@@ -13,6 +13,8 @@
 | `project-logs/` | 실험·실행·회의 로그 |
 | `admin-records/` | 행정 기록 |
 
-> 이 계층은 **인덱싱에서 제외**됩니다. raw는 wikilink 타깃이 아니라 `source_path`
-> 상대 경로로만 참조되며, 인덱싱 가능한 대리물은 `50_Source_Summaries/`의
-> source-summary node입니다. 규칙: [[Source Policy]], [AGENTS.md](../AGENTS.md) §1.1.
+> 이 계층은 **전문검색 전용으로 인덱싱**됩니다. 즉 검색(BM25/임베딩)에는 잡히되
+> 강등되고, **그래프 node는 아닙니다**(edge 미파싱, wikilink/edge 타깃 아님). raw는
+> `source_path` 상대 경로로만 참조되며, 그래프상 대리물은 `50_Source_Summaries/`의
+> source-summary node입니다. 규칙: [[Source Policy]], [AGENTS.md](../AGENTS.md) §1.1,
+> 계층 정책: [[2026-06-18-layer-and-confidence-aware-retrieval]].

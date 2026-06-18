@@ -15,26 +15,28 @@ related:
 
 ## Open
 
-### [open] 폴더별 인덱싱 정책(per-folder index policy)을 어떻게 둘 것인가?
-- created: 2026-06-18
-- context: 현재 `90_Engine/indexer.py`는 `05_Inbox/`·`06_Raw/`를 디렉터리 이름으로
-  단순 제외만 한다(코드 내 TODO 참조). 해석 계층(`30`/`40`/`50`/`60`/`70`/`80`)은
-  모두 node+edge로 동일 취급된다. 향후 계층별로 다르게 다뤄야 할 수 있다.
-- 후보: `06_Raw`는 전문(full-text) 검색만 / `80_Reviews`는 검색 우선순위 강등 /
-  `40_Decisions`는 node+edge 유지 / `50_Source_Summaries`는 raw 대리물로 가중치 부여.
-- related: [[LLM Second Brain]], [[Ontology Specification]]
-- answer: _(미정)_
-
-### [open] 검토 큐(`80_Reviews/`)·결정 status를 retrieval에 반영할 것인가?
-- created: 2026-06-18
-- context: 낮은 신뢰도/환각 의심 항목이 일반 지식과 동급으로 검색되면 오염 위험.
-  confidence-aware retrieval 또는 status 필터가 필요할 수 있다.
-- related: [[Review Policy]], [[LLM Second Brain]]
-- answer: _(미정)_
+_(현재 열린 구현 질문 없음)_
 
 ## Resolved
 
-_(없음)_
+### [resolved] 폴더별 인덱싱 정책(per-folder index policy)을 어떻게 둘 것인가?
+- created: 2026-06-18
+- context: 초기 구현은 `05_Inbox/`·`06_Raw/`를 디렉터리 이름으로 단순 제외만 했다.
+  해석 계층(`30`/`40`/`50`/`60`/`70`/`80`)은 모두 node+edge로 동일 취급되었다.
+- answer (2026-06-18): `LAYER_POLICY`/`policy_for()` 도입.
+  `05_Inbox` 제외 / `06_Raw` **전문검색 전용**(node+embed, edge·링크 타깃 제외) /
+  그 외 해석 계층 node+edge 유지. 검색 랭킹은 계층 가중치로 차등.
+  결정: [[2026-06-18-layer-and-confidence-aware-retrieval]].
+- related: [[LLM Second Brain]], [[Ontology Specification]]
+
+### [resolved] 검토 큐(`80_Reviews/`)·결정 status를 retrieval에 반영할 것인가?
+- created: 2026-06-18
+- context: 낮은 신뢰도/환각 의심 항목이 일반 지식과 동급으로 검색되면 오염 위험.
+- answer (2026-06-18): confidence/status 인지 검색 도입. 낮은 신뢰도·폐기 상태는
+  **강등 + 표기**(숨기지 않음). `60/70/80`은 기본 검색 제외(`include_reviews=True`로
+  포함). 검토 큐 위생용 `review_queue()` MCP 도구 추가.
+  결정: [[2026-06-18-layer-and-confidence-aware-retrieval]].
+- related: [[Review Policy]], [[LLM Second Brain]]
 
 ---
 
