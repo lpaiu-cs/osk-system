@@ -88,6 +88,12 @@ related:
   최소 블록-YAML 파서 추가(PyYAML 있으면 사용, 없으면 fallback). `requirements.txt`에
   `pyyaml`를 **선택** 의존성으로 명시.
 - **평가 도구**: `90_Engine/eval_retrieval.py` + `eval_queries.sample.json` 신설.
+- **edges FK 제거**: `edges.source_id/target_id`의 `REFERENCES nodes(node_id)` FK를
+  제거. DuckDB는 FK 부모행(nodes) UPDATE를 delete+insert로 처리해, edge에 참조되는
+  노드의 임베딩/메타를 UPDATE할 때 "still referenced by a foreign key" 오류를 낸다
+  (실측 중 발견; MCP `update_note(embed=True)`도 동일 영향). 참조 무결성은 앱 레벨
+  (`title_to_id` + dangling skip + `reconcile_graph`)이 보장한다. predicate 9-CHECK과
+  자기참조 금지 CHECK는 유지.
 - 문서 갱신: README, [[Second Brain Operating Model]], [[Ontology Specification]] §0,
   [../AGENTS.md](../AGENTS.md), `06_Raw/README`, `docs/MCP_TOOLS.md`, `SETUP.md` —
   "raw 인덱싱 제외" → "raw 전문검색 전용(그래프 제외)"로 일관화 + config/eval 안내.
@@ -113,6 +119,27 @@ related:
 
 위 트리거 발생 시 [[Review Policy]] §4의 `decision-needs-reconsideration`로 올리고,
 정책이 바뀌면 [../AGENTS.md](../AGENTS.md) §4 supersede 절차를 따른다.
+
+## Tuning Log
+
+- **2026-06-18** — 첫 실측 (Ollama `bge-m3` dense + BM25, 55 nodes 100% 임베딩,
+  `eval_queries.sample.json` 7쿼리, top-k=5):
+
+  | config | MRR@5 | Recall@5 | review_leakage | raw_overexposure |
+  |--------|------:|---------:|---------------:|-----------------:|
+  | baseline (provisional prior) | 0.857 | **0.857** | 0.0 | 0.0 |
+  | flat (모든 weight 1.0) | 0.857 | 0.762 | 0.0 | 0.0 |
+  | adversarial (MOC/System≫Concept) | 0.0 | 0.0 | 0.0 | 0.0 |
+
+  - 결론: **현재 가중치 유지.** flat 대비 Recall +0.095(개념>MOC 정렬이 실제로 기여),
+    adversarial은 0으로 붕괴 → 지표가 가중치에 민감하고 방향이 옳음을 입증.
+    `review_leakage_rate`는 세 설정 모두 0 → 필터가 가중치와 독립적으로 견고(설계 의도).
+  - BM25-only(임베딩 전) 대비 dense 켠 뒤 Recall 0.762→0.857.
+  - 남은 1개 미스("strawberry r 개수")는 **콘텐츠/임베딩 갭**(원자 노트 BPE/Tokenizer/
+    Glitch Tokens에 strawberry 예시 텍스트가 없음 — 설명은 MOC에만 존재). 가중치로
+    해결 불가. → corpus 보강 과제.
+  - 한계: corpus가 작고 동질적(대부분 concept). raw/summary/저신뢰 데이터가 쌓이면
+    재튜닝 필요(특히 raw_overexposure는 현재 raw 콘텐츠 0이라 측정 의미 약함).
 
 ## Sources
 

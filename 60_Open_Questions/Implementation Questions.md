@@ -19,11 +19,24 @@ related:
 - created: 2026-06-18
 - context: `00_System/Retrieval Policy.yaml`의 layer/confidence/status 가중치는 경험적
   최적값이 아니라 출발점(provisional prior)이다. `90_Engine/eval_retrieval.py`로
-  MRR@5/Recall@5/review_leakage_rate/raw_overexposure_rate를 측정해 조정해야 한다.
-- todo: 실제 도메인 쿼리로 `eval_queries.sample.json`을 확장하고, 가중치를 조정하며
-  지표를 비교. raw가 과다노출되면 `06_Raw` weight↓, 유효 원본이 과강등되면 ↑.
+  지표를 측정해 조정한다.
+- 1차 측정 (2026-06-18, bge-m3 dense+BM25, 55 nodes, 7쿼리): baseline Recall@5 0.857 >
+  flat 0.762 > adversarial 0.0. review_leakage 0(전 설정). → **현재 가중치 유지**가 타당.
+  상세: [[2026-06-18-layer-and-confidence-aware-retrieval]] §Tuning Log.
+- 남은 todo: corpus가 작고 동질적이라 민감도 제한적. raw/summary/저신뢰 데이터가
+  쌓이면 재튜닝(특히 raw_overexposure는 raw 콘텐츠가 있어야 의미). 도메인 쿼리로
+  `eval_queries.sample.json` 확장 필요.
 - related: [[2026-06-18-layer-and-confidence-aware-retrieval]], [[LLM Second Brain]]
-- answer: _(측정 후 기록)_
+- status: 1차 완료, corpus 확장 후 재튜닝 대기
+
+### [open] strawberry류 쿼리 콘텐츠 갭 (검색 미스)
+- created: 2026-06-18
+- context: "왜 LLM은 strawberry의 r 개수를 못 세나?"가 BPE/Tokenizer/Glitch Tokens를
+  못 끌어온다. 해당 원자 노트에 strawberry 예시 텍스트가 없고 설명이 MOC에만 있어
+  dense/BM25 모두 약하게 매칭. **가중치가 아니라 콘텐츠 문제.**
+- todo: BPE/Tokenizer 노트에 실제 strawberry 토큰화 예시를 (사실 기반으로) 보강하거나,
+  MOC 본문 청크가 검색되도록 개선. 콘텐츠 보강 시 eval로 재확인.
+- related: [[Byte Pair Encoding]], [[Tokenizer]], [[Glitch Tokens]]
 
 ### [open] 06_Raw 하위 폴더별 임베딩 정책
 - created: 2026-06-18
