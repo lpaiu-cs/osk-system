@@ -41,15 +41,22 @@ related:
   sync 시 unpinned 파일 경고. 결정 후 `template-allowlist.txt` 반영.
 - related: [[LLM Second Brain]]
 
-### [open] 06_Raw 하위 폴더별 임베딩 정책
-- created: 2026-06-18
-- context: 현재 `raw_policy.embed: true`로 raw 전체를 임베딩한다. 스크린샷 OCR 등은
-  BM25만으로 충분할 수 있어 임베딩 비용을 줄일 여지가 있다. config 구조(`raw_policy.
-  subfolders`)와 `indexer.py` TODO가 이미 열려 있다.
-- related: [[2026-06-18-layer-and-confidence-aware-retrieval]]
-- answer: _(미정)_
-
 ## Resolved
+
+### [resolved] 06_Raw 하위 폴더별 임베딩 정책
+- created: 2026-06-18
+- context: raw 전체를 임베딩하면 비용·노이즈가 커진다. 하위 폴더별 차등 필요.
+- answer (2026-06-18): `indexer.py`의 `RAW_SUBFOLDER_EMBED` 상수로 하위 폴더별 embed
+  차등(`policy_for`가 06_Raw에서 적용). chats/papers/project-logs/**admin-records**=embed
+  true, code-logs/screenshots=false, 미분류=false. **06_Raw 전체는 index=true(BM25 유지)·
+  parse_edges=false·graph_node=false 불변** — embed=false는 dense만 끄는 것이지 검색에서
+  빠지는 게 아님. 검증: `policy_for` 단위 테스트로 전 케이스 확인.
+  - **admin-records=embed true는 의식적 선택**: 행정/건강/복무/증빙/상담 기록은 민감하지만
+    그렇기에 "나"를 잘 반영하는 중요한 기억이라 private 안에서 의미검색되게 둔다. 보안상
+    안전하다는 뜻이 아니라 **private-only 운영 전제**(유출 방지는 public/private 분리·sync
+    guard 담당). public 템플릿에는 실제 raw가 절대 포함되지 않음.
+- 문서: `00_System/Retrieval Policy.yaml` raw_policy.subfolders(미러), indexer.py 주석.
+- related: [[2026-06-18-layer-and-confidence-aware-retrieval]]
 
 ### [resolved] strawberry류 쿼리 콘텐츠 갭 (검색 미스)
 - created: 2026-06-18

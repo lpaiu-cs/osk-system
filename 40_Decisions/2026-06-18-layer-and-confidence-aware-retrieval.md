@@ -104,7 +104,11 @@ related:
   최적값이 아니라 출발점이다. `eval_retrieval.py`로 실데이터를 측정해 조정해야 한다
   (지표가 기대와 다르면 config만 수정; 코드 변경 불필요).
 - **raw 임베딩 비용·노이즈.** raw가 커지면 Ollama 임베딩 호출·BM25 코퍼스가 커진다.
-  필요 시 raw를 BM25-only(임베딩 제외)로 더 낮출 수 있음(향후 정책 옵션).
+  → **구현됨(2026-06-18)**: `indexer.py` `RAW_SUBFOLDER_EMBED`로 06_Raw 하위 폴더별 embed
+  차등(chats/papers/project-logs/admin-records=true, code-logs/screenshots/미분류=false).
+  index=true(BM25)·parse_edges=false·graph_node=false는 불변이라 embed=false도 검색 유지.
+  admin-records=true는 **private-only 전제하의 의식적 선택**(민감하지만 "나"를 반영하는
+  기억; 유출 방지는 public/private 분리·sync guard). 문서: `00_System/Retrieval Policy.yaml`.
 - **로컬 검증 한계.** 작성 환경에 `duckdb`/`rank_bm25` 미설치로 전체 파이프라인 통합
   테스트는 미수행. 순수 로직(정책/가중치/파서/그래프 확장)은 stub로 단위 검증함.
   → 사용자 머신에서 `pip install -r requirements.txt && indexer --force --embed` 후
