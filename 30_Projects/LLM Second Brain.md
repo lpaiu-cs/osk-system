@@ -37,7 +37,7 @@ brain**으로 운영한다. 사람과 LLM이 함께 읽고 쓰며, LLM이 틀릴
 - 인입 마찰 vs. 규율의 균형 (모든 단계를 매번 밟지 않도록 최소 경로 필요) → [[Ingest Policy]] §3
 - 개념 과적합 위험 (Anti-Bloat) → [[Ingest Policy]] §2
 - 검토 큐(`80_Reviews/`)가 쌓이고 비워지지 않을 위험 → [[Review Policy]] (점검: `review_queue()`)
-- 검색 가중치(`LAYER_RANK_WEIGHT`/`CONFIDENCE_WEIGHT`)가 휴리스틱 임시값 — 실데이터 튜닝 필요
+- 검색 가중치는 provisional prior(`00_System/Retrieval Policy.yaml`) — `eval_retrieval.py`로 실측 튜닝 필요
 - 로컬에 `duckdb`/`rank_bm25` 미설치로 검색 파이프라인 통합 검증 미수행 (순수 로직만 검증)
 
 ## Ingest Workflow
@@ -55,8 +55,9 @@ brain**으로 운영한다. 사람과 LLM이 함께 읽고 쓰며, LLM이 틀릴
 
 `90_Engine/`: `indexer.py`(컴파일·9술어 검증·임베딩·계층 정책) · `retriever.py`(BM25 +
 Dense + graph expansion, **계층/신뢰도 인지**) · `mcp_server.py`(MCP 도구, `review_queue`
-포함). DuckDB 캐시는 `ltm_cache.db`. `05_Inbox/`는 인덱싱 제외, `06_Raw/`는 전문검색
-전용. 정책: [[2026-06-18-layer-and-confidence-aware-retrieval]].
+포함) · `eval_retrieval.py`(검색 품질 평가). DuckDB 캐시는 `ltm_cache.db`. `05_Inbox/`는
+인덱싱 제외, `06_Raw/`는 전문검색 전용. 가중치/필터는 `00_System/Retrieval Policy.yaml`
+(provisional prior). 정책: [[2026-06-18-layer-and-confidence-aware-retrieval]].
 
 ## Open Questions
 
@@ -67,9 +68,9 @@ Dense + graph expansion, **계층/신뢰도 인지**) · `mcp_server.py`(MCP 도
 
 - [ ] `pip install -r requirements.txt` 후 `python3 90_Engine/indexer.py --force --embed --report`로 신규 계층/raw 인덱싱 통합 검증
 - [ ] 첫 실제 source를 `06_Raw/`에 이관하고 `50_Source_Summaries/`에 요약 1건 작성(워크플로우 검증)
-- [ ] 실데이터로 검색 가중치(`LAYER_RANK_WEIGHT`/`CONFIDENCE_WEIGHT`) 튜닝
+- [ ] `python3 90_Engine/eval_retrieval.py --db 90_Engine/ltm_cache.db --queries 90_Engine/eval_queries.sample.json`로 검색 품질 측정 후 `00_System/Retrieval Policy.yaml` 튜닝 → [[Implementation Questions]]
 - [ ] `review_queue()`로 검토 큐 주기적 비우기 습관 정립([[Review Policy]])
-- [x] 폴더별 인덱싱 정책 + 신뢰도 인지 검색 → [[2026-06-18-layer-and-confidence-aware-retrieval]] (완료)
+- [x] 폴더별 인덱싱 정책 + 신뢰도 인지 검색 + 가중치 config 외부화 + 평가 스캐폴드 → [[2026-06-18-layer-and-confidence-aware-retrieval]] (완료)
 
 ---
 

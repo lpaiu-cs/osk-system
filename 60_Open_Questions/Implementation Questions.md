@@ -15,7 +15,23 @@ related:
 
 ## Open
 
-_(현재 열린 구현 질문 없음)_
+### [open] retrieval 가중치(provisional prior)를 실측 튜닝
+- created: 2026-06-18
+- context: `00_System/Retrieval Policy.yaml`의 layer/confidence/status 가중치는 경험적
+  최적값이 아니라 출발점(provisional prior)이다. `90_Engine/eval_retrieval.py`로
+  MRR@5/Recall@5/review_leakage_rate/raw_overexposure_rate를 측정해 조정해야 한다.
+- todo: 실제 도메인 쿼리로 `eval_queries.sample.json`을 확장하고, 가중치를 조정하며
+  지표를 비교. raw가 과다노출되면 `06_Raw` weight↓, 유효 원본이 과강등되면 ↑.
+- related: [[2026-06-18-layer-and-confidence-aware-retrieval]], [[LLM Second Brain]]
+- answer: _(측정 후 기록)_
+
+### [open] 06_Raw 하위 폴더별 임베딩 정책
+- created: 2026-06-18
+- context: 현재 `raw_policy.embed: true`로 raw 전체를 임베딩한다. 스크린샷 OCR 등은
+  BM25만으로 충분할 수 있어 임베딩 비용을 줄일 여지가 있다. config 구조(`raw_policy.
+  subfolders`)와 `indexer.py` TODO가 이미 열려 있다.
+- related: [[2026-06-18-layer-and-confidence-aware-retrieval]]
+- answer: _(미정)_
 
 ## Resolved
 
