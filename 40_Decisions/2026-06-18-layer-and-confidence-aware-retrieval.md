@@ -141,6 +141,20 @@ related:
   - 한계: corpus가 작고 동질적(대부분 concept). raw/summary/저신뢰 데이터가 쌓이면
     재튜닝 필요(특히 raw_overexposure는 현재 raw 콘텐츠 0이라 측정 의미 약함).
 
+- **2026-06-18 (2차)** — strawberry 콘텐츠 갭 보강 후 재측정(동일 조건):
+
+  | config | MRR@5 | Recall@5 | review_leakage | raw_overexposure |
+  |--------|------:|---------:|---------------:|-----------------:|
+  | 1차 (보강 전) | 0.857 | 0.857 | 0.0 | 0.0 |
+  | 2차 (BPE/Tokenizer에 글자세기 예시 보강) | **1.0** | **0.952** | 0.0 | 0.0 |
+
+  - `[[Byte Pair Encoding]]`·`[[Tokenizer]]`에 "strawberry 글자 세기" 사례를 사실
+    기반으로 추가(과장 금지 — 토큰화는 글자 카운팅을 *간접적으로* 만들 뿐 불가능하게
+    하지 않음). strawberry 쿼리가 기대 3노드(BPE/Tokenizer/Glitch Tokens)를 전부 회수
+    (rr 0→1.0, recall 0→1.0). **가중치가 아니라 콘텐츠 문제였음을 실측으로 확인.**
+  - 남은 미스: "Vibe Coding의 위험"이 `[[Hallucination as Default]]`를 top-5에 못 올림
+    (recall 0.667). 이는 별개의 콘텐츠/링크 갭(가중치 무관).
+
 ## Sources
 
 - 구현: `90_Engine/indexer.py`, `90_Engine/retriever.py`, `90_Engine/mcp_server.py`
