@@ -29,14 +29,17 @@ related:
 - related: [[2026-06-18-layer-and-confidence-aware-retrieval]], [[LLM Second Brain]]
 - status: 1차 완료, corpus 확장 후 재튜닝 대기
 
-### [open] strawberry류 쿼리 콘텐츠 갭 (검색 미스)
+### [open] 20_Concepts allowlist를 디렉터리 전체→개별 파일로 좁히기
 - created: 2026-06-18
-- context: "왜 LLM은 strawberry의 r 개수를 못 세나?"가 BPE/Tokenizer/Glitch Tokens를
-  못 끌어온다. 해당 원자 노트에 strawberry 예시 텍스트가 없고 설명이 MOC에만 있어
-  dense/BM25 모두 약하게 매칭. **가중치가 아니라 콘텐츠 문제.**
-- todo: BPE/Tokenizer 노트에 실제 strawberry 토큰화 예시를 (사실 기반으로) 보강하거나,
-  MOC 본문 청크가 검색되도록 개선. 콘텐츠 보강 시 eval로 재확인.
-- related: [[Byte Pair Encoding]], [[Tokenizer]], [[Glitch Tokens]]
+- context: `scripts/template-allowlist.txt`가 현재 `20_Concepts/`·`00_System/`을 디렉터리
+  전체로 공개 허용한다. 공개 LLM 개념 코퍼스라면 안전하지만, **개인 연구 개념이나
+  개인 운영 규칙이 이 폴더에 쌓이면 silent하게 공개로 새어나갈 수 있다.** 검토자(GPT)와
+  Claude 모두 지적. Claude는 "나중"이 아니라 지금 좁히거나 최소한 unpinned 파일 경고를
+  넣자는 입장(GPT보다 강경).
+- todo: 사용자 결정 대기 — 20_Concepts를 (a) 공개 지식 전용으로 유지(개인 개념은
+  30/40 등 다른 계층에), (b) 개별 파일 allowlist로 전환, (c) 디렉터리 허용 유지하되
+  sync 시 unpinned 파일 경고. 결정 후 `template-allowlist.txt` 반영.
+- related: [[LLM Second Brain]]
 
 ### [open] 06_Raw 하위 폴더별 임베딩 정책
 - created: 2026-06-18
@@ -47,6 +50,17 @@ related:
 - answer: _(미정)_
 
 ## Resolved
+
+### [resolved] strawberry류 쿼리 콘텐츠 갭 (검색 미스)
+- created: 2026-06-18
+- context: "왜 LLM은 strawberry의 r 개수를 못 세나?"가 BPE/Tokenizer/Glitch Tokens를
+  못 끌어온다. 해당 원자 노트에 strawberry 예시 텍스트가 없고 설명이 MOC에만 있어
+  dense/BM25 모두 약하게 매칭. **가중치가 아니라 콘텐츠 문제.**
+- answer (2026-06-18): `[[Byte Pair Encoding]]`·`[[Tokenizer]]`에 strawberry 글자 세기
+  사례를 사실 기반(과장 금지)으로 추가. 재인덱싱+eval 결과 strawberry 쿼리 recall 0→1.0,
+  전체 MRR@5 0.857→1.0 / Recall@5 0.857→0.952. 상세:
+  [[2026-06-18-layer-and-confidence-aware-retrieval]] §Tuning Log 2차.
+- related: [[Byte Pair Encoding]], [[Tokenizer]], [[Glitch Tokens]]
 
 ### [resolved] 폴더별 인덱싱 정책(per-folder index policy)을 어떻게 둘 것인가?
 - created: 2026-06-18
