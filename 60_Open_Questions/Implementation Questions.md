@@ -41,6 +41,13 @@ related:
   sync 시 unpinned 파일 경고. 결정 후 `template-allowlist.txt` 반영.
 - related: [[LLM Second Brain]]
 
+### [mostly-resolved] music-bot: YouTube 직접-URL 로드만 실패하는 메커니즘/대응
+- created: 2026-06-19
+- **메커니즘 확정**: youtube-source README 능력표상 **TV(OAuth) 클라이언트는 Metadata Support=None** → 직접 video-ID 로드(`routeFromVideoId`/`loadVideo`, 메타데이터 단계)엔 비-OAuth 클라이언트(WEB/ANDROID_VR/WEBEMBEDDED)만 참여 → 데이터센터서 로그인월. 검색→재생은 재생(format) 단계에서 TV+OAuth가 끼어 통과. ⇒ 영상 제한 아닌 **로드 경로** 문제. 통제 실험으로 확정(같은 영상 검색OK/직접FAIL). 상세: [[YouTube Datacenter IP Login Wall]].
+- **대응 구현(확정)**: 봇 `_resolveQuery`에 oembed→ytsearch 폴백(동일 id 우선). 정식 MV는 정확 일치 resolve 실측. discord_bots 레포 메모리 참조.
+- **남은 open**: poToken(WEB/WEBEMBEDDED 전용)을 데이터센터서 생성해 **직접-URL 로드 자체**를 고칠 수 있는지 미검증(검색 우회로 실사용은 해결돼 우선순위 낮음).
+- related: [[Discord Bots]], [[YouTube Datacenter IP Login Wall]]
+
 ## Resolved
 
 ### [resolved] 06_Raw 하위 폴더별 임베딩 정책

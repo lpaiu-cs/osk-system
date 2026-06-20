@@ -1,7 +1,7 @@
 ---
 type: project
-status: stub
-updated: 2026-06-18
+status: active
+updated: 2026-06-19
 area: development
 related:
   - "[[Development MOC]]"
@@ -9,37 +9,31 @@ related:
 
 # Discord Bots
 
-> [!WARNING] 스텁(stub) 대시보드
-> 구조만 갖춘 **빈 대시보드**입니다. 아직 source material이 없어 내용은 비워 둡니다.
-> 실제 자료를 [[Ingest Policy]]에 따라 인입한 뒤 채우세요.
+> 여러 Discord 봇 모음(`discord_bots` 저장소). music / casino / game / attendance 등.
+> 고수준 지도만 둔다. **코드·배포·파일경로 등 레포 종속 디테일은 vault가 아니라
+> 프로젝트 레포의 메모리에 보관한다**(`~/.claude/projects/-Users-lpaiu-vs-discord-bots/memory/`).
+> 근거: [[2026-06-19-claude-memory-routes-to-llm-vault]].
 
 ## Purpose
 
-_(TODO: 어떤 봇을, 무엇을 위해)_
+Discord용 봇들을 운영·개선한다. 핵심 활성 작업은 **music-bot**(Lavalink 기반 음악 재생).
 
-## Status
+## 증류된 일반 사실 (cross-project)
 
-`stub` — 자료 인입 대기.
+- UX 철학: 슬래시 명령은 최소화, 버튼/셀렉트 피드백 UI에 투자(슬래시 단축 추가 지양).
+- music-bot의 YouTube 재생은 데이터센터 IP login-wall 이슈를 만날 수 있음 — 일반 원리는 [[YouTube Datacenter IP Login Wall]]. (구체 진단/패치/서버 경로는 레포 메모리에.)
 
-## Active Decisions
+## 레포 종속 디테일 위치
 
-_(없음)_
-
-## Current Problems
-
-_(TODO)_
+- 배포 방식, Lavalink/yt-cipher 구성, 코드 패치 등은 `discord_bots` 레포 `.claude` 메모리 참조.
 
 ## Open Questions
 
 - [[Implementation Questions]]
 
-## Next Actions
-
-- [ ] 코드/배포 로그를 `06_Raw/code-logs/`·`06_Raw/project-logs/`로 이관
-- [ ] `50_Source_Summaries/`에 요약 작성 후 대시보드 채우기
-
 ---
 
 ## Sources
 
-_(아직 없음)_
+- 일반 원리: [[YouTube Datacenter IP Login Wall]]
+- 메모리 라우팅 정책: [[2026-06-19-claude-memory-routes-to-llm-vault]]

@@ -1,23 +1,21 @@
 ---
 id: moc_development
 title: Development MOC
-aliases:
-  - 개발 MOC
-  - Development
+aliases: [개발 MOC, Development]
 type: Domain-MOC
 moc: "[[Second Brain MOC]]"
 parent_moc: "[[Second Brain MOC]]"
-tags:
-  - SecondBrain
-  - Development
-  - Engineering
+tags: [SecondBrain, Development, Engineering]
 status: evergreen
 created: 2026-06-18
-updated: 2026-06-18
+updated: 2026-06-20
 version: 1.0
 related:
   - "[[Local Dev Environment]]"
+node_id: 354cc4be-aeb0-4336-8157-f297e4167cd7
 ---
+
+# Development MOC
 
 > [!NOTE] 영역
 > 코드, 디버깅 로그, 도구·런타임, 개발 환경에 관한 영역 지도입니다. 디버깅 세션은
@@ -29,6 +27,7 @@ related:
 
 - [[Local Dev Environment]] — 로컬 개발 환경 셋업
 - [[Discord Bots]] — 봇 개발
+- [[lbot]] — KakaoTalk 오픈챗 운영 봇 (frida 브리지 자동화)
 - [[TFT RL Simulator]] — 강화학습 시뮬레이터
 - [[LLM Second Brain]] — 본 저장소의 엔진/MCP 런타임
 
@@ -47,6 +46,14 @@ related:
 - [[Implementation Questions]]
 
 ---
+
+## Sources
+
+- 영역 정의 근거: [[Second Brain Operating Model]]
+
+## 핵심 엣지
+
+<!-- 아직 엣지 없음 -->
 
 ## Sources
 
