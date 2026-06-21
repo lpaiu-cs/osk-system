@@ -3,7 +3,7 @@ id: concept_2026_06_21_mobile_ia_redesign_four_tabs
 title: 2026-06-21-mobile-ia-redesign-four-tabs
 aliases: []
 type: decision
-moc: "[[[[Development MOC]]]]"
+moc: "[[Development MOC]]"
 tags: [mobile, information-architecture, ux, expo-router, project-mgmt]
 status: draft
 created: 2026-06-21
