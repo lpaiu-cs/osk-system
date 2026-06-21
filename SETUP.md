@@ -372,7 +372,7 @@ python3 90_Engine/eval_retrieval.py \
 
 - **public `llm-vault` (`upstream`) = 프레임워크 템플릿** — 누구나 scratch에서 시작할 수
   있는 골격입니다. 담는 것: 엔진(`90_Engine/`) + 정책(`00_System/`) + 문서/스크립트 +
-  **빈 vault 스켈레톤**(지식 계층은 `README/.gitkeep`만) + `examples/mini-vault/`(데모).
+  **빈 vault 스켈레톤**(지식 계층은 `README/.gitkeep`만).
   실제 지식 코퍼스는 담지 않습니다.
 - **private `llm-vault-private` (`origin`) = 실제 second brain 인스턴스** — 당신의 진짜
   지식이 `10_MOC/`·`20_Concepts/`·`30_Projects/`·`40_Decisions/`·`50~80`에 쌓이는 곳.
@@ -390,13 +390,12 @@ scripts/sync-template.sh <커밋…>   # 프레임워크 개선만 골라 upstre
 
 | 구분 | 경로 | allowlist |
 |------|------|-----------|
-| 프레임워크 (공개) | `90_Engine/`, `docs/`, `scripts/`, `00_System/`, `examples/`, 루트 문서(`README/SETUP/AGENTS/LICENSE/requirements`) | 등록 → 허용 |
+| 프레임워크 (공개) | `90_Engine/`, `docs/`, `scripts/`, `00_System/`, 루트 문서(`README/SETUP/AGENTS/LICENSE/requirements`) | 등록 → 허용 |
 | vault 스켈레톤 (공개) | 모든 지식 계층의 `README.md`·`.gitkeep` **만** | 등록 → 허용 |
 | 실제 지식 (private 전용) | `10_MOC/`·`20_Concepts/`·`30_Projects/`·`40_Decisions/`·`50~80`의 **모든 콘텐츠 파일**, `05_Inbox/`·`06_Raw/` 콘텐츠 | 미등록 → **기본 차단** |
 
 즉 지식 계층은 **디렉터리 통째 허용이 없습니다.** 어떤 계층에 무엇을 적든 콘텐츠 파일은
-기본 차단되므로, public에 노출하려면 의식적인 결정이 필요합니다. 공개용 예시는
-`examples/mini-vault/`에 최소한만 둡니다(README/.gitkeep 외 실제 노트는 main vault에 두지 않음).
+기본 차단되므로, public에 노출하려면 의식적인 결정이 필요합니다.
 
 > **structure 분기 운영**: public main vault를 스켈레톤으로 유지하면서 private main vault에는
 > 실제 지식을 쌓으려면, public 정리는 private 워킹카피가 아니라 별도 worktree에서 합니다.

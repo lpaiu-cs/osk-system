@@ -6,7 +6,6 @@
 *.duckdb
 *.duckdb.wal
 ltm_cache.db*
-examples/mini-vault/fixture.db*
 
 # ─────────────────────────────────────────────────────────
 # Python

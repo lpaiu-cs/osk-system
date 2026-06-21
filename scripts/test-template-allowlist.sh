@@ -38,7 +38,7 @@ check "60_Open_Questions/Implementation Questions.md"  block
 check "70_Contradictions/foo.md"                       block
 check "80_Reviews/foo.md"                              block
 
-# 허용: 프레임워크 + 스켈레톤 구조 파일 + examples/mini-vault
+# 허용: 프레임워크 + 스켈레톤 구조 파일
 check "90_Engine/retriever.py"                         allow
 check "00_System/Retrieval Policy.yaml"                allow
 check "06_Raw/README.md"                               allow
@@ -46,9 +46,6 @@ check "50_Source_Summaries/README.md"                  allow
 check "20_Concepts/README.md"                          allow
 check "20_Concepts/.gitkeep"                           allow
 check "10_MOC/README.md"                               allow
-check "examples/mini-vault/20_Concepts/Tokenizer.md"  allow
-check "examples/mini-vault/README.md"                  allow
-check "examples/mini-vault/eval_queries.json"          allow
 check "README.md"                                      allow
 check "scripts/sync-template.sh"                       allow
 check ".mcp.json.example"                              allow
