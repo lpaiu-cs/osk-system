@@ -324,7 +324,22 @@ def _norm(t: str) -> str:
 # ─────────────────────────────────────────────────────────────
 # MCP 서버 정의
 # ─────────────────────────────────────────────────────────────
-mcp = FastMCP("karpathy-vault-ltm")
+mcp = FastMCP(
+    "karpathy-vault-ltm",
+    instructions=(
+        "이 서버는 장기기억(LTM) 지식 그래프 vault입니다. Claude Code의 memory를 "
+        "쓰듯 능동적으로 활용하세요.\n"
+        "- 지식·개념·과거 결정·출처에 관한 질문에 답하기 전에, 먼저 "
+        "retrieve_knowledge 로 vault를 조회해 관련 노드/엣지를 확인합니다.\n"
+        "- 새로운 사실·결정·정의가 확정되면 create_note(필요 시 upsert_edge)로 "
+        "기록하고, 기존 노드가 바뀌면 update_note 로 갱신합니다.\n"
+        "- vault 파일이 외부에서 변경되었을 수 있으면 sync_vault 로 동기화한 뒤 "
+        "조회합니다.\n"
+        "- 검증·정리가 필요하면 review_queue / reconcile_graph 로 상태를 점검합니다.\n"
+        "raw 원본(06_Raw)은 그래프 node가 아니라 검색 전용이며, 그래프 대리물은 "
+        "50_Source_Summaries 의 source-summary node입니다."
+    ),
+)
 
 
 # ===== 읽기 도구 (원본 유지) ===============================================
