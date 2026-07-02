@@ -334,6 +334,10 @@ def retrieve_knowledge(query: str, top_k: int = 5, max_hops: int = 2,
         include_reviews: 60/70/80 검토·메타 계층 포함 (기본 False)
         confidence_weighting: confidence(low/medium) 강등 적용 (기본 True)
 
+    [latent 승격 안내] 회수된 노트에 분할 후보(frontmatter latent_split_candidate)가
+    있으면 hit이 기록되고, 승격 조건(서로 다른 맥락 ≥ N회 회수) 도달 시 응답에
+    `latent_promotions_due` 목록이 포함됩니다 — 그 후보는 promote_latent 도구로
+    승격하거나(extraction-ready일 때), 아니면 review queue로 보내세요.
     """
     return _daemon("POST", "/retrieve", {
         "query": query, "top_k": top_k, "max_hops": max_hops, "max_nodes": max_nodes,
@@ -759,6 +763,49 @@ def reconcile_graph(embed: bool = False) -> dict:
         "edges_dangling": stats.get("edges_dangling"),
         "embeddings_built": stats.get("embeddings_built"),
     }
+
+
+@mcp.tool()
+def promote_latent(parent_title: str, candidate_id: str, evidence_quote: str,
+                   independent_review_condition: str,
+                   new_title: Optional[str] = None) -> dict:
+    """latent 분할 후보를 독립 노드로 승격합니다(extraction-only, [[Granularity Policy]] §3).
+
+    부모 노트 frontmatter의 `latent_split_candidate` 항목이 "서로 다른 맥락에서 N회
+    회수"(retrieve_knowledge 응답의 latent_promotions_due로 통지) 조건을 채웠을 때만
+    호출하세요. **에이전트가 직접 파일을 쪼개지 않습니다** — 이 도구가 데몬 write 락
+    하에서 원자적·멱등으로 수행합니다:
+
+      1. evidence_quote(부모 본문에 verbatim 실재)로 span(문단 블록)을 기계적으로 특정
+      2. span을 20_Concepts/의 새 노드로 **이동**(promoted_from/promotion_evidence
+         frontmatter로 감사 추적), 부모에는 `[[새 노드]]` 한 줄만 남김 (복제 금지)
+      3. 즉시 재색인. 인용 미발견/중복/코드 펜스/문단 경계 초과/제목 충돌 등
+         extraction-ready가 아닌 경우는 실행하지 않고 80_Reviews 큐로 라우팅
+
+    Args:
+        parent_title: 후보를 보유한 부모 노드 제목
+        candidate_id: 후보의 id 슬러그 (latent_promotions_due의 candidate_id)
+        evidence_quote: 적출할 span에 포함된, 부모 본문에 실재하는 문장 (10자 이상)
+        independent_review_condition: span이 자기완결(G2)임을 어떻게 확인했는지 —
+            감사용 필수 인자. 새 노드 frontmatter와 승격 로그에 기록됩니다.
+        new_title: 새 노드 제목 (생략 시 후보의 candidate_title 사용)
+
+    Returns:
+        {status: promoted|already_promoted|routed_to_review, ...}
+    """
+    evidence_quote = (evidence_quote or "").strip()
+    independent_review_condition = (independent_review_condition or "").strip()
+    if len(evidence_quote) < 10:
+        raise ValueError("evidence_quote는 부모 본문에 실재하는 10자 이상의 문장이어야 합니다")
+    if not independent_review_condition:
+        raise ValueError("independent_review_condition(G2 확인 근거)은 필수입니다")
+    return _daemon("POST", "/promote_latent", {
+        "parent_title": parent_title,
+        "candidate_id": candidate_id,
+        "evidence_quote": evidence_quote,
+        "independent_review_condition": independent_review_condition,
+        "new_title": new_title,
+    }, timeout=900)
 
 
 # ─────────────────────────────────────────────────────────────

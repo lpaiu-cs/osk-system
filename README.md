@@ -243,7 +243,9 @@ node는 사람이 직접 Markdown으로 작성해도 되고, MCP write 도구로
   `create_node()`, `update_node()`, `upsert_edge()`를 사용합니다.
 - dangling edge가 생기면 자동 정합이 처리하거나 `reconcile_graph()`로 즉시 정리합니다.
 - **모든 source를 concept node로 만들지 않습니다.** 기본 도착지는
-  `50_Source_Summaries/`이며, 내구성 지식만 `20_Concepts/`로 승격합니다.
+  `50_Source_Summaries/`이며, 승격(split-vs-fold)은
+  [00_System/Granularity Policy.md](00_System/Granularity%20Policy.md)의
+  G1∧G2 게이트 절차를 따릅니다.
 - 검색은 **계층/신뢰도 인지**입니다. `06_Raw/`는 전문검색 전용으로 검색되되 강등되고,
   낮은 신뢰도·폐기 항목도 강등+표기되며, 검토 계층(`60/70/80`)은 기본 검색에서 빠집니다
   (`retrieve_knowledge(..., include_reviews=true)`로 포함). 검토 큐 점검은

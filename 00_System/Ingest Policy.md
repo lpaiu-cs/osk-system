@@ -14,12 +14,13 @@ tags:
   - Ingest
 status: evergreen
 created: 2026-06-18
-updated: 2026-06-18
-version: 1.0
+updated: 2026-07-02
+version: 1.1
 related:
   - "[[Source Policy]]"
   - "[[Review Policy]]"
   - "[[Second Brain Operating Model]]"
+  - "[[Granularity Policy]]"
 ---
 
 > [!IMPORTANT] 목적
@@ -42,7 +43,8 @@ related:
 4. **관련 `30_Projects/` 대시보드를 갱신한다.** 어떤 프로젝트에 영향을 주는지
    링크하고, 대시보드의 상태/다음 행동을 갱신한다. (덤프 금지, 링크 중심)
 5. **내구성 지식일 때만 `20_Concepts/`를 갱신한다.** source가 *지속적으로 유효한*
-   개념 지식을 더할 때만 개념을 만들거나 보강한다. (절제 — §2 경고 참조)
+   개념 지식을 더할 때만 개념을 만들거나 보강한다. (절제 — §2 경고와
+   [[Granularity Policy]]의 split-vs-fold 판정 참조)
 6. **중요한 선택이 있으면 `40_Decisions/`에 결정 기록을 만든다.** source가 아키텍처·
    방향·도구 선택 등 중요한 결정을 담고 있으면 decision record로 남긴다([[Review Policy]]·[[Naming Convention]]).
 7. **미해결 질문을 `60_Open_Questions/`에 추가한다.** 연구/구현/행정 카테고리에 맞춰
@@ -67,8 +69,11 @@ related:
 규칙:
 
 - 기본 도착지는 **`50_Source_Summaries/`**다. 대부분의 source는 요약까지만 만들면 된다.
-- `20_Concepts/` 승격은 source가 **재사용 가능하고 지속적으로 유효한** 개념 지식을
-  더할 때만. "이 개념을 다른 맥락에서 또 참조하게 될까?"가 Yes일 때만.
+- `20_Concepts/` 승격(split)은 [[Granularity Policy]]의 3분기 결정을 따른다:
+  **Split ⟺ G1(게이트 통과 9술어 엣지 ≥1) ∧ G2(자기완결 독립 검토단위)**.
+  하나만 충족하면 fold + frontmatter latent 표식, 둘 다 미달·불확실하면 fold.
+  (구판의 "이 개념을 다른 맥락에서 또 참조하게 될까?" 휴리스틱은 이 절차로
+  **대체**되었다 — 재사용 예측이 아니라 게이트 판정과 회수 실측이 기준이다.)
 - 같은 개념의 중복 노드가 의심되면 만들지 말고 `80_Reviews/`에 `duplicate-concept-candidate`로 올린다.
 - 일시적 연관을 predicate 엣지로 강제하지 않는다([[Ontology Specification]] §4: 불확실하면 비워라).
 
@@ -87,7 +92,7 @@ related:
 - [ ] 원본을 `06_Raw/`에 보존했고, 이후 수정하지 않는가?
 - [ ] source summary가 `source_path`로 raw를 가리키는가?
 - [ ] 중요한 사실 주장에 출처를 달았는가?
-- [ ] 개념 승격이 정말 필요한가? (대부분 No)
+- [ ] 개념 승격(split)이 G1∧G2를 통과하는가? ([[Granularity Policy]] — 불확실하면 fold)
 - [ ] 중요한 선택을 결정 기록으로 남겼는가?
 - [ ] 불확실/모순을 `80_Reviews/`·`70_Contradictions/`로 보냈는가?
 - [ ] 재인덱싱을 실행했거나 TODO로 남겼는가?
@@ -96,5 +101,5 @@ related:
 
 ## Sources
 
-- 설계 근거: [[2026-06-18-second-brain-architecture]]
-- 관련 정책: [[Source Policy]], [[Review Policy]], [[Naming Convention]]
+- 설계 근거: [[2026-06-18-second-brain-architecture]], [[2026-07-02-node-granularity-split-vs-fold]]
+- 관련 정책: [[Source Policy]], [[Review Policy]], [[Naming Convention]], [[Granularity Policy]]

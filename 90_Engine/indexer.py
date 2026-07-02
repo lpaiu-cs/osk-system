@@ -34,6 +34,10 @@ try:
 except ImportError:
     sys.exit("ERROR: duckdb 미설치. pip install duckdb --break-system-packages")
 
+# latent split candidate 파이프라인 (Granularity Policy — 스키마/파서/동기화)
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+import latent as latent_mod  # noqa: E402
+
 
 # ─────────────────────────────────────────────────────────────
 # §1. 헌법 상수
@@ -81,6 +85,9 @@ DEFAULT_EMBED_MODEL = "bge-m3"
 #   - 그 외(10/20/30/40/50/60/70/80) : 해석 계층 → node+edge 풀 인덱싱.
 ALWAYS_EXCLUDE_PARTS = (
     "90_Engine", ".git", ".obsidian",
+    # Claude Code 워크트리: .claude/worktrees/<id>/ 에 vault .md 사본이 생겨
+    # 같은 노트가 워크트리 수만큼 중복 색인되는 것을 차단.
+    ".claude",
     # 가상환경·도구 디렉터리: 패키지 문서(.md)가 vault에 섞이지 않게 제외
     ".venv", "venv", "env", "ENV", ".env", "node_modules", "__pycache__", ".trash",
 )
@@ -248,6 +255,9 @@ def init_database(db_path):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_predicate ON edges(predicate)")
 
+    # latent split candidate 테이블(latent_candidates/latent_hits/latent_promotions)
+    latent_mod.ensure_schema(conn)
+
     return conn
 
 
@@ -373,6 +383,7 @@ def index_vault(vault_root, db_path, force_rebuild=False, embed=False,
         "edges_rejected": 0,
         "edges_dangling": 0,
         "nodes_pruned": 0,
+        "latent_candidates_synced": 0,
     }
 
     # ── 1차 패스: 노드 업서트 + 임베딩 필요 판정 ──
@@ -453,6 +464,7 @@ def index_vault(vault_root, db_path, force_rebuild=False, embed=False,
                   if not Path(fp).exists()]
     for nid in orphan_ids:
         conn.execute("DELETE FROM edges WHERE source_id = ? OR target_id = ?", [nid, nid])
+        latent_mod.prune_candidates_for_node(conn, nid)
         conn.execute("DELETE FROM nodes WHERE node_id = ?", [nid])
     stats["nodes_pruned"] = len(orphan_ids)
     if orphan_ids:
@@ -491,6 +503,9 @@ def index_vault(vault_root, db_path, force_rebuild=False, embed=False,
         file_source_uuid = path_to_id[path]
         conn.execute("DELETE FROM edges WHERE source_id = ?", [file_source_uuid])
         content = path.read_text(encoding="utf-8")
+        # latent 분할 후보(frontmatter) 동기화 — hits는 candidate_key로 보존된다
+        stats["latent_candidates_synced"] += latent_mod.sync_candidates_for_file(
+            conn, file_source_uuid, str(path), content)
         raw_edges = extract_edges_safely(content)
         stats["edges_extracted"] += len(raw_edges)
 
@@ -543,6 +558,8 @@ def print_report(conn, stats):
     print(f"\n[노드] 총 {stats['nodes_total']} | 신규 {stats['nodes_new']} | 수정 {stats['nodes_updated']} | 무변경 {stats['nodes_unchanged']}")
     print(f"[엣지] 추출 {stats['edges_extracted']} | 적재 {stats['edges_inserted']} | 거부 {stats['edges_rejected']} | Dangling {stats['edges_dangling']}")
     print(f"[임베딩] 빌드 {stats['embeddings_built']} | 실패 {stats['embeddings_failed']}")
+    lat_total = conn.execute("SELECT COUNT(*) FROM latent_candidates").fetchone()[0]
+    print(f"[latent] 이번 동기화 {stats.get('latent_candidates_synced', 0)} | 전체 후보 {lat_total}")
 
     print(f"\n[술어 분포]")
     rows = conn.execute("""

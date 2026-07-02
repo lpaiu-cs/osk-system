@@ -115,3 +115,10 @@ raw_policy:
     code-logs:     { embed: false }  # BM25-only
     screenshots:   { embed: false }  # BM25-only (OCR/캡션)
   default: { embed: false }          # 분류 안 된 raw → BM25-only
+
+# latent 승격(Granularity Policy §3) — 참고 미러.
+#   적용 지점(authoritative)은 90_Engine/latent.py 다:
+#     - 발화 임계: 후보별 frontmatter promote_condition의 숫자(기본 2 = DEFAULT_PROMOTE_THRESHOLD)
+#     - "서로 다른 맥락" v1 정의: 정규화 쿼리 해시(토큰 집합) 구별 + evidence/reason 어휘 겹침 게이트
+#   카운터(latent_hits)는 DuckDB 캐시에 있어 캐시 재생성 시 초기화된다(허용 손실).
+#   미해결 쟁점: 60_Open_Questions/Implementation Questions.md 참조.
