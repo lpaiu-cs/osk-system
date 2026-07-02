@@ -15,11 +15,17 @@ import subprocess
 
 _GIT_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C", "GIT_TERMINAL_PROMPT": "0"}
 
+# CREATE_NO_WINDOW: 데몬이 pythonw(콘솔 없음)로 돌 때, 콘솔 서브시스템인 git.exe를 spawn하면
+# Windows가 매번 새 콘솔 창을 할당한다. sync 1회가 git을 여러 번 호출하므로 검은 콘솔이
+# 여러 개 깜빡인다 → 무창 플래그로 억제. POSIX에선 0(무영향). See handoff/DAEMON_SPAWN_FIX.md.
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
 
 def _git(vault_root, args, timeout):
     return subprocess.run(
         ["git", "-C", str(vault_root), *args],
         capture_output=True, text=True, timeout=timeout, env=_GIT_ENV,
+        creationflags=_NO_WINDOW,
     )
 
 
