@@ -140,6 +140,15 @@ def check_parser():
     assert c["slug"] == "slug-x", c
     assert c["candidate_title"] == "Quoted Title", c
     assert c["evidence"] == "single quoted" and c["reason"] == "unquoted value", c
+    # 인용 스칼라 안 이스케이프 따옴표 → 내장 따옴표를 닫는 따옴표로 오인하지 않음
+    esc = ("---\nlatent_split_candidate:\n"
+           "  - id: esc\n"
+           "    evidence: \"인용 \\\"게이트\\\" 용어 포함 문장\"  # 주석\n"
+           "    reason: 'it''s a reason'  # c\n"
+           "---\n\nb\n")
+    c = latent.parse_latent_candidates(esc)[0]
+    assert c["evidence"] == '인용 "게이트" 용어 포함 문장', c
+    assert c["reason"] == "it's a reason", c
     # update_node류 frontmatter 재조립에서 보존할 엔진 소유 메타 추출(마커+감사 필드)
     pm = latent.extract_passthrough_meta(
         "title: X\npromoted_from: \"[[P]]\"\nlatent_split_candidate:\n"
@@ -498,6 +507,61 @@ latent_split_candidate:
     print("  [ok] fence guard")
 
 
+def check_list_span(root, db):
+    # 연속 리스트에서 한 항목만 후보인 경우 — 형제 bullet이 딸려가면 안 됨
+    p = root / "20_Concepts" / "List Note.md"
+    p.write_text("""---
+title: List Note
+type: Concept
+latent_split_candidate:
+  - id: list-item
+    candidate_title: "List Item Concept"
+    reason: "test"
+    evidence: "승격 대상 항목 문장이며 자기완결적 서술 단위다"
+    promote_condition: "distinct-context retrieval >= 2"
+  - id: esc-quote
+    candidate_title: "Escaped Quote Concept"
+    reason: "test"
+    evidence: "이스케이프 \\"게이트\\" 용어를 포함한 자기완결 문단이다"
+    promote_condition: "distinct-context retrieval >= 2"
+---
+
+# List Note
+
+도입 문단은 부모에 남는다.
+
+- 첫 항목은 유지 대상이다
+- 승격 대상 항목 문장이며 자기완결적 서술 단위다
+  - 중첩 자식 항목은 부모 항목과 함께 이동한다
+- 마지막 형제 항목도 유지 대상이다
+
+이스케이프 "게이트" 용어를 포함한 자기완결 문단이다. 부가 설명 문장.
+""", encoding="utf-8")
+    reindex(root, db)
+    # 두 bullet에 걸친 인용 → 항목 경계 위반으로 review 라우팅
+    r = latent.promote(db, root, "List Note", "list-item",
+                       "첫 항목은 유지 대상이다\n- 승격 대상 항목 문장이며 자기완결적 서술 단위다",
+                       "G2 확인")
+    assert r["status"] == "routed_to_review" and "경계" in r["reason"], r
+    # 정상 승격: 해당 항목 + 중첩 자식만 이동, 형제는 부모에 잔류
+    r = latent.promote(db, root, "List Note", "list-item",
+                       "승격 대상 항목 문장이며 자기완결적 서술 단위다", "G2 확인")
+    assert r["status"] == "promoted", r
+    new_md = (root / "20_Concepts" / "List Item Concept.md").read_text(encoding="utf-8")
+    assert "승격 대상 항목" in new_md and "중첩 자식 항목" in new_md, new_md
+    parent = p.read_text(encoding="utf-8")
+    assert "첫 항목은 유지 대상이다" in parent and "마지막 형제 항목" in parent, \
+        "형제 bullet이 부모에서 삭제되면 안 됨"
+    assert "중첩 자식 항목" not in parent and "승격 대상 항목" not in parent, parent
+    assert "- [[List Item Concept]]" in parent, "리스트 마커를 유지한 링크 치환"
+    # 이스케이프 따옴표 evidence의 후보 — 디코딩된 evidence가 span과 일치해 승격 성공
+    # (오파싱 시 evidence-mismatch로 오라우팅되는 회귀를 방지)
+    r = latent.promote(db, root, "List Note", "esc-quote",
+                       '이스케이프 "게이트" 용어를 포함한 자기완결 문단이다', "G2 확인")
+    assert r["status"] == "promoted", r
+    print("  [ok] list span & escaped-quote evidence")
+
+
 def main():
     root, db = make_vault()
     print(f"[*] temp vault: {root}")
@@ -511,6 +575,7 @@ def main():
         check_cross_folder_title_collision(root, db)
         check_raw_shadow(root, db)
         check_fence_quote(root, db)
+        check_list_span(root, db)
         check_vault_under_claude_dir()
         print("\nALL LATENT TESTS PASSED")
     finally:

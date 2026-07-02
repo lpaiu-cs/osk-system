@@ -95,14 +95,38 @@ def ensure_schema(conn):
 # §2. frontmatter 전용 파서 (latent_split_candidate 블록만)
 # ─────────────────────────────────────────────────────────────
 def _clean_value(val):
-    """스칼라 값 정리. 인용 값은 **닫는 따옴표까지**를 값으로 취하고 그 뒤(트레일링
-    주석 포함)는 버린다 — `"값"   # 주석` 형태(정책 문서의 정본 예시)에서 따옴표가
-    값에 남는 것을 방지. 비인용 값은 트레일링 주석만 제거한다."""
+    """스칼라 값 정리. 인용 값은 YAML 이스케이프를 해석해 **닫는 따옴표까지**를 값으로
+    취하고 그 뒤(트레일링 주석 포함)는 버린다 — `"값"   # 주석` 형태에서 따옴표가 값에
+    남는 것을 방지. 쌍따옴표는 백슬래시 이스케이프(`\\"` 등), 홑따옴표는 `''` 중복
+    이스케이프를 지원한다(내장 따옴표를 닫는 따옴표로 오인해 값이 잘리면 hit 매칭과
+    evidence-in-span 검증이 어긋난다). 닫는 따옴표가 없거나 비인용이면 트레일링 주석만
+    제거한다."""
     val = val.strip()
-    if val[:1] in ("'", '"'):
-        end = val.find(val[0], 1)
-        if end != -1:
-            return val[1:end]
+    q = val[:1]
+    if q == '"':
+        out, i = [], 1
+        while i < len(val):
+            c = val[i]
+            if c == "\\" and i + 1 < len(val):
+                nxt = val[i + 1]
+                out.append({"n": "\n", "t": "\t", '"': '"', "\\": "\\"}.get(nxt, "\\" + nxt))
+                i += 2
+                continue
+            if c == '"':
+                return "".join(out)
+            out.append(c)
+            i += 1
+    elif q == "'":
+        out, i = [], 1
+        while i < len(val):
+            if val[i] == "'":
+                if val[i + 1:i + 2] == "'":
+                    out.append("'")
+                    i += 2
+                    continue
+                return "".join(out)
+            out.append(val[i])
+            i += 1
     return re.split(r"\s+#", val, 1)[0].strip()
 
 
@@ -430,9 +454,15 @@ def _split_doc(content):
     return m.group("meta"), content[m.end():]
 
 
+_LIST_ITEM_RE = re.compile(r"^(\s*)(?:[-*+]|\d+[.)])\s+")
+
+
 def _find_span_block(body, quote):
-    """quote가 속한 문단 블록(빈 줄 경계, 코드 펜스 밖)을 찾는다.
-    반환: ({"start","end","text"} | None, error_reason | None) — 라인 인덱스는 양끝 포함."""
+    """quote가 속한 문단 블록(빈 줄 경계, 코드 펜스 밖)을 찾는다. 블록이 Markdown
+    리스트를 포함하면 **리스트 항목 경계도 span 경계**다 — 빈 줄 없는 연속 리스트에서
+    문단 스캔이 형제 bullet까지 포함해 통째로 적출·삭제되는 것을 방지한다.
+    반환: ({"start","end","text","link_prefix"} | None, error_reason | None)
+    — 라인 인덱스는 양끝 포함, link_prefix는 부모 치환 시 유지할 리스트 마커."""
     idx = body.find(quote)
     if idx == -1:
         return None, "evidence_quote가 부모 본문에 그대로 존재하지 않음(verbatim 필수)"
@@ -471,15 +501,39 @@ def _find_span_block(body, quote):
         s += 1
     if s > e:
         return None, "블록이 헤딩뿐 — 적출할 span 없음"
+
+    # 리스트 항목 경계로 절단: quote가 속한 항목 + 그보다 깊이 들여쓴 연속행(중첩
+    # 자식 포함)만 남긴다. quote가 리스트 앞 도입부면 첫 항목 직전까지.
+    if s <= qline <= e and any(_LIST_ITEM_RE.match(lines[i]) for i in range(s, e + 1)):
+        item_start = next((i for i in range(qline, s - 1, -1)
+                           if _LIST_ITEM_RE.match(lines[i])), None)
+        if item_start is None:
+            e = next((i - 1 for i in range(qline + 1, e + 1)
+                      if _LIST_ITEM_RE.match(lines[i])), e)
+        else:
+            indent = len(_LIST_ITEM_RE.match(lines[item_start]).group(1))
+            s = item_start
+            j = item_start
+            while j < e:
+                nxt = lines[j + 1]
+                m = _LIST_ITEM_RE.match(nxt)
+                deeper = (len(m.group(1)) if m else len(nxt) - len(nxt.lstrip())) > indent
+                if not deeper:
+                    break
+                j += 1
+            e = j
+
     span_text = "\n".join(lines[s:e + 1])
     if quote not in span_text:
-        return None, "evidence_quote가 문단 경계를 넘음 — 문단 단위 span으로 특정 불가"
+        return None, "evidence_quote가 문단/리스트 항목 경계를 넘음 — span 특정 불가"
     if any(l.strip().startswith("```") for l in lines[s:e + 1]):
         return None, "span 블록에 코드 펜스가 걸침 — 자동 적출 대상 아님"
     nonblank = [i for i, l in enumerate(lines) if l.strip()]
     if nonblank and s <= nonblank[0] and e >= nonblank[-1]:
         return None, "span이 본문 전체 — extraction이 무의미(노트 이동은 수동으로)"
-    return {"start": s, "end": e, "text": span_text}, None
+    m_item = _LIST_ITEM_RE.match(lines[s])
+    return {"start": s, "end": e, "text": span_text,
+            "link_prefix": m_item.group(0) if m_item else ""}, None
 
 
 def route_to_review(vault_root, summary, detail, related=None):
@@ -723,7 +777,9 @@ def promote(db_path, vault_root, parent_title, candidate_id, evidence_quote,
                                       parent_moc_raw, evidence_quote,
                                       independent_review_condition)
         body_lines = body.splitlines()
-        body_lines[span["start"]:span["end"] + 1] = [f"[[{resolved_title}]]"]
+        # span이 리스트 항목이면 마커/들여쓰기를 유지해 부모 리스트 구조를 보존
+        body_lines[span["start"]:span["end"] + 1] = [
+            f"{span.get('link_prefix', '')}[[{resolved_title}]]"]
         new_body = "\n".join(body_lines)
         if meta_text is not None:
             new_meta, _removed = _remove_candidate_from_meta(meta_text, entry["slug"])
