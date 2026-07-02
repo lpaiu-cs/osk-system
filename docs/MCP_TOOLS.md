@@ -50,7 +50,7 @@
 |---|---|
 | `list_nodes()` | 전체 node 목록을 반환합니다. edge target으로 써야 할 정확한 제목을 확인할 때 먼저 호출합니다. |
 | `create_node(title, body, type="Concept", moc=None, aliases=None, tags=None, edges=None, sources=None, folder="20_Concepts", embed=True, resolve_links=False)` | 새 Markdown node 파일을 만들고 증분 인덱싱합니다. |
-| `update_node(title, body=None, edges=None, type=None, moc=None, aliases=None, tags=None, sources=None, embed=True, resolve_links=False)` | 기존 node의 본문, 전체 edge 섹션, 메타데이터를 수정합니다. `node_id`, `id`, `created`는 보존합니다. |
+| `update_node(title, body=None, edges=None, type=None, moc=None, aliases=None, tags=None, sources=None, embed=True, resolve_links=False)` | 기존 node의 본문, 전체 edge 섹션, 메타데이터를 수정합니다. `node_id`, `id`, `created`와 함께 latent 마커(`latent_split_candidate`)·승격 감사 필드도 보존합니다. |
 | `upsert_edge(source_title, predicate, target_title, description=None)` | source node에 edge 한 개를 추가합니다. 이미 있으면 중복 추가하지 않습니다. |
 | `remove_edge(source_title, predicate, target_title)` | source node에서 지정 edge를 제거합니다. |
 | `delete_node(title)` | node 파일과 DB의 해당 node/연결 edge를 삭제합니다. 다른 node의 링크는 dangling이 될 수 있습니다. |

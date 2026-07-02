@@ -130,6 +130,15 @@ def check_parser():
     assert c["slug"] == "slug-x", c
     assert c["candidate_title"] == "Quoted Title", c
     assert c["evidence"] == "single quoted" and c["reason"] == "unquoted value", c
+    # update_node류 frontmatter 재조립에서 보존할 엔진 소유 메타 추출(마커+감사 필드)
+    pm = latent.extract_passthrough_meta(
+        "title: X\npromoted_from: \"[[P]]\"\nlatent_split_candidate:\n"
+        "  - id: keep-1\n    evidence: \"e\"\nstatus: active")
+    assert "promoted_from" in pm and "- id: keep-1" in pm, pm
+    assert "title: X" not in pm and "status: active" not in pm, pm
+    reparsed = latent.parse_latent_candidates(f"---\ntitle: Y\n{pm}\n---\n\nb\n")
+    assert len(reparsed) == 1 and reparsed[0]["slug"] == "keep-1", reparsed
+    assert latent.extract_passthrough_meta("title: X\nstatus: active") is None
     # 미지원 인라인 flow 스타일 → 후보 0건 + 경고(무음 실패 아님)
     import io
     import contextlib

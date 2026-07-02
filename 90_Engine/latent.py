@@ -214,6 +214,29 @@ def _remove_candidate_from_meta(meta_text, slug):
 # ─────────────────────────────────────────────────────────────
 # §3. 인덱스 동기화 (indexer 2차 패스에서 호출)
 # ─────────────────────────────────────────────────────────────
+# promote가 새 노드 frontmatter에 남기는 감사 필드 — update_node류 재조립에서 보존 대상.
+PROMOTION_AUDIT_FIELDS = ("promoted_from", "promotion_evidence", "independent_review_condition")
+
+
+def extract_passthrough_meta(meta_text):
+    """frontmatter 재조립(update_node 등) 시 보존해야 할 엔진 소유 라인들의 원문을 반환:
+    latent_split_candidate 블록(엔트리가 있을 때) + 승격 감사 필드. 없으면 None.
+    일반 노드 편집이 승격 신호(마커→hit 카운터)와 감사 추적을 지우는 것을 막는다."""
+    if not meta_text:
+        return None
+    lines = meta_text.splitlines()
+    keep = []
+    for ln in lines:
+        if (":" in ln and not ln[:1].isspace()
+                and ln.split(":", 1)[0].strip() in PROMOTION_AUDIT_FIELDS):
+            keep.append(ln)
+    key_idx, entries = _parse_block(lines)
+    if key_idx != -1 and entries:
+        end = max(e["end"] for e in entries)
+        keep.extend(lines[key_idx:end + 1])
+    return "\n".join(keep) if keep else None
+
+
 def candidate_key(node_id, slug, evidence=""):
     """후보의 안정 식별자: node_id::slug::evidence지문.
 
@@ -528,7 +551,9 @@ def promote(db_path, vault_root, parent_title, candidate_id, evidence_quote,
     """latent 후보를 독립 노드로 승격한다(extraction-only).
 
     데몬 write 락 하에서 호출할 것. 파일 2개(신규 노드, 부모)를 원자적 단위로 다루고,
-    승격 로그(latent_promotions)로 멱등성을 보장한다. 재색인은 호출자(데몬)가 수행한다.
+    승격 로그(latent_promotions)로 멱등성을 보장한다. 재색인은 호출자(데몬)가 수행하며,
+    전역 제목 충돌 검사가 인덱스 기준이므로 호출 직전 인덱스가 신선해야 한다(데몬
+    라우트가 승격 직전 증분 재색인으로 보장).
 
     반환 dict의 status:
       promoted          — 적출 완료 (new_title/new_path/parent_path 포함)

@@ -355,6 +355,10 @@ def promote_latent(req: PromoteLatentReq):
     _maybe_pull()
     try:
         with _write_lock():
+            # 충돌 검사(전역 링크 네임스페이스)는 인덱스를 기준으로 하므로, 마지막 색인
+            # 이후 디스크에 추가/개명된 노트도 잡히도록 승격 직전 증분 재색인으로
+            # 신선화한다(무변경 vault면 md5 스킵으로 저렴).
+            _do_reindex(force=False, embed=False)
             result = latent_mod.promote(
                 VAULT_DB, Path(VAULT_ROOT), req.parent_title, req.candidate_id,
                 req.evidence_quote, req.independent_review_condition, req.new_title)

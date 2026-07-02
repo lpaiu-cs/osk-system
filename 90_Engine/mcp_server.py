@@ -226,10 +226,13 @@ def _edge_line(src: str, pred: str, tgt: str, desc: Optional[str] = None) -> str
 
 
 def _build_node_markdown(title, body, type_, moc, aliases, tags, edges, sources,
-                         node_id=None, id_=None, created=None, version="1.0") -> str:
+                         node_id=None, id_=None, created=None, version="1.0",
+                         extra_meta=None) -> str:
     """indexer가 파싱 가능한 frontmatter + 9술어 엣지 섹션을 갖춘 node 생성.
 
     edges: [(pred, target, desc)] (source는 title로 고정)
+    extra_meta: frontmatter에 그대로 이어붙일 원문 라인들(예: update_node가 보존하는
+        latent 마커 블록·승격 감사 필드 — latent.extract_passthrough_meta 참조)
     """
     nid = node_id or str(uuid.uuid4())
     slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_") or "node"
@@ -251,6 +254,10 @@ def _build_node_markdown(title, body, type_, moc, aliases, tags, edges, sources,
         f"created: {created}",
         f"version: {version}",
         f"node_id: {nid}",
+    ]
+    if extra_meta:
+        out.append(extra_meta)
+    out += [
         "---",
         "",
         f"# {title}",
@@ -617,10 +624,15 @@ def update_node(title: str, body: Optional[str] = None, edges: Optional[list] = 
     new_tags = tags if tags is not None else (meta.get("tags") or [])
     new_sources = sources if sources is not None else existing_sources
 
+    # 엔진 소유 frontmatter(latent 마커 블록·승격 감사 필드)는 재조립을 넘어 보존한다 —
+    # 일반 노드 편집이 승격 신호(마커→hit 카운터)와 감사 추적을 지우지 않도록.
+    passthrough = latent_mod.extract_passthrough_meta(m.group("meta") if m else "")
+
     md = _build_node_markdown(
         title, new_body, new_type, new_moc, new_aliases, new_tags,
         new_edges, new_sources,
         node_id=meta.get("node_id"), id_=meta.get("id"), created=meta.get("created"),
+        extra_meta=passthrough,
     )
     path.write_text(md, encoding="utf-8")
 
