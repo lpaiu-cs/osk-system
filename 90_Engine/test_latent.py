@@ -274,21 +274,42 @@ def test_vault_under_claude_dir():
         # vault 내부 워크트리 사본은 제외
         copy = vault / ".claude" / "worktrees" / "copy" / "20_Concepts"
         copy.mkdir(parents=True)
-        (copy / "Solo Note.md").write_text("# dup", encoding="utf-8")
+        copy_file = copy / "Solo Note.md"
+        copy_file.write_text("# dup", encoding="utf-8")
         stats2, conn = indexer.index_vault(vault, db, embed=False)
         conn.close()
         assert stats2["nodes_total"] == 1, stats2
-        print("  [ok] vault-under-.claude indexing (relative exclusion)")
+        # 업그레이드 경로: 제외 규칙 도입 '전'에 색인된 사본 행(파일은 실존)은
+        # 존재 검사만으로는 안 지워진다 — 정책 기반 prune이 제거해야 한다.
+        import uuid as uuid_mod
+        from datetime import datetime as dt
+        conn = indexer.init_database(db)
+        conn.execute(
+            "INSERT INTO nodes (node_id, file_path, title, aliases, md5_hash, last_indexed)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [uuid_mod.uuid4(), str(copy_file), "Solo Note", [], "stale", dt.now()])
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == 2
+        conn.close()
+        stats3, conn = indexer.index_vault(vault, db, embed=False)
+        n_rows = conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+        conn.close()
+        assert stats3["nodes_pruned"] >= 1 and n_rows == 1, (stats3, n_rows)
+        print("  [ok] vault-under-.claude indexing + stale excluded-row prune")
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
 
 def test_cross_folder_title_collision(root, db):
-    # 제목은 vault 전역 링크 식별자 — 대상 폴더가 아닌 다른 계층의 동명 노드와도
-    # 충돌해야 하며, 자동 적출 대신 review로 라우팅된다.
+    # 새 노드 제목은 vault 전역 링크 네임스페이스(title + 파일명 stem + aliases)와
+    # 충돌하면 안 된다 — 어느 쪽과 겹쳐도 자동 적출 대신 review로 라우팅된다.
     (root / "50_Source_Summaries").mkdir(exist_ok=True)
     (root / "50_Source_Summaries" / "Existing Elsewhere.md").write_text(
         "---\ntitle: Existing Elsewhere\ntype: source-summary\n---\n\n# Existing Elsewhere\n\n요약.\n",
+        encoding="utf-8")
+    # stem ≠ title 인 노드: 링크 네임스페이스는 stem("Stem Foo")과 alias("Alias Target")로 키잉됨
+    (root / "50_Source_Summaries" / "Stem Foo.md").write_text(
+        "---\ntitle: Different Title\naliases: [Alias Target]\ntype: source-summary\n---\n\n# x\n\n요약.\n",
         encoding="utf-8")
     p = root / "20_Concepts" / "Collide Note.md"
     p.write_text("""---
@@ -297,8 +318,18 @@ type: Concept
 latent_split_candidate:
   - id: col-1
     candidate_title: "Existing Elsewhere"
-    reason: "test"
+    reason: "title 충돌"
     evidence: "다른 계층 동명 노드와 충돌하는 근거 문장"
+    promote_condition: "distinct-context retrieval >= 2"
+  - id: col-2
+    candidate_title: "Stem Foo"
+    reason: "stem 충돌"
+    evidence: "파일명 stem과 충돌하는 근거 문장"
+    promote_condition: "distinct-context retrieval >= 2"
+  - id: col-3
+    candidate_title: "Alias Target"
+    reason: "alias 충돌"
+    evidence: "alias와 충돌하는 근거 문장"
     promote_condition: "distinct-context retrieval >= 2"
 ---
 
@@ -307,13 +338,22 @@ latent_split_candidate:
 본문 문단.
 
 다른 계층 동명 노드와 충돌하는 근거 문장. 자기완결 span이다.
+
+파일명 stem과 충돌하는 근거 문장. 자기완결 span이다.
+
+alias와 충돌하는 근거 문장. 자기완결 span이다.
 """, encoding="utf-8")
     reindex(root, db)
-    r = latent.promote(db, root, "Collide Note", "col-1",
-                       "다른 계층 동명 노드와 충돌하는 근거 문장. 자기완결 span이다.", "검증")
-    assert r["status"] == "routed_to_review" and r["reason"] == "title-collision", r
+    for cid, quote in [
+        ("col-1", "다른 계층 동명 노드와 충돌하는 근거 문장. 자기완결 span이다."),
+        ("col-2", "파일명 stem과 충돌하는 근거 문장. 자기완결 span이다."),
+        ("col-3", "alias와 충돌하는 근거 문장. 자기완결 span이다."),
+    ]:
+        r = latent.promote(db, root, "Collide Note", cid, quote, "검증")
+        assert r["status"] == "routed_to_review" and r["reason"] == "title-collision", (cid, r)
     assert not (root / "20_Concepts" / "Existing Elsewhere.md").exists()
-    print("  [ok] vault-wide title collision → review")
+    assert not (root / "20_Concepts" / "Alias Target.md").exists()
+    print("  [ok] vault-wide collision (title/stem/alias) → review")
 
 
 def test_fence_quote(root, db):

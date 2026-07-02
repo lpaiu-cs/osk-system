@@ -562,11 +562,17 @@ def promote(db_path, vault_root, parent_title, candidate_id, evidence_quote,
             raise ValueError(f"제목에 파일명 금지문자가 있습니다: {resolved_title!r}")
 
         new_path = vault_root / folder / f"{resolved_title}.md"
-        # 제목은 vault 전역 링크 식별자(title_to_id가 제목으로 키잉)이므로 대상 폴더의
-        # 파일 존재만이 아니라 인덱스 전체에서 동명 노드를 검사한다 — 다른 계층(예:
-        # 50_Source_Summaries)의 동명 노드와 충돌하면 [[링크]]/엣지 해석이 모호해진다.
-        dup = conn.execute(
-            "SELECT file_path FROM nodes WHERE title = ?", [resolved_title]).fetchone()
+        # 새 노드는 vault 전역 링크 네임스페이스에 들어간다. 인덱서의 title_to_id는
+        # **파일명 stem + aliases**로 키잉하고(frontmatter title 아님), 검색/노출은
+        # nodes.title을 쓴다 — 셋 중 무엇과 겹쳐도 [[링크]]/엣지 해석이 모호해지므로
+        # 세 네임스페이스 전부에서 충돌을 검사한다(승격은 드물어 전행 스캔 비용 무시 가능).
+        dup = None
+        for fp, t, aliases in conn.execute(
+                "SELECT file_path, title, aliases FROM nodes").fetchall():
+            if (t == resolved_title or Path(fp).stem == resolved_title
+                    or (aliases and resolved_title in list(aliases))):
+                dup = (fp,)
+                break
         if new_path.exists() or dup:
             if prior and prior[0] == resolved_title:
                 return {"status": "already_promoted", "new_title": resolved_title,

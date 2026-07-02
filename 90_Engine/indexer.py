@@ -468,13 +468,16 @@ def index_vault(vault_root, db_path, force_rebuild=False, embed=False,
 
     print(f"[*] 노드 패스 완료 — 신규: {stats['nodes_new']}, 수정: {stats['nodes_updated']}, 무변경: {stats['nodes_unchanged']}")
 
-    # ── orphan prune: 디스크에서 사라진 파일의 노드 + 그 노드에 닿는 엣지(양방향) 정리 ──
-    # Markdown이 source of truth, DB는 파생 캐시다. 파일 없는 stub 노드는 존재하지 않으므로
-    # (file_path NOT NULL, dangling 타깃은 스킵), file_path가 디스크에 없는 노드는 명백한
-    # orphan이다. 노드별 존재 검사라 인덱서 스캔 범위와 무관하게 안전하다.
+    # ── orphan prune: "현행 정책상 더는 수집되지 않는" 노드 + 그 엣지(양방향) 정리 ──
+    # Markdown이 source of truth, DB는 파생 캐시다. orphan 판정은 두 갈래:
+    #   (a) 파일이 디스크에서 사라짐 — 명백한 orphan.
+    #   (b) 파일은 있으나 현행 policy_for가 index=False로 제외 — 예: 제외 규칙이 추가되기
+    #       전에 색인된 .claude/worktrees 사본. 존재 검사만 하면 이런 행이 캐시에 영구
+    #       잔류해 retriever가 중복 제목/엣지를 계속 적재한다(업그레이드 경로).
     orphan_ids = [nid for nid, fp in
                   conn.execute("SELECT node_id, file_path FROM nodes").fetchall()
-                  if not Path(fp).exists()]
+                  if not Path(fp).exists()
+                  or not policy_for(Path(fp), vault_root)["index"]]
     for nid in orphan_ids:
         conn.execute("DELETE FROM edges WHERE source_id = ? OR target_id = ?", [nid, nid])
         conn.execute("DELETE FROM nodes WHERE node_id = ?", [nid])
