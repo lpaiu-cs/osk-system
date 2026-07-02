@@ -6,8 +6,10 @@ process per machine removes multi-process DuckDB file contention entirely and is
 cross-platform. Thin `mcp_server.py` proxies forward ALL tool calls here over
 localhost HTTP (in-process DB 경로 없음). See docs/DAEMON_DESIGN.md.
 
-Endpoints: `/health`, `/retrieve`, `/vault_stats` (read) + `/reindex` (write —
-데몬이 DB 단일 소유). git 동기화는 SYNC_ENABLED일 때 이벤트 구동 + 주기 백스톱.
+Endpoints: `/health`, `/retrieve`, `/vault_stats` (read) + `/reindex`,
+`/promote_latent` (write — 데몬이 DB 단일 소유). `/retrieve`는 latent 분할 후보의
+hit을 piggyback 기록한다(Granularity Policy §3.1 — latent.py). git 동기화는
+SYNC_ENABLED일 때 이벤트 구동 + 주기 백스톱.
 Lifecycle: singleton via deterministic port, optional idle shutdown(기본 off).
 
 One daemon per machine per vault. Discovery: deterministic port from the vault
@@ -20,6 +22,7 @@ import signal
 import threading
 import contextlib
 from pathlib import Path
+from typing import Optional
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -27,6 +30,7 @@ import retriever as retriever_mod  # noqa: E402
 import indexer as indexer_mod  # noqa: E402
 import daemon_client  # noqa: E402
 import vault_sync  # noqa: E402
+import latent as latent_mod  # noqa: E402
 
 # ── 환경 (프록시가 주입; mcp_server와 동일 키) ──
 VAULT_ROOT = os.environ.get("VAULT_ROOT", str(SCRIPT_DIR.parent))
@@ -67,6 +71,10 @@ if SYNC_ENABLED and not _SYNC_OK:
 _lock = threading.RLock()
 _retriever = None
 _last_activity = time.time()
+# latent 후보를 보유한 부모 노드 id(str) 집합 캐시(None=미확인). reindex 후 무효화.
+# 회수 결과와 이 집합이 겹칠 때만 write 락을 잡으므로, 대부분의 retrieve는 락 없이 지나간다.
+# 제목이 아닌 node_id 기준 — 동명 06_Raw 회수가 개념 후보의 hit으로 새지 않는다.
+_latent_parents = None
 
 # ── 싱크 상태 (git 명령은 _git_lock으로 직렬화; 요청 서빙은 블록하지 않게 스케줄) ──
 _git_lock = threading.Lock()
@@ -101,9 +109,10 @@ def get_retriever():
 
 def invalidate_retriever():
     """write(reindex) 후 호출: 인메모리 그래프를 버려 다음 read가 새 DB로 재적재한다."""
-    global _retriever
+    global _retriever, _latent_parents
     with _lock:
         _retriever = None
+        _latent_parents = None  # 후보 부모 집합도 재확인 대상
 
 
 # ── reader/writer 조정 ──
@@ -274,19 +283,41 @@ def health():
 
 @app.post("/retrieve")
 def retrieve(req: RetrieveReq):
+    global _latent_parents
     _touch()
     _maybe_pull()  # stale면 원격 변경부터 당겨온다(throttle)
     try:
         with _read_lock():  # write(reindex)와 배타; reader끼리는 동시
             r = get_retriever()
-            return r.retrieve(
+            result = r.retrieve(
                 req.query, top_k=req.top_k, max_hops=req.max_hops,
                 max_nodes=req.max_nodes, include_raw=req.include_raw,
                 include_reviews=req.include_reviews,
                 confidence_weighting=req.confidence_weighting,
             )
+            if _latent_parents is None:  # read-only 연결은 read 락 하에서만 안전
+                _latent_parents = latent_mod.candidate_parent_ids(VAULT_DB)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(e))
+    # ── latent hit piggyback (Granularity Policy §3.1) ──
+    # 회수된 노트가 후보 부모 집합과 겹칠 때만 hit을 기록하고, 승격 조건
+    # (distinct-context ≥ N) 도달 시 응답에 안내를 싣는다. 기록은 read-write 연결이
+    # 필요하므로 write 락으로 짧게 전환한다(같은 프로세스에서 ro/rw 동시 연결 불가 —
+    # 상단 reader/writer 주석). 겹침이 없으면 락을 아예 잡지 않는다.
+    # 어떤 실패도 검색 자체를 깨지 않는다.
+    if _latent_parents:
+        try:
+            hit_ids = [n.get("node_id")
+                       for n in (result.get("layer1_meta") or {}).get("nodes", [])
+                       if n.get("node_id") in _latent_parents]
+            if hit_ids:
+                with _write_lock():
+                    hits = latent_mod.record_hits(VAULT_DB, hit_ids, req.query)
+                if hits["due"]:
+                    result["latent_promotions_due"] = hits["due"]
+        except Exception as e:  # noqa: BLE001
+            print(f"[daemon] latent hit 기록 실패(무시): {e!r}", file=sys.stderr)
+    return result
 
 
 @app.get("/vault_stats")
@@ -303,6 +334,46 @@ def vault_stats():
 class ReindexReq(BaseModel):
     force: bool = False
     embed: bool = True
+
+
+class PromoteLatentReq(BaseModel):
+    parent_title: str
+    candidate_id: str
+    evidence_quote: str
+    independent_review_condition: str
+    new_title: Optional[str] = None
+
+
+@app.post("/promote_latent")
+def promote_latent(req: PromoteLatentReq):
+    """latent 분할 후보를 독립 노드로 승격(extraction-only, Granularity Policy §3).
+
+    write 락 하에서 latent.promote가 파일 2개(신규 노드·부모)를 다루고 승격 로그로
+    멱등성을 보장한다. 파일이 바뀐 경우(promoted/routed_to_review) 즉시 재색인한다.
+    """
+    global _dirty_since
+    _touch()
+    _maybe_pull()
+    try:
+        with _write_lock():
+            # 충돌 검사(전역 링크 네임스페이스)는 인덱스를 기준으로 하므로, 마지막 색인
+            # 이후 디스크에 추가/개명된 노트도 잡히도록 승격 직전 증분 재색인으로
+            # 신선화한다(무변경 vault면 md5 스킵으로 저렴).
+            _do_reindex(force=False, embed=False)
+            result = latent_mod.promote(
+                VAULT_DB, Path(VAULT_ROOT), req.parent_title, req.candidate_id,
+                req.evidence_quote, req.independent_review_condition, req.new_title)
+            if result.get("status") in ("promoted", "routed_to_review"):
+                result["reindex"] = _do_reindex(force=False, embed=True)
+        if _SYNC_OK and result.get("status") in ("promoted", "routed_to_review"):
+            _dirty_since = time.time()  # write 발생 → 디바운스 commit+push 예약
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/reindex")

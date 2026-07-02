@@ -8,7 +8,7 @@
 
 | 도구 | 역할 |
 |---|---|
-| `retrieve_knowledge(query, top_k=5, max_hops=2, max_nodes=10, include_raw=True, include_reviews=False, confidence_weighting=True)` | 자연어 쿼리로 관련 지식 node 서브그래프를 검색합니다. BM25, dense embedding, graph expansion 결과를 캡슐 형태로 반환합니다. **계층/신뢰도 인지**로 랭킹합니다(아래 참조). |
+| `retrieve_knowledge(query, top_k=5, max_hops=2, max_nodes=10, include_raw=True, include_reviews=False, confidence_weighting=True)` | 자연어 쿼리로 관련 지식 node 서브그래프를 검색합니다. BM25, dense embedding, graph expansion 결과를 캡슐 형태로 반환합니다. **계층/신뢰도 인지**로 랭킹합니다(아래 참조). 회수된 노트의 latent 분할 후보 hit을 기록하고, 승격 조건 도달 시 응답에 `latent_promotions_due`를 포함합니다(아래 "Latent 승격"). |
 | `sync_vault(force=False, embed=True)` | Markdown vault를 DuckDB 캐시로 컴파일합니다. 사람이 파일을 직접 편집한 뒤 호출합니다. |
 | `vault_stats()` | node/엣지 수, 임베딩 커버리지, predicate 분포, hub/authority 상위 node를 반환합니다. |
 | `review_queue(status="open", layer=None)` | 검토·질문·모순 큐(`60/70/80`)의 항목을 상태별로 모아 반환합니다. 검토 큐 위생용. |
@@ -50,11 +50,39 @@
 |---|---|
 | `list_nodes()` | 전체 node 목록을 반환합니다. edge target으로 써야 할 정확한 제목을 확인할 때 먼저 호출합니다. |
 | `create_node(title, body, type="Concept", moc=None, aliases=None, tags=None, edges=None, sources=None, folder="20_Concepts", embed=True, resolve_links=False)` | 새 Markdown node 파일을 만들고 증분 인덱싱합니다. |
-| `update_node(title, body=None, edges=None, type=None, moc=None, aliases=None, tags=None, sources=None, embed=True, resolve_links=False)` | 기존 node의 본문, 전체 edge 섹션, 메타데이터를 수정합니다. `node_id`, `id`, `created`는 보존합니다. |
+| `update_node(title, body=None, edges=None, type=None, moc=None, aliases=None, tags=None, sources=None, embed=True, resolve_links=False)` | 기존 node의 본문, 전체 edge 섹션, 메타데이터를 수정합니다. `node_id`, `id`, `created`와 함께 latent 마커(`latent_split_candidate`)·승격 감사 필드도 보존합니다. |
 | `upsert_edge(source_title, predicate, target_title, description=None)` | source node에 edge 한 개를 추가합니다. 이미 있으면 중복 추가하지 않습니다. |
 | `remove_edge(source_title, predicate, target_title)` | source node에서 지정 edge를 제거합니다. |
 | `delete_node(title)` | node 파일과 DB의 해당 node/연결 edge를 삭제합니다. 다른 node의 링크는 dangling이 될 수 있습니다. |
 | `reconcile_graph(embed=False)` | 전체 edge를 재구성해 dangling 해소를 시도합니다. 기본값은 재임베딩 없이 빠르게 정합합니다. |
+| `promote_latent(parent_title, candidate_id, evidence_quote, independent_review_condition, new_title=None)` | latent 분할 후보를 독립 노드로 승격합니다(extraction-only). 아래 "Latent 승격" 참조. |
+
+## Latent 승격 (split-vs-fold)
+
+노드 입자 결정 규칙은 [00_System/Granularity Policy.md](../00_System/Granularity%20Policy.md)를
+따릅니다. 엔진 측 흐름:
+
+1. **표식**: split 자격이 절반만 충족된 span은 부모 노트 frontmatter
+   `latent_split_candidate`(id/candidate_title/reason/evidence/promote_condition)로
+   표식합니다. 본문 인라인 표식 금지. 인덱서가 이를 DuckDB `latent_candidates`로
+   컴파일합니다(파생 캐시).
+2. **hit 기록**: `retrieve_knowledge`가 후보 보유 노트를 회수하면, 쿼리가 후보의
+   evidence/reason과 어휘 겹침이 있을 때 hit을 기록합니다(`latent_hits` — 카운터는
+   Markdown이 아니라 DB에만 삽니다). "서로 다른 맥락" v1 정의 = 정규화 쿼리 해시의
+   구별. 조건(기본 ≥ 2) 도달 시 응답에 `latent_promotions_due`가 포함됩니다.
+3. **승격**: `promote_latent`가 데몬 write 락 하에서 **extraction-only**로 수행합니다 —
+   evidence_quote로 span(문단)을 특정해 새 노드로 **이동**, 부모에는 `[[링크]]` 한 줄.
+   `evidence_quote`(본문 verbatim)와 `independent_review_condition`(G2 확인 근거)은
+   필수이며 새 노드 frontmatter(`promoted_from`/`promotion_evidence`)와 승격 로그
+   (`latent_promotions`)에 남습니다. 멱등 — 같은 후보 재호출은 `already_promoted`.
+4. **review 라우팅**: 인용 미발견/중복/코드 펜스/문단 경계 초과/제목 충돌 등
+   extraction-ready가 아닌 경우 자동 실행하지 않고 `80_Reviews/Needs Human Review.md`에
+   `[open]` 항목을 추가합니다.
+
+> **업그레이드 노트**: 이 기능 도입 전에 색인된 무변경 파일의 후보는 아직 컴파일되지
+> 않았을 수 있습니다. 도입 직후 한 번 `reconcile_graph()` 또는 `sync_vault(force=true)`를
+> 실행하면 전 파일의 후보가 동기화됩니다. (hit 카운터는 캐시 파일 재생성 시
+> 초기화됩니다 — 승격이 수요를 다시 증명해야 한다는 의미로 허용.)
 
 ## Edge Rules
 

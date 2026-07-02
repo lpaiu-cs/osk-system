@@ -66,6 +66,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import indexer as indexer_mod
 import daemon_client
+import latent as latent_mod
 
 
 # ─────────────────────────────────────────────────────────────
@@ -132,9 +133,19 @@ def _daemon(method: str, path: str, payload: dict = None, timeout: float = 120.0
 # 주의: 이는 "검색 인덱싱" 제외와 다르다. indexer는 06_Raw를 full-text 전용으로
 # 인덱싱(검색 가능)하되 graph_node=False라 링크 타깃은 아니다. 즉 이 목록과
 # indexer의 policy_for(graph_node=False)는 일관된다. 05_Inbox만 완전 제외.
-EXCLUDE_PARTS = ("90_Engine", ".git", ".obsidian", "05_Inbox", "06_Raw",
-                 ".venv", "venv", "env", "ENV", ".env", "node_modules",
-                 "__pycache__", ".trash")
+# 엔진/숨김 디렉터리 목록의 정본은 indexer.ALWAYS_EXCLUDE_PARTS — 여기서 재정의하면
+# (예: .claude 워크트리 제외가) 한쪽만 갱신되는 drift가 생긴다.
+EXCLUDE_PARTS = tuple(indexer_mod.ALWAYS_EXCLUDE_PARTS) + ("05_Inbox", "06_Raw")
+
+
+def _excluded_rel(p: Path, root: Path) -> bool:
+    """vault_root 상대 경로 기준 제외 판정 — vault 자체가 .claude 등 제외 이름의 상위
+    디렉터리 밑에 체크아웃돼도 전체가 제외되지 않는다(indexer.policy_for와 동일 규칙)."""
+    try:
+        rel_parts = p.resolve().relative_to(root.resolve()).parts
+    except (ValueError, OSError):
+        rel_parts = p.parts
+    return any(part in EXCLUDE_PARTS for part in rel_parts)
 EDGE_HEADING = "## 핵심 엣지"
 EMPTY_EDGE_PLACEHOLDER = "<!-- 아직 엣지 없음 -->"
 
@@ -168,7 +179,7 @@ def _find_node_path(title: str) -> Optional[Path]:
     """제목(=파일명 stem)으로 node 파일을 찾는다. 엔진/숨김 폴더는 제외."""
     root = _vault_root()
     for p in root.rglob(f"{title}.md"):
-        if any(part in EXCLUDE_PARTS for part in p.parts):
+        if _excluded_rel(p, root):
             continue
         return p
     return None
@@ -215,10 +226,13 @@ def _edge_line(src: str, pred: str, tgt: str, desc: Optional[str] = None) -> str
 
 
 def _build_node_markdown(title, body, type_, moc, aliases, tags, edges, sources,
-                         node_id=None, id_=None, created=None, version="1.0") -> str:
+                         node_id=None, id_=None, created=None, version="1.0",
+                         extra_meta=None) -> str:
     """indexer가 파싱 가능한 frontmatter + 9술어 엣지 섹션을 갖춘 node 생성.
 
     edges: [(pred, target, desc)] (source는 title로 고정)
+    extra_meta: frontmatter에 그대로 이어붙일 원문 라인들(예: update_node가 보존하는
+        latent 마커 블록·승격 감사 필드 — latent.extract_passthrough_meta 참조)
     """
     nid = node_id or str(uuid.uuid4())
     slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_") or "node"
@@ -240,6 +254,10 @@ def _build_node_markdown(title, body, type_, moc, aliases, tags, edges, sources,
         f"created: {created}",
         f"version: {version}",
         f"node_id: {nid}",
+    ]
+    if extra_meta:
+        out.append(extra_meta)
+    out += [
         "---",
         "",
         f"# {title}",
@@ -334,6 +352,10 @@ def retrieve_knowledge(query: str, top_k: int = 5, max_hops: int = 2,
         include_reviews: 60/70/80 검토·메타 계층 포함 (기본 False)
         confidence_weighting: confidence(low/medium) 강등 적용 (기본 True)
 
+    [latent 승격 안내] 회수된 노트에 분할 후보(frontmatter latent_split_candidate)가
+    있으면 hit이 기록되고, 승격 조건(서로 다른 맥락 ≥ N회 회수) 도달 시 응답에
+    `latent_promotions_due` 목록이 포함됩니다 — 그 후보는 promote_latent 도구로
+    승격하거나(extraction-ready일 때), 아니면 review queue로 보내세요.
     """
     return _daemon("POST", "/retrieve", {
         "query": query, "top_k": top_k, "max_hops": max_hops, "max_nodes": max_nodes,
@@ -366,7 +388,9 @@ def vault_stats() -> dict:
 
 # ===== 검토 큐 위생 도구 ====================================================
 REVIEW_QUEUE_DIRS = ("60_Open_Questions", "70_Contradictions", "80_Reviews")
-_REVIEW_ITEM_RE = re.compile(r"^###\s*\[(?P<status>[A-Za-z\-]+)\]\s*(?P<title>.+?)\s*$")
+# 리뷰 항목 헤딩 포맷의 정본은 latent.REVIEW_ITEM_RE — 쓰기(latent.route_to_review)와
+# 읽기(여기)가 같은 상수를 공유해 포맷 drift를 막는다.
+_REVIEW_ITEM_RE = latent_mod.REVIEW_ITEM_RE
 
 
 @mcp.tool()
@@ -395,7 +419,7 @@ def review_queue(status: str = "open", layer: Optional[str] = None) -> dict:
         if not base.exists():
             continue
         for p in sorted(base.rglob("*.md")):
-            if any(part in EXCLUDE_PARTS for part in p.parts):
+            if _excluded_rel(p, root):
                 continue
             try:
                 text = p.read_text(encoding="utf-8")
@@ -451,7 +475,7 @@ def list_nodes() -> dict:
     root = _vault_root()
     out = []
     for p in sorted(root.rglob("*.md")):
-        if any(part in EXCLUDE_PARTS for part in p.parts):
+        if _excluded_rel(p, root):
             continue
         try:
             meta = indexer_mod.parse_yaml_frontmatter(p.read_text(encoding="utf-8"))
@@ -600,10 +624,15 @@ def update_node(title: str, body: Optional[str] = None, edges: Optional[list] = 
     new_tags = tags if tags is not None else (meta.get("tags") or [])
     new_sources = sources if sources is not None else existing_sources
 
+    # 엔진 소유 frontmatter(latent 마커 블록·승격 감사 필드)는 재조립을 넘어 보존한다 —
+    # 일반 노드 편집이 승격 신호(마커→hit 카운터)와 감사 추적을 지우지 않도록.
+    passthrough = latent_mod.extract_passthrough_meta(m.group("meta") if m else "")
+
     md = _build_node_markdown(
         title, new_body, new_type, new_moc, new_aliases, new_tags,
         new_edges, new_sources,
         node_id=meta.get("node_id"), id_=meta.get("id"), created=meta.get("created"),
+        extra_meta=passthrough,
     )
     path.write_text(md, encoding="utf-8")
 
@@ -759,6 +788,51 @@ def reconcile_graph(embed: bool = False) -> dict:
         "edges_dangling": stats.get("edges_dangling"),
         "embeddings_built": stats.get("embeddings_built"),
     }
+
+
+@mcp.tool()
+def promote_latent(parent_title: str, candidate_id: str, evidence_quote: str,
+                   independent_review_condition: str,
+                   new_title: Optional[str] = None) -> dict:
+    """latent 분할 후보를 독립 노드로 승격합니다(extraction-only, [[Granularity Policy]] §3).
+
+    부모 노트 frontmatter의 `latent_split_candidate` 항목이 "서로 다른 맥락에서 N회
+    회수"(retrieve_knowledge 응답의 latent_promotions_due로 통지) 조건을 채웠을 때만
+    호출하세요. **에이전트가 직접 파일을 쪼개지 않습니다** — 이 도구가 데몬 write 락
+    하에서 원자적·멱등으로 수행합니다:
+
+      1. evidence_quote(부모 본문에 verbatim 실재)로 span(문단 블록)을 기계적으로 특정
+      2. 특정된 span이 후보 마커에 기록된 evidence를 포함하는지 검증 — 마커와 무관한
+         문단을 적출하는 호출은 자동 실행되지 않음
+      3. span을 20_Concepts/의 새 노드로 **이동**(promoted_from/promotion_evidence
+         frontmatter로 감사 추적), 부모에는 `[[새 노드]]` 한 줄만 남김 (복제 금지)
+      4. 즉시 재색인. 인용 미발견/중복/코드 펜스/문단 경계 초과/제목·stem·alias 충돌/
+         evidence 불일치 등은 실행하지 않고 80_Reviews 큐로 라우팅
+
+    Args:
+        parent_title: 후보를 보유한 부모 노드 제목
+        candidate_id: 후보의 id 슬러그 (latent_promotions_due의 candidate_id)
+        evidence_quote: 적출할 span에 포함된, 부모 본문에 실재하는 문장 (10자 이상)
+        independent_review_condition: span이 자기완결(G2)임을 어떻게 확인했는지 —
+            감사용 필수 인자. 새 노드 frontmatter와 승격 로그에 기록됩니다.
+        new_title: 새 노드 제목 (생략 시 후보의 candidate_title 사용)
+
+    Returns:
+        {status: promoted|already_promoted|routed_to_review, ...}
+    """
+    evidence_quote = (evidence_quote or "").strip()
+    independent_review_condition = (independent_review_condition or "").strip()
+    if len(evidence_quote) < 10:
+        raise ValueError("evidence_quote는 부모 본문에 실재하는 10자 이상의 문장이어야 합니다")
+    if not independent_review_condition:
+        raise ValueError("independent_review_condition(G2 확인 근거)은 필수입니다")
+    return _daemon("POST", "/promote_latent", {
+        "parent_title": parent_title,
+        "candidate_id": candidate_id,
+        "evidence_quote": evidence_quote,
+        "independent_review_condition": independent_review_condition,
+        "new_title": new_title,
+    }, timeout=900)
 
 
 # ─────────────────────────────────────────────────────────────

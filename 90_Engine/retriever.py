@@ -147,6 +147,11 @@ def parse_frontmatter_fields(content):
         return {}
     out = {}
     for line in content[3:end].splitlines():
+        # 들여쓰인 key:value(중첩 맵 필드 — 예: latent_split_candidate 엔트리)는 최상위
+        # 필드가 아니다. 엔트리 내 필드가 status/confidence로 오인되어 랭킹을 오염시키지
+        # 않도록 건너뛴다(indexer.parse_yaml_frontmatter와 동일 규칙).
+        if line[:1] in (" ", "\t"):
+            continue
         s = line.strip()
         if ":" in s and not s.startswith("-") and not s.startswith("#"):
             k, _, v = s.partition(":")
@@ -643,6 +648,7 @@ def format_hybrid_output(query, seed_ids, ranked_ids, node_scores,
         # 계층/신뢰도/상태/주석을 함께 표기 → 에이전트가 출처·불확실성을 스스로 판단
         "nodes": [
             {
+                "node_id": nid,  # 제목은 계층 간 중복될 수 있으므로(예: 동명 06_Raw) 정체성은 id
                 "title": nodes[nid]["title"],
                 "layer": nodes[nid].get("layer"),
                 "type": nodes[nid].get("type"),

@@ -96,10 +96,55 @@
   중복 후보가 의심되면 `80_Reviews/`에 `duplicate-concept-candidate`로 올린다.
 - **프로젝트 페이지는 대시보드다.** 모든 세부사항을 쏟아붓지 말고, 정책·결정·개념·
   검토 항목으로 **링크**한다. 덤프가 아니라 현재 상태의 한눈 지도여야 한다.
+- 노드를 **쪼갤지(split) 접을지(fold)**는 §6의 자율 절차로 판정한다 ([[Granularity Policy]]).
 
 ---
 
-## 6. 온톨로지 그래프 사용 (9-Predicate)
+## 6. 노드 입자 결정 (split-vs-fold) — 자율 절차
+
+**사람에게 묻지 않는다.** 새 내용을 기록할 때 span(문단) 단위로 판정한다.
+전체 규범: [[Granularity Policy]].
+
+**Split** ⟺ G1 ∧ G2:
+
+- **G1 연결성**: 증거 있고 강제 아닌 9술어 엣지를 *구별되는 기존 노드*로 ≥1 실제로
+  세울 수 있다 (evidence_quote 본문 실재 · confidence ≥ 0.7 · `utilizes` 남용 금지 ·
+  불확실하면 비워라 — [[Ontology Specification]] §5.2/§6/§4).
+- **G2 독립 검토단위**: 부모가 폐기돼도 단독 참/거짓 검토 가능 = span이 자기완결적이다
+  (부모 문맥 참조 없음, 전제는 span 내 명시 또는 `[[위키링크]]`로 명명).
+- Split 실행은 **extraction만**: span을 새 노드로 이동하고 부모엔 `[[링크]]` 한 줄만
+  남긴다. 본문 복제(distillation) 금지 — 살아있는 사본 두 개는 drift를 내장한다.
+
+**Fold + latent 표식** ⟺ G1·G2 중 하나만 충족, 그리고 span이 자기완결적일 때:
+
+- **frontmatter에만**, `latent_split_candidate:` **블록 스타일 리스트**로 기록한다
+  (필드: `id` · `candidate_title` · `reason` · `evidence` · `promote_condition`;
+  정확한 형식은 [[Granularity Policy]] §2.1). 인라인 flow 스타일(`[{...}]`)은 엔진
+  파서가 지원하지 않으므로 쓰지 않는다.
+- 본문 인라인 표식 금지. span이 자기완결 미달이면 표식을 남기는 지금 다듬는다.
+- 회수 카운터는 엔진 DB가 관리한다 — frontmatter에 `hit_count`를 두지 않는다.
+
+**Fold (표식 없음)** ⟺ 둘 다 미달 또는 불확실. **불확실하면 fold가 기본값이다.**
+
+**승격**: latent 표식은 서로 다른 맥락에서 2회 회수되면(`retrieve_knowledge` 응답의
+승격 안내로 통지) `promote_latent` 도구로만 승격한다 — **직접 파일을 쪼개지 않는다**.
+재구성이 필요하거나 애매하면 `80_Reviews/` 큐로 보낸다.
+
+---
+
+## 7. 작성 원칙 — 자기완결성
+
+- 자기완결의 단위 = 그 계층의 회수 원자: `20_Concepts/`는 **문단**, `40_Decisions/`는
+  **노트 전체**(ADR식 서사 허용, 노트 경계에서만 자기완결).
+- "위 방식"류 문맥 의존 참조 대신 `[[노드명]]`으로 대상을 명시한다. 링크는 자유롭게
+  걸어도 된다 — 그래프 확장은 9술어 엣지만 타므로 링크가 검색 그래프를 오염시키지 않는다.
+- **위키링크는 참조 명시 수단이고, 9술어 엣지가 아니다.** 링크는 무타입·무비용(자유롭게),
+  엣지는 evidence 게이트되는 DB 시민(엄격하게). 지식 관계 주장은 엣지로만 한다.
+- 철학/원칙 노드 링크는 그 원칙이 이 노트의 주장을 **실제로 지지할 때만** 건다.
+
+---
+
+## 8. 온톨로지 그래프 사용 (9-Predicate)
 
 - predicate 엣지(`requires` · `utilizes` · `implemented_by` · `extends` · `abstracts` ·
   `causes` · `contradicts` · `replaces` · `defines`)는 **안정적 지식 그래프 관계**에만 쓴다.
@@ -113,7 +158,7 @@
 
 ---
 
-## 7. 인입 워크플로우 (요약)
+## 9. 인입 워크플로우 (요약)
 
 1. 미가공물 → `05_Inbox/`
 2. 안정적 원본 → `06_Raw/`로 이동/복사 (이후 불변)
@@ -131,7 +176,7 @@
 
 ---
 
-## 8. 작성 형식 규칙
+## 10. 작성 형식 규칙
 
 - 모든 Markdown은 Obsidian 호환을 유지한다.
 - 내부 참조는 wikilink(`[[제목]]`), 증거 참조는 source 경로를 쓴다.
@@ -149,4 +194,5 @@
 - 검토 정책: [[Review Policy]]
 - 명명 규칙: [[Naming Convention]]
 - 온톨로지 헌법: [[Ontology Specification]]
+- 입자 정책: [[Granularity Policy]]
 - 프로젝트 대시보드: [[LLM Second Brain]]

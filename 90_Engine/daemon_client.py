@@ -54,18 +54,36 @@ def post(port: int, path: str, payload: dict, timeout: float = 120.0):
         return json.loads(r.read().decode("utf-8"))
 
 
-def _venv_python() -> str:
-    """데몬을 띄울 인터프리터. sys.executable을 쓰면 안 되는 이유: Windows venv 런처는
-    base 파이썬으로 redirect되는 경우가 있어(프록시가 venv/Scripts/python.exe로 기동돼도
-    sys.executable이 base Python을 가리킴), 그 base에는 venv 의존성(duckdb/fastapi)이 없어
-    데몬이 import에서 즉사한다. sys.prefix는 pyvenv.cfg로 항상 active venv를 가리키므로,
-    거기서 venv 인터프리터를 도출한다. venv가 아니면(=경로 부재) sys.executable로 폴백.
+def _daemon_python(script_dir) -> str:
+    """데몬을 띄울 인터프리터. 두 가지를 동시에 만족해야 한다:
+    (1) **venv 의존성(duckdb/fastapi)이 있는** 인터프리터일 것 — 아니면 import에서 즉사.
+    (2) Windows에서 **콘솔 창을 띄우지 않을 것**(pythonw.exe = GUI 서브시스템).
+
+    sys.executable/sys.prefix를 쓰면 안 되는 이유: 프록시가 venv 런처로 기동돼도 Windows에선
+    base Python으로 redirect돼 실제 실행 컨텍스트의 sys.prefix가 base를 가리키는 경우가 있다
+    (이 기기 실측: 프록시 자식 프로세스 = base Python312, sys.prefix = base → deps 없음 →
+    데몬 즉사 → 매 read마다 재spawn → 검은 콘솔 반복). 그래서 sys.* 대신 **스크립트 위치**에서
+    venv를 도출한다: vault_daemon.py는 `<repo>/90_Engine/`에 있고 venv는 `<repo>/.venv`라
+    `script_dir.parent/.venv`가 실행 인터프리터와 무관하게 항상 옳다. 그 venv의 pythonw.exe는
+    GUI 서브시스템이라 콘솔을 절대 할당하지 않으면서도 venv prefix/deps를 그대로 갖는다.
     See handoff/DAEMON_SPAWN_FIX.md."""
+    root = Path(script_dir).parent  # <repo>/90_Engine -> <repo>
     if os.name == "nt":
-        cand = Path(sys.prefix) / "Scripts" / "python.exe"
+        cands = [
+            root / ".venv" / "Scripts" / "pythonw.exe",  # 1순위: 콘솔 무창 + venv deps
+            root / ".venv" / "Scripts" / "python.exe",   # 폴백: deps는 있으나 콘솔 위험
+            Path(sys.prefix) / "Scripts" / "pythonw.exe",
+            Path(sys.prefix) / "Scripts" / "python.exe",
+        ]
     else:
-        cand = Path(sys.prefix) / "bin" / "python"
-    return str(cand) if cand.exists() else sys.executable
+        cands = [
+            root / ".venv" / "bin" / "python",
+            Path(sys.prefix) / "bin" / "python",
+        ]
+    for c in cands:
+        if c.exists():
+            return str(c)
+    return sys.executable
 
 
 def ensure_daemon(vault_db, script_dir, env=None, wait: float = 20.0):
@@ -82,13 +100,17 @@ def ensure_daemon(vault_db, script_dir, env=None, wait: float = 20.0):
                  if os.environ.get("DAEMON_DEBUG") else None)
     try:
         sink = spawn_log if spawn_log else subprocess.DEVNULL
-        kwargs = dict(stdout=sink, stderr=sink, env=env or os.environ, close_fds=True)
-        if os.name == "nt":  # Windows: 부모와 분리된 자식
-            kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        kwargs = dict(stdout=sink, stderr=sink, stdin=subprocess.DEVNULL,
+                      env=env or os.environ, close_fds=True)
+        if os.name == "nt":  # Windows: 부모와 분리 + 콘솔 무창
+            # DETACHED_PROCESS(0x8): 부모 콘솔 미상속. CREATE_NEW_PROCESS_GROUP(0x200): 신호 격리.
+            # CREATE_NO_WINDOW(0x8000000): console-subsystem 폴백(python.exe)일 때도 창 억제.
+            # 1순위 인터프리터는 pythonw.exe(GUI 서브시스템)라 본질적으로 콘솔이 없다.
+            kwargs["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
         else:  # POSIX: 새 세션으로 분리
             kwargs["start_new_session"] = True
-        # venv 인터프리터로 spawn(= sys.executable 아님; _venv_python 도큐 참조).
-        subprocess.Popen([_venv_python(), script], **kwargs)
+        # 콘솔 무창 venv 인터프리터로 spawn(script_dir 기준 도출; _daemon_python 도큐 참조).
+        subprocess.Popen([_daemon_python(script_dir), script], **kwargs)
     except Exception:
         return None
     finally:

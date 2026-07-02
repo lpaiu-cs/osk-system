@@ -34,6 +34,10 @@ try:
 except ImportError:
     sys.exit("ERROR: duckdb 미설치. pip install duckdb --break-system-packages")
 
+# latent split candidate 파이프라인 (Granularity Policy — 스키마/파서/동기화)
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+import latent as latent_mod  # noqa: E402
+
 
 # ─────────────────────────────────────────────────────────────
 # §1. 헌법 상수
@@ -51,10 +55,9 @@ EDGE_REGEX = re.compile(
     r"(?:\s*—\s*(?P<desc>.*))?$"
 )
 
-FRONTMATTER_REGEX = re.compile(
-    r"\A---\s*\n(?P<meta>.*?)\n---\s*\n",
-    re.DOTALL
-)
+# frontmatter 구분 정규식의 정본은 latent.FRONTMATTER_RE — 중복 정의로 drift가 생기지
+# 않도록 alias만 둔다(mcp_server 등 기존 참조명 유지).
+FRONTMATTER_REGEX = latent_mod.FRONTMATTER_RE
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_EMBED_MODEL = "bge-m3"
@@ -81,6 +84,9 @@ DEFAULT_EMBED_MODEL = "bge-m3"
 #   - 그 외(10/20/30/40/50/60/70/80) : 해석 계층 → node+edge 풀 인덱싱.
 ALWAYS_EXCLUDE_PARTS = (
     "90_Engine", ".git", ".obsidian",
+    # Claude Code 워크트리: .claude/worktrees/<id>/ 에 vault .md 사본이 생겨
+    # 같은 노트가 워크트리 수만큼 중복 색인되는 것을 차단.
+    ".claude",
     # 가상환경·도구 디렉터리: 패키지 문서(.md)가 vault에 섞이지 않게 제외
     ".venv", "venv", "env", "ENV", ".env", "node_modules", "__pycache__", ".trash",
 )
@@ -140,8 +146,18 @@ def raw_subfolder_of(path, vault_root):
 
 
 def policy_for(path, vault_root):
-    """파일에 적용할 계층 정책 dict 반환 (layer 키 포함)."""
-    if any(part in ALWAYS_EXCLUDE_PARTS for part in path.parts):
+    """파일에 적용할 계층 정책 dict 반환 (layer 키 포함).
+
+    제외 판정은 vault_root **상대 경로** 기준이다 — vault 체크아웃 자체가 `.claude`나
+    `env` 같은 제외 이름의 디렉터리 밑에 있는 경우(예: Claude 워크트리에서 엔진 실행)
+    전체 vault가 통째로 제외되는 것을 막는다. vault 내부의 `.claude/worktrees` 사본
+    등만 걸러진다.
+    """
+    try:
+        rel_parts = path.resolve().relative_to(Path(vault_root).resolve()).parts
+    except (ValueError, OSError):
+        rel_parts = path.parts  # vault 밖 경로(이례) — 전체 경로 기준으로 보수 판정
+    if any(part in ALWAYS_EXCLUDE_PARTS for part in rel_parts):
         return {"layer": None, "index": False, "embed": False,
                 "parse_edges": False, "graph_node": False, "role": "engine"}
     layer = layer_of(path, vault_root)
@@ -248,6 +264,9 @@ def init_database(db_path):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_predicate ON edges(predicate)")
 
+    # latent split candidate 테이블(latent_candidates/latent_hits/latent_promotions)
+    latent_mod.ensure_schema(conn)
+
     return conn
 
 
@@ -268,7 +287,11 @@ def parse_yaml_frontmatter(content):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if ":" in line and not line.startswith("-"):
+        # 들여쓰인 key:value(중첩 맵 필드 — 예: latent_split_candidate 엔트리)는 이 미니
+        # 파서의 범위 밖이다. 최상위 키로 오인해 노드 메타(status/confidence 등)를
+        # 오염시키지 않도록 건너뛴다(전용 파서는 latent.py). 최상위 키는 항상 비들여쓰기.
+        indented = raw_line[:1] in (" ", "\t")
+        if ":" in line and not line.startswith("-") and not indented:
             key, _, val = line.partition(":")
             current_key = key.strip()
             val = val.strip()
@@ -373,6 +396,7 @@ def index_vault(vault_root, db_path, force_rebuild=False, embed=False,
         "edges_rejected": 0,
         "edges_dangling": 0,
         "nodes_pruned": 0,
+        "latent_candidates_synced": 0,
     }
 
     # ── 1차 패스: 노드 업서트 + 임베딩 필요 판정 ──
@@ -444,16 +468,20 @@ def index_vault(vault_root, db_path, force_rebuild=False, embed=False,
 
     print(f"[*] 노드 패스 완료 — 신규: {stats['nodes_new']}, 수정: {stats['nodes_updated']}, 무변경: {stats['nodes_unchanged']}")
 
-    # ── orphan prune: 디스크에서 사라진 파일의 노드 + 그 노드에 닿는 엣지(양방향) 정리 ──
-    # Markdown이 source of truth, DB는 파생 캐시다. 파일 없는 stub 노드는 존재하지 않으므로
-    # (file_path NOT NULL, dangling 타깃은 스킵), file_path가 디스크에 없는 노드는 명백한
-    # orphan이다. 노드별 존재 검사라 인덱서 스캔 범위와 무관하게 안전하다.
+    # ── orphan prune: "현행 정책상 더는 수집되지 않는" 노드 + 그 엣지(양방향) 정리 ──
+    # Markdown이 source of truth, DB는 파생 캐시다. orphan 판정은 두 갈래:
+    #   (a) 파일이 디스크에서 사라짐 — 명백한 orphan.
+    #   (b) 파일은 있으나 현행 policy_for가 index=False로 제외 — 예: 제외 규칙이 추가되기
+    #       전에 색인된 .claude/worktrees 사본. 존재 검사만 하면 이런 행이 캐시에 영구
+    #       잔류해 retriever가 중복 제목/엣지를 계속 적재한다(업그레이드 경로).
     orphan_ids = [nid for nid, fp in
                   conn.execute("SELECT node_id, file_path FROM nodes").fetchall()
-                  if not Path(fp).exists()]
+                  if not Path(fp).exists()
+                  or not policy_for(Path(fp), vault_root)["index"]]
     for nid in orphan_ids:
         conn.execute("DELETE FROM edges WHERE source_id = ? OR target_id = ?", [nid, nid])
         conn.execute("DELETE FROM nodes WHERE node_id = ?", [nid])
+    latent_mod.prune_candidates_for_nodes(conn, orphan_ids)
     stats["nodes_pruned"] = len(orphan_ids)
     if orphan_ids:
         print(f"[*] orphan prune — 파일이 사라진 노드 {len(orphan_ids)}개(+엣지) 제거")
@@ -491,6 +519,9 @@ def index_vault(vault_root, db_path, force_rebuild=False, embed=False,
         file_source_uuid = path_to_id[path]
         conn.execute("DELETE FROM edges WHERE source_id = ?", [file_source_uuid])
         content = path.read_text(encoding="utf-8")
+        # latent 분할 후보(frontmatter) 동기화 — hits는 candidate_key로 보존된다
+        stats["latent_candidates_synced"] += latent_mod.sync_candidates_for_file(
+            conn, file_source_uuid, str(path), content)
         raw_edges = extract_edges_safely(content)
         stats["edges_extracted"] += len(raw_edges)
 
@@ -543,6 +574,8 @@ def print_report(conn, stats):
     print(f"\n[노드] 총 {stats['nodes_total']} | 신규 {stats['nodes_new']} | 수정 {stats['nodes_updated']} | 무변경 {stats['nodes_unchanged']}")
     print(f"[엣지] 추출 {stats['edges_extracted']} | 적재 {stats['edges_inserted']} | 거부 {stats['edges_rejected']} | Dangling {stats['edges_dangling']}")
     print(f"[임베딩] 빌드 {stats['embeddings_built']} | 실패 {stats['embeddings_failed']}")
+    lat_total = conn.execute("SELECT COUNT(*) FROM latent_candidates").fetchone()[0]
+    print(f"[latent] 이번 동기화 {stats.get('latent_candidates_synced', 0)} | 전체 후보 {lat_total}")
 
     print(f"\n[술어 분포]")
     rows = conn.execute("""
