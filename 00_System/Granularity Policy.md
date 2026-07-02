@@ -142,6 +142,9 @@ independent_review_condition, new_title=None)`로만 수행한다. **에이전�
   사본 두 개는 drift를 내장한다. `06_Raw` ↔ `50_Source_Summaries` 패턴이 안전한
   것은 `06_Raw`가 **불변**이라 한쪽이 절대 움직이지 않기 때문이며, 해석 계층에는
   그 전제가 없다.
+- 적출되는 span은 **후보 마커에 기록된 `evidence`를 포함해야 한다** — 호출 인자
+  `evidence_quote`는 span을 *위치 특정*하고, 마커의 `evidence`는 그 span이 정말
+  표식된 그 span인지 *검증*한다. 불일치는 자동 실행 없이 review로 회송된다.
 - 따라서 자동 승격은 **extraction-ready(자기완결) span만** 대상으로 한다.
   재구성이 필요한 span은 전부 `80_Reviews/` 큐로 보낸다([[Review Policy]]).
   → 시스템 안에 텍스트 자동 재작성 경로는 0개이며, drift가 설계 차원에서

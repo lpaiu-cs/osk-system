@@ -790,10 +790,12 @@ def promote_latent(parent_title: str, candidate_id: str, evidence_quote: str,
     하에서 원자적·멱등으로 수행합니다:
 
       1. evidence_quote(부모 본문에 verbatim 실재)로 span(문단 블록)을 기계적으로 특정
-      2. span을 20_Concepts/의 새 노드로 **이동**(promoted_from/promotion_evidence
+      2. 특정된 span이 후보 마커에 기록된 evidence를 포함하는지 검증 — 마커와 무관한
+         문단을 적출하는 호출은 자동 실행되지 않음
+      3. span을 20_Concepts/의 새 노드로 **이동**(promoted_from/promotion_evidence
          frontmatter로 감사 추적), 부모에는 `[[새 노드]]` 한 줄만 남김 (복제 금지)
-      3. 즉시 재색인. 인용 미발견/중복/코드 펜스/문단 경계 초과/제목 충돌 등
-         extraction-ready가 아닌 경우는 실행하지 않고 80_Reviews 큐로 라우팅
+      4. 즉시 재색인. 인용 미발견/중복/코드 펜스/문단 경계 초과/제목·stem·alias 충돌/
+         evidence 불일치 등은 실행하지 않고 80_Reviews 큐로 라우팅
 
     Args:
         parent_title: 후보를 보유한 부모 노드 제목

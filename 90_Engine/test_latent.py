@@ -184,6 +184,12 @@ def test_promote(root, db):
     assert r["status"] == "routed_to_review", r
     review = (root / "80_Reviews" / "Needs Human Review.md").read_text(encoding="utf-8")
     assert "[open] latent 승격 보류" in review
+    # 유효한 candidate_id + 무관 문단의 인용 → 마커 evidence 불일치로 review 라우팅
+    r = latent.promote(db, root, "Parent Note", "split-alpha",
+                       "첫 문단은 부모의 주제 서술이다. 적출 대상이 아니다.", "G2 확인함")
+    assert r["status"] == "routed_to_review" and r["reason"] == "evidence-mismatch", r
+    assert "첫 문단은 부모의 주제 서술이다" in (root / "20_Concepts" / "Parent Note.md").read_text(
+        encoding="utf-8"), "무관 문단이 적출되면 안 됨"
     # 정상 승격
     r = latent.promote(db, root, "Parent Note", "split-alpha", quote,
                        "부모 폐기 가정 하 단독 검토 가능 — 대명사/문맥 참조 없음 확인")

@@ -348,6 +348,11 @@ def record_hits(db_path, retrieved_titles, query):
 _FORBIDDEN_TITLE = re.compile(r'[\\/:*?"<>|]')
 
 
+def _norm_ws(s):
+    """공백 정규화 비교용 — 본문 줄바꿈 래핑과 frontmatter 한 줄 문자열의 차이를 흡수."""
+    return re.sub(r"\s+", " ", s or "").strip()
+
+
 def _split_doc(content):
     """(frontmatter meta 텍스트 | None, body 텍스트) 반환."""
     m = FRONTMATTER_RE.search(content)
@@ -597,6 +602,22 @@ def promote(db_path, vault_root, parent_title, candidate_id, evidence_quote,
                 f"재구성 필요 여부를 사람이 판단. evidence: {evidence_quote[:120]}",
                 f"[[{parent_title}]]")
             return {"status": "routed_to_review", "reason": err,
+                    "review_file": review, "parent_title": parent_title}
+
+        # 감사 앵커 검증: 후보에 기록된 evidence가 지정된 span 안에 실재해야 한다 —
+        # 유효한 candidate_id에 무관 문단의 인용을 조합하면 마커와 무관한 span이
+        # 적출되는 사고를 차단하는, 파괴적 extraction의 최종 게이트다.
+        recorded = _norm_ws(entry.get("evidence"))
+        if not recorded or recorded not in _norm_ws(span["text"]):
+            review = route_to_review(
+                vault_root,
+                f"latent 승격 보류: [[{parent_title}]] 후보 '{entry['slug']}' evidence 불일치",
+                f"후보 마커에 기록된 evidence가 지정된 span에 없음(또는 미기록) — 마커와 "
+                f"다른 문단을 적출하려는 호출일 수 있어 자동 실행하지 않음. "
+                f"기록된 evidence: {(entry.get('evidence') or '(없음)')[:120]} / "
+                f"지정 quote: {evidence_quote[:120]}",
+                f"[[{parent_title}]]")
+            return {"status": "routed_to_review", "reason": "evidence-mismatch",
                     "review_file": review, "parent_title": parent_title}
 
         # 부모 moc 원문(있으면 새 노드에 승계)
