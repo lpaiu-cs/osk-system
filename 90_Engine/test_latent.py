@@ -92,7 +92,7 @@ def q1(db, sql, params=None):
         conn.close()
 
 
-def test_parser():
+def check_parser():
     cands = latent.parse_latent_candidates(PARENT_MD)
     assert len(cands) == 2, cands
     a = cands[0]
@@ -141,7 +141,7 @@ def test_parser():
     print("  [ok] parser")
 
 
-def test_index_sync(root, db):
+def check_index_sync(root, db):
     stats = reindex(root, db)
     assert stats["latent_candidates_synced"] == 2, stats
     rows = q1(db, "SELECT candidate_key, slug FROM latent_candidates ORDER BY slug")
@@ -154,7 +154,7 @@ def test_index_sync(root, db):
     print("  [ok] index sync")
 
 
-def test_hits(root, db):
+def check_hits(root, db):
     # 어휘 겹침 없는 쿼리 → 기록 안 됨
     r = latent.record_hits(db, ["Parent Note"], "완전히 무관한 질의 텍스트 blah")
     assert r["recorded"] == 0 and r["due"] == [], r
@@ -179,7 +179,7 @@ def test_hits(root, db):
     print("  [ok] hits & distinct-context")
 
 
-def test_promote(root, db):
+def check_promote(root, db):
     quote = "게이트 임계값은 재사용 수요가 실측될 때만 조정한다. 이 문단은 자기완결적이며,"
     # 하드 인자 오류
     try:
@@ -236,10 +236,34 @@ def test_promote(root, db):
     assert n == 1, n
     logs = q1(db, "SELECT new_title FROM latent_promotions")
     assert logs and logs[0][0] == "Alpha Extraction Concept"
+    # 승격으로 마커가 제거되면 그 후보의 hit도 정리된다(옛 수요 잔류 금지)
+    n = q1(db, "SELECT COUNT(*) FROM latent_hits WHERE candidate_key LIKE '%::split-alpha::%'")[0][0]
+    assert n == 0, n
     print("  [ok] promote (적출/멱등/review 라우팅)")
 
 
-def test_ambiguous_title(root, db):
+def check_hit_reset(root, db):
+    # 마커 evidence 변경(repurpose) → 키의 evidence 지문이 바뀌어 카운터가 0에서 재시작
+    p = root / "20_Concepts" / "Parent Note.md"
+    r = latent.record_hits(db, ["Parent Note"], "두번째 후보의 근거 문장 관련 질의")
+    assert r["recorded"] == 1, r
+    live_sql = ("SELECT COUNT(*) FROM latent_hits h JOIN latent_candidates c "
+                "ON c.candidate_key = h.candidate_key WHERE c.slug LIKE 'lsc-%'")
+    assert q1(db, live_sql)[0][0] == 1
+    txt = p.read_text(encoding="utf-8").replace(
+        "두번째 후보의 근거 문장이다", "두번째 후보의 수정된 근거 문장이다")
+    p.write_text(txt, encoding="utf-8")
+    reindex(root, db)
+    assert q1(db, live_sql)[0][0] == 0, "repurpose된 마커가 옛 hit을 계승하면 안 됨"
+    # alpha 후보(evidence 불변)의 distinct 2회는 재색인을 넘어 생존
+    alpha = q1(db, "SELECT COUNT(DISTINCT h.query_hash) FROM latent_hits h "
+                   "JOIN latent_candidates c ON c.candidate_key = h.candidate_key "
+                   "WHERE c.slug = 'split-alpha'")[0][0]
+    assert alpha == 2, alpha
+    print("  [ok] hit reset on marker repurpose (evidence fingerprint)")
+
+
+def check_ambiguous_title(root, db):
     # 동일 candidate_title 후보 2개 → 제목으로 promote 시도하면 명시적 거부 (오적출 방지)
     p = root / "20_Concepts" / "Ambig Note.md"
     p.write_text("""---
@@ -282,7 +306,7 @@ latent_split_candidate:
     print("  [ok] ambiguous candidate_title guard")
 
 
-def test_vault_under_claude_dir():
+def check_vault_under_claude_dir():
     # vault 자체가 .claude/worktrees/<id>/ 밑에 체크아웃된 경우에도 색인돼야 한다
     # (제외 판정은 vault-상대 경로 기준). vault 내부의 .claude 사본만 걸러진다.
     base = Path(tempfile.mkdtemp(prefix="latent_wt_"))
@@ -325,7 +349,7 @@ def test_vault_under_claude_dir():
         shutil.rmtree(base, ignore_errors=True)
 
 
-def test_cross_folder_title_collision(root, db):
+def check_cross_folder_title_collision(root, db):
     # 새 노드 제목은 vault 전역 링크 네임스페이스(title + 파일명 stem + aliases)와
     # 충돌하면 안 된다 — 어느 쪽과 겹쳐도 자동 적출 대신 review로 라우팅된다.
     (root / "50_Source_Summaries").mkdir(exist_ok=True)
@@ -381,7 +405,7 @@ alias와 충돌하는 근거 문장. 자기완결 span이다.
     print("  [ok] vault-wide collision (title/stem/alias) → review")
 
 
-def test_fence_quote(root, db):
+def check_fence_quote(root, db):
     # 코드 펜스 안에만 있는 인용 → review 라우팅
     p = root / "20_Concepts" / "Fence Note.md"
     p.write_text("""---
@@ -415,17 +439,24 @@ def main():
     root, db = make_vault()
     print(f"[*] temp vault: {root}")
     try:
-        test_parser()
-        test_index_sync(root, db)
-        test_hits(root, db)
-        test_promote(root, db)
-        test_ambiguous_title(root, db)
-        test_cross_folder_title_collision(root, db)
-        test_fence_quote(root, db)
-        test_vault_under_claude_dir()
+        check_parser()
+        check_index_sync(root, db)
+        check_hits(root, db)
+        check_hit_reset(root, db)
+        check_promote(root, db)
+        check_ambiguous_title(root, db)
+        check_cross_folder_title_collision(root, db)
+        check_fence_quote(root, db)
+        check_vault_under_claude_dir()
         print("\nALL LATENT TESTS PASSED")
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def test_all():
+    """pytest 진입점 — pytest가 이 파일을 수집해도 전체 스위트가 한 테스트로 돈다.
+    (check_* 헬퍼는 인자를 받아 pytest가 fixture로 오인하지 않도록 test_ 접두를 피했다.)"""
+    main()
 
 
 if __name__ == "__main__":

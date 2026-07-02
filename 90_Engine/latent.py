@@ -214,26 +214,44 @@ def _remove_candidate_from_meta(meta_text, slug):
 # ─────────────────────────────────────────────────────────────
 # §3. 인덱스 동기화 (indexer 2차 패스에서 호출)
 # ─────────────────────────────────────────────────────────────
-def candidate_key(node_id, slug):
-    return f"{node_id}::{slug}"
+def candidate_key(node_id, slug, evidence=""):
+    """후보의 안정 식별자: node_id::slug::evidence지문.
+
+    evidence 지문을 포함시키는 이유 — 카운터의 정체성은 **표식 내용**이다. 같은 slug가
+    삭제 후 재활용되거나 evidence가 다른 span으로 고쳐지면(repurpose) 새 키가 되어,
+    옛 hit이 새 후보의 승격 조건에 계승 집계되는 조기 발화를 막는다. evidence가 그대로면
+    재색인을 넘어 키가 안정적이라 hit이 생존한다(설계 의도)."""
+    fp = hashlib.md5((evidence or "").encode("utf-8")).hexdigest()[:8]
+    return f"{node_id}::{slug}::{fp}"
 
 
 def sync_candidates_for_file(conn, node_id, file_path, content):
     """재색인된 파일의 후보 행을 재구성한다(delete+insert — 파생 캐시).
-    latent_hits는 candidate_key(node_id::slug)가 재색인을 넘어 안정적이므로 보존된다.
-    스키마는 init_database(→ensure_schema)가 매 색인마다 보장하는 것을 전제한다.
+    무변경 마커의 hit은 candidate_key가 동일해 보존되고, 이번 재구성에서 사라진 키
+    (마커 삭제/evidence 변경)의 hit은 함께 정리한다 — 옛 수요가 새 후보로 계승되지
+    않는다. 스키마는 init_database(→ensure_schema)가 매 색인마다 보장하는 것을 전제.
     반환: 이 파일의 후보 수."""
+    old_keys = {r[0] for r in conn.execute(
+        "SELECT candidate_key FROM latent_candidates WHERE file_path = ?",
+        [str(file_path)]).fetchall()}
     conn.execute("DELETE FROM latent_candidates WHERE file_path = ?", [str(file_path)])
     cands = parse_latent_candidates(content)
     now = datetime.now()
+    new_keys = set()
     for c in cands:
+        key = candidate_key(node_id, c["slug"], c["evidence"])
+        new_keys.add(key)
         conn.execute("""
             INSERT OR REPLACE INTO latent_candidates
                 (candidate_key, node_id, file_path, slug, candidate_title,
                  reason, evidence, promote_condition, last_indexed)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [candidate_key(node_id, c["slug"]), node_id, str(file_path), c["slug"],
+        """, [key, node_id, str(file_path), c["slug"],
               c["candidate_title"], c["reason"], c["evidence"], c["promote_condition"], now])
+    stale = old_keys - new_keys
+    if stale:
+        ph = ", ".join("?" for _ in stale)
+        conn.execute(f"DELETE FROM latent_hits WHERE candidate_key IN ({ph})", list(stale))
     return len(cands)
 
 
@@ -561,10 +579,19 @@ def promote(db_path, vault_root, parent_title, candidate_id, evidence_quote,
                     f"지정하세요: {[c['slug'] for c in title_matches]}")
             entry = title_matches[0] if title_matches else None
 
-        key = candidate_key(node_id, entry["slug"] if entry else candidate_id)
-        prior = conn.execute(
-            "SELECT new_title FROM latent_promotions WHERE candidate_key = ? "
-            "ORDER BY promoted_at DESC LIMIT 1", [key]).fetchone()
+        if entry is not None:
+            key = candidate_key(node_id, entry["slug"], entry.get("evidence"))
+            prior = conn.execute(
+                "SELECT new_title FROM latent_promotions WHERE candidate_key = ? "
+                "ORDER BY promoted_at DESC LIMIT 1", [key]).fetchone()
+        else:
+            # 멱등 재호출 경로: 승격으로 마커가 이미 제거돼 evidence 지문을 재계산할 수
+            # 없으므로 node_id::slug 접두로 승격 로그를 조회한다.
+            key = None
+            prior = conn.execute(
+                "SELECT new_title FROM latent_promotions WHERE candidate_key LIKE ? "
+                "ORDER BY promoted_at DESC LIMIT 1",
+                [f"{node_id}::{candidate_id}::%"]).fetchone()
 
         if entry is None:
             if prior:
