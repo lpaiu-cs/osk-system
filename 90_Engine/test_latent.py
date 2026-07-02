@@ -414,6 +414,44 @@ alias와 충돌하는 근거 문장. 자기완결 span이다.
     print("  [ok] vault-wide collision (title/stem/alias) → review")
 
 
+def check_raw_shadow(root, db):
+    # 06_Raw 행은 검색용일 뿐 링크 타깃이 아니다 — 동명 raw가 (a) 부모 해석을 가로채거나
+    # (b) 제목 충돌로 오판되어 유효한 승격을 막으면 안 된다.
+    (root / "06_Raw").mkdir(exist_ok=True)
+    (root / "06_Raw" / "Shadow Parent.md").write_text(
+        "raw 원본 — 부모와 동명이지만 마커 없음.\n", encoding="utf-8")
+    (root / "06_Raw" / "Shadow Target.md").write_text(
+        "raw 원본 — 승격 대상 제목과 동명.\n", encoding="utf-8")
+    (root / "20_Concepts" / "Shadow Parent.md").write_text("""---
+title: Shadow Parent
+type: Concept
+latent_split_candidate:
+  - id: sh-1
+    candidate_title: "Shadow Target"
+    reason: "raw 그림자 검증"
+    evidence: "그림자 검증용 근거 문장이다"
+    promote_condition: "distinct-context retrieval >= 2"
+---
+
+# Shadow Parent
+
+본문 문단.
+
+그림자 검증용 근거 문장이다. 자기완결 span이다.
+""", encoding="utf-8")
+    reindex(root, db)
+    # 동명 raw 2건이 nodes에 존재함을 전제 확인
+    n = q1(db, "SELECT COUNT(*) FROM nodes WHERE title IN ('Shadow Parent', 'Shadow Target')")[0][0]
+    assert n == 3, n  # 개념 부모 1 + 동명 raw 2 (raw도 검색용으로 nodes에 적재됨)
+    r = latent.promote(db, root, "Shadow Parent", "sh-1",
+                       "그림자 검증용 근거 문장이다. 자기완결 span이다.", "검증")
+    assert r["status"] == "promoted", r
+    assert (root / "20_Concepts" / "Shadow Target.md").exists()
+    parent = (root / "20_Concepts" / "Shadow Parent.md").read_text(encoding="utf-8")
+    assert "[[Shadow Target]]" in parent
+    print("  [ok] raw shadow (06_Raw 동명 행은 부모 해석·충돌에서 제외)")
+
+
 def check_fence_quote(root, db):
     # 코드 펜스 안에만 있는 인용 → review 라우팅
     p = root / "20_Concepts" / "Fence Note.md"
@@ -455,6 +493,7 @@ def main():
         check_promote(root, db)
         check_ambiguous_title(root, db)
         check_cross_folder_title_collision(root, db)
+        check_raw_shadow(root, db)
         check_fence_quote(root, db)
         check_vault_under_claude_dir()
         print("\nALL LATENT TESTS PASSED")

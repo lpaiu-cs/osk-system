@@ -410,6 +410,16 @@ def _norm_ws(s):
     return re.sub(r"\s+", " ", s or "").strip()
 
 
+def _is_graph_row(file_path, vault_root):
+    """nodes 행이 링크/엣지 네임스페이스(graph_node=True 계층)에 속하는지 판정.
+    06_Raw/05_Inbox 행은 검색용으로만 nodes에 있고 [[링크]] 타깃이 아니므로, 부모 해석과
+    제목 충돌 검사에서 제외해야 한다. 계층 정책의 단일 출처인 indexer.policy_for를
+    재사용한다(런타임 lazy import — indexer가 이 모듈을 import하므로 모듈 수준 상호
+    import는 피하고, 호출 시점엔 indexer가 이미 적재돼 있다)."""
+    import indexer  # lazy
+    return indexer.policy_for(Path(file_path), Path(vault_root))["graph_node"]
+
+
 def _split_doc(content):
     """(frontmatter meta 텍스트 | None, body 텍스트) 반환."""
     m = FRONTMATTER_RE.search(content)
@@ -577,12 +587,18 @@ def promote(db_path, vault_root, parent_title, candidate_id, evidence_quote,
     conn = connect_db(str(db_path), read_only=False)
     try:
         ensure_schema(conn)
-        row = conn.execute(
-            "SELECT node_id, file_path FROM nodes WHERE title = ?", [parent_title]).fetchone()
-        if row is None:
-            row = conn.execute(
-                "SELECT node_id, file_path FROM nodes WHERE list_contains(aliases, ?)",
-                [parent_title]).fetchone()
+        # 부모 해석은 그래프 행만 대상 — 동명 06_Raw 행이 먼저 잡히면 마커 없는 raw
+        # 파일을 읽어 유효한 승격이 거부된다.
+        row = None
+        for cond in ("title = ?", "list_contains(aliases, ?)"):
+            for cand_row in conn.execute(
+                    f"SELECT node_id, file_path FROM nodes WHERE {cond}",
+                    [parent_title]).fetchall():
+                if _is_graph_row(cand_row[1], vault_root):
+                    row = cand_row
+                    break
+            if row is not None:
+                break
         if row is None:
             raise ValueError(f"부모 노드를 찾을 수 없습니다: '{parent_title}' (list_nodes로 제목 확인)")
         node_id, parent_path = str(row[0]), Path(row[1])
@@ -639,11 +655,15 @@ def promote(db_path, vault_root, parent_title, candidate_id, evidence_quote,
         # **파일명 stem + aliases**로 키잉하고(frontmatter title 아님), 검색/노출은
         # nodes.title을 쓴다 — 셋 중 무엇과 겹쳐도 [[링크]]/엣지 해석이 모호해지므로
         # 세 네임스페이스 전부에서 충돌을 검사한다(승격은 드물어 전행 스캔 비용 무시 가능).
+        # 단, 링크 타깃이 아닌 계층(06_Raw 등 graph_node=False)의 행은 충돌이 아니다 —
+        # 동명 raw가 있다고 유효한 승격을 review로 보내지 않는다(인덱서 정책과 동일 기준).
         dup = None
         for fp, t, aliases in conn.execute(
                 "SELECT file_path, title, aliases FROM nodes").fetchall():
             if (t == resolved_title or Path(fp).stem == resolved_title
                     or (aliases and resolved_title in list(aliases))):
+                if not _is_graph_row(fp, vault_root):
+                    continue
                 dup = (fp,)
                 break
         if new_path.exists() or dup:
