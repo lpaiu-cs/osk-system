@@ -146,8 +146,18 @@ def raw_subfolder_of(path, vault_root):
 
 
 def policy_for(path, vault_root):
-    """파일에 적용할 계층 정책 dict 반환 (layer 키 포함)."""
-    if any(part in ALWAYS_EXCLUDE_PARTS for part in path.parts):
+    """파일에 적용할 계층 정책 dict 반환 (layer 키 포함).
+
+    제외 판정은 vault_root **상대 경로** 기준이다 — vault 체크아웃 자체가 `.claude`나
+    `env` 같은 제외 이름의 디렉터리 밑에 있는 경우(예: Claude 워크트리에서 엔진 실행)
+    전체 vault가 통째로 제외되는 것을 막는다. vault 내부의 `.claude/worktrees` 사본
+    등만 걸러진다.
+    """
+    try:
+        rel_parts = path.resolve().relative_to(Path(vault_root).resolve()).parts
+    except (ValueError, OSError):
+        rel_parts = path.parts  # vault 밖 경로(이례) — 전체 경로 기준으로 보수 판정
+    if any(part in ALWAYS_EXCLUDE_PARTS for part in rel_parts):
         return {"layer": None, "index": False, "embed": False,
                 "parse_edges": False, "graph_node": False, "role": "engine"}
     layer = layer_of(path, vault_root)

@@ -257,6 +257,65 @@ latent_split_candidate:
     print("  [ok] ambiguous candidate_title guard")
 
 
+def test_vault_under_claude_dir():
+    # vault 자체가 .claude/worktrees/<id>/ 밑에 체크아웃된 경우에도 색인돼야 한다
+    # (제외 판정은 vault-상대 경로 기준). vault 내부의 .claude 사본만 걸러진다.
+    base = Path(tempfile.mkdtemp(prefix="latent_wt_"))
+    vault = base / ".claude" / "worktrees" / "wt1"
+    (vault / "20_Concepts").mkdir(parents=True)
+    (vault / "20_Concepts" / "Solo Note.md").write_text(OTHER_MD.replace("Other Note", "Solo Note"),
+                                                        encoding="utf-8")
+    db = vault / "90_Engine" / "cache.db"
+    try:
+        stats = None
+        stats, conn = indexer.index_vault(vault, db, embed=False)
+        conn.close()
+        assert stats["nodes_total"] == 1 and stats["nodes_new"] == 1, stats
+        # vault 내부 워크트리 사본은 제외
+        copy = vault / ".claude" / "worktrees" / "copy" / "20_Concepts"
+        copy.mkdir(parents=True)
+        (copy / "Solo Note.md").write_text("# dup", encoding="utf-8")
+        stats2, conn = indexer.index_vault(vault, db, embed=False)
+        conn.close()
+        assert stats2["nodes_total"] == 1, stats2
+        print("  [ok] vault-under-.claude indexing (relative exclusion)")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_cross_folder_title_collision(root, db):
+    # 제목은 vault 전역 링크 식별자 — 대상 폴더가 아닌 다른 계층의 동명 노드와도
+    # 충돌해야 하며, 자동 적출 대신 review로 라우팅된다.
+    (root / "50_Source_Summaries").mkdir(exist_ok=True)
+    (root / "50_Source_Summaries" / "Existing Elsewhere.md").write_text(
+        "---\ntitle: Existing Elsewhere\ntype: source-summary\n---\n\n# Existing Elsewhere\n\n요약.\n",
+        encoding="utf-8")
+    p = root / "20_Concepts" / "Collide Note.md"
+    p.write_text("""---
+title: Collide Note
+type: Concept
+latent_split_candidate:
+  - id: col-1
+    candidate_title: "Existing Elsewhere"
+    reason: "test"
+    evidence: "다른 계층 동명 노드와 충돌하는 근거 문장"
+    promote_condition: "distinct-context retrieval >= 2"
+---
+
+# Collide Note
+
+본문 문단.
+
+다른 계층 동명 노드와 충돌하는 근거 문장. 자기완결 span이다.
+""", encoding="utf-8")
+    reindex(root, db)
+    r = latent.promote(db, root, "Collide Note", "col-1",
+                       "다른 계층 동명 노드와 충돌하는 근거 문장. 자기완결 span이다.", "검증")
+    assert r["status"] == "routed_to_review" and r["reason"] == "title-collision", r
+    assert not (root / "20_Concepts" / "Existing Elsewhere.md").exists()
+    print("  [ok] vault-wide title collision → review")
+
+
 def test_fence_quote(root, db):
     # 코드 펜스 안에만 있는 인용 → review 라우팅
     p = root / "20_Concepts" / "Fence Note.md"
@@ -296,7 +355,9 @@ def main():
         test_hits(root, db)
         test_promote(root, db)
         test_ambiguous_title(root, db)
+        test_cross_folder_title_collision(root, db)
         test_fence_quote(root, db)
+        test_vault_under_claude_dir()
         print("\nALL LATENT TESTS PASSED")
     finally:
         shutil.rmtree(root, ignore_errors=True)

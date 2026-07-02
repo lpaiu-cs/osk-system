@@ -133,9 +133,19 @@ def _daemon(method: str, path: str, payload: dict = None, timeout: float = 120.0
 # 주의: 이는 "검색 인덱싱" 제외와 다르다. indexer는 06_Raw를 full-text 전용으로
 # 인덱싱(검색 가능)하되 graph_node=False라 링크 타깃은 아니다. 즉 이 목록과
 # indexer의 policy_for(graph_node=False)는 일관된다. 05_Inbox만 완전 제외.
-EXCLUDE_PARTS = ("90_Engine", ".git", ".obsidian", "05_Inbox", "06_Raw",
-                 ".venv", "venv", "env", "ENV", ".env", "node_modules",
-                 "__pycache__", ".trash")
+# 엔진/숨김 디렉터리 목록의 정본은 indexer.ALWAYS_EXCLUDE_PARTS — 여기서 재정의하면
+# (예: .claude 워크트리 제외가) 한쪽만 갱신되는 drift가 생긴다.
+EXCLUDE_PARTS = tuple(indexer_mod.ALWAYS_EXCLUDE_PARTS) + ("05_Inbox", "06_Raw")
+
+
+def _excluded_rel(p: Path, root: Path) -> bool:
+    """vault_root 상대 경로 기준 제외 판정 — vault 자체가 .claude 등 제외 이름의 상위
+    디렉터리 밑에 체크아웃돼도 전체가 제외되지 않는다(indexer.policy_for와 동일 규칙)."""
+    try:
+        rel_parts = p.resolve().relative_to(root.resolve()).parts
+    except (ValueError, OSError):
+        rel_parts = p.parts
+    return any(part in EXCLUDE_PARTS for part in rel_parts)
 EDGE_HEADING = "## 핵심 엣지"
 EMPTY_EDGE_PLACEHOLDER = "<!-- 아직 엣지 없음 -->"
 
@@ -169,7 +179,7 @@ def _find_node_path(title: str) -> Optional[Path]:
     """제목(=파일명 stem)으로 node 파일을 찾는다. 엔진/숨김 폴더는 제외."""
     root = _vault_root()
     for p in root.rglob(f"{title}.md"):
-        if any(part in EXCLUDE_PARTS for part in p.parts):
+        if _excluded_rel(p, root):
             continue
         return p
     return None
@@ -402,7 +412,7 @@ def review_queue(status: str = "open", layer: Optional[str] = None) -> dict:
         if not base.exists():
             continue
         for p in sorted(base.rglob("*.md")):
-            if any(part in EXCLUDE_PARTS for part in p.parts):
+            if _excluded_rel(p, root):
                 continue
             try:
                 text = p.read_text(encoding="utf-8")
@@ -458,7 +468,7 @@ def list_nodes() -> dict:
     root = _vault_root()
     out = []
     for p in sorted(root.rglob("*.md")):
-        if any(part in EXCLUDE_PARTS for part in p.parts):
+        if _excluded_rel(p, root):
             continue
         try:
             meta = indexer_mod.parse_yaml_frontmatter(p.read_text(encoding="utf-8"))

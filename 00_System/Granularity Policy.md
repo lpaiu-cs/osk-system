@@ -215,3 +215,7 @@ independent_review_condition, new_title=None)`로만 수행한다. **에이전�
 - 설계 근거(결정 기록): [[2026-07-02-node-granularity-split-vs-fold]]
 - 토론·실측 원본: `06_Raw/project-logs/2026-07-02-granularity-debate-handoff.md`
 - 관련 정책: [[Ingest Policy]], [[Ontology Specification]], [[Review Policy]]
+
+> 결정 기록과 raw 원본은 **private 인스턴스**의 지식 계층에 있다. 이 저장소는 지식
+> 계층이 비어 있는 프레임워크 템플릿이므로 위 두 참조는 여기서는 의도적 dangling이며,
+> 기존 정책들이 [[2026-06-18-second-brain-architecture]]를 인용하는 방식과 같다.
