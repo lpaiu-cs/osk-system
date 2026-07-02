@@ -119,6 +119,17 @@ def test_parser():
     assert fm.get("status") == "active" and "confidence" not in fm, fm
     # 후보 없는 문서
     assert latent.parse_latent_candidates(OTHER_MD) == []
+    # 인용 스칼라 + 트레일링 주석(정책 문서 §2.1 정본 예시 형태) → 따옴표·주석 모두 제거
+    doc_comment = ("---\nlatent_split_candidate:\n"
+                   "  - id: slug-x        # 후보 슬러그\n"
+                   "    candidate_title: \"Quoted Title\"   # 승격 시 새 노드 제목(제안)\n"
+                   "    evidence: 'single quoted'  # c\n"
+                   "    reason: unquoted value  # c\n"
+                   "---\n\nb\n")
+    c = latent.parse_latent_candidates(doc_comment)[0]
+    assert c["slug"] == "slug-x", c
+    assert c["candidate_title"] == "Quoted Title", c
+    assert c["evidence"] == "single quoted" and c["reason"] == "unquoted value", c
     # 미지원 인라인 flow 스타일 → 후보 0건 + 경고(무음 실패 아님)
     import io
     import contextlib

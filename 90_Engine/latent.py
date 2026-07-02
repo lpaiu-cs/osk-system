@@ -95,10 +95,14 @@ def ensure_schema(conn):
 # §2. frontmatter 전용 파서 (latent_split_candidate 블록만)
 # ─────────────────────────────────────────────────────────────
 def _clean_value(val):
-    """스칼라 값 정리: 양끝 따옴표 제거, 비인용 값의 트레일링 주석 제거."""
+    """스칼라 값 정리. 인용 값은 **닫는 따옴표까지**를 값으로 취하고 그 뒤(트레일링
+    주석 포함)는 버린다 — `"값"   # 주석` 형태(정책 문서의 정본 예시)에서 따옴표가
+    값에 남는 것을 방지. 비인용 값은 트레일링 주석만 제거한다."""
     val = val.strip()
-    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
-        return val[1:-1]
+    if val[:1] in ("'", '"'):
+        end = val.find(val[0], 1)
+        if end != -1:
+            return val[1:end]
     return re.split(r"\s+#", val, 1)[0].strip()
 
 
