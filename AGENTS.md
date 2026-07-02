@@ -117,8 +117,10 @@
 
 **Fold + latent 표식** ⟺ G1·G2 중 하나만 충족, 그리고 span이 자기완결적일 때:
 
-- **frontmatter에만** 기록:
-  `latent_split_candidate: [{id, candidate_title, reason, evidence, promote_condition}]`
+- **frontmatter에만**, `latent_split_candidate:` **블록 스타일 리스트**로 기록한다
+  (필드: `id` · `candidate_title` · `reason` · `evidence` · `promote_condition`;
+  정확한 형식은 [[Granularity Policy]] §2.1). 인라인 flow 스타일(`[{...}]`)은 엔진
+  파서가 지원하지 않으므로 쓰지 않는다.
 - 본문 인라인 표식 금지. span이 자기완결 미달이면 표식을 남기는 지금 다듬는다.
 - 회수 카운터는 엔진 DB가 관리한다 — frontmatter에 `hit_count`를 두지 않는다.
 

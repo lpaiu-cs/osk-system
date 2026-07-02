@@ -25,6 +25,7 @@
 import hashlib
 import json
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -43,6 +44,9 @@ REVIEW_ITEM_HEADING = "### [{status}] {title}"
 REVIEW_ITEM_RE = re.compile(r"^###\s*\[(?P<status>[A-Za-z\-]+)\]\s*(?P<title>.+?)\s*$")
 
 _ENTRY_FIELDS = ("id", "candidate_title", "reason", "evidence", "promote_condition")
+
+# 미지원 인라인 flow 스타일(latent_split_candidate: [{...}]) 감지용 — 무음 실패 방지.
+_INLINE_FLOW_RE = re.compile(rf"^{LATENT_KEY}\s*:\s*\[.*\S.*\]\s*$")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -155,12 +159,20 @@ def _slug_of(fields):
 
 
 def parse_latent_candidates(content):
-    """노트 전문에서 latent 후보 목록을 파싱한다.
+    """노트 전문에서 latent 후보 목록을 파싱한다(블록 스타일 리스트만 지원).
     반환: [{"slug","candidate_title","reason","evidence","promote_condition"}]"""
     m = FRONTMATTER_RE.search(content)
     if not m:
         return []
-    _, entries = _parse_block(m.group("meta").splitlines())
+    meta_lines = m.group("meta").splitlines()
+    # 미지원 인라인 flow 스타일은 조용히 0건이 되지 않도록 경고한다(표식은 무시됨).
+    for raw in meta_lines:
+        if not raw[:1].isspace() and _INLINE_FLOW_RE.match(raw.strip()):
+            print(f"[latent][WARN] '{LATENT_KEY}' 인라인 flow 스타일([{{...}}])은 미지원 — "
+                  f"블록 스타일 리스트로 작성하세요(Granularity Policy §2.1). 이 표식은 무시됩니다.",
+                  file=sys.stderr)
+            break
+    _, entries = _parse_block(meta_lines)
     out = []
     for e in entries:
         f = e["fields"]

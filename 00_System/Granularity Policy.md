@@ -92,6 +92,9 @@ latent_split_candidate:
 
 - **본문 인라인 표식은 금지한다** (`[Latent: ...]`류). 인라인 표식은 전문검색을
   오염시키고 비공식 반(半)노드 계층을 만든다.
+- **위 블록 스타일만 지원한다.** YAML 인라인 flow 맵(`latent_split_candidate: [{...}]`)은
+  엔진의 미니 파서가 읽지 못한다(`Retrieval Policy.yaml`과 동일한 블록-전용 제약) —
+  엔진이 감지 시 경고를 내고 해당 표식을 무시한다.
 - `evidence`는 해당 span 본문에 실재하는 문장이어야 한다. 승격 시 이 인용으로
   span을 기계적으로 위치 특정한다(§3.3).
 - **`hit_count`는 frontmatter에 두지 않는다.** 회수 카운터는 가변 런타임 상태이므로

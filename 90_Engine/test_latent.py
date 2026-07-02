@@ -119,6 +119,14 @@ def test_parser():
     assert fm.get("status") == "active" and "confidence" not in fm, fm
     # 후보 없는 문서
     assert latent.parse_latent_candidates(OTHER_MD) == []
+    # 미지원 인라인 flow 스타일 → 후보 0건 + 경고(무음 실패 아님)
+    import io
+    import contextlib
+    inline_md = ('---\ntitle: I\nlatent_split_candidate: [{id: x, evidence: "e"}]\n---\n\nb\n')
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        assert latent.parse_latent_candidates(inline_md) == []
+    assert "인라인 flow" in buf.getvalue(), buf.getvalue()
     print("  [ok] parser")
 
 
