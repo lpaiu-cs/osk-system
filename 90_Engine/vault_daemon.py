@@ -71,7 +71,9 @@ if SYNC_ENABLED and not _SYNC_OK:
 _lock = threading.RLock()
 _retriever = None
 _last_activity = time.time()
-_latent_count = None  # latent 후보 수 캐시(None=미확인). reindex 후 무효화.
+# latent 후보를 보유한 부모 노드 제목 집합 캐시(None=미확인). reindex 후 무효화.
+# 회수 결과와 이 집합이 겹칠 때만 write 락을 잡으므로, 대부분의 retrieve는 락 없이 지나간다.
+_latent_parents = None
 
 # ── 싱크 상태 (git 명령은 _git_lock으로 직렬화; 요청 서빙은 블록하지 않게 스케줄) ──
 _git_lock = threading.Lock()
@@ -106,10 +108,10 @@ def get_retriever():
 
 def invalidate_retriever():
     """write(reindex) 후 호출: 인메모리 그래프를 버려 다음 read가 새 DB로 재적재한다."""
-    global _retriever, _latent_count
+    global _retriever, _latent_parents
     with _lock:
         _retriever = None
-        _latent_count = None  # 후보 수도 재확인 대상
+        _latent_parents = None  # 후보 부모 집합도 재확인 대상
 
 
 # ── reader/writer 조정 ──
@@ -280,7 +282,7 @@ def health():
 
 @app.post("/retrieve")
 def retrieve(req: RetrieveReq):
-    global _latent_count
+    global _latent_parents
     _touch()
     _maybe_pull()  # stale면 원격 변경부터 당겨온다(throttle)
     try:
@@ -292,23 +294,24 @@ def retrieve(req: RetrieveReq):
                 include_reviews=req.include_reviews,
                 confidence_weighting=req.confidence_weighting,
             )
-            if _latent_count is None:  # read-only 연결은 read 락 하에서만 안전
-                _latent_count = latent_mod.count_candidates(VAULT_DB)
+            if _latent_parents is None:  # read-only 연결은 read 락 하에서만 안전
+                _latent_parents = latent_mod.candidate_parent_titles(VAULT_DB)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(e))
     # ── latent hit piggyback (Granularity Policy §3.1) ──
-    # 회수된 노트에 분할 후보가 있으면 hit을 기록하고, 승격 조건(distinct-context ≥ N)
-    # 도달 시 응답에 안내를 싣는다. 기록은 read-write 연결이 필요하므로 write 락으로
-    # 짧게 전환한다(같은 프로세스에서 ro/rw 동시 연결 불가 — 상단 reader/writer 주석).
+    # 회수된 노트가 후보 부모 집합과 겹칠 때만 hit을 기록하고, 승격 조건
+    # (distinct-context ≥ N) 도달 시 응답에 안내를 싣는다. 기록은 read-write 연결이
+    # 필요하므로 write 락으로 짧게 전환한다(같은 프로세스에서 ro/rw 동시 연결 불가 —
+    # 상단 reader/writer 주석). 겹침이 없으면 락을 아예 잡지 않는다.
     # 어떤 실패도 검색 자체를 깨지 않는다.
-    if _latent_count:
+    if _latent_parents:
         try:
-            titles = [n.get("title")
-                      for n in (result.get("layer1_meta") or {}).get("nodes", [])
-                      if n.get("title")]
-            if titles:
+            hit_titles = [n.get("title")
+                          for n in (result.get("layer1_meta") or {}).get("nodes", [])
+                          if n.get("title") in _latent_parents]
+            if hit_titles:
                 with _write_lock():
-                    hits = latent_mod.record_hits(VAULT_DB, titles, req.query)
+                    hits = latent_mod.record_hits(VAULT_DB, hit_titles, req.query)
                 if hits["due"]:
                     result["latent_promotions_due"] = hits["due"]
         except Exception as e:  # noqa: BLE001

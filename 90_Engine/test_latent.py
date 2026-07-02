@@ -103,8 +103,20 @@ def test_parser():
     b = cands[1]
     assert b["slug"].startswith("lsc-"), "id 없는 엔트리는 자동 슬러그"
     assert latent.parse_threshold(b["promote_condition"]) == 3
-    # 핸드오프 스타일 여분 키(parent/hit_count)는 무해하게 무시
-    assert "parent" not in b or True
+    # 핸드오프 스타일 여분 키(parent/hit_count)는 파서 출력에 새지 않는다
+    assert set(b) == {"slug", "candidate_title", "reason", "evidence", "promote_condition"}, b
+    # 중첩 latent 필드가 indexer 미니 파서에서 최상위 키로 누출되지 않는다 (회귀 방지)
+    meta = indexer.parse_yaml_frontmatter(PARENT_MD)
+    for leaked in ("reason", "evidence", "promote_condition", "candidate_title"):
+        assert leaked not in meta, f"'{leaked}' 최상위 누출: {meta}"
+    assert meta.get("status") == "active" and meta.get("title") == "Parent Note", meta
+    # retriever 파서도 동일: 엔트리 안의 status/confidence류 필드가 노드 메타를 덮지 않는다
+    import retriever
+    nested_status_md = ("---\ntitle: N\nstatus: active\nlatent_split_candidate:\n"
+                        "  - id: x\n    status: pending\n    confidence: low\n"
+                        "    evidence: \"e\"\n---\n\nbody\n")
+    fm = retriever.parse_frontmatter_fields(nested_status_md)
+    assert fm.get("status") == "active" and "confidence" not in fm, fm
     # 후보 없는 문서
     assert latent.parse_latent_candidates(OTHER_MD) == []
     print("  [ok] parser")
@@ -202,6 +214,49 @@ def test_promote(root, db):
     print("  [ok] promote (적출/멱등/review 라우팅)")
 
 
+def test_ambiguous_title(root, db):
+    # 동일 candidate_title 후보 2개 → 제목으로 promote 시도하면 명시적 거부 (오적출 방지)
+    p = root / "20_Concepts" / "Ambig Note.md"
+    p.write_text("""---
+title: Ambig Note
+type: Concept
+latent_split_candidate:
+  - id: amb-1
+    candidate_title: "Same Title"
+    reason: "entry one"
+    evidence: "엔트리 하나의 근거 문장이다"
+    promote_condition: "distinct-context retrieval >= 2"
+  - id: amb-2
+    candidate_title: "Same Title"
+    reason: "entry two"
+    evidence: "엔트리 둘의 근거 문장이다"
+    promote_condition: "distinct-context retrieval >= 2"
+---
+
+# Ambig Note
+
+엔트리 하나의 근거 문장이다. 첫째 스팬.
+
+엔트리 둘의 근거 문장이다. 둘째 스팬.
+""", encoding="utf-8")
+    reindex(root, db)
+    try:
+        latent.promote(db, root, "Ambig Note", "Same Title",
+                       "엔트리 둘의 근거 문장이다. 둘째 스팬.", "검증")
+        raise AssertionError("동명 후보 2개인데 제목 매칭이 통과됨")
+    except ValueError as e:
+        assert "amb-1" in str(e) and "amb-2" in str(e), e
+    # 유일 매칭이면 제목 폴백 허용: id로 지정해 하나 제거 후 제목으로 승격 성공해야 함
+    r = latent.promote(db, root, "Ambig Note", "amb-1",
+                       "엔트리 하나의 근거 문장이다. 첫째 스팬.", "검증",
+                       new_title="Entry One Node")
+    assert r["status"] == "promoted", r
+    r2 = latent.promote(db, root, "Ambig Note", "Same Title",
+                        "엔트리 둘의 근거 문장이다. 둘째 스팬.", "검증")
+    assert r2["status"] == "promoted" and r2["new_title"] == "Same Title", r2
+    print("  [ok] ambiguous candidate_title guard")
+
+
 def test_fence_quote(root, db):
     # 코드 펜스 안에만 있는 인용 → review 라우팅
     p = root / "20_Concepts" / "Fence Note.md"
@@ -240,6 +295,7 @@ def main():
         test_index_sync(root, db)
         test_hits(root, db)
         test_promote(root, db)
+        test_ambiguous_title(root, db)
         test_fence_quote(root, db)
         print("\nALL LATENT TESTS PASSED")
     finally:

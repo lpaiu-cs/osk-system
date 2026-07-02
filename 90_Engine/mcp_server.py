@@ -66,6 +66,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import indexer as indexer_mod
 import daemon_client
+import latent as latent_mod
 
 
 # ─────────────────────────────────────────────────────────────
@@ -370,7 +371,9 @@ def vault_stats() -> dict:
 
 # ===== 검토 큐 위생 도구 ====================================================
 REVIEW_QUEUE_DIRS = ("60_Open_Questions", "70_Contradictions", "80_Reviews")
-_REVIEW_ITEM_RE = re.compile(r"^###\s*\[(?P<status>[A-Za-z\-]+)\]\s*(?P<title>.+?)\s*$")
+# 리뷰 항목 헤딩 포맷의 정본은 latent.REVIEW_ITEM_RE — 쓰기(latent.route_to_review)와
+# 읽기(여기)가 같은 상수를 공유해 포맷 drift를 막는다.
+_REVIEW_ITEM_RE = latent_mod.REVIEW_ITEM_RE
 
 
 @mcp.tool()

@@ -55,10 +55,9 @@ EDGE_REGEX = re.compile(
     r"(?:\s*—\s*(?P<desc>.*))?$"
 )
 
-FRONTMATTER_REGEX = re.compile(
-    r"\A---\s*\n(?P<meta>.*?)\n---\s*\n",
-    re.DOTALL
-)
+# frontmatter 구분 정규식의 정본은 latent.FRONTMATTER_RE — 중복 정의로 drift가 생기지
+# 않도록 alias만 둔다(mcp_server 등 기존 참조명 유지).
+FRONTMATTER_REGEX = latent_mod.FRONTMATTER_RE
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_EMBED_MODEL = "bge-m3"
@@ -278,7 +277,11 @@ def parse_yaml_frontmatter(content):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        if ":" in line and not line.startswith("-"):
+        # 들여쓰인 key:value(중첩 맵 필드 — 예: latent_split_candidate 엔트리)는 이 미니
+        # 파서의 범위 밖이다. 최상위 키로 오인해 노드 메타(status/confidence 등)를
+        # 오염시키지 않도록 건너뛴다(전용 파서는 latent.py). 최상위 키는 항상 비들여쓰기.
+        indented = raw_line[:1] in (" ", "\t")
+        if ":" in line and not line.startswith("-") and not indented:
             key, _, val = line.partition(":")
             current_key = key.strip()
             val = val.strip()
@@ -464,8 +467,8 @@ def index_vault(vault_root, db_path, force_rebuild=False, embed=False,
                   if not Path(fp).exists()]
     for nid in orphan_ids:
         conn.execute("DELETE FROM edges WHERE source_id = ? OR target_id = ?", [nid, nid])
-        latent_mod.prune_candidates_for_node(conn, nid)
         conn.execute("DELETE FROM nodes WHERE node_id = ?", [nid])
+    latent_mod.prune_candidates_for_nodes(conn, orphan_ids)
     stats["nodes_pruned"] = len(orphan_ids)
     if orphan_ids:
         print(f"[*] orphan prune — 파일이 사라진 노드 {len(orphan_ids)}개(+엣지) 제거")

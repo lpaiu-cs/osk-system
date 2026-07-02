@@ -147,6 +147,11 @@ def parse_frontmatter_fields(content):
         return {}
     out = {}
     for line in content[3:end].splitlines():
+        # 들여쓰인 key:value(중첩 맵 필드 — 예: latent_split_candidate 엔트리)는 최상위
+        # 필드가 아니다. 엔트리 내 필드가 status/confidence로 오인되어 랭킹을 오염시키지
+        # 않도록 건너뛴다(indexer.parse_yaml_frontmatter와 동일 규칙).
+        if line[:1] in (" ", "\t"):
+            continue
         s = line.strip()
         if ":" in s and not s.startswith("-") and not s.startswith("#"):
             k, _, v = s.partition(":")

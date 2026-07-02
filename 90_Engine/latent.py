@@ -33,9 +33,14 @@ DEFAULT_PROMOTE_THRESHOLD = 2
 PROMOTE_FOLDER_DEFAULT = "20_Concepts"
 REVIEW_QUEUE_REL = Path("80_Reviews") / "Needs Human Review.md"
 
+# frontmatter 구분 정규식의 정본(canonical). indexer.FRONTMATTER_REGEX는 이것의 alias다
+# (동일 정규식 중복 정의 금지 — drift 방지).
 FRONTMATTER_RE = re.compile(r"\A---\s*\n(?P<meta>.*?)\n---\s*\n", re.DOTALL)
-# retriever.tokenize_korean_english와 동일 규칙을 유지할 것(정규화 쿼리 해시의 기준).
-_TOKEN_RE = re.compile(r"[가-힣]+|[a-z0-9]+")
+
+# 리뷰 큐 항목 헤딩 포맷의 정본 — 쓰기(route_to_review)와 읽기(mcp_server.review_queue)가
+# 이 상수를 공유한다(포맷 소유권 분산 방지).
+REVIEW_ITEM_HEADING = "### [{status}] {title}"
+REVIEW_ITEM_RE = re.compile(r"^###\s*\[(?P<status>[A-Za-z\-]+)\]\s*(?P<title>.+?)\s*$")
 
 _ENTRY_FIELDS = ("id", "candidate_title", "reason", "evidence", "promote_condition")
 
@@ -96,10 +101,9 @@ def _clean_value(val):
 def _parse_block(meta_lines):
     """meta 라인들에서 latent_split_candidate 블록을 찾아 엔트리와 라인 범위를 반환.
 
-    반환: (key_idx, entries, block_end)
-      key_idx   : 키 라인 인덱스 (없으면 -1)
-      entries   : [{"fields": dict, "start": i, "end": j}]  (meta_lines 기준, 양끝 포함)
-      block_end : 블록 마지막 라인 인덱스 (키 라인 포함 범위의 끝)
+    반환: (key_idx, entries)
+      key_idx : 키 라인 인덱스 (없으면 -1)
+      entries : [{"fields": dict, "start": i, "end": j}]  (meta_lines 기준, 양끝 포함)
     """
     key_idx = -1
     for i, raw in enumerate(meta_lines):
@@ -107,11 +111,10 @@ def _parse_block(meta_lines):
             key_idx = i
             break
     if key_idx == -1:
-        return -1, [], -1
+        return -1, []
 
     entries = []
     cur = None  # {"fields": {}, "start": i, "end": i}
-    end = key_idx
     i = key_idx + 1
     while i < len(meta_lines):
         raw = meta_lines[i]
@@ -120,8 +123,7 @@ def _parse_block(meta_lines):
             break  # 다음 top-level 키 → 블록 종료
         if not stripped:
             i += 1
-            continue  # 블록 내 빈 줄 허용(종료로 치지 않음; end는 갱신 안 함)
-        end = i
+            continue  # 블록 내 빈 줄 허용(종료로 치지 않음)
         if stripped.startswith("- "):
             if cur:
                 entries.append(cur)
@@ -141,7 +143,7 @@ def _parse_block(meta_lines):
         i += 1
     if cur:
         entries.append(cur)
-    return key_idx, entries, end
+    return key_idx, entries
 
 
 def _slug_of(fields):
@@ -158,7 +160,7 @@ def parse_latent_candidates(content):
     m = FRONTMATTER_RE.search(content)
     if not m:
         return []
-    _, entries, _ = _parse_block(m.group("meta").splitlines())
+    _, entries = _parse_block(m.group("meta").splitlines())
     out = []
     for e in entries:
         f = e["fields"]
@@ -176,7 +178,7 @@ def _remove_candidate_from_meta(meta_text, slug):
     """meta 텍스트에서 slug에 해당하는 엔트리를 제거. 엔트리가 다 없어지면 키 라인도
     제거한다. 반환: (new_meta_text, removed: bool)"""
     lines = meta_text.splitlines()
-    key_idx, entries, _ = _parse_block(lines)
+    key_idx, entries = _parse_block(lines)
     if key_idx == -1:
         return meta_text, False
     target = None
@@ -203,8 +205,8 @@ def candidate_key(node_id, slug):
 def sync_candidates_for_file(conn, node_id, file_path, content):
     """재색인된 파일의 후보 행을 재구성한다(delete+insert — 파생 캐시).
     latent_hits는 candidate_key(node_id::slug)가 재색인을 넘어 안정적이므로 보존된다.
+    스키마는 init_database(→ensure_schema)가 매 색인마다 보장하는 것을 전제한다.
     반환: 이 파일의 후보 수."""
-    ensure_schema(conn)
     conn.execute("DELETE FROM latent_candidates WHERE file_path = ?", [str(file_path)])
     cands = parse_latent_candidates(content)
     now = datetime.now()
@@ -219,20 +221,27 @@ def sync_candidates_for_file(conn, node_id, file_path, content):
     return len(cands)
 
 
-def prune_candidates_for_node(conn, node_id):
-    """orphan prune 경로: 노드가 사라지면 그 후보와 hit 기록도 제거한다."""
-    ensure_schema(conn)
+def prune_candidates_for_nodes(conn, node_ids):
+    """orphan prune 경로: 사라진 노드들의 후보와 hit 기록을 일괄 제거한다(set-based —
+    노드별 반복 호출로 N+1 쿼리를 만들지 않는다). 스키마는 init_database가 보장."""
+    ids = list(node_ids)
+    if not ids:
+        return
+    ph = ", ".join("?" for _ in ids)
     conn.execute(
-        "DELETE FROM latent_hits WHERE candidate_key IN "
-        "(SELECT candidate_key FROM latent_candidates WHERE node_id = ?)", [node_id])
-    conn.execute("DELETE FROM latent_candidates WHERE node_id = ?", [node_id])
+        f"DELETE FROM latent_hits WHERE candidate_key IN "
+        f"(SELECT candidate_key FROM latent_candidates WHERE node_id IN ({ph}))", ids)
+    conn.execute(f"DELETE FROM latent_candidates WHERE node_id IN ({ph})", ids)
 
 
 # ─────────────────────────────────────────────────────────────
 # §4. hit 기록 (retrieve piggyback)
 # ─────────────────────────────────────────────────────────────
 def _tokenize(text):
-    return _TOKEN_RE.findall((text or "").lower())
+    # 토큰 규칙의 단일 출처는 retriever다 — 여기 해시가 검색과 다른 규칙으로 어긋나면
+    # distinct-context 카운트가 조용히 리셋/분기하므로 복제하지 않고 재사용한다.
+    from retriever import tokenize_korean_english  # lazy (connect_db와 동일 패턴)
+    return tokenize_korean_english(text or "")
 
 
 def normalized_query_hash(query):
@@ -247,19 +256,23 @@ def parse_threshold(promote_condition):
     return int(m.group(1)) if m else DEFAULT_PROMOTE_THRESHOLD
 
 
-def count_candidates(db_path):
-    """후보 존재 여부의 저비용 확인(read-only). 데몬이 piggyback 스킵 판단에 쓴다.
-    테이블 부재(구버전 캐시)나 연결 실패는 0으로 답한다."""
+def candidate_parent_titles(db_path):
+    """latent 후보를 보유한 부모 노드 제목 집합(read-only). 데몬이 이 집합과 회수 결과의
+    겹침을 먼저 보고, 겹칠 때만 write 락 + hit 기록으로 넘어간다(불필요한 락 회피).
+    테이블 부재(구버전 캐시)나 연결 실패는 빈 집합으로 답한다."""
     from retriever import connect_db  # lazy: 락-재시도 헬퍼 재사용
     try:
         conn = connect_db(str(db_path), read_only=True)
     except Exception:
-        return 0
+        return set()
     try:
         try:
-            return conn.execute("SELECT COUNT(*) FROM latent_candidates").fetchone()[0]
+            rows = conn.execute(
+                "SELECT DISTINCT n.title FROM latent_candidates c "
+                "JOIN nodes n ON n.node_id = c.node_id").fetchall()
+            return {r[0] for r in rows}
         except Exception:
-            return 0
+            return set()
     finally:
         conn.close()
 
@@ -281,7 +294,7 @@ def record_hits(db_path, retrieved_titles, query):
     from retriever import connect_db  # lazy
     conn = connect_db(str(db_path), read_only=False)
     try:
-        ensure_schema(conn)
+        # 스키마는 호출 게이트(candidate_parent_titles가 비어있지 않음 = 테이블 실재)가 보장
         placeholders = ", ".join("?" for _ in titles)
         rows = conn.execute(f"""
             SELECT c.candidate_key, c.slug, c.candidate_title, c.reason, c.evidence,
@@ -401,7 +414,7 @@ def route_to_review(vault_root, summary, detail, related=None):
     path = Path(vault_root) / REVIEW_QUEUE_REL
     today = datetime.now().strftime("%Y-%m-%d")
     item_lines = [
-        f"### [open] {summary}",
+        REVIEW_ITEM_HEADING.format(status="open", title=summary),
         "- reason: needs-human-review",
         f"- created: {today}",
         f"- detail: {detail}",
@@ -517,8 +530,15 @@ def promote(db_path, vault_root, parent_title, candidate_id, evidence_quote,
         entries = parse_latent_candidates(content)
         entry = next((c for c in entries if c["slug"] == candidate_id), None)
         if entry is None:
-            entry = next((c for c in entries
-                          if c["candidate_title"] and c["candidate_title"] == candidate_id), None)
+            # candidate_title 폴백은 유일 매칭일 때만 — 동명 후보가 2개 이상이면 첫 매칭이
+            # 엉뚱한 엔트리를 제거하는 사고가 나므로 명시적으로 거부한다.
+            title_matches = [c for c in entries
+                             if c["candidate_title"] and c["candidate_title"] == candidate_id]
+            if len(title_matches) > 1:
+                raise ValueError(
+                    f"candidate_title '{candidate_id}'가 후보 여러 개와 일치합니다 — id 슬러그로 "
+                    f"지정하세요: {[c['slug'] for c in title_matches]}")
+            entry = title_matches[0] if title_matches else None
 
         key = candidate_key(node_id, entry["slug"] if entry else candidate_id)
         prior = conn.execute(
