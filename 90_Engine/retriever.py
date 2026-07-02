@@ -648,6 +648,7 @@ def format_hybrid_output(query, seed_ids, ranked_ids, node_scores,
         # 계층/신뢰도/상태/주석을 함께 표기 → 에이전트가 출처·불확실성을 스스로 판단
         "nodes": [
             {
+                "node_id": nid,  # 제목은 계층 간 중복될 수 있으므로(예: 동명 06_Raw) 정체성은 id
                 "title": nodes[nid]["title"],
                 "layer": nodes[nid].get("layer"),
                 "type": nodes[nid].get("type"),

@@ -92,6 +92,16 @@ def q1(db, sql, params=None):
         conn.close()
 
 
+def nid_of(db, title, path_like=None):
+    """제목(+선택 경로 패턴)으로 node_id(str)를 찾는다 — hit 기록은 id 기반이다."""
+    sql = "SELECT CAST(node_id AS VARCHAR) FROM nodes WHERE title = ?"
+    params = [title]
+    if path_like:
+        sql += " AND file_path LIKE ?"
+        params.append(path_like)
+    return q1(db, sql, params)[0][0]
+
+
 def check_parser():
     cands = latent.parse_latent_candidates(PARENT_MD)
     assert len(cands) == 2, cands
@@ -164,22 +174,24 @@ def check_index_sync(root, db):
 
 
 def check_hits(root, db):
+    parent_id = nid_of(db, "Parent Note")
+    other_id = nid_of(db, "Other Note")
     # 어휘 겹침 없는 쿼리 → 기록 안 됨
-    r = latent.record_hits(db, ["Parent Note"], "완전히 무관한 질의 텍스트 blah")
+    r = latent.record_hits(db, [parent_id], "완전히 무관한 질의 텍스트 blah")
     assert r["recorded"] == 0 and r["due"] == [], r
     # 겹침 쿼리 1회 → 기록 1, due 없음
-    r = latent.record_hits(db, ["Parent Note"], "게이트 임계값 조정 기준이 뭐였지")
+    r = latent.record_hits(db, [parent_id], "게이트 임계값 조정 기준이 뭐였지")
     assert r["recorded"] == 1 and r["due"] == [], r
     # 같은 쿼리(토큰 집합 동일) 반복 → distinct 안 늘어남
-    r = latent.record_hits(db, ["Parent Note"], "기준이 뭐였지 게이트 임계값 조정")
+    r = latent.record_hits(db, [parent_id], "기준이 뭐였지 게이트 임계값 조정")
     assert r["recorded"] == 0 and r["due"] == [], r
     # 다른 맥락 쿼리 → distinct 2 → 후보 alpha(threshold 2)만 발화
-    r = latent.record_hits(db, ["Parent Note"], "재사용 수요 실측은 어떻게 하나")
+    r = latent.record_hits(db, [parent_id], "재사용 수요 실측은 어떻게 하나")
     assert r["recorded"] == 1, r
     assert len(r["due"]) == 1 and r["due"][0]["candidate_id"] == "split-alpha", r
     assert r["due"][0]["distinct_contexts"] == 2
     # 회수 목록에 부모가 없으면 아무 일도 없음
-    r = latent.record_hits(db, ["Other Note"], "게이트 임계값")
+    r = latent.record_hits(db, [other_id], "게이트 임계값")
     assert r["recorded"] == 0
     # 재색인해도 hits 생존 (candidate_key 안정성)
     reindex(root, db)
@@ -254,7 +266,7 @@ def check_promote(root, db):
 def check_hit_reset(root, db):
     # 마커 evidence 변경(repurpose) → 키의 evidence 지문이 바뀌어 카운터가 0에서 재시작
     p = root / "20_Concepts" / "Parent Note.md"
-    r = latent.record_hits(db, ["Parent Note"], "두번째 후보의 근거 문장 관련 질의")
+    r = latent.record_hits(db, [nid_of(db, "Parent Note")], "두번째 후보의 근거 문장 관련 질의")
     assert r["recorded"] == 1, r
     live_sql = ("SELECT COUNT(*) FROM latent_hits h JOIN latent_candidates c "
                 "ON c.candidate_key = h.candidate_key WHERE c.slug LIKE 'lsc-%'")
@@ -443,6 +455,10 @@ latent_split_candidate:
     # 동명 raw 2건이 nodes에 존재함을 전제 확인
     n = q1(db, "SELECT COUNT(*) FROM nodes WHERE title IN ('Shadow Parent', 'Shadow Target')")[0][0]
     assert n == 3, n  # 개념 부모 1 + 동명 raw 2 (raw도 검색용으로 nodes에 적재됨)
+    # 동명 raw만 회수된 경우: id 기반 기록이라 개념 후보에 hit이 오인 적립되지 않는다
+    raw_id = nid_of(db, "Shadow Parent", path_like="%06_Raw%")
+    r = latent.record_hits(db, [raw_id], "그림자 검증용 근거 문장")
+    assert r["recorded"] == 0 and r["due"] == [], r
     r = latent.promote(db, root, "Shadow Parent", "sh-1",
                        "그림자 검증용 근거 문장이다. 자기완결 span이다.", "검증")
     assert r["status"] == "promoted", r

@@ -313,10 +313,11 @@ def parse_threshold(promote_condition):
     return int(m.group(1)) if m else DEFAULT_PROMOTE_THRESHOLD
 
 
-def candidate_parent_titles(db_path):
-    """latent 후보를 보유한 부모 노드 제목 집합(read-only). 데몬이 이 집합과 회수 결과의
-    겹침을 먼저 보고, 겹칠 때만 write 락 + hit 기록으로 넘어간다(불필요한 락 회피).
-    테이블 부재(구버전 캐시)나 연결 실패는 빈 집합으로 답한다."""
+def candidate_parent_ids(db_path):
+    """latent 후보를 보유한 부모 노드의 node_id(str) 집합(read-only). 데몬이 이 집합과
+    회수 결과의 겹침을 먼저 보고, 겹칠 때만 write 락 + hit 기록으로 넘어간다.
+    제목이 아닌 **node 정체성** 기준이다 — 동명 06_Raw 노트만 회수된 경우가 개념 후보의
+    hit으로 오인 적립되지 않는다. 테이블 부재/연결 실패는 빈 집합."""
     from retriever import connect_db  # lazy: 락-재시도 헬퍼 재사용
     try:
         conn = connect_db(str(db_path), read_only=True)
@@ -325,8 +326,7 @@ def candidate_parent_titles(db_path):
     try:
         try:
             rows = conn.execute(
-                "SELECT DISTINCT n.title FROM latent_candidates c "
-                "JOIN nodes n ON n.node_id = c.node_id").fetchall()
+                "SELECT DISTINCT CAST(node_id AS VARCHAR) FROM latent_candidates").fetchall()
             return {r[0] for r in rows}
         except Exception:
             return set()
@@ -334,9 +334,11 @@ def candidate_parent_titles(db_path):
         conn.close()
 
 
-def record_hits(db_path, retrieved_titles, query):
-    """회수된 노트 제목들에 대해 latent hit을 기록하고 승격 조건 도달 후보를 반환한다.
+def record_hits(db_path, retrieved_node_ids, query):
+    """회수된 노드 id들에 대해 latent hit을 기록하고 승격 조건 도달 후보를 반환한다.
 
+    식별은 제목이 아닌 **node_id**다 — 제목은 계층 간 중복될 수 있어(동명 06_Raw 등)
+    제목 조인은 회수되지 않은 개념 후보에 hit을 오인 적립할 수 있다.
     반드시 데몬 write 락 하에서 호출할 것(단명 read-write 연결을 열기 때문).
     쿼리와 후보(evidence/reason/candidate_title)의 어휘 겹침이 있을 때만 hit로 친다 —
     노트가 후보 span과 무관한 이유로 회수된 경우를 걸러내는 span-편중 회수의 근사.
@@ -345,21 +347,21 @@ def record_hits(db_path, retrieved_titles, query):
             distinct_contexts, promote_condition, action}]}
     """
     result = {"recorded": 0, "due": []}
-    titles = [t for t in (retrieved_titles or []) if t]
-    if not titles or not (query or "").strip():
+    node_ids = [str(i) for i in (retrieved_node_ids or []) if i]
+    if not node_ids or not (query or "").strip():
         return result
     from retriever import connect_db  # lazy
     conn = connect_db(str(db_path), read_only=False)
     try:
-        # 스키마는 호출 게이트(candidate_parent_titles가 비어있지 않음 = 테이블 실재)가 보장
-        placeholders = ", ".join("?" for _ in titles)
+        # 스키마는 호출 게이트(candidate_parent_ids가 비어있지 않음 = 테이블 실재)가 보장
+        placeholders = ", ".join("?" for _ in node_ids)
         rows = conn.execute(f"""
             SELECT c.candidate_key, c.slug, c.candidate_title, c.reason, c.evidence,
                    c.promote_condition, n.title
             FROM latent_candidates c
             JOIN nodes n ON n.node_id = c.node_id
-            WHERE n.title IN ({placeholders})
-        """, titles).fetchall()
+            WHERE CAST(c.node_id AS VARCHAR) IN ({placeholders})
+        """, node_ids).fetchall()
         if not rows:
             return result
         qtoks = set(_tokenize(query))

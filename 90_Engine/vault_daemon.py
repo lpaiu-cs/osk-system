@@ -71,8 +71,9 @@ if SYNC_ENABLED and not _SYNC_OK:
 _lock = threading.RLock()
 _retriever = None
 _last_activity = time.time()
-# latent 후보를 보유한 부모 노드 제목 집합 캐시(None=미확인). reindex 후 무효화.
+# latent 후보를 보유한 부모 노드 id(str) 집합 캐시(None=미확인). reindex 후 무효화.
 # 회수 결과와 이 집합이 겹칠 때만 write 락을 잡으므로, 대부분의 retrieve는 락 없이 지나간다.
+# 제목이 아닌 node_id 기준 — 동명 06_Raw 회수가 개념 후보의 hit으로 새지 않는다.
 _latent_parents = None
 
 # ── 싱크 상태 (git 명령은 _git_lock으로 직렬화; 요청 서빙은 블록하지 않게 스케줄) ──
@@ -295,7 +296,7 @@ def retrieve(req: RetrieveReq):
                 confidence_weighting=req.confidence_weighting,
             )
             if _latent_parents is None:  # read-only 연결은 read 락 하에서만 안전
-                _latent_parents = latent_mod.candidate_parent_titles(VAULT_DB)
+                _latent_parents = latent_mod.candidate_parent_ids(VAULT_DB)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=str(e))
     # ── latent hit piggyback (Granularity Policy §3.1) ──
@@ -306,12 +307,12 @@ def retrieve(req: RetrieveReq):
     # 어떤 실패도 검색 자체를 깨지 않는다.
     if _latent_parents:
         try:
-            hit_titles = [n.get("title")
-                          for n in (result.get("layer1_meta") or {}).get("nodes", [])
-                          if n.get("title") in _latent_parents]
-            if hit_titles:
+            hit_ids = [n.get("node_id")
+                       for n in (result.get("layer1_meta") or {}).get("nodes", [])
+                       if n.get("node_id") in _latent_parents]
+            if hit_ids:
                 with _write_lock():
-                    hits = latent_mod.record_hits(VAULT_DB, hit_titles, req.query)
+                    hits = latent_mod.record_hits(VAULT_DB, hit_ids, req.query)
                 if hits["due"]:
                     result["latent_promotions_due"] = hits["due"]
         except Exception as e:  # noqa: BLE001
