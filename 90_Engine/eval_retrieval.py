@@ -10,8 +10,10 @@ Retrieval evaluation scaffold — 검색 "품질"이 기대와 맞는지 평가�
 측정 지표:
   - MRR@k              : 기대 노드 중 첫 적중의 평균 역순위 (랭킹 품질)
   - Recall@k           : top-k 안에 들어온 기대 노드 비율 (커버리지)
-  - review_leakage_rate: top-k 결과 중 검토/메타 계층(60/70/80) 비율 (필터 누수)
-  - raw_overexposure_rate: top-k 결과 중 06_Raw 비율 (원본 과다노출)
+  - review_leakage_rate: review opt-in(include_reviews)이 아닌 쿼리의 top-k 중
+                         검토/메타 계층(60/70/80) 비율 (필터 누수)
+  - raw_overexposure_rate: raw가 스코프에 있는(include_raw) 쿼리의 top-k 중 06_Raw
+                           비율 (원본 과다노출). review opt-in과 무관하게 집계한다.
 
 기본 스코프(include_reviews=False)에서는 review_leakage_rate가 0이어야 한다.
 
@@ -25,7 +27,10 @@ queries 파일(JSON):
     {
       "queries": [
         {"query": "왜 LLM은 strawberry의 r 개수를 못 세나?",
-         "expected": ["Byte Pair Encoding", "Tokenizer", "Glitch Tokens"]}
+         "expected": ["Byte Pair Encoding", "Tokenizer", "Glitch Tokens"]},
+        {"query": "When should unresolved contradictions be included in retrieval?",
+         "expected": ["Agent Memory Retrieval Weighting"],
+         "include_reviews": true}
       ]
     }
 (.yaml도 PyYAML 설치 시 지원. expected는 top-k에 떠야 하는 node 제목(stem) 목록.)
@@ -61,12 +66,22 @@ def recall_at_k(ranked_titles, expected, k):
     return hit / len(exp)
 
 
-def evaluate(per_query_nodes, queries, k,
+def evaluate(per_query_nodes, queries, k, reviews_allowed_default=False,
+             raw_allowed_default=True,
              review_layers=REVIEW_LAYERS, raw_layer=RAW_LAYER):
     """per_query_nodes: 쿼리별 결과 노드 리스트 [[{title, layer}, ...], ...].
-    queries: [{query, expected}]. 반환: 집계 지표 + 쿼리별 상세."""
+    queries: [{query, expected}]. 반환: 집계 지표 + 쿼리별 상세.
+
+    두 누수 지표는 게이팅·분모가 서로 독립이다:
+      - review leakage: review opt-in(include_reviews)이 아닌 쿼리에서만 센다
+        (opt-in한 쿼리의 review 노드는 누수가 아니라 요청한 결과다).
+      - raw overexposure: raw가 스코프에 있는(include_raw) 쿼리에서 센다. review
+        opt-in과 무관하다 — 모순/검토를 보려고 opt-in한 쿼리가 06_Raw를 과다
+        노출하는 회귀는 그대로 잡혀야 한다.
+    """
     rr_list, recall_list = [], []
-    total_results = leaked = raw_hits = 0
+    leakage_denom = leaked = 0
+    raw_denom = raw_hits = 0
     per_query = []
     for nodes, q in zip(per_query_nodes, queries):
         topk = nodes[:k]
@@ -77,13 +92,20 @@ def evaluate(per_query_nodes, queries, k,
         if expected:
             rr_list.append(rr)
             recall_list.append(rec)
-        total_results += len(topk)
-        leaked += sum(1 for n in topk if n.get("layer") in review_layers)
-        raw_hits += sum(1 for n in topk if n.get("layer") == raw_layer)
+        reviews_allowed = bool(q.get("include_reviews", reviews_allowed_default))
+        raw_allowed = bool(q.get("include_raw", raw_allowed_default))
+        if not reviews_allowed:
+            leakage_denom += len(topk)
+            leaked += sum(1 for n in topk if n.get("layer") in review_layers)
+        if raw_allowed:
+            raw_denom += len(topk)
+            raw_hits += sum(1 for n in topk if n.get("layer") == raw_layer)
         per_query.append({
             "query": q.get("query"),
             "expected": expected,
             "got": titles,
+            "include_reviews": reviews_allowed,
+            "include_raw": raw_allowed,
             "rr": round(rr, 4),
             "recall": (round(rec, 4) if rec is not None else None),
         })
@@ -97,8 +119,8 @@ def evaluate(per_query_nodes, queries, k,
         "n_scored": len(rr_list),
         "mrr_at_k": round(mean(rr_list), 4),
         "recall_at_k": round(mean(recall_list), 4),
-        "review_leakage_rate": round(leaked / total_results, 4) if total_results else 0.0,
-        "raw_overexposure_rate": round(raw_hits / total_results, 4) if total_results else 0.0,
+        "review_leakage_rate": round(leaked / leakage_denom, 4) if leakage_denom else 0.0,
+        "raw_overexposure_rate": round(raw_hits / raw_denom, 4) if raw_denom else 0.0,
         "per_query": per_query,
     }
 
@@ -129,9 +151,11 @@ def run_eval(retriever, queries, k=5, max_hops=2,
     """retriever.retrieve를 쿼리마다 호출해 결과 노드 리스트를 모은다."""
     per_query_nodes = []
     for q in queries:
+        query_include_raw = q.get("include_raw", include_raw)
+        query_include_reviews = q.get("include_reviews", include_reviews)
         res = retriever.retrieve(
             q["query"], top_k=k, max_hops=max_hops, max_nodes=k,
-            include_raw=include_raw, include_reviews=include_reviews,
+            include_raw=query_include_raw, include_reviews=query_include_reviews,
         )
         per_query_nodes.append(res["layer1_meta"]["nodes"])
     return per_query_nodes
@@ -150,7 +174,8 @@ def print_report(metrics, thresholds):
     print("-" * 64)
     for pq in metrics["per_query"]:
         mark = "✓" if pq["rr"] > 0 else "✗"
-        print(f"  {mark} rr={pq['rr']:.3f} recall={pq['recall']}  «{pq['query']}»")
+        scope = " include_reviews" if pq.get("include_reviews") else ""
+        print(f"  {mark} rr={pq['rr']:.3f} recall={pq['recall']}{scope}  «{pq['query']}»")
         print(f"      expected: {pq['expected']}")
         print(f"      got     : {pq['got']}")
     print("=" * 64)
@@ -186,8 +211,12 @@ def main():
     ap.add_argument("--no-raw", action="store_true")
     ap.add_argument("--max-review-leakage", type=float, default=0.0)
     ap.add_argument("--max-raw-overexposure", type=float, default=0.6)
-    ap.add_argument("--min-mrr", type=float, default=0.0)
-    ap.add_argument("--min-recall", type=float, default=0.0)
+    # 데모 픽스처가 결정적으로 내는 값은 MRR@5=0.84 / Recall@5=0.94다. 기본 floor를
+    # 그 아래로 두어, 랭킹/커버리지가 크게 무너지면 데모 eval이 실제로 [FAIL]하게
+    # 한다(0.0이면 어떤 회귀도 통과해 "기대 동작 검증"이 무의미해짐). 잠정값이며,
+    # 다른 vault/쿼리셋을 평가할 땐 --min-mrr/--min-recall로 덮어쓴다.
+    ap.add_argument("--min-mrr", type=float, default=0.5)
+    ap.add_argument("--min-recall", type=float, default=0.6)
     ap.add_argument("--json-only", action="store_true")
     args = ap.parse_args()
 
@@ -203,7 +232,9 @@ def main():
         r, queries, k=args.top_k, max_hops=args.hops,
         include_raw=not args.no_raw, include_reviews=args.include_reviews,
     )
-    metrics = evaluate(per_query_nodes, queries, args.top_k)
+    metrics = evaluate(per_query_nodes, queries, args.top_k,
+                       reviews_allowed_default=args.include_reviews,
+                       raw_allowed_default=not args.no_raw)
     thresholds = {
         "max_review_leakage": args.max_review_leakage,
         "max_raw_overexposure": args.max_raw_overexposure,
@@ -219,11 +250,13 @@ def main():
 
     fails = check_thresholds(metrics, thresholds)
     if fails:
-        print("\n[FAIL] 품질 임계 위반:")
-        for f in fails:
-            print("  -", f)
+        if not args.json_only:  # json-only: stdout은 순수 JSON, 실패는 exit code로
+            print("\n[FAIL] 품질 임계 위반:")
+            for f in fails:
+                print("  -", f)
         sys.exit(1)
-    print("\n[OK] 모든 임계 통과.")
+    if not args.json_only:
+        print("\n[OK] 모든 임계 통과.")
 
 
 if __name__ == "__main__":

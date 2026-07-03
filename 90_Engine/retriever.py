@@ -409,10 +409,14 @@ def load_vault_graph(db_path, vault_root=None):
     vr = Path(vault_root).resolve() if vault_root else None
 
     nodes = {}
+    # ORDER BY node_id: DuckDB는 미지정 시 행 순서를 보장하지 않는다. 로드 순서가
+    # 흔들리면 BM25 동점(tie) 문서의 순위가 환경마다 달라져 검색 결과가 비결정적이
+    # 된다(eval 재현성·경계 근처 top-k가 흔들림). 안정 정렬 기준을 고정한다.
     rows = conn.execute("""
         SELECT node_id, file_path, title, aliases, type, moc, md5_hash,
                embedding_model, embedding
         FROM nodes
+        ORDER BY node_id
     """).fetchall()
     for nid, fp, title, aliases, ntype, moc, md5, emb_model, embedding in rows:
         nid_str = str(nid)
@@ -449,6 +453,7 @@ def load_vault_graph(db_path, vault_root=None):
     edges = []
     rows = conn.execute("""
         SELECT source_id, target_id, predicate, evidence FROM edges
+        ORDER BY source_id, target_id, predicate
     """).fetchall()
     for src, tgt, pred, ev in rows:
         edges.append({
@@ -528,8 +533,14 @@ def hybrid_seed_search(query, conn, nodes, top_k=5,
         tokenized = [tokenize_korean_english(d) for d in corpus]
         bm25 = BM25Okapi(tokenized)
         scores = bm25.get_scores(tokenize_korean_english(query))
-        bm25_ranking = [node_ids[i] for i in sorted(range(len(scores)),
-                                                      key=lambda i: -scores[i])]
+        # 점수 0(쿼리 토큰 미포함) 문서는 seed 후보에서 제외한다. 그대로 두면 RRF
+        # 순위에 편입돼 계층 가중치 적용 후 무관 문서가 상위를 오염시킨다. 전부 0
+        # (BM25 무매치)이면 폴백으로 전체를 둔다(dense가 seed를 정하도록).
+        ranked_idx = [i for i in range(len(scores)) if scores[i] > 0]
+        if not ranked_idx:
+            ranked_idx = list(range(len(scores)))
+        bm25_ranking = [node_ids[i] for i in sorted(ranked_idx,
+                                                     key=lambda i: -scores[i])]
         rankings.append(bm25_ranking)
         used_modes.append("bm25")
 
@@ -634,7 +645,23 @@ def strip_frontmatter(content):
 
 def format_hybrid_output(query, seed_ids, ranked_ids, node_scores,
                           activated_edges, nodes, max_nodes=10, annotations=None):
-    out_ids = [nid for nid in ranked_ids[:max_nodes] if nid in nodes]
+    # 동일 (title, layer) 중복 노드 제거 — 점수 순 첫 등장만 유지한다.
+    # 제목은 계층 간 중복 가능(예: 06_Raw 원본과 그 요약)하므로 layer까지 묶어
+    # 판정하고, 같은 계층 내 동명은 Naming Convention상 유일해야 하므로 데이터
+    # 중복으로 보아 하나로 접는다. dedup 후 slice해야 중복 때문에 max_nodes가
+    # 덜 차는 일이 없다.
+    seen_identity = set()
+    out_ids = []
+    for nid in ranked_ids:
+        if nid not in nodes:
+            continue
+        identity = (nodes[nid]["title"], nodes[nid].get("layer"))
+        if identity in seen_identity:
+            continue
+        seen_identity.add(identity)
+        out_ids.append(nid)
+        if len(out_ids) >= max_nodes:
+            break
     annotations = annotations or {}
     layer1 = {
         "query": query,
