@@ -409,10 +409,14 @@ def load_vault_graph(db_path, vault_root=None):
     vr = Path(vault_root).resolve() if vault_root else None
 
     nodes = {}
+    # ORDER BY node_id: DuckDB는 미지정 시 행 순서를 보장하지 않는다. 로드 순서가
+    # 흔들리면 BM25 동점(tie) 문서의 순위가 환경마다 달라져 검색 결과가 비결정적이
+    # 된다(eval 재현성·경계 근처 top-k가 흔들림). 안정 정렬 기준을 고정한다.
     rows = conn.execute("""
         SELECT node_id, file_path, title, aliases, type, moc, md5_hash,
                embedding_model, embedding
         FROM nodes
+        ORDER BY node_id
     """).fetchall()
     for nid, fp, title, aliases, ntype, moc, md5, emb_model, embedding in rows:
         nid_str = str(nid)
@@ -449,6 +453,7 @@ def load_vault_graph(db_path, vault_root=None):
     edges = []
     rows = conn.execute("""
         SELECT source_id, target_id, predicate, evidence FROM edges
+        ORDER BY source_id, target_id, predicate
     """).fetchall()
     for src, tgt, pred, ev in rows:
         edges.append({
