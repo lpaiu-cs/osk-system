@@ -86,10 +86,14 @@ confidence_weight:
 default_confidence_weight: 1.0
 
 # 상태(frontmatter status) 가중치. 폐기/대체/낡음은 강등.
+# draft는 미확정 초안이므로 확정 지식(active/evergreen)보다 약하게 강등한다 — 폐기
+# (superseded/rejected)만큼은 아니되, draft가 검증된 지식을 제치고 최상위로 회상되면
+# "미확정을 권위처럼 다루지 말라"는 시스템 전제와 어긋난다. 잠정값(provisional prior).
 status_weight:
   active: 1.0
   evergreen: 1.0
   open: 1.0
+  draft: 0.7
   superseded: 0.3
   rejected: 0.25
   deprecated: 0.3
