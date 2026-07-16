@@ -2,15 +2,21 @@
 type: constitution
 ratified: 2026-07-06
 revised: 2026-07-17
-status: ratified
-replaces: "[[Constitution-2026-07-17-workbench]]"
+status: superseded
+superseded-by: "[[Constitution]]"
+superseded-date: 2026-07-17
+replaces: "[[Constitution-2026-07-08]]"
 ---
 
-# knowledge-vault 헌법
+# knowledge-vault 헌법 (구판 2026-07-17, Workbench 개정판)
 
-> 이 vault는 사용자의 second brain이다 — **Observation**(관측의 세계)과
-> **Sensemaking**(의미를 형성하는 과정)과 **Knowledge**(연결된 지식), 세 층으로
-> 이루어진다. 모든 조항은 원소별 비준으로 성립한다. 경위와 역사는
+> **SUPERSEDED — 2026-07-17.** 이 문서는 구판이다. 현행 헌법은 [[Constitution]]이다.
+> 대체 사유: 용어 개정 — Scope Layer→Sensemaking Layer, 스코프→Synthesis,
+> 관측 클러스터→Scope, 주제별 클러스터→Domain.
+
+> 이 vault는 사용자의 second brain이다 — **Observation**(관측의 세계)와
+> **Scope**(의미 응집의 경계)와 **Knowledge**(연결된 지식), 세 층으로 이루어진다.
+> 모든 조항은 원소별 비준으로 성립한다. 경위와 역사는
 > [[2026-07-06-second-brain-reconstitution]]에 있다.
 
 ## 제1조 — 이름과 주어
@@ -24,66 +30,63 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    과정에서 지식으로 성장한다.
 2. 모든 지식은 주변부에서 시작하여 연결을 통해 중심부로 자라난다. 다만 중심과
    주변은 이산적인 계층이 아니라 연속적인 스펙트럼이다(제11조).
-3. 노드가 지식으로 성장할 때에는 Observation Layer(제5조), Sensemaking Layer(제4조),
+3. 노드가 지식으로 성장할 때에는 Observation Layer(제5조), Scope Layer(제4조),
    Knowledge Layer(제3조)를 차례로 거치며 작성·재구성된다.
 
 ## 제3조 — Knowledge Layer
 
 1. **Knowledge Layer** — 장기적으로 유지되는 이해와 지식의 집합이다.
-2. Knowledge Layer는 **Domain**으로 조직된다. Domain은 사용자가 장기적으로 함께
-   유지하려는 지식의 주제적 영역이다.
-3. Domain은 사용자의 관심과 의도에 따라 분화·병합·재배치된다 — 제안은
+2. Knowledge Layer는 주제별 클러스터로 분류된다.
+3. 클러스터는 사용자의 관심과 의도에 따라 분화·병합·재배치된다 — 제안은
    에이전트가, 명명과 실행은 사용자가.
 
-## 제4조 — Sensemaking Layer
+## 제4조 — Scope Layer
 
-1. **Sensemaking Layer** — 관측들이 의미 단위로 응집하고 이해가 형성되는 층이다.
-2. Sensemaking Layer는 **Synthesis**로 조직된다. Synthesis는 하나 이상의 Scope에서
-   나온 관측이 하나의 질문이나 의미를 중심으로 응집한, 수정 가능한 단위다. 미리
-   정해진 종류는 없고, Observation Layer의 locality 신호를 단서로 삼되 최종적으로는
-   의미 단위로 응집한다. Synthesis는 초점을 유지할 만큼 응집되어야 한다.
-3. Synthesis의 재배치·재배정·분화는 규칙 아래 **자동화가 기본**이며, 사용자는
+1. **Scope Layer** — 관측들이 의미 단위로 응집한 활동·주제의 경계다.
+2. Scope Layer는 **스코프**로 조직된다. 스코프에 미리 정해진 종류는 없고,
+   Observation Layer의 locality 신호를 단서로 삼되 최종적으로는 의미 단위로
+   응집한다. 스코프는 초점을 유지할 만큼 응집되어야 한다.
+3. 스코프의 재배치·재배정·분화는 규칙 아래 **자동화가 기본**이며, 사용자는
    필요시 개입한다.
-4. Synthesis의 노드는 이해가 형성되는 동안 수정·재구성된다.
+4. 스코프의 노드는 이해가 형성되는 동안 수정·재구성된다.
 
 ## 제5조 — Observation Layer
 
 1. **Observation Layer** — 지식 이전의 관측과 그 출처를 보존하는 층이다.
    관측은 덧붙여 남기며, 이미 보존된 원자료는 수정하지 않는다. 원자료, 관측 사실,
    활동 산출물, 외부 실체의 인덱스가 노드로서 여기에 남는다.
-2. Observation Layer는 **Scope**로 조직된다. Scope는 관측이 발생한 활동이나
-   출처의 경계다.
+2. Observation Layer는 관측이 발생한 활동이나 출처를 기준으로
+   **관측 클러스터**로 조직된다.
 3. Observation은 활동이 저절로 남기는 관측이다. 인입은 자동 수집이 기본이고,
    쓰기 마찰이 있어서는 안 된다.
 4. **Observation Layer는 모든 관측과 외부 실체의 등기소다.** 실체가 vault 밖에
    있으면 정체·위치·소속·상태를 가리키는 인덱스만 두고, vault 안에 남는 관측은
    원자료로 보존한다.
 5. Observation Layer는 관측 사이의 locality(주제·활동·시간·출처의 가까움) 신호를
-   보존한다. Synthesis는 이 신호를 단서로 삼아 의미 단위로 응집한다.
+   보존한다. 스코프는 이 신호를 단서로 삼아 의미 단위로 응집한다.
 
 ## 제6조 — Workbench
 
 1. **Workbench**는 진행 중인 하나의 작업을 위해 계획, 중간 산물, 진행 기록,
    미해결 질문을 유지하는 에이전트의 작업 공간이다. 지식의 층이 아니며 승격
    경로에 속하지 않는다.
-2. Workbench는 하나의 작업에 대응하며, 그 작업의 근거가 되는 Scope를 반드시
-   참조한다. 관련 에이전트 기록(제7조), Synthesis와 Knowledge를 참조할 수 있다.
-3. Workbench는 대응하는 작업의 맥락에서만 조회된다. 그 내용은 전역 지식 검색,
+2. Workbench는 하나의 작업에 결속되며, 그 작업의 근거가 되는 관측 클러스터를
+   반드시 참조한다. 관련 에이전트 기록(제7조), 스코프와 Knowledge를 참조할 수 있다.
+3. Workbench는 결속된 작업의 맥락에서만 조회된다. 그 내용은 전역 지식 검색,
    승격 후보, 술어 및 중심성 계산에서 제외되며, 내부 구성은 에이전트에게 위임된다.
-4. **3-Layer 노드**(Observation·Sensemaking·Knowledge 중 하나에 속한 노드)는
-   Workbench를 참조하지 않는다. Workbench가 맺는 참조는 중심성 계산에 포함하지
-   않는다.
+4. **3-Layer 노드**(Observation·Scope·Knowledge 중 하나에 속한 노드)는 Workbench를
+   참조하지 않는다. Workbench가 맺는 참조는 중심성 계산에 포함하지 않는다.
 5. Workbench는 작업이 명시적으로 종료되거나 활동이 중단되면 보존 상태로 전환한다.
-   계속 검토할 산출물은 출처를 붙인 미서명 노드로 이관하며, 이관된 노드는 각 층의
-   편입 규칙을 따른다. Workbench의 마지막 상태는 Observation에 스냅샷으로 보존하고,
+   계속 검토할 산출물은 출처를 붙인 미서명 노드로 반출하며, 반출된 노드는 각 층의
+   입경 규칙을 따른다. Workbench의 마지막 상태는 Observation에 스냅샷으로 보존하고,
    보존된 Workbench는 다시 열 수 있다.
 
 ## 제7조 — 에이전트 기록
 
 1. **에이전트 기록**은 에이전트가 세션과 기기를 넘어 협업의 연속성을 유지하기 위해
-   남기는 관측이다. 외부 에이전트 환경이 아니라 Observation Layer에서 에이전트
-   기록을 위한 Scope에 직접 보존된다. 에이전트에게 성숙한 지식이라도 사용자의
-   지식으로는 관측에 머문다.
+   남기는 관측이다. 외부 에이전트 환경이 아니라 Observation Layer의 에이전트 기록
+   클러스터에 직접 보존된다. 에이전트에게 성숙한 지식이라도 사용자의 지식으로는
+   관측에 머문다.
 2. 에이전트 기록은 작업을 넘어 이어지는 **협업 기록**과 에이전트가 관측한
    **사용자 모델**로 이루어진다.
 3. 에이전트 기록은 제자리에서 갱신할 수 있으며, 변경 이력은 스냅샷으로 보존한다.
@@ -102,15 +105,15 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 1. 지식이 다음 층위로 올라서는 것을 승격이라고 부른다.
 2. **중복 금지 원칙**: 승격의 과정은 복제를 허용하지 않는다 — 같은 정보의 살아있는
    사본 둘은 불일치(drift)의 원천이다. 원자료는 Observation Layer에 한 벌만
-   존재한다. Sensemaking 노드는 원자료의 사본이 아니라, 원자료를 참조해
-   재서술·응집한 노드다. Sensemaking 노드가 Knowledge로 승격될 때에는 사본을
-   남기지 않고 이동하며, 필요한 배선만 추가한다.
-3. Observation 노드가 Sensemaking Layer로 승격하기 위해서는
-   증류(발췌·응집·재서술)를 통해 지식노드로서의 형태를 갖추어야 한다.
-4. Sensemaking 노드가 승격하기 위해서는 해당 Synthesis의 존속과 무관하게 유지되는
-   이해여야 한다. 단, 판별 3문에 모두 해당하는 지식은 자기 Synthesis에 잔류한다 —
-   ①이 지식을 낡게 만드는 변화가 Synthesis 안에서 일어나는가 ②주로 쓰는 쪽이
-   미래의 작업 세션인가 ③사용자의 재서술 없이도 유용한가.
+   존재한다. Scope 노드는 원자료의 사본이 아니라, 원자료를 참조해 재서술·응집한
+   노드다. Scope 노드가 Knowledge로 승격될 때에는 사본을 남기지 않고 이동하며,
+   필요한 배선만 추가한다.
+3. Observation 노드가 Scope Layer로 승격하기 위해서는 증류(발췌·응집·재서술)를
+   통해 지식노드로서의 형태를 갖추어야 한다.
+4. Scope 노드가 승격하기 위해서는 해당 스코프의 존속과 무관하게 유지되는
+   이해여야 한다. 단, 판별 3문에 모두 해당하는 지식은 자기 스코프에 잔류한다 —
+   ①이 지식을 낡게 만드는 변화가 스코프 안에서 일어나는가 ②주로 쓰는 쪽이 미래의
+   작업 세션인가 ③사용자의 재서술 없이도 유용한가.
 
 ## 제9조 — 서명
 
@@ -126,7 +129,7 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 
 ## 제10조 — Link와 Predicate Edge
 
-1. **포함 위상** — 노드는 자신이 배치된 조직 단위에 포함되며, 그 조직 단위의
+1. **포함 위상** — 노드는 자신이 배치된 클러스터에 포함되며, 그 클러스터의
    분류와 맥락이 적용된다. 이 관계는 Link나 Predicate Edge로 선언하지 않고
    배치에서 성립한다.
 2. **Link의 기본 의존** — B가 `[[A]]`를 인용하면 "B의 이해에 A가 사용된다"
