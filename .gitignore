@@ -1,0 +1,51 @@
+# ─────────────────────────────────────────────────────────
+# osk-system 통치 문서 브랜치 — 문서만 추적한다
+# ─────────────────────────────────────────────────────────
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# 에이전트·MCP 클라이언트 로컬 설정 (절대 경로 포함 — 커밋 금지)
+.claude/
+.codex/
+.cursor/
+.mcp.json
+mcp_config_local.json
+claude_desktop_config.local.json
+
+# Obsidian 사용자별 workspace 상태
+.obsidian/workspace
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+.obsidian/graph.json
+.trash/
+
+# Python / 가상환경 (구 엔진 잔재가 워크트리에 남아 있을 수 있음)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+ENV/
+
+# 엔진 캐시·DB (이 브랜치의 추적 대상 아님)
+*.db
+*.db.wal
+*.duckdb
+*.duckdb.wal
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 로컬 임시 작업
+scratch/
+notes_draft/
+*.bak
