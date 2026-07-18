@@ -1,7 +1,7 @@
 ---
 type: constitution
 ratified: 2026-07-06
-revised: 2026-07-17
+revised: 2026-07-19
 status: ratified
 replaces: "[[Constitution-2026-07-17-workbench]]"
 ---
@@ -24,8 +24,8 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    과정에서 지식으로 성장한다.
 2. 모든 지식은 주변부에서 시작하여 연결을 통해 중심부로 자라난다. 다만 중심과
    주변은 이산적인 계층이 아니라 연속적인 스펙트럼이다(제11조).
-3. 노드가 지식으로 성장할 때에는 Observation Layer(제5조), Sensemaking Layer(제4조),
-   Knowledge Layer(제3조)를 차례로 거치며 작성·재구성된다.
+3. Observation은 Sensemaking의 근거가 되며, Sensemaking에서 성숙해진 지식은
+   Knowledge로 이동할 수 있다.
 
 ## 제3조 — Knowledge Layer
 
@@ -37,28 +37,26 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 
 ## 제4조 — Sensemaking Layer
 
-1. **Sensemaking Layer** — 관측들이 의미 단위로 응집하고 이해가 형성되는 층이다.
+1. **Sensemaking Layer** — Observation들이 의미 단위로 응집하고 이해가 형성되는
+   층이다.
 2. Sensemaking Layer는 **Synthesis**로 조직된다. Synthesis는 하나 이상의 Scope에서
-   나온 관측이 하나의 질문이나 의미를 중심으로 응집한, 수정 가능한 단위다. 미리
-   정해진 종류는 없고, Observation Layer의 locality 신호를 단서로 삼되 최종적으로는
-   의미 단위로 응집한다. Synthesis는 초점을 유지할 만큼 응집되어야 한다.
+   나온 Observation이 하나의 질문이나 의미를 중심으로 응집한, 수정 가능한 이해의
+   단위다. 미리 정해진 종류는 없고, Observation Layer의 locality 신호를 단서로
+   삼되 최종적으로는 의미 단위로 응집한다. Synthesis는 초점을 유지할 만큼
+   응집되어야 한다.
 3. Synthesis의 재배치·재배정·분화는 규칙 아래 **자동화가 기본**이며, 사용자는
    필요시 개입한다.
 4. Synthesis의 노드는 이해가 형성되는 동안 수정·재구성된다.
 
 ## 제5조 — Observation Layer
 
-1. **Observation Layer** — 지식 이전의 관측과 그 출처를 보존하는 층이다.
-   관측은 덧붙여 남기며, 이미 보존된 원자료는 수정하지 않는다. 원자료, 관측 사실,
-   활동 산출물, 외부 실체의 인덱스가 노드로서 여기에 남는다.
+1. **Observation Layer** — 에이전트가 관측·확인한 사실을 출처와 함께 보고하는
+   층이다.
 2. Observation Layer는 **Scope**로 조직된다. Scope는 관측이 발생한 활동이나
    출처의 경계다.
-3. Observation은 활동이 저절로 남기는 관측이다. 인입은 자동 수집이 기본이고,
-   쓰기 마찰이 있어서는 안 된다.
-4. **Observation Layer는 모든 관측과 외부 실체의 등기소다.** 실체가 vault 밖에
-   있으면 정체·위치·소속·상태를 가리키는 인덱스만 두고, vault 안에 남는 관측은
-   원자료로 보존한다.
-5. Observation Layer는 관측 사이의 locality(주제·활동·시간·출처의 가까움) 신호를
+3. 현행 사실을 나타내는 Observation은 갱신할 수 있다. 특정 시점에 고정된
+   스냅샷은 수정하지 않는다.
+4. Observation Layer는 관측 사이의 locality(주제·활동·시간·출처의 가까움) 신호를
    보존한다. Synthesis는 이 신호를 단서로 삼아 의미 단위로 응집한다.
 
 ## 제6조 — Workbench
@@ -73,10 +71,9 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 4. **3-Layer 노드**(Observation·Sensemaking·Knowledge 중 하나에 속한 노드)는
    Workbench를 참조하지 않는다. Workbench가 맺는 참조는 중심성 계산에 포함하지
    않는다.
-5. Workbench는 작업이 명시적으로 종료되거나 활동이 중단되면 보존 상태로 전환한다.
-   계속 검토할 산출물은 출처를 붙인 미서명 노드로 이관하며, 이관된 노드는 각 층의
-   편입 규칙을 따른다. Workbench의 마지막 상태는 Observation에 스냅샷으로 보존하고,
-   보존된 Workbench는 다시 열 수 있다.
+5. Workbench가 종료되거나 활동이 중단되면, 작업 밖에서도 필요한 사실 보고는
+   Observation으로, 형성된 이해는 Sensemaking으로, 협업의 연속성에 필요한 맥락은
+   에이전트 기록으로 이관한다. 그 밖의 내용은 Workbench 운영 규칙에 따른다.
 
 ## 제7조 — 에이전트 기록
 
@@ -86,7 +83,7 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    지식으로는 관측에 머문다.
 2. 에이전트 기록은 작업을 넘어 이어지는 **협업 기록**과 에이전트가 관측한
    **사용자 모델**로 이루어진다.
-3. 에이전트 기록은 제자리에서 갱신할 수 있으며, 변경 이력은 스냅샷으로 보존한다.
+3. 에이전트 기록은 제자리에서 갱신할 수 있다.
 4. 사용자 모델은 Observation Layer에 하나의 정본으로 유지한다. 프로젝트별
    에이전트 기록은 사용자 모델을 복제하지 않고 이 정본을 참조하며, 프로젝트
    고유의 기록은 각 활동 곁에 둔다.
@@ -97,17 +94,16 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 7. 에이전트 기록은 Workbench를 참조하지 않는다. 3-Layer 노드가 에이전트 기록을
    근거로 삼을 때에는 참조 시점의 스냅샷을 가리킨다.
 
-## 제8조 — 승격
+## 제8조 — 응집과 승격
 
-1. 지식이 다음 층위로 올라서는 것을 승격이라고 부른다.
-2. **중복 금지 원칙**: 승격의 과정은 복제를 허용하지 않는다 — 같은 정보의 살아있는
-   사본 둘은 불일치(drift)의 원천이다. 원자료는 Observation Layer에 한 벌만
-   존재한다. Sensemaking 노드는 원자료의 사본이 아니라, 원자료를 참조해
-   재서술·응집한 노드다. Sensemaking 노드가 Knowledge로 승격될 때에는 사본을
-   남기지 않고 이동하며, 필요한 배선만 추가한다.
-3. Observation 노드가 Sensemaking Layer로 승격하기 위해서는
-   증류(발췌·응집·재서술)를 통해 지식노드로서의 형태를 갖추어야 한다.
-4. Sensemaking 노드가 승격하기 위해서는 해당 Synthesis의 존속과 무관하게 유지되는
+1. Observation을 근거로 Sensemaking에서 새로운 이해를 만드는 것을 **응집**이라
+   하고, Sensemaking의 이해가 Knowledge로 올라서는 것을 **승격**이라 한다.
+2. **중복 금지 원칙**: 같은 정보의 살아있는 사본 둘은 불일치(drift)의 원천이다.
+   Synthesis는 Observation의 사본이 아니라, 하나 이상의 Scope에서 나온
+   Observation이 하나의 질문이나 의미를 중심으로 새로 응집한 이해다. Sensemaking
+   노드가 Knowledge로 승격될 때에는 사본을 남기지 않고 이동하며, 필요한 배선만
+   추가한다.
+3. Sensemaking 노드가 승격하기 위해서는 해당 Synthesis의 존속과 무관하게 유지되는
    이해여야 한다. 단, 판별 3문에 모두 해당하는 지식은 자기 Synthesis에 잔류한다 —
    ①이 지식을 낡게 만드는 변화가 Synthesis 안에서 일어나는가 ②주로 쓰는 쪽이
    미래의 작업 세션인가 ③사용자의 재서술 없이도 유용한가.
