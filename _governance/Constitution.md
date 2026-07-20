@@ -1,22 +1,26 @@
 ---
 type: constitution
 ratified: 2026-07-06
-revised: 2026-07-19
+revised: 2026-07-20
 status: ratified
 replaces: "[[Constitution-2026-07-17-workbench]]"
 ---
 
 # knowledge-vault 헌법
 
-> 이 vault는 사용자의 second brain이다 — **Observation**(관측의 세계)과
-> **Sensemaking**(의미를 형성하는 과정)과 **Knowledge**(연결된 지식), 세 층으로
-> 이루어진다. 모든 조항은 원소별 비준으로 성립한다. 경위와 역사는
+> 이 vault는 사용자의 second brain이다 — **Observation Layer**(관측의 세계)와
+> **Sensemaking Layer**(의미를 형성하는 과정)와 **Knowledge Layer**(연결된 지식),
+> 세 층으로 이루어진다. 모든 조항은 원소별 비준으로 성립한다. 경위와 역사는
 > [[2026-07-06-second-brain-reconstitution]]에 있다.
+>
+> 이 헌법에서 Layer는 인식적 신분을, Scope·Synthesis·Domain은 각 Layer의 조직
+> 단위를, 노드는 그 조직 단위에 속하는 개별 기록을 가리킨다. Layer 전체를
+> 가리킬 때에는 Layer를, 개별 기록을 가리킬 때에는 노드를 명시한다.
 
 ## 제1조 — 이름과 주어
 
-이름은 knowledge-vault다. Knowledge의 주어는 사용자다 — 여기 보관되는 지식은
-사용자의 것이다.
+이름은 knowledge-vault다. 이 vault가 보관하는 지식의 주어는 사용자다 — 여기
+보관되는 지식은 사용자의 것이다.
 
 ## 제2조 — 지식의 정의
 
@@ -24,29 +28,29 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    과정에서 지식으로 성장한다.
 2. 모든 지식은 주변부에서 시작하여 연결을 통해 중심부로 자라난다. 다만 중심과
    주변은 이산적인 계층이 아니라 연속적인 스펙트럼이다(제11조).
-3. Observation은 Sensemaking의 근거가 되며, Sensemaking에서 성숙해진 지식은
-   Knowledge로 이동할 수 있다.
+3. Observation 노드는 Sensemaking 노드의 근거가 되며, Sensemaking 노드는
+   성숙하면 Knowledge Layer로 이동할 수 있다.
 
 ## 제3조 — Knowledge Layer
 
 1. **Knowledge Layer** — 장기적으로 유지되는 이해와 지식의 집합이다.
 2. Knowledge Layer는 **Domain**으로 조직된다. Domain은 사용자가 장기적으로 함께
    유지하려는 지식의 주제적 영역이다.
-3. Domain은 사용자의 관심과 의도에 따라 분화·병합·재배치된다 — 제안은
-   에이전트가, 명명과 실행은 사용자가.
+3. Domain은 사용자의 관심과 의도에 따라 분화·병합된다 — 제안은 에이전트가,
+   명명과 실행은 사용자가.
 
 ## 제4조 — Sensemaking Layer
 
-1. **Sensemaking Layer** — Observation들이 의미 단위로 응집하고 이해가 형성되는
-   층이다.
+1. **Sensemaking Layer** — Observation 노드를 근거로 새로운 이해가 증류되고,
+   Sensemaking 노드들이 의미 단위로 응집하는 층이다.
 2. Sensemaking Layer는 **Synthesis**로 조직된다. Synthesis는 하나 이상의 Scope에서
-   나온 Observation이 하나의 질문이나 의미를 중심으로 응집한, 수정 가능한 이해의
-   단위다. 미리 정해진 종류는 없고, Observation Layer의 locality 신호를 단서로
-   삼되 최종적으로는 의미 단위로 응집한다. Synthesis는 초점을 유지할 만큼
-   응집되어야 한다.
-3. Synthesis의 재배치·재배정·분화는 규칙 아래 **자동화가 기본**이며, 사용자는
-   필요시 개입한다.
-4. Synthesis의 노드는 이해가 형성되는 동안 수정·재구성된다.
+   나온 Observation 노드를 근거로 형성된 Sensemaking 노드들을 하나의 질문이나
+   의미를 중심으로 응집하는 조직 단위다. 미리 정해진 종류는 없고,
+   Observation Layer의 locality 신호를 단서로 삼되 최종적으로는 의미에 따라
+   응집한다. Synthesis는 초점을 유지할 만큼 응집되어야 한다.
+3. Synthesis의 분화와 구성 Sensemaking 노드의 재배정은 규칙 아래 자동화가
+   기본이며, 사용자는 필요시 개입한다.
+4. Synthesis에 속한 Sensemaking 노드는 이해가 형성되는 동안 수정·재구성된다.
 
 ## 제5조 — Observation Layer
 
@@ -54,10 +58,11 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    층이다.
 2. Observation Layer는 **Scope**로 조직된다. Scope는 관측이 발생한 활동이나
    출처의 경계다.
-3. 현행 사실을 나타내는 Observation은 갱신할 수 있다. 특정 시점에 고정된
+3. 현행 사실을 나타내는 Observation 노드는 갱신할 수 있다. 특정 시점에 고정된
    스냅샷은 수정하지 않는다.
 4. Observation Layer는 관측 사이의 locality(주제·활동·시간·출처의 가까움) 신호를
-   보존한다. Synthesis는 이 신호를 단서로 삼아 의미 단위로 응집한다.
+   보존한다. Synthesis는 이 신호를 단서로 삼아 Sensemaking 노드를 의미 단위로
+   응집한다.
 
 ## 제6조 — Workbench
 
@@ -65,15 +70,16 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    미해결 질문을 유지하는 에이전트의 작업 공간이다. 지식의 층이 아니며 승격
    경로에 속하지 않는다.
 2. Workbench는 하나의 작업에 대응하며, 그 작업의 근거가 되는 Scope를 반드시
-   참조한다. 관련 에이전트 기록(제7조), Synthesis와 Knowledge를 참조할 수 있다.
+   참조한다. 관련 에이전트 기록(제7조)과 Synthesis를 참조하고, Knowledge 노드를
+   열람·참조할 수 있다.
 3. Workbench는 대응하는 작업의 맥락에서만 조회된다. 그 내용은 전역 지식 검색,
    승격 후보, 술어 및 중심성 계산에서 제외되며, 내부 구성은 에이전트에게 위임된다.
-4. **3-Layer 노드**(Observation·Sensemaking·Knowledge 중 하나에 속한 노드)는
-   Workbench를 참조하지 않는다. Workbench가 맺는 참조는 중심성 계산에 포함하지
-   않는다.
+4. **3-Layer 노드**(Observation Layer·Sensemaking Layer·Knowledge Layer 중
+   하나에 속한 노드)는 Workbench를 참조하지 않는다. Workbench가 맺는 참조는
+   중심성 계산에 포함하지 않는다.
 5. Workbench가 종료되거나 활동이 중단되면, 작업 밖에서도 필요한 사실 보고는
-   Observation으로, 형성된 이해는 Sensemaking으로, 협업의 연속성에 필요한 맥락은
-   에이전트 기록으로 이관한다. 그 밖의 내용은 Workbench 운영 규칙에 따른다.
+   Observation 노드로, 형성된 이해는 Sensemaking 노드로, 협업의 연속성에 필요한
+   맥락은 에이전트 기록으로 이관한다. 그 밖의 내용은 Workbench 운영 규칙에 따른다.
 
 ## 제7조 — 에이전트 기록
 
@@ -87,24 +93,25 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 4. 사용자 모델은 Observation Layer에 하나의 정본으로 유지한다. 프로젝트별
    에이전트 기록은 사용자 모델을 복제하지 않고 이 정본을 참조하며, 프로젝트
    고유의 기록은 각 활동 곁에 둔다.
-5. 사용자 모델에 기록된 사용자에 관한 주장을 Knowledge에 반영하려면 사용자의
-   서명을 거쳐야 한다.
-6. 사용자 모델은 사용자에 관한 서명된 Knowledge를 복제하지 않고 참조한다.
-   둘이 충돌하면 서명된 Knowledge를 따른다.
+5. 사용자 모델에 기록된 사용자에 관한 주장은 서명된 상태로만 Knowledge Layer에
+   들어갈 수 있다.
+6. 사용자 모델은 사용자에 관한 서명된 Knowledge 노드를 복제하지 않고 참조한다.
+   둘이 충돌하면 서명된 Knowledge 노드를 따른다.
 7. 에이전트 기록은 Workbench를 참조하지 않는다. 3-Layer 노드가 에이전트 기록을
    근거로 삼을 때에는 참조 시점의 스냅샷을 가리킨다.
 
-## 제8조 — 응집과 승격
+## 제8조 — 증류와 승격
 
-1. Observation을 근거로 Sensemaking에서 새로운 이해를 만드는 것을 **응집**이라
-   하고, Sensemaking의 이해가 Knowledge로 올라서는 것을 **승격**이라 한다.
+1. Observation 노드를 근거로 Sensemaking 노드를 만드는 것을 **증류**라 하고,
+   Sensemaking 노드가 Knowledge Layer로 이동하는 것을 **승격**이라 한다.
 2. **중복 금지 원칙**: 같은 정보의 살아있는 사본 둘은 불일치(drift)의 원천이다.
-   Synthesis는 Observation의 사본이 아니라, 하나 이상의 Scope에서 나온
-   Observation이 하나의 질문이나 의미를 중심으로 새로 응집한 이해다. Sensemaking
-   노드가 Knowledge로 승격될 때에는 사본을 남기지 않고 이동하며, 필요한 배선만
-   추가한다.
-3. Sensemaking 노드가 승격하기 위해서는 해당 Synthesis의 존속과 무관하게 유지되는
-   이해여야 한다. 단, 판별 3문에 모두 해당하는 지식은 자기 Synthesis에 잔류한다 —
+   Synthesis에 속한 Sensemaking 노드는 Observation 노드의 사본이 아니라, 하나
+   이상의 Scope에서 나온 Observation 노드를 근거로 증류된 이해다. Sensemaking
+   노드가 Knowledge Layer로 승격될 때에는 사본을 남기지 않고 이동하며, 필요한
+   배선만 추가한다.
+3. Sensemaking 노드의 위치는 판별 3문으로 정한다. 다음 세 문항에 모두 해당하면
+   자기 Synthesis에 잔류한다. 그렇지 않은 노드 중 해당 Synthesis의 존속과
+   무관하게 유지되는 이해는 Knowledge Layer로 승격할 수 있다 —
    ①이 지식을 낡게 만드는 변화가 Synthesis 안에서 일어나는가 ②주로 쓰는 쪽이
    미래의 작업 세션인가 ③사용자의 재서술 없이도 유용한가.
 
@@ -112,12 +119,14 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 
 1. **서명** — 사용자가 노드의 현재 상태를 직접 확인하고, 그 확인 사실을 기록하는
    행위. 커밋처럼 기록(시점, 선택적 사유)을 남긴다.
-2. **서명은 노드가 아니라 상태에 붙는다.** 서명된 노드의 내용이나 배선이 변경되면
-   서명은 풀린다. 사용자는 변경(diff)을 확인하고 다시 서명한다.
-3. 에이전트는 미서명 노드(응집·인덱스·초안)를 만들고, 검색·배선 초안·엣지 기입·
+2. **서명은 노드가 아니라 상태에 붙는다.** 서명된 노드의 내용이나 그 노드가
+   선언한 배선이 변경되면 서명은 풀린다. 사용자는 변경(diff)을 확인하고 다시
+   서명한다.
+3. 에이전트는 미서명 노드와 인덱스·초안을 만들고, 검색·배선 초안·엣지 기입·
    파일 정리를 대행할 수 있다. 에이전트가 작성한 서술에는 에이전트 저작임을
-   표시한다. 표시가 없는 서술은 사용자의 저작으로 본다. **서명은 대행할 수 없다** —
-   이는 권한이 아니라 정체성이므로 판례가 쌓여도 위임되지 않는다.
+   표시한다. 표시가 없는 서술은 사용자의 저작으로 본다. 서명은 사용자의 확인을
+   노드의 상태에 결속하는 기록이다. 그러므로 서명의 근거는 사용자의 명시적
+   행위여야 하며, 에이전트는 그 확인을 추정하지 않는다.
 4. 사용자의 정의와 신념을 담는 노드는 본문 전체가 사용자의 말로 작성되어야 한다.
 
 ## 제10조 — Link와 Predicate Edge
@@ -143,7 +152,8 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    때에만 둔다. 새 술어는 기존 술어로 표현할 수 없는 구별된 엔진 행동의
    필요가 실제 사용에서 반복적으로 확인되고, 그 행동과 함께 비준될 때에만
    추가된다.
-6. Predicate Edge는 서명 또는 정합성 검사를 통해서만 성립하거나 변경된다.
+6. Predicate Edge는 서명 또는 사용자 확인을 수반한 정합성 검사를 통해서만
+   성립하거나 변경된다.
 
 ## 제11조 — 신뢰
 
@@ -151,8 +161,9 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    라벨을 노드에 부여하지 않는다.
 2. **중심성 = 개정 비용** = 어떤 노드가 뒤집힐 때 재검토되어야 하는 의존
    부분그래프의 크기. 인덱싱 시 계산되는 측정값이지 부여되는 라벨이 아니다.
-3. 미서명 노드는 검색에서 후보 표기·강등되고, 중심성 계산과 supports 하중에서
-   배제된다.
+3. 미서명 노드는 검색에서 후보 표기·강등되고, 자신은 중심성과 supports 하중을
+   갖지 않는다. 다만 미서명 노드의 Link가 서명 노드에 만드는 의존은 그 서명
+   노드의 개정 비용에 포함된다.
 
 ## 제12조 — 정합성 검사
 
@@ -178,8 +189,9 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    회수 가능하다.
 4. 이 vault의 쓰기 권한은 사용자 주권 아래에 있다. 에이전트는 기록·정리·배선·수선을
    수행할 수 있으나, 사용자의 거부권을 넘어설 수 없다.
-5. 사용자의 직접 저작은 절차의 예외를 허용한다. 사용자는 어느 층에든 직접 쓸 수
-   있다. 다만 서명 규칙은 예외가 아니다 — 직접 쓴 노드도 서명 전에는 미서명이다.
+5. 사용자의 직접 저작은 절차의 예외를 허용한다. 사용자는 어느 Layer에든 직접 쓸
+   수 있다. 다만 서명 규칙은 예외가 아니다 — 직접 쓴 노드도 서명 전에는
+   미서명이다.
 
 ## 제14조 — 개정
 
@@ -188,5 +200,5 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    replaces를 선언하며, 옛 기록에는 superseded 표기와 배너를 남긴다. 옛 본문은
    보존하되 검색에서는 구판으로 강등한다.
 3. 재통과 원칙(no-grandfathering): 이 헌법의 기준으로 비준되지 않은 기존 노드는
-   서명 없이 Knowledge에 배치될 수 있으나 **미서명 신분**이며, 서명 전에는 지식으로
-   검색되지 않고, 후보로만 노출된다.
+   서명 없이 Knowledge Layer에 배치될 수 있으나 **미서명 신분**이며, 서명 전에는
+   지식으로 검색되지 않고, 후보로만 노출된다.
