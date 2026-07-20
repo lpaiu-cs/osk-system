@@ -13,7 +13,7 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 > 세 층으로 이루어진다. 모든 조항은 원소별 비준으로 성립한다. 경위와 역사는
 > [[2026-07-06-second-brain-reconstitution]]에 있다.
 >
-> 이 헌법에서 Layer는 인식적 신분을, Scope·Synthesis·Domain은 각 Layer의 조직
+> 이 헌법에서 Layer는 인식적 신분을, Scope·Sense·Domain은 각 Layer의 조직
 > 단위를, 노드는 그 조직 단위에 속하는 개별 기록을 가리킨다. Layer 전체를
 > 가리킬 때에는 Layer를, 개별 기록을 가리킬 때에는 노드를 명시한다.
 
@@ -43,14 +43,14 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 
 1. **Sensemaking Layer** — Observation 노드를 근거로 새로운 이해가 증류되고,
    Sensemaking 노드들이 의미 단위로 응집하는 층이다.
-2. Sensemaking Layer는 **Synthesis**로 조직된다. Synthesis는 하나 이상의 Scope에서
+2. Sensemaking Layer는 **Sense**로 조직된다. Sense는 하나 이상의 Scope에서
    나온 Observation 노드를 근거로 형성된 Sensemaking 노드들을 하나의 질문이나
    의미를 중심으로 응집하는 조직 단위다. 미리 정해진 종류는 없고,
    Observation Layer의 locality 신호를 단서로 삼되 최종적으로는 의미에 따라
-   응집한다. Synthesis는 초점을 유지할 만큼 응집되어야 한다.
-3. Synthesis의 분화와 구성 Sensemaking 노드의 재배정은 규칙 아래 자동화가
+   응집한다. Sense는 초점을 유지할 만큼 응집되어야 한다.
+3. Sense의 분화와 구성 Sensemaking 노드의 재배정은 규칙 아래 자동화가
    기본이며, 사용자는 필요시 개입한다.
-4. Synthesis에 속한 Sensemaking 노드는 이해가 형성되는 동안 수정·재구성된다.
+4. Sense에 속한 Sensemaking 노드는 이해가 형성되는 동안 수정·재구성된다.
 
 ## 제5조 — Observation Layer
 
@@ -61,7 +61,7 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 3. 현행 사실을 나타내는 Observation 노드는 갱신할 수 있다. 특정 시점에 고정된
    스냅샷은 수정하지 않는다.
 4. Observation Layer는 관측 사이의 locality(주제·활동·시간·출처의 가까움) 신호를
-   보존한다. Synthesis는 이 신호를 단서로 삼아 Sensemaking 노드를 의미 단위로
+   보존한다. Sense는 이 신호를 단서로 삼아 Sensemaking 노드를 의미 단위로
    응집한다.
 
 ## 제6조 — Workbench
@@ -69,14 +69,14 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 1. **Workbench**는 진행 중인 하나의 작업을 위해 계획, 중간 산물, 진행 기록,
    미해결 질문을 유지하는 에이전트의 작업 공간이다. 지식의 층이 아니며 승격
    경로에 속하지 않는다.
-2. Workbench는 하나의 작업에 대응하며, 그 작업의 근거가 되는 Scope를 반드시
-   참조한다. 관련 에이전트 기록(제7조)과 Synthesis를 참조하고, Knowledge 노드를
-   열람·참조할 수 있다.
+2. Workbench는 하나의 작업에 대응하며, 그 작업의 근거가 되는 하나 이상의
+   Scope를 참조한다. 관련 에이전트 기록(제7조)과 Sense를 참조하고, Knowledge
+   노드를 열람·참조할 수 있다.
 3. Workbench는 대응하는 작업의 맥락에서만 조회된다. 그 내용은 전역 지식 검색,
    승격 후보, 술어 및 중심성 계산에서 제외되며, 내부 구성은 에이전트에게 위임된다.
-4. **3-Layer 노드**(Observation Layer·Sensemaking Layer·Knowledge Layer 중
-   하나에 속한 노드)는 Workbench를 참조하지 않는다. Workbench가 맺는 참조는
-   중심성 계산에 포함하지 않는다.
+4. **3-Layer**(Observation Layer, Sensemaking Layer, Knowledge Layer) 노드는
+   Workbench를 참조하지 않는다. Workbench가 맺는 참조는 중심성 계산에 포함하지
+   않는다.
 5. Workbench가 종료되거나 활동이 중단되면, 작업 밖에서도 필요한 사실 보고는
    Observation 노드로, 형성된 이해는 Sensemaking 노드로, 협업의 연속성에 필요한
    맥락은 에이전트 기록으로 이관한다. 그 밖의 내용은 Workbench 운영 규칙에 따른다.
@@ -105,14 +105,14 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 1. Observation 노드를 근거로 Sensemaking 노드를 만드는 것을 **증류**라 하고,
    Sensemaking 노드가 Knowledge Layer로 이동하는 것을 **승격**이라 한다.
 2. **중복 금지 원칙**: 같은 정보의 살아있는 사본 둘은 불일치(drift)의 원천이다.
-   Synthesis에 속한 Sensemaking 노드는 Observation 노드의 사본이 아니라, 하나
+   Sense에 속한 Sensemaking 노드는 Observation 노드의 사본이 아니라, 하나
    이상의 Scope에서 나온 Observation 노드를 근거로 증류된 이해다. Sensemaking
    노드가 Knowledge Layer로 승격될 때에는 사본을 남기지 않고 이동하며, 필요한
    배선만 추가한다.
-3. Sensemaking 노드의 위치는 판별 3문으로 정한다. 다음 세 문항에 모두 해당하면
-   자기 Synthesis에 잔류한다. 그렇지 않은 노드 중 해당 Synthesis의 존속과
-   무관하게 유지되는 이해는 Knowledge Layer로 승격할 수 있다 —
-   ①이 지식을 낡게 만드는 변화가 Synthesis 안에서 일어나는가 ②주로 쓰는 쪽이
+3. Sensemaking 노드 중 해당 Sense의 존속과 무관하게 유지되는 이해는
+   Knowledge Layer로 승격할 수 있다. 단, 판별 3문에 모두 해당하는 지식은 자기
+   Sense에 잔류한다 —
+   ①이 지식을 낡게 만드는 변화가 Sense 안에서 일어나는가 ②주로 쓰는 쪽이
    미래의 작업 세션인가 ③사용자의 재서술 없이도 유용한가.
 
 ## 제9조 — 서명
@@ -161,17 +161,18 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    라벨을 노드에 부여하지 않는다.
 2. **중심성 = 개정 비용** = 어떤 노드가 뒤집힐 때 재검토되어야 하는 의존
    부분그래프의 크기. 인덱싱 시 계산되는 측정값이지 부여되는 라벨이 아니다.
-3. 미서명 노드는 검색에서 후보 표기·강등되고, 자신은 중심성과 supports 하중을
+3. 미서명 노드는 검색에서 후보 표기·강등되고, 중심성과 supports 하중을
    갖지 않는다. 다만 미서명 노드의 Link가 서명 노드에 만드는 의존은 그 서명
    노드의 개정 비용에 포함된다.
 
 ## 제12조 — 정합성 검사
 
 1. 검사 시점: 서명 시 + 주기 스캔.
-2. 정합성 검사는 새 노드와 기존 지식의 배선을 검사하여 충돌(모순·중복·대항·관점차)
-   사건을 찾아낸다. 새 노드는 기존 지식과의 관계가 배선되고, 발견된 충돌의 상태가
-   명시될 때 비로소 공고해진다.
-3. 정합성 검사기는 감지하고 사건화하며 라우팅만 한다. 해소는 자동화되지 않는다.
+2. 정합성 검사는 새 노드와 기존 지식의 배선을 검사하여 충돌 가능성을 사건 후보로
+   등록한다. 이를 **충돌 입건**이라 한다. 입건된 후보는 사용자 확인을 거쳐 모순
+   사건으로 확정되거나 기각된다. 새 노드는 기존 지식과의 관계가 배선되고, 입건된
+   후보의 처리 상태가 명시될 때 비로소 공고해진다.
+3. 정합성 검사기는 감지하고 입건하며 라우팅만 한다. 해소는 자동화되지 않는다.
 4. 라우팅:
    - 주변부 충돌(개정 비용 낮음) → 에이전트 수선 제안 → 사용자 승인.
    - 중심부 충돌(개정 비용 높음) → **사용자 심의로**: 충돌 당사자와 그 의존 이웃이
