@@ -54,8 +54,7 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 
 ## 제5조 — Observation Layer
 
-1. **Observation Layer** — 에이전트가 관측·확인한 사실을 출처와 함께 보고하는
-   층이다.
+1. **Observation Layer** — 관측·확인한 사실을 출처와 함께 기록하는 층이다.
 2. Observation Layer는 **Scope**로 조직된다. Scope는 관측이 발생한 활동이나
    출처의 경계다.
 3. 현행 사실을 나타내는 Observation 노드는 갱신할 수 있다. 특정 시점에 고정된
