@@ -40,9 +40,9 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    명명과 실행은 사용자가.
 
 ## 제4조 — Sensemaking Layer
-
-1. **Sensemaking Layer** — Observation 노드를 근거로 새로운 이해가 증류되고,
-   Sensemaking 노드들이 의미 단위로 응집하는 층이다.
+1. **Sensemaking Layer** — Observation 노드에 기록된 사실과 국소적 추론을 
+   해석하여 새로운 이해를 Sensemaking 노드로 증류하고, 그 노드들을 의미 단위로
+   응집하는 층이다.
 2. Sensemaking Layer는 **Sense**로 조직된다. Sense는 하나 이상의 Scope에서
    나온 Observation 노드를 근거로 형성된 Sensemaking 노드들을 하나의 질문이나
    의미를 중심으로 응집하는 조직 단위다. 미리 정해진 종류는 없고,
@@ -54,7 +54,8 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
 
 ## 제5조 — Observation Layer
 
-1. **Observation Layer** — 관측·확인한 추론·사실을 출처와 함께 기록하는 층이다.
+1. **Observation Layer** — 관측·확인한 사실과 그 사실에 밀착된 국소적 추론을
+   출처와 함께 기록하는 층이다.
 2. Observation Layer는 **Scope**로 조직된다. Scope는 관측이 발생한 활동이나
    출처의 경계다.
 3. 현행 사실을 나타내는 Observation 노드는 갱신할 수 있다. 특정 시점에 고정된
