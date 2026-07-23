@@ -74,10 +74,10 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    노드를 열람·참조할 수 있다.
 3. Workbench는 대응하는 작업의 맥락에서만 조회된다. 그 내용은 전역 지식 검색,
    승격 후보, 술어 및 중심성 계산에서 제외되며, 내부 구성은 에이전트에게 위임된다.
-4. **3-Layer**(Observation Layer, Sensemaking Layer, Knowledge Layer) 노드는
-   Workbench를 참조하지 않는다. Workbench가 맺는 참조는 중심성 계산에 포함하지
-   않는다.
-5. Workbench가 종료되거나 활동이 중단되면, 작업 밖에서도 필요한 사실 보고는
+4. **3-Layer**(Observation Layer, Sensemaking Layer, Knowledge
+   Layer) 노드는 Workbench를 참조하지 않는다. Workbench가 맺는 참조는 중심성
+   계산에 포함하지 않는다.
+5. Workbench가 종료되거나 활동이 중단되면, 작업 밖에서도 필요한 사실과 국소적 추론은
    Observation 노드로, 형성된 이해는 Sensemaking 노드로, 협업의 연속성에 필요한
    맥락은 에이전트 기록으로 이관한다. 이관 검토의 시점과 그 밖의 내용은 Workbench
    운영 규칙에 따른다.
