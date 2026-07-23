@@ -40,7 +40,8 @@ replaces: "[[Constitution-2026-07-17-workbench]]"
    명명과 실행은 사용자가.
 
 ## 제4조 — Sensemaking Layer
-1. **Sensemaking Layer** — Observation 노드에 기록된 사실과 국소적 추론을 
+
+1. **Sensemaking Layer** — Observation 노드에 기록된 사실과 국소적 추론을
    해석하여 새로운 이해를 Sensemaking 노드로 증류하고, 그 노드들을 의미 단위로
    응집하는 층이다.
 2. Sensemaking Layer는 **Sense**로 조직된다. Sense는 하나 이상의 Scope에서
