@@ -1,9 +1,13 @@
 ---
 type: constitution
+status: ratified
 ratified: 2026-07-06
 revised: 2026-07-23
-status: ratified
 replaces: "[[Constitution-2026-07-17-workbench]]"
+author: user
+drafter:
+  - agent:claude
+  - agent:gpt
 ---
 
 # knowledge-vault 헌법

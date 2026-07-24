@@ -1,20 +1,15 @@
 ---
 type: commentary
-date: 2026-07-23
+created: 2026-07-23
 status: draft
-project: knowledge-vault
 author: agent:claude
-drafter: agent:claude
+drafter:
+  - agent:claude
 annotates:
   - path: _governance/Constitution.md
-    blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
+    blob: 49c1ebecd769f62764ba434029e6c12d654a706a
   - path: _governance/Bylaws.md
-    blob: 42422173013dd90b09b5cebc29130a1091139e82
-related:
-  - "[[Constitution]]"
-  - "[[Bylaws]]"
-  - "[[2026-07-21-governance-cycle-adjudication-ledger]]"
-  - "[[2026-07-06-second-brain-reconstitution]]"
+    blob: ffe7e633ca6a76c382d99932b368d57dc0c576aa
 ---
 
 # knowledge-vault 헌법 주석백서 (draft)
@@ -42,9 +37,9 @@ related:
 - **중복 회피.** Predicate Edge 정당화 제도의 소거 서사(원설계→K→K′→격하)와
   미결 지도의 전문(全文)은 [[2026-07-21-governance-cycle-adjudication-ledger]]에
   있다. 여기서는 조문에 닿는 부분만 요약하고 장부를 가리킨다.
-- **이 문서의 존재론적 지위**는 헌법·시행령과 마찬가지로 아직 미결이다(governance
-  문서의 vault 내 신분 — 뼈대 후 판정 묶음). 그때까지 frontmatter는 서술적으로
-  둔다.
+- **이 문서의 존재론적 지위**는 시행령 §17이 정한다(2026-07-24) — **비규범
+  해설**이며 독자적 권위를 갖지 않는다. 주석과 정본이 어긋나면 정본을 따른다.
+  frontmatter도 §17.2의 주석백서 규약을 따른다.
 - **주석 대상의 고정(`annotates`).** frontmatter에 이 주석이 설명하는 헌법·시행령의
   git blob 해시를 적는다. 주석은 특정 **상태**를 설명하므로, 정본이 개정되면 이
   주석은 그 개정을 아직 반영하지 못한 상태일 수 있다 — 해시가 그 사실을 드러낸다.
@@ -582,10 +577,14 @@ Specification.md`에 있다. **주의: 9술어 각각이 어느 현행 수단으
   §16.7은 그 활성화 검증계획의 변경 규율을 정한다. 현재 헌법·시행령은 비준됐으나
   엔진 미구축으로 아직 활성화되지 않았다. §14.4는 기술 중립적으로 「재현 가능한
   이력」만 요구한다.
-- **뼈대 후 판정 묶음**: governance 문서의 존재론적 지위(이 백서 포함 —
-  status·ratified 등 frontmatter 필드의 규율과 계보 자기 적용 문제도 이 판정에
-  묶임, 07-22). 합집합 규칙은 pass 판정, "공고"는 일상어 확인 + 시행령의
-  용어화 흔적 제거로 해소(07-22).
+- **뼈대 후 판정 묶음** *(2026-07-24 해소 — 시행령 §17 신설)*: governance 문서의
+  존재론적 지위(이 백서 포함)와 frontmatter 규율, 계보의 자기 적용 문제가
+  §17로 닫혔다. 통치 정본·주석백서·mechanism 사양을 **세 신분으로 갈라** 모두
+  3-Layer 밖에 두고, 통치 정본과 주석백서의 frontmatter만 규약화했다(mechanism
+  것은 §15 계약 소관 — 시행령이 정하면 §15의 위임을 되돌리게 된다). 이 백서의
+  신분도 그때 확정됐다: **비규범 해설, 독자적 권위 없음, 정본과 어긋나면 정본을
+  따른다.** 합집합 규칙은 pass 판정, "공고"는 일상어 확인 + 시행령의 용어화
+  흔적 제거로 해소(07-22).
 - 해소(07-22): 구 9조 3항 "무표기 = 사용자 추정" 문장과 §14.4의 정합 — 추정
   문장 삭제 + 신설 9조 4항(저작)의 경로 위임 + §14.4의 unknown 보충으로 닫힘
   (⑤-A 불추정 구절은 탈방어로 제거 — 방어 대상 소멸).

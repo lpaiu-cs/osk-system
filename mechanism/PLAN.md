@@ -1,15 +1,15 @@
 ---
 type: mechanism-plan
 status: draft
-project: knowledge-vault
 author: agent:claude
-drafter: agent:claude
+drafter:
+  - agent:claude
 implements:
   - path: _governance/Bylaws.md
-    blob: 42422173013dd90b09b5cebc29130a1091139e82
-    clause: "§15·§16"
+    blob: ffe7e633ca6a76c382d99932b368d57dc0c576aa
+    clause: "§15·§16·§17"
   - path: _governance/Constitution.md
-    blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
+    blob: 49c1ebecd769f62764ba434029e6c12d654a706a
 ---
 
 # mechanism 사양 — 착수 계획 (draft, rev.5)
@@ -122,7 +122,7 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 
 ```yaml
 - id: SIGN-CONFIRM-IMMUTABLE
-  clause: { path: _governance/Bylaws.md, blob: 42422173…, ref: "§8.1(4)" }
+  clause: { path: _governance/Bylaws.md, blob: ffe7e633…, ref: "§8.1(4)" }
   invariant: "사용자 확인 뒤 서명 대상 상태는 변경되지 않는다"
   owner: signing            # 정확히 하나
   consumers: [graph-compiler, briefing]
@@ -259,6 +259,9 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 | §11.4 | 작업 맥락 식별자, 검색 이벤트 중복 제거 키 | `identifiers` |
 | §15.1·3 | 모듈 경계와 구현 내부 (메타 권한) | `ARCHITECTURE.md` |
 | §14.11 | 근거·고정 식별자·호환성 상태 validator, activation registry | `authority-validator` |
+| §17.2 | 통치 정본·주석백서 frontmatter 검증, `current` 전이 조건, 미열거 필드의 권위 상태 비산입 | `authority-validator` |
+| §17.3 | archive의 옛 상태·관계 필드 비산입 / 현행 정본의 `replaces` 계보 유지 | `authority-validator` |
+| §17.4 | 릴리스 매니페스트 생성·X/Y/Z 판정 후보·정확 참조 재고정 | `authority-validator` |
 
 **표에 없는 것과 그 이유**
 - **PE의 '응집' 반영식** — 시행령이 그 행동을 특정하지 않았다. G1 해소 전에는 도출
@@ -286,7 +289,7 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 | ~~**G3-C2**~~ | 헌법 11조 3항 Observation 강등 사정거리 | — | **기각(2026-07-24)** — §1.16 검색의 두 결이 이미 경계를 만든다. 작업 검색은 강등 없음, 열람 검색은 헌법 11조 3항 그대로 |
 | ~~**G3-C3**~~ | §10.2 '만' 문면 | 시행령 | **완료(2026-07-24)** — §12.3에 6번째 Review Trigger(서명 시 검사 결과만 집계) |
 | ~~**G3-C4**~~ | 서명된 Observation 노드의 존치 출구 | 시행령 | **완료(2026-07-24)** — 새 규칙이 아니라 §10.4 말미의 확인 문장(§10.2가 이미 관측 영향 후보로 보낸다) |
-| **G4** | **governance 문서에 한정** — 존재론적 지위, 저작·frontmatter 규율, `governance-vX.Y.Z` 버전 체계와 릴리스 매니페스트 | 시행령 | 기존 "뼈대 후 판정 묶음"과 병합. **3-Layer·Workbench 스키마를 차단하지 않는다** |
+| ~~**G4**~~ | governance 문서의 신분·frontmatter 규약·`governance-vX.Y.Z` 릴리스 | 시행령 | **완료(2026-07-24)** — §17 신설. 신분 3분류(통치 정본/주석백서/mechanism), 통치 정본·주석만 규약화(mechanism은 §15 계약), archive는 사료, 릴리스는 사용자 선언 |
 | ~~**G5**~~ | **3-Layer·Workbench**에서 복수 `author`/`drafter` | 시행령 | **완료(2026-07-24)** — §1.11(`author` 단수·`drafter` 복수)·§5.2(공간 표기 갱신)·§5.3 |
 | ~~**G6**~~ | 기능별 자동 정지(§16.6)의 append-only 기록과 재개 조건 | 시행령 | **완료(2026-07-24)** — §16.2 기록 사건 확장 + §16.6 자동 복귀 금지 |
 | ~~**G2a**~~ | 엔진 활성화 acceptance criteria (정책 불변조건) | 시행령 | **완료 — §16 비준(2026-07-24)** |
@@ -363,7 +366,6 @@ G2b 엔진 활성화 선언 → 이와 함께 contracts를 active로 전이
 | G3-C2 | Observation의 열람 검색 강등·가시성 |
 | G3-C3 | consistency scan의 후보 집합·관측 영향 라우팅 |
 | G3-C4 | signed Observation lifecycle · signing · storage-gate · legacy-migration |
-| G4 | governance 스키마 + `RELEASE.yaml` + X/Y/Z 호환성 전파 |
 | G5 | `author`/`drafter`의 카디널리티 (단일값 구현은 진행 가능) |
 | 하네스 실측 | `harness-adapter`, `storage-gate`, 쓰기 provenance, 하네스가 직접 읽고 쓰는 계약 |
 
@@ -393,18 +395,19 @@ G2b 엔진 활성화 선언 → 이와 함께 contracts를 active로 전이
 잠그면 안 된다. G2b는 시스템 전체의 엔진 활성화이지 개별 계약의 비소급 기산점을 대신하지
 않는다.
 
-## 9. 릴리스와 엔진 활성화 — G4 후보안 (비활성)
+## 9. 릴리스와 엔진 활성화 *(G4 확정 — 시행령 §17.4)*
 
-*이 절은 확정 사항이 아니다. 버전 체계는 G4의 비준 대상이며, 아래는 대안+추천의
-추천안이다.*
+*버전 체계는 시행령 §17.4가 정본이다. 이 절은 그 요약과 mechanism 측 귀결이다.*
 
 릴리스와 엔진 활성화는 다른 사건이다. 통치 문서는 엔진 없이 `governance-v1.0.0`을 낼 수
 있고, 엔진 활성화는 acceptance criteria 통과 후의 별도 판정이다.
 
-**추천안**: 릴리스 매니페스트(`RELEASE.yaml`)가 네 정본의 blob과 bump 사유·호환성
+릴리스 매니페스트(`RELEASE.yaml`)가 네 정본의 blob과 bump 사유·호환성
 검토 결과를 고정한다. 전파 규칙 — **X**(헌법 변경): 하위 전부 재검사.
 **Y**(시행령 변경): mechanism과 **두 주석백서 모두** 재검사(헌법 주석도 시행령을
-다수 인용한다). **Z**(규범 의미·호환성 경계 불변): 전파 없음. 저장소에 이미
+다수 인용한다). **Z**(규범 의미·호환성 경계 불변): 하위 행동·스키마의 호환성 재시험은
+요구하지 않는다. 다만 변경된 blob을 고정하는 정확 참조(`annotates`·`implements`)는
+비의미성을 확인한 뒤 재고정한다. 저장소에 이미
 `v1.0.0` 태그가 있으므로 새 계열은 `governance-` 접두로 namespace한다.
 
 G2b 엔진 활성화 기록은 governance 릴리스뿐 아니라 **acceptance criteria를 통과한
