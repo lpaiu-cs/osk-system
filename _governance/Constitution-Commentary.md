@@ -9,7 +9,7 @@ annotates:
   - path: _governance/Constitution.md
     blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
   - path: _governance/Bylaws.md
-    blob: 759857e02f3507c0c961f86870c2d00b521ab61a
+    blob: 83e4496e20e5f43bf7e3a9f3131a5e5a43afcdfa
 related:
   - "[[Constitution]]"
   - "[[Bylaws]]"
@@ -566,11 +566,18 @@ Specification.md`에 있다. **주의: 9술어 각각이 어느 현행 수단으
 ## 부록 C — 미결·잔여 지도
 
 전문은 판정 장부 §4에 있다. 조문에 닿는 잔여만 —
-- **mechanism 위임**: 하네스 연결, Predicate Edge 물리 스키마(YAML·대칭 술어 선언
-  위치), 계수·정규화. 통치 문서는 행동 범위만 정하고 구현은 mechanism 사양이 정한다
-  (3층 모델: 헌법=philosophy, 시행령=policy, 수치·식=mechanism).
+- **mechanism 위임** *(2026-07-24 해소 — 시행령 §15 신설)*: 통치 문서는 행동
+  범위만 정하고 구현은 mechanism 사양이 정한다(3층 모델: 헌법=philosophy,
+  시행령=policy, 실현=mechanism). 위임 방식은 **역참조**로 확정됐다 — 시행령이
+  항목을 열거하는 대신, mechanism 규정이 자기 근거 조문을 가리키고 그 도출
+  범위에서만 유효하다(§15.2, 「참조 자체는 권한을 만들지 않는다」). 개별 위임의
+  실물(하네스 연결, PE 물리 스키마, 계수·정규화)은 그대로 남되 시행령의 표가
+  아니라 mechanism의 `IMPLEMENTS.yaml`이 관리한다. 헌법 10조 4항의 직접 위임
+  (「구체 계수는 mechanism이 정한다」)도 같은 규율 아래 놓인다.
 - **발효(enacted) 상태 체계**: 보류(사용자 판정 — 비준과 발효는 별개, 체계 도입은
-  추후). 현재 헌법·시행령은 비준됐으나 엔진 미구축으로 미발효.
+  추후). 현재 헌법·시행령은 비준됐으나 엔진 미구축으로 미발효. *주의: 시행령
+  §8.5의 「검증 규칙 버전 확정」과 §14.4의 「발효 후 엔진 경로 기록」이 이 미결에
+  걸려 있다 — 발효 체계가 서면 그 시점 규정이 확정된다.*
 - **뼈대 후 판정 묶음**: governance 문서의 존재론적 지위(이 백서 포함 —
   status·ratified 등 frontmatter 필드의 규율과 계보 자기 적용 문제도 이 판정에
   묶임, 07-22). 합집합 규칙은 pass 판정, "공고"는 일상어 확인 + 시행령의
