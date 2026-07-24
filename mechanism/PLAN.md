@@ -78,7 +78,7 @@ mechanism/
   modules/
     signing/  graph-compiler/  search/  consistency/  briefing/
     harness-adapter/  casebook/  storage-gate/  legacy-migration/
-    authority-validator/     §14.11 집행 — 최초 구축 대상
+    authority-validator/     §14.11 집행 — 사양·인터페이스·fixture가 최초 대상
   activation/          엔진 활성화 사전등록 검증계획 + acceptance report
   fixtures/            합성 golden 전용
 ```
@@ -277,7 +277,9 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 ### G2a 이전의 경계 (사전등록)
 
 **허용** — `IMPLEMENTS.yaml`, `ARCHITECTURE.md`, 계약 draft, 모듈 사양, 합성
-fixture 설계, `authority-validator` 구축.
+fixture 설계, `authority-validator`의 사양·인터페이스·fixture 설계. **실행 가능한
+validator의 구현·통과는 G2a와 검증계획 등록 이후**로 미룬다 — 그래야 구현 결과에
+시험을 맞추지 않는 사전등록의 취지가 유지된다(§16.7).
 
 **금지** — 실행 코드의 상태 변경 경로 활성화, 실제 vault write, 실서명, migration
 write, 계수 활성화, **봉인 계약의 `active` 전이**.
@@ -288,8 +290,10 @@ acceptance criteria가 비준되기 전에 계약이 잠긴다. 엔진 활성화
 실서명을 허용하지 않는 **`test-active`**를 쓴다.
 
 이 경계가 없으면 구현 결과를 본 뒤 acceptance criteria를 맞추게 된다.
-`authority-validator`(§14.11)와 activation registry는 **외부 행동을 하는 다른
-어떤 모듈보다 먼저** 구축·통과해야 한다 — 감시자가 피감시자보다 늦게 생기면 안 된다.
+**감시자가 피감시자보다 늦게 생기면 안 된다.** `authority-validator`(§14.11)와
+activation registry의 **사양·인터페이스**는 다른 모듈의 사양보다 먼저 확정하고,
+그 **실행 가능한 구현**은 다른 어떤 외부 행동 모듈보다 먼저 구축·통과한다 —
+사양은 G2a 이전, 구현은 G2a 이후.
 
 ### 순서
 
