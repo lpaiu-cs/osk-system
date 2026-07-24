@@ -298,27 +298,32 @@ activation registry의 **사양·인터페이스**는 다른 모듈의 사양보
 ### 순서
 
 ```text
-[즉시 병렬]
-  IMPLEMENTS.yaml + ARCHITECTURE.md 초안      원자 의무 분해가 먼저
-  authority-validator (§14.11)                 최초 실행 모듈
+[G2a 이전 — 즉시 병렬, 실행 코드 없음]
+  IMPLEMENTS.yaml + ARCHITECTURE.md 초안       원자 의무 분해가 먼저
+  authority-validator 사양·인터페이스·fixture   실행 가능 구현은 G2a 이후
   하네스 실측(§6.5)
   G4 판정 요청 · G1 해석 시도 · G5 제출
-
-contracts/ draft → 실측 반영 → 독립 검토 → candidate → 재현 검증
-  ( active 전이는 G2b 선언과 함께. 그 전 검증 실행은 test-active )
-  · canonicalization은 원소별로 나눠 검토: 알고리즘·버전 / UTF-8·Unicode·줄바꿈 /
-    YAML typing·중복 키·키 순서 / PE 정규화·대상 식별자 / 포함·제외 필드 /
-    round-trip 규칙 / 단사성 / golden vector
-
-modules/ 사양 작성 (실행 코드 아님)
+  contracts/ draft                              실측 반영
+  modules/ 사양 작성                            실행 코드 아님
   · graph-compiler는 참조 의미론을 먼저 확정한다 — cycle/SCC 처리, 다중 경로의
     중복 여부, 노드 수와 가중 비용의 결합, 정지된 PE·미서명·휴면 처리,
     replaces 승계의 시작·종료 조건
+  · canonicalization 원소별 검토: 알고리즘·버전 / UTF-8·Unicode·줄바꿈 /
+    YAML typing·중복 키·키 순서 / PE 정규화·대상 식별자 / 포함·제외 필드 /
+    round-trip 규칙 / 단사성 / golden vector
   · 합성 fixture로 브리핑 폭주·과도한 은폐가 없는지 확인
 
-G2a 기준 설계·비준  ← 여기까지가 사전등록
+G2a §16 비준  ← 여기까지가 사전등록
   ↓
-구현 → test-active로 검증 → 기준 충족(ready)
+사전등록 검증계획 고정·독립 검토(§16.7)
+  ↓
+authority-validator·activation registry 구현·통과   감시자가 먼저
+  ↓
+나머지 실행 코드 구현
+  ↓
+contracts candidate → 재현 검증 (test-active로 실행 검증 — 실서명 금지)
+  ↓
+기준 충족(ready)
   ↓
 G2b 엔진 활성화 선언 → 이와 함께 contracts를 active로 전이
 ```
