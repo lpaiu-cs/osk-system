@@ -79,8 +79,16 @@ mechanism/
     signing/  graph-compiler/  search/  consistency/  briefing/
     harness-adapter/  casebook/  storage-gate/  legacy-migration/
     authority-validator/     §14.11 집행 — 최초 구축 대상
+  activation/          엔진 활성화 사전등록 검증계획 + acceptance report
   fixtures/            합성 golden 전용
 ```
+
+**엔진 활성화의 2층 분리.** 시행령 §16(G2a)은 **정책 불변조건만** 비준한다 —
+서명 결정론·비소급, 트랜잭션 무결성, 정본 복구 가능성, 필수 보고 무손실, 권한
+중지·회수, legacy 무단 쓰기·삭제 금지. 그 불변조건을 **어떻게 시험하는가**(golden
+vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/`의 사전등록
+검증계획이 정한다. 검증계획은 구현 전에 고정 blob으로 등록하고 독립 검토하되 사용자
+비준을 요하지 않는다 — 시행령 기준을 **완화**하는 변경만 상향한다.
 
 **`IMPLEMENTS.yaml`의 키는 조문이 아니라 원자 의무다.** 한 조항에 여러 상태 전이와
 사용자 권한이 들어 있는 곳(§7.3, §10.2~5 등)에서 "조문 하나에 소유자 하나"만으로는
@@ -255,8 +263,7 @@ mechanism/
 | **G3-C4** | 서명된 Observation 노드의 존치 출구 | 시행령 | 새 생애 규칙 — signing·lifecycle·migration에 걸린다 |
 | **G4** | **governance 문서에 한정** — 존재론적 지위, 저작·frontmatter 규율, `governance-vX.Y.Z` 버전 체계와 릴리스 매니페스트 | 시행령 | 기존 "뼈대 후 판정 묶음"과 병합. **3-Layer·Workbench 스키마를 차단하지 않는다** |
 | **G5** | **3-Layer·Workbench**에서 복수 `author`/`drafter`의 허용 여부·의미·순서·주도 저작 관계 | 시행령 | §1.11·§5.3 개정 후보 |
-
-| **G2a** | 엔진 활성화 acceptance criteria | 시행령 | **구현 착수 전** 비준 (§7의 경계 참조) |
+| **G2a** | 엔진 활성화 acceptance criteria (정책 불변조건) | 시행령 | **구현 착수 전** 비준 (§7의 경계 참조) |
 | **G2b** | 엔진 활성화 선언 | 사용자 판정 | 검증 통과 후. mechanism 내용의 총괄 비준이 **아니다** — 기준은 사용자가, 충족 여부는 검증이, 내용의 책임은 에이전트가 진다 |
 
 **B1-core**는 G-트랙이 아니다 — frontmatter 필드의 전수 삼분류
@@ -326,8 +333,9 @@ G2b 엔진 활성화 선언 → 이와 함께 contracts를 active로 전이
 
 전체 contracts를 하나의 게이트로 묶지 않는다 — 병렬성과 권한 경계를 둘 다 잃는다.
 
-**legacy 이행**은 G2a acceptance criteria에 포함한다 — 구 vault 노드의 dry-run
-분류표와 사용자 승인 write set을 요구한다(헌법 14조 3항, §11.6).
+**legacy 이행**의 불변조건(승인 write set 밖 쓰기·삭제 0건)은 §16 acceptance
+criteria에 들어가고, 그 시험 절차(dry-run 분류표 형식 등)는 `mechanism/activation/`이
+정한다(헌법 14조 3항, §11.6).
 
 ## 8. 봉인 계약의 lifecycle
 
