@@ -9,7 +9,7 @@ annotates:
   - path: _governance/Constitution.md
     blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
   - path: _governance/Bylaws.md
-    blob: 861b045139d3f7d756a1ddd4da672fd152282618
+    blob: 1a1c7715d11a1c4798200ff5b32aa2249d8d4cbd
 related:
   - "[[Bylaws]]"
   - "[[Constitution]]"
@@ -519,7 +519,7 @@ mechanism으로 내리려 했으나 되돌렸다. 모든 검증을 mechanism이 
 `IMPLEMENTS.yaml`의 양방향 커버리지 검사, golden vector, 상세 검토 프로토콜 —
 은 mechanism 층이 스스로 진다.
 
-## §16. 엔진 활성화 *(2026-07-25 신설)*
+## §16. 엔진 활성화 *(2026-07-24 신설)*
 
 **구현.** 발효 체계의 미결(주석 부록 C, 「비준과 발효는 별개, 체계 도입은 추후」)을
 닫는다. 규범적 효력은 비준으로 이미 발생하므로 이 사건은 헌법 발효가 아니라

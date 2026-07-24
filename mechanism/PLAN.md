@@ -6,13 +6,13 @@ author: agent:claude
 drafter: agent:claude
 implements:
   - path: _governance/Bylaws.md
-    blob: 83e4496e20e5f43bf7e3a9f3131a5e5a43afcdfa
-    clause: "§15"
+    blob: 1a1c7715d11a1c4798200ff5b32aa2249d8d4cbd
+    clause: "§15·§16"
   - path: _governance/Constitution.md
     blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
 ---
 
-# mechanism 사양 — 착수 계획 (draft, rev.3)
+# mechanism 사양 — 착수 계획 (draft, rev.4)
 
 ## 0. 이 문서의 지위
 
@@ -88,7 +88,20 @@ mechanism/
 중지·회수, legacy 무단 쓰기·삭제 금지. 그 불변조건을 **어떻게 시험하는가**(golden
 vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/`의 사전등록
 검증계획이 정한다. 검증계획은 구현 전에 고정 blob으로 등록하고 독립 검토하되 사용자
-비준을 요하지 않는다 — 시행령 기준을 **완화**하는 변경만 상향한다.
+비준을 요하지 않는다 — 시행령 기준을 **완화**하는 변경만 상향한다(§16.7).
+
+**`failure_scope` — §16.6의 물리적 적용 범위.** §16.6은 「§16.4 조건 실패는 엔진
+전체 정지, 그 밖의 기능 실패는 그 기능의 신규 적용 정지」로 행동을 정했다. 어느
+실패가 어느 기능을 멈추는지는 검증계획이 정하되, 에이전트가 범위를 지나치게 좁혀
+잡지 못하도록 다음을 규율한다.
+
+- 각 시험은 `failure_scope`를 **반드시** 선언한다.
+- §16.4 항목의 실패 범위는 **항상 `engine-wide`**다.
+- 그 밖의 시험은 영향받는 활성 기능을 **닫힌 목록**으로 식별하고 `IMPLEMENTS.yaml`의
+  원자 의무에 연결한다.
+- 범위가 없거나 모호하거나 공유 의존성을 분리할 수 없으면 **보수적으로
+  `engine-wide`**다.
+- 등록 후 범위 변경은 검증계획 새 버전·독립 검토·영향 시험 재실행을 요구한다(§16.7).
 
 **`IMPLEMENTS.yaml`의 키는 조문이 아니라 원자 의무다.** 한 조항에 여러 상태 전이와
 사용자 권한이 들어 있는 곳(§7.3, §10.2~5 등)에서 "조문 하나에 소유자 하나"만으로는
@@ -98,7 +111,7 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 
 ```yaml
 - id: SIGN-CONFIRM-IMMUTABLE
-  clause: { path: _governance/Bylaws.md, blob: 83e4496e…, ref: "§8.1(4)" }
+  clause: { path: _governance/Bylaws.md, blob: 1a1c7715…, ref: "§8.1(4)" }
   invariant: "사용자 확인 뒤 서명 대상 상태는 변경되지 않는다"
   owner: signing            # 정확히 하나
   consumers: [graph-compiler, briefing]

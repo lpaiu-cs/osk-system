@@ -2,7 +2,7 @@
 type: bylaws
 based-on: "[[Constitution]]"
 created: 2026-07-17
-revised: 2026-07-25
+revised: 2026-07-24
 ratified: 2026-07-21
 status: ratified
 replaces: "[[Bylaws-2026-07-06]]"
