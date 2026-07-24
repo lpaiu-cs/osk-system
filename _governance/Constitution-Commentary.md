@@ -9,7 +9,7 @@ annotates:
   - path: _governance/Constitution.md
     blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
   - path: _governance/Bylaws.md
-    blob: 1a1c7715d11a1c4798200ff5b32aa2249d8d4cbd
+    blob: 25ed177239a9a89d7cf1c48d292c400ccfffa97c
 related:
   - "[[Constitution]]"
   - "[[Bylaws]]"

@@ -6,7 +6,7 @@ author: agent:claude
 drafter: agent:claude
 implements:
   - path: _governance/Bylaws.md
-    blob: 1a1c7715d11a1c4798200ff5b32aa2249d8d4cbd
+    blob: 25ed177239a9a89d7cf1c48d292c400ccfffa97c
     clause: "§15·§16"
   - path: _governance/Constitution.md
     blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
@@ -122,7 +122,7 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 
 ```yaml
 - id: SIGN-CONFIRM-IMMUTABLE
-  clause: { path: _governance/Bylaws.md, blob: 1a1c7715…, ref: "§8.1(4)" }
+  clause: { path: _governance/Bylaws.md, blob: 25ed1772…, ref: "§8.1(4)" }
   invariant: "사용자 확인 뒤 서명 대상 상태는 변경되지 않는다"
   owner: signing            # 정확히 하나
   consumers: [graph-compiler, briefing]
