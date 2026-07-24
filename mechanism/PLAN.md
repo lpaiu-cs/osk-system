@@ -12,7 +12,7 @@ implements:
     blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
 ---
 
-# mechanism 사양 — 착수 계획 (draft, rev.2)
+# mechanism 사양 — 착수 계획 (draft, rev.3)
 
 ## 0. 이 문서의 지위
 
@@ -256,12 +256,14 @@ mechanism/
 | **G4** | **governance 문서에 한정** — 존재론적 지위, 저작·frontmatter 규율, `governance-vX.Y.Z` 버전 체계와 릴리스 매니페스트 | 시행령 | 기존 "뼈대 후 판정 묶음"과 병합. **3-Layer·Workbench 스키마를 차단하지 않는다** |
 | **G5** | **3-Layer·Workbench**에서 복수 `author`/`drafter`의 허용 여부·의미·순서·주도 저작 관계 | 시행령 | §1.11·§5.3 개정 후보 |
 
-**B1-core**는 G-트랙이 아니다 — 3-Layer·Workbench·사건/엔진 기록 필드의 전수
-삼분류(`signed`/`excluded`/`derived`)는 §8.2가 mechanism에 위임한 범위 안이다.
-다만 그 판정에서 정책 결정이 필요하다고 드러나는 필드(예: 3-Layer의 `status`)는
-§15.3에 따라 개별적으로 상향한다.
-| **G2a** | 발효 acceptance criteria | governance 판정 | **구현 착수 전** 비준 (§7의 경계 참조) |
-| **G2b** | 발효 선언 | governance 판정 | 검증 통과 후. mechanism 내용의 총괄 비준이 **아니다** — 기준은 사용자가, 충족 여부는 검증이, 내용의 책임은 에이전트가 진다 |
+| **G2a** | 엔진 활성화 acceptance criteria | 시행령 | **구현 착수 전** 비준 (§7의 경계 참조) |
+| **G2b** | 엔진 활성화 선언 | 사용자 판정 | 검증 통과 후. mechanism 내용의 총괄 비준이 **아니다** — 기준은 사용자가, 충족 여부는 검증이, 내용의 책임은 에이전트가 진다 |
+
+**B1-core**는 G-트랙이 아니다 — frontmatter 필드의 전수 삼분류
+(`signed`/`excluded`/`derived`)이며, **권원은 하나가 아니라 대상별로 나뉜다**:
+3-Layer 서명 필드는 §8.2, Workbench 필드는 §5, 사건부 필드는 §10.4, 엔진 운영
+기록은 각 조문의 역참조. 판정에서 정책 결정이 필요하다고 드러나는 필드(예:
+3-Layer의 `status` ↔ 헌법 11조 1항의 상태 라벨 금지)는 §15.3으로 개별 상향한다.
 
 ## 7. 실행 순서와 게이트
 
@@ -275,7 +277,7 @@ write, 계수 활성화, **봉인 계약의 `active` 전이**.
 
 봉인 계약은 G2a 이전에 `candidate`와 재현 검증 통과까지만 간다. `active`는
 「새 서명에 사용 가능」이고 동시에 **동결 기산점**이므로(§8), G2a 이전에 전이하면
-acceptance criteria가 비준되기 전에 계약이 잠긴다. 발효 전 검증 실행이 필요하면
+acceptance criteria가 비준되기 전에 계약이 잠긴다. 엔진 활성화 전 검증 실행이 필요하면
 실서명을 허용하지 않는 **`test-active`**를 쓴다.
 
 이 경계가 없으면 구현 결과를 본 뒤 acceptance criteria를 맞추게 된다.
@@ -292,7 +294,7 @@ acceptance criteria가 비준되기 전에 계약이 잠긴다. 발효 전 검�
   G4 판정 요청 · G1 해석 시도 · G5 제출
 
 contracts/ draft → 실측 반영 → 독립 검토 → candidate → 재현 검증
-  ( active 전이는 G2a 비준 뒤. 검증 실행이 필요하면 test-active )
+  ( active 전이는 G2b 선언과 함께. 그 전 검증 실행은 test-active )
   · canonicalization은 원소별로 나눠 검토: 알고리즘·버전 / UTF-8·Unicode·줄바꿈 /
     YAML typing·중복 키·키 순서 / PE 정규화·대상 식별자 / 포함·제외 필드 /
     round-trip 규칙 / 단사성 / golden vector
@@ -305,7 +307,9 @@ modules/ 사양 작성 (실행 코드 아님)
 
 G2a 기준 설계·비준  ← 여기까지가 사전등록
   ↓
-contracts active 전이 → 구현 → 검증 → G2b 발효 선언
+구현 → test-active로 검증 → 기준 충족(ready)
+  ↓
+G2b 엔진 활성화 선언 → 이와 함께 contracts를 active로 전이
 ```
 
 ### 게이트의 실제 영향 범위
@@ -316,7 +320,7 @@ contracts active 전이 → 구현 → 검증 → G2b 발효 선언
 | G3-C2 | Observation의 열람 검색 강등·가시성 |
 | G3-C3 | consistency scan의 후보 집합·관측 영향 라우팅 |
 | G3-C4 | signed Observation lifecycle · signing · storage-gate · legacy-migration |
-| G4 | governance 스키마 + `RELEASE.yaml` + X/Y/Z 호환성 전파 + B1 필드 확정 |
+| G4 | governance 스키마 + `RELEASE.yaml` + X/Y/Z 호환성 전파 |
 | G5 | `author`/`drafter`의 카디널리티 (단일값 구현은 진행 가능) |
 | 하네스 실측 | `harness-adapter`, `storage-gate`, 쓰기 provenance, 하네스가 직접 읽고 쓰는 계약 |
 
@@ -327,7 +331,7 @@ contracts active 전이 → 구현 → 검증 → G2b 발효 선언
 
 ## 8. 봉인 계약의 lifecycle
 
-§8.5는 비소급을 발효에 묶지 않는다. 서명이 어떤 버전을 참조하는 순간 그 버전은
+§8.5는 비소급을 엔진 활성화에 묶지 않는다. 서명이 어떤 버전을 참조하는 순간 그 버전은
 이미 소급 보호 대상이다. 따라서 동결 기산점은 G2b가 아니다.
 
 | 상태 | 의미 |
@@ -335,21 +339,21 @@ contracts active 전이 → 구현 → 검증 → G2b 발효 선언
 | `draft` | 비활성. 실서명이 참조할 수 없다. 제자리 수정 가능 |
 | `candidate` | golden vector와 별도 세션 재현 검증의 대상(§8.5). 실서명 불가 |
 | `test-active` | 검증 실행에만 사용. **실서명 금지** — 동결 기산점이 아니다 |
-| `active` | 새 서명에 사용 가능. **제자리 수정 금지**. G2a 비준 뒤에만 전이 |
+| `active` | 새 서명에 사용 가능. **제자리 수정 금지**. G2b 선언과 함께 전이 |
 | `retired` | 새 서명에는 쓰지 않되 기존 서명 검증을 위해 보존(§8.5) |
 
 **동결 기산점** — `active` 전이와 최초 실서명 참조 중 **먼저 도달한 시점**.
 `test-active`는 기산점이 아니며, 그래서 실서명을 금지한다 — 시험 실행이 계약을
-잠그면 안 된다. G2b는 시스템 전체의 발효이지 개별 계약의 비소급 기산점을 대신하지
+잠그면 안 된다. G2b는 시스템 전체의 엔진 활성화이지 개별 계약의 비소급 기산점을 대신하지
 않는다.
 
-## 9. 릴리스와 발효 — G4 후보안 (비활성)
+## 9. 릴리스와 엔진 활성화 — G4 후보안 (비활성)
 
 *이 절은 확정 사항이 아니다. 버전 체계는 G4의 비준 대상이며, 아래는 대안+추천의
 추천안이다.*
 
-릴리스와 발효는 다른 사건이다. 통치 문서는 엔진 없이 `governance-v1.0.0`을 낼 수
-있고, 발효는 acceptance criteria 통과 후의 별도 판정이다.
+릴리스와 엔진 활성화는 다른 사건이다. 통치 문서는 엔진 없이 `governance-v1.0.0`을 낼 수
+있고, 엔진 활성화는 acceptance criteria 통과 후의 별도 판정이다.
 
 **추천안**: 릴리스 매니페스트(`RELEASE.yaml`)가 네 정본의 blob과 bump 사유·호환성
 검토 결과를 고정한다. 전파 규칙 — **X**(헌법 변경): 하위 전부 재검사.
@@ -357,7 +361,7 @@ contracts active 전이 → 구현 → 검증 → G2b 발효 선언
 다수 인용한다). **Z**(규범 의미·호환성 경계 불변): 전파 없음. 저장소에 이미
 `v1.0.0` 태그가 있으므로 새 계열은 `governance-` 접두로 namespace한다.
 
-G2b 발효 기록은 governance 릴리스뿐 아니라 **acceptance criteria를 통과한
+G2b 엔진 활성화 기록은 governance 릴리스뿐 아니라 **acceptance criteria를 통과한
 mechanism·엔진 구현 릴리스도 함께 고정**한다. 문서만 고정하면 어느 코드가
 통과했는지 특정할 수 없다.
 
