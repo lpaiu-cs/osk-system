@@ -12,7 +12,7 @@ implements:
     blob: 49c1ebecd769f62764ba434029e6c12d654a706a
 ---
 
-# mechanism 사양 — 착수 계획 (draft, rev.5)
+# mechanism 사양 — 착수 계획 (draft, rev.6)
 
 ## 0. 이 문서의 지위
 
@@ -266,20 +266,18 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 **표에 없는 것과 그 이유**
 - **PE의 '응집' 반영식** — 시행령이 그 행동을 특정하지 않았다. G1 해소 전에는 도출
   근거가 없다(§15.2).
-- **governance 문서 frontmatter 스키마** — G4 소관.
 - **복수 `author`/`drafter`** — **G5 완료(2026-07-24).** §1.11이 `author` 단수·
   `drafter` 복수(참여가 처음 기록된 순서, 기초자별 한 번씩)를 확정했고 §5.2·3이
   Workbench에 이를 적용했다. mechanism에 남은 것은 동순위 정렬의 결정론과 물리
   형식뿐이다 — 아래 커버리지 표를 따른다.
-- **governance 문서의 저작·frontmatter 규율** — §1.11·헌법 9조 4항은 「모든 **3-Layer
-  노드**」를, §5.3은 **Workbench**를 규율한다. 통치 문서는 둘 중 어느 쪽도 아니므로
-  그 frontmatter는 위반이 아니라 **미규율**이다. *(현행 시행령의 `drafter:
-  "agent:claude, agent:gpt"`도 이 미규율 상태에 놓인다 — 앞선 rev.2에서 이를 §5.3
-  위반이라 적은 것은 오귀속이었다.)* **G4 소관.**
+- **통치 문서의 저작·frontmatter 규율** — **§17.2로 해소(2026-07-24).** §1.11·헌법
+  9조 4항은 3-Layer를, §5.3은 Workbench를 규율하므로 통치 문서는 오래 미규율
+  상태였다. §17.2가 통치 정본·주석백서의 규약을 정했고, 그 집행은 커버리지 표의
+  `authority-validator`가 진다.
 - **`type`/`status`/`project`/`related`의 3-Layer·Workbench 적용** — **B1-core**로
   별도 처리한다. 3-Layer 노드의 `status`가 신뢰 상태 라벨로 기능하면 헌법 11조
   1항과 충돌하므로, 폐지·유지·의미 재정의를 전수 판정한다. governance 문서에서의
-  같은 필드는 G4가 본다.
+  같은 필드는 §17.2가 정한다.
 
 ## 6. G-트랙 — 사용자 비준이 필요한 것
 
@@ -331,7 +329,7 @@ activation registry의 **사양·인터페이스**는 다른 모듈의 사양보
   IMPLEMENTS.yaml + ARCHITECTURE.md 초안       원자 의무 분해가 먼저
   authority-validator 사양·인터페이스·fixture   실행 가능 구현은 G2a 이후
   하네스 실측(§6.5)
-  G4 판정 요청 · G1 해석 시도 · G5 제출
+  G1 해석 시도  (G3·G4·G5·G6은 완료·기각 — §6 표 참조)
   contracts/ draft                              실측 반영
   modules/ 사양 작성                            실행 코드 아님
   · graph-compiler는 참조 의미론을 먼저 확정한다 — cycle/SCC 처리, 다중 경로의
@@ -363,10 +361,6 @@ G2b 엔진 활성화 선언 → 이와 함께 contracts를 active로 전이
 | 게이트 | 막는 것 |
 |---|---|
 | G1 | 응집 반영식만 |
-| G3-C2 | Observation의 열람 검색 강등·가시성 |
-| G3-C3 | consistency scan의 후보 집합·관측 영향 라우팅 |
-| G3-C4 | signed Observation lifecycle · signing · storage-gate · legacy-migration |
-| G5 | `author`/`drafter`의 카디널리티 (단일값 구현은 진행 가능) |
 | 하네스 실측 | `harness-adapter`, `storage-gate`, 쓰기 provenance, 하네스가 직접 읽고 쓰는 계약 |
 
 전체 contracts를 하나의 게이트로 묶지 않는다 — 병렬성과 권한 경계를 둘 다 잃는다.
