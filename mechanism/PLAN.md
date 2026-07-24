@@ -6,7 +6,7 @@ author: agent:claude
 drafter: agent:claude
 implements:
   - path: _governance/Bylaws.md
-    blob: 25ed177239a9a89d7cf1c48d292c400ccfffa97c
+    blob: 42422173013dd90b09b5cebc29130a1091139e82
     clause: "§15·§16"
   - path: _governance/Constitution.md
     blob: f6a8cc08257f4c4528ccc3af63926db0d06b13d4
@@ -122,7 +122,7 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 
 ```yaml
 - id: SIGN-CONFIRM-IMMUTABLE
-  clause: { path: _governance/Bylaws.md, blob: 25ed1772…, ref: "§8.1(4)" }
+  clause: { path: _governance/Bylaws.md, blob: 42422173…, ref: "§8.1(4)" }
   invariant: "사용자 확인 뒤 서명 대상 상태는 변경되지 않는다"
   owner: signing            # 정확히 하나
   consumers: [graph-compiler, briefing]
@@ -248,7 +248,8 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 | §10.6 | 라우팅 초기 임계·분포 보정식·보정 한계·rollback | `consistency` |
 | §1.16 | 열람 검색 미서명 강등 계수 | `search` |
 | §9.3 | 효력이 발화한 replaces의 구판 검색 강등 계수 | `search` |
-| §8.2, §1.11 | `signed` 분류 필드의 물리 형식(제목·본문·선언 PE·`author`·`drafter`) | `signed-state-schema` |
+| §8.2, §1.11 | `signed` 분류 필드의 물리 형식(제목·본문·선언 PE·`author`·`drafter`) — `drafter` 목록의 카디널리티·순서 보존·동순위 tie-break 포함 | `signed-state-schema` |
+| §5.2·3 | Workbench의 `author`/`drafter`·`scopes` 물리 형식 (**§8.2 봉인 대상 아님** — 형식은 재사용 가능) | `node-envelope` |
 | §8.2·3 | 필드 분류표·namespace·파싱 규칙 (봉인 대상 — §3) | `signed-state-schema` |
 | §4.4 | locality 신호(주제·활동·시간·출처) 메타데이터 형식 | `node-envelope` |
 | §4.3 | 현행 정본 / 고정 스냅샷 구분 표기 | `node-envelope` |
@@ -263,10 +264,10 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 - **PE의 '응집' 반영식** — 시행령이 그 행동을 특정하지 않았다. G1 해소 전에는 도출
   근거가 없다(§15.2).
 - **governance 문서 frontmatter 스키마** — G4 소관.
-- **3-Layer·Workbench의 복수 `author`/`drafter` 표기** — §1.11(모든 3-Layer 노드)과
-  §5.3(Workbench)이 각 필드를 `user` 또는 단일 `agent:<하네스>`로 규정한다. 복수의
-  허용 여부·의미는 YAML 배열 선택 이전의 정책 문제다(모호하면 승인제, 헌법 13조
-  3항). **G5로 올린다.** 그때까지 구현은 단일 값만 지원한다.
+- **복수 `author`/`drafter`** — **G5 완료(2026-07-24).** §1.11이 `author` 단수·
+  `drafter` 복수(참여가 처음 기록된 순서, 기초자별 한 번씩)를 확정했고 §5.2·3이
+  Workbench에 이를 적용했다. mechanism에 남은 것은 동순위 정렬의 결정론과 물리
+  형식뿐이다 — 아래 커버리지 표를 따른다.
 - **governance 문서의 저작·frontmatter 규율** — §1.11·헌법 9조 4항은 「모든 **3-Layer
   노드**」를, §5.3은 **Workbench**를 규율한다. 통치 문서는 둘 중 어느 쪽도 아니므로
   그 frontmatter는 위반이 아니라 **미규율**이다. *(현행 시행령의 `drafter:
@@ -282,12 +283,12 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 | # | 항목 | 상향 층 | 성격 |
 |---|---|---|---|
 | **G1** | PE의 '응집' 반영 양상 | 시행령 | 현행 문면에서 단일 행동이 도출되는지 해석을 먼저 시도하고, 미도출이면 **개정**. 해석 기록으로 대체하지 않는다 |
-| **G3-C2** | 헌법 11조 3항 Observation 강등 사정거리 | **건별 판정** | 「미서명 노드」의 의미 범위를 바꾸면 헌법, 그 범위 안의 운영 규칙이면 시행령(§15.3) |
-| **G3-C3** | §10.2 '만' 문면 | 시행령 | 주기 스캔의 후보 집합과 관측 영향 라우팅을 바꾼다 |
-| **G3-C4** | 서명된 Observation 노드의 존치 출구 | 시행령 | 새 생애 규칙 — signing·lifecycle·migration에 걸린다 |
+| ~~**G3-C2**~~ | 헌법 11조 3항 Observation 강등 사정거리 | — | **기각(2026-07-24)** — §1.16 검색의 두 결이 이미 경계를 만든다. 작업 검색은 강등 없음, 열람 검색은 헌법 11조 3항 그대로 |
+| ~~**G3-C3**~~ | §10.2 '만' 문면 | 시행령 | **완료(2026-07-24)** — §12.3에 6번째 Review Trigger(서명 시 검사 결과만 집계) |
+| ~~**G3-C4**~~ | 서명된 Observation 노드의 존치 출구 | 시행령 | **완료(2026-07-24)** — 새 규칙이 아니라 §10.4 말미의 확인 문장(§10.2가 이미 관측 영향 후보로 보낸다) |
 | **G4** | **governance 문서에 한정** — 존재론적 지위, 저작·frontmatter 규율, `governance-vX.Y.Z` 버전 체계와 릴리스 매니페스트 | 시행령 | 기존 "뼈대 후 판정 묶음"과 병합. **3-Layer·Workbench 스키마를 차단하지 않는다** |
-| **G5** | **3-Layer·Workbench**에서 복수 `author`/`drafter`의 허용 여부·의미·순서·주도 저작 관계 | 시행령 | §1.11·§5.3 개정 후보 |
-| **G6** | 기능별 자동 정지(§16.6)의 append-only 기록과 재개 조건 | 시행령 | **엔진 활성화 전 필수.** §16.6은 기능별 신규 적용 중지만 정하고 재개를 정하지 않았다 — §16.2 기록 사건에 자동 정지·재개를 추가하고, §16.4 실패의 전역 중지는 §16.8을 따르되 그 밖의 기능은 조건 해소·영향 시험 재실행·사용자 재개 기록 뒤에만 재개한다고 명시 |
+| ~~**G5**~~ | **3-Layer·Workbench**에서 복수 `author`/`drafter` | 시행령 | **완료(2026-07-24)** — §1.11(`author` 단수·`drafter` 복수)·§5.2(공간 표기 갱신)·§5.3 |
+| ~~**G6**~~ | 기능별 자동 정지(§16.6)의 append-only 기록과 재개 조건 | 시행령 | **완료(2026-07-24)** — §16.2 기록 사건 확장 + §16.6 자동 복귀 금지 |
 | ~~**G2a**~~ | 엔진 활성화 acceptance criteria (정책 불변조건) | 시행령 | **완료 — §16 비준(2026-07-24)** |
 | **G2b** | 엔진 활성화 선언 | 사용자 판정 | 검증 통과 후. mechanism 내용의 총괄 비준이 **아니다** — 기준은 사용자가, 충족 여부는 검증이, 내용의 책임은 에이전트가 진다 |
 
