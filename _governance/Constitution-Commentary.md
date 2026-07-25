@@ -9,7 +9,7 @@ annotates:
   - path: _governance/Constitution.md
     blob: 49c1ebecd769f62764ba434029e6c12d654a706a
   - path: _governance/Bylaws.md
-    blob: fdff3eef0ceedda85de11d3ae922026b24a386b8
+    blob: 18896207f6ac07a06cabd624abc80e2b5ed41733
 ---
 
 # knowledge-vault 헌법 주석백서 (draft)
