@@ -6,13 +6,13 @@ drafter:
   - agent:claude
 implements:
   - path: _governance/Bylaws.md
-    blob: ffe7e633ca6a76c382d99932b368d57dc0c576aa
+    blob: fdff3eef0ceedda85de11d3ae922026b24a386b8
     clause: "§15·§16·§17"
   - path: _governance/Constitution.md
     blob: 49c1ebecd769f62764ba434029e6c12d654a706a
 ---
 
-# mechanism 사양 — 착수 계획 (draft, rev.6)
+# mechanism 사양 — 착수 계획 (draft, rev.7)
 
 ## 0. 이 문서의 지위
 
@@ -78,6 +78,7 @@ mechanism/
   modules/
     signing/  graph-compiler/  search/  consistency/  briefing/
     harness-adapter/  casebook/  storage-gate/  legacy-migration/
+    sense-organizer/
     authority-validator/     §14.11 집행 — 사양·인터페이스·fixture가 최초 대상
   activation/          엔진 활성화 사전등록 검증계획 + acceptance report
   fixtures/            합성 golden 전용
@@ -122,7 +123,7 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 
 ```yaml
 - id: SIGN-CONFIRM-IMMUTABLE
-  clause: { path: _governance/Bylaws.md, blob: ffe7e633…, ref: "§8.1(4)" }
+  clause: { path: _governance/Bylaws.md, blob: fdff3eef…, ref: "§8.1(4)" }
   invariant: "사용자 확인 뒤 서명 대상 상태는 변경되지 않는다"
   owner: signing            # 정확히 하나
   consumers: [graph-compiler, briefing]
@@ -184,7 +185,9 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 과 그 사유를 기록한다 — 그래야 누락과 의도적 제외를 구별할 수 있다. seed에 없지만
 모집단에 반드시 드는 것으로 확인된 것: §5.6(활성 집합·자동 보존 전환), §6.4(사용자
 모델 주간 대조), §7.2(Workbench 이관 방향), §9.5(구판 배선 이관), §11.1~3(휴면·
-주의·직접 메모 차등), §12.3(Review Trigger), §13.3(자율권 부여와 즉시 회수의 집행).
+주의·직접 메모 차등), §12.3(Review Trigger), §13.3(자율권 부여와 즉시 회수의 집행),
+§3.1(Sense 포함 위상은 중심성 산입의 입력이 아니며 조직 재편만으로 Link·PE를
+생성·변경하지 않는다 — 기계 검증 가능한 부정 불변조건).
 
 **서명·승격**
 - §8.1 선확정 4단 순서. 파일을 바꾸는 정규화는 (2)에서 전부 적용, 사용자 확인 뒤
@@ -246,6 +249,7 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 | §9.3 | 재검토 전파의 임계와 계수 | `graph-compiler` |
 | §9.4 | 중심성 가중치·승계 계수·계산식 | `graph-compiler` |
 | §10.6 | 라우팅 초기 임계·분포 보정식·보정 한계·rollback | `consistency` |
+| §3.1, §9.4 | Sense 조직 후보의 구체 가중치·결합식·계산 주기·진동 방지 | `sense-organizer` |
 | §1.16 | 열람 검색 미서명 강등 계수 | `search` |
 | §9.3 | 효력이 발화한 replaces의 구판 검색 강등 계수 | `search` |
 | §8.2, §1.11 | `signed` 분류 필드의 물리 형식(제목·본문·선언 PE·`author`·`drafter`) — `drafter` 목록의 카디널리티·순서 보존·동순위 tie-break 포함 | `signed-state-schema` |
@@ -264,8 +268,6 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 | §17.4 | 릴리스 매니페스트 생성·X/Y/Z 판정 후보·정확 참조 재고정 | `authority-validator` |
 
 **표에 없는 것과 그 이유**
-- **PE의 '응집' 반영식** — 시행령이 그 행동을 특정하지 않았다. G1 해소 전에는 도출
-  근거가 없다(§15.2).
 - **복수 `author`/`drafter`** — **G5 완료(2026-07-24).** §1.11이 `author` 단수·
   `drafter` 복수(참여가 처음 기록된 순서, 기초자별 한 번씩)를 확정했고 §5.2·3이
   Workbench에 이를 적용했다. mechanism에 남은 것은 동순위 정렬의 결정론과 물리
@@ -283,7 +285,7 @@ vector, round-trip, DB 복구 절차, fixture, 지표)는 `mechanism/activation/
 
 | # | 항목 | 상향 층 | 성격 |
 |---|---|---|---|
-| **G1** | PE의 '응집' 반영 양상 | 시행령 | 현행 문면에서 단일 행동이 도출되는지 해석을 먼저 시도하고, 미도출이면 **개정**. 해석 기록으로 대체하지 않는다 |
+| ~~**G1**~~ | PE의 '응집' 반영 양상 | 시행령 | **완료(2026-07-25)** — §3.1 두 단계 조직(의미가 적격 범위·중심성이 내부 위상) + §9.4를 산입/사용 분업으로 |
 | ~~**G3-C2**~~ | 헌법 11조 3항 Observation 강등 사정거리 | — | **기각(2026-07-24)** — §1.16 검색의 두 결이 이미 경계를 만든다. 작업 검색은 강등 없음, 열람 검색은 헌법 11조 3항 그대로 |
 | ~~**G3-C3**~~ | §10.2 '만' 문면 | 시행령 | **완료(2026-07-24)** — §12.3에 6번째 Review Trigger(서명 시 검사 결과만 집계) |
 | ~~**G3-C4**~~ | 서명된 Observation 노드의 존치 출구 | 시행령 | **완료(2026-07-24)** — 새 규칙이 아니라 §10.4 말미의 확인 문장(§10.2가 이미 관측 영향 후보로 보낸다) |
@@ -329,7 +331,7 @@ activation registry의 **사양·인터페이스**는 다른 모듈의 사양보
   IMPLEMENTS.yaml + ARCHITECTURE.md 초안       원자 의무 분해가 먼저
   authority-validator 사양·인터페이스·fixture   실행 가능 구현은 G2a 이후
   하네스 실측(§6.5)
-  G1 해석 시도  (G3·G4·G5·G6은 완료·기각 — §6 표 참조)
+  (G-트랙은 전부 완료·기각 — §6 표. 남은 것은 G2b 활성화 선언)
   contracts/ draft                              실측 반영
   modules/ 사양 작성                            실행 코드 아님
   · graph-compiler는 참조 의미론을 먼저 확정한다 — cycle/SCC 처리, 다중 경로의
@@ -360,7 +362,6 @@ G2b 엔진 활성화 선언 → 이와 함께 contracts를 active로 전이
 
 | 게이트 | 막는 것 |
 |---|---|
-| G1 | 응집 반영식만 |
 | 하네스 실측 | `harness-adapter`, `storage-gate`, 쓰기 provenance, 하네스가 직접 읽고 쓰는 계약 |
 
 전체 contracts를 하나의 게이트로 묶지 않는다 — 병렬성과 권한 경계를 둘 다 잃는다.
@@ -432,6 +433,11 @@ mechanism·엔진 구현 릴리스도 함께 고정**한다. 문서만 고정하
 **계수의 cold start.** 사용자가 계수 비준에서 빠지는 만큼 최초 기본값이 가장
 위험하다. 표본·fixture 없이 정하면 브리핑 폭주, 광범위 효력 정지, 또는 중요한
 미서명 지식의 과도한 은폐가 발생한다. fixture 게이트가 대응이다.
+
+**중심성과 응집의 되먹임.** 조직이 중심성을 참조하고 재편이 배선 분포를 바꾸면
+진동이나 중심 편중이 생길 수 있다. 시행령은 「포함 위상은 산입의 입력이 아니다」로
+직접 순환을 닫았지만, 간접 경로(재편 → 사용자 배선 행동 변화)까지 막지는 않는다.
+진동 방지는 §3.1이 mechanism에 위임했다.
 
 **서명 비결정성.** 하네스별 YAML·Unicode·순서 차이로 같은 상태의 해시가 갈라지는
 것. canonicalization 원소별 검토와 golden vector가 대응이다.

@@ -9,7 +9,7 @@ annotates:
   - path: _governance/Constitution.md
     blob: 49c1ebecd769f62764ba434029e6c12d654a706a
   - path: _governance/Bylaws.md
-    blob: ffe7e633ca6a76c382d99932b368d57dc0c576aa
+    blob: fdff3eef0ceedda85de11d3ae922026b24a386b8
 ---
 
 # knowledge-vault 헌법 주석백서 (draft)
@@ -409,7 +409,7 @@ Predicate Edge를 "의존의 중심으로 흐르는 참조"로 규정하면 정�
 견고함은 **위상**(연결의 조밀함)으로 드러난다. 이것이 제2조(연속 스펙트럼)의 귀결이다.
 
 **심의 1 — 중심성 = 개정 비용.** 2항이 중심성을 **측정값**으로 정의한다: 「어떤
-노드가 뒤집힐 때 재검토되어야 하는 의존 부분그래프의 크기」. 부여되는 라벨이 아니라
+노드가 뒤집힐 때 재검토되어야 하는 의존 부분그래프의 규모」. 부여되는 라벨이 아니라
 인덱싱 시 계산되는 값이다. 이 정의가 supported-by의 방향(제10조 심의 2)과 미서명
 Link 산입(아래)을 하나의 회계로 묶는다.
 
