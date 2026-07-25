@@ -2,7 +2,7 @@
 type: constitution
 status: ratified
 ratified: 2026-07-06
-revised: 2026-07-23
+revised: 2026-07-25
 replaces: "[[Constitution-2026-07-17-workbench]]"
 author: user
 drafter:
@@ -10,7 +10,7 @@ drafter:
   - agent:gpt
 ---
 
-# knowledge-vault 헌법
+# osk-system 헌법
 
 > 이 vault는 사용자의 second brain이다 — **Observation Layer**(관측의 세계)와
 > **Sensemaking Layer**(의미를 형성하는 과정)와 **Knowledge Layer**(연결된 지식),
@@ -23,7 +23,7 @@ drafter:
 
 ## 제1조 — 이름과 주어
 
-이름은 knowledge-vault다. 이 vault가 보관하는 지식의 주어는 사용자다 — 여기
+이름은 osk-system이다. 이 vault가 보관하는 지식의 주어는 사용자다 — 여기
 보관되는 지식은 사용자의 것이다.
 
 ## 제2조 — 지식의 정의
@@ -230,4 +230,4 @@ drafter:
    체제의 교체는 새 기록을 작성하고 replaces로 잇는다. 옛 본문은 보존한다.
 3. 재통과 원칙(no-grandfathering): 이 헌법의 기준으로 비준되지 않은 기존 노드는
    서명 없이 Knowledge Layer에 배치될 수 있으나 **미서명 신분**이며, 서명 전에는
-   검색에서 후보로만 표기·강등된다(제11조 3항).
+   열람 검색에서 후보로만 표기·강등된다(제11조 3항).
