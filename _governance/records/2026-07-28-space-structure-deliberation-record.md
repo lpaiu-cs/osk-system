@@ -1,12 +1,10 @@
 ---
-type: decision
 id: 260802-114u-7lo3
-created_at: 2026-08-02T13:22:06+09:00
-revised_at: 2026-08-02T13:22:06+09:00
-summary: 재헌법화 심의·판정 원장 — 공간 구조 채택부터 물리 사양까지, 부록 A~H와 판정 1~50
 author: user
-drafter:
-  - agent:claude
+drafter: agent:fable-5
+created_at: 2026-08-02 13:22 (KST)
+revised_at: 2026-08-02 15:00 (KST)
+summary: "재헌법화 심의·판정 원장 — 공간 구조 채택부터 물리 사양까지, 부록 A~H와 판정 1~50"
 ---
 
 

@@ -1,12 +1,10 @@
 ---
-type: workbench-contract
 id: 260802-114u-xbxp
-created_at: 2026-08-02T13:22:06+09:00
-revised_at: 2026-08-02T13:22:06+09:00
-summary: Workbench scope 헌장 — 구획과 경계, 경유 노드 정돈의 4출구, 참조 예외의 운영
 author: user
-drafter:
-  - agent:claude
+drafter: agent:fable-5
+created_at: 2026-08-02 13:22 (KST)
+revised_at: 2026-08-02 15:00 (KST)
+summary: "Workbench scope 헌장 — 구획과 경계, 경유 노드 정돈의 4출구, 참조 예외의 운영"
 supported-by: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
 

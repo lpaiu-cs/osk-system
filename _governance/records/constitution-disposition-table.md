@@ -1,12 +1,10 @@
 ---
-type: disposition-table
 id: 260802-114u-j0rq
-created_at: 2026-08-02T13:22:06+09:00
-revised_at: 2026-08-02T13:22:06+09:00
-summary: 구 헌법 전 조문의 계승·대체·폐지·이행 처분표 — 무침묵 규율로 작성된 개정 근거
 author: user
-drafter:
-  - agent:claude
+drafter: agent:fable-5
+created_at: 2026-08-02 13:22 (KST)
+revised_at: 2026-08-02 15:00 (KST)
+summary: "구 헌법 전 조문의 계승·대체·폐지·이행 처분표 — 무침묵 규율로 작성된 개정 근거"
 supported-by: "[[2026-07-28-space-structure-deliberation-record]]"
 baseline: 구 헌법 = commit adfb0de / blob d566e79b72be73c28f95ab6d46c289ff33f833ac
 ---

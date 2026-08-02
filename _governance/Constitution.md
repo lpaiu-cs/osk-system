@@ -1,15 +1,12 @@
 ---
-type: constitution
 id: 260802-114u-w9vj
-created_at: 2026-08-02T13:22:06+09:00
-revised_at: 2026-08-02T13:22:06+09:00
-summary: osk-system 최상위 규범 — 노드·비노드와 Space, 참조 위상, 위임, 서명, 사건, 개정·이행
 author: user
-drafter:
-  - agent:claude
-  - agent:codex
-replaces: "[[Constitution-2026-07-25]]"
+drafter: agent:fable-5
+created_at: 2026-08-02 13:22 (KST)
+revised_at: 2026-08-02 15:00 (KST)
+summary: "osk-system 최상위 규범 — 노드·비노드와 Space, 참조 위상, 위임, 서명, 사건, 개정·이행"
 supported-by: "[[2026-07-28-space-structure-deliberation-record]]"
+replaces: "[[Constitution-2026-07-25]]"
 ---
 
 

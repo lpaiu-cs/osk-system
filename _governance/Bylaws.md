@@ -1,14 +1,12 @@
 ---
-type: bylaws
 id: 260802-114u-m5lm
-created_at: 2026-08-02T13:22:06+09:00
-revised_at: 2026-08-02T13:22:06+09:00
-summary: 헌법이 맡긴 운영 규칙 — 노드 계약, _raw, 군집과 pin, 기록 모듈, 위임 운영, 서명 기록부, 사건부
 author: user
-drafter:
-  - agent:claude
-replaces: "[[Bylaws-2026-07-25]]"
+drafter: agent:fable-5
+created_at: 2026-08-02 13:22 (KST)
+revised_at: 2026-08-02 15:00 (KST)
+summary: "헌법이 맡긴 운영 규칙 — 노드 계약, _raw, 군집과 pin, 기록 모듈, 위임 운영, 서명 기록부, 사건부"
 supported-by: "[[2026-07-28-space-structure-deliberation-record]]"
+replaces: "[[Bylaws-2026-07-25]]"
 ---
 
 
@@ -20,8 +18,8 @@ supported-by: "[[2026-07-28-space-structure-deliberation-record]]"
 
 ## §1 노드 계약
 
-1. 모든 노드는 frontmatter에 `id`·`created_at`·`revised_at`·`summary`·
-   `author`·`drafter`를 둔다.
+1. 모든 노드는 frontmatter에 `id`·`author`·`drafter`·`created_at`·
+   `revised_at`·`summary`를 둔다.
 2. `summary`는 한 줄로 쓰고 공백 포함 80자를 넘지 않는다. 저장된 `summary`
    안에는 Link와 Predicate Edge를 두지 않는다. 본문을 수정한 뒤에는
    `summary`가 본문과 일치하는지 재점검한다.
