@@ -57,13 +57,19 @@ class WriteError(ValueError):
 # 아니라 **전량** `invalid path`로 실패한 사례가 있다. 소비자 쪽에서 우회하지 않고,
 # 이름이 만들어지는 이 자리에서 막는다.
 _BAD_TITLE_CHARS = '<>:"|?*\\/'
-# Windows는 ISO/IEC 8859-1 위첨자 ¹²³을 **숫자로 읽어** COM#·LPT# 장치명으로
-# 취급한다 — `echo test > COM¹`이 파일을 만들지 못한다. 목록은 MS "Naming Files,
-# Paths, and Namespaces"의 열거를 그대로 따른다(COM0·LPT0은 그 목록에 없다).
-_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL",
+# MS "Naming Files, Paths, and Namespaces"의 열거 + CreateFile "Consoles"가
+# 콘솔 장치로 지정하는 `CONIN$`·`CONOUT$`. COM0·LPT0은 어느 쪽에도 없어 넣지 않는다.
+# 위첨자 ¹²³은 Windows가 **숫자로 읽어** COM#·LPT#로 취급한다는 문서 근거로 넣었다.
+#
+# 실측(Windows 11 + git 2.x): `CON.md`·`NUL.md`·`COM1.md`·`CONIN$.md`는 디스크에는
+# 만들어져도 `git add`가 `No such file or directory`로 실패하며, **그 하나가 add
+# 전체를 rc=128로 중단시킨다** — 콜론 사고와 같은 폭발 반경이다. `COM0.md`와
+# `LPT¹.md`는 이 조합에서는 통과했다(위첨자 차단은 문서 근거의 예방적 조치다).
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
                  *(f"COM{i}" for i in range(1, 10)),
                  *(f"LPT{i}" for i in range(1, 10)),
                  "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"}
+
 
 # 아래 둘은 파일명으로는 멀쩡하지만 **이 체계 자신의 Link 문법**을 깬다. 본문
 # Link 파서가 `\[\[([^\]#|]+)`이라 `#`·`]`·`|`에서 대상명이 잘린다 — 그런 제목의
@@ -105,7 +111,9 @@ def _title_errors(title: str) -> list[str]:
         errs.append(f"제목은 `.`으로 시작할 수 없다: {title!r}")
     if t.endswith((".", " ")):
         errs.append("제목은 `.`이나 공백으로 끝낼 수 없다 — Windows가 잘라낸다")
-    if t.split(".")[0].upper() in _WIN_RESERVED:
+    # Windows의 DOS 장치명 판정은 장치명 뒤의 **공백을 무시**하고 그다음 `.`을 본다
+    # — `COM1 .foo`도 장치명으로 해석된다(실측: 그 이름은 git add가 실패한다).
+    if t.split(".", 1)[0].rstrip(" ").upper() in _WIN_RESERVED:
         errs.append(f"Windows 예약 장치명은 파일명이 될 수 없다: {t}")
     return errs
 
