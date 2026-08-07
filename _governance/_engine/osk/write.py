@@ -25,7 +25,7 @@ CAS (설계 rev.3 §2): `expect_hash`는 **연산이 아니라 서명에 결속*
 거부 응답에 현재 해시를 담지 않는다 — 담으면 관측 증명이 연극이 된다.
 """
 from __future__ import annotations
-import fcntl, json, os, re, tempfile
+import fcntl, json, os, re, tempfile, unicodedata
 from pathlib import Path
 
 import yaml
