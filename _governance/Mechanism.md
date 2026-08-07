@@ -1,9 +1,9 @@
 ---
 id: 260802-114u-iter
 created: 2026-08-02 13:22 (KST)
-updated: 2026-08-07 09:23 (KST)
+updated: 2026-08-07 13:14 (KST)
 author: user
-drafter: agent:fable-5
+drafter: fable-5
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"
 supported-by: "[[2026-07-28-space-structure-deliberation-record]]"
 replaces: "[[PLAN-2026-07-25]]"
@@ -28,9 +28,9 @@ replaces: "[[PLAN-2026-07-25]]"
    | `= Scope/Workbench/` | Workbench scope (헌법 4조 5항) | 아래 3항 |
    | `= Domain/<이름>/` | Domain Space의 Domain | 노드 |
    | `= Person/<Facet>/` | Person Space의 Facet | 노드 |
-   | `= Person/Governance/` | 통치 Facet (pin 고정) | 통치 문서 + `records/` |
+   | `_governance/` | 통치 구획 (Space 밖, 헌법 3조 6항) | 통치 문서 + `records/` |
+   | `_governance/_engine/` | 엔진 | 코드·동기화 도구·회귀 수트 |
    | `_sources/` | 공용 원자료 구획 | 비노드 (이미지·pdf 등) |
-   | `_engine/` | 엔진 | 코드·색인·캐시·동기화 도구 |
 
 3. Workbench scope의 내부: 루트의 파일은 작업 상태(비노드)다. 노드는
    `transit/`(경유 노드)에만 둔다. `_ledger/`는 대장 구획으로
@@ -38,9 +38,12 @@ replaces: "[[PLAN-2026-07-25]]"
    `pins.jsonl`(pin 기록)·`routing.jsonl`(세션 라우팅)을 담는다. `_raw/`는
    운영 세션 기록이다.
 4. **접두 규칙**: `= ` 접두는 Space 루트의 강조 표기다. 밑줄 접두 구획에는
-   노드를 두지 않는다. 노드 군집은 2항의 표에 선언된 경로(`= Scope/`·
-   `= Domain/`·`= Person/`과 그 하위 군집, `transit/`)뿐이다. 그 밖의 루트
-   디렉토리는 엔진·저장소 지원 구획이며 노드를 두지 않는다.
+   노드를 두지 않는다 — 유일한 예외가 `_governance/`로, Space 밖의 통치
+   구획으로서 통치 문서·사료 노드를 담는다(헌법 3조 6항). 노드 군집은 2항의
+   표에 선언된 경로(`= Scope/`·`= Domain/`·`= Person/`과 그 하위 군집,
+   `transit/`, `_governance/`)뿐이다. 그 밖의 루트 디렉토리는 엔진·저장소
+   지원 구획이며 노드를 두지 않는다. 통치 구획의 노드는 표면 쓰기의 대상이
+   아니고 검색·중심성에 산입하지 않는다(시행령 §10 1항).
 5. 콜드 티어는 규칙만 둔다(시행령 §2 6항) — 물리 구획은 필요해질 때 이 절의
    개정으로 신설한다.
 
@@ -54,9 +57,11 @@ replaces: "[[PLAN-2026-07-25]]"
    쓴다(예: `2026-08-02 15:30 (KST)`). 대장 기록의 `at`은 ISO 8601을
    유지한다.
 3. 파일명은 제목이며 개명·이동할 수 있다. 동일성의 정본은 `id`다.
-4. `author`·`drafter`의 agent 표기는 하네스명이 아니라 모델명으로 한다
-   (예: `agent:fable-5`, `agent:gpt-5.6-sol`). 모델 미상의 이관 노드는
-   `agent`로 표기한다. `drafter`는 대표 기초자 하나만 적는다.
+4. `author`는 `user` 또는 `agent`다. `drafter`는 사용자가 기초했으면
+   `user`, 에이전트가 기초했으면 **모델명만** 쓴다(예: `fable-5`,
+   `gpt-5.6-sol`) — 하네스명·`agent:` 접두·콜론 표기는 쓰지 않는다. 모델
+   미상의 이관 노드는 `agent`로 표기한다. `drafter`는 대표 기초자 하나만
+   적는다.
 5. frontmatter의 필드 순서는 `id`·`created`·`updated`·`author`·
    `drafter`·`summary`·Predicate Edge(상호 순서 무관)로 쓴다.
 

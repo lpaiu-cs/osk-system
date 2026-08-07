@@ -1,9 +1,9 @@
 ---
 id: 260802-114u-m5lm
 created: 2026-08-02 13:22 (KST)
-updated: 2026-08-07 09:23 (KST)
+updated: 2026-08-07 13:14 (KST)
 author: user
-drafter: agent:fable-5
+drafter: fable-5
 summary: "헌법이 맡긴 운영 규칙 — 노드 계약, _raw, 군집과 pin, 기록 모듈, 위임 운영, 서명 기록부, 사건부"
 supported-by: "[[2026-07-28-space-structure-deliberation-record]]"
 replaces: "[[Bylaws-2026-07-25]]"
@@ -55,7 +55,8 @@ replaces: "[[Bylaws-2026-07-25]]"
    고정하는 사용자 지시다. 형성·분화·재배정의 주기 처리는 pin된 군집을
    변경하지 않는다. pin의 기록은 재배정 판정이 참조하는 위치에 두며(형식은
    mechanism), 필요하면 개별 노드의 배치에도 붙일 수 있다.
-5. Governance Facet은 pin으로 고정한다.
+5. 통치 구획은 Space 밖의 상설 구획이므로 군집 재배정의 대상이 아니다 —
+   pin 없이 그 자체로 고정이다(헌법 제3조 6항).
 
 ## §4 기록 모듈
 
@@ -166,8 +167,9 @@ replaces: "[[Bylaws-2026-07-25]]"
 
 1. 통치 문서(헌법·시행령·Workbench 계약·주석백서·mechanism)는 노드이며
    §1의 노드 계약을 따른다. 판본 계보는 `replaces`로, 심의·근거는
-   `supported-by`로 참조한다. 배치는 Person Space의 Governance Facet으로
-   한다.
+   `supported-by`로 참조한다. 배치는 Space 밖의 상설 통치 구획으로 하며
+   (헌법 제3조 6항), 물리 경로는 mechanism이 정한다. 통치 구획의 노드는
+   검색·중심성에 산입하지 않고 명시 조회로 도달한다.
 2. 통치 문서의 비준과 개정은 사용자의 서명으로 한다(헌법 제14조). 서명
    기록부가 그 확인의 정본이다.
 3. 사건부·서명 기록부·이행 기록은 Workbench scope 대장 구획의 비노드 제도
