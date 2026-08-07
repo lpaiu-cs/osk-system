@@ -96,6 +96,20 @@ def sha256_bytes(b: bytes) -> str:
     return "sha256:" + hashlib.sha256(b).hexdigest()
 
 
+def posix_rel(p: Path, relative_to: Path) -> str:
+    r"""경로를 **기기 비의존 표기**의 상대 경로 문자열로 — `resolve_in_root`의 역방향.
+
+    `str(Path)`는 OS 표기를 낸다. Windows에서는 구분자가 역슬래시(`_engine\osk`)로
+    나오는데, 이 체계의 규칙은 전부 슬래시로 쓰인다(매니페스트 `DENY _engine/`,
+    pin 대상 `= Scope/W2/`, 대장의 `path`). 그래서 OS 표기를 그대로 비교에 넘기면
+    규칙이 **조용히 안 걸린다** — 실측으로 Windows에서 DENY 8개가 0건을 제외했고
+    `move_node`의 pin 거부가 통과했다.
+
+    트리는 기기 사이에서 공유되므로 키도 기록도 기기에 의존하면 안 된다.
+    비교에 쓰거나 대장에 적는 경로는 전부 이 함수를 거친다."""
+    return p.relative_to(relative_to).as_posix()
+
+
 def resolve_in_root(rel_or_abs: str | Path) -> Path | None:
     """대장·사건부에 적힌 경로 문자열을 **vault 안으로 봉쇄** 해석한다.
     대장은 다기기 병합으로 임의의 내용이 유입될 수 있는 신뢰 밖 입력이므로,
