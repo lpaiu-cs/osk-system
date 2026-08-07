@@ -106,6 +106,29 @@ def _title_errors(title: str) -> list[str]:
     return errs
 
 
+def _portable_name_key(name: str) -> str:
+    """**모든** 기기에서 같은 경로가 되는지 판정하는 파일명 동일성 키.
+
+    NTFS·APFS는 대소문자를 구별하지 않고, macOS는 한글을 NFD로 저장하기도 한다.
+    그래서 `path.exists()`처럼 **현재 OS에게** 물으면 Linux에서 `Example.md`와
+    `example.md`가 둘 다 만들어지고, 그 트리를 Windows·macOS에서 체크아웃할 때
+    두 경로가 충돌한다 — 한쪽만 워킹트리에 남는다.
+
+    `contract.target_stem`은 링크 대상 해소용 키라서 여기 쓰지 않는다. 그쪽을
+    접으면 Link가 대소문자를 무시하게 되는데, 그것은 다른 계약이다."""
+    return unicodedata.normalize("NFC", name).casefold()
+
+
+def _name_collision(dest_dir: Path, stem: str) -> str | None:
+    """같은 군집에 이식성 기준으로 충돌하는 파일이 있으면 그 이름을 돌려준다.
+    같은 이름 자신도 걸리므로 기존 존재 검사를 겸한다."""
+    key = _portable_name_key(stem)
+    for p in dest_dir.glob("*.md"):
+        if _portable_name_key(p.stem) == key:
+            return p.name
+    return None
+
+
 class _Lock:
     """전역 쓰기 잠금 — 잠금 파일은 `_ledger/`에 두고 git에서 무시한다."""
 
@@ -479,8 +502,12 @@ def create_node(title: str, summary: str, body: str, drafter: str,
         if title in idx.nodes or title in getattr(idx, "broken", {}):
             raise WriteError(
                 f"같은 이름의 노드가 이미 있다: {title} — 생성하면 중복 후보가 된다")
-        if path.exists():
-            raise WriteError(f"이미 있는 파일이다: {title}")
+        clash = _name_collision(dest_dir, title)
+        if clash is not None:
+            raise WriteError(
+                f"같은 군집에 이미 있는 이름이다: {clash} — 대소문자나 유니코드 "
+                f"정규화만 다른 이름은 NTFS·APFS에서 **같은 경로**가 되어 그 기기의 "
+                f"체크아웃에서 충돌한다(한쪽만 남는다)")
 
         now = now_kst()
         meta = {"id": new_node_id(_existing_ids(idx)),
@@ -648,8 +675,11 @@ def move_node(name: str, dest_space: str) -> dict:
             raise WriteError(
                 "pin으로 고정된 군집이다 — 자동 재배정에서 제외된다 "
                 "(시행령 §3 4항). 사용자 발의로만 옮긴다")
-        if target.exists():
-            raise WriteError(f"목적지에 같은 이름이 있다: {target.name}")
+        clash = _name_collision(dest_dir, path.stem)
+        if clash is not None:
+            raise WriteError(
+                f"목적지에 이미 있는 이름이다: {clash} — 대소문자나 유니코드 "
+                f"정규화만 달라도 NTFS·APFS에서 같은 경로가 된다")
         try:
             n = contract.parse(path)
         except Exception as e:
