@@ -1,0 +1,42 @@
+# _governance/_engine/scripts/systemd/ltm-vault-daemon.service.example
+# Linux(systemd user) osk-system 동기화 데몬(_governance/_engine/sync_daemon.py) 상시가동 서비스.
+#
+# 이 데몬은 git 동기화 전용이다 — 검색·색인은 서빙하지 않고(osk 엔진과 MCP 서버의 일)
+# 포트도 열지 않는다. 클라이언트가 대신 띄우는 경로가 없으므로 이 유닛이 유일한
+# 기동 경로다. 한 기기에 하나만 돈다(잠금 파일 기반 싱글턴; 잠금은 추적 트리 밖).
+#
+# 설치(기기마다 1회):
+#   mkdir -p ~/.config/systemd/user
+#   cp _governance/_engine/scripts/systemd/ltm-vault-daemon.service.example ~/.config/systemd/user/ltm-vault-daemon.service
+#   # <REPO> 를 private 인스턴스 저장소 **루트**의 절대경로로 치환
+#   #   (하위 디렉터리를 주면 데몬이 거부한다)
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ltm-vault-daemon.service
+#   loginctl enable-linger "$USER"        # 로그아웃 상태에서도 상주
+#   systemctl --user status ltm-vault-daemon            # 확인
+#   journalctl --user -u ltm-vault-daemon -f            # 로그
+#
+# 비활성화·제거:
+#   systemctl --user disable --now ltm-vault-daemon.service
+#   SYNC_ENABLED 줄만 지우면 안 된다 — Restart=always 때문에 데몬이 즉시 종료되고
+#   systemd 가 5초마다 다시 띄우는 재시작 루프가 된다. 반드시 disable --now 로 내린다.
+#
+# SYNC_ENABLED=1 은 동기화를 명시 허가하는 키다(없으면 기동 즉시 종료 — 템플릿 계약).
+# 자격증명은 비대화식(git credential helper/PAT 또는 ssh-agent)으로 설정돼 있어야 한다.
+
+[Unit]
+Description=osk-system sync daemon (git 동기화 전용)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=<REPO>
+Environment=OSK_VAULT_ROOT=<REPO>
+Environment=SYNC_ENABLED=1
+ExecStart=<REPO>/.venv/bin/python <REPO>/_governance/_engine/sync_daemon.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "osk-system": {
+      "type": "stdio",
+      "command": "<REPO>/.venv/bin/python",
+      "args": ["<REPO>/_governance/_engine/mcp_server.py"]
+    }
+  }
+}

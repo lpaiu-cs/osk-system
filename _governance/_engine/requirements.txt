@@ -1,0 +1,7 @@
+# _engine 실의존성 — import 스캔으로 실측(표준 라이브러리·자체 모듈 제외).
+# duckdb·fastapi·uvicorn은 구 데몬과 DuckDB 색인의 것이었고, v2에는 사용처가
+# 하나도 없어 제거했다.
+mcp
+pydantic
+PyYAML
+rank-bm25
