@@ -69,11 +69,19 @@ _LINK_BREAKING_CHARS = "#]"
 
 
 def _title_errors(title: str) -> list[str]:
-    """제목이 동기화 대상 **모든** 기기에서 파일명이 될 수 있는가."""
-    t = (title or "").strip()
-    if not t:
+    """제목이 동기화 대상 **모든** 기기에서 파일명이 될 수 있는가.
+
+    검사 대상은 **원본 문자열**이다. 여기서 `strip()`을 하면 검사 대상이 실제로
+    파일명이 되는 문자열(`dest_dir / f"{title}.md"`)과 갈라져, 후행 공백과 양끝
+    제어문자가 검사를 통과한 뒤 파일명에 그대로 들어간다 — 검사는 `foo`를 보고
+    파일은 `foo .md`가 된다."""
+    t = title or ""
+    if not t.strip():
         return ["부적격 제목: 비어 있다"]
     errs = []
+    if t != t.strip():
+        errs.append("제목 앞뒤에 공백을 둘 수 없다 — 그대로 파일명이 되는데 "
+                    "Windows는 후행 공백을 조용히 잘라낸다")
     bad = sorted({c for c in t if c in _BAD_TITLE_CHARS})
     if bad:
         errs.append(
