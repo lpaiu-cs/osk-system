@@ -1675,8 +1675,65 @@ def test_conflict_candidates():
                   for x in validate.conflict_candidates(graph.Index())))
 
 
+# ── 16. 제목은 모든 기기에서 파일명·Link 대상이 될 수 있어야 한다 ────────
+def test_portable_title():
+    """제목이 곧 파일명이자 Link 대상이므로, 한 기기에서만 표현 가능한 이름은
+    다른 기기의 체크아웃이나 Link 해소를 깨뜨린다. 검사 대상이 **원본 문자열**
+    이어야 한다는 것도 여기서 고정한다 — `strip()` 뒤를 검사하면 후행 공백과
+    양끝 제어문자가 검사를 통과한 뒤 파일명에 그대로 들어간다."""
+    valid = ["정상 제목", "대괄호[있음", "괄호(있음)", "밑줄_있음", "점.중간.있음"]
+    invalid = {
+        "": "빈 제목", " ": "공백뿐", "foo ": "후행 공백", " foo": "선행 공백",
+        "foo\t": "후행 탭", "foo\n": "후행 개행", "a\tb": "중간 제어문자",
+        ".foo": "선행 점", "foo.": "후행 점",
+        "foo/bar": "슬래시", "foo\\bar": "역슬래시", "foo:bar": "콜론",
+        'foo"bar': "따옴표", "foo|bar": "파이프", "foo?bar": "물음표",
+        "foo*bar": "별표", "foo<bar": "부등호", "foo#1": "샵(Link 절단)",
+        "foo]bar": "닫는 대괄호(Link 절단)",
+        "CON": "예약 장치명", "CON.md": "확장자 붙은 예약 장치명", "COM1": "예약 포트명",
+        "COM¹": "예약 포트명(위첨자)", "LPT³.txt": "확장자 붙은 예약 포트명(위첨자)",
+        "NUL.tar.gz": "다중 확장자 예약 장치명",
+        "CONIN$": "콘솔 장치명", "CONOUT$.md": "확장자 붙은 콘솔 장치명",
+        "COM1 .foo": "장치명 뒤 공백", "LPT1  .x": "장치명 뒤 공백 여러 개",
+        "가" * 85: "UTF-8 258바이트(ext4 상한 초과)",
+        "a" * 253: "ASCII 256바이트(ext4 상한 초과)",
+    }
+    valid += ["COMMENT", "CON2", "COM0", "가" * 84, "a" * 252]
+    bad_ok = [t for t in valid if write._title_errors(t)]
+    check("적격 제목은 통과한다", not bad_ok, bad_ok)
+    missed = [f"{k!r}({why})" for k, why in invalid.items()
+              if not write._title_errors(k)]
+    check("부적격 제목은 전부 거부된다", not missed, missed)
+
+    # 이식성 키 — 대소문자·유니코드 정규화만 다른 이름은 같은 경로다
+    import unicodedata as _ud
+    check("대소문자만 다른 이름은 같은 키",
+          write._portable_name_key("Example") == write._portable_name_key("example"))
+    check("NFC·NFD만 다른 이름은 같은 키",
+          write._portable_name_key(_ud.normalize("NFC", "가나"))
+          == write._portable_name_key(_ud.normalize("NFD", "가나")))
+    check("서로 다른 이름은 다른 키",
+          write._portable_name_key("Example") != write._portable_name_key("Exampl3"))
+
+    # create_node가 대소문자 변종을 거부한다 (Linux에서만 나던 구멍)
+    made = ROOT / "= Scope/W1/Regr-Case.md"
+    try:
+        write.create_node(title="Regr-Case", summary="이식성 시험", body="본문",
+                          drafter="sonnet-5", space="= Scope/W1")
+        try:
+            write.create_node(title="regr-case", summary="충돌해야 한다", body="본문",
+                              drafter="sonnet-5", space="= Scope/W1")
+            check("대소문자만 다른 형제 이름은 거부된다", False, "생성되어 버렸다")
+        except write.WriteError as e:
+            check("대소문자만 다른 형제 이름은 거부된다",
+                  "Regr-Case" in str(e.violations), e.violations)
+    finally:
+        made.unlink(missing_ok=True)
+        (ROOT / "= Scope/W1/regr-case.md").unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
-    for fn in [test_rid_monotone, test_same_ms_chain_signed,
+    for fn in [test_portable_title, test_rid_monotone, test_same_ms_chain_signed,
                test_fork_failclosed_and_reseal, test_anchor_no_order_fallback,
                test_cycle_normalization, test_structural_damage,
                test_ridless_unsign_not_swallowed, test_root_confinement_and_kst,
