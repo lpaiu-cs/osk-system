@@ -70,6 +70,11 @@ _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
                  *(f"LPT{i}" for i in range(1, 10)),
                  "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"}
 
+# 파일명 한 구성요소의 상한. ext4는 255 **바이트**, NTFS는 255 **문자**라 단위가
+# 다르다 — 한글 제목은 문자 수로는 여유로워도 UTF-8 바이트로는 넘칠 수 있다
+# (한글 85자 + `.md` = 258바이트). 표면 스키마의 `max_length=120`은 문자 단위라
+# 이 제약을 표현하지 못한다.
+_MAX_FILENAME_BYTES = 255
 
 # 아래 둘은 파일명으로는 멀쩡하지만 **이 체계 자신의 Link 문법**을 깬다. 본문
 # Link 파서가 `\[\[([^\]#|]+)`이라 `#`·`]`·`|`에서 대상명이 잘린다 — 그런 제목의
@@ -115,6 +120,12 @@ def _title_errors(title: str) -> list[str]:
     # — `COM1 .foo`도 장치명으로 해석된다(실측: 그 이름은 git add가 실패한다).
     if t.split(".", 1)[0].rstrip(" ").upper() in _WIN_RESERVED:
         errs.append(f"Windows 예약 장치명은 파일명이 될 수 없다: {t}")
+    n = len(f"{t}.md".encode("utf-8"))
+    if n > _MAX_FILENAME_BYTES:
+        errs.append(
+            f"제목이 너무 길다 — `.md`를 포함한 UTF-8 파일명이 {n}바이트로 "
+            f"{_MAX_FILENAME_BYTES}바이트를 넘는다. ext4는 파일명을 **바이트**로 "
+            f"제한하므로 Linux 기기에서 만들 수 없다(한글은 글자당 3바이트다)")
     return errs
 
 

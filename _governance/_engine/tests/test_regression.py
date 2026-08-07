@@ -1693,7 +1693,12 @@ def test_portable_title():
         "CON": "예약 장치명", "CON.md": "확장자 붙은 예약 장치명", "COM1": "예약 포트명",
         "COM¹": "예약 포트명(위첨자)", "LPT³.txt": "확장자 붙은 예약 포트명(위첨자)",
         "NUL.tar.gz": "다중 확장자 예약 장치명",
+        "CONIN$": "콘솔 장치명", "CONOUT$.md": "확장자 붙은 콘솔 장치명",
+        "COM1 .foo": "장치명 뒤 공백", "LPT1  .x": "장치명 뒤 공백 여러 개",
+        "가" * 85: "UTF-8 258바이트(ext4 상한 초과)",
+        "a" * 253: "ASCII 256바이트(ext4 상한 초과)",
     }
+    valid += ["COMMENT", "CON2", "COM0", "가" * 84, "a" * 252]
     bad_ok = [t for t in valid if write._title_errors(t)]
     check("적격 제목은 통과한다", not bad_ok, bad_ok)
     missed = [f"{k!r}({why})" for k, why in invalid.items()
