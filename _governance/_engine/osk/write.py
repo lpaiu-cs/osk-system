@@ -51,6 +51,40 @@ class WriteError(ValueError):
         self.extra = extra
 
 
+# 제목은 곧 파일명이다. 인스턴스가 여러 기기에서 같은 트리를 git으로 공유하면,
+# **한쪽에서만 만들 수 있는 이름**은 다른 쪽의 체크아웃을 통째로 막는다 — 콜론이
+# 든 노드 하나 때문에 Windows에서 `git reset --hard origin/main`이 그 파일 하나가
+# 아니라 **전량** `invalid path`로 실패한 사례가 있다. 소비자 쪽에서 우회하지 않고,
+# 이름이 만들어지는 이 자리에서 막는다.
+_BAD_TITLE_CHARS = '<>:"|?*\\/'
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL",
+                 *(f"COM{i}" for i in range(1, 10)),
+                 *(f"LPT{i}" for i in range(1, 10))}
+
+
+def _title_errors(title: str) -> list[str]:
+    """제목이 동기화 대상 **모든** 기기에서 파일명이 될 수 있는가."""
+    t = (title or "").strip()
+    if not t:
+        return ["부적격 제목: 비어 있다"]
+    errs = []
+    bad = sorted({c for c in t if c in _BAD_TITLE_CHARS})
+    if bad:
+        errs.append(
+            f"제목에 쓸 수 없는 문자: {' '.join(bad)} — 제목이 곧 파일명이라 "
+            f"Windows에서 만들 수 없고, 그 기기의 체크아웃 전체를 막는다 "
+            f"(`/`는 `·`, `:`는 `—`로 바꿔 쓴다)")
+    if any(ord(c) < 32 for c in t):
+        errs.append("제목에 제어문자를 쓸 수 없다")
+    if t.startswith("."):
+        errs.append(f"제목은 `.`으로 시작할 수 없다: {title!r}")
+    if t.endswith((".", " ")):
+        errs.append("제목은 `.`이나 공백으로 끝낼 수 없다 — Windows가 잘라낸다")
+    if t.split(".")[0].upper() in _WIN_RESERVED:
+        errs.append(f"Windows 예약 장치명은 파일명이 될 수 없다: {t}")
+    return errs
+
+
 class _Lock:
     """전역 쓰기 잠금 — 잠금 파일은 `_ledger/`에 두고 git에서 무시한다."""
 
@@ -395,9 +429,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
     space가 없으면 세션 라우팅으로 착지를 정하고, 라우팅이 없으면 space를
     요구한 뒤 성공 시 그 scope로 세션을 확정한다."""
     with _Lock():
-        errs = _check_edges(edges)
-        if "/" in title or title.startswith(".") or not title.strip():
-            errs.append(f"부적격 제목: {title!r}")
+        errs = _check_edges(edges) + _title_errors(title)
         if errs:
             raise WriteError("계약 위반 — 쓰지 않았다", errs)
 
