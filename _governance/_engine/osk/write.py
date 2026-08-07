@@ -61,6 +61,12 @@ _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL",
                  *(f"COM{i}" for i in range(1, 10)),
                  *(f"LPT{i}" for i in range(1, 10))}
 
+# 아래 둘은 파일명으로는 멀쩡하지만 **이 체계 자신의 Link 문법**을 깬다. 본문
+# Link 파서가 `\[\[([^\]#|]+)`이라 `#`·`]`·`|`에서 대상명이 잘린다 — 그런 제목의
+# 노드는 만들어지긴 해도 **아무도 링크로 가리킬 수 없다**(실측: `[[PR#1 판정]]`
+# → 대상 `PR`). `|`는 위 파일명 집합이 이미 막으므로 여기서는 나머지 둘이다.
+_LINK_BREAKING_CHARS = "#]"
+
 
 def _title_errors(title: str) -> list[str]:
     """제목이 동기화 대상 **모든** 기기에서 파일명이 될 수 있는가."""
@@ -74,6 +80,13 @@ def _title_errors(title: str) -> list[str]:
             f"제목에 쓸 수 없는 문자: {' '.join(bad)} — 제목이 곧 파일명이라 "
             f"Windows에서 만들 수 없고, 그 기기의 체크아웃 전체를 막는다 "
             f"(`/`는 `·`, `:`는 `—`로 바꿔 쓴다)")
+    breaking = sorted({c for c in t if c in _LINK_BREAKING_CHARS})
+    if breaking:
+        errs.append(
+            f"제목에 쓸 수 없는 문자: {' '.join(breaking)} — 파일명으로는 되지만 "
+            f"본문 Link 파서가 `[[제목#헤딩]]`·`[[제목|별칭]]` 문법 때문에 여기서 "
+            f"대상명을 자른다. 이 제목으로 만든 노드는 아무도 링크로 가리킬 수 "
+            f"없다 (이슈·PR 번호는 `#1` 대신 `1`이나 `-1`로)")
     if any(ord(c) < 32 for c in t):
         errs.append("제목에 제어문자를 쓸 수 없다")
     if t.startswith("."):
