@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import errno
+
 try:
     import fcntl
     _WINDOWS = False
@@ -18,6 +20,16 @@ except ModuleNotFoundError:      # Windows
     _WINDOWS = True
 
 _REGION = 1      # 선두 1바이트 — 잠금 참여자 전원이 공유하는 관례 구간
+
+# 재시도해도 되는 실패는 **경합뿐**이다. `msvcrt.locking`은 잘못된 fd·인자로도
+# 실패하는데(실측: 닫힌 fd → EBADF 9, 음수 nbytes → EINVAL 22), 그것까지 다시
+# 걸면 영구 오류가 호출자에게 영영 돌아가지 않고 여기서 무한히 돈다 — 대장
+# append와 전역 쓰기 잠금이 통째로 멈춘다. 이 파일이 없애려는 무한대기와
+# 정확히 같은 실패 형태다.
+#
+# 실측(Windows 11 CRT): LK_LOCK은 1초 간격 10회 재시도 뒤 EDEADLOCK(36),
+# LK_NBLCK은 즉시 EACCES(13). 런타임에 따라 LK_LOCK도 EACCES로 오므로 둘 다 본다.
+_CONTENTION = {getattr(errno, "EDEADLOCK", errno.EDEADLK), errno.EACCES}
 
 
 def lock_exclusive(f, blocking: bool = True) -> None:
@@ -32,14 +44,15 @@ def lock_exclusive(f, blocking: bool = True) -> None:
         if not blocking:
             msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, _REGION)
             return
-        # LK_LOCK은 1초 간격 10회만 재시도하고 OSError를 올린다 — POSIX flock의
-        # 무기한 대기와 맞추려면 성공할 때까지 다시 건다.
+        # LK_LOCK은 1초 간격 10회만 재시도하고 실패한다 — POSIX flock의 무기한
+        # 대기와 맞추려면 성공할 때까지 다시 건다. 단 **경합일 때만**이다.
         while True:
             try:
                 msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, _REGION)
                 return
-            except OSError:
-                continue
+            except OSError as e:
+                if e.errno not in _CONTENTION:
+                    raise           # EBADF·EINVAL 등은 재시도로 낫지 않는다
     finally:
         f.seek(pos)
 
