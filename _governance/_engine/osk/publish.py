@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
-from .core import ROOT
+from .core import ROOT, posix_rel
 from . import contract, graph, secrets, signatures, validate
 
 MANIFEST = ROOT / "_governance" / "_engine" / "scripts" / "publish-manifest.txt"
@@ -82,7 +82,7 @@ def collect(man: dict) -> list[tuple[Path, str]]:
             for p in sorted(s.rglob("*")):
                 if not p.is_file():
                     continue
-                rel = str(p.relative_to(s))
+                rel = posix_rel(p, s)
                 if _denied(rel, man["deny"]):
                     continue
                 out.append((p, dst.rstrip("/") + "/" + rel))

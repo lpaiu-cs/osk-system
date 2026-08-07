@@ -19,15 +19,20 @@ from pathlib import Path
 import yaml
 
 from .core import (ROOT, LEDGER, SIGNATURES, CASE_RE, ledger_append, ledger_read,
-                   sha256_file, causal_maxima, unresolved_nodes, resolve_in_root)
+                   sha256_file, causal_maxima, unresolved_nodes, posix_rel,
+                   resolve_in_root)
 from . import contract
 
 KINDS = ("sign", "unsign", "restore")
 
 
 def _rel_in_root(p: Path) -> str:
-    """봉쇄 해석된 경로 → 대장에 적을 vault 상대 경로."""
-    return str(p.relative_to(Path(os.path.realpath(ROOT))))
+    """봉쇄 해석된 경로 → 대장에 적을 vault 상대 경로.
+
+    대장은 다기기 병합 대상이므로 표기가 기기에 의존하면 안 된다 —
+    `posix_rel`로 접는다(그러지 않으면 Windows에서 기록한 `path`가
+    역슬래시가 되어 다른 기기의 `resolve_in_root`가 해석하지 못한다)."""
+    return posix_rel(p, Path(os.path.realpath(ROOT)))
 
 
 def _id_of(p: Path) -> str | None:

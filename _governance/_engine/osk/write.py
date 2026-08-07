@@ -32,7 +32,7 @@ import yaml
 
 from .core import (ROOT, LEDGER, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
                    ledger_append, ledger_read, new_node_id, now_kst,
-                   resolve_in_root, resolve_one, sha256_bytes, sha256_file)
+                   posix_rel, resolve_in_root, resolve_one, sha256_bytes, sha256_file)
 from . import contract, graph, signatures
 
 WRITE_LOCK = LEDGER / ".write.lock"      # 전역 쓰기 잠금 (대장 구획, git 추적 밖)
@@ -693,8 +693,8 @@ def move_node(name: str, dest_space: str) -> dict:
             raise WriteError(
                 f"노드를 둘 수 없는 구획이다: {dest_space} {dst_kind} —"
                 f" 노드는 군집 안에 둔다 (Space 루트 직속 불가)")
-        src_rel = str(path.parent.relative_to(ROOT)) + "/"
-        if _pinned(src_rel) or _pinned(str(dest_dir.relative_to(ROOT)) + "/"):
+        src_rel = posix_rel(path.parent, ROOT) + "/"
+        if _pinned(src_rel) or _pinned(posix_rel(dest_dir, ROOT) + "/"):
             raise WriteError(
                 "pin으로 고정된 군집이다 — 자동 재배정에서 제외된다 "
                 "(시행령 §3 4항). 사용자 발의로만 옮긴다")
