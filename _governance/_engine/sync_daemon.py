@@ -15,12 +15,13 @@ vault_sync(순수 git 헬퍼)는 「동기화 데몬 예외」로 재사용한�
        절대 폴백하지 않는다(데몬 자신의 `git add -A`가 잠금 파일을 커밋한다).
 """
 from __future__ import annotations
-import argparse, fcntl, hashlib, os, signal, subprocess, sys, tempfile, time
+import argparse, hashlib, os, signal, subprocess, sys, tempfile, time
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
+from osk._portalock import lock_exclusive  # noqa: E402
 
 ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
         if os.environ.get("OSK_VAULT_ROOT")
@@ -100,7 +101,7 @@ def main():
         sys.exit("sync 비활성 — SYNC_ENABLED=1 로 명시 활성화 (템플릿 계약: 키가 없으면 동기화하지 않는다)")
     lock = open(_lock_path(), "w")
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_exclusive(lock, blocking=False)
     except OSError:
         sys.exit("이미 실행 중인 sync_daemon이 있다 (singleton lock)")
     signal.signal(signal.SIGTERM, _on_signal)

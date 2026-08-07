@@ -13,7 +13,7 @@
 서명뿐이다(§6-2 8항).
 """
 from __future__ import annotations
-import subprocess, sys
+import os, subprocess, sys
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -39,6 +39,10 @@ CandidateType: TypeAlias = Literal["contradiction", "duplication",
 Title: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
 Drafter: TypeAlias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9.\-]{0,39}$")]
+
+# CREATE_NO_WINDOW — 콘솔 서브시스템 자식(git)에 창을 주지 않는다.
+# `vault_sync._NO_WINDOW`와 같은 이유이고 같은 값이다(POSIX에선 0, 무영향).
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 mcp = FastMCP("osk-system")
 _searcher = None
@@ -72,14 +76,30 @@ def _s():
     return _searcher
 
 
-def _engine_rev() -> str:
+def _engine_rev(timeout: float = 5) -> str:
     """지금 도는 엔진의 판. 수트는 코드를 시험하지 **돌고 있는 프로세스**를
-    시험하지 못하므로(8차의 영구 사각), 첫 호출에서 서버의 낡음이 보이게 한다."""
+    시험하지 못하므로(8차의 영구 사각), 첫 호출에서 서버의 낡음이 보이게 한다.
+
+    표면은 stdio 파이프 위에 서 있다. git에게 그 stdin을 물려주면 안 되고,
+    시한이 지나 죽인 뒤에도 파이프를 쥔 손자(자격증명 도우미 등)가 남으면
+    `subprocess.run`의 사후 `communicate()`가 **무기한** 막힌다 — 도구 호출이
+    영영 돌아오지 않는다. stdin을 끊고, 콘솔을 주지 않고, 정리에도 시한을 건다.
+    판 하나 읽자고 표면이 멈추는 일은 없어야 한다."""
+    p = None
     try:
-        r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-                           capture_output=True, text=True, timeout=5)
-        return r.stdout.strip() or "unknown"
+        p = subprocess.Popen(
+            ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, creationflags=_NO_WINDOW)
+        out, _ = p.communicate(timeout=timeout)
+        return out.strip() or "unknown"
     except Exception:
+        if p is not None:
+            try:
+                p.kill()
+                p.communicate(timeout=1)
+            except Exception:  # noqa: BLE001 — 정리 실패까지 표면을 막지 않는다
+                pass
         return "unknown"
 
 

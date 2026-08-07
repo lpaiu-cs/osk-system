@@ -5,3 +5,7 @@ mcp
 pydantic
 PyYAML
 rank-bm25
+
+# Windows에는 IANA tz 데이터베이스가 없어 `zoneinfo`가 KST(Mechanism §2 2항)를
+# 찾지 못하고 엔진이 import에서 죽는다. 데이터 전용 패키지로 보충한다.
+tzdata; sys_platform == "win32"

@@ -25,7 +25,7 @@ CAS (설계 rev.3 §2): `expect_hash`는 **연산이 아니라 서명에 결속*
 거부 응답에 현재 해시를 담지 않는다 — 담으면 관측 증명이 연극이 된다.
 """
 from __future__ import annotations
-import fcntl, json, os, re, tempfile, unicodedata
+import json, os, re, tempfile, unicodedata
 from pathlib import Path
 
 import yaml
@@ -33,6 +33,7 @@ import yaml
 from .core import (ROOT, LEDGER, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
                    ledger_append, ledger_read, new_node_id, now_kst,
                    posix_rel, resolve_in_root, resolve_one, sha256_bytes, sha256_file)
+from ._portalock import lock_exclusive, unlock
 from . import contract, graph, signatures
 
 WRITE_LOCK = LEDGER / ".write.lock"      # 전역 쓰기 잠금 (대장 구획, git 추적 밖)
@@ -158,11 +159,11 @@ class _Lock:
     def __enter__(self):
         WRITE_LOCK.parent.mkdir(parents=True, exist_ok=True)
         self._f = open(WRITE_LOCK, "w")
-        fcntl.flock(self._f, fcntl.LOCK_EX)
+        lock_exclusive(self._f)
         return self
 
     def __exit__(self, *exc):
-        fcntl.flock(self._f, fcntl.LOCK_UN)
+        unlock(self._f)
         self._f.close()
         return False
 
