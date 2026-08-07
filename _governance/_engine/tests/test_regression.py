@@ -1732,8 +1732,31 @@ def test_portable_title():
         (ROOT / "= Scope/W1/regr-case.md").unlink(missing_ok=True)
 
 
+# ── 17. 경로 키는 기기 표기에 의존하지 않는다 (OS 무관 고정) ───────────
+def test_posix_rel_is_os_independent():
+    """`posix_rel`이 항상 슬래시 표기를 내는지 **실행 OS와 무관하게** 고정한다.
+
+    pin·DENY 회귀는 실제 파일시스템을 쓰므로 Windows에서만 이 결함을 잡는다 —
+    POSIX에서는 수정 전 코드도 슬래시를 내서 회귀가 처음부터 없었던 것처럼
+    통과한다. 그래서 여기서는 Pure*Path로 두 표기를 직접 만들어 불변식 자체를
+    못박는다. 이 시험은 파일시스템을 건드리지 않는다."""
+    from pathlib import PureWindowsPath, PurePosixPath
+    win = core.posix_rel(PureWindowsPath('C:\\vault\\= Scope\\W2\\a.md'), PureWindowsPath('C:\\vault'))
+    check("Windows 표기도 슬래시로 접힌다", win == "= Scope/W2/a.md", win)
+    pos = core.posix_rel(PurePosixPath("/vault/= Scope/W2/a.md"),
+                         PurePosixPath("/vault"))
+    check("POSIX 표기는 그대로다", pos == "= Scope/W2/a.md", pos)
+    check("두 표기가 같은 키로 접힌다", win == pos, (win, pos))
+
+    # 이 결함의 소비자 두 곳과 같은 형태로, 규칙 문자열 대조가 성립하는지
+    d = core.posix_rel(PureWindowsPath('C:\\v\\_governance\\_engine\\osk\\x.py'), PureWindowsPath('C:\\v\\_governance'))
+    check("DENY 조각이 걸린다", "_engine/" in d, d)
+    pin = core.posix_rel(PureWindowsPath('C:\\v\\= Scope\\W2'), PureWindowsPath('C:\\v')) + "/"
+    check("pin 대상 표기와 일치한다", pin == "= Scope/W2/", pin)
+
+
 if __name__ == "__main__":
-    for fn in [test_portable_title, test_rid_monotone, test_same_ms_chain_signed,
+    for fn in [test_posix_rel_is_os_independent, test_portable_title, test_rid_monotone, test_same_ms_chain_signed,
                test_fork_failclosed_and_reseal, test_anchor_no_order_fallback,
                test_cycle_normalization, test_structural_damage,
                test_ridless_unsign_not_swallowed, test_root_confinement_and_kst,
