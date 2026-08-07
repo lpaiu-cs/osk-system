@@ -28,10 +28,12 @@
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
 from __future__ import annotations
-import fcntl, hashlib, json, os, random, re, string, time
+import hashlib, json, os, random, re, string, time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from ._portalock import lock_exclusive, unlock
 
 B36 = string.digits + string.ascii_lowercase
 KST = ZoneInfo("Asia/Seoul")          # Mechanism §2 2항 — 표기 시간대는 KST 고정
@@ -334,7 +336,7 @@ def ledger_append(path: Path, record: dict) -> dict:
     record.setdefault("at", now_iso())
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+", encoding="utf-8") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        lock_exclusive(f)
         try:
             f.seek(0)
             records = _parse_lines(f.read(), path)
@@ -351,5 +353,5 @@ def ledger_append(path: Path, record: dict) -> dict:
             f.flush()
             os.fsync(f.fileno())
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            unlock(f)
     return record
