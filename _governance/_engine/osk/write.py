@@ -79,14 +79,14 @@ def _title_errors(title: str) -> list[str]:
         errs.append(
             f"제목에 쓸 수 없는 문자: {' '.join(bad)} — 제목이 곧 파일명이라 "
             f"Windows에서 만들 수 없고, 그 기기의 체크아웃 전체를 막는다 "
-            f"(`/`는 `·`, `:`는 `—`로 바꿔 쓴다)")
+            f"(`/`는 `·`로, `:`는 `_`로 바꿔 쓴다)")
     breaking = sorted({c for c in t if c in _LINK_BREAKING_CHARS})
     if breaking:
         errs.append(
             f"제목에 쓸 수 없는 문자: {' '.join(breaking)} — 파일명으로는 되지만 "
             f"본문 Link 파서가 `[[제목#헤딩]]`·`[[제목|별칭]]` 문법 때문에 여기서 "
             f"대상명을 자른다. 이 제목으로 만든 노드는 아무도 링크로 가리킬 수 "
-            f"없다 (이슈·PR 번호는 `#1` 대신 `1`이나 `-1`로)")
+            f"없다 (이슈·PR 번호는 `PR#1` 대신 `PR-1`로 쓴다)")
     if any(ord(c) < 32 for c in t):
         errs.append("제목에 제어문자를 쓸 수 없다")
     if t.startswith("."):
