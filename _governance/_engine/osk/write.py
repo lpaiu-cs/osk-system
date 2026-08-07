@@ -57,9 +57,13 @@ class WriteError(ValueError):
 # 아니라 **전량** `invalid path`로 실패한 사례가 있다. 소비자 쪽에서 우회하지 않고,
 # 이름이 만들어지는 이 자리에서 막는다.
 _BAD_TITLE_CHARS = '<>:"|?*\\/'
+# Windows는 ISO/IEC 8859-1 위첨자 ¹²³을 **숫자로 읽어** COM#·LPT# 장치명으로
+# 취급한다 — `echo test > COM¹`이 파일을 만들지 못한다. 목록은 MS "Naming Files,
+# Paths, and Namespaces"의 열거를 그대로 따른다(COM0·LPT0은 그 목록에 없다).
 _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL",
                  *(f"COM{i}" for i in range(1, 10)),
-                 *(f"LPT{i}" for i in range(1, 10))}
+                 *(f"LPT{i}" for i in range(1, 10)),
+                 "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"}
 
 # 아래 둘은 파일명으로는 멀쩡하지만 **이 체계 자신의 Link 문법**을 깬다. 본문
 # Link 파서가 `\[\[([^\]#|]+)`이라 `#`·`]`·`|`에서 대상명이 잘린다 — 그런 제목의

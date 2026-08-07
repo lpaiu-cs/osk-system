@@ -1691,6 +1691,8 @@ def test_portable_title():
         "foo*bar": "별표", "foo<bar": "부등호", "foo#1": "샵(Link 절단)",
         "foo]bar": "닫는 대괄호(Link 절단)",
         "CON": "예약 장치명", "CON.md": "확장자 붙은 예약 장치명", "COM1": "예약 포트명",
+        "COM¹": "예약 포트명(위첨자)", "LPT³.txt": "확장자 붙은 예약 포트명(위첨자)",
+        "NUL.tar.gz": "다중 확장자 예약 장치명",
     }
     bad_ok = [t for t in valid if write._title_errors(t)]
     check("적격 제목은 통과한다", not bad_ok, bad_ok)
