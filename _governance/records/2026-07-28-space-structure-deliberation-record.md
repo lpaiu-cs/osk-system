@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-7lo3
-created_at: 2026-08-02 13:22 (KST)
-revised_at: 2026-08-02 15:00 (KST)
+created: 2026-08-02 13:22 (KST)
+updated: 2026-08-02 15:00 (KST)
 author: user
 drafter: agent:fable-5
 summary: "재헌법화 심의·판정 원장 — 공간 구조 채택부터 물리 사양까지, 부록 A~H와 판정 1~50"

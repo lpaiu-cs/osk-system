@@ -1,7 +1,7 @@
 ---
 id: 260802-0000-s52i
-created_at: 2026-08-02 14:41 (KST)
-revised_at: 2026-08-02 16:20 (KST)
+created: 2026-08-02 14:41 (KST)
+updated: 2026-08-02 16:20 (KST)
 author: agent
 drafter: agent
 summary: "2026-07 헌법·시행령 개정 사이클의 원소별 판정·소거 서사·반영 상태 장부(draft)"

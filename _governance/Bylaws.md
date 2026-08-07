@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-m5lm
-created_at: 2026-08-02 13:22 (KST)
-revised_at: 2026-08-02 20:10 (KST)
+created: 2026-08-02 13:22 (KST)
+updated: 2026-08-07 09:23 (KST)
 author: user
 drafter: agent:fable-5
 summary: "헌법이 맡긴 운영 규칙 — 노드 계약, _raw, 군집과 pin, 기록 모듈, 위임 운영, 서명 기록부, 사건부"
@@ -17,7 +17,7 @@ replaces: "[[Bylaws-2026-07-25]]"
 
 ## §1 노드 계약
 
-1. 모든 노드는 frontmatter에 `id`·`created_at`·`revised_at`·`author`·
+1. 모든 노드는 frontmatter에 `id`·`created`·`updated`·`author`·
    `drafter`·`summary`를 둔다.
 2. `summary`는 한 줄로 쓰고 공백 포함 80자를 넘지 않는다. 저장된 `summary`
    안에는 Link와 Predicate Edge를 두지 않는다. 본문을 수정한 뒤에는
@@ -25,8 +25,8 @@ replaces: "[[Bylaws-2026-07-25]]"
 3. Predicate Edge는 frontmatter에 `{술어}: [[대상]]` 형식으로 표기한다.
    대상이 여럿이면 목록으로 둔다. 대상 내부의 위치는 `[[대상#앵커]]`로
    지정할 수 있다.
-4. `revised_at`은 노드의 상태가 변경될 때 갱신한다. 경로 이동과, 사건
-   절차에 따른 `conflicts` 표지의 부착·원상 제거는 `revised_at`을 갱신하지
+4. `updated`는 노드의 상태가 변경될 때 갱신한다. 경로 이동과, 사건
+   절차에 따른 `conflicts` 표지의 부착·원상 제거는 `updated`를 갱신하지
    않는다(헌법 제3조 4항의 예외). 존치 판결의 상대 노드 치환은 갱신한다.
 
 ## §2 _raw 계약

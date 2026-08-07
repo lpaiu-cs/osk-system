@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-iter
-created_at: 2026-08-02 13:22 (KST)
-revised_at: 2026-08-07 01:00 (KST)
+created: 2026-08-02 13:22 (KST)
+updated: 2026-08-07 09:23 (KST)
 author: user
 drafter: agent:fable-5
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"
@@ -50,14 +50,14 @@ replaces: "[[PLAN-2026-07-25]]"
    자정 기준 경과 초를 base36으로 인코딩한 4자 + 소문자 base36 무작위 4자
    (예: `260802-e3k1-k7f2`). 부여 시 기존 `id` 전수와 대조하여 중복이면
    무작위부를 재생성한다 — 유일성의 담보는 길이가 아니라 이 검증이다.
-2. `created_at`·`revised_at`은 `YYYY-MM-DD hh:mm (KST)` 표기로 분 단위까지
+2. `created`·`updated`는 `YYYY-MM-DD hh:mm (KST)` 표기로 분 단위까지
    쓴다(예: `2026-08-02 15:30 (KST)`). 대장 기록의 `at`은 ISO 8601을
    유지한다.
 3. 파일명은 제목이며 개명·이동할 수 있다. 동일성의 정본은 `id`다.
 4. `author`·`drafter`의 agent 표기는 하네스명이 아니라 모델명으로 한다
    (예: `agent:fable-5`, `agent:gpt-5.6-sol`). 모델 미상의 이관 노드는
    `agent`로 표기한다. `drafter`는 대표 기초자 하나만 적는다.
-5. frontmatter의 필드 순서는 `id`·`created_at`·`revised_at`·`author`·
+5. frontmatter의 필드 순서는 `id`·`created`·`updated`·`author`·
    `drafter`·`summary`·Predicate Edge(상호 순서 무관)로 쓴다.
 
 ## §3 서명 기록부 (`_ledger/signatures.jsonl`)

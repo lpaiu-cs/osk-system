@@ -1,9 +1,9 @@
 ---
 id: 260802-114u-w9vj
-created_at: 2026-08-02 13:22 (KST)
-revised_at: 2026-08-02 15:00 (KST)
+created: 2026-08-02 13:22 (KST)
+updated: 2026-08-07 09:23 (KST)
 author: user
-drafter: agent:fable-5
+drafter: user
 summary: "osk-system 최상위 규범 — 노드·비노드와 Space, 참조 위상, 위임, 서명, 사건, 개정·이행"
 supported-by: "[[2026-07-28-space-structure-deliberation-record]]"
 replaces: "[[Constitution-2026-07-25]]"
@@ -35,8 +35,8 @@ replaces: "[[Constitution-2026-07-25]]"
    사실·관측·추론·지식·규칙·사용자에 관한 이해 등 그 내용과 역할에 따라 구별된다.
 3. **비노드(非노드)**는 system의 가공물이 아닌 데이터 객체다. 원자료·세션
    기록·외부 참조와 그 밖의 인용 대상은 비노드에 속한다.
-4. 모든 노드는 생성 시 고유식별자 `id`, 생성시간 `created_at`, 그리고
-   수정시간 `revised_at`을 받는다. 생성시간은 변경하지 않으며, 수정시간은
+4. 모든 노드는 생성 시 고유식별자 `id`, 생성시간 `created`, 그리고
+   수정시간 `updated`를 받는다. 생성시간은 변경하지 않으며, 수정시간은
    노드의 상태가 변경될 때 갱신한다. 생성 이후 변경되지 않은 노드의 수정시간은
    생성시간과 같다. 사건 절차에 따른 `conflicts` 표지의 부착과 원상 제거는 예외로 하며, 수정시간을 갱신하지 않는다.
 5. 모든 노드는 그 내용을 한 줄로 축약한 `summary`를 가진다. `summary`는

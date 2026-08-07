@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-xbxp
-created_at: 2026-08-02 13:22 (KST)
-revised_at: 2026-08-02 15:00 (KST)
+created: 2026-08-02 13:22 (KST)
+updated: 2026-08-02 15:00 (KST)
 author: user
 drafter: agent:fable-5
 summary: "Workbench scope 헌장 — 구획과 경계, 경유 노드 정돈의 4출구, 참조 예외의 운영"

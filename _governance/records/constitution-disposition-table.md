@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-j0rq
-created_at: 2026-08-02 13:22 (KST)
-revised_at: 2026-08-02 15:00 (KST)
+created: 2026-08-02 13:22 (KST)
+updated: 2026-08-02 15:00 (KST)
 author: user
 drafter: agent:fable-5
 summary: "구 헌법 전 조문의 계승·대체·폐지·이행 처분표 — 무침묵 규율로 작성된 개정 근거"

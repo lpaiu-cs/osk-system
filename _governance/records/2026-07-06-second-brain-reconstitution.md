@@ -1,7 +1,7 @@
 ---
 id: 260802-0000-n3hu
-created_at: 2026-08-02 14:41 (KST)
-revised_at: 2026-08-02 16:20 (KST)
+created: 2026-08-02 14:41 (KST)
+updated: 2026-08-02 16:20 (KST)
 author: agent
 drafter: agent
 summary: "2026-06-18 아키텍처를 supersede, 원소별 비준된 새 헌법으로 vault 재헌법화"
