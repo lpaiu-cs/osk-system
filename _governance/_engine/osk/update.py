@@ -149,15 +149,24 @@ def tag_exists(url: str, tag: str) -> bool:
     return r.returncode == 0 and bool(r.stdout.strip())
 
 
-def fetch_git(url: str, ref: str, dest: Path) -> Path:
-    """정본 저장소의 **태그**를 얕게 받는다(ref는 호출부에서 태그로 정한다)."""
-    cmd = ["git", "clone", "-q", "--depth", "1", "--branch", ref,
-           url, str(dest / "tree")]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    if r.returncode != 0:
-        raise UpdateError(f"정본 fetch 실패({url} {ref}): "
-                          f"{r.stderr.strip()[-300:]}")
-    return dest / "tree"
+def fetch_git(url: str, tag: str, dest: Path) -> Path:
+    """정본의 그 **태그가 가리키는 정확한 커밋**을 얕게 받는다. `clone --branch`는
+    동명 브랜치(`refs/heads/<tag>`)를 대신 고를 수 있으므로 쓰지 않는다 —
+    `refs/tags/<tag>`를 명시 fetch해 FETCH_HEAD(태그의 peeled 커밋)에 detached
+    checkout한다. 이렇게 해야 태그 경계가 브랜치로 우회되지 않는다."""
+    d = dest / "tree"
+    def _g(*a, **k):
+        r = subprocess.run(["git", *a], capture_output=True, text=True,
+                           timeout=300, **k)
+        if r.returncode != 0:
+            raise UpdateError(f"정본 fetch 실패({url} {tag}): "
+                              f"{r.stderr.strip()[-300:]}")
+        return r
+    _g("init", "-q", str(d))
+    _g("-C", str(d), "fetch", "-q", "--depth", "1", url,
+       f"refs/tags/{tag}")                        # FETCH_HEAD = 태그의 커밋
+    _g("-C", str(d), "checkout", "-q", "--detach", "FETCH_HEAD")
+    return d
 
 
 def fetch_bundle(src: str, dest: Path) -> Path:

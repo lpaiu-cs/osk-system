@@ -5,10 +5,11 @@
 Mechanism §1-2 2항(release.json 형식·선언의 전제·커밋과 태그).
 
 비준증빙 `release.json`은 저장소 루트에 두는, 릴리스에 담긴 전 파일
-(자신 제외)의 경로→내용 해시 목록이다. 통치 문서는 서명 제도의 대상이
-아니므로(헌법 3조 6항), 규범의 확인은 이 증빙을 만드는 사용자의 대화형
-선언이 담당한다 — 에이전트는 보고 모드까지만 돌릴 수 있고, `--apply`는
-대화형 단말을 요구한다.
+(자신 제외)의 경로→내용 해시 목록이다. 통치 문서는 특수한 노드이고
+서명은 각 인스턴스 사용자의 **수용 기록**이지 정본의 비준·효력 요건이
+아니다(헌법 3조 6항 · 시행령 §10 2항) — 정본의 비준은 이 증빙을 만드는
+사용자의 대화형 확정이 담당한다. 에이전트는 보고 모드까지만 돌릴 수 있고,
+`--apply`는 대화형 단말을 요구한다.
 
 선언의 전제 (전부 fail-closed):
 1. **깨끗한 작업 트리** — 증빙은 커밋과 일치해야 한다.
@@ -127,18 +128,26 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
            "added": added, "changed": changed, "removed": removed}
     if not apply:
         return out
-    ap.write_text(json.dumps(att, ensure_ascii=False, indent=1) + "\n",
-                  encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "--", ATTESTATION],
-                   check=True, timeout=60)
-    subprocess.run(["git", "-C", str(root), "commit", "-q", "-m",
-                    f"release: {version} — 비준증빙"], check=True, timeout=60)
-    r = _git(root, "tag", version)
-    if r.returncode != 0:
-        # 태그가 실패하면 증빙 커밋을 되돌린다 — '아무것도 쓰지 않는다'를 회복한다
-        # (형식·중복은 위에서 이미 걸러지므로 여기 도달은 드물다).
-        _git(root, "reset", "--hard", "HEAD~1")
-        raise ReleaseError(f"태그 실패 — 증빙 커밋을 되돌렸다: {r.stderr.strip()}")
+    # mutation 전체를 하나의 rollback 단위로 잡는다 — write·add·commit·tag 어느
+    # 단계가 실패하든(commit hook·서명·index 오류 포함) 선언 전 상태로 되돌려
+    # '아무것도 쓰지 않는다'를 지킨다. guards가 clean tree를 요구하므로 선언 전
+    # HEAD로의 reset --hard가 정확한 원상복구다(새 증빙은 clean으로 함께 제거).
+    pre = _git(root, "rev-parse", "HEAD").stdout.strip()
+    try:
+        ap.write_text(json.dumps(att, ensure_ascii=False, indent=1) + "\n",
+                      encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "--", ATTESTATION],
+                       check=True, timeout=60)
+        subprocess.run(["git", "-C", str(root), "commit", "-q", "-m",
+                        f"release: {version} — 비준증빙"], check=True, timeout=60)
+        r = _git(root, "tag", version)
+        if r.returncode != 0:
+            raise ReleaseError(f"태그 실패: {r.stderr.strip()}")
+    except (subprocess.SubprocessError, ReleaseError, OSError) as e:
+        if pre:
+            _git(root, "reset", "--hard", pre)
+        _git(root, "clean", "-fdq", "--", ATTESTATION)
+        raise ReleaseError(f"릴리스 mutation 실패 — 선언 전으로 원상복구했다: {e}")
     out.update(applied=True, tagged=version)
     return out
 

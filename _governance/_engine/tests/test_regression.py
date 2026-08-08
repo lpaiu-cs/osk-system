@@ -1865,6 +1865,48 @@ def test_release_and_update():
             check("기준선 덕에 엔진 drift 오판 없이 깨끗이 갱신",
                   (ROOT / probe).read_text(encoding="utf-8") == "P = 2\n", rp2)
 
+            # 동명 브랜치가 태그를 가리지 못한다 — refs/tags 명시 fetch (P1)
+            # 태그 v9.0.0과 동명인 브랜치를 HEAD(다른·최신 커밋)에 만들어 둔다
+            git(can, "branch", "v9.0.0", "HEAD")
+            tf = update.fetch_git(str(can), "v9.0.0", Path(td) / "ftag")
+            relf = json.loads((tf / "release.json").read_text(encoding="utf-8"))
+            check("동명 브랜치가 있어도 태그의 커밋을 받는다",
+                  relf["version"] == "v9.0.0", relf.get("version"))
+            git(can, "branch", "-q", "-D", "v9.0.0")
+
+            # 손상된 update.jsonl은 검증기가 FAIL로 잡는다 — 단순 로그가 아니다 (P2)
+            uj = core.LEDGER / "update.jsonl"
+            orig_uj = uj.read_text(encoding="utf-8") if uj.exists() else ""
+            with open(uj, "a", encoding="utf-8") as _f:
+                _f.write('{"rid":"bad-rid","kind":"apply","path":"X",'
+                         '"hash":"h"}\n')
+            repv = validate.run()
+            check("손상된 update.jsonl은 검증기 FAIL",
+                  repv["verdict"] == "FAIL"
+                  and any("update.jsonl" in str(v) for v in repv["fail"]),
+                  repv["fail"])
+            uj.write_text(orig_uj, encoding="utf-8")
+
+            # release mutation 실패는 선언 전으로 원상복구 (P2)
+            hook = can / ".git" / "hooks" / "pre-commit"
+            hook.parent.mkdir(parents=True, exist_ok=True)
+            hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            hook.chmod(0o755)
+            pre_head = subprocess.run(
+                ["git", "-C", str(can), "rev-parse", "HEAD"],
+                capture_output=True, text=True).stdout.strip()
+            e = uerr(lambda: release.run("v9.3.0", apply=True, root=can))
+            post_head = subprocess.run(
+                ["git", "-C", str(can), "rev-parse", "HEAD"],
+                capture_output=True, text=True).stdout.strip()
+            porcelain = subprocess.run(
+                ["git", "-C", str(can), "status", "--porcelain"],
+                capture_output=True, text=True).stdout.strip()
+            check("commit 실패 시 선언 전으로 원상복구(HEAD·트리 불변)",
+                  e is not None and post_head == pre_head and porcelain == "",
+                  (e, post_head == pre_head, porcelain))
+            hook.unlink()
+
             # clean-tree 면제는 정확히 release.json만 — release.json.bak은 아니다 (P2)
             (can / "release.json.bak").write_text("x\n", encoding="utf-8")
             git(can, "add", "-A"); git(can, "commit", "-qm", "add bak")

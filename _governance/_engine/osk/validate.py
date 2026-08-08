@@ -100,9 +100,12 @@ def run() -> dict:
             errs.append(str(e))
     ok(f"서명 기록부 ({len(recs)}행)", errs)
 
-    # 5. 대장 판독 (Mechanism §3 1항 공통)
+    # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
+    #    대장이다 — updater가 baseline·관리 집합·삭제 전파·현재 version을 여기서
+    #    계산하므로 단순 로그가 아니다(손상되면 판정이 뒤집힌다).
     errs, ledgers = [], ([(SIGNATURES, recs)] if sig_ok else [])
-    for p in [CANDIDATES, PINS, ROUTING, LEDGER / "migration" / "events.jsonl"]:
+    for p in [CANDIDATES, PINS, ROUTING, LEDGER / "migration" / "events.jsonl",
+              LEDGER / "update.jsonl"]:
         try:
             ledgers.append((p, ledger_read(p)))
         except Exception as e:
