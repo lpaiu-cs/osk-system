@@ -268,12 +268,19 @@ def _recover(root: Path, report_only: bool = False) -> int:
     for rel in sorted(man.get("dirs") or [], key=lambda s: -str(s).count("/")):
         cp = _canon_rel(root, str(rel))
         if cp is None:
-            continue
+            print(f"[중단] 복구 대상 디렉터리가 봉쇄·정체성 검증 실패 — 수동 "
+                  f"개입 필요(보존: {txn_dir}): {rel}", file=sys.stderr)
+            return 2
         d = root / cp
         try:
             d.rmdir()
-        except OSError:
-            continue
+        except OSError as ex:
+            # 허용: 이미 없음(ENOENT) · 사용자 파일로 비어 있지 않음(ENOTEMPTY)
+            if ex.errno in (errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST):
+                continue
+            print(f"[중단] 디렉터리 복구 실패 — 백업 보존({txn_dir}): {cp} {ex}",
+                  file=sys.stderr)
+            return 2
         _fsync_dir(d.parent)
     _rmtree_checked(txn_dir)
     rep["applied"] = True

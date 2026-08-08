@@ -535,12 +535,20 @@ def _txn_recover(recs: list[dict]) -> str | None:
     for rel in sorted(man.get("dirs") or [], key=lambda s: -s.count("/")):
         cp = _canon_rel(ROOT, str(rel))
         if cp is None:
-            continue
+            raise UpdateError(                   # 경로 정체성이 바뀌었다 — 중단
+                f"복구 대상 디렉터리가 봉쇄·정체성 검증에 실패했다 "
+                f"— 중단(보존: {TXN_DIR}): {rel}")
         d = ROOT / cp
         try:
             d.rmdir()
-        except OSError:
-            continue                             # 비어 있지 않거나 이미 없다
+        except OSError as ex:
+            # 허용하는 것은 둘뿐이다: 이미 없다(ENOENT), 사용자 파일이 생겨
+            # 비어 있지 않다(ENOTEMPTY/EEXIST). 권한·I/O 오류는 복구 실패이므로
+            # 파일 복구와 같은 규율로 fail-closed한다.
+            if ex.errno in (errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST):
+                continue
+            raise UpdateError(
+                f"디렉터리 복구 실패 — 중단(백업 보존: {TXN_DIR}): {cp} {ex}")
         _fsync_dir(d.parent)
     _txn_clear()
     return "rollback"
@@ -630,12 +638,15 @@ def _sidecar_plan(p: dict, tree: Path, version: str, dests: set) -> tuple:
     사이드카는 사용자가 **수동 병합에 쓰는 작업 파일**이다. 같은 버전을 다시
     적용할 때 무조건 덮으면 그 작업이 영구히 사라진다(성공 후 pre-image도
     지워지므로 복구 경로가 없다). 그래서 내용이 incoming과 같을 때만 그대로
-    인정하고, 다르면 **덮지 않고 보고**한다. 정식 target과 경로가 겹치는
-    사이드카는 앞서 적용한 관리 파일을 되덮으므로 갱신을 중단한다."""
+    인정하고, 다르면 **덮지 않고 보고**한다.
+
+    `dests`에는 이번에 **적용할 경로와 삭제할 경로를 모두** 넘긴다 — 삭제 예정
+    경로와 사이드카 이름이 겹치면 '보존·인정'으로 보고한 파일이 뒤의 삭제 단계에서
+    사라져 보고가 거짓이 된다. 겹치면 갱신을 중단한다."""
     write, kept, held, collide = [], [], [], []
     for src, dest in p["conflict"]:
         side = dest + f".upstream-{version}"
-        if side in dests:                        # 관리 파일과 경로 충돌
+        if side in dests:                        # 관리·삭제 예정 경로와 충돌
             collide.append(side)
             continue
         sp = ROOT / side
@@ -766,7 +777,7 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         # 사이드카는 사용자의 수동 병합 작업 파일이다 — 덮을 것/인정할 것/보존할
         # 것을 먼저 가른다. 관리 파일과 경로가 겹치면 중단한다.
         side_write, side_kept, side_held, side_collide = _sidecar_plan(
-            p, tree, v, {d for _s, d in targets})
+            p, tree, v, {d for _s, d in targets} | set(p["remove"]))
         out["sidecar_held"] = side_held
         if side_collide:
             raise UpdateError(

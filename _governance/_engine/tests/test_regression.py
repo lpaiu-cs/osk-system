@@ -8,7 +8,7 @@
 실행: cd <vault> && .venv/bin/python _engine/tests/test_regression.py
 """
 from __future__ import annotations
-import json, os, shutil, subprocess, sys, tempfile, traceback
+import errno, json, os, shutil, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 from unittest import mock
 
@@ -2194,6 +2194,76 @@ def test_release_and_update():
             check("중단 시 커밋·태그가 남지 않는다",
                   post_head_r == pre_head_r and not tags_r,
                   (post_head_r == pre_head_r, tags_r))
+
+            # 증빙 **자체**가 add 이후 변조돼 커밋되면 태그 전에 잡는다 (P1)
+            # 리뷰가 지목한 시점을 결정론적으로 재현한다: release가 올바른
+            # release.json을 add한 **직후·commit 직전**에 다른 프로세스가 그
+            # 파일만 바꿔 다시 stage한다.
+            _h0 = subprocess.run(["git", "-C", str(can), "rev-parse", "HEAD"],
+                                 capture_output=True, text=True).stdout.strip()
+            _real_run = release.subprocess.run
+
+            def _tamper_before_commit(cmd, *a, **k):
+                if isinstance(cmd, list) and "commit" in cmd:
+                    bad = {"version": "vTAMPERED", "at": "x", "files": {}}
+                    (can / "release.json").write_text(
+                        json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+                    _real_run(["git", "-C", str(can), "add", "--",
+                               "release.json"], capture_output=True)
+                return _real_run(cmd, *a, **k)
+            release.subprocess.run = _tamper_before_commit
+            try:
+                etam = uerr(lambda: release.run("v9.6.0", apply=True, root=can))
+            finally:
+                release.subprocess.run = _real_run
+            check("커밋된 증빙이 변조되면 태그 전에 중단",
+                  etam is not None and "증빙" in etam, etam)
+            check("변조 중단 시 태그가 남지 않는다",
+                  not subprocess.run(["git", "-C", str(can), "tag", "-l",
+                                      "v9.6.0"], capture_output=True,
+                                     text=True).stdout.strip())
+            subprocess.run(["git", "-C", str(can), "reset", "-q", "--hard", _h0],
+                           capture_output=True)
+
+            # tree_hashes는 git object tree를 읽는다 — symlink는 지원 밖으로 거부 (P2)
+            (can / "linky").symlink_to("README.md")
+            subprocess.run(["git", "-C", str(can), "add", "-A"],
+                           capture_output=True)
+            subprocess.run(["git", "-C", str(can), "commit", "-qm", "symlink"],
+                           capture_output=True)
+            esym = uerr(lambda: release.tree_hashes(can))
+            check("symlink 등 비정규 mode는 릴리스에서 거부",
+                  esym is not None and "지원하지 않는" in esym, esym)
+            subprocess.run(["git", "-C", str(can), "rm", "-q", "--cached",
+                            "linky"], capture_output=True)
+            (can / "linky").unlink()
+            subprocess.run(["git", "-C", str(can), "commit", "-qm", "drop link"],
+                           capture_output=True)
+
+            # 사이드카 충돌 판정은 **삭제 예정 경로**도 본다 (P2)
+            _p_rm = {"conflict": [("_governance/UpdDoc.md", "_governance/A.md")],
+                     "remove": ["_governance/A.md.upstream-v9.9.9"]}
+            _coll = update._sidecar_plan(
+                _p_rm, can, "v9.9.9",
+                set() | set(_p_rm["remove"]))[3]
+            check("삭제 예정 경로와 겹치는 사이드카는 충돌로 잡는다",
+                  "_governance/A.md.upstream-v9.9.9" in _coll, _coll)
+
+            # 디렉터리 rollback 실패는 fail-closed — 허용은 ENOENT·ENOTEMPTY뿐 (P2)
+            update._txn_begin("txnDF", "v9.9.9", ["_governance/dfx/f.md"])
+            _saved_rmdir = update.Path.rmdir
+
+            def _boom_rmdir(self):
+                raise OSError(errno.EACCES, "denied")
+            try:
+                update.Path.rmdir = _boom_rmdir
+                edf = uerr(lambda: update._txn_recover(
+                    [{"kind": "begin", "txn": "txnDF"}]))
+                check("디렉터리 복구의 권한 오류는 fail-closed",
+                      edf is not None and "디렉터리 복구 실패" in edf, edf)
+            finally:
+                update.Path.rmdir = _saved_rmdir
+                update._txn_clear()
 
             # 새 디렉터리도 rollback 대상 — 파일만 되돌리면 SKEL 잔재가 남는다 (P2)
             deep = "_governance/_engine/newpkg/sub/mod.py"
