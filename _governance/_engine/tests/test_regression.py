@@ -1675,6 +1675,10 @@ def test_release_and_update():
         with tempfile.TemporaryDirectory() as td:
             can = Path(td) / "canonical"
             (can / "_governance/_engine/scripts").mkdir(parents=True)
+            # 릴리스는 **스냅샷 안의 엔진**으로 검증하므로 정본 픽스처도 엔진을
+            # 담는다(실제 정본은 프레임워크 자신이므로 항상 담고 있다).
+            shutil.copytree(ENGINE / "osk", can / "_governance/_engine/osk",
+                            ignore=shutil.ignore_patterns("__pycache__"))
             (can / "_governance/records").mkdir()
             (can / "docs").mkdir()
             (can / "_governance/UpdDoc.md").write_text(

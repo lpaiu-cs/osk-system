@@ -97,6 +97,11 @@ def make_canonical(root: Path, version: str, files: dict) -> None:
     (root / "_governance/_engine/scripts").mkdir(parents=True, exist_ok=True)
     (root / "_governance/_engine/scripts/publish-manifest.txt").write_text(
         MANIFEST, encoding="utf-8")
+    # 릴리스는 **스냅샷 안의 엔진**으로 검증한다 — 픽스처의 pad_*.py와 공존하도록
+    # 병합 복사한다(디렉터리가 이미 있어도 패키지 파일이 들어가야 한다).
+    shutil.copytree(ENGINE / "osk", root / "_governance/_engine/osk",
+                    ignore=shutil.ignore_patterns("__pycache__"),
+                    dirs_exist_ok=True)
     (root / "README.md").write_text("readme\n", encoding="utf-8")
     (root / "LICENSE").write_text("MIT\n", encoding="utf-8")
     if not (root / ".git").exists():

@@ -116,11 +116,16 @@ def build_attestation(root: Path, version: str, ref: str = "HEAD") -> dict:
 
 
 def _validate_at(root: Path) -> list[str]:
-    """release는 **자신이 릴리스하는 트리**를 검증한다. validate는 core.ROOT
-    전역에 묶여 있으므로(임포트 시점 고정), fixture_signature_lifecycle와
-    같은 선례로 OSK_VAULT_ROOT를 건 별도 프로세스에서 돌린다 — 이렇게 해야
-    guards의 세 전제가 모두 같은 root를 본다(비밀값·깨끗함·검증기 정합)."""
-    engine = Path(__file__).resolve().parent.parent          # <repo>/_governance/_engine
+    """release는 **자신이 릴리스하는 트리**를 그 트리의 **엔진으로** 검증한다.
+
+    데이터만 스냅샷을 보고 검증기 코드는 원본 작업 트리에서 import하면, 선언
+    도중 외부가 엔진을 고쳤을 때 "스냅샷을 그 스냅샷의 규칙으로 검증했다"가
+    성립하지 않는다. 그래서 `PYTHONPATH`도 스냅샷 안의 엔진을 가리킨다.
+    (validate는 core.ROOT 전역에 묶이므로 별도 프로세스여야 한다 —
+    fixture_signature_lifecycle와 같은 선례.)"""
+    engine = root / "_governance" / "_engine"
+    if not (engine / "osk").is_dir():
+        return [f"스냅샷에 엔진이 없다 — 검증 불성립: {engine}"]
     code = ("import json; from osk import validate; r = validate.run(); "
             "print(json.dumps({'v': r['verdict'], "
             "'f': [list(x)[0] for x in r['fail']]}))")
@@ -176,11 +181,18 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
     r = _git(root, "tag", "-l", version)
     if r.stdout.strip():
         raise ReleaseError(f"이미 선언된 버전이다 — 버전은 불변이다: {version}")
-    # 선언 전체가 **하나의 커밋 스냅샷**을 기준으로 돈다 — 전제 검사·증빙·커밋·
-    # 태그가 모두 이 `base`에 묶인다(중간에 working tree가 바뀌어도 무관).
+    # 선언 전체가 **하나의 (브랜치, 커밋) identity**를 기준으로 돈다 — 전제
+    # 검사·증빙·커밋·설치·태그가 모두 여기에 묶인다. 브랜치를 나중에 읽으면
+    # 그 사이 외부가 `git switch` 했을 때 **다른 브랜치에 릴리스가 설치**된다.
+    branch = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+    if not branch:
+        raise ReleaseError("detached HEAD에서는 선언하지 않는다 — 브랜치가 필요하다")
     base = _git(root, "rev-parse", "HEAD").stdout.strip()
     if not base:
         raise ReleaseError("HEAD를 읽지 못했다 — 커밋이 없는 저장소인가")
+    bref = _git(root, "rev-parse", f"refs/heads/{branch}").stdout.strip()
+    if bref != base:
+        raise ReleaseError(f"브랜치 {branch}가 HEAD와 어긋난다 — 선언하지 않는다")
     errs = guards(root, base)
     if errs:
         raise ReleaseError("릴리스 전제 위반 — 선언하지 않았다:\n  "
@@ -213,11 +225,8 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
     # 이렇게 하면 (a) 태그가 **검증한 정확한 SHA**에 붙고, (b) 그 사이 외부
     # 커밋이 들어오면 CAS가 실패해 아무것도 남지 않으며, (c) 선언과 무관한
     # 외부 수정·index를 애초에 만지지 않으므로 파괴할 것이 없다.
-    branch = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
-    if not branch:
-        raise ReleaseError("detached HEAD에서는 선언하지 않는다 — 브랜치가 필요하다")
     att_bytes = (json.dumps(att, ensure_ascii=False, indent=1) + "\n").encode()
-    installed = False
+    installed = tagged = False
     try:
         blob = subprocess.run(["git", "-C", str(root), "hash-object", "-w",
                                "--stdin"], input=att_bytes,
@@ -265,6 +274,12 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
             raise ReleaseError(
                 f"커밋 트리가 증빙과 다르다 — 선언 중단(외부 수정 유입?): "
                 f"{diff[:5]}")
+        # 설치 직전 HEAD가 여전히 선언을 시작한 그 브랜치인지 확인한다 —
+        # 그 사이 외부가 `git switch` 했으면 다른 브랜치에 설치될 수 있다.
+        now = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+        if now != branch:
+            raise ReleaseError(
+                f"선언 도중 브랜치가 바뀌었다({branch} → {now or 'detached'}) — 중단")
         # 브랜치 설치는 **CAS**다 — 그 사이 남이 커밋했으면 실패하고 아무것도
         # 남지 않는다(남의 커밋을 덮지도, 떨어뜨리지도 않는다).
         r = _git(root, "update-ref", f"refs/heads/{branch}", new, base)
@@ -273,26 +288,45 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
                 f"브랜치 갱신(CAS) 실패 — 그 사이 다른 커밋이 들어왔다: "
                 f"{r.stderr.strip()[-200:]}")
         installed = True
-        # 태그는 **검증한 그 SHA**에 붙인다(현재 HEAD가 아니라).
-        r = _git(root, "tag", version, new)
+        # 태그도 **CAS**로 만든다: 빈 old-value는 "그 ref가 없을 때만"이다.
+        # `git tag`는 이 소유권 검사가 없어, 그 사이 남이 같은 이름을 만들면
+        # 실패 후 rollback이 **남의 태그를 지울** 수 있다.
+        r = _git(root, "update-ref", f"refs/tags/{version}", new, "")
         if r.returncode != 0:
-            raise ReleaseError(f"태그 실패: {r.stderr.strip()[-200:]}")
-        # 작업 트리·index를 새 HEAD에 맞춘다 — 우리가 만든 증빙 파일 하나뿐이다.
-        ap.write_bytes(att_bytes)
-        r = _git(root, "update-index", "--add", "--", ATTESTATION)
-        if r.returncode != 0:
-            raise ReleaseError(f"증빙 index 반영 실패: {r.stderr.strip()[-200:]}")
+            raise ReleaseError(
+                f"태그 생성(CAS) 실패 — 그 사이 같은 이름이 생겼다: "
+                f"{r.stderr.strip()[-200:]}")
+        tagged = True
     except (subprocess.SubprocessError, ReleaseError, OSError, ValueError) as e:
-        why = ""
+        why = []
+        if tagged:                      # 우리가 만든 태그일 때만 지운다(CAS)
+            rt = _git(root, "update-ref", "-d", f"refs/tags/{version}", new)
+            if rt.returncode != 0:
+                why.append(f"태그 되돌리기 실패: {rt.stderr.strip()[-160:]}")
         if installed:                   # 설치까지 갔으면 CAS로 되돌린다
             rb = _git(root, "update-ref", f"refs/heads/{branch}", base, new)
             if rb.returncode != 0:
-                why = f"브랜치 되돌리기 실패: {rb.stderr.strip()[-200:]}"
-            _git(root, "tag", "-d", version)
+                why.append(f"브랜치 되돌리기 실패: {rb.stderr.strip()[-160:]}")
         state = ("선언 전으로 원상복구했다" if not why
-                 else f"**원상복구하지 못했다 — 수동 확인 필요**({why})")
+                 else f"**원상복구하지 못했다 — 수동 확인 필요**({'; '.join(why)})")
         raise ReleaseError(f"릴리스 선언 실패 — {state}: {e}")
     out.update(applied=True, tagged=version, commit=new)
+    # 작업 트리·index 동기화는 **릴리스 성립 이후의 편의**다(커밋·태그로 릴리스는
+    # 이미 원자적으로 끝났다). 그러므로 실패해도 릴리스를 되돌리지 않고, 무엇보다
+    # **외부 수정을 덮지 않는다** — release.json이 여전히 base 상태일 때만 맞춘다.
+    d_wt = _git(root, "diff", "--quiet", base, "--", ATTESTATION)
+    d_idx = _git(root, "diff", "--quiet", "--cached", base, "--", ATTESTATION)
+    if d_wt.returncode == 0 and d_idx.returncode == 0:
+        try:
+            ap.write_bytes(att_bytes)
+            r = _git(root, "update-index", "--add", "--", ATTESTATION)
+            out["worktree_sync"] = ("ok" if r.returncode == 0 else
+                                    f"보류 — index 반영 실패: {r.stderr.strip()[-160:]}")
+        except OSError as e:
+            out["worktree_sync"] = f"보류 — 증빙 파일 기록 실패: {e}"
+    else:
+        out["worktree_sync"] = ("보류 — release.json에 외부 수정이 있어 "
+                                "작업 트리를 건드리지 않았다")
     return out
 
 
