@@ -8,7 +8,7 @@
 실행: cd <vault> && .venv/bin/python _engine/tests/test_regression.py
 """
 from __future__ import annotations
-import errno, json, os, shutil, subprocess, sys, tempfile, time, traceback
+import errno, json, os, shutil, stat, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 from unittest import mock
 
@@ -1701,7 +1701,17 @@ def test_release_and_update():
             git(can, "add", "-A")
             git(can, "commit", "-qm", "base")
 
-            rep = release.run("v9.0.0", apply=True, root=can)
+            def _rel(ver, root=None):
+                """선언 + 안내대로 작업 트리 맞추기. release는 작업 트리를
+                건드리지 않으므로(외부 수정 보호), 픽스처가 사용자를 대신해
+                `git checkout <ver> -- release.json`을 수행한다."""
+                root = root if root is not None else can
+                rep_ = release.run(ver, apply=True, root=root)
+                subprocess.run(["git", "-C", str(root), "checkout", ver, "--",
+                                "release.json"], capture_output=True)
+                return rep_
+
+            rep = _rel("v9.0.0")
             check("릴리스 선언: 증빙 생성·커밋·태그",
                   rep["applied"] and rep.get("tagged") == "v9.0.0", rep)
             att = json.loads((can / "release.json").read_text(encoding="utf-8"))
@@ -1816,7 +1826,7 @@ def test_release_and_update():
                 encoding="utf-8")
             git(can, "add", "-A")
             git(can, "commit", "-qm", "gov v2")
-            release.run("v9.0.1", apply=True, root=can)
+            _rel("v9.0.1")
             update.run(source="bundle", bundle=str(can), apply=True)
             check("갱신이 덮으면 서명이 풀린다(수용 재확인 대기)",
                   S.status("260802-uupd-0002", gp) == "unsigned"
@@ -1849,13 +1859,13 @@ def test_release_and_update():
             (can / "_governance/DropMe.md").write_text(
                 node_text("260802-uupd-0009", "곧 삭제될 규범"), encoding="utf-8")
             git(can, "add", "-A"); git(can, "commit", "-qm", "add DropMe")
-            release.run("v9.0.2", apply=True, root=can)
+            _rel("v9.0.2")
             update.run(source="bundle", bundle=str(can), apply=True)
             drop = ROOT / "_governance/DropMe.md"; mine.append(drop)
             check("삭제 전 파일이 관리된다", drop.exists())
             git(can, "rm", "-q", "_governance/DropMe.md")
             git(can, "commit", "-qm", "drop DropMe")
-            release.run("v9.0.3", apply=True, root=can)
+            _rel("v9.0.3")
             rdel = update.run(source="bundle", bundle=str(can), apply=True)
             check("정본에서 빠진 파일은 인스턴스에서도 삭제된다",
                   not drop.exists()
@@ -1865,14 +1875,14 @@ def test_release_and_update():
             (can / "_governance/KeepMe.md").write_text(
                 node_text("260802-uupd-000a", "삭제되나 보존"), encoding="utf-8")
             git(can, "add", "-A"); git(can, "commit", "-qm", "add KeepMe")
-            release.run("v9.0.4", apply=True, root=can)
+            _rel("v9.0.4")
             update.run(source="bundle", bundle=str(can), apply=True)
             keep = ROOT / "_governance/KeepMe.md"; mine.append(keep)
             keep.write_text(node_text("260802-uupd-000a", "로컬에서 고쳤다"),
                             encoding="utf-8")
             git(can, "rm", "-q", "_governance/KeepMe.md")
             git(can, "commit", "-qm", "drop KeepMe")
-            release.run("v9.0.5", apply=True, root=can)
+            _rel("v9.0.5")
             rkeep = update.run(source="bundle", bundle=str(can), apply=True)
             check("로컬 수정된 삭제 대상은 보존된다",
                   keep.exists()
@@ -1883,7 +1893,7 @@ def test_release_and_update():
             probe = "_governance/_engine/adopt_probe.py"
             (can / probe).write_text("P = 1\n", encoding="utf-8")
             git(can, "add", "-A"); git(can, "commit", "-qm", "add probe")
-            release.run("v9.0.6", apply=True, root=can)
+            _rel("v9.0.6")
             (ROOT / probe).parent.mkdir(parents=True, exist_ok=True)
             (ROOT / probe).write_text("P = 1\n", encoding="utf-8")  # 저널 없이 존재
             mine.append(ROOT / probe)
@@ -1892,7 +1902,7 @@ def test_release_and_update():
             update.run(source="bundle", bundle=str(can), apply=True)   # 기준선 기록
             (can / probe).write_text("P = 2\n", encoding="utf-8")
             git(can, "add", "-A"); git(can, "commit", "-qm", "probe v2")
-            release.run("v9.0.7", apply=True, root=can)
+            _rel("v9.0.7")
             # 기준선이 없었다면 base=None→engine_drift로 갱신 전체가 중단됐을 것
             rp2 = update.run(source="bundle", bundle=str(can), apply=True)
             check("기준선 덕에 엔진 drift 오판 없이 깨끗이 갱신",
@@ -1968,7 +1978,7 @@ def test_release_and_update():
                 'git add "_governance/hooktouch.md"\n', encoding="utf-8")
             hook.chmod(0o755)
             before = probe2.read_text(encoding="utf-8")
-            release.run("v9.4.0", apply=True, root=can)
+            _rel("v9.4.0")
             check("release 커밋은 변조 hook을 태우지 않는다(--no-verify)",
                   probe2.read_text(encoding="utf-8") == before
                   and "TAMPERED" not in probe2.read_text(encoding="utf-8"))
@@ -1977,7 +1987,7 @@ def test_release_and_update():
             # clean-tree 면제는 정확히 release.json만 — release.json.bak은 아니다 (P2)
             (can / "release.json.bak").write_text("x\n", encoding="utf-8")
             git(can, "add", "-A"); git(can, "commit", "-qm", "add bak")
-            release.run("v9.1.0", apply=True, root=can)
+            _rel("v9.1.0")
             (can / "release.json.bak").write_text("변조\n", encoding="utf-8")
             check("release.json.bak 수정은 clean-tree에서 면제되지 않는다",
                   "깨끗하지 않다" in (uerr(lambda: release.run(
@@ -1988,7 +1998,7 @@ def test_release_and_update():
             (can / "_governance/RmRep.md").write_text(
                 node_text("260802-uupd-000b", "삭제 보고 대상"), encoding="utf-8")
             git(can, "add", "-A"); git(can, "commit", "-qm", "add RmRep")
-            release.run("v9.2.0", apply=True, root=can)
+            _rel("v9.2.0")
             git(can, "rm", "-q", "_governance/RmRep.md")
             git(can, "commit", "-qm", "rm RmRep")
             rrep = release.run("v9.2.1", apply=False, root=can)
@@ -2239,7 +2249,7 @@ def test_release_and_update():
                 return _real_run(cmd, *a, **k)
             release.subprocess.run = _tamper_index
             try:
-                rep_t = release.run("v9.6.0", apply=True, root=can)
+                rep_t = _rel("v9.6.0")
             finally:
                 release.subprocess.run = _real_run
             _tagged_att = json.loads(subprocess.run(
@@ -2413,7 +2423,7 @@ def test_release_and_update():
                                capture_output=True)
                 subprocess.run(["git", "-C", str(forced), "commit", "-qm", "forced"],
                                capture_output=True)
-                release.run(_ver_now, apply=True, root=forced)
+                _rel(_ver_now, forced)
                 efm = uerr(lambda: update.run(source="bundle", bundle=str(forced),
                                               apply=True))
                 check("같은 버전·다른 identity는 거부(force-move 방어)",
@@ -2440,6 +2450,37 @@ def test_release_and_update():
             check("값이 갈리는 병렬 극대는 여전히 미확정",
                   update.last_applied_hash(conflicted, "F") is None,
                   update.last_applied_hash(conflicted, "F"))
+
+            # 저널 디렉터리 엔트리 내구화 — 표식을 지우기 전에 저널의 이름이
+            # 살아 있어야 baseline이 유실되지 않는다 (P1)
+            _fs_calls = []
+            _real_fsd = update._fsync_dir
+            try:
+                update._fsync_dir = lambda d: (_fs_calls.append(str(d)),
+                                               _real_fsd(d))[1]
+                update._fsync_journal_home()
+            finally:
+                update._fsync_dir = _real_fsd
+            check("저널 홈과 그 조상이 ROOT까지 내구화된다",
+                  str(update.UPDATE_JOURNAL.parent) in _fs_calls
+                  and str(ROOT) in _fs_calls, _fs_calls[:4])
+
+            # 삭제됐던 파일의 rollback은 **권한까지** 되돌린다 (P2)
+            _permf = ROOT / "_governance/permtest.md"
+            _permf.write_text("x\n", encoding="utf-8")
+            os.chmod(_permf, 0o600)
+            mine.append(_permf)
+            update._txn_begin("txnPERM", "v9.9.9", ["_governance/permtest.md"])
+            _manp = json.loads(update.TXN_MANIFEST.read_text(encoding="utf-8"))
+            check("manifest가 pre-image의 mode를 담는다",
+                  _manp["entries"][0].get("mode") == 0o600,
+                  _manp["entries"][0].get("mode"))
+            _permf.unlink()                       # remove를 적용한 상태를 모사
+            update._txn_recover([{"kind": "begin", "txn": "txnPERM"}])
+            check("삭제 rollback이 내용과 권한을 모두 복원한다",
+                  _permf.exists()
+                  and stat.S_IMODE(_permf.stat().st_mode) == 0o600,
+                  oct(stat.S_IMODE(_permf.stat().st_mode)) if _permf.exists() else None)
 
             # 트랜잭션 정리 실패는 fail-closed (P2)
             update._txn_begin("txnCLR", "v9.9.9", [])

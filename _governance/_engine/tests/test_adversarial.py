@@ -116,6 +116,8 @@ def make_canonical(root: Path, version: str, files: dict) -> None:
                 "OSK_VAULT_ROOT": str(root)}, cwd=str(root))
     if r.returncode != 0:            # release는 대화형 전속이라 CLI가 거부한다
         _release_direct(root, version)
+    # release는 작업 트리를 건드리지 않는다(외부 수정 보호) — 안내대로 맞춘다
+    git(root, "checkout", version, "--", "release.json")
 
 
 def _release_direct(root: Path, version: str) -> None:

@@ -311,30 +311,14 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
                  else f"**원상복구하지 못했다 — 수동 확인 필요**({'; '.join(why)})")
         raise ReleaseError(f"릴리스 선언 실패 — {state}: {e}")
     out.update(applied=True, tagged=version, commit=new)
-    # 작업 트리·index 동기화는 **릴리스 성립 이후의 편의**다(커밋·태그로 릴리스는
-    # 이미 원자적으로 끝났다). 그러므로 실패해도 릴리스를 되돌리지 않고, 무엇보다
-    # **외부 수정을 덮지 않는다** — release.json이 여전히 base 상태일 때만 맞춘다.
-    # 쓰기 직전에 **여기가 여전히 그 브랜치의 그 커밋인지** 재확인한다 — 태그
-    # 직후 외부가 `git switch` 했으면 다른 브랜치를 오염시킬 수 있다.
-    now2 = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
-    head_now = _git(root, "rev-parse", "HEAD").stdout.strip()
-    if now2 != branch or head_now != new:
-        out["worktree_sync"] = ("보류 — 선언 뒤 브랜치·HEAD가 바뀌어 작업 트리를 "
-                                "건드리지 않았다")
-        return out
-    d_wt = _git(root, "diff", "--quiet", base, "--", ATTESTATION)
-    d_idx = _git(root, "diff", "--quiet", "--cached", base, "--", ATTESTATION)
-    if d_wt.returncode == 0 and d_idx.returncode == 0:
-        try:
-            ap.write_bytes(att_bytes)
-            r = _git(root, "update-index", "--add", "--", ATTESTATION)
-            out["worktree_sync"] = ("ok" if r.returncode == 0 else
-                                    f"보류 — index 반영 실패: {r.stderr.strip()[-160:]}")
-        except OSError as e:
-            out["worktree_sync"] = f"보류 — 증빙 파일 기록 실패: {e}"
-    else:
-        out["worktree_sync"] = ("보류 — release.json에 외부 수정이 있어 "
-                                "작업 트리를 건드리지 않았다")
+    # 작업 트리·색인은 **건드리지 않는다.** 릴리스는 커밋과 태그로 이미 원자적으로
+    # 성립했고, 그 뒤의 자동 동기화는 "확인 → 쓰기" 사이의 창을 없앨 수단이 없다
+    # (git에는 작업 트리 CAS가 없고, 외부 git 명령에는 잠금도 통하지 않는다).
+    # 확인을 아무리 앞당겨도 그 사이 `git switch`나 외부 수정이 끼어들면 우리가
+    # 그것을 덮게 되므로, **강제할 수 없는 보장을 강제한 척하지 않고** 맞추는 일은
+    # 사용자에게 남긴다(명령을 보고에 싣는다).
+    out["worktree_sync"] = ("미수행 — 릴리스는 커밋·태그로 성립했다. 작업 트리를 "
+                            f"맞추려면: git checkout {version} -- {ATTESTATION}")
     return out
 
 

@@ -239,7 +239,7 @@ def _recover(root: Path, report_only: bool = False) -> int:
                   f"필요(보존: {txn_dir}): {e.get('rel')}", file=sys.stderr)
             return 2
         plan.append((cp, bool(e.get("existed")), str(e.get("backup")),
-                     e.get("hash")))
+                     e.get("hash"), e.get("mode")))
     rep = {"pending": True, "txn": txn, "version": man.get("version"),
            "committed": committed,
            "action": "roll-forward" if committed else "rollback",
@@ -254,17 +254,19 @@ def _recover(root: Path, report_only: bool = False) -> int:
         print(json.dumps(rep, ensure_ascii=False, indent=2))
         return 0
 
-    for cp, existed, key, h in plan:  # 사전 검증 후 되돌린다(fail-closed)
+    for cp, existed, key, h, _m in plan:  # 사전 검증 후 되돌린다(fail-closed)
         bp = txn_dir / "backup" / key
         if existed and (not bp.is_file() or (h and _sha256(bp) != h)):
             print(f"[중단] 백업 부재·손상 — 복구 불가, 수동 개입 필요"
                   f"(보존: {txn_dir}): {cp}", file=sys.stderr)
             return 2
-    for cp, existed, key, _h in plan:
+    for cp, existed, key, _h, mode in plan:
         p = root / cp
         try:
             if existed:
                 _write_atomic(p, (txn_dir / "backup" / key).read_bytes())
+                if mode is not None:      # pre-image의 권한까지 복원한다
+                    os.chmod(p, int(mode))
             else:
                 p.unlink(missing_ok=True)
                 _fsync_dir(p.parent)  # 삭제 엔트리 내구화

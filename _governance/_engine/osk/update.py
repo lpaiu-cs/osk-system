@@ -432,6 +432,21 @@ def _mkdirs_durable(d: Path) -> list[Path]:
     return created
 
 
+def _fsync_journal_home() -> None:
+    """저널 파일의 **디렉터리 엔트리**를 내구화한다. `ledger_append`는 파일만
+    fsync하므로, 저널이 이번에 처음 만들어졌으면 이름 자체가 전원 차단에
+    유실될 수 있다 — 그 상태에서 트랜잭션 표식까지 지우면 파일은 새 판인데
+    baseline·관리 이력이 통째로 사라진다. ROOT까지 조상을 함께 내구화한다
+    (대장 구획도 이번에 생겼을 수 있다)."""
+    d = UPDATE_JOURNAL.parent
+    root_real = Path(os.path.realpath(ROOT))
+    while True:
+        _fsync_dir(d)
+        if Path(os.path.realpath(d)) == root_real or d.parent == d:
+            break
+        d = d.parent
+
+
 def _planned_dirs(rels: list[str]) -> list[str]:
     """이 트랜잭션이 새로 만들 수 있는 디렉터리(canonical 상대, 얕은 순).
     manifest에 미리 담아 두면 rollback이 **비어 있는 것만** 되돌릴 수 있다 —
@@ -478,14 +493,15 @@ def _txn_begin(txn: str, version: str, touch: list[str]) -> None:
         key = f"{i:06d}"
         p = ROOT / rel
         existed = p.is_file()
-        h = None
+        h = mode = None
         if existed:
+            mode = stat.S_IMODE(p.stat().st_mode)   # 권한도 pre-image의 일부다
             data = p.read_bytes()
             bp = TXN_BACKUP / key
             _write_atomic(bp, data)              # 백업 자체도 fsync된다
             h = sha256_file(bp)
         entries.append({"rel": rel, "backup": key, "existed": existed,
-                        "hash": h})
+                        "hash": h, "mode": mode})
     _fsync_dir(TXN_BACKUP)
     _write_atomic(TXN_MANIFEST, json.dumps(
         {"txn": txn, "version": version, "entries": entries,
@@ -567,6 +583,10 @@ def _txn_recover(recs: list[dict]) -> str | None:
                     raise UpdateError(
                         f"백업이 손상됐다 — 복구 불가, 수동 개입 필요: {rel}")
                 _write_atomic(p, bp.read_bytes())
+                # 삭제됐던 파일은 대상이 없어 _write_atomic이 기본 권한을 쓴다 —
+                # pre-image의 권한을 명시 복원해야 복구가 완전해진다.
+                if e.get("mode") is not None:
+                    os.chmod(p, int(e["mode"]))
             else:
                 p.unlink(missing_ok=True)
                 _fsync_dir(p.parent)
@@ -920,6 +940,10 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
             "kind": "done", "txn": txn, "version": v, "attest": attest_id,
             "applied": len(applied), "removed": len(removed),
             "conflicts": len(sidecars)})
+        # 커밋 기록의 **디렉터리 엔트리**까지 내구화한 뒤에만 표식을 지운다 —
+        # 저널이 이번에 처음 생겼으면 이름이 유실될 수 있고, 그러면 파일은 새
+        # 판인데 복구 표식도 없어 baseline이 통째로 사라진다.
+        _fsync_journal_home()
         _txn_clear()                              # 커밋 완료 — 트랜잭션 영역 정리
         out.update(applied=True, applied_files=len(applied),
                    removed=removed, sidecars=sidecars, skel_created=made_skel,
