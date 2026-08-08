@@ -152,6 +152,32 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 적�
   아니다; 미비준은 status에 상시 표시된다).
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면
   실행 중인 MCP 서버·데몬을 재시작한다.
+- 적용은 **크래시-안전 트랜잭션**이다. 갱신이 도중에 죽으면 다음 `--apply`가
+  자동 복구한다. 엔진이 반쯤 교체돼 `osk.update` 자체가 안 돌면 엔진과 독립된
+  복구 부트스트랩을 쓴다(표준 라이브러리만 사용):
+
+```bash
+python3 _governance/_engine/scripts/recover.py --apply
+```
+
+  기본은 보고다. 커밋된 트랜잭션은 파일을 두고 표식만 정리하고(roll-forward),
+  미커밋이면 pre-image로 되돌린다(rollback). 백업이 없거나 손상되면 아무것도
+  지우지 않고 중단한다. 복구가 끝나기 전에는 동기화 데몬도 tick을 거부한다.
+
+## 적대적 하네스
+
+회귀 수트가 **알려진** 결함을 고정한다면, 이 하네스는 아직 모르는 결함을
+찾는다 — 갱신 프로세스를 실제로 SIGKILL로 죽이고, 악의 릴리스와 동시 데몬을
+조합해 무작위로 돌린 뒤 불변식을 검사한다.
+
+```bash
+.venv/bin/python _governance/_engine/tests/test_adversarial.py --trials 12 --seed 7
+```
+
+보고 끝의 **커버리지** 줄이 중요하다 — `pending_txn`·`half_applied`가 0이면
+위험 구간을 한 번도 때리지 못한 것이므로 "통과"에 의미가 없다(타이밍·규모를
+조정해야 한다). 실측에서 `half_applied`를 만든 뒤 복구·재적용이 수렴함을
+확인했다.
 
 신규 설치는 버전 0에서의 첫 갱신이다 — 빈 디렉터리에서 `--apply --adopt`로
 시작하거나, 정본을 clone한 뒤 자기 원격으로 갈아탄다.

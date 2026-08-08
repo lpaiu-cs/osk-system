@@ -293,7 +293,19 @@ def apply_set(tree: Path, rel: dict):
 
 # ── 저널 — 직전 적용 상태의 정본 ─────────────────────────────────────────
 
+def committed(recs: list[dict]) -> list[dict]:
+    """상태 판정이 볼 수 있는 기록 — **커밋된 트랜잭션의 것만**.
+
+    `done`이 그 트랜잭션의 커밋 지점이다(Mechanism §1-2 7항). 커밋 전에 죽어
+    남은 `apply`/`remove`는 파일이 pre-image로 복구되므로 baseline이 되어서는
+    안 된다 — 여기서 걸러 파일 상태와 저널 판정이 어긋나지 않게 한다. `txn`이
+    없는 유산 기록은 그대로 보인다(호환 경계)."""
+    done = {r.get("txn") for r in recs if r.get("kind") == "done" and r.get("txn")}
+    return [r for r in recs if not r.get("txn") or r["txn"] in done]
+
+
 def last_applied_hash(recs: list[dict], rel_path: str) -> str | None:
+    recs = committed(recs)
     r = resolve_one(recs, rel_path, "path")
     return r.get("hash") if r and r.get("kind") == "apply" else None
 
@@ -302,6 +314,7 @@ def managed_paths(recs: list[dict]) -> dict[str, str]:
     """지금 이 인스턴스가 정본으로부터 관리 중인 경로 → 기준선 해시.
     경로별 인과 극대가 `apply`면 관리 중, `remove`면 삭제됨(last_applied_hash와
     같은 규율). 삭제 전파의 '직전 관리 집합'이 여기서 나온다."""
+    recs = committed(recs)
     out = {}
     for p in {r.get("path") for r in recs if r.get("path")}:
         r = resolve_one(recs, p, "path")
@@ -321,58 +334,126 @@ def current_version(recs: list[dict] | None = None) -> str | None:
 
 
 def has_history(recs: list[dict] | None = None) -> bool:
-    """이 인스턴스가 이미 갱신 관리 이력을 가졌는가 — apply·remove·done 중
-    하나라도 있으면 참. adopt(최초 편입)의 허용 판정에 쓴다. current_version이
-    None이어도(다기기 분기) 이력이 있으면 최초가 아니다."""
-    recs = ledger_read(UPDATE_JOURNAL) if recs is None else recs
+    """이 인스턴스가 이미 갱신 관리 이력을 가졌는가 — **커밋된** apply·remove·
+    done 중 하나라도 있으면 참. adopt(최초 편입)의 허용 판정에 쓴다. 커밋 전에
+    죽어 남은 기록으로 adopt가 막히면 복구가 불가능해지므로 committed로 본다."""
+    recs = committed(ledger_read(UPDATE_JOURNAL) if recs is None else recs)
     return any(r.get("kind") in ("apply", "remove", "done") for r in recs)
 
 
 # ── 크래시-안전 트랜잭션 (Mechanism §1-2 7항) ────────────────────────────
+#
+# 프로토콜 — 파일과 저널을 **하나의 txn id**로 묶는다:
+#   ①pre-image 백업 fsync → ②manifest(txn) 원자 기록·fsync  ← 트랜잭션 시작
+#   ③저널 begin(txn) → ④파일 조작 → ⑤저널 apply/remove(txn) → ⑥저널 done(txn)
+#   ⑦manifest 제거                                            ← 트랜잭션 종료
+# 복구 판정은 결정적이다: manifest의 txn이 저널에 `done`이면 **roll-forward**
+# (파일은 이미 새 판이므로 manifest만 정리), 없으면 **rollback**(pre-image 복구).
+# 커밋 전 apply/remove는 `committed()`가 판정에서 가린다 — 파일과 저널이 어긋나지
+# 않는 이유다. 복구 실패는 fail-closed로 백업을 보존한 채 중단한다.
+
+def _fsync_dir(d: Path) -> None:
+    """디렉터리 엔트리를 내구화 — 파일만 fsync하면 rename·create가 유실될 수 있다."""
+    try:
+        fd = os.open(str(d), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
 
 def _txn_clear() -> None:
     if TXN_DIR.exists():
         shutil.rmtree(TXN_DIR, ignore_errors=True)
+    _fsync_dir(TXN_DIR.parent if TXN_DIR.parent.exists() else ROOT)
 
 
-def _txn_begin(touch: list[Path]) -> None:
-    """건드릴 파일들의 pre-image를 **영속 백업**한 뒤 manifest를 원자 기록한다.
-    manifest 존재가 '트랜잭션 시작'의 커밋 지점이다 — 이 함수가 반환된 뒤부터
-    target을 건드리므로, manifest 없이 남은 부분 백업은 target 미변경을 뜻한다."""
+def _txn_begin(txn: str, version: str, touch: list[str]) -> None:
+    """건드릴 파일(canonical ROOT-상대 경로)의 pre-image를 영속 백업·fsync한 뒤
+    manifest를 원자 기록한다. manifest 기록이 트랜잭션 시작의 커밋 지점이므로,
+    그 전에 죽으면 target은 아직 손대지 않은 상태다. 경로는 절대경로로 굳히지
+    않는다 — 복구 시 다시 봉쇄·정체성 검증하기 위해 canonical 상대로 남긴다."""
     _txn_clear()
     TXN_BACKUP.mkdir(parents=True)
     entries = []
-    for i, path in enumerate(touch):
+    for i, rel in enumerate(touch):
         key = f"{i:06d}"
-        existed = path.is_file()
+        p = ROOT / rel
+        existed = p.is_file()
+        h = None
         if existed:
-            shutil.copy2(path, TXN_BACKUP / key)
-        entries.append({"abs": str(path), "backup": key, "existed": existed})
-    _write_atomic(TXN_MANIFEST,
-                  json.dumps({"entries": entries}, ensure_ascii=False).encode())
+            data = p.read_bytes()
+            bp = TXN_BACKUP / key
+            _write_atomic(bp, data)              # 백업 자체도 fsync된다
+            h = sha256_file(bp)
+        entries.append({"rel": rel, "backup": key, "existed": existed,
+                        "hash": h})
+    _fsync_dir(TXN_BACKUP)
+    _write_atomic(TXN_MANIFEST, json.dumps(
+        {"txn": txn, "version": version, "entries": entries},
+        ensure_ascii=False).encode())
+    _fsync_dir(TXN_DIR)
 
 
-def _txn_restore() -> bool:
-    """미완료 트랜잭션이 있으면 pre-image로 되돌린다 — 있었으면 True.
-    크래시(프로세스 사망·전원 차단) 뒤 다음 실행이 호출해 혼합 상태를 없앤다."""
+def _txn_pending() -> dict | None:
+    """미완료(또는 미정리) 트랜잭션 manifest — 없으면 None. 판독 실패는 손상이며
+    **지우지 않는다**(유일한 복구 자료다) — 호출부가 fail-closed로 중단한다."""
     if not TXN_MANIFEST.is_file():
-        return False
+        return None
     try:
         man = json.loads(TXN_MANIFEST.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        _txn_clear()
-        return False
-    for e in man.get("entries", []):
-        path = Path(e["abs"])
+    except (OSError, ValueError) as e:
+        raise UpdateError(
+            f"트랜잭션 manifest 손상 — 자동 복구 불가, 수동 개입 필요: {e} "
+            f"(백업은 {TXN_DIR} 에 보존했다)")
+    if not isinstance(man.get("entries"), list) or not man.get("txn"):
+        raise UpdateError(
+            f"트랜잭션 manifest 형식 위반 — 수동 개입 필요 (보존: {TXN_DIR})")
+    return man
+
+
+def _txn_recover(recs: list[dict]) -> str | None:
+    """미완료 트랜잭션을 결정적으로 처리한다 — 'rollback'|'roll-forward'|None.
+
+    저널에 그 txn의 `done`이 있으면 커밋된 것이므로 파일은 새 판이 정답이고
+    manifest만 정리한다(roll-forward). 없으면 pre-image로 되돌린다(rollback).
+    복구 대상 경로는 다시 봉쇄·정체성 검증하며, 하나라도 되돌리지 못하면
+    백업을 보존한 채 중단한다(fail-closed)."""
+    man = _txn_pending()
+    if man is None:
+        return None
+    txn = man["txn"]
+    if any(r.get("kind") == "done" and r.get("txn") == txn for r in recs):
+        _txn_clear()                             # 커밋됨 — 파일은 그대로 둔다
+        return "roll-forward"
+    for e in man["entries"]:
+        rel = e.get("rel")
+        cp = _canon_rel(ROOT, str(rel)) if rel else None
+        if cp is None:
+            raise UpdateError(
+                f"복구 경로가 봉쇄·정체성 검증에 실패했다 — 중단(보존: {TXN_DIR}): {rel}")
+        p = ROOT / cp
         try:
             if e.get("existed"):
-                shutil.copy2(TXN_BACKUP / e["backup"], path)
+                bp = TXN_BACKUP / str(e.get("backup"))
+                if not bp.is_file():
+                    raise UpdateError(
+                        f"백업이 없다 — 복구 불가, 수동 개입 필요: {rel}")
+                if e.get("hash") and sha256_file(bp) != e["hash"]:
+                    raise UpdateError(
+                        f"백업이 손상됐다 — 복구 불가, 수동 개입 필요: {rel}")
+                _write_atomic(p, bp.read_bytes())
             else:
-                path.unlink(missing_ok=True)
-        except OSError:
-            pass
+                p.unlink(missing_ok=True)
+        except OSError as ex:
+            raise UpdateError(
+                f"복구 실패 — 중단(백업 보존: {TXN_DIR}): {rel} {ex}")
     _txn_clear()
-    return True
+    return "rollback"
 
 
 def _sync_lock_path() -> Path:
@@ -442,6 +523,7 @@ def _write_atomic(dst: Path, data: bytes) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, dst)
+        _fsync_dir(dst.parent)          # rename 자체의 내구성 (전원 차단 대비)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -451,6 +533,54 @@ def _write_atomic(dst: Path, data: bytes) -> None:
 def run(source: str | None = None, ref: str | None = None,
         bundle: str | None = None, apply: bool = False,
         adopt: bool = False) -> dict:
+    """기본은 보고. `apply`면 **가장 먼저** mutation 잠금을 잡고 미완료 트랜잭션을
+    복구한 뒤에야 상태를 판정한다 — 복구가 판정 뒤에 오면 half-applied 상태가
+    drift·adopt 거부로 오판되어 복구에 도달하지 못한다(Mechanism §1-2 7항)."""
+    if not apply:
+        return _run_locked(source, ref, bundle, False, adopt)
+    # 데몬이 **실행 중이면** 갱신하지 않는다. mutation 잠금은 새 규약이므로,
+    # 이 기능을 처음 들여오는 갱신에서는 이미 돌고 있는 구버전 데몬이 그 규약을
+    # 모른 채 혼합 상태를 커밋·push할 수 있다. 데몬 싱글턴 잠금(osk-sync.lock)의
+    # 획득 가능성으로 실행 여부를 판정한다 — 구·신 데몬 모두 이 잠금을 잡는다.
+    from sync_daemon import _lock_path as _dlp
+    probe = open(_dlp(ROOT, "osk-sync.lock"), "w")
+    try:
+        try:
+            lock_exclusive(probe, blocking=False)
+        except OSError:
+            raise UpdateError(
+                "동기화 데몬이 실행 중이다 — 갱신 전에 데몬을 멈춘다"
+                "(구버전 데몬은 갱신의 잠금 규약을 모른다)")
+        unlock(probe)
+    finally:
+        probe.close()
+
+    lock_f = open(_sync_lock_path(), "w")
+    acquired = False
+    try:
+        try:
+            lock_exclusive(lock_f, blocking=False)
+            acquired = True
+        except OSError:
+            raise UpdateError(
+                "다른 갱신이 vault를 잠갔다 — 잠시 후 다시 실행한다")
+        # 복구는 어떤 상태 판정보다 먼저다(잠금 안에서).
+        recovered = _txn_recover(ledger_read(UPDATE_JOURNAL))
+        if recovered == "rollback":
+            ledger_append(UPDATE_JOURNAL,
+                          {"kind": "rollback", "why": "미완료 트랜잭션 크래시 복구"})
+        rep = _run_locked(source, ref, bundle, True, adopt)
+        if recovered:
+            rep["recovered"] = recovered
+        return rep
+    finally:
+        if acquired:                    # 소유하지 않은 잠금을 풀지 않는다(P2)
+            unlock(lock_f)
+        lock_f.close()
+
+
+def _run_locked(source: str | None, ref: str | None, bundle: str | None,
+                apply: bool, adopt: bool) -> dict:
     cfg = load_config().get("upstream", {})
     source = source or ("bundle" if bundle else cfg.get("source", "git"))
     self_tag = None
@@ -517,91 +647,75 @@ def run(source: str | None = None, ref: str | None = None,
                 out["pending_txn"] = True        # 미완료 트랜잭션 — --apply로 복구
             return out
 
-        # 적용은 sync 데몬과 **같은 잠금** 아래에서 한다 — 데몬이 커밋·push하는
-        # 사이 혼합 상태가 만들어지는 것을 상호배제한다(P1).
-        _sync = open(_sync_lock_path(), "w")
+        # (잠금·미완료 트랜잭션 복구는 run()이 이미 끝냈다 — 여기는 잠금 안이다.)
+        v = rel["version"]
+        txn = os.urandom(8).hex()                # 파일과 저널을 묶는 트랜잭션 id
+        # 이번에 건드릴 파일(canonical 상대)의 pre-image를 영속 백업하고 manifest를
+        # 기록한 **뒤에만** target을 건드린다. 이후 크래시는 다음 실행이 판정한다:
+        # done(txn)이 있으면 roll-forward, 없으면 rollback.
+        touch = [dest for _s, dest in p["add"] + p["update"]]
+        touch += list(p["remove"])
+        touch += [dest + f".upstream-{v}" for _s, dest in p["conflict"]]
+        touch += [posix_rel(d / ".gitkeep", ROOT) for d in skel if not d.exists()]
+        _txn_begin(txn, v, touch)
+        ledger_append(UPDATE_JOURNAL, {"kind": "begin", "txn": txn,
+                                       "version": v, "adopt": bool(adopt)})
+        applied, removed, sidecars, made_skel = [], [], [], []
         try:
-            try:
-                lock_exclusive(_sync, blocking=False)
-            except OSError:
-                raise UpdateError(
-                    "동기화 데몬이 vault를 잠갔다 — 잠시 후 다시 실행한다")
-            # 크래시로 남은 미완료 트랜잭션을 먼저 복구한 뒤 재계획한다(§1-2 7항).
-            if _txn_restore():
-                ledger_append(UPDATE_JOURNAL,
-                              {"kind": "rollback", "why": "미완료 트랜잭션 크래시 복구"})
-            p = plan(tree, targets, adopt)        # 복구·잠금 후 상태로 재계획
-            if p["engine_drift"]:
-                raise UpdateError(
-                    "엔진 파일에 로컬 수정이 있다 — 갱신 전체를 중단한다"
-                    "(Mechanism §1-2 6항):\n  " + "\n  ".join(p["engine_drift"][:10]))
-
-            v = rel["version"]
-            # 이번에 건드릴 모든 파일 = 백업 대상. 영속 백업+manifest를 먼저 남기고
-            # (커밋 지점) 그 뒤에만 target을 건드린다. 크래시면 다음 실행이 복구.
-            touch = [ROOT / dest for _s, dest in p["add"] + p["update"]]
-            touch += [ROOT / path for path in p["remove"]]
-            touch += [ROOT / (dest + f".upstream-{v}") for _s, dest in p["conflict"]]
-            touch += [d / ".gitkeep" for d in skel if not d.exists()]
-            _txn_begin(touch)
+            for src, dest in p["add"] + p["update"]:
+                _write_atomic(ROOT / dest, (tree / src).read_bytes())
+                applied.append(dest)
+            for path in p["remove"]:              # path는 이미 canonical(P1)
+                (ROOT / path).unlink(missing_ok=True)
+                removed.append(path)
+            for src, dest in p["conflict"]:
+                side = ROOT / (dest + f".upstream-{v}")
+                _write_atomic(side, (tree / src).read_bytes())
+                sidecars.append(posix_rel(side, ROOT))
+            for d in skel:                        # 이미 _allowed_skel로 봉쇄·검증됨
+                if not d.exists():
+                    d.mkdir(parents=True)
+                    _write_atomic(d / ".gitkeep", b"")
+                    made_skel.append(posix_rel(d, ROOT))
+        except OSError as e:
+            _txn_recover(ledger_read(UPDATE_JOURNAL))   # done(txn) 없음 → rollback
             ledger_append(UPDATE_JOURNAL,
-                          {"kind": "begin", "version": v, "adopt": bool(adopt)})
-            applied, removed, sidecars, made_skel = [], [], [], []
-            try:
-                for src, dest in p["add"] + p["update"]:
-                    _write_atomic(ROOT / dest, (tree / src).read_bytes())
-                    applied.append(dest)
-                for path in p["remove"]:          # path는 이미 canonical(P1)
-                    (ROOT / path).unlink(missing_ok=True)
-                    removed.append(path)
-                for src, dest in p["conflict"]:
-                    side = ROOT / (dest + f".upstream-{v}")
-                    _write_atomic(side, (tree / src).read_bytes())
-                    sidecars.append(posix_rel(side, ROOT))
-                for d in skel:                    # 이미 _allowed_skel로 봉쇄·검증됨
-                    if not d.exists():
-                        d.mkdir(parents=True)
-                        (d / ".gitkeep").write_text("", encoding="utf-8")
-                        made_skel.append(posix_rel(d, ROOT))
-            except OSError as e:
-                _txn_restore()                    # 영속 백업으로 원상복구
-                ledger_append(UPDATE_JOURNAL,
-                              {"kind": "rollback", "version": v, "why": str(e)[:200]})
-                raise UpdateError(f"갱신 적용 중 실패 — 원상복구했다: {e}")
+                          {"kind": "rollback", "txn": txn, "version": v,
+                           "why": str(e)[:200]})
+            raise UpdateError(f"갱신 적용 중 실패 — 원상복구했다: {e}")
 
-            # 파일 조작 성공 후에만 적용 상태를 저널에 남긴다(baseline·삭제).
-            for dest in applied:
-                ledger_append(UPDATE_JOURNAL, {
-                    "kind": "apply", "version": v, "path": dest,
-                    "hash": sha256_file(ROOT / dest)})
-            for _src, dest in p["rebaseline"]:    # 내용 동일·기준선만 갱신
-                ledger_append(UPDATE_JOURNAL, {
-                    "kind": "apply", "version": v, "path": dest,
-                    "hash": sha256_file(ROOT / dest)})
-            for path in removed:
-                ledger_append(UPDATE_JOURNAL,
-                              {"kind": "remove", "version": v, "path": path})
-            # skip은 conflict **사건**이지 적용 상태 변경이 아니다 — `skipped_path`로
-            # 남겨 baseline/관리 판정(`path` 키)이 이를 보지 않게 한다(P2).
-            for _src, dest in p["conflict"]:
-                ledger_append(UPDATE_JOURNAL, {
-                    "kind": "skip", "version": v, "skipped_path": dest,
-                    "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
-            for path in p["remove_conflict"]:
-                ledger_append(UPDATE_JOURNAL, {
-                    "kind": "skip", "version": v, "skipped_path": path,
-                    "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
+        # 파일 조작 성공 후에 적용 상태를 저널에 남긴다. 이 기록들은 마지막
+        # `done(txn)`이 append될 때까지 `committed()`가 판정에서 가린다 —
+        # 중간에 죽어도 파일(pre-image 복구)과 판정이 어긋나지 않는다.
+        for dest in applied:
             ledger_append(UPDATE_JOURNAL, {
-                "kind": "done", "version": v, "applied": len(applied),
-                "removed": len(removed), "conflicts": len(sidecars)})
-            _txn_clear()                          # 성공 — 트랜잭션 영역 정리
-            out.update(applied=True, applied_files=len(applied),
-                       removed=removed, sidecars=sidecars, skel_created=made_skel,
-                       note="엔진이 갱신되었으면 실행 중인 서버·데몬을 재시작한다")
-            return out
-        finally:
-            unlock(_sync)
-            _sync.close()
+                "kind": "apply", "txn": txn, "version": v, "path": dest,
+                "hash": sha256_file(ROOT / dest)})
+        for _src, dest in p["rebaseline"]:        # 내용 동일·기준선만 갱신
+            ledger_append(UPDATE_JOURNAL, {
+                "kind": "apply", "txn": txn, "version": v, "path": dest,
+                "hash": sha256_file(ROOT / dest)})
+        for path in removed:
+            ledger_append(UPDATE_JOURNAL, {"kind": "remove", "txn": txn,
+                                           "version": v, "path": path})
+        # skip은 conflict **사건**이지 적용 상태 변경이 아니다 — `skipped_path`로
+        # 남겨 baseline/관리 판정(`path` 키)이 이를 보지 않게 한다(P2).
+        for _src, dest in p["conflict"]:
+            ledger_append(UPDATE_JOURNAL, {
+                "kind": "skip", "txn": txn, "version": v, "skipped_path": dest,
+                "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
+        for path in p["remove_conflict"]:
+            ledger_append(UPDATE_JOURNAL, {
+                "kind": "skip", "txn": txn, "version": v, "skipped_path": path,
+                "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
+        ledger_append(UPDATE_JOURNAL, {
+            "kind": "done", "txn": txn, "version": v, "applied": len(applied),
+            "removed": len(removed), "conflicts": len(sidecars)})
+        _txn_clear()                              # 커밋 완료 — 트랜잭션 영역 정리
+        out.update(applied=True, applied_files=len(applied),
+                   removed=removed, sidecars=sidecars, skel_created=made_skel,
+                   note="엔진이 갱신되었으면 실행 중인 서버·데몬을 재시작한다")
+        return out
 
 
 def main(argv=None):

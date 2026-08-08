@@ -2073,21 +2073,58 @@ def test_release_and_update():
                   '"kind": "apply"' not in new_j and '"kind": "rollback"' in new_j,
                   new_j[-300:])
 
-            # 크래시-안전: manifest가 남은 미완료 트랜잭션을 다음 실행이 복구 (P1)
-            (update.TXN_BACKUP).mkdir(parents=True, exist_ok=True)
-            victim = ROOT / "_governance/UpdDoc.md"
+            # 크래시-안전 트랜잭션: 커밋 여부로 rollback/roll-forward를 결정한다 (P1)
+            victim_rel = "_governance/UpdDoc.md"
+            victim = ROOT / victim_rel
             orig_v = victim.read_bytes()
-            (update.TXN_BACKUP / "000000").write_bytes(b"PRE-IMAGE\n")
-            update._write_atomic(
-                update.TXN_MANIFEST,
-                json.dumps({"entries": [{"abs": str(victim), "backup": "000000",
-                                         "existed": True}]}).encode())
+
+            def _stage_txn(txn):
+                """_txn_begin으로 실제 프로토콜대로 트랜잭션을 시작해 둔다."""
+                update._txn_begin(txn, "v9.9.9", [victim_rel])
+
+            # ① 미커밋(done 없음) → pre-image로 rollback
+            _stage_txn("txnAAA")
             victim.write_bytes(b"HALF-APPLIED\n")     # 크래시로 남은 부분 적용
-            did = update._txn_restore()
-            check("미완료 트랜잭션은 다음 실행이 pre-image로 복구",
-                  did and victim.read_bytes() == b"PRE-IMAGE\n"
-                  and not update.TXN_MANIFEST.exists())
-            victim.write_bytes(orig_v)                # 이후 검사 위해 원상
+            act = update._txn_recover([{"kind": "begin", "txn": "txnAAA"}])
+            check("미커밋 트랜잭션은 pre-image로 rollback",
+                  act == "rollback" and victim.read_bytes() == orig_v
+                  and not update.TXN_MANIFEST.exists(), act)
+            # ② 커밋됨(done(txn) 있음) → 파일은 새 판 유지, 표식만 정리
+            _stage_txn("txnBBB")
+            victim.write_bytes(b"NEW-VERSION\n")
+            act = update._txn_recover([{"kind": "done", "txn": "txnBBB"}])
+            check("커밋된 트랜잭션은 roll-forward(파일 유지·표식 정리)",
+                  act == "roll-forward"
+                  and victim.read_bytes() == b"NEW-VERSION\n"
+                  and not update.TXN_MANIFEST.exists(), act)
+            victim.write_bytes(orig_v)
+            # ③ 백업 손상 → fail-closed(백업 보존·중단)
+            _stage_txn("txnCCC")
+            (update.TXN_BACKUP / "000000").write_bytes(b"CORRUPT\n")
+            ec = uerr(lambda: update._txn_recover([{"kind": "begin",
+                                                    "txn": "txnCCC"}]))
+            check("백업 손상은 fail-closed로 중단하고 txn 영역을 보존",
+                  ec is not None and "손상" in ec and update.TXN_MANIFEST.is_file(),
+                  ec)
+            update._txn_clear()
+            victim.write_bytes(orig_v)
+
+            # 커밋 전 apply 기록은 판정에서 보이지 않는다 (파일↔저널 정합, P1)
+            uncommitted = [
+                {"rid": "00000000-0000-7000-8000-00000000c001", "parents": [],
+                 "kind": "apply", "txn": "T1", "path": "F", "hash": "sha256:aa"},
+            ]
+            check("미커밋 apply는 baseline이 되지 않는다",
+                  update.last_applied_hash(uncommitted, "F") is None
+                  and "F" not in update.managed_paths(uncommitted)
+                  and not update.has_history(uncommitted))
+            committed_recs = uncommitted + [
+                {"rid": "00000000-0000-7000-8000-00000000c002",
+                 "parents": ["00000000-0000-7000-8000-00000000c001"],
+                 "kind": "done", "txn": "T1"}]
+            check("done(txn) 이후에는 같은 기록이 baseline이 된다",
+                  update.last_applied_hash(committed_recs, "F") == "sha256:aa"
+                  and update.has_history(committed_recs))
 
             # has_history — apply/remove/done 이력 유무 (adopt 게이팅 근거) (P2)
             check("has_history: 빈/이력",
@@ -2116,6 +2153,27 @@ def test_release_and_update():
                       _sd.once(can) == "locked")
             finally:
                 update.unlock(_held); _held.close()
+
+            # 데몬이 pending 트랜잭션 표식을 보면 tick을 거부한다 (P1)
+            _tm = can / ".osk" / "txn" / "manifest.json"
+            _tm.parent.mkdir(parents=True, exist_ok=True)
+            _tm.write_text('{"txn":"x","entries":[]}', encoding="utf-8")
+            try:
+                check("데몬은 미완료 트랜잭션 표식에서 tick을 거부",
+                      _sd.once(can) == "pending-txn", _sd.once(can))
+            finally:
+                shutil.rmtree(can / ".osk", ignore_errors=True)
+
+            # 데몬 실행 중에는 갱신하지 않는다 — 구버전 데몬 bootstrap 방어 (P1)
+            _sing = open(_sd._lock_path(ROOT, "osk-sync.lock"), "w")
+            try:
+                update.lock_exclusive(_sing, blocking=False)   # 데몬처럼 선점
+                eds = uerr(lambda: update.run(source="bundle", bundle=str(can),
+                                              apply=True))
+                check("데몬 실행 중 갱신은 거부",
+                      eds is not None and "데몬" in eds, eds)
+            finally:
+                update.unlock(_sing); _sing.close()
 
             # MAP 사상 — publish.collect과 같은 src/a -> dst/a (P2)
             man_id = {"map": [("_governance/", "_governance/"),

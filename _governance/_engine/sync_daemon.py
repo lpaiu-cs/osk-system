@@ -65,18 +65,28 @@ def once(root: Path = ROOT) -> str:
 
     working-tree를 건드리는 구간 전체를 **mutation 잠금** 아래 둔다 — update가
     파일을 반쯤 바꾼 순간에 데몬의 `git add -A`가 그 혼합 상태를 커밋·push하지
-    못하게 한다(update와 공유하는 잠금). 잡혀 있으면 이번 tick을 건너뛴다."""
+    못하게 한다(update와 공유하는 잠금). 잡혀 있으면 이번 tick을 건너뛴다.
+
+    잠금을 얻어도 **미완료 트랜잭션 표식**(`.osk/txn/manifest.json`)이 남아 있으면
+    거부한다 — update 프로세스가 죽으면 OS가 잠금을 풀지만 working tree에는
+    half-applied 파일이 남는다. 표식이 사라지는 것은 updater의 복구가 끝났다는
+    뜻이며, 그때까지 혼합 상태를 커밋·push하지 않는다."""
     if not vault_sync.is_git_repo(root):
         return "git 저장소 아님"
     mlock = open(_lock_path(root, "osk-mutation.lock"), "w")
+    acquired = False
     try:
         try:
             lock_exclusive(mlock, blocking=False)
+            acquired = True
         except OSError:
             return "locked"          # update가 mutation 중 — 다음 주기에 맡긴다
+        if (root / ".osk" / "txn" / "manifest.json").is_file():
+            return "pending-txn"     # 갱신이 죽어 half-applied — 복구 전엔 손대지 않는다
         return _once_locked(root)
     finally:
-        unlock(mlock)
+        if acquired:                 # 소유하지 않은 잠금은 풀지 않는다(Windows 안전)
+            unlock(mlock)
         mlock.close()
 
 
