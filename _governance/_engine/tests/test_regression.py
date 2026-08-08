@@ -2517,30 +2517,61 @@ def test_release_and_update():
                   and stat.S_IMODE(_permf2.stat().st_mode) == 0o600, _ff[:3])
 
             # 정상 원자 교체도 mode를 **fsync 앞에서** 확정한다 — 뒤에 chmod하면
-            # 그 메타데이터가 내구화되지 않아 권한만 0600으로 남을 수 있다 (P2)
-            _order = []
-            _real_fchmod = os.fchmod
-            _real_fsync = os.fsync
-            _permf3 = ROOT / "_governance/permtest3.md"
-            _permf3.write_text("z\n", encoding="utf-8")
-            os.chmod(_permf3, 0o640)
-            mine.append(_permf3)
-            try:
-                os.fchmod = lambda fd_, m_: (_order.append("fchmod"),
-                                             _real_fchmod(fd_, m_))[1]
-                os.fsync = lambda fd_: (_order.append("fsync"),
-                                        _real_fsync(fd_))[1]
-                update._write_atomic(_permf3, b"new\n")
-            finally:
-                os.fchmod = _real_fchmod
-                os.fsync = _real_fsync
-            check("원자 교체는 fchmod를 fsync보다 먼저 한다",
-                  "fchmod" in _order and "fsync" in _order
-                  and _order.index("fchmod") < _order.index("fsync"), _order[:4])
-            check("원자 교체가 기존 권한을 유지한다",
-                  stat.S_IMODE(_permf3.stat().st_mode) == 0o640
-                  and _permf3.read_bytes() == b"new\n",
-                  oct(stat.S_IMODE(_permf3.stat().st_mode)))
+            # 그 메타데이터가 내구화되지 않아 권한만 0600으로 남을 수 있다 (P2).
+            #
+            # 검사하는 것은 *어느 호출을 쓰느냐*가 아니라 **mode 확정이 fsync보다
+            # 앞서느냐**다. 호출 이름으로 검사하면 fchmod가 없는 환경(Windows)의
+            # chmod 대체 경로는 영영 검증되지 않고, 그 환경에서는 수트가 fchmod를
+            # 읽는 자리에서 먼저 죽는다. 그래서 POSIX에서도 fchmod를 지운 채 한 번
+            # 더 돌려 **양쪽 분기를 같은 불변식으로** 검사한다.
+            #
+            # `scripts/recover.py`는 이 함수의 의도적 중복이므로 같은 잣대를 댄다 —
+            # 중복이 갈라지는 순간을 여기서 잡는다.
+            def _mode_before_fsync(mod, tag, drop_fchmod):
+                order = []
+                real_fchmod = getattr(os, "fchmod", None)
+                real_chmod, real_fsync = os.chmod, os.fsync
+                f = ROOT / ("_governance/permtest3-%s.md" % tag)
+                f.write_text("z\n", encoding="utf-8")
+                real_chmod(f, 0o640)
+                mine.append(f)
+                try:
+                    if drop_fchmod:
+                        if real_fchmod is not None:
+                            del os.fchmod              # 대체 경로를 강제한다
+                    elif real_fchmod is not None:
+                        os.fchmod = lambda fd_, m_: (order.append("mode"),
+                                                     real_fchmod(fd_, m_))[1]
+                    os.chmod = lambda p_, m_: (order.append("mode"),
+                                               real_chmod(p_, m_))[1]
+                    os.fsync = lambda fd_: (order.append("fsync"),
+                                            real_fsync(fd_))[1]
+                    mod._write_atomic(f, b"new\n")
+                finally:
+                    if real_fchmod is not None:
+                        os.fchmod = real_fchmod
+                    os.chmod, os.fsync = real_chmod, real_fsync
+                return (("mode" in order and "fsync" in order
+                         and order.index("mode") < order.index("fsync")),
+                        stat.S_IMODE(f.stat().st_mode) == 0o640
+                        and f.read_bytes() == b"new\n",
+                        order[:4])
+
+            import importlib.util as _ilu
+            _rspec = _ilu.spec_from_file_location(
+                "osk_recover_probe", ENGINE / "scripts" / "recover.py")
+            _rmod = _ilu.module_from_spec(_rspec)
+            _rspec.loader.exec_module(_rmod)
+            for _mod, _who in ((update, "update"), (_rmod, "recover")):
+                for _tag, _drop, _via in ((_who + "a", False, "fchmod"),
+                                          (_who + "b", True, "chmod 대체")):
+                    if _drop is False and not hasattr(os, "fchmod"):
+                        continue                       # Windows — 그 분기가 없다
+                    _o, _k, _d = _mode_before_fsync(_mod, _tag, _drop)
+                    check("%s: 원자 교체는 mode를 fsync 앞에서 확정한다(%s)"
+                          % (_who, _via), _o, _d)
+                    check("%s: 원자 교체가 기존 권한을 유지한다(%s)"
+                          % (_who, _via), _k)
 
             # 트랜잭션 정리 실패는 fail-closed (P2)
             update._txn_begin("txnCLR", "v9.9.9", [])
