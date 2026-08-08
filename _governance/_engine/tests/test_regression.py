@@ -1667,6 +1667,161 @@ def test_conflict_candidates():
                   for x in validate.conflict_candidates(graph.Index())))
 
 
+# ── 15b. 정본 릴리스와 갱신 (Mechanism §1-2 · 시행령 §10 6항) ────────────
+def test_release_and_update():
+    from osk import release, update
+
+    def git(root, *args):
+        subprocess.run(["git", "-C", str(root), *args], check=True,
+                       capture_output=True)
+
+    mine = []
+    with tempfile.TemporaryDirectory() as td:
+        can = Path(td) / "canonical"
+        (can / "_governance/_engine/scripts").mkdir(parents=True)
+        (can / "_governance/records").mkdir()
+        (can / "docs").mkdir()
+        (can / "_governance/UpdDoc.md").write_text("# 규범\n\n1조.\n",
+                                                   encoding="utf-8")
+        (can / "_governance/records/갱신 사료.md").write_text("# 사료\n",
+                                                             encoding="utf-8")
+        (can / "_governance/_engine/eng_upd.py").write_text("X = 1\n",
+                                                            encoding="utf-8")
+        (can / "_governance/_engine/scripts/publish-manifest.txt").write_text(
+            "MAP  _governance/ -> _governance/\nMAP  docs/ -> docs/\n"
+            "KEEP LICENSE\nKEEP README.md\nDENY _ledger/\nDENY __pycache__/\n"
+            "SKEL = UpdSkel/\n", encoding="utf-8")
+        (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
+        (can / "README.md").write_text("readme\n", encoding="utf-8")
+        (can / "LICENSE").write_text("MIT\n", encoding="utf-8")
+        git(can, "init", "-q")
+        git(can, "config", "user.email", "t@t")
+        git(can, "config", "user.name", "t")
+        git(can, "add", "-A")
+        git(can, "commit", "-qm", "base")
+
+        rep = release.run("v9.0.0", apply=True, root=can)
+        check("릴리스 선언: 증빙 생성·커밋·태그",
+              rep["applied"] and rep.get("tagged") == "v9.0.0", rep)
+        att = json.loads((can / "release.json").read_text(encoding="utf-8"))
+        check("증빙은 자신을 담지 않는다", "release.json" not in att["files"])
+        check("증빙이 전 파일을 덮는다",
+              "_governance/UpdDoc.md" in att["files"]
+              and "README.md" in att["files"], sorted(att["files"])[:5])
+
+        def uerr(f):
+            try:
+                f()
+                return None
+            except (release.ReleaseError, update.UpdateError) as e:
+                return str(e)
+        check("중복 버전은 선언 전에 거부(버전 불변)",
+              "이미 선언된 버전" in (uerr(lambda: release.run(
+                  "v9.0.0", apply=True, root=can)) or ""))
+
+        # 보고 모드 — 아무것도 쓰지 않는다. KEEP은 정본 저장소 전용.
+        r0 = update.run(source="bundle", bundle=str(can))
+        check("갱신 보고: applied=False", r0["ok"] and not r0["applied"], r0)
+        check("KEEP은 적용 대상이 아니다",
+              "_governance/UpdDoc.md" in r0["add"]
+              and all("README" not in x and "LICENSE" not in x
+                      for x in r0["add"]), r0["add"])
+        check("보고는 쓰지 않는다", not (ROOT / "docs/UPD-SETUP.md").exists())
+
+        # 적용 — 파일·골격·저널
+        r1 = update.run(source="bundle", bundle=str(can), apply=True)
+        mine += [ROOT / "_governance/UpdDoc.md",
+                 ROOT / "_governance/records/갱신 사료.md",
+                 ROOT / "_governance/_engine/eng_upd.py",
+                 ROOT / "docs/UPD-SETUP.md",
+                 ROOT / "_governance/_engine/scripts/publish-manifest.txt"]
+        check("적용: 파일이 들어온다",
+              (ROOT / "_governance/UpdDoc.md").exists()
+              and (ROOT / "docs/UPD-SETUP.md").exists(), r1)
+        check("골격은 없는 자리에 생긴다", (ROOT / "= UpdSkel/.gitkeep").exists())
+        recs = core.ledger_read(update.UPDATE_JOURNAL)
+        check("저널: begin·apply·done",
+              {"begin", "apply", "done"} <= {r.get("kind") for r in recs})
+        check("현재 버전 판정", update.current_version() == "v9.0.0")
+
+        # 멱등 — 재실행은 전부 same
+        r2 = update.run(source="bundle", bundle=str(can))
+        check("재실행은 전부 same",
+              not r2["add"] and not r2["update"] and not r2["conflict"], r2)
+
+        # 문서 드리프트 → 덮지 않고 사이드카
+        (ROOT / "_governance/UpdDoc.md").write_text("# 규범\n\n로컬 개정.\n",
+                                                    encoding="utf-8")
+        r3 = update.run(source="bundle", bundle=str(can))
+        check("로컬 수정 문서는 conflict",
+              "_governance/UpdDoc.md" in r3["conflict"], r3)
+        r4 = update.run(source="bundle", bundle=str(can), apply=True)
+        side = ROOT / "_governance/UpdDoc.md.upstream-v9.0.0"
+        mine.append(side)
+        check("사이드카가 생기고 원본은 보존",
+              side.exists() and "로컬 개정" in
+              (ROOT / "_governance/UpdDoc.md").read_text(encoding="utf-8"), r4)
+
+        # 엔진 드리프트 → 갱신 전체 중단, adopt → 기준선 편입
+        (ROOT / "_governance/_engine/eng_upd.py").write_text("X = 2\n",
+                                                             encoding="utf-8")
+        e = uerr(lambda: update.run(source="bundle", bundle=str(can),
+                                    apply=True))
+        check("엔진 로컬 수정은 갱신 전체 중단", e is not None and "엔진" in e, e)
+        r5 = update.run(source="bundle", bundle=str(can), apply=True,
+                        adopt=True)
+        check("adopt는 현재 릴리스를 기준선 삼아 덮는다",
+              (ROOT / "_governance/_engine/eng_upd.py")
+              .read_text(encoding="utf-8") == "X = 1\n", r5)
+
+        # 비준증빙 위반 — 변조·밀반입·부재 전부 중단
+        (can / "docs/UPD-SETUP.md").write_text("# 변조\n", encoding="utf-8")
+        e = uerr(lambda: update.run(source="bundle", bundle=str(can)))
+        check("해시 불일치는 중단", e is not None and "해시 불일치" in e, e)
+        (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
+        (can / "sneaky.md").write_text("x\n", encoding="utf-8")
+        e = uerr(lambda: update.run(source="bundle", bundle=str(can)))
+        check("증빙 밖 파일은 중단", e is not None and "증빙 밖" in e, e)
+        (can / "sneaky.md").unlink()
+        e = uerr(lambda: update.run(source="bundle",
+                                    bundle=str(Path(td) / "noatt-없는트리")))
+        check("비준증빙 없는 출처는 거부", e is not None, e)
+
+        # 인스턴스 소유 바닥 — 악의 릴리스·매니페스트도 못 쓴다 (엔진 상수)
+        ev = Path(td) / "evil"
+        (ev / "_governance/_engine/scripts").mkdir(parents=True)
+        (ev / "= Scope").mkdir()
+        (ev / "= Scope/침투.md").write_text("x\n", encoding="utf-8")
+        (ev / "_governance/x/_ledger").mkdir(parents=True)
+        (ev / "_governance/x/_ledger/x.jsonl").write_text("{}\n",
+                                                          encoding="utf-8")
+        (ev / "_governance/_engine/scripts/publish-manifest.txt").write_text(
+            'MAP  = Scope/ -> = Scope/\nMAP  _governance/ -> _governance/\n',
+            encoding="utf-8")
+        att2 = {"version": "v9.6.6", "at": core.now_iso(),
+                "files": {core.posix_rel(f, ev): core.sha256_file(f)
+                          for f in ev.rglob("*") if f.is_file()}}
+        (ev / "release.json").write_text(
+            json.dumps(att2, ensure_ascii=False), encoding="utf-8")
+        r6 = update.run(source="bundle", bundle=str(ev), apply=True)
+        check("Space 바닥에는 쓰지 않는다",
+              not (ROOT / "= Scope/침투.md").exists(), r6)
+        check("_ledger 조각 경로에도 쓰지 않는다",
+              not (ROOT / "_governance/x/_ledger/x.jsonl").exists(), r6)
+
+    # 뒷정리 — 이후 기준선 PASS 유지
+    for f in mine:
+        f.unlink(missing_ok=True)
+    for d in (ROOT / "= UpdSkel", ROOT / "docs",
+              ROOT / "_governance/_engine/scripts",
+              ROOT / "_governance/_engine", ROOT / "_governance/records"):
+        try:
+            (d / ".gitkeep").unlink(missing_ok=True)
+            d.rmdir()
+        except OSError:
+            pass
+
+
 # ── 16. 제목은 모든 기기에서 파일명·Link 대상이 될 수 있어야 한다 ────────
 def test_portable_title():
     """제목이 곧 파일명이자 Link 대상이므로, 한 기기에서만 표현 가능한 이름은
@@ -1776,6 +1931,7 @@ if __name__ == "__main__":
                test_sync_pins_main,
                test_publish_manifest, test_publish_guards,
                test_conflict_candidates,
+               test_release_and_update,
                test_baseline_pass]:
         try:
             fn()

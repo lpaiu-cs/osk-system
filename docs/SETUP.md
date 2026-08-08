@@ -1,25 +1,25 @@
 # osk-system 설치·운용
 
-이 인스턴스의 실행 방법. 규범이 아니라 **운용 문서**이므로 서명 대상이 아니고,
-구현이 바뀌면 여기부터 고친다.
+인스턴스의 실행 방법. 규범이 아니라 **운용 문서**다.
 
 체계 자체의 규범은 `_governance/`(헌법·시행령·Mechanism·Workbench 계약)에
-있고, 공개 미러 <https://github.com/lpaiu-cs/osk-system> 로 발행된다.
+있다. 그 **정본은 정본 저장소** <https://github.com/lpaiu-cs/osk-system> 이고,
+각 인스턴스는 릴리스를 갱신으로 받는다(아래 '정본 릴리스와 갱신').
 
 ## 구성
 
 ```
 _governance/
-  Constitution.md 등   통치 문서 4종 + records/ (사료) — Space 밖 통치 구획
+  Constitution.md 등   통치 문서 4종 + records/ (사료) — Space 밖 통치 구획, 비노드
   _engine/
-    osk/               엔진 — 계약·서명·인과 DAG·검색·검증기·발행
+    osk/               엔진 — 계약·서명·인과 DAG·검색·검증기·릴리스·갱신
     mcp_server.py      외부 표면(MCP, stdio) — 도구 8종
     sync_daemon.py     동기화 데몬(git만; 검색·색인은 서빙하지 않는다)
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
     scripts/           발행 매니페스트, launchd/systemd 예시
 = Scope/ = Domain/ = Person/   지식 공간
-= Scope/Workbench/_ledger/     대장 — 서명·pin·세션 라우팅 (append-only)
+= Scope/Workbench/_ledger/     대장 — 서명·pin·세션 라우팅·갱신 저널 (append-only)
 ```
 
 ## 준비
@@ -110,26 +110,47 @@ HEAD가 `main`이 아니면 매 주기 시작에 되돌린다. 되돌릴 수 없
 
 launchd/systemd 예시는 `_governance/_engine/scripts/`에 있다.
 
-## 공개 미러 발행
+## 정본 릴리스와 갱신
 
-공개 미러는 사설 트리에서 **빌드**한다. v2.1부터 통치 구획 경로가 사설·공개
-동일해(`_governance/`) 사상은 항등이지만, 무엇이 나가는지의 정본은 여전히
-코드가 아니라 `_governance/_engine/scripts/publish-manifest.txt`다.
+프레임워크(통치 문서·엔진·운용 문서)의 **정본은 정본 저장소**
+<https://github.com/lpaiu-cs/osk-system> 다(Mechanism §1-2). 엔진·통치 문서의
+저작은 정본에서 하고, 모든 인스턴스는 — 기초자의 것을 포함해 — 릴리스를
+**갱신**으로 받아들인다. 데이터 동기화 데몬(위)과는 다른 축이다 — 데몬은
+인스턴스 자신의 원격만 다루고 정본에 닿지 않는다.
+
+**정본에서 — 릴리스 선언** (사용자의 비준 행위, 대화형 단말 전속):
 
 ```bash
-PYTHONPATH=_governance/_engine .venv/bin/python -m osk.publish --public <PUBLIC_REPO>
+PYTHONPATH=_governance/_engine python3 -m osk.release --version vX.Y.Z --apply
 ```
 
-기본은 **보고**다. `--apply`가 있어야 공개 트리에 쓰고, `--push`가 있어야 올린다.
-보고에는 add·change·remove와 함께 `stray`(매니페스트가 통제하지 않는데 디스크에
-있는 파일)가 나온다 — 발행은 stray를 커밋하지도 지우지도 않는다.
+깨끗한 작업 트리·검증기 PASS·비밀값 스캔을 전제로, 릴리스 전 파일의 내용
+해시 목록인 **비준증빙**(`release.json`)을 만들어 커밋·태그한다. 버전은
+불변이다 — 같은 태그의 재선언은 거부된다. 태그 push는 git으로 직접 한다.
 
-네 가드가 전부 fail-closed다. 하나라도 걸리면 아무것도 쓰지 않는다.
+**인스턴스에서 — 갱신**:
 
-- 지식 노드 유출 금지 — `_governance/` 밖의 노드형 파일은 나가지 않는다
-- 비밀값 스캔 — 값 자체는 보고에 싣지 않는다
-- **미서명 통치 문서 발행 금지** — 사용자가 확인하지 않은 규범은 세상에 내놓지 않는다
-- 검증기 PASS — 깨진 vault에서 발행하지 않는다
+```bash
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update            # 보고
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 적용
+```
+
+- 출처는 둘이다: `git`(기본 — 정본을 태그로 얕게 받는다. `--to vX.Y.Z`로
+  버전 고정) · `bundle`(`--from <경로>` — 디렉터리·tar 오프라인 반입).
+  로컬 설정은 `.osk/config.json`의 `{"upstream": {"source", "url", "pin"}}`.
+- 릴리스는 **비준증빙과 전수 대조**한 뒤에만 적용된다 — 해시 불일치·증빙 밖
+  파일·증빙 부재는 전부 중단이다.
+- 적용 범위는 릴리스 안의 발행 매니페스트가 정하고(별도 갱신 매니페스트
+  없음), **인스턴스 소유 바닥**(`= ` Space·`_ledger/`·`_raw/`·`_sources/`·
+  `.osk/`)에는 무엇이 와도 쓰지 않는다.
+- 로컬 수정이 있는 문서는 덮지 않고 `<이름>.upstream-<버전>` 사본을 옆에
+  둔다(병합은 수동). **엔진 파일의 로컬 수정은 갱신 전체를 중단한다** —
+  엔진을 고치는 자리는 정본이다. 기존 인스턴스의 최초 편입은 `--adopt`.
+- 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면
+  실행 중인 MCP 서버·데몬을 재시작한다.
+
+신규 설치는 버전 0에서의 첫 갱신이다 — 빈 디렉터리에서 `--apply --adopt`로
+시작하거나, 정본을 clone한 뒤 자기 원격으로 갈아탄다.
 
 ## 배경 기록
 
