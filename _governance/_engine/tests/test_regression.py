@@ -1888,23 +1888,40 @@ def test_release_and_update():
             uj.write_text(orig_uj, encoding="utf-8")
 
             # release mutation 실패는 선언 전으로 원상복구 (P2)
-            hook = can / ".git" / "hooks" / "pre-commit"
-            hook.parent.mkdir(parents=True, exist_ok=True)
-            hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-            hook.chmod(0o755)
-            pre_head = subprocess.run(
-                ["git", "-C", str(can), "rev-parse", "HEAD"],
-                capture_output=True, text=True).stdout.strip()
+            # commit을 실패시킨다 — gpgsign+없는 키(--no-verify가 우회 못 하는 경로)
+            def _head(r):
+                return subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD"],
+                                      capture_output=True, text=True).stdout.strip()
+            git(can, "config", "commit.gpgsign", "true")
+            git(can, "config", "user.signingkey", "0xNONEXISTENTKEY")
+            pre_head = _head(can)
             e = uerr(lambda: release.run("v9.3.0", apply=True, root=can))
-            post_head = subprocess.run(
-                ["git", "-C", str(can), "rev-parse", "HEAD"],
-                capture_output=True, text=True).stdout.strip()
             porcelain = subprocess.run(
                 ["git", "-C", str(can), "status", "--porcelain"],
                 capture_output=True, text=True).stdout.strip()
             check("commit 실패 시 선언 전으로 원상복구(HEAD·트리 불변)",
-                  e is not None and post_head == pre_head and porcelain == "",
-                  (e, post_head == pre_head, porcelain))
+                  e is not None and _head(can) == pre_head and porcelain == "",
+                  (e, _head(can) == pre_head, porcelain))
+            git(can, "config", "commit.gpgsign", "false")
+
+            # 변조 pre-commit hook은 --no-verify로 무력화 — self-invalid 릴리스 방지 (P2)
+            probe2 = can / "_governance" / "hooktouch.md"
+            probe2.write_text(node_text("260802-uupd-000c", "훅 미변조 확인"),
+                              encoding="utf-8")
+            git(can, "add", "-A"); git(can, "commit", "-qm", "add hooktouch")
+            hook = can / ".git" / "hooks" / "pre-commit"
+            hook.parent.mkdir(parents=True, exist_ok=True)
+            # 훅이 tracked 파일을 수정·stage하려 시도한다(우회되면 원본 유지)
+            hook.write_text(
+                "#!/bin/sh\n"
+                'printf "TAMPERED\\n" >> "_governance/hooktouch.md"\n'
+                'git add "_governance/hooktouch.md"\n', encoding="utf-8")
+            hook.chmod(0o755)
+            before = probe2.read_text(encoding="utf-8")
+            release.run("v9.4.0", apply=True, root=can)
+            check("release 커밋은 변조 hook을 태우지 않는다(--no-verify)",
+                  probe2.read_text(encoding="utf-8") == before
+                  and "TAMPERED" not in probe2.read_text(encoding="utf-8"))
             hook.unlink()
 
             # clean-tree 면제는 정확히 release.json만 — release.json.bak은 아니다 (P2)
@@ -1976,6 +1993,66 @@ def test_release_and_update():
             check("증빙 경로 탈출은 대조 단계에서 중단",
                   any("트리 밖" in e for e in update.verify_attestation(can, esc)),
                   update.verify_attestation(can, esc))
+
+            # ROOT 내부 symlink alias는 경로 정체성 훼손으로 거부 — 다른 파일로
+            # write 재지정 차단 (P1). docs가 _governance로 가는 symlink라 하자.
+            syroot = Path(td) / "syroot"
+            (syroot / "_governance").mkdir(parents=True)
+            (syroot / "_governance" / "target.md").write_text("t\n",
+                                                              encoding="utf-8")
+            try:
+                (syroot / "docs").symlink_to(syroot / "_governance")
+                sy_ok = True
+            except OSError:
+                sy_ok = True                     # symlink 불가 환경이면 통과 처리
+            if (syroot / "docs").is_symlink():
+                check("ROOT 내부 symlink alias(docs->_governance)는 거부",
+                      update._canon_rel(syroot, "docs/target.md") is None
+                      and update._canon_rel(syroot, "_governance/target.md")
+                      == "_governance/target.md")
+
+            # 적용 트랜잭션 — 도중 실패 시 파일 원상복구, 저널에 apply 안 남김 (P1)
+            trbase = Path(td) / "txn"
+            (trbase / "_governance/_engine/scripts").mkdir(parents=True)
+            (trbase / "_governance/A.md").write_text(
+                node_text("260802-uupd-000d", "A"), encoding="utf-8")
+            (trbase / "_governance/B.md").write_text(
+                node_text("260802-uupd-000e", "B"), encoding="utf-8")
+            (trbase / "_governance/_engine/scripts/publish-manifest.txt"
+             ).write_text("MAP  _governance/ -> _governance/\nDENY _ledger/\n"
+                          "DENY __pycache__/\n", encoding="utf-8")
+            att_t = {"version": "v1.0.0", "at": core.now_iso(),
+                     "files": {core.posix_rel(f, trbase): core.sha256_file(f)
+                               for f in trbase.rglob("*") if f.is_file()}}
+            (trbase / "release.json").write_text(
+                json.dumps(att_t, ensure_ascii=False), encoding="utf-8")
+            # _write_atomic이 B에서 OSError를 던지게 해 트랜잭션 실패를 유발
+            real_wa = update._write_atomic
+            calls = {"n": 0}
+
+            def _boom(dst, data):
+                calls["n"] += 1
+                if calls["n"] == 2:              # 두 번째 파일 write에서 실패
+                    raise OSError("boom")
+                return real_wa(dst, data)
+            uj0 = core.LEDGER / "update.jsonl"
+            j_before = uj0.read_text(encoding="utf-8") if uj0.exists() else ""
+            update._write_atomic = _boom
+            try:
+                et = uerr(lambda: update.run(source="bundle", bundle=str(trbase),
+                                             apply=True, adopt=True))
+            finally:
+                update._write_atomic = real_wa
+            j_after = uj0.read_text(encoding="utf-8") if uj0.exists() else ""
+            check("적용 중 실패는 UpdateError로 중단",
+                  et is not None and "원상복구" in et, et)
+            check("실패한 트랜잭션은 파일을 남기지 않는다(A·B 부재)",
+                  not (ROOT / "_governance/A.md").exists()
+                  and not (ROOT / "_governance/B.md").exists())
+            new_j = j_after[len(j_before):]
+            check("실패 트랜잭션은 apply 저널을 안 남긴다(begin·rollback만)",
+                  '"kind": "apply"' not in new_j and '"kind": "rollback"' in new_j,
+                  new_j[-300:])
 
             # MAP 사상 — publish.collect과 같은 src/a -> dst/a (P2)
             man_id = {"map": [("_governance/", "_governance/"),

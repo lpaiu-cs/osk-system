@@ -78,11 +78,11 @@ def _validate_at(root: Path) -> list[str]:
 def guards(root: Path) -> list[str]:
     errs = []
     r = _git(root, "status", "--porcelain", "-z")
-    # 면제는 **정확히** release.json만 — `startswith`면 release.json.bak 같은
-    # tracked 파일의 수정도 dirty에서 빠져, 증빙엔 그 수정 hash가 들어가는데
-    # 커밋엔 안 담기는 self-invalid 릴리스가 된다(P2).
-    dirty = [e for e in r.stdout.split("\0")
-             if e.strip() and e[3:] != ATTESTATION]
+    # release.json도 예외 없이 clean을 요구한다 — 면제하면 선언 전 로컬 수정·
+    # untracked release.json이 있을 때 실패 롤백(reset --hard + clean)이 그
+    # 선언 전 상태까지 지워 '원상복구'가 아니게 된다(P2). 완전 clean tree를
+    # 요구하면 롤백 규칙이 단순·정확해진다.
+    dirty = [e for e in r.stdout.split("\0") if e.strip()]
     if dirty:
         errs.append(f"작업 트리가 깨끗하지 않다 — 증빙은 커밋과 일치해야 한다: "
                     f"{[d[3:] for d in dirty[:5]]}")
@@ -138,8 +138,12 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
                       encoding="utf-8")
         subprocess.run(["git", "-C", str(root), "add", "--", ATTESTATION],
                        check=True, timeout=60)
-        subprocess.run(["git", "-C", str(root), "commit", "-q", "-m",
-                        f"release: {version} — 비준증빙"], check=True, timeout=60)
+        # `--no-verify`: commit hook이 다른 tracked 파일을 수정·stage해 커밋
+        # 트리가 증빙과 어긋난 self-invalid 릴리스를 만드는 것을 막는다(P2).
+        # 릴리스 커밋은 기계적이므로 hook을 태울 이유가 없다.
+        subprocess.run(["git", "-C", str(root), "commit", "-q", "--no-verify",
+                        "-m", f"release: {version} — 비준증빙"],
+                       check=True, timeout=60)
         r = _git(root, "tag", version)
         if r.returncode != 0:
             raise ReleaseError(f"태그 실패: {r.stderr.strip()}")

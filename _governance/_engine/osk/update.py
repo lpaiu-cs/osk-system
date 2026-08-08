@@ -77,15 +77,21 @@ def _within(base: Path, rel: str) -> Path | None:
 
 
 def _canon_rel(base: Path, rel: str) -> str | None:
-    """봉쇄된 canonical base-상대 경로(posix) — 탈출·재진입은 None. floor·I/O
-    판정은 raw 문자열이 아니라 반드시 이 canonical 경로에 건다."""
+    """봉쇄된 canonical base-상대 경로(posix) — 탈출·재진입·**경로 정체성 훼손**은
+    None. floor·I/O 판정은 raw 문자열이 아니라 이 canonical 경로에 건다. realpath가
+    lexical 경로와 다르면(경로 구성요소에 symlink) 다른 프레임워크 파일로 write가
+    재지정된 것이므로 거부한다 — symlink 탈출만이 아니라 ROOT **내부** alias도 막는다
+    (예: `docs/SETUP.md -> _engine/osk/core.py`)."""
     p = _within(base, rel)
     if p is None:
         return None
     try:
-        return p.relative_to(Path(os.path.realpath(base))).as_posix()
+        canon = p.relative_to(Path(os.path.realpath(base))).as_posix()
     except ValueError:
         return None
+    if canon != Path(rel).as_posix():            # lexical ≠ realpath → symlink 재지정
+        return None
+    return canon
 
 
 # SKEL이 파고들 수 없는 보호 구획 — 골격은 빈 Space 루트만 만든다.
@@ -431,52 +437,78 @@ def run(source: str | None = None, ref: str | None = None,
             return out
 
         v = rel["version"]
+        # 적용은 하나의 트랜잭션이다 — 파일 조작을 먼저 전부(백업 뜨며) 끝낸
+        # 뒤에만 apply/remove 저널을 남긴다. 도중 OSError면 백업으로 되돌려
+        # 혼합 상태(프레임워크 절반만 새 판)를 남기지 않는다(P1). 저널을
+        # 파일 조작 뒤로 미루므로, 실패 시 append-only 대장에 잘못된 baseline이
+        # 박히지 않는다. begin/done은 크래시 감지의 경계다.
         ledger_append(UPDATE_JOURNAL,
                       {"kind": "begin", "version": v, "adopt": bool(adopt)})
-        applied = []
-        for src, dest in p["add"] + p["update"]:
-            _write_atomic(ROOT / dest, (tree / src).read_bytes())
+        backup: dict = {}                        # abs path -> bytes | None(부재)
+
+        def _stage(path: Path):
+            if path not in backup:
+                backup[path] = path.read_bytes() if path.is_file() else None
+
+        applied, removed, sidecars, made_skel = [], [], [], []
+        try:
+            for src, dest in p["add"] + p["update"]:
+                dp = ROOT / dest
+                _stage(dp)
+                _write_atomic(dp, (tree / src).read_bytes())
+                applied.append(dest)
+            for path in p["remove"]:
+                dp = ROOT / path                 # path는 이미 canonical(P1)
+                _stage(dp)
+                dp.unlink(missing_ok=True)
+                removed.append(path)
+            for src, dest in p["conflict"]:
+                side = ROOT / (dest + f".upstream-{v}")
+                _stage(side)
+                _write_atomic(side, (tree / src).read_bytes())
+                sidecars.append(posix_rel(side, ROOT))
+            for d in skel:                       # 이미 _allowed_skel로 봉쇄·검증됨
+                if not d.exists():
+                    d.mkdir(parents=True)
+                    gk = d / ".gitkeep"
+                    _stage(gk)
+                    gk.write_text("", encoding="utf-8")
+                    made_skel.append(posix_rel(d, ROOT))
+        except OSError as e:
+            for path, data in backup.items():    # best-effort 원상복구
+                try:
+                    if data is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        _write_atomic(path, data)
+                except OSError:
+                    pass
+            ledger_append(UPDATE_JOURNAL,
+                          {"kind": "rollback", "version": v, "why": str(e)[:200]})
+            raise UpdateError(f"갱신 적용 중 실패 — 원상복구했다: {e}")
+
+        # 파일 조작 성공 후에만 적용 상태를 저널에 남긴다(baseline·삭제).
+        for dest in applied:
             ledger_append(UPDATE_JOURNAL, {
                 "kind": "apply", "version": v, "path": dest,
                 "hash": sha256_file(ROOT / dest)})
-            applied.append(dest)
-        # 내용은 같으나 기준선이 없던 파일 — 저널만 남긴다(파일은 그대로).
-        for _src, dest in p["rebaseline"]:
+        for _src, dest in p["rebaseline"]:       # 내용 동일·기준선만 갱신
             ledger_append(UPDATE_JOURNAL, {
                 "kind": "apply", "version": v, "path": dest,
                 "hash": sha256_file(ROOT / dest)})
-        # 삭제 전파 — upstream에서 빠졌고 로컬 무수정인 관리 파일을 제거한다.
-        removed = []
-        for path in p["remove"]:
-            rp = _within(ROOT, path)             # unlink 전 재봉쇄(P1)
-            if rp is not None:
-                rp.unlink(missing_ok=True)
+        for path in removed:
             ledger_append(UPDATE_JOURNAL,
                           {"kind": "remove", "version": v, "path": path})
-            removed.append(path)
-        # skip은 conflict **사건**이지 적용 상태의 변경이 아니다 — 경로를
-        # `skipped_path`로 남겨 baseline/관리 판정(`path` 키)이 이를 보지 않게
-        # 한다. 안 그러면 skip이 인과 극대가 되어 마지막 apply baseline을
-        # 가리고, 되돌려도 계속 drift·삭제 전파 누락이 된다(P2).
-        sidecars = []
-        for src, dest in p["conflict"]:
-            side = ROOT / (dest + f".upstream-{v}")
-            _write_atomic(side, (tree / src).read_bytes())
+        # skip은 conflict **사건**이지 적용 상태 변경이 아니다 — `skipped_path`로
+        # 남겨 baseline/관리 판정(`path` 키)이 이를 보지 않게 한다(P2).
+        for _src, dest in p["conflict"]:
             ledger_append(UPDATE_JOURNAL, {
                 "kind": "skip", "version": v, "skipped_path": dest,
                 "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
-            sidecars.append(posix_rel(side, ROOT))
-        # upstream에서 삭제됐으나 로컬 수정이 있는 파일 — 지우지 않고 보존·보고.
         for path in p["remove_conflict"]:
             ledger_append(UPDATE_JOURNAL, {
                 "kind": "skip", "version": v, "skipped_path": path,
                 "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
-        made_skel = []
-        for d in skel:                       # 이미 _allowed_skel로 봉쇄·검증됨
-            if not d.exists():
-                d.mkdir(parents=True)
-                (d / ".gitkeep").write_text("", encoding="utf-8")
-                made_skel.append(posix_rel(d, ROOT))
         ledger_append(UPDATE_JOURNAL, {
             "kind": "done", "version": v, "applied": len(applied),
             "removed": len(removed), "conflicts": len(sidecars)})
