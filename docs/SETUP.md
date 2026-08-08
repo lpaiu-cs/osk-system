@@ -10,7 +10,7 @@
 
 ```
 _governance/
-  Constitution.md 등   통치 문서 4종 + records/ (사료) — Space 밖 통치 구획, 비노드
+  Constitution.md 등   통치 문서 4종 + records/ (사료) — Space 밖 통치 구획의 특수 노드
   _engine/
     osk/               엔진 — 계약·서명·인과 DAG·검색·검증기·릴리스·갱신
     mcp_server.py      외부 표면(MCP, stdio) — 도구 8종
@@ -146,6 +146,9 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 적�
 - 로컬 수정이 있는 문서는 덮지 않고 `<이름>.upstream-<버전>` 사본을 옆에
   둔다(병합은 수동). **엔진 파일의 로컬 수정은 갱신 전체를 중단한다** —
   엔진을 고치는 자리는 정본이다. 기존 인스턴스의 최초 편입은 `--adopt`.
+- 갱신이 통치 문서를 덮으면 그 인스턴스의 서명이 자동으로 풀린다 — diff를
+  확인하고 `osk sign`으로 재서명하는 것이 **수용의 기록**이다(효력 요건은
+  아니다; 미비준은 status에 상시 표시된다).
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면
   실행 중인 MCP 서버·데몬을 재시작한다.
 

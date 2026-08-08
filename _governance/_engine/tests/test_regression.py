@@ -694,8 +694,9 @@ def test_surface_contract():
     check("실 Mechanism에 §6-2가 있다", sec is not None)
     if not sec:
         return
-    (gov / "Mechanism.md").write_text(          # 비노드 규범 문서 — frontmatter 없음
-        "# Mechanism (시험 사본)\n\n" + sec.group(0), encoding="utf-8")
+    (gov / "Mechanism.md").write_text(          # 특수 노드 — 계약을 갖춘다
+        node_text("260802-zzzz-rg50", "표면 계약 시험용", sec.group(0)),
+        encoding="utf-8")
     check("실 표면은 선언과 동치·권위 비노출", not validate.surface_violations(),
           validate.surface_violations())
     declared = validate.declared_tools()
@@ -1516,9 +1517,11 @@ def test_publish_guards():
     led = gov / "_ledger"
     mine = []
     try:
-        # 통치 문서·사료는 비노드 규범 문서 — frontmatter 없음 (헌법 3조 6항)
-        doc.write_text("# 발행 시험 문서\n\n본문.\n", encoding="utf-8")
-        rec.write_text("# 발행 시험 사료\n\n본문.\n", encoding="utf-8")
+        # 통치 문서·사료는 특수한 노드 — 계약을 갖춘다 (시행령 §10 1항)
+        doc.write_text(node_text("260802-pppp-0001", "발행 시험 문서"),
+                       encoding="utf-8")
+        rec.write_text(node_text("260802-pppp-0010", "발행 시험 사료"),
+                       encoding="utf-8")
         led.mkdir(exist_ok=True)
         (led / "secret.jsonl").write_text('{"a":1}\n', encoding="utf-8")
         mine = [doc, rec, led / "secret.jsonl"]
@@ -1533,13 +1536,14 @@ def test_publish_guards():
                   "_governance/PubDoc.md" in rels
                   and "_governance/records/pub-rec.md" in rels, sorted(rels))
 
-            # 비노드 통치 문서는 서명 없이 발행된다 — 비준은 서명 제도가
-            # 아니라 정본 확정·비준증빙이다 (헌법 14조 1항·시행령 §10 2항)
-            check("통치 문서는 지식 가드에 걸리지 않는다",
+            # 통치 문서는 서명 없이 발행된다 — 비준은 정본 확정·비준증빙이고
+            # 서명은 인스턴스의 수용 기록이다 (헌법 14조 1항·시행령 §10 2항).
+            # 통치 구획 안의 노드형은 특수 노드로서 정상이다.
+            check("통치 구획의 노드형은 지식 가드에 걸리지 않는다",
                   not publish.guard_knowledge(items),
                   publish.guard_knowledge(items))
 
-            # 지식 유출 ① — Space의 노드형 파일
+            # 지식 유출 — 통치 구획 밖의 노드형 파일
             man2 = Path(td) / "m2.txt"
             man2.write_text("MAP  = Scope/W1/ -> nodes/\n", encoding="utf-8")
             leak = ROOT / "= Scope/W1/pub-leak.md"
@@ -1552,17 +1556,6 @@ def test_publish_guards():
                       publish.guard_knowledge(i2))
             finally:
                 leak.unlink(missing_ok=True)
-            # 지식 유출 ② — 통치 구획 안이라도 노드형이면 차단 (예외 경로 없음)
-            gleak = gov / "GovLeak.md"
-            gleak.write_text(node_text("260802-pppp-0004", "통치 구획의 노드형"),
-                             encoding="utf-8")
-            try:
-                i3 = publish.collect(m)
-                check("통치 구획 안의 노드형 파일도 차단",
-                      any("GovLeak" in e for e in publish.guard_knowledge(i3)),
-                      publish.guard_knowledge(i3))
-            finally:
-                gleak.unlink(missing_ok=True)
 
             # 비밀값
             rec.write_text('token = "ghp_' + "A" * 36 + '"\n', encoding="utf-8")
@@ -1570,7 +1563,8 @@ def test_publish_guards():
             check("비밀값이 들어 있으면 차단", any("비밀값" in e for e in se), se)
             check("보고에 비밀값 자체는 싣지 않는다",
                   not any("ghp_" in e for e in se))
-            rec.write_text("# 발행 시험 사료\n\n본문.\n", encoding="utf-8")
+            rec.write_text(node_text("260802-pppp-0010", "발행 시험 사료"),
+                           encoding="utf-8")
 
             # 보고 모드는 아무것도 쓰지 않는다
             before = sorted(str(x.relative_to(pub)) for x in pub.rglob("*")
@@ -1594,7 +1588,8 @@ def test_publish_guards():
             # 8진 이스케이프로 감싼다. 그 문자열을 그대로 쓰면 want와 어긋나
             # 매번 remove로 잡히고 스테이지도 삭제도 빗나간다.
             ko = gov / "records" / "한글 사료.md"
-            ko.write_text("# 한글 이름 사료\n\n본문.\n", encoding="utf-8")
+            ko.write_text(node_text("260802-pppp-0011", "한글 이름 사료"),
+                          encoding="utf-8")
             mine.append(ko)
             items = publish.collect(m)
             p_ko = publish.plan(pub, m, items)
@@ -1676,150 +1671,172 @@ def test_release_and_update():
                        capture_output=True)
 
     mine = []
-    with tempfile.TemporaryDirectory() as td:
-        can = Path(td) / "canonical"
-        (can / "_governance/_engine/scripts").mkdir(parents=True)
-        (can / "_governance/records").mkdir()
-        (can / "docs").mkdir()
-        (can / "_governance/UpdDoc.md").write_text("# 규범\n\n1조.\n",
-                                                   encoding="utf-8")
-        (can / "_governance/records/갱신 사료.md").write_text("# 사료\n",
-                                                             encoding="utf-8")
-        (can / "_governance/_engine/eng_upd.py").write_text("X = 1\n",
-                                                            encoding="utf-8")
-        (can / "_governance/_engine/scripts/publish-manifest.txt").write_text(
-            "MAP  _governance/ -> _governance/\nMAP  docs/ -> docs/\n"
-            "KEEP LICENSE\nKEEP README.md\nDENY _ledger/\nDENY __pycache__/\n"
-            "SKEL = UpdSkel/\n", encoding="utf-8")
-        (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
-        (can / "README.md").write_text("readme\n", encoding="utf-8")
-        (can / "LICENSE").write_text("MIT\n", encoding="utf-8")
-        git(can, "init", "-q")
-        git(can, "config", "user.email", "t@t")
-        git(can, "config", "user.name", "t")
-        git(can, "add", "-A")
-        git(can, "commit", "-qm", "base")
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            can = Path(td) / "canonical"
+            (can / "_governance/_engine/scripts").mkdir(parents=True)
+            (can / "_governance/records").mkdir()
+            (can / "docs").mkdir()
+            (can / "_governance/UpdDoc.md").write_text(
+                node_text("260802-uupd-0002", "정본 규범 문서", "1조."),
+                encoding="utf-8")
+            (can / "_governance/records/갱신 사료.md").write_text(
+                node_text("260802-uupd-0003", "갱신 사료"), encoding="utf-8")
+            (can / "_governance/_engine/eng_upd.py").write_text("X = 1\n",
+                                                                encoding="utf-8")
+            (can / "_governance/_engine/scripts/publish-manifest.txt").write_text(
+                "MAP  _governance/ -> _governance/\nMAP  docs/ -> docs/\n"
+                "KEEP LICENSE\nKEEP README.md\nDENY _ledger/\nDENY __pycache__/\n"
+                "SKEL = UpdSkel/\n", encoding="utf-8")
+            (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
+            (can / "README.md").write_text("readme\n", encoding="utf-8")
+            (can / "LICENSE").write_text("MIT\n", encoding="utf-8")
+            git(can, "init", "-q")
+            git(can, "config", "user.email", "t@t")
+            git(can, "config", "user.name", "t")
+            git(can, "add", "-A")
+            git(can, "commit", "-qm", "base")
 
-        rep = release.run("v9.0.0", apply=True, root=can)
-        check("릴리스 선언: 증빙 생성·커밋·태그",
-              rep["applied"] and rep.get("tagged") == "v9.0.0", rep)
-        att = json.loads((can / "release.json").read_text(encoding="utf-8"))
-        check("증빙은 자신을 담지 않는다", "release.json" not in att["files"])
-        check("증빙이 전 파일을 덮는다",
-              "_governance/UpdDoc.md" in att["files"]
-              and "README.md" in att["files"], sorted(att["files"])[:5])
+            rep = release.run("v9.0.0", apply=True, root=can)
+            check("릴리스 선언: 증빙 생성·커밋·태그",
+                  rep["applied"] and rep.get("tagged") == "v9.0.0", rep)
+            att = json.loads((can / "release.json").read_text(encoding="utf-8"))
+            check("증빙은 자신을 담지 않는다", "release.json" not in att["files"])
+            check("증빙이 전 파일을 덮는다",
+                  "_governance/UpdDoc.md" in att["files"]
+                  and "README.md" in att["files"], sorted(att["files"])[:5])
 
-        def uerr(f):
+            def uerr(f):
+                try:
+                    f()
+                    return None
+                except (release.ReleaseError, update.UpdateError) as e:
+                    return str(e)
+            check("중복 버전은 선언 전에 거부(버전 불변)",
+                  "이미 선언된 버전" in (uerr(lambda: release.run(
+                      "v9.0.0", apply=True, root=can)) or ""))
+
+            # 보고 모드 — 아무것도 쓰지 않는다. KEEP은 정본 저장소 전용.
+            r0 = update.run(source="bundle", bundle=str(can))
+            check("갱신 보고: applied=False", r0["ok"] and not r0["applied"], r0)
+            check("KEEP은 적용 대상이 아니다",
+                  "_governance/UpdDoc.md" in r0["add"]
+                  and all("README" not in x and "LICENSE" not in x
+                          for x in r0["add"]), r0["add"])
+            check("보고는 쓰지 않는다", not (ROOT / "docs/UPD-SETUP.md").exists())
+
+            # 적용 — 파일·골격·저널
+            r1 = update.run(source="bundle", bundle=str(can), apply=True)
+            mine += [ROOT / "_governance/UpdDoc.md",
+                     ROOT / "_governance/records/갱신 사료.md",
+                     ROOT / "_governance/_engine/eng_upd.py",
+                     ROOT / "docs/UPD-SETUP.md",
+                     ROOT / "_governance/_engine/scripts/publish-manifest.txt"]
+            check("적용: 파일이 들어온다",
+                  (ROOT / "_governance/UpdDoc.md").exists()
+                  and (ROOT / "docs/UPD-SETUP.md").exists(), r1)
+            check("골격은 없는 자리에 생긴다", (ROOT / "= UpdSkel/.gitkeep").exists())
+            recs = core.ledger_read(update.UPDATE_JOURNAL)
+            check("저널: begin·apply·done",
+                  {"begin", "apply", "done"} <= {r.get("kind") for r in recs})
+            check("현재 버전 판정", update.current_version() == "v9.0.0")
+
+            # 멱등 — 재실행은 전부 same
+            r2 = update.run(source="bundle", bundle=str(can))
+            check("재실행은 전부 same",
+                  not r2["add"] and not r2["update"] and not r2["conflict"], r2)
+
+            # 문서 드리프트 → 덮지 않고 사이드카
+            (ROOT / "_governance/UpdDoc.md").write_text(
+                node_text("260802-uupd-0002", "정본 규범 문서", "로컬 개정."),
+                encoding="utf-8")
+            r3 = update.run(source="bundle", bundle=str(can))
+            check("로컬 수정 문서는 conflict",
+                  "_governance/UpdDoc.md" in r3["conflict"], r3)
+            r4 = update.run(source="bundle", bundle=str(can), apply=True)
+            side = ROOT / "_governance/UpdDoc.md.upstream-v9.0.0"
+            mine.append(side)
+            check("사이드카가 생기고 원본은 보존",
+                  side.exists() and "로컬 개정" in
+                  (ROOT / "_governance/UpdDoc.md").read_text(encoding="utf-8"), r4)
+
+            # 엔진 드리프트 → 갱신 전체 중단, adopt → 기준선 편입
+            (ROOT / "_governance/_engine/eng_upd.py").write_text("X = 2\n",
+                                                                 encoding="utf-8")
+            e = uerr(lambda: update.run(source="bundle", bundle=str(can),
+                                        apply=True))
+            check("엔진 로컬 수정은 갱신 전체 중단", e is not None and "엔진" in e, e)
+            r5 = update.run(source="bundle", bundle=str(can), apply=True,
+                            adopt=True)
+            check("adopt는 현재 릴리스를 기준선 삼아 덮는다",
+                  (ROOT / "_governance/_engine/eng_upd.py")
+                  .read_text(encoding="utf-8") == "X = 1\n", r5)
+
+            # 갱신이 통치 문서를 덮으면 서명이 자동으로 풀린다 — 재서명이 수용
+            # 기록이다 (Mechanism §1-2 6항 · 시행령 §10 2항)
+            gp = ROOT / "_governance/UpdDoc.md"
+            S.sign(gp, "수용 시험", "260802-uupd-0002")
+            check("갱신 후 수용 서명 성립",
+                  S.status("260802-uupd-0002", gp) == "signed")
+            (can / "_governance/UpdDoc.md").write_text(
+                node_text("260802-uupd-0002", "정본 규범 문서", "1조 개정."),
+                encoding="utf-8")
+            git(can, "add", "-A")
+            git(can, "commit", "-qm", "gov v2")
+            release.run("v9.0.1", apply=True, root=can)
+            update.run(source="bundle", bundle=str(can), apply=True)
+            check("갱신이 덮으면 서명이 풀린다(수용 재확인 대기)",
+                  S.status("260802-uupd-0002", gp) == "unsigned"
+                  and "1조 개정" in gp.read_text(encoding="utf-8"))
+            check("갱신 후 현재 버전 갱신", update.current_version() == "v9.0.1")
+
+            # 비준증빙 위반 — 변조·밀반입·부재 전부 중단
+            (can / "docs/UPD-SETUP.md").write_text("# 변조\n", encoding="utf-8")
+            e = uerr(lambda: update.run(source="bundle", bundle=str(can)))
+            check("해시 불일치는 중단", e is not None and "해시 불일치" in e, e)
+            (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
+            (can / "sneaky.md").write_text("x\n", encoding="utf-8")
+            e = uerr(lambda: update.run(source="bundle", bundle=str(can)))
+            check("증빙 밖 파일은 중단", e is not None and "증빙 밖" in e, e)
+            (can / "sneaky.md").unlink()
+            e = uerr(lambda: update.run(source="bundle",
+                                        bundle=str(Path(td) / "noatt-없는트리")))
+            check("비준증빙 없는 출처는 거부", e is not None, e)
+
+            # 인스턴스 소유 바닥 — 악의 릴리스·매니페스트도 못 쓴다 (엔진 상수)
+            ev = Path(td) / "evil"
+            (ev / "_governance/_engine/scripts").mkdir(parents=True)
+            (ev / "= Scope").mkdir()
+            (ev / "= Scope/침투.md").write_text("x\n", encoding="utf-8")
+            (ev / "_governance/x/_ledger").mkdir(parents=True)
+            (ev / "_governance/x/_ledger/x.jsonl").write_text("{}\n",
+                                                              encoding="utf-8")
+            (ev / "_governance/_engine/scripts/publish-manifest.txt").write_text(
+                'MAP  = Scope/ -> = Scope/\nMAP  _governance/ -> _governance/\n',
+                encoding="utf-8")
+            att2 = {"version": "v9.6.6", "at": core.now_iso(),
+                    "files": {core.posix_rel(f, ev): core.sha256_file(f)
+                              for f in ev.rglob("*") if f.is_file()}}
+            (ev / "release.json").write_text(
+                json.dumps(att2, ensure_ascii=False), encoding="utf-8")
+            r6 = update.run(source="bundle", bundle=str(ev), apply=True)
+            check("Space 바닥에는 쓰지 않는다",
+                  not (ROOT / "= Scope/침투.md").exists(), r6)
+            check("_ledger 조각 경로에도 쓰지 않는다",
+                  not (ROOT / "_governance/x/_ledger/x.jsonl").exists(), r6)
+
+    finally:
+        # 뒷정리 — 이후 기준선 PASS 유지
+        for f in mine:
+            f.unlink(missing_ok=True)
+        for d in (ROOT / "= UpdSkel", ROOT / "docs",
+                  ROOT / "_governance/_engine/scripts",
+                  ROOT / "_governance/_engine", ROOT / "_governance/records"):
             try:
-                f()
-                return None
-            except (release.ReleaseError, update.UpdateError) as e:
-                return str(e)
-        check("중복 버전은 선언 전에 거부(버전 불변)",
-              "이미 선언된 버전" in (uerr(lambda: release.run(
-                  "v9.0.0", apply=True, root=can)) or ""))
-
-        # 보고 모드 — 아무것도 쓰지 않는다. KEEP은 정본 저장소 전용.
-        r0 = update.run(source="bundle", bundle=str(can))
-        check("갱신 보고: applied=False", r0["ok"] and not r0["applied"], r0)
-        check("KEEP은 적용 대상이 아니다",
-              "_governance/UpdDoc.md" in r0["add"]
-              and all("README" not in x and "LICENSE" not in x
-                      for x in r0["add"]), r0["add"])
-        check("보고는 쓰지 않는다", not (ROOT / "docs/UPD-SETUP.md").exists())
-
-        # 적용 — 파일·골격·저널
-        r1 = update.run(source="bundle", bundle=str(can), apply=True)
-        mine += [ROOT / "_governance/UpdDoc.md",
-                 ROOT / "_governance/records/갱신 사료.md",
-                 ROOT / "_governance/_engine/eng_upd.py",
-                 ROOT / "docs/UPD-SETUP.md",
-                 ROOT / "_governance/_engine/scripts/publish-manifest.txt"]
-        check("적용: 파일이 들어온다",
-              (ROOT / "_governance/UpdDoc.md").exists()
-              and (ROOT / "docs/UPD-SETUP.md").exists(), r1)
-        check("골격은 없는 자리에 생긴다", (ROOT / "= UpdSkel/.gitkeep").exists())
-        recs = core.ledger_read(update.UPDATE_JOURNAL)
-        check("저널: begin·apply·done",
-              {"begin", "apply", "done"} <= {r.get("kind") for r in recs})
-        check("현재 버전 판정", update.current_version() == "v9.0.0")
-
-        # 멱등 — 재실행은 전부 same
-        r2 = update.run(source="bundle", bundle=str(can))
-        check("재실행은 전부 same",
-              not r2["add"] and not r2["update"] and not r2["conflict"], r2)
-
-        # 문서 드리프트 → 덮지 않고 사이드카
-        (ROOT / "_governance/UpdDoc.md").write_text("# 규범\n\n로컬 개정.\n",
-                                                    encoding="utf-8")
-        r3 = update.run(source="bundle", bundle=str(can))
-        check("로컬 수정 문서는 conflict",
-              "_governance/UpdDoc.md" in r3["conflict"], r3)
-        r4 = update.run(source="bundle", bundle=str(can), apply=True)
-        side = ROOT / "_governance/UpdDoc.md.upstream-v9.0.0"
-        mine.append(side)
-        check("사이드카가 생기고 원본은 보존",
-              side.exists() and "로컬 개정" in
-              (ROOT / "_governance/UpdDoc.md").read_text(encoding="utf-8"), r4)
-
-        # 엔진 드리프트 → 갱신 전체 중단, adopt → 기준선 편입
-        (ROOT / "_governance/_engine/eng_upd.py").write_text("X = 2\n",
-                                                             encoding="utf-8")
-        e = uerr(lambda: update.run(source="bundle", bundle=str(can),
-                                    apply=True))
-        check("엔진 로컬 수정은 갱신 전체 중단", e is not None and "엔진" in e, e)
-        r5 = update.run(source="bundle", bundle=str(can), apply=True,
-                        adopt=True)
-        check("adopt는 현재 릴리스를 기준선 삼아 덮는다",
-              (ROOT / "_governance/_engine/eng_upd.py")
-              .read_text(encoding="utf-8") == "X = 1\n", r5)
-
-        # 비준증빙 위반 — 변조·밀반입·부재 전부 중단
-        (can / "docs/UPD-SETUP.md").write_text("# 변조\n", encoding="utf-8")
-        e = uerr(lambda: update.run(source="bundle", bundle=str(can)))
-        check("해시 불일치는 중단", e is not None and "해시 불일치" in e, e)
-        (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
-        (can / "sneaky.md").write_text("x\n", encoding="utf-8")
-        e = uerr(lambda: update.run(source="bundle", bundle=str(can)))
-        check("증빙 밖 파일은 중단", e is not None and "증빙 밖" in e, e)
-        (can / "sneaky.md").unlink()
-        e = uerr(lambda: update.run(source="bundle",
-                                    bundle=str(Path(td) / "noatt-없는트리")))
-        check("비준증빙 없는 출처는 거부", e is not None, e)
-
-        # 인스턴스 소유 바닥 — 악의 릴리스·매니페스트도 못 쓴다 (엔진 상수)
-        ev = Path(td) / "evil"
-        (ev / "_governance/_engine/scripts").mkdir(parents=True)
-        (ev / "= Scope").mkdir()
-        (ev / "= Scope/침투.md").write_text("x\n", encoding="utf-8")
-        (ev / "_governance/x/_ledger").mkdir(parents=True)
-        (ev / "_governance/x/_ledger/x.jsonl").write_text("{}\n",
-                                                          encoding="utf-8")
-        (ev / "_governance/_engine/scripts/publish-manifest.txt").write_text(
-            'MAP  = Scope/ -> = Scope/\nMAP  _governance/ -> _governance/\n',
-            encoding="utf-8")
-        att2 = {"version": "v9.6.6", "at": core.now_iso(),
-                "files": {core.posix_rel(f, ev): core.sha256_file(f)
-                          for f in ev.rglob("*") if f.is_file()}}
-        (ev / "release.json").write_text(
-            json.dumps(att2, ensure_ascii=False), encoding="utf-8")
-        r6 = update.run(source="bundle", bundle=str(ev), apply=True)
-        check("Space 바닥에는 쓰지 않는다",
-              not (ROOT / "= Scope/침투.md").exists(), r6)
-        check("_ledger 조각 경로에도 쓰지 않는다",
-              not (ROOT / "_governance/x/_ledger/x.jsonl").exists(), r6)
-
-    # 뒷정리 — 이후 기준선 PASS 유지
-    for f in mine:
-        f.unlink(missing_ok=True)
-    for d in (ROOT / "= UpdSkel", ROOT / "docs",
-              ROOT / "_governance/_engine/scripts",
-              ROOT / "_governance/_engine", ROOT / "_governance/records"):
-        try:
-            (d / ".gitkeep").unlink(missing_ok=True)
-            d.rmdir()
-        except OSError:
-            pass
+                (d / ".gitkeep").unlink(missing_ok=True)
+                d.rmdir()
+            except OSError:
+                pass
 
 
 # ── 16. 제목은 모든 기기에서 파일명·Link 대상이 될 수 있어야 한다 ────────

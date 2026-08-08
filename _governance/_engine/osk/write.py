@@ -246,8 +246,8 @@ def _is_cluster(kind: tuple) -> bool:
 def _reject_governance(kind: tuple) -> None:
     if kind[:1] == GOVERNANCE:
         raise WriteError(
-            "통치 구획은 표면 쓰기 대상이 아니다 — 통치 문서는 노드가 아니며 "
-            "개정은 정본 저장소에서 한다 (헌법 3조 6항·시행령 §10 1항)")
+            "통치 구획은 표면 쓰기 대상이 아니다 — 통치 문서의 개정은 정본 "
+            "저장소에서 하고 갱신으로 도달한다 (헌법 3조 6항·시행령 §10 1항)")
 
 
 def _pinned(target: str) -> bool:

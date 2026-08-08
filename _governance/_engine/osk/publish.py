@@ -16,14 +16,14 @@ cherry-pick하는 방식이었고, 그것은 두 저장소의 **경로가 같다
 가드 (모두 통과해야 발행):
 1. **매니페스트 밖 금지** — 나가는 모든 파일은 MAP이 사상한 것이어야 한다.
 2. **DENY 조각** — 대장·`_raw`·`_sources`·부산물은 대상 안이라도 제외.
-3. **지식 유출 금지** — 노드형(frontmatter) 파일은 발행 대상 어디에도 없어야
-   한다. 통치 문서는 노드가 아니므로 통치 구획도 예외가 아니다(Mechanism §1 4항).
+3. **지식 유출 금지** — `_governance/` 밖에 노드형(frontmatter) 파일이 있으면
+   중단. 통치 문서·사료는 특수한 노드라 통치 구획 안의 frontmatter는 정상이다.
 4. **비밀값** — 나가는 전 파일을 `secrets.PATTERNS`로 훑는다.
 5. **검증기 PASS** — 깨진 vault에서 발행하지 않는다.
 
-통치 문서의 비준은 서명 제도가 아니라 정본 저장소에 대한 사용자의 확정이다
-(헌법 14조 1항·시행령 §10 2항) — 발행에 서명 가드는 없고, 규범의 고정은
-정식 릴리스의 비준증빙이 맡는다(시행령 §10 6항).
+발행에 서명 가드는 없다 — 통치 문서의 비준은 정본 저장소에 대한 사용자의
+확정이고 정식 릴리스의 비준증빙이 고정하며(헌법 14조 1항·시행령 §10 2·6항),
+서명은 각 인스턴스 사용자의 수용 기록이지 발행·효력의 요건이 아니다.
 """
 from __future__ import annotations
 import argparse, os, re, shutil, subprocess, sys, tempfile
@@ -99,13 +99,16 @@ def collect(man: dict) -> list[tuple[Path, str]]:
 
 # ── 가드 ─────────────────────────────────────────────────────────────────
 
+GOVERNANCE_DST = "_governance/"
+
+
 def guard_knowledge(items: list[tuple[Path, str]]) -> list[str]:
-    """노드형(frontmatter) 파일이 나가면 지식 코퍼스 유출이다. 공개 미러는
-    프레임워크이지 이 인스턴스의 지식이 아니며, 통치 구획도 노드를 두지
-    않으므로(Mechanism §1 4항) 예외 경로가 없다."""
+    """`_governance/` 밖에 노드형 파일이 나가면 지식 코퍼스 유출이다.
+    공개 미러는 프레임워크이지 이 인스턴스의 지식이 아니다. 통치 구획의
+    노드형은 정상이다 — 통치 문서·사료는 특수한 노드다(시행령 §10 1항)."""
     errs = []
     for src, dst in items:
-        if src.suffix != ".md":
+        if dst.startswith(GOVERNANCE_DST) or src.suffix != ".md":
             continue
         try:
             head = src.read_text(encoding="utf-8", errors="ignore")[:4]
