@@ -1,7 +1,12 @@
 # _engine 실의존성 — import 스캔으로 실측(표준 라이브러리·자체 모듈 제외).
 # duckdb·fastapi·uvicorn은 구 데몬과 DuckDB 색인의 것이었고, v2에는 사용처가
 # 하나도 없어 제거했다.
-mcp
+# mcp는 **major를 묶는다**. 외부 표면(mcp_server.py)은 1.x의
+# `mcp.server.fastmcp.FastMCP`로 쓰였는데, 2.0이 그 모듈을 `mcp.server.mcpserver`
+# 로 개편해 없앴다 — 묶지 않으면 오늘 새로 설치하는 인스턴스는 표면이 import에서
+# 죽는다(실측: mcp 2.0.0에서 "No module named 'mcp.server.fastmcp'"). 2.x 표면으로
+# 옮기는 것은 별개의 작업이고, 그 전까지 계약은 1.x다.
+mcp>=1.28,<2
 pydantic
 PyYAML
 rank-bm25
