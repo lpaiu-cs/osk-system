@@ -757,9 +757,16 @@ def _write_atomic(dst: Path, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            # mode를 **fsync 앞에서** 확정한다 — 뒤에 chmod하면 그 메타데이터가
+            # 내구화되지 않아, 내용은 신판인데 권한만 mkstemp의 0600으로 남는
+            # 창이 생긴다(부모 디렉터리 fsync는 rename 엔트리의 내구성이지
+            # 파일 mode의 내구성이 아니다). 한 번의 fsync가 둘 다 내구화한다.
+            try:
+                os.fchmod(f.fileno(), mode)
+            except (AttributeError, OSError):    # Windows 등 — 경로로 대체
+                os.chmod(tmp, mode)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, mode)
         os.replace(tmp, dst)
         _fsync_dir(dst.parent)          # rename 자체의 내구성 (전원 차단 대비)
     except BaseException:

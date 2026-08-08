@@ -2516,6 +2516,32 @@ def test_release_and_update():
                   str(_permf2) in _ff
                   and stat.S_IMODE(_permf2.stat().st_mode) == 0o600, _ff[:3])
 
+            # 정상 원자 교체도 mode를 **fsync 앞에서** 확정한다 — 뒤에 chmod하면
+            # 그 메타데이터가 내구화되지 않아 권한만 0600으로 남을 수 있다 (P2)
+            _order = []
+            _real_fchmod = os.fchmod
+            _real_fsync = os.fsync
+            _permf3 = ROOT / "_governance/permtest3.md"
+            _permf3.write_text("z\n", encoding="utf-8")
+            os.chmod(_permf3, 0o640)
+            mine.append(_permf3)
+            try:
+                os.fchmod = lambda fd_, m_: (_order.append("fchmod"),
+                                             _real_fchmod(fd_, m_))[1]
+                os.fsync = lambda fd_: (_order.append("fsync"),
+                                        _real_fsync(fd_))[1]
+                update._write_atomic(_permf3, b"new\n")
+            finally:
+                os.fchmod = _real_fchmod
+                os.fsync = _real_fsync
+            check("원자 교체는 fchmod를 fsync보다 먼저 한다",
+                  "fchmod" in _order and "fsync" in _order
+                  and _order.index("fchmod") < _order.index("fsync"), _order[:4])
+            check("원자 교체가 기존 권한을 유지한다",
+                  stat.S_IMODE(_permf3.stat().st_mode) == 0o640
+                  and _permf3.read_bytes() == b"new\n",
+                  oct(stat.S_IMODE(_permf3.stat().st_mode)))
+
             # 트랜잭션 정리 실패는 fail-closed (P2)
             update._txn_begin("txnCLR", "v9.9.9", [])
             _saved = update.shutil.rmtree
