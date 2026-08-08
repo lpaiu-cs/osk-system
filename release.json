@@ -1,6 +1,6 @@
 {
- "version": "v2.2.0",
- "at": "2026-08-09T02:59:13+09:00",
+ "version": "v2.2.1",
+ "at": "2026-08-09T03:15:10+09:00",
  "files": {
   ".gitattributes": "sha256:a411ec7ae804bb7cb6c28f73f0210c00774a3e195a38d01da72f56c41786e070",
   ".gitignore": "sha256:75fb125fab612aa785e88d2423794ae22a2ed4fb26dac37813214aca10623a6d",
@@ -46,6 +46,6 @@
   "_governance/records/2026-07-28-space-structure-deliberation-record.md": "sha256:1d9511e7854ade08e5a5c4b84fa7f473b8aba9333fbc8fe816d0a949a3907b09",
   "_governance/records/2026-08-08-denode-and-canonical-update-deliberation.md": "sha256:8c24dcf76181f89464640e8c46090ea61535a3f69834650ebd8793b2b5c0438f",
   "_governance/records/constitution-disposition-table.md": "sha256:8881665b9f2066e9013fde98766abdb98b1c3b30329e0a54fb05219c15393cbc",
-  "docs/SETUP.md": "sha256:537359a68fe223a252a0d64c20d1b922e722c9d953cbebfe7a4aad33f7726de6"
+  "docs/SETUP.md": "sha256:6a36108740db4a206c6d0fdaac0bf7c7d81239cf7c14242a6b357538128c5137"
  }
 }
