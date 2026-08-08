@@ -267,6 +267,9 @@ def check_invariants(tag: str, inst: Path, versions: dict[str, dict],
                  if r in base and (inst / r).is_file()
                  and base[r] != sha(inst / r)]
         check(f"[{tag}] I2b baseline 해시 일치", not wrong, wrong[:6])
+    # I6 — 복구가 끝났으면 트랜잭션 표식·잔재가 없어야 한다
+    check(f"[{tag}] I6 트랜잭션 표식 잔재 없음",
+          not (inst / ".osk/txn/manifest.json").exists())
     # I2 — 커밋된 baseline은 디스크 실제 해시와 일치
     for rel, h in committed_baselines(inst).items():
         p = inst / rel
@@ -413,6 +416,9 @@ def scenario_daemon_race(tmp: Path, rnd: random.Random, trial: int) -> None:
     check_invariants(f"race{trial}", inst, {"v1": dict(FRAMEWORK), "v2": v2})
 
 
+# release의 working-tree TOCTOU는 타이밍이 아니라 **코드 경로**의 문제라
+# (증빙을 커밋 트리에서 뜨는가) 회귀 수트가 정확히 고정한다 — 하네스에 넣어
+# 봤으나 monkeypatch 시점 의존이라 결함을 재현하지 못했다(실측 확인).
 SCENARIOS = (scenario_crash_midway, scenario_malicious_release,
              scenario_daemon_race)
 

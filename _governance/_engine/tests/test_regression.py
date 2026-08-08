@@ -2157,6 +2157,80 @@ def test_release_and_update():
                   update.last_applied_hash(rm3, "F") is None
                   and update.managed_paths(rm3) == {})
 
+            # release 증빙은 **커밋 트리**에서 뜬다 — guard 이후 working tree가
+            # 바뀌어도 증빙이 커밋과 어긋나지 않는다(TOCTOU) (P1)
+            wt_victim = can / "docs/UPD-SETUP.md"
+            wt_orig = wt_victim.read_bytes()
+            head_h = release.tree_hashes(can)
+            wt_victim.write_bytes(b"EXTERNAL EDIT\n")        # 외부 프로세스 모사
+            check("tree_hashes는 working tree 오염과 무관(커밋 트리를 읽는다)",
+                  release.tree_hashes(can) == head_h,
+                  "docs/UPD-SETUP.md")
+            wt_victim.write_bytes(wt_orig)
+
+            # 태그 전 전수 재대조 — 증빙이 커밋 트리와 다르면 선언을 중단한다 (P1)
+            _real_ba = release.build_attestation
+
+            def _bad_ba(root_, ver_):
+                att_ = _real_ba(root_, ver_)
+                k = sorted(att_["files"])[0]
+                att_["files"][k] = "sha256:" + "0" * 64      # 어긋난 증빙
+                return att_
+            pre_head_r = subprocess.run(
+                ["git", "-C", str(can), "rev-parse", "HEAD"],
+                capture_output=True, text=True).stdout.strip()
+            release.build_attestation = _bad_ba
+            try:
+                ebad = uerr(lambda: release.run("v9.5.0", apply=True, root=can))
+            finally:
+                release.build_attestation = _real_ba
+            post_head_r = subprocess.run(
+                ["git", "-C", str(can), "rev-parse", "HEAD"],
+                capture_output=True, text=True).stdout.strip()
+            tags_r = subprocess.run(["git", "-C", str(can), "tag", "-l", "v9.5.0"],
+                                    capture_output=True, text=True).stdout.strip()
+            check("증빙≠커밋 트리면 태그 전에 중단한다",
+                  ebad is not None and "커밋 트리가 증빙과 다르다" in ebad, ebad)
+            check("중단 시 커밋·태그가 남지 않는다",
+                  post_head_r == pre_head_r and not tags_r,
+                  (post_head_r == pre_head_r, tags_r))
+
+            # 새 디렉터리도 rollback 대상 — 파일만 되돌리면 SKEL 잔재가 남는다 (P2)
+            deep = "_governance/_engine/newpkg/sub/mod.py"
+            update._txn_begin("txnDIR", "v9.9.9", [deep])
+            man_d = json.loads(update.TXN_MANIFEST.read_text(encoding="utf-8"))
+            check("manifest가 새 디렉터리를 기록한다",
+                  "_governance/_engine/newpkg" in (man_d.get("dirs") or [])
+                  and "_governance/_engine/newpkg/sub" in (man_d.get("dirs") or []),
+                  man_d.get("dirs"))
+            update._write_atomic(ROOT / deep, b"X = 1\n")   # 디렉터리까지 생성
+            check("적용으로 깊은 디렉터리가 생긴다",
+                  (ROOT / "_governance/_engine/newpkg/sub").is_dir())
+            act_d = update._txn_recover([{"kind": "begin", "txn": "txnDIR"}])
+            check("rollback이 파일과 새 디렉터리를 모두 되돌린다",
+                  act_d == "rollback"
+                  and not (ROOT / deep).exists()
+                  and not (ROOT / "_governance/_engine/newpkg").exists(), act_d)
+
+            # 사이드카는 사용자 작업을 덮지 않는다 (P1)
+            sc_dest = "_governance/UpdDoc.md"
+            sc_side = sc_dest + ".upstream-v9.9.9"
+            (ROOT / sc_side).write_text("사용자 수동 병합 작업\n", encoding="utf-8")
+            mine.append(ROOT / sc_side)
+            _pfake = {"conflict": [("_governance/UpdDoc.md", sc_dest)]}
+            w, kept, held, coll = update._sidecar_plan(_pfake, can, "v9.9.9", set())
+            check("다른 내용의 기존 사이드카는 손대지 않는다(보존·보고)",
+                  not w and not kept and sc_side in held and not coll,
+                  (w, kept, held, coll))
+            (ROOT / sc_side).write_bytes((can / "_governance/UpdDoc.md").read_bytes())
+            w2, kept2, held2, _c = update._sidecar_plan(_pfake, can, "v9.9.9", set())
+            check("같은 내용이면 그대로 인정(재기록 없음)",
+                  not w2 and sc_side in kept2 and not held2, (w2, kept2, held2))
+            _c2 = update._sidecar_plan(_pfake, can, "v9.9.9", {sc_side})[3]
+            check("사이드카가 관리 파일과 겹치면 충돌로 잡는다",
+                  sc_side in _c2, _c2)
+            (ROOT / sc_side).unlink(missing_ok=True)
+
             # 트랜잭션 정리 실패는 fail-closed (P2)
             update._txn_begin("txnCLR", "v9.9.9", [])
             _saved = update.shutil.rmtree

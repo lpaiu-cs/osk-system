@@ -17,7 +17,7 @@ Mechanism §1-2 2항(release.json 형식·선언의 전제·커밋과 태그).
 3. **비밀값 스캔** — 릴리스 전 파일을 훑는다 (secrets.py 자기 면제 동일).
 """
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys
+import argparse, hashlib, io, json, os, re, subprocess, sys, tarfile
 from pathlib import Path
 
 from .core import ROOT, now_iso, sha256_file
@@ -44,13 +44,32 @@ def tracked_files(root: Path) -> list[str]:
     return sorted(x for x in r.stdout.split("\0") if x.strip())
 
 
+def tree_hashes(root: Path, ref: str = "HEAD") -> dict[str, str]:
+    """그 **커밋의 트리**가 담은 파일의 경로→sha256. working tree를 읽지 않는다 —
+    guard가 clean을 본 시점과 해시를 뜨는 시점 사이에 외부 프로세스가 파일을
+    바꾸면 증빙이 커밋과 어긋나 공식 태그가 즉시 self-invalid가 된다(TOCTOU).
+    `git archive`로 그 커밋의 고정 스냅샷을 받아 읽으므로 그 창이 없다."""
+    r = subprocess.run(["git", "-C", str(root), "archive", "--format=tar", ref],
+                       capture_output=True, timeout=300)
+    if r.returncode != 0:
+        raise ReleaseError(
+            f"git archive 실패({ref}): {r.stderr.decode('utf-8', 'ignore')[-300:]}")
+    out: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
+        for m in tf.getmembers():
+            if not m.isfile():
+                continue
+            f = tf.extractfile(m)
+            if f is None:
+                continue
+            out[m.name] = "sha256:" + hashlib.sha256(f.read()).hexdigest()
+    return out
+
+
 def build_attestation(root: Path, version: str) -> dict:
-    """비준증빙 — 추적 파일 전수(자신 제외)의 경로→sha256 (Mechanism §1-2 2항)."""
-    files = {}
-    for rel in tracked_files(root):
-        if rel == ATTESTATION:
-            continue
-        files[rel] = sha256_file(root / rel)
+    """비준증빙 — **커밋된 트리**의 전 파일(자신 제외)의 경로→sha256
+    (Mechanism §1-2 2항)."""
+    files = {k: v for k, v in tree_hashes(root).items() if k != ATTESTATION}
     return {"version": version, "at": now_iso(), "files": files}
 
 
@@ -128,29 +147,52 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
            "added": added, "changed": changed, "removed": removed}
     if not apply:
         return out
-    # mutation 전체를 하나의 rollback 단위로 잡는다 — write·add·commit·tag 어느
-    # 단계가 실패하든(commit hook·서명·index 오류 포함) 선언 전 상태로 되돌려
-    # '아무것도 쓰지 않는다'를 지킨다. guards가 clean tree를 요구하므로 선언 전
-    # HEAD로의 reset --hard가 정확한 원상복구다(새 증빙은 clean으로 함께 제거).
+    # mutation 전체를 하나의 rollback 단위로 잡는다 — write·add·commit·재대조·tag
+    # 어느 단계가 실패하든 선언 전 상태로 되돌려 '아무것도 쓰지 않는다'를 지킨다.
+    # 되돌림은 `--mixed`다: 커밋과 index만 선언 전으로 돌리고 **working tree는
+    # 건드리지 않는다** — guard 이후 외부 프로세스가 만든 수정을 파괴하지 않기
+    # 위해서다(우리가 만든 증빙 파일만 우리가 정리한다).
     pre = _git(root, "rev-parse", "HEAD").stdout.strip()
+    had_att = ap.exists()
+    pre_att = ap.read_bytes() if had_att else None
     try:
         ap.write_text(json.dumps(att, ensure_ascii=False, indent=1) + "\n",
                       encoding="utf-8")
         subprocess.run(["git", "-C", str(root), "add", "--", ATTESTATION],
                        check=True, timeout=60)
         # `--no-verify`: commit hook이 다른 tracked 파일을 수정·stage해 커밋
-        # 트리가 증빙과 어긋난 self-invalid 릴리스를 만드는 것을 막는다(P2).
+        # 트리가 증빙과 어긋난 self-invalid 릴리스를 만드는 것을 막는다.
         # 릴리스 커밋은 기계적이므로 hook을 태울 이유가 없다.
         subprocess.run(["git", "-C", str(root), "commit", "-q", "--no-verify",
                         "-m", f"release: {version} — 비준증빙"],
                        check=True, timeout=60)
+        # **태그 전 전수 재대조** — 실제로 커밋된 트리가 증빙과 정확히 일치하는지
+        # 본다. 그 사이 외부 프로세스가 다른 파일을 stage해 함께 커밋됐거나, 증빙
+        # 자체가 커밋에 안 담겼으면 여기서 걸린다(self-invalid 태그 방지).
+        committed_tree = tree_hashes(root, "HEAD")
+        att_in_commit = committed_tree.pop(ATTESTATION, None)
+        if att_in_commit is None:
+            raise ReleaseError("증빙이 릴리스 커밋에 담기지 않았다")
+        if committed_tree != att["files"]:
+            diff = sorted(set(committed_tree) ^ set(att["files"])) or [
+                k for k in att["files"]
+                if committed_tree.get(k) != att["files"][k]]
+            raise ReleaseError(
+                f"커밋 트리가 증빙과 다르다 — 선언 중단(외부 수정 유입?): "
+                f"{diff[:5]}")
         r = _git(root, "tag", version)
         if r.returncode != 0:
             raise ReleaseError(f"태그 실패: {r.stderr.strip()}")
     except (subprocess.SubprocessError, ReleaseError, OSError) as e:
         if pre:
-            _git(root, "reset", "--hard", pre)
-        _git(root, "clean", "-fdq", "--", ATTESTATION)
+            _git(root, "reset", "--mixed", "-q", pre)   # working tree 보존
+        try:
+            if had_att and pre_att is not None:
+                ap.write_bytes(pre_att)
+            else:
+                ap.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise ReleaseError(f"릴리스 mutation 실패 — 선언 전으로 원상복구했다: {e}")
     out.update(applied=True, tagged=version)
     return out

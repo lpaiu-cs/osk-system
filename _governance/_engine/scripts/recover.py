@@ -16,7 +16,7 @@
 복구 자료(백업)가 없거나 손상됐으면 아무것도 지우지 않고 중단한다(fail-closed).
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile
+import argparse, errno, hashlib, json, os, shutil, subprocess, sys, tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -84,16 +84,37 @@ def _exclusive(path: Path, busy: str):
 
 
 def _fsync_dir(d: Path) -> None:
+    """엔진의 osk.update._fsync_dir와 같은 정책 — 디렉터리 fsync 개념이 없는
+    파일시스템만 예외로 넘기고 그 밖의 오류는 올린다."""
     try:
         fd = os.open(str(d), os.O_RDONLY)
-    except OSError:
+    except FileNotFoundError:
         return
+    except OSError as e:
+        if e.errno in (errno.EINVAL, errno.ENOTSUP, errno.EACCES, errno.EPERM):
+            return
+        raise
     try:
         os.fsync(fd)
-    except OSError:
-        pass
+    except OSError as e:
+        if e.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
     finally:
         os.close(fd)
+
+
+def _mkdirs_durable(d: Path) -> None:
+    """없는 조상을 만들고 **만든 각 디렉터리의 부모**를 fsync한다."""
+    missing = []
+    p = d
+    while not p.exists():
+        missing.append(p)
+        if p.parent == p:
+            break
+        p = p.parent
+    for q in reversed(missing):
+        q.mkdir(exist_ok=True)
+        _fsync_dir(q.parent)
 
 
 def _rmtree_checked(d: Path) -> None:
@@ -110,7 +131,7 @@ def _sha256(p: Path) -> str:
 
 
 def _write_atomic(dst: Path, data: bytes) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    _mkdirs_durable(dst.parent)
     fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
     try:
         with os.fdopen(fd, "wb") as f:
@@ -243,6 +264,17 @@ def _recover(root: Path, report_only: bool = False) -> int:
             print(f"[중단] 복구 실패 — 백업 보존({txn_dir}): {cp} {e}",
                   file=sys.stderr)
             return 2
+    # 이 트랜잭션이 만든 디렉터리 중 **비어 있는 것만** 깊은 순서로 되돌린다
+    for rel in sorted(man.get("dirs") or [], key=lambda s: -str(s).count("/")):
+        cp = _canon_rel(root, str(rel))
+        if cp is None:
+            continue
+        d = root / cp
+        try:
+            d.rmdir()
+        except OSError:
+            continue
+        _fsync_dir(d.parent)
     _rmtree_checked(txn_dir)
     rep["applied"] = True
     print(json.dumps(rep, ensure_ascii=False, indent=2))

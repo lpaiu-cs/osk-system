@@ -23,7 +23,7 @@
 - 기존 인스턴스의 최초 편입은 `--adopt`로 현재 릴리스를 기준선 삼는다.
 """
 from __future__ import annotations
-import argparse, json, os, re, shutil, subprocess, sys, tarfile, tempfile
+import argparse, errno, json, os, re, shutil, subprocess, sys, tarfile, tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -371,17 +371,66 @@ def has_history(recs: list[dict] | None = None) -> bool:
 # 않는 이유다. 복구 실패는 fail-closed로 백업을 보존한 채 중단한다.
 
 def _fsync_dir(d: Path) -> None:
-    """디렉터리 엔트리를 내구화 — 파일만 fsync하면 rename·create가 유실될 수 있다."""
+    """디렉터리 엔트리를 내구화 — 파일만 fsync하면 rename·create·unlink가 유실될
+    수 있다. 전원 차단까지 계약하므로 실패를 삼키지 않는다: 디렉터리 fsync 개념이
+    없는 파일시스템(EINVAL·ENOTSUP)만 예외로 넘기고, 그 밖의 오류는 올려
+    트랜잭션이 durability 없이 성공한 척하지 못하게 한다."""
     try:
         fd = os.open(str(d), os.O_RDONLY)
-    except OSError:
-        return
+    except FileNotFoundError:
+        return                      # 이미 사라진 디렉터리 — 내구화할 대상이 없다
+    except OSError as e:
+        if e.errno in (errno.EINVAL, errno.ENOTSUP, errno.EACCES, errno.EPERM):
+            return
+        raise
     try:
         os.fsync(fd)
-    except OSError:
-        pass
+    except OSError as e:
+        if e.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
     finally:
         os.close(fd)
+
+
+def _mkdirs_durable(d: Path) -> list[Path]:
+    """`d`까지의 없는 조상을 만들고, **만든 각 디렉터리의 부모를 fsync**한다.
+    `mkdir(parents=True)` 뒤 자신만 fsync하면 그 엔트리를 소유한 부모가 내구화되지
+    않아 전원 차단 시 디렉터리째 유실된다(그 안의 파일은 done 이후에도 사라진다).
+    반환: 새로 만든 디렉터리(깊은 순) — 트랜잭션 rollback이 되돌릴 대상이다."""
+    missing = []
+    p = d
+    while not p.exists():
+        missing.append(p)
+        if p.parent == p:
+            break
+        p = p.parent
+    created = []
+    for q in reversed(missing):     # 얕은 곳부터 만든다
+        q.mkdir(exist_ok=True)
+        created.append(q)
+        _fsync_dir(q.parent)        # 그 엔트리를 소유한 부모를 내구화
+    created.reverse()
+    return created
+
+
+def _planned_dirs(rels: list[str]) -> list[str]:
+    """이 트랜잭션이 새로 만들 수 있는 디렉터리(canonical 상대, 얕은 순).
+    manifest에 미리 담아 두면 rollback이 **비어 있는 것만** 되돌릴 수 있다 —
+    SKEL은 디렉터리 존재 자체가 적용 결과이므로 잔재로 남겨서는 안 된다."""
+    out: set[str] = set()
+    root_real = Path(os.path.realpath(ROOT))
+    for rel in rels:
+        p = (ROOT / rel).parent
+        while True:
+            try:
+                cp = p.relative_to(ROOT)
+            except ValueError:
+                break
+            if not cp.parts or p.exists() or Path(os.path.realpath(p)) == root_real:
+                break
+            out.add(cp.as_posix())
+            p = p.parent
+    return sorted(out, key=lambda s: (s.count("/"), s))
 
 
 def _txn_clear() -> None:
@@ -402,9 +451,9 @@ def _txn_begin(txn: str, version: str, touch: list[str]) -> None:
     그 전에 죽으면 target은 아직 손대지 않은 상태다. 경로는 절대경로로 굳히지
     않는다 — 복구 시 다시 봉쇄·정체성 검증하기 위해 canonical 상대로 남긴다."""
     _txn_clear()
-    TXN_BACKUP.mkdir(parents=True)
-    _fsync_dir(TXN_DIR)                          # backup 디렉터리 엔트리
-    _fsync_dir(TXN_DIR.parent)                   # .osk/ — txn 디렉터리 엔트리
+    # `.osk/`까지 처음 만들 수 있다 — 만든 각 디렉터리의 부모(최상단은 ROOT)를
+    # 내구화해야 target은 남고 복구 표식만 유실되는 창이 닫힌다.
+    _mkdirs_durable(TXN_BACKUP)
     entries = []
     for i, rel in enumerate(touch):
         key = f"{i:06d}"
@@ -420,7 +469,8 @@ def _txn_begin(txn: str, version: str, touch: list[str]) -> None:
                         "hash": h})
     _fsync_dir(TXN_BACKUP)
     _write_atomic(TXN_MANIFEST, json.dumps(
-        {"txn": txn, "version": version, "entries": entries},
+        {"txn": txn, "version": version, "entries": entries,
+         "dirs": _planned_dirs(touch)},           # rollback이 되돌릴 새 디렉터리
         ensure_ascii=False).encode())
     _fsync_dir(TXN_DIR)
 
@@ -475,9 +525,23 @@ def _txn_recover(recs: list[dict]) -> str | None:
                 _write_atomic(p, bp.read_bytes())
             else:
                 p.unlink(missing_ok=True)
+                _fsync_dir(p.parent)
         except OSError as ex:
             raise UpdateError(
                 f"복구 실패 — 중단(백업 보존: {TXN_DIR}): {rel} {ex}")
+    # 파일을 되돌린 뒤, 이 트랜잭션이 만든 디렉터리 중 **비어 있는 것만** 깊은
+    # 순서로 제거한다 — SKEL은 디렉터리 존재 자체가 적용 결과라 잔재로 남으면
+    # 'pre-image로 복구'가 성립하지 않는다. 비어 있지 않으면(사용자 파일 등) 둔다.
+    for rel in sorted(man.get("dirs") or [], key=lambda s: -s.count("/")):
+        cp = _canon_rel(ROOT, str(rel))
+        if cp is None:
+            continue
+        d = ROOT / cp
+        try:
+            d.rmdir()
+        except OSError:
+            continue                             # 비어 있지 않거나 이미 없다
+        _fsync_dir(d.parent)
     _txn_clear()
     return "rollback"
 
@@ -560,8 +624,32 @@ def plan(tree: Path, targets: list, adopt: bool) -> dict:
             "remove": remove, "remove_conflict": remove_conflict}
 
 
+def _sidecar_plan(p: dict, tree: Path, version: str, dests: set) -> tuple:
+    """conflict 사이드카를 (쓸 것, 이미 같아 인정할 것, 손대지 않을 것)으로 가른다.
+
+    사이드카는 사용자가 **수동 병합에 쓰는 작업 파일**이다. 같은 버전을 다시
+    적용할 때 무조건 덮으면 그 작업이 영구히 사라진다(성공 후 pre-image도
+    지워지므로 복구 경로가 없다). 그래서 내용이 incoming과 같을 때만 그대로
+    인정하고, 다르면 **덮지 않고 보고**한다. 정식 target과 경로가 겹치는
+    사이드카는 앞서 적용한 관리 파일을 되덮으므로 갱신을 중단한다."""
+    write, kept, held, collide = [], [], [], []
+    for src, dest in p["conflict"]:
+        side = dest + f".upstream-{version}"
+        if side in dests:                        # 관리 파일과 경로 충돌
+            collide.append(side)
+            continue
+        sp = ROOT / side
+        if not sp.exists():
+            write.append((src, side))
+        elif sp.read_bytes() == (tree / src).read_bytes():
+            kept.append(side)                    # 이미 같다 — 그대로 인정
+        else:
+            held.append(side)                    # 사용자 작업 — 손대지 않는다
+    return write, kept, held, collide
+
+
 def _write_atomic(dst: Path, data: bytes) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    _mkdirs_durable(dst.parent)     # 새 조상 각각의 부모까지 내구화
     fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
     try:
         with os.fdopen(fd, "wb") as f:
@@ -675,13 +763,22 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
 
         # (잠금·미완료 트랜잭션 복구는 run()이 이미 끝냈다 — 여기는 잠금 안이다.)
         v = rel["version"]
+        # 사이드카는 사용자의 수동 병합 작업 파일이다 — 덮을 것/인정할 것/보존할
+        # 것을 먼저 가른다. 관리 파일과 경로가 겹치면 중단한다.
+        side_write, side_kept, side_held, side_collide = _sidecar_plan(
+            p, tree, v, {d for _s, d in targets})
+        out["sidecar_held"] = side_held
+        if side_collide:
+            raise UpdateError(
+                "사이드카 경로가 정식 관리 파일과 겹친다 — 갱신을 중단한다"
+                "(관리 파일을 되덮게 된다):\n  " + "\n  ".join(side_collide[:10]))
         txn = os.urandom(8).hex()                # 파일과 저널을 묶는 트랜잭션 id
         # 이번에 건드릴 파일(canonical 상대)의 pre-image를 영속 백업하고 manifest를
         # 기록한 **뒤에만** target을 건드린다. 이후 크래시는 다음 실행이 판정한다:
         # done(txn)이 있으면 roll-forward, 없으면 rollback.
         touch = [dest for _s, dest in p["add"] + p["update"]]
         touch += list(p["remove"])
-        touch += [dest + f".upstream-{v}" for _s, dest in p["conflict"]]
+        touch += [side for _s, side in side_write]
         touch += [posix_rel(d / ".gitkeep", ROOT) for d in skel if not d.exists()]
         _txn_begin(txn, v, touch)
         ledger_append(UPDATE_JOURNAL, {"kind": "begin", "txn": txn,
@@ -696,14 +793,13 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
                 tp.unlink(missing_ok=True)
                 _fsync_dir(tp.parent)             # 삭제 엔트리 내구화(전원 차단)
                 removed.append(path)
-            for src, dest in p["conflict"]:
-                side = ROOT / (dest + f".upstream-{v}")
-                _write_atomic(side, (tree / src).read_bytes())
-                sidecars.append(posix_rel(side, ROOT))
+            for src, side in side_write:          # 없던 사이드카만 쓴다
+                _write_atomic(ROOT / side, (tree / src).read_bytes())
+                sidecars.append(side)
+            sidecars += side_kept                 # 이미 같은 것은 그대로 인정
             for d in skel:                        # 이미 _allowed_skel로 봉쇄·검증됨
                 if not d.exists():
-                    d.mkdir(parents=True)
-                    _fsync_dir(d.parent)          # mkdir 엔트리 내구화
+                    _mkdirs_durable(d)            # 만든 각 조상의 부모까지 내구화
                     _write_atomic(d / ".gitkeep", b"")
                     made_skel.append(posix_rel(d, ROOT))
         except OSError as e:
