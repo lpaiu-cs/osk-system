@@ -77,8 +77,11 @@ def _validate_at(root: Path) -> list[str]:
 def guards(root: Path) -> list[str]:
     errs = []
     r = _git(root, "status", "--porcelain", "-z")
+    # 면제는 **정확히** release.json만 — `startswith`면 release.json.bak 같은
+    # tracked 파일의 수정도 dirty에서 빠져, 증빙엔 그 수정 hash가 들어가는데
+    # 커밋엔 안 담기는 self-invalid 릴리스가 된다(P2).
     dirty = [e for e in r.stdout.split("\0")
-             if e.strip() and not e[3:].startswith(ATTESTATION)]
+             if e.strip() and e[3:] != ATTESTATION]
     if dirty:
         errs.append(f"작업 트리가 깨끗하지 않다 — 증빙은 커밋과 일치해야 한다: "
                     f"{[d[3:] for d in dirty[:5]]}")
@@ -109,14 +112,19 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
             prev = json.loads(ap.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             prev = None
-    changed = None
+    # 직전 릴리스 대비 added/changed/**removed** — 삭제는 updater가 인스턴스까지
+    # 전파하므로(§1-2 4항), 선언 전 변화 요약에서 빠지면 안 된다(P3). prev/new
+    # key의 합집합으로 본다.
+    added = changed = removed = None
     if prev and isinstance(prev.get("files"), dict):
-        changed = sorted(p for p, h in att["files"].items()
-                         if prev["files"].get(p) != h)
+        pf, nf = prev["files"], att["files"]
+        added = sorted(k for k in nf if k not in pf)
+        changed = sorted(k for k in nf if k in pf and pf[k] != nf[k])
+        removed = sorted(k for k in pf if k not in nf)
     out = {"ok": True, "applied": False, "version": version,
            "files": len(att["files"]),
            "prev_version": prev.get("version") if prev else None,
-           "changed_since_prev": changed}
+           "added": added, "changed": changed, "removed": removed}
     if not apply:
         return out
     ap.write_text(json.dumps(att, ensure_ascii=False, indent=1) + "\n",

@@ -55,19 +55,36 @@ def _floor(rel: str) -> bool:
 
 
 def _within(base: Path, rel: str) -> Path | None:
-    """rel을 base 안으로 봉쇄한 절대 경로 — `..`·절대경로·심볼릭 탈출은 None.
-    release 증빙 key와 (다기기 병합되는) 저널 path는 **신뢰 밖 입력**이므로,
-    tree 읽기·ROOT 쓰기·unlink 어느 I/O 전에도 이 봉쇄를 통과해야 한다
-    (core.resolve_in_root의 base 일반화 — 자기 자신은 벗어남이 아니다)."""
+    """rel을 base 안으로 봉쇄한 **정규 절대 경로** — 아니면 None. release 증빙
+    key와 (다기기 병합되는) 저널 path는 **신뢰 밖 입력**이므로, 어느 I/O 전에도
+    이 봉쇄를 통과한다. 두 겹으로 막는다: ①`.`/`..` segment·절대경로를 문자열
+    단계에서 거부(정규화 전 판정 우회 차단 — `docs/../= Scope/`로 바닥 재진입
+    금지) ②남은 심볼릭 재배치는 realpath로 흡수해 base 안인지 확인. 반환값의
+    base-상대(canonical)에만 floor·I/O를 걸어야 한다."""
     try:
         p = Path(rel)
-        cand = p if p.is_absolute() else base / p
-        real = Path(os.path.realpath(cand))
+        if not p.parts or p.is_absolute() \
+                or any(seg in ("..", ".") for seg in p.parts):
+            return None
         broot = Path(os.path.realpath(base))
-        if real != broot:
-            real.relative_to(broot)
+        real = Path(os.path.realpath(base / p))
+        if real == broot:
+            return None                          # base 자신은 파일 대상이 아니다
+        real.relative_to(broot)                  # 벗어나면 ValueError
         return real
     except (ValueError, OSError, TypeError):
+        return None
+
+
+def _canon_rel(base: Path, rel: str) -> str | None:
+    """봉쇄된 canonical base-상대 경로(posix) — 탈출·재진입은 None. floor·I/O
+    판정은 raw 문자열이 아니라 반드시 이 canonical 경로에 건다."""
+    p = _within(base, rel)
+    if p is None:
+        return None
+    try:
+        return p.relative_to(Path(os.path.realpath(base))).as_posix()
+    except ValueError:
         return None
 
 
@@ -121,6 +138,15 @@ def latest_release_tag(url: str) -> str | None:
             if best is None or key > best[0]:
                 best = (key, name)
     return best[1] if best else None
+
+
+def tag_exists(url: str, tag: str) -> bool:
+    """정본에 `refs/tags/<tag>`가 실제로 있는가 — 명시 ref가 브랜치로
+    릴리스 경계를 우회하는 것을 막는다(`--branch`는 태그·브랜치 모두 받는다)."""
+    r = subprocess.run(["git", "ls-remote", "--tags", "--refs", url,
+                        f"refs/tags/{tag}"], capture_output=True, text=True,
+                       timeout=60)
+    return r.returncode == 0 and bool(r.stdout.strip())
 
 
 def fetch_git(url: str, ref: str, dest: Path) -> Path:
@@ -222,11 +248,13 @@ def apply_set(tree: Path, rel: dict):
         if dest is None:
             skipped.append(f"{ap} (매니페스트 밖)")
             continue
-        # dest는 신뢰 밖 입력에서 파생된다 — 바닥·루트 봉쇄를 여기서 강제한다(P1).
-        if _floor(dest) or _within(ROOT, dest) is None:
+        # dest는 신뢰 밖 입력에서 파생된다 — canonical 경로로 봉쇄한 뒤 그
+        # canonical에 floor를 건다(정규화 전 문자열 판정 우회 차단, P1).
+        cdest = _canon_rel(ROOT, dest)
+        if cdest is None or _floor(cdest):
             skipped.append(f"{dest} (바닥·경로 봉쇄 — 쓰지 않는다)")
             continue
-        targets.append((ap, dest))
+        targets.append((ap, cdest))
     # SKEL은 허용 골격(루트 봉쇄된 빈 Space 루트)만 통과시킨다
     skel = []
     for s in man["skel"]:
@@ -305,12 +333,13 @@ def plan(tree: Path, targets: list, adopt: bool) -> dict:
     # 있는 삭제 대상은 지우지 않고 보존·보고한다. 바닥은 애초에 관리 대상이 아니다.
     remove, remove_conflict = [], []
     for p, h in sorted(managed_paths(recs).items()):
-        if p in dests or _floor(p):
+        cp = _canon_rel(ROOT, p)                 # 병합된 저널 path도 봉쇄(P1)
+        if cp is None or cp in dests or _floor(cp):
             continue
-        rp = _within(ROOT, p)                    # 병합된 저널 path도 봉쇄(P1)
-        if rp is None or not rp.exists():
+        rp = ROOT / cp
+        if not rp.exists():
             continue
-        (remove if sha256_file(rp) == h else remove_conflict).append(p)
+        (remove if sha256_file(rp) == h else remove_conflict).append(cp)
     return {"add": add, "same": len(same), "rebaseline": rebaseline,
             "update": update, "conflict": conflict, "engine_drift": engine_drift,
             "remove": remove, "remove_conflict": remove_conflict}
@@ -336,16 +365,27 @@ def run(source: str | None = None, ref: str | None = None,
         adopt: bool = False) -> dict:
     cfg = load_config().get("upstream", {})
     source = source or ("bundle" if bundle else cfg.get("source", "git"))
+    self_tag = None
     with tempfile.TemporaryDirectory() as td:
         if source == "git":
             url = cfg.get("url", DEFAULT_UPSTREAM)
-            # 기본은 최신 정식 릴리스 태그다 — 브랜치 HEAD가 아니다(§1-2 3항).
-            tag = ref or cfg.get("pin") or latest_release_tag(url)
-            if tag is None:
-                raise UpdateError(
-                    "정본에 정식 릴리스 태그(vX.Y.Z)가 없다 — 정본에서 먼저 "
-                    "릴리스하거나 --to로 참조를 지정한다")
+            pin = ref or cfg.get("pin")
+            if pin is not None:
+                # 명시 ref/pin도 정식 릴리스 태그여야 한다 — 브랜치(`--to main`)로
+                # 태그 경계를 우회하지 못하게, 형식·실재를 함께 확인한다(§1-2 3항).
+                if not re.match(VERSION_RE, str(pin)):
+                    raise UpdateError(f"명시 ref/pin은 vX.Y.Z 태그여야 한다: {pin}")
+                if not tag_exists(url, pin):
+                    raise UpdateError(f"정본에 그 릴리스 태그가 없다: {pin}")
+                tag = pin
+            else:
+                tag = latest_release_tag(url)   # 기본은 최신 정식 태그(HEAD 아님)
+                if tag is None:
+                    raise UpdateError(
+                        "정본에 정식 릴리스 태그(vX.Y.Z)가 없다 — 정본에서 "
+                        "먼저 릴리스하거나 --to로 참조를 지정한다")
             tree = fetch_git(url, tag, Path(td))
+            self_tag = tag                       # 증빙 version이 이 태그와 같아야 한다
         elif source == "bundle":
             if not bundle:
                 raise UpdateError("bundle 출처에는 --from <경로>가 필요하다")
@@ -354,6 +394,10 @@ def run(source: str | None = None, ref: str | None = None,
             raise UpdateError(f"미정의 출처: {source} (git·bundle)")
 
         rel = load_release(tree)
+        if self_tag is not None and rel["version"] != self_tag:
+            raise UpdateError(
+                f"요청 태그와 증빙 version이 다르다 — 태그 {self_tag} 의 "
+                f"release.json은 {rel['version']} 이다(태그 위조·오지정 차단)")
         errs = verify_attestation(tree, rel)
         if errs:
             raise UpdateError("비준증빙 대조 실패 — 아무것도 쓰지 않았다:\n  "
@@ -401,18 +445,22 @@ def run(source: str | None = None, ref: str | None = None,
             ledger_append(UPDATE_JOURNAL,
                           {"kind": "remove", "version": v, "path": path})
             removed.append(path)
+        # skip은 conflict **사건**이지 적용 상태의 변경이 아니다 — 경로를
+        # `skipped_path`로 남겨 baseline/관리 판정(`path` 키)이 이를 보지 않게
+        # 한다. 안 그러면 skip이 인과 극대가 되어 마지막 apply baseline을
+        # 가리고, 되돌려도 계속 drift·삭제 전파 누락이 된다(P2).
         sidecars = []
         for src, dest in p["conflict"]:
             side = ROOT / (dest + f".upstream-{v}")
             _write_atomic(side, (tree / src).read_bytes())
             ledger_append(UPDATE_JOURNAL, {
-                "kind": "skip", "version": v, "path": dest,
+                "kind": "skip", "version": v, "skipped_path": dest,
                 "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
             sidecars.append(posix_rel(side, ROOT))
         # upstream에서 삭제됐으나 로컬 수정이 있는 파일 — 지우지 않고 보존·보고.
         for path in p["remove_conflict"]:
             ledger_append(UPDATE_JOURNAL, {
-                "kind": "skip", "version": v, "path": path,
+                "kind": "skip", "version": v, "skipped_path": path,
                 "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
         made_skel = []
         for d in skel:                       # 이미 _allowed_skel로 봉쇄·검증됨

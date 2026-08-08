@@ -1865,6 +1865,27 @@ def test_release_and_update():
             check("기준선 덕에 엔진 drift 오판 없이 깨끗이 갱신",
                   (ROOT / probe).read_text(encoding="utf-8") == "P = 2\n", rp2)
 
+            # clean-tree 면제는 정확히 release.json만 — release.json.bak은 아니다 (P2)
+            (can / "release.json.bak").write_text("x\n", encoding="utf-8")
+            git(can, "add", "-A"); git(can, "commit", "-qm", "add bak")
+            release.run("v9.1.0", apply=True, root=can)
+            (can / "release.json.bak").write_text("변조\n", encoding="utf-8")
+            check("release.json.bak 수정은 clean-tree에서 면제되지 않는다",
+                  "깨끗하지 않다" in (uerr(lambda: release.run(
+                      "v9.1.1", apply=True, root=can)) or ""))
+            git(can, "checkout", "-q", "--", "release.json.bak")
+
+            # release 보고가 직전 릴리스 대비 삭제(removed)를 포함한다 (P3)
+            (can / "_governance/RmRep.md").write_text(
+                node_text("260802-uupd-000b", "삭제 보고 대상"), encoding="utf-8")
+            git(can, "add", "-A"); git(can, "commit", "-qm", "add RmRep")
+            release.run("v9.2.0", apply=True, root=can)
+            git(can, "rm", "-q", "_governance/RmRep.md")
+            git(can, "commit", "-qm", "rm RmRep")
+            rrep = release.run("v9.2.1", apply=False, root=can)
+            check("release 보고가 removed에 삭제 파일을 담는다",
+                  "_governance/RmRep.md" in (rrep.get("removed") or []), rrep)
+
             # 인스턴스 소유 바닥·SKEL 봉쇄 — 악의 매니페스트도 못 쓴다(엔진 상수) (P1)
             # apply_set 단계에서 봉쇄되는지를 본다(쓰기 없음 — 대량삭제 부작용 회피)
             ev = Path(td) / "evil"
@@ -1941,6 +1962,33 @@ def test_release_and_update():
             check("load_release: 느슨한 version은 증빙 판독에서 거부",
                   "version 형식" in (uerr(
                       lambda: update.load_release(badrel)) or ""))
+
+            # ROOT 내부 `..` 재진입도 거부 — floor 판정 우회 차단 (P1)
+            check("_within/_canon_rel: ROOT 내부 재진입(../)은 거부, 정상은 통과",
+                  update._within(ROOT, "docs/../= Scope/x") is None
+                  and update._canon_rel(ROOT, "= Scope/../_governance/x") is None
+                  and update._canon_rel(ROOT, "_governance/x") == "_governance/x")
+
+            # skip은 적용 baseline을 가리지 않는다 — conflict 사건과 상태 분리 (P2)
+            j = [{"rid": "00000000-0000-7000-8000-00000000ba01",
+                  "parents": [], "kind": "apply", "path": "F",
+                  "hash": "sha256:aaa"},
+                 {"rid": "00000000-0000-7000-8000-00000000ba02",
+                  "parents": ["00000000-0000-7000-8000-00000000ba01"],
+                  "kind": "skip", "skipped_path": "F", "why": "conflict"}]
+            check("skip 뒤에도 baseline은 마지막 apply",
+                  update.last_applied_hash(j, "F") == "sha256:aaa"
+                  and "F" in update.managed_paths(j))
+
+            # 명시 ref/pin은 정식 태그여야 한다 — 브랜치로 경계 우회 금지 (P2)
+            check("tag_exists: 태그만 인정(브랜치·부재는 False)",
+                  update.tag_exists(str(can), "v9.0.1")
+                  and not update.tag_exists(str(can), "main")
+                  and not update.tag_exists(str(can), "master")
+                  and not update.tag_exists(str(can), "v0.0.0"))
+            check("git: 비형식 ref(main)는 형식에서 거부(네트워크 전)",
+                  "vX.Y.Z" in (uerr(
+                      lambda: update.run(source="git", ref="main")) or ""))
 
             # 현재 판본은 인과 극대로 판정한다(물리 마지막 행이 아니다) —
             # sibling last_applied_hash와 같은 규율, union 병합 대장이므로.
