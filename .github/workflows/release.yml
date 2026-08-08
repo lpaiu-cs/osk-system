@@ -1,0 +1,67 @@
+# 태그를 사람이 읽는 표면(GitHub Release)에 비춘다.
+#
+# 이 워크플로는 **권위를 만들지 않는다**. 비준은 정본에서의 릴리스 선언과
+# `release.json`이 이미 끝냈고(시행령 §10 6항), 여기서는 그 사실을 옮겨 적을
+# 뿐이다. 그래서 증빙이 없거나 태그와 어긋나면 Release를 만들지 않고 실패한다 —
+# 정식 릴리스가 아닌 태그가 정식처럼 보이는 쪽이 안 보이는 쪽보다 나쁘다.
+#
+# 발행 매니페스트에 `.github/`가 없으므로 이 파일은 릴리스 payload에 들어가지
+# 않는다. 인스턴스는 받지 않는다 — 정본의 발행 설비이지 프레임워크가 아니다.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write          # Release 생성. 그 외 권한은 주지 않는다.
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 비준증빙을 확인하고 Release를 만든다
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # 이미 있으면 손대지 않는다 — 손으로 쓴 노트를 덮지 않기 위해서다.
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "$TAG 는 이미 Release가 있다 — 그대로 둔다."
+            exit 0
+          fi
+
+          # 저장소를 checkout하지 않는다. 필요한 것은 그 태그의 release.json
+          # 한 장뿐이고, 외부 action을 하나도 쓰지 않는 편이 공급망에 안전하다.
+          if ! gh api "repos/$REPO/contents/release.json?ref=$TAG" --jq '.content' \
+               | base64 -d > release.json; then
+            echo "::error::$TAG 에 release.json이 없다 — 정식 릴리스 태그가 아니다."
+            exit 1
+          fi
+
+          ver=$(python3 -c 'import json;print(json.load(open("release.json"))["version"])')
+          num=$(python3 -c 'import json;print(len(json.load(open("release.json"))["files"]))')
+
+          if [ "$ver" != "$TAG" ]; then
+            echo "::error::증빙의 버전($ver)이 태그($TAG)와 다르다 — 만들지 않는다."
+            exit 1
+          fi
+
+          notes=$(gh api -X POST "repos/$REPO/releases/generate-notes" \
+                    -f tag_name="$TAG" --jq '.body')
+
+          {
+            printf '비준증빙 `release.json` — 파일 %s건의 내용 해시로 이 판본을 고정한다.\n' "$num"
+            printf '인스턴스는 증빙과 전수 대조한 것만 적용한다.\n\n'
+            printf '```bash\n'
+            printf 'PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply --to %s\n' "$TAG"
+            printf '```\n\n'
+            printf '설치·운용은 [docs/SETUP.md](../blob/%s/docs/SETUP.md)에 있다.\n\n' "$TAG"
+            printf -- '---\n\n%s\n' "$notes"
+          } > notes.md
+
+          gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file notes.md
