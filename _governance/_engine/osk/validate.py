@@ -83,6 +83,16 @@ def run() -> dict:
     if sig_ok:
         try:
             latest = signatures.latest_by_node()
+            # 현황은 **현재 노드**에 대한 요약이다 — 통치 문서 비노드화·노드
+            # 폐기 등으로 대장에만 남은 id는 세지 않는다(기록 자체는 대장에
+            # 이력으로 남는다).
+            current = set()
+            for _s, (p, _k) in idx.nodes.items():
+                try:
+                    current.add(idx.node(p).id)
+                except Exception:
+                    pass
+            latest = {nid: r for nid, r in latest.items() if nid in current}
             n_signed = sum(1 for nid, r in latest.items()
                            if signatures.status(nid) == "signed")
             rep["signed_nodes"] = f"{n_signed}/{len(latest)}"
@@ -90,9 +100,12 @@ def run() -> dict:
             errs.append(str(e))
     ok(f"서명 기록부 ({len(recs)}행)", errs)
 
-    # 5. 대장 판독 (Mechanism §3 1항 공통)
+    # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
+    #    대장이다 — updater가 baseline·관리 집합·삭제 전파·현재 version을 여기서
+    #    계산하므로 단순 로그가 아니다(손상되면 판정이 뒤집힌다).
     errs, ledgers = [], ([(SIGNATURES, recs)] if sig_ok else [])
-    for p in [CANDIDATES, PINS, ROUTING, LEDGER / "migration" / "events.jsonl"]:
+    for p in [CANDIDATES, PINS, ROUTING, LEDGER / "migration" / "events.jsonl",
+              LEDGER / "update.jsonl"]:
         try:
             ledgers.append((p, ledger_read(p)))
         except Exception as e:

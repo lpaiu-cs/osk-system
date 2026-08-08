@@ -25,6 +25,8 @@ MAP  _governance/ -> _governance/
 # 운용 문서와 MCP 설정 예시.
 MAP  docs/ -> docs/
 MAP  .mcp.json.example -> .mcp.json.example
+# 대장 병합 규칙 — 다기기 인스턴스의 union merge (Mechanism §3 1항)
+MAP  .gitattributes -> .gitattributes
 
 # ── 공개에만 사는 것 ────────────────────────────────────────
 # 사설에 원본이 없으므로 사상 대상이 아니다. 매니페스트가 "없는 것은 지운다"를

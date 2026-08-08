@@ -64,7 +64,7 @@ class Searcher:
         for stem, p, kind, n in parsed:
             if kind[0] in ("workbench-transit", "governance"):
                 continue  # 검색 제외 — Workbench(헌법 11조 3항·4조 5항)와
-                          # 통치 구획(Space 밖 — 명시 조회로 도달한다)
+                          # 통치 구획(시행령 §10 1항 — 명시 조회로 도달한다)
             toks = _tokens(f"{stem} {n.meta.get('summary','')} {n.body}")
             self.paths.append((stem, p, n))
             self.tokens.append(set(toks))
