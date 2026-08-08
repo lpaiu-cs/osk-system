@@ -1790,14 +1790,18 @@ def test_release_and_update():
                   and "1조 개정" in gp.read_text(encoding="utf-8"))
             check("갱신 후 현재 버전 갱신", update.current_version() == "v9.0.1")
 
-            # 비준증빙 위반 — 변조·밀반입·부재 전부 중단
+            # 비준증빙 위반 — 변조·부재는 중단. 증빙 밖 미추적 파일은 허용.
             (can / "docs/UPD-SETUP.md").write_text("# 변조\n", encoding="utf-8")
             e = uerr(lambda: update.run(source="bundle", bundle=str(can)))
             check("해시 불일치는 중단", e is not None and "해시 불일치" in e, e)
             (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
+            # 증빙 밖(미추적) 파일은 적용되지 않으므로 갱신을 막지 않는다 —
+            # 적용은 오직 증빙이 모는 파일만 하고 그 하나하나가 해시 검증된다
+            # (pyc·.DS_Store 부산물이 딸린 디렉터리 bundle을 못 쓰게 하지 않는다)
             (can / "sneaky.md").write_text("x\n", encoding="utf-8")
-            e = uerr(lambda: update.run(source="bundle", bundle=str(can)))
-            check("증빙 밖 파일은 중단", e is not None and "증빙 밖" in e, e)
+            r7 = update.run(source="bundle", bundle=str(can))
+            check("증빙 밖 파일은 갱신을 막지 않고 적용되지도 않는다",
+                  r7["ok"] and not (ROOT / "sneaky.md").exists(), r7)
             (can / "sneaky.md").unlink()
             e = uerr(lambda: update.run(source="bundle",
                                         bundle=str(Path(td) / "noatt-없는트리")))
@@ -1824,6 +1828,27 @@ def test_release_and_update():
                   not (ROOT / "= Scope/침투.md").exists(), r6)
             check("_ledger 조각 경로에도 쓰지 않는다",
                   not (ROOT / "_governance/x/_ledger/x.jsonl").exists(), r6)
+
+            # 현재 판본은 인과 극대로 판정한다(물리 마지막 행이 아니다) —
+            # sibling last_applied_hash와 같은 규율, union 병합 대장이므로.
+            chain = [
+                {"rid": "00000000-0000-7000-8000-000000000001",
+                 "parents": [], "kind": "done", "version": "vA", "at": "t1"},
+                {"rid": "00000000-0000-7000-8000-000000000002",
+                 "parents": ["00000000-0000-7000-8000-000000000001"],
+                 "kind": "done", "version": "vB", "at": "t2"},
+            ]
+            check("선형 사슬은 인과 첨단(tip)을 낸다",
+                  update.current_version(chain) == "vB",
+                  update.current_version(chain))
+            # 두 기기의 동시 갱신(비교 불능 분기) — done[-1]이라면 물리 마지막
+            # 하나를 결정적인 양 내지만, 인과 극대는 미확정 None이다(fail-closed)
+            fork = chain[:1] + [
+                {"rid": "00000000-0000-7000-8000-0000000000ff",
+                 "parents": [], "kind": "done", "version": "vX", "at": "t9"}]
+            check("동시 갱신(비교 불능 분기)은 미확정 None",
+                  update.current_version(fork) is None,
+                  update.current_version(fork))
 
     finally:
         # 뒷정리 — 이후 기준선 PASS 유지

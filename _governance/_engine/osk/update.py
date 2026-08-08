@@ -26,8 +26,8 @@ from __future__ import annotations
 import argparse, json, os, subprocess, sys, tarfile, tempfile
 from pathlib import Path
 
-from .core import (ROOT, LEDGER, ledger_append, ledger_read, resolve_one,
-                   sha256_file, posix_rel)
+from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_read,
+                   resolve_one, sha256_file, posix_rel)
 from . import publish
 
 UPDATE_JOURNAL = LEDGER / "update.jsonl"     # 운영 저널 — 권위 대장이 아니다
@@ -110,19 +110,17 @@ def load_release(tree: Path) -> dict:
 
 
 def verify_attestation(tree: Path, rel: dict) -> list[str]:
-    """전수 대조 — 증빙의 파일이 다 있고 해시가 맞고, 증빙 밖 파일이 없다."""
+    """전수 대조 — 증빙의 파일이 다 있고 해시가 맞다. 적용은 오직 증빙이
+    모는 파일(`rel["files"]`)만 하고 그 하나하나를 해시로 검증하므로, 증빙
+    밖에 있는 디스크 파일은 적용 자체가 되지 않는다 — 트리에 딸린 미추적
+    부산물(pyc·.DS_Store)로 갱신을 막지 않는다(그건 안전이 아니라 오탐이다)."""
     errs = []
-    want = rel["files"]
-    for p, h in sorted(want.items()):
+    for p, h in sorted(rel["files"].items()):
         f = tree / p
         if not f.is_file():
             errs.append(f"증빙의 파일이 없다: {p}")
         elif sha256_file(f) != h:
             errs.append(f"해시 불일치: {p}")
-    have = {posix_rel(f, tree) for f in tree.rglob("*")
-            if f.is_file() and ".git" not in f.parts}
-    for p in sorted(have - set(want) - {ATTESTATION}):
-        errs.append(f"증빙 밖 파일이 릴리스에 있다: {p}")
     return errs
 
 
@@ -164,9 +162,13 @@ def last_applied_hash(recs: list[dict], rel_path: str) -> str | None:
 
 
 def current_version(recs: list[dict] | None = None) -> str | None:
+    """현재 판본 — `done` 기록의 **인과 극대**(물리 마지막 행이 아니다).
+    update.jsonl은 union 병합되는 대장이므로 파일 순서는 정본이 아니다
+    (core 판정 계약 · sibling `last_applied_hash`와 같은 규율). 극대가 여럿
+    (다기기 동시 갱신)이면 미확정으로 None."""
     recs = ledger_read(UPDATE_JOURNAL) if recs is None else recs
-    done = [r for r in recs if r.get("kind") == "done"]
-    return done[-1].get("version") if done else None
+    maxima = causal_maxima(recs, "done", field="kind")
+    return maxima[0].get("version") if len(maxima) == 1 else None
 
 
 # ── 계획과 적용 ──────────────────────────────────────────────────────────
