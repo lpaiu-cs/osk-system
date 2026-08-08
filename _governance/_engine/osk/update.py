@@ -23,11 +23,11 @@
 - 기존 인스턴스의 최초 편입은 `--adopt`로 현재 릴리스를 기준선 삼는다.
 """
 from __future__ import annotations
-import argparse, json, os, subprocess, sys, tarfile, tempfile
+import argparse, json, os, re, subprocess, sys, tarfile, tempfile
 from pathlib import Path
 
 from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_read,
-                   resolve_one, sha256_file, posix_rel)
+                   resolve_in_root, resolve_one, sha256_file, posix_rel)
 from . import publish
 
 UPDATE_JOURNAL = LEDGER / "update.jsonl"     # 운영 저널 — 권위 대장이 아니다
@@ -53,6 +53,28 @@ def _floor(rel: str) -> bool:
     return any(f"/{seg}/" in f"/{rel}" for seg in ("_ledger", "_raw"))
 
 
+# SKEL이 파고들 수 없는 보호 구획 — 골격은 빈 Space 루트만 만든다.
+SKEL_FORBIDDEN = ("_ledger", "_raw", "_sources", ".osk", ".git")
+
+
+def _allowed_skel(s: str) -> Path | None:
+    """SKEL이 만들어도 되는 절대 경로 — 아니면 None. 골격은 **루트 안으로
+    봉쇄된 빈 Space 루트**만 만든다(Mechanism §1-2 5항의 바닥은 매니페스트가
+    무엇을 말하든 지켜진다). `../` 탈출·보호 구획 파고들기·비Space 경로는 거부."""
+    p = resolve_in_root(s)                       # `..`·절대경로 탈출은 None
+    if p is None:
+        return None
+    try:
+        parts = p.relative_to(Path(os.path.realpath(ROOT))).parts
+    except ValueError:
+        return None
+    if not parts or not parts[0].startswith("= "):
+        return None                              # Space 루트(`= `)만 골격 대상
+    if any(seg in SKEL_FORBIDDEN for seg in parts):
+        return None
+    return p
+
+
 def load_config() -> dict:
     if CONFIG.exists():
         try:
@@ -64,15 +86,32 @@ def load_config() -> dict:
 
 # ── 출처 — 전송만 다르고 검증은 같다 (Mechanism §1-2 3항) ────────────────
 
-def fetch_git(url: str, ref: str | None, dest: Path) -> Path:
-    """정본 저장소를 얕게 받는다. ref가 없으면 기본 브랜치."""
-    cmd = ["git", "clone", "-q", "--depth", "1"]
-    if ref:
-        cmd += ["--branch", ref]
-    cmd += [url, str(dest / "tree")]
+def latest_release_tag(url: str) -> str | None:
+    """정본의 정식 릴리스 태그 중 최신 semver(`vX.Y.Z`) — 없으면 None.
+    갱신의 기본은 브랜치 HEAD가 아니라 태그다(Mechanism §1-2 3항) — HEAD를
+    받으면 릴리스 이후의 개발 커밋이 딸려 와 attestation과 어긋난다."""
+    r = subprocess.run(["git", "ls-remote", "--tags", "--refs", url],
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise UpdateError(f"정본 태그 조회 실패({url}): {r.stderr.strip()[-200:]}")
+    best = None
+    for line in r.stdout.splitlines():
+        name = line.rsplit("refs/tags/", 1)[-1].strip()
+        m = re.match(r"^v(\d+)\.(\d+)\.(\d+)$", name)
+        if m:
+            key = tuple(int(g) for g in m.groups())
+            if best is None or key > best[0]:
+                best = (key, name)
+    return best[1] if best else None
+
+
+def fetch_git(url: str, ref: str, dest: Path) -> Path:
+    """정본 저장소의 **태그**를 얕게 받는다(ref는 호출부에서 태그로 정한다)."""
+    cmd = ["git", "clone", "-q", "--depth", "1", "--branch", ref,
+           url, str(dest / "tree")]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
-        raise UpdateError(f"정본 fetch 실패({url} {ref or 'HEAD'}): "
+        raise UpdateError(f"정본 fetch 실패({url} {ref}): "
                           f"{r.stderr.strip()[-300:]}")
     return dest / "tree"
 
@@ -151,7 +190,15 @@ def apply_set(tree: Path, rel: dict) -> tuple[list[str], list[str], list[str]]:
             targets.append(p)
         else:
             skipped.append(f"{p} (매니페스트 밖)")
-    return targets, [s.rstrip("/") for s in man["skel"]], skipped
+    # SKEL은 허용 골격(루트 봉쇄된 빈 Space 루트)만 통과시킨다
+    skel = []
+    for s in man["skel"]:
+        d = _allowed_skel(s.rstrip("/"))
+        if d is None:
+            skipped.append(f"{s} (SKEL 허용 밖 — 쓰지 않는다)")
+        else:
+            skel.append(d)
+    return targets, skel, skipped
 
 
 # ── 저널 — 직전 적용 상태의 정본 ─────────────────────────────────────────
@@ -159,6 +206,18 @@ def apply_set(tree: Path, rel: dict) -> tuple[list[str], list[str], list[str]]:
 def last_applied_hash(recs: list[dict], rel_path: str) -> str | None:
     r = resolve_one(recs, rel_path, "path")
     return r.get("hash") if r and r.get("kind") == "apply" else None
+
+
+def managed_paths(recs: list[dict]) -> dict[str, str]:
+    """지금 이 인스턴스가 정본으로부터 관리 중인 경로 → 기준선 해시.
+    경로별 인과 극대가 `apply`면 관리 중, `remove`면 삭제됨(last_applied_hash와
+    같은 규율). 삭제 전파의 '직전 관리 집합'이 여기서 나온다."""
+    out = {}
+    for p in {r.get("path") for r in recs if r.get("path")}:
+        r = resolve_one(recs, p, "path")
+        if r and r.get("kind") == "apply":
+            out[p] = r.get("hash")
+    return out
 
 
 def current_version(recs: list[dict] | None = None) -> str | None:
@@ -175,14 +234,21 @@ def current_version(recs: list[dict] | None = None) -> str | None:
 
 def plan(tree: Path, targets: list[str], adopt: bool) -> dict:
     recs = ledger_read(UPDATE_JOURNAL)
-    add, same, update, conflict, engine_drift = [], [], [], [], []
+    add, same, rebaseline = [], [], []
+    update, conflict, engine_drift = [], [], []
+    tset = set(targets)
     for p in targets:
         src, dst = tree / p, ROOT / p
         if not dst.exists():
             add.append(p)
             continue
         if dst.read_bytes() == src.read_bytes():
-            same.append(p)
+            # 내용은 upstream과 같다 — 기준선이 없거나(adopt·수동 동기화) 낡았으면
+            # 저널만 갱신한다. 안 하면 다음 릴리스에서 이 파일이 drift로 오판된다.
+            if last_applied_hash(recs, p) != sha256_file(dst):
+                rebaseline.append(p)
+            else:
+                same.append(p)
             continue
         base = last_applied_hash(recs, p)
         drifted = base is None or sha256_file(dst) != base
@@ -190,8 +256,17 @@ def plan(tree: Path, targets: list[str], adopt: bool) -> dict:
             (engine_drift if p.startswith(ENGINE_PREFIX) else conflict).append(p)
         else:
             update.append(p)
-    return {"add": add, "same": len(same), "update": update,
-            "conflict": conflict, "engine_drift": engine_drift}
+    # 삭제 전파 — 직전까지 관리하던 파일이 새 릴리스에서 빠졌으면 인스턴스에서도
+    # 제거한다(안 하면 하류가 정본과 다른 프레임워크를 실행한다). 로컬 수정이
+    # 있는 삭제 대상은 지우지 않고 보존·보고한다. 바닥은 애초에 관리 대상이 아니다.
+    remove, remove_conflict = [], []
+    for p, h in sorted(managed_paths(recs).items()):
+        if p in tset or _floor(p) or not (ROOT / p).exists():
+            continue
+        (remove if sha256_file(ROOT / p) == h else remove_conflict).append(p)
+    return {"add": add, "same": len(same), "rebaseline": rebaseline,
+            "update": update, "conflict": conflict, "engine_drift": engine_drift,
+            "remove": remove, "remove_conflict": remove_conflict}
 
 
 def _write_atomic(dst: Path, data: bytes) -> None:
@@ -216,8 +291,14 @@ def run(source: str | None = None, ref: str | None = None,
     source = source or ("bundle" if bundle else cfg.get("source", "git"))
     with tempfile.TemporaryDirectory() as td:
         if source == "git":
-            tree = fetch_git(cfg.get("url", DEFAULT_UPSTREAM),
-                             ref or cfg.get("pin"), Path(td))
+            url = cfg.get("url", DEFAULT_UPSTREAM)
+            # 기본은 최신 정식 릴리스 태그다 — 브랜치 HEAD가 아니다(§1-2 3항).
+            tag = ref or cfg.get("pin") or latest_release_tag(url)
+            if tag is None:
+                raise UpdateError(
+                    "정본에 정식 릴리스 태그(vX.Y.Z)가 없다 — 정본에서 먼저 "
+                    "릴리스하거나 --to로 참조를 지정한다")
+            tree = fetch_git(url, tag, Path(td))
         elif source == "bundle":
             if not bundle:
                 raise UpdateError("bundle 출처에는 --from <경로>가 필요하다")
@@ -235,8 +316,9 @@ def run(source: str | None = None, ref: str | None = None,
         out = {"ok": True, "applied": False, "version": rel["version"],
                "current": current_version(), "files": len(targets),
                "add": p["add"], "update": p["update"], "same": p["same"],
-               "conflict": p["conflict"], "engine_drift": p["engine_drift"],
-               "skipped": len(skipped)}
+               "rebaseline": p["rebaseline"], "conflict": p["conflict"],
+               "engine_drift": p["engine_drift"], "remove": p["remove"],
+               "remove_conflict": p["remove_conflict"], "skipped": len(skipped)}
         if p["engine_drift"]:
             raise UpdateError(
                 "엔진 파일에 로컬 수정이 있다 — 갱신 전체를 중단한다. 엔진을 "
@@ -246,37 +328,52 @@ def run(source: str | None = None, ref: str | None = None,
         if not apply:
             return out
 
-        ledger_append(UPDATE_JOURNAL, {
-            "kind": "begin", "version": rel["version"],
-            "adopt": bool(adopt)})
+        v = rel["version"]
+        ledger_append(UPDATE_JOURNAL,
+                      {"kind": "begin", "version": v, "adopt": bool(adopt)})
         applied = []
         for path in p["add"] + p["update"]:
-            data = (tree / path).read_bytes()
-            _write_atomic(ROOT / path, data)
+            _write_atomic(ROOT / path, (tree / path).read_bytes())
             ledger_append(UPDATE_JOURNAL, {
-                "kind": "apply", "version": rel["version"], "path": path,
+                "kind": "apply", "version": v, "path": path,
                 "hash": sha256_file(ROOT / path)})
             applied.append(path)
+        # 내용은 같으나 기준선이 없던 파일 — 저널만 남긴다(파일은 그대로).
+        for path in p["rebaseline"]:
+            ledger_append(UPDATE_JOURNAL, {
+                "kind": "apply", "version": v, "path": path,
+                "hash": sha256_file(ROOT / path)})
+        # 삭제 전파 — upstream에서 빠졌고 로컬 무수정인 관리 파일을 제거한다.
+        removed = []
+        for path in p["remove"]:
+            (ROOT / path).unlink(missing_ok=True)
+            ledger_append(UPDATE_JOURNAL,
+                          {"kind": "remove", "version": v, "path": path})
+            removed.append(path)
         sidecars = []
         for path in p["conflict"]:
-            side = ROOT / (path + f".upstream-{rel['version']}")
+            side = ROOT / (path + f".upstream-{v}")
             _write_atomic(side, (tree / path).read_bytes())
             ledger_append(UPDATE_JOURNAL, {
-                "kind": "skip", "version": rel["version"], "path": path,
+                "kind": "skip", "version": v, "path": path,
                 "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
             sidecars.append(posix_rel(side, ROOT))
+        # upstream에서 삭제됐으나 로컬 수정이 있는 파일 — 지우지 않고 보존·보고.
+        for path in p["remove_conflict"]:
+            ledger_append(UPDATE_JOURNAL, {
+                "kind": "skip", "version": v, "path": path,
+                "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
         made_skel = []
-        for s in skel:
-            d = ROOT / s
+        for d in skel:                       # 이미 _allowed_skel로 봉쇄·검증됨
             if not d.exists():
                 d.mkdir(parents=True)
                 (d / ".gitkeep").write_text("", encoding="utf-8")
-                made_skel.append(s)
+                made_skel.append(posix_rel(d, ROOT))
         ledger_append(UPDATE_JOURNAL, {
-            "kind": "done", "version": rel["version"],
-            "applied": len(applied), "conflicts": len(sidecars)})
+            "kind": "done", "version": v, "applied": len(applied),
+            "removed": len(removed), "conflicts": len(sidecars)})
         out.update(applied=True, applied_files=len(applied),
-                   sidecars=sidecars, skel_created=made_skel,
+                   removed=removed, sidecars=sidecars, skel_created=made_skel,
                    note="엔진이 갱신되었으면 실행 중인 서버·데몬을 재시작한다")
         return out
 
@@ -286,7 +383,7 @@ def main(argv=None):
         prog="osk-update",
         description="정본 릴리스로 갱신 — 기본은 보고, 쓰기는 --apply")
     ap.add_argument("--apply", action="store_true")
-    ap.add_argument("--to", help="버전 태그 pin (기본: 설정의 pin 또는 HEAD)")
+    ap.add_argument("--to", help="버전 태그 pin (기본: 설정의 pin 또는 최신 릴리스 태그)")
     ap.add_argument("--from", dest="bundle", help="로컬 bundle 경로 (오프라인)")
     ap.add_argument("--source", choices=("git", "bundle"))
     ap.add_argument("--adopt", action="store_true",

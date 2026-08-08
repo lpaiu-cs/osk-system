@@ -1807,7 +1807,66 @@ def test_release_and_update():
                                         bundle=str(Path(td) / "noatt-없는트리")))
             check("비준증빙 없는 출처는 거부", e is not None, e)
 
-            # 인스턴스 소유 바닥 — 악의 릴리스·매니페스트도 못 쓴다 (엔진 상수)
+            # 갱신 기본은 브랜치 HEAD가 아니라 최신 정식 릴리스 태그다 (P2)
+            check("갱신 기본은 최신 릴리스 태그",
+                  update.latest_release_tag(str(can)) == "v9.0.1",
+                  update.latest_release_tag(str(can)))
+
+            # 삭제 전파 — 정본에서 빠진 파일은 인스턴스에서도 제거(로컬 무수정) (P1)
+            (can / "_governance/DropMe.md").write_text(
+                node_text("260802-uupd-0009", "곧 삭제될 규범"), encoding="utf-8")
+            git(can, "add", "-A"); git(can, "commit", "-qm", "add DropMe")
+            release.run("v9.0.2", apply=True, root=can)
+            update.run(source="bundle", bundle=str(can), apply=True)
+            drop = ROOT / "_governance/DropMe.md"; mine.append(drop)
+            check("삭제 전 파일이 관리된다", drop.exists())
+            git(can, "rm", "-q", "_governance/DropMe.md")
+            git(can, "commit", "-qm", "drop DropMe")
+            release.run("v9.0.3", apply=True, root=can)
+            rdel = update.run(source="bundle", bundle=str(can), apply=True)
+            check("정본에서 빠진 파일은 인스턴스에서도 삭제된다",
+                  not drop.exists()
+                  and "_governance/DropMe.md" in rdel.get("removed", []), rdel)
+
+            # 삭제 대상이라도 로컬 수정이 있으면 보존·보고 (P1)
+            (can / "_governance/KeepMe.md").write_text(
+                node_text("260802-uupd-000a", "삭제되나 보존"), encoding="utf-8")
+            git(can, "add", "-A"); git(can, "commit", "-qm", "add KeepMe")
+            release.run("v9.0.4", apply=True, root=can)
+            update.run(source="bundle", bundle=str(can), apply=True)
+            keep = ROOT / "_governance/KeepMe.md"; mine.append(keep)
+            keep.write_text(node_text("260802-uupd-000a", "로컬에서 고쳤다"),
+                            encoding="utf-8")
+            git(can, "rm", "-q", "_governance/KeepMe.md")
+            git(can, "commit", "-qm", "drop KeepMe")
+            release.run("v9.0.5", apply=True, root=can)
+            rkeep = update.run(source="bundle", bundle=str(can), apply=True)
+            check("로컬 수정된 삭제 대상은 보존된다",
+                  keep.exists()
+                  and "_governance/KeepMe.md" in rkeep.get("remove_conflict", []),
+                  rkeep)
+
+            # 사전존재·동일내용 파일도 기준선을 남긴다 — 다음 릴리스 drift 오판 금지 (P1)
+            probe = "_governance/_engine/adopt_probe.py"
+            (can / probe).write_text("P = 1\n", encoding="utf-8")
+            git(can, "add", "-A"); git(can, "commit", "-qm", "add probe")
+            release.run("v9.0.6", apply=True, root=can)
+            (ROOT / probe).parent.mkdir(parents=True, exist_ok=True)
+            (ROOT / probe).write_text("P = 1\n", encoding="utf-8")  # 저널 없이 존재
+            mine.append(ROOT / probe)
+            rp = update.run(source="bundle", bundle=str(can))
+            check("사전존재·동일내용은 rebaseline", probe in rp["rebaseline"], rp)
+            update.run(source="bundle", bundle=str(can), apply=True)   # 기준선 기록
+            (can / probe).write_text("P = 2\n", encoding="utf-8")
+            git(can, "add", "-A"); git(can, "commit", "-qm", "probe v2")
+            release.run("v9.0.7", apply=True, root=can)
+            # 기준선이 없었다면 base=None→engine_drift로 갱신 전체가 중단됐을 것
+            rp2 = update.run(source="bundle", bundle=str(can), apply=True)
+            check("기준선 덕에 엔진 drift 오판 없이 깨끗이 갱신",
+                  (ROOT / probe).read_text(encoding="utf-8") == "P = 2\n", rp2)
+
+            # 인스턴스 소유 바닥·SKEL 봉쇄 — 악의 매니페스트도 못 쓴다(엔진 상수) (P1)
+            # apply_set 단계에서 봉쇄되는지를 본다(쓰기 없음 — 대량삭제 부작용 회피)
             ev = Path(td) / "evil"
             (ev / "_governance/_engine/scripts").mkdir(parents=True)
             (ev / "= Scope").mkdir()
@@ -1816,18 +1875,30 @@ def test_release_and_update():
             (ev / "_governance/x/_ledger/x.jsonl").write_text("{}\n",
                                                               encoding="utf-8")
             (ev / "_governance/_engine/scripts/publish-manifest.txt").write_text(
-                'MAP  = Scope/ -> = Scope/\nMAP  _governance/ -> _governance/\n',
+                'MAP  = Scope/ -> = Scope/\nMAP  _governance/ -> _governance/\n'
+                'SKEL = Scope/Workbench/_ledger\nSKEL ../escape\n',
                 encoding="utf-8")
             att2 = {"version": "v9.6.6", "at": core.now_iso(),
                     "files": {core.posix_rel(f, ev): core.sha256_file(f)
                               for f in ev.rglob("*") if f.is_file()}}
             (ev / "release.json").write_text(
                 json.dumps(att2, ensure_ascii=False), encoding="utf-8")
-            r6 = update.run(source="bundle", bundle=str(ev), apply=True)
-            check("Space 바닥에는 쓰지 않는다",
-                  not (ROOT / "= Scope/침투.md").exists(), r6)
-            check("_ledger 조각 경로에도 쓰지 않는다",
-                  not (ROOT / "_governance/x/_ledger/x.jsonl").exists(), r6)
+            ev_rel = update.load_release(ev)
+            ev_targets, ev_skel, ev_skipped = update.apply_set(ev, ev_rel)
+            check("Space 바닥은 target이 아니라 skip(침투 차단)",
+                  "= Scope/침투.md" not in ev_targets
+                  and any("침투" in s for s in ev_skipped), (ev_targets, ev_skipped))
+            check("_ledger 조각도 target이 아니다",
+                  "_governance/x/_ledger/x.jsonl" not in ev_targets, ev_targets)
+            check("SKEL의 바닥 파고들기·루트 탈출은 허용 밖",
+                  ev_skel == []
+                  and sum("SKEL 허용 밖" in s for s in ev_skipped) == 2,
+                  (ev_skel, ev_skipped))
+            check("_allowed_skel: 빈 Space 루트만 허용",
+                  update._allowed_skel("= Scope") is not None
+                  and update._allowed_skel("= Scope/Workbench/_ledger") is None
+                  and update._allowed_skel("../evil") is None
+                  and update._allowed_skel("_ledger") is None)
 
             # 현재 판본은 인과 극대로 판정한다(물리 마지막 행이 아니다) —
             # sibling last_applied_hash와 같은 규율, union 병합 대장이므로.
