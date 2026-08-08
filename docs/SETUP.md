@@ -30,6 +30,37 @@ Python 3.12. 실의존성은 네 가지뿐이다 — `mcp`, `pydantic`, `PyYAML`
 python3.12 -m venv .venv && .venv/bin/pip install -r _governance/_engine/requirements.txt
 ```
 
+`mcp`는 major가 묶여 있다(`>=1.28,<2`). 외부 표면이 1.x의 `FastMCP`로 쓰였는데
+2.0이 그 모듈을 없앴다 — **`requirements.txt`를 갱신으로 받았으면 pip을 다시
+돌려야** 이미 만든 venv에 반영된다.
+
+## Windows
+
+엔진은 Windows에서도 돈다(잠금은 `msvcrt`, tz는 `tzdata` 패키지로 보충한다).
+이 문서의 명령은 POSIX 표기이니 아래 셋만 바꿔 읽는다.
+
+| | POSIX | Windows (PowerShell) |
+|---|---|---|
+| 인터프리터 | `python3.12` | `py -3.12` |
+| venv 실행 파일 | `.venv/bin/python` | `.venv\Scripts\python.exe` |
+| 환경변수 + 명령 | `VAR=값 명령` | `$env:VAR="값"; 명령` |
+
+준비와 CLI는 이렇게 된다:
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install -r _governance\_engine\requirements.txt
+$env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli validate
+```
+
+환경변수는 그 세션에만 남는다. 여러 명령을 이어 쓸 것이면 `$env:PYTHONPATH`를
+한 번만 두고 이후 명령에서는 생략한다. `cmd.exe`라면 `set VAR=값`을 별도 줄에
+쓴다(`set` 뒤 값에 따옴표를 붙이면 따옴표까지 값이 된다).
+
+데몬의 상시 실행은 `scripts/`의 launchd·systemd 예시에 해당하는 것이 없다 —
+**작업 스케줄러**에 `.venv\Scripts\python.exe _governance\_engine\sync_daemon.py`를
+등록하고 환경변수 `SYNC_ENABLED=1`을 준다.
+
 ## MCP 서버
 
 에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 여덟이다 —
@@ -47,6 +78,10 @@ claude mcp add --scope user osk-system -- <REPO>/.venv/bin/python <REPO>/_govern
 
 설정 파일을 직접 쓰는 클라이언트(Antigravity의 `~/.gemini/config/mcp_config.json`,
 Codex 등)는 `.mcp.json.example`을 그대로 베끼고 `<REPO>`만 바꾼다. 전송은 stdio다.
+
+Windows에서는 두 경로의 실행 파일 부분이 `.venv\Scripts\python.exe`가 되고,
+JSON 안의 역슬래시는 `\\`로 이스케이프한다 —
+`"command": "C:\\vault\\.venv\\Scripts\\python.exe"`.
 
 대상 인스턴스는 `OSK_VAULT_ROOT`로 바꿀 수 있다. 지정하지 않으면
 `_governance/_engine/`에서 두 단계 위(= `_governance`의 부모)를 vault 루트로 본다.
@@ -164,6 +199,13 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 적�
   아니다; 미비준은 status에 상시 표시된다).
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면
   실행 중인 MCP 서버·데몬을 재시작한다.
+- **갱신은 인스턴스당 한 번이다.** 한 인스턴스를 여러 기기에서 쓰더라도
+  `osk.update`는 정본→인스턴스 경계를 넘을 때만 돌린다 — 프레임워크 파일도,
+  현재 판본을 정하는 갱신 저널도 인스턴스 자신의 저장소가 추적하므로, 나머지
+  기기는 **평소의 동기화(pull)만으로 같은 판본이 된다**. 판본 판정이 로컬
+  상태 파일이 아니라 union 병합되는 저널의 인과 극대이기 때문이다. 그 기기들
+  에서 할 일은 둘뿐이다 — 돌고 있는 서버·데몬 재시작(구 코드가 메모리에 남아
+  있다), 그리고 `requirements.txt`가 바뀌었으면 pip 재실행.
 - 적용은 **크래시-안전 트랜잭션**이다. 갱신이 도중에 죽으면 다음 `--apply`가
   자동 복구한다. 엔진이 반쯤 교체돼 `osk.update` 자체가 안 돌면 엔진과 독립된
   복구 부트스트랩을 쓴다(표준 라이브러리만 사용):
