@@ -57,8 +57,8 @@ def space_of(path: Path) -> tuple:
     if head == "= Person":
         return ("person", parts[1] if len(parts) > 2 else None)
     if head == "_governance":
-        # 통치 구획 — Space 밖의 상설 구획. 통치 문서·사료는 노드이고,
-        # `_engine/`은 그 하위의 엔진 구획이다.
+        # 통치 구획 — Space 밖의 상설 구획. 통치 문서·사료는 노드가 아닌
+        # 규범 문서다(헌법 3조 6항). `_engine/`은 그 하위의 엔진 구획이다.
         if "_engine" in parts:
             return ("engine",)
         return ("governance",)
@@ -83,16 +83,13 @@ def space_of(path: Path) -> tuple:
 
 
 def is_node_home(kind: tuple) -> bool:
-    """노드 군집은 선언표의 무접두 경로뿐 (Mechanism §1 4항)."""
-    return kind[0] in ("domain", "person", "scope", "workbench-transit",
-                       "governance")
+    """노드 군집은 선언표의 `= ` Space 경로와 transit뿐 (Mechanism §1 4항 —
+    통치 구획은 노드를 두지 않는다, 예외 없음)."""
+    return kind[0] in ("domain", "person", "scope", "workbench-transit")
 
 
 def iter_nodes():
-    # 통치 구획은 Space가 아니지만 노드 구획이다(헌법 3조 6항) — 색인에
-    # 포함해야 명시 조회(read_node)가 도달한다(시행령 §10 1항). 하위
-    # `_engine`의 .md는 space_of가 ("engine",)으로 걸러낸다.
-    for base in NODE_SPACES + ("_governance",):
+    for base in NODE_SPACES:
         root = ROOT / base
         if not root.exists():
             continue
@@ -119,12 +116,12 @@ def _vault_md():
 def layout_violations() -> list[str]:
     """노드형(frontmatter 보유) 파일은 선언표의 노드 군집에만 둘 수 있다
     (Mechanism §1 4항 — `_` 구획·Workbench 루트·비선언 루트 디렉토리 모두
-    노드를 두지 않는다). 통치 문서의 과거판 보관소(archive)만 예외로,
-    노드형 사본을 두는 것이 그 구획의 용도다."""
+    노드를 두지 않는다. 통치 구획도 예외가 아니다 — 통치 문서·사료는
+    frontmatter를 두지 않는 규범 문서다)."""
     errs = []
     for p in _vault_md():
         k = space_of(p)
-        if is_node_home(k) or k[0] == "archive":
+        if is_node_home(k):
             continue
         if p.read_text(encoding="utf-8", errors="ignore").startswith("---\n"):
             errs.append(f"비노드 구획에 노드형 파일: {p.relative_to(ROOT)} ({k[0]})")
@@ -155,16 +152,18 @@ class Index:
                     str(self.nodes[p.stem][0].relative_to(ROOT))]).append(
                     str(p.relative_to(ROOT)))
             self.nodes[p.stem] = (p, k)
-        # 비노드 파일(원자료·대장·raw·archive)도 대상 해석용으로 등재
+        # 비노드 파일(원자료·대장·raw·통치 문서)도 대상 해석용으로 등재 —
+        # 통치 문서·사료는 노드가 아니지만 어느 소속에서나 인용된다
+        # (헌법 8조 3항). `_engine`은 ("engine",)으로 걸러진다.
         self.nonnode: dict[str, tuple] = {}
-        for base in ("_sources", "= Scope", "= Person"):
+        for base in ("_sources", "= Scope", "= Person", "_governance"):
             root = ROOT / base
             if not root.exists():
                 continue
             for p in root.rglob("*"):
                 if p.is_file() and p.stem not in self.nodes:
                     k = space_of(p)
-                    if k[0] in ("raw", "sources", "archive", "ledger"):
+                    if k[0] in ("raw", "sources", "ledger", "governance"):
                         self.nonnode[p.stem] = (p, k)
 
     def node(self, path: Path) -> contract.Node:

@@ -1,12 +1,3 @@
----
-id: 260802-0000-n3hu
-created: 2026-08-02 14:41 (KST)
-updated: 2026-08-02 16:20 (KST)
-author: agent
-drafter: agent
-summary: "2026-06-18 아키텍처를 supersede, 원소별 비준된 새 헌법으로 vault 재헌법화"
----
-
 # ltm-vault를 사용자의 second brain으로 재헌법화 (Reconstitution)
 
 ## Decision

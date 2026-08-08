@@ -694,9 +694,8 @@ def test_surface_contract():
     check("실 Mechanism에 §6-2가 있다", sec is not None)
     if not sec:
         return
-    (gov / "Mechanism.md").write_text(          # 계약을 갖춘 노드로 둔다
-        node_text("260802-zzzz-rg50", "표면 계약 시험용", sec.group(0)),
-        encoding="utf-8")
+    (gov / "Mechanism.md").write_text(          # 비노드 규범 문서 — frontmatter 없음
+        "# Mechanism (시험 사본)\n\n" + sec.group(0), encoding="utf-8")
     check("실 표면은 선언과 동치·권위 비노출", not validate.surface_violations(),
           validate.surface_violations())
     declared = validate.declared_tools()
@@ -1517,10 +1516,9 @@ def test_publish_guards():
     led = gov / "_ledger"
     mine = []
     try:
-        doc.write_text(node_text("260802-pppp-0001", "발행 시험 문서"),
-                       encoding="utf-8")
-        rec.write_text(node_text("260802-pppp-0010", "발행 시험 사료"),
-                       encoding="utf-8")
+        # 통치 문서·사료는 비노드 규범 문서 — frontmatter 없음 (헌법 3조 6항)
+        doc.write_text("# 발행 시험 문서\n\n본문.\n", encoding="utf-8")
+        rec.write_text("# 발행 시험 사료\n\n본문.\n", encoding="utf-8")
         led.mkdir(exist_ok=True)
         (led / "secret.jsonl").write_text('{"a":1}\n', encoding="utf-8")
         mine = [doc, rec, led / "secret.jsonl"]
@@ -1535,19 +1533,13 @@ def test_publish_guards():
                   "_governance/PubDoc.md" in rels
                   and "_governance/records/pub-rec.md" in rels, sorted(rels))
 
-            def signed_errs():
-                return [e for e in publish.guard_signed(items) if "PubDoc" in e]
-            check("미서명 통치 문서는 발행 차단",
-                  any("미서명" in e for e in signed_errs()), signed_errs())
-            core.ledger_append(core.SIGNATURES, {
-                "kind": "sign", "node": "260802-pppp-0001",
-                "path": str(doc.relative_to(ROOT)),
-                "hash": core.sha256_file(doc)})
-            check("서명 후에는 통과", not signed_errs(), signed_errs())
-            check("사료는 서명 대상이 아니다(계약 밖 기록)",
-                  not any("pub-rec" in e for e in publish.guard_signed(items)))
+            # 비노드 통치 문서는 서명 없이 발행된다 — 비준은 서명 제도가
+            # 아니라 정본 확정·비준증빙이다 (헌법 14조 1항·시행령 §10 2항)
+            check("통치 문서는 지식 가드에 걸리지 않는다",
+                  not publish.guard_knowledge(items),
+                  publish.guard_knowledge(items))
 
-            # 지식 유출 — governance 밖 노드형 파일
+            # 지식 유출 ① — Space의 노드형 파일
             man2 = Path(td) / "m2.txt"
             man2.write_text("MAP  = Scope/W1/ -> nodes/\n", encoding="utf-8")
             leak = ROOT / "= Scope/W1/pub-leak.md"
@@ -1555,11 +1547,22 @@ def test_publish_guards():
                             encoding="utf-8")
             try:
                 i2 = publish.collect(publish.parse_manifest(man2))
-                check("governance 밖 노드형 파일은 차단",
-                      any("지식 노드" in e for e in publish.guard_knowledge(i2)),
+                check("Space의 노드형 파일은 차단",
+                      any("노드형" in e for e in publish.guard_knowledge(i2)),
                       publish.guard_knowledge(i2))
             finally:
                 leak.unlink(missing_ok=True)
+            # 지식 유출 ② — 통치 구획 안이라도 노드형이면 차단 (예외 경로 없음)
+            gleak = gov / "GovLeak.md"
+            gleak.write_text(node_text("260802-pppp-0004", "통치 구획의 노드형"),
+                             encoding="utf-8")
+            try:
+                i3 = publish.collect(m)
+                check("통치 구획 안의 노드형 파일도 차단",
+                      any("GovLeak" in e for e in publish.guard_knowledge(i3)),
+                      publish.guard_knowledge(i3))
+            finally:
+                gleak.unlink(missing_ok=True)
 
             # 비밀값
             rec.write_text('token = "ghp_' + "A" * 36 + '"\n', encoding="utf-8")
@@ -1567,8 +1570,7 @@ def test_publish_guards():
             check("비밀값이 들어 있으면 차단", any("비밀값" in e for e in se), se)
             check("보고에 비밀값 자체는 싣지 않는다",
                   not any("ghp_" in e for e in se))
-            rec.write_text(node_text("260802-pppp-0010", "발행 시험 사료"),
-                           encoding="utf-8")
+            rec.write_text("# 발행 시험 사료\n\n본문.\n", encoding="utf-8")
 
             # 보고 모드는 아무것도 쓰지 않는다
             before = sorted(str(x.relative_to(pub)) for x in pub.rglob("*")
@@ -1585,15 +1587,6 @@ def test_publish_guards():
 
             # 매니페스트 밖 파일이 디스크에 있어도 커밋되지 않는다
             # (`git add -A`가 가드를 통째로 우회한 실사고의 고정)
-            for gdoc in sorted(gov.glob("*.md")):
-                gn = contract.parse(gdoc)
-                if S.status(gn.id, gdoc) != "signed":
-                    core.ledger_append(core.SIGNATURES, {
-                        "kind": "sign", "node": gn.id,
-                        "path": str(gdoc.relative_to(ROOT)),
-                        "hash": core.sha256_file(gdoc), "reason": "발행 시험"})
-            check("가드 전제: 통치 문서 전부 서명",
-                  not publish.guard_signed(items), publish.guard_signed(items))
             _rep = validate.run()
             check("가드 전제: 검증기 PASS", _rep["verdict"] == "PASS",
                   _rep["fail"])
@@ -1601,8 +1594,7 @@ def test_publish_guards():
             # 8진 이스케이프로 감싼다. 그 문자열을 그대로 쓰면 want와 어긋나
             # 매번 remove로 잡히고 스테이지도 삭제도 빗나간다.
             ko = gov / "records" / "한글 사료.md"
-            ko.write_text(node_text("260802-pppp-0011", "한글 이름 사료"),
-                          encoding="utf-8")
+            ko.write_text("# 한글 이름 사료\n\n본문.\n", encoding="utf-8")
             mine.append(ko)
             items = publish.collect(m)
             p_ko = publish.plan(pub, m, items)

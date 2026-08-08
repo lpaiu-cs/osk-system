@@ -62,9 +62,9 @@ class Searcher:
                 if t and t != stem:   # 자기 참조는 자기 강등이 되지 않는다(랭킹 한정)
                     self.demoted.add(t)
         for stem, p, kind, n in parsed:
-            if kind[0] in ("workbench-transit", "governance"):
-                continue  # 검색 제외 — Workbench(헌법 11조 3항·4조 5항)와
-                          # 통치 구획(Space 밖 — 명시 조회로 도달한다)
+            if kind[0] == "workbench-transit":
+                continue  # 검색 제외 — Workbench(헌법 11조 3항·4조 5항).
+                          # 통치 문서는 노드가 아니라 색인 자체에 없다.
             toks = _tokens(f"{stem} {n.meta.get('summary','')} {n.body}")
             self.paths.append((stem, p, n))
             self.tokens.append(set(toks))
