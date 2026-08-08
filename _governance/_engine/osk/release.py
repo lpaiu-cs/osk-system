@@ -314,6 +314,14 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
     # 작업 트리·index 동기화는 **릴리스 성립 이후의 편의**다(커밋·태그로 릴리스는
     # 이미 원자적으로 끝났다). 그러므로 실패해도 릴리스를 되돌리지 않고, 무엇보다
     # **외부 수정을 덮지 않는다** — release.json이 여전히 base 상태일 때만 맞춘다.
+    # 쓰기 직전에 **여기가 여전히 그 브랜치의 그 커밋인지** 재확인한다 — 태그
+    # 직후 외부가 `git switch` 했으면 다른 브랜치를 오염시킬 수 있다.
+    now2 = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+    head_now = _git(root, "rev-parse", "HEAD").stdout.strip()
+    if now2 != branch or head_now != new:
+        out["worktree_sync"] = ("보류 — 선언 뒤 브랜치·HEAD가 바뀌어 작업 트리를 "
+                                "건드리지 않았다")
+        return out
     d_wt = _git(root, "diff", "--quiet", base, "--", ATTESTATION)
     d_idx = _git(root, "diff", "--quiet", "--cached", base, "--", ATTESTATION)
     if d_wt.returncode == 0 and d_idx.returncode == 0:

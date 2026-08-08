@@ -23,7 +23,7 @@
 - 기존 인스턴스의 최초 편입은 `--adopt`로 현재 릴리스를 기준선 삼는다.
 """
 from __future__ import annotations
-import argparse, errno, json, os, re, shutil, subprocess, sys, tarfile, tempfile
+import argparse, errno, json, os, re, shutil, stat, subprocess, sys, tarfile, tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -99,14 +99,16 @@ def _canon_rel(base: Path, rel: str) -> str | None:
     return canon
 
 
-# SKEL이 파고들 수 없는 보호 구획 — 골격은 빈 Space 루트만 만든다.
-SKEL_FORBIDDEN = ("_ledger", "_raw", "_sources", ".osk", ".git")
+# 골격을 만들어도 되는 곳은 **최상위 Space 루트 셋**뿐이다. 그 아래는 전부
+# 인스턴스 소유 바닥이므로, `SKEL = Scope/UserData/newdir` 같은 지시는 사용자
+# 영역에 디렉터리를 만들게 된다 — 접두만 보지 않고 정확히 이 셋만 허용한다.
+SKEL_ROOTS = ("= Scope", "= Domain", "= Person")
 
 
 def _allowed_skel(s: str) -> Path | None:
     """SKEL이 만들어도 되는 절대 경로 — 아니면 None. 골격은 **루트 안으로
-    봉쇄된 빈 Space 루트**만 만든다(Mechanism §1-2 5항의 바닥은 매니페스트가
-    무엇을 말하든 지켜진다). `../` 탈출·보호 구획 파고들기·비Space 경로는 거부."""
+    봉쇄된 최상위 Space 루트**만 만든다(Mechanism §1-2 5항의 바닥은 매니페스트가
+    무엇을 말하든 지켜진다). `../` 탈출·하위 경로·비Space 경로는 거부."""
     p = _within(ROOT, s)                         # `..`·절대경로·심볼릭 탈출은 None
     if p is None:
         return None
@@ -114,10 +116,8 @@ def _allowed_skel(s: str) -> Path | None:
         parts = p.relative_to(Path(os.path.realpath(ROOT))).parts
     except ValueError:
         return None
-    if not parts or not parts[0].startswith("= "):
-        return None                              # Space 루트(`= `)만 골격 대상
-    if any(seg in SKEL_FORBIDDEN for seg in parts):
-        return None
+    if len(parts) != 1 or parts[0] not in SKEL_ROOTS:
+        return None                              # 최상위 Space 루트만 골격 대상
     return p
 
 
@@ -324,12 +324,23 @@ def committed(recs: list[dict]) -> list[dict]:
 
 
 def _committed_maximum(recs: list[dict], rel_path: str) -> dict | None:
-    """그 경로의 **커밋된 기록 중 인과 극대** — 유일할 때만 돌려준다.
-    조상 관계는 전체 저널의 DAG로 계산한다(미커밋 기록이 사슬을 끊지 않게)."""
+    """그 경로의 **커밋된 기록 중 인과 극대**. 조상 관계는 전체 저널의 DAG로
+    계산한다(미커밋 기록이 사슬을 끊지 않게).
+
+    극대가 여럿이어도 그것들이 **같은 최종 상태**(kind·hash 동일)를 말하면
+    동치로 수렴시킨다 — 다기기가 같은 릴리스를 각각 정상 적용한 뒤 저널이
+    union 병합되면 값이 같은 병렬 극대가 생기는데, 그걸 미확정으로 보면
+    baseline이 사라져 멀쩡한 파일이 전부 drift로 오판된다. 값이 실제로 갈리는
+    경우만 미확정(None)이다."""
     done = _done_txns(recs)
     m = causal_maxima(recs, rel_path, None, "path",
                       candidate=lambda r: _is_committed(r, done))
-    return m[0] if len(m) == 1 else None
+    if len(m) == 1:
+        return m[0]
+    if m and all((r.get("kind"), r.get("hash"))
+                 == (m[0].get("kind"), m[0].get("hash")) for r in m):
+        return m[0]
+    return None
 
 
 def last_applied_hash(recs: list[dict], rel_path: str) -> str | None:
@@ -481,6 +492,31 @@ def _txn_begin(txn: str, version: str, touch: list[str]) -> None:
          "dirs": _planned_dirs(touch)},           # rollback이 되돌릴 새 디렉터리
         ensure_ascii=False).encode())
     _fsync_dir(TXN_DIR)
+
+
+def _journal_lenient() -> list[dict]:
+    """**복구 판정 전용** 관대한 판독 — 판독 가능한 행만 모은다.
+
+    크래시가 저널 append 도중이었으면 부분 JSON 행이 남는데, 엄격 판독
+    (`ledger_read`)은 거기서 즉시 실패한다. 그러면 트랜잭션 표식이 남은 바로
+    그 상황에서 복구에 도달하지 못한다 — 복구 판정에 필요한 것은 `done(txn)`의
+    존재 여부뿐이므로, 그 판정만 관대하게 하고 저널의 엄격 검증은 복구 뒤
+    정상 경로에 맡긴다(독립 `recover.py`와 같은 규율)."""
+    if not UPDATE_JOURNAL.exists():
+        return []
+    out = []
+    for line in UPDATE_JOURNAL.read_text(encoding="utf-8",
+                                         errors="ignore").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue                    # 부분 행 — 복구 판정에서 건너뛴다
+        if isinstance(r, dict):
+            out.append(r)
+    return out
 
 
 def _txn_pending() -> dict | None:
@@ -668,13 +704,21 @@ def _sidecar_plan(p: dict, tree: Path, version: str, dests: set) -> tuple:
 
 
 def _write_atomic(dst: Path, data: bytes) -> None:
+    """원자 교체. `mkstemp`는 0600으로 만들므로 **기존 권한을 보존**한다 —
+    보존하지 않으면 갱신이 0644 프레임워크 파일을 0600으로 바꿔 다른 계정의
+    서비스가 읽지 못하고, rollback도 원래 권한을 되돌리지 못한다."""
     _mkdirs_durable(dst.parent)     # 새 조상 각각의 부모까지 내구화
+    try:
+        mode = stat.S_IMODE(dst.stat().st_mode)
+    except OSError:
+        mode = 0o644                # 새 파일 — 프레임워크의 기본 권한
     fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        os.chmod(tmp, mode)
         os.replace(tmp, dst)
         _fsync_dir(dst.parent)          # rename 자체의 내구성 (전원 차단 대비)
     except BaseException:
@@ -701,11 +745,19 @@ def run(source: str | None = None, ref: str | None = None,
                     "(구버전 데몬은 갱신의 잠금 규약을 모른다)"), \
             _exclusive(_sync_lock_path(),
                        "다른 갱신이 vault를 잠갔다 — 잠시 후 다시 실행한다"):
-        # 복구는 어떤 상태 판정보다 먼저다(잠금 안에서).
-        recovered = _txn_recover(ledger_read(UPDATE_JOURNAL))
+        # 복구는 어떤 상태 판정보다 먼저다(잠금 안에서). 저널은 **관대하게**
+        # 읽는다 — 크래시가 append 도중이면 부분 행이 남는데, 엄격 판독으로
+        # 여기서 실패하면 정작 복구에 도달하지 못한다.
+        recovered = _txn_recover(_journal_lenient())
         if recovered == "rollback":
-            ledger_append(UPDATE_JOURNAL,
-                          {"kind": "rollback", "why": "미완료 트랜잭션 크래시 복구"})
+            try:
+                ledger_append(UPDATE_JOURNAL,
+                              {"kind": "rollback",
+                               "why": "미완료 트랜잭션 크래시 복구"})
+            except Exception:
+                pass                    # 저널이 손상돼 기록을 못 남겨도 **파일
+                                        # 복구는 유효하다**. 손상 자체는 아래
+                                        # 정상 경로의 엄격 판독이 보고한다.
         rep = _run_locked(source, ref, bundle, True, adopt)
         if recovered:
             rep["recovered"] = recovered
@@ -759,6 +811,18 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         if errs:
             raise UpdateError("비준증빙 대조 실패 — 아무것도 쓰지 않았다:\n  "
                               + "\n  ".join(errs[:10]))
+        # **버전 불변성**: 같은 version이 다른 릴리스 identity로 오면 거부한다.
+        # 태그 이름과 증빙의 version만 맞춰서는, 원격에서 태그를 다른 커밋으로
+        # force-move한 뒤 자기일관적 증빙만 갖추면 그대로 통과한다(엔진까지
+        # 덮인다). 증빙 파일 자체의 해시를 identity로 삼아 저널에 고정한다.
+        attest_id = sha256_file(tree / ATTESTATION)
+        for r in _journal_lenient():
+            if (r.get("kind") == "done" and r.get("version") == rel["version"]
+                    and r.get("attest") and r["attest"] != attest_id):
+                raise UpdateError(
+                    f"같은 버전인데 릴리스 identity가 다르다 — 중단"
+                    f"(태그 force-move·위조 의심): {rel['version']}\n"
+                    f"  적용된 증빙: {r['attest']}\n  받은 증빙: {attest_id}")
         targets, skel, skipped = apply_set(tree, rel)
         p = plan(tree, targets, adopt)
         dests = lambda pairs: [d for _s, d in pairs]
@@ -853,8 +917,9 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
                 "kind": "skip", "txn": txn, "version": v, "skipped_path": path,
                 "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
         ledger_append(UPDATE_JOURNAL, {
-            "kind": "done", "txn": txn, "version": v, "applied": len(applied),
-            "removed": len(removed), "conflicts": len(sidecars)})
+            "kind": "done", "txn": txn, "version": v, "attest": attest_id,
+            "applied": len(applied), "removed": len(removed),
+            "conflicts": len(sidecars)})
         _txn_clear()                              # 커밋 완료 — 트랜잭션 영역 정리
         out.update(applied=True, applied_files=len(applied),
                    removed=removed, sidecars=sidecars, skel_created=made_skel,

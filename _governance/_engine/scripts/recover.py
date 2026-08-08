@@ -16,7 +16,7 @@
 복구 자료(백업)가 없거나 손상됐으면 아무것도 지우지 않고 중단한다(fail-closed).
 """
 from __future__ import annotations
-import argparse, errno, hashlib, json, os, shutil, subprocess, sys, tempfile
+import argparse, errno, hashlib, json, os, shutil, stat, subprocess, sys, tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -131,15 +131,23 @@ def _sha256(p: Path) -> str:
 
 
 def _write_atomic(dst: Path, data: bytes) -> None:
+    """원자 교체. `mkstemp`는 0600으로 만들므로 **기존 권한을 보존**한다 —
+    보존하지 않으면 갱신이 0644 프레임워크 파일을 0600으로 바꿔 다른 계정의
+    서비스가 읽지 못하고, rollback도 원래 권한을 되돌리지 못한다."""
     _mkdirs_durable(dst.parent)
+    try:
+        mode = stat.S_IMODE(dst.stat().st_mode)
+    except OSError:
+        mode = 0o644                # 새 파일 — 프레임워크의 기본 권한
     fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        os.chmod(tmp, mode)
         os.replace(tmp, dst)
-        _fsync_dir(dst.parent)       # rename 엔트리 내구화(전원 차단 대비)
+        _fsync_dir(dst.parent)          # rename 자체의 내구성 (전원 차단 대비)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)

@@ -1691,7 +1691,7 @@ def test_release_and_update():
             (can / "_governance/_engine/scripts/publish-manifest.txt").write_text(
                 "MAP  _governance/ -> _governance/\nMAP  docs/ -> docs/\n"
                 "KEEP LICENSE\nKEEP README.md\nDENY _ledger/\nDENY __pycache__/\n"
-                "SKEL = UpdSkel/\n", encoding="utf-8")
+                "SKEL = Scope/\nSKEL = UpdSkel/\n", encoding="utf-8")
             (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
             (can / "README.md").write_text("readme\n", encoding="utf-8")
             (can / "LICENSE").write_text("MIT\n", encoding="utf-8")
@@ -1750,7 +1750,16 @@ def test_release_and_update():
             check("적용: 파일이 들어온다",
                   (ROOT / "_governance/UpdDoc.md").exists()
                   and (ROOT / "docs/UPD-SETUP.md").exists(), r1)
-            check("골격은 없는 자리에 생긴다", (ROOT / "= UpdSkel/.gitkeep").exists())
+            # 허용 밖 골격(`= UpdSkel`)은 만들어지지 않고, 허용 루트는 이미 있으면
+            # 그대로 둔다 — 골격은 **최상위 Space 루트 셋**에만 허용된다 (P1)
+            check("허용 밖 SKEL은 만들어지지 않는다",
+                  not (ROOT / "= UpdSkel").exists())
+            check("_allowed_skel: 최상위 Space 루트만 허용",
+                  update._allowed_skel("= Scope") is not None
+                  and update._allowed_skel("= Domain") is not None
+                  and update._allowed_skel("= Scope/UserData") is None
+                  and update._allowed_skel("= Scope/UserData/newdir") is None
+                  and update._allowed_skel("= NotASpace") is None)
             recs = core.ledger_read(update.UPDATE_JOURNAL)
             check("저널: begin·apply·done",
                   {"begin", "apply", "done"} <= {r.get("kind") for r in recs})
@@ -2352,6 +2361,85 @@ def test_release_and_update():
             check("사이드카가 관리 파일과 겹치면 충돌로 잡는다",
                   sc_side in _c2, _c2)
             (ROOT / sc_side).unlink(missing_ok=True)
+
+            # 저널에 부분 행이 남아도 복구에 도달한다 — 크래시가 append 도중일
+            # 때 엄격 판독으로 막히면 '다음 실행이 복구'가 성립하지 않는다 (P1).
+            # 실제 저널을 오염시키지 않도록 임시 저널로 격리해 검사한다.
+            _saved_j = update.UPDATE_JOURNAL
+            _tmp_j = Path(td) / "uj_partial.jsonl"
+            _tmp_j.write_text('{"kind": "done", "txn": "TOK"}\n'
+                              '{"kind": "begin", "txn": "TPART"',   # 잘린 행
+                              encoding="utf-8")
+            try:
+                update.UPDATE_JOURNAL = _tmp_j
+                lenient = update._journal_lenient()
+                check("관대한 판독은 부분 행을 건너뛰고 나머지를 읽는다",
+                      [r.get("txn") for r in lenient] == ["TOK"], lenient)
+                try:
+                    core.ledger_read(_tmp_j)
+                    _strict_failed = False
+                except ValueError:
+                    _strict_failed = True     # 엄격 판독은 손상으로 본다
+                check("엄격 판독은 같은 저널에서 손상을 보고한다", _strict_failed)
+            finally:
+                update.UPDATE_JOURNAL = _saved_j
+            # 부분 행뿐인 저널에서도 복구는 수행된다(목록이 비어도 rollback)
+            victim2 = ROOT / "_governance/UpdDoc.md"
+            orig_v2 = victim2.read_bytes()
+            update._txn_begin("txnPART2", "v9.9.9", ["_governance/UpdDoc.md"])
+            victim2.write_bytes(b"HALF\n")
+            actp = update._txn_recover([])          # done 기록을 못 읽은 상황
+            check("판독 가능한 done이 없으면 복구는 rollback",
+                  actp == "rollback" and victim2.read_bytes() == orig_v2, actp)
+
+            # 같은 버전인데 릴리스 identity가 다르면 거부 — 태그 force-move 방어 (P1)
+            check("적용 완료 기록에 릴리스 identity(attest)가 남는다",
+                  any(r.get("kind") == "done" and r.get("attest")
+                      for r in core.ledger_read(core.LEDGER / "update.jsonl")))
+            _ver_now = update.current_version()
+            if _ver_now:                     # 같은 버전으로 다시 릴리스(force-move 모사)
+                forced = Path(td) / "forced"
+                shutil.copytree(can, forced)
+                shutil.rmtree(forced / ".git")
+                (forced / "_governance/UpdDoc.md").write_text(
+                    node_text("260802-uupd-0002", "정본 규범 문서", "위조판."),
+                    encoding="utf-8")
+                subprocess.run(["git", "-C", str(forced), "init", "-q"],
+                               capture_output=True)
+                for _k, _v in (("user.email", "t@t"), ("user.name", "t")):
+                    subprocess.run(["git", "-C", str(forced), "config", _k, _v],
+                                   capture_output=True)
+                subprocess.run(["git", "-C", str(forced), "add", "-A"],
+                               capture_output=True)
+                subprocess.run(["git", "-C", str(forced), "commit", "-qm", "forced"],
+                               capture_output=True)
+                release.run(_ver_now, apply=True, root=forced)
+                efm = uerr(lambda: update.run(source="bundle", bundle=str(forced),
+                                              apply=True))
+                check("같은 버전·다른 identity는 거부(force-move 방어)",
+                      efm is not None and "identity" in efm, efm)
+
+            # 다기기 병렬 적용 — 값이 같은 극대는 동치로 수렴한다 (P2)
+            def _rr(n):
+                return f"00000000-0000-7000-8000-{n:012d}"
+            forked = [
+                {"rid": _rr(31), "parents": [], "kind": "apply", "txn": "TA",
+                 "path": "F", "hash": "sha256:same"},
+                {"rid": _rr(32), "parents": [_rr(31)], "kind": "done", "txn": "TA"},
+                # 다른 기기가 같은 릴리스를 적용한 뒤 union 병합된 갈래
+                {"rid": _rr(33), "parents": [], "kind": "apply", "txn": "TB",
+                 "path": "F", "hash": "sha256:same"},
+                {"rid": _rr(34), "parents": [_rr(33)], "kind": "done", "txn": "TB"},
+            ]
+            check("값이 같은 병렬 극대는 동치로 수렴(baseline 유지)",
+                  update.last_applied_hash(forked, "F") == "sha256:same",
+                  update.last_applied_hash(forked, "F"))
+            conflicted = forked[:3] + [
+                {"rid": _rr(35), "parents": [_rr(33)], "kind": "done", "txn": "TB"}]
+            conflicted[2] = dict(conflicted[2], hash="sha256:other")
+            check("값이 갈리는 병렬 극대는 여전히 미확정",
+                  update.last_applied_hash(conflicted, "F") is None,
+                  update.last_applied_hash(conflicted, "F"))
 
             # 트랜잭션 정리 실패는 fail-closed (P2)
             update._txn_begin("txnCLR", "v9.9.9", [])
