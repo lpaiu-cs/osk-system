@@ -286,13 +286,22 @@ def _ancestors(rid: str, par: dict[str, list[str]]) -> set[str]:
 
 def causal_maxima(records: list[dict], value: str,
                   par: dict[str, list[str]] | None = None,
-                  field: str = "node") -> list[dict]:
+                  field: str = "node",
+                  candidate=None) -> list[dict]:
     """같은 키를 가진 기록 중 인과 극대(다른 기록의 조상이 아닌 것). 유일하면
     그것이 판정 기록, 그 밖에는 비교 불능 — fail-closed.
 
-    `field`로 키를 고른다: 서명 기록부는 `node`, 라우팅 대장은 `session`."""
+    `field`로 키를 고른다: 서명 기록부는 `node`, 라우팅 대장은 `session`.
+
+    `candidate(r)`를 주면 그 술어를 만족하는 기록만 **후보**로 삼되, 조상 관계는
+    여전히 **전체 기록의 DAG**로 계산한다. 후보를 목록에서 미리 빼고 부르면 그
+    기록이 맡고 있던 parents 간선이 함께 끊겨(effective_parents가 미지 parent를
+    자른다) 남은 기록들이 서로 비교 불능인 거짓 분기가 된다 — 걸러야 할 것은
+    후보 자격이지 인과 사슬이 아니다."""
     par = effective_parents(records) if par is None else par
     mine = [r for r in records if r.get(field) == value and r.get("rid") in par]
+    if candidate is not None:
+        mine = [r for r in mine if candidate(r)]
     rids = {r["rid"] for r in mine}
     anc = {r["rid"]: _ancestors(r["rid"], par) for r in mine}
     return [r for r in mine

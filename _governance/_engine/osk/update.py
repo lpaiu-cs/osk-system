@@ -24,6 +24,7 @@
 """
 from __future__ import annotations
 import argparse, json, os, re, shutil, subprocess, sys, tarfile, tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_read,
@@ -293,31 +294,48 @@ def apply_set(tree: Path, rel: dict):
 
 # ── 저널 — 직전 적용 상태의 정본 ─────────────────────────────────────────
 
-def committed(recs: list[dict]) -> list[dict]:
-    """상태 판정이 볼 수 있는 기록 — **커밋된 트랜잭션의 것만**.
+def _done_txns(recs: list[dict]) -> set:
+    return {r.get("txn") for r in recs
+            if r.get("kind") == "done" and r.get("txn")}
 
-    `done`이 그 트랜잭션의 커밋 지점이다(Mechanism §1-2 7항). 커밋 전에 죽어
-    남은 `apply`/`remove`는 파일이 pre-image로 복구되므로 baseline이 되어서는
-    안 된다 — 여기서 걸러 파일 상태와 저널 판정이 어긋나지 않게 한다. `txn`이
-    없는 유산 기록은 그대로 보인다(호환 경계)."""
-    done = {r.get("txn") for r in recs if r.get("kind") == "done" and r.get("txn")}
-    return [r for r in recs if not r.get("txn") or r["txn"] in done]
+
+def _is_committed(r: dict, done: set) -> bool:
+    """`done`이 그 트랜잭션의 커밋 지점이다(Mechanism §1-2 7항). 커밋 전에 죽어
+    남은 `apply`/`remove`는 파일이 pre-image로 복구되므로 상태의 후보가 아니다.
+    `txn`이 없는 유산 기록은 그대로 후보다(호환 경계)."""
+    return not r.get("txn") or r["txn"] in done
+
+
+def committed(recs: list[dict]) -> list[dict]:
+    """커밋된 기록만 남긴 목록 — **존재 검사 전용**(has_history). 인과 판정에는
+    쓰지 않는다: 목록에서 빼면 그 기록이 잇던 parents 간선도 끊겨 남은 기록들이
+    거짓 분기가 된다. 판정은 `causal_maxima(..., candidate=...)`로 후보만
+    제한한다."""
+    done = _done_txns(recs)
+    return [r for r in recs if _is_committed(r, done)]
+
+
+def _committed_maximum(recs: list[dict], rel_path: str) -> dict | None:
+    """그 경로의 **커밋된 기록 중 인과 극대** — 유일할 때만 돌려준다.
+    조상 관계는 전체 저널의 DAG로 계산한다(미커밋 기록이 사슬을 끊지 않게)."""
+    done = _done_txns(recs)
+    m = causal_maxima(recs, rel_path, None, "path",
+                      candidate=lambda r: _is_committed(r, done))
+    return m[0] if len(m) == 1 else None
 
 
 def last_applied_hash(recs: list[dict], rel_path: str) -> str | None:
-    recs = committed(recs)
-    r = resolve_one(recs, rel_path, "path")
+    r = _committed_maximum(recs, rel_path)
     return r.get("hash") if r and r.get("kind") == "apply" else None
 
 
 def managed_paths(recs: list[dict]) -> dict[str, str]:
     """지금 이 인스턴스가 정본으로부터 관리 중인 경로 → 기준선 해시.
-    경로별 인과 극대가 `apply`면 관리 중, `remove`면 삭제됨(last_applied_hash와
-    같은 규율). 삭제 전파의 '직전 관리 집합'이 여기서 나온다."""
-    recs = committed(recs)
+    경로별(커밋된) 인과 극대가 `apply`면 관리 중, `remove`면 삭제됨
+    (last_applied_hash와 같은 규율). 삭제 전파의 '직전 관리 집합'이 여기서 나온다."""
     out = {}
     for p in {r.get("path") for r in recs if r.get("path")}:
-        r = resolve_one(recs, p, "path")
+        r = _committed_maximum(recs, p)
         if r and r.get("kind") == "apply":
             out[p] = r.get("hash")
     return out
@@ -367,8 +385,14 @@ def _fsync_dir(d: Path) -> None:
 
 
 def _txn_clear() -> None:
+    """트랜잭션 영역을 지운다. 정리도 상태 전이의 일부이므로 **성공을 확인**한다 —
+    표식이 남으면 데몬이 모든 tick을 거부하고 다음 갱신이 남은 백업과 충돌한다."""
     if TXN_DIR.exists():
         shutil.rmtree(TXN_DIR, ignore_errors=True)
+    if TXN_DIR.exists() or TXN_MANIFEST.exists():
+        raise UpdateError(
+            f"트랜잭션 영역 정리 실패 — 수동 개입 필요(권한·파일시스템 확인): "
+            f"{TXN_DIR}")
     _fsync_dir(TXN_DIR.parent if TXN_DIR.parent.exists() else ROOT)
 
 
@@ -379,6 +403,8 @@ def _txn_begin(txn: str, version: str, touch: list[str]) -> None:
     않는다 — 복구 시 다시 봉쇄·정체성 검증하기 위해 canonical 상대로 남긴다."""
     _txn_clear()
     TXN_BACKUP.mkdir(parents=True)
+    _fsync_dir(TXN_DIR)                          # backup 디렉터리 엔트리
+    _fsync_dir(TXN_DIR.parent)                   # .osk/ — txn 디렉터리 엔트리
     entries = []
     for i, rel in enumerate(touch):
         key = f"{i:06d}"
@@ -454,6 +480,26 @@ def _txn_recover(recs: list[dict]) -> str | None:
                 f"복구 실패 — 중단(백업 보존: {TXN_DIR}): {rel} {ex}")
     _txn_clear()
     return "rollback"
+
+
+@contextmanager
+def _exclusive(path: Path, busy: str):
+    """비차단 배타 잠금 — 경합이면 `busy` 사유로 중단한다. **획득한 경우에만**
+    해제한다(소유하지 않은 구간의 unlock은 Windows에서 실제 해제 연산이라
+    원래 결과를 덮는 오류를 낸다)."""
+    f = open(path, "w")
+    ok = False
+    try:
+        try:
+            lock_exclusive(f, blocking=False)
+            ok = True
+        except OSError:
+            raise UpdateError(busy)
+        yield
+    finally:
+        if ok:
+            unlock(f)
+        f.close()
 
 
 def _sync_lock_path() -> Path:
@@ -538,32 +584,16 @@ def run(source: str | None = None, ref: str | None = None,
     drift·adopt 거부로 오판되어 복구에 도달하지 못한다(Mechanism §1-2 7항)."""
     if not apply:
         return _run_locked(source, ref, bundle, False, adopt)
-    # 데몬이 **실행 중이면** 갱신하지 않는다. mutation 잠금은 새 규약이므로,
-    # 이 기능을 처음 들여오는 갱신에서는 이미 돌고 있는 구버전 데몬이 그 규약을
-    # 모른 채 혼합 상태를 커밋·push할 수 있다. 데몬 싱글턴 잠금(osk-sync.lock)의
-    # 획득 가능성으로 실행 여부를 판정한다 — 구·신 데몬 모두 이 잠금을 잡는다.
+    # 잠금 순서는 데몬과 같다: **싱글턴 → mutation**. 싱글턴(osk-sync.lock)은
+    # probe로 잠깐 잡았다 놓으면 그 틈에 구버전 데몬이 떠 버리므로(TOCTOU),
+    # 갱신 **수명 내내 보유**한다 — 구·신 데몬 모두 이 잠금을 먼저 잡기 때문에
+    # 새 mutation 규약을 모르는 구 데몬의 동시 실행까지 함께 막힌다.
     from sync_daemon import _lock_path as _dlp
-    probe = open(_dlp(ROOT, "osk-sync.lock"), "w")
-    try:
-        try:
-            lock_exclusive(probe, blocking=False)
-        except OSError:
-            raise UpdateError(
-                "동기화 데몬이 실행 중이다 — 갱신 전에 데몬을 멈춘다"
-                "(구버전 데몬은 갱신의 잠금 규약을 모른다)")
-        unlock(probe)
-    finally:
-        probe.close()
-
-    lock_f = open(_sync_lock_path(), "w")
-    acquired = False
-    try:
-        try:
-            lock_exclusive(lock_f, blocking=False)
-            acquired = True
-        except OSError:
-            raise UpdateError(
-                "다른 갱신이 vault를 잠갔다 — 잠시 후 다시 실행한다")
+    with _exclusive(_dlp(ROOT, "osk-sync.lock"),
+                    "동기화 데몬이 실행 중이다 — 갱신 전에 데몬을 멈춘다"
+                    "(구버전 데몬은 갱신의 잠금 규약을 모른다)"), \
+            _exclusive(_sync_lock_path(),
+                       "다른 갱신이 vault를 잠갔다 — 잠시 후 다시 실행한다"):
         # 복구는 어떤 상태 판정보다 먼저다(잠금 안에서).
         recovered = _txn_recover(ledger_read(UPDATE_JOURNAL))
         if recovered == "rollback":
@@ -573,10 +603,6 @@ def run(source: str | None = None, ref: str | None = None,
         if recovered:
             rep["recovered"] = recovered
         return rep
-    finally:
-        if acquired:                    # 소유하지 않은 잠금을 풀지 않는다(P2)
-            unlock(lock_f)
-        lock_f.close()
 
 
 def _run_locked(source: str | None, ref: str | None, bundle: str | None,
@@ -666,7 +692,9 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
                 _write_atomic(ROOT / dest, (tree / src).read_bytes())
                 applied.append(dest)
             for path in p["remove"]:              # path는 이미 canonical(P1)
-                (ROOT / path).unlink(missing_ok=True)
+                tp = ROOT / path
+                tp.unlink(missing_ok=True)
+                _fsync_dir(tp.parent)             # 삭제 엔트리 내구화(전원 차단)
                 removed.append(path)
             for src, dest in p["conflict"]:
                 side = ROOT / (dest + f".upstream-{v}")
@@ -675,6 +703,7 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
             for d in skel:                        # 이미 _allowed_skel로 봉쇄·검증됨
                 if not d.exists():
                     d.mkdir(parents=True)
+                    _fsync_dir(d.parent)          # mkdir 엔트리 내구화
                     _write_atomic(d / ".gitkeep", b"")
                     made_skel.append(posix_rel(d, ROOT))
         except OSError as e:

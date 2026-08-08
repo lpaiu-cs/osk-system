@@ -195,22 +195,33 @@ def journal(inst: Path) -> list[dict]:
 
 
 def committed_baselines(inst: Path) -> dict[str, str]:
-    """저널에서 **커밋된** 트랜잭션의 최종 baseline(경로→해시)."""
-    recs = journal(inst)
-    done = {r.get("txn") for r in recs if r.get("kind") == "done" and r.get("txn")}
-    base: dict[str, str] = {}
-    for r in recs:
-        if r.get("txn") and r["txn"] not in done:
-            continue                 # 미커밋 — 판정에서 제외(committed()와 같은 규율)
-        if r.get("kind") == "apply" and r.get("path"):
-            base[r["path"]] = r.get("hash")
-        elif r.get("kind") == "remove" and r.get("path"):
-            base.pop(r["path"], None)
-    return base
+    """저널에서 커밋된 baseline(경로→해시) — **프로덕션 판정 함수로** 구한다.
+
+    하네스가 자기 나름의 단순 판정(파일 순서로 dict 덮어쓰기)을 두면, 검사하는
+    대상이 프로덕션이 아니라 하네스의 병렬 구현이 된다 — 실제로 그 때문에
+    `committed()`가 인과 사슬을 끊던 결함을 이 하네스가 놓쳤다. oracle은 반드시
+    `osk.update.managed_paths`(=`causal_maxima` 경유)를 그 인스턴스의
+    `OSK_VAULT_ROOT`로 호출해 얻는다."""
+    code = (
+        "import json,sys; sys.path.insert(0, r'%s');"
+        "from osk import core, update;"
+        "print(json.dumps(update.managed_paths(core.ledger_read(update.UPDATE_JOURNAL))))"
+        % str(ENGINE))
+    r = sh(PY, "-c", code, env={**os.environ, "OSK_VAULT_ROOT": str(inst)})
+    if r.returncode != 0:
+        check(f"oracle(managed_paths) 호출 성공 — {inst.name}", False,
+              r.stderr[-300:])
+        return {}
+    try:
+        return json.loads((r.stdout or "{}").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        check(f"oracle 출력 판독 — {inst.name}", False, r.stdout[-200:])
+        return {}
 
 
 def check_invariants(tag: str, inst: Path, versions: dict[str, dict],
-                    strict: bool = True) -> None:
+                    strict: bool = True,
+                    expect_baselines: dict | None = None) -> None:
     """versions: {version: {rel: body}} — 알려진 정본 판본들.
 
     `strict=False`는 **복구 전**(pending 트랜잭션이 살아 있는) 상태다. 그때는
@@ -243,6 +254,19 @@ def check_invariants(tag: str, inst: Path, versions: dict[str, dict],
         check(f"[{tag}] I1 혼합 상태 없음(어느 한 판본과 일치)",
               bool(matches),
               {r: present[r][:20] for r in sorted(present)[:6]})
+    # I2b — 정상 적용이 끝난 뒤에는 관리 대상 파일이 **모두** 커밋된 baseline을
+    #       가져야 한다. baseline이 사라지는 결함(미커밋 기록이 인과 사슬을 끊는
+    #       종류)은 I2만으로는 통과해 버린다 — 그 방향을 여기서 막는다.
+    if expect_baselines is not None:
+        base = committed_baselines(inst)
+        missing = [r for r in sorted(expect_baselines)
+                   if (inst / r).is_file() and r not in base]
+        check(f"[{tag}] I2b 적용 파일이 모두 baseline을 갖는다",
+              not missing, missing[:6])
+        wrong = [r for r in sorted(expect_baselines)
+                 if r in base and (inst / r).is_file()
+                 and base[r] != sha(inst / r)]
+        check(f"[{tag}] I2b baseline 해시 일치", not wrong, wrong[:6])
     # I2 — 커밋된 baseline은 디스크 실제 해시와 일치
     for rel, h in committed_baselines(inst).items():
         p = inst / rel
@@ -302,7 +326,8 @@ def scenario_crash_midway(tmp: Path, rnd: random.Random, trial: int) -> None:
 
     r2 = run_update(inst, can2, "--apply")
     check(f"[crash{trial}] I5 재적용 수렴", r2.returncode == 0, r2.stderr[-300:])
-    check_invariants(f"crash{trial}/reapplied", inst, versions)
+    check_invariants(f"crash{trial}/reapplied", inst, versions,
+                     expect_baselines=v2)
     for rel, body in v2.items():     # 최종 상태는 v2여야 한다
         check(f"[crash{trial}] 최종 v2: {rel}",
               (inst / rel).read_text(encoding="utf-8") == body)

@@ -2126,6 +2126,49 @@ def test_release_and_update():
                   update.last_applied_hash(committed_recs, "F") == "sha256:aa"
                   and update.has_history(committed_recs))
 
+            # 미커밋 기록은 **후보**에서만 빠지고 인과 사슬은 남아야 한다 —
+            # 목록에서 빼면 parents 간선이 끊겨 정상 복구·재적용 뒤에도 baseline이
+            # 사라진다(T1 커밋 → T2 크래시·롤백 → T3 커밋). (P1)
+            def _r(n):
+                return f"00000000-0000-7000-8000-{n:012d}"
+            chain3 = [
+                {"rid": _r(11), "parents": [], "kind": "apply", "txn": "T1",
+                 "path": "F", "hash": "sha256:old"},
+                {"rid": _r(12), "parents": [_r(11)], "kind": "done", "txn": "T1"},
+                {"rid": _r(13), "parents": [_r(12)], "kind": "apply", "txn": "T2",
+                 "path": "F", "hash": "sha256:mid"},     # 크래시·롤백(미커밋)
+                {"rid": _r(14), "parents": [_r(13)], "kind": "apply", "txn": "T3",
+                 "path": "F", "hash": "sha256:new"},
+                {"rid": _r(15), "parents": [_r(14)], "kind": "done", "txn": "T3"},
+            ]
+            check("미커밋이 사슬을 끊지 않는다(재적용 baseline 유지)",
+                  update.last_applied_hash(chain3, "F") == "sha256:new"
+                  and update.managed_paths(chain3) == {"F": "sha256:new"},
+                  (update.last_applied_hash(chain3, "F"),
+                   update.managed_paths(chain3)))
+            check("미커밋만 있으면 직전 커밋 baseline이 남는다",
+                  update.last_applied_hash(chain3[:3], "F") == "sha256:old",
+                  update.last_applied_hash(chain3[:3], "F"))
+            rm3 = chain3 + [
+                {"rid": _r(16), "parents": [_r(15)], "kind": "remove",
+                 "txn": "T4", "path": "F"},
+                {"rid": _r(17), "parents": [_r(16)], "kind": "done", "txn": "T4"}]
+            check("커밋된 remove가 극대면 관리에서 빠진다",
+                  update.last_applied_hash(rm3, "F") is None
+                  and update.managed_paths(rm3) == {})
+
+            # 트랜잭션 정리 실패는 fail-closed (P2)
+            update._txn_begin("txnCLR", "v9.9.9", [])
+            _saved = update.shutil.rmtree
+            try:
+                update.shutil.rmtree = lambda *a, **k: None   # 정리가 안 되는 상황
+                ecl = uerr(update._txn_clear)
+                check("트랜잭션 정리 실패는 fail-closed",
+                      ecl is not None and "정리 실패" in ecl, ecl)
+            finally:
+                update.shutil.rmtree = _saved
+                update._txn_clear()
+
             # has_history — apply/remove/done 이력 유무 (adopt 게이팅 근거) (P2)
             check("has_history: 빈/이력",
                   not update.has_history([])

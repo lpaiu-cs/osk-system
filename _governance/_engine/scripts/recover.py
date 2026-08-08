@@ -16,8 +16,93 @@
 복구 자료(백업)가 없거나 손상됐으면 아무것도 지우지 않고 중단한다(fail-closed).
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, shutil, sys, tempfile
+import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile
+from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+    _WINDOWS = False
+except ModuleNotFoundError:          # Windows
+    import msvcrt
+    _WINDOWS = True
+
+# 아래 잠금·fsync·경로 규율은 엔진(osk/_portalock.py·osk/update.py)과 **의도적으로
+# 중복**된다. 이 스크립트의 존재 이유가 "엔진이 반쯤 교체돼 import가 깨져도 복구가
+# 성립한다"이므로, 엔진을 import해 규율을 공유할 수 없다.
+
+
+def _lock(f) -> None:
+    if not _WINDOWS:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+
+
+def _unlock(f) -> None:
+    if not _WINDOWS:
+        fcntl.flock(f, fcntl.LOCK_UN)
+    else:
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _lock_path(root: Path, name: str) -> Path:
+    """sync_daemon._lock_path와 같은 자리 — 추적 트리 밖."""
+    try:
+        r = subprocess.run(["git", "-C", str(root), "rev-parse",
+                            "--git-common-dir"], capture_output=True,
+                           text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            d = Path(r.stdout.strip())
+            if not d.is_absolute():
+                d = root / d
+            if d.is_dir():
+                return d / name
+    except Exception:                # noqa: BLE001
+        pass
+    key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"{name.rsplit('.', 1)[0]}-{key}.lock"
+
+
+@contextmanager
+def _exclusive(path: Path, busy: str):
+    f = open(path, "w")
+    ok = False
+    try:
+        try:
+            _lock(f)
+            ok = True
+        except OSError:
+            raise RuntimeError(busy)
+        yield
+    finally:
+        if ok:
+            _unlock(f)
+        f.close()
+
+
+def _fsync_dir(d: Path) -> None:
+    try:
+        fd = os.open(str(d), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _rmtree_checked(d: Path) -> None:
+    """정리도 상태 전이의 일부다 — 성공을 확인하고, 남으면 fail-closed."""
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+    if d.exists():
+        raise RuntimeError(f"트랜잭션 영역 정리 실패 — 수동 개입 필요: {d}")
+    _fsync_dir(d.parent)
 
 
 def _sha256(p: Path) -> str:
@@ -33,6 +118,7 @@ def _write_atomic(dst: Path, data: bytes) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, dst)
+        _fsync_dir(dst.parent)       # rename 엔트리 내구화(전원 차단 대비)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -79,6 +165,28 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     root = Path(a.root).resolve() if a.root else \
         Path(__file__).resolve().parent.parent.parent.parent
+    if not a.apply:
+        return _report(root)
+    # 복구도 working tree를 바꾼다 — update·데몬과 같은 잠금 순서
+    # (싱글턴 → mutation)로 상호배제한다. 크래시 뒤 service manager가 구 데몬을
+    # 되살린 환경에서도 데몬이 half-applied를 커밋하지 못하게 한다.
+    try:
+        with _exclusive(_lock_path(root, "osk-sync.lock"),
+                        "동기화 데몬이 실행 중이다 — 복구 전에 데몬을 멈춘다"), \
+                _exclusive(_lock_path(root, "osk-mutation.lock"),
+                           "다른 갱신·복구가 진행 중이다 — 잠시 후 다시 실행한다"):
+            return _recover(root)
+    except RuntimeError as e:
+        print(f"[중단] {e}", file=sys.stderr)
+        return 2
+
+
+def _report(root: Path) -> int:
+    """보고 전용 — 쓰지 않으므로 잠금 없이 현재 상태만 낸다."""
+    return _recover(root, report_only=True)
+
+
+def _recover(root: Path, report_only: bool = False) -> int:
     txn_dir = root / ".osk" / "txn"
     manifest = txn_dir / "manifest.json"
     if not manifest.is_file():
@@ -107,12 +215,12 @@ def main(argv=None) -> int:
            "committed": committed,
            "action": "roll-forward" if committed else "rollback",
            "files": [c for c, *_ in plan], "applied": False}
-    if not a.apply:
+    if report_only:
         print(json.dumps(rep, ensure_ascii=False, indent=2))
         return 0
 
     if committed:                     # 파일은 새 판이 정답 — 표식만 정리
-        shutil.rmtree(txn_dir, ignore_errors=True)
+        _rmtree_checked(txn_dir)
         rep["applied"] = True
         print(json.dumps(rep, ensure_ascii=False, indent=2))
         return 0
@@ -130,11 +238,12 @@ def main(argv=None) -> int:
                 _write_atomic(p, (txn_dir / "backup" / key).read_bytes())
             else:
                 p.unlink(missing_ok=True)
+                _fsync_dir(p.parent)  # 삭제 엔트리 내구화
         except OSError as e:
             print(f"[중단] 복구 실패 — 백업 보존({txn_dir}): {cp} {e}",
                   file=sys.stderr)
             return 2
-    shutil.rmtree(txn_dir, ignore_errors=True)
+    _rmtree_checked(txn_dir)
     rep["applied"] = True
     print(json.dumps(rep, ensure_ascii=False, indent=2))
     return 0
