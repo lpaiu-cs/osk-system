@@ -2482,6 +2482,40 @@ def test_release_and_update():
                   and stat.S_IMODE(_permf.stat().st_mode) == 0o600,
                   oct(stat.S_IMODE(_permf.stat().st_mode)) if _permf.exists() else None)
 
+            # roll-forward도 저널 홈 내구화를 재시도한 뒤에 표식을 지운다 (P1)
+            _fs2 = []
+            _real_fsd2 = update._fsync_dir
+            update._txn_begin("txnRF", "v9.9.9", [])
+            try:
+                update._fsync_dir = lambda d: (_fs2.append(str(d)),
+                                               _real_fsd2(d))[1]
+                actrf = update._txn_recover([{"kind": "done", "txn": "txnRF"}])
+            finally:
+                update._fsync_dir = _real_fsd2
+            check("roll-forward가 저널 홈을 내구화한 뒤 표식을 지운다",
+                  actrf == "roll-forward"
+                  and str(update.UPDATE_JOURNAL.parent) in _fs2
+                  and not update.TXN_MANIFEST.exists(), (actrf, _fs2[:3]))
+
+            # chmod 결과까지 내구화한다 (P2)
+            _permf2 = ROOT / "_governance/permtest2.md"
+            _permf2.write_text("y\n", encoding="utf-8")
+            os.chmod(_permf2, 0o600)
+            mine.append(_permf2)
+            update._txn_begin("txnPERM2", "v9.9.9", ["_governance/permtest2.md"])
+            _permf2.unlink()
+            _ff = []
+            _real_ffile = update._fsync_file
+            try:
+                update._fsync_file = lambda q: (_ff.append(str(q)),
+                                                _real_ffile(q))[1]
+                update._txn_recover([{"kind": "begin", "txn": "txnPERM2"}])
+            finally:
+                update._fsync_file = _real_ffile
+            check("권한 복원 뒤 파일 메타데이터를 내구화한다",
+                  str(_permf2) in _ff
+                  and stat.S_IMODE(_permf2.stat().st_mode) == 0o600, _ff[:3])
+
             # 트랜잭션 정리 실패는 fail-closed (P2)
             update._txn_begin("txnCLR", "v9.9.9", [])
             _saved = update.shutil.rmtree

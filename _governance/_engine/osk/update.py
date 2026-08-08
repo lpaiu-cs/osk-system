@@ -389,6 +389,22 @@ def has_history(recs: list[dict] | None = None) -> bool:
 # 커밋 전 apply/remove는 `committed()`가 판정에서 가린다 — 파일과 저널이 어긋나지
 # 않는 이유다. 복구 실패는 fail-closed로 백업을 보존한 채 중단한다.
 
+def _fsync_file(p: Path) -> None:
+    """파일의 메타데이터까지 내구화 — `chmod` 뒤 fsync하지 않으면 내용은
+    복구됐는데 권한 변경만 유실될 수 있다."""
+    try:
+        fd = os.open(str(p), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError as e:
+        if e.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
+    finally:
+        os.close(fd)
+
+
 def _fsync_dir(d: Path) -> None:
     """디렉터리 엔트리를 내구화 — 파일만 fsync하면 rename·create·unlink가 유실될
     수 있다. 전원 차단까지 계약하므로 실패를 삼키지 않는다: 디렉터리 fsync 개념이
@@ -564,7 +580,11 @@ def _txn_recover(recs: list[dict]) -> str | None:
         return None
     txn = man["txn"]
     if any(r.get("kind") == "done" and r.get("txn") == txn for r in recs):
-        _txn_clear()                             # 커밋됨 — 파일은 그대로 둔다
+        # 커밋됨 — 파일은 그대로 둔다. 다만 직전 실행이 `done` 기록 직후·저널
+        # 홈 내구화 **전에** 죽었을 수 있으므로, 그 내구화를 여기서 재시도한
+        # 뒤에만 표식을 지운다(안 그러면 누락된 fsync가 영영 재시도되지 않는다).
+        _fsync_journal_home()
+        _txn_clear()
         return "roll-forward"
     for e in man["entries"]:
         rel = e.get("rel")
@@ -587,6 +607,7 @@ def _txn_recover(recs: list[dict]) -> str | None:
                 # pre-image의 권한을 명시 복원해야 복구가 완전해진다.
                 if e.get("mode") is not None:
                     os.chmod(p, int(e["mode"]))
+                    _fsync_file(p)       # 권한 변경도 내구화한 뒤 표식을 지운다
             else:
                 p.unlink(missing_ok=True)
                 _fsync_dir(p.parent)

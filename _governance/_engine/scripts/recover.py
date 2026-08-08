@@ -117,6 +117,32 @@ def _mkdirs_durable(d: Path) -> None:
         _fsync_dir(q.parent)
 
 
+def _fsync_file(p: Path) -> None:
+    """파일 메타데이터 내구화 — chmod 결과가 유실되지 않게 한다."""
+    try:
+        fd = os.open(str(p), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError as e:
+        if e.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
+    finally:
+        os.close(fd)
+
+
+def _fsync_journal_home(root: Path) -> None:
+    """갱신 저널의 디렉터리 엔트리를 ROOT까지 내구화 — osk.update와 같은 규율."""
+    d = root / "= Scope" / "Workbench" / "_ledger"
+    root_real = Path(os.path.realpath(root))
+    while True:
+        _fsync_dir(d)
+        if Path(os.path.realpath(d)) == root_real or d.parent == d:
+            break
+        d = d.parent
+
+
 def _rmtree_checked(d: Path) -> None:
     """정리도 상태 전이의 일부다 — 성공을 확인하고, 남으면 fail-closed."""
     if d.exists():
@@ -249,6 +275,8 @@ def _recover(root: Path, report_only: bool = False) -> int:
         return 0
 
     if committed:                     # 파일은 새 판이 정답 — 표식만 정리
+        # 직전 실행이 저널 홈 내구화 전에 죽었을 수 있다 — 재시도 후 정리한다
+        _fsync_journal_home(root)
         _rmtree_checked(txn_dir)
         rep["applied"] = True
         print(json.dumps(rep, ensure_ascii=False, indent=2))
@@ -267,6 +295,7 @@ def _recover(root: Path, report_only: bool = False) -> int:
                 _write_atomic(p, (txn_dir / "backup" / key).read_bytes())
                 if mode is not None:      # pre-image의 권한까지 복원한다
                     os.chmod(p, int(mode))
+                    _fsync_file(p)        # 권한 변경도 내구화한다
             else:
                 p.unlink(missing_ok=True)
                 _fsync_dir(p.parent)  # 삭제 엔트리 내구화
