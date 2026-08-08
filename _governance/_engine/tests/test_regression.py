@@ -1725,8 +1725,19 @@ def test_release_and_update():
                           for x in r0["add"]), r0["add"])
             check("보고는 쓰지 않는다", not (ROOT / "docs/UPD-SETUP.md").exists())
 
+            # 최초 편입 — 빈 저널에서 adopt는 사전 존재(다른 내용) 파일도 정본으로
+            # 기준선 삼는다. adopt는 이 최초 편입에만 허용된다(P2).
+            (ROOT / "_governance").mkdir(parents=True, exist_ok=True)
+            (ROOT / "_governance/UpdDoc.md").write_text(
+                "기존 인스턴스의 다른 내용\n", encoding="utf-8")
+            check("최초 편입 전 저널은 비어 있다", not update.has_history())
             # 적용 — 파일·골격·저널
-            r1 = update.run(source="bundle", bundle=str(can), apply=True)
+            r1 = update.run(source="bundle", bundle=str(can), apply=True,
+                            adopt=True)
+            check("adopt 최초 편입: 사전 존재 파일을 정본으로 덮는다",
+                  "정본 규범 문서" in
+                  (ROOT / "_governance/UpdDoc.md").read_text(encoding="utf-8"))
+            check("편입 후 관리 이력이 생긴다", update.has_history())
             mine += [ROOT / "_governance/UpdDoc.md",
                      ROOT / "_governance/records/갱신 사료.md",
                      ROOT / "_governance/_engine/eng_upd.py",
@@ -1760,17 +1771,26 @@ def test_release_and_update():
                   side.exists() and "로컬 개정" in
                   (ROOT / "_governance/UpdDoc.md").read_text(encoding="utf-8"), r4)
 
-            # 엔진 드리프트 → 갱신 전체 중단, adopt → 기준선 편입
+            # 엔진 드리프트 → 갱신 전체 중단. 이미 관리 중이면 adopt는 force로
+            # 쓰이지 않는다(최초 편입 전용) — 거부된다(P2).
             (ROOT / "_governance/_engine/eng_upd.py").write_text("X = 2\n",
                                                                  encoding="utf-8")
             e = uerr(lambda: update.run(source="bundle", bundle=str(can),
                                         apply=True))
             check("엔진 로컬 수정은 갱신 전체 중단", e is not None and "엔진" in e, e)
-            r5 = update.run(source="bundle", bundle=str(can), apply=True,
-                            adopt=True)
-            check("adopt는 현재 릴리스를 기준선 삼아 덮는다",
-                  (ROOT / "_governance/_engine/eng_upd.py")
-                  .read_text(encoding="utf-8") == "X = 1\n", r5)
+            e2 = uerr(lambda: update.run(source="bundle", bundle=str(can),
+                                         apply=True, adopt=True))
+            check("관리 중 인스턴스에서 adopt는 거부(최초 편입 전용)",
+                  e2 is not None and "최초 편입" in e2, e2)
+            # 사용자가 로컬 수정을 정리(정본 내용으로 복원) → 이후 갱신 정상
+            (ROOT / "_governance/_engine/eng_upd.py").write_text("X = 1\n",
+                                                                 encoding="utf-8")
+
+            # 사용자가 사이드카 충돌을 수용(로컬 개정 폐기, upstream v9.0.0 복원)
+            # → 이 문서의 baseline과 일치해 다음 갱신이 깨끗이 덮을 수 있다.
+            (ROOT / "_governance/UpdDoc.md").write_text(
+                node_text("260802-uupd-0002", "정본 규범 문서", "1조."),
+                encoding="utf-8")
 
             # 갱신이 통치 문서를 덮으면 서명이 자동으로 풀린다 — 재서명이 수용
             # 기록이다 (Mechanism §1-2 6항 · 시행령 §10 2항)
@@ -2026,13 +2046,12 @@ def test_release_and_update():
                                for f in trbase.rglob("*") if f.is_file()}}
             (trbase / "release.json").write_text(
                 json.dumps(att_t, ensure_ascii=False), encoding="utf-8")
-            # _write_atomic이 B에서 OSError를 던지게 해 트랜잭션 실패를 유발
+            # _write_atomic이 B.md write에서 OSError를 던지게 해 트랜잭션 실패 유발
+            # (A는 써진 뒤 B에서 실패 → 원상복구로 A·B 모두 사라져야 한다)
             real_wa = update._write_atomic
-            calls = {"n": 0}
 
             def _boom(dst, data):
-                calls["n"] += 1
-                if calls["n"] == 2:              # 두 번째 파일 write에서 실패
+                if dst.name == "B.md":
                     raise OSError("boom")
                 return real_wa(dst, data)
             uj0 = core.LEDGER / "update.jsonl"
@@ -2040,7 +2059,7 @@ def test_release_and_update():
             update._write_atomic = _boom
             try:
                 et = uerr(lambda: update.run(source="bundle", bundle=str(trbase),
-                                             apply=True, adopt=True))
+                                             apply=True))
             finally:
                 update._write_atomic = real_wa
             j_after = uj0.read_text(encoding="utf-8") if uj0.exists() else ""
@@ -2053,6 +2072,50 @@ def test_release_and_update():
             check("실패 트랜잭션은 apply 저널을 안 남긴다(begin·rollback만)",
                   '"kind": "apply"' not in new_j and '"kind": "rollback"' in new_j,
                   new_j[-300:])
+
+            # 크래시-안전: manifest가 남은 미완료 트랜잭션을 다음 실행이 복구 (P1)
+            (update.TXN_BACKUP).mkdir(parents=True, exist_ok=True)
+            victim = ROOT / "_governance/UpdDoc.md"
+            orig_v = victim.read_bytes()
+            (update.TXN_BACKUP / "000000").write_bytes(b"PRE-IMAGE\n")
+            update._write_atomic(
+                update.TXN_MANIFEST,
+                json.dumps({"entries": [{"abs": str(victim), "backup": "000000",
+                                         "existed": True}]}).encode())
+            victim.write_bytes(b"HALF-APPLIED\n")     # 크래시로 남은 부분 적용
+            did = update._txn_restore()
+            check("미완료 트랜잭션은 다음 실행이 pre-image로 복구",
+                  did and victim.read_bytes() == b"PRE-IMAGE\n"
+                  and not update.TXN_MANIFEST.exists())
+            victim.write_bytes(orig_v)                # 이후 검사 위해 원상
+
+            # has_history — apply/remove/done 이력 유무 (adopt 게이팅 근거) (P2)
+            check("has_history: 빈/이력",
+                  not update.has_history([])
+                  and not update.has_history([{"kind": "begin"}])
+                  and update.has_history([{"kind": "apply"}]))
+
+            # 디렉터리 bundle은 snapshot을 뜬다 — 검증 후 원본 변경 TOCTOU 차단 (P1)
+            snb = Path(td) / "snapbundle"
+            (snb / "docs").mkdir(parents=True)
+            (snb / "docs/x.md").write_text("orig\n", encoding="utf-8")
+            snap = update.fetch_bundle(str(snb), Path(td) / "snapdst")
+            (snb / "docs/x.md").write_text("MUTATED\n", encoding="utf-8")  # 이후 변경
+            check("디렉터리 bundle은 snapshot이라 원본 변경에 영향 없다",
+                  (snap / "docs/x.md").read_text(encoding="utf-8") == "orig\n"
+                  and snap != snb)
+
+            # 동시 데몬 잠금 — update가 mutation 잠금을 잡으면 데몬 tick은 건너뛴다
+            # (git repo인 can으로 검사 — once는 is_git_repo를 먼저 본다) (P1)
+            import sync_daemon as _sd
+            _lp = _sd._lock_path(can, "osk-mutation.lock")
+            _held = open(_lp, "w")
+            try:
+                update.lock_exclusive(_held, blocking=False)   # update처럼 선점
+                check("데몬은 update가 잡은 mutation 잠금에서 tick을 건너뛴다",
+                      _sd.once(can) == "locked")
+            finally:
+                update.unlock(_held); _held.close()
 
             # MAP 사상 — publish.collect과 같은 src/a -> dst/a (P2)
             man_id = {"map": [("_governance/", "_governance/"),
