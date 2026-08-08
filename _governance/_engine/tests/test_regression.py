@@ -2724,6 +2724,47 @@ def test_release_and_update():
                 pass
 
 
+# ── 15c. 위임 명령은 인자를 해석하지 않고 그대로 넘긴다 ──────────────────
+def test_cli_delegation():
+    """`osk update`·`osk release`의 계약은 "해석하지 않고 넘긴다"이다.
+    `argparse.REMAINDER`로 받으면 잔여의 첫 토큰이 `-`로 시작할 때 상위 파서가
+    자기 옵션으로 먼저 해석해 `osk update --apply`가 죽는다 — 위임한다고
+    광고해 놓고 정작 갱신·릴리스의 **적용 형태를 못 부르는** 상태였다."""
+    from osk import cli
+    import osk.update as _u, osk.release as _r
+    seen = {}
+    ru, rr = _u.main, _r.main
+    try:
+        _u.main = lambda rest=None: seen.__setitem__("update", rest)
+        _r.main = lambda rest=None: seen.__setitem__("release", rest)
+        for argv, key, want in (
+                (["update", "--apply"], "update", ["--apply"]),
+                (["update", "--apply", "--to", "v1.2.3"], "update",
+                 ["--apply", "--to", "v1.2.3"]),
+                (["update"], "update", []),          # 인자 없는 보고도 그대로
+                (["release", "--version", "v1.2.3", "--apply"], "release",
+                 ["--version", "v1.2.3", "--apply"])):
+            seen.clear()
+            # 위임이 깨지면 상위 파서가 `SystemExit(2)`로 죽는다. 그대로 두면
+            # 수트 전체가 중단돼 **어느 검사가 깨졌는지 보이지 않는다** — 실패는
+            # 실패로 보고되어야 한다.
+            try:
+                cli.main(argv)
+            except SystemExit as e:
+                seen[key] = f"<SystemExit {e.code}>"
+            check(f"위임: osk {' '.join(argv)}", seen.get(key) == want, seen)
+    finally:
+        _u.main, _r.main = ru, rr
+
+    # 위임 명령이 `osk --help` 목록에서 사라지면 발견 가능성을 잃는다.
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.suppress(SystemExit), contextlib.redirect_stdout(buf):
+        cli.main(["--help"])
+    check("위임 명령도 osk --help 목록에 남는다",
+          "update" in buf.getvalue() and "release" in buf.getvalue())
+
+
 # ── 16. 제목은 모든 기기에서 파일명·Link 대상이 될 수 있어야 한다 ────────
 def test_portable_title():
     """제목이 곧 파일명이자 Link 대상이므로, 한 기기에서만 표현 가능한 이름은
@@ -2805,7 +2846,8 @@ def test_posix_rel_is_os_independent():
 
 
 if __name__ == "__main__":
-    for fn in [test_posix_rel_is_os_independent, test_portable_title, test_rid_monotone, test_same_ms_chain_signed,
+    for fn in [test_posix_rel_is_os_independent, test_portable_title,
+               test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
                test_fork_failclosed_and_reseal, test_anchor_no_order_fallback,
                test_cycle_normalization, test_structural_damage,
                test_ridless_unsign_not_swallowed, test_root_confinement_and_kst,

@@ -23,7 +23,27 @@ def _confirm(prompt: str) -> None:
         sys.exit("중단")
 
 
+# `osk <이름> …`의 인자를 **파싱하지 않고 그대로** 넘기는 위임 명령.
+DELEGATED = {"update": "정본 릴리스로 갱신 (osk.update로 위임)",
+             "release": "[정본 전용] 정식 릴리스 선언 (osk.release로 위임)"}
+
+
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # 위임 명령은 파서에 넣기 전에 가른다. `argparse.REMAINDER`로 받으면 잔여의
+    # 첫 토큰이 `-`로 시작할 때 상위 파서가 그것을 자기 옵션으로 먼저 해석해
+    # `osk update --apply`가 "unrecognized arguments: --apply"로 죽는다(실측).
+    # 위임의 계약은 "해석하지 않고 넘긴다"이므로, 해석하는 자리를 아예 지난다 —
+    # `--help`도 그대로 넘어가 위임 대상 자신의 사용법이 나온다.
+    if argv and argv[0] in DELEGATED:
+        rest = argv[1:]
+        if argv[0] == "update":
+            from . import update as _u
+            return _u.main(rest)
+        from . import release as _r
+        return _r.main(rest)
+
     ap = argparse.ArgumentParser(prog="osk")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("validate", help="검증기 수트 전체 실행")
@@ -38,10 +58,8 @@ def main(argv=None):
     p.add_argument("path"); p.add_argument("--reason", required=True)
     p = sub.add_parser("unsign", help="[사용자 전속] 서명 해제")
     p.add_argument("node_id"); p.add_argument("--reason", required=True)
-    sub.add_parser("update", help="정본 릴리스로 갱신 (osk.update로 위임)"
-                   ).add_argument("rest", nargs=argparse.REMAINDER)
-    sub.add_parser("release", help="[정본 전용] 정식 릴리스 선언 (osk.release로 위임)"
-                   ).add_argument("rest", nargs=argparse.REMAINDER)
+    for name, helptext in DELEGATED.items():     # `osk --help` 목록에만 쓰인다
+        sub.add_parser(name, help=helptext)      # — 실제 파싱은 위에서 지났다
     a = ap.parse_args(argv)
 
     if a.cmd == "validate":
@@ -87,12 +105,7 @@ def main(argv=None):
         _confirm(f"{a.node_id} 서명을 해제합니까? [y/N] ")
         rec = signatures.unsign(a.node_id, a.reason)
         print("해제 등재:", rec["rid"])
-    elif a.cmd == "update":
-        from . import update as _u
-        _u.main(a.rest)
-    elif a.cmd == "release":
-        from . import release as _r
-        _r.main(a.rest)
+    # update·release는 파서 앞에서 위임된다 — 여기에 분기를 두면 죽은 코드다.
 
 
 if __name__ == "__main__":
