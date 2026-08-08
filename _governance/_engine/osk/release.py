@@ -16,11 +16,11 @@ Mechanism §1-2 2항(release.json 형식·선언의 전제·커밋과 태그).
 3. **비밀값 스캔** — 릴리스 전 파일을 훑는다 (secrets.py 자기 면제 동일).
 """
 from __future__ import annotations
-import argparse, json, subprocess, sys
+import argparse, json, os, subprocess, sys
 from pathlib import Path
 
 from .core import ROOT, now_iso, sha256_file
-from . import publish, validate
+from . import publish
 
 ATTESTATION = "release.json"
 
@@ -52,6 +52,27 @@ def build_attestation(root: Path, version: str) -> dict:
     return {"version": version, "at": now_iso(), "files": files}
 
 
+def _validate_at(root: Path) -> list[str]:
+    """release는 **자신이 릴리스하는 트리**를 검증한다. validate는 core.ROOT
+    전역에 묶여 있으므로(임포트 시점 고정), fixture_signature_lifecycle와
+    같은 선례로 OSK_VAULT_ROOT를 건 별도 프로세스에서 돌린다 — 이렇게 해야
+    guards의 세 전제가 모두 같은 root를 본다(비밀값·깨끗함·검증기 정합)."""
+    engine = Path(__file__).resolve().parent.parent          # <repo>/_governance/_engine
+    code = ("import json; from osk import validate; r = validate.run(); "
+            "print(json.dumps({'v': r['verdict'], "
+            "'f': [list(x)[0] for x in r['fail']]}))")
+    env = dict(os.environ, OSK_VAULT_ROOT=str(root), PYTHONPATH=str(engine))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, env=env, timeout=120)
+    if not r.stdout.strip():
+        return [f"검증기 실행 실패: {r.stderr.strip()[-300:]}"]
+    try:
+        rep = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        return [f"검증기 출력 파싱 실패: {r.stdout[-200:]!r}"]
+    return [] if rep["v"] == "PASS" else [f"검증기 {rep['v']}: {'; '.join(rep['f'])}"]
+
+
 def guards(root: Path) -> list[str]:
     errs = []
     r = _git(root, "status", "--porcelain", "-z")
@@ -62,7 +83,7 @@ def guards(root: Path) -> list[str]:
                     f"{[d[3:] for d in dirty[:5]]}")
     items = [(root / rel, rel) for rel in tracked_files(root)]
     errs += publish.guard_secrets(items)
-    errs += publish.guard_vault()
+    errs += _validate_at(root)
     return errs
 
 
