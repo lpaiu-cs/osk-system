@@ -1885,11 +1885,12 @@ def test_release_and_update():
                 json.dumps(att2, ensure_ascii=False), encoding="utf-8")
             ev_rel = update.load_release(ev)
             ev_targets, ev_skel, ev_skipped = update.apply_set(ev, ev_rel)
+            ev_dests = [d for _s, d in ev_targets]      # apply_set는 (src,dest) 사상
             check("Space 바닥은 target이 아니라 skip(침투 차단)",
-                  "= Scope/침투.md" not in ev_targets
-                  and any("침투" in s for s in ev_skipped), (ev_targets, ev_skipped))
+                  "= Scope/침투.md" not in ev_dests
+                  and any("침투" in s for s in ev_skipped), (ev_dests, ev_skipped))
             check("_ledger 조각도 target이 아니다",
-                  "_governance/x/_ledger/x.jsonl" not in ev_targets, ev_targets)
+                  "_governance/x/_ledger/x.jsonl" not in ev_dests, ev_dests)
             check("SKEL의 바닥 파고들기·루트 탈출은 허용 밖",
                   ev_skel == []
                   and sum("SKEL 허용 밖" in s for s in ev_skipped) == 2,
@@ -1899,6 +1900,47 @@ def test_release_and_update():
                   and update._allowed_skel("= Scope/Workbench/_ledger") is None
                   and update._allowed_skel("../evil") is None
                   and update._allowed_skel("_ledger") is None)
+
+            # 경로 봉쇄 — 증빙 key·저널 path의 vault 탈출 차단 (P1)
+            check("_within: 정상 상대경로는 통과",
+                  update._within(ROOT, "_governance/Constitution.md") is not None)
+            check("_within: 상위 탈출·절대경로는 봉쇄",
+                  update._within(ROOT, "_governance/../../payload") is None
+                  and update._within(ROOT, "../escape") is None
+                  and update._within(ROOT, "/etc/passwd") is None)
+            esc = {"version": "v1.0.0",
+                   "files": {"_governance/../../payload": "sha256:00"}}
+            check("증빙 경로 탈출은 대조 단계에서 중단",
+                  any("트리 밖" in e for e in update.verify_attestation(can, esc)),
+                  update.verify_attestation(can, esc))
+
+            # MAP 사상 — publish.collect과 같은 src/a -> dst/a (P2)
+            man_id = {"map": [("_governance/", "_governance/"),
+                              (".mcp.json.example", ".mcp.json.example")],
+                      "deny": [], "skel": [], "keep": []}
+            check("MAP 항등 사상",
+                  update._map_dest("_governance/C.md", man_id) == "_governance/C.md"
+                  and update._map_dest(".mcp.json.example", man_id)
+                  == ".mcp.json.example")
+            man_nz = {"map": [("src/", "dst/")],
+                      "deny": [], "skel": [], "keep": []}
+            check("MAP 비항등 사상(src/a -> dst/a)·미매칭은 None",
+                  update._map_dest("src/a/b.md", man_nz) == "dst/a/b.md"
+                  and update._map_dest("other/x", man_nz) is None)
+
+            # 버전 계약 — release와 updater 자동 탐색이 같은 vX.Y.Z를 쓴다 (P2)
+            check("release: 느슨한 버전(v2.2)은 선언 전에 거부",
+                  "vX.Y.Z" in (uerr(lambda: release.run(
+                      "v2.2", apply=True, root=can)) or ""))
+            check("release: 비형식(vfoo)도 거부",
+                  "vX.Y.Z" in (uerr(lambda: release.run(
+                      "vfoo", apply=True, root=can)) or ""))
+            badrel = Path(td) / "badrel"; badrel.mkdir()
+            (badrel / "release.json").write_text(
+                json.dumps({"version": "v2.2", "files": {}}), encoding="utf-8")
+            check("load_release: 느슨한 version은 증빙 판독에서 거부",
+                  "version 형식" in (uerr(
+                      lambda: update.load_release(badrel)) or ""))
 
             # 현재 판본은 인과 극대로 판정한다(물리 마지막 행이 아니다) —
             # sibling last_applied_hash와 같은 규율, union 병합 대장이므로.

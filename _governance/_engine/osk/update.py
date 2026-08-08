@@ -27,7 +27,7 @@ import argparse, json, os, re, subprocess, sys, tarfile, tempfile
 from pathlib import Path
 
 from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_read,
-                   resolve_in_root, resolve_one, sha256_file, posix_rel)
+                   resolve_one, sha256_file, posix_rel)
 from . import publish
 
 UPDATE_JOURNAL = LEDGER / "update.jsonl"     # 운영 저널 — 권위 대장이 아니다
@@ -35,6 +35,7 @@ CONFIG = ROOT / ".osk" / "config.json"       # 인스턴스 소유 로컬 설정
 DEFAULT_UPSTREAM = "https://github.com/lpaiu-cs/osk-system.git"
 ATTESTATION = "release.json"
 ENGINE_PREFIX = "_governance/_engine/"
+VERSION_RE = r"^v\d+\.\d+\.\d+$"             # 릴리스·태그·자동 탐색이 공유하는 계약
 
 # 인스턴스 소유 바닥 — 릴리스·매니페스트가 무엇을 말하든 쓰지 않는다.
 # (골격 .gitkeep은 디렉터리가 없을 때만 예외 — _skel에서 별도 처리)
@@ -53,6 +54,23 @@ def _floor(rel: str) -> bool:
     return any(f"/{seg}/" in f"/{rel}" for seg in ("_ledger", "_raw"))
 
 
+def _within(base: Path, rel: str) -> Path | None:
+    """rel을 base 안으로 봉쇄한 절대 경로 — `..`·절대경로·심볼릭 탈출은 None.
+    release 증빙 key와 (다기기 병합되는) 저널 path는 **신뢰 밖 입력**이므로,
+    tree 읽기·ROOT 쓰기·unlink 어느 I/O 전에도 이 봉쇄를 통과해야 한다
+    (core.resolve_in_root의 base 일반화 — 자기 자신은 벗어남이 아니다)."""
+    try:
+        p = Path(rel)
+        cand = p if p.is_absolute() else base / p
+        real = Path(os.path.realpath(cand))
+        broot = Path(os.path.realpath(base))
+        if real != broot:
+            real.relative_to(broot)
+        return real
+    except (ValueError, OSError, TypeError):
+        return None
+
+
 # SKEL이 파고들 수 없는 보호 구획 — 골격은 빈 Space 루트만 만든다.
 SKEL_FORBIDDEN = ("_ledger", "_raw", "_sources", ".osk", ".git")
 
@@ -61,7 +79,7 @@ def _allowed_skel(s: str) -> Path | None:
     """SKEL이 만들어도 되는 절대 경로 — 아니면 None. 골격은 **루트 안으로
     봉쇄된 빈 Space 루트**만 만든다(Mechanism §1-2 5항의 바닥은 매니페스트가
     무엇을 말하든 지켜진다). `../` 탈출·보호 구획 파고들기·비Space 경로는 거부."""
-    p = resolve_in_root(s)                       # `..`·절대경로 탈출은 None
+    p = _within(ROOT, s)                         # `..`·절대경로·심볼릭 탈출은 None
     if p is None:
         return None
     try:
@@ -145,6 +163,8 @@ def load_release(tree: Path) -> dict:
         raise UpdateError(f"비준증빙 판독 실패: {e}")
     if not isinstance(rel.get("files"), dict) or not rel.get("version"):
         raise UpdateError("비준증빙 형식 위반 — version·files가 필요하다")
+    if not re.match(VERSION_RE, str(rel["version"])):
+        raise UpdateError(f"비준증빙 version 형식 위반(vX.Y.Z): {rel['version']}")
     return rel
 
 
@@ -152,11 +172,15 @@ def verify_attestation(tree: Path, rel: dict) -> list[str]:
     """전수 대조 — 증빙의 파일이 다 있고 해시가 맞다. 적용은 오직 증빙이
     모는 파일(`rel["files"]`)만 하고 그 하나하나를 해시로 검증하므로, 증빙
     밖에 있는 디스크 파일은 적용 자체가 되지 않는다 — 트리에 딸린 미추적
-    부산물(pyc·.DS_Store)로 갱신을 막지 않는다(그건 안전이 아니라 오탐이다)."""
+    부산물(pyc·.DS_Store)로 갱신을 막지 않는다(그건 안전이 아니라 오탐이다).
+
+    증빙 key는 신뢰 밖 입력이다 — I/O 전에 tree 안으로 봉쇄한다(경로 탈출 차단)."""
     errs = []
     for p, h in sorted(rel["files"].items()):
-        f = tree / p
-        if not f.is_file():
+        f = _within(tree, p)
+        if f is None:
+            errs.append(f"증빙 경로가 트리 밖으로 벗어난다(경로 봉쇄 실패): {p}")
+        elif not f.is_file():
             errs.append(f"증빙의 파일이 없다: {p}")
         elif sha256_file(f) != h:
             errs.append(f"해시 불일치: {p}")
@@ -165,31 +189,44 @@ def verify_attestation(tree: Path, rel: dict) -> list[str]:
 
 # ── 적용 집합 — 릴리스 안의 발행 매니페스트가 정한다 ─────────────────────
 
-def apply_set(tree: Path, rel: dict) -> tuple[list[str], list[str], list[str]]:
-    """(적용 경로, 골격, 건너뜀 보고). KEEP은 정본 저장소 전용이라 제외."""
+def _map_dest(ap: str, man: dict) -> str | None:
+    """증빙 경로(정본 source)를 발행 매니페스트 MAP으로 인스턴스 경로에 사상한다
+    — publish.collect과 같은 `src/a -> dst/a` 사상이다(dst-prefix 매칭이 아니라).
+    비항등 MAP도 올바로 반영하고, 어느 MAP에도 안 걸리면 None(매니페스트 밖)."""
+    for s, d in man["map"]:
+        if not s.endswith("/"):
+            if ap == s:
+                return d
+        elif ap.startswith(s.rstrip("/") + "/"):
+            return d.rstrip("/") + "/" + ap[len(s.rstrip("/")) + 1:]
+    return None
+
+
+def apply_set(tree: Path, rel: dict):
+    """((source, dest) 사상 목록, 골격 절대경로 목록, 건너뜀 보고).
+    KEEP은 정본 저장소 전용이라 제외. dest는 floor·루트 봉쇄를 통과한 것만."""
     man_path = tree / "_governance/_engine/scripts/publish-manifest.txt"
     if not man_path.exists():
         raise UpdateError("릴리스에 발행 매니페스트가 없다 — 적용 범위 불명")
     man = publish.parse_manifest(man_path)
     keep = set(man["keep"])
     targets, skipped = [], []
-    prefixes = [dst.rstrip("/") + "/" for _s, dst in man["map"]
-                if _s.endswith("/")]
-    exact = {dst for _s, dst in man["map"] if not _s.endswith("/")}
-    for p in sorted(rel["files"]):
-        if p in keep or p == ATTESTATION:
-            skipped.append(f"{p} (정본 저장소 전용)")
+    for ap in sorted(rel["files"]):
+        if ap in keep or ap == ATTESTATION:
+            skipped.append(f"{ap} (정본 저장소 전용)")
             continue
-        if publish._denied(p, man["deny"]):
-            skipped.append(f"{p} (DENY)")
+        if publish._denied(ap, man["deny"]):
+            skipped.append(f"{ap} (DENY)")
             continue
-        if p in exact or any(p.startswith(x) for x in prefixes):
-            if _floor(p):
-                skipped.append(f"{p} (인스턴스 소유 바닥 — 쓰지 않는다)")
-                continue
-            targets.append(p)
-        else:
-            skipped.append(f"{p} (매니페스트 밖)")
+        dest = _map_dest(ap, man)
+        if dest is None:
+            skipped.append(f"{ap} (매니페스트 밖)")
+            continue
+        # dest는 신뢰 밖 입력에서 파생된다 — 바닥·루트 봉쇄를 여기서 강제한다(P1).
+        if _floor(dest) or _within(ROOT, dest) is None:
+            skipped.append(f"{dest} (바닥·경로 봉쇄 — 쓰지 않는다)")
+            continue
+        targets.append((ap, dest))
     # SKEL은 허용 골격(루트 봉쇄된 빈 Space 루트)만 통과시킨다
     skel = []
     for s in man["skel"]:
@@ -232,38 +269,48 @@ def current_version(recs: list[dict] | None = None) -> str | None:
 
 # ── 계획과 적용 ──────────────────────────────────────────────────────────
 
-def plan(tree: Path, targets: list[str], adopt: bool) -> dict:
+def plan(tree: Path, targets: list, adopt: bool) -> dict:
+    """targets는 (source, dest) 사상. add/update/rebaseline/conflict는 파일을
+    읽어야 하므로 (source, dest)를, engine_drift/remove/remove_conflict는 보고·
+    삭제만 하므로 dest 문자열을 담는다."""
     recs = ledger_read(UPDATE_JOURNAL)
     add, same, rebaseline = [], [], []
     update, conflict, engine_drift = [], [], []
-    tset = set(targets)
-    for p in targets:
-        src, dst = tree / p, ROOT / p
-        if not dst.exists():
-            add.append(p)
+    dests = set()
+    for src, dest in targets:
+        dests.add(dest)
+        s, d = tree / src, ROOT / dest
+        if not d.exists():
+            add.append((src, dest))
             continue
-        if dst.read_bytes() == src.read_bytes():
+        if d.read_bytes() == s.read_bytes():
             # 내용은 upstream과 같다 — 기준선이 없거나(adopt·수동 동기화) 낡았으면
             # 저널만 갱신한다. 안 하면 다음 릴리스에서 이 파일이 drift로 오판된다.
-            if last_applied_hash(recs, p) != sha256_file(dst):
-                rebaseline.append(p)
+            if last_applied_hash(recs, dest) != sha256_file(d):
+                rebaseline.append((src, dest))
             else:
-                same.append(p)
+                same.append(dest)
             continue
-        base = last_applied_hash(recs, p)
-        drifted = base is None or sha256_file(dst) != base
+        base = last_applied_hash(recs, dest)
+        drifted = base is None or sha256_file(d) != base
         if drifted and not adopt:
-            (engine_drift if p.startswith(ENGINE_PREFIX) else conflict).append(p)
+            if dest.startswith(ENGINE_PREFIX):
+                engine_drift.append(dest)
+            else:
+                conflict.append((src, dest))
         else:
-            update.append(p)
+            update.append((src, dest))
     # 삭제 전파 — 직전까지 관리하던 파일이 새 릴리스에서 빠졌으면 인스턴스에서도
     # 제거한다(안 하면 하류가 정본과 다른 프레임워크를 실행한다). 로컬 수정이
     # 있는 삭제 대상은 지우지 않고 보존·보고한다. 바닥은 애초에 관리 대상이 아니다.
     remove, remove_conflict = [], []
     for p, h in sorted(managed_paths(recs).items()):
-        if p in tset or _floor(p) or not (ROOT / p).exists():
+        if p in dests or _floor(p):
             continue
-        (remove if sha256_file(ROOT / p) == h else remove_conflict).append(p)
+        rp = _within(ROOT, p)                    # 병합된 저널 path도 봉쇄(P1)
+        if rp is None or not rp.exists():
+            continue
+        (remove if sha256_file(rp) == h else remove_conflict).append(p)
     return {"add": add, "same": len(same), "rebaseline": rebaseline,
             "update": update, "conflict": conflict, "engine_drift": engine_drift,
             "remove": remove, "remove_conflict": remove_conflict}
@@ -313,12 +360,14 @@ def run(source: str | None = None, ref: str | None = None,
                               + "\n  ".join(errs[:10]))
         targets, skel, skipped = apply_set(tree, rel)
         p = plan(tree, targets, adopt)
+        dests = lambda pairs: [d for _s, d in pairs]
         out = {"ok": True, "applied": False, "version": rel["version"],
                "current": current_version(), "files": len(targets),
-               "add": p["add"], "update": p["update"], "same": p["same"],
-               "rebaseline": p["rebaseline"], "conflict": p["conflict"],
-               "engine_drift": p["engine_drift"], "remove": p["remove"],
-               "remove_conflict": p["remove_conflict"], "skipped": len(skipped)}
+               "add": dests(p["add"]), "update": dests(p["update"]),
+               "same": p["same"], "rebaseline": dests(p["rebaseline"]),
+               "conflict": dests(p["conflict"]), "engine_drift": p["engine_drift"],
+               "remove": p["remove"], "remove_conflict": p["remove_conflict"],
+               "skipped": len(skipped)}
         if p["engine_drift"]:
             raise UpdateError(
                 "엔진 파일에 로컬 수정이 있다 — 갱신 전체를 중단한다. 엔진을 "
@@ -332,30 +381,32 @@ def run(source: str | None = None, ref: str | None = None,
         ledger_append(UPDATE_JOURNAL,
                       {"kind": "begin", "version": v, "adopt": bool(adopt)})
         applied = []
-        for path in p["add"] + p["update"]:
-            _write_atomic(ROOT / path, (tree / path).read_bytes())
+        for src, dest in p["add"] + p["update"]:
+            _write_atomic(ROOT / dest, (tree / src).read_bytes())
             ledger_append(UPDATE_JOURNAL, {
-                "kind": "apply", "version": v, "path": path,
-                "hash": sha256_file(ROOT / path)})
-            applied.append(path)
+                "kind": "apply", "version": v, "path": dest,
+                "hash": sha256_file(ROOT / dest)})
+            applied.append(dest)
         # 내용은 같으나 기준선이 없던 파일 — 저널만 남긴다(파일은 그대로).
-        for path in p["rebaseline"]:
+        for _src, dest in p["rebaseline"]:
             ledger_append(UPDATE_JOURNAL, {
-                "kind": "apply", "version": v, "path": path,
-                "hash": sha256_file(ROOT / path)})
+                "kind": "apply", "version": v, "path": dest,
+                "hash": sha256_file(ROOT / dest)})
         # 삭제 전파 — upstream에서 빠졌고 로컬 무수정인 관리 파일을 제거한다.
         removed = []
         for path in p["remove"]:
-            (ROOT / path).unlink(missing_ok=True)
+            rp = _within(ROOT, path)             # unlink 전 재봉쇄(P1)
+            if rp is not None:
+                rp.unlink(missing_ok=True)
             ledger_append(UPDATE_JOURNAL,
                           {"kind": "remove", "version": v, "path": path})
             removed.append(path)
         sidecars = []
-        for path in p["conflict"]:
-            side = ROOT / (path + f".upstream-{v}")
-            _write_atomic(side, (tree / path).read_bytes())
+        for src, dest in p["conflict"]:
+            side = ROOT / (dest + f".upstream-{v}")
+            _write_atomic(side, (tree / src).read_bytes())
             ledger_append(UPDATE_JOURNAL, {
-                "kind": "skip", "version": v, "path": path,
+                "kind": "skip", "version": v, "path": dest,
                 "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
             sidecars.append(posix_rel(side, ROOT))
         # upstream에서 삭제됐으나 로컬 수정이 있는 파일 — 지우지 않고 보존·보고.

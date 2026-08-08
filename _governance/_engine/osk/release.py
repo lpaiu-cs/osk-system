@@ -16,13 +16,14 @@ Mechanism §1-2 2항(release.json 형식·선언의 전제·커밋과 태그).
 3. **비밀값 스캔** — 릴리스 전 파일을 훑는다 (secrets.py 자기 면제 동일).
 """
 from __future__ import annotations
-import argparse, json, os, subprocess, sys
+import argparse, json, os, re, subprocess, sys
 from pathlib import Path
 
 from .core import ROOT, now_iso, sha256_file
 from . import publish
 
 ATTESTATION = "release.json"
+VERSION_RE = r"^v\d+\.\d+\.\d+$"        # 릴리스·태그·updater 자동 탐색의 공통 계약
 
 
 class ReleaseError(RuntimeError):
@@ -89,8 +90,10 @@ def guards(root: Path) -> list[str]:
 
 def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
     root = root or ROOT
-    if not version.startswith("v"):
-        raise ReleaseError(f"버전은 vX.Y.Z 형식이다: {version}")
+    # 정확히 vX.Y.Z만 — updater의 자동 탐색(같은 정규식)이 인정하는 형식이어야
+    # 릴리스가 영영 후보에서 누락되지 않고, git이 거부하는 태그도 원천 차단된다.
+    if not re.match(VERSION_RE, version):
+        raise ReleaseError(f"버전은 정확히 vX.Y.Z 형식이어야 한다: {version}")
     r = _git(root, "tag", "-l", version)
     if r.stdout.strip():
         raise ReleaseError(f"이미 선언된 버전이다 — 버전은 불변이다: {version}")
@@ -124,7 +127,10 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
                     f"release: {version} — 비준증빙"], check=True, timeout=60)
     r = _git(root, "tag", version)
     if r.returncode != 0:
-        raise ReleaseError(f"태그 실패(이미 있는 버전?): {r.stderr.strip()}")
+        # 태그가 실패하면 증빙 커밋을 되돌린다 — '아무것도 쓰지 않는다'를 회복한다
+        # (형식·중복은 위에서 이미 걸러지므로 여기 도달은 드물다).
+        _git(root, "reset", "--hard", "HEAD~1")
+        raise ReleaseError(f"태그 실패 — 증빙 커밋을 되돌렸다: {r.stderr.strip()}")
     out.update(applied=True, tagged=version)
     return out
 
