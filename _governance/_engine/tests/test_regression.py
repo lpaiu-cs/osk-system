@@ -1907,22 +1907,39 @@ def test_release_and_update():
                   repv["fail"])
             uj.write_text(orig_uj, encoding="utf-8")
 
-            # release mutation 실패는 선언 전으로 원상복구 (P2)
-            # commit을 실패시킨다 — gpgsign+없는 키(--no-verify가 우회 못 하는 경로)
+            # 선언 도중 외부 커밋이 들어오면 **CAS**가 막고 아무것도 남지 않는다 (P1)
             def _head(r):
                 return subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD"],
                                       capture_output=True, text=True).stdout.strip()
-            git(can, "config", "commit.gpgsign", "true")
-            git(can, "config", "user.signingkey", "0xNONEXISTENTKEY")
-            pre_head = _head(can)
-            e = uerr(lambda: release.run("v9.3.0", apply=True, root=can))
-            porcelain = subprocess.run(
-                ["git", "-C", str(can), "status", "--porcelain"],
-                capture_output=True, text=True).stdout.strip()
-            check("commit 실패 시 선언 전으로 원상복구(HEAD·트리 불변)",
-                  e is not None and _head(can) == pre_head and porcelain == "",
-                  (e, _head(can) == pre_head, porcelain))
-            git(can, "config", "commit.gpgsign", "false")
+            _real_bt = release.build_attestation
+
+            def _outsider_commits(root_, ver_, ref_="HEAD"):
+                att_ = _real_bt(root_, ver_, ref_)
+                # 증빙을 뜬 뒤·설치 전에 다른 프로세스가 커밋한다
+                (can / "outsider.md").write_text("외부 작업\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(can), "add", "-A"],
+                               capture_output=True)
+                subprocess.run(["git", "-C", str(can), "commit", "-qm",
+                                "outsider"], capture_output=True)
+                return att_
+            release.build_attestation = _outsider_commits
+            try:
+                e = uerr(lambda: release.run("v9.3.0", apply=True, root=can))
+            finally:
+                release.build_attestation = _real_bt
+            outsider_head = _head(can)
+            check("외부 커밋이 끼어들면 CAS가 선언을 막는다",
+                  e is not None and "CAS" in e, e)
+            check("외부 커밋은 파괴되지 않는다(HEAD 유지)",
+                  (can / "outsider.md").exists()
+                  and subprocess.run(["git", "-C", str(can), "log", "-1",
+                                      "--format=%s"], capture_output=True,
+                                     text=True).stdout.strip() == "outsider",
+                  outsider_head)
+            check("실패 선언의 태그는 남지 않는다",
+                  not subprocess.run(["git", "-C", str(can), "tag", "-l",
+                                      "v9.3.0"], capture_output=True,
+                                     text=True).stdout.strip())
 
             # 변조 pre-commit hook은 --no-verify로 무력화 — self-invalid 릴리스 방지 (P2)
             probe2 = can / "_governance" / "hooktouch.md"
@@ -2171,8 +2188,8 @@ def test_release_and_update():
             # 태그 전 전수 재대조 — 증빙이 커밋 트리와 다르면 선언을 중단한다 (P1)
             _real_ba = release.build_attestation
 
-            def _bad_ba(root_, ver_):
-                att_ = _real_ba(root_, ver_)
+            def _bad_ba(root_, ver_, ref_="HEAD"):
+                att_ = _real_ba(root_, ver_, ref_)
                 k = sorted(att_["files"])[0]
                 att_["files"][k] = "sha256:" + "0" * 64      # 어긋난 증빙
                 return att_
@@ -2195,34 +2212,65 @@ def test_release_and_update():
                   post_head_r == pre_head_r and not tags_r,
                   (post_head_r == pre_head_r, tags_r))
 
-            # 증빙 **자체**가 add 이후 변조돼 커밋되면 태그 전에 잡는다 (P1)
-            # 리뷰가 지목한 시점을 결정론적으로 재현한다: release가 올바른
-            # release.json을 add한 **직후·commit 직전**에 다른 프로세스가 그
-            # 파일만 바꿔 다시 stage한다.
-            _h0 = subprocess.run(["git", "-C", str(can), "rev-parse", "HEAD"],
-                                 capture_output=True, text=True).stdout.strip()
+            # CAS 구조에서는 index·working tree 변조가 릴리스 커밋에 **영향을
+            # 주지 못한다** — 커밋을 object로 직접 만들기 때문이다(공격 벡터 소멸).
             _real_run = release.subprocess.run
 
-            def _tamper_before_commit(cmd, *a, **k):
-                if isinstance(cmd, list) and "commit" in cmd:
-                    bad = {"version": "vTAMPERED", "at": "x", "files": {}}
+            def _tamper_index(cmd, *a, **k):
+                if isinstance(cmd, list) and "commit-tree" in cmd:
                     (can / "release.json").write_text(
-                        json.dumps(bad, ensure_ascii=False), encoding="utf-8")
+                        json.dumps({"version": "vTAMPERED", "at": "x",
+                                    "files": {}}), encoding="utf-8")
                     _real_run(["git", "-C", str(can), "add", "--",
                                "release.json"], capture_output=True)
                 return _real_run(cmd, *a, **k)
-            release.subprocess.run = _tamper_before_commit
+            release.subprocess.run = _tamper_index
             try:
-                etam = uerr(lambda: release.run("v9.6.0", apply=True, root=can))
+                rep_t = release.run("v9.6.0", apply=True, root=can)
             finally:
                 release.subprocess.run = _real_run
-            check("커밋된 증빙이 변조되면 태그 전에 중단",
-                  etam is not None and "증빙" in etam, etam)
-            check("변조 중단 시 태그가 남지 않는다",
-                  not subprocess.run(["git", "-C", str(can), "tag", "-l",
-                                      "v9.6.0"], capture_output=True,
-                                     text=True).stdout.strip())
-            subprocess.run(["git", "-C", str(can), "reset", "-q", "--hard", _h0],
+            _tagged_att = json.loads(subprocess.run(
+                ["git", "-C", str(can), "show", "v9.6.0:release.json"],
+                capture_output=True, text=True).stdout)
+            check("index 변조는 릴리스 커밋에 영향을 주지 못한다",
+                  rep_t.get("applied") and _tagged_att["version"] == "v9.6.0",
+                  _tagged_att.get("version"))
+            check("태그는 검증한 그 커밋에 붙는다",
+                  subprocess.run(["git", "-C", str(can), "rev-parse", "v9.6.0^{commit}"],
+                                 capture_output=True, text=True).stdout.strip()
+                  == rep_t.get("commit"), rep_t.get("commit"))
+
+            # 매니페스트가 증빙에 없으면 control plane으로 쓰지 않는다 (P2)
+            _noman = Path(td) / "noman"
+            (_noman / "_governance/_engine/scripts").mkdir(parents=True)
+            (_noman / "_governance/X.md").write_text(
+                node_text("260802-uupd-000f", "증빙된 파일"), encoding="utf-8")
+            (_noman / "_governance/_engine/scripts/publish-manifest.txt"
+             ).write_text("MAP  _governance/ -> _governance/\n", encoding="utf-8")
+            _att_nm = {"version": "v1.0.0", "at": core.now_iso(),
+                       "files": {"_governance/X.md":
+                                 core.sha256_file(_noman / "_governance/X.md")}}
+            (_noman / "release.json").write_text(
+                json.dumps(_att_nm, ensure_ascii=False), encoding="utf-8")
+            enm = uerr(lambda: update.apply_set(_noman,
+                                                update.load_release(_noman)))
+            check("증빙에 없는 매니페스트는 적용 범위로 쓰지 않는다",
+                  enm is not None and "비준증빙에 없다" in enm, enm)
+
+            # 실행 비트가 붙은 파일은 릴리스에서 거부 — 증빙이 mode를 안 싣는다 (P2)
+            _exe = can / "runme.sh"
+            _exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+            _exe.chmod(0o755)
+            subprocess.run(["git", "-C", str(can), "add", "-A"],
+                           capture_output=True)
+            subprocess.run(["git", "-C", str(can), "commit", "-qm", "exe"],
+                           capture_output=True)
+            eexe = uerr(lambda: release.tree_hashes(can))
+            check("100755(실행 비트)도 릴리스에서 거부",
+                  eexe is not None and "지원하지 않는" in eexe, eexe)
+            subprocess.run(["git", "-C", str(can), "rm", "-q", "-f", "runme.sh"],
+                           capture_output=True)
+            subprocess.run(["git", "-C", str(can), "commit", "-qm", "drop exe"],
                            capture_output=True)
 
             # tree_hashes는 git object tree를 읽는다 — symlink는 지원 밖으로 거부 (P2)

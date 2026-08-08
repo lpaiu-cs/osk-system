@@ -257,7 +257,15 @@ def _map_dest(ap: str, man: dict) -> str | None:
 def apply_set(tree: Path, rel: dict):
     """((source, dest) 사상 목록, 골격 절대경로 목록, 건너뜀 보고).
     KEEP은 정본 저장소 전용이라 제외. dest는 floor·루트 봉쇄를 통과한 것만."""
-    man_path = tree / "_governance/_engine/scripts/publish-manifest.txt"
+    man_rel = "_governance/_engine/scripts/publish-manifest.txt"
+    # 매니페스트는 적용 범위를 정하는 **control plane**이다. 증빙 밖 파일은
+    # 적용 대상이 아니지만(허용), 그런 파일이 증빙된 bytes의 목적지·정책을
+    # 지배해서는 안 된다 — 반드시 증빙에 있고 이미 해시 검증된 것이어야 한다.
+    if man_rel not in rel["files"]:
+        raise UpdateError(
+            f"발행 매니페스트가 비준증빙에 없다 — 적용 범위를 신뢰할 수 없다: "
+            f"{man_rel}")
+    man_path = tree / man_rel
     if not man_path.exists():
         raise UpdateError("릴리스에 발행 매니페스트가 없다 — 적용 범위 불명")
     man = publish.parse_manifest(man_path)

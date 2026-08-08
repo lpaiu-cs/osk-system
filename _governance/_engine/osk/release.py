@@ -17,10 +17,10 @@ Mechanism §1-2 2항(release.json 형식·선언의 전제·커밋과 태그).
 3. **비밀값 스캔** — 릴리스 전 파일을 훑는다 (secrets.py 자기 면제 동일).
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, re, subprocess, sys
+import argparse, hashlib, json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 
-from .core import ROOT, now_iso, sha256_file
+from .core import ROOT, now_iso
 from . import publish
 
 ATTESTATION = "release.json"
@@ -44,7 +44,11 @@ def tracked_files(root: Path) -> list[str]:
     return sorted(x for x in r.stdout.split("\0") if x.strip())
 
 
-BLOB_MODES = ("100644", "100755")       # 정규 파일·실행 파일
+# 지원 mode는 정규 파일 하나뿐이다. 증빙은 **내용 해시만** 싣고 갱신·복구도
+# mode를 실어 나르지 않으므로, `100755`를 받아들이면 실행 비트가 조용히 사라지고
+# (updater의 원자 교체는 새 파일을 만든다) content가 같은 mode 변경은 아예
+# 감지되지 않는다. 계약을 넓히는 대신 지원 범위를 좁혀 선언 단계에서 거부한다.
+BLOB_MODES = ("100644",)
 
 
 def tree_hashes(root: Path, ref: str = "HEAD") -> dict[str, str]:
@@ -103,37 +107,11 @@ def _git_show_bytes(root: Path, spec: str) -> bytes | None:
     return r.stdout if r.returncode == 0 else None
 
 
-def _rollback(root: Path, mine: str | None, had_att: bool,
-              pre_att: bytes | None, ap: Path) -> tuple[bool, str]:
-    """선언 실패 시 되돌린다 — (성공?, 사유). **자신이 만든 커밋만** 제거하며,
-    그 사이 외부 커밋이 쌓였으면 ref를 건드리지 않는다(남의 커밋 보호). 되돌림에
-    실패하면 성공을 주장하지 않는다."""
-    if mine:                                  # 커밋까지 갔다면
-        head = _git(root, "rev-parse", "HEAD").stdout.strip()
-        if head != mine:
-            return False, "그 사이 다른 커밋이 쌓여 릴리스 커밋을 되돌리지 않았다"
-        r = _git(root, "reset", "--mixed", "-q", f"{mine}^")
-        if r.returncode != 0:
-            return False, f"reset 실패: {r.stderr.strip()[-200:]}"
-    # 커밋 전에 실패했어도 우리가 stage한 증빙은 index에 남는다 — **경로를 한정해**
-    # 그것만 되돌린다(전역 reset은 그 사이 남이 stage한 것까지 지운다).
-    r = _git(root, "reset", "-q", "--", ATTESTATION)
-    if r.returncode != 0:
-        return False, f"증빙 unstage 실패: {r.stderr.strip()[-200:]}"
-    try:                                      # 우리가 만든 증빙 파일만 원상
-        if had_att and pre_att is not None:
-            ap.write_bytes(pre_att)
-        else:
-            ap.unlink(missing_ok=True)
-    except OSError as e:
-        return False, f"증빙 파일 원상복구 실패: {e}"
-    return True, ""
-
-
-def build_attestation(root: Path, version: str) -> dict:
-    """비준증빙 — **커밋된 트리**의 전 파일(자신 제외)의 경로→sha256
-    (Mechanism §1-2 2항)."""
-    files = {k: v for k, v in tree_hashes(root).items() if k != ATTESTATION}
+def build_attestation(root: Path, version: str, ref: str = "HEAD") -> dict:
+    """비준증빙 — **그 커밋 트리**의 전 파일(자신 제외)의 경로→sha256
+    (Mechanism §1-2 2항). `ref`는 선언 전체가 공유하는 고정 스냅샷이다."""
+    files = {k: v for k, v in tree_hashes(root, ref).items()
+             if k != ATTESTATION}
     return {"version": version, "at": now_iso(), "files": files}
 
 
@@ -158,20 +136,34 @@ def _validate_at(root: Path) -> list[str]:
     return [] if rep["v"] == "PASS" else [f"검증기 {rep['v']}: {'; '.join(rep['f'])}"]
 
 
-def guards(root: Path) -> list[str]:
+def guards(root: Path, base: str) -> list[str]:
+    """선언의 전제를 **고정 커밋 스냅샷 `base`에서** 검사한다.
+
+    비밀값 스캔과 검증기가 mutable working tree를 보면, `git status`가 clean을
+    본 직후 외부 프로세스가 파일을 바꿔도 그 수정본이 PASS하고 증빙은 원래
+    커밋을 증빙하는 어긋남이 생긴다("검증을 통과한 바로 그 릴리스"가 성립하지
+    않는다). 그래서 `base`를 임시 detached worktree로 펼쳐 그 트리에서 검사한다."""
     errs = []
     r = _git(root, "status", "--porcelain", "-z")
-    # release.json도 예외 없이 clean을 요구한다 — 면제하면 선언 전 로컬 수정·
-    # untracked release.json이 있을 때 실패 롤백(reset --hard + clean)이 그
-    # 선언 전 상태까지 지워 '원상복구'가 아니게 된다(P2). 완전 clean tree를
-    # 요구하면 롤백 규칙이 단순·정확해진다.
+    # release.json도 예외 없이 clean을 요구한다 — 작업 트리가 base와 같아야
+    # 사용자가 보고 선언한 것과 실제로 증빙되는 것이 일치한다.
     dirty = [e for e in r.stdout.split("\0") if e.strip()]
     if dirty:
         errs.append(f"작업 트리가 깨끗하지 않다 — 증빙은 커밋과 일치해야 한다: "
                     f"{[d[3:] for d in dirty[:5]]}")
-    items = [(root / rel, rel) for rel in tracked_files(root)]
-    errs += publish.guard_secrets(items)
-    errs += _validate_at(root)
+        return errs                     # 스냅샷 검사 전에 이미 전제가 깨졌다
+    with tempfile.TemporaryDirectory(prefix="osk-rel-") as td:
+        snap = Path(td) / "snap"
+        w = _git(root, "worktree", "add", "--detach", "-q", str(snap), base,
+                 timeout=300)
+        if w.returncode != 0:
+            return [f"릴리스 스냅샷 생성 실패: {w.stderr.strip()[-300:]}"]
+        try:
+            items = [(snap / rel, rel) for rel in tracked_files(snap)]
+            errs += publish.guard_secrets(items)
+            errs += _validate_at(snap)
+        finally:
+            _git(root, "worktree", "remove", "--force", str(snap), timeout=120)
     return errs
 
 
@@ -184,11 +176,16 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
     r = _git(root, "tag", "-l", version)
     if r.stdout.strip():
         raise ReleaseError(f"이미 선언된 버전이다 — 버전은 불변이다: {version}")
-    errs = guards(root)
+    # 선언 전체가 **하나의 커밋 스냅샷**을 기준으로 돈다 — 전제 검사·증빙·커밋·
+    # 태그가 모두 이 `base`에 묶인다(중간에 working tree가 바뀌어도 무관).
+    base = _git(root, "rev-parse", "HEAD").stdout.strip()
+    if not base:
+        raise ReleaseError("HEAD를 읽지 못했다 — 커밋이 없는 저장소인가")
+    errs = guards(root, base)
     if errs:
         raise ReleaseError("릴리스 전제 위반 — 선언하지 않았다:\n  "
                            + "\n  ".join(errs))
-    att = build_attestation(root, version)
+    att = build_attestation(root, version, base)
     prev = None
     ap = root / ATTESTATION
     if ap.exists():
@@ -211,39 +208,56 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
            "added": added, "changed": changed, "removed": removed}
     if not apply:
         return out
-    # mutation 전체를 하나의 rollback 단위로 잡는다 — write·add·commit·재대조·tag
-    # 어느 단계가 실패하든 선언 전으로 되돌려 '아무것도 쓰지 않는다'를 지킨다.
-    # 되돌림은 **자신이 만든 커밋만** 대상이다: HEAD가 아직 그 커밋일 때에만
-    # 그 부모로 `--mixed` 되돌리고, 그 사이 외부 커밋이 쌓였으면 손대지 않는다
-    # (남의 커밋을 ref에서 떨어뜨리지 않는다). 되돌리지 못하면 성공을 주장하지
-    # 않고 그 사실을 실패에 담는다(fail-closed).
-    had_att = ap.exists()
-    pre_att = ap.read_bytes() if had_att else None
-    mine: str | None = None                 # 우리가 만든 릴리스 커밋 sha
+    # 릴리스 커밋은 **working tree·index를 건드리지 않고** object로 만든다:
+    # blob → 임시 index로 tree → commit-tree(-p base) → update-ref CAS.
+    # 이렇게 하면 (a) 태그가 **검증한 정확한 SHA**에 붙고, (b) 그 사이 외부
+    # 커밋이 들어오면 CAS가 실패해 아무것도 남지 않으며, (c) 선언과 무관한
+    # 외부 수정·index를 애초에 만지지 않으므로 파괴할 것이 없다.
+    branch = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+    if not branch:
+        raise ReleaseError("detached HEAD에서는 선언하지 않는다 — 브랜치가 필요하다")
+    att_bytes = (json.dumps(att, ensure_ascii=False, indent=1) + "\n").encode()
+    installed = False
     try:
-        ap.write_text(json.dumps(att, ensure_ascii=False, indent=1) + "\n",
-                      encoding="utf-8")
-        subprocess.run(["git", "-C", str(root), "add", "--", ATTESTATION],
-                       check=True, timeout=60)
-        # `--no-verify`: commit hook이 다른 tracked 파일을 수정·stage해 커밋
-        # 트리가 증빙과 어긋난 self-invalid 릴리스를 만드는 것을 막는다.
-        # 릴리스 커밋은 기계적이므로 hook을 태울 이유가 없다.
-        subprocess.run(["git", "-C", str(root), "commit", "-q", "--no-verify",
-                        "-m", f"release: {version} — 비준증빙"],
-                       check=True, timeout=60)
-        mine = _git(root, "rev-parse", "HEAD").stdout.strip() or None
-        # **태그 전 전수 재대조** — 커밋된 트리가 증빙과 정확히 일치하는지 본다.
-        # 증빙 **자체의 bytes**도 대조한다: add 직후 다른 프로세스가 release.json만
-        # 변조해 다시 stage하면 나머지 파일은 그대로라 존재 확인만으로는 통과한다.
-        committed_att = _git_show_bytes(root, f"HEAD:{ATTESTATION}")
+        blob = subprocess.run(["git", "-C", str(root), "hash-object", "-w",
+                               "--stdin"], input=att_bytes,
+                              capture_output=True, timeout=120)
+        if blob.returncode != 0:
+            raise ReleaseError(f"증빙 blob 생성 실패: {blob.stderr.decode()[-200:]}")
+        blob_sha = blob.stdout.decode().strip()
+        with tempfile.TemporaryDirectory(prefix="osk-idx-") as td:
+            env = dict(os.environ, GIT_INDEX_FILE=str(Path(td) / "index"))
+
+            def _g(*args, timeout=120):
+                return subprocess.run(["git", "-C", str(root), *args],
+                                      capture_output=True, text=True,
+                                      env=env, timeout=timeout)
+            r = _g("read-tree", base)
+            if r.returncode != 0:
+                raise ReleaseError(f"read-tree 실패: {r.stderr.strip()[-200:]}")
+            r = _g("update-index", "--add", "--cacheinfo",
+                   f"100644,{blob_sha},{ATTESTATION}")
+            if r.returncode != 0:
+                raise ReleaseError(f"update-index 실패: {r.stderr.strip()[-200:]}")
+            r = _g("write-tree")
+            if r.returncode != 0:
+                raise ReleaseError(f"write-tree 실패: {r.stderr.strip()[-200:]}")
+            tree_sha = r.stdout.strip()
+        r = _git(root, "commit-tree", tree_sha, "-p", base,
+                 "-m", f"release: {version} — 비준증빙")
+        if r.returncode != 0:
+            raise ReleaseError(f"commit-tree 실패: {r.stderr.strip()[-200:]}")
+        new = r.stdout.strip()
+        # **태그 전 전수 재대조** — 우리가 만든 커밋이지만, 구성 실수·object 이상을
+        # 잡기 위해 커밋된 증빙 bytes와 트리를 다시 대조한다(기준은 커밋 안의 증빙).
+        committed_att = _git_show_bytes(root, f"{new}:{ATTESTATION}")
         if committed_att is None:
             raise ReleaseError("증빙이 릴리스 커밋에 담기지 않았다")
         if json.loads(committed_att.decode("utf-8")) != att:
             raise ReleaseError(
                 "커밋된 증빙이 선언한 증빙과 다르다 — 선언 중단(증빙 변조?)")
-        committed_tree = tree_hashes(root, "HEAD")
+        committed_tree = tree_hashes(root, new)
         committed_tree.pop(ATTESTATION, None)
-        # 기준은 **커밋에 들어간 증빙**이다(메모리 사본이 아니라).
         want = json.loads(committed_att.decode("utf-8"))["files"]
         if committed_tree != want:
             diff = sorted(set(committed_tree) ^ set(want)) or [
@@ -251,15 +265,34 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
             raise ReleaseError(
                 f"커밋 트리가 증빙과 다르다 — 선언 중단(외부 수정 유입?): "
                 f"{diff[:5]}")
-        r = _git(root, "tag", version)
+        # 브랜치 설치는 **CAS**다 — 그 사이 남이 커밋했으면 실패하고 아무것도
+        # 남지 않는다(남의 커밋을 덮지도, 떨어뜨리지도 않는다).
+        r = _git(root, "update-ref", f"refs/heads/{branch}", new, base)
         if r.returncode != 0:
-            raise ReleaseError(f"태그 실패: {r.stderr.strip()}")
+            raise ReleaseError(
+                f"브랜치 갱신(CAS) 실패 — 그 사이 다른 커밋이 들어왔다: "
+                f"{r.stderr.strip()[-200:]}")
+        installed = True
+        # 태그는 **검증한 그 SHA**에 붙인다(현재 HEAD가 아니라).
+        r = _git(root, "tag", version, new)
+        if r.returncode != 0:
+            raise ReleaseError(f"태그 실패: {r.stderr.strip()[-200:]}")
+        # 작업 트리·index를 새 HEAD에 맞춘다 — 우리가 만든 증빙 파일 하나뿐이다.
+        ap.write_bytes(att_bytes)
+        r = _git(root, "update-index", "--add", "--", ATTESTATION)
+        if r.returncode != 0:
+            raise ReleaseError(f"증빙 index 반영 실패: {r.stderr.strip()[-200:]}")
     except (subprocess.SubprocessError, ReleaseError, OSError, ValueError) as e:
-        undone, why = _rollback(root, mine, had_att, pre_att, ap)
-        state = ("선언 전으로 원상복구했다" if undone
+        why = ""
+        if installed:                   # 설치까지 갔으면 CAS로 되돌린다
+            rb = _git(root, "update-ref", f"refs/heads/{branch}", base, new)
+            if rb.returncode != 0:
+                why = f"브랜치 되돌리기 실패: {rb.stderr.strip()[-200:]}"
+            _git(root, "tag", "-d", version)
+        state = ("선언 전으로 원상복구했다" if not why
                  else f"**원상복구하지 못했다 — 수동 확인 필요**({why})")
-        raise ReleaseError(f"릴리스 mutation 실패 — {state}: {e}")
-    out.update(applied=True, tagged=version)
+        raise ReleaseError(f"릴리스 선언 실패 — {state}: {e}")
+    out.update(applied=True, tagged=version, commit=new)
     return out
 
 
