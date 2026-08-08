@@ -16,20 +16,23 @@ cherry-pick하는 방식이었고, 그것은 두 저장소의 **경로가 같다
 가드 (모두 통과해야 발행):
 1. **매니페스트 밖 금지** — 나가는 모든 파일은 MAP이 사상한 것이어야 한다.
 2. **DENY 조각** — 대장·`_raw`·`_sources`·부산물은 대상 안이라도 제외.
-3. **지식 유출 금지** — `_governance/` 밖에 노드형(frontmatter) 파일이 있으면 중단.
+3. **지식 유출 금지** — `_governance/` 밖에 노드형(frontmatter) 파일이 있으면
+   중단. 통치 문서·사료는 특수한 노드라 통치 구획 안의 frontmatter는 정상이다.
 4. **비밀값** — 나가는 전 파일을 `secrets.PATTERNS`로 훑는다.
-5. **미서명 통치 문서 금지** — 사용자가 확인하지 않은 규범을 세상에 내놓지 않는다.
-6. **검증기 PASS** — 깨진 vault에서 발행하지 않는다.
+5. **검증기 PASS** — 깨진 vault에서 발행하지 않는다.
+
+발행에 서명 가드는 없다 — 통치 문서의 비준은 정본 저장소에 대한 사용자의
+확정이고 정식 릴리스의 비준증빙이 고정하며(헌법 14조 1항·시행령 §10 2·6항),
+서명은 각 인스턴스 사용자의 수용 기록이지 발행·효력의 요건이 아니다.
 """
 from __future__ import annotations
 import argparse, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 from .core import ROOT, posix_rel
-from . import contract, graph, secrets, signatures, validate
+from . import secrets, validate
 
 MANIFEST = ROOT / "_governance" / "_engine" / "scripts" / "publish-manifest.txt"
-GOVERNANCE_DST = "_governance/"
 
 
 class PublishError(RuntimeError):
@@ -96,9 +99,13 @@ def collect(man: dict) -> list[tuple[Path, str]]:
 
 # ── 가드 ─────────────────────────────────────────────────────────────────
 
+GOVERNANCE_DST = "_governance/"
+
+
 def guard_knowledge(items: list[tuple[Path, str]]) -> list[str]:
     """`_governance/` 밖에 노드형 파일이 나가면 지식 코퍼스 유출이다.
-    공개 미러는 프레임워크이지 이 인스턴스의 지식이 아니다."""
+    공개 미러는 프레임워크이지 이 인스턴스의 지식이 아니다. 통치 구획의
+    노드형은 정상이다 — 통치 문서·사료는 특수한 노드다(시행령 §10 1항)."""
     errs = []
     for src, dst in items:
         if dst.startswith(GOVERNANCE_DST) or src.suffix != ".md":
@@ -108,7 +115,7 @@ def guard_knowledge(items: list[tuple[Path, str]]) -> list[str]:
         except OSError:
             continue
         if head.startswith("---\n"):
-            errs.append(f"지식 노드가 발행 대상에 있다: {dst}")
+            errs.append(f"노드형 파일이 발행 대상에 있다: {dst}")
     return errs
 
 
@@ -127,26 +134,6 @@ def guard_secrets(items: list[tuple[Path, str]]) -> list[str]:
         _, hits = secrets.filter_text(text)
         if hits:
             errs.append(f"{dst}: 비밀값 패턴 {sorted(set(hits))}")
-    return errs
-
-
-def guard_signed(items: list[tuple[Path, str]]) -> list[str]:
-    """발행되는 통치 문서는 서명돼 있어야 한다 — 사용자가 확인하지 않은 규범을
-    세상에 내놓지 않는다. 사료(`records/`)는 노드 계약 밖이므로 제외한다."""
-    errs = []
-    gov = ROOT / "_governance"
-    for src, dst in items:
-        if not dst.startswith(GOVERNANCE_DST) or src.suffix != ".md":
-            continue
-        if src.parent != gov:            # 통치 문서 4종만 — 사료는 대상 아님
-            continue
-        try:
-            n = contract.parse(src)
-        except Exception as e:
-            errs.append(f"{dst}: 파싱 실패 {e}")
-            continue
-        if signatures.status(n.id, src) != "signed":
-            errs.append(f"{dst}: 미서명 — 사용자 확인 전에는 발행하지 않는다")
     return errs
 
 
@@ -224,8 +211,7 @@ def run(public: Path, apply: bool = False, push: bool = False,
         raise PublishError(f"공개 저장소가 아니다: {public}")
     man = parse_manifest(manifest or MANIFEST)
     items = collect(man)
-    errs = (guard_knowledge(items) + guard_secrets(items)
-            + guard_signed(items) + guard_vault())
+    errs = guard_knowledge(items) + guard_secrets(items) + guard_vault()
     if errs:
         raise PublishError("발행 가드 위반 — 아무것도 쓰지 않았다:\n  "
                            + "\n  ".join(errs))

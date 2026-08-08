@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
-from osk._portalock import lock_exclusive  # noqa: E402
+from osk._portalock import lock_exclusive, unlock  # noqa: E402
 
 ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
         if os.environ.get("OSK_VAULT_ROOT")
@@ -34,8 +34,10 @@ def _on_signal(signum, frame):
     _stop = True
 
 
-def _lock_path(root: Path = ROOT) -> Path:
-    """싱글턴 잠금 파일의 경로 — 추적 트리 밖으로만 고른다.
+def _lock_path(root: Path = ROOT, name: str = "osk-sync.lock") -> Path:
+    """잠금 파일의 경로 — 추적 트리 밖으로만 고른다. `name`으로 잠금을 구분한다:
+    `osk-sync.lock`은 데몬 싱글턴(한 기기 한 데몬), `osk-mutation.lock`은 update와
+    공유하는 **working-tree 변경 상호배제** 잠금이다.
 
     `<vault>/.git`은 worktree에서 디렉터리가 아니라 파일이므로 존재 여부로
     판단하면 안 된다. 실제 git 디렉터리를 git에게 묻고, 그것도 실패하면
@@ -49,18 +51,46 @@ def _lock_path(root: Path = ROOT) -> Path:
             if not d.is_absolute():
                 d = root / d
             if d.is_dir():
-                return d / "osk-sync.lock"
+                return d / name
     except Exception:  # noqa: BLE001 — git 부재·타임아웃 모두 임시 디렉터리로
         pass
     key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f"osk-sync-{key}.lock"
+    stem = name.rsplit(".", 1)[0]
+    return Path(tempfile.gettempdir()) / f"{stem}-{key}.lock"
 
 
 def once(root: Path = ROOT) -> str:
     """ensure_branch → commit_local → pull(rebase) → push. vault_sync 자체 계약
-    순서를 따른다. 충돌·거부는 삼키지 않고 상태 문자열로 표면화한다."""
+    순서를 따른다. 충돌·거부는 삼키지 않고 상태 문자열로 표면화한다.
+
+    working-tree를 건드리는 구간 전체를 **mutation 잠금** 아래 둔다 — update가
+    파일을 반쯤 바꾼 순간에 데몬의 `git add -A`가 그 혼합 상태를 커밋·push하지
+    못하게 한다(update와 공유하는 잠금). 잡혀 있으면 이번 tick을 건너뛴다.
+
+    잠금을 얻어도 **미완료 트랜잭션 표식**(`.osk/txn/manifest.json`)이 남아 있으면
+    거부한다 — update 프로세스가 죽으면 OS가 잠금을 풀지만 working tree에는
+    half-applied 파일이 남는다. 표식이 사라지는 것은 updater의 복구가 끝났다는
+    뜻이며, 그때까지 혼합 상태를 커밋·push하지 않는다."""
     if not vault_sync.is_git_repo(root):
         return "git 저장소 아님"
+    mlock = open(_lock_path(root, "osk-mutation.lock"), "w")
+    acquired = False
+    try:
+        try:
+            lock_exclusive(mlock, blocking=False)
+            acquired = True
+        except OSError:
+            return "locked"          # update가 mutation 중 — 다음 주기에 맡긴다
+        if (root / ".osk" / "txn" / "manifest.json").is_file():
+            return "pending-txn"     # 갱신이 죽어 half-applied — 복구 전엔 손대지 않는다
+        return _once_locked(root)
+    finally:
+        if acquired:                 # 소유하지 않은 잠금은 풀지 않는다(Windows 안전)
+            unlock(mlock)
+        mlock.close()
+
+
+def _once_locked(root: Path) -> str:
     # 동기화 대상은 main 고정이다. HEAD를 따라가면 어떤 세션이 잠깐 다른
     # 브랜치를 checkout해 둔 사이에 그 브랜치가 정본인 양 커밋·push된다.
     switched, st, detail = vault_sync.ensure_branch(root)

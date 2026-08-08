@@ -38,13 +38,24 @@ def main(argv=None):
     p.add_argument("path"); p.add_argument("--reason", required=True)
     p = sub.add_parser("unsign", help="[사용자 전속] 서명 해제")
     p.add_argument("node_id"); p.add_argument("--reason", required=True)
+    sub.add_parser("update", help="정본 릴리스로 갱신 (osk.update로 위임)"
+                   ).add_argument("rest", nargs=argparse.REMAINDER)
+    sub.add_parser("release", help="[정본 전용] 정식 릴리스 선언 (osk.release로 위임)"
+                   ).add_argument("rest", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
 
     if a.cmd == "validate":
         validate.main()
     elif a.cmd == "status":
         idx = graph.Index()
-        latest = signatures.latest_by_node()
+        current = set()
+        for _s, (pp, _k) in idx.nodes.items():
+            try:
+                current.add(idx.node(pp).id)
+            except Exception:
+                pass
+        latest = {n: r for n, r in signatures.latest_by_node().items()
+                  if n in current}
         signed = sum(1 for nid in latest if signatures.status(nid) == "signed")
         print(json.dumps({
             "nodes": len(idx.nodes),
@@ -76,6 +87,12 @@ def main(argv=None):
         _confirm(f"{a.node_id} 서명을 해제합니까? [y/N] ")
         rec = signatures.unsign(a.node_id, a.reason)
         print("해제 등재:", rec["rid"])
+    elif a.cmd == "update":
+        from . import update as _u
+        _u.main(a.rest)
+    elif a.cmd == "release":
+        from . import release as _r
+        _r.main(a.rest)
 
 
 if __name__ == "__main__":
