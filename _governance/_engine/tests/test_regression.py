@@ -519,6 +519,25 @@ def test_sync_pins_main():
         check("회복 후 HEAD가 main", vault_sync.current_branch(R) == "main")
 
 
+# ── 8-3. 데몬은 콘솔 없는 pythonw로 돈다 — git bare-spawn 재도입 금지 ──────
+def test_daemon_no_bare_git_spawn():
+    """검은 콘솔 재발 방지(2026-08-09). 데몬은 pythonw(콘솔 없음)로 돌아,
+    직접 subprocess로 git.exe를 spawn하면 Windows가 tick마다 새 콘솔 창을
+    할당한다. `_lock_path`가 이 실수를 저질렀고, v2.2.0이 그 함수를 매 tick
+    호출로 승격하며 15분 주기 증상으로 표면화됐다. 데몬의 git은 전부
+    vault_sync._git(=CREATE_NO_WINDOW 하드닝의 단일 소유자)를 거쳐야 한다 —
+    이 계약을 AST로 고정해 새 호출부가 조용히 bare-spawn을 되살리지 못하게 한다."""
+    import ast
+    src = (ENGINE / "sync_daemon.py").read_text(encoding="utf-8")
+    bare = [f"line {n.lineno}: subprocess.{n.func.attr}(...)"
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "subprocess"]
+    check("sync_daemon은 subprocess로 직접 git을 spawn하지 않는다 "
+          "(전부 vault_sync._git 게이트웨이 경유)", not bare, "; ".join(bare))
+
+
 # ── 9. conflicts 적격 — 열린 사건 또는 존치 상호+실재 존치 사건 결속 ─────
 def test_conflicts_semantics():
     write_case("CASE-2026-9001", status="docketed", verdict=None,
@@ -2872,7 +2891,7 @@ if __name__ == "__main__":
                test_refusal_teaches_address, test_id_as_handle,
                test_surface_name_roundtrip, test_validate_uses_destination_path,
                test_dup_stem_write_refused,
-               test_sync_pins_main,
+               test_sync_pins_main, test_daemon_no_bare_git_spawn,
                test_publish_manifest, test_publish_guards,
                test_conflict_candidates,
                test_release_and_update,

@@ -15,7 +15,7 @@ vault_sync(순수 git 헬퍼)는 「동기화 데몬 예외」로 재사용한�
        절대 폴백하지 않는다(데몬 자신의 `git add -A`가 잠금 파일을 커밋한다).
 """
 from __future__ import annotations
-import argparse, hashlib, os, signal, subprocess, sys, tempfile, time
+import argparse, hashlib, os, signal, sys, tempfile, time
 from datetime import datetime
 from pathlib import Path
 
@@ -41,11 +41,15 @@ def _lock_path(root: Path = ROOT, name: str = "osk-sync.lock") -> Path:
 
     `<vault>/.git`은 worktree에서 디렉터리가 아니라 파일이므로 존재 여부로
     판단하면 안 된다. 실제 git 디렉터리를 git에게 묻고, 그것도 실패하면
-    임시 디렉터리에 루트 경로 해시를 키로 둔다(기기 안 vault별 유일)."""
+    임시 디렉터리에 루트 경로 해시를 키로 둔다(기기 안 vault별 유일).
+
+    git은 반드시 `vault_sync._git` 게이트웨이로만 부른다 — 데몬은 콘솔 없는
+    pythonw로 돌고, 이 함수는 매 tick(mutation 잠금 경로 계산)마다 불린다.
+    bare `subprocess`로 git.exe를 spawn하면 Windows가 tick마다 새 콘솔 창을
+    깜빡인다. 게이트웨이가 `CREATE_NO_WINDOW`(+`GIT_TERMINAL_PROMPT=0`) 하드닝의
+    단일 소유자다(bare-spawn 재도입은 test_regression이 AST로 막는다)."""
     try:
-        r = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=10)
+        r = vault_sync._git(root, ["rev-parse", "--git-common-dir"], 10)
         if r.returncode == 0 and r.stdout.strip():
             d = Path(r.stdout.strip())
             if not d.is_absolute():
