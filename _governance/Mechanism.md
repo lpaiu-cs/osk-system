@@ -32,11 +32,12 @@ derived-from: 260802-114u-7lo3
 
 3. Workbench scope의 내부: 루트의 파일은 작업 상태(비노드)다. 노드는
    `transit/`(경유 노드)에만 둔다. `_ledger/`는 대장 구획으로
-   `approvals.jsonl`(승인 기록부 — §3)·`baseline/`(승인본 보관 — §3)·
+   `approvals.jsonl`(승인 기록부 — §3)·`approved/`(승인본 보관 — §3)·
    `case/`(사건부)·`migration/`(이행 기록)·`pins.jsonl`(pin 기록)·
    `routing.jsonl`(세션 라우팅)·`rechecks.jsonl`(근거 재검토 완료 기록 —
-   §4-1)을 담는다. `signatures.jsonl`은 구체제 서명 기록부의 사료로
-   보존하며 새 기록을 추가하지 않는다. `_raw/`는 운영 세션 기록이다.
+   §4-1)·`update.jsonl`(갱신 저널 — §1-2 7항)을 담는다.
+   `signatures.jsonl`은 구체제 서명 기록부의 보존 기록이며 새 기록을
+   추가하지 않는다. `_raw/`는 운영 세션 기록이다.
 4. **접두 규칙**: `= ` 접두는 Space 루트의 강조 표기다. 밑줄 접두 구획에는
    노드를 두지 않는다 — 유일한 예외가 `_governance/`로, Space 밖의 통치
    구획으로서 통치 문서·사료를 특수한 노드로 담는다(헌법 3조 6항 · 시행령
@@ -231,13 +232,13 @@ derived-from: 260802-114u-7lo3
 4. **영역 tree**: 영역 안 전체 파일의 (vault 상대 POSIX 경로, 내용
    sha256) 쌍을 경로 오름차순으로 담은 목록을 공백 없는 UTF-8 JSON으로
    직렬화한 것이 manifest이고, manifest의 sha256이 tree 해시다. manifest와
-   파일 내용 blob은 `_ledger/baseline/objects/<해시 앞 2자>/<나머지>`에
+   파일 내용 blob은 `_ledger/approved/objects/<해시 앞 2자>/<나머지>`에
    내용 주소로 보관한다. 같은 내용은 한 번만 저장되고, 다기기 병합은
    합집합으로 자명하다 — 같은 해시는 같은 내용이다.
 5. 판정: 영역의 현행 승인본은 그 `region`의 유일한 인과 극대 기록이 정한다
    — `protect`·`approve`는 그 `accepted`, `revert`는 그 `base`,
-   `unprotect`는 보호 없음. 극대가 여럿이면 stale로 보아 승인·반려를
-   보류하고, 모든 head를 잇는 사용자의 새 기록이 봉합한다. pending은 현행
+   `unprotect`는 보호 없음. 극대가 여럿이면 승인·반려를 보류하고, 모든
+   head를 잇는 사용자의 새 기록이 봉합한다. pending은 현행
    작업본 tree와 승인본 tree의 불일치다.
 6. 순서와 실패: `approve`는 append 직전에 `base`가 현행 승인본과 일치하고
    `accepted`가 승인 시점 작업본의 영역 tree와 일치하는지 함께 확인한다 —
@@ -253,15 +254,17 @@ derived-from: 260802-114u-7lo3
    대장의 복구는 양쪽 행의 합집합이며(`rid`가 유일하므로 중복 행은
    버린다), 이후 모든 head를 `parents`로 잇는 사용자의 기록이 갈래를
    봉합한다.
-9. `signatures.jsonl`은 구체제 서명 기록부의 사료로 보존한다 — 새 기록을
+9. `signatures.jsonl`은 구체제 서명 기록부의 보존 기록이다 — 새 기록을
    추가하지 않으며, 어떤 판정의 근거도 아니다(헌법 제14조 6항).
 
 ## §4 사건부 (`_ledger/case/`)
 
 1. 충돌 후보 대장 `candidates.jsonl`:
-   `{"rid": "<UUIDv7>", "kind": "candidate"|"dismiss", "basis": "<근거 키>",
+   `{"rid": "<UUIDv7>", "parents": ["<head rid>", ...],
+   "kind": "candidate"|"dismiss", "basis": "<근거 키>",
    "basis_version": 1, "type": "<충돌 유형>", "nodes": ["<id>", ...],
-   "at": "<ISO>", "reason": "<선택>"}`
+   "at": "<ISO>", "reason": "<선택>"}` — `parents`가 없는 기존 기록은 §3
+   1항의 유산 규칙(파일 순서를 인과로 간주)을 따른다.
 2. `basis`는 정렬된 전체 당사자 `id` 집합 + 충돌 유형 + 검사 당시 각
    당사자의 상태 해시로 만드는 정규화 키다. 당사자의 상태가 변하거나 새
    근거가 생기면 키가 달라져 재상정이 가능하다 — 중복 억제는 같은 근거에만
@@ -278,7 +281,7 @@ derived-from: 260802-114u-7lo3
    `case_no` / `status`(docketed·adjudicated) / `parties`(`id` 목록) /
    `docketed_at` / `verdict`(기각·수정·존치·null) / `verdict_at` /
    `applied`(적용 결과) / `schema_version`. `pre_sign`은 구체제 필드다 —
-   기존 사건 기록에서는 사료로 보존하고 새 기록에는 두지 않으며, 이
+   기존 사건 기록에는 그대로 남기고 새 기록에는 두지 않으며, 이
    변경으로 `schema_version`을 올린다. 본문에는 근거·심의 경과·판결문을
    산문으로
    쓰고 당사자 위키링크(판례의 역참조)를 둔다.
@@ -313,7 +316,8 @@ derived-from: 260802-114u-7lo3
 1. 체제 이행의 감사 대장이다(헌법 14조 8~9항). 이행의 모든 변경은 실행
    전에 이 대장에 기록한다 — 형식 확정 전의 이동·변환은 하지 않는다.
 2. 판정 로그 `events.jsonl`:
-   `{"rid": "<UUIDv7>", "kind": "archive"|"move"|"transform"|"hold"|"drop",
+   `{"rid": "<UUIDv7>", "parents": ["<head rid>", ...],
+   "kind": "archive"|"move"|"transform"|"hold"|"drop",
    "source": "<구 경로>", "dest": "<신 경로|null>",
    "before": "sha256:<hex>", "after": "sha256:<hex>|null",
    "rule": "<적용 규칙>", "at": "<ISO>", "note": "<선택>"}`
@@ -323,7 +327,8 @@ derived-from: 260802-114u-7lo3
 
 ## §6 pin 기록 (`_ledger/pins.jsonl`)
 
-1. `{"rid": "<UUIDv7>", "kind": "pin"|"unpin",
+1. `{"rid": "<UUIDv7>", "parents": ["<head rid>", ...],
+   "kind": "pin"|"unpin",
    "target": "<군집 경로 또는 노드 id>", "at": "<ISO>", "reason": "<선택>"}`
 2. 군집의 형성·분화·재배정 판정은 실행 전에 이 파일을 대조한다(시행령 §3
    4항). pin은 노드가 아니며 위임의 효력을 갖지 않는다.
@@ -339,7 +344,7 @@ derived-from: 260802-114u-7lo3
    기록부·승인본 보관과 pin 기록에 기록을 추가해서는 안 된다.
 3. 그 밖의 도구는 노출할 수 있다. 노드를 쓰는 도구는 쓰기 전에 노드 계약과
    참조 위상을 검증하고, 군집의 배치를 바꾸는 도구는 pin 기록을 대조한다
-   (시행령 §3 4항 · §6 2항) — 표면은 계약 검증의 강제 지점이다. 검증에 실패한
+   (시행령 §3 4항 · 이 문서 §6 2항) — 표면은 계약 검증의 강제 지점이다. 검증에 실패한
    요청은 기록하지 않고 위반 목록을 돌려준다. 부분 성공을 만들지 않는다.
    쓰기 도구의 위상 검증은 그 노드에서 나가는 참조에 한한다 — 전역 상태의
    점검은 검증기의 일이다.
@@ -437,7 +442,8 @@ derived-from: 260802-114u-7lo3
 3. 그 밖의 마스킹은 적용하지 않는다.
 4. `_raw/` 쓰기는 기존 파일의 정확한 바이트를 새 파일의 접두부로 보존하는
    append만 허용한다. 접두부가 달라지면 쓰기를 거부한다. 새 라운드는 시행령
-   §2 7항과 §8 3항의 다음 index 제목으로 시작하며, 기존 index를 고치거나
+   §2 7항과 이 문서 §8 3항의 다음 index 제목으로 시작하며, 기존 index를
+   고치거나
    재번호화하지 않는다.
 
 ## §10 해석 각서
