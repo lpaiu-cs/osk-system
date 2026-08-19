@@ -1,14 +1,16 @@
 """osk.write — 노드 쓰기의 **단일 통로**.
 
 구현 근거: Mechanism §6-2 3항(표면은 계약 검증의 강제 지점), 시행령 §1(노드
-계약)·§3 4항(pin 대조)·§11(실패는 보류·보고), 헌법 8조(참조 위상)·10조
-3항(서명은 사용자 전속)·12조 2항(충돌 후보 기록).
+계약)·§3 4항(pin 대조)·§11(실패는 보류·보고), 헌법 8조(참조 위상)·12조
+2항(충돌 후보 기록).
 
 MCP 도구와 CLI가 **같은 이 통로**를 쓴다 — 쓰기 경로가 둘로 갈라지면 한쪽만
 계약을 지키게 된다.
 
-이 모듈은 서명 기록부와 pin 기록에 **결코 쓰지 않는다**(Mechanism §6-2 2항).
-검증기의 표면 세그먼트가 그 사실을 AST로 강제한다.
+이 모듈은 승인 기록부와 pin 기록에 **결코 쓰지 않는다**(Mechanism §6-2 2항).
+보호영역의 승인·반려는 사용자 전속(대화형 단말)이며, 표면 쓰기는 언제나
+작업본에 반영될 뿐이다(§6-2 8항) — 검증기의 표면 세그먼트가 이를 AST로
+강제한다.
 
 동시성 (설계 rev.3 §4):
 - v1은 **전역 단일 쓰기 잠금**이다. 노드 단위 잠금을 경로로 키잡으면 move와
@@ -20,9 +22,9 @@ MCP 도구와 CLI가 **같은 이 통로**를 쓴다 — 쓰기 경로가 둘로
 - 잠금 안 재판독에서 부재·파손이면 거부한다 — 델타가 파손 파일을 "복구"하지
   않는다.
 
-CAS (설계 rev.3 §2): `expect_hash`는 **연산이 아니라 서명에 결속**한다.
-본문 전체 치환은 언제나 필수, 무-body 변경은 대상이 **서명 노드일 때만** 필수다.
-거부 응답에 현재 해시를 담지 않는다 — 담으면 관측 증명이 연극이 된다.
+CAS (Mechanism §6-2 4항): `expect_hash`는 **본문 전체 치환**에 결속한다 —
+보지 않은 상태를 덮지 않게 한다. 부분 변경(엣지 델타·summary)에는 요구하지
+않는다. 거부 응답에 현재 해시를 담지 않는다 — 담으면 관측 증명이 연극이 된다.
 """
 from __future__ import annotations
 import json, os, re, tempfile, unicodedata
@@ -39,7 +41,7 @@ from . import contract, graph, signatures
 WRITE_LOCK = LEDGER / ".write.lock"      # 전역 쓰기 잠금 (대장 구획, git 추적 밖)
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
-                   "lineage-fork", "delegation-overlap")   # Mechanism §4 3항
+                   "delegation-overlap")   # Mechanism §4 3항 (lineage-fork 폐지)
 
 
 class WriteError(ValueError):
@@ -203,7 +205,7 @@ def _render(meta: dict, body: str) -> bytes:
         lines.append(f"{k}: {_scalar(meta[k])}")
     for k in contract.PREDICATES:
         if k in meta and meta[k] not in (None, [], ""):
-            lines.append(f"{k}: {_scalar(meta[k])}")
+            lines.append(f"{k}: {_edge_value(k, meta[k])}")
     lines.append("---")
     return ("\n".join(lines) + "\n\n" + _norm_body(body) + "\n").encode()
 
@@ -215,6 +217,22 @@ def _scalar(v):
         return "[" + ", ".join(json.dumps(str(x), ensure_ascii=False)
                                for x in v) + "]"
     return json.dumps(str(v), ensure_ascii=False)
+
+
+def _edge_value(pred: str, v) -> str:
+    """Predicate Edge 값의 표기 (시행령 §1 3항 · Mechanism §8 2항):
+    `derived-from`의 노드 대상(id)은 **맨값**으로, 비노드 대상과 `conflicts`의
+    위키링크는 따옴표로 감싼 스칼라로 쓴다. id는 계약이 문자열로 해석하며,
+    맨값·따옴표 어느 쪽으로 되읽어도 같은 문자열이라 왕복이 안정적이다."""
+    def one(x):
+        s = str(x).strip()
+        if pred == "derived-from" and re.match(ID_RE, s):
+            return s                                   # id — 맨값
+        return json.dumps(s, ensure_ascii=False)       # 위키링크 — 따옴표
+    items = v if isinstance(v, list) else [v]
+    if len(items) == 1:
+        return one(items[0])
+    return "[" + ", ".join(one(x) for x in items) + "]"
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -336,7 +354,18 @@ def _validate_render(path: Path, meta: dict, body: str) -> tuple[bytes, list[str
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
-    if {k: str(v) for k, v in back.meta.items()} != {k: str(v) for k, v in meta.items()}:
+    # 왕복 비교는 **논리값**으로 한다 — Predicate Edge의 단일 원소 리스트
+    # `[x]`와 스칼라 `x`는 대상이 하나로 같다. _edge_value가 단일 목록을
+    # 맨값으로 접으므로, 표현 차이(리스트↔스칼라)를 불일치로 오판하면 손으로
+    # 쓴 `derived-from: [<id>]` 노드가 무관한 갱신마다 거부된다.
+    def _norm(m):
+        out = {}
+        for k, v in m.items():
+            if k in contract.PREDICATES and isinstance(v, list) and len(v) == 1:
+                v = v[0]
+            out[k] = str(v)
+        return out
+    if _norm(back.meta) != _norm(meta):
         return data, [f"직렬화 왕복 불일치 — 쓰지 않았다: {sorted(back.meta)} vs {sorted(meta)}"]
     return data, _validate_node(path, back, body)
 
@@ -401,23 +430,17 @@ def _dangling_of(path: Path, meta: dict, body: str) -> list[str]:
 
 def _cas(path: Path, node_id: str, expect_hash: str | None,
          body_given: bool) -> dict:
-    """CAS는 **서명에 결속**한다 (설계 rev.3 §2). 반환: 서명 표면화 정보.
+    """CAS는 **본문 전체 치환**에 결속한다 (Mechanism §6-2 4항). 서명이
+    폐지됐으므로 부분 변경(엣지 델타·summary)에는 expect_hash를 요구하지
+    않는다 — 보호영역의 승인/반려는 별도 표면(대화형 단말)의 일이다.
     거부 응답에 현재 해시를 담지 않는다 — 관측 증명이 연극이 되지 않게."""
-    signed = signatures.status(node_id, path) == "signed"
-    need = body_given or signed
-    if need and not expect_hash:
-        rec = signatures.causal_maxima(signatures.records(), node_id) \
-            if signed else []
+    if body_given and not expect_hash:
         raise WriteError(
-            "서명된 노드다 — 읽은 상태의 해시(expect_hash)를 함께 보내야 한다"
-            if signed else
-            "본문 전체 치환에는 읽은 상태의 해시(expect_hash)가 필요하다",
-            signed=signed,
-            signature_rid=(rec[0]["rid"] if rec else None))
+            "본문 전체 치환에는 읽은 상태의 해시(expect_hash)가 필요하다")
     if expect_hash and sha256_file(path) != expect_hash:
         raise WriteError(
             "그 사이 노드가 변경됐다 — 다시 읽고 재시도하라 (CAS 불일치)")
-    return {"was_signed": signed}
+    return {}
 
 
 # ── 세션 라우팅 (Mechanism §6-2 3항) ─────────────────────────────────────
@@ -538,7 +561,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 "created": now, "updated": now,
                 "author": "agent", "drafter": drafter, "summary": summary}
         for pred, tg in (edges or {}).items():
-            meta[pred] = _as_links(tg)
+            meta[pred] = _as_links(pred, tg)
         data, errs = _validate_render(path, meta, body)
         if errs:
             raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
@@ -552,7 +575,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
             bound_now = dest_dir.name       # 실제로 결속했을 때만 보고한다
         return {"ok": True, "name": title,
                 "path": str(path.relative_to(ROOT)), "id": meta["id"],
-                "new_hash": sha256_bytes(data), "signed": False,
+                "new_hash": sha256_bytes(data),
                 "bound_scope": bound_now,
                 "dangling": _dangling_of(path, meta, body)}
 
@@ -573,9 +596,16 @@ def _as_list(v) -> list:
     return v if isinstance(v, list) else [v]
 
 
-def _as_links(targets) -> str | list:
-    vals = _as_list(targets)
-    out = [t if str(t).startswith("[[") else f"[[{t}]]" for t in vals]
+def _as_links(pred: str, targets) -> str | list:
+    """입력 대상을 저장 표기로 접는다. `derived-from`의 id 대상은 맨값으로
+    남기고, 그 밖(비노드 경로·conflicts 사건)은 위키링크로 감싼다."""
+    out = []
+    for t in _as_list(targets):
+        s = str(t).strip()
+        if s.startswith("[[") or (pred == "derived-from" and re.match(ID_RE, s)):
+            out.append(s)
+        else:
+            out.append(f"[[{s}]]")
     return out[0] if len(out) == 1 else out
 
 
@@ -599,7 +629,7 @@ def update_node(name: str, body: str | None = None,
         except Exception as e:
             raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
 
-        sig = _cas(path, n.id, expect_hash, body is not None)
+        _cas(path, n.id, expect_hash, body is not None)   # 위반 시 raise
         meta = dict(n.meta)
         replaced_summary = None
         changed = False
@@ -613,7 +643,7 @@ def update_node(name: str, body: str | None = None,
             new = [t for t in _as_list(tg)
                    if contract.target_stem(t) not in have]
             if new:
-                meta[pred] = _as_links(cur + new)
+                meta[pred] = _as_links(pred, cur + new)
                 changed = True
         for pred, tg in (remove_edges or {}).items():
             drop = {contract.target_stem(t) for t in _as_list(tg)}
@@ -622,7 +652,7 @@ def update_node(name: str, body: str | None = None,
             if len(keep) != len(cur):
                 changed = True
                 if keep:
-                    meta[pred] = _as_links(keep)
+                    meta[pred] = _as_links(pred, keep)
                 else:
                     meta.pop(pred, None)
         new_body = n.body if body is None else body
@@ -648,7 +678,6 @@ def update_node(name: str, body: str | None = None,
             return {"ok": True, "no_change": True, "name": name,
                     "path": str(path.relative_to(ROOT)), "id": n.id,
                     "new_hash": sha256_file(path),
-                    "signed": signatures.status(n.id, path) == "signed",
                     "edges": {p: n.edges(p) for p in contract.PREDICATES},
                     "dangling": _dangling_of(path, n.meta, n.body)}
         if not only_conflicts:
@@ -660,22 +689,19 @@ def update_node(name: str, body: str | None = None,
         _atomic_write(path, data)
         out = {"ok": True, "name": name, "path": str(path.relative_to(ROOT)),
                "id": n.id, "new_hash": sha256_bytes(data),
-               "signed": False, "updated_kept": only_conflicts,
+               "updated_kept": only_conflicts,
                "edges": {p: contract.Node(path=path, meta=meta,
                                           body=new_body).edges(p)
                          for p in contract.PREDICATES},
                "dangling": _dangling_of(path, meta, new_body)}
-        out.update(sig)
-        if sig.get("was_signed"):
-            out["now_unsigned"] = True
         if replaced_summary is not None:
             out["replaced_summary"] = replaced_summary
         return out
 
 
 def move_node(name: str, dest_space: str) -> dict:
-    """군집 재배정. 이동은 바이트 불변이라 서명이 존속한다 — CAS가 없다.
-    pin된 군집은 출발·도착 어느 쪽이든 거부한다(시행령 §3 4항)."""
+    """군집 재배정. 이동은 바이트 불변이라 CAS가 없다(경로는 상태, 동일성은
+    id). pin된 군집은 출발·도착 어느 쪽이든 거부한다(시행령 §3 4항)."""
     with _Lock():
         path = _live_locate(name)
         if path is None or not path.is_file():
@@ -713,7 +739,6 @@ def move_node(name: str, dest_space: str) -> dict:
         return {"ok": True, "name": name, "id": n.id,
                 "path": str(target.relative_to(ROOT)),
                 "new_hash": before, "moved_from": str(path.relative_to(ROOT)),
-                "signed": signatures.status(n.id, target) == "signed",
                 "dangling": _dangling_of(target, n.meta, n.body)}
 
 

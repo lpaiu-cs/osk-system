@@ -3,14 +3,15 @@
 이 표면은 프로세스 경계다 — 클라이언트는 여기 선언된 도구만 호출할 수 있으므로,
 무엇을 선언하는지가 곧 그 클라이언트의 능력이다.
 
-**권위 비노출**: 서명(`sign`·`unsign`·`restore`)과 pin 기록은 노출하지 않는다.
-서명·해제의 발의는 대화형 단말 전속이다(헌법 10조 3항). 쓰기 도구는 전부
-`osk.write`의 단일 통로를 거치며, 그 통로는 서명 기록부와 pin 기록에 쓰지
-않는다 — 검증기의 표면 세그먼트가 이 사실을 AST로 강제한다.
+**권위 비노출**: 보호영역 권위(`protect`·`unprotect`·`approve`·`revert`)와
+pin 기록은 노출하지 않는다. 지정·해제·승인·반려의 발의는 대화형 단말
+전속이다(헌법 10조 1~2항). 쓰기 도구는 전부 `osk.write`의 단일 통로를 거치며,
+그 통로는 승인 기록부와 pin 기록에 쓰지 않는다 — 검증기의 표면 세그먼트가 이
+사실을 AST로 강제한다.
 
-에이전트가 노드를 고치면 상태 해시가 달라져 서명이 무효가 된다. 표면을 통한
-쓰기는 언제나 미서명 상태를 만들 뿐이며, 그것을 유효로 만드는 것은 사용자의
-서명뿐이다(§6-2 8항).
+표면을 통한 쓰기는 보호영역 안에서도 평소처럼 작업본에 반영될 뿐이며,
+승인본과의 차이는 변경집합으로 남는다. 그것을 승인본으로 만드는 것은 사용자의
+승인뿐이다(§6-2 8항).
 """
 from __future__ import annotations
 import os, subprocess, sys
@@ -31,11 +32,10 @@ from osk.core import ROOT, sha256_file  # noqa: E402
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
 # 이뤄진다(술어는 헌법 8조 5항, 충돌 유형은 Mechanism §4 3항의 목록이며,
 # 그 개정이 있을 때만 이 줄이 함께 바뀐다).
-Predicate: TypeAlias = Literal["supported-by", "replaces", "conflicts"]
+Predicate: TypeAlias = Literal["derived-from", "conflicts"]
 Edges: TypeAlias = dict[Predicate, str | list[str]]
 CandidateType: TypeAlias = Literal["contradiction", "duplication",
-                                   "competition", "lineage-fork",
-                                   "delegation-overlap"]
+                                   "competition", "delegation-overlap"]
 Title: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
 Drafter: TypeAlias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9.\-]{0,39}$")]
@@ -60,10 +60,6 @@ def _vault_fingerprint() -> str:
         except OSError:
             continue   # 열거와 stat 사이의 삭제 — 다음 호출의 지문이 달라진다
         h.update(f"{p.relative_to(ROOT)}|{st.st_mtime_ns}|{st.st_size}\n".encode())
-    from osk.core import SIGNATURES as sig
-    if sig.exists():
-        st = sig.stat()
-        h.update(f"__sig|{st.st_mtime_ns}|{st.st_size}".encode())
     return h.hexdigest()
 
 
@@ -142,18 +138,18 @@ def _guard(fn, *a, **kw) -> dict:
 @mcp.tool()
 def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8) -> list[dict]:
     """검색 — `query`의 어휘가 겹쳐야 걸린다(전 Space 연합, `_raw`·Workbench
-    제외). 결과의 `title`이 그대로 다른 도구의 `name`이다. `summary`는 미리보기이니 인용·판단은 `read_node`
-    뒤에 하고, 시기는 `updated`으로 걸러 필요한 것만 펼쳐라. `signed`가
-    false면 사용자가 확인하지 않은 후보다. 0건이면 어휘를 바꿔 재질의한다."""
+    제외). 결과의 `title`이 그대로 다른 도구의 `name`이다. `summary`는 미리보기이니
+    인용·판단은 `read_node` 뒤에 하고, 시기는 `updated`으로 걸러 필요한 것만
+    펼쳐라. 0건이면 어휘를 바꿔 재질의한다."""
     return _s().view_search(query, k)
 
 
 @mcp.tool()
 def read_node(name: str) -> dict:
     """노드 전문 읽기 — 본문 전체가 오므로 비싸다(평균 1.4k 토큰). 인용이나
-    본문 재작성 직전에만 부르고, 서명 여부나 해시만 알려고 부르지 마라 —
-    검색과 쓰기 응답이 `signed`·`new_hash`로 준다. `name`은 노드 제목이며
-    `id`로도 찾는다. `hash`는 `expect_hash`에 그대로 넣는다."""
+    본문 재작성 직전에만 부르고, 해시만 알려고 부르지 마라 — 쓰기 응답이
+    `new_hash`로 준다. `name`은 노드 제목이며 `id`로도 찾는다. `hash`는
+    `expect_hash`에 그대로 넣는다."""
     idx = _s().idx
     hit = idx.nodes.get(name)
     if not hit:
@@ -179,7 +175,6 @@ def read_node(name: str) -> dict:
         return {"error": f"파싱 실패 — 수동 확인 필요: {name} ({e})"}
     return {"path": str(hit[0].relative_to(ROOT)), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
-            "signed": search_mod.is_signed(n.id, hit[0]),
             "hash": sha256_file(hit[0]),
             "body": n.body}
 
@@ -225,6 +220,8 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `space`는 군집의 전체 경로(`"= Scope/W1"` 꼴, 맨 이름 `W1`은 거부)이니
     모르면 `overview`를 먼저 보라. `session`은 저장소 이름처럼 세션이 바뀌어도
     같은 값이며 첫 성공이 그 키를 영구 결속한다 — 1회용 대화 id를 넣지 마라.
+    `edges`의 `derived-from`은 근거를 가리킨다 — 노드 근거는 그 `id`
+    (`260802-114u-7lo3` 꼴)로, 비노드 근거는 `[[경로]]`·`[[경로#제목]]`로 준다.
     `conflicts`는 열린 사건 번호(`CASE-2026-1` 꼴)만 받는다. 본문의 `[[링크]]`도
     검사 대상이라 다른 scope의 노드는 직접 가리킬 수 없다."""
     return _guard(write.create_node, title, summary, body, drafter,
@@ -238,11 +235,11 @@ def update_node(name: str, body: str | None = None,
                 add_edges: Edges | None = None,
                 remove_edges: Edges | None = None) -> dict:
     """`name`이 가리키는 노드의 본문·summary·엣지 수정. 엣지는 델타라 현재
-    상태에 적용되니 선-읽기가 필요 없다. **확인하려고 먼저 읽지 마라** — 그냥 시도하면 거부가 짧게
-    서명 여부와 필요한 것을 알려준다. `expect_hash`는 `body`를 보낼 때(언제나
-    전문 치환이다)와 서명된 노드를 고칠 때 필수이며, 방금 쓴 응답의 `new_hash`를
-    그대로 이어 쓸 수 있다. 응답의 `dangling`은 대상이 아직 없는 링크이니
-    오타인지 확인하라."""
+    상태에 적용되니 선-읽기가 필요 없다. **확인하려고 먼저 읽지 마라** — 그냥
+    시도하면 거부가 짧게 필요한 것을 알려준다. `expect_hash`는 `body`를 보낼
+    때(언제나 전문 치환이다) 필수이며, 방금 쓴 응답의 `new_hash`를 그대로 이어
+    쓸 수 있다. 응답의 `dangling`은 대상이 아직 없는 링크이니 오타인지
+    확인하라."""
     return _guard(write.update_node, name, body, expect_hash, summary,
                   add_edges, remove_edges)
 
@@ -250,9 +247,9 @@ def update_node(name: str, body: str | None = None,
 @mcp.tool()
 def move_node(name: str, dest_space: str) -> dict:
     """`name`이 가리키는 노드의 군집 재배정 — `dest_space`는 `create_node`의
-    `space`와 같은 형식이다
-    (`overview`의 `clusters`를 그대로 쓴다). 이동은 바이트를 바꾸지 않으므로
-    서명이 존속한다. pin된 군집은 출발·도착 어느 쪽이든 거부한다."""
+    `space`와 같은 형식이다(`overview`의 `clusters`를 그대로 쓴다). 이동은
+    바이트를 바꾸지 않는다(경로는 상태, 동일성은 id). pin된 군집은 출발·도착
+    어느 쪽이든 거부한다."""
     return _guard(write.move_node, name, dest_space)
 
 

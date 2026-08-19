@@ -1,9 +1,11 @@
 """osk.authority — 권한 검사.
 
 구현 근거: 헌법 7조(위임 3요건·불명 보류), 시행령 §5(위임 Facet 전수 열거 +
-서명 확인 + 위임 절 + 3값 평가·fail-closed), Mechanism §7(위임 절 형식).
+승인본 확인 + 위임 절 + 3값 평가·fail-closed), Mechanism §7(위임 절 형식).
 
-권한 검사는 결정론적 전수 조회다 — 의미 검색·랭킹으로 권한을 추정하지
+권한 검사는 위임 Facet의 **승인본 상태만** 읽는다(시행령 §5 2항). 위임의
+성립은 그 노드가 위임 Facet의 승인본에 반영되어 있을 것을 요한다(헌법 7조
+3항) — 위임 Facet은 상설 보호영역이다. 의미 검색·랭킹으로 권한을 추정하지
 않는다(헌법 11조 3항).
 """
 from __future__ import annotations
@@ -11,7 +13,7 @@ import re
 from pathlib import Path
 
 from .core import ROOT
-from . import contract, signatures
+from . import contract, approvals
 
 DELEGATION_FACET = ROOT / "= Person" / "Delegation"
 CLAUSE_KEYS = ("대상", "범위", "조건", "종료")
@@ -32,12 +34,14 @@ def parse_clause(body: str) -> dict | None:
 
 
 def enumerate_delegations() -> list[dict]:
-    """위임 Facet 전수 열거. 각 항목: 성립 3요건(배치·유효 위임 절·유효 서명)
-    평가를 포함한다.
+    """위임 Facet 전수 열거. 각 항목: 성립 3요건(배치·유효 위임 절·승인본
+    반영) 평가를 포함한다.
 
-    파싱 불가 파일(임시 메모 등)은 위임으로 세지 않고 `broken`으로 표시해
-    돌려준다 — 그 파일 하나가 권한 검사를 죽이지 않는다(시행령 §11 —
-    실패는 보류·보고). 위임으로 세지 않으므로 방향은 fail-closed다."""
+    `approved`는 그 위임 노드가 위임 Facet의 승인본에 그대로 반영돼 있는가다
+    — 위임 Facet이 보호영역이 아니거나(미보호), 노드가 승인본에 없거나 승인
+    이후 작업본이 달라졌으면(pending) False다(fail-closed). 파싱 불가 파일은
+    위임으로 세지 않고 `broken`으로 표시한다 — 그 파일 하나가 권한 검사를
+    죽이지 않는다(시행령 §11)."""
     out = []
     if not DELEGATION_FACET.exists():
         return out
@@ -48,17 +52,20 @@ def enumerate_delegations() -> list[dict]:
             out.append({
                 "path": str(p.relative_to(ROOT)), "node": None,
                 "title": p.stem, "clause": None, "broken": str(e),
-                "valid_clause": False, "signed": False, "effective": False,
+                "valid_clause": False, "approved": False, "effective": False,
             })
             continue
         clause = parse_clause(n.body)
-        sig = signatures.status(n.id, p)
+        # 승인본 반영 = 위임 Facet(보호영역) 안에 있고 그 승인본과 내용이
+        # 일치. 보호 중이 아니면 region_of가 None이라 미성립(fail-closed).
+        approved = (approvals.region_of(p) is not None
+                    and approvals.file_matches_baseline(p))
         out.append({
             "path": str(p.relative_to(ROOT)), "node": n.id,
             "title": p.stem, "clause": clause,
             "valid_clause": clause is not None,
-            "signed": sig == "signed",
-            "effective": clause is not None and sig == "signed",
+            "approved": approved,
+            "effective": clause is not None and approved,
         })
     return out
 
@@ -74,8 +81,8 @@ def evaluate(delegation: dict, action: str) -> tuple[str, str]:
     문자열 일치는 사용자가 원문을 읽을 때의 안내일 뿐 평가값이 아니다."""
     if not delegation["valid_clause"]:
         return "비적용", "위임 절 형식 미충족 — 권한의 근거가 아니다"
-    if not delegation["signed"]:
-        return "비적용", "유효 서명 없음 — 위임 미성립"
+    if not delegation["approved"]:
+        return "비적용", "위임 Facet 승인본에 반영되지 않음 — 위임 미성립"
     return "불명", "적용 봉투(범위·조건·종료)의 기계 평가 미구현"
 
 

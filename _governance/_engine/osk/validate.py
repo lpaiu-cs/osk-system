@@ -14,14 +14,15 @@ from pathlib import Path
 
 from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER,
                    CASE_RE, RID_RE, ledger_read, ledger_damage,
-                   ledger_anchor_index, unresolved_nodes)
-from . import contract, graph, signatures, authority, secrets
+                   ledger_anchor_index)
+from . import contract, graph, signatures, approvals, authority, secrets
 
-# 사건 파일 머리의 고정 헤더 (Mechanism §4 3항)
-CASE_HEADER = ("case_no", "status", "parties", "docketed_at", "pre_sign",
+# 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
+# 새 기록에는 두지 않으므로 필수에서 뺐다(기존 사건에는 사료로 남는다).
+CASE_HEADER = ("case_no", "status", "parties", "docketed_at",
                "verdict", "verdict_at", "applied", "schema_version")
 CASE_STATUS = ("docketed", "adjudicated")
-CASE_VERDICT = ("기각", "개정", "존치")
+CASE_VERDICT = ("기각", "수정", "존치")
 
 
 def run() -> dict:
@@ -72,39 +73,27 @@ def run() -> dict:
         rep["warnings"] = {"dangling_refs": []}
         skip("미해석 참조 경고", f"산출 실패: {e}")
 
-    # 4. 서명 기록부 (시행령 §6 · Mechanism §3)
+    # 4. 승인 기록부 (시행령 §6 · Mechanism §3) — 보호영역 현황.
     #    판독 실패는 플래그로 남긴다 — 빈 recs를 검사한 헛 PASS를 막는다.
-    errs, recs, sig_ok = [], [], True
+    errs, arecs, appr_ok = [], [], True
     try:
-        recs = ledger_read(SIGNATURES)
+        arecs = approvals.records()
     except Exception as e:
         errs.append(str(e))
-        sig_ok = False
-    if sig_ok:
+        appr_ok = False
+    if appr_ok:
         try:
-            latest = signatures.latest_by_node()
-            # 현황은 **현재 노드**에 대한 요약이다 — 통치 문서 비노드화·노드
-            # 폐기 등으로 대장에만 남은 id는 세지 않는다(기록 자체는 대장에
-            # 이력으로 남는다).
-            current = set()
-            for _s, (p, _k) in idx.nodes.items():
-                try:
-                    current.add(idx.node(p).id)
-                except Exception:
-                    pass
-            latest = {nid: r for nid, r in latest.items() if nid in current}
-            n_signed = sum(1 for nid, r in latest.items()
-                           if signatures.status(nid) == "signed")
-            rep["signed_nodes"] = f"{n_signed}/{len(latest)}"
+            rep["protected_regions"] = {
+                r: approvals.state(r) for r in approvals.protected_regions()}
         except Exception as e:
             errs.append(str(e))
-    ok(f"서명 기록부 ({len(recs)}행)", errs)
+    ok(f"승인 기록부 ({len(arecs)}행)", errs)
 
     # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
-    #    대장이다 — updater가 baseline·관리 집합·삭제 전파·현재 version을 여기서
-    #    계산하므로 단순 로그가 아니다(손상되면 판정이 뒤집힌다).
-    errs, ledgers = [], ([(SIGNATURES, recs)] if sig_ok else [])
-    for p in [CANDIDATES, PINS, ROUTING, LEDGER / "migration" / "events.jsonl",
+    #    대장이다. signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상).
+    errs, ledgers = [], ([(approvals.APPROVALS, arecs)] if appr_ok else [])
+    for p in [SIGNATURES, CANDIDATES, PINS, ROUTING,
+              LEDGER / "migration" / "events.jsonl", LEDGER / "rechecks.jsonl",
               LEDGER / "update.jsonl"]:
         try:
             ledgers.append((p, ledger_read(p)))
@@ -112,14 +101,14 @@ def run() -> dict:
             errs.append(str(e))
     ok("대장 JSON 무결", errs)
 
-    # 6. 대장 구조 손상 — rid 부재·형식 위반·중복 (Mechanism §3 7항).
+    # 6. 대장 구조 손상 — rid 부재·형식 위반·중복 (Mechanism §3 7항 · §3 2항).
     #    중복 rid는 기록의 동일성을 깨뜨려 판정을 뒤집으므로 전 대장에 건다.
     dmg = []
     for p, rs in ledgers:
         dmg += ledger_damage(rs, p.name)
     ok(f"대장 rid 유일·형식 ({len(ledgers)}개 대장)", dmg)
-    if not sig_ok:
-        skip("서명 대장 rid 유일·형식", "서명 대장 판독 실패 — 검사 불성립")
+    if not appr_ok:
+        skip("승인 대장 rid 유일·형식", "승인 대장 판독 실패 — 검사 불성립")
 
     # 7. 위임 성립 요건 (시행령 §5) — 대장 손상에도 죽지 않는다
     errs = []
@@ -127,7 +116,7 @@ def run() -> dict:
         dels = authority.enumerate_delegations()
         for d in dels:
             if not d["effective"]:
-                errs.append(f"{d['title']}: 절={d['valid_clause']} 서명={d['signed']}")
+                errs.append(f"{d['title']}: 절={d['valid_clause']} 승인본={d['approved']}")
         rep["delegations"] = len(dels)
     except Exception as e:
         errs.append(f"위임 검사 실패: {e}")
@@ -136,50 +125,49 @@ def run() -> dict:
     # 8. 비밀값 필터 fixture (Mechanism §9 2항)
     ok("비밀값 필터 양성/음성", secrets.self_test())
 
-    # 9. 서명 생애 fixture — 매 검증 실행 (회귀 방지)
+    # 9. 보호영역 생애 fixture — 매 검증 실행 (회귀 방지)
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        ok("서명 생애 fixture", fixture_signature_lifecycle(td))
+        ok("보호영역 생애 fixture", fixture_approval_lifecycle(td))
 
-    # 10. 인과 극대 유일성 (다기기 병합 fail-closed 감시)
-    if sig_ok:
-        guard("인과 극대 유일(비교 불능 분기 없음)",
-              lambda: sorted(unresolved_nodes(recs)))
+    # 10. 승인 기록부 정합성 (인과 극대 유일·승인본 해석 — 시행령 §6 7항)
+    if appr_ok:
+        guard("승인 기록부 정합(stale·승인본 해석)", approvals.integrity)
     else:
-        skip("인과 극대 유일(비교 불능 분기 없음)", "서명 대장 판독 실패 — 판정 보류")
+        skip("승인 기록부 정합", "승인 대장 판독 실패 — 판정 보류")
 
     # 11. 대장 스키마 — 기록 동일성·필수 필드는 **전 구간**, parents 계약만
     #     앵커(첫 parents 기록) 이후. 유산 구간을 무검증으로 두면 앵커 위에
-    #     끼운 위조 행이 검증을 통째로 우회한다.
-    if sig_ok:
+    #     끼운 위조 행이 검증을 통째로 우회한다. 대상은 승인 기록부다.
+    if appr_ok:
         errs = []
-        anchor = ledger_anchor_index(recs)
+        anchor = ledger_anchor_index(arecs)
         known = set()
-        for i, r in enumerate(recs):
+        for i, r in enumerate(arecs):
             where = f"행{i+1}"
             rid = r.get("rid")
             if not re.match(RID_RE, str(rid)):
                 errs.append(f"{where}: rid 형식 위반 {rid}")
-            for k in ("kind", "node", "path", "hash", "at"):
+            for k in ("kind", "region", "at"):
                 if k not in r:
                     errs.append(f"{where}: 필수 필드 누락 {k}")
-            if r.get("kind") not in signatures.KINDS:
+            if r.get("kind") not in approvals.KINDS:
                 errs.append(f"{where}: 미정의 kind {r.get('kind')}")
             if anchor is not None and i >= anchor:
                 if not isinstance(r.get("parents"), list) or (not r["parents"] and i != 0):
                     errs.append(f"{where}: parents 부재")   # 빈 parents는 파일 첫 기록만 허용
                 else:
-                    for p in r["parents"]:
-                        if not isinstance(p, str):
-                            errs.append(f"{where}: parents 원소가 문자열이 아님 {p!r}")
-                        elif p not in known:
-                            errs.append(f"{where}: 미지의 parent {p}")
+                    for pp in r["parents"]:
+                        if not isinstance(pp, str):
+                            errs.append(f"{where}: parents 원소가 문자열이 아님 {pp!r}")
+                        elif pp not in known:
+                            errs.append(f"{where}: 미지의 parent {pp}")
             if isinstance(rid, str):
                 known.add(rid)
-        after = 0 if anchor is None else len(recs) - anchor
-        ok(f"대장 스키마(전 {len(recs)}행 · parents는 앵커 이후 {after}행)", errs)
+        after = 0 if anchor is None else len(arecs) - anchor
+        ok(f"승인 대장 스키마(전 {len(arecs)}행 · parents는 앵커 이후 {after}행)", errs)
     else:
-        skip("대장 스키마", "서명 대장 판독 실패 — 검사 불성립")
+        skip("승인 대장 스키마", "승인 대장 판독 실패 — 검사 불성립")
 
     # 12. 사건 파일 헤더 (Mechanism §4 3항) — 파싱 실패를 여기서 직접 보고한다
     #     (topology_check의 'conflicts 대상 부적격'으로 오보되지 않게).
@@ -290,15 +278,17 @@ def surface_lint() -> list[str]:
                                "minLength", "maxLength", "minItems"))
             if k not in (t.description or "") and not constrained:
                 errs.append(f"{t.name}.{k}: 필수인데 설명에도 스키마 제약에도 없다")
-    # ⓓ search 결과 필드 계약
+    # ⓓ search 결과 필드 계약 — `updated`는 실어야 하고(시기 필터), 서명
+    #    폐지로 `signed`는 표면에서 사라져야 한다(그 필드로 권한 추정 금지)
     names = {t.name for t in tools}
     if "search" in names:
         try:
             import osk.search as _s
             src = (Path(_s.__file__).read_text(encoding="utf-8"))
-            for f in ('"signed"', '"updated"'):
-                if f not in src:
-                    errs.append(f"search 결과 계약 누락: {f}")
+            if '"updated"' not in src:
+                errs.append('search 결과 계약 누락: "updated"')
+            if 'r["signed"]' in src or '"signed":' in src:
+                errs.append('search 결과에 폐지된 signed 필드 잔존')
         except Exception as e:
             errs.append(f"search 계약 판독 실패: {e}")
     # ⓔ 군집 거부가 유효 목록을 싣는가
@@ -311,9 +301,10 @@ def surface_lint() -> list[str]:
     return errs
 
 
-# Mechanism §6-2 2항 — 표면에서 금지된 권위 심벌
-FORBIDDEN_CALLS = ("sign", "unsign", "restore_for_dismissal")
-AUTHORITY_LEDGERS = ("SIGNATURES", "PINS")
+# Mechanism §6-2 2항 — 표면에서 금지된 권위 심벌 (보호영역 권위·구체제 서명)
+FORBIDDEN_CALLS = ("protect", "unprotect", "approve", "revert",
+                   "sign", "unsign", "restore_for_dismissal")
+AUTHORITY_LEDGERS = ("APPROVALS", "SIGNATURES", "PINS")
 
 
 def declared_tools() -> list[str] | None:
@@ -389,26 +380,13 @@ def surface_violations(engine_dir=None) -> list[str]:
 def conflict_candidates(idx: "graph.Index") -> list[str]:
     """기계 판정이 가능한 충돌 유형 (Mechanism §4 3항의 초기 목록 중):
 
-    - `lineage-fork` — 둘 이상의 노드가 같은 선행 노드를 `replaces`.
     - `duplication`  — 같은 이름의 독립 노드(동명 stem).
 
     contradiction·competition 등 의미 판단이 필요한 유형은 여기서 다루지
-    않는다 — 기계가 판정할 수 없는 것을 판정한 척하지 않는다."""
+    않는다 — 기계가 판정할 수 없는 것을 판정한 척하지 않는다.
+    (lineage-fork는 계보 술어 `replaces` 폐지로 함께 사라졌다 — 개정은
+    같은 `id`의 제자리 갱신이므로 분기 자체가 성립하지 않는다.)"""
     out = []
-    replaced: dict[str, list[str]] = {}
-    for stem, (p, _k) in idx.nodes.items():
-        try:
-            n = idx.node(p)
-        except Exception:
-            continue          # 파싱 실패는 세그먼트 1이 이미 보고했다
-        for t in n.edges("replaces"):
-            t = t.strip().rstrip("/").split("/")[-1]
-            t = t[:-3] if t.endswith(".md") else t
-            if t and t != stem:
-                replaced.setdefault(t, []).append(stem)
-    for target, heirs in sorted(replaced.items()):
-        if len(heirs) > 1:
-            out.append(f"lineage-fork: {sorted(heirs)} → [[{target}]]")
     for stem, paths in sorted(idx.dup_stems.items()):
         out.append(f"duplication: {stem} — {paths}")
     return out
@@ -424,10 +402,11 @@ def make_mini_vault(dst) -> None:
         (dst / d).mkdir(parents=True, exist_ok=True)
 
 
-def fixture_signature_lifecycle(tmp_root) -> list[str]:
-    """F.2 fixture — **격리 subprocess**에서 실행한다: OSK_VAULT_ROOT가 임시
-    mini-vault를 가리키는 별도 프로세스이므로 서버 프로세스의 전역 상태
-    (core.SIGNATURES 등)를 일절 건드리지 않는다."""
+def fixture_approval_lifecycle(tmp_root) -> list[str]:
+    """보호영역 생애 fixture — **격리 subprocess**에서 실행한다: OSK_VAULT_ROOT가
+    임시 mini-vault를 가리키는 별도 프로세스이므로 서버 프로세스의 전역 상태를
+    일절 건드리지 않는다. protect→pending→approve(양측 CAS)→revert→unprotect의
+    생애와 fail-closed 경계를 소진한다."""
     import json as _json
     import os as _os
     import subprocess as _sp
@@ -435,7 +414,7 @@ def fixture_signature_lifecycle(tmp_root) -> list[str]:
     from pathlib import Path
     mini = Path(tmp_root) / "mini-vault"
     make_mini_vault(mini)
-    script = Path(__file__).parent / "_fixture_lifecycle.py"
+    script = Path(__file__).parent / "_fixture_approvals.py"
     env = dict(_os.environ, OSK_VAULT_ROOT=str(mini))
     r = _sp.run([_sys.executable, str(script)], capture_output=True,
                 text=True, env=env, timeout=120)

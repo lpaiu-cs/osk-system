@@ -44,6 +44,35 @@ def raw_append(rec: dict):
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def sig_status(node_id, path=None):
+    """구 signatures.status의 관측을 core+헬퍼로 재현한다 — 서명 제도는
+    폐지됐지만 그 관측을 떠받치던 **인과 DAG 기계**(effective_parents·
+    causal_maxima·unresolved_nodes·id 해석)는 그대로 존속하며, 이 재현으로
+    그 기계를 signatures 모듈 없이 계속 소진한다. SIGNATURES는 이 수트에서
+    임의 append가 가능한 임시 대장으로 쓰인다."""
+    recs = core.ledger_read(core.SIGNATURES)
+    if node_id in core.unresolved_nodes(recs):
+        return "unsigned"
+    m = core.causal_maxima(recs, node_id)
+    if len(m) != 1 or m[0].get("kind") not in ("sign", "restore"):
+        return "unsigned"
+    r = m[0]
+    hit = None
+    for c in (path, r.get("path")):
+        c = core.resolve_in_root(c) if c else None
+        if c is not None and c.exists() and S._id_of(c) == node_id:
+            hit = c
+            break
+    if hit is None:
+        hit = S.locate_by_id(node_id)
+        if hit is None:
+            return "unsigned"
+    try:
+        return "signed" if core.sha256_file(hit) == r.get("hash") else "unsigned"
+    except OSError:
+        return "unsigned"
+
+
 def node_text(nid: str, summary="회귀 시험", body="본문", extra=""):
     return (f"---\nid: {nid}\ncreated: 2026-08-02 16:00 (KST)\n"
             f"updated: 2026-08-02 16:00 (KST)\nauthor: agent\ndrafter: agent\n"
@@ -115,7 +144,7 @@ def test_same_ms_chain_signed():
     same = core._rid_parts(recs[0]["rid"])[0] == core._rid_parts(recs[1]["rid"])[0]
     check("같은 ms 사슬 성립(전제)", same)
     check("같은 ms라도 인과 사슬이면 signed(비교 가능)",
-          S.status("260802-zzzz-rg01", node) == "signed")
+          sig_status("260802-zzzz-rg01", node) == "signed")
 
 
 # ── 3. 인과 분기 → fail-closed → 모든 head 봉합 재서명으로 해소 ──────────
@@ -127,9 +156,10 @@ def test_fork_failclosed_and_reseal():
                 "node": "260802-zzzz-rg01", "path": str(node.relative_to(ROOT)),
                 "hash": h, "at": core.now_iso()})     # 다른 기기 유래 뿌리(병합 산물)
     check("분기(비교 불능) → unsigned fail-closed",
-          S.status("260802-zzzz-rg01", node) == "unsigned")
-    check("분기 상태에서 unsign도 거부(fail-closed)",
-          _raises(lambda: S.unsign("260802-zzzz-rg01", "시험"))())
+          sig_status("260802-zzzz-rg01", node) == "unsigned")
+    check("분기 상태는 판정 불가로 표면화(fail-closed)",
+          "260802-zzzz-rg01" in core.unresolved_nodes(
+              core.ledger_read(core.SIGNATURES)))
     r = core.ledger_append(core.SIGNATURES, {
         "kind": "sign", "node": "260802-zzzz-rg01",
         "path": str(node.relative_to(ROOT)), "hash": h,
@@ -137,7 +167,7 @@ def test_fork_failclosed_and_reseal():
     check("재서명이 모든 head를 봉합(parents 2개)", len(r["parents"]) == 2,
           r["parents"])
     check("재서명 후 유일 극대 → signed",
-          S.status("260802-zzzz-rg01", node) == "signed")
+          sig_status("260802-zzzz-rg01", node) == "signed")
 
 
 def _raises(fn):
@@ -173,7 +203,7 @@ def test_anchor_no_order_fallback():
     check("앵커 이후 parents-부재는 고립 루트(파일 순서 fallback 금지)",
           core.effective_parents(recs)[B1] == [], core.effective_parents(recs)[B1])
     check("해제가 서명으로 뒤집히지 않는다(fail-closed)",
-          S.status("260802-zzzz-rg10", node) == "unsigned")
+          sig_status("260802-zzzz-rg10", node) == "unsigned")
     check("판정 불가 노드로 표면화",
           "260802-zzzz-rg10" in core.unresolved_nodes(recs))
     r = core.ledger_append(core.SIGNATURES, {
@@ -181,7 +211,7 @@ def test_anchor_no_order_fallback():
         "reason": "사용자 재서명 — 유입 분기 봉합"})
     check("재서명이 유입 분기까지 봉합(해소 가능성 보존)",
           set(r["parents"]) == {U["rid"], B1}, r["parents"])
-    check("봉합 후 signed", S.status("260802-zzzz-rg10", node) == "signed")
+    check("봉합 후 signed", sig_status("260802-zzzz-rg10", node) == "signed")
 
 
 # ── 3c. 순환·자기 참조·전방 참조는 잘려 항상 비순환 + 해소 가능 ──────────
@@ -224,7 +254,7 @@ def test_cycle_normalization():
         "reason": "재서명 — 순환 잔재 봉합"})
     check("재서명이 남은 head 전부를 봉합 → 해소",
           set(r["parents"]) == {B, X}
-          and S.status("260802-zzzz-rg11", node) == "signed", r["parents"])
+          and sig_status("260802-zzzz-rg11", node) == "signed", r["parents"])
 
 
 # ── 3d. 구조 손상(rid 부재·형식·중복)은 표면화되고 append를 거부한다 ─────
@@ -264,11 +294,11 @@ def test_ridless_unsign_not_swallowed():
     core.ledger_append(core.SIGNATURES, {
         "kind": "sign", "node": "260802-zzzz-rg12", "path": rel,
         "hash": core.sha256_file(node)})
-    check("정상 서명은 signed", S.status("260802-zzzz-rg12", node) == "signed")
+    check("정상 서명은 signed", sig_status("260802-zzzz-rg12", node) == "signed")
     raw_append({"kind": "unsign", "node": "260802-zzzz-rg12", "path": rel,
                 "hash": core.sha256_file(node), "at": core.now_iso()})
     check("rid 없는 해제는 무시되지 않고 미서명으로 떨어진다",
-          S.status("260802-zzzz-rg12", node) == "unsigned")
+          sig_status("260802-zzzz-rg12", node) == "unsigned")
 
 
 # ── 3f. 경로 봉쇄·KST 고정 ──────────────────────────────────────────────
@@ -290,11 +320,11 @@ def test_root_confinement_and_kst():
           r.stdout.strip().startswith(want[:14]), (r.stdout.strip(), want))
 
 
-# ── 4. 회복의 구조적 사건 결속 (허위 사건 매트릭스 — 격리 subprocess) ────
-def test_restore_binding():
+# ── 4. 보호영역 생애 (지정·pending·양측 CAS 승인·반려·해제 — 격리 subprocess) ──
+def test_approval_lifecycle():
     with tempfile.TemporaryDirectory() as td:
-        errs = validate.fixture_signature_lifecycle(td)
-        check("회복 결속 매트릭스(허위 6종 차단+정상+분기 왕복)", not errs, errs)
+        errs = validate.fixture_approval_lifecycle(td)
+        check("보호영역 생애(양측 CAS·반려 복원·미보호 거부)", not errs, errs)
 
 
 # ── 5. 경로 재사용 공격 — id가 정본 ─────────────────────────────────────
@@ -310,34 +340,15 @@ def test_path_reuse():
         shutil.move(str(a), str(b))                                    # 이동
         a.write_text(node_text("260802-zzzz-dcoy", "미끼"), encoding="utf-8")
         check("이동+경로 재사용에도 signed(id 정본)",
-              S.status("260802-zzzz-rg02") == "signed")
-        check("미끼 id는 unsigned", S.status("260802-zzzz-dcoy") == "unsigned")
+              sig_status("260802-zzzz-rg02") == "signed")
+        check("미끼 id는 unsigned", sig_status("260802-zzzz-dcoy") == "unsigned")
     finally:
         for p in (a, b):
             p.unlink(missing_ok=True)
 
 
-# ── 6. 구판 강등이 순위를 실제로 뒤집는가 ───────────────────────────────
-def test_demotion_reorder():
-    wipe_sig()
-    oldn = ROOT / "= Scope/W1/regr-old-zqx.md"
-    newn = ROOT / "= Scope/W1/regr-new-zqx.md"
-    try:
-        oldn.write_text(node_text("260802-zzzz-rg03", "구판 zqxtoken",
-                                  "zqxtoken " * 30), encoding="utf-8")
-        newn.write_text(node_text("260802-zzzz-rg04", "후계 zqxtoken",
-                                  "zqxtoken " * 10,
-                                  'replaces: "[[regr-old-zqx]]"\n'), encoding="utf-8")
-        core.ledger_append(core.SIGNATURES, {
-            "kind": "sign", "node": "260802-zzzz-rg04",
-            "path": str(newn.relative_to(ROOT)), "hash": core.sha256_file(newn)})
-        hits = [h["title"] for h in search.Searcher().work_search("zqxtoken", 5)]
-        check("서명된 후계가 구판보다 상위(강등 후 재정렬)",
-              hits.index("regr-new-zqx") < hits.index("regr-old-zqx")
-              if {"regr-new-zqx", "regr-old-zqx"} <= set(hits) else False, hits)
-    finally:
-        for p in (oldn, newn):
-            p.unlink(missing_ok=True)
+# ── 6. (구판 강등 시험 폐지 — replaces·강등 기제는 2술어 개정에서 제거됐다.
+#        개정은 같은 id의 제자리 갱신이므로 후계·강등 자체가 성립하지 않는다.) ──
 
 
 # ── 7. 순수 이동·개명의 재색인 감지 ─────────────────────────────────────
@@ -598,53 +609,61 @@ def test_conflicts_semantics():
 
 # ── 10. 대장 손상 → 검증기는 죽지 않고 FAIL 보고 ────────────────────────
 def test_ledger_corruption_resilience():
-    backup = core.SIGNATURES.read_bytes() if core.SIGNATURES.exists() else None
+    from osk import approvals
+    backup = approvals.APPROVALS.read_bytes() if approvals.APPROVALS.exists() else None
     try:
-        core.SIGNATURES.write_text('{"rid": "x", "kind": "sign"\n', encoding="utf-8")
+        approvals.APPROVALS.parent.mkdir(parents=True, exist_ok=True)
+        approvals.APPROVALS.write_text('{"rid": "x", "kind": "protect"\n',
+                                       encoding="utf-8")   # 부분 행(손상)
         try:
             rep = validate.run()
             check("손상 대장에도 검증기 생존", True)
             check("손상은 FAIL로 보고", rep["verdict"] == "FAIL"
-                  and any("서명 기록부" in list(f)[0] for f in rep["fail"]))
+                  and any("승인 기록부" in list(f)[0] for f in rep["fail"]))
         except Exception as e:
             check("손상 대장에도 검증기 생존", False, repr(e))
     finally:
         if backup is not None:
-            core.SIGNATURES.write_bytes(backup)
+            approvals.APPROVALS.write_bytes(backup)
+        else:
+            approvals.APPROVALS.unlink(missing_ok=True)
 
 
 # ── 11. 대장 스키마 — 앵커 이후 parents·rid·필수 필드 강제 ──────────────
 def test_ledger_schema_segment():
-    backup = core.SIGNATURES.read_bytes() if core.SIGNATURES.exists() else None
+    from osk import approvals
+    backup = approvals.APPROVALS.read_bytes() if approvals.APPROVALS.exists() else None
     try:
         ms = int(1754000200.0 * 1000)
         r1, r2, r3, r5 = (core._make_rid(ms, i) for i in range(4))
         rows = [
-            {"rid": r1, "kind": "sign", "node": "a", "path": "p", "hash": "h",
-             "at": "t"},                                        # 유산(parents 없음)
-            {"rid": r2, "parents": [r1], "kind": "sign", "node": "a", "path": "p",
-             "hash": "h", "at": "t"},                           # 앵커 — 적법
-            {"rid": r3, "parents": [], "kind": "sign", "node": "a", "path": "p",
-             "hash": "h", "at": "t"},                           # 위반: 중간의 빈 parents
-            {"rid": "not-a-rid", "parents": [r3], "kind": "sign", "node": "a",
-             "path": "p", "hash": "h", "at": "t"},              # 위반: rid 형식
-            {"rid": r5, "parents": ["ghost-rid"], "kind": "sign", "node": "a",
-             "path": "p", "hash": "h", "at": "t"},              # 위반: 미지의 parent
-            {"rid": core._make_rid(ms, 9), "parents": [r5], "kind": "sign"},  # 필드 누락
+            {"rid": r1, "kind": "protect", "region": "= Scope/W1", "at": "t"},   # 유산(parents 없음)
+            {"rid": r2, "parents": [r1], "kind": "approve", "region": "= Scope/W1",
+             "at": "t"},                                        # 앵커 — 적법
+            {"rid": r3, "parents": [], "kind": "approve", "region": "= Scope/W1",
+             "at": "t"},                                        # 위반: 중간의 빈 parents
+            {"rid": "not-a-rid", "parents": [r3], "kind": "approve",
+             "region": "= Scope/W1", "at": "t"},               # 위반: rid 형식
+            {"rid": r5, "parents": ["ghost-rid"], "kind": "revert",
+             "region": "= Scope/W1", "at": "t"},               # 위반: 미지의 parent
+            {"rid": core._make_rid(ms, 9), "parents": [r5], "kind": "protect"},  # 필드 누락
         ]
-        core.SIGNATURES.write_text(
+        approvals.APPROVALS.parent.mkdir(parents=True, exist_ok=True)
+        approvals.APPROVALS.write_text(
             "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         rep = validate.run()
         seg = next((list(f.values())[0] for f in rep["fail"]
-                    if "대장 스키마" in list(f)[0]), None)
-        check("대장 스키마 세그먼트가 위반을 적발", seg is not None, rep["fail"])
+                    if "승인 대장 스키마" in list(f)[0]), None)
+        check("승인 대장 스키마 세그먼트가 위반을 적발", seg is not None, rep["fail"])
         if seg:
             joined = " | ".join(seg)
             for want in ("parents 부재", "rid 형식 위반", "미지의 parent", "필수 필드 누락"):
                 check(f"스키마 적발: {want}", want in joined, joined)
     finally:
         if backup is not None:
-            core.SIGNATURES.write_bytes(backup)
+            approvals.APPROVALS.write_bytes(backup)
+        else:
+            approvals.APPROVALS.unlink(missing_ok=True)
 
 
 # ── 12. validate.run은 전역을 오염시키지 않는다 ─────────────────────────
@@ -668,34 +687,49 @@ def test_authority_hold():
               v["verdict"])
 
 
-# ── 14. 기준선: 정상 mini-vault + 앵커 대장 → 검증기 PASS ───────────────
+# ── 14. 기준선: 정상 mini-vault + 보호영역 지정 → 검증기 PASS ───────────
 def test_baseline_pass():
-    wipe_sig()
-    node = ROOT / "= Scope/W1/regr-chain.md"     # 2·3번이 만든 정상 노드 재사용
-    core.ledger_append(core.SIGNATURES, {
-        "kind": "sign", "node": "260802-zzzz-rg01",
-        "path": str(node.relative_to(ROOT)), "hash": core.sha256_file(node),
-        "reason": "기준선"})
+    from osk import approvals
+    # 보호영역 하나를 지정하고 clean 상태에서 검증기가 통과하는지 본다
+    reg = "= Scope/W1"
+    if not approvals.is_protected(reg):
+        approvals.protect(reg, "기준선")
     rep = validate.run()
     check("정상 vault 기준선 PASS", rep["verdict"] == "PASS", rep["fail"])
-    check("기준선 서명 판정 1건 signed", rep.get("signed_nodes") == "1/1",
-          rep.get("signed_nodes"))
+    check("보호영역 현황이 clean으로 판정",
+          rep.get("protected_regions", {}).get(reg) == "clean",
+          rep.get("protected_regions"))
+    # clean↔pending 불변식을 실제로 소진한다 — 항진명제가 아니게 한다
+    junk = ROOT / "= Scope/W1/regr-baseline-junk.md"
+    junk.write_text(node_text("260802-zzzz-rgba", "지문 변경"), encoding="utf-8")
+    try:
+        check("영역 내 쓰기가 pending으로 전이", approvals.state(reg) == "pending",
+              approvals.state(reg))
+        rep2 = validate.run()
+        check("검증기 리포트도 pending을 싣는다",
+              rep2.get("protected_regions", {}).get(reg) == "pending",
+              rep2.get("protected_regions"))
+    finally:
+        junk.unlink(missing_ok=True)
+    check("쓰기 회수 후 clean 복귀", approvals.state(reg) == "clean")
+    approvals.unprotect(reg, "기준선 정리")   # 잔여 없이 되돌린다
 
 
 # ── 14b. 자기 참조 PE는 계약 위반 (상태 자체를 불허) ──────────────────
 def test_self_referencing_edge():
     p = ROOT / "= Scope/W1/regr-selfref.md"
     try:
-        for pred, tgt in (("replaces", "[[regr-selfref]]"),
-                          ("conflicts", "[[= Scope/W1/regr-selfref]]"),
-                          ("supported-by", "[[regr-selfref.md]]")):
+        # 경로형·id형 어느 표기든 자기 참조는 적발한다(derived-from은 id로도)
+        for pred, tgt in (("conflicts", "[[= Scope/W1/regr-selfref]]"),
+                          ("derived-from", "[[regr-selfref.md]]"),
+                          ("derived-from", "260802-zzzz-rg30")):
             p.write_text(node_text("260802-zzzz-rg30", "자기 참조", "본문",
                                    f'{pred}: "{tgt}"\n'), encoding="utf-8")
             errs = contract.validate(contract.parse(p))
             check(f"자기 참조 {pred}({tgt})는 계약 위반",
                   any("자기 자신" in e for e in errs), errs)
         p.write_text(node_text("260802-zzzz-rg30", "정상", "본문",
-                               'replaces: "[[regr-other]]"\n'), encoding="utf-8")
+                               'derived-from: "[[regr-other]]"\n'), encoding="utf-8")
         check("남을 가리키는 PE는 통과",
               not contract.validate(contract.parse(p)))
     finally:
@@ -754,26 +788,8 @@ def test_surface_contract():
           and not validate.surface_violations())
 
 
-# ── 14d. 헌법 12조 5항 후단 — 입건 당사자는 판결 전까지 재서명 불가 ────
-def test_open_case_blocks_signing():
-    wipe_sig()
-    node = ROOT / "= Scope/W1/regr-party.md"
-    node.write_text(node_text("260802-zzzz-rg40", "당사자"), encoding="utf-8")
-    check("평시에는 서명된다",
-          bool(S.sign(node, "평시", "260802-zzzz-rg40"))
-          and S.status("260802-zzzz-rg40", node) == "signed")
-    write_case("CASE-2026-9100", status="docketed", verdict=None,
-               parties=["260802-zzzz-rg40"])
-    node.write_text(node_text("260802-zzzz-rg40", "당사자", "수정됨"), encoding="utf-8")
-    check("입건 중에는 재서명이 거부된다(헌법 12조 5항)",
-          _raises(lambda: S.sign(node, "재서명 시도", "260802-zzzz-rg40"))())
-    check("입건 중 재서명 시도가 대장에 기록을 남기지 않는다",
-          len([r for r in core.ledger_read(core.SIGNATURES)
-               if r.get("node") == "260802-zzzz-rg40"]) == 1)
-    (core.LEDGER / "case" / "CASE-2026-9100.md").unlink()
-    check("사건 종결 후에는 재서명된다",
-          bool(S.sign(node, "판결 후", "260802-zzzz-rg40"))
-          and S.status("260802-zzzz-rg40", node) == "signed")
+# ── 14d. (입건-재서명 차단 시험 폐지 — 서명 제도가 폐지됐다. 입건 당사자
+#          노드의 노출·권위는 이제 보호영역 승인본이 다룬다.) ──
 
 
 # ── 14e. 대장 행 형상 — 비-dict 행·비문자열 parents (4차 조건 나) ──────
@@ -785,8 +801,6 @@ def test_ledger_row_shape():
     rep = validate.run()
     check("비-dict 행에도 검증기가 죽지 않고 FAIL 보고",
           rep["verdict"] == "FAIL")
-    check("status()도 죽지 않는다",
-          _raises(lambda: S.status("아무개"))() or True)
 
     wipe_sig()                       # unhashable parents 원소
     node = ROOT / "= Scope/W1/regr-shape.md"
@@ -803,7 +817,7 @@ def test_ledger_row_shape():
     check("비문자열 parents 원소는 여과되고 판정이 죽지 않는다",
           all(all(isinstance(x, str) for x in v) for v in par.values()), par)
     check("남은 정상 부모는 보존된다",
-          S.status("260802-zzzz-rg41", node) == "unsigned")
+          sig_status("260802-zzzz-rg41", node) == "unsigned")
     check("형상 이상에도 ledger_append가 산다",
           bool(core.ledger_append(core.SIGNATURES, {
               "kind": "sign", "node": "260802-zzzz-rg41", "path": rel,
@@ -861,17 +875,18 @@ def test_write_contract():
           not (ROOT / "= Scope/W1/regr-w4.md").exists())
 
 
-def test_write_cas_bound_to_signature():
+def test_write_cas_body_bound():
+    # 서명이 폐지됐으므로 CAS는 **본문 전체 치환**에만 결속한다(Mechanism
+    # §6-2 4항) — 부분 변경(엣지 델타·summary)에는 요구하지 않는다.
     node = ROOT / "= Scope/W1/regr-w1.md"
-    nid = contract.parse(node).id
-    # 미서명 노드 — 무-body 변경은 CAS 면제
     r = _w(write.update_node, "regr-w1", summary="고친 요약")
-    check("미서명 노드의 summary 변경은 CAS 면제", r["ok"], r)
+    check("summary 변경은 CAS 면제", r["ok"], r)
     check("덮은 요약을 응답에 담는다",
           r.get("replaced_summary") == "쓰기 통로 시험", r)
-    r = _w(write.update_node, "regr-w1", add_edges={"supported-by": "regr-w1x"})
-    check("미서명 노드의 엣지 델타도 면제", r["ok"], r)
+    r = _w(write.update_node, "regr-w1", add_edges={"derived-from": "regr-w1x"})
+    check("엣지 델타도 면제", r["ok"], r)
     check("dangling을 응답으로 알린다", "regr-w1x" in r.get("dangling", []), r)
+    check("응답에 폐지된 signed 필드가 없다", "signed" not in r, r)
     # 본문 전체 치환은 언제나 CAS
     r = _w(write.update_node, "regr-w1", body="새 본문")
     check("본문 치환은 CAS 필수", not r["ok"], r)
@@ -883,21 +898,29 @@ def test_write_cas_bound_to_signature():
     r = _w(write.update_node, "regr-w1", body="새 본문", expect_hash=h)
     check("올바른 CAS면 통과", r["ok"] and r["new_hash"] != h, r)
 
-    # 서명 노드 — 무-body 변경에도 CAS 필수
-    core.ledger_append(core.SIGNATURES, {
-        "kind": "sign", "node": nid, "path": str(node.relative_to(ROOT)),
-        "hash": core.sha256_file(node), "reason": "시험"})
-    check("전제: signed", S.status(nid, node) == "signed")
-    r = _w(write.update_node, "regr-w1", summary="몰래 고침")
-    check("서명 노드의 summary 변경은 CAS 필수(관측 증명)", not r["ok"], r)
-    check("거부 응답이 서명 사실과 rid를 알린다",
-          r.get("signed") is True and r.get("signature_rid"), r)
-    check("거부했으므로 서명이 그대로다", S.status(nid, node) == "signed")
-    r = _w(write.update_node, "regr-w1", summary="정당한 수정",
-           expect_hash=core.sha256_file(node))
-    check("해시를 대면 통과하고 서명 무효화를 알린다",
-          r["ok"] and r.get("was_signed") and r.get("now_unsigned"), r)
-    check("쓰기 후 미서명", S.status(nid, node) == "unsigned")
+
+def test_edge_single_list_roundtrip():
+    """손으로/정본에서 단일 원소 리스트로 저장된 엣지(`derived-from: [<id>]`)를
+    가진 노드가 그 엣지를 건드리지 않는 갱신에서 왕복 불일치로 거부되지 않는다
+    (리스트 `[x]`와 스칼라 `x`는 대상이 하나로 논리적으로 같다)."""
+    tgt = ROOT / "= Scope/W1/regr-sl-target.md"
+    ref = ROOT / "= Scope/W1/regr-sl-ref.md"
+    try:
+        tgt.write_text(node_text("260802-zzzz-rgs1", "근거"), encoding="utf-8")
+        # 단일 원소 리스트 표기로 손수 저장
+        ref.write_text(node_text("260802-zzzz-rgs2", "파생", "본문",
+                                 'derived-from: [260802-zzzz-rgs1]\n'),
+                       encoding="utf-8")
+        check("전제: 단일 원소 리스트로 파싱된다",
+              contract.parse(ref).meta.get("derived-from") == ["260802-zzzz-rgs1"])
+        r = _w(write.update_node, "regr-sl-ref", summary="요약 갱신")
+        check("단일 원소 리스트 엣지 노드의 무관한 갱신이 거부되지 않는다",
+              r.get("ok") is True, r)
+        check("갱신 후에도 근거를 여전히 가리킨다",
+              "260802-zzzz-rgs1" in contract.parse(ref).edges("derived-from"))
+    finally:
+        for p_ in (tgt, ref):
+            p_.unlink(missing_ok=True)
 
 
 def test_write_move_and_pin():
@@ -1001,8 +1024,8 @@ def test_write_serialized():
         "import sys, json; sys.path.insert(0, %r)\n"
         "from osk import write\n"
         "import sys as s\n"
-        "r = write.update_node('regr-r2', add_edges={'supported-by': s.argv[1]})\n"
-        "print(json.dumps({'ok': r['ok'], 'edges': r['edges']['supported-by']}))\n"
+        "r = write.update_node('regr-r2', add_edges={'derived-from': s.argv[1]})\n"
+        "print(json.dumps({'ok': r['ok'], 'edges': r['edges']['derived-from']}))\n"
         % str(ENGINE))
     sf = Path(_TMP.name) / "concurrent.py"
     sf.write_text(script, encoding="utf-8")
@@ -1014,7 +1037,7 @@ def test_write_serialized():
     outs = [p.communicate() for p in procs]
     check("동시 쓰기 2건 모두 성공", all(p.returncode == 0 for p in procs),
           [o[1][-200:] for o in outs])
-    final = contract.parse(ROOT / "= Scope/W1/regr-r2.md").edges("supported-by")
+    final = contract.parse(ROOT / "= Scope/W1/regr-r2.md").edges("derived-from")
     check("두 델타가 모두 보존된다(lost update 없음)",
           "tgt0" in final and "tgt1" in final, final)
 
@@ -1053,8 +1076,10 @@ def test_surface_smoke():
             check(f"표면 도구 살아 있음: {name}", False, f"{type(e).__name__}: {e}")
     r = M.read_node("regr-smoke")
     check("read_node가 hash를 준다(CAS 입력)", r.get("hash", "").startswith("sha256:"))
+    check("read_node에 폐지된 signed 필드가 없다", "signed" not in r, r)
     hits = M.search("스모크", 5)
-    check("search 결과에 signed 표시", all("signed" in h for h in hits), hits)
+    check("search 결과에 폐지된 signed 필드가 없다",
+          all("signed" not in h for h in hits), hits)
 
 
 # ── 14i. 직렬화 왕복 — 표면이 스스로 파손 노드를 만들지 않는다 (7차 중대 A) ──
@@ -1063,7 +1088,7 @@ def test_render_roundtrip():
         ('따옴표', {"summary": 'He said "hi"'}),
         ('백슬래시', {"summary": r"경로 C:\temp\x"}),
         ('콜론·해시', {"summary": "a: b # c"}),
-        ('엣지 따옴표', {"summary": "정상", "edges": {"supported-by": '따옴표"대상'}}),
+        ('엣지 따옴표', {"summary": "정상", "edges": {"derived-from": '따옴표"대상'}}),
     ):
         name = f"regr-rt-{abs(hash(label)) % 10000}"
         r = _w(write.create_node, name, kw.get("summary", "s"), "본문",
@@ -1183,17 +1208,17 @@ def test_edge_target_normalization():
            space="= Scope/W1")
     r0 = _w(write.create_node, "regr-norm", "표기 정규화", "본문",
             "fable-5", space="= Scope/W1",
-            edges={"supported-by": "= Scope/W1/regr-norm-t"})
+            edges={"derived-from": "= Scope/W1/regr-norm-t"})
     check("전제: 경로형 엣지로 생성", r0["ok"], r0)
     r1 = _w(write.update_node, "regr-norm",
-            add_edges={"supported-by": "regr-norm-t"})
+            add_edges={"derived-from": "regr-norm-t"})
     check("스템형 추가는 경로형과 같은 대상 — 중복 등재하지 않는다",
-          len(r1["edges"]["supported-by"]) == 1, r1["edges"])
+          len(r1["edges"]["derived-from"]) == 1, r1["edges"])
     check("변경이 없으므로 no_change", r1.get("no_change") is True, r1)
     r2 = _w(write.update_node, "regr-norm",
-            remove_edges={"supported-by": "regr-norm-t"})
+            remove_edges={"derived-from": "regr-norm-t"})
     check("스템형 제거가 경로형 엣지에 유효하다",
-          r2["ok"] and not r2["edges"]["supported-by"], r2)
+          r2["ok"] and not r2["edges"]["derived-from"], r2)
     for nm in ("regr-norm", "regr-norm-t"):
         (ROOT / f"= Scope/W1/{nm}.md").unlink(missing_ok=True)
 
@@ -1273,7 +1298,7 @@ def test_mcp_transport():
                 out["create"] = await call("create_node", {
                     "title": "regr-tx", "summary": "전송", "body": "본문",
                     "drafter": "fable-5", "space": "= Scope/W1",
-                    "edges": {"supported-by": "regr-tx-t"}})   # dict 인자
+                    "edges": {"derived-from": "regr-tx-t"}})   # dict 인자
                 out["read"] = await call("read_node", {"name": "regr-tx"})
                 out["stale"] = await call("update_node", {
                     "name": "regr-tx", "body": "새 본문",
@@ -1283,7 +1308,7 @@ def test_mcp_transport():
                     "expect_hash": out["read"]["hash"]})
                 out["delta"] = await call("update_node", {
                     "name": "regr-tx",
-                    "add_edges": {"supported-by": "regr-tx-t2"}})  # dict 인자
+                    "add_edges": {"derived-from": "regr-tx-t2"}})  # dict 인자
                 out["validators"] = await call("run_validators", {})
                 res = await s.call_tool("search", {"query": "전송", "k": 3})
                 items = [json.loads(c.text) for c in res.content]
@@ -1309,31 +1334,29 @@ def test_mcp_transport():
           o["stale"])
     check("전송: 재읽기 후 재시도 성공(재시도 계약)", o["retry"].get("ok"), o["retry"])
     check("전송: dict 인자(add_edges) 델타 적용",
-          o["delta"].get("ok") and "regr-tx-t2" in o["delta"]["edges"]["supported-by"],
+          o["delta"].get("ok") and "regr-tx-t2" in o["delta"]["edges"]["derived-from"],
           o["delta"])
     check("전송: run_validators가 서버 안에서도 동작(이벤트 루프 안)",
           o["validators"].get("verdict") in ("PASS", "FAIL")
           and not any("asyncio" in str(x) for f in o["validators"]["fail"]
                       for x in list(f.values())[0]),
           o["validators"]["fail"])
-    check("전송: search 결과에 signed 동봉",
-          all("signed" in h for h in o["search"]), o["search"])
+    check("전송: search 결과에 폐지된 signed 필드가 없다",
+          all("signed" not in h for h in o["search"]), o["search"])
     (ROOT / "= Scope/W1/regr-tx.md").unlink(missing_ok=True)
 
 
 # ── 14s. 표면 왕복 — search가 준 이름을 나머지 도구가 받는가 (8차 차단 ③) ──
 def test_surface_name_roundtrip():
     """list_nodes를 없앤 설계에서 search는 이름을 얻는 유일한 통로다. 그 이름이
-    그대로 쓰이지 않으면 발견과 지목 사이가 끊어진다 — 표면 쓰기의 결과는 언제나
-    미서명이므로 이것은 예외가 아니라 기본 경로다."""
+    그대로 쓰이지 않으면 발견과 지목 사이가 끊어진다."""
     import mcp_server as M
     r = _w(write.create_node, "regr-rt-name", "왕복", "본문 내용",
            "fable-5", space="= Scope/W1")
-    check("전제: 생성(→미서명)", r["ok"] and not r["signed"], r)
+    check("전제: 생성", r["ok"], r)
     hits = [h for h in M.search("왕복", 8) if h["path"].endswith("regr-rt-name.md")]
     check("search가 찾는다", len(hits) == 1, hits)
     h = hits[0]
-    check("미서명이 signed 필드로 표시된다", h["signed"] is False, h)
     check("title은 노드 이름 그대로다(변조 없음)",
           h["title"] == "regr-rt-name", h["title"])
     check("그 title로 read_node가 된다",
@@ -1343,7 +1366,7 @@ def test_surface_name_roundtrip():
     check("그 title을 엣지 대상으로 쓰면 dangling이 아니다",
           not _w(write.create_node, "regr-rt-ref", "참조", "본문",
                  "fable-5", space="= Scope/W1",
-                 edges={"supported-by": h["title"]})["dangling"])
+                 edges={"derived-from": h["title"]})["dangling"])
     for nm in ("regr-rt-name", "regr-rt-ref"):
         (ROOT / f"= Scope/W1/{nm}.md").unlink(missing_ok=True)
 
@@ -1354,8 +1377,8 @@ def test_validate_uses_destination_path():
     표면이 자기 검증기가 위반이라 부르는 노드를 ok로 쓰게 된다."""
     r = _w(write.create_node, "regr-selfref-w", "자기 참조", "본문",
            "fable-5", space="= Scope/W1",
-           edges={"replaces": "regr-selfref-w"})
-    check("자기 참조 replaces를 쓰기 통로가 거부한다", not r["ok"], r)
+           edges={"derived-from": "regr-selfref-w"})
+    check("자기 참조 derived-from을 쓰기 통로가 거부한다", not r["ok"], r)
     check("거부 사유가 계약 문언 그대로",
           any("자기 자신" in v for v in r["violations"]), r)
     check("거부했으므로 파일이 없다",
@@ -1408,7 +1431,7 @@ def test_surface_lint():
     check("drafter가 스키마 패턴으로 가둬진다",
           "pattern" in cn.inputSchema["properties"]["drafter"])
     check("edges 술어가 스키마 enum으로 가둬진다",
-          "supported-by" in _json.dumps(cn.inputSchema["properties"]["edges"]))
+          "derived-from" in _json.dumps(cn.inputSchema["properties"]["edges"]))
 
 
 # ── 14w. overview — 주소를 선제 조회할 수 있다 (10차 ②) ─────────────────
@@ -1429,8 +1452,8 @@ def test_overview():
 
 # ── 14x. 엣지 값의 형은 통로가 거부한다 (10차 정정 ①: 스키마+런타임 이중) ──
 def test_edge_value_type_refused():
-    for bad in ({"supported-by": 42}, {"supported-by": [{"x": 1}]},
-                {"supported-by": ""}, {"supported-by": [None]}):
+    for bad in ({"derived-from": 42}, {"derived-from": [{"x": 1}]},
+                {"derived-from": ""}, {"derived-from": [None]}):
         r = _w(write.create_node, "regr-edgeval", "형 검사", "본문",
                "fable-5", space="= Scope/W1", edges=bad)
         check(f"엣지 값 {bad} 거부", not r["ok"], r)
@@ -1438,14 +1461,14 @@ def test_edge_value_type_refused():
               not (ROOT / "= Scope/W1/regr-edgeval.md").exists())
     # remove_edges도 add_edges와 같은 검사를 받는다(비대칭 제거)
     r0 = _w(write.create_node, "regr-sym", "대칭", "본문", "fable-5",
-            space="= Scope/W1", edges={"supported-by": "대상A"})
+            space="= Scope/W1", edges={"derived-from": "대상A"})
     check("전제: 생성", r0["ok"], r0)
     for kw in ({"add_edges": {"suported-by": "X"}},
                {"remove_edges": {"suported-by": "X"}}):
         r = _w(write.update_node, "regr-sym", **kw)
         check(f"술어 오타 거부: {list(kw)[0]}", not r["ok"], r)
         check("거부 사유에 쓸 수 있는 술어가 실린다",
-              any("supported-by" in v for v in r["violations"]), r)
+              any("derived-from" in v for v in r["violations"]), r)
     (ROOT / "= Scope/W1/regr-sym.md").unlink(missing_ok=True)
 
 
@@ -1652,19 +1675,17 @@ def test_publish_guards():
 
 # ── 15. 정합성 검사 — 충돌 후보 검출 (헌법 12조 1·2항) ─────────────────
 def test_conflict_candidates():
-    a = ROOT / "= Scope/W1/regr-heir-a.md"
-    b = ROOT / "= Scope/W1/regr-heir-b.md"
-    c = ROOT / "= Scope/W1/regr-ancestor.md"
+    # lineage-fork는 계보 술어 폐지로 사라졌다. 기계 판정이 남는 유형은
+    # duplication(동명 stem의 독립 노드) 하나다.
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    a = ROOT / "= Scope/W1/regr-dup.md"
+    b = ROOT / "= Scope/W2/regr-dup.md"
     try:
-        c.write_text(node_text("260802-zzzz-rg20", "선행"), encoding="utf-8")
-        a.write_text(node_text("260802-zzzz-rg21", "후계 A", "본문",
-                               'replaces: "[[regr-ancestor]]"\n'), encoding="utf-8")
-        b.write_text(node_text("260802-zzzz-rg22", "후계 B", "본문",
-                               'replaces: "[[= Scope/W1/regr-ancestor]]"\n'),
-                     encoding="utf-8")
+        a.write_text(node_text("260802-zzzz-rg20", "동명 A"), encoding="utf-8")
+        b.write_text(node_text("260802-zzzz-rg21", "동명 B"), encoding="utf-8")
         cands = validate.conflict_candidates(graph.Index())
-        check("lineage-fork 검출(경로형 표기 포함)",
-              any("lineage-fork" in x and "regr-ancestor" in x for x in cands), cands)
+        check("duplication 검출(동명 stem)",
+              any("duplication" in x and "regr-dup" in x for x in cands), cands)
         rep = validate.run()
         check("충돌 후보는 검증기 FAIL로 사용자 심의 요청",
               rep["verdict"] == "FAIL"
@@ -1674,10 +1695,10 @@ def test_conflict_candidates():
         check("검증기는 후보를 대장에 자동 기록하지 않는다(자동 집행 없음)",
               len(core.ledger_read(core.CANDIDATES)) == before)
     finally:
-        for p_ in (a, b, c):
+        for p_ in (a, b):
             p_.unlink(missing_ok=True)
     check("후보 해소 후 기준선 복귀",
-          not any("lineage-fork" in x
+          not any("duplication" in x and "regr-dup" in x
                   for x in validate.conflict_candidates(graph.Index())))
 
 
@@ -1834,12 +1855,11 @@ def test_release_and_update():
                 node_text("260802-uupd-0002", "정본 규범 문서", "1조."),
                 encoding="utf-8")
 
-            # 갱신이 통치 문서를 덮으면 서명이 자동으로 풀린다 — 재서명이 수용
-            # 기록이다 (Mechanism §1-2 6항 · 시행령 §10 2항)
+            # 갱신이 통치 문서를 덮으면 그 차이가 통치 구획 보호영역의 변경집합
+            # 으로 남는다 — 사용자의 승인이 수용 기록이다 (Mechanism §1-2 6항 ·
+            # 시행령 §10 2항). 여기서는 updater가 통치 문서를 실제로 덮는지만 본다
+            # (수용=승인의 생애는 보호영역 fixture가 소진한다).
             gp = ROOT / "_governance/UpdDoc.md"
-            S.sign(gp, "수용 시험", "260802-uupd-0002")
-            check("갱신 후 수용 서명 성립",
-                  S.status("260802-uupd-0002", gp) == "signed")
             (can / "_governance/UpdDoc.md").write_text(
                 node_text("260802-uupd-0002", "정본 규범 문서", "1조 개정."),
                 encoding="utf-8")
@@ -1847,9 +1867,8 @@ def test_release_and_update():
             git(can, "commit", "-qm", "gov v2")
             _rel("v9.0.1")
             update.run(source="bundle", bundle=str(can), apply=True)
-            check("갱신이 덮으면 서명이 풀린다(수용 재확인 대기)",
-                  S.status("260802-uupd-0002", gp) == "unsigned"
-                  and "1조 개정" in gp.read_text(encoding="utf-8"))
+            check("갱신이 통치 문서를 정본 내용으로 덮는다",
+                  "1조 개정" in gp.read_text(encoding="utf-8"))
             check("갱신 후 현재 버전 갱신", update.current_version() == "v9.0.1")
 
             # 비준증빙 위반 — 변조·부재는 중단. 증빙 밖 미추적 파일은 허용.
@@ -2870,15 +2889,16 @@ if __name__ == "__main__":
                test_fork_failclosed_and_reseal, test_anchor_no_order_fallback,
                test_cycle_normalization, test_structural_damage,
                test_ridless_unsign_not_swallowed, test_root_confinement_and_kst,
-               test_restore_binding,
-               test_path_reuse, test_demotion_reorder, test_fingerprint_move,
+               test_approval_lifecycle,
+               test_path_reuse, test_fingerprint_move,
                test_sync, test_conflicts_semantics,
                test_ledger_corruption_resilience, test_ledger_schema_segment,
                test_validate_global_invariance, test_authority_hold,
                test_self_referencing_edge, test_surface_contract,
-               test_open_case_blocks_signing, test_ledger_row_shape,
+               test_ledger_row_shape,
                test_broken_delegation_isolated, test_write_contract,
-               test_write_cas_bound_to_signature, test_write_move_and_pin,
+               test_write_cas_body_bound, test_edge_single_list_roundtrip,
+               test_write_move_and_pin,
                test_write_routing, test_write_session_alias,
                test_write_candidate_basis,
                test_write_serialized, test_surface_smoke,

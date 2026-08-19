@@ -20,7 +20,7 @@ def target_stem(name: str) -> str:
 
 
 REQUIRED = ["id", "created", "updated", "author", "drafter", "summary"]
-PREDICATES = ["supported-by", "replaces", "conflicts"]  # 헌법 8조 5항
+PREDICATES = ["derived-from", "conflicts"]  # 헌법 8조 5항 (2술어 체제)
 ORDER = REQUIRED  # Mechanism §2 5항 — PE는 그 뒤 상호 순서 무관
 
 
@@ -36,16 +36,23 @@ class Node:
         return str(self.meta.get("id", ""))
 
     def edges(self, predicate: str) -> list[str]:
-        """PE 대상 목록 — `"[[대상]]"` 문자열에서 대상명 추출."""
+        """PE 대상 목록. 두 표기를 함께 읽는다(시행령 §1 3항 · Mechanism §8 2항):
+        노드 대상은 `id`를 **그대로**(`derived-from: 260802-114u-7lo3`),
+        비노드 대상과 `conflicts`는 위키링크(`"[[경로#제목]]"`)로 쓴다.
+        위키링크는 대상명(경로·stem)만, id형은 스칼라 전체를 돌려준다 —
+        소비자(graph.resolve)가 id는 id로, 그 밖은 경로/stem으로 해석한다."""
         v = self.meta.get(predicate)
         if v is None:
             return []
         vals = v if isinstance(v, list) else [v]
         out = []
         for x in vals:
-            m = re.search(r"\[\[([^\]#|]+)", str(x))
+            s = str(x).strip()
+            m = re.search(r"\[\[([^\]#|]+)", s)
             if m:
-                out.append(m.group(1).strip())
+                out.append(m.group(1).strip())   # 비노드/사건 — 위키링크 대상명
+            elif s:
+                out.append(s)                     # 노드 대상 — id 그대로
         return out
 
     def wikilinks(self) -> list[str]:
@@ -141,12 +148,13 @@ def validate(node: Node) -> list[str]:
     elif dr in ("claude", "codex", "claude-code", "gemini-cli"):
         errs.append(f"drafter는 하네스명이 아니라 모델명: {dr}")
     stem = node.path.stem
+    sid = str(m["id"])
     for pred in PREDICATES:
         for t in node.edges(pred):
-            t = t.strip().rstrip("/").split("/")[-1]
-            t = t[:-3] if t.endswith(".md") else t
-            if t == stem:
-                errs.append(f"{pred}가 자기 자신을 가리킨다")  # 후계·충돌은 남과의 관계다
+            ts = t.strip().rstrip("/").split("/")[-1]
+            ts = ts[:-3] if ts.endswith(".md") else ts
+            if ts == stem or t == sid:   # id형·경로형 어느 표기든 자기 참조 적발
+                errs.append(f"{pred}가 자기 자신을 가리킨다")  # 근거·충돌은 남과의 관계다
     if node.fm_keys and len(node.fm_keys) != len(set(node.fm_keys)):
         errs.append(f"frontmatter 중복 필드: {node.fm_keys}")
     return errs
