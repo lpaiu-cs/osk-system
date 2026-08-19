@@ -80,17 +80,21 @@ def _manifest_bytes(region_dir: Path) -> tuple[bytes, dict[str, str]]:
 
 
 def working_tree_hash(region: str) -> str | None:
-    """작업본의 영역 tree 해시 — vault 밖 경로면 None.
+    """작업본의 영역 tree 해시 — 판정할 수 없으면 None.
 
-    영역 디렉터리가 없으면 **빈 tree**의 해시다(None이 아니다). 영역째 지워진
-    것은 "판정 불능"이 아니라 "파일이 하나도 없는 상태"이며, 그렇게 봐야
-    반려가 그 사고를 되돌릴 수 있다(디렉터리를 다시 만들어 복원)."""
+    세 경우를 구분한다. ①디렉터리면 그 tree의 해시. ②**부재**면 빈 tree의
+    해시 — 영역째 지워진 것은 판정 불능이 아니라 "파일이 하나도 없는 상태"이며,
+    그렇게 봐야 반려가 그 사고를 되돌릴 수 있다. ③그 경로에 디렉터리가 아닌
+    무언가가 있으면 None — 부재와 접으면 빈 승인본을 가진 영역이 구조가 깨진
+    채로 clean으로 오판되고 해제까지 허용된다(fail-closed)."""
     d = resolve_in_root(region)
     if d is None:
         return None
-    if not d.is_dir():
-        return sha256_bytes(_manifest_blob([]))
-    return sha256_bytes(_manifest_bytes(d)[0])
+    if d.is_dir():
+        return sha256_bytes(_manifest_bytes(d)[0])
+    if d.exists() or d.is_symlink():
+        return None                       # 디렉터리가 아닌 객체 — 판정 불능
+    return sha256_bytes(_manifest_blob([]))          # 부재 = 빈 작업본
 
 
 # ── 내용 주소 저장소 ─────────────────────────────────────────────────────
@@ -461,7 +465,6 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         raise ValueError(
             f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
     discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
-    d.mkdir(parents=True, exist_ok=True)  # 영역째 사라진 경우도 복원 대상이다
     # 복원은 **파괴적**이다. 전제는 기록의 정직성만이 아니라 **파일을 건드리기
     # 전에** 유효해야 한다 — 준비 도중 승인본이 바뀌거나(다른 기기 승인 유입)
     # 작업본이 바뀌면(확인 프롬프트 사이 에이전트 쓰기), 사후 검사만으로는
@@ -551,7 +554,11 @@ def _restore_tree(region_dir: Path, table: dict[str, str], confirm=None) -> None
         why = confirm()
         if why:
             raise ValueError(why)
-    # 1) 전수 검증 통과 후에만 승인본 내용으로 원자 교체
+    # 1) 전수 검증·확인을 **모두** 통과한 뒤에야 첫 변경을 낸다. 영역째 사라진
+    #    경우의 디렉터리 재생성도 여기가 첫 mutation이다 — 앞에 두면 거부된
+    #    복원이 "작업본을 건드리지 않았다"면서 부재→빈 디렉터리를 만든다.
+    region_dir.mkdir(parents=True, exist_ok=True)
+    # 2) 승인본 내용으로 원자 교체
     for p, data in resolved:
         p.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(p.parent))
@@ -565,7 +572,7 @@ def _restore_tree(region_dir: Path, table: dict[str, str], confirm=None) -> None
             if os.path.exists(tmp):
                 os.unlink(tmp)
             raise
-    # 2) manifest에 없는 현재 파일 제거 (에이전트가 추가한 것)
+    # 3) manifest에 없는 현재 파일 제거 (에이전트가 추가한 것)
     #    삭제 실패(권한 등)는 삼키지 않는다 — 조용히 넘기면 작업본이 승인본과
     #    다른 채로 남는데도 revert가 완료된 것처럼 기록될 수 있다.
     for rel, p in _region_files(region_dir):

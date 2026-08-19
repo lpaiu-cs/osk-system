@@ -981,6 +981,61 @@ def test_revert_recreates_deleted_region():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 부재와 '디렉터리가 아닌 것'은 다르다 (PR #14 리뷰) ─────────────────
+def test_region_replaced_by_file_is_pending():
+    """부재만 빈 작업본으로 읽는다 — 같은 경로에 일반 파일이 생기면 구조가
+    깨진 것이므로 판정 불능(pending)이고 해제도 거부된다. 둘을 접으면 빈
+    승인본을 가진 영역이 clean으로 오판되고 해제까지 허용된다."""
+    from osk import approvals as A
+    reg = "= Domain/asfile"
+    regdir = ROOT / "= Domain" / "asfile"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)     # 빈 영역 → 승인본도 빈 tree
+        A.protect(reg, "지정")
+        check("빈 영역은 지정 직후 clean", A.state(reg) == "clean")
+        regdir.rmdir()
+        check("부재는 빈 작업본 — 여전히 clean", A.state(reg) == "clean")
+        regdir.write_text("디렉터리가 파일로 바뀌었다", encoding="utf-8")
+        check("같은 경로가 파일이면 판정 불능",
+              A.working_tree_hash(reg) is None)
+        check("따라서 pending", A.state(reg) == "pending")
+        check("해제도 거부된다", _raises(lambda: A.unprotect(reg))())
+    finally:
+        if regdir.is_file():
+            regdir.unlink()
+        regdir.mkdir(parents=True, exist_ok=True)
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 거부된 반려는 부재조차 바꾸지 않는다 (PR #14 리뷰) ─────────────────
+def test_refused_revert_leaves_region_absent():
+    """CAS가 어긋나 거부된 반려는 무변이어야 한다 — 영역 재생성도 확인을 통과한
+    뒤의 첫 mutation이다. 앞에 두면 '작업본을 건드리지 않았다'면서 부재→빈
+    디렉터리라는 변경이 이미 일어난다."""
+    from osk import approvals as A
+    reg = "= Domain/absent"
+    regdir = ROOT / "= Domain" / "absent"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("본문", encoding="utf-8")
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        shutil.rmtree(regdir)                          # 영역째 삭제
+        check("영역 경로가 부재", not regdir.exists())
+        check("검토한 작업본이 어긋나면 반려 거부",
+              _raises(lambda: A.revert(reg, base, base))())   # base != 빈 tree
+        check("거부 후에도 경로는 여전히 부재(무변)", not regdir.exists())
+        A.revert(reg, base, A.working_tree_hash(reg), "정상 복구")
+        check("맞는 expect_work로는 복구된다",
+              regdir.is_dir() and (regdir / "a.md").read_text() == "본문")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
 # ── 반려도 검토한 변경집합에만 성립한다 (PR #14 리뷰) ──────────────────
 def test_revert_binds_reviewed_changeset():
     """반려는 파괴적이므로 승인과 **같은 결속**을 쓴다 — 확인 프롬프트 사이에
@@ -3544,6 +3599,8 @@ if __name__ == "__main__":
                test_move_across_protection_boundary_refused,
                test_revert_recreates_deleted_region,
                test_revert_binds_reviewed_changeset,
+               test_region_replaced_by_file_is_pending,
+               test_refused_revert_leaves_region_absent,
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
