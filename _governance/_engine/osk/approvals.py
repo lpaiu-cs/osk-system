@@ -139,12 +139,21 @@ def _store_get(digest: str) -> bytes | None:
 
 def _store_tree(region_dir: Path) -> str:
     """영역의 작업본 전체(manifest + 각 파일 내용)를 저장소에 넣고 tree 해시를
-    돌려준다 — 승인본으로 고정할 상태를 불변으로 박제한다."""
-    blob, table = _manifest_bytes(region_dir)
-    for rel, h in table.items():
-        p = resolve_in_root(rel)
-        if p is not None and p.is_file():
-            _store_put(p.read_bytes())
+    돌려준다.
+
+    각 파일을 **한 번만** 읽어, 그 **같은 bytes**를 blob으로 저장하고 그 해시를
+    manifest에 싣는다 — manifest가 가리키는 해시와 저장된 blob이 언제나 같은
+    판독에서 나오므로, `_manifest_bytes`의 해시 판독과 blob 저장 판독이 갈려
+    승인본이 복원 불가능(manifest는 hash(A)를 가리키나 저장된 blob은 hash(B))
+    해지는 일이 없다. 판독 순서·직렬화는 `_manifest_bytes`와 같아 tree 해시가
+    동일하다(state 비교의 정합)."""
+    entries = []
+    for rel, p in _region_files(region_dir):
+        data = p.read_bytes()          # 파일당 유일 판독
+        h = _store_put(data)           # 그 bytes를 그대로 박제(반환 = 그 해시)
+        entries.append([rel, h])
+    blob = json.dumps(entries, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
     return _store_put(blob)
 
 
@@ -287,13 +296,19 @@ def protect(region: str, reason: str = "") -> dict:
         "base": None, "accepted": accepted, "reason": reason})
 
 
-def approve(region: str, base: str, expect_work: str | None = None,
+def approve(region: str, base: str, expect_work: str,
             reason: str = "") -> dict:
     """승인 — **양측 CAS**(시행령 §6 3항): 검토가 전제한 승인본(`base`)이
     현행이고(승인본 측), 검토한 작업본(`expect_work`)이 승인 시점에도 그대로일
     때만(작업본 측) 성립한다. 어느 한쪽이 그 사이 달라지면 승인하지 않고 사용자의
     새 검토로 넘긴다 — 검토 뒤 에이전트가 더 쓴 변경까지 승인되는 일이 없게 한다.
-    승인본을 검토한 작업본으로 갱신한다."""
+    승인본을 검토한 작업본으로 갱신한다.
+
+    `expect_work`는 **필수**다 — 기본값을 두면 내부 호출이 작업본 측 CAS를 건너뛰어
+    권위의 핵심 불변식이 호출 관례에만 의존하게 된다. None으로 부르면 즉시 거부한다."""
+    if expect_work is None:
+        raise ValueError(
+            "expect_work(검토한 작업본 tree 해시)는 필수다 — 양측 CAS를 건너뛸 수 없다")
     d = resolve_in_root(region)
     if d is None or not d.is_dir():
         raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
@@ -313,7 +328,7 @@ def approve(region: str, base: str, expect_work: str | None = None,
     # 끼어들 창(TOCTOU)이 없다. 별도 판독으로 검사하고 또 다른 판독을 박제하면
     # 그 사이 에이전트가 쓴 상태가 승인본이 된다.
     accepted = _store_tree(d)         # 승인 시점 작업본을 박제·해시(단일 판독)
-    if expect_work is not None and accepted != expect_work:
+    if accepted != expect_work:
         raise ValueError(
             "검토한 작업본이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측 CAS)")
     if accepted == cur:
@@ -441,6 +456,15 @@ def integrity() -> list[str]:
             continue
         if is_protected(region, recs):
             tree = approved_hash(region, recs)
-            if tree is None or _tree_table(tree) is None:
+            table = _tree_table(tree) if tree else None
+            if table is None:
                 errs.append(f"승인본 manifest를 저장소에서 찾지 못함: {region} ({tree})")
+                continue
+            # manifest가 가리키는 **모든 blob의 실재**를 확인한다 — manifest만
+            # 해석되고 그것이 가리키는 blob이 없으면 승인본이 clean으로 보여도
+            # revert가 나중에 실패한다(복원 불가능한 승인본 적발).
+            missing = [rel for rel, h in table.items() if _store_get(h) is None]
+            if missing:
+                errs.append(
+                    f"승인본 blob 부재(복원 불가): {region} — {sorted(missing)[:5]}")
     return errs

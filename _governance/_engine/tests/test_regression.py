@@ -739,6 +739,69 @@ def test_delegation_facet_exact_region():
         dnode.unlink(missing_ok=True)
 
 
+# ── approve 양측 CAS는 관례가 아니라 계약으로 강제 (PR #14 리뷰 [high]) ──
+def test_approve_requires_expect_work():
+    """approve는 `expect_work`(검토한 작업본) 없이는 성립하지 않는다 — 기본값을
+    두면 내부 호출이 작업본 측 CAS를 건너뛴다. base가 맞아도 생략하면 거부하고
+    대장에 아무 기록도 남기지 않는다."""
+    from osk import approvals as A
+    def raises_any(fn):
+        try: fn(); return False
+        except (ValueError, TypeError): return True
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f = ROOT / "= Scope/W2/regr-aw.md"
+    f.write_text("v1", encoding="utf-8")
+    try:
+        A.protect("= Scope/W2", "지정")
+        f.write_text("v2", encoding="utf-8")            # pending
+        base = A.approved_hash("= Scope/W2")
+        before = len(A.records())
+        check("expect_work 생략 approve 거부(필수 인자)",
+              raises_any(lambda: A.approve("= Scope/W2", base)))
+        check("expect_work=None approve 거부",
+              raises_any(lambda: A.approve("= Scope/W2", base, None)))
+        check("거부 시 승인 대장에 기록 없음", len(A.records()) == before)
+        work = A.working_tree_hash("= Scope/W2")
+        A.approve("= Scope/W2", base, expect_work=work, reason="검토")
+        check("양측 CAS 충족 시 승인", A.state("= Scope/W2") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W2", "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
+# ── 승인본 manifest↔blob 결속·복원 가능성 (PR #14 리뷰 [high]) ──────────
+def test_approval_baseline_blobs_present():
+    """_store_tree가 파일당 한 번 읽어 그 bytes를 박제하므로 manifest가 가리키는
+    모든 blob이 실재한다(복원 가능). integrity는 manifest만이 아니라 그것이
+    가리키는 blob의 실재까지 확인해 복원 불가능한 승인본을 적발한다."""
+    from osk import approvals as A
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f = ROOT / "= Scope/W2/regr-bb.md"
+    f.write_text("내용A", encoding="utf-8")
+    try:
+        A.protect("= Scope/W2", "지정")
+        table = A._tree_table(A.approved_hash("= Scope/W2"))
+        check("승인본 manifest의 모든 blob 실재(단일 판독 박제)",
+              all(A._store_get(h) is not None for h in table.values()), table)
+        check("integrity 통과(정상 승인본)", A.integrity() == [], A.integrity())
+        # 참조 blob 하나를 삭제 → 복원 불가 승인본을 integrity가 적발
+        some_h = next(iter(table.values()))
+        A._obj_path(some_h).unlink()
+        check("integrity가 blob 부재(복원 불가)를 적발",
+              any("복원 불가" in e for e in A.integrity()), A.integrity())
+        f.write_text("변경", encoding="utf-8")            # pending
+        check("blob 부재 승인본으로의 revert는 사전검증에서 거부",
+              _raises(lambda: A.revert("= Scope/W2"))())
+        A._store_put("내용A".encode("utf-8"))             # blob 복원
+        check("blob 복원 후 integrity 통과", A.integrity() == [], A.integrity())
+    finally:
+        f.write_text("내용A", encoding="utf-8")            # 승인본으로 복귀 → clean
+        try: A.unprotect("= Scope/W2", "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
 def test_baseline_pass():
     from osk import approvals
     # 보호영역 하나를 지정하고 clean 상태에서 검증기가 통과하는지 본다
@@ -2967,6 +3030,8 @@ if __name__ == "__main__":
                test_conflict_candidates,
                test_release_and_update,
                test_store_digest_confined, test_delegation_facet_exact_region,
+               test_approve_requires_expect_work,
+               test_approval_baseline_blobs_present,
                test_baseline_pass]:
         try:
             fn()

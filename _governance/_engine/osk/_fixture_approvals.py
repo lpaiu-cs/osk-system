@@ -33,8 +33,8 @@ def expect(cond, msg):
 
 # 미보호 영역의 승인·반려·해제는 거부된다 (fail-closed)
 expect(A.state(REG) == "unprotected", "초기 상태가 unprotected 아님")
-for op in (lambda: A.approve(REG, "sha256:x"), lambda: A.revert(REG),
-           lambda: A.unprotect(REG)):
+for op in (lambda: A.approve(REG, "sha256:x", expect_work="sha256:y"),
+           lambda: A.revert(REG), lambda: A.unprotect(REG)):
     try:
         op(); errs.append("미보호 영역 조작이 거부되지 않음")
     except ValueError:
@@ -60,9 +60,15 @@ expect(A.state(REG) == "pending", "수정 후 pending 아님")
 expect(not A.file_matches_baseline(regdir / "d.md"), "수정 후 승인본 일치로 오판")
 
 base = A.approved_hash(REG)
-# 잘못된 base 승인 거부 (양측 CAS — 승인본 측)
+# 잘못된 base 승인 거부 (양측 CAS — 승인본 측; 작업본 측은 맞게 주어 base만 시험)
 try:
-    A.approve(REG, "sha256:deadbeef"); errs.append("잘못된 base 승인이 거부되지 않음")
+    A.approve(REG, "sha256:" + "d" * 64, expect_work=A.working_tree_hash(REG))
+    errs.append("잘못된 base 승인이 거부되지 않음")
+except ValueError:
+    pass
+# expect_work 필수 — None이면 즉시 거부 (양측 CAS를 관례로 우회 불가)
+try:
+    A.approve(REG, base, expect_work=None); errs.append("expect_work 없는 승인이 거부되지 않음")
 except ValueError:
     pass
 # 검토한 작업본이 그 사이 바뀌면 승인 거부 (양측 CAS — 작업본 측)
