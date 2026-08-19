@@ -33,12 +33,11 @@ from pathlib import Path
 import yaml
 
 from .core import (ROOT, LEDGER, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
-                   MUTATION_LOCK, ledger_append, ledger_read, mutation_lock,
-                   new_node_id, now_kst, posix_rel, resolve_in_root, resolve_one,
+                   ledger_append, ledger_read, mutation_lock, new_node_id,
+                   now_kst, posix_rel, resolve_in_root, resolve_one,
                    sha256_bytes, sha256_file)
 from . import approvals, contract, graph, signatures
 
-WRITE_LOCK = MUTATION_LOCK               # 하위 호환 별칭 (잠금 실체는 core)
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
                    "delegation-overlap")   # Mechanism §4 3항 (lineage-fork 폐지)

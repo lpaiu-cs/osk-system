@@ -53,22 +53,41 @@ SIGNATURES = LEDGER / "signatures.jsonl"
 CANDIDATES = LEDGER / "case" / "candidates.jsonl"
 PINS = LEDGER / "pins.jsonl"
 ROUTING = LEDGER / "routing.jsonl"       # 세션→scope 라우팅 (Mechanism §6-2 3항)
-MUTATION_LOCK = LEDGER / ".write.lock"   # 전역 변경 잠금 (대장 구획, git 추적 밖)
+_MUTATION_LOCK_PATH: Path | None = None
+
+
+def mutation_lock_path() -> Path:
+    """working-tree 변경 상호배제 잠금의 경로 — **이미 있는 그 잠금**이다.
+
+    sync 데몬과 update가 공유하는 `osk-mutation.lock`을 그대로 쓴다(해석기는
+    `sync_daemon._lock_path` — git common dir, 실패 시 임시 디렉터리). 새 파일을
+    만들면 데몬의 `pull(rebase)`가 이 잠금을 보지 않아 반려의 파괴 구간과
+    경합하고, 추적 트리 안에 두면 `git add -A`에 딸려 들어가며 checkout이
+    inode를 갈아 "같은 경로 = 같은 mutex" 전제까지 깨진다.
+
+    프로세스마다 한 번만 해석한다 — 해석은 git 호출이고 이 잠금은 모든 노드
+    쓰기가 잡는다."""
+    global _MUTATION_LOCK_PATH
+    if _MUTATION_LOCK_PATH is None:
+        from sync_daemon import _lock_path          # 지연 — update와 같은 규율
+        _MUTATION_LOCK_PATH = _lock_path(ROOT, "osk-mutation.lock")
+    return _MUTATION_LOCK_PATH
 
 
 class mutation_lock:
-    """엔진이 내는 **모든 변경**을 직렬화하는 전역 잠금 — 노드 쓰기(write)와
-    보호영역 조작(approvals)이 같은 이 잠금을 쓴다.
+    """엔진이 내는 **모든 working-tree 변경**을 직렬화하는 잠금 — 노드
+    쓰기(write)·보호영역 조작(approvals)·동기화(sync·update)가 같은 잠금을 쓴다.
 
-    둘이 다른 잠금을 쓰면, 반려가 마지막으로 전제를 확인한 뒤 파일을 덮기까지
-    사이에 정상 쓰기가 끼어들어 **검토하지 않은 변경이 파괴된다**. 잠금 순서는
-    언제나 이 잠금 → 대장 잠금(`ledger_append`)이다(양쪽 모듈이 같은 순서라
-    교착이 없다). 프로세스 밖에서 들어오는 변경(git pull)은 이 잠금 밖이며,
-    그것은 `expect`·전제 재확인이 맡는다."""
+    다른 잠금을 쓰면, 반려가 마지막으로 전제를 확인한 뒤 파일을 덮기까지 사이에
+    정상 쓰기나 데몬의 `pull(rebase)`가 끼어들어 **검토하지 않은 변경이
+    파괴된다**. 잠금 순서는 언제나 이 잠금 → 대장 잠금(`ledger_append`)이다
+    (모든 모듈이 같은 순서라 교착이 없다). 다른 기기에서 사람이 직접 부른
+    `git pull`만 이 잠금 밖이며, 그것은 `expect`·전제 재확인이 맡는다."""
 
     def __enter__(self):
-        MUTATION_LOCK.parent.mkdir(parents=True, exist_ok=True)
-        self._f = open(MUTATION_LOCK, "w")
+        path = mutation_lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._f = open(path, "w")
         lock_exclusive(self._f)
         return self
 

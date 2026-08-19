@@ -1024,8 +1024,26 @@ def test_approval_serialized_with_writes():
     잡는다 — 엔진이 통제하는 writer는 그 사이에 들어올 수 없다."""
     from osk import approvals as A
     from osk import write
-    check("write와 approvals가 같은 잠금 실체를 쓴다",
-          write.WRITE_LOCK == core.MUTATION_LOCK)
+    import sync_daemon
+    check("변경 잠금이 sync·update가 쓰는 그 잠금과 같은 파일이다",
+          core.mutation_lock_path()
+          == sync_daemon._lock_path(ROOT, "osk-mutation.lock"))
+    check("잠금 파일은 추적 트리 밖이다",
+          not str(core.mutation_lock_path()).startswith(str(ROOT) + os.sep)
+          or ".git" in core.mutation_lock_path().parts)
+    # 같은 경로를 가리키는 것만으로는 부족하다 — 실제로 상호배제되는지 본다.
+    # flock은 open file description마다이므로 같은 프로세스의 두 번째 열기도
+    # 경합한다(데몬이 다른 프로세스에서 잡는 상황과 같은 판정).
+    with core.mutation_lock():
+        with open(sync_daemon._lock_path(ROOT, "osk-mutation.lock"), "w") as fh:
+            try:
+                core.lock_exclusive(fh, blocking=False)
+                core.unlock(fh)
+                got = True
+            except OSError:
+                got = False
+        check("변경 잠금 보유 중에는 데몬 쪽 획득이 실패한다(실 상호배제)",
+              got is False)
     held = []
     real = core.mutation_lock
 
