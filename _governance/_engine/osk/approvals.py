@@ -31,8 +31,20 @@ STORE = LEDGER / "approved" / "objects"       # 내용 주소 blob·manifest 보
 # 아니라 realpath(ROOT)/이 경로다(STORE 루트 symlink를 trust root로 승격시키지
 # 않기 위해; core.resolve_in_root가 realpath(ROOT)를 정본 앵커로 삼는 것과 같다).
 _STORE_REL = os.path.relpath(STORE, ROOT)
+_STORE_PARTS = tuple(x for x in _STORE_REL.replace("\\", "/").split("/")
+                     if x and x != ".")
 KINDS = ("protect", "unprotect", "approve", "revert")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")   # 저장소 접근의 유일 형식
+
+# 저장소 I/O를 **검증과 사용이 같은 fd 체인에 결속**되게 열 수 있는가 —
+# O_NOFOLLOW로 각 성분을 열면 검사 시점과 I/O 시점 사이 symlink 교체
+# (TOCTOU)로 우회할 수 없다. Windows 등 dir_fd 미지원 플랫폼에서는 realpath
+# 선검사(_obj_path)로 best-effort 봉쇄한다.
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_ODIR = getattr(os, "O_DIRECTORY", 0)
+_DIRFD_SAFE = (_NOFOLLOW != 0 and _ODIR != 0
+               and {os.open, os.mkdir, os.unlink} <= os.supports_dir_fd)
+_CHUNK = 1 << 20
 
 # 영역 tree에서 제외하는 이름 — 저장소 살림살이와 대장 자신(승인본이 대장을
 # 담으면 승인이 자기 자신을 포함하는 순환이 된다).
@@ -115,21 +127,145 @@ def _obj_path(digest: str) -> Path:
     return p
 
 
+def _open_store_dirfd(create: bool) -> int | None:
+    """realpath(ROOT)에서 저장소 objects 디렉터리까지 **각 성분을 O_NOFOLLOW로**
+    열어 그 디렉터리 fd를 돌려준다 — 검증(비-symlink)과 사용이 같은 fd 체인에
+    결속돼 check-then-use TOCTOU가 없다. 어느 성분이든 symlink이면(공격) 열기가
+    ELOOP로 실패하고, 없으면 create=False에서 None, create=True에서 O_NOFOLLOW
+    규율로 만든다. dir_fd 미지원 플랫폼에서는 부르지 않는다(_DIRFD_SAFE)."""
+    try:
+        fd = os.open(os.path.realpath(ROOT), _ODIR | _NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        for part in _STORE_PARTS:
+            while True:
+                try:
+                    nxt = os.open(part, _ODIR | _NOFOLLOW, dir_fd=fd)
+                    break
+                except FileNotFoundError:
+                    if not create:
+                        return None
+                    try:
+                        os.mkdir(part, dir_fd=fd)
+                    except FileExistsError:
+                        pass              # 경쟁 생성 — 재시도로 연다(symlink면 ELOOP)
+            os.close(fd)
+            fd = nxt
+        return fd
+    except OSError:
+        os.close(fd)
+        return None                       # 성분이 symlink(ELOOP) 등 — fail-closed
+
+
+def _readall_fd(fd: int) -> bytes:
+    chunks = []
+    while True:
+        b = os.read(fd, _CHUNK)
+        if not b:
+            break
+        chunks.append(b)
+    return b"".join(chunks)
+
+
+def _read_object_nofollow(hexd: str) -> bytes | None:
+    base = _open_store_dirfd(create=False)
+    if base is None:
+        return None
+    try:
+        try:
+            sfd = os.open(hexd[:2], _ODIR | _NOFOLLOW, dir_fd=base)
+        except OSError:
+            return None                   # shard 부재·symlink
+        try:
+            try:
+                ofd = os.open(hexd[2:], os.O_RDONLY | _NOFOLLOW, dir_fd=sfd)
+            except OSError:
+                return None               # 객체 부재·symlink
+            try:
+                return _readall_fd(ofd)
+            finally:
+                os.close(ofd)
+        finally:
+            os.close(sfd)
+    finally:
+        os.close(base)
+
+
+def _write_object_nofollow(digest: str, hexd: str, data: bytes) -> None:
+    base = _open_store_dirfd(create=True)
+    if base is None:
+        raise ValueError("승인 저장소 경로 봉쇄 실패 — 쓰지 않았다")
+    try:
+        while True:                       # shard 열기/만들기 (nofollow)
+            try:
+                sfd = os.open(hexd[:2], _ODIR | _NOFOLLOW, dir_fd=base)
+                break
+            except FileNotFoundError:
+                try:
+                    os.mkdir(hexd[:2], dir_fd=base)
+                except FileExistsError:
+                    pass              # 경쟁 생성 — 재시도(symlink로 만들어졌으면 ELOOP)
+            except OSError as e:
+                # shard가 symlink(ELOOP) 등 — 봉쇄 실패를 명시적 거부로 올린다
+                raise ValueError(f"저장소 shard 봉쇄 실패(symlink 재지정 등): {e}") from e
+        try:
+            obj = hexd[2:]
+            for _ in range(4):            # 경쟁·손상에 대한 유한 재시도
+                try:                      # 기존 객체가 정상이면 멱등
+                    efd = os.open(obj, os.O_RDONLY | _NOFOLLOW, dir_fd=sfd)
+                    try:
+                        if sha256_bytes(_readall_fd(efd)) == digest:
+                            return
+                    finally:
+                        os.close(efd)
+                except OSError:
+                    pass                  # 부재·symlink(ELOOP)
+                try:                      # 손상·symlink·부재 → 제거 후 새로 만든다
+                    os.unlink(obj, dir_fd=sfd)
+                except OSError:
+                    pass
+                try:
+                    wfd = os.open(obj, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                  | _NOFOLLOW, 0o600, dir_fd=sfd)
+                except FileExistsError:
+                    continue              # 경쟁 생성 — 위에서 정상 여부 재확인
+                try:
+                    mv = memoryview(data)
+                    while mv:
+                        mv = mv[os.write(wfd, mv[:_CHUNK]):]
+                    os.fsync(wfd)
+                    return
+                finally:
+                    os.close(wfd)
+            raise ValueError("승인 저장소 객체 기록 경쟁 미수렴 — 쓰지 않았다")
+        finally:
+            os.close(sfd)
+    finally:
+        os.close(base)
+
+
 def _store_put(data: bytes) -> str:
     """바이트를 내용 주소로 보관하고 그 digest를 돌려준다. 같은 내용은 한 번만
     저장된다(멱등) — 다기기 병합은 합집합으로 자명하다.
 
-    이미 그 경로에 객체가 있으면 **그 내용이 digest와 일치하는지 확인**하고,
-    동기화 충돌·디스크 손상·변조로 어긋나 있으면 올바른 bytes로 다시 쓴다 —
-    내용 주소라 정본 내용이 유일하게 정해지므로 치유가 자명하다."""
+    경로 봉쇄와 실제 I/O를 **같은 O_NOFOLLOW fd 체인**에 결속한다 — 검사 뒤
+    symlink 교체(TOCTOU)로 vault 밖에 쓰는 일이 없다. 이미 있는 객체가 digest와
+    일치하면 멱등 반환, 손상·symlink면 제거 후 다시 쓴다(내용 주소라 정본 내용이
+    유일하게 정해져 치유가 자명하다)."""
     digest = sha256_bytes(data)
+    hexd = digest.split(":", 1)[1]
+    if _DIRFD_SAFE:
+        _write_object_nofollow(digest, hexd, data)
+        return digest
+    # 폴백(dir_fd 미지원) — realpath 선검사 + 경로 I/O (best-effort)
     dst = _obj_path(digest)
     if dst.exists():
         try:
             if sha256_bytes(dst.read_bytes()) == digest:
-                return digest             # 정상 객체 — 멱등 반환
+                return digest
         except OSError:
-            pass                          # 판독 불가 → 아래 원자 재기록으로 치유
+            pass
     dst.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
     try:
@@ -137,7 +273,7 @@ def _store_put(data: bytes) -> str:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, dst)              # 원자 교체 — 손상 객체를 정상으로 치유
+        os.replace(tmp, dst)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -146,15 +282,18 @@ def _store_put(data: bytes) -> str:
 
 
 def _store_get(digest: str) -> bytes | None:
-    try:
-        p = _obj_path(digest)            # 부적격 digest는 ValueError
-    except ValueError:
+    if not (isinstance(digest, str) and _DIGEST_RE.match(digest)):
         return None                      # 신뢰 밖 digest — 부재로 취급(fail-closed)
-    try:
-        if not p.is_file():
+    hexd = digest.split(":", 1)[1]
+    if _DIRFD_SAFE:
+        data = _read_object_nofollow(hexd)
+    else:
+        try:
+            p = _obj_path(digest)
+            data = p.read_bytes() if p.is_file() else None
+        except (ValueError, OSError):
             return None
-        data = p.read_bytes()
-    except OSError:
+    if data is None:
         return None
     # 내용 주소 계약: 읽은 bytes가 실제로 digest로 해시되어야 한다. 동기화
     # 충돌·디스크 손상·변조로 어긋난 객체는 부재/손상으로 취급한다(fail-closed)

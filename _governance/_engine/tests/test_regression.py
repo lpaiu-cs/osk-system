@@ -871,6 +871,49 @@ def test_store_symlink_confined():
         shutil.rmtree(ext, ignore_errors=True)
 
 
+# ── 검사-사용 사이 shard symlink 교체 TOCTOU 봉쇄 (PR #14 리뷰 [high]) ───
+def test_store_toctou_shard_swap():
+    """경로 검사와 실제 I/O 사이에 shard가 외부 symlink로 교체돼도 저장소 I/O가
+    밖으로 새지 않는다 — _store_get/_store_put이 O_NOFOLLOW fd 체인으로 사용
+    시점에 재검증하므로, 선검사 결과에 의존하지 않는다(dir_fd 지원 플랫폼)."""
+    from osk import approvals as A
+    if not A._DIRFD_SAFE:
+        check("dir_fd 미지원 — TOCTOU 강봉쇄 시험 생략(skip)", True)
+        return
+    ext = Path(tempfile.mkdtemp(prefix="osk-toctou-"))
+    data = b"toctou-payload"
+    digest = A.sha256_bytes(data)
+    hexd = digest.split(":", 1)[1]
+    A.STORE.mkdir(parents=True, exist_ok=True)
+    shard = A.STORE / hexd[:2]
+    saved = None
+    try:
+        if shard.is_symlink():
+            shard.unlink()
+        elif shard.exists():
+            saved = shard.with_name(hexd[:2] + ".bak")
+            shard.rename(saved)
+        shard.mkdir()                               # 검사 시점엔 정상 실디렉터리
+        A._obj_path(digest)                         # 통과(정상)
+        shard.rmdir()                               # ── 검사-사용 사이 교체 ──
+        shard.symlink_to(ext, target_is_directory=True)
+        (ext / hexd[2:]).write_bytes(data)          # 외부에 '정상 내용' 미끼
+        check("교체 후 _store_put이 외부에 쓰지 않는다(fd 체인 재검증)",
+              _raises(lambda: A._store_put(data))())
+        check("외부 디렉터리에 객체가 쓰이지 않음",
+              not any(p.name == hexd[2:] and p.stat().st_size != len(data)
+                      for p in ext.iterdir()) and
+              [p.name for p in ext.iterdir()] == [hexd[2:]])   # 미끼 1개만, 새 쓰기 없음
+        check("교체 후 _store_get이 외부를 읽지 않는다(내용 일치해도)",
+              A._store_get(digest) is None)
+    finally:
+        if shard.is_symlink():
+            shard.unlink()
+        if saved is not None:
+            saved.rename(shard)
+        shutil.rmtree(ext, ignore_errors=True)
+
+
 # ── STORE 루트 자체 symlink 봉쇄 (PR #14 리뷰 [high]) ───────────────────
 def test_store_root_symlink_confined():
     """STORE(objects) **자체**가 vault 밖 symlink여도 trust root로 승격되지
@@ -3137,7 +3180,7 @@ if __name__ == "__main__":
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
                test_store_content_verified, test_store_symlink_confined,
-               test_store_root_symlink_confined,
+               test_store_toctou_shard_swap, test_store_root_symlink_confined,
                test_baseline_pass]:
         try:
             fn()
