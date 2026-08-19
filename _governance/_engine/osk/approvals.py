@@ -127,18 +127,19 @@ def _obj_path(digest: str) -> Path:
     return p
 
 
-def _open_store_dirfd(create: bool) -> int | None:
-    """realpath(ROOT)에서 저장소 objects 디렉터리까지 **각 성분을 O_NOFOLLOW로**
-    열어 그 디렉터리 fd를 돌려준다 — 검증(비-symlink)과 사용이 같은 fd 체인에
-    결속돼 check-then-use TOCTOU가 없다. 어느 성분이든 symlink이면(공격) 열기가
-    ELOOP로 실패하고, 없으면 create=False에서 None, create=True에서 O_NOFOLLOW
-    규율로 만든다. dir_fd 미지원 플랫폼에서는 부르지 않는다(_DIRFD_SAFE)."""
+def _open_dir_chain(parts, create: bool) -> int | None:
+    """realpath(ROOT)에서 `parts`(vault 상대 경로 성분)를 따라 **각 성분을
+    O_NOFOLLOW로** 열어 그 디렉터리 fd를 돌려준다 — 검증(비-symlink)과 사용이
+    같은 fd 체인에 결속돼 check-then-use TOCTOU가 없다. 어느 성분이든 symlink
+    이면(공격) 열기가 ELOOP로 실패하고, 없으면 create=False에서 None,
+    create=True에서 O_NOFOLLOW 규율로 만든다. 저장소·영역 복원이 공유한다.
+    dir_fd 미지원 플랫폼에서는 부르지 않는다(_DIRFD_SAFE)."""
     try:
         fd = os.open(os.path.realpath(ROOT), _ODIR | _NOFOLLOW)
     except OSError:
         return None
     try:
-        for part in _STORE_PARTS:
+        for part in parts:
             while True:
                 try:
                     nxt = os.open(part, _ODIR | _NOFOLLOW, dir_fd=fd)
@@ -156,6 +157,11 @@ def _open_store_dirfd(create: bool) -> int | None:
     except OSError:
         os.close(fd)
         return None                       # 성분이 symlink(ELOOP) 등 — fail-closed
+
+
+def _open_store_dirfd(create: bool) -> int | None:
+    """저장소 objects 디렉터리 fd (nofollow 체인)."""
+    return _open_dir_chain(_STORE_PARTS, create)
 
 
 def _readall_fd(fd: int) -> bytes:
@@ -552,52 +558,121 @@ def unprotect(region: str, reason: str = "") -> dict:
         "base": base, "accepted": None, "reason": reason})
 
 
+def _rel_parts(rel: str) -> list[str]:
+    return [x for x in rel.replace("\\", "/").split("/") if x and x != "."]
+
+
+def _write_file_nofollow(rel: str, data: bytes) -> None:
+    """vault 상대 `rel` 파일에 `data`를 쓴다 — realpath(ROOT)에서 부모까지 각
+    성분을 O_NOFOLLOW로 열어(없으면 만들어) 그 dir_fd 상대로 O_NOFOLLOW 생성한다.
+    부모 성분이 symlink면 ELOOP로 거부되므로, 검증 뒤 부모를 symlink로 교체해도
+    (TOCTOU) I/O가 vault 밖으로 새지 않는다. 저장소 접근자와 같은 규율."""
+    parts = _rel_parts(rel)
+    if not parts:
+        raise ValueError(f"복원 경로가 비었다: {rel!r}")
+    parent = _open_dir_chain(parts[:-1], create=True)
+    if parent is None:
+        raise ValueError(f"복원 부모 경로 봉쇄 실패(symlink 재지정 등): {rel}")
+    name = parts[-1]
+    try:
+        try:
+            os.unlink(name, dir_fd=parent)   # 파일·symlink 제거(따라가지 않음)
+        except OSError:
+            pass                             # 부재·디렉터리·권한 — 아래 O_EXCL가 판정
+        try:
+            wfd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
+                          0o600, dir_fd=parent)
+        except FileExistsError as e:
+            raise ValueError(
+                f"복원 대상을 비울 수 없다(디렉터리 등) — 수동 확인: {rel}") from e
+        try:
+            mv = memoryview(data)
+            while mv:
+                mv = mv[os.write(wfd, mv[:_CHUNK]):]
+            os.fsync(wfd)
+        finally:
+            os.close(wfd)
+    finally:
+        os.close(parent)
+
+
+def _unlink_nofollow(rel: str) -> None:
+    """vault 상대 `rel`을 nofollow 부모 fd 체인 안에서 지운다 — 부모가 없거나
+    symlink면 지울 것도 없다(무시)."""
+    parts = _rel_parts(rel)
+    if not parts:
+        return
+    parent = _open_dir_chain(parts[:-1], create=False)
+    if parent is None:
+        return
+    try:
+        try:
+            os.unlink(parts[-1], dir_fd=parent)
+        except OSError:
+            pass
+    finally:
+        os.close(parent)
+
+
+def _write_file_path(p: Path, data: bytes) -> None:
+    """폴백(dir_fd 미지원) — 경로 기반 원자 교체(best-effort)."""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, p)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
 def _restore_tree(region_dir: Path, table: dict[str, str]) -> None:
     """영역을 manifest 상태로 되돌린다 — manifest의 각 파일을 저장소 내용으로
-    원자 교체하고, manifest에 없는 현재 파일은 지운다.
+    복원하고, manifest에 없는 현재 파일은 지운다.
 
-    manifest는 신뢰 밖 입력이다(다기기 병합으로 유입). 두 방어를 **전수 사전
-    검증**으로 건다 — 한 파일이라도 쓰기 **전에** ①모든 rel이 그 영역 안에
-    봉쇄되는가(정본 manifest는 언제나 `<영역>/…` 접두다; 영역 밖 rel은 악의
-    주입뿐이며, 그것이 승인 기록부·통치문서·타 보호영역을 덮게 두지 않는다)
-    ②모든 blob이 저장소에 실재하는가를 확인한다. 사전 검증에 실패하면 아무
-    파일도 건드리지 않고 거부한다(부분 복원·영역 밖 쓰기 동시 차단)."""
+    manifest는 신뢰 밖 입력이다(다기기 병합으로 유입). ①모든 rel이 그 영역 안에
+    봉쇄되는가 ②모든 blob이 저장소에 실재하는가를 **전수 사전 검증**으로 먼저
+    확인해(부분 복원·영역 밖 쓰기 동시 차단), 그다음 실제 쓰기·삭제는 저장소와
+    같은 **O_NOFOLLOW fd 체인**에 결속한다 — 사전 검증 뒤 영역 하위 부모를
+    symlink로 교체해도(TOCTOU) I/O가 vault 밖으로 새지 않는다(dir_fd 지원
+    플랫폼; 그 밖에는 경로 기반 best-effort 폴백)."""
     root_real = Path(os.path.realpath(ROOT))
     region_rel = posix_rel(region_dir, root_real).rstrip("/")
-    # 0) 전수 사전 검증 — 봉쇄·blob 실재를 쓰기 전에 모두 확인
-    resolved: list[tuple[Path, bytes]] = []
+    # 0) 전수 사전 검증 — 봉쇄(영역 접두)·blob 실재를 쓰기 전에 모두 확인
+    validated: list[tuple[str, bytes]] = []
     for rel, h in sorted(table.items()):
         if not (rel == region_rel or rel.startswith(region_rel + "/")):
             raise ValueError(
                 f"승인본 경로가 영역 밖이다 — 복원 거부: {rel} ⊄ {region_rel}")
-        p = resolve_in_root(rel)
-        if p is None:
+        if resolve_in_root(rel) is None:
             raise ValueError(f"승인본 경로가 vault 밖이다 — 복원 거부: {rel}")
         data = _store_get(h)
         if data is None:
             raise ValueError(f"승인본 blob 부재 — 복원 불가: {rel} {h}")
-        resolved.append((p, data))
-    # 1) 전수 검증 통과 후에만 승인본 내용으로 원자 교체
-    for p, data in resolved:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(p.parent))
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, p)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        validated.append((rel, data))
+    # 1) 승인본 내용으로 복원 (쓰기를 fd 체인에 결속)
+    for rel, data in validated:
+        if _DIRFD_SAFE:
+            _write_file_nofollow(rel, data)
+        else:
+            p = resolve_in_root(rel)
+            if p is None:
+                raise ValueError(f"승인본 경로가 vault 밖이다 — 복원 거부: {rel}")
+            _write_file_path(p, data)
     # 2) manifest에 없는 현재 파일 제거 (에이전트가 추가한 것)
     for rel, p in _region_files(region_dir):
         if rel not in table:
-            try:
-                p.unlink()
-            except OSError:
-                pass
+            if _DIRFD_SAFE:
+                _unlink_nofollow(rel)
+            else:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
 
 # ── 검증기 지원 ──────────────────────────────────────────────────────────

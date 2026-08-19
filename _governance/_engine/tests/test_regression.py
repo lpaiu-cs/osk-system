@@ -914,6 +914,44 @@ def test_store_toctou_shard_swap():
         shutil.rmtree(ext, ignore_errors=True)
 
 
+# ── revert 복원 경로도 fd 체인 봉쇄 (검사-사용 TOCTOU) (PR #14 리뷰 [high]) ─
+def test_revert_restore_subdir_swap_confined():
+    """revert의 복원 쓰기·삭제가 영역 하위 부모 symlink 교체 TOCTOU로 vault 밖에
+    쓰지 않는다 — manifest 전수검증 뒤 `region/sub`를 외부 symlink로 바꿔도
+    _restore_tree가 fd 체인으로 재검증해 외부 파일을 만들지 않는다."""
+    from osk import approvals as A
+    if not A._DIRFD_SAFE:
+        check("dir_fd 미지원 — revert TOCTOU 시험 생략(skip)", True)
+        return
+    ext = Path(tempfile.mkdtemp(prefix="osk-rev-"))
+    reg = "= Domain/revtest"
+    regdir = ROOT / "= Domain" / "revtest"
+    sub = regdir / "sub"
+    try:
+        sub.mkdir(parents=True, exist_ok=True)
+        (sub / "f.md").write_text("승인본-내용", encoding="utf-8")
+        A.protect(reg, "지정")                       # sub/f.md가 승인본에 들어감
+        (sub / "f.md").write_text("변경됨", encoding="utf-8")   # pending
+        table = A._tree_table(A.approved_hash(reg))
+        # 복원 직전 부모(sub)를 외부 symlink로 교체(검사-사용 TOCTOU 주입)
+        (sub / "f.md").unlink()
+        sub.rmdir()
+        sub.symlink_to(ext, target_is_directory=True)
+        check("영역 하위 부모 symlink 교체 시 _restore_tree가 외부에 쓰지 않는다",
+              _raises(lambda: A._restore_tree(regdir, table))())
+        check("외부 디렉터리에 복원 파일이 생기지 않음",
+              not (ext / "f.md").exists())
+    finally:
+        if sub.is_symlink():
+            sub.unlink()
+        sub.mkdir(parents=True, exist_ok=True)
+        (sub / "f.md").write_text("승인본-내용", encoding="utf-8")   # 승인본으로 → clean
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+        shutil.rmtree(ext, ignore_errors=True)
+
+
 # ── STORE 루트 자체 symlink 봉쇄 (PR #14 리뷰 [high]) ───────────────────
 def test_store_root_symlink_confined():
     """STORE(objects) **자체**가 vault 밖 symlink여도 trust root로 승격되지
@@ -3181,6 +3219,7 @@ if __name__ == "__main__":
                test_approval_baseline_blobs_present,
                test_store_content_verified, test_store_symlink_confined,
                test_store_toctou_shard_swap, test_store_root_symlink_confined,
+               test_revert_restore_subdir_swap_confined,
                test_baseline_pass]:
         try:
             fn()
