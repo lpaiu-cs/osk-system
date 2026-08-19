@@ -6,7 +6,6 @@ CLI는 대화형 확인을 강제하고, 에이전트는 이 명령을 사용자
 """
 from __future__ import annotations
 import argparse, json, sys
-from pathlib import Path
 
 from .core import ROOT
 from . import graph, approvals, authority, validate, search
@@ -27,6 +26,26 @@ def _confirm(prompt: str) -> None:
 # `osk <이름> …`의 인자를 **파싱하지 않고 그대로** 넘기는 위임 명령.
 DELEGATED = {"update": "정본 릴리스로 갱신 (osk.update로 위임)",
              "release": "[정본 전용] 정식 릴리스 선언 (osk.release로 위임)"}
+
+
+def _print_changeset(region: str) -> None:
+    """헌법 10조 2항 — 사용자는 **차이를 검토하여** 승인·반려한다. 해시 두 개는
+    검토가 아니므로 무엇이 생기고 사라지고 바뀌는지를 파일 단위로 낸다."""
+    cs = approvals.changeset(region)
+    if cs is None:
+        print("  (차이를 판정할 수 없다 — 승인본 미해석)")
+        return
+    for label, key in (("추가", "added"), ("삭제", "removed"), ("수정", "modified")):
+        rows = cs[key]
+        if not rows:
+            continue
+        print(f"  {label} {len(rows)}건")
+        for r in rows[:20]:
+            print(f"    {r}")
+        if len(rows) > 20:
+            print(f"    … 외 {len(rows) - 20}건")
+    if not any(cs.values()):
+        print("  (파일 단위 차이 없음)")
 
 
 def main(argv=None):
@@ -98,6 +117,21 @@ def main(argv=None):
         print("해제 등재:", rec["rid"])
     elif a.cmd == "approve":
         st = approvals.state(a.region)
+        if st == "stale":
+            # 봉합 승인 — 승인 기록이 갈렸다(다기기 병합). 사용자가 갈래를 보고
+            # 현재 작업본을 새 승인본으로 삼는다(Mechanism §3 5항).
+            forks = approvals.divergence(a.region)
+            work = approvals.working_tree_hash(a.region)
+            print(f"영역이 stale입니다 — 승인 기록이 {len(forks)}갈래로 갈렸습니다.")
+            for f in forks:
+                print(f"  갈래 {f.get('rid')} {f.get('kind')} "
+                      f"accepted={f.get('accepted')} at={f.get('at')}")
+            print(f"현재 작업본: {work}")
+            _confirm("이 작업본을 새 승인본으로 삼아 갈래를 봉합합니까? [y/N] ")
+            rec = approvals.approve(a.region, None, expect_work=work,
+                                    reason=a.reason or "분기 봉합")
+            print("봉합 승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
+            return
         if st != "pending":
             sys.exit(f"승인할 변경집합이 없다 — 상태: {st}")
         # 양측 CAS의 두 예상값을 확인 프롬프트 **전에** 고정한다 — 프롬프트
@@ -105,6 +139,7 @@ def main(argv=None):
         base = approvals.approved_hash(a.region)
         work = approvals.working_tree_hash(a.region)
         print(f"승인 대상: {a.region}\n승인본→작업본: {base} → {work}")
+        _print_changeset(a.region)
         _confirm("검토한 이 변경집합을 승인본으로 받아들입니까? [y/N] ")
         rec = approvals.approve(a.region, base, expect_work=work, reason=a.reason)
         print("승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
@@ -119,6 +154,7 @@ def main(argv=None):
         work = approvals.working_tree_hash(a.region)
         print(f"반려 대상: {a.region} — 작업본을 승인본으로 원상 복원합니다")
         print(f"버릴 변경집합(작업본→승인본): {work} → {base}")
+        _print_changeset(a.region)
         _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
         rec = approvals.revert(a.region, base, expect_work=work, reason=a.reason)
         print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])

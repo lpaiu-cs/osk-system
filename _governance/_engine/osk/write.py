@@ -32,11 +32,11 @@ from pathlib import Path
 
 import yaml
 
-from .core import (ROOT, LEDGER, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
+from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
                    ledger_append, ledger_read, mutation_lock, new_node_id,
                    now_kst, posix_rel, resolve_in_root, resolve_one,
                    sha256_bytes, sha256_file)
-from . import approvals, contract, graph, signatures
+from . import contract, graph, signatures
 
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
@@ -725,14 +725,6 @@ def move_node(name: str, dest_space: str) -> dict:
             raise WriteError(
                 "pin으로 고정된 군집이다 — 자동 재배정에서 제외된다 "
                 "(시행령 §3 4항). 사용자 발의로만 옮긴다")
-        # 보호영역 경계를 넘는 이동은 반려로 되돌릴 수 없다 — 반려는 영역별
-        # tree만 알므로, 밖→안 이동을 반려하면 도착본이 지워지고 출발본은
-        # 복원할 정보가 없어 노드가 사라진다(안→밖은 같은 id가 둘이 된다).
-        # pin과 같은 규율로 자동 재배정에서 뺀다 — 사용자 발의로만 옮긴다.
-        if approvals.containing_regions(path) != approvals.containing_regions(target):
-            raise WriteError(
-                "보호영역 경계를 넘는 이동이다 — 반려가 되돌릴 수 없어 자동 "
-                "재배정에서 제외된다(헌법 10조·시행령 §6). 사용자 발의로만 옮긴다")
         clash = _name_collision(dest_dir, path.stem)
         if clash is not None:
             raise WriteError(

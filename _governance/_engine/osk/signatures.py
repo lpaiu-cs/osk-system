@@ -7,7 +7,7 @@
 이 모듈이 남기는 것은 두 가지다:
 - 구체제 서명 기록부의 **판독**(사료 열람·감사): records()·latest_by_node().
 - 서명과 무관한 **판독 헬퍼**: 파일의 id 해석(_id_of·locate_by_id), 사건 헤더
-  파싱(parse_case). 이들은 write·graph·approvals가 공유한다.
+  파싱(parse_case). 이들은 write·graph·validate가 공유한다.
 
 대장·사건부에 적힌 **경로와 사건 번호는 신뢰 밖 입력**이다(다기기 병합).
 파일을 읽기 전에 core.resolve_in_root로 vault 안에 봉쇄한다.

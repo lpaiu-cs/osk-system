@@ -13,16 +13,6 @@ from .core import ROOT, LEDGER, ID_RE, resolve_in_root
 from . import contract
 
 
-def open_case_of(node_id: str) -> str | None:
-    """그 노드를 당사자로 하는 **열린(docketed) 사건**의 번호 — 없으면 None.
-    헌법 12조 5항 후단(판결 전까지 재서명되지 않는다)의 집행 근거다."""
-    for no, c in _load_cases().items():
-        if str(c.get("status")) == "docketed" \
-                and node_id in [str(x) for x in (c.get("parties") or [])]:
-            return no
-    return None
-
-
 def _load_cases() -> dict[str, dict]:
     """사건부 헤더 일괄 로드 — conflicts 적격 판정용."""
     from . import signatures as _sig
@@ -92,7 +82,7 @@ def is_node_home(kind: tuple) -> bool:
 
 def iter_nodes():
     # 통치 구획의 통치 문서·사료는 특수한 노드다(시행령 §10 1항) — 색인에
-    # 있어야 명시 조회(read_node)가 도달하고 갱신 후 재서명(수용 기록)이
+    # 있어야 명시 조회(read_node)가 도달하고 갱신 후 승인(수용 기록)이
     # 성립한다. `_engine`의 .md는 space_of가 ("engine",)으로 걸러낸다.
     for base in NODE_SPACES + ("_governance",):
         root = ROOT / base

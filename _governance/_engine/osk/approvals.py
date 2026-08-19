@@ -290,6 +290,35 @@ def region_of(path: Path | str) -> str | None:
     return max(regions, key=len) if regions else None
 
 
+def changeset(region: str) -> dict | None:
+    """승인본과 작업본의 **차이** — 헌법 10조 2항이 사용자에게 검토를 요구하는
+    그 차이다. 판정할 수 없으면(미보호·stale·승인본 미해석) None.
+
+    반환: {"added": [rel…], "removed": [rel…], "modified": [rel…]}. 해시 비교라
+    내용 diff는 아니지만, 사용자가 무엇이 생기고 사라지고 바뀌는지를 파일 단위로
+    보고 판단할 수 있어야 승인이 확인 절차가 된다 — 해시 두 개만 보여주는 것은
+    검토가 아니다."""
+    tree = approved_hash(region)
+    table = _tree_table_for_region(region, tree) if tree else None
+    if table is None:
+        return None
+    d = resolve_in_root(region)
+    cur = ({rel: sha256_file(p) for rel, p in _region_files(d)}
+           if d is not None and d.is_dir() else {})
+    return {
+        "added": sorted(set(cur) - set(table)),
+        "removed": sorted(set(table) - set(cur)),
+        "modified": sorted(r for r in set(cur) & set(table) if cur[r] != table[r]),
+    }
+
+
+def divergence(region: str, recs: list[dict] | None = None) -> list[dict]:
+    """stale 영역의 **갈래** — 인과 극대 기록 전부(비-stale이면 0~1개).
+    사용자가 무엇이 갈렸는지 보고 봉합을 판단할 근거다(Mechanism §3 5항)."""
+    recs = records() if recs is None else recs
+    return causal_maxima(recs, region, None, "region")
+
+
 def file_matches_baseline(path: Path | str) -> bool:
     """이 파일의 현재 내용이 자신을 포함하는 **모든** 보호영역의 승인본과
     일치하는가. 보호영역 밖이면 True(제약 없음).
@@ -372,24 +401,32 @@ def approve(region: str, base: str, expect_work: str,
     되므로 승인이 성립하지 않는다 — 영역을 판정할 수 없을 때(`approved_hash`·
     `working_tree_hash`가 None) CLI가 그 None을 그대로 넘기는 경로가 실제로
     있으므로, 그 자리에서 거부한다. 다만 **경로 진단이 먼저다** — 영역 자체가
-    성립하지 않는 것이 원인이면 인자 탓으로 보고하지 않는다."""
+    성립하지 않는 것이 원인이면 인자 탓으로 보고하지 않는다.
+
+    예외는 **봉합 승인**뿐이다. stale(인과 극대 비유일)에서는 현행 승인본이
+    하나로 정해지지 않아 걸 `base`가 없으므로 `base=None`으로 부른다 — 사용자가
+    갈래를 보고 "이 작업본을 새 승인본으로 삼는다"고 판단한 것이며, 그 기록이
+    모든 head를 이어 분기를 봉합한다(Mechanism §3 5항 · 시행령 §6 3항의
+    "해소는 사용자의 새 검토")."""
     with mutation_lock():   # 엔진이 내는 변경을 직렬화
         d = resolve_in_root(region)
         if d is None or not d.is_dir():
             raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
-        if base is None or expect_work is None:
-            raise ValueError(
-                "base·expect_work(검토한 승인본·작업본)는 필수다 — 양측 CAS를 "
-                "건너뛸 수 없다")
         reg = posix_rel(d, Path(os.path.realpath(ROOT)))
         recs = records()
         st = state(reg, recs)
-        if st == "stale":
-            raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
         if st == "unprotected":
             raise ValueError(f"보호 중이 아니다: {reg}")
+        sealing = (st == "stale")
+        if expect_work is None or (base is None) != sealing:
+            raise ValueError(
+                "stale 영역의 봉합 승인은 base 없이(None) 한다 — 현행 승인본이 "
+                f"유일하지 않다: {reg}"
+                if sealing else
+                "base·expect_work(검토한 승인본·작업본)는 필수다 — 양측 CAS를 "
+                "건너뛸 수 없다 (base=None은 stale 봉합에서만)")
         cur = approved_hash(reg, recs)
-        if cur != base:
+        if not sealing and cur != base:
             raise ValueError(
                 f"검토가 전제한 승인본이 현행이 아니다 (승인본 측 CAS): 전제={base} 현행={cur}")
         # 작업본을 **한 번** 읽어 박제하고, 그 **같은** tree를 작업본 측 CAS에
@@ -400,7 +437,7 @@ def approve(region: str, base: str, expect_work: str,
         if accepted != expect_work:
             raise ValueError(
                 "검토한 작업본이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측 CAS)")
-        if accepted == cur:
+        if not sealing and accepted == cur:
             raise ValueError("변경집합이 없다 — 승인할 pending 차이가 없다")
         # 승인본 측 CAS를 **대장 잠금 안에서 다시** 본다 — 위 검사와 append 사이에
         # 영역 전수 판독(_store_tree)이 있어 창이 길다. 그 사이 다른 기기의 승인이
@@ -410,7 +447,8 @@ def approve(region: str, base: str, expect_work: str,
             "kind": "approve", "region": reg,
             "base": base, "accepted": accepted, "reason": reason},
             expect=lambda recs2: (
-                None if approved_hash(reg, recs2) == base else
+                None if (state(reg, recs2) == "stale" if sealing
+                         else approved_hash(reg, recs2) == base) else
                 "승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 검토하라"
                 f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
 

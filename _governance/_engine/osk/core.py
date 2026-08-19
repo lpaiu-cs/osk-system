@@ -10,20 +10,20 @@
   이력). 도입 사건(첫 parents 보유 기록 = 앵커)부터 명시 인과가 정본이며,
   **앵커 이후에는 파일 순서 추정을 쓰지 않는다** — parents 없는 기록은 고립
   루트로 강등한다(구 엔진이 다른 클론에서 쓴 행이 병합돼 들어와도 가짜 인과를
-  얻지 못한다). 고립 루트도 head이므로 사용자의 재서명이 봉합해 해소한다.
+  얻지 못한다). 고립 루트도 head이므로 사용자의 새 봉합 기록이 해소한다.
 - rid는 잠금 안에서 대장의 정본상 최대 rid로부터 단조 생성한다 — 물리적
   마지막 행이 아니라 최대값이 바닥이다.
 - 판정은 rid 정렬이 아니라 인과 극대(causal maxima)로 한다. 같은 노드의
   극대 기록이 유일하지 않으면(비교 불능 분기 또는 순환) 보수적으로
-  미서명이다. 이후 모든 head를 조상으로 갖는 새 기록(사용자의 재서명)이
+  미확정이다. 이후 모든 head를 조상으로 갖는 새 기록(사용자의 봉합)이
   유일 극대가 되어 해소한다.
 
 손상과 해소 가능성 (fail-closed의 두 갈래):
 - **정규화로 해소 가능한 이상** — 자기 참조·미지 rid 참조·전방 참조(파일
   순서상 뒤를 가리키는 parents)는 간선을 잘라 고립 루트로 강등한다. 순환이
-  원천 차단되고(항상 DAG), 재서명으로 해소되는 길이 남는다.
+  원천 차단되고(항상 DAG), 새 봉합 기록으로 해소되는 길이 남는다.
 - **구조 손상** — rid 부재·rid 형식 위반·rid 중복은 기록의 동일성 자체가
-  깨진 상태다. 판정은 fail-closed(미서명)로 두되 `ledger_damage`가 이를
+  깨진 상태다. 판정은 fail-closed(미확정)로 두되 `ledger_damage`가 이를
   표면화하고, 회복은 Mechanism §3 7항의 수동 복구가 담당한다. 이 상태에서는
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
@@ -191,7 +191,7 @@ def resolve_in_root(rel_or_abs: str | Path) -> Path | None:
     """대장·사건부에 적힌 경로 문자열을 **vault 안으로 봉쇄** 해석한다.
     대장은 다기기 병합으로 임의의 내용이 유입될 수 있는 신뢰 밖 입력이므로,
     `..`·절대 경로·심볼릭 링크로 루트를 벗어나면 None(=해석 실패)이다.
-    실패는 호출부에서 언제나 미서명·거부 쪽으로 처리한다."""
+    실패는 호출부에서 언제나 거부·불일치 쪽으로 처리한다."""
     try:
         p = Path(rel_or_abs)
         cand = p if p.is_absolute() else ROOT / p
@@ -268,7 +268,7 @@ def ledger_read(path: Path) -> list[dict]:
 
 def ledger_damage(records: list[dict], path: Path | str = "") -> list[str]:
     """기록의 **동일성**이 깨진 구조 손상 목록 — rid 부재·형식 위반·중복.
-    정규화로 흡수하면 안 되는(해소를 재서명에 맡길 수 없는) 이상이며,
+    정규화로 흡수하면 안 되는(해소를 새 기록에 맡길 수 없는) 이상이며,
     Mechanism §3 7항의 수동 복구 대상이다. 빈 목록이면 건전."""
     out, seen = [], {}
     where = f"{path}:" if path else "행"
@@ -287,7 +287,7 @@ def ledger_damage(records: list[dict], path: Path | str = "") -> list[str]:
 
 
 def damaged_nodes(records: list[dict]) -> set[str]:
-    """구조 손상에 연루된 노드 — 판정은 fail-closed(미서명)."""
+    """구조 손상에 연루된 노드 — 판정은 fail-closed(미확정)."""
     bad, seen = set(), {}
     for i, r in enumerate(records):
         rid, node = r.get("rid"), r.get("node")
@@ -312,7 +312,7 @@ def effective_parents(records: list[dict]) -> dict[str, list[str]]:
       간주한다. 앵커 이후의 parents 부재 기록은 고립 루트다.
     - parents 원소 중 자기 자신·미지 rid·파일 순서상 뒤(전방 참조)는
       잘라낸다 — 손상이 순환을 만들어 기록을 판정에서 소거하는 것을 막고,
-      잘린 기록은 head로 남아 재서명으로 봉합된다.
+      잘린 기록은 head로 남아 새 기록으로 봉합된다.
     - 구조 손상 기록(rid 부재·형식 위반)은 DAG에 넣지 않는다. 그 노드는
       damaged_nodes가 fail-closed로 잡는다.
     """
@@ -385,7 +385,7 @@ def causal_maxima(records: list[dict], value: str,
 
 def unresolved_nodes(records: list[dict], field: str = "node") -> set[str]:
     """판정이 성립하지 않는 키 — 인과 극대가 유일하지 않거나(분기·순환 잔재)
-    구조 손상에 연루된 것. 판정은 보수적으로 미서명·미확정."""
+    구조 손상에 연루된 것. 판정은 보수적으로 미확정."""
     par = effective_parents(records)
     keys = {r.get(field) for r in records if r.get(field)}
     out = set(damaged_nodes(records)) if field == "node" else set()

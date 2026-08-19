@@ -36,35 +36,74 @@ def parse_clause(body: str) -> dict | None:
     return out
 
 
+def covering_regions() -> list[str]:
+    """위임 Facet을 덮는 보호영역 — Facet 자신과 그 **상위** 구획들.
+
+    헌법 10조 1항: "상위 구획의 보호는 그 하위 전체에 미치며, 에이전트는 하위에
+    보호의 예외를 만들 수 없다." 그래서 사용자가 Facet 대신 `= Person`을
+    지정했어도 위임은 성립한다. 반대로 Facet **하위**만 지정한 것은 덮지 못한다
+    — 하위 구획만 protect해 Facet의 미보호를 우회할 수 없다(헌법 7조 3항)."""
+    reg = DELEGATION_REGION
+    return [r for r in approvals.protected_regions()
+            if reg == r.rstrip("/") or reg.startswith(r.rstrip("/") + "/")]
+
+
+def _baseline_nodes() -> list[Path] | None:
+    """승인본에 담긴 위임 Facet 안의 노드 파일 전수 — 덮는 보호영역이 없으면
+    None(미보호).
+
+    시행령 §5 2항은 "**승인본의** 위임 노드를 전수 열거"라고 한다 — 작업본을
+    훑으면 승인본에 있으나 지금 지워진 노드를 놓치고, 하위 디렉터리의 노드도
+    빠진다. 그래서 열거의 출처는 승인본 manifest다."""
+    for region in sorted(covering_regions(), key=len, reverse=True):
+        tree = approvals.approved_hash(region)
+        table = approvals._tree_table_for_region(region, tree) if tree else None
+        if table is None:
+            continue
+        pre = DELEGATION_REGION + "/"
+        return [p for p in (approvals.resolve_in_root(rel) for rel in sorted(table)
+                            if rel.startswith(pre) and rel.endswith(".md"))
+                if p is not None]
+    return None
+
+
 def enumerate_delegations() -> list[dict]:
     """위임 Facet 전수 열거. 각 항목: 성립 3요건(배치·유효 위임 절·승인본
     반영) 평가를 포함한다.
 
-    `approved`는 그 위임 노드가 위임 Facet의 승인본에 그대로 반영돼 있는가다
-    — 위임 Facet이 보호영역이 아니거나(미보호), 노드가 승인본에 없거나 승인
-    이후 작업본이 달라졌으면(pending) False다(fail-closed). 파싱 불가 파일은
-    위임으로 세지 않고 `broken`으로 표시한다 — 그 파일 하나가 권한 검사를
-    죽이지 않는다(시행령 §11)."""
+    열거는 **승인본**에서 한다(시행령 §5 2항). `approved`는 그 노드가 덮는
+    보호영역의 승인본에 그 해시로 들어 있는가다 — 덮는 영역이 없거나(미보호),
+    승인 이후 작업본이 달라졌으면(pending) False다(fail-closed). 파싱 불가
+    파일은 위임으로 세지 않고 `broken`으로 표시한다 — 그 파일 하나가 권한
+    검사를 죽이지 않는다(시행령 §11)."""
     out = []
-    if not DELEGATION_FACET.exists():
-        return out
-    for p in sorted(DELEGATION_FACET.glob("*.md")):
+    nodes = _baseline_nodes()
+    if nodes is None:                      # 미보호 — 성립한 위임이 없다
+        if not DELEGATION_FACET.exists():
+            return out
+        nodes = sorted(DELEGATION_FACET.glob("*.md"))   # 보고용(전부 미성립)
+    for p in nodes:
+        rel = str(p.relative_to(ROOT))
+        if not p.is_file():                # 승인본에는 있으나 작업본에서 사라짐
+            out.append({"path": rel, "node": None, "title": p.stem,
+                        "clause": None, "broken": "작업본에 없음",
+                        "valid_clause": False, "approved": False,
+                        "effective": False})
+            continue
         try:
             n = contract.parse(p)
         except Exception as e:
             out.append({
-                "path": str(p.relative_to(ROOT)), "node": None,
+                "path": rel, "node": None,
                 "title": p.stem, "clause": None, "broken": str(e),
                 "valid_clause": False, "approved": False, "effective": False,
             })
             continue
         clause = parse_clause(n.body)
-        # 승인본 반영 = **위임 Facet 자체**(DELEGATION_REGION)가 보호 중이고 그
-        # 승인본에 이 노드가 그 해시로 들어 있음. Facet이 미보호면 미성립이다 —
-        # 하위 디렉터리만 protect해 우회할 수 없다(헌법 7조 3항, fail-closed).
-        approved = approvals.file_in_region_baseline(DELEGATION_REGION, p)
+        approved = any(approvals.file_in_region_baseline(r, p)
+                       for r in covering_regions())
         out.append({
-            "path": str(p.relative_to(ROOT)), "node": n.id,
+            "path": rel, "node": n.id,
             "title": p.stem, "clause": clause,
             "valid_clause": clause is not None,
             "approved": approved,

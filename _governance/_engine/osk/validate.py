@@ -326,7 +326,7 @@ SURFACE_MODULES = ("mcp_server.py", "osk/write.py")
 def surface_violations(engine_dir=None) -> list[str]:
     """MCP 표면 검사 (Mechanism §6-2). 정적 도달성 분석은 파이썬에서 취약하므로
     결정론적인 두 가지만 본다: ⅰ)선언 목록과 구현 도구의 동치 ⅱ)금지 심벌
-    (서명 권위 호출·권위 대장 append)의 부재. 금지선은 **권위 대장**이지
+    (보호영역·구체제 서명 권위 호출·권위 대장 append)의 부재. 금지선은 **권위 대장**이지
     대장 일반이 아니다 — 충돌 후보 기록은 헌법 12조 2항이 명하는 바다.
 
     검사 대상은 경로 사본이 아니라 **지금 도는 엔진**이다(시험은 engine_dir로
@@ -368,7 +368,7 @@ def surface_violations(engine_dir=None) -> list[str]:
                 continue
             name = getattr(n.func, "attr", None) or getattr(n.func, "id", None)
             if name in FORBIDDEN_CALLS:
-                errs.append(f"표면이 서명 권위를 호출한다: {rel}:{n.lineno} {name}")
+                errs.append(f"표면이 권위 심벌을 호출한다: {rel}:{n.lineno} {name}")
             if name == "ledger_append" and n.args:
                 tgt = (getattr(n.args[0], "attr", None)
                        or getattr(n.args[0], "id", None))

@@ -3,7 +3,7 @@
 격리 원칙 (검토 3차 지적 4): 수트 전체가 임시 mini-vault를 OSK_VAULT_ROOT로
 가리키는 **자기 프로세스** 안에서 돈다 — 실 vault는 읽지도 쓰지도 않고,
 전역(core.SIGNATURES 등)의 재대입·모듈 reload도 하지 않는다. sync 시험은
-별도 임시 git 저장소, 서명 생애 fixture는 별도 subprocess에서 돈다.
+별도 임시 git 저장소, 보호영역 생애 fixture는 별도 subprocess에서 돈다.
 
 실행: cd <vault> && .venv/bin/python _engine/tests/test_regression.py
 """
@@ -18,7 +18,7 @@ MINI = Path(_TMP.name) / "mini-vault"
 os.environ["OSK_VAULT_ROOT"] = str(MINI)   # osk import 전에 — 전 모듈이 mini를 본다
 sys.path.insert(0, str(ENGINE))
 
-from osk import (core, graph, search, validate, authority, contract, write,  # noqa: E402
+from osk import (core, graph, validate, authority, contract, write,  # noqa: E402
                  publish)  # noqa: E402
 import osk.signatures as S  # noqa: E402
 
@@ -709,33 +709,54 @@ def test_store_digest_confined():
               A._store_get(bad) is None)
 
 
-# ── 위임 성립은 위임 Facet '자체'의 승인본 (PR #14 리뷰 [high]) ──────────
-def test_delegation_facet_exact_region():
-    """위임 성립 검사는 가장 안쪽 보호영역(region_of)이 아니라 위임 Facet의
-    **정확한** region으로 한다 — Facet은 미보호인데 더 넓은 조상만 protect해도
-    성립으로 새지 않는다(헌법 7조 3항, fail-closed)."""
+# ── 위임 성립의 보호 범위 — 상위는 상속, 하위는 우회 불가 ───────────────
+def test_delegation_protection_scope():
+    """헌법 10조 1항: 상위 구획의 보호는 그 하위 전체에 미친다 — 사용자가 Facet
+    대신 `= Person`을 지정했어도 위임은 성립한다. 반대로 Facet **하위**만
+    지정한 것은 Facet의 미보호를 우회하지 못한다(헌법 7조 3항, fail-closed)."""
     from osk import approvals as A, authority
     dnode = ROOT / "= Person/Delegation/regr-deleg.md"
+    subdir = ROOT / "= Person/Delegation/sub"
     clause = ("## 위임\n- 대상: 시험 행위\n- 범위: 시험\n"
               "- 조건: 없음\n- 종료: 없음\n")
-    dnode.write_text(node_text("260802-zzzz-rgd1", "위임 노드", clause),
-                     encoding="utf-8")
+    def eff():
+        return {d["title"]: d["effective"] for d in authority.enumerate_delegations()}
     try:
-        # (a) 더 넓은 조상(= Person)만 보호 — 위임 Facet 자체는 미보호
-        A.protect("= Person", "조상만")
-        eff = {d["title"]: d["effective"]
-               for d in authority.enumerate_delegations()}
-        check("조상만 보호되면 위임 미성립(우회 차단)",
-              eff.get("regr-deleg") is False, eff)
+        dnode.write_text(node_text("260802-zzzz-rgd1", "위임 노드", clause),
+                         encoding="utf-8")
+        check("미보호에서는 미성립", eff().get("regr-deleg") is False, eff())
+        # (a) 상위 구획만 보호 — 하향 상속으로 성립한다
+        A.protect("= Person", "상위 지정")
+        check("상위 보호는 하위에 미친다(헌법 10조 1항)",
+              eff().get("regr-deleg") is True, eff())
         A.unprotect("= Person", "정리")
-        # (b) 위임 Facet 자체 보호 + 승인본 일치 → 성립
+        # (b) Facet 하위만 보호 — Facet 자신은 미보호라 우회되지 않는다
+        subdir.mkdir(parents=True, exist_ok=True)
+        (subdir / "filler.md").write_text("x", encoding="utf-8")
+        A.protect("= Person/Delegation/sub", "하위만")
+        check("하위 구획만 보호되면 위임 미성립(우회 차단)",
+              eff().get("regr-deleg") is False, eff())
+        A.unprotect("= Person/Delegation/sub", "정리")
+        shutil.rmtree(subdir, ignore_errors=True)
+        # (c) Facet 자신 보호 → 성립
         A.protect("= Person/Delegation", "Facet 보호")
-        eff = {d["title"]: d["effective"]
-               for d in authority.enumerate_delegations()}
         check("위임 Facet 자체 보호 시 위임 성립",
-              eff.get("regr-deleg") is True, eff)
+              eff().get("regr-deleg") is True, eff())
+        # (d) 열거는 승인본에서 — 작업본에서 지워도 승인본의 노드가 보고된다
+        dnode.unlink()
+        rows = {d["title"]: d for d in authority.enumerate_delegations()}
+        check("승인본에 있던 노드가 열거에서 사라지지 않는다",
+              "regr-deleg" in rows, list(rows))
+        check("다만 작업본 부재라 미성립",
+              rows.get("regr-deleg", {}).get("effective") is False, rows)
+        dnode.write_text(node_text("260802-zzzz-rgd1", "위임 노드", clause),
+                         encoding="utf-8")
         A.unprotect("= Person/Delegation", "정리")
     finally:
+        for r in ("= Person", "= Person/Delegation", "= Person/Delegation/sub"):
+            try: A.unprotect(r, "정리")
+            except Exception: pass
+        shutil.rmtree(subdir, ignore_errors=True)
         dnode.unlink(missing_ok=True)
 
 
@@ -918,41 +939,6 @@ def test_protect_precondition_rejects_stale():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
-# ── 보호 경계를 넘는 이동은 자동 재배정에서 빠진다 (PR #14 리뷰) ───────
-def test_move_across_protection_boundary_refused():
-    """반려는 영역별 tree만 알므로 경계를 넘는 이동을 되돌리지 못한다 — 밖→안
-    이동을 반려하면 도착본은 지워지고 출발본은 복원할 정보가 없어 노드가
-    사라진다. pin과 같은 규율로 자동 재배정에서 뺀다(사용자 발의로만)."""
-    from osk import approvals as A, write
-    src = ROOT / "= Scope/W1"
-    dst = ROOT / "= Scope/W3"
-    node = src / "regr-mv.md"
-    try:
-        src.mkdir(parents=True, exist_ok=True)
-        dst.mkdir(parents=True, exist_ok=True)
-        node.write_text(node_text("260802-zzzz-rgmv", "이동 시험", "본문\n"),
-                        encoding="utf-8")
-        A.protect("= Scope/W3", "도착지만 보호")
-        def moved():
-            try:
-                write.move_node("regr-mv", "= Scope/W3"); return False
-            except Exception:
-                return True
-        check("경계를 넘는 이동은 거부", moved())
-        check("출발본이 그대로 있다", node.exists())
-        check("도착지에 사본이 생기지 않았다", not (dst / "regr-mv.md").exists())
-        A.unprotect("= Scope/W3", "정리")
-        check("경계가 없으면 이동 가능",
-              write.move_node("regr-mv", "= Scope/W3")["ok"])
-    finally:
-        for r in ("= Scope/W3",):
-            try: A.unprotect(r, "정리")
-            except Exception: pass
-        (dst / "regr-mv.md").unlink(missing_ok=True)
-        node.unlink(missing_ok=True)
-        shutil.rmtree(ROOT / "= Scope/W3", ignore_errors=True)
-
-
 # ── 영역째 삭제된 사고도 반려로 복구된다 (PR #14 리뷰) ─────────────────
 def test_revert_recreates_deleted_region():
     """보호영역 디렉터리가 통째로 사라져도(rm -r·동기화 삭제) 승인본이 유효하면
@@ -979,6 +965,147 @@ def test_revert_recreates_deleted_region():
         try: A.unprotect(reg, "정리")
         except Exception: pass
         shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 사용자는 '차이'를 검토한다 — 해시 두 개는 검토가 아니다 (헌법 10조 2항) ──
+def test_changeset_lists_difference():
+    """헌법 10조 2항은 사용자가 **차이를 검토하여** 승인·반려하라고 한다.
+    엔진은 그 차이를 파일 단위(추가·삭제·수정)로 낼 수 있어야 한다."""
+    from osk import approvals as A
+    reg = "= Domain/csview"
+    regdir = ROOT / "= Domain" / "csview"
+    try:
+        (regdir / "sub").mkdir(parents=True, exist_ok=True)
+        (regdir / "keep.md").write_text("그대로", encoding="utf-8")
+        (regdir / "gone.md").write_text("사라질 것", encoding="utf-8")
+        (regdir / "sub" / "edit.md").write_text("v1", encoding="utf-8")
+        A.protect(reg, "지정")
+        check("clean에서는 차이가 없다",
+              A.changeset(reg) == {"added": [], "removed": [], "modified": []},
+              A.changeset(reg))
+        (regdir / "gone.md").unlink()
+        (regdir / "sub" / "edit.md").write_text("v2", encoding="utf-8")
+        (regdir / "new.md").write_text("새 파일", encoding="utf-8")
+        cs = A.changeset(reg)
+        check("추가를 집는다", cs["added"] == ["= Domain/csview/new.md"], cs)
+        check("삭제를 집는다", cs["removed"] == ["= Domain/csview/gone.md"], cs)
+        check("수정을 집는다(하위 디렉터리 포함)",
+              cs["modified"] == ["= Domain/csview/sub/edit.md"], cs)
+        check("차이가 있으면 pending", A.state(reg) == "pending")
+        A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "정리")
+        check("반려 뒤 차이 없음", A.changeset(reg)["modified"] == [])
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── stale은 막다른 상태가 아니다 — 봉합 승인 (Mechanism §3 5항) ─────────
+def test_stale_sealed_by_approve():
+    """극대가 여럿이면 '모든 head를 잇는 사용자의 새 기록이 봉합한다'(§3 5항).
+    네 조작이 전부 stale을 거부하면 그 길이 막혀 다기기 병합 한 번이 영역을
+    영구히 고착시킨다 — 봉합 승인(base=None)이 그 길이다."""
+    from osk import approvals as A
+    reg = "= Domain/sealed"
+    regdir = ROOT / "= Domain" / "sealed"
+    kept = A.APPROVALS.read_text(encoding="utf-8") if A.APPROVALS.exists() else ""
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("v1", encoding="utf-8")
+        A.protect(reg, "지정")
+        # 두 기기가 각각 승인 → git 병합이 두 줄을 남긴다(인과 극대 2)
+        head = A.records()[-1]["rid"]
+        rid = head
+        with open(A.APPROVALS, "a", encoding="utf-8") as fh:
+            for i in (1, 2):
+                rid = core._next_rid(rid)
+                fh.write(json.dumps({
+                    "rid": rid, "parents": [head], "at": core.now_iso(),
+                    "kind": "approve", "region": reg, "base": A.approved_hash(reg),
+                    "accepted": A.working_tree_hash(reg), "reason": f"기기{i}"},
+                    ensure_ascii=False) + "\n")
+        check("병합 뒤 stale", A.state(reg) == "stale")
+        check("갈래가 둘로 보인다", len(A.divergence(reg)) == 2)
+        check("일반 승인은 거부(현행 승인본이 하나가 아니다)",
+              _raises(lambda: A.approve(reg, "sha256:" + "a" * 64,
+                                        A.working_tree_hash(reg)))())
+        (regdir / "a.md").write_text("봉합 시점 상태", encoding="utf-8")
+        rec = A.approve(reg, None, expect_work=A.working_tree_hash(reg),
+                        reason="분기 봉합")
+        check("봉합 승인이 갈래 둘을 모두 부모로 잇는다",
+              len(rec["parents"]) == 2, rec["parents"])
+        check("봉합 뒤 clean", A.state(reg) == "clean")
+        check("현행 승인본이 봉합 시점 상태", A.approved_hash(reg) == rec["accepted"])
+        check("이후 일반 승인이 다시 성립한다", A.divergence(reg) and
+              len(A.divergence(reg)) == 1)
+    finally:
+        try: A.APPROVALS.write_text(kept, encoding="utf-8")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 위상 검증도 derived-from의 id 강제를 본다 (쓰기 통로 밖 유입) ────────
+def test_topology_rejects_wiki_node_derived_from():
+    """손으로 쓰거나 다기기 동기화로 들어온 노드는 쓰기 통로를 거치지 않는다 —
+    위상 검증이 그 자리에서 `derived-from`의 비-id 노드 대상을 잡아야 한다."""
+    target = ROOT / "= Scope/W1/regr-topo-t.md"
+    bad = ROOT / "= Scope/W1/regr-topo-bad.md"
+    try:
+        target.write_text(node_text("260802-zzzz-topo", "대상", "본문"),
+                          encoding="utf-8")
+        bad.write_text(node_text("260802-zzzz-tbad", "비-id 근거", "본문",
+                                 'derived-from: "[[regr-topo-t]]"\n'),
+                       encoding="utf-8")
+        errs = graph.topology_check(graph.Index())
+        check("위키 표기의 노드 근거를 위반으로 잡는다",
+              any("id로 단다" in e and "regr-topo-bad" in e for e in errs), errs)
+        bad.write_text(node_text("260802-zzzz-tbad", "id 근거", "본문",
+                                 "derived-from: 260802-zzzz-topo\n"),
+                       encoding="utf-8")
+        errs = graph.topology_check(graph.Index())
+        check("id 근거는 위반이 아니다",
+              not any("regr-topo-bad" in e for e in errs), errs)
+    finally:
+        target.unlink(missing_ok=True)
+        bad.unlink(missing_ok=True)
+
+
+# ── 잠금 자리 해석의 세 형태 (worktree·submodule 포함) ──────────────────
+def test_local_lock_path_git_shapes():
+    """잠금 자리가 클론 형태마다 달라지면 같은 vault의 두 프로세스가 서로 다른
+    파일을 잡아 상호배제가 조용히 깨진다 — `.git`이 디렉터리·파일(gitdir)·
+    worktree(commondir)인 세 형태와 git 부재를 모두 같은 규칙으로 푼다."""
+    import tempfile as _tf
+    base = Path(_tf.mkdtemp(prefix="osk-shape-"))
+    try:
+        plain = base / "plain"; (plain / ".git").mkdir(parents=True)
+        check("`.git` 디렉터리 → 그 안",
+              core.local_lock_path("x.lock", plain) == plain / ".git" / "x.lock")
+        # worktree: `.git`이 파일이고 그 대상 안에 commondir가 있다
+        main_git = base / "main" / ".git"
+        (main_git / "worktrees" / "wt").mkdir(parents=True)
+        (main_git / "worktrees" / "wt" / "commondir").write_text("../..\n",
+                                                                encoding="utf-8")
+        wt = base / "wt"; wt.mkdir()
+        (wt / ".git").write_text(
+            f"gitdir: {main_git / 'worktrees' / 'wt'}\n", encoding="utf-8")
+        check("worktree → 공용 git 디렉터리(commondir)",
+              core.local_lock_path("x.lock", wt).resolve()
+              == (main_git / "x.lock").resolve(),
+              core.local_lock_path("x.lock", wt))
+        # submodule 등: `.git` 파일이 commondir 없는 디렉터리를 가리킨다
+        sub_git = base / "modules" / "s"; sub_git.mkdir(parents=True)
+        sm = base / "sm"; sm.mkdir()
+        (sm / ".git").write_text(f"gitdir: {sub_git}\n", encoding="utf-8")
+        check("gitdir 파일 → 그 디렉터리",
+              core.local_lock_path("x.lock", sm).resolve()
+              == (sub_git / "x.lock").resolve())
+        nogit = base / "nogit"; nogit.mkdir()
+        p = core.local_lock_path("x.lock", nogit)
+        check("git 부재 → 추적 트리 밖 임시 자리",
+              not str(p).startswith(str(nogit)) and p.name.startswith("x-"), p)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 # ── 구조 충돌은 첫 쓰기 전에 잡는다 — 부분 복원 금지 (PR #14 리뷰) ─────
@@ -3686,7 +3813,7 @@ if __name__ == "__main__":
                test_publish_manifest, test_publish_guards,
                test_conflict_candidates,
                test_release_and_update,
-               test_store_digest_confined, test_delegation_facet_exact_region,
+               test_store_digest_confined, test_delegation_protection_scope,
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
                test_store_content_verified,
@@ -3696,9 +3823,11 @@ if __name__ == "__main__":
                test_protect_precondition_rejects_stale,
                test_protect_concurrent_write_becomes_pending,
                test_revert_confirms_before_destroying,
-               test_move_across_protection_boundary_refused,
                test_revert_recreates_deleted_region,
                test_revert_binds_reviewed_changeset,
+               test_changeset_lists_difference, test_stale_sealed_by_approve,
+               test_topology_rejects_wiki_node_derived_from,
+               test_local_lock_path_git_shapes,
                test_revert_structure_conflict_no_partial,
                test_approval_serialized_with_writes,
                test_region_replaced_by_file_is_pending,
