@@ -1099,6 +1099,74 @@ def test_move_chain_reverted_no_duplicate():
         shutil.rmtree(ROOT / "= Scope/W4", ignore_errors=True)
 
 
+def test_move_lifecycle_cutoff():
+    """승인으로 처분된 과거 이동은 새 반려의 해석 대상이 아니다 — 해석의 경계는
+    현재 승인본이 성립한 기록이다. 경계가 없으면 처분된 첫 이탈의 출발지가
+    '영역 안 생성분'으로 오독돼 재진입 노드가 **삭제**된다."""
+    from osk import approvals as A, write
+    p1 = ROOT / "= Person/P1"; p2 = ROOT / "= Person/P2"
+    p1.mkdir(parents=True, exist_ok=True); p2.mkdir(parents=True, exist_ok=True)
+    node_p1, node_p2 = p1 / "regr-lc.md", p2 / "regr-lc.md"
+    w1, w4 = ROOT / "= Scope/W1/regr-lc.md", ROOT / "= Scope/W4/regr-lc.md"
+    (ROOT / "= Scope/W4").mkdir(parents=True, exist_ok=True)
+    try:
+        node_p1.write_text(node_text("260802-zzzz-lcx1", "생애 경계", "본문"),
+                           encoding="utf-8")
+        A.protect("= Person", "지정")
+        base = A.approved_hash("= Person")
+        check("이탈 이동 성립", write.move_node("regr-lc", "= Scope/W1")["ok"])
+        A.approve("= Person", base, A.working_tree_hash("= Person"), "이탈 수용")
+        base2 = A.approved_hash("= Person")
+        check("처분 뒤 방랑 hop 성립(사슬 기록)",
+              write.move_node("regr-lc", "= Scope/W4")["ok"])
+        check("재진입 성립", write.move_node("regr-lc", "= Person/P2")["ok"])
+        A.revert("= Person", base2, A.working_tree_hash("= Person"), "재진입 반려")
+        check("노드는 직전 위치로 돌아간다(삭제되지 않음)", w4.is_file())
+        check("재진입 자리는 비었다", not node_p2.exists())
+        check("처분된 과거 자리로 되돌리지 않는다",
+              not node_p1.exists() and not w1.exists())
+        check("영역은 clean", A.state("= Person") == "clean")
+    finally:
+        try: A.unprotect("= Person", "정리")
+        except Exception: pass
+        for f in (node_p1, node_p2, w1, w4):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(p1, ignore_errors=True); shutil.rmtree(p2, ignore_errors=True)
+        shutil.rmtree(ROOT / "= Scope/W4", ignore_errors=True)
+
+
+def test_move_reentry_single_plan():
+    """같은 생애에서 나갔다가 **다른 자리로 재진입**한 노드의 반려 — 해석 단위가
+    rel이면 한 파일에 계획이 둘 잡혀 복원이 중도에 깨진다(실측: os.replace
+    FileNotFoundError로 부분 변경 방치). 노드 단위 해석은 계획을 하나만 세워
+    승인본 원적으로 되돌린다."""
+    from osk import approvals as A, write
+    p1 = ROOT / "= Person/P1"; p2 = ROOT / "= Person/P2"
+    p1.mkdir(parents=True, exist_ok=True); p2.mkdir(parents=True, exist_ok=True)
+    node_p1, node_p2 = p1 / "regr-re.md", p2 / "regr-re.md"
+    w1 = ROOT / "= Scope/W1/regr-re.md"
+    try:
+        node_p1.write_text(node_text("260802-zzzz-lcx2", "재진입", "본문"),
+                           encoding="utf-8")
+        A.protect("= Person", "지정")
+        base = A.approved_hash("= Person")
+        check("이탈 성립", write.move_node("regr-re", "= Scope/W1")["ok"])
+        check("다른 facet 재진입 성립",
+              write.move_node("regr-re", "= Person/P2")["ok"])
+        A.revert("= Person", base, A.working_tree_hash("= Person"), "반려")
+        check("노드가 승인본 원적으로 돌아왔다",
+              node_p1.is_file() and "본문" in node_p1.read_text())
+        check("재진입 자리·경유지에 사본 없음",
+              not node_p2.exists() and not w1.exists())
+        check("영역은 clean", A.state("= Person") == "clean")
+    finally:
+        try: A.unprotect("= Person", "정리")
+        except Exception: pass
+        for f in (node_p1, node_p2, w1):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(p1, ignore_errors=True); shutil.rmtree(p2, ignore_errors=True)
+
+
 def test_move_unrecorded_outside_protection():
     """양끝 다 보호 밖인 이동은 변경집합과 무관하므로 기록하지 않는다
     (시행령 §6 4항의 범위 그대로 — 기록부를 소음으로 채우지 않는다)."""
@@ -3998,6 +4066,7 @@ if __name__ == "__main__":
                test_move_reverted_out_no_duplicate,
                test_move_return_blocked_origin_occupied,
                test_move_chain_reverted_no_duplicate,
+               test_move_lifecycle_cutoff, test_move_reentry_single_plan,
                test_move_unrecorded_outside_protection,
                test_changeset_lists_difference, test_stale_sealed_by_approve,
                test_topology_rejects_wiki_node_derived_from,
