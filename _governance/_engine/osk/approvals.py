@@ -453,7 +453,12 @@ def unprotect(region: str, reason: str = "") -> dict:
     base = approved_hash(reg, recs)
     return ledger_append(APPROVALS, {
         "kind": "unprotect", "region": reg,
-        "base": base, "accepted": None, "reason": reason})
+        "base": base, "accepted": None, "reason": reason},
+        expect=lambda recs2: (            # 유입된 승인을 해제로 덮지 않는다
+            None if (state(reg, recs2) == "clean"
+                     and approved_hash(reg, recs2) == base) else
+            "그 사이 승인 기록이 바뀌었다(다른 기기 기록 유입) — 해제 전에 "
+            f"다시 보라: {reg}"))
 
 
 def _restore_tree(region_dir: Path, table: dict[str, str]) -> None:

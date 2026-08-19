@@ -873,6 +873,47 @@ def test_approve_precondition_under_lock():
         f.unlink(missing_ok=True)
 
 
+# ── 해제도 잠금 안 전제 재확인을 거친다 (PR #14 리뷰) ───────────────────
+def test_unprotect_precondition_under_lock():
+    """해제 판정과 append 사이에 다른 기기의 승인이 동기화로 들어오면 해제는
+    성립하지 않는다 — 그러지 않으면 stale이 아니라 unprotected가 되어 사용자가
+    보지 못한 최신 승인이 조용히 해제로 덮인다(행의 base도 이미 거짓이다)."""
+    from osk import approvals as A
+    reg = "= Scope/W2"
+    f = ROOT / "= Scope/W2/regr-unp.md"
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f.write_text("v1", encoding="utf-8")
+    real_append = A.ledger_append
+    try:
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        d = A.resolve_in_root(reg)
+        f.write_text("v2", encoding="utf-8")
+        other = A._store_tree(d)          # 다른 기기가 승인할 tree(B)
+        f.write_text("v1", encoding="utf-8")          # 작업본은 되돌려 clean
+        check("해제 직전 상태는 clean", A.state(reg) == "clean")
+
+        def racing(path, record, expect=None):
+            if record.get("kind") == "unprotect":     # 판정 뒤·append 전에 유입
+                A.ledger_append = real_append
+                real_append(A.APPROVALS, {
+                    "kind": "approve", "region": reg, "base": base,
+                    "accepted": other, "reason": "다른 기기(시험)"})
+            return real_append(path, record, expect)
+        A.ledger_append = racing
+        check("유입 승인이 있으면 해제 거부", _raises(lambda: A.unprotect(reg))())
+        A.ledger_append = real_append
+        check("영역은 여전히 보호 중", A.is_protected(reg))
+        check("현행 승인본은 유입된 승인의 것", A.approved_hash(reg) == other)
+    finally:
+        A.ledger_append = real_append
+        try: A.revert(reg, "정리")         # 유입 승인본으로 복원 → clean
+        except Exception: pass
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
 # ── stale은 해제가 아니다 — 파일 판정이 fail-open 하지 않는다 ───────────
 def test_stale_region_not_unprotected():
     """인과 극대가 둘이면(다기기 병합) 영역은 stale이다 — 판정 불능이지 해제가
@@ -3271,6 +3312,7 @@ if __name__ == "__main__":
                test_store_content_verified,
                test_revert_incomplete_no_record,
                test_approve_precondition_under_lock,
+               test_unprotect_precondition_under_lock,
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
