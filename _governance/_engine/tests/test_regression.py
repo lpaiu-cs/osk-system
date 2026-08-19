@@ -836,6 +836,122 @@ def test_store_content_verified():
         f.unlink(missing_ok=True)
 
 
+# ── 대장 잠금 안 전제 재확인 — 스냅샷 중 유입 기록을 덮지 않는다 ────────
+def test_approve_precondition_under_lock():
+    """승인본 측 CAS는 대장 **잠금 안에서** 다시 본다 — 작업본 스냅샷이 걸리는
+    동안 다른 기기의 승인이 동기화로 들어오면, 그것을 못 본 행이 인과 자식으로
+    붙어 사용자가 검토한 적 없는 승인본을 조용히 대체하는 일이 없다."""
+    from osk import approvals as A
+    reg = "= Scope/W2"
+    f = ROOT / "= Scope/W2/regr-race.md"
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f.write_text("v1", encoding="utf-8")
+    real = A._store_tree
+    try:
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        f.write_text("v2", encoding="utf-8")                 # pending
+        work = A.working_tree_hash(reg)
+
+        def racing(d):                    # 스냅샷 도중 다른 기기 기록이 착지
+            A._store_tree = real
+            core.ledger_append(A.APPROVALS, {
+                "kind": "approve", "region": reg, "base": base,
+                "accepted": work, "reason": "다른 기기(시험)"})
+            return real(d)
+        A._store_tree = racing
+        before = len(A.records())
+        check("스냅샷 중 승인본이 바뀌면 승인 거부",
+              _raises(lambda: A.approve(reg, base, expect_work=work))())
+        check("유입 기록 1행만 늘고 내 승인은 미기록",
+              len(A.records()) == before + 1, len(A.records()) - before)
+        check("현행 승인본은 유입 기록의 것", A.approved_hash(reg) == work)
+    finally:
+        A._store_tree = real
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
+# ── stale은 해제가 아니다 — 파일 판정이 fail-open 하지 않는다 ───────────
+def test_stale_region_not_unprotected():
+    """인과 극대가 둘이면(다기기 병합) 영역은 stale이다 — 판정 불능이지 해제가
+    아니므로, 현황에서 사라지거나 파일 판정이 '보호영역 밖 = 제약 없음'으로
+    새면 안 된다(fail-open 금지)."""
+    from osk import approvals as A
+    reg = "= Scope/W2"
+    f = ROOT / "= Scope/W2/regr-stale.md"
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f.write_text("v1", encoding="utf-8")
+    try:
+        A.protect(reg, "지정")
+        check("보호 직후 승인본 일치", A.file_matches_baseline(f))
+        # 같은 head를 부모로 갖는 기록 두 줄 = 다기기 병합 결과(인과 극대 2).
+        # ledger_append는 parents를 스스로 정하므로, 병합 결과 파일을 그대로
+        # 흉내내려면 대장에 직접 적는다(git merge가 남기는 상태와 동일).
+        head = A.records()[-1]["rid"]
+        base_h, work_h = A.approved_hash(reg), A.working_tree_hash(reg)
+        kept = A.APPROVALS.read_text(encoding="utf-8")     # 시험 뒤 되돌릴 원본
+        rid = head
+        with open(A.APPROVALS, "a", encoding="utf-8") as fh:
+            for i in (1, 2):
+                rid = core._next_rid(rid)
+                fh.write(json.dumps({
+                    "rid": rid, "parents": [head], "at": core.now_iso(),
+                    "kind": "approve", "region": reg, "base": base_h,
+                    "accepted": work_h, "reason": f"기기{i}(시험)"},
+                    ensure_ascii=False) + "\n")
+        check("영역이 stale", A.state(reg) == "stale")
+        check("stale 영역도 현황에 남는다", reg in A.protected_regions())
+        check("stale 영역 안의 파일은 보호영역 밖으로 새지 않는다",
+              A.region_of(f) == reg)
+        check("integrity도 stale을 적발",
+              any("stale" in e and reg in e for e in A.integrity()))
+        f.write_text("아무도 승인한 적 없는 내용", encoding="utf-8")
+        check("stale에서 파일 판정은 불일치(fail-closed)",
+              A.file_matches_baseline(f) is False)
+        new = ROOT / "= Scope/W2/regr-stale-new.md"
+        new.write_text("아무도 본 적 없는 새 파일", encoding="utf-8")
+        check("stale 영역에 새로 생긴 파일도 불일치",
+              A.file_matches_baseline(new) is False)
+        new.unlink(missing_ok=True)
+    finally:
+        try: A.APPROVALS.write_text(kept, encoding="utf-8")   # 분기 원상 복구
+        except Exception: pass
+        f.unlink(missing_ok=True)
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+
+
+# ── 중첩 영역: 안쪽 승인이 바깥 미승인을 가리지 않는다 ──────────────────
+def test_nested_regions_all_checked():
+    """파일이 여러 보호영역에 속하면 **전부**의 승인본과 일치해야 한다 — 하위
+    구획만 승인하고 바깥 영역은 그 변경을 승인한 적 없는데 일치로 새면 안 된다."""
+    from osk import approvals as A
+    outer, inner = "= Scope/W3", "= Scope/W3/sub"
+    od, idir = ROOT / "= Scope/W3", ROOT / "= Scope/W3/sub"
+    x = idir / "x.md"
+    try:
+        idir.mkdir(parents=True, exist_ok=True)
+        x.write_text("v1", encoding="utf-8")
+        A.protect(outer, "바깥 지정")
+        A.protect(inner, "안쪽 지정")
+        check("초기에는 양쪽 다 일치", A.file_matches_baseline(x))
+        x.write_text("v2", encoding="utf-8")
+        A.approve(inner, A.approved_hash(inner),
+                  expect_work=A.working_tree_hash(inner), reason="안쪽만 승인")
+        check("안쪽은 clean", A.state(inner) == "clean")
+        check("바깥은 pending", A.state(outer) == "pending")
+        check("안쪽 승인만으로는 일치로 판정되지 않는다",
+              A.file_matches_baseline(x) is False)
+        check("가장 안쪽 영역만 물으면 일치", A.file_in_region_baseline(inner, x))
+    finally:
+        for r in (inner, outer):
+            try: A.unprotect(r, "정리")
+            except Exception: pass
+        shutil.rmtree(od, ignore_errors=True)
+
+
 # ── revert 미완료(삭제 실패)는 기록하지 않는다 (PR #14 리뷰 [high]) ──────
 def test_revert_incomplete_no_record():
     """manifest에 없는 추가 파일의 삭제가 실패하면(권한 등) 작업본이 pending으로
@@ -3154,6 +3270,9 @@ if __name__ == "__main__":
                test_approval_baseline_blobs_present,
                test_store_content_verified,
                test_revert_incomplete_no_record,
+               test_approve_precondition_under_lock,
+               test_stale_region_not_unprotected,
+               test_nested_regions_all_checked,
                test_baseline_bound_to_region,
                test_baseline_pass]:
         try:

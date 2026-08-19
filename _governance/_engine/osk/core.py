@@ -337,11 +337,18 @@ def ledger_anchor_index(records: list[dict]) -> int | None:
     return None
 
 
-def ledger_append(path: Path, record: dict) -> dict:
+def ledger_append(path: Path, record: dict, expect=None) -> dict:
     """모든 `_ledger/` jsonl 공통 (Mechanism §3):
     잠금 → 전체 판독 → **구조 손상이면 거부** → parents = 현재 head 전부
     (병합 봉합) → rid = 정본 최대 rid로부터 단조 생성 → 행 단위 원자
-    append·fsync."""
+    append·fsync.
+
+    `expect`는 **잠금 안에서** 방금 읽은 기록으로 전제조건을 다시 보는 선택적
+    검사다 — `expect(records)`가 문자열을 돌려주면 그것을 사유로 거부한다.
+    호출부가 잠금 밖에서 검사하고 append 하는 사이에 다른 기기의 기록이
+    동기화로 들어오면, 그것을 못 본 행이 그 기록의 **인과 자식**으로 붙어
+    분기가 stale로 드러나지 않고 조용히 대체한다(그리고 행에 적은 전제가
+    거짓 진술이 된다). 검사와 append를 같은 잠금에 두어야 그 창이 닫힌다."""
     record.setdefault("at", now_iso())
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+", encoding="utf-8") as f:
@@ -354,6 +361,10 @@ def ledger_append(path: Path, record: dict) -> dict:
                 raise ValueError(
                     f"대장 손상 — 수동 복구 절차 필요 (Mechanism §3 7항): "
                     + "; ".join(dmg[:5]))
+            if expect is not None:
+                why = expect(records)
+                if why:
+                    raise ValueError(why)
             record["rid"] = _next_rid(
                 max((r["rid"] for r in records if r.get("rid")),
                     key=_rid_key, default=None))

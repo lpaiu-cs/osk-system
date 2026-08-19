@@ -242,13 +242,15 @@ def is_protected(region: str, recs: list[dict] | None = None) -> bool:
 
 
 def protected_regions() -> list[str]:
-    """현재 보호 중인 영역 — 각 영역의 인과 극대가 unprotect가 아닌 것."""
+    """해제되지 않은 영역 전부 — 상태가 `unprotected`가 아닌 것.
+
+    **stale도 포함한다.** stale은 판정 불능이지 해제가 아니다 — 빼면 그 영역이
+    현황에서 사라지고(사용자가 봉합할 대상을 못 본다), `region_of`가 None을
+    돌려 파일 판정이 '보호영역 밖 = 제약 없음'으로 새어 나간다(fail-open).
+    `is_protected`는 stale에서 False이므로 승인 여부 판정은 그대로 fail-closed다."""
     recs = records()
-    out = []
-    for region in {r.get("region") for r in recs if r.get("region")}:
-        if is_protected(region, recs):
-            out.append(region)
-    return sorted(out)
+    return sorted({r.get("region") for r in recs if r.get("region")
+                   and state(r["region"], recs) != "unprotected"})
 
 
 def state(region: str, recs: list[dict] | None = None) -> str:
@@ -266,30 +268,37 @@ def state(region: str, recs: list[dict] | None = None) -> str:
     return "clean" if appr is not None and appr == work else "pending"
 
 
-def region_of(path: Path | str) -> str | None:
-    """경로를 포함하는 **가장 안쪽** 보호영역 — 없으면 None. 권한 소비자가
-    노드 하나의 보호 여부를 묻는 입구다."""
+def containing_regions(path: Path | str) -> list[str]:
+    """경로를 포함하는 보호영역 **전부** — 없으면 빈 목록. 영역은 중첩될 수
+    있으므로(사용자가 하위 구획을 따로 지정) 포함 관계는 여럿일 수 있다."""
     p = resolve_in_root(path)
     if p is None:
-        return None
+        return []
     rel = posix_rel(p, Path(os.path.realpath(ROOT)))
-    best = None
+    out = []
     for region in protected_regions():
         r = region.rstrip("/")
         if rel == r or rel.startswith(r + "/"):
-            if best is None or len(r) > len(best):
-                best = r
-    return best
+            out.append(r)
+    return out
+
+
+def region_of(path: Path | str) -> str | None:
+    """경로를 포함하는 **가장 안쪽** 보호영역 — 없으면 None."""
+    regions = containing_regions(path)
+    return max(regions, key=len) if regions else None
 
 
 def file_matches_baseline(path: Path | str) -> bool:
-    """이 파일의 현재 내용이 그 파일이 속한 보호영역의 **승인본**과 일치하는가.
-    보호영역 밖이면 True(제약 없음). 보호영역 안인데 승인본에 없거나 해시가
-    다르면 False — 권한·효력의 근거는 승인본뿐이다(헌법 10조 4항)."""
-    region = region_of(path)
-    if region is None:
-        return True
-    return file_in_region_baseline(region, path)
+    """이 파일의 현재 내용이 자신을 포함하는 **모든** 보호영역의 승인본과
+    일치하는가. 보호영역 밖이면 True(제약 없음).
+
+    가장 안쪽 영역만 보면 안 된다 — 하위 구획만 승인된 경우 바깥 영역이 그
+    변경을 승인한 적 없는데도 일치로 새어 나간다. 판정 불능(stale) 영역도
+    불일치로 본다(`file_in_region_baseline`의 fail-closed). 권한·효력의 근거는
+    승인본뿐이다(헌법 10조 4항)."""
+    return all(file_in_region_baseline(r, path)
+               for r in containing_regions(path))
 
 
 def file_in_region_baseline(region: str, path: Path | str) -> bool:
@@ -333,7 +342,10 @@ def protect(region: str, reason: str = "") -> dict:
     accepted = _store_tree(d)
     return ledger_append(APPROVALS, {
         "kind": "protect", "region": reg,
-        "base": None, "accepted": accepted, "reason": reason})
+        "base": None, "accepted": accepted, "reason": reason},
+        expect=lambda recs2: (            # 스냅샷 중 유입된 지정을 덮지 않는다
+            None if not is_protected(reg, recs2) else
+            f"그 사이 보호 중이 되었다(다른 기기 기록 유입): {reg}"))
 
 
 def approve(region: str, base: str, expect_work: str,
@@ -373,9 +385,17 @@ def approve(region: str, base: str, expect_work: str,
             "검토한 작업본이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측 CAS)")
     if accepted == cur:
         raise ValueError("변경집합이 없다 — 승인할 pending 차이가 없다")
+    # 승인본 측 CAS를 **대장 잠금 안에서 다시** 본다 — 위 검사와 append 사이에
+    # 영역 전수 판독(_store_tree)이 있어 창이 길다. 그 사이 다른 기기의 승인이
+    # 동기화로 들어오면, 못 본 채 붙은 이 행이 그 기록의 인과 자식이 되어
+    # 사용자가 검토한 적 없는 승인본을 조용히 대체하고 행의 base도 거짓이 된다.
     return ledger_append(APPROVALS, {
         "kind": "approve", "region": reg,
-        "base": base, "accepted": accepted, "reason": reason})
+        "base": base, "accepted": accepted, "reason": reason},
+        expect=lambda recs2: (
+            None if approved_hash(reg, recs2) == base else
+            "승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 검토하라"
+            f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
 
 
 def revert(region: str, reason: str = "") -> dict:
@@ -408,7 +428,10 @@ def revert(region: str, reason: str = "") -> dict:
             "복원이 승인본과 일치하지 않는다 — revert를 기록하지 않았다(fail-closed)")
     return ledger_append(APPROVALS, {
         "kind": "revert", "region": reg,
-        "base": base, "discarded": discarded, "reason": reason})
+        "base": base, "discarded": discarded, "reason": reason},
+        expect=lambda recs2: (            # 복원 중 유입된 승인을 덮지 않는다
+            None if approved_hash(reg, recs2) == base else
+            f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 보라: {reg}"))
 
 
 def unprotect(region: str, reason: str = "") -> dict:
