@@ -1114,12 +1114,12 @@ def test_revert_confirms_before_destroying():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
-# ── 지정도 작업본 측 CAS를 거친다 (PR #14 리뷰) ────────────────────────
-def test_protect_worktree_cas():
-    """초기 승인본은 사용자가 확인한 **그** 상태여야 한다(시행령 §6 5항) —
-    스냅샷 뒤 작업본이 바뀌면 지정은 성립하지 않는다. _store_tree는 파일을
-    하나씩 읽으므로, 확인하지 않으면 한 번도 존재한 적 없는 혼합 상태가 초기
-    승인본으로 굳는다(approve의 expect_work와 같은 이유)."""
+# ── 지정 뒤의 동시 편집은 오류가 아니라 다음 변경집합이다 ──────────────
+def test_protect_concurrent_write_becomes_pending():
+    """스냅샷 직후의 정상 동시 편집은 지정을 무효로 만들지 않는다 — 영역이
+    곧바로 pending으로 드러나고 사용자가 승인하거나 반려하면 된다. 이것을 하드
+    오류로 바꾸면 자가 치유되는 상태를 재시도로 바꿀 뿐이다(파괴적인 반려에만
+    작업본 결속을 건다)."""
     from osk import approvals as A
     reg = "= Domain/pcas"
     regdir = ROOT / "= Domain" / "pcas"
@@ -1135,14 +1135,14 @@ def test_protect_worktree_cas():
                 f.write_text("B", encoding="utf-8")
             return real_append(path, record, expect)
         A.ledger_append = racing
-        before = len(A.records())
-        check("스냅샷 뒤 작업본이 바뀌면 지정 거부", _raises(lambda: A.protect(reg))())
+        rec = A.protect(reg, "지정")
         A.ledger_append = real_append
-        check("대장에 기록되지 않았다", len(A.records()) == before)
-        check("영역은 여전히 미보호", A.state(reg) == "unprotected")
-        check("작업본은 바뀐 그대로", f.read_text() == "B")
-        A.protect(reg, "다시 지정")                    # 조용해지면 정상 성립
-        check("재시도는 성립하고 clean", A.state(reg) == "clean")
+        check("지정은 성립한다", bool(rec.get("rid")))
+        check("그 편집은 곧바로 변경집합으로 드러난다", A.state(reg) == "pending")
+        check("승인본은 스냅샷 시점 상태", A.approved_hash(reg) == rec["accepted"])
+        A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "반려")
+        check("반려로 처분하면 clean", A.state(reg) == "clean")
+        check("작업본이 스냅샷 상태로 복원", f.read_text() == "A")
     finally:
         A.ledger_append = real_append
         try: A.unprotect(reg, "정리")
@@ -3604,7 +3604,8 @@ if __name__ == "__main__":
                test_revert_incomplete_no_record,
                test_approve_precondition_under_lock,
                test_unprotect_precondition_under_lock,
-               test_protect_precondition_rejects_stale, test_protect_worktree_cas,
+               test_protect_precondition_rejects_stale,
+               test_protect_concurrent_write_becomes_pending,
                test_revert_confirms_before_destroying,
                test_move_across_protection_boundary_refused,
                test_revert_recreates_deleted_region,

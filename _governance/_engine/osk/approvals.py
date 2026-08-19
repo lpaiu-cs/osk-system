@@ -60,13 +60,10 @@ def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
 
 
 def _manifest_blob(entries: list) -> bytes:
-    """manifest의 **정본 직렬화** — 공백 없는 UTF-8 JSON. 생성(`_manifest_bytes`·
-    `_store_tree`)과 판독 검증(`_tree_table`)이 같은 함수를 쓰므로 정본 형상의
-    정의가 한 곳에만 있다."""
+    """manifest의 **정본 직렬화** — 공백 없는 UTF-8 JSON. 생성(작업본 해시·
+    `_store_tree`)과 판독이 같은 함수를 쓰므로 정본 형상의 정의가 한 곳이다."""
     return json.dumps(entries, ensure_ascii=False,
                       separators=(",", ":")).encode("utf-8")
-
-
 
 
 def working_tree_hash(region: str) -> str | None:
@@ -156,11 +153,9 @@ def _store_tree(region_dir: Path) -> str:
     돌려준다.
 
     각 파일을 **한 번만** 읽어, 그 **같은 bytes**를 blob으로 저장하고 그 해시를
-    manifest에 싣는다 — manifest가 가리키는 해시와 저장된 blob이 언제나 같은
-    판독에서 나오므로, `_manifest_bytes`의 해시 판독과 blob 저장 판독이 갈려
-    승인본이 복원 불가능(manifest는 hash(A)를 가리키나 저장된 blob은 hash(B))
-    해지는 일이 없다. 판독 순서·직렬화는 `_manifest_bytes`와 같아 tree 해시가
-    동일하다(state 비교의 정합)."""
+    manifest에 싣는다 — 해시 판독과 blob 저장 판독이 갈려 승인본이 복원 불가능
+    (manifest는 hash(A)를 가리키나 저장된 blob은 hash(B))해지는 일이 없다.
+    판독 순서·직렬화는 `working_tree_hash`와 같아 tree 해시가 동일하다."""
     entries = []
     for rel, p in _region_files(region_dir):
         data = p.read_bytes()          # 파일당 유일 판독
@@ -188,9 +183,9 @@ def _tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None
     `_store_tree(region_dir)`는 영역 디렉터리를 걸어 만들므로 정본 승인본의 rel은
     전부 그 영역 안이다. 이 결속이 없으면 영역과 승인본이 어긋난 조합에서
     **권한 판정은 성립인데 복원은 거부되는** 상태가 생긴다
-    (`file_in_region_baseline`은 자기 파일 항목만 보고, `_restore_tree`는 영역
-    밖 rel을 거부하므로). 세 소비자(integrity·권한 검사·revert)가 같은 해석기를
-    쓰도록 결속을 이 한 곳에 둔다."""
+    (`file_in_region_baseline`은 자기 파일 항목만 보고, 복원은 영역 밖 rel을 가진
+    승인본을 근거로 삼을 수 없다). 세 소비자(integrity·권한 검사·반려)가 같은
+    해석기를 쓰도록 결속을 이 한 곳에 둔다."""
     table = _tree_table(tree_hash)
     if table is None:
         return None
@@ -348,23 +343,20 @@ def protect(region: str, reason: str = "") -> dict:
     return ledger_append(APPROVALS, {
         "kind": "protect", "region": reg,
         "base": None, "accepted": accepted, "reason": reason},
-        # 잠금 안에서 **대장 상태와 작업본을 함께** 다시 본다.
-        # ①대장: `not is_protected`로는 부족하다(is_protected는 stale에서도
-        #   False다). 스냅샷 중 비교 불능 기록이 유입돼 stale이 되면, 그 분기가
-        #   표면화되지 않고 새 초기 승인본으로 조용히 봉합된다.
-        # ②작업본: 초기 승인본은 **사용자가 확인한 그 상태**여야 한다
-        #   (시행령 §6 5항). `_store_tree`는 파일을 하나씩 읽으므로, 스냅샷
-        #   도중·직후의 정상 동시 편집은 한 번도 존재한 적 없는 혼합 상태를
-        #   초기 승인본으로 굳힐 수 있다. approve가 `expect_work`로 작업본 측
-        #   CAS를 강제하는 것과 같은 이유로, 박제한 tree가 지금도 작업본과
-        #   같은지 확인한다.
+        # 잠금 안에서 본문과 같은 전제를 다시 본다 — `not is_protected`로는
+        # 부족하다(is_protected는 stale에서도 False다). 스냅샷 중 비교 불능
+        # 기록이 유입돼 stale이 되면, 그 분기가 표면화되지 않고 새 초기
+        # 승인본으로 조용히 봉합된다.
+        #
+        # 작업본 쪽은 보지 않는다. 스냅샷 직후의 정상 동시 편집은 지정을
+        # 무효로 만들 사고가 아니라 **다음 변경집합**이다 — 영역이 곧바로
+        # pending으로 드러나고 사용자가 승인하거나 반려하면 된다. 그것을
+        # 하드 오류로 바꾸면 자가 치유되는 상태를 재시도로 바꿀 뿐이다
+        # (반려처럼 파괴적인 조작에만 작업본 결속을 건다).
         expect=lambda recs2: (
+            None if state(reg, recs2) == "unprotected" else
             f"그 사이 상태가 바뀌었다(다른 기기 기록 유입) — "
-            f"{state(reg, recs2)}: {reg}"
-            if state(reg, recs2) != "unprotected" else
-            None if working_tree_hash(reg) == accepted else
-            "작업본이 스냅샷 뒤 바뀌었다 — 지정을 다시 하라 (작업본 측 CAS): "
-            f"{reg}"))
+            f"{state(reg, recs2)}: {reg}"))
 
 
 def approve(region: str, base: str, expect_work: str,
@@ -473,19 +465,18 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
             "버릴 변경집합이 검토한 것과 다르다 — 다시 검토하라 (작업본 측): "
             f"검토={expect_work} 현재={discarded}")
 
-    def _still_valid():
-        """준비를 마치고 **첫 쓰기 직전에** 두 전제를 다시 본다. 복원은 파괴적
-        이므로 전제는 기록의 정직성만이 아니라 파일을 건드리기 전에 유효해야
-        한다 — 사후 검사는 기록만 막을 뿐 파괴는 이미 끝난 뒤다."""
-        work = working_tree_hash(reg)
-        if approved_hash(reg) != base:
-            return (f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — "
-                    f"작업본을 건드리지 않았다: {reg}")
-        if work != expect_work:
-            return ("버릴 변경집합이 그 사이 바뀌었다 — 다시 검토하라 "
-                    f"(작업본 측): 검토={expect_work} 현재={work}")
-        return None
-    _restore_tree(d, table, confirm=_still_valid)
+    staged = _stage_tree(table)           # 준비 — 아직 아무것도 건드리지 않았다
+    # 준비를 마치고 **첫 쓰기 직전에** 두 전제를 다시 본다. 복원은 파괴적이므로
+    # 전제는 기록의 정직성만이 아니라 파일을 건드리기 전에 유효해야 한다 —
+    # 사후 검사는 기록만 막을 뿐 파괴는 이미 끝난 뒤다.
+    if approved_hash(reg) != base:
+        raise ValueError(f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — "
+                         f"작업본을 건드리지 않았다: {reg}")
+    work = working_tree_hash(reg)
+    if work != expect_work:
+        raise ValueError("버릴 변경집합이 그 사이 바뀌었다 — 다시 검토하라 "
+                         f"(작업본 측): 검토={expect_work} 현재={work}")
+    _apply_tree(d, table, staged)         # 여기부터 파괴적이다
     # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
     # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
     # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게
@@ -528,26 +519,17 @@ def unprotect(region: str, reason: str = "") -> dict:
             f"다시 보라: {reg}"))
 
 
-def _restore_tree(region_dir: Path, table: dict[str, str], confirm=None) -> None:
-    """영역을 manifest 상태로 되돌린다 — manifest의 각 파일을 저장소 내용으로
-    원자 교체하고, manifest에 없는 현재 파일은 지운다.
+def _stage_tree(table: dict[str, str]) -> list[tuple[Path, bytes]]:
+    """복원할 내용을 **전부 메모리에 올린다** — 아직 아무것도 건드리지 않는다.
 
-    쓰기 **전에** 모든 blob이 저장소에 실재하는지 전수로 확인한다 — 하나라도
-    없으면 아무 파일도 건드리지 않고 거부한다. **부분 복원**을 만들지 않는
-    것이 요점이다(반쯤 되돌아간 영역은 사용자가 검토할 수 없다).
+    blob이 하나라도 없으면 여기서 거부한다. **부분 복원**을 만들지 않는 것이
+    요점이다(반쯤 되돌아간 영역은 사용자가 검토할 수 없다). 준비와 반영을
+    가르는 이유는 그 사이가 호출부가 전제를 마지막으로 확인할 자리이기
+    때문이다 — 파괴가 시작된 뒤의 확인은 기록만 막을 뿐이다.
 
     table의 rel이 영역 안이라는 것은 `_tree_table_for_region`이 이미 보장한다
-    (그 함수를 거치지 않은 table은 복원의 근거가 아니다) — 여기서 다시 보지
-    않는다.
-
-    `confirm`은 준비를 마치고 **첫 쓰기 직전에** 호출부의 전제를 다시 보는
-    선택적 검사다(문자열을 돌려주면 그것을 사유로 거부). 준비(판독·검증)가
-    긴 만큼 그 사이 전제가 무너질 수 있는데, 사후 검사는 기록만 막을 뿐
-    파괴는 이미 끝난 뒤다. 쓰기 도중 외부에서 들어오는 변경까지 막지는
-    못한다 — 그 잔여 창은 이 프로세스 밖(git pull 등)이라 닫을 수 없고,
-    그때는 영역이 pending으로 남아 다음 반려가 새 승인본으로 복원한다."""
-    # 0) 전수 사전 검증 — blob 실재를 쓰기 전에 모두 확인
-    resolved: list[tuple[Path, bytes]] = []
+    (그 함수를 거치지 않은 table은 복원의 근거가 아니다)."""
+    staged: list[tuple[Path, bytes]] = []
     for rel, h in sorted(table.items()):
         p = resolve_in_root(rel)
         if p is None:
@@ -555,17 +537,21 @@ def _restore_tree(region_dir: Path, table: dict[str, str], confirm=None) -> None
         data = _store_get(h)
         if data is None:
             raise ValueError(f"승인본 blob 부재 — 복원 불가: {rel} {h}")
-        resolved.append((p, data))
-    if confirm is not None:               # 파괴 직전 전제 재확인
-        why = confirm()
-        if why:
-            raise ValueError(why)
-    # 1) 전수 검증·확인을 **모두** 통과한 뒤에야 첫 변경을 낸다. 영역째 사라진
-    #    경우의 디렉터리 재생성도 여기가 첫 mutation이다 — 앞에 두면 거부된
-    #    복원이 "작업본을 건드리지 않았다"면서 부재→빈 디렉터리를 만든다.
+        staged.append((p, data))
+    return staged
+
+
+def _apply_tree(region_dir: Path, table: dict[str, str],
+                staged: list[tuple[Path, bytes]]) -> None:
+    """준비된 내용을 실제로 반영한다 — **여기부터가 파괴적이다.**
+
+    영역째 사라진 경우의 디렉터리 재생성이 첫 mutation이다. 쓰기 도중 외부에서
+    들어오는 변경까지 막지는 못한다 — 그 잔여 창은 이 프로세스 밖(git pull 등)
+    이라 닫을 수 없고, 그때는 영역이 pending으로 남아 다음 반려가 새 승인본으로
+    복원한다."""
     region_dir.mkdir(parents=True, exist_ok=True)
     # 2) 승인본 내용으로 원자 교체
-    for p, data in resolved:
+    for p, data in staged:
         p.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(p.parent))
         try:
