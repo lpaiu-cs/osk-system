@@ -871,6 +871,41 @@ def test_store_symlink_confined():
         shutil.rmtree(ext, ignore_errors=True)
 
 
+# ── STORE 루트 자체 symlink 봉쇄 (PR #14 리뷰 [high]) ───────────────────
+def test_store_root_symlink_confined():
+    """STORE(objects) **자체**가 vault 밖 symlink여도 trust root로 승격되지
+    않는다 — 앵커는 realpath(STORE)가 아니라 realpath(ROOT) 아래 canonical
+    경로이므로 _obj_path/_store_get/_store_put이 전부 fail-closed."""
+    from osk import approvals as A
+    ext = Path(tempfile.mkdtemp(prefix="osk-extroot-"))
+    data = b"root-confine-payload"
+    digest = A.sha256_bytes(data)
+    hexd = digest.split(":", 1)[1]
+    A.STORE.parent.mkdir(parents=True, exist_ok=True)
+    saved = None
+    try:
+        if A.STORE.is_symlink():
+            A.STORE.unlink()
+        elif A.STORE.exists():
+            saved = A.STORE.with_name("objects.bak")
+            A.STORE.rename(saved)
+        (ext / hexd[:2]).mkdir(parents=True, exist_ok=True)
+        (ext / hexd[:2] / hexd[2:]).write_bytes(data)     # 외부에 '정상' 객체 미끼
+        A.STORE.symlink_to(ext, target_is_directory=True)
+        check("STORE 루트 symlink에서 _obj_path 거부",
+              _raises(lambda: A._obj_path(digest))())
+        check("_store_get은 STORE 루트 symlink 경유 외부 판독 안 함(내용 일치해도)",
+              A._store_get(digest) is None)
+        check("_store_put은 STORE 루트 symlink로 쓰기 거부",
+              _raises(lambda: A._store_put(data))())
+    finally:
+        if A.STORE.is_symlink():
+            A.STORE.unlink()
+        if saved is not None:
+            saved.rename(A.STORE)
+        shutil.rmtree(ext, ignore_errors=True)
+
+
 def test_baseline_pass():
     from osk import approvals
     # 보호영역 하나를 지정하고 clean 상태에서 검증기가 통과하는지 본다
@@ -3102,6 +3137,7 @@ if __name__ == "__main__":
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
                test_store_content_verified, test_store_symlink_confined,
+               test_store_root_symlink_confined,
                test_baseline_pass]:
         try:
             fn()

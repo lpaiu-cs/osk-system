@@ -27,6 +27,10 @@ from .core import (ROOT, LEDGER, sha256_bytes, sha256_file, posix_rel,
 
 APPROVALS = LEDGER / "approvals.jsonl"
 STORE = LEDGER / "approved" / "objects"       # 내용 주소 blob·manifest 보관
+# ROOT 기준 저장소의 **정해진** 상대 경로 — 봉쇄의 앵커는 realpath(STORE)가
+# 아니라 realpath(ROOT)/이 경로다(STORE 루트 symlink를 trust root로 승격시키지
+# 않기 위해; core.resolve_in_root가 realpath(ROOT)를 정본 앵커로 삼는 것과 같다).
+_STORE_REL = os.path.relpath(STORE, ROOT)
 KINDS = ("protect", "unprotect", "approve", "revert")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")   # 저장소 접근의 유일 형식
 
@@ -96,14 +100,16 @@ def _obj_path(digest: str) -> Path:
         raise ValueError(f"부적격 digest — 저장소 접근 거부: {digest!r}")
     hexd = digest.split(":", 1)[1]
     p = STORE / hexd[:2] / hexd[2:]
-    # 물리 봉쇄 — 경로 **성분의 symlink**가 I/O를 STORE 밖으로 재지정하지
-    # 못하게 realpath 정체성으로 확인한다(core.resolve_in_root와 같은 기법 ·
-    # Mechanism §1-2 5항). 계산 경로의 realpath가 STORE 실경로 기준 기대 위치와
-    # 정확히 일치하지 않으면 — shard parent나 최종 객체가 symlink이거나 STORE를
-    # 이탈했거나 — 거부한다(fail-closed). 양쪽 다 realpath라 정본 prefix의 정상
-    # symlink(예: /tmp→/private/tmp)에는 오탐하지 않는다.
-    store_real = os.path.realpath(STORE)
-    expected = os.path.join(store_real, hexd[:2], hexd[2:])
+    # 물리 봉쇄 — 경로 **어느 성분의 symlink**(STORE 루트·shard·최종 객체)도
+    # I/O를 vault 밖으로 재지정하지 못하게 realpath 정체성으로 확인한다
+    # (core.resolve_in_root와 같은 기법 · Mechanism §1-2 5항). 앵커는 정본
+    # 신뢰 루트인 realpath(ROOT) 아래의 정해진 canonical 저장소 경로다 —
+    # realpath(STORE)를 앵커로 삼으면 STORE 자신이 밖을 가리키는 symlink일 때
+    # 외부를 trust root로 승격시킨다. 계산 경로의 realpath가 canonical 기대
+    # 위치와 정확히 일치하지 않으면 거부(fail-closed). 양쪽 다 realpath라 정본
+    # prefix의 정상 symlink(예: /tmp→/private/tmp)에는 오탐하지 않는다.
+    store_canon = os.path.normpath(os.path.join(os.path.realpath(ROOT), _STORE_REL))
+    expected = os.path.join(store_canon, hexd[:2], hexd[2:])
     if os.path.realpath(p) != expected:
         raise ValueError(f"저장소 밖·symlink 재지정 경로 — 거부: {digest}")
     return p
