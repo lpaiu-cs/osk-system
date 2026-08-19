@@ -395,6 +395,25 @@ def _tree_table(tree_hash: str) -> dict[str, str] | None:
     return table
 
 
+def _tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None:
+    """그 **영역의** 승인본 table — 형상이 정본이고 모든 rel이 `region/` 아래일
+    때만 반환한다(아니면 None).
+
+    `_store_tree(region_dir)`는 영역 디렉터리를 걸어 만들므로 정본 승인본의 rel은
+    전부 그 영역 안이다. 이 결속을 강제하지 않으면 영역 밖 항목을 섞은 tree가
+    승인본으로 통해, **권한 판정은 성립인데 복원은 거부되는** 승인본이 생긴다
+    (`file_in_region_baseline`은 자기 파일 항목만 보고, `_restore_tree`는 영역
+    밖 rel을 거부하므로). region↔승인본 결속을 이 한 곳에서 강제하고 integrity·
+    권한 검사·revert가 모두 이 함수를 거친다."""
+    table = _tree_table(tree_hash)
+    if table is None:
+        return None
+    r = str(region).rstrip("/")
+    if not r or any(not rel.startswith(r + "/") for rel in table):
+        return None                   # 영역 밖 항목 — 그 영역의 tree가 아니다
+    return table
+
+
 # ── 판정 (인과 극대) ─────────────────────────────────────────────────────
 
 def records() -> list[dict]:
@@ -490,7 +509,7 @@ def file_in_region_baseline(region: str, path: Path | str) -> bool:
     if p is None or not p.is_file():
         return False
     tree = approved_hash(region)
-    table = _tree_table(tree) if tree else None
+    table = _tree_table_for_region(region, tree) if tree else None
     if not table:
         return False                  # 승인본 미해석 — fail-closed
     rel = posix_rel(p, Path(os.path.realpath(ROOT)))
@@ -579,10 +598,10 @@ def revert(region: str, reason: str = "") -> dict:
     if st == "unprotected":
         raise ValueError(f"보호 중이 아니다: {reg}")
     base = approved_hash(reg, recs)
-    table = _tree_table(base) if base else None
+    table = _tree_table_for_region(reg, base) if base else None
     if table is None:
         raise ValueError(
-            f"승인본 manifest를 해석하지 못했다(부재 또는 비정규) — 복원 불가: {base}")
+            f"승인본 manifest를 해석하지 못했다(부재·비정규·영역 불일치) — 복원 불가: {base}")
     discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
     _restore_tree(d, table)
     # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
@@ -705,14 +724,19 @@ def _restore_tree(region_dir: Path, table: dict[str, str]) -> None:
 
     영역 봉쇄는 두 겹이다(`update._within`과 같은 규율): 선언된 rel이 영역
     접두인지(문자열 — tree 해시·상태 비교가 쓰는 그 표기)와, 그 rel이 실제로
-    가리키는 경로가 영역 realpath 아래인지(물리 — symlink 재배치를 흡수)."""
+    가리키는 경로가 영역 realpath 아래인지(물리 — symlink 재배치를 흡수).
+    어느 한 겹도 다른 겹을 대신하지 못한다 — 영역 밖 rel이 영역 안으로 향한
+    symlink면 물리는 통과하지만 쓰기는 선언 위치(영역 밖)에 생기고, 반대로
+    영역 안 rel의 성분이 밖으로 향한 symlink면 문자열만으로는 못 막는다.
+    revert 경로에서는 `_tree_table_for_region`이 첫 겹을 이미 강제하지만,
+    이 함수는 쓰기 직전의 마지막 관문이므로 자기 전제를 스스로 확인한다."""
     root_real = Path(os.path.realpath(ROOT))
     region_rel = posix_rel(region_dir, root_real).rstrip("/")
     region_real = os.path.realpath(region_dir)
     # 0) 전수 사전 검증 — 봉쇄(영역 접두 + 물리 경로)·blob 실재를 쓰기 전에 확인
     validated: list[tuple[str, bytes]] = []
     for rel, h in sorted(table.items()):
-        if not (rel == region_rel or rel.startswith(region_rel + "/")):
+        if not rel.startswith(region_rel + "/"):
             raise ValueError(
                 f"승인본 경로가 영역 밖이다 — 복원 거부: {rel} ⊄ {region_rel}")
         p = resolve_in_root(rel)
@@ -770,10 +794,11 @@ def integrity() -> list[str]:
             continue
         if is_protected(region, recs):
             tree = approved_hash(region, recs)
-            table = _tree_table(tree) if tree else None
+            table = _tree_table_for_region(region, tree) if tree else None
             if table is None:
                 errs.append(
-                    f"승인본 manifest 해석 불가(부재 또는 비정규): {region} ({tree})")
+                    f"승인본 manifest 해석 불가(부재·비정규·영역 불일치): "
+                    f"{region} ({tree})")
                 continue
             # manifest가 가리키는 **모든 blob의 실재**를 확인한다 — manifest만
             # 해석되고 그것이 가리키는 blob이 없으면 승인본이 clean으로 보여도

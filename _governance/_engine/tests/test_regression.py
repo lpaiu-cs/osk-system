@@ -1050,6 +1050,57 @@ def test_baseline_manifest_canonical_only():
         dnode.unlink(missing_ok=True)
 
 
+# ── 승인본은 그 영역의 tree여야 한다 (PR #14 리뷰 [high]) ──────────────
+def test_baseline_bound_to_region():
+    """승인본 manifest는 **그 영역의** tree일 때만 해석된다 — 영역 밖 항목을 섞은
+    tree는 정상 protect/approve가 만들 수 없으므로, 자기 파일 항목이 맞아도 권한
+    판정이 성립하지 않는다(권위는 성립인데 복원은 거부되는 승인본 금지)."""
+    from osk import approvals as A, authority
+    reg = authority.DELEGATION_REGION
+    dnode = ROOT / "= Person/Delegation/regr-bind.md"
+    outsider = ROOT / "= Domain/regr-outside.md"
+    clause = ("## 위임\n- 대상: 시험 행위\n- 범위: 시험\n"
+              "- 조건: 없음\n- 종료: 없음\n")
+    dnode.write_text(node_text("260802-zzzz-rgd3", "영역 결속 시험", clause),
+                     encoding="utf-8")
+    outsider.write_text("영역 밖 파일", encoding="utf-8")
+    good = None
+    try:
+        A.protect(reg, "지정")
+        good = A.approved_hash(reg)
+        check("정상 승인본에서는 위임 성립", A.file_in_region_baseline(reg, dnode))
+        # 위임 파일 항목은 현재 파일과 정확히 맞추고, 영역 밖 항목을 하나 섞는다
+        entries = sorted(([r, h] for r, h in A._tree_table(good).items()),
+                         key=lambda e: e[0])
+        entries.append(["= Domain/regr-outside.md",
+                        A._store_put(outsider.read_bytes())])
+        entries.sort(key=lambda e: e[0])
+        evil = A._store_put(A._manifest_blob(entries))
+        check("혼합 tree 자체는 형상 검증을 통과", A._tree_table(evil) is not None)
+        check("그러나 그 영역의 tree로는 해석되지 않는다",
+              A._tree_table_for_region(reg, evil) is None)
+        core.ledger_append(A.APPROVALS, {
+            "kind": "approve", "region": reg, "base": good,
+            "accepted": evil, "reason": "영역 밖 항목 혼입(시험)"})
+        check("integrity가 영역 불일치를 적발",
+              any("영역 불일치" in e and reg in e for e in A.integrity()), A.integrity())
+        check("위임 성립이 부정된다(fail-closed)",
+              A.file_in_region_baseline(reg, dnode) is False)
+        eff = {d["title"]: d["effective"] for d in authority.enumerate_delegations()}
+        check("권위 판정도 미성립", eff.get("regr-bind") is False, eff)
+        check("revert도 거부", _raises(lambda: A.revert(reg))())
+        check("영역 밖 파일이 변하지 않음", outsider.read_text() == "영역 밖 파일")
+    finally:
+        if good:
+            core.ledger_append(A.APPROVALS, {
+                "kind": "approve", "region": reg, "base": None,
+                "accepted": good, "reason": "시험 정리"})
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        dnode.unlink(missing_ok=True)
+        outsider.unlink(missing_ok=True)
+
+
 # ── 승인본 rel은 정규 vault 상대 경로 (PR #14 리뷰 [high]) ──────────────
 def test_baseline_rel_canonical_path():
     """manifest의 rel은 `posix_rel()`이 낳는 정규 경로뿐이다 — `..`을 담은 항목은
@@ -3364,7 +3415,7 @@ if __name__ == "__main__":
                test_revert_restore_subdir_swap_confined,
                test_revert_incomplete_no_record,
                test_baseline_manifest_canonical_only,
-               test_baseline_rel_canonical_path,
+               test_baseline_rel_canonical_path, test_baseline_bound_to_region,
                test_baseline_pass]:
         try:
             fn()
