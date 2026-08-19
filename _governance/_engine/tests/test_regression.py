@@ -1065,6 +1065,40 @@ def test_move_return_blocked_origin_occupied():
         dst.unlink(missing_ok=True)
 
 
+def test_move_chain_reverted_no_duplicate():
+    """보호영역을 나온 노드가 미처리인 채 한 번 더 이동하면(양끝 미보호) 그
+    hop도 사슬로 기록되고, 반려가 **최종 위치**에서 되가져온다 — 옛 도착지만
+    보면 '밖 사본 없음'으로 승인본을 재생성해 같은 id가 둘 남는다(복제 금지)."""
+    from osk import approvals as A, write
+    home = ROOT / "= Scope/W3/regr-mvchain.md"
+    hop1 = ROOT / "= Scope/W1/regr-mvchain.md"
+    hop2 = ROOT / "= Scope/W4/regr-mvchain.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    (ROOT / "= Scope/W4").mkdir(parents=True, exist_ok=True)
+    try:
+        home.write_text(node_text("260802-zzzz-chn1", "사슬 이동", "본문"),
+                        encoding="utf-8")
+        A.protect("= Scope/W3", "출발지 보호")
+        base = A.approved_hash("= Scope/W3")
+        check("hop1 성립", write.move_node("regr-mvchain", "= Scope/W1")["ok"])
+        check("hop2 성립(양끝 미보호)",
+              write.move_node("regr-mvchain", "= Scope/W4")["ok"])
+        rows = [r for r in core.ledger_read(A.MOVES)
+                if r.get("node") == "260802-zzzz-chn1"]
+        check("두 hop 모두 사슬로 기록됐다", len(rows) == 2, rows)
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("노드가 제자리로 돌아왔다", home.is_file())
+        check("hop1 자리에 사본 없음", not hop1.exists())
+        check("hop2 자리에 사본 없음(중복 id 없음)", not hop2.exists())
+        check("출발 영역은 clean", A.state("= Scope/W3") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        for f in (home, hop1, hop2):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(ROOT / "= Scope/W4", ignore_errors=True)
+
+
 def test_move_unrecorded_outside_protection():
     """양끝 다 보호 밖인 이동은 변경집합과 무관하므로 기록하지 않는다
     (시행령 §6 4항의 범위 그대로 — 기록부를 소음으로 채우지 않는다)."""
@@ -1142,15 +1176,33 @@ def test_stale_sealed_by_approve():
                     "accepted": A.working_tree_hash(reg), "reason": f"기기{i}"},
                     ensure_ascii=False) + "\n")
         check("병합 뒤 stale", A.state(reg) == "stale")
-        check("갈래가 둘로 보인다", len(A.divergence(reg)) == 2)
+        forks = [f["rid"] for f in A.divergence(reg)]
+        check("갈래가 둘로 보인다", len(forks) == 2)
         check("일반 승인은 거부(현행 승인본이 하나가 아니다)",
               _raises(lambda: A.approve(reg, "sha256:" + "a" * 64,
                                         A.working_tree_hash(reg)))())
+        check("갈래 집합 없는 봉합도 거부",
+              _raises(lambda: A.approve(reg, None,
+                                        A.working_tree_hash(reg)))())
+        # 검토 사이 새 갈래 유입 — 검토한 집합과 어긋나면 봉합 거부(본 적 없는
+        # 갈래를 함께 봉합하지 않는다)
+        rid3 = core._next_rid(max((r["rid"] for r in A.records()),
+                                  key=core._rid_key))
+        with open(A.APPROVALS, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "rid": rid3, "parents": [head], "at": core.now_iso(),
+                "kind": "approve", "region": reg, "base": A.approved_hash(reg),
+                "accepted": A.working_tree_hash(reg), "reason": "기기3(유입)"},
+                ensure_ascii=False) + "\n")
+        check("본 적 없는 갈래는 함께 봉합되지 않는다",
+              _raises(lambda: A.approve(reg, None, A.working_tree_hash(reg),
+                                        seal_heads=forks))())
+        forks = [f["rid"] for f in A.divergence(reg)]   # 3갈래 재검토
         (regdir / "a.md").write_text("봉합 시점 상태", encoding="utf-8")
         rec = A.approve(reg, None, expect_work=A.working_tree_hash(reg),
-                        reason="분기 봉합")
-        check("봉합 승인이 갈래 둘을 모두 부모로 잇는다",
-              len(rec["parents"]) == 2, rec["parents"])
+                        reason="분기 봉합", seal_heads=forks)
+        check("봉합 승인이 검토한 갈래 셋을 모두 부모로 잇는다",
+              len(rec["parents"]) == 3, rec["parents"])
         check("봉합 뒤 clean", A.state(reg) == "clean")
         check("현행 승인본이 봉합 시점 상태", A.approved_hash(reg) == rec["accepted"])
         check("이후 일반 승인이 다시 성립한다", A.divergence(reg) and
@@ -3945,6 +3997,7 @@ if __name__ == "__main__":
                test_move_recorded_and_reverted_in,
                test_move_reverted_out_no_duplicate,
                test_move_return_blocked_origin_occupied,
+               test_move_chain_reverted_no_duplicate,
                test_move_unrecorded_outside_protection,
                test_changeset_lists_difference, test_stale_sealed_by_approve,
                test_topology_rejects_wiki_node_derived_from,

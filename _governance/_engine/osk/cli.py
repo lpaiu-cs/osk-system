@@ -132,8 +132,12 @@ def main(argv=None):
                       f"accepted={f.get('accepted')} at={f.get('at')}")
             print(f"현재 작업본: {work}")
             _confirm("이 작업본을 새 승인본으로 삼아 갈래를 봉합합니까? [y/N] ")
+            # 검토한 갈래 집합을 프롬프트 **전에** 고정해 넘긴다 — 프롬프트
+            # 사이 동기화로 새 갈래가 오면 봉합이 거부된다(본 적 없는 갈래를
+            # 함께 봉합하지 않는다).
             rec = approvals.approve(a.region, None, expect_work=work,
-                                    reason=a.reason or "분기 봉합")
+                                    reason=a.reason or "분기 봉합",
+                                    seal_heads=[f["rid"] for f in forks])
             print("봉합 승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
             return
         if st != "pending":
