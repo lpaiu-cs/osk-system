@@ -440,7 +440,12 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
 
     영역 디렉터리가 통째로 사라진 경우도 복원 대상이다 — 승인본이 유효하면
     디렉터리를 다시 만들어 되돌린다. 보호가 되돌려야 할 가장 기본적인 사고가
-    영역 삭제인데 그것만 수동 복구를 요구하면 장치의 뜻이 무너진다."""
+    영역 삭제인데 그것만 수동 복구를 요구하면 장치의 뜻이 무너진다.
+
+    반면 그 경로에 **디렉터리가 아닌 무언가가 있으면** 거부한다(pending으로
+    남는다). 삭제와 달리 이쪽은 사용자가 치울 것이 눈앞에 있고(`rm` 한 번),
+    엔진이 승인본에 없던 객체를 말없이 지우는 것은 반려의 범위가 아니다 —
+    승인본 밖 물건을 지우는 것은 영역 **안**에서만 하는 일이다."""
     if base is None or expect_work is None:
         raise ValueError(
             "base·expect_work(검토한 승인본·작업본)는 필수다 — 반려는 파괴적이다")
@@ -448,7 +453,9 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
     if d is None:
         raise ValueError(f"영역이 vault 안의 경로가 아니다: {region}")
     if d.exists() and not d.is_dir():
-        raise ValueError(f"영역이 디렉터리가 아니다: {region}")
+        raise ValueError(
+            f"영역 경로에 디렉터리가 아닌 것이 있다 — 그것을 치우면(rm) 반려가 "
+            f"승인본을 복원한다. 엔진은 승인본 밖 객체를 대신 지우지 않는다: {region}")
     reg = posix_rel(d, Path(os.path.realpath(ROOT)))
     recs = records()
     st = state(reg, recs)
