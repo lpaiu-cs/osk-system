@@ -802,6 +802,40 @@ def test_approval_baseline_blobs_present():
         f.unlink(missing_ok=True)
 
 
+# ── 내용 주소 저장소는 digest↔bytes 일치를 검증 (PR #14 리뷰 [high]) ────
+def test_store_content_verified():
+    """저장소는 읽기에서 `sha256(bytes)==digest`를 검증한다 — 같은 경로가 다른
+    bytes로 변조되면(동기화 충돌·손상·변조) 부재/손상으로 취급되어 integrity
+    FAIL·revert가 쓰기 전에 거부하고, _store_put은 손상 객체를 정상으로 치유한다.
+    이 계약을 저장소 접근자 한 곳에서 강제하므로 integrity·revert는 손대지
+    않아도 함께 fail-closed 된다."""
+    from osk import approvals as A
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f = ROOT / "= Scope/W2/regr-cv.md"
+    f.write_text("정본내용", encoding="utf-8")
+    try:
+        A.protect("= Scope/W2", "지정")
+        table = A._tree_table(A.approved_hash("= Scope/W2"))
+        h = table["= Scope/W2/regr-cv.md"]
+        obj = A._obj_path(h)
+        obj.write_bytes(b"corrupted-bytes-not-matching-the-digest")   # 같은 경로 변조
+        check("변조된 blob은 _store_get에서 부재로(내용 검증)",
+              A._store_get(h) is None)
+        check("integrity가 손상 blob을 적발",
+              any("복원 불가" in e for e in A.integrity()), A.integrity())
+        f.write_text("변경", encoding="utf-8")            # pending
+        check("손상 blob 승인본으로의 revert는 사전검증에서 거부",
+              _raises(lambda: A.revert("= Scope/W2"))())
+        A._store_put("정본내용".encode("utf-8"))          # 손상 객체 치유
+        check("_store_put이 손상 객체를 정상으로 치유", A._store_get(h) is not None)
+        check("치유 후 integrity 통과", A.integrity() == [], A.integrity())
+    finally:
+        f.write_text("정본내용", encoding="utf-8")          # 승인본으로 복귀 → clean
+        try: A.unprotect("= Scope/W2", "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
 def test_baseline_pass():
     from osk import approvals
     # 보호영역 하나를 지정하고 clean 상태에서 검증기가 통과하는지 본다
@@ -3032,6 +3066,7 @@ if __name__ == "__main__":
                test_store_digest_confined, test_delegation_facet_exact_region,
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
+               test_store_content_verified,
                test_baseline_pass]:
         try:
             fn()

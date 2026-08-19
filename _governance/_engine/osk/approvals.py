@@ -106,11 +106,19 @@ def _obj_path(digest: str) -> Path:
 
 def _store_put(data: bytes) -> str:
     """바이트를 내용 주소로 보관하고 그 digest를 돌려준다. 같은 내용은 한 번만
-    저장된다(멱등) — 다기기 병합은 합집합으로 자명하다."""
+    저장된다(멱등) — 다기기 병합은 합집합으로 자명하다.
+
+    이미 그 경로에 객체가 있으면 **그 내용이 digest와 일치하는지 확인**하고,
+    동기화 충돌·디스크 손상·변조로 어긋나 있으면 올바른 bytes로 다시 쓴다 —
+    내용 주소라 정본 내용이 유일하게 정해지므로 치유가 자명하다."""
     digest = sha256_bytes(data)
     dst = _obj_path(digest)
     if dst.exists():
-        return digest
+        try:
+            if sha256_bytes(dst.read_bytes()) == digest:
+                return digest             # 정상 객체 — 멱등 반환
+        except OSError:
+            pass                          # 판독 불가 → 아래 원자 재기록으로 치유
     dst.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
     try:
@@ -118,7 +126,7 @@ def _store_put(data: bytes) -> str:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, dst)
+        os.replace(tmp, dst)              # 원자 교체 — 손상 객체를 정상으로 치유
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -132,9 +140,18 @@ def _store_get(digest: str) -> bytes | None:
     except ValueError:
         return None                      # 신뢰 밖 digest — 부재로 취급(fail-closed)
     try:
-        return p.read_bytes() if p.is_file() else None
+        if not p.is_file():
+            return None
+        data = p.read_bytes()
     except OSError:
         return None
+    # 내용 주소 계약: 읽은 bytes가 실제로 digest로 해시되어야 한다. 동기화
+    # 충돌·디스크 손상·변조로 어긋난 객체는 부재/손상으로 취급한다(fail-closed)
+    # — 손상 blob이 승인본으로 신뢰되어 integrity가 PASS하거나 revert가 잘못된
+    # bytes를 복원하는 일이 없다. 이 한 지점의 검증이 두 소비자를 함께 막는다.
+    if sha256_bytes(data) != digest:
+        return None
+    return data
 
 
 def _store_tree(region_dir: Path) -> str:
