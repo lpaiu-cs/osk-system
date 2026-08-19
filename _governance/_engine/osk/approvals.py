@@ -75,6 +75,24 @@ def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
     return sorted(out, key=lambda x: x[0])
 
 
+def _rel_parts(rel: str) -> list[str]:
+    r"""정규 vault 상대 POSIX 경로 → 성분 목록. 정본 형상이 아니면 거부한다.
+
+    정본 rel은 `posix_rel()`이 낳는 형상뿐이다 — 빈 문자열·절대경로·백슬래시·
+    빈 성분·`.`·`..`이 없다. 이 rel→성분 변환이 manifest 파서와 복원 I/O가
+    공유하는 유일한 지점이므로, 형상 강제를 여기 둔다.
+
+    `..`을 남기면 fd 체인이 그 성분에서 **실제 부모로 올라가** 영역 밖에 쓴다
+    — `O_NOFOLLOW`는 symlink만 막고 `..` 이동은 막지 못한다. 문자열 단계에서
+    거부하고 물리 봉쇄로 이중화하는 규율은 `update._within`과 같다."""
+    if not isinstance(rel, str) or not rel or rel.startswith("/") or "\\" in rel:
+        raise ValueError(f"정규 vault 상대 경로가 아니다: {rel!r}")
+    parts = rel.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise ValueError(f"정규 vault 상대 경로가 아니다: {rel!r}")
+    return parts
+
+
 def _manifest_blob(entries: list) -> bytes:
     """manifest의 **정본 직렬화** — 공백 없는 UTF-8 JSON. 생성(`_manifest_bytes`·
     `_store_tree`)과 판독 검증(`_tree_table`)이 같은 함수를 쓰므로 정본 형상의
@@ -360,8 +378,11 @@ def _tree_table(tree_hash: str) -> dict[str, str] | None:
         if not (isinstance(item, list) and len(item) == 2):
             return None
         rel, h = item
-        if not (isinstance(rel, str) and isinstance(h, str)
-                and _DIGEST_RE.match(h)):
+        if not (isinstance(h, str) and _DIGEST_RE.match(h)):
+            return None
+        try:
+            _rel_parts(rel)           # 정규 vault 상대 POSIX 경로만(`..` 금지)
+        except ValueError:
             return None
         if rel in table:
             return None               # 경로 중복 — 정본 manifest에 없는 형상
@@ -598,18 +619,12 @@ def unprotect(region: str, reason: str = "") -> dict:
         "base": base, "accepted": None, "reason": reason})
 
 
-def _rel_parts(rel: str) -> list[str]:
-    return [x for x in rel.replace("\\", "/").split("/") if x and x != "."]
-
-
 def _write_file_nofollow(rel: str, data: bytes) -> None:
     """vault 상대 `rel` 파일에 `data`를 쓴다 — realpath(ROOT)에서 부모까지 각
     성분을 O_NOFOLLOW로 열어(없으면 만들어) 그 dir_fd 상대로 O_NOFOLLOW 생성한다.
     부모 성분이 symlink면 ELOOP로 거부되므로, 검증 뒤 부모를 symlink로 교체해도
     (TOCTOU) I/O가 vault 밖으로 새지 않는다. 저장소 접근자와 같은 규율."""
-    parts = _rel_parts(rel)
-    if not parts:
-        raise ValueError(f"복원 경로가 비었다: {rel!r}")
+    parts = _rel_parts(rel)           # 정규형 위반은 여기서 거부(성분 `..` 없음)
     parent = _open_dir_chain(parts[:-1], create=True)
     if parent is None:
         raise ValueError(f"복원 부모 경로 봉쇄 실패(symlink 재지정 등): {rel}")
@@ -643,9 +658,7 @@ def _unlink_nofollow(rel: str) -> None:
     삭제 실패'(권한 등)를 **구분**한다 — 후자는 삼키지 않고 올린다. 삭제 실패를
     조용히 넘기면 작업본이 승인본과 달리 남는데도 revert가 완료된 것처럼
     기록될 수 있다(복원 완료 계약 위반)."""
-    parts = _rel_parts(rel)
-    if not parts:
-        return
+    parts = _rel_parts(rel)           # 정규형 위반은 여기서 거부(성분 `..` 없음)
     parent = _open_dir_chain(parts[:-1], create=False)
     if parent is None:
         return                           # 부모 부재·symlink — 지울 것이 없다
@@ -688,17 +701,27 @@ def _restore_tree(region_dir: Path, table: dict[str, str]) -> None:
     확인해(부분 복원·영역 밖 쓰기 동시 차단), 그다음 실제 쓰기·삭제는 저장소와
     같은 **O_NOFOLLOW fd 체인**에 결속한다 — 사전 검증 뒤 영역 하위 부모를
     symlink로 교체해도(TOCTOU) I/O가 vault 밖으로 새지 않는다(dir_fd 지원
-    플랫폼; 그 밖에는 경로 기반 best-effort 폴백)."""
+    플랫폼; 그 밖에는 경로 기반 best-effort 폴백).
+
+    영역 봉쇄는 두 겹이다(`update._within`과 같은 규율): 선언된 rel이 영역
+    접두인지(문자열 — tree 해시·상태 비교가 쓰는 그 표기)와, 그 rel이 실제로
+    가리키는 경로가 영역 realpath 아래인지(물리 — symlink 재배치를 흡수)."""
     root_real = Path(os.path.realpath(ROOT))
     region_rel = posix_rel(region_dir, root_real).rstrip("/")
-    # 0) 전수 사전 검증 — 봉쇄(영역 접두)·blob 실재를 쓰기 전에 모두 확인
+    region_real = os.path.realpath(region_dir)
+    # 0) 전수 사전 검증 — 봉쇄(영역 접두 + 물리 경로)·blob 실재를 쓰기 전에 확인
     validated: list[tuple[str, bytes]] = []
     for rel, h in sorted(table.items()):
         if not (rel == region_rel or rel.startswith(region_rel + "/")):
             raise ValueError(
                 f"승인본 경로가 영역 밖이다 — 복원 거부: {rel} ⊄ {region_rel}")
-        if resolve_in_root(rel) is None:
+        p = resolve_in_root(rel)
+        if p is None:
             raise ValueError(f"승인본 경로가 vault 밖이다 — 복원 거부: {rel}")
+        real = os.path.realpath(p)
+        if real != region_real and not real.startswith(region_real + os.sep):
+            raise ValueError(
+                f"승인본 경로의 실제 위치가 영역 밖이다 — 복원 거부: {rel} → {real}")
         data = _store_get(h)
         if data is None:
             raise ValueError(f"승인본 blob 부재 — 복원 불가: {rel} {h}")

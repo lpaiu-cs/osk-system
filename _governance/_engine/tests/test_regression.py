@@ -1050,6 +1050,50 @@ def test_baseline_manifest_canonical_only():
         dnode.unlink(missing_ok=True)
 
 
+# ── 승인본 rel은 정규 vault 상대 경로 (PR #14 리뷰 [high]) ──────────────
+def test_baseline_rel_canonical_path():
+    """manifest의 rel은 `posix_rel()`이 낳는 정규 경로뿐이다 — `..`을 담은 항목은
+    파서가 거부한다. fd 체인은 symlink만 막고 `..` 이동은 막지 못하므로 문자열
+    정규형이 첫 겹이고, `_restore_tree`의 물리(realpath) 봉쇄가 둘째 겹이다."""
+    from osk import approvals as A
+    reg = "= Domain/dotdot"
+    regdir = ROOT / "= Domain" / "dotdot"
+    outside = ROOT / "= Domain" / "outside"
+    victim = outside / "victim.md"
+    evil_rel = "= Domain/dotdot/../outside/victim.md"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        outside.mkdir(parents=True, exist_ok=True)
+        (regdir / "keep.md").write_text("keep-v1", encoding="utf-8")
+        victim.write_text("원본-불변", encoding="utf-8")
+        A.protect(reg, "지정")
+        good = A.approved_hash(reg)
+        payload = A._store_put("덮어쓰기-시도".encode("utf-8"))
+        # (a) 파서 — `..` 성분을 담은 canonical JSON manifest는 해석되지 않는다
+        evil_tree = A._store_put(A._manifest_blob([[evil_rel, payload]]))
+        check("`..` 성분 manifest는 파서가 거부", A._tree_table(evil_tree) is None)
+        # (b) 파서를 우회해 직접 복원해도 물리 봉쇄가 막는다(둘째 겹)
+        check("`..` rel 복원은 영역 밖으로 거부",
+              _raises(lambda: A._restore_tree(regdir, {evil_rel: payload}))())
+        check("영역 밖 파일이 변하지 않음", victim.read_text() == "원본-불변")
+        # (c) 복원 I/O의 rel→성분 변환도 정규형 위반을 거부한다
+        if A._DIRFD_SAFE:
+            check("_write_file_nofollow가 `..` 성분을 거부",
+                  _raises(lambda: A._write_file_nofollow(evil_rel, b"x"))())
+            check("거부 후에도 영역 밖 파일 불변", victim.read_text() == "원본-불변")
+        for bad in ("", "/abs/x.md", "= Domain\\dotdot\\x.md", "./x.md",
+                    "= Domain//dotdot/x.md", "= Domain/dotdot/."):
+            check(f"비정규 rel 거부: {bad!r}",
+                  _raises(lambda b=bad: A._rel_parts(b))())
+        check("정상 승인본은 그대로 해석", A._tree_table(good) is not None)
+        check("정상 영역은 여전히 clean", A.state(reg) == "clean")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
+
 # ── STORE 루트 자체 symlink 봉쇄 (PR #14 리뷰 [high]) ───────────────────
 def test_store_root_symlink_confined():
     """STORE(objects) **자체**가 vault 밖 symlink여도 trust root로 승격되지
@@ -3320,6 +3364,7 @@ if __name__ == "__main__":
                test_revert_restore_subdir_swap_confined,
                test_revert_incomplete_no_record,
                test_baseline_manifest_canonical_only,
+               test_baseline_rel_canonical_path,
                test_baseline_pass]:
         try:
             fn()
