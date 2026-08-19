@@ -987,6 +987,69 @@ def test_revert_incomplete_no_record():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 승인본 manifest는 정본 형상만 해석 (PR #14 리뷰 [high]) ─────────────
+def test_baseline_manifest_canonical_only():
+    """다기기 병합으로 유입된 **비정규 manifest**는 승인본으로 해석되지 않는다.
+    같은 경로를 두 번 담고 마지막 항목만 현재 파일과 맞춘 manifest는 dict 축약의
+    last-wins로 정상처럼 보이지만, 정본 protect/approve가 만들 수 없는 형상이므로
+    파서가 거부한다 — integrity FAIL·위임 미성립·revert 거부로 함께 fail-closed."""
+    from osk import approvals as A, authority
+    reg = authority.DELEGATION_REGION
+    dnode = ROOT / "= Person/Delegation/regr-dupm.md"
+    rel = "= Person/Delegation/regr-dupm.md"
+    clause = ("## 위임\n- 대상: 시험 행위\n- 범위: 시험\n"
+              "- 조건: 없음\n- 종료: 없음\n")
+    dnode.write_text(node_text("260802-zzzz-rgd2", "중복 manifest 시험", clause),
+                     encoding="utf-8")
+    good = None
+    try:
+        A.protect(reg, "지정")
+        good = A.approved_hash(reg)
+        check("정상 승인본에서는 위임 성립", A.file_in_region_baseline(reg, dnode))
+        # 정본 entries에 같은 rel을 하나 더 끼운다 — 진짜 해시를 **뒤에** 두어
+        # last-wins 축약이면 정상 table로 보이게 한다(정렬은 여전히 비내림차순).
+        entries = sorted(([r, h] for r, h in A._tree_table(good).items()),
+                         key=lambda e: e[0])
+        evil_entries = []
+        for r, h in entries:
+            if r == rel:
+                evil_entries.append([r, "sha256:" + "0" * 64])   # 미끼 중복 항목
+            evil_entries.append([r, h])
+        evil = A._store_put(A._manifest_blob(evil_entries))
+        core.ledger_append(A.APPROVALS, {
+            "kind": "approve", "region": reg, "base": good,
+            "accepted": evil, "reason": "비정규 manifest 유입(시험)"})
+        check("주입한 비정규 tree가 현행 승인본", A.approved_hash(reg) == evil)
+        check("비정규 manifest는 해석되지 않는다(중복 경로)",
+              A._tree_table(evil) is None)
+        check("integrity가 비정규 승인본을 적발",
+              any("비정규" in e and reg in e for e in A.integrity()), A.integrity())
+        check("비정규 승인본에서는 위임 미성립(fail-closed)",
+              A.file_in_region_baseline(reg, dnode) is False)
+        eff = {d["title"]: d["effective"] for d in authority.enumerate_delegations()}
+        check("권위 판정도 미성립", eff.get("regr-dupm") is False, eff)
+        check("비정규 승인본으로의 revert는 거부", _raises(lambda: A.revert(reg))())
+        # 그 밖의 비정본 형상도 같은 한 지점에서 함께 막힌다
+        for name, blob in (
+                ("최상위가 list 아님", b'{"a":"b"}'),
+                ("항목 원소 수 불일치", b'[["x"]]'),
+                ("digest 형식 위반", b'[["x","sha256:zz"]]'),
+                ("rel이 문자열 아님", b'[[1,"sha256:' + b"a" * 64 + b'"]]'),
+                ("정렬 위반", b'[["b","sha256:' + b"a" * 64 + b'"],["a","sha256:'
+                 + b"a" * 64 + b'"]]'),
+                ("직렬화 비정본(공백)", b'[["a", "sha256:' + b"a" * 64 + b'"]]')):
+            check(f"비정본 manifest 거부: {name}",
+                  A._tree_table(A._store_put(blob)) is None)
+    finally:
+        if good:
+            core.ledger_append(A.APPROVALS, {                    # 정본 승인본 복원
+                "kind": "approve", "region": reg, "base": None,
+                "accepted": good, "reason": "시험 정리"})
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        dnode.unlink(missing_ok=True)
+
+
 # ── STORE 루트 자체 symlink 봉쇄 (PR #14 리뷰 [high]) ───────────────────
 def test_store_root_symlink_confined():
     """STORE(objects) **자체**가 vault 밖 symlink여도 trust root로 승격되지
@@ -3256,6 +3319,7 @@ if __name__ == "__main__":
                test_store_toctou_shard_swap, test_store_root_symlink_confined,
                test_revert_restore_subdir_swap_confined,
                test_revert_incomplete_no_record,
+               test_baseline_manifest_canonical_only,
                test_baseline_pass]:
         try:
             fn()

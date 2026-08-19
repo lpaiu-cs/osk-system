@@ -75,6 +75,14 @@ def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
     return sorted(out, key=lambda x: x[0])
 
 
+def _manifest_blob(entries: list) -> bytes:
+    """manifest의 **정본 직렬화** — 공백 없는 UTF-8 JSON. 생성(`_manifest_bytes`·
+    `_store_tree`)과 판독 검증(`_tree_table`)이 같은 함수를 쓰므로 정본 형상의
+    정의가 한 곳에만 있다."""
+    return json.dumps(entries, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
+
+
 def _manifest_bytes(region_dir: Path) -> tuple[bytes, dict[str, str]]:
     """영역의 manifest — (rel, sha256) 쌍을 경로 오름차순으로 담은 공백 없는
     UTF-8 JSON. 반환: (manifest 바이트, {rel: sha256})."""
@@ -84,9 +92,7 @@ def _manifest_bytes(region_dir: Path) -> tuple[bytes, dict[str, str]]:
         h = sha256_file(p)
         entries.append([rel, h])
         table[rel] = h
-    blob = json.dumps(entries, ensure_ascii=False,
-                      separators=(",", ":")).encode("utf-8")
-    return blob, table
+    return _manifest_blob(entries), table
 
 
 def working_tree_hash(region: str) -> str | None:
@@ -325,21 +331,47 @@ def _store_tree(region_dir: Path) -> str:
         data = p.read_bytes()          # 파일당 유일 판독
         h = _store_put(data)           # 그 bytes를 그대로 박제(반환 = 그 해시)
         entries.append([rel, h])
-    blob = json.dumps(entries, ensure_ascii=False,
-                      separators=(",", ":")).encode("utf-8")
-    return _store_put(blob)
+    return _store_put(_manifest_blob(entries))
 
 
 def _tree_table(tree_hash: str) -> dict[str, str] | None:
-    """tree 해시 → {rel: sha256}. 저장소에 manifest가 없으면 None."""
+    """tree 해시 → {rel: sha256}. 저장소에 manifest가 없거나 **정본 형상이
+    아니면** None — 그러면 integrity·권한 검사·revert가 모두 fail-closed 한다.
+
+    manifest는 신뢰 밖 입력이다(다기기 병합으로 유입된 대장·저장소 객체).
+    정본 엔진이 만드는 manifest는 `_store_tree`가 낳는 형상 하나뿐이므로 —
+    경로 오름차순, 경로당 정확히 한 항목, 각 항목이 `[rel, sha256:<64hex>]`,
+    공백 없는 UTF-8 JSON — 여기서 그 형상을 그대로 강제한다(parse, don't
+    validate): 통과한 table은 정상 `protect`/`approve`가 만들 수 있었던
+    manifest임이 보장된다. 느슨하게 접으면(예: dict 축약의 last-wins) 중복
+    경로를 담은 비정규 manifest가 integrity를 통과하고 위임 권위의 근거가
+    될 수 있다."""
     blob = _store_get(tree_hash)
     if blob is None:
         return None
     try:
         entries = json.loads(blob.decode("utf-8"))
-        return {str(rel): str(h) for rel, h in entries}
-    except (ValueError, TypeError):
+    except (ValueError, UnicodeDecodeError):
         return None
+    if not isinstance(entries, list):
+        return None
+    table: dict[str, str] = {}
+    for item in entries:
+        if not (isinstance(item, list) and len(item) == 2):
+            return None
+        rel, h = item
+        if not (isinstance(rel, str) and isinstance(h, str)
+                and _DIGEST_RE.match(h)):
+            return None
+        if rel in table:
+            return None               # 경로 중복 — 정본 manifest에 없는 형상
+        table[rel] = h
+    rels = list(table)
+    if rels != sorted(rels):
+        return None                   # 정렬이 정본과 다름
+    if _manifest_blob(entries) != blob:
+        return None                   # 직렬화가 정본과 다름
+    return table
 
 
 # ── 판정 (인과 극대) ─────────────────────────────────────────────────────
@@ -528,7 +560,8 @@ def revert(region: str, reason: str = "") -> dict:
     base = approved_hash(reg, recs)
     table = _tree_table(base) if base else None
     if table is None:
-        raise ValueError(f"승인본 manifest를 저장소에서 찾지 못했다 — 복원 불가: {base}")
+        raise ValueError(
+            f"승인본 manifest를 해석하지 못했다(부재 또는 비정규) — 복원 불가: {base}")
     discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
     _restore_tree(d, table)
     # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
@@ -716,7 +749,8 @@ def integrity() -> list[str]:
             tree = approved_hash(region, recs)
             table = _tree_table(tree) if tree else None
             if table is None:
-                errs.append(f"승인본 manifest를 저장소에서 찾지 못함: {region} ({tree})")
+                errs.append(
+                    f"승인본 manifest 해석 불가(부재 또는 비정규): {region} ({tree})")
                 continue
             # manifest가 가리키는 **모든 blob의 실재**를 확인한다 — manifest만
             # 해석되고 그것이 가리키는 blob이 없으면 승인본이 clean으로 보여도
