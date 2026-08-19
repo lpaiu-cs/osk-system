@@ -16,6 +16,9 @@ from .core import ROOT
 from . import contract, approvals
 
 DELEGATION_FACET = ROOT / "= Person" / "Delegation"
+# 위임 Facet의 정본 region key — 권한 판정은 **이 정확한 region**의 승인본으로만
+# 한다(하위 영역만 보호된 경우로 우회되지 않게).
+DELEGATION_REGION = DELEGATION_FACET.relative_to(ROOT).as_posix()
 CLAUSE_KEYS = ("대상", "범위", "조건", "종료")
 
 
@@ -56,10 +59,10 @@ def enumerate_delegations() -> list[dict]:
             })
             continue
         clause = parse_clause(n.body)
-        # 승인본 반영 = 위임 Facet(보호영역) 안에 있고 그 승인본과 내용이
-        # 일치. 보호 중이 아니면 region_of가 None이라 미성립(fail-closed).
-        approved = (approvals.region_of(p) is not None
-                    and approvals.file_matches_baseline(p))
+        # 승인본 반영 = **위임 Facet 자체**(DELEGATION_REGION)가 보호 중이고 그
+        # 승인본에 이 노드가 그 해시로 들어 있음. Facet이 미보호면 미성립이다 —
+        # 하위 디렉터리만 protect해 우회할 수 없다(헌법 7조 3항, fail-closed).
+        approved = approvals.file_in_region_baseline(DELEGATION_REGION, p)
         out.append({
             "path": str(p.relative_to(ROOT)), "node": n.id,
             "title": p.stem, "clause": clause,

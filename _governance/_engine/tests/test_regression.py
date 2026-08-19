@@ -688,6 +688,57 @@ def test_authority_hold():
 
 
 # ── 14. 기준선: 정상 mini-vault + 보호영역 지정 → 검증기 PASS ───────────
+# ── 승인 저장소 digest 봉쇄 (PR #14 리뷰 [high]) ────────────────────────
+def test_store_digest_confined():
+    """신뢰 밖 digest가 승인 저장소(STORE) 밖 경로를 읽지 못한다 — _obj_path는
+    정확히 `sha256:<64 소문자 hex>`만 받고 계산 경로의 STORE 봉쇄를 재확인한다."""
+    from osk import approvals as A
+    import os as _os
+    good = "sha256:" + "a" * 64
+    p = A._obj_path(good)
+    store_s = _os.path.normpath(A.STORE)
+    check("정상 digest는 STORE 안으로만 해석",
+          _os.path.commonpath([store_s, _os.path.normpath(p)]) == store_s)
+    for bad in ("sha256:../" + "a" * 61, "sha256:/etc/passwd",
+                "sha256:" + "a" * 63, "sha256:" + "a" * 65, "sha256:" + "A" * 64,
+                "sha256:" + "g" * 64, "notsha:" + "a" * 64, "../../etc/passwd",
+                "sha256:", "sha256:" + "a" * 62 + "/x"):
+        check(f"부적격 digest 거부: {bad[:22]}",
+              _raises(lambda b=bad: A._obj_path(b))())
+        check(f"_store_get은 부적격 digest를 부재로: {bad[:22]}",
+              A._store_get(bad) is None)
+
+
+# ── 위임 성립은 위임 Facet '자체'의 승인본 (PR #14 리뷰 [high]) ──────────
+def test_delegation_facet_exact_region():
+    """위임 성립 검사는 가장 안쪽 보호영역(region_of)이 아니라 위임 Facet의
+    **정확한** region으로 한다 — Facet은 미보호인데 더 넓은 조상만 protect해도
+    성립으로 새지 않는다(헌법 7조 3항, fail-closed)."""
+    from osk import approvals as A, authority
+    dnode = ROOT / "= Person/Delegation/regr-deleg.md"
+    clause = ("## 위임\n- 대상: 시험 행위\n- 범위: 시험\n"
+              "- 조건: 없음\n- 종료: 없음\n")
+    dnode.write_text(node_text("260802-zzzz-rgd1", "위임 노드", clause),
+                     encoding="utf-8")
+    try:
+        # (a) 더 넓은 조상(= Person)만 보호 — 위임 Facet 자체는 미보호
+        A.protect("= Person", "조상만")
+        eff = {d["title"]: d["effective"]
+               for d in authority.enumerate_delegations()}
+        check("조상만 보호되면 위임 미성립(우회 차단)",
+              eff.get("regr-deleg") is False, eff)
+        A.unprotect("= Person", "정리")
+        # (b) 위임 Facet 자체 보호 + 승인본 일치 → 성립
+        A.protect("= Person/Delegation", "Facet 보호")
+        eff = {d["title"]: d["effective"]
+               for d in authority.enumerate_delegations()}
+        check("위임 Facet 자체 보호 시 위임 성립",
+              eff.get("regr-deleg") is True, eff)
+        A.unprotect("= Person/Delegation", "정리")
+    finally:
+        dnode.unlink(missing_ok=True)
+
+
 def test_baseline_pass():
     from osk import approvals
     # 보호영역 하나를 지정하고 clean 상태에서 검증기가 통과하는지 본다
@@ -2915,6 +2966,7 @@ if __name__ == "__main__":
                test_publish_manifest, test_publish_guards,
                test_conflict_candidates,
                test_release_and_update,
+               test_store_digest_confined, test_delegation_facet_exact_region,
                test_baseline_pass]:
         try:
             fn()

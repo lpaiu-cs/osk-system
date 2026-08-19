@@ -18,7 +18,7 @@
 core.resolve_in_root로 vault 안에 봉쇄한다. 해석 실패는 언제나 거부 쪽이다.
 """
 from __future__ import annotations
-import json, os, tempfile
+import json, os, re, tempfile
 from pathlib import Path
 
 from .core import (ROOT, LEDGER, sha256_bytes, sha256_file, posix_rel,
@@ -28,6 +28,7 @@ from .core import (ROOT, LEDGER, sha256_bytes, sha256_file, posix_rel,
 APPROVALS = LEDGER / "approvals.jsonl"
 STORE = LEDGER / "approved" / "objects"       # 내용 주소 blob·manifest 보관
 KINDS = ("protect", "unprotect", "approve", "revert")
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")   # 저장소 접근의 유일 형식
 
 # 영역 tree에서 제외하는 이름 — 저장소 살림살이와 대장 자신(승인본이 대장을
 # 담으면 승인이 자기 자신을 포함하는 순환이 된다).
@@ -83,9 +84,24 @@ def working_tree_hash(region: str) -> str | None:
 # ── 내용 주소 저장소 ─────────────────────────────────────────────────────
 
 def _obj_path(digest: str) -> Path:
-    """`sha256:<hex>` → 저장 경로 `_ledger/approved/objects/<2>/<나머지>`."""
-    hexd = digest.split(":", 1)[-1]
-    return STORE / hexd[:2] / hexd[2:]
+    """`sha256:<64hex>` → 저장 경로 `_ledger/approved/objects/<2>/<나머지>`.
+
+    digest는 신뢰 밖 입력일 수 있다(다기기 병합으로 유입된 manifest·대장의
+    `accepted`/`base`·manifest 안 blob 해시). 형식을 강제하지 않으면 조작된
+    digest의 `../`·절대경로 성분이 STORE를 버리고 vault 밖 파일을 읽게 할 수
+    있으므로(그리고 revert가 그 내용을 영역 안으로 복사), 진입점에서 정확히
+    `sha256:<64 소문자 hex>`를 강제하고 계산된 경로가 STORE 안에 봉쇄되는지
+    재검증한다 — 어긋나면 거부(fail-closed)."""
+    if not (isinstance(digest, str) and _DIGEST_RE.match(digest)):
+        raise ValueError(f"부적격 digest — 저장소 접근 거부: {digest!r}")
+    hexd = digest.split(":", 1)[1]
+    p = STORE / hexd[:2] / hexd[2:]
+    # 형식 강제로 이미 순수 hex 성분뿐이라 탈출이 불가능하나, 명시적으로
+    # STORE 봉쇄를 재확인한다(lexical — 파일 부재에도 성립).
+    store_s = os.path.normpath(STORE)
+    if os.path.commonpath([store_s, os.path.normpath(p)]) != store_s:
+        raise ValueError(f"저장소 밖 경로 — 거부: {digest}")
+    return p
 
 
 def _store_put(data: bytes) -> str:
@@ -111,7 +127,10 @@ def _store_put(data: bytes) -> str:
 
 
 def _store_get(digest: str) -> bytes | None:
-    p = _obj_path(digest)
+    try:
+        p = _obj_path(digest)            # 부적격 digest는 ValueError
+    except ValueError:
+        return None                      # 신뢰 밖 digest — 부재로 취급(fail-closed)
     try:
         return p.read_bytes() if p.is_file() else None
     except OSError:
@@ -221,6 +240,17 @@ def file_matches_baseline(path: Path | str) -> bool:
     region = region_of(path)
     if region is None:
         return True
+    return file_in_region_baseline(region, path)
+
+
+def file_in_region_baseline(region: str, path: Path | str) -> bool:
+    """지정한 **정확한** region의 승인본 안에 이 파일이 그 해시로 들어 있는가.
+    `region_of`(가장 안쪽 보호영역)가 아니라 호출자가 지정한 region으로 판정한다
+    — 권한 검사는 위임 Facet **자체**의 승인본 반영이어야 하며, Facet은 미보호인데
+    그 하위 디렉터리만 보호된 경우로 우회되지 않는다(헌법 7조 3항). region이
+    보호 중이 아니거나 파일이 그 승인본에 없거나 해시가 다르면 False(fail-closed)."""
+    if not is_protected(region):
+        return False
     p = resolve_in_root(path)
     if p is None or not p.is_file():
         return False
