@@ -916,6 +916,42 @@ def test_protect_precondition_rejects_stale():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 지정도 작업본 측 CAS를 거친다 (PR #14 리뷰) ────────────────────────
+def test_protect_worktree_cas():
+    """초기 승인본은 사용자가 확인한 **그** 상태여야 한다(시행령 §6 5항) —
+    스냅샷 뒤 작업본이 바뀌면 지정은 성립하지 않는다. _store_tree는 파일을
+    하나씩 읽으므로, 확인하지 않으면 한 번도 존재한 적 없는 혼합 상태가 초기
+    승인본으로 굳는다(approve의 expect_work와 같은 이유)."""
+    from osk import approvals as A
+    reg = "= Domain/pcas"
+    regdir = ROOT / "= Domain" / "pcas"
+    f = regdir / "a.md"
+    real_append = A.ledger_append
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        f.write_text("A", encoding="utf-8")
+
+        def racing(path, record, expect=None):
+            if record.get("kind") == "protect":       # 박제 뒤·append 전 편집
+                A.ledger_append = real_append
+                f.write_text("B", encoding="utf-8")
+            return real_append(path, record, expect)
+        A.ledger_append = racing
+        before = len(A.records())
+        check("스냅샷 뒤 작업본이 바뀌면 지정 거부", _raises(lambda: A.protect(reg))())
+        A.ledger_append = real_append
+        check("대장에 기록되지 않았다", len(A.records()) == before)
+        check("영역은 여전히 미보호", A.state(reg) == "unprotected")
+        check("작업본은 바뀐 그대로", f.read_text() == "B")
+        A.protect(reg, "다시 지정")                    # 조용해지면 정상 성립
+        check("재시도는 성립하고 clean", A.state(reg) == "clean")
+    finally:
+        A.ledger_append = real_append
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
 # ── 해제도 잠금 안 전제 재확인을 거친다 (PR #14 리뷰) ───────────────────
 def test_unprotect_precondition_under_lock():
     """해제 판정과 append 사이에 다른 기기의 승인이 동기화로 들어오면 해제는
@@ -3356,7 +3392,7 @@ if __name__ == "__main__":
                test_revert_incomplete_no_record,
                test_approve_precondition_under_lock,
                test_unprotect_precondition_under_lock,
-               test_protect_precondition_rejects_stale,
+               test_protect_precondition_rejects_stale, test_protect_worktree_cas,
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,

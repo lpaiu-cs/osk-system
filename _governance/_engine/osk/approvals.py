@@ -349,14 +349,23 @@ def protect(region: str, reason: str = "") -> dict:
     return ledger_append(APPROVALS, {
         "kind": "protect", "region": reg,
         "base": None, "accepted": accepted, "reason": reason},
-        # 잠금 안에서도 **본문과 같은 전제**를 본다 — `not is_protected`로는
-        # 부족하다(is_protected는 stale에서도 False다). 스냅샷 중 같은 영역의
-        # 비교 불능 기록이 유입돼 stale이 되면, 그 분기가 표면화되지 않고 새
-        # 초기 승인본으로 조용히 봉합된다(본문의 stale 거부와 어긋난다).
+        # 잠금 안에서 **대장 상태와 작업본을 함께** 다시 본다.
+        # ①대장: `not is_protected`로는 부족하다(is_protected는 stale에서도
+        #   False다). 스냅샷 중 비교 불능 기록이 유입돼 stale이 되면, 그 분기가
+        #   표면화되지 않고 새 초기 승인본으로 조용히 봉합된다.
+        # ②작업본: 초기 승인본은 **사용자가 확인한 그 상태**여야 한다
+        #   (시행령 §6 5항). `_store_tree`는 파일을 하나씩 읽으므로, 스냅샷
+        #   도중·직후의 정상 동시 편집은 한 번도 존재한 적 없는 혼합 상태를
+        #   초기 승인본으로 굳힐 수 있다. approve가 `expect_work`로 작업본 측
+        #   CAS를 강제하는 것과 같은 이유로, 박제한 tree가 지금도 작업본과
+        #   같은지 확인한다.
         expect=lambda recs2: (
-            None if state(reg, recs2) == "unprotected" else
             f"그 사이 상태가 바뀌었다(다른 기기 기록 유입) — "
-            f"{state(reg, recs2)}: {reg}"))
+            f"{state(reg, recs2)}: {reg}"
+            if state(reg, recs2) != "unprotected" else
+            None if working_tree_hash(reg) == accepted else
+            "작업본이 스냅샷 뒤 바뀌었다 — 지정을 다시 하라 (작업본 측 CAS): "
+            f"{reg}"))
 
 
 def approve(region: str, base: str, expect_work: str,
