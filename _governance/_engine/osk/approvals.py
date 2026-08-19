@@ -22,8 +22,9 @@ import json, os, re, tempfile
 from pathlib import Path
 
 from .core import (ROOT, LEDGER, sha256_bytes, sha256_file, posix_rel,
-                   resolve_in_root, ledger_append, ledger_read,
-                   causal_maxima, mutation_lock, resolve_one, _rid_key)
+                   resolve_in_root, ledger_append, ledger_read, causal_maxima,
+                   effective_parents, heads, mutation_lock, resolve_one,
+                   _rid_key)
 from . import signatures
 
 APPROVALS = LEDGER / "approvals.jsonl"
@@ -316,17 +317,46 @@ def record_move(node_id: str, src: Path, dst: Path) -> None:
         "to": posix_rel(Path(os.path.realpath(dst)), root_real)})
 
 
+def _moves_boundary() -> list[str]:
+    """지금 이 순간 이동 기록부의 head rid들 — 승인 생애 기록(protect·approve·
+    revert)에 `moves_seen`으로 박제한다. 생애 경계는 rid 크기 비교(전역 시계
+    가정)가 아니라 **그 기록이 실제로 본 이동 기록부 상태**여야 한다: 두 대장의
+    rid는 각자 독립 단조라 기기 간 시계 편차에서 순서가 어긋난다."""
+    return heads(ledger_read(MOVES))
+
+
 def _moves_since(region: str, recs: list[dict] | None = None) -> list[dict]:
-    """이 영역의 반려·표시가 해석할 이동 행 — **현재 승인본이 성립한 기록의
-    rid 이후**의 행만. 기록부는 물리 사건 전체를 보존하지만, 승인·반려로 이미
+    """이 영역의 반려·표시가 해석할 이동 행 — 현재 승인본이 성립한 기록이
+    **보지 못한** 행만. 기록부는 물리 사건 전체를 보존하지만, 승인·반려로 이미
     처분된 이동은 그 시점의 승인본에 반영이 끝났으므로 다시 해석하면 수용된
-    과거를 새 반려가 되밟는다(생애 경계)."""
+    과거를 새 반려가 되밟는다(생애 경계).
+
+    경계는 인과다 — 생애 기록의 `moves_seen`(그때의 이동 기록부 head들)의
+    조상 폐포가 "이미 본 것"이고, 그 밖(후손이든 비교 불능 병행이든)이 해석
+    대상이다. rid 크기 비교는 쓰지 않는다: 두 대장의 rid는 각자 독립 단조라
+    기기 시계가 어긋나면 승인 이후의 실제 이동이 승인 rid보다 작아져 잘리고,
+    반려가 밖의 실물을 못 본 채 승인본을 재생성해 같은 id가 둘 남는다.
+    병행(비교 불능) 이동을 해석에 넣는 것도 옳다 — 승인이 못 본 이동이면
+    작업본에는 반영돼 있으므로 되돌릴 변경집합의 일부다."""
     rec = region_record(region, recs)
     if rec is None or not rec.get("rid"):
         return []
-    cut = _rid_key(rec["rid"])
-    return [r for r in ledger_read(MOVES)
-            if r.get("rid") and _rid_key(r["rid"]) > cut]
+    rows = ledger_read(MOVES)
+    boundary = rec.get("moves_seen")
+    if boundary is None:
+        # 경계 미기록(이 필드 도입 전의 기록) — rid 시각 비교로 최선 노력
+        cut = _rid_key(rec["rid"])
+        return [r for r in rows if r.get("rid") and _rid_key(r["rid"]) > cut]
+    par = effective_parents(rows)
+    seen: set = set()
+    stack = [r for r in boundary if isinstance(r, str)]
+    while stack:
+        rid = stack.pop()
+        if rid in seen:
+            continue
+        seen.add(rid)
+        stack.extend(par.get(rid, []))
+    return [r for r in rows if r.get("rid") and r["rid"] not in seen]
 
 
 def _latest_move(rows: list[dict], key: str, rel: str, node: str | None = None,
@@ -459,8 +489,9 @@ def protect(region: str, reason: str = "") -> dict:
             raise ValueError(f"이미 보호 중인 영역이다: {reg}")
         accepted = _store_tree(d)
         return ledger_append(APPROVALS, {
-            "kind": "protect", "region": reg,
-            "base": None, "accepted": accepted, "reason": reason},
+            "kind": "protect", "region": reg, "base": None,
+            "accepted": accepted, "moves_seen": _moves_boundary(),
+            "reason": reason},
             # 잠금 안에서 본문과 같은 전제를 다시 본다 — `not is_protected`로는
             # 부족하다(is_protected는 stale에서도 False다). 스냅샷 중 비교 불능
             # 기록이 유입돼 stale이 되면, 그 분기가 표면화되지 않고 새 초기
@@ -542,8 +573,9 @@ def approve(region: str, base: str, expect_work: str,
         # 동기화로 들어오면, 못 본 채 붙은 이 행이 그 기록의 인과 자식이 되어
         # 사용자가 검토한 적 없는 승인본을 조용히 대체하고 행의 base도 거짓이 된다.
         return ledger_append(APPROVALS, {
-            "kind": "approve", "region": reg,
-            "base": base, "accepted": accepted, "reason": reason},
+            "kind": "approve", "region": reg, "base": base,
+            "accepted": accepted, "moves_seen": _moves_boundary(),
+            "reason": reason},
             expect=lambda recs2: (
                 None if ({r["rid"] for r in causal_maxima(recs2, reg, None,
                                                           "region")}
@@ -703,8 +735,9 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
             raise ValueError(
                 "복원이 승인본과 일치하지 않는다 — revert를 기록하지 않았다(fail-closed)")
         return ledger_append(APPROVALS, {
-            "kind": "revert", "region": reg,
-            "base": base, "discarded": discarded, "reason": reason},
+            "kind": "revert", "region": reg, "base": base,
+            "discarded": discarded, "moves_seen": _moves_boundary(),
+            "reason": reason},
             expect=lambda recs2: (            # 복원 중 유입된 승인을 덮지 않는다
                 None if approved_hash(reg, recs2) == base else
                 f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 보라: {reg}"))

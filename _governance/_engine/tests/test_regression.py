@@ -1167,6 +1167,56 @@ def test_move_reentry_single_plan():
         shutil.rmtree(p1, ignore_errors=True); shutil.rmtree(p2, ignore_errors=True)
 
 
+def test_move_cutoff_causal_not_clock():
+    """생애 경계는 인과다 — rid 크기 비교가 아니다. 시계가 뒤처진 기기의 승인
+    이후 이동은 rid가 승인 rid보다 **작지만**, 승인 기록의 `moves_seen`이 보지
+    못한 행이므로 해석에 들어간다. 크기 비교였다면 잘려서 반려가 밖의 실물을
+    못 본 채 승인본을 재생성해 같은 id가 둘 남는다."""
+    from osk import approvals as A
+    reg = "= Domain/skew"
+    regdir = ROOT / "= Domain" / "skew"
+    away = ROOT / "= Scope/W1/regr-skew.md"
+    kept = A.MOVES.read_text(encoding="utf-8") if A.MOVES.exists() else None
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "regr-skew.md").write_text(
+            node_text("260802-zzzz-skw1", "시계 편차", "본문"), encoding="utf-8")
+        A.protect(reg, "지정")
+        prot = A.records()[-1]
+        check("생애 기록이 이동 경계를 박제한다", "moves_seen" in prot, prot)
+        base = A.approved_hash(reg)
+        # 뒤처진 시계의 기기에서 승인 **이후** 실행된 이동 — rid는 승인보다 작다
+        ms = core._rid_parts(prot["rid"])[0] - 60_000
+        rid = core._make_rid(ms, 0)
+        check("편차 전제: 이동 rid < 승인 rid",
+              core._rid_key(rid) < core._rid_key(prot["rid"]))
+        with open(A.MOVES, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "rid": rid, "parents": core.heads(core.ledger_read(A.MOVES)),
+                "at": core.now_iso(), "kind": "move", "node": "260802-zzzz-skw1",
+                "from": "= Domain/skew/regr-skew.md",
+                "to": "= Scope/W1/regr-skew.md"}, ensure_ascii=False) + "\n")
+        os.replace(regdir / "regr-skew.md", away)
+        check("이동 뒤 pending", A.state(reg) == "pending")
+        cs = A.changeset(reg)
+        check("표시도 그 이동을 이동으로 본다",
+              cs["moves"] and cs["moves"][0]["to"] == "= Scope/W1/regr-skew.md",
+              cs)
+        A.revert(reg, base, A.working_tree_hash(reg), "반려")
+        check("밖의 실물이 회수됐다(같은 id 하나뿐)", not away.exists())
+        check("승인본 원적으로 복원", (regdir / "regr-skew.md").is_file())
+        check("영역은 clean", A.state(reg) == "clean")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        away.unlink(missing_ok=True)
+        shutil.rmtree(regdir, ignore_errors=True)
+        if kept is None:
+            A.MOVES.unlink(missing_ok=True)
+        else:
+            A.MOVES.write_text(kept, encoding="utf-8")
+
+
 def test_move_unrecorded_outside_protection():
     """양끝 다 보호 밖인 이동은 변경집합과 무관하므로 기록하지 않는다
     (시행령 §6 4항의 범위 그대로 — 기록부를 소음으로 채우지 않는다)."""
@@ -4067,6 +4117,7 @@ if __name__ == "__main__":
                test_move_return_blocked_origin_occupied,
                test_move_chain_reverted_no_duplicate,
                test_move_lifecycle_cutoff, test_move_reentry_single_plan,
+               test_move_cutoff_causal_not_clock,
                test_move_unrecorded_outside_protection,
                test_changeset_lists_difference, test_stale_sealed_by_approve,
                test_topology_rejects_wiki_node_derived_from,
