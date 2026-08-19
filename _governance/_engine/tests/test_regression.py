@@ -873,6 +873,49 @@ def test_approve_precondition_under_lock():
         f.unlink(missing_ok=True)
 
 
+# ── 지정의 잠금 안 전제는 stale도 막는다 (PR #14 리뷰) ─────────────────
+def test_protect_precondition_rejects_stale():
+    """지정 스냅샷 도중 같은 영역의 비교 불능 기록이 유입돼 stale이 되면 지정은
+    성립하지 않는다 — `is_protected`는 stale에서도 False라, 그것만 보면 분기가
+    표면화되지 않고 새 초기 승인본으로 조용히 봉합된다(본문의 stale 거부와 어긋남)."""
+    from osk import approvals as A
+    reg = "= Domain/pstale"
+    regdir = ROOT / "= Domain" / "pstale"
+    real = A._store_tree
+    kept = A.APPROVALS.read_text(encoding="utf-8") if A.APPROVALS.exists() else ""
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("v1", encoding="utf-8")
+        check("지정 전에는 미보호", A.state(reg) == "unprotected")
+
+        def racing(d):                    # 스냅샷 도중 다기기 분기가 착지
+            A._store_tree = real
+            recs = A.records()
+            head = recs[-1]["rid"] if recs else None
+            rid = head
+            with open(A.APPROVALS, "a", encoding="utf-8") as fh:
+                for i in (1, 2):
+                    rid = core._next_rid(rid)
+                    fh.write(json.dumps({
+                        "rid": rid, "parents": [head] if head else [],
+                        "at": core.now_iso(), "kind": "protect", "region": reg,
+                        "base": None, "accepted": "sha256:" + f"{i}" * 64,
+                        "reason": f"기기{i}(시험)"}, ensure_ascii=False) + "\n")
+            return real(d)
+        A._store_tree = racing
+        check("스냅샷 중 stale이 되면 지정 거부", _raises(lambda: A.protect(reg))())
+        A._store_tree = real
+        check("분기는 그대로 남는다(봉합되지 않음)", A.state(reg) == "stale")
+        check("내 protect 행은 기록되지 않았다",
+              sum(1 for r in A.records()
+                  if r.get("region") == reg and "시험" not in (r.get("reason") or "")) == 0)
+    finally:
+        A._store_tree = real
+        try: A.APPROVALS.write_text(kept, encoding="utf-8")   # 분기 원상 복구
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
 # ── 해제도 잠금 안 전제 재확인을 거친다 (PR #14 리뷰) ───────────────────
 def test_unprotect_precondition_under_lock():
     """해제 판정과 append 사이에 다른 기기의 승인이 동기화로 들어오면 해제는
@@ -3313,6 +3356,7 @@ if __name__ == "__main__":
                test_revert_incomplete_no_record,
                test_approve_precondition_under_lock,
                test_unprotect_precondition_under_lock,
+               test_protect_precondition_rejects_stale,
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,

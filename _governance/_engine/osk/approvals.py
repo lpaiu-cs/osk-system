@@ -237,6 +237,12 @@ def approved_hash(region: str, recs: list[dict] | None = None) -> str | None:
 
 
 def is_protected(region: str, recs: list[dict] | None = None) -> bool:
+    """승인 판정이 **가능한** 보호 상태인가 — 유일 극대가 있고 해제가 아닐 때.
+
+    주의: **stale에서도 False다**(극대가 여럿이면 현행 기록을 못 고른다). 승인
+    여부를 묻는 소비자에게는 그것이 옳은 fail-closed지만, "보호되지 않았다"는
+    뜻으로 읽으면 stale을 미보호로 오인한다. 상태를 구분해야 하는 자리에서는
+    `state()`를 쓴다."""
     r = region_record(region, recs)
     return bool(r) and r.get("kind") != "unprotect"
 
@@ -343,9 +349,14 @@ def protect(region: str, reason: str = "") -> dict:
     return ledger_append(APPROVALS, {
         "kind": "protect", "region": reg,
         "base": None, "accepted": accepted, "reason": reason},
-        expect=lambda recs2: (            # 스냅샷 중 유입된 지정을 덮지 않는다
-            None if not is_protected(reg, recs2) else
-            f"그 사이 보호 중이 되었다(다른 기기 기록 유입): {reg}"))
+        # 잠금 안에서도 **본문과 같은 전제**를 본다 — `not is_protected`로는
+        # 부족하다(is_protected는 stale에서도 False다). 스냅샷 중 같은 영역의
+        # 비교 불능 기록이 유입돼 stale이 되면, 그 분기가 표면화되지 않고 새
+        # 초기 승인본으로 조용히 봉합된다(본문의 stale 거부와 어긋난다).
+        expect=lambda recs2: (
+            None if state(reg, recs2) == "unprotected" else
+            f"그 사이 상태가 바뀌었다(다른 기기 기록 유입) — "
+            f"{state(reg, recs2)}: {reg}"))
 
 
 def approve(region: str, base: str, expect_work: str,
