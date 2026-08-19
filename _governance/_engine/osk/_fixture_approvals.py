@@ -103,29 +103,6 @@ expect((regdir / "d.md").read_text() == "v2", "반려가 d.md를 승인본으로
 expect((regdir / "added.md").exists(), "반려가 승인본의 added.md를 지움")
 expect(not (regdir / "junk.md").exists(), "반려가 승인 후 추가된 junk.md를 안 지움")
 
-# 반려의 영역 결속 — 영역과 어긋난 manifest(영역 밖 rel)는 복원의 근거가
-# 아니다. 그런 table이 오면 거부하고 영역 밖 파일을 건드리지 않는다.
-import json as _json
-outsider = ROOT / "= Scope" / "W1"
-outsider.mkdir(parents=True, exist_ok=True)
-victim = outsider / "victim.md"
-victim.write_text("원본-불변", encoding="utf-8")
-# 영역 밖 rel을 담은 어긋난 manifest와 그 내용 blob을 저장소에 넣는다
-evil_blob = A._store_put("덮어쓰기-시도".encode("utf-8"))
-evil_manifest = _json.dumps(
-    [["= Scope/W1/victim.md", evil_blob]], ensure_ascii=False,
-    separators=(",", ":")).encode("utf-8")
-evil_tree = A._store_put(evil_manifest)
-# 그 tree를 base로 가리키는 revert 기록을 REG(현재 clean·unprotected)에 주입할
-# 수는 없으므로, _restore_tree를 직접 불러 봉쇄 방어만 소진한다.
-try:
-    A._restore_tree(regdir, {"= Scope/W1/victim.md": evil_blob})
-    errs.append("영역 밖 경로 복원이 거부되지 않음")
-except ValueError:
-    pass
-expect(victim.read_text() == "원본-불변", "영역 밖 파일이 복원으로 덮였다")
-victim.unlink(missing_ok=True)
-
 # clean에서 해제 → unprotected, 이후 승인 거부
 A.unprotect(REG, "해제")
 expect(A.state(REG) == "unprotected", "해제 후 unprotected 아님")

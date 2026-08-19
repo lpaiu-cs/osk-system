@@ -441,8 +441,7 @@ def _dangling_of(path: Path, meta: dict, body: str) -> list[str]:
     return sorted(out)
 
 
-def _cas(path: Path, node_id: str, expect_hash: str | None,
-         body_given: bool) -> dict:
+def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
     """CAS는 **본문 전체 치환**에 결속한다 (Mechanism §6-2 4항). 서명이
     폐지됐으므로 부분 변경(엣지 델타·summary)에는 expect_hash를 요구하지
     않는다 — 보호영역의 승인/반려는 별도 표면(대화형 단말)의 일이다.
@@ -453,7 +452,6 @@ def _cas(path: Path, node_id: str, expect_hash: str | None,
     if expect_hash and sha256_file(path) != expect_hash:
         raise WriteError(
             "그 사이 노드가 변경됐다 — 다시 읽고 재시도하라 (CAS 불일치)")
-    return {}
 
 
 # ── 세션 라우팅 (Mechanism §6-2 3항) ─────────────────────────────────────
@@ -642,7 +640,7 @@ def update_node(name: str, body: str | None = None,
         except Exception as e:
             raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
 
-        _cas(path, n.id, expect_hash, body is not None)   # 위반 시 raise
+        _cas(path, expect_hash, body is not None)   # 위반 시 raise
         meta = dict(n.meta)
         replaced_summary = None
         changed = False

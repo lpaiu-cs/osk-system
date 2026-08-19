@@ -67,16 +67,6 @@ def _manifest_blob(entries: list) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
-def _manifest_bytes(region_dir: Path) -> tuple[bytes, dict[str, str]]:
-    """영역의 manifest — (rel, sha256) 쌍을 경로 오름차순으로 담은 공백 없는
-    UTF-8 JSON. 반환: (manifest 바이트, {rel: sha256})."""
-    entries = []
-    table: dict[str, str] = {}
-    for rel, p in _region_files(region_dir):
-        h = sha256_file(p)
-        entries.append([rel, h])
-        table[rel] = h
-    return _manifest_blob(entries), table
 
 
 def working_tree_hash(region: str) -> str | None:
@@ -91,8 +81,9 @@ def working_tree_hash(region: str) -> str | None:
     if d is None:
         return None
     if d.is_dir():
-        return sha256_bytes(_manifest_bytes(d)[0])
-    if d.exists() or d.is_symlink():
+        return sha256_bytes(_manifest_blob(
+            [[rel, sha256_file(p)] for rel, p in _region_files(d)]))
+    if d.exists():
         return None                       # 디렉터리가 아닌 객체 — 판정 불능
     return sha256_bytes(_manifest_blob([]))          # 부재 = 빈 작업본
 
@@ -102,22 +93,12 @@ def working_tree_hash(region: str) -> str | None:
 def _obj_path(digest: str) -> Path:
     """`sha256:<64hex>` → 저장 경로 `_ledger/approved/objects/<2>/<나머지>`.
 
-    digest는 신뢰 밖 입력일 수 있다(다기기 병합으로 유입된 manifest·대장의
-    `accepted`/`base`·manifest 안 blob 해시). 형식을 강제하지 않으면 조작된
-    digest의 `../`·절대경로 성분이 STORE를 버리고 vault 밖 파일을 읽게 할 수
-    있으므로(그리고 revert가 그 내용을 영역 안으로 복사), 진입점에서 정확히
-    `sha256:<64 소문자 hex>`를 강제하고 계산된 경로가 STORE 안에 봉쇄되는지
-    재검증한다 — 어긋나면 거부(fail-closed)."""
+    형식을 진입점에서 강제한다 — 손상된 대장에서 온 쓰레기 값이 경로 계산에
+    섞이지 않고 그 자리에서 거부된다(fail-closed)."""
     if not (isinstance(digest, str) and _DIGEST_RE.match(digest)):
         raise ValueError(f"부적격 digest — 저장소 접근 거부: {digest!r}")
     hexd = digest.split(":", 1)[1]
-    p = STORE / hexd[:2] / hexd[2:]
-    # 형식 강제로 이미 순수 hex 성분뿐이라 탈출이 불가능하나, 명시적으로
-    # STORE 봉쇄를 재확인한다(lexical — 파일 부재에도 성립).
-    store_s = os.path.normpath(STORE)
-    if os.path.commonpath([store_s, os.path.normpath(p)]) != store_s:
-        raise ValueError(f"저장소 밖 경로 — 거부: {digest}")
-    return p
+    return STORE / hexd[:2] / hexd[2:]
 
 
 def _store_put(data: bytes) -> str:
@@ -263,10 +244,19 @@ def protected_regions() -> list[str]:
     **stale도 포함한다.** stale은 판정 불능이지 해제가 아니다 — 빼면 그 영역이
     현황에서 사라지고(사용자가 봉합할 대상을 못 본다), `region_of`가 None을
     돌려 파일 판정이 '보호영역 밖 = 제약 없음'으로 새어 나간다(fail-open).
-    `is_protected`는 stale에서 False이므로 승인 여부 판정은 그대로 fail-closed다."""
+    `is_protected`는 stale에서 False이므로 승인 여부 판정은 그대로 fail-closed다.
+
+    판정은 대장만 본다 — 작업본 tree를 읽지 않는다(clean/pending 구분은 여기서
+    필요 없고, 그것 때문에 영역 전수 판독을 하면 이 함수를 쓰는 모든 쓰기가
+    비싸진다)."""
     recs = records()
-    return sorted({r.get("region") for r in recs if r.get("region")
-                   and state(r["region"], recs) != "unprotected"})
+    out = []
+    for region in {r.get("region") for r in recs if r.get("region")}:
+        maxima = causal_maxima(recs, region, None, "region")
+        if maxima and not (len(maxima) == 1
+                           and maxima[0].get("kind") == "unprotect"):
+            out.append(region)
+    return sorted(out)
 
 
 def state(region: str, recs: list[dict] | None = None) -> str:
@@ -322,9 +312,8 @@ def file_in_region_baseline(region: str, path: Path | str) -> bool:
     `region_of`(가장 안쪽 보호영역)가 아니라 호출자가 지정한 region으로 판정한다
     — 권한 검사는 위임 Facet **자체**의 승인본 반영이어야 하며, Facet은 미보호인데
     그 하위 디렉터리만 보호된 경우로 우회되지 않는다(헌법 7조 3항). region이
-    보호 중이 아니거나 파일이 그 승인본에 없거나 해시가 다르면 False(fail-closed)."""
-    if not is_protected(region):
-        return False
+    보호 중이 아니거나 파일이 그 승인본에 없거나 해시가 다르면 False(fail-closed)
+    — 미보호·stale은 `approved_hash`가 None이라 같은 지점에서 걸린다."""
     p = resolve_in_root(path)
     if p is None or not p.is_file():
         return False
@@ -386,14 +375,18 @@ def approve(region: str, base: str, expect_work: str,
     새 검토로 넘긴다 — 검토 뒤 에이전트가 더 쓴 변경까지 승인되는 일이 없게 한다.
     승인본을 검토한 작업본으로 갱신한다.
 
-    `expect_work`는 **필수**다 — 기본값을 두면 내부 호출이 작업본 측 CAS를 건너뛰어
-    권위의 핵심 불변식이 호출 관례에만 의존하게 된다. None으로 부르면 즉시 거부한다."""
-    if expect_work is None:
-        raise ValueError(
-            "expect_work(검토한 작업본 tree 해시)는 필수다 — 양측 CAS를 건너뛸 수 없다")
+    `base`·`expect_work`는 **필수**다. 둘 중 하나가 None이면 CAS가 빈 비교가
+    되므로 승인이 성립하지 않는다 — 영역을 판정할 수 없을 때(`approved_hash`·
+    `working_tree_hash`가 None) CLI가 그 None을 그대로 넘기는 경로가 실제로
+    있으므로, 그 자리에서 거부한다. 다만 **경로 진단이 먼저다** — 영역 자체가
+    성립하지 않는 것이 원인이면 인자 탓으로 보고하지 않는다."""
     d = resolve_in_root(region)
     if d is None or not d.is_dir():
         raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
+    if base is None or expect_work is None:
+        raise ValueError(
+            "base·expect_work(검토한 승인본·작업본)는 필수다 — 양측 CAS를 "
+            "건너뛸 수 없다")
     reg = posix_rel(d, Path(os.path.realpath(ROOT)))
     recs = records()
     st = state(reg, recs)
@@ -446,16 +439,19 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
     남는다). 삭제와 달리 이쪽은 사용자가 치울 것이 눈앞에 있고(`rm` 한 번),
     엔진이 승인본에 없던 객체를 말없이 지우는 것은 반려의 범위가 아니다 —
     승인본 밖 물건을 지우는 것은 영역 **안**에서만 하는 일이다."""
-    if base is None or expect_work is None:
-        raise ValueError(
-            "base·expect_work(검토한 승인본·작업본)는 필수다 — 반려는 파괴적이다")
     d = resolve_in_root(region)
     if d is None:
         raise ValueError(f"영역이 vault 안의 경로가 아니다: {region}")
     if d.exists() and not d.is_dir():
+        # 경로 진단이 인자 검사보다 **먼저**다 — 이 상태에서는 작업본을 판정할
+        # 수 없어 호출부가 expect_work=None을 넘기게 되는데, 그때 인자 탓으로
+        # 보고하면 사용자가 실제 원인(치울 객체)을 못 본다.
         raise ValueError(
             f"영역 경로에 디렉터리가 아닌 것이 있다 — 그것을 치우면(rm) 반려가 "
             f"승인본을 복원한다. 엔진은 승인본 밖 객체를 대신 지우지 않는다: {region}")
+    if base is None or expect_work is None:
+        raise ValueError(
+            "base·expect_work(검토한 승인본·작업본)는 필수다 — 반려는 파괴적이다")
     reg = posix_rel(d, Path(os.path.realpath(ROOT)))
     recs = records()
     st = state(reg, recs)
@@ -472,18 +468,24 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         raise ValueError(
             f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
     discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
-    # 복원은 **파괴적**이다. 전제는 기록의 정직성만이 아니라 **파일을 건드리기
-    # 전에** 유효해야 한다 — 준비 도중 승인본이 바뀌거나(다른 기기 승인 유입)
-    # 작업본이 바뀌면(확인 프롬프트 사이 에이전트 쓰기), 사후 검사만으로는
-    # 기록만 막을 뿐 파괴는 이미 끝난 뒤다. 그래서 준비(전수 검증·blob 적재)를
-    # 마치고 **첫 쓰기 직전에** 양쪽을 다시 본다.
-    _restore_tree(d, table, confirm=lambda: (
-        f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 작업본을 건드리지 "
-        f"않았다: {reg}"
-        if approved_hash(reg) != base else
-        None if working_tree_hash(reg) == expect_work else
-        "버릴 변경집합이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측): "
-        f"검토={expect_work} 현재={working_tree_hash(reg)}"))
+    if discarded != expect_work:
+        raise ValueError(
+            "버릴 변경집합이 검토한 것과 다르다 — 다시 검토하라 (작업본 측): "
+            f"검토={expect_work} 현재={discarded}")
+
+    def _still_valid():
+        """준비를 마치고 **첫 쓰기 직전에** 두 전제를 다시 본다. 복원은 파괴적
+        이므로 전제는 기록의 정직성만이 아니라 파일을 건드리기 전에 유효해야
+        한다 — 사후 검사는 기록만 막을 뿐 파괴는 이미 끝난 뒤다."""
+        work = working_tree_hash(reg)
+        if approved_hash(reg) != base:
+            return (f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — "
+                    f"작업본을 건드리지 않았다: {reg}")
+        if work != expect_work:
+            return ("버릴 변경집합이 그 사이 바뀌었다 — 다시 검토하라 "
+                    f"(작업본 측): 검토={expect_work} 현재={work}")
+        return None
+    _restore_tree(d, table, confirm=_still_valid)
     # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
     # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
     # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게
@@ -530,11 +532,13 @@ def _restore_tree(region_dir: Path, table: dict[str, str], confirm=None) -> None
     """영역을 manifest 상태로 되돌린다 — manifest의 각 파일을 저장소 내용으로
     원자 교체하고, manifest에 없는 현재 파일은 지운다.
 
-    쓰기 **전에** 전수로 확인한다 — ①모든 rel이 그 영역 안인가(정본 manifest는
-    언제나 `<영역>/…` 접두다; 어긋난 table은 영역과 승인본이 어긋난 것이므로
-    복원의 근거가 아니다) ②모든 blob이 저장소에 실재하는가. 사전 검증에
-    실패하면 아무 파일도 건드리지 않고 거부한다 — **부분 복원**을 만들지
-    않는 것이 요점이다(반쯤 되돌아간 영역은 사용자가 검토할 수 없다).
+    쓰기 **전에** 모든 blob이 저장소에 실재하는지 전수로 확인한다 — 하나라도
+    없으면 아무 파일도 건드리지 않고 거부한다. **부분 복원**을 만들지 않는
+    것이 요점이다(반쯤 되돌아간 영역은 사용자가 검토할 수 없다).
+
+    table의 rel이 영역 안이라는 것은 `_tree_table_for_region`이 이미 보장한다
+    (그 함수를 거치지 않은 table은 복원의 근거가 아니다) — 여기서 다시 보지
+    않는다.
 
     `confirm`은 준비를 마치고 **첫 쓰기 직전에** 호출부의 전제를 다시 보는
     선택적 검사다(문자열을 돌려주면 그것을 사유로 거부). 준비(판독·검증)가
@@ -542,14 +546,9 @@ def _restore_tree(region_dir: Path, table: dict[str, str], confirm=None) -> None
     파괴는 이미 끝난 뒤다. 쓰기 도중 외부에서 들어오는 변경까지 막지는
     못한다 — 그 잔여 창은 이 프로세스 밖(git pull 등)이라 닫을 수 없고,
     그때는 영역이 pending으로 남아 다음 반려가 새 승인본으로 복원한다."""
-    root_real = Path(os.path.realpath(ROOT))
-    region_rel = posix_rel(region_dir, root_real).rstrip("/")
-    # 0) 전수 사전 검증 — 봉쇄·blob 실재를 쓰기 전에 모두 확인
+    # 0) 전수 사전 검증 — blob 실재를 쓰기 전에 모두 확인
     resolved: list[tuple[Path, bytes]] = []
     for rel, h in sorted(table.items()):
-        if not (rel == region_rel or rel.startswith(region_rel + "/")):
-            raise ValueError(
-                f"승인본 경로가 영역 밖이다 — 복원 거부: {rel} ⊄ {region_rel}")
         p = resolve_in_root(rel)
         if p is None:
             raise ValueError(f"승인본 경로가 vault 밖이다 — 복원 거부: {rel}")

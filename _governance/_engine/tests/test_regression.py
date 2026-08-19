@@ -1000,6 +1000,16 @@ def test_region_replaced_by_file_is_pending():
               A.working_tree_hash(reg) is None)
         check("따라서 pending", A.state(reg) == "pending")
         check("해제도 거부된다", _raises(lambda: A.unprotect(reg))())
+        # 이 상태에서는 작업본을 판정할 수 없어 호출부가 None을 넘기게 된다.
+        # 그때 인자 탓으로 보고하면 사용자가 실제 원인(치울 객체)을 못 본다 —
+        # 경로 진단이 인자 검사보다 먼저다.
+        try:
+            A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg))
+            msg = ""
+        except ValueError as e:
+            msg = str(e)
+        check("거부 사유가 치울 객체를 가리킨다(인자 탓이 아니라)",
+              "치우면" in msg, msg)
     finally:
         if regdir.is_file():
             regdir.unlink()
