@@ -10,17 +10,18 @@ vault_sync(순수 git 헬퍼)는 「동기화 데몬 예외」로 재사용한�
        브랜치가 checkout돼 있으면 깨끗할 때만 전환하고, 더러우면 동기화를
        거부한다(남의 작업을 옮기거나 감추지 않는다).
 중지:  SIGTERM/SIGINT (진행 중 sync는 완료 후 종료)
-잠금:  실제 git 디렉터리(rev-parse --git-common-dir) 안의 osk-sync.lock.
+잠금:  실제 git 디렉터리(엔진이 파일시스템으로 해석) 안의 osk-sync.lock.
        구하지 못하면 임시 디렉터리에 루트 경로 해시를 키로 둔다 — 추적 트리로는
        절대 폴백하지 않는다(데몬 자신의 `git add -A`가 잠금 파일을 커밋한다).
 """
 from __future__ import annotations
-import argparse, hashlib, os, signal, sys, tempfile, time
+import argparse, os, signal, sys, time
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
+from osk import core  # noqa: E402
 from osk._portalock import lock_exclusive, unlock  # noqa: E402
 
 ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
@@ -35,32 +36,16 @@ def _on_signal(signum, frame):
 
 
 def _lock_path(root: Path = ROOT, name: str = "osk-sync.lock") -> Path:
-    """잠금 파일의 경로 — 추적 트리 밖으로만 고른다. `name`으로 잠금을 구분한다:
-    `osk-sync.lock`은 데몬 싱글턴(한 기기 한 데몬), `osk-mutation.lock`은 update와
-    공유하는 **working-tree 변경 상호배제** 잠금이다.
+    """잠금 파일의 경로 — 자리는 **엔진이 정한다**(`core.local_lock_path`).
+    `name`으로 잠금을 구분한다: `osk-sync.lock`은 데몬 싱글턴(한 기기 한 데몬),
+    `osk-mutation.lock`은 엔진의 working-tree 변경 잠금과 **같은 파일**이다.
 
-    `<vault>/.git`은 worktree에서 디렉터리가 아니라 파일이므로 존재 여부로
-    판단하면 안 된다. 실제 git 디렉터리를 git에게 묻고, 그것도 실패하면
-    임시 디렉터리에 루트 경로 해시를 키로 둔다(기기 안 vault별 유일).
-
-    git은 반드시 `vault_sync._git` 게이트웨이로만 부른다 — 데몬은 콘솔 없는
-    pythonw로 돌고, 이 함수는 매 tick(mutation 잠금 경로 계산)마다 불린다.
-    bare `subprocess`로 git.exe를 spawn하면 Windows가 tick마다 새 콘솔 창을
-    깜빡인다. 게이트웨이가 `CREATE_NO_WINDOW`(+`GIT_TERMINAL_PROMPT=0`) 하드닝의
-    단일 소유자다(bare-spawn 재도입은 test_regression이 AST로 막는다)."""
-    try:
-        r = vault_sync._git(root, ["rev-parse", "--git-common-dir"], 10)
-        if r.returncode == 0 and r.stdout.strip():
-            d = Path(r.stdout.strip())
-            if not d.is_absolute():
-                d = root / d
-            if d.is_dir():
-                return d / name
-    except Exception:  # noqa: BLE001 — git 부재·타임아웃 모두 임시 디렉터리로
-        pass
-    key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
-    stem = name.rsplit(".", 1)[0]
-    return Path(tempfile.gettempdir()) / f"{stem}-{key}.lock"
+    동기화는 이 체계의 필수 구성요소가 아니라 쓰는 사람만 쓰는 편의 모듈이므로,
+    잠금 자리를 여기서 따로 정하면 엔진과 갈라져 상호배제가 조용히 깨진다 —
+    정의는 엔진에 한 벌만 둔다. 엔진의 해석기는 git을 **실행하지 않고**
+    파일시스템으로 읽으므로, 매 tick마다 git.exe를 띄우던 비용과 Windows
+    콘솔 깜빡임도 함께 사라진다."""
+    return core.local_lock_path(name, root)
 
 
 def once(root: Path = ROOT) -> str:

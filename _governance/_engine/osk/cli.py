@@ -1,24 +1,24 @@
 """osk.cli — 사용자·에이전트 공용 명령.
 
-서명(sign)·해제(unsign)는 사용자 전속 행위다(헌법 10조 3항) — CLI는 대화형
-확인을 강제하고, 에이전트는 이 명령을 사용자 지시 없이 실행하지 않는다.
+보호영역의 지정·해제·승인·반려는 사용자 전속 행위다(헌법 10조 1~2항) —
+CLI는 대화형 확인을 강제하고, 에이전트는 이 명령을 사용자 지시 없이 실행하지
+않는다. 승인/반려는 MCP 표면에 노출하지 않는다(Mechanism §6-2 2항).
 """
 from __future__ import annotations
 import argparse, json, sys
-from pathlib import Path
 
-from .core import ROOT, resolve_in_root
-from . import contract, graph, signatures, authority, validate, search
+from .core import ROOT
+from . import graph, approvals, authority, validate, search
 
 
 def _confirm(prompt: str) -> None:
-    """사용자 전속 행위의 대화형 확인 (헌법 10조 3항).
+    """사용자 전속 행위의 대화형 확인 (헌법 10조 1~2항).
     표준입력이 단말이 아니면 응답이 사용자의 것임을 확인할 수 없으므로
-    묻지 않고 중단한다 — 파이프·리다이렉션으로 무인 서명이 성립하지 않게
+    묻지 않고 중단한다 — 파이프·리다이렉션으로 무인 승인이 성립하지 않게
     한다. 우회 플래그는 두지 않는다(fail-closed)."""
     if not sys.stdin.isatty():
-        sys.exit("중단 — 서명·해제는 대화형 단말에서 사용자가 직접 확인해야 한다 "
-                 "(헌법 10조 3항)")
+        sys.exit("중단 — 지정·해제·승인·반려는 대화형 단말에서 사용자가 직접 "
+                 "확인해야 한다 (헌법 10조 1~2항)")
     if input(prompt).lower() != "y":
         sys.exit("중단")
 
@@ -26,6 +26,30 @@ def _confirm(prompt: str) -> None:
 # `osk <이름> …`의 인자를 **파싱하지 않고 그대로** 넘기는 위임 명령.
 DELEGATED = {"update": "정본 릴리스로 갱신 (osk.update로 위임)",
              "release": "[정본 전용] 정식 릴리스 선언 (osk.release로 위임)"}
+
+
+def _print_changeset(region: str) -> None:
+    """헌법 10조 2항 — 사용자는 **차이를 검토하여** 승인·반려한다. 해시 두 개는
+    검토가 아니므로 무엇이 생기고 사라지고 바뀌는지를 파일 단위로 낸다."""
+    cs = approvals.changeset(region)
+    if cs is None:
+        print("  (차이를 판정할 수 없다 — 승인본 미해석)")
+        return
+    moved = {m["to"] for m in cs.get("moves", [])} \
+        | {m["from"] for m in cs.get("moves", [])}
+    for label, key in (("추가", "added"), ("삭제", "removed"), ("수정", "modified")):
+        rows = [r for r in cs[key] if r not in moved]
+        if not rows:
+            continue
+        print(f"  {label} {len(rows)}건")
+        for r in rows[:20]:
+            print(f"    {r}")
+        if len(rows) > 20:
+            print(f"    … 외 {len(rows) - 20}건")
+    for m in cs.get("moves", []):
+        print(f"  이동  {m['from']} → {m['to']}")
+    if not any(cs.values()):
+        print("  (파일 단위 차이 없음)")
 
 
 def main(argv=None):
@@ -47,17 +71,21 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="osk")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("validate", help="검증기 수트 전체 실행")
-    p = sub.add_parser("status", help="체계 현황")
+    sub.add_parser("status", help="체계 현황")
     p = sub.add_parser("search", help="작업 검색")
     p.add_argument("query"); p.add_argument("-k", type=int, default=8)
-    p = sub.add_parser("view", help="열람 검색(미서명 후보 표시)")
+    p = sub.add_parser("view", help="열람 검색")
     p.add_argument("query"); p.add_argument("-k", type=int, default=8)
     p = sub.add_parser("check", help="권한 사전 검사")
     p.add_argument("action")
-    p = sub.add_parser("sign", help="[사용자 전속] 노드 서명")
-    p.add_argument("path"); p.add_argument("--reason", required=True)
-    p = sub.add_parser("unsign", help="[사용자 전속] 서명 해제")
-    p.add_argument("node_id"); p.add_argument("--reason", required=True)
+    p = sub.add_parser("protect", help="[사용자 전속] 보호영역 지정")
+    p.add_argument("region"); p.add_argument("--reason", default="")
+    p = sub.add_parser("unprotect", help="[사용자 전속] 보호영역 해제")
+    p.add_argument("region"); p.add_argument("--reason", default="")
+    p = sub.add_parser("approve", help="[사용자 전속] 변경집합 승인")
+    p.add_argument("region"); p.add_argument("--reason", default="")
+    p = sub.add_parser("revert", help="[사용자 전속] 변경집합 반려(원상 복원)")
+    p.add_argument("region"); p.add_argument("--reason", default="")
     for name, helptext in DELEGATED.items():     # `osk --help` 목록에만 쓰인다
         sub.add_parser(name, help=helptext)      # — 실제 파싱은 위에서 지났다
     a = ap.parse_args(argv)
@@ -66,18 +94,10 @@ def main(argv=None):
         validate.main()
     elif a.cmd == "status":
         idx = graph.Index()
-        current = set()
-        for _s, (pp, _k) in idx.nodes.items():
-            try:
-                current.add(idx.node(pp).id)
-            except Exception:
-                pass
-        latest = {n: r for n, r in signatures.latest_by_node().items()
-                  if n in current}
-        signed = sum(1 for nid in latest if signatures.status(nid) == "signed")
+        regions = approvals.protected_regions()
         print(json.dumps({
             "nodes": len(idx.nodes),
-            "signed": f"{signed}/{len(latest)}",
+            "protected_regions": {r: approvals.state(r) for r in regions},
             "delegations": [d["title"] for d in authority.enumerate_delegations()
                             if d["effective"]],
             "root": str(ROOT),
@@ -89,22 +109,63 @@ def main(argv=None):
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     elif a.cmd == "check":
         print(json.dumps(authority.check(a.action), ensure_ascii=False, indent=2))
-    elif a.cmd == "sign":
-        p = resolve_in_root(Path(a.path).resolve())   # 인자 경로도 vault 안으로 봉쇄
-        if p is None or not p.is_file():
-            sys.exit(f"vault 밖이거나 없는 경로 — 서명 불가: {a.path}")
-        n = contract.parse(p)
-        errs = contract.validate(n)
-        if errs:
-            print("계약 위반 — 서명 불가:", errs); sys.exit(1)
-        print(f"서명 대상: {p}\nid: {n.id}\nsummary: {n.meta.get('summary')}")
-        _confirm("서명은 사용자 전속 행위입니다. 본인이 상태를 확인했습니까? [y/N] ")
-        rec = signatures.sign(p, a.reason, n.id)
-        print("서명 등재:", rec["rid"])
-    elif a.cmd == "unsign":
-        _confirm(f"{a.node_id} 서명을 해제합니까? [y/N] ")
-        rec = signatures.unsign(a.node_id, a.reason)
+    elif a.cmd == "protect":
+        st = approvals.state(a.region)
+        print(f"보호영역 지정: {a.region}\n현재 상태: {st}")
+        _confirm("지정 시점의 작업본이 초기 승인본이 됩니다. 지정합니까? [y/N] ")
+        rec = approvals.protect(a.region, a.reason)
+        print("지정 등재:", rec["rid"], "| 승인본:", rec["accepted"])
+    elif a.cmd == "unprotect":
+        _confirm(f"{a.region} 보호를 해제합니까? (clean 상태에서만) [y/N] ")
+        rec = approvals.unprotect(a.region, a.reason)
         print("해제 등재:", rec["rid"])
+    elif a.cmd == "approve":
+        st = approvals.state(a.region)
+        if st == "stale":
+            # 봉합 승인 — 승인 기록이 갈렸다(다기기 병합). 사용자가 갈래를 보고
+            # 현재 작업본을 새 승인본으로 삼는다(Mechanism §3 5항).
+            forks = approvals.divergence(a.region)
+            work = approvals.working_tree_hash(a.region)
+            print(f"영역이 stale입니다 — 승인 기록이 {len(forks)}갈래로 갈렸습니다.")
+            for f in forks:
+                print(f"  갈래 {f.get('rid')} {f.get('kind')} "
+                      f"accepted={f.get('accepted')} at={f.get('at')}")
+            print(f"현재 작업본: {work}")
+            _confirm("이 작업본을 새 승인본으로 삼아 갈래를 봉합합니까? [y/N] ")
+            # 검토한 갈래 집합을 프롬프트 **전에** 고정해 넘긴다 — 프롬프트
+            # 사이 동기화로 새 갈래가 오면 봉합이 거부된다(본 적 없는 갈래를
+            # 함께 봉합하지 않는다).
+            rec = approvals.approve(a.region, None, expect_work=work,
+                                    reason=a.reason or "분기 봉합",
+                                    seal_heads=[f["rid"] for f in forks])
+            print("봉합 승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
+            return
+        if st != "pending":
+            sys.exit(f"승인할 변경집합이 없다 — 상태: {st}")
+        # 양측 CAS의 두 예상값을 확인 프롬프트 **전에** 고정한다 — 프롬프트
+        # 사이에 작업본이 바뀌면 approve가 거부한다(검토한 것만 승인).
+        base = approvals.approved_hash(a.region)
+        work = approvals.working_tree_hash(a.region)
+        print(f"승인 대상: {a.region}\n승인본→작업본: {base} → {work}")
+        _print_changeset(a.region)
+        _confirm("검토한 이 변경집합을 승인본으로 받아들입니까? [y/N] ")
+        rec = approvals.approve(a.region, base, expect_work=work, reason=a.reason)
+        print("승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
+    elif a.cmd == "revert":
+        st = approvals.state(a.region)
+        if st != "pending":
+            sys.exit(f"반려할 변경집합이 없다 — 상태: {st}")
+        # 반려도 파괴적이므로 승인과 **같은 결속**을 쓴다 — 버릴 변경집합
+        # (승인본→작업본)을 프롬프트 **전에** 고정한다. 프롬프트 사이에
+        # 에이전트가 더 쓴 변경이 '사용자가 승인한 반려'에 묶여 사라지지 않게.
+        base = approvals.approved_hash(a.region)
+        work = approvals.working_tree_hash(a.region)
+        print(f"반려 대상: {a.region} — 작업본을 승인본으로 원상 복원합니다")
+        print(f"버릴 변경집합(작업본→승인본): {work} → {base}")
+        _print_changeset(a.region)
+        _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
+        rec = approvals.revert(a.region, base, expect_work=work, reason=a.reason)
+        print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])
     # update·release는 파서 앞에서 위임된다 — 여기에 분기를 두면 죽은 코드다.
 
 

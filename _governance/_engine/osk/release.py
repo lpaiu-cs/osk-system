@@ -122,7 +122,7 @@ def _validate_at(root: Path) -> list[str]:
     도중 외부가 엔진을 고쳤을 때 "스냅샷을 그 스냅샷의 규칙으로 검증했다"가
     성립하지 않는다. 그래서 `PYTHONPATH`도 스냅샷 안의 엔진을 가리킨다.
     (validate는 core.ROOT 전역에 묶이므로 별도 프로세스여야 한다 —
-    fixture_signature_lifecycle와 같은 선례.)"""
+    fixture_approval_lifecycle와 같은 선례.)"""
     engine = root / "_governance" / "_engine"
     if not (engine / "osk").is_dir():
         return [f"스냅샷에 엔진이 없다 — 검증 불성립: {engine}"]

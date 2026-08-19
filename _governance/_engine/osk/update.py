@@ -29,6 +29,7 @@ from pathlib import Path
 
 from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_read,
                    resolve_one, sha256_file, posix_rel)
+from .core import mutation_lock_path as core_mutation_lock_path
 from ._portalock import lock_exclusive, unlock
 from . import publish
 
@@ -660,11 +661,11 @@ def _exclusive(path: Path, busy: str):
 
 
 def _sync_lock_path() -> Path:
-    """sync 데몬과 **공유하는 mutation 잠금** — 데몬 싱글턴 잠금이 아니다.
-    데몬의 once()가 working-tree를 건드리는 구간에 이 잠금을 잡으므로, update가
-    이걸 잡으면 데몬이 그 사이 혼합 상태를 커밋·push하지 못하고 tick을 건너뛴다."""
-    from sync_daemon import _lock_path
-    return _lock_path(ROOT, "osk-mutation.lock")
+    """엔진·데몬과 **공유하는 mutation 잠금** — 데몬 싱글턴 잠금이 아니다.
+    노드 쓰기·보호영역 조작·데몬의 working-tree 구간이 모두 이 하나를 잡으므로,
+    update가 이걸 잡으면 그 사이 누구도 혼합 상태를 만들거나 커밋·push하지
+    못한다. 자리의 정의는 엔진에 한 벌뿐이다(core.mutation_lock_path)."""
+    return core_mutation_lock_path()
 
 
 # ── 계획과 적용 ──────────────────────────────────────────────────────────

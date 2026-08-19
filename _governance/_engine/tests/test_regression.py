@@ -3,7 +3,7 @@
 격리 원칙 (검토 3차 지적 4): 수트 전체가 임시 mini-vault를 OSK_VAULT_ROOT로
 가리키는 **자기 프로세스** 안에서 돈다 — 실 vault는 읽지도 쓰지도 않고,
 전역(core.SIGNATURES 등)의 재대입·모듈 reload도 하지 않는다. sync 시험은
-별도 임시 git 저장소, 서명 생애 fixture는 별도 subprocess에서 돈다.
+별도 임시 git 저장소, 보호영역 생애 fixture는 별도 subprocess에서 돈다.
 
 실행: cd <vault> && .venv/bin/python _engine/tests/test_regression.py
 """
@@ -18,7 +18,7 @@ MINI = Path(_TMP.name) / "mini-vault"
 os.environ["OSK_VAULT_ROOT"] = str(MINI)   # osk import 전에 — 전 모듈이 mini를 본다
 sys.path.insert(0, str(ENGINE))
 
-from osk import (core, graph, search, validate, authority, contract, write,  # noqa: E402
+from osk import (core, graph, validate, authority, contract, write,  # noqa: E402
                  publish)  # noqa: E402
 import osk.signatures as S  # noqa: E402
 
@@ -42,6 +42,35 @@ def raw_append(rec: dict):
     """대장 계약을 우회한 직접 주입 — 공격·병합 산물 모사 전용."""
     with open(core.SIGNATURES, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def sig_status(node_id, path=None):
+    """구 signatures.status의 관측을 core+헬퍼로 재현한다 — 서명 제도는
+    폐지됐지만 그 관측을 떠받치던 **인과 DAG 기계**(effective_parents·
+    causal_maxima·unresolved_nodes·id 해석)는 그대로 존속하며, 이 재현으로
+    그 기계를 signatures 모듈 없이 계속 소진한다. SIGNATURES는 이 수트에서
+    임의 append가 가능한 임시 대장으로 쓰인다."""
+    recs = core.ledger_read(core.SIGNATURES)
+    if node_id in core.unresolved_nodes(recs):
+        return "unsigned"
+    m = core.causal_maxima(recs, node_id)
+    if len(m) != 1 or m[0].get("kind") not in ("sign", "restore"):
+        return "unsigned"
+    r = m[0]
+    hit = None
+    for c in (path, r.get("path")):
+        c = core.resolve_in_root(c) if c else None
+        if c is not None and c.exists() and S._id_of(c) == node_id:
+            hit = c
+            break
+    if hit is None:
+        hit = S.locate_by_id(node_id)
+        if hit is None:
+            return "unsigned"
+    try:
+        return "signed" if core.sha256_file(hit) == r.get("hash") else "unsigned"
+    except OSError:
+        return "unsigned"
 
 
 def node_text(nid: str, summary="회귀 시험", body="본문", extra=""):
@@ -115,7 +144,7 @@ def test_same_ms_chain_signed():
     same = core._rid_parts(recs[0]["rid"])[0] == core._rid_parts(recs[1]["rid"])[0]
     check("같은 ms 사슬 성립(전제)", same)
     check("같은 ms라도 인과 사슬이면 signed(비교 가능)",
-          S.status("260802-zzzz-rg01", node) == "signed")
+          sig_status("260802-zzzz-rg01", node) == "signed")
 
 
 # ── 3. 인과 분기 → fail-closed → 모든 head 봉합 재서명으로 해소 ──────────
@@ -127,9 +156,10 @@ def test_fork_failclosed_and_reseal():
                 "node": "260802-zzzz-rg01", "path": str(node.relative_to(ROOT)),
                 "hash": h, "at": core.now_iso()})     # 다른 기기 유래 뿌리(병합 산물)
     check("분기(비교 불능) → unsigned fail-closed",
-          S.status("260802-zzzz-rg01", node) == "unsigned")
-    check("분기 상태에서 unsign도 거부(fail-closed)",
-          _raises(lambda: S.unsign("260802-zzzz-rg01", "시험"))())
+          sig_status("260802-zzzz-rg01", node) == "unsigned")
+    check("분기 상태는 판정 불가로 표면화(fail-closed)",
+          "260802-zzzz-rg01" in core.unresolved_nodes(
+              core.ledger_read(core.SIGNATURES)))
     r = core.ledger_append(core.SIGNATURES, {
         "kind": "sign", "node": "260802-zzzz-rg01",
         "path": str(node.relative_to(ROOT)), "hash": h,
@@ -137,7 +167,7 @@ def test_fork_failclosed_and_reseal():
     check("재서명이 모든 head를 봉합(parents 2개)", len(r["parents"]) == 2,
           r["parents"])
     check("재서명 후 유일 극대 → signed",
-          S.status("260802-zzzz-rg01", node) == "signed")
+          sig_status("260802-zzzz-rg01", node) == "signed")
 
 
 def _raises(fn):
@@ -173,7 +203,7 @@ def test_anchor_no_order_fallback():
     check("앵커 이후 parents-부재는 고립 루트(파일 순서 fallback 금지)",
           core.effective_parents(recs)[B1] == [], core.effective_parents(recs)[B1])
     check("해제가 서명으로 뒤집히지 않는다(fail-closed)",
-          S.status("260802-zzzz-rg10", node) == "unsigned")
+          sig_status("260802-zzzz-rg10", node) == "unsigned")
     check("판정 불가 노드로 표면화",
           "260802-zzzz-rg10" in core.unresolved_nodes(recs))
     r = core.ledger_append(core.SIGNATURES, {
@@ -181,7 +211,7 @@ def test_anchor_no_order_fallback():
         "reason": "사용자 재서명 — 유입 분기 봉합"})
     check("재서명이 유입 분기까지 봉합(해소 가능성 보존)",
           set(r["parents"]) == {U["rid"], B1}, r["parents"])
-    check("봉합 후 signed", S.status("260802-zzzz-rg10", node) == "signed")
+    check("봉합 후 signed", sig_status("260802-zzzz-rg10", node) == "signed")
 
 
 # ── 3c. 순환·자기 참조·전방 참조는 잘려 항상 비순환 + 해소 가능 ──────────
@@ -224,7 +254,7 @@ def test_cycle_normalization():
         "reason": "재서명 — 순환 잔재 봉합"})
     check("재서명이 남은 head 전부를 봉합 → 해소",
           set(r["parents"]) == {B, X}
-          and S.status("260802-zzzz-rg11", node) == "signed", r["parents"])
+          and sig_status("260802-zzzz-rg11", node) == "signed", r["parents"])
 
 
 # ── 3d. 구조 손상(rid 부재·형식·중복)은 표면화되고 append를 거부한다 ─────
@@ -264,11 +294,11 @@ def test_ridless_unsign_not_swallowed():
     core.ledger_append(core.SIGNATURES, {
         "kind": "sign", "node": "260802-zzzz-rg12", "path": rel,
         "hash": core.sha256_file(node)})
-    check("정상 서명은 signed", S.status("260802-zzzz-rg12", node) == "signed")
+    check("정상 서명은 signed", sig_status("260802-zzzz-rg12", node) == "signed")
     raw_append({"kind": "unsign", "node": "260802-zzzz-rg12", "path": rel,
                 "hash": core.sha256_file(node), "at": core.now_iso()})
     check("rid 없는 해제는 무시되지 않고 미서명으로 떨어진다",
-          S.status("260802-zzzz-rg12", node) == "unsigned")
+          sig_status("260802-zzzz-rg12", node) == "unsigned")
 
 
 # ── 3f. 경로 봉쇄·KST 고정 ──────────────────────────────────────────────
@@ -290,11 +320,11 @@ def test_root_confinement_and_kst():
           r.stdout.strip().startswith(want[:14]), (r.stdout.strip(), want))
 
 
-# ── 4. 회복의 구조적 사건 결속 (허위 사건 매트릭스 — 격리 subprocess) ────
-def test_restore_binding():
+# ── 4. 보호영역 생애 (지정·pending·양측 CAS 승인·반려·해제 — 격리 subprocess) ──
+def test_approval_lifecycle():
     with tempfile.TemporaryDirectory() as td:
-        errs = validate.fixture_signature_lifecycle(td)
-        check("회복 결속 매트릭스(허위 6종 차단+정상+분기 왕복)", not errs, errs)
+        errs = validate.fixture_approval_lifecycle(td)
+        check("보호영역 생애(양측 CAS·반려 복원·미보호 거부)", not errs, errs)
 
 
 # ── 5. 경로 재사용 공격 — id가 정본 ─────────────────────────────────────
@@ -310,34 +340,15 @@ def test_path_reuse():
         shutil.move(str(a), str(b))                                    # 이동
         a.write_text(node_text("260802-zzzz-dcoy", "미끼"), encoding="utf-8")
         check("이동+경로 재사용에도 signed(id 정본)",
-              S.status("260802-zzzz-rg02") == "signed")
-        check("미끼 id는 unsigned", S.status("260802-zzzz-dcoy") == "unsigned")
+              sig_status("260802-zzzz-rg02") == "signed")
+        check("미끼 id는 unsigned", sig_status("260802-zzzz-dcoy") == "unsigned")
     finally:
         for p in (a, b):
             p.unlink(missing_ok=True)
 
 
-# ── 6. 구판 강등이 순위를 실제로 뒤집는가 ───────────────────────────────
-def test_demotion_reorder():
-    wipe_sig()
-    oldn = ROOT / "= Scope/W1/regr-old-zqx.md"
-    newn = ROOT / "= Scope/W1/regr-new-zqx.md"
-    try:
-        oldn.write_text(node_text("260802-zzzz-rg03", "구판 zqxtoken",
-                                  "zqxtoken " * 30), encoding="utf-8")
-        newn.write_text(node_text("260802-zzzz-rg04", "후계 zqxtoken",
-                                  "zqxtoken " * 10,
-                                  'replaces: "[[regr-old-zqx]]"\n'), encoding="utf-8")
-        core.ledger_append(core.SIGNATURES, {
-            "kind": "sign", "node": "260802-zzzz-rg04",
-            "path": str(newn.relative_to(ROOT)), "hash": core.sha256_file(newn)})
-        hits = [h["title"] for h in search.Searcher().work_search("zqxtoken", 5)]
-        check("서명된 후계가 구판보다 상위(강등 후 재정렬)",
-              hits.index("regr-new-zqx") < hits.index("regr-old-zqx")
-              if {"regr-new-zqx", "regr-old-zqx"} <= set(hits) else False, hits)
-    finally:
-        for p in (oldn, newn):
-            p.unlink(missing_ok=True)
+# ── 6. (구판 강등 시험 폐지 — replaces·강등 기제는 2술어 개정에서 제거됐다.
+#        개정은 같은 id의 제자리 갱신이므로 후계·강등 자체가 성립하지 않는다.) ──
 
 
 # ── 7. 순수 이동·개명의 재색인 감지 ─────────────────────────────────────
@@ -598,53 +609,61 @@ def test_conflicts_semantics():
 
 # ── 10. 대장 손상 → 검증기는 죽지 않고 FAIL 보고 ────────────────────────
 def test_ledger_corruption_resilience():
-    backup = core.SIGNATURES.read_bytes() if core.SIGNATURES.exists() else None
+    from osk import approvals
+    backup = approvals.APPROVALS.read_bytes() if approvals.APPROVALS.exists() else None
     try:
-        core.SIGNATURES.write_text('{"rid": "x", "kind": "sign"\n', encoding="utf-8")
+        approvals.APPROVALS.parent.mkdir(parents=True, exist_ok=True)
+        approvals.APPROVALS.write_text('{"rid": "x", "kind": "protect"\n',
+                                       encoding="utf-8")   # 부분 행(손상)
         try:
             rep = validate.run()
             check("손상 대장에도 검증기 생존", True)
             check("손상은 FAIL로 보고", rep["verdict"] == "FAIL"
-                  and any("서명 기록부" in list(f)[0] for f in rep["fail"]))
+                  and any("승인 기록부" in list(f)[0] for f in rep["fail"]))
         except Exception as e:
             check("손상 대장에도 검증기 생존", False, repr(e))
     finally:
         if backup is not None:
-            core.SIGNATURES.write_bytes(backup)
+            approvals.APPROVALS.write_bytes(backup)
+        else:
+            approvals.APPROVALS.unlink(missing_ok=True)
 
 
 # ── 11. 대장 스키마 — 앵커 이후 parents·rid·필수 필드 강제 ──────────────
 def test_ledger_schema_segment():
-    backup = core.SIGNATURES.read_bytes() if core.SIGNATURES.exists() else None
+    from osk import approvals
+    backup = approvals.APPROVALS.read_bytes() if approvals.APPROVALS.exists() else None
     try:
         ms = int(1754000200.0 * 1000)
         r1, r2, r3, r5 = (core._make_rid(ms, i) for i in range(4))
         rows = [
-            {"rid": r1, "kind": "sign", "node": "a", "path": "p", "hash": "h",
-             "at": "t"},                                        # 유산(parents 없음)
-            {"rid": r2, "parents": [r1], "kind": "sign", "node": "a", "path": "p",
-             "hash": "h", "at": "t"},                           # 앵커 — 적법
-            {"rid": r3, "parents": [], "kind": "sign", "node": "a", "path": "p",
-             "hash": "h", "at": "t"},                           # 위반: 중간의 빈 parents
-            {"rid": "not-a-rid", "parents": [r3], "kind": "sign", "node": "a",
-             "path": "p", "hash": "h", "at": "t"},              # 위반: rid 형식
-            {"rid": r5, "parents": ["ghost-rid"], "kind": "sign", "node": "a",
-             "path": "p", "hash": "h", "at": "t"},              # 위반: 미지의 parent
-            {"rid": core._make_rid(ms, 9), "parents": [r5], "kind": "sign"},  # 필드 누락
+            {"rid": r1, "kind": "protect", "region": "= Scope/W1", "at": "t"},   # 유산(parents 없음)
+            {"rid": r2, "parents": [r1], "kind": "approve", "region": "= Scope/W1",
+             "at": "t"},                                        # 앵커 — 적법
+            {"rid": r3, "parents": [], "kind": "approve", "region": "= Scope/W1",
+             "at": "t"},                                        # 위반: 중간의 빈 parents
+            {"rid": "not-a-rid", "parents": [r3], "kind": "approve",
+             "region": "= Scope/W1", "at": "t"},               # 위반: rid 형식
+            {"rid": r5, "parents": ["ghost-rid"], "kind": "revert",
+             "region": "= Scope/W1", "at": "t"},               # 위반: 미지의 parent
+            {"rid": core._make_rid(ms, 9), "parents": [r5], "kind": "protect"},  # 필드 누락
         ]
-        core.SIGNATURES.write_text(
+        approvals.APPROVALS.parent.mkdir(parents=True, exist_ok=True)
+        approvals.APPROVALS.write_text(
             "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         rep = validate.run()
         seg = next((list(f.values())[0] for f in rep["fail"]
-                    if "대장 스키마" in list(f)[0]), None)
-        check("대장 스키마 세그먼트가 위반을 적발", seg is not None, rep["fail"])
+                    if "승인 대장 스키마" in list(f)[0]), None)
+        check("승인 대장 스키마 세그먼트가 위반을 적발", seg is not None, rep["fail"])
         if seg:
             joined = " | ".join(seg)
             for want in ("parents 부재", "rid 형식 위반", "미지의 parent", "필수 필드 누락"):
                 check(f"스키마 적발: {want}", want in joined, joined)
     finally:
         if backup is not None:
-            core.SIGNATURES.write_bytes(backup)
+            approvals.APPROVALS.write_bytes(backup)
+        else:
+            approvals.APPROVALS.unlink(missing_ok=True)
 
 
 # ── 12. validate.run은 전역을 오염시키지 않는다 ─────────────────────────
@@ -668,34 +687,1261 @@ def test_authority_hold():
               v["verdict"])
 
 
-# ── 14. 기준선: 정상 mini-vault + 앵커 대장 → 검증기 PASS ───────────────
+# ── 14. 기준선: 정상 mini-vault + 보호영역 지정 → 검증기 PASS ───────────
+# ── 승인 저장소 digest 봉쇄 (PR #14 리뷰 [high]) ────────────────────────
+def test_store_digest_confined():
+    """신뢰 밖 digest가 승인 저장소(STORE) 밖 경로를 읽지 못한다 — _obj_path는
+    정확히 `sha256:<64 소문자 hex>`만 받고 계산 경로의 STORE 봉쇄를 재확인한다."""
+    from osk import approvals as A
+    import os as _os
+    good = "sha256:" + "a" * 64
+    p = A._obj_path(good)
+    store_s = _os.path.normpath(A.STORE)
+    check("정상 digest는 STORE 안으로만 해석",
+          _os.path.commonpath([store_s, _os.path.normpath(p)]) == store_s)
+    for bad in ("sha256:../" + "a" * 61, "sha256:/etc/passwd",
+                "sha256:" + "a" * 63, "sha256:" + "a" * 65, "sha256:" + "A" * 64,
+                "sha256:" + "g" * 64, "notsha:" + "a" * 64, "../../etc/passwd",
+                "sha256:", "sha256:" + "a" * 62 + "/x"):
+        check(f"부적격 digest 거부: {bad[:22]}",
+              _raises(lambda b=bad: A._obj_path(b))())
+        check(f"_store_get은 부적격 digest를 부재로: {bad[:22]}",
+              A._store_get(bad) is None)
+
+
+# ── 위임 성립의 보호 범위 — 상위는 상속, 하위는 우회 불가 ───────────────
+def test_delegation_protection_scope():
+    """헌법 10조 1항: 상위 구획의 보호는 그 하위 전체에 미친다 — 사용자가 Facet
+    대신 `= Person`을 지정했어도 위임은 성립한다. 반대로 Facet **하위**만
+    지정한 것은 Facet의 미보호를 우회하지 못한다(헌법 7조 3항, fail-closed)."""
+    from osk import approvals as A, authority
+    dnode = ROOT / "= Person/Delegation/regr-deleg.md"
+    subdir = ROOT / "= Person/Delegation/sub"
+    clause = ("## 위임\n- 대상: 시험 행위\n- 범위: 시험\n"
+              "- 조건: 없음\n- 종료: 없음\n")
+    def eff():
+        return {d["title"]: d["effective"] for d in authority.enumerate_delegations()}
+    try:
+        dnode.write_text(node_text("260802-zzzz-rgd1", "위임 노드", clause),
+                         encoding="utf-8")
+        check("미보호에서는 미성립", eff().get("regr-deleg") is False, eff())
+        # (a) 상위 구획만 보호 — 하향 상속으로 성립한다
+        A.protect("= Person", "상위 지정")
+        check("상위 보호는 하위에 미친다(헌법 10조 1항)",
+              eff().get("regr-deleg") is True, eff())
+        A.unprotect("= Person", "정리")
+        # (b) Facet 하위만 보호 — Facet 자신은 미보호라 우회되지 않는다
+        subdir.mkdir(parents=True, exist_ok=True)
+        (subdir / "filler.md").write_text("x", encoding="utf-8")
+        A.protect("= Person/Delegation/sub", "하위만")
+        check("하위 구획만 보호되면 위임 미성립(우회 차단)",
+              eff().get("regr-deleg") is False, eff())
+        A.unprotect("= Person/Delegation/sub", "정리")
+        shutil.rmtree(subdir, ignore_errors=True)
+        # (c) Facet 자신 보호 → 성립
+        A.protect("= Person/Delegation", "Facet 보호")
+        check("위임 Facet 자체 보호 시 위임 성립",
+              eff().get("regr-deleg") is True, eff())
+        # (d) 열거는 승인본에서 — 작업본에서 지워도 승인본의 노드가 보고된다
+        dnode.unlink()
+        rows = {d["title"]: d for d in authority.enumerate_delegations()}
+        check("승인본에 있던 노드가 열거에서 사라지지 않는다",
+              "regr-deleg" in rows, list(rows))
+        check("다만 작업본 부재라 미성립",
+              rows.get("regr-deleg", {}).get("effective") is False, rows)
+        dnode.write_text(node_text("260802-zzzz-rgd1", "위임 노드", clause),
+                         encoding="utf-8")
+        A.unprotect("= Person/Delegation", "정리")
+    finally:
+        for r in ("= Person", "= Person/Delegation", "= Person/Delegation/sub"):
+            try: A.unprotect(r, "정리")
+            except Exception: pass
+        shutil.rmtree(subdir, ignore_errors=True)
+        dnode.unlink(missing_ok=True)
+
+
+# ── approve 양측 CAS는 관례가 아니라 계약으로 강제 (PR #14 리뷰 [high]) ──
+def test_approve_requires_expect_work():
+    """approve는 `expect_work`(검토한 작업본) 없이는 성립하지 않는다 — 기본값을
+    두면 내부 호출이 작업본 측 CAS를 건너뛴다. base가 맞아도 생략하면 거부하고
+    대장에 아무 기록도 남기지 않는다."""
+    from osk import approvals as A
+    def raises_any(fn):
+        try: fn(); return False
+        except (ValueError, TypeError): return True
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f = ROOT / "= Scope/W2/regr-aw.md"
+    f.write_text("v1", encoding="utf-8")
+    try:
+        A.protect("= Scope/W2", "지정")
+        f.write_text("v2", encoding="utf-8")            # pending
+        base = A.approved_hash("= Scope/W2")
+        before = len(A.records())
+        check("expect_work 생략 approve 거부(필수 인자)",
+              raises_any(lambda: A.approve("= Scope/W2", base)))
+        check("expect_work=None approve 거부",
+              raises_any(lambda: A.approve("= Scope/W2", base, None)))
+        check("거부 시 승인 대장에 기록 없음", len(A.records()) == before)
+        work = A.working_tree_hash("= Scope/W2")
+        A.approve("= Scope/W2", base, expect_work=work, reason="검토")
+        check("양측 CAS 충족 시 승인", A.state("= Scope/W2") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W2", "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
+# ── 승인본 manifest↔blob 결속·복원 가능성 (PR #14 리뷰 [high]) ──────────
+def test_approval_baseline_blobs_present():
+    """_store_tree가 파일당 한 번 읽어 그 bytes를 박제하므로 manifest가 가리키는
+    모든 blob이 실재한다(복원 가능). integrity는 manifest만이 아니라 그것이
+    가리키는 blob의 실재까지 확인해 복원 불가능한 승인본을 적발한다."""
+    from osk import approvals as A
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f = ROOT / "= Scope/W2/regr-bb.md"
+    f.write_text("내용A", encoding="utf-8")
+    try:
+        A.protect("= Scope/W2", "지정")
+        table = A._tree_table(A.approved_hash("= Scope/W2"))
+        check("승인본 manifest의 모든 blob 실재(단일 판독 박제)",
+              all(A._store_get(h) is not None for h in table.values()), table)
+        check("integrity 통과(정상 승인본)", A.integrity() == [], A.integrity())
+        # 참조 blob 하나를 삭제 → 복원 불가 승인본을 integrity가 적발
+        some_h = next(iter(table.values()))
+        A._obj_path(some_h).unlink()
+        check("integrity가 blob 부재(복원 불가)를 적발",
+              any("복원 불가" in e for e in A.integrity()), A.integrity())
+        f.write_text("변경", encoding="utf-8")            # pending
+        check("blob 부재 승인본으로의 revert는 사전검증에서 거부",
+              _raises(lambda: A.revert("= Scope/W2", A.approved_hash("= Scope/W2"),
+                                       A.working_tree_hash("= Scope/W2")))())
+        A._store_put("내용A".encode("utf-8"))             # blob 복원
+        check("blob 복원 후 integrity 통과", A.integrity() == [], A.integrity())
+    finally:
+        f.write_text("내용A", encoding="utf-8")            # 승인본으로 복귀 → clean
+        try: A.unprotect("= Scope/W2", "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
+# ── 내용 주소 저장소는 digest↔bytes 일치를 검증 (PR #14 리뷰 [high]) ────
+def test_store_content_verified():
+    """저장소는 읽기에서 `sha256(bytes)==digest`를 검증한다 — 같은 경로가 다른
+    bytes로 변조되면(동기화 충돌·손상·변조) 부재/손상으로 취급되어 integrity
+    FAIL·revert가 쓰기 전에 거부하고, _store_put은 손상 객체를 정상으로 치유한다.
+    이 계약을 저장소 접근자 한 곳에서 강제하므로 integrity·revert는 손대지
+    않아도 함께 fail-closed 된다."""
+    from osk import approvals as A
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f = ROOT / "= Scope/W2/regr-cv.md"
+    f.write_text("정본내용", encoding="utf-8")
+    try:
+        A.protect("= Scope/W2", "지정")
+        table = A._tree_table(A.approved_hash("= Scope/W2"))
+        h = table["= Scope/W2/regr-cv.md"]
+        obj = A._obj_path(h)
+        obj.write_bytes(b"corrupted-bytes-not-matching-the-digest")   # 같은 경로 변조
+        check("변조된 blob은 _store_get에서 부재로(내용 검증)",
+              A._store_get(h) is None)
+        check("integrity가 손상 blob을 적발",
+              any("복원 불가" in e for e in A.integrity()), A.integrity())
+        f.write_text("변경", encoding="utf-8")            # pending
+        check("손상 blob 승인본으로의 revert는 사전검증에서 거부",
+              _raises(lambda: A.revert("= Scope/W2", A.approved_hash("= Scope/W2"),
+                                       A.working_tree_hash("= Scope/W2")))())
+        A._store_put("정본내용".encode("utf-8"))          # 손상 객체 치유
+        check("_store_put이 손상 객체를 정상으로 치유", A._store_get(h) is not None)
+        check("치유 후 integrity 통과", A.integrity() == [], A.integrity())
+    finally:
+        f.write_text("정본내용", encoding="utf-8")          # 승인본으로 복귀 → clean
+        try: A.unprotect("= Scope/W2", "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
+# ── 대장 잠금 안 전제 재확인 — 스냅샷 중 유입 기록을 덮지 않는다 ────────
+def test_approve_precondition_under_lock():
+    """승인본 측 CAS는 대장 **잠금 안에서** 다시 본다 — 작업본 스냅샷이 걸리는
+    동안 다른 기기의 승인이 동기화로 들어오면, 그것을 못 본 행이 인과 자식으로
+    붙어 사용자가 검토한 적 없는 승인본을 조용히 대체하는 일이 없다."""
+    from osk import approvals as A
+    reg = "= Scope/W2"
+    f = ROOT / "= Scope/W2/regr-race.md"
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f.write_text("v1", encoding="utf-8")
+    real = A._store_tree
+    try:
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        f.write_text("v2", encoding="utf-8")                 # pending
+        work = A.working_tree_hash(reg)
+
+        def racing(d):                    # 스냅샷 도중 다른 기기 기록이 착지
+            A._store_tree = real
+            core.ledger_append(A.APPROVALS, {
+                "kind": "approve", "region": reg, "base": base,
+                "accepted": work, "reason": "다른 기기(시험)"})
+            return real(d)
+        A._store_tree = racing
+        before = len(A.records())
+        check("스냅샷 중 승인본이 바뀌면 승인 거부",
+              _raises(lambda: A.approve(reg, base, expect_work=work))())
+        check("유입 기록 1행만 늘고 내 승인은 미기록",
+              len(A.records()) == before + 1, len(A.records()) - before)
+        check("현행 승인본은 유입 기록의 것", A.approved_hash(reg) == work)
+    finally:
+        A._store_tree = real
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
+# ── 지정의 잠금 안 전제는 stale도 막는다 (PR #14 리뷰) ─────────────────
+def test_protect_precondition_rejects_stale():
+    """지정 스냅샷 도중 같은 영역의 비교 불능 기록이 유입돼 stale이 되면 지정은
+    성립하지 않는다 — `is_protected`는 stale에서도 False라, 그것만 보면 분기가
+    표면화되지 않고 새 초기 승인본으로 조용히 봉합된다(본문의 stale 거부와 어긋남)."""
+    from osk import approvals as A
+    reg = "= Domain/pstale"
+    regdir = ROOT / "= Domain" / "pstale"
+    real = A._store_tree
+    kept = A.APPROVALS.read_text(encoding="utf-8") if A.APPROVALS.exists() else ""
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("v1", encoding="utf-8")
+        check("지정 전에는 미보호", A.state(reg) == "unprotected")
+
+        def racing(d):                    # 스냅샷 도중 다기기 분기가 착지
+            A._store_tree = real
+            recs = A.records()
+            head = recs[-1]["rid"] if recs else None
+            rid = head
+            with open(A.APPROVALS, "a", encoding="utf-8") as fh:
+                for i in (1, 2):
+                    rid = core._next_rid(rid)
+                    fh.write(json.dumps({
+                        "rid": rid, "parents": [head] if head else [],
+                        "at": core.now_iso(), "kind": "protect", "region": reg,
+                        "base": None, "accepted": "sha256:" + f"{i}" * 64,
+                        "reason": f"기기{i}(시험)"}, ensure_ascii=False) + "\n")
+            return real(d)
+        A._store_tree = racing
+        check("스냅샷 중 stale이 되면 지정 거부", _raises(lambda: A.protect(reg))())
+        A._store_tree = real
+        check("분기는 그대로 남는다(봉합되지 않음)", A.state(reg) == "stale")
+        check("내 protect 행은 기록되지 않았다",
+              sum(1 for r in A.records()
+                  if r.get("region") == reg and "시험" not in (r.get("reason") or "")) == 0)
+    finally:
+        A._store_tree = real
+        try: A.APPROVALS.write_text(kept, encoding="utf-8")   # 분기 원상 복구
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 영역째 삭제된 사고도 반려로 복구된다 (PR #14 리뷰) ─────────────────
+def test_revert_recreates_deleted_region():
+    """보호영역 디렉터리가 통째로 사라져도(rm -r·동기화 삭제) 승인본이 유효하면
+    반려가 디렉터리를 다시 만들어 복원한다 — 보호가 되돌려야 할 가장 기본적인
+    사고가 영역 삭제인데 그것만 수동 복구를 요구하면 장치의 뜻이 무너진다."""
+    from osk import approvals as A
+    reg = "= Domain/gone"
+    regdir = ROOT / "= Domain" / "gone"
+    try:
+        (regdir / "sub").mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("본문A", encoding="utf-8")
+        (regdir / "sub" / "b.md").write_text("본문B", encoding="utf-8")
+        A.protect(reg, "지정")
+        shutil.rmtree(regdir)                         # 영역째 삭제 사고
+        check("영역이 사라지면 pending", A.state(reg) == "pending")
+        check("작업본 tree는 빈 tree(판정 불능이 아님)",
+              A.working_tree_hash(reg) is not None)
+        A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "복구")
+        check("디렉터리가 되살아났다", regdir.is_dir())
+        check("파일 내용이 승인본 그대로", (regdir / "a.md").read_text() == "본문A")
+        check("하위 디렉터리 파일도 복원", (regdir / "sub" / "b.md").read_text() == "본문B")
+        check("복구 후 clean", A.state(reg) == "clean")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 이동은 이동으로 기록되고, 반려가 이동 전체를 되돌린다 (시행령 §6 4항) ──
+def test_move_recorded_and_reverted_in():
+    """밖→보호영역 이동을 반려하면 노드는 삭제되지 않고 **원위치로 돌아간다**.
+    기록이 없으면 반려가 이동을 '추가'로만 보아 노드를 지운다 — 출발지에는
+    복원할 정보가 없으므로 그대로 소실이다(사용자 판정: 이동을 이동으로)."""
+    from osk import approvals as A, write
+    src = ROOT / "= Scope/W1/regr-mvin.md"
+    dst = ROOT / "= Scope/W3/regr-mvin.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    try:
+        src.write_text(node_text("260802-zzzz-mvi1", "이동 노드", "본문"),
+                       encoding="utf-8")
+        A.protect("= Scope/W3", "도착지 보호")
+        base = A.approved_hash("= Scope/W3")
+        r = write.move_node("regr-mvin", "= Scope/W3")
+        check("이동 성립", r["ok"], r)
+        row = A._latest_move(core.ledger_read(A.MOVES), "to",
+                             "= Scope/W3/regr-mvin.md")
+        check("이동이 이동으로 기록됐다",
+              row is not None and row["from"] == "= Scope/W1/regr-mvin.md"
+              and row["node"] == "260802-zzzz-mvi1", row)
+        check("도착 영역은 pending", A.state("= Scope/W3") == "pending")
+        cs = A.changeset("= Scope/W3")
+        check("변경집합이 이동을 이동으로 보인다",
+              cs["moves"] == [{"node": "260802-zzzz-mvi1",
+                               "from": "= Scope/W1/regr-mvin.md",
+                               "to": "= Scope/W3/regr-mvin.md"}], cs)
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("노드가 원위치로 돌아왔다(삭제되지 않음)", src.is_file())
+        check("도착지에는 없다", not dst.exists())
+        check("도착 영역은 clean", A.state("= Scope/W3") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+def test_move_reverted_out_no_duplicate():
+    """보호영역→밖 이동을 반려하면 밖의 사본을 **되가져와** 승인본을 복원한다 —
+    승인본 재생성만 하면 같은 id가 두 곳에 남는다(복제 금지)."""
+    from osk import approvals as A, write
+    home = ROOT / "= Scope/W3/regr-mvout.md"
+    away = ROOT / "= Scope/W1/regr-mvout.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    try:
+        home.write_text(node_text("260802-zzzz-mvo1", "이동 노드", "본문"),
+                        encoding="utf-8")
+        A.protect("= Scope/W3", "출발지 보호")
+        base = A.approved_hash("= Scope/W3")
+        check("이동 성립", write.move_node("regr-mvout", "= Scope/W1")["ok"])
+        check("출발 영역은 pending", A.state("= Scope/W3") == "pending")
+        cs = A.changeset("= Scope/W3")
+        check("나간 이동도 이동으로 보인다",
+              cs["moves"] and cs["moves"][0]["to"] == "= Scope/W1/regr-mvout.md",
+              cs)
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("노드가 제자리로 돌아왔다", home.is_file())
+        check("밖의 사본이 남지 않았다(같은 id 하나뿐)", not away.exists())
+        check("출발 영역은 clean", A.state("= Scope/W3") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        home.unlink(missing_ok=True)
+        away.unlink(missing_ok=True)
+
+
+def test_move_return_blocked_origin_occupied():
+    """이동으로 온 노드는 지우지 않는다 — 되돌리거나 거부한다. 원위치가 다른
+    파일로 차 있으면 반려를 거부하고 아무것도 건드리지 않는다."""
+    from osk import approvals as A, write
+    src = ROOT / "= Scope/W1/regr-mvocc.md"
+    dst = ROOT / "= Scope/W3/regr-mvocc.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    try:
+        src.write_text(node_text("260802-zzzz-mvc1", "이동 노드", "본문"),
+                       encoding="utf-8")
+        A.protect("= Scope/W3", "도착지 보호")
+        base = A.approved_hash("= Scope/W3")
+        check("이동 성립", write.move_node("regr-mvocc", "= Scope/W3")["ok"])
+        src.write_text("원위치에 새로 생긴 다른 파일", encoding="utf-8")
+        check("원위치가 차 있으면 반려 거부",
+              _raises(lambda: A.revert("= Scope/W3", base,
+                                       A.working_tree_hash("= Scope/W3")))())
+        check("이동 노드는 그대로(삭제되지 않음)", dst.is_file())
+        check("원위치의 새 파일도 그대로",
+              src.read_text() == "원위치에 새로 생긴 다른 파일")
+        check("영역은 여전히 pending", A.state("= Scope/W3") == "pending")
+        src.unlink()                       # 자리를 치우면 반려가 진행된다
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("치운 뒤에는 원위치로 복귀", src.is_file())
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+def test_move_chain_reverted_no_duplicate():
+    """보호영역을 나온 노드가 미처리인 채 한 번 더 이동하면(양끝 미보호) 그
+    hop도 사슬로 기록되고, 반려가 **최종 위치**에서 되가져온다 — 옛 도착지만
+    보면 '밖 사본 없음'으로 승인본을 재생성해 같은 id가 둘 남는다(복제 금지)."""
+    from osk import approvals as A, write
+    home = ROOT / "= Scope/W3/regr-mvchain.md"
+    hop1 = ROOT / "= Scope/W1/regr-mvchain.md"
+    hop2 = ROOT / "= Scope/W4/regr-mvchain.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    (ROOT / "= Scope/W4").mkdir(parents=True, exist_ok=True)
+    try:
+        home.write_text(node_text("260802-zzzz-chn1", "사슬 이동", "본문"),
+                        encoding="utf-8")
+        A.protect("= Scope/W3", "출발지 보호")
+        base = A.approved_hash("= Scope/W3")
+        check("hop1 성립", write.move_node("regr-mvchain", "= Scope/W1")["ok"])
+        check("hop2 성립(양끝 미보호)",
+              write.move_node("regr-mvchain", "= Scope/W4")["ok"])
+        rows = [r for r in core.ledger_read(A.MOVES)
+                if r.get("node") == "260802-zzzz-chn1"]
+        check("두 hop 모두 사슬로 기록됐다", len(rows) == 2, rows)
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("노드가 제자리로 돌아왔다", home.is_file())
+        check("hop1 자리에 사본 없음", not hop1.exists())
+        check("hop2 자리에 사본 없음(중복 id 없음)", not hop2.exists())
+        check("출발 영역은 clean", A.state("= Scope/W3") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        for f in (home, hop1, hop2):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(ROOT / "= Scope/W4", ignore_errors=True)
+
+
+def test_move_lifecycle_cutoff():
+    """승인으로 처분된 과거 이동은 새 반려의 해석 대상이 아니다 — 해석의 경계는
+    현재 승인본이 성립한 기록이다. 경계가 없으면 처분된 첫 이탈의 출발지가
+    '영역 안 생성분'으로 오독돼 재진입 노드가 **삭제**된다."""
+    from osk import approvals as A, write
+    p1 = ROOT / "= Person/P1"; p2 = ROOT / "= Person/P2"
+    p1.mkdir(parents=True, exist_ok=True); p2.mkdir(parents=True, exist_ok=True)
+    node_p1, node_p2 = p1 / "regr-lc.md", p2 / "regr-lc.md"
+    w1, w4 = ROOT / "= Scope/W1/regr-lc.md", ROOT / "= Scope/W4/regr-lc.md"
+    (ROOT / "= Scope/W4").mkdir(parents=True, exist_ok=True)
+    try:
+        node_p1.write_text(node_text("260802-zzzz-lcx1", "생애 경계", "본문"),
+                           encoding="utf-8")
+        A.protect("= Person", "지정")
+        base = A.approved_hash("= Person")
+        check("이탈 이동 성립", write.move_node("regr-lc", "= Scope/W1")["ok"])
+        A.approve("= Person", base, A.working_tree_hash("= Person"), "이탈 수용")
+        base2 = A.approved_hash("= Person")
+        check("처분 뒤 방랑 hop 성립(사슬 기록)",
+              write.move_node("regr-lc", "= Scope/W4")["ok"])
+        check("재진입 성립", write.move_node("regr-lc", "= Person/P2")["ok"])
+        A.revert("= Person", base2, A.working_tree_hash("= Person"), "재진입 반려")
+        check("노드는 직전 위치로 돌아간다(삭제되지 않음)", w4.is_file())
+        check("재진입 자리는 비었다", not node_p2.exists())
+        check("처분된 과거 자리로 되돌리지 않는다",
+              not node_p1.exists() and not w1.exists())
+        check("영역은 clean", A.state("= Person") == "clean")
+    finally:
+        try: A.unprotect("= Person", "정리")
+        except Exception: pass
+        for f in (node_p1, node_p2, w1, w4):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(p1, ignore_errors=True); shutil.rmtree(p2, ignore_errors=True)
+        shutil.rmtree(ROOT / "= Scope/W4", ignore_errors=True)
+
+
+def test_move_reentry_single_plan():
+    """같은 생애에서 나갔다가 **다른 자리로 재진입**한 노드의 반려 — 해석 단위가
+    rel이면 한 파일에 계획이 둘 잡혀 복원이 중도에 깨진다(실측: os.replace
+    FileNotFoundError로 부분 변경 방치). 노드 단위 해석은 계획을 하나만 세워
+    승인본 원적으로 되돌린다."""
+    from osk import approvals as A, write
+    p1 = ROOT / "= Person/P1"; p2 = ROOT / "= Person/P2"
+    p1.mkdir(parents=True, exist_ok=True); p2.mkdir(parents=True, exist_ok=True)
+    node_p1, node_p2 = p1 / "regr-re.md", p2 / "regr-re.md"
+    w1 = ROOT / "= Scope/W1/regr-re.md"
+    try:
+        node_p1.write_text(node_text("260802-zzzz-lcx2", "재진입", "본문"),
+                           encoding="utf-8")
+        A.protect("= Person", "지정")
+        base = A.approved_hash("= Person")
+        check("이탈 성립", write.move_node("regr-re", "= Scope/W1")["ok"])
+        check("다른 facet 재진입 성립",
+              write.move_node("regr-re", "= Person/P2")["ok"])
+        A.revert("= Person", base, A.working_tree_hash("= Person"), "반려")
+        check("노드가 승인본 원적으로 돌아왔다",
+              node_p1.is_file() and "본문" in node_p1.read_text())
+        check("재진입 자리·경유지에 사본 없음",
+              not node_p2.exists() and not w1.exists())
+        check("영역은 clean", A.state("= Person") == "clean")
+    finally:
+        try: A.unprotect("= Person", "정리")
+        except Exception: pass
+        for f in (node_p1, node_p2, w1):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(p1, ignore_errors=True); shutil.rmtree(p2, ignore_errors=True)
+
+
+def test_move_cutoff_causal_not_clock():
+    """생애 경계는 인과다 — rid 크기 비교가 아니다. 시계가 뒤처진 기기의 승인
+    이후 이동은 rid가 승인 rid보다 **작지만**, 승인 기록의 `moves_seen`이 보지
+    못한 행이므로 해석에 들어간다. 크기 비교였다면 잘려서 반려가 밖의 실물을
+    못 본 채 승인본을 재생성해 같은 id가 둘 남는다."""
+    from osk import approvals as A
+    reg = "= Domain/skew"
+    regdir = ROOT / "= Domain" / "skew"
+    away = ROOT / "= Scope/W1/regr-skew.md"
+    kept = A.MOVES.read_text(encoding="utf-8") if A.MOVES.exists() else None
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "regr-skew.md").write_text(
+            node_text("260802-zzzz-skw1", "시계 편차", "본문"), encoding="utf-8")
+        A.protect(reg, "지정")
+        prot = A.records()[-1]
+        check("생애 기록이 이동 경계를 박제한다", "moves_seen" in prot, prot)
+        base = A.approved_hash(reg)
+        # 뒤처진 시계의 기기에서 승인 **이후** 실행된 이동 — rid는 승인보다 작다
+        ms = core._rid_parts(prot["rid"])[0] - 60_000
+        rid = core._make_rid(ms, 0)
+        check("편차 전제: 이동 rid < 승인 rid",
+              core._rid_key(rid) < core._rid_key(prot["rid"]))
+        with open(A.MOVES, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "rid": rid, "parents": core.heads(core.ledger_read(A.MOVES)),
+                "at": core.now_iso(), "kind": "move", "node": "260802-zzzz-skw1",
+                "from": "= Domain/skew/regr-skew.md",
+                "to": "= Scope/W1/regr-skew.md"}, ensure_ascii=False) + "\n")
+        os.replace(regdir / "regr-skew.md", away)
+        check("이동 뒤 pending", A.state(reg) == "pending")
+        cs = A.changeset(reg)
+        check("표시도 그 이동을 이동으로 본다",
+              cs["moves"] and cs["moves"][0]["to"] == "= Scope/W1/regr-skew.md",
+              cs)
+        A.revert(reg, base, A.working_tree_hash(reg), "반려")
+        check("밖의 실물이 회수됐다(같은 id 하나뿐)", not away.exists())
+        check("승인본 원적으로 복원", (regdir / "regr-skew.md").is_file())
+        check("영역은 clean", A.state(reg) == "clean")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        away.unlink(missing_ok=True)
+        shutil.rmtree(regdir, ignore_errors=True)
+        if kept is None:
+            A.MOVES.unlink(missing_ok=True)
+        else:
+            A.MOVES.write_text(kept, encoding="utf-8")
+
+
+def test_move_phantom_tail_row_harmless():
+    """실패한 마지막 이동의 잔행(기록만 남고 rename 실패)은 무해해야 한다 —
+    해석이 마지막 행의 to(의도)가 아니라 **실물이 있는 가장 최근 hop**(사실)을
+    현재 위치로 삼는다. 의도를 믿으면 앞선 성공 이동의 실물을 못 보고 승인본을
+    재생성해 같은 id가 둘 남는다."""
+    from osk import approvals as A, write
+    home = ROOT / "= Scope/W3/regr-phantom.md"
+    w1 = ROOT / "= Scope/W1/regr-phantom.md"
+    w4 = ROOT / "= Scope/W4/regr-phantom.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    (ROOT / "= Scope/W4").mkdir(parents=True, exist_ok=True)
+    try:
+        home.write_text(node_text("260802-zzzz-phm2", "잔행", "본문"),
+                        encoding="utf-8")
+        A.protect("= Scope/W3", "지정")
+        base = A.approved_hash("= Scope/W3")
+        check("이탈 성립", write.move_node("regr-phantom", "= Scope/W1")["ok"])
+        # 두 번째 이동 — 기록만 남고 rename이 실패한 상황(권한·IO 오류)
+        A.record_move("260802-zzzz-phm2", w1, w4)
+        check("실물은 여전히 첫 도착지에", w1.is_file() and not w4.exists())
+        cs = A.changeset("= Scope/W3")
+        check("표시도 실물 위치를 낸다",
+              cs["moves"] and cs["moves"][0]["to"] == "= Scope/W1/regr-phantom.md",
+              cs)
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("실물이 원적으로 회수됐다", home.is_file())
+        check("경유지·거짓 도착지에 사본 없음(같은 id 하나뿐)",
+              not w1.exists() and not w4.exists())
+        check("영역은 clean", A.state("= Scope/W3") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        for f in (home, w1, w4):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(ROOT / "= Scope/W4", ignore_errors=True)
+
+
+def test_move_unrecorded_outside_protection():
+    """양끝 다 보호 밖인 이동은 변경집합과 무관하므로 기록하지 않는다
+    (시행령 §6 4항의 범위 그대로 — 기록부를 소음으로 채우지 않는다)."""
+    from osk import approvals as A, write
+    src = ROOT / "= Scope/W1/regr-mvfree.md"
+    dst = ROOT / "= Scope/W3/regr-mvfree.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    try:
+        src.write_text(node_text("260802-zzzz-mvf1", "자유 이동", "본문"),
+                       encoding="utf-8")
+        before = len(core.ledger_read(A.MOVES))
+        check("이동 성립", write.move_node("regr-mvfree", "= Scope/W3")["ok"])
+        check("기록부는 그대로", len(core.ledger_read(A.MOVES)) == before)
+    finally:
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+# ── 사용자는 '차이'를 검토한다 — 해시 두 개는 검토가 아니다 (헌법 10조 2항) ──
+def test_changeset_lists_difference():
+    """헌법 10조 2항은 사용자가 **차이를 검토하여** 승인·반려하라고 한다.
+    엔진은 그 차이를 파일 단위(추가·삭제·수정)로 낼 수 있어야 한다."""
+    from osk import approvals as A
+    reg = "= Domain/csview"
+    regdir = ROOT / "= Domain" / "csview"
+    try:
+        (regdir / "sub").mkdir(parents=True, exist_ok=True)
+        (regdir / "keep.md").write_text("그대로", encoding="utf-8")
+        (regdir / "gone.md").write_text("사라질 것", encoding="utf-8")
+        (regdir / "sub" / "edit.md").write_text("v1", encoding="utf-8")
+        A.protect(reg, "지정")
+        check("clean에서는 차이가 없다",
+              A.changeset(reg) == {"added": [], "removed": [],
+                                   "modified": [], "moves": []},
+              A.changeset(reg))
+        (regdir / "gone.md").unlink()
+        (regdir / "sub" / "edit.md").write_text("v2", encoding="utf-8")
+        (regdir / "new.md").write_text("새 파일", encoding="utf-8")
+        cs = A.changeset(reg)
+        check("추가를 집는다", cs["added"] == ["= Domain/csview/new.md"], cs)
+        check("삭제를 집는다", cs["removed"] == ["= Domain/csview/gone.md"], cs)
+        check("수정을 집는다(하위 디렉터리 포함)",
+              cs["modified"] == ["= Domain/csview/sub/edit.md"], cs)
+        check("차이가 있으면 pending", A.state(reg) == "pending")
+        A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "정리")
+        check("반려 뒤 차이 없음", A.changeset(reg)["modified"] == [])
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── stale은 막다른 상태가 아니다 — 봉합 승인 (Mechanism §3 5항) ─────────
+def test_stale_sealed_by_approve():
+    """극대가 여럿이면 '모든 head를 잇는 사용자의 새 기록이 봉합한다'(§3 5항).
+    네 조작이 전부 stale을 거부하면 그 길이 막혀 다기기 병합 한 번이 영역을
+    영구히 고착시킨다 — 봉합 승인(base=None)이 그 길이다."""
+    from osk import approvals as A
+    reg = "= Domain/sealed"
+    regdir = ROOT / "= Domain" / "sealed"
+    kept = A.APPROVALS.read_text(encoding="utf-8") if A.APPROVALS.exists() else ""
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("v1", encoding="utf-8")
+        A.protect(reg, "지정")
+        # 두 기기가 각각 승인 → git 병합이 두 줄을 남긴다(인과 극대 2)
+        head = A.records()[-1]["rid"]
+        rid = head
+        with open(A.APPROVALS, "a", encoding="utf-8") as fh:
+            for i in (1, 2):
+                rid = core._next_rid(rid)
+                fh.write(json.dumps({
+                    "rid": rid, "parents": [head], "at": core.now_iso(),
+                    "kind": "approve", "region": reg, "base": A.approved_hash(reg),
+                    "accepted": A.working_tree_hash(reg), "reason": f"기기{i}"},
+                    ensure_ascii=False) + "\n")
+        check("병합 뒤 stale", A.state(reg) == "stale")
+        forks = [f["rid"] for f in A.divergence(reg)]
+        check("갈래가 둘로 보인다", len(forks) == 2)
+        check("일반 승인은 거부(현행 승인본이 하나가 아니다)",
+              _raises(lambda: A.approve(reg, "sha256:" + "a" * 64,
+                                        A.working_tree_hash(reg)))())
+        check("갈래 집합 없는 봉합도 거부",
+              _raises(lambda: A.approve(reg, None,
+                                        A.working_tree_hash(reg)))())
+        # 검토 사이 새 갈래 유입 — 검토한 집합과 어긋나면 봉합 거부(본 적 없는
+        # 갈래를 함께 봉합하지 않는다)
+        rid3 = core._next_rid(max((r["rid"] for r in A.records()),
+                                  key=core._rid_key))
+        with open(A.APPROVALS, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({
+                "rid": rid3, "parents": [head], "at": core.now_iso(),
+                "kind": "approve", "region": reg, "base": A.approved_hash(reg),
+                "accepted": A.working_tree_hash(reg), "reason": "기기3(유입)"},
+                ensure_ascii=False) + "\n")
+        check("본 적 없는 갈래는 함께 봉합되지 않는다",
+              _raises(lambda: A.approve(reg, None, A.working_tree_hash(reg),
+                                        seal_heads=forks))())
+        forks = [f["rid"] for f in A.divergence(reg)]   # 3갈래 재검토
+        (regdir / "a.md").write_text("봉합 시점 상태", encoding="utf-8")
+        rec = A.approve(reg, None, expect_work=A.working_tree_hash(reg),
+                        reason="분기 봉합", seal_heads=forks)
+        check("봉합 승인이 검토한 갈래 셋을 모두 부모로 잇는다",
+              len(rec["parents"]) == 3, rec["parents"])
+        check("봉합 뒤 clean", A.state(reg) == "clean")
+        check("현행 승인본이 봉합 시점 상태", A.approved_hash(reg) == rec["accepted"])
+        check("이후 일반 승인이 다시 성립한다", A.divergence(reg) and
+              len(A.divergence(reg)) == 1)
+    finally:
+        try: A.APPROVALS.write_text(kept, encoding="utf-8")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 위상 검증도 derived-from의 id 강제를 본다 (쓰기 통로 밖 유입) ────────
+def test_topology_rejects_wiki_node_derived_from():
+    """손으로 쓰거나 다기기 동기화로 들어온 노드는 쓰기 통로를 거치지 않는다 —
+    위상 검증이 그 자리에서 `derived-from`의 비-id 노드 대상을 잡아야 한다."""
+    target = ROOT / "= Scope/W1/regr-topo-t.md"
+    bad = ROOT / "= Scope/W1/regr-topo-bad.md"
+    try:
+        target.write_text(node_text("260802-zzzz-topo", "대상", "본문"),
+                          encoding="utf-8")
+        bad.write_text(node_text("260802-zzzz-tbad", "비-id 근거", "본문",
+                                 'derived-from: "[[regr-topo-t]]"\n'),
+                       encoding="utf-8")
+        errs = graph.topology_check(graph.Index())
+        check("위키 표기의 노드 근거를 위반으로 잡는다",
+              any("id로 단다" in e and "regr-topo-bad" in e for e in errs), errs)
+        bad.write_text(node_text("260802-zzzz-tbad", "id 근거", "본문",
+                                 "derived-from: 260802-zzzz-topo\n"),
+                       encoding="utf-8")
+        errs = graph.topology_check(graph.Index())
+        check("id 근거는 위반이 아니다",
+              not any("regr-topo-bad" in e for e in errs), errs)
+    finally:
+        target.unlink(missing_ok=True)
+        bad.unlink(missing_ok=True)
+
+
+# ── 잠금 자리 해석의 세 형태 (worktree·submodule 포함) ──────────────────
+def test_local_lock_path_git_shapes():
+    """잠금 자리가 클론 형태마다 달라지면 같은 vault의 두 프로세스가 서로 다른
+    파일을 잡아 상호배제가 조용히 깨진다 — `.git`이 디렉터리·파일(gitdir)·
+    worktree(commondir)인 세 형태와 git 부재를 모두 같은 규칙으로 푼다."""
+    import tempfile as _tf
+    base = Path(_tf.mkdtemp(prefix="osk-shape-"))
+    try:
+        plain = base / "plain"; (plain / ".git").mkdir(parents=True)
+        check("`.git` 디렉터리 → 그 안",
+              core.local_lock_path("x.lock", plain) == plain / ".git" / "x.lock")
+        # worktree: `.git`이 파일이고 그 대상 안에 commondir가 있다
+        main_git = base / "main" / ".git"
+        (main_git / "worktrees" / "wt").mkdir(parents=True)
+        (main_git / "worktrees" / "wt" / "commondir").write_text("../..\n",
+                                                                encoding="utf-8")
+        wt = base / "wt"; wt.mkdir()
+        (wt / ".git").write_text(
+            f"gitdir: {main_git / 'worktrees' / 'wt'}\n", encoding="utf-8")
+        check("worktree → 공용 git 디렉터리(commondir)",
+              core.local_lock_path("x.lock", wt).resolve()
+              == (main_git / "x.lock").resolve(),
+              core.local_lock_path("x.lock", wt))
+        # submodule 등: `.git` 파일이 commondir 없는 디렉터리를 가리킨다
+        sub_git = base / "modules" / "s"; sub_git.mkdir(parents=True)
+        sm = base / "sm"; sm.mkdir()
+        (sm / ".git").write_text(f"gitdir: {sub_git}\n", encoding="utf-8")
+        check("gitdir 파일 → 그 디렉터리",
+              core.local_lock_path("x.lock", sm).resolve()
+              == (sub_git / "x.lock").resolve())
+        nogit = base / "nogit"; nogit.mkdir()
+        p = core.local_lock_path("x.lock", nogit)
+        check("git 부재 → 추적 트리 밖 임시 자리",
+              not str(p).startswith(str(nogit)) and p.name.startswith("x-"), p)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+# ── 구조 충돌은 첫 쓰기 전에 잡는다 — 부분 복원 금지 (PR #14 리뷰) ─────
+def test_revert_structure_conflict_no_partial():
+    """작업본에서 파일↔디렉터리가 뒤바뀐 평범한 재구성이면, 반영 도중 실패해
+    앞선 파일만 덮인 **부분 복원**이 된다. 준비 단계에서 전수로 잡아 거부하므로
+    다른 작업본 변경이 그대로 남는다."""
+    from osk import approvals as A
+    reg = "= Domain/struct"
+    regdir = ROOT / "= Domain" / "struct"
+    a, sub = regdir / "a.md", regdir / "sub"
+    try:
+        sub.mkdir(parents=True, exist_ok=True)
+        a.write_text("승인본 A", encoding="utf-8")
+        (sub / "b.md").write_text("승인본 B", encoding="utf-8")
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        a.write_text("작업본 A2", encoding="utf-8")      # 사용자의 변경
+        shutil.rmtree(sub)
+        sub.write_text("이제 파일이다", encoding="utf-8")  # 디렉터리→파일
+        check("반려가 구조 충돌로 거부",
+              _raises(lambda: A.revert(reg, base, A.working_tree_hash(reg)))())
+        check("앞선 파일이 덮이지 않았다(부분 복원 없음)",
+              a.read_text() == "작업본 A2")
+        check("충돌 객체도 그대로", sub.read_text() == "이제 파일이다")
+        # 반대 방향 — 승인본은 디렉터리 자리, 작업본은 그 자리에 파일
+        sub.unlink()
+        sub.mkdir()
+        (sub / "b.md").write_text("승인본 B", encoding="utf-8")
+        A.revert(reg, base, A.working_tree_hash(reg), "구조 정리 후 반려")
+        check("구조를 바로잡으면 반려 성립", A.state(reg) == "clean")
+        check("승인본으로 복원", a.read_text() == "승인본 A")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 승인 조작은 노드 쓰기와 같은 잠금으로 직렬화된다 (PR #14 리뷰) ──────
+def test_approval_serialized_with_writes():
+    """반려의 마지막 전제 확인과 첫 파괴 사이에 정상 쓰기가 끼어들면 검토하지
+    않은 변경이 사라진다. 네 조작 모두 노드 쓰기와 **같은** 전역 변경 잠금을
+    잡는다 — 엔진이 통제하는 writer는 그 사이에 들어올 수 없다."""
+    from osk import approvals as A
+    from osk import write
+    import sync_daemon
+    check("변경 잠금이 sync·update가 쓰는 그 잠금과 같은 파일이다",
+          core.mutation_lock_path()
+          == sync_daemon._lock_path(ROOT, "osk-mutation.lock"))
+    check("잠금 파일은 추적 트리 밖이다",
+          not str(core.mutation_lock_path()).startswith(str(ROOT) + os.sep)
+          or ".git" in core.mutation_lock_path().parts)
+    # 같은 경로를 가리키는 것만으로는 부족하다 — 실제로 상호배제되는지 본다.
+    # flock은 open file description마다이므로 같은 프로세스의 두 번째 열기도
+    # 경합한다(데몬이 다른 프로세스에서 잡는 상황과 같은 판정).
+    with core.mutation_lock():
+        with open(sync_daemon._lock_path(ROOT, "osk-mutation.lock"), "w") as fh:
+            try:
+                core.lock_exclusive(fh, blocking=False)
+                core.unlock(fh)
+                got = True
+            except OSError:
+                got = False
+        check("변경 잠금 보유 중에는 데몬 쪽 획득이 실패한다(실 상호배제)",
+              got is False)
+    held = []
+    real = core.mutation_lock
+
+    class _Spy(real):
+        def __enter__(self):
+            held.append(1)
+            return super().__enter__()
+    reg = "= Domain/lockchk"
+    regdir = ROOT / "= Domain" / "lockchk"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("v1", encoding="utf-8")
+        A.mutation_lock = _Spy
+        A.protect(reg, "지정")
+        (regdir / "a.md").write_text("v2", encoding="utf-8")
+        A.approve(reg, A.approved_hash(reg),
+                  expect_work=A.working_tree_hash(reg), reason="승인")
+        (regdir / "a.md").write_text("v3", encoding="utf-8")
+        A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "반려")
+        A.unprotect(reg, "해제")
+        check("네 조작이 모두 잠금을 잡았다", len(held) == 4, len(held))
+    finally:
+        A.mutation_lock = real
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 부재와 '디렉터리가 아닌 것'은 다르다 (PR #14 리뷰) ─────────────────
+def test_region_replaced_by_file_is_pending():
+    """부재만 빈 작업본으로 읽는다 — 같은 경로에 일반 파일이 생기면 구조가
+    깨진 것이므로 판정 불능(pending)이고 해제도 거부된다. 둘을 접으면 빈
+    승인본을 가진 영역이 clean으로 오판되고 해제까지 허용된다."""
+    from osk import approvals as A
+    reg = "= Domain/asfile"
+    regdir = ROOT / "= Domain" / "asfile"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)     # 빈 영역 → 승인본도 빈 tree
+        A.protect(reg, "지정")
+        check("빈 영역은 지정 직후 clean", A.state(reg) == "clean")
+        regdir.rmdir()
+        check("부재는 빈 작업본 — 여전히 clean", A.state(reg) == "clean")
+        regdir.write_text("디렉터리가 파일로 바뀌었다", encoding="utf-8")
+        check("같은 경로가 파일이면 판정 불능",
+              A.working_tree_hash(reg) is None)
+        check("따라서 pending", A.state(reg) == "pending")
+        check("해제도 거부된다", _raises(lambda: A.unprotect(reg))())
+        # 이 상태에서는 작업본을 판정할 수 없어 호출부가 None을 넘기게 된다.
+        # 그때 인자 탓으로 보고하면 사용자가 실제 원인(치울 객체)을 못 본다 —
+        # 경로 진단이 인자 검사보다 먼저다.
+        try:
+            A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg))
+            msg = ""
+        except ValueError as e:
+            msg = str(e)
+        check("거부 사유가 치울 객체를 가리킨다(인자 탓이 아니라)",
+              "치우면" in msg, msg)
+    finally:
+        if regdir.is_file():
+            regdir.unlink()
+        regdir.mkdir(parents=True, exist_ok=True)
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 거부된 반려는 부재조차 바꾸지 않는다 (PR #14 리뷰) ─────────────────
+def test_refused_revert_leaves_region_absent():
+    """CAS가 어긋나 거부된 반려는 무변이어야 한다 — 영역 재생성도 확인을 통과한
+    뒤의 첫 mutation이다. 앞에 두면 '작업본을 건드리지 않았다'면서 부재→빈
+    디렉터리라는 변경이 이미 일어난다."""
+    from osk import approvals as A
+    reg = "= Domain/absent"
+    regdir = ROOT / "= Domain" / "absent"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("본문", encoding="utf-8")
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        shutil.rmtree(regdir)                          # 영역째 삭제
+        check("영역 경로가 부재", not regdir.exists())
+        check("검토한 작업본이 어긋나면 반려 거부",
+              _raises(lambda: A.revert(reg, base, base))())   # base != 빈 tree
+        check("거부 후에도 경로는 여전히 부재(무변)", not regdir.exists())
+        A.revert(reg, base, A.working_tree_hash(reg), "정상 복구")
+        check("맞는 expect_work로는 복구된다",
+              regdir.is_dir() and (regdir / "a.md").read_text() == "본문")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 반려도 검토한 변경집합에만 성립한다 (PR #14 리뷰) ──────────────────
+def test_revert_binds_reviewed_changeset():
+    """반려는 파괴적이므로 승인과 **같은 결속**을 쓴다 — 확인 프롬프트 사이에
+    에이전트가 더 쓴 변경까지 '사용자가 승인한 반려'로 묶여 사라지면 안 된다."""
+    from osk import approvals as A
+    reg = "= Domain/rbind"
+    regdir = ROOT / "= Domain" / "rbind"
+    f = regdir / "a.md"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        f.write_text("승인본", encoding="utf-8")
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        f.write_text("검토한 변경 B", encoding="utf-8")
+        reviewed = A.working_tree_hash(reg)            # 사용자가 확인한 변경집합
+        f.write_text("프롬프트 사이 새 변경 C", encoding="utf-8")   # 에이전트 쓰기
+        check("검토하지 않은 C가 섞이면 반려 거부",
+              _raises(lambda: A.revert(reg, base, reviewed))())
+        check("C가 살아 있다", f.read_text() == "프롬프트 사이 새 변경 C")
+        check("영역은 여전히 pending", A.state(reg) == "pending")
+        A.revert(reg, base, A.working_tree_hash(reg), "다시 검토 후 반려")
+        check("다시 검토한 뒤에는 반려 성립", A.state(reg) == "clean")
+        check("승인본으로 복원됨", f.read_text() == "승인본")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 반려는 파괴 직전에 전제를 다시 본다 (PR #14 리뷰) ──────────────────
+def test_revert_confirms_before_destroying():
+    """반려는 파괴적이다 — 준비 도중 다른 기기의 승인이 들어오면, 기록만 막는
+    사후 검사로는 부족하고 **작업본을 건드리기 전에** 거부해야 한다. 그러지
+    않으면 사용자가 방금 승인한 내용이 옛 승인본으로 덮여 사라진다."""
+    from osk import approvals as A
+    reg = "= Domain/rcas"
+    regdir = ROOT / "= Domain" / "rcas"
+    f = regdir / "a.md"
+    real_get = A._store_get
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        f.write_text("v1", encoding="utf-8")
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)                   # 승인본 A = v1
+        f.write_text("v2", encoding="utf-8")
+        other = A._store_tree(A.resolve_in_root(reg))  # 다른 기기가 승인할 tree B = v2
+        check("반려 전 상태는 pending", A.state(reg) == "pending")
+
+        def racing(h):                    # 준비(blob 적재) 도중 승인 B가 유입
+            A._store_get = real_get
+            core.ledger_append(A.APPROVALS, {
+                "kind": "approve", "region": reg, "base": base,
+                "accepted": other, "reason": "다른 기기(시험)"})
+            return real_get(h)
+        A._store_get = racing
+        check("준비 중 승인본이 바뀌면 반려 거부",
+              _raises(lambda: A.revert(reg, base, A.working_tree_hash(reg)))())
+        A._store_get = real_get
+        check("작업본이 옛 승인본으로 덮이지 않았다", f.read_text() == "v2")
+        check("현행 승인본은 유입된 승인의 것", A.approved_hash(reg) == other)
+        check("유입 승인 기준으로는 clean", A.state(reg) == "clean")
+    finally:
+        A._store_get = real_get
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 지정 뒤의 동시 편집은 오류가 아니라 다음 변경집합이다 ──────────────
+def test_protect_concurrent_write_becomes_pending():
+    """스냅샷 직후의 정상 동시 편집은 지정을 무효로 만들지 않는다 — 영역이
+    곧바로 pending으로 드러나고 사용자가 승인하거나 반려하면 된다. 이것을 하드
+    오류로 바꾸면 자가 치유되는 상태를 재시도로 바꿀 뿐이다(파괴적인 반려에만
+    작업본 결속을 건다)."""
+    from osk import approvals as A
+    reg = "= Domain/pcas"
+    regdir = ROOT / "= Domain" / "pcas"
+    f = regdir / "a.md"
+    real_append = A.ledger_append
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        f.write_text("A", encoding="utf-8")
+
+        def racing(path, record, expect=None):
+            if record.get("kind") == "protect":       # 박제 뒤·append 전 편집
+                A.ledger_append = real_append
+                f.write_text("B", encoding="utf-8")
+            return real_append(path, record, expect)
+        A.ledger_append = racing
+        rec = A.protect(reg, "지정")
+        A.ledger_append = real_append
+        check("지정은 성립한다", bool(rec.get("rid")))
+        check("그 편집은 곧바로 변경집합으로 드러난다", A.state(reg) == "pending")
+        check("승인본은 스냅샷 시점 상태", A.approved_hash(reg) == rec["accepted"])
+        A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "반려")
+        check("반려로 처분하면 clean", A.state(reg) == "clean")
+        check("작업본이 스냅샷 상태로 복원", f.read_text() == "A")
+    finally:
+        A.ledger_append = real_append
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 해제도 잠금 안 전제 재확인을 거친다 (PR #14 리뷰) ───────────────────
+def test_unprotect_precondition_under_lock():
+    """해제 판정과 append 사이에 다른 기기의 승인이 동기화로 들어오면 해제는
+    성립하지 않는다 — 그러지 않으면 stale이 아니라 unprotected가 되어 사용자가
+    보지 못한 최신 승인이 조용히 해제로 덮인다(행의 base도 이미 거짓이다)."""
+    from osk import approvals as A
+    reg = "= Scope/W2"
+    f = ROOT / "= Scope/W2/regr-unp.md"
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f.write_text("v1", encoding="utf-8")
+    real_append = A.ledger_append
+    try:
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        d = A.resolve_in_root(reg)
+        f.write_text("v2", encoding="utf-8")
+        other = A._store_tree(d)          # 다른 기기가 승인할 tree(B)
+        f.write_text("v1", encoding="utf-8")          # 작업본은 되돌려 clean
+        check("해제 직전 상태는 clean", A.state(reg) == "clean")
+
+        def racing(path, record, expect=None):
+            if record.get("kind") == "unprotect":     # 판정 뒤·append 전에 유입
+                A.ledger_append = real_append
+                real_append(A.APPROVALS, {
+                    "kind": "approve", "region": reg, "base": base,
+                    "accepted": other, "reason": "다른 기기(시험)"})
+            return real_append(path, record, expect)
+        A.ledger_append = racing
+        check("유입 승인이 있으면 해제 거부", _raises(lambda: A.unprotect(reg))())
+        A.ledger_append = real_append
+        check("영역은 여전히 보호 중", A.is_protected(reg))
+        check("현행 승인본은 유입된 승인의 것", A.approved_hash(reg) == other)
+    finally:
+        A.ledger_append = real_append
+        try: A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "정리")
+        except Exception: pass
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        f.unlink(missing_ok=True)
+
+
+# ── stale은 해제가 아니다 — 파일 판정이 fail-open 하지 않는다 ───────────
+def test_stale_region_not_unprotected():
+    """인과 극대가 둘이면(다기기 병합) 영역은 stale이다 — 판정 불능이지 해제가
+    아니므로, 현황에서 사라지거나 파일 판정이 '보호영역 밖 = 제약 없음'으로
+    새면 안 된다(fail-open 금지)."""
+    from osk import approvals as A
+    reg = "= Scope/W2"
+    f = ROOT / "= Scope/W2/regr-stale.md"
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    f.write_text("v1", encoding="utf-8")
+    try:
+        A.protect(reg, "지정")
+        check("보호 직후 승인본 일치", A.file_matches_baseline(f))
+        # 같은 head를 부모로 갖는 기록 두 줄 = 다기기 병합 결과(인과 극대 2).
+        # ledger_append는 parents를 스스로 정하므로, 병합 결과 파일을 그대로
+        # 흉내내려면 대장에 직접 적는다(git merge가 남기는 상태와 동일).
+        head = A.records()[-1]["rid"]
+        base_h, work_h = A.approved_hash(reg), A.working_tree_hash(reg)
+        kept = A.APPROVALS.read_text(encoding="utf-8")     # 시험 뒤 되돌릴 원본
+        rid = head
+        with open(A.APPROVALS, "a", encoding="utf-8") as fh:
+            for i in (1, 2):
+                rid = core._next_rid(rid)
+                fh.write(json.dumps({
+                    "rid": rid, "parents": [head], "at": core.now_iso(),
+                    "kind": "approve", "region": reg, "base": base_h,
+                    "accepted": work_h, "reason": f"기기{i}(시험)"},
+                    ensure_ascii=False) + "\n")
+        check("영역이 stale", A.state(reg) == "stale")
+        check("stale 영역도 현황에 남는다", reg in A.protected_regions())
+        check("stale 영역 안의 파일은 보호영역 밖으로 새지 않는다",
+              A.region_of(f) == reg)
+        check("integrity도 stale을 적발",
+              any("stale" in e and reg in e for e in A.integrity()))
+        f.write_text("아무도 승인한 적 없는 내용", encoding="utf-8")
+        check("stale에서 파일 판정은 불일치(fail-closed)",
+              A.file_matches_baseline(f) is False)
+        new = ROOT / "= Scope/W2/regr-stale-new.md"
+        new.write_text("아무도 본 적 없는 새 파일", encoding="utf-8")
+        check("stale 영역에 새로 생긴 파일도 불일치",
+              A.file_matches_baseline(new) is False)
+        new.unlink(missing_ok=True)
+    finally:
+        try: A.APPROVALS.write_text(kept, encoding="utf-8")   # 분기 원상 복구
+        except Exception: pass
+        f.unlink(missing_ok=True)
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+
+
+# ── 중첩 영역: 안쪽 승인이 바깥 미승인을 가리지 않는다 ──────────────────
+def test_nested_regions_all_checked():
+    """파일이 여러 보호영역에 속하면 **전부**의 승인본과 일치해야 한다 — 하위
+    구획만 승인하고 바깥 영역은 그 변경을 승인한 적 없는데 일치로 새면 안 된다."""
+    from osk import approvals as A
+    outer, inner = "= Scope/W3", "= Scope/W3/sub"
+    od, idir = ROOT / "= Scope/W3", ROOT / "= Scope/W3/sub"
+    x = idir / "x.md"
+    try:
+        idir.mkdir(parents=True, exist_ok=True)
+        x.write_text("v1", encoding="utf-8")
+        A.protect(outer, "바깥 지정")
+        A.protect(inner, "안쪽 지정")
+        check("초기에는 양쪽 다 일치", A.file_matches_baseline(x))
+        x.write_text("v2", encoding="utf-8")
+        A.approve(inner, A.approved_hash(inner),
+                  expect_work=A.working_tree_hash(inner), reason="안쪽만 승인")
+        check("안쪽은 clean", A.state(inner) == "clean")
+        check("바깥은 pending", A.state(outer) == "pending")
+        check("안쪽 승인만으로는 일치로 판정되지 않는다",
+              A.file_matches_baseline(x) is False)
+        check("가장 안쪽 영역만 물으면 일치", A.file_in_region_baseline(inner, x))
+    finally:
+        for r in (inner, outer):
+            try: A.unprotect(r, "정리")
+            except Exception: pass
+        shutil.rmtree(od, ignore_errors=True)
+
+
+# ── revert 미완료(삭제 실패)는 기록하지 않는다 (PR #14 리뷰 [high]) ──────
+def test_revert_incomplete_no_record():
+    """manifest에 없는 추가 파일의 삭제가 실패하면(권한 등) 작업본이 pending으로
+    남고, revert는 복원 완료 확인에 실패해 대장에 기록하지 않는다 — '복원을 마친
+    뒤에만 기록'(Mechanism §3 6항) 계약이 위장되지 않는다(fail-closed)."""
+    from osk import approvals as A
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        check("root — 삭제 실패를 만들 수 없어 생략(skip)", True)
+        return
+    reg = "= Domain/revinc"
+    regdir = ROOT / "= Domain" / "revinc"
+    locked = regdir / "locked"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "keep.md").write_text("keep-v1", encoding="utf-8")
+        A.protect(reg, "지정")
+        locked.mkdir()
+        (locked / "junk.md").write_text("junk", encoding="utf-8")   # pending(추가)
+        before = len(A.records())
+        os.chmod(locked, 0o500)                                     # 삭제 불가
+        check("삭제 실패 시 revert가 예외로 거부",
+              _raises(lambda: A.revert(reg, A.approved_hash(reg),
+                                       A.working_tree_hash(reg)))())
+        check("삭제 못한 파일이 남아 있다", (locked / "junk.md").exists())
+        check("revert 대장 행이 추가되지 않았다", len(A.records()) == before)
+        check("영역은 여전히 pending(복원 미완료)", A.state(reg) == "pending")
+    finally:
+        try:
+            os.chmod(locked, 0o700)
+        except OSError:
+            pass
+        shutil.rmtree(locked, ignore_errors=True)     # 추가분 정리 → clean
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 승인본은 그 영역의 tree여야 한다 (PR #14 리뷰 [high]) ──────────────
+def test_baseline_bound_to_region():
+    """승인본 manifest는 **그 영역의** tree일 때만 해석된다 — 영역 밖 항목을 섞은
+    tree는 정상 protect/approve가 만들 수 없으므로, 자기 파일 항목이 맞아도 권한
+    판정이 성립하지 않는다(권위는 성립인데 복원은 거부되는 승인본 금지)."""
+    from osk import approvals as A, authority
+    reg = authority.DELEGATION_REGION
+    dnode = ROOT / "= Person/Delegation/regr-bind.md"
+    outsider = ROOT / "= Domain/regr-outside.md"
+    clause = ("## 위임\n- 대상: 시험 행위\n- 범위: 시험\n"
+              "- 조건: 없음\n- 종료: 없음\n")
+    dnode.write_text(node_text("260802-zzzz-rgd3", "영역 결속 시험", clause),
+                     encoding="utf-8")
+    outsider.write_text("영역 밖 파일", encoding="utf-8")
+    good = None
+    try:
+        A.protect(reg, "지정")
+        good = A.approved_hash(reg)
+        check("정상 승인본에서는 위임 성립", A.file_in_region_baseline(reg, dnode))
+        # 위임 파일 항목은 현재 파일과 정확히 맞추고, 영역 밖 항목을 하나 섞는다
+        entries = sorted(([r, h] for r, h in A._tree_table(good).items()),
+                         key=lambda e: e[0])
+        entries.append(["= Domain/regr-outside.md",
+                        A._store_put(outsider.read_bytes())])
+        entries.sort(key=lambda e: e[0])
+        evil = A._store_put(A._manifest_blob(entries))
+        check("혼합 tree 자체는 형상 검증을 통과", A._tree_table(evil) is not None)
+        check("그러나 그 영역의 tree로는 해석되지 않는다",
+              A._tree_table_for_region(reg, evil) is None)
+        core.ledger_append(A.APPROVALS, {
+            "kind": "approve", "region": reg, "base": good,
+            "accepted": evil, "reason": "영역 밖 항목 혼입(시험)"})
+        check("integrity가 영역 불일치를 적발",
+              any("영역 불일치" in e and reg in e for e in A.integrity()), A.integrity())
+        check("위임 성립이 부정된다(fail-closed)",
+              A.file_in_region_baseline(reg, dnode) is False)
+        eff = {d["title"]: d["effective"] for d in authority.enumerate_delegations()}
+        check("권위 판정도 미성립", eff.get("regr-bind") is False, eff)
+        check("revert도 거부",
+              _raises(lambda: A.revert(reg, A.approved_hash(reg),
+                                       A.working_tree_hash(reg)))())
+        check("영역 밖 파일이 변하지 않음", outsider.read_text() == "영역 밖 파일")
+    finally:
+        if good:
+            core.ledger_append(A.APPROVALS, {
+                "kind": "approve", "region": reg, "base": None,
+                "accepted": good, "reason": "시험 정리"})
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        dnode.unlink(missing_ok=True)
+        outsider.unlink(missing_ok=True)
+
+
 def test_baseline_pass():
-    wipe_sig()
-    node = ROOT / "= Scope/W1/regr-chain.md"     # 2·3번이 만든 정상 노드 재사용
-    core.ledger_append(core.SIGNATURES, {
-        "kind": "sign", "node": "260802-zzzz-rg01",
-        "path": str(node.relative_to(ROOT)), "hash": core.sha256_file(node),
-        "reason": "기준선"})
+    from osk import approvals
+    # 보호영역 하나를 지정하고 clean 상태에서 검증기가 통과하는지 본다
+    reg = "= Scope/W1"
+    if not approvals.is_protected(reg):
+        approvals.protect(reg, "기준선")
     rep = validate.run()
     check("정상 vault 기준선 PASS", rep["verdict"] == "PASS", rep["fail"])
-    check("기준선 서명 판정 1건 signed", rep.get("signed_nodes") == "1/1",
-          rep.get("signed_nodes"))
+    check("보호영역 현황이 clean으로 판정",
+          rep.get("protected_regions", {}).get(reg) == "clean",
+          rep.get("protected_regions"))
+    # clean↔pending 불변식을 실제로 소진한다 — 항진명제가 아니게 한다
+    junk = ROOT / "= Scope/W1/regr-baseline-junk.md"
+    junk.write_text(node_text("260802-zzzz-rgba", "지문 변경"), encoding="utf-8")
+    try:
+        check("영역 내 쓰기가 pending으로 전이", approvals.state(reg) == "pending",
+              approvals.state(reg))
+        rep2 = validate.run()
+        check("검증기 리포트도 pending을 싣는다",
+              rep2.get("protected_regions", {}).get(reg) == "pending",
+              rep2.get("protected_regions"))
+    finally:
+        junk.unlink(missing_ok=True)
+    check("쓰기 회수 후 clean 복귀", approvals.state(reg) == "clean")
+    approvals.unprotect(reg, "기준선 정리")   # 잔여 없이 되돌린다
 
 
 # ── 14b. 자기 참조 PE는 계약 위반 (상태 자체를 불허) ──────────────────
 def test_self_referencing_edge():
     p = ROOT / "= Scope/W1/regr-selfref.md"
     try:
-        for pred, tgt in (("replaces", "[[regr-selfref]]"),
-                          ("conflicts", "[[= Scope/W1/regr-selfref]]"),
-                          ("supported-by", "[[regr-selfref.md]]")):
+        # 경로형·id형 어느 표기든 자기 참조는 적발한다(derived-from은 id로도)
+        for pred, tgt in (("conflicts", "[[= Scope/W1/regr-selfref]]"),
+                          ("derived-from", "[[regr-selfref.md]]"),
+                          ("derived-from", "260802-zzzz-rg30")):
             p.write_text(node_text("260802-zzzz-rg30", "자기 참조", "본문",
                                    f'{pred}: "{tgt}"\n'), encoding="utf-8")
             errs = contract.validate(contract.parse(p))
             check(f"자기 참조 {pred}({tgt})는 계약 위반",
                   any("자기 자신" in e for e in errs), errs)
         p.write_text(node_text("260802-zzzz-rg30", "정상", "본문",
-                               'replaces: "[[regr-other]]"\n'), encoding="utf-8")
+                               'derived-from: "[[regr-other]]"\n'), encoding="utf-8")
         check("남을 가리키는 PE는 통과",
               not contract.validate(contract.parse(p)))
     finally:
@@ -754,26 +2000,8 @@ def test_surface_contract():
           and not validate.surface_violations())
 
 
-# ── 14d. 헌법 12조 5항 후단 — 입건 당사자는 판결 전까지 재서명 불가 ────
-def test_open_case_blocks_signing():
-    wipe_sig()
-    node = ROOT / "= Scope/W1/regr-party.md"
-    node.write_text(node_text("260802-zzzz-rg40", "당사자"), encoding="utf-8")
-    check("평시에는 서명된다",
-          bool(S.sign(node, "평시", "260802-zzzz-rg40"))
-          and S.status("260802-zzzz-rg40", node) == "signed")
-    write_case("CASE-2026-9100", status="docketed", verdict=None,
-               parties=["260802-zzzz-rg40"])
-    node.write_text(node_text("260802-zzzz-rg40", "당사자", "수정됨"), encoding="utf-8")
-    check("입건 중에는 재서명이 거부된다(헌법 12조 5항)",
-          _raises(lambda: S.sign(node, "재서명 시도", "260802-zzzz-rg40"))())
-    check("입건 중 재서명 시도가 대장에 기록을 남기지 않는다",
-          len([r for r in core.ledger_read(core.SIGNATURES)
-               if r.get("node") == "260802-zzzz-rg40"]) == 1)
-    (core.LEDGER / "case" / "CASE-2026-9100.md").unlink()
-    check("사건 종결 후에는 재서명된다",
-          bool(S.sign(node, "판결 후", "260802-zzzz-rg40"))
-          and S.status("260802-zzzz-rg40", node) == "signed")
+# ── 14d. (입건-재서명 차단 시험 폐지 — 서명 제도가 폐지됐다. 입건 당사자
+#          노드의 노출·권위는 이제 보호영역 승인본이 다룬다.) ──
 
 
 # ── 14e. 대장 행 형상 — 비-dict 행·비문자열 parents (4차 조건 나) ──────
@@ -785,8 +2013,6 @@ def test_ledger_row_shape():
     rep = validate.run()
     check("비-dict 행에도 검증기가 죽지 않고 FAIL 보고",
           rep["verdict"] == "FAIL")
-    check("status()도 죽지 않는다",
-          _raises(lambda: S.status("아무개"))() or True)
 
     wipe_sig()                       # unhashable parents 원소
     node = ROOT / "= Scope/W1/regr-shape.md"
@@ -803,7 +2029,7 @@ def test_ledger_row_shape():
     check("비문자열 parents 원소는 여과되고 판정이 죽지 않는다",
           all(all(isinstance(x, str) for x in v) for v in par.values()), par)
     check("남은 정상 부모는 보존된다",
-          S.status("260802-zzzz-rg41", node) == "unsigned")
+          sig_status("260802-zzzz-rg41", node) == "unsigned")
     check("형상 이상에도 ledger_append가 산다",
           bool(core.ledger_append(core.SIGNATURES, {
               "kind": "sign", "node": "260802-zzzz-rg41", "path": rel,
@@ -861,17 +2087,18 @@ def test_write_contract():
           not (ROOT / "= Scope/W1/regr-w4.md").exists())
 
 
-def test_write_cas_bound_to_signature():
+def test_write_cas_body_bound():
+    # 서명이 폐지됐으므로 CAS는 **본문 전체 치환**에만 결속한다(Mechanism
+    # §6-2 4항) — 부분 변경(엣지 델타·summary)에는 요구하지 않는다.
     node = ROOT / "= Scope/W1/regr-w1.md"
-    nid = contract.parse(node).id
-    # 미서명 노드 — 무-body 변경은 CAS 면제
     r = _w(write.update_node, "regr-w1", summary="고친 요약")
-    check("미서명 노드의 summary 변경은 CAS 면제", r["ok"], r)
+    check("summary 변경은 CAS 면제", r["ok"], r)
     check("덮은 요약을 응답에 담는다",
           r.get("replaced_summary") == "쓰기 통로 시험", r)
-    r = _w(write.update_node, "regr-w1", add_edges={"supported-by": "regr-w1x"})
-    check("미서명 노드의 엣지 델타도 면제", r["ok"], r)
+    r = _w(write.update_node, "regr-w1", add_edges={"derived-from": "regr-w1x"})
+    check("엣지 델타도 면제", r["ok"], r)
     check("dangling을 응답으로 알린다", "regr-w1x" in r.get("dangling", []), r)
+    check("응답에 폐지된 signed 필드가 없다", "signed" not in r, r)
     # 본문 전체 치환은 언제나 CAS
     r = _w(write.update_node, "regr-w1", body="새 본문")
     check("본문 치환은 CAS 필수", not r["ok"], r)
@@ -883,21 +2110,29 @@ def test_write_cas_bound_to_signature():
     r = _w(write.update_node, "regr-w1", body="새 본문", expect_hash=h)
     check("올바른 CAS면 통과", r["ok"] and r["new_hash"] != h, r)
 
-    # 서명 노드 — 무-body 변경에도 CAS 필수
-    core.ledger_append(core.SIGNATURES, {
-        "kind": "sign", "node": nid, "path": str(node.relative_to(ROOT)),
-        "hash": core.sha256_file(node), "reason": "시험"})
-    check("전제: signed", S.status(nid, node) == "signed")
-    r = _w(write.update_node, "regr-w1", summary="몰래 고침")
-    check("서명 노드의 summary 변경은 CAS 필수(관측 증명)", not r["ok"], r)
-    check("거부 응답이 서명 사실과 rid를 알린다",
-          r.get("signed") is True and r.get("signature_rid"), r)
-    check("거부했으므로 서명이 그대로다", S.status(nid, node) == "signed")
-    r = _w(write.update_node, "regr-w1", summary="정당한 수정",
-           expect_hash=core.sha256_file(node))
-    check("해시를 대면 통과하고 서명 무효화를 알린다",
-          r["ok"] and r.get("was_signed") and r.get("now_unsigned"), r)
-    check("쓰기 후 미서명", S.status(nid, node) == "unsigned")
+
+def test_edge_single_list_roundtrip():
+    """손으로/정본에서 단일 원소 리스트로 저장된 엣지(`derived-from: [<id>]`)를
+    가진 노드가 그 엣지를 건드리지 않는 갱신에서 왕복 불일치로 거부되지 않는다
+    (리스트 `[x]`와 스칼라 `x`는 대상이 하나로 논리적으로 같다)."""
+    tgt = ROOT / "= Scope/W1/regr-sl-target.md"
+    ref = ROOT / "= Scope/W1/regr-sl-ref.md"
+    try:
+        tgt.write_text(node_text("260802-zzzz-rgs1", "근거"), encoding="utf-8")
+        # 단일 원소 리스트 표기로 손수 저장
+        ref.write_text(node_text("260802-zzzz-rgs2", "파생", "본문",
+                                 'derived-from: [260802-zzzz-rgs1]\n'),
+                       encoding="utf-8")
+        check("전제: 단일 원소 리스트로 파싱된다",
+              contract.parse(ref).meta.get("derived-from") == ["260802-zzzz-rgs1"])
+        r = _w(write.update_node, "regr-sl-ref", summary="요약 갱신")
+        check("단일 원소 리스트 엣지 노드의 무관한 갱신이 거부되지 않는다",
+              r.get("ok") is True, r)
+        check("갱신 후에도 근거를 여전히 가리킨다",
+              "260802-zzzz-rgs1" in contract.parse(ref).edges("derived-from"))
+    finally:
+        for p_ in (tgt, ref):
+            p_.unlink(missing_ok=True)
 
 
 def test_write_move_and_pin():
@@ -1001,8 +2236,8 @@ def test_write_serialized():
         "import sys, json; sys.path.insert(0, %r)\n"
         "from osk import write\n"
         "import sys as s\n"
-        "r = write.update_node('regr-r2', add_edges={'supported-by': s.argv[1]})\n"
-        "print(json.dumps({'ok': r['ok'], 'edges': r['edges']['supported-by']}))\n"
+        "r = write.update_node('regr-r2', add_edges={'derived-from': s.argv[1]})\n"
+        "print(json.dumps({'ok': r['ok'], 'edges': r['edges']['derived-from']}))\n"
         % str(ENGINE))
     sf = Path(_TMP.name) / "concurrent.py"
     sf.write_text(script, encoding="utf-8")
@@ -1014,7 +2249,7 @@ def test_write_serialized():
     outs = [p.communicate() for p in procs]
     check("동시 쓰기 2건 모두 성공", all(p.returncode == 0 for p in procs),
           [o[1][-200:] for o in outs])
-    final = contract.parse(ROOT / "= Scope/W1/regr-r2.md").edges("supported-by")
+    final = contract.parse(ROOT / "= Scope/W1/regr-r2.md").edges("derived-from")
     check("두 델타가 모두 보존된다(lost update 없음)",
           "tgt0" in final and "tgt1" in final, final)
 
@@ -1053,8 +2288,10 @@ def test_surface_smoke():
             check(f"표면 도구 살아 있음: {name}", False, f"{type(e).__name__}: {e}")
     r = M.read_node("regr-smoke")
     check("read_node가 hash를 준다(CAS 입력)", r.get("hash", "").startswith("sha256:"))
+    check("read_node에 폐지된 signed 필드가 없다", "signed" not in r, r)
     hits = M.search("스모크", 5)
-    check("search 결과에 signed 표시", all("signed" in h for h in hits), hits)
+    check("search 결과에 폐지된 signed 필드가 없다",
+          all("signed" not in h for h in hits), hits)
 
 
 # ── 14i. 직렬화 왕복 — 표면이 스스로 파손 노드를 만들지 않는다 (7차 중대 A) ──
@@ -1063,7 +2300,7 @@ def test_render_roundtrip():
         ('따옴표', {"summary": 'He said "hi"'}),
         ('백슬래시', {"summary": r"경로 C:\temp\x"}),
         ('콜론·해시', {"summary": "a: b # c"}),
-        ('엣지 따옴표', {"summary": "정상", "edges": {"supported-by": '따옴표"대상'}}),
+        ('엣지 따옴표', {"summary": "정상", "edges": {"derived-from": '따옴표"대상'}}),
     ):
         name = f"regr-rt-{abs(hash(label)) % 10000}"
         r = _w(write.create_node, name, kw.get("summary", "s"), "본문",
@@ -1179,21 +2416,28 @@ def test_candidate_needs_distinct():
 
 # ── 14o. 엣지 표기 동일성 — 경로형과 스템형은 같은 대상 (8차 잔여 1) ────
 def test_edge_target_normalization():
+    """derived-from의 **노드** 근거는 id로만 단다(Mechanism §8 2항) — 경로·이름은
+    상태라 이동·개명에 끊어진다. 비노드 근거는 위키링크로 그대로 받는다."""
     r = _w(write.create_node, "regr-norm-t", "대상", "본문", "fable-5",
            space="= Scope/W1")
+    tid = r["id"]
+    for form in ("= Scope/W1/regr-norm-t", "regr-norm-t"):
+        bad = _w(write.create_node, "regr-norm-x", "경로형 근거", "본문",
+                 "fable-5", space="= Scope/W1", edges={"derived-from": form})
+        check(f"노드 근거의 비-id 표기는 거부: {form}", not bad["ok"], bad)
+        check("거부 사유가 id를 요구한다",
+              any("id로 단다" in v for v in bad.get("violations", [])), bad)
     r0 = _w(write.create_node, "regr-norm", "표기 정규화", "본문",
-            "fable-5", space="= Scope/W1",
-            edges={"supported-by": "= Scope/W1/regr-norm-t"})
-    check("전제: 경로형 엣지로 생성", r0["ok"], r0)
-    r1 = _w(write.update_node, "regr-norm",
-            add_edges={"supported-by": "regr-norm-t"})
-    check("스템형 추가는 경로형과 같은 대상 — 중복 등재하지 않는다",
-          len(r1["edges"]["supported-by"]) == 1, r1["edges"])
-    check("변경이 없으므로 no_change", r1.get("no_change") is True, r1)
+            "fable-5", space="= Scope/W1", edges={"derived-from": tid})
+    check("id 근거로는 생성", r0["ok"], r0)
+    r1 = _w(write.update_node, "regr-norm", add_edges={"derived-from": tid})
+    check("같은 id 추가는 중복 등재하지 않는다", r1.get("no_change") is True, r1)
     r2 = _w(write.update_node, "regr-norm",
-            remove_edges={"supported-by": "regr-norm-t"})
-    check("스템형 제거가 경로형 엣지에 유효하다",
-          r2["ok"] and not r2["edges"]["supported-by"], r2)
+            add_edges={"derived-from": "[[= Governance/없는문서]]"})
+    check("비노드 근거는 위키링크로 받는다", r2["ok"], r2)
+    r3 = _w(write.update_node, "regr-norm", remove_edges={"derived-from": tid})
+    check("id 제거가 유효하다",
+          r3["ok"] and tid not in (r3["edges"]["derived-from"] or []), r3)
     for nm in ("regr-norm", "regr-norm-t"):
         (ROOT / f"= Scope/W1/{nm}.md").unlink(missing_ok=True)
 
@@ -1273,7 +2517,7 @@ def test_mcp_transport():
                 out["create"] = await call("create_node", {
                     "title": "regr-tx", "summary": "전송", "body": "본문",
                     "drafter": "fable-5", "space": "= Scope/W1",
-                    "edges": {"supported-by": "regr-tx-t"}})   # dict 인자
+                    "edges": {"derived-from": "regr-tx-t"}})   # dict 인자
                 out["read"] = await call("read_node", {"name": "regr-tx"})
                 out["stale"] = await call("update_node", {
                     "name": "regr-tx", "body": "새 본문",
@@ -1283,7 +2527,7 @@ def test_mcp_transport():
                     "expect_hash": out["read"]["hash"]})
                 out["delta"] = await call("update_node", {
                     "name": "regr-tx",
-                    "add_edges": {"supported-by": "regr-tx-t2"}})  # dict 인자
+                    "add_edges": {"derived-from": "regr-tx-t2"}})  # dict 인자
                 out["validators"] = await call("run_validators", {})
                 res = await s.call_tool("search", {"query": "전송", "k": 3})
                 items = [json.loads(c.text) for c in res.content]
@@ -1309,41 +2553,42 @@ def test_mcp_transport():
           o["stale"])
     check("전송: 재읽기 후 재시도 성공(재시도 계약)", o["retry"].get("ok"), o["retry"])
     check("전송: dict 인자(add_edges) 델타 적용",
-          o["delta"].get("ok") and "regr-tx-t2" in o["delta"]["edges"]["supported-by"],
+          o["delta"].get("ok") and "regr-tx-t2" in o["delta"]["edges"]["derived-from"],
           o["delta"])
     check("전송: run_validators가 서버 안에서도 동작(이벤트 루프 안)",
           o["validators"].get("verdict") in ("PASS", "FAIL")
           and not any("asyncio" in str(x) for f in o["validators"]["fail"]
                       for x in list(f.values())[0]),
           o["validators"]["fail"])
-    check("전송: search 결과에 signed 동봉",
-          all("signed" in h for h in o["search"]), o["search"])
+    check("전송: search 결과에 폐지된 signed 필드가 없다",
+          all("signed" not in h for h in o["search"]), o["search"])
     (ROOT / "= Scope/W1/regr-tx.md").unlink(missing_ok=True)
 
 
 # ── 14s. 표면 왕복 — search가 준 이름을 나머지 도구가 받는가 (8차 차단 ③) ──
 def test_surface_name_roundtrip():
     """list_nodes를 없앤 설계에서 search는 이름을 얻는 유일한 통로다. 그 이름이
-    그대로 쓰이지 않으면 발견과 지목 사이가 끊어진다 — 표면 쓰기의 결과는 언제나
-    미서명이므로 이것은 예외가 아니라 기본 경로다."""
+    그대로 쓰이지 않으면 발견과 지목 사이가 끊어진다."""
     import mcp_server as M
     r = _w(write.create_node, "regr-rt-name", "왕복", "본문 내용",
            "fable-5", space="= Scope/W1")
-    check("전제: 생성(→미서명)", r["ok"] and not r["signed"], r)
+    check("전제: 생성", r["ok"], r)
     hits = [h for h in M.search("왕복", 8) if h["path"].endswith("regr-rt-name.md")]
     check("search가 찾는다", len(hits) == 1, hits)
     h = hits[0]
-    check("미서명이 signed 필드로 표시된다", h["signed"] is False, h)
     check("title은 노드 이름 그대로다(변조 없음)",
           h["title"] == "regr-rt-name", h["title"])
     check("그 title로 read_node가 된다",
           "error" not in M.read_node(h["title"]), M.read_node(h["title"]))
     check("그 title로 update_node가 된다",
           _w(write.update_node, h["title"], summary="갱신")["ok"])
-    check("그 title을 엣지 대상으로 쓰면 dangling이 아니다",
+    # derived-from의 노드 근거는 id다 — 그 id도 같은 검색 결과가 함께 준다.
+    # (발견→지목이 끊어지지 않는 것은 title이 아니라 이 id가 담보한다)
+    check("검색 결과가 id도 함께 준다", bool(h.get("id")), h)
+    check("그 id를 엣지 대상으로 쓰면 dangling이 아니다",
           not _w(write.create_node, "regr-rt-ref", "참조", "본문",
                  "fable-5", space="= Scope/W1",
-                 edges={"supported-by": h["title"]})["dangling"])
+                 edges={"derived-from": h["id"]})["dangling"])
     for nm in ("regr-rt-name", "regr-rt-ref"):
         (ROOT / f"= Scope/W1/{nm}.md").unlink(missing_ok=True)
 
@@ -1354,8 +2599,8 @@ def test_validate_uses_destination_path():
     표면이 자기 검증기가 위반이라 부르는 노드를 ok로 쓰게 된다."""
     r = _w(write.create_node, "regr-selfref-w", "자기 참조", "본문",
            "fable-5", space="= Scope/W1",
-           edges={"replaces": "regr-selfref-w"})
-    check("자기 참조 replaces를 쓰기 통로가 거부한다", not r["ok"], r)
+           edges={"derived-from": "regr-selfref-w"})
+    check("자기 참조 derived-from을 쓰기 통로가 거부한다", not r["ok"], r)
     check("거부 사유가 계약 문언 그대로",
           any("자기 자신" in v for v in r["violations"]), r)
     check("거부했으므로 파일이 없다",
@@ -1408,7 +2653,7 @@ def test_surface_lint():
     check("drafter가 스키마 패턴으로 가둬진다",
           "pattern" in cn.inputSchema["properties"]["drafter"])
     check("edges 술어가 스키마 enum으로 가둬진다",
-          "supported-by" in _json.dumps(cn.inputSchema["properties"]["edges"]))
+          "derived-from" in _json.dumps(cn.inputSchema["properties"]["edges"]))
 
 
 # ── 14w. overview — 주소를 선제 조회할 수 있다 (10차 ②) ─────────────────
@@ -1429,8 +2674,8 @@ def test_overview():
 
 # ── 14x. 엣지 값의 형은 통로가 거부한다 (10차 정정 ①: 스키마+런타임 이중) ──
 def test_edge_value_type_refused():
-    for bad in ({"supported-by": 42}, {"supported-by": [{"x": 1}]},
-                {"supported-by": ""}, {"supported-by": [None]}):
+    for bad in ({"derived-from": 42}, {"derived-from": [{"x": 1}]},
+                {"derived-from": ""}, {"derived-from": [None]}):
         r = _w(write.create_node, "regr-edgeval", "형 검사", "본문",
                "fable-5", space="= Scope/W1", edges=bad)
         check(f"엣지 값 {bad} 거부", not r["ok"], r)
@@ -1438,14 +2683,14 @@ def test_edge_value_type_refused():
               not (ROOT / "= Scope/W1/regr-edgeval.md").exists())
     # remove_edges도 add_edges와 같은 검사를 받는다(비대칭 제거)
     r0 = _w(write.create_node, "regr-sym", "대칭", "본문", "fable-5",
-            space="= Scope/W1", edges={"supported-by": "대상A"})
+            space="= Scope/W1", edges={"derived-from": "대상A"})
     check("전제: 생성", r0["ok"], r0)
     for kw in ({"add_edges": {"suported-by": "X"}},
                {"remove_edges": {"suported-by": "X"}}):
         r = _w(write.update_node, "regr-sym", **kw)
         check(f"술어 오타 거부: {list(kw)[0]}", not r["ok"], r)
         check("거부 사유에 쓸 수 있는 술어가 실린다",
-              any("supported-by" in v for v in r["violations"]), r)
+              any("derived-from" in v for v in r["violations"]), r)
     (ROOT / "= Scope/W1/regr-sym.md").unlink(missing_ok=True)
 
 
@@ -1652,19 +2897,17 @@ def test_publish_guards():
 
 # ── 15. 정합성 검사 — 충돌 후보 검출 (헌법 12조 1·2항) ─────────────────
 def test_conflict_candidates():
-    a = ROOT / "= Scope/W1/regr-heir-a.md"
-    b = ROOT / "= Scope/W1/regr-heir-b.md"
-    c = ROOT / "= Scope/W1/regr-ancestor.md"
+    # lineage-fork는 계보 술어 폐지로 사라졌다. 기계 판정이 남는 유형은
+    # duplication(동명 stem의 독립 노드) 하나다.
+    (ROOT / "= Scope/W2").mkdir(exist_ok=True)
+    a = ROOT / "= Scope/W1/regr-dup.md"
+    b = ROOT / "= Scope/W2/regr-dup.md"
     try:
-        c.write_text(node_text("260802-zzzz-rg20", "선행"), encoding="utf-8")
-        a.write_text(node_text("260802-zzzz-rg21", "후계 A", "본문",
-                               'replaces: "[[regr-ancestor]]"\n'), encoding="utf-8")
-        b.write_text(node_text("260802-zzzz-rg22", "후계 B", "본문",
-                               'replaces: "[[= Scope/W1/regr-ancestor]]"\n'),
-                     encoding="utf-8")
+        a.write_text(node_text("260802-zzzz-rg20", "동명 A"), encoding="utf-8")
+        b.write_text(node_text("260802-zzzz-rg21", "동명 B"), encoding="utf-8")
         cands = validate.conflict_candidates(graph.Index())
-        check("lineage-fork 검출(경로형 표기 포함)",
-              any("lineage-fork" in x and "regr-ancestor" in x for x in cands), cands)
+        check("duplication 검출(동명 stem)",
+              any("duplication" in x and "regr-dup" in x for x in cands), cands)
         rep = validate.run()
         check("충돌 후보는 검증기 FAIL로 사용자 심의 요청",
               rep["verdict"] == "FAIL"
@@ -1674,10 +2917,10 @@ def test_conflict_candidates():
         check("검증기는 후보를 대장에 자동 기록하지 않는다(자동 집행 없음)",
               len(core.ledger_read(core.CANDIDATES)) == before)
     finally:
-        for p_ in (a, b, c):
+        for p_ in (a, b):
             p_.unlink(missing_ok=True)
     check("후보 해소 후 기준선 복귀",
-          not any("lineage-fork" in x
+          not any("duplication" in x and "regr-dup" in x
                   for x in validate.conflict_candidates(graph.Index())))
 
 
@@ -1834,12 +3077,11 @@ def test_release_and_update():
                 node_text("260802-uupd-0002", "정본 규범 문서", "1조."),
                 encoding="utf-8")
 
-            # 갱신이 통치 문서를 덮으면 서명이 자동으로 풀린다 — 재서명이 수용
-            # 기록이다 (Mechanism §1-2 6항 · 시행령 §10 2항)
+            # 갱신이 통치 문서를 덮으면 그 차이가 통치 구획 보호영역의 변경집합
+            # 으로 남는다 — 사용자의 승인이 수용 기록이다 (Mechanism §1-2 6항 ·
+            # 시행령 §10 2항). 여기서는 updater가 통치 문서를 실제로 덮는지만 본다
+            # (수용=승인의 생애는 보호영역 fixture가 소진한다).
             gp = ROOT / "_governance/UpdDoc.md"
-            S.sign(gp, "수용 시험", "260802-uupd-0002")
-            check("갱신 후 수용 서명 성립",
-                  S.status("260802-uupd-0002", gp) == "signed")
             (can / "_governance/UpdDoc.md").write_text(
                 node_text("260802-uupd-0002", "정본 규범 문서", "1조 개정."),
                 encoding="utf-8")
@@ -1847,9 +3089,8 @@ def test_release_and_update():
             git(can, "commit", "-qm", "gov v2")
             _rel("v9.0.1")
             update.run(source="bundle", bundle=str(can), apply=True)
-            check("갱신이 덮으면 서명이 풀린다(수용 재확인 대기)",
-                  S.status("260802-uupd-0002", gp) == "unsigned"
-                  and "1조 개정" in gp.read_text(encoding="utf-8"))
+            check("갱신이 통치 문서를 정본 내용으로 덮는다",
+                  "1조 개정" in gp.read_text(encoding="utf-8"))
             check("갱신 후 현재 버전 갱신", update.current_version() == "v9.0.1")
 
             # 비준증빙 위반 — 변조·부재는 중단. 증빙 밖 미추적 파일은 허용.
@@ -2870,15 +4111,16 @@ if __name__ == "__main__":
                test_fork_failclosed_and_reseal, test_anchor_no_order_fallback,
                test_cycle_normalization, test_structural_damage,
                test_ridless_unsign_not_swallowed, test_root_confinement_and_kst,
-               test_restore_binding,
-               test_path_reuse, test_demotion_reorder, test_fingerprint_move,
+               test_approval_lifecycle,
+               test_path_reuse, test_fingerprint_move,
                test_sync, test_conflicts_semantics,
                test_ledger_corruption_resilience, test_ledger_schema_segment,
                test_validate_global_invariance, test_authority_hold,
                test_self_referencing_edge, test_surface_contract,
-               test_open_case_blocks_signing, test_ledger_row_shape,
+               test_ledger_row_shape,
                test_broken_delegation_isolated, test_write_contract,
-               test_write_cas_bound_to_signature, test_write_move_and_pin,
+               test_write_cas_body_bound, test_edge_single_list_roundtrip,
+               test_write_move_and_pin,
                test_write_routing, test_write_session_alias,
                test_write_candidate_basis,
                test_write_serialized, test_surface_smoke,
@@ -2895,6 +4137,36 @@ if __name__ == "__main__":
                test_publish_manifest, test_publish_guards,
                test_conflict_candidates,
                test_release_and_update,
+               test_store_digest_confined, test_delegation_protection_scope,
+               test_approve_requires_expect_work,
+               test_approval_baseline_blobs_present,
+               test_store_content_verified,
+               test_revert_incomplete_no_record,
+               test_approve_precondition_under_lock,
+               test_unprotect_precondition_under_lock,
+               test_protect_precondition_rejects_stale,
+               test_protect_concurrent_write_becomes_pending,
+               test_revert_confirms_before_destroying,
+               test_revert_recreates_deleted_region,
+               test_revert_binds_reviewed_changeset,
+               test_move_recorded_and_reverted_in,
+               test_move_reverted_out_no_duplicate,
+               test_move_return_blocked_origin_occupied,
+               test_move_chain_reverted_no_duplicate,
+               test_move_lifecycle_cutoff, test_move_reentry_single_plan,
+               test_move_cutoff_causal_not_clock,
+               test_move_phantom_tail_row_harmless,
+               test_move_unrecorded_outside_protection,
+               test_changeset_lists_difference, test_stale_sealed_by_approve,
+               test_topology_rejects_wiki_node_derived_from,
+               test_local_lock_path_git_shapes,
+               test_revert_structure_conflict_no_partial,
+               test_approval_serialized_with_writes,
+               test_region_replaced_by_file_is_pending,
+               test_refused_revert_leaves_region_absent,
+               test_stale_region_not_unprotected,
+               test_nested_regions_all_checked,
+               test_baseline_bound_to_region,
                test_baseline_pass]:
         try:
             fn()

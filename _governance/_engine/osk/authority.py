@@ -1,9 +1,11 @@
 """osk.authority — 권한 검사.
 
 구현 근거: 헌법 7조(위임 3요건·불명 보류), 시행령 §5(위임 Facet 전수 열거 +
-서명 확인 + 위임 절 + 3값 평가·fail-closed), Mechanism §7(위임 절 형식).
+승인본 확인 + 위임 절 + 3값 평가·fail-closed), Mechanism §7(위임 절 형식).
 
-권한 검사는 결정론적 전수 조회다 — 의미 검색·랭킹으로 권한을 추정하지
+권한 검사는 위임 Facet의 **승인본 상태만** 읽는다(시행령 §5 2항). 위임의
+성립은 그 노드가 위임 Facet의 승인본에 반영되어 있을 것을 요한다(헌법 7조
+3항) — 위임 Facet은 상설 보호영역이다. 의미 검색·랭킹으로 권한을 추정하지
 않는다(헌법 11조 3항).
 """
 from __future__ import annotations
@@ -11,9 +13,12 @@ import re
 from pathlib import Path
 
 from .core import ROOT
-from . import contract, signatures
+from . import contract, approvals
 
 DELEGATION_FACET = ROOT / "= Person" / "Delegation"
+# 위임 Facet의 정본 region key — 권한 판정은 **이 정확한 region**의 승인본으로만
+# 한다(하위 영역만 보호된 경우로 우회되지 않게).
+DELEGATION_REGION = DELEGATION_FACET.relative_to(ROOT).as_posix()
 CLAUSE_KEYS = ("대상", "범위", "조건", "종료")
 
 
@@ -31,34 +36,78 @@ def parse_clause(body: str) -> dict | None:
     return out
 
 
-def enumerate_delegations() -> list[dict]:
-    """위임 Facet 전수 열거. 각 항목: 성립 3요건(배치·유효 위임 절·유효 서명)
-    평가를 포함한다.
+def covering_regions() -> list[str]:
+    """위임 Facet을 덮는 보호영역 — Facet 자신과 그 **상위** 구획들.
 
-    파싱 불가 파일(임시 메모 등)은 위임으로 세지 않고 `broken`으로 표시해
-    돌려준다 — 그 파일 하나가 권한 검사를 죽이지 않는다(시행령 §11 —
-    실패는 보류·보고). 위임으로 세지 않으므로 방향은 fail-closed다."""
+    헌법 10조 1항: "상위 구획의 보호는 그 하위 전체에 미치며, 에이전트는 하위에
+    보호의 예외를 만들 수 없다." 그래서 사용자가 Facet 대신 `= Person`을
+    지정했어도 위임은 성립한다. 반대로 Facet **하위**만 지정한 것은 덮지 못한다
+    — 하위 구획만 protect해 Facet의 미보호를 우회할 수 없다(헌법 7조 3항)."""
+    reg = DELEGATION_REGION
+    return [r for r in approvals.protected_regions()
+            if reg == r.rstrip("/") or reg.startswith(r.rstrip("/") + "/")]
+
+
+def _baseline_nodes() -> list[Path] | None:
+    """승인본에 담긴 위임 Facet 안의 노드 파일 전수 — 덮는 보호영역이 없으면
+    None(미보호).
+
+    시행령 §5 2항은 "**승인본의** 위임 노드를 전수 열거"라고 한다 — 작업본을
+    훑으면 승인본에 있으나 지금 지워진 노드를 놓치고, 하위 디렉터리의 노드도
+    빠진다. 그래서 열거의 출처는 승인본 manifest다."""
+    for region in sorted(covering_regions(), key=len, reverse=True):
+        tree = approvals.approved_hash(region)
+        table = approvals._tree_table_for_region(region, tree) if tree else None
+        if table is None:
+            continue
+        pre = DELEGATION_REGION + "/"
+        return [p for p in (approvals.resolve_in_root(rel) for rel in sorted(table)
+                            if rel.startswith(pre) and rel.endswith(".md"))
+                if p is not None]
+    return None
+
+
+def enumerate_delegations() -> list[dict]:
+    """위임 Facet 전수 열거. 각 항목: 성립 3요건(배치·유효 위임 절·승인본
+    반영) 평가를 포함한다.
+
+    열거는 **승인본**에서 한다(시행령 §5 2항). `approved`는 그 노드가 덮는
+    보호영역의 승인본에 그 해시로 들어 있는가다 — 덮는 영역이 없거나(미보호),
+    승인 이후 작업본이 달라졌으면(pending) False다(fail-closed). 파싱 불가
+    파일은 위임으로 세지 않고 `broken`으로 표시한다 — 그 파일 하나가 권한
+    검사를 죽이지 않는다(시행령 §11)."""
     out = []
-    if not DELEGATION_FACET.exists():
-        return out
-    for p in sorted(DELEGATION_FACET.glob("*.md")):
+    nodes = _baseline_nodes()
+    if nodes is None:                      # 미보호 — 성립한 위임이 없다
+        if not DELEGATION_FACET.exists():
+            return out
+        nodes = sorted(DELEGATION_FACET.glob("*.md"))   # 보고용(전부 미성립)
+    for p in nodes:
+        rel = str(p.relative_to(ROOT))
+        if not p.is_file():                # 승인본에는 있으나 작업본에서 사라짐
+            out.append({"path": rel, "node": None, "title": p.stem,
+                        "clause": None, "broken": "작업본에 없음",
+                        "valid_clause": False, "approved": False,
+                        "effective": False})
+            continue
         try:
             n = contract.parse(p)
         except Exception as e:
             out.append({
-                "path": str(p.relative_to(ROOT)), "node": None,
+                "path": rel, "node": None,
                 "title": p.stem, "clause": None, "broken": str(e),
-                "valid_clause": False, "signed": False, "effective": False,
+                "valid_clause": False, "approved": False, "effective": False,
             })
             continue
         clause = parse_clause(n.body)
-        sig = signatures.status(n.id, p)
+        approved = any(approvals.file_in_region_baseline(r, p)
+                       for r in covering_regions())
         out.append({
-            "path": str(p.relative_to(ROOT)), "node": n.id,
+            "path": rel, "node": n.id,
             "title": p.stem, "clause": clause,
             "valid_clause": clause is not None,
-            "signed": sig == "signed",
-            "effective": clause is not None and sig == "signed",
+            "approved": approved,
+            "effective": clause is not None and approved,
         })
     return out
 
@@ -74,8 +123,8 @@ def evaluate(delegation: dict, action: str) -> tuple[str, str]:
     문자열 일치는 사용자가 원문을 읽을 때의 안내일 뿐 평가값이 아니다."""
     if not delegation["valid_clause"]:
         return "비적용", "위임 절 형식 미충족 — 권한의 근거가 아니다"
-    if not delegation["signed"]:
-        return "비적용", "유효 서명 없음 — 위임 미성립"
+    if not delegation["approved"]:
+        return "비적용", "위임 Facet 승인본에 반영되지 않음 — 위임 미성립"
     return "불명", "적용 봉투(범위·조건·종료)의 기계 평가 미구현"
 
 

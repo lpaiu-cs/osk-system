@@ -2,25 +2,15 @@
 
 구현 근거: Mechanism §1(선언표·`_` 규칙), 헌법 8조(참조 위상·conflicts 예외,
 Domain의 _raw 직접 참조 금지), 헌법 4조 5항(Workbench 예외),
-헌법 11조 2항 + 시행령 §7 1항(중심성 산입: Link 약가중·supported-by 근거 가중,
-conflicts·replaces·비노드 대상·Workbench 비산입).
+헌법 11조 2항 + 시행령 §7 1항(중심성 산입: 노드 향 Link·derived-from,
+conflicts·비노드 대상·Workbench 비산입).
 """
 from __future__ import annotations
 import re
 from pathlib import Path
 
-from .core import ROOT, LEDGER, resolve_in_root
+from .core import ROOT, LEDGER, ID_RE, resolve_in_root
 from . import contract
-
-
-def open_case_of(node_id: str) -> str | None:
-    """그 노드를 당사자로 하는 **열린(docketed) 사건**의 번호 — 없으면 None.
-    헌법 12조 5항 후단(판결 전까지 재서명되지 않는다)의 집행 근거다."""
-    for no, c in _load_cases().items():
-        if str(c.get("status")) == "docketed" \
-                and node_id in [str(x) for x in (c.get("parties") or [])]:
-            return no
-    return None
 
 
 def _load_cases() -> dict[str, dict]:
@@ -36,7 +26,7 @@ def _load_cases() -> dict[str, dict]:
     return out
 
 NODE_SPACES = ("= Domain", "= Person", "= Scope")
-W_LINK, W_SUPPORT = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값
+W_LINK, W_DERIVED = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값 (Link·derived-from)
 
 
 def space_of(path: Path) -> tuple:
@@ -92,7 +82,7 @@ def is_node_home(kind: tuple) -> bool:
 
 def iter_nodes():
     # 통치 구획의 통치 문서·사료는 특수한 노드다(시행령 §10 1항) — 색인에
-    # 있어야 명시 조회(read_node)가 도달하고 갱신 후 재서명(수용 기록)이
+    # 있어야 명시 조회(read_node)가 도달하고 갱신 후 승인(수용 기록)이
     # 성립한다. `_engine`의 .md는 space_of가 ("engine",)으로 걸러낸다.
     for base in NODE_SPACES + ("_governance",):
         root = ROOT / base
@@ -137,6 +127,7 @@ class Index:
 
     def __init__(self):
         self.nodes: dict[str, tuple[Path, tuple]] = {}
+        self.by_id: dict[str, tuple[Path, tuple]] = {}   # id → 노드 (derived-from 해석)
         self.parsed: dict[Path, contract.Node] = {}
         self.dup_stems: dict[str, list[str]] = {}
         self.broken: dict[str, str] = {}
@@ -156,6 +147,9 @@ class Index:
                     str(self.nodes[p.stem][0].relative_to(ROOT))]).append(
                     str(p.relative_to(ROOT)))
             self.nodes[p.stem] = (p, k)
+            nid = self.parsed[p].id
+            if nid:
+                self.by_id[nid] = (p, k)
         # 비노드 파일(원자료·대장·raw)도 대상 해석용으로 등재
         self.nonnode: dict[str, tuple] = {}
         for base in ("_sources", "= Scope", "= Person"):
@@ -180,6 +174,10 @@ class Index:
         아니며, 경로 해석은 vault 안으로 봉쇄한다([[/etc/passwd]])."""
         if re.match(r"^https?://", name):
             return ("external",)
+        if re.match(ID_RE, name):
+            # derived-from 노드 대상 — id가 정본 동일성(경로·이름은 상태)
+            hit = self.by_id.get(name)
+            return ("node", hit[1]) if hit else ("dangling",)
         if "/" in name:
             p = resolve_in_root(name)
             if p is None:
@@ -246,6 +244,13 @@ def topology_check(idx: Index) -> list[str]:
                     continue
                 errs.append(f"conflicts 대상 부적격: {stem} → {name} ({r[0]})")
                 continue
+            if pred == "derived-from" and not re.match(ID_RE, name) \
+                    and r[0] in ("node", "ambiguous"):
+                # 노드 근거의 동일성은 id다 — 경로·이름은 상태이므로 이동·개명에
+                # 끊어지고, 같은 이름이 재사용되면 다른 노드를 가리킨다
+                # (Mechanism §8 2항 · 헌법 8조 5항).
+                errs.append(f"derived-from 노드 대상은 id로 단다: {stem} → {name}")
+                continue
             if r[0] in ("external", "dangling"):
                 continue  # 외부·미해석 — 소속 제한 없음 (dangling은 경고로 별도 보고)
             if r[0] == "ambiguous":
@@ -288,12 +293,22 @@ def centrality(idx: Index) -> dict[str, float]:
         if kind[0] in EXCL:
             continue
         n = idx.node(p)
-        for t in n.edges("supported-by"):
+        for t in n.edges("derived-from"):
             r = idx.resolve(t)
             if r[0] == "node" and r[1][0] not in EXCL:
-                score[t] = score.get(t, 0.0) + W_SUPPORT
+                score[_score_key(idx, t)] = score.get(_score_key(idx, t), 0.0) + W_DERIVED
         for t in n.wikilinks():
             r = idx.resolve(t)
             if r[0] == "node" and r[1][0] not in EXCL:
-                score[t] = score.get(t, 0.0) + W_LINK
+                score[_score_key(idx, t)] = score.get(_score_key(idx, t), 0.0) + W_LINK
     return score
+
+
+def _score_key(idx: "Index", t: str) -> str:
+    """중심성 점수는 노드 **stem**으로 키잡는다(score 초기화가 stem이므로).
+    대상 표기를 그 노드의 stem으로 접는다 — id형은 by_id로, 경로형·stem형은
+    마지막 요소 stem으로. 경로형(`[[= Scope/X/design]]`)을 raw 문자열로 키잡으면
+    참조된 노드가 유입 중심성을 통째로 놓친다."""
+    if re.match(ID_RE, t) and t in idx.by_id:
+        return idx.by_id[t][0].stem
+    return contract.target_stem(t)

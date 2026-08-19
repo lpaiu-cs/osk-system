@@ -1,9 +1,13 @@
 """osk.search — 검색 3계약 중 작업 검색·열람 검색.
 
-구현 근거: 헌법 11조 3항 — 작업 검색(모든 Space 연합, `_raw/`·Workbench 제외,
-서명 여부 무강등), 열람 검색(미서명 노드는 후보 표시), 권한 검사는
-osk.authority(랭킹 금지)가 전담. 11조 4항·시행령 §7 4항 — summary 미리보기
-`[[대상]](: summary)` 확장(파생 표시, 저장·서명·권한 판정 대상 아님).
+구현 근거: 헌법 11조 3항 — 작업 검색(모든 Space 연합, `_raw/`·Workbench 제외),
+열람 검색(사용자에게 결과 노출), 권한 검사는 osk.authority(랭킹 금지)가 전담.
+11조 4항·시행령 §7 4항 — summary 미리보기 `[[대상]](: summary)` 확장(파생 표시,
+저장·권한 판정 대상 아님).
+
+서명 제도가 폐지됐으므로 검색은 서명 여부를 표시하지 않는다 — 검색은 파일의
+현재 상태(보호영역에서는 작업본)를 대상으로 하며, 결과로 권한을 추정하지
+않는다(헌법 11조 3항).
 
 v0 랭킹: 문자 bigram BM25 (rank_bm25). 임베딩·데몬 인덱스는 후속 —
 파일 정본에서 매 호출 재계산 가능해야 한다는 원칙(시행령 §11 1항)이 우선.
@@ -14,7 +18,7 @@ import re
 from rank_bm25 import BM25Okapi
 
 from .core import ROOT
-from . import graph, signatures, contract
+from . import graph
 
 
 def _tokens(text: str) -> list[str]:
@@ -26,15 +30,6 @@ def _tokens(text: str) -> list[str]:
         else:
             toks += [w[i:i + 2] for i in range(len(w) - 1)] or [w]
     return toks
-
-
-def is_signed(node_id: str, path) -> bool:
-    """판정 실패(대장 손상 등)는 미서명 쪽으로 — 검색은 어떤 상태에서도
-    죽지 않고 보수적으로 답한다(시행령 §11 · fail-closed)."""
-    try:
-        return signatures.status(node_id, path) == "signed"
-    except Exception:
-        return False
 
 
 class Searcher:
@@ -52,15 +47,6 @@ class Searcher:
                 self.broken[stem] = str(e)
                 continue
             parsed.append((stem, p, kind, n))
-        self.demoted: set[str] = set()   # 서명된 후계의 replaces 대상 (시행령 §7 2항)
-        for stem, p, kind, n in parsed:
-            reps = n.edges("replaces")
-            if not reps or not is_signed(n.id, p):
-                continue
-            for t in reps:
-                t = contract.target_stem(t)
-                if t and t != stem:   # 자기 참조는 자기 강등이 되지 않는다(랭킹 한정)
-                    self.demoted.add(t)
         for stem, p, kind, n in parsed:
             if kind[0] in ("workbench-transit", "governance"):
                 continue  # 검색 제외 — Workbench(헌법 11조 3항·4조 5항)와
@@ -79,10 +65,10 @@ class Searcher:
         scores = self.bm25.get_scores(q)
         # 탈락 기준은 점수 부호가 아니라 질의 토큰 겹침 — 정확히 문서 절반에
         # 나오는 항은 BM25 idf가 0이라 점수로 거르면 일치가 전멸한다
-        adjusted = [(s * (0.3 if stem in self.demoted else 1.0), (stem, p, n))
+        adjusted = [(float(s), (stem, p, n))
                     for s, (stem, p, n), toks in zip(scores, self.paths, self.tokens)
                     if qset & toks]
-        ranked = sorted(adjusted, key=lambda x: -x[0])[:k]   # 강등 반영 후 절단 (시행령 §7 2항)
+        ranked = sorted(adjusted, key=lambda x: -x[0])[:k]
         out = []
         for score, (stem, p, n) in ranked:
             out.append({
@@ -96,16 +82,10 @@ class Searcher:
         return out
 
     def view_search(self, query: str, k: int = 8) -> list[dict]:
-        """열람 검색 — 미서명 노드는 후보임을 `signed`로 표시한다(시행령 §7 5항이
-        mechanism에 위임한 형식이며, Mechanism §6-2 5항이 이 필드로 정한다).
-
-        `title`은 **노드 이름 그대로** 둔다 — 다른 도구가 `name`으로 받는 값이고,
-        표면 쓰기의 결과는 언제나 미서명이므로(§6-2 8항) 여기에 표시를 덧붙이면
-        기본 경로에서 이름이 통째로 쓸 수 없게 된다."""
-        out = self.work_search(query, k)
-        for r in out:
-            r["signed"] = is_signed(r["id"], ROOT / r["path"])
-        return out
+        """열람 검색 — 사용자에게 결과를 노출하는 검색이다(헌법 11조 3항).
+        서명 표시가 폐지됐으므로 작업 검색과 같은 결과를 돌려준다. `title`은
+        **노드 이름 그대로** 둔다 — 다른 도구가 `name`으로 받는 값이다."""
+        return self.work_search(query, k)
 
     def expand_preview(self, text: str) -> str:
         """`[[대상]]` → `[[대상]](: summary)` 파생 표시."""

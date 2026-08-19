@@ -10,25 +10,25 @@
   이력). 도입 사건(첫 parents 보유 기록 = 앵커)부터 명시 인과가 정본이며,
   **앵커 이후에는 파일 순서 추정을 쓰지 않는다** — parents 없는 기록은 고립
   루트로 강등한다(구 엔진이 다른 클론에서 쓴 행이 병합돼 들어와도 가짜 인과를
-  얻지 못한다). 고립 루트도 head이므로 사용자의 재서명이 봉합해 해소한다.
+  얻지 못한다). 고립 루트도 head이므로 사용자의 새 봉합 기록이 해소한다.
 - rid는 잠금 안에서 대장의 정본상 최대 rid로부터 단조 생성한다 — 물리적
   마지막 행이 아니라 최대값이 바닥이다.
 - 판정은 rid 정렬이 아니라 인과 극대(causal maxima)로 한다. 같은 노드의
   극대 기록이 유일하지 않으면(비교 불능 분기 또는 순환) 보수적으로
-  미서명이다. 이후 모든 head를 조상으로 갖는 새 기록(사용자의 재서명)이
+  미확정이다. 이후 모든 head를 조상으로 갖는 새 기록(사용자의 봉합)이
   유일 극대가 되어 해소한다.
 
 손상과 해소 가능성 (fail-closed의 두 갈래):
 - **정규화로 해소 가능한 이상** — 자기 참조·미지 rid 참조·전방 참조(파일
   순서상 뒤를 가리키는 parents)는 간선을 잘라 고립 루트로 강등한다. 순환이
-  원천 차단되고(항상 DAG), 재서명으로 해소되는 길이 남는다.
+  원천 차단되고(항상 DAG), 새 봉합 기록으로 해소되는 길이 남는다.
 - **구조 손상** — rid 부재·rid 형식 위반·rid 중복은 기록의 동일성 자체가
-  깨진 상태다. 판정은 fail-closed(미서명)로 두되 `ledger_damage`가 이를
+  깨진 상태다. 판정은 fail-closed(미확정)로 두되 `ledger_damage`가 이를
   표면화하고, 회복은 Mechanism §3 7항의 수동 복구가 담당한다. 이 상태에서는
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
 from __future__ import annotations
-import hashlib, json, os, random, re, string, time
+import hashlib, json, os, random, re, string, tempfile, time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -53,6 +53,81 @@ SIGNATURES = LEDGER / "signatures.jsonl"
 CANDIDATES = LEDGER / "case" / "candidates.jsonl"
 PINS = LEDGER / "pins.jsonl"
 ROUTING = LEDGER / "routing.jsonl"       # 세션→scope 라우팅 (Mechanism §6-2 3항)
+_MUTATION_LOCK_PATH: Path | None = None
+
+
+def local_lock_path(name: str, root: Path | None = None) -> Path:
+    """기기 로컬 잠금 파일의 경로 — **추적 트리 밖으로만** 고른다.
+
+    엔진의 primitive다. 동기화는 이 체계의 필수 구성요소가 아니라 쓰는 사람만
+    쓰는 편의 모듈이므로, 엔진이 자기 잠금 자리를 알기 위해 그쪽을 부르지
+    않는다(의존은 반대 방향이다 — 동기화가 이 함수를 쓴다).
+
+    자리는 git 디렉터리를 **파일시스템으로 읽어** 정한다(git 실행 없음 —
+    데몬 tick마다 subprocess를 띄우지 않고 Windows 콘솔 깜빡임도 없다):
+    `<root>/.git`이 디렉터리면 그것, 파일이면 `gitdir:` 대상(그 안에
+    `commondir`가 있으면 worktree이므로 그쪽을 따라간다). git이 없으면 루트
+    경로 해시를 키로 한 임시 디렉터리다(기기 안 vault별 유일).
+
+    추적 트리 안에 두지 않는 이유: `git add -A`에 딸려 들어가고, checkout이
+    그 pathname의 inode를 갈면 "같은 경로 = 같은 mutex" 전제가 깨진다."""
+    r = Path(root) if root is not None else ROOT
+    dot = r / ".git"
+    try:
+        if dot.is_dir():
+            return dot / name
+        if dot.is_file():
+            head = dot.read_text(encoding="utf-8").strip()
+            if head.startswith("gitdir:"):
+                g = Path(head.split(":", 1)[1].strip())
+                if not g.is_absolute():
+                    g = (r / g).resolve()
+                common = g / "commondir"
+                if common.is_file():
+                    c = Path(common.read_text(encoding="utf-8").strip())
+                    g = c if c.is_absolute() else (g / c).resolve()
+                if g.is_dir():
+                    return g / name
+    except OSError:
+        pass                                  # 판독 불가 → 임시 디렉터리로
+    key = hashlib.sha256(str(r).encode("utf-8")).hexdigest()[:16]
+    stem = name.rsplit(".", 1)[0]
+    return Path(tempfile.gettempdir()) / f"{stem}-{key}.lock"
+
+
+def mutation_lock_path() -> Path:
+    """working-tree 변경 상호배제 잠금의 경로 — 동기화(sync·update)가 잡는
+    `osk-mutation.lock`과 **같은 파일**이다.
+
+    이름을 공유해야 데몬의 `pull(rebase)`가 반려의 파괴 구간과 경합하지 않는다.
+    프로세스마다 한 번만 해석한다 — 이 잠금은 모든 노드 쓰기가 잡는다."""
+    global _MUTATION_LOCK_PATH
+    if _MUTATION_LOCK_PATH is None:
+        _MUTATION_LOCK_PATH = local_lock_path("osk-mutation.lock")
+    return _MUTATION_LOCK_PATH
+
+
+class mutation_lock:
+    """엔진이 내는 **모든 working-tree 변경**을 직렬화하는 잠금 — 노드
+    쓰기(write)·보호영역 조작(approvals)·동기화(sync·update)가 같은 잠금을 쓴다.
+
+    다른 잠금을 쓰면, 반려가 마지막으로 전제를 확인한 뒤 파일을 덮기까지 사이에
+    정상 쓰기나 데몬의 `pull(rebase)`가 끼어들어 **검토하지 않은 변경이
+    파괴된다**. 잠금 순서는 언제나 이 잠금 → 대장 잠금(`ledger_append`)이다
+    (모든 모듈이 같은 순서라 교착이 없다). 다른 기기에서 사람이 직접 부른
+    `git pull`만 이 잠금 밖이며, 그것은 `expect`·전제 재확인이 맡는다."""
+
+    def __enter__(self):
+        path = mutation_lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._f = open(path, "w")
+        lock_exclusive(self._f)
+        return self
+
+    def __exit__(self, *exc):
+        unlock(self._f)
+        self._f.close()
+        return False
 
 TS_FMT = "%Y-%m-%d %H:%M (KST)"          # Mechanism §2 2항 — frontmatter 시각
 TS_RE = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \(KST\)$"
@@ -116,7 +191,7 @@ def resolve_in_root(rel_or_abs: str | Path) -> Path | None:
     """대장·사건부에 적힌 경로 문자열을 **vault 안으로 봉쇄** 해석한다.
     대장은 다기기 병합으로 임의의 내용이 유입될 수 있는 신뢰 밖 입력이므로,
     `..`·절대 경로·심볼릭 링크로 루트를 벗어나면 None(=해석 실패)이다.
-    실패는 호출부에서 언제나 미서명·거부 쪽으로 처리한다."""
+    실패는 호출부에서 언제나 거부·불일치 쪽으로 처리한다."""
     try:
         p = Path(rel_or_abs)
         cand = p if p.is_absolute() else ROOT / p
@@ -193,7 +268,7 @@ def ledger_read(path: Path) -> list[dict]:
 
 def ledger_damage(records: list[dict], path: Path | str = "") -> list[str]:
     """기록의 **동일성**이 깨진 구조 손상 목록 — rid 부재·형식 위반·중복.
-    정규화로 흡수하면 안 되는(해소를 재서명에 맡길 수 없는) 이상이며,
+    정규화로 흡수하면 안 되는(해소를 새 기록에 맡길 수 없는) 이상이며,
     Mechanism §3 7항의 수동 복구 대상이다. 빈 목록이면 건전."""
     out, seen = [], {}
     where = f"{path}:" if path else "행"
@@ -212,7 +287,7 @@ def ledger_damage(records: list[dict], path: Path | str = "") -> list[str]:
 
 
 def damaged_nodes(records: list[dict]) -> set[str]:
-    """구조 손상에 연루된 노드 — 판정은 fail-closed(미서명)."""
+    """구조 손상에 연루된 노드 — 판정은 fail-closed(미확정)."""
     bad, seen = set(), {}
     for i, r in enumerate(records):
         rid, node = r.get("rid"), r.get("node")
@@ -237,7 +312,7 @@ def effective_parents(records: list[dict]) -> dict[str, list[str]]:
       간주한다. 앵커 이후의 parents 부재 기록은 고립 루트다.
     - parents 원소 중 자기 자신·미지 rid·파일 순서상 뒤(전방 참조)는
       잘라낸다 — 손상이 순환을 만들어 기록을 판정에서 소거하는 것을 막고,
-      잘린 기록은 head로 남아 재서명으로 봉합된다.
+      잘린 기록은 head로 남아 새 기록으로 봉합된다.
     - 구조 손상 기록(rid 부재·형식 위반)은 DAG에 넣지 않는다. 그 노드는
       damaged_nodes가 fail-closed로 잡는다.
     """
@@ -310,7 +385,7 @@ def causal_maxima(records: list[dict], value: str,
 
 def unresolved_nodes(records: list[dict], field: str = "node") -> set[str]:
     """판정이 성립하지 않는 키 — 인과 극대가 유일하지 않거나(분기·순환 잔재)
-    구조 손상에 연루된 것. 판정은 보수적으로 미서명·미확정."""
+    구조 손상에 연루된 것. 판정은 보수적으로 미확정."""
     par = effective_parents(records)
     keys = {r.get(field) for r in records if r.get(field)}
     out = set(damaged_nodes(records)) if field == "node" else set()
@@ -337,11 +412,18 @@ def ledger_anchor_index(records: list[dict]) -> int | None:
     return None
 
 
-def ledger_append(path: Path, record: dict) -> dict:
+def ledger_append(path: Path, record: dict, expect=None) -> dict:
     """모든 `_ledger/` jsonl 공통 (Mechanism §3):
     잠금 → 전체 판독 → **구조 손상이면 거부** → parents = 현재 head 전부
     (병합 봉합) → rid = 정본 최대 rid로부터 단조 생성 → 행 단위 원자
-    append·fsync."""
+    append·fsync.
+
+    `expect`는 **잠금 안에서** 방금 읽은 기록으로 전제조건을 다시 보는 선택적
+    검사다 — `expect(records)`가 문자열을 돌려주면 그것을 사유로 거부한다.
+    호출부가 잠금 밖에서 검사하고 append 하는 사이에 다른 기기의 기록이
+    동기화로 들어오면, 그것을 못 본 행이 그 기록의 **인과 자식**으로 붙어
+    분기가 stale로 드러나지 않고 조용히 대체한다(그리고 행에 적은 전제가
+    거짓 진술이 된다). 검사와 append를 같은 잠금에 두어야 그 창이 닫힌다."""
     record.setdefault("at", now_iso())
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+", encoding="utf-8") as f:
@@ -354,6 +436,10 @@ def ledger_append(path: Path, record: dict) -> dict:
                 raise ValueError(
                     f"대장 손상 — 수동 복구 절차 필요 (Mechanism §3 7항): "
                     + "; ".join(dmg[:5]))
+            if expect is not None:
+                why = expect(records)
+                if why:
+                    raise ValueError(why)
             record["rid"] = _next_rid(
                 max((r["rid"] for r in records if r.get("rid")),
                     key=_rid_key, default=None))
