@@ -96,11 +96,16 @@ def _obj_path(digest: str) -> Path:
         raise ValueError(f"부적격 digest — 저장소 접근 거부: {digest!r}")
     hexd = digest.split(":", 1)[1]
     p = STORE / hexd[:2] / hexd[2:]
-    # 형식 강제로 이미 순수 hex 성분뿐이라 탈출이 불가능하나, 명시적으로
-    # STORE 봉쇄를 재확인한다(lexical — 파일 부재에도 성립).
-    store_s = os.path.normpath(STORE)
-    if os.path.commonpath([store_s, os.path.normpath(p)]) != store_s:
-        raise ValueError(f"저장소 밖 경로 — 거부: {digest}")
+    # 물리 봉쇄 — 경로 **성분의 symlink**가 I/O를 STORE 밖으로 재지정하지
+    # 못하게 realpath 정체성으로 확인한다(core.resolve_in_root와 같은 기법 ·
+    # Mechanism §1-2 5항). 계산 경로의 realpath가 STORE 실경로 기준 기대 위치와
+    # 정확히 일치하지 않으면 — shard parent나 최종 객체가 symlink이거나 STORE를
+    # 이탈했거나 — 거부한다(fail-closed). 양쪽 다 realpath라 정본 prefix의 정상
+    # symlink(예: /tmp→/private/tmp)에는 오탐하지 않는다.
+    store_real = os.path.realpath(STORE)
+    expected = os.path.join(store_real, hexd[:2], hexd[2:])
+    if os.path.realpath(p) != expected:
+        raise ValueError(f"저장소 밖·symlink 재지정 경로 — 거부: {digest}")
     return p
 
 

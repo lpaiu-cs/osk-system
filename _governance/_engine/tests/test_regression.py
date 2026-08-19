@@ -836,6 +836,41 @@ def test_store_content_verified():
         f.unlink(missing_ok=True)
 
 
+# ── 저장소 shard symlink 물리 봉쇄 (PR #14 리뷰 [high]) ─────────────────
+def test_store_symlink_confined():
+    """STORE 안 shard가 vault 밖을 가리키는 symlink여도 저장소 접근이 외부로
+    새지 않는다 — _obj_path이 realpath 정체성으로 shard·객체 symlink를 거부하고,
+    _store_get·_store_put은 그 한 지점을 거치므로 함께 봉쇄된다."""
+    from osk import approvals as A
+    ext = Path(tempfile.mkdtemp(prefix="osk-ext-"))
+    data = b"confine-test-payload"
+    digest = A.sha256_bytes(data)
+    hexd = digest.split(":", 1)[1]
+    A.STORE.mkdir(parents=True, exist_ok=True)
+    shard = A.STORE / hexd[:2]
+    saved = None
+    try:
+        if shard.is_symlink():
+            shard.unlink()
+        elif shard.exists():
+            saved = shard.with_name(hexd[:2] + ".bak")
+            shard.rename(saved)
+        (ext / hexd[2:]).write_bytes(data)          # 외부에 '정상 내용' 미끼
+        shard.symlink_to(ext, target_is_directory=True)
+        check("_obj_path이 symlink shard 경로를 거부",
+              _raises(lambda: A._obj_path(digest))())
+        check("_store_get은 symlink 경유 외부 파일을 읽지 않는다(내용 일치해도)",
+              A._store_get(digest) is None)
+        check("_store_put은 symlink shard로 쓰기 거부",
+              _raises(lambda: A._store_put(data))())
+    finally:
+        if shard.is_symlink():
+            shard.unlink()
+        if saved is not None:
+            saved.rename(shard)
+        shutil.rmtree(ext, ignore_errors=True)
+
+
 def test_baseline_pass():
     from osk import approvals
     # 보호영역 하나를 지정하고 clean 상태에서 검증기가 통과하는지 본다
@@ -3066,7 +3101,7 @@ if __name__ == "__main__":
                test_store_digest_confined, test_delegation_facet_exact_region,
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
-               test_store_content_verified,
+               test_store_content_verified, test_store_symlink_confined,
                test_baseline_pass]:
         try:
             fn()
