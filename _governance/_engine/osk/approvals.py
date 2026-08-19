@@ -23,15 +23,19 @@ from pathlib import Path
 
 from .core import (ROOT, LEDGER, sha256_bytes, sha256_file, posix_rel,
                    resolve_in_root, ledger_append, ledger_read,
-                   causal_maxima, mutation_lock, resolve_one)
+                   causal_maxima, mutation_lock, resolve_one, _rid_key)
+from . import signatures
 
 APPROVALS = LEDGER / "approvals.jsonl"
+MOVES = LEDGER / "moves.jsonl"                # 이동 기록부 — 이동을 이동으로
 STORE = LEDGER / "approved" / "objects"       # 내용 주소 blob·manifest 보관
 KINDS = ("protect", "unprotect", "approve", "revert")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")   # 저장소 접근의 유일 형식
 
 # 영역 tree에서 제외하는 이름 — 저장소 살림살이와 대장 자신(승인본이 대장을
-# 담으면 승인이 자기 자신을 포함하는 순환이 된다).
+# 담으면 승인이 자기 자신을 포함하는 순환이 된다). `_raw` 제외는 사용자 판정
+# (2026-08-19)이다: raw는 append-only 저장소라 선의의 에이전트가 건드리는 것은
+# 사용자 지시가 있을 때뿐이므로, 보호영역의 변경집합 대상이 아니다.
 _SKIP_DIRS = {".git", ".venv", "__pycache__", "_ledger", "_raw"}
 
 
@@ -284,6 +288,34 @@ def containing_regions(path: Path | str) -> list[str]:
     return out
 
 
+def record_move(node_id: str, src: Path, dst: Path) -> None:
+    """이동을 **이동으로** 기록한다 — 시행령 §6 4항: "이동은 출발지와 도착지 중
+    하나라도 보호영역이면 (변경집합에) 포함한다."
+
+    기록이 없으면 반려가 이동을 '도착 영역의 추가 + 출발 영역의 삭제'로만 보아,
+    되돌릴 때 노드를 지우거나(도착 쪽 반려 — 출발지에 복원할 정보가 없다)
+    복제한다(출발 쪽 반려 — 도착 사본이 남는다). 기록은 물리 사건의 일지다 —
+    권위 판정이 아니므로 인과 해소를 쓰지 않고, 소비자는 시각(rid)이 가장
+    늦은 행을 본다. 이동이 실패해 남는 행은 무해하다(그 자리에 그 id의 파일이
+    없으면 어떤 판정에도 쓰이지 않는다) — 그래서 이동 **전에** 기록해, 기록
+    없는 이동이 생기지 않게 한다."""
+    if not node_id:
+        return                            # 동일성 없는 파일은 추적 대상이 아니다
+    if not (containing_regions(src) or containing_regions(dst)):
+        return                            # 양끝 다 보호 밖 — 변경집합 무관
+    root_real = Path(os.path.realpath(ROOT))
+    ledger_append(MOVES, {
+        "kind": "move", "node": node_id,
+        "from": posix_rel(Path(os.path.realpath(src)), root_real),
+        "to": posix_rel(Path(os.path.realpath(dst)), root_real)})
+
+
+def _latest_move(rows: list[dict], key: str, rel: str) -> dict | None:
+    """rel을 `key`(from|to)로 갖는 가장 최근 이동 행 — 없으면 None."""
+    hits = [r for r in rows if r.get(key) == rel and r.get("rid")]
+    return max(hits, key=lambda r: _rid_key(r["rid"])) if hits else None
+
+
 def region_of(path: Path | str) -> str | None:
     """경로를 포함하는 **가장 안쪽** 보호영역 — 없으면 None."""
     regions = containing_regions(path)
@@ -303,13 +335,30 @@ def changeset(region: str) -> dict | None:
     if table is None:
         return None
     d = resolve_in_root(region)
-    cur = ({rel: sha256_file(p) for rel, p in _region_files(d)}
-           if d is not None and d.is_dir() else {})
-    return {
+    files = ({rel: p for rel, p in _region_files(d)}
+             if d is not None and d.is_dir() else {})
+    cur = {rel: sha256_file(p) for rel, p in files.items()}
+    cs = {
         "added": sorted(set(cur) - set(table)),
         "removed": sorted(set(table) - set(cur)),
         "modified": sorted(r for r in set(cur) & set(table) if cur[r] != table[r]),
     }
+    # 이동은 이동으로 보인다(시행령 §6 4항) — 추가·삭제 중 이동 기록과 id가
+    # 맞는 것을 해석해 함께 낸다(added/removed는 tree 차이 그대로 둔다).
+    rows = ledger_read(MOVES)
+    moves = []
+    for rel in cs["added"]:
+        row = _latest_move(rows, "to", rel)
+        if row and signatures._id_of(files[rel]) == row.get("node"):
+            moves.append({"node": row["node"], "from": row["from"], "to": rel})
+    for rel in cs["removed"]:
+        row = _latest_move(rows, "from", rel)
+        out = resolve_in_root(row.get("to") or "") if row else None
+        if row and out is not None and out.is_file() \
+                and signatures._id_of(out) == row.get("node"):
+            moves.append({"node": row["node"], "from": rel, "to": row["to"]})
+    cs["moves"] = moves
+    return cs
 
 
 def divergence(region: str, recs: list[dict] | None = None) -> list[dict]:
@@ -453,6 +502,59 @@ def approve(region: str, base: str, expect_work: str,
                 f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
 
 
+def _plan_unmoves(region_dir: Path, table: dict[str, str]) -> list[tuple[Path, Path]]:
+    """반려가 되돌릴 **이동**의 목록 — (지금 자리, 원위치) 쌍. 계획만 하고
+    아무것도 건드리지 않는다. 되돌릴 수 없는 이동이 있으면 거부한다.
+
+    두 방향이 있다(시행령 §6 4항 — 이동은 한쪽 끝만 보호여도 변경집합이다):
+    ①안으로 온 이동 — 승인본에 없는 파일이 이동 기록의 도착지이고 그 id가
+      기록과 일치하면, 지우는 대신 원위치로 돌려보낸다. 이동으로 온 노드를
+      지우는 것은 원상 복원이 아니라 소실이다. 원위치가 차 있으면 반려를
+      거부한다(치우면 반려가 진행된다).
+    ②밖으로 간 이동 — 승인본에 있는 rel이 비어 있고 이동 기록의 출발지이며
+      도착지에 그 id의 파일이 실재하면, 그 파일을 되가져온다(내용은 이어지는
+      승인본 복원이 정본으로 덮는다). 그냥 승인본에서 재생성하면 밖의 사본이
+      남아 같은 id가 둘이 된다. 밖의 사본이 이미 없으면 재생성만으로 족하다.
+
+    판정의 열쇠는 경로가 아니라 **id**다(이 체계의 동일성) — 같은 자리에 다른
+    파일이 새로 생긴 경우는 이동과 무관하므로 평소대로 다룬다."""
+    rows = ledger_read(MOVES)
+    if not rows:
+        return []
+    root_real = Path(os.path.realpath(ROOT))
+    cur = {rel: p for rel, p in _region_files(region_dir)}
+    plan: list[tuple[Path, Path]] = []
+    used, targets = set(), set()
+    for rel in sorted(set(cur) - set(table)):          # ① 안으로 온 이동
+        row = _latest_move(rows, "to", rel)
+        if row is None or signatures._id_of(cur[rel]) != row.get("node"):
+            continue                                   # 이동한 그 노드가 아니다
+        back = resolve_in_root(row.get("from") or "")
+        if back is None:
+            raise ValueError(
+                f"이동 원위치를 해석할 수 없다 — 반려 보류: {rel} ← {row.get('from')!r}")
+        if back.exists() or str(back) in targets:
+            raise ValueError(
+                f"이동 원위치가 이미 차 있다 — 그 자리를 치우면 반려가 이동을 "
+                f"되돌린다: {row['from']}")
+        plan.append((cur[rel], back))
+        used.add(row["rid"]); targets.add(str(back))
+    for rel in sorted(set(table) - set(cur)):          # ② 밖으로 간 이동
+        row = _latest_move(rows, "from", rel)
+        if row is None or row["rid"] in used:
+            continue
+        out = resolve_in_root(row.get("to") or "")
+        if out is None or not out.is_file() \
+                or signatures._id_of(out) != row.get("node"):
+            continue                                   # 밖 사본 없음 — 재생성으로 족하다
+        home = resolve_in_root(rel)
+        if home is None or str(home) in targets:
+            continue
+        plan.append((out, home))
+        targets.add(str(home))
+    return plan
+
+
 def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
     """반려 — 작업본을 승인본으로 **원상 복원**한다(시행령 §6 6항 · Mechanism
     §3 6항: 파일 복원을 마친 뒤에만 기록한다 — 기록에 실패해도 작업본이
@@ -507,6 +609,7 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
                 f"검토={expect_work} 현재={discarded}")
 
         staged = _stage_tree(d, table)     # 준비 — 아직 아무것도 건드리지 않았다
+        unmoves = _plan_unmoves(d, table)  # 이동의 원상 복원 계획(무변)
         # 준비를 마치고 **첫 쓰기 직전에** 두 전제를 다시 본다. 복원은 파괴적이므로
         # 전제는 기록의 정직성만이 아니라 파일을 건드리기 전에 유효해야 한다 —
         # 사후 검사는 기록만 막을 뿐 파괴는 이미 끝난 뒤다.
@@ -517,7 +620,14 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         if work != expect_work:
             raise ValueError("버릴 변경집합이 그 사이 바뀌었다 — 다시 검토하라 "
                              f"(작업본 측): 검토={expect_work} 현재={work}")
-        _apply_tree(d, table, staged)         # 여기부터 파괴적이다
+        # 여기부터 파괴적이다. 이동의 원상 복원이 먼저다 — 안으로 온 노드는
+        # 삭제 순회가 보기 전에 원위치로 나가고, 밖으로 간 노드는 승인본 내용
+        # 쓰기가 덮기 전에 제자리로 돌아온다(순서가 뒤면 밖의 내용이 승인본을
+        # 덮거나 이동 노드가 삭제된다).
+        for now_at, home in unmoves:
+            home.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(now_at, home)
+        _apply_tree(d, table, staged)
         # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
         # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
         # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게

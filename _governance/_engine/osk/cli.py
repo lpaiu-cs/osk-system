@@ -35,8 +35,10 @@ def _print_changeset(region: str) -> None:
     if cs is None:
         print("  (차이를 판정할 수 없다 — 승인본 미해석)")
         return
+    moved = {m["to"] for m in cs.get("moves", [])} \
+        | {m["from"] for m in cs.get("moves", [])}
     for label, key in (("추가", "added"), ("삭제", "removed"), ("수정", "modified")):
-        rows = cs[key]
+        rows = [r for r in cs[key] if r not in moved]
         if not rows:
             continue
         print(f"  {label} {len(rows)}건")
@@ -44,6 +46,8 @@ def _print_changeset(region: str) -> None:
             print(f"    {r}")
         if len(rows) > 20:
             print(f"    … 외 {len(rows) - 20}건")
+    for m in cs.get("moves", []):
+        print(f"  이동  {m['from']} → {m['to']}")
     if not any(cs.values()):
         print("  (파일 단위 차이 없음)")
 

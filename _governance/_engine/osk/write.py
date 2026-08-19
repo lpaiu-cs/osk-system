@@ -36,7 +36,7 @@ from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
                    ledger_append, ledger_read, mutation_lock, new_node_id,
                    now_kst, posix_rel, resolve_in_root, resolve_one,
                    sha256_bytes, sha256_file)
-from . import contract, graph, signatures
+from . import approvals, contract, graph, signatures
 
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
@@ -735,6 +735,10 @@ def move_node(name: str, dest_space: str) -> dict:
         except Exception as e:
             raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
         before = sha256_file(path)
+        # 이동을 이동으로 기록한다(시행령 §6 4항) — 기록이 없으면 반려가 이동을
+        # 추가+삭제로 보아 노드를 지우거나 복제한다. 실패한 이동의 잔행은
+        # 무해하므로(그 자리에 그 id가 없으면 안 쓰인다) 이동 **전에** 적는다.
+        approvals.record_move(n.id, path, target)
         os.replace(path, target)          # 바이트 불변 — updated 갱신 없음
         return {"ok": True, "name": name, "id": n.id,
                 "path": str(target.relative_to(ROOT)),

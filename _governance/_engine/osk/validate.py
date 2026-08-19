@@ -92,7 +92,7 @@ def run() -> dict:
     # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
     #    대장이다. signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상).
     errs, ledgers = [], ([(approvals.APPROVALS, arecs)] if appr_ok else [])
-    for p in [SIGNATURES, CANDIDATES, PINS, ROUTING,
+    for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, approvals.MOVES,
               LEDGER / "migration" / "events.jsonl", LEDGER / "rechecks.jsonl",
               LEDGER / "update.jsonl"]:
         try:

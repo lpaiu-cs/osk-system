@@ -967,6 +967,122 @@ def test_revert_recreates_deleted_region():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 이동은 이동으로 기록되고, 반려가 이동 전체를 되돌린다 (시행령 §6 4항) ──
+def test_move_recorded_and_reverted_in():
+    """밖→보호영역 이동을 반려하면 노드는 삭제되지 않고 **원위치로 돌아간다**.
+    기록이 없으면 반려가 이동을 '추가'로만 보아 노드를 지운다 — 출발지에는
+    복원할 정보가 없으므로 그대로 소실이다(사용자 판정: 이동을 이동으로)."""
+    from osk import approvals as A, write
+    src = ROOT / "= Scope/W1/regr-mvin.md"
+    dst = ROOT / "= Scope/W3/regr-mvin.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    try:
+        src.write_text(node_text("260802-zzzz-mvi1", "이동 노드", "본문"),
+                       encoding="utf-8")
+        A.protect("= Scope/W3", "도착지 보호")
+        base = A.approved_hash("= Scope/W3")
+        r = write.move_node("regr-mvin", "= Scope/W3")
+        check("이동 성립", r["ok"], r)
+        row = A._latest_move(core.ledger_read(A.MOVES), "to",
+                             "= Scope/W3/regr-mvin.md")
+        check("이동이 이동으로 기록됐다",
+              row is not None and row["from"] == "= Scope/W1/regr-mvin.md"
+              and row["node"] == "260802-zzzz-mvi1", row)
+        check("도착 영역은 pending", A.state("= Scope/W3") == "pending")
+        cs = A.changeset("= Scope/W3")
+        check("변경집합이 이동을 이동으로 보인다",
+              cs["moves"] == [{"node": "260802-zzzz-mvi1",
+                               "from": "= Scope/W1/regr-mvin.md",
+                               "to": "= Scope/W3/regr-mvin.md"}], cs)
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("노드가 원위치로 돌아왔다(삭제되지 않음)", src.is_file())
+        check("도착지에는 없다", not dst.exists())
+        check("도착 영역은 clean", A.state("= Scope/W3") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+def test_move_reverted_out_no_duplicate():
+    """보호영역→밖 이동을 반려하면 밖의 사본을 **되가져와** 승인본을 복원한다 —
+    승인본 재생성만 하면 같은 id가 두 곳에 남는다(복제 금지)."""
+    from osk import approvals as A, write
+    home = ROOT / "= Scope/W3/regr-mvout.md"
+    away = ROOT / "= Scope/W1/regr-mvout.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    try:
+        home.write_text(node_text("260802-zzzz-mvo1", "이동 노드", "본문"),
+                        encoding="utf-8")
+        A.protect("= Scope/W3", "출발지 보호")
+        base = A.approved_hash("= Scope/W3")
+        check("이동 성립", write.move_node("regr-mvout", "= Scope/W1")["ok"])
+        check("출발 영역은 pending", A.state("= Scope/W3") == "pending")
+        cs = A.changeset("= Scope/W3")
+        check("나간 이동도 이동으로 보인다",
+              cs["moves"] and cs["moves"][0]["to"] == "= Scope/W1/regr-mvout.md",
+              cs)
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("노드가 제자리로 돌아왔다", home.is_file())
+        check("밖의 사본이 남지 않았다(같은 id 하나뿐)", not away.exists())
+        check("출발 영역은 clean", A.state("= Scope/W3") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        home.unlink(missing_ok=True)
+        away.unlink(missing_ok=True)
+
+
+def test_move_return_blocked_origin_occupied():
+    """이동으로 온 노드는 지우지 않는다 — 되돌리거나 거부한다. 원위치가 다른
+    파일로 차 있으면 반려를 거부하고 아무것도 건드리지 않는다."""
+    from osk import approvals as A, write
+    src = ROOT / "= Scope/W1/regr-mvocc.md"
+    dst = ROOT / "= Scope/W3/regr-mvocc.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    try:
+        src.write_text(node_text("260802-zzzz-mvc1", "이동 노드", "본문"),
+                       encoding="utf-8")
+        A.protect("= Scope/W3", "도착지 보호")
+        base = A.approved_hash("= Scope/W3")
+        check("이동 성립", write.move_node("regr-mvocc", "= Scope/W3")["ok"])
+        src.write_text("원위치에 새로 생긴 다른 파일", encoding="utf-8")
+        check("원위치가 차 있으면 반려 거부",
+              _raises(lambda: A.revert("= Scope/W3", base,
+                                       A.working_tree_hash("= Scope/W3")))())
+        check("이동 노드는 그대로(삭제되지 않음)", dst.is_file())
+        check("원위치의 새 파일도 그대로",
+              src.read_text() == "원위치에 새로 생긴 다른 파일")
+        check("영역은 여전히 pending", A.state("= Scope/W3") == "pending")
+        src.unlink()                       # 자리를 치우면 반려가 진행된다
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("치운 뒤에는 원위치로 복귀", src.is_file())
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+def test_move_unrecorded_outside_protection():
+    """양끝 다 보호 밖인 이동은 변경집합과 무관하므로 기록하지 않는다
+    (시행령 §6 4항의 범위 그대로 — 기록부를 소음으로 채우지 않는다)."""
+    from osk import approvals as A, write
+    src = ROOT / "= Scope/W1/regr-mvfree.md"
+    dst = ROOT / "= Scope/W3/regr-mvfree.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    try:
+        src.write_text(node_text("260802-zzzz-mvf1", "자유 이동", "본문"),
+                       encoding="utf-8")
+        before = len(core.ledger_read(A.MOVES))
+        check("이동 성립", write.move_node("regr-mvfree", "= Scope/W3")["ok"])
+        check("기록부는 그대로", len(core.ledger_read(A.MOVES)) == before)
+    finally:
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
 # ── 사용자는 '차이'를 검토한다 — 해시 두 개는 검토가 아니다 (헌법 10조 2항) ──
 def test_changeset_lists_difference():
     """헌법 10조 2항은 사용자가 **차이를 검토하여** 승인·반려하라고 한다.
@@ -981,7 +1097,8 @@ def test_changeset_lists_difference():
         (regdir / "sub" / "edit.md").write_text("v1", encoding="utf-8")
         A.protect(reg, "지정")
         check("clean에서는 차이가 없다",
-              A.changeset(reg) == {"added": [], "removed": [], "modified": []},
+              A.changeset(reg) == {"added": [], "removed": [],
+                                   "modified": [], "moves": []},
               A.changeset(reg))
         (regdir / "gone.md").unlink()
         (regdir / "sub" / "edit.md").write_text("v2", encoding="utf-8")
@@ -3825,6 +3942,10 @@ if __name__ == "__main__":
                test_revert_confirms_before_destroying,
                test_revert_recreates_deleted_region,
                test_revert_binds_reviewed_changeset,
+               test_move_recorded_and_reverted_in,
+               test_move_reverted_out_no_duplicate,
+               test_move_return_blocked_origin_occupied,
+               test_move_unrecorded_outside_protection,
                test_changeset_lists_difference, test_stale_sealed_by_approve,
                test_topology_rejects_wiki_node_derived_from,
                test_local_lock_path_git_shapes,
