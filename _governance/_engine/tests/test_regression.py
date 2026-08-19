@@ -916,6 +916,44 @@ def test_protect_precondition_rejects_stale():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 반려는 파괴 직전에 전제를 다시 본다 (PR #14 리뷰) ──────────────────
+def test_revert_confirms_before_destroying():
+    """반려는 파괴적이다 — 준비 도중 다른 기기의 승인이 들어오면, 기록만 막는
+    사후 검사로는 부족하고 **작업본을 건드리기 전에** 거부해야 한다. 그러지
+    않으면 사용자가 방금 승인한 내용이 옛 승인본으로 덮여 사라진다."""
+    from osk import approvals as A
+    reg = "= Domain/rcas"
+    regdir = ROOT / "= Domain" / "rcas"
+    f = regdir / "a.md"
+    real_get = A._store_get
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        f.write_text("v1", encoding="utf-8")
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)                   # 승인본 A = v1
+        f.write_text("v2", encoding="utf-8")
+        other = A._store_tree(A.resolve_in_root(reg))  # 다른 기기가 승인할 tree B = v2
+        check("반려 전 상태는 pending", A.state(reg) == "pending")
+
+        def racing(h):                    # 준비(blob 적재) 도중 승인 B가 유입
+            A._store_get = real_get
+            core.ledger_append(A.APPROVALS, {
+                "kind": "approve", "region": reg, "base": base,
+                "accepted": other, "reason": "다른 기기(시험)"})
+            return real_get(h)
+        A._store_get = racing
+        check("준비 중 승인본이 바뀌면 반려 거부", _raises(lambda: A.revert(reg))())
+        A._store_get = real_get
+        check("작업본이 옛 승인본으로 덮이지 않았다", f.read_text() == "v2")
+        check("현행 승인본은 유입된 승인의 것", A.approved_hash(reg) == other)
+        check("유입 승인 기준으로는 clean", A.state(reg) == "clean")
+    finally:
+        A._store_get = real_get
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
 # ── 지정도 작업본 측 CAS를 거친다 (PR #14 리뷰) ────────────────────────
 def test_protect_worktree_cas():
     """초기 승인본은 사용자가 확인한 **그** 상태여야 한다(시행령 §6 5항) —
@@ -3393,6 +3431,7 @@ if __name__ == "__main__":
                test_approve_precondition_under_lock,
                test_unprotect_precondition_under_lock,
                test_protect_precondition_rejects_stale, test_protect_worktree_cas,
+               test_revert_confirms_before_destroying,
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,

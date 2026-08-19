@@ -438,7 +438,15 @@ def revert(region: str, reason: str = "") -> dict:
         raise ValueError(
             f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
     discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
-    _restore_tree(d, table)
+    # 복원은 **파괴적**이다. 전제(base가 현행 승인본)는 기록의 정직성만이 아니라
+    # **파일을 건드리기 전에** 유효해야 한다 — 준비 도중 다른 기기의 승인 B가
+    # 동기화로 들어오면, 사후 검사만으로는 기록만 막을 뿐 작업본은 이미 옛
+    # 승인본 A로 덮인 뒤다(사용자가 방금 승인한 B의 내용이 로컬에서 사라진다).
+    # 그래서 준비(전수 검증·blob 적재)를 마치고 **첫 쓰기 직전에** 다시 본다.
+    _restore_tree(d, table, confirm=lambda: (
+        None if approved_hash(reg) == base else
+        f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 작업본을 건드리지 "
+        f"않았다: {reg}"))
     # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
     # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
     # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게
@@ -481,7 +489,7 @@ def unprotect(region: str, reason: str = "") -> dict:
             f"다시 보라: {reg}"))
 
 
-def _restore_tree(region_dir: Path, table: dict[str, str]) -> None:
+def _restore_tree(region_dir: Path, table: dict[str, str], confirm=None) -> None:
     """영역을 manifest 상태로 되돌린다 — manifest의 각 파일을 저장소 내용으로
     원자 교체하고, manifest에 없는 현재 파일은 지운다.
 
@@ -489,7 +497,14 @@ def _restore_tree(region_dir: Path, table: dict[str, str]) -> None:
     언제나 `<영역>/…` 접두다; 어긋난 table은 영역과 승인본이 어긋난 것이므로
     복원의 근거가 아니다) ②모든 blob이 저장소에 실재하는가. 사전 검증에
     실패하면 아무 파일도 건드리지 않고 거부한다 — **부분 복원**을 만들지
-    않는 것이 요점이다(반쯤 되돌아간 영역은 사용자가 검토할 수 없다)."""
+    않는 것이 요점이다(반쯤 되돌아간 영역은 사용자가 검토할 수 없다).
+
+    `confirm`은 준비를 마치고 **첫 쓰기 직전에** 호출부의 전제를 다시 보는
+    선택적 검사다(문자열을 돌려주면 그것을 사유로 거부). 준비(판독·검증)가
+    긴 만큼 그 사이 전제가 무너질 수 있는데, 사후 검사는 기록만 막을 뿐
+    파괴는 이미 끝난 뒤다. 쓰기 도중 외부에서 들어오는 변경까지 막지는
+    못한다 — 그 잔여 창은 이 프로세스 밖(git pull 등)이라 닫을 수 없고,
+    그때는 영역이 pending으로 남아 다음 반려가 새 승인본으로 복원한다."""
     root_real = Path(os.path.realpath(ROOT))
     region_rel = posix_rel(region_dir, root_real).rstrip("/")
     # 0) 전수 사전 검증 — 봉쇄·blob 실재를 쓰기 전에 모두 확인
@@ -505,6 +520,10 @@ def _restore_tree(region_dir: Path, table: dict[str, str]) -> None:
         if data is None:
             raise ValueError(f"승인본 blob 부재 — 복원 불가: {rel} {h}")
         resolved.append((p, data))
+    if confirm is not None:               # 파괴 직전 전제 재확인
+        why = confirm()
+        if why:
+            raise ValueError(why)
     # 1) 전수 검증 통과 후에만 승인본 내용으로 원자 교체
     for p, data in resolved:
         p.parent.mkdir(parents=True, exist_ok=True)
