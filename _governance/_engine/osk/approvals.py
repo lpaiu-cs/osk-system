@@ -80,10 +80,16 @@ def _manifest_bytes(region_dir: Path) -> tuple[bytes, dict[str, str]]:
 
 
 def working_tree_hash(region: str) -> str | None:
-    """작업본의 영역 tree 해시 — 영역 디렉터리가 없으면 None."""
+    """작업본의 영역 tree 해시 — vault 밖 경로면 None.
+
+    영역 디렉터리가 없으면 **빈 tree**의 해시다(None이 아니다). 영역째 지워진
+    것은 "판정 불능"이 아니라 "파일이 하나도 없는 상태"이며, 그렇게 봐야
+    반려가 그 사고를 되돌릴 수 있다(디렉터리를 다시 만들어 복원)."""
     d = resolve_in_root(region)
-    if d is None or not d.is_dir():
+    if d is None:
         return None
+    if not d.is_dir():
+        return sha256_bytes(_manifest_blob([]))
     return sha256_bytes(_manifest_bytes(d)[0])
 
 
@@ -418,13 +424,27 @@ def approve(region: str, base: str, expect_work: str,
             f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
 
 
-def revert(region: str, reason: str = "") -> dict:
+def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
     """반려 — 작업본을 승인본으로 **원상 복원**한다(시행령 §6 6항 · Mechanism
     §3 6항: 파일 복원을 마친 뒤에만 기록한다 — 기록에 실패해도 작업본이
-    승인본과 같아졌으므로 clean으로 수렴할 뿐이다)."""
+    승인본과 같아졌으므로 clean으로 수렴할 뿐이다).
+
+    `base`·`expect_work`는 **필수**다 — 반려는 파괴적이므로 사용자가 확인한
+    그 변경집합(승인본 base → 작업본 expect_work)에만 성립해야 한다. 확인
+    프롬프트 사이에 에이전트가 더 쓴 변경까지 '사용자가 승인한 반려'로 묶여
+    사라지면 안 된다(approve의 양측 CAS와 같은 이유·같은 결속).
+
+    영역 디렉터리가 통째로 사라진 경우도 복원 대상이다 — 승인본이 유효하면
+    디렉터리를 다시 만들어 되돌린다. 보호가 되돌려야 할 가장 기본적인 사고가
+    영역 삭제인데 그것만 수동 복구를 요구하면 장치의 뜻이 무너진다."""
+    if base is None or expect_work is None:
+        raise ValueError(
+            "base·expect_work(검토한 승인본·작업본)는 필수다 — 반려는 파괴적이다")
     d = resolve_in_root(region)
-    if d is None or not d.is_dir():
-        raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
+    if d is None:
+        raise ValueError(f"영역이 vault 안의 경로가 아니다: {region}")
+    if d.exists() and not d.is_dir():
+        raise ValueError(f"영역이 디렉터리가 아니다: {region}")
     reg = posix_rel(d, Path(os.path.realpath(ROOT)))
     recs = records()
     st = state(reg, recs)
@@ -432,21 +452,28 @@ def revert(region: str, reason: str = "") -> dict:
         raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
     if st == "unprotected":
         raise ValueError(f"보호 중이 아니다: {reg}")
-    base = approved_hash(reg, recs)
-    table = _tree_table_for_region(reg, base) if base else None
+    cur = approved_hash(reg, recs)
+    if cur != base:
+        raise ValueError(
+            f"검토가 전제한 승인본이 현행이 아니다 (승인본 측): 전제={base} 현행={cur}")
+    table = _tree_table_for_region(reg, base)
     if table is None:
         raise ValueError(
             f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
     discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
-    # 복원은 **파괴적**이다. 전제(base가 현행 승인본)는 기록의 정직성만이 아니라
-    # **파일을 건드리기 전에** 유효해야 한다 — 준비 도중 다른 기기의 승인 B가
-    # 동기화로 들어오면, 사후 검사만으로는 기록만 막을 뿐 작업본은 이미 옛
-    # 승인본 A로 덮인 뒤다(사용자가 방금 승인한 B의 내용이 로컬에서 사라진다).
-    # 그래서 준비(전수 검증·blob 적재)를 마치고 **첫 쓰기 직전에** 다시 본다.
+    d.mkdir(parents=True, exist_ok=True)  # 영역째 사라진 경우도 복원 대상이다
+    # 복원은 **파괴적**이다. 전제는 기록의 정직성만이 아니라 **파일을 건드리기
+    # 전에** 유효해야 한다 — 준비 도중 승인본이 바뀌거나(다른 기기 승인 유입)
+    # 작업본이 바뀌면(확인 프롬프트 사이 에이전트 쓰기), 사후 검사만으로는
+    # 기록만 막을 뿐 파괴는 이미 끝난 뒤다. 그래서 준비(전수 검증·blob 적재)를
+    # 마치고 **첫 쓰기 직전에** 양쪽을 다시 본다.
     _restore_tree(d, table, confirm=lambda: (
-        None if approved_hash(reg) == base else
         f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 작업본을 건드리지 "
-        f"않았다: {reg}"))
+        f"않았다: {reg}"
+        if approved_hash(reg) != base else
+        None if working_tree_hash(reg) == expect_work else
+        "버릴 변경집합이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측): "
+        f"검토={expect_work} 현재={working_tree_hash(reg)}"))
     # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
     # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
     # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게

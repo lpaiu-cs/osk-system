@@ -112,9 +112,15 @@ def main(argv=None):
         st = approvals.state(a.region)
         if st != "pending":
             sys.exit(f"반려할 변경집합이 없다 — 상태: {st}")
+        # 반려도 파괴적이므로 승인과 **같은 결속**을 쓴다 — 버릴 변경집합
+        # (승인본→작업본)을 프롬프트 **전에** 고정한다. 프롬프트 사이에
+        # 에이전트가 더 쓴 변경이 '사용자가 승인한 반려'에 묶여 사라지지 않게.
+        base = approvals.approved_hash(a.region)
+        work = approvals.working_tree_hash(a.region)
         print(f"반려 대상: {a.region} — 작업본을 승인본으로 원상 복원합니다")
+        print(f"버릴 변경집합(작업본→승인본): {work} → {base}")
         _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
-        rec = approvals.revert(a.region, a.reason)
+        rec = approvals.revert(a.region, base, expect_work=work, reason=a.reason)
         print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])
     # update·release는 파서 앞에서 위임된다 — 여기에 분기를 두면 죽은 코드다.
 

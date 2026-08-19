@@ -36,7 +36,7 @@ from .core import (ROOT, LEDGER, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
                    ledger_append, ledger_read, new_node_id, now_kst,
                    posix_rel, resolve_in_root, resolve_one, sha256_bytes, sha256_file)
 from ._portalock import lock_exclusive, unlock
-from . import contract, graph, signatures
+from . import approvals, contract, graph, signatures
 
 WRITE_LOCK = LEDGER / ".write.lock"      # 전역 쓰기 잠금 (대장 구획, git 추적 밖)
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
@@ -322,6 +322,19 @@ def _check_edges(edges: dict | None) -> list[str]:
             if not isinstance(t, str) or not t.strip():
                 errs.append(f"엣지 대상은 비어 있지 않은 문자열이어야 한다: "
                             f"{pred} → {t!r}")
+                continue
+            if pred == "derived-from" and not re.match(ID_RE, t.strip()):
+                # 노드 근거의 동일성은 **id**다(Mechanism §8 2항) — 경로·이름은
+                # 상태라 이동·개명에 끊어지고, 같은 이름이 재사용되면 다른
+                # 노드를 가리킨다. 비노드 근거만 위키링크로 단다.
+                s = t.strip()
+                inner = s[2:-2].strip() if s.startswith("[[") and s.endswith("]]") else s
+                kind = graph.Index().resolve(inner)
+                if kind[0] in ("node", "ambiguous"):
+                    errs.append(
+                        f"derived-from의 노드 근거는 id로 단다: {t} — 경로·이름은 "
+                        f"상태라 이동·개명에 끊어진다. 그 노드의 id를 쓰라 "
+                        f"(비노드 근거만 [[경로#앵커]])")
                 continue
             if pred == "conflicts" and not re.match(CASE_RE, t.strip()):
                 # 존치 상호 치환은 표면으로 만들 수 없다(닭-달걀) — 에이전트가 달 수
@@ -725,6 +738,14 @@ def move_node(name: str, dest_space: str) -> dict:
             raise WriteError(
                 "pin으로 고정된 군집이다 — 자동 재배정에서 제외된다 "
                 "(시행령 §3 4항). 사용자 발의로만 옮긴다")
+        # 보호영역 경계를 넘는 이동은 반려로 되돌릴 수 없다 — 반려는 영역별
+        # tree만 알므로, 밖→안 이동을 반려하면 도착본이 지워지고 출발본은
+        # 복원할 정보가 없어 노드가 사라진다(안→밖은 같은 id가 둘이 된다).
+        # pin과 같은 규율로 자동 재배정에서 뺀다 — 사용자 발의로만 옮긴다.
+        if approvals.containing_regions(path) != approvals.containing_regions(target):
+            raise WriteError(
+                "보호영역 경계를 넘는 이동이다 — 반려가 되돌릴 수 없어 자동 "
+                "재배정에서 제외된다(헌법 10조·시행령 §6). 사용자 발의로만 옮긴다")
         clash = _name_collision(dest_dir, path.stem)
         if clash is not None:
             raise WriteError(

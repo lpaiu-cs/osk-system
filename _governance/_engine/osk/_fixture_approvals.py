@@ -34,7 +34,8 @@ def expect(cond, msg):
 # 미보호 영역의 승인·반려·해제는 거부된다 (fail-closed)
 expect(A.state(REG) == "unprotected", "초기 상태가 unprotected 아님")
 for op in (lambda: A.approve(REG, "sha256:x", expect_work="sha256:y"),
-           lambda: A.revert(REG), lambda: A.unprotect(REG)):
+           lambda: A.revert(REG, "sha256:x", "sha256:y"),
+           lambda: A.unprotect(REG)):
     try:
         op(); errs.append("미보호 영역 조작이 거부되지 않음")
     except ValueError:
@@ -96,7 +97,7 @@ except ValueError:
     pass
 
 # 반려 → 작업본 원상 복원 (승인본=v2, added.md는 그 승인본에 있음, junk.md는 제거)
-A.revert(REG, "되돌림")
+A.revert(REG, A.approved_hash(REG), A.working_tree_hash(REG), "되돌림")
 expect(A.state(REG) == "clean", "반려 후 clean 아님")
 expect((regdir / "d.md").read_text() == "v2", "반려가 d.md를 승인본으로 복원 안 함")
 expect((regdir / "added.md").exists(), "반려가 승인본의 added.md를 지움")

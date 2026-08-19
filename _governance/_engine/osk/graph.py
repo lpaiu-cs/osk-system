@@ -254,6 +254,13 @@ def topology_check(idx: Index) -> list[str]:
                     continue
                 errs.append(f"conflicts 대상 부적격: {stem} → {name} ({r[0]})")
                 continue
+            if pred == "derived-from" and not re.match(ID_RE, name) \
+                    and r[0] in ("node", "ambiguous"):
+                # 노드 근거의 동일성은 id다 — 경로·이름은 상태이므로 이동·개명에
+                # 끊어지고, 같은 이름이 재사용되면 다른 노드를 가리킨다
+                # (Mechanism §8 2항 · 헌법 8조 5항).
+                errs.append(f"derived-from 노드 대상은 id로 단다: {stem} → {name}")
+                continue
             if r[0] in ("external", "dangling"):
                 continue  # 외부·미해석 — 소속 제한 없음 (dangling은 경고로 별도 보고)
             if r[0] == "ambiguous":

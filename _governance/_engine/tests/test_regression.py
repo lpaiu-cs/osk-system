@@ -792,7 +792,8 @@ def test_approval_baseline_blobs_present():
               any("복원 불가" in e for e in A.integrity()), A.integrity())
         f.write_text("변경", encoding="utf-8")            # pending
         check("blob 부재 승인본으로의 revert는 사전검증에서 거부",
-              _raises(lambda: A.revert("= Scope/W2"))())
+              _raises(lambda: A.revert("= Scope/W2", A.approved_hash("= Scope/W2"),
+                                       A.working_tree_hash("= Scope/W2")))())
         A._store_put("내용A".encode("utf-8"))             # blob 복원
         check("blob 복원 후 integrity 통과", A.integrity() == [], A.integrity())
     finally:
@@ -825,7 +826,8 @@ def test_store_content_verified():
               any("복원 불가" in e for e in A.integrity()), A.integrity())
         f.write_text("변경", encoding="utf-8")            # pending
         check("손상 blob 승인본으로의 revert는 사전검증에서 거부",
-              _raises(lambda: A.revert("= Scope/W2"))())
+              _raises(lambda: A.revert("= Scope/W2", A.approved_hash("= Scope/W2"),
+                                       A.working_tree_hash("= Scope/W2")))())
         A._store_put("정본내용".encode("utf-8"))          # 손상 객체 치유
         check("_store_put이 손상 객체를 정상으로 치유", A._store_get(h) is not None)
         check("치유 후 integrity 통과", A.integrity() == [], A.integrity())
@@ -916,6 +918,98 @@ def test_protect_precondition_rejects_stale():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 보호 경계를 넘는 이동은 자동 재배정에서 빠진다 (PR #14 리뷰) ───────
+def test_move_across_protection_boundary_refused():
+    """반려는 영역별 tree만 알므로 경계를 넘는 이동을 되돌리지 못한다 — 밖→안
+    이동을 반려하면 도착본은 지워지고 출발본은 복원할 정보가 없어 노드가
+    사라진다. pin과 같은 규율로 자동 재배정에서 뺀다(사용자 발의로만)."""
+    from osk import approvals as A, write
+    src = ROOT / "= Scope/W1"
+    dst = ROOT / "= Scope/W3"
+    node = src / "regr-mv.md"
+    try:
+        src.mkdir(parents=True, exist_ok=True)
+        dst.mkdir(parents=True, exist_ok=True)
+        node.write_text(node_text("260802-zzzz-rgmv", "이동 시험", "본문\n"),
+                        encoding="utf-8")
+        A.protect("= Scope/W3", "도착지만 보호")
+        def moved():
+            try:
+                write.move_node("regr-mv", "= Scope/W3"); return False
+            except Exception:
+                return True
+        check("경계를 넘는 이동은 거부", moved())
+        check("출발본이 그대로 있다", node.exists())
+        check("도착지에 사본이 생기지 않았다", not (dst / "regr-mv.md").exists())
+        A.unprotect("= Scope/W3", "정리")
+        check("경계가 없으면 이동 가능",
+              write.move_node("regr-mv", "= Scope/W3")["ok"])
+    finally:
+        for r in ("= Scope/W3",):
+            try: A.unprotect(r, "정리")
+            except Exception: pass
+        (dst / "regr-mv.md").unlink(missing_ok=True)
+        node.unlink(missing_ok=True)
+        shutil.rmtree(ROOT / "= Scope/W3", ignore_errors=True)
+
+
+# ── 영역째 삭제된 사고도 반려로 복구된다 (PR #14 리뷰) ─────────────────
+def test_revert_recreates_deleted_region():
+    """보호영역 디렉터리가 통째로 사라져도(rm -r·동기화 삭제) 승인본이 유효하면
+    반려가 디렉터리를 다시 만들어 복원한다 — 보호가 되돌려야 할 가장 기본적인
+    사고가 영역 삭제인데 그것만 수동 복구를 요구하면 장치의 뜻이 무너진다."""
+    from osk import approvals as A
+    reg = "= Domain/gone"
+    regdir = ROOT / "= Domain" / "gone"
+    try:
+        (regdir / "sub").mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("본문A", encoding="utf-8")
+        (regdir / "sub" / "b.md").write_text("본문B", encoding="utf-8")
+        A.protect(reg, "지정")
+        shutil.rmtree(regdir)                         # 영역째 삭제 사고
+        check("영역이 사라지면 pending", A.state(reg) == "pending")
+        check("작업본 tree는 빈 tree(판정 불능이 아님)",
+              A.working_tree_hash(reg) is not None)
+        A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "복구")
+        check("디렉터리가 되살아났다", regdir.is_dir())
+        check("파일 내용이 승인본 그대로", (regdir / "a.md").read_text() == "본문A")
+        check("하위 디렉터리 파일도 복원", (regdir / "sub" / "b.md").read_text() == "본문B")
+        check("복구 후 clean", A.state(reg) == "clean")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 반려도 검토한 변경집합에만 성립한다 (PR #14 리뷰) ──────────────────
+def test_revert_binds_reviewed_changeset():
+    """반려는 파괴적이므로 승인과 **같은 결속**을 쓴다 — 확인 프롬프트 사이에
+    에이전트가 더 쓴 변경까지 '사용자가 승인한 반려'로 묶여 사라지면 안 된다."""
+    from osk import approvals as A
+    reg = "= Domain/rbind"
+    regdir = ROOT / "= Domain" / "rbind"
+    f = regdir / "a.md"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        f.write_text("승인본", encoding="utf-8")
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        f.write_text("검토한 변경 B", encoding="utf-8")
+        reviewed = A.working_tree_hash(reg)            # 사용자가 확인한 변경집합
+        f.write_text("프롬프트 사이 새 변경 C", encoding="utf-8")   # 에이전트 쓰기
+        check("검토하지 않은 C가 섞이면 반려 거부",
+              _raises(lambda: A.revert(reg, base, reviewed))())
+        check("C가 살아 있다", f.read_text() == "프롬프트 사이 새 변경 C")
+        check("영역은 여전히 pending", A.state(reg) == "pending")
+        A.revert(reg, base, A.working_tree_hash(reg), "다시 검토 후 반려")
+        check("다시 검토한 뒤에는 반려 성립", A.state(reg) == "clean")
+        check("승인본으로 복원됨", f.read_text() == "승인본")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
 # ── 반려는 파괴 직전에 전제를 다시 본다 (PR #14 리뷰) ──────────────────
 def test_revert_confirms_before_destroying():
     """반려는 파괴적이다 — 준비 도중 다른 기기의 승인이 들어오면, 기록만 막는
@@ -942,7 +1036,8 @@ def test_revert_confirms_before_destroying():
                 "accepted": other, "reason": "다른 기기(시험)"})
             return real_get(h)
         A._store_get = racing
-        check("준비 중 승인본이 바뀌면 반려 거부", _raises(lambda: A.revert(reg))())
+        check("준비 중 승인본이 바뀌면 반려 거부",
+              _raises(lambda: A.revert(reg, base, A.working_tree_hash(reg)))())
         A._store_get = real_get
         check("작업본이 옛 승인본으로 덮이지 않았다", f.read_text() == "v2")
         check("현행 승인본은 유입된 승인의 것", A.approved_hash(reg) == other)
@@ -1024,7 +1119,7 @@ def test_unprotect_precondition_under_lock():
         check("현행 승인본은 유입된 승인의 것", A.approved_hash(reg) == other)
     finally:
         A.ledger_append = real_append
-        try: A.revert(reg, "정리")         # 유입 승인본으로 복원 → clean
+        try: A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "정리")
         except Exception: pass
         try: A.unprotect(reg, "정리")
         except Exception: pass
@@ -1130,7 +1225,9 @@ def test_revert_incomplete_no_record():
         (locked / "junk.md").write_text("junk", encoding="utf-8")   # pending(추가)
         before = len(A.records())
         os.chmod(locked, 0o500)                                     # 삭제 불가
-        check("삭제 실패 시 revert가 예외로 거부", _raises(lambda: A.revert(reg))())
+        check("삭제 실패 시 revert가 예외로 거부",
+              _raises(lambda: A.revert(reg, A.approved_hash(reg),
+                                       A.working_tree_hash(reg)))())
         check("삭제 못한 파일이 남아 있다", (locked / "junk.md").exists())
         check("revert 대장 행이 추가되지 않았다", len(A.records()) == before)
         check("영역은 여전히 pending(복원 미완료)", A.state(reg) == "pending")
@@ -1183,7 +1280,9 @@ def test_baseline_bound_to_region():
               A.file_in_region_baseline(reg, dnode) is False)
         eff = {d["title"]: d["effective"] for d in authority.enumerate_delegations()}
         check("권위 판정도 미성립", eff.get("regr-bind") is False, eff)
-        check("revert도 거부", _raises(lambda: A.revert(reg))())
+        check("revert도 거부",
+              _raises(lambda: A.revert(reg, A.approved_hash(reg),
+                                       A.working_tree_hash(reg)))())
         check("영역 밖 파일이 변하지 않음", outsider.read_text() == "영역 밖 파일")
     finally:
         if good:
@@ -1712,21 +1811,28 @@ def test_candidate_needs_distinct():
 
 # ── 14o. 엣지 표기 동일성 — 경로형과 스템형은 같은 대상 (8차 잔여 1) ────
 def test_edge_target_normalization():
+    """derived-from의 **노드** 근거는 id로만 단다(Mechanism §8 2항) — 경로·이름은
+    상태라 이동·개명에 끊어진다. 비노드 근거는 위키링크로 그대로 받는다."""
     r = _w(write.create_node, "regr-norm-t", "대상", "본문", "fable-5",
            space="= Scope/W1")
+    tid = r["id"]
+    for form in ("= Scope/W1/regr-norm-t", "regr-norm-t"):
+        bad = _w(write.create_node, "regr-norm-x", "경로형 근거", "본문",
+                 "fable-5", space="= Scope/W1", edges={"derived-from": form})
+        check(f"노드 근거의 비-id 표기는 거부: {form}", not bad["ok"], bad)
+        check("거부 사유가 id를 요구한다",
+              any("id로 단다" in v for v in bad.get("violations", [])), bad)
     r0 = _w(write.create_node, "regr-norm", "표기 정규화", "본문",
-            "fable-5", space="= Scope/W1",
-            edges={"derived-from": "= Scope/W1/regr-norm-t"})
-    check("전제: 경로형 엣지로 생성", r0["ok"], r0)
-    r1 = _w(write.update_node, "regr-norm",
-            add_edges={"derived-from": "regr-norm-t"})
-    check("스템형 추가는 경로형과 같은 대상 — 중복 등재하지 않는다",
-          len(r1["edges"]["derived-from"]) == 1, r1["edges"])
-    check("변경이 없으므로 no_change", r1.get("no_change") is True, r1)
+            "fable-5", space="= Scope/W1", edges={"derived-from": tid})
+    check("id 근거로는 생성", r0["ok"], r0)
+    r1 = _w(write.update_node, "regr-norm", add_edges={"derived-from": tid})
+    check("같은 id 추가는 중복 등재하지 않는다", r1.get("no_change") is True, r1)
     r2 = _w(write.update_node, "regr-norm",
-            remove_edges={"derived-from": "regr-norm-t"})
-    check("스템형 제거가 경로형 엣지에 유효하다",
-          r2["ok"] and not r2["edges"]["derived-from"], r2)
+            add_edges={"derived-from": "[[= Governance/없는문서]]"})
+    check("비노드 근거는 위키링크로 받는다", r2["ok"], r2)
+    r3 = _w(write.update_node, "regr-norm", remove_edges={"derived-from": tid})
+    check("id 제거가 유효하다",
+          r3["ok"] and tid not in (r3["edges"]["derived-from"] or []), r3)
     for nm in ("regr-norm", "regr-norm-t"):
         (ROOT / f"= Scope/W1/{nm}.md").unlink(missing_ok=True)
 
@@ -1871,10 +1977,13 @@ def test_surface_name_roundtrip():
           "error" not in M.read_node(h["title"]), M.read_node(h["title"]))
     check("그 title로 update_node가 된다",
           _w(write.update_node, h["title"], summary="갱신")["ok"])
-    check("그 title을 엣지 대상으로 쓰면 dangling이 아니다",
+    # derived-from의 노드 근거는 id다 — 그 id도 같은 검색 결과가 함께 준다.
+    # (발견→지목이 끊어지지 않는 것은 title이 아니라 이 id가 담보한다)
+    check("검색 결과가 id도 함께 준다", bool(h.get("id")), h)
+    check("그 id를 엣지 대상으로 쓰면 dangling이 아니다",
           not _w(write.create_node, "regr-rt-ref", "참조", "본문",
                  "fable-5", space="= Scope/W1",
-                 edges={"derived-from": h["title"]})["dangling"])
+                 edges={"derived-from": h["id"]})["dangling"])
     for nm in ("regr-rt-name", "regr-rt-ref"):
         (ROOT / f"= Scope/W1/{nm}.md").unlink(missing_ok=True)
 
@@ -3432,6 +3541,9 @@ if __name__ == "__main__":
                test_unprotect_precondition_under_lock,
                test_protect_precondition_rejects_stale, test_protect_worktree_cas,
                test_revert_confirms_before_destroying,
+               test_move_across_protection_boundary_refused,
+               test_revert_recreates_deleted_region,
+               test_revert_binds_reviewed_changeset,
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
