@@ -981,6 +981,77 @@ def test_revert_recreates_deleted_region():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 구조 충돌은 첫 쓰기 전에 잡는다 — 부분 복원 금지 (PR #14 리뷰) ─────
+def test_revert_structure_conflict_no_partial():
+    """작업본에서 파일↔디렉터리가 뒤바뀐 평범한 재구성이면, 반영 도중 실패해
+    앞선 파일만 덮인 **부분 복원**이 된다. 준비 단계에서 전수로 잡아 거부하므로
+    다른 작업본 변경이 그대로 남는다."""
+    from osk import approvals as A
+    reg = "= Domain/struct"
+    regdir = ROOT / "= Domain" / "struct"
+    a, sub = regdir / "a.md", regdir / "sub"
+    try:
+        sub.mkdir(parents=True, exist_ok=True)
+        a.write_text("승인본 A", encoding="utf-8")
+        (sub / "b.md").write_text("승인본 B", encoding="utf-8")
+        A.protect(reg, "지정")
+        base = A.approved_hash(reg)
+        a.write_text("작업본 A2", encoding="utf-8")      # 사용자의 변경
+        shutil.rmtree(sub)
+        sub.write_text("이제 파일이다", encoding="utf-8")  # 디렉터리→파일
+        check("반려가 구조 충돌로 거부",
+              _raises(lambda: A.revert(reg, base, A.working_tree_hash(reg)))())
+        check("앞선 파일이 덮이지 않았다(부분 복원 없음)",
+              a.read_text() == "작업본 A2")
+        check("충돌 객체도 그대로", sub.read_text() == "이제 파일이다")
+        # 반대 방향 — 승인본은 디렉터리 자리, 작업본은 그 자리에 파일
+        sub.unlink()
+        sub.mkdir()
+        (sub / "b.md").write_text("승인본 B", encoding="utf-8")
+        A.revert(reg, base, A.working_tree_hash(reg), "구조 정리 후 반려")
+        check("구조를 바로잡으면 반려 성립", A.state(reg) == "clean")
+        check("승인본으로 복원", a.read_text() == "승인본 A")
+    finally:
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
+# ── 승인 조작은 노드 쓰기와 같은 잠금으로 직렬화된다 (PR #14 리뷰) ──────
+def test_approval_serialized_with_writes():
+    """반려의 마지막 전제 확인과 첫 파괴 사이에 정상 쓰기가 끼어들면 검토하지
+    않은 변경이 사라진다. 네 조작 모두 노드 쓰기와 **같은** 전역 변경 잠금을
+    잡는다 — 엔진이 통제하는 writer는 그 사이에 들어올 수 없다."""
+    from osk import approvals as A
+    from osk import write
+    check("write와 approvals가 같은 잠금 실체를 쓴다",
+          write.WRITE_LOCK == core.MUTATION_LOCK)
+    held = []
+    real = core.mutation_lock
+
+    class _Spy(real):
+        def __enter__(self):
+            held.append(1)
+            return super().__enter__()
+    reg = "= Domain/lockchk"
+    regdir = ROOT / "= Domain" / "lockchk"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "a.md").write_text("v1", encoding="utf-8")
+        A.mutation_lock = _Spy
+        A.protect(reg, "지정")
+        (regdir / "a.md").write_text("v2", encoding="utf-8")
+        A.approve(reg, A.approved_hash(reg),
+                  expect_work=A.working_tree_hash(reg), reason="승인")
+        (regdir / "a.md").write_text("v3", encoding="utf-8")
+        A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg), "반려")
+        A.unprotect(reg, "해제")
+        check("네 조작이 모두 잠금을 잡았다", len(held) == 4, len(held))
+    finally:
+        A.mutation_lock = real
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
 # ── 부재와 '디렉터리가 아닌 것'은 다르다 (PR #14 리뷰) ─────────────────
 def test_region_replaced_by_file_is_pending():
     """부재만 빈 작업본으로 읽는다 — 같은 경로에 일반 파일이 생기면 구조가
@@ -3610,6 +3681,8 @@ if __name__ == "__main__":
                test_move_across_protection_boundary_refused,
                test_revert_recreates_deleted_region,
                test_revert_binds_reviewed_changeset,
+               test_revert_structure_conflict_no_partial,
+               test_approval_serialized_with_writes,
                test_region_replaced_by_file_is_pending,
                test_refused_revert_leaves_region_absent,
                test_stale_region_not_unprotected,

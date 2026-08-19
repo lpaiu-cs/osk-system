@@ -53,6 +53,29 @@ SIGNATURES = LEDGER / "signatures.jsonl"
 CANDIDATES = LEDGER / "case" / "candidates.jsonl"
 PINS = LEDGER / "pins.jsonl"
 ROUTING = LEDGER / "routing.jsonl"       # 세션→scope 라우팅 (Mechanism §6-2 3항)
+MUTATION_LOCK = LEDGER / ".write.lock"   # 전역 변경 잠금 (대장 구획, git 추적 밖)
+
+
+class mutation_lock:
+    """엔진이 내는 **모든 변경**을 직렬화하는 전역 잠금 — 노드 쓰기(write)와
+    보호영역 조작(approvals)이 같은 이 잠금을 쓴다.
+
+    둘이 다른 잠금을 쓰면, 반려가 마지막으로 전제를 확인한 뒤 파일을 덮기까지
+    사이에 정상 쓰기가 끼어들어 **검토하지 않은 변경이 파괴된다**. 잠금 순서는
+    언제나 이 잠금 → 대장 잠금(`ledger_append`)이다(양쪽 모듈이 같은 순서라
+    교착이 없다). 프로세스 밖에서 들어오는 변경(git pull)은 이 잠금 밖이며,
+    그것은 `expect`·전제 재확인이 맡는다."""
+
+    def __enter__(self):
+        MUTATION_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        self._f = open(MUTATION_LOCK, "w")
+        lock_exclusive(self._f)
+        return self
+
+    def __exit__(self, *exc):
+        unlock(self._f)
+        self._f.close()
+        return False
 
 TS_FMT = "%Y-%m-%d %H:%M (KST)"          # Mechanism §2 2항 — frontmatter 시각
 TS_RE = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \(KST\)$"

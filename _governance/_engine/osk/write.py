@@ -33,12 +33,12 @@ from pathlib import Path
 import yaml
 
 from .core import (ROOT, LEDGER, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
-                   ledger_append, ledger_read, new_node_id, now_kst,
-                   posix_rel, resolve_in_root, resolve_one, sha256_bytes, sha256_file)
-from ._portalock import lock_exclusive, unlock
+                   MUTATION_LOCK, ledger_append, ledger_read, mutation_lock,
+                   new_node_id, now_kst, posix_rel, resolve_in_root, resolve_one,
+                   sha256_bytes, sha256_file)
 from . import approvals, contract, graph, signatures
 
-WRITE_LOCK = LEDGER / ".write.lock"      # 전역 쓰기 잠금 (대장 구획, git 추적 밖)
+WRITE_LOCK = MUTATION_LOCK               # 하위 호환 별칭 (잠금 실체는 core)
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
                    "delegation-overlap")   # Mechanism §4 3항 (lineage-fork 폐지)
@@ -155,19 +155,9 @@ def _name_collision(dest_dir: Path, stem: str) -> str | None:
     return None
 
 
-class _Lock:
-    """전역 쓰기 잠금 — 잠금 파일은 `_ledger/`에 두고 git에서 무시한다."""
-
-    def __enter__(self):
-        WRITE_LOCK.parent.mkdir(parents=True, exist_ok=True)
-        self._f = open(WRITE_LOCK, "w")
-        lock_exclusive(self._f)
-        return self
-
-    def __exit__(self, *exc):
-        unlock(self._f)
-        self._f.close()
-        return False
+# 전역 변경 잠금은 core가 소유한다 — 보호영역 조작(approvals)이 같은 잠금을
+# 써야 반려의 마지막 전제 확인과 첫 파괴 사이에 정상 쓰기가 끼어들지 않는다.
+_Lock = mutation_lock
 
 
 # ── 파일 해석·직렬화 ─────────────────────────────────────────────────────

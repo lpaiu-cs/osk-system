@@ -23,7 +23,7 @@ from pathlib import Path
 
 from .core import (ROOT, LEDGER, sha256_bytes, sha256_file, posix_rel,
                    resolve_in_root, ledger_append, ledger_read,
-                   causal_maxima, resolve_one)
+                   causal_maxima, mutation_lock, resolve_one)
 
 APPROVALS = LEDGER / "approvals.jsonl"
 STORE = LEDGER / "approved" / "objects"       # 내용 주소 blob·manifest 보관
@@ -328,35 +328,36 @@ def file_in_region_baseline(region: str, path: Path | str) -> bool:
 def protect(region: str, reason: str = "") -> dict:
     """보호영역 지정 — 지정 시점 작업본을 **초기 승인본**으로 삼는다
     (시행령 §6 5항). 이미 보호 중이면 거부(이중 지정은 승인·반려로 한다)."""
-    d = resolve_in_root(region)
-    if d is None or not d.is_dir():
-        raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
-    reg = posix_rel(d, Path(os.path.realpath(ROOT)))
-    recs = records()
-    if state(reg, recs) == "stale":
-        # is_protected는 stale에서 False라 이중지정 거부를 통과한다 — 분기
-        # 영역을 검토 없이 재봉인하지 않도록 stale을 먼저 막는다.
-        raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
-    if is_protected(reg, recs):
-        raise ValueError(f"이미 보호 중인 영역이다: {reg}")
-    accepted = _store_tree(d)
-    return ledger_append(APPROVALS, {
-        "kind": "protect", "region": reg,
-        "base": None, "accepted": accepted, "reason": reason},
-        # 잠금 안에서 본문과 같은 전제를 다시 본다 — `not is_protected`로는
-        # 부족하다(is_protected는 stale에서도 False다). 스냅샷 중 비교 불능
-        # 기록이 유입돼 stale이 되면, 그 분기가 표면화되지 않고 새 초기
-        # 승인본으로 조용히 봉합된다.
-        #
-        # 작업본 쪽은 보지 않는다. 스냅샷 직후의 정상 동시 편집은 지정을
-        # 무효로 만들 사고가 아니라 **다음 변경집합**이다 — 영역이 곧바로
-        # pending으로 드러나고 사용자가 승인하거나 반려하면 된다. 그것을
-        # 하드 오류로 바꾸면 자가 치유되는 상태를 재시도로 바꿀 뿐이다
-        # (반려처럼 파괴적인 조작에만 작업본 결속을 건다).
-        expect=lambda recs2: (
-            None if state(reg, recs2) == "unprotected" else
-            f"그 사이 상태가 바뀌었다(다른 기기 기록 유입) — "
-            f"{state(reg, recs2)}: {reg}"))
+    with mutation_lock():   # 엔진이 내는 변경을 직렬화
+        d = resolve_in_root(region)
+        if d is None or not d.is_dir():
+            raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
+        reg = posix_rel(d, Path(os.path.realpath(ROOT)))
+        recs = records()
+        if state(reg, recs) == "stale":
+            # is_protected는 stale에서 False라 이중지정 거부를 통과한다 — 분기
+            # 영역을 검토 없이 재봉인하지 않도록 stale을 먼저 막는다.
+            raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
+        if is_protected(reg, recs):
+            raise ValueError(f"이미 보호 중인 영역이다: {reg}")
+        accepted = _store_tree(d)
+        return ledger_append(APPROVALS, {
+            "kind": "protect", "region": reg,
+            "base": None, "accepted": accepted, "reason": reason},
+            # 잠금 안에서 본문과 같은 전제를 다시 본다 — `not is_protected`로는
+            # 부족하다(is_protected는 stale에서도 False다). 스냅샷 중 비교 불능
+            # 기록이 유입돼 stale이 되면, 그 분기가 표면화되지 않고 새 초기
+            # 승인본으로 조용히 봉합된다.
+            #
+            # 작업본 쪽은 보지 않는다. 스냅샷 직후의 정상 동시 편집은 지정을
+            # 무효로 만들 사고가 아니라 **다음 변경집합**이다 — 영역이 곧바로
+            # pending으로 드러나고 사용자가 승인하거나 반려하면 된다. 그것을
+            # 하드 오류로 바꾸면 자가 치유되는 상태를 재시도로 바꿀 뿐이다
+            # (반려처럼 파괴적인 조작에만 작업본 결속을 건다).
+            expect=lambda recs2: (
+                None if state(reg, recs2) == "unprotected" else
+                f"그 사이 상태가 바뀌었다(다른 기기 기록 유입) — "
+                f"{state(reg, recs2)}: {reg}"))
 
 
 def approve(region: str, base: str, expect_work: str,
@@ -372,45 +373,46 @@ def approve(region: str, base: str, expect_work: str,
     `working_tree_hash`가 None) CLI가 그 None을 그대로 넘기는 경로가 실제로
     있으므로, 그 자리에서 거부한다. 다만 **경로 진단이 먼저다** — 영역 자체가
     성립하지 않는 것이 원인이면 인자 탓으로 보고하지 않는다."""
-    d = resolve_in_root(region)
-    if d is None or not d.is_dir():
-        raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
-    if base is None or expect_work is None:
-        raise ValueError(
-            "base·expect_work(검토한 승인본·작업본)는 필수다 — 양측 CAS를 "
-            "건너뛸 수 없다")
-    reg = posix_rel(d, Path(os.path.realpath(ROOT)))
-    recs = records()
-    st = state(reg, recs)
-    if st == "stale":
-        raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
-    if st == "unprotected":
-        raise ValueError(f"보호 중이 아니다: {reg}")
-    cur = approved_hash(reg, recs)
-    if cur != base:
-        raise ValueError(
-            f"검토가 전제한 승인본이 현행이 아니다 (승인본 측 CAS): 전제={base} 현행={cur}")
-    # 작업본을 **한 번** 읽어 박제하고, 그 **같은** tree를 작업본 측 CAS에
-    # 쓴다 — 검사한 상태와 박제한 상태가 언제나 동일해야 검토하지 않은 변경이
-    # 끼어들 창(TOCTOU)이 없다. 별도 판독으로 검사하고 또 다른 판독을 박제하면
-    # 그 사이 에이전트가 쓴 상태가 승인본이 된다.
-    accepted = _store_tree(d)         # 승인 시점 작업본을 박제·해시(단일 판독)
-    if accepted != expect_work:
-        raise ValueError(
-            "검토한 작업본이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측 CAS)")
-    if accepted == cur:
-        raise ValueError("변경집합이 없다 — 승인할 pending 차이가 없다")
-    # 승인본 측 CAS를 **대장 잠금 안에서 다시** 본다 — 위 검사와 append 사이에
-    # 영역 전수 판독(_store_tree)이 있어 창이 길다. 그 사이 다른 기기의 승인이
-    # 동기화로 들어오면, 못 본 채 붙은 이 행이 그 기록의 인과 자식이 되어
-    # 사용자가 검토한 적 없는 승인본을 조용히 대체하고 행의 base도 거짓이 된다.
-    return ledger_append(APPROVALS, {
-        "kind": "approve", "region": reg,
-        "base": base, "accepted": accepted, "reason": reason},
-        expect=lambda recs2: (
-            None if approved_hash(reg, recs2) == base else
-            "승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 검토하라"
-            f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
+    with mutation_lock():   # 엔진이 내는 변경을 직렬화
+        d = resolve_in_root(region)
+        if d is None or not d.is_dir():
+            raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
+        if base is None or expect_work is None:
+            raise ValueError(
+                "base·expect_work(검토한 승인본·작업본)는 필수다 — 양측 CAS를 "
+                "건너뛸 수 없다")
+        reg = posix_rel(d, Path(os.path.realpath(ROOT)))
+        recs = records()
+        st = state(reg, recs)
+        if st == "stale":
+            raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
+        if st == "unprotected":
+            raise ValueError(f"보호 중이 아니다: {reg}")
+        cur = approved_hash(reg, recs)
+        if cur != base:
+            raise ValueError(
+                f"검토가 전제한 승인본이 현행이 아니다 (승인본 측 CAS): 전제={base} 현행={cur}")
+        # 작업본을 **한 번** 읽어 박제하고, 그 **같은** tree를 작업본 측 CAS에
+        # 쓴다 — 검사한 상태와 박제한 상태가 언제나 동일해야 검토하지 않은 변경이
+        # 끼어들 창(TOCTOU)이 없다. 별도 판독으로 검사하고 또 다른 판독을 박제하면
+        # 그 사이 에이전트가 쓴 상태가 승인본이 된다.
+        accepted = _store_tree(d)         # 승인 시점 작업본을 박제·해시(단일 판독)
+        if accepted != expect_work:
+            raise ValueError(
+                "검토한 작업본이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측 CAS)")
+        if accepted == cur:
+            raise ValueError("변경집합이 없다 — 승인할 pending 차이가 없다")
+        # 승인본 측 CAS를 **대장 잠금 안에서 다시** 본다 — 위 검사와 append 사이에
+        # 영역 전수 판독(_store_tree)이 있어 창이 길다. 그 사이 다른 기기의 승인이
+        # 동기화로 들어오면, 못 본 채 붙은 이 행이 그 기록의 인과 자식이 되어
+        # 사용자가 검토한 적 없는 승인본을 조용히 대체하고 행의 base도 거짓이 된다.
+        return ledger_append(APPROVALS, {
+            "kind": "approve", "region": reg,
+            "base": base, "accepted": accepted, "reason": reason},
+            expect=lambda recs2: (
+                None if approved_hash(reg, recs2) == base else
+                "승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 검토하라"
+                f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
 
 
 def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
@@ -431,65 +433,66 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
     남는다). 삭제와 달리 이쪽은 사용자가 치울 것이 눈앞에 있고(`rm` 한 번),
     엔진이 승인본에 없던 객체를 말없이 지우는 것은 반려의 범위가 아니다 —
     승인본 밖 물건을 지우는 것은 영역 **안**에서만 하는 일이다."""
-    d = resolve_in_root(region)
-    if d is None:
-        raise ValueError(f"영역이 vault 안의 경로가 아니다: {region}")
-    if d.exists() and not d.is_dir():
-        # 경로 진단이 인자 검사보다 **먼저**다 — 이 상태에서는 작업본을 판정할
-        # 수 없어 호출부가 expect_work=None을 넘기게 되는데, 그때 인자 탓으로
-        # 보고하면 사용자가 실제 원인(치울 객체)을 못 본다.
-        raise ValueError(
-            f"영역 경로에 디렉터리가 아닌 것이 있다 — 그것을 치우면(rm) 반려가 "
-            f"승인본을 복원한다. 엔진은 승인본 밖 객체를 대신 지우지 않는다: {region}")
-    if base is None or expect_work is None:
-        raise ValueError(
-            "base·expect_work(검토한 승인본·작업본)는 필수다 — 반려는 파괴적이다")
-    reg = posix_rel(d, Path(os.path.realpath(ROOT)))
-    recs = records()
-    st = state(reg, recs)
-    if st == "stale":
-        raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
-    if st == "unprotected":
-        raise ValueError(f"보호 중이 아니다: {reg}")
-    cur = approved_hash(reg, recs)
-    if cur != base:
-        raise ValueError(
-            f"검토가 전제한 승인본이 현행이 아니다 (승인본 측): 전제={base} 현행={cur}")
-    table = _tree_table_for_region(reg, base)
-    if table is None:
-        raise ValueError(
-            f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
-    discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
-    if discarded != expect_work:
-        raise ValueError(
-            "버릴 변경집합이 검토한 것과 다르다 — 다시 검토하라 (작업본 측): "
-            f"검토={expect_work} 현재={discarded}")
+    with mutation_lock():   # 엔진이 내는 변경을 직렬화
+        d = resolve_in_root(region)
+        if d is None:
+            raise ValueError(f"영역이 vault 안의 경로가 아니다: {region}")
+        if d.exists() and not d.is_dir():
+            # 경로 진단이 인자 검사보다 **먼저**다 — 이 상태에서는 작업본을 판정할
+            # 수 없어 호출부가 expect_work=None을 넘기게 되는데, 그때 인자 탓으로
+            # 보고하면 사용자가 실제 원인(치울 객체)을 못 본다.
+            raise ValueError(
+                f"영역 경로에 디렉터리가 아닌 것이 있다 — 그것을 치우면(rm) 반려가 "
+                f"승인본을 복원한다. 엔진은 승인본 밖 객체를 대신 지우지 않는다: {region}")
+        if base is None or expect_work is None:
+            raise ValueError(
+                "base·expect_work(검토한 승인본·작업본)는 필수다 — 반려는 파괴적이다")
+        reg = posix_rel(d, Path(os.path.realpath(ROOT)))
+        recs = records()
+        st = state(reg, recs)
+        if st == "stale":
+            raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
+        if st == "unprotected":
+            raise ValueError(f"보호 중이 아니다: {reg}")
+        cur = approved_hash(reg, recs)
+        if cur != base:
+            raise ValueError(
+                f"검토가 전제한 승인본이 현행이 아니다 (승인본 측): 전제={base} 현행={cur}")
+        table = _tree_table_for_region(reg, base)
+        if table is None:
+            raise ValueError(
+                f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
+        discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
+        if discarded != expect_work:
+            raise ValueError(
+                "버릴 변경집합이 검토한 것과 다르다 — 다시 검토하라 (작업본 측): "
+                f"검토={expect_work} 현재={discarded}")
 
-    staged = _stage_tree(table)           # 준비 — 아직 아무것도 건드리지 않았다
-    # 준비를 마치고 **첫 쓰기 직전에** 두 전제를 다시 본다. 복원은 파괴적이므로
-    # 전제는 기록의 정직성만이 아니라 파일을 건드리기 전에 유효해야 한다 —
-    # 사후 검사는 기록만 막을 뿐 파괴는 이미 끝난 뒤다.
-    if approved_hash(reg) != base:
-        raise ValueError(f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — "
-                         f"작업본을 건드리지 않았다: {reg}")
-    work = working_tree_hash(reg)
-    if work != expect_work:
-        raise ValueError("버릴 변경집합이 그 사이 바뀌었다 — 다시 검토하라 "
-                         f"(작업본 측): 검토={expect_work} 현재={work}")
-    _apply_tree(d, table, staged)         # 여기부터 파괴적이다
-    # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
-    # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
-    # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게
-    # 한다(fail-closed) — 실패는 미기록으로 남아 다음 revert가 다시 시도한다.
-    if working_tree_hash(reg) != base:
-        raise ValueError(
-            "복원이 승인본과 일치하지 않는다 — revert를 기록하지 않았다(fail-closed)")
-    return ledger_append(APPROVALS, {
-        "kind": "revert", "region": reg,
-        "base": base, "discarded": discarded, "reason": reason},
-        expect=lambda recs2: (            # 복원 중 유입된 승인을 덮지 않는다
-            None if approved_hash(reg, recs2) == base else
-            f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 보라: {reg}"))
+        staged = _stage_tree(d, table)     # 준비 — 아직 아무것도 건드리지 않았다
+        # 준비를 마치고 **첫 쓰기 직전에** 두 전제를 다시 본다. 복원은 파괴적이므로
+        # 전제는 기록의 정직성만이 아니라 파일을 건드리기 전에 유효해야 한다 —
+        # 사후 검사는 기록만 막을 뿐 파괴는 이미 끝난 뒤다.
+        if approved_hash(reg) != base:
+            raise ValueError(f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — "
+                             f"작업본을 건드리지 않았다: {reg}")
+        work = working_tree_hash(reg)
+        if work != expect_work:
+            raise ValueError("버릴 변경집합이 그 사이 바뀌었다 — 다시 검토하라 "
+                             f"(작업본 측): 검토={expect_work} 현재={work}")
+        _apply_tree(d, table, staged)         # 여기부터 파괴적이다
+        # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
+        # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
+        # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게
+        # 한다(fail-closed) — 실패는 미기록으로 남아 다음 revert가 다시 시도한다.
+        if working_tree_hash(reg) != base:
+            raise ValueError(
+                "복원이 승인본과 일치하지 않는다 — revert를 기록하지 않았다(fail-closed)")
+        return ledger_append(APPROVALS, {
+            "kind": "revert", "region": reg,
+            "base": base, "discarded": discarded, "reason": reason},
+            expect=lambda recs2: (            # 복원 중 유입된 승인을 덮지 않는다
+                None if approved_hash(reg, recs2) == base else
+                f"승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 보라: {reg}"))
 
 
 def unprotect(region: str, reason: str = "") -> dict:
@@ -497,43 +500,59 @@ def unprotect(region: str, reason: str = "") -> dict:
     (시행령 §6 5항). 상설 보호영역(위임 Facet·통치 구획·모듈 Facet)의 해제는
     제도 개정과 함께 한다 — 그 정책 판정은 사용자·CLI가 지고, 이 함수는 물리만
     본다."""
-    d = resolve_in_root(region)
-    reg = posix_rel(d, Path(os.path.realpath(ROOT))) if d else str(region).rstrip("/")
-    recs = records()
-    st = state(reg, recs)
-    if st == "stale":
-        raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
-    if st == "unprotected":
-        raise ValueError(f"보호 중이 아니다: {reg}")
-    if st == "pending":
-        raise ValueError(
-            "미처리 변경집합이 있다 — 해제 전에 승인 또는 반려로 처분하라 (시행령 §6 5항)")
-    base = approved_hash(reg, recs)
-    return ledger_append(APPROVALS, {
-        "kind": "unprotect", "region": reg,
-        "base": base, "accepted": None, "reason": reason},
-        expect=lambda recs2: (            # 유입된 승인을 해제로 덮지 않는다
-            None if (state(reg, recs2) == "clean"
-                     and approved_hash(reg, recs2) == base) else
-            "그 사이 승인 기록이 바뀌었다(다른 기기 기록 유입) — 해제 전에 "
-            f"다시 보라: {reg}"))
+    with mutation_lock():   # 엔진이 내는 변경을 직렬화
+        d = resolve_in_root(region)
+        reg = posix_rel(d, Path(os.path.realpath(ROOT))) if d else str(region).rstrip("/")
+        recs = records()
+        st = state(reg, recs)
+        if st == "stale":
+            raise ValueError(f"stale 영역이다 — 인과 분기 해소가 먼저다: {reg}")
+        if st == "unprotected":
+            raise ValueError(f"보호 중이 아니다: {reg}")
+        if st == "pending":
+            raise ValueError(
+                "미처리 변경집합이 있다 — 해제 전에 승인 또는 반려로 처분하라 (시행령 §6 5항)")
+        base = approved_hash(reg, recs)
+        return ledger_append(APPROVALS, {
+            "kind": "unprotect", "region": reg,
+            "base": base, "accepted": None, "reason": reason},
+            expect=lambda recs2: (            # 유입된 승인을 해제로 덮지 않는다
+                None if (state(reg, recs2) == "clean"
+                         and approved_hash(reg, recs2) == base) else
+                "그 사이 승인 기록이 바뀌었다(다른 기기 기록 유입) — 해제 전에 "
+                f"다시 보라: {reg}"))
 
 
-def _stage_tree(table: dict[str, str]) -> list[tuple[Path, bytes]]:
+def _stage_tree(region_dir: Path, table: dict[str, str]) -> list[tuple[Path, bytes]]:
     """복원할 내용을 **전부 메모리에 올린다** — 아직 아무것도 건드리지 않는다.
 
-    blob이 하나라도 없으면 여기서 거부한다. **부분 복원**을 만들지 않는 것이
-    요점이다(반쯤 되돌아간 영역은 사용자가 검토할 수 없다). 준비와 반영을
+    blob이 없거나 **작업본의 경로 구조가 승인본과 충돌하면**(파일↔디렉터리가
+    뒤바뀐 자리) 여기서 거부한다. **부분 복원**을 만들지 않는 것이 요점이다
+    (반쯤 되돌아간 영역은 사용자가 검토할 수 없다). 준비와 반영을
     가르는 이유는 그 사이가 호출부가 전제를 마지막으로 확인할 자리이기
     때문이다 — 파괴가 시작된 뒤의 확인은 기록만 막을 뿐이다.
 
     table의 rel이 영역 안이라는 것은 `_tree_table_for_region`이 이미 보장한다
     (그 함수를 거치지 않은 table은 복원의 근거가 아니다)."""
+    region_real = Path(os.path.realpath(region_dir))
     staged: list[tuple[Path, bytes]] = []
     for rel, h in sorted(table.items()):
         p = resolve_in_root(rel)
         if p is None:
             raise ValueError(f"승인본 경로가 vault 밖이다 — 복원 거부: {rel}")
+        # 구조 충돌은 **쓰기 전에** 잡는다. 작업본에서 파일↔디렉터리가 뒤바뀐
+        # 평범한 재구성(예: `sub/` 디렉터리를 지우고 파일 `sub`를 만듦)이면,
+        # 반영 도중 mkdir·replace가 실패해 앞선 파일만 덮인 **부분 복원**이 된다.
+        if p.is_dir():
+            raise ValueError(
+                f"복원 대상 자리에 디렉터리가 있다 — 구조를 먼저 바로잡으라: {rel}")
+        for anc in p.parents:
+            if anc == region_real:
+                break
+            if anc.exists() and not anc.is_dir():
+                raise ValueError(
+                    f"복원 경로의 부모가 디렉터리가 아니다 — 구조를 먼저 "
+                    f"바로잡으라: {rel} ({posix_rel(anc, Path(os.path.realpath(ROOT)))})")
         data = _store_get(h)
         if data is None:
             raise ValueError(f"승인본 blob 부재 — 복원 불가: {rel} {h}")
