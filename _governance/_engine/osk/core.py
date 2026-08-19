@@ -28,7 +28,7 @@
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
 from __future__ import annotations
-import hashlib, json, os, random, re, string, time
+import hashlib, json, os, random, re, string, tempfile, time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -56,21 +56,54 @@ ROUTING = LEDGER / "routing.jsonl"       # 세션→scope 라우팅 (Mechanism �
 _MUTATION_LOCK_PATH: Path | None = None
 
 
+def local_lock_path(name: str, root: Path | None = None) -> Path:
+    """기기 로컬 잠금 파일의 경로 — **추적 트리 밖으로만** 고른다.
+
+    엔진의 primitive다. 동기화는 이 체계의 필수 구성요소가 아니라 쓰는 사람만
+    쓰는 편의 모듈이므로, 엔진이 자기 잠금 자리를 알기 위해 그쪽을 부르지
+    않는다(의존은 반대 방향이다 — 동기화가 이 함수를 쓴다).
+
+    자리는 git 디렉터리를 **파일시스템으로 읽어** 정한다(git 실행 없음 —
+    데몬 tick마다 subprocess를 띄우지 않고 Windows 콘솔 깜빡임도 없다):
+    `<root>/.git`이 디렉터리면 그것, 파일이면 `gitdir:` 대상(그 안에
+    `commondir`가 있으면 worktree이므로 그쪽을 따라간다). git이 없으면 루트
+    경로 해시를 키로 한 임시 디렉터리다(기기 안 vault별 유일).
+
+    추적 트리 안에 두지 않는 이유: `git add -A`에 딸려 들어가고, checkout이
+    그 pathname의 inode를 갈면 "같은 경로 = 같은 mutex" 전제가 깨진다."""
+    r = Path(root) if root is not None else ROOT
+    dot = r / ".git"
+    try:
+        if dot.is_dir():
+            return dot / name
+        if dot.is_file():
+            head = dot.read_text(encoding="utf-8").strip()
+            if head.startswith("gitdir:"):
+                g = Path(head.split(":", 1)[1].strip())
+                if not g.is_absolute():
+                    g = (r / g).resolve()
+                common = g / "commondir"
+                if common.is_file():
+                    c = Path(common.read_text(encoding="utf-8").strip())
+                    g = c if c.is_absolute() else (g / c).resolve()
+                if g.is_dir():
+                    return g / name
+    except OSError:
+        pass                                  # 판독 불가 → 임시 디렉터리로
+    key = hashlib.sha256(str(r).encode("utf-8")).hexdigest()[:16]
+    stem = name.rsplit(".", 1)[0]
+    return Path(tempfile.gettempdir()) / f"{stem}-{key}.lock"
+
+
 def mutation_lock_path() -> Path:
-    """working-tree 변경 상호배제 잠금의 경로 — **이미 있는 그 잠금**이다.
+    """working-tree 변경 상호배제 잠금의 경로 — 동기화(sync·update)가 잡는
+    `osk-mutation.lock`과 **같은 파일**이다.
 
-    sync 데몬과 update가 공유하는 `osk-mutation.lock`을 그대로 쓴다(해석기는
-    `sync_daemon._lock_path` — git common dir, 실패 시 임시 디렉터리). 새 파일을
-    만들면 데몬의 `pull(rebase)`가 이 잠금을 보지 않아 반려의 파괴 구간과
-    경합하고, 추적 트리 안에 두면 `git add -A`에 딸려 들어가며 checkout이
-    inode를 갈아 "같은 경로 = 같은 mutex" 전제까지 깨진다.
-
-    프로세스마다 한 번만 해석한다 — 해석은 git 호출이고 이 잠금은 모든 노드
-    쓰기가 잡는다."""
+    이름을 공유해야 데몬의 `pull(rebase)`가 반려의 파괴 구간과 경합하지 않는다.
+    프로세스마다 한 번만 해석한다 — 이 잠금은 모든 노드 쓰기가 잡는다."""
     global _MUTATION_LOCK_PATH
     if _MUTATION_LOCK_PATH is None:
-        from sync_daemon import _lock_path          # 지연 — update와 같은 규율
-        _MUTATION_LOCK_PATH = _lock_path(ROOT, "osk-mutation.lock")
+        _MUTATION_LOCK_PATH = local_lock_path("osk-mutation.lock")
     return _MUTATION_LOCK_PATH
 
 
