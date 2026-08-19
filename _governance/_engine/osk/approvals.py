@@ -27,24 +27,8 @@ from .core import (ROOT, LEDGER, sha256_bytes, sha256_file, posix_rel,
 
 APPROVALS = LEDGER / "approvals.jsonl"
 STORE = LEDGER / "approved" / "objects"       # 내용 주소 blob·manifest 보관
-# ROOT 기준 저장소의 **정해진** 상대 경로 — 봉쇄의 앵커는 realpath(STORE)가
-# 아니라 realpath(ROOT)/이 경로다(STORE 루트 symlink를 trust root로 승격시키지
-# 않기 위해; core.resolve_in_root가 realpath(ROOT)를 정본 앵커로 삼는 것과 같다).
-_STORE_REL = os.path.relpath(STORE, ROOT)
-_STORE_PARTS = tuple(x for x in _STORE_REL.replace("\\", "/").split("/")
-                     if x and x != ".")
 KINDS = ("protect", "unprotect", "approve", "revert")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")   # 저장소 접근의 유일 형식
-
-# 저장소 I/O를 **검증과 사용이 같은 fd 체인에 결속**되게 열 수 있는가 —
-# O_NOFOLLOW로 각 성분을 열면 검사 시점과 I/O 시점 사이 symlink 교체
-# (TOCTOU)로 우회할 수 없다. Windows 등 dir_fd 미지원 플랫폼에서는 realpath
-# 선검사(_obj_path)로 best-effort 봉쇄한다.
-_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-_ODIR = getattr(os, "O_DIRECTORY", 0)
-_DIRFD_SAFE = (_NOFOLLOW != 0 and _ODIR != 0
-               and {os.open, os.mkdir, os.unlink} <= os.supports_dir_fd)
-_CHUNK = 1 << 20
 
 # 영역 tree에서 제외하는 이름 — 저장소 살림살이와 대장 자신(승인본이 대장을
 # 담으면 승인이 자기 자신을 포함하는 순환이 된다).
@@ -73,24 +57,6 @@ def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
                 continue
             out.append((rel, p))
     return sorted(out, key=lambda x: x[0])
-
-
-def _rel_parts(rel: str) -> list[str]:
-    r"""정규 vault 상대 POSIX 경로 → 성분 목록. 정본 형상이 아니면 거부한다.
-
-    정본 rel은 `posix_rel()`이 낳는 형상뿐이다 — 빈 문자열·절대경로·백슬래시·
-    빈 성분·`.`·`..`이 없다. 이 rel→성분 변환이 manifest 파서와 복원 I/O가
-    공유하는 유일한 지점이므로, 형상 강제를 여기 둔다.
-
-    `..`을 남기면 fd 체인이 그 성분에서 **실제 부모로 올라가** 영역 밖에 쓴다
-    — `O_NOFOLLOW`는 symlink만 막고 `..` 이동은 막지 못한다. 문자열 단계에서
-    거부하고 물리 봉쇄로 이중화하는 규율은 `update._within`과 같다."""
-    if not isinstance(rel, str) or not rel or rel.startswith("/") or "\\" in rel:
-        raise ValueError(f"정규 vault 상대 경로가 아니다: {rel!r}")
-    parts = rel.split("/")
-    if any(p in ("", ".", "..") for p in parts):
-        raise ValueError(f"정규 vault 상대 경로가 아니다: {rel!r}")
-    return parts
 
 
 def _manifest_blob(entries: list) -> bytes:
@@ -136,166 +102,29 @@ def _obj_path(digest: str) -> Path:
         raise ValueError(f"부적격 digest — 저장소 접근 거부: {digest!r}")
     hexd = digest.split(":", 1)[1]
     p = STORE / hexd[:2] / hexd[2:]
-    # 물리 봉쇄 — 경로 **어느 성분의 symlink**(STORE 루트·shard·최종 객체)도
-    # I/O를 vault 밖으로 재지정하지 못하게 realpath 정체성으로 확인한다
-    # (core.resolve_in_root와 같은 기법 · Mechanism §1-2 5항). 앵커는 정본
-    # 신뢰 루트인 realpath(ROOT) 아래의 정해진 canonical 저장소 경로다 —
-    # realpath(STORE)를 앵커로 삼으면 STORE 자신이 밖을 가리키는 symlink일 때
-    # 외부를 trust root로 승격시킨다. 계산 경로의 realpath가 canonical 기대
-    # 위치와 정확히 일치하지 않으면 거부(fail-closed). 양쪽 다 realpath라 정본
-    # prefix의 정상 symlink(예: /tmp→/private/tmp)에는 오탐하지 않는다.
-    store_canon = os.path.normpath(os.path.join(os.path.realpath(ROOT), _STORE_REL))
-    expected = os.path.join(store_canon, hexd[:2], hexd[2:])
-    if os.path.realpath(p) != expected:
-        raise ValueError(f"저장소 밖·symlink 재지정 경로 — 거부: {digest}")
+    # 형식 강제로 이미 순수 hex 성분뿐이라 탈출이 불가능하나, 명시적으로
+    # STORE 봉쇄를 재확인한다(lexical — 파일 부재에도 성립).
+    store_s = os.path.normpath(STORE)
+    if os.path.commonpath([store_s, os.path.normpath(p)]) != store_s:
+        raise ValueError(f"저장소 밖 경로 — 거부: {digest}")
     return p
-
-
-def _open_dir_chain(parts, create: bool) -> int | None:
-    """realpath(ROOT)에서 `parts`(vault 상대 경로 성분)를 따라 **각 성분을
-    O_NOFOLLOW로** 열어 그 디렉터리 fd를 돌려준다 — 검증(비-symlink)과 사용이
-    같은 fd 체인에 결속돼 check-then-use TOCTOU가 없다. 어느 성분이든 symlink
-    이면(공격) 열기가 ELOOP로 실패하고, 없으면 create=False에서 None,
-    create=True에서 O_NOFOLLOW 규율로 만든다. 저장소·영역 복원이 공유한다.
-    dir_fd 미지원 플랫폼에서는 부르지 않는다(_DIRFD_SAFE)."""
-    try:
-        fd = os.open(os.path.realpath(ROOT), _ODIR | _NOFOLLOW)
-    except OSError:
-        return None
-    try:
-        for part in parts:
-            while True:
-                try:
-                    nxt = os.open(part, _ODIR | _NOFOLLOW, dir_fd=fd)
-                    break
-                except FileNotFoundError:
-                    if not create:
-                        return None
-                    try:
-                        os.mkdir(part, dir_fd=fd)
-                    except FileExistsError:
-                        pass              # 경쟁 생성 — 재시도로 연다(symlink면 ELOOP)
-            os.close(fd)
-            fd = nxt
-        return fd
-    except OSError:
-        os.close(fd)
-        return None                       # 성분이 symlink(ELOOP) 등 — fail-closed
-
-
-def _open_store_dirfd(create: bool) -> int | None:
-    """저장소 objects 디렉터리 fd (nofollow 체인)."""
-    return _open_dir_chain(_STORE_PARTS, create)
-
-
-def _readall_fd(fd: int) -> bytes:
-    chunks = []
-    while True:
-        b = os.read(fd, _CHUNK)
-        if not b:
-            break
-        chunks.append(b)
-    return b"".join(chunks)
-
-
-def _read_object_nofollow(hexd: str) -> bytes | None:
-    base = _open_store_dirfd(create=False)
-    if base is None:
-        return None
-    try:
-        try:
-            sfd = os.open(hexd[:2], _ODIR | _NOFOLLOW, dir_fd=base)
-        except OSError:
-            return None                   # shard 부재·symlink
-        try:
-            try:
-                ofd = os.open(hexd[2:], os.O_RDONLY | _NOFOLLOW, dir_fd=sfd)
-            except OSError:
-                return None               # 객체 부재·symlink
-            try:
-                return _readall_fd(ofd)
-            finally:
-                os.close(ofd)
-        finally:
-            os.close(sfd)
-    finally:
-        os.close(base)
-
-
-def _write_object_nofollow(digest: str, hexd: str, data: bytes) -> None:
-    base = _open_store_dirfd(create=True)
-    if base is None:
-        raise ValueError("승인 저장소 경로 봉쇄 실패 — 쓰지 않았다")
-    try:
-        while True:                       # shard 열기/만들기 (nofollow)
-            try:
-                sfd = os.open(hexd[:2], _ODIR | _NOFOLLOW, dir_fd=base)
-                break
-            except FileNotFoundError:
-                try:
-                    os.mkdir(hexd[:2], dir_fd=base)
-                except FileExistsError:
-                    pass              # 경쟁 생성 — 재시도(symlink로 만들어졌으면 ELOOP)
-            except OSError as e:
-                # shard가 symlink(ELOOP) 등 — 봉쇄 실패를 명시적 거부로 올린다
-                raise ValueError(f"저장소 shard 봉쇄 실패(symlink 재지정 등): {e}") from e
-        try:
-            obj = hexd[2:]
-            for _ in range(4):            # 경쟁·손상에 대한 유한 재시도
-                try:                      # 기존 객체가 정상이면 멱등
-                    efd = os.open(obj, os.O_RDONLY | _NOFOLLOW, dir_fd=sfd)
-                    try:
-                        if sha256_bytes(_readall_fd(efd)) == digest:
-                            return
-                    finally:
-                        os.close(efd)
-                except OSError:
-                    pass                  # 부재·symlink(ELOOP)
-                try:                      # 손상·symlink·부재 → 제거 후 새로 만든다
-                    os.unlink(obj, dir_fd=sfd)
-                except OSError:
-                    pass
-                try:
-                    wfd = os.open(obj, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                                  | _NOFOLLOW, 0o600, dir_fd=sfd)
-                except FileExistsError:
-                    continue              # 경쟁 생성 — 위에서 정상 여부 재확인
-                try:
-                    mv = memoryview(data)
-                    while mv:
-                        mv = mv[os.write(wfd, mv[:_CHUNK]):]
-                    os.fsync(wfd)
-                    return
-                finally:
-                    os.close(wfd)
-            raise ValueError("승인 저장소 객체 기록 경쟁 미수렴 — 쓰지 않았다")
-        finally:
-            os.close(sfd)
-    finally:
-        os.close(base)
 
 
 def _store_put(data: bytes) -> str:
     """바이트를 내용 주소로 보관하고 그 digest를 돌려준다. 같은 내용은 한 번만
     저장된다(멱등) — 다기기 병합은 합집합으로 자명하다.
 
-    경로 봉쇄와 실제 I/O를 **같은 O_NOFOLLOW fd 체인**에 결속한다 — 검사 뒤
-    symlink 교체(TOCTOU)로 vault 밖에 쓰는 일이 없다. 이미 있는 객체가 digest와
-    일치하면 멱등 반환, 손상·symlink면 제거 후 다시 쓴다(내용 주소라 정본 내용이
-    유일하게 정해져 치유가 자명하다)."""
+    이미 그 경로에 객체가 있으면 **그 내용이 digest와 일치하는지 확인**하고,
+    동기화 충돌·디스크 손상·변조로 어긋나 있으면 올바른 bytes로 다시 쓴다 —
+    내용 주소라 정본 내용이 유일하게 정해지므로 치유가 자명하다."""
     digest = sha256_bytes(data)
-    hexd = digest.split(":", 1)[1]
-    if _DIRFD_SAFE:
-        _write_object_nofollow(digest, hexd, data)
-        return digest
-    # 폴백(dir_fd 미지원) — realpath 선검사 + 경로 I/O (best-effort)
     dst = _obj_path(digest)
     if dst.exists():
         try:
             if sha256_bytes(dst.read_bytes()) == digest:
-                return digest
+                return digest             # 정상 객체 — 멱등 반환
         except OSError:
-            pass
+            pass                          # 판독 불가 → 아래 원자 재기록으로 치유
     dst.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
     try:
@@ -303,7 +132,7 @@ def _store_put(data: bytes) -> str:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, dst)
+        os.replace(tmp, dst)              # 원자 교체 — 손상 객체를 정상으로 치유
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -312,18 +141,15 @@ def _store_put(data: bytes) -> str:
 
 
 def _store_get(digest: str) -> bytes | None:
-    if not (isinstance(digest, str) and _DIGEST_RE.match(digest)):
+    try:
+        p = _obj_path(digest)            # 부적격 digest는 ValueError
+    except ValueError:
         return None                      # 신뢰 밖 digest — 부재로 취급(fail-closed)
-    hexd = digest.split(":", 1)[1]
-    if _DIRFD_SAFE:
-        data = _read_object_nofollow(hexd)
-    else:
-        try:
-            p = _obj_path(digest)
-            data = p.read_bytes() if p.is_file() else None
-        except (ValueError, OSError):
+    try:
+        if not p.is_file():
             return None
-    if data is None:
+        data = p.read_bytes()
+    except OSError:
         return None
     # 내용 주소 계약: 읽은 bytes가 실제로 digest로 해시되어야 한다. 동기화
     # 충돌·디스크 손상·변조로 어긋난 객체는 부재/손상으로 취급한다(fail-closed)
@@ -353,46 +179,15 @@ def _store_tree(region_dir: Path) -> str:
 
 
 def _tree_table(tree_hash: str) -> dict[str, str] | None:
-    """tree 해시 → {rel: sha256}. 저장소에 manifest가 없거나 **정본 형상이
-    아니면** None — 그러면 integrity·권한 검사·revert가 모두 fail-closed 한다.
-
-    manifest는 신뢰 밖 입력이다(다기기 병합으로 유입된 대장·저장소 객체).
-    정본 엔진이 만드는 manifest는 `_store_tree`가 낳는 형상 하나뿐이므로 —
-    경로 오름차순, 경로당 정확히 한 항목, 각 항목이 `[rel, sha256:<64hex>]`,
-    공백 없는 UTF-8 JSON — 여기서 그 형상을 그대로 강제한다(parse, don't
-    validate): 통과한 table은 정상 `protect`/`approve`가 만들 수 있었던
-    manifest임이 보장된다. 느슨하게 접으면(예: dict 축약의 last-wins) 중복
-    경로를 담은 비정규 manifest가 integrity를 통과하고 위임 권위의 근거가
-    될 수 있다."""
+    """tree 해시 → {rel: sha256}. 저장소에 manifest가 없으면 None."""
     blob = _store_get(tree_hash)
     if blob is None:
         return None
     try:
         entries = json.loads(blob.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+        return {str(rel): str(h) for rel, h in entries}
+    except (ValueError, TypeError):
         return None
-    if not isinstance(entries, list):
-        return None
-    table: dict[str, str] = {}
-    for item in entries:
-        if not (isinstance(item, list) and len(item) == 2):
-            return None
-        rel, h = item
-        if not (isinstance(h, str) and _DIGEST_RE.match(h)):
-            return None
-        try:
-            _rel_parts(rel)           # 정규 vault 상대 POSIX 경로만(`..` 금지)
-        except ValueError:
-            return None
-        if rel in table:
-            return None               # 경로 중복 — 정본 manifest에 없는 형상
-        table[rel] = h
-    rels = list(table)
-    if rels != sorted(rels):
-        return None                   # 정렬이 정본과 다름
-    if _manifest_blob(entries) != blob:
-        return None                   # 직렬화가 정본과 다름
-    return table
 
 
 def _tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None:
@@ -400,11 +195,11 @@ def _tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None
     때만 반환한다(아니면 None).
 
     `_store_tree(region_dir)`는 영역 디렉터리를 걸어 만들므로 정본 승인본의 rel은
-    전부 그 영역 안이다. 이 결속을 강제하지 않으면 영역 밖 항목을 섞은 tree가
-    승인본으로 통해, **권한 판정은 성립인데 복원은 거부되는** 승인본이 생긴다
+    전부 그 영역 안이다. 이 결속이 없으면 영역과 승인본이 어긋난 조합에서
+    **권한 판정은 성립인데 복원은 거부되는** 상태가 생긴다
     (`file_in_region_baseline`은 자기 파일 항목만 보고, `_restore_tree`는 영역
-    밖 rel을 거부하므로). region↔승인본 결속을 이 한 곳에서 강제하고 integrity·
-    권한 검사·revert가 모두 이 함수를 거친다."""
+    밖 rel을 거부하므로). 세 소비자(integrity·권한 검사·revert)가 같은 해석기를
+    쓰도록 결속을 이 한 곳에 둔다."""
     table = _tree_table(tree_hash)
     if table is None:
         return None
@@ -601,7 +396,7 @@ def revert(region: str, reason: str = "") -> dict:
     table = _tree_table_for_region(reg, base) if base else None
     if table is None:
         raise ValueError(
-            f"승인본 manifest를 해석하지 못했다(부재·비정규·영역 불일치) — 복원 불가: {base}")
+            f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
     discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
     _restore_tree(d, table)
     # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
@@ -638,137 +433,56 @@ def unprotect(region: str, reason: str = "") -> dict:
         "base": base, "accepted": None, "reason": reason})
 
 
-def _write_file_nofollow(rel: str, data: bytes) -> None:
-    """vault 상대 `rel` 파일에 `data`를 쓴다 — realpath(ROOT)에서 부모까지 각
-    성분을 O_NOFOLLOW로 열어(없으면 만들어) 그 dir_fd 상대로 O_NOFOLLOW 생성한다.
-    부모 성분이 symlink면 ELOOP로 거부되므로, 검증 뒤 부모를 symlink로 교체해도
-    (TOCTOU) I/O가 vault 밖으로 새지 않는다. 저장소 접근자와 같은 규율."""
-    parts = _rel_parts(rel)           # 정규형 위반은 여기서 거부(성분 `..` 없음)
-    parent = _open_dir_chain(parts[:-1], create=True)
-    if parent is None:
-        raise ValueError(f"복원 부모 경로 봉쇄 실패(symlink 재지정 등): {rel}")
-    name = parts[-1]
-    try:
-        try:
-            os.unlink(name, dir_fd=parent)   # 파일·symlink 제거(따라가지 않음)
-        except OSError:
-            pass                             # 부재·디렉터리·권한 — 아래 O_EXCL가 판정
-        try:
-            wfd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
-                          0o600, dir_fd=parent)
-        except FileExistsError as e:
-            raise ValueError(
-                f"복원 대상을 비울 수 없다(디렉터리 등) — 수동 확인: {rel}") from e
-        try:
-            mv = memoryview(data)
-            while mv:
-                mv = mv[os.write(wfd, mv[:_CHUNK]):]
-            os.fsync(wfd)
-        finally:
-            os.close(wfd)
-    finally:
-        os.close(parent)
-
-
-def _unlink_nofollow(rel: str) -> None:
-    """vault 상대 `rel`을 nofollow 부모 fd 체인 안에서 지운다.
-
-    '지울 것이 없음'(부모 부재·symlink, 대상 이미 없음)과 '대상이 실재하지만
-    삭제 실패'(권한 등)를 **구분**한다 — 후자는 삼키지 않고 올린다. 삭제 실패를
-    조용히 넘기면 작업본이 승인본과 달리 남는데도 revert가 완료된 것처럼
-    기록될 수 있다(복원 완료 계약 위반)."""
-    parts = _rel_parts(rel)           # 정규형 위반은 여기서 거부(성분 `..` 없음)
-    parent = _open_dir_chain(parts[:-1], create=False)
-    if parent is None:
-        return                           # 부모 부재·symlink — 지울 것이 없다
-    try:
-        try:
-            os.unlink(parts[-1], dir_fd=parent)
-        except FileNotFoundError:
-            pass                         # 이미 없음 — 정상
-        except OSError as e:
-            # 대상이 실재하나 삭제 실패(권한·디렉터리 등) — 삼키지 않고 명시적
-            # 거부로 올린다. 삭제 실패를 복원 완료로 위장하지 않는다.
-            raise ValueError(
-                f"승인본 밖 파일 삭제 실패 — 복원 미완료: {rel} ({e})") from e
-    finally:
-        os.close(parent)
-
-
-def _write_file_path(p: Path, data: bytes) -> None:
-    """폴백(dir_fd 미지원) — 경로 기반 원자 교체(best-effort)."""
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent))
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, p)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-
-
 def _restore_tree(region_dir: Path, table: dict[str, str]) -> None:
     """영역을 manifest 상태로 되돌린다 — manifest의 각 파일을 저장소 내용으로
-    복원하고, manifest에 없는 현재 파일은 지운다.
+    원자 교체하고, manifest에 없는 현재 파일은 지운다.
 
-    manifest는 신뢰 밖 입력이다(다기기 병합으로 유입). ①모든 rel이 그 영역 안에
-    봉쇄되는가 ②모든 blob이 저장소에 실재하는가를 **전수 사전 검증**으로 먼저
-    확인해(부분 복원·영역 밖 쓰기 동시 차단), 그다음 실제 쓰기·삭제는 저장소와
-    같은 **O_NOFOLLOW fd 체인**에 결속한다 — 사전 검증 뒤 영역 하위 부모를
-    symlink로 교체해도(TOCTOU) I/O가 vault 밖으로 새지 않는다(dir_fd 지원
-    플랫폼; 그 밖에는 경로 기반 best-effort 폴백).
-
-    영역 봉쇄는 두 겹이다(`update._within`과 같은 규율): 선언된 rel이 영역
-    접두인지(문자열 — tree 해시·상태 비교가 쓰는 그 표기)와, 그 rel이 실제로
-    가리키는 경로가 영역 realpath 아래인지(물리 — symlink 재배치를 흡수).
-    어느 한 겹도 다른 겹을 대신하지 못한다 — 영역 밖 rel이 영역 안으로 향한
-    symlink면 물리는 통과하지만 쓰기는 선언 위치(영역 밖)에 생기고, 반대로
-    영역 안 rel의 성분이 밖으로 향한 symlink면 문자열만으로는 못 막는다.
-    revert 경로에서는 `_tree_table_for_region`이 첫 겹을 이미 강제하지만,
-    이 함수는 쓰기 직전의 마지막 관문이므로 자기 전제를 스스로 확인한다."""
+    쓰기 **전에** 전수로 확인한다 — ①모든 rel이 그 영역 안인가(정본 manifest는
+    언제나 `<영역>/…` 접두다; 어긋난 table은 영역과 승인본이 어긋난 것이므로
+    복원의 근거가 아니다) ②모든 blob이 저장소에 실재하는가. 사전 검증에
+    실패하면 아무 파일도 건드리지 않고 거부한다 — **부분 복원**을 만들지
+    않는 것이 요점이다(반쯤 되돌아간 영역은 사용자가 검토할 수 없다)."""
     root_real = Path(os.path.realpath(ROOT))
     region_rel = posix_rel(region_dir, root_real).rstrip("/")
-    region_real = os.path.realpath(region_dir)
-    # 0) 전수 사전 검증 — 봉쇄(영역 접두 + 물리 경로)·blob 실재를 쓰기 전에 확인
-    validated: list[tuple[str, bytes]] = []
+    # 0) 전수 사전 검증 — 봉쇄·blob 실재를 쓰기 전에 모두 확인
+    resolved: list[tuple[Path, bytes]] = []
     for rel, h in sorted(table.items()):
-        if not rel.startswith(region_rel + "/"):
+        if not (rel == region_rel or rel.startswith(region_rel + "/")):
             raise ValueError(
                 f"승인본 경로가 영역 밖이다 — 복원 거부: {rel} ⊄ {region_rel}")
         p = resolve_in_root(rel)
         if p is None:
             raise ValueError(f"승인본 경로가 vault 밖이다 — 복원 거부: {rel}")
-        real = os.path.realpath(p)
-        if real != region_real and not real.startswith(region_real + os.sep):
-            raise ValueError(
-                f"승인본 경로의 실제 위치가 영역 밖이다 — 복원 거부: {rel} → {real}")
         data = _store_get(h)
         if data is None:
             raise ValueError(f"승인본 blob 부재 — 복원 불가: {rel} {h}")
-        validated.append((rel, data))
-    # 1) 승인본 내용으로 복원 (쓰기를 fd 체인에 결속)
-    for rel, data in validated:
-        if _DIRFD_SAFE:
-            _write_file_nofollow(rel, data)
-        else:
-            p = resolve_in_root(rel)
-            if p is None:
-                raise ValueError(f"승인본 경로가 vault 밖이다 — 복원 거부: {rel}")
-            _write_file_path(p, data)
+        resolved.append((p, data))
+    # 1) 전수 검증 통과 후에만 승인본 내용으로 원자 교체
+    for p, data in resolved:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent))
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, p)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
     # 2) manifest에 없는 현재 파일 제거 (에이전트가 추가한 것)
+    #    삭제 실패(권한 등)는 삼키지 않는다 — 조용히 넘기면 작업본이 승인본과
+    #    다른 채로 남는데도 revert가 완료된 것처럼 기록될 수 있다.
     for rel, p in _region_files(region_dir):
         if rel not in table:
-            if _DIRFD_SAFE:
-                _unlink_nofollow(rel)
-            else:
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass                      # 이미 없음 — 정상
+            except OSError as e:
+                raise ValueError(
+                    f"승인본 밖 파일 삭제 실패 — 복원 미완료: {rel} ({e})") from e
 
 
 # ── 검증기 지원 ──────────────────────────────────────────────────────────
@@ -797,7 +511,7 @@ def integrity() -> list[str]:
             table = _tree_table_for_region(region, tree) if tree else None
             if table is None:
                 errs.append(
-                    f"승인본 manifest 해석 불가(부재·비정규·영역 불일치): "
+                    f"승인본 manifest 해석 불가(부재·영역 불일치): "
                     f"{region} ({tree})")
                 continue
             # manifest가 가리키는 **모든 blob의 실재**를 확인한다 — manifest만

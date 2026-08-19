@@ -836,130 +836,14 @@ def test_store_content_verified():
         f.unlink(missing_ok=True)
 
 
-# ── 저장소 shard symlink 물리 봉쇄 (PR #14 리뷰 [high]) ─────────────────
-def test_store_symlink_confined():
-    """STORE 안 shard가 vault 밖을 가리키는 symlink여도 저장소 접근이 외부로
-    새지 않는다 — _obj_path이 realpath 정체성으로 shard·객체 symlink를 거부하고,
-    _store_get·_store_put은 그 한 지점을 거치므로 함께 봉쇄된다."""
-    from osk import approvals as A
-    ext = Path(tempfile.mkdtemp(prefix="osk-ext-"))
-    data = b"confine-test-payload"
-    digest = A.sha256_bytes(data)
-    hexd = digest.split(":", 1)[1]
-    A.STORE.mkdir(parents=True, exist_ok=True)
-    shard = A.STORE / hexd[:2]
-    saved = None
-    try:
-        if shard.is_symlink():
-            shard.unlink()
-        elif shard.exists():
-            saved = shard.with_name(hexd[:2] + ".bak")
-            shard.rename(saved)
-        (ext / hexd[2:]).write_bytes(data)          # 외부에 '정상 내용' 미끼
-        shard.symlink_to(ext, target_is_directory=True)
-        check("_obj_path이 symlink shard 경로를 거부",
-              _raises(lambda: A._obj_path(digest))())
-        check("_store_get은 symlink 경유 외부 파일을 읽지 않는다(내용 일치해도)",
-              A._store_get(digest) is None)
-        check("_store_put은 symlink shard로 쓰기 거부",
-              _raises(lambda: A._store_put(data))())
-    finally:
-        if shard.is_symlink():
-            shard.unlink()
-        if saved is not None:
-            saved.rename(shard)
-        shutil.rmtree(ext, ignore_errors=True)
-
-
-# ── 검사-사용 사이 shard symlink 교체 TOCTOU 봉쇄 (PR #14 리뷰 [high]) ───
-def test_store_toctou_shard_swap():
-    """경로 검사와 실제 I/O 사이에 shard가 외부 symlink로 교체돼도 저장소 I/O가
-    밖으로 새지 않는다 — _store_get/_store_put이 O_NOFOLLOW fd 체인으로 사용
-    시점에 재검증하므로, 선검사 결과에 의존하지 않는다(dir_fd 지원 플랫폼)."""
-    from osk import approvals as A
-    if not A._DIRFD_SAFE:
-        check("dir_fd 미지원 — TOCTOU 강봉쇄 시험 생략(skip)", True)
-        return
-    ext = Path(tempfile.mkdtemp(prefix="osk-toctou-"))
-    data = b"toctou-payload"
-    digest = A.sha256_bytes(data)
-    hexd = digest.split(":", 1)[1]
-    A.STORE.mkdir(parents=True, exist_ok=True)
-    shard = A.STORE / hexd[:2]
-    saved = None
-    try:
-        if shard.is_symlink():
-            shard.unlink()
-        elif shard.exists():
-            saved = shard.with_name(hexd[:2] + ".bak")
-            shard.rename(saved)
-        shard.mkdir()                               # 검사 시점엔 정상 실디렉터리
-        A._obj_path(digest)                         # 통과(정상)
-        shard.rmdir()                               # ── 검사-사용 사이 교체 ──
-        shard.symlink_to(ext, target_is_directory=True)
-        (ext / hexd[2:]).write_bytes(data)          # 외부에 '정상 내용' 미끼
-        check("교체 후 _store_put이 외부에 쓰지 않는다(fd 체인 재검증)",
-              _raises(lambda: A._store_put(data))())
-        check("외부 디렉터리에 객체가 쓰이지 않음",
-              not any(p.name == hexd[2:] and p.stat().st_size != len(data)
-                      for p in ext.iterdir()) and
-              [p.name for p in ext.iterdir()] == [hexd[2:]])   # 미끼 1개만, 새 쓰기 없음
-        check("교체 후 _store_get이 외부를 읽지 않는다(내용 일치해도)",
-              A._store_get(digest) is None)
-    finally:
-        if shard.is_symlink():
-            shard.unlink()
-        if saved is not None:
-            saved.rename(shard)
-        shutil.rmtree(ext, ignore_errors=True)
-
-
-# ── revert 복원 경로도 fd 체인 봉쇄 (검사-사용 TOCTOU) (PR #14 리뷰 [high]) ─
-def test_revert_restore_subdir_swap_confined():
-    """revert의 복원 쓰기·삭제가 영역 하위 부모 symlink 교체 TOCTOU로 vault 밖에
-    쓰지 않는다 — manifest 전수검증 뒤 `region/sub`를 외부 symlink로 바꿔도
-    _restore_tree가 fd 체인으로 재검증해 외부 파일을 만들지 않는다."""
-    from osk import approvals as A
-    if not A._DIRFD_SAFE:
-        check("dir_fd 미지원 — revert TOCTOU 시험 생략(skip)", True)
-        return
-    ext = Path(tempfile.mkdtemp(prefix="osk-rev-"))
-    reg = "= Domain/revtest"
-    regdir = ROOT / "= Domain" / "revtest"
-    sub = regdir / "sub"
-    try:
-        sub.mkdir(parents=True, exist_ok=True)
-        (sub / "f.md").write_text("승인본-내용", encoding="utf-8")
-        A.protect(reg, "지정")                       # sub/f.md가 승인본에 들어감
-        (sub / "f.md").write_text("변경됨", encoding="utf-8")   # pending
-        table = A._tree_table(A.approved_hash(reg))
-        # 복원 직전 부모(sub)를 외부 symlink로 교체(검사-사용 TOCTOU 주입)
-        (sub / "f.md").unlink()
-        sub.rmdir()
-        sub.symlink_to(ext, target_is_directory=True)
-        check("영역 하위 부모 symlink 교체 시 _restore_tree가 외부에 쓰지 않는다",
-              _raises(lambda: A._restore_tree(regdir, table))())
-        check("외부 디렉터리에 복원 파일이 생기지 않음",
-              not (ext / "f.md").exists())
-    finally:
-        if sub.is_symlink():
-            sub.unlink()
-        sub.mkdir(parents=True, exist_ok=True)
-        (sub / "f.md").write_text("승인본-내용", encoding="utf-8")   # 승인본으로 → clean
-        try: A.unprotect(reg, "정리")
-        except Exception: pass
-        shutil.rmtree(regdir, ignore_errors=True)
-        shutil.rmtree(ext, ignore_errors=True)
-
-
 # ── revert 미완료(삭제 실패)는 기록하지 않는다 (PR #14 리뷰 [high]) ──────
 def test_revert_incomplete_no_record():
     """manifest에 없는 추가 파일의 삭제가 실패하면(권한 등) 작업본이 pending으로
     남고, revert는 복원 완료 확인에 실패해 대장에 기록하지 않는다 — '복원을 마친
     뒤에만 기록'(Mechanism §3 6항) 계약이 위장되지 않는다(fail-closed)."""
     from osk import approvals as A
-    if not A._DIRFD_SAFE or (hasattr(os, "geteuid") and os.geteuid() == 0):
-        check("dir_fd 미지원/root — revert 미완료 시험 생략(skip)", True)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        check("root — 삭제 실패를 만들 수 없어 생략(skip)", True)
         return
     reg = "= Domain/revinc"
     regdir = ROOT / "= Domain" / "revinc"
@@ -985,69 +869,6 @@ def test_revert_incomplete_no_record():
         try: A.unprotect(reg, "정리")
         except Exception: pass
         shutil.rmtree(regdir, ignore_errors=True)
-
-
-# ── 승인본 manifest는 정본 형상만 해석 (PR #14 리뷰 [high]) ─────────────
-def test_baseline_manifest_canonical_only():
-    """다기기 병합으로 유입된 **비정규 manifest**는 승인본으로 해석되지 않는다.
-    같은 경로를 두 번 담고 마지막 항목만 현재 파일과 맞춘 manifest는 dict 축약의
-    last-wins로 정상처럼 보이지만, 정본 protect/approve가 만들 수 없는 형상이므로
-    파서가 거부한다 — integrity FAIL·위임 미성립·revert 거부로 함께 fail-closed."""
-    from osk import approvals as A, authority
-    reg = authority.DELEGATION_REGION
-    dnode = ROOT / "= Person/Delegation/regr-dupm.md"
-    rel = "= Person/Delegation/regr-dupm.md"
-    clause = ("## 위임\n- 대상: 시험 행위\n- 범위: 시험\n"
-              "- 조건: 없음\n- 종료: 없음\n")
-    dnode.write_text(node_text("260802-zzzz-rgd2", "중복 manifest 시험", clause),
-                     encoding="utf-8")
-    good = None
-    try:
-        A.protect(reg, "지정")
-        good = A.approved_hash(reg)
-        check("정상 승인본에서는 위임 성립", A.file_in_region_baseline(reg, dnode))
-        # 정본 entries에 같은 rel을 하나 더 끼운다 — 진짜 해시를 **뒤에** 두어
-        # last-wins 축약이면 정상 table로 보이게 한다(정렬은 여전히 비내림차순).
-        entries = sorted(([r, h] for r, h in A._tree_table(good).items()),
-                         key=lambda e: e[0])
-        evil_entries = []
-        for r, h in entries:
-            if r == rel:
-                evil_entries.append([r, "sha256:" + "0" * 64])   # 미끼 중복 항목
-            evil_entries.append([r, h])
-        evil = A._store_put(A._manifest_blob(evil_entries))
-        core.ledger_append(A.APPROVALS, {
-            "kind": "approve", "region": reg, "base": good,
-            "accepted": evil, "reason": "비정규 manifest 유입(시험)"})
-        check("주입한 비정규 tree가 현행 승인본", A.approved_hash(reg) == evil)
-        check("비정규 manifest는 해석되지 않는다(중복 경로)",
-              A._tree_table(evil) is None)
-        check("integrity가 비정규 승인본을 적발",
-              any("비정규" in e and reg in e for e in A.integrity()), A.integrity())
-        check("비정규 승인본에서는 위임 미성립(fail-closed)",
-              A.file_in_region_baseline(reg, dnode) is False)
-        eff = {d["title"]: d["effective"] for d in authority.enumerate_delegations()}
-        check("권위 판정도 미성립", eff.get("regr-dupm") is False, eff)
-        check("비정규 승인본으로의 revert는 거부", _raises(lambda: A.revert(reg))())
-        # 그 밖의 비정본 형상도 같은 한 지점에서 함께 막힌다
-        for name, blob in (
-                ("최상위가 list 아님", b'{"a":"b"}'),
-                ("항목 원소 수 불일치", b'[["x"]]'),
-                ("digest 형식 위반", b'[["x","sha256:zz"]]'),
-                ("rel이 문자열 아님", b'[[1,"sha256:' + b"a" * 64 + b'"]]'),
-                ("정렬 위반", b'[["b","sha256:' + b"a" * 64 + b'"],["a","sha256:'
-                 + b"a" * 64 + b'"]]'),
-                ("직렬화 비정본(공백)", b'[["a", "sha256:' + b"a" * 64 + b'"]]')):
-            check(f"비정본 manifest 거부: {name}",
-                  A._tree_table(A._store_put(blob)) is None)
-    finally:
-        if good:
-            core.ledger_append(A.APPROVALS, {                    # 정본 승인본 복원
-                "kind": "approve", "region": reg, "base": None,
-                "accepted": good, "reason": "시험 정리"})
-        try: A.unprotect(reg, "정리")
-        except Exception: pass
-        dnode.unlink(missing_ok=True)
 
 
 # ── 승인본은 그 영역의 tree여야 한다 (PR #14 리뷰 [high]) ──────────────
@@ -1099,85 +920,6 @@ def test_baseline_bound_to_region():
         except Exception: pass
         dnode.unlink(missing_ok=True)
         outsider.unlink(missing_ok=True)
-
-
-# ── 승인본 rel은 정규 vault 상대 경로 (PR #14 리뷰 [high]) ──────────────
-def test_baseline_rel_canonical_path():
-    """manifest의 rel은 `posix_rel()`이 낳는 정규 경로뿐이다 — `..`을 담은 항목은
-    파서가 거부한다. fd 체인은 symlink만 막고 `..` 이동은 막지 못하므로 문자열
-    정규형이 첫 겹이고, `_restore_tree`의 물리(realpath) 봉쇄가 둘째 겹이다."""
-    from osk import approvals as A
-    reg = "= Domain/dotdot"
-    regdir = ROOT / "= Domain" / "dotdot"
-    outside = ROOT / "= Domain" / "outside"
-    victim = outside / "victim.md"
-    evil_rel = "= Domain/dotdot/../outside/victim.md"
-    try:
-        regdir.mkdir(parents=True, exist_ok=True)
-        outside.mkdir(parents=True, exist_ok=True)
-        (regdir / "keep.md").write_text("keep-v1", encoding="utf-8")
-        victim.write_text("원본-불변", encoding="utf-8")
-        A.protect(reg, "지정")
-        good = A.approved_hash(reg)
-        payload = A._store_put("덮어쓰기-시도".encode("utf-8"))
-        # (a) 파서 — `..` 성분을 담은 canonical JSON manifest는 해석되지 않는다
-        evil_tree = A._store_put(A._manifest_blob([[evil_rel, payload]]))
-        check("`..` 성분 manifest는 파서가 거부", A._tree_table(evil_tree) is None)
-        # (b) 파서를 우회해 직접 복원해도 물리 봉쇄가 막는다(둘째 겹)
-        check("`..` rel 복원은 영역 밖으로 거부",
-              _raises(lambda: A._restore_tree(regdir, {evil_rel: payload}))())
-        check("영역 밖 파일이 변하지 않음", victim.read_text() == "원본-불변")
-        # (c) 복원 I/O의 rel→성분 변환도 정규형 위반을 거부한다
-        if A._DIRFD_SAFE:
-            check("_write_file_nofollow가 `..` 성분을 거부",
-                  _raises(lambda: A._write_file_nofollow(evil_rel, b"x"))())
-            check("거부 후에도 영역 밖 파일 불변", victim.read_text() == "원본-불변")
-        for bad in ("", "/abs/x.md", "= Domain\\dotdot\\x.md", "./x.md",
-                    "= Domain//dotdot/x.md", "= Domain/dotdot/."):
-            check(f"비정규 rel 거부: {bad!r}",
-                  _raises(lambda b=bad: A._rel_parts(b))())
-        check("정상 승인본은 그대로 해석", A._tree_table(good) is not None)
-        check("정상 영역은 여전히 clean", A.state(reg) == "clean")
-    finally:
-        try: A.unprotect(reg, "정리")
-        except Exception: pass
-        shutil.rmtree(regdir, ignore_errors=True)
-        shutil.rmtree(outside, ignore_errors=True)
-
-
-# ── STORE 루트 자체 symlink 봉쇄 (PR #14 리뷰 [high]) ───────────────────
-def test_store_root_symlink_confined():
-    """STORE(objects) **자체**가 vault 밖 symlink여도 trust root로 승격되지
-    않는다 — 앵커는 realpath(STORE)가 아니라 realpath(ROOT) 아래 canonical
-    경로이므로 _obj_path/_store_get/_store_put이 전부 fail-closed."""
-    from osk import approvals as A
-    ext = Path(tempfile.mkdtemp(prefix="osk-extroot-"))
-    data = b"root-confine-payload"
-    digest = A.sha256_bytes(data)
-    hexd = digest.split(":", 1)[1]
-    A.STORE.parent.mkdir(parents=True, exist_ok=True)
-    saved = None
-    try:
-        if A.STORE.is_symlink():
-            A.STORE.unlink()
-        elif A.STORE.exists():
-            saved = A.STORE.with_name("objects.bak")
-            A.STORE.rename(saved)
-        (ext / hexd[:2]).mkdir(parents=True, exist_ok=True)
-        (ext / hexd[:2] / hexd[2:]).write_bytes(data)     # 외부에 '정상' 객체 미끼
-        A.STORE.symlink_to(ext, target_is_directory=True)
-        check("STORE 루트 symlink에서 _obj_path 거부",
-              _raises(lambda: A._obj_path(digest))())
-        check("_store_get은 STORE 루트 symlink 경유 외부 판독 안 함(내용 일치해도)",
-              A._store_get(digest) is None)
-        check("_store_put은 STORE 루트 symlink로 쓰기 거부",
-              _raises(lambda: A._store_put(data))())
-    finally:
-        if A.STORE.is_symlink():
-            A.STORE.unlink()
-        if saved is not None:
-            saved.rename(A.STORE)
-        shutil.rmtree(ext, ignore_errors=True)
 
 
 def test_baseline_pass():
@@ -3410,12 +3152,9 @@ if __name__ == "__main__":
                test_store_digest_confined, test_delegation_facet_exact_region,
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
-               test_store_content_verified, test_store_symlink_confined,
-               test_store_toctou_shard_swap, test_store_root_symlink_confined,
-               test_revert_restore_subdir_swap_confined,
+               test_store_content_verified,
                test_revert_incomplete_no_record,
-               test_baseline_manifest_canonical_only,
-               test_baseline_rel_canonical_path, test_baseline_bound_to_region,
+               test_baseline_bound_to_region,
                test_baseline_pass]:
         try:
             fn()

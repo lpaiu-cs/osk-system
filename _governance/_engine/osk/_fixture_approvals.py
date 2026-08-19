@@ -102,14 +102,14 @@ expect((regdir / "d.md").read_text() == "v2", "반려가 d.md를 승인본으로
 expect((regdir / "added.md").exists(), "반려가 승인본의 added.md를 지움")
 expect(not (regdir / "junk.md").exists(), "반려가 승인 후 추가된 junk.md를 안 지움")
 
-# 반려의 영역 봉쇄 — 영역 밖 경로를 담은 조작 manifest는 복원을 거부하고
-# 영역 밖 파일을 건드리지 않는다(신뢰 밖 입력 방어).
+# 반려의 영역 결속 — 영역과 어긋난 manifest(영역 밖 rel)는 복원의 근거가
+# 아니다. 그런 table이 오면 거부하고 영역 밖 파일을 건드리지 않는다.
 import json as _json
 outsider = ROOT / "= Scope" / "W1"
 outsider.mkdir(parents=True, exist_ok=True)
 victim = outsider / "victim.md"
 victim.write_text("원본-불변", encoding="utf-8")
-# 영역 밖 rel을 담은 악의 manifest와 그 내용 blob을 저장소에 주입
+# 영역 밖 rel을 담은 어긋난 manifest와 그 내용 blob을 저장소에 넣는다
 evil_blob = A._store_put("덮어쓰기-시도".encode("utf-8"))
 evil_manifest = _json.dumps(
     [["= Scope/W1/victim.md", evil_blob]], ensure_ascii=False,
