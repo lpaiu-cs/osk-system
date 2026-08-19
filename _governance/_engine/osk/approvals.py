@@ -531,6 +531,13 @@ def revert(region: str, reason: str = "") -> dict:
         raise ValueError(f"승인본 manifest를 저장소에서 찾지 못했다 — 복원 불가: {base}")
     discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
     _restore_tree(d, table)
+    # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
+    # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
+    # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게
+    # 한다(fail-closed) — 실패는 미기록으로 남아 다음 revert가 다시 시도한다.
+    if working_tree_hash(reg) != base:
+        raise ValueError(
+            "복원이 승인본과 일치하지 않는다 — revert를 기록하지 않았다(fail-closed)")
     return ledger_append(APPROVALS, {
         "kind": "revert", "region": reg,
         "base": base, "discarded": discarded, "reason": reason})
@@ -597,19 +604,28 @@ def _write_file_nofollow(rel: str, data: bytes) -> None:
 
 
 def _unlink_nofollow(rel: str) -> None:
-    """vault 상대 `rel`을 nofollow 부모 fd 체인 안에서 지운다 — 부모가 없거나
-    symlink면 지울 것도 없다(무시)."""
+    """vault 상대 `rel`을 nofollow 부모 fd 체인 안에서 지운다.
+
+    '지울 것이 없음'(부모 부재·symlink, 대상 이미 없음)과 '대상이 실재하지만
+    삭제 실패'(권한 등)를 **구분**한다 — 후자는 삼키지 않고 올린다. 삭제 실패를
+    조용히 넘기면 작업본이 승인본과 달리 남는데도 revert가 완료된 것처럼
+    기록될 수 있다(복원 완료 계약 위반)."""
     parts = _rel_parts(rel)
     if not parts:
         return
     parent = _open_dir_chain(parts[:-1], create=False)
     if parent is None:
-        return
+        return                           # 부모 부재·symlink — 지울 것이 없다
     try:
         try:
             os.unlink(parts[-1], dir_fd=parent)
-        except OSError:
-            pass
+        except FileNotFoundError:
+            pass                         # 이미 없음 — 정상
+        except OSError as e:
+            # 대상이 실재하나 삭제 실패(권한·디렉터리 등) — 삼키지 않고 명시적
+            # 거부로 올린다. 삭제 실패를 복원 완료로 위장하지 않는다.
+            raise ValueError(
+                f"승인본 밖 파일 삭제 실패 — 복원 미완료: {rel} ({e})") from e
     finally:
         os.close(parent)
 

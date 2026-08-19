@@ -952,6 +952,41 @@ def test_revert_restore_subdir_swap_confined():
         shutil.rmtree(ext, ignore_errors=True)
 
 
+# ── revert 미완료(삭제 실패)는 기록하지 않는다 (PR #14 리뷰 [high]) ──────
+def test_revert_incomplete_no_record():
+    """manifest에 없는 추가 파일의 삭제가 실패하면(권한 등) 작업본이 pending으로
+    남고, revert는 복원 완료 확인에 실패해 대장에 기록하지 않는다 — '복원을 마친
+    뒤에만 기록'(Mechanism §3 6항) 계약이 위장되지 않는다(fail-closed)."""
+    from osk import approvals as A
+    if not A._DIRFD_SAFE or (hasattr(os, "geteuid") and os.geteuid() == 0):
+        check("dir_fd 미지원/root — revert 미완료 시험 생략(skip)", True)
+        return
+    reg = "= Domain/revinc"
+    regdir = ROOT / "= Domain" / "revinc"
+    locked = regdir / "locked"
+    try:
+        regdir.mkdir(parents=True, exist_ok=True)
+        (regdir / "keep.md").write_text("keep-v1", encoding="utf-8")
+        A.protect(reg, "지정")
+        locked.mkdir()
+        (locked / "junk.md").write_text("junk", encoding="utf-8")   # pending(추가)
+        before = len(A.records())
+        os.chmod(locked, 0o500)                                     # 삭제 불가
+        check("삭제 실패 시 revert가 예외로 거부", _raises(lambda: A.revert(reg))())
+        check("삭제 못한 파일이 남아 있다", (locked / "junk.md").exists())
+        check("revert 대장 행이 추가되지 않았다", len(A.records()) == before)
+        check("영역은 여전히 pending(복원 미완료)", A.state(reg) == "pending")
+    finally:
+        try:
+            os.chmod(locked, 0o700)
+        except OSError:
+            pass
+        shutil.rmtree(locked, ignore_errors=True)     # 추가분 정리 → clean
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
 # ── STORE 루트 자체 symlink 봉쇄 (PR #14 리뷰 [high]) ───────────────────
 def test_store_root_symlink_confined():
     """STORE(objects) **자체**가 vault 밖 symlink여도 trust root로 승격되지
@@ -3220,6 +3255,7 @@ if __name__ == "__main__":
                test_store_content_verified, test_store_symlink_confined,
                test_store_toctou_shard_swap, test_store_root_symlink_confined,
                test_revert_restore_subdir_swap_confined,
+               test_revert_incomplete_no_record,
                test_baseline_pass]:
         try:
             fn()
