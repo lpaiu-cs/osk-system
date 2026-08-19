@@ -1217,6 +1217,43 @@ def test_move_cutoff_causal_not_clock():
             A.MOVES.write_text(kept, encoding="utf-8")
 
 
+def test_move_phantom_tail_row_harmless():
+    """실패한 마지막 이동의 잔행(기록만 남고 rename 실패)은 무해해야 한다 —
+    해석이 마지막 행의 to(의도)가 아니라 **실물이 있는 가장 최근 hop**(사실)을
+    현재 위치로 삼는다. 의도를 믿으면 앞선 성공 이동의 실물을 못 보고 승인본을
+    재생성해 같은 id가 둘 남는다."""
+    from osk import approvals as A, write
+    home = ROOT / "= Scope/W3/regr-phantom.md"
+    w1 = ROOT / "= Scope/W1/regr-phantom.md"
+    w4 = ROOT / "= Scope/W4/regr-phantom.md"
+    (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
+    (ROOT / "= Scope/W4").mkdir(parents=True, exist_ok=True)
+    try:
+        home.write_text(node_text("260802-zzzz-phm2", "잔행", "본문"),
+                        encoding="utf-8")
+        A.protect("= Scope/W3", "지정")
+        base = A.approved_hash("= Scope/W3")
+        check("이탈 성립", write.move_node("regr-phantom", "= Scope/W1")["ok"])
+        # 두 번째 이동 — 기록만 남고 rename이 실패한 상황(권한·IO 오류)
+        A.record_move("260802-zzzz-phm2", w1, w4)
+        check("실물은 여전히 첫 도착지에", w1.is_file() and not w4.exists())
+        cs = A.changeset("= Scope/W3")
+        check("표시도 실물 위치를 낸다",
+              cs["moves"] and cs["moves"][0]["to"] == "= Scope/W1/regr-phantom.md",
+              cs)
+        A.revert("= Scope/W3", base, A.working_tree_hash("= Scope/W3"), "반려")
+        check("실물이 원적으로 회수됐다", home.is_file())
+        check("경유지·거짓 도착지에 사본 없음(같은 id 하나뿐)",
+              not w1.exists() and not w4.exists())
+        check("영역은 clean", A.state("= Scope/W3") == "clean")
+    finally:
+        try: A.unprotect("= Scope/W3", "정리")
+        except Exception: pass
+        for f in (home, w1, w4):
+            f.unlink(missing_ok=True)
+        shutil.rmtree(ROOT / "= Scope/W4", ignore_errors=True)
+
+
 def test_move_unrecorded_outside_protection():
     """양끝 다 보호 밖인 이동은 변경집합과 무관하므로 기록하지 않는다
     (시행령 §6 4항의 범위 그대로 — 기록부를 소음으로 채우지 않는다)."""
@@ -4118,6 +4155,7 @@ if __name__ == "__main__":
                test_move_chain_reverted_no_duplicate,
                test_move_lifecycle_cutoff, test_move_reentry_single_plan,
                test_move_cutoff_causal_not_clock,
+               test_move_phantom_tail_row_harmless,
                test_move_unrecorded_outside_protection,
                test_changeset_lists_difference, test_stale_sealed_by_approve,
                test_topology_rejects_wiki_node_derived_from,

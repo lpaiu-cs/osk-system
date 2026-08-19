@@ -297,9 +297,10 @@ def record_move(node_id: str, src: Path, dst: Path) -> None:
     되돌릴 때 노드를 지우거나(도착 쪽 반려 — 출발지에 복원할 정보가 없다)
     복제한다(출발 쪽 반려 — 도착 사본이 남는다). 기록은 물리 사건의 일지다 —
     권위 판정이 아니므로 인과 해소를 쓰지 않고, 소비자는 시각(rid)이 가장
-    늦은 행을 본다. 이동이 실패해 남는 행은 무해하다(그 자리에 그 id의 파일이
-    없으면 어떤 판정에도 쓰이지 않는다) — 그래서 이동 **전에** 기록해, 기록
-    없는 이동이 생기지 않게 한다."""
+    늦은 행을 본다. 이동이 실패해 남는 행은 무해하다 — 해석이 도착지의
+    **실물**(그 id의 파일)로 위치를 확인하므로(_chain_position), rename이
+    실패한 행은 어떤 판정에도 쓰이지 않는다. 그래서 이동 **전에** 기록해,
+    기록 없는 이동이 생기지 않게 한다."""
     if not node_id:
         return                            # 동일성 없는 파일은 추적 대상이 아니다
     if not (containing_regions(src) or containing_regions(dst)):
@@ -421,10 +422,9 @@ def changeset(region: str) -> dict | None:
         touching = [r for r in chain if _ins(r.get("from")) or _ins(r.get("to"))]
         if not touching:
             continue
-        origin, at = touching[0].get("from"), chain[-1].get("to")
-        dst = resolve_in_root(at or "")
-        if origin != at and dst is not None and dst.is_file() \
-                and signatures._id_of(dst) == node:
+        origin = touching[0].get("from")
+        at = _chain_position(node, chain)  # 복원과 같은 해석 — 실물이 사실이다
+        if at is not None and origin != at:
             moves.append({"node": node, "from": origin, "to": at})
     cs["moves"] = moves
     return cs
@@ -585,6 +585,20 @@ def approve(region: str, base: str, expect_work: str,
                 f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
 
 
+def _chain_position(node: str, chain: list[dict]) -> str | None:
+    """사슬에서 노드의 **실제** 현재 위치 — 도착지에 그 id의 실물이 있는 가장
+    최근 hop의 to. 기록은 이동 **전에** 남으므로(실패 규율) 마지막 행의 to는
+    의도이지 사실이 아니다 — rename이 실패한 잔행이 사슬 끝에 남으면 그 거짓
+    to가 앞선 성공 이동의 실물을 가린다. 사실은 파일시스템이 정본이므로
+    실물로 확인한다(실패 잔행이 다시 무해해진다). 없으면 None."""
+    for r in reversed(chain):
+        rel = r.get("to")
+        q = resolve_in_root(rel or "")
+        if q is not None and q.is_file() and signatures._id_of(q) == node:
+            return rel
+    return None
+
+
 def _plan_unmoves(region_dir: Path, table: dict[str, str],
                   rows: list[dict]) -> list[tuple[Path, Path]]:
     """반려가 되돌릴 **이동**의 목록 — (지금 자리, 원위치) 쌍. 계획만 하고
@@ -632,13 +646,12 @@ def _plan_unmoves(region_dir: Path, table: dict[str, str],
         if not touching:
             continue
         origin = touching[0].get("from")  # 변경집합이 처음 옮긴 자리
-        at = chain[-1].get("to")          # 사슬 완결 전제의 현재 위치
+        at = _chain_position(node, chain) # 실물로 확인한 현재 위치
+        if at is None:
+            continue                      # 실물 없음 — 승인본 재생성으로 족하다
         if origin == at:
             continue                      # 제자리 순환 — 되돌릴 위치 변화 없음
-        src = resolve_in_root(at or "")
-        if src is None or not src.is_file() \
-                or signatures._id_of(src) != node:
-            continue                      # 실물 없음 — 승인본 재생성으로 족하다
+        src = resolve_in_root(at)
         if _inside_rel(origin) and origin not in table:
             continue                      # 영역 안 생성분 — 생성의 반려(삭제)
         dst = resolve_in_root(origin or "")
