@@ -240,7 +240,8 @@ def run() -> dict:
 #   6100 → 6300: §6-2 7항 감사가 적발한 가르침 결손 보강 — `space`의 실제
 #     형식, 결속 후 생략, 재호출 비안전성, 절단의 비대칭. 감사에서 이것들이
 #     없어 실제로 막혔다(예산이 막는 것은 비대이지 필요한 가르침이 아니다).
-SCHEMA_BUDGET = 6300
+#   6300 → 7000: working_memory 노출 (작업 기억 — Mechanism §9-2).
+SCHEMA_BUDGET = 7000
 
 
 def surface_lint() -> list[str]:

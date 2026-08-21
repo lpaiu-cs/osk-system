@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import graph, raw, validate, write  # noqa: E402
+from osk import graph, raw, validate, wm, write  # noqa: E402
 from osk import search as search_mod  # noqa: E402
 from osk.core import ROOT, sha256_file  # noqa: E402
 
@@ -296,6 +296,21 @@ def append_raw(session: str, record: RawRecord, user: str, agent: str,
     내용이 같은 배치는 **재시도로 보고 거부한다** — 응답을 못 받았을 뿐이면 이미
     기록된 것이다. `filtered`가 비지 않았으면 비밀값이 치환된 것이다."""
     return _guard(raw.append_round, session, record, user, agent, space)
+
+
+@mcp.tool()
+def working_memory(session: str, text: str | None = None,
+                   expect_hash: str | None = None,
+                   space: str | None = None) -> dict:
+    """작업 기억 — 그 scope에서 **지금 살아 있는 배울 점**. `text` 없이 부르면
+    전문을 읽고, 주면 **전체 치환**한다(부분 추가는 없다). 상한을 넘기면 거부하되
+    성공·실패 모두 전문과 잔여를 돌려주므로 넘치기 전에 정리할 수 있다. 기존
+    내용이 있으면 `expect_hash`가 필수다 — 방금 받은 `hash`를 그대로 쓴다.
+    `session`·`space`는 `create_node`와 같다. 자리가 모자라면 **먼저 자리값
+    못하는 엔트리를 지우고**, 그래도 모자랄 때 노드로 올린다."""
+    if text is None:
+        return _guard(wm.read, session, space)
+    return _guard(wm.replace, session, text, expect_hash, space)
 
 
 def _apply_prune() -> None:

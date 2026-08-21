@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse, json, sys
 
 from .core import ROOT
-from . import graph, approvals, authority, raw, validate, search, write
+from . import graph, approvals, authority, raw, validate, search, wm, write
 
 
 def _confirm(prompt: str) -> None:
@@ -120,6 +120,38 @@ def _raw_cmd(a) -> None:
         sys.exit(1)
 
 
+def _wm_cmd(a) -> None:
+    """`osk wm` — 작업 기억. `show`는 SessionStart 훅이 부르는 자리다.
+
+    **`show`의 기본 출력은 JSON이 아니라 전문 그대로다.** 훅은 이 값을 문맥에
+    그대로 넣으므로, 감싸는 껍데기가 있으면 훅마다 벗기는 코드를 쓰게 된다.
+    결속이 없으면 빈 출력이고 주입할 것도 없다 — 그것은 오류가 아니다."""
+    try:
+        if a.wm_cmd == "show":
+            st = wm.read(a.session, a.space)
+            if a.json:
+                _emit(st)
+            else:
+                sys.stdout.buffer.write(st["text"].encode("utf-8"))
+                sys.stdout.buffer.flush()
+            return
+        _emit(wm.replace(a.session, _stdin_text(), a.expect_hash, a.space))
+    except write.WriteError as e:
+        _emit({"ok": False, "violations": e.violations, **e.extra})
+        sys.exit(1)
+
+
+def _stdin_text() -> str:
+    """본문은 **바이트로 읽어 UTF-8로 푼다** — 콘솔 인코딩을 타면 그 기기에서
+    쓴 작업 기억만 다른 바이트가 되고, 상한도 해시도 어긋난다."""
+    if sys.stdin.isatty():
+        sys.exit("본문을 stdin으로 넘겨라 (훅·파이프).")
+    try:
+        return sys.stdin.buffer.read().decode("utf-8")
+    except UnicodeDecodeError as e:
+        sys.exit(f"stdin 판독 실패 — {e}")
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -159,6 +191,18 @@ def main(argv=None):
     q.add_argument("--record", required=True)
     q.add_argument("--space", default=None)
 
+    # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
+    p = sub.add_parser("wm", help="작업 기억 (훅 경로)")
+    ws = p.add_subparsers(dest="wm_cmd", required=True)
+    q = ws.add_parser("show", help="전문 출력 — 훅이 그대로 문맥에 주입한다")
+    q.add_argument("--session", required=True)
+    q.add_argument("--space", default=None)
+    q.add_argument("--json", action="store_true", help="상태 전체를 JSON으로")
+    q = ws.add_parser("write", help="전체 치환 — 본문은 stdin")
+    q.add_argument("--session", required=True)
+    q.add_argument("--expect-hash", dest="expect_hash", default=None)
+    q.add_argument("--space", default=None)
+
     p = sub.add_parser("protect", help="[사용자 전속] 보호영역 지정")
     p.add_argument("region"); p.add_argument("--reason", default="")
     p = sub.add_parser("unprotect", help="[사용자 전속] 보호영역 해제")
@@ -192,6 +236,8 @@ def main(argv=None):
         print(json.dumps(authority.check(a.action), ensure_ascii=False, indent=2))
     elif a.cmd == "raw":
         return _raw_cmd(a)
+    elif a.cmd == "wm":
+        return _wm_cmd(a)
     elif a.cmd == "protect":
         st = approvals.state(a.region)
         print(f"보호영역 지정: {a.region}\n현재 상태: {st}")

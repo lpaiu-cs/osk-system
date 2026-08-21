@@ -13,7 +13,7 @@ _governance/
   Constitution.md 등   통치 문서 4종 + records/ (사료) — Space 밖 통치 구획의 특수 노드
   _engine/
     osk/               엔진 — 계약·서명·인과 DAG·검색·검증기·릴리스·갱신
-    mcp_server.py      외부 표면(MCP, stdio) — 도구 10종
+    mcp_server.py      외부 표면(MCP, stdio) — 도구 11종
     sync_daemon.py     동기화 데몬(git만; 검색·색인은 서빙하지 않는다)
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
@@ -63,9 +63,9 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 
 ## MCP 서버
 
-에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 열이다 —
+에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 열하나다 —
 `overview` `search` `read_node` `run_validators` `create_node` `update_node`
-`move_node` `record_candidate` `append_raw` `read_raw`.
+`move_node` `record_candidate` `append_raw` `read_raw` `working_memory`.
 
 `_raw/` 세션 기록은 작업 검색에서 빠지므로(헌법 11조 3항) `read_raw`는 질의가
 아니라 **좌표**를 받는다. 노드의 `derived-from`에 든 `[[경로#N]]`을 그대로 넣으면
@@ -104,6 +104,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `search` / `view` | 작업 검색 / 열람 검색 |
 | `check` | 권한 사전 검사 |
 | `raw append` / `raw status` | `_raw/` 세션 기록 — 훅 경로(아래) |
+| `wm show` / `wm write` | 작업 기억 — SessionStart 훅 경로(아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
 | `approve` / `revert` | **사용자 전속** — 변경집합 승인·반려 |
 | `update` / `release` | 갱신 / 릴리스 선언 — 인자를 그대로 위임한다 |
@@ -116,6 +117,31 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 
 `check`는 적용 봉투를 기계로 평가할 수 있기 전까지 **언제나 보류를 낸다**. 강제할
 수 없는 것을 강제한 척하지 않는다.
+
+### 작업 기억 주입 훅 (`wm show`)
+
+작업 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한이 있다(Mechanism §9-2).
+상한은 저장 용량의 제한이 아니라 **승격의 문턱**이다 — 넘기면 쓰기를 거부하고, 자리값
+못하는 엔트리를 먼저 정리한 뒤 그래도 모자라면 노드로 올리게 한다.
+
+**전문이 세션 시작에 문맥에 있어야 이 압력이 작동한다.** 도구를 불러야 보이는 것이면
+보이지 않고, 보이지 않는 것은 통합되지 않는다. `CLAUDE.md`에 "쓰라"고 적어 두는
+것으로는 부족하다 — 지시는 읽히지만 눈앞에 없으면 쓰이지 않는다.
+
+```bash
+.venv/bin/python -m osk.cli wm show --session <세션 키>
+```
+
+**출력은 JSON이 아니라 전문 그대로다.** 훅이 이 값을 문맥에 그대로 넣으므로, 감싸는
+껍데기가 있으면 훅마다 벗기는 코드를 쓰게 된다. 결속이 없으면 빈 출력이고 주입할 것도
+없다 — 오류가 아니다. 상태 전체가 필요하면 `--json`을 준다.
+
+쓰기는 stdin으로 전문을 받아 **전체 치환**한다. 기존 내용이 있으면 `--expect-hash`가
+필수다.
+
+```bash
+printf '%s' "$새전문" | .venv/bin/python -m osk.cli wm write   --session <키> --expect-hash <방금 받은 hash>
+```
 
 ### 세션 기록 훅 (`raw append`)
 
