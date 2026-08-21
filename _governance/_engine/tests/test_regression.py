@@ -4376,6 +4376,44 @@ def test_raw_space_misdiagnosis():
           _w(raw.record_state, S, "rec", "WRawSp").get("ok") is False)
 
 
+# ── 18d-2. 한 세션의 기록이 여러 scope로 번지지 않는다 (Mechanism §6-2 6항) ──
+def test_raw_binding_confines_scope():
+    """결속이 선 세션에 다른 `space`를 주면 **쓰기 전에** 거부한다.
+
+    허용하면 같은 기록 이름이 두 scope에 앉아 시행령 §2 1항의 '세션당 정본
+    하나'가 깨지고, 결속은 그대로라 다음 호출은 원래 자리로 돌아가 한 대화가
+    두 파일을 오간다. `_raw/`는 append-only이고 표면에 삭제가 없으므로 쓴 뒤에
+    알리는 것으로는 되돌릴 수 없다."""
+    from osk import raw
+    for n in ("WBindA", "WBindB"):
+        (ROOT / f"= Scope/{n}").mkdir(exist_ok=True)
+    S = "repo/regr-bind"
+    check("첫 쓰기가 결속을 세운다",
+          _w(raw.append_rounds, S, "rec", [{"user": "q", "agent": "a"}],
+             "= Scope/WBindA").get("indices") == [1])
+
+    r = _w(raw.append_rounds, S, "rec", [{"user": "딴데", "agent": "씀"}],
+           "= Scope/WBindB")
+    v = " ".join(r.get("violations", []))
+    check("교차 scope는 거부", r.get("ok") is False, r)
+    check("거부가 현재 결속을 알려준다", "= Scope/WBindA" in v, v)
+    check("건너간 자리에 파일이 생기지 않았다",
+          not (ROOT / "= Scope/WBindB/_raw/rec.md").exists())
+    check("정본은 하나뿐", raw.record_state(S, "rec")["rounds"] == 1)
+
+    # 결속과 같은 space를 중복 명시하는 것은 무해하므로 통과해야 한다
+    check("결속과 같은 space는 통과",
+          _w(raw.append_rounds, S, "rec", [{"user": "q2", "agent": "a2"}],
+             "= Scope/WBindA").get("indices") == [2])
+    check("space 생략도 통과",
+          _w(raw.append_rounds, S, "rec2",
+             [{"user": "q", "agent": "a"}]).get("indices") == [1])
+    # 미결속 세션은 여전히 어디로든 첫 착지를 정할 수 있다
+    check("미결속 세션의 첫 착지는 자유",
+          _w(raw.append_rounds, "repo/regr-bind-2", "rec",
+             [{"user": "q", "agent": "a"}], "= Scope/WBindB").get("indices") == [1])
+
+
 # ── 18e. 재시도 중복 거부 (Mechanism §9 7항 · 시행령 §2 1항) ────────────────
 def test_raw_replay_rejected():
     """응답이 유실되면 호출자는 같은 배치를 다시 보낸다. `_raw/`는 append-only이고
@@ -4477,7 +4515,7 @@ if __name__ == "__main__":
                test_baseline_bound_to_region,
                test_baseline_pass, test_raw_append, test_raw_cli_path,
                test_raw_read, test_raw_space_misdiagnosis,
-               test_raw_replay_rejected]:
+               test_raw_binding_confines_scope, test_raw_replay_rejected]:
         try:
             fn()
         except Exception as e:

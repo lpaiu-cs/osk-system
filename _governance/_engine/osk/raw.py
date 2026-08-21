@@ -120,7 +120,17 @@ def _resolve_dest(session: str, space: str | None,
     형식이 어긋난 `space`를 **조용히 버리지 않는다**. 버리면 안 준 것과 같아져
     호출부가 "결속이 없다"고 엉뚱한 원인을 지목하고, 받는 쪽은 결속이 멀쩡한데도
     세션 키를 바꿔가며 헤맨다(감사에서 실측된 오진). 틀린 것은 틀렸다고 그 자리에서
-    말한다."""
+    말한다.
+
+    결속이 선 세션에 **그와 다른 scope**를 주는 것도 오류다. 한 세션은 한 scope에
+    속하고(Mechanism §6-2 6항 · Workbench 계약 2.4), `_raw/`는 세션당 정본
+    하나다(시행령 §2 1항). 이것을 허용하면 같은 기록 이름이 두 scope에 앉아
+    정본이 둘이 되고, 결속은 그대로라 다음 호출은 원래 자리로 돌아가 한 대화가
+    두 파일을 오간다. `_raw/`는 append-only이고 표면에 삭제가 없으므로 쓰고 난
+    뒤에 알리는 것은 되돌릴 수 없는 일을 알리는 것일 뿐이다 — 쓰기 전에 막는다.
+
+    판정 순서는 형식 → 실재 → 결속이다. 셋 다 참인 경우 가장 먼저 고칠 수 있는
+    것을 지목한다."""
     if not space:
         return bound
     scope = _scope_of_space(space)
@@ -130,6 +140,17 @@ def _resolve_dest(session: str, space: str | None,
             [f"`{space}`는 space 표기가 아니다 — `= Scope/<이름>` **두 마디**로 "
              f"준다. `overview`의 `clusters`에는 `= Person/…`이나 더 깊은 경로도 "
              f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {_space_list()}"])
+    if scope not in _scope_names():
+        raise write.WriteError(
+            "없는 scope — 쓰지 않았다",
+            [f"`{space}`는 `_raw/`를 둘 수 있는 scope가 아니다. "
+             f"가능한 space: {_space_list()}"])
+    if bound and scope != bound:
+        raise write.WriteError(
+            "결속과 어긋나는 착지 — 쓰지 않았다",
+            [f"세션 `{session}`은 `= Scope/{bound}`에 결속돼 있다. `_raw/`는 "
+             f"세션당 정본 하나이므로(시행령 §2 1항) 한 세션의 기록을 다른 "
+             f"scope로 번지게 하지 않는다 — 결속대로 쓰려면 `space`를 빼라."])
     return scope
 
 
@@ -171,10 +192,12 @@ def append_rounds(session: str, record: str, pairs: list,
                 [f"세션 `{session}`의 scope 결속이 없다. `space`를 주면 그 자리에 "
                  f"기록하고 결속을 확정한다. 가능한 space: {_space_list()}"])
         if dest not in _scope_names():
+            # 결속이 가리키는 scope가 사라진 경우 — `space`는 이미 `_resolve_dest`가
+            # 검사했으므로 여기 남는 것은 낡은 결속뿐이다.
             raise write.WriteError(
-                "없는 scope — 쓰지 않았다",
-                [f"`{space or dest}`는 `_raw/`를 둘 수 있는 scope가 아니다. "
-                 f"가능한 space: {_space_list()}"])
+                "결속이 가리키는 scope가 없다 — 쓰지 않았다",
+                [f"세션 `{session}`은 `= Scope/{dest}`에 결속돼 있으나 그 scope가 "
+                 f"없다. 가능한 space: {_space_list()}"])
 
         p = record_path(dest, record)
         prior = p.read_text(encoding="utf-8") if p.exists() else ""
