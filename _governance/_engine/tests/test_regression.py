@@ -4515,6 +4515,43 @@ def test_working_memory():
     r5 = _w(wm.replace, S, "", r4["hash"])
     check("전부 비울 수 있다", r5.get("ok") and r5["chars"] == 0, r5)
 
+    # 경계 — 문서가 정한 계수만큼은 실제로 담겨야 한다. 저장본의 개행을 계수에
+    # 넣으면 유효 상한이 1499가 되고, 문서를 따른 호출자가 반드시 한 번 튕긴다.
+    exact = _w(wm.replace, S, "가" * wm.LIMIT, _w(wm.read, S)["hash"])
+    check("정확히 상한은 통과", exact.get("ok") and exact["chars"] == wm.LIMIT, exact)
+    over = _w(wm.replace, S, "나" * (wm.LIMIT + 1), exact["hash"])
+    check("상한+1은 거부", over.get("ok") is False, over)
+    check("거부가 보낸 글자수를 센다",
+          over.get("rejected_chars") == wm.LIMIT + 1, over)
+
+    # 정규화 — 없으면 같은 글이 기기에 따라 두 배로 세어져 상한이 기기 의존이 된다
+    nfd = _w(wm.replace, S, "가" * 10, _w(wm.read, S)["hash"])
+    check("NFD 자모는 NFC로 접혀 세어진다", nfd.get("chars") == 10, nfd)
+
+    # frontmatter로 오독되면 검증기가 통째로 FAIL한다 — 통로에서 막는다
+    dash = _w(wm.replace, S, "---" + chr(10) + "본문", _w(wm.read, S)["hash"])
+    check("`---` 선두 거부", dash.get("ok") is False, dash)
+    check("거부 뒤에도 배치 검증기는 깨끗하다", not graph.layout_violations())
+
+    # 승격 지시가 **이행 수단**까지 알려야 한다 — 작업 기억은 Workbench에 있어
+    # 노드가 직접 가리킬 수 없으므로, 근거를 무엇으로 만드는지 말해주지 않으면
+    # 코드를 못 보는 호출자는 (2)에서 멈춘다(감사에서 실측).
+    big2 = "다" * (wm.LIMIT + 100)
+    ov = _w(wm.replace, S, big2, _w(wm.read, S)["hash"])
+    check("승격 안내가 근거 수단을 알려준다",
+          "round_ref" in " ".join(ov.get("violations", [])), ov)
+
+    # 착지 거부에도 전문·잔여가 실린다 (§9-2 5항)
+    xs = _w(wm.replace, S, "- x", _w(wm.read, S)["hash"], "= Scope/WWmB")
+    check("교차 scope 거부에도 전문이 온다",
+          "text" in xs and "remaining" in xs and "eviction" in xs, sorted(xs))
+
+    # 이 계층은 git을 부르지 않는다 — 동기화 계약은 데몬이 소유한다
+    src = (Path(wm.__file__).read_text(encoding="utf-8"))
+    check("wm은 vault_sync를 부르지 않는다",
+          "vault_sync" not in src and "commit_push" not in src)
+    check("응답에 sync 키가 없다", "sync" not in _w(wm.read, S))
+
 
 # ── 19b. 작업 기억 훅 경로 — `show`는 전문 그대로 낸다 ──────────────────────
 def test_working_memory_cli():
@@ -4544,6 +4581,13 @@ def test_working_memory_cli():
 
     _, plain = run(["wm", "show", "--session", S, "--space", "= Scope/WWmCli"])
     check("결속 전 show는 빈 출력", plain == "", repr(plain))
+
+    # 계약 §3.4가 말하는 훅의 첫 호출 — 결속도 space도 없는 새 저장소.
+    # 여기서 위반 JSON이 나오면 훅이 그것을 문맥에 넣거나 종료코드를 보고
+    # 조용히 건너뛴다. 둘 다 나쁘므로 빈 출력·종료코드 0이어야 한다.
+    out0, plain0 = run(["wm", "show", "--session", "repo/never-bound"])
+    check("결속 없는 show는 빈 출력", plain0 == "", repr(plain0))
+    check("결속 없는 show는 종료코드 0", out0.get("exit") in (None, 0), out0)
 
     out, _ = run(["wm", "write", "--session", S, "--space", "= Scope/WWmCli"],
                  "- 훅으로 쓴 엔트리")

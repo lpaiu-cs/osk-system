@@ -15,7 +15,7 @@
 없고, 통합할 때마다 자리값 못하는 엔트리가 퇴출되므로 decay 스케줄러도 없다.
 """
 from __future__ import annotations
-import os
+import unicodedata
 from pathlib import Path
 
 from .core import ROOT, mutation_lock, posix_rel, sha256_bytes
@@ -47,13 +47,25 @@ def wm_path(scope: str) -> Path:
     return wm_dir() / f"{scope}.md"
 
 
+def canon(text: str) -> str:
+    """작업 기억의 **정본 형태** — NFC 정규화 + 앞뒤 공백 제거.
+
+    길이·해시·전문이 전부 이 형태 위에서 돈다. 정규화가 없으면 같은 글이
+    기기에 따라 두 배로 세어진다(macOS 유래 NFD 한글은 코드포인트가 두 배다) —
+    상한이 기기 의존이 되면 그것은 상한이 아니다. 저장은 여기에 개행 하나를
+    붙이지만 그 개행은 계수에 들지 않는다 — 호출자가 보내지 않은 글자를 세면
+    "몇 자를 지워야 하는가"의 답이 틀린다."""
+    return unicodedata.normalize("NFC", text).strip()
+
+
 def _read(p: Path) -> str:
-    return p.read_text(encoding="utf-8") if p.is_file() else ""
+    return canon(p.read_text(encoding="utf-8")) if p.is_file() else ""
 
 
 def _state(scope: str, text: str, **extra) -> dict:
     """성공·실패와 무관하게 **늘 같은 모양**을 돌려준다 — 전문과 잔여가 매 응답에
     실려야 호출자가 넘치기 전에 스스로 정리한다. 보이지 않는 것은 통합되지 않는다."""
+    text = canon(text)
     return {"scope": scope, "path": posix_rel(wm_path(scope), ROOT),
             "text": text, "chars": len(text), "limit": LIMIT,
             "remaining": LIMIT - len(text),
@@ -62,8 +74,18 @@ def _state(scope: str, text: str, **extra) -> dict:
 
 
 def _landing(session: str, space: str | None) -> tuple[str, str | None]:
-    """`(scope, bound)` — 첫 쓰기가 결속을 세워야 하므로 결속 여부도 함께 낸다."""
-    scope, bound = write.resolve_landing(session, space, _CONFINE)
+    """`(scope, bound)` — 첫 쓰기가 결속을 세워야 하므로 결속 여부도 함께 낸다.
+
+    거부에도 전문과 잔여를 싣는다(§9-2 5항). 결속을 아는 거부 — 교차 scope 같은
+    경우 — 는 낼 수 있는데 안 내면, 호출자가 고쳐 보내려고 다시 읽어야 한다."""
+    try:
+        scope, bound = write.resolve_landing(session, space, _CONFINE)
+    except write.WriteError as e:
+        b = write.resolve_session(session)
+        if b:
+            raise write.WriteError(str(e), e.violations,
+                                   **_state(b, _read(wm_path(b)))) from None
+        raise
     if not scope:
         raise write.WriteError(
             "착지 미정 — 아무것도 하지 않았다",
@@ -92,17 +114,17 @@ def replace(session: str, text: str, expect_hash: str | None = None,
     엔진이 되고, 무엇을 버릴지는 엔진이 알 수 없다.
 
     `expect_hash`는 기존 내용이 있을 때 필수다(Mechanism §6-2 4항의 규율) —
-    아래 pull이 다른 기기의 통합을 끌어올 수 있으므로 보지 않은 상태를 덮는 일이
-    실제로 일어난다."""
+    데몬의 주기 pull이 다른 기기의 통합을 끌어오므로 보지 않은 상태를 덮는 일이
+    실제로 일어난다. 그 불일치가 곧 §9-2 8항의 통합 신호다.
+
+    **이 계층은 git을 부르지 않는다.** 동기화의 계약(`ensure_branch → commit →
+    pull → push`)은 데몬이 소유한다. 그 순서를 여기서 복제하면 브랜치 고정이
+    빠져 남의 feature 브랜치를 rebase하고, `git add -A`가 진행 중이던 작업까지
+    쓸어 담아 push한다(리뷰에서 실측). 네트워크 I/O를 `mutation_lock` 안에서
+    하는 것도 표면 전체를 최대 수 분 세운다."""
     with mutation_lock():
         scope, bound = _landing(session, space)
         p = wm_path(scope)
-
-        # pull이 상한 판정보다 **앞선다.** 그러지 않으면 각 기기가 자기 사본
-        # 기준으로 상한을 지키고 합치면 두 배가 된다. 다만 최선 노력이다 —
-        # 오프라인에서 못 쓰게 만드는 것보다, 뒤늦은 충돌을 통합 신호로 받는 편이
-        # 이 설계와 일관된다(충돌 처리도 초과와 같은 통합 요구다).
-        sync = _pull()
         cur = _read(p)
 
         if cur and expect_hash is None:
@@ -110,77 +132,49 @@ def replace(session: str, text: str, expect_hash: str | None = None,
                 "expect_hash 없음 — 쓰지 않았다",
                 ["기존 내용이 있다. 지금 상태를 읽고 그 `hash`를 `expect_hash`로 "
                  "함께 보내라 — 보지 않은 상태를 덮지 않기 위해서다."],
-                **_state(scope, cur, sync=sync))
-        cur_hash = sha256_bytes(cur.encode("utf-8"))
-        if cur and expect_hash != cur_hash:
+                **_state(scope, cur))
+        if cur and expect_hash != sha256_bytes(cur.encode("utf-8")):
             raise write.WriteError(
                 "상태가 어긋났다 — 쓰지 않았다",
-                [f"`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "
-                 f"들어왔을 수 있다 — 아래 전문 위에서 다시 통합하라."],
-                **_state(scope, cur, sync=sync))
+                ["`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "
+                 "들어왔을 수 있다 — 아래 전문 위에서 다시 통합하라."],
+                **_state(scope, cur))
 
         # 비밀값 필터의 적용 지점이 여기다. 전사는 vault 밖이라 필터가 닿지
         # 않지만, 작업 기억은 vault 안이고 에이전트가 쓴다 — 요약에 섞이면
-        # 그대로 커밋된다.
+        # 그대로 커밋된다. 상한은 **치환 뒤** 길이로 잰다(치환문이 원본보다
+        # 길어질 수 있고, 저장되는 것이 세어져야 한다).
         filtered, hits = secrets.filter_text(text)
-        filtered = filtered.strip() + ("\n" if filtered.strip() else "")
+        body = canon(filtered)
 
-        if len(filtered) > LIMIT:
+        if body.startswith("---"):
+            # `---`로 시작하면 색인이 frontmatter로 읽어 이 파일을 노드형으로
+            # 본다 — 표면 도구 하나가 vault를 검증기 FAIL 상태로 만든다.
+            raise write.WriteError(
+                "`---`로 시작할 수 없다 — 쓰지 않았다",
+                ["작업 기억은 노드가 아니므로 frontmatter를 두지 않는다"
+                 "(Mechanism §9-2 1항). 선두의 `---`는 색인이 frontmatter로 "
+                 "읽어 검증기를 깨뜨린다 — 다른 줄로 시작하라."],
+                **_state(scope, cur))
+
+        if len(body) > LIMIT:
             raise write.WriteError(
                 "상한 초과 — 쓰지 않았다",
-                [f"{len(filtered)}자로 상한 {LIMIT}자를 {len(filtered) - LIMIT}자 "
+                [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
                  f"넘는다. **순서대로** 하라 — (1) 작업 기억에서 자리값 못하는 "
                  f"엔트리를 먼저 정리하라. (2) 그래도 모자라면, 남길 값어치가 "
                  f"있는 것을 **기존 노드에 갱신**하거나 새 노드로 증류하고 "
-                 f"**근거를 배선하라**(착지는 `= Scope/{scope}`). 그 뒤 남은 "
-                 f"것으로 다시 보내라."],
-                **_state(scope, cur, sync=sync, rejected_chars=len(filtered)))
+                 f"**근거를 배선하라** — 근거는 `append_raw`로 이 대화를 기록하고 "
+                 f"받은 `round_ref`다(작업 기억 자체는 Workbench에 있어 노드가 "
+                 f"가리킬 수 없다). 착지는 `= Scope/{scope}`. 그 뒤 남은 것으로 "
+                 f"다시 보내라."],
+                **_state(scope, cur, rejected_chars=len(body)))
 
-        p.parent.mkdir(parents=True, exist_ok=True)
-        write._atomic_write(p, filtered.encode("utf-8"))
-        # 첫 쓰기가 결속을 세운다 — `raw`와 같은 규율이다. 안 그러면 다음
-        # 호출이 `space` 없이는 착지를 못 찾아 전부 막힌다(실측).
+        # 결속을 **쓰기 전에** 세운다. 뒤에 두면 대장이 손상됐을 때 파일은
+        # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
+        # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
         if not bound:
             write.bind_session(session, scope, "첫 작업 기억 쓰기에서 확정")
-        sync = {**sync, **_push(scope)}
-        return {"ok": True, **_state(scope, filtered, sync=sync,
-                                     filtered=sorted(set(hits)))}
-
-
-# ── 동기화 (최선 노력) ───────────────────────────────────────────────────
-# 작업 기억은 md라 `_ledger/*.jsonl`의 union merge 규칙이 걸리지 않는다. 그래서
-# 다기기 동시 편집의 git 충돌은 남는다 — 그 충돌은 상한 초과와 같은 처리를
-# 받는다(전문을 돌려주고 통합을 요구한다). 충돌이 곧 통합 신호다.
-
-def _sync_ready() -> bool:
-    """동기화는 **쓰는 사람만 쓰는 편의 모듈**이다(`core.local_lock_path` 각서).
-    그래서 데몬과 같은 열쇠(`SYNC_ENABLED`)로 잠근다 — 켜지 않은 사람의 저장소에서
-    작업 기억 쓰기가 `git add -A` + push를 일으키면, 그 사람이 손대던 다른 변경까지
-    함께 커밋된다. 켜지 않았으면 아무것도 하지 않는다."""
-    if os.environ.get("SYNC_ENABLED", "").lower() not in ("1", "true", "yes"):
-        return False
-    import vault_sync as vs          # 엔진 루트 모듈 (osk 패키지 밖) — update.py와 같은 형태
-    return vs.is_git_repo(ROOT) and vs.has_remote(ROOT)
-
-
-def _pull() -> dict:
-    """pull은 **상한 판정보다 앞선다**(계약 §3.5). 각 기기가 자기 사본 기준으로
-    상한을 지키면 합쳐서 두 배가 되기 때문이다. 다만 최선 노력이다 — 오프라인에서
-    못 쓰게 만드는 것보다, 뒤늦은 충돌을 통합 신호로 받는 편이 이 설계와 일관된다."""
-    try:
-        if not _sync_ready():
-            return {"pull": "skipped"}
-        import vault_sync as vs
-        return {"pull": vs.pull(ROOT)}
-    except Exception as e:                      # 동기화 실패가 쓰기를 막지 않는다
-        return {"pull": f"error: {type(e).__name__}"}
-
-
-def _push(scope: str) -> dict:
-    try:
-        if not _sync_ready():
-            return {"push": "skipped"}
-        import vault_sync as vs
-        return {"push": vs.commit_push(ROOT, f"wm: {scope} 작업 기억 갱신")}
-    except Exception as e:
-        return {"push": f"error: {type(e).__name__}"}
+        p.parent.mkdir(parents=True, exist_ok=True)
+        write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
+        return {"ok": True, **_state(scope, body, filtered=sorted(set(hits)))}

@@ -126,15 +126,25 @@ def _wm_cmd(a) -> None:
     **`show`의 기본 출력은 JSON이 아니라 전문 그대로다.** 훅은 이 값을 문맥에
     그대로 넣으므로, 감싸는 껍데기가 있으면 훅마다 벗기는 코드를 쓰게 된다.
     결속이 없으면 빈 출력이고 주입할 것도 없다 — 그것은 오류가 아니다."""
-    try:
-        if a.wm_cmd == "show":
+    if a.wm_cmd == "show":
+        # 훅이 세션 시작마다 부르는 자리다. 결속이 아직 없는 새 저장소가
+        # **첫 호출의 정상 상태**이므로, 거기서 위반 JSON을 내면 훅이 그것을
+        # 문맥에 넣거나 종료코드를 보고 조용히 건너뛴다 — 둘 다 나쁘다.
+        # 착지를 못 정하면 주입할 것이 없을 뿐이니 빈 출력으로 넘긴다.
+        try:
             st = wm.read(a.session, a.space)
+        except write.WriteError as e:
             if a.json:
-                _emit(st)
-            else:
-                sys.stdout.buffer.write(st["text"].encode("utf-8"))
-                sys.stdout.buffer.flush()
-            return
+                _emit({"ok": False, "violations": e.violations, **e.extra})
+                sys.exit(1)
+            return                      # 빈 stdout · 종료코드 0
+        if a.json:
+            _emit(st)
+        else:
+            sys.stdout.buffer.write(st["text"].encode("utf-8"))
+            sys.stdout.buffer.flush()
+        return
+    try:
         _emit(wm.replace(a.session, _stdin_text(), a.expect_hash, a.space))
     except write.WriteError as e:
         _emit({"ok": False, "violations": e.violations, **e.extra})

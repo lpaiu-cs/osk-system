@@ -136,8 +136,11 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 껍데기가 있으면 훅마다 벗기는 코드를 쓰게 된다. 결속이 없으면 빈 출력이고 주입할 것도
 없다 — 오류가 아니다. 상태 전체가 필요하면 `--json`을 준다.
 
+결속이 아직 없으면 **빈 출력에 종료코드 0**이다 — 새 저장소의 첫 세션이 그 상태이므로
+오류가 아니다. 훅은 stdout을 그대로 쓰면 된다.
+
 쓰기는 stdin으로 전문을 받아 **전체 치환**한다. 기존 내용이 있으면 `--expect-hash`가
-필수다.
+필수다. **이 명령은 git을 부르지 않는다** — 동기화는 데몬이 맡는다.
 
 ```bash
 printf '%s' "$새전문" | .venv/bin/python -m osk.cli wm write   --session <키> --expect-hash <방금 받은 hash>

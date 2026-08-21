@@ -198,7 +198,11 @@ def run() -> dict:
     # 13. _raw 비밀값 (Mechanism §9 1항 — '기록 시 치환'의 집행 지점).
     #     보고에는 경로와 패턴 이름만 싣는다 — 비밀값 자체는 절대 싣지 않는다.
     errs = []
-    for d in sorted((ROOT / "= Scope").rglob("_raw")):
+    # `_wm`도 함께 훑는다 — 통로에는 필터가 걸려 있지만(osk/wm.py), 통로 밖
+    # 유입(수동 편집·구 엔진 기기에서의 동기화·나중에 추가된 패턴)은 그 필터를
+    # 지나지 않는다. §9 1항이 검증기를 집행 지점으로 두는 이유가 그것이다.
+    for d in sorted([*(ROOT / "= Scope").rglob("_raw"),
+                     *(ROOT / "= Scope").rglob("_wm")]):
         if not d.is_dir():
             continue
         for p in sorted(d.rglob("*")):
@@ -212,7 +216,7 @@ def run() -> dict:
             _, hits = secrets.filter_text(text)
             if hits:
                 errs.append(f"{p.relative_to(ROOT)}: {sorted(set(hits))}")
-    ok("_raw 비밀값 미기록", errs)
+    ok("_raw·_wm 비밀값 미기록", errs)
 
     # 14. 정합성 검사 — 충돌 후보 (헌법 12조 1·2항). 기계 판정이 가능한 유형만
     #     검출해 **보고**한다. 상정·각하는 사용자 전속이므로 대장에 자동으로
