@@ -2286,6 +2286,8 @@ def test_surface_smoke():
         "append_raw": lambda: M.append_raw("repo/smoke-raw", "regr-smoke-rec",
                                            "질문", "응답", space="= Scope/W1"),
         "read_raw": lambda: M.read_raw("[[= Scope/W1/_raw/regr-smoke-rec.md#1]]"),
+        "working_memory": lambda: M.working_memory("repo/smoke-wm",
+                                                   space="= Scope/W1"),
     }
     declared = set(validate.declared_tools() or [])
     check("스모크가 선언된 도구를 전부 부른다",
@@ -4451,6 +4453,119 @@ def test_raw_replay_rejected():
           _w(raw.append_rounds, S, "sec", SEC).get("ok") is False)
 
 
+
+# ── 19. 작업 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
+def test_working_memory():
+    """상한은 저장 용량의 제한이 아니라 문턱이다. 그래서 초과는 **거부**하고,
+    거부는 **전문과 순서**를 함께 돌려준다 — 자동 절단·자동 요약을 두면 그
+    신호가 조용히 소비되어 아무 일도 일어나지 않는다."""
+    from osk import wm
+    for n in ("WWm", "WWmB"):
+        (ROOT / f"= Scope/{n}").mkdir(exist_ok=True)
+    S = "repo/regr-wm"
+
+    r = _w(wm.replace, S, "- 첫 엔트리", None, "= Scope/WWm")
+    # 저장본은 개행으로 끝난다 — 길이는 저장된 전문 기준이어야 잔여 계산이 맞다
+    check("최초 쓰기", r.get("ok") and r["text"].strip() == "- 첫 엔트리"
+          and r["chars"] == len(r["text"]), r)
+    check("잔여를 함께 낸다", r["remaining"] == wm.LIMIT - r["chars"], r)
+    check("퇴출 원칙이 성공 응답에도 실린다", "지우는 것이 정상" in r["eviction"])
+    # 첫 쓰기가 결속을 세운다 — 빠뜨렸더니 이후 호출이 전부 막혔다(실측)
+    check("첫 쓰기가 결속을 세운다", write.resolve_session(S) == "WWm")
+    check("이후에는 space 없이 읽힌다", _w(wm.read, S).get("ok") is True)
+
+    h = r["hash"]
+    check("hash 없이 덮어쓰기 거부",
+          _w(wm.replace, S, "- 다른 것").get("ok") is False)
+    check("틀린 hash 거부",
+          _w(wm.replace, S, "- 다른 것", "sha256:00").get("ok") is False)
+    check("거부해도 전문을 돌려준다",
+          _w(wm.replace, S, "- 다른 것")["text"].strip() == "- 첫 엔트리")
+    r2 = _w(wm.replace, S, "- 갱신됨", h)
+    check("맞는 hash로 전체 치환", r2["text"].strip() == "- 갱신됨", r2)
+
+    # 상한 초과 — 거부하고, 파일은 그대로이며, 안내가 순서를 준다
+    big = chr(10).join(f"- 엔트리 {i} 길게 이어지는 내용이 계속된다" for i in range(120))
+    r3 = _w(wm.replace, S, big, r2["hash"])
+    v = " ".join(r3.get("violations", []))
+    check("상한 초과는 거부", r3.get("ok") is False, r3)
+    check("거부가 넘친 크기를 알린다", r3.get("rejected_chars", 0) > wm.LIMIT, r3)
+    check("거부해도 현재 전문이 온다", r3["text"].strip() == "- 갱신됨", r3)
+    check("거부는 파일을 건드리지 않는다",
+          _w(wm.read, S)["text"].strip() == "- 갱신됨")
+    check("안내가 순서를 준다 — 정리가 먼저",
+          v.index("정리하라") < v.index("노드"), v)
+    check("안내가 기존 노드 갱신을 먼저 말한다", "기존 노드에 갱신" in v, v)
+    check("안내가 배선을 요구한다", "배선" in v, v)
+    check("안내가 착지 scope를 알린다", "= Scope/WWm" in v, v)
+
+    # 비밀값 필터의 새 적용 지점 — 작업 기억은 vault 안이고 에이전트가 쓴다
+    r4 = _w(wm.replace, S, "- 토큰 ghp_" + "a" * 36 + " 조심",
+            _w(wm.read, S)["hash"])
+    check("작업 기억에도 비밀값 필터", r4.get("filtered") == ["github-token"], r4)
+    check("원본이 남지 않는다", "ghp_" not in r4["text"], r4)
+
+    # 한 세션의 작업 기억이 여러 scope로 번지지 않는다
+    check("교차 scope 거부",
+          _w(wm.replace, S, "- x", r4["hash"], "= Scope/WWmB").get("ok") is False)
+    check("건너간 자리에 파일이 없다",
+          not (ROOT / "= Scope/Workbench/_wm/WWmB.md").exists())
+
+    # 전부 비우는 것은 정상 동작이다 — 퇴출이 유실이 아니라는 계약의 실행형
+    r5 = _w(wm.replace, S, "", r4["hash"])
+    check("전부 비울 수 있다", r5.get("ok") and r5["chars"] == 0, r5)
+
+
+# ── 19b. 작업 기억 훅 경로 — `show`는 전문 그대로 낸다 ──────────────────────
+def test_working_memory_cli():
+    """훅이 이 출력을 문맥에 그대로 넣으므로 감싸는 껍데기가 있으면 훅마다
+    벗기는 코드를 쓰게 된다. 결속이 없으면 빈 출력이고, 그것은 오류가 아니다."""
+    from osk import cli, wm
+    import io, types
+    (ROOT / "= Scope/WWmCli").mkdir(exist_ok=True)
+    S = "repo/regr-wm-cli"
+
+    def run(argv, stdin=None):
+        out, buf = {}, io.BytesIO()
+        real_emit, real_in, real_out = cli._emit, sys.stdin, sys.stdout
+        try:
+            cli._emit = out.update
+            sys.stdout = types.SimpleNamespace(buffer=buf)
+            if stdin is not None:
+                sys.stdin = types.SimpleNamespace(
+                    isatty=lambda: False, buffer=io.BytesIO(stdin.encode("utf-8")))
+            try:
+                cli.main(argv)
+            except SystemExit as e:
+                out["exit"] = e.code
+        finally:
+            cli._emit, sys.stdin, sys.stdout = real_emit, real_in, real_out
+        return out, buf.getvalue().decode("utf-8")
+
+    _, plain = run(["wm", "show", "--session", S, "--space", "= Scope/WWmCli"])
+    check("결속 전 show는 빈 출력", plain == "", repr(plain))
+
+    out, _ = run(["wm", "write", "--session", S, "--space", "= Scope/WWmCli"],
+                 "- 훅으로 쓴 엔트리")
+    check("CLI 쓰기", out.get("ok") is True, out)
+
+    _, plain = run(["wm", "show", "--session", S])
+    check("show는 JSON이 아니라 전문 그대로",
+          plain.strip() == "- 훅으로 쓴 엔트리" and not plain.lstrip().startswith("{"),
+          repr(plain))
+    out, _ = run(["wm", "show", "--session", S, "--json"])
+    check("--json은 상태 전체",
+          out.get("text", "").strip() == "- 훅으로 쓴 엔트리"
+          and out.get("chars") == len(out["text"]), out)
+
+    big = chr(10).join(f"- 엔트리 {i} 길게 이어지는 내용" for i in range(150))
+    out, _ = run(["wm", "write", "--session", S,
+                  "--expect-hash", out["hash"]], big)
+    check("CLI 상한 초과는 종료코드 0이 아니다", out.get("exit") == 1, out)
+    check("CLI 거부도 전문을 돌려준다",
+          out.get("text", "").strip() == "- 훅으로 쓴 엔트리", out)
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -4515,7 +4630,8 @@ if __name__ == "__main__":
                test_baseline_bound_to_region,
                test_baseline_pass, test_raw_append, test_raw_cli_path,
                test_raw_read, test_raw_space_misdiagnosis,
-               test_raw_binding_confines_scope, test_raw_replay_rejected]:
+               test_raw_binding_confines_scope, test_raw_replay_rejected,
+               test_working_memory, test_working_memory_cli]:
         try:
             fn()
         except Exception as e:
