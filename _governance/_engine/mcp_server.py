@@ -187,8 +187,9 @@ def read_raw(ref: str | None = None, space: str | None = None,
     """세션 기록의 **명시 회상** — `_raw/`는 검색에 걸리지 않으니 좌표로 연다.
     `ref`는 노드 `derived-from`에 든 `[[경로#N]]` 그대로이며 그 라운드 전문이
     온다. `#N` 없이 경로만 주면 그 기록의 목차(번호·미리보기)가, `ref` 대신
-    `space`(`"= Scope/W1"` 꼴)를 주면 그 scope의 기록 목록이 온다. 긴 라운드는
-    `max_chars`에서 잘리며 `truncated`로 알린다."""
+    `space`(`"= Scope/W1"` 꼴)를 주면 그 scope의 기록 목록이 온다. 둘 다 주면
+    `ref`가 이긴다. 긴 라운드는 `max_chars`에서 **뒤가** 잘리므로 `agent` 쪽이
+    먼저 사라진다 — `truncated`가 참이면 올려서 다시 부른다."""
     if ref:
         return _guard(raw.read_round, ref, max_chars)
     if space:
@@ -286,12 +287,14 @@ def record_candidate(type: CandidateType,
 def append_raw(session: str, record: RawRecord, user: str, agent: str,
                space: str | None = None) -> dict:
     """세션 기록 append — 이 대화의 한 라운드(`user` 발화와 그에 딸린 `agent`
-    응답)를 그 scope의 불변 기록에 잇는다. `record`는 **대화 하나의 이름**이라
-    한 대화 내내 같은 값을 쓴다(`2026-08-21-undo-buffer` 꼴). 라운드 번호는
-    엔진이 매기며, 응답의 `round_ref`를 그대로 `create_node`의 `derived-from`에
-    넣으면 근거가 배선된다. `session`·`space`는 `create_node`와 같다. 기록은
-    append만 되고 고쳐지지 않으며, `filtered`가 비지 않았으면 비밀값이 치환된
-    것이다."""
+    응답)를 그 scope의 불변 기록에 잇는다. `session`은 저장소 이름처럼 세션이
+    바뀌어도 같은 값이고, `record`는 **대화 하나의 이름**이라 한 대화 내내 같은
+    값을 쓴다(`2026-08-21-undo-buffer` 꼴). `space`는 `= Scope/<이름>` **두
+    마디**만 받으며(`overview`의 `clusters`엔 더 깊은 경로도 섞여 있다) 세션이
+    이미 결속됐으면 생략한다. 라운드 번호는 엔진이 매기고, 응답의 `round_ref`를
+    그대로 `create_node`의 `derived-from`에 넣으면 근거가 배선된다. **재호출은
+    안전하지 않다** — 같은 내용을 두 번 보내면 라운드가 둘 생기고 지우는 수단은
+    없다. `filtered`가 비지 않았으면 비밀값이 치환된 것이다."""
     return _guard(raw.append_round, session, record, user, agent, space)
 
 

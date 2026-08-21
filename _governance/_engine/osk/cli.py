@@ -97,7 +97,11 @@ def _raw_cmd(a) -> None:
     3항이 명하는 것은 전량 포착이므로, 전사를 그대로 나를 수 있는 경로가
     따로 필요하다 — 같은 통로·같은 계약을 쓰고 입력만 기계에서 온다."""
     if a.raw_cmd == "status":
-        _emit(raw.record_state(a.session, a.record, a.space))
+        try:
+            _emit(raw.record_state(a.session, a.record, a.space))
+        except write.WriteError as e:
+            _emit({"ok": False, "violations": e.violations})
+            sys.exit(1)
         return
     env = _raw_stdin()
     meta = env if isinstance(env, dict) else {}

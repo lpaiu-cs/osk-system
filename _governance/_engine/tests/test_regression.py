@@ -4335,6 +4335,46 @@ def test_raw_read():
           miss.get("ok") is False and "[1, 2, 3]" in str(miss.get("violations")),
           miss)
 
+    # 목차의 길이와 본문의 길이는 같은 것을 재야 한다 — 예산을 재려고 목차를
+    # 본 호출자가 실제 응답과 다른 수를 쥐면 안 된다(감사 지적).
+    check("목차 chars == 회상 chars",
+          [x["chars"] for x in idx["index"]]
+          == [_w(raw.read_round, r).get("chars") for r in w["round_refs"]],
+          (idx["index"], w["round_refs"]))
+
+
+# ── 18d. 형식이 어긋난 `space`를 조용히 버리지 않는다 (감사 적발) ───────────
+def test_raw_space_misdiagnosis():
+    """결속이 **있는데도** 형식이 틀린 `space` 하나 때문에 "결속이 없다"고
+    답하던 오진의 고정. 틀린 원인을 지목하는 거부는 거부하지 않느니만 못하다 —
+    받는 쪽은 멀쩡한 세션 키를 바꿔가며 헤맨다(코드를 보지 않은 감사에서 실측)."""
+    from osk import raw
+    (ROOT / "= Scope/WRawSp").mkdir(exist_ok=True)
+    S = "repo/regr-space"
+    ok = _w(raw.append_round, S, "rec", "q", "a", space="= Scope/WRawSp")
+    check("결속을 만든다", ok.get("index") == 1, ok)
+    check("결속이 섰다", write.resolve_session(S) == "WRawSp")
+
+    r = _w(raw.append_round, S, "rec", "q2", "a2", space="WRawSp")   # 맨 이름
+    v = " ".join(r.get("violations", []))
+    check("형식 오류를 space 자신의 문제로 지목한다",
+          r.get("ok") is False and "space 표기가 아니다" in v, r)
+    check("결속이 있는데 '결속이 없다'고 하지 않는다", "결속이 없다" not in v, r)
+
+    # 진짜 미결속·없는 scope의 진단은 그대로여야 한다 (오진을 반대로 만들지 않기)
+    r2 = _w(raw.append_round, "repo/regr-unbound-2", "rec", "q", "a")
+    check("진짜 미결속은 결속을 지목한다",
+          "결속이 없다" in " ".join(r2.get("violations", [])), r2)
+    r3 = _w(raw.append_round, S, "rec", "q", "a", space="= Scope/없는스코프")
+    check("없는 scope는 scope를 지목한다",
+          "scope가 아니다" in " ".join(r3.get("violations", [])), r3)
+    check("결속만으로도 계속 이어진다",
+          _w(raw.append_round, S, "rec", "q3", "a3").get("index") == 2)
+
+    # status도 같은 규율 — 조용히 0을 내지 않는다
+    check("status도 형식 오류를 거부한다",
+          _w(raw.record_state, S, "rec", "WRawSp").get("ok") is False)
+
 
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
@@ -4399,7 +4439,7 @@ if __name__ == "__main__":
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
                test_baseline_pass, test_raw_append, test_raw_cli_path,
-               test_raw_read]:
+               test_raw_read, test_raw_space_misdiagnosis]:
         try:
             fn()
         except Exception as e:

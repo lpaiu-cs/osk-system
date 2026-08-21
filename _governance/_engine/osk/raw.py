@@ -80,9 +80,23 @@ def _block(index: int, user: str, agent: str) -> str:
 
 def _resolve_dest(session: str, space: str | None,
                   bound: str | None) -> str | None:
-    """착지 scope. 세션 라우팅이 정하고(Mechanism §6-2 6항), 결속이 없으면
-    `space`가 정한다. 어느 쪽도 없으면 None — 호출부가 fail-closed로 다룬다."""
-    return (_scope_of_space(space) if space else bound)
+    """착지 scope. `space`가 있으면 그것이, 없으면 세션 라우팅이 정한다
+    (Mechanism §6-2 6항). 어느 쪽도 없으면 None — 호출부가 fail-closed로 다룬다.
+
+    형식이 어긋난 `space`를 **조용히 버리지 않는다**. 버리면 안 준 것과 같아져
+    호출부가 "결속이 없다"고 엉뚱한 원인을 지목하고, 받는 쪽은 결속이 멀쩡한데도
+    세션 키를 바꿔가며 헤맨다(감사에서 실측된 오진). 틀린 것은 틀렸다고 그 자리에서
+    말한다."""
+    if not space:
+        return bound
+    scope = _scope_of_space(space)
+    if not scope:
+        raise write.WriteError(
+            "space 표기 아님 — 쓰지 않았다",
+            [f"`{space}`는 space 표기가 아니다 — `= Scope/<이름>` **두 마디**로 "
+             f"준다. `overview`의 `clusters`에는 `= Person/…`이나 더 깊은 경로도 "
+             f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {_space_list()}"])
+    return scope
 
 
 def append_rounds(session: str, record: str, pairs: list,
@@ -237,6 +251,13 @@ def _round_spans(text: str) -> dict:
             for i, m in enumerate(ms)}
 
 
+def _recalled(chunk: str) -> str:
+    """파일 위의 라운드 범위 → 회상 본문. escape를 되돌리고(Mechanism §8 3항)
+    범위 경계의 꼬리 개행을 턴다. 목차와 본문이 **같은 함수**를 지나야 둘이
+    보고하는 길이가 어긋나지 않는다."""
+    return unescape_numeric_h2(chunk).rstrip("\n")
+
+
 def _preview(chunk: str, width: int = 60) -> str:
     """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
     for line in chunk.splitlines():
@@ -258,8 +279,12 @@ def read_round(ref: str, max_chars: int = 20000) -> dict:
     rel = posix_rel(p, ROOT)
     spans = _round_spans(text)
     if index is None:
+        # 목차의 `chars`는 **회상했을 때 오는 길이**다. 파일 위 원시 span 길이를
+        # 내면 escape와 꼬리 개행만큼 어긋나, 예산을 재려고 목차를 본 호출자가
+        # 실제 응답과 다른 수를 쥔다(감사 지적).
         return {"ok": True, "path": rel, "rounds": len(spans),
-                "index": [{"index": i, "chars": e - s,
+                "index": [{"index": i,
+                           "chars": len(_recalled(text[s:e])),
                            "preview": _preview(text[s:e])}
                           for i, (s, e) in sorted(spans.items())]}
     if index not in spans:
@@ -267,8 +292,7 @@ def read_round(ref: str, max_chars: int = 20000) -> dict:
             "없는 라운드",
             [f"`{rel}`에 라운드 {index}이(가) 없다. 있는 라운드: "
              f"{sorted(spans) if spans else '없음'}"])
-    s, e = spans[index]
-    chunk = unescape_numeric_h2(text[s:e]).rstrip("\n")
+    chunk = _recalled(text[spans[index][0]:spans[index][1]])
     cut = len(chunk) > max_chars
     return {"ok": True, "path": rel, "index": index,
             "round_ref": f"[[{rel}#{index}]]",
