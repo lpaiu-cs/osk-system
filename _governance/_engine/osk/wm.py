@@ -30,9 +30,10 @@ _CONFINE = ("작업 기억은 scope당 하나이므로 한 세션의 것을 다�
 
 # 이 문장이 응답에 늘 실린다. 호출자의 기본 성향은 "지우면 안 된다"라서, 퇴출이
 # 정상임을 말해 주지 않으면 쌓기만 하고 상한이 압력이 아니라 벽이 된다.
-EVICTION_NOTE = ("엔트리는 자리를 다툰다. 통합할 때 자리값을 못하는 엔트리는 "
-                 "지운다 — 지우는 것이 정상이며 유실이 아니다. 남길 값어치가 "
-                 "있으면 노드로 올린다.")
+EVICTION_NOTE = ("엔트리는 자리를 다툰다. 자리값을 못하는 엔트리는 지운다 — "
+                 "지우는 것이 정상이며 유실이 아니다. 정리로도 모자라면 그때 "
+                 "기존 노드를 갱신하거나 새 노드로 증류하고 근거를 배선한다. "
+                 "순서가 반대면 자리값 못하는 것까지 노드가 된다.")
 
 
 def wm_dir() -> Path:
@@ -128,9 +129,11 @@ def replace(session: str, text: str, expect_hash: str | None = None,
             raise write.WriteError(
                 "상한 초과 — 쓰지 않았다",
                 [f"{len(filtered)}자로 상한 {LIMIT}자를 {len(filtered) - LIMIT}자 "
-                 f"넘는다. 아래 전문 위에서 통합해 다시 보내라. 넘겨서까지 남길 "
-                 f"값어치가 있는 것은 작업 기억이 아니라 **노드로 올린다** — "
-                 f"{EVICTION_NOTE}"],
+                 f"넘는다. **순서대로** 하라 — (1) 작업 기억에서 자리값 못하는 "
+                 f"엔트리를 먼저 정리하라. (2) 그래도 모자라면, 남길 값어치가 "
+                 f"있는 것을 **기존 노드에 갱신**하거나 새 노드로 증류하고 "
+                 f"**근거를 배선하라**(착지는 `= Scope/{scope}`). 그 뒤 남은 "
+                 f"것으로 다시 보내라."],
                 **_state(scope, cur, sync=sync, rejected_chars=len(filtered)))
 
         p.parent.mkdir(parents=True, exist_ok=True)
