@@ -20,7 +20,7 @@ from .core import ROOT, mutation_lock, posix_rel
 # `write`의 `_title_errors`·`_name_collision`을 그대로 쓴다 — 파일명 이식성
 # 규칙(Windows 예약명·링크 파서 충돌·ext4 바이트 상한·대소문자 접기)의 정본은
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
-from . import secrets, write
+from . import graph, secrets, write
 
 # 라운드 제목 — 행 머리의 `## ` 뒤에 양의 십진 index 하나(Mechanism §8 3항).
 # escape된 제목(`\## 3`)은 `^## `에 걸리지 않으므로 이 하나로 판정이 끝난다.
@@ -112,46 +112,13 @@ def _block(index: int, user: str, agent: str) -> str:
             f"### agent\n\n{agent.rstrip()}\n")
 
 
-def _resolve_dest(session: str, space: str | None,
-                  bound: str | None) -> str | None:
-    """착지 scope. `space`가 있으면 그것이, 없으면 세션 라우팅이 정한다
-    (Mechanism §6-2 6항). 어느 쪽도 없으면 None — 호출부가 fail-closed로 다룬다.
+# scope 열거·space 표기 판정은 `graph`가 한 벌로 소유한다(`wm`도 같은 것을 쓴다).
+_scope_names, _space_list, _scope_of_space = (
+    graph.scope_names, graph.space_list, graph.scope_of_space)
 
-    형식이 어긋난 `space`를 **조용히 버리지 않는다**. 버리면 안 준 것과 같아져
-    호출부가 "결속이 없다"고 엉뚱한 원인을 지목하고, 받는 쪽은 결속이 멀쩡한데도
-    세션 키를 바꿔가며 헤맨다(감사에서 실측된 오진). 틀린 것은 틀렸다고 그 자리에서
-    말한다.
-
-    결속이 선 세션에 **그와 다른 scope**를 주는 것도 오류다. 한 세션은 한 scope에
-    속하고(Mechanism §6-2 6항 · Workbench 계약 2.4), `_raw/`는 세션당 정본
-    하나다(시행령 §2 1항). 이것을 허용하면 같은 기록 이름이 두 scope에 앉아
-    정본이 둘이 되고, 결속은 그대로라 다음 호출은 원래 자리로 돌아가 한 대화가
-    두 파일을 오간다. `_raw/`는 append-only이고 표면에 삭제가 없으므로 쓰고 난
-    뒤에 알리는 것은 되돌릴 수 없는 일을 알리는 것일 뿐이다 — 쓰기 전에 막는다.
-
-    판정 순서는 형식 → 실재 → 결속이다. 셋 다 참인 경우 가장 먼저 고칠 수 있는
-    것을 지목한다."""
-    if not space:
-        return bound
-    scope = _scope_of_space(space)
-    if not scope:
-        raise write.WriteError(
-            "space 표기 아님 — 쓰지 않았다",
-            [f"`{space}`는 space 표기가 아니다 — `= Scope/<이름>` **두 마디**로 "
-             f"준다. `overview`의 `clusters`에는 `= Person/…`이나 더 깊은 경로도 "
-             f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {_space_list()}"])
-    if scope not in _scope_names():
-        raise write.WriteError(
-            "없는 scope — 쓰지 않았다",
-            [f"`{space}`는 `_raw/`를 둘 수 있는 scope가 아니다. "
-             f"가능한 space: {_space_list()}"])
-    if bound and scope != bound:
-        raise write.WriteError(
-            "결속과 어긋나는 착지 — 쓰지 않았다",
-            [f"세션 `{session}`은 `= Scope/{bound}`에 결속돼 있다. `_raw/`는 "
-             f"세션당 정본 하나이므로(시행령 §2 1항) 한 세션의 기록을 다른 "
-             f"scope로 번지게 하지 않는다 — 결속대로 쓰려면 `space`를 빼라."])
-    return scope
+# 착지 판정(형식 → 실재 → 결속)은 `write.resolve_landing`이 한 벌로 소유한다.
+_CONFINE = ("`_raw/`는 세션당 정본 하나이므로(시행령 §2 1항) 한 세션의 기록을 "
+            "다른 scope로 번지게 하지 않는다 —")
 
 
 def append_rounds(session: str, record: str, pairs: list,
@@ -184,16 +151,15 @@ def append_rounds(session: str, record: str, pairs: list,
         raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
 
     with mutation_lock():
-        bound = write.resolve_session(session)
-        dest = _resolve_dest(session, space, bound)
+        dest, bound = write.resolve_landing(session, space, _CONFINE)
         if not dest:
             raise write.WriteError(
                 "착지 미정 — 쓰지 않았다",
                 [f"세션 `{session}`의 scope 결속이 없다. `space`를 주면 그 자리에 "
                  f"기록하고 결속을 확정한다. 가능한 space: {_space_list()}"])
         if dest not in _scope_names():
-            # 결속이 가리키는 scope가 사라진 경우 — `space`는 이미 `_resolve_dest`가
-            # 검사했으므로 여기 남는 것은 낡은 결속뿐이다.
+            # 결속이 가리키는 scope가 사라진 경우 — `space`는 이미
+            # `resolve_landing`이 검사했으므로 여기 남는 것은 낡은 결속뿐이다.
             raise write.WriteError(
                 "결속이 가리키는 scope가 없다 — 쓰지 않았다",
                 [f"세션 `{session}`은 `= Scope/{dest}`에 결속돼 있으나 그 scope가 "
@@ -243,8 +209,7 @@ def record_state(session: str, record: str, space: str | None = None) -> dict:
     번호로 두 번 앉아 기록이 대화가 아니게 된다. 어느 쪽도 그것을 사후에
     되돌릴 수 없으므로(`_raw/`는 append-only다), 붙이기 전에 세는 자리를
     둔다 — 어댑터는 `rounds`를 읽고 그 뒤부터만 보낸다."""
-    bound = write.resolve_session(session)
-    dest = _resolve_dest(session, space, bound)
+    dest, bound = write.resolve_landing(session, space, _CONFINE)
     if not dest or dest not in _scope_names():
         return {"ok": True, "bound": bound, "scope": None, "path": None,
                 "exists": False, "rounds": 0, "next_index": 1, "damaged": False}
@@ -373,24 +338,3 @@ def list_records(space: str) -> dict:
         out.append({"record": f.stem, "path": posix_rel(f, ROOT),
                     "rounds": len(rounds(text)), "chars": len(text)})
     return {"ok": True, "scope": scope, "records": out}
-
-
-def _scope_names() -> list[str]:
-    """`_raw/`를 둘 수 있는 scope — 헌법 4조 3항은 세션을 가진 scope에 이
-    구획을 두게 한다. Workbench도 자기 운영 세션의 기록을 담는다(Workbench
-    계약 2.4)."""
-    d = ROOT / "= Scope"
-    return sorted(x.name for x in d.iterdir()
-                  if x.is_dir() and not x.name.startswith(".")) if d.is_dir() else []
-
-
-def _space_list() -> str:
-    return ", ".join(f"= Scope/{s}" for s in _scope_names())
-
-
-def _scope_of_space(space: str) -> str | None:
-    """`"= Scope/<이름>"` → `<이름>`. 맨 이름은 접지 않는다 — `create_node`가
-    맨 이름을 거부하는 것과 같은 규율이며, 같은 표면에서 같은 인자가 다른
-    관대함을 가지면 호출자가 규칙을 하나로 배우지 못한다."""
-    parts = [x for x in space.strip().strip("/").split("/") if x]
-    return parts[1] if len(parts) == 2 and parts[0] == "= Scope" else None

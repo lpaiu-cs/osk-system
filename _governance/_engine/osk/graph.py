@@ -312,3 +312,28 @@ def _score_key(idx: "Index", t: str) -> str:
     if re.match(ID_RE, t) and t in idx.by_id:
         return idx.by_id[t][0].stem
     return contract.target_stem(t)
+
+
+# ── scope 이름과 space 표기 ──────────────────────────────────────────────
+# 배치가 정본이므로(시행령 §3 3항) scope 목록은 디렉토리에서 읽는다. `raw`와
+# `wm`이 같은 판정을 쓰므로 여기 한 벌만 둔다 — 두 벌이면 조용히 갈라진다.
+
+def scope_names() -> list[str]:
+    """`= Scope/` 아래의 scope 이름. Workbench도 하나의 scope다(헌법 4조 5항)."""
+    d = ROOT / "= Scope"
+    return sorted(x.name for x in d.iterdir()
+                  if x.is_dir() and not x.name.startswith(".")) if d.is_dir() else []
+
+
+def space_list() -> str:
+    """거부 메시지에 싣는 유효 space 목록 — 틀린 값을 준 호출자가 다음에 무엇을
+    써야 하는지 그 자리에서 알 수 있어야 한다."""
+    return ", ".join(f"= Scope/{s}" for s in scope_names())
+
+
+def scope_of_space(space: str) -> str | None:
+    """`"= Scope/<이름>"` → `<이름>`. 맨 이름은 접지 않는다 — `create_node`가
+    맨 이름을 거부하는 것과 같은 규율이며, 같은 표면에서 같은 인자가 다른
+    관대함을 가지면 호출자가 규칙을 하나로 배우지 못한다."""
+    parts = [x for x in (space or "").strip().strip("/").split("/") if x]
+    return parts[1] if len(parts) == 2 and parts[0] == "= Scope" else None

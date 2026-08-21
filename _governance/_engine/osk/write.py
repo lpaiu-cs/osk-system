@@ -511,6 +511,45 @@ def alias_session(alt: str, canonical: str, reason: str = "") -> dict:
         "reason": reason or "개명 이력"})
 
 
+def resolve_landing(session: str, space: str | None,
+                    confine_note: str) -> tuple[str | None, str | None]:
+    """세션·space → 착지 scope. `(scope, bound)`를 돌려준다.
+
+    scope별 구획을 갖는 모든 표면(`_raw/`·작업 기억)이 같은 판정을 쓴다. 규율은
+    셋이고 **순서가 있다** — 형식 → 실재 → 결속. 셋 다 어긋난 경우 가장 먼저
+    고칠 수 있는 것을 지목한다.
+
+    1. 형식이 어긋난 `space`를 **조용히 버리지 않는다.** 버리면 안 준 것과 같아져
+       호출부가 "결속이 없다"고 엉뚱한 원인을 지목하고, 받는 쪽은 결속이 멀쩡한데도
+       세션 키를 바꿔가며 헤맨다(감사에서 실측된 오진).
+    2. 없는 scope는 유효 목록과 함께 거부한다.
+    3. 결속이 선 세션에 **그와 다른 scope**를 주는 것도 오류다 — 한 세션은 한
+       scope에 속한다(헌법 4조 3항 · Workbench 계약 2.4). 무엇이 번지는지는
+       표면마다 다르므로 `confine_note`가 그 이유를 싣는다.
+
+    결속이 없고 `space`도 없으면 `(None, None)` — 호출부가 fail-closed로 다룬다."""
+    bound = resolve_session(session)
+    if not space:
+        return bound, bound
+    scope = graph.scope_of_space(space)
+    if not scope:
+        raise WriteError(
+            "space 표기 아님 — 쓰지 않았다",
+            [f"`{space}`는 space 표기가 아니다 — `= Scope/<이름>` **두 마디**로 "
+             f"준다. `overview`의 `clusters`에는 `= Person/…`이나 더 깊은 경로도 "
+             f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {graph.space_list()}"])
+    if scope not in graph.scope_names():
+        raise WriteError(
+            "없는 scope — 쓰지 않았다",
+            [f"`{space}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
+    if bound and scope != bound:
+        raise WriteError(
+            "결속과 어긋나는 착지 — 쓰지 않았다",
+            [f"세션 `{session}`은 `= Scope/{bound}`에 결속돼 있다. {confine_note} "
+             f"결속대로 쓰려면 `space`를 빼라."])
+    return scope, bound
+
+
 # ── 도구 ─────────────────────────────────────────────────────────────────
 
 def create_node(title: str, summary: str, body: str, drafter: str,
