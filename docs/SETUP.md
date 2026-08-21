@@ -13,7 +13,7 @@ _governance/
   Constitution.md 등   통치 문서 4종 + records/ (사료) — Space 밖 통치 구획의 특수 노드
   _engine/
     osk/               엔진 — 계약·서명·인과 DAG·검색·검증기·릴리스·갱신
-    mcp_server.py      외부 표면(MCP, stdio) — 도구 8종
+    mcp_server.py      외부 표면(MCP, stdio) — 도구 9종
     sync_daemon.py     동기화 데몬(git만; 검색·색인은 서빙하지 않는다)
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
@@ -63,9 +63,9 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 
 ## MCP 서버
 
-에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 여덟이다 —
+에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 아홉이다 —
 `overview` `search` `read_node` `run_validators` `create_node` `update_node`
-`move_node` `record_candidate`.
+`move_node` `record_candidate` `append_raw`.
 
 서명과 pin은 **표면에 영구히 노출하지 않는다**(Mechanism §6-2). 권위의 발의는
 사용자 전속이므로 아래 CLI에만 있다.

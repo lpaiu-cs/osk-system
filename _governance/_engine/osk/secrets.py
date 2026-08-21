@@ -34,7 +34,8 @@ def write_raw(path: Path | str, text: str) -> tuple[Path, list[str]]:
     필터를 우회하는 _raw 쓰기 경로를 두지 않기 위해, 원본을 파일로 남기는
     코드는 장래에도 이 함수를 통과해야 한다 — 치환은 호출자 재량이 아니다.
     vault 밖 경로·`_raw/` 밖 경로는 기록하지 않고 거부한다(fail-closed).
-    반환은 (기록한 경로, 적중 패턴 목록)."""
+    `text`는 **파일 전문**이며, 기존 파일이 있으면 그 바이트를 접두부로
+    보존해야 한다(아래 append 판정). 반환은 (기록한 경로, 적중 패턴 목록)."""
     from .core import resolve_in_root
     from . import graph
     p = resolve_in_root(path)
@@ -43,11 +44,26 @@ def write_raw(path: Path | str, text: str) -> tuple[Path, list[str]]:
     if graph.space_of(p)[0] != "raw":
         raise ValueError(f"`_raw/` 밖 경로 — 이 통로로 기록할 수 없다: {p}")
     filtered, hits = filter_text(text)
+    # 바이트로 쓴다 — 라운드 범위·상태 해시가 "정규화하지 않은 UTF-8 바이트"로
+    # 정의돼 있으므로(Mechanism §8 3~4항), 텍스트 모드의 개행 변환이 끼면
+    # Windows에서 쓴 기록만 해시가 달라진다.
+    data = filtered.encode("utf-8")
+    # Mechanism §9 4항 — `_raw/` 쓰기는 기존 파일의 정확한 바이트를 새 파일의
+    # 접두부로 보존하는 append만 허용한다. 판정은 **치환 뒤** 바이트로 한다:
+    # 기존 파일도 이 통로를 지나며 치환됐으므로 평소에는 그대로 일치하고,
+    # 패턴이 늘어 과거 기록까지 새로 치환돼야 하는 경우에만 접두부가 어긋나
+    # 거부된다 — 증거를 소급해 고쳐 쓰는 대신 멈추는 쪽이 감사 추적을 지킨다.
+    if p.exists():
+        prior = p.read_bytes()
+        if not data.startswith(prior):
+            raise ValueError(
+                f"append 아님 — 기존 {len(prior)}바이트가 접두부로 보존되지 "
+                f"않았다. `_raw/`는 불변이며 append만 허용한다: {p}")
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(p.parent))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(filtered)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, p)      # 원자 교체 — 미치환 중간 상태를 남기지 않는다

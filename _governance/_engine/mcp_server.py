@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import graph, validate, write  # noqa: E402
+from osk import graph, raw, validate, write  # noqa: E402
 from osk import search as search_mod  # noqa: E402
 from osk.core import ROOT, sha256_file  # noqa: E402
 
@@ -39,6 +39,8 @@ CandidateType: TypeAlias = Literal["contradiction", "duplication",
 Title: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
 Drafter: TypeAlias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9.\-]{0,39}$")]
+# 기록 이름도 곧 파일명이다 — 상한은 Title과 같은 자리에서 같은 이유로 건다.
+RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 
 # CREATE_NO_WINDOW — 콘솔 서브시스템 자식(git)에 창을 주지 않는다.
 # `vault_sync._NO_WINDOW`와 같은 이유이고 같은 값이다(POSIX에선 0, 무영향).
@@ -261,6 +263,19 @@ def record_candidate(type: CandidateType,
     기록을 돌려주므로 재호출이 안전하다. `nodes`는 서로 다른 둘 이상의 노드
     이름이다."""
     return _guard(write.record_candidate, type, nodes, reason)
+
+
+@mcp.tool()
+def append_raw(session: str, record: RawRecord, user: str, agent: str,
+               space: str | None = None) -> dict:
+    """세션 기록 append — 이 대화의 한 라운드(`user` 발화와 그에 딸린 `agent`
+    응답)를 그 scope의 불변 기록에 잇는다. `record`는 **대화 하나의 이름**이라
+    한 대화 내내 같은 값을 쓴다(`2026-08-21-undo-buffer` 꼴). 라운드 번호는
+    엔진이 매기며, 응답의 `round_ref`를 그대로 `create_node`의 `derived-from`에
+    넣으면 근거가 배선된다. `session`·`space`는 `create_node`와 같다. 기록은
+    append만 되고 고쳐지지 않으며, `filtered`가 비지 않았으면 비밀값이 치환된
+    것이다."""
+    return _guard(raw.append_round, session, record, user, agent, space)
 
 
 def _apply_prune() -> None:

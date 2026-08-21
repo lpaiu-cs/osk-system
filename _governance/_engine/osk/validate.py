@@ -231,7 +231,12 @@ def run() -> dict:
     return rep
 
 
-SCHEMA_BUDGET = 5000     # 상주 스키마 문자수 상한 — 초과는 회귀다
+# 상주 스키마 문자수 상한 — 초과는 회귀다. 이 예산이 막는 것은 **설명의
+# 비대**이지 도구 수가 아니다. 표면이 도구 하나만큼 자라는 것은 §6-2 7항의
+# 개정이 결정하는 일이므로, 그때는 이 상수도 함께 올린다 — 올린 사유를 여기
+# 남겨 다음 사람이 "왜 올랐나"를 코드 밖에서 묻지 않게 한다.
+#   5000 → 5600: append_raw 노출 (`_raw/` 기록 통로의 표면 연결).
+SCHEMA_BUDGET = 5600
 
 
 def surface_lint() -> list[str]:
@@ -319,8 +324,9 @@ def declared_tools() -> list[str] | None:
 
 
 # 표면이 거치는 쓰기 통로 — 금지 심벌 검사를 여기까지 건다. 코드를 옮겨
-# 검사를 비켜가는 표류를 막기 위해서다(6차 판정).
-SURFACE_MODULES = ("mcp_server.py", "osk/write.py")
+# 검사를 비켜가는 표류를 막기 위해서다(6차 판정). `osk/raw.py`는 append_raw의
+# 통로이므로 같은 이유로 여기 든다.
+SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/raw.py")
 
 
 def surface_violations(engine_dir=None) -> list[str]:

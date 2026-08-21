@@ -1970,26 +1970,31 @@ def test_surface_contract():
           declared is not None
           and not ({"sign", "unsign", "restore"} & set(declared)), declared)
 
-    # 드리프트 적발은 **사본**에 위반을 심어 시험한다 — 엔진 원본을 건드리지 않는다
-    real = (ENGINE / "mcp_server.py").read_text(encoding="utf-8")
-    wsrc = (ENGINE / "osk/write.py").read_text(encoding="utf-8")
-    for inject, into, want in (
+    # 드리프트 적발은 **사본**에 위반을 심어 시험한다 — 엔진 원본을 건드리지
+    # 않는다. 사본은 `SURFACE_MODULES`에서 짓는다: 목록에 모듈이 하나 늘 때
+    # 여기 손으로 적은 파일 목록이 따라오지 않으면, 검사가 "판독 실패"로 무너져
+    # 정작 심은 위반을 못 본다(실측 — raw.py 편입에서 세 시험이 함께 죽었다).
+    srcs = {rel: (ENGINE / rel).read_text(encoding="utf-8")
+            for rel in validate.SURFACE_MODULES}
+    real = srcs["mcp_server.py"]
+    for inject, into, anchor, want in (
         ('@mcp.tool()\ndef sign_node(x: str) -> dict:\n'
          '    return signatures.sign(x, "r", "n")\n\n\n',
-         "mcp_server.py", "선언되지 않은 도구"),
+         "mcp_server.py", "@mcp.tool()", "선언되지 않은 도구"),
         ('@mcp.tool()\ndef pin_it() -> dict:\n'
          '    return ledger_append(PINS, {})\n\n\n',
-         "mcp_server.py", "권위 대장에 기록"),
+         "mcp_server.py", "@mcp.tool()", "권위 대장에 기록"),
         ('def sneak():\n    return ledger_append(SIGNATURES, {})\n\n\n',
-         "osk/write.py", "권위 대장에 기록"),
+         "osk/write.py", "def create_node", "권위 대장에 기록"),
+        ('def sneak_raw():\n    return ledger_append(PINS, {})\n\n\n',
+         "osk/raw.py", "def append_round", "권위 대장에 기록"),
     ):
         with tempfile.TemporaryDirectory() as td:
             eng = Path(td) / "_engine"
             (eng / "osk").mkdir(parents=True)
-            (eng / "mcp_server.py").write_text(real, encoding="utf-8")
-            (eng / "osk/write.py").write_text(wsrc, encoding="utf-8")
+            for rel, src in srcs.items():
+                (eng / rel).write_text(src, encoding="utf-8")
             f = eng / into
-            anchor = "@mcp.tool()" if into == "mcp_server.py" else "def create_node"
             f.write_text(f.read_text(encoding="utf-8").replace(
                 anchor, inject + anchor, 1), encoding="utf-8")
             errs = validate.surface_violations(eng)
@@ -2254,7 +2259,7 @@ def test_write_serialized():
           "tgt0" in final and "tgt1" in final, final)
 
 
-# ── 14h. 표면 스모크 — 도구 7종을 **직접 호출**한다 (7차 치명) ──────────
+# ── 14h. 표면 스모크 — 선언된 도구 전부를 **직접 호출**한다 (7차 치명) ────
 def test_surface_smoke():
     """AST 검사와 fingerprint 호출만으로는 표면 껍데기가 죽어 있어도 통과한다.
     실제로 불러 봐야 이름 가림 계열이 잡힌다."""
@@ -2278,7 +2283,12 @@ def test_surface_smoke():
         "move_node": lambda: M.move_node("regr-smoke2", "= Scope/WSmoke"),
         "record_candidate": lambda: M.record_candidate(
             "duplication", ["regr-smoke", "regr-smoke2"], "스모크"),
+        "append_raw": lambda: M.append_raw("repo/smoke-raw", "regr-smoke-rec",
+                                           "질문", "응답", space="= Scope/W1"),
     }
+    declared = set(validate.declared_tools() or [])
+    check("스모크가 선언된 도구를 전부 부른다",
+          declared == set(calls), sorted(declared ^ set(calls)))
     for name, fn in calls.items():
         try:
             out = fn()
@@ -4105,6 +4115,81 @@ def test_posix_rel_is_os_independent():
     check("pin 대상 표기와 일치한다", pin == "= Scope/W2/", pin)
 
 
+# ── 18. `_raw/` 기록 통로 (헌법 4조 3~4항 · 시행령 §2 · Mechanism §9 4~6항) ──
+def test_raw_append():
+    """`_raw/`는 증거다. 이 수트가 지키는 것은 세 가지다 — 한 번 쓴 바이트가
+    다시는 바뀌지 않는 것, 라운드 번호가 이미 쓴 근거 참조를 배신하지 않는 것,
+    그리고 비밀값이 이 통로를 우회해 남지 않는 것."""
+    from osk import raw, secrets
+    (ROOT / "= Scope/WRaw").mkdir(exist_ok=True)
+    S, REC = "repo/regr-raw", "2026-08-21-regr"
+    p = ROOT / "= Scope/WRaw/_raw" / f"{REC}.md"
+
+    r1 = _w(raw.append_round, S, REC, "첫 질문", "첫 응답", space="= Scope/WRaw")
+    check("최초 라운드는 1", r1.get("index") == 1, r1)
+    check("round_ref가 근거 표기 그대로다",
+          r1.get("round_ref") == f"[[= Scope/WRaw/_raw/{REC}.md#1]]", r1)
+    check("첫 기록이 세션을 결속한다", write.resolve_session(S) == "WRaw")
+
+    r2 = _w(raw.append_round, S, REC, "둘째 질문", "둘째 응답")   # 라우팅으로 착지
+    check("index 단조 증가", r2.get("index") == 2, r2)
+    body = p.read_text(encoding="utf-8")
+    check("먼저 쓴 라운드가 그대로 남는다", "첫 질문" in body and "첫 응답" in body)
+
+    # 대화 본문의 숫자 H2가 라운드 제목으로 오독되지 않는다 (Mechanism §8 3항)
+    _w(raw.append_round, S, REC, "본문에 ## 24 가 있다", "응답\n## 7\n끝")
+    body = p.read_text(encoding="utf-8")
+    check("escape로 라운드 수가 늘지 않는다", raw.rounds(body) == [1, 2, 3],
+          raw.rounds(body))
+    check("escape는 역연산이 있다",
+          raw.unescape_numeric_h2(raw.escape_numeric_h2("## 7\n\\## 9"))
+          == "## 7\n\\## 9")
+
+    # 비밀값은 통로에서 치환된다 (시행령 §2 3항 — 우회 경로를 두지 않는다)
+    r4 = _w(raw.append_round, S, REC, "키 AKIAIOSFODNN7EXAMPLE 준다", "받았다")
+    body = p.read_text(encoding="utf-8")
+    check("비밀값이 기록에 남지 않는다", "AKIAIOSFODNN7EXAMPLE" not in body)
+    check("치환 사실을 호출자에게 알린다",
+          r4.get("filtered") == ["aws-access-key"], r4)
+
+    # 접두부 보존 — 증거를 소급해 고쳐 쓰지 못한다 (Mechanism §9 4항)
+    before = p.read_bytes()
+    try:
+        secrets.write_raw(p, "과거를 지운 새 내용")
+        check("접두부 훼손을 거부한다", False, "거부하지 않았다")
+    except ValueError as e:
+        check("접두부 훼손을 거부한다", "append 아님" in str(e), e)
+    check("거부는 파일을 건드리지 않는다", p.read_bytes() == before)
+
+    # 손상된 index 열 위에는 이어 쓰지 않는다 (Mechanism §9 6항)
+    bad = ROOT / "= Scope/WRaw/_raw/corrupt.md"
+    bad.write_text("## 1\n\n본문\n\n## 1\n\n중복\n", encoding="utf-8")
+    r = _w(raw.append_round, S, "corrupt", "질문", "응답")
+    check("중복 index 기록에 이어 쓰지 않는다", r.get("ok") is False, r)
+
+    # 통로 fail-closed — `_raw/` 밖은 이 함수로 쓸 수 없다
+    try:
+        secrets.write_raw(ROOT / "= Scope/WRaw/노드.md", "x")
+        check("`_raw/` 밖 경로를 거부한다", False, "거부하지 않았다")
+    except ValueError as e:
+        check("`_raw/` 밖 경로를 거부한다", "_raw" in str(e), e)
+
+    # 라운드는 쌍이다 / 착지·이름은 fail-closed
+    check("빈 응답을 거부한다",
+          _w(raw.append_round, S, REC, "질문만", "  ").get("ok") is False)
+    check("결속 없는 세션은 착지를 요구한다",
+          _w(raw.append_round, "repo/unbound-raw", "r", "q", "a").get("ok") is False)
+    check("맨 scope 이름을 거부한다",
+          _w(raw.append_round, "repo/x", "r", "q", "a", space="WRaw").get("ok") is False)
+    check("Windows 예약 장치명을 기록 이름으로 거부한다",
+          _w(raw.append_round, S, "COM1", "q", "a").get("ok") is False)
+
+    # 이식성 기준으로 같은 이름은 같은 정본 (시행령 §2 1항)
+    r5 = _w(raw.append_round, S, REC.upper(), "대소문자", "같은 파일")
+    check("대소문자만 다른 이름은 같은 기록으로 접힌다",
+          r5.get("path", "").endswith(f"{REC}.md"), r5)
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -4167,7 +4252,7 @@ if __name__ == "__main__":
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
-               test_baseline_pass]:
+               test_baseline_pass, test_raw_append]:
         try:
             fn()
         except Exception as e:
