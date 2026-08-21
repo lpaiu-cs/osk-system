@@ -190,6 +190,108 @@ def record_state(session: str, record: str, space: str | None = None) -> dict:
             "next_index": nxt, "damaged": damaged}
 
 
+# ── 명시 회상 (시행령 §2 5항) ────────────────────────────────────────────
+#
+# `_raw/`는 작업 검색에서 빠진다(헌법 11조 3항). 빠진 것을 도구 없이 읽으려면
+# 경로를 손으로 찾아야 하는데, 기록은 엔진 계약의 언어로 쓰여 있다 — 라운드
+# 제목, escape된 숫자 H2, `[[경로#N]]` 좌표. 그 언어를 아는 쪽이 읽는 자리를
+# 내주는 것이 맞다. 검색이 아니라 **좌표로 여는** 회상이므로 11조 3항의 제외와
+# 충돌하지 않는다.
+
+
+def parse_ref(ref: str) -> tuple[str, int | None]:
+    """`[[경로#N]]` · `경로#N` · `경로` → (경로, index). 저장된 표기가 곧
+    입력이다 — 노드의 `derived-from`에서 값을 그대로 옮겨 올 수 있어야 한다."""
+    s = (ref or "").strip()
+    if s.startswith("[[") and s.endswith("]]"):
+        s = s[2:-2].strip()
+    path, sep, idx = s.rpartition("#")
+    if not sep or not idx.isdigit():
+        return s, None
+    return path.strip(), int(idx)
+
+
+def _raw_file(path: str) -> Path:
+    """`_raw/` 안의 실재 파일로 해소한다. 봉쇄는 쓰기와 **같은 규율**이다 —
+    읽기라고 느슨하게 두면 `[[../../어딘가]]`가 vault 밖을 읽는 창이 된다."""
+    from .core import resolve_in_root
+    from . import graph
+    p = resolve_in_root(path)
+    if p is None:
+        raise write.WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
+    if graph.space_of(p)[0] != "raw":
+        raise write.WriteError(
+            "`_raw/` 밖 경로 — 이 도구로 읽지 않는다",
+            [f"`{path}`는 세션 기록이 아니다. 노드는 `read_node`로 읽는다"])
+    if not p.is_file():
+        raise write.WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
+    return p
+
+
+def _round_spans(text: str) -> dict:
+    """index → (시작, 끝). 라운드 범위는 그 제목 행의 첫 바이트부터 다음 숫자
+    라운드 제목의 직전까지이고, 다음이 없으면 파일 끝까지다(Mechanism §8 3항)."""
+    ms = list(_ROUND.finditer(text))
+    return {int(m.group(1)):
+            (m.start(), ms[i + 1].start() if i + 1 < len(ms) else len(text))
+            for i, m in enumerate(ms)}
+
+
+def _preview(chunk: str, width: int = 60) -> str:
+    """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
+    for line in chunk.splitlines():
+        s = line.strip()
+        if s and not _ROUND.match(s) and not s.startswith("#"):
+            return s[:width] + ("…" if len(s) > width else "")
+    return ""
+
+
+def read_round(ref: str, max_chars: int = 20000) -> dict:
+    """좌표 하나를 연다. `index`가 없으면 그 기록의 **목차**를 낸다 — 전문을
+    쏟지 않는 것이 기본값이어야 세션 기록 하나가 맥락을 삼키지 않는다.
+
+    돌려주는 본문은 escape를 되돌린 것이다(Mechanism §8 3항 "회상할 때 이를
+    되돌린다") — 기록에 남은 `\\## 3`은 원래 대화의 `## 3`이었다."""
+    path, index = parse_ref(ref)
+    p = _raw_file(path)
+    text = p.read_text(encoding="utf-8")
+    rel = posix_rel(p, ROOT)
+    spans = _round_spans(text)
+    if index is None:
+        return {"ok": True, "path": rel, "rounds": len(spans),
+                "index": [{"index": i, "chars": e - s,
+                           "preview": _preview(text[s:e])}
+                          for i, (s, e) in sorted(spans.items())]}
+    if index not in spans:
+        raise write.WriteError(
+            "없는 라운드",
+            [f"`{rel}`에 라운드 {index}이(가) 없다. 있는 라운드: "
+             f"{sorted(spans) if spans else '없음'}"])
+    s, e = spans[index]
+    chunk = unescape_numeric_h2(text[s:e]).rstrip("\n")
+    cut = len(chunk) > max_chars
+    return {"ok": True, "path": rel, "index": index,
+            "round_ref": f"[[{rel}#{index}]]",
+            "chars": len(chunk), "truncated": cut,
+            "text": chunk[:max_chars] if cut else chunk}
+
+
+def list_records(space: str) -> dict:
+    """한 scope의 세션 기록 목록 — 좌표를 모를 때 여기서 시작한다."""
+    scope = _scope_of_space(space)
+    if not scope or scope not in _scope_names():
+        raise write.WriteError(
+            "없는 scope", [f"`{space}`는 scope가 아니다. 가능한 space: "
+                          f"{_space_list()}"])
+    d = ROOT / "= Scope" / scope / "_raw"
+    out = []
+    for f in sorted(d.glob("*.md")) if d.is_dir() else []:
+        text = f.read_text(encoding="utf-8")
+        out.append({"record": f.stem, "path": posix_rel(f, ROOT),
+                    "rounds": len(rounds(text)), "chars": len(text)})
+    return {"ok": True, "scope": scope, "records": out}
+
+
 def _scope_names() -> list[str]:
     """`_raw/`를 둘 수 있는 scope — 헌법 4조 3항은 세션을 가진 scope에 이
     구획을 두게 한다. Workbench도 자기 운영 세션의 기록을 담는다(Workbench

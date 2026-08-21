@@ -182,6 +182,23 @@ def read_node(name: str) -> dict:
 
 
 @mcp.tool()
+def read_raw(ref: str | None = None, space: str | None = None,
+             max_chars: Annotated[int, Field(ge=200, le=100000)] = 20000) -> dict:
+    """세션 기록의 **명시 회상** — `_raw/`는 검색에 걸리지 않으니 좌표로 연다.
+    `ref`는 노드 `derived-from`에 든 `[[경로#N]]` 그대로이며 그 라운드 전문이
+    온다. `#N` 없이 경로만 주면 그 기록의 목차(번호·미리보기)가, `ref` 대신
+    `space`(`"= Scope/W1"` 꼴)를 주면 그 scope의 기록 목록이 온다. 긴 라운드는
+    `max_chars`에서 잘리며 `truncated`로 알린다."""
+    if ref:
+        return _guard(raw.read_round, ref, max_chars)
+    if space:
+        return _guard(raw.list_records, space)
+    return {"ok": False, "violations": [
+        "`ref`(라운드 좌표 `[[경로#N]]`) 또는 `space`(`= Scope/이름`) 중 "
+        "하나를 준다 — 좌표를 모르면 `space`로 기록 목록부터 본다"]}
+
+
+@mcp.tool()
 def overview(session: str | None = None) -> dict:
     """구조 조망 — 무엇이 있고 어디에 둘 수 있는가. **첫 쓰기 전에 한 번** 부르면
     착지를 추측하지 않아도 된다. `clusters`는 노드를 둘 수 있는 군집 경로(그대로

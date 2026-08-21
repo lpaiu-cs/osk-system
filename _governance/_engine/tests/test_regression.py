@@ -2285,6 +2285,7 @@ def test_surface_smoke():
             "duplication", ["regr-smoke", "regr-smoke2"], "스모크"),
         "append_raw": lambda: M.append_raw("repo/smoke-raw", "regr-smoke-rec",
                                            "질문", "응답", space="= Scope/W1"),
+        "read_raw": lambda: M.read_raw("[[= Scope/W1/_raw/regr-smoke-rec.md#1]]"),
     }
     declared = set(validate.declared_tools() or [])
     check("스모크가 선언된 도구를 전부 부른다",
@@ -4272,6 +4273,69 @@ def test_raw_cli_path():
           buf.getvalue())
 
 
+# ── 18c. 명시 회상 — 근거에서 증거로 번역 없이 간다 (시행령 §2 5항) ────────
+def test_raw_read():
+    """`_raw/`는 작업 검색에서 빠지므로(헌법 11조 3항) 좌표로 연다. 이 수트가
+    지키는 것은 **왕복**이다 — 쓰기가 준 `round_ref`가 `derived-from`에 앉고,
+    그 값이 그대로 읽기의 입력이어야 근거에서 증거로 가는 데 번역이 끼지 않는다."""
+    from osk import raw
+    (ROOT / "= Scope/WRawRd").mkdir(exist_ok=True)
+    SP, S, REC = "= Scope/WRawRd", "repo/regr-read", "rec"
+
+    w = _w(raw.append_rounds, S, REC, [
+        {"user": "첫 질문", "agent": "첫 응답"},
+        {"user": "둘째 질문", "agent": "본문에\n## 7\n숫자 제목"},
+        {"user": "긴 것", "agent": "가" * 3000},
+    ], SP)
+    check("세 라운드 기록", w.get("indices") == [1, 2, 3], w)
+
+    # 왕복 — 쓰기가 준 좌표를 그대로 읽기에 넣는다
+    r = _w(raw.read_round, w["round_refs"][1])
+    check("round_ref가 그대로 읽기의 입력이다", r.get("index") == 2, r)
+    check("라운드 본문이 온다", "둘째 질문" in r.get("text", ""), r)
+    check("이웃 라운드가 섞이지 않는다",
+          "첫 질문" not in r.get("text", "") and "긴 것" not in r.get("text", ""))
+
+    # escape 역연산 — 파일엔 `\## 7`, 회상엔 `## 7` (Mechanism §8 3항)
+    p = ROOT / SP / "_raw" / f"{REC}.md"
+    check("파일에는 escape된 채로 있다", "\\## 7" in p.read_text(encoding="utf-8"))
+    check("회상은 escape를 되돌린다",
+          "\n## 7\n" in r.get("text", "") and "\\##" not in r.get("text", ""), r)
+
+    # 절단은 조용히 하지 않는다
+    r3 = _w(raw.read_round, w["round_refs"][2], 500)
+    check("긴 라운드는 잘린다", len(r3.get("text", "")) == 500, r3)
+    check("자른 사실과 원 길이를 알린다",
+          r3.get("truncated") is True and r3.get("chars") > 3000, r3)
+
+    # 좌표가 없으면 목차까지만 — 본문을 쏟지 않는다
+    idx = _w(raw.read_round, f"{SP}/_raw/{REC}.md")
+    check("index 없으면 목차", idx.get("rounds") == 3 and "text" not in idx, idx)
+    check("목차는 미리보기만 싣는다",
+          [x["preview"] for x in idx["index"]][:2] == ["첫 질문", "둘째 질문"], idx)
+
+    # 표기 관용 — 저장 표기·맨 표기 모두 같은 좌표로 읽힌다
+    for label, ref in (("위키링크", f"[[{SP}/_raw/{REC}.md#1]]"),
+                       ("맨 표기", f"{SP}/_raw/{REC}.md#1")):
+        check(f"좌표 표기: {label}", _w(raw.read_round, ref).get("index") == 1)
+
+    # scope의 기록 목록 — 좌표를 모를 때의 출발점
+    ls = _w(raw.list_records, SP)
+    check("기록 목록", [x["record"] for x in ls.get("records", [])] == [REC], ls)
+    check("목록은 라운드 수를 센다", ls["records"][0]["rounds"] == 3, ls)
+
+    # 봉쇄는 쓰기와 같은 규율이다 — 읽기라고 느슨하면 vault 밖을 읽는 창이 된다
+    for label, ref in (
+            ("vault 밖 탈출", "[[../../../../etc/passwd]]"),
+            ("_raw 밖 노드", f"[[{SP}/어떤노드.md]]"),
+            ("없는 기록", f"[[{SP}/_raw/없다.md#1]]")):
+        check(f"회상 봉쇄: {label}", _w(raw.read_round, ref).get("ok") is False)
+    miss = _w(raw.read_round, f"[[{SP}/_raw/{REC}.md#9]]")
+    check("없는 라운드는 있는 것을 알려준다",
+          miss.get("ok") is False and "[1, 2, 3]" in str(miss.get("violations")),
+          miss)
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -4334,7 +4398,8 @@ if __name__ == "__main__":
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
-               test_baseline_pass, test_raw_append, test_raw_cli_path]:
+               test_baseline_pass, test_raw_append, test_raw_cli_path,
+               test_raw_read]:
         try:
             fn()
         except Exception as e:

@@ -366,7 +366,7 @@ derived-from: 260802-114u-7lo3
 7. 표면에 노출된 도구의 목록은 다음과 같다. 이 목록의 개정으로 표면을
    변경하며, 목록과 구현이 어긋나면 검증기가 이를 적발한다.
    ```
-   overview search read_node run_validators create_node update_node move_node record_candidate append_raw
+   overview search read_node run_validators create_node update_node move_node record_candidate append_raw read_raw
    ```
    이 목록을 고치는 개정에는 **코드를 보지 않은 감사 1회**를 관문으로 붙인다 —
    도구 설명과 스키마만으로 현실 과업을 수행해 보고, 막힌 지점과 추측해야 했던
@@ -458,6 +458,13 @@ derived-from: 260802-114u-7lo3
    라운드를 가리키게 만든다. index 열이 1부터 단조 증가하지 않는 기록에는
    이어 쓰지 않고 거부한다 — 손상된 기록 위의 append는 라운드 참조의
    동일성을 정하지 못한다.
+7. **명시 회상은 좌표로 한다**(시행령 §2 5항). `_raw/`는 작업 검색에서
+   빠지므로(헌법 11조 3항), 표면의 회상 도구는 질의가 아니라 라운드 좌표
+   `[[경로#index]]` — 곧 `derived-from`에 저장된 그 값 — 를 입력으로 받는다.
+   저장된 표기가 그대로 입력이어야 근거에서 증거로 가는 데 번역이 끼지
+   않는다. 좌표 없는 회상은 기록 목록과 라운드 목차까지만 내고 본문을 쏟지
+   않으며, 회상하는 본문은 §8 3항의 escape를 되돌린 것이다. 경로 봉쇄는
+   쓰기와 같다 — `_raw/` 밖·vault 밖은 거부한다.
 
 ## §10 해석 각서
 

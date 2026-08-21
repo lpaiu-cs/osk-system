@@ -13,7 +13,7 @@ _governance/
   Constitution.md 등   통치 문서 4종 + records/ (사료) — Space 밖 통치 구획의 특수 노드
   _engine/
     osk/               엔진 — 계약·서명·인과 DAG·검색·검증기·릴리스·갱신
-    mcp_server.py      외부 표면(MCP, stdio) — 도구 9종
+    mcp_server.py      외부 표면(MCP, stdio) — 도구 10종
     sync_daemon.py     동기화 데몬(git만; 검색·색인은 서빙하지 않는다)
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
@@ -63,9 +63,14 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 
 ## MCP 서버
 
-에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 아홉이다 —
+에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 열이다 —
 `overview` `search` `read_node` `run_validators` `create_node` `update_node`
-`move_node` `record_candidate` `append_raw`.
+`move_node` `record_candidate` `append_raw` `read_raw`.
+
+`_raw/` 세션 기록은 작업 검색에서 빠지므로(헌법 11조 3항) `read_raw`는 질의가
+아니라 **좌표**를 받는다. 노드의 `derived-from`에 든 `[[경로#N]]`을 그대로 넣으면
+그 라운드가 열린다 — 근거에서 증거로 가는 데 번역이 끼지 않는다. 좌표를 모르면
+`space`로 기록 목록부터, 경로만으로 라운드 목차부터 본다.
 
 서명과 pin은 **표면에 영구히 노출하지 않는다**(Mechanism §6-2). 권위의 발의는
 사용자 전속이므로 아래 CLI에만 있다.

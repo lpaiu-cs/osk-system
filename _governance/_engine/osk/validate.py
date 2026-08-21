@@ -236,7 +236,8 @@ def run() -> dict:
 # 개정이 결정하는 일이므로, 그때는 이 상수도 함께 올린다 — 올린 사유를 여기
 # 남겨 다음 사람이 "왜 올랐나"를 코드 밖에서 묻지 않게 한다.
 #   5000 → 5600: append_raw 노출 (`_raw/` 기록 통로의 표면 연결).
-SCHEMA_BUDGET = 5600
+#   5600 → 6100: read_raw 노출 (기록의 명시 회상 — Mechanism §9 7항).
+SCHEMA_BUDGET = 6100
 
 
 def surface_lint() -> list[str]:
