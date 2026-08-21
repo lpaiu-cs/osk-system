@@ -4190,6 +4190,88 @@ def test_raw_append():
           r5.get("path", "").endswith(f"{REC}.md"), r5)
 
 
+# ── 18b. 훅 경로 — 실제 대화 바이트를 stdin으로 받는다 (헌법 4조 3항) ──────
+def test_raw_cli_path():
+    """표면의 `append_raw`는 에이전트가 **서술한** 라운드를 받는다. 전량 포착은
+    전사를 그대로 나를 수 있어야 성립하므로, 같은 통로에 기계 입력 경로를 둔다.
+    여기서 지키는 것은 봉투 계약과 **배치의 원자성**이다 — 라운드마다 따로
+    쓰면 중간 거부에서 '있었던 대화의 일부'가 남는다."""
+    from osk import cli, raw
+    import io, types
+    (ROOT / "= Scope/WRawCli").mkdir(exist_ok=True)
+    SP, S, REC = "= Scope/WRawCli", "hook/regr", "2026-08-21-hook"
+
+    def run(argv, payload=None):
+        out, real_emit, real_stdin = {}, cli._emit, sys.stdin
+        try:
+            cli._emit = out.update
+            if payload is not None:
+                sys.stdin = types.SimpleNamespace(
+                    isatty=lambda: False,
+                    buffer=io.BytesIO(payload.encode("utf-8")))
+            try:
+                cli.main(argv)
+            except SystemExit as e:
+                out["exit"] = e.code
+        finally:
+            cli._emit, sys.stdin = real_emit, real_stdin
+        return out
+
+    r = run(["raw", "append", "--session", S, "--record", REC, "--space", SP],
+            json.dumps({"rounds": [{"user": f"질문{i}", "agent": f"응답{i}"}
+                                   for i in (1, 2, 3)]}, ensure_ascii=False))
+    check("배치가 한 번에 이어진다", r.get("indices") == [1, 2, 3], r)
+
+    st = run(["raw", "status", "--session", S, "--record", REC])
+    check("status가 기록된 분량을 센다",
+          (st.get("rounds"), st.get("next_index")) == (3, 4), st)
+
+    # 배치 원자성 — 기존 기록이 있는 상태에서 중간 거부
+    p = ROOT / SP / "_raw" / f"{REC}.md"
+    before = p.read_bytes()
+    r = run(["raw", "append", "--session", S, "--record", REC],
+            json.dumps({"rounds": [{"user": "좋다", "agent": "응답"},
+                                   {"user": "나쁘다", "agent": "  "}]},
+                       ensure_ascii=False))
+    check("중간 거부는 배치 전체를 무른다", r.get("ok") is False, r)
+    check("거부 시 종료코드가 0이 아니다", r.get("exit") == 1, r)
+    check("거부는 기존 기록을 건드리지 않는다", p.read_bytes() == before)
+
+    # 봉투 모양 — 라운드 하나만 보낼 때 감싸기를 강요하지 않는다
+    r = run(["raw", "append", "--session", S, "--record", REC],
+            json.dumps({"user": "홑겹", "agent": "응답"}, ensure_ascii=False))
+    check("라운드 하나는 감싸지 않아도 된다", r.get("indices") == [4], r)
+    r = run(["raw", "append", "--session", S, "--record", REC],
+            json.dumps([{"user": "배열", "agent": "응답"}], ensure_ascii=False))
+    check("배열 봉투도 받는다", r.get("indices") == [5], r)
+
+    # 플래그가 봉투를 이긴다 — 거는 쪽의 뜻이 생성기의 값보다 앞선다
+    r = run(["raw", "append", "--session", S, "--record", REC],
+            json.dumps({"record": "다른이름", "user": "q", "agent": "a"},
+                       ensure_ascii=False))
+    check("플래그 record가 봉투를 이긴다",
+          r.get("path", "").endswith(f"{REC}.md"), r)
+
+    # 손상 기록은 셀 수 없다고 말한다 — 그 위에 이어 붙이게 두지 않는다
+    (ROOT / SP / "_raw" / "dmg.md").write_text(
+        "## 2\n\n본문\n\n## 1\n\n역행\n", encoding="utf-8")
+    st = run(["raw", "status", "--session", S, "--record", "dmg"])
+    check("손상 기록은 damaged로 보고한다",
+          st.get("damaged") is True and st.get("next_index") is None, st)
+
+    # stdin은 바이트로 읽고 UTF-8로 푼다 — 콘솔 코드페이지에 인질이 되지 않는다
+    buf = io.BytesIO()
+    real = sys.stdout
+    try:
+        sys.stdout = types.SimpleNamespace(buffer=buf)
+        cli._emit({"한글": "값"})
+    finally:
+        sys.stdout = real
+    check("_emit은 UTF-8 바이트를 낸다",
+          json.loads(buf.getvalue().decode("utf-8")) == {"한글": "값"},
+          buf.getvalue())
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -4252,7 +4334,7 @@ if __name__ == "__main__":
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
-               test_baseline_pass, test_raw_append]:
+               test_baseline_pass, test_raw_append, test_raw_cli_path]:
         try:
             fn()
         except Exception as e:

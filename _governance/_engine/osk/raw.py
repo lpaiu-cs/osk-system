@@ -78,26 +78,45 @@ def _block(index: int, user: str, agent: str) -> str:
             f"### agent\n\n{agent.rstrip()}\n")
 
 
-def append_round(session: str, record: str, user: str, agent: str,
-                 space: str | None = None) -> dict:
-    """세션 기록에 라운드 하나를 append한다.
+def _resolve_dest(session: str, space: str | None,
+                  bound: str | None) -> str | None:
+    """착지 scope. 세션 라우팅이 정하고(Mechanism §6-2 6항), 결속이 없으면
+    `space`가 정한다. 어느 쪽도 없으면 None — 호출부가 fail-closed로 다룬다."""
+    return (_scope_of_space(space) if space else bound)
 
-    착지는 세션 라우팅이 정한다(Mechanism §6-2 6항) — 결속이 없으면 `space`를
-    요구하고, 성공하면 그 scope로 세션을 확정한다. `space`의 표기는
-    `create_node`와 같은 군집 전체 경로(`"= Scope/W1"`)다 — 같은 표면에서 같은
-    값이 같은 뜻이어야 호출자가 `overview`의 `clusters`를 그대로 옮겨 쓴다."""
-    if not user.strip() or not agent.strip():
-        raise write.WriteError(
-            "라운드는 user 발화와 그 응답을 함께 담는다", [
-                "user·agent 중 빈 쪽이 있다 — 한 라운드는 user 발화와 그에 "
-                "속한 에이전트 응답의 쌍이다 (시행령 §2 7항)"])
+
+def append_rounds(session: str, record: str, pairs: list,
+                  space: str | None = None) -> dict:
+    """라운드 여럿을 **한 번의 쓰기로** 잇는다.
+
+    배치가 필요한 이유는 성능이 아니라 원자성이다. 라운드마다 따로 쓰면 세
+    번째에서 거부됐을 때 앞의 둘만 남아, `_raw/`가 "있었던 대화의 일부"가
+    된다 — 표면이 부분 성공을 만들지 않는 것과 같은 규율을 이 경로에도
+    건다(Mechanism §6-2 3항). index는 배치 안에서도 엔진이 이어 매긴다.
+
+    착지는 세션 라우팅이 정한다 — 결속이 없으면 `space`를 요구하고, 성공하면
+    그 scope로 세션을 확정한다. `space`의 표기는 `create_node`와 같은 군집
+    전체 경로(`"= Scope/W1"`)다 — 같은 값이 같은 뜻이어야 호출자가
+    `overview`의 `clusters`를 그대로 옮겨 쓴다."""
+    if not pairs:
+        raise write.WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
+    norm = []
+    for i, r in enumerate(pairs):
+        u = r.get("user") if isinstance(r, dict) else (r[0] if r else "")
+        a = r.get("agent") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")
+        if not (u or "").strip() or not (a or "").strip():
+            raise write.WriteError(
+                "라운드는 user 발화와 그 응답을 함께 담는다",
+                [f"{i + 1}번째 라운드의 user·agent 중 빈 쪽이 있다 — 한 라운드는 "
+                 f"user 발화와 그에 속한 에이전트 응답의 쌍이다 (시행령 §2 7항)"])
+        norm.append((u, a))
     errs = write._title_errors(record)      # 기록 이름이 곧 파일명이다
     if errs:
         raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
 
     with mutation_lock():
         bound = write.resolve_session(session)
-        dest = _scope_of_space(space) if space else bound
+        dest = _resolve_dest(session, space, bound)
         if not dest:
             raise write.WriteError(
                 "착지 미정 — 쓰지 않았다",
@@ -111,13 +130,18 @@ def append_round(session: str, record: str, user: str, agent: str,
 
         p = record_path(dest, record)
         prior = p.read_text(encoding="utf-8") if p.exists() else ""
-        index = _next_index(prior)
+        first = _next_index(prior)
         if prior and not prior.endswith("\n"):
             prior += "\n"
-        body = _block(index, escape_numeric_h2(user), escape_numeric_h2(agent))
+        blocks, indices = [], []
+        for n, (u, a) in enumerate(norm):
+            indices.append(first + n)
+            blocks.append(_block(first + n, escape_numeric_h2(u),
+                                 escape_numeric_h2(a)))
         # 되돌아온 경로를 쓴다 — 통로가 봉쇄·해소한 그 경로가 실제로 기록된
         # 자리이고, `ROOT`도 해소된 값이라 둘의 상대 계산이 어긋나지 않는다.
-        written, hits = secrets.write_raw(p, prior + ("\n" if prior else "") + body)
+        written, hits = secrets.write_raw(
+            p, prior + ("\n" if prior else "") + "\n".join(blocks))
 
         if not bound:
             write.bind_session(session, dest, "첫 세션 기록에서 확정")
@@ -125,9 +149,45 @@ def append_round(session: str, record: str, user: str, agent: str,
         # `round_ref`를 그대로 돌려준다 — 이 값이 곧 `derived-from`의 비노드
         # 대상 표기다(Mechanism §8 2항). 호출자가 경로와 index를 조립하다
         # 틀리면 근거 배선이 dangling으로 앉는다.
-        return {"ok": True, "path": rel, "index": index,
-                "round_ref": f"[[{rel}#{index}]]",
+        return {"ok": True, "path": rel, "indices": indices,
+                "round_refs": [f"[[{rel}#{i}]]" for i in indices],
                 "filtered": sorted(set(hits))}
+
+
+def append_round(session: str, record: str, user: str, agent: str,
+                 space: str | None = None) -> dict:
+    """라운드 하나 — 표면(`append_raw`)이 부르는 단수형."""
+    r = append_rounds(session, record, [{"user": user, "agent": agent}], space)
+    return {"ok": True, "path": r["path"], "index": r["indices"][0],
+            "round_ref": r["round_refs"][0], "filtered": r["filtered"]}
+
+
+def record_state(session: str, record: str, space: str | None = None) -> dict:
+    """기록의 현재 상태 — 어댑터가 **이미 기록된 분량을 건너뛰는** 데 쓴다.
+
+    자동 포착의 진짜 위험은 유실이 아니라 중복이다. 훅은 같은 대화에 대해
+    여러 번 깨어나는데, 그때마다 처음부터 이어 붙이면 같은 라운드가 다른
+    번호로 두 번 앉아 기록이 대화가 아니게 된다. 어느 쪽도 그것을 사후에
+    되돌릴 수 없으므로(`_raw/`는 append-only다), 붙이기 전에 세는 자리를
+    둔다 — 어댑터는 `rounds`를 읽고 그 뒤부터만 보낸다."""
+    bound = write.resolve_session(session)
+    dest = _resolve_dest(session, space, bound)
+    if not dest or dest not in _scope_names():
+        return {"ok": True, "bound": bound, "scope": None, "path": None,
+                "exists": False, "rounds": 0, "next_index": 1, "damaged": False}
+    p = record_path(dest, record)
+    text = p.read_text(encoding="utf-8") if p.exists() else ""
+    seen = rounds(text)
+    try:
+        nxt, damaged = _next_index(text), False
+    except write.WriteError:
+        # 손상 기록에 다음 번호를 알려주면 어댑터가 그 위에 이어 붙이려 든다.
+        # 셀 수 없다는 사실을 그대로 낸다 — append도 같은 이유로 거부한다.
+        nxt, damaged = None, True
+    return {"ok": True, "bound": bound, "scope": dest,
+            "path": posix_rel(p.resolve(), ROOT) if p.exists() else None,
+            "exists": p.exists(), "rounds": len(seen),
+            "next_index": nxt, "damaged": damaged}
 
 
 def _scope_names() -> list[str]:

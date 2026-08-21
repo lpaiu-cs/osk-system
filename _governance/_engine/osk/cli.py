@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse, json, sys
 
 from .core import ROOT
-from . import graph, approvals, authority, validate, search
+from . import graph, approvals, authority, raw, validate, search, write
 
 
 def _confirm(prompt: str) -> None:
@@ -52,6 +52,70 @@ def _print_changeset(region: str) -> None:
         print("  (파일 단위 차이 없음)")
 
 
+def _emit(obj) -> None:
+    """결과를 **UTF-8 바이트로** 낸다. 이 경로의 소비자는 사람이 아니라 훅이고,
+    Windows 콘솔의 기본 코드페이지를 타면 한글이 든 위반 메시지에서
+    `UnicodeEncodeError`로 죽는다 — 기록은 남았는데 보고가 죽는 꼴이 된다."""
+    sys.stdout.buffer.write(
+        (json.dumps(obj, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
+def _raw_stdin():
+    """훅이 보내는 봉투를 읽는다. **바이트로 읽어 UTF-8로 푼다** — 콘솔
+    인코딩을 타면 기록이 그 기기의 코드페이지에 인질이 되는데, `_raw/`는
+    append-only라 나중에 고칠 수도 없다."""
+    if sys.stdin.isatty():
+        sys.exit('stdin으로 JSON 봉투를 넘겨라 (훅·파이프). 형식: '
+                 '{"rounds": [{"user": "…", "agent": "…"}, …]}')
+    data = sys.stdin.buffer.read()
+    if not data.strip():
+        sys.exit("빈 stdin — 이을 라운드가 없다")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        sys.exit(f"stdin 판독 실패 — {type(e).__name__}: {e}")
+
+
+def _raw_rounds(env) -> list:
+    """봉투에서 라운드 목록을 꺼낸다. 배열 그대로 · `rounds` 키 · 라운드 하나를
+    모두 받는다 — 한 라운드만 보내는 흔한 경우에 감싸기를 강요하지 않는다."""
+    if isinstance(env, list):
+        return env
+    if isinstance(env, dict):
+        if isinstance(env.get("rounds"), list):
+            return env["rounds"]
+        if "user" in env or "agent" in env:
+            return [env]
+    return []
+
+
+def _raw_cmd(a) -> None:
+    """`osk raw` — 하네스 훅이 실제 대화 바이트를 넣는 경로.
+
+    표면의 `append_raw`는 에이전트가 **서술한** 라운드를 받는다. 헌법 4조
+    3항이 명하는 것은 전량 포착이므로, 전사를 그대로 나를 수 있는 경로가
+    따로 필요하다 — 같은 통로·같은 계약을 쓰고 입력만 기계에서 온다."""
+    if a.raw_cmd == "status":
+        _emit(raw.record_state(a.session, a.record, a.space))
+        return
+    env = _raw_stdin()
+    meta = env if isinstance(env, dict) else {}
+    # 플래그가 봉투를 이긴다 — 봉투는 전사 생성기가, 플래그는 그것을 거는
+    # 사람이 쓴다. 어느 자리로 왔는지 모호하면 거는 쪽의 뜻을 따른다.
+    session = a.session or meta.get("session")
+    record = a.record or meta.get("record")
+    space = a.space or meta.get("space")
+    missing = [k for k, v in (("session", session), ("record", record)) if not v]
+    if missing:
+        sys.exit(f"필수 값 없음: {', '.join(missing)} — 플래그나 봉투로 준다")
+    try:
+        _emit(raw.append_rounds(session, record, _raw_rounds(env), space))
+    except write.WriteError as e:
+        _emit({"ok": False, "violations": e.violations})
+        sys.exit(1)
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -78,6 +142,19 @@ def main(argv=None):
     p.add_argument("query"); p.add_argument("-k", type=int, default=8)
     p = sub.add_parser("check", help="권한 사전 검사")
     p.add_argument("action")
+    # `raw`는 하네스 훅이 부르는 **기계 경로**다 — 대화형 확인을 걸지 않는다.
+    # 사용자 전속 행위가 아니라 표면의 `append_raw`와 같은 행위이고, 거는
+    # 순간 훅에서 쓸 수 없어 자동 포착이 성립하지 않는다.
+    p = sub.add_parser("raw", help="`_raw/` 세션 기록 (훅 경로)")
+    rs = p.add_subparsers(dest="raw_cmd", required=True)
+    q = rs.add_parser("append", help="라운드 append — 본문은 stdin JSON")
+    q.add_argument("--session"); q.add_argument("--record")
+    q.add_argument("--space", default=None)
+    q = rs.add_parser("status", help="기록의 현재 라운드 수 — 중복 방지용")
+    q.add_argument("--session", required=True)
+    q.add_argument("--record", required=True)
+    q.add_argument("--space", default=None)
+
     p = sub.add_parser("protect", help="[사용자 전속] 보호영역 지정")
     p.add_argument("region"); p.add_argument("--reason", default="")
     p = sub.add_parser("unprotect", help="[사용자 전속] 보호영역 해제")
@@ -109,6 +186,8 @@ def main(argv=None):
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     elif a.cmd == "check":
         print(json.dumps(authority.check(a.action), ensure_ascii=False, indent=2))
+    elif a.cmd == "raw":
+        return _raw_cmd(a)
     elif a.cmd == "protect":
         st = approvals.state(a.region)
         print(f"보호영역 지정: {a.region}\n현재 상태: {st}")
