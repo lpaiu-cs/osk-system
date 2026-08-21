@@ -71,6 +71,40 @@ def record_path(scope: str, record: str) -> Path:
     return d / (hit or f"{record}.md")
 
 
+def _round_body(chunk: str) -> str:
+    """라운드에서 제목 줄을 뺀 내용. 재시도가 만드는 중복은 번호만 다르므로,
+    같음의 판정은 번호가 아니라 내용으로 한다."""
+    return chunk.partition("\n")[2].strip()
+
+
+def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
+    """직전 꼬리와 바이트가 같은 배치는 재시도로 보고 거부한다.
+
+    at-least-once 전송에서는 응답이 유실되면 호출자가 같은 배치를 다시 보낸다.
+    그런데 `_raw/`는 append-only라 그렇게 생긴 중복은 **지울 수단이 없다** —
+    표면에도 삭제 도구가 없다. 조용히 접지 않고 거부하는 이유는, 접으면 성공을
+    보고하면서 아무것도 안 쓰는 것이 되어 호출자가 무슨 일이 있었는지 모르기
+    때문이다. 거부하고 무엇을 봐야 하는지 알려 호출자가 판정하게 한다.
+
+    비교는 **치환 뒤** 내용으로 한다 — 저장된 쪽은 통로에서 치환됐으므로,
+    비밀값이 든 라운드의 재시도는 치환 전으로 견주면 다른 것이 되어 빠져나간다."""
+    n = len(blocks)
+    if len(spans) < n:
+        return
+    incoming = [_round_body(secrets.filter_text(b)[0]) for b in blocks]
+    tail = [_round_body(prior[s:e])
+            for _, (s, e) in sorted(spans.items())[-n:]]
+    if tail != incoming:
+        return
+    last = sorted(spans)[-n:]
+    raise write.WriteError(
+        "재시도로 보이는 중복 — 쓰지 않았다",
+        [f"직전 라운드 {last}의 내용과 바이트가 같다. 응답을 못 받아 다시 "
+         f"보내는 것이라면 이미 기록됐다 — `read_raw`로 목차를 보고 마지막 "
+         f"index를 확인하라. 정말 같은 대화가 다시 오간 것이면 그 사실이 "
+         f"드러나게 라운드를 고쳐 보낸다."])
+
+
 def _block(index: int, user: str, agent: str) -> str:
     """한 라운드 = user 발화 + 그에 속한 에이전트 응답(시행령 §2 7항)."""
     return (f"## {index}\n\n"
@@ -145,13 +179,15 @@ def append_rounds(session: str, record: str, pairs: list,
         p = record_path(dest, record)
         prior = p.read_text(encoding="utf-8") if p.exists() else ""
         first = _next_index(prior)
-        if prior and not prior.endswith("\n"):
-            prior += "\n"
+        spans = _round_spans(prior)
         blocks, indices = [], []
         for n, (u, a) in enumerate(norm):
             indices.append(first + n)
             blocks.append(_block(first + n, escape_numeric_h2(u),
                                  escape_numeric_h2(a)))
+        _reject_replay(prior, spans, blocks)
+        if prior and not prior.endswith("\n"):
+            prior += "\n"
         # 되돌아온 경로를 쓴다 — 통로가 봉쇄·해소한 그 경로가 실제로 기록된
         # 자리이고, `ROOT`도 해소된 값이라 둘의 상대 계산이 어긋나지 않는다.
         written, hits = secrets.write_raw(

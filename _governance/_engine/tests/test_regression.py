@@ -4376,6 +4376,43 @@ def test_raw_space_misdiagnosis():
           _w(raw.record_state, S, "rec", "WRawSp").get("ok") is False)
 
 
+# ── 18e. 재시도 중복 거부 (Mechanism §9 7항 · 시행령 §2 1항) ────────────────
+def test_raw_replay_rejected():
+    """응답이 유실되면 호출자는 같은 배치를 다시 보낸다. `_raw/`는 append-only이고
+    표면에 삭제가 없으므로 그렇게 생긴 중복은 되돌릴 수 없다 — 쓰기 전에 막는다.
+    조용히 접지 않고 **거부**하는 것은, 접으면 쓰지 않고 성공을 보고하는 것이 되어
+    호출자가 무슨 일이 있었는지 모르기 때문이다."""
+    from osk import raw
+    (ROOT / "= Scope/WRawRp").mkdir(exist_ok=True)
+    SP, S = "= Scope/WRawRp", "repo/regr-replay"
+    B = [{"user": "q1", "agent": "a1"}, {"user": "q2", "agent": "a2"}]
+
+    check("최초 배치", _w(raw.append_rounds, S, "rec", B, SP).get("indices") == [1, 2])
+    r = _w(raw.append_rounds, S, "rec", B)
+    check("같은 배치 재시도는 거부", r.get("ok") is False, r)
+    check("거부가 어디를 보라고 알려준다",
+          "read_raw" in " ".join(r.get("violations", [])), r)
+    check("거부는 아무것도 쓰지 않았다", raw.record_state(S, "rec")["rounds"] == 2)
+
+    check("꼬리 일부만 재시도해도 거부",
+          _w(raw.append_rounds, S, "rec", [B[1]]).get("ok") is False)
+    check("다른 내용은 통과",
+          _w(raw.append_rounds, S, "rec",
+             [{"user": "q3", "agent": "a3"}]).get("indices") == [3])
+    # 꼬리가 아닌 옛 라운드의 반복은 재시도가 아니다 — 정말 같은 말이 다시 오갔을
+    # 수 있고, 그것을 막으면 대화를 기록하지 못한다.
+    check("꼬리가 아니면 같은 내용도 통과",
+          _w(raw.append_rounds, S, "rec", [B[0]]).get("indices") == [4])
+
+    # 비밀값이 든 라운드의 재시도 — 저장본은 치환됐으므로 치환 전으로 견주면
+    # 다른 것이 되어 빠져나간다. 판정은 치환 뒤로 한다.
+    SEC = [{"user": "키 AKIAIOSFODNN7EXAMPLE 준다", "agent": "받았다"}]
+    check("비밀값 라운드 최초",
+          _w(raw.append_rounds, S, "sec", SEC, SP).get("indices") == [1])
+    check("비밀값 라운드의 재시도도 거부",
+          _w(raw.append_rounds, S, "sec", SEC).get("ok") is False)
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -4439,7 +4476,8 @@ if __name__ == "__main__":
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
                test_baseline_pass, test_raw_append, test_raw_cli_path,
-               test_raw_read, test_raw_space_misdiagnosis]:
+               test_raw_read, test_raw_space_misdiagnosis,
+               test_raw_replay_rejected]:
         try:
             fn()
         except Exception as e:

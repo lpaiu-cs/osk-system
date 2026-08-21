@@ -292,9 +292,9 @@ def append_raw(session: str, record: RawRecord, user: str, agent: str,
     값을 쓴다(`2026-08-21-undo-buffer` 꼴). `space`는 `= Scope/<이름>` **두
     마디**만 받으며(`overview`의 `clusters`엔 더 깊은 경로도 섞여 있다) 세션이
     이미 결속됐으면 생략한다. 라운드 번호는 엔진이 매기고, 응답의 `round_ref`를
-    그대로 `create_node`의 `derived-from`에 넣으면 근거가 배선된다. **재호출은
-    안전하지 않다** — 같은 내용을 두 번 보내면 라운드가 둘 생기고 지우는 수단은
-    없다. `filtered`가 비지 않았으면 비밀값이 치환된 것이다."""
+    그대로 `create_node`의 `derived-from`에 넣으면 근거가 배선된다. 직전 라운드와
+    내용이 같은 배치는 **재시도로 보고 거부한다** — 응답을 못 받았을 뿐이면 이미
+    기록된 것이다. `filtered`가 비지 않았으면 비밀값이 치환된 것이다."""
     return _guard(raw.append_round, session, record, user, agent, space)
 
 
