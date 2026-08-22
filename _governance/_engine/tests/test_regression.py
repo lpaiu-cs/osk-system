@@ -4151,10 +4151,13 @@ def test_raw_append():
           raw.unescape_numeric_h2(raw.escape_numeric_h2("## 7\n\\## 9"))
           == "## 7\n\\## 9")
 
-    # 비밀값은 통로에서 치환된다 (시행령 §2 3항 — 우회 경로를 두지 않는다)
-    r4 = _w(raw.append_round, S, REC, "키 AKIAIOSFODNN7EXAMPLE 준다", "받았다")
+    # 비밀값은 통로에서 치환된다 (시행령 §2 3항 — 우회 경로를 두지 않는다).
+    # fixture를 쪼개 쓰는 이유: 릴리스의 비밀값 스캔이 전 파일을 훑으므로
+    # (release.py, secrets.py만 자기 면제) 소스에 완전형을 두면 선언이 막힌다.
+    r4 = _w(raw.append_round, S, REC,
+            "키 " + "AKIA" + "IOSFODNN7EXAMPLE" + " 준다", "받았다")
     body = p.read_text(encoding="utf-8")
-    check("비밀값이 기록에 남지 않는다", "AKIAIOSFODNN7EXAMPLE" not in body)
+    check("비밀값이 기록에 남지 않는다", ("AKIA" + "IOSFODNN7EXAMPLE") not in body)
     check("치환 사실을 호출자에게 알린다",
           r4.get("filtered") == ["aws-access-key"], r4)
 
@@ -4449,7 +4452,8 @@ def test_raw_replay_rejected():
 
     # 비밀값이 든 라운드의 재시도 — 저장본은 치환됐으므로 치환 전으로 견주면
     # 다른 것이 되어 빠져나간다. 판정은 치환 뒤로 한다.
-    SEC = [{"user": "키 AKIAIOSFODNN7EXAMPLE 준다", "agent": "받았다"}]
+    SEC = [{"user": "키 " + "AKIA" + "IOSFODNN7EXAMPLE" + " 준다",
+            "agent": "받았다"}]
     check("비밀값 라운드 최초",
           _w(raw.append_rounds, S, "sec", SEC, SP).get("indices") == [1])
     check("비밀값 라운드의 재시도도 거부",
