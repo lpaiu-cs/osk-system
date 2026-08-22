@@ -230,15 +230,20 @@ def run() -> dict:
     else:
         guard("외부 표면 계약(도구 목록·권위 비노출)", surface_violations)
         guard("표면 린트(스키마 건전·가르침)", surface_lint)
+        if _last_surface_cost:
+            rep["surface_cost"] = dict(_last_surface_cost)
 
     rep["verdict"] = "PASS" if not rep["fail"] else "FAIL"
     return rep
 
 
-# 상주 스키마 문자수 상한 — 초과는 회귀다. 이 예산이 막는 것은 **설명의
-# 비대**이지 도구 수가 아니다. 표면이 도구 하나만큼 자라는 것은 §6-2 7항의
-# 개정이 결정하는 일이므로, 그때는 이 상수도 함께 올린다 — 올린 사유를 여기
-# 남겨 다음 사람이 "왜 올랐나"를 코드 밖에서 묻지 않게 한다.
+# 상주 표면 비용의 상한 — 초과는 회귀다. 이 blob(도구의 이름·설명·스키마)은
+# 클라이언트가 접속할 때 문맥에 들어가 세션 내내 모든 요청에 실려 다닌다.
+# 그 성장이 조용히 일어나지 못하게 하는 **래칫**이 이 상수다: 설명이 자라든
+# (가르침 — 글로 줄일 수 있다) 스키마가 자라든(인자 수·타입 복잡도 — 글로 못
+# 줄인다) 여기를 올려야 하고, 올릴 때는 사유를 남긴다. 분해는 검증기 보고의
+# `surface_cost`가 매 실행 싣는다 — 다음 상향 때 어느 쪽이 자랐는지 그 자리에서
+# 보인다.
 #   5000 → 5600: append_raw 노출 (`_raw/` 기록 통로의 표면 연결).
 #   5600 → 6100: read_raw 노출 (기록의 명시 회상 — Mechanism §9 8항).
 #   6100 → 6300: §6-2 7항 감사가 적발한 가르침 결손 보강 — `space`의 실제
@@ -250,11 +255,14 @@ def run() -> dict:
 #     함께 `overview`가 `clusters`를 '그대로 space에 넣으라'고 하던 것을
 #     바로잡았다 — 한 도구의 설명이 다른 도구를 반박하고 있었다.
 #
-# 관측(2026-08-22): 이 blob의 절반 이상이 **스키마**이고(3278/6918) 스키마는
-# 인자 수·타입 복잡도가 정하므로 글로 줄일 수 없다. 즉 이 예산은 이름과
-# 달리 설명의 비대보다 **표면의 확장**을 억제하는 쪽으로 작동한다. 그
-# 불일치는 언젠가 정리해야 한다.
+# (2026-08-22: 예전 머리 문구는 "막는 것은 설명의 비대이지 도구 수가 아니다"라
+#  했으나 실측상 blob의 절반 이상이 스키마였다 — 이름과 실제가 어긋나 위
+#  문구로 바로잡았다. 기계는 그대로다: 매 상향이 사유와 함께 남는 의도된
+#  결정이 되는 것, 그것이 이 상수의 일이다.)
 SCHEMA_BUDGET = 7400
+
+# 마지막 표면 린트의 상주 비용 분해 — surface_lint가 채우고 run이 보고에 싣는다.
+_last_surface_cost: dict | None = None
 
 
 def surface_lint() -> list[str]:
@@ -279,6 +287,15 @@ def surface_lint() -> list[str]:
     blob = _json.dumps([{"name": t.name, "description": t.description,
                          "inputSchema": t.inputSchema} for t in tools],
                        ensure_ascii=False)
+    # 측정을 남긴다 — 보고(run)가 이 값을 싣는다. 판정과 보고가 딴 자로 재면
+    # 조용히 갈라지므로, 재는 자리는 여기 하나다.
+    global _last_surface_cost
+    _last_surface_cost = {
+        "total": len(blob), "budget": SCHEMA_BUDGET,
+        "headroom": SCHEMA_BUDGET - len(blob),
+        "description": sum(len(t.description or "") for t in tools),
+        "schema": sum(len(_json.dumps(t.inputSchema, ensure_ascii=False))
+                      for t in tools)}
     if len(blob) > SCHEMA_BUDGET:
         errs.append(f"상주 스키마 예산 초과: {len(blob)}자 > {SCHEMA_BUDGET}")
     for t in tools:
