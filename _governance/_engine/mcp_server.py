@@ -202,8 +202,9 @@ def read_raw(ref: str | None = None, space: str | None = None,
 @mcp.tool()
 def overview(session: str | None = None) -> dict:
     """구조 조망 — 무엇이 있고 어디에 둘 수 있는가. **첫 쓰기 전에 한 번** 부르면
-    착지를 추측하지 않아도 된다. `clusters`는 노드를 둘 수 있는 군집 경로(그대로
-    `space`에 넣는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
+    착지를 추측하지 않아도 된다. `clusters`는 **노드**를 둘 수 있는 군집 경로다
+    (`create_node`의 `space`에 그대로 넣는다 — `_raw`·작업 기억의 `space`는
+    이보다 좁아 `= Scope/<이름>`만 받는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
     `broken`은 검색에 잡히지 않는 파손 파일, `engine_rev`는 지금 도는 엔진의
     판이다(저장소보다 오래됐으면 서버를 재기동하라). `session`을 주면 그 키의
     현재 결속(`session_scope`)을 함께 돌려준다."""
@@ -306,8 +307,12 @@ def working_memory(session: str, text: str | None = None,
     전문을 읽고, 주면 **전체 치환**한다(부분 추가는 없다). 상한을 넘기면 거부하되
     성공·실패 모두 전문과 잔여를 돌려주므로 넘치기 전에 정리할 수 있다. 기존
     내용이 있으면 `expect_hash`가 필수다 — 방금 받은 `hash`를 그대로 쓴다.
-    `session`·`space`는 `create_node`와 같다. 자리가 모자라면 **먼저 자리값
-    못하는 엔트리를 지우고**, 그래도 모자랄 때 노드로 올린다."""
+    `session`은 `create_node`와 같은 값이고, `space`는 `= Scope/<이름>` **두
+    마디**만 받는다(`clusters`보다 좁다). 자리가
+    모자라면 **먼저 자리값 못하는 엔트리를 지우고**, 그래도 모자랄 때 노드로
+    올린다. 비밀값은 **성공하면서 치환되니** `filtered`가 비지 않았으면 저장된
+    것이 보낸 것과 다르다. `text:""`는 전체를 지우며, 크게 줄면 `replaced_text`로
+    직전 전문이 오니 실수면 그대로 다시 보내라."""
     if text is None:
         return _guard(wm.read, session, space)
     return _guard(wm.replace, session, text, expect_hash, space)

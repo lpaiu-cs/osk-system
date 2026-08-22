@@ -185,4 +185,17 @@ def replace(session: str, text: str, expect_hash: str | None = None,
             write.bind_session(session, scope, "첫 작업 기억 쓰기에서 확정")
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
-        return {"ok": True, **_state(scope, body, filtered=sorted(set(hits)))}
+
+        # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
+        # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한
+        # 호출자가 가장 손대기 쉬운 것이 `text:""`다 — 가장 위험한 버튼이 가장
+        # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 작업 기억은 작업
+        # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
+        extra = {"filtered": sorted(set(hits))}
+        if cur and len(body) * 2 < len(cur):
+            extra["replaced_text"] = cur
+            extra["note"] = (
+                f"이 쓰기로 {len(cur) - len(body)}자가 사라졌다. 의도한 정리라면 "
+                f"그대로 두고, 실수였으면 `replaced_text`를 그대로 다시 보내라 — "
+                f"직전 상태는 여기 말고 어디에도 남지 않는다.")
+        return {"ok": True, **_state(scope, body, **extra)}

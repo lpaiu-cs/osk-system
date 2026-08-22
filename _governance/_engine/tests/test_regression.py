@@ -4511,9 +4511,20 @@ def test_working_memory():
     check("건너간 자리에 파일이 없다",
           not (ROOT / "= Scope/Workbench/_wm/WWmB.md").exists())
 
-    # 전부 비우는 것은 정상 동작이다 — 퇴출이 유실이 아니라는 계약의 실행형
+    # 전부 비우는 것은 정상 동작이다 — 퇴출이 유실이 아니라는 계약의 실행형.
+    # 다만 직전 상태가 어디에도 남지 않으므로, 크게 줄면 사라진 전문을 함께
+    # 돌려줘 같은 턴 안에서 되돌릴 수 있게 한다.
+    before = _w(wm.read, S)["text"]
     r5 = _w(wm.replace, S, "", r4["hash"])
     check("전부 비울 수 있다", r5.get("ok") and r5["chars"] == 0, r5)
+    check("비우면 사라진 전문이 온다", r5.get("replaced_text") == before, r5)
+    check("사라진 양을 알린다", "사라졌다" in r5.get("note", ""), r5)
+    check("되돌리는 법을 알린다", "그대로 다시 보내라" in r5.get("note", ""), r5)
+    back = _w(wm.replace, S, r5["replaced_text"], r5["hash"])
+    check("돌려준 전문으로 복원된다", back.get("text") == before, back)
+    # 늘어나거나 조금 줄어든 쓰기에는 붙이지 않는다 — 모든 응답에 실으면 소음이다
+    grow = _w(wm.replace, S, before + chr(10) + "- 한 줄 더", back["hash"])
+    check("늘어난 쓰기엔 붙지 않는다", "replaced_text" not in grow, sorted(grow))
 
     # 경계 — 문서가 정한 계수만큼은 실제로 담겨야 한다. 저장본의 개행을 계수에
     # 넣으면 유효 상한이 1499가 되고, 문서를 따른 호출자가 반드시 한 번 튕긴다.
