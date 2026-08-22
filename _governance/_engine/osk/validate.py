@@ -338,6 +338,16 @@ def surface_lint() -> list[str]:
             errs.append("군집 거부 문구가 유효 목록을 싣지 않는다")
     except Exception as e:
         errs.append(f"거부 문구 판독 실패: {e}")
+    # ⓕ 설명에 박힌 수치는 낡는다 — working_memory 설명의 상한 수치는 계수
+    #    (wm.LIMIT)와 같아야 한다. 계수를 개정하면 이 검사가 설명의 낡음을 잡는다.
+    if "working_memory" in names:
+        try:
+            import osk.wm as _wm
+            wmt = next(t for t in tools if t.name == "working_memory")
+            if str(_wm.LIMIT) not in (wmt.description or ""):
+                errs.append(f"working_memory 설명의 상한 수치가 계수({_wm.LIMIT}자)와 다르다")
+        except Exception as e:
+            errs.append(f"상한 수치 대조 실패: {e}")
     return errs
 
 

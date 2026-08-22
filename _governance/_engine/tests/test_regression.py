@@ -2301,10 +2301,13 @@ def test_surface_smoke():
             check(f"표면 도구 살아 있음: {name}", False, f"{type(e).__name__}: {e}")
     r = M.read_node("regr-smoke")
     check("read_node가 hash를 준다(CAS 입력)", r.get("hash", "").startswith("sha256:"))
+    check("read_node 경로는 POSIX 표기", "\\" not in r.get("path", ""), r.get("path"))
     check("read_node에 폐지된 signed 필드가 없다", "signed" not in r, r)
     hits = M.search("스모크", 5)
     check("search 결과에 폐지된 signed 필드가 없다",
           all("signed" not in h for h in hits), hits)
+    check("search 경로도 POSIX 표기",
+          all("\\" not in h.get("path", "") for h in hits), hits)
 
 
 # ── 14i. 직렬화 왕복 — 표면이 스스로 파손 노드를 만들지 않는다 (7차 중대 A) ──
@@ -4559,6 +4562,9 @@ def test_working_memory():
           "원료 없이" in ov and "본문에" in ov, ov)
     check("기존 노드의 id를 첫 선택지로 든다", "`id`" in ov, ov)
     check("raw는 다툴 만한 주장일 때로 한정한다", "다툴 만한" in ov, ov)
+    # 감사 실증: 이 안내가 없어 감사자가 검색 없이 새 노드를 만들었고, 사후
+    # 검색에서 인접 주제의 기존 노드를 발견했다 — 중복 금지(헌법 3조 7항).
+    check("승격 전에 기존 노드 탐색을 지시한다", "`search`" in ov, ov)
     check("작업 기억을 근거로 오인하지 않게 한다",
           "경유지" in ov and "가리킬 수 없다" not in ov, ov)
 

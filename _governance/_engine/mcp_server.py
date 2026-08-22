@@ -27,7 +27,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
 from osk import graph, raw, validate, wm, write  # noqa: E402
 from osk import search as search_mod  # noqa: E402
-from osk.core import ROOT, sha256_file  # noqa: E402
+from osk.core import ROOT, posix_rel, sha256_file  # noqa: E402
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
 # 이뤄진다(술어는 헌법 8조 5항, 충돌 유형은 Mechanism §4 3항의 목록이며,
@@ -175,7 +175,9 @@ def read_node(name: str) -> dict:
         n = idx.node(hit[0])
     except Exception as e:
         return {"error": f"파싱 실패 — 수동 확인 필요: {name} ({e})"}
-    return {"path": str(hit[0].relative_to(ROOT)), "id": n.id,
+    # 경로는 POSIX 표기로 낸다 — 도구마다 구분자가 갈리면 ref를 손으로
+    # 조립하는 호출자가 혼선을 겪는다(감사 지적). 규칙·ref 표기도 전부 슬래시다.
+    return {"path": posix_rel(hit[0], ROOT), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
             "hash": sha256_file(hit[0]),
             "body": n.body}
@@ -206,7 +208,7 @@ def overview(session: str | None = None) -> dict:
     (`create_node`의 `space`에 그대로 넣는다 — `_raw`·작업 기억의 `space`는
     이보다 좁아 `= Scope/<이름>`만 받는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
     `broken`은 검색에 잡히지 않는 파손 파일, `engine_rev`는 지금 도는 엔진의
-    판이다(저장소보다 오래됐으면 서버를 재기동하라). `session`을 주면 그 키의
+    판이다(저장소보다 오래됐으면 서버를 재기동하라; `unknown`은 git을 읽지 못한 것이라 비교 불가 — 낡음이 의심되면 재기동이 안전하다). `session`을 주면 그 키의
     현재 결속(`session_scope`)을 함께 돌려준다."""
     idx = _s().idx
     out = {
@@ -244,7 +246,9 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `edges`의 `derived-from`은 근거를 가리킨다 — 노드 근거는 그 `id`
     (`260802-114u-7lo3` 꼴)로, 비노드 근거는 `[[경로]]`·`[[경로#제목]]`로 준다.
     `conflicts`는 열린 사건 번호(`CASE-2026-1` 꼴)만 받는다. 본문의 `[[링크]]`도
-    검사 대상이라 다른 scope의 노드는 직접 가리킬 수 없다."""
+    검사 대상이라 다른 scope의 노드는 직접 가리킬 수 없다. 응답의 `bound_scope`는 이 쓰기가
+    **새로** 세운 결속이다(이미 결속돼 있었으면 null) — 결속 뒤에는 `space`를
+    생략한다."""
     return _guard(write.create_node, title, summary, body, drafter,
                   session, space, edges)
 
@@ -304,14 +308,14 @@ def working_memory(session: str, text: str | None = None,
                    expect_hash: str | None = None,
                    space: str | None = None) -> dict:
     """작업 기억 — 그 scope에서 **지금 살아 있는 배울 점**. `text` 없이 부르면
-    전문을 읽고, 주면 **전체 치환**한다(부분 추가는 없다). 상한을 넘기면 거부하되
+    전문을 읽고, 주면 **전체 치환**한다(부분 추가는 없다). 상한(1500자)을 넘기면 거부하되
     성공·실패 모두 전문과 잔여를 돌려주므로 넘치기 전에 정리할 수 있다. 기존
     내용이 있으면 `expect_hash`가 필수다 — 방금 받은 `hash`를 그대로 쓴다.
     `session`은 `create_node`와 같은 값이고, `space`는 `= Scope/<이름>` **두
     마디**만 받는다(`clusters`보다 좁다). 자리가
     모자라면 **먼저 자리값 못하는 엔트리를 지우고**, 그래도 모자랄 때 노드로
     올린다. 비밀값은 **성공하면서 치환되니** `filtered`가 비지 않았으면 저장된
-    것이 보낸 것과 다르다. `text:""`는 전체를 지우며, 크게 줄면 `replaced_text`로
+    것이 보낸 것과 다르다. `text:""`는 전체를 지우며, 절반 넘게 줄면 `replaced_text`로
     직전 전문이 오니 실수면 그대로 다시 보내라."""
     if text is None:
         return _guard(wm.read, session, space)

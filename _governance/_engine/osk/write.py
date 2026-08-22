@@ -177,7 +177,7 @@ def _live_locate(name: str) -> Path | None:
     if len(hits) > 1:
         raise WriteError(
             f"같은 이름의 노드가 {len(hits)}개다 — 어느 것인지 정해지지 않아 "
-            f"고치지 않았다: {[str(h.relative_to(ROOT)) for h in hits]}")
+            f"고치지 않았다: {[posix_rel(h, ROOT) for h in hits]}")
     return hits[0] if hits else None
 
 
@@ -621,7 +621,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
             bind_session(session, dest_dir.name)
             bound_now = dest_dir.name       # 실제로 결속했을 때만 보고한다
         return {"ok": True, "name": title,
-                "path": str(path.relative_to(ROOT)), "id": meta["id"],
+                "path": posix_rel(path, ROOT), "id": meta["id"],
                 "new_hash": sha256_bytes(data),
                 "bound_scope": bound_now,
                 "dangling": _dangling_of(path, meta, body)}
@@ -723,7 +723,7 @@ def update_node(name: str, body: str | None = None,
             # 변경이 없으면 쓰지 않는다 — 내용이 그대로인데 updated만
             # 갱신하면 "상태가 변경될 때 갱신한다"(시행령 §1 4항)에 어긋난다
             return {"ok": True, "no_change": True, "name": name,
-                    "path": str(path.relative_to(ROOT)), "id": n.id,
+                    "path": posix_rel(path, ROOT), "id": n.id,
                     "new_hash": sha256_file(path),
                     "edges": {p: n.edges(p) for p in contract.PREDICATES},
                     "dangling": _dangling_of(path, n.meta, n.body)}
@@ -734,7 +734,7 @@ def update_node(name: str, body: str | None = None,
         if errs:
             raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
         _atomic_write(path, data)
-        out = {"ok": True, "name": name, "path": str(path.relative_to(ROOT)),
+        out = {"ok": True, "name": name, "path": posix_rel(path, ROOT),
                "id": n.id, "new_hash": sha256_bytes(data),
                "updated_kept": only_conflicts,
                "edges": {p: contract.Node(path=path, meta=meta,
@@ -788,8 +788,8 @@ def move_node(name: str, dest_space: str) -> dict:
         approvals.record_move(n.id, path, target)
         os.replace(path, target)          # 바이트 불변 — updated 갱신 없음
         return {"ok": True, "name": name, "id": n.id,
-                "path": str(target.relative_to(ROOT)),
-                "new_hash": before, "moved_from": str(path.relative_to(ROOT)),
+                "path": posix_rel(target, ROOT),
+                "new_hash": before, "moved_from": posix_rel(path, ROOT),
                 "dangling": _dangling_of(target, n.meta, n.body)}
 
 

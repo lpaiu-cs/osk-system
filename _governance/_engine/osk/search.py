@@ -17,7 +17,7 @@ import re
 
 from rank_bm25 import BM25Okapi
 
-from .core import ROOT
+from .core import ROOT, posix_rel
 from . import graph
 
 
@@ -73,7 +73,7 @@ class Searcher:
         for score, (stem, p, n) in ranked:
             out.append({
                 "title": stem,
-                "path": str(p.relative_to(ROOT)),
+                "path": posix_rel(p, ROOT),
                 "id": n.id,
                 "summary": str(n.meta.get("summary", "")),
                 "updated": str(n.meta.get("updated", "")),
