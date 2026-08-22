@@ -268,7 +268,10 @@ def topology_check(idx: Index) -> list[str]:
                                     "sources", "governance")
                 )
                 if not ok:
-                    errs.append(f"scope 간 직접 참조: [{kind[1]}] {stem} → {name} {tkind}")
+                    errs.append(
+                        f"작업 상태는 근거로 쓰지 않는다: {stem} → {name} "
+                        f"(Workbench 계약 4.2)" if tkind[0] == "workbench"
+                        else f"scope 간 직접 참조: [{kind[1]}] {stem} → {name} {tkind}")
     return errs
 
 

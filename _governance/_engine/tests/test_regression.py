@@ -4533,13 +4533,17 @@ def test_working_memory():
     check("`---` 선두 거부", dash.get("ok") is False, dash)
     check("거부 뒤에도 배치 검증기는 깨끗하다", not graph.layout_violations())
 
-    # 승격 지시가 **이행 수단**까지 알려야 한다 — 작업 기억은 Workbench에 있어
-    # 노드가 직접 가리킬 수 없으므로, 근거를 무엇으로 만드는지 말해주지 않으면
-    # 코드를 못 보는 호출자는 (2)에서 멈춘다(감사에서 실측).
+    # 승격 지시가 **근거가 무엇인지**까지 알려야 한다. 말해주지 않으면 코드를
+    # 못 보는 호출자는 (2)에서 멈춘다(감사에서 실측). 근거는 그 지식이 나온
+    # 곳이며 — 작업 기억은 경유지이지 원료가 아니다(헌법 9조 1항 "원료가 된",
+    # Workbench 계약 4.2 "작업 상태는 근거로 참조하지 않는다").
     big2 = "다" * (wm.LIMIT + 100)
-    ov = _w(wm.replace, S, big2, _w(wm.read, S)["hash"])
-    check("승격 안내가 근거 수단을 알려준다",
-          "round_ref" in " ".join(ov.get("violations", [])), ov)
+    ov = " ".join(_w(wm.replace, S, big2, _w(wm.read, S)["hash"])
+                  .get("violations", []))
+    check("승격 안내가 근거의 정의를 준다", "그 지식이 나온 곳" in ov, ov)
+    check("안내가 기존 노드의 id를 첫 선택지로 든다", "`id`" in ov, ov)
+    check("안내가 작업 기억을 근거로 오인하지 않게 한다",
+          "경유지" in ov and "가리킬 수 없다" not in ov, ov)
 
     # 착지 거부에도 전문·잔여가 실린다 (§9-2 5항)
     xs = _w(wm.replace, S, "- x", _w(wm.read, S)["hash"], "= Scope/WWmB")
@@ -4551,6 +4555,25 @@ def test_working_memory():
     check("wm은 vault_sync를 부르지 않는다",
           "vault_sync" not in src and "commit_push" not in src)
     check("응답에 sync 키가 없다", "sync" not in _w(wm.read, S))
+
+
+# ── 19a. 작업 상태를 근거로 걸면 계약 4.2로 진단한다 ──────────────────────
+def test_workbench_state_not_evidence():
+    """작업 기억을 `derived-from`으로 걸면 "scope 간 직접 참조"로 진단되던 것을
+    바로잡는다. 그것은 위상 문제가 아니다 — 어느 scope에서 걸어도 계약이
+    금지한다(Workbench 계약 4.2). 위상으로 진단하면 받는 쪽은 scope를 바꿔
+    보려 하고, 그 길은 없다. 감사가 잡은 `space` 오진과 같은 계열이다."""
+    from osk import wm
+    (ROOT / "= Scope/WEv").mkdir(exist_ok=True)
+    _w(wm.replace, "repo/regr-ev", "- 경유지 내용", None, "= Scope/WEv")
+    r = _w(write.create_node, "regr-ev-node", "근거 오지정 시험", "본문",
+           "fable-5", space="= Scope/WEv",
+           edges={"derived-from": "[[= Scope/Workbench/_wm/WEv]]"})
+    v = " ".join(r.get("violations", []))
+    check("작업 상태 근거는 거부", r.get("ok") is False, r)
+    check("위상이 아니라 계약 4.2로 진단한다",
+          "작업 상태는 근거로 쓰지 않는다" in v and "scope 간 직접 참조" not in v, v)
+    check("근거가 무엇인지 함께 말한다", "그 지식이 나온 곳" in v, v)
 
 
 # ── 19b. 작업 기억 훅 경로 — `show`는 전문 그대로 낸다 ──────────────────────
@@ -4675,7 +4698,8 @@ if __name__ == "__main__":
                test_baseline_pass, test_raw_append, test_raw_cli_path,
                test_raw_read, test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
-               test_working_memory, test_working_memory_cli]:
+               test_working_memory, test_workbench_state_not_evidence,
+               test_working_memory_cli]:
         try:
             fn()
         except Exception as e:
