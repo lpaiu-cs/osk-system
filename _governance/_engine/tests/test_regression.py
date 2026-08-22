@@ -4540,9 +4540,15 @@ def test_working_memory():
     big2 = "다" * (wm.LIMIT + 100)
     ov = " ".join(_w(wm.replace, S, big2, _w(wm.read, S)["hash"])
                   .get("violations", []))
-    check("승격 안내가 근거의 정의를 준다", "그 지식이 나온 곳" in ov, ov)
-    check("안내가 기존 노드의 id를 첫 선택지로 든다", "`id`" in ov, ov)
-    check("안내가 작업 기억을 근거로 오인하지 않게 한다",
+    # 근거를 **무조건** 요구하면 승격마다 대화를 raw에 남기게 되고, 승격은
+    # 10턴마다 압박이 걸리므로 결국 전량 포착으로 우회 복귀한다. 규범도 그렇게
+    # 읽히지 않는다 — 의무는 증류에 붙고 증류에는 원료가 전제된다(헌법 9조 1항).
+    check("근거를 조건부로 요구한다", "근거가 있으면" in ov, ov)
+    check("원료가 없을 때 무엇을 할지 알려준다",
+          "원료 없이" in ov and "본문에" in ov, ov)
+    check("기존 노드의 id를 첫 선택지로 든다", "`id`" in ov, ov)
+    check("raw는 다툴 만한 주장일 때로 한정한다", "다툴 만한" in ov, ov)
+    check("작업 기억을 근거로 오인하지 않게 한다",
           "경유지" in ov and "가리킬 수 없다" not in ov, ov)
 
     # 착지 거부에도 전문·잔여가 실린다 (§9-2 5항)
