@@ -4660,6 +4660,55 @@ def test_working_memory_cli():
           out.get("text", "").strip() == "- 훅으로 쓴 엔트리", out)
 
 
+# ── 20. 군집 신설의 2단계 확인 (Mechanism §6-2 3항) ─────────────────────
+def test_new_cluster_two_phase():
+    """구판은 "군집 신설은 사용자 발의다"라며 전면 거부했으나 그 문구는 규범
+    무근거였다 — 헌법은 형성의 자동화를 기본으로 둔다(5조 4항·6조 9항).
+    현행 관문은 한 번 묻는다: 1차 거부가 신설임을 알리고, 같은 군집에 대한
+    재시도는 통과한다. 선의의 에이전트가 오류 원인을 읽고 사용자 허락을
+    확인한 뒤 같은 요청을 다시 보내는 한 왕복이 전부다."""
+    import time as _time
+    r = _w(write.create_node, "이상 신설 시험", "s", "본문", "fable-5",
+           space="= Scope/W2P")
+    check("새 군집 1차는 거부", r.get("ok") is False, r)
+    v = " ".join(r.get("violations", []))
+    check("거부가 신설임을 알린다", "새 군집" in v, v)
+    check("거부가 재시도 절차를 알려준다", "그대로 다시" in v, v)
+    check("1차 거부는 디렉토리를 만들지 않는다",
+          not (ROOT / "= Scope/W2P").is_dir())
+    r2 = _w(write.create_node, "이상 신설 시험", "s", "본문", "fable-5",
+            space="= Scope/W2P")
+    check("같은 요청의 재시도는 통과", r2.get("ok"), r2)
+    check("군집이 만들어졌다", (ROOT / "= Scope/W2P").is_dir())
+    r3 = _w(write.create_node, "이상 신설 후속", "s", "본문", "fable-5",
+            space="= Scope/W2P")
+    check("선언된 군집은 관문 없이 통과", r3.get("ok"), r3)
+    r4 = _w(write.move_node, "이상 신설 후속", "= Domain/D2P")
+    check("move의 새 군집도 1차 거부", r4.get("ok") is False, r4)
+    r5 = _w(write.move_node, "이상 신설 후속", "= Domain/D2P")
+    check("move 재시도는 통과", r5.get("ok"), r5)
+    r6 = _w(write.create_node, "깊은 경로", "s", "본문", "fable-5",
+            space="= Scope/W2P/sub")
+    check("Space 루트 아래가 아니면 즉시 거부",
+          r6.get("ok") is False
+          and "Space 루트 바로 아래" in " ".join(r6["violations"]), r6)
+    r7 = _w(write.create_node, "예약명 군집", "s", "본문", "fable-5",
+            space="= Scope/COM1")
+    check("군집 이름도 이식성 규칙을 받는다",
+          r7.get("ok") is False and "예약 장치명" in " ".join(r7["violations"]), r7)
+    check("부적격 신설은 디렉토리를 남기지 않는다",
+          not (ROOT / "= Scope/COM1").is_dir())
+    # 만료 — 잊힌 표식이 뒷날의 다른 요청을 무확인 통과시키지 않는다
+    write._ack_file().write_text(
+        json.dumps({"= Scope/WStale2P": _time.time() - 7200}), encoding="utf-8")
+    r8 = _w(write.create_node, "만료 시험", "s", "본문", "fable-5",
+            space="= Scope/WStale2P")
+    check("만료된 표식은 다시 1차 거부", r8.get("ok") is False, r8)
+    r9 = _w(write.create_node, "만료 시험", "s", "본문", "fable-5",
+            space="= Scope/WStale2P")
+    check("만료 후 새 왕복은 통과", r9.get("ok"), r9)
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -4726,7 +4775,7 @@ if __name__ == "__main__":
                test_raw_read, test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_working_memory, test_workbench_state_not_evidence,
-               test_working_memory_cli]:
+               test_working_memory_cli, test_new_cluster_two_phase]:
         try:
             fn()
         except Exception as e:

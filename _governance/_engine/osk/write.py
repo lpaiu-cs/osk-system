@@ -27,7 +27,7 @@ CAS (Mechanism §6-2 4항): `expect_hash`는 **본문 전체 치환**에 결속�
 않는다. 거부 응답에 현재 해시를 담지 않는다 — 담으면 관측 증명이 연극이 된다.
 """
 from __future__ import annotations
-import json, os, re, tempfile, unicodedata
+import json, os, re, tempfile, time, unicodedata
 from pathlib import Path
 
 import yaml
@@ -289,6 +289,81 @@ def _cluster_names() -> list[str]:
     if (ROOT / "= Scope/Workbench/transit").is_dir():
         out.add("= Scope/Workbench/transit")
     return sorted(out)
+
+
+# ── 군집 신설 관문 (Mechanism §6-2 3항) ──────────────────────────────────
+
+# 확인 표식의 유효 시간. 관문의 목적은 차단이 아니라 "오류 → 사용자 확인 →
+# 재시도"의 한 왕복이며, 그 왕복은 분 단위다. 너무 길면 잊힌 표식이 뒷날의
+# 다른 요청을 무확인 통과시키고, 너무 짧으면 확인을 받아 오는 사이에 만료된다.
+_ACK_TTL = 3600.0
+
+
+def _ack_file() -> Path:
+    """표식은 **기기 로컬**이다(추적 트리 밖 — `git add -A`에 딸려 가지 않고
+    다른 기기와 공유되지 않는다). 확인은 지금 이 대화의 일이지 저장소의
+    상태가 아니다."""
+    from .core import local_lock_path
+    return local_lock_path("osk-cluster-ack.json")
+
+
+def _read_ack() -> dict:
+    try:
+        d = json.loads(_ack_file().read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}   # 없음·손상 = 표식 없음 — 관문이 한 번 더 물을 뿐이다
+
+
+def _write_ack(d: dict) -> None:
+    try:
+        _ack_file().write_text(json.dumps(d), encoding="utf-8")
+    except OSError:
+        pass        # 표식을 못 남겨도 쓰기를 막지 않는다 — 1차 거부가 반복될 뿐
+
+
+def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
+    """선언되지 않은 군집 — **2단계 확인 관문** (Mechanism §6-2 3항).
+
+    신설을 막지 않는다 — 규범은 군집 형성의 자동화를 기본으로 두므로(헌법
+    5조 4항·6조 9항) 여기의 일은 **한 번 묻는 것**이다. 1차 요청은 신설임을
+    알리며 거부하고, 같은 군집에 대한 재시도는 통과시킨다. 선의의 에이전트는
+    오류 원인이 돌아오면 사용자 허락을 확인한 뒤 같은 요청을 다시 보낸다 —
+    그 한 왕복이 관문의 전부이며, 보안 경계가 아니라 확인 지점이다.
+
+    통과하면 디렉토리를 만들어 돌려준다. 이후 검사(동명 등)가 거부해 빈
+    디렉토리가 남을 수 있는데, git은 빈 디렉토리를 추적하지 않으므로
+    무해하고 다음 시도에서는 선언된 군집으로 보인다."""
+    if dest_dir is None:
+        raise WriteError(f"군집 경로가 vault를 벗어난다: {dest}")
+    roots = {(ROOT / "= Scope").resolve(), (ROOT / "= Domain").resolve(),
+             (ROOT / "= Person").resolve()}
+    if dest_dir.parent.resolve() not in roots:
+        raise WriteError(
+            f"선언되지 않은 군집이다: {dest}. 신설은 Space 루트 바로 아래에만 "
+            f"가능하다(`= Scope/<이름>` 꼴 — Mechanism §1 2항). "
+            f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
+    name_errs = _title_errors(dest_dir.name)
+    if name_errs:
+        raise WriteError("군집 이름 부적격 — 이름이 곧 디렉토리명이다", name_errs)
+    key = posix_rel(dest_dir, ROOT)
+    now = time.time()
+    pending = {k: v for k, v in _read_ack().items()
+               if isinstance(v, (int, float)) and now - v < _ACK_TTL}
+    if key in pending:
+        del pending[key]
+        _write_ack(pending)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        return dest_dir
+    pending[key] = now
+    _write_ack(pending)
+    raise WriteError(
+        "새 군집 신설 — 1차 확인 거부 (쓰지 않았다)",
+        [f"`{dest}`는 아직 없는 군집이라 {doing} **새 군집을 만든다**. "
+         f"사용자와 합의된 신설인지 확인하라 — 허락을 확인했으면 **같은 "
+         f"요청을 그대로 다시** 보내라(1시간 안의 재시도는 통과한다). 기존 "
+         f"군집을 쓰려던 것이면 여기서 골라라: "
+         f"{', '.join(_cluster_names()) or '없음'}"])
 
 
 def _open_cases() -> list[str]:
@@ -581,9 +656,10 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 "그 scope로 결속되어 다음부터 space 없이 착지한다")
         dest_dir = resolve_in_root(dest)
         if dest_dir is None or not dest_dir.is_dir():
-            raise WriteError(
-                f"선언되지 않은 군집이다 — 군집 신설은 사용자 발의다: {dest}. "
-                f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
+            # 신설 후보 — 막는 대신 한 번 묻는다. 통과하면 디렉토리가 생긴다.
+            # (구판은 "신설은 사용자 발의다"라며 전면 거부했으나 그 문구는
+            # 규범 무근거였다 — 헌법은 형성의 자동화를 기본으로 둔다.)
+            dest_dir = _new_cluster_gate(dest, dest_dir, "이 쓰기가")
         path = dest_dir / f"{title}.md"
         kind = graph.space_of(path)      # 소속은 노드 파일 경로로 판정한다
         _reject_governance(kind)
@@ -757,9 +833,7 @@ def move_node(name: str, dest_space: str) -> dict:
         _reject_governance(src_kind)
         dest_dir = resolve_in_root(dest_space)
         if dest_dir is None or not dest_dir.is_dir():
-            raise WriteError(
-                f"선언되지 않은 군집이다: {dest_space}. "
-                f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
+            dest_dir = _new_cluster_gate(dest_space, dest_dir, "이 이동이")
         target = dest_dir / path.name
         dst_kind = graph.space_of(target)   # 소속은 노드 파일 경로로 판정한다
         _reject_governance(dst_kind)
