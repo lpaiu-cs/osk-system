@@ -1,11 +1,16 @@
-"""osk.wm — 작업 기억 (working memory).
+"""osk.scope_memory — scope 기억.
+
+**모든 세션과 기기가 같은 것을 본다.** 이름이 그것을 말해야 한다 — 구명
+working_memory는 인지과학 은유(한 마음의 사유물)라 "내 세션의 스크래치패드"로
+읽혔고, 실측으로 세션 한정 상태("push 대기"류)가 섞여 들어왔다. scope의 공유
+기억이므로 세션 한정 상태는 적지 않는다.
 
 구현 근거: Workbench 계약 2.1(작업 상태 — 노드가 아닌 임시 데이터, 작업 종료 시
 보존 판별), 헌법 9조 3항("일회적 작업 상태는 Workbench 계약에 맡기고" + 보존
 판별의 기준), 시행령 §11 1항(파일이 정본).
 
-**상한은 저장 용량의 제한이 아니라 승격의 문턱이다.** 상한이 없으면 작업 기억이
-자라고, 자라는 작업 기억은 노드를 만들 이유를 없앤다 — 필요한 것이 이미 거기 다
+**상한은 저장 용량의 제한이 아니라 승격의 문턱이다.** 상한이 없으면 scope 기억이
+자라고, 자라는 scope 기억은 노드를 만들 이유를 없앤다 — 필요한 것이 이미 거기 다
 있기 때문이다. 그러면 지식은 영원히 주변부에 머물고 헌법 2조("연결을 통해
 중심부로 자라난다")가 작동하지 않는다. 넘치는 순간이 곧 "이건 이 세션의 것이
 아니다"라는 신호이고, 그 신호가 노드화를 부른다.
@@ -25,7 +30,7 @@ from . import graph, secrets, write
 # 두 세션어치를 쌓아두기에는 모자란 크기여야 압력이 선다.
 LIMIT = 1500
 
-_CONFINE = ("작업 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
+_CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
             "번지게 하지 않는다 —")
 
 # 이 문장이 응답에 늘 실린다. 호출자의 기본 성향은 "지우면 안 된다"라서, 퇴출이
@@ -42,19 +47,19 @@ EVICTION_NOTE = ("엔트리는 자리를 다툰다. 자리값을 못하는 엔�
                  "배선한다. 순서가 반대면 자리값 못하는 것까지 노드가 된다.")
 
 
-def wm_dir() -> Path:
-    return ROOT / "= Scope" / "Workbench" / "_wm"
+def sm_dir() -> Path:
+    return ROOT / "= Scope" / "Workbench" / "_scope_memory"
 
 
-def wm_path(scope: str) -> Path:
-    """`= Scope/Workbench/_wm/<scope>.md`. scope의 지도가 scope 밖에 사는 것은
+def sm_path(scope: str) -> Path:
+    """`= Scope/Workbench/_scope_memory/<scope>.md`. scope의 지도가 scope 밖에 사는 것은
     scope 디렉토리를 노드만으로 깔끔히 두기 위해서이고, 접근이 어차피 엔진을
     지나므로 물리 자리가 사용성을 좌우하지 않는다."""
-    return wm_dir() / f"{scope}.md"
+    return sm_dir() / f"{scope}.md"
 
 
 def canon(text: str) -> str:
-    """작업 기억의 **정본 형태** — NFC 정규화 + 앞뒤 공백 제거.
+    """scope 기억의 **정본 형태** — NFC 정규화 + 앞뒤 공백 제거.
 
     길이·해시·전문이 전부 이 형태 위에서 돈다. 정규화가 없으면 같은 글이
     기기에 따라 두 배로 세어진다(macOS 유래 NFD 한글은 코드포인트가 두 배다) —
@@ -72,7 +77,7 @@ def _state(scope: str, text: str, **extra) -> dict:
     """성공·실패와 무관하게 **늘 같은 모양**을 돌려준다 — 전문과 잔여가 매 응답에
     실려야 호출자가 넘치기 전에 스스로 정리한다. 보이지 않는 것은 통합되지 않는다."""
     text = canon(text)
-    return {"scope": scope, "path": posix_rel(wm_path(scope), ROOT),
+    return {"scope": scope, "path": posix_rel(sm_path(scope), ROOT),
             "text": text, "chars": len(text), "limit": LIMIT,
             "remaining": LIMIT - len(text),
             "hash": sha256_bytes(text.encode("utf-8")),
@@ -90,13 +95,13 @@ def _landing(session: str, space: str | None) -> tuple[str, str | None]:
         b = write.resolve_session(session)
         if b:
             raise write.WriteError(str(e), e.violations,
-                                   **_state(b, _read(wm_path(b)))) from None
+                                   **_state(b, _read(sm_path(b)))) from None
         raise
     if not scope:
         raise write.WriteError(
             "착지 미정 — 아무것도 하지 않았다",
             [f"세션 `{session}`의 scope 결속이 없다. `space`를 주면 그 자리의 "
-             f"작업 기억을 쓴다. 가능한 space: {graph.space_list()}"])
+             f"scope 기억을 쓴다. 가능한 space: {graph.space_list()}"])
     if scope not in graph.scope_names():
         raise write.WriteError(
             "결속이 가리키는 scope가 없다 — 아무것도 하지 않았다",
@@ -106,14 +111,14 @@ def _landing(session: str, space: str | None) -> tuple[str, str | None]:
 
 
 def read(session: str, space: str | None = None) -> dict:
-    """그 scope의 작업 기억 전문. 결속이 없고 `space`도 없으면 거부한다."""
+    """그 scope의 scope 기억 전문. 결속이 없고 `space`도 없으면 거부한다."""
     scope, _ = _landing(session, space)     # 읽기는 결속을 세우지 않는다
-    return {"ok": True, **_state(scope, _read(wm_path(scope)))}
+    return {"ok": True, **_state(scope, _read(sm_path(scope)))}
 
 
 def replace(session: str, text: str, expect_hash: str | None = None,
             space: str | None = None) -> dict:
-    """작업 기억을 **전체 치환**한다.
+    """scope 기억을 **전체 치환**한다.
 
     부분 추가 API를 두지 않는 이유: 계약이 "전문을 돌려주고 통합 후 재시도"이므로
     호출자는 언제나 전문을 손에 쥐고 온다. 부분 추가를 열면 상한에 닿는 쪽이
@@ -130,7 +135,7 @@ def replace(session: str, text: str, expect_hash: str | None = None,
     하는 것도 표면 전체를 최대 수 분 세운다."""
     with mutation_lock():
         scope, bound = _landing(session, space)
-        p = wm_path(scope)
+        p = sm_path(scope)
         cur = _read(p)
 
         if cur and expect_hash is None:
@@ -147,7 +152,7 @@ def replace(session: str, text: str, expect_hash: str | None = None,
                 **_state(scope, cur))
 
         # 비밀값 필터의 적용 지점이 여기다. 전사는 vault 밖이라 필터가 닿지
-        # 않지만, 작업 기억은 vault 안이고 에이전트가 쓴다 — 요약에 섞이면
+        # 않지만, scope 기억은 vault 안이고 에이전트가 쓴다 — 요약에 섞이면
         # 그대로 커밋된다. 상한은 **치환 뒤** 길이로 잰다(치환문이 원본보다
         # 길어질 수 있고, 저장되는 것이 세어져야 한다).
         filtered, hits = secrets.filter_text(text)
@@ -158,7 +163,7 @@ def replace(session: str, text: str, expect_hash: str | None = None,
             # 본다 — 표면 도구 하나가 vault를 검증기 FAIL 상태로 만든다.
             raise write.WriteError(
                 "`---`로 시작할 수 없다 — 쓰지 않았다",
-                ["작업 기억은 노드가 아니므로 frontmatter를 두지 않는다"
+                ["scope 기억은 노드가 아니므로 frontmatter를 두지 않는다"
                  "(Mechanism §9-2 1항). 선두의 `---`는 색인이 frontmatter로 "
                  "읽어 검증기를 깨뜨린다 — 다른 줄로 시작하라."],
                 **_state(scope, cur))
@@ -167,7 +172,7 @@ def replace(session: str, text: str, expect_hash: str | None = None,
             raise write.WriteError(
                 "상한 초과 — 쓰지 않았다",
                 [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
-                 f"넘는다. **순서대로** 하라 — (1) 작업 기억에서 자리값 못하는 "
+                 f"넘는다. **순서대로** 하라 — (1) scope 기억에서 자리값 못하는 "
                  f"엔트리를 먼저 정리하라. (2) 그래도 모자라면 갱신할 기존 노드를 "
                  f"`search`로 먼저 찾고, 남길 값어치가 "
                  f"있는 것을 **기존 노드에 갱신**하거나 새 노드로 증류하라"
@@ -175,7 +180,7 @@ def replace(session: str, text: str, expect_hash: str | None = None,
                  f"배선한다 — 기존 노드에서 온 것이면 그 `id`, 이 대화에서 처음 "
                  f"알게 됐고 **나중에 다툴 만한 주장**이면 `append_raw`로 그 라운드를 "
                  f"남기고 `round_ref`를 건다. 원료 없이 지금 처음 적는 것이면 근거는 "
-                 f"비우고 본문에 언제·어디서인지를 남긴다. 작업 기억은 근거가 아니라 "
+                 f"비우고 본문에 언제·어디서인지를 남긴다. scope 기억은 근거가 아니라 "
                  f"경유지다. 그 뒤 남은 것으로 다시 보내라."],
                 **_state(scope, cur, rejected_chars=len(body)))
 
@@ -183,14 +188,14 @@ def replace(session: str, text: str, expect_hash: str | None = None,
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
         if not bound:
-            write.bind_session(session, scope, "첫 작업 기억 쓰기에서 확정")
+            write.bind_session(session, scope, "첫 scope 기억 쓰기에서 확정")
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
 
         # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
         # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한
         # 호출자가 가장 손대기 쉬운 것이 `text:""`다 — 가장 위험한 버튼이 가장
-        # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 작업 기억은 작업
+        # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 scope 기억은 작업
         # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
         extra = {"filtered": sorted(set(hits))}
         if cur and len(body) * 2 < len(cur):

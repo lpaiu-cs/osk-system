@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse, json, sys
 
 from .core import ROOT
-from . import graph, approvals, authority, raw, validate, search, wm, write
+from . import graph, approvals, authority, raw, scope_memory, validate, search, write
 
 
 def _confirm(prompt: str) -> None:
@@ -120,19 +120,19 @@ def _raw_cmd(a) -> None:
         sys.exit(1)
 
 
-def _wm_cmd(a) -> None:
-    """`osk wm` — 작업 기억. `show`는 SessionStart 훅이 부르는 자리다.
+def _sm_cmd(a) -> None:
+    """`osk sm` — scope 기억. `show`는 SessionStart 훅이 부르는 자리다.
 
     **`show`의 기본 출력은 JSON이 아니라 전문 그대로다.** 훅은 이 값을 문맥에
     그대로 넣으므로, 감싸는 껍데기가 있으면 훅마다 벗기는 코드를 쓰게 된다.
     결속이 없으면 빈 출력이고 주입할 것도 없다 — 그것은 오류가 아니다."""
-    if a.wm_cmd == "show":
+    if a.sm_cmd == "show":
         # 훅이 세션 시작마다 부르는 자리다. 결속이 아직 없는 새 저장소가
         # **첫 호출의 정상 상태**이므로, 거기서 위반 JSON을 내면 훅이 그것을
         # 문맥에 넣거나 종료코드를 보고 조용히 건너뛴다 — 둘 다 나쁘다.
         # 착지를 못 정하면 주입할 것이 없을 뿐이니 빈 출력으로 넘긴다.
         try:
-            st = wm.read(a.session, a.space)
+            st = scope_memory.read(a.session, a.space)
         except write.WriteError as e:
             if a.json:
                 _emit({"ok": False, "violations": e.violations, **e.extra})
@@ -145,7 +145,7 @@ def _wm_cmd(a) -> None:
             sys.stdout.buffer.flush()
         return
     try:
-        _emit(wm.replace(a.session, _stdin_text(), a.expect_hash, a.space))
+        _emit(scope_memory.replace(a.session, _stdin_text(), a.expect_hash, a.space))
     except write.WriteError as e:
         _emit({"ok": False, "violations": e.violations, **e.extra})
         sys.exit(1)
@@ -202,8 +202,8 @@ def main(argv=None):
     q.add_argument("--space", default=None)
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
-    p = sub.add_parser("wm", help="작업 기억 (훅 경로)")
-    ws = p.add_subparsers(dest="wm_cmd", required=True)
+    p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
+    ws = p.add_subparsers(dest="sm_cmd", required=True)
     q = ws.add_parser("show", help="전문 출력 — 훅이 그대로 문맥에 주입한다")
     q.add_argument("--session", required=True)
     q.add_argument("--space", default=None)
@@ -246,8 +246,8 @@ def main(argv=None):
         print(json.dumps(authority.check(a.action), ensure_ascii=False, indent=2))
     elif a.cmd == "raw":
         return _raw_cmd(a)
-    elif a.cmd == "wm":
-        return _wm_cmd(a)
+    elif a.cmd == "sm":
+        return _sm_cmd(a)
     elif a.cmd == "protect":
         st = approvals.state(a.region)
         print(f"보호영역 지정: {a.region}\n현재 상태: {st}")

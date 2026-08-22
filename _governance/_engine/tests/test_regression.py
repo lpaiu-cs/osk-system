@@ -2286,7 +2286,7 @@ def test_surface_smoke():
         "append_raw": lambda: M.append_raw("repo/smoke-raw", "regr-smoke-rec",
                                            "질문", "응답", space="= Scope/W1"),
         "read_raw": lambda: M.read_raw("[[= Scope/W1/_raw/regr-smoke-rec.md#1]]"),
-        "working_memory": lambda: M.working_memory("repo/smoke-wm",
+        "scope_memory": lambda: M.scope_memory("repo/smoke-wm",
                                                    space="= Scope/W1"),
     }
     declared = set(validate.declared_tools() or [])
@@ -4462,11 +4462,11 @@ def test_raw_replay_rejected():
 
 
 # ── 19. 작업 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
-def test_working_memory():
+def test_scope_memory():
     """상한은 저장 용량의 제한이 아니라 문턱이다. 그래서 초과는 **거부**하고,
     거부는 **전문과 순서**를 함께 돌려준다 — 자동 절단·자동 요약을 두면 그
     신호가 조용히 소비되어 아무 일도 일어나지 않는다."""
-    from osk import wm
+    from osk import scope_memory as wm
     for n in ("WWm", "WWmB"):
         (ROOT / f"= Scope/{n}").mkdir(exist_ok=True)
     S = "repo/regr-wm"
@@ -4516,7 +4516,7 @@ def test_working_memory():
     check("교차 scope 거부",
           _w(wm.replace, S, "- x", r4["hash"], "= Scope/WWmB").get("ok") is False)
     check("건너간 자리에 파일이 없다",
-          not (ROOT / "= Scope/Workbench/_wm/WWmB.md").exists())
+          not (ROOT / "= Scope/Workbench/_scope_memory/WWmB.md").exists())
 
     # 전부 비우는 것은 정상 동작이다 — 퇴출이 유실이 아니라는 계약의 실행형.
     # 다만 직전 상태가 어디에도 남지 않으므로, 크게 줄면 사라진 전문을 함께
@@ -4590,12 +4590,12 @@ def test_workbench_state_not_evidence():
     바로잡는다. 그것은 위상 문제가 아니다 — 어느 scope에서 걸어도 계약이
     금지한다(Workbench 계약 4.2). 위상으로 진단하면 받는 쪽은 scope를 바꿔
     보려 하고, 그 길은 없다. 감사가 잡은 `space` 오진과 같은 계열이다."""
-    from osk import wm
+    from osk import scope_memory as wm
     (ROOT / "= Scope/WEv").mkdir(exist_ok=True)
     _w(wm.replace, "repo/regr-ev", "- 경유지 내용", None, "= Scope/WEv")
     r = _w(write.create_node, "regr-ev-node", "근거 오지정 시험", "본문",
            "fable-5", space="= Scope/WEv",
-           edges={"derived-from": "[[= Scope/Workbench/_wm/WEv]]"})
+           edges={"derived-from": "[[= Scope/Workbench/_scope_memory/WEv]]"})
     v = " ".join(r.get("violations", []))
     check("작업 상태 근거는 거부", r.get("ok") is False, r)
     check("위상이 아니라 계약 4.2로 진단한다",
@@ -4604,10 +4604,11 @@ def test_workbench_state_not_evidence():
 
 
 # ── 19b. 작업 기억 훅 경로 — `show`는 전문 그대로 낸다 ──────────────────────
-def test_working_memory_cli():
+def test_scope_memory_cli():
     """훅이 이 출력을 문맥에 그대로 넣으므로 감싸는 껍데기가 있으면 훅마다
     벗기는 코드를 쓰게 된다. 결속이 없으면 빈 출력이고, 그것은 오류가 아니다."""
-    from osk import cli, wm
+    from osk import cli
+    from osk import scope_memory as wm
     import io, types
     (ROOT / "= Scope/WWmCli").mkdir(exist_ok=True)
     S = "repo/regr-wm-cli"
@@ -4629,31 +4630,31 @@ def test_working_memory_cli():
             cli._emit, sys.stdin, sys.stdout = real_emit, real_in, real_out
         return out, buf.getvalue().decode("utf-8")
 
-    _, plain = run(["wm", "show", "--session", S, "--space", "= Scope/WWmCli"])
+    _, plain = run(["sm", "show", "--session", S, "--space", "= Scope/WWmCli"])
     check("결속 전 show는 빈 출력", plain == "", repr(plain))
 
     # 계약 §3.4가 말하는 훅의 첫 호출 — 결속도 space도 없는 새 저장소.
     # 여기서 위반 JSON이 나오면 훅이 그것을 문맥에 넣거나 종료코드를 보고
     # 조용히 건너뛴다. 둘 다 나쁘므로 빈 출력·종료코드 0이어야 한다.
-    out0, plain0 = run(["wm", "show", "--session", "repo/never-bound"])
+    out0, plain0 = run(["sm", "show", "--session", "repo/never-bound"])
     check("결속 없는 show는 빈 출력", plain0 == "", repr(plain0))
     check("결속 없는 show는 종료코드 0", out0.get("exit") in (None, 0), out0)
 
-    out, _ = run(["wm", "write", "--session", S, "--space", "= Scope/WWmCli"],
+    out, _ = run(["sm", "write", "--session", S, "--space", "= Scope/WWmCli"],
                  "- 훅으로 쓴 엔트리")
     check("CLI 쓰기", out.get("ok") is True, out)
 
-    _, plain = run(["wm", "show", "--session", S])
+    _, plain = run(["sm", "show", "--session", S])
     check("show는 JSON이 아니라 전문 그대로",
           plain.strip() == "- 훅으로 쓴 엔트리" and not plain.lstrip().startswith("{"),
           repr(plain))
-    out, _ = run(["wm", "show", "--session", S, "--json"])
+    out, _ = run(["sm", "show", "--session", S, "--json"])
     check("--json은 상태 전체",
           out.get("text", "").strip() == "- 훅으로 쓴 엔트리"
           and out.get("chars") == len(out["text"]), out)
 
     big = chr(10).join(f"- 엔트리 {i} 길게 이어지는 내용" for i in range(150))
-    out, _ = run(["wm", "write", "--session", S,
+    out, _ = run(["sm", "write", "--session", S,
                   "--expect-hash", out["hash"]], big)
     check("CLI 상한 초과는 종료코드 0이 아니다", out.get("exit") == 1, out)
     check("CLI 거부도 전문을 돌려준다",
@@ -4774,8 +4775,8 @@ if __name__ == "__main__":
                test_baseline_pass, test_raw_append, test_raw_cli_path,
                test_raw_read, test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
-               test_working_memory, test_workbench_state_not_evidence,
-               test_working_memory_cli, test_new_cluster_two_phase]:
+               test_scope_memory, test_workbench_state_not_evidence,
+               test_scope_memory_cli, test_new_cluster_two_phase]:
         try:
             fn()
         except Exception as e:

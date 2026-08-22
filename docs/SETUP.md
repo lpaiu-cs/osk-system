@@ -65,7 +65,7 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 
 에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 열하나다 —
 `overview` `search` `read_node` `run_validators` `create_node` `update_node`
-`move_node` `record_candidate` `append_raw` `read_raw` `working_memory`.
+`move_node` `record_candidate` `append_raw` `read_raw` `scope_memory`.
 
 `_raw/` 세션 기록은 작업 검색에서 빠지므로(헌법 11조 3항) `read_raw`는 질의가
 아니라 **좌표**를 받는다. 노드의 `derived-from`에 든 `[[경로#N]]`을 그대로 넣으면
@@ -104,7 +104,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `search` / `view` | 작업 검색 / 열람 검색 |
 | `check` | 권한 사전 검사 |
 | `raw append` / `raw status` | `_raw/` 세션 기록 — 훅 경로(아래) |
-| `wm show` / `wm write` | 작업 기억 — SessionStart 훅 경로(아래) |
+| `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
 | `approve` / `revert` | **사용자 전속** — 변경집합 승인·반려 |
 | `update` / `release` | 갱신 / 릴리스 선언 — 인자를 그대로 위임한다 |
@@ -118,9 +118,10 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 `check`는 적용 봉투를 기계로 평가할 수 있기 전까지 **언제나 보류를 낸다**. 강제할
 수 없는 것을 강제한 척하지 않는다.
 
-### 작업 기억 주입 훅 (`wm show`)
+### scope 기억 주입 훅 (`sm show`)
 
-작업 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한이 있다(Mechanism §9-2).
+scope 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한이 있다(Mechanism §9-2).
+모든 세션과 기기가 같은 것을 보므로 **세션 한정 작업 상태는 적지 않는다.**
 상한은 저장 용량의 제한이 아니라 **승격의 문턱**이다 — 넘기면 쓰기를 거부하고, 자리값
 못하는 엔트리를 먼저 정리한 뒤 그래도 모자라면 노드로 올리게 한다.
 
@@ -129,7 +130,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 것으로는 부족하다 — 지시는 읽히지만 눈앞에 없으면 쓰이지 않는다.
 
 ```bash
-.venv/bin/python -m osk.cli wm show --session <세션 키>
+.venv/bin/python -m osk.cli sm show --session <세션 키>
 ```
 
 **출력은 JSON이 아니라 전문 그대로다.** 훅이 이 값을 문맥에 그대로 넣으므로, 감싸는
@@ -143,7 +144,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 필수다. **이 명령은 git을 부르지 않는다** — 동기화는 데몬이 맡는다.
 
 ```bash
-printf '%s' "$새전문" | .venv/bin/python -m osk.cli wm write   --session <키> --expect-hash <방금 받은 hash>
+printf '%s' "$새전문" | .venv/bin/python -m osk.cli sm write   --session <키> --expect-hash <방금 받은 hash>
 ```
 
 ### 세션 기록 훅 (`raw append`)

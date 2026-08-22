@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import graph, raw, validate, wm, write  # noqa: E402
+from osk import graph, raw, validate, write  # noqa: E402
+# 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
+from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
 from osk.core import ROOT, posix_rel, sha256_file  # noqa: E402
 
@@ -304,22 +306,23 @@ def append_raw(session: str, record: RawRecord, user: str, agent: str,
 
 
 @mcp.tool()
-def working_memory(session: str, text: str | None = None,
-                   expect_hash: str | None = None,
-                   space: str | None = None) -> dict:
-    """작업 기억 — 그 scope에서 **지금 살아 있는 배울 점**. `text` 없이 부르면
-    전문을 읽고, 주면 **전체 치환**한다(부분 추가는 없다). 상한(1500자)을 넘기면 거부하되
-    성공·실패 모두 전문과 잔여를 돌려주므로 넘치기 전에 정리할 수 있다. 기존
-    내용이 있으면 `expect_hash`가 필수다 — 방금 받은 `hash`를 그대로 쓴다.
-    `session`은 `create_node`와 같은 값이고, `space`는 `= Scope/<이름>` **두
-    마디**만 받는다(`clusters`보다 좁다). 자리가
-    모자라면 **먼저 자리값 못하는 엔트리를 지우고**, 그래도 모자랄 때 노드로
-    올린다. 비밀값은 **성공하면서 치환되니** `filtered`가 비지 않았으면 저장된
-    것이 보낸 것과 다르다. `text:""`는 전체를 지우며, 절반 넘게 줄면 `replaced_text`로
-    직전 전문이 오니 실수면 그대로 다시 보내라."""
+def scope_memory(session: str, text: str | None = None,
+                 expect_hash: str | None = None,
+                 space: str | None = None) -> dict:
+    """scope 기억 — 그 scope에서 지금 살아 있는 **배울 점**. 모든 세션과
+    기기가 **같은 것을 본다** — 이 세션에만 유효한 작업 상태는 적지 않는다.
+    `text` 없이 부르면 전문을 읽고, 주면 **전체 치환**한다(부분 추가 없음).
+    상한(1500자)을 넘기면 거부하되 성공·실패 모두 전문과 잔여를 돌려주므로
+    넘치기 전에 정리할 수 있다. 기존 내용이 있으면 `expect_hash` 필수 — 방금
+    받은 `hash`를 그대로 쓴다. `session`은 `create_node`와 같은 값, `space`는
+    `= Scope/<이름>` **두 마디**만 받는다(`clusters`보다 좁다). 자리가
+    모자라면 **먼저 자리값 못하는 엔트리를 지우고** 그래도 모자랄 때 노드로
+    올린다. 비밀값은 **성공하면서 치환되니** `filtered`가 비지 않았으면
+    저장본이 다르다. `text:""`는 전체를 지우며, 절반 넘게 줄면
+    `replaced_text`로 직전 전문이 오니 실수면 그대로 다시 보내라."""
     if text is None:
-        return _guard(wm.read, session, space)
-    return _guard(wm.replace, session, text, expect_hash, space)
+        return _guard(scope_memory_mod.read, session, space)
+    return _guard(scope_memory_mod.replace, session, text, expect_hash, space)
 
 
 def _apply_prune() -> None:

@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-iter
 created: 2026-08-02 13:22 (KST)
-updated: 2026-08-22 19:20 (KST)
+updated: 2026-08-23 03:30 (KST)
 author: user
 drafter: opus-5
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"
@@ -37,7 +37,7 @@ derived-from: 260802-114u-7lo3
    `routing.jsonl`(세션 라우팅)·`rechecks.jsonl`(근거 재검토 완료 기록 —
    §4-1)·`update.jsonl`(갱신 저널 — §1-2 7항)을 담는다.
    `signatures.jsonl`은 구체제 서명 기록부의 보존 기록이며 새 기록을
-   추가하지 않는다. `_raw/`는 운영 세션 기록이고, `_wm/`은 scope별 작업
+   추가하지 않는다. `_raw/`는 운영 세션 기록이고, `_scope_memory/`는 scope별 공유
    기억이다(§9-2).
 4. **접두 규칙**: `= ` 접두는 Space 루트의 강조 표기다. 밑줄 접두 구획에는
    노드를 두지 않는다 — 유일한 예외가 `_governance/`로, Space 밖의 통치
@@ -379,7 +379,7 @@ derived-from: 260802-114u-7lo3
 7. 표면에 노출된 도구의 목록은 다음과 같다. 이 목록의 개정으로 표면을
    변경하며, 목록과 구현이 어긋나면 검증기가 이를 적발한다.
    ```
-   overview search read_node run_validators create_node update_node move_node record_candidate append_raw read_raw working_memory
+   overview search read_node run_validators create_node update_node move_node record_candidate append_raw read_raw scope_memory
    ```
    이 목록을 고치는 개정에는 **코드를 보지 않은 감사 1회**를 관문으로 붙인다 —
    도구 설명과 스키마만으로 현실 과업을 수행해 보고, 막힌 지점과 추측해야 했던
@@ -485,9 +485,12 @@ derived-from: 260802-114u-7lo3
    않으며, 회상하는 본문은 §8 3항의 escape를 되돌린 것이다. 경로 봉쇄는
    쓰기와 같다 — `_raw/` 밖·vault 밖은 거부한다.
 
-## §9-2 작업 기억
+## §9-2 scope 기억
 
-1. 물리 자리는 `= Scope/Workbench/_wm/<scope 이름>.md`이며 scope당 하나다.
+1. 물리 자리는 `= Scope/Workbench/_scope_memory/<scope 이름>.md`이며 scope당
+   하나다. **모든 세션과 기기가 같은 것을 본다** — 세션 한정 작업 상태는
+   적지 않는다. 이름이 이 공유성을 말한다(구명 working_memory는 한 마음의
+   사유물로 읽혀 세션 한정 상태의 유입을 불렀고, 실측 후 개명했다).
    Markdown이되 **노드가 아니다** — frontmatter를 두지 않고 검색·중심성에
    산입하지 않는다. scope의 것이 scope 밖에 사는 것은 scope 디렉토리를 노드만으로
    두기 위해서이고, 접근이 엔진을 지나므로 물리 자리가 사용성을 좌우하지 않는다.
@@ -511,7 +514,7 @@ derived-from: 260802-114u-7lo3
    담는다. 네트워크 I/O를 변경 잠금 안에서 하는 것도 표면 전체를 멈춘다.
    상한 판정은 그 기기의 현재 사본 위에서 하고, 기기 사이의 정합은 데몬의
    주기 동기화와 8항의 통합 신호가 맡는다.
-8. 작업 기억은 md이므로 `_ledger/*.jsonl`의 union merge가 걸리지 않는다. 다기기
+8. scope 기억은 md이므로 `_ledger/*.jsonl`의 union merge가 걸리지 않는다. 다기기
    동시 편집의 충돌은 남으며, 그 충돌은 상한 초과와 **같은 처리**를 받는다 —
    전문을 돌려주고 통합을 요구한다. 충돌이 곧 통합 신호다. 다른 기기의 변경이
    동기화로 들어오면 읽은 상태의 해시가 어긋나므로, 그 불일치가 이 신호를
@@ -520,10 +523,10 @@ derived-from: 260802-114u-7lo3
    정규화가 없으면 같은 글이 기기에 따라 두 배로 세어져 상한이 기기 의존이
    된다. 저장은 여기에 개행 하나를 붙이되 그 개행은 계수에 들지 않는다 —
    호출자가 보내지 않은 글자를 세면 "몇 자를 지워야 하는가"의 답이 틀린다.
-11. 작업 기억은 `---`로 시작할 수 없다. 노드가 아니므로 frontmatter를 두지
+11. scope 기억은 `---`로 시작할 수 없다. 노드가 아니므로 frontmatter를 두지
    않는데(1항), 선두의 `---`는 색인이 frontmatter로 읽어 이 파일을 노드형으로
    보게 만든다 — 표면 도구 하나가 vault를 검증기 실패 상태로 만든다.
-9. 비밀값 필터(§9)는 **작업 기억 쓰기에도 건다.** 전사는 vault 밖이라 필터가
+9. 비밀값 필터(§9)는 **scope 기억 쓰기에도 건다.** 전사는 vault 밖이라 필터가
    닿지 않지만 작업 기억은 vault 안이고 에이전트가 쓴다.
 
 ## §10 해석 각서

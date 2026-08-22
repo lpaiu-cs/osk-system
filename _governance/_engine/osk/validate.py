@@ -202,7 +202,7 @@ def run() -> dict:
     # 유입(수동 편집·구 엔진 기기에서의 동기화·나중에 추가된 패턴)은 그 필터를
     # 지나지 않는다. §9 1항이 검증기를 집행 지점으로 두는 이유가 그것이다.
     for d in sorted([*(ROOT / "= Scope").rglob("_raw"),
-                     *(ROOT / "= Scope").rglob("_wm")]):
+                     *(ROOT / "= Scope").rglob("_scope_memory")]):
         if not d.is_dir():
             continue
         for p in sorted(d.rglob("*")):
@@ -216,7 +216,7 @@ def run() -> dict:
             _, hits = secrets.filter_text(text)
             if hits:
                 errs.append(f"{p.relative_to(ROOT)}: {sorted(set(hits))}")
-    ok("_raw·_wm 비밀값 미기록", errs)
+    ok("_raw·_scope_memory 비밀값 미기록", errs)
 
     # 14. 정합성 검사 — 충돌 후보 (헌법 12조 1·2항). 기계 판정이 가능한 유형만
     #     검출해 **보고**한다. 상정·각하는 사용자 전속이므로 대장에 자동으로
@@ -249,7 +249,7 @@ def run() -> dict:
 #   6100 → 6300: §6-2 7항 감사가 적발한 가르침 결손 보강 — `space`의 실제
 #     형식, 결속 후 생략, 재호출 비안전성, 절단의 비대칭. 감사에서 이것들이
 #     없어 실제로 막혔다(예산이 막는 것은 비대이지 필요한 가르침이 아니다).
-#   6300 → 7000: working_memory 노출 (작업 기억 — Mechanism §9-2).
+#   6300 → 7000: working_memory(현 scope_memory) 노출 (Mechanism §9-2).
 #   7000 → 7400: §6-2 7항 감사가 적발한 결손 셋 — `space`의 실제 범위,
 #     비밀값이 성공하면서 치환된다는 것, `text:""`의 의미와 되돌리는 법.
 #     함께 `overview`가 `clusters`를 '그대로 space에 넣으라'고 하던 것을
@@ -259,7 +259,10 @@ def run() -> dict:
 #  했으나 실측상 blob의 절반 이상이 스키마였다 — 이름과 실제가 어긋나 위
 #  문구로 바로잡았다. 기계는 그대로다: 매 상향이 사유와 함께 남는 의도된
 #  결정이 되는 것, 그것이 이 상수의 일이다.)
-SCHEMA_BUDGET = 7400
+#   7400 → 7500: working_memory → scope_memory 개명 + 공유성 가르침(모든
+#     세션과 기기가 같은 것을 본다 — 세션 한정 상태 금지). 실측으로 세션
+#     한정 상태가 유입돼 개명했고, 그 이유가 설명에 실려야 재발을 막는다.
+SCHEMA_BUDGET = 7500
 
 # 마지막 표면 린트의 상주 비용 분해 — surface_lint가 채우고 run이 보고에 싣는다.
 _last_surface_cost: dict | None = None
@@ -340,12 +343,12 @@ def surface_lint() -> list[str]:
         errs.append(f"거부 문구 판독 실패: {e}")
     # ⓕ 설명에 박힌 수치는 낡는다 — working_memory 설명의 상한 수치는 계수
     #    (wm.LIMIT)와 같아야 한다. 계수를 개정하면 이 검사가 설명의 낡음을 잡는다.
-    if "working_memory" in names:
+    if "scope_memory" in names:
         try:
-            import osk.wm as _wm
-            wmt = next(t for t in tools if t.name == "working_memory")
-            if str(_wm.LIMIT) not in (wmt.description or ""):
-                errs.append(f"working_memory 설명의 상한 수치가 계수({_wm.LIMIT}자)와 다르다")
+            import osk.scope_memory as _sm
+            wmt = next(t for t in tools if t.name == "scope_memory")
+            if str(_sm.LIMIT) not in (wmt.description or ""):
+                errs.append(f"scope_memory 설명의 상한 수치가 계수({_sm.LIMIT}자)와 다르다")
         except Exception as e:
             errs.append(f"상한 수치 대조 실패: {e}")
     return errs

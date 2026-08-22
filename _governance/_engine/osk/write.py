@@ -492,7 +492,7 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
             # 진단하면 받는 쪽은 scope를 바꿔 보려 하고, 그 길은 없다.
             if tkind[0] == "workbench":
                 return [f"작업 상태는 근거로 쓰지 않는다: {stem} → {name} — "
-                        f"Workbench의 작업 상태(작업 기억 포함)는 근거 또는 "
+                        f"Workbench의 작업 상태(scope 기억 포함)는 근거 또는 "
                         f"권위의 출처로 참조하지 않는다(Workbench 계약 4.2). "
                         f"근거는 그 지식이 나온 곳이다."]
             return [f"scope 간 직접 참조: [{kind[1]}] {stem} → {name} {tkind}"]

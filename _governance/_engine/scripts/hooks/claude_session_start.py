@@ -1,0 +1,90 @@
+"""Claude Code SessionStart 훅 — scope 기억 주입.
+
+등록(사용자 settings.json → hooks.SessionStart → command):
+    <인스턴스>/.venv/Scripts/python.exe <인스턴스>/_governance/_engine/scripts/hooks/claude_session_start.py
+
+stdin으로 하네스가 주는 JSON({cwd, session_id, source, …})을 받고, stdout이
+그대로 세션 문맥에 주입된다. 지시("CLAUDE.md에 쓰라")는 읽혀도 눈앞에 없으면
+쓰이지 않는다는 것이 실측이라, 보여주는 일은 훅이 맡는다 — 보이지 않는 것은
+통합되지 않는다.
+
+세션 키는 cwd가 속한 git 저장소의 **본 저장소 디렉터리 이름**이다. 워크트리
+안에서도 본 저장소 이름으로 접힌다(`git-common-dir`의 부모) — 워크트리 이름은
+세션마다 달라 키가 되지 못한다. 결속이 없거나 기억이 비었으면 빈 출력 —
+주입할 것이 없는 것은 오류가 아니다.
+
+부수 임무: 케이던스 카운터 리셋. 재개(resume)가 시계를 이어받으면 긴 대화일수록
+증류가 덜 일어나는 것이 아니라 — 이 체계의 결정은 반대다: 재개 직후에는 증류할
+새것이 없으므로 카운터는 세션 로컬이고 재개는 0에서 시작한다.
+
+어떤 실패도 세션 시작을 막지 않는다(전부 삼키고 빈 출력).
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ENGINE = Path(__file__).resolve().parents[2]        # …/_governance/_engine
+sys.path.insert(0, str(ENGINE))
+
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def session_key(cwd: str) -> str:
+    try:
+        r = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=10,
+            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        if r.returncode == 0 and r.stdout.strip():
+            gd = Path(r.stdout.strip())
+            if not gd.is_absolute():
+                gd = Path(cwd) / gd
+            return gd.resolve().parent.name
+    except Exception:
+        pass
+    return Path(cwd).name
+
+
+def main() -> None:
+    try:
+        env = json.load(sys.stdin)
+    except Exception:
+        env = {}
+    cwd = env.get("cwd") or os.getcwd()
+
+    # 케이던스 카운터 리셋 — 카운터는 세션·기기 로컬이다.
+    sid = env.get("session_id") or ""
+    if sid:
+        try:
+            (Path(tempfile.gettempdir()) / "osk-cadence" / f"{sid}.count"
+             ).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    try:
+        from osk import scope_memory, write
+        key = session_key(cwd)
+        if not write.resolve_session(key):
+            return                                   # 결속 없음 — 주입할 것 없음
+        st = scope_memory.read(key)
+        text = (st.get("text") or "").strip()
+        if not text:
+            return
+        out = (
+            f"[osk scope 기억 — = Scope/{st['scope']} · "
+            f"{st['chars']}/{st['limit']}자]\n"
+            f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것. "
+            f"약 10 user 턴마다 이 세션의 배울 점을 `scope_memory` 도구로 "
+            f"통합하라(전체 치환, `expect_hash`는 아래 hash).\n"
+            f"hash: {st['hash']}\n---\n{text}")
+        sys.stdout.buffer.write(out.encode("utf-8"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        return                                       # 주입 실패가 세션을 막지 않는다
+
+
+if __name__ == "__main__":
+    main()
