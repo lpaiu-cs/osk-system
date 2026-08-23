@@ -13,8 +13,8 @@ import json, re
 from pathlib import Path
 
 from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER,
-                   VALIDATORS, CASE_RE, RID_RE, ledger_read, ledger_damage,
-                   ledger_anchor_index, resolve_one)
+                   VALIDATORS, CASE_RE, RID_RE, ID_RE, ledger_read,
+                   ledger_damage, ledger_anchor_index, resolve_one)
 from . import contract, graph, signatures, approvals, authority, secrets
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
@@ -234,7 +234,7 @@ def run() -> dict:
         if _last_surface_cost:
             rep["surface_cost"] = dict(_last_surface_cost)
 
-    # 16. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1). 검사는 언제나
+    # 16. 군집 색인 노드 (헌법 3조 8항 · 시행령 §3 6항 · Mechanism §6-1). 검사는 언제나
     #     수행해 보고하고, verdict 산입은 활성화 뒤에만 한다(시행령 §11
     #     2항·3항) — 활성화 순간 무엇이 FAIL이 될지 사용자가 미리 본다.
     try:
@@ -245,17 +245,17 @@ def run() -> dict:
         co_errs = []
         for c, st in sorted(co.items()):
             if not st["overview"]:
-                co_errs.append(f"{c}: 동명 개요 노드 없음")
+                co_errs.append(f"{c}: 동명 색인 노드 없음")
             elif st["unreachable"]:
-                co_errs.append(f"{c}: 개요 미도달 {st['unreachable']}개")
+                co_errs.append(f"{c}: 색인 미도달 {st['unreachable']}개")
         if co_active:
-            ok("군집 개요 노드", co_errs)
+            ok("군집 색인 노드", co_errs)
         elif co_errs:
-            skip("군집 개요 노드", f"비활성 — 보고만 (위반 {len(co_errs)}건)")
+            skip("군집 색인 노드", f"비활성 — 보고만 (위반 {len(co_errs)}건)")
         else:
-            ok("군집 개요 노드", [])
+            ok("군집 색인 노드", [])
     except Exception as e:
-        rep["fail"].append({"군집 개요 노드": [f"검사 자체 실패: {e}"]})
+        rep["fail"].append({"군집 색인 노드": [f"검사 자체 실패: {e}"]})
 
     rep["verdict"] = "PASS" if not rep["fail"] else "FAIL"
     return rep
@@ -274,63 +274,70 @@ def validator_active(rule: str) -> bool:
 
 
 def cluster_overview_report(idx: "graph.Index") -> dict:
-    """군집 개요 노드 검사 (시행령 §3 6항) — 군집별 (a) 동명 개요 노드
-    존재, (b) 전 구성 노드의 개요 무향 도달. 산입 간선은 본문 Link와
-    `derived-from`의 노드 대상이며 **군집 안으로 한정**한다 — 군집 밖
-    대상은 위상 규칙의 몫이고, 비노드 대상(원자료·대장)은 노드 그래프가
-    아니다. Workbench 구획은 자체 계약을 따르므로 제외한다(§6-1 3항).
+    """군집 색인 노드 검사 (헌법 3조 8항 · 시행령 §3 6항) — 군집별 (a) 동명
+    색인 노드 존재, (b) 색인에서 **참조의 방향**(헌법 8조 2항: A가 B를
+    참조하면 의존은 A→B)을 따라 출발했을 때 전 구성 노드의 도달 가능성.
+    노드가 색인을 가리키는 역방향 참조는 도달을 만들지 않는다.
 
-    도달은 무향으로 판정한다. 개요가 모든 노드를 직접 열거해야 한다면
-    개요는 자리값 못하는 덤프 목록으로 퇴화한다 — 개요가 갈래의 머리를
-    링크하고 나머지는 파생 사슬(derived-from)과 역링크로 이어지는 것이
-    가꾸는 노드의 형태다."""
+    간선은 본문 Link와 Predicate Edge의 노드 대상이며 **군집 안으로
+    한정**한다 — 군집 밖 대상은 위상 규칙의 몫이고, 비노드 대상(원자료·
+    대장)은 노드 그래프가 아니다. Workbench 구획은 자체 계약을 따르므로
+    제외한다(§6-1 3항).
+
+    방향이 강제하는 형태: 색인이 갈래의 **머리**를 참조하고, 머리의
+    `derived-from` 사슬이 조상들을 잇는다 — 색인은 머리를 추적하고 역사는
+    사슬이 나른다. 순회는 방문 집합 위에서만 전진하므로 상호·자기 참조의
+    순환에서도 종료가 보장된다."""
     clusters: dict = {}
     for stem, (p, _k) in idx.nodes.items():
         rel = p.relative_to(ROOT)
         if "Workbench" in rel.parts or rel.parts[0] == "_governance":
             continue
-        clusters.setdefault(p.parent, []).append(stem)
+        clusters.setdefault(p.parent, set()).add(stem)
     out = {}
     for cdir, members in clusters.items():
-        mset = set(members)
-        ov = cdir.name
         key = str(cdir.relative_to(ROOT)).replace("\\", "/")
-        if ov not in mset:
+        ov = cdir.name
+        if ov not in members:
             out[key] = {"overview": False, "nodes": len(members),
                         "unreachable": len(members)}
             continue
-        adj = {m: set() for m in members}
-        for m in members:
-            n = idx.node(idx.nodes[m][0])
-            near = set()
-            for t in set(n.wikilinks()):
-                # 경로형([[= Scope/X/이름]])은 마지막 조각이 이름이다
-                base = t.rsplit("/", 1)[-1].strip()
-                if base.endswith(".md"):
-                    base = base[:-3]
-                if base in mset:
-                    near.add(base)
-            for tid in n.edges("derived-from"):
-                hit = idx.by_id.get(tid)
-                if hit and hit[0].stem in mset:
-                    near.add(hit[0].stem)
-            near.discard(m)
-            for t in near:
-                adj[m].add(t)
-                adj[t].add(m)
-        seen, q = {ov}, [ov]
-        while q:
-            for nb in adj[q.pop()]:
-                if nb not in seen:
-                    seen.add(nb)
-                    q.append(nb)
-        unreach = sorted(mset - seen)
+        seen, queue = {ov}, [ov]
+        while queue:
+            for t in _outgoing_refs(idx, queue.pop(), members) - seen:
+                seen.add(t)
+                queue.append(t)
+        unreach = sorted(members - seen)
         st = {"overview": True, "nodes": len(members),
               "unreachable": len(unreach)}
         if unreach:
             st["orphans"] = unreach[:20]
         out[key] = st
     return out
+
+
+def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
+    """`stem` 노드가 참조의 방향으로 가리키는 군집 구성원 (헌법 8조 2항).
+
+    본문 Link는 이름형·경로형 모두 마지막 조각으로 접고, Predicate Edge는
+    id 대상(`derived-from`)을 `by_id`로, 위키링크 대상(`conflicts`의 존치
+    상대)을 이름으로 해석한다. 구성원이 아닌 대상 — 군집 밖 노드·비노드·
+    사건 — 은 마지막 교집합에서 떨어진다."""
+    n = idx.node(idx.nodes[stem][0])
+    near = set()
+    for t in set(n.wikilinks()):
+        base = t.rsplit("/", 1)[-1].strip()
+        near.add(base[:-3] if base.endswith(".md") else base)
+    for pred in contract.PREDICATES:
+        for tgt in n.edges(pred):
+            if re.match(ID_RE, tgt):
+                hit = idx.by_id.get(tgt)
+                if hit:
+                    near.add(hit[0].stem)
+            else:
+                near.add(tgt.rsplit("/", 1)[-1].strip())
+    near.discard(stem)
+    return near & members
 
 
 # 상주 표면 비용의 상한 — 초과는 회귀다. 이 blob(도구의 이름·설명·스키마)은
@@ -550,6 +557,15 @@ def make_mini_vault(dst) -> None:
               "= Scope/Workbench/transit", "= Domain",
               "= Person/Delegation", "= Person/Module", "_sources"]:
         (dst / d).mkdir(parents=True, exist_ok=True)
+    # W1 색인 노드 — 첫-노드 규칙(시행령 §3 6항) 아래에서 시험들이 W1에
+    # 자유로 노드를 만들 수 있으려면 색인이 먼저 서 있어야 한다.
+    idx_md = dst / "= Scope/W1/W1.md"
+    if not idx_md.exists():
+        idx_md.write_text(
+            '---\nid: "260801-zzzz-w1ix"\ncreated: "2026-08-01 00:00 (KST)"\n'
+            'updated: "2026-08-01 00:00 (KST)"\nauthor: "agent"\n'
+            'drafter: "sonnet-5"\nsummary: "W1 군집 색인 — 시험 골격"\n---\n'
+            "\n# W1\n\n시험 군집의 색인 노드.\n", encoding="utf-8")
 
 
 def fixture_approval_lifecycle(tmp_root) -> list[str]:
