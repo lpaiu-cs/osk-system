@@ -530,6 +530,37 @@ def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
 
 ALIAS_DEPTH = 8          # 별칭 사슬 추적 한계 — 순환·장난에 대한 보수적 상한
 
+# 1회용 대화 id의 형태 — UUID(하이픈 유무 무관). 실제 세션 키(`open-hwp`,
+# `rhwp`, `lpaiu-cs/ltm-vault` 꼴)와는 겹치지 않는다.
+EPHEMERAL_SESSION_RE = re.compile(
+    r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|[0-9a-f]{32})$", re.I)
+
+
+def ephemeral_session_errors(session: str | None) -> list[str]:
+    """1회용 대화 id는 세션 키가 될 수 없다 (Mechanism §6-2 6항).
+
+    세션 키는 **첫 성공이 영구 결속**한다. 그래서 대화마다 새로 나는 값을
+    넣으면 그 대화가 끝나는 순간 그 scope의 기억으로 돌아올 길이 사라진다 —
+    다음 세션은 다른 id로 오기 때문이다. 결속은 남지만 아무도 그 키로 다시
+    오지 않으므로, 대장에는 죽은 행만 쌓인다.
+
+    도구 설명이 이미 금지하고 있었으나 **설명은 강제가 아니었고**, 실측으로
+    두 건이 굳었다(2026-08-24 관측: `= Scope/Arel-Wars-2`·`= Scope/gh-hint`).
+    형식이 어긋난 `space`를 조용히 버리지 않는 `resolve_landing`의 규율과
+    같은 이유로 여기서도 거부한다 — 버리면 호출자는 왜 다음 세션이 기억을
+    잃는지 영영 모른다.
+
+    쓰기 경로의 **가장 앞**에서 부른다. `bind_session`은 파일 쓰기 뒤에
+    오는 경로가 있어(raw·create_node) 거기서 막으면 부분 성공이 된다."""
+    if not session or not EPHEMERAL_SESSION_RE.match(session.strip()):
+        return []
+    return [f"`{session}`은 1회용 대화 id다 — 세션 키로 쓸 수 없다. 키는 "
+            f"**저장소 이름처럼 세션이 바뀌어도 같은 값**이어야 한다"
+            f"(`open-hwp`·`rhwp` 꼴). 첫 성공이 그 키를 영구 결속하므로, "
+            f"대화마다 새로 나는 값을 주면 다음 세션이 이 scope의 기억에 "
+            f"닿지 못한다."]
+
 
 def canonical_session(session: str | None,
                       recs: list[dict] | None = None) -> str | None:
@@ -642,7 +673,8 @@ def create_node(title: str, summary: str, body: str, drafter: str,
     space가 없으면 세션 라우팅으로 착지를 정하고, 라우팅이 없으면 space를
     요구한 뒤 성공 시 그 scope로 세션을 확정한다."""
     with _Lock():
-        errs = _check_edges(edges) + _title_errors(title)
+        errs = (_check_edges(edges) + _title_errors(title)
+                + ephemeral_session_errors(session))
         if errs:
             raise WriteError("계약 위반 — 쓰지 않았다", errs)
 

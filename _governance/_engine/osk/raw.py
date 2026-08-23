@@ -149,6 +149,11 @@ def append_rounds(session: str, record: str, pairs: list,
     errs = write._title_errors(record)      # 기록 이름이 곧 파일명이다
     if errs:
         raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
+    # 세션 키는 착지 판정보다 먼저 본다 — 결속은 파일 쓰기 뒤에 오므로
+    # 여기서 막지 않으면 부분 성공이 된다.
+    errs = write.ephemeral_session_errors(session)
+    if errs:
+        raise write.WriteError("세션 키 부적격 — 쓰지 않았다", errs)
 
     with mutation_lock():
         dest, bound = write.resolve_landing(session, space, _CONFINE)

@@ -4461,7 +4461,52 @@ def test_raw_replay_rejected():
 
 
 
-# ── 19. 작업 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
+# ── 21. 1회용 대화 id는 세션 키가 될 수 없다 (Mechanism §6-2 6항) ──────────
+def test_ephemeral_session_key():
+    """세션 키는 첫 성공이 **영구 결속**한다. 그래서 대화마다 새로 나는 값을
+    넣으면 그 대화가 끝나는 순간 그 scope의 기억으로 돌아올 길이 사라진다.
+    도구 설명이 금지하고 있었으나 설명은 강제가 아니었고, 실측으로 두 건이
+    굳었다(2026-08-24). 세 쓰기 표면 모두에서 막고, **막는 자리는 파일 쓰기
+    앞**이어야 한다 — 결속은 뒤에 오는 경로가 있어 뒤에서 막으면 파일만 남는다."""
+    from osk import raw, scope_memory as sm
+    U = "2df63e9c-b6fd-4499-8d2a-f53c4921e243"          # 실측된 그 형태
+    U32 = "2df63e9cb6fd44998d2af53c4921e243"            # 하이픈 없는 UUID
+    before = core.ROUTING.read_text(encoding="utf-8") if core.ROUTING.exists() else ""
+
+    r = _w(write.create_node, "1회용 키 시험", "s", "본문", "fable-5",
+           session=U, space="= Scope/W1")
+    check("create_node가 UUID 세션을 거부", r.get("ok") is False, r)
+    v = " ".join(r.get("violations", []))
+    check("거부가 1회용 id임을 지목", "1회용 대화 id" in v, v)
+    check("거부가 대안을 알려준다", "저장소 이름처럼" in v, v)
+    check("거부는 노드를 남기지 않는다",
+          not (ROOT / "= Scope/W1/1회용 키 시험.md").exists())
+
+    check("하이픈 없는 UUID도 거부",
+          _w(write.create_node, "1회용 키 시험2", "s", "본문", "fable-5",
+             session=U32, space="= Scope/W1").get("ok") is False)
+
+    rr = _w(raw.append_rounds, U, "rec", [{"user": "q", "agent": "a"}],
+            space="= Scope/W1")
+    check("append_raw도 거부", rr.get("ok") is False, rr)
+    check("raw 거부는 원인을 세션 키로 지목",
+          "1회용 대화 id" in " ".join(rr.get("violations", [])), rr)
+
+    rs = _w(sm.replace, U, "- 엔트리", None, "= Scope/W1")
+    check("scope_memory도 거부", rs.get("ok") is False, rs)
+
+    after = core.ROUTING.read_text(encoding="utf-8") if core.ROUTING.exists() else ""
+    check("거부는 라우팅 대장에 결속을 남기지 않는다", before == after)
+
+    # 실제 세션 키는 그대로 통과해야 한다 — 과잉 거부는 이 관문의 실패다.
+    for good in ("open-hwp", "rhwp", "aw2", "lpaiu-cs/ltm-vault",
+                 "causal-spacetime", "illustratorAI"):
+        check(f"실제 키 `{good}`는 통과", write.ephemeral_session_errors(good) == [])
+    check("빈 세션은 이 관문이 관여하지 않는다",
+          write.ephemeral_session_errors(None) == [])
+
+
+# ── 19. scope 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
 def test_scope_memory():
     """상한은 저장 용량의 제한이 아니라 문턱이다. 그래서 초과는 **거부**하고,
     거부는 **전문과 순서**를 함께 돌려준다 — 자동 절단·자동 요약을 두면 그
@@ -4776,7 +4821,8 @@ if __name__ == "__main__":
                test_raw_read, test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_scope_memory, test_workbench_state_not_evidence,
-               test_scope_memory_cli, test_new_cluster_two_phase]:
+               test_scope_memory_cli, test_new_cluster_two_phase,
+               test_ephemeral_session_key]:
         try:
             fn()
         except Exception as e:

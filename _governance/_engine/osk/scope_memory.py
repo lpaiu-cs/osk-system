@@ -133,6 +133,9 @@ def replace(session: str, text: str, expect_hash: str | None = None,
     빠져 남의 feature 브랜치를 rebase하고, `git add -A`가 진행 중이던 작업까지
     쓸어 담아 push한다(리뷰에서 실측). 네트워크 I/O를 `mutation_lock` 안에서
     하는 것도 표면 전체를 최대 수 분 세운다."""
+    errs = write.ephemeral_session_errors(session)
+    if errs:
+        raise write.WriteError("세션 키 부적격 — 쓰지 않았다", errs)
     with mutation_lock():
         scope, bound = _landing(session, space)
         p = sm_path(scope)
