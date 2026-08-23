@@ -337,6 +337,22 @@ def main(argv=None):
     except ReleaseError as e:
         sys.exit(f"[중단] {e}")
     print(json.dumps(rep, ensure_ascii=False, indent=2))
+    if rep.get("applied") and sys.stdin.isatty():
+        # 작업 트리 동기화 — 릴리스는 이미 커밋·태그로 성립했고 이것은 그
+        # 뒤의 편의다. run()이 자동으로 하지 않는 이유(작업 트리 CAS 부재 —
+        # 강제할 수 없는 보장을 강제한 척하지 않는다)는 그대로 두되, 선언자가
+        # 그 자리에서 확인하고 수행하는 길을 연다. worktree_sync 안내만으로는
+        # 세 릴리스 연속(v3.1.3~v3.3.0) 이 단계가 남아, 다음 커밋이 증빙을
+        # 구판으로 되돌릴 뻔했다(실측).
+        try:
+            ans = input(f"작업 트리의 {ATTESTATION}을 릴리스에 맞춥니까? [y/N] ")
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() == "y":
+            r = _git(ROOT, "checkout", a.version, "--", ATTESTATION)
+            print("동기화 완료" if r.returncode == 0 else
+                  f"동기화 실패(릴리스는 성립) — 수동: git checkout "
+                  f"{a.version} -- {ATTESTATION}")
 
 
 if __name__ == "__main__":

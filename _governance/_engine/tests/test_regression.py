@@ -4467,6 +4467,30 @@ def test_raw_replay_rejected():
 
 
 
+# ── 24. 군집 색인 노드는 위임이 아니다 (시행령 §5 1항) ─────────────────────
+def test_index_node_not_delegation():
+    """Delegation Facet도 노드 군집이라 동명 색인을 두는데(헌법 3조 8항),
+    v3.3.0에서 색인이 승인본에 들어가는 순간 위임으로 열거되어 절 형식
+    검사가 영구 실패했다(실측). 열거가 색인을 걸러야 두 제도가 공존한다."""
+    from osk import authority, validate
+    idx = ROOT / "= Person/Delegation/Delegation.md"
+    made = not idx.exists()
+    if made:
+        idx.write_text(node_text("260802-zzzz-dgix", "위임 Facet 색인"),
+                       encoding="utf-8")
+    try:
+        dels = authority.enumerate_delegations()
+        check("색인 노드는 위임으로 열거되지 않는다",
+              all(d["title"] != "Delegation" for d in dels), dels)
+        rep = validate.run()
+        check("색인 노드가 위임 3요건을 깨뜨리지 않는다",
+              not any("위임 3요건" in k for d in rep["fail"] for k in d),
+              rep["fail"])
+    finally:
+        if made:
+            idx.unlink(missing_ok=True)
+
+
 # ── 23. 옵시디언 태그 방어 (Mechanism §8 7항) ───────────────────────────────
 def test_obsidian_tag_defense():
     """`#숫자`에 조사·가운뎃점이 직결되면 옵시디언 태그가 된다(순수 숫자만은
@@ -4966,7 +4990,7 @@ if __name__ == "__main__":
                test_scope_memory, test_workbench_state_not_evidence,
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
-               test_obsidian_tag_defense]:
+               test_obsidian_tag_defense, test_index_node_not_delegation]:
         try:
             fn()
         except Exception as e:

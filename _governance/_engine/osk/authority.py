@@ -83,6 +83,13 @@ def enumerate_delegations() -> list[dict]:
             return out
         nodes = sorted(DELEGATION_FACET.glob("*.md"))   # 보고용(전부 미성립)
     for p in nodes:
+        # 군집 색인 노드(헌법 3조 8항)는 위임이 아니다 — Delegation Facet도
+        # 노드 군집이라 동명 색인을 두는데, 그것을 위임으로 열거하면 절 형식
+        # 검사가 영구 실패한다(v3.3.0 실측: 색인 승인 직후 위임 3요건 FAIL).
+        # 색인에 위임 절을 위장시키는 것도, Facet만 색인 예외로 하는 것도
+        # 답이 아니다 — 열거가 거른다(시행령 §5 1항).
+        if p == DELEGATION_FACET / f"{DELEGATION_FACET.name}.md":
+            continue
         rel = str(p.relative_to(ROOT))
         if not p.is_file():                # 승인본에는 있으나 작업본에서 사라짐
             out.append({"path": rel, "node": None, "title": p.stem,
