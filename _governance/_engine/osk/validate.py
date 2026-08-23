@@ -13,8 +13,8 @@ import json, re
 from pathlib import Path
 
 from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER,
-                   CASE_RE, RID_RE, ledger_read, ledger_damage,
-                   ledger_anchor_index)
+                   VALIDATORS, CASE_RE, RID_RE, ledger_read, ledger_damage,
+                   ledger_anchor_index, resolve_one)
 from . import contract, graph, signatures, approvals, authority, secrets
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
@@ -92,7 +92,8 @@ def run() -> dict:
     # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
     #    대장이다. signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상).
     errs, ledgers = [], ([(approvals.APPROVALS, arecs)] if appr_ok else [])
-    for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, approvals.MOVES,
+    for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, VALIDATORS,
+              approvals.MOVES,
               LEDGER / "migration" / "events.jsonl", LEDGER / "rechecks.jsonl",
               LEDGER / "update.jsonl"]:
         try:
@@ -233,8 +234,103 @@ def run() -> dict:
         if _last_surface_cost:
             rep["surface_cost"] = dict(_last_surface_cost)
 
+    # 16. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1). 검사는 언제나
+    #     수행해 보고하고, verdict 산입은 활성화 뒤에만 한다(시행령 §11
+    #     2항·3항) — 활성화 순간 무엇이 FAIL이 될지 사용자가 미리 본다.
+    try:
+        co = cluster_overview_report(idx)
+        rep["cluster_overview"] = co
+        co_active = validator_active("cluster-overview")
+        rep["cluster_overview_active"] = co_active
+        co_errs = []
+        for c, st in sorted(co.items()):
+            if not st["overview"]:
+                co_errs.append(f"{c}: 동명 개요 노드 없음")
+            elif st["unreachable"]:
+                co_errs.append(f"{c}: 개요 미도달 {st['unreachable']}개")
+        if co_active:
+            ok("군집 개요 노드", co_errs)
+        elif co_errs:
+            skip("군집 개요 노드", f"비활성 — 보고만 (위반 {len(co_errs)}건)")
+        else:
+            ok("군집 개요 노드", [])
+    except Exception as e:
+        rep["fail"].append({"군집 개요 노드": [f"검사 자체 실패: {e}"]})
+
     rep["verdict"] = "PASS" if not rep["fail"] else "FAIL"
     return rep
+
+
+def validator_active(rule: str) -> bool:
+    """검증기 규칙의 활성 여부 (Mechanism §6-1). 규칙별 인과 극대가 현재
+    상태이고, 대장이 없거나 미확정(분기)이면 비활성이다 — fail-open이 아니라
+    보고-전용으로 남는 쪽이 안전하다(시행령 §11 2항: 집행은 활성화 뒤에만)."""
+    try:
+        recs = ledger_read(VALIDATORS)
+    except Exception:
+        return False
+    r = resolve_one(recs, rule, "rule")
+    return bool(r and r.get("kind") == "activate")
+
+
+def cluster_overview_report(idx: "graph.Index") -> dict:
+    """군집 개요 노드 검사 (시행령 §3 6항) — 군집별 (a) 동명 개요 노드
+    존재, (b) 전 구성 노드의 개요 무향 도달. 산입 간선은 본문 Link와
+    `derived-from`의 노드 대상이며 **군집 안으로 한정**한다 — 군집 밖
+    대상은 위상 규칙의 몫이고, 비노드 대상(원자료·대장)은 노드 그래프가
+    아니다. Workbench 구획은 자체 계약을 따르므로 제외한다(§6-1 3항).
+
+    도달은 무향으로 판정한다. 개요가 모든 노드를 직접 열거해야 한다면
+    개요는 자리값 못하는 덤프 목록으로 퇴화한다 — 개요가 갈래의 머리를
+    링크하고 나머지는 파생 사슬(derived-from)과 역링크로 이어지는 것이
+    가꾸는 노드의 형태다."""
+    clusters: dict = {}
+    for stem, (p, _k) in idx.nodes.items():
+        rel = p.relative_to(ROOT)
+        if "Workbench" in rel.parts or rel.parts[0] == "_governance":
+            continue
+        clusters.setdefault(p.parent, []).append(stem)
+    out = {}
+    for cdir, members in clusters.items():
+        mset = set(members)
+        ov = cdir.name
+        key = str(cdir.relative_to(ROOT)).replace("\\", "/")
+        if ov not in mset:
+            out[key] = {"overview": False, "nodes": len(members),
+                        "unreachable": len(members)}
+            continue
+        adj = {m: set() for m in members}
+        for m in members:
+            n = idx.node(idx.nodes[m][0])
+            near = set()
+            for t in set(n.wikilinks()):
+                # 경로형([[= Scope/X/이름]])은 마지막 조각이 이름이다
+                base = t.rsplit("/", 1)[-1].strip()
+                if base.endswith(".md"):
+                    base = base[:-3]
+                if base in mset:
+                    near.add(base)
+            for tid in n.edges("derived-from"):
+                hit = idx.by_id.get(tid)
+                if hit and hit[0].stem in mset:
+                    near.add(hit[0].stem)
+            near.discard(m)
+            for t in near:
+                adj[m].add(t)
+                adj[t].add(m)
+        seen, q = {ov}, [ov]
+        while q:
+            for nb in adj[q.pop()]:
+                if nb not in seen:
+                    seen.add(nb)
+                    q.append(nb)
+        unreach = sorted(mset - seen)
+        st = {"overview": True, "nodes": len(members),
+              "unreachable": len(unreach)}
+        if unreach:
+            st["orphans"] = unreach[:20]
+        out[key] = st
+    return out
 
 
 # 상주 표면 비용의 상한 — 초과는 회귀다. 이 blob(도구의 이름·설명·스키마)은

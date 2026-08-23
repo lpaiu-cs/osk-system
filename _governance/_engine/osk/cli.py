@@ -213,6 +213,11 @@ def main(argv=None):
     q.add_argument("--expect-hash", dest="expect_hash", default=None)
     q.add_argument("--space", default=None)
 
+    p = sub.add_parser("validators",
+                       help="[사용자 전속] 검증기 활성화 현황·전환 (Mechanism §6-1)")
+    p.add_argument("--activate", metavar="RULE")
+    p.add_argument("--deactivate", metavar="RULE")
+    p.add_argument("--reason", default="")
     p = sub.add_parser("protect", help="[사용자 전속] 보호영역 지정")
     p.add_argument("region"); p.add_argument("--reason", default="")
     p = sub.add_parser("unprotect", help="[사용자 전속] 보호영역 해제")
@@ -227,6 +232,32 @@ def main(argv=None):
 
     if a.cmd == "validate":
         validate.main()
+    elif a.cmd == "validators":
+        # 활성화·해제는 사용자 전속이다(시행령 §11 3항) — 표면(MCP)에는 없다.
+        known = ["cluster-overview"]
+        rule = a.activate or a.deactivate
+        if rule:
+            if a.activate and a.deactivate:
+                sys.exit("중단 — --activate와 --deactivate는 함께 줄 수 없다")
+            if rule not in known:
+                sys.exit(f"모르는 규칙: {rule} — 가능한 규칙: {', '.join(known)}")
+            kind = "activate" if a.activate else "deactivate"
+            cur = "활성" if validate.validator_active(rule) else "비활성"
+            print(f"규칙 {rule}: 현재 {cur}")
+            if kind == "activate":
+                _confirm(f"{rule}을(를) 활성화하면 위반이 검증기 verdict에 "
+                         f"산입됩니다(시행령 §11 2항). 활성화합니까? [y/N] ")
+            else:
+                _confirm(f"{rule}을(를) 해제하면 같은 검사가 보고 전용으로 "
+                         f"돌아갑니다. 해제합니까? [y/N] ")
+            from .core import VALIDATORS, ledger_append
+            rec = ledger_append(VALIDATORS, {
+                "kind": kind, "rule": rule, "reason": a.reason})
+            print("기록 등재:", rec["rid"])
+        else:
+            for r in known:
+                print(f"{r}: "
+                      f"{'활성' if validate.validator_active(r) else '비활성'}")
     elif a.cmd == "status":
         idx = graph.Index()
         regions = approvals.protected_regions()

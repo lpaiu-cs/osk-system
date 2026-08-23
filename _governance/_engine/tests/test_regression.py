@@ -4461,6 +4461,69 @@ def test_raw_replay_rejected():
 
 
 
+# ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
+def test_cluster_overview():
+    """각 군집은 동명 개요 노드를 두고, 전 노드가 무향으로 개요에 닿아야
+    한다. 저작 신설의 첫 노드는 개요 강제, 이동 형성은 검증기 보고. 활성화
+    전에는 보고만 하고 verdict에 산입하지 않는다(시행령 §11 2항·3항)."""
+    from osk import validate
+
+    # 저작 신설: 1차는 신설 관문, 2차는 첫-노드 규칙이 개요를 요구한다
+    r = _w(write.create_node, "개요 아닌 첫 노드", "s", "본문", "fable-5",
+           space="= Scope/OVW")
+    check("신설 1차는 관문 거부", r.get("ok") is False, r)
+    r2 = _w(write.create_node, "개요 아닌 첫 노드", "s", "본문", "fable-5",
+            space="= Scope/OVW")
+    check("신설 2차는 첫-노드 규칙 거부", r2.get("ok") is False, r2)
+    v = " ".join(r2.get("violations", []))
+    check("거부가 개요 노드를 지목", "개요 노드" in v and "OVW" in v, v)
+    check("거부는 노드를 남기지 않는다",
+          not (ROOT / "= Scope/OVW/개요 아닌 첫 노드.md").exists())
+    r3 = _w(write.create_node, "OVW", "OVW 군집 개요", "시험 군집.",
+            "fable-5", space="= Scope/OVW")
+    check("동명 개요 노드는 첫 노드로 통과", r3.get("ok"), r3)
+    r4 = _w(write.create_node, "개요 아닌 첫 노드", "s", "섬 노드다.",
+            "fable-5", space="= Scope/OVW")
+    check("개요가 선 뒤 일반 노드 통과", r4.get("ok"), r4)
+
+    # 도달 판정 — 링크 없는 노드는 고아, 역링크([[OVW]])로도 닿는다
+    co = validate.cluster_overview_report(graph.Index())
+    st = co.get("= Scope/OVW")
+    check("검사가 군집을 본다", st is not None, co)
+    check("개요 존재 인식", st and st["overview"] is True, st)
+    check("링크 없는 노드는 고아", st and st["unreachable"] == 1, st)
+    r5 = _w(write.create_node, "역링크 노드", "s", "[[OVW]]에서 갈라진 실험.",
+            "fable-5", space="= Scope/OVW")
+    check("역링크 노드 생성", r5.get("ok"), r5)
+    co2 = validate.cluster_overview_report(graph.Index())
+    st2 = co2.get("= Scope/OVW")
+    check("역링크로도 개요에 닿는다(무향)",
+          st2 and st2["unreachable"] == 1 and "개요 아닌 첫 노드" in
+          st2.get("orphans", []), st2)
+
+    # 개요 노드는 군집 밖으로 이동 불가
+    r6 = _w(write.move_node, "OVW", "= Scope/W1")
+    check("개요 노드 이동 거부", r6.get("ok") is False, r6)
+    check("이동 거부가 결박을 설명",
+          "개요 노드" in " ".join(r6.get("violations", [])), r6)
+
+    # 활성화 게이트 — 기본 비활성(보고만), 활성화 후 verdict 산입, 해제 원복
+    check("기본 비활성", validate.validator_active("cluster-overview") is False)
+    rep = validate.run()
+    check("비활성이면 verdict 불산입(그 이유의 fail 없음)",
+          not any("군집 개요 노드" in f for d in rep["fail"] for f in d), rep["fail"])
+    check("보고는 언제나 실린다", "= Scope/OVW" in rep.get("cluster_overview", {}))
+    core.ledger_append(core.VALIDATORS,
+                       {"kind": "activate", "rule": "cluster-overview"})
+    check("활성 판정", validate.validator_active("cluster-overview") is True)
+    rep2 = validate.run()
+    check("활성이면 위반이 verdict에 산입", rep2["verdict"] == "FAIL"
+          and any("군집 개요 노드" in f for d in rep2["fail"] for f in d), rep2["verdict"])
+    core.ledger_append(core.VALIDATORS,
+                       {"kind": "deactivate", "rule": "cluster-overview"})
+    check("해제 원복", validate.validator_active("cluster-overview") is False)
+
+
 # ── 21. 1회용 대화 id는 세션 키가 될 수 없다 (Mechanism §6-2 6항) ──────────
 def test_ephemeral_session_key():
     """세션 키는 첫 성공이 **영구 결속**한다. 그래서 대화마다 새로 나는 값을
@@ -4822,7 +4885,7 @@ if __name__ == "__main__":
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_scope_memory, test_workbench_state_not_evidence,
                test_scope_memory_cli, test_new_cluster_two_phase,
-               test_ephemeral_session_key]:
+               test_ephemeral_session_key, test_cluster_overview]:
         try:
             fn()
         except Exception as e:

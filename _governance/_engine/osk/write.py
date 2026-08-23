@@ -692,6 +692,19 @@ def create_node(title: str, summary: str, body: str, drafter: str,
             # (구판은 "신설은 사용자 발의다"라며 전면 거부했으나 그 문구는
             # 규범 무근거였다 — 헌법은 형성의 자동화를 기본으로 둔다.)
             dest_dir = _new_cluster_gate(dest, dest_dir, "이 쓰기가")
+        # 새 군집의 첫 노드는 **동명 개요 노드**다 (시행령 §3 6항). 신설
+        # 관문을 지나 방금 생겼든 이미 비어 있든, 개요 없이 출발한 군집은
+        # 이름뿐인 통이 된다 — 무엇인지 서술하는 노드가 먼저다. 이동·재배정
+        # 형성은 이 검사를 받지 않고(§3 1항의 주기 처리 보호) 검증기 보고가
+        # 채움을 독촉한다. Workbench 구획은 자체 계약이라 제외.
+        if (title != dest_dir.name and "Workbench" not in dest_dir.parts
+                and not any(dest_dir.glob("*.md"))):
+            raise WriteError(
+                "새 군집의 첫 노드는 개요 노드다 — 쓰지 않았다",
+                [f"`{dest_dir.name}` 군집이 비어 있다. 먼저 군집과 동명의 "
+                 f"개요 노드 `{dest_dir.name}`을(를) 만들어 이 군집이 무엇인지 "
+                 f"서술하고, 그 다음 이 노드를 만들어 개요에서 닿게 하라 "
+                 f"(시행령 §3 6항)"])
         path = dest_dir / f"{title}.md"
         kind = graph.space_of(path)      # 소속은 노드 파일 경로로 판정한다
         _reject_governance(kind)
@@ -863,6 +876,14 @@ def move_node(name: str, dest_space: str) -> dict:
             raise WriteError(f"노드 없음: {name}")
         src_kind = graph.space_of(path)
         _reject_governance(src_kind)
+        # 개요 노드는 이름이 군집에 결박한다 (시행령 §3 6항) — 밖으로 나가면
+        # 군집이 개요를 잃고, 도착지에는 남의 군집 이름을 단 노드가 앉는다.
+        if path.parent.name == path.stem:
+            raise WriteError(
+                "개요 노드는 군집 밖으로 이동할 수 없다 — 옮기지 않았다",
+                [f"`{name}`은 `= …/{path.parent.name}` 군집의 동명 개요 노드다"
+                 f"(시행령 §3 6항). 군집 개명이 필요하면 사용자 발의로 군집과"
+                 f" 함께 개명한다"])
         dest_dir = resolve_in_root(dest_space)
         if dest_dir is None or not dest_dir.is_dir():
             dest_dir = _new_cluster_gate(dest_space, dest_dir, "이 이동이")
