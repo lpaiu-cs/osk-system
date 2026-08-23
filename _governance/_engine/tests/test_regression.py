@@ -4461,6 +4461,42 @@ def test_raw_replay_rejected():
 
 
 
+# ── 23. 옵시디언 태그 방어 (Mechanism §8 7항) ───────────────────────────────
+def test_obsidian_tag_defense():
+    """`#숫자`에 조사·가운뎃점이 직결되면 옵시디언 태그가 된다(순수 숫자만은
+    태그가 아님). 거부 없이 공백 하나를 넣어 태그화만 끊는다 — 종결 문자와
+    코드 구획은 불변, `_raw/`는 전사 보존이라 적용하지 않는다."""
+    from osk import scope_memory as sm
+    f = write._space_numeric_tags
+    check("조사 직결은 띄운다", f("#1227은 문제") == "#1227 은 문제")
+    check("가운뎃점도 띄운다", f("#1227·1228") == "#1227 ·1228")
+    check("종결 문자는 불변",
+          f("이슈 #2027, PR #114 적용(#2071)") == "이슈 #2027, PR #114 적용(#2071)")
+    check("인라인 코드는 불변", f("`#1227은` 밖 #1227은") == "`#1227은` 밖 #1227 은")
+    check("펜스 안은 불변",
+          f("```\n#1227은\n```\n#1227은") == "```\n#1227은\n```\n#1227 은")
+    check("raw anchor 불변", f("[[rec#3]] 근거") == "[[rec#3]] 근거")
+
+    # 쓰기 경로 통합 — 저장된 본문이 이미 방어된 형태다
+    r = _w(write.create_node, "태그 방어 시험", "s", "이슈 #1227은 심각했다.",
+           "fable-5", space="= Scope/W1")
+    check("생성 통과", r.get("ok"), r)
+    stored = (ROOT / "= Scope/W1/태그 방어 시험.md").read_text(encoding="utf-8")
+    check("노드 본문에 방어 반영", "#1227 은 심각했다" in stored, stored[-80:])
+
+    # scope 기억 경로
+    r2 = _w(sm.replace, "WTag", "- #1227·1228 병합 건", None, "= Scope/W1")
+    check("scope 기억 방어 반영", "#1227 ·1228" in r2.get("text", ""), r2.get("text"))
+
+    # 제목 거부문 — 원인은 지목하되 대체 표기는 처방하지 않는다(사용자 결정)
+    r3 = _w(write.create_node, "PR#1 판정", "s", "본문", "fable-5",
+            space="= Scope/W1")
+    check("제목 # 거부 유지", r3.get("ok") is False, r3)
+    v = " ".join(r3.get("violations", []))
+    check("거부가 원인을 지목", "링크로 가리킬 수" in v, v)
+    check("거부가 대체 표기를 처방하지 않는다", "PR-1" not in v, v)
+
+
 # ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
 def test_cluster_overview():
     """각 군집은 동명 개요 노드를 두고, 전 노드가 무향으로 개요에 닿아야
@@ -4885,7 +4921,8 @@ if __name__ == "__main__":
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_scope_memory, test_workbench_state_not_evidence,
                test_scope_memory_cli, test_new_cluster_two_phase,
-               test_ephemeral_session_key, test_cluster_overview]:
+               test_ephemeral_session_key, test_cluster_overview,
+               test_obsidian_tag_defense]:
         try:
             fn()
         except Exception as e:

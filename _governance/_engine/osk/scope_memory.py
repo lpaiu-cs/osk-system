@@ -159,7 +159,10 @@ def replace(session: str, text: str, expect_hash: str | None = None,
         # 그대로 커밋된다. 상한은 **치환 뒤** 길이로 잰다(치환문이 원본보다
         # 길어질 수 있고, 저장되는 것이 세어져야 한다).
         filtered, hits = secrets.filter_text(text)
-        body = canon(filtered)
+        # 옵시디언 태그 방어 (Mechanism §8 7항) — scope 기억도 vault의 md라
+        # 옵시디언이 렌더한다. 상한은 변환 **뒤** 길이로 잰다(저장되는 것이
+        # 세어져야 한다 — 비밀값 치환과 같은 이유).
+        body = canon(write._space_numeric_tags(filtered))
 
         if body.startswith("---"):
             # `---`로 시작하면 색인이 frontmatter로 읽어 이 파일을 노드형으로
