@@ -1,6 +1,6 @@
 {
- "version": "v3.3.1",
- "at": "2026-08-24T14:37:45+09:00",
+ "version": "v3.3.2",
+ "at": "2026-08-26T18:43:10+09:00",
  "files": {
   ".gitattributes": "sha256:302bb23568d751677b083afac94210c05c17d95a933b30a9050b35256a41a024",
   ".github/workflows/release.yml": "sha256:df5c204e39d0b1f32ba9a9e0fd9b2dd3d7c5dbdb7bbc2e5d238dda6e4f751742",
@@ -34,7 +34,7 @@
   "_governance/_engine/osk/secrets.py": "sha256:0e76b8c0b0362e02a260d75e574ebf90ff9f4a425bf1c9f9d11f7ba813a29f78",
   "_governance/_engine/osk/signatures.py": "sha256:6131f5418d80797034dd6d760d82d3ba9ac529300ec3f12f7272d364b91d5433",
   "_governance/_engine/osk/update.py": "sha256:70db512876738f21c85280b4a6eadadaa583166681e15b76824794e8e30b4168",
-  "_governance/_engine/osk/validate.py": "sha256:21ecaac1beb6d597c1da32dfeedfbf276917099c111eeb04fbd35ae11b776fd4",
+  "_governance/_engine/osk/validate.py": "sha256:fdaa84a89fe9b7964f9b106e806b8b379821fdbe2b308fa1f0b8d54a08ceec6f",
   "_governance/_engine/osk/write.py": "sha256:e615f272417846767dc9a1804a6612a6696e1c65cdea73326976b6801f776a28",
   "_governance/_engine/requirements.txt": "sha256:062511e03858388684210f5d5fd04369e7e5eb062ab20c8385ff63644dd3476e",
   "_governance/_engine/scripts/hooks/claude_prompt_submit.py": "sha256:87cdfadf353997de79a9eb7e35d14c7b1bed11b2cd4d17bfeecd69a67cdc0dd0",
