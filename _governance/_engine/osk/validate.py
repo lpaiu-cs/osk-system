@@ -129,7 +129,7 @@ def run() -> dict:
     # 9. 보호영역 생애 fixture — 매 검증 실행 (회귀 방지)
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        ok("보호영역 생애 fixture", fixture_approval_lifecycle(td))
+        guard("보호영역 생애 fixture", lambda: fixture_approval_lifecycle(td))
 
     # 10. 승인 기록부 정합성 (인과 극대 유일·승인본 해석 — 시행령 §6 7항)
     if appr_ok:
@@ -572,7 +572,14 @@ def fixture_approval_lifecycle(tmp_root) -> list[str]:
     """보호영역 생애 fixture — **격리 subprocess**에서 실행한다: OSK_VAULT_ROOT가
     임시 mini-vault를 가리키는 별도 프로세스이므로 서버 프로세스의 전역 상태를
     일절 건드리지 않는다. protect→pending→approve(양측 CAS)→revert→unprotect의
-    생애와 fail-closed 경계를 소진한다."""
+    생애와 fail-closed 경계를 소진한다.
+
+    stdin은 끊는다 — `_engine_rev`(mcp_server.py)와 같은 이유이고, 이 수트가
+    `run_validators`로 불릴 때 부모는 **stdio 파이프 위에 선 표면 프로세스**다.
+    그 stdin을 물려주면 자식은 부모의 미결 read 뒤에 줄을 서서 인터프리터
+    초기화조차 마치지 못하고(Windows 익명 파이프는 동기 객체다), 시한 120초를
+    다 태운 뒤 `TimeoutExpired`가 올라온다. 실측된 실패다 — 표면으로 부른
+    검증기가 매번 120초 만에 통째로 무효가 됐다."""
     import json as _json
     import os as _os
     import subprocess as _sp
@@ -583,7 +590,7 @@ def fixture_approval_lifecycle(tmp_root) -> list[str]:
     script = Path(__file__).parent / "_fixture_approvals.py"
     env = dict(_os.environ, OSK_VAULT_ROOT=str(mini))
     r = _sp.run([_sys.executable, str(script)], capture_output=True,
-                text=True, env=env, timeout=120)
+                stdin=_sp.DEVNULL, text=True, env=env, timeout=120)
     if r.returncode != 0:
         return [f"fixture 프로세스 실패: {r.stderr.strip()[-400:]}"]
     try:
