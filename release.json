@@ -1,6 +1,6 @@
 {
- "version": "v3.3.2",
- "at": "2026-08-26T18:43:10+09:00",
+ "version": "v3.4.0",
+ "at": "2026-08-29T06:45:35+09:00",
  "files": {
   ".gitattributes": "sha256:302bb23568d751677b083afac94210c05c17d95a933b30a9050b35256a41a024",
   ".github/workflows/release.yml": "sha256:df5c204e39d0b1f32ba9a9e0fd9b2dd3d7c5dbdb7bbc2e5d238dda6e4f751742",
@@ -11,9 +11,9 @@
   "= Scope/.gitkeep": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "LICENSE": "sha256:5767f39416aa81ae85cdcdd84fe14ff37cc3f1841d737c4ea85b4c590ec4308a",
   "README.md": "sha256:54bf973c3543355a0d31ae952a75833e24da0c2f35002a24d7b8cce023428032",
-  "_governance/Bylaws.md": "sha256:e7d7f6620bda30aa0b45e3a88e59aa5b787c3144a6ffd1e9f32013c593274cc4",
-  "_governance/Constitution.md": "sha256:e3b77ec2d4779a15a9e8bf1520c4e6ae7728930054575eec5e1560f23c473a60",
-  "_governance/Mechanism.md": "sha256:e8dbd78ebbd9ab2b92be52fd36e0de50bfe5e87267282ecae9af6ad4daf78ef9",
+  "_governance/Bylaws.md": "sha256:1b87fd36b92efbbefe65d11f9d370ed15f11302072c65fdb83f0789881d4a06e",
+  "_governance/Constitution.md": "sha256:fc14faefe5053a52395987a18d7f55a35c17505219a1b20ea85fb34d4758b470",
+  "_governance/Mechanism.md": "sha256:aa01a82373407eeb849af73d4f5fb87795ca0ec5a8482916b432468e1418c213",
   "_governance/Workbench-Contract.md": "sha256:380c7861d57e9028214cb6dd86d1b14eec927fec85be7d8e24e99b1f7a66e14a",
   "_governance/_engine/README.md": "sha256:689bcd60287af44804cf25d9063b206ebb9c0c139326ee8c82be84c9638841b8",
   "_governance/_engine/mcp_server.py": "sha256:c083783349462a044c297e18244f6acd2e36775520331c02297061c4cafc2c77",
@@ -54,6 +54,7 @@
   "_governance/records/2026-08-08-denode-and-canonical-update-deliberation.md": "sha256:8c24dcf76181f89464640e8c46090ea61535a3f69834650ebd8793b2b5c0438f",
   "_governance/records/2026-08-24-cluster-overview-node-revival.md": "sha256:4df49459a2362a86d629e225794fed812e20f480650f0ad899e51173f16ab59a",
   "_governance/records/2026-08-24-index-node-directional-shift.md": "sha256:ce6798366069f893d64c1c13bb18e4edb4931eca6ad2a6aa509eb7f13b249273",
+  "_governance/records/2026-08-29-person-space-presence-amendment.md": "sha256:b0c792f2494c1e8294a0b152ada84d23376936839316bc084d7b12941e132d15",
   "_governance/records/constitution-disposition-table.md": "sha256:106418bf55db42b000763205e3e558c39a853f3ee184448f7ed44d716b0b3d71",
   "docs/SETUP.md": "sha256:436f6ccf82c9b41b59bb181859ce4245b27989b66b4eabe47eeb28a35955ce43"
  }
