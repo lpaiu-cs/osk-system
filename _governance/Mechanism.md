@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-iter
 created: 2026-08-02 13:22 (KST)
-updated: 2026-08-23 03:30 (KST)
+updated: 2026-08-29 05:42 (KST)
 author: user
 drafter: opus-5
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"
@@ -24,8 +24,8 @@ derived-from: 260802-114u-7lo3
    |---|---|---|
    | `= Scope/<이름>/` | Scope Space의 scope | 노드 + `_raw/` |
    | `= Scope/Workbench/` | Workbench scope (헌법 4조 5항) | 아래 3항 |
-   | `= Domain/<이름>/` | Domain Space의 Domain | 노드 |
-   | `= Person/<Facet>/` | Person Space의 Facet | 노드 |
+   | `= Domain/<이름>/` | Domain Space의 domain | 노드 |
+   | `= Person/<facet>/` | Person Space의 facet | 노드 |
    | `_governance/` | 통치 구획 (Space 밖, 헌법 3조 6항) | 통치 문서 + `records/` |
    | `_governance/_engine/` | 엔진 | 코드·동기화 도구·회귀 수트 |
    | `_sources/` | 공용 원자료 구획 | 비노드 (이미지·pdf 등) |
