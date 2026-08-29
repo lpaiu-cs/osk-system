@@ -351,7 +351,7 @@ def test_path_reuse():
 #        개정은 같은 id의 제자리 갱신이므로 후계·강등 자체가 성립하지 않는다.) ──
 
 
-# ── 7. 순수 이동·개명의 재색인 감지 ─────────────────────────────────────
+# ── 7. 순수 이동·개명의 재허브 감지 ─────────────────────────────────────
 def test_fingerprint_move():
     import mcp_server
     a = ROOT / "= Scope/W1/regr-fp-a.md"
@@ -2485,11 +2485,11 @@ def test_update_no_change():
 def test_bound_scope_honest():
     core.ROUTING.unlink(missing_ok=True)
     (ROOT / "= Domain/D1").mkdir(parents=True, exist_ok=True)
-    # 색인 노드를 골격으로 심는다 — 이 시험의 관심사는 결속이지 첫-노드
+    # 허브 노드를 골격으로 심는다 — 이 시험의 관심사는 결속이지 첫-노드
     # 규칙이 아니다(그 규칙은 test_cluster_overview가 소진한다)
     idx = ROOT / "= Domain/D1/D1.md"
     if not idx.exists():
-        idx.write_text(node_text("260802-zzzz-d1ix", "D1 색인"),
+        idx.write_text(node_text("260802-zzzz-d1ix", "D1 허브"),
                        encoding="utf-8")
     r = _w(write.create_node, "regr-bs-dom", "도메인", "본문", "fable-5",
            session="repo/gamma", space="= Domain/D1")
@@ -2631,7 +2631,7 @@ def test_validate_uses_destination_path():
 
 # ── 14u. 동명 중복이면 쓰기를 거부한다 (8차 차단 ②) ─────────────────────
 def test_dup_stem_write_refused():
-    """읽기(색인)와 쓰기가 서로 다른 쪽을 고르면 본 파일과 고쳐지는 파일이
+    """읽기(허브)와 쓰기가 서로 다른 쪽을 고르면 본 파일과 고쳐지는 파일이
     달라진다. 표면은 임의로 한쪽을 택하지 않는다."""
     (ROOT / "= Scope/W3").mkdir(parents=True, exist_ok=True)
     a = ROOT / "= Scope/W1/regr-dup.md"
@@ -2639,7 +2639,7 @@ def test_dup_stem_write_refused():
     try:
         a.write_text(node_text("260806-aaaa-1111", "중복 A", "A 본문"), encoding="utf-8")
         b.write_text(node_text("260806-aaaa-3333", "중복 B", "B 본문"), encoding="utf-8")
-        check("색인이 중복을 인지", "regr-dup" in graph.Index().dup_stems)
+        check("허브가 중복을 인지", "regr-dup" in graph.Index().dup_stems)
         for label, call in (
             ("update", lambda: write.update_node("regr-dup", summary="x")),
             ("move", lambda: write.move_node("regr-dup", "= Scope/W2")),
@@ -4467,23 +4467,23 @@ def test_raw_replay_rejected():
 
 
 
-# ── 24. 군집 색인 노드는 위임이 아니다 (시행령 §5 1항) ─────────────────────
+# ── 24. 군집 허브 노드는 위임이 아니다 (시행령 §5 1항) ─────────────────────
 def test_index_node_not_delegation():
-    """Delegation Facet도 노드 군집이라 동명 색인을 두는데(헌법 3조 8항),
-    v3.3.0에서 색인이 승인본에 들어가는 순간 위임으로 열거되어 절 형식
-    검사가 영구 실패했다(실측). 열거가 색인을 걸러야 두 제도가 공존한다."""
+    """Delegation Facet도 노드 군집이라 동명 허브을 두는데(헌법 3조 8항),
+    v3.3.0에서 허브가 승인본에 들어가는 순간 위임으로 열거되어 절 형식
+    검사가 영구 실패했다(실측). 열거가 허브를 걸러야 두 제도가 공존한다."""
     from osk import authority, validate
     idx = ROOT / "= Person/Delegation/Delegation.md"
     made = not idx.exists()
     if made:
-        idx.write_text(node_text("260802-zzzz-dgix", "위임 Facet 색인"),
+        idx.write_text(node_text("260802-zzzz-dgix", "위임 Facet 허브"),
                        encoding="utf-8")
     try:
         dels = authority.enumerate_delegations()
-        check("색인 노드는 위임으로 열거되지 않는다",
+        check("허브 노드는 위임으로 열거되지 않는다",
               all(d["title"] != "Delegation" for d in dels), dels)
         rep = validate.run()
-        check("색인 노드가 위임 3요건을 깨뜨리지 않는다",
+        check("허브 노드가 위임 3요건을 깨뜨리지 않는다",
               not any("위임 3요건" in k for d in rep["fail"] for k in d),
               rep["fail"])
     finally:
@@ -4529,33 +4529,33 @@ def test_obsidian_tag_defense():
 
 # ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
 def test_cluster_overview():
-    """각 군집은 동명 색인 노드를 두고, 전 노드가 색인에서 **참조의 방향**을
-    따라 도달 가능해야 한다(헌법 3조 8항). 노드가 색인을 가리키는 역링크는
-    도달을 만들지 않는다. 저작 신설의 첫 노드는 색인 강제, 이동 형성은
+    """각 군집은 동명 허브 노드를 두고, 전 노드가 허브에서 **참조의 방향**을
+    따라 도달 가능해야 한다(헌법 3조 8항). 노드가 허브를 가리키는 역링크는
+    도달을 만들지 않는다. 저작 신설의 첫 노드는 허브 강제, 이동 형성은
     검증기 보고. 활성화 전에는 보고만 한다(시행령 §11 2항·3항)."""
     from osk import validate
 
-    # 저작 신설: 1차는 신설 관문, 2차는 첫-노드 규칙이 색인을 요구한다
-    r = _w(write.create_node, "색인 아닌 첫 노드", "s", "본문", "fable-5",
+    # 저작 신설: 1차는 신설 관문, 2차는 첫-노드 규칙이 허브를 요구한다
+    r = _w(write.create_node, "허브 아닌 첫 노드", "s", "본문", "fable-5",
            space="= Scope/OVW")
     check("신설 1차는 관문 거부", r.get("ok") is False, r)
-    r2 = _w(write.create_node, "색인 아닌 첫 노드", "s", "본문", "fable-5",
+    r2 = _w(write.create_node, "허브 아닌 첫 노드", "s", "본문", "fable-5",
             space="= Scope/OVW")
     check("신설 2차는 첫-노드 규칙 거부", r2.get("ok") is False, r2)
     v = " ".join(r2.get("violations", []))
-    check("거부가 색인 노드를 지목", "색인 노드" in v and "OVW" in v, v)
+    check("거부가 허브 노드를 지목", "허브 노드" in v and "OVW" in v, v)
     check("거부는 노드를 남기지 않는다",
-          not (ROOT / "= Scope/OVW/색인 아닌 첫 노드.md").exists())
-    # 색인이 갈래 머리들을 **미리** 참조한다 — 아직 없는 대상은 dangling
+          not (ROOT / "= Scope/OVW/허브 아닌 첫 노드.md").exists())
+    # 허브가 갈래 머리들을 **미리** 참조한다 — 아직 없는 대상은 dangling
     # 경고일 뿐 거부가 아니다(탐색 링크는 자유).
-    r3 = _w(write.create_node, "OVW", "OVW 군집 색인",
+    r3 = _w(write.create_node, "OVW", "OVW 군집 허브",
             "갈래: [[OVW-head]] · [[OVW-a]]", "fable-5", space="= Scope/OVW")
-    check("동명 색인 노드는 첫 노드로 통과", r3.get("ok"), r3)
+    check("동명 허브 노드는 첫 노드로 통과", r3.get("ok"), r3)
 
-    # 방향 도달 — 색인→머리→(derived-from)→조상. 역링크·섬은 고아다.
+    # 방향 도달 — 허브→머리→(derived-from)→조상. 역링크·섬은 고아다.
     r4 = _w(write.create_node, "OVW-섬", "s", "아무도 가리키지 않는 섬.",
             "fable-5", space="= Scope/OVW")
-    check("색인이 선 뒤 일반 노드 통과", r4.get("ok"), r4)
+    check("허브가 선 뒤 일반 노드 통과", r4.get("ok"), r4)
     r5 = _w(write.create_node, "OVW-조상", "s", "갈래의 처음.",
             "fable-5", space="= Scope/OVW")
     rh = _w(write.create_node, "OVW-head", "s", "갈래 머리.", "fable-5",
@@ -4564,7 +4564,7 @@ def test_cluster_overview():
     r6 = _w(write.create_node, "OVW-역링크", "s", "[[OVW]]만 가리킨다.",
             "fable-5", space="= Scope/OVW")
     check("역링크 노드 생성", r6.get("ok"), r6)
-    # 순환 안전 — 색인에 닿는 고리(a↔b)와 닿지 않는 고리(c↔d) 둘 다 종료
+    # 순환 안전 — 허브에 닿는 고리(a↔b)와 닿지 않는 고리(c↔d) 둘 다 종료
     ra = _w(write.create_node, "OVW-a", "s", "[[OVW-b]]를 본다.",
             "fable-5", space="= Scope/OVW")
     rb = _w(write.create_node, "OVW-b", "s", "[[OVW-a]]를 본다.",
@@ -4578,11 +4578,11 @@ def test_cluster_overview():
     co = validate.cluster_overview_report(graph.Index())
     st = co.get("= Scope/OVW")
     check("검사가 군집을 본다", st is not None, co)
-    check("색인 존재 인식", st and st["overview"] is True, st)
+    check("허브 존재 인식", st and st["overview"] is True, st)
     orphans = set(st.get("orphans", []))
-    check("색인→머리 직접 도달", "OVW-head" not in orphans, st)
+    check("허브→머리 직접 도달", "OVW-head" not in orphans, st)
     check("derived-from 사슬로 조상 도달", "OVW-조상" not in orphans, st)
-    check("색인에 닿는 고리는 순회가 완주한다(무한루프 없음)",
+    check("허브에 닿는 고리는 순회가 완주한다(무한루프 없음)",
           not {"OVW-a", "OVW-b"} & orphans, st)
     check("역링크만으로는 고아 — 방향이 반대다", "OVW-역링크" in orphans, st)
     check("섬은 고아", "OVW-섬" in orphans, st)
@@ -4591,24 +4591,24 @@ def test_cluster_overview():
     check("미도달 수가 고아 목록과 일치",
           st["unreachable"] == len(orphans) == 4, st)
 
-    # 색인 노드는 군집 밖으로 이동 불가
+    # 허브 노드는 군집 밖으로 이동 불가
     r7 = _w(write.move_node, "OVW", "= Scope/W1")
-    check("색인 노드 이동 거부", r7.get("ok") is False, r7)
+    check("허브 노드 이동 거부", r7.get("ok") is False, r7)
     check("이동 거부가 결박을 설명",
-          "색인 노드" in " ".join(r7.get("violations", [])), r7)
+          "허브 노드" in " ".join(r7.get("violations", [])), r7)
 
     # 활성화 게이트 — 기본 비활성(보고만), 활성화 후 verdict 산입, 해제 원복
     check("기본 비활성", validate.validator_active("cluster-overview") is False)
     rep = validate.run()
     check("비활성이면 verdict 불산입(그 이유의 fail 없음)",
-          not any("군집 색인 노드" in f for d in rep["fail"] for f in d), rep["fail"])
+          not any("군집 허브 노드" in f for d in rep["fail"] for f in d), rep["fail"])
     check("보고는 언제나 실린다", "= Scope/OVW" in rep.get("cluster_overview", {}))
     core.ledger_append(core.VALIDATORS,
                        {"kind": "activate", "rule": "cluster-overview"})
     check("활성 판정", validate.validator_active("cluster-overview") is True)
     rep2 = validate.run()
     check("활성이면 위반이 verdict에 산입", rep2["verdict"] == "FAIL"
-          and any("군집 색인 노드" in f for d in rep2["fail"] for f in d), rep2["verdict"])
+          and any("군집 허브 노드" in f for d in rep2["fail"] for f in d), rep2["verdict"])
     core.ledger_append(core.VALIDATORS,
                        {"kind": "deactivate", "rule": "cluster-overview"})
     check("해제 원복", validate.validator_active("cluster-overview") is False)
@@ -4790,9 +4790,9 @@ def test_workbench_state_not_evidence():
     보려 하고, 그 길은 없다. 감사가 잡은 `space` 오진과 같은 계열이다."""
     from osk import scope_memory as wm
     (ROOT / "= Scope/WEv").mkdir(exist_ok=True)
-    idx = ROOT / "= Scope/WEv/WEv.md"     # 첫-노드 규칙 충족용 색인 골격
+    idx = ROOT / "= Scope/WEv/WEv.md"     # 첫-노드 규칙 충족용 허브 골격
     if not idx.exists():
-        idx.write_text(node_text("260802-zzzz-wevi", "WEv 색인"),
+        idx.write_text(node_text("260802-zzzz-wevi", "WEv 허브"),
                        encoding="utf-8")
     _w(wm.replace, "repo/regr-ev", "- 경유지 내용", None, "= Scope/WEv")
     r = _w(write.create_node, "regr-ev-node", "근거 오지정 시험", "본문",
@@ -4879,25 +4879,25 @@ def test_new_cluster_two_phase():
     check("거부가 재시도 절차를 알려준다", "그대로 다시" in v, v)
     check("1차 거부는 디렉토리를 만들지 않는다",
           not (ROOT / "= Scope/W2P").is_dir())
-    # 재시도는 관문을 지나되, 빈 군집의 첫 노드는 색인이어야 한다(§3 6항) —
-    # 두 관문은 겹치지 않고 이어진다: 신설 확인 → 색인 먼저.
+    # 재시도는 관문을 지나되, 빈 군집의 첫 노드는 허브가어야 한다(§3 6항) —
+    # 두 관문은 겹치지 않고 이어진다: 신설 확인 → 허브 먼저.
     r2 = _w(write.create_node, "이상 신설 시험", "s", "본문", "fable-5",
             space="= Scope/W2P")
     check("재시도는 관문을 지나 첫-노드 규칙에 닿는다",
           r2.get("ok") is False
-          and "색인 노드" in " ".join(r2["violations"]), r2)
+          and "허브 노드" in " ".join(r2["violations"]), r2)
     check("관문 통과로 군집 디렉토리는 만들어졌다",
           (ROOT / "= Scope/W2P").is_dir())
-    r2b = _w(write.create_node, "W2P", "W2P 색인", "[[이상 신설 시험]]",
+    r2b = _w(write.create_node, "W2P", "W2P 허브", "[[이상 신설 시험]]",
              "fable-5", space="= Scope/W2P")
-    check("색인 노드가 첫 노드로 통과", r2b.get("ok"), r2b)
+    check("허브 노드가 첫 노드로 통과", r2b.get("ok"), r2b)
     r3 = _w(write.create_node, "이상 신설 시험", "s", "본문", "fable-5",
             space="= Scope/W2P")
-    check("색인이 선 군집은 관문 없이 통과", r3.get("ok"), r3)
+    check("허브가 선 군집은 관문 없이 통과", r3.get("ok"), r3)
     r4 = _w(write.move_node, "이상 신설 시험", "= Domain/D2P")
     check("move의 새 군집도 1차 거부", r4.get("ok") is False, r4)
     r5 = _w(write.move_node, "이상 신설 시험", "= Domain/D2P")
-    check("move 재시도는 통과 — 이동 형성은 색인 강제가 없다(§3 1항 보호)",
+    check("move 재시도는 통과 — 이동 형성은 허브 강제가 없다(§3 1항 보호)",
           r5.get("ok"), r5)
     r6 = _w(write.create_node, "깊은 경로", "s", "본문", "fable-5",
             space="= Scope/W2P/sub")
@@ -4913,12 +4913,12 @@ def test_new_cluster_two_phase():
     # 만료 — 잊힌 표식이 뒷날의 다른 요청을 무확인 통과시키지 않는다
     write._ack_file().write_text(
         json.dumps({"= Scope/WStale2P": _time.time() - 7200}), encoding="utf-8")
-    r8 = _w(write.create_node, "WStale2P", "색인", "본문", "fable-5",
+    r8 = _w(write.create_node, "WStale2P", "허브", "본문", "fable-5",
             space="= Scope/WStale2P")
     check("만료된 표식은 다시 1차 거부", r8.get("ok") is False, r8)
-    r9 = _w(write.create_node, "WStale2P", "색인", "본문", "fable-5",
+    r9 = _w(write.create_node, "WStale2P", "허브", "본문", "fable-5",
             space="= Scope/WStale2P")
-    check("만료 후 새 왕복은 통과(색인 제목이라 첫-노드 규칙도 충족)",
+    check("만료 후 새 왕복은 통과(허브 제목이라 첫-노드 규칙도 충족)",
           r9.get("ok"), r9)
 
 

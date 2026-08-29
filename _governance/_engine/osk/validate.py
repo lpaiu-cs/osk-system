@@ -234,7 +234,7 @@ def run() -> dict:
         if _last_surface_cost:
             rep["surface_cost"] = dict(_last_surface_cost)
 
-    # 16. 군집 색인 노드 (헌법 3조 8항 · 시행령 §3 6항 · Mechanism §6-1). 검사는 언제나
+    # 16. 군집 허브 노드 (헌법 3조 8항 · 시행령 §3 6항 · Mechanism §6-1). 검사는 언제나
     #     수행해 보고하고, verdict 산입은 활성화 뒤에만 한다(시행령 §11
     #     2항·3항) — 활성화 순간 무엇이 FAIL이 될지 사용자가 미리 본다.
     try:
@@ -245,17 +245,17 @@ def run() -> dict:
         co_errs = []
         for c, st in sorted(co.items()):
             if not st["overview"]:
-                co_errs.append(f"{c}: 동명 색인 노드 없음")
+                co_errs.append(f"{c}: 동명 허브 노드 없음")
             elif st["unreachable"]:
-                co_errs.append(f"{c}: 색인 미도달 {st['unreachable']}개")
+                co_errs.append(f"{c}: 허브 미도달 {st['unreachable']}개")
         if co_active:
-            ok("군집 색인 노드", co_errs)
+            ok("군집 허브 노드", co_errs)
         elif co_errs:
-            skip("군집 색인 노드", f"비활성 — 보고만 (위반 {len(co_errs)}건)")
+            skip("군집 허브 노드", f"비활성 — 보고만 (위반 {len(co_errs)}건)")
         else:
-            ok("군집 색인 노드", [])
+            ok("군집 허브 노드", [])
     except Exception as e:
-        rep["fail"].append({"군집 색인 노드": [f"검사 자체 실패: {e}"]})
+        rep["fail"].append({"군집 허브 노드": [f"검사 자체 실패: {e}"]})
 
     rep["verdict"] = "PASS" if not rep["fail"] else "FAIL"
     return rep
@@ -274,18 +274,18 @@ def validator_active(rule: str) -> bool:
 
 
 def cluster_overview_report(idx: "graph.Index") -> dict:
-    """군집 색인 노드 검사 (헌법 3조 8항 · 시행령 §3 6항) — 군집별 (a) 동명
-    색인 노드 존재, (b) 색인에서 **참조의 방향**(헌법 8조 2항: A가 B를
+    """군집 허브 노드 검사 (헌법 3조 8항 · 시행령 §3 6항) — 군집별 (a) 동명
+    허브 노드 존재, (b) 허브에서 **참조의 방향**(헌법 8조 2항: A가 B를
     참조하면 의존은 A→B)을 따라 출발했을 때 전 구성 노드의 도달 가능성.
-    노드가 색인을 가리키는 역방향 참조는 도달을 만들지 않는다.
+    노드가 허브를 가리키는 역방향 참조는 도달을 만들지 않는다.
 
     간선은 본문 Link와 Predicate Edge의 노드 대상이며 **군집 안으로
     한정**한다 — 군집 밖 대상은 위상 규칙의 몫이고, 비노드 대상(원자료·
     대장)은 노드 그래프가 아니다. Workbench 구획은 자체 계약을 따르므로
     제외한다(§6-1 3항).
 
-    방향이 강제하는 형태: 색인이 갈래의 **머리**를 참조하고, 머리의
-    `derived-from` 사슬이 조상들을 잇는다 — 색인은 머리를 추적하고 역사는
+    방향이 강제하는 형태: 허브가 갈래의 **머리**를 참조하고, 머리의
+    `derived-from` 사슬이 조상들을 잇는다 — 허브는 머리를 추적하고 역사는
     사슬이 나른다. 순회는 방문 집합 위에서만 전진하므로 상호·자기 참조의
     순환에서도 종료가 보장된다."""
     clusters: dict = {}
@@ -557,15 +557,15 @@ def make_mini_vault(dst) -> None:
               "= Scope/Workbench/transit", "= Domain",
               "= Person/Delegation", "= Person/Module", "_sources"]:
         (dst / d).mkdir(parents=True, exist_ok=True)
-    # W1 색인 노드 — 첫-노드 규칙(시행령 §3 6항) 아래에서 시험들이 W1에
-    # 자유로 노드를 만들 수 있으려면 색인이 먼저 서 있어야 한다.
+    # W1 허브 노드 — 첫-노드 규칙(시행령 §3 6항) 아래에서 시험들이 W1에
+    # 자유로 노드를 만들 수 있으려면 허브가 먼저 서 있어야 한다.
     idx_md = dst / "= Scope/W1/W1.md"
     if not idx_md.exists():
         idx_md.write_text(
             '---\nid: "260801-zzzz-w1ix"\ncreated: "2026-08-01 00:00 (KST)"\n'
             'updated: "2026-08-01 00:00 (KST)"\nauthor: "agent"\n'
-            'drafter: "sonnet-5"\nsummary: "W1 군집 색인 — 시험 골격"\n---\n'
-            "\n# W1\n\n시험 군집의 색인 노드.\n", encoding="utf-8")
+            'drafter: "sonnet-5"\nsummary: "W1 군집 허브 — 시험 골격"\n---\n'
+            "\n# W1\n\n시험 군집의 허브 노드.\n", encoding="utf-8")
 
 
 def fixture_approval_lifecycle(tmp_root) -> list[str]:
