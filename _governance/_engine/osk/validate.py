@@ -570,8 +570,8 @@ def fixture_approval_lifecycle(tmp_root) -> list[str]:
     일절 건드리지 않는다. protect→pending→approve(양측 CAS)→revert→unprotect의
     생애와 fail-closed 경계를 소진한다.
 
-    stdin은 끊는다 — `_engine_rev`(mcp_server.py)와 같은 이유이고, 이 수트가
-    `run_validators`로 불릴 때 부모는 **stdio 파이프 위에 선 표면 프로세스**다.
+    stdin은 끊는다 — 이 수트가 `run_validators`로 불릴 때 부모는 **stdio
+    파이프 위에 선 표면 프로세스**다.
     그 stdin을 물려주면 자식은 부모의 미결 read 뒤에 줄을 서서 인터프리터
     초기화조차 마치지 못하고(Windows 익명 파이프는 동기 객체다), 시한 120초를
     다 태운 뒤 `TimeoutExpired`가 올라온다. 실측된 실패다 — 표면으로 부른

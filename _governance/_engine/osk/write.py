@@ -408,10 +408,14 @@ def _open_cases() -> list[str]:
                   if str(c.get("status")) == "docketed")
 
 
-def _check_edges(edges: dict | None) -> list[str]:
+def _check_edges(edges: dict | None, idx) -> list[str]:
     """술어와 **대상 값의 형**을 함께 본다. 스키마(표면)와 통로(여기) 이중으로
     거는 이유는 CLI·Bash 경유가 스키마를 통과하지 않기 때문이다 — 검증은
-    통로에, 교육은 스키마에(10차 정정 ①)."""
+    통로에, 교육은 스키마에(10차 정정 ①).
+
+    `idx`는 호출부가 잠금 안에서 **한 번 지어** 내려보낸다 (v3.7.0). 기본값을
+    두지 않는 것은 규율이다 — 기본값이 있으면 새 호출부가 색인을 또 짓는 것이
+    언제나 가능해지고, 증폭은 조용히 돌아온다."""
     errs = []
     for pred, targets in (edges or {}).items():
         if pred not in contract.PREDICATES:
@@ -429,7 +433,7 @@ def _check_edges(edges: dict | None) -> list[str]:
                 # 노드를 가리킨다. 비노드 근거만 위키링크로 단다.
                 s = t.strip()
                 inner = s[2:-2].strip() if s.startswith("[[") and s.endswith("]]") else s
-                kind = graph.Index().resolve(inner)
+                kind = idx.resolve(inner)
                 if kind[0] in ("node", "ambiguous"):
                     errs.append(
                         f"derived-from의 노드 근거는 id로 단다: {t} — 경로·이름은 "
@@ -448,7 +452,8 @@ def _check_edges(edges: dict | None) -> list[str]:
     return errs
 
 
-def _validate_render(path: Path, meta: dict, body: str) -> tuple[bytes, list[str]]:
+def _validate_render(path: Path, meta: dict, body: str,
+                     idx) -> tuple[bytes, list[str]]:
     """**렌더된 바이트를 되읽어** 검증한다 — 쓰려던 것이 아니라 쓸 것을
     검증해야 한다(7차 중대 A). 직렬화가 깨뜨린 것은 dict 검사로는 안 보인다."""
     data = _render(meta, body)
@@ -480,14 +485,13 @@ def _validate_render(path: Path, meta: dict, body: str) -> tuple[bytes, list[str
         return out
     if _norm(back.meta) != _norm(meta):
         return data, [f"직렬화 왕복 불일치 — 쓰지 않았다: {sorted(back.meta)} vs {sorted(meta)}"]
-    return data, _validate_node(path, back, body)
+    return data, _validate_node(path, back, body, idx)
 
 
-def _validate_node(path: Path, node, body: str) -> list[str]:
+def _validate_node(path: Path, node, body: str, idx) -> list[str]:
     """계약 + 그 노드에서 **나가는 참조**의 위상. 전역 검사는 하지 않는다 —
     남이 만든 위반 때문에 내 쓰기가 막히면 안 된다 (설계 D10)."""
     errs = list(contract.validate(node))
-    idx = graph.Index()
     kind = graph.space_of(path)
     for pred in contract.PREDICATES:
         for t in node.edges(pred):
@@ -535,12 +539,11 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
     return []
 
 
-def _dangling_of(path: Path, meta: dict, body: str) -> list[str]:
+def _dangling_of(path: Path, meta: dict, body: str, idx) -> list[str]:
     """그 노드의 미해석 참조 — 위반이 아니라 경고. 응답에 실어 에이전트가
     조용히 dangling을 쌓지 않게 한다(`list_nodes` 제거의 부작용 차단)."""
     node = meta if isinstance(meta, contract.Node) else \
         contract.Node(path=path, meta=meta, body=body)
-    idx = graph.Index()
     out = []
     for t in set(node.wikilinks()) | {t for p in contract.PREDICATES
                                       for t in node.edges(p)}:
@@ -709,7 +712,12 @@ def create_node(title: str, summary: str, body: str, drafter: str,
     space가 없으면 세션 라우팅으로 착지를 정하고, 라우팅이 없으면 space를
     요구한 뒤 성공 시 그 scope로 세션을 확정한다."""
     with _Lock():
-        errs = (_check_edges(edges) + _title_errors(title)
+        # 이 쓰기가 쓰는 색인은 **하나**다 (v3.7.0). 구판은 한 번의 생성에서
+        # 세 벌을 지었다 — 계약 검사·이름 유일성·검증·dangling이 각자 지었고,
+        # 그래서 체감 비용이 단가의 3배였다. 잠금 안이라 그 사이에 파일이
+        # 바뀌지 않으므로 한 벌이면 족하다.
+        idx = graph.Index()
+        errs = (_check_edges(edges, idx) + _title_errors(title)
                 + ephemeral_session_errors(session))
         if errs:
             raise WriteError("계약 위반 — 쓰지 않았다", errs)
@@ -749,8 +757,10 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 f"노드를 둘 수 없는 구획이다: {dest} {kind} — 노드는 군집 안에 둔다"
                 f" (Space 루트 직속 불가, Mechanism §1 4항)")
 
-        idx = graph.Index()
-        if title in idx.nodes or title in getattr(idx, "broken", {}):
+        # 이름 색인 하나로 끝난다 — 구판의 `nodes ∪ broken`과 **같은 집합**임이
+        # 1,809·10,000 노드 양쪽에서 차집합 공집합으로 검증됐다(심의 실측).
+        # 이 검사 때문에 전 노드를 열 이유가 없다.
+        if title in idx.names:
             raise WriteError(
                 f"같은 이름의 노드가 이미 있다: {title} — 생성하면 중복 후보가 된다")
         clash = _name_collision(dest_dir, title)
@@ -766,11 +776,17 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 "author": "agent", "drafter": drafter, "summary": summary}
         for pred, tg in (edges or {}).items():
             meta[pred] = _as_links(pred, tg)
-        data, errs = _validate_render(path, meta, body)
+        data, errs = _validate_render(path, meta, body, idx)
         if errs:
             raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
 
         _atomic_write(path, data)
+        # 방금 쓴 노드를 손에 든 색인의 **이름 색인**에 등재한다 —
+        # `_dangling_of`가 보는 것은 쓰기 **후**의 상태여야 한다. 구판은 여기서
+        # 색인을 새로 지어 그 상태를 얻었다. 등재하지 않으면 자기 자신을
+        # 가리키는 Link가 dangling으로 잘못 실려, 오타가 아닌 것을 오타라고
+        # 알리게 된다. 판독은 `resolve`가 그때 한 번 한다(파일은 이미 있다).
+        idx.register_new(path, kind)
         # 결속은 **scope일 때만** — Domain/Person에 결속하면 자동 라우팅이
         # 존재하지 않는 `= Scope/<이름>`을 가리켜 그 키가 벽돌이 된다(7차 중대 C)
         bound_now = None
@@ -781,7 +797,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 "path": posix_rel(path, ROOT), "id": meta["id"],
                 "new_hash": sha256_bytes(data),
                 "bound_scope": bound_now,
-                "dangling": _dangling_of(path, meta, body)}
+                "dangling": _dangling_of(path, meta, body, idx)}
 
 
 def _existing_ids(idx) -> set[str]:
@@ -820,7 +836,8 @@ def update_node(name: str, body: str | None = None,
     """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
     상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다."""
     with _Lock():
-        errs = _check_edges(add_edges) + _check_edges(remove_edges)
+        idx = graph.Index()                     # 이 쓰기가 쓰는 색인은 하나다
+        errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx)
         if errs:
             raise WriteError("계약 위반 — 쓰지 않았다", errs)
         path = _live_locate(name)
@@ -883,11 +900,11 @@ def update_node(name: str, body: str | None = None,
                     "path": posix_rel(path, ROOT), "id": n.id,
                     "new_hash": sha256_file(path),
                     "edges": {p: n.edges(p) for p in contract.PREDICATES},
-                    "dangling": _dangling_of(path, n.meta, n.body)}
+                    "dangling": _dangling_of(path, n.meta, n.body, idx)}
         if not only_conflicts:
             meta["updated"] = now_kst()
 
-        data, errs = _validate_render(path, meta, new_body)
+        data, errs = _validate_render(path, meta, new_body, idx)
         if errs:
             raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
         _atomic_write(path, data)
@@ -897,7 +914,7 @@ def update_node(name: str, body: str | None = None,
                "edges": {p: contract.Node(path=path, meta=meta,
                                           body=new_body).edges(p)
                          for p in contract.PREDICATES},
-               "dangling": _dangling_of(path, meta, new_body)}
+               "dangling": _dangling_of(path, meta, new_body, idx)}
         if replaced_summary is not None:
             out["replaced_summary"] = replaced_summary
         return out
@@ -907,6 +924,7 @@ def move_node(name: str, dest_space: str) -> dict:
     """군집 재배정. 이동은 바이트 불변이라 CAS가 없다(경로는 상태, 동일성은
     id). pin된 군집은 출발·도착 어느 쪽이든 거부한다(시행령 §3 4항)."""
     with _Lock():
+        idx = graph.Index()                     # 이 이동이 쓰는 색인은 하나다
         path = _live_locate(name)
         if path is None or not path.is_file():
             raise WriteError(f"노드 없음: {name}")
@@ -950,10 +968,15 @@ def move_node(name: str, dest_space: str) -> dict:
         # 무해하므로(그 자리에 그 id가 없으면 안 쓰인다) 이동 **전에** 적는다.
         approvals.record_move(n.id, path, target)
         os.replace(path, target)          # 바이트 불변 — updated 갱신 없음
+        # 손에 든 색인은 이동 **전** 경로를 쥐고 있다. 갱신하지 않으면 아래
+        # `_dangling_of`가 옛 경로를 열려다 실패해 이 노드의 자기링크를
+        # dangling으로 오보한다 — `create_node`가 `register_new`로 막는 것과
+        # 같은 실패이고, 오타가 아닌 것을 오타라고 알리게 된다.
+        idx.retarget(path, target, dst_kind)
         return {"ok": True, "name": name, "id": n.id,
                 "path": posix_rel(target, ROOT),
                 "new_hash": before, "moved_from": posix_rel(path, ROOT),
-                "dangling": _dangling_of(target, n.meta, n.body)}
+                "dangling": _dangling_of(target, n.meta, n.body, idx)}
 
 
 def record_candidate(type: str, nodes: list[str], reason: str = "") -> dict:

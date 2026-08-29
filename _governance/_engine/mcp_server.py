@@ -50,26 +50,38 @@ _searcher = None
 _fingerprint: str | None = None
 
 
-def _vault_fingerprint() -> str:
-    """전 노드의 (상대경로, mtime_ns, size) digest — 순수 이동·개명도 경로가
-    바뀌므로 감지된다 (파일 정본에서 재계산 원칙)."""
+def _vault_fingerprint() -> tuple[str, bool]:
+    """**색인이 읽는 것**의 (상대경로, mtime_ns, size) digest와, 그 채취를
+    믿을 수 있는가 — 순수 이동·개명도 경로가 바뀌므로 감지된다(파일 정본에서
+    재계산 원칙).
+
+    범위가 색인보다 좁으면 그 바깥의 변경이 캐시를 무효화하지 못하고(구판은
+    노드만 봐서 `_raw`·대장의 변경을 놓쳤다), 넓으면 색인과 무관한 것이 캐시를
+    버린다. 범위 판정은 `graph.index_signature`가 한 벌로 갖는다.
+
+    둘째 값 `racy`가 참이면 채취 시각에 너무 가까운 파일이 있었다는 뜻이다 —
+    그 창 안에서는 (mtime, 크기)가 변경을 구별하지 못하므로 지문이 같다고
+    답하는 것이 곧 낡은 색인 위에서 읽는 것이 된다.
+
+    지문 자체에 시각을 섞지는 **않는다.** 섞으면 캐시 키가 내용과 무관한 값이
+    되어 창이 닫힌 뒤에도 무엇과도 맞지 않는다. 믿을지 말지는 호출부가 정한다."""
     import hashlib
+    entries, racy = graph.index_signature()
     h = hashlib.sha256()
-    for p, _k in sorted(graph.iter_nodes(), key=lambda x: str(x[0])):
-        try:
-            st = p.stat()
-        except OSError:
-            continue   # 열거와 stat 사이의 삭제 — 다음 호출의 지문이 달라진다
-        h.update(f"{p.relative_to(ROOT)}|{st.st_mtime_ns}|{st.st_size}\n".encode())
-    return h.hexdigest()
+    for rel, mtime_ns, size in entries:
+        h.update(f"{rel}|{mtime_ns}|{size}\n".encode())
+    return h.hexdigest(), racy
 
 
 def _s():
+    """검색기 캐시. racy 창 안에서는 지문을 **접어 두지 않는다** — 그 창의
+    지문은 변경을 구별하지 못하므로 키로 삼으면 낡은 색인을 붙잡게 된다.
+    창이 닫히면 그때의 지문이 정상 키가 된다."""
     global _searcher, _fingerprint
-    fp = _vault_fingerprint()
-    if _searcher is None or fp != _fingerprint:
+    fp, racy = _vault_fingerprint()
+    if _searcher is None or racy or fp != _fingerprint:
         _searcher = search_mod.Searcher()
-        _fingerprint = fp
+        _fingerprint = None if racy else fp
     return _searcher
 
 

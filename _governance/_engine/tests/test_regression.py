@@ -4929,6 +4929,12 @@ def test_new_cluster_two_phase():
     check("만료 후 새 왕복은 통과(허브 제목이라 첫-노드 규칙도 충족)",
           r9.get("ok"), r9)
 
+# ── v3.7.0 색인 재설계의 회귀 시험 ──────────────────────────────────────
+# 이 절의 시험들은 **뮤테이션 검출률로 잰다.** 통과 건수는 보호의 근거가 되지
+# 못한다는 것이 실측으로 드러났다 — 구현에 결함 17종을 심었을 때 처음 판의
+# 시험은 11종을 하나도 잡지 못했다. 그래서 각 단언은 "무엇을 망가뜨리면 이것이
+# 실패하는가"를 먼저 정하고 짰다.
+
 _FIXED_PAST = 1_700_000_000.0        # 고정 과거 시각 — 아래 `_age_all` 참조
 
 
@@ -5014,6 +5020,402 @@ def test_parse_guards():
         except yaml.YAMLError:
             check(f"{L.__name__}: 중복 키 거부", True)
     shutil.rmtree(d, ignore_errors=True)
+
+
+# ── 순회의 봉쇄와 대소문자 (v3.7.0) ─────────────────────────────────────
+def test_scan_confinement_and_case():
+    """손으로 짠 순회가 `rglob`이 하던 두 가지를 잃지 않았는가 — 대소문자
+    무시(Windows)와 vault 밖 봉쇄."""
+    # 대소문자: rglob은 Windows에서 `*.md`로 `.MD`·`.Md`를 함께 잡는다.
+    # 놓치면 그 노드가 색인에서 사라지고 표면이 **스스로 동명 중복을 만든다.**
+    up = ROOT / "= Scope/W1/regr-Case.MD"
+    try:
+        up.write_text(node_text("260806-cccc-1111", "대문자 확장자", "본문"),
+                      encoding="utf-8")
+        i = graph.Index()
+        if os.name == "nt":
+            check("Windows: 대문자 확장자도 색인에 든다",
+                  "regr-Case" in i.names, sorted(i.names)[:5])
+            r = _w(write.create_node, "regr-Case", "충돌", "본문", "fable-5",
+                   space="= Scope/W2")
+            check("다른 군집에 같은 이름을 만들지 못한다 — 전역 유일이 선다",
+                  r.get("ok") is False, r)
+            check("거부가 동명임을 밝힌다",
+                  any("이미 있다" in v for v in r.get("violations", [])), r)
+            (ROOT / "= Scope/W2/regr-Case.md").unlink(missing_ok=True)
+        else:
+            check("POSIX: 대소문자를 구분한다 — rglob과 같다",
+                  "regr-Case" not in i.names)
+    finally:
+        up.unlink(missing_ok=True)
+
+    # 봉쇄: 리파스 포인트(심볼릭 링크·정션)를 따라 내려가면 vault 밖 파일이
+    # 안쪽 노드가 된다. Windows 정션은 `is_symlink()`가 **거짓**이므로
+    # 그것만으로 거르면 뚫린다.
+    tmp = Path(tempfile.mkdtemp(prefix="osk-outside-"))
+    (tmp / "몰래").mkdir()
+    (tmp / "몰래" / "regr-외부.md").write_text(
+        node_text("260806-dddd-2222", "밖에 있다", "본문"), encoding="utf-8")
+    link = ROOT / "= Scope/W1/regr-link"
+    made = False
+    try:
+        if os.name == "nt":
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link),
+                                   str(tmp / "몰래")],
+                                  capture_output=True).returncode == 0
+        else:
+            try:
+                os.symlink(tmp / "몰래", link, target_is_directory=True)
+                made = True
+            except OSError:
+                made = False
+        if made:
+            i = graph.Index()
+            check("리파스 포인트 너머는 색인에 들지 않는다 — 봉쇄 유지",
+                  "regr-외부" not in i.names)
+            check("그 이름은 해석되지 않는다",
+                  i.resolve("regr-외부")[0] == "dangling",
+                  i.resolve("regr-외부"))
+            r = _w(write.update_node, "regr-외부", summary="밖에 쓰기")
+            check("쓰기 통로도 vault 밖 파일을 잡지 못한다",
+                  r.get("ok") is False, r)
+        else:
+            check("리파스 포인트를 만들 수 없어 건너뛴다(환경 제약)", True)
+
+        # 리파스 **파일**의 배선 — 링크 파일은 조각이 아니라 `space_of`로
+        # 보내야 vault 밖을 가리키는 것이 걸러진다. 실제 심볼릭 링크 파일은
+        # Windows에서 관리자 권한을 요구하므로 판정기만 갈아 끼워 배선을
+        # 고정한다(`is_symlink()`로 되돌리면 이 단언이 깨진다).
+        probe = ROOT / "= Scope/W1/regr-reparse.md"
+        probe.write_text(node_text("260806-eeee-3333", "리파스 배선", "본문"),
+                         encoding="utf-8")
+        seen_paths = []
+        real_space_of, real_isr = graph.space_of, graph._is_reparse
+        graph.space_of = lambda p: (seen_paths.append(Path(p)),
+                                    real_space_of(p))[1]
+        graph._is_reparse = lambda e: Path(e.path).name == "regr-reparse.md"
+        try:
+            list(graph.iter_nodes())
+        finally:
+            graph.space_of, graph._is_reparse = real_space_of, real_isr
+            probe.unlink(missing_ok=True)
+        check("리파스로 판정된 **파일**은 봉쇄 경로(`space_of`)로 간다",
+              any(p.name == "regr-reparse.md" for p in seen_paths),
+              [p.name for p in seen_paths][:4])
+    finally:
+        if made:
+            if os.name == "nt":
+                subprocess.run(["cmd", "/c", "rmdir", str(link)],
+                               capture_output=True)
+            else:
+                link.unlink(missing_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── 읽기 캐시의 서명: 범위와 racy 창 (v3.7.0) ───────────────────────────
+def test_fingerprint_scope_and_racy():
+    import mcp_server as M
+    raw_dir = ROOT / "= Scope/W1/_raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    r = raw_dir / "regr-fp-raw.md"
+    a = ROOT / "= Scope/W1/regr-fp-scope.md"
+    b = ROOT / "= Scope/W1/regr-fp-moved.md"
+    try:
+        r.write_text("원자료 1\n", encoding="utf-8")
+        a.write_text(node_text("260802-zzzz-rg07"), encoding="utf-8")
+        _age_all()
+        _entries, racy = graph.index_signature()
+        check("과거로 민 뒤에는 racy가 서지 않는다", not racy)
+        fp0, _ = M._vault_fingerprint()
+        check("파일을 건드리지 않으면 지문이 같다 — 헬퍼가 스스로 흔들지 않는다",
+              fp0 == M._vault_fingerprint()[0])
+
+        # 범위 ① 비노드(_raw) 변경이 지문을 바꾼다
+        r.write_text("원자료 2 — 길이가 다르다\n", encoding="utf-8")
+        _age_all()
+        check("비노드(_raw) 변경도 지문을 바꾼다", fp0 != M._vault_fingerprint()[0])
+
+        # 범위 ② 엔진 트리는 지문에 들지 않는다 — 들면 `.pyc` 재생성만으로도
+        # 읽기 캐시가 통째로 날아간다
+        entries, _racy = graph.index_signature()
+        eng = [rel for rel, _m, _s in entries if "_engine" in rel]
+        check("엔진 트리는 지문 범위 밖 — 색인이 읽지 않는 것은 세지 않는다",
+              not eng, eng[:4])
+        kinds = {graph._space_of_parts(tuple(rel.split("/")))[0]
+                 for rel, _m, _sz in entries}
+        check("지문에 드는 소속은 색인이 읽는 것뿐",
+              kinds <= {"domain", "person", "scope", "workbench-transit",
+                        "governance", "raw", "sources", "ledger"}, kinds)
+        check("노드 군집에서는 .md만 센다 — 색인이 그것만 읽는다",
+              all(graph._is_md(rel.rsplit("/", 1)[-1]) for rel, _m, _sz in entries
+                  if graph.is_node_home(
+                      graph._space_of_parts(tuple(rel.split("/"))))))
+
+        # 경로·크기가 서명에 실제로 실리는가
+        _age_all()
+        fp1, _ = M._vault_fingerprint()
+        os.rename(a, b)
+        _age_all()
+        check("순수 이동도 지문을 바꾼다 — 경로가 서명에 실린다",
+              fp1 != M._vault_fingerprint()[0])
+        _age_all()
+        fp2, _ = M._vault_fingerprint()
+        b.write_text(b.read_text(encoding="utf-8") + "덧붙임\n", encoding="utf-8")
+        _age_all()
+        check("같은 시각·다른 크기도 지문을 바꾼다 — 크기가 서명에 실린다",
+              fp2 != M._vault_fingerprint()[0])
+
+        # racy 창 — 아래로도 위로도 닫혀 있어야 한다
+        _age_all()
+        check("전제: 지금은 안정적", not graph.index_signature()[1])
+        b.write_text(node_text("260802-zzzz-rg07"), encoding="utf-8")
+        check("방금 쓴 파일이 있으면 racy가 선다", graph.index_signature()[1])
+        # 미래 mtime은 racy가 **아니다** — 아래만 닫으면 그 파일 하나로 읽기
+        # 캐시가 영구히 죽는다(실측: 20k에서 80 ms → 6.8~9.2 s)
+        _age_all()
+        future = time.time() + 86_400
+        os.utime(b, (future, future))
+        check("먼 미래의 mtime은 racy가 아니다 — 창은 위로도 닫힌다",
+              not graph.index_signature()[1])
+        _age_all()
+
+        # racy 창에서는 캐시를 접지 않는다. 여유를 넉넉히 **고정해** 시험이
+        # 시계에 의존하지 않게 한다 — 실측 여유는 10 ms대라 그대로 두면 파이썬
+        # 몇 줄 사이에 창이 닫혀 무엇을 시험했는지 알 수 없어진다.
+        held_margin = graph._racy_margin_cache
+        graph._racy_margin_cache = 5_000_000_000
+        try:
+            M._searcher, M._fingerprint = None, None
+            b.write_text(node_text("260802-zzzz-rg07") + "\n덧",
+                         encoding="utf-8")
+            s1 = M._s()
+            s2 = M._s()
+            check("racy 창 안에서는 매번 새 검색기 — 낡은 색인을 붙잡지 않는다",
+                  s1 is not s2)
+            check("창 안에서는 지문을 캐시 키로 접지 않는다",
+                  M._fingerprint is None)
+            _age_all()
+            s3 = M._s()
+            check("창이 닫히면 캐시가 선다", M._s() is s3)
+            check("그때는 지문이 키로 선다", M._fingerprint is not None)
+        finally:
+            graph._racy_margin_cache = held_margin
+
+        # 여유는 상수가 아니라 **재서** 정한다
+        graph._racy_margin_cache = None
+        m = graph.racy_margin_ns()
+        check("racy 여유는 바닥과 천장 사이에서 측정으로 정해진다",
+              graph._RACY_FLOOR_NS <= m <= graph._RACY_CEIL_NS, m)
+    finally:
+        for p in (r, a, b):
+            p.unlink(missing_ok=True)
+        _age_all()
+
+
+# ── 색인의 분할: 이름은 즉시, 계약은 묻는 것만 (v3.7.0) ─────────────────
+def test_index_split():
+    lazy = graph.Index()
+    check("생성만으로는 파일을 열지 않는다", not lazy.parsed, len(lazy.parsed))
+    check("이름 색인은 그 자리에서 선다", len(lazy.names) > 0, len(lazy.names))
+
+    bad = ROOT / "= Scope/W1/regr-split-bad.md"
+    bad2 = ROOT / "= Scope/W2/regr-split-bad.md"
+    good = ROOT / "= Scope/W1/regr-split-ok.md"
+    dupgood = ROOT / "= Scope/W2/regr-split-ok.md"
+    rawcollide = ROOT / "= Scope/W1/_raw/regr-split-bad.md"
+    try:
+        bad.write_text("---\nid: [닫히지 않은\n---\n본문\n", encoding="utf-8")
+        good.write_text(node_text("260806-bbbb-2222", "정상", "본문"),
+                        encoding="utf-8")
+        i = graph.Index()
+        # 등가성 — **파손이 있는 상태**에서 평가한다. 파손 0건에서 재면
+        # `names == nodes`만 확인하는 셈이라 접기의 근거가 서지 않는다.
+        check("전제: 파손이 있다", len(i.broken) > 0, sorted(i.broken))
+        check("names == nodes ∪ broken (파손 있는 상태)",
+              set(i.names) == set(i.nodes) | set(i.broken),
+              (len(i.names), len(i.nodes), len(i.broken)))
+        check("파손 파일도 이름 색인에는 있다", "regr-split-bad" in i.names)
+        check("그러나 노드는 아니다", "regr-split-bad" not in i.nodes)
+        check("파손 파일의 이름은 dangling으로 해석된다",
+              i.resolve("regr-split-bad")[0] == "dangling",
+              i.resolve("regr-split-bad"))
+        check("정상 파일은 노드로 해석된다",
+              i.resolve("regr-split-ok")[0] == "node")
+
+        # 파손 파일은 동명 판정에 **참여하지 않는다**. 세면 그 이름을 가리키는
+        # 모든 쓰기가 `모호 참조`로 막히고, 그 판정에는 소속이 없어서 뒤따르는
+        # 헌법 8조 검사가 아예 제기되지 않는다.
+        dupgood.write_text(node_text("260806-bbbb-3333", "정상 2", "본문"),
+                           encoding="utf-8")
+        i = graph.Index()
+        check("판독되는 동명 둘은 모호",
+              i.resolve("regr-split-ok")[0] == "ambiguous",
+              i.resolve("regr-split-ok"))
+        check("dup_stems가 그것을 싣는다", "regr-split-ok" in i.dup_stems)
+        dupgood.unlink()
+
+        bad2.write_text("---\n또 깨짐\n", encoding="utf-8")
+        i = graph.Index()
+        check("정상 + 파손 동명은 모호가 아니라 그 정상 노드다 — 구판 판정",
+              i.resolve("regr-split-bad") == ("dangling",)
+              or i.resolve("regr-split-bad")[0] == "dangling",
+              i.resolve("regr-split-bad"))
+        good2 = ROOT / "= Scope/W2/regr-split-ok2.md"
+        good2.write_text(node_text("260806-bbbb-4444", "정상 3", "본문"),
+                         encoding="utf-8")
+        badtwin = ROOT / "= Scope/W1/regr-split-ok2.md"
+        badtwin.write_text("---\n깨짐\n", encoding="utf-8")
+        i = graph.Index()
+        check("정상 하나 + 파손 하나면 그 정상 노드로 해석된다 — 구판 판정",
+              i.resolve("regr-split-ok2")[0] == "node",
+              i.resolve("regr-split-ok2"))
+        check("파손은 dup_stems에 실리지 않는다",
+              "regr-split-ok2" not in i.dup_stems, i.dup_stems)
+        good2.unlink(); badtwin.unlink()
+        bad2.unlink()
+
+        # 파손 노드와 이름이 겹치는 원자료는 그 이름을 되찾는다 — 이것이
+        # 헌법 8조(Domain의 `_raw` 직접 참조)를 fail-open시키지 않는 자리다
+        rawcollide.parent.mkdir(parents=True, exist_ok=True)
+        rawcollide.write_text("원자료\n", encoding="utf-8")
+        i = graph.Index()
+        check("파손 노드와 동명인 원자료는 비노드로 해석된다 — 구판 판정",
+              i.resolve("regr-split-bad")[0] == "nonnode",
+              i.resolve("regr-split-bad"))
+
+        # 대상 하나를 묻는 데 전수를 열지 않는다
+        j = graph.Index()
+        j.resolve("regr-split-ok")
+        check("이름 하나 해석은 그 후보만 연다", len(j.parsed) == 1, len(j.parsed))
+        check("전수 판독은 아직 아니다", not j._all_parsed)
+        j.nodes
+        check("`nodes`를 물으면 그때 전수 판독한다", j._all_parsed)
+        # 전수 판독은 **한 번뿐**이다 — 접어 두지 않으면 `nodes`·`by_id`·
+        # `broken`을 물을 때마다 전 노드를 다시 훑는다
+        reads = {"n": 0}
+        real_readable = graph.Index._readable
+
+        def counted_readable(self, path):
+            reads["n"] += 1
+            return real_readable(self, path)
+
+        graph.Index._readable = counted_readable
+        try:
+            j.parse_all(); j.nodes; j.by_id; j.broken; j.dup_stems
+        finally:
+            graph.Index._readable = real_readable
+        check("접어 둔 뒤에는 다시 훑지 않는다", reads["n"] == 0, reads["n"])
+    finally:
+        for p in (bad, bad2, good, dupgood, rawcollide):
+            p.unlink(missing_ok=True)
+
+    # 쓰기 표면별 전수 판독 횟수 — id 유일성 대조를 요구하는 `create_node`만
+    seen = {"n": 0}
+    real = graph.Index.parse_all
+
+    def counted(self):
+        if not self._all_parsed:
+            seen["n"] += 1
+        return real(self)
+
+    graph.Index.parse_all = counted
+    try:
+        def full_reads(label, fn):
+            seen["n"] = 0
+            r = _w(fn)
+            check(f"전제: {label} 성공", r.get("ok"), r)
+            return seen["n"]
+
+        check("create_node는 전수 판독을 부른다 — id 유일성은 전수다",
+              full_reads("create_node", lambda: write.create_node(
+                  "regr-split-w", "분할", "본문", "fable-5",
+                  space="= Scope/W1")) == 1)
+        check("update_node(근거 없는 노드)는 전수 판독을 부르지 않는다",
+              full_reads("update_node", lambda: write.update_node(
+                  "regr-split-w", summary="고침")) == 0)
+        check("move_node는 전수 판독을 부르지 않는다",
+              full_reads("move_node", lambda: write.move_node(
+                  "regr-split-w", "= Scope/Workbench/transit")) == 0)
+    finally:
+        graph.Index.parse_all = real
+        for c in ("= Scope/W1", "= Scope/Workbench/transit"):
+            (ROOT / c / "regr-split-w.md").unlink(missing_ok=True)
+
+
+# ── 순회의 결정성 (v3.7.0) ──────────────────────────────────────────────
+def test_traversal_deterministic():
+    """동명이 둘이면 색인에서 **뒤에 오는 쪽이 이긴다.** 순서가 기기마다
+    다르면 같은 트리가 기기마다 다른 노드를 가리킨다 — 정렬이 그것을 막는다."""
+    real = graph._scan
+
+    def reversed_scan(root, prefix):
+        return reversed(list(real(root, prefix)))
+
+    base = [(p, k) for p, k in graph.iter_nodes()]
+    non = dict(graph.Index().nonnode)
+    graph._scan = reversed_scan
+    try:
+        flipped = [(p, k) for p, k in graph.iter_nodes()]
+        check("열거 순서를 뒤집어도 `iter_nodes`의 순서는 같다 — 정렬이 선다",
+              base == flipped,
+              (len(base), len(flipped),
+               [str(a[0]) for a, b in zip(base, flipped) if a != b][:3]))
+        check("`nonnode` 등재도 순서에 흔들리지 않는다",
+              non == dict(graph.Index().nonnode))
+    finally:
+        graph._scan = real
+
+
+# ── 쓰기 1회 = 색인 1회 (v3.7.0) ────────────────────────────────────────
+def test_one_index_per_write():
+    built = {"n": 0}
+    real = graph.Index.__init__
+
+    def counted(self):
+        built["n"] += 1
+        return real(self)
+
+    def once(label, fn, expect_ok=True):
+        built["n"] = 0
+        r = _w(fn)
+        check(f"{label}: 색인을 한 벌만 짓는다", built["n"] == 1,
+              f"{built['n']}벌 / {r}")
+        # 비용만 재고 성공을 안 재면, 통째로 실패하기 시작해도 조용히 통과한다
+        if expect_ok:
+            check(f"{label}: 성공", r.get("ok"), r)
+        return r
+
+    graph.Index.__init__ = counted
+    try:
+        r = once("create_node", lambda: write.create_node(
+            "regr-amp", "증폭", "본문 [[regr-amp]] [[regr-amp-오타]]", "fable-5",
+            space="= Scope/W1"))
+        check("자기 자신을 가리키는 Link는 dangling이 아니다",
+              r.get("dangling") is not None
+              and "regr-amp" not in r["dangling"], r.get("dangling"))
+        check("진짜 오타는 그대로 실린다",
+              "regr-amp-오타" in (r.get("dangling") or []), r.get("dangling"))
+        once("update_node", lambda: write.update_node("regr-amp", summary="고침"))
+        once("update_node(no_change)",
+             lambda: write.update_node("regr-amp", summary="고침"))
+        once("create_node(엣지 동반)", lambda: write.create_node(
+            "regr-amp2", "증폭", "본문", "fable-5", space="= Scope/W1",
+            edges={"derived-from": "[[없는근거]]"}))
+        once("record_candidate", lambda: write.record_candidate(
+            "duplication", ["regr-amp", "regr-amp2"]))
+        m = once("move_node", lambda: write.move_node(
+            "regr-amp", "= Scope/Workbench/transit"))
+        # 이동 후에도 손에 든 색인이 옛 경로를 쥐고 있으면 자기링크가 오타로
+        # 실린다 — `create_node`가 막은 것과 같은 실패다
+        check("이동해도 자기 Link는 dangling이 아니다",
+              "regr-amp" not in (m.get("dangling") or []), m.get("dangling"))
+        check("이동 뒤에도 진짜 오타는 실린다",
+              "regr-amp-오타" in (m.get("dangling") or []), m.get("dangling"))
+    finally:
+        graph.Index.__init__ = real
+    for c in ("= Scope/W1", "= Scope/Workbench/transit"):
+        for stem in ("regr-amp", "regr-amp2"):
+            (ROOT / c / f"{stem}.md").unlink(missing_ok=True)
 
 
 # ── 엔진 판본 관문 (v3.7.0) ─────────────────────────────────────────────
@@ -5263,7 +5665,10 @@ if __name__ == "__main__":
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
                test_obsidian_tag_defense, test_index_node_not_delegation,
-               test_parse_guards, test_engine_epoch_fence]:
+               test_parse_guards, test_scan_confinement_and_case,
+               test_traversal_deterministic, test_index_split,
+               test_one_index_per_write,
+               test_fingerprint_scope_and_racy, test_engine_epoch_fence]:
         try:
             fn()
         except Exception as e:
