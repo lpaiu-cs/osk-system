@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
-from osk import core  # noqa: E402
+from osk import core, epoch  # noqa: E402
 from osk._portalock import lock_exclusive, unlock  # noqa: E402
 
 ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
@@ -128,6 +128,13 @@ def main():
     if a.once:
         print(once())
         return
+    # 데몬은 pull로 **엔진 자신을 받아온다** — 그 순간 자기가 낡는다. 이 자리는
+    # 알리기만 하고 멈추지 않는다: 데몬이 하는 일은 git 전송이지 노드 쓰기가
+    # 아니라 구판으로 도는 위험이 작은 반면, 여기서 자진 종료하면 스케줄러가
+    # 다시 띄우지 않는 트리거에서 동기화가 조용히 죽는다. 의미론적 쓰기를 막는
+    # 것은 `core._fence`의 일이다.
+    told_epoch = None      # 알린 디스크 판. 판이 또 바뀌면 다시 알린다 —
+                           # 참/거짓 래치로 두면 두 번째 교체가 침묵한다.
     while not _stop:
         try:
             st = once()
@@ -135,6 +142,19 @@ def main():
                 print(f"sync 상태: {st}", file=sys.stderr)
         except Exception as e:
             print(f"sync 실패(다음 주기 재시도): {e}", file=sys.stderr)
+        try:
+            if epoch.stale():
+                disk = epoch.on_disk()
+                if disk != told_epoch:
+                    told_epoch = disk
+                    print(f"엔진이 교체됐다 — 이 데몬은 적재판 "
+                          f"{epoch.loaded()}로 계속 돌고, 쓰기 표면은 이미 "
+                          f"거부한다. 다음 재기동에 디스크판 {disk}을(를) "
+                          f"집는다", file=sys.stderr)
+            else:
+                told_epoch = None
+        except epoch.EpochError as e:
+            print(f"엔진 판 확인 불가: {e}", file=sys.stderr)
         for _ in range(a.interval):
             if _stop:
                 break

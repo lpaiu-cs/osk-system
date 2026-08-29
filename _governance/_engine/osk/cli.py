@@ -7,7 +7,7 @@ CLI는 대화형 확인을 강제하고, 에이전트는 이 명령을 사용자
 from __future__ import annotations
 import argparse, json, sys
 
-from .core import ROOT
+from .core import ROOT, StaleEngineError
 from . import graph, approvals, authority, raw, scope_memory, validate, search, write
 
 
@@ -99,7 +99,7 @@ def _raw_cmd(a) -> None:
     if a.raw_cmd == "status":
         try:
             _emit(raw.record_state(a.session, a.record, a.space))
-        except write.WriteError as e:
+        except (write.WriteError, StaleEngineError) as e:
             _emit({"ok": False, "violations": e.violations})
             sys.exit(1)
         return
@@ -115,7 +115,7 @@ def _raw_cmd(a) -> None:
         sys.exit(f"필수 값 없음: {', '.join(missing)} — 플래그나 봉투로 준다")
     try:
         _emit(raw.append_rounds(session, record, _raw_rounds(env), space))
-    except write.WriteError as e:
+    except (write.WriteError, StaleEngineError) as e:
         _emit({"ok": False, "violations": e.violations})
         sys.exit(1)
 
@@ -133,7 +133,7 @@ def _sm_cmd(a) -> None:
         # 착지를 못 정하면 주입할 것이 없을 뿐이니 빈 출력으로 넘긴다.
         try:
             st = scope_memory.read(a.session, a.space)
-        except write.WriteError as e:
+        except (write.WriteError, StaleEngineError) as e:
             if a.json:
                 _emit({"ok": False, "violations": e.violations, **e.extra})
                 sys.exit(1)
@@ -146,7 +146,7 @@ def _sm_cmd(a) -> None:
         return
     try:
         _emit(scope_memory.replace(a.session, _stdin_text(), a.expect_hash, a.space))
-    except write.WriteError as e:
+    except (write.WriteError, StaleEngineError) as e:
         _emit({"ok": False, "violations": e.violations, **e.extra})
         sys.exit(1)
 

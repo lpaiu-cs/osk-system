@@ -14,7 +14,7 @@ pin 기록은 노출하지 않는다. 지정·해제·승인·반려의 발의�
 승인뿐이다(§6-2 8항).
 """
 from __future__ import annotations
-import os, subprocess, sys
+import sys
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -25,11 +25,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import graph, raw, validate, write  # noqa: E402
+from osk import epoch, graph, raw, validate, write  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
-from osk.core import ROOT, posix_rel, sha256_file  # noqa: E402
+from osk.core import (ROOT, StaleEngineError, posix_rel,  # noqa: E402
+                      sha256_file)
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
 # 이뤄진다(술어는 헌법 8조 5항, 충돌 유형은 Mechanism §4 3항의 목록이며,
@@ -43,10 +44,6 @@ Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
 Drafter: TypeAlias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9.\-]{0,39}$")]
 # 기록 이름도 곧 파일명이다 — 상한은 Title과 같은 자리에서 같은 이유로 건다.
 RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
-
-# CREATE_NO_WINDOW — 콘솔 서브시스템 자식(git)에 창을 주지 않는다.
-# `vault_sync._NO_WINDOW`와 같은 이유이고 같은 값이다(POSIX에선 0, 무영향).
-_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 mcp = FastMCP("osk-system")
 _searcher = None
@@ -76,31 +73,20 @@ def _s():
     return _searcher
 
 
-def _engine_rev(timeout: float = 5) -> str:
-    """지금 도는 엔진의 판. 수트는 코드를 시험하지 **돌고 있는 프로세스**를
-    시험하지 못하므로(8차의 영구 사각), 첫 호출에서 서버의 낡음이 보이게 한다.
+def _engine_state() -> dict:
+    """표면이 내는 판 — 이 서버가 **적재한** 엔진과, 디스크가 그보다 새로운가.
 
-    표면은 stdio 파이프 위에 서 있다. git에게 그 stdin을 물려주면 안 되고,
-    시한이 지나 죽인 뒤에도 파이프를 쥔 손자(자격증명 도우미 등)가 남으면
-    `subprocess.run`의 사후 `communicate()`가 **무기한** 막힌다 — 도구 호출이
-    영영 돌아오지 않는다. stdin을 끊고, 콘솔을 주지 않고, 정리에도 시한을 건다.
-    판 하나 읽자고 표면이 멈추는 일은 없어야 한다."""
-    p = None
+    구판은 여기서 `git rev-parse HEAD`를 띄웠다. 그 수는 두 방향으로 거짓을
+    말했다 — 데이터만 커밋해도 움직이고, 릴리스 없이 엔진을 고치면 안
+    움직인다. 지금은 엔진 파일 자신을 재므로 git을 부르지 않고, 그래서 표면이
+    stdio 파이프 위에서 자식 프로세스에 막히던 위험도 함께 사라졌다.
+
+    `engine_stale`이 `None`이면 판정 불가다 — 그 상태에서 쓰기는 관문이
+    거부한다(core._fence)."""
     try:
-        p = subprocess.Popen(
-            ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, creationflags=_NO_WINDOW)
-        out, _ = p.communicate(timeout=timeout)
-        return out.strip() or "unknown"
-    except Exception:
-        if p is not None:
-            try:
-                p.kill()
-                p.communicate(timeout=1)
-            except Exception:  # noqa: BLE001 — 정리 실패까지 표면을 막지 않는다
-                pass
-        return "unknown"
+        return {"engine_rev": epoch.loaded(), "engine_stale": epoch.stale()}
+    except epoch.EpochError:
+        return {"engine_rev": epoch.loaded(), "engine_stale": None}
 
 
 def _prune_titles(s):
@@ -131,7 +117,7 @@ def _guard(fn, *a, **kw) -> dict:
     """쓰기 결과 또는 위반 목록. 부분 성공은 없다 — 실패면 아무것도 쓰지 않았다."""
     try:
         return fn(*a, **kw)
-    except write.WriteError as e:
+    except (write.WriteError, StaleEngineError) as e:
         return {"ok": False, "violations": e.violations, **e.extra}
     except Exception as e:                      # 죽지 않고 보고한다(시행령 §11)
         return {"ok": False, "violations": [f"{type(e).__name__}: {e}"]}
@@ -209,8 +195,9 @@ def overview(session: str | None = None) -> dict:
     착지를 추측하지 않아도 된다. `clusters`는 **노드**를 둘 수 있는 군집 경로다
     (`create_node`의 `space`에 그대로 넣는다 — `_raw`·작업 기억의 `space`는
     이보다 좁아 `= Scope/<이름>`만 받는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
-    `broken`은 검색에 잡히지 않는 파손 파일, `engine_rev`는 지금 도는 엔진의
-    판이다(저장소보다 오래됐으면 서버를 재기동하라; `unknown`은 git을 읽지 못한 것이라 비교 불가 — 낡음이 의심되면 재기동이 안전하다). `session`을 주면 그 키의
+    `broken`은 검색에 잡히지 않는 파손 파일이다. `engine_rev`는 이 서버가
+    뜬 시각의 엔진 판이고, `engine_stale`이 참이면 디스크의 엔진이 그때와
+    **다르니** 재기동하라 — 그 전까지 쓰기는 거부된다. `session`을 주면 그 키의
     현재 결속(`session_scope`)을 함께 돌려준다."""
     idx = _s().idx
     out = {
@@ -218,7 +205,7 @@ def overview(session: str | None = None) -> dict:
         "open_cases": write._open_cases(),
         "broken": sorted(getattr(idx, "broken", None) or {}),
         "nodes": len(idx.nodes),
-        "engine_rev": _engine_rev(),
+        **_engine_state(),
     }
     if session:
         out["session_scope"] = write.resolve_session(session)

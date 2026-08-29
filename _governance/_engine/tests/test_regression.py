@@ -2059,9 +2059,11 @@ def test_broken_delegation_isolated():
 
 # ── 14g. 쓰기 통로 — 계약 강제·CAS 서명 결속·델타·라우팅 ────────────────
 def _w(fn, *a, **kw):
+    # 표면의 `_guard`와 같은 집합을 잡는다 — 수트가 잡는 것이 표면이 잡는 것보다
+    # 좁으면 거부가 수트에서만 예외로 터져 시험이 통로를 대변하지 못한다.
     try:
         return fn(*a, **kw)
-    except write.WriteError as e:
+    except (write.WriteError, core.StaleEngineError) as e:
         return {"ok": False, "violations": e.violations, **e.extra}
 
 
@@ -4925,6 +4927,220 @@ def test_new_cluster_two_phase():
     check("만료 후 새 왕복은 통과(허브 제목이라 첫-노드 규칙도 충족)",
           r9.get("ok"), r9)
 
+_FIXED_PAST = 1_700_000_000.0        # 고정 과거 시각 — 아래 `_age_all` 참조
+
+
+def _age_all(ts=_FIXED_PAST):
+    """모든 파일의 mtime을 **고정된** 과거로 민다 — racy 가드를 끄고 서명
+    자체를 시험할 수 있게 한다.
+
+    시각이 고정이어야 한다. 호출마다 `time.time() - 3600`처럼 새로 계산하면
+    파일을 하나도 건드리지 않아도 mtime이 전부 바뀌어 지문이 달라지고, 그러면
+    지문에서 경로를 지우든 크기를 지우든 범위를 좁히든 **모든 단언이 공허하게
+    통과한다**(실측으로 확인된 결함)."""
+    for root, _dirs, files in os.walk(ROOT):
+        for f in files:
+            try:
+                os.utime(os.path.join(root, f), (ts, ts))
+            except OSError:
+                pass
+
+
+def _mini_engine(tmp: Path) -> Path:
+    """엔진 트리의 사본 — 판 관련 시험이 **살아 있는 엔진에 쓰지 않게** 한다.
+
+    처음 판의 시험은 탐침 파일을 실 엔진 디렉토리에 만들었다. 그 창 동안 같은
+    기기의 다른 osk 서버 전부가 낡은 것으로 판정되어 쓰기를 거부했고, 수트가
+    강제 종료되면 파일이 남아 재기동 전까지 그 상태가 이어졌다(독립 검토 3인
+    지적)."""
+    dst = tmp / "engine"
+    (dst / "osk").mkdir(parents=True, exist_ok=True)
+    (dst / "osk" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (dst / "osk" / "b.py").write_text("y = 2\n", encoding="utf-8")
+    (dst / "tests").mkdir(exist_ok=True)
+    (dst / "tests" / "t.py").write_text("z = 3\n", encoding="utf-8")
+    (dst / "osk" / "__pycache__").mkdir(exist_ok=True)
+    (dst / "osk" / "__pycache__" / "a.pyc").write_bytes(b"\x00")
+    return dst
+
+
+# ── 엔진 판본 관문 (v3.7.0) ─────────────────────────────────────────────
+# 두 사고("구판 코드를 쥔 서버가 구 경로에 계속 씀", "폐지된 술어를 단 노드가
+# 14시간 뒤에 태어남")의 완화가 여기 선다. 구판의 완화는 `git rev-parse HEAD`를
+# 읽어 **엔진과 무관한 수**를 냈다.
+def test_engine_epoch_fence():
+    from osk import epoch, raw as raw_mod, scope_memory as sm_mod
+
+    check("적재판을 잡았다", epoch.loaded() != epoch.UNKNOWN, epoch.loaded())
+    check("정상 상태에서는 낡지 않았다", not epoch.stale())
+    check("판은 되풀이해도 같다", epoch.on_disk() == epoch.on_disk())
+
+    # 판의 재료·범위는 **엔진 사본** 위에서 시험한다 — 살아 있는 엔진에 쓰면
+    # 같은 기기의 다른 서버 전부가 그 창 동안 쓰기를 거부한다
+    tmp = Path(tempfile.mkdtemp(prefix="osk-epoch-"))
+    real_root = epoch.ENGINE_ROOT
+    try:
+        epoch.ENGINE_ROOT = _mini_engine(tmp)
+        names = {p.relative_to(epoch.ENGINE_ROOT).as_posix()
+                 for p in epoch.engine_files()}
+        check("엔진의 .py만 센다", names == {"osk/a.py", "osk/b.py"}, names)
+        check("수트는 판에 산입하지 않는다 — 시험을 고쳐도 서버는 낡지 않는다",
+              not any(n.startswith("tests/") for n in names), names)
+        d0 = epoch._digest()
+        (epoch.ENGINE_ROOT / "osk" / "__pycache__" / "b.pyc").write_bytes(b"\x01")
+        check("바이트코드는 판을 바꾸지 않는다", epoch._digest() == d0)
+        (epoch.ENGINE_ROOT / "tests" / "t.py").write_text("z = 4\n",
+                                                          encoding="utf-8")
+        check("수트를 고쳐도 판은 그대로", epoch._digest() == d0)
+        (epoch.ENGINE_ROOT / "osk" / "a.py").write_text("x = 2\n",
+                                                        encoding="utf-8")
+        check("엔진 내용이 바뀌면 판이 바뀐다", epoch._digest() != d0)
+        (epoch.ENGINE_ROOT / "osk" / "a.py").write_text("x = 1\n",
+                                                        encoding="utf-8")
+        check("되돌리면 판도 돌아온다", epoch._digest() == d0)
+        (epoch.ENGINE_ROOT / "osk" / "c.py").write_text("w = 0\n",
+                                                        encoding="utf-8")
+        check("파일이 늘면 판이 바뀐다 — 경로가 판의 재료다",
+              epoch._digest() != d0)
+        (epoch.ENGINE_ROOT / "osk" / "c.py").unlink()
+
+        # **열거 실패는 판이 아니다.** `os.walk`의 기본값은 오류를 삼키고, 그러면
+        # 빈 해시가 정상 판 행세를 해 관문이 통째로 no-op가 된다.
+        empty = tmp / "empty"
+        empty.mkdir()
+        epoch.ENGINE_ROOT = empty
+        check("엔진 `.py`가 없으면 판을 재지 못한다 — 빈 해시를 내지 않는다",
+              epoch._measure() == epoch.UNKNOWN, epoch._measure())
+        epoch.ENGINE_ROOT = tmp / "없는디렉토리"
+        check("열거 불가도 판정 불가다", epoch._measure() == epoch.UNKNOWN)
+        # **부분** 열거 실패가 진짜 위험이다. 전면 실패는 "파일 0개" 가드가
+        # 잡지만, 일부 디렉토리만 못 읽으면 `os.walk`의 기본값이 그것을 조용히
+        # 건너뛰어 **일부만 센 해시**가 정상 판 행세를 한다 — 그 프로세스는
+        # 자기가 낡았는지 영영 모른다.
+        epoch.ENGINE_ROOT = _mini_engine(tmp)
+        real_walk = epoch.os.walk
+
+        def partial(top, **kw):
+            yield (str(Path(top) / "osk"), [], ["a.py"])   # 한 갈래는 읽히고
+            onerror = kw.get("onerror")
+            if onerror is not None:                        # 다른 갈래는 실패
+                onerror(OSError(13, "권한 없음", str(top)))
+
+        epoch.os.walk = partial
+        try:
+            check("부분 열거 실패는 판정 불가다 — 일부만 센 해시를 내지 않는다",
+                  epoch._measure() == epoch.UNKNOWN, epoch._measure())
+        finally:
+            epoch.os.walk = real_walk
+
+        # `__pycache__` 제외는 판정이 아니라 **순회 비용**의 문제다 — 아래가
+        # `.py`만 모으므로 빼도 판은 같다. 그 사실을 여기 못박아 두면 다음
+        # 사람이 이 항목을 안전 장치로 오해하지 않는다.
+        epoch.ENGINE_ROOT = _mini_engine(tmp)
+        d_with = epoch._digest()
+        real_skip = epoch._SKIP_DIRS
+        epoch._SKIP_DIRS = frozenset(x for x in real_skip if x != "__pycache__")
+        try:
+            check("`__pycache__` 제외는 판을 바꾸지 않는다 — 비용 문제일 뿐",
+                  epoch._digest() == d_with)
+        finally:
+            epoch._SKIP_DIRS = real_skip
+    finally:
+        epoch.ENGINE_ROOT = real_root
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    # 관문은 **잠금을 잡은 뒤**에 선다 — 밖에서 재면 재고 잡기까지 사이에
+    # 갱신이 끼어드는 창이 열린다
+    order = []
+    real_lock = core.lock_exclusive
+    real_fence = core._fence
+
+    def spy_lock(f, *a, **kw):
+        order.append("lock")
+        return real_lock(f, *a, **kw)
+
+    def spy_fence():
+        order.append("fence")
+        return real_fence()
+
+    core.lock_exclusive, core._fence = spy_lock, spy_fence
+    try:
+        with core.mutation_lock():
+            pass
+    finally:
+        core.lock_exclusive, core._fence = real_lock, real_fence
+    check("관문은 잠금 안에서 선다", order == ["lock", "fence"], order)
+
+    # 낡음 위조 — 관문이 없으면 **성공했을** 인자로 부른다. 그래야 거부가
+    # 관문 때문임이 증명된다(자기 이유로 거부되는 인자는 아무것도 못 밝힌다).
+    real_loaded, target = epoch._LOADED, ROOT / "= Scope/W1/regr-fence.md"
+    r0 = _w(write.create_node, "regr-fence", "관문", "본문", "fable-5",
+            space="= Scope/W1")
+    check("전제: 관문 전에는 쓰기가 된다", r0.get("ok"), r0)
+    r0b = _w(write.create_node, "regr-fence-b", "관문", "본문", "fable-5",
+             space="= Scope/W1")
+    check("전제: 두 번째 노드도 만들어졌다", r0b.get("ok"), r0b)
+    h = r0["new_hash"]
+    trace = ROOT / "= Scope/W1/_raw/2026-08-30-fence.md"
+    sm_before = _w(sm_mod.read, "repo/fence")
+    try:
+        epoch._LOADED = "0000deadbeef"
+        surfaces = {
+            "create_node": lambda: _w(write.create_node, "regr-fence-2", "관문",
+                                      "본문", "fable-5", space="= Scope/W1"),
+            "update_node": lambda: _w(write.update_node, "regr-fence",
+                                      body="새 본문", expect_hash=h),
+            "move_node": lambda: _w(write.move_node, "regr-fence",
+                                    "= Scope/Workbench/transit"),
+            "record_candidate": lambda: _w(write.record_candidate,
+                                           "duplication",
+                                           ["regr-fence", "regr-fence-b"]),
+            "append_raw": lambda: _w(raw_mod.append_round, "repo/fence",
+                                     "2026-08-30-fence", "u", "a",
+                                     "= Scope/W1"),
+            "scope_memory": lambda: _w(sm_mod.replace, "repo/fence", "기억"),
+        }
+        for name, call in surfaces.items():
+            r = call()
+            check(f"낡은 프로세스의 {name} 거부", r.get("ok") is False, r)
+            check(f"{name} 거부가 재기동을 지시한다",
+                  any("재기동" in v for v in r.get("violations", [])), r)
+        vio = surfaces["create_node"]()["violations"]
+        check("거부는 적재판과 디스크판을 함께 보인다",
+              any("0000deadbeef" in v and epoch.on_disk() in v for v in vio), vio)
+        # 거부 뒤 흔적 없음 — 여섯 표면 전부
+        check("create_node: 파일이 없다",
+              not (ROOT / "= Scope/W1/regr-fence-2.md").exists())
+        check("update_node: 본문 그대로",
+              "새 본문" not in target.read_text(encoding="utf-8"))
+        check("move_node: 제자리 그대로", target.exists())
+        check("append_raw: 기록이 생기지 않았다", not trace.exists())
+        check("scope_memory: 기억이 바뀌지 않았다",
+              _w(sm_mod.read, "repo/fence").get("text")
+              == sm_before.get("text"))
+    finally:
+        epoch._LOADED = real_loaded
+
+    # 관문 거부 뒤에도 잠금이 실제로 풀렸는가 — 예외 객체를 살려 두어
+    # 참조계수가 대신 닫아 주는 것을 막고 본다
+    held = None
+    try:
+        epoch._LOADED = "0000deadbeef"
+        try:
+            with core.mutation_lock():
+                pass
+        except core.StaleEngineError as e:
+            held = e            # 프레임을 살려 둔다 — 참조계수에 기대지 않는다
+    finally:
+        epoch._LOADED = real_loaded
+    check("관문이 거부해도 잠금은 풀린다(예외를 쥔 채로도)", held is not None)
+    r1 = _w(write.update_node, "regr-fence", summary="복구 확인")
+    check("관문 해제 후 쓰기가 다시 된다", r1.get("ok"), r1)
+    del held
+    for p in (target, ROOT / "= Scope/W1/regr-fence-b.md",
+              ROOT / "= Scope/Workbench/transit/regr-fence.md"):
+        p.unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
@@ -4994,7 +5210,8 @@ if __name__ == "__main__":
                test_scope_memory, test_workbench_state_not_evidence,
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
-               test_obsidian_tag_defense, test_index_node_not_delegation]:
+               test_obsidian_tag_defense, test_index_node_not_delegation,
+               test_engine_epoch_fence]:
         try:
             fn()
         except Exception as e:
