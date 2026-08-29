@@ -4529,9 +4529,9 @@ def test_obsidian_tag_defense():
 
 # ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
 def test_cluster_overview():
-    """각 군집은 동명 허브 노드를 두고, 전 노드가 허브에서 **참조의 방향**을
-    따라 도달 가능해야 한다(헌법 3조 8항). 노드가 허브를 가리키는 역링크는
-    도달을 만들지 않는다. 저작 신설의 첫 노드는 허브 강제, 이동 형성은
+    """각 군집은 동명 허브 노드를 두고, 전 노드가 허브에서 **Link의 방향**을
+    따라 도달 가능해야 한다(헌법 3조 8항). 도달은 허브가 가리키는 것으로
+    성립하며, 역링크도 `derived-from`도 도달을 만들지 않는다. 저작 신설의 첫 노드는 허브 강제, 이동 형성은
     검증기 보고. 활성화 전에는 보고만 한다(시행령 §11 2항·3항)."""
     from osk import validate
 
@@ -4552,7 +4552,7 @@ def test_cluster_overview():
             "갈래: [[OVW-head]] · [[OVW-a]]", "fable-5", space="= Scope/OVW")
     check("동명 허브 노드는 첫 노드로 통과", r3.get("ok"), r3)
 
-    # 방향 도달 — 허브→머리→(derived-from)→조상. 역링크·섬은 고아다.
+    # 방향 도달 — 간선은 **Link만**이다. derived-from은 도달을 만들지 않는다.
     r4 = _w(write.create_node, "OVW-섬", "s", "아무도 가리키지 않는 섬.",
             "fable-5", space="= Scope/OVW")
     check("허브가 선 뒤 일반 노드 통과", r4.get("ok"), r4)
@@ -4581,7 +4581,11 @@ def test_cluster_overview():
     check("허브 존재 인식", st and st["overview"] is True, st)
     orphans = set(st.get("orphans", []))
     check("허브→머리 직접 도달", "OVW-head" not in orphans, st)
-    check("derived-from 사슬로 조상 도달", "OVW-조상" not in orphans, st)
+    # v3.6.0 — 도달은 Link만 센다. 근거는 조건부인데 도달은 필수이므로
+    # 필수를 조건부 위에 얹지 않는다(헌법 3조 8항 · Mechanism §6-1 3항).
+    # 이 항목은 v3.5.0에서 정반대였다 — 그때는 derived-from이 도달을 날랐다.
+    check("derived-from만으로는 도달하지 않는다 — 조상은 고아",
+          "OVW-조상" in orphans, st)
     check("허브에 닿는 고리는 순회가 완주한다(무한루프 없음)",
           not {"OVW-a", "OVW-b"} & orphans, st)
     check("역링크만으로는 고아 — 방향이 반대다", "OVW-역링크" in orphans, st)
@@ -4589,7 +4593,7 @@ def test_cluster_overview():
     check("닿지 않는 고리는 둘 다 고아(여기서도 종료)",
           {"OVW-c", "OVW-d"} <= orphans, st)
     check("미도달 수가 고아 목록과 일치",
-          st["unreachable"] == len(orphans) == 4, st)
+          st["unreachable"] == len(orphans) == 5, st)
 
     # 허브 노드는 군집 밖으로 이동 불가
     r7 = _w(write.move_node, "OVW", "= Scope/W1")

@@ -275,19 +275,20 @@ def validator_active(rule: str) -> bool:
 
 def cluster_overview_report(idx: "graph.Index") -> dict:
     """군집 허브 노드 검사 (헌법 3조 8항 · 시행령 §3 6항) — 군집별 (a) 동명
-    허브 노드 존재, (b) 허브에서 **참조의 방향**(헌법 8조 2항: A가 B를
-    참조하면 의존은 A→B)을 따라 출발했을 때 전 구성 노드의 도달 가능성.
-    노드가 허브를 가리키는 역방향 참조는 도달을 만들지 않는다.
+    허브 노드 존재, (b) 허브에서 **Link의 방향**(헌법 8조 4항)을 따라
+    출발했을 때 전 구성 노드의 도달 가능성. 도달은 허브가 가리키는 것으로
+    성립하고, 노드가 허브를 가리키는 것으로는 성립하지 않는다.
 
-    간선은 본문 Link와 Predicate Edge의 노드 대상이며 **군집 안으로
-    한정**한다 — 군집 밖 대상은 위상 규칙의 몫이고, 비노드 대상(원자료·
-    대장)은 노드 그래프가 아니다. Workbench 구획은 자체 계약을 따르므로
-    제외한다(§6-1 3항).
+    간선은 **본문 Link의 노드 대상만**이며 **군집 안으로 한정**한다 —
+    Predicate Edge는 근거·사건의 관계라 세지 않고(`_outgoing_refs` 참조),
+    군집 밖 대상은 위상 규칙의 몫이며, 비노드 대상(원자료·대장)은 노드
+    그래프가 아니다. Workbench 구획은 자체 계약을 따르므로 제외한다(§6-1 3항).
 
-    방향이 강제하는 형태: 허브가 갈래의 **머리**를 참조하고, 머리의
-    `derived-from` 사슬이 조상들을 잇는다 — 허브는 머리를 추적하고 역사는
-    사슬이 나른다. 순회는 방문 집합 위에서만 전진하므로 상호·자기 참조의
-    순환에서도 종료가 보장된다."""
+    이 검사는 최상위 허브만 알고 하위 허브를 구별하지 않는다 — 시행령 §3
+    7항의 "항해의 내부 노드는 허브뿐"과 "각 노드는 하나의 갈래에 속한다"는
+    검사하지 않으며, 그 판정에는 하위 허브의 기계 식별이 선행한다.
+    순회는 방문 집합 위에서만 전진하므로 상호·자기 참조의 순환에서도 종료가
+    보장된다."""
     clusters: dict = {}
     for stem, (p, _k) in idx.nodes.items():
         rel = p.relative_to(ROOT)
@@ -317,25 +318,20 @@ def cluster_overview_report(idx: "graph.Index") -> dict:
 
 
 def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
-    """`stem` 노드가 참조의 방향으로 가리키는 군집 구성원 (헌법 8조 2항).
+    """`stem` 노드가 **본문 Link로** 가리키는 군집 구성원 (헌법 8조 4항).
 
-    본문 Link는 이름형·경로형 모두 마지막 조각으로 접고, Predicate Edge는
-    id 대상(`derived-from`)을 `by_id`로, 위키링크 대상(`conflicts`의 존치
-    상대)을 이름으로 해석한다. 구성원이 아닌 대상 — 군집 밖 노드·비노드·
-    사건 — 은 마지막 교집합에서 떨어진다."""
+    Predicate Edge는 세지 않는다. 도달이 `derived-from`을 세면 고아를 지우는
+    가장 싼 길이 근거를 하나 더 다는 것이 되어, 검증기의 압력이 증거 계층으로
+    샌다 — 근거는 조건부인데(헌법 9조 1항) 도달은 필수이므로, 필수를 조건부
+    위에 얹지 않는다(Mechanism §6-1 3항).
+
+    이름형·경로형 Link 모두 마지막 조각으로 접는다. 구성원이 아닌 대상 —
+    군집 밖 노드·비노드 — 은 마지막 교집합에서 떨어진다."""
     n = idx.node(idx.nodes[stem][0])
     near = set()
     for t in set(n.wikilinks()):
         base = t.rsplit("/", 1)[-1].strip()
         near.add(base[:-3] if base.endswith(".md") else base)
-    for pred in contract.PREDICATES:
-        for tgt in n.edges(pred):
-            if re.match(ID_RE, tgt):
-                hit = idx.by_id.get(tgt)
-                if hit:
-                    near.add(hit[0].stem)
-            else:
-                near.add(tgt.rsplit("/", 1)[-1].strip())
     near.discard(stem)
     return near & members
 
