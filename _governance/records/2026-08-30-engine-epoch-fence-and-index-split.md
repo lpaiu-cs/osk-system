@@ -23,8 +23,25 @@ summary: "v3.7.0 — 판본 관문과 색인의 분할. 적용 시 살아 있는
 스스로 걸러진다. 방향이 뒤집힌다: 지금까지는 전량 재기동했음을 *믿어야* 했고,
 이후로는 잊으면 fail-closed다.
 
-적용 순서: 데몬 정지 → `osk update --apply` → **MCP 서버 전량 재기동** →
-데몬 재기동(`Stop-ScheduledTask` → `Start-`).
+적용 순서: 데몬 **프로세스** 정지 → `osk update --apply` → **MCP 서버 전량
+재기동** → 데몬 재기동.
+
+**`Stop-ScheduledTask`만으로는 데몬이 멈추지 않는다.** 예약 작업의 동작이
+`cmd /c ... pythonw.exe ...` 꼴이라 작업 인스턴스를 끝내도 손자 `pythonw`가
+살아남고, 그것이 싱글턴 잠금(`osk-sync.lock`)을 쥔 채로 남아 갱신이
+fail-closed로 멈춘다(2026-08-30 v3.7.0 적용에서 실제로 걸렸다). 프로세스를
+직접 세어 죽여야 한다:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" |
+  Where-Object { $_.CommandLine -like '*sync_daemon*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+프로세스를 셀 때 **하나를 둘로 세지 않도록** 주의한다. venv의
+`pythonw.exe`/`python.exe`는 실행 파일이 아니라 베이스 인터프리터를 자식으로
+띄우는 **런처 스텁**이라, 데몬 하나가 (venv 런처 + 시스템 파이썬 자식) 두
+프로세스로 보인다. 부모-자식 관계를 보면 갈린다. MCP 서버도 같은 모양이다.
 
 ## 왜 관문인가
 
