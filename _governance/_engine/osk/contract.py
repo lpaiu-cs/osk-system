@@ -67,9 +67,29 @@ class Node:
                 for m in re.finditer(r"!?\[\[([^\]#|]+)", body)]
 
 
-class _StrictLoader(yaml.SafeLoader):
+# libyaml(C) 로더가 있으면 그것을 바닥으로 쓴다 — 실 vault 1,811건 실측으로
+# **값 차이 0·오류 차이 0**이고, 되풀이 측정의 최소값 기준 **9.2배**다(부하가
+# 걸린 기기에서 0.68초 → 0.074초; 무부하에서는 더 짧다). 심의 문서
+# `design-review-index-cache.md`는 같은 비교를 6배(0.302→0.050)로 적었으므로,
+# 이 수를 인용할 때는 어느 조건의 값인지 함께 적어야 한다. 중복 키 생성자도
+# C 로더에서 그대로 작동한다(실측).
+#
+# 폴백은 선택이 아니라 조건이다. 이 기기에서도 살아 있는 `mcp_server.py` 24개
+# 중 **12개**가 `.venv`가 아닌 시스템 파이썬으로 돌고(실측), requirements는
+# PyYAML의 버전도 libyaml 동봉 여부도 묶지 않는다. "이 환경에 깔려 있다"를
+# 전제로 쓰면 다른 인터프리터에서 import가 죽는다 — 이식성은 이 체계의 선언된
+# 선호다.
+_LoaderBase = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+class _StrictLoader(_LoaderBase):
     """중복 키를 last-wins로 삼키지 않는 로더 — `conflicts`를 두 번 쓰면
     앞 엣지가 조용히 사라진다. frontmatter의 중복 키는 오류다."""
+
+
+class _PureStrictLoader(yaml.SafeLoader):
+    """같은 규율의 **순수 파이썬** 로더. C 로더와 판정이 갈리는 입력을 구판과
+    같게 다루기 위해서만 쓴다(`parse`의 탭 처리)."""
 
 
 def _no_dup_keys(loader, node, deep=False):
@@ -83,8 +103,40 @@ def _no_dup_keys(loader, node, deep=False):
     return out
 
 
-_StrictLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_keys)
+for _L in (_StrictLoader, _PureStrictLoader):
+    _L.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_keys)
+
+
+# frontmatter 흐름 컬렉션의 중첩 상한. C 로더는 깊은 중첩에서 **네이티브 스택
+# 오버플로**로 프로세스를 죽인다 — 실측: 깊이 ~2,700에서 종료코드 127, 파이썬
+# 트레이스백이 한 글자도 없다. 순수 로더의 `RecursionError`는 파이썬 예외라
+# `except`가 잡아 그 파일을 broken으로 보냈지만, 네이티브 크래시는 표면의
+# `_guard`도 검증기의 `guard`도 잡지 못한다 — 시행령 §11("실패는 보류·보고")이
+# 파서 교체로 깨지는 자리다. 그리고 그런 파일은 vault 안에 있으므로 git으로
+# 전 기기에 퍼져 모든 서버가 함께 죽고, 재기동해도 다시 죽는다.
+#
+# 그래서 로더에 넘기기 **전에** 여기서 센다. 값의 근거: 실 vault 1,811건의
+# 최대 깊이가 3이고(노드 frontmatter는 평평하다 — 필수 6필드 + 술어 목록),
+# 구판 순수 로더의 실측 경계는 493이었다. 32는 실사용의 10배이고 크래시
+# 임계의 1/80이다. 33~493 구간은 구판이 받아들이던 자리이므로 이것은
+# **조이는 변경**이며, 실 vault에 그 구간의 파일은 0건이다.
+_MAX_FM_DEPTH = 32
+
+
+def _flow_depth(text: str) -> int:
+    """흐름 컬렉션(`[`·`{`)의 최대 중첩. 따옴표 안까지 세므로 실제보다 크게
+    나올 수 있는데, 그 방향이 안전하다 — 문자열에 괄호를 32단 쌓은
+    frontmatter는 어느 쪽으로 읽어도 노드 계약이 아니다."""
+    d = mx = 0
+    for c in text:
+        if c in "[{":
+            d += 1
+            if d > mx:
+                mx = d
+        elif c in "]}":
+            d -= 1
+    return mx
 
 
 def parse(path: Path | str) -> Node:
@@ -96,8 +148,23 @@ def parse(path: Path | str) -> Node:
     if end < 0:
         raise ValueError(f"frontmatter 미종결: {p}")
     fm_text = t[4:end]
+    depth = _flow_depth(fm_text)
+    if depth > _MAX_FM_DEPTH:
+        raise ValueError(
+            f"frontmatter 중첩이 너무 깊다: {p} — 깊이 {depth}(상한 "
+            f"{_MAX_FM_DEPTH}). 노드 frontmatter는 평평하다")
+    # 파서를 바꾸면서 **거부되던 것이 통과하게** 두면 최적화가 아니라 계약의
+    # 완화다. C 로더는 평문 스칼라 안의 탭(`summary: a<TAB>b`, `a:<TAB>b`)을
+    # 통과시키는데 순수 로더는 ScannerError로 거부한다(실측). 그 입력만 순수
+    # 로더에게 맡겨 구판과 **같은 판정·같은 메시지**를 받는다.
+    #
+    # 탭 전부를 거부하는 것은 과잉이었다 — 따옴표·블록(`|`)·접힘(`>`) 스칼라와
+    # 주석 안의 탭은 두 로더가 **똑같이 통과**시키므로, 그것까지 막으면 구판이
+    # 받아들이던 노드가 새로 broken이 된다. 실 vault 1,811건 중 탭이 든
+    # frontmatter는 0건이라 이 갈래를 타는 비용도 사실상 0이다.
+    loader = _PureStrictLoader if "\t" in fm_text else _StrictLoader
     try:
-        meta = yaml.load(fm_text, Loader=_StrictLoader) or {}
+        meta = yaml.load(fm_text, Loader=loader) or {}
     except yaml.YAMLError as e:
         raise ValueError(f"frontmatter 파싱 실패: {p} — {e}") from e
     if not isinstance(meta, dict):

@@ -12,6 +12,8 @@ import errno, json, os, shutil, stat, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 ENGINE = Path(__file__).resolve().parent.parent
 _TMP = tempfile.TemporaryDirectory(prefix="osk-regr-")
 MINI = Path(_TMP.name) / "mini-vault"
@@ -4964,6 +4966,56 @@ def _mini_engine(tmp: Path) -> Path:
     return dst
 
 
+# ── 판독 계약: 깊이 가드와 탭 (v3.7.0) ──────────────────────────────────
+def test_parse_guards():
+    """C 로더로 바꾸면서 (a) 프로세스를 죽이는 입력과 (b) 거부되던 것이
+    통과하게 되는 입력을 둘 다 막았는가."""
+    d = Path(tempfile.mkdtemp(prefix="osk-parse-"))
+    HEAD = "id: 260830-0000-0000\ncreated: 2026-08-30 00:00 (KST)\n"
+
+    def parse(fm, name):
+        f = d / f"{name}.md"
+        f.write_text(f"---\n{fm}\n---\n본문\n", encoding="utf-8")
+        try:
+            contract.parse(f)
+            return None
+        except ValueError as e:
+            return str(e)
+
+    # (a) 깊이 — C 로더는 깊은 중첩에서 네이티브 스택 오버플로로 **프로세스를
+    # 죽인다**(파이썬 예외가 아니라 종료코드 127). 로더에 닿기 전에 막는다.
+    deep = parse(HEAD + "summary: " + "[" * 3000 + "]" * 3000, "deep")
+    check("깊은 중첩은 로더에 닿기 전에 거부된다 — 프로세스가 살아 있다",
+          deep is not None and "깊이" in deep, deep)
+    check("거부가 상한을 밝힌다", deep and str(contract._MAX_FM_DEPTH) in deep, deep)
+    check("실 vault 최대 깊이(3)는 통과",
+          parse(HEAD + "summary: " + "[" * 3 + "]" * 3, "d3") is None)
+    check("상한 바로 아래는 통과",
+          parse(HEAD + "summary: " + "[" * contract._MAX_FM_DEPTH
+                + "]" * contract._MAX_FM_DEPTH, "at") is None)
+
+    # (b) 탭 — 두 로더가 갈리는 것은 **평문 스칼라**뿐이다. 그 자리만 순수
+    # 로더에게 맡겨 구판과 같은 판정을 받는다. 전부 거부하면 구판이 받아들이던
+    # 노드가 새로 broken이 된다.
+    check("평문 스칼라의 탭은 거부 — 구판과 같다",
+          parse(HEAD + "summary: a\tb", "plain") is not None)
+    for label, fm in (("겹따옴표", HEAD + 'summary: "a\tb"'),
+                      ("홑따옴표", HEAD + "summary: 'a\tb'"),
+                      ("블록 스칼라", HEAD + "summary: |-\n  a\tb"),
+                      ("주석", HEAD + "summary: ok  # note\there")):
+        check(f"탭이 {label} 안에 있으면 통과 — 구판이 받아들이던 것이다",
+              parse(fm, f"tab-{abs(hash(label))}") is None)
+
+    # 두 로더가 같은 규율을 갖는지 — 폴백 경로가 살아 있는지도 여기서 본다
+    for L in (contract._StrictLoader, contract._PureStrictLoader):
+        try:
+            yaml.load("id: a\nid: b\n", Loader=L)
+            check(f"{L.__name__}: 중복 키 거부", False, "통과해 버렸다")
+        except yaml.YAMLError:
+            check(f"{L.__name__}: 중복 키 거부", True)
+    shutil.rmtree(d, ignore_errors=True)
+
+
 # ── 엔진 판본 관문 (v3.7.0) ─────────────────────────────────────────────
 # 두 사고("구판 코드를 쥔 서버가 구 경로에 계속 씀", "폐지된 술어를 단 노드가
 # 14시간 뒤에 태어남")의 완화가 여기 선다. 구판의 완화는 `git rev-parse HEAD`를
@@ -5211,7 +5263,7 @@ if __name__ == "__main__":
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
                test_obsidian_tag_defense, test_index_node_not_delegation,
-               test_engine_epoch_fence]:
+               test_parse_guards, test_engine_epoch_fence]:
         try:
             fn()
         except Exception as e:
