@@ -449,16 +449,21 @@ def _check_edges(edges: dict | None, idx) -> list[str]:
                             f"{pred} → {t!r}")
                 continue
             if pred == "derived-from" and not re.match(ID_RE, t.strip()):
-                # 노드 근거의 동일성은 **id**다(Mechanism §8 2항) — 경로·이름은
-                # 상태라 이동·개명에 끊어지고, 같은 이름이 재사용되면 다른
-                # 노드를 가리킨다. 비노드 근거만 위키링크로 단다.
+                # 노드 근거는 **제목 위키링크**로 단다(Mechanism §8 2항).
+                #
+                # 경로 표기는 쓰지 않는다. 근거로 삼았던 "경로·이름은 상태라
+                # 끊어진다"는 이름에 대해서는 사실이 아니다 — `move_node`는
+                # 디렉토리만 바꾸고 이름 색인은 경로와 무관하다. 오히려
+                # **경로형이 이동에 끊어진다**(resolve의 `/` 갈래는 그 자리에
+                # 파일이 없으면 dangling). 게다가 `contract.target_stem`이
+                # 경로형과 이름형을 같은 키로 접으므로 resolve 밖에서는
+                # 구별되지도 않는다. 제목은 전역에서 유일하니 경로가 필요 없다.
                 s = t.strip()
                 inner = s[2:-2].strip() if s.startswith("[[") and s.endswith("]]") else s
-                kind = idx.resolve(inner)
-                if kind[0] in ("node", "ambiguous"):
+                if "/" in inner and idx.resolve(inner)[0] == "node":
                     errs.append(
-                        f"derived-from의 노드 근거는 id로 단다: {t} — 경로·이름은 "
-                        f"상태라 이동·개명에 끊어진다. 그 노드의 id를 쓰라 "
+                        f"derived-from의 노드 근거에 경로 표기는 쓰지 않는다: {t} — "
+                        f"경로는 이동에 끊어진다. 그 노드의 **제목**을 쓰라 "
                         f"(비노드 근거만 [[경로#앵커]])")
                 continue
             if pred == "conflicts" and not re.match(CASE_RE, t.strip()):
@@ -793,7 +798,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 f"체크아웃에서 충돌한다(한쪽만 남는다)")
 
         now = now_kst()
-        meta = {"id": new_node_id(_existing_ids(idx)),
+        meta = {"id": new_node_id(),
                 "created": now, "updated": now,
                 "author": "agent", "drafter": drafter, "summary": summary}
         for pred, tg in (edges or {}).items():
@@ -840,25 +845,20 @@ def _require_complete(idx) -> None:
             "확인하고 다시 보내라."])
 
 
-def _existing_ids(idx) -> set[str]:
-    """전수 중복 대조용 id 집합 (Mechanism §2 1항).
-
-    파싱 실패 노드는 id를 **알 수 없다.** 건너뛰면 "기존 id 전수와 대조했다"고
-    말할 수 없으므로, 그런 파일이 있으면 여기서 거부한다 — 유일성의 담보는
-    길이가 아니라 이 검증이라고 §2 1항이 명시한다. 파손 파일은 드물고 검증기가
-    이미 표면화하므로, 고치라고 말하는 편이 모르는 채 id를 발급하는 것보다
-    싸다."""
-    if idx.broken:
-        raise WriteError(
-            "판독할 수 없는 노드가 있어 id 전수 대조가 성립하지 않는다 — "
-            "쓰지 않았다",
-            [f"판독 실패: {stem} — {why}" for stem, why in
-             sorted(idx.broken.items())][:8] + [
-                "그 파일의 id를 알 수 없으므로 새 id가 겹치지 않는다고 증명할 "
-                "수 없다(Mechanism §2 1항). 먼저 고치거나 노드 군집 밖으로 "
-                "옮겨라."])
-    return {n.id for n in (idx.parsed[p] for p, _k in idx.nodes.values())
-            if n.id}
+# 파손 파일에 대한 생성 관문은 **두지 않는다.**
+#
+# v3.7.2까지는 `_existing_ids` 안에 그런 관문이 있었고 근거는 id였다 — "그
+# 파일의 id를 모르면 새 id가 겹치지 않는다고 증명할 수 없다". 근거는 §4-1이
+# 지웠지만 관문 자체는 다른 일을 하고 있었다: 파손 파일이 오래 남지 못하게
+# 하는 **강제 함수**. 그것을 제자리에 다시 세우려 했으나 값이 맞지 않는다 —
+# "파손이 있는가"를 물으려면 `idx.broken`을 봐야 하고, 그것은 전수 판독을
+# 강제한다. §4-1이 없앤 6.4초를 관문 하나에 도로 내는 셈이다.
+#
+# 대신 알림에 기댄다. `overview`가 이미 `broken`을 싣고, 그 자리에서는 색인이
+# 이미 파싱돼 있어 **무료**다. 세션 시작마다 돌므로 오래 숨지 않는다.
+#
+# 관문을 되살리고 싶어지면 조건은 하나다: **전수 판독이 이미 일어난 자리**에
+# 두어야 한다. 쓰기 통로는 그런 자리가 아니다.
 
 
 def _as_list(v) -> list:
@@ -866,8 +866,17 @@ def _as_list(v) -> list:
 
 
 def _as_links(pred: str, targets) -> str | list:
-    """입력 대상을 저장 표기로 접는다. `derived-from`의 id 대상은 맨값으로
-    남기고, 그 밖(비노드 경로·conflicts 사건)은 위키링크로 감싼다."""
+    """입력 대상을 저장 표기로 접는다 — 맨값은 위키링크로 감싸고, 이미
+    위키링크면 그대로 둔다. `derived-from`의 id 맨값만 감싸지 않는다.
+
+    v3.7.3부터 노드 근거의 정본 표기는 **제목 위키링크**이므로, 제목을 맨값으로
+    받으면 여기서 `[[제목]]`이 된다. id 맨값을 그대로 두는 것은 **구형 표기의
+    호환**이다(§8 2항 — 계속 해석한다).
+
+    id 입력을 제목으로 **정규화하지 않는다.** 정규화하려면 id→노드 해석이
+    필요하고 그것은 전수 판독을 부르는데, 이 함수는 `add_edges`·`remove_edges`
+    경로에서 **이미 저장된 간선까지** 다시 접는 자리라 호출자가 요청하지 않은
+    간선을 바꾸게 된다. 구형 표기의 이관은 별도 작업이다."""
     out = []
     for t in _as_list(targets):
         s = str(t).strip()
