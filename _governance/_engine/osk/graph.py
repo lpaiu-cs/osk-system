@@ -652,12 +652,15 @@ def topology_check(idx: Index) -> list[str]:
                     continue
                 errs.append(f"conflicts 대상 부적격: {stem} → {name} ({r[0]})")
                 continue
-            if pred == "derived-from" and not re.match(ID_RE, name) \
-                    and r[0] in ("node", "ambiguous"):
-                # 노드 근거의 동일성은 id다 — 경로·이름은 상태이므로 이동·개명에
-                # 끊어지고, 같은 이름이 재사용되면 다른 노드를 가리킨다
-                # (Mechanism §8 2항 · 헌법 8조 5항).
-                errs.append(f"derived-from 노드 대상은 id로 단다: {stem} → {name}")
+            if pred == "derived-from" and "/" in name and r[0] == "node":
+                # 노드 근거는 **제목**으로 단다(Mechanism §8 2항). 경로 표기는
+                # 이동에 끊어지고(위 `/` 갈래는 그 자리에 파일이 없으면
+                # dangling), `contract.target_stem`이 경로형과 이름형을 같은
+                # 키로 접어 여기 밖에서는 구별되지도 않는다. 제목은 전역에서
+                # 유일하므로 경로가 필요하지 않다.
+                errs.append(
+                    f"derived-from 노드 대상에 경로 표기는 쓰지 않는다: "
+                    f"{stem} → {name} (제목을 쓰라)")
                 continue
             if r[0] in ("external", "dangling"):
                 continue  # 외부·미해석 — 소속 제한 없음 (dangling은 경고로 별도 보고)

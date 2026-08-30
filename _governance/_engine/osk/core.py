@@ -199,7 +199,14 @@ class mutation_lock:
 
 TS_FMT = "%Y-%m-%d %H:%M (KST)"          # Mechanism §2 2항 — frontmatter 시각
 TS_RE = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \(KST\)$"
-ID_RE = r"^\d{6}-[0-9a-z]{4}-[0-9a-z]{4}$"  # Mechanism §2 1항 — YYMMDD-ssss-rrrr
+# Mechanism §2 1항 — YYMMDD-ssss-rrrrrrrr. 무작위부는 8자이며, 4자인 구형
+# id도 그대로 유효하다(길이가 다르므로 신·구가 충돌할 수 없다).
+#
+# 이것은 유효성 검사가 아니라 **판별자**다 — "이 문자열은 id인가 이름인가"를
+# 가르는 자리로 여섯 곳에서 쓰인다(resolve·_score_key·_live_locate·_as_links·
+# _check_edges·read_node). 넓히면 id로 읽히는 노드 제목의 집합이 넓어지므로,
+# 넓히는 폭은 4|8 두 값으로 한정한다.
+ID_RE = r"^\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?$"
 RID_RE = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$"
 CASE_RE = r"^CASE-\d{4}-\d+$"            # Mechanism §4 3항 — CASE-<연도>-<일련>
 
@@ -222,15 +229,27 @@ def b36(n: int, width: int) -> str:
     return s.rjust(width, "0")
 
 
-def new_node_id(existing: set[str], when: datetime | None = None) -> str:
-    """생성 시 자동 부여. 유일성의 담보는 전수 중복 검증(Mechanism §2 1항).
-    날짜·경과초는 created와 같은 KST 시계에서 뽑는다."""
+def new_node_id(when: datetime | None = None) -> str:
+    """생성 시 자동 부여 (Mechanism §2 1항). 날짜·경과초는 created와 같은
+    KST 시계에서 뽑는다.
+
+    구판은 여기서 **기존 id 전수와 대조**했다. 그 대조는 frontmatter를 전부
+    열어야 성립하므로 25,000 노드에서 생성 하나가 전역 잠금을 6.4초 더 쥐었다
+    (실측). 대조를 싸게 하는 길은 없었다 — "오늘 만든 것만 보자"도 어느 것이
+    오늘 것인지가 파일 안에 있어 성립하지 않고, 파일 mtime은 clone·복원이
+    덮어써 가장 필요할 때 가장 틀린다.
+
+    그래서 담보를 **폭**으로 옮겼다. 앞 11자가 결정적이라 충돌은 같은 초
+    안에서만 일어나는데, 무작위 8자(36**8 ≈ 2**41.4)면 같은 초에 23만 건을
+    부여해도 충돌이 1%에 못 미친다. 남는 위험은 사후 전수 대조가 잡고, 겹친
+    id를 만나면 표면이 읽기도 쓰기도 거부한다(v3.7.2).
+
+    대조를 되살리고 싶어지면 먼저 이것을 보라: 중복 id의 실제 발생원은 이
+    함수가 아니라 **파일 복제**(사본 만들기·복원·병합의 수동 해결)이며, 그
+    경로는 여기를 거치지 않는다. 대조는 그것을 막지 못했다."""
     d = when or datetime.now(KST)
     secs = d.hour * 3600 + d.minute * 60 + d.second
-    while True:
-        i = f"{d:%y%m%d}-{b36(secs, 4)}-{''.join(random.choices(B36, k=4))}"
-        if i not in existing:
-            return i
+    return f"{d:%y%m%d}-{b36(secs, 4)}-{''.join(random.choices(B36, k=8))}"
 
 
 def sha256_file(p: Path | str) -> str:

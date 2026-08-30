@@ -1379,12 +1379,19 @@ def test_topology_rejects_wiki_node_derived_from():
     try:
         target.write_text(node_text("260802-zzzz-topo", "대상", "본문"),
                           encoding="utf-8")
-        bad.write_text(node_text("260802-zzzz-tbad", "비-id 근거", "본문",
+        bad.write_text(node_text("260802-zzzz-tbad", "제목 근거", "본문",
                                  'derived-from: "[[regr-topo-t]]"\n'),
                        encoding="utf-8")
         errs = graph.topology_check(graph.Index())
-        check("위키 표기의 노드 근거를 위반으로 잡는다",
-              any("id로 단다" in e and "regr-topo-bad" in e for e in errs), errs)
+        check("제목 표기의 노드 근거는 위반이 아니다 (v3.7.3)",
+              not any("regr-topo-bad" in e for e in errs), errs)
+        bad.write_text(node_text("260802-zzzz-tbad", "경로 근거", "본문",
+                                 'derived-from: "[[= Scope/W1/regr-topo-t]]"\n'),
+                       encoding="utf-8")
+        errs = graph.topology_check(graph.Index())
+        check("경로 표기의 노드 근거를 위반으로 잡는다",
+              any("경로 표기는 쓰지 않는다" in e and "regr-topo-bad" in e
+                  for e in errs), errs)
         bad.write_text(node_text("260802-zzzz-tbad", "id 근거", "본문",
                                  "derived-from: 260802-zzzz-topo\n"),
                        encoding="utf-8")
@@ -2436,20 +2443,33 @@ def test_candidate_needs_distinct():
 
 # ── 14o. 엣지 표기 동일성 — 경로형과 스템형은 같은 대상 (8차 잔여 1) ────
 def test_edge_target_normalization():
-    """derived-from의 **노드** 근거는 id로만 단다(Mechanism §8 2항) — 경로·이름은
-    상태라 이동·개명에 끊어진다. 비노드 근거는 위키링크로 그대로 받는다."""
+    """derived-from의 **노드** 근거는 제목으로 단다(Mechanism §8 2항, v3.7.3).
+
+    구판은 반대였다 — id만 받고 이름·경로를 거부했다. 근거는 *"경로·이름은
+    상태라 이동·개명에 끊어진다"*였는데, 이름에 대해서는 사실이 아니었다:
+    `move_node`는 디렉토리만 바꾸고 이름 색인은 경로와 무관하다. **끊어지는
+    것은 경로형 쪽**이므로 그것만 거부한다. 구형 id 표기는 계속 받는다."""
     r = _w(write.create_node, "regr-norm-t", "대상", "본문", "fable-5",
            space="= Scope/W1")
     tid = r["id"]
-    for form in ("= Scope/W1/regr-norm-t", "regr-norm-t"):
-        bad = _w(write.create_node, "regr-norm-x", "경로형 근거", "본문",
-                 "fable-5", space="= Scope/W1", edges={"derived-from": form})
-        check(f"노드 근거의 비-id 표기는 거부: {form}", not bad["ok"], bad)
-        check("거부 사유가 id를 요구한다",
-              any("id로 단다" in v for v in bad.get("violations", [])), bad)
+    bad = _w(write.create_node, "regr-norm-x", "경로형 근거", "본문",
+             "fable-5", space="= Scope/W1",
+             edges={"derived-from": "= Scope/W1/regr-norm-t"})
+    check("노드 근거의 경로 표기는 거부", not bad["ok"], bad)
+    check("거부 사유가 제목을 요구한다",
+          any("경로 표기는 쓰지 않는다" in v for v in bad.get("violations", [])), bad)
+    (ROOT / "= Scope/W1/regr-norm-x.md").unlink(missing_ok=True)
+
+    ok0 = _w(write.create_node, "regr-norm-n", "제목형 근거", "본문", "fable-5",
+             space="= Scope/W1", edges={"derived-from": "regr-norm-t"})
+    check("제목형 노드 근거로 생성", ok0.get("ok"), ok0)
+    saved = contract.parse(ROOT / "= Scope/W1/regr-norm-n.md").meta.get("derived-from")
+    check("제목은 위키링크로 저장된다", saved == "[[regr-norm-t]]", saved)
+    (ROOT / "= Scope/W1/regr-norm-n.md").unlink(missing_ok=True)
+
     r0 = _w(write.create_node, "regr-norm", "표기 정규화", "본문",
             "fable-5", space="= Scope/W1", edges={"derived-from": tid})
-    check("id 근거로는 생성", r0["ok"], r0)
+    check("구형 id 근거도 계속 받는다", r0["ok"], r0)
     r1 = _w(write.update_node, "regr-norm", add_edges={"derived-from": tid})
     check("같은 id 추가는 중복 등재하지 않는다", r1.get("no_change") is True, r1)
     r2 = _w(write.update_node, "regr-norm",
@@ -5075,23 +5095,80 @@ def test_incomplete_scan_refuses_writes():
             f.unlink(missing_ok=True)
 
 
-def test_broken_blocks_id_uniqueness_claim():
-    """판독할 수 없는 노드가 있으면 id 전수 대조를 **주장할 수 없다**
-    (Mechanism §2 1항). 건너뛰고 발급하면 유일성의 담보가 사라진다."""
+def test_broken_is_reported_not_gated():
+    """파손 노드는 **생성을 막지 않고 알린다** (v3.7.3에서 뒤집힌 계약).
+
+    v3.7.1은 여기에 관문을 세웠고 근거는 id였다 — *"그 파일의 id를 모르면 새
+    id가 겹치지 않는다고 증명할 수 없다"*(구 §2 1항). v3.7.3이 생성 시 전수
+    대조를 폐지하면서 그 근거가 사라졌다.
+
+    관문 자체는 다른 일 — 파손이 오래 남지 못하게 하는 강제 함수 — 을 하고
+    있었으므로 제자리에 다시 세우려 했으나 **값이 맞지 않는다.** "파손이
+    있는가"는 `idx.broken`을 물어야 알고, 그것이 전수 판독을 강제한다. 관문
+    하나에 매 생성 6.4초(25,000 노드)를 내는 셈이다.
+
+    그래서 알림에 기댄다. 이 시험은 그 맞바꿈을 **명시적으로 고정**한다 —
+    관문이 사라진 것이 사고가 아니라 판단이었음을, 그리고 알림 쪽은 살아
+    있어야 함을 함께 적는다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · `overview`가 `broken`을 싣지 않게 하면 → 알림이 죽는다
+      · 생성에 전수 판독 관문을 되살리면 → 첫 단언이 실패한다(성능 계약)
+    """
+    import mcp_server as M
     bad = ROOT / "= Scope/W1/regr-idbad.md"
     try:
         bad.write_text("---\nid: [닫히지 않은\n---\n본문\n", encoding="utf-8")
         check("전제: 파손으로 잡힌다", "regr-idbad" in graph.Index().broken)
         r = _w(write.create_node, "regr-idnew", "새 노드", "본문", "fable-5",
                space="= Scope/W1")
-        check("파손이 있으면 생성 거부", r.get("ok") is False, r)
-        check("거부가 근거 조항을 지목한다",
-              any("Mechanism §2 1항" in v for v in r.get("violations", [])), r)
-        check("거부했으므로 파일이 없다",
-              not (ROOT / "= Scope/W1/regr-idnew.md").exists())
+        check("파손이 있어도 생성은 된다", r.get("ok"), r)
+        _age_all()
+        ov = M.overview()
+        check("overview가 파손을 알린다", "regr-idbad" in (ov.get("broken") or []),
+              ov.get("broken"))
     finally:
         bad.unlink(missing_ok=True)
         (ROOT / "= Scope/W1/regr-idnew.md").unlink(missing_ok=True)
+        _age_all()
+
+
+# ── id의 폭과 판별자 (v3.7.3) ───────────────────────────────────────────
+def test_id_width_and_discriminator():
+    """새 `id`의 무작위부는 **8자**이고, 구형 4자 id는 그대로 유효하다
+    (Mechanism §2 1항).
+
+    담보가 검증에서 **폭**으로 옮겨갔으므로 폭 자체가 계약이다. 8자가
+    아니면(예: 되돌려 4자로) 같은 초 183건에서 충돌이 1%로 올라간다.
+
+    그리고 `ID_RE`는 유효성 검사가 아니라 **판별자**다 — "이 문자열은 id인가
+    이름인가"를 여섯 자리에서 가른다. 넓힌 폭이 4|8 두 값에만 머무는지
+    고정한다. 넓으면 평범한 노드 제목이 id로 읽힌다."""
+    import re as _re
+    r = _w(write.create_node, "regr-idw", "폭", "본문", "fable-5",
+           space="= Scope/W1")
+    try:
+        check("생성이 성공한다", r.get("ok"), r)
+        nid = r["id"]
+        check("무작위부가 8자다", len(nid.split("-")[2]) == 8, nid)
+        check("발급한 id가 판별자를 통과한다", _re.match(core.ID_RE, nid), nid)
+        check("파일에 그 id가 적혔다",
+              contract.parse(ROOT / r["path"]).id == nid)
+
+        ok_forms = ["260802-e3k1-k7f2",            # 구형 4자 — 계속 유효
+                    "260802-e3k1-k7f2m9x3"]        # 신형 8자
+        for s in ok_forms:
+            check(f"id로 판별한다: {s}", _re.match(core.ID_RE, s), s)
+        no_forms = ["260802-e3k1-k7f",             # 3자
+                    "260802-e3k1-k7f2m",           # 5자
+                    "260802-e3k1-k7f2m9x3z",       # 9자
+                    "260802-e3k1-k7f2m9x3k7f2",    # 12자
+                    "260802-e3k1-K7F2",            # 대문자
+                    "회의록 2026-08"]              # 평범한 제목
+        for s in no_forms:
+            check(f"id가 아니라고 판별한다: {s}", not _re.match(core.ID_RE, s), s)
+    finally:
+        (ROOT / "= Scope/W1/regr-idw.md").unlink(missing_ok=True)
 
 
 # ── id 중복: 읽기와 쓰기가 갈리지 않는다 ────────────────────────────────
@@ -5524,10 +5601,13 @@ def test_index_split():
             check(f"전제: {label} 성공", r.get("ok"), r)
             return seen["n"]
 
-        check("create_node는 전수 판독을 부른다 — id 유일성은 전수다",
+        # v3.7.3 이전에는 1이었다 — id 유일성을 전수 대조로 담보했기 때문이다.
+        # 담보가 폭으로 옮겨간 뒤에는 **0이어야 한다.** 이것이 그 판의 성능
+        # 계약이며(25,000 노드에서 4.0초 → 0.55초), 되살아나면 여기서 잡힌다.
+        check("create_node는 전수 판독을 부르지 않는다 (v3.7.3)",
               full_reads("create_node", lambda: write.create_node(
                   "regr-split-w", "분할", "본문", "fable-5",
-                  space="= Scope/W1")) == 1)
+                  space="= Scope/W1")) == 0)
         check("update_node(근거 없는 노드)는 전수 판독을 부르지 않는다",
               full_reads("update_node", lambda: write.update_node(
                   "regr-split-w", summary="고침")) == 0)
@@ -5865,7 +5945,8 @@ if __name__ == "__main__":
                test_obsidian_tag_defense, test_index_node_not_delegation,
                test_read_is_bound_to_bytes,
                test_incomplete_scan_refuses_writes,
-               test_broken_blocks_id_uniqueness_claim,
+               test_broken_is_reported_not_gated,
+               test_id_width_and_discriminator,
                test_duplicate_id_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_traversal_deterministic, test_index_split,
