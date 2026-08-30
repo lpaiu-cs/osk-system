@@ -489,6 +489,17 @@ class Index:
         말할 수 없다 — 쓰기는 거부하고 읽기 캐시는 접어 두지 않는다."""
         return not self.scan_errors
 
+    def candidates(self, name: str) -> list[Path]:
+        """그 이름을 가진 노드 파일 **전부**(판독 여부 무관).
+
+        쓰기 통로가 이름을 파일로 해석할 때 쓴다. 구판은 그 자리에서
+        파일시스템을 다시 훑었는데, 그 금지의 근거는 *"mcp_server의 fingerprint
+        캐시 색인으로 해석하면 낡은 경로에 작용한다"*였다 — 쓰기 통로가 쓰는
+        것은 캐시가 아니라 **잠금 안에서 방금 지은** 색인이므로 그 자체가
+        라이브 패스다. 같은 잠금 안에서 같은 디렉토리를 두 번 읽는 것은 순수
+        중복이었다(실측: 25,000 노드에서 289 ms)."""
+        return [p for p, _k in self._by_name.get(name, [])]
+
     def register_new(self, path: Path, kind: tuple) -> None:
         """방금 쓴 노드를 손에 든 색인에 등재한다 — 쓰기 **후** 상태를 봐야
         하는 소비자(`_dangling_of`)가 자기 자신을 가리키는 Link를 dangling으로

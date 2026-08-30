@@ -161,19 +161,28 @@ _Lock = mutation_lock
 
 # ── 파일 해석·직렬화 ─────────────────────────────────────────────────────
 
-def _live_locate(name: str) -> Path | None:
-    """이름 → 파일. **라이브 파일시스템**을 훑는다(잠금 안에서만 부른다).
+def _live_locate(name: str, idx) -> Path | None:
+    """이름 → 파일. **잠금 안에서 지은 색인**으로 해석한다.
 
     같은 이름이 둘 이상이면 **거부한다** — 읽기(색인)와 쓰기가 서로 다른 쪽을
     고르면 에이전트가 본 파일과 고쳐지는 파일이 달라진다. 표면 자신은 중복을
     만들 수 없으므로(create_node가 동명을 거부한다) 중복은 언제나 외부 기원이며,
-    그렇기에 표면이 임의로 한쪽을 택하는 것이 더 나쁘다."""
-    hits = [p for p, _k in graph.iter_nodes() if p.stem == name]
+    그렇기에 표면이 임의로 한쪽을 택하는 것이 더 나쁘다.
+
+    구판은 여기서 파일시스템을 **다시 훑었다.** 그 규율("이름→파일 해석은
+    잠금 안에서 라이브 파일시스템으로")의 근거는 *"mcp_server의 fingerprint
+    캐시 색인으로 해석하면 낡은 경로에 작용한다"*였는데, 쓰기 통로가 쓰는 것은
+    그 캐시가 아니라 같은 잠금 안에서 방금 지은 색인이다. 규율의 뜻은 지키고
+    중복만 없앤다 — 실측: 25,000 노드에서 순회 289 ms, 그리고 id 핸들로 부르면
+    `_id_of`가 전 노드를 **캐시 없이** 다시 파싱해 5k에서도 이름 경로의
+    5.8배였다(804 ms 대 139 ms). 색인의 `by_id`는 그 판독을 접어 두므로 뒤이은
+    검증이 다시 파싱하지 않는다."""
+    hits = idx.candidates(name)
     if not hits and re.match(ID_RE, str(name).strip()):
         # id 형태면 id로도 찾는다 — 쓰기 응답이 id를 돌려주므로 그것을 핸들로
         # 잡은 호출자에게 "노드 없음"은 틀린 진단이다(10차 ②)
-        hits = [p for p, _k in graph.iter_nodes()
-                if signatures._id_of(p) == str(name).strip()]
+        hit = idx.by_id.get(str(name).strip())
+        hits = [hit[0]] if hit else []
     if len(hits) > 1:
         raise WriteError(
             f"같은 이름의 노드가 {len(hits)}개다 — 어느 것인지 정해지지 않아 "
@@ -869,7 +878,7 @@ def update_node(name: str, body: str | None = None,
         errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx)
         if errs:
             raise WriteError("계약 위반 — 쓰지 않았다", errs)
-        path = _live_locate(name)
+        path = _live_locate(name, idx)
         if path is None or not path.is_file():
             raise WriteError(f"노드 없음: {name}")
         kind = graph.space_of(path)
@@ -955,7 +964,7 @@ def move_node(name: str, dest_space: str) -> dict:
     with _Lock():
         idx = graph.Index()                     # 이 이동이 쓰는 색인은 하나다
         _require_complete(idx)
-        path = _live_locate(name)
+        path = _live_locate(name, idx)
         if path is None or not path.is_file():
             raise WriteError(f"노드 없음: {name}")
         src_kind = graph.space_of(path)
