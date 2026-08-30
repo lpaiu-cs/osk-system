@@ -5265,9 +5265,17 @@ def test_move_nodes_and_cluster():
         r = _w(write.move_nodes, ["regr-mv-a", "regr-mv-b"],
                "= Scope/W1/regr-mv2")
         check("묶음 이동", r.get("ok") and r["count"] == 2, r)
-        check("출발지 허브의 낡은 Link를 알린다",
-              any(set(h["moved_out"]) == {"regr-mv-a", "regr-mv-b"}
-                  for h in r["stale_hub_links"]), r["stale_hub_links"])
+        # 안내는 **양쪽**이어야 한다. 출발지만 알리면 그 안내를 따른 호출자가
+        # 링크를 지우고 도착지에서 고아를 만든다(표면 감사 실측).
+        hl = r["hub_links"]
+        check("출발지 허브에서 뺄 것을 알린다",
+              any(set(h.get("remove") or []) == {"regr-mv-a", "regr-mv-b"}
+                  for h in hl), hl)
+        check("도착지 허브에 더할 것을 알린다",
+              any(set(h.get("add") or []) == {"regr-mv-a", "regr-mv-b"}
+                  for h in hl), hl)
+        check("허브 손잡이는 제목이다 — 경로가 아니라",
+              all("/" not in h["hub"] for h in hl), hl)
         dup = _w(write.move_nodes, ["regr-mv-a", "regr-mv-a"], "= Scope/W1/regr-mv")
         check("같은 노드를 두 번 옮길 수 없다", dup.get("ok") is False, dup)
 
@@ -5289,6 +5297,23 @@ def test_move_nodes_and_cluster():
         bad3 = _w(write.move_cluster, "regr-mv-a", "= Scope/W1/regr-mv")
         check("허브가 아니면 군집째 옮길 수 없다",
               bad3.get("ok") is False and "군집이 아니다" in str(bad3), bad3)
+
+        # 노드는 scope를 건널 수 있다 — 막지 않고 **알린다.** 침묵하면
+        # 호출자가 ok:true를 받고 검증기 FAIL로 알게 된다(표면 감사 실측).
+        cs = _w(write.move_nodes, ["regr-mv-a"], "= Person/Module")
+        check("노드의 scope 건너기는 허용된다", cs.get("ok"), cs)
+        check("건넜다는 사실을 알린다",
+              cs.get("crossed_scope", {}).get("nodes") == ["regr-mv-a"], cs)
+        check("왜 위험한지와 무엇을 하라를 함께 준다",
+              "hub_links" in cs["crossed_scope"]["why"], cs["crossed_scope"])
+        # 되돌아오는 것도 건너는 이동이다(Person → Scope). 같은 최상위 안의
+        # 이동을 보려면 W1 안에서 옮겨야 한다.
+        back = _w(write.move_nodes, ["regr-mv-a"], "= Scope/W1/regr-mv")
+        check("되돌아오는 것도 건너는 이동이다",
+              back.get("crossed_scope", {}).get("nodes") == ["regr-mv-a"], back)
+        same = _w(write.move_nodes, ["regr-mv-a"], "= Scope/W1/regr-mv2")
+        check("같은 최상위 안에서는 알리지 않는다",
+              "crossed_scope" not in same, same)
     finally:
         for d in made:
             shutil.rmtree(d, ignore_errors=True)

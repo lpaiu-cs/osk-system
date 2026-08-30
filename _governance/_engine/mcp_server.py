@@ -144,7 +144,7 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8) -> list[dict]:
     """검색 — `query`의 어휘가 겹쳐야 걸린다(전 Space 연합, `_raw`·Workbench
     제외). 결과의 `title`이 그대로 다른 도구의 `name`이다. `summary`는 미리보기이니
     인용·판단은 `read_node` 뒤에 하고, 시기는 `updated`으로 걸러 필요한 것만
-    펼쳐라. 0건이면 어휘를 바꿔 재질의한다."""
+    펼쳐라."""
     return _s().view_search(query, k)
 
 
@@ -153,8 +153,7 @@ def read_node(name: str) -> dict:
     """노드 전문 읽기 — 본문 전체가 오므로 비싸다(평균 1.4k 토큰). 인용이나
     본문 재작성 직전에만 부르고, 해시만 알려고 부르지 마라 — 쓰기 응답이
     `new_hash`로 준다. 손잡이는 응답의 `name`(제목)이다 — 다른 도구에 그대로
-    넣고, 근거로 달 때도 그것을 쓴다. `id`는 대장·서명의 동일성이라 손잡이로
-    쓰면 느리다. `hash`는 `expect_hash`에 그대로 넣는다."""
+    넣고, 근거로 달 때도 그것을 쓴다. `hash`는 `expect_hash`에 그대로 넣는다."""
     idx = _s().idx
     hit = idx.nodes.get(name)
     if not hit:
@@ -226,7 +225,7 @@ def read_raw(ref: str | None = None, space: str | None = None,
 @mcp.tool()
 def overview(session: str | None = None) -> dict:
     """구조 조망 — 무엇이 있고 어디에 둘 수 있는가. **첫 쓰기 전에 한 번** 부르면
-    착지를 추측하지 않아도 된다. `clusters`는 **노드**를 둘 수 있는 군집 경로다
+    착지를 추측하지 않아도 된다. `clusters`는 **허브가 있는** 군집 경로다
     (`create_node`의 `space`에 그대로 넣는다 — `_raw`·작업 기억의 `space`는
     이보다 좁아 `= Scope/<이름>`만 받는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
     `broken`은 검색에 잡히지 않는 파손 파일이다. `engine_stale`이 참이면
@@ -282,8 +281,7 @@ def update_node(name: str, body: str | None = None,
                 add_edges: Edges | None = None,
                 remove_edges: Edges | None = None) -> dict:
     """`name`이 가리키는 노드의 본문·summary·엣지 수정. 엣지는 델타라 현재
-    상태에 적용되니 선-읽기가 필요 없다. **확인하려고 먼저 읽지 마라** — 그냥
-    시도하면 거부가 짧게 필요한 것을 알려준다. `expect_hash`는 `body`를 보낼
+    상태에 적용되니 선-읽기가 필요 없다. `expect_hash`는 `body`를 보낼
     때(언제나 전문 치환이다) 필수이며, 방금 쓴 응답의 `new_hash`를 그대로 이어
     쓸 수 있다. 응답의 `dangling`은 대상이 아직 없는 링크이니 오타인지
     확인하라."""
@@ -294,16 +292,18 @@ def update_node(name: str, body: str | None = None,
 @mcp.tool()
 def move_nodes(names: list[str], dest_space: str) -> dict:
     """군집 재배정 — **전부 아니면 전무**. `names`는 옮길 노드 제목의 목록이고
-    (하나여도 목록으로) `dest_space`는 `create_node`의 `space`와 같다. 허브는
-    거부하니 군집째는 `move_cluster`다. 응답의 `stale_hub_links`는 떠난 노드를
-    아직 가리키는 출발지 허브다 — 본문을 손봐라."""
+    (하나여도 목록으로) `dest_space`는 `create_node`의 `space`와 같다. 없는
+    군집이면 만들어지되 허브는 없다. 허브는 거부하니 군집째는 `move_cluster`다.
+    응답의 `hub_links`가 **양쪽** 허브에서 뺄 것(`remove`)과 더할 것(`add`)을
+    준다 — 둘 다 해야 도달이 산다. `crossed_scope`가 오면 먼저 읽어라."""
     return _guard(write.move_nodes, names, dest_space)
 
 
 @mcp.tool()
 def move_cluster(name: str, dest_parent: str) -> dict:
     """하위 군집을 폴더째 옮긴다 — `name`은 그 군집(=허브)의 이름, `dest_parent`
-    는 새 부모(`clusters`). 아래 군집도 함께 가며 최상위는 못 건넌다."""
+    는 새 부모(`clusters`). 아래 군집도 함께 가며 최상위는 못 건넌다.
+    `hub_links`는 `move_nodes`와 같다."""
     return _guard(write.move_cluster, name, dest_parent)
 
 

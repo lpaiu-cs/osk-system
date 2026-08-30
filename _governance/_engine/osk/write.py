@@ -626,8 +626,13 @@ def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
     않는다 — 보호영역의 승인/반려는 별도 표면(대화형 단말)의 일이다.
     거부 응답에 현재 해시를 담지 않는다 — 관측 증명이 연극이 되지 않게."""
     if body_given and not expect_hash:
+        # 이름만 주고 값을 주지 않으면 호출자는 `read_node`로 갈 수밖에 없는데,
+        # 그 도구는 "해시만 알려고 부르지 마라"고 금한다 — 표면이 시킨 대로 하면
+        # 표면이 금한 행동으로만 빠져나온다(표면 감사 실측). 값을 함께 준다.
         raise WriteError(
-            "본문 전체 치환에는 읽은 상태의 해시(expect_hash)가 필요하다")
+            f"본문 전체 치환에는 읽은 상태의 해시(expect_hash)가 필요하다 — "
+            f"지금 값은 {sha256_file(path)}이며, 이 본문을 실제로 읽고 고치는 "
+            f"것이면 그대로 넣어라")
     if expect_hash and sha256_file(path) != expect_hash:
         raise WriteError(
             "그 사이 노드가 변경됐다 — 다시 읽고 재시도하라 (CAS 불일치)")
@@ -1039,7 +1044,9 @@ def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
     어중간해 사람이 무엇을 되돌릴지 알기 어렵다."""
     path = _live_locate(name, idx)
     if path is None or not path.is_file():
-        raise WriteError(f"노드 없음: {name}")
+        # 결과를 함께 말한다 — "전부 아니면 전무"를 문안으로만 약속하면 받는
+        # 쪽이 못 믿고 확인 질의를 한 번 더 한다(표면 감사 실측).
+        raise WriteError(f"노드 없음: {name} — 아무것도 옮기지 않았다")
     _reject_governance(graph.space_of(path))
     # 허브 노드는 이름이 군집에 결박한다 (시행령 §3 6항) — 밖으로 나가면
     # 군집이 허브를 잃고, 도착지에는 남의 군집 이름을 단 노드가 앉는다.
@@ -1088,13 +1095,22 @@ def _apply_move(path: Path, target: Path, n, idx) -> None:
     idx.retarget(path, target, graph.space_of(target))
 
 
-def _stale_hub_links(srcs: set, moved: set, idx) -> list:
-    """이동으로 **낡아진 출발지 허브의 Link**를 보고한다.
+def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
+    """이동으로 손봐야 할 허브를 **양쪽 다** 보고한다 — 뺄 것(`remove`)과
+    더할 것(`add`).
 
     도달은 본문 Link로만 성립하므로(v3.6.0), 노드가 다른 군집으로 가면 출발지
-    허브의 Link는 군집 밖을 가리키는 죽은 줄이 되고 도착지 허브에는 그 노드로
-    가는 줄이 없다. 기계가 대신 고칠 수 없다 — 항해는 큐레이션이라 어느 갈래에
-    걸지가 판단이다(시행령 §3 7항). 그래서 **고치지 않고 알린다.**"""
+    허브의 Link는 죽은 줄이 되고 **도착지 허브에는 그 노드로 가는 줄이 없다.**
+    기계가 대신 고칠 수 없다 — 항해는 큐레이션이라 어느 갈래에 걸지가
+    판단이다(시행령 §3 7항). 그래서 고치지 않고 알린다.
+
+    구판은 **출발지만** 알렸다. 표면 감사에서 감사자가 그 안내대로 출발지
+    링크를 지웠더니 그 노드가 도착지에서 고아가 됐고, 허브 검사가 비활성이라
+    `verdict`는 PASS였다 — **안내를 따르면 vault가 나빠지는데 아무도 말해
+    주지 않았다.** 절반만 아는 안내는 안 하느니만 못하다.
+
+    허브의 손잡이는 **제목**으로 낸다 — 이 표면의 다른 모든 손잡이가 제목인데
+    여기만 경로를 내면 호출자가 변환을 스스로 해야 한다(감사 지적)."""
     out = []
     for h in sorted(srcs):
         hub = h / f"{h.name}.md"
@@ -1106,7 +1122,16 @@ def _stale_hub_links(srcs: set, moved: set, idx) -> list:
             continue
         gone = sorted({contract.target_stem(t) for t in n.wikilinks()} & moved)
         if gone:
-            out.append({"hub": posix_rel(hub, ROOT), "moved_out": gone})
+            out.append({"hub": hub.stem, "remove": gone})
+    dhub = dest / f"{dest.name}.md"
+    if dhub.is_file():
+        try:
+            have = {contract.target_stem(t) for t in idx.node(dhub).wikilinks()}
+            need = sorted(moved - have)
+        except Exception:
+            need = sorted(moved)
+        if need:
+            out.append({"hub": dhub.stem, "add": need})
     return out
 
 
@@ -1118,7 +1143,7 @@ def move_node(name: str, dest_space: str) -> dict:
     return {"ok": True, "name": one["name"], "id": one["id"],
             "path": one["path"], "new_hash": one["new_hash"],
             "moved_from": one["moved_from"], "dangling": one["dangling"],
-            "stale_hub_links": r["stale_hub_links"]}
+            "hub_links": r["hub_links"]}
 
 
 def move_nodes(names: list[str], dest_space: str) -> dict:
@@ -1148,7 +1173,21 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
             plans.append(_plan_move(name, dest_dir, dest_space, idx))
         srcs = {p.parent for p, _t, _n in plans}
         moved_stems = {p.stem for p, _t, _n in plans}
-        stale = _stale_hub_links(srcs - {dest_dir}, moved_stems, idx)
+        stale = _hub_links(srcs - {dest_dir}, dest_dir, moved_stems, idx)
+        # 최상위 군집을 건너면 **알린다** — 거부하지는 않는다.
+        #
+        # 노드 하나를 다른 scope로 재배정하는 것은 정당한 행위이고(구판
+        # `move_node`가 늘 하던 일이다), 실제 위반은 출발지 허브가 계속
+        # 가리키는 것이라 `hub_links`의 `remove`를 따르면 해소된다. 그래서
+        # `move_cluster`처럼 막지 않는다 — 거기는 폴더 아래 전부의 소속이
+        # 한꺼번에 바뀌어 되돌릴 수 없이 무더기 위반이 되지만, 여기는 한 노드씩
+        # 이고 안내로 닫힌다.
+        #
+        # 다만 침묵하면 안 된다. 표면 감사에서 감사자가 이 이동을 하고 `ok:true`
+        # 를 받은 뒤 검증기 FAIL로 알게 됐다 — 응답이 그 사실을 말하지 않았다.
+        dtop = dest_dir.relative_to(ROOT).parts[:2]
+        crossed = sorted(p.stem for p, _t, _n in plans
+                         if p.relative_to(ROOT).parts[:2] != dtop)
         out = []
         for path, target, n in plans:
             before = sha256_file(path)
@@ -1157,8 +1196,15 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
                         "path": posix_rel(target, ROOT), "new_hash": before,
                         "moved_from": posix_rel(path, ROOT),
                         "dangling": _dangling_of(target, n.meta, n.body, idx)})
-        return {"ok": True, "moved": out, "count": len(out),
-                "dest": posix_rel(dest_dir, ROOT), "stale_hub_links": stale}
+        r = {"ok": True, "moved": out, "count": len(out),
+             "dest": posix_rel(dest_dir, ROOT), "hub_links": stale}
+        if crossed:
+            r["crossed_scope"] = {
+                "nodes": crossed,
+                "why": "최상위 군집을 건넜다 — 출발지 허브가 이 노드들을 계속 "
+                       "가리키면 scope 간 직접 참조가 되어 검증기가 막는다"
+                       "(헌법 8조 3항). `hub_links`의 `remove`를 먼저 하라"}
+        return r
 
 
 def move_cluster(name: str, dest_parent: str) -> dict:
@@ -1233,8 +1279,8 @@ def move_cluster(name: str, dest_parent: str) -> dict:
                 "path": posix_rel(target, ROOT),
                 "moved_from": posix_rel(sdir, ROOT),
                 "nodes": len(inside),
-                "stale_hub_links": _stale_hub_links(
-                    {sdir.parent}, {sdir.name}, idx)}
+                "hub_links": _hub_links(
+                    {sdir.parent}, ddir, {sdir.name}, idx)}
 
 
 def record_candidate(type: str, nodes: list[str], reason: str = "") -> dict:
