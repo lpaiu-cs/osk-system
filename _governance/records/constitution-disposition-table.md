@@ -5,7 +5,7 @@ updated: 2026-08-13 04:36 (KST)
 author: user
 drafter: fable-5
 summary: "구 헌법 전 조문의 계승·대체·폐지·이행 처분표 — 무침묵 규율로 작성된 개정 근거"
-derived-from: 260802-114u-7lo3
+derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
 
 > 기준선: 구 헌법 = commit adfb0de / blob d566e79b72be73c28f95ab6d46c289ff33f833ac

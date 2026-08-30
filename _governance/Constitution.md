@@ -5,7 +5,7 @@ updated: 2026-08-29 05:42 (KST)
 author: user
 drafter: user
 summary: "osk-system 최상위 규범 — 노드·비노드와 Space, 참조 위상, 위임, 보호영역, 사건, 개정·이행"
-derived-from: 260802-114u-7lo3
+derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
 
 # osk-system 헌법

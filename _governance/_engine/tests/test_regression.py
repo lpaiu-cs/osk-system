@@ -5133,6 +5133,64 @@ def test_broken_is_reported_not_gated():
         _age_all()
 
 
+# ── 엣지 델타는 누적된 상태 위에서 계산된다 (v3.7.4) ────────────────────
+def test_edge_delta_is_cumulative():
+    """같은 술어에 `add_edges`와 `remove_edges`를 함께 주면 **둘 다** 반영된다.
+
+    구판은 두 루프가 각자 `n.edges(pred)`로 **원본**을 다시 읽었다. remove가
+    "add가 없었던 것처럼" 계산한 값으로 meta를 덮었고, 원본에 지울 것이 하나뿐
+    이면 술어를 통째로 `pop`해 **방금 추가한 근거까지 사라졌다** — 그러면서
+    `ok: true`를 냈다. "근거를 A에서 B로 바꾼다"는 이관·오타 수정·근거 갱신의
+    자연스러운 표현이라 드문 경로가 아니다(v3.7.3 이관에서 두 번 걸렸다).
+
+    그리고 `target_stem`이 위키링크 괄호를 벗긴다. 구판은 같은 노드가
+    `[[N]]`·`N`·`N]]` 세 키로 갈려, 맨 이름으로 넣으면 중복 판정이 되고
+    `[[이름]]`으로 넣으면 안 됐다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · 두 루프 중 하나라도 `n.edges(pred)`로 되돌리면 → 첫 단언이 실패
+      · `target_stem`의 괄호 벗기기를 지우면 → 괄호형 중복 단언이 실패
+    """
+    a = _w(write.create_node, "regr-ed-a", "근거A", "본문", "fable-5",
+           space="= Scope/W1")
+    _w(write.create_node, "regr-ed-b", "근거B", "본문", "fable-5",
+       space="= Scope/W1")
+    r = _w(write.create_node, "regr-ed-src", "대상", "본문", "fable-5",
+           space="= Scope/W1", edges={"derived-from": a["id"]})
+    p = ROOT / "= Scope/W1/regr-ed-src.md"
+    try:
+        check("전제: 구형 id 근거 하나", r.get("ok"), r)
+        # 지울 것이 **하나뿐**인 상태 — 구판이 술어를 통째로 지우던 자리다.
+        r1 = _w(write.update_node, "regr-ed-src",
+                add_edges={"derived-from": "regr-ed-a"},
+                remove_edges={"derived-from": a["id"]})
+        got = contract.parse(p).meta.get("derived-from")
+        check("한 호출 add+remove에서 근거가 살아남는다",
+              got == "[[regr-ed-a]]", got)
+        check("응답도 같은 것을 보고한다",
+              r1.get("edges", {}).get("derived-from") == ["regr-ed-a"], r1)
+
+        r2 = _w(write.update_node, "regr-ed-src",
+                add_edges={"derived-from": "regr-ed-b"},
+                remove_edges={"derived-from": "regr-ed-a"})
+        got = contract.parse(p).meta.get("derived-from")
+        check("A→B 교체가 한 호출로 성립한다", got == "[[regr-ed-b]]", got)
+
+        r3 = _w(write.update_node, "regr-ed-src",
+                add_edges={"derived-from": "[[regr-ed-b]]"})
+        check("괄호형 입력도 중복으로 접힌다", r3.get("no_change") is True, r3)
+
+        for s, want in (("[[N]]", "N"), ("N", "N"),
+                        ("[[= Scope/A/N]]", "N"), ("= Scope/A/N.md", "N")):
+            check(f"target_stem 접기: {s}", contract.target_stem(s) == want,
+                  contract.target_stem(s))
+        check("id는 접지 않는다",
+              contract.target_stem("260802-114u-7lo3") == "260802-114u-7lo3")
+    finally:
+        for nm in ("regr-ed-src", "regr-ed-a", "regr-ed-b"):
+            (ROOT / f"= Scope/W1/{nm}.md").unlink(missing_ok=True)
+
+
 # ── id의 폭과 판별자 (v3.7.3) ───────────────────────────────────────────
 def test_id_width_and_discriminator():
     """새 `id`의 무작위부는 **8자**이고, 구형 4자 id는 그대로 유효하다
@@ -5947,6 +6005,7 @@ if __name__ == "__main__":
                test_incomplete_scan_refuses_writes,
                test_broken_is_reported_not_gated,
                test_id_width_and_discriminator,
+               test_edge_delta_is_cumulative,
                test_duplicate_id_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_traversal_deterministic, test_index_split,
