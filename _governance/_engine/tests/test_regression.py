@@ -4972,6 +4972,128 @@ def _mini_engine(tmp: Path) -> Path:
     return dst
 
 
+# ── v3.7.1 정확성 불변식 ────────────────────────────────────────────────
+# 예제가 아니라 **불변식**으로 적는다. 앞 판의 수트는 신규 57건이 전부
+# 통과했는데 아래 셋을 하나도 잡지 못했다 — 독립 검토가 재현해 보내 왔다.
+def test_read_is_bound_to_bytes():
+    """성공한 `read_node`의 해시는 **반환한 body를 만든 바로 그 바이트**의
+    해시다. 아니면 호출자가 읽지 않은 상태의 해시를 CAS에 넣게 되고, 그
+    해시가 통과해 외부 편집을 지운다(실측 재현)."""
+    import mcp_server as M
+    p = ROOT / "= Scope/W1/regr-bytes.md"
+    try:
+        r0 = _w(write.create_node, "regr-bytes", "결속", "ORIGINAL-A",
+                "fable-5", space="= Scope/W1")
+        check("전제: 생성", r0.get("ok"), r0)
+        _age_all()
+        M._s()                                   # 캐시를 채운다
+        raw, st = p.read_bytes(), p.stat()
+        p.write_bytes(raw.replace(b"ORIGINAL-A", b"EXTERNAL-B"))
+        os.utime(p, (st.st_atime, st.st_mtime))  # mtime 복원 → 지문 동일
+        check("전제: 지문이 변경을 못 본다",
+              not graph.index_signature()[1]
+              and M._vault_fingerprint()[0] == M._vault_fingerprint()[0])
+        r = M.read_node("regr-bytes")
+        check("해시는 돌려준 body의 바이트에서 나온다",
+              r.get("hash") == core.sha256_bytes(p.read_bytes()), r.get("hash"))
+        check("돌려준 body는 디스크의 실제 내용이다",
+              "EXTERNAL-B" in r.get("body", ""), r.get("body"))
+        # 그 해시로 덮는 것은 정당하다 — 호출자가 그 상태를 실제로 읽었다.
+        # 반대로 **낡은** 해시는 거부돼야 한다.
+        stale_hash = core.sha256_bytes(raw)
+        r2 = _w(write.update_node, "regr-bytes", body="덮기",
+                expect_hash=stale_hash)
+        check("읽지 않은 상태의 해시는 CAS가 거부한다", r2.get("ok") is False, r2)
+        check("거부했으므로 외부 편집이 남아 있다",
+              "EXTERNAL-B" in p.read_text(encoding="utf-8"))
+    finally:
+        p.unlink(missing_ok=True)
+        _age_all()
+
+
+def test_incomplete_scan_refuses_writes():
+    """열거 실패가 하나라도 있으면 **쓰기 성공은 0건**이다.
+
+    구판은 `os.scandir` 실패를 조용히 건너뛰었고, 그래서 디렉토리 하나가 안
+    읽히면 이름 색인이 그 노드를 못 보고 다른 군집에 같은 이름이 거부 없이
+    만들어졌다(실측 재현). 유일성은 전체를 봐야 말할 수 있다."""
+    w1, w2 = ROOT / "= Scope/W1", ROOT / "= Scope/W2"
+    w2.mkdir(parents=True, exist_ok=True)
+    victim = w1 / "regr-scan.md"
+    made = []
+    try:
+        if not (w2 / "W2.md").exists():
+            _w(write.create_node, "W2", "허브", "본문", "fable-5",
+               space="= Scope/W2")
+            made.append(w2 / "W2.md")
+        r0 = _w(write.create_node, "regr-scan", "피해자", "본문", "fable-5",
+                space="= Scope/W1")
+        check("전제: 생성", r0.get("ok"), r0)
+        real = os.scandir
+
+        def blind(path):
+            if str(path) == str(w1):
+                raise PermissionError(13, "권한 없음", str(path))
+            return real(path)
+
+        os.scandir = blind
+        try:
+            idx = graph.Index()
+            check("불완전 관측을 색인이 안다", not idx.complete, idx.scan_errors)
+            check("못 본 자리의 이름은 색인에 없다", "regr-scan" not in idx.names)
+            for label, call in (
+                ("create_node", lambda: _w(
+                    write.create_node, "regr-scan", "복제", "본문", "fable-5",
+                    space="= Scope/W2")),
+                ("update_node", lambda: _w(
+                    write.update_node, "W2", summary="고침")),
+                ("record_candidate", lambda: _w(
+                    write.record_candidate, "duplication", ["W2", "W1"])),
+            ):
+                r = call()
+                check(f"불완전 관측에서 {label} 거부", r.get("ok") is False, r)
+                check(f"{label} 거부가 못 읽은 자리를 지목한다",
+                      any("열거 불가" in v for v in r.get("violations", [])), r)
+            # 읽기도 불완전 관측을 **접어 두지 않는다** — 키로 붙잡으면 그
+            # 자리가 다시 읽히게 된 뒤에도 낡은 그림을 계속 쓴다.
+            import mcp_server as M
+            M._searcher, M._fingerprint = None, None
+            s1 = M._s()
+            check("불완전 관측은 캐시 키가 되지 않는다", M._fingerprint is None)
+            check("그래서 다음 호출이 다시 짓는다", M._s() is not s1)
+        finally:
+            os.scandir = real
+            import mcp_server as M
+            M._searcher, M._fingerprint = None, None
+        check("동명 중복이 생기지 않았다",
+              len(list(ROOT.rglob("regr-scan.md"))) == 1,
+              [str(x) for x in ROOT.rglob("regr-scan.md")])
+    finally:
+        victim.unlink(missing_ok=True)
+        (w2 / "regr-scan.md").unlink(missing_ok=True)
+        for f in made:
+            f.unlink(missing_ok=True)
+
+
+def test_broken_blocks_id_uniqueness_claim():
+    """판독할 수 없는 노드가 있으면 id 전수 대조를 **주장할 수 없다**
+    (Mechanism §2 1항). 건너뛰고 발급하면 유일성의 담보가 사라진다."""
+    bad = ROOT / "= Scope/W1/regr-idbad.md"
+    try:
+        bad.write_text("---\nid: [닫히지 않은\n---\n본문\n", encoding="utf-8")
+        check("전제: 파손으로 잡힌다", "regr-idbad" in graph.Index().broken)
+        r = _w(write.create_node, "regr-idnew", "새 노드", "본문", "fable-5",
+               space="= Scope/W1")
+        check("파손이 있으면 생성 거부", r.get("ok") is False, r)
+        check("거부가 근거 조항을 지목한다",
+              any("Mechanism §2 1항" in v for v in r.get("violations", [])), r)
+        check("거부했으므로 파일이 없다",
+              not (ROOT / "= Scope/W1/regr-idnew.md").exists())
+    finally:
+        bad.unlink(missing_ok=True)
+        (ROOT / "= Scope/W1/regr-idnew.md").unlink(missing_ok=True)
+
+
 # ── 판독 계약: 깊이 가드와 탭 (v3.7.0) ──────────────────────────────────
 def test_parse_guards():
     """C 로더로 바꾸면서 (a) 프로세스를 죽이는 입력과 (b) 거부되던 것이
@@ -5348,8 +5470,8 @@ def test_traversal_deterministic():
     다르면 같은 트리가 기기마다 다른 노드를 가리킨다 — 정렬이 그것을 막는다."""
     real = graph._scan
 
-    def reversed_scan(root, prefix):
-        return reversed(list(real(root, prefix)))
+    def reversed_scan(root, prefix, errors=None):
+        return reversed(list(real(root, prefix, errors)))
 
     base = [(p, k) for p, k in graph.iter_nodes()]
     non = dict(graph.Index().nonnode)
@@ -5665,6 +5787,9 @@ if __name__ == "__main__":
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
                test_obsidian_tag_defense, test_index_node_not_delegation,
+               test_read_is_bound_to_bytes,
+               test_incomplete_scan_refuses_writes,
+               test_broken_blocks_id_uniqueness_claim,
                test_parse_guards, test_scan_confinement_and_case,
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,

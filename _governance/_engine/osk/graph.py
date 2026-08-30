@@ -190,7 +190,7 @@ def is_node_home(kind: tuple) -> bool:
                        "governance")
 
 
-def _scan(root: Path, prefix: tuple):
+def _scan(root: Path, prefix: tuple, errors: list | None = None):
     """`root` 아래를 `os.scandir`로 훑어 (경로, ROOT 상대 조각)을 낸다.
 
     `Path.rglob`은 항목마다 `Path` 객체를 짓는다. 3.12의 pathlib은 순회 자체에
@@ -210,8 +210,15 @@ def _scan(root: Path, prefix: tuple):
         d, pref = stack.pop()
         try:
             entries = list(os.scandir(d))
-        except OSError:
-            continue          # 열거 불가(권한·경합) — 죽지 않고 건너뛴다
+        except OSError as ex:
+            # 삼키지 않는다. 구판은 여기서 `continue`했고, 그래서 디렉토리
+            # 하나가 안 읽히면 이름 색인이 그 노드를 못 보고 **다른 군집에 같은
+            # 이름이 거부 없이 만들어졌다**(실측 재현). 관측이 불완전하면
+            # 유일성을 말할 수 없으므로, 그 사실을 위로 올려 쓰기가 거부하게
+            # 한다(시행령 §11 — 실패는 보류·보고).
+            if errors is not None:
+                errors.append(f"열거 불가: {d} — {ex}")
+            continue
         for e in entries:
             try:
                 if e.is_dir(follow_symlinks=False):
@@ -219,11 +226,13 @@ def _scan(root: Path, prefix: tuple):
                         stack.append((Path(e.path), pref + (e.name,)))
                 else:
                     yield e, pref + (e.name,)
-            except OSError:
+            except OSError as ex:
+                if errors is not None:
+                    errors.append(f"항목 판독 불가: {d} — {ex}")
                 continue
 
 
-def iter_nodes():
+def iter_nodes(errors: list | None = None):
     # 통치 구획의 통치 문서·사료는 특수한 노드다(시행령 §10 1항) — 색인에
     # 있어야 명시 조회(read_node)가 도달하고 갱신 후 승인(수용 기록)이
     # 성립한다. `_engine`의 .md는 소속 판정이 ("engine",)으로 걸러낸다.
@@ -236,7 +245,7 @@ def iter_nodes():
         if not root.exists():
             continue
         found = []
-        for e, parts in _scan(root, (base,)):
+        for e, parts in _scan(root, (base,), errors):
             if not _is_md(e.name):
                 continue
             # 리파스 파일만 옛 경로로 보낸다 — 그것이 vault 밖을 가리키면
@@ -249,7 +258,7 @@ def iter_nodes():
                 yield p, k
 
 
-def index_signature():
+def index_signature(errors: list | None = None):
     """`Index`가 읽는 것의 (상대경로, mtime_ns, 크기)와, 그중 채취 시각에 너무
     가까워 믿을 수 없는 항목이 있었는가.
 
@@ -272,7 +281,7 @@ def index_signature():
         root = ROOT / base
         if not root.exists():
             continue
-        for e, parts in _scan(root, (base,)):
+        for e, parts in _scan(root, (base,), errors):
             k = _space_of_parts(parts)
             if is_node_home(k):
                 if not _is_md(e.name):
@@ -355,7 +364,11 @@ class Index:
     않았다(독립 검토 4인 확인)."""
 
     def __init__(self):
-        self._entries: list[tuple[Path, tuple]] = list(iter_nodes())
+        # 관측이 불완전하면(디렉토리 하나라도 못 읽었으면) 유일성을 말할 수
+        # 없다. 그 사실을 색인이 들고 있어야 쓰기가 거부할 수 있다.
+        self.scan_errors: list[str] = []
+        self._entries: list[tuple[Path, tuple]] = list(
+            iter_nodes(self.scan_errors))
         self.names: dict[str, tuple[Path, tuple]] = {}
         self._by_name: dict[str, list[tuple[Path, tuple]]] = {}
         self.parsed: dict[Path, contract.Node] = {}
@@ -382,7 +395,7 @@ class Index:
             if not root.exists():
                 continue
             found = []
-            for e, parts in _scan(root, (base,)):
+            for e, parts in _scan(root, (base,), self.scan_errors):
                 p = Path(e.path)
                 k = space_of(p) if _is_reparse(e) else _space_of_parts(parts)
                 if k[0] in ("raw", "sources", "ledger"):
@@ -469,6 +482,12 @@ class Index:
         교환이었고, 독립 검토 4인이 같은 자리를 지목했다."""
         self.parse_all()
         return self._dup_stems
+
+    @property
+    def complete(self) -> bool:
+        """이 색인이 vault **전부**를 관측했는가. 거짓이면 이름·id 유일성을
+        말할 수 없다 — 쓰기는 거부하고 읽기 캐시는 접어 두지 않는다."""
+        return not self.scan_errors
 
     def register_new(self, path: Path, kind: tuple) -> None:
         """방금 쓴 노드를 손에 든 색인에 등재한다 — 쓰기 **후** 상태를 봐야

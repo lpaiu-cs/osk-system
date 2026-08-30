@@ -25,12 +25,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import epoch, graph, raw, validate, write  # noqa: E402
+from osk import contract, epoch, graph, raw, validate, write  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
 from osk.core import (ROOT, StaleEngineError, posix_rel,  # noqa: E402
-                      sha256_file)
+                      sha256_bytes)
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
 # 이뤄진다(술어는 헌법 8조 5항, 충돌 유형은 Mechanism §4 3항의 목록이며,
@@ -81,7 +81,9 @@ def _s():
     fp, racy = _vault_fingerprint()
     if _searcher is None or racy or fp != _fingerprint:
         _searcher = search_mod.Searcher()
-        _fingerprint = None if racy else fp
+        # 불완전 관측도 접어 두지 않는다 — 못 읽은 자리가 있는 색인을 키로
+        # 붙잡으면 그 자리가 다시 읽히게 된 뒤에도 낡은 그림을 계속 쓴다.
+        _fingerprint = None if (racy or not _searcher.idx.complete) else fp
     return _searcher
 
 
@@ -171,15 +173,24 @@ def read_node(name: str) -> dict:
         why = (getattr(idx, "broken", None) or {}).get(name)
         return {"error": f"파싱 실패 — 수동 확인 필요: {why}" if why
                 else f"노드 없음: {name}"}
+    # 바이트를 **한 번** 읽고, 그 바이트에서 본문과 해시를 함께 만든다.
+    #
+    # 구판은 본문을 캐시된 `Node`에서, 해시는 디스크에서 새로 재어 붙였다.
+    # 캐시가 낡으면(같은 크기로 고치고 mtime을 되돌리면 지문이 같아 racy 창
+    # 밖이다) 호출자는 **읽지 않은 상태의 해시**를 받는다. 그 해시는 다음
+    # `update_node`의 CAS 입력이므로 그대로 통과하고, 외부 편집이 조용히
+    # 사라진다 — 실측으로 재현했다. 해시가 캐시된 바이트에 결속되면 캐시가
+    # 낡더라도 다음 쓰기는 CAS에서 **안전하게 거부**된다(Mechanism §6-2 4항).
     try:
-        n = idx.node(hit[0])
+        raw = hit[0].read_bytes()
+        n = contract.parse_bytes(hit[0], raw)
     except Exception as e:
         return {"error": f"파싱 실패 — 수동 확인 필요: {name} ({e})"}
     # 경로는 POSIX 표기로 낸다 — 도구마다 구분자가 갈리면 ref를 손으로
     # 조립하는 호출자가 혼선을 겪는다(감사 지적). 규칙·ref 표기도 전부 슬래시다.
     return {"path": posix_rel(hit[0], ROOT), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
-            "hash": sha256_file(hit[0]),
+            "hash": sha256_bytes(raw),
             "body": n.body}
 
 

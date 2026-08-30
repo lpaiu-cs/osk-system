@@ -717,6 +717,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
         # 그래서 체감 비용이 단가의 3배였다. 잠금 안이라 그 사이에 파일이
         # 바뀌지 않으므로 한 벌이면 족하다.
         idx = graph.Index()
+        _require_complete(idx)
         errs = (_check_edges(edges, idx) + _title_errors(title)
                 + ephemeral_session_errors(session))
         if errs:
@@ -800,16 +801,43 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 "dangling": _dangling_of(path, meta, body, idx)}
 
 
+def _require_complete(idx) -> None:
+    """관측이 불완전하면 쓰지 않는다.
+
+    이름·id의 유일성은 **전체를 봐야만** 말할 수 있다. 디렉토리 하나가 안
+    읽혔는데 쓰면, 그 안의 이름을 못 본 채 "없다"고 판정하는 것이다 — 실측으로
+    재현했다: W1 열거를 막고 `create_node`를 부르니 W2에 같은 이름이 거부 없이
+    만들어졌다. 시행령 §11이 요구하는 것은 그 자리에서 **보류하고 보고**하는
+    것이지 조용히 지나가는 것이 아니다."""
+    if idx.complete:
+        return
+    raise WriteError(
+        "vault를 전부 관측하지 못했다 — 쓰지 않았다",
+        idx.scan_errors + [
+            "이름과 id의 유일성은 전체를 봐야 말할 수 있다. 못 읽은 자리가 "
+            "있으면 그 안의 이름을 못 본 채 '없다'고 판정하게 된다. 권한·잠금을 "
+            "확인하고 다시 보내라."])
+
+
 def _existing_ids(idx) -> set[str]:
-    """전수 중복 대조용 id 집합 (Mechanism §2 1항). 파싱 실패 노드는 id를 알 수
-    없으므로 건너뛴다 — 그 파일은 색인이 broken으로 이미 보고한다."""
-    out = set()
-    for p, _k in idx.nodes.values():
-        try:
-            out.add(idx.node(p).id)
-        except Exception:
-            continue
-    return out
+    """전수 중복 대조용 id 집합 (Mechanism §2 1항).
+
+    파싱 실패 노드는 id를 **알 수 없다.** 건너뛰면 "기존 id 전수와 대조했다"고
+    말할 수 없으므로, 그런 파일이 있으면 여기서 거부한다 — 유일성의 담보는
+    길이가 아니라 이 검증이라고 §2 1항이 명시한다. 파손 파일은 드물고 검증기가
+    이미 표면화하므로, 고치라고 말하는 편이 모르는 채 id를 발급하는 것보다
+    싸다."""
+    if idx.broken:
+        raise WriteError(
+            "판독할 수 없는 노드가 있어 id 전수 대조가 성립하지 않는다 — "
+            "쓰지 않았다",
+            [f"판독 실패: {stem} — {why}" for stem, why in
+             sorted(idx.broken.items())][:8] + [
+                "그 파일의 id를 알 수 없으므로 새 id가 겹치지 않는다고 증명할 "
+                "수 없다(Mechanism §2 1항). 먼저 고치거나 노드 군집 밖으로 "
+                "옮겨라."])
+    return {n.id for n in (idx.parsed[p] for p, _k in idx.nodes.values())
+            if n.id}
 
 
 def _as_list(v) -> list:
@@ -837,6 +865,7 @@ def update_node(name: str, body: str | None = None,
     상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다."""
     with _Lock():
         idx = graph.Index()                     # 이 쓰기가 쓰는 색인은 하나다
+        _require_complete(idx)
         errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx)
         if errs:
             raise WriteError("계약 위반 — 쓰지 않았다", errs)
@@ -925,6 +954,7 @@ def move_node(name: str, dest_space: str) -> dict:
     id). pin된 군집은 출발·도착 어느 쪽이든 거부한다(시행령 §3 4항)."""
     with _Lock():
         idx = graph.Index()                     # 이 이동이 쓰는 색인은 하나다
+        _require_complete(idx)
         path = _live_locate(name)
         if path is None or not path.is_file():
             raise WriteError(f"노드 없음: {name}")
@@ -987,6 +1017,7 @@ def record_candidate(type: str, nodes: list[str], reason: str = "") -> dict:
         if type not in CANDIDATE_TYPES:
             raise WriteError(f"미정의 충돌 유형: {type} (Mechanism §4 3항)")
         idx = graph.Index()
+        _require_complete(idx)
         parties = []
         for nm in nodes:
             hit = idx.nodes.get(nm)

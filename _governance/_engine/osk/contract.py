@@ -146,7 +146,24 @@ def _flow_depth(text: str) -> int:
 
 def parse(path: Path | str) -> Node:
     p = Path(path)
-    t = p.read_text(encoding="utf-8")
+    return parse_bytes(p, p.read_bytes())
+
+
+def parse_bytes(path: Path | str, data: bytes) -> Node:
+    """**주어진 바이트**에서 판독한다.
+
+    경로가 아니라 바이트를 받는 갈래가 따로 있어야 하는 이유: 호출자가 판독한
+    것과 해시한 것이 **같은 바이트임을 보장**할 수 있어야 한다. 표면의
+    `read_node`가 캐시된 본문에 디스크에서 새로 잰 해시를 붙여 내보내는 바람에,
+    호출자는 자기가 **읽지 않은 상태**의 해시를 받았고 그 해시가 CAS를 통과해
+    외부 편집을 지웠다(실측 재현). 해시는 읽은 상태의 증거여야 한다
+    (Mechanism §6-2 4항).
+
+    줄바꿈은 `read_text`의 universal newlines와 같게 접는다 — 이 갈래로 읽은
+    본문이 `parse(path)`로 읽은 것과 달라지면 CRLF 파일에서 두 경로의 판정이
+    갈린다."""
+    p = Path(path)
+    t = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     if not t.startswith("---\n"):
         raise ValueError(f"frontmatter 없음: {p}")
     end = t.find("\n---\n", 4)
