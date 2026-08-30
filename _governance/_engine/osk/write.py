@@ -347,9 +347,16 @@ def _cluster_names() -> list[str]:
             if not (graph.is_node_home(k) and _is_cluster(k)
                     and k[:1] != GOVERNANCE):
                 continue
+            # 허브가 있어야 군집이다 — 허브 없는 자리는 **싣지 않는다.**
+            # 구판은 실었고, 그래서 이 목록이 "노드를 둘 수 있는 군집"이라는
+            # 자기 설명과 어긋났다: 신설 관문을 지났으나 뒤이은 검사에 거부돼
+            # 남은 빈 디렉토리가 목록에 오르고, 거기 쓰려 하면 "첫 노드는
+            # 허브"로 다시 거부된다(표면 감사 실측 — 처음 오는 자를 두 번
+            # 헛걸음시킨다). 허브를 세우는 첫 쓰기는 이 목록을 거치지 않고
+            # 관문이 안내하므로 잃는 것이 없다.
             path = f"{prefix}/{sub.name}"
-            out.add(path)
-            if (sub / f"{sub.name}.md").is_file():   # 허브가 있어야 군집이다
+            if (sub / f"{sub.name}.md").is_file():
+                out.add(path)
                 walk(sub, path)
 
     for space in ("= Scope", "= Domain", "= Person"):
@@ -419,7 +426,8 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
         raise WriteError(
             f"선언되지 않은 군집이다: {dest}. 신설은 Space 루트 바로 아래이거나 "
             f"**허브가 있는 군집 안**이어야 한다(Mechanism §1 2항 · 시행령 §3 7항). "
-            f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
+            f"`{parent.name}`에 먼저 동명 허브 노드를 만들면 그 안에 분화할 수 "
+            f"있다. 지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
     name_errs = _title_errors(dest_dir.name)
     if name_errs:
         raise WriteError("군집 이름 부적격 — 이름이 곧 디렉토리명이다", name_errs)
@@ -589,7 +597,13 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
                         f"Workbench의 작업 상태(scope 기억 포함)는 근거 또는 "
                         f"권위의 출처로 참조하지 않는다(Workbench 계약 4.2). "
                         f"근거는 그 지식이 나온 곳이다."]
-            return [f"scope 간 직접 참조: [{kind[1]}] {stem} → {name} {tkind}"]
+            # 무엇을 하라는 말이 없으면 받는 쪽이 scope를 바꿔 보다 두 번
+            # 거부당한다(표면 감사 실측). 옮기는 중이면 순서가 답이다 —
+            # 노드를 먼저 옮기고 그 다음에 잇는다. 아니면 domain 경유다.
+            return [f"scope 간 직접 참조: [{kind[1]}] {stem} → {name} {tkind} — "
+                    f"옮기는 중이면 노드를 먼저 옮기고 그 다음에 이어라. "
+                    f"scope를 넘어 공유할 지식이면 domain 노드로 증류해 경유한다"
+                    f"(헌법 8조 3항)"]
     return []
 
 
