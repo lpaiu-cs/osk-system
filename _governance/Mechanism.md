@@ -432,7 +432,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 7. 표면에 노출된 도구의 목록은 다음과 같다. 이 목록의 개정으로 표면을
    변경하며, 목록과 구현이 어긋나면 검증기가 이를 적발한다.
    ```
-   overview search read_node run_validators create_node update_node move_node record_candidate append_raw read_raw scope_memory
+   overview search read_node run_validators create_node update_node move_nodes move_cluster record_candidate append_raw read_raw scope_memory
    ```
    이 목록을 고치는 개정에는 **코드를 보지 않은 감사 1회**를 관문으로 붙인다 —
    도구 설명과 스키마만으로 현실 과업을 수행해 보고, 막힌 지점과 추측해야 했던

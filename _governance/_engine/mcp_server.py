@@ -213,8 +213,7 @@ def read_raw(ref: str | None = None, space: str | None = None,
     `ref`는 노드 `derived-from`에 든 `[[경로#N]]` 그대로이며 그 라운드 전문이
     온다. `#N` 없이 경로만 주면 그 기록의 목차(번호·미리보기)가, `ref` 대신
     `space`(`"= Scope/W1"` 꼴)를 주면 그 scope의 기록 목록이 온다. 둘 다 주면
-    `ref`가 이긴다. 긴 라운드는 `max_chars`에서 **뒤가** 잘리므로 `agent` 쪽이
-    먼저 사라진다 — `truncated`가 참이면 올려서 다시 부른다."""
+    `ref`가 이긴다. `truncated`가 참이면 `max_chars`를 올려 다시 부른다."""
     if ref:
         return _guard(raw.read_round, ref, max_chars)
     if space:
@@ -230,9 +229,8 @@ def overview(session: str | None = None) -> dict:
     착지를 추측하지 않아도 된다. `clusters`는 **노드**를 둘 수 있는 군집 경로다
     (`create_node`의 `space`에 그대로 넣는다 — `_raw`·작업 기억의 `space`는
     이보다 좁아 `= Scope/<이름>`만 받는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
-    `broken`은 검색에 잡히지 않는 파손 파일이다. `engine_rev`는 이 서버가
-    뜬 시각의 엔진 판이고, `engine_stale`이 참이면 디스크의 엔진이 그때와
-    **다르니** 재기동하라 — 그 전까지 쓰기는 거부된다. `session`을 주면 그 키의
+    `broken`은 검색에 잡히지 않는 파손 파일이다. `engine_stale`이 참이면
+    재기동하라 — 그 전까지 쓰기는 거부된다. `session`을 주면 그 키의
     현재 결속(`session_scope`)을 함께 돌려준다."""
     idx = _s().idx
     out = {
@@ -269,8 +267,8 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     같은 값이며 첫 성공이 그 키를 영구 결속한다 — 1회용 대화 id를 넣지 마라.
     `edges`의 `derived-from`은 근거를 가리킨다 — 노드 근거는 그 **제목**으로,
     비노드 근거는 `[[경로]]`·`[[경로#제목]]`로 준다.
-    `conflicts`는 열린 사건 번호(`CASE-2026-1` 꼴)만 받는다. 본문의 `[[링크]]`도
-    검사 대상이라 다른 scope의 노드는 직접 가리킬 수 없다. 응답의 `bound_scope`는 이 쓰기가
+    `conflicts`는 열린 사건 번호(`CASE-2026-1` 꼴)만 받는다.
+    응답의 `bound_scope`는 이 쓰기가
     **새로** 세운 결속이다(이미 결속돼 있었으면 null) — 결속 뒤에는 `space`를
     생략한다."""
     return _guard(write.create_node, title, summary, body, drafter,
@@ -294,12 +292,19 @@ def update_node(name: str, body: str | None = None,
 
 
 @mcp.tool()
-def move_node(name: str, dest_space: str) -> dict:
-    """`name`이 가리키는 노드의 군집 재배정 — `dest_space`는 `create_node`의
-    `space`와 같은 형식이다(`overview`의 `clusters`를 그대로 쓴다). 이동은
-    바이트를 바꾸지 않는다(경로는 상태, 동일성은 id). pin된 군집은 출발·도착
-    어느 쪽이든 거부한다."""
-    return _guard(write.move_node, name, dest_space)
+def move_nodes(names: list[str], dest_space: str) -> dict:
+    """군집 재배정 — **전부 아니면 전무**. `names`는 옮길 노드 제목의 목록이고
+    (하나여도 목록으로) `dest_space`는 `create_node`의 `space`와 같다. 허브는
+    거부하니 군집째는 `move_cluster`다. 응답의 `stale_hub_links`는 떠난 노드를
+    아직 가리키는 출발지 허브다 — 본문을 손봐라."""
+    return _guard(write.move_nodes, names, dest_space)
+
+
+@mcp.tool()
+def move_cluster(name: str, dest_parent: str) -> dict:
+    """하위 군집을 폴더째 옮긴다 — `name`은 그 군집(=허브)의 이름, `dest_parent`
+    는 새 부모(`clusters`). 아래 군집도 함께 가며 최상위는 못 건넌다."""
+    return _guard(write.move_cluster, name, dest_parent)
 
 
 @mcp.tool()
@@ -321,9 +326,8 @@ def append_raw(session: str, record: RawRecord, user: str, agent: str,
     값을 쓴다(`2026-08-21-undo-buffer` 꼴). `space`는 `= Scope/<이름>` **두
     마디**만 받으며(`overview`의 `clusters`엔 더 깊은 경로도 섞여 있다) 결속이
     선 뒤에는 생략한다 — 결속과 다른 scope를 주면 거부한다. 라운드 번호는 엔진이 매기고, 응답의 `round_ref`를
-    그대로 `create_node`의 `derived-from`에 넣으면 근거가 배선된다. 직전 라운드와
-    내용이 같은 배치는 **재시도로 보고 거부한다** — 응답을 못 받았을 뿐이면 이미
-    기록된 것이다. `filtered`가 비지 않았으면 비밀값이 치환된 것이다."""
+    그대로 `create_node`의 `derived-from`에 넣으면 근거가 배선된다.
+    `filtered`가 비지 않았으면 비밀값이 치환된 것이다."""
     return _guard(raw.append_round, session, record, user, agent, space)
 
 
@@ -334,12 +338,11 @@ def scope_memory(session: str, text: str | None = None,
     """scope 기억 — 그 scope에서 지금 살아 있는 **배울 점**. 모든 세션과
     기기가 **같은 것을 본다** — 이 세션에만 유효한 작업 상태는 적지 않는다.
     `text` 없이 부르면 전문을 읽고, 주면 **전체 치환**한다(부분 추가 없음).
-    상한(1500자)을 넘기면 거부하되 성공·실패 모두 전문과 잔여를 돌려주므로
-    넘치기 전에 정리할 수 있다. 기존 내용이 있으면 `expect_hash` 필수 — 방금
+    기존 내용이 있으면 `expect_hash` 필수 — 방금
     받은 `hash`를 그대로 쓴다. `session`은 `create_node`와 같은 값, `space`는
-    `= Scope/<이름>` **두 마디**만 받는다(`clusters`보다 좁다). 자리가
-    모자라면 **먼저 자리값 못하는 엔트리를 지우고** 그래도 모자랄 때 노드로
-    올린다. 비밀값은 **성공하면서 치환되니** `filtered`가 비지 않았으면
+    `= Scope/<이름>` **두 마디**만 받는다(`clusters`보다 좁다). 상한 1500자이며
+    자리 다툼의 규율은 응답의 `eviction`이 매번 알려준다.
+    비밀값은 **성공하면서 치환되니** `filtered`가 비지 않았으면
     저장본이 다르다. `text:""`는 전체를 지우며, 절반 넘게 줄면
     `replaced_text`로 직전 전문이 오니 실수면 그대로 다시 보내라."""
     if text is None:

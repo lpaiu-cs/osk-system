@@ -2281,6 +2281,13 @@ def test_surface_smoke():
           hasattr(M.search_mod, "Searcher"), type(M.search_mod).__name__)
 
     (ROOT / "= Scope/WSmoke").mkdir(exist_ok=True)   # 앞선 시험이 pin한 군집 회피
+    (ROOT / "= Scope/WSmoke/WSmoke.md").write_text(
+        node_text("260802-zzzz-rgs0", "스모크 허브"), encoding="utf-8")
+    # move_cluster가 옮길 하위 군집과 받을 자리 — 둘 다 허브가 있어야 군집이다.
+    for nm in ("WSmoke2", "WSmoke3"):
+        (ROOT / f"= Scope/W1/{nm}").mkdir(exist_ok=True)
+        (ROOT / f"= Scope/W1/{nm}/{nm}.md").write_text(
+            node_text(f"260802-zzzz-rg{nm[-1]}1", f"{nm} 허브"), encoding="utf-8")
     node = ROOT / "= Scope/W1/regr-smoke.md"
     node.write_text(node_text("260802-zzzz-rg60", "스모크"), encoding="utf-8")
     calls = {
@@ -2291,7 +2298,8 @@ def test_surface_smoke():
         "create_node": lambda: M.create_node("regr-smoke2", "스모크2", "본문",
                                              "fable-5", space="= Scope/W1"),
         "update_node": lambda: M.update_node("regr-smoke2", summary="고침"),
-        "move_node": lambda: M.move_node("regr-smoke2", "= Scope/WSmoke"),
+        "move_nodes": lambda: M.move_nodes(["regr-smoke2"], "= Scope/WSmoke"),
+        "move_cluster": lambda: M.move_cluster("WSmoke2", "= Scope/W1/WSmoke3"),
         "record_candidate": lambda: M.record_candidate(
             "duplication", ["regr-smoke", "regr-smoke2"], "스모크"),
         "append_raw": lambda: M.append_raw("repo/smoke-raw", "regr-smoke-rec",
