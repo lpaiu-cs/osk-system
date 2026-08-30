@@ -5,7 +5,7 @@ updated: 2026-08-29 08:22 (KST)
 author: user
 drafter: fable-5
 summary: "헌법이 맡긴 운영 규칙 — 노드 계약, _raw, 군집과 pin, 율령, 위임 운영, 보호영역, 사건부"
-derived-from: 260802-114u-7lo3
+derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
 
 # osk-system 시행령

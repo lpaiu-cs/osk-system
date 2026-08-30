@@ -5,7 +5,7 @@ updated: 2026-08-29 05:42 (KST)
 author: user
 drafter: opus-5
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"
-derived-from: 260802-114u-7lo3
+derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
 
 # osk-system Mechanism — 최소 사양
