@@ -183,6 +183,17 @@ def _space_of_parts(parts: tuple) -> tuple:
     return ("support",)
 
 
+def is_hub(path: Path) -> bool:
+    """허브 노드인가 — **군집 폴더와 이름이 같은 노드**가 그 군집의 허브다
+    (헌법 3조 8항 · 시행령 §3 6항). 최상위든 하위든 같은 식이다.
+
+    허브는 노드의 **종이 아니라 자리**이므로 frontmatter에 표식을 두지 않는다
+    (시행령 §3 7항 — "하위 허브는 별도의 종이 아니라 그 역할을 맡은 보통
+    노드"). 배치가 정본이라는 원칙(§3 3항)에서 읽어 내는 것이지 새로 선언하는
+    것이 아니다. 이 판정이 서야 검증기가 층을 가로질러 도달을 셀 수 있다."""
+    return path.parent.name == path.stem
+
+
 def is_node_home(kind: tuple) -> bool:
     """노드 군집은 선언표의 `= ` Space 경로·transit과, 유일한 밑줄 예외인
     통치 구획뿐 (Mechanism §1 4항)."""

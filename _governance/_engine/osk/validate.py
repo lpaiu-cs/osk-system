@@ -246,8 +246,13 @@ def run() -> dict:
         for c, st in sorted(co.items()):
             if not st["overview"]:
                 co_errs.append(f"{c}: 동명 허브 노드 없음")
-            elif st["unreachable"]:
-                co_errs.append(f"{c}: 허브 미도달 {st['unreachable']}개")
+            else:
+                if st.get("hubless"):
+                    co_errs.append(
+                        f"{c}: 허브 없는 하위 군집 {len(st['hubless'])}개 — "
+                        f"{', '.join(st['hubless'][:3])}")
+                if st["unreachable"]:
+                    co_errs.append(f"{c}: 허브 미도달 {st['unreachable']}개")
         if co_active:
             ok("군집 허브 노드", co_errs)
         elif co_errs:
@@ -284,17 +289,32 @@ def cluster_overview_report(idx: "graph.Index") -> dict:
     군집 밖 대상은 위상 규칙의 몫이며, 비노드 대상(원자료·대장)은 노드
     그래프가 아니다. Workbench 구획은 자체 계약을 따르므로 제외한다(§6-1 3항).
 
-    이 검사는 최상위 허브만 알고 하위 허브를 구별하지 않는다 — 시행령 §3
-    7항의 "항해의 내부 노드는 허브뿐"과 "각 노드는 하나의 갈래에 속한다"는
-    검사하지 않으며, 그 판정에는 하위 허브의 기계 식별이 선행한다.
+    묶음은 **최상위 군집**이며 하위 군집의 노드도 그 안에 든다. 구판은
+    폴더별로 따로 판정해서 **층 사이의 도달을 전혀 검사하지 못했다** — 부모
+    허브가 하위 허브를 안 가리켜도, 떠난 노드를 계속 가리켜도 미직결이 0으로
+    나왔다(실측 재현). 헌법 3조 8항이 요구하는 것은 *"최상위 허브에서 하위
+    허브를 거쳐"* 닿는 것이므로, 출발점은 하나이고 구성원은 하위를 포함한다.
+
+    하위 허브의 식별은 **이름이 한다** — 군집 폴더와 이름이 같은 노드가 그
+    군집의 허브다(`graph.is_hub`). 별도의 종이 아니라 자리이므로 노드에 표식이
+    붙지 않는다(시행령 §3 7항). 허브가 없는 하위 폴더는 `hubless`로 보고한다 —
+    그 안의 노드는 부모가 직접 가리키지 않는 한 미직결이 된다.
+
+    시행령 §3 7항의 "항해의 내부 노드는 허브뿐"과 "각 노드는 하나의 갈래에
+    속한다"는 여전히 검사하지 않는다(A안).
     순회는 방문 집합 위에서만 전진하므로 상호·자기 참조의 순환에서도 종료가
     보장된다."""
     clusters: dict = {}
+    subdirs: dict = {}
     for stem, (p, _k) in idx.nodes.items():
         rel = p.relative_to(ROOT)
         if "Workbench" in rel.parts or rel.parts[0] == "_governance":
             continue
-        clusters.setdefault(p.parent, set()).add(stem)
+        if len(rel.parts) < 3:
+            continue                      # Space 루트 직속은 군집이 아니다
+        top = ROOT / rel.parts[0] / rel.parts[1]
+        clusters.setdefault(top, set()).add(stem)
+        subdirs.setdefault(top, set()).add(p.parent)
     out = {}
     for cdir, members in clusters.items():
         key = str(cdir.relative_to(ROOT)).replace("\\", "/")
@@ -309,10 +329,18 @@ def cluster_overview_report(idx: "graph.Index") -> dict:
                 seen.add(t)
                 queue.append(t)
         unreach = sorted(members - seen)
+        # 허브 없는 하위 폴더 — 그 안의 노드는 부모가 직접 가리키지 않는 한
+        # 미직결이 된다. 원인을 미직결 목록이 아니라 **자리**로 보고해야
+        # 고치는 쪽이 무엇을 만들지 안다.
+        hubless = sorted(
+            str(d.relative_to(ROOT)).replace("\\", "/")
+            for d in subdirs.get(cdir, ()) if d.name not in members)
         st = {"overview": True, "nodes": len(members),
               "unreachable": len(unreach)}
         if unreach:
             st["orphans"] = unreach[:20]
+        if hubless:
+            st["hubless"] = hubless
         out[key] = st
     return out
 

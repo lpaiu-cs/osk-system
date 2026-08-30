@@ -331,18 +331,38 @@ def _pinned(target: str) -> bool:
 def _cluster_names() -> list[str]:
     """노드를 둘 수 있는 군집 경로 — **거부 응답에만** 실어 보낸다(상주 비용 0).
     표면에 열거 도구가 없으므로 실패하는 순간에 주소를 가르치는 것이 이 목록의
-    일이다(10차 ②의 완화분 — 해결은 `overview`)."""
+    일이다(10차 ②의 완화분 — 해결은 `overview`).
+
+    하위 군집도 **함께 낸다** — 분화(시행령 §3 7항)로 생긴 자리를 못 보면
+    에이전트가 거기에 노드를 둘 방법이 없다. 하위인지는 **허브의 존재**로
+    가른다: 폴더와 동명인 노드가 있어야 군집이며, 없으면 그냥 폴더다.
+    """
     out = set()
-    for space in ("= Scope", "= Domain", "= Person"):
-        d = ROOT / space
-        if not d.is_dir():
-            continue
+
+    def walk(d: Path, prefix: str) -> None:
         for sub in sorted(d.iterdir()):
             if not sub.is_dir() or sub.name.startswith((".", "_")):
                 continue
             k = graph.space_of(sub / "x.md")
-            if graph.is_node_home(k) and _is_cluster(k) and k[:1] != GOVERNANCE:
-                out.add(f"{space}/{sub.name}")
+            if not (graph.is_node_home(k) and _is_cluster(k)
+                    and k[:1] != GOVERNANCE):
+                continue
+            # 허브가 있어야 군집이다 — 허브 없는 자리는 **싣지 않는다.**
+            # 구판은 실었고, 그래서 이 목록이 "노드를 둘 수 있는 군집"이라는
+            # 자기 설명과 어긋났다: 신설 관문을 지났으나 뒤이은 검사에 거부돼
+            # 남은 빈 디렉토리가 목록에 오르고, 거기 쓰려 하면 "첫 노드는
+            # 허브"로 다시 거부된다(표면 감사 실측 — 처음 오는 자를 두 번
+            # 헛걸음시킨다). 허브를 세우는 첫 쓰기는 이 목록을 거치지 않고
+            # 관문이 안내하므로 잃는 것이 없다.
+            path = f"{prefix}/{sub.name}"
+            if (sub / f"{sub.name}.md").is_file():
+                out.add(path)
+                walk(sub, path)
+
+    for space in ("= Scope", "= Domain", "= Person"):
+        d = ROOT / space
+        if d.is_dir():
+            walk(d, space)
     if (ROOT / "= Scope/Workbench/transit").is_dir():
         out.add("= Scope/Workbench/transit")
     return sorted(out)
@@ -393,16 +413,32 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
     무해하고 다음 시도에서는 선언된 군집으로 보인다."""
     if dest_dir is None:
         raise WriteError(f"군집 경로가 vault를 벗어난다: {dest}")
+    # 신설이 설 수 있는 자리는 둘이다 — Space 루트 바로 아래(최상위 군집),
+    # 그리고 **이미 선언된 군집 안**(하위 군집). 뒤엣것이 시행령 §3 7항의
+    # 분화다: 한 허브가 지는 주제가 갈리면 하위 허브로 분화하고 상위 허브는
+    # 하위 허브를 참조한다. 구판은 하위를 막았고, 그래서 규범에 있는 분화를
+    # 표면으로 수행할 길이 없었다.
+    parent = dest_dir.parent.resolve()
     roots = {(ROOT / "= Scope").resolve(), (ROOT / "= Domain").resolve(),
              (ROOT / "= Person").resolve()}
-    if dest_dir.parent.resolve() not in roots:
+    top_level = parent in roots
+    if not top_level and not (parent / f"{parent.name}.md").is_file():
         raise WriteError(
-            f"선언되지 않은 군집이다: {dest}. 신설은 Space 루트 바로 아래에만 "
-            f"가능하다(`= Scope/<이름>` 꼴 — Mechanism §1 2항). "
-            f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
+            f"선언되지 않은 군집이다: {dest}. 신설은 Space 루트 바로 아래이거나 "
+            f"**허브가 있는 군집 안**이어야 한다(Mechanism §1 2항 · 시행령 §3 7항). "
+            f"`{parent.name}`에 먼저 동명 허브 노드를 만들면 그 안에 분화할 수 "
+            f"있다. 지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
     name_errs = _title_errors(dest_dir.name)
     if name_errs:
         raise WriteError("군집 이름 부적격 — 이름이 곧 디렉토리명이다", name_errs)
+    # 하위 군집에는 **2단계 확인을 붙이지 않는다.** 관문의 일은 "이거 신설인데
+    # 맞습니까"를 한 번 묻는 것인데, 하위 군집은 그 물음의 답이 이미 나와 있다 —
+    # 부모 허브가 존재한다는 것이 그 갈래를 사용자가 안다는 증거이고, 분화는
+    # 시행령 §3 7항이 권장하는 정상 행위다. 게다가 "첫 노드는 허브"가 어차피
+    # 한 왕복을 만들므로, 관문까지 붙이면 왕복이 둘이 된다.
+    if not top_level:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        return dest_dir
     key = posix_rel(dest_dir, ROOT)
     now = time.time()
     pending = {k: v for k, v in _read_ack().items()
@@ -561,7 +597,13 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
                         f"Workbench의 작업 상태(scope 기억 포함)는 근거 또는 "
                         f"권위의 출처로 참조하지 않는다(Workbench 계약 4.2). "
                         f"근거는 그 지식이 나온 곳이다."]
-            return [f"scope 간 직접 참조: [{kind[1]}] {stem} → {name} {tkind}"]
+            # 무엇을 하라는 말이 없으면 받는 쪽이 scope를 바꿔 보다 두 번
+            # 거부당한다(표면 감사 실측). 옮기는 중이면 순서가 답이다 —
+            # 노드를 먼저 옮기고 그 다음에 잇는다. 아니면 domain 경유다.
+            return [f"scope 간 직접 참조: [{kind[1]}] {stem} → {name} {tkind} — "
+                    f"옮기는 중이면 노드를 먼저 옮기고 그 다음에 이어라. "
+                    f"scope를 넘어 공유할 지식이면 domain 노드로 증류해 경유한다"
+                    f"(헌법 8조 3항)"]
     return []
 
 
@@ -584,8 +626,13 @@ def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
     않는다 — 보호영역의 승인/반려는 별도 표면(대화형 단말)의 일이다.
     거부 응답에 현재 해시를 담지 않는다 — 관측 증명이 연극이 되지 않게."""
     if body_given and not expect_hash:
+        # 이름만 주고 값을 주지 않으면 호출자는 `read_node`로 갈 수밖에 없는데,
+        # 그 도구는 "해시만 알려고 부르지 마라"고 금한다 — 표면이 시킨 대로 하면
+        # 표면이 금한 행동으로만 빠져나온다(표면 감사 실측). 값을 함께 준다.
         raise WriteError(
-            "본문 전체 치환에는 읽은 상태의 해시(expect_hash)가 필요하다")
+            f"본문 전체 치환에는 읽은 상태의 해시(expect_hash)가 필요하다 — "
+            f"지금 값은 {sha256_file(path)}이며, 이 본문을 실제로 읽고 고치는 "
+            f"것이면 그대로 넣어라")
     if expect_hash and sha256_file(path) != expect_hash:
         raise WriteError(
             "그 사이 노드가 변경됐다 — 다시 읽고 재시도하라 (CAS 불일치)")
@@ -988,64 +1035,252 @@ def update_node(name: str, body: str | None = None,
         return out
 
 
+def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
+    """이동 하나의 **검사만** 수행하고 (원본, 목표, 노드)를 낸다 — 아무것도
+    쓰지 않는다.
+
+    `move_nodes`가 전부-아니면-전무이려면 **검사를 전부 먼저** 돌려야 한다.
+    검사와 실행이 한 덩이면 절반 옮긴 상태가 남고, 그 상태는 허브 배선이
+    어중간해 사람이 무엇을 되돌릴지 알기 어렵다."""
+    path = _live_locate(name, idx)
+    if path is None or not path.is_file():
+        # 결과를 함께 말한다 — "전부 아니면 전무"를 문안으로만 약속하면 받는
+        # 쪽이 못 믿고 확인 질의를 한 번 더 한다(표면 감사 실측).
+        raise WriteError(f"노드 없음: {name} — 아무것도 옮기지 않았다")
+    _reject_governance(graph.space_of(path))
+    # 허브 노드는 이름이 군집에 결박한다 (시행령 §3 6항) — 밖으로 나가면
+    # 군집이 허브를 잃고, 도착지에는 남의 군집 이름을 단 노드가 앉는다.
+    # 하위 허브도 같은 식으로 걸린다(`graph.is_hub`) — 하위 군집의 재편은
+    # 허브만 옮기는 일이 아니라 폴더째 옮기는 일이므로 `move_cluster`가 맡는다.
+    if graph.is_hub(path):
+        raise WriteError(
+            "허브 노드는 군집 밖으로 이동할 수 없다 — 옮기지 않았다",
+            [f"`{name}`은 `= …/{path.parent.name}` 군집의 동명 허브 노드다"
+             f"(시행령 §3 6항). 군집째 옮기려면 `move_cluster`를 쓴다"])
+    target = dest_dir / path.name
+    dst_kind = graph.space_of(target)   # 소속은 노드 파일 경로로 판정한다
+    _reject_governance(dst_kind)
+    if not graph.is_node_home(dst_kind) or not _is_cluster(dst_kind):
+        raise WriteError(
+            f"노드를 둘 수 없는 구획이다: {dest_space} {dst_kind} —"
+            f" 노드는 군집 안에 둔다 (Space 루트 직속 불가)")
+    if _pinned(posix_rel(path.parent, ROOT) + "/") \
+            or _pinned(posix_rel(dest_dir, ROOT) + "/"):
+        raise WriteError(
+            "pin으로 고정된 군집이다 — 자동 재배정에서 제외된다 "
+            "(시행령 §3 4항). 사용자 발의로만 옮긴다")
+    clash = _name_collision(dest_dir, path.stem)
+    if clash is not None:
+        raise WriteError(
+            f"목적지에 이미 있는 이름이다: {clash} — 대소문자나 유니코드 "
+            f"정규화만 달라도 NTFS·APFS에서 같은 경로가 된다")
+    try:
+        n = contract.parse(path)
+    except Exception as e:
+        raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
+    return path, target, n
+
+
+def _apply_move(path: Path, target: Path, n, idx) -> None:
+    """검사를 통과한 이동 하나를 수행한다. 바이트 불변 — `updated` 갱신 없음."""
+    # 이동을 이동으로 기록한다(시행령 §6 4항) — 기록이 없으면 반려가 이동을
+    # 추가+삭제로 보아 노드를 지우거나 복제한다. 실패한 이동의 잔행은
+    # 무해하므로(그 자리에 그 id가 없으면 안 쓰인다) 이동 **전에** 적는다.
+    approvals.record_move(n.id, path, target)
+    os.replace(path, target)
+    # 손에 든 색인은 이동 **전** 경로를 쥐고 있다. 갱신하지 않으면 아래
+    # `_dangling_of`가 옛 경로를 열려다 실패해 이 노드의 자기링크를
+    # dangling으로 오보한다 — `create_node`가 `register_new`로 막는 것과
+    # 같은 실패이고, 오타가 아닌 것을 오타라고 알리게 된다.
+    idx.retarget(path, target, graph.space_of(target))
+
+
+def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
+    """이동으로 손봐야 할 허브를 **양쪽 다** 보고한다 — 뺄 것(`remove`)과
+    더할 것(`add`).
+
+    도달은 본문 Link로만 성립하므로(v3.6.0), 노드가 다른 군집으로 가면 출발지
+    허브의 Link는 죽은 줄이 되고 **도착지 허브에는 그 노드로 가는 줄이 없다.**
+    기계가 대신 고칠 수 없다 — 항해는 큐레이션이라 어느 갈래에 걸지가
+    판단이다(시행령 §3 7항). 그래서 고치지 않고 알린다.
+
+    구판은 **출발지만** 알렸다. 표면 감사에서 감사자가 그 안내대로 출발지
+    링크를 지웠더니 그 노드가 도착지에서 고아가 됐고, 허브 검사가 비활성이라
+    `verdict`는 PASS였다 — **안내를 따르면 vault가 나빠지는데 아무도 말해
+    주지 않았다.** 절반만 아는 안내는 안 하느니만 못하다.
+
+    허브의 손잡이는 **제목**으로 낸다 — 이 표면의 다른 모든 손잡이가 제목인데
+    여기만 경로를 내면 호출자가 변환을 스스로 해야 한다(감사 지적)."""
+    out = []
+    for h in sorted(srcs):
+        hub = h / f"{h.name}.md"
+        if not hub.is_file():
+            continue
+        try:
+            n = idx.node(hub)
+        except Exception:
+            continue
+        gone = sorted({contract.target_stem(t) for t in n.wikilinks()} & moved)
+        if gone:
+            out.append({"hub": hub.stem, "remove": gone})
+    dhub = dest / f"{dest.name}.md"
+    if dhub.is_file():
+        try:
+            have = {contract.target_stem(t) for t in idx.node(dhub).wikilinks()}
+            need = sorted(moved - have)
+        except Exception:
+            need = sorted(moved)
+        if need:
+            out.append({"hub": dhub.stem, "add": need})
+    return out
+
+
 def move_node(name: str, dest_space: str) -> dict:
     """군집 재배정. 이동은 바이트 불변이라 CAS가 없다(경로는 상태, 동일성은
     id). pin된 군집은 출발·도착 어느 쪽이든 거부한다(시행령 §3 4항)."""
+    r = move_nodes([name], dest_space)
+    one = r["moved"][0]
+    return {"ok": True, "name": one["name"], "id": one["id"],
+            "path": one["path"], "new_hash": one["new_hash"],
+            "moved_from": one["moved_from"], "dangling": one["dangling"],
+            "hub_links": r["hub_links"]}
+
+
+def move_nodes(names: list[str], dest_space: str) -> dict:
+    """노드 여럿을 한 군집으로 옮긴다 — **전부 아니면 전무**.
+
+    분화(시행령 §3 7항)의 실제 모양이 이것이다: 한 갈래를 통째로 하위 군집에
+    내린다. 하나씩 부르면 잠금과 색인을 N번 짓고(v3.7.0이 세운 "쓰기 1회 =
+    색인 1회"의 반대), 중간에 하나가 거부되면 절반만 내려간 상태가 남는다.
+
+    검사를 **전부 먼저** 돌리고 하나라도 걸리면 아무것도 쓰지 않는다. 그 뒤의
+    실행은 개별 `os.replace`라 원자적이지만 묶음은 아니다 — 실행 중 OSError는
+    이미 옮긴 것을 되돌리지 않고 그대로 보고한다(자료는 어느 쪽에도 남아 있고,
+    이동은 바이트 불변이라 되돌리기가 다시 옮기는 일이다)."""
+    if not names:
+        raise WriteError("옮길 노드가 없다")
     with _Lock():
         idx = graph.Index()                     # 이 이동이 쓰는 색인은 하나다
         _require_complete(idx)
-        path = _live_locate(name, idx)
-        if path is None or not path.is_file():
-            raise WriteError(f"노드 없음: {name}")
-        src_kind = graph.space_of(path)
-        _reject_governance(src_kind)
-        # 허브 노드는 이름이 군집에 결박한다 (시행령 §3 6항) — 밖으로 나가면
-        # 군집이 허브를 잃고, 도착지에는 남의 군집 이름을 단 노드가 앉는다.
-        if path.parent.name == path.stem:
-            raise WriteError(
-                "허브 노드는 군집 밖으로 이동할 수 없다 — 옮기지 않았다",
-                [f"`{name}`은 `= …/{path.parent.name}` 군집의 동명 허브 노드다"
-                 f"(시행령 §3 6항). 군집 개명이 필요하면 사용자 발의로 군집과"
-                 f" 함께 개명한다"])
         dest_dir = resolve_in_root(dest_space)
         if dest_dir is None or not dest_dir.is_dir():
             dest_dir = _new_cluster_gate(dest_space, dest_dir, "이 이동이")
-        target = dest_dir / path.name
-        dst_kind = graph.space_of(target)   # 소속은 노드 파일 경로로 판정한다
-        _reject_governance(dst_kind)
-        if not graph.is_node_home(dst_kind) or not _is_cluster(dst_kind):
+        seen, plans = set(), []
+        for name in names:
+            if name in seen:
+                raise WriteError(f"같은 노드를 두 번 옮길 수 없다: {name}")
+            seen.add(name)
+            plans.append(_plan_move(name, dest_dir, dest_space, idx))
+        srcs = {p.parent for p, _t, _n in plans}
+        moved_stems = {p.stem for p, _t, _n in plans}
+        stale = _hub_links(srcs - {dest_dir}, dest_dir, moved_stems, idx)
+        # 최상위 군집을 건너면 **알린다** — 거부하지는 않는다.
+        #
+        # 노드 하나를 다른 scope로 재배정하는 것은 정당한 행위이고(구판
+        # `move_node`가 늘 하던 일이다), 실제 위반은 출발지 허브가 계속
+        # 가리키는 것이라 `hub_links`의 `remove`를 따르면 해소된다. 그래서
+        # `move_cluster`처럼 막지 않는다 — 거기는 폴더 아래 전부의 소속이
+        # 한꺼번에 바뀌어 되돌릴 수 없이 무더기 위반이 되지만, 여기는 한 노드씩
+        # 이고 안내로 닫힌다.
+        #
+        # 다만 침묵하면 안 된다. 표면 감사에서 감사자가 이 이동을 하고 `ok:true`
+        # 를 받은 뒤 검증기 FAIL로 알게 됐다 — 응답이 그 사실을 말하지 않았다.
+        dtop = dest_dir.relative_to(ROOT).parts[:2]
+        crossed = sorted(p.stem for p, _t, _n in plans
+                         if p.relative_to(ROOT).parts[:2] != dtop)
+        out = []
+        for path, target, n in plans:
+            before = sha256_file(path)
+            _apply_move(path, target, n, idx)
+            out.append({"name": path.stem, "id": n.id,
+                        "path": posix_rel(target, ROOT), "new_hash": before,
+                        "moved_from": posix_rel(path, ROOT),
+                        "dangling": _dangling_of(target, n.meta, n.body, idx)})
+        r = {"ok": True, "moved": out, "count": len(out),
+             "dest": posix_rel(dest_dir, ROOT), "hub_links": stale}
+        if crossed:
+            r["crossed_scope"] = {
+                "nodes": crossed,
+                "why": "최상위 군집을 건넜다 — 출발지 허브가 이 노드들을 계속 "
+                       "가리키면 scope 간 직접 참조가 되어 검증기가 막는다"
+                       "(헌법 8조 3항). `hub_links`의 `remove`를 먼저 하라"}
+        return r
+
+
+def move_cluster(name: str, dest_parent: str) -> dict:
+    """하위 군집을 **폴더째** 옮긴다 — 재편(승격·강등·자리 바꾸기).
+
+    `name`은 하위 군집의 이름(= 그 폴더명 = 그 허브의 이름)이고 `dest_parent`는
+    새 부모 군집의 경로다. 폴더가 통째로 가므로 **그 아래의 하위 군집도 함께
+    간다** — 재귀 처리가 따로 필요 없다.
+
+    **같은 최상위 군집 안에서만** 옮긴다. `_space_of_parts`가 소속을 `parts[1]`
+    로 정하므로 최상위를 건너면 그 안 노드 **전부의 scope가 한꺼번에 바뀌고**,
+    그러면 기존 참조가 무더기로 헌법 8조 3항 위반이 된다. scope를 건너는 것은
+    재편이 아니라 **증류**이며(헌법 8조 3항 — "scope 사이에 공유되는 지식은
+    domain 노드로 증류하여 경유한다") 다른 문으로 간다.
+
+    노드는 바이트가 안 바뀌고 소속도 안 바뀐다(최상위가 같으므로). 그래서
+    위상 검사를 다시 돌릴 필요가 없다 — 기존 참조가 전부 그대로 유효하다.
+    이동 대장은 노드마다 남긴다(시행령 §6 4항 — 반려가 이동을 추가+삭제로
+    오독하지 않게)."""
+    with _Lock():
+        idx = graph.Index()
+        _require_complete(idx)
+        src = _live_locate(name, idx)
+        if src is None or not src.is_file():
+            raise WriteError(f"노드 없음: {name}")
+        if not graph.is_hub(src):
             raise WriteError(
-                f"노드를 둘 수 없는 구획이다: {dest_space} {dst_kind} —"
-                f" 노드는 군집 안에 둔다 (Space 루트 직속 불가)")
-        src_rel = posix_rel(path.parent, ROOT) + "/"
-        if _pinned(src_rel) or _pinned(posix_rel(dest_dir, ROOT) + "/"):
+                f"군집이 아니다: {name} — 군집의 허브(폴더와 동명인 노드)만 "
+                f"군집째 옮길 수 있다. 노드 하나를 옮기려면 `move_nodes`를 쓴다")
+        sdir = src.parent
+        _reject_governance(graph.space_of(src))
+        ddir = resolve_in_root(dest_parent)
+        if ddir is None or not ddir.is_dir():
             raise WriteError(
-                "pin으로 고정된 군집이다 — 자동 재배정에서 제외된다 "
-                "(시행령 §3 4항). 사용자 발의로만 옮긴다")
-        clash = _name_collision(dest_dir, path.stem)
-        if clash is not None:
+                f"목적지 군집이 없다: {dest_parent} — 재편은 이미 있는 군집 "
+                f"안으로만 한다(먼저 그 군집을 만든다)")
+        _reject_governance(graph.space_of(ddir / "x.md"))
+        srel, drel = sdir.relative_to(ROOT).parts, ddir.relative_to(ROOT).parts
+        if srel[:2] != drel[:2]:
             raise WriteError(
-                f"목적지에 이미 있는 이름이다: {clash} — 대소문자나 유니코드 "
-                f"정규화만 달라도 NTFS·APFS에서 같은 경로가 된다")
-        try:
-            n = contract.parse(path)
-        except Exception as e:
-            raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
-        before = sha256_file(path)
-        # 이동을 이동으로 기록한다(시행령 §6 4항) — 기록이 없으면 반려가 이동을
-        # 추가+삭제로 보아 노드를 지우거나 복제한다. 실패한 이동의 잔행은
-        # 무해하므로(그 자리에 그 id가 없으면 안 쓰인다) 이동 **전에** 적는다.
-        approvals.record_move(n.id, path, target)
-        os.replace(path, target)          # 바이트 불변 — updated 갱신 없음
-        # 손에 든 색인은 이동 **전** 경로를 쥐고 있다. 갱신하지 않으면 아래
-        # `_dangling_of`가 옛 경로를 열려다 실패해 이 노드의 자기링크를
-        # dangling으로 오보한다 — `create_node`가 `register_new`로 막는 것과
-        # 같은 실패이고, 오타가 아닌 것을 오타라고 알리게 된다.
-        idx.retarget(path, target, dst_kind)
-        return {"ok": True, "name": name, "id": n.id,
+                f"최상위 군집을 건널 수 없다: {posix_rel(sdir, ROOT)} → "
+                f"{dest_parent}",
+                ["그 안 노드 전부의 소속이 한꺼번에 바뀌어 기존 참조가 무더기로 "
+                 "위반이 된다(헌법 8조 3항). scope 사이의 지식 이동은 재편이 "
+                 "아니라 **증류**다 — domain 노드로 증류하여 경유한다"])
+        if ddir == sdir.parent:
+            raise WriteError(f"이미 그 자리다: {posix_rel(sdir, ROOT)}")
+        if sdir in ddir.parents or sdir == ddir:
+            raise WriteError(
+                f"자기 안으로 옮길 수 없다: {posix_rel(sdir, ROOT)} → {dest_parent}")
+        if not (ddir / f"{ddir.name}.md").is_file() \
+                and ddir.parent.resolve() not in {
+                    (ROOT / s).resolve() for s in graph.NODE_SPACES}:
+            raise WriteError(
+                f"허브 없는 군집 안으로는 옮길 수 없다: {dest_parent}")
+        target = ddir / sdir.name
+        if target.exists():
+            raise WriteError(
+                f"목적지에 같은 이름의 군집이 이미 있다: {posix_rel(target, ROOT)} "
+                f"— 하위 군집 이름은 전역에서 유일하다")
+        if _pinned(posix_rel(sdir, ROOT) + "/") or _pinned(posix_rel(ddir, ROOT) + "/"):
+            raise WriteError(
+                "pin으로 고정된 군집이다 — 사용자 발의로만 옮긴다 (시행령 §3 4항)")
+        inside = [(p, k) for p, k in idx.nodes.values() if sdir in p.parents]
+        for p, _k in inside:
+            approvals.record_move(idx.node(p).id, p,
+                                  target / p.relative_to(sdir))
+        os.replace(sdir, target)          # 같은 볼륨 — 원자적 rename
+        for p, k in inside:
+            idx.retarget(p, target / p.relative_to(sdir), k)
+        return {"ok": True, "cluster": name,
                 "path": posix_rel(target, ROOT),
-                "new_hash": before, "moved_from": posix_rel(path, ROOT),
-                "dangling": _dangling_of(target, n.meta, n.body, idx)}
+                "moved_from": posix_rel(sdir, ROOT),
+                "nodes": len(inside),
+                "hub_links": _hub_links(
+                    {sdir.parent}, ddir, {sdir.name}, idx)}
 
 
 def record_candidate(type: str, nodes: list[str], reason: str = "") -> dict:
