@@ -917,8 +917,17 @@ def update_node(name: str, body: str | None = None,
             replaced_summary = str(meta.get("summary"))
             meta["summary"] = summary
             changed = True
+        # 두 루프 모두 **누적된 `meta`**에서 현재값을 읽는다. 구판은 각자
+        # `n.edges(pred)`로 **원본**을 다시 읽었고, 그래서 같은 술어에 add와
+        # remove를 함께 주면 remove가 "add가 없었던 것처럼" 계산한 값으로
+        # meta를 덮었다 — 원본에 지울 것 하나뿐이었으면 술어를 통째로 `pop`해
+        # **방금 추가한 근거까지 사라졌다.** 그러면서 `ok: true`를 냈다.
+        #
+        # "근거를 A에서 B로 바꾼다"는 드문 호출이 아니라 이관·오타 수정·근거
+        # 갱신의 자연스러운 표현이다. 실제로 v3.7.3 이관에서 두 번 걸렸고,
+        # 두 번째는 이 결함을 재현해 기록한 직후였다 — 알고도 피해지지 않았다.
         for pred, tg in (add_edges or {}).items():
-            cur = n.edges(pred)
+            cur = contract.edge_targets(meta.get(pred))
             have = {contract.target_stem(x) for x in cur}   # 표기 차이는 같은 대상
             new = [t for t in _as_list(tg)
                    if contract.target_stem(t) not in have]
@@ -927,7 +936,7 @@ def update_node(name: str, body: str | None = None,
                 changed = True
         for pred, tg in (remove_edges or {}).items():
             drop = {contract.target_stem(t) for t in _as_list(tg)}
-            cur = n.edges(pred)
+            cur = contract.edge_targets(meta.get(pred))
             keep = [t for t in cur if contract.target_stem(t) not in drop]
             if len(keep) != len(cur):
                 changed = True

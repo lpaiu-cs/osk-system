@@ -11,11 +11,41 @@ import yaml
 
 from .core import ID_RE, TS_RE
 
+def edge_targets(value) -> list[str]:
+    """PE 스칼라·목록을 **대상명 목록**으로 읽는다(시행령 §1 3항 · Mechanism
+    §8 2항). 위키링크는 대상명(경로·stem)만, id 맨값은 스칼라 전체를 돌려준다 —
+    소비자(`graph.resolve`)가 id는 id로, 그 밖은 경로/stem으로 해석한다.
+
+    `Node.edges`와 쓰기 통로의 엣지 델타가 **같은 해석**을 쓰도록 여기 한 벌만
+    둔다. 두 벌이면 조용히 갈라진다."""
+    if value is None:
+        return []
+    out = []
+    for x in (value if isinstance(value, list) else [value]):
+        s = str(x).strip()
+        m = re.search(r"\[\[([^\]#|]+)", s)
+        if m:
+            out.append(m.group(1).strip())   # 비노드/사건/노드 — 위키링크 대상명
+        elif s:
+            out.append(s)                     # 구형 노드 대상 — id 그대로
+    return out
+
+
 def target_stem(name: str) -> str:
     """PE·Link 대상명의 **동일성 키**. 경로형 `[[= Scope/W1/N]]`과 스템형
     `[[N]]`은 같은 대상이므로 마지막 요소의 stem으로 접는다 — 표기 차이가
-    중복 등재나 무효한 제거로 새지 않게 한다."""
-    s = str(name).strip().rstrip("/").split("/")[-1]
+    중복 등재나 무효한 제거로 새지 않게 한다.
+
+    위키링크 괄호를 **여기서 벗긴다.** 구판은 벗기지 않아 같은 노드가
+    `[[N]]`·`N`·`N]]` 세 키로 갈렸다 — 독스트링이 약속한 접기가 실제로는
+    일어나지 않았다. 호출부가 `Node.edges`(이미 벗겨진 값)를 먹이는 자리에서는
+    드러나지 않았지만, 호출자 입력은 벗겨지지 않은 채 들어온다. 그래서 맨
+    이름으로 넣으면 중복 판정이 되고 `[[이름]]`으로 넣으면 안 되는 상태였다."""
+    s = str(name).strip()
+    m = re.search(r"\[\[([^\]#|]+)", s)
+    if m:
+        s = m.group(1).strip()
+    s = s.rstrip("/").split("/")[-1]
     return s[:-3] if s.endswith(".md") else s
 
 
@@ -40,20 +70,11 @@ class Node:
         노드 대상은 `id`를 **그대로**(`derived-from: 260802-114u-7lo3`),
         비노드 대상과 `conflicts`는 위키링크(`"[[경로#제목]]"`)로 쓴다.
         위키링크는 대상명(경로·stem)만, id형은 스칼라 전체를 돌려준다 —
-        소비자(graph.resolve)가 id는 id로, 그 밖은 경로/stem으로 해석한다."""
-        v = self.meta.get(predicate)
-        if v is None:
-            return []
-        vals = v if isinstance(v, list) else [v]
-        out = []
-        for x in vals:
-            s = str(x).strip()
-            m = re.search(r"\[\[([^\]#|]+)", s)
-            if m:
-                out.append(m.group(1).strip())   # 비노드/사건 — 위키링크 대상명
-            elif s:
-                out.append(s)                     # 노드 대상 — id 그대로
-        return out
+        소비자(graph.resolve)가 id는 id로, 그 밖은 경로/stem으로 해석한다.
+
+        해석은 `edge_targets`에 한 벌만 둔다 — 쓰기 통로의 엣지 델타가 저장
+        표기에서 같은 목록을 얻어야 하기 때문이다."""
+        return edge_targets(self.meta.get(predicate))
 
     def wikilinks(self) -> list[str]:
         """본문 Link(임베드 포함). 코드 구획(``` 펜스·인라인 백틱) 안의
