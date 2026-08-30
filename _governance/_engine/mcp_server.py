@@ -152,8 +152,9 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8) -> list[dict]:
 def read_node(name: str) -> dict:
     """노드 전문 읽기 — 본문 전체가 오므로 비싸다(평균 1.4k 토큰). 인용이나
     본문 재작성 직전에만 부르고, 해시만 알려고 부르지 마라 — 쓰기 응답이
-    `new_hash`로 준다. `name`은 노드 제목이며 `id`로도 찾는다. `hash`는
-    `expect_hash`에 그대로 넣는다."""
+    `new_hash`로 준다. 손잡이는 응답의 `name`(제목)이다 — 다른 도구에 그대로
+    넣고, 근거로 달 때도 그것을 쓴다. `id`는 대장·서명의 동일성이라 손잡이로
+    쓰면 느리다. `hash`는 `expect_hash`에 그대로 넣는다."""
     idx = _s().idx
     hit = idx.nodes.get(name)
     if not hit:
@@ -195,7 +196,11 @@ def read_node(name: str) -> dict:
         return {"error": f"파싱 실패 — 수동 확인 필요: {name} ({e})"}
     # 경로는 POSIX 표기로 낸다 — 도구마다 구분자가 갈리면 ref를 손으로
     # 조립하는 호출자가 혼선을 겪는다(감사 지적). 규칙·ref 표기도 전부 슬래시다.
-    return {"path": posix_rel(hit[0], ROOT), "id": n.id,
+    # `name`을 **먼저** 낸다. 구판은 `id`만 돌려줘서, 읽은 뒤 그 노드를 근거로
+    # 달거나 고치려는 호출자의 손에 남는 것이 id뿐이었다 — 그래서 새 엔진으로도
+    # 구형 id 표기 근거가 계속 태어났다(v3.7.4 직후 하루에 3간선). 손잡이는
+    # 이름이고, id는 대장·서명·사건부의 동일성으로 남는다.
+    return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
             "hash": sha256_bytes(raw),
             "body": n.body}
@@ -262,8 +267,8 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `space`는 군집의 전체 경로(`"= Scope/W1"` 꼴, 맨 이름 `W1`은 거부)이니
     모르면 `overview`를 먼저 보라. `session`은 저장소 이름처럼 세션이 바뀌어도
     같은 값이며 첫 성공이 그 키를 영구 결속한다 — 1회용 대화 id를 넣지 마라.
-    `edges`의 `derived-from`은 근거를 가리킨다 — 노드 근거는 그 `id`
-    (`260802-114u-7lo3` 꼴)로, 비노드 근거는 `[[경로]]`·`[[경로#제목]]`로 준다.
+    `edges`의 `derived-from`은 근거를 가리킨다 — 노드 근거는 그 **제목**으로,
+    비노드 근거는 `[[경로]]`·`[[경로#제목]]`로 준다.
     `conflicts`는 열린 사건 번호(`CASE-2026-1` 꼴)만 받는다. 본문의 `[[링크]]`도
     검사 대상이라 다른 scope의 노드는 직접 가리킬 수 없다. 응답의 `bound_scope`는 이 쓰기가
     **새로** 세운 결속이다(이미 결속돼 있었으면 null) — 결속 뒤에는 `space`를

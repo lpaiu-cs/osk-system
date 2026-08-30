@@ -5133,6 +5133,48 @@ def test_broken_is_reported_not_gated():
         _age_all()
 
 
+# ── 손잡이는 이름이다 (v3.7.5) ──────────────────────────────────────────
+def test_name_is_the_handle():
+    """모든 표면이 **이름을 돌려준다.** 읽은 뒤 그 노드를 근거로 달거나 고치려는
+    호출자의 손에 이름이 남아야 한다.
+
+    구판 `read_node`는 `id`만 돌려줬다. 그래서 새 엔진으로도 구형 id 표기
+    근거가 계속 태어났다 — v3.7.4 직후 하루에 3간선. 스키마가 *"노드 근거는
+    그 `id`로"*라고 **가르치고 있던** 것도 같은 뿌리다(검증은 통로에, 교육은
+    스키마에 — 통로만 고치고 스키마를 두면 표기가 수렴하지 않는다).
+
+    무엇을 망가뜨리면 실패하는가:
+      · `read_node`가 `name`을 빼면 → 첫 단언이 실패
+      · 돌려준 이름이 손잡이로 안 통하면 → 왕복 단언이 실패
+    """
+    import mcp_server as M
+    r = _w(write.create_node, "regr-handle", "손잡이", "본문", "fable-5",
+           space="= Scope/W1")
+    try:
+        check("전제: 생성", r.get("ok"), r)
+        check("create_node가 이름을 돌려준다", r.get("name") == "regr-handle", r)
+        _age_all()
+        got = M.read_node("regr-handle")
+        check("read_node가 이름을 돌려준다", got.get("name") == "regr-handle", got)
+        check("id도 함께 온다(대장 동일성)", got.get("id") == r["id"], got)
+        # 돌려준 이름이 그대로 손잡이가 된다 — 쓰기·근거 양쪽에서.
+        r2 = _w(write.update_node, got["name"], summary="바뀐 요약")
+        check("돌려준 이름으로 고칠 수 있다", r2.get("ok"), r2)
+        r3 = _w(write.create_node, "regr-handle-src", "근거 단 노드", "본문",
+                "fable-5", space="= Scope/W1",
+                edges={"derived-from": got["name"]})
+        check("돌려준 이름으로 근거를 달 수 있다", r3.get("ok"), r3)
+        check("근거가 제목 표기로 저장된다",
+              contract.parse(ROOT / "= Scope/W1/regr-handle-src.md")
+              .meta.get("derived-from") == "[[regr-handle]]",
+              r3.get("edges"))
+        check("그 근거는 dangling이 아니다", not r3.get("dangling"), r3)
+    finally:
+        for nm in ("regr-handle", "regr-handle-src"):
+            (ROOT / f"= Scope/W1/{nm}.md").unlink(missing_ok=True)
+        _age_all()
+
+
 # ── 엣지 델타는 누적된 상태 위에서 계산된다 (v3.7.4) ────────────────────
 def test_edge_delta_is_cumulative():
     """같은 술어에 `add_edges`와 `remove_edges`를 함께 주면 **둘 다** 반영된다.
@@ -6006,6 +6048,7 @@ if __name__ == "__main__":
                test_broken_is_reported_not_gated,
                test_id_width_and_discriminator,
                test_edge_delta_is_cumulative,
+               test_name_is_the_handle,
                test_duplicate_id_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_traversal_deterministic, test_index_split,
