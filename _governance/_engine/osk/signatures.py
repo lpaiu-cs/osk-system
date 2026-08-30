@@ -49,12 +49,21 @@ def _id_of(p: Path) -> str | None:
 
 def locate_by_id(node_id: str) -> Path | None:
     """현재 vault에서 id로 노드 파일을 찾는다 — 경로 이동은 동일성을 깨지
-    않으므로(경로는 상태) id 해석이 정본이다."""
+    않으므로(경로는 상태) id 해석이 정본이다.
+
+    같은 id가 둘 이상이면 **고르지 않고 `None`을 낸다.** 구판은 첫 일치에서
+    멈춰, `by_id`(뒤가 이긴다)·`read_node`와 서로 다른 파일을 가리켰다 —
+    id 해석의 동점 규칙이 세 갈래로 갈려 있었다. 지금 이 함수의 생산
+    호출자는 없지만, 규칙이 갈린 채로 두면 다음 호출자가 그 함정을 다시
+    연다. 서명 판정에서 `None`은 fail-closed(=`unsigned`)로 떨어진다."""
     from . import graph
+    hit = None
     for p, _k in graph.iter_nodes():
         if _id_of(p) == node_id:
-            return p
-    return None
+            if hit is not None:
+                return None       # 모호 — 표면이 임의로 한쪽을 택하지 않는다
+            hit = p
+    return hit
 
 
 class _StrictLoader(yaml.SafeLoader):

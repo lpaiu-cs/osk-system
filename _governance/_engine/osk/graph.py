@@ -434,6 +434,7 @@ class Index:
         by_id: dict[str, tuple[Path, tuple]] = {}
         broken: dict[str, str] = {}
         dup: dict[str, list[str]] = {}
+        dupid: dict[str, list[str]] = {}
         for p, k in self._entries:
             if not self._readable(p):
                 why = self._failed[p]
@@ -447,9 +448,21 @@ class Index:
             nodes[p.stem] = (p, k)
             nid = self.parsed[p].id
             if nid:
+                # id 중복도 **센다.** 세지 않으면 뒤에 오는 쪽이 조용히 이기고,
+                # 읽기 표면은 앞에 오는 쪽을 골라 서로 다른 파일을 가리킨다 —
+                # 사본은 바이트가 같으므로 CAS도 통과해, 에이전트가 읽지 않은
+                # 파일이 갱신된다(재현 확인). 동일성의 정본이 겹쳤다는 것은
+                # 표면이 임의로 한쪽을 택할 일이 아니라 사람이 고칠 일이다.
+                if nid in by_id:
+                    # 경로는 POSIX 표기 — 이 목록은 `read_node`의 오류로 MCP
+                    # 표면까지 나간다(도구마다 구분자가 갈리면 호출자가 혼선).
+                    dupid.setdefault(nid, [
+                        by_id[nid][0].relative_to(ROOT).as_posix()]).append(
+                        p.relative_to(ROOT).as_posix())
                 by_id[nid] = (p, k)
         self._nodes, self._by_id = nodes, by_id
         self._broken, self._dup_stems = broken, dup
+        self._dup_ids = dupid
         self._all_parsed = True
 
     @property
@@ -460,9 +473,25 @@ class Index:
 
     @property
     def by_id(self) -> dict[str, tuple[Path, tuple]]:
-        """id → 노드 (derived-from 해석). 동일성의 정본은 id다."""
+        """id → 노드 (derived-from 해석). 동일성의 정본은 id다.
+
+        겹친 id는 여기서 **뒤에 오는 쪽이 이긴다.** 그 승패에 기대지 마라 —
+        겹쳤는지는 `dup_ids`로 먼저 묻고, 겹쳤으면 표면은 고르지 말고 거부한다.
+        """
         self.parse_all()
         return self._by_id
+
+    @property
+    def dup_ids(self) -> dict[str, list[str]]:
+        """**판독에 성공한** 노드끼리의 동 id 중복 (id → 경로 목록).
+
+        `dup_stems`의 id판이며 같은 이유로 판독 실패 파일을 세지 않는다.
+        중복 id는 표면이 만들 수 없으므로 언제나 외부 기원이다 — 파일 복제
+        (옵시디언 "사본 만들기"), 백업 복원, 병합 충돌의 수동 해결. id 생성기의
+        무작위부를 늘려도 이 경로는 `new_node_id`를 거치지 않으므로 남는다.
+        """
+        self.parse_all()
+        return self._dup_ids
 
     @property
     def broken(self) -> dict[str, str]:
@@ -538,6 +567,12 @@ class Index:
         if re.match(ID_RE, name):
             # derived-from 노드 대상 — id가 정본 동일성(경로·이름은 상태).
             # id는 frontmatter 안에 있으므로 이것만은 전수 판독을 부른다.
+            #
+            # 동명이 모호이면 동 id도 모호다. 이름 갈래가 `('ambiguous',)`를
+            # 내는 자리에서 id 갈래만 조용히 한쪽을 고르면, 같은 트리가 무엇을
+            # 가리키는지가 파일 정렬 순서에 달린다.
+            if name in self.dup_ids:
+                return ("ambiguous",)
             hit = self.by_id.get(name)
             return ("node", hit[1]) if hit else ("dangling",)
         if "/" in name:

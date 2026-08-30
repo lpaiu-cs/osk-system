@@ -5094,6 +5094,82 @@ def test_broken_blocks_id_uniqueness_claim():
         (ROOT / "= Scope/W1/regr-idnew.md").unlink(missing_ok=True)
 
 
+# ── id 중복: 읽기와 쓰기가 갈리지 않는다 ────────────────────────────────
+def test_duplicate_id_refused():
+    """같은 id의 노드가 둘이면 **읽기도 쓰기도 고르지 않는다.**
+
+    구판은 갈렸다 — `read_node`는 자체 순회로 **첫** 일치를, `_live_locate`는
+    `by_id`로 **마지막**을 골랐다. 사본은 바이트가 같아 `expect_hash`까지
+    통과해, 에이전트가 **읽지 않은 파일이 갱신**됐다. 이름 중복에는 있던
+    방어가 id에는 없었다. 3자 독립 검토가 각각 재현했고 여기서도 재현했다.
+
+    중복 id는 표면이 만들 수 없다 — 언제나 외부 기원이다(파일 복제·복원·
+    병합의 수동 해결). id 무작위부를 늘려도 그 경로는 `new_node_id`를 거치지
+    않으므로 남는다.
+
+    무엇을 망가뜨리면 이 시험이 실패하는가:
+      · `parse_all`의 `dup_ids` 집계를 지우면 → 전제부터 실패
+      · `_live_locate`의 중복 거부를 지우면 → 쓰기가 통과해 바이트가 바뀐다
+      · `read_node`를 자체 순회(첫 일치)로 되돌리면 → 읽기가 노드를 내준다
+      · `resolve`의 ambiguous를 지우면 → 위상 판정이 한쪽을 조용히 고른다
+    """
+    import mcp_server as M
+    p = ROOT / "= Scope/W1/regr-dupid.md"
+    twin = ROOT / "= Scope/W1/regr-dupid 1.md"
+    try:
+        r0 = _w(write.create_node, "regr-dupid", "요약", "ORIGINAL", "fable-5",
+                space="= Scope/W1")
+        check("전제: 생성", r0.get("ok"), r0)
+        nid = r0["id"]
+        twin.write_bytes(p.read_bytes())      # 옵시디언 "사본 만들기"와 같은 상태
+        _age_all()
+        before_p, before_twin = p.read_bytes(), twin.read_bytes()
+        check("전제: 바이트가 같다", before_p == before_twin)
+
+        i = graph.Index()
+        check("색인이 id 중복을 싣는다", nid in i.dup_ids, i.dup_ids)
+        check("중복은 두 경로를 모두 지목한다",
+              len(i.dup_ids[nid]) == 2, i.dup_ids.get(nid))
+        check("경로는 POSIX 표기다",
+              all("\\" not in s for s in i.dup_ids[nid]), i.dup_ids[nid])
+        check("resolve는 모호로 답한다", i.resolve(nid) == ("ambiguous",),
+              i.resolve(nid))
+
+        rr = M.read_node(nid)
+        check("읽기는 노드를 내주지 않는다", "error" in rr, rr)
+        check("읽기가 이유를 말한다", "id" in rr.get("error", ""), rr)
+
+        r1 = _w(write.update_node, nid, body="바뀐 본문")
+        check("쓰기는 거부한다", r1.get("ok") is False, r1)
+        check("거부가 중복을 지목한다", "같은 id" in str(r1), r1)
+
+        # 세 번째 해석 경로도 고르지 않는다. 지금 생산 호출자는 없지만
+        # 동점 규칙이 갈린 채로 두면 다음 호출자가 함정을 다시 연다.
+        check("locate_by_id도 고르지 않는다",
+              S.locate_by_id(nid) is None, S.locate_by_id(nid))
+
+        # 계약의 본체 — 거부했으면 **어느 쪽도** 바뀌지 않았다.
+        check("원본 바이트 불변", p.read_bytes() == before_p)
+        check("사본 바이트 불변", twin.read_bytes() == before_twin)
+
+        # 중복이 해소되면 종전대로 동작하고, **읽기와 쓰기가 같은 파일**을
+        # 가리킨다. 이 마지막 단언이 동점 규칙의 통일을 지킨다.
+        twin.unlink()
+        _age_all()
+        rr2 = M.read_node(nid)
+        check("중복 해소 후 읽기 복구", rr2.get("path"), rr2)
+        live = write._live_locate(nid, graph.Index())
+        check("읽기와 쓰기가 같은 파일을 가리킨다",
+              rr2.get("path") == core.posix_rel(live, ROOT),
+              (rr2.get("path"), live))
+        r2 = _w(write.update_node, nid, summary="새 요약")
+        check("중복 해소 후 쓰기 복구", r2.get("ok"), r2)
+    finally:
+        p.unlink(missing_ok=True)
+        twin.unlink(missing_ok=True)
+        _age_all()
+
+
 # ── 판독 계약: 깊이 가드와 탭 (v3.7.0) ──────────────────────────────────
 def test_parse_guards():
     """C 로더로 바꾸면서 (a) 프로세스를 죽이는 입력과 (b) 거부되던 것이
@@ -5790,6 +5866,7 @@ if __name__ == "__main__":
                test_read_is_bound_to_bytes,
                test_incomplete_scan_refuses_writes,
                test_broken_blocks_id_uniqueness_claim,
+               test_duplicate_id_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,

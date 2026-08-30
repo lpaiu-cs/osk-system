@@ -159,16 +159,23 @@ def read_node(name: str) -> dict:
     if not hit:
         # 쓰기 응답은 id를 돌려준다 — 그것을 핸들로 잡은 호출자에게
         # "노드 없음"은 틀린 진단이다(10차 ②)
+        #
+        # 해석은 **쓰기와 같은 `by_id`**로 한다. 구판은 여기서 자체 순회로
+        # **첫 일치**를 골랐고 `by_id`는 **마지막**을 골랐다 — 같은 id가 둘일 때
+        # 읽기와 쓰기가 서로 다른 파일을 가리켰고, 사본은 바이트가 같아
+        # `expect_hash`까지 통과해 **읽지 않은 파일이 갱신됐다**(재현 확인).
+        # 동점 규칙을 하나로 두는 것으로는 부족하고, 겹쳤으면 고르지 않는다.
         import re as _re
         from osk.core import ID_RE as _ID
-        if _re.match(_ID, str(name).strip()):
-            for stem, (p, _k) in idx.nodes.items():
-                try:
-                    if idx.node(p).id == str(name).strip():
-                        hit, name = (p, _k), stem
-                        break
-                except Exception:
-                    continue
+        nid = str(name).strip()
+        if _re.match(_ID, nid):
+            if nid in idx.dup_ids:
+                return {"error": f"같은 id의 노드가 {len(idx.dup_ids[nid])}개다 "
+                                 f"— 어느 것인지 정해지지 않는다: "
+                                 f"{idx.dup_ids[nid]} (먼저 고쳐라)"}
+            h = idx.by_id.get(nid)
+            if h:
+                hit, name = h, h[0].stem
     if not hit:
         why = (getattr(idx, "broken", None) or {}).get(name)
         return {"error": f"파싱 실패 — 수동 확인 필요: {why}" if why

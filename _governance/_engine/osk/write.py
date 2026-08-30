@@ -169,6 +169,10 @@ def _live_locate(name: str, idx) -> Path | None:
     만들 수 없으므로(create_node가 동명을 거부한다) 중복은 언제나 외부 기원이며,
     그렇기에 표면이 임의로 한쪽을 택하는 것이 더 나쁘다.
 
+    **같은 id가 둘 이상일 때도 같다.** 이 방어가 이름에만 있고 id에는 없었다 —
+    그래서 `read_node(id)`는 앞의 것을, 여기서는 뒤의 것을 골랐고, 사본은
+    바이트가 같아 `expect_hash`까지 통과했다. 읽지 않은 파일이 갱신되는 경로였다.
+
     구판은 여기서 파일시스템을 **다시 훑었다.** 그 규율("이름→파일 해석은
     잠금 안에서 라이브 파일시스템으로")의 근거는 *"mcp_server의 fingerprint
     캐시 색인으로 해석하면 낡은 경로에 작용한다"*였는데, 쓰기 통로가 쓰는 것은
@@ -181,7 +185,15 @@ def _live_locate(name: str, idx) -> Path | None:
     if not hits and re.match(ID_RE, str(name).strip()):
         # id 형태면 id로도 찾는다 — 쓰기 응답이 id를 돌려주므로 그것을 핸들로
         # 잡은 호출자에게 "노드 없음"은 틀린 진단이다(10차 ②)
-        hit = idx.by_id.get(str(name).strip())
+        nid = str(name).strip()
+        if nid in idx.dup_ids:
+            # 이름 중복과 **같은 이유로** 거부한다. 여기서 한쪽을 고르면 읽기
+            # 표면이 고른 쪽과 갈리는데, 사본은 바이트가 같아 CAS가 그것을
+            # 막지 못한다 — 에이전트가 읽지 않은 파일이 갱신된다(재현 확인).
+            raise WriteError(
+                f"같은 id의 노드가 {len(idx.dup_ids[nid])}개다 — 어느 것인지 "
+                f"정해지지 않아 고치지 않았다: {idx.dup_ids[nid]}")
+        hit = idx.by_id.get(nid)
         hits = [hit[0]] if hit else []
     if len(hits) > 1:
         raise WriteError(
@@ -526,7 +538,7 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
     if r[0] in ("external", "dangling"):
         return []                       # dangling은 경고이지 위반이 아니다
     if r[0] == "ambiguous":
-        return [f"모호 참조(동명 노드 중복): {stem} → {name}"]
+        return [f"모호 참조(같은 이름 또는 같은 id의 노드가 여럿): {stem} → {name}"]
     tkind = r[1]
     if kind[0] == "domain" and tkind[0] == "raw":
         return [f"Domain의 _raw 직접 참조: {stem} → {name}"]
