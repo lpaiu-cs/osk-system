@@ -4927,11 +4927,25 @@ def test_new_cluster_two_phase():
     r5 = _w(write.move_node, "이상 신설 시험", "= Domain/D2P")
     check("move 재시도는 통과 — 이동 형성은 허브 강제가 없다(§3 1항 보호)",
           r5.get("ok"), r5)
+    # v3.8.0 — 하위 군집 신설이 열렸다. 분화는 시행령 §3 7항이 권장하는 정상
+    # 행위이고, 구판은 그것을 표면으로 수행할 길이 없었다. 다만 **허브가 있는
+    # 군집 안**이어야 하고, 하위 허브가 첫 노드여야 한다.
     r6 = _w(write.create_node, "깊은 경로", "s", "본문", "fable-5",
             space="= Scope/W2P/sub")
-    check("Space 루트 아래가 아니면 즉시 거부",
+    check("하위 군집도 첫 노드는 허브여야 한다",
           r6.get("ok") is False
-          and "Space 루트 바로 아래" in " ".join(r6["violations"]), r6)
+          and "허브 노드" in " ".join(r6["violations"]), r6)
+    r6b = _w(write.create_node, "sub", "하위 허브", "본문", "fable-5",
+             space="= Scope/W2P/sub")
+    check("하위 군집 신설은 2단계 관문 없이 한 번에",
+          r6b.get("ok"), r6b)
+    check("하위 허브가 그 자리에 섰다",
+          (ROOT / "= Scope/W2P/sub/sub.md").is_file())
+    r6c = _w(write.create_node, "더 깊은 경로", "s", "본문", "fable-5",
+             space="= Scope/W2P/없는군집/더깊이")
+    check("허브 없는 폴더 안으로는 분화할 수 없다",
+          r6c.get("ok") is False
+          and "허브가 있는 군집 안" in " ".join(r6c["violations"]), r6c)
     r7 = _w(write.create_node, "예약명 군집", "s", "본문", "fable-5",
             space="= Scope/COM1")
     check("군집 이름도 이식성 규칙을 받는다",
@@ -5130,6 +5144,146 @@ def test_broken_is_reported_not_gated():
     finally:
         bad.unlink(missing_ok=True)
         (ROOT / "= Scope/W1/regr-idnew.md").unlink(missing_ok=True)
+        _age_all()
+
+
+# ── 하위 군집: 허브는 자리다 (v3.8.0) ───────────────────────────────────
+def test_nested_clusters():
+    """하위 군집은 **폴더**이고, 그 허브는 **폴더와 동명인 노드**다.
+
+    이 판정이 서기 전에는 검증기가 최상위 허브만 알아 층 사이의 도달을 전혀
+    검사하지 못했다 — 부모 허브가 하위 허브를 안 가리켜도, 떠난 노드를 계속
+    가리켜도 미직결이 0이었다(폴더별로 따로 셌기 때문). 헌법 3조 8항이
+    요구하는 것은 *"최상위 허브에서 하위 허브를 거쳐"* 닿는 것이다.
+
+    허브는 노드의 종이 아니라 자리이므로 frontmatter에 표식이 붙지 않는다
+    (시행령 §3 7항). 배치가 정본이라는 원칙에서 읽어 내는 것이다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · `cluster_overview_report`를 폴더별 묶음으로 되돌리면 → 층 단언이 실패
+      · `graph.is_hub`가 stem/parent 비교를 놓으면 → 허브 판정 전부가 실패
+      · 하위 신설에 2단계 관문을 붙이면 → 한-번-에 단언이 실패
+    """
+    import osk.core as C
+    base = ROOT / "= Scope/W1"
+    made = []
+    try:
+        def L(ns):
+            return "개요\n\n" + "\n".join(f"- [[{n}]]" for n in ns) + "\n"
+        r = _w(write.create_node, "regr-nc", "갈래", L(["regr-nc-a"]),
+               "fable-5", space="= Scope/W1/regr-nc")
+        check("하위 군집 신설은 한 번에(2단계 관문 없음)", r.get("ok"), r)
+        made.append(base / "regr-nc")
+        check("허브가 폴더와 동명으로 앉는다",
+              (base / "regr-nc/regr-nc.md").is_file())
+        check("is_hub가 그것을 허브로 본다",
+              graph.is_hub(base / "regr-nc/regr-nc.md"))
+        check("is_hub가 평범한 노드는 허브로 보지 않는다",
+              not graph.is_hub(base / "regr-nc/regr-nc-a.md"))
+        for nm in ("regr-nc-a", "regr-nc-b"):
+            _w(write.create_node, nm, "요", "본문", "fable-5",
+               space="= Scope/W1/regr-nc")
+
+        rep = validate.cluster_overview_report(graph.Index())
+        check("묶음은 최상위 군집이다 — 하위 폴더가 따로 서지 않는다",
+              "= Scope/W1/regr-nc" not in rep, sorted(rep))
+        st = rep["= Scope/W1"]
+        check("최상위가 하위 허브를 안 가리키면 그 아래가 통째로 미직결",
+              {"regr-nc", "regr-nc-a"} <= set(st.get("orphans") or []),
+              st.get("orphans"))
+
+        # 층을 가로지른다 — 최상위가 하위 허브를 가리키면 **그 아래까지** 산다.
+        # mini-vault의 W1 허브는 공유물이므로 본문을 되돌린다.
+        top = ROOT / "= Scope/W1/W1.md"
+        top_body = contract.parse(top).body
+        _w(write.update_node, "W1", body=top_body + "\n- [[regr-nc]]\n",
+           expect_hash=C.sha256_file(top))
+        st = validate.cluster_overview_report(graph.Index())["= Scope/W1"]
+        check("하위 허브를 가리키니 하위 허브가 산다",
+              "regr-nc" not in (st.get("orphans") or []), st.get("orphans"))
+        check("그 아래 노드도 층을 거쳐 산다 — 이것이 구판이 못 보던 것",
+              "regr-nc-a" not in (st.get("orphans") or []), st.get("orphans"))
+        _w(write.update_node, "W1", body=top_body,
+           expect_hash=C.sha256_file(top))
+
+        # 허브 없는 폴더는 자리로 보고된다.
+        (base / "regr-nc-hl").mkdir(exist_ok=True)
+        made.append(base / "regr-nc-hl")
+        _w(write.move_nodes, ["regr-nc-b"], "= Scope/W1/regr-nc-hl")
+        st = validate.cluster_overview_report(graph.Index())["= Scope/W1"]
+        check("허브 없는 하위 폴더를 hubless로 지목한다",
+              "= Scope/W1/regr-nc-hl" in (st.get("hubless") or []), st)
+    finally:
+        for d in made:
+            shutil.rmtree(d, ignore_errors=True)
+        _age_all()
+
+
+def test_move_nodes_and_cluster():
+    """`move_nodes`는 **전부 아니면 전무**이고, `move_cluster`는 폴더째 옮긴다.
+
+    분화는 갈래를 골라 내리는 일(N개 지정)이고 재편은 통째로 옮기는 일이다 —
+    성격이 달라 표면이 둘이다. 재편은 폴더가 가므로 **하위의 하위가 공짜로
+    따라간다.**
+
+    무엇을 망가뜨리면 실패하는가:
+      · 검사 전에 옮기기 시작하면 → 전무 단언이 실패
+      · `move_cluster`가 최상위를 건너게 하면 → 거부 단언이 실패
+      · `_stale_hub_links`를 지우면 → 안내 단언이 실패
+    """
+    base = ROOT / "= Scope/W1"
+    made = []
+    try:
+        for sub in ("regr-mv", "regr-mv2"):
+            _w(write.create_node, sub, "갈래", "개요\n", "fable-5",
+               space=f"= Scope/W1/{sub}")
+            made.append(base / sub)
+        for nm in ("regr-mv-a", "regr-mv-b"):
+            _w(write.create_node, nm, "요", "본문", "fable-5",
+               space="= Scope/W1/regr-mv")
+        hub = base / "regr-mv/regr-mv.md"
+        import osk.core as C
+        _w(write.update_node, "regr-mv",
+           body="개요\n\n- [[regr-mv-a]]\n- [[regr-mv-b]]\n",
+           expect_hash=C.sha256_file(hub))
+
+        # 전부-아니면-전무 — 허브를 섞으면 아무것도 안 옮긴다.
+        bad = _w(write.move_nodes, ["regr-mv-a", "regr-mv"],
+                 "= Scope/W1/regr-mv2")
+        check("허브가 섞이면 거부", bad.get("ok") is False, bad)
+        check("거부했으므로 아무것도 안 옮겼다",
+              (base / "regr-mv/regr-mv-a.md").is_file())
+
+        r = _w(write.move_nodes, ["regr-mv-a", "regr-mv-b"],
+               "= Scope/W1/regr-mv2")
+        check("묶음 이동", r.get("ok") and r["count"] == 2, r)
+        check("출발지 허브의 낡은 Link를 알린다",
+              any(set(h["moved_out"]) == {"regr-mv-a", "regr-mv-b"}
+                  for h in r["stale_hub_links"]), r["stale_hub_links"])
+        dup = _w(write.move_nodes, ["regr-mv-a", "regr-mv-a"], "= Scope/W1/regr-mv")
+        check("같은 노드를 두 번 옮길 수 없다", dup.get("ok") is False, dup)
+
+        # 재편 — 폴더째, 그리고 하위의 하위가 따라간다.
+        _w(write.create_node, "regr-mv-deep", "갈래", "개요\n", "fable-5",
+           space="= Scope/W1/regr-mv2/regr-mv-deep")
+        rc = _w(write.move_cluster, "regr-mv2", "= Scope/W1/regr-mv")
+        check("군집째 이동", rc.get("ok"), rc)
+        check("하위의 하위가 따라왔다",
+              (base / "regr-mv/regr-mv2/regr-mv-deep/regr-mv-deep.md").is_file())
+        check("노드 수를 보고한다", rc["nodes"] >= 4, rc)
+
+        # `WriteError`는 violations가 있으면 메시지를 그쪽에 싣는다 — 단언은
+        # 실제로 오는 자리에 건다(v3.7.0에서 값을 치르고 배운 것).
+        bad2 = _w(write.move_cluster, "regr-mv2", "= Person/Module")
+        check("최상위 군집을 건널 수 없다",
+              bad2.get("ok") is False
+              and any("증류" in v for v in bad2.get("violations", [])), bad2)
+        bad3 = _w(write.move_cluster, "regr-mv-a", "= Scope/W1/regr-mv")
+        check("허브가 아니면 군집째 옮길 수 없다",
+              bad3.get("ok") is False and "군집이 아니다" in str(bad3), bad3)
+    finally:
+        for d in made:
+            shutil.rmtree(d, ignore_errors=True)
         _age_all()
 
 
@@ -6049,6 +6203,8 @@ if __name__ == "__main__":
                test_id_width_and_discriminator,
                test_edge_delta_is_cumulative,
                test_name_is_the_handle,
+               test_nested_clusters,
+               test_move_nodes_and_cluster,
                test_duplicate_id_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_traversal_deterministic, test_index_split,
