@@ -4548,7 +4548,10 @@ def test_obsidian_tag_defense():
 
     # scope 기억 경로
     r2 = _w(sm.replace, "WTag", "- #1227·1228 병합 건", None, "= Scope/W1")
-    check("scope 기억 방어 반영", "#1227 ·1228" in r2.get("text", ""), r2.get("text"))
+    check("scope 기억 쓰기 통과", r2.get("ok"), r2)
+    # 성공은 전문을 싣지 않으므로(§9-2 5항) 저장물을 되읽어 확인한다
+    check("scope 기억 방어 반영",
+          "#1227 ·1228" in _w(sm.read, "WTag").get("text", ""), r2)
 
     # 제목 거부문 — 원인은 지목하되 대체 표기는 처방하지 않는다(사용자 결정)
     r3 = _w(write.create_node, "PR#1 판정", "s", "본문", "fable-5",
@@ -4707,9 +4710,21 @@ def test_scope_memory():
 
     r = _w(wm.replace, S, "- 첫 엔트리", None, "= Scope/WWm")
     # 저장본은 개행으로 끝난다 — 길이는 저장된 전문 기준이어야 잔여 계산이 맞다
-    check("최초 쓰기", r.get("ok") and r["text"].strip() == "- 첫 엔트리"
-          and r["chars"] == len(r["text"]), r)
+    check("최초 쓰기", r.get("ok") and r["chars"] == len("- 첫 엔트리"), r)
+    check("성공이 저장한 것은 되읽어 확인된다",
+          _w(wm.read, S)["text"].strip() == "- 첫 엔트리", r)
     check("잔여를 함께 낸다", r["remaining"] == wm.LIMIT - r["chars"], r)
+
+    # §9-2 5항 — 성공한 쓰기는 전문을 싣지 않는다. 호출자가 방금 보낸 바이트
+    # 그대로라 정보가 아니고, 14일 실측에서 osk 비용의 10.4%를 썼다. 대신
+    # 잔여·해시는 남는다: 잔여는 호출자가 셀 수 없고(초과폭 중앙값 49자),
+    # 해시는 다음 쓰기가 재읽기 없이 연쇄하는 값이다.
+    check("성공은 전문을 싣지 않는다", "text" not in r, sorted(r))
+    check("성공도 자수·상한·잔여는 낸다",
+          {"chars", "limit", "remaining"} <= set(r), sorted(r))
+    check("성공이 낸 해시가 저장물과 맞는다 — 연쇄가 산다",
+          r["hash"] == _w(wm.read, S)["hash"], r)
+    check("읽기는 전문을 낸다", "text" in _w(wm.read, S))
     check("퇴출 원칙이 성공 응답에도 실린다", "지우는 것이 정상" in r["eviction"])
     # 첫 쓰기가 결속을 세운다 — 빠뜨렸더니 이후 호출이 전부 막혔다(실측)
     check("첫 쓰기가 결속을 세운다", write.resolve_session(S) == "WWm")
@@ -4723,7 +4738,8 @@ def test_scope_memory():
     check("거부해도 전문을 돌려준다",
           _w(wm.replace, S, "- 다른 것")["text"].strip() == "- 첫 엔트리")
     r2 = _w(wm.replace, S, "- 갱신됨", h)
-    check("맞는 hash로 전체 치환", r2["text"].strip() == "- 갱신됨", r2)
+    check("맞는 hash로 전체 치환",
+          r2.get("ok") and _w(wm.read, S)["text"].strip() == "- 갱신됨", r2)
 
     # 상한 초과 — 거부하고, 파일은 그대로이며, 안내가 순서를 준다
     big = chr(10).join(f"- 엔트리 {i} 길게 이어지는 내용이 계속된다" for i in range(120))
@@ -4744,7 +4760,16 @@ def test_scope_memory():
     r4 = _w(wm.replace, S, "- 토큰 ghp_" + "a" * 36 + " 조심",
             _w(wm.read, S)["hash"])
     check("작업 기억에도 비밀값 필터", r4.get("filtered") == ["github-token"], r4)
-    check("원본이 남지 않는다", "ghp_" not in r4["text"], r4)
+    # 응답이 아니라 **저장물**에 남지 않아야 한다 — 커밋되는 것이 그것이다
+    check("원본이 남지 않는다", "ghp_" not in _w(wm.read, S)["text"], r4)
+    # 성공이 전문을 안 실으므로 치환 결과가 안 보인다. 표면 예산이 막혀
+    # 상주 스키마엔 못 적으니, 치환이 실제로 난 때만 응답이 알려야 한다 —
+    # 안 알리면 호출자의 기억과 저장본이 갈린 채 다음 통합이 그 위에 얹힌다.
+    check("치환되면 다시 읽으라고 알린다",
+          "읽어" in r4.get("filtered_note", ""), r4)
+    # 치환이 없으면 붙지 않는다 — 모든 응답에 실으면 소음이고 예산이다.
+    # 여기서 새로 쓰지 않는다: 쓰기를 끼우면 아래가 쥔 `r4["hash"]`가 낡는다.
+    check("치환이 없으면 안 붙는다", "filtered_note" not in r2, sorted(r2))
 
     # 한 세션의 작업 기억이 여러 scope로 번지지 않는다
     check("교차 scope 거부",
@@ -4762,7 +4787,8 @@ def test_scope_memory():
     check("사라진 양을 알린다", "사라졌다" in r5.get("note", ""), r5)
     check("되돌리는 법을 알린다", "그대로 다시 보내라" in r5.get("note", ""), r5)
     back = _w(wm.replace, S, r5["replaced_text"], r5["hash"])
-    check("돌려준 전문으로 복원된다", back.get("text") == before, back)
+    check("돌려준 전문으로 복원된다",
+          back.get("ok") and _w(wm.read, S)["text"] == before, back)
     # 늘어나거나 조금 줄어든 쓰기에는 붙이지 않는다 — 모든 응답에 실으면 소음이다
     grow = _w(wm.replace, S, before + chr(10) + "- 한 줄 더", back["hash"])
     check("늘어난 쓰기엔 붙지 않는다", "replaced_text" not in grow, sorted(grow))
