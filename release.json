@@ -1,6 +1,6 @@
 {
- "version": "v3.8.0",
- "at": "2026-08-31T08:15:55+09:00",
+ "version": "v3.9.0",
+ "at": "2026-09-02T00:49:53+09:00",
  "files": {
   ".gitattributes": "sha256:302bb23568d751677b083afac94210c05c17d95a933b30a9050b35256a41a024",
   ".github/workflows/release.yml": "sha256:df5c204e39d0b1f32ba9a9e0fd9b2dd3d7c5dbdb7bbc2e5d238dda6e4f751742",
@@ -13,7 +13,7 @@
   "README.md": "sha256:54bf973c3543355a0d31ae952a75833e24da0c2f35002a24d7b8cce023428032",
   "_governance/Bylaws.md": "sha256:f086aafde5d9044ce0fcfd7c71d1bedd2541f409af452610a843b2f0b311efae",
   "_governance/Constitution.md": "sha256:807fa5e0ebec07604c1dccd6854048b0470752e40b05f42d7e7ddc4239304bbd",
-  "_governance/Mechanism.md": "sha256:f1cca6e5f5b9578da9dd20f7b1eeaa1d9fa875b94d8687d56840ff2ebdcaa700",
+  "_governance/Mechanism.md": "sha256:14c15316f313a17fe4e52f0e7f835483d842491fb823697ea6d8fef076df7711",
   "_governance/Workbench-Contract.md": "sha256:2bdfcf64ea9aee6fdf05719b2c801c32d3b05980c65bb8678b1632585071ff4d",
   "_governance/_engine/README.md": "sha256:689bcd60287af44804cf25d9063b206ebb9c0c139326ee8c82be84c9638841b8",
   "_governance/_engine/mcp_server.py": "sha256:fbdc423bbcf1aa7a663e1114f39e8045610a744a9d1c9b3a39f664d59e6d4407",
@@ -30,7 +30,7 @@
   "_governance/_engine/osk/publish.py": "sha256:3b2d4ccbd207448396adb3a31b33d4c7b7ed4a28330e2ca100b168ca7c1ca783",
   "_governance/_engine/osk/raw.py": "sha256:454e303ad2e3a4daaeaa04c4b0b06700fb805694610fdcda0ba4bda5fe826b87",
   "_governance/_engine/osk/release.py": "sha256:c2d3870053119b7569f194e56ce9654f5a650c4f6ad8ab63cadb13b98ea58916",
-  "_governance/_engine/osk/scope_memory.py": "sha256:952b3623153fa50116c868ad0f47e938bf21dbd4880ecc0509baf27cb17fe272",
+  "_governance/_engine/osk/scope_memory.py": "sha256:360772c7902ff6ec163ba3cc691d7ad54326b02ae83182e4cb9d0d922755755b",
   "_governance/_engine/osk/search.py": "sha256:3210fac1c521bd16fe6b54216b4cb6646d9c8bad8c8b356586b01da3c5031d81",
   "_governance/_engine/osk/secrets.py": "sha256:0e76b8c0b0362e02a260d75e574ebf90ff9f4a425bf1c9f9d11f7ba813a29f78",
   "_governance/_engine/osk/signatures.py": "sha256:16be1028d959793302c8def27094cf4ef8f46991f989c661f04700439f831a8b",
@@ -47,7 +47,7 @@
   "_governance/_engine/sync_daemon.py": "sha256:7fdf134b771b74a08689b80e052969ce33179a7c07eedfef09ad8a2c085a2d2b",
   "_governance/_engine/tests/conftest.py": "sha256:c954d38b1fe7efd72b1ae0971cff6919a4cd85b6521925000f7bc5bb13f926de",
   "_governance/_engine/tests/test_adversarial.py": "sha256:7bde24b062a42f373c5be1f5c8af7a9a97e0ecef226433ac95b546c2254a94fb",
-  "_governance/_engine/tests/test_regression.py": "sha256:8bd60ec579f55aca9762a0cc11f0fb0e27448fcea41487f68204a0c4f0a144f8",
+  "_governance/_engine/tests/test_regression.py": "sha256:0dbaf1929828371c3c253e9d4c9eef60ac997573abe1928f5ec813d0a76ef09a",
   "_governance/_engine/vault_sync.py": "sha256:fd6353fd7cb3813eed135aef2df46ff7bf51c2181e426fed65937dac7f03e5e9",
   "_governance/records/2026-07-06-second-brain-reconstitution.md": "sha256:d28b67c44f85b808f44536b824db1db4b3bfeccedf5f37c5cb513419ac9276d0",
   "_governance/records/2026-07-21-governance-cycle-adjudication-ledger.md": "sha256:fc4529a73d19aa36fd04d019f328300853b01cbce937427f656a372358934e58",
@@ -66,6 +66,7 @@
   "_governance/records/2026-08-30-read-bound-to-bytes-and-complete-observation.md": "sha256:d32ec82b144e12a0a586d5509f42484c8d5669105b9ce7f98773ad28b902c4dc",
   "_governance/records/2026-08-31-name-is-the-handle.md": "sha256:3acff03feb8dd857f4efd7ed25c2f6373551f9d4c42cc423ba4fc3905fce1fe1",
   "_governance/records/2026-08-31-nested-clusters.md": "sha256:acc7b6db9349e9cf92e5ac643faac42cbabf89a83e599995502d901ae670b4ef",
+  "_governance/records/2026-09-02-echo-only-where-the-caller-is-blind.md": "sha256:dd6dec54e7cada108cffb33ab4a17ed9dd6850f27ca491a41211680b12bc33f0",
   "_governance/records/constitution-disposition-table.md": "sha256:125717e4c6bc173da81b6fc955bf2d9c6f9141dd21a1cd293860461763c8d0b3",
   "docs/SETUP.md": "sha256:436f6ccf82c9b41b59bb181859ce4245b27989b66b4eabe47eeb28a35955ce43"
  }
