@@ -73,15 +73,29 @@ def _read(p: Path) -> str:
     return canon(p.read_text(encoding="utf-8")) if p.is_file() else ""
 
 
-def _state(scope: str, text: str, **extra) -> dict:
-    """성공·실패와 무관하게 **늘 같은 모양**을 돌려준다 — 전문과 잔여가 매 응답에
-    실려야 호출자가 넘치기 전에 스스로 정리한다. 보이지 않는 것은 통합되지 않는다."""
+def _state(scope: str, text: str, *, full: bool = True, **extra) -> dict:
+    """**잔여는 늘, 전문은 읽기와 거부에만** 싣는다(§9-2 5항).
+
+    잔여가 매 응답에 실려야 호출자가 넘치기 전에 정리한다 — 호출자는 글자를 셀
+    수 없다. 14일 실측에서 상한 초과폭의 중앙값은 49자였고 33%가 25자 이내였다.
+
+    전문은 다르다. 성공한 쓰기의 전문은 호출자가 **방금 보낸 바이트 그대로**라
+    정보가 아니고, "무엇이 들어 있는지"는 세션 시작 주입이 이미 세션당 한 번
+    싣는다(`scripts/hooks/claude_session_start.py`). 같은 실측에서 이 에코가
+    154,955토큰 — osk 도구 비용 전체의 10.4% — 을 썼다.
+
+    거부에는 싣는다. 시도가 반려됐으므로 호출자는 실제 저장 상태를 모른다.
+    특히 해시 불일치는 다른 기기의 통합이 들어왔다는 뜻이라(§9-2 8항) 전문
+    없이는 그 위에서 다시 통합할 수 없다."""
     text = canon(text)
-    return {"scope": scope, "path": posix_rel(sm_path(scope), ROOT),
-            "text": text, "chars": len(text), "limit": LIMIT,
-            "remaining": LIMIT - len(text),
-            "hash": sha256_bytes(text.encode("utf-8")),
-            "eviction": EVICTION_NOTE, **extra}
+    st = {"scope": scope, "path": posix_rel(sm_path(scope), ROOT)}
+    if full:
+        st["text"] = text
+    st.update({"chars": len(text), "limit": LIMIT,
+               "remaining": LIMIT - len(text),
+               "hash": sha256_bytes(text.encode("utf-8")),
+               "eviction": EVICTION_NOTE, **extra})
+    return st
 
 
 def _landing(session: str, space: str | None) -> tuple[str, str | None]:
@@ -204,10 +218,20 @@ def replace(session: str, text: str, expect_hash: str | None = None,
         # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 scope 기억은 작업
         # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
         extra = {"filtered": sorted(set(hits))}
+        # 성공이 전문을 싣지 않으므로(§9-2 5항) 치환된 결과가 보이지 않는다.
+        # 상주 스키마는 여유가 4자뿐이라 표면에 못 적는다 — 실제로 치환이 일어난
+        # 때만 싣는다. 안 적으면 호출자의 기억과 저장본이 갈린 채로 다음 통합이
+        # 그 위에 얹힌다.
+        if hits:
+            extra["filtered_note"] = (
+                "비밀값이 치환됐다 — 저장본이 보낸 것과 다르다. 다음 통합 전에 "
+                "`text` 없이 한 번 읽어 저장본 위에서 이어라.")
         if cur and len(body) * 2 < len(cur):
             extra["replaced_text"] = cur
             extra["note"] = (
                 f"이 쓰기로 {len(cur) - len(body)}자가 사라졌다. 의도한 정리라면 "
                 f"그대로 두고, 실수였으면 `replaced_text`를 그대로 다시 보내라 — "
                 f"직전 상태는 여기 말고 어디에도 남지 않는다.")
-        return {"ok": True, **_state(scope, body, **extra)}
+        # 성공에는 전문을 싣지 않는다(§9-2 5항) — 호출자가 방금 보낸 것이다.
+        # `hash`는 남는다: 다음 쓰기가 재읽기 없이 연쇄한다.
+        return {"ok": True, **_state(scope, body, full=False, **extra)}
