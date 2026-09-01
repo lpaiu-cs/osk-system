@@ -30,6 +30,13 @@ from . import graph, secrets, write
 # 두 세션어치를 쌓아두기에는 모자란 크기여야 압력이 선다.
 LIMIT = 1500
 
+# 연속 상한 초과 거부의 상한 (§9-2 4항). 넘으면 재시도 지시를 거두고 "접고
+# 가라"를 싣는다 — 실패한 기억 갱신이 본 작업을 막아서는 안 된다. 세션 키
+# 단위로, 이 프로세스 안에서만 센다(엔진은 하네스 턴을 보지 못한다). 성공이
+# 지운다. Hermes의 _MAX_CONSOLIDATION_FAILURES_PER_TURN과 같은 자리다.
+OVERFLOW_STOP = 3
+_OVERFLOW_RUNS: dict[str, int] = {}
+
 _CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
             "번지게 하지 않는다 —")
 
@@ -130,13 +137,20 @@ def read(session: str, space: str | None = None) -> dict:
     return {"ok": True, **_state(scope, _read(sm_path(scope)))}
 
 
-def replace(session: str, text: str, expect_hash: str | None = None,
-            space: str | None = None) -> dict:
-    """scope 기억을 **전체 치환**한다.
+def replace(session: str, text: str | None = None,
+            expect_hash: str | None = None, space: str | None = None,
+            edits: list | None = None) -> dict:
+    """scope 기억을 쓴다 — **전체 치환**(`text`) 또는 **앵커 일괄**(`edits`).
 
-    부분 추가 API를 두지 않는 이유: 계약이 "전문을 돌려주고 통합 후 재시도"이므로
-    호출자는 언제나 전문을 손에 쥐고 온다. 부분 추가를 열면 상한에 닿는 쪽이
-    엔진이 되고, 무엇을 버릴지는 엔진이 알 수 없다.
+    앵커 일괄은 `[{old_text, new_text}, …]`이며 해시를 요구하지 않는다 — 앵커가
+    "고칠 자리를 봤다"는 증거다(§6-2 4항이 부분 변경을 그렇게 가른다). 각
+    앵커는 **그 시점의 작업본**에 정확히 한 번 나와야 하고, 목록은 전부 아니면
+    전무로 적용되며, 상한은 중간 상태가 아니라 **순결과**에만 건다. 그래야
+    비우는 연산과 채우는 연산이 한 호출에 실려, 넘칠 때마다 전문을 다시 보내고
+    문맥 전체를 다시 읽히는 왕복이 사라진다(§9-2 4항). 부분 연산을 금했던
+    근거 — 상한에 닿는 쪽이 엔진이 되어 무엇을 버릴지 모른다 — 는 그대로다:
+    버리는 결정은 호출자가 같은 호출 안에서 하고, 엔진은 어떤 경우에도 스스로
+    버리지 않는다. 파일은 파싱하지 않는다 — 원소는 호출자가 앵커로 그때 정한다.
 
     `expect_hash`는 기존 내용이 있을 때 필수다(Mechanism §6-2 4항의 규율) —
     데몬의 주기 pull이 다른 기기의 통합을 끌어오므로 보지 않은 상태를 덮는 일이
@@ -147,6 +161,33 @@ def replace(session: str, text: str, expect_hash: str | None = None,
     빠져 남의 feature 브랜치를 rebase하고, `git add -A`가 진행 중이던 작업까지
     쓸어 담아 push한다(리뷰에서 실측). 네트워크 I/O를 `mutation_lock` 안에서
     하는 것도 표면 전체를 최대 수 분 세운다."""
+    # 형태 검사는 잠금 **밖**에서 — 틀린 요청이 잠금을 잡을 이유가 없다.
+    if (text is None) == (edits is None):
+        raise write.WriteError(
+            "`text`(전체 치환)와 `edits`(앵커 일괄) 중 하나만 — 쓰지 않았다",
+            ["둘 다 없으면 쓸 것이 없고, 둘 다 있으면 어느 쪽이 이겼는지 응답으로 "
+             "구분되지 않는다. 읽기는 둘 다 없이 부른다."])
+    if edits is not None:
+        if not isinstance(edits, list) or not edits:
+            raise write.WriteError(
+                "`edits`가 비어 있다 — 쓰지 않았다",
+                ["`[{old_text, new_text}, …]` 목록을 보내라. 지울 때는 `new_text`에 "
+                 "빈 문자열을 준다."])
+        for i, e in enumerate(edits, 1):
+            if not isinstance(e, dict) or "old_text" not in e or "new_text" not in e:
+                raise write.WriteError(
+                    f"`edits[{i}]`의 형태가 틀렸다 — 쓰지 않았다",
+                    ["각 항목은 `{old_text, new_text}`다. 한쪽만으로는 무엇을 "
+                     "무엇으로 바꾸는지 정해지지 않는다."])
+            if not e["old_text"]:
+                raise write.WriteError(
+                    f"`edits[{i}]`의 앵커가 비어 있다 — 쓰지 않았다",
+                    ["빈 앵커는 모든 자리에 맞아 고칠 자리를 가리키지 못한다. "
+                     "바꿀 대목을 그대로 넣어라."])
+            if e["old_text"] == e["new_text"]:
+                raise write.WriteError(
+                    f"`edits[{i}]`는 바뀌는 것이 없다 — 쓰지 않았다",
+                    ["`old_text`와 `new_text`가 같다."])
     errs = write.ephemeral_session_errors(session)
     if errs:
         raise write.WriteError("세션 키 부적격 — 쓰지 않았다", errs)
@@ -155,13 +196,13 @@ def replace(session: str, text: str, expect_hash: str | None = None,
         p = sm_path(scope)
         cur = _read(p)
 
-        if cur and expect_hash is None:
+        if cur and expect_hash is None and edits is None:
             raise write.WriteError(
                 "expect_hash 없음 — 쓰지 않았다",
                 ["기존 내용이 있다. 지금 상태를 읽고 그 `hash`를 `expect_hash`로 "
                  "함께 보내라 — 보지 않은 상태를 덮지 않기 위해서다."],
                 **_state(scope, cur))
-        if cur and expect_hash != sha256_bytes(cur.encode("utf-8")):
+        if cur and expect_hash is not None and expect_hash != sha256_bytes(cur.encode("utf-8")):
             raise write.WriteError(
                 "상태가 어긋났다 — 쓰지 않았다",
                 ["`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "
@@ -172,6 +213,34 @@ def replace(session: str, text: str, expect_hash: str | None = None,
         # 않지만, scope 기억은 vault 안이고 에이전트가 쓴다 — 요약에 섞이면
         # 그대로 커밋된다. 상한은 **치환 뒤** 길이로 잰다(치환문이 원본보다
         # 길어질 수 있고, 저장되는 것이 세어져야 한다).
+        if edits is not None:
+            # 앵커 일괄 (§9-2 4항). 각 앵커는 **그 시점의 작업본**에 정확히 한 번 —
+            # 앞 연산이 만든 자리를 뒤 연산이 앵커로 쓸 수 있다. 전부 아니면
+            # 전무: 하나라도 안 맞으면 아무것도 쓰지 않는다. 그때 저장본은
+            # 호출자가 모르는 것이 돼 있다는 뜻이므로 전문을 싣는다(5항 — 해시
+            # 불일치와 같은 자리). 유일성이 안전 계약의 전부다 — 여러 곳에
+            # 맞으면 어디를 고칠지 호출자가 정한 바가 없다.
+            if not cur:
+                raise write.WriteError(
+                    "기억이 비어 있다 — 쓰지 않았다",
+                    ["`edits`는 기존 본문을 고친다. 첫 쓰기는 `text`로 하라."],
+                    **_state(scope, cur))
+            work = cur
+            for i, e in enumerate(edits, 1):
+                n = work.count(e["old_text"])
+                if n != 1:
+                    raise write.WriteError(
+                        (f"`edits[{i}]` 앵커가 없다 — 쓰지 않았다" if n == 0 else
+                         f"`edits[{i}]` 앵커가 {n}곳 맞는다 — 쓰지 않았다"),
+                        ([f"`old_text`가 지금 저장본에 나오지 않는다. 저장본이 그 "
+                          f"사이 바뀌었을 수 있다 — 아래 전문에서 그대로 복사해 "
+                          f"넣어라. 공백·줄바꿈까지 일치해야 한다."]
+                         if n == 0 else
+                         ["어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
+                          "넣어 앵커를 **유일하게** 만들어라."]),
+                        **_state(scope, cur))
+                work = work.replace(e["old_text"], e["new_text"], 1)
+            text = work
         filtered, hits = secrets.filter_text(text)
         # 옵시디언 태그 방어 (Mechanism §8 7항) — scope 기억도 vault의 md라
         # 옵시디언이 렌더한다. 상한은 변환 **뒤** 길이로 잰다(저장되는 것이
@@ -189,9 +258,13 @@ def replace(session: str, text: str, expect_hash: str | None = None,
                 **_state(scope, cur))
 
         if len(body) > LIMIT:
-            raise write.WriteError(
-                "상한 초과 — 쓰지 않았다",
-                [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
+            runs = _OVERFLOW_RUNS.get(session, 0) + 1
+            _OVERFLOW_RUNS[session] = runs
+            retry = ("빼는 연산과 넣는 연산을 **한 `edits`에** 실어 다시 보내라 — "
+                     "상한은 순결과에만 걸린다." if edits is not None else
+                     "그 뒤 남은 것으로 다시 보내라. 넘칠 때마다 전문을 다시 보내지 "
+                     "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다.")
+            v = [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
                  f"넘는다. **순서대로** 하라 — (1) scope 기억에서 자리값 못하는 "
                  f"엔트리를 먼저 정리하라. (2) 그래도 모자라면 갱신할 기존 노드를 "
                  f"`search`로 먼저 찾고, 남길 값어치가 "
@@ -201,7 +274,16 @@ def replace(session: str, text: str, expect_hash: str | None = None,
                  f"알게 됐고 **나중에 다툴 만한 주장**이면 `append_raw`로 그 라운드를 "
                  f"남기고 `round_ref`를 건다. 원료 없이 지금 처음 적는 것이면 근거는 "
                  f"비우고 본문에 언제·어디서인지를 남긴다. scope 기억은 근거가 아니라 "
-                 f"경유지다. 그 뒤 남은 것으로 다시 보내라."],
+                 f"경유지다. {retry}"]
+            if runs >= OVERFLOW_STOP:
+                # 재시도 지시를 거둔다(§9-2 4항) — 실패한 기억 갱신이 본 작업을
+                # 막아서는 안 된다. 기억은 그대로이니 신호를 소비하는 것이 아니라
+                # 미루는 것이다.
+                v.append(f"연속 {runs}회째 거부다 — 이번 통합은 **접고** 본 작업으로 "
+                         f"돌아가라. 기억은 그대로다. 다음 통합 전에 결론 난 것을 "
+                         f"노드로 증류해 자리를 만들어라.")
+            raise write.WriteError(
+                "상한 초과 — 쓰지 않았다", v,
                 # 상한 초과에는 전문을 싣지 않는다(§9-2 5항). 이 거부는 **디스크를
                 # 바꾸지 않았고**, 호출자가 다듬을 것은 저장본이 아니라 방금 보낸
                 # 자기 초안이다. 해시 불일치와 다른 점이 그것이다 — 거기서는 다른
@@ -216,6 +298,7 @@ def replace(session: str, text: str, expect_hash: str | None = None,
             write.bind_session(session, scope, "첫 scope 기억 쓰기에서 확정")
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
+        _OVERFLOW_RUNS.pop(session, None)          # 성공이 연속 거부 계수를 지운다
 
         # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
         # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한

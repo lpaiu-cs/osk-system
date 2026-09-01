@@ -211,8 +211,8 @@ def read_raw(ref: str | None = None, space: str | None = None,
     """세션 기록의 **명시 회상** — `_raw/`는 검색에 걸리지 않으니 좌표로 연다.
     `ref`는 노드 `derived-from`에 든 `[[경로#N]]` 그대로이며 그 라운드 전문이
     온다. `#N` 없이 경로만 주면 그 기록의 목차(번호·미리보기)가, `ref` 대신
-    `space`(`"= Scope/W1"` 꼴)를 주면 그 scope의 기록 목록이 온다. 둘 다 주면
-    `ref`가 이긴다. `truncated`가 참이면 `max_chars`를 올려 다시 부른다."""
+    `space`(`"= Scope/W1"` 꼴)를 주면 그 scope의 기록 목록이 온다. `truncated`가
+    참이면 `max_chars`를 올려 다시 부른다."""
     if ref:
         return _guard(raw.read_round, ref, max_chars)
     if space:
@@ -226,8 +226,7 @@ def read_raw(ref: str | None = None, space: str | None = None,
 def overview(session: str | None = None) -> dict:
     """구조 조망 — 무엇이 있고 어디에 둘 수 있는가. **첫 쓰기 전에 한 번** 부르면
     착지를 추측하지 않아도 된다. `clusters`는 **허브가 있는** 군집 경로다
-    (`create_node`의 `space`에 그대로 넣는다 — `_raw`·작업 기억의 `space`는
-    이보다 좁아 `= Scope/<이름>`만 받는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
+    (`create_node`의 `space`에 그대로 넣는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
     `broken`은 검색에 잡히지 않는 파손 파일이다. `session`을 주면 그 키의
     현재 결속(`session_scope`)을 함께 돌려준다."""
     idx = _s().idx
@@ -324,8 +323,7 @@ def append_raw(session: str, record: RawRecord, user: str, agent: str,
     응답)를 그 scope의 불변 기록에 잇는다. `session`은 저장소 이름처럼 세션이
     바뀌어도 같은 값이고, `record`는 **대화 하나의 이름**이라 한 대화 내내 같은
     값을 쓴다(`2026-08-21-undo-buffer` 꼴). `space`는 `= Scope/<이름>` **두
-    마디**만 받으며(`overview`의 `clusters`엔 더 깊은 경로도 섞여 있다) 결속이
-    선 뒤에는 생략한다 — 결속과 다른 scope를 주면 거부한다. 라운드 번호는 엔진이 매기고, 응답의 `round_ref`를
+    마디**만 받으며 결속이 선 뒤에는 생략한다. 라운드 번호는 엔진이 매기고, 응답의 `round_ref`를
     그대로 `create_node`의 `derived-from`에 넣으면 근거가 배선된다.
     `filtered`가 비지 않았으면 비밀값이 치환된 것이다."""
     return _guard(raw.append_round, session, record, user, agent, space)
@@ -334,17 +332,19 @@ def append_raw(session: str, record: RawRecord, user: str, agent: str,
 @mcp.tool()
 def scope_memory(session: str, text: str | None = None,
                  expect_hash: str | None = None,
-                 space: str | None = None) -> dict:
+                 space: str | None = None,
+                 edits: list[dict] | None = None) -> dict:
     """scope 기억 — 그 scope에서 지금 살아 있는 **배울 점**. 모든 세션과
     기기가 **같은 것을 본다** — 이 세션에만 유효한 작업 상태는 적지 않는다.
-    `text` 없이 부르면 전문을 읽고, 주면 **전체 치환**한다(부분 추가 없음).
-    기존 내용이 있으면 `expect_hash` 필수 — 방금
-    받은 `hash`를 그대로 쓴다. `session`은 `create_node`와 같은 값, `space`는
-    `= Scope/<이름>` **두 마디**만 받는다(`clusters`보다 좁다). 상한 1500자이고
-    `text:""`는 전체를 지운다."""
-    if text is None:
+    아무것도 없이 부르면 읽는다. 쓰기는 **`edits`가 기본** —
+    `[{old_text,new_text},…]`, 앵커는 본문에 정확히 한 번, 전부 아니면 전무,
+    상한은 순결과에만, 해시 불요. `text`는 전체 치환이라 `expect_hash` 필수.
+    `session`은 `create_node`와 같은 값, `space`는 `= Scope/<이름>` **두 마디**만.
+    상한 1500자."""
+    if text is None and edits is None:
         return _guard(scope_memory_mod.read, session, space)
-    return _guard(scope_memory_mod.replace, session, text, expect_hash, space)
+    return _guard(scope_memory_mod.replace, session, text, expect_hash, space,
+                  edits)
 
 
 def _apply_prune() -> None:

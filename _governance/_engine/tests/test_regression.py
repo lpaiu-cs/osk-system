@@ -4961,6 +4961,174 @@ def test_workbench_state_not_evidence():
 
 
 # ── 19b. 작업 기억 훅 경로 — `show`는 전문 그대로 낸다 ──────────────────────
+def test_scope_memory_edits():
+    """앵커 일괄 쓰기 (§9-2 4항) — 부분 변경의 증거는 해시가 아니라 앵커다.
+
+    무엇을 망가뜨리면 실패하는가: 앵커 경로가 해시를 요구하게 되면 · 앵커가
+    없거나 여러 곳인데 쓰면 · 하나가 틀렸는데 나머지를 쓰면(전부 아니면 전무) ·
+    상한을 순결과가 아니라 중간 상태에 걸면 · 앵커 불일치 거부가 전문을 안
+    실으면 · 상한 초과 거부가 전문을 실으면 · `text`와 병용을 허용하면 · 연속
+    거부 계수가 안 오르거나 성공이 안 지우면."""
+    from osk import scope_memory as wm
+    (ROOT / "= Scope/WWmE").mkdir(exist_ok=True)
+    S = "repo/regr-wm-edits"
+    p = ROOT / "= Scope/Workbench/_scope_memory/WWmE.md"
+
+    # 빈 기억에 edits는 갈 데가 없다 — 첫 쓰기는 text
+    r = _w(wm.replace, S, edits=[{"old_text": "x", "new_text": "y"}], space="= Scope/WWmE")
+    check("빈 기억에 edits는 거부", not r.get("ok") and "첫 쓰기" in " ".join(r["violations"]), r)
+    r = _w(wm.replace, S, "# 머리\n- 첫째 줄\n- 둘째 줄\n- 셋째 줄\n", None, "= Scope/WWmE")
+    check("text로 첫 쓰기", r.get("ok"), r)
+    h0 = r["hash"]
+
+    # 계약의 핵심 — 해시 없이, 앵커로
+    r = _w(wm.replace, S, edits=[{"old_text": "- 둘째 줄\n", "new_text": "- 둘째 줄을 고쳤다\n"}])
+    check("edits는 해시 없이 통과", r.get("ok"), r)
+    check("저장물에 반영", "둘째 줄을 고쳤다" in wm._read(p), wm._read(p))
+    check("다른 줄은 그대로", "- 셋째 줄" in wm._read(p))
+    check("성공은 전문을 안 싣는다(5항)", "text" not in r, sorted(r))
+    check("해시가 바뀌었다", r["hash"] != h0)
+
+    # 유일성
+    r = _w(wm.replace, S, edits=[{"old_text": "줄", "new_text": "행"}])
+    check("여러 곳이면 거부", not r.get("ok") and "유일하게" in " ".join(r["violations"]), r)
+    check("여러 곳 거부는 파일을 안 건드린다", wm._read(p).count("줄") == 3)
+    r = _w(wm.replace, S, edits=[{"old_text": "- 없는 줄\n", "new_text": ""}])
+    check("없으면 거부", not r.get("ok") and "나오지 않는다" in " ".join(r["violations"]), r)
+    check("앵커 불일치 거부는 전문을 싣는다(5항)", r.get("text", "").startswith("# 머리"), sorted(r))
+    check("거부문이 전문에서 복사하라고 가리킨다", "복사" in " ".join(r["violations"]), r)
+
+    # 전부 아니면 전무 — 첫 항목은 맞고 둘째가 틀리면 첫 항목도 안 쓴다
+    before = wm._read(p)
+    r = _w(wm.replace, S, edits=[{"old_text": "- 첫째 줄\n", "new_text": "- 첫째 줄(수정)\n"},
+                                 {"old_text": "- 없는 줄\n", "new_text": ""}])
+    check("하나 틀리면 전부 안 쓴다", not r.get("ok") and wm._read(p) == before, r)
+
+    # 그 시점의 작업본 — 앞 연산이 만든 자리를 뒤 연산이 앵커로 쓴다
+    r = _w(wm.replace, S, edits=[{"old_text": "- 셋째 줄", "new_text": "- 셋째 줄\n- 넷째 줄"},
+                                 {"old_text": "- 넷째 줄", "new_text": "- 넷째 줄(뒤 연산)"}])
+    check("뒤 연산이 앞 연산의 결과에 앵커한다", r.get("ok") and "넷째 줄(뒤 연산)" in wm._read(p), r)
+
+    # 형태 — 잠금 밖에서 거른다
+    check("text와 edits 병용은 거부",
+          not _w(wm.replace, S, "전문", r["hash"], edits=[{"old_text": "a", "new_text": "b"}]).get("ok"))
+    check("빈 edits는 거부", not _w(wm.replace, S, edits=[]).get("ok"))
+    check("형태 틀린 항목은 거부", not _w(wm.replace, S, edits=[{"old_text": "a"}]).get("ok"))
+    check("빈 앵커는 거부", not _w(wm.replace, S, edits=[{"old_text": "", "new_text": "b"}]).get("ok"))
+    check("old==new는 거부", not _w(wm.replace, S, edits=[{"old_text": "- 첫째 줄\n", "new_text": "- 첫째 줄\n"}]).get("ok"))
+
+    # 상한은 순결과에만 — 넣기를 먼저 두어 중간 상태는 넘치고 순결과는 맞게 한다
+    big_a, big_b = "가" * 700, "나" * 700
+    r = _w(wm.replace, S, "# 머리\n- A " + big_a + "\n- B " + big_b + "\n", _w(wm.read, S)["hash"])
+    check("상한 근처 기준선", r.get("ok") and r["chars"] > 1400, r)
+    r = _w(wm.replace, S, edits=[{"old_text": "# 머리\n", "new_text": "# 머리\n- C " + "다" * 600 + "\n"},
+                                 {"old_text": "\n- B " + big_b, "new_text": ""}])
+    check("중간은 넘치고 순결과는 맞으면 통과", r.get("ok"), r)
+    check("B는 빠지고 C는 들어갔다", "- C" in wm._read(p) and "- B" not in wm._read(p))
+
+    # 순결과 초과 — 거부, 전문 없음, 넘긴 자수, 재시도 안내는 edits 형태로
+    r = _w(wm.replace, S, edits=[{"old_text": "# 머리\n", "new_text": "# 머리\n- D " + "라" * 300 + "\n"}])
+    check("순결과 초과는 거부", not r.get("ok") and r.get("rejected_chars", 0) > wm.LIMIT, r)
+    check("상한 초과 거부는 전문을 안 싣는다(5항)", "text" not in r, sorted(r))
+    check("재시도 안내가 한 edits로 빼고 넣으라 한다", "한 `edits`에" in " ".join(r["violations"]), r)
+
+    # 연속 거부 계수 — 3회째에 "접고" 가 실리고, 성공이 지운다
+    add_big = [{"old_text": "# 머리\n", "new_text": "# 머리\n- E " + "마" * 300 + "\n"}]
+    r2 = _w(wm.replace, S, edits=add_big)
+    r3 = _w(wm.replace, S, edits=add_big)
+    check("2회째엔 아직 접으라 하지 않는다", "접고" not in " ".join(r2["violations"]), r2)
+    check("3회째에 접으라 한다", "접고" in " ".join(r3["violations"]) and "3회째" in " ".join(r3["violations"]), r3)
+    r = _w(wm.replace, S, edits=[{"old_text": "- C " + "다" * 600 + "\n", "new_text": ""}])
+    check("자리를 만들면 통과", r.get("ok"), r)
+    r = _w(wm.replace, S, edits=[{"old_text": "# 머리\n", "new_text": "# 머리\n- F " + "바" * 900 + "\n"}])
+    check("성공이 계수를 지운다 — 다음 초과는 1회째", not r.get("ok") and "접고" not in " ".join(r["violations"]), r)
+
+    # 기존 부속 계약이 edits에도 산다
+    r = _w(wm.replace, S, edits=[{"old_text": "# 머리\n", "new_text": "# 머리\n- 토큰 ghp_" + "a" * 36 + "\n"}])
+    check("edits에도 비밀값 필터", r.get("ok") and r.get("filtered") == ["github-token"] and "filtered_note" in r, r)
+    cur = wm._read(p)
+    r = _w(wm.replace, S, edits=[{"old_text": cur, "new_text": "# 머리\n"}])
+    check("크게 줄면 replaced_text가 온다", r.get("ok") and r.get("replaced_text") == cur, sorted(r))
+
+
+def test_cadence_hook():
+    """케이던스 훅 — 9턴 동승 주입, 15턴 단독 허용, 갱신은 계수를 처음으로.
+
+    무엇을 망가뜨리면 실패하는가: 9턴 전에 주입하면 · 9턴에 전문·해시·여유가
+    빠지면 · 10~14턴에 주입하면 · 15턴에 단독 허용이 빠지면 · 15턴 뒤 계수가
+    안 돌아가면 · 기억이 바뀌었는데 계수가 안 돌아가면 · 결속 없는 세션에
+    주입하면."""
+    import io, importlib, tempfile, types, uuid
+    from osk import scope_memory as wm
+    hooks = Path(__file__).resolve().parents[1] / "scripts" / "hooks"
+    sys.path.insert(0, str(hooks))
+    hook = importlib.import_module("claude_prompt_submit")
+
+    (ROOT / "= Scope/WCad").mkdir(exist_ok=True)
+    # session_key(cwd)는 git 밖에서 디렉터리 이름으로 접히므로, 이름이 곧 세션 키다
+    cwd = Path(tempfile.mkdtemp(prefix="osk-")) / "regr-cad"
+    cwd.mkdir()
+    S = cwd.name
+    sid = f"regr-{uuid.uuid4().hex[:8]}"
+    d = Path(tempfile.gettempdir()) / "osk-cadence"
+
+    def turn():
+        buf = io.BytesIO()
+        real_in, real_out = sys.stdin, sys.stdout
+        try:
+            sys.stdin = io.StringIO(json.dumps({"session_id": sid, "cwd": str(cwd)}))
+            sys.stdout = types.SimpleNamespace(buffer=buf)
+            hook.main()
+        finally:
+            sys.stdin, sys.stdout = real_in, real_out
+        return buf.getvalue().decode("utf-8")
+
+    # 결속 없음 — 세기만 하고 주입하지 않는다
+    for _ in range(9):
+        out = turn()
+    check("결속 없는 세션엔 9턴에도 주입 없음", out == "", out[:80])
+    # 결속을 세우고 계수를 새로 시작한다
+    r = _w(wm.replace, S, "- 기억 한 줄\n", None, "= Scope/WCad")
+    check("결속·기억 세움", r.get("ok"), r)
+    (d / f"{sid}.count").unlink(missing_ok=True)
+    (d / f"{sid}.hash").unlink(missing_ok=True)
+
+    outs = [turn() for _ in range(15)]
+    check("1~8턴은 조용하다", all(o == "" for o in outs[:8]), [len(o) for o in outs[:8]])
+    o9 = outs[8]
+    check("9턴에 주입한다", o9 != "", o9[:80])
+    check("9턴 주입에 전문이 있다", "- 기억 한 줄" in o9, o9[-60:])
+    check("9턴 주입에 해시·여유가 있다", r["hash"] in o9 and "여유" in o9, o9[:160])
+    check("9턴은 동승을 지시한다", "함께 실어" in o9 and "따로 쓰지" in o9, o9[:200])
+    check("9턴은 edits 계약을 알린다", "edits" in o9 and "순결과" in o9, o9[:400])
+    check("10~14턴은 조용하다", all(o == "" for o in outs[9:14]), [len(o) for o in outs[9:14]])
+    o15 = outs[14]
+    check("15턴에 다시 주입한다", o15 != "" and "- 기억 한 줄" in o15, o15[:80])
+    check("15턴은 단독 턴을 허용한다", "단독 턴이어도" in o15, o15[:200])
+    check("15턴 뒤 계수는 처음으로", turn() == "")       # n=1
+    outs = [turn() for _ in range(7)]                    # n=2..8
+    check("15턴 리셋 뒤 2~8턴은 조용하다", all(o == "" for o in outs), [len(o) for o in outs])
+    o = turn()                                           # n=9 — 리셋이 없었으면 24턴이라 침묵한다
+    check("15턴 리셋 뒤 9턴째에 다시 주입한다 — 계수가 돌아갔다", "함께 실어" in o, o[:80])
+
+    # 기억이 바뀌면 계수가 처음으로 — 9턴에 못 미쳐도
+    for _ in range(3):
+        turn()                                           # n=10..12
+    r = _w(wm.replace, S, edits=[{"old_text": "- 기억 한 줄", "new_text": "- 기억 한 줄\n- 통합됨"}])
+    check("통합 성공", r.get("ok"), r)
+    o = turn()                                           # 해시가 바뀐 것을 보고 n=1
+    check("갱신 직후 턴은 조용하다", o == "")
+    outs = [turn() for _ in range(7)]                    # n=2..8 — 리셋이 없었으면 15턴에서 주입된다
+    check("갱신 후 2~8턴은 조용하다 — 계수가 돌아갔다", all(o == "" for o in outs), [len(o) for o in outs])
+    o = turn()                                           # n=9
+    check("갱신 후 9턴째에 새 전문으로 주입한다", "- 통합됨" in o, o[-60:])
+
+    for f in (d / f"{sid}.count", d / f"{sid}.hash"):
+        f.unlink(missing_ok=True)
+    import shutil
+    shutil.rmtree(cwd.parent, ignore_errors=True)
+
+
 def test_scope_memory_cli():
     """훅이 이 출력을 문맥에 그대로 넣으므로 감싸는 껍데기가 있으면 훅마다
     벗기는 코드를 쓰게 된다. 결속이 없으면 빈 출력이고, 그것은 오류가 아니다."""
@@ -6351,6 +6519,7 @@ if __name__ == "__main__":
                test_raw_read, test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_scope_memory, test_workbench_state_not_evidence,
+               test_scope_memory_edits, test_cadence_hook,
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
                test_obsidian_tag_defense, test_index_node_not_delegation,
