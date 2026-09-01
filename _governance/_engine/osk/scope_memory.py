@@ -202,7 +202,12 @@ def replace(session: str, text: str, expect_hash: str | None = None,
                  f"남기고 `round_ref`를 건다. 원료 없이 지금 처음 적는 것이면 근거는 "
                  f"비우고 본문에 언제·어디서인지를 남긴다. scope 기억은 근거가 아니라 "
                  f"경유지다. 그 뒤 남은 것으로 다시 보내라."],
-                **_state(scope, cur, rejected_chars=len(body)))
+                # 상한 초과에는 전문을 싣지 않는다(§9-2 5항). 이 거부는 **디스크를
+                # 바꾸지 않았고**, 호출자가 다듬을 것은 저장본이 아니라 방금 보낸
+                # 자기 초안이다. 해시 불일치와 다른 점이 그것이다 — 거기서는 다른
+                # 기기의 통합이 들어와 저장본이 호출자가 모르는 것이 돼 있다.
+                # `hash`·`remaining`·넘긴 자수는 그대로 온다.
+                **_state(scope, cur, full=False, rejected_chars=len(body)))
 
         # 결속을 **쓰기 전에** 세운다. 뒤에 두면 대장이 손상됐을 때 파일은
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도

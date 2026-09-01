@@ -4747,9 +4747,17 @@ def test_scope_memory():
     v = " ".join(r3.get("violations", []))
     check("상한 초과는 거부", r3.get("ok") is False, r3)
     check("거부가 넘친 크기를 알린다", r3.get("rejected_chars", 0) > wm.LIMIT, r3)
-    check("거부해도 현재 전문이 온다", r3["text"].strip() == "- 갱신됨", r3)
+    # §9-2 5항 — 상한 초과에는 전문을 싣지 않는다. 이 거부는 디스크를 바꾸지
+    # 않았고, 호출자가 다듬을 것은 저장본이 아니라 방금 보낸 자기 초안이다.
+    # 해시 불일치(위)와 갈리는 지점이 그것이다 — 거기선 저장본이 호출자가
+    # 모르는 것이 돼 있으므로 전문이 필수다.
+    check("상한 초과는 전문을 싣지 않는다", "text" not in r3, sorted(r3))
+    check("상한 초과도 해시·잔여는 낸다",
+          {"hash", "remaining", "rejected_chars"} <= set(r3), sorted(r3))
     check("거부는 파일을 건드리지 않는다",
           _w(wm.read, S)["text"].strip() == "- 갱신됨")
+    check("거부가 낸 해시로 곧장 이어 쓸 수 있다 — 재읽기 불필요",
+          r3["hash"] == _w(wm.read, S)["hash"], r3)
     check("안내가 순서를 준다 — 정리가 먼저",
           v.index("정리하라") < v.index("노드"), v)
     check("안내가 기존 노드 갱신을 먼저 말한다", "기존 노드에 갱신" in v, v)
@@ -4921,8 +4929,12 @@ def test_scope_memory_cli():
     out, _ = run(["sm", "write", "--session", S,
                   "--expect-hash", out["hash"]], big)
     check("CLI 상한 초과는 종료코드 0이 아니다", out.get("exit") == 1, out)
-    check("CLI 거부도 전문을 돌려준다",
-          out.get("text", "").strip() == "- 훅으로 쓴 엔트리", out)
+    # CLI가 거부 페이로드를 삼키지 않는지가 요점이다. 전문은 §9-2 5항에 따라
+    # 상한 초과에는 실리지 않으므로, 실려야 하는 것들로 확인한다.
+    check("CLI 거부도 거부 상세를 그대로 낸다",
+          out.get("violations") and out.get("rejected_chars", 0) > wm.LIMIT
+          and "hash" in out, out)
+    check("CLI 상한 초과도 전문은 없다", "text" not in out, sorted(out))
 
 
 # ── 20. 군집 신설의 2단계 확인 (Mechanism §6-2 3항) ─────────────────────
