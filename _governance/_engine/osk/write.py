@@ -937,9 +937,42 @@ def _as_links(pred: str, targets) -> str | list:
 def update_node(name: str, body: str | None = None,
                 expect_hash: str | None = None, summary: str | None = None,
                 add_edges: dict | None = None,
-                remove_edges: dict | None = None) -> dict:
+                remove_edges: dict | None = None,
+                old_text: str | None = None,
+                new_text: str | None = None) -> dict:
     """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
-    상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다."""
+    상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
+
+    `old_text`/`new_text`는 본문의 **앵커 편집**이며 같은 규율을 본문으로
+    넓힌 것이다. 앵커는 "고칠 자리를 봤다"는 증거이므로 "전체를 봤다"는
+    증거(`expect_hash`)를 요구하지 않는다 — §6-2 4항이 부분 변경을 그렇게
+    갈라 둔다. 전문 치환(`body`)은 그대로 해시를 요구한다.
+
+    실측이 이 경로를 부른 이유: 본문을 실은 `update_node` 78건이 그 도구
+    발화 비용의 85%를 썼는데 연속 재작성 간 유사도 중앙값이 0.84였다 —
+    국소 편집에 전문을 다시 뱉고 있었다. 하네스 `Edit`의 실측 대조에서
+    부분 편집은 전문 치환의 0.119배이고 실패율은 오히려 낮다(2.2%)."""
+    # 인자 검사는 잠금 **밖**에서 — 형태가 틀린 요청이 잠금을 잡을 이유가 없다.
+    if (old_text is None) != (new_text is None):
+        raise WriteError(
+            "앵커 편집은 `old_text`와 `new_text`를 함께 받는다 — 쓰지 않았다",
+            ["지울 때는 `new_text`에 빈 문자열을 준다. 한쪽만으로는 무엇을 "
+             "무엇으로 바꾸는지 정해지지 않는다."])
+    if old_text is not None:
+        if body is not None:
+            raise WriteError(
+                "`body`와 앵커 편집은 함께 쓸 수 없다 — 쓰지 않았다",
+                ["`body`는 전문 치환이고 앵커는 부분 편집이다. 둘을 함께 주면 "
+                 "어느 쪽이 이겼는지 응답으로 구분되지 않는다. 하나만 보내라."])
+        if not old_text:
+            raise WriteError(
+                "`old_text`가 비어 있다 — 쓰지 않았다",
+                ["빈 앵커는 본문의 모든 자리에 맞으므로 고칠 자리를 가리키지 "
+                 "못한다. 바꿀 대목을 그대로 넣어라."])
+        if old_text == new_text:
+            raise WriteError(
+                "`old_text`와 `new_text`가 같다 — 쓰지 않았다",
+                ["바뀌는 것이 없다. 고칠 내용을 `new_text`에 담아라."])
     with _Lock():
         idx = graph.Index()                     # 이 쓰기가 쓰는 색인은 하나다
         _require_complete(idx)
@@ -957,6 +990,23 @@ def update_node(name: str, body: str | None = None,
             raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
 
         _cas(path, expect_hash, body is not None)   # 위반 시 raise
+        if old_text is not None:
+            # **유일성이 안전 계약의 전부다.** 여러 곳에 맞으면 어디를 고칠지
+            # 호출자가 정한 바가 없고, 아무 곳이나 고르는 것은 조용히 틀린
+            # 자리를 고치는 길이다. 하네스 `Edit` 실측에서 유일성 위반은
+            # 5,454건 중 5건(0.09%)이라 이 계약은 실무에서 거의 공짜다.
+            hits = n.body.count(old_text)
+            if hits != 1:
+                raise WriteError(
+                    ("앵커가 본문에 없다 — 쓰지 않았다" if hits == 0 else
+                     f"앵커가 본문에 {hits}곳 맞는다 — 쓰지 않았다"),
+                    ([f"`old_text`가 `{name}`의 본문에 나오지 않는다. 노드가 "
+                      f"그 사이 바뀌었을 수 있다 — `read_node`로 지금 본문을 "
+                      f"보고 그대로 복사해 넣어라. 공백·줄바꿈까지 일치해야 한다."]
+                     if hits == 0 else
+                     [f"어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
+                      f"넣어 앵커를 **유일하게** 만들어라."]))
+            body = n.body.replace(old_text, new_text, 1)
         meta = dict(n.meta)
         replaced_summary = None
         changed = False

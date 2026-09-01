@@ -228,8 +228,7 @@ def overview(session: str | None = None) -> dict:
     착지를 추측하지 않아도 된다. `clusters`는 **허브가 있는** 군집 경로다
     (`create_node`의 `space`에 그대로 넣는다 — `_raw`·작업 기억의 `space`는
     이보다 좁아 `= Scope/<이름>`만 받는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
-    `broken`은 검색에 잡히지 않는 파손 파일이다. `engine_stale`이 참이면
-    재기동하라 — 그 전까지 쓰기는 거부된다. `session`을 주면 그 키의
+    `broken`은 검색에 잡히지 않는 파손 파일이다. `session`을 주면 그 키의
     현재 결속(`session_scope`)을 함께 돌려준다."""
     idx = _s().idx
     out = {
@@ -279,14 +278,15 @@ def update_node(name: str, body: str | None = None,
                 expect_hash: str | None = None,
                 summary: Summary | None = None,
                 add_edges: Edges | None = None,
-                remove_edges: Edges | None = None) -> dict:
-    """`name`이 가리키는 노드의 본문·summary·엣지 수정. 엣지는 델타라 현재
-    상태에 적용되니 선-읽기가 필요 없다. `expect_hash`는 `body`를 보낼
-    때(언제나 전문 치환이다) 필수이며, 방금 쓴 응답의 `new_hash`를 그대로 이어
-    쓸 수 있다. 응답의 `dangling`은 대상이 아직 없는 링크이니 오타인지
-    확인하라."""
+                remove_edges: Edges | None = None,
+                old_text: str | None = None,
+                new_text: str | None = None) -> dict:
+    """`name` 노드의 본문·summary·엣지 수정. 본문은 **앵커가 기본**이다 —
+    `old_text`(본문에 **정확히 한 번**)를 `new_text`로 바꾸며 해시가 필요 없다.
+    `body`는 전문 치환이라 `expect_hash`가 필수이니 통째로 새로 쓸 때만 쓴다.
+    엣지는 델타라 선-읽기가 필요 없다. `dangling`은 대상이 아직 없는 링크다."""
     return _guard(write.update_node, name, body, expect_hash, summary,
-                  add_edges, remove_edges)
+                  add_edges, remove_edges, old_text, new_text)
 
 
 @mcp.tool()
@@ -340,11 +340,8 @@ def scope_memory(session: str, text: str | None = None,
     `text` 없이 부르면 전문을 읽고, 주면 **전체 치환**한다(부분 추가 없음).
     기존 내용이 있으면 `expect_hash` 필수 — 방금
     받은 `hash`를 그대로 쓴다. `session`은 `create_node`와 같은 값, `space`는
-    `= Scope/<이름>` **두 마디**만 받는다(`clusters`보다 좁다). 상한 1500자이며
-    자리 다툼의 규율은 응답의 `eviction`이 매번 알려준다.
-    비밀값은 **성공하면서 치환되니** `filtered`가 비지 않았으면
-    저장본이 다르다. `text:""`는 전체를 지우며, 절반 넘게 줄면
-    `replaced_text`로 직전 전문이 오니 실수면 그대로 다시 보내라."""
+    `= Scope/<이름>` **두 마디**만 받는다(`clusters`보다 좁다). 상한 1500자이고
+    `text:""`는 전체를 지운다."""
     if text is None:
         return _guard(scope_memory_mod.read, session, space)
     return _guard(scope_memory_mod.replace, session, text, expect_hash, space)

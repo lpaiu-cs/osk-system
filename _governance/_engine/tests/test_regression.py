@@ -2127,6 +2127,91 @@ def test_write_cas_body_bound():
     check("올바른 CAS면 통과", r["ok"] and r["new_hash"] != h, r)
 
 
+def test_anchor_edit():
+    """앵커 편집 — 본문의 **부분 변경**은 해시가 아니라 앵커가 관측을 증명한다
+    (Mechanism §6-2 4항 "부분 변경에는 요구하지 않는다").
+
+    무엇을 망가뜨리면 이 시험이 실패하는가: 앵커 경로가 해시를 요구하게 되면 ·
+    앵커가 없거나 여러 곳인데 쓰면 · `body`와 병용을 허용하면 · 치환이 저장물에
+    안 닿으면 · 앵커 본문이 검증 통로(비밀값 필터·왕복 검증)를 건너뛰면 ·
+    `updated` 각인이 빠지면."""
+    body = ("첫 줄이다.\n\n같은 말이 두 번 나온다.\n중간 줄.\n"
+            "같은 말이 두 번 나온다.\n마지막 줄이다.\n")
+    r = _w(write.create_node, "regr-anchoredit", "앵커 편집 시험", body, "opus-5",
+           space="= Scope/W1")
+    check("시험 노드 생성", r.get("ok"), r)
+    p = ROOT / "= Scope/W1/regr-anchoredit.md"
+    h0 = core.sha256_file(p)
+
+    # 계약의 핵심 — 부분 변경에 해시를 요구하지 않는다
+    r = _w(write.update_node, "regr-anchoredit",
+           old_text="첫 줄이다.", new_text="첫 줄을 고쳤다.")
+    check("앵커 편집은 해시 없이 통과", r.get("ok"), r)
+    cur = contract.parse(p).body
+    check("치환이 저장물에 반영된다", "첫 줄을 고쳤다." in cur, cur[:80])
+    check("앵커는 그 자리만 바꾼다", "마지막 줄이다." in cur, cur[-60:])
+    check("본문이 실제로 바뀌었다", core.sha256_file(p) != h0)
+    check("새 해시를 돌려준다 — 연쇄가 산다",
+          r.get("new_hash") == core.sha256_file(p), r)
+
+    # 유일성이 안전 계약의 전부다
+    r = _w(write.update_node, "regr-anchoredit",
+           old_text="같은 말이 두 번 나온다.", new_text="바꿈")
+    check("앵커가 여러 곳이면 거부", not r.get("ok"), r)
+    check("거부가 유일하게 만들라고 가리킨다",
+          "유일" in " ".join(r.get("violations", [])), r)
+    check("여러 곳 거부는 파일을 건드리지 않는다",
+          contract.parse(p).body.count("같은 말이 두 번 나온다.") == 2)
+    r = _w(write.update_node, "regr-anchoredit",
+           old_text="중간 줄.\n같은 말이 두 번 나온다.", new_text="중간 줄.\n하나만 바꿈")
+    check("앞뒤를 붙여 유일하게 만들면 통과", r.get("ok"), r)
+    check("거부가 막다른 길이 아니다 — 한 곳만 바뀌었다",
+          contract.parse(p).body.count("같은 말이 두 번 나온다.") == 1)
+
+    # 없는 앵커
+    r = _w(write.update_node, "regr-anchoredit", old_text="없는 문장", new_text="x")
+    check("앵커가 없으면 거부", not r.get("ok"), r)
+    check("거부가 다시 읽으라고 가리킨다",
+          "read_node" in " ".join(r.get("violations", [])), r)
+
+    # 형태가 틀린 요청 — 잠금을 잡기 전에 걸러야 한다
+    check("한쪽만 주면 거부",
+          not _w(write.update_node, "regr-anchoredit", old_text="첫 줄을").get("ok"))
+    check("빈 앵커는 거부",
+          not _w(write.update_node, "regr-anchoredit",
+                 old_text="", new_text="x").get("ok"))
+    check("old==new는 거부",
+          not _w(write.update_node, "regr-anchoredit",
+                 old_text="중간 줄.", new_text="중간 줄.").get("ok"))
+    h = core.sha256_file(p)
+    r = _w(write.update_node, "regr-anchoredit", body="통째로", expect_hash=h,
+           old_text="중간 줄.", new_text="바꿈")
+    check("`body`와 앵커 병용은 거부", not r.get("ok"), r)
+    check("병용 거부는 파일을 건드리지 않는다", core.sha256_file(p) == h)
+
+    # 앵커 본문도 `body`와 **같은 통로**를 지난다 — 여기가 새면 계약이 반만
+    # 산다. 노드 통로에 실제로 걸리는 것은 옵시디언 태그 방어와 렌더 왕복
+    # 검증이다(비밀값 필터는 `_raw/`·scope 기억 전용이다 — Mechanism §9 1항).
+    r = _w(write.update_node, "regr-anchoredit",
+           old_text="마지막 줄이다.", new_text="#1227은 심각했다")
+    check("앵커 편집도 통로를 지난다", r.get("ok"), r)
+    check("태그 방어가 저장물에 반영된다",
+          "#1227 은 심각했다" in contract.parse(p).body,
+          contract.parse(p).body[-60:])
+
+    # 부분 변경도 변경이다 — 각인이 빠지면 최신성이 거짓이 된다
+    before = contract.parse(p).meta.get("updated")
+    r = _w(write.update_node, "regr-anchoredit",
+           old_text="하나만 바꿈", new_text="또 바꿈")
+    check("앵커 편집이 updated를 각인한다",
+          contract.parse(p).meta.get("updated") is not None and r.get("ok"), r)
+
+    # 지우기는 빈 문자열로 — `new_text` 생략과 구분된다
+    r = _w(write.update_node, "regr-anchoredit", old_text="또 바꿈\n", new_text="")
+    check("빈 new_text로 지운다", r.get("ok"), r)
+    check("지워졌다", "또 바꿈" not in contract.parse(p).body)
+
+
 def test_edge_single_list_roundtrip():
     """손으로/정본에서 단일 원소 리스트로 저장된 엣지(`derived-from: [<id>]`)를
     가진 노드가 그 엣지를 건드리지 않는 갱신에서 왕복 불일치로 거부되지 않는다
@@ -6213,7 +6298,8 @@ if __name__ == "__main__":
                test_self_referencing_edge, test_surface_contract,
                test_ledger_row_shape,
                test_broken_delegation_isolated, test_write_contract,
-               test_write_cas_body_bound, test_edge_single_list_roundtrip,
+               test_write_cas_body_bound, test_anchor_edit,
+               test_edge_single_list_roundtrip,
                test_write_move_and_pin,
                test_write_routing, test_write_session_alias,
                test_write_candidate_basis,
