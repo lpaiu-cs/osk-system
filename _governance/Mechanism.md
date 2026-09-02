@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-iter
 created: 2026-08-02 13:22 (KST)
-updated: 2026-08-29 05:42 (KST)
+updated: 2026-09-02 15:45 (KST)
 author: user
 drafter: opus-5
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"
@@ -242,7 +242,20 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    - `unprotect` — `base`는 해제 시점의 승인본이다.
 4. **영역 tree**: 영역 안 전체 파일의 (vault 상대 POSIX 경로, 내용
    sha256) 쌍을 경로 오름차순으로 담은 목록을 공백 없는 UTF-8 JSON으로
-   직렬화한 것이 manifest이고, manifest의 sha256이 tree 해시다. manifest와
+   직렬화한 것이 manifest이고, manifest의 sha256이 tree 해시다.
+   다음 구획은 영역 안에 있어도 tree에서 **제외한다**.
+   - `.git`·`.venv`·`__pycache__` — 저장소 살림살이이지 기억이 아니다.
+   - `_ledger/` — 대장 자신. 승인본이 대장을 담으면 승인이 자기 자신을 포함하는
+     순환이 된다.
+   - `_raw/`·`_scope_memory/` — append-only 세션 기록과 기기 공유 기억. 선의의
+     에이전트가 사용자 지시 없이 건드리는 자리가 아니고, 변경집합에 넣으면
+     케이던스가 쓸 때마다 영역이 pending이 되며 **반려가 다른 기기의 기억까지
+     지운다**. 되돌릴 것이 없는 자리를 되돌림의 대상으로 두지 않는다.
+
+   이 구획들과 vault 루트는 **영역의 루트로도 지정할 수 없다.** 제외 구획을
+   영역으로 삼으면 지정 직후부터 tree가 비거나 자기를 담아 clean에 이르지
+   못하고, 해제는 pending이라 거부되어 대장을 손으로 고치기 전에는 빠져나올
+   길이 없다. manifest와
    파일 내용 blob은 `_ledger/approved/objects/<해시 앞 2자>/<나머지>`에
    내용 주소로 보관한다. 같은 내용은 한 번만 저장되고, 다기기 병합은
    합집합으로 자명하다 — 같은 해시는 같은 내용이다.
@@ -509,16 +522,26 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    | 이름 | 패턴 |
    |---|---|
    | pem-private-key | `-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----` |
-   | aws-access-key | `\bAKIA[0-9A-Z]{16}\b` |
-   | github-token | `\bgh[pousr]_[A-Za-z0-9]{36,}\b` |
-   | openai-style-key | `\bsk-[A-Za-z0-9_\-]{20,}\b` |
-   | slack-token | `\bxox[baprs]-[A-Za-z0-9\-]{10,}\b` |
-   | google-api-key | `\bAIza[0-9A-Za-z_\-]{35}\b` |
+   | aws-access-key | `(?<![A-Za-z0-9_])AKIA[0-9A-Z]{16}(?![A-Za-z0-9_])` |
+   | github-token | `(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36,}(?![A-Za-z0-9_])` |
+   | openai-style-key | `(?<![A-Za-z0-9_])sk-[A-Za-z0-9_\-]{20,}(?![A-Za-z0-9_])` |
+   | slack-token | `(?<![A-Za-z0-9_])xox[baprs]-[A-Za-z0-9\-]{10,}(?![A-Za-z0-9_])` |
+   | google-api-key | `(?<![A-Za-z0-9_])AIza[0-9A-Za-z_\-]{35}(?![A-Za-z0-9_])` |
    | bearer-header | `Authorization:\s*Bearer\s+[A-Za-z0-9_\-.~+/]+=*` |
+
+   토큰의 경계는 **ASCII 단어문자로만** 판정한다. `\b`는 유니코드 단어문자
+   사이에 경계를 두지 않으므로 `ghp_…를`·`AKIA…이다`처럼 **한글 조사가 직결된**
+   토큰을 통째로 놓친다 — 한국어 전사에서 가장 흔한 형태이고, 실측으로 확인된
+   미탐이다. ASCII 경계로 바꾸면 그 자리가 닫히면서 영문 문맥의 판정은 그대로
+   남는다(앞뒤가 ASCII 단어문자면 여전히 매치하지 않는다).
 
 2. 정규식은 Python `re` 문법이며 추가 flags 없이 해석한다(pem-private-key의
    줄바꿈 매칭은 패턴 안의 `[\s\S]`가 담당한다). 각 패턴은 양성·음성
-   fixture와 함께 검증기에 등재한 뒤 활성화한다.
+   fixture와 함께 검증기에 등재한 뒤 활성화한다. fixture의 양성에는 **비ASCII
+   문자가 토큰에 직결된 사례**를 포함한다 — 없으면 1항의 경계 규율이 검사되지
+   않는다(구판의 fixture가 전부 ASCII 문맥이라 그 미탐을 통과시켰다).
+   구현이 이 표를 그대로 담는지는 검증기가 대조한다 — 조문이 필터의 정본이므로
+   코드만 고치면 규범과 갈리고, 갈렸다는 사실을 아무도 알려 주지 않는다.
 3. 그 밖의 마스킹은 적용하지 않는다.
 4. `_raw/` 쓰기는 기존 파일의 정확한 바이트를 새 파일의 접두부로 보존하는
    append만 허용한다. 접두부가 달라지면 쓰기를 거부한다. 새 라운드는 시행령

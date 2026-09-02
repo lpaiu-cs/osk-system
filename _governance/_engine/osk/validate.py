@@ -126,6 +126,13 @@ def run() -> dict:
     # 8. 비밀값 필터 fixture (Mechanism §9 2항)
     ok("비밀값 필터 양성/음성", secrets.self_test())
 
+    # 8b. 구현이 §9 1항의 표를 그대로 담는가 (§9 2항). 표를 못 읽으면 검사가
+    #     성립하지 않으므로 생략한다 — 표면 계약(§6-2)과 같은 규율이다.
+    if declared_secret_patterns() is None:
+        skip("비밀값 패턴 동치", "Mechanism §9 1항 패턴 표 부재 — 검사 불성립")
+    else:
+        ok("비밀값 패턴이 규범과 동치", secret_pattern_drift())
+
     # 9. 보호영역 생애 fixture — 매 검증 실행 (회귀 방지)
     import tempfile
     with tempfile.TemporaryDirectory() as td:
@@ -497,6 +504,53 @@ def surface_lint() -> list[str]:
 FORBIDDEN_CALLS = ("protect", "unprotect", "approve", "revert",
                    "sign", "unsign", "restore_for_dismissal")
 AUTHORITY_LEDGERS = ("APPROVALS", "SIGNATURES", "PINS")
+
+
+def declared_secret_patterns() -> dict[str, str] | None:
+    """Mechanism §9 1항의 패턴 표 — **규범이 필터의 정본이다.**
+
+    `declared_tools`와 같은 규율이다. 이 표가 조문에 있다는 것은 코드만 고치면
+    규범과 갈린다는 뜻인데, 갈렸다는 사실을 알려 주는 자리가 없었다 — 그래서
+    경계 결함(`\\b`가 한글 조사 직결 토큰을 놓친다)이 조문과 코드 양쪽에 함께
+    오래 남았다. 정본을 읽어 대조하면 다음에는 한쪽만 고칠 수 없다.
+
+    표를 못 읽으면 `None`이다 — 호출부가 그것을 거부로 다룬다(fail-closed)."""
+    import re as _re
+    try:
+        text = (ROOT / "_governance/Mechanism.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    # 종결자는 `§9-2`**또는 문서 끝**이다 — 규범 원본에서는 §9-2가 뒤따르지만,
+    # 발췌를 심는 시험 vault에서는 §9가 마지막일 수 있다. 하나만 보면 그런
+    # vault에서 표가 통째로 안 읽혀 "정본 부재"가 된다.
+    sec = _re.search(r"^## §9 .*?(?=^## §9-2|\Z)", text, _re.M | _re.S)
+    if not sec:
+        return None
+    out = {}
+    for line in sec.group(0).split("\n"):
+        m = _re.match(r"^\s*\|\s*([a-z0-9][a-z0-9-]*)\s*\|\s*`(.+?)`\s*\|\s*$",
+                      line)
+        if m:
+            out[m.group(1)] = m.group(2)
+    return out or None
+
+
+def secret_pattern_drift() -> list[str]:
+    """구현(`secrets.PATTERNS`)과 조문(§9 1항 표)의 차이 — 빈 목록이면 동치."""
+    declared = declared_secret_patterns()
+    if declared is None:
+        return ["Mechanism §9 1항의 패턴 표를 읽지 못했다 — 필터의 정본 부재"]
+    errs = []
+    for name in sorted(set(declared) - set(secrets.PATTERNS)):
+        errs.append(f"규범에 선언된 패턴이 구현에 없다: {name}")
+    for name in sorted(set(secrets.PATTERNS) - set(declared)):
+        errs.append(f"선언되지 않은 패턴이 구현에 있다: {name}")
+    for name in sorted(set(declared) & set(secrets.PATTERNS)):
+        if declared[name] != secrets.PATTERNS[name]:
+            errs.append(f"패턴이 규범과 다르다: {name}\n"
+                        f"    규범: {declared[name]}\n"
+                        f"    구현: {secrets.PATTERNS[name]}")
+    return errs
 
 
 def declared_tools() -> list[str] | None:

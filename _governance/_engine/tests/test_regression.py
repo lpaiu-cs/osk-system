@@ -2006,11 +2006,17 @@ def test_surface_contract():
     real = (ENGINE.parent / "Mechanism.md").read_text(encoding="utf-8")
     import re as _re
     sec = _re.search(r"^## §6-2 .*?(?=^## §7)", real, _re.M | _re.S)
+    # §9(비밀값 패턴 표)도 함께 심는다 — 검증기가 구현과 조문의 동치를 보는데,
+    # 그 정본이 없으면 이 vault를 쓰는 뒤 시나리오(발행 가드·릴리스 전제)까지
+    # 통째로 "정본 부재"로 FAIL한다. 규범이 정본인 검사가 늘면 심는 범위도 는다.
+    sec9 = _re.search(r"^## §9 .*?(?=^## §9-2)", real, _re.M | _re.S)
     check("실 Mechanism에 §6-2가 있다", sec is not None)
-    if not sec:
+    check("실 Mechanism에 §9가 있다", sec9 is not None)
+    if not sec or not sec9:
         return
     (gov / "Mechanism.md").write_text(          # 특수 노드 — 계약을 갖춘다
-        node_text("260802-zzzz-rg50", "표면 계약 시험용", sec.group(0)),
+        node_text("260802-zzzz-rg50", "표면 계약 시험용",
+                  sec.group(0) + "\n" + sec9.group(0)),
         encoding="utf-8")
     check("실 표면은 선언과 동치·권위 비노출", not validate.surface_violations(),
           validate.surface_violations())
@@ -6900,6 +6906,88 @@ def test_audit_fixes_2026_09_02():
             shutil.rmtree(ROOT / d, ignore_errors=True)
 
 
+# ── 개정 2026-09-02: 비밀값 경계와 영역 tree 제외 (#29·#37) ───────────────
+def test_governance_amend_secrets_and_region():
+    """Mechanism §9 1항(비밀값 경계)·§3 4항(영역 tree 제외) 개정의 고정.
+
+    이 둘은 **조문이 정본**이라 코드만 고칠 수 없었던 자리다. 그래서 검사도
+    둘을 함께 본다 — 동작이 맞는가, 그리고 구현이 조문과 같은가.
+
+    무엇을 망가뜨리면 실패하는가:
+      · 패턴의 경계를 `\\b`로 되돌리면 → 직결 양성 넷이 실패한다
+      · 조문 표만 고치고 코드를 안 고치면(또는 그 반대) → 동치 단언이 실패한다
+      · `_SKIP_DIRS`에서 `_scope_memory`를 빼면 → 보호영역 단언 둘이 실패한다
+    """
+    from osk import approvals as A, scope_memory as SM, secrets
+    reg = "= Scope/Workbench"
+    smp, prior, protected = SM.sm_path("W1"), None, False
+    try:
+        # ① 한글 조사가 직결된 토큰도 걸러진다 (#29)
+        cases = [
+            ("github-token", "토큰 ghp_" + "a" * 36 + "를 썼다"),
+            ("aws-access-key", "키 AKIAIOSFODNN7EXAMPLE이다"),
+            ("openai-style-key", "sk-ant-api03-" + "x" * 30 + "가 새었다"),
+            ("google-api-key", "AIza" + "b" * 35 + "로 불렀다"),
+        ]
+        for name, sample in cases:
+            out, hits = secrets.filter_text(sample)
+            check(f"조사 직결 토큰이 걸러진다: {name} (#29)",
+                  name in hits and sample != out, (hits, out[:40]))
+        #    ASCII가 앞뒤에 붙으면 여전히 토큰이 아니다 — 경계를 넓힌 것이
+        #    아니라 비ASCII만 경계로 인정한 것이다.
+        for sample in ("NOTAKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLEX"):
+            _o, hits = secrets.filter_text(sample)
+            check(f"ASCII 인접은 토큰이 아니다: {sample[:24]} (#29)",
+                  not hits, hits)
+        check("비밀값 fixture가 통과한다 (#29)",
+              not secrets.self_test(), secrets.self_test())
+
+        # ② 구현이 §9 1항의 표를 **그대로** 담는다 (#29)
+        #    조문이 필터의 정본이므로, 한쪽만 고치는 것이 다시 가능해지면 안 된다.
+        declared = validate.declared_secret_patterns()
+        check("규범에서 패턴 표를 읽는다 (#29)",
+              declared is not None and len(declared) == len(secrets.PATTERNS),
+              declared and sorted(declared))
+        check("구현과 규범의 패턴이 동치다 (#29)",
+              not validate.secret_pattern_drift(),
+              validate.secret_pattern_drift())
+
+        # ③ scope 기억은 영역 tree에 들지 않는다 (#37)
+        #    되돌리면 — 케이던스가 쓸 때마다 영역이 pending이 되고, 반려가 다른
+        #    기기의 공유 기억까지 지운다.
+        prior = smp.read_bytes() if smp.is_file() else None
+        write.bind_session("gov-amend-sess", "W1", "개정 회귀 시험")
+        st0 = _w(SM.read, "gov-amend-sess")
+        r = _w(SM.replace, "gov-amend-sess", "개정 전 기억", st0.get("hash"))
+        check("전제: scope 기억을 쓸 수 있다 (#37)", r.get("ok"), r)
+        A.protect(reg, "개정 회귀 시험")
+        protected = True
+        check("전제: 지정 직후 clean (#37)", A.state(reg) == "clean",
+              A.state(reg))
+        r = _w(SM.replace, "gov-amend-sess", "개정 뒤 기억", r.get("hash"))
+        check("전제: 그 위에 다시 쓴다 (#37)", r.get("ok"), r)
+        check("scope 기억 쓰기가 영역을 pending으로 만들지 않는다 (#37)",
+              A.state(reg) == "clean", A.state(reg))
+
+        # ④ 제외 구획은 영역의 루트로도 지정되지 않는다 (#37)
+        check("scope 기억 구획은 보호영역이 될 수 없다 (#37)",
+              _raises(lambda: A.protect("= Scope/Workbench/_scope_memory",
+                                        "시험"))())
+    finally:
+        if protected:
+            try:
+                A.unprotect(reg, "시험 종료")
+            except Exception:
+                pass
+        try:
+            if prior is None:
+                smp.unlink(missing_ok=True)
+            else:
+                smp.write_bytes(prior)
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -6984,7 +7072,8 @@ if __name__ == "__main__":
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,
                test_fingerprint_scope_and_racy, test_engine_epoch_fence,
-               test_audit_fixes_2026_09_02]:
+               test_audit_fixes_2026_09_02,
+               test_governance_amend_secrets_and_region]:
         try:
             fn()
         except Exception as e:
