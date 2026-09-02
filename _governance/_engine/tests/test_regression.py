@@ -6977,6 +6977,99 @@ def test_audit_fixes_2026_09_02():
 
 # ── 개정 2026-09-02: 비밀값 경계와 영역 tree 제외 (#29·#37) ───────────────
 
+def test_setup_doc_drift():
+    """운용 안내문이 규범·파서와 갈라지면 검증기가 말한다 (#42).
+
+    감사 2026-09-02이 찾은 문서 표류 한 무리는 조용했다 — 검증기가 문서를 보지
+    않으니 감사로만 드러나고, 그 사이 새 세션이 안내문을 먼저 읽고 시작한다.
+    §9 1항 패턴표↔`secrets.PATTERNS` 대조와 같은 규율을 안내문에 건다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · 대조 넷(빠진 도구·없는 도구·개수·CLI 명령) 중 하나를 지우면 그 단언이 실패
+      · 실 안내문이 규범과 갈라지면 마지막 단언이 실패한다(이 저장소 자신을 본다)
+    """
+    lab = Path(tempfile.mkdtemp(prefix="osk-setupdoc-"))
+    try:
+        (lab / "_governance").mkdir()
+        (lab / "docs").mkdir()
+        tools = ["overview", "search", "read_node", "scope_memory"]
+        (lab / "_governance/Mechanism.md").write_bytes(
+            ("## §6-2 외부 표면" + chr(10) * 2 + "```" + chr(10)
+             + " ".join(tools) + chr(10) + "```" + chr(10)).encode("utf-8"))
+
+        def _setup(tool_line, count_word, cli_rows):
+            body = ("## MCP 서버" + chr(10) * 2
+                    + f"도구는 {count_word}이며 그 목록의 정본은 "
+                    + "Mechanism §6-2 7항이다 —" + chr(10)
+                    + tool_line + chr(10) * 2
+                    + "| 명령 | 하는 일 |" + chr(10)
+                    + "|---|---|" + chr(10)
+                    + cli_rows + chr(10) * 2 + "끝." + chr(10))
+            (lab / "docs/SETUP.md").write_bytes(body.encode("utf-8"))
+
+        def _drift():
+            with mock.patch.object(validate, "ROOT", lab):
+                return validate.setup_doc_drift()
+
+        rows = ("| `validate` | 검증기 |" + chr(10)
+                + "| `status` | 현황 |" + chr(10)
+                + "| `search` / `view` | 검색 |" + chr(10)
+                + "| `check` | 사전 검사 |" + chr(10)
+                + "| `validators` | 활성화 |" + chr(10)
+                + "| `raw append` | 기록 |" + chr(10)
+                + "| `sm show` | 기억 |" + chr(10)
+                + "| `protect` / `unprotect` | 영역 |" + chr(10)
+                + "| `approve` / `revert` | 승인 |" + chr(10)
+                + "| `store-reconcile` | 저장소 |" + chr(10)
+                + "| `update` / `release` | 갱신 |")
+        full = "`overview` `search` `read_node` `scope_memory`."
+
+        #    ① 규범에 있는 도구가 안내문에 없다
+        _setup("`overview` `search` `read_node`.", "넷", rows)
+        e = _drift()
+        check("빠진 도구를 안내문 대조가 잡는다 (#42)",
+              any("도구 목록에 없다: scope_memory" in x for x in e), e)
+
+        #    ② 안내문이 규범에 없는(구판) 도구를 적는다
+        _setup(full[:-1] + " `move_node`.", "넷", rows)
+        e = _drift()
+        check("구판 도구 이름을 안내문 대조가 잡는다 (#42)",
+              any("규범에 없는 도구를 적는다: move_node" in x for x in e), e)
+
+        #    ③ 개수 표기가 목록과 함께 늙는다
+        _setup(full, "열하나", rows)
+        e = _drift()
+        check("도구 수 표기 어긋남을 잡는다 (#42)",
+              any("도구 수 표기가 규범과 다르다" in x for x in e), e)
+
+        #    ④ 파서에 있는 명령이 CLI 표에 없다
+        _setup(full, "넷", rows.replace(
+            "| `validators` | 활성화 |" + chr(10), ""))
+        e = _drift()
+        check("CLI 표에서 빠진 명령을 잡는다 (#42)",
+              any("CLI 표에 없는 명령이다: validators" in x for x in e), e)
+
+        #    ⑤ 맞으면 아무 말도 하지 않는다
+        _setup(full, "넷", rows)
+        check("어긋남이 없으면 조용하다 (#42)", _drift() == [], _drift())
+    finally:
+        rmtree_force(lab)
+
+    #    ⑥ **이 저장소 자신의** 안내문이 지금 규범·파서와 같다.
+    #       위 다섯은 검사가 도는지를 보고, 이것이 실제 표류를 막는 자리다.
+    #       `ROOT`는 mini-vault라 `docs/`가 없다 — 그대로 부르면 빈 목록이
+    #       돌아와 **무엇을 지워도 통과한다**(첫 판이 그래서 뮤턴트를 살렸다).
+    #       실 저장소를 가리켜야 이 단언이 성립한다.
+    repo = ENGINE.parent.parent
+    if not (repo / "docs/SETUP.md").is_file():
+        skip("이 저장소의 안내문 대조 (#42)", "docs/SETUP.md 부재 — 인스턴스다")
+    else:
+        with mock.patch.object(validate, "ROOT", repo):
+            real = validate.setup_doc_drift()
+        check("이 저장소의 안내문이 규범·파서와 어긋나지 않는다 (#42)",
+              real == [], real)
+
+
 def test_region_root_is_not_an_excluded_compartment():
     """영역 **루트**가 제외 이름을 담아도 반려가 그 영역을 지우지 않는다 (4차 리뷰).
 
@@ -7512,7 +7605,8 @@ if __name__ == "__main__":
                test_fingerprint_scope_and_racy, test_engine_epoch_fence,
                test_audit_fixes_2026_09_02,
                test_governance_amend_secrets_and_region,
-               test_region_root_is_not_an_excluded_compartment]:
+               test_region_root_is_not_an_excluded_compartment,
+               test_setup_doc_drift]:
         try:
             fn()
         except Exception as e:

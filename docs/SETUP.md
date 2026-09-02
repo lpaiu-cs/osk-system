@@ -110,6 +110,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
 | `approve` / `revert` | **사용자 전속** — 변경집합 승인·반려 |
+| `store-reconcile` | 내용 주소 저장소를 파일 이름 기준으로 판독·이행 (EOL 이행) |
 | `update` / `release` | 갱신 / 릴리스 선언 — 인자를 그대로 위임한다 |
 
 보호영역 권위(`protect`·`unprotect`·`approve`·`revert`)는 MCP로 노출되지 않는다.
