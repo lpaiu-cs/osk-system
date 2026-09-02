@@ -8,7 +8,7 @@
 실행: cd <vault> && .venv/bin/python _engine/tests/test_regression.py
 """
 from __future__ import annotations
-import errno, json, os, shutil, stat, subprocess, sys, tempfile, time, traceback
+import errno, json, os, shlex, shutil, stat, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 from unittest import mock
 
@@ -7222,6 +7222,66 @@ def test_governance_amend_secrets_and_region():
                       f"으로 본다 (#39)", verdict == want, out)
         finally:
             rmtree_force(lab)
+
+        # ⑨ **문서에 적힌 이행 명령 그대로** 돌려, 그것이 append-only 원자료의
+        #    blob을 건드리지 않는지 본다 (#39). `check-attr`만 보는 ⑧은 이걸
+        #    잡지 못한다 — `-text`를 받은 구획은 clean 필터가 사라져 오히려
+        #    작업 트리 바이트가 그대로 새 blob이 되기 때문이다. `autocrlf=true`
+        #    기기의 현실(blob은 LF, 작업 트리는 CRLF, status는 clean)을 그대로
+        #    세우고 실측한다: 문서대로면 무변, 구판 명령(`--renormalize .`)이면
+        #    과거 기록의 blob이 LF→CRLF로 소급 수정된다.
+        #    명령을 **문서에서 읽어** 쓰므로 문서가 되돌아가면 여기서 실패한다.
+        setup = (ENGINE.parent.parent / "docs/SETUP.md").read_text(
+            encoding="utf-8")
+        cmds = [l.strip() for l in setup.splitlines()
+                if l.strip().startswith("git add --renormalize")]
+        check("이행 명령이 문서에 한 줄로 있다 (#39)", len(cmds) == 1, cmds)
+        lab2 = Path(tempfile.mkdtemp(prefix="osk-renorm-"))
+        try:
+            _g = lambda *a: subprocess.run(("git",) + a, cwd=str(lab2),
+                                           capture_output=True, text=True)
+            _g("init", "-q")
+            _g("config", "user.email", "t@t"); _g("config", "user.name", "t")
+            _g("config", "core.autocrlf", "true")
+            raw_rel = "= Scope/W/_raw/2026-09-02.md"
+            crlf = bytes([13, 10])
+            body = ("## 1" + chr(10) + chr(10) + "붙여넣은 로그" + chr(10)
+                    ).encode("utf-8").replace(bytes([10]), crlf)
+            for rel, data in ((raw_rel, body),
+                              ("= Person/누구.md",
+                               ("# 누구" + chr(10)).encode("utf-8"))):
+                (lab2 / rel).parent.mkdir(parents=True, exist_ok=True)
+                (lab2 / rel).write_bytes(data)
+            _g("add", "-A"); _g("commit", "-q", "-m", "구판 커밋(속성 없음)")
+            #    autocrlf=true의 체크아웃 — 작업 트리만 CRLF가 된다
+            _g("rm", "--cached", "-r", ".", "-q"); _g("reset", "--hard", "-q")
+            before = _g("rev-parse", "HEAD:" + raw_rel).stdout.strip()
+            check("전제: blob은 LF인데 작업 트리는 CRLF이고 clean이다 (#39)",
+                  crlf in (lab2 / raw_rel).read_bytes()
+                  and not _g("status", "--porcelain").stdout.strip(),
+                  _g("status", "--porcelain").stdout)
+            (lab2 / ".gitattributes").write_bytes(ga.encode("utf-8"))
+            _g("add", ".gitattributes"); _g("commit", "-q", "-m", "attrs")
+            r = subprocess.run(shlex.split(cmds[0]), cwd=str(lab2),
+                               capture_output=True, text=True)
+            check("문서의 이행 명령이 성립한다 (#39)", r.returncode == 0,
+                  r.stderr[:200])
+            staged = [x for x in _g("diff", "--cached", "--name-only")
+                      .stdout.splitlines() if x.strip()]
+            check("이행이 append-only 원자료를 stage하지 않는다 (#39)",
+                  raw_rel not in staged, staged)
+            if staged:
+                _g("commit", "-q", "-m", "정규화")
+            check("과거 기록의 blob이 그대로다 (#39)",
+                  _g("rev-parse", "HEAD:" + raw_rel).stdout.strip() == before,
+                  (before, _g("rev-parse", "HEAD:" + raw_rel).stdout.strip()))
+            #    3단계 재전개가 그 구획을 blob 그대로 되펼친다
+            _g("rm", "--cached", "-r", ".", "-q"); _g("reset", "--hard", "-q")
+            check("재전개가 원자료를 blob 바이트 그대로 펼친다 (#39)",
+                  crlf not in (lab2 / raw_rel).read_bytes(),
+                  (lab2 / raw_rel).read_bytes()[:40])
+        finally:
+            rmtree_force(lab2)
     finally:
         (ROOT / (reg + "/audit-keep.md")).unlink(missing_ok=True)
         (ROOT / (reg + "/audit-extra.md")).unlink(missing_ok=True)

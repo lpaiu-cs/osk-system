@@ -293,11 +293,25 @@ osk validate                    # 지금의 protected_regions를 적어 둔다
 # 1) 데몬과 MCP 서버를 멈춘다
 #    (mutation 잠금 경합과 중간 상태 커밋을 막는다)
 
-# 2) 색인을 새 규칙으로 다시 만든다
-git add --renormalize .
+# 2) 색인을 새 규칙으로 다시 만든다 — **byte-exact 구획은 빼고**
+#    `-text`를 받은 구획은 clean 필터가 사라져, 여기에 포함하면 **작업 트리의
+#    바이트가 그대로 새 blob이 된다.** `autocrlf=true` 기기에서는 blob은 LF인데
+#    작업 트리가 CRLF인 `_raw` 기록이 clean 상태로 있을 수 있어(체크아웃이
+#    바꿔 놓은 것이다), 그 CRLF가 stage되어 **과거 append-only 기록의 blob을
+#    소급 수정한다** — 그리고 다른 기기가 그 CRLF를 정확히 받는다(실측:
+#    blob LF → CRLF). 이 구획은 blob을 그대로 두고 3단계에서 `-text`로
+#    정확히 되펼치는 것이 맞다.
+git add --renormalize -- . ':(exclude)**/_raw/**' ':(exclude)**/_scope_memory/**'
 git status --short              # 줄바꿈만 바뀐 파일 목록
 git commit -m "chore: 줄바꿈을 LF로 정규화"
 #    변경이 없으면 이 커밋은 건너뛴다 — blob이 이미 LF라는 뜻이고 정상이다.
+#
+#    `_ledger/approved/objects/`는 **빼지 않는다.** 그 구획은 파일 이름이 곧
+#    내용의 sha256이라 옳은 바이트가 무엇인지 스스로 증명한다 — 작업 트리를
+#    다시 stage하는 것은 blob이 이미 맞으면 무변이고, 구판 정규화로 깨져 있었다면
+#    이름과 내용을 다시 맞추는 복구다. `_raw/`·`_scope_memory/`에는 그런 대조가
+#    없어 보수적으로 두는 것이 맞고, 여기서는 두지 않는 쪽이 깨진 승인본을
+#    영구화한다.
 
 # 3) 작업 트리를 실제로 LF로 펼친다
 #    `--renormalize`는 **색인만** 고친다. 엔진은 작업 트리 바이트를 읽으므로
