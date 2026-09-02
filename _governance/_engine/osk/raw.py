@@ -24,12 +24,17 @@ from . import graph, secrets, write
 
 # 라운드 제목 — 행 머리의 `## ` 뒤에 양의 십진 index 하나(Mechanism §8 3항).
 # escape된 제목(`\## 3`)은 `^## `에 걸리지 않으므로 이 하나로 판정이 끝난다.
-_ROUND = re.compile(r"^## (\d+)[ \t]*$", re.M)
+#
+# 꼬리 공백에 `\r`을 함께 센다. 기록은 바이트 그대로 읽으므로(`read_exact`),
+# CRLF가 섞인 파일에서 `[ \t]*$`만 쓰면 제목 행이 하나도 안 걸려 **라운드가
+# 0개로 보인다** — 중복·역행 검출과 `damaged` 보고가 통째로 눈을 감는다.
+# 쓰기는 바이트를 보존하고 판독은 관대하게: 이 파일의 규율이 그것이다.
+_ROUND = re.compile(r"^## (\d+)[ \t\r]*$", re.M)
 
 # escape 대상 — 대화 본문에 섞인 "숫자 H2와 같은 모양"의 행. 이미 escape된
 # 행(`\## 3`)도 함께 잡아 backslash를 하나 더 얹는다. 그래야 escape/unescape가
 # 정확히 역연산이 되고, 원문에 `\## 3`이 있어도 회상에서 복원된다.
-_NUMERIC_H2 = re.compile(r"^(\\*)(## \d+[ \t]*)$", re.M)
+_NUMERIC_H2 = re.compile(r"^(\\*)(## \d+[ \t\r]*)$", re.M)
 
 
 def escape_numeric_h2(text: str) -> str:
@@ -40,8 +45,22 @@ def escape_numeric_h2(text: str) -> str:
 
 def unescape_numeric_h2(text: str) -> str:
     """회상 시 escape를 되돌린다 — `escape_numeric_h2`의 역연산."""
-    return re.sub(r"^\\(\\*)(## \d+[ \t]*)$",
+    return re.sub(r"^\\(\\*)(## \d+[ \t\r]*)$",
                   lambda m: m.group(1) + m.group(2), text, flags=re.M)
+
+
+def read_exact(p) -> str:
+    """기록 파일을 **바이트 그대로** 읽는다 — 개행을 접지 않는다.
+
+    `read_text`의 universal newlines가 `\\r\\n`·`\\r`을 `\\n`으로 바꾼다. 그
+    문자열로 전문을 재조립하면 `secrets.write_raw`의 접두부 판정(`read_bytes`)을
+    **영원히** 통과하지 못한다 — 대화 한 줄에 `\\r`이 섞이는 순간 그 기록은
+    append가 막히고, `_raw/`는 append-only라 되돌릴 수단이 없다(실측 재현).
+
+    Mechanism §8 3~4항도 라운드 범위와 상태 해시를 "정규화하지 않은 UTF-8
+    바이트"로 정의한다 — 읽는 자리가 그 정의를 따라야 쓰는 자리와 맞는다."""
+    from pathlib import Path as _P
+    return _P(p).read_bytes().decode("utf-8")
 
 
 def rounds(text: str) -> list[int]:
@@ -151,7 +170,7 @@ def append_rounds(session: str, record: str, pairs: list,
         raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
     # 세션 키는 착지 판정보다 먼저 본다 — 결속은 파일 쓰기 뒤에 오므로
     # 여기서 막지 않으면 부분 성공이 된다.
-    errs = write.ephemeral_session_errors(session)
+    errs = write.ephemeral_session_errors(session) + write.routing_errors(session)
     if errs:
         raise write.WriteError("세션 키 부적격 — 쓰지 않았다", errs)
 
@@ -171,7 +190,7 @@ def append_rounds(session: str, record: str, pairs: list,
                  f"없다. 가능한 space: {_space_list()}"])
 
         p = record_path(dest, record)
-        prior = p.read_text(encoding="utf-8") if p.exists() else ""
+        prior = read_exact(p) if p.exists() else ""
         first = _next_index(prior)
         spans = _round_spans(prior)
         blocks, indices = [], []
@@ -219,7 +238,7 @@ def record_state(session: str, record: str, space: str | None = None) -> dict:
         return {"ok": True, "bound": bound, "scope": None, "path": None,
                 "exists": False, "rounds": 0, "next_index": 1, "damaged": False}
     p = record_path(dest, record)
-    text = p.read_text(encoding="utf-8") if p.exists() else ""
+    text = read_exact(p) if p.exists() else ""
     seen = rounds(text)
     try:
         nxt, damaged = _next_index(text), False
@@ -304,7 +323,7 @@ def read_round(ref: str, max_chars: int = 20000) -> dict:
     되돌린다") — 기록에 남은 `\\## 3`은 원래 대화의 `## 3`이었다."""
     path, index = parse_ref(ref)
     p = _raw_file(path)
-    text = p.read_text(encoding="utf-8")
+    text = read_exact(p)
     rel = posix_rel(p, ROOT)
     spans = _round_spans(text)
     if index is None:
@@ -339,7 +358,7 @@ def list_records(space: str) -> dict:
     d = ROOT / "= Scope" / scope / "_raw"
     out = []
     for f in sorted(d.glob("*.md")) if d.is_dir() else []:
-        text = f.read_text(encoding="utf-8")
+        text = read_exact(f)
         out.append({"record": f.stem, "path": posix_rel(f, ROOT),
                     "rounds": len(rounds(text)), "chars": len(text)})
     return {"ok": True, "scope": scope, "records": out}

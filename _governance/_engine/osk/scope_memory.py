@@ -54,6 +54,18 @@ EVICTION_NOTE = ("엔트리는 자리를 다툰다. 자리값을 못하는 엔�
                  "배선한다. 순서가 반대면 자리값 못하는 것까지 노드가 된다.")
 
 
+def _runs_key(session: str) -> str:
+    """연속 거부 계수의 키 — **정본 세션 키**로 접는다.
+
+    구판은 호출자가 보낸 원문으로 키잡았다. 별칭(구 저장소 이름)으로 들어온
+    같은 세션이 다른 계수를 갖게 되어, `OVERFLOW_STOP`이 세 번째에 서지 않거나
+    엉뚱한 자리에서 섰다."""
+    try:
+        return write.canonical_session(session) or session
+    except Exception:
+        return session              # 대장 판독 실패는 계수의 문제가 아니다
+
+
 def sm_dir() -> Path:
     return ROOT / "= Scope" / "Workbench" / "_scope_memory"
 
@@ -77,7 +89,15 @@ def canon(text: str) -> str:
 
 
 def _read(p: Path) -> str:
-    return canon(p.read_text(encoding="utf-8")) if p.is_file() else ""
+    """저장본을 **바이트 그대로** 읽어 정본 형태로 접는다.
+
+    `read_text`의 universal newlines를 쓰면 읽기와 쓰기가 다른 문자열을 본다 —
+    쓰기(`_atomic_write`)는 `\\r`을 그대로 저장하는데 읽기만 접으므로, 성공
+    응답의 `hash`와 다음 CAS가 재는 `hash`가 갈린다. 그러면 자기가 방금 쓴
+    해시로 다시 부른 호출자가 "다른 기기의 통합이 들어왔다"는 거짓 진단을
+    받는다(실측 재현 — PowerShell 파이프가 CRLF를 내므로 `sm write` 훅 경로가
+    그대로 밟는다)."""
+    return canon(p.read_bytes().decode("utf-8")) if p.is_file() else ""
 
 
 def _state(scope: str, text: str, *, full: bool = True, **extra) -> dict:
@@ -134,6 +154,13 @@ def _landing(session: str, space: str | None) -> tuple[str, str | None]:
 def read(session: str, space: str | None = None) -> dict:
     """그 scope의 scope 기억 전문. 결속이 없고 `space`도 없으면 거부한다."""
     scope, _ = _landing(session, space)     # 읽기는 결속을 세우지 않는다
+    # 성공한 읽기도 **연속**을 끊는다. §9-2 4항의 상한은 "연속 3회 거부"인데,
+    # 구판은 성공한 쓰기만 계수를 지워서 사이에 낀 읽기·앵커 불일치·해시
+    # 불일치가 연속으로 세어졌다. 읽기는 호출자가 저장본을 다시 본 순간이니
+    # 그 다음 시도는 새 시도다. (계수는 프로세스 안에만 산다 — 이 초기화가
+    # 없으면 서버를 대화 사이에 유지하는 클라이언트에서 지난 대화의 거부가
+    # 다음 대화의 첫 초과를 곧장 "3회째"로 만든다.)
+    _OVERFLOW_RUNS.pop(_runs_key(session), None)
     return {"ok": True, **_state(scope, _read(sm_path(scope)))}
 
 
@@ -179,6 +206,19 @@ def replace(session: str, text: str | None = None,
                     f"`edits[{i}]`의 형태가 틀렸다 — 쓰지 않았다",
                     ["각 항목은 `{old_text, new_text}`다. 한쪽만으로는 무엇을 "
                      "무엇으로 바꾸는지 정해지지 않는다."])
+            if not all(isinstance(e[k], str) for k in ("old_text", "new_text")):
+                # 문자열이 아니면 아래 `count`·`replace`가 원시 `TypeError`를
+                # 내고, 그 예외 문구가 그대로 위반 목록에 실려 호출자는 무엇을
+                # 고쳐야 할지 모른다. 계약 위반은 계약의 말로 낸다.
+                raise write.WriteError(
+                    f"`edits[{i}]`의 값이 문자열이 아니다 — 쓰지 않았다",
+                    ["`old_text`·`new_text`는 본문의 조각(문자열)이다. 지울 "
+                     "때는 `new_text`에 빈 문자열을 준다."])
+            # 앵커는 저장본과 **같은 정본 형태**로 맞춘다 — 저장본은 NFC인데
+            # (§9-2 9항) 앵커만 NFD로 오면(macOS 유래) 눈에 같은 글자가 맞지
+            # 않아 "앵커가 없다"가 된다.
+            e["old_text"] = unicodedata.normalize("NFC", e["old_text"])
+            e["new_text"] = unicodedata.normalize("NFC", e["new_text"])
             if not e["old_text"]:
                 raise write.WriteError(
                     f"`edits[{i}]`의 앵커가 비어 있다 — 쓰지 않았다",
@@ -258,12 +298,18 @@ def replace(session: str, text: str | None = None,
                 **_state(scope, cur))
 
         if len(body) > LIMIT:
-            runs = _OVERFLOW_RUNS.get(session, 0) + 1
-            _OVERFLOW_RUNS[session] = runs
-            retry = ("빼는 연산과 넣는 연산을 **한 `edits`에** 실어 다시 보내라 — "
-                     "상한은 순결과에만 걸린다." if edits is not None else
-                     "그 뒤 남은 것으로 다시 보내라. 넘칠 때마다 전문을 다시 보내지 "
-                     "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다.")
+            key = _runs_key(session)
+            runs = _OVERFLOW_RUNS.get(key, 0) + 1
+            _OVERFLOW_RUNS[key] = runs
+            # §9-2 4항은 3회째에 "**재시도 지시를 거두고** … 다음 통합으로
+            # 넘긴다"고 정한다. 구판은 거두지 않고 "접고 가라"를 덧붙이기만 해서
+            # 상반된 두 지시가 한 응답에 실렸다 — 거두는 것이 조문이다.
+            stop = runs >= OVERFLOW_STOP
+            retry = ("" if stop else
+                     ("빼는 연산과 넣는 연산을 **한 `edits`에** 실어 다시 보내라 — "
+                      "상한은 순결과에만 걸린다." if edits is not None else
+                      "그 뒤 남은 것으로 다시 보내라. 넘칠 때마다 전문을 다시 보내지 "
+                      "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다."))
             v = [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
                  f"넘는다. **순서대로** 하라 — (1) scope 기억에서 자리값 못하는 "
                  f"엔트리를 먼저 정리하라. (2) 그래도 모자라면 갱신할 기존 노드를 "
@@ -275,13 +321,13 @@ def replace(session: str, text: str | None = None,
                  f"남기고 `round_ref`를 건다. 원료 없이 지금 처음 적는 것이면 근거는 "
                  f"비우고 본문에 언제·어디서인지를 남긴다. scope 기억은 근거가 아니라 "
                  f"경유지다. {retry}"]
-            if runs >= OVERFLOW_STOP:
+            if stop:
                 # 재시도 지시를 거둔다(§9-2 4항) — 실패한 기억 갱신이 본 작업을
                 # 막아서는 안 된다. 기억은 그대로이니 신호를 소비하는 것이 아니라
                 # 미루는 것이다.
                 v.append(f"연속 {runs}회째 거부다 — 이번 통합은 **접고** 본 작업으로 "
-                         f"돌아가라. 기억은 그대로다. 다음 통합 전에 결론 난 것을 "
-                         f"노드로 증류해 자리를 만들어라.")
+                         f"돌아가라. 다시 보내지 마라. 기억은 그대로다. 다음 통합 "
+                         f"전에 결론 난 것을 노드로 증류해 자리를 만들어라.")
             raise write.WriteError(
                 "상한 초과 — 쓰지 않았다", v,
                 # 상한 초과에는 전문을 싣지 않는다(§9-2 5항). 이 거부는 **디스크를
@@ -298,7 +344,7 @@ def replace(session: str, text: str | None = None,
             write.bind_session(session, scope, "첫 scope 기억 쓰기에서 확정")
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
-        _OVERFLOW_RUNS.pop(session, None)          # 성공이 연속 거부 계수를 지운다
+        _OVERFLOW_RUNS.pop(_runs_key(session), None)   # 성공이 연속 계수를 지운다
 
         # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
         # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한

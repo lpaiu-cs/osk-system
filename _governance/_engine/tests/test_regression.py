@@ -28,7 +28,36 @@ validate.make_mini_vault(MINI)
 ROOT = core.ROOT
 assert ROOT == MINI.resolve(), f"격리 실패 — 실 vault를 가리킨다: {ROOT}"
 
-PASS, FAIL = [], []
+PASS, FAIL, SKIP = [], [], []
+
+# POSIX mode(그룹·기타 비트, 실행 비트)를 파일시스템이 보존하는가. Windows는
+# 읽기 전용 비트 하나만 다루므로 `chmod(0o600)`이 `0o666`으로 돌아온다 — 그
+# 값에 건 단언은 그 기기에서 **참일 수 없다.** 통과로 세면 거짓 신호이므로
+# 건너뛴 것으로 센다(시행령 §11 — 실패는 보류·보고).
+POSIX_MODE = os.name != "nt"
+
+
+def skip(name, why=""):
+    """환경 제약으로 **수행하지 않은** 검사. 통과에 세지 않는다.
+
+    구판은 이런 자리를 `check("…(skip)", True)`로 적어 통과 수를 부풀렸다 —
+    "1018 통과"가 무엇을 실제로 시험했는지 말해 주지 못하는 이유의 하나였다."""
+    SKIP.append(f"{name} — {why}" if why else name)
+
+
+def rmtree_force(p):
+    """읽기 전용 파일까지 지운다.
+
+    Windows에서 `.git/objects`의 blob은 읽기 전용이라 기본 `shutil.rmtree`가
+    `PermissionError(WinError 5)`로 죽는다 — 그 예외가 시나리오를 통째로
+    중단시켜 뒤의 검사들이 실행되지 않았다."""
+    def _onerr(func, path, _exc):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except OSError:
+            pass
+    shutil.rmtree(p, onerror=_onerr)
 
 
 def check(name, cond, detail=""):
@@ -1826,19 +1855,29 @@ def test_revert_incomplete_no_record():
     뒤에만 기록'(Mechanism §3 6항) 계약이 위장되지 않는다(fail-closed)."""
     from osk import approvals as A
     if hasattr(os, "geteuid") and os.geteuid() == 0:
-        check("root — 삭제 실패를 만들 수 없어 생략(skip)", True)
+        skip("삭제 실패 시 revert가 예외로 거부", "root는 삭제 실패를 만들 수 없다")
         return
     reg = "= Domain/revinc"
     regdir = ROOT / "= Domain" / "revinc"
     locked = regdir / "locked"
+    holder = None
     try:
         regdir.mkdir(parents=True, exist_ok=True)
         (regdir / "keep.md").write_text("keep-v1", encoding="utf-8")
         A.protect(reg, "지정")
         locked.mkdir()
-        (locked / "junk.md").write_text("junk", encoding="utf-8")   # pending(추가)
+        junk = locked / "junk.md"
+        junk.write_text("junk", encoding="utf-8")                   # pending(추가)
         before = len(A.records())
-        os.chmod(locked, 0o500)                                     # 삭제 불가
+        if POSIX_MODE:
+            os.chmod(locked, 0o500)                                 # 삭제 불가
+        else:
+            # Windows는 디렉터리 권한으로 자식의 unlink를 막지 못한다(실측:
+            # `chmod(0o500)` 뒤 mode는 0o555가 되고 unlink는 성공한다). 그래서
+            # 이 시나리오가 그 기기에서 **네 검사 모두 FAIL**로 남아 있었고,
+            # 반려의 fail-closed 보호가 한 번도 시험되지 않았다. 열린 핸들이
+            # 그 자리를 대신한다 — 삭제가 실제로 실패하는 정상 수단이다.
+            holder = open(junk, "rb")
         check("삭제 실패 시 revert가 예외로 거부",
               _raises(lambda: A.revert(reg, A.approved_hash(reg),
                                        A.working_tree_hash(reg)))())
@@ -1846,6 +1885,8 @@ def test_revert_incomplete_no_record():
         check("revert 대장 행이 추가되지 않았다", len(A.records()) == before)
         check("영역은 여전히 pending(복원 미완료)", A.state(reg) == "pending")
     finally:
+        if holder is not None:
+            holder.close()
         try:
             os.chmod(locked, 0o700)
         except OSError:
@@ -3004,9 +3045,25 @@ def test_publish_guards():
             stray = pub / "stray-leftover.md"
             stray.write_text(node_text("260802-pppp-0003", "떠도는 잔재"),
                              encoding="utf-8")
+            # KEEP 파일의 **로컬 수정**은 발행이 검증하지 않는다(사설에 원본이
+            # 없어 `items`에 들지 않으므로 `guard_secrets`도 `plan`도 못 본다).
+            # 그러니 커밋에 실려서도 안 된다 — 실리면 CI workflow 같은 특권
+            # 파일의 조용한 변경이 검증 밖으로 공개된다.
+            keepf = pub / "LICENSE"
+            keep_before = keepf.read_bytes() if keepf.is_file() else None
+            keepf.write_text("로컬에서 고친 KEEP\n", encoding="utf-8")
             rep_a = publish.run(pub, apply=True, message="가드 시험",
                                 manifest=man)
             check("적용: 커밋됨", rep_a.get("committed"), rep_a)
+            _kshow = subprocess.run(
+                ["git", "-C", str(pub), "show", "HEAD:LICENSE"],
+                capture_output=True, text=True)
+            check("KEEP의 로컬 수정은 발행 커밋에 실리지 않는다",
+                  _kshow.returncode != 0
+                  or "로컬에서 고친" not in _kshow.stdout, _kshow.stdout[:60])
+            check("그래도 KEEP 파일은 디스크에 남는다", keepf.is_file())
+            if keep_before is not None:
+                keepf.write_bytes(keep_before)
             tracked = subprocess.run(
                 ["git", "-C", str(pub), "ls-files", "-z"], capture_output=True,
                 text=True).stdout.split("\0")
@@ -3070,6 +3127,19 @@ def test_release_and_update():
     def git(root, *args):
         subprocess.run(["git", "-C", str(root), *args], check=True,
                        capture_output=True)
+        if args[:1] == ("init",):
+            # 픽스처 저장소의 줄바꿈을 **기기 설정에서 떼어 낸다.**
+            #
+            # 증빙 해시는 git object에서 뜨고(`release.tree_hashes`) 갱신의 대조는
+            # 작업 트리 바이트로 한다. 전역·시스템 `core.autocrlf`가 켜진
+            # 기기(Git for Windows 설치 기본값이 `true`다)에서는 그 둘이 갈려
+            # **전 텍스트 파일이 "해시 불일치"**가 되고, 이 시나리오는 첫 단계에서
+            # 예외로 죽는다. 러너는 예외를 FAIL 한 줄로 접으므로 그 뒤의 검사
+            # 101개가 **한 번도 실행되지 않았다** — 트랜잭션·롤백·복구·사이드카·
+            # 드리프트·바닥 불변·데몬 tick 거부 전부가 그 안에 있다.
+            for _k, _v in (("core.autocrlf", "false"), ("core.eol", "lf")):
+                subprocess.run(["git", "-C", str(root), "config", _k, _v],
+                               check=True, capture_output=True)
 
     mine = []
     try:
@@ -3685,6 +3755,11 @@ def test_release_and_update():
             _exe.chmod(0o755)
             subprocess.run(["git", "-C", str(can), "add", "-A"],
                            capture_output=True)
+            # mode는 **색인에** 박는다. Windows에는 실행 비트가 없고 git의
+            # `core.fileMode`도 그 기본이 false라, `chmod`만으로는 100755가
+            # 색인에 들어가지 않아 이 검사가 그 기기에서만 조용히 무력해진다.
+            subprocess.run(["git", "-C", str(can), "update-index",
+                            "--chmod=+x", "runme.sh"], capture_output=True)
             subprocess.run(["git", "-C", str(can), "commit", "-qm", "exe"],
                            capture_output=True)
             eexe = uerr(lambda: release.tree_hashes(can))
@@ -3809,13 +3884,14 @@ def test_release_and_update():
             if _ver_now:                     # 같은 버전으로 다시 릴리스(force-move 모사)
                 forced = Path(td) / "forced"
                 shutil.copytree(can, forced)
-                shutil.rmtree(forced / ".git")
+                rmtree_force(forced / ".git")
                 (forced / "_governance/UpdDoc.md").write_text(
                     node_text("260802-uupd-0002", "정본 규범 문서", "위조판."),
                     encoding="utf-8")
                 subprocess.run(["git", "-C", str(forced), "init", "-q"],
                                capture_output=True)
-                for _k, _v in (("user.email", "t@t"), ("user.name", "t")):
+                for _k, _v in (("user.email", "t@t"), ("user.name", "t"),
+                               ("core.autocrlf", "false"), ("core.eol", "lf")):
                     subprocess.run(["git", "-C", str(forced), "config", _k, _v],
                                    capture_output=True)
                 subprocess.run(["git", "-C", str(forced), "add", "-A"],
@@ -3872,14 +3948,23 @@ def test_release_and_update():
             update._txn_begin("txnPERM", "v9.9.9", ["_governance/permtest.md"])
             _manp = json.loads(update.TXN_MANIFEST.read_text(encoding="utf-8"))
             check("manifest가 pre-image의 mode를 담는다",
-                  _manp["entries"][0].get("mode") == 0o600,
+                  _manp["entries"][0].get("mode")
+                  == (0o600 if POSIX_MODE
+                      else stat.S_IMODE(_permf.stat().st_mode)),
                   _manp["entries"][0].get("mode"))
             _permf.unlink()                       # remove를 적용한 상태를 모사
             update._txn_recover([{"kind": "begin", "txn": "txnPERM"}])
-            check("삭제 rollback이 내용과 권한을 모두 복원한다",
+            check("삭제 rollback이 내용을 복원한다",
                   _permf.exists()
-                  and stat.S_IMODE(_permf.stat().st_mode) == 0o600,
-                  oct(stat.S_IMODE(_permf.stat().st_mode)) if _permf.exists() else None)
+                  and _permf.read_text(encoding="utf-8") == "x\n",
+                  _permf.exists())
+            if POSIX_MODE:
+                check("삭제 rollback이 권한도 복원한다",
+                      stat.S_IMODE(_permf.stat().st_mode) == 0o600,
+                      oct(stat.S_IMODE(_permf.stat().st_mode)))
+            else:
+                skip("삭제 rollback이 권한도 복원한다",
+                     "Windows는 POSIX mode를 보존하지 않는다")
 
             # roll-forward도 저널 홈 내구화를 재시도한 뒤에 표식을 지운다 (P1)
             _fs2 = []
@@ -3912,8 +3997,14 @@ def test_release_and_update():
             finally:
                 update._fsync_file = _real_ffile
             check("권한 복원 뒤 파일 메타데이터를 내구화한다",
-                  str(_permf2) in _ff
-                  and stat.S_IMODE(_permf2.stat().st_mode) == 0o600, _ff[:3])
+                  str(_permf2) in _ff, _ff[:3])
+            if POSIX_MODE:
+                check("그 복원이 mode까지 되돌린다",
+                      stat.S_IMODE(_permf2.stat().st_mode) == 0o600,
+                      oct(stat.S_IMODE(_permf2.stat().st_mode)))
+            else:
+                skip("그 복원이 mode까지 되돌린다",
+                     "Windows는 POSIX mode를 보존하지 않는다")
 
             # 정상 원자 교체도 mode를 **fsync 앞에서** 확정한다 — 뒤에 chmod하면
             # 그 메타데이터가 내구화되지 않아 권한만 0600으로 남을 수 있다 (P2).
@@ -3969,8 +4060,13 @@ def test_release_and_update():
                     _o, _k, _d = _mode_before_fsync(_mod, _tag, _drop)
                     check("%s: 원자 교체는 mode를 fsync 앞에서 확정한다(%s)"
                           % (_who, _via), _o, _d)
-                    check("%s: 원자 교체가 기존 권한을 유지한다(%s)"
-                          % (_who, _via), _k)
+                    if POSIX_MODE:
+                        check("%s: 원자 교체가 기존 권한을 유지한다(%s)"
+                              % (_who, _via), _k)
+                    else:
+                        skip("%s: 원자 교체가 기존 권한을 유지한다(%s)"
+                             % (_who, _via),
+                             "Windows는 POSIX mode를 보존하지 않는다")
 
             # 트랜잭션 정리 실패는 fail-closed (P2)
             update._txn_begin("txnCLR", "v9.9.9", [])
@@ -6452,6 +6548,358 @@ def test_engine_epoch_fence():
         p.unlink(missing_ok=True)
 
 
+# ── 감사 2026-09-02: 재현으로 확정한 결함의 고정 (이슈 #24~#43) ───────────
+def test_audit_fixes_2026_09_02():
+    """전면 감사(2026-09-02)가 재현으로 확정한 결함들을 고정한다.
+
+    한 시나리오에 묶은 것은 이 검사들이 서로를 전제하지 않고 **되돌리면
+    실패한다**는 성질만 공유하기 때문이다. 항목마다 무엇을 망가뜨리면 어느
+    단언이 실패하는지 적는다 — 통과 건수가 아니라 그것이 이 검사들의 근거다.
+    """
+    from osk import approvals as A, raw as R, scope_memory as SM, update as U
+    mine, restore = [], []
+    try:
+        # ① 이식성 충돌은 표면이 만들지도, 이동이 덮지도 않는다 (#25)
+        #    되돌리면 — `create_node`의 전역 이식성 키 검사를 지우면 첫 단언이,
+        #    `move_nodes`의 `seen_keys`를 지우면 셋째·넷째가 실패한다.
+        for sub in ("AudX", "AudY", "AudZ"):
+            _w(write.create_node, sub, f"{sub} 허브", "본문", "fable-5",
+               space=f"= Scope/W1/{sub}")
+            mine.append(ROOT / f"= Scope/W1/{sub}/{sub}.md")
+        r = _w(write.create_node, "AudFoo", "이식성 시험", "본문", "fable-5",
+               space="= Scope/W1/AudX")
+        mine.append(ROOT / "= Scope/W1/AudX/AudFoo.md")
+        check("전제: 첫 이름은 만들어진다", r.get("ok"), r)
+        r = _w(write.create_node, "audfoo", "대소문자만 다른 이름", "본문",
+               "fable-5", space="= Scope/W1/AudY")
+        check("대소문자만 다른 이름은 전역에서도 거부된다 (#25)",
+              not r.get("ok")
+              and any("이식성" in v for v in r.get("violations", [])), r)
+
+        #    표면이 못 만드는 상태는 외부 기원으로만 온다(파일 복제·병합) —
+        #    그 상태에서 이동이 덮지 않는지가 이 결함의 핵심이다.
+        ext = ROOT / "= Scope/W1/AudY/audfoo.md"
+        ext.write_text(node_text("260802-audt-0f00", "외부 기원 동명"),
+                       encoding="utf-8")
+        mine.append(ext)
+        r = _w(write.move_nodes, ["AudFoo", "audfoo"], "= Scope/W1/AudZ")
+        check("이식성 충돌 묶음 이동은 거부된다 (#25)",
+              not r.get("ok"), r)
+        check("아무것도 옮기지 않았다 (#25)",
+              (ROOT / "= Scope/W1/AudX/AudFoo.md").is_file() and ext.is_file(),
+              sorted(p.name for p in (ROOT / "= Scope/W1/AudZ").glob("*.md")))
+        ext.unlink()
+
+        # ② 엣지 델타가 라운드 좌표를 지우지 않는다 (#26)
+        #    되돌리면 — 델타 루프를 `contract.edge_targets`로 되돌리면 실패한다.
+        p = ROOT / "= Scope/W1/audit-edge.md"
+        p.write_text(node_text(
+            "260802-audt-0e01", "라운드 좌표 보존",
+            extra='derived-from: "[[= Scope/W1/_raw/audrec#3]]"\n'),
+            encoding="utf-8")
+        mine.append(p)
+        r = _w(write.update_node, "audit-edge", add_edges={"derived-from": "W1"})
+        got = str(contract.parse(p).meta.get("derived-from"))
+        check("엣지를 더해도 `#라운드`가 남는다 (#26)",
+              "audrec#3" in got, got)
+        r = _w(write.update_node, "audit-edge",
+               remove_edges={"derived-from": "W1"})
+        got = str(contract.parse(p).meta.get("derived-from"))
+        check("엣지를 빼도 `#라운드`가 남는다 (#26)", "audrec#3" in got, got)
+        #    같은 호출 안의 중복은 한 번만 앉는다
+        r = _w(write.update_node, "audit-edge",
+               add_edges={"derived-from": ["W1", "W1", "[[W1]]"]})
+        got = contract.parse(p).meta.get("derived-from")
+        check("한 호출 안의 중복 엣지는 한 번만 앉는다 (#26)",
+              str(got).count("[[W1]]") == 1, got)
+
+        # ③ 앵커 편집은 파서가 읽을 형태로 쓴다 (#27)
+        #    되돌리면 — `_norm_body`의 개행 정규화를 지우면 둘째가 실패한다.
+        r = _w(write.update_node, "audit-edge",
+               old_text="본문", new_text="첫 줄\r\n둘째 줄")
+        check("앵커 편집이 성공한다 (#27)", r.get("ok"), r)
+        check("쓴 바이트에 `\\r`이 남지 않는다 (#27)",
+              b"\r" not in p.read_bytes(), p.read_bytes()[-40:])
+        r = _w(write.update_node, "audit-edge",
+               old_text="첫 줄\r\n둘째 줄", new_text="되찾음")
+        check("CRLF 앵커로도 그 자리를 다시 찾는다 (#27)", r.get("ok"), r)
+        #    전문 치환 경로도 같다 — 앵커 정규화와 **별개로** `_norm_body`가
+        #    접는다. 앵커만 접으면 이 자리가 열린 채 남는다.
+        r = _w(write.update_node, "audit-edge", body="가\r\n나\r\n",
+               expect_hash=core.sha256_file(p))
+        check("전문 치환도 `\\r`을 쓰지 않는다 (#27)",
+              r.get("ok") and b"\r" not in p.read_bytes(), r)
+
+        # ④ 전문 치환 거부문은 해시를 내주지 않는다 (#33)
+        #    되돌리면 — 거부문에 `sha256_file(path)`를 도로 넣으면 실패한다.
+        r = _w(write.update_node, "audit-edge", body="통째로 새 본문")
+        check("해시 없는 전문 치환은 거부된다 (#33)", not r.get("ok"), r)
+        check("거부문이 현재 해시를 내주지 않는다 (#33)",
+              "sha256:" not in json.dumps(r, ensure_ascii=False), r)
+
+        # ⑤ 하위 군집의 첫 결속은 **scope**에 선다 (#28)
+        #    되돌리면 — `bind_session(session, dest_dir.name)`으로 되돌리면 실패.
+        r = _w(write.create_node, "audit-bind", "하위 군집 결속", "본문",
+               "fable-5", session="audit-sub-sess", space="= Scope/W1/AudX")
+        mine.append(ROOT / "= Scope/W1/AudX/audit-bind.md")
+        check("하위 군집에서 결속해도 scope 이름에 묶인다 (#28)",
+              r.get("bound_scope") == "W1"
+              and write.resolve_session("audit-sub-sess") == "W1", r)
+
+        # ⑥ 결속과 어긋나는 착지는 노드 생성도 거부한다 (#36)
+        #    되돌리면 — create_node의 착지 대조를 지우면 실패한다.
+        r = _w(write.create_node, "audit-cross", "교차 착지", "본문", "fable-5",
+               session="audit-sub-sess", space="= Scope/AudOther")
+        check("결속과 다른 scope 착지는 거부된다 (#36)",
+              not r.get("ok")
+              and any("결속" in v for v in r.get("violations", [])), r)
+
+        # ⑦ 작업 상태 참조 금지는 소속을 가리지 않는다 (#36)
+        #    되돌리면 — `_topology_of`의 workbench 갈래를 scope 안으로 되돌리면
+        #    Domain 노드가 통과해 실패한다.
+        note = ROOT / "= Scope/Workbench/audit-note.md"
+        note.write_text("작업 상태(비노드)\n", encoding="utf-8")
+        mine.append(note)
+        dom = ROOT / "= Domain/AudD"
+        dom.mkdir(parents=True, exist_ok=True)
+        (dom / "AudD.md").write_text(
+            node_text("260802-audt-0d01", "AudD 허브"), encoding="utf-8")
+        mine.append(dom / "AudD.md")
+        dnode = dom / "audit-dom.md"
+        dnode.write_text(node_text(
+            "260802-audt-0d02", "작업 상태 참조",
+            extra='derived-from: "[[= Scope/Workbench/audit-note]]"\n'),
+            encoding="utf-8")
+        mine.append(dnode)
+        errs = graph.topology_check(graph.Index())
+        check("Domain의 작업 상태 참조를 검증기가 잡는다 (#36)",
+              any("작업 상태는 근거로 쓰지 않는다" in e and "audit-dom" in e
+                  for e in errs), [e for e in errs if "audit-dom" in e])
+        dnode.unlink()
+
+        # ⑧ 동명 노드는 읽기·후보 상정도 고르지 않는다 (#35)
+        #    되돌리면 — read_node의 `dup_stems` 갈래나 record_candidate의
+        #    `_live_locate`를 되돌리면 실패한다.
+        for sub in ("AudX", "AudY"):
+            (ROOT / f"= Scope/W1/{sub}/audit-dup.md").write_text(
+                node_text(f"260802-audt-0{'a' if sub == 'AudX' else 'b'}11",
+                          "동명 시험"), encoding="utf-8")
+            mine.append(ROOT / f"= Scope/W1/{sub}/audit-dup.md")
+        r = _w(write.record_candidate, "duplication",
+               ["audit-dup", "audit-edge"])
+        check("동명 노드는 충돌 후보 당사자로도 고르지 않는다 (#35)",
+              not r.get("ok"), r)
+        try:
+            import mcp_server as _srv
+            rr = _srv.read_node("audit-dup")
+            check("읽기 표면도 동명 노드를 고르지 않는다 (#35)",
+                  "error" in rr and "정해지지 않는다" in rr["error"], rr)
+        except Exception as e:                       # 표면 판독 불가는 별도 결함
+            check("읽기 표면도 동명 노드를 고르지 않는다 (#35)", False, repr(e))
+        for sub in ("AudX", "AudY"):
+            (ROOT / f"= Scope/W1/{sub}/audit-dup.md").unlink()
+
+        # ⑨ pin은 노드 id에도 걸린다 (#36)
+        #    되돌리면 — `_plan_move`의 `_pinned(n.id)`를 지우면 실패한다.
+        nid = contract.parse(ROOT / "= Scope/W1/AudX/audit-bind.md").id
+        core.ledger_append(core.PINS, {"kind": "pin", "target": nid,
+                                       "reason": "감사 회귀 시험"})
+        r = _w(write.move_nodes, ["audit-bind"], "= Scope/W1/AudZ")
+        core.ledger_append(core.PINS, {"kind": "unpin", "target": nid,
+                                       "reason": "시험 종료"})
+        check("노드 id pin이 이동을 막는다 (#36)",
+              not r.get("ok") and any("pin" in v for v in
+                                      r.get("violations", [])), r)
+
+        # ⑩ `overview`는 별칭 해소 결과를 내지 않는다 (#36)
+        try:
+            import mcp_server as _srv
+            ov = _srv.overview(session="audit-sub-sess")
+            check("표면이 별칭 정본 키를 노출하지 않는다 (#36)",
+                  "session_canonical" not in ov, sorted(ov))
+        except Exception as e:
+            check("표면이 별칭 정본 키를 노출하지 않는다 (#36)", False, repr(e))
+
+        # ⑪ `_raw`는 `\r`이 섞여도 계속 이어 쓸 수 있다 (#27)
+        #    되돌리면 — `raw.read_exact`를 `read_text`로 되돌리면 둘째가 실패한다.
+        write.bind_session("audit-raw-sess", "W1", "감사 회귀 시험")
+        r1 = _w(R.append_round, "audit-raw-sess", "audit-crlf",
+                "도구 출력\r\n두 줄", "응답")
+        check("전제: `\\r`이 든 라운드가 기록된다 (#27)", r1.get("ok"), r1)
+        r2 = _w(R.append_round, "audit-raw-sess", "audit-crlf", "다음", "응답2")
+        check("그 뒤에도 append가 성립한다 (#27)", r2.get("ok"), r2)
+        st = R.record_state("audit-raw-sess", "audit-crlf", None)
+        check("라운드 수가 정확히 세어진다 (#27)", st.get("rounds") == 2, st)
+        mine.append(ROOT / "= Scope/W1/_raw/audit-crlf.md")
+
+        # ⑫ scope 기억의 해시 사슬이 `\r`에 끊기지 않는다 (#27)
+        #    되돌리면 — `scope_memory._read`를 `read_text`로 되돌리면 실패한다.
+        smp = SM.sm_path("W1")
+        prior = smp.read_bytes() if smp.is_file() else None
+        restore.append((smp, prior))
+        w = _w(SM.replace, "audit-raw-sess", "첫 줄\r\n둘째 줄",
+               SM._read(smp) and core.sha256_bytes(
+                   SM._read(smp).encode("utf-8")) or None)
+        rd = _w(SM.read, "audit-raw-sess")
+        check("쓰기가 낸 해시와 읽기의 해시가 같다 (#27)",
+              w.get("ok") and rd.get("hash") == w.get("hash"), (w, rd))
+
+        # ⑬ 연속 3회 거부는 재시도 지시를 **거둔다** (#34)
+        #    되돌리면 — `stop` 분기를 지워 retry를 늘 붙이면 셋째가 실패한다.
+        big = "가" * (SM.LIMIT + 40)
+        seen = []
+        for _ in range(3):
+            seen.append(_w(SM.replace, "audit-raw-sess", big,
+                           rd.get("hash") if not seen else seen[-1].get("hash")))
+        last = " ".join(seen[-1].get("violations", []))
+        check("3회째 거부가 재시도를 지시하지 않는다 (#34)",
+              "다시 보내지 마라" in last and "다시 보내라" not in last, last)
+        check("3회째 거부가 접으라고 말한다 (#34)", "접고" in last, last)
+        #    읽기가 연속을 끊는다
+        _w(SM.read, "audit-raw-sess")
+        again = _w(SM.replace, "audit-raw-sess", big, rd.get("hash"))
+        check("읽기 뒤의 거부는 다시 1회째다 (#34)",
+              "다시 보내지 마라" not in " ".join(again.get("violations", [])),
+              again)
+
+        # ⑭ 손상된 대장 위에서는 쓰지 않는다 (#30·#31)
+        #    되돌리면 — `routing_errors`를 지우면 파일이 남아 둘째가 실패하고,
+        #    `approvals._damaged`를 지우면 셋째가 `unprotected`가 되어 실패한다.
+        rj = core.ROUTING
+        rprior = rj.read_bytes() if rj.is_file() else b""
+        restore.append((rj, rprior))
+        rj.write_bytes(rprior + b'{"kind": "bind", "session": "x", '
+                                b'"scope": "W1", "rid": "not-a-rid"}\n')
+        victim = ROOT / "= Scope/W1/audit-damaged.md"
+        r = _w(write.create_node, "audit-damaged", "손상 위 쓰기", "본문",
+               "fable-5", session="audit-damage-sess", space="= Scope/W1")
+        check("라우팅 대장이 손상되면 쓰지 않는다 (#31)", not r.get("ok"), r)
+        check("파일도 남지 않는다 (#31)", not victim.exists(), victim.exists())
+        rj.write_bytes(rprior)
+
+        aj = core.LEDGER / "approvals.jsonl"
+        aprior = aj.read_bytes() if aj.is_file() else b""
+        restore.append((aj, aprior))
+        A.protect("= Scope/W1/AudZ", "감사 회귀 시험")
+        good = aj.read_bytes()
+        aj.write_bytes(good.replace(b'"rid": "0', b'"rid": "Z', 1))
+        check("승인 대장이 손상되면 영역은 미보호가 아니라 stale이다 (#30)",
+              A.state("= Scope/W1/AudZ") == "stale", A.state("= Scope/W1/AudZ"))
+        check("손상 위에서는 반려가 파일을 건드리기 전에 거부된다 (#30)",
+              _raises(lambda: A.revert("= Scope/W1/AudZ", "sha256:x",
+                                       "sha256:y"))())
+        aj.write_bytes(good)
+        A.unprotect("= Scope/W1/AudZ", "시험 종료")
+
+        # ⑮ 성립할 수 없는 영역은 지정되지 않는다 (#37)
+        check("대장 구획은 보호영역이 될 수 없다 (#37)",
+              _raises(lambda: A.protect("= Scope/Workbench/_ledger", "시험"))())
+        check("vault 루트는 보호영역이 될 수 없다 (#37)",
+              _raises(lambda: A.protect(".", "시험"))())
+
+        # ⑯ 표면 AST 검사가 scope 기억 통로를 본다 (#37)
+        check("SURFACE_MODULES가 scope 기억 통로를 담는다 (#37)",
+              "osk/scope_memory.py" in validate.SURFACE_MODULES,
+              validate.SURFACE_MODULES)
+
+        # ⑰ mtime 탐침은 프로세스마다 유일하다 (#32)
+        #    되돌리면 — 고정 이름으로 되돌리면 둘째가 실패한다(같은 이름 재사용).
+        seen_probe = set()
+        real_mkstemp = graph.tempfile.mkstemp
+
+        def _spy(*a, **kw):
+            fd, nm = real_mkstemp(*a, **kw)
+            seen_probe.add(nm)
+            return fd, nm
+        graph.tempfile.mkstemp = _spy
+        try:
+            graph._probe_mtime_granularity(rounds=2)
+            graph._probe_mtime_granularity(rounds=2)
+        finally:
+            graph.tempfile.mkstemp = real_mkstemp
+        check("탐침 두 번이 서로 다른 파일을 쓴다 (#32)",
+              len(seen_probe) == 2, sorted(seen_probe))
+        check("탐침 파일이 남지 않는다 (#32)",
+              not any(Path(n).exists() for n in seen_probe), sorted(seen_probe))
+
+        # ⑱ fetch_git 체크아웃은 기기의 autocrlf에 흔들리지 않는다 (#41)
+        #    되돌리면 — `config core.autocrlf false`를 지우면 실패한다.
+        with tempfile.TemporaryDirectory() as _td:
+            src = Path(_td) / "src"
+            src.mkdir()
+            (src / "f.txt").write_bytes(b"a\nb\n")
+            for cmd in (["init", "-q"], ["config", "user.email", "t@t"],
+                        ["config", "user.name", "t"],
+                        ["config", "core.autocrlf", "false"],
+                        ["add", "-A"], ["commit", "-qm", "x"],
+                        ["tag", "v0.0.1"]):
+                subprocess.run(["git", "-C", str(src), *cmd],
+                               check=True, capture_output=True)
+            gcfg = Path(_td) / "gitconfig"
+            gcfg.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+            dest = Path(_td) / "dst"
+            dest.mkdir()
+            _old = os.environ.get("GIT_CONFIG_GLOBAL")
+            os.environ["GIT_CONFIG_GLOBAL"] = str(gcfg)
+            try:
+                tree = U.fetch_git(str(src), "v0.0.1", dest)
+                got = (tree / "f.txt").read_bytes()
+            finally:
+                if _old is None:
+                    os.environ.pop("GIT_CONFIG_GLOBAL", None)
+                else:
+                    os.environ["GIT_CONFIG_GLOBAL"] = _old
+            check("정본 체크아웃이 기기 설정과 무관하게 바이트 동일하다 (#41)",
+                  got == b"a\nb\n", got)
+
+        # ⑲ 발행이 비준증빙과 릴리스 워크플로를 지우지 않는다 (#41)
+        man = publish.parse_manifest(
+            ENGINE / "scripts" / "publish-manifest.txt")
+        check("발행 매니페스트가 release.json을 보존한다 (#41)",
+              "release.json" in man["keep"], man["keep"])
+        check("발행 매니페스트가 릴리스 워크플로를 보존한다 (#41)",
+              any(k.startswith(".github/") for k in man["keep"]), man["keep"])
+
+        # ⑳ 엔진과 **독립된** 복구 부트스트랩도 롤백을 끝낸다 (#24)
+        #    되돌리면 — `scripts/recover.py`의 `_fsync_file`을 읽기 전용 핸들로
+        #    되돌리면 Windows에서 EBADF가 나 rc=2로 중단되고 표식이 남는다.
+        #    엔진이 반쯤 교체된 상태에서 유일하게 남는 길이 이것이라, 엔진 쪽
+        #    같은 결함을 고쳐도 이 사본이 낡으면 복구는 여전히 불가능하다.
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location(
+            "osk_recover_audit", ENGINE / "scripts" / "recover.py")
+        _rec = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_rec)
+        _rf = ROOT / "_governance/audit-recov.md"
+        _rf.write_bytes("원본\n".encode("utf-8"))
+        _orig = _rf.read_bytes()
+        mine.append(_rf)
+        os.chmod(_rf, 0o600)           # mode 항목이 있어야 그 경로를 지난다
+        U._txn_begin("txnAUDR", "v9.9.9", ["_governance/audit-recov.md"])
+        _rf.write_bytes(b"HALF\n")     # 반쯤 적용된 상태를 모사
+        _rc = _rec._recover(ROOT)
+        check("독립 복구 부트스트랩이 롤백을 끝낸다 (#24)",
+              _rc == 0 and _rf.read_bytes() == _orig
+              and not U.TXN_MANIFEST.exists(), (_rc, _rf.read_bytes()))
+    finally:
+        for p, data in reversed(restore):
+            try:
+                if data is None:
+                    p.unlink(missing_ok=True)
+                else:
+                    p.write_bytes(data)
+            except OSError:
+                pass
+        for p in mine:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for d in ("= Scope/W1/AudX", "= Scope/W1/AudY", "= Scope/W1/AudZ",
+                  "= Domain/AudD"):
+            shutil.rmtree(ROOT / d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -6535,15 +6983,19 @@ if __name__ == "__main__":
                test_parse_guards, test_scan_confinement_and_case,
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,
-               test_fingerprint_scope_and_racy, test_engine_epoch_fence]:
+               test_fingerprint_scope_and_racy, test_engine_epoch_fence,
+               test_audit_fixes_2026_09_02]:
         try:
             fn()
         except Exception as e:
             FAIL.append(f"{fn.__name__} 예외: {e!r}\n"
                         + "".join(traceback.format_exc().splitlines(True)[-6:]))
-    print(f"회귀 수트: 통과 {len(PASS)} / 실패 {len(FAIL)}  (mini-vault: {MINI})")
+    print(f"회귀 수트: 통과 {len(PASS)} / 실패 {len(FAIL)} / 생략 {len(SKIP)}"
+          f"  (mini-vault: {MINI})")
     for f in FAIL:
         print("FAIL:", f)
+    for s in SKIP:
+        print("SKIP:", s)
     for p in PASS:
         print("  ✓", p)
     sys.exit(1 if FAIL else 0)

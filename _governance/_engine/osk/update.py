@@ -27,8 +27,8 @@ import argparse, errno, json, os, re, shutil, stat, subprocess, sys, tarfile, te
 from contextlib import contextmanager
 from pathlib import Path
 
-from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_read,
-                   resolve_one, sha256_file, posix_rel)
+from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_damage,
+                   ledger_read, resolve_one, sha256_file, posix_rel)
 from .core import mutation_lock_path as core_mutation_lock_path
 from ._portalock import lock_exclusive, unlock
 from . import publish
@@ -175,6 +175,14 @@ def fetch_git(url: str, tag: str, dest: Path) -> Path:
                               f"{r.stderr.strip()[-300:]}")
         return r
     _g("init", "-q", str(d))
+    # 체크아웃 바이트를 **인스턴스의 git 설정에서 떼어 낸다.** 증빙의 해시는
+    # 정본이 git object(LF)에서 뜬 값인데, 임시 저장소는 전역·시스템 설정을
+    # 물려받으므로 `core.autocrlf=true`(Git for Windows 설치 기본값)인 기기에서는
+    # 체크아웃이 CRLF가 되어 **모든 텍스트 파일이 해시 불일치**로 중단된다 —
+    # 메시지가 "해시 불일치"라 위조·손상으로 오인된다(실측: 루트 파일 6개).
+    # 로컬 설정이 전역·시스템을 이기므로 여기서 못박으면 기기와 무관해진다.
+    _g("-C", str(d), "config", "core.autocrlf", "false")
+    _g("-C", str(d), "config", "core.eol", "lf")
     _g("-C", str(d), "fetch", "-q", "--depth", "1", url,
        f"refs/tags/{tag}")                        # FETCH_HEAD = 태그의 커밋
     _g("-C", str(d), "checkout", "-q", "--detach", "FETCH_HEAD")
@@ -392,15 +400,26 @@ def has_history(recs: list[dict] | None = None) -> bool:
 
 def _fsync_file(p: Path) -> None:
     """파일의 메타데이터까지 내구화 — `chmod` 뒤 fsync하지 않으면 내용은
-    복구됐는데 권한 변경만 유실될 수 있다."""
+    복구됐는데 권한 변경만 유실될 수 있다.
+
+    핸들은 **쓰기 가능**으로 연다. Windows CRT는 읽기 전용 핸들에 `_commit`을
+    허용하지 않아 `O_RDONLY`로 열면 `os.fsync`가 `EBADF`를 낸다(실측: O_RDONLY
+    → errno 9, O_RDWR → OK). 이 함수를 부르는 유일한 자리가 롤백 루프이므로,
+    그 EBADF는 **모든 롤백을 첫 파일에서 중단**시켜 half-applied를 영구
+    고착시켰다 — 정상 경로는 여기 오지 않아 드러나지 않았다.
+
+    핸들을 못 얻으면 조용히 넘긴다. 내구화는 최선 노력이고, 그 실패로 이미
+    복구된 내용을 되돌리는 것이 더 나쁘다 — `_fsync_dir`이 EACCES·EPERM에
+    쓰는 규율과 같다."""
     try:
-        fd = os.open(str(p), os.O_RDONLY)
+        fd = os.open(str(p), os.O_RDWR)
     except OSError:
-        return
+        return          # 읽기 전용·부재 — 내구화할 핸들이 없다
     try:
         os.fsync(fd)
     except OSError as e:
-        if e.errno not in (errno.EINVAL, errno.ENOTSUP):
+        if e.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EBADF,
+                           errno.EACCES):
             raise
     finally:
         os.close(fd)
@@ -904,6 +923,20 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
             raise UpdateError(
                 "사이드카 경로가 정식 관리 파일과 겹친다 — 갱신을 중단한다"
                 "(관리 파일을 되덮게 된다):\n  " + "\n  ".join(side_collide[:10]))
+        # 저널이 **기록 가능한지 먼저 본다.** `_txn_begin`이 manifest를 남긴
+        # 뒤에 `ledger_append`가 손상으로 죽으면(그 호출은 아래 try 밖이다)
+        # 표식만 남아 데몬이 영원히 `pending-txn`으로 tick을 거부하고, 다음
+        # `--apply`가 같은 자리에서 또 죽으며 표식을 다시 만든다 — 지워도 벗어날
+        # 수 없는 상태다(실측). 손상 위에 이력을 더 쌓지 않는다(Mechanism §3 2항).
+        try:
+            _dmg = ledger_damage(ledger_read(UPDATE_JOURNAL), UPDATE_JOURNAL)
+        except Exception as e:
+            raise UpdateError(f"갱신 저널을 읽지 못했다 — 아무것도 쓰지 않았다: {e}")
+        if _dmg:
+            raise UpdateError(
+                "갱신 저널이 손상됐다 — 아무것도 쓰지 않았다 "
+                "(Mechanism §3 8항의 수동 복구가 먼저다):\n  "
+                + "\n  ".join(_dmg[:5]))
         txn = os.urandom(8).hex()                # 파일과 저널을 묶는 트랜잭션 id
         # 이번에 건드릴 파일(canonical 상대)의 pre-image를 영속 백업하고 manifest를
         # 기록한 **뒤에만** target을 건드린다. 이후 크래시는 다음 실행이 판정한다:

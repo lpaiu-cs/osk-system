@@ -224,9 +224,16 @@ def run(public: Path, apply: bool = False, push: bool = False,
     # **매니페스트가 통제하는 경로만** 스테이지한다. `git add -A`는 디스크에
     # 남아 있는 아무 파일이나 함께 커밋해 위의 가드를 통째로 우회한다 —
     # 실제로 v1 잔재(지식 노드 포함)가 그렇게 들어간 적이 있다.
+    # **KEEP은 스테이지하지 않는다.** KEEP의 뜻은 "지우지 않는다"이고 그것은
+    # 위의 `want`(삭제 집합 제외)가 이미 낸다. 여기에 넣으면 `git add --all`이
+    # 공개 저장소에 남아 있던 **로컬 수정·삭제까지** 발행 커밋에 싣는데, KEEP
+    # 경로는 사설에 원본이 없어 `items`에 들지 않으므로 `guard_secrets`·
+    # `guard_knowledge`·`plan()`의 어느 검사도 그 내용을 보지 않는다 — 검증을
+    # 통과하지 않은 변경이 발행으로 나가는 길이다. CI workflow처럼 특권을 가진
+    # 파일이 그 길에 있으면 조용한 변경이 그대로 공개된다.
     controlled = sorted({rel for _s, rel in items}
                         | {s.rstrip("/") + "/.gitkeep" for s in man["skel"]}
-                        | set(man["keep"]) | set(p["remove"]))
+                        | set(p["remove"]))
     for rel in controlled:
         subprocess.run(["git", "-C", str(public), "add", "--all", "--", rel],
                        check=False, timeout=60)

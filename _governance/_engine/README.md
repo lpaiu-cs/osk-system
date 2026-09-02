@@ -17,17 +17,25 @@
 | `osk/search.py` | 헌법 11조 3~4항·시행령 §7 4항 — 작업/열람 검색·summary 확장 |
 | `osk/validate.py` | 시행령 §11 — 검증기 수트(보고 전용)·보호영역 생애 fixture |
 | `osk/cli.py` | 사용자 명령 — protect·unprotect·approve·revert는 대화형 확인 강제(사용자 전속) |
+| `osk/write.py` | Mechanism §6-2 3항 — 노드 쓰기의 단일 통로(계약·위상·세션 라우팅) |
+| `osk/raw.py` | 헌법 4조 3~4항·Mechanism §9 4~8항 — `_raw/` append와 좌표 회상 |
+| `osk/scope_memory.py` | Mechanism §9-2 — scope 기억(상한·앵커 일괄·거부 계약) |
+| `osk/epoch.py` | 판본 관문 — 이 프로세스가 적재한 엔진과 디스크의 대조 |
+| `osk/update.py`·`osk/release.py` | Mechanism §1-2 — 정본 릴리스와 인스턴스 갱신(크래시-안전 트랜잭션) |
+| `osk/publish.py` | Mechanism §1 1항 — 공개 미러 발행(allowlist) |
 | `mcp_server.py` | MCP 노출 — 조회·검증·노드 쓰기·충돌 후보 기록(보호영역 권위·pin 미노출) |
 
 ## 사용
 
+엔진의 실경로는 `<vault>/_governance/_engine`이다.
+
 ```bash
-PYTHONPATH=_engine .venv/bin/python -m osk.cli validate   # 검증기 전체
-PYTHONPATH=_engine .venv/bin/python -m osk.cli status
-PYTHONPATH=_engine .venv/bin/python -m osk.cli search "질의"
-PYTHONPATH=_engine .venv/bin/python -m osk.cli protect "= Person/Delegation" --reason "..."  # 사용자 전속
-PYTHONPATH=_engine .venv/bin/python -m osk.cli approve "= Person/Delegation" --reason "..."  # 사용자 전속
-# 동기화 데몬: nohup .venv/bin/python _engine/sync_daemon.py &
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli validate   # 검증기 전체
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli status
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli search "질의"
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli protect "= Person/Delegation" --reason "..."  # 사용자 전속
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli approve "= Person/Delegation" --reason "..."  # 사용자 전속
+# 동기화 데몬: SYNC_ENABLED=1 nohup .venv/bin/python _governance/_engine/sync_daemon.py &
 ```
 
 ## 미구현 (후속 개정 대상)
@@ -37,17 +45,19 @@ PYTHONPATH=_engine .venv/bin/python -m osk.cli approve "= Person/Delegation" --r
   미구현이다 — 검증기가 그 파일의 JSON 무결성만 본다)
 - 정합성 주기 스캔·충돌 후보 감지(사건부 자동 채널) — 근거 키 계산기만 예약
 - 브리핑 4채널 생성기 / 중심성 기반 랭킹 통합 / 임베딩 검색
-- `_raw` 세션 포착 파이프라인(라운드 제목·접두부 보존 포함) / 정돈 실행기
-  (위임 성립됨)
-- 자동 집행 활성화 제도(시행령 §11 3항) — 활성화된 자동 집행 현재 0건
+- 정돈 실행기(위임은 성립됨) — 경유 노드의 주기 정돈
+- 활성화된 자동 집행 현재 0건 — 제도(`osk validators`)와 첫 규칙
+  (`cluster-overview`)은 구현돼 있고 검사도 돌지만 보고 전용이다
 
 ## 알려진 한계
 
 **보호는 선의의 실수를 되돌리는 장치다**(시행령 §6 7항). 이 엔진은 vault에 임의로
 쓸 수 있는 상대를 위협 모델에 두지 않는다 — 그런 상대는 작업본·승인본 객체·승인
 기록부를 직접 고칠 수 있으므로 보호영역은 애초에 그에 대한 권한 경계가 아니다.
-경로 봉쇄·symlink·TOCTOU 대비는 그래서 두지 않는다. 신뢰 밖 입력 방어는 동기화
-충돌·디스크 손상·부분 기록처럼 **사고로 생기는 것**까지다.
+그래서 이 층에는 권한 경계를 두지 않는다. 신뢰 밖 입력 방어는 동기화 충돌·디스크
+손상·부분 기록처럼 **사고로 생기는 것**까지다. (갱신·대장 경로의 봉쇄와 symlink
+재지정 거부는 별개다 — 그쪽은 Mechanism §1-2 5항이 명하고 `core.resolve_in_root`·
+`update`가 구현한다. 다기기 병합으로 임의의 경로가 대장에 실려 오기 때문이다.)
 
 **영역 경로가 디렉터리가 아닌 것으로 바뀌면 수동 정리가 먼저다.** 영역이 통째로
 사라진 사고는 반려가 자동 복구한다(승인본에서 디렉터리와 파일을 되살린다). 그러나

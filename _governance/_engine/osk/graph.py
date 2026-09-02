@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import tempfile
 import time
 from pathlib import Path
 
@@ -99,11 +100,21 @@ def _probe_mtime_granularity(rounds: int = 40) -> int | None:
     전진하지 않으므로(실측), 몇 번으로는 눈금이 굵다고 오판하고 천장으로
     떨어진다. 40회면 NTFS에서 실패 확률이 무시할 만하고, 정말로 굵은
     파일시스템(FAT 2초)에서는 40회가 전부 같은 눈금에 들어 제대로 천장을
-    고른다."""
+    고른다.
+
+    탐침 파일은 **프로세스마다 유일**해야 한다. 구판은 고정 이름을 써서, 동시에
+    뜬 서버들이 같은 파일을 번갈아 쓰고 지웠다 — 진 쪽은 남의 쓰기를 재거나
+    `unlink`가 이미 사라진 파일에서 실패해 `None`(=모름)을 냈고, 그 `None`은
+    racy 창 **2초**로 굳어 프로세스 수명 내내 남았다. 그 프로세스는 어떤 쓰기
+    뒤에도 2초 동안 모든 읽기가 전수 재구축이 된다(실측: 동시 4개 중 절반이
+    2초를 잡았고, 파일 mtime이 1.6초 전인데도 racy로 판정했다)."""
+    probe = None
     try:
         d = ROOT / ".osk"
         d.mkdir(parents=True, exist_ok=True)
-        probe = d / "mtime-probe"
+        fd, nm = tempfile.mkstemp(dir=str(d), prefix="mtime-probe-")
+        os.close(fd)
+        probe = Path(nm)
         deltas = []
         for _ in range(rounds):
             probe.write_bytes(b"a" * 64)
@@ -112,9 +123,14 @@ def _probe_mtime_granularity(rounds: int = 40) -> int | None:
             b = probe.stat().st_mtime_ns
             if b > a:
                 deltas.append(b - a)
-        probe.unlink(missing_ok=True)
     except OSError:
         return None
+    finally:
+        if probe is not None:
+            try:
+                probe.unlink(missing_ok=True)
+            except OSError:
+                pass                 # 남아도 `.osk/`는 추적되지 않는다
     return min(deltas) if deltas else None
 
 
@@ -679,6 +695,14 @@ def topology_check(idx: Index) -> list[str]:
                 errs.append(f"모호 참조(동명 노드 중복): {stem} → {name}")
                 continue
             tkind = r[1]
+            # 작업 상태 참조 금지는 **소속과 무관하다** — Workbench 계약 4.2의
+            # 주어에 소속 제한이 없다. 구판은 이 판정이 아래 `scope` 갈래 안에
+            # 있어 Domain·Person 노드의 작업 상태 참조를 보고하지 않았다
+            # (쓰기 통로 `write._topology_of`도 같은 자리에서 함께 고쳤다).
+            if tkind[0] == "workbench":
+                errs.append(f"작업 상태는 근거로 쓰지 않는다: {stem} → {name} "
+                            f"(Workbench 계약 4.2)")
+                continue
             if kind[0] == "domain" and tkind[0] == "raw":
                 errs.append(f"Domain의 _raw 직접 참조: {stem} → {name}")
                 continue
@@ -690,10 +714,8 @@ def topology_check(idx: Index) -> list[str]:
                                     "sources", "governance")
                 )
                 if not ok:
-                    errs.append(
-                        f"작업 상태는 근거로 쓰지 않는다: {stem} → {name} "
-                        f"(Workbench 계약 4.2)" if tkind[0] == "workbench"
-                        else f"scope 간 직접 참조: [{kind[1]}] {stem} → {name} {tkind}")
+                    errs.append(f"scope 간 직접 참조: [{kind[1]}] {stem} → "
+                                f"{name} {tkind}")
     return errs
 
 

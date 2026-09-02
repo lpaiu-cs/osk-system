@@ -12,14 +12,14 @@
 _governance/
   Constitution.md 등   통치 문서 4종 + records/ (사료) — Space 밖 통치 구획의 특수 노드
   _engine/
-    osk/               엔진 — 계약·서명·인과 DAG·검색·검증기·릴리스·갱신
-    mcp_server.py      외부 표면(MCP, stdio) — 도구 11종
+    osk/               엔진 — 계약·승인·인과 DAG·검색·검증기·릴리스·갱신
+    mcp_server.py      외부 표면(MCP, stdio) — 도구 12종
     sync_daemon.py     동기화 데몬(git만; 검색·색인은 서빙하지 않는다)
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
     scripts/           발행 매니페스트, launchd/systemd 예시
 = Scope/ = Domain/ = Person/   지식 공간
-= Scope/Workbench/_ledger/     대장 — 서명·pin·세션 라우팅·갱신 저널 (append-only)
+= Scope/Workbench/_ledger/     대장 — 승인·pin·세션 라우팅·갱신 저널 (append-only)
 ```
 
 ## 준비
@@ -63,17 +63,19 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 
 ## MCP 서버
 
-에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 열하나다 —
+에이전트가 이 체계를 다루는 **유일한 외부 표면**이다. 도구는 열둘이며 그
+목록의 정본은 Mechanism §6-2 7항이다 —
 `overview` `search` `read_node` `run_validators` `create_node` `update_node`
-`move_node` `record_candidate` `append_raw` `read_raw` `scope_memory`.
+`move_nodes` `move_cluster` `record_candidate` `append_raw` `read_raw`
+`scope_memory`.
 
 `_raw/` 세션 기록은 작업 검색에서 빠지므로(헌법 11조 3항) `read_raw`는 질의가
 아니라 **좌표**를 받는다. 노드의 `derived-from`에 든 `[[경로#N]]`을 그대로 넣으면
 그 라운드가 열린다 — 근거에서 증거로 가는 데 번역이 끼지 않는다. 좌표를 모르면
 `space`로 기록 목록부터, 경로만으로 라운드 목차부터 본다.
 
-서명과 pin은 **표면에 영구히 노출하지 않는다**(Mechanism §6-2). 권위의 발의는
-사용자 전속이므로 아래 CLI에만 있다.
+보호영역 권위와 pin은 **표면에 영구히 노출하지 않는다**(Mechanism §6-2 2항).
+지정·해제·승인·반려의 발의는 사용자 전속이므로 아래 CLI에만 있다.
 
 Claude Code에 user scope로 등록:
 
@@ -103,6 +105,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `status` | 체계 현황 |
 | `search` / `view` | 작업 검색 / 열람 검색 |
 | `check` | 권한 사전 검사 |
+| `validators` | **사용자 전속** — 검증기 활성화 현황·전환 (Mechanism §6-1) |
 | `raw append` / `raw status` | `_raw/` 세션 기록 — 훅 경로(아래) |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
@@ -152,6 +155,25 @@ scope 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한
 ```bash
 printf '%s' "$새전문" | .venv/bin/python -m osk.cli sm write   --session <키> --expect-hash <방금 받은 hash>
 ```
+
+### 케이던스 훅 (`scripts/hooks/claude_prompt_submit.py`)
+
+주입은 세션 시작 한 번으로 끝나지 않는다. **UserPromptSubmit** 훅이 user 턴을
+세어, **9턴**에 기억의 지금 전문·해시·여유·세션 키를 주입하며 "다음 도구 호출에
+**함께** 실어라"를 지시하고, **15턴**까지 갱신이 없으면 다시 주입하되 단독 턴을
+허용한다. 기억이 갱신되면(해시가 바뀌면) 계수는 처음으로 돌아간다.
+
+```
+<인스턴스>/.venv/Scripts/python.exe <인스턴스>/_governance/_engine/scripts/hooks/claude_prompt_submit.py
+```
+
+- 계수와 마지막 해시는 **세션·기기 로컬**이다(임시 디렉터리, `session_id` 단위).
+  vault에 두면 동기화되어 공유되는데, 계수는 지식이 아니다.
+- 이 훅은 세션 시작 훅과 달리 **엔진을 import한다** — 등록한 인터프리터가
+  인스턴스의 `.venv`여야 한다(의존이 없으면 조용히 아무것도 하지 않는다).
+- 두 훅 모두 주입문에 **그 세션의 키**를 싣는다. `scope_memory`·`append_raw`의
+  `session` 인자에 그 값을 그대로 쓴다 — 지어낸 키는 첫 성공에 영구 결속되어
+  대장에 다시 오지 않을 행을 남긴다.
 
 ### 세션 기록 훅 (`raw append`)
 
@@ -285,9 +307,10 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 적�
 - 로컬 수정이 있는 문서는 덮지 않고 `<이름>.upstream-<버전>` 사본을 옆에
   둔다(병합은 수동). **엔진 파일의 로컬 수정은 갱신 전체를 중단한다** —
   엔진을 고치는 자리는 정본이다. 기존 인스턴스의 최초 편입은 `--adopt`.
-- 갱신이 통치 문서를 덮으면 그 인스턴스의 서명이 자동으로 풀린다 — diff를
-  확인하고 `osk sign`으로 재서명하는 것이 **수용의 기록**이다(효력 요건은
-  아니다; 미비준은 status에 상시 표시된다).
+- 갱신이 통치 문서를 덮으면 그 차이가 통치 구획 보호영역의 변경집합으로
+  남는다 — diff를 확인하고 `osk approve _governance`로 승인하는 것이
+  **수용의 기록**이다(효력 요건은 아니다). 미처리 변경집합은 `osk status`의
+  `protected_regions`에 `pending`으로 드러난다.
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면
   실행 중인 MCP 서버·데몬을 재시작한다.
 - **갱신은 인스턴스당 한 번이다.** 한 인스턴스를 여러 기기에서 쓰더라도
