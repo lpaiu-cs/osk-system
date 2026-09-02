@@ -301,17 +301,24 @@ osk validate                    # 지금의 protected_regions를 적어 둔다
 #    소급 수정한다** — 그리고 다른 기기가 그 CRLF를 정확히 받는다(실측:
 #    blob LF → CRLF). 이 구획은 blob을 그대로 두고 3단계에서 `-text`로
 #    정확히 되펼치는 것이 맞다.
-git add --renormalize -- . ':(exclude)**/_raw/**' ':(exclude)**/_scope_memory/**'
+git add --renormalize -- . ':(exclude)**/_raw/**' ':(exclude)**/_scope_memory/**' ':(exclude)**/_ledger/approved/objects/**'
 git status --short              # 줄바꿈만 바뀐 파일 목록
+
+# 2b) 승인 객체는 **파일 이름을 심판으로** 이행한다
+#     승인 객체에는 어느 쪽을 무조건 택해도 틀리는 두 경우가 다 있다:
+#       · 정상 LF 객체 — blob이 옳은데 구판 checkout이 작업 트리만 CRLF로
+#         펼쳐 놓았다. stage하면 옳던 blob이 깨져 승인본이 해석 불능이 된다.
+#       · 원본이 CRLF인 객체 — 구판 정규화로 blob이 이미 깨졌고 작업 트리가
+#         옳다. 빼 두면 재전개가 깨진 blob으로 작업 트리를 덮어 양쪽 다 잃는다.
+#     내용 주소에는 심판이 있다 — **파일 이름이 곧 내용의 sha256이다.**
+#     맞는 쪽만 남기고, 둘 다 아니면 아무것도 바꾸지 않고 멈춘다.
+osk store-reconcile              # 먼저 판독만 해서 무엇을 할지 본다
+osk store-reconcile --apply      # 색인·작업 트리를 이름에 맞춘다
+
 git commit -m "chore: 줄바꿈을 LF로 정규화"
 #    변경이 없으면 이 커밋은 건너뛴다 — blob이 이미 LF라는 뜻이고 정상이다.
-#
-#    `_ledger/approved/objects/`는 **빼지 않는다.** 그 구획은 파일 이름이 곧
-#    내용의 sha256이라 옳은 바이트가 무엇인지 스스로 증명한다 — 작업 트리를
-#    다시 stage하는 것은 blob이 이미 맞으면 무변이고, 구판 정규화로 깨져 있었다면
-#    이름과 내용을 다시 맞추는 복구다. `_raw/`·`_scope_memory/`에는 그런 대조가
-#    없어 보수적으로 두는 것이 맞고, 여기서는 두지 않는 쪽이 깨진 승인본을
-#    영구화한다.
+#    2b가 "판정 불능"으로 멈추면 그 객체는 이 이행 **전에** 이미 깨져 있었다는
+#    뜻이다 — 그 객체를 참조하는 승인본은 해제 후 재지정이 회복 경로다.
 
 # 3) 작업 트리를 실제로 LF로 펼친다
 #    `--renormalize`는 **색인만** 고친다. 엔진은 작업 트리 바이트를 읽으므로
@@ -375,7 +382,9 @@ osk validate                    # 전 영역 clean
 
 **승인본 blob과 원자료는 이 이행에서 변환되지 않는다.** `_ledger/approved/objects/`는
 파일 이름이 곧 내용의 sha256이라, `_raw/`·`_scope_memory/`는 쓰인 바이트가 그대로
-남아야 하므로 `.gitattributes`가 셋 다 `-text`로 못박는다. 그
+남아야 하므로 `.gitattributes`가 셋 다 `-text`로 못박는다. 다만 `-text`는 **변환을
+멈출 뿐 이미 어긋난 것을 고르지는 못한다** — 승인 객체만 이름이라는 심판을 가지고
+있어 2b단계가 그것으로 가른다. 그
 줄이 없으면 CRLF를 담은 blob이 이행 중에 바뀌어 그 승인본이 통째로 해석
 불능이 된다(실측). 이행 뒤 `osk validate`가 "승인본 미해석"을 보고하면 그
 영역은 이 이행 **전에** 이미 그렇게 됐다는 뜻이다 — 그때는 해제 후 재지정이

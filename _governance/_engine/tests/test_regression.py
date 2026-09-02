@@ -8,7 +8,7 @@
 실행: cd <vault> && .venv/bin/python _engine/tests/test_regression.py
 """
 from __future__ import annotations
-import errno, json, os, shlex, shutil, stat, subprocess, sys, tempfile, time, traceback
+import errno, hashlib, json, os, shlex, shutil, stat, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 from unittest import mock
 
@@ -7247,7 +7247,14 @@ def test_governance_amend_secrets_and_region():
             crlf = bytes([13, 10])
             body = ("## 1" + chr(10) + chr(10) + "붙여넣은 로그" + chr(10)
                     ).encode("utf-8").replace(bytes([10]), crlf)
-            for rel, data in ((raw_rel, body),
+            #    정상 승인 객체 하나 — blob은 옳고(LF) 구판 checkout이 작업
+            #    트리만 CRLF로 펼쳐 놓는다. 문서의 명령이 이것을 stage하면
+            #    옳던 blob이 CRLF가 되어 이름과 내용이 갈린다(리뷰 지적).
+            _ob = ("# 노드" + chr(10)).encode("utf-8")
+            _oh = hashlib.sha256(_ob).hexdigest()
+            obj_rel = ("= Scope/Workbench/_ledger/approved/objects/"
+                       + _oh[:2] + "/" + _oh[2:])
+            for rel, data in ((raw_rel, body), (obj_rel, _ob),
                               ("= Person/누구.md",
                                ("# 누구" + chr(10)).encode("utf-8"))):
                 (lab2 / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -7270,6 +7277,8 @@ def test_governance_amend_secrets_and_region():
                       .stdout.splitlines() if x.strip()]
             check("이행이 append-only 원자료를 stage하지 않는다 (#39)",
                   raw_rel not in staged, staged)
+            check("이행이 정상 승인 객체도 stage하지 않는다 (#39)",
+                  obj_rel not in staged, staged)
             if staged:
                 _g("commit", "-q", "-m", "정규화")
             check("과거 기록의 blob이 그대로다 (#39)",
@@ -7280,8 +7289,57 @@ def test_governance_amend_secrets_and_region():
             check("재전개가 원자료를 blob 바이트 그대로 펼친다 (#39)",
                   crlf not in (lab2 / raw_rel).read_bytes(),
                   (lab2 / raw_rel).read_bytes()[:40])
+            check("승인 객체의 내용이 이행 뒤에도 이름의 digest와 맞는다 (#39)",
+                  hashlib.sha256((lab2 / obj_rel).read_bytes()).hexdigest()
+                  == _oh, (lab2 / obj_rel).read_bytes()[:40])
         finally:
             rmtree_force(lab2)
+
+        # ⑩ **승인 객체는 어느 쪽을 무조건 택해도 틀린다** (#39)
+        #    `-text`는 변환을 멈출 뿐 이미 어긋난 것을 고르지 못한다. 두 경우가
+        #    다 현실이다: ⓐ 정상 LF 객체를 구판 checkout이 작업 트리만 CRLF로
+        #    펼쳐 놓은 것 — stage하면 옳던 blob이 깨진다. ⓑ 원본이 CRLF라
+        #    구판 정규화로 blob이 깨진 것 — 빼 두면 재전개가 작업 트리까지
+        #    덮어 양쪽 다 잃는다. 내용 주소에는 파일 이름이라는 심판이 있으므로
+        #    그것으로 가른다(`reconcile_store`).
+        #    되돌리면 — 판정을 한쪽으로 고정하면 두 경우 중 하나가 실패하고,
+        #    fail-closed를 지우면 셋째 검사가 실패한다.
+        def _reconcile_case(tag, name_body, work_body, idx_body, expect):
+            """이름(digest)·작업 트리·색인을 각각 세워 판정을 본다."""
+            lab3 = Path(tempfile.mkdtemp(prefix="osk-obj-"))
+            try:
+                _h = hashlib.sha256(name_body).hexdigest()
+                rel3 = ("= Scope/Workbench/_ledger/approved/objects/"
+                        + _h[:2] + "/" + _h[2:])
+                (lab3 / rel3).parent.mkdir(parents=True, exist_ok=True)
+                (lab3 / rel3).write_bytes(work_body)
+                store = lab3 / "= Scope/Workbench/_ledger/approved/objects"
+                with mock.patch.object(A, "ROOT", lab3),                      mock.patch.object(A, "STORE", store):
+                    res = A.reconcile_store(lambda rel: idx_body)
+                got = ("stage" if res["stage"] else
+                       "restore" if res["restore"] else
+                       "broken" if res["broken"] else "none")
+                check(f"승인 객체 판정 — {tag} (#39)",
+                      got == expect and res["checked"] == 1, (got, res))
+                return res
+            finally:
+                rmtree_force(lab3)
+
+        _lf = ("# 노드" + chr(10)).encode("utf-8")
+        _crlf = _lf.replace(bytes([10]), crlf)
+        #    ⓐ blob이 옳고 작업 트리만 구판 checkout으로 CRLF가 된 것
+        _reconcile_case("정상 LF 객체는 색인이 정본이다",
+                        _lf, _crlf, _lf, "restore")
+        #    ⓑ 원본이 CRLF라 구판 정규화로 색인 쪽이 깨진 것
+        _reconcile_case("원본이 CRLF면 작업 트리가 정본이다",
+                        _crlf, _crlf, _lf, "stage")
+        #    ⓒ 어느 쪽도 이름과 맞지 않는 것
+        _broken = _reconcile_case("양쪽 다 이름과 다르면 판정 불능이다",
+                                  _lf, b"amount to nothing" + bytes([10]),
+                                  b"and to nothing else" + bytes([10]),
+                                  "broken")
+        check("판정 불능이 하나라도 있으면 이행하지 않는다 (#39)",
+              _broken["ok"] is False, _broken)
     finally:
         (ROOT / (reg + "/audit-keep.md")).unlink(missing_ok=True)
         (ROOT / (reg + "/audit-extra.md")).unlink(missing_ok=True)
