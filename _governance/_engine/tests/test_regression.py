@@ -6607,6 +6607,12 @@ def test_audit_fixes_2026_09_02():
         r = _w(write.update_node, "audit-edge",
                old_text="첫 줄\r\n둘째 줄", new_text="되찾음")
         check("CRLF 앵커로도 그 자리를 다시 찾는다 (#27)", r.get("ok"), r)
+        #    전문 치환 경로도 같다 — 앵커 정규화와 **별개로** `_norm_body`가
+        #    접는다. 앵커만 접으면 이 자리가 열린 채 남는다.
+        r = _w(write.update_node, "audit-edge", body="가\r\n나\r\n",
+               expect_hash=core.sha256_file(p))
+        check("전문 치환도 `\\r`을 쓰지 않는다 (#27)",
+              r.get("ok") and b"\r" not in p.read_bytes(), r)
 
         # ④ 전문 치환 거부문은 해시를 내주지 않는다 (#33)
         #    되돌리면 — 거부문에 `sha256_file(path)`를 도로 넣으면 실패한다.
@@ -6837,6 +6843,28 @@ def test_audit_fixes_2026_09_02():
               "release.json" in man["keep"], man["keep"])
         check("발행 매니페스트가 릴리스 워크플로를 보존한다 (#41)",
               any(k.startswith(".github/") for k in man["keep"]), man["keep"])
+
+        # ⑳ 엔진과 **독립된** 복구 부트스트랩도 롤백을 끝낸다 (#24)
+        #    되돌리면 — `scripts/recover.py`의 `_fsync_file`을 읽기 전용 핸들로
+        #    되돌리면 Windows에서 EBADF가 나 rc=2로 중단되고 표식이 남는다.
+        #    엔진이 반쯤 교체된 상태에서 유일하게 남는 길이 이것이라, 엔진 쪽
+        #    같은 결함을 고쳐도 이 사본이 낡으면 복구는 여전히 불가능하다.
+        import importlib.util as _ilu
+        _spec = _ilu.spec_from_file_location(
+            "osk_recover_audit", ENGINE / "scripts" / "recover.py")
+        _rec = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_rec)
+        _rf = ROOT / "_governance/audit-recov.md"
+        _rf.write_bytes("원본\n".encode("utf-8"))
+        _orig = _rf.read_bytes()
+        mine.append(_rf)
+        os.chmod(_rf, 0o600)           # mode 항목이 있어야 그 경로를 지난다
+        U._txn_begin("txnAUDR", "v9.9.9", ["_governance/audit-recov.md"])
+        _rf.write_bytes(b"HALF\n")     # 반쯤 적용된 상태를 모사
+        _rc = _rec._recover(ROOT)
+        check("독립 복구 부트스트랩이 롤백을 끝낸다 (#24)",
+              _rc == 0 and _rf.read_bytes() == _orig
+              and not U.TXN_MANIFEST.exists(), (_rc, _rf.read_bytes()))
     finally:
         for p, data in reversed(restore):
             try:
@@ -6946,7 +6974,6 @@ if __name__ == "__main__":
         except Exception as e:
             FAIL.append(f"{fn.__name__} 예외: {e!r}\n"
                         + "".join(traceback.format_exc().splitlines(True)[-6:]))
-    _ = None
     print(f"회귀 수트: 통과 {len(PASS)} / 실패 {len(FAIL)} / 생략 {len(SKIP)}"
           f"  (mini-vault: {MINI})")
     for f in FAIL:
