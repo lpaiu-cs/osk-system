@@ -454,9 +454,7 @@ def surface_lint() -> list[str]:
     #    같은 자리에서 대조하면 정적 분석의 사각이 닫힌다 — 무엇이 선언됐는지가
     #    곧 클라이언트의 능력이라는 §6-2 1항의 전제가 그렇게 지켜진다.
     declared = declared_tools()
-    if declared is None:
-        errs.append("Mechanism §6-2의 도구 목록을 읽지 못했다 — 표면의 정본 부재")
-    else:
+    if declared is not None:      # 정본 부재는 `surface_violations`가 이미 보고한다
         reg_names = {t.name for t in tools}
         for extra in sorted(reg_names - set(declared)):
             errs.append(f"선언되지 않은 도구가 등록부에 있다: {extra}")
