@@ -259,8 +259,14 @@ launchd/systemd 예시는 `_governance/_engine/scripts/`에 있다.
 
 `.gitattributes`가 저장소 전체를 **LF로 못박는다**. 이 체계의 여러 판정이 파일의
 raw 바이트에 걸려 있어서다 — 갱신의 프레임워크 대조, 보호영역의 승인본
-tree(Mechanism §3 4항), `_raw/`의 접두부 보존(§9 4항). 기기마다 다른 줄바꿈으로
-체크아웃되면 그 판정이 기기에 의존한다.
+tree(Mechanism §3 4항). 기기마다 다른 줄바꿈으로 체크아웃되면 그 판정이 기기에
+의존한다.
+
+**단, 바이트가 걸려 있다고 다 LF로 못박는 것은 아니다.** `_raw/`는 append-only
+원자료이고 쓰기가 기존 바이트를 접두부로 보존하는 것을 계약으로 삼는다(§9 4항).
+`_scope_memory/`의 CAS 해시도 개행에 민감하다(`canon`은 NFC와 앞뒤 공백만
+다룬다). 이 둘은 **쓰인 바이트가 그대로 남아야** 하므로 `.gitattributes`가
+`-text`로 변환 밖에 둔다 — 아래 이행 절차가 그 자리를 건드리지 않는 근거다.
 
 **증상.** `core.autocrlf=true`(Git for Windows 설치 기본값)인 기기에서는 노드가
 CRLF로 체크아웃되어 그 기기의 **모든 보호영역이 "전 파일 수정" pending**이 된다.
@@ -353,8 +359,9 @@ osk validate                    # 전 영역 clean
 4단계에서 pending이 남으면 그 영역은 줄바꿈이 아닌 실제 차이가 있다는 뜻이다.
 평소대로 검토해 승인하거나 반려한다 — 이행의 일부가 아니다.
 
-**승인본 blob은 이 이행에서 변환되지 않는다.** `_ledger/approved/objects/`는
-파일 이름이 곧 내용의 sha256이라 `.gitattributes`가 `-text`로 못박는다. 그
+**승인본 blob과 원자료는 이 이행에서 변환되지 않는다.** `_ledger/approved/objects/`는
+파일 이름이 곧 내용의 sha256이라, `_raw/`·`_scope_memory/`는 쓰인 바이트가 그대로
+남아야 하므로 `.gitattributes`가 셋 다 `-text`로 못박는다. 그
 줄이 없으면 CRLF를 담은 blob이 이행 중에 바뀌어 그 승인본이 통째로 해석
 불능이 된다(실측). 이행 뒤 `osk validate`가 "승인본 미해석"을 보고하면 그
 영역은 이 이행 **전에** 이미 그렇게 됐다는 뜻이다 — 그때는 해제 후 재지정이

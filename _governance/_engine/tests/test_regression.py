@@ -7197,6 +7197,31 @@ def test_governance_amend_secrets_and_region():
         check("내용 주소 저장소는 변환에서 제외된다 (#39)",
               any("_ledger/approved/objects/" in l and "-text" in l
                   for l in ga.splitlines()), ga[:80])
+
+        # ⑧ **바이트 그대로인 구획**은 실제 git 판정에서도 변환 밖이다 (#39)
+        #    줄이 있는지가 아니라 git이 그 경로를 어떻게 보는지를 묻는다 —
+        #    패턴이 틀리면(`_raw/*` 대 `**/_raw/**`) 줄은 있는데 적용이 안 된다.
+        #    `_raw/`는 append 접두부 판정이 raw 바이트이고(§9 4항), scope 기억은
+        #    `canon`이 개행을 접지 않아 CAS 해시가 개행에 민감하다. 변환이 끼면
+        #    확정된 원자료가 조용히 바뀌고, 되돌릴 수단이 없다(실측: CRLF 6개를
+        #    담은 기록이 이행 뒤 0개).
+        #    되돌리면 — 두 `-text` 줄 중 하나를 지우면 그 구획이 실패한다.
+        lab = Path(tempfile.mkdtemp(prefix="osk-attr-"))
+        try:
+            _g = lambda *a: subprocess.run(("git",) + a, cwd=str(lab),
+                                           capture_output=True, text=True)
+            _g("init", "-q")
+            (lab / ".gitattributes").write_bytes(ga.encode("utf-8"))
+            for space, path in (("_raw", "= Scope/W/_raw/2026-09-02.md"),
+                                ("_scope_memory", "= Scope/W/_scope_memory/W.md"),
+                                ("일반 노드", "= Person/누구.md")):
+                out = _g("check-attr", "text", "--", path).stdout.strip()
+                verdict = out.rsplit(": ", 1)[-1]
+                want = "unset" if space != "일반 노드" else "auto"
+                check(f"git이 {space}를 EOL 변환 {'밖' if want == 'unset' else '안'}"
+                      f"으로 본다 (#39)", verdict == want, out)
+        finally:
+            rmtree_force(lab)
     finally:
         (ROOT / (reg + "/audit-keep.md")).unlink(missing_ok=True)
         (ROOT / (reg + "/audit-extra.md")).unlink(missing_ok=True)
