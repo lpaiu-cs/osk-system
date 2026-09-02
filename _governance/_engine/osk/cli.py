@@ -48,13 +48,24 @@ def _print_changeset(region: str) -> None:
             print(f"    … 외 {len(rows) - 20}건")
     for m in cs.get("moves", []):
         print(f"  이동  {m['from']} → {m['to']}")
+    eol = cs.get("eol_only") or []
+    if eol:
+        print(f"  그중 {len(eol)}건은 **줄바꿈만** 다릅니다 — 내용은 그대로입니다"
+              f"(EOL 고정 이행). `git diff`가 빈 출력인 이유가 이것입니다.")
+        for r in eol[:10]:
+            print(f"    ~ {r}")
+        if len(eol) > 10:
+            print(f"    … 외 {len(eol) - 10}건")
     legacy = cs.get("legacy_excluded") or []
     if legacy:
         print(f"  개정 전 승인본 — 제외 구획 항목 {len(legacy)}건이 승인본에만 "
               f"남아 있습니다(§3 4항): {', '.join(legacy[:3])}")
         print("  이 승인으로 새 형상의 승인본이 서고, 그 항목은 이후 변경집합에 "
               "들지 않습니다.")
-    if not any(v for k, v in cs.items() if k != "legacy_excluded"):
+    # 파생 표시(`legacy_excluded`·`eol_only`)는 "차이 없음" 판정에 세지 않는다 —
+    # 앞의 것은 승인본 쪽 사정이고, 뒤의 것은 `modified`의 부분집합이다.
+    if not any(v for k, v in cs.items()
+               if k not in ("legacy_excluded", "eol_only")):
         print("  (파일 단위 차이 없음)")
 
 
@@ -232,6 +243,10 @@ def main(argv=None):
     p.add_argument("region"); p.add_argument("--reason", default="")
     p = sub.add_parser("revert", help="[사용자 전속] 변경집합 반려(원상 복원)")
     p.add_argument("region"); p.add_argument("--reason", default="")
+    p = sub.add_parser("store-reconcile",
+                       help="내용 주소 저장소를 파일 이름 기준으로 판독·이행")
+    p.add_argument("--apply", action="store_true",
+                   help="판독만 하지 않고 색인·작업 트리를 실제로 맞춘다")
     for name, helptext in DELEGATED.items():     # `osk --help` 목록에만 쓰인다
         sub.add_parser(name, help=helptext)      # — 실제 파싱은 위에서 지났다
     a = ap.parse_args(argv)
@@ -342,6 +357,40 @@ def main(argv=None):
         _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
         rec = approvals.revert(a.region, base, expect_work=work, reason=a.reason)
         print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])
+    elif a.cmd == "store-reconcile":
+        # EOL 이행의 저장소 몫. `-text`를 얻은 구획은 어느 쪽을 무조건 택해도
+        # 틀린다(작업 트리를 stage하면 옳던 blob이 깨지고, 통째로 빼면 깨진
+        # blob이 작업 트리를 덮는다) — 내용 주소에는 파일 이름이라는 심판이
+        # 있으므로 그것으로 가른다.
+        import subprocess as _sp
+        _root = str(ROOT)
+
+        def _index_bytes(rel):
+            r = _sp.run(["git", "-C", _root, "cat-file", "blob", ":" + rel],
+                        capture_output=True)
+            return r.stdout if r.returncode == 0 else None
+
+        def _apply(kind, rel):
+            if kind == "stage":
+                _sp.run(["git", "-C", _root, "add", "--", rel], check=True)
+            else:
+                _sp.run(["git", "-C", _root, "checkout", "--", rel], check=True)
+
+        res = approvals.reconcile_store(
+            _index_bytes, _apply if a.apply else None)
+        print(f"객체 {res['checked']}건 판독 — 색인을 고칠 것 {len(res['stage'])}, "
+              f"작업 트리를 고칠 것 {len(res['restore'])}, "
+              f"판정 불능 {len(res['broken'])}")
+        for rel in res["broken"][:20]:
+            print("  판정 불능(양쪽 다 이름과 다름):", rel)
+        if not res["ok"]:
+            sys.exit("중단 — 어느 쪽도 이름의 digest와 맞지 않는 객체가 있다. "
+                     "추측으로 고르지 않았고 아무것도 바꾸지 않았다. 그 객체를 "
+                     "참조하는 승인본은 해제 후 재지정이 회복 경로다.")
+        if not a.apply:
+            print("판독만 했다 — 이행하려면 --apply")
+        elif res["stage"] or res["restore"]:
+            print("이행했다. 색인 변경은 이어지는 commit에 담긴다.")
     # update·release는 파서 앞에서 위임된다 — 여기에 분기를 두면 죽은 코드다.
 
 

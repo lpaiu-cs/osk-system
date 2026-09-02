@@ -139,6 +139,80 @@ def _store_put(data: bytes) -> str:
     return digest
 
 
+def _obj_digest_of_path(rel: str) -> str | None:
+    """저장 경로에서 그 객체가 **가져야 할** digest를 되읽는다.
+
+    `_obj_path`의 역이다 — `…/objects/<2>/<62>` → `sha256:<64hex>`. 이름이
+    형식에 맞지 않으면 None(저장소 소관이 아닌 파일)."""
+    parts = str(rel).replace(chr(92), "/").split("/")
+    if len(parts) < 2:
+        return None
+    a, b = parts[-2], parts[-1]
+    d = "sha256:" + a + b
+    return d if _DIGEST_RE.match(d) else None
+
+
+def reconcile_store(index_bytes, apply_fn=None) -> dict:
+    """내용 주소 저장소를 **파일 이름을 심판으로** 판독·이행한다.
+
+    EOL 이행에서 `-text`를 얻은 뒤의 문제다. 그 구획은 clean 필터가 사라지므로
+    작업 트리를 다시 stage하면 그 바이트가 그대로 blob이 되고, 반대로 통째로
+    빼면 blob이 그대로 작업 트리로 펼쳐진다. **어느 쪽도 무조건은 틀렸다**:
+
+      · 구판 checkout이 정상 LF 객체의 작업 트리만 CRLF로 펼쳐 놓았으면,
+        stage하는 순간 옳던 blob이 CRLF로 바뀌어 이름과 내용이 갈린다 —
+        `_store_get`이 실패하고 그 객체를 참조하는 승인본이 해석 불능이 된다.
+      · 반대로 원본이 CRLF였던 객체는 구판 정규화로 blob 쪽이 이미 깨져 있고
+        작업 트리(왕복 대칭으로 살아남은 쪽)가 옳다 — 통째로 빼면 재전개가
+        그 깨진 blob을 작업 트리에 덮어써 양쪽 다 잃는다.
+
+    내용 주소에는 심판이 있다: **파일 이름이 곧 내용의 sha256이다.** 양쪽을
+    digest에 대조해 맞는 쪽만 남기고, 둘 다 아니면 그 객체는 손댈 근거가 없으니
+    **아무것도 하지 않고 멈춘다**(fail-closed) — 어느 쪽을 골라도 추측이다.
+
+    `index_bytes(rel)`은 그 경로의 git 색인 내용을 돌려주거나(bytes) 추적되지
+    않으면 None. `apply_fn(kind, rel)`이 주어지면 판정을 이행한다
+    (`"stage"`=작업 트리를 색인에, `"restore"`=색인을 작업 트리에). 손상이
+    하나라도 있으면 **어떤 이행도 하지 않는다** — 절반만 고친 저장소는
+    고치기 전보다 판독하기 어렵다.
+
+    반환: {"ok": bool, "stage": [rel…], "restore": [rel…], "broken": [rel…],
+           "checked": int}
+    """
+    root = Path(os.path.realpath(ROOT))
+    out = {"stage": [], "restore": [], "broken": [], "checked": 0}
+    if not STORE.is_dir():
+        return {"ok": True, **out}
+    for f in sorted(STORE.rglob("*")):
+        if not f.is_file() or f.is_symlink():
+            continue
+        rel = posix_rel(f, root)
+        want = _obj_digest_of_path(rel)
+        if want is None:
+            out["broken"].append(rel)      # 저장소 안의 이름 없는 파일 — 판정 불능
+            continue
+        out["checked"] += 1
+        work = f.read_bytes()
+        idx = index_bytes(rel)
+        w_ok = sha256_bytes(work) == want
+        i_ok = idx is not None and sha256_bytes(idx) == want
+        if i_ok and w_ok:
+            continue                       # 둘 다 옳다 — 건드릴 것이 없다
+        if w_ok:
+            out["stage"].append(rel)       # 작업 트리가 정본 — 색인을 고친다
+        elif i_ok:
+            out["restore"].append(rel)     # 색인이 정본 — 작업 트리를 고친다
+        else:
+            out["broken"].append(rel)
+    ok = not out["broken"]
+    if ok and apply_fn is not None:
+        for rel in out["stage"]:
+            apply_fn("stage", rel)
+        for rel in out["restore"]:
+            apply_fn("restore", rel)
+    return {"ok": ok, **out}
+
+
 def _store_get(digest: str) -> bytes | None:
     try:
         p = _obj_path(digest)            # 부적격 digest는 ValueError
@@ -185,6 +259,15 @@ def _tree_table(tree_hash: str) -> dict[str, str] | None:
         return {str(rel): str(h) for rel, h in entries}
     except (ValueError, TypeError):
         return None
+
+
+def _fold_eol(data: bytes) -> bytes:
+    """줄바꿈만 접는다 — 두 바이트열이 **줄바꿈 말고는 같은가**를 묻기 위한 것.
+
+    판정에는 쓰지 않는다. 승인본 tree는 raw 바이트 해시이고(Mechanism §3 4항)
+    그것이 반려가 원본을 되살릴 수 있는 근거다 — 여기서 접는 것은 사용자에게
+    **차이의 성질**을 알려 주기 위해서뿐이다."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def _excluded_rel(rel: str, region: str) -> bool:
@@ -482,6 +565,22 @@ def changeset(region: str) -> dict | None:
     legacy = legacy_excluded(tree, region)
     if legacy:
         cs["legacy_excluded"] = legacy
+    # **줄바꿈만 다른 것**은 그렇게 말한다. EOL 고정 이행에서는 영역 전체가
+    # 수정으로 보이는데 `git diff`는 빈 출력이라(정규화가 blob을 같게 만든다)
+    # 사용자가 원인을 짚을 자리가 없다 — 내용이 그대로임을 여기서 알린다.
+    eol_only = []
+    for rel in cs["modified"]:
+        blob = _store_get(table[rel])
+        if blob is None:
+            continue
+        try:
+            now = (files[rel]).read_bytes()
+        except OSError:
+            continue
+        if _fold_eol(blob) == _fold_eol(now):
+            eol_only.append(rel)
+    if eol_only:
+        cs["eol_only"] = eol_only
     # 이동은 이동으로 보인다(시행령 §6 4항) — 반려와 **같은 해석**(노드별
     # 사슬, 생애 경계)으로 낸다. 표시와 복원이 갈리면 사용자가 검토한 것과
     # 반려가 하는 일이 달라진다(added/removed는 tree 차이 그대로 둔다).

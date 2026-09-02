@@ -8,7 +8,7 @@
 실행: cd <vault> && .venv/bin/python _engine/tests/test_regression.py
 """
 from __future__ import annotations
-import errno, json, os, shutil, stat, subprocess, sys, tempfile, time, traceback
+import errno, hashlib, json, os, shlex, shutil, stat, subprocess, sys, tempfile, time, traceback
 from pathlib import Path
 from unittest import mock
 
@@ -7159,6 +7159,187 @@ def test_governance_amend_secrets_and_region():
         check("이행된 승인본은 저장소에서 해석된다 (#37)",
               A._tree_table_for_region(reg, A.approved_hash(reg)) is not None,
               A.approved_hash(reg))
+
+        # ⑥ 줄바꿈만 다른 것은 변경집합이 그렇게 말한다 (#39)
+        #    EOL 고정 이행에서는 영역 전체가 "수정"으로 보이는데 `git diff`는
+        #    빈 출력이다 — 내용이 그대로임을 표면이 말하지 않으면 사용자는
+        #    무엇을 승인하는지 모르는 채 승인하게 된다.
+        #    되돌리면 — `changeset`의 `eol_only` 계산을 지우면 실패한다.
+        eolf = ROOT / (reg + "/audit-eol.md")
+        eolf.write_bytes("한 줄\n두 줄\n".encode("utf-8"))
+        A.approve(reg, A.approved_hash(reg),
+                  expect_work=A.working_tree_hash(reg), reason="EOL 시험 기준")
+        eolf.write_bytes("한 줄\r\n두 줄\r\n".encode("utf-8"))   # 줄바꿈만 바꾼다
+        cs2 = A.changeset(reg)
+        check("줄바꿈만 바뀌어도 수정으로 잡힌다 — 판정은 raw 바이트다 (#39)",
+              A.state(reg) == "pending"
+              and reg + "/audit-eol.md" in (cs2 or {}).get("modified", []), cs2)
+        check("그것이 **줄바꿈만** 다르다고 표시된다 (#39)",
+              reg + "/audit-eol.md" in (cs2 or {}).get("eol_only", []), cs2)
+        #    내용이 실제로 다르면 그 표시가 붙지 않는다
+        eolf.write_bytes("한 줄\n다른 줄\n".encode("utf-8"))
+        cs3 = A.changeset(reg)
+        check("내용이 다르면 줄바꿈 표시가 붙지 않는다 (#39)",
+              reg + "/audit-eol.md" not in (cs3 or {}).get("eol_only", []), cs3)
+        eolf.unlink(missing_ok=True)
+        A.approve(reg, A.approved_hash(reg),
+                  expect_work=A.working_tree_hash(reg), reason="EOL 시험 정리")
+
+        # ⑦ 내용 주소 저장소는 줄바꿈 변환 대상이 아니다 (#39)
+        #    `.gitattributes`가 `-text`로 못박지 않으면 CRLF를 담은 blob이
+        #    이행 중에 바뀌어 그 승인본이 통째로 해석 불능이 된다(실측).
+        ga = (ENGINE.parent.parent / ".gitattributes").read_text(
+            encoding="utf-8")
+        check("`.gitattributes`가 저장소 전체를 LF로 못박는다 (#39)",
+              any(l.split()[:1] == ["*"] and "eol=lf" in l
+                  for l in ga.splitlines() if l.strip()
+                  and not l.startswith("#")), ga[:80])
+        check("내용 주소 저장소는 변환에서 제외된다 (#39)",
+              any("_ledger/approved/objects/" in l and "-text" in l
+                  for l in ga.splitlines()), ga[:80])
+
+        # ⑧ **바이트 그대로인 구획**은 실제 git 판정에서도 변환 밖이다 (#39)
+        #    줄이 있는지가 아니라 git이 그 경로를 어떻게 보는지를 묻는다 —
+        #    패턴이 틀리면(`_raw/*` 대 `**/_raw/**`) 줄은 있는데 적용이 안 된다.
+        #    `_raw/`는 append 접두부 판정이 raw 바이트이고(§9 4항), scope 기억은
+        #    `canon`이 개행을 접지 않아 CAS 해시가 개행에 민감하다. 변환이 끼면
+        #    확정된 원자료가 조용히 바뀌고, 되돌릴 수단이 없다(실측: CRLF 6개를
+        #    담은 기록이 이행 뒤 0개).
+        #    되돌리면 — 두 `-text` 줄 중 하나를 지우면 그 구획이 실패한다.
+        lab = Path(tempfile.mkdtemp(prefix="osk-attr-"))
+        try:
+            _g = lambda *a: subprocess.run(("git",) + a, cwd=str(lab),
+                                           capture_output=True, text=True)
+            _g("init", "-q")
+            (lab / ".gitattributes").write_bytes(ga.encode("utf-8"))
+            for space, path in (("_raw", "= Scope/W/_raw/2026-09-02.md"),
+                                ("_scope_memory", "= Scope/W/_scope_memory/W.md"),
+                                ("일반 노드", "= Person/누구.md")):
+                out = _g("check-attr", "text", "--", path).stdout.strip()
+                verdict = out.rsplit(": ", 1)[-1]
+                want = "unset" if space != "일반 노드" else "auto"
+                check(f"git이 {space}를 EOL 변환 {'밖' if want == 'unset' else '안'}"
+                      f"으로 본다 (#39)", verdict == want, out)
+        finally:
+            rmtree_force(lab)
+
+        # ⑨ **문서에 적힌 이행 명령 그대로** 돌려, 그것이 append-only 원자료의
+        #    blob을 건드리지 않는지 본다 (#39). `check-attr`만 보는 ⑧은 이걸
+        #    잡지 못한다 — `-text`를 받은 구획은 clean 필터가 사라져 오히려
+        #    작업 트리 바이트가 그대로 새 blob이 되기 때문이다. `autocrlf=true`
+        #    기기의 현실(blob은 LF, 작업 트리는 CRLF, status는 clean)을 그대로
+        #    세우고 실측한다: 문서대로면 무변, 구판 명령(`--renormalize .`)이면
+        #    과거 기록의 blob이 LF→CRLF로 소급 수정된다.
+        #    명령을 **문서에서 읽어** 쓰므로 문서가 되돌아가면 여기서 실패한다.
+        setup = (ENGINE.parent.parent / "docs/SETUP.md").read_text(
+            encoding="utf-8")
+        cmds = [l.strip() for l in setup.splitlines()
+                if l.strip().startswith("git add --renormalize")]
+        check("이행 명령이 문서에 한 줄로 있다 (#39)", len(cmds) == 1, cmds)
+        lab2 = Path(tempfile.mkdtemp(prefix="osk-renorm-"))
+        try:
+            _g = lambda *a: subprocess.run(("git",) + a, cwd=str(lab2),
+                                           capture_output=True, text=True)
+            _g("init", "-q")
+            _g("config", "user.email", "t@t"); _g("config", "user.name", "t")
+            _g("config", "core.autocrlf", "true")
+            raw_rel = "= Scope/W/_raw/2026-09-02.md"
+            crlf = bytes([13, 10])
+            body = ("## 1" + chr(10) + chr(10) + "붙여넣은 로그" + chr(10)
+                    ).encode("utf-8").replace(bytes([10]), crlf)
+            #    정상 승인 객체 하나 — blob은 옳고(LF) 구판 checkout이 작업
+            #    트리만 CRLF로 펼쳐 놓는다. 문서의 명령이 이것을 stage하면
+            #    옳던 blob이 CRLF가 되어 이름과 내용이 갈린다(리뷰 지적).
+            _ob = ("# 노드" + chr(10)).encode("utf-8")
+            _oh = hashlib.sha256(_ob).hexdigest()
+            obj_rel = ("= Scope/Workbench/_ledger/approved/objects/"
+                       + _oh[:2] + "/" + _oh[2:])
+            for rel, data in ((raw_rel, body), (obj_rel, _ob),
+                              ("= Person/누구.md",
+                               ("# 누구" + chr(10)).encode("utf-8"))):
+                (lab2 / rel).parent.mkdir(parents=True, exist_ok=True)
+                (lab2 / rel).write_bytes(data)
+            _g("add", "-A"); _g("commit", "-q", "-m", "구판 커밋(속성 없음)")
+            #    autocrlf=true의 체크아웃 — 작업 트리만 CRLF가 된다
+            _g("rm", "--cached", "-r", ".", "-q"); _g("reset", "--hard", "-q")
+            before = _g("rev-parse", "HEAD:" + raw_rel).stdout.strip()
+            check("전제: blob은 LF인데 작업 트리는 CRLF이고 clean이다 (#39)",
+                  crlf in (lab2 / raw_rel).read_bytes()
+                  and not _g("status", "--porcelain").stdout.strip(),
+                  _g("status", "--porcelain").stdout)
+            (lab2 / ".gitattributes").write_bytes(ga.encode("utf-8"))
+            _g("add", ".gitattributes"); _g("commit", "-q", "-m", "attrs")
+            r = subprocess.run(shlex.split(cmds[0]), cwd=str(lab2),
+                               capture_output=True, text=True)
+            check("문서의 이행 명령이 성립한다 (#39)", r.returncode == 0,
+                  r.stderr[:200])
+            staged = [x for x in _g("diff", "--cached", "--name-only")
+                      .stdout.splitlines() if x.strip()]
+            check("이행이 append-only 원자료를 stage하지 않는다 (#39)",
+                  raw_rel not in staged, staged)
+            check("이행이 정상 승인 객체도 stage하지 않는다 (#39)",
+                  obj_rel not in staged, staged)
+            if staged:
+                _g("commit", "-q", "-m", "정규화")
+            check("과거 기록의 blob이 그대로다 (#39)",
+                  _g("rev-parse", "HEAD:" + raw_rel).stdout.strip() == before,
+                  (before, _g("rev-parse", "HEAD:" + raw_rel).stdout.strip()))
+            #    3단계 재전개가 그 구획을 blob 그대로 되펼친다
+            _g("rm", "--cached", "-r", ".", "-q"); _g("reset", "--hard", "-q")
+            check("재전개가 원자료를 blob 바이트 그대로 펼친다 (#39)",
+                  crlf not in (lab2 / raw_rel).read_bytes(),
+                  (lab2 / raw_rel).read_bytes()[:40])
+            check("승인 객체의 내용이 이행 뒤에도 이름의 digest와 맞는다 (#39)",
+                  hashlib.sha256((lab2 / obj_rel).read_bytes()).hexdigest()
+                  == _oh, (lab2 / obj_rel).read_bytes()[:40])
+        finally:
+            rmtree_force(lab2)
+
+        # ⑩ **승인 객체는 어느 쪽을 무조건 택해도 틀린다** (#39)
+        #    `-text`는 변환을 멈출 뿐 이미 어긋난 것을 고르지 못한다. 두 경우가
+        #    다 현실이다: ⓐ 정상 LF 객체를 구판 checkout이 작업 트리만 CRLF로
+        #    펼쳐 놓은 것 — stage하면 옳던 blob이 깨진다. ⓑ 원본이 CRLF라
+        #    구판 정규화로 blob이 깨진 것 — 빼 두면 재전개가 작업 트리까지
+        #    덮어 양쪽 다 잃는다. 내용 주소에는 파일 이름이라는 심판이 있으므로
+        #    그것으로 가른다(`reconcile_store`).
+        #    되돌리면 — 판정을 한쪽으로 고정하면 두 경우 중 하나가 실패하고,
+        #    fail-closed를 지우면 셋째 검사가 실패한다.
+        def _reconcile_case(tag, name_body, work_body, idx_body, expect):
+            """이름(digest)·작업 트리·색인을 각각 세워 판정을 본다."""
+            lab3 = Path(tempfile.mkdtemp(prefix="osk-obj-"))
+            try:
+                _h = hashlib.sha256(name_body).hexdigest()
+                rel3 = ("= Scope/Workbench/_ledger/approved/objects/"
+                        + _h[:2] + "/" + _h[2:])
+                (lab3 / rel3).parent.mkdir(parents=True, exist_ok=True)
+                (lab3 / rel3).write_bytes(work_body)
+                store = lab3 / "= Scope/Workbench/_ledger/approved/objects"
+                with mock.patch.object(A, "ROOT", lab3),                      mock.patch.object(A, "STORE", store):
+                    res = A.reconcile_store(lambda rel: idx_body)
+                got = ("stage" if res["stage"] else
+                       "restore" if res["restore"] else
+                       "broken" if res["broken"] else "none")
+                check(f"승인 객체 판정 — {tag} (#39)",
+                      got == expect and res["checked"] == 1, (got, res))
+                return res
+            finally:
+                rmtree_force(lab3)
+
+        _lf = ("# 노드" + chr(10)).encode("utf-8")
+        _crlf = _lf.replace(bytes([10]), crlf)
+        #    ⓐ blob이 옳고 작업 트리만 구판 checkout으로 CRLF가 된 것
+        _reconcile_case("정상 LF 객체는 색인이 정본이다",
+                        _lf, _crlf, _lf, "restore")
+        #    ⓑ 원본이 CRLF라 구판 정규화로 색인 쪽이 깨진 것
+        _reconcile_case("원본이 CRLF면 작업 트리가 정본이다",
+                        _crlf, _crlf, _lf, "stage")
+        #    ⓒ 어느 쪽도 이름과 맞지 않는 것
+        _broken = _reconcile_case("양쪽 다 이름과 다르면 판정 불능이다",
+                                  _lf, b"amount to nothing" + bytes([10]),
+                                  b"and to nothing else" + bytes([10]),
+                                  "broken")
+        check("판정 불능이 하나라도 있으면 이행하지 않는다 (#39)",
+              _broken["ok"] is False, _broken)
     finally:
         (ROOT / (reg + "/audit-keep.md")).unlink(missing_ok=True)
         (ROOT / (reg + "/audit-extra.md")).unlink(missing_ok=True)
