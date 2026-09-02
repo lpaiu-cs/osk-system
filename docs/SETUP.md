@@ -255,7 +255,7 @@ HEAD가 `main`이 아니면 매 주기 시작에 되돌린다. 되돌릴 수 없
 
 launchd/systemd 예시는 `_governance/_engine/scripts/`에 있다.
 
-## 줄바꿈(EOL) 이행 — 한 기기에서 한 번
+## 줄바꿈(EOL) 이행 — 기기마다 한 번, 승인은 한 번
 
 `.gitattributes`가 저장소 전체를 **LF로 못박는다**. 이 체계의 여러 판정이 파일의
 raw 바이트에 걸려 있어서다 — 갱신의 프레임워크 대조, 보호영역의 승인본
@@ -267,8 +267,17 @@ CRLF로 체크아웃되어 그 기기의 **모든 보호영역이 "전 파일 �
 거기서 승인하면 반대편 기기가 pending이 되는 핑퐁이다. `git diff`는 빈 출력이라
 원인이 보이지 않는다.
 
-이 이행은 **한 기기에서 한 번**만 한다. 나머지 기기는 평소의 pull로 정규화된
-파일과 새 승인본을 함께 받으므로 clean으로 수렴한다.
+**pull만으로는 이행되지 않는다.** `.gitattributes`가 바뀌어도 git은 blob이 그대로인
+파일을 다시 체크아웃하지 않는다. 그리고 이 문제를 겪는 기기에서는 blob이 이미
+LF인 경우가 대부분이다(`core.autocrlf=true`는 커밋할 때 LF로 정규화하고 체크아웃할
+때 CRLF로 되돌린다) — 그래서 이행 기기의 `git add --renormalize .`가 **아무 파일도
+바꾸지 않는다.** 실측: `autocrlf=true` 클론이 새 `.gitattributes`를 pull한 뒤에도
+작업 트리는 CRLF 그대로였고 `git status`는 clean이었다. 재전개(아래 3단계)를 그
+기기에서 직접 돌려야 LF가 된다. 그래서 **승인은 한 기기에서 한 번**이지만
+**재전개는 기존 클론마다 한 번**이다. 새로 clone하는 기기는 처음부터 LF로
+받으므로 할 일이 없다.
+
+### A. 이행 기기에서 — 한 번
 
 ```bash
 # 0) 전제 — 진행 중 작업이 없어야 한다
@@ -282,6 +291,7 @@ osk validate                    # 지금의 protected_regions를 적어 둔다
 git add --renormalize .
 git status --short              # 줄바꿈만 바뀐 파일 목록
 git commit -m "chore: 줄바꿈을 LF로 정규화"
+#    변경이 없으면 이 커밋은 건너뛴다 — blob이 이미 LF라는 뜻이고 정상이다.
 
 # 3) 작업 트리를 실제로 LF로 펼친다
 #    `--renormalize`는 **색인만** 고친다. 엔진은 작업 트리 바이트를 읽으므로
@@ -293,7 +303,16 @@ git reset --hard
 osk status                      # pending인 영역이 보인다
 osk approve "<영역>"            # 변경집합이 "줄바꿈만 다름"으로 표시한다
 
-# 5) 확인
+# 5) **승인 결과를 커밋한다** — 이게 없으면 다른 기기에 도달하지 않는다
+#    `osk approve`는 `= Scope/Workbench/_ledger/approvals.jsonl`에 행을 더하고
+#    `_ledger/approved/objects/`에 새 manifest·blob을 쓰지만 **git commit은 하지
+#    않는다.** 1단계에서 데몬을 멈췄으므로 대신 커밋해 줄 것도 없다. 그대로
+#    push하면 2단계의 정규화 커밋만 올라가고, 다른 기기는 정규화된 파일만 받고
+#    대응하는 승인본을 못 받아 pending에 머문다.
+git add -A
+git commit -m "chore: 줄바꿈 이행 — 새 승인본"
+
+# 6) 확인하고 올린다
 osk validate                    # 전 영역 clean
 git push
 ```
@@ -306,6 +325,33 @@ git이 색인과 작업 트리를 같다고 보기 때문이다(실측). `git rm
 4단계에서 `osk approve`는 **줄바꿈만 다른 파일을 그렇게 표시한다** — 내용이
 그대로임을 보고 승인하는 것이지, 무엇이 바뀌었는지 모르는 채 승인하는 것이
 아니다.
+
+### B. 나머지 기존 클론마다 — 한 번씩
+
+승인은 하지 않는다. A가 세운 승인본을 받고, 작업 트리를 그 기준으로 펼치기만
+한다.
+
+```bash
+# 0) 데몬과 MCP 서버를 멈춘다
+
+# 1) 미커밋 변경을 먼저 정리한다 — 다음 단계가 그것을 버린다
+git status --porcelain          # 비어 있어야 한다
+#    남은 것이 있으면 버릴 것이 아닌 한 먼저 커밋한다(내용은 보존된다 —
+#    새 규칙이 색인에 넣을 때 LF로 정규화하고, 재전개가 그대로 되펼친다).
+
+# 2) A의 정규화·승인본을 받는다
+git pull --ff-only
+
+# 3) **이 기기에서도** 작업 트리를 다시 펼친다 — pull은 이걸 하지 않는다
+git rm --cached -r . -q
+git reset --hard
+
+# 4) 확인 — 승인할 것이 없어야 한다
+osk validate                    # 전 영역 clean
+```
+
+4단계에서 pending이 남으면 그 영역은 줄바꿈이 아닌 실제 차이가 있다는 뜻이다.
+평소대로 검토해 승인하거나 반려한다 — 이행의 일부가 아니다.
 
 **승인본 blob은 이 이행에서 변환되지 않는다.** `_ledger/approved/objects/`는
 파일 이름이 곧 내용의 sha256이라 `.gitattributes`가 `-text`로 못박는다. 그
