@@ -643,41 +643,54 @@ def setup_doc_drift() -> list[str]:
             for stale in sorted(named - set(declared)):
                 errs.append(f"안내문이 규범에 없는 도구를 적는다: {stale}")
         # ⓑ 개수 표기 — "도구는 열둘이며" 같은 문장이 목록과 함께 늙는다.
-        at = m.start() if m else 0
-        head = text[max(0, at - 200):at + 200]
+        #    문단을 못 찾았으면 위에서 이미 말했다 — 같은 사실로 두 번 울지 않는다.
+        at = m.start() if m else None
+        head = text[max(0, at - 200):at + 200] if at is not None else ""
         n = len(declared)
         want = _NUM_KO.get(n)
         # 숫자꼴도 인정하되 **단위를 달고 있을 때만** 본다 — 맨 숫자를 찾으면
         # 곁의 조항 번호(§6-2 7항)가 우연히 걸린다.
-        if want and not (want in head or f"{n}종" in head or f"{n}개" in head):
+        if (at is not None and want
+                and not (want in head or f"{n}종" in head
+                         or f"{n}개" in head)):
             errs.append(f"안내문의 도구 수 표기가 규범과 다르다 — 선언 {n}종")
 
     # ⓒ CLI 표 — 사용자가 칠 수 있는 명령이 실제 파서와 **양방향으로** 같아야
     #    한다. 빠진 것만 보면 반대쪽 표류를 놓친다: 파서에서 명령을 없앴는데
     #    안내문 행이 남으면 사용자는 안내문을 따라 존재하지 않는 명령을 친다 —
-    #    이 PR이 막으려는 '없어진 제도를 안내문이 계속 가르치는' 유형 그 자체다.
+    #    이 검사가 막으려는 '없어진 제도를 안내문이 계속 가르치는' 유형이다.
+    #
+    #    **찾지 못한 것을 통과로 세지 않는다.** 표를 못 찾으면 조용히 넘어가던
+    #    구판은, 안내문을 다시 쓰다 표 머리글이 바뀌는 순간 이 보장을 통째로
+    #    잃었다(리뷰 지적) — 그 뒤로는 명령을 더하든 지우든 아무 말이 없다.
+    #    위 도구 목록 갈래가 '문단을 찾지 못했다'를 오류로 내는 것과 같게 둔다.
     try:
         allc, leaves = cli_commands()
-    except Exception:
-        allc, leaves = set(), set()          # 파서를 세우지 못하면 성립하지 않는다
-    tbl = _re.search(r"^\| 명령 \| 하는 일 \|$(.*?)\n[ \t]*\n", text,
-                     _re.M | _re.S)
-    if tbl and leaves:
-        doc: set[str] = set()
-        for row in tbl.group(1).splitlines():
-            cells = row.split("|")
-            if len(cells) < 3:
-                continue
-            head = cells[1].strip()
-            if not head or set(head) <= set("-: "):
-                continue                     # 구분선
-            # **첫 칸만** 본다 — 설명 칸의 backtick(`_raw/` 등)까지 훑으면
-            # 명령이 아닌 것이 명령으로 잡힌다.
-            doc |= set(_re.findall(r"`([a-z][a-z-]*(?: [a-z]+)?)`", head))
-        for missing in sorted(leaves - doc):
-            errs.append(f"안내문의 CLI 표에 없는 명령이다: {missing}")
-        for stale in sorted(doc - allc):
-            errs.append(f"안내문의 CLI 표에 없어진 명령이 남아 있다: {stale}")
+    except Exception as e:
+        errs.append(f"CLI 명령을 파서에서 만들지 못했다 — 검사 불성립: {e}")
+        allc, leaves = set(), set()
+    if leaves:
+        tbl = _re.search(r"^\| 명령 \| 하는 일 \|$(.*?)\n[ \t]*\n", text,
+                         _re.M | _re.S)
+        if not tbl:
+            errs.append("안내문에서 CLI 표를 찾지 못했다 — 검사 불성립"
+                        "(표 머리글은 `| 명령 | 하는 일 |`이어야 한다)")
+        else:
+            doc: set[str] = set()
+            for row in tbl.group(1).splitlines():
+                cells = row.split("|")
+                if len(cells) < 3:
+                    continue
+                head = cells[1].strip()
+                if not head or set(head) <= set("-: "):
+                    continue                     # 구분선
+                # **첫 칸만** 본다 — 설명 칸의 backtick(`_raw/` 등)까지 훑으면
+                # 명령이 아닌 것이 명령으로 잡혀 거짓 경보가 난다.
+                doc |= set(_re.findall(r"`([a-z][a-z-]*(?: [a-z]+)?)`", head))
+            for missing in sorted(leaves - doc):
+                errs.append(f"안내문의 CLI 표에 없는 명령이다: {missing}")
+            for stale in sorted(doc - allc):
+                errs.append(f"안내문의 CLI 표에 없어진 명령이 남아 있다: {stale}")
     return errs
 
 

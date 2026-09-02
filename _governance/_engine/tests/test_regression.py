@@ -7070,14 +7070,55 @@ def test_setup_doc_drift():
         check("설명 칸의 backtick을 명령으로 세지 않는다 (#42)",
               _drift() == [], _drift())
 
-        #    ⑧ 맞으면 아무 말도 하지 않는다
+        #    ⑧ **표를 못 찾으면 통과가 아니라 오류다.** 구판은 조용히 넘어가서,
+        #       안내문을 다시 쓰다 표 머리글이 바뀌는 순간 파서↔안내문 보장을
+        #       통째로 잃었다 — 그 뒤로는 명령을 더하든 지우든 아무 말이 없다.
+        #       도구 목록 갈래가 '문단을 찾지 못했다'를 내는 것과 같아야 한다.
+        body = (lab / "docs/SETUP.md").read_text(encoding="utf-8")
+        (lab / "docs/SETUP.md").write_bytes(
+            body.replace("| 명령 | 하는 일 |", "| CLI 명령 | 설명 |")
+            .encode("utf-8"))
+        e = _drift()
+        check("CLI 표 머리글이 바뀌면 검사 불성립을 보고한다 (#42)",
+              any("CLI 표를 찾지 못했다" in x for x in e), e)
+        #       표를 통째로 지운 경우 — 머리글 자체가 없다
+        (lab / "docs/SETUP.md").write_bytes(
+            ("## MCP 서버" + chr(10) * 2
+             + "도구는 넷이며 그 목록의 정본은 Mechanism §6-2 7항이다 —"
+             + chr(10) + full + chr(10) * 2 + "끝." + chr(10)).encode("utf-8"))
+        e = _drift()
+        check("CLI 표가 통째로 없으면 검사 불성립을 보고한다 (#42)",
+              any("CLI 표를 찾지 못했다" in x for x in e), e)
+
+        #       도구 목록 문단도 같다 — 그 문단을 찾는 문장이 바뀌면 조용히
+        #       넘어가는 대신 불성립을 말해야, 목록 표류가 계속 잡힌다.
+        (lab / "docs/SETUP.md").write_bytes(
+            ("## MCP 서버" + chr(10) * 2
+             + "도구는 넷이며 목록은 아래와 같다 —" + chr(10)   # 정본 문장이 바뀌었다
+             + full + chr(10) * 2
+             + "| 명령 | 하는 일 |" + chr(10) + "|---|---|" + chr(10)
+             + rows + chr(10) * 2 + "끝." + chr(10)).encode("utf-8"))
+        e = _drift()
+        check("도구 목록 문단을 못 찾으면 검사 불성립을 보고한다 (#42)",
+              any("도구 목록 문단을 찾지 못했다" in x for x in e), e)
+
+        #       파서를 세우지 못하는 경우도 통과가 아니다 — 검사가 스스로
+        #       꺼지는 자리를 남기지 않는다.
+        _setup(full, "넷", rows)
+        with mock.patch.object(validate, "cli_commands",
+                               side_effect=RuntimeError("파서 고장")):
+            e = _drift()
+        check("파서를 못 세우면 검사 불성립을 보고한다 (#42)",
+              any("파서에서 만들지 못했다" in x for x in e), e)
+
+        #    ⑨ 맞으면 아무 말도 하지 않는다
         _setup(full, "넷", rows)
         check("어긋남이 없으면 조용하다 (#42)", _drift() == [], _drift())
     finally:
         rmtree_force(lab)
 
-    #    ⑨ **이 저장소 자신의** 안내문이 지금 규범·파서와 같다.
-    #       위 여덟은 검사가 도는지를 보고, 이것이 실제 표류를 막는 자리다.
+    #    ⑩ **이 저장소 자신의** 안내문이 지금 규범·파서와 같다.
+    #       위 아홉은 검사가 도는지를 보고, 이것이 실제 표류를 막는 자리다.
     #       `ROOT`는 mini-vault라 `docs/`가 없다 — 그대로 부르면 빈 목록이
     #       돌아와 **무엇을 지워도 통과한다**(첫 판이 그래서 뮤턴트를 살렸다).
     repo = ENGINE.parent.parent
