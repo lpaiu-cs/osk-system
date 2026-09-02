@@ -448,6 +448,20 @@ def surface_lint() -> list[str]:
                                "minLength", "maxLength", "minItems"))
             if k not in (t.description or "") and not constrained:
                 errs.append(f"{t.name}.{k}: 필수인데 설명에도 스키마 제약에도 없다")
+    # ⓒ-2 **등록부 대 선언 목록** — `surface_violations`의 AST 검사는 `@mcp.tool()`
+    #    데코레이터만 보므로 `mcp.add_tool(fn, name=…)`으로 등재한 도구를 놓친다
+    #    (FastMCP에 실재하는 API다). 여기는 이미 **런타임 등록부**를 읽고 있으니
+    #    같은 자리에서 대조하면 정적 분석의 사각이 닫힌다 — 무엇이 선언됐는지가
+    #    곧 클라이언트의 능력이라는 §6-2 1항의 전제가 그렇게 지켜진다.
+    declared = declared_tools()
+    if declared is None:
+        errs.append("Mechanism §6-2의 도구 목록을 읽지 못했다 — 표면의 정본 부재")
+    else:
+        reg_names = {t.name for t in tools}
+        for extra in sorted(reg_names - set(declared)):
+            errs.append(f"선언되지 않은 도구가 등록부에 있다: {extra}")
+        for missing in sorted(set(declared) - reg_names):
+            errs.append(f"선언된 도구가 등록부에 없다: {missing}")
     # ⓓ search 결과 필드 계약 — `updated`는 실어야 하고(시기 필터), 서명
     #    폐지로 `signed`는 표면에서 사라져야 한다(그 필드로 권한 추정 금지)
     names = {t.name for t in tools}
@@ -501,7 +515,8 @@ def declared_tools() -> list[str] | None:
 # 표면이 거치는 쓰기 통로 — 금지 심벌 검사를 여기까지 건다. 코드를 옮겨
 # 검사를 비켜가는 표류를 막기 위해서다(6차 판정). `osk/raw.py`는 append_raw의
 # 통로이므로 같은 이유로 여기 든다.
-SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/raw.py")
+SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/raw.py",
+                   "osk/scope_memory.py")
 
 
 def surface_violations(engine_dir=None) -> list[str]:

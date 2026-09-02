@@ -73,12 +73,24 @@ def main() -> None:
         text = (st.get("text") or "").strip()
         if not text:
             return
+        # 문구는 **현행 계약**을 가르쳐야 한다. 구판은 "약 10 user 턴마다 …
+        # 전체 치환"이라 적었는데, v3.10.0의 케이던스는 9·15턴이고 쓰기의 기본은
+        # `edits` 앵커 일괄이다 — 세션의 첫 지시가 1,500자 전문 재발화를 유도해
+        # 개정이 없애려던 행동을 그대로 불렀다.
+        #
+        # 세션 키도 싣는다. 도구의 `session`은 이 값이어야 하는데 훅만 알고
+        # 호출자는 몰라서 매번 지어냈고, 그 결속은 append-only로 영구히 쌓였다.
         out = (
             f"[osk scope 기억 — = Scope/{st['scope']} · "
-            f"{st['chars']}/{st['limit']}자]\n"
-            f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것. "
-            f"약 10 user 턴마다 이 세션의 배울 점을 `scope_memory` 도구로 "
-            f"통합하라(전체 치환, `expect_hash`는 아래 hash).\n"
+            f"{st['chars']}/{st['limit']}자 · 여유 {st['limit'] - st['chars']}자]\n"
+            f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것.\n"
+            f"`scope_memory`를 부를 때 `session=\"{key}\"`를 그대로 쓴다 — "
+            f"세션이 바뀌어도 같은 값이어야 이 기억으로 돌아온다.\n"
+            f"약 9 user 턴마다 이 세션의 배울 점을 통합하라 — `edits`로 "
+            f"`[{{old_text, new_text}}, …]`를 **다음 도구 호출에 함께** 실어라. "
+            f"앵커는 아래 전문에서 그대로 복사하고(공백·줄바꿈까지, 마지막 줄엔 "
+            f"개행이 없다) 해시는 필요 없다. 전문을 통째로 갈 때만 `text`와 "
+            f"아래 `hash`를 쓴다.\n"
             f"hash: {st['hash']}\n---\n{text}")
         sys.stdout.buffer.write(out.encode("utf-8"))
         sys.stdout.buffer.flush()

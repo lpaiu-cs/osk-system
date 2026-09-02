@@ -155,6 +155,13 @@ def read_node(name: str) -> dict:
     `new_hash`로 준다. 손잡이는 응답의 `name`(제목)이다 — 다른 도구에 그대로
     넣고, 근거로 달 때도 그것을 쓴다. `hash`는 `expect_hash`에 그대로 넣는다."""
     idx = _s().idx
+    # 동명 노드는 **고르지 않는다** — id 갈래(아래)와 같은 규율이다. 구판은
+    # 이름 갈래에만 이 방어가 없어, 쓰기 통로가 "어느 것인지 정해지지 않는다"고
+    # 거부하는 상황에서 읽기는 조용히 한쪽을 돌려줬다(Mechanism §2 1항).
+    if name in idx.dup_stems:
+        return {"error": f"같은 이름의 노드가 {len(idx.dup_stems[name])}개다 "
+                         f"— 어느 것인지 정해지지 않는다: "
+                         f"{idx.dup_stems[name]} (먼저 고쳐라)"}
     hit = idx.nodes.get(name)
     if not hit:
         # 쓰기 응답은 id를 돌려준다 — 그것을 핸들로 잡은 호출자에게
@@ -238,8 +245,10 @@ def overview(session: str | None = None) -> dict:
         **_engine_state(),
     }
     if session:
+        # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
+        # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
+        # 노출하지 않는다"고 못박는다. 착지 판단에는 `session_scope`로 족하다.
         out["session_scope"] = write.resolve_session(session)
-        out["session_canonical"] = write.canonical_session(session)
     return out
 
 

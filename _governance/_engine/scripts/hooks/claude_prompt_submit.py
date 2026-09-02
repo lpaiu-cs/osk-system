@@ -80,7 +80,7 @@ def main() -> None:
         pass
 
     # 기억의 지금 상태 — 결속이 없거나 비었으면 세기만 한다(주입할 것이 없다).
-    st = None
+    st, key = None, None
     try:
         from claude_session_start import session_key
         from osk import scope_memory, write
@@ -90,7 +90,7 @@ def main() -> None:
             if not (st.get("text") or "").strip():
                 st = None
     except Exception:
-        st = None
+        st, key = None, None
 
     n = _read_int(f_count) + 1
     if st is not None:
@@ -99,8 +99,14 @@ def main() -> None:
             last = f_hash.read_text(encoding="utf-8").strip()
         except Exception:
             pass
-        if last and last != st["hash"]:
-            # 통합이 일어났다(이 세션이든 다른 기기든). 계수를 처음으로.
+        if last != st["hash"]:
+            # 통합이 일어났다(이 세션이든 다른 기기든) — 계수를 처음으로.
+            #
+            # `last`가 **빈** 경우도 여기 든다: 이 세션에서 기억이 처음 보인
+            # 턴이다. 구판은 `last and …`라 그 턴을 그냥 지나쳤고, 결속이나 첫
+            # 기억이 15턴 뒤에 생기면 계수가 이미 그 너머라 9·15에 다시 닿지
+            # 못해 **그 세션 내내 주입이 없었다**(실측: 16턴에 결속 → 59턴까지
+            # 0건). 처음 보인 순간이 곧 케이던스의 시작이다.
             n = 1
         _write(f_hash, st["hash"])
     _write(f_count, str(n))
@@ -109,9 +115,11 @@ def main() -> None:
         return
 
     scope, chars, limit = st["scope"], st["chars"], st["limit"]
+    # 세션 키를 함께 싣는다 — 도구의 `session` 인자가 그 값이어야 하는데,
+    # 훅만 그 값을 알고 호출자는 몰라서 매번 지어냈다(대장에 죽은 결속이 쌓였다).
     head = (f"[osk 케이던스 — user 턴 {n}] 아래는 `= Scope/{scope}` 기억의 지금 "
             f"전문이다 — {chars}/{limit}자 · **여유 {limit - chars}자** · "
-            f"hash {st['hash']}.\n")
+            f"hash {st['hash']} · `session=\"{key}\"`.\n")
     if n == SOFT:
         body = (head +
                 "이 세션에서 배운 것을 **다음 도구 호출에 함께 실어** `scope_memory`로 "

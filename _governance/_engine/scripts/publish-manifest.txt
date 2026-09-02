@@ -34,6 +34,11 @@ MAP  .gitattributes -> .gitattributes
 KEEP LICENSE
 KEEP .gitignore
 KEEP README.md
+# 비준증빙과 릴리스 워크플로는 **정본에서 만들어져 정본에 산다**(Mechanism
+# §1-2 2항). 사설에 원본이 없으니 MAP 대상이 아닌데, KEEP에도 없으면 "없는 것은
+# 지운다"에 걸려 발행이 그 둘을 지우고 커밋한다 — 비준증빙이 HEAD에서 사라진다.
+KEEP release.json
+KEEP .github/workflows/release.yml
 
 # ── 대상 안에서도 나가지 않는 것 ────────────────────────────
 # 대장은 이 인스턴스의 권위 기록이다 — 노드 id·해시·사유·세션 키가 들어 있고

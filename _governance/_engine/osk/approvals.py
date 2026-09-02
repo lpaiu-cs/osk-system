@@ -21,7 +21,8 @@ from __future__ import annotations
 import json, os, re, tempfile
 from pathlib import Path
 
-from .core import (ROOT, LEDGER, sha256_bytes, sha256_file, posix_rel,
+from .core import (ROOT, LEDGER, ledger_damage, sha256_bytes, sha256_file,
+                   posix_rel,
                    resolve_in_root, ledger_append, ledger_read, causal_maxima,
                    effective_parents, heads, mutation_lock, resolve_one,
                    _rid_key)
@@ -206,10 +207,29 @@ def records() -> list[dict]:
     return ledger_read(APPROVALS)
 
 
+def _damaged(recs: list[dict]) -> bool:
+    """대장에 **구조 손상**(rid 부재·형식 위반·중복)이 있는가.
+
+    `core.unresolved_nodes`의 손상 접기는 `field == "node"`일 때만 돌아서
+    `region` 키에는 적용되지 않았다. 그 결과가 fail-**open**이었다: 손상된 행은
+    `effective_parents`가 DAG에서 아예 빼므로 극대가 0이 되고, `state()`는 그것을
+    `unprotected`로 읽었다 — 보호영역이 조용히 사라진 것처럼 보이고, 남은 행만
+    극대가 되면 사용자가 승인한 내용이 "에이전트 변경"으로 보여 반려가 그것을
+    지웠다(실측 재현).
+
+    Mechanism §3 2항은 반대를 명한다 — "구조 손상은 해당 대상을 **미확정으로
+    두고** … 그 상태에서는 새 기록의 append도 거부한다." 손상은 영역을 가리지
+    않으므로(어느 행이 어느 갈래에 속했는지가 깨진 것이다) 전 영역을 미확정으로
+    본다. 해소는 §3 8항의 수동 복구다."""
+    return bool(ledger_damage(recs, APPROVALS))
+
+
 def region_record(region: str, recs: list[dict] | None = None) -> dict | None:
     """영역의 현행 기록 — 그 `region`의 **유일한 인과 극대**. 극대가 여럿
-    (다기기 비교 불능 분기)이면 None(stale)."""
+    (다기기 비교 불능 분기)이거나 대장이 구조 손상이면 None(stale)."""
     recs = records() if recs is None else recs
+    if _damaged(recs):
+        return None
     return resolve_one(recs, region, "region")
 
 
@@ -250,8 +270,14 @@ def protected_regions() -> list[str]:
     필요 없고, 그것 때문에 영역 전수 판독을 하면 이 함수를 쓰는 모든 쓰기가
     비싸진다)."""
     recs = records()
+    named = {r.get("region") for r in recs if r.get("region")}
+    if _damaged(recs):
+        # 손상 위에서는 어느 영역이 해제됐는지도 말할 수 없다 — 이름이 오른 것을
+        # 전부 남긴다(fail-closed). 빼면 `region_of`가 None을 돌려 그 아래 파일이
+        # '보호영역 밖 = 제약 없음'으로 새어 나간다.
+        return sorted(named)
     out = []
-    for region in {r.get("region") for r in recs if r.get("region")}:
+    for region in named:
         maxima = causal_maxima(recs, region, None, "region")
         if maxima and not (len(maxima) == 1
                            and maxima[0].get("kind") == "unprotect"):
@@ -264,6 +290,11 @@ def state(region: str, recs: list[dict] | None = None) -> str:
     stale = 인과 극대가 유일하지 않음(승인·반려 보류). clean = 작업본 tree가
     승인본 tree와 같음. pending = 다름."""
     recs = records() if recs is None else recs
+    if _damaged(recs):
+        # 손상은 판정 불능이지 해제가 아니다. 이름이 대장에 오른 적 없는 영역만
+        # `unprotected`이고, 나머지는 stale로 두어 승인·반려가 함께 막힌다.
+        return ("stale" if any(r.get("region") == region for r in recs)
+                else "unprotected")
     maxima = causal_maxima(recs, region, None, "region")
     if len(maxima) != 1:
         return "stale" if maxima else "unprotected"
@@ -480,6 +511,18 @@ def protect(region: str, reason: str = "") -> dict:
         if d is None or not d.is_dir():
             raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
         reg = posix_rel(d, Path(os.path.realpath(ROOT)))
+        # **성립할 수 없는 영역을 받지 않는다.** `_SKIP_DIRS`는 영역 **안**의
+        # 하위 디렉터리에만 걸리고 루트 자신에는 걸리지 않아, 대장 구획을 영역으로
+        # 지정하면 승인본이 자기 자신을 담는 순환이 된다 — 지정 직후 pending,
+        # 승인해도 곧바로 pending, 해제는 pending이라 거부되어 대장을 손으로
+        # 고치기 전에는 빠져나올 수 없다(실측). vault 루트(`.`)도 같다: region
+        # key가 `"."`이 되어 `containing_regions`의 접두 대조가 어떤 파일도 덮지
+        # 못하고 changeset이 해석되지 않는다.
+        if reg == "." or set(Path(reg).parts) & _SKIP_DIRS:
+            raise ValueError(
+                f"영역이 될 수 없는 구획이다: {reg} — 대장·저장소 살림살이 구획"
+                f"({', '.join(sorted(_SKIP_DIRS))})과 vault 루트는 승인본이 "
+                f"자기 자신을 담게 되어 판정이 성립하지 않는다")
         recs = records()
         if state(reg, recs) == "stale":
             # is_protected는 stale에서 False라 이중지정 거부를 통과한다 — 분기
