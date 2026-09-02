@@ -3228,6 +3228,26 @@ def test_release_and_update():
             check("adopt 최초 편입: 사전 존재 파일을 정본으로 덮는다",
                   "정본 규범 문서" in
                   (ROOT / "_governance/UpdDoc.md").read_text(encoding="utf-8"))
+            # **덮은 것을 옆에 남기고 그렇다고 말한다** (#41 4항).
+            #   편입의 뜻이 "현재 릴리스를 기준선 삼는다"이므로 덮는 것은 맞다.
+            #   맞지 않았던 것은 그것이 보고에서 평범한 `update`와 구별되지 않고,
+            #   성공하면 `_txn_clear`가 pre-image까지 지워 되돌릴 길이 없다는 것이다.
+            #   되돌리면 — `plan`의 `adopted` 집계나 `_adopt_sidecar_plan`을 지우면
+            #   아래 셋 중 하나가 실패한다.
+            _side = ROOT / f"_governance/UpdDoc.md.local-{r1['version']}"
+            mine.append(_side)
+            check("adopt가 덮은 로컬 내용을 사이드카로 남긴다 (#41)",
+                  _side.is_file()
+                  and _side.read_text(encoding="utf-8") == "기존 인스턴스의 다른 내용\n",
+                  _side.read_bytes()[:40] if _side.exists() else "부재")
+            check("adopt가 덮은 자리를 보고에서 구별한다 (#41)",
+                  "_governance/UpdDoc.md" in r1.get("adopted", [])
+                  and "_governance/UpdDoc.md" in r1["update"], r1.get("adopted"))
+            check("덮지 않은 갱신은 adopted에 들지 않는다 (#41)",
+                  all(x not in r1.get("adopted", [])
+                      for x in ("docs/UPD-SETUP.md",
+                                "_governance/records/갱신 사료.md")),
+                  r1.get("adopted"))
             check("편입 후 관리 이력이 생긴다", update.has_history())
             mine += [ROOT / "_governance/UpdDoc.md",
                      ROOT / "_governance/records/갱신 사료.md",
