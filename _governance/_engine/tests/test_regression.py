@@ -3045,9 +3045,25 @@ def test_publish_guards():
             stray = pub / "stray-leftover.md"
             stray.write_text(node_text("260802-pppp-0003", "떠도는 잔재"),
                              encoding="utf-8")
+            # KEEP 파일의 **로컬 수정**은 발행이 검증하지 않는다(사설에 원본이
+            # 없어 `items`에 들지 않으므로 `guard_secrets`도 `plan`도 못 본다).
+            # 그러니 커밋에 실려서도 안 된다 — 실리면 CI workflow 같은 특권
+            # 파일의 조용한 변경이 검증 밖으로 공개된다.
+            keepf = pub / "LICENSE"
+            keep_before = keepf.read_bytes() if keepf.is_file() else None
+            keepf.write_text("로컬에서 고친 KEEP\n", encoding="utf-8")
             rep_a = publish.run(pub, apply=True, message="가드 시험",
                                 manifest=man)
             check("적용: 커밋됨", rep_a.get("committed"), rep_a)
+            _kshow = subprocess.run(
+                ["git", "-C", str(pub), "show", "HEAD:LICENSE"],
+                capture_output=True, text=True)
+            check("KEEP의 로컬 수정은 발행 커밋에 실리지 않는다",
+                  _kshow.returncode != 0
+                  or "로컬에서 고친" not in _kshow.stdout, _kshow.stdout[:60])
+            check("그래도 KEEP 파일은 디스크에 남는다", keepf.is_file())
+            if keep_before is not None:
+                keepf.write_bytes(keep_before)
             tracked = subprocess.run(
                 ["git", "-C", str(pub), "ls-files", "-z"], capture_output=True,
                 text=True).stdout.split("\0")
