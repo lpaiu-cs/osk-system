@@ -570,6 +570,38 @@ def declared_tools() -> list[str] | None:
     return sorted(m.group(1).split()) if m else None
 
 
+def cli_commands() -> tuple[set[str], set[str]]:
+    """CLI 명령을 **파서 자신**에게 묻는다 — (전체 경로, 잎).
+
+    소스 문자열을 정규식으로 훑는 방식은 정의 형태가 조금만 달라도 조용히
+    빠진다: `DELEGATED`의 `update`·`release`는 들여쓰기 때문에 **하나도 걸리지
+    않았고**, 그래서 안내문에서 그 두 행을 지워도 검사가 통과했다(리뷰 지적,
+    실측). 명령이 무엇인지 아는 것은 파서이므로 파서에서 만든다.
+
+    잎을 따로 돌려주는 이유: `raw`·`sm`은 그 자체로 칠 수 있는 명령이 아니라
+    하위 명령을 요구하는 묶음이다. 안내문이 적어야 하는 것은 사용자가 실제로
+    치는 `raw append` 쪽이고, 묶음 이름을 적는 것은 잘못이 아니다."""
+    import argparse as _ap
+    from .cli import build_parser
+    allc: set[str] = set()
+    leaves: set[str] = set()
+
+    def walk(parser, prefix=""):
+        subs = [a for a in parser._actions
+                if isinstance(a, _ap._SubParsersAction)]
+        if not subs and prefix:
+            leaves.add(prefix)
+            return
+        for act in subs:
+            for name, sp in act.choices.items():
+                path = (prefix + " " + name).strip()
+                allc.add(path)
+                walk(sp, path)
+
+    walk(build_parser())
+    return allc, leaves
+
+
 def setup_doc_drift() -> list[str]:
     """운용 안내문(`docs/SETUP.md`)이 규범·구현과 어긋나는가.
 
@@ -620,20 +652,32 @@ def setup_doc_drift() -> list[str]:
         if want and not (want in head or f"{n}종" in head or f"{n}개" in head):
             errs.append(f"안내문의 도구 수 표기가 규범과 다르다 — 선언 {n}종")
 
-    # ⓒ CLI 표 — 사용자가 칠 수 있는 명령이 실제 파서와 같아야 한다.
+    # ⓒ CLI 표 — 사용자가 칠 수 있는 명령이 실제 파서와 **양방향으로** 같아야
+    #    한다. 빠진 것만 보면 반대쪽 표류를 놓친다: 파서에서 명령을 없앴는데
+    #    안내문 행이 남으면 사용자는 안내문을 따라 존재하지 않는 명령을 친다 —
+    #    이 PR이 막으려는 '없어진 제도를 안내문이 계속 가르치는' 유형 그 자체다.
     try:
-        from . import cli as _cli
-        src = Path(_cli.__file__).read_text(encoding="utf-8")
-        real = set(_re.findall(r'sub\.add_parser\("([a-z-]+)"', src))
-        real |= set(_re.findall(r'^[ ]{4}"([a-z]+)": "', src, _re.M))  # DELEGATED
-        tbl = _re.search(r"^\| 명령 \| 하는 일 \|$(.*?)\n[ \t]*\n", text,
-                         _re.M | _re.S)
-        if tbl and real:
-            doc = set(_re.findall(r"`([a-z-]+)(?: [a-z]+)?`", tbl.group(1)))
-            for missing in sorted(real - doc):
-                errs.append(f"안내문의 CLI 표에 없는 명령이다: {missing}")
+        allc, leaves = cli_commands()
     except Exception:
-        pass                       # 파서를 못 읽으면 이 갈래는 성립하지 않는다
+        allc, leaves = set(), set()          # 파서를 세우지 못하면 성립하지 않는다
+    tbl = _re.search(r"^\| 명령 \| 하는 일 \|$(.*?)\n[ \t]*\n", text,
+                     _re.M | _re.S)
+    if tbl and leaves:
+        doc: set[str] = set()
+        for row in tbl.group(1).splitlines():
+            cells = row.split("|")
+            if len(cells) < 3:
+                continue
+            head = cells[1].strip()
+            if not head or set(head) <= set("-: "):
+                continue                     # 구분선
+            # **첫 칸만** 본다 — 설명 칸의 backtick(`_raw/` 등)까지 훑으면
+            # 명령이 아닌 것이 명령으로 잡힌다.
+            doc |= set(_re.findall(r"`([a-z][a-z-]*(?: [a-z]+)?)`", head))
+        for missing in sorted(leaves - doc):
+            errs.append(f"안내문의 CLI 표에 없는 명령이다: {missing}")
+        for stale in sorted(doc - allc):
+            errs.append(f"안내문의 CLI 표에 없어진 명령이 남아 있다: {stale}")
     return errs
 
 

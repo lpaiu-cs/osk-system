@@ -6985,8 +6985,11 @@ def test_setup_doc_drift():
     §9 1항 패턴표↔`secrets.PATTERNS` 대조와 같은 규율을 안내문에 건다.
 
     무엇을 망가뜨리면 실패하는가:
-      · 대조 넷(빠진 도구·없는 도구·개수·CLI 명령) 중 하나를 지우면 그 단언이 실패
-      · 실 안내문이 규범과 갈라지면 마지막 단언이 실패한다(이 저장소 자신을 본다)
+      · 대조 다섯(빠진 도구·없는 도구·개수·빠진 명령·없어진 명령) 중 하나를
+        지우면 그 단언이 실패한다
+      · 명령 집합을 파서가 아니라 소스 정규식에서 만들면 `update`·`release`가
+        빠져 ④가 실패한다(구판이 그랬다)
+      · 실 안내문이 규범·파서와 갈라지면 마지막 단언이 실패한다
     """
     lab = Path(tempfile.mkdtemp(prefix="osk-setupdoc-"))
     try:
@@ -6996,6 +6999,14 @@ def test_setup_doc_drift():
         (lab / "_governance/Mechanism.md").write_bytes(
             ("## §6-2 외부 표면" + chr(10) * 2 + "```" + chr(10)
              + " ".join(tools) + chr(10) + "```" + chr(10)).encode("utf-8"))
+
+        #    표의 행은 **파서에서** 만든다 — 여기에 손으로 적으면 그 목록이
+        #    또 하나의 표류 원천이 된다(검사가 막으려는 바로 그것이다).
+        _all, _leaves = validate.cli_commands()
+        check("파서에서 만든 명령 집합이 위임 명령을 담는다 (#42)",
+              {"update", "release"} <= _leaves, sorted(_leaves))
+        rows_of = lambda names: chr(10).join(
+            f"| `{c}` | 설명 |" for c in sorted(names))
 
         def _setup(tool_line, count_word, cli_rows):
             body = ("## MCP 서버" + chr(10) * 2
@@ -7011,17 +7022,7 @@ def test_setup_doc_drift():
             with mock.patch.object(validate, "ROOT", lab):
                 return validate.setup_doc_drift()
 
-        rows = ("| `validate` | 검증기 |" + chr(10)
-                + "| `status` | 현황 |" + chr(10)
-                + "| `search` / `view` | 검색 |" + chr(10)
-                + "| `check` | 사전 검사 |" + chr(10)
-                + "| `validators` | 활성화 |" + chr(10)
-                + "| `raw append` | 기록 |" + chr(10)
-                + "| `sm show` | 기억 |" + chr(10)
-                + "| `protect` / `unprotect` | 영역 |" + chr(10)
-                + "| `approve` / `revert` | 승인 |" + chr(10)
-                + "| `store-reconcile` | 저장소 |" + chr(10)
-                + "| `update` / `release` | 갱신 |")
+        rows = rows_of(_leaves)
         full = "`overview` `search` `read_node` `scope_memory`."
 
         #    ① 규범에 있는 도구가 안내문에 없다
@@ -7042,24 +7043,43 @@ def test_setup_doc_drift():
         check("도구 수 표기 어긋남을 잡는다 (#42)",
               any("도구 수 표기가 규범과 다르다" in x for x in e), e)
 
-        #    ④ 파서에 있는 명령이 CLI 표에 없다
-        _setup(full, "넷", rows.replace(
-            "| `validators` | 활성화 |" + chr(10), ""))
+        #    ④ 파서에 있는 명령이 CLI 표에 없다 — **위임 명령으로 시험한다.**
+        #       구판은 명령 집합을 소스 정규식으로 만들어 `update`·`release`가
+        #       하나도 안 걸렸고, 그래서 이 두 행을 지워도 통과했다(리뷰 지적).
+        _setup(full, "넷", rows_of(_leaves - {"update", "release"}))
         e = _drift()
-        check("CLI 표에서 빠진 명령을 잡는다 (#42)",
-              any("CLI 표에 없는 명령이다: validators" in x for x in e), e)
+        check("CLI 표에서 빠진 위임 명령을 잡는다 (#42)",
+              any("CLI 표에 없는 명령이다: release" in x for x in e)
+              and any("CLI 표에 없는 명령이다: update" in x for x in e), e)
 
-        #    ⑤ 맞으면 아무 말도 하지 않는다
+        #    ⑤ 파서에서 없어진 명령이 안내문에 남아 있다(반대 방향)
+        _setup(full, "넷", rows + chr(10) + "| `osk-sign` | 폐지된 명령 |")
+        e = _drift()
+        check("없어진 명령이 표에 남은 것을 잡는다 (#42)",
+              any("없어진 명령이 남아 있다: osk-sign" in x for x in e), e)
+
+        #    ⑥ 묶음 이름(`raw`·`sm`)은 적어도 되고 안 적어도 된다
+        _setup(full, "넷", rows + chr(10) + "| `raw` / `sm` | 묶음 |")
+        check("묶음 이름은 표류로 세지 않는다 (#42)", _drift() == [], _drift())
+
+        #    ⑦ **설명 칸의 backtick은 명령이 아니다.** 행 전체를 훑으면 설명에
+        #       적힌 인자·경로·예시가 전부 '없어진 명령'으로 잡혀, 안내문을 고칠
+        #       때마다 거짓 경보가 난다 — 그런 검사는 곧 꺼진다.
+        _setup(full, "넷",
+               rows + chr(10) + "| `status` | `nonesuch`처럼 쓴다 |")
+        check("설명 칸의 backtick을 명령으로 세지 않는다 (#42)",
+              _drift() == [], _drift())
+
+        #    ⑧ 맞으면 아무 말도 하지 않는다
         _setup(full, "넷", rows)
         check("어긋남이 없으면 조용하다 (#42)", _drift() == [], _drift())
     finally:
         rmtree_force(lab)
 
-    #    ⑥ **이 저장소 자신의** 안내문이 지금 규범·파서와 같다.
-    #       위 다섯은 검사가 도는지를 보고, 이것이 실제 표류를 막는 자리다.
+    #    ⑨ **이 저장소 자신의** 안내문이 지금 규범·파서와 같다.
+    #       위 여덟은 검사가 도는지를 보고, 이것이 실제 표류를 막는 자리다.
     #       `ROOT`는 mini-vault라 `docs/`가 없다 — 그대로 부르면 빈 목록이
     #       돌아와 **무엇을 지워도 통과한다**(첫 판이 그래서 뮤턴트를 살렸다).
-    #       실 저장소를 가리켜야 이 단언이 성립한다.
     repo = ENGINE.parent.parent
     if not (repo / "docs/SETUP.md").is_file():
         skip("이 저장소의 안내문 대조 (#42)", "docs/SETUP.md 부재 — 인스턴스다")
