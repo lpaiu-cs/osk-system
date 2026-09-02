@@ -179,22 +179,14 @@ def _stdin_text() -> str:
         sys.exit(f"stdin 판독 실패 — {e}")
 
 
-def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
+def build_parser() -> argparse.ArgumentParser:
+    """`osk`의 명령 정본 — 파서 구성만 떼어 둔다.
 
-    # 위임 명령은 파서에 넣기 전에 가른다. `argparse.REMAINDER`로 받으면 잔여의
-    # 첫 토큰이 `-`로 시작할 때 상위 파서가 그것을 자기 옵션으로 먼저 해석해
-    # `osk update --apply`가 "unrecognized arguments: --apply"로 죽는다(실측).
-    # 위임의 계약은 "해석하지 않고 넘긴다"이므로, 해석하는 자리를 아예 지난다 —
-    # `--help`도 그대로 넘어가 위임 대상 자신의 사용법이 나온다.
-    if argv and argv[0] in DELEGATED:
-        rest = argv[1:]
-        if argv[0] == "update":
-            from . import update as _u
-            return _u.main(rest)
-        from . import release as _r
-        return _r.main(rest)
-
+    검증기가 안내문(`docs/SETUP.md`)의 CLI 표를 이것과 대조한다. 구판은
+    소스 문자열을 정규식으로 훑었는데, 정의 형태가 조금만 달라도 조용히
+    빠졌다 — `DELEGATED`의 두 항목은 들여쓰기가 달라 **하나도 걸리지
+    않았다**(실측). 명령이 무엇인지 아는 것은 파서이므로 파서에게 묻는다.
+    """
     ap = argparse.ArgumentParser(prog="osk")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("validate", help="검증기 수트 전체 실행")
@@ -249,6 +241,26 @@ def main(argv=None):
                    help="판독만 하지 않고 색인·작업 트리를 실제로 맞춘다")
     for name, helptext in DELEGATED.items():     # `osk --help` 목록에만 쓰인다
         sub.add_parser(name, help=helptext)      # — 실제 파싱은 위에서 지났다
+    return ap
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    # 위임 명령은 파서에 넣기 전에 가른다. `argparse.REMAINDER`로 받으면 잔여의
+    # 첫 토큰이 `-`로 시작할 때 상위 파서가 그것을 자기 옵션으로 먼저 해석해
+    # `osk update --apply`가 "unrecognized arguments: --apply"로 죽는다(실측).
+    # 위임의 계약은 "해석하지 않고 넘긴다"이므로, 해석하는 자리를 아예 지난다 —
+    # `--help`도 그대로 넘어가 위임 대상 자신의 사용법이 나온다.
+    if argv and argv[0] in DELEGATED:
+        rest = argv[1:]
+        if argv[0] == "update":
+            from . import update as _u
+            return _u.main(rest)
+        from . import release as _r
+        return _r.main(rest)
+
+    ap = build_parser()
     a = ap.parse_args(argv)
 
     if a.cmd == "validate":

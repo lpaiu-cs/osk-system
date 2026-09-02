@@ -241,6 +241,12 @@ def run() -> dict:
         if _last_surface_cost:
             rep["surface_cost"] = dict(_last_surface_cost)
 
+    # 15b. 운용 안내문(docs/SETUP.md) ↔ 규범·파서. 문서 표류는 조용하다 —
+    #      검증기가 문서를 보지 않으면 감사로만 드러나고, 그 사이 새 세션이
+    #      안내문을 먼저 읽고 시작한다(감사 2026-09-02: 도구 수·이름·CLI 표).
+    #      인스턴스에 `docs/`가 없으면 빈 목록이라 자연히 통과한다.
+    guard("운용 안내문 대조(도구 목록·CLI 표)", setup_doc_drift)
+
     # 16. 군집 허브 노드 (헌법 3조 8항 · 시행령 §3 6항 · Mechanism §6-1). 검사는 언제나
     #     수행해 보고하고, verdict 산입은 활성화 뒤에만 한다(시행령 §11
     #     2항·3항) — 활성화 순간 무엇이 FAIL이 될지 사용자가 미리 본다.
@@ -562,6 +568,137 @@ def declared_tools() -> list[str] | None:
         return None
     m = _re.search(r"^## §6-2 .*?```\n(.*?)```", text, _re.M | _re.S)
     return sorted(m.group(1).split()) if m else None
+
+
+def cli_commands() -> tuple[set[str], set[str]]:
+    """CLI 명령을 **파서 자신**에게 묻는다 — (전체 경로, 잎).
+
+    소스 문자열을 정규식으로 훑는 방식은 정의 형태가 조금만 달라도 조용히
+    빠진다: `DELEGATED`의 `update`·`release`는 들여쓰기 때문에 **하나도 걸리지
+    않았고**, 그래서 안내문에서 그 두 행을 지워도 검사가 통과했다(리뷰 지적,
+    실측). 명령이 무엇인지 아는 것은 파서이므로 파서에서 만든다.
+
+    잎을 따로 돌려주는 이유: `raw`·`sm`은 그 자체로 칠 수 있는 명령이 아니라
+    하위 명령을 요구하는 묶음이다. 안내문이 적어야 하는 것은 사용자가 실제로
+    치는 `raw append` 쪽이고, 묶음 이름을 적는 것은 잘못이 아니다."""
+    import argparse as _ap
+    from .cli import build_parser
+    allc: set[str] = set()
+    leaves: set[str] = set()
+
+    def walk(parser, prefix=""):
+        subs = [a for a in parser._actions
+                if isinstance(a, _ap._SubParsersAction)]
+        if not subs and prefix:
+            leaves.add(prefix)
+            return
+        for act in subs:
+            for name, sp in act.choices.items():
+                path = (prefix + " " + name).strip()
+                allc.add(path)
+                walk(sp, path)
+
+    walk(build_parser())
+    return allc, leaves
+
+
+def setup_doc_drift() -> list[str]:
+    """운용 안내문(`docs/SETUP.md`)이 규범·구현과 어긋나는가.
+
+    표류는 코드에서만 나는 것이 아니다. 감사 2026-09-02이 찾은 한 무리는
+    **안내문이 없어진 제도를 가르치는 것**이었다 — 도구를 열한 종이라 세고,
+    있지도 않은 `move_node`를 적었으며, CLI 표에 `validators`가 빠져 있었다.
+    그 무리는 조용하다: 검증기가 문서를 보지 않으므로 감사로만 드러나고, 그
+    사이 새 세션은 안내문을 먼저 읽고 시작한다.
+
+    §9 1항의 패턴표를 `secrets.PATTERNS`와 대조하는 것과 같은 규율이다 —
+    **같은 것을 두 곳에 적으면 갈라지므로, 갈라진 것을 검사가 말하게 한다.**
+    `surface_lint`가 이미 규범↔등록부를 잇고 있으니 여기서 안내문↔규범·파서를
+    이으면 셋이 한 삼각형으로 묶인다.
+
+    안내문을 읽지 못하면 빈 목록을 돌려준다 — 인스턴스에는 `docs/`가 없을 수
+    있고, 없는 것을 결함으로 세면 그 vault는 영영 FAIL이다(§6-2 검사와 같은
+    '검사 불성립' 관례)."""
+    import re as _re
+    try:
+        text = (ROOT / "docs/SETUP.md").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    errs, declared = [], declared_tools()
+
+    # ⓐ 도구 목록 — 정본은 Mechanism §6-2 7항이고 안내문은 그 사본이다.
+    #    목록이 적힌 **문단만** 본다. 절 전체를 훑으면 본문에 backtick으로 적힌
+    #    경로·인자 이름까지 '도구'로 잡혀 오탐이 된다.
+    if declared:
+        m = _re.search(r"정본은 Mechanism §6-2 7항이다[^\n]*\n(.*?)\n[ \t]*\n",
+                       text, _re.S)
+        blob = m.group(1) if m else ""
+        named = set(_re.findall(r"`([a-z_]+)`", blob))
+        if not named:
+            errs.append("안내문에서 도구 목록 문단을 찾지 못했다 — 검사 불성립")
+        else:
+            for missing in sorted(set(declared) - named):
+                errs.append(
+                    f"안내문의 도구 목록에 없다: {missing} (Mechanism §6-2 7항)")
+            for stale in sorted(named - set(declared)):
+                errs.append(f"안내문이 규범에 없는 도구를 적는다: {stale}")
+        # ⓑ 개수 표기 — "도구는 열둘이며" 같은 문장이 목록과 함께 늙는다.
+        #    문단을 못 찾았으면 위에서 이미 말했다 — 같은 사실로 두 번 울지 않는다.
+        at = m.start() if m else None
+        head = text[max(0, at - 200):at + 200] if at is not None else ""
+        n = len(declared)
+        want = _NUM_KO.get(n)
+        # 숫자꼴도 인정하되 **단위를 달고 있을 때만** 본다 — 맨 숫자를 찾으면
+        # 곁의 조항 번호(§6-2 7항)가 우연히 걸린다.
+        if (at is not None and want
+                and not (want in head or f"{n}종" in head
+                         or f"{n}개" in head)):
+            errs.append(f"안내문의 도구 수 표기가 규범과 다르다 — 선언 {n}종")
+
+    # ⓒ CLI 표 — 사용자가 칠 수 있는 명령이 실제 파서와 **양방향으로** 같아야
+    #    한다. 빠진 것만 보면 반대쪽 표류를 놓친다: 파서에서 명령을 없앴는데
+    #    안내문 행이 남으면 사용자는 안내문을 따라 존재하지 않는 명령을 친다 —
+    #    이 검사가 막으려는 '없어진 제도를 안내문이 계속 가르치는' 유형이다.
+    #
+    #    **찾지 못한 것을 통과로 세지 않는다.** 표를 못 찾으면 조용히 넘어가던
+    #    구판은, 안내문을 다시 쓰다 표 머리글이 바뀌는 순간 이 보장을 통째로
+    #    잃었다(리뷰 지적) — 그 뒤로는 명령을 더하든 지우든 아무 말이 없다.
+    #    위 도구 목록 갈래가 '문단을 찾지 못했다'를 오류로 내는 것과 같게 둔다.
+    try:
+        allc, leaves = cli_commands()
+    except Exception as e:
+        errs.append(f"CLI 명령을 파서에서 만들지 못했다 — 검사 불성립: {e}")
+        allc, leaves = set(), set()
+    if leaves:
+        tbl = _re.search(r"^\| 명령 \| 하는 일 \|$(.*?)\n[ \t]*\n", text,
+                         _re.M | _re.S)
+        if not tbl:
+            errs.append("안내문에서 CLI 표를 찾지 못했다 — 검사 불성립"
+                        "(표 머리글은 `| 명령 | 하는 일 |`이어야 한다)")
+        else:
+            doc: set[str] = set()
+            for row in tbl.group(1).splitlines():
+                cells = row.split("|")
+                if len(cells) < 3:
+                    continue
+                head = cells[1].strip()
+                if not head or set(head) <= set("-: "):
+                    continue                     # 구분선
+                # **첫 칸만** 본다 — 설명 칸의 backtick(`_raw/` 등)까지 훑으면
+                # 명령이 아닌 것이 명령으로 잡혀 거짓 경보가 난다.
+                doc |= set(_re.findall(r"`([a-z][a-z-]*(?: [a-z]+)?)`", head))
+            for missing in sorted(leaves - doc):
+                errs.append(f"안내문의 CLI 표에 없는 명령이다: {missing}")
+            for stale in sorted(doc - allc):
+                errs.append(f"안내문의 CLI 표에 없어진 명령이 남아 있다: {stale}")
+    return errs
+
+
+# 안내문은 도구 수를 한국어 고유수사로 적는다("도구는 열둘이며").
+_NUM_KO = dict(enumerate(
+    ["하나", "둘", "셋", "넷", "다섯", "여섯", "일곱", "여덟", "아홉", "열",
+     "열하나", "열둘", "열셋", "열넷", "열다섯", "열여섯", "열일곱",
+     "열여덟", "열아홉", "스물"], start=1))
 
 
 # 표면이 거치는 쓰기 통로 — 금지 심벌 검사를 여기까지 건다. 코드를 옮겨
