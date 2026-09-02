@@ -6907,6 +6907,104 @@ def test_audit_fixes_2026_09_02():
 
 
 # ── 개정 2026-09-02: 비밀값 경계와 영역 tree 제외 (#29·#37) ───────────────
+
+def test_region_root_is_not_an_excluded_compartment():
+    """영역 **루트**가 제외 이름을 담아도 반려가 그 영역을 지우지 않는다 (4차 리뷰).
+
+    `_region_files(region_dir)`는 루트 자신에는 걸러내기를 걸지 않고 그 **아래**
+    자식 디렉터리와 파일 이름만 거른다. 제외 판정이 vault 상대 **전체** 경로를
+    보면 두 해석이 갈린다 — 루트에 제외 이름(구판이 지정한 `…/_scope_memory`)이나
+    점 접두(`protect`가 지금도 허용하는 `.foo`)가 든 영역에서 승인본 table의 모든
+    행이 빠져 `table={}`가 되는데, 삭제 순회는 그 파일들을 정상 열거하므로 반려가
+    영역을 통째로 지우고, 이행 논리가 빈 manifest를 새 `base`로 적어 그 삭제를
+    clean한 반려로 확정한다(실측 재현).
+
+    무엇을 망가뜨리면 실패하는가:
+      · `_excluded_rel`이 다시 전체 경로를 보면 → 사전 대조가 반려를 거부해
+        "반려가 성립한다"가 실패한다(그 대조까지 함께 지우면 파일이 사라진다)
+      · `revert`의 사전 대조를 지우면 → 세 번째 묶음(해석이 갈린 상황)에서
+        영역이 지워지고 삭제가 기록으로 확정된다
+    """
+    from osk import approvals as A
+    made, protected = [], []
+    try:
+        for leaf, legacy in ((".hid", False), ("_scope_memory", True)):
+            reg = "= Domain/" + leaf
+            d = ROOT / reg
+            d.mkdir(parents=True, exist_ok=True)
+            made.append(d)
+            body_a, body_b = "원본\n".encode("utf-8"), "둘\n".encode("utf-8")
+            (d / "a.md").write_bytes(body_a)
+            (d / "b.md").write_bytes(body_b)
+            if legacy:
+                # 개정으로 이제 **지정할 수 없는** 형태다. 구판이 남긴 영역을
+                # 모사하려면 대장에 직접 적는다 — 그것이 이 경로의 현실이다.
+                check("제외 이름을 루트로 하는 새 지정은 거부된다 (4차)",
+                      _raises(lambda r=reg: A.protect(r, "시험"))())
+                core.ledger_append(A.APPROVALS, {
+                    "kind": "protect", "region": reg, "base": None,
+                    "accepted": A._store_tree(d),
+                    "moves_seen": A._moves_boundary(),
+                    "reason": "구판 지정 모사"})
+            else:
+                A.protect(reg, "4차 리뷰 회귀")
+            protected.append(reg)
+            base = A.approved_hash(reg)
+            check(f"[{leaf}] 전제: 지정 직후 clean (4차)",
+                  A.state(reg) == "clean", A.state(reg))
+            check(f"[{leaf}] 루트 이름은 제외 판정에 들지 않는다 (4차)",
+                  A.legacy_excluded(base, reg) == [],
+                  A.legacy_excluded(base, reg))
+            tbl = A._tree_table_for_region(reg, base)
+            check(f"[{leaf}] 복원 table이 영역 파일을 그대로 담는다 (4차)",
+                  tbl is not None and len(tbl) == 2, tbl)
+
+            (d / "a.md").write_bytes("변경\n".encode("utf-8"))
+            (d / "c.md").write_bytes("더한 것\n".encode("utf-8"))
+            check(f"[{leaf}] 전제: 변경이 pending으로 보인다 (4차)",
+                  A.state(reg) == "pending", A.state(reg))
+            rec = A.revert(reg, base, A.working_tree_hash(reg), reason="4차")
+            check(f"[{leaf}] 반려가 성립한다 (4차)",
+                  rec.get("kind") == "revert", rec)
+            check(f"[{leaf}] 반려가 영역을 지우지 않고 되돌린다 (4차)",
+                  (d / "a.md").read_bytes() == body_a
+                  and (d / "b.md").read_bytes() == body_b
+                  and not (d / "c.md").exists(),
+                  sorted(x.name for x in d.iterdir()))
+            check(f"[{leaf}] 되돌린 뒤 clean이다 (4차)",
+                  A.state(reg) == "clean", A.state(reg))
+
+        # 해석이 실제로 갈린 상황에서 **파괴가 시작되지 않는다.** 위 두 묶음은
+        # 걸러내기가 옳아진 뒤의 동작이고, 이것은 그 걸러내기가 언젠가 다시
+        # 어긋나도 반려가 승인본에 든 살아 있는 파일을 지우지 못한다는 것이다 —
+        # 같은 규칙을 두 곳에서 읽는 한 그 어긋남은 되돌아올 수 있다.
+        reg = protected[0]
+        d = ROOT / reg
+        before = sorted(x.name for x in d.iterdir())
+        with mock.patch.object(A, "_excluded_rel", lambda rel, region: True):
+            check("해석이 갈리면 반려가 파괴 전에 멈춘다 (4차)",
+                  _raises(lambda: A.revert(reg, A.approved_hash(reg),
+                                           A.working_tree_hash(reg), "시험"))())
+        check("멈춘 반려는 파일을 하나도 건드리지 않았다 (4차)",
+              sorted(x.name for x in d.iterdir()) == before,
+              sorted(x.name for x in d.iterdir()))
+
+        # 구판 형태의 영역에서 **빠져나오는 길**은 해제다 — 파괴적이지 않고,
+        # 지정이 막힌 뒤에도 남아 있어야 하는 유일한 출구다.
+        check("구판 루트 영역은 해제로 빠져나온다 (4차)",
+              A.unprotect(protected[1], "이행").get("kind") == "unprotect"
+              and A.state(protected[1]) == "unprotected", A.state(protected[1]))
+        protected.pop()
+    finally:
+        for reg in protected:
+            try:
+                A.unprotect(reg, "시험 종료")
+            except Exception:
+                pass
+        for d in made:
+            if d.exists():
+                rmtree_force(d)
+
 def test_governance_amend_secrets_and_region():
     """Mechanism §9 1항(비밀값 경계)·§3 4항(영역 tree 제외) 개정의 고정.
 
@@ -7026,8 +7124,8 @@ def test_governance_amend_secrets_and_region():
             "kind": "approve", "region": reg, "base": A.approved_hash(reg),
             "accepted": legacy_hash, "reason": "개정 전 형상 모사"})
         check("개정 전 승인본의 제외 구획 항목이 드러난다 (#37)",
-              A.legacy_excluded(legacy_hash)
-              == [reg + "/_scope_memory/W1.md"], A.legacy_excluded(legacy_hash))
+              A.legacy_excluded(legacy_hash, reg)
+              == [reg + "/_scope_memory/W1.md"], A.legacy_excluded(legacy_hash, reg))
         tbl = A._tree_table_for_region(reg, legacy_hash)
         check("복원 table에서 그 자리가 빠진다 — 공유 기억을 덮지 않는다 (#37)",
               tbl is not None and reg + "/_scope_memory/W1.md" not in tbl, tbl)
@@ -7056,8 +7154,8 @@ def test_governance_amend_secrets_and_region():
               smp.read_bytes() == _now_mem, smp.read_bytes()[:30])
         check("그 반려가 새 형상의 baseline을 세운다 (#37)",
               A.state(reg) == "clean"
-              and not A.legacy_excluded(A.approved_hash(reg)),
-              (A.state(reg), A.legacy_excluded(A.approved_hash(reg))))
+              and not A.legacy_excluded(A.approved_hash(reg), reg),
+              (A.state(reg), A.legacy_excluded(A.approved_hash(reg), reg)))
         check("이행된 승인본은 저장소에서 해석된다 (#37)",
               A._tree_table_for_region(reg, A.approved_hash(reg)) is not None,
               A.approved_hash(reg))
@@ -7163,7 +7261,8 @@ if __name__ == "__main__":
                test_one_index_per_write,
                test_fingerprint_scope_and_racy, test_engine_epoch_fence,
                test_audit_fixes_2026_09_02,
-               test_governance_amend_secrets_and_region]:
+               test_governance_amend_secrets_and_region,
+               test_region_root_is_not_an_excluded_compartment]:
         try:
             fn()
         except Exception as e:
