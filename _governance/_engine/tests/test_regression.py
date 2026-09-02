@@ -3222,12 +3222,81 @@ def test_release_and_update():
             (ROOT / "_governance/UpdDoc.md").write_text(
                 "기존 인스턴스의 다른 내용\n", encoding="utf-8")
             check("최초 편입 전 저널은 비어 있다", not update.has_history())
+            # **덮기가 시작조차 되지 않는다** — 내용이 다른 사이드카가 이미 있으면
+            #   adopt는 중단한다(#41 · PR 리뷰). 진행하면 지금 파일의 로컬 수정이
+            #   어디에도 남지 않는다: 사이드카는 못 쓰고 원본은 덮이며 pre-image는
+            #   성공 뒤 `_txn_clear`가 지운다. conflict의 `held`는 원본이 제자리에
+            #   남아 안전하지만 adopt는 그렇지 않다.
+            #   되돌리면 — `if ad_blocked: raise`를 지우면 아래 셋이 실패한다.
+            _pre = (ROOT / "_governance/UpdDoc.md").read_bytes()
+            _blk = ROOT / "_governance/UpdDoc.md.local-v9.0.0"
+            _blk.write_bytes("남이 먼저 차지한 사이드카".encode("utf-8"))
+            mine.append(_blk)
+            try:
+                update.run(source="bundle", bundle=str(can), apply=True,
+                           adopt=True)
+                _blocked_msg = None
+            except update.UpdateError as e:
+                _blocked_msg = str(e)
+            check("사이드카가 이미 있고 다르면 adopt가 중단한다 (#41)",
+                  _blocked_msg is not None
+                  and "UpdDoc.md.local-v9.0.0" in _blocked_msg, _blocked_msg)
+            check("중단한 adopt는 원본을 덮지 않았다 (#41)",
+                  (ROOT / "_governance/UpdDoc.md").read_bytes() == _pre,
+                  (ROOT / "_governance/UpdDoc.md").read_bytes()[:30])
+            check("중단한 adopt는 남의 사이드카도 건드리지 않았다 (#41)",
+                  _blk.read_bytes() == "남이 먼저 차지한 사이드카".encode("utf-8"),
+                  _blk.read_bytes()[:30])
+            _blk.unlink()                  # 치우고 정상 편입을 이어 간다
             # 적용 — 파일·골격·저널
             r1 = update.run(source="bundle", bundle=str(can), apply=True,
                             adopt=True)
             check("adopt 최초 편입: 사전 존재 파일을 정본으로 덮는다",
                   "정본 규범 문서" in
                   (ROOT / "_governance/UpdDoc.md").read_text(encoding="utf-8"))
+            # **덮은 것을 옆에 남기고 그렇다고 말한다** (#41 4항).
+            #   편입의 뜻이 "현재 릴리스를 기준선 삼는다"이므로 덮는 것은 맞다.
+            #   맞지 않았던 것은 그것이 보고에서 평범한 `update`와 구별되지 않고,
+            #   성공하면 `_txn_clear`가 pre-image까지 지워 되돌릴 길이 없다는 것이다.
+            #   되돌리면 — `plan`의 `adopted` 집계나 `_adopt_sidecar_plan`을 지우면
+            #   아래 셋 중 하나가 실패한다.
+            _side = ROOT / f"_governance/UpdDoc.md.local-{r1['version']}"
+            mine.append(_side)
+            check("adopt가 덮은 로컬 내용을 사이드카로 남긴다 (#41)",
+                  _side.is_file()
+                  and _side.read_text(encoding="utf-8") == "기존 인스턴스의 다른 내용\n",
+                  _side.read_bytes()[:40] if _side.exists() else "부재")
+            check("adopt가 덮은 자리를 보고에서 구별한다 (#41)",
+                  "_governance/UpdDoc.md" in r1.get("adopted", [])
+                  and "_governance/UpdDoc.md" in r1["update"], r1.get("adopted"))
+            check("덮지 않은 갱신은 adopted에 들지 않는다 (#41)",
+                  all(x not in r1.get("adopted", [])
+                      for x in ("docs/UPD-SETUP.md",
+                                "_governance/records/갱신 사료.md")),
+                  r1.get("adopted"))
+
+            # **내용이 다른 사이드카가 이미 있으면 덮기를 시작하지 않는다** (#41).
+            #   conflict의 `held`가 안전한 것은 원본이 제자리에 남기 때문이다.
+            #   adopt는 원본을 덮으므로 같은 규율을 쓰면, 사이드카를 못 쓴 채
+            #   원본을 덮어 로컬 수정이 어디에도 남지 않는다(pre-image는 성공 뒤
+            #   `_txn_clear`가 지운다). 되돌리면 — `blocked`를 `held`처럼 흘려
+            #   보내면 아래 둘이 실패한다.
+            _b = ROOT / "_governance/UpdDoc2.md"
+            _bside = ROOT / "_governance/UpdDoc2.md.local-v9.9.9"
+            mine += [_b, _bside]
+            _b.write_bytes("잃으면 안 되는 로컬 수정".encode("utf-8"))
+            _bside.write_bytes("남이 먼저 차지한 사이드카".encode("utf-8"))
+            _fake = {"adopted": [("x", "_governance/UpdDoc2.md")]}
+            _w, _k, _blocked, _c = update._adopt_sidecar_plan(
+                _fake, "v9.9.9", set())
+            check("내용이 다른 adopt 사이드카는 blocked로 갈린다 (#41)",
+                  _blocked == ["_governance/UpdDoc2.md.local-v9.9.9"]
+                  and not _w and not _k, (_w, _k, _blocked, _c))
+            check("그때 원본과 사이드카를 둘 다 손대지 않는다 (#41)",
+                  _b.read_bytes() == "잃으면 안 되는 로컬 수정".encode("utf-8")
+                  and _bside.read_bytes()
+                  == "남이 먼저 차지한 사이드카".encode("utf-8"),
+                  (_b.read_bytes()[:20], _bside.read_bytes()[:20]))
             check("편입 후 관리 이력이 생긴다", update.has_history())
             mine += [ROOT / "_governance/UpdDoc.md",
                      ROOT / "_governance/records/갱신 사료.md",

@@ -695,7 +695,7 @@ def plan(tree: Path, targets: list, adopt: bool) -> dict:
     삭제만 하므로 dest 문자열을 담는다."""
     recs = ledger_read(UPDATE_JOURNAL)
     add, same, rebaseline = [], [], []
-    update, conflict, engine_drift = [], [], []
+    update, conflict, engine_drift, adopted = [], [], [], []
     dests = set()
     for src, dest in targets:
         dests.add(dest)
@@ -720,6 +720,13 @@ def plan(tree: Path, targets: list, adopt: bool) -> dict:
                 conflict.append((src, dest))
         else:
             update.append((src, dest))
+            if drifted:
+                # **adopt가 로컬 수정 위에 덮는 자리다.** 편입의 뜻이 "현재
+                # 릴리스를 기준선 삼는다"이므로 덮는 것 자체는 맞다. 맞지 않은
+                # 것은 그것이 보고에서 평범한 `update`와 구별되지 않고, 성공하면
+                # pre-image까지 `_txn_clear`가 지워 **되돌릴 길이 없다**는 것이다
+                # (실측: 보고 update=[…], conflict=[], 사이드카 없음).
+                adopted.append((src, dest))
     # 삭제 전파 — 직전까지 관리하던 파일이 새 릴리스에서 빠졌으면 인스턴스에서도
     # 제거한다(안 하면 하류가 정본과 다른 프레임워크를 실행한다). 로컬 수정이
     # 있는 삭제 대상은 지우지 않고 보존·보고한다. 바닥은 애초에 관리 대상이 아니다.
@@ -734,6 +741,7 @@ def plan(tree: Path, targets: list, adopt: bool) -> dict:
         (remove if sha256_file(rp) == h else remove_conflict).append(cp)
     return {"add": add, "same": len(same), "rebaseline": rebaseline,
             "update": update, "conflict": conflict, "engine_drift": engine_drift,
+            "adopted": adopted,
             "remove": remove, "remove_conflict": remove_conflict}
 
 
@@ -762,6 +770,47 @@ def _sidecar_plan(p: dict, tree: Path, version: str, dests: set) -> tuple:
         else:
             held.append(side)                    # 사용자 작업 — 손대지 않는다
     return write, kept, held, collide
+
+
+def _adopt_sidecar_plan(p: dict, version: str, dests: set) -> tuple:
+    """adopt가 덮을 로컬 내용을 옆에 남길 계획 — (쓸 것, 인정할 것, 보존할 것,
+    겹친 것). 반환의 첫 항은 `(로컬 바이트, 사이드카 경로)`다.
+
+    `--adopt`는 "현재 릴리스를 기준선 삼는다"는 뜻이므로 덮는 것 자체는 맞다.
+    문제는 **되돌릴 길이 없다**는 것이었다: 성공하면 `_txn_clear`가 pre-image를
+    지우고, 보고에서도 평범한 `update`와 구별되지 않아 사용자는 자기 수정이
+    사라진 사실조차 모른다(실측). 그래서 덮기 **전에** 로컬 내용을
+    `<경로>.local-<판본>`으로 남긴다.
+
+    `conflict`의 사이드카(`.upstream-…`)와 방향이 반대다 — 저기서는 로컬이
+    제자리에 남고 incoming을 옆에 두지만, 여기서는 incoming이 제자리를 갖고
+    로컬을 옆에 둔다. 이름이 그 방향을 말한다.
+
+    이미 있는 사이드카를 무조건 덮지 않는 것과 관리·삭제 예정 경로와 겹치면
+    중단하는 것은 `_sidecar_plan`과 같다. **다른 것이 하나 있다:** 내용이 다른
+    사이드카가 이미 있으면 여기서는 `held`로 넘기고 진행할 수 없다.
+
+    conflict의 `held`가 안전한 것은 **원본이 제자리에 남기** 때문이다 — 갱신하지
+    못한 것은 옆에 둘 사본뿐이다. adopt는 반대로 원본을 덮으므로, 사이드카를
+    쓰지 못한 채 진행하면 로컬 내용이 어디에도 남지 않는다(pre-image는 성공 후
+    `_txn_clear`가 지운다). 사용자가 같은 이름의 `.local-<판본>`을 이미 가지고
+    있는 것만으로 그 자리의 수정이 영구히 사라지는 셈이다(리뷰 지적). 그래서
+    **덮기를 시작하지 않는다** — 무엇을 잃을지 모르는 채 파괴하지 않는다."""
+    write, kept, blocked, collide = [], [], [], []
+    for _src, dest in p["adopted"]:
+        side = dest + f".local-{version}"
+        if side in dests:
+            collide.append(side)
+            continue
+        local = (ROOT / dest).read_bytes()      # **덮기 전** 바이트
+        sp = ROOT / side
+        if not sp.exists():
+            write.append((local, side))
+        elif sp.read_bytes() == local:
+            kept.append(side)                   # 이미 같다 — 그대로 인정
+        else:
+            blocked.append(side)                # 다른 내용 — 진행하면 원본을 잃는다
+    return write, kept, blocked, collide
 
 
 def _write_atomic(dst: Path, data: bytes) -> None:
@@ -899,6 +948,7 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
                "add": dests(p["add"]), "update": dests(p["update"]),
                "same": p["same"], "rebaseline": dests(p["rebaseline"]),
                "conflict": dests(p["conflict"]), "engine_drift": p["engine_drift"],
+               "adopted": dests(p["adopted"]),
                "remove": p["remove"], "remove_conflict": p["remove_conflict"],
                "skipped": len(skipped)}
         if p["engine_drift"]:
@@ -916,9 +966,23 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         v = rel["version"]
         # 사이드카는 사용자의 수동 병합 작업 파일이다 — 덮을 것/인정할 것/보존할
         # 것을 먼저 가른다. 관리 파일과 경로가 겹치면 중단한다.
+        _dests = {d for _s, d in targets} | set(p["remove"])
         side_write, side_kept, side_held, side_collide = _sidecar_plan(
-            p, tree, v, {d for _s, d in targets} | set(p["remove"]))
+            p, tree, v, _dests)
+        # adopt가 덮을 로컬 내용도 같은 규율로 옆에 남긴다 — 덮기 전 바이트를
+        # 여기서 읽어 둔다(아래 적용 루프가 그 자리를 먼저 덮을 수 있다).
+        ad_write, ad_kept, ad_blocked, ad_collide = _adopt_sidecar_plan(
+            p, v, _dests)
         out["sidecar_held"] = side_held
+        out["adopt_blocked"] = ad_blocked
+        if ad_blocked:
+            raise UpdateError(
+                "adopt가 덮을 자리의 사이드카가 이미 있고 내용이 다르다 — "
+                "아무것도 쓰지 않았다. 진행하면 지금 파일의 로컬 수정이 어디에도 "
+                "남지 않는다(성공 뒤 pre-image도 지워진다). 그 사이드카를 확인해 "
+                "필요한 것을 챙긴 뒤 옮기거나 지우고 다시 실행하라:\n  "
+                + (chr(10) + "  ").join(ad_blocked[:10]))
+        side_collide = side_collide + ad_collide
         if side_collide:
             raise UpdateError(
                 "사이드카 경로가 정식 관리 파일과 겹친다 — 갱신을 중단한다"
@@ -944,12 +1008,17 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         touch = [dest for _s, dest in p["add"] + p["update"]]
         touch += list(p["remove"])
         touch += [side for _s, side in side_write]
+        touch += [side for _b, side in ad_write]
         touch += [posix_rel(d / ".gitkeep", ROOT) for d in skel if not d.exists()]
         _txn_begin(txn, v, touch)
         ledger_append(UPDATE_JOURNAL, {"kind": "begin", "txn": txn,
                                        "version": v, "adopt": bool(adopt)})
         applied, removed, sidecars, made_skel = [], [], [], []
         try:
+            for local, side in ad_write:      # **덮기 전에** 로컬을 옆에 남긴다
+                _write_atomic(ROOT / side, local)
+                sidecars.append(side)
+            sidecars += ad_kept
             for src, dest in p["add"] + p["update"]:
                 _write_atomic(ROOT / dest, (tree / src).read_bytes())
                 applied.append(dest)
