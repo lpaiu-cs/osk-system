@@ -786,10 +786,17 @@ def _adopt_sidecar_plan(p: dict, version: str, dests: set) -> tuple:
     제자리에 남고 incoming을 옆에 두지만, 여기서는 incoming이 제자리를 갖고
     로컬을 옆에 둔다. 이름이 그 방향을 말한다.
 
-    `_sidecar_plan`과 같은 규율: 이미 있는 사이드카를 무조건 덮지 않는다(같은
-    판본을 다시 적용할 때 사용자의 병합 작업이 사라진다), 관리·삭제 예정 경로와
-    겹치면 중단한다."""
-    write, kept, held, collide = [], [], [], []
+    이미 있는 사이드카를 무조건 덮지 않는 것과 관리·삭제 예정 경로와 겹치면
+    중단하는 것은 `_sidecar_plan`과 같다. **다른 것이 하나 있다:** 내용이 다른
+    사이드카가 이미 있으면 여기서는 `held`로 넘기고 진행할 수 없다.
+
+    conflict의 `held`가 안전한 것은 **원본이 제자리에 남기** 때문이다 — 갱신하지
+    못한 것은 옆에 둘 사본뿐이다. adopt는 반대로 원본을 덮으므로, 사이드카를
+    쓰지 못한 채 진행하면 로컬 내용이 어디에도 남지 않는다(pre-image는 성공 후
+    `_txn_clear`가 지운다). 사용자가 같은 이름의 `.local-<판본>`을 이미 가지고
+    있는 것만으로 그 자리의 수정이 영구히 사라지는 셈이다(리뷰 지적). 그래서
+    **덮기를 시작하지 않는다** — 무엇을 잃을지 모르는 채 파괴하지 않는다."""
+    write, kept, blocked, collide = [], [], [], []
     for _src, dest in p["adopted"]:
         side = dest + f".local-{version}"
         if side in dests:
@@ -800,10 +807,10 @@ def _adopt_sidecar_plan(p: dict, version: str, dests: set) -> tuple:
         if not sp.exists():
             write.append((local, side))
         elif sp.read_bytes() == local:
-            kept.append(side)
+            kept.append(side)                   # 이미 같다 — 그대로 인정
         else:
-            held.append(side)                   # 사용자 작업 — 손대지 않는다
-    return write, kept, held, collide
+            blocked.append(side)                # 다른 내용 — 진행하면 원본을 잃는다
+    return write, kept, blocked, collide
 
 
 def _write_atomic(dst: Path, data: bytes) -> None:
@@ -964,9 +971,17 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
             p, tree, v, _dests)
         # adopt가 덮을 로컬 내용도 같은 규율로 옆에 남긴다 — 덮기 전 바이트를
         # 여기서 읽어 둔다(아래 적용 루프가 그 자리를 먼저 덮을 수 있다).
-        ad_write, ad_kept, ad_held, ad_collide = _adopt_sidecar_plan(
+        ad_write, ad_kept, ad_blocked, ad_collide = _adopt_sidecar_plan(
             p, v, _dests)
-        out["sidecar_held"] = side_held + ad_held
+        out["sidecar_held"] = side_held
+        out["adopt_blocked"] = ad_blocked
+        if ad_blocked:
+            raise UpdateError(
+                "adopt가 덮을 자리의 사이드카가 이미 있고 내용이 다르다 — "
+                "아무것도 쓰지 않았다. 진행하면 지금 파일의 로컬 수정이 어디에도 "
+                "남지 않는다(성공 뒤 pre-image도 지워진다). 그 사이드카를 확인해 "
+                "필요한 것을 챙긴 뒤 옮기거나 지우고 다시 실행하라:\n  "
+                + (chr(10) + "  ").join(ad_blocked[:10]))
         side_collide = side_collide + ad_collide
         if side_collide:
             raise UpdateError(
