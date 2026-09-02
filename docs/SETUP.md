@@ -255,6 +255,65 @@ HEAD가 `main`이 아니면 매 주기 시작에 되돌린다. 되돌릴 수 없
 
 launchd/systemd 예시는 `_governance/_engine/scripts/`에 있다.
 
+## 줄바꿈(EOL) 이행 — 한 기기에서 한 번
+
+`.gitattributes`가 저장소 전체를 **LF로 못박는다**. 이 체계의 여러 판정이 파일의
+raw 바이트에 걸려 있어서다 — 갱신의 프레임워크 대조, 보호영역의 승인본
+tree(Mechanism §3 4항), `_raw/`의 접두부 보존(§9 4항). 기기마다 다른 줄바꿈으로
+체크아웃되면 그 판정이 기기에 의존한다.
+
+**증상.** `core.autocrlf=true`(Git for Windows 설치 기본값)인 기기에서는 노드가
+CRLF로 체크아웃되어 그 기기의 **모든 보호영역이 "전 파일 수정" pending**이 된다.
+거기서 승인하면 반대편 기기가 pending이 되는 핑퐁이다. `git diff`는 빈 출력이라
+원인이 보이지 않는다.
+
+이 이행은 **한 기기에서 한 번**만 한다. 나머지 기기는 평소의 pull로 정규화된
+파일과 새 승인본을 함께 받으므로 clean으로 수렴한다.
+
+```bash
+# 0) 전제 — 진행 중 작업이 없어야 한다
+git status --porcelain          # 비어 있어야 한다
+osk validate                    # 지금의 protected_regions를 적어 둔다
+
+# 1) 데몬과 MCP 서버를 멈춘다
+#    (mutation 잠금 경합과 중간 상태 커밋을 막는다)
+
+# 2) 색인을 새 규칙으로 다시 만든다
+git add --renormalize .
+git status --short              # 줄바꿈만 바뀐 파일 목록
+git commit -m "chore: 줄바꿈을 LF로 정규화"
+
+# 3) 작업 트리를 실제로 LF로 펼친다
+#    `--renormalize`는 **색인만** 고친다. 엔진은 작업 트리 바이트를 읽으므로
+#    이 단계가 없으면 그 기기는 계속 CRLF를 본다.
+git rm --cached -r . -q
+git reset --hard
+
+# 4) 어긋난 영역을 한 번 승인한다
+osk status                      # pending인 영역이 보인다
+osk approve "<영역>"            # 변경집합이 "줄바꿈만 다름"으로 표시한다
+
+# 5) 확인
+osk validate                    # 전 영역 clean
+git push
+```
+
+3단계의 순서가 중요하다. `git checkout --force -- .`로는 **바뀌지 않는다** —
+git이 색인과 작업 트리를 같다고 보기 때문이다(실측). `git rm --cached`는 색인만
+비우므로 디스크가 빈 순간이 없고, 이어지는 `git reset --hard`가 전 파일을
+필터를 거쳐 다시 펼친다.
+
+4단계에서 `osk approve`는 **줄바꿈만 다른 파일을 그렇게 표시한다** — 내용이
+그대로임을 보고 승인하는 것이지, 무엇이 바뀌었는지 모르는 채 승인하는 것이
+아니다.
+
+**승인본 blob은 이 이행에서 변환되지 않는다.** `_ledger/approved/objects/`는
+파일 이름이 곧 내용의 sha256이라 `.gitattributes`가 `-text`로 못박는다. 그
+줄이 없으면 CRLF를 담은 blob이 이행 중에 바뀌어 그 승인본이 통째로 해석
+불능이 된다(실측). 이행 뒤 `osk validate`가 "승인본 미해석"을 보고하면 그
+영역은 이 이행 **전에** 이미 그렇게 됐다는 뜻이다 — 그때는 해제 후 재지정이
+회복 경로다.
+
 ## 정본 릴리스와 갱신
 
 프레임워크(통치 문서·엔진·운용 문서)의 **정본은 정본 저장소**

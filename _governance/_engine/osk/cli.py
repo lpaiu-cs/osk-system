@@ -48,13 +48,24 @@ def _print_changeset(region: str) -> None:
             print(f"    … 외 {len(rows) - 20}건")
     for m in cs.get("moves", []):
         print(f"  이동  {m['from']} → {m['to']}")
+    eol = cs.get("eol_only") or []
+    if eol:
+        print(f"  그중 {len(eol)}건은 **줄바꿈만** 다릅니다 — 내용은 그대로입니다"
+              f"(EOL 고정 이행). `git diff`가 빈 출력인 이유가 이것입니다.")
+        for r in eol[:10]:
+            print(f"    ~ {r}")
+        if len(eol) > 10:
+            print(f"    … 외 {len(eol) - 10}건")
     legacy = cs.get("legacy_excluded") or []
     if legacy:
         print(f"  개정 전 승인본 — 제외 구획 항목 {len(legacy)}건이 승인본에만 "
               f"남아 있습니다(§3 4항): {', '.join(legacy[:3])}")
         print("  이 승인으로 새 형상의 승인본이 서고, 그 항목은 이후 변경집합에 "
               "들지 않습니다.")
-    if not any(v for k, v in cs.items() if k != "legacy_excluded"):
+    # 파생 표시(`legacy_excluded`·`eol_only`)는 "차이 없음" 판정에 세지 않는다 —
+    # 앞의 것은 승인본 쪽 사정이고, 뒤의 것은 `modified`의 부분집합이다.
+    if not any(v for k, v in cs.items()
+               if k not in ("legacy_excluded", "eol_only")):
         print("  (파일 단위 차이 없음)")
 
 

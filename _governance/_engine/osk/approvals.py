@@ -187,6 +187,15 @@ def _tree_table(tree_hash: str) -> dict[str, str] | None:
         return None
 
 
+def _fold_eol(data: bytes) -> bytes:
+    """줄바꿈만 접는다 — 두 바이트열이 **줄바꿈 말고는 같은가**를 묻기 위한 것.
+
+    판정에는 쓰지 않는다. 승인본 tree는 raw 바이트 해시이고(Mechanism §3 4항)
+    그것이 반려가 원본을 되살릴 수 있는 근거다 — 여기서 접는 것은 사용자에게
+    **차이의 성질**을 알려 주기 위해서뿐이다."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def _excluded_rel(rel: str, region: str) -> bool:
     """그 경로가 `region` **안에서** 지금 규칙(§3 4항)의 제외 구획에 드는가.
 
@@ -482,6 +491,22 @@ def changeset(region: str) -> dict | None:
     legacy = legacy_excluded(tree, region)
     if legacy:
         cs["legacy_excluded"] = legacy
+    # **줄바꿈만 다른 것**은 그렇게 말한다. EOL 고정 이행에서는 영역 전체가
+    # 수정으로 보이는데 `git diff`는 빈 출력이라(정규화가 blob을 같게 만든다)
+    # 사용자가 원인을 짚을 자리가 없다 — 내용이 그대로임을 여기서 알린다.
+    eol_only = []
+    for rel in cs["modified"]:
+        blob = _store_get(table[rel])
+        if blob is None:
+            continue
+        try:
+            now = (files[rel]).read_bytes()
+        except OSError:
+            continue
+        if _fold_eol(blob) == _fold_eol(now):
+            eol_only.append(rel)
+    if eol_only:
+        cs["eol_only"] = eol_only
     # 이동은 이동으로 보인다(시행령 §6 4항) — 반려와 **같은 해석**(노드별
     # 사슬, 생애 경계)으로 낸다. 표시와 복원이 갈리면 사용자가 검토한 것과
     # 반려가 하는 일이 달라진다(added/removed는 tree 차이 그대로 둔다).

@@ -7159,6 +7159,44 @@ def test_governance_amend_secrets_and_region():
         check("이행된 승인본은 저장소에서 해석된다 (#37)",
               A._tree_table_for_region(reg, A.approved_hash(reg)) is not None,
               A.approved_hash(reg))
+
+        # ⑥ 줄바꿈만 다른 것은 변경집합이 그렇게 말한다 (#39)
+        #    EOL 고정 이행에서는 영역 전체가 "수정"으로 보이는데 `git diff`는
+        #    빈 출력이다 — 내용이 그대로임을 표면이 말하지 않으면 사용자는
+        #    무엇을 승인하는지 모르는 채 승인하게 된다.
+        #    되돌리면 — `changeset`의 `eol_only` 계산을 지우면 실패한다.
+        eolf = ROOT / (reg + "/audit-eol.md")
+        eolf.write_bytes("한 줄\n두 줄\n".encode("utf-8"))
+        A.approve(reg, A.approved_hash(reg),
+                  expect_work=A.working_tree_hash(reg), reason="EOL 시험 기준")
+        eolf.write_bytes("한 줄\r\n두 줄\r\n".encode("utf-8"))   # 줄바꿈만 바꾼다
+        cs2 = A.changeset(reg)
+        check("줄바꿈만 바뀌어도 수정으로 잡힌다 — 판정은 raw 바이트다 (#39)",
+              A.state(reg) == "pending"
+              and reg + "/audit-eol.md" in (cs2 or {}).get("modified", []), cs2)
+        check("그것이 **줄바꿈만** 다르다고 표시된다 (#39)",
+              reg + "/audit-eol.md" in (cs2 or {}).get("eol_only", []), cs2)
+        #    내용이 실제로 다르면 그 표시가 붙지 않는다
+        eolf.write_bytes("한 줄\n다른 줄\n".encode("utf-8"))
+        cs3 = A.changeset(reg)
+        check("내용이 다르면 줄바꿈 표시가 붙지 않는다 (#39)",
+              reg + "/audit-eol.md" not in (cs3 or {}).get("eol_only", []), cs3)
+        eolf.unlink(missing_ok=True)
+        A.approve(reg, A.approved_hash(reg),
+                  expect_work=A.working_tree_hash(reg), reason="EOL 시험 정리")
+
+        # ⑦ 내용 주소 저장소는 줄바꿈 변환 대상이 아니다 (#39)
+        #    `.gitattributes`가 `-text`로 못박지 않으면 CRLF를 담은 blob이
+        #    이행 중에 바뀌어 그 승인본이 통째로 해석 불능이 된다(실측).
+        ga = (ENGINE.parent.parent / ".gitattributes").read_text(
+            encoding="utf-8")
+        check("`.gitattributes`가 저장소 전체를 LF로 못박는다 (#39)",
+              any(l.split()[:1] == ["*"] and "eol=lf" in l
+                  for l in ga.splitlines() if l.strip()
+                  and not l.startswith("#")), ga[:80])
+        check("내용 주소 저장소는 변환에서 제외된다 (#39)",
+              any("_ledger/approved/objects/" in l and "-text" in l
+                  for l in ga.splitlines()), ga[:80])
     finally:
         (ROOT / (reg + "/audit-keep.md")).unlink(missing_ok=True)
         (ROOT / (reg + "/audit-extra.md")).unlink(missing_ok=True)
