@@ -48,7 +48,13 @@ def _print_changeset(region: str) -> None:
             print(f"    … 외 {len(rows) - 20}건")
     for m in cs.get("moves", []):
         print(f"  이동  {m['from']} → {m['to']}")
-    if not any(cs.values()):
+    legacy = cs.get("legacy_excluded") or []
+    if legacy:
+        print(f"  개정 전 승인본 — 제외 구획 항목 {len(legacy)}건이 승인본에만 "
+              f"남아 있습니다(§3 4항): {', '.join(legacy[:3])}")
+        print("  이 승인으로 새 형상의 승인본이 서고, 그 항목은 이후 변경집합에 "
+              "들지 않습니다.")
+    if not any(v for k, v in cs.items() if k != "legacy_excluded"):
         print("  (파일 단위 차이 없음)")
 
 

@@ -6925,7 +6925,12 @@ def test_governance_amend_secrets_and_region():
         # ① 한글 조사가 직결된 토큰도 걸러진다 (#29)
         cases = [
             ("github-token", "토큰 ghp_" + "a" * 36 + "를 썼다"),
-            ("aws-access-key", "키 AKIAIOSFODNN7EXAMPLE이다"),
+            # 완성된 키 형상을 **소스에 두지 않는다.** 정식 릴리스의 전제
+            # 검사는 스냅샷의 전 파일을 이 필터로 훑고 `osk/secrets.py`만
+            # 면제하므로, 여기 완전형을 적으면 이 파일의 `aws-access-key`
+            # 적중으로 **릴리스 선언이 항상 막힌다**(경계를 고친 뒤로는 뒤에
+            # 한글이 붙어도 매치한다 — 그것이 이 개정의 요지다).
+            ("aws-access-key", "키 AKIA" + "IOSFODNN7EXAMPLE" + "이다"),
             ("openai-style-key", "sk-ant-api03-" + "x" * 30 + "가 새었다"),
             ("google-api-key", "AIza" + "b" * 35 + "로 불렀다"),
         ]
@@ -6952,6 +6957,25 @@ def test_governance_amend_secrets_and_region():
               not validate.secret_pattern_drift(),
               validate.secret_pattern_drift())
 
+        #    이 저장소의 **소스 자신**이 자기 필터에 걸리지 않아야 한다.
+        #    정식 릴리스의 전제는 스냅샷 전 파일을 이 필터로 훑고 `osk/secrets.py`
+        #    만 면제하므로, 어딘가에 완성된 키 형상이 있으면 선언이 **항상**
+        #    막힌다. 경계를 고치면서 이 위험이 커졌다 — 뒤에 한글이 붙어 통과하던
+        #    문자열이 이제 적중한다. fixture는 문자열 조합으로 쓴다.
+        src_hits = []
+        for _p in sorted(ENGINE.rglob("*.py")) + sorted(
+                ENGINE.parent.glob("*.md")):
+            if "__pycache__" in _p.parts:
+                continue
+            if _p.name == "secrets.py" and "osk" in _p.parts:
+                continue                       # guard_secrets와 같은 면제
+            _o, _h = secrets.filter_text(
+                _p.read_text(encoding="utf-8", errors="ignore"))
+            if _h:
+                src_hits.append((_p.name, sorted(set(_h))))
+        check("소스가 자기 비밀값 필터에 걸리지 않는다 — 릴리스 차단 방지 (#29)",
+              not src_hits, src_hits)
+
         # ③ scope 기억은 영역 tree에 들지 않는다 (#37)
         #    되돌리면 — 케이던스가 쓸 때마다 영역이 pending이 되고, 반려가 다른
         #    기기의 공유 기억까지 지운다.
@@ -6973,6 +6997,61 @@ def test_governance_amend_secrets_and_region():
         check("scope 기억 구획은 보호영역이 될 수 없다 (#37)",
               _raises(lambda: A.protect("= Scope/Workbench/_scope_memory",
                                         "시험"))())
+
+        # ⑤ **개정 전 승인본의 이행** — 이 규칙이 바뀌기 전에 지정된 영역의
+        #    승인본은 `_scope_memory/*`를 담고 있다. 그 상태에서
+        #      · 복원 계획이 그 자리를 건드리지 않아야 하고(공유 기억 보호),
+        #      · 반려는 **파괴 전에** 멈춰야 하며,
+        #      · 한 번의 승인으로 해소돼야 한다.
+        #    되돌리면 — `_tree_table_for_region`의 걸러내기를 지우면 첫 단언이,
+        #    `revert`의 사전 거부를 지우면 둘째가 실패한다.
+        #    개정 전 승인본을 **실제로 그 영역의 현행 승인본으로** 세운다 —
+        #    저장소에 manifest만 넣어 두면 반려가 기존 base-CAS에 먼저 걸려
+        #    이행 관문을 태우지 못한다(첫 판이 그래서 뮤턴트를 살렸다).
+        old_mem = "과거 기억\n".encode("utf-8")
+        legacy_entries = [[rel, A._store_put(p.read_bytes())]
+                          for rel, p in A._region_files(ROOT / reg)]
+        legacy_entries.append([reg + "/_scope_memory/W1.md",
+                               A._store_put(old_mem)])
+        legacy_entries.sort(key=lambda e: e[0])
+        legacy_hash = A._store_put(A._manifest_blob(legacy_entries))
+        core.ledger_append(A.APPROVALS, {
+            "kind": "approve", "region": reg, "base": A.approved_hash(reg),
+            "accepted": legacy_hash, "reason": "개정 전 형상 모사"})
+        check("개정 전 승인본의 제외 구획 항목이 드러난다 (#37)",
+              A.legacy_excluded(legacy_hash)
+              == [reg + "/_scope_memory/W1.md"], A.legacy_excluded(legacy_hash))
+        tbl = A._tree_table_for_region(reg, legacy_hash)
+        check("복원 table에서 그 자리가 빠진다 — 공유 기억을 덮지 않는다 (#37)",
+              tbl is not None and reg + "/_scope_memory/W1.md" not in tbl, tbl)
+        cs = A.changeset(reg)
+        check("파일 차이가 없어도 pending이고 그 사유를 알린다 (#37)",
+              A.state(reg) == "pending" and cs is not None
+              and cs.get("legacy_excluded"), (A.state(reg), cs))
+
+        #    반려는 **파괴 전에** 멈춰야 한다. 사전 거부가 없으면 아래 `extra`가
+        #    승인본에 없다는 이유로 먼저 지워진 뒤 최종 확인에서 실패한다 —
+        #    기록은 안 남는데 작업본만 바뀐 상태다.
+        extra = ROOT / (reg + "/audit-extra.md")
+        extra.write_text("에이전트가 더한 것\n", encoding="utf-8")
+        _now_mem = smp.read_bytes()
+        check("반려는 파괴 전에 거부된다 (#37)",
+              _raises(lambda: A.revert(reg, legacy_hash,
+                                       A.working_tree_hash(reg)))())
+        check("그 거부가 공유 기억을 건드리지 않았다 (#37)",
+              smp.read_bytes() == _now_mem, smp.read_bytes()[:30])
+        check("그 거부가 작업본도 건드리지 않았다 (#37)",
+              extra.exists(), extra.exists())
+        extra.unlink(missing_ok=True)
+
+        #    이행은 **한 번의 승인**이다 — 사용자가 할 일이 그것뿐임을 고정한다.
+        A.approve(reg, A.approved_hash(reg),
+                  expect_work=A.working_tree_hash(reg), reason="개정 후 첫 승인")
+        check("한 번의 승인으로 새 형상이 서고 clean이 된다 (#37)",
+              A.state(reg) == "clean", A.state(reg))
+        check("그 뒤 승인본에는 제외 구획 항목이 없다 (#37)",
+              not A.legacy_excluded(A.approved_hash(reg)),
+              A.legacy_excluded(A.approved_hash(reg)))
     finally:
         if protected:
             try:
