@@ -2006,11 +2006,17 @@ def test_surface_contract():
     real = (ENGINE.parent / "Mechanism.md").read_text(encoding="utf-8")
     import re as _re
     sec = _re.search(r"^## §6-2 .*?(?=^## §7)", real, _re.M | _re.S)
+    # §9(비밀값 패턴 표)도 함께 심는다 — 검증기가 구현과 조문의 동치를 보는데,
+    # 그 정본이 없으면 이 vault를 쓰는 뒤 시나리오(발행 가드·릴리스 전제)까지
+    # 통째로 "정본 부재"로 FAIL한다. 규범이 정본인 검사가 늘면 심는 범위도 는다.
+    sec9 = _re.search(r"^## §9 .*?(?=^## §9-2)", real, _re.M | _re.S)
     check("실 Mechanism에 §6-2가 있다", sec is not None)
-    if not sec:
+    check("실 Mechanism에 §9가 있다", sec9 is not None)
+    if not sec or not sec9:
         return
     (gov / "Mechanism.md").write_text(          # 특수 노드 — 계약을 갖춘다
-        node_text("260802-zzzz-rg50", "표면 계약 시험용", sec.group(0)),
+        node_text("260802-zzzz-rg50", "표면 계약 시험용",
+                  sec.group(0) + "\n" + sec9.group(0)),
         encoding="utf-8")
     check("실 표면은 선언과 동치·권위 비노출", not validate.surface_violations(),
           validate.surface_violations())
@@ -6900,6 +6906,276 @@ def test_audit_fixes_2026_09_02():
             shutil.rmtree(ROOT / d, ignore_errors=True)
 
 
+# ── 개정 2026-09-02: 비밀값 경계와 영역 tree 제외 (#29·#37) ───────────────
+
+def test_region_root_is_not_an_excluded_compartment():
+    """영역 **루트**가 제외 이름을 담아도 반려가 그 영역을 지우지 않는다 (4차 리뷰).
+
+    `_region_files(region_dir)`는 루트 자신에는 걸러내기를 걸지 않고 그 **아래**
+    자식 디렉터리와 파일 이름만 거른다. 제외 판정이 vault 상대 **전체** 경로를
+    보면 두 해석이 갈린다 — 루트에 제외 이름(구판이 지정한 `…/_scope_memory`)이나
+    점 접두(`protect`가 지금도 허용하는 `.foo`)가 든 영역에서 승인본 table의 모든
+    행이 빠져 `table={}`가 되는데, 삭제 순회는 그 파일들을 정상 열거하므로 반려가
+    영역을 통째로 지우고, 이행 논리가 빈 manifest를 새 `base`로 적어 그 삭제를
+    clean한 반려로 확정한다(실측 재현).
+
+    무엇을 망가뜨리면 실패하는가:
+      · `_excluded_rel`이 다시 전체 경로를 보면 → 사전 대조가 반려를 거부해
+        "반려가 성립한다"가 실패한다(그 대조까지 함께 지우면 파일이 사라진다)
+      · `revert`의 사전 대조를 지우면 → 세 번째 묶음(해석이 갈린 상황)에서
+        영역이 지워지고 삭제가 기록으로 확정된다
+    """
+    from osk import approvals as A
+    made, protected = [], []
+    try:
+        for leaf, legacy in ((".hid", False), ("_scope_memory", True)):
+            reg = "= Domain/" + leaf
+            d = ROOT / reg
+            d.mkdir(parents=True, exist_ok=True)
+            made.append(d)
+            body_a, body_b = "원본\n".encode("utf-8"), "둘\n".encode("utf-8")
+            (d / "a.md").write_bytes(body_a)
+            (d / "b.md").write_bytes(body_b)
+            if legacy:
+                # 개정으로 이제 **지정할 수 없는** 형태다. 구판이 남긴 영역을
+                # 모사하려면 대장에 직접 적는다 — 그것이 이 경로의 현실이다.
+                check("제외 이름을 루트로 하는 새 지정은 거부된다 (4차)",
+                      _raises(lambda r=reg: A.protect(r, "시험"))())
+                core.ledger_append(A.APPROVALS, {
+                    "kind": "protect", "region": reg, "base": None,
+                    "accepted": A._store_tree(d),
+                    "moves_seen": A._moves_boundary(),
+                    "reason": "구판 지정 모사"})
+            else:
+                A.protect(reg, "4차 리뷰 회귀")
+            protected.append(reg)
+            base = A.approved_hash(reg)
+            check(f"[{leaf}] 전제: 지정 직후 clean (4차)",
+                  A.state(reg) == "clean", A.state(reg))
+            check(f"[{leaf}] 루트 이름은 제외 판정에 들지 않는다 (4차)",
+                  A.legacy_excluded(base, reg) == [],
+                  A.legacy_excluded(base, reg))
+            tbl = A._tree_table_for_region(reg, base)
+            check(f"[{leaf}] 복원 table이 영역 파일을 그대로 담는다 (4차)",
+                  tbl is not None and len(tbl) == 2, tbl)
+
+            (d / "a.md").write_bytes("변경\n".encode("utf-8"))
+            (d / "c.md").write_bytes("더한 것\n".encode("utf-8"))
+            check(f"[{leaf}] 전제: 변경이 pending으로 보인다 (4차)",
+                  A.state(reg) == "pending", A.state(reg))
+            rec = A.revert(reg, base, A.working_tree_hash(reg), reason="4차")
+            check(f"[{leaf}] 반려가 성립한다 (4차)",
+                  rec.get("kind") == "revert", rec)
+            check(f"[{leaf}] 반려가 영역을 지우지 않고 되돌린다 (4차)",
+                  (d / "a.md").read_bytes() == body_a
+                  and (d / "b.md").read_bytes() == body_b
+                  and not (d / "c.md").exists(),
+                  sorted(x.name for x in d.iterdir()))
+            check(f"[{leaf}] 되돌린 뒤 clean이다 (4차)",
+                  A.state(reg) == "clean", A.state(reg))
+
+        # 해석이 실제로 갈린 상황에서 **파괴가 시작되지 않는다.** 위 두 묶음은
+        # 걸러내기가 옳아진 뒤의 동작이고, 이것은 그 걸러내기가 언젠가 다시
+        # 어긋나도 반려가 승인본에 든 살아 있는 파일을 지우지 못한다는 것이다 —
+        # 같은 규칙을 두 곳에서 읽는 한 그 어긋남은 되돌아올 수 있다.
+        reg = protected[0]
+        d = ROOT / reg
+        before = sorted(x.name for x in d.iterdir())
+        with mock.patch.object(A, "_excluded_rel", lambda rel, region: True):
+            check("해석이 갈리면 반려가 파괴 전에 멈춘다 (4차)",
+                  _raises(lambda: A.revert(reg, A.approved_hash(reg),
+                                           A.working_tree_hash(reg), "시험"))())
+        check("멈춘 반려는 파일을 하나도 건드리지 않았다 (4차)",
+              sorted(x.name for x in d.iterdir()) == before,
+              sorted(x.name for x in d.iterdir()))
+
+        # 구판 형태의 영역에서 **빠져나오는 길**은 해제다 — 파괴적이지 않고,
+        # 지정이 막힌 뒤에도 남아 있어야 하는 유일한 출구다.
+        check("구판 루트 영역은 해제로 빠져나온다 (4차)",
+              A.unprotect(protected[1], "이행").get("kind") == "unprotect"
+              and A.state(protected[1]) == "unprotected", A.state(protected[1]))
+        protected.pop()
+    finally:
+        for reg in protected:
+            try:
+                A.unprotect(reg, "시험 종료")
+            except Exception:
+                pass
+        for d in made:
+            if d.exists():
+                rmtree_force(d)
+
+def test_governance_amend_secrets_and_region():
+    """Mechanism §9 1항(비밀값 경계)·§3 4항(영역 tree 제외) 개정의 고정.
+
+    이 둘은 **조문이 정본**이라 코드만 고칠 수 없었던 자리다. 그래서 검사도
+    둘을 함께 본다 — 동작이 맞는가, 그리고 구현이 조문과 같은가.
+
+    무엇을 망가뜨리면 실패하는가:
+      · 패턴의 경계를 `\\b`로 되돌리면 → 직결 양성 넷이 실패한다
+      · 조문 표만 고치고 코드를 안 고치면(또는 그 반대) → 동치 단언이 실패한다
+      · `_SKIP_DIRS`에서 `_scope_memory`를 빼면 → 보호영역 단언 둘이 실패한다
+    """
+    from osk import approvals as A, scope_memory as SM, secrets
+    reg = "= Scope/Workbench"
+    smp, prior, protected = SM.sm_path("W1"), None, False
+    try:
+        # ① 한글 조사가 직결된 토큰도 걸러진다 (#29)
+        cases = [
+            ("github-token", "토큰 ghp_" + "a" * 36 + "를 썼다"),
+            # 완성된 키 형상을 **소스에 두지 않는다.** 정식 릴리스의 전제
+            # 검사는 스냅샷의 전 파일을 이 필터로 훑고 `osk/secrets.py`만
+            # 면제하므로, 여기 완전형을 적으면 이 파일의 `aws-access-key`
+            # 적중으로 **릴리스 선언이 항상 막힌다**(경계를 고친 뒤로는 뒤에
+            # 한글이 붙어도 매치한다 — 그것이 이 개정의 요지다).
+            ("aws-access-key", "키 AKIA" + "IOSFODNN7EXAMPLE" + "이다"),
+            ("openai-style-key", "sk-ant-api03-" + "x" * 30 + "가 새었다"),
+            ("google-api-key", "AIza" + "b" * 35 + "로 불렀다"),
+        ]
+        for name, sample in cases:
+            out, hits = secrets.filter_text(sample)
+            check(f"조사 직결 토큰이 걸러진다: {name} (#29)",
+                  name in hits and sample != out, (hits, out[:40]))
+        #    ASCII가 앞뒤에 붙으면 여전히 토큰이 아니다 — 경계를 넓힌 것이
+        #    아니라 비ASCII만 경계로 인정한 것이다.
+        for sample in ("NOTAKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLEX"):
+            _o, hits = secrets.filter_text(sample)
+            check(f"ASCII 인접은 토큰이 아니다: {sample[:24]} (#29)",
+                  not hits, hits)
+        check("비밀값 fixture가 통과한다 (#29)",
+              not secrets.self_test(), secrets.self_test())
+
+        # ② 구현이 §9 1항의 표를 **그대로** 담는다 (#29)
+        #    조문이 필터의 정본이므로, 한쪽만 고치는 것이 다시 가능해지면 안 된다.
+        declared = validate.declared_secret_patterns()
+        check("규범에서 패턴 표를 읽는다 (#29)",
+              declared is not None and len(declared) == len(secrets.PATTERNS),
+              declared and sorted(declared))
+        check("구현과 규범의 패턴이 동치다 (#29)",
+              not validate.secret_pattern_drift(),
+              validate.secret_pattern_drift())
+
+        #    이 저장소의 **소스 자신**이 자기 필터에 걸리지 않아야 한다.
+        #    정식 릴리스의 전제는 스냅샷 전 파일을 이 필터로 훑고 `osk/secrets.py`
+        #    만 면제하므로, 어딘가에 완성된 키 형상이 있으면 선언이 **항상**
+        #    막힌다. 경계를 고치면서 이 위험이 커졌다 — 뒤에 한글이 붙어 통과하던
+        #    문자열이 이제 적중한다. fixture는 문자열 조합으로 쓴다.
+        src_hits = []
+        for _p in sorted(ENGINE.rglob("*.py")) + sorted(
+                ENGINE.parent.glob("*.md")):
+            if "__pycache__" in _p.parts:
+                continue
+            if _p.name == "secrets.py" and "osk" in _p.parts:
+                continue                       # guard_secrets와 같은 면제
+            _o, _h = secrets.filter_text(
+                _p.read_text(encoding="utf-8", errors="ignore"))
+            if _h:
+                src_hits.append((_p.name, sorted(set(_h))))
+        check("소스가 자기 비밀값 필터에 걸리지 않는다 — 릴리스 차단 방지 (#29)",
+              not src_hits, src_hits)
+
+        # ③ scope 기억은 영역 tree에 들지 않는다 (#37)
+        #    되돌리면 — 케이던스가 쓸 때마다 영역이 pending이 되고, 반려가 다른
+        #    기기의 공유 기억까지 지운다.
+        prior = smp.read_bytes() if smp.is_file() else None
+        write.bind_session("gov-amend-sess", "W1", "개정 회귀 시험")
+        st0 = _w(SM.read, "gov-amend-sess")
+        r = _w(SM.replace, "gov-amend-sess", "개정 전 기억", st0.get("hash"))
+        check("전제: scope 기억을 쓸 수 있다 (#37)", r.get("ok"), r)
+        A.protect(reg, "개정 회귀 시험")
+        protected = True
+        check("전제: 지정 직후 clean (#37)", A.state(reg) == "clean",
+              A.state(reg))
+        r = _w(SM.replace, "gov-amend-sess", "개정 뒤 기억", r.get("hash"))
+        check("전제: 그 위에 다시 쓴다 (#37)", r.get("ok"), r)
+        check("scope 기억 쓰기가 영역을 pending으로 만들지 않는다 (#37)",
+              A.state(reg) == "clean", A.state(reg))
+
+        # ④ 제외 구획은 영역의 루트로도 지정되지 않는다 (#37)
+        check("scope 기억 구획은 보호영역이 될 수 없다 (#37)",
+              _raises(lambda: A.protect("= Scope/Workbench/_scope_memory",
+                                        "시험"))())
+
+        # ⑤ **개정 전 승인본의 이행** — 이 규칙이 바뀌기 전에 지정된 영역의
+        #    승인본은 `_scope_memory/*`를 담고 있다. 그 상태에서
+        #      · 복원 계획이 그 자리를 건드리지 않아야 하고(공유 기억 보호),
+        #      · 반려는 **파괴 전에** 멈춰야 하며,
+        #      · 한 번의 승인으로 해소돼야 한다.
+        #    되돌리면 — `_tree_table_for_region`의 걸러내기를 지우면 첫 단언이,
+        #    `revert`의 사전 거부를 지우면 둘째가 실패한다.
+        #    개정 전 승인본을 **실제로 그 영역의 현행 승인본으로** 세운다 —
+        #    저장소에 manifest만 넣어 두면 반려가 기존 base-CAS에 먼저 걸려
+        #    이행 관문을 태우지 못한다(첫 판이 그래서 뮤턴트를 살렸다).
+        old_mem = "과거 기억\n".encode("utf-8")
+        # 승인본에만 있고 지금은 없는 파일을 하나 넣는다 — 반려가 **되살리는**
+        # 쪽도 함께 시험하려는 것이고, 그래야 이행이 만드는 manifest가 이 vault에
+        # 한 번도 저장된 적 없는 것이 된다(그러지 않으면 지정 시점의 manifest와
+        # 우연히 같아져 "저장했는가"를 묻는 단언이 헛돈다).
+        keep_rel = reg + "/audit-keep.md"
+        keep_body = "승인본에만 있던 파일\n".encode("utf-8")
+        legacy_entries = [[rel, A._store_put(p.read_bytes())]
+                          for rel, p in A._region_files(ROOT / reg)]
+        legacy_entries.append([keep_rel, A._store_put(keep_body)])
+        legacy_entries.append([reg + "/_scope_memory/W1.md",
+                               A._store_put(old_mem)])
+        legacy_entries.sort(key=lambda e: e[0])
+        legacy_hash = A._store_put(A._manifest_blob(legacy_entries))
+        core.ledger_append(A.APPROVALS, {
+            "kind": "approve", "region": reg, "base": A.approved_hash(reg),
+            "accepted": legacy_hash, "reason": "개정 전 형상 모사"})
+        check("개정 전 승인본의 제외 구획 항목이 드러난다 (#37)",
+              A.legacy_excluded(legacy_hash, reg)
+              == [reg + "/_scope_memory/W1.md"], A.legacy_excluded(legacy_hash, reg))
+        tbl = A._tree_table_for_region(reg, legacy_hash)
+        check("복원 table에서 그 자리가 빠진다 — 공유 기억을 덮지 않는다 (#37)",
+              tbl is not None and reg + "/_scope_memory/W1.md" not in tbl, tbl)
+        cs = A.changeset(reg)
+        check("파일 차이가 없어도 pending이고 그 사유를 알린다 (#37)",
+              A.state(reg) == "pending" and cs is not None
+              and cs.get("legacy_excluded"), (A.state(reg), cs))
+
+        #    **반려는 막히지 않는다.** 막으면 그 영역의 일반 파일 변경을 버릴
+        #    길이 사라져, 버리려던 것을 승인해야만 벗어나는 정반대 결과가 된다.
+        #    되돌리면 — `revert`의 이행(`record_base`)을 지우면 최종 확인에서
+        #    실패해 `extra`가 지워진 채 기록이 안 남는다.
+        extra = ROOT / (reg + "/audit-extra.md")
+        extra.write_text("에이전트가 더한 것 — 버릴 것\n", encoding="utf-8")
+        _now_mem = smp.read_bytes()
+        rec = A.revert(reg, legacy_hash, A.working_tree_hash(reg),
+                       reason="개정 전 승인본에서의 반려")
+        check("개정 전 승인본에서도 반려가 성립한다 (#37)",
+              rec.get("kind") == "revert", rec)
+        check("버리려던 일반 파일 변경이 실제로 버려진다 (#37)",
+              not extra.exists(), extra.exists())
+        check("승인본에만 있던 파일은 되살아난다 (#37)",
+              (ROOT / keep_rel).read_bytes() == keep_body,
+              (ROOT / keep_rel).exists())
+        check("반려가 공유 기억은 건드리지 않는다 (#37)",
+              smp.read_bytes() == _now_mem, smp.read_bytes()[:30])
+        check("그 반려가 새 형상의 baseline을 세운다 (#37)",
+              A.state(reg) == "clean"
+              and not A.legacy_excluded(A.approved_hash(reg), reg),
+              (A.state(reg), A.legacy_excluded(A.approved_hash(reg), reg)))
+        check("이행된 승인본은 저장소에서 해석된다 (#37)",
+              A._tree_table_for_region(reg, A.approved_hash(reg)) is not None,
+              A.approved_hash(reg))
+    finally:
+        (ROOT / (reg + "/audit-keep.md")).unlink(missing_ok=True)
+        (ROOT / (reg + "/audit-extra.md")).unlink(missing_ok=True)
+        if protected:
+            try:
+                A.unprotect(reg, "시험 종료")
+            except Exception:
+                pass
+        try:
+            if prior is None:
+                smp.unlink(missing_ok=True)
+            else:
+                smp.write_bytes(prior)
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -6984,7 +7260,9 @@ if __name__ == "__main__":
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,
                test_fingerprint_scope_and_racy, test_engine_epoch_fence,
-               test_audit_fixes_2026_09_02]:
+               test_audit_fixes_2026_09_02,
+               test_governance_amend_secrets_and_region,
+               test_region_root_is_not_an_excluded_compartment]:
         try:
             fn()
         except Exception as e:

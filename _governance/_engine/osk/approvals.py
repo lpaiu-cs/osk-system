@@ -34,11 +34,16 @@ STORE = LEDGER / "approved" / "objects"       # 내용 주소 blob·manifest 보
 KINDS = ("protect", "unprotect", "approve", "revert")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")   # 저장소 접근의 유일 형식
 
-# 영역 tree에서 제외하는 이름 — 저장소 살림살이와 대장 자신(승인본이 대장을
-# 담으면 승인이 자기 자신을 포함하는 순환이 된다). `_raw` 제외는 사용자 판정
-# (2026-08-19)이다: raw는 append-only 저장소라 선의의 에이전트가 건드리는 것은
-# 사용자 지시가 있을 때뿐이므로, 보호영역의 변경집합 대상이 아니다.
-_SKIP_DIRS = {".git", ".venv", "__pycache__", "_ledger", "_raw"}
+# 영역 tree에서 제외하는 이름 — **Mechanism §3 4항이 열거한다.** 저장소
+# 살림살이, 대장 자신(승인본이 대장을 담으면 승인이 자기 자신을 포함하는
+# 순환이 된다), 그리고 append-only 기록과 기기 공유 기억이다.
+#
+# `_raw` 제외는 사용자 판정(2026-08-19)이었고 `_scope_memory`는 같은 근거가 더
+# 강하게 적용되는 자리인데 빠져 있었다: 케이던스가 15턴마다 쓰므로 그 구획을
+# 담은 영역은 계속 pending이 되고, **반려가 다른 기기의 공유 기억까지 지운다**.
+# 되돌릴 것이 없는 자리를 되돌림의 대상으로 두지 않는다.
+_SKIP_DIRS = {".git", ".venv", "__pycache__", "_ledger", "_raw",
+              "_scope_memory"}
 
 
 # ── 영역 tree (내용 주소) ────────────────────────────────────────────────
@@ -182,6 +187,40 @@ def _tree_table(tree_hash: str) -> dict[str, str] | None:
         return None
 
 
+def _excluded_rel(rel: str, region: str) -> bool:
+    """그 경로가 `region` **안에서** 지금 규칙(§3 4항)의 제외 구획에 드는가.
+
+    `_region_files`의 걸러내기와 같은 판정을 경로 문자열에 대해 한다 — 작업본
+    스캔과 승인본 판독이 같은 규칙을 써야 둘이 비교 가능하다. 그래서 판정은
+    **영역 루트 아래**의 구성요소만 본다: `_region_files(region_dir)`는 루트
+    자신에는 걸러내기를 걸지 않고 그 아래 자식 디렉터리와 파일 이름만 거른다
+    (§3 4항도 "영역 **안에** 있어도"라고 적는다 — 루트는 판정 대상이 아니다).
+
+    루트 경로까지 판정에 넣으면 두 해석이 갈린다. 루트에 제외 이름이나 점
+    접두가 든 영역 — 개정 전에 합법적으로 지정된 `= …/_scope_memory`, 그리고
+    `protect`가 **지금도 허용하는** `.foo` — 에서 승인본 table의 모든 행이
+    빠져 `table={}`가 되는데, 삭제 순회는 `_region_files`로 그 파일들을 정상
+    열거하므로 **반려가 영역을 통째로 지운다.** 그 뒤 이행 논리가 빈 manifest를
+    새 `base`로 적어 삭제를 clean한 반려로 확정한다(4차 리뷰, 실측 재현)."""
+    r = str(region).rstrip("/")
+    s = str(rel)
+    if not r or not s.startswith(r + "/"):
+        return False              # 영역 밖 — 여기서 판정할 자리가 아니다
+    parts = s[len(r) + 1:].split("/")
+    return any(p in _SKIP_DIRS or p.startswith(".") for p in parts)
+
+
+def legacy_excluded(tree_hash: str, region: str) -> list[str]:
+    """저장된 승인본 manifest에 든 **지금은 제외되는** 항목들.
+
+    §3 4항 개정 전에 지정된 영역의 승인본은 `_scope_memory/*`를 담고 있을 수
+    있다. 그 항목은 이제 영역 tree에 들지 않으므로, 그대로 두면 복원 계획이
+    **현재의 공유 기억을 과거 승인본으로 덮는다.** 어느 자리가 그런지 여기서
+    한 번 답하고, 판독(`_tree_table_for_region`)과 반려가 같은 답을 쓴다."""
+    table = _tree_table(tree_hash)
+    return sorted(r for r in (table or {}) if _excluded_rel(r, region))
+
+
 def _tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None:
     """그 **영역의** 승인본 table — 형상이 정본이고 모든 rel이 `region/` 아래일
     때만 반환한다(아니면 None).
@@ -198,7 +237,14 @@ def _tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None
     r = str(region).rstrip("/")
     if not r or any(not rel.startswith(r + "/") for rel in table):
         return None                   # 영역 밖 항목 — 그 영역의 tree가 아니다
-    return table
+    # **지금 규칙으로 해석한다.** 개정 전 승인본이 담고 있을 수 있는 제외 구획
+    # 항목(`_scope_memory/*`)을 걸러 낸다 — 걸러 내지 않으면 복원 계획이 현재의
+    # 공유 기억 위에 과거 승인본을 쓰고, 그 뒤 최종 확인이 새 규칙으로 계산되어
+    # 어차피 실패한다(기록은 안 남는데 자료만 덮인다). 삭제 쪽은 위험이 없다 —
+    # `_apply_tree`의 삭제 순회가 `_region_files`를 쓰므로 제외 구획을 애초에
+    # 열거하지 않는다.
+    return {rel: h for rel, h in table.items()
+            if not _excluded_rel(rel, r)}
 
 
 # ── 판정 (인과 극대) ─────────────────────────────────────────────────────
@@ -429,6 +475,13 @@ def changeset(region: str) -> dict | None:
         "removed": sorted(set(table) - set(cur)),
         "modified": sorted(r for r in set(cur) & set(table) if cur[r] != table[r]),
     }
+    # 개정 전 형상의 승인본은 **파일 단위 차이가 없어도 pending**이다(제외 구획
+    # 항목이 승인본에만 남아 tree 해시가 어긋난다). 그 사실을 말해 주지 않으면
+    # 사용자는 "차이가 없는데 왜 pending인가"에서 멈춘다 — 한 번 승인하면
+    # 해소된다는 것까지 함께 낸다.
+    legacy = legacy_excluded(tree, region)
+    if legacy:
+        cs["legacy_excluded"] = legacy
     # 이동은 이동으로 보인다(시행령 §6 4항) — 반려와 **같은 해석**(노드별
     # 사슬, 생애 경계)으로 낸다. 표시와 복원이 갈리면 사용자가 검토한 것과
     # 반려가 하는 일이 달라진다(added/removed는 tree 차이 그대로 둔다).
@@ -757,6 +810,33 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         if table is None:
             raise ValueError(
                 f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
+        # 개정 전 형상의 승인본이면 **파괴 전에** 멈춘다(§3 4항). 제외 구획
+        # 항목은 위에서 걸러졌으므로 복원이 그 자리를 덮지는 않지만, 그 승인본은
+        # 새 규칙의 작업본 tree와 결코 같아질 수 없어 마지막 확인에서 어차피
+        # 실패한다 — 그때는 다른 파일이 이미 되돌려진 뒤이고 기록은 남지 않는다.
+        # 사용자가 할 일은 한 번의 승인이므로 그것을 말해 준다.
+        # 개정 전 형상의 승인본이면 **반려하면서 이행한다**(§3 4항 마지막 문단).
+        # 막지 않는다 — 막으면 그 영역의 일반 파일 변경을 버릴 길이 사라져,
+        # 버리려던 것을 승인해야만 벗어나는 정반대 결과가 된다(리뷰 지적).
+        # 제외 구획은 복원이 건드리지 않고(위 `table`에서 이미 걸러졌다),
+        # 그 복원을 기록하는 `revert`가 다시 해석한 tree를 `base`로 적는다.
+        stale_rels = legacy_excluded(base, reg)
+        # **걸러내기가 작업본 스캔보다 많이 지우려 하면 멈춘다.** `table`은 승인본을
+        # 지금 규칙으로 해석한 것이고 삭제 순회는 `_region_files`가 연다 — 같은
+        # 규칙을 두 곳에서 읽으므로 갈릴 수 있고, 갈리면 복원이 **승인본에 든 살아
+        # 있는 파일을** 지운다. 그 뒤의 최종 확인은 잡지 못한다: 지운 결과로 다시
+        # 계산한 해시가 같은 table에서 다시 유도한 해시와 맞아떨어져 삭제를
+        # 확정해 버린다(4차 리뷰의 실측 경로). 그래서 파괴 전에, 두 해석을 서로
+        # 대조해 한 번 확인한다 — 승인본에 있고 지금도 영역 파일로 열거되는
+        # 자리는 복원 계획에 반드시 남아 있어야 한다.
+        stored = _tree_table(base) or {}
+        live = {rel for rel, _ in _region_files(d)}
+        lost = sorted((live & set(stored)) - set(table))
+        if lost:
+            raise ValueError(
+                "복원 계획이 승인본에 든 현재 파일을 지운다 — 제외 판정과 작업본 "
+                "스캔이 어긋났다(반려하지 않았다): "
+                + ", ".join(lost[:5]) + (" 외" if len(lost) > 5 else ""))
         discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
         if discarded != expect_work:
             raise ValueError(
@@ -787,11 +867,22 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
         # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게
         # 한다(fail-closed) — 실패는 미기록으로 남아 다음 revert가 다시 시도한다.
-        if working_tree_hash(reg) != base:
+        now = working_tree_hash(reg)
+        record_base = base
+        if now != base and stale_rels:
+            # **이행.** 개정 전 승인본을 지금 규칙으로 다시 해석한 tree가 곧
+            # 복원된 작업본이면, 그것이 이 영역의 승인본이다 — 내용은 하나도
+            # 바뀌지 않고 manifest에서 제외 구획 항목만 빠진다. 저장소에 넣어야
+            # 다음 판독이 해석할 수 있다(blob은 이미 전부 들어 있다).
+            rederived = _store_put(_manifest_blob(
+                [[rel, table[rel]] for rel in sorted(table)]))
+            if rederived == now:
+                record_base = rederived
+        if now != record_base:
             raise ValueError(
                 "복원이 승인본과 일치하지 않는다 — revert를 기록하지 않았다(fail-closed)")
         return ledger_append(APPROVALS, {
-            "kind": "revert", "region": reg, "base": base,
+            "kind": "revert", "region": reg, "base": record_base,
             "discarded": discarded, "moves_seen": _moves_boundary(),
             "reason": reason},
             expect=lambda recs2: (            # 복원 중 유입된 승인을 덮지 않는다
