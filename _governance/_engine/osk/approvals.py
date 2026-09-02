@@ -800,14 +800,12 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         # 새 규칙의 작업본 tree와 결코 같아질 수 없어 마지막 확인에서 어차피
         # 실패한다 — 그때는 다른 파일이 이미 되돌려진 뒤이고 기록은 남지 않는다.
         # 사용자가 할 일은 한 번의 승인이므로 그것을 말해 준다.
+        # 개정 전 형상의 승인본이면 **반려하면서 이행한다**(§3 4항 마지막 문단).
+        # 막지 않는다 — 막으면 그 영역의 일반 파일 변경을 버릴 길이 사라져,
+        # 버리려던 것을 승인해야만 벗어나는 정반대 결과가 된다(리뷰 지적).
+        # 제외 구획은 복원이 건드리지 않고(위 `table`에서 이미 걸러졌다),
+        # 그 복원을 기록하는 `revert`가 다시 해석한 tree를 `base`로 적는다.
         stale_rels = legacy_excluded(base)
-        if stale_rels:
-            raise ValueError(
-                f"승인본이 §3 4항 개정 전 형상이다 — 반려하지 않았다: 제외 구획 "
-                f"항목 {len(stale_rels)}건({', '.join(stale_rels[:3])}). 그 자리는 "
-                f"이제 영역 tree에 들지 않으므로 이 승인본으로는 작업본이 승인본과 "
-                f"같아질 수 없다. 변경집합을 검토해 **한 번 승인**하면 새 형상의 "
-                f"승인본이 서고, 그 뒤로는 평소대로 반려된다")
         discarded = working_tree_hash(reg)    # 복원 **전** — 실제로 버려지는 상태(감사)
         if discarded != expect_work:
             raise ValueError(
@@ -838,11 +836,22 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
         # 기록한다'(Mechanism §3 6항)는 계약이 지켜진 것처럼 감사 대장에 남지 않게
         # 한다(fail-closed) — 실패는 미기록으로 남아 다음 revert가 다시 시도한다.
-        if working_tree_hash(reg) != base:
+        now = working_tree_hash(reg)
+        record_base = base
+        if now != base and stale_rels:
+            # **이행.** 개정 전 승인본을 지금 규칙으로 다시 해석한 tree가 곧
+            # 복원된 작업본이면, 그것이 이 영역의 승인본이다 — 내용은 하나도
+            # 바뀌지 않고 manifest에서 제외 구획 항목만 빠진다. 저장소에 넣어야
+            # 다음 판독이 해석할 수 있다(blob은 이미 전부 들어 있다).
+            rederived = _store_put(_manifest_blob(
+                [[rel, table[rel]] for rel in sorted(table)]))
+            if rederived == now:
+                record_base = rederived
+        if now != record_base:
             raise ValueError(
                 "복원이 승인본과 일치하지 않는다 — revert를 기록하지 않았다(fail-closed)")
         return ledger_append(APPROVALS, {
-            "kind": "revert", "region": reg, "base": base,
+            "kind": "revert", "region": reg, "base": record_base,
             "discarded": discarded, "moves_seen": _moves_boundary(),
             "reason": reason},
             expect=lambda recs2: (            # 복원 중 유입된 승인을 덮지 않는다

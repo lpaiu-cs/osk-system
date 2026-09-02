@@ -7009,8 +7009,15 @@ def test_governance_amend_secrets_and_region():
         #    저장소에 manifest만 넣어 두면 반려가 기존 base-CAS에 먼저 걸려
         #    이행 관문을 태우지 못한다(첫 판이 그래서 뮤턴트를 살렸다).
         old_mem = "과거 기억\n".encode("utf-8")
+        # 승인본에만 있고 지금은 없는 파일을 하나 넣는다 — 반려가 **되살리는**
+        # 쪽도 함께 시험하려는 것이고, 그래야 이행이 만드는 manifest가 이 vault에
+        # 한 번도 저장된 적 없는 것이 된다(그러지 않으면 지정 시점의 manifest와
+        # 우연히 같아져 "저장했는가"를 묻는 단언이 헛돈다).
+        keep_rel = reg + "/audit-keep.md"
+        keep_body = "승인본에만 있던 파일\n".encode("utf-8")
         legacy_entries = [[rel, A._store_put(p.read_bytes())]
                           for rel, p in A._region_files(ROOT / reg)]
+        legacy_entries.append([keep_rel, A._store_put(keep_body)])
         legacy_entries.append([reg + "/_scope_memory/W1.md",
                                A._store_put(old_mem)])
         legacy_entries.sort(key=lambda e: e[0])
@@ -7029,30 +7036,34 @@ def test_governance_amend_secrets_and_region():
               A.state(reg) == "pending" and cs is not None
               and cs.get("legacy_excluded"), (A.state(reg), cs))
 
-        #    반려는 **파괴 전에** 멈춰야 한다. 사전 거부가 없으면 아래 `extra`가
-        #    승인본에 없다는 이유로 먼저 지워진 뒤 최종 확인에서 실패한다 —
-        #    기록은 안 남는데 작업본만 바뀐 상태다.
+        #    **반려는 막히지 않는다.** 막으면 그 영역의 일반 파일 변경을 버릴
+        #    길이 사라져, 버리려던 것을 승인해야만 벗어나는 정반대 결과가 된다.
+        #    되돌리면 — `revert`의 이행(`record_base`)을 지우면 최종 확인에서
+        #    실패해 `extra`가 지워진 채 기록이 안 남는다.
         extra = ROOT / (reg + "/audit-extra.md")
-        extra.write_text("에이전트가 더한 것\n", encoding="utf-8")
+        extra.write_text("에이전트가 더한 것 — 버릴 것\n", encoding="utf-8")
         _now_mem = smp.read_bytes()
-        check("반려는 파괴 전에 거부된다 (#37)",
-              _raises(lambda: A.revert(reg, legacy_hash,
-                                       A.working_tree_hash(reg)))())
-        check("그 거부가 공유 기억을 건드리지 않았다 (#37)",
+        rec = A.revert(reg, legacy_hash, A.working_tree_hash(reg),
+                       reason="개정 전 승인본에서의 반려")
+        check("개정 전 승인본에서도 반려가 성립한다 (#37)",
+              rec.get("kind") == "revert", rec)
+        check("버리려던 일반 파일 변경이 실제로 버려진다 (#37)",
+              not extra.exists(), extra.exists())
+        check("승인본에만 있던 파일은 되살아난다 (#37)",
+              (ROOT / keep_rel).read_bytes() == keep_body,
+              (ROOT / keep_rel).exists())
+        check("반려가 공유 기억은 건드리지 않는다 (#37)",
               smp.read_bytes() == _now_mem, smp.read_bytes()[:30])
-        check("그 거부가 작업본도 건드리지 않았다 (#37)",
-              extra.exists(), extra.exists())
-        extra.unlink(missing_ok=True)
-
-        #    이행은 **한 번의 승인**이다 — 사용자가 할 일이 그것뿐임을 고정한다.
-        A.approve(reg, A.approved_hash(reg),
-                  expect_work=A.working_tree_hash(reg), reason="개정 후 첫 승인")
-        check("한 번의 승인으로 새 형상이 서고 clean이 된다 (#37)",
-              A.state(reg) == "clean", A.state(reg))
-        check("그 뒤 승인본에는 제외 구획 항목이 없다 (#37)",
-              not A.legacy_excluded(A.approved_hash(reg)),
-              A.legacy_excluded(A.approved_hash(reg)))
+        check("그 반려가 새 형상의 baseline을 세운다 (#37)",
+              A.state(reg) == "clean"
+              and not A.legacy_excluded(A.approved_hash(reg)),
+              (A.state(reg), A.legacy_excluded(A.approved_hash(reg))))
+        check("이행된 승인본은 저장소에서 해석된다 (#37)",
+              A._tree_table_for_region(reg, A.approved_hash(reg)) is not None,
+              A.approved_hash(reg))
     finally:
+        (ROOT / (reg + "/audit-keep.md")).unlink(missing_ok=True)
+        (ROOT / (reg + "/audit-extra.md")).unlink(missing_ok=True)
         if protected:
             try:
                 A.unprotect(reg, "시험 종료")
