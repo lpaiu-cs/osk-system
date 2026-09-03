@@ -23,8 +23,12 @@
 즉 n번째 응답이 낸 도구 결과가 다음 요청의 프롬프트를 얼마나 키웠는가다. 이
 값은 결과 문자수와 교차 검증하는 게이트(chars/token이 1.0~3.0)를 지나야 싣는다
 — 압축·주입이 끼면 차이가 오염되므로, 통과율을 함께 낸다. 발화 비용
-(`output_tokens`)은 **메시지의 값**이라 메시지당 한 번만 센다 — 한 메시지에 osk
-호출이 k개면 각 호출에 1/k씩 나눠 붙여, 도구별 합과 전체 합이 같은 수를 가리킨다.
+(`output_tokens`)은 **메시지의 값**이라 메시지당 한 번만 센다 — **osk만 있는**
+메시지의 호출 k개에 1/k씩 나눠 붙여, 도구별 합과 전체 합이 같은 수를 가리킨다.
+비-osk 도구가 섞인 메시지는 발화를 주지 않고 그 호출 수를 따로 낸다(아래 §발화).
+
+대장(`_ledger/*.jsonl`) 행의 시각은 **`rid`(UUIDv7)에서** 읽는다 — §3 1항이 모든
+행에 요구하는 유일한 시각 근거이고, `at`은 `settle`의 계약 필드가 아니다.
 
 ## 세 집계를 분리한다 — 고유 호출 · 경로 · 대화
 
@@ -102,6 +106,25 @@ def _ts(s: str | None) -> float:
         return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return 0.0
+
+
+def _row_time(r: dict) -> float | None:
+    """대장 행의 시각 — **`rid`에서 읽는다.**
+
+    Mechanism §3 1항이 모든 `_ledger/` 행에 UUIDv7 `rid`를 요구하고, 그 앞 48비트가
+    Unix ms이며 **잠금 안에서 단조 생성**된다. `at`으로 자르면 안 되는 이유: `at`은
+    `evict`의 계약 필드일 뿐 `settle`의 계약(§9-2 12항)은 `of`·`outcome`·`target`
+    이라, 계약에 맞는 `settle`이 시각 없이 들어와 **과거 창의 처분 상태를 바꾼다**
+    (리뷰 지적). rid는 모든 행에 있고 뒤에 오는 기록이 앞의 rid를 바꾸지 못한다.
+    형식이 어긋난 행(손상)만 `at`으로 물러선다(실측: 실 대장 22/22행이 rid에서
+    시각을 내고 파일 순서로 단조였다)."""
+    h = str(r.get("rid", "")).replace("-", "")
+    if len(h) == 32 and h[12] == "7":
+        try:
+            return int(h[:12], 16) / 1000.0
+        except ValueError:
+            pass
+    return _ts(r.get("at")) if r.get("at") else None
 
 
 def _failed(r: dict | None) -> bool:
@@ -263,6 +286,11 @@ def attribute_costs(corpus: dict) -> None:
 
     - 발화(`output_tokens`)는 메시지의 값이다 — 그 메시지의 osk 호출 k개에 1/k씩
       나눈다(`out_share`). 도구별 합과 전체 합이 같은 수를 가리키게 하기 위해서다.
+      **osk만 있는 메시지에서만** 나눈다: 한 메시지에 `scope_memory`와 Bash가 함께
+      있으면 메시지 전체의 발화가 osk 몫으로 들어가 분모·분자가 다 부푼다(실측:
+      혼합 메시지 50/728·호출 56/905·발화 119,988tok). #20의 손측정도 osk만 있는
+      메시지에서 발화를 읽었다. 혼합 메시지의 호출은 발화를 얻지 못하며 그 수를
+      `speech_unattributed_calls`로 함께 낸다 — 덜 세는 것을 숨기지 않는다.
     - 페이로드(다음 프롬프트의 증분)는 그 메시지의 도구 호출이 **하나**일 때만 그
       호출에 귀속한다 — 여럿이면 어느 결과가 프롬프트를 키웠는지 가를 수 없다.
 
@@ -286,11 +314,12 @@ def attribute_costs(corpus: dict) -> None:
                   for n in sorted(succ.get(mid, ()), key=lambda x: (msgs[x]["ts"], x))]
         k = len(ent["tool_uses"])
         n_tools = len(ent["blocks"])
+        all_osk = k == n_tools                     # 비-osk 도구가 섞이지 않았다
         for tid in ent["tool_uses"]:
             use = corpus["uses"][tid]
             use["conversation"] = ent["conversation"]
             use["output_tokens"] = out
-            use["out_share"] = out / k if k else 0.0
+            use["out_share"] = (out / k) if (all_osk and k) else None
             use["alone"] = n_tools == 1
             res = corpus["results"].get(tid)
             ratios = []
@@ -371,7 +400,7 @@ def evictions(ledger: Path | None, until: float) -> dict | None:
                 r = json.loads(line)
             except ValueError:
                 continue
-            at = _ts(r.get("at")) if r.get("at") else None
+            at = _row_time(r)
             if at is not None and at > until:
                 continue
             if r.get("kind") == "evict" and r.get("rid"):
@@ -408,13 +437,17 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
     per_tool: dict = defaultdict(lambda: {"calls": 0, "fail": 0, "out": [], "payload": [],
                                           "ratios": [], "gated": 0, "alone": 0})
     total = failed_cost = 0.0
+    unattributed = 0
     for tid, u in uses.items():
         r = res.get(tid)
         t = per_tool[u["name"]]
         t["calls"] += 1
         f = _failed(r)
         t["fail"] += f
-        t["out"].append(u.get("out_share") or 0.0)
+        if u.get("out_share") is not None:
+            t["out"].append(u["out_share"])
+        else:
+            unattributed += 1
         t["alone"] += bool(u.get("alone"))
         c = _cost(u)
         total += c
@@ -452,6 +485,7 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
                    datetime.fromtimestamp(until, timezone.utc).date().isoformat()],
         "files": corpus["files"], "conversations": len(convs_seen),
         "calls": len(uses), "failures": fails,
+        "speech_unattributed_calls": unattributed,
         "failure_rate": round(fails / len(uses), 3) if uses else None,
         "retry_after_fail": len(pairs),
         "tokens_total": round(total), "tokens_failed": round(failed_cost),
@@ -484,7 +518,8 @@ def render(s: dict) -> str:
     L.append(f"osk 턴 계기 — {w[0]} ~ {w[1]} · 파일 {s['files']} · 대화 {s['conversations']} · 호출 {s['calls']}")
     L.append(f"실패 {s['failures']} ({(s['failure_rate'] or 0)*100:.1f}%) · 실패 직후 같은 도구 재호출 {s['retry_after_fail']}"
              f" · 토큰 합 {s['tokens_total']:,} (실패분 {s['tokens_failed']:,})"
-             f" — 합은 발화(메시지당 한 번) + 게이트 통과 페이로드")
+             f" — 합은 발화(osk만 있는 메시지, 메시지당 한 번) + 게이트 통과 페이로드"
+             f"; 혼합 메시지라 발화를 못 준 호출 {s['speech_unattributed_calls']}")
     L.append("")
     L.append(f"{'도구':<18}{'호출':>6}{'실패':>6}{'발화tok/호출':>13}{'페이로드tok':>11}{'게이트':>7}{'chars/tok':>12}{'단독률':>8}")
     for name, t in s["tools"].items():

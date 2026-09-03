@@ -7236,6 +7236,12 @@ def test_turn_ledger():
         _result(A, "S1", "T7", '{"ok": true, "results": []}')
         _assistant(A, "S1", "M8", [_use("T8", "update_node")])
         _result(A, "S1", "T8", "MCP error: timeout", is_error=True)
+        #    혼합 메시지 — osk 하나와 비-osk 하나가 한 메시지에 (실측 50/728).
+        #    메시지 전체의 발화를 osk가 다 가져가면 분모·분자가 부푼다(리뷰 6차).
+        _assistant(A, "S1", "M19", [_use("T19", "overview"),
+                                    {"type": "tool_use", "id": "TB", "name": "Bash", "input": {}}])
+        _result(A, "S1", "T19", okov, bump=False)
+        _result(A, "S1", "TB", "ok")
         _dump("a.jsonl", A)
         # 함정 3 — 재개 사본, **다른 sessionId** 아래(코퍼스: 537 중 411) + 새 호출 하나
         B = [dict(r, sessionId="S1-resume") for r in A[:4]]
@@ -7300,7 +7306,7 @@ def test_turn_ledger():
         tl.attribute_costs(corpus)
         uses, res, msgs = corpus["uses"], corpus["results"], corpus["msgs"]
 
-        check("재개 사본은 한 호출로 센다 (#20 함정 3)", len(uses) == 16, sorted(uses))
+        check("재개 사본은 한 호출로 센다 (#20 함정 3)", len(uses) == 17, sorted(uses))
         check("텍스트 블록의 도구 이름은 호출이 아니다 (#20 함정 1)",
               len([u for u in uses.values() if u["name"] == "scope_memory"]) == 9,
               [u["name"] for u in uses.values()])
@@ -7359,20 +7365,35 @@ def test_turn_ledger():
               s2["scope_memory"]["episodes"] == 4 and s2["scope_memory"]["episodes_unresolved"] == 0
               and s2["scope_memory"]["trimmed_chars_total"] == 47 + 40 + 40, s2["scope_memory"])
         check("창을 넓히면 재개의 새 호출이 들어온다",
-              s2["calls"] == 17 and s2["conversations"] == 4, (s2["calls"], s2["conversations"]))
+              s2["calls"] == 18 and s2["conversations"] == 4, (s2["calls"], s2["conversations"]))
 
         # 집계 — 창 끝 = 9월 2일 0시
+        #    대장 행의 시각은 rid(UUIDv7)에서 온다 — `at`은 settle의 계약 필드가
+        #    아니라(§9-2 12항: of·outcome·target), `at`으로 자르면 계약에 맞는
+        #    미래 settle이 과거 창의 처분 상태를 바꾼다(리뷰 6차).
+        def _rid(iso, n):
+            h = f"{int(tl._ts(iso) * 1000):012x}"
+            return f"{h[:8]}-{h[8:12]}-7000-8000-{n:012d}"
+
+        e1 = _rid("2026-08-10T00:00:00Z", 1)
+        e2 = _rid("2026-08-30T00:00:00Z", 2)
+        e3 = _rid("2026-09-01T12:00:00Z", 3)
         led = lab / "evictions.jsonl"
         led.write_text(chr(10).join(json.dumps(r, ensure_ascii=False) for r in [
-            {"kind": "evict", "rid": "e1", "scope": "W", "at": "2026-08-10T00:00:00Z", "text": "x"},
-            {"kind": "evict", "rid": "e2", "scope": "W", "at": "2026-08-30T00:00:00Z", "text": "y"},
-            {"kind": "evict", "rid": "e3", "scope": "W", "at": "2026-09-01T12:00:00Z", "text": "z"},
-            {"kind": "settle", "of": "e2", "outcome": "node", "target": "n1", "at": "2026-08-31T00:00:00Z"},
+            {"kind": "evict", "rid": e1, "scope": "W", "at": "2026-08-10T00:00:00Z", "text": "x"},
+            {"kind": "evict", "rid": e2, "scope": "W", "at": "2026-08-30T00:00:00Z", "text": "y"},
+            {"kind": "evict", "rid": e3, "scope": "W", "at": "2026-09-01T12:00:00Z", "text": "z"},
+            #    계약 그대로 — `at`이 없다. 창 안(8/31)이라 세어야 한다.
+            {"kind": "settle", "rid": _rid("2026-08-31T00:00:00Z", 4),
+             "of": e2, "outcome": "node", "target": "n1"},
+            #    창 뒤(9/3)의 처분 — `at`이 없어도 과거 창에 들어오면 안 된다.
+            {"kind": "settle", "rid": _rid("2026-09-03T00:00:00Z", 5),
+             "of": e1, "outcome": "discarded"},
         ]) + chr(10), encoding="utf-8")
         s = tl.summarize(full2, 0.0, end, led)
         m, ev = s["scope_memory"], s["evictions"]
-        check("집계: 호출 16 · 실패 5 · 거부 4 · 대화 4",
-              s["calls"] == 16 and s["failures"] == 5 and m["overflow_rejections"] == 4
+        check("집계: 호출 17 · 실패 5 · 거부 4 · 대화 4",
+              s["calls"] == 17 and s["failures"] == 5 and m["overflow_rejections"] == 4
               and s["conversations"] == 4,
               (s["calls"], s["failures"], m["overflow_rejections"], s["conversations"]))
 
@@ -7399,18 +7420,31 @@ def test_turn_ledger():
               and s["retry_after_fail"] == 3,
               ({k: v["fail"] for k, v in s["tools"].items()}, s["retry_after_fail"]))
         wm = tl.window(full2, end)
-        out_once = sum(int(e_["usage"].get("output_tokens", 0)) for e_ in wm["msgs"].values() if e_["tool_uses"])
         tl.attribute_costs(wm)
+        #    발화는 **osk만 있는** 메시지에서만, 메시지당 한 번.
+        out_once = sum(int(e_["usage"].get("output_tokens", 0)) for e_ in wm["msgs"].values()
+                       if e_["tool_uses"] and len(e_["blocks"]) == len(e_["tool_uses"]))
         pay = sum((u.get("payload_tokens") or 0) for u in wm["uses"].values() if u.get("gated"))
         check("집계: 토큰 합의 발화 몫은 메시지당 한 번이다 (리뷰)",
               s["tokens_total"] == round(out_once + pay)
               and uses["T6"]["out_share"] + uses["T7"]["out_share"] == 50,
               (s["tokens_total"], out_once, pay))
+        check("혼합 메시지의 호출은 발화를 못 받고, 그 수를 낸다 (리뷰 6차)",
+              uses["T19"]["out_share"] is None and uses["T19"]["payload_tokens"] is None
+              and s["speech_unattributed_calls"] == 1
+              and uses["T1"]["out_share"] == 50,
+              (uses["T19"].get("out_share"), s["speech_unattributed_calls"]))
         check("집계: 잘린 분량은 잘라서 통과한 에피소드만 센다",
               m["trimmed_chars_total"] == 47 + 40 + 40 and m["episodes_trim"] == 3 and m["episodes_distill"] == 1, m)
         check("퇴출 기록부(창 끝 기준): 3 중 1 처분, 미처분 2, 가장 오래된 23일",
               ev and ev["evict"] == 3 and ev["settled"] == 1 and ev["open"] == 2
               and round(ev["oldest_days"]) == 23, ev)
+        #    `at`이 없어도 rid로 시각을 알므로 창 뒤의 처분은 들어오지 않는다.
+        #    창을 그 뒤로 넓히면 세어진다 — 검사가 헛돌지 않는다는 증거다.
+        ev_late = tl.summarize(full2, 0.0, tl._ts("2026-09-04T00:00:00Z"), led)["evictions"]
+        check("`at` 없는 미래 settle이 과거 창에 들어오지 않는다 (리뷰 6차)",
+              ev["settled"] == 1 and ev_late["settled"] == 2 and ev_late["open"] == 1,
+              (ev["settled"], ev_late["settled"], ev_late["open"]))
 
         # 창을 먼저 자른다 (리뷰) — T3 거부 직후에 창이 끝나면 둘째 에피소드는 미해결
         cut = msgs["M4"]["ts"] + 0.5
