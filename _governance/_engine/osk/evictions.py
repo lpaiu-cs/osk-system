@@ -26,8 +26,9 @@ import re
 import time
 from datetime import datetime
 
-from .core import (EVICTIONS, RID_RE, ledger_read, ledger_damage, ledger_append,
-                   ledger_anchor_index, mutation_lock, _rid_parts, _rid_key)
+from .core import (EVICTIONS, RID_RE, ID_RE, ledger_read, ledger_damage,
+                   ledger_append, ledger_anchor_index, mutation_lock, _rid_parts,
+                   _rid_key)
 from . import graph
 
 KINDS = ("evict", "settle")
@@ -141,6 +142,12 @@ def settle(of: str, outcome: str, target: str | None = None) -> dict:
     if outcome != "discarded" and not target:
         raise ValueError(f"{outcome}에는 target(노드 제목)이 필요하다 — "
                          f"어디로 갔는지가 처분의 내용이다")
+    if target and ("/" in target or "\\" in target or re.match(ID_RE, target)):
+        # 계약은 **제목**이다(리뷰 2차 P2). `resolve()`는 경로형·id형도 풀지만
+        # 경로형은 파일을 파싱하지 않고 존재만 보며 동명 판정도 우회한다 —
+        # 파손 파일 하나를 경로로 지목하면 증류된 적 없는 조각이 큐에서 빠진다.
+        raise ValueError(f"target은 노드 **제목**(파일 이름 그대로)이다 — 경로도 id도 "
+                         f"아니다: `{target}`")
 
     def expect(recs: list[dict]) -> str | None:
         if not any(r.get("kind") == "evict" and r.get("rid") == of for r in recs):

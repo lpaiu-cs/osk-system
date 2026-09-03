@@ -52,8 +52,12 @@ _OVERFLOW_RUNS: dict[str, int] = {}
 
 
 def _pending_path(key: str) -> Path:
-    h = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-    return local_lock_path(f"osk-pending-evict-{h}")
+    # 키에 **이 작업 트리**를 넣는다(리뷰 2차 P1). 잠금 자리는 linked worktree
+    # 사이에 공유되는데(`commondir`), 세션 키도 worktree를 본 저장소 이름으로
+    # 접으므로, 트리를 빼면 A 트리의 거부를 B 트리의 평범한 성공이 소비한다 —
+    # 거부는 그 트리의 사본 위에서 났고, 덜어 내는 쓰기도 그 사본에 온다.
+    h = hashlib.sha256(f"{ROOT.resolve()}\n{key}".encode("utf-8")).hexdigest()[:16]
+    return local_lock_path(f"osk-pending-evict-{h}", ROOT)
 
 
 def _pending(key: str) -> bool:

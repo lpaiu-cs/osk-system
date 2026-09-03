@@ -5472,6 +5472,12 @@ def test_evictions():
     pend = wm._pending_path(S)
     check("다시 거부(표식 파일)", _w(wm.replace, S, edits=big).get("ok") is False)
     check("거부가 표식 파일을 세운다 — 추적 트리 밖", pend.is_file() and ROOT not in pend.parents, pend)
+    # 표식은 **이 작업 트리**의 것이다(리뷰 2차 P1) — linked worktree는 잠금
+    # 자리와 세션 키를 공유하므로, 트리가 키에 없으면 다른 트리의 성공이 소비한다.
+    other = Path(tempfile.mkdtemp(prefix="osk-other-"))
+    with mock.patch.object(wm, "ROOT", other):
+        check("다른 작업 트리에서는 그 표식이 보이지 않는다", not wm._pending(S), wm._pending_path(S))
+    shutil.rmtree(other, ignore_errors=True)
     cur = _w(wm.read, S)
     sub = subprocess.run(
         [sys.executable, "-m", "osk.cli", "sm", "write", "--session", S,
@@ -5528,6 +5534,10 @@ def test_evictions():
     broken = ROOT / "= Scope/W1/regr-evi-broken.md"
     broken.write_text("---\nid: [\n---\n본문\n", encoding="utf-8")
     check("파손 파일은 노드가 아니다 — 거부", bad(lambda: ev.settle(live, "node", "regr-evi-broken")))
+    # 경로형·id형은 계약 밖이다(리뷰 2차 P2) — 경로는 파싱 없이 존재만 보고 동명을
+    # 우회하므로, 파손 파일을 경로로 지목하면 통과해 버린다.
+    check("경로형 target 거부", bad(lambda: ev.settle(live, "node", "= Scope/W1/regr-evi-broken")))
+    check("id형 target 거부", bad(lambda: ev.settle(live, "node", "260801-zzzz-w1ix")))
     broken.unlink()
     n_before = len(ev.unsettled("WEvi"))
     check("거부된 settle은 아무것도 처분하지 않았다", n_before == 10, n_before)
