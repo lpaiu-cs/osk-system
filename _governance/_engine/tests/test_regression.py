@@ -7142,7 +7142,10 @@ def test_turn_ledger():
       · `tool_use_id` 전역 중복 제거를 지우면 → 재개 사본이 호출로 세어진다
       · 텍스트 블록의 도구 이름을 호출로 세면 → deferred tools 목록이 호출이 된다
       · 실패를 `is_error`로 보면 → `"ok": false` 거부가 실패에서 빠진다
-      · `message.id` 접기를 지우면 → 쪼개진 레코드마다 usage가 중복된다
+      · `message.id` 접기를 지우면 → 블록마다 쪼개진 다중 도구 메시지가 마지막
+        블록 하나로 보인다(앞 도구는 귀속을 잃는다)
+      · 블록을 메시지 안에서 한 번만 세지 않으면 → 같은 세션 사본이 n_tools를
+        부풀려 단독 판정과 페이로드 귀속이 깨진다
       · 에피소드가 성공에서 닫히지 않으면 → 둘이 하나로 합쳐진다
     """
     import importlib.util
@@ -7209,7 +7212,7 @@ def test_turn_ledger():
         _assistant("M6", [_use("T5", "scope_memory")])
         _result("T5", ok2)
         # 한 메시지에 도구 둘 — 페이로드 귀속 불가
-        _assistant("M7", [_use("T6", "read_node"), _use("T7", "search")], split=False)
+        _assistant("M7", [_use("T6", "read_node"), _use("T7", "search")])   # 블록마다 레코드(코퍼스 그대로)
         _result("T6", '{"ok": true, "title": "n1"}', bump=False)
         _result("T7", '{"ok": true, "results": []}')
         # is_error로만 실패한 호출 — ok 표기가 없다
@@ -7236,7 +7239,12 @@ def test_turn_ledger():
                             "content": '{"ok": true, "clusters": []}', "is_error": False}]}})
         (proj / "b.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs_b) + "\n",
                                       encoding="utf-8")
-        raw_ids = sum(json.dumps(r).count('"tool_use"') for r in recs_a + recs_b)
+        #    사본의 둘째 모양 — **같은 sessionId** 아래 같은 레코드가 다시 온다
+        #    (코퍼스: 사본 있는 호출 537 중 126). 이때는 (sessionId, message.id) 키가
+        #    같으므로 블록을 메시지 안에서 한 번만 세어야 n_tools가 안 부푼다.
+        (proj / "c.jsonl").write_text(chr(10).join(json.dumps(r, ensure_ascii=False) for r in recs_a[:4]) + chr(10),
+                                      encoding="utf-8")
+        raw_ids = sum(json.dumps(r).count('"tool_use"') for r in recs_a + recs_b + recs_a[:4])
         check("전제: 파일들에 tool_use 블록이 사본까지 더 많다", raw_ids > 9, raw_ids)
         check("전제: 사본은 다른 sessionId 아래에 있다(코퍼스와 같다)",
               {r["sessionId"] for r in recs_b} == {"S1-resume"}
@@ -7268,6 +7276,10 @@ def test_turn_ledger():
         check("상한 초과 거부에서 초과폭을 읽는다",
               res["T1"]["overflow"] == (1527, 1500, 27) and res["T3"]["overflow"] == (1600, 1500, 100),
               (res["T1"]["overflow"], res["T3"]["overflow"]))
+        check("블록마다 쪼개진 다중 도구 메시지도 한 메시지로 접힌다 (#20 함정 2)",
+              corpus["msgs"][("S1", "M7")]["n_tools"] == 2
+              and set(corpus["msgs"][("S1", "M7")]["tool_uses"]) == {"T6", "T7"},
+              corpus["msgs"].get(("S1", "M7")))
         check("도구 하나인 메시지에만 페이로드를 귀속하고 게이트를 지난다",
               uses["T1"]["gated"] and uses["T1"]["alone"]
               and not uses["T6"]["alone"] and uses["T6"]["payload_tokens"] is None,
