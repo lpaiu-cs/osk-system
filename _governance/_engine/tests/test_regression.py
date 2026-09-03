@@ -7255,9 +7255,13 @@ def test_turn_ledger():
               uses["T1"]["file"] == "a.jsonl"
               and corpus["msgs"][("S1", "M1")]["tool_uses"] == ["T1"],
               (uses["T1"]["file"], corpus["msgs"][("S1", "M1")]["tool_uses"]))
+        #    접기는 (sessionId, message.id) 단위다 — 재개 사본은 다른 세션 키 아래
+        #    자기 항목을 갖되, 호출은 원본이 이미 가져갔으니 비어 있어야 한다.
         check("쪼개진 레코드는 한 과금 메시지다 (#20 함정 2)",
               corpus["msgs"][("S1", "M1")]["n_tools"] == 1
-              and len([k for k in corpus["msgs"] if k[1] == "M1"]) == 1, corpus["msgs"].get(("S1", "M1")))
+              and len([k for k in corpus["msgs"] if k == ("S1", "M1")]) == 1
+              and corpus["msgs"][("S1-resume", "M1")]["tool_uses"] == [],
+              (corpus["msgs"].get(("S1", "M1")), corpus["msgs"].get(("S1-resume", "M1"))))
         check("실패는 is_error가 아니라 ok로 본다 (#20)",
               res["T1"]["ok"] is False and res["T1"]["is_error"] is False
               and res["T8"]["ok"] is None and res["T8"]["is_error"] is True, (res["T1"], res["T8"]))
