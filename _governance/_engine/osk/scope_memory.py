@@ -20,11 +20,12 @@ working_memory는 인지과학 은유(한 마음의 사유물)라 "내 세션의
 없고, 통합할 때마다 자리값 못하는 엔트리가 퇴출되므로 decay 스케줄러도 없다.
 """
 from __future__ import annotations
+import hashlib
 import unicodedata
 from pathlib import Path
 
-from .core import ROOT, mutation_lock, posix_rel, sha256_bytes
-from . import graph, secrets, write
+from .core import ROOT, local_lock_path, mutation_lock, posix_rel, sha256_bytes
+from . import evictions, graph, secrets, write
 
 # 계수는 mechanism이 정한다(시행령 서문). 한 세션의 배울 점을 적기에는 충분하고
 # 두 세션어치를 쌓아두기에는 모자란 크기여야 압력이 선다.
@@ -36,6 +37,41 @@ LIMIT = 1500
 # 지운다. Hermes의 _MAX_CONSOLIDATION_FAILURES_PER_TURN과 같은 자리다.
 OVERFLOW_STOP = 3
 _OVERFLOW_RUNS: dict[str, int] = {}
+
+# 퇴출 대기 표식 (§9-2 12항) — 상한 초과 거부가 세우고 **첫 성공한 쓰기**가
+# 지운다. 연속 계수와 다른 표식이다: 계수는 읽기도 지우지만(읽기는 새 시도의
+# 시작), 이 표식은 읽기에 살아남아야 한다 — 거부 → 읽기 → 잘라서 통과가 바로
+# "상한에 밀려 자른" 경로이고, 그 사이의 읽기는 무엇을 자를지 보는 일이다.
+#
+# **프로세스 메모리에 두지 않는다**(리뷰 P1). 3회째 거부는 "접고 다음 통합으로
+# 넘기라"고 지시하고, 그 다음 통합은 흔히 새 세션 — 새 MCP 프로세스 — 에서
+# 온다. 표식이 메모리에만 있으면 그 첫 성공한 쓰기가 줄을 덜어 내도 적히지
+# 않아, 이 조문이 막으려는 손실이 정확히 그 자리에서 난다. 자리는 잠금과 같은
+# 기기 로컬 디렉터리(추적 트리 밖)다 — 거부는 이 기기의 사본 위에서 났고,
+# 세션 키는 기기를 넘지 않는다.
+
+
+def _pending_path(key: str) -> Path:
+    # 키에 **이 작업 트리**를 넣는다(리뷰 2차 P1). 잠금 자리는 linked worktree
+    # 사이에 공유되는데(`commondir`), 세션 키도 worktree를 본 저장소 이름으로
+    # 접으므로, 트리를 빼면 A 트리의 거부를 B 트리의 평범한 성공이 소비한다 —
+    # 거부는 그 트리의 사본 위에서 났고, 덜어 내는 쓰기도 그 사본에 온다.
+    h = hashlib.sha256(f"{ROOT.resolve()}\n{key}".encode("utf-8")).hexdigest()[:16]
+    return local_lock_path(f"osk-pending-evict-{h}", ROOT)
+
+
+def _pending(key: str) -> bool:
+    return _pending_path(key).is_file()
+
+
+def _pending_set(key: str) -> None:
+    p = _pending_path(key)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(key, encoding="utf-8")
+
+
+def _pending_clear(key: str) -> None:
+    _pending_path(key).unlink(missing_ok=True)
 
 _CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
             "번지게 하지 않는다 —")
@@ -301,6 +337,7 @@ def replace(session: str, text: str | None = None,
             key = _runs_key(session)
             runs = _OVERFLOW_RUNS.get(key, 0) + 1
             _OVERFLOW_RUNS[key] = runs
+            _pending_set(key)               # 다음 성공이 덜어 낸 것을 적는다
             # §9-2 4항은 3회째에 "**재시도 지시를 거두고** … 다음 통합으로
             # 넘긴다"고 정한다. 구판은 거두지 않고 "접고 가라"를 덧붙이기만 해서
             # 상반된 두 지시가 한 응답에 실렸다 — 거두는 것이 조문이다.
@@ -328,6 +365,12 @@ def replace(session: str, text: str | None = None,
                 v.append(f"연속 {runs}회째 거부다 — 이번 통합은 **접고** 본 작업으로 "
                          f"돌아가라. 다시 보내지 마라. 기억은 그대로다. 다음 통합 "
                          f"전에 결론 난 것을 노드로 증류해 자리를 만들어라.")
+            # (2)는 그 자리의 의무가 아니다(§9-2 6항) — 잘라 낸 것은 12항이
+            # 기록하고 §9-3의 정돈이 처분한다. 이 말이 없으면 호출자는 (2)를
+            # 지금 못 하는 것을 유실로 여겨 자르지 못하고 벽에 선다.
+            v.append("잘라 낸 것은 사라지지 않는다 — 이 거부 뒤 첫 성공한 쓰기가 "
+                     "덜어 낸 줄은 퇴출 기록부에 남고, 다음 세션 시작이 처분을 "
+                     "싣는다(§9-2 12항·§9-3). (2)는 지금의 의무가 아니다.")
             raise write.WriteError(
                 "상한 초과 — 쓰지 않았다", v,
                 # 상한 초과에는 전문을 싣지 않는다(§9-2 5항). 이 거부는 **디스크를
@@ -337,6 +380,30 @@ def replace(session: str, text: str | None = None,
                 # `hash`·`remaining`·넘긴 자수는 그대로 온다.
                 **_state(scope, cur, full=False, rejected_chars=len(body)))
 
+        # 퇴출 기록 (§9-2 12항) — 상한 초과 거부 직후의 첫 성공한 쓰기가 덜어
+        # 낸 구간. 엔진은 자르지 않는다: 호출자가 뺀 것을 적을 뿐이다. 거부와
+        # 무관한 정리는 표식이 없어 적히지 않는다. **파일보다 먼저** 적는다 —
+        # 파일이 먼저면 대장 손상 때 잘린 것이 기록 없이 사라지고, 그것이 이
+        # 조문이 막는 유일한 손실이다. 대장이 거부하면 아무것도 쓰지 않는다.
+        key = _runs_key(session)
+        removed = ""
+        if _pending(key):
+            # 전체 치환이든 앵커 일괄이든 **저장본의 전후**로 잰다 — 원시
+            # `edits`의 중간 문자열은 저장된 적이 없고 비밀값 필터도 지나지
+            # 않았다(리뷰 P1). `cur`는 필터를 지나 저장된 것이지만, 대장은
+            # 동기화되므로 한 번 더 거른다 — 손으로 고친 저장본을 믿지 않는다.
+            removed, _ = secrets.filter_text(evictions.removed_lines(cur, body))
+        ev = None
+        if removed:
+            try:
+                ev = evictions.record_evict(scope, key, removed)
+            except ValueError as e:
+                raise write.WriteError(
+                    "퇴출 기록부에 적지 못했다 — 쓰지 않았다",
+                    [f"퇴출 기록부에 적지 못했다 — {e}. 상한에 밀려 잘라 낸 것은 "
+                     f"기록 없이 사라질 수 없다(§9-2 12항) — 대장을 복구한 뒤 "
+                     f"다시 보내라. 저장본은 그대로다."],
+                    **_state(scope, cur, full=False)) from None
         # 결속을 **쓰기 전에** 세운다. 뒤에 두면 대장이 손상됐을 때 파일은
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
@@ -344,7 +411,8 @@ def replace(session: str, text: str | None = None,
             write.bind_session(session, scope, "첫 scope 기억 쓰기에서 확정")
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
-        _OVERFLOW_RUNS.pop(_runs_key(session), None)   # 성공이 연속 계수를 지운다
+        _OVERFLOW_RUNS.pop(key, None)       # 성공이 연속 계수를 지운다
+        _pending_clear(key)                 # 덜어 낸 것이 없었어도 표식은 끝난다
 
         # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
         # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한
@@ -352,6 +420,10 @@ def replace(session: str, text: str | None = None,
         # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 scope 기억은 작업
         # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
         extra = {"filtered": sorted(set(hits))}
+        if ev:
+            # 잘린 것이 어디 남았는지 — 처분은 다음 세션 시작이 싣는다(§9-3 1항)
+            extra["evicted"] = ev["rid"]
+            extra["evicted_chars"] = len(removed)
         # 성공이 전문을 싣지 않으므로(§9-2 5항) 치환된 결과가 보이지 않는다.
         # 상주 스키마는 여유가 4자뿐이라 표면에 못 적는다 — 실제로 치환이 일어난
         # 때만 싣는다. 안 적으면 호출자의 기억과 저장본이 갈린 채로 다음 통합이

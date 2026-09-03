@@ -20,6 +20,7 @@
 | `osk/write.py` | Mechanism §6-2 3항 — 노드 쓰기의 단일 통로(계약·위상·세션 라우팅) |
 | `osk/raw.py` | 헌법 4조 3~4항·Mechanism §9 4~8항 — `_raw/` append와 좌표 회상 |
 | `osk/scope_memory.py` | Mechanism §9-2 — scope 기억(상한·앵커 일괄·거부 계약) |
+| `osk/evictions.py` | Mechanism §9-2 12항·§9-3 — 퇴출 기록부(evict·settle)와 정돈 실행(훅 주입·`status`·`tidy`) |
 | `osk/epoch.py` | 판본 관문 — 이 프로세스가 적재한 엔진과 디스크의 대조 |
 | `osk/update.py`·`osk/release.py` | Mechanism §1-2 — 정본 릴리스와 인스턴스 갱신(크래시-안전 트랜잭션) |
 | `osk/publish.py` | Mechanism §1 1항 — 공개 미러 발행(allowlist) |
@@ -45,7 +46,8 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli approve "= Person/Del
   미구현이다 — 검증기가 그 파일의 JSON 무결성만 본다)
 - 정합성 주기 스캔·충돌 후보 감지(사건부 자동 채널) — 근거 키 계산기만 예약
 - 브리핑 4채널 생성기 / 중심성 기반 랭킹 통합 / 임베딩 검색
-- 정돈 실행기(위임은 성립됨) — 경유 노드의 주기 정돈
+- 정돈의 **출구 자동화** — §9-3의 정돈 실행(세션 시작 훅 주입·`osk tidy`)은
+  구현됐으나, 경유 노드의 Domain·scope 이동 판정과 수행은 에이전트가 한다
 - 활성화된 자동 집행 현재 0건 — 제도(`osk validators`)와 첫 규칙
   (`cluster-overview`)은 구현돼 있고 검사도 돌지만 보고 전용이다
 

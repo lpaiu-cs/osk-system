@@ -5361,6 +5361,368 @@ def test_scope_memory_cli():
     check("CLI 상한 초과도 전문은 없다", "text" not in out, sorted(out))
 
 
+# ── 19c. 퇴출 기록부와 정돈 (Mechanism §9-2 12항 · §9-3) ─────────────────
+def test_evictions():
+    """상한 초과 거부 **직후의 첫 성공한 쓰기**가 덜어 낸 줄을 `evict`로 남기고,
+    처분은 `settle`로 남긴다. 세션 시작 훅이 오래된 것부터 K개를 싣는다.
+
+    무엇을 망가뜨리면 실패하는가: 거부 없는 정리를 기록하면 · 거부 뒤 읽기가
+    대기 표식을 지우면 · 덜어 낸 줄 대신 전문을 적거나 남은 줄을 적으면 ·
+    덜어 낸 것이 없는데 적으면 · 대장 손상에도 파일을 쓰면 · settle이 없는
+    evict·없는 노드·폐기의 target을 받으면 · 미처분이 오래된 것부터가 아니면 ·
+    나이를 rid가 아니라 at에서 읽으면 · K를 넘겨 싣거나 밀림 경고를 뒤에 두면 ·
+    스키마 검사가 settle의 of·target을 안 보면."""
+    import io, importlib, re, types
+    from osk import scope_memory as wm, evictions as ev, cli
+    (ROOT / "= Scope/WEvi").mkdir(exist_ok=True)
+    S = "regr-evi"                        # 훅 시험: 디렉터리 이름이 곧 세션 키
+    core.EVICTIONS.unlink(missing_ok=True)
+    now_ms = int(time.time() * 1000)
+
+    # 오래된 미처분 넷을 대장의 **첫 구간**에 심는다 — 이후의 append가 이 위에
+    # 이어지므로 스키마(parents)도 rid 단조도 그대로 선다. `at`은 일부러 오늘로
+    # 두어 나이가 rid에서 나오는지 본다(계기와 같은 판정).
+    old, prev = [], []
+    for d in (20, 19, 18, 17):
+        rid = core._make_rid(now_ms - d * 86_400_000, 0)
+        old.append({"rid": rid, "parents": prev, "kind": "evict", "scope": "WEvi",
+                    "session": S, "text": f"- 옛 조각 {d}", "at": core.now_iso()})
+        prev = [rid]
+    core.EVICTIONS.parent.mkdir(parents=True, exist_ok=True)
+    core.EVICTIONS.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in old), encoding="utf-8")
+    check("나이는 rid에서 — at이 오늘이어도 20일", ev.age_days(old[0], now_ms) == 20)
+    check("미처분은 오래된 것부터",
+          [r["text"] for r in ev.unsettled("WEvi")] == [f"- 옛 조각 {d}" for d in (20, 19, 18, 17)])
+    st = ev.status(now_ms)
+    check("status: 미처분 4·가장 오래된 20일·밀림",
+          st.get("WEvi") == {"unsettled": 4, "oldest_days": 20, "overdue": True}, st)
+
+    # 거부 없는 정리는 기록하지 않는다 — 자리값 못하는 엔트리를 지우는 정상이다
+    r = _w(wm.replace, S, "# 머리\n- 갑 첫 줄\n- 을 둘째 줄\n- 병 셋째 줄", None, "= Scope/WEvi")
+    check("첫 쓰기", r.get("ok"), r)
+    r = _w(wm.replace, S, edits=[{"old_text": "\n- 병 셋째 줄", "new_text": ""}])
+    check("거부 없는 정리는 기록하지 않는다",
+          r.get("ok") and "evicted" not in r and len(ev.records()) == 4, r)
+
+    # 거부 → 읽기 → 잘라서 통과 → evict. 읽기는 대기 표식을 지우지 않는다 —
+    # 무엇을 자를지 보는 일이 그 사이에 있다.
+    big = [{"old_text": "# 머리", "new_text": "# 머리\n- 정 " + "가" * 1600}]
+    r = _w(wm.replace, S, edits=big)
+    check("상한 초과 거부", r.get("ok") is False, r)
+    check("거부문이 '사라지지 않는다'를 말한다 — (2)는 지금의 의무가 아니다",
+          "사라지지 않는다" in " ".join(r["violations"]), r)
+    _w(wm.read, S)
+    r = _w(wm.replace, S, edits=[{"old_text": "- 갑 첫 줄\n", "new_text": ""},
+                                 {"old_text": "# 머리", "new_text": "# 머리\n- 정 " + "가" * 100}])
+    check("잘라서 통과", r.get("ok"), r)
+    check("evict rid를 낸다", re.match(core.RID_RE, str(r.get("evicted"))), r)
+    rows = ev.records()
+    check("evict 한 행이 늘었다", len(rows) == 5 and rows[-1]["kind"] == "evict", len(rows))
+    check("덜어 낸 줄만 적는다 — 전문도 남은 줄도 아니다",
+          rows[-1]["text"] == "- 갑 첫 줄", rows[-1]["text"])
+    check("scope·session·at", rows[-1]["scope"] == "WEvi" and rows[-1]["session"] == S
+          and "at" in rows[-1], rows[-1])
+    check("덜어 낸 자수", r.get("evicted_chars") == len("- 갑 첫 줄"), r)
+    mem = _w(wm.read, S)["text"]
+    check("저장본은 보낸 그대로", "- 갑 첫 줄" not in mem and "- 정 가" in mem, mem)
+    r = _w(wm.replace, S, edits=[{"old_text": "\n- 을 둘째 줄", "new_text": ""}])
+    check("성공이 표식을 지운다 — 다음 정리는 기록 없음",
+          r.get("ok") and "evicted" not in r and len(ev.records()) == 5, r)
+
+    # 전체 치환 — 두 정본 형태의 차이. 사이의 해시 불일치 거부는 표식을 지우지 않는다
+    cur = _w(wm.read, S)
+    r = _w(wm.replace, S, cur["text"] + "\n- 무 " + "나" * 1600, cur["hash"])
+    check("전체 치환 초과 거부", r.get("ok") is False, r)
+    check("해시 불일치 거부", _w(wm.replace, S, "# 머리\n- 정 새로", "sha256:00").get("ok") is False)
+    r = _w(wm.replace, S, "# 머리\n- 정 새로", cur["hash"])
+    check("전체 치환의 차이가 기록된다", r.get("ok") and "evicted" in r, r)
+    rows = ev.records()
+    check("치환 전 줄 중 남지 않은 줄만 — 머리는 남았으니 없다",
+          rows[-1]["text"] == "- 정 " + "가" * 100, rows[-1]["text"][:30])
+    # 덜어 낸 것이 없는 성공 — 기록 없음, 표식은 끝
+    check("다시 거부", _w(wm.replace, S, edits=big).get("ok") is False)
+    r = _w(wm.replace, S, edits=[{"old_text": "- 정 새로", "new_text": "- 정 새로\n- 기 한 줄"}])
+    check("덜어 낸 것이 없으면 기록하지 않는다",
+          r.get("ok") and "evicted" not in r and len(ev.records()) == 6, r)
+    r = _w(wm.replace, S, edits=[{"old_text": "\n- 기 한 줄", "new_text": ""}])
+    check("그 성공이 표식도 끝냈다", r.get("ok") and "evicted" not in r and len(ev.records()) == 6, r)
+
+    # 대장 손상 — 잘린 것이 기록 없이 사라질 수 없으므로 파일도 쓰지 않는다
+    backup = core.EVICTIONS.read_bytes()
+    with open(core.EVICTIONS, "a", encoding="utf-8") as f:
+        f.write("{broken\n")
+    check("다시 거부(손상 위)", _w(wm.replace, S, edits=big).get("ok") is False)
+    before = _w(wm.read, S)["text"]
+    r = _w(wm.replace, S, edits=[{"old_text": "\n- 정 새로", "new_text": ""}])
+    check("손상된 대장 위에서는 잘라도 쓰지 않는다",
+          r.get("ok") is False and "퇴출 기록부" in " ".join(r["violations"]), r)
+    check("파일이 그대로다", _w(wm.read, S)["text"] == before)
+    core.EVICTIONS.write_bytes(backup)
+    r = _w(wm.replace, S, edits=[{"old_text": "\n- 정 새로", "new_text": ""}])
+    check("복구 뒤 같은 쓰기가 통과하고 기록된다",
+          r.get("ok") and "evicted" in r and ev.records()[-1]["text"] == "- 정 새로", r)
+    live = r["evicted"]
+
+    # 표식은 프로세스 밖에 산다(리뷰 P1) — 3회째 거부는 "접고 다음 통합으로"를
+    # 지시하고 그 다음 통합은 흔히 새 프로세스에서 온다. 거부는 여기서, 잘라서
+    # 통과는 **다른 프로세스**(CLI `sm write`)에서.
+    r = _w(wm.replace, S, "# 머리\n- 재시작 줄", _w(wm.read, S)["hash"])
+    check("재시작 시험 기준선", r.get("ok") and "evicted" not in r, r)
+    pend = wm._pending_path(S)
+    check("다시 거부(표식 파일)", _w(wm.replace, S, edits=big).get("ok") is False)
+    check("거부가 표식 파일을 세운다 — 추적 트리 밖", pend.is_file() and ROOT not in pend.parents, pend)
+    # 표식은 **이 작업 트리**의 것이다(리뷰 2차 P1) — linked worktree는 잠금
+    # 자리와 세션 키를 공유하므로, 트리가 키에 없으면 다른 트리의 성공이 소비한다.
+    # git 없는 mini-vault는 루트 해시가 든 임시 경로로 떨어져 저절로 갈리므로,
+    # 실제 모양 — 본 저장소 A와 그 `.git`을 `commondir`로 공유하는 linked
+    # worktree B — 를 파일로 세운다(git 실행 없음). 둘의 잠금 자리는 같다.
+    wt = Path(tempfile.mkdtemp(prefix="osk-wt-"))
+    A, B = wt / "A", wt / "B"
+    (A / ".git" / "worktrees" / "B").mkdir(parents=True)
+    B.mkdir()
+    (B / ".git").write_text(f"gitdir: {A / '.git' / 'worktrees' / 'B'}", encoding="utf-8")
+    (A / ".git" / "worktrees" / "B" / "commondir").write_text("../..", encoding="utf-8")
+    check("두 트리의 잠금 자리는 같다",
+          core.local_lock_path("x", A) == core.local_lock_path("x", B), (A, B))
+    with mock.patch.object(wm, "ROOT", A):
+        wm._pending_set(S)
+        check("A 트리에 표식", wm._pending(S))
+    with mock.patch.object(wm, "ROOT", B):
+        check("같은 git을 쓰는 B 트리에서는 A의 표식이 보이지 않는다", not wm._pending(S),
+              wm._pending_path(S))
+    with mock.patch.object(wm, "ROOT", A):
+        wm._pending_clear(S)
+    rmtree_force(wt)
+    cur = _w(wm.read, S)
+    sub = subprocess.run(
+        [sys.executable, "-m", "osk.cli", "sm", "write", "--session", S,
+         "--expect-hash", cur["hash"]],
+        input="# 머리".encode("utf-8"), capture_output=True, cwd=str(ENGINE),
+        env={**os.environ, "PYTHONPATH": str(ENGINE), "OSK_VAULT_ROOT": str(ROOT)},
+        timeout=120)
+    check("새 프로세스의 첫 성공이 통과", sub.returncode == 0,
+          (sub.stdout[-300:] + sub.stderr[-300:]).decode("utf-8", "replace"))
+    check("새 프로세스가 덜어 낸 줄을 적는다 — 표식이 재시작을 넘었다",
+          ev.records()[-1]["kind"] == "evict" and ev.records()[-1]["text"] == "- 재시작 줄",
+          ev.records()[-1])
+    check("성공이 표식 파일을 지운다", not pend.is_file())
+
+    # 저장본의 전후로 잰다(리뷰 P1) — 앵커 일괄의 중간 문자열은 저장된 적이 없고
+    # 필터도 지나지 않았다. 옮긴 줄은 남은 것이고, 비밀값은 대장에 없어야 한다.
+    r = _w(wm.replace, S, "# 머리\n- 엑스\n- 옮길 줄\n- 남는 줄", _w(wm.read, S)["hash"])
+    check("연쇄 시험 기준선", r.get("ok"), r)
+    check("다시 거부(연쇄)", _w(wm.replace, S, edits=big).get("ok") is False)
+    tok = "ghp_" + "b" * 36
+    r = _w(wm.replace, S, edits=[{"old_text": "- 엑스", "new_text": "- " + tok},
+                                 {"old_text": "- " + tok, "new_text": "- 와이"},
+                                 {"old_text": "\n- 옮길 줄", "new_text": ""},
+                                 {"old_text": "- 남는 줄", "new_text": "- 남는 줄\n- 옮길 줄"}])
+    check("연쇄 편집 통과", r.get("ok") and "evicted" in r, r)
+    last = ev.records()[-1]["text"]
+    check("덜어 낸 것은 저장본의 전후 차이뿐 — 옮긴 줄은 남았고 중간 문자열은 없다",
+          last == "- 엑스", last)
+    check("비밀값이 대장에 없다", tok not in core.EVICTIONS.read_text(encoding="utf-8"))
+    # 손으로 고친 저장본에 비밀값이 있어도 대장으로 새지 않는다 — 대장은 동기화된다
+    p_mem = ROOT / "= Scope/Workbench/_scope_memory/WEvi.md"
+    # `write_bytes` — `write_text`는 Windows에서 CRLF를 넣어 앵커가 어긋난다
+    p_mem.write_bytes(("# 머리\n- 손편집 ghp_" + "c" * 36 + "\n- 와이\n").encode("utf-8"))
+    check("다시 거부(손편집)", _w(wm.replace, S, edits=big).get("ok") is False)
+    r = _w(wm.replace, S, edits=[{"old_text": "- 손편집 ghp_" + "c" * 36 + "\n", "new_text": ""}])
+    check("손편집 줄 제거 통과", r.get("ok") and "evicted" in r, r)
+    check("대장의 퇴출문은 필터를 지난다", "ghp_" not in ev.records()[-1]["text"],
+          ev.records()[-1]["text"])
+
+    # settle — 처분은 한 일의 기록이지 하겠다는 약속이 아니다
+    def bad(fn):
+        try:
+            fn()
+            return False
+        except ValueError:
+            return True
+    check("모르는 outcome 거부", bad(lambda: ev.settle(live, "kept")))
+    check("폐기에 target 거부", bad(lambda: ev.settle(live, "discarded", "x")))
+    check("node에 target 없음 거부", bad(lambda: ev.settle(live, "node")))
+    check("없는 노드 거부", bad(lambda: ev.settle(live, "node", "없는-노드-제목")))
+    check("없는 evict 거부", bad(lambda: ev.settle(core._make_rid(now_ms, 99), "discarded")))
+    # 파손 파일·동명은 노드가 아니다(리뷰 P2) — 후보 파일이 아니라 판독되는
+    # 비모호 노드여야 한다. 아니면 증류된 적 없는 조각이 정돈 큐에서 영구히 빠진다.
+    broken = ROOT / "= Scope/W1/regr-evi-broken.md"
+    broken.write_text("---\nid: [\n---\n본문\n", encoding="utf-8")
+    check("파손 파일은 노드가 아니다 — 거부", bad(lambda: ev.settle(live, "node", "regr-evi-broken")))
+    # 경로형·id형은 계약 밖이다(리뷰 2차 P2) — 경로는 파싱 없이 존재만 보고 동명을
+    # 우회하므로, 파손 파일을 경로로 지목하면 통과해 버린다.
+    check("경로형 target 거부", bad(lambda: ev.settle(live, "node", "= Scope/W1/regr-evi-broken")))
+    check("id형 target 거부", bad(lambda: ev.settle(live, "node", "260801-zzzz-w1ix")))
+    broken.unlink()
+    # 불완전한 색인에서는 유일성을 확정하지 않는다(리뷰 3차 P2) — 다른 군집이
+    # 안 읽히는 동안 이 군집의 동명 하나만 보이면 단일 node로 오판한다.
+    real_scandir = os.scandir
+
+    def blind(path):
+        if str(path) == str(ROOT / "= Scope/WEvi"):
+            raise PermissionError(13, "권한 없음", str(path))
+        return real_scandir(path)
+
+    os.scandir = blind
+    try:
+        n_seen = len(ev.unsettled("WEvi"))
+        try:
+            ev.settle(live, "node", "W1")
+            blind_ok = False
+        except ValueError as e:
+            blind_ok = "관측하지 못했다" in str(e)
+        check("불완전 관측에서는 settle을 적지 않는다", blind_ok)
+        check("불완전 관측 거부는 아무것도 처분하지 않았다", len(ev.unsettled("WEvi")) == n_seen)
+    finally:
+        os.scandir = real_scandir
+    n_before = len(ev.unsettled("WEvi"))
+    check("거부된 settle은 아무것도 처분하지 않았다", n_before == 10, n_before)
+    node = _w(write.create_node, "regr-evi-distilled", "퇴출 조각의 증류", "본문",
+              "fable-5", space="= Scope/W1")
+    check("증류 노드", node.get("ok"), node)
+    dup = ROOT / "= Scope/WEvi/regr-evi-distilled.md"
+    dup.write_text(node_text("260903-zzzz-evdp", "동명"), encoding="utf-8")
+    check("동명이 둘이면 거부", bad(lambda: ev.settle(live, "node", "regr-evi-distilled")))
+    dup.unlink()
+    s1 = ev.settle(live, "node", "regr-evi-distilled")
+    check("settle 행", s1["kind"] == "settle" and s1["of"] == live
+          and s1["target"] == "regr-evi-distilled", s1)
+    par = core.effective_parents(ev.records())
+    check("settle은 그 evict를 조상으로 갖는다 (§9-3 4항)", live in core._ancestors(s1["rid"], par))
+    check("처분된 것은 미처분에서 빠진다", live not in {r["rid"] for r in ev.unsettled("WEvi")})
+    s2 = ev.settle(live, "discarded")
+    check("두 번째 settle도 산다 — 다기기 동시 처분은 손상이 아니다",
+          s2["of"] == live and len([r for r in ev.records() if r.get("of") == live]) == 2)
+    s3 = ev.settle(old[3]["rid"], "merged", "regr-evi-distilled")
+    check("merged도 target을 받는다", s3["outcome"] == "merged"
+          and old[3]["rid"] not in {r["rid"] for r in ev.unsettled()})
+
+    # 검증기 — 스키마 세그먼트
+    def names(lst):
+        return [x if isinstance(x, str) else list(x)[0] for x in lst]
+    rep = validate.run()
+    check("퇴출 기록부 스키마가 통과에 있다",
+          any("퇴출 기록부 스키마" in n for n in names(rep["pass"])), names(rep["fail"]))
+    backup = core.EVICTIONS.read_bytes()
+    b0, b1, b2 = (core._make_rid(now_ms + 1000, i) for i in range(3))
+    bad_rows = [
+        {"rid": b0, "parents": core.heads(ev.records()), "kind": "settle",
+         "of": "ghost", "outcome": "burned", "at": "t"},
+        {"rid": b1, "parents": [b0], "kind": "settle", "of": live,
+         "outcome": "discarded", "target": "x", "at": "t"},
+        {"rid": b2, "parents": [b1], "kind": "evict", "scope": "WEvi", "at": "t"},
+    ]
+    with open(core.EVICTIONS, "a", encoding="utf-8") as f:
+        for row in bad_rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    rep = validate.run()
+    seg = next((list(f.values())[0] for f in rep["fail"]
+                if "퇴출 기록부 스키마" in list(f)[0]), None)
+    check("스키마 세그먼트가 위반을 적발", seg is not None, names(rep["fail"]))
+    if seg:
+        joined = " | ".join(seg)
+        for want in ("미지의 evict", "미정의 outcome", "target은 폐기에는 없고",
+                     "필수 필드 누락 session"):
+            check(f"스키마 적발: {want}", want in joined, joined)
+    core.EVICTIONS.write_bytes(backup)
+
+    # 훅 문안 — K개·밀림 경고·경유 노드·출구. 미처분은 옛 20·19·18 + 갑·정가·
+    # 재시작·엑스·손편집 = 8
+    transit = ROOT / "= Scope/Workbench/transit/regr-evi-transit.md"
+    transit.write_text(node_text("260903-zzzz-evtr", "경유 노드"), encoding="utf-8")
+    banner, block = ev.hook_block("WEvi", "PY", "ENG", now_ms)
+    check("밀림 경고가 있다", banner.startswith("[osk 정돈이 밀렸다") and "20일" in banner, banner)
+    check("오래된 것부터 K=3건만", block.count("\n- `") == 3 and "- 옛 조각 20" in block
+          and "- 옛 조각 18" in block and "- 옛 조각 17" not in block, block)
+    check("나머지 건수를 알린다", "외 5건" in block, block)
+    check("경유 노드를 싣는다", "[[regr-evi-transit]]" in block, block)
+    check("settle 명령·출구·벽 아님", "tidy settle" in block and "PYTHONPATH=ENG PY" in block
+          and "벽이 아니다" in block and "= Scope/WEvi" in block, block)
+
+    # 훅 실행 — 경고가 맨 앞, 기억, 정돈 블록 순. 결속은 위 첫 쓰기가 세웠고,
+    # git 밖의 cwd는 디렉터리 이름으로 접히므로 이름이 곧 세션 키다.
+    hooks = Path(__file__).resolve().parents[1] / "scripts" / "hooks"
+    sys.path.insert(0, str(hooks))
+    hook = importlib.import_module("claude_session_start")
+    cwd = Path(tempfile.mkdtemp(prefix="osk-")) / S
+    cwd.mkdir()
+
+    def hook_run():
+        buf = io.BytesIO()
+        real_in, real_out = sys.stdin, sys.stdout
+        try:
+            sys.stdin = io.StringIO(json.dumps({"session_id": "regr-evi-hook", "cwd": str(cwd)}))
+            sys.stdout = types.SimpleNamespace(buffer=buf)
+            hook.main()
+        finally:
+            sys.stdin, sys.stdout = real_in, real_out
+        return buf.getvalue().decode("utf-8")
+
+    out = hook_run()
+    mem = _w(wm.read, S)["text"].strip()
+    check("훅: 밀림 경고가 맨 앞", out.startswith("[osk 정돈이 밀렸다"), out[:80])
+    check("훅: 기억 전문이 있다", mem and mem in out, out[:200])
+    check("훅: 정돈 블록이 기억 뒤에", out.index("[osk scope 기억") < out.index("[osk 정돈 —"), out[:200])
+    check("훅: 처분 명령에 실제 인터프리터", sys.executable in out and "tidy settle" in out, out[-300:])
+    r = _w(wm.replace, S, "", _w(wm.read, S)["hash"])
+    check("비움", r.get("ok"), r)
+    out2 = hook_run()
+    check("훅: 기억이 비어도 정돈을 싣는다",
+          "[osk 정돈 —" in out2 and "[osk scope 기억" not in out2, out2[:120])
+
+    # CLI — list · prompt · settle · status
+    def run(argv):
+        out, buf = {}, io.BytesIO()
+        real_emit, real_out = cli._emit, sys.stdout
+        try:
+            cli._emit = out.update
+            sys.stdout = types.SimpleNamespace(buffer=buf)
+            try:
+                cli.main(argv)
+            except SystemExit as e:
+                out["exit"] = e.code
+        finally:
+            cli._emit, sys.stdout = real_emit, real_out
+        return out, buf.getvalue().decode("utf-8")
+
+    o, _ = run(["tidy", "list", "--scope", "WEvi"])
+    check("tidy list: 미처분 8건·현황", len(o.get("items", [])) == 8
+          and o["status"]["WEvi"]["unsettled"] == 8, o.get("status"))
+    _, p = run(["tidy", "prompt"])
+    check("tidy prompt: 전용 세션·정본 키·전 항목", "전용 정돈 세션" in p
+          and f'session="{S}"' in p and p.count("\n- `") == 8, p[:200])
+    _, p2 = run(["tidy", "prompt", "--scope", "NoSuch"])
+    check("tidy prompt: 없는 scope는 있는 scope를 알린다", "WEvi" in p2 and "없다" in p2, p2)
+    o, _ = run(["tidy", "settle", "no-such-rid", "discarded"])
+    check("tidy settle: 없는 evict는 중단", str(o.get("exit", "")).startswith("[중단]"), o)
+    target = ev.unsettled("WEvi")[0]["rid"]
+    o, _ = run(["tidy", "settle", target, "discarded"])
+    check("tidy settle: 처분 등재", o.get("ok") and re.match(core.RID_RE, str(o.get("rid")))
+          and o["of"] == target, o)
+    check("처분 뒤 미처분 7건", len(ev.unsettled("WEvi")) == 7)
+    sio, real_out = io.StringIO(), sys.stdout
+    try:
+        sys.stdout = sio
+        cli.main(["status"])
+    finally:
+        sys.stdout = real_out
+    stj = json.loads(sio.getvalue())
+    check("status에 scope별 미처분·나이", stj.get("evictions", {}).get("WEvi", {}).get("unsettled") == 7
+          and stj["evictions"]["WEvi"]["overdue"] is True, stj.get("evictions"))
+
+    # 전부 처분하면 — 프롬프트도 훅도 조용하다
+    for r in ev.unsettled():
+        ev.settle(r["rid"], "discarded")
+    check("전부 처분하면 프롬프트가 없다고 말한다", "정돈할 것이 없다" in ev.tidy_prompt(None, "PY", "ENG"))
+    out3 = hook_run()
+    check("훅: 미처분이 없으면 정돈 블록도 경고도 없다", "[osk 정돈" not in out3, out3[:120])
+    check("status는 미처분 없는 scope를 싣지 않는다", ev.status() == {}, ev.status())
+
+    transit.unlink(missing_ok=True)
+    shutil.rmtree(cwd.parent, ignore_errors=True)
+
+
 # ── 20. 군집 신설의 2단계 확인 (Mechanism §6-2 3항) ─────────────────────
 def test_new_cluster_two_phase():
     """구판은 "군집 신설은 사용자 발의다"라며 전면 거부했으나 그 문구는 규범
@@ -7999,7 +8361,7 @@ if __name__ == "__main__":
                test_audit_fixes_2026_09_02,
                test_governance_amend_secrets_and_region,
                test_region_root_is_not_an_excluded_compartment,
-               test_setup_doc_drift, test_turn_ledger]:
+               test_setup_doc_drift, test_turn_ledger, test_evictions]:
         try:
             fn()
         except Exception as e:

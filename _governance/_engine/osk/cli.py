@@ -6,9 +6,13 @@ CLI는 대화형 확인을 강제하고, 에이전트는 이 명령을 사용자
 """
 from __future__ import annotations
 import argparse, json, sys
+from pathlib import Path
 
 from .core import ROOT, StaleEngineError
-from . import graph, approvals, authority, raw, scope_memory, validate, search, write
+from . import (graph, approvals, authority, raw, scope_memory, validate, search,
+               write, evictions)
+
+ENGINE = Path(__file__).resolve().parents[1]     # …/_governance/_engine
 
 
 def _confirm(prompt: str) -> None:
@@ -168,6 +172,32 @@ def _sm_cmd(a) -> None:
         sys.exit(1)
 
 
+def _tidy_cmd(a) -> None:
+    """`osk tidy` — 정돈 (Mechanism §9-3). `list`는 미처분, `prompt`는 전용
+    세션의 프롬프트(전문 그대로 — 붙여 넣는 값이다), `settle`은 처분 기록.
+
+    settle은 에이전트가 부르는 **기계 경로**다 — 상주 스키마에 여유가 없어
+    표면 도구로 두지 않았고, 대화형 확인을 걸면 훅이 지시한 첫 도구 호출에
+    실을 수 없다. 권위 행위가 아니다(§6-2 2항의 넷이 아니다)."""
+    try:
+        if a.tidy_cmd == "list":
+            rows = evictions.unsettled(a.scope)
+            _emit({"status": evictions.status(), "items": [
+                {"rid": r["rid"], "scope": r.get("scope"), "session": r.get("session"),
+                 "at": r.get("at"), "age_days": evictions.age_days(r),
+                 "text": r.get("text")} for r in rows]})
+        elif a.tidy_cmd == "prompt":
+            out = evictions.tidy_prompt(a.scope, sys.executable, str(ENGINE))
+            sys.stdout.buffer.write(out.encode("utf-8"))
+            sys.stdout.buffer.flush()
+        else:
+            rec = evictions.settle(a.of, a.outcome, a.target)
+            _emit({"ok": True, "rid": rec["rid"], "of": a.of,
+                   "outcome": a.outcome, "target": rec.get("target")})
+    except ValueError as e:
+        sys.exit(f"[중단] {e}")
+
+
 def _stdin_text() -> str:
     """본문은 **바이트로 읽어 UTF-8로 푼다** — 콘솔 인코딩을 타면 그 기기에서
     쓴 작업 기억만 다른 바이트가 되고, 상한도 해시도 어긋난다."""
@@ -221,6 +251,18 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--session", required=True)
     q.add_argument("--expect-hash", dest="expect_hash", default=None)
     q.add_argument("--space", default=None)
+
+    # `tidy`도 기계 경로다 — 훅이 지시한 처분을 에이전트가 `settle`로 적는다.
+    p = sub.add_parser("tidy", help="정돈 — 미처분 퇴출 항목 (Mechanism §9-3)")
+    ts = p.add_subparsers(dest="tidy_cmd", required=True)
+    q = ts.add_parser("list", help="scope별 미처분 evict 목록과 현황")
+    q.add_argument("--scope", default=None)
+    q = ts.add_parser("prompt", help="전용 정돈 세션의 프롬프트 — 새 세션에 붙여 넣는다")
+    q.add_argument("--scope", default=None, help="기본: 가장 오래 밀린 scope")
+    q = ts.add_parser("settle", help="처분 기록 — 노드로 증류·기존 노드에 통합·폐기")
+    q.add_argument("of", help="대상 evict의 rid")
+    q.add_argument("outcome", choices=evictions.OUTCOMES)
+    q.add_argument("--target", default=None, help="노드 제목 (폐기면 없음)")
 
     p = sub.add_parser("validators",
                        help="[사용자 전속] 검증기 활성화 현황·전환 (Mechanism §6-1)")
@@ -294,11 +336,17 @@ def main(argv=None):
     elif a.cmd == "status":
         idx = graph.Index()
         regions = approvals.protected_regions()
+        try:
+            # 건너뛴 정돈은 보인다(§9-3 3항) — scope별 미처분·가장 오래된 나이
+            ev = evictions.status()
+        except Exception as e:                  # 대장 손상은 현황을 막지 않는다
+            ev = {"error": str(e)}
         print(json.dumps({
             "nodes": len(idx.nodes),
             "protected_regions": {r: approvals.state(r) for r in regions},
             "delegations": [d["title"] for d in authority.enumerate_delegations()
                             if d["effective"]],
+            "evictions": ev,
             "root": str(ROOT),
         }, ensure_ascii=False, indent=2))
     elif a.cmd in ("search", "view"):
@@ -312,6 +360,8 @@ def main(argv=None):
         return _raw_cmd(a)
     elif a.cmd == "sm":
         return _sm_cmd(a)
+    elif a.cmd == "tidy":
+        return _tidy_cmd(a)
     elif a.cmd == "protect":
         st = approvals.state(a.region)
         print(f"보호영역 지정: {a.region}\n현재 상태: {st}")
