@@ -27,7 +27,7 @@ import time
 from datetime import datetime
 
 from .core import (EVICTIONS, RID_RE, ledger_read, ledger_damage, ledger_append,
-                   ledger_anchor_index, _rid_parts, _rid_key)
+                   ledger_anchor_index, mutation_lock, _rid_parts, _rid_key)
 from . import graph
 
 KINDS = ("evict", "settle")
@@ -46,6 +46,13 @@ def _lines(s: str) -> list[str]:
 def removed_lines(old: str, new: str) -> str:
     """`old`의 줄 중 `new`에 남지 않은 줄 — 순서를 지키고 같은 줄은 한 번.
 
+    **두 쓰기 방식 모두 저장본의 전후로 잰다** — 전체 치환이든 앵커 일괄이든
+    "저장본에서 덜어 낸 구간"(§9-2 12항)은 치환 전 정본과 치환 뒤 정본의
+    차이이고, 원시 `edits`의 `old_text`가 아니다. 앵커 일괄은 앞 연산이 만든
+    문자열을 뒤 연산의 앵커로 쓸 수 있어, `old_text`를 모으면 **저장된 적 없는
+    중간 문자열**이 퇴출된 것처럼 적히고 그 문자열은 비밀값 필터를 지나지
+    않았다(리뷰 P1). 저장본은 필터를 지난 것만 담는다.
+
     줄이 단위다. scope 기억은 줄 단위 엔트리이고, 고쳐 쓴 줄은 옛 줄 그대로
     남으므로 처분에서 폐기로 판정된다 — 잘린 것을 놓치는 쪽보다 그 편이 싸다."""
     keep = set(_lines(new))
@@ -53,16 +60,6 @@ def removed_lines(old: str, new: str) -> str:
     for ln in _lines(old):
         if ln not in keep and ln not in out:
             out.append(ln)
-    return "\n".join(out)
-
-
-def removed_by_edits(edits: list[dict]) -> str:
-    """앵커 일괄 — 각 `old_text` 중 `new_text`에 남지 않은 것 (§9-2 12항)."""
-    out: list[str] = []
-    for e in edits:
-        for ln in _lines(removed_lines(e["old_text"], e["new_text"])):
-            if ln not in out:
-                out.append(ln)
     return "\n".join(out)
 
 
@@ -141,13 +138,9 @@ def settle(of: str, outcome: str, target: str | None = None) -> dict:
     target = (target or "").strip() or None
     if outcome == "discarded" and target:
         raise ValueError("폐기(discarded)에는 target이 없다 — 어디로도 가지 않았다")
-    if outcome != "discarded":
-        if not target:
-            raise ValueError(f"{outcome}에는 target(노드 제목)이 필요하다 — "
-                             f"어디로 갔는지가 처분의 내용이다")
-        if not graph.Index().candidates(target):
-            raise ValueError(f"노드 `{target}`이 없다 — 처분은 노드가 선 뒤에 적는다"
-                             f"(제목은 파일 이름 그대로, 경로 없이)")
+    if outcome != "discarded" and not target:
+        raise ValueError(f"{outcome}에는 target(노드 제목)이 필요하다 — "
+                         f"어디로 갔는지가 처분의 내용이다")
 
     def expect(recs: list[dict]) -> str | None:
         if not any(r.get("kind") == "evict" and r.get("rid") == of for r in recs):
@@ -158,7 +151,21 @@ def settle(of: str, outcome: str, target: str | None = None) -> dict:
     rec: dict = {"kind": "settle", "of": of, "outcome": outcome}
     if target:
         rec["target"] = target
-    return ledger_append(EVICTIONS, rec, expect=expect)
+    # 노드 확인은 **변경 잠금 안**에서, 그리고 후보 파일이 아니라 **판독되는
+    # 비모호 노드**로 한다(리뷰 P2). 파손 파일 하나가 그 이름의 임자가 되면
+    # 증류된 적 없는 조각이 정돈 큐에서 영구히 빠진다. 잠금 순서는 다른
+    # 모듈과 같다 — 변경 잠금 → 대장 잠금.
+    with mutation_lock():
+        if target:
+            r = graph.Index().resolve(target)
+            if r[0] == "ambiguous":
+                raise ValueError(f"`{target}`는 동명이 둘 이상이라 어느 노드인지 정해지지 "
+                                 f"않는다 — 처분을 적지 않았다")
+            if r[0] != "node":
+                raise ValueError(f"노드 `{target}`이 없다(파손 파일은 노드가 아니다) — "
+                                 f"처분은 노드가 선 뒤에 적는다. 제목은 파일 이름 "
+                                 f"그대로, 경로 없이")
+        return ledger_append(EVICTIONS, rec, expect=expect)
 
 
 def schema_errors(recs: list[dict]) -> list[str]:

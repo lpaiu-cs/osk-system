@@ -20,10 +20,11 @@ working_memory는 인지과학 은유(한 마음의 사유물)라 "내 세션의
 없고, 통합할 때마다 자리값 못하는 엔트리가 퇴출되므로 decay 스케줄러도 없다.
 """
 from __future__ import annotations
+import hashlib
 import unicodedata
 from pathlib import Path
 
-from .core import ROOT, mutation_lock, posix_rel, sha256_bytes
+from .core import ROOT, local_lock_path, mutation_lock, posix_rel, sha256_bytes
 from . import evictions, graph, secrets, write
 
 # 계수는 mechanism이 정한다(시행령 서문). 한 세션의 배울 점을 적기에는 충분하고
@@ -41,7 +42,32 @@ _OVERFLOW_RUNS: dict[str, int] = {}
 # 지운다. 연속 계수와 다른 표식이다: 계수는 읽기도 지우지만(읽기는 새 시도의
 # 시작), 이 표식은 읽기에 살아남아야 한다 — 거부 → 읽기 → 잘라서 통과가 바로
 # "상한에 밀려 자른" 경로이고, 그 사이의 읽기는 무엇을 자를지 보는 일이다.
-_PENDING_EVICT: dict[str, bool] = {}
+#
+# **프로세스 메모리에 두지 않는다**(리뷰 P1). 3회째 거부는 "접고 다음 통합으로
+# 넘기라"고 지시하고, 그 다음 통합은 흔히 새 세션 — 새 MCP 프로세스 — 에서
+# 온다. 표식이 메모리에만 있으면 그 첫 성공한 쓰기가 줄을 덜어 내도 적히지
+# 않아, 이 조문이 막으려는 손실이 정확히 그 자리에서 난다. 자리는 잠금과 같은
+# 기기 로컬 디렉터리(추적 트리 밖)다 — 거부는 이 기기의 사본 위에서 났고,
+# 세션 키는 기기를 넘지 않는다.
+
+
+def _pending_path(key: str) -> Path:
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return local_lock_path(f"osk-pending-evict-{h}")
+
+
+def _pending(key: str) -> bool:
+    return _pending_path(key).is_file()
+
+
+def _pending_set(key: str) -> None:
+    p = _pending_path(key)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(key, encoding="utf-8")
+
+
+def _pending_clear(key: str) -> None:
+    _pending_path(key).unlink(missing_ok=True)
 
 _CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
             "번지게 하지 않는다 —")
@@ -307,7 +333,7 @@ def replace(session: str, text: str | None = None,
             key = _runs_key(session)
             runs = _OVERFLOW_RUNS.get(key, 0) + 1
             _OVERFLOW_RUNS[key] = runs
-            _PENDING_EVICT[key] = True      # 다음 성공이 덜어 낸 것을 적는다
+            _pending_set(key)               # 다음 성공이 덜어 낸 것을 적는다
             # §9-2 4항은 3회째에 "**재시도 지시를 거두고** … 다음 통합으로
             # 넘긴다"고 정한다. 구판은 거두지 않고 "접고 가라"를 덧붙이기만 해서
             # 상반된 두 지시가 한 응답에 실렸다 — 거두는 것이 조문이다.
@@ -357,9 +383,12 @@ def replace(session: str, text: str | None = None,
         # 조문이 막는 유일한 손실이다. 대장이 거부하면 아무것도 쓰지 않는다.
         key = _runs_key(session)
         removed = ""
-        if _PENDING_EVICT.get(key):
-            removed = (evictions.removed_by_edits(edits) if edits is not None
-                       else evictions.removed_lines(cur, body))
+        if _pending(key):
+            # 전체 치환이든 앵커 일괄이든 **저장본의 전후**로 잰다 — 원시
+            # `edits`의 중간 문자열은 저장된 적이 없고 비밀값 필터도 지나지
+            # 않았다(리뷰 P1). `cur`는 필터를 지나 저장된 것이지만, 대장은
+            # 동기화되므로 한 번 더 거른다 — 손으로 고친 저장본을 믿지 않는다.
+            removed, _ = secrets.filter_text(evictions.removed_lines(cur, body))
         ev = None
         if removed:
             try:
@@ -379,7 +408,7 @@ def replace(session: str, text: str | None = None,
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
         _OVERFLOW_RUNS.pop(key, None)       # 성공이 연속 계수를 지운다
-        _PENDING_EVICT.pop(key, None)       # 덜어 낸 것이 없었어도 표식은 끝난다
+        _pending_clear(key)                 # 덜어 낸 것이 없었어도 표식은 끝난다
 
         # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
         # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한
