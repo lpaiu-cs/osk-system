@@ -164,7 +164,15 @@ def settle(of: str, outcome: str, target: str | None = None) -> dict:
     # 모듈과 같다 — 변경 잠금 → 대장 잠금.
     with mutation_lock():
         if target:
-            r = graph.Index().resolve(target)
+            idx = graph.Index()
+            if not idx.complete:
+                # 유일성은 전체를 봐야 말할 수 있다(리뷰 3차 P2) — 못 읽은
+                # 군집에 동명이 숨어 있으면 단일 `node`로 오판해 처분이 적히고,
+                # 그 evict는 큐에서 영구히 빠진다. 쓰기 통로와 같은 fail-closed.
+                raise ValueError("vault를 전부 관측하지 못했다 — 처분을 적지 않았다: "
+                                 + "; ".join(idx.scan_errors[:3])
+                                 + ". 권한·잠금을 확인하고 다시 보내라")
+            r = idx.resolve(target)
             if r[0] == "ambiguous":
                 raise ValueError(f"`{target}`는 동명이 둘 이상이라 어느 노드인지 정해지지 "
                                  f"않는다 — 처분을 적지 않았다")

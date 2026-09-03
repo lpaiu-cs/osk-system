@@ -5555,6 +5555,27 @@ def test_evictions():
     check("경로형 target 거부", bad(lambda: ev.settle(live, "node", "= Scope/W1/regr-evi-broken")))
     check("id형 target 거부", bad(lambda: ev.settle(live, "node", "260801-zzzz-w1ix")))
     broken.unlink()
+    # 불완전한 색인에서는 유일성을 확정하지 않는다(리뷰 3차 P2) — 다른 군집이
+    # 안 읽히는 동안 이 군집의 동명 하나만 보이면 단일 node로 오판한다.
+    real_scandir = os.scandir
+
+    def blind(path):
+        if str(path) == str(ROOT / "= Scope/WEvi"):
+            raise PermissionError(13, "권한 없음", str(path))
+        return real_scandir(path)
+
+    os.scandir = blind
+    try:
+        n_seen = len(ev.unsettled("WEvi"))
+        try:
+            ev.settle(live, "node", "W1")
+            blind_ok = False
+        except ValueError as e:
+            blind_ok = "관측하지 못했다" in str(e)
+        check("불완전 관측에서는 settle을 적지 않는다", blind_ok)
+        check("불완전 관측 거부는 아무것도 처분하지 않았다", len(ev.unsettled("WEvi")) == n_seen)
+    finally:
+        os.scandir = real_scandir
     n_before = len(ev.unsettled("WEvi"))
     check("거부된 settle은 아무것도 처분하지 않았다", n_before == 10, n_before)
     node = _w(write.create_node, "regr-evi-distilled", "퇴출 조각의 증류", "본문",
