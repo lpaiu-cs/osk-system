@@ -7176,8 +7176,10 @@ def test_turn_ledger():
             state["t"] += 1
             return f"2026-09-01T10:{state['t'] // 60:02d}:{state['t'] % 60:02d}.000Z"
 
-        def _assistant(recs, sess, mid, blocks, out=50):
+        def _assistant(recs, sess, mid, blocks, out=50, prompt=None):
             """한 과금 메시지 — 블록마다 레코드로 쪼개고 usage는 공유한다(함정 2)."""
+            if prompt is not None:
+                state["prompt"] = prompt
             usage = {"input_tokens": state["prompt"], "cache_creation_input_tokens": 0,
                      "cache_read_input_tokens": 0, "output_tokens": out}
             ts = _ts()
@@ -7261,12 +7263,17 @@ def test_turn_ledger():
         #    판정된다(리뷰 4차). 경로마다 따로 보면 A가 먼저 닫고, 그 하나만 센다.
         O3: list[dict] = []
         _assistant(O3, "S3", "M12", [_use("T12", "scope_memory")])
+        p_fork = state["prompt"]                       # 분기 지점의 프롬프트
         _result(O3, "S3", "T12", rej4)
+        d_a = round(len(rej4) / 1.5)                   # A가 실은 rej4의 증분
+        d_b = d_a + 10                                 # B는 훅 주입 10만큼 문맥이 다르다
         FB = [dict(r, sessionId="S3-B") for r in O3]
-        _assistant(FB, "S3-B", "M14", [_use("T14", "create_node")])          # t2
+        _assistant(FB, "S3-B", "M14", [_use("T14", "create_node")],          # t2
+                   prompt=p_fork + 50 + d_b)
         _result(FB, "S3-B", "T14", okn)
         FA = [dict(r, sessionId="S3-A") for r in O3]
-        _assistant(FA, "S3-A", "M13", [_use("T13", "scope_memory")])         # t3 — 먼저 닫힌다
+        _assistant(FA, "S3-A", "M13", [_use("T13", "scope_memory")],         # t3 — 먼저 닫힌다
+                   prompt=p_fork + 50 + d_a)
         _result(FA, "S3-A", "T13", ok4a)
         _assistant(FB, "S3-B", "M15", [_use("T15", "scope_memory")])         # t4
         _result(FB, "S3-B", "T15", ok4b)
@@ -7320,9 +7327,16 @@ def test_turn_ledger():
               and uses["T10"]["conversation"] == uses["T11"]["conversation"]
               and uses["T12"]["conversation"] == uses["T13"]["conversation"] == uses["T15"]["conversation"],
               (uses["T9"]["conversation"], uses["T11"]["conversation"], uses["T15"]["conversation"]))
-        check("창 뒤에 태어난 재개 세션은 그 메시지의 사본을 가져도 아직 없다 (리뷰 4차)",
-              msgs["M16"]["sessions"] == {"S4"} and "T17" not in uses,
-              (msgs["M16"]["sessions"], "T17" in uses))
+        check("창 뒤 재개의 새 호출은 시각으로 걸러진다 — 사본이 든 메시지는 남는다 (리뷰 5차)",
+              "T17" not in uses and "T16" in uses
+              and msgs["M16"]["sessions"] == {"S4", "S4-resume"},
+              (msgs["M16"]["sessions"], "T16" in uses, "T17" in uses))
+        check("분기점의 페이로드는 후속마다 세어 합한다 (리뷰 5차)",
+              uses["T12"]["successors"] == 2
+              and uses["T12"]["payload_tokens"] == d_a + d_b
+              and len(uses["T12"]["ratios"]) == 2
+              and uses["T1"]["successors"] == 1,
+              (uses["T12"].get("successors"), uses["T12"].get("payload_tokens"), d_a + d_b))
 
         eps = tl.episodes(corpus)
         by = {e["start_tid"]: e for e in eps}
@@ -7344,8 +7358,8 @@ def test_turn_ledger():
         check("파일명 순서에 결과가 매이지 않는다 (리뷰)",
               s2["scope_memory"]["episodes"] == 4 and s2["scope_memory"]["episodes_unresolved"] == 0
               and s2["scope_memory"]["trimmed_chars_total"] == 47 + 40 + 40, s2["scope_memory"])
-        check("창이 재개 세션의 탄생 뒤면 그 세션이 센다 (리뷰 4차)",
-              s2["sessions"] == 9 and s2["calls"] == 17, (s2["sessions"], s2["calls"]))
+        check("창을 넓히면 재개의 새 호출이 들어온다",
+              s2["calls"] == 17 and s2["conversations"] == 4, (s2["calls"], s2["conversations"]))
 
         # 집계 — 창 끝 = 9월 2일 0시
         led = lab / "evictions.jsonl"
@@ -7357,10 +7371,29 @@ def test_turn_ledger():
         ]) + chr(10), encoding="utf-8")
         s = tl.summarize(full2, 0.0, end, led)
         m, ev = s["scope_memory"], s["evictions"]
-        check("집계: 호출 16 · 실패 5 · 거부 4 · 대화 4 · 세션 id 8(창 뒤 탄생 제외)",
+        check("집계: 호출 16 · 실패 5 · 거부 4 · 대화 4",
               s["calls"] == 16 and s["failures"] == 5 and m["overflow_rejections"] == 4
-              and s["conversations"] == 4 and s["sessions"] == 8,
-              (s["calls"], s["failures"], m["overflow_rejections"], s["conversations"], s["sessions"]))
+              and s["conversations"] == 4,
+              (s["calls"], s["failures"], m["overflow_rejections"], s["conversations"]))
+
+        #    **과거 창은 뒤에 오는 기록에 흔들리지 않는다** (리뷰 5차의 요지).
+        #    S1 전체를 복사한 후손 재개를 새로 더한다 — 구판은 이 순간 S1-resume에
+        #    고유 메시지가 사라져 탄생 추정이 뒤로 밀리고, 창에서 세션이 빠지면서
+        #    그 세션에만 있던 메시지의 호출까지 사라졌다. 지금은 자르는 기준이
+        #    메시지 시각 하나라 같은 창이 같은 답을 낸다.
+        #    재개는 **한 세션**의 선형 이력을 복사한다 — S1 전체를 복사하고 새 호출
+        #    하나를 잇는다(두 세션을 섞으면 없던 인접이 생겨 픽스처가 거짓이 된다).
+        D = [dict(r, sessionId="S1-resume3") for r in A]
+        state["at"] = "2026-09-02T12:00:00.000Z"
+        _assistant(D, "S1-resume3", "M18", [_use("T18", "search")])
+        _result(D, "S1-resume3", "T18", '{"ok": true, "results": []}')
+        state["at"] = None
+        _dump("s1-r3.jsonl", D)
+        again = tl.summarize(tl.read_corpus(lab / "projects", []), 0.0, end, led)
+        #    `files`는 지금 훑은 코퍼스의 크기이지 창의 값이 아니다 — 빼고 본다.
+        diff = [k for k in s if k != "files" and again.get(k) != s.get(k)]
+        check("뒤에 온 후손 재개가 과거 창의 보고를 바꾸지 않는다 (리뷰 5차)",
+              not diff, diff)
         check("집계: 도구별 실패 수도 ok로 세고, 같은 도구 재호출만 재시도로 센다",
               s["tools"]["scope_memory"]["fail"] == 4 and s["tools"]["update_node"]["fail"] == 1
               and s["retry_after_fail"] == 3,

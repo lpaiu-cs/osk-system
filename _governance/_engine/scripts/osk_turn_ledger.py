@@ -37,22 +37,21 @@
   두 재개)의 호출이 시각순으로 섞여, A의 거부가 B의 증류 때문에 `distill`로
   판정된다(리뷰 지적). 공통 접두는 부모-자식 연속을 증명할 뿐 형제 사이의 순서를
   증명하지 않는다. 그래서 경로마다 따로 판정하고, 같은 거부(같은 `tool_use_id`)에서
-  시작한 에피소드는 **가장 먼저 닫힌 경로의 것 하나만** 센다. 페이로드는 그
-  메시지의 **가장 이른 후속** 메시지로 재는데, 형제 분기는 접두부가 같아 어느
-  후속으로 재도 차이가 같다.
+  시작한 에피소드는 **가장 먼저 닫힌 경로의 것 하나만** 센다. 페이로드는 반대다 —
+  분기점에서는 두 재개가 각각 요청을 보내 그 결과가 **각각 실려 각각 청구되므로**,
+  후속마다 증분을 재고 게이트를 따로 걸어 통과한 것들을 **합한다**(실측: 분기점 50).
 - **대화 수**는 `message.id`를 공유하는 세션들의 연결 성분으로 센다 — 재개·분기는
   모두 한 대화다(실측: 사본 537 중 411이 다른 sessionId 아래, message.id는 같다).
+  **세션 id 수는 싣지 않는다** — 뒤에 오는 재개가 옛 메시지를 복사하며 그 수를
+  바꾸는데, 세션이 언제 생겼는지는 자료에 없다(`window` 주석).
 
 ## 창은 먼저 자른다
 
 `--since/--until`은 파생 상태(에피소드·페이로드·대장 나이)를 계산하기 **전에**
 입력을 자른다. 창 뒤의 성공이 창 안 거부를 닫으면 같은 과거 창을 나중에 다시
 돌렸을 때 결과가 바뀐다 — 창의 마지막 시점에 존재한 자료만으로 계산해야 같은
-창은 언제 돌려도 같다(리뷰 지적). 세션도 마찬가지다: 재개 세션은 원 메시지를
-**복사**하므로(복사본의 시각은 원본 그대로다) 메시지 시각으로만 자르면 나중에
-태어난 재개 세션의 id가 과거 창에 들어온다. 세션의 **탄생 시각** — 그 세션에만
-있는 첫 메시지의 시각, 없으면 담은 메시지의 마지막 시각 — 을 세워 창 끝보다
-늦게 태어난 세션은 없는 것으로 본다(리뷰 지적).
+창은 언제 돌려도 같다(리뷰 지적). 자르는 기준은 **메시지의 시각 하나**다: 그것이
+자료에 있는 유일한 실제 생성 시각이고 뒤에 무엇이 추가돼도 변하지 않는다.
 
 ## 계측 함정 셋 (재현하려면 반드시 피해야 한다 — #20)
 
@@ -192,25 +191,14 @@ def read_corpus(projects: Path, exclude: list[str]) -> dict:
 
 # ── 세션·대화·창 ─────────────────────────────────────────────────────────
 
-def session_birth(corpus: dict) -> dict:
-    """세션 → 탄생 시각. 그 세션에만 있는 메시지 중 가장 이른 것의 시각이고,
-    그런 메시지가 없으면(아직 연속을 만들지 않은 순수 사본) 담은 메시지의 마지막
-    시각이다. 복사본의 시각은 원본 그대로이므로 메시지 시각으로는 세션의 나이를
-    알 수 없다 — 이 값이 "이 세션이 코퍼스에 언제 나타났는가"의 근사다."""
-    unique: dict = {}
-    last: dict = {}
-    for ent in corpus["msgs"].values():
-        for s in ent["sessions"]:
-            last[s] = max(last.get(s, 0.0), ent["ts"])
-        if len(ent["sessions"]) == 1:
-            (s,) = tuple(ent["sessions"])
-            unique[s] = min(unique.get(s, INF), ent["ts"])
-    return {s: unique.get(s, last[s]) for s in last}
-
-
 def conversations(corpus: dict) -> dict:
     """세션 → 대화 id. 같은 `message.id`를 공유하는 세션은 한 대화다(재개·분기).
-    **세기 위한 것**이지 순서의 근거가 아니다 — 순서는 `session_paths`가 준다."""
+    **세기 위한 것**이지 순서의 근거가 아니다 — 순서는 `session_paths`가 준다.
+
+    이 셈은 뒤에 오는 사본에 흔들리지 않는다: 나중의 재개는 원 세션의 메시지를
+    복사하므로 이미 있는 성분에 합쳐질 뿐 성분 수를 바꾸지 않고, 창 뒤에 시작한
+    새 대화의 메시지는 시각으로 걸러진다. 세션 id 수는 그렇지 않아 싣지 않는다
+    (`window` 주석)."""
     parent: dict = {}
 
     def find(x):
@@ -242,18 +230,22 @@ def session_paths(corpus: dict) -> dict:
 
 def window(corpus: dict, until: float) -> dict:
     """창의 끝 시점에 존재한 자료만 남긴다 — 파생 상태는 이 위에서 계산한다.
-    메시지는 시각으로, 세션은 **탄생 시각**으로 자른다(창 뒤에 태어난 재개 세션은
-    그 메시지의 사본을 갖고 있어도 아직 없는 것이다)."""
-    born = session_birth(corpus)
-    alive = {s for s, b in born.items() if b <= until}
-    msgs = {}
-    for k, v in corpus["msgs"].items():
-        if v["ts"] > until:
-            continue
-        ss = v["sessions"] & alive
-        if not ss:
-            continue
-        msgs[k] = dict(v, sessions=ss)
+
+    자르는 기준은 **메시지의 시각 하나**다. 그것이 자료에 있는 유일한 실제
+    생성 시각이고, 뒤에 무엇이 추가돼도 변하지 않는다. 세션의 '탄생'으로도
+    잘라 봤으나 물렸다: 세션이 언제 생겼는지를 적은 자리가 트랜스크립트에
+    없어(계보 필드 부재, `cost-state.startTime`은 184 세션 중 1) 코퍼스에서
+    추정할 수밖에 없는데, "그 세션에만 있는 메시지"라는 추정은 나중의 재개가
+    그 메시지를 복사하는 순간 무너진다(실측: 고유 메시지가 없는 세션 31/184).
+    그러면 **자기 시각으로는 창 안인 메시지가 통째로 사라져** 호출·토큰·
+    에피소드까지 과거 실행과 달라진다 — 세션 수 하나를 지키려다 자료를 잃는다.
+
+    그래서 세션으로는 자르지 않고, 대신 **불안정한 세션 id 수를 싣지 않는다**.
+    창 뒤의 재개가 옛 메시지를 복사해도 메시지 집합은 그대로이고(같은
+    `message.id`), 늘어나는 것은 그 메시지의 `sessions` 집합뿐이다. 경로가
+    하나 늘지만 그것은 부모 경로의 접두이므로 에피소드(같은 거부는 먼저 닫힌
+    것 하나)·재시도(쌍의 집합)·호출(tool_use_id)에 아무것도 더하지 않는다."""
+    msgs = {k: v for k, v in corpus["msgs"].items() if v["ts"] <= until}
     uses = {t: dict(u) for t, u in corpus["uses"].items() if u["msg"] in msgs}
     results = {t: r for t, r in corpus["results"].items() if t in uses}
     return {"msgs": msgs, "uses": uses, "results": results, "files": corpus["files"]}
@@ -273,8 +265,13 @@ def attribute_costs(corpus: dict) -> None:
       나눈다(`out_share`). 도구별 합과 전체 합이 같은 수를 가리키게 하기 위해서다.
     - 페이로드(다음 프롬프트의 증분)는 그 메시지의 도구 호출이 **하나**일 때만 그
       호출에 귀속한다 — 여럿이면 어느 결과가 프롬프트를 키웠는지 가를 수 없다.
-    후속 메시지는 경로들에서 모은 **가장 이른 후속**이다 — 형제 분기는 접두부가
-    같아 어느 후속으로 재도 차이가 같고, 창 끝의 마지막 메시지는 후속이 없다."""
+
+    후속은 **하나가 아니다.** 분기점에서는 두 재개가 각각 요청을 보내고, 두 요청의
+    프롬프트에 그 결과가 **각각 실려 각각 청구된다**. 가장 이른 후속 하나만 재면
+    다시 실린 몫이 통째로 빠진다(실측: 분기점 50). 그래서 후속마다 증분을 재고
+    게이트를 따로 걸어 **통과한 것들의 합**을 페이로드로 둔다 — 두 재개 시점의
+    문맥이 달라 증분도 게이트 통과 여부도 다를 수 있으므로 하나로 갈음하지 않는다.
+    창 끝의 마지막 메시지는 후속이 없어 페이로드를 얻지 못한다."""
     conv = conversations(corpus)
     succ: dict = defaultdict(set)
     for path in session_paths(corpus).values():
@@ -285,8 +282,8 @@ def attribute_costs(corpus: dict) -> None:
         ent["conversation"] = min(conv.get(s, s) for s in ent["sessions"]) if ent["sessions"] else mid
         u = ent["usage"]
         out = int(u.get("output_tokens", 0) or 0)
-        nxt_id = min(succ.get(mid, ()), key=lambda x: (msgs[x]["ts"], x), default=None)
-        payload = (_prompt(msgs[nxt_id]["usage"]) - _prompt(u) - out) if nxt_id else None
+        deltas = [_prompt(msgs[n]["usage"]) - _prompt(u) - out
+                  for n in sorted(succ.get(mid, ()), key=lambda x: (msgs[x]["ts"], x))]
         k = len(ent["tool_uses"])
         n_tools = len(ent["blocks"])
         for tid in ent["tool_uses"]:
@@ -296,15 +293,15 @@ def attribute_costs(corpus: dict) -> None:
             use["out_share"] = out / k if k else 0.0
             use["alone"] = n_tools == 1
             res = corpus["results"].get(tid)
-            if payload is not None and n_tools == 1 and res and res["text_len"] > 0:
-                ratio = res["text_len"] / payload if payload > 0 else None
-                use["payload_tokens"] = payload
-                use["ratio"] = ratio
-                use["gated"] = bool(ratio and GATE[0] <= ratio <= GATE[1])
-            else:
-                use["payload_tokens"] = None
-                use["ratio"] = None
-                use["gated"] = False
+            ratios = []
+            if deltas and n_tools == 1 and res and res["text_len"] > 0:
+                ratios = [(d, res["text_len"] / d) for d in deltas if d > 0]
+            passed = [(d, r) for d, r in ratios if GATE[0] <= r <= GATE[1]]
+            use["successors"] = len(deltas)
+            use["payload_tokens"] = sum(d for d, _r in passed) if passed else None
+            use["ratios"] = [r for _d, r in passed]
+            use["ratio"] = passed[0][1] if passed else None
+            use["gated"] = bool(passed)
 
 
 def _cost(u: dict) -> float:
@@ -408,7 +405,6 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
     res, msgs = corpus["results"], corpus["msgs"]
     uses = {t: u for t, u in corpus["uses"].items() if since <= u["ts"]}
     convs_seen = {u.get("conversation") for u in uses.values()}
-    sessions_seen = set().union(*(msgs[u["msg"]]["sessions"] for u in uses.values())) if uses else set()
     per_tool: dict = defaultdict(lambda: {"calls": 0, "fail": 0, "out": [], "payload": [],
                                           "ratios": [], "gated": 0, "alone": 0})
     total = failed_cost = 0.0
@@ -426,7 +422,7 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
         if u.get("gated"):
             t["gated"] += 1
             t["payload"].append(u["payload_tokens"])
-            t["ratios"].append(u["ratio"])
+            t["ratios"].extend(u["ratios"])
     tools = {}
     for name, t in sorted(per_tool.items(), key=lambda x: -x[1]["calls"]):
         tools[name] = {"calls": t["calls"], "fail": t["fail"],
@@ -454,7 +450,7 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
     return {
         "window": [datetime.fromtimestamp(since, timezone.utc).date().isoformat(),
                    datetime.fromtimestamp(until, timezone.utc).date().isoformat()],
-        "files": corpus["files"], "sessions": len(sessions_seen), "conversations": len(convs_seen),
+        "files": corpus["files"], "conversations": len(convs_seen),
         "calls": len(uses), "failures": fails,
         "failure_rate": round(fails / len(uses), 3) if uses else None,
         "retry_after_fail": len(pairs),
@@ -485,7 +481,7 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
 def render(s: dict) -> str:
     L = []
     w = s["window"]
-    L.append(f"osk 턴 계기 — {w[0]} ~ {w[1]} · 파일 {s['files']} · 대화 {s['conversations']}(세션 id {s['sessions']}) · 호출 {s['calls']}")
+    L.append(f"osk 턴 계기 — {w[0]} ~ {w[1]} · 파일 {s['files']} · 대화 {s['conversations']} · 호출 {s['calls']}")
     L.append(f"실패 {s['failures']} ({(s['failure_rate'] or 0)*100:.1f}%) · 실패 직후 같은 도구 재호출 {s['retry_after_fail']}"
              f" · 토큰 합 {s['tokens_total']:,} (실패분 {s['tokens_failed']:,})"
              f" — 합은 발화(메시지당 한 번) + 게이트 통과 페이로드")
