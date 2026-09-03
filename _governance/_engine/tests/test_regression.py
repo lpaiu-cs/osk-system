@@ -5474,10 +5474,26 @@ def test_evictions():
     check("거부가 표식 파일을 세운다 — 추적 트리 밖", pend.is_file() and ROOT not in pend.parents, pend)
     # 표식은 **이 작업 트리**의 것이다(리뷰 2차 P1) — linked worktree는 잠금
     # 자리와 세션 키를 공유하므로, 트리가 키에 없으면 다른 트리의 성공이 소비한다.
-    other = Path(tempfile.mkdtemp(prefix="osk-other-"))
-    with mock.patch.object(wm, "ROOT", other):
-        check("다른 작업 트리에서는 그 표식이 보이지 않는다", not wm._pending(S), wm._pending_path(S))
-    shutil.rmtree(other, ignore_errors=True)
+    # git 없는 mini-vault는 루트 해시가 든 임시 경로로 떨어져 저절로 갈리므로,
+    # 실제 모양 — 본 저장소 A와 그 `.git`을 `commondir`로 공유하는 linked
+    # worktree B — 를 파일로 세운다(git 실행 없음). 둘의 잠금 자리는 같다.
+    wt = Path(tempfile.mkdtemp(prefix="osk-wt-"))
+    A, B = wt / "A", wt / "B"
+    (A / ".git" / "worktrees" / "B").mkdir(parents=True)
+    B.mkdir()
+    (B / ".git").write_text(f"gitdir: {A / '.git' / 'worktrees' / 'B'}", encoding="utf-8")
+    (A / ".git" / "worktrees" / "B" / "commondir").write_text("../..", encoding="utf-8")
+    check("두 트리의 잠금 자리는 같다",
+          core.local_lock_path("x", A) == core.local_lock_path("x", B), (A, B))
+    with mock.patch.object(wm, "ROOT", A):
+        wm._pending_set(S)
+        check("A 트리에 표식", wm._pending(S))
+    with mock.patch.object(wm, "ROOT", B):
+        check("같은 git을 쓰는 B 트리에서는 A의 표식이 보이지 않는다", not wm._pending(S),
+              wm._pending_path(S))
+    with mock.patch.object(wm, "ROOT", A):
+        wm._pending_clear(S)
+    rmtree_force(wt)
     cur = _w(wm.read, S)
     sub = subprocess.run(
         [sys.executable, "-m", "osk.cli", "sm", "write", "--session", S,
