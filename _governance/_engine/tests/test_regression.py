@@ -7131,6 +7131,187 @@ def test_setup_doc_drift():
               real == [], real)
 
 
+def test_turn_ledger():
+    """osk 턴 계기 — 트랜스크립트 계측의 함정 셋과 에피소드 판정 (#19 · #20).
+
+    사료 두 편이 "전부 `osk_turn_ledger.py`가 잰다"고 적었으나 그 파일은 없었다
+    (#42 6항). 이 시나리오는 합성 트랜스크립트로 계기를 세운다 — 실 코퍼스는
+    사용자 대화라 수트에 넣지 않는다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · `tool_use_id` 전역 중복 제거를 지우면 → 재개 사본이 호출로 세어진다
+      · 텍스트 블록의 도구 이름을 호출로 세면 → deferred tools 목록이 호출이 된다
+      · 실패를 `is_error`로 보면 → `"ok": false` 거부가 실패에서 빠진다
+      · `message.id` 접기를 지우면 → 쪼개진 레코드마다 usage가 중복된다
+      · 에피소드가 성공에서 닫히지 않으면 → 둘이 하나로 합쳐진다
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "osk_turn_ledger", ENGINE / "scripts" / "osk_turn_ledger.py")
+    tl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tl)
+
+    lab = Path(tempfile.mkdtemp(prefix="osk-ledger-"))
+    try:
+        proj = lab / "projects" / "E--fixture"
+        proj.mkdir(parents=True)
+        P = "mcp__osk-system__"
+        recs_a: list[dict] = []
+        state = {"prompt": 1000, "t": 0}
+
+        def _ts():
+            state["t"] += 1
+            return f"2026-09-01T10:{state['t'] // 60:02d}:{state['t'] % 60:02d}.000Z"
+
+        def _assistant(mid, blocks, out=50, split=True):
+            """한 과금 메시지 — 블록마다 레코드로 쪼개고 usage는 공유한다(함정 2)."""
+            usage = {"input_tokens": state["prompt"], "cache_creation_input_tokens": 0,
+                     "cache_read_input_tokens": 0, "output_tokens": out}
+            ts = _ts()
+            groups = [[b] for b in blocks] if split else [blocks]
+            for g in groups:
+                recs_a.append({"type": "assistant", "sessionId": "S1", "timestamp": ts,
+                               "message": {"id": mid, "role": "assistant",
+                                           "usage": usage, "content": g}})
+            state["last_out"] = out
+
+        def _result(tid, text, is_error=False, bump=True):
+            recs_a.append({"type": "user", "sessionId": "S1", "timestamp": _ts(),
+                           "message": {"role": "user", "content": [
+                               {"type": "tool_result", "tool_use_id": tid,
+                                "content": [{"type": "text", "text": text}],
+                                "is_error": is_error}]}})
+            if bump:      # 다음 프롬프트 = 이번 프롬프트 + 발화 + 결과/1.5 (게이트 안)
+                state["prompt"] += state["last_out"] + round(len(text) / 1.5)
+
+        def _use(tid, name, inp=None):
+            return {"type": "tool_use", "id": tid, "name": P + name, "input": inp or {}}
+
+        rej1 = '{"ok": false, "violations": ["1527자로 상한 1500자를 27자 넘는다. **순서대로** 하라 — ' + "x" * 400 + '"]}'
+        ok1 = '{"ok": true, "scope": "W", "chars": 1480, "remaining": 20, "hash": "sha256:' + "a" * 64 + '", "text": "' + "m" * 1400 + '"}'
+        rej2 = '{"ok": false, "violations": ["1600자로 상한 1500자를 100자 넘는다. ' + "y" * 300 + '"]}'
+        okn = '{"ok": true, "name": "n1", "path": "= Scope/W/n1.md", "id": "260901-0000-n1x1", "new_hash": "sha256:' + "b" * 64 + '", "dangling": []}'
+        ok2 = '{"ok": true, "scope": "W", "chars": 1450, "remaining": 50, "hash": "sha256:' + "c" * 64 + '", "text": "' + "n" * 1300 + '"}'
+
+        # 에피소드 1 — 거부 → 잘라서 통과 (증류 없음)
+        _assistant("M1", [{"type": "thinking", "thinking": "…"}, _use("T1", "scope_memory")])
+        _result("T1", rej1)
+        _assistant("M2", [_use("T2", "scope_memory")])
+        _result("T2", ok1)
+        # 함정 1 — deferred tools 목록(텍스트 블록)이 도구 이름을 담는다
+        _assistant("M3", [{"type": "text", "text": "도구 목록: " + P + "scope_memory, " + P + "search"}], out=20)
+        state["prompt"] += 20
+        # 에피소드 2 — 거부 → 증류(create_node) → 통과
+        _assistant("M4", [_use("T3", "scope_memory")])
+        _result("T3", rej2)
+        _assistant("M5", [_use("T4", "create_node")])
+        _result("T4", okn)
+        _assistant("M6", [_use("T5", "scope_memory")])
+        _result("T5", ok2)
+        # 한 메시지에 도구 둘 — 페이로드 귀속 불가
+        _assistant("M7", [_use("T6", "read_node"), _use("T7", "search")], split=False)
+        _result("T6", '{"ok": true, "title": "n1"}', bump=False)
+        _result("T7", '{"ok": true, "results": []}')
+        # is_error로만 실패한 호출 — ok 표기가 없다
+        _assistant("M8", [_use("T8", "update_node")])
+        _result("T8", "MCP error: timeout", is_error=True)
+
+        (proj / "a.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs_a) + "\n",
+                                      encoding="utf-8")
+        # 함정 3 — 재개 사본: 앞 이력을 그대로 담은 새 파일 + 새 호출 하나.
+        #    사본은 **다른 sessionId** 아래에 있다 — 실측(코퍼스 2026-09-02):
+        #    사본 있는 호출 537 중 411이 다른 sessionId, message.id는 같다. 그래서
+        #    (sessionId, message.id) 접기로는 못 잡고 tool_use_id 전역 제거만이
+        #    잡는다. 첫 판 픽스처는 같은 sessionId로 사본을 만들어 그 뮤턴트가
+        #    픽스처에서만 등가였다.
+        recs_b = [dict(r, sessionId="S1-resume") for r in recs_a[:4]]
+        recs_b.append({"type": "assistant", "sessionId": "S1-resume", "timestamp": _ts(),
+                       "message": {"id": "M9", "role": "assistant",
+                                   "usage": {"input_tokens": state["prompt"], "cache_creation_input_tokens": 0,
+                                             "cache_read_input_tokens": 0, "output_tokens": 30},
+                                   "content": [_use("T9", "overview")]}})
+        recs_b.append({"type": "user", "sessionId": "S1-resume", "timestamp": _ts(),
+                       "message": {"role": "user", "content": [
+                           {"type": "tool_result", "tool_use_id": "T9",
+                            "content": '{"ok": true, "clusters": []}', "is_error": False}]}})
+        (proj / "b.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs_b) + "\n",
+                                      encoding="utf-8")
+        raw_ids = sum(json.dumps(r).count('"tool_use"') for r in recs_a + recs_b)
+        check("전제: 파일들에 tool_use 블록이 사본까지 더 많다", raw_ids > 9, raw_ids)
+        check("전제: 사본은 다른 sessionId 아래에 있다(코퍼스와 같다)",
+              {r["sessionId"] for r in recs_b} == {"S1-resume"}
+              and any("T1" in json.dumps(r) for r in recs_b), sorted({r["sessionId"] for r in recs_b}))
+
+        corpus = tl.read_corpus(lab / "projects", [])
+        tl.attribute_costs(corpus)
+        uses, res = corpus["uses"], corpus["results"]
+        check("재개 사본은 한 호출로 센다 (#20 함정 3)", len(uses) == 9, sorted(uses))
+        check("텍스트 블록의 도구 이름은 호출이 아니다 (#20 함정 1)",
+              all(u["name"] in {"scope_memory", "create_node", "read_node", "search",
+                                "update_node", "overview"} for u in uses.values())
+              and len([u for u in uses.values() if u["name"] == "scope_memory"]) == 4,
+              [u["name"] for u in uses.values()])
+        check("재개 사본은 출처를 덮지 않는다 — 첫 파일이 출처다 (#20 함정 3)",
+              uses["T1"]["file"] == "a.jsonl"
+              and corpus["msgs"][("S1", "M1")]["tool_uses"] == ["T1"],
+              (uses["T1"]["file"], corpus["msgs"][("S1", "M1")]["tool_uses"]))
+        check("쪼개진 레코드는 한 과금 메시지다 (#20 함정 2)",
+              corpus["msgs"][("S1", "M1")]["n_tools"] == 1
+              and len([k for k in corpus["msgs"] if k[1] == "M1"]) == 1, corpus["msgs"].get(("S1", "M1")))
+        check("실패는 is_error가 아니라 ok로 본다 (#20)",
+              res["T1"]["ok"] is False and res["T1"]["is_error"] is False
+              and res["T8"]["ok"] is None and res["T8"]["is_error"] is True, (res["T1"], res["T8"]))
+        check("상한 초과 거부에서 초과폭을 읽는다",
+              res["T1"]["overflow"] == (1527, 1500, 27) and res["T3"]["overflow"] == (1600, 1500, 100),
+              (res["T1"]["overflow"], res["T3"]["overflow"]))
+        check("도구 하나인 메시지에만 페이로드를 귀속하고 게이트를 지난다",
+              uses["T1"]["gated"] and uses["T1"]["alone"]
+              and not uses["T6"]["alone"] and uses["T6"]["payload_tokens"] is None,
+              (uses["T1"].get("ratio"), uses["T6"]))
+
+        eps = tl.episodes(corpus)
+        check("에피소드가 둘로 갈린다 — 성공이 닫는다", len(eps) == 2, eps)
+        by = {e["start"]: e for e in eps}
+        e1, e2 = [by[k] for k in sorted(by)]
+        check("첫 에피소드는 잘라서 통과 — 잘린 분량 27+20=47자",
+              e1["outcome"] == "trim" and e1["trimmed"] == 1527 - 1480 and e1["rejections"] == 1, e1)
+        check("둘째 에피소드는 증류로 이어졌다",
+              e2["outcome"] == "distill" and e2["distill"] == 1, e2)
+
+        # 퇴출 기록부 — 있으면 §9-3 지표
+        led = lab / "evictions.jsonl"
+        led.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+            {"kind": "evict", "rid": "e1", "scope": "W", "at": "2026-08-10T00:00:00Z", "text": "x"},
+            {"kind": "evict", "rid": "e2", "scope": "W", "at": "2026-08-30T00:00:00Z", "text": "y"},
+            {"kind": "evict", "rid": "e3", "scope": "W", "at": "2026-09-01T00:00:00Z", "text": "z"},
+            {"kind": "settle", "of": "e2", "outcome": "node", "target": "n1"},
+        ]) + "\n", encoding="utf-8")
+        now = tl._ts("2026-09-02T00:00:00Z")
+        s = tl.summarize(corpus, 0.0, now, led)
+        m, ev = s["scope_memory"], s["evictions"]
+        check("집계: 재개된 세션은 자기 id로 센다 — 세션 2",
+              s["sessions"] == 2 and uses["T9"]["session"] == "S1-resume", (s["sessions"], uses["T9"]["session"]))
+        check("집계: 호출 9 · 실패 3 · 거부 2 · 에피소드 2 · 증류율 50%",
+              s["calls"] == 9 and s["failures"] == 3 and m["overflow_rejections"] == 2
+              and m["episodes"] == 2 and m["distill_rate"] == 0.5, (s["calls"], s["failures"], m))
+        #    실패 직후 **같은 도구** 재호출은 T1→T2 하나다 — T3 뒤는 create_node,
+        #    T8 뒤는 overview라 세지 않는다(재발화 지표는 같은 도구의 재시도다).
+        check("집계: 도구별 실패 수도 ok로 세고, 같은 도구 재호출만 재시도로 센다",
+              s["tools"]["scope_memory"]["fail"] == 2 and s["tools"]["update_node"]["fail"] == 1
+              and s["retry_after_fail"] == 1,
+              ({k: v["fail"] for k, v in s["tools"].items()}, s["retry_after_fail"]))
+        check("집계: 잘린 분량은 잘라서 통과한 에피소드만 센다",
+              m["trimmed_chars_total"] == 47 and m["episodes_trim"] == 1 and m["episodes_distill"] == 1, m)
+        check("퇴출 기록부: 3 중 1 처분, 미처분 2, 가장 오래된 23일",
+              ev and ev["evict"] == 3 and ev["settled"] == 1 and ev["open"] == 2
+              and round(ev["oldest_days"]) == 23, ev)
+        out = tl.render(s)
+        check("출력은 집계뿐 — 본문을 싣지 않는다",
+              "mmmm" not in out and "nnnn" not in out and "xxxx" not in out, out[:200])
+    finally:
+        rmtree_force(lab)
+
+
 def test_region_root_is_not_an_excluded_compartment():
     """영역 **루트**가 제외 이름을 담아도 반려가 그 영역을 지우지 않는다 (4차 리뷰).
 
@@ -7667,7 +7848,7 @@ if __name__ == "__main__":
                test_audit_fixes_2026_09_02,
                test_governance_amend_secrets_and_region,
                test_region_root_is_not_an_excluded_compartment,
-               test_setup_doc_drift]:
+               test_setup_doc_drift, test_turn_ledger]:
         try:
             fn()
         except Exception as e:
