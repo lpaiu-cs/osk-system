@@ -7143,10 +7143,15 @@ def test_turn_ledger():
       · 텍스트 블록의 도구 이름을 호출로 세면 → deferred tools 목록이 호출이 된다
       · 실패를 `is_error`로 보면 → `"ok": false` 거부가 실패에서 빠진다
       · `message.id` 접기를 지우면 → 블록마다 쪼개진 다중 도구 메시지가 마지막
-        블록 하나로 보인다(앞 도구는 귀속을 잃는다)
+        블록 하나로 보인다
       · 블록을 메시지 안에서 한 번만 세지 않으면 → 같은 세션 사본이 n_tools를
-        부풀려 단독 판정과 페이로드 귀속이 깨진다
+        부풀린다
       · 에피소드가 성공에서 닫히지 않으면 → 둘이 하나로 합쳐진다
+      · 대화선 합치기를 지우면 → 원 세션 끝의 거부를 재개 세션의 성공이 못 닫고,
+        결과가 파일명 순서에 매인다 (PR #50 리뷰)
+      · 발화 토큰을 호출마다 통째로 붙이면 → 다중 호출 메시지가 두 번 합산된다 (리뷰)
+      · 창을 먼저 자르지 않으면 → `--until` 뒤의 성공이 과거 창의 에피소드를 닫고
+        대장 나이가 음수가 된다 (리뷰)
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location(
@@ -7159,171 +7164,194 @@ def test_turn_ledger():
         proj = lab / "projects" / "E--fixture"
         proj.mkdir(parents=True)
         P = "mcp__osk-system__"
-        recs_a: list[dict] = []
-        state = {"prompt": 1000, "t": 0}
+        state = {"prompt": 1000, "t": 0, "last_out": 0}
 
         def _ts():
             state["t"] += 1
             return f"2026-09-01T10:{state['t'] // 60:02d}:{state['t'] % 60:02d}.000Z"
 
-        def _assistant(mid, blocks, out=50, split=True):
+        def _assistant(recs, sess, mid, blocks, out=50):
             """한 과금 메시지 — 블록마다 레코드로 쪼개고 usage는 공유한다(함정 2)."""
             usage = {"input_tokens": state["prompt"], "cache_creation_input_tokens": 0,
                      "cache_read_input_tokens": 0, "output_tokens": out}
             ts = _ts()
-            groups = [[b] for b in blocks] if split else [blocks]
-            for g in groups:
-                recs_a.append({"type": "assistant", "sessionId": "S1", "timestamp": ts,
-                               "message": {"id": mid, "role": "assistant",
-                                           "usage": usage, "content": g}})
+            for b in blocks:
+                recs.append({"type": "assistant", "sessionId": sess, "timestamp": ts,
+                             "message": {"id": mid, "role": "assistant", "usage": usage, "content": [b]}})
             state["last_out"] = out
 
-        def _result(tid, text, is_error=False, bump=True):
-            recs_a.append({"type": "user", "sessionId": "S1", "timestamp": _ts(),
-                           "message": {"role": "user", "content": [
-                               {"type": "tool_result", "tool_use_id": tid,
-                                "content": [{"type": "text", "text": text}],
-                                "is_error": is_error}]}})
+        def _result(recs, sess, tid, text, is_error=False, bump=True):
+            recs.append({"type": "user", "sessionId": sess, "timestamp": _ts(),
+                         "message": {"role": "user", "content": [
+                             {"type": "tool_result", "tool_use_id": tid,
+                              "content": [{"type": "text", "text": text}], "is_error": is_error}]}})
             if bump:      # 다음 프롬프트 = 이번 프롬프트 + 발화 + 결과/1.5 (게이트 안)
                 state["prompt"] += state["last_out"] + round(len(text) / 1.5)
 
-        def _use(tid, name, inp=None):
-            return {"type": "tool_use", "id": tid, "name": P + name, "input": inp or {}}
+        def _use(tid, name):
+            return {"type": "tool_use", "id": tid, "name": P + name, "input": {}}
+
+        def _dump(name, recs):
+            (proj / name).write_text(chr(10).join(json.dumps(r, ensure_ascii=False) for r in recs) + chr(10),
+                                     encoding="utf-8")
 
         rej1 = '{"ok": false, "violations": ["1527자로 상한 1500자를 27자 넘는다. **순서대로** 하라 — ' + "x" * 400 + '"]}'
         ok1 = '{"ok": true, "scope": "W", "chars": 1480, "remaining": 20, "hash": "sha256:' + "a" * 64 + '", "text": "' + "m" * 1400 + '"}'
         rej2 = '{"ok": false, "violations": ["1600자로 상한 1500자를 100자 넘는다. ' + "y" * 300 + '"]}'
         okn = '{"ok": true, "name": "n1", "path": "= Scope/W/n1.md", "id": "260901-0000-n1x1", "new_hash": "sha256:' + "b" * 64 + '", "dangling": []}'
         ok2 = '{"ok": true, "scope": "W", "chars": 1450, "remaining": 50, "hash": "sha256:' + "c" * 64 + '", "text": "' + "n" * 1300 + '"}'
+        rej3 = '{"ok": false, "violations": ["1530자로 상한 1500자를 30자 넘는다. ' + "z" * 300 + '"]}'
+        ok3 = '{"ok": true, "scope": "W", "chars": 1490, "remaining": 10, "hash": "sha256:' + "d" * 64 + '", "text": "' + "p" * 1300 + '"}'
 
-        # 에피소드 1 — 거부 → 잘라서 통과 (증류 없음)
-        _assistant("M1", [{"type": "thinking", "thinking": "…"}, _use("T1", "scope_memory")])
-        _result("T1", rej1)
-        _assistant("M2", [_use("T2", "scope_memory")])
-        _result("T2", ok1)
+        # ── 대화 1 (S1) ─────────────────────────────────────────────────
+        A: list[dict] = []
+        _assistant(A, "S1", "M1", [{"type": "thinking", "thinking": "…"}, _use("T1", "scope_memory")])
+        _result(A, "S1", "T1", rej1)
+        _assistant(A, "S1", "M2", [_use("T2", "scope_memory")])
+        _result(A, "S1", "T2", ok1)
         # 함정 1 — deferred tools 목록(텍스트 블록)이 도구 이름을 담는다
-        _assistant("M3", [{"type": "text", "text": "도구 목록: " + P + "scope_memory, " + P + "search"}], out=20)
+        _assistant(A, "S1", "M3", [{"type": "text", "text": "도구 목록: " + P + "scope_memory, " + P + "search"}], out=20)
         state["prompt"] += 20
-        # 에피소드 2 — 거부 → 증류(create_node) → 통과
-        _assistant("M4", [_use("T3", "scope_memory")])
-        _result("T3", rej2)
-        _assistant("M5", [_use("T4", "create_node")])
-        _result("T4", okn)
-        _assistant("M6", [_use("T5", "scope_memory")])
-        _result("T5", ok2)
-        # 한 메시지에 도구 둘 — 페이로드 귀속 불가
-        _assistant("M7", [_use("T6", "read_node"), _use("T7", "search")])   # 블록마다 레코드(코퍼스 그대로)
-        _result("T6", '{"ok": true, "title": "n1"}', bump=False)
-        _result("T7", '{"ok": true, "results": []}')
-        # is_error로만 실패한 호출 — ok 표기가 없다
-        _assistant("M8", [_use("T8", "update_node")])
-        _result("T8", "MCP error: timeout", is_error=True)
+        _assistant(A, "S1", "M4", [_use("T3", "scope_memory")])
+        _result(A, "S1", "T3", rej2)
+        _assistant(A, "S1", "M5", [_use("T4", "create_node")])
+        _result(A, "S1", "T4", okn)
+        _assistant(A, "S1", "M6", [_use("T5", "scope_memory")])
+        _result(A, "S1", "T5", ok2)
+        # 한 메시지에 osk 도구 둘 — 블록마다 레코드(코퍼스 그대로). 발화 50은 한 번만.
+        _assistant(A, "S1", "M7", [_use("T6", "read_node"), _use("T7", "search")])
+        _result(A, "S1", "T6", '{"ok": true, "title": "n1"}', bump=False)
+        _result(A, "S1", "T7", '{"ok": true, "results": []}')
+        _assistant(A, "S1", "M8", [_use("T8", "update_node")])
+        _result(A, "S1", "T8", "MCP error: timeout", is_error=True)
+        _dump("a.jsonl", A)
+        # 함정 3 — 재개 사본, **다른 sessionId** 아래(코퍼스: 537 중 411) + 새 호출 하나
+        B = [dict(r, sessionId="S1-resume") for r in A[:4]]
+        _assistant(B, "S1-resume", "M9", [_use("T9", "overview")], out=30)
+        _result(B, "S1-resume", "T9", '{"ok": true, "clusters": []}')
+        _dump("b.jsonl", B)
+        # 사본의 둘째 모양 — **같은 sessionId** 아래(537 중 126)
+        _dump("c.jsonl", A[:4])
 
-        (proj / "a.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs_a) + "\n",
-                                      encoding="utf-8")
-        # 함정 3 — 재개 사본: 앞 이력을 그대로 담은 새 파일 + 새 호출 하나.
-        #    사본은 **다른 sessionId** 아래에 있다 — 실측(코퍼스 2026-09-02):
-        #    사본 있는 호출 537 중 411이 다른 sessionId, message.id는 같다. 그래서
-        #    (sessionId, message.id) 접기로는 못 잡고 tool_use_id 전역 제거만이
-        #    잡는다. 첫 판 픽스처는 같은 sessionId로 사본을 만들어 그 뮤턴트가
-        #    픽스처에서만 등가였다.
-        recs_b = [dict(r, sessionId="S1-resume") for r in recs_a[:4]]
-        recs_b.append({"type": "assistant", "sessionId": "S1-resume", "timestamp": _ts(),
-                       "message": {"id": "M9", "role": "assistant",
-                                   "usage": {"input_tokens": state["prompt"], "cache_creation_input_tokens": 0,
-                                             "cache_read_input_tokens": 0, "output_tokens": 30},
-                                   "content": [_use("T9", "overview")]}})
-        recs_b.append({"type": "user", "sessionId": "S1-resume", "timestamp": _ts(),
-                       "message": {"role": "user", "content": [
-                           {"type": "tool_result", "tool_use_id": "T9",
-                            "content": '{"ok": true, "clusters": []}', "is_error": False}]}})
-        (proj / "b.jsonl").write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs_b) + "\n",
-                                      encoding="utf-8")
-        #    사본의 둘째 모양 — **같은 sessionId** 아래 같은 레코드가 다시 온다
-        #    (코퍼스: 사본 있는 호출 537 중 126). 이때는 (sessionId, message.id) 키가
-        #    같으므로 블록을 메시지 안에서 한 번만 세어야 n_tools가 안 부푼다.
-        (proj / "c.jsonl").write_text(chr(10).join(json.dumps(r, ensure_ascii=False) for r in recs_a[:4]) + chr(10),
-                                      encoding="utf-8")
-        raw_ids = sum(json.dumps(r).count('"tool_use"') for r in recs_a + recs_b + recs_a[:4])
+        # ── 대화 2 (S2) — 원 세션이 상한 초과 직후 끝나고 재개 세션이 닫는다 ──
+        def _s2(orig_name, resume_name):
+            O: list[dict] = []
+            _assistant(O, "S2", "M10", [_use("T10", "scope_memory")])
+            _result(O, "S2", "T10", rej3)
+            R = [dict(r, sessionId="S2-resume") for r in O]
+            _assistant(R, "S2-resume", "M11", [_use("T11", "scope_memory")])
+            _result(R, "S2-resume", "T11", ok3)
+            _dump(orig_name, O)
+            _dump(resume_name, R)
+
+        _s2("z-orig.jsonl", "0-resume.jsonl")        # 재개 파일이 **먼저** 정렬된다
+
+        raw_ids = sum(json.dumps(r).count('"tool_use"') for r in A + B + A[:4])
         check("전제: 파일들에 tool_use 블록이 사본까지 더 많다", raw_ids > 9, raw_ids)
-        check("전제: 사본은 다른 sessionId 아래에 있다(코퍼스와 같다)",
-              {r["sessionId"] for r in recs_b} == {"S1-resume"}
-              and any("T1" in json.dumps(r) for r in recs_b), sorted({r["sessionId"] for r in recs_b}))
 
-        corpus = tl.read_corpus(lab / "projects", [])
+        full = tl.read_corpus(lab / "projects", [])
+        end = tl._ts("2026-09-02T00:00:00Z")
+        corpus = tl.window(full, end)
         tl.attribute_costs(corpus)
-        uses, res = corpus["uses"], corpus["results"]
-        check("재개 사본은 한 호출로 센다 (#20 함정 3)", len(uses) == 9, sorted(uses))
+        uses, res, msgs = corpus["uses"], corpus["results"], corpus["msgs"]
+
+        check("재개 사본은 한 호출로 센다 (#20 함정 3)", len(uses) == 11, sorted(uses))
         check("텍스트 블록의 도구 이름은 호출이 아니다 (#20 함정 1)",
-              all(u["name"] in {"scope_memory", "create_node", "read_node", "search",
-                                "update_node", "overview"} for u in uses.values())
-              and len([u for u in uses.values() if u["name"] == "scope_memory"]) == 4,
+              len([u for u in uses.values() if u["name"] == "scope_memory"]) == 6,
               [u["name"] for u in uses.values()])
-        check("재개 사본은 출처를 덮지 않는다 — 첫 파일이 출처다 (#20 함정 3)",
-              uses["T1"]["file"] == "a.jsonl"
-              and corpus["msgs"][("S1", "M1")]["tool_uses"] == ["T1"],
-              (uses["T1"]["file"], corpus["msgs"][("S1", "M1")]["tool_uses"]))
-        #    접기는 (sessionId, message.id) 단위다 — 재개 사본은 다른 세션 키 아래
-        #    자기 항목을 갖되, 호출은 원본이 이미 가져갔으니 비어 있어야 한다.
-        check("쪼개진 레코드는 한 과금 메시지다 (#20 함정 2)",
-              corpus["msgs"][("S1", "M1")]["n_tools"] == 1
-              and len([k for k in corpus["msgs"] if k == ("S1", "M1")]) == 1
-              and corpus["msgs"][("S1-resume", "M1")]["tool_uses"] == [],
-              (corpus["msgs"].get(("S1", "M1")), corpus["msgs"].get(("S1-resume", "M1"))))
+        check("쪼개진 레코드는 한 과금 메시지다 — 사본이 어디에 있든 (#20 함정 2)",
+              len(msgs["M1"]["blocks"]) == 1 and msgs["M1"]["tool_uses"] == ["T1"]
+              and msgs["M1"]["sessions"] == {"S1", "S1-resume"}, msgs["M1"])
+        check("블록마다 쪼개진 다중 도구 메시지도 한 메시지로 접힌다 (#20 함정 2)",
+              len(msgs["M7"]["blocks"]) == 2 and set(msgs["M7"]["tool_uses"]) == {"T6", "T7"}, msgs["M7"])
         check("실패는 is_error가 아니라 ok로 본다 (#20)",
               res["T1"]["ok"] is False and res["T1"]["is_error"] is False
               and res["T8"]["ok"] is None and res["T8"]["is_error"] is True, (res["T1"], res["T8"]))
         check("상한 초과 거부에서 초과폭을 읽는다",
               res["T1"]["overflow"] == (1527, 1500, 27) and res["T3"]["overflow"] == (1600, 1500, 100),
               (res["T1"]["overflow"], res["T3"]["overflow"]))
-        check("블록마다 쪼개진 다중 도구 메시지도 한 메시지로 접힌다 (#20 함정 2)",
-              corpus["msgs"][("S1", "M7")]["n_tools"] == 2
-              and set(corpus["msgs"][("S1", "M7")]["tool_uses"]) == {"T6", "T7"},
-              corpus["msgs"].get(("S1", "M7")))
         check("도구 하나인 메시지에만 페이로드를 귀속하고 게이트를 지난다",
               uses["T1"]["gated"] and uses["T1"]["alone"]
               and not uses["T6"]["alone"] and uses["T6"]["payload_tokens"] is None,
               (uses["T1"].get("ratio"), uses["T6"]))
 
-        eps = tl.episodes(corpus)
-        check("에피소드가 둘로 갈린다 — 성공이 닫는다", len(eps) == 2, eps)
-        by = {e["start"]: e for e in eps}
-        e1, e2 = [by[k] for k in sorted(by)]
-        check("첫 에피소드는 잘라서 통과 — 잘린 분량 27+20=47자",
-              e1["outcome"] == "trim" and e1["trimmed"] == 1527 - 1480 and e1["rejections"] == 1, e1)
-        check("둘째 에피소드는 증류로 이어졌다",
-              e2["outcome"] == "distill" and e2["distill"] == 1, e2)
+        # 발화 토큰은 메시지당 한 번 — 호출 k개에 1/k (리뷰)
+        check("다중 호출 메시지의 발화는 나눠 붙어 합이 한 번이다 (리뷰)",
+              uses["T6"]["out_share"] == 25 and uses["T7"]["out_share"] == 25
+              and uses["T1"]["out_share"] == 50, (uses["T6"]["out_share"], uses["T7"]["out_share"]))
 
-        # 퇴출 기록부 — 있으면 §9-3 지표
+        # 대화선 — 재개를 가로질러 하나 (리뷰)
+        check("재개 세션은 원 세션과 한 대화선이다 (리뷰)",
+              uses["T1"]["lineage"] == uses["T9"]["lineage"]
+              and uses["T10"]["lineage"] == uses["T11"]["lineage"], (uses["T9"]["lineage"], uses["T11"]["lineage"]))
+        eps = tl.episodes(corpus)
+        by = {e["start"]: e for e in eps}
+        e1, e2, e3 = [by[k] for k in sorted(by)]
+        check("에피소드가 셋으로 갈린다 — 성공이 닫는다", len(eps) == 3, eps)
+        check("첫 에피소드는 잘라서 통과 — 잘린 분량 1527−1480=47자",
+              e1["outcome"] == "trim" and e1["trimmed"] == 47 and e1["rejections"] == 1, e1)
+        check("둘째 에피소드는 증류로 이어졌다", e2["outcome"] == "distill" and e2["distill"] == 1, e2)
+        check("원 세션 끝의 거부를 재개 세션의 성공이 닫는다 (리뷰)",
+              e3["outcome"] == "trim" and e3["trimmed"] == 1530 - 1490, e3)
+
+        #    파일명 순서를 뒤집어도 같다 — 재개 파일이 나중에 정렬되게
+        (proj / "z-orig.jsonl").unlink(); (proj / "0-resume.jsonl").unlink()
+        state_t = state["t"]
+        _s2("0-orig.jsonl", "z-resume.jsonl")
+        full2 = tl.read_corpus(lab / "projects", [])
+        s2 = tl.summarize(full2, 0.0, tl._ts("2026-09-03T00:00:00Z"), None)
+        check("파일명 순서에 결과가 매이지 않는다 (리뷰)",
+              s2["scope_memory"]["episodes"] == 3 and s2["scope_memory"]["episodes_unresolved"] == 0
+              and s2["scope_memory"]["trimmed_chars_total"] == 47 + 40, s2["scope_memory"])
+
+        # 집계 — 창 끝 = 전체
         led = lab / "evictions.jsonl"
-        led.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        led.write_text(chr(10).join(json.dumps(r, ensure_ascii=False) for r in [
             {"kind": "evict", "rid": "e1", "scope": "W", "at": "2026-08-10T00:00:00Z", "text": "x"},
             {"kind": "evict", "rid": "e2", "scope": "W", "at": "2026-08-30T00:00:00Z", "text": "y"},
-            {"kind": "evict", "rid": "e3", "scope": "W", "at": "2026-09-01T00:00:00Z", "text": "z"},
-            {"kind": "settle", "of": "e2", "outcome": "node", "target": "n1"},
-        ]) + "\n", encoding="utf-8")
-        now = tl._ts("2026-09-02T00:00:00Z")
-        s = tl.summarize(corpus, 0.0, now, led)
+            {"kind": "evict", "rid": "e3", "scope": "W", "at": "2026-09-01T12:00:00Z", "text": "z"},
+            {"kind": "settle", "of": "e2", "outcome": "node", "target": "n1", "at": "2026-08-31T00:00:00Z"},
+        ]) + chr(10), encoding="utf-8")
+        s = tl.summarize(full2, 0.0, end, led)
         m, ev = s["scope_memory"], s["evictions"]
-        check("집계: 재개된 세션은 자기 id로 센다 — 세션 2",
-              s["sessions"] == 2 and uses["T9"]["session"] == "S1-resume", (s["sessions"], uses["T9"]["session"]))
-        check("집계: 호출 9 · 실패 3 · 거부 2 · 에피소드 2 · 증류율 50%",
-              s["calls"] == 9 and s["failures"] == 3 and m["overflow_rejections"] == 2
-              and m["episodes"] == 2 and m["distill_rate"] == 0.5, (s["calls"], s["failures"], m))
-        #    실패 직후 **같은 도구** 재호출은 T1→T2 하나다 — T3 뒤는 create_node,
-        #    T8 뒤는 overview라 세지 않는다(재발화 지표는 같은 도구의 재시도다).
+        #    세션 id 수는 호출을 담은 세션 id의 합집합(S1·S1-resume·S2·S2-resume) —
+        #    처음 본 파일로 세면 파일 순서에 따라 3이 됐다 4가 됐다 한다.
+        check("집계: 호출 11 · 실패 4 · 거부 3 · 대화 2 (세션 id 4)",
+              s["calls"] == 11 and s["failures"] == 4 and m["overflow_rejections"] == 3
+              and s["conversations"] == 2 and s["sessions"] == 4,
+              (s["calls"], s["failures"], m["overflow_rejections"], s["conversations"], s["sessions"]))
         check("집계: 도구별 실패 수도 ok로 세고, 같은 도구 재호출만 재시도로 센다",
-              s["tools"]["scope_memory"]["fail"] == 2 and s["tools"]["update_node"]["fail"] == 1
-              and s["retry_after_fail"] == 1,
+              s["tools"]["scope_memory"]["fail"] == 3 and s["tools"]["update_node"]["fail"] == 1
+              and s["retry_after_fail"] == 2,
               ({k: v["fail"] for k, v in s["tools"].items()}, s["retry_after_fail"]))
+        #    토큰 합 = 발화(메시지당 한 번) + 게이트 통과 페이로드 — 창의 호출에서 직접 다시 센다
+        wu = tl.window(full2, end)["uses"]
+        out_once = sum(int(msgs_.get("usage", {}).get("output_tokens", 0))
+                       for mid, msgs_ in tl.window(full2, end)["msgs"].items() if msgs_["tool_uses"])
+        pay = sum((u.get("payload_tokens") or 0) for u in wu.values() if u.get("gated"))
+        check("집계: 토큰 합의 발화 몫은 메시지당 한 번이다 (리뷰)",
+              s["tokens_total"] == round(out_once + pay)
+              and uses["T6"]["out_share"] + uses["T7"]["out_share"] == 50,
+              (s["tokens_total"], out_once, pay))
         check("집계: 잘린 분량은 잘라서 통과한 에피소드만 센다",
-              m["trimmed_chars_total"] == 47 and m["episodes_trim"] == 1 and m["episodes_distill"] == 1, m)
-        check("퇴출 기록부: 3 중 1 처분, 미처분 2, 가장 오래된 23일",
+              m["trimmed_chars_total"] == 47 + 40 and m["episodes_trim"] == 2 and m["episodes_distill"] == 1, m)
+        check("퇴출 기록부(창 끝 기준): 3 중 1 처분, 미처분 2, 가장 오래된 23일",
               ev and ev["evict"] == 3 and ev["settled"] == 1 and ev["open"] == 2
               and round(ev["oldest_days"]) == 23, ev)
+
+        # 창을 먼저 자른다 (리뷰) — T3 거부 직후에 창이 끝나면 둘째 에피소드는 미해결
+        cut = msgs["M4"]["ts"] + 0.5
+        sw = tl.summarize(full2, 0.0, cut, led)
+        mw, evw = sw["scope_memory"], sw["evictions"]
+        check("창 뒤의 성공이 창 안의 거부를 닫지 않는다 (리뷰)",
+              mw["episodes"] == 2 and mw["episodes_unresolved"] == 1 and mw["episodes_distill"] == 0
+              and sw["calls"] == 3, (mw, sw["calls"]))
+        check("창 뒤의 evict는 없는 것이고 나이는 음수가 아니다 (리뷰)",
+              evw["evict"] == 2 and evw["open"] == 1 and evw["oldest_days"] > 0
+              and evw["settled"] == 1, evw)
         out = tl.render(s)
         check("출력은 집계뿐 — 본문을 싣지 않는다",
-              "mmmm" not in out and "nnnn" not in out and "xxxx" not in out, out[:200])
+              "mmmm" not in out and "nnnn" not in out and "xxxx" not in out and "pppp" not in out, out[:200])
     finally:
         rmtree_force(lab)
 
