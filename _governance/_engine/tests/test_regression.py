@@ -7147,11 +7147,15 @@ def test_turn_ledger():
       · 블록을 메시지 안에서 한 번만 세지 않으면 → 같은 세션 사본이 n_tools를
         부풀린다
       · 에피소드가 성공에서 닫히지 않으면 → 둘이 하나로 합쳐진다
-      · 대화선 합치기를 지우면 → 원 세션 끝의 거부를 재개 세션의 성공이 못 닫고,
-        결과가 파일명 순서에 매인다 (PR #50 리뷰)
+      · 경로를 세션마다 두지 않고 대화로 평탄화하면 → 형제 분기의 호출이 섞여
+        A의 거부가 B의 증류로 판정된다 (PR #50 리뷰 4차)
+      · 같은 거부의 에피소드를 가장 먼저 닫힌 것으로 고르지 않으면 → 늦게 닫힌
+        분기의 결과가 앞선다
       · 발화 토큰을 호출마다 통째로 붙이면 → 다중 호출 메시지가 두 번 합산된다 (리뷰)
       · 창을 먼저 자르지 않으면 → `--until` 뒤의 성공이 과거 창의 에피소드를 닫고
         대장 나이가 음수가 된다 (리뷰)
+      · 세션을 탄생 시각으로 자르지 않으면 → 창 뒤에 태어난 재개 세션의 id가
+        과거 창의 세션 수에 든다 (리뷰 4차)
     """
     import importlib.util
     spec = importlib.util.spec_from_file_location(
@@ -7164,9 +7168,11 @@ def test_turn_ledger():
         proj = lab / "projects" / "E--fixture"
         proj.mkdir(parents=True)
         P = "mcp__osk-system__"
-        state = {"prompt": 1000, "t": 0, "last_out": 0}
+        state = {"prompt": 1000, "t": 0, "last_out": 0, "at": None}
 
         def _ts():
+            if state["at"]:
+                return state["at"]
             state["t"] += 1
             return f"2026-09-01T10:{state['t'] // 60:02d}:{state['t'] % 60:02d}.000Z"
 
@@ -7202,6 +7208,10 @@ def test_turn_ledger():
         ok2 = '{"ok": true, "scope": "W", "chars": 1450, "remaining": 50, "hash": "sha256:' + "c" * 64 + '", "text": "' + "n" * 1300 + '"}'
         rej3 = '{"ok": false, "violations": ["1530자로 상한 1500자를 30자 넘는다. ' + "z" * 300 + '"]}'
         ok3 = '{"ok": true, "scope": "W", "chars": 1490, "remaining": 10, "hash": "sha256:' + "d" * 64 + '", "text": "' + "p" * 1300 + '"}'
+        rej4 = '{"ok": false, "violations": ["1540자로 상한 1500자를 40자 넘는다. ' + "w" * 300 + '"]}'
+        ok4a = '{"ok": true, "scope": "W", "chars": 1500, "remaining": 0, "hash": "sha256:' + "e" * 64 + '", "text": "' + "q" * 1300 + '"}'
+        ok4b = '{"ok": true, "scope": "W", "chars": 1495, "remaining": 5, "hash": "sha256:' + "f" * 64 + '", "text": "' + "r" * 1300 + '"}'
+        okov = '{"ok": true, "clusters": []}'
 
         # ── 대화 1 (S1) ─────────────────────────────────────────────────
         A: list[dict] = []
@@ -7228,7 +7238,7 @@ def test_turn_ledger():
         # 함정 3 — 재개 사본, **다른 sessionId** 아래(코퍼스: 537 중 411) + 새 호출 하나
         B = [dict(r, sessionId="S1-resume") for r in A[:4]]
         _assistant(B, "S1-resume", "M9", [_use("T9", "overview")], out=30)
-        _result(B, "S1-resume", "T9", '{"ok": true, "clusters": []}')
+        _result(B, "S1-resume", "T9", okov)
         _dump("b.jsonl", B)
         # 사본의 둘째 모양 — **같은 sessionId** 아래(537 중 126)
         _dump("c.jsonl", A[:4])
@@ -7246,6 +7256,34 @@ def test_turn_ledger():
 
         _s2("z-orig.jsonl", "0-resume.jsonl")        # 재개 파일이 **먼저** 정렬된다
 
+        # ── 대화 3 (S3) — 형제 분기: 같은 거부에서 A는 잘라 통과, B는 증류 뒤 통과 ──
+        #    시각순으로 섞으면 [거부, B의 create_node, A의 성공]이 되어 A가 증류로
+        #    판정된다(리뷰 4차). 경로마다 따로 보면 A가 먼저 닫고, 그 하나만 센다.
+        O3: list[dict] = []
+        _assistant(O3, "S3", "M12", [_use("T12", "scope_memory")])
+        _result(O3, "S3", "T12", rej4)
+        FB = [dict(r, sessionId="S3-B") for r in O3]
+        _assistant(FB, "S3-B", "M14", [_use("T14", "create_node")])          # t2
+        _result(FB, "S3-B", "T14", okn)
+        FA = [dict(r, sessionId="S3-A") for r in O3]
+        _assistant(FA, "S3-A", "M13", [_use("T13", "scope_memory")])         # t3 — 먼저 닫힌다
+        _result(FA, "S3-A", "T13", ok4a)
+        _assistant(FB, "S3-B", "M15", [_use("T15", "scope_memory")])         # t4
+        _result(FB, "S3-B", "T15", ok4b)
+        _dump("s3-o.jsonl", O3); _dump("s3-b.jsonl", FB); _dump("s3-a.jsonl", FA)
+
+        # ── 대화 4 (S4) — 9월 1일 세션을 9월 2일에 재개: 재개 세션은 창 뒤에 태어났다 ──
+        O4: list[dict] = []
+        _assistant(O4, "S4", "M16", [_use("T16", "overview")])
+        _result(O4, "S4", "T16", okov)
+        R4 = [dict(r, sessionId="S4-resume") for r in O4]
+        state["at"] = "2026-09-02T09:00:00.000Z"
+        _assistant(R4, "S4-resume", "M17", [_use("T17", "overview")])
+        state["at"] = "2026-09-02T09:00:05.000Z"
+        _result(R4, "S4-resume", "T17", okov)
+        state["at"] = None
+        _dump("s4-o.jsonl", O4); _dump("s4-r.jsonl", R4)
+
         raw_ids = sum(json.dumps(r).count('"tool_use"') for r in A + B + A[:4])
         check("전제: 파일들에 tool_use 블록이 사본까지 더 많다", raw_ids > 9, raw_ids)
 
@@ -7255,9 +7293,9 @@ def test_turn_ledger():
         tl.attribute_costs(corpus)
         uses, res, msgs = corpus["uses"], corpus["results"], corpus["msgs"]
 
-        check("재개 사본은 한 호출로 센다 (#20 함정 3)", len(uses) == 11, sorted(uses))
+        check("재개 사본은 한 호출로 센다 (#20 함정 3)", len(uses) == 16, sorted(uses))
         check("텍스트 블록의 도구 이름은 호출이 아니다 (#20 함정 1)",
-              len([u for u in uses.values() if u["name"] == "scope_memory"]) == 6,
+              len([u for u in uses.values() if u["name"] == "scope_memory"]) == 9,
               [u["name"] for u in uses.values()])
         check("쪼개진 레코드는 한 과금 메시지다 — 사본이 어디에 있든 (#20 함정 2)",
               len(msgs["M1"]["blocks"]) == 1 and msgs["M1"]["tool_uses"] == ["T1"]
@@ -7274,37 +7312,42 @@ def test_turn_ledger():
               uses["T1"]["gated"] and uses["T1"]["alone"]
               and not uses["T6"]["alone"] and uses["T6"]["payload_tokens"] is None,
               (uses["T1"].get("ratio"), uses["T6"]))
-
-        # 발화 토큰은 메시지당 한 번 — 호출 k개에 1/k (리뷰)
         check("다중 호출 메시지의 발화는 나눠 붙어 합이 한 번이다 (리뷰)",
               uses["T6"]["out_share"] == 25 and uses["T7"]["out_share"] == 25
               and uses["T1"]["out_share"] == 50, (uses["T6"]["out_share"], uses["T7"]["out_share"]))
+        check("재개·분기 세션은 원 세션과 한 대화다 (리뷰)",
+              uses["T1"]["conversation"] == uses["T9"]["conversation"]
+              and uses["T10"]["conversation"] == uses["T11"]["conversation"]
+              and uses["T12"]["conversation"] == uses["T13"]["conversation"] == uses["T15"]["conversation"],
+              (uses["T9"]["conversation"], uses["T11"]["conversation"], uses["T15"]["conversation"]))
+        check("창 뒤에 태어난 재개 세션은 그 메시지의 사본을 가져도 아직 없다 (리뷰 4차)",
+              msgs["M16"]["sessions"] == {"S4"} and "T17" not in uses,
+              (msgs["M16"]["sessions"], "T17" in uses))
 
-        # 대화선 — 재개를 가로질러 하나 (리뷰)
-        check("재개 세션은 원 세션과 한 대화선이다 (리뷰)",
-              uses["T1"]["lineage"] == uses["T9"]["lineage"]
-              and uses["T10"]["lineage"] == uses["T11"]["lineage"], (uses["T9"]["lineage"], uses["T11"]["lineage"]))
         eps = tl.episodes(corpus)
-        by = {e["start"]: e for e in eps}
-        e1, e2, e3 = [by[k] for k in sorted(by)]
-        check("에피소드가 셋으로 갈린다 — 성공이 닫는다", len(eps) == 3, eps)
+        by = {e["start_tid"]: e for e in eps}
+        check("에피소드는 거부마다 하나 — 넷", len(eps) == 4 and set(by) == {"T1", "T3", "T10", "T12"}, sorted(by))
         check("첫 에피소드는 잘라서 통과 — 잘린 분량 1527−1480=47자",
-              e1["outcome"] == "trim" and e1["trimmed"] == 47 and e1["rejections"] == 1, e1)
-        check("둘째 에피소드는 증류로 이어졌다", e2["outcome"] == "distill" and e2["distill"] == 1, e2)
+              by["T1"]["outcome"] == "trim" and by["T1"]["trimmed"] == 47 and by["T1"]["rejections"] == 1, by["T1"])
+        check("둘째 에피소드는 증류로 이어졌다", by["T3"]["outcome"] == "distill" and by["T3"]["distill"] == 1, by["T3"])
         check("원 세션 끝의 거부를 재개 세션의 성공이 닫는다 (리뷰)",
-              e3["outcome"] == "trim" and e3["trimmed"] == 1530 - 1490, e3)
+              by["T10"]["outcome"] == "trim" and by["T10"]["trimmed"] == 1530 - 1490, by["T10"])
+        check("형제 분기는 섞이지 않고, 먼저 닫힌 경로의 결과 하나만 센다 (리뷰 4차)",
+              by["T12"]["outcome"] == "trim" and by["T12"]["trimmed"] == 1540 - 1500
+              and by["T12"]["distill"] == 0, by["T12"])
 
         #    파일명 순서를 뒤집어도 같다 — 재개 파일이 나중에 정렬되게
         (proj / "z-orig.jsonl").unlink(); (proj / "0-resume.jsonl").unlink()
-        state_t = state["t"]
         _s2("0-orig.jsonl", "z-resume.jsonl")
         full2 = tl.read_corpus(lab / "projects", [])
         s2 = tl.summarize(full2, 0.0, tl._ts("2026-09-03T00:00:00Z"), None)
         check("파일명 순서에 결과가 매이지 않는다 (리뷰)",
-              s2["scope_memory"]["episodes"] == 3 and s2["scope_memory"]["episodes_unresolved"] == 0
-              and s2["scope_memory"]["trimmed_chars_total"] == 47 + 40, s2["scope_memory"])
+              s2["scope_memory"]["episodes"] == 4 and s2["scope_memory"]["episodes_unresolved"] == 0
+              and s2["scope_memory"]["trimmed_chars_total"] == 47 + 40 + 40, s2["scope_memory"])
+        check("창이 재개 세션의 탄생 뒤면 그 세션이 센다 (리뷰 4차)",
+              s2["sessions"] == 9 and s2["calls"] == 17, (s2["sessions"], s2["calls"]))
 
-        # 집계 — 창 끝 = 전체
+        # 집계 — 창 끝 = 9월 2일 0시
         led = lab / "evictions.jsonl"
         led.write_text(chr(10).join(json.dumps(r, ensure_ascii=False) for r in [
             {"kind": "evict", "rid": "e1", "scope": "W", "at": "2026-08-10T00:00:00Z", "text": "x"},
@@ -7314,27 +7357,24 @@ def test_turn_ledger():
         ]) + chr(10), encoding="utf-8")
         s = tl.summarize(full2, 0.0, end, led)
         m, ev = s["scope_memory"], s["evictions"]
-        #    세션 id 수는 호출을 담은 세션 id의 합집합(S1·S1-resume·S2·S2-resume) —
-        #    처음 본 파일로 세면 파일 순서에 따라 3이 됐다 4가 됐다 한다.
-        check("집계: 호출 11 · 실패 4 · 거부 3 · 대화 2 (세션 id 4)",
-              s["calls"] == 11 and s["failures"] == 4 and m["overflow_rejections"] == 3
-              and s["conversations"] == 2 and s["sessions"] == 4,
+        check("집계: 호출 16 · 실패 5 · 거부 4 · 대화 4 · 세션 id 8(창 뒤 탄생 제외)",
+              s["calls"] == 16 and s["failures"] == 5 and m["overflow_rejections"] == 4
+              and s["conversations"] == 4 and s["sessions"] == 8,
               (s["calls"], s["failures"], m["overflow_rejections"], s["conversations"], s["sessions"]))
         check("집계: 도구별 실패 수도 ok로 세고, 같은 도구 재호출만 재시도로 센다",
-              s["tools"]["scope_memory"]["fail"] == 3 and s["tools"]["update_node"]["fail"] == 1
-              and s["retry_after_fail"] == 2,
+              s["tools"]["scope_memory"]["fail"] == 4 and s["tools"]["update_node"]["fail"] == 1
+              and s["retry_after_fail"] == 3,
               ({k: v["fail"] for k, v in s["tools"].items()}, s["retry_after_fail"]))
-        #    토큰 합 = 발화(메시지당 한 번) + 게이트 통과 페이로드 — 창의 호출에서 직접 다시 센다
-        wu = tl.window(full2, end)["uses"]
-        out_once = sum(int(msgs_.get("usage", {}).get("output_tokens", 0))
-                       for mid, msgs_ in tl.window(full2, end)["msgs"].items() if msgs_["tool_uses"])
-        pay = sum((u.get("payload_tokens") or 0) for u in wu.values() if u.get("gated"))
+        wm = tl.window(full2, end)
+        out_once = sum(int(e_["usage"].get("output_tokens", 0)) for e_ in wm["msgs"].values() if e_["tool_uses"])
+        tl.attribute_costs(wm)
+        pay = sum((u.get("payload_tokens") or 0) for u in wm["uses"].values() if u.get("gated"))
         check("집계: 토큰 합의 발화 몫은 메시지당 한 번이다 (리뷰)",
               s["tokens_total"] == round(out_once + pay)
               and uses["T6"]["out_share"] + uses["T7"]["out_share"] == 50,
               (s["tokens_total"], out_once, pay))
         check("집계: 잘린 분량은 잘라서 통과한 에피소드만 센다",
-              m["trimmed_chars_total"] == 47 + 40 and m["episodes_trim"] == 2 and m["episodes_distill"] == 1, m)
+              m["trimmed_chars_total"] == 47 + 40 + 40 and m["episodes_trim"] == 3 and m["episodes_distill"] == 1, m)
         check("퇴출 기록부(창 끝 기준): 3 중 1 처분, 미처분 2, 가장 오래된 23일",
               ev and ev["evict"] == 3 and ev["settled"] == 1 and ev["open"] == 2
               and round(ev["oldest_days"]) == 23, ev)
@@ -7351,7 +7391,7 @@ def test_turn_ledger():
               and evw["settled"] == 1, evw)
         out = tl.render(s)
         check("출력은 집계뿐 — 본문을 싣지 않는다",
-              "mmmm" not in out and "nnnn" not in out and "xxxx" not in out and "pppp" not in out, out[:200])
+              all(x not in out for x in ("mmmm", "nnnn", "xxxx", "pppp", "qqqq", "rrrr")), out[:200])
     finally:
         rmtree_force(lab)
 

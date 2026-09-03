@@ -26,23 +26,33 @@
 (`output_tokens`)은 **메시지의 값**이라 메시지당 한 번만 센다 — 한 메시지에 osk
 호출이 k개면 각 호출에 1/k씩 나눠 붙여, 도구별 합과 전체 합이 같은 수를 가리킨다.
 
-## 두 집계를 분리한다 — 고유 호출과 연속선
+## 세 집계를 분리한다 — 고유 호출 · 경로 · 대화
 
-같은 호출이 여러 파일에 남는다(재개가 이력을 복사한다). **건수**는 `tool_use_id`로
-전역 고유하게 세고, **순서 분석**(에피소드·페이로드 귀속)은 세션이 아니라
-**대화선(lineage)** 위에서 한다 — 같은 `message.id`를 공유하는 세션들은 한 대화의
-연속이다(실측: 사본 537 중 411이 다른 sessionId 아래, message.id는 전부 같다).
-원 세션이 상한 초과 직후 끝나고 재개 세션이 그 뒤 성공하면, 세션 단위로는 거부가
-영영 미해결이고 성공은 에피소드 밖이 된다 — 대화선 위에서는 하나의 닫힌
-에피소드다. 파일명 순서에 결과가 매이지 않는다(리뷰 지적).
+같은 호출이 여러 파일에 남는다(재개가 이력을 복사한다). 셋을 따로 둔다:
+
+- **건수**는 `tool_use_id`로 전역 고유하게 센다.
+- **순서 분석**(에피소드·페이로드 귀속·재시도)은 **세션 자신의 경로** 위에서 한다 —
+  세션 파일은 복사된 접두부와 자기 연속을 담은 하나의 선형 역사다. 세션들을 한
+  선으로 평탄화하면 공통 접두를 공유하는 **형제 분기**(같은 원 세션에서 갈라진
+  두 재개)의 호출이 시각순으로 섞여, A의 거부가 B의 증류 때문에 `distill`로
+  판정된다(리뷰 지적). 공통 접두는 부모-자식 연속을 증명할 뿐 형제 사이의 순서를
+  증명하지 않는다. 그래서 경로마다 따로 판정하고, 같은 거부(같은 `tool_use_id`)에서
+  시작한 에피소드는 **가장 먼저 닫힌 경로의 것 하나만** 센다. 페이로드는 그
+  메시지의 **가장 이른 후속** 메시지로 재는데, 형제 분기는 접두부가 같아 어느
+  후속으로 재도 차이가 같다.
+- **대화 수**는 `message.id`를 공유하는 세션들의 연결 성분으로 센다 — 재개·분기는
+  모두 한 대화다(실측: 사본 537 중 411이 다른 sessionId 아래, message.id는 같다).
 
 ## 창은 먼저 자른다
 
 `--since/--until`은 파생 상태(에피소드·페이로드·대장 나이)를 계산하기 **전에**
 입력을 자른다. 창 뒤의 성공이 창 안 거부를 닫으면 같은 과거 창을 나중에 다시
 돌렸을 때 결과가 바뀐다 — 창의 마지막 시점에 존재한 자료만으로 계산해야 같은
-창은 언제 돌려도 같다(리뷰 지적). 그래서 창 끝에 걸린 에피소드는 `unresolved`이고,
-창 마지막 메시지의 페이로드는 다음 메시지가 창 밖이라 귀속되지 않는다.
+창은 언제 돌려도 같다(리뷰 지적). 세션도 마찬가지다: 재개 세션은 원 메시지를
+**복사**하므로(복사본의 시각은 원본 그대로다) 메시지 시각으로만 자르면 나중에
+태어난 재개 세션의 id가 과거 창에 들어온다. 세션의 **탄생 시각** — 그 세션에만
+있는 첫 메시지의 시각, 없으면 담은 메시지의 마지막 시각 — 을 세워 창 끝보다
+늦게 태어난 세션은 없는 것으로 본다(리뷰 지적).
 
 ## 계측 함정 셋 (재현하려면 반드시 피해야 한다 — #20)
 
@@ -51,7 +61,7 @@
 2. 한 과금 메시지가 블록마다 레코드로 쪼개져 `usage`를 공유한다(`apiBlockIndex`).
    **`message.id`로 접는다** — 안 접으면 건수가 부풀고 델타가 오염된다.
 3. 세션 재개가 이전 이력을 새 파일로 복사한다 — 한 호출이 여러 파일에 남는다.
-   **`tool_use_id`로 전역 중복 제거**하되 연속선은 대화선으로 보존한다.
+   **`tool_use_id`로 전역 중복 제거**하되 경로는 세션마다 보존한다.
 
 그리고 `is_error`는 실패를 못 잡는다 — osk는 거부를 MCP 오류가 아니라 성공
 응답 본문의 `"ok": false`로 돌려준다. `ok`를 본다.
@@ -72,6 +82,7 @@ OK_RE = re.compile(r'"ok"\s*:\s*(true|false)')
 CHARS_RE = re.compile(r'"chars"\s*:\s*(\d+)')
 GATE = (1.0, 3.0)          # chars/token — 이 밖이면 델타가 오염된 것으로 보고 뺀다
 DISTILL_TOOLS = {"create_node", "update_node"}
+INF = float("inf")
 
 
 # ── 판독 ─────────────────────────────────────────────────────────────────
@@ -179,14 +190,27 @@ def read_corpus(projects: Path, exclude: list[str]) -> dict:
     return {"msgs": msgs, "uses": uses, "results": results, "files": files_scanned}
 
 
-# ── 대화선 — 재개를 가로지르는 연속선 ─────────────────────────────────────
+# ── 세션·대화·창 ─────────────────────────────────────────────────────────
 
-def lineages(corpus: dict) -> dict:
-    """세션 → 대화선 id. 같은 `message.id`를 공유하는 세션은 한 대화의 연속이다.
+def session_birth(corpus: dict) -> dict:
+    """세션 → 탄생 시각. 그 세션에만 있는 메시지 중 가장 이른 것의 시각이고,
+    그런 메시지가 없으면(아직 연속을 만들지 않은 순수 사본) 담은 메시지의 마지막
+    시각이다. 복사본의 시각은 원본 그대로이므로 메시지 시각으로는 세션의 나이를
+    알 수 없다 — 이 값이 "이 세션이 코퍼스에 언제 나타났는가"의 근사다."""
+    unique: dict = {}
+    last: dict = {}
+    for ent in corpus["msgs"].values():
+        for s in ent["sessions"]:
+            last[s] = max(last.get(s, 0.0), ent["ts"])
+        if len(ent["sessions"]) == 1:
+            (s,) = tuple(ent["sessions"])
+            unique[s] = min(unique.get(s, INF), ent["ts"])
+    return {s: unique.get(s, last[s]) for s in last}
 
-    재개 세션은 원 세션의 이력을 복사하므로 그 메시지들을 공유한다. 세션을 따로
-    두면 원 세션 끝의 거부와 재개 세션 첫머리의 성공이 갈라져, 에피소드가
-    파일명 순서에 따라 달라진다. 대화선으로 합치면 순서가 하나다."""
+
+def conversations(corpus: dict) -> dict:
+    """세션 → 대화 id. 같은 `message.id`를 공유하는 세션은 한 대화다(재개·분기).
+    **세기 위한 것**이지 순서의 근거가 아니다 — 순서는 `session_paths`가 준다."""
     parent: dict = {}
 
     def find(x):
@@ -195,24 +219,42 @@ def lineages(corpus: dict) -> dict:
             x = parent[x]
         return x
 
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)      # 결정적 — 이름이 작은 쪽이 대표
-
     for ent in corpus["msgs"].values():
         ss = sorted(ent["sessions"])
         for s in ss:
             find(s)
         for a, b in zip(ss, ss[1:]):
-            union(a, b)
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)      # 결정적 — 이름이 작은 쪽이 대표
     return {s: find(s) for s in list(parent)}
 
 
+def session_paths(corpus: dict) -> dict:
+    """세션 → 그 세션이 담은 메시지 id의 시각순 목록. 복사된 접두부까지 포함한
+    **그 세션의 선형 역사**다. 형제 분기는 접두부만 공유하고 그 뒤는 각자다."""
+    paths: dict = defaultdict(list)
+    for mid, ent in corpus["msgs"].items():
+        for sess in ent["sessions"]:
+            paths[sess].append((ent["ts"], mid))
+    return {s: [m for _t, m in sorted(v)] for s, v in paths.items()}
+
+
 def window(corpus: dict, until: float) -> dict:
-    """창의 끝 시점에 존재한 자료만 남긴다 — 파생 상태는 이 위에서 계산한다."""
-    msgs = {k: v for k, v in corpus["msgs"].items() if v["ts"] <= until}
-    uses = {t: u for t, u in corpus["uses"].items() if u["msg"] in msgs}
+    """창의 끝 시점에 존재한 자료만 남긴다 — 파생 상태는 이 위에서 계산한다.
+    메시지는 시각으로, 세션은 **탄생 시각**으로 자른다(창 뒤에 태어난 재개 세션은
+    그 메시지의 사본을 갖고 있어도 아직 없는 것이다)."""
+    born = session_birth(corpus)
+    alive = {s for s, b in born.items() if b <= until}
+    msgs = {}
+    for k, v in corpus["msgs"].items():
+        if v["ts"] > until:
+            continue
+        ss = v["sessions"] & alive
+        if not ss:
+            continue
+        msgs[k] = dict(v, sessions=ss)
+    uses = {t: dict(u) for t, u in corpus["uses"].items() if u["msg"] in msgs}
     results = {t: r for t, r in corpus["results"].items() if t in uses}
     return {"msgs": msgs, "uses": uses, "results": results, "files": corpus["files"]}
 
@@ -231,39 +273,38 @@ def attribute_costs(corpus: dict) -> None:
       나눈다(`out_share`). 도구별 합과 전체 합이 같은 수를 가리키게 하기 위해서다.
     - 페이로드(다음 프롬프트의 증분)는 그 메시지의 도구 호출이 **하나**일 때만 그
       호출에 귀속한다 — 여럿이면 어느 결과가 프롬프트를 키웠는지 가를 수 없다.
-    순서는 세션이 아니라 대화선이다. 대화선의 마지막 메시지는 다음이 없어
-    페이로드를 얻지 못한다 — 창 끝에서 그렇다."""
-    lin = lineages(corpus)
-    by_line: dict = defaultdict(list)
-    for mid, ent in corpus["msgs"].items():
-        root = min(lin.get(s, s) for s in ent["sessions"]) if ent["sessions"] else mid
-        ent["lineage"] = root
-        by_line[root].append((ent["ts"], mid, ent))
-    for root, lst in by_line.items():
-        lst.sort(key=lambda x: (x[0], x[1]))
-        for i, (_ts_, mid, ent) in enumerate(lst):
-            u = ent["usage"]
-            out = int(u.get("output_tokens", 0) or 0)
-            nxt = lst[i + 1][2]["usage"] if i + 1 < len(lst) else None
-            payload = (_prompt(nxt) - _prompt(u) - out) if nxt else None
-            k = len(ent["tool_uses"])
-            n_tools = len(ent["blocks"])
-            for tid in ent["tool_uses"]:
-                use = corpus["uses"][tid]
-                use["lineage"] = root
-                use["output_tokens"] = out
-                use["out_share"] = out / k if k else 0.0
-                use["alone"] = n_tools == 1
-                res = corpus["results"].get(tid)
-                if payload is not None and n_tools == 1 and res and res["text_len"] > 0:
-                    ratio = res["text_len"] / payload if payload > 0 else None
-                    use["payload_tokens"] = payload
-                    use["ratio"] = ratio
-                    use["gated"] = bool(ratio and GATE[0] <= ratio <= GATE[1])
-                else:
-                    use["payload_tokens"] = None
-                    use["ratio"] = None
-                    use["gated"] = False
+    후속 메시지는 경로들에서 모은 **가장 이른 후속**이다 — 형제 분기는 접두부가
+    같아 어느 후속으로 재도 차이가 같고, 창 끝의 마지막 메시지는 후속이 없다."""
+    conv = conversations(corpus)
+    succ: dict = defaultdict(set)
+    for path in session_paths(corpus).values():
+        for a, b in zip(path, path[1:]):
+            succ[a].add(b)
+    msgs = corpus["msgs"]
+    for mid, ent in msgs.items():
+        ent["conversation"] = min(conv.get(s, s) for s in ent["sessions"]) if ent["sessions"] else mid
+        u = ent["usage"]
+        out = int(u.get("output_tokens", 0) or 0)
+        nxt_id = min(succ.get(mid, ()), key=lambda x: (msgs[x]["ts"], x), default=None)
+        payload = (_prompt(msgs[nxt_id]["usage"]) - _prompt(u) - out) if nxt_id else None
+        k = len(ent["tool_uses"])
+        n_tools = len(ent["blocks"])
+        for tid in ent["tool_uses"]:
+            use = corpus["uses"][tid]
+            use["conversation"] = ent["conversation"]
+            use["output_tokens"] = out
+            use["out_share"] = out / k if k else 0.0
+            use["alone"] = n_tools == 1
+            res = corpus["results"].get(tid)
+            if payload is not None and n_tools == 1 and res and res["text_len"] > 0:
+                ratio = res["text_len"] / payload if payload > 0 else None
+                use["payload_tokens"] = payload
+                use["ratio"] = ratio
+                use["gated"] = bool(ratio and GATE[0] <= ratio <= GATE[1])
+            else:
+                use["payload_tokens"] = None
+                use["ratio"] = None
+                use["gated"] = False
 
 
 def _cost(u: dict) -> float:
@@ -273,44 +314,50 @@ def _cost(u: dict) -> float:
 # ── scope 기억 에피소드 ───────────────────────────────────────────────────
 
 def episodes(corpus: dict) -> list[dict]:
-    """대화선별 scope_memory 호출 순서에서 '첫 상한 초과 거부 ~ 다음 성공'을 한
-    에피소드로 묶고, 그 사이에 증류(create_node/update_node 성공)가 있었는지
-    본다. 대화선이 끝날 때까지(= 창 끝까지) 성공이 없으면 미해결이다."""
-    by_line: dict = defaultdict(list)
-    for tid, use in corpus["uses"].items():
-        by_line[use.get("lineage", use["first_session"])].append((use["ts"], tid))
-    out = []
-    for root, calls in by_line.items():
-        calls.sort()
+    """경로별로 '첫 상한 초과 거부 ~ 다음 성공'을 한 에피소드로 묶고, 그 사이에
+    증류(create_node/update_node 성공)가 있었는지 본다. 같은 거부에서 시작한
+    에피소드가 여러 경로(재개·분기)에 나타나면 **가장 먼저 닫힌 것 하나**만 센다 —
+    끝까지 닫히지 않은 경로만 있으면 미해결 하나다."""
+    msgs, uses, results = corpus["msgs"], corpus["uses"], corpus["results"]
+    best: dict = {}
+    for sess, path in session_paths(corpus).items():
         cur = None
-        for ts, tid in calls:
-            use, res = corpus["uses"][tid], corpus["results"].get(tid)
-            if res is None:
-                continue
-            name = use["name"]
-            if name == "scope_memory" and res["overflow"]:
-                if cur is None:
-                    cur = {"lineage": root, "start": ts, "rejections": 0,
-                           "attempted": res["overflow"][0], "distill": 0,
-                           "search": 0, "tokens": 0.0, "over": res["overflow"][2]}
-                cur["rejections"] += 1
-                cur["tokens"] += _cost(use)
-            elif cur is not None:
-                if name in DISTILL_TOOLS and res["ok"]:
-                    cur["distill"] += 1
-                elif name == "search":
-                    cur["search"] += 1
-                elif name == "scope_memory" and res["ok"]:
-                    cur["end"] = ts
-                    cur["accepted"] = res["chars"]
-                    cur["trimmed"] = (cur["attempted"] - res["chars"]) if res["chars"] is not None else None
-                    cur["outcome"] = "distill" if cur["distill"] else "trim"
-                    out.append(cur)
-                    cur = None
+        for mid in path:
+            for tid in msgs[mid]["tool_uses"]:
+                use, res = uses[tid], results.get(tid)
+                if res is None:
+                    continue
+                name = use["name"]
+                if name == "scope_memory" and res["overflow"]:
+                    if cur is None:
+                        cur = {"start": use["ts"], "start_tid": tid, "rejections": 0,
+                               "attempted": res["overflow"][0], "distill": 0,
+                               "search": 0, "tokens": 0.0, "over": res["overflow"][2]}
+                    cur["rejections"] += 1
+                    cur["tokens"] += _cost(use)
+                elif cur is not None:
+                    if name in DISTILL_TOOLS and res["ok"]:
+                        cur["distill"] += 1
+                    elif name == "search":
+                        cur["search"] += 1
+                    elif name == "scope_memory" and res["ok"]:
+                        cur["end"] = use["ts"]
+                        cur["accepted"] = res["chars"]
+                        cur["trimmed"] = (cur["attempted"] - res["chars"]) if res["chars"] is not None else None
+                        cur["outcome"] = "distill" if cur["distill"] else "trim"
+                        _keep_earliest(best, cur)
+                        cur = None
         if cur is not None:
             cur["outcome"] = "unresolved"
-            out.append(cur)
-    return out
+            cur["end"] = INF
+            _keep_earliest(best, cur)
+    return sorted(best.values(), key=lambda e: e["start"])
+
+
+def _keep_earliest(best: dict, ep: dict) -> None:
+    key = ep["start_tid"]
+    if key not in best or ep["end"] < best[key]["end"]:
+        best[key] = ep
 
 
 # ── 퇴출 기록부 (§9-2 12항 · §9-3) ─────────────────────────────────────────
@@ -358,12 +405,10 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
     """창을 먼저 자르고, 그 위에서 귀속·에피소드·대장 상태를 계산한다."""
     corpus = window(full, until)
     attribute_costs(corpus)
-    res = corpus["results"]
+    res, msgs = corpus["results"], corpus["msgs"]
     uses = {t: u for t, u in corpus["uses"].items() if since <= u["ts"]}
-    lineages_seen = {u.get("lineage") for u in uses.values()}
-    # 세션 id 수는 **그 호출을 담은 모든 세션 id의 합집합**이다 — 처음 본 파일의
-    # 세션으로 세면 파일 순서에 따라 달라진다(재개 사본이 어느 쪽에서 먼저 보이느냐).
-    sessions_seen = set().union(*(corpus["msgs"][u["msg"]]["sessions"] for u in uses.values())) if uses else set()
+    convs_seen = {u.get("conversation") for u in uses.values()}
+    sessions_seen = set().union(*(msgs[u["msg"]]["sessions"] for u in uses.values())) if uses else set()
     per_tool: dict = defaultdict(lambda: {"calls": 0, "fail": 0, "out": [], "payload": [],
                                           "ratios": [], "gated": 0, "alone": 0})
     total = failed_cost = 0.0
@@ -399,23 +444,20 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
     multi = [e for e in eps if e["rejections"] >= 2]
     trimmed = [e["trimmed"] for e in resolved if e.get("trimmed") is not None and e["outcome"] == "trim"]
     fails = sum(1 for t in uses if _failed(res.get(t)))
-    retry_after_fail = 0
-    by_line: dict = defaultdict(list)
-    for t, u in uses.items():
-        by_line[u.get("lineage")].append((u["ts"], t))
-    for lst in by_line.values():
-        lst.sort()
-        for i in range(len(lst) - 1):
-            a, b = lst[i][1], lst[i + 1][1]
+    # 실패 직후 같은 도구 재호출 — 경로마다 인접 쌍을 보되 같은 쌍은 한 번만 센다
+    pairs: set = set()
+    for path in session_paths(corpus).values():
+        seq = [tid for mid in path for tid in msgs[mid]["tool_uses"] if tid in uses]
+        for a, b in zip(seq, seq[1:]):
             if _failed(res.get(a)) and uses[a]["name"] == uses[b]["name"]:
-                retry_after_fail += 1
+                pairs.add((a, b))
     return {
         "window": [datetime.fromtimestamp(since, timezone.utc).date().isoformat(),
                    datetime.fromtimestamp(until, timezone.utc).date().isoformat()],
-        "files": corpus["files"], "sessions": len(sessions_seen), "conversations": len(lineages_seen),
+        "files": corpus["files"], "sessions": len(sessions_seen), "conversations": len(convs_seen),
         "calls": len(uses), "failures": fails,
         "failure_rate": round(fails / len(uses), 3) if uses else None,
-        "retry_after_fail": retry_after_fail,
+        "retry_after_fail": len(pairs),
         "tokens_total": round(total), "tokens_failed": round(failed_cost),
         "tools": tools,
         "scope_memory": {
