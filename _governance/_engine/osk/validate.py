@@ -12,10 +12,10 @@ from __future__ import annotations
 import json, re
 from pathlib import Path
 
-from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER,
+from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER, EVICTIONS,
                    VALIDATORS, CASE_RE, RID_RE, ID_RE, ledger_read,
                    ledger_damage, ledger_anchor_index, resolve_one)
-from . import contract, graph, signatures, approvals, authority, secrets
+from . import contract, graph, signatures, approvals, authority, secrets, evictions
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
 # 새 기록에는 두지 않으므로 필수에서 뺐다(기존 사건에는 사료로 남는다).
@@ -93,7 +93,7 @@ def run() -> dict:
     #    대장이다. signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상).
     errs, ledgers = [], ([(approvals.APPROVALS, arecs)] if appr_ok else [])
     for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, VALIDATORS,
-              approvals.MOVES,
+              approvals.MOVES, EVICTIONS,
               LEDGER / "migration" / "events.jsonl", LEDGER / "rechecks.jsonl",
               LEDGER / "update.jsonl"]:
         try:
@@ -176,6 +176,14 @@ def run() -> dict:
         ok(f"승인 대장 스키마(전 {len(arecs)}행 · parents는 앵커 이후 {after}행)", errs)
     else:
         skip("승인 대장 스키마", "승인 대장 판독 실패 — 검사 불성립")
+
+    # 11b. 퇴출 기록부 스키마 (Mechanism §9-2 12항) — 같은 규율에 kind별 필수
+    #      필드와 `settle`→`evict` 참조를 더한다. 판독 실패는 5번이 이미 보고했다.
+    erecs = next((rs for p, rs in ledgers if p == EVICTIONS), None)
+    if erecs is not None:
+        ok(f"퇴출 기록부 스키마({len(erecs)}행)", evictions.schema_errors(erecs))
+    else:
+        skip("퇴출 기록부 스키마", "퇴출 기록부 판독 실패 — 검사 불성립")
 
     # 12. 사건 파일 헤더 (Mechanism §4 3항) — 파싱 실패를 여기서 직접 보고한다
     #     (topology_check의 'conflicts 대상 부적격'으로 오보되지 않게).

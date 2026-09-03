@@ -108,6 +108,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `validators` | **사용자 전속** — 검증기 활성화 현황·전환 (Mechanism §6-1) |
 | `raw append` / `raw status` | `_raw/` 세션 기록 — 훅 경로(아래) |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
+| `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
 | `approve` / `revert` | **사용자 전속** — 변경집합 승인·반려 |
 | `store-reconcile` | 내용 주소 저장소를 파일 이름 기준으로 판독·이행 (EOL 이행) |
@@ -149,6 +150,25 @@ scope 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한
 
 결속이 아직 없으면 **빈 출력에 종료코드 0**이다 — 새 저장소의 첫 세션이 그 상태이므로
 오류가 아니다. 훅은 stdout을 그대로 쓰면 된다.
+
+**같은 훅이 정돈도 싣는다**(Mechanism §9-3). scope 기억의 상한 초과 거부 직후에 잘려 나간
+줄은 퇴출 기록부 `_ledger/evictions.jsonl`에 `evict`로 남는다(§9-2 12항) — 엔진은 자르지
+않으며 호출자가 스스로 뺀 것을 적을 뿐이고, 거부와 무관한 평소의 정리는 적지 않는다.
+결속이 선 세션이 시작되면 훅은 그 scope의 미처분 항목 중 **오래된 것부터 3건**과
+Workbench의 경유 노드를 함께 실어 첫 도구 호출에 처분을 함께 실으라고 지시한다. 벽이
+아니다 — 본 작업이 먼저면 넘어가도 되고 항목은 대장에 남는다. 출구는 노드로 증류·기존
+노드에 통합·폐기이며, 어느 쪽이든 `settle`을 적어야 처분이다:
+
+```bash
+.venv/bin/python -m osk.cli tidy list                                  # scope별 미처분·나이
+.venv/bin/python -m osk.cli tidy settle <rid> node --target "<노드 제목>"   # 증류 (통합은 merged)
+.venv/bin/python -m osk.cli tidy settle <rid> discarded                # 폐기
+```
+
+건너뛴 것은 `osk status`의 `evictions`에 보인다. 가장 오래된 항목이 **14일**을 넘으면
+훅이 "정돈이 밀렸다"를 주입문 맨 앞에 세우고, 그래도 밀리면 `tidy prompt`가 **전용 정돈
+세션의 프롬프트**를 낸다 — 새 세션에 붙여 넣으면 되며, 스케줄러가 있으면 그 프롬프트로
+`claude -p`를 띄울 수 있다(세션 키는 그 scope의 정본 키, 승인은 우회하지 않는다).
 
 쓰기는 stdin으로 전문을 받아 **전체 치환**한다. 기존 내용이 있으면 `--expect-hash`가
 필수다. **이 명령은 git을 부르지 않는다** — 동기화는 데몬이 맡는다.
