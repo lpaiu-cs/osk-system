@@ -1,4 +1,4 @@
-"""Claude Code UserPromptSubmit 훅 — 케이던스 (9턴 동승 · 15턴 단독).
+"""Claude Code / Codex UserPromptSubmit 훅 — 케이던스 (9턴 동승 · 15턴 단독).
 
 등록(사용자 settings.json → hooks.UserPromptSubmit → command):
     <인스턴스>/.venv/Scripts/python.exe <인스턴스>/_governance/_engine/scripts/hooks/claude_prompt_submit.py
@@ -87,7 +87,7 @@ def main() -> None:
         key = session_key(cwd)
         if write.resolve_session(key):
             st = scope_memory.read(key)
-            if not (st.get("text") or "").strip():
+            if not (st.get("text") or "").strip() and not st.get("recovery"):
                 st = None
     except Exception:
         st, key = None, None
@@ -120,7 +120,12 @@ def main() -> None:
     head = (f"[osk 케이던스 — user 턴 {n}] 아래는 `= Scope/{scope}` 기억의 지금 "
             f"전문이다 — {chars}/{limit}자 · **여유 {limit - chars}자** · "
             f"hash {st['hash']} · `session=\"{key}\"`.\n")
-    if n == SOFT:
+    if st.get("recovery"):
+        # 실패한 통합을 같은 '새것 추가' 지시로 다시 시작시키지 않는다.
+        body = head + scope_memory.recovery_block(key)
+        if n == HARD:
+            _write(f_count, "0")
+    elif n == SOFT:
         body = (head +
                 "이 세션에서 배운 것을 **다음 도구 호출에 함께 실어** `scope_memory`로 "
                 "통합하라 — 통합만을 위한 턴을 따로 쓰지 마라. " + _EDITS_HOWTO)

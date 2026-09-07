@@ -341,12 +341,18 @@ def main(argv=None):
             ev = evictions.status()
         except Exception as e:                  # 대장 손상은 현황을 막지 않는다
             ev = {"error": str(e)}
+        try:
+            from . import scope_memory
+            recovery = scope_memory.recovery_status()
+        except Exception as e:
+            recovery = {"error": str(e)}
         print(json.dumps({
             "nodes": len(idx.nodes),
             "protected_regions": {r: approvals.state(r) for r in regions},
             "delegations": [d["title"] for d in authority.enumerate_delegations()
                             if d["effective"]],
             "evictions": ev,
+            "scope_recovery": recovery,
             "root": str(ROOT),
         }, ensure_ascii=False, indent=2))
     elif a.cmd in ("search", "view"):

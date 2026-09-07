@@ -1,4 +1,4 @@
-"""Claude Code SessionStart 훅 — scope 기억 주입 + 정돈 주입.
+"""Claude Code / Codex SessionStart 훅 — scope 기억·복구·정돈 주입.
 
 등록(사용자 settings.json → hooks.SessionStart → command):
     <인스턴스>/.venv/Scripts/python.exe <인스턴스>/_governance/_engine/scripts/hooks/claude_session_start.py
@@ -10,8 +10,8 @@ stdin으로 하네스가 주는 JSON({cwd, session_id, source, …})을 받고, 
 
 세션 키는 cwd가 속한 git 저장소의 **본 저장소 디렉터리 이름**이다. 워크트리
 안에서도 본 저장소 이름으로 접힌다(`git-common-dir`의 부모) — 워크트리 이름은
-세션마다 달라 키가 되지 못한다. 결속이 없으면 빈 출력 — 주입할 것이 없는 것은
-오류가 아니다.
+세션마다 달라 키가 되지 못한다. 결속이 없어도 `overview`로 착지를 확인하도록
+안내한다. 아직 없는 착지를 훅이 대신 정하지 않는다.
 
 **정돈도 같은 길로 싣는다**(Mechanism §9-3 1항). 세션이 곧 주기다 — 별도
 스케줄러 없이, 결속이 선 세션이 시작되면 그 scope의 미처분 퇴출 항목 중 오래된
@@ -83,6 +83,16 @@ def _memory_block(scope_memory, key: str) -> str:
         f"hash: {st['hash']}\n---\n{text}")
 
 
+def _bootstrap(key: str, *, bound: bool) -> str:
+    arg = json.dumps(key, ensure_ascii=False)
+    return (f"[osk 세션 시작 — session={arg}]\n"
+            f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집과 열린 사건을 "
+            "확인하라. 기억을 묻는 질문에는 `search`를 먼저 쓴다. "
+            + ("아래 scope 기억을 통합의 출발점으로 삼는다."
+               if bound else "아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 "
+               "군집에서 해당 프로젝트를 확인한 뒤 scope_memory를 읽어라."))
+
+
 def main() -> None:
     try:
         env = json.load(sys.stdin)
@@ -103,8 +113,15 @@ def main() -> None:
         from osk import scope_memory, write, evictions
         key = session_key(cwd)
         scope = write.resolve_session(key)
+        bootstrap = _bootstrap(key, bound=bool(scope))
+        recovery = ""
+        try:
+            recovery = scope_memory.recovery_block(key)
+        except Exception:
+            recovery = "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]"
         if not scope:
-            return                                   # 결속 없음 — 주입할 것 없음
+            sys.stdout.buffer.write("\n\n".join(p for p in (bootstrap, recovery) if p).encode("utf-8"))
+            return
         mem = ""
         try:
             mem = _memory_block(scope_memory, key)
@@ -116,7 +133,7 @@ def main() -> None:
         except Exception:
             pass                                     # 대장 손상은 검증기·status가 말한다
         # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록.
-        out = "\n\n".join(p for p in (banner, mem, block) if p)
+        out = "\n\n".join(p for p in (banner, bootstrap, recovery, mem, block) if p)
         if not out:
             return
         sys.stdout.buffer.write(out.encode("utf-8"))
