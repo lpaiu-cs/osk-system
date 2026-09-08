@@ -1,6 +1,6 @@
 {
- "version": "v3.12.0",
- "at": "2026-09-03T19:36:07+09:00",
+ "version": "v3.13.0",
+ "at": "2026-09-08T09:05:55+09:00",
  "files": {
   ".gitattributes": "sha256:0871bdbff00beea77084c2660ebfee35b89fcca79d41f73188222c4501d249dc",
   ".github/workflows/release.yml": "sha256:df5c204e39d0b1f32ba9a9e0fd9b2dd3d7c5dbdb7bbc2e5d238dda6e4f751742",
@@ -13,7 +13,7 @@
   "README.md": "sha256:50f13e00e293730c0166cea117cda67af0ef1a2a0a8c8a03a9fa06e540a0089d",
   "_governance/Bylaws.md": "sha256:f086aafde5d9044ce0fcfd7c71d1bedd2541f409af452610a843b2f0b311efae",
   "_governance/Constitution.md": "sha256:807fa5e0ebec07604c1dccd6854048b0470752e40b05f42d7e7ddc4239304bbd",
-  "_governance/Mechanism.md": "sha256:43b790a21dbba029cf9d804764a5d6685f674a0cf9df3d7a80397d616b68021b",
+  "_governance/Mechanism.md": "sha256:336bc471ae8188691d35452959f84dbb76c2b22c2eb8b5dacb4f1282e32593b3",
   "_governance/Workbench-Contract.md": "sha256:4494281561007bd1059358600c6595e65edab27bace7eac0d8d3196ad9bffba9",
   "_governance/_engine/README.md": "sha256:47efff2ce1949387890f8cf97559cbad758d227855afb47f4a728feb43baa9f8",
   "_governance/_engine/mcp_server.py": "sha256:4592c31a1a95d62d90fe8472c75dd02234399cefb45e4e6d66de7f0e3201b3bf",
@@ -22,7 +22,7 @@
   "_governance/_engine/osk/_portalock.py": "sha256:4e9685429ad96e0b89831aab3638be8e9b015864e18f2354a660f2889c8ed29f",
   "_governance/_engine/osk/approvals.py": "sha256:096336c45c5fa1e6028370e29ff70bf226ec0cbc65b8c906d8161089e7adbffc",
   "_governance/_engine/osk/authority.py": "sha256:e16110dd8485a6d873a2a273fd4896735f10a4b3908f04b55c058463c7ad88b6",
-  "_governance/_engine/osk/cli.py": "sha256:c88c847411a3742b3a19ff9eece9424fc959f87e0a95afd62e8f711104aa8c99",
+  "_governance/_engine/osk/cli.py": "sha256:c131c842d44115dcb4bac2736f433be9012130475a8c98c91bd3454171637fd7",
   "_governance/_engine/osk/contract.py": "sha256:8939a3278f5d4c9a70f6171ccb4ffa7109ca3994730ad91aab044d84641a6e42",
   "_governance/_engine/osk/core.py": "sha256:73d82a95a6967abde83d501ec00b60fc05745ed59b586637a027f514284f7120",
   "_governance/_engine/osk/epoch.py": "sha256:335558ec86751513f865f61cf3214510f8699f1f1f0c6dc2c6f9b9a9a53908d0",
@@ -31,7 +31,7 @@
   "_governance/_engine/osk/publish.py": "sha256:6b2fa24c49efef6af1a737cd58e4d924b80c12efc24bb318c8e06c85d3744571",
   "_governance/_engine/osk/raw.py": "sha256:86e64ed7cc7e974f820f86cfc1a4be8504a5a13e078f1bc6280dd7badeb458f8",
   "_governance/_engine/osk/release.py": "sha256:c2d3870053119b7569f194e56ce9654f5a650c4f6ad8ab63cadb13b98ea58916",
-  "_governance/_engine/osk/scope_memory.py": "sha256:5211adb0328f0929ed79c6a1c19a60ba73f9f5162fd254512d74926ac8051aff",
+  "_governance/_engine/osk/scope_memory.py": "sha256:d69a2ace5e272443a8d9ccaa8df0298b846e1f77ed8b4a09b58197ad21a364b4",
   "_governance/_engine/osk/search.py": "sha256:3210fac1c521bd16fe6b54216b4cb6646d9c8bad8c8b356586b01da3c5031d81",
   "_governance/_engine/osk/secrets.py": "sha256:8a0ea6e558a1c8bc6fec47c46f375ed3311d828dab262b80b6b9eea60133c4b2",
   "_governance/_engine/osk/signatures.py": "sha256:16be1028d959793302c8def27094cf4ef8f46991f989c661f04700439f831a8b",
@@ -39,8 +39,8 @@
   "_governance/_engine/osk/validate.py": "sha256:f02c6b11d62efd205ca5a0c463964c5b3a3ced8bdea63d030531189950fdb0c5",
   "_governance/_engine/osk/write.py": "sha256:156c9d2dc0a743ba3583d69ece721ff3e46816b74fe555debfa372a580614b3d",
   "_governance/_engine/requirements.txt": "sha256:062511e03858388684210f5d5fd04369e7e5eb062ab20c8385ff63644dd3476e",
-  "_governance/_engine/scripts/hooks/claude_prompt_submit.py": "sha256:48993ad9db08cb2c8e38589272c48cc7bb75aceddf8bca7c2c06796e500e471a",
-  "_governance/_engine/scripts/hooks/claude_session_start.py": "sha256:60b3557053c6173f9510ac074a2b10b84863a7671538d7d23cc8613e5dbe551b",
+  "_governance/_engine/scripts/hooks/claude_prompt_submit.py": "sha256:9437b8c9926e7e38cea27c019342e1915fecce86eea07b936f96c40d0b674973",
+  "_governance/_engine/scripts/hooks/claude_session_start.py": "sha256:f84d8282295175af86a00fd68397157107c950565a74c932fdc5836f26295ce2",
   "_governance/_engine/scripts/launchd/com.ltm-vault-daemon.plist.example": "sha256:9f023f061cc224bebb66d3ff12f4cc778a0a9f44be63bc9c929ebea1b2d9274f",
   "_governance/_engine/scripts/osk_turn_ledger.py": "sha256:cd09194b01bcd66564578de8e4f96c4feddb5ff5c672f6bf92a757ed6c7f6df3",
   "_governance/_engine/scripts/publish-manifest.txt": "sha256:98f218d7783354287b73cb182ba3097f1ae7f99627109d0e1e382a3124a256a0",
@@ -49,7 +49,7 @@
   "_governance/_engine/sync_daemon.py": "sha256:7fdf134b771b74a08689b80e052969ce33179a7c07eedfef09ad8a2c085a2d2b",
   "_governance/_engine/tests/conftest.py": "sha256:c954d38b1fe7efd72b1ae0971cff6919a4cd85b6521925000f7bc5bb13f926de",
   "_governance/_engine/tests/test_adversarial.py": "sha256:7bde24b062a42f373c5be1f5c8af7a9a97e0ecef226433ac95b546c2254a94fb",
-  "_governance/_engine/tests/test_regression.py": "sha256:b6d8f236f97b8b2f2f8b5dc13b43a285538768a1fa91e89bf796927abc109a75",
+  "_governance/_engine/tests/test_regression.py": "sha256:a70ead846a574cbaceba40ed97a64dcd0e2c2939b6b574bedffa75be8199df24",
   "_governance/_engine/vault_sync.py": "sha256:fd6353fd7cb3813eed135aef2df46ff7bf51c2181e426fed65937dac7f03e5e9",
   "_governance/records/2026-07-06-second-brain-reconstitution.md": "sha256:d28b67c44f85b808f44536b824db1db4b3bfeccedf5f37c5cb513419ac9276d0",
   "_governance/records/2026-07-21-governance-cycle-adjudication-ledger.md": "sha256:fc4529a73d19aa36fd04d019f328300853b01cbce937427f656a372358934e58",
@@ -73,7 +73,8 @@
   "_governance/records/2026-09-02-echo-only-where-the-caller-is-blind.md": "sha256:d588ccd02fbf8940761180580b1f883f0c34e8badc866e487084f4ea4d11d2e6",
   "_governance/records/2026-09-02-eviction-ledger.md": "sha256:b50f1039a0232462b010a85c4770bf7a332bd0452504e84d226acfa2bee14944",
   "_governance/records/2026-09-02-what-shipped-is-not-what-merged.md": "sha256:6828b98a56bcda82dfa491966c082d40946cebb32496003bc64884da8a68e924",
+  "_governance/records/2026-09-08-scope-recovery-handoff.md": "sha256:926430d073fdc7b64ffae5bf4ca1245a5202e6803e343971960fdc1792671f7a",
   "_governance/records/constitution-disposition-table.md": "sha256:125717e4c6bc173da81b6fc955bf2d9c6f9141dd21a1cd293860461763c8d0b3",
-  "docs/SETUP.md": "sha256:47024ddb0b5b2f82413e60c642b7c9515584dd1215292f3533edaee30204f4cf"
+  "docs/SETUP.md": "sha256:a5c97af3f1f606394ea5c82fb50585db9af601a3c7e4e5cf83b743e463adb368"
  }
 }
