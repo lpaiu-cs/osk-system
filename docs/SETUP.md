@@ -190,11 +190,62 @@ printf '%s' "$새전문" | .venv/bin/python -m osk.cli sm write   --session <키
 
 - 계수와 마지막 해시는 **세션·기기 로컬**이다(임시 디렉터리, `session_id` 단위).
   vault에 두면 동기화되어 공유되는데, 계수는 지식이 아니다.
-- 이 훅은 세션 시작 훅과 달리 **엔진을 import한다** — 등록한 인터프리터가
+- 두 훅 모두 **엔진을 import한다** — 등록한 인터프리터가
   인스턴스의 `.venv`여야 한다(의존이 없으면 조용히 아무것도 하지 않는다).
 - 두 훅 모두 주입문에 **그 세션의 키**를 싣는다. `scope_memory`·`append_raw`의
   `session` 인자에 그 값을 그대로 쓴다 — 지어낸 키는 첫 성공에 영구 결속되어
   대장에 다시 오지 않을 행을 남긴다.
+
+상한 초과 뒤에는 **복구 대기**를 세션 시작과 9·15턴에 싣는다. 복구할 때는 새
+요약 추가 대신 현재 저장본의 엔트리를 골라 정리하고, 남길 지식은 기존 노드에
+먼저 보존한다. 아직 덜어 낸 줄이 없어 `evict`가 0건이어도 동작한다. 복구 대기는
+CLI `status`의 `scope_recovery`에 별도로 보이며, 읽기·주입·같은 내용의 재저장으로
+사라지지 않는다. 이는 거부된 새 초안을 보관하는 기능이 아니다.
+
+### Codex에도 두 훅을 등록한다
+
+Codex의 MCP 등록과 훅 등록은 별개다. `~/.codex/hooks.json`에 다음처럼 등록한다.
+`<PYTHON>`은 인스턴스 가상환경의 실행 파일, `<ENGINE>`은 그 인스턴스의
+`_governance/_engine` 절대 경로로 바꾼다. 명령은 해당 기기의 셸에서 실행
+가능해야 한다. 기존 hooks.json이 있으면 이벤트 목록에 추가하며 덮어쓰지 않는다.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "startup|resume|clear|compact",
+      "hooks": [{
+        "type": "command",
+        "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_session_start.py",
+        "timeout": 30,
+        "statusMessage": "osk scope 기억과 복구 확인"
+      }]
+    }],
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_prompt_submit.py",
+        "timeout": 30,
+        "statusMessage": "osk 기억 통합 시점 확인"
+      }]
+    }]
+  }
+}
+```
+
+파일명의 `claude_`는 기존 등록 경로를 유지하기 위한 이름이다. 두 하네스 모두
+stdin의 `cwd`·`session_id`를 주며, 이 두 이벤트의 일반 stdout을 문맥에 싣는다.
+SessionStart는 `overview` 호출과 안정된 세션 키도 안내한다. 결속이 없으면
+착지를 추측하지 말고 확인하라고 지시한다.
+
+Codex는 새로 추가하거나 바뀐 훅 정의를 사용자가 신뢰하기 전까지 건너뛴다.
+CLI의 `/hooks`에서 위 두 정의를 확인하고 신뢰한 뒤 새 세션에서 주입을 확인한다.
+설정 파일 존재만으로 실제 실행을 판정하지 않는다. 큰 출력은 기본 문맥 상한에서
+파일로 넘겨질 수 있으므로 주입 메시지의 저장 경로가 보이면 그 전문도 확인한다.
+계약과 설정 형식은 [Codex Hooks 문서](https://learn.chatgpt.com/docs/hooks)를 따른다.
+
+Personalization에는 저장 경계를 간단히 두어도 된다. 다만 훅의 설치·신뢰·새 세션
+실행을 확인하기 전에는 `overview`·scope 읽기와 주기적 통합 안내를 제거하지 않는다.
 
 ### 세션 기록 훅 (`raw append`)
 

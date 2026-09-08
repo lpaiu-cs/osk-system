@@ -5014,9 +5014,9 @@ def test_scope_memory():
           _w(wm.read, S)["text"].strip() == "- 갱신됨")
     check("거부가 낸 해시로 곧장 이어 쓸 수 있다 — 재읽기 불필요",
           r3["hash"] == _w(wm.read, S)["hash"], r3)
-    check("안내가 순서를 준다 — 정리가 먼저",
-          v.index("정리하라") < v.index("노드"), v)
-    check("안내가 기존 노드 갱신을 먼저 말한다", "기존 노드에 갱신" in v, v)
+    check("안내가 끝난 상태의 정리와 보존할 지식을 구분한다",
+          "끝난 작업 상태·중복은 정리" in v and "남길 지식" in v, v)
+    check("안내가 기존 노드 갱신을 먼저 말한다", "update_node" in v and "먼저 보존" in v, v)
     check("안내가 배선을 요구한다", "배선" in v, v)
     check("안내가 착지 scope를 알린다", "= Scope/WWm" in v, v)
 
@@ -5298,6 +5298,102 @@ def test_cadence_hook():
         f.unlink(missing_ok=True)
     import shutil
     shutil.rmtree(cwd.parent, ignore_errors=True)
+
+
+def test_scope_recovery_handoff():
+    """초과 → 중단 → 새 프로세스 훅 → no-op → 실제 통합의 경계를 시험한다."""
+    import uuid
+    from osk import scope_memory as wm, evictions as ev
+    S, scope = "regr-recovery", "WRecovery"
+    (ROOT / f"= Scope/{scope}").mkdir(exist_ok=True)
+    wm._pending_clear(S)
+    cur = "- 남길 지식 " + "가" * 700 + "\n- 끝난 상태 " + "나" * 700
+    r = _w(wm.replace, S, cur, None, f"= Scope/{scope}")
+    check("복구 기준선", r.get("ok"), r)
+    before = len(ev.records())
+    draft = cur + "\n- 거부된 새 초안 " + "다" * 200
+    first = None
+    for n in range(3):
+        rejected = _w(wm.replace, S, draft, r["hash"])
+        check(f"복구 초과 {n + 1}회", not rejected.get("ok") and rejected.get("recovery"), rejected)
+        if first is None:
+            first = rejected["recovery"]["since"]
+        check("재거부로 관측 시점이 늦춰지지 않는다", rejected["recovery"]["since"] == first)
+    check("3회째에는 현재 재시도를 접는다", "접고" in " ".join(rejected["violations"]))
+    check("초안은 표식에 보관하지 않는다", "거부된 새 초안" not in wm._pending_path(S).read_text(encoding="utf-8"))
+    check("실패만으로 evict가 생기지 않는다", len(ev.records()) == before)
+    check("읽기에 복구 대기가 보인다", _w(wm.read, S).get("recovery", {}).get("session") == S)
+    write.alias_session("regr-recovery-old", S)
+    check("별칭도 같은 복구 대기", wm.recovery("regr-recovery-old") == wm.recovery(S))
+
+    # 실제 훅 파일을 새 프로세스에서 실행한다. Codex/Claude 공통 wire 입력이다.
+    cwd = Path(tempfile.mkdtemp(prefix="osk-recovery-")) / S
+    cwd.mkdir()
+    sid = "regr-" + uuid.uuid4().hex
+    hooks = ENGINE / "scripts" / "hooks"
+    payload = {"session_id": sid, "cwd": str(cwd), "source": "startup",
+               "hook_event_name": "SessionStart", "permission_mode": "default"}
+    env = {**os.environ, "OSK_VAULT_ROOT": str(ROOT), "PYTHONPATH": str(ENGINE)}
+
+    def run_hook(name):
+        sub = subprocess.run([sys.executable, str(hooks / name)],
+                             input=json.dumps(payload).encode("utf-8"), capture_output=True,
+                             env=env, cwd=str(cwd), timeout=30)
+        check("복구 훅 프로세스 성공", sub.returncode == 0, sub.stderr[-300:])
+        return sub.stdout.decode("utf-8")
+
+    try:
+        out = run_hook("claude_session_start.py")
+        check("새 세션은 evict 없이도 복구를 싣는다", "[osk scope 복구 대기" in out, out[:300])
+        check("복구는 현재 저장본과 기존 노드 우선 행동을 싣는다", cur in out and "update_node" in out and "엔트리 단위" in out)
+        check("세션 시작은 overview를 안내한다", "overview(session=" in out)
+        check("훅은 표식을 소비하지 않는다", wm.recovery(S) is not None)
+        d = Path(tempfile.gettempdir()) / "osk-cadence"
+        d.mkdir(exist_ok=True)
+        payload["hook_event_name"] = "UserPromptSubmit"
+        payload["prompt"] = "계속"
+        for count in (8, 14):
+            (d / f"{sid}.count").write_text(str(count), encoding="ascii")
+            (d / f"{sid}.hash").write_text(r["hash"], encoding="utf-8")
+            out = run_hook("claude_prompt_submit.py")
+            check(f"{count + 1}턴은 새 요약 추가 대신 복구를 싣는다",
+                  "[osk scope 복구 대기" in out and "이 세션에서 배운 것을" not in out and cur in out)
+        check("15턴 뒤 매 턴 재촉하지 않는다", (d / f"{sid}.count").read_text() == "0")
+
+        same = _w(wm.replace, S, cur, r["hash"])
+        check("동일 전문의 성공은 대기를 소비하지 않는다", same.get("ok") and same.get("recovery"), same)
+        same = _w(wm.replace, S, edits=[{"old_text": "남길 지식", "new_text": "임시 표현"},
+                                         {"old_text": "임시 표현", "new_text": "남길 지식"}])
+        check("상쇄된 edits 성공도 대기를 소비하지 않는다", same.get("ok") and same.get("recovery"), same)
+        check("no-op으로 evict도 늘지 않는다", len(ev.records()) == before)
+
+        # 구판의 키만 든 표식도 다음 세션에서 복구할 수 있어야 한다.
+        wm._pending_path(S).write_text(S, encoding="utf-8")
+        check("구판 표식 판독과 시점 한계 표시", wm.recovery(S)["legacy"])
+        out = run_hook("claude_session_start.py")
+        check("구판 표식도 새 훅에 보인다", "[osk scope 복구 대기" in out)
+        status = subprocess.run([sys.executable, "-m", "osk.cli", "status"],
+                                env=env, capture_output=True, timeout=30)
+        parsed = json.loads(status.stdout)
+        check("CLI는 evict와 복구를 별도로 싣는다",
+              "evictions" in parsed and any(x["session"] == S for x in parsed["scope_recovery"]))
+
+        # 다른 세션의 쓰기가 같은 scope를 바꿔도 이 세션의 미완료 의도를 대신
+        # 완료했다고 할 수 없다. 현재 본문으로 다시 판단하고 CAS/앵커를 쓴다.
+        other = _w(wm.replace, "regr-recovery-other", cur + "\n- 공유 변경", r["hash"], f"= Scope/{scope}")
+        check("다른 작성자의 성공은 기존 복구를 소비하지 않는다", other.get("ok") and wm.recovery(S) is not None)
+        stale = _w(wm.replace, S, "이전 초안", r["hash"])
+        check("낡은 해시 거부도 복구를 소비하지 않는다", not stale.get("ok") and wm.recovery(S) is not None)
+        done = _w(wm.replace, S, edits=[{"old_text": "\n- 끝난 상태 " + "나" * 700, "new_text": ""}])
+        check("실제 정리는 evict를 남기고 복구를 끝낸다", done.get("ok") and done.get("evicted") and wm.recovery(S) is None, done)
+        check("실제로 덜어 낸 저장본만 evict", ev.records()[-1]["text"] == "- 끝난 상태 " + "나" * 700)
+        out = run_hook("claude_session_start.py")
+        check("성공 뒤 복구는 사라지고 정돈이 나타난다", "[osk scope 복구 대기" not in out and done["evicted"] in out)
+    finally:
+        for suffix in ("count", "hash"):
+            (Path(tempfile.gettempdir()) / "osk-cadence" / f"{sid}.{suffix}").unlink(missing_ok=True)
+        wm._pending_clear(S)
+        rmtree_force(cwd.parent)
 
 
 def test_scope_memory_cli():
@@ -8341,7 +8437,7 @@ if __name__ == "__main__":
                test_raw_read, test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_scope_memory, test_workbench_state_not_evidence,
-               test_scope_memory_edits, test_cadence_hook,
+               test_scope_memory_edits, test_cadence_hook, test_scope_recovery_handoff,
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
                test_obsidian_tag_defense, test_index_node_not_delegation,

@@ -21,10 +21,12 @@ working_memory는 인지과학 은유(한 마음의 사유물)라 "내 세션의
 """
 from __future__ import annotations
 import hashlib
+import json
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .core import ROOT, local_lock_path, mutation_lock, posix_rel, sha256_bytes
+from .core import ROOT, local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
 from . import evictions, graph, secrets, write
 
 # 계수는 mechanism이 정한다(시행령 서문). 한 세션의 배울 점을 적기에는 충분하고
@@ -38,7 +40,7 @@ LIMIT = 1500
 OVERFLOW_STOP = 3
 _OVERFLOW_RUNS: dict[str, int] = {}
 
-# 퇴출 대기 표식 (§9-2 12항) — 상한 초과 거부가 세우고 **첫 성공한 쓰기**가
+# 복구·퇴출 대기 표식 (§9-2 4·12항) — 상한 초과 거부가 세우고 **내용을 바꾼 성공**이
 # 지운다. 연속 계수와 다른 표식이다: 계수는 읽기도 지우지만(읽기는 새 시도의
 # 시작), 이 표식은 읽기에 살아남아야 한다 — 거부 → 읽기 → 잘라서 통과가 바로
 # "상한에 밀려 자른" 경로이고, 그 사이의 읽기는 무엇을 자를지 보는 일이다.
@@ -64,14 +66,93 @@ def _pending(key: str) -> bool:
     return _pending_path(key).is_file()
 
 
-def _pending_set(key: str) -> None:
+def _pending_set(key: str, scope: str | None = None, base_hash: str | None = None) -> None:
     p = _pending_path(key)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(key, encoding="utf-8")
+    if p.is_file():
+        return                              # 재거부로 대기 시작을 늦추지 않는다
+    # 초안은 저장하지 않는다. 기존 표식에 복구할 자리·시점만 붙인다.
+    write._atomic_write(p, json.dumps({
+        "session": key, "scope": scope, "since": now_iso(), "base_hash": base_hash,
+    }, ensure_ascii=False).encode("utf-8"))
 
 
 def _pending_clear(key: str) -> None:
     _pending_path(key).unlink(missing_ok=True)
+
+
+RECOVERY_NOTE = (
+    "글자 몇 개를 줄이는 재시도를 반복하지 말고, 현재 저장본에서 엔트리 단위로 "
+    "자리를 만들어라. 끝난 작업 상태·중복은 정리하고, 남길 지식은 `search`로 "
+    "기존 노드를 찾아 `update_node`로 먼저 보존하라. 맞는 노드가 없을 때만 "
+    "`create_node`로 세우고 허브에 건다. **근거가 있으면** 배선한다 — 기존 노드에서 "
+    "온 것이면 그 `id`, 이 대화에서 처음 알게 됐고 나중에 다툴 만한 주장이면 "
+    "`append_raw`로 해당 라운드만 남겨 `round_ref`를 건다. 원료 없이 처음 적는 "
+    "것이면 근거는 비우고 본문에 언제·어디서인지를 남긴다. scope 기억은 근거가 "
+    "아닌 경유지다. 보존한 뒤 scope에는 요약만 남기고 빼기·넣기를 한 "
+    "`edits`에 실어라. 보존할 값이 없는 항목을 억지로 노드로 만들지 않는다. "
+    "지금 못 하면 본 작업을 계속해도 되며, 복구 대기는 다음 훅에 남는다. "
+    "거부된 새 초안은 저장되지 않았다 — 이 표식은 그 초안의 보관함이 아니다.")
+
+
+def recovery(session: str) -> dict | None:
+    """이 사본·정본 세션의 미완료 통합. 읽기는 소비하지 않는다.
+
+    v3.12.0의 키만 든 표식도 읽는다. 그 파일의 mtime은 마지막으로 관측한
+    거부 시점일 뿐 최초 실패 시점이라고 소급해서 주장하지 않는다.
+    """
+    key = _runs_key(session)
+    p = _pending_path(key)
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    if raw == key:
+        try:
+            modified = p.stat().st_mtime
+        except FileNotFoundError:
+            return None                     # 읽는 사이 성공한 쓰기가 끝냈다
+        record = {"scope": write.resolve_session(key), "base_hash": None,
+                  "since": datetime.fromtimestamp(modified, timezone.utc).isoformat(),
+                  "legacy": True}
+    else:
+        record = json.loads(raw)
+        if not isinstance(record, dict) or record.get("session") != key:
+            raise ValueError("scope 복구 표식의 세션이 다르다")
+    scope = record.get("scope") or write.resolve_session(key)
+    bound = write.resolve_session(key)
+    return {"session": key, "scope": scope, "since": record["since"],
+            "legacy": record.get("legacy", False), "base_hash": record.get("base_hash"),
+            "binding_changed": bool(bound and scope and bound != scope)}
+
+
+def recovery_status() -> list[dict]:
+    """evict와 별도로 현황에 싣는다. 공통 git 디렉터리의 다른 사본은 제외한다."""
+    rows = []
+    for p in sorted(_pending_path("").parent.glob("osk-pending-evict-*")):
+        try:
+            raw = p.read_text(encoding="utf-8")
+        except FileNotFoundError:             # 동시에 성공한 쓰기가 표식을 끝냈다
+            continue
+        key = json.loads(raw)["session"] if raw.startswith("{") else raw
+        if _pending_path(key) != p:
+            continue
+        row = recovery(key)
+        if row:
+            rows.append(row)
+    return sorted(rows, key=lambda r: (r["since"], r["session"]))
+
+
+def recovery_block(session: str) -> str:
+    row = recovery(session)
+    if not row:
+        return ""
+    head = (f"[osk scope 복구 대기 — {row['scope'] or '착지 확인 필요'} · "
+            f"session={json.dumps(row['session'], ensure_ascii=False)} · "
+            f"관측 {row['since']}]\n")
+    if row["binding_changed"]:
+        return head + "실패 당시와 지금의 scope 결속이 다르다. 기존 복구 대기를 다른 scope에 적용하지 말고 사용자에게 알려라."
+    return head + RECOVERY_NOTE
 
 _CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
             "번지게 하지 않는다 —")
@@ -84,10 +165,10 @@ _CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다�
 # 복귀하는 셈이다. 규범도 그렇게 읽힌다: 의무는 **증류**에 붙고(헌법 9조 1항)
 # 증류에는 원료가 전제된다. Workbench 계약 3.1도 `_raw/` 인용은 쌓을 것이
 # 아니라 "근거 노드로 증류하여 대체"할 것으로 본다.
-EVICTION_NOTE = ("엔트리는 자리를 다툰다. 자리값을 못하는 엔트리는 지운다 — "
-                 "지우는 것이 정상이며 유실이 아니다. 정리로도 모자라면 그때 "
-                 "기존 노드를 갱신하거나 새 노드로 증류하고, **근거가 있으면** "
-                 "배선한다. 순서가 반대면 자리값 못하는 것까지 노드가 된다.")
+EVICTION_NOTE = ("엔트리는 자리를 다툰다. 자리값 못하는 것은 지우는 것이 정상이다. 남길 지식은 "
+                 "기존 노드 갱신을 우선해 보존한 뒤 scope에 요약만 남긴다. "
+                 "**근거가 있으면** 배선한다. 글자 몇 개를 줄이는 재시도를 "
+                 "반복하지 말고 엔트리 단위로 자리를 만든다.")
 
 
 def _runs_key(session: str) -> str:
@@ -197,7 +278,9 @@ def read(session: str, space: str | None = None) -> dict:
     # 없으면 서버를 대화 사이에 유지하는 클라이언트에서 지난 대화의 거부가
     # 다음 대화의 첫 초과를 곧장 "3회째"로 만든다.)
     _OVERFLOW_RUNS.pop(_runs_key(session), None)
-    return {"ok": True, **_state(scope, _read(sm_path(scope)))}
+    pending = recovery(session)
+    extra = {"recovery": pending} if pending else {}
+    return {"ok": True, **_state(scope, _read(sm_path(scope)), **extra)}
 
 
 def replace(session: str, text: str | None = None,
@@ -337,7 +420,7 @@ def replace(session: str, text: str | None = None,
             key = _runs_key(session)
             runs = _OVERFLOW_RUNS.get(key, 0) + 1
             _OVERFLOW_RUNS[key] = runs
-            _pending_set(key)               # 다음 성공이 덜어 낸 것을 적는다
+            _pending_set(key, scope, sha256_bytes(cur.encode("utf-8")))
             # §9-2 4항은 3회째에 "**재시도 지시를 거두고** … 다음 통합으로
             # 넘긴다"고 정한다. 구판은 거두지 않고 "접고 가라"를 덧붙이기만 해서
             # 상반된 두 지시가 한 응답에 실렸다 — 거두는 것이 조문이다.
@@ -348,29 +431,21 @@ def replace(session: str, text: str | None = None,
                       "그 뒤 남은 것으로 다시 보내라. 넘칠 때마다 전문을 다시 보내지 "
                       "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다."))
             v = [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
-                 f"넘는다. **순서대로** 하라 — (1) scope 기억에서 자리값 못하는 "
-                 f"엔트리를 먼저 정리하라. (2) 그래도 모자라면 갱신할 기존 노드를 "
-                 f"`search`로 먼저 찾고, 남길 값어치가 "
-                 f"있는 것을 **기존 노드에 갱신**하거나 새 노드로 증류하라"
-                 f"(착지는 `= Scope/{scope}`). **근거가 있으면** "
-                 f"배선한다 — 기존 노드에서 온 것이면 그 `id`, 이 대화에서 처음 "
-                 f"알게 됐고 **나중에 다툴 만한 주장**이면 `append_raw`로 그 라운드를 "
-                 f"남기고 `round_ref`를 건다. 원료 없이 지금 처음 적는 것이면 근거는 "
-                 f"비우고 본문에 언제·어디서인지를 남긴다. scope 기억은 근거가 아니라 "
-                 f"경유지다. {retry}"]
+                 f"넘는다. 복구할 자리는 `= Scope/{scope}`다."]
+            if not stop:
+                v.append(RECOVERY_NOTE + " " + retry)
             if stop:
                 # 재시도 지시를 거둔다(§9-2 4항) — 실패한 기억 갱신이 본 작업을
                 # 막아서는 안 된다. 기억은 그대로이니 신호를 소비하는 것이 아니라
                 # 미루는 것이다.
                 v.append(f"연속 {runs}회째 거부다 — 이번 통합은 **접고** 본 작업으로 "
-                         f"돌아가라. 다시 보내지 마라. 기억은 그대로다. 다음 통합 "
-                         f"전에 결론 난 것을 노드로 증류해 자리를 만들어라.")
-            # (2)는 그 자리의 의무가 아니다(§9-2 6항) — 잘라 낸 것은 12항이
-            # 기록하고 §9-3의 정돈이 처분한다. 이 말이 없으면 호출자는 (2)를
-            # 지금 못 하는 것을 유실로 여겨 자르지 못하고 벽에 선다.
-            v.append("잘라 낸 것은 사라지지 않는다 — 이 거부 뒤 첫 성공한 쓰기가 "
+                         f"돌아가라. 다시 보내지 마라. 기억은 그대로다. 미완료 통합은 "
+                         f"복구 대기로 남겨 다음 세션 시작·케이던스 훅이 다시 싣는다.")
+            # 이미 덜어 낸 것과 아직 못 쓴 초안의 보존 범위를 구분한다.
+            v.append("잘라 낸 것은 사라지지 않는다 — 이 거부 뒤 내용을 바꾸는 첫 성공한 쓰기가 "
                      "덜어 낸 줄은 퇴출 기록부에 남고, 다음 세션 시작이 처분을 "
-                     "싣는다(§9-2 12항·§9-3). (2)는 지금의 의무가 아니다.")
+                     "싣는다(§9-2 12항·§9-3). 아직 안 지운 저장본은 복구 대상으로 "
+                     "남는다. 거부된 새 초안은 저장되지 않았다.")
             raise write.WriteError(
                 "상한 초과 — 쓰지 않았다", v,
                 # 상한 초과에는 전문을 싣지 않는다(§9-2 5항). 이 거부는 **디스크를
@@ -378,7 +453,8 @@ def replace(session: str, text: str | None = None,
                 # 자기 초안이다. 해시 불일치와 다른 점이 그것이다 — 거기서는 다른
                 # 기기의 통합이 들어와 저장본이 호출자가 모르는 것이 돼 있다.
                 # `hash`·`remaining`·넘긴 자수는 그대로 온다.
-                **_state(scope, cur, full=False, rejected_chars=len(body)))
+                **_state(scope, cur, full=False, rejected_chars=len(body),
+                         recovery=recovery(session)))
 
         # 퇴출 기록 (§9-2 12항) — 상한 초과 거부 직후의 첫 성공한 쓰기가 덜어
         # 낸 구간. 엔진은 자르지 않는다: 호출자가 뺀 것을 적을 뿐이다. 거부와
@@ -387,7 +463,8 @@ def replace(session: str, text: str | None = None,
         # 조문이 막는 유일한 손실이다. 대장이 거부하면 아무것도 쓰지 않는다.
         key = _runs_key(session)
         removed = ""
-        if _pending(key):
+        pending = recovery(session)
+        if pending and (not pending["scope"] or pending["scope"] == scope):
             # 전체 치환이든 앵커 일괄이든 **저장본의 전후**로 잰다 — 원시
             # `edits`의 중간 문자열은 저장된 적이 없고 비밀값 필터도 지나지
             # 않았다(리뷰 P1). `cur`는 필터를 지나 저장된 것이지만, 대장은
@@ -412,7 +489,8 @@ def replace(session: str, text: str | None = None,
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
         _OVERFLOW_RUNS.pop(key, None)       # 성공이 연속 계수를 지운다
-        _pending_clear(key)                 # 덜어 낸 것이 없었어도 표식은 끝난다
+        if body != cur and pending and (not pending["scope"] or pending["scope"] == scope):
+            _pending_clear(key)             # no-op·다른 scope의 성공은 복구가 아니다
 
         # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
         # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한
@@ -420,6 +498,9 @@ def replace(session: str, text: str | None = None,
         # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 scope 기억은 작업
         # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
         extra = {"filtered": sorted(set(hits))}
+        remaining_recovery = recovery(session)
+        if remaining_recovery:
+            extra["recovery"] = remaining_recovery
         if ev:
             # 잘린 것이 어디 남았는지 — 처분은 다음 세션 시작이 싣는다(§9-3 1항)
             extra["evicted"] = ev["rid"]
