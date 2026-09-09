@@ -2,7 +2,7 @@
 """적대적 시나리오 하네스 — 갱신·릴리스의 불변식을 기계로 소진시킨다.
 
 왜 별도 하네스인가: `test_regression.py`는 **알려진** 결함을 영속 고정한다.
-이 파일은 아직 모르는 결함을 찾는다 — 실제 프로세스를 **SIGKILL로 죽이고**,
+이 파일은 아직 모르는 결함을 찾는다 — 실제 프로세스를 **강제 종료하고**,
 악의 릴리스와 동시 데몬을 조합해 무작위로 돌린 뒤, 매 시행마다 불변식을
 검사한다. 리뷰가 한 겹씩 벗겨 온 층(경로 봉쇄·원자성·동시성)을 사람이 아니라
 반복 시행이 훑게 하는 것이 목적이다.
@@ -18,7 +18,7 @@
     python3 _governance/_engine/tests/test_adversarial.py [--trials 12] [--seed 7]
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, random, shutil, signal, subprocess, sys, time
+import argparse, hashlib, json, os, random, shutil, subprocess, sys, time
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent
@@ -66,7 +66,7 @@ FRAMEWORK = {                       # 정본이 관리하는 프레임워크 파
     "_governance/_engine/osk/mod_a.py": "A = 1\n",
     "_governance/_engine/osk/mod_b.py": "B = 1\n",
     "_governance/_engine/osk/mod_c.py": "C = 1\n",
-    "docs/SETUP.md": "# 설치\n",
+    "docs/SETUP.md": (ENGINE.parent.parent / "docs/SETUP.md").read_text(encoding="utf-8"),
 }
 # mutation 구간을 실측 가능한 길이로 만든다 — 파일이 몇 개뿐이면 write 구간이
 # 너무 짧아 무작위 SIGKILL이 그 구간에 떨어지지 않고, 검사가 무해하게 통과한다.
@@ -93,21 +93,22 @@ def make_canonical(root: Path, version: str, files: dict) -> None:
     for rel, body in files.items():
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(body, encoding="utf-8")
+        p.write_text(body, encoding="utf-8", newline="\n")
     (root / "_governance/_engine/scripts").mkdir(parents=True, exist_ok=True)
     (root / "_governance/_engine/scripts/publish-manifest.txt").write_text(
-        MANIFEST, encoding="utf-8")
+        MANIFEST, encoding="utf-8", newline="\n")
     # 릴리스는 **스냅샷 안의 엔진**으로 검증한다 — 픽스처의 pad_*.py와 공존하도록
     # 병합 복사한다(디렉터리가 이미 있어도 패키지 파일이 들어가야 한다).
     shutil.copytree(ENGINE / "osk", root / "_governance/_engine/osk",
                     ignore=shutil.ignore_patterns("__pycache__"),
                     dirs_exist_ok=True)
-    (root / "README.md").write_text("readme\n", encoding="utf-8")
-    (root / "LICENSE").write_text("MIT\n", encoding="utf-8")
+    (root / "README.md").write_text("readme\n", encoding="utf-8", newline="\n")
+    (root / "LICENSE").write_text("MIT\n", encoding="utf-8", newline="\n")
     if not (root / ".git").exists():
         git(root, "init", "-q")
         git(root, "config", "user.email", "t@t")
         git(root, "config", "user.name", "t")
+        git(root, "config", "core.autocrlf", "false")
     git(root, "add", "-A")
     git(root, "commit", "-qm", f"tree {version}")
     # 비준증빙은 엔진의 release 모듈로 만든다(정본 쪽 절차 그대로).
@@ -146,8 +147,8 @@ def make_instance(root: Path) -> None:
 
 def run_update(inst: Path, bundle: Path, *extra: str,
                kill_after: float | None = None, kill_in_txn: float | None = None):
-    """갱신을 **별도 프로세스**로 돌린다. SIGKILL이므로 파이썬 예외 처리·finally가
-    전혀 돌지 않는 진짜 크래시다(전원 차단과 같은 결).
+    """갱신을 **별도 프로세스**로 돌린다. kill()은 POSIX에서 SIGKILL, Windows에서
+    TerminateProcess라 파이썬 예외 처리·finally가 돌지 않는 진짜 크래시다.
 
     `kill_in_txn`: 트랜잭션 표식(`.osk/txn/manifest.json`)이 **나타나는 순간**을
     관찰해 그 뒤 지정 시간에 죽인다 — 프로덕션 코드에 시험용 훅을 넣지 않고도
@@ -170,7 +171,7 @@ def run_update(inst: Path, bundle: Path, *extra: str,
     else:
         time.sleep(kill_after)
     if p.poll() is None:
-        os.kill(p.pid, signal.SIGKILL)
+        p.kill()
     else:
         HIT["kill_too_late"] += 1     # 이미 끝났다 — 이 시행은 크래시를 못 만들었다
     p.wait(timeout=30)
@@ -301,10 +302,7 @@ def scenario_crash_midway(tmp: Path, rnd: random.Random, trial: int) -> None:
 
     v2 = {k: (v + f"\n# v2 변경 {trial}\n") for k, v in v1.items()}
     can2 = base / "can2"
-    shutil.copytree(can, can2)
-    shutil.rmtree(can2 / ".git")
-    for rel, body in v2.items():
-        (can2 / rel).write_text(body, encoding="utf-8")
+    shutil.copytree(can, can2, ignore=shutil.ignore_patterns(".git"))
     make_canonical(can2, "v2.0.0", v2)
 
     versions = {"v1": v1, "v2": v2}
@@ -398,10 +396,7 @@ def scenario_daemon_race(tmp: Path, rnd: random.Random, trial: int) -> None:
 
     v2 = {k: v + "\n# v2\n" for k, v in FRAMEWORK.items()}
     can2 = base / "can2"
-    shutil.copytree(can, can2)
-    shutil.rmtree(can2 / ".git")
-    for rel, body in v2.items():
-        (can2 / rel).write_text(body, encoding="utf-8")
+    shutil.copytree(can, can2, ignore=shutil.ignore_patterns(".git"))
     make_canonical(can2, "v2.0.0", v2)
 
     run_update(inst, can2, "--apply", kill_in_txn=rnd.uniform(0.002, 0.05))

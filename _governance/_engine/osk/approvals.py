@@ -53,7 +53,12 @@ def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
     오름차순. 저장소 살림살이·대장·`_raw`는 뺀다(위 _SKIP_DIRS)."""
     out = []
     root_real = Path(os.path.realpath(ROOT))
-    for cur, dirs, files in os.walk(region_dir):
+    def scan_error(error):
+        if isinstance(error, FileNotFoundError) and Path(error.filename) == region_dir:
+            return  # 영역 자체의 삭제는 빈 작업본이다. 반려가 되살릴 수 있다.
+        raise error  # 읽지 못한 구획을 빈 승인본으로 기록하지 않는다.
+
+    for cur, dirs, files in os.walk(region_dir, onerror=scan_error):
         dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS
                          and not d.startswith("."))
         for name in sorted(files):
@@ -89,8 +94,11 @@ def working_tree_hash(region: str) -> str | None:
     if d is None:
         return None
     if d.is_dir():
-        return sha256_bytes(_manifest_blob(
-            [[rel, sha256_file(p)] for rel, p in _region_files(d)]))
+        try:
+            return sha256_bytes(_manifest_blob(
+                [[rel, sha256_file(p)] for rel, p in _region_files(d)]))
+        except OSError:
+            return None  # 불완전 관측은 판정 불능이며 clean이 아니다.
     if d.exists():
         return None                       # 디렉터리가 아닌 객체 — 판정 불능
     return sha256_bytes(_manifest_blob([]))          # 부재 = 빈 작업본

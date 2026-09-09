@@ -47,6 +47,7 @@ RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 
 mcp = FastMCP("osk-system")
 _searcher = None
+_index = None
 _fingerprint: str | None = None
 
 
@@ -73,17 +74,27 @@ def _vault_fingerprint() -> tuple[str, bool]:
     return h.hexdigest(), racy
 
 
-def _s():
-    """검색기 캐시. racy 창 안에서는 지문을 **접어 두지 않는다** — 그 창의
+def _idx():
+    """공유 색인 캐시. racy 창 안에서는 지문을 **접어 두지 않는다** — 그 창의
     지문은 변경을 구별하지 못하므로 키로 삼으면 낡은 색인을 붙잡게 된다.
     창이 닫히면 그때의 지문이 정상 키가 된다."""
-    global _searcher, _fingerprint
+    global _index, _searcher, _fingerprint
     fp, racy = _vault_fingerprint()
-    if _searcher is None or racy or fp != _fingerprint:
-        _searcher = search_mod.Searcher()
+    if _index is None or racy or fp != _fingerprint:
+        _index = graph.Index()
+        _searcher = None
         # 불완전 관측도 접어 두지 않는다 — 못 읽은 자리가 있는 색인을 키로
         # 붙잡으면 그 자리가 다시 읽히게 된 뒤에도 낡은 그림을 계속 쓴다.
-        _fingerprint = None if (racy or not _searcher.idx.complete) else fp
+        _fingerprint = None if (racy or not _index.complete) else fp
+    return _index
+
+
+def _s():
+    """BM25는 검색할 때만 만든다. 조회의 중복 id 검사는 공유 Index에 남는다."""
+    global _searcher
+    idx = _idx()
+    if _searcher is None:
+        _searcher = search_mod.Searcher(idx)
     return _searcher
 
 
@@ -154,7 +165,7 @@ def read_node(name: str) -> dict:
     본문 재작성 직전에만 부르고, 해시만 알려고 부르지 마라 — 쓰기 응답이
     `new_hash`로 준다. 손잡이는 응답의 `name`(제목)이다 — 다른 도구에 그대로
     넣고, 근거로 달 때도 그것을 쓴다. `hash`는 `expect_hash`에 그대로 넣는다."""
-    idx = _s().idx
+    idx = _idx()
     # 동명 노드는 **고르지 않는다** — id 갈래(아래)와 같은 규율이다. 구판은
     # 이름 갈래에만 이 방어가 없어, 쓰기 통로가 "어느 것인지 정해지지 않는다"고
     # 거부하는 상황에서 읽기는 조용히 한쪽을 돌려줬다(Mechanism §2 1항).
@@ -236,7 +247,7 @@ def overview(session: str | None = None) -> dict:
     (`create_node`의 `space`에 그대로 넣는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
     `broken`은 검색에 잡히지 않는 파손 파일이다. `session`을 주면 그 키의
     현재 결속(`session_scope`)을 함께 돌려준다."""
-    idx = _s().idx
+    idx = _idx()
     out = {
         "clusters": write._cluster_names(),
         "open_cases": write._open_cases(),

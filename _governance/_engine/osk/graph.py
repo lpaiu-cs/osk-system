@@ -232,6 +232,11 @@ def _scan(root: Path, prefix: tuple, errors: list | None = None):
     **리파스 포인트 디렉토리는 내려가지 않는다**(`_is_reparse` 참조). 따라
     내려가면 vault 밖의 트리가 안쪽 경로 조각을 뒤집어쓴 채 색인에 들어와
     봉쇄가 무의미해지고, 순환 링크에서는 순회가 끝나지 않는다."""
+    # 시작 Space도 자식 디렉터리와 같은 봉쇄를 거친다.
+    if _is_reparse(root):
+        if errors is not None:
+            errors.append(f"열거 불가: 리파스 포인트인 시작 구획 — {root}")
+        return
     stack = [(root, prefix)]
     while stack:
         d, pref = stack.pop()

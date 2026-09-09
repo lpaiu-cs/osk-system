@@ -325,16 +325,23 @@ def _reject_governance(kind: tuple) -> None:
             "저장소에서 하고 갱신으로 도달한다 (헌법 3조 6항·시행령 §10 1항)")
 
 
-def _pinned(target: str) -> bool:
-    """군집이 pin으로 고정돼 있는가 (시행령 §3 4·5항 · Mechanism §6 2항)."""
+def _pinned(*targets: str, subtree: str | None = None) -> bool:
+    """대상 또는 이동할 하위 군집의 pin·미확정 여부. 대장은 한 번만 읽는다."""
     try:
         recs = ledger_read(PINS)
     except Exception:
         return True             # 판독 실패는 보수적으로 '고정됨' — fail-closed
+    if ledger_damage(recs, PINS):
+        return True
+    wanted = {t.rstrip("/") for t in targets}
+    prefix = subtree.rstrip("/") + "/" if subtree else None
     keys = {r.get("target") for r in recs if r.get("target")}
     for k in keys:
+        if str(k).rstrip("/") not in wanted and not (prefix and str(k).startswith(prefix)):
+            continue
         r = resolve_one(recs, k, "target")
-        if r and r.get("kind") == "pin" and str(k).rstrip("/") == target.rstrip("/"):
+        # 분기·손상은 unpin이 아니다(Mechanism §3 1·2항).
+        if r is None or r.get("kind") != "unpin":
             return True
     return False
 
@@ -1020,10 +1027,22 @@ def _stored_edges(v) -> list[str]:
     `[[…/_raw/rec#3]]` → `[[…/_raw/rec]]`. 근거에서 증거로 가는 길이 그렇게
     끊긴다(시행령 §1 3항이 `_raw/` 참조에 라운드 제목을 요구한다).
 
-    그래서 델타는 **여기서 읽고** 동일성 비교만 `target_stem`으로 한다."""
+    그래서 델타는 **여기서 읽고** 동일성 비교는 `_edge_key`로 한다."""
     if v is None or v == "" or v == []:
         return []
     return [str(x) for x in _as_list(v)]
+
+
+def _edge_key(target: str, idx) -> tuple[str, str]:
+    """노드는 제목으로, 비노드 근거는 전체 경로와 앵커로 구별한다."""
+    s = target.strip()
+    if s.startswith("[[") and s.endswith("]]"):
+        s = s[2:-2]
+    path, sep, anchor = s.split("|", 1)[0].strip().partition("#")
+    path = path.strip().replace("\\", "/")
+    if ("/" in path or sep) and idx.resolve(path)[0] != "node":
+        return path.removesuffix(".md"), anchor
+    return contract.target_stem(path), ""
 
 
 def _as_links(pred: str, targets) -> str | list:
@@ -1144,10 +1163,10 @@ def update_node(name: str, body: str | None = None,
         # 두 번째는 이 결함을 재현해 기록한 직후였다 — 알고도 피해지지 않았다.
         for pred, tg in (add_edges or {}).items():
             cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
-            have = {contract.target_stem(x) for x in cur}  # 표기 차이는 같은 대상
+            have = {_edge_key(x, idx) for x in cur}
             new = []
             for t in _as_list(tg):
-                k = contract.target_stem(t)
+                k = _edge_key(t, idx)
                 if k in have:
                     continue
                 have.add(k)          # 한 호출 안의 중복도 한 번만 앉는다
@@ -1156,9 +1175,9 @@ def update_node(name: str, body: str | None = None,
                 meta[pred] = _as_links(pred, cur + new)
                 changed = True
         for pred, tg in (remove_edges or {}).items():
-            drop = {contract.target_stem(t) for t in _as_list(tg)}
+            drop = {_edge_key(t, idx) for t in _as_list(tg)}
             cur = _stored_edges(meta.get(pred))
-            keep = [t for t in cur if contract.target_stem(t) not in drop]
+            keep = [t for t in cur if _edge_key(t, idx) not in drop]
             if len(keep) != len(cur):
                 changed = True
                 if keep:
@@ -1251,11 +1270,10 @@ def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
     # 시행령 §3 4항 "필요하면 개별 노드의 배치에도 붙일 수 있다"). 구판은
     # 디렉토리만 대조해 노드 pin이 이동에서 조용히 무시됐다. 판독을 위로
     # 옮겨 id를 손에 쥔 뒤 함께 본다.
-    if (_pinned(posix_rel(path.parent, ROOT) + "/")
-            or _pinned(posix_rel(dest_dir, ROOT) + "/")
-            or _pinned(n.id)):
+    if _pinned(posix_rel(path.parent, ROOT) + "/",
+               posix_rel(dest_dir, ROOT) + "/", n.id):
         raise WriteError(
-            "pin으로 고정됐다 — 자동 재배정에서 제외된다 "
+            "pin으로 고정됐거나 pin 판정이 미확정이다 — 자동 재배정에서 제외된다 "
             "(시행령 §3 4항). 사용자 발의로만 옮긴다")
     return path, target, n
 
@@ -1470,10 +1488,13 @@ def move_cluster(name: str, dest_parent: str) -> dict:
             raise WriteError(
                 f"목적지에 같은 이름의 군집이 이미 있다: {posix_rel(target, ROOT)} "
                 f"— 하위 군집 이름은 전역에서 유일하다")
-        if _pinned(posix_rel(sdir, ROOT) + "/") or _pinned(posix_rel(ddir, ROOT) + "/"):
-            raise WriteError(
-                "pin으로 고정된 군집이다 — 사용자 발의로만 옮긴다 (시행령 §3 4항)")
         inside = [(p, k) for p, k in idx.nodes.values() if sdir in p.parents]
+        if _pinned(posix_rel(sdir, ROOT), posix_rel(ddir, ROOT),
+                   *(idx.node(p).id for p, _k in inside),
+                   subtree=posix_rel(sdir, ROOT)):
+            raise WriteError(
+                "pin으로 고정됐거나 pin 판정이 미확정인 군집·노드가 있다 "
+                "— 사용자 발의로만 옮긴다 (시행령 §3 4항)")
         for p, _k in inside:
             approvals.record_move(idx.node(p).id, p,
                                   target / p.relative_to(sdir))

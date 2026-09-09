@@ -69,6 +69,8 @@ SYNC_BRANCH = "main"
 def current_branch(vault_root, timeout=10):
     """현재 브랜치명. detached HEAD면 None."""
     r = _git(vault_root, ["symbolic-ref", "--quiet", "--short", "HEAD"], timeout)
+    if r.returncode not in (0, 1):       # 1만 정상 detached HEAD다
+        raise RuntimeError(f"git branch 판독 실패: {r.stderr.strip()[-600:]}")
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
 
 
@@ -78,6 +80,8 @@ def _tracked_dirty(vault_root, timeout):
     데리고 넘어가므로 main에서 커밋되는 것이 옳다. 반대로 추적 파일의 수정은
     누군가 그 브랜치에서 진행 중인 작업일 수 있어 옮기면 안 된다."""
     r = _git(vault_root, ["status", "--porcelain", "-z"], timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"git status 실패: {r.stderr.strip()[-600:]}")
     return any(e[:2] != "??" for e in r.stdout.split("\0") if e.strip())
 
 
@@ -90,6 +94,9 @@ def ensure_branch(vault_root, branch=SYNC_BRANCH, timeout=30):
     stash로 감추는 것은 사용자 데이터에 대한 파괴적 자동 조치다(이 모듈의
     기본 원칙). 미추적 파일은 새 노드이므로 함께 넘어가는 것이 옳다."""
     try:
+        pending = _in_progress(vault_root, timeout)
+        if pending:
+            return (False, "error", f"{pending} 진행 중 — 동기화하지 않는다(수동 개입 필요)")
         cur = current_branch(vault_root, timeout)
         if cur == branch:
             return (False, "ok", "")
@@ -113,25 +120,38 @@ def ensure_branch(vault_root, branch=SYNC_BRANCH, timeout=30):
         return (False, "error", repr(e))
 
 
+def _in_progress(vault_root, timeout):
+    """사용자가 끝내야 할 git 작업. worktree별 git 디렉터리와 미병합 index를 본다.
+    충돌을 이미 stage했어도 작업 표식이 남아 있으면 데몬이 대신 완료하지 않는다."""
+    r = _git(vault_root, ["rev-parse", "--absolute-git-dir"], timeout)
+    if r.returncode != 0 or not r.stdout.strip():
+        raise RuntimeError(f"git 작업 상태 판독 실패: {r.stderr.strip()[-600:]}")
+    for name in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD",
+                 "REVERT_HEAD", "sequencer", "BISECT_START"):
+        if os.path.exists(os.path.join(r.stdout.strip(), name)):
+            return name
+    r = _git(vault_root, ["ls-files", "--unmerged", "-z"], timeout)
+    if r.returncode != 0:
+        raise RuntimeError(f"git 미병합 index 판독 실패: {r.stderr.strip()[-600:]}")
+    return "미병합 index" if r.stdout else None
+
+
 def _in_rebase(vault_root, timeout) -> bool:
-    """진행 중 rebase 판별 — .git/rebase-{merge,apply}의 존재로, 로케일 무관."""
-    for name in ("rebase-merge", "rebase-apply"):
-        r = _git(vault_root, ["rev-parse", "--git-path", name], timeout)
-        if r.returncode == 0 and os.path.isdir(
-                os.path.join(str(vault_root), r.stdout.strip())):
-            return True
-    return False
+    return _in_progress(vault_root, timeout) in ("rebase-merge", "rebase-apply")
 
 
 def commit_local(vault_root, message, timeout=60):
     """add -A → commit(변경 없으면 'nothing to commit'을 ok로 처리). push는 하지 않는다.
     pull 전에 로컬을 먼저 commit해 두면 autostash 없이 rebase가 깔끔히 처리한다.
-    진행 중 rebase에서는 커밋을 거부한다 — 그대로 add -A 하면 충돌 마커를 커밋한다."""
+    진행 중 git 작업에서는 커밋을 거부한다 — add -A가 충돌을 해결한 것으로 만든다."""
     try:
-        if _in_rebase(vault_root, timeout):
+        pending = _in_progress(vault_root, timeout)
+        if pending:
             return (False, "error",
-                    "rebase 진행 중 — 충돌 마커를 커밋하지 않는다(수동 개입 필요)")
-        _git(vault_root, ["add", "-A"], timeout)
+                    f"{pending} 진행 중 — 커밋하지 않는다(수동 개입 필요)")
+        added = _git(vault_root, ["add", "-A"], timeout)
+        if added.returncode != 0:
+            return (False, "error", (added.stdout + added.stderr).strip()[-600:])
         c = _git(vault_root, ["commit", "-m", message], timeout)
         if c.returncode != 0 and "nothing to commit" not in (c.stdout + c.stderr).lower():
             return (False, "error", (c.stdout + c.stderr).strip()[-600:])
@@ -148,6 +168,9 @@ def pull(vault_root, timeout=60):
     abort가 실패하면 저장소가 충돌 상태로 남으므로 ("error")로 올린다 — 다음 주기가
     충돌 마커를 커밋하지 않게 하기 위해서다."""
     try:
+        pending = _in_progress(vault_root, timeout)
+        if pending:
+            return (False, "error", f"{pending} 진행 중 — pull하지 않는다(수동 개입 필요)")
         before = _head(vault_root, timeout)
         # 원격·브랜치를 **명시**한다. 인자 없는 pull은 현재 브랜치의 upstream을
         # 따르므로, upstream이 잘못 걸려 있으면 엉뚱한 브랜치를 정본에 섞는다.
