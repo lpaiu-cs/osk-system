@@ -8819,6 +8819,57 @@ def test_publish_external_engine_preserves_manifest():
               and not (data / "_governance/_engine/osk").exists())
 
 
+def test_publish_preserves_mapped_dot_directories():
+    """매니페스트의 점 디렉터리·그 안의 단일 파일도 같은 사본으로 발행한다."""
+    with tempfile.TemporaryDirectory() as td:
+        data = Path(td) / "data-vault"
+        validate.make_mini_vault(data)
+        source = data / ".github/workflows/check.yml"
+        source.parent.mkdir(parents=True)
+        checked = b"name: reviewed-workflow\n"
+        source.write_bytes(checked)
+        (data / ".cache").mkdir()
+        (data / ".cache/unmapped.txt").write_text("unmapped", encoding="utf-8")
+        actual_guard = publish.guard_vault
+        skipped = []
+        def snapshot_guard(root=None):
+            skipped.append(not (root / ".cache").exists())
+            return actual_guard(root)
+        cases = ((".github/", ".github/"),
+                 (".github/workflows/check.yml", ".github/workflows/check.yml"),
+                 ("./.github/", ".github/"))
+        with mock.patch.object(publish, "ROOT", data), \
+                mock.patch.object(publish, "guard_vault", side_effect=snapshot_guard):
+            for i, (src, dst) in enumerate(cases):
+                case = Path(td) / str(i)
+                case.mkdir()
+                pub, man = _pub_fixture(case)
+                man.write_text(f"MAP {src} -> {dst}\nKEEP LICENSE\n", encoding="utf-8")
+                report = publish.run(pub, manifest=man)
+                check(f"{src}: 명시된 점 경로의 보고가 가능하다",
+                      report["add"] == [".github/workflows/check.yml"]
+                      and not (pub / ".github").exists(), report)
+                applied = publish.run(pub, apply=True, manifest=man)
+                committed = subprocess.run(
+                    ["git", "-C", str(pub), "show", "HEAD:.github/workflows/check.yml"],
+                    check=True, capture_output=True).stdout
+                check(f"{src}: 검사한 점 경로의 내용이 발행된다",
+                      applied.get("committed") and committed == checked, applied)
+            check("MAP 밖 점 디렉터리는 계속 스냅샷에서 제외된다", all(skipped))
+            before = subprocess.run(["git", "-C", str(pub), "rev-parse", "HEAD"],
+                                    check=True, capture_output=True).stdout
+            source.write_text('token = "ghp_' + "A" * 36 + '"\n', encoding="utf-8")
+            error = None
+            try:
+                publish.run(pub, apply=True, manifest=man)
+            except publish.PublishError as exc:
+                error = str(exc)
+            after = subprocess.run(["git", "-C", str(pub), "rev-parse", "HEAD"],
+                                   check=True, capture_output=True).stdout
+            check("MAP된 점 디렉터리도 비밀값 가드를 우회하지 못한다",
+                  error is not None and "비밀값" in error and before == after)
+
+
 def test_validate_at_uses_snapshot_engine():
     """PYTHONPATH보다 앞서는 호출 cwd가 스냅샷 검증기를 바꿔치기하지 못한다."""
     from osk import release
@@ -8934,7 +8985,7 @@ if __name__ == "__main__":
                test_setup_doc_drift, test_turn_ledger, test_evictions,
                test_sync_pending_git_operations, test_publish_binds_checked_bytes,
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
-               test_validate_at_uses_snapshot_engine,
+               test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
                test_write_edge_coordinates, test_write_pin_subtree_and_fork,
                test_review_empty_memory_and_incomplete_region,
                test_review_root_reparse_and_lazy_search]:

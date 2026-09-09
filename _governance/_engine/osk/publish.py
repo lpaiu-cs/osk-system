@@ -157,11 +157,13 @@ def guard_vault(root: Path | None = None) -> list[str]:
 
 # ── 빌드·비교 ────────────────────────────────────────────────────────────
 
-def _snapshot_ignored(directory: str, names: list[str]) -> set[str]:
+def _snapshot_ignored(directory: str, names: list[str], mapped_roots: set[str]) -> set[str]:
     # layout_violations가 보지 않는 루트 도구 디렉터리만 뺀다. 노드 군집의
     # 같은 이름 폴더나 승인 blob·대장·raw는 전역 검증 대상이므로 보존한다.
     root = Path(directory)
-    ignored = {n for n in names if root == ROOT and
+    # 검증기 제외 구획이어도 명시적인 MAP 출처와 그 조상은 발행에 필요하다.
+    ignored = {n for n in names if root == ROOT and "" not in mapped_roots
+               and n not in mapped_roots and
                (n == ".git" or ((n.startswith(".") or n == "__pycache__")
                                 and (root / n).is_dir()))}
     # 검증기는 복사한 .py를 적재해야 한다. 같은 시각·크기의 낡은 pyc를
@@ -234,12 +236,20 @@ def run(public: Path, apply: bool = False, push: bool = False,
     if not (public / ".git").exists():
         raise PublishError(f"공개 저장소가 아니다: {public}")
     man = parse_manifest(manifest or MANIFEST)
+    mapped_roots = set()
+    for src, _dst in man["map"]:
+        source = (ROOT / src.rstrip("/")).resolve()
+        if not source.is_relative_to(ROOT.resolve()):
+            raise PublishError(f"MAP 출처가 vault 밖이다: {src}")
+        parts = source.relative_to(ROOT.resolve()).parts
+        mapped_roots.add(parts[0] if parts else "")  # vault 전체 MAP도 보존한다.
     # ponytail: 발행마다 검증 대상 전체를 복사한다. 복사 비용이 병목으로
     # 측정되면 검증 가능한 파일시스템 snapshot으로 대체한다.
     with tempfile.TemporaryDirectory(prefix="osk-publish-") as td:
         snap = Path(td) / "vault"
         try:
-            shutil.copytree(ROOT, snap, symlinks=True, ignore=_snapshot_ignored)
+            shutil.copytree(ROOT, snap, symlinks=True,
+                            ignore=lambda d, ns: _snapshot_ignored(d, ns, mapped_roots))
             items = collect(man, snap)
             # OSK_VAULT_ROOT로 데이터만 별도 배치한 경우에도 검증기는 이
             # 프로세스의 엔진 사본을 쓴다. 추가한 엔진은 발행 목록에 넣지 않는다.
