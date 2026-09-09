@@ -3,9 +3,10 @@
 등록(사용자 settings.json → hooks.SessionStart → command):
     <인스턴스>/.venv/Scripts/python.exe <인스턴스>/_governance/_engine/scripts/hooks/claude_session_start.py
 
-stdin으로 하네스가 주는 JSON({cwd, session_id, source, …})을 받고, stdout이
-그대로 세션 문맥에 주입된다. 지시("CLAUDE.md에 쓰라")는 읽혀도 눈앞에 없으면
-쓰이지 않는다는 것이 실측이라, 보여주는 일은 훅이 맡는다 — 보이지 않는 것은
+stdin으로 하네스가 주는 JSON({cwd, session_id, source, …})을 받고, stdout의
+hookSpecificOutput.additionalContext가 세션 문맥에 주입된다. 지시("CLAUDE.md에
+쓰라")는 읽혀도 눈앞에 없으면 쓰이지 않는다는 것이 실측이라, 보여주는 일은
+훅이 맡는다 — 보이지 않는 것은
 통합되지 않는다.
 
 세션 키는 cwd가 속한 git 저장소의 **본 저장소 디렉터리 이름**이다. 워크트리
@@ -38,6 +39,13 @@ ENGINE = Path(__file__).resolve().parents[2]        # …/_governance/_engine
 sys.path.insert(0, str(ENGINE))
 
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def emit_context(event: str, text: str) -> None:
+    """두 하네스의 JSON 계약 — `[osk …]` 평문은 Codex에서 JSON으로 오인된다."""
+    output = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+    sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def session_key(cwd: str) -> str:
@@ -120,7 +128,7 @@ def main() -> None:
         except Exception:
             recovery = "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]"
         if not scope:
-            sys.stdout.buffer.write("\n\n".join(p for p in (bootstrap, recovery) if p).encode("utf-8"))
+            emit_context("SessionStart", "\n\n".join(p for p in (bootstrap, recovery) if p))
             return
         mem = ""
         try:
@@ -136,8 +144,7 @@ def main() -> None:
         out = "\n\n".join(p for p in (banner, bootstrap, recovery, mem, block) if p)
         if not out:
             return
-        sys.stdout.buffer.write(out.encode("utf-8"))
-        sys.stdout.buffer.flush()
+        emit_context("SessionStart", out)
     except Exception:
         return                                       # 주입 실패가 세션을 막지 않는다
 

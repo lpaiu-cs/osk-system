@@ -5228,6 +5228,15 @@ def test_scope_memory_edits():
     check("크게 줄면 replaced_text가 온다", r.get("ok") and r.get("replaced_text") == cur, sorted(r))
 
 
+def _hook_context(raw, event):
+    """하네스처럼 wire JSON을 먼저 해석한 뒤 기존 본문 계약을 검사한다."""
+    if not raw:
+        return ""
+    output = json.loads(raw)["hookSpecificOutput"]
+    check("훅 JSON의 이벤트가 실행한 훅과 같다", output["hookEventName"] == event, output)
+    return output["additionalContext"]
+
+
 def test_cadence_hook():
     """케이던스 훅 — 9턴 동승 주입, 15턴 단독 허용, 갱신은 계수를 처음으로.
 
@@ -5258,7 +5267,7 @@ def test_cadence_hook():
             hook.main()
         finally:
             sys.stdin, sys.stdout = real_in, real_out
-        return buf.getvalue().decode("utf-8")
+        return _hook_context(buf.getvalue(), "UserPromptSubmit")
 
     # 결속 없음 — 세기만 하고 주입하지 않는다
     for _ in range(9):
@@ -5342,13 +5351,22 @@ def test_scope_recovery_handoff():
     env = {**os.environ, "OSK_VAULT_ROOT": str(ROOT), "PYTHONPATH": str(ENGINE)}
 
     def run_hook(name):
+        event = "SessionStart" if name == "claude_session_start.py" else "UserPromptSubmit"
+        payload["hook_event_name"] = event
         sub = subprocess.run([sys.executable, str(hooks / name)],
                              input=json.dumps(payload).encode("utf-8"), capture_output=True,
                              env=env, cwd=str(cwd), timeout=30)
         check("복구 훅 프로세스 성공", sub.returncode == 0, sub.stderr[-300:])
-        return sub.stdout.decode("utf-8")
+        return _hook_context(sub.stdout, event)
 
     try:
+        unbound = cwd / "unbound"
+        unbound.mkdir()
+        payload["cwd"] = str(unbound)
+        out = run_hook("claude_session_start.py")
+        check("결속 없는 세션도 JSON으로 시작 안내를 주입한다",
+              out.startswith("[osk 세션 시작") and "아직 scope 결속이 없다" in out)
+        payload["cwd"] = str(cwd)
         out = run_hook("claude_session_start.py")
         check("새 세션은 evict 없이도 복구를 싣는다", "[osk scope 복구 대기" in out, out[:300])
         check("복구는 현재 저장본과 기존 노드 우선 행동을 싣는다", cur in out and "update_node" in out and "엔트리 단위" in out)
@@ -5759,7 +5777,7 @@ def test_evictions():
             hook.main()
         finally:
             sys.stdin, sys.stdout = real_in, real_out
-        return buf.getvalue().decode("utf-8")
+        return _hook_context(buf.getvalue(), "SessionStart")
 
     out = hook_run()
     mem = _w(wm.read, S)["text"].strip()
