@@ -56,11 +56,6 @@ def _write(p: Path, s: str) -> None:
         pass
 
 
-def _emit(s: str) -> None:
-    sys.stdout.buffer.write(s.encode("utf-8"))
-    sys.stdout.buffer.flush()
-
-
 def main() -> None:
     try:
         env = json.load(sys.stdin)
@@ -82,7 +77,7 @@ def main() -> None:
     # 기억의 지금 상태 — 결속이 없거나 비었으면 세기만 한다(주입할 것이 없다).
     st, key = None, None
     try:
-        from claude_session_start import session_key
+        from claude_session_start import emit_context, session_key
         from osk import scope_memory, write
         key = session_key(cwd)
         if write.resolve_session(key):
@@ -134,7 +129,7 @@ def main() -> None:
                 f"{SOFT}턴부터 통합이 실리지 않았다. 지금 `scope_memory`로 통합하라 — "
                 f"이번엔 단독 턴이어도 된다. " + _EDITS_HOWTO)
         _write(f_count, "0")            # 15턴 뒤엔 처음부터 — 매 턴 재촉하지 않는다
-    _emit(body + "\n---\n" + st["text"])
+    emit_context("UserPromptSubmit", body + "\n---\n" + st["text"])
 
 
 if __name__ == "__main__":

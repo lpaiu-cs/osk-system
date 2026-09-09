@@ -234,7 +234,12 @@ Codex의 MCP 등록과 훅 등록은 별개다. `~/.codex/hooks.json`에 다음�
 ```
 
 파일명의 `claude_`는 기존 등록 경로를 유지하기 위한 이름이다. 두 하네스 모두
-stdin의 `cwd`·`session_id`를 주며, 이 두 이벤트의 일반 stdout을 문맥에 싣는다.
+stdin의 `cwd`·`session_id`를 주며, 두 훅은 stdout에
+`{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}`
+형태의 JSON을 출력한다. 케이던스 훅의 `hookEventName`은 `UserPromptSubmit`이다.
+`additionalContext` 안의 본문을 문맥에 싣는다. `[osk …]`로 시작하는 평문은
+Codex 0.153.4에서 JSON 출력으로 오인되어 주입에 실패하므로 이 봉투를 유지한다.
+케이던스에 도달하지 않은 턴은 빈 stdout으로 성공한다.
 SessionStart는 `overview` 호출과 안정된 세션 키도 안내한다. 결속이 없으면
 착지를 추측하지 말고 확인하라고 지시한다.
 
