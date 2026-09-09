@@ -3129,6 +3129,8 @@ def test_conflict_candidates():
 # ── 15b. 정본 릴리스와 갱신 (Mechanism §1-2 · 시행령 §10 6항) ────────────
 def test_release_and_update():
     from osk import release, update
+    installed_engine = ROOT / "_governance/_engine"
+    had_engine = installed_engine.exists()
 
     def git(root, *args):
         subprocess.run(["git", "-C", str(root), *args], check=True,
@@ -4284,6 +4286,10 @@ def test_release_and_update():
         # 뒷정리 — 이후 기준선 PASS 유지
         for f in mine:
             f.unlink(missing_ok=True)
+        # 이 시험이 설치한 부분 엔진을 후속 발행 시험에 남기지 않는다.
+        if not had_engine and installed_engine.exists():
+            assert installed_engine.resolve().is_relative_to(MINI.resolve())
+            rmtree_force(installed_engine)
         for d in (ROOT / "= UpdSkel", ROOT / "docs",
                   ROOT / "_governance/_engine/scripts",
                   ROOT / "_governance/_engine", ROOT / "_governance/records"):
@@ -6575,7 +6581,7 @@ def test_scan_confinement_and_case():
         real_space_of, real_isr = graph.space_of, graph._is_reparse
         graph.space_of = lambda p: (seen_paths.append(Path(p)),
                                     real_space_of(p))[1]
-        graph._is_reparse = lambda e: Path(e.path).name == "regr-reparse.md"
+        graph._is_reparse = lambda e: Path(getattr(e, "path", e)).name == "regr-reparse.md"
         try:
             list(graph.iter_nodes())
         finally:
@@ -8370,6 +8376,474 @@ def test_governance_amend_secrets_and_region():
             pass
 
 
+def test_review_empty_memory_and_incomplete_region():
+    from osk import approvals as A, scope_memory as sm
+    scope = "ReviewEmptyCAS"
+    scope_dir = ROOT / "= Scope" / scope
+    region = "= Domain/ReviewScanError"
+    region_dir = ROOT / region
+    saved = {p: p.read_bytes() if p.exists() else None
+             for p in (core.ROUTING, A.APPROVALS)}
+    try:
+        scope_dir.mkdir()
+        old = sm.replace("review-empty-cas", "old decision", space=f"= Scope/{scope}")
+        empty = sm.replace("review-empty-cas", "", expect_hash=old["hash"])
+        refused = _w(sm.replace, "review-empty-cas", "stale decision", old["hash"])
+        check("빈 기억에도 stale hash를 거부한다", refused.get("ok") is False, refused)
+        check("stale 쓰기가 삭제를 되돌리지 않는다", sm.read("review-empty-cas")["text"] == "")
+        check("빈 기억의 현행 hash는 새 쓰기를 허용한다",
+              sm.replace("review-empty-cas", "new decision", empty["hash"])["ok"])
+
+        region_dir.mkdir()
+        (region_dir / "reviewed.txt").write_text("reviewed", encoding="utf-8")
+        baseline = A.protect(region, "scan error fixture")
+        denied = region_dir / "new-subtree"
+        denied.mkdir()
+        (denied / "new.txt").write_text("not reviewed", encoding="utf-8")
+        work = A.working_tree_hash(region)
+        real_scandir = os.scandir
+        def scan_error(path):
+            if Path(path) == denied:
+                raise PermissionError(13, "fixture directory unreadable", str(path))
+            return real_scandir(path)
+        with mock.patch("os.scandir", side_effect=scan_error):
+            check("보호영역 열거 실패는 작업본 판정 불능", A.working_tree_hash(region) is None)
+            check("보호영역 열거 실패는 clean이 아니다", A.state(region) == "pending")
+            check("열거 실패로 보호를 해제하지 않는다", _raises(lambda: A.unprotect(region))())
+            try:
+                A.approve(region, baseline["accepted"], work)
+                rejected = False
+            except OSError:
+                rejected = True
+            check("부분 열거를 새 승인본으로 저장하지 않는다", rejected)
+        check("열거 실패 뒤에도 승인본은 유지된다", A.approved_hash(region) == baseline["accepted"])
+    finally:
+        rmtree_force(scope_dir)
+        sm.sm_path(scope).unlink(missing_ok=True)
+        rmtree_force(region_dir)
+        for p, data in saved.items():
+            if data is None:
+                p.unlink(missing_ok=True)
+            else:
+                p.write_bytes(data)
+
+
+def test_review_root_reparse_and_lazy_search():
+    import mcp_server as M
+    # 고립된 새 root로 실제 최상위 junction/symlink를 검사한다.
+    with tempfile.TemporaryDirectory() as td:
+        vault, outside = Path(td) / "vault", Path(td) / "outside"
+        vault.mkdir()
+        outside.mkdir()
+        marker = outside / "review-outside.md"
+        marker.write_text(node_text("260802-zzzz-9030", body="outside marker"), encoding="utf-8")
+        for base in ("= Domain", "_sources"):
+            link = vault / base
+            if os.name == "nt":
+                made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                                      capture_output=True).returncode == 0
+            else:
+                try:
+                    link.symlink_to(outside, target_is_directory=True)
+                    made = True
+                except OSError:
+                    made = False
+            if not made:
+                skip("최상위 리파스 포인트 봉쇄", "fixture 링크를 만들 수 없다")
+                continue
+            try:
+                with mock.patch.object(graph, "ROOT", vault):
+                    idx = graph.Index()
+                    check(f"최상위 {base} 링크는 완전한 색인이 아니다", not idx.complete)
+                    check(f"최상위 {base} 링크의 외부 파일을 색인하지 않는다",
+                          "review-outside" not in idx.names and "review-outside" not in idx.nonnode)
+                    signature, _ = graph.index_signature()
+                    check(f"최상위 {base} 링크의 외부 내용은 지문에도 없다", not signature)
+            finally:
+                if os.name == "nt":
+                    link.rmdir()  # junction 자체만 제거; 외부 트리를 순회하지 않는다.
+                else:
+                    link.unlink()
+    p = ROOT / "= Scope/W1/review-lazy-search.md"
+    duplicate = ROOT / "= Scope/W1/review-lazy-duplicate.md"
+    try:
+        p.write_text(node_text("260802-zzzz-9031", body="uniquelazysearchmarker"), encoding="utf-8")
+        _age_all()
+        M._index, M._searcher, M._fingerprint = None, None, None
+        with mock.patch.object(M.search_mod, "Searcher", side_effect=AssertionError("조회에서 BM25 생성")):
+            check("read_node는 BM25 없이 동작한다", "error" not in M.read_node(p.stem))
+            check("overview는 BM25 없이 동작한다", "error" not in M.overview())
+            duplicate.write_bytes(p.read_bytes())
+            check("BM25 분리 후에도 중복 id 핸들은 거부한다", "error" in M.read_node("260802-zzzz-9031"))
+            duplicate.unlink()
+        _age_all()
+        check("검색 호출은 BM25를 생성해 결과를 낸다",
+              any(r["title"] == p.stem for r in M.search("uniquelazysearchmarker")))
+    finally:
+        p.unlink(missing_ok=True)
+        duplicate.unlink(missing_ok=True)
+        M._index, M._searcher, M._fingerprint = None, None, None
+
+
+def test_sync_pending_git_operations():
+    """사용자의 미완료 git 작업·index를 데몬이 대신 완료하지 않는다."""
+    import sync_daemon, vault_sync
+    temp = Path(tempfile.mkdtemp(prefix="osk-sync-pending-"))
+    repo, bare = temp / "repo", temp / "origin.git"
+
+    def git(*args, expected=0, root=repo):
+        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                           text=True, timeout=30,
+                           creationflags=0x08000000 if os.name == "nt" else 0)
+        assert r.returncode == expected, (args, r.stdout, r.stderr)
+        return r.stdout
+
+    def commit(body, message):
+        (repo / "note.md").write_text(body, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", message)
+
+    try:
+        repo.mkdir()
+        bare.mkdir()
+        git("init", "-q", "--bare", root=bare)
+        git("init", "-q", "-b", "main")
+        git("config", "user.name", "fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        git("config", "core.autocrlf", "false")
+        commit("base\n", "base")
+        git("checkout", "-qb", "side")
+        commit("side\n", "side")
+        git("checkout", "-q", "main")
+        commit("main\n", "main")
+        git("remote", "add", "origin", str(bare))
+        git("push", "-qu", "origin", "main")
+        remote_head = git("rev-parse", "refs/heads/main", root=bare)
+        for operation in ("merge", "cherry-pick", "revert", "rebase"):
+            git(operation, "side", expected=1)
+            before = (git("rev-parse", "HEAD"), git("ls-files", "--stage"),
+                      (repo / "note.md").read_bytes())
+            check(f"{operation}: 충돌 전제", bool(git("ls-files", "--unmerged")))
+            check(f"{operation}: 데몬이 거부", "실패" in sync_daemon.once(repo))
+            for call in (lambda: vault_sync.commit_local(repo, "must refuse"),
+                         lambda: vault_sync.commit_push(repo, "must refuse"),
+                         lambda: vault_sync.pull(repo)):
+                check(f"{operation}: 직접 호출도 거부", call()[1] == "error")
+            after = (git("rev-parse", "HEAD"), git("ls-files", "--stage"),
+                     (repo / "note.md").read_bytes())
+            check(f"{operation}: HEAD·index·내용 보존", before == after)
+            check(f"{operation}: 원격 변경 없음",
+                  git("rev-parse", "refs/heads/main", root=bare) == remote_head)
+            # 충돌을 수동 stage해도 진행 표식이 남아 있으면 대신 완료하면 안 된다.
+            git("add", "note.md")
+            check(f"{operation}: stage된 충돌도 보류",
+                  vault_sync.commit_local(repo, "must refuse staged")[1] == "error")
+            git(operation, "--abort")
+        # MERGE_HEAD를 잃은 미병합 index도 독립적으로 보호한다.
+        git("merge", "side", expected=1)
+        (repo / ".git/MERGE_HEAD").unlink()
+        before_index = git("ls-files", "--stage")
+        check("작업 표식 없는 미병합 index도 보류",
+              vault_sync.commit_local(repo, "must refuse unmerged")[1] == "error"
+              and git("ls-files", "--stage") == before_index)
+        git("reset", "--hard", "-q", "HEAD")
+        for name in ("rebase-apply", "sequencer", "BISECT_START"):
+            marker = repo / ".git" / name
+            marker.mkdir() if name != "BISECT_START" else marker.write_text("main\n")
+            try:
+                check(f"{name}: 충돌 없는 진행 작업도 보류",
+                      vault_sync.ensure_branch(repo)[1] == "error"
+                      and vault_sync.commit_local(repo, "must refuse pending")[1] == "error")
+            finally:
+                marker.rmdir() if marker.is_dir() else marker.unlink()
+        original_git = vault_sync._git
+        for bad in (["rev-parse", "--absolute-git-dir"],
+                    ["ls-files", "--unmerged", "-z"], ["add", "-A"]):
+            calls = []
+            def fail_query(root, args, timeout):
+                calls.append(args)
+                return (subprocess.CompletedProcess(args, 128, "", "injected git error")
+                        if args == bad else original_git(root, args, timeout))
+            with mock.patch.object(vault_sync, "_git", side_effect=fail_query):
+                result = vault_sync.commit_local(repo, "must refuse git error")
+            check(f"git 실패 {bad[0]}: 후속 commit 금지",
+                  result[1] == "error" and not any(a[0] == "commit" for a in calls))
+        git("checkout", "-q", "side")
+        for bad in (["symbolic-ref", "--quiet", "--short", "HEAD"],
+                    ["status", "--porcelain", "-z"]):
+            with mock.patch.object(vault_sync, "_git", side_effect=fail_query):
+                result = vault_sync.ensure_branch(repo)
+            check(f"git 실패 {bad[0]}: 브랜치 전환 금지",
+                  result[1] == "error" and git("branch", "--show-current").strip() == "side")
+        git("checkout", "-q", "main")
+        check("정상 저장소는 계속 동기화", sync_daemon.once(repo) == "ok")
+    finally:
+        rmtree_force(temp)
+
+
+def test_publish_binds_checked_bytes():
+    """검사 후 원본 변경은 plan·설치·커밋의 바이트를 바꾸지 않는다."""
+    src = ROOT / "_governance" / "publish-snapshot.txt"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    checked = b"reviewed-marker\r\n"
+    changed = b"changed-after-check-marker\r\n"
+    src.write_bytes(checked)
+    fixed_ns = 1_700_000_000_000_000_000
+    os.utime(src, ns=(fixed_ns, fixed_ns))
+    held_guard = publish.guard_vault
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            pub, man = _pub_fixture(td)
+            subprocess.run(["git", "-C", str(pub), "config", "core.autocrlf", "false"],
+                           check=True)
+            man.write_text(
+                "MAP _governance/publish-snapshot.txt -> reviewed.txt\n"
+                "KEEP LICENSE\n", encoding="utf-8")
+            # run이 파일 내용 가드를 완료한 직후 원본을 변경한다.
+            def changed_after_content_guards(root=None):
+                src.write_bytes(changed)
+                return held_guard(root)
+            publish.guard_vault = changed_after_content_guards
+            result = publish.run(pub, apply=True, manifest=man,
+                                 message="Fix publish checked-byte fixture")
+            committed = subprocess.run(
+                ["git", "-C", str(pub), "show", "HEAD:reviewed.txt"],
+                check=True, capture_output=True).stdout
+            check("발행의 원본 변경 hook이 실행됐다", src.read_bytes() == changed)
+            check("발행 커밋은 검사한 바이트다", committed == checked, committed)
+            check("발행 설치도 검사한 바이트다",
+                  (pub / "reviewed.txt").read_bytes() == checked)
+            check("발행은 스냅샷의 파일 시각을 보존한다",
+                  (pub / "reviewed.txt").stat().st_mtime_ns == fixed_ns)
+            check("발행 응답의 경로는 공개 경로다",
+                  result["add"] == ["reviewed.txt"] and result["files"] == 1,
+                  result)
+
+            # 보고에서도 같은 snapshot을 비교하고 공개 파일은 건드리지 않는다.
+            src.write_bytes(checked)
+            before = subprocess.run(
+                ["git", "-C", str(pub), "rev-parse", "HEAD"],
+                check=True, capture_output=True).stdout
+            reported = publish.run(pub, manifest=man)
+            after = subprocess.run(
+                ["git", "-C", str(pub), "rev-parse", "HEAD"],
+                check=True, capture_output=True).stdout
+            check("발행 보고는 검사한 바이트를 비교한다",
+                  reported["same"] == 1 and not reported["change"], reported)
+            check("발행 보고는 공개 커밋을 만들지 않는다",
+                  before == after and not reported["applied"])
+    finally:
+        publish.guard_vault = held_guard
+        src.unlink(missing_ok=True)
+
+
+def test_publish_validator_uses_snapshot():
+    """원본의 동시 복구로 파손된 snapshot이 검증을 우회하지 못한다."""
+    gov = ROOT / "_governance" / "publish-validation-race.md"
+    other = ROOT / "= Scope" / "W1" / "publish-unexported-race.md"
+    gov.parent.mkdir(parents=True, exist_ok=True)
+    good = node_text("260802-pubs-0001", "발행 snapshot 검증")
+    original_guard = publish.guard_vault
+    try:
+        for label, broken in (("발행 대상", gov), ("발행 밖 노드", other)):
+            gov.write_text(good, encoding="utf-8")
+            content = good if broken == gov else node_text("260802-pubs-0002")
+            bad = "\n".join(ln for ln in content.splitlines()
+                            if not ln.startswith("summary:")) + "\n"
+            broken.write_text(bad, encoding="utf-8")
+            with tempfile.TemporaryDirectory() as td:
+                pub, man = _pub_fixture(td)
+                man.write_text(
+                    "MAP _governance/publish-validation-race.md -> _governance/race.md\n"
+                    "KEEP LICENSE\n", encoding="utf-8")
+                before = subprocess.run(
+                    ["git", "-C", str(pub), "rev-parse", "HEAD"],
+                    check=True, capture_output=True).stdout
+                def repaired_original(root=None):
+                    if broken == other:
+                        broken.unlink()
+                    else:
+                        broken.write_text(good, encoding="utf-8")
+                    return original_guard(root)
+                publish.guard_vault = repaired_original
+                refused = None
+                try:
+                    publish.run(pub, apply=True, manifest=man)
+                except publish.PublishError as exc:
+                    refused = str(exc)
+                after = subprocess.run(
+                    ["git", "-C", str(pub), "rev-parse", "HEAD"],
+                    check=True, capture_output=True).stdout
+                check(f"{label}: snapshot의 계약 위반으로 발행을 거부한다",
+                      refused is not None and "노드 계약" in refused, refused)
+                check(f"{label}: 거부 전 공개 파일이나 커밋을 바꾸지 않는다",
+                      before == after and not (pub / "_governance/race.md").exists())
+    finally:
+        publish.guard_vault = original_guard
+        gov.unlink(missing_ok=True)
+        other.unlink(missing_ok=True)
+
+
+def test_write_edge_coordinates():
+    """A round delta preserves every other round and same-named source file."""
+    from osk import raw
+    base = ROOT / "= Scope/W1/regr-write-coordinates"
+    sources = ROOT / "_sources/regr-write-coordinates"
+    raw_path = ROOT / "= Scope/W1/_raw/regr-write-coordinates.md"
+    prior_route = core.ROUTING.read_bytes() if core.ROUTING.exists() else None
+    try:
+        base.mkdir(parents=True)
+        write.create_node(base.name, "test hub", "hub", "fable-5",
+                          space=base.relative_to(ROOT).as_posix())
+        r = raw.append_rounds("regr-write-coordinates", raw_path.stem,
+                              [{"user": "u1", "agent": "a1"},
+                               {"user": "u2", "agent": "a2"}], space="= Scope/W1")
+        first, second = r["round_refs"]
+        n = write.create_node("regr-coordinate-node", "test evidence", "claim",
+                              "fable-5", space=base.relative_to(ROOT).as_posix(),
+                              edges={"derived-from": first})
+        p = ROOT / n["path"]
+        write.update_node(p.stem, add_edges={"derived-from": second})
+        check("different rounds can both be added",
+              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [first, second])
+        write.update_node(p.stem, remove_edges={"derived-from": first})
+        check("removing one round preserves the other",
+              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second])
+        write.update_node(p.stem, add_edges={"derived-from": second.replace(".md#", "#")})
+        check("optional md suffix still identifies the same round",
+              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second])
+        refs = []
+        for folder in ("one", "two"):
+            s = sources / folder / "evidence.md"
+            s.parent.mkdir(parents=True)
+            s.write_text("source material", encoding="utf-8")
+            refs.append(f"[[{s.relative_to(ROOT).as_posix()}#section]]")
+        write.update_node(p.stem, add_edges={"derived-from": refs})
+        write.update_node(p.stem, remove_edges={"derived-from": refs[0]})
+        check("same filename in different source paths remains distinct",
+              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second, refs[1]])
+        target = write.create_node("regr-coordinate-target", "target", "claim", "fable-5",
+                                   space=base.relative_to(ROOT).as_posix())
+        write.update_node(p.stem, add_edges={"derived-from": target["name"]})
+        write.update_node(p.stem, add_edges={"derived-from": f"[[{target['name']}]]"})
+        check("node title and wikilink still deduplicate",
+              len(write._stored_edges(contract.parse(p).meta.get("derived-from"))) == 3)
+    finally:
+        rmtree_force(base)
+        rmtree_force(sources)
+        raw_path.unlink(missing_ok=True)
+        if prior_route is None:
+            core.ROUTING.unlink(missing_ok=True)
+        else:
+            core.ROUTING.write_bytes(prior_route)
+
+
+def test_write_pin_subtree_and_fork():
+    """Cluster moves preserve contained pins; unresolved pin is not unpin."""
+    from osk import approvals
+    base = ROOT / "= Scope/W1/regr-write-pins"
+    saved = {p: p.read_bytes() if p.exists() else None
+             for p in (core.PINS, approvals.MOVES)}
+    try:
+        # Isolate the pin scenarios from pins intentionally left by earlier fixtures.
+        core.PINS.write_bytes(b"")
+        dirs = [base, base / "regr-pin-A", base / "regr-pin-B",
+                base / "regr-pin-A/regr-pin-child"]
+        for d in dirs:
+            d.mkdir(parents=True, exist_ok=True)
+            write.create_node(d.name, "test hub", "hub", "fable-5",
+                              space=d.relative_to(ROOT).as_posix())
+        src, dest = dirs[1], dirs[2]
+        n = write.create_node("regr-pin-contained", "test node", "claim", "fable-5",
+                              space=src.relative_to(ROOT).as_posix())
+        def refused():
+            result = _w(write.move_cluster, src.name, dest.relative_to(ROOT).as_posix())
+            return result.get("ok") is False and "pin" in str(result) and src.is_dir()
+        for target in (n["id"], dirs[3].relative_to(ROOT).as_posix() + "/"):
+            core.ledger_append(core.PINS, {"kind": "pin", "target": target})
+            check("containing cluster respects pin " + target, refused())
+            core.ledger_append(core.PINS, {"kind": "unpin", "target": target})
+        parent = core.ledger_read(core.PINS)[-1]["rid"]
+        last = parent
+        with core.PINS.open("a", encoding="utf-8") as f:
+            for _ in range(2):
+                last = core._next_rid(last)
+                f.write(json.dumps({"rid": last, "parents": [parent], "kind": "pin",
+                                    "target": n["id"], "at": core.now_iso()}) + "\n")
+        check("valid union-merged pin branches are unresolved",
+              not core.ledger_damage(core.ledger_read(core.PINS)) and
+              core.resolve_one(core.ledger_read(core.PINS), n["id"], "target") is None)
+        direct = _w(write.move_nodes, [n["name"]], dest.relative_to(ROOT).as_posix())
+        check("unresolved pin blocks a direct move", direct.get("ok") is False and "pin" in str(direct))
+        check("unresolved pin blocks a containing-cluster move", refused())
+        core.ledger_append(core.PINS, {"kind": "unpin", "target": n["id"]})
+        clean_pins = core.PINS.read_bytes()
+        core.PINS.write_bytes(clean_pins + clean_pins.splitlines(keepends=True)[0])
+        check("structurally damaged pins block automatic movement", refused())
+        core.PINS.write_bytes(clean_pins)
+        moved = write.move_cluster(src.name, dest.relative_to(ROOT).as_posix())
+        check("a resolved unpin permits the cluster move",
+              moved["ok"] and (dest / src.name / (n["name"] + ".md")).is_file())
+    finally:
+        rmtree_force(base)
+        for p, data in saved.items():
+            if data is None:
+                p.unlink(missing_ok=True)
+            else:
+                p.write_bytes(data)
+
+
+def test_publish_external_engine_preserves_manifest():
+    """데이터 vault의 일부 engine 파일을 보존하며 실행 엔진만 보충한다."""
+    with tempfile.TemporaryDirectory() as td:
+        data = Path(td) / "data-vault"
+        validate.make_mini_vault(data)
+        source = data / "docs" / "safe.txt"
+        source.parent.mkdir()
+        source.write_text("publish-external-engine-marker\n", encoding="utf-8")
+        manifest = data / "_governance" / "_engine" / "scripts" / "publish-manifest.txt"
+        manifest.parent.mkdir(parents=True)
+        text = ("MAP docs/safe.txt -> docs/safe.txt\n"
+                "MAP _governance/_engine/scripts/publish-manifest.txt -> publish-manifest.txt\n"
+                "KEEP LICENSE\n")
+        manifest.write_text(text, encoding="utf-8")
+        pub, _unused = _pub_fixture(td)
+        with mock.patch.object(publish, "ROOT", data):
+            result = publish.run(pub, apply=True, manifest=manifest)
+        check("외부 엔진·manifest-only 데이터 vault도 발행된다",
+              result.get("committed") and result["files"] == 2, result)
+        check("실행 엔진 보충은 기존 snapshot manifest를 덮지 않는다",
+              (pub / "publish-manifest.txt").read_text(encoding="utf-8") == text)
+        check("보충 엔진은 발행 목록과 원본 데이터 vault에 추가되지 않는다",
+              not (pub / "_governance/_engine/osk").exists()
+              and not (data / "_governance/_engine/osk").exists())
+
+
+def test_validate_at_uses_snapshot_engine():
+    """PYTHONPATH보다 앞서는 호출 cwd가 스냅샷 검증기를 바꿔치기하지 못한다."""
+    from osk import release
+    with tempfile.TemporaryDirectory(prefix="osk-validation-import-") as td:
+        snapshot = Path(td) / "snapshot"
+        caller = Path(td) / "caller-engine"
+        for engine, verdict, failures in (
+                (snapshot / "_governance/_engine", "FAIL", [{"snapshot rejection": []}]),
+                (caller, "PASS", [])):
+            package = engine / "osk"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "validate.py").write_text(
+                "def run():\n    return " + repr({"verdict": verdict, "fail": failures}) + "\n",
+                encoding="utf-8")
+        previous = Path.cwd()
+        try:
+            os.chdir(caller)
+            errors = release._validate_at(snapshot)
+        finally:
+            os.chdir(previous)
+        check("원본 엔진 cwd에서도 snapshot 검증기를 실행",
+              errors == ["검증기 FAIL: snapshot rejection"], errors)
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -8457,7 +8931,13 @@ if __name__ == "__main__":
                test_audit_fixes_2026_09_02,
                test_governance_amend_secrets_and_region,
                test_region_root_is_not_an_excluded_compartment,
-               test_setup_doc_drift, test_turn_ledger, test_evictions]:
+               test_setup_doc_drift, test_turn_ledger, test_evictions,
+               test_sync_pending_git_operations, test_publish_binds_checked_bytes,
+               test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
+               test_validate_at_uses_snapshot_engine,
+               test_write_edge_coordinates, test_write_pin_subtree_and_fork,
+               test_review_empty_memory_and_incomplete_region,
+               test_review_root_reparse_and_lazy_search]:
         try:
             fn()
         except Exception as e:

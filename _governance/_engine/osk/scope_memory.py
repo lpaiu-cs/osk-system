@@ -361,7 +361,7 @@ def replace(session: str, text: str | None = None,
                 ["기존 내용이 있다. 지금 상태를 읽고 그 `hash`를 `expect_hash`로 "
                  "함께 보내라 — 보지 않은 상태를 덮지 않기 위해서다."],
                 **_state(scope, cur))
-        if cur and expect_hash is not None and expect_hash != sha256_bytes(cur.encode("utf-8")):
+        if expect_hash is not None and expect_hash != sha256_bytes(cur.encode("utf-8")):
             raise write.WriteError(
                 "상태가 어긋났다 — 쓰지 않았다",
                 ["`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "

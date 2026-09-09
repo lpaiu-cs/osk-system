@@ -30,7 +30,7 @@ import argparse, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 from .core import ROOT, posix_rel
-from . import secrets, validate
+from . import graph, secrets, validate
 
 MANIFEST = ROOT / "_governance" / "_engine" / "scripts" / "publish-manifest.txt"
 
@@ -74,11 +74,14 @@ def _denied(rel: str, deny: list[str]) -> str | None:
     return None
 
 
-def collect(man: dict) -> list[tuple[Path, str]]:
+def collect(man: dict, root: Path | None = None) -> list[tuple[Path, str]]:
     """(사설 절대경로, 공개 상대경로) 목록. DENY에 걸리는 것은 여기서 빠진다."""
     out: list[tuple[Path, str]] = []
+    root = ROOT if root is None else root
     for src, dst in man["map"]:
-        s = ROOT / src.rstrip("/")
+        s = root / src.rstrip("/")
+        if not s.resolve().is_relative_to(root.resolve()):
+            raise PublishError(f"MAP 출처가 vault 밖이다: {src}")
         if src.endswith("/"):
             if not s.is_dir():
                 raise PublishError(f"MAP 출처가 디렉터리가 아니다: {src}")
@@ -137,9 +140,12 @@ def guard_secrets(items: list[tuple[Path, str]]) -> list[str]:
     return errs
 
 
-def guard_vault() -> list[str]:
+def guard_vault(root: Path | None = None) -> list[str]:
     """깨진 vault에서 발행하지 않는다."""
     try:
+        if root is not None:
+            from .release import _validate_at
+            return _validate_at(root)
         rep = validate.run()
     except Exception as e:
         return [f"검증기 실행 실패: {e}"]
@@ -150,6 +156,24 @@ def guard_vault() -> list[str]:
 
 
 # ── 빌드·비교 ────────────────────────────────────────────────────────────
+
+def _snapshot_ignored(directory: str, names: list[str]) -> set[str]:
+    # layout_violations가 보지 않는 루트 도구 디렉터리만 뺀다. 노드 군집의
+    # 같은 이름 폴더나 승인 blob·대장·raw는 전역 검증 대상이므로 보존한다.
+    root = Path(directory)
+    ignored = {n for n in names if root == ROOT and
+               (n == ".git" or ((n.startswith(".") or n == "__pycache__")
+                                and (root / n).is_dir()))}
+    # 검증기는 복사한 .py를 적재해야 한다. 같은 시각·크기의 낡은 pyc를
+    # 재사용하지 않되 이 폴더의 .md 등 실제 배치 검사 대상은 남긴다.
+    if "_engine" in root.parts and root.name == "__pycache__":
+        ignored.update(n for n in names if n.endswith(".pyc"))
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if entry.name not in ignored and graph._is_reparse(entry):
+                raise PublishError(f"발행 스냅샷은 리파스 경로를 복사하지 않는다: {entry.path}")
+    return ignored
+
 
 def build(items: list[tuple[Path, str]], man: dict, dest: Path) -> None:
     for src, rel in items:
@@ -210,15 +234,32 @@ def run(public: Path, apply: bool = False, push: bool = False,
     if not (public / ".git").exists():
         raise PublishError(f"공개 저장소가 아니다: {public}")
     man = parse_manifest(manifest or MANIFEST)
-    items = collect(man)
-    errs = guard_knowledge(items) + guard_secrets(items) + guard_vault()
-    if errs:
-        raise PublishError("발행 가드 위반 — 아무것도 쓰지 않았다:\n  "
-                           + "\n  ".join(errs))
-    p = plan(public, man, items)
-    if not apply:
-        return {"ok": True, "applied": False, "files": len(items), **p}
-    build(items, man, public)
+    # ponytail: 발행마다 검증 대상 전체를 복사한다. 복사 비용이 병목으로
+    # 측정되면 검증 가능한 파일시스템 snapshot으로 대체한다.
+    with tempfile.TemporaryDirectory(prefix="osk-publish-") as td:
+        snap = Path(td) / "vault"
+        try:
+            shutil.copytree(ROOT, snap, symlinks=True, ignore=_snapshot_ignored)
+            items = collect(man, snap)
+            # OSK_VAULT_ROOT로 데이터만 별도 배치한 경우에도 검증기는 이
+            # 프로세스의 엔진 사본을 쓴다. 추가한 엔진은 발행 목록에 넣지 않는다.
+            snap_engine = snap / "_governance" / "_engine"
+            if not (snap_engine / "osk").is_dir():
+                shutil.copytree(Path(__file__).resolve().parent.parent, snap_engine,
+                                ignore=shutil.ignore_patterns("__pycache__", ".git", ".venv"),
+                                dirs_exist_ok=True,
+                                copy_function=lambda src, dst: dst if Path(dst).exists()
+                                else shutil.copy2(src, dst))
+        except OSError as e:
+            raise PublishError(f"발행 스냅샷 생성 실패 — 아무것도 쓰지 않았다: {e}") from e
+        errs = guard_knowledge(items) + guard_secrets(items) + guard_vault(snap)
+        if errs:
+            raise PublishError("발행 가드 위반 — 아무것도 쓰지 않았다:\n  "
+                               + "\n  ".join(errs))
+        p = plan(public, man, items)
+        if not apply:
+            return {"ok": True, "applied": False, "files": len(items), **p}
+        build(items, man, public)
     for rel in p["remove"]:
         (public / rel).unlink(missing_ok=True)
     # **매니페스트가 통제하는 경로만** 스테이지한다. `git add -A`는 디스크에

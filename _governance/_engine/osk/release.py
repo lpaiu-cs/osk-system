@@ -131,7 +131,7 @@ def _validate_at(root: Path) -> list[str]:
             "'f': [list(x)[0] for x in r['fail']]}))")
     env = dict(os.environ, OSK_VAULT_ROOT=str(root), PYTHONPATH=str(engine))
     r = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                       text=True, env=env, timeout=120)
+                       text=True, env=env, cwd=engine, timeout=120)
     if not r.stdout.strip():
         return [f"검증기 실행 실패: {r.stderr.strip()[-300:]}"]
     try:
