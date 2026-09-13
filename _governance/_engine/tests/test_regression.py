@@ -5336,6 +5336,8 @@ def test_scope_recovery_handoff():
     cur = "- 남길 지식 " + "가" * 700 + "\n- 끝난 상태 " + "나" * 700
     r = _w(wm.replace, S, cur, None, f"= Scope/{scope}")
     check("복구 기준선", r.get("ok"), r)
+    check("쓰기 응답은 세션 키와 실제 변경을 싣는다",
+          r.get("session") == S and r.get("canonical_session") == S and r.get("changed") is True, r)
     before = len(ev.records())
     draft = cur + "\n- 거부된 새 초안 " + "다" * 200
     first = None
@@ -5345,12 +5347,19 @@ def test_scope_recovery_handoff():
         if first is None:
             first = rejected["recovery"]["since"]
         check("재거부로 관측 시점이 늦춰지지 않는다", rejected["recovery"]["since"] == first)
+        check("거부는 scope 이름 대신 호출한 세션 키를 이어 준다",
+              rejected.get("session") == S and f'session="{S}"' in rejected.get("session_note", "")
+              and "저장 위치" in rejected.get("session_note", ""), rejected)
     check("3회째에는 현재 재시도를 접는다", "접고" in " ".join(rejected["violations"]))
     check("초안은 표식에 보관하지 않는다", "거부된 새 초안" not in wm._pending_path(S).read_text(encoding="utf-8"))
     check("실패만으로 evict가 생기지 않는다", len(ev.records()) == before)
     check("읽기에 복구 대기가 보인다", _w(wm.read, S).get("recovery", {}).get("session") == S)
     write.alias_session("regr-recovery-old", S)
     check("별칭도 같은 복구 대기", wm.recovery("regr-recovery-old") == wm.recovery(S))
+    alias_read = _w(wm.read, "regr-recovery-old")
+    check("별칭은 호출 인자와 정본 키를 구별한다",
+          alias_read.get("session") == "regr-recovery-old" and alias_read.get("canonical_session") == S
+          and 'session="regr-recovery-old"' in alias_read.get("session_note", ""), alias_read)
 
     # 실제 훅 파일을 새 프로세스에서 실행한다. Codex/Claude 공통 wire 입력이다.
     cwd = Path(tempfile.mkdtemp(prefix="osk-recovery-")) / S
@@ -5382,6 +5391,8 @@ def test_scope_recovery_handoff():
         check("새 세션은 evict 없이도 복구를 싣는다", "[osk scope 복구 대기" in out, out[:300])
         check("복구는 현재 저장본과 기존 노드 우선 행동을 싣는다", cur in out and "update_node" in out and "엔트리 단위" in out)
         check("세션 시작은 overview를 안내한다", "overview(session=" in out)
+        check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",
+              f'session="{S}"' in out and "저장 위치" in out and "대신하지 않는다" in out)
         check("훅은 표식을 소비하지 않는다", wm.recovery(S) is not None)
         d = Path(tempfile.gettempdir()) / "osk-cadence"
         d.mkdir(exist_ok=True)
@@ -5392,14 +5403,18 @@ def test_scope_recovery_handoff():
             (d / f"{sid}.hash").write_text(r["hash"], encoding="utf-8")
             out = run_hook("claude_prompt_submit.py")
             check(f"{count + 1}턴은 새 요약 추가 대신 복구를 싣는다",
-                  "[osk scope 복구 대기" in out and "이 세션에서 배운 것을" not in out and cur in out)
+                   "[osk scope 복구 대기" in out and "이 세션에서 배운 것을" not in out and cur in out)
+            check("케이던스도 같은 세션 키의 복구를 안내한다",
+                  f'session="{S}"' in out and "대신하지 않는다" in out)
         check("15턴 뒤 매 턴 재촉하지 않는다", (d / f"{sid}.count").read_text() == "0")
 
         same = _w(wm.replace, S, cur, r["hash"])
         check("동일 전문의 성공은 대기를 소비하지 않는다", same.get("ok") and same.get("recovery"), same)
+        check("동일 전문은 changed false", same.get("changed") is False, same)
         same = _w(wm.replace, S, edits=[{"old_text": "남길 지식", "new_text": "임시 표현"},
                                          {"old_text": "임시 표현", "new_text": "남길 지식"}])
         check("상쇄된 edits 성공도 대기를 소비하지 않는다", same.get("ok") and same.get("recovery"), same)
+        check("상쇄된 edits는 changed false", same.get("changed") is False, same)
         check("no-op으로 evict도 늘지 않는다", len(ev.records()) == before)
 
         # 구판의 키만 든 표식도 다음 세션에서 복구할 수 있어야 한다.
@@ -5421,6 +5436,7 @@ def test_scope_recovery_handoff():
         check("낡은 해시 거부도 복구를 소비하지 않는다", not stale.get("ok") and wm.recovery(S) is not None)
         done = _w(wm.replace, S, edits=[{"old_text": "\n- 끝난 상태 " + "나" * 700, "new_text": ""}])
         check("실제 정리는 evict를 남기고 복구를 끝낸다", done.get("ok") and done.get("evicted") and wm.recovery(S) is None, done)
+        check("실제 정리는 changed true", done.get("changed") is True, done)
         check("실제로 덜어 낸 저장본만 evict", ev.records()[-1]["text"] == "- 끝난 상태 " + "나" * 700)
         out = run_hook("claude_session_start.py")
         check("성공 뒤 복구는 사라지고 정돈이 나타난다", "[osk scope 복구 대기" not in out and done["evicted"] in out)
@@ -7814,20 +7830,22 @@ def test_turn_ledger():
                 state["prompt"] += state["last_out"] + round(len(text) / 1.5)
 
         def _use(tid, name):
-            return {"type": "tool_use", "id": tid, "name": P + name, "input": {}}
+            args = ({"session": "repo", "text": "draft", "expect_hash": "sha256:" + "0" * 64}
+                    if name == "scope_memory" else {})
+            return {"type": "tool_use", "id": tid, "name": P + name, "input": args}
 
         def _dump(name, recs):
             (proj / name).write_text(chr(10).join(json.dumps(r, ensure_ascii=False) for r in recs) + chr(10),
                                      encoding="utf-8")
 
-        rej1 = '{"ok": false, "violations": ["1527자로 상한 1500자를 27자 넘는다. **순서대로** 하라 — ' + "x" * 400 + '"]}'
+        rej1 = '{"ok": false, "scope": "W", "violations": ["1527자로 상한 1500자를 27자 넘는다. **순서대로** 하라 — ' + "x" * 400 + '"]}'
         ok1 = '{"ok": true, "scope": "W", "chars": 1480, "remaining": 20, "hash": "sha256:' + "a" * 64 + '", "text": "' + "m" * 1400 + '"}'
-        rej2 = '{"ok": false, "violations": ["1600자로 상한 1500자를 100자 넘는다. ' + "y" * 300 + '"]}'
+        rej2 = '{"ok": false, "scope": "W", "violations": ["1600자로 상한 1500자를 100자 넘는다. ' + "y" * 300 + '"]}'
         okn = '{"ok": true, "name": "n1", "path": "= Scope/W/n1.md", "id": "260901-0000-n1x1", "new_hash": "sha256:' + "b" * 64 + '", "dangling": []}'
         ok2 = '{"ok": true, "scope": "W", "chars": 1450, "remaining": 50, "hash": "sha256:' + "c" * 64 + '", "text": "' + "n" * 1300 + '"}'
-        rej3 = '{"ok": false, "violations": ["1530자로 상한 1500자를 30자 넘는다. ' + "z" * 300 + '"]}'
+        rej3 = '{"ok": false, "scope": "W", "violations": ["1530자로 상한 1500자를 30자 넘는다. ' + "z" * 300 + '"]}'
         ok3 = '{"ok": true, "scope": "W", "chars": 1490, "remaining": 10, "hash": "sha256:' + "d" * 64 + '", "text": "' + "p" * 1300 + '"}'
-        rej4 = '{"ok": false, "violations": ["1540자로 상한 1500자를 40자 넘는다. ' + "w" * 300 + '"]}'
+        rej4 = '{"ok": false, "scope": "W", "violations": ["1540자로 상한 1500자를 40자 넘는다. ' + "w" * 300 + '"]}'
         ok4a = '{"ok": true, "scope": "W", "chars": 1500, "remaining": 0, "hash": "sha256:' + "e" * 64 + '", "text": "' + "q" * 1300 + '"}'
         ok4b = '{"ok": true, "scope": "W", "chars": 1495, "remaining": 5, "hash": "sha256:' + "f" * 64 + '", "text": "' + "r" * 1300 + '"}'
         okov = '{"ok": true, "clusters": []}'
@@ -8076,6 +8094,148 @@ def test_turn_ledger():
         out = tl.render(s)
         check("출력은 집계뿐 — 본문을 싣지 않는다",
               all(x not in out for x in ("mmmm", "nnnn", "xxxx", "pppp", "qqqq", "rrrr")), out[:200])
+
+        # 실제 open-hwp → rhwp 오종결의 최소 재현. 하네스 경로가 같아도
+        # OSK session과 scope가 모두 같고 저장본을 바꾼 쓰기만 닫아야 한다.
+        boundary = []
+        state["at"] = None
+
+        def call(tid, session, scope="W", *, ok=True, read=False, **result):
+            b = _use(tid, "scope_memory")
+            b["input"] = {"session": session}
+            if not read:
+                b["input"]["edits"] = [{"old_text": "kept", "new_text": "updated"}]
+            _assistant(boundary, "boundary", "M-" + tid, [b])
+            data = {"ok": ok, "scope": scope, "chars": 1400, "hash": "sha256:" + "a" * 64, **result}
+            if not ok:
+                data["violations"] = ["1513자로 상한 1500자를 13자 넘는다."]
+            _result(boundary, "boundary", tid, json.dumps(data, ensure_ascii=False))
+            return b
+
+        call("A-reject", "open-hwp", ok=False, recovery={"session": "open-hwp", "scope": "W"})
+        call("B-reject", "rhwp", ok=False)
+        call("B-done", "rhwp", changed=True)
+        call("A-read", "open-hwp", read=True)
+        call("A-noop", "open-hwp", changed=False)
+        call("A-other-scope", "open-hwp", "Other", changed=True)
+        call("A-unknown", "open-hwp")   # 구판 edits 응답: 변경 증거가 없다
+        legacy_noop = call("A-legacy-noop", "open-hwp")
+        legacy_noop["input"] = {"session": "open-hwp", "text": "same", "expect_hash": "sha256:" + "a" * 64}
+        call("A-pending", "open-hwp", changed=True, recovery={"session": "open-hwp", "scope": "W"})
+        _dump("boundary.jsonl", boundary)
+        partial = tl.read_corpus(lab / "projects", [])
+        eps = {e["start_tid"]: e for e in tl.episodes(partial)}
+        check("다른 키의 성공·읽기·no-op·다른 scope·미확인 쓰기는 원 거부를 닫지 않는다",
+              eps["A-reject"]["outcome"] == "unresolved", eps["A-reject"])
+        check("두 OSK 키의 거부는 별개 에피소드다",
+              eps.get("B-reject", {}).get("end_tid") == "B-done", eps)
+        check("변경 증거가 없는 성공은 미확인으로 센다",
+              eps["A-reject"].get("unverified_writes") == 1, eps["A-reject"])
+
+        call("A-done", "open-hwp", evicted="fixture-evict")
+        call("alias-reject", "old-name", ok=False, canonical_session="canonical")
+        call("alias-done", "canonical", changed=True, canonical_session="canonical")
+        call("cas-reject", "cas", ok=False)
+        cas = call("cas-done", "cas")
+        cas["input"] = {"session": "cas", "text": "new", "expect_hash": "sha256:" + "0" * 64}
+        call("missing-reject", None, scope=None, ok=False)
+        call("missing-done", None, scope=None, changed=True)
+        _dump("boundary.jsonl", boundary)
+        full = tl.read_corpus(lab / "projects", [])
+        eps = {e["start_tid"]: e for e in tl.episodes(full)}
+        check("같은 키·scope의 실제 evict 쓰기가 원 거부를 닫는다",
+              eps["A-reject"].get("end_tid") == "A-done", eps["A-reject"])
+        check("응답이 증명한 정본 별칭은 같은 키다",
+              eps["alias-reject"].get("end_tid") == "alias-done", eps["alias-reject"])
+        check("구판 전문 쓰기는 CAS 전후 해시로 변경을 입증한다",
+              eps["cas-reject"].get("end_tid") == "cas-done", eps["cas-reject"])
+        check("키·scope 누락을 같은 키로 추측하지 않는다",
+              eps["missing-reject"]["outcome"] == "unresolved", eps["missing-reject"])
+        summary = tl.summarize(full, 0, max(m["ts"] for m in full["msgs"].values()) + 1, None)
+        check("노드 쓰기 동반을 자율 증류 성공률로 발표하지 않는다",
+              summary["scope_memory"].get("autonomy") == "not_measured"
+              and "자율" in tl.render(summary))
+        # 구판 거부 뒤에 처음 나온 정본 키도 진행 중 에피소드에 반영한다.
+        boundary = []
+        call("late-success-reject", "late-success-old", ok=False)
+        call("late-success-done", "late-success-old", changed=True,
+             canonical_session="late-success-canonical")
+        call("late-refusal-first", "late-refusal-old", ok=False)
+        call("late-refusal-next", "late-refusal-old", ok=False,
+             canonical_session="late-refusal-canonical")
+        call("late-refusal-done", "late-refusal-canonical", changed=True)
+        call("renamed-reject", "renamed-old", ok=False, canonical_session="renamed-middle")
+        call("renamed-done", "renamed-old", changed=True, canonical_session="renamed-final")
+
+        # 두 이름으로 열렸던 같은 recovery를 합친다. 공유 검색·노드 쓰기는
+        # 중복 계수하지 않고, 서로 다른 이름으로 한 거부·미확인 쓰기는 보존한다.
+        call("merge-first", "merge-old", ok=False)
+        call("merge-old-unknown", "merge-old")
+        for tid, name in (("merge-search-before", "search"), ("merge-node-before", "create_node")):
+            _assistant(boundary, "boundary", "M-" + tid, [_use(tid, name)])
+            _result(boundary, "boundary", tid, '{"ok": true}')
+        call("merge-next", "merge-canonical", ok=False)
+        call("merge-canonical-unknown", "merge-canonical")
+        for tid, name in (("merge-search-shared", "search"), ("merge-node-shared", "update_node")):
+            _assistant(boundary, "boundary", "M-" + tid, [_use(tid, name)])
+            _result(boundary, "boundary", tid, '{"ok": true}')
+        call("merge-other-scope", "merge-old", "Other", ok=False)
+        merge_parent = [dict(r, sessionId="late-merge-parent") for r in boundary]
+        call("merge-link", "merge-old", "Other", read=True, canonical_session="merge-canonical")
+        call("merge-done", "merge-old", changed=True)
+        _dump("boundary.jsonl", boundary)
+        late = tl.read_corpus(lab / "projects", [])
+        tl.attribute_costs(late)
+        eps = {e["start_tid"]: e for e in tl.episodes(late)}
+        check("성공에서 늦게 배운 정본 키가 구판 거부를 닫는다",
+              eps["late-success-reject"].get("end_tid") == "late-success-done"
+              and eps["late-success-reject"]["session"] == "late-success-canonical",
+              eps["late-success-reject"])
+        check("거부에서 늦게 배운 정본 키가 같은 recovery를 둘로 쪼개지 않는다",
+              eps["late-refusal-first"].get("end_tid") == "late-refusal-done"
+              and eps["late-refusal-first"]["rejections"] == 2
+              and "late-refusal-next" not in eps, eps["late-refusal-first"])
+        check("같은 요청 키가 새 정본 이름을 알리면 이미 접힌 pending도 따라간다",
+              eps["renamed-reject"].get("end_tid") == "renamed-done"
+              and eps["renamed-reject"]["session"] == "renamed-final", eps["renamed-reject"])
+        merged = eps["merge-first"]
+        check("기존 별칭·정본 pending을 최초 거부 하나로 합치고 개별 쓰기를 보존한다",
+              merged.get("end_tid") == "merge-done" and merged["session"] == "merge-canonical"
+              and merged["rejections"] == 2 and merged["unverified_writes"] == 2
+              and merged["tokens"] == sum(tl._cost(late["uses"][t]) for t in ("merge-first", "merge-next"))
+              and "merge-next" not in eps, merged)
+        check("병합 전후 공유 검색·노드 쓰기는 한 번씩만 센다",
+              merged["search"] == 2 and merged["distill"] == 2, merged)
+        check("정본 키를 배운 scope 밖 pending도 옮기되 서로 다른 scope는 합치지 않는다",
+              eps["merge-other-scope"]["outcome"] == "unresolved"
+              and eps["merge-other-scope"]["session"] == "merge-canonical"
+              and eps["merge-other-scope"]["scope"] == "Other", eps["merge-other-scope"])
+        _dump("late-merge-parent.jsonl", merge_parent)
+        resumed = {e["start_tid"]: e for e in tl.episodes(tl.read_corpus(lab / "projects", []))}
+        check("복사된 접두부의 둘째 pending이 후손의 병합 뒤에 별개 에피소드로 남지 않는다",
+              "merge-next" not in resumed and resumed["merge-first"].get("end_tid") == "merge-done",
+              {k: v for k, v in resumed.items() if k.startswith("merge-")})
+        cut = late["msgs"]["M-late-success-done"]["ts"] - 0.5
+        earlier = {e["start_tid"]: e for e in tl.episodes(tl.window(late, cut))}
+        check("창 뒤의 정본 키·성공이 과거 창의 구판 거부를 닫지 않는다",
+              earlier["late-success-reject"]["outcome"] == "unresolved"
+              and earlier["late-success-reject"]["session"] == "late-success-old",
+              earlier["late-success-reject"])
+
+        # 형제 경로 A의 별칭 증거로 B의 정본 키 성공을 연결하면 안 된다.
+        boundary = []
+        call("late-fork-reject", "late-fork-old", ok=False)
+        prefix = list(boundary)
+        call("late-fork-alias", "late-fork-old", read=True, canonical_session="late-fork-canonical")
+        _dump("late-fork-a.jsonl", [dict(r, sessionId="late-fork-a") for r in boundary])
+        boundary = prefix
+        call("late-fork-done", "late-fork-canonical", changed=True)
+        _dump("late-fork-b.jsonl", [dict(r, sessionId="late-fork-b") for r in boundary])
+        forks = tl.read_corpus(lab / "projects", [])
+        eps = {e["start_tid"]: e for e in tl.episodes(forks)}
+        check("늦게 배운 별칭은 같은 접두부를 공유하는 형제 경로로 새지 않는다",
+              eps["late-fork-reject"]["outcome"] == "unresolved", eps["late-fork-reject"])
+
     finally:
         rmtree_force(lab)
 

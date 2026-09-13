@@ -114,7 +114,7 @@ def main() -> None:
     # 훅만 그 값을 알고 호출자는 몰라서 매번 지어냈다(대장에 죽은 결속이 쌓였다).
     head = (f"[osk 케이던스 — user 턴 {n}] 아래는 `= Scope/{scope}` 기억의 지금 "
             f"전문이다 — {chars}/{limit}자 · **여유 {limit - chars}자** · "
-            f"hash {st['hash']} · `session=\"{key}\"`.\n")
+            f"hash {st['hash']}.\n{st['session_note']}\n")
     if st.get("recovery"):
         # 실패한 통합을 같은 '새것 추가' 지시로 다시 시작시키지 않는다.
         body = head + scope_memory.recovery_block(key)
