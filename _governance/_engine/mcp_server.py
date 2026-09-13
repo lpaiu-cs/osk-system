@@ -276,20 +276,16 @@ def run_validators() -> dict:
 @mcp.tool()
 def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
                 session: str | None = None, space: str | None = None,
-                edges: Edges | None = None) -> dict:
-    """노드 생성 — `title`이 곧 파일명이자 다른 도구의 `name`이며 전역 유일이고,
-    `body`는 본문 전문이다.
-    `space`는 군집의 전체 경로(`"= Scope/W1"` 꼴, 맨 이름 `W1`은 거부)이니
-    모르면 `overview`를 먼저 보라. `session`은 저장소 이름처럼 세션이 바뀌어도
-    같은 값이며 첫 성공이 그 키를 영구 결속한다 — 1회용 대화 id를 넣지 마라.
-    `edges`의 `derived-from`은 근거를 가리킨다 — 노드 근거는 그 **제목**으로,
-    비노드 근거는 `[[경로]]`·`[[경로#제목]]`로 준다.
-    `conflicts`는 열린 사건 번호(`CASE-2026-1` 꼴)만 받는다.
-    응답의 `bound_scope`는 이 쓰기가
-    **새로** 세운 결속이다(이미 결속돼 있었으면 null) — 결속 뒤에는 `space`를
-    생략한다."""
+                edges: Edges | None = None, settle: str | None = None) -> dict:
+    """생성. 전역 유일 `title`=파일명=`name`, `body`=본문 전문.
+    `space`는 전체 군집 경로(`= Scope/W1`); 모르면 `overview`.
+    `session`은 저장소명 같은 고정 키(대화 id 금지). 첫 성공에 영구 결속;
+    이후 `space` 생략. `bound_scope`는 새 결속만 보고한다.
+    `edges`: `derived-from` 근거는 노드 제목 또는 비노드 `[[경로]]`·`[[경로#제목]]`,
+    `conflicts`는 열린 사건 번호(`CASE-2026-1`).
+    `settle`=보존한 evict rid. 저장 후 처분 결과: `settlement`."""
     return _guard(write.create_node, title, summary, body, drafter,
-                  session, space, edges)
+                  session, space, edges, settle)
 
 
 @mcp.tool()
@@ -299,13 +295,14 @@ def update_node(name: str, body: str | None = None,
                 add_edges: Edges | None = None,
                 remove_edges: Edges | None = None,
                 old_text: str | None = None,
-                new_text: str | None = None) -> dict:
-    """`name` 노드의 본문·summary·엣지 수정. 본문은 **앵커가 기본**이다 —
-    `old_text`(본문에 **정확히 한 번**)를 `new_text`로 바꾸며 해시가 필요 없다.
-    `body`는 전문 치환이라 `expect_hash`가 필수이니 통째로 새로 쓸 때만 쓴다.
-    엣지는 델타라 선-읽기가 필요 없다. `dangling`은 대상이 아직 없는 링크다."""
+                new_text: str | None = None, settle: str | None = None) -> dict:
+    """`name`의 본문·summary·엣지 수정. 기본은 해시 없는 앵커 편집:
+    본문의 유일한 `old_text`를 `new_text`로 바꾼다.
+    전문 `body` 치환은 `expect_hash` 필수. 엣지는 선-읽기 없는 델타.
+    `dangling`=대상 없는 링크. `settle`=이 본문 갱신으로 보존한 evict rid;
+    저장 후 처분 결과: `settlement`."""
     return _guard(write.update_node, name, body, expect_hash, summary,
-                  add_edges, remove_edges, old_text, new_text)
+                  add_edges, remove_edges, old_text, new_text, settle)
 
 
 @mcp.tool()

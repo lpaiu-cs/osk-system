@@ -36,7 +36,7 @@ from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
                    ledger_append, ledger_damage, ledger_read, mutation_lock,
                    new_node_id, now_kst, posix_rel, resolve_in_root,
                    resolve_one, sha256_bytes, sha256_file)
-from . import approvals, contract, graph, signatures
+from . import approvals, contract, evictions, graph, signatures
 
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
@@ -854,7 +854,7 @@ def resolve_landing(session: str, space: str | None,
 
 def create_node(title: str, summary: str, body: str, drafter: str,
                 session: str | None = None, space: str | None = None,
-                edges: dict | None = None) -> dict:
+                edges: dict | None = None, settle: str | None = None) -> dict:
     """노드 생성. id·시각은 **서버 전속**이고 author는 `agent` 고정이다(D5).
     space가 없으면 세션 라우팅으로 착지를 정하고, 라우팅이 없으면 space를
     요구한 뒤 성공 시 그 scope로 세션을 확정한다."""
@@ -865,6 +865,8 @@ def create_node(title: str, summary: str, body: str, drafter: str,
         # 바뀌지 않으므로 한 벌이면 족하다.
         idx = graph.Index()
         _require_complete(idx)
+        if settle is not None:
+            evictions.require_evict(settle)
         errs = (_check_edges(edges, idx) + _title_errors(title)
                 + ephemeral_session_errors(session) + routing_errors(session))
         if errs:
@@ -953,6 +955,8 @@ def create_node(title: str, summary: str, body: str, drafter: str,
         data, errs = _validate_render(path, meta, body, idx)
         if errs:
             raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
+        if settle is not None and not _norm_body(contract.parse_bytes(path, data).body):
+            raise WriteError("보존할 본문이 없다 — 쓰지도 처분하지도 않았다")
 
         _atomic_write(path, data)
         # 방금 쓴 노드를 손에 든 색인의 **이름 색인**에 등재한다 —
@@ -973,11 +977,12 @@ def create_node(title: str, summary: str, body: str, drafter: str,
             # 2항), 소속은 `space_of`가 이미 정확히 말해 준다.
             bind_session(session, kind[1])
             bound_now = kind[1]             # 실제로 결속했을 때만 보고한다
-        return {"ok": True, "name": title,
+        result = {"ok": True, "name": title,
                 "path": posix_rel(path, ROOT), "id": meta["id"],
                 "new_hash": sha256_bytes(data),
                 "bound_scope": bound_now,
                 "dangling": _dangling_of(path, meta, body, idx)}
+        return evictions._after_node_write(result, settle, "node", title)
 
 
 def _require_complete(idx) -> None:
@@ -1072,7 +1077,7 @@ def update_node(name: str, body: str | None = None,
                 add_edges: dict | None = None,
                 remove_edges: dict | None = None,
                 old_text: str | None = None,
-                new_text: str | None = None) -> dict:
+                new_text: str | None = None, settle: str | None = None) -> dict:
     """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
     상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
 
@@ -1114,6 +1119,8 @@ def update_node(name: str, body: str | None = None,
     with _Lock():
         idx = graph.Index()                     # 이 쓰기가 쓰는 색인은 하나다
         _require_complete(idx)
+        if settle is not None:
+            evictions.require_evict(settle)
         errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx)
         if errs:
             raise WriteError("계약 위반 — 쓰지 않았다", errs)
@@ -1122,6 +1129,8 @@ def update_node(name: str, body: str | None = None,
             raise WriteError(f"노드 없음: {name}")
         kind = graph.space_of(path)
         _reject_governance(kind)
+        if settle is not None:
+            evictions.require_target(path.stem, idx)
         try:
             n = contract.parse(path)
         except Exception as e:
@@ -1201,7 +1210,7 @@ def update_node(name: str, body: str | None = None,
                           and not (add_edges or {}).keys() - {"conflicts"}
                           and not (remove_edges or {}).keys() - {"conflicts"}
                           and bool(add_edges or remove_edges))
-        if not changed:
+        if not changed and settle is None:
             # 변경이 없으면 쓰지 않는다 — 내용이 그대로인데 updated만
             # 갱신하면 "상태가 변경될 때 갱신한다"(시행령 §1 4항)에 어긋난다
             return {"ok": True, "no_change": True, "name": name,
@@ -1215,6 +1224,12 @@ def update_node(name: str, body: str | None = None,
         data, errs = _validate_render(path, meta, new_body, idx)
         if errs:
             raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
+        if settle is not None:
+            saved_body = _norm_body(contract.parse_bytes(path, data).body)
+            if not saved_body or saved_body == _norm_body(n.body):
+                raise WriteError("보존할 본문이 없거나 변경되지 않았다 — 쓰지도 처분하지도 않았다", [
+                    "settle은 이 호출이 보존한 evict의 rid다. 이미 노드에 보존된 내용이면 "
+                    "본문을 확인한 뒤 CLI tidy settle로 기록하라."])
         _atomic_write(path, data)
         out = {"ok": True, "name": name, "path": posix_rel(path, ROOT),
                "id": n.id, "new_hash": sha256_bytes(data),
@@ -1225,7 +1240,7 @@ def update_node(name: str, body: str | None = None,
                "dangling": _dangling_of(path, meta, new_body, idx)}
         if replaced_summary is not None:
             out["replaced_summary"] = replaced_summary
-        return out
+        return evictions._after_node_write(out, settle, "merged", path.stem)
 
 
 def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
