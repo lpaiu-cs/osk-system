@@ -8020,6 +8020,87 @@ def test_turn_ledger():
         check("노드 쓰기 동반을 자율 증류 성공률로 발표하지 않는다",
               summary["scope_memory"].get("autonomy") == "not_measured"
               and "자율" in tl.render(summary))
+        # 구판 거부 뒤에 처음 나온 정본 키도 진행 중 에피소드에 반영한다.
+        boundary = []
+        call("late-success-reject", "late-success-old", ok=False)
+        call("late-success-done", "late-success-old", changed=True,
+             canonical_session="late-success-canonical")
+        call("late-refusal-first", "late-refusal-old", ok=False)
+        call("late-refusal-next", "late-refusal-old", ok=False,
+             canonical_session="late-refusal-canonical")
+        call("late-refusal-done", "late-refusal-canonical", changed=True)
+        call("renamed-reject", "renamed-old", ok=False, canonical_session="renamed-middle")
+        call("renamed-done", "renamed-old", changed=True, canonical_session="renamed-final")
+
+        # 두 이름으로 열렸던 같은 recovery를 합친다. 공유 검색·노드 쓰기는
+        # 중복 계수하지 않고, 서로 다른 이름으로 한 거부·미확인 쓰기는 보존한다.
+        call("merge-first", "merge-old", ok=False)
+        call("merge-old-unknown", "merge-old")
+        for tid, name in (("merge-search-before", "search"), ("merge-node-before", "create_node")):
+            _assistant(boundary, "boundary", "M-" + tid, [_use(tid, name)])
+            _result(boundary, "boundary", tid, '{"ok": true}')
+        call("merge-next", "merge-canonical", ok=False)
+        call("merge-canonical-unknown", "merge-canonical")
+        for tid, name in (("merge-search-shared", "search"), ("merge-node-shared", "update_node")):
+            _assistant(boundary, "boundary", "M-" + tid, [_use(tid, name)])
+            _result(boundary, "boundary", tid, '{"ok": true}')
+        call("merge-other-scope", "merge-old", "Other", ok=False)
+        merge_parent = [dict(r, sessionId="late-merge-parent") for r in boundary]
+        call("merge-link", "merge-old", "Other", read=True, canonical_session="merge-canonical")
+        call("merge-done", "merge-old", changed=True)
+        _dump("boundary.jsonl", boundary)
+        late = tl.read_corpus(lab / "projects", [])
+        tl.attribute_costs(late)
+        eps = {e["start_tid"]: e for e in tl.episodes(late)}
+        check("성공에서 늦게 배운 정본 키가 구판 거부를 닫는다",
+              eps["late-success-reject"].get("end_tid") == "late-success-done"
+              and eps["late-success-reject"]["session"] == "late-success-canonical",
+              eps["late-success-reject"])
+        check("거부에서 늦게 배운 정본 키가 같은 recovery를 둘로 쪼개지 않는다",
+              eps["late-refusal-first"].get("end_tid") == "late-refusal-done"
+              and eps["late-refusal-first"]["rejections"] == 2
+              and "late-refusal-next" not in eps, eps["late-refusal-first"])
+        check("같은 요청 키가 새 정본 이름을 알리면 이미 접힌 pending도 따라간다",
+              eps["renamed-reject"].get("end_tid") == "renamed-done"
+              and eps["renamed-reject"]["session"] == "renamed-final", eps["renamed-reject"])
+        merged = eps["merge-first"]
+        check("기존 별칭·정본 pending을 최초 거부 하나로 합치고 개별 쓰기를 보존한다",
+              merged.get("end_tid") == "merge-done" and merged["session"] == "merge-canonical"
+              and merged["rejections"] == 2 and merged["unverified_writes"] == 2
+              and merged["tokens"] == sum(tl._cost(late["uses"][t]) for t in ("merge-first", "merge-next"))
+              and "merge-next" not in eps, merged)
+        check("병합 전후 공유 검색·노드 쓰기는 한 번씩만 센다",
+              merged["search"] == 2 and merged["distill"] == 2, merged)
+        check("정본 키를 배운 scope 밖 pending도 옮기되 서로 다른 scope는 합치지 않는다",
+              eps["merge-other-scope"]["outcome"] == "unresolved"
+              and eps["merge-other-scope"]["session"] == "merge-canonical"
+              and eps["merge-other-scope"]["scope"] == "Other", eps["merge-other-scope"])
+        _dump("late-merge-parent.jsonl", merge_parent)
+        resumed = {e["start_tid"]: e for e in tl.episodes(tl.read_corpus(lab / "projects", []))}
+        check("복사된 접두부의 둘째 pending이 후손의 병합 뒤에 별개 에피소드로 남지 않는다",
+              "merge-next" not in resumed and resumed["merge-first"].get("end_tid") == "merge-done",
+              {k: v for k, v in resumed.items() if k.startswith("merge-")})
+        cut = late["msgs"]["M-late-success-done"]["ts"] - 0.5
+        earlier = {e["start_tid"]: e for e in tl.episodes(tl.window(late, cut))}
+        check("창 뒤의 정본 키·성공이 과거 창의 구판 거부를 닫지 않는다",
+              earlier["late-success-reject"]["outcome"] == "unresolved"
+              and earlier["late-success-reject"]["session"] == "late-success-old",
+              earlier["late-success-reject"])
+
+        # 형제 경로 A의 별칭 증거로 B의 정본 키 성공을 연결하면 안 된다.
+        boundary = []
+        call("late-fork-reject", "late-fork-old", ok=False)
+        prefix = list(boundary)
+        call("late-fork-alias", "late-fork-old", read=True, canonical_session="late-fork-canonical")
+        _dump("late-fork-a.jsonl", [dict(r, sessionId="late-fork-a") for r in boundary])
+        boundary = prefix
+        call("late-fork-done", "late-fork-canonical", changed=True)
+        _dump("late-fork-b.jsonl", [dict(r, sessionId="late-fork-b") for r in boundary])
+        forks = tl.read_corpus(lab / "projects", [])
+        eps = {e["start_tid"]: e for e in tl.episodes(forks)}
+        check("늦게 배운 별칭은 같은 접두부를 공유하는 형제 경로로 새지 않는다",
+              eps["late-fork-reject"]["outcome"] == "unresolved", eps["late-fork-reject"])
+
     finally:
         rmtree_force(lab)
 

@@ -391,7 +391,13 @@ def episodes(corpus: dict) -> list[dict]:
     끝까지 닫히지 않은 경로만 있으면 미해결 하나다."""
     msgs, uses, results = corpus["msgs"], corpus["uses"], corpus["results"]
     best: dict = {}
-    for path in session_paths(corpus).values():
+    paths = sorted(session_paths(corpus).values())
+    for index, path in enumerate(paths):
+        # A copied prefix adds no observation beyond its continuation. Keeping
+        # its legacy pending entries would resurrect an episode merged later.
+        # Lexicographic neighbours suffice; divergent sibling paths both remain.
+        if index + 1 < len(paths) and paths[index + 1][:len(path)] == path:
+            continue
         pending = {}
         aliases = {}
         for mid in path:
@@ -408,8 +414,32 @@ def episodes(corpus: dict) -> list[dict]:
                             cur["search"] += 1
                     continue
                 requested = use.get("osk_session")
-                if requested and res.get("canonical_session"):
-                    aliases[requested] = res["canonical_session"]
+                canonical = res.get("canonical_session")
+                if requested and canonical and aliases.get(requested) != canonical:
+                    # A resumed legacy path can learn the alias after its first
+                    # refusal. Re-key active episodes before handling this result.
+                    previous_session = aliases.get(requested, requested)
+                    aliases.update({name: canonical for name, target in aliases.items()
+                                    if target in {requested, previous_session}})
+                    aliases[previous_session] = canonical
+                    aliases[requested] = canonical
+                    normalized = {}
+                    for (old_session, old_scope), episode in pending.items():
+                        new_session = aliases.get(old_session, old_session)
+                        new_key = (new_session, old_scope)
+                        episode["session"] = new_session
+                        previous = normalized.get(new_key)
+                        if previous is not None:
+                            first, later = sorted((previous, episode), key=lambda e: e["start"])
+                            for field in ("rejections", "tokens", "unverified_writes"):
+                                first[field] += later[field]
+                            # Both episodes observed the same non-scope calls;
+                            # the earlier one's interval already includes them all.
+                            for field in ("distill", "search"):
+                                first[field] = max(first[field], later[field])
+                            episode = first
+                        normalized[new_key] = episode
+                    pending = normalized
                 session = aliases.get(requested, requested)
                 scope = res.get("scope")
                 # 누락된 키를 None끼리 묶으면 출처 불명 성공이 거부를 닫는다.
