@@ -148,11 +148,11 @@ def recovery_block(session: str) -> str:
     if not row:
         return ""
     head = (f"[osk scope 복구 대기 — {row['scope'] or '착지 확인 필요'} · "
-            f"session={json.dumps(row['session'], ensure_ascii=False)} · "
+            f"session={json.dumps(session, ensure_ascii=False)} · "
             f"관측 {row['since']}]\n")
     if row["binding_changed"]:
         return head + "실패 당시와 지금의 scope 결속이 다르다. 기존 복구 대기를 다른 scope에 적용하지 말고 사용자에게 알려라."
-    return head + RECOVERY_NOTE
+    return head + session_note(session, row["scope"]) + "\n" + RECOVERY_NOTE
 
 _CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
             "번지게 하지 않는다 —")
@@ -214,7 +214,13 @@ def _read(p: Path) -> str:
     return canon(p.read_bytes().decode("utf-8")) if p.is_file() else ""
 
 
-def _state(scope: str, text: str, *, full: bool = True, **extra) -> dict:
+def session_note(session: str, scope: str | None) -> str:
+    """훅과 도구 응답이 같은 호출 키를 이어 준다. scope 이름은 키가 아니다."""
+    return (f"`scope_memory`의 `session={json.dumps(session, ensure_ascii=False)}`를 그대로 쓴다. "
+            f"`= Scope/{scope}`는 저장 위치이며 session 키를 대신하지 않는다.")
+
+
+def _state(session: str, scope: str, text: str, *, full: bool = True, **extra) -> dict:
     """**잔여는 늘, 전문은 읽기와 거부에만** 싣는다(§9-2 5항).
 
     잔여가 매 응답에 실려야 호출자가 넘치기 전에 정리한다 — 호출자는 글자를 셀
@@ -229,7 +235,9 @@ def _state(scope: str, text: str, *, full: bool = True, **extra) -> dict:
     특히 해시 불일치는 다른 기기의 통합이 들어왔다는 뜻이라(§9-2 8항) 전문
     없이는 그 위에서 다시 통합할 수 없다."""
     text = canon(text)
-    st = {"scope": scope, "path": posix_rel(sm_path(scope), ROOT)}
+    st = {"session": session, "canonical_session": _runs_key(session),
+          "session_note": session_note(session, scope),
+          "scope": scope, "path": posix_rel(sm_path(scope), ROOT)}
     if full:
         st["text"] = text
     st.update({"chars": len(text), "limit": LIMIT,
@@ -250,7 +258,7 @@ def _landing(session: str, space: str | None) -> tuple[str, str | None]:
         b = write.resolve_session(session)
         if b:
             raise write.WriteError(str(e), e.violations,
-                                   **_state(b, _read(sm_path(b)))) from None
+                                   **_state(session, b, _read(sm_path(b)))) from None
         raise
     if not scope:
         raise write.WriteError(
@@ -277,7 +285,7 @@ def read(session: str, space: str | None = None) -> dict:
     _OVERFLOW_RUNS.pop(_runs_key(session), None)
     pending = recovery(session)
     extra = {"recovery": pending} if pending else {}
-    return {"ok": True, **_state(scope, _read(sm_path(scope)), **extra)}
+    return {"ok": True, **_state(session, scope, _read(sm_path(scope)), **extra)}
 
 
 def replace(session: str, text: str | None = None,
@@ -357,13 +365,13 @@ def replace(session: str, text: str | None = None,
                 "expect_hash 없음 — 쓰지 않았다",
                 ["기존 내용이 있다. 지금 상태를 읽고 그 `hash`를 `expect_hash`로 "
                  "함께 보내라 — 보지 않은 상태를 덮지 않기 위해서다."],
-                **_state(scope, cur))
+                **_state(session, scope, cur))
         if expect_hash is not None and expect_hash != sha256_bytes(cur.encode("utf-8")):
             raise write.WriteError(
                 "상태가 어긋났다 — 쓰지 않았다",
                 ["`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "
                  "들어왔을 수 있다 — 아래 전문 위에서 다시 통합하라."],
-                **_state(scope, cur))
+                **_state(session, scope, cur))
 
         # 비밀값 필터의 적용 지점이 여기다. 전사는 vault 밖이라 필터가 닿지
         # 않지만, scope 기억은 vault 안이고 에이전트가 쓴다 — 요약에 섞이면
@@ -380,7 +388,7 @@ def replace(session: str, text: str | None = None,
                 raise write.WriteError(
                     "기억이 비어 있다 — 쓰지 않았다",
                     ["`edits`는 기존 본문을 고친다. 첫 쓰기는 `text`로 하라."],
-                    **_state(scope, cur))
+                    **_state(session, scope, cur))
             work = cur
             for i, e in enumerate(edits, 1):
                 n = work.count(e["old_text"])
@@ -394,7 +402,7 @@ def replace(session: str, text: str | None = None,
                          if n == 0 else
                          ["어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
                           "넣어 앵커를 **유일하게** 만들어라."]),
-                        **_state(scope, cur))
+                        **_state(session, scope, cur))
                 work = work.replace(e["old_text"], e["new_text"], 1)
             text = work
         filtered, hits = secrets.filter_text(text)
@@ -411,7 +419,7 @@ def replace(session: str, text: str | None = None,
                 ["scope 기억은 노드가 아니므로 frontmatter를 두지 않는다"
                  "(Mechanism §9-2 1항). 선두의 `---`는 색인이 frontmatter로 "
                  "읽어 검증기를 깨뜨린다 — 다른 줄로 시작하라."],
-                **_state(scope, cur))
+                **_state(session, scope, cur))
 
         if len(body) > LIMIT:
             key = _runs_key(session)
@@ -428,7 +436,8 @@ def replace(session: str, text: str | None = None,
                       "그 뒤 남은 것으로 다시 보내라. 넘칠 때마다 전문을 다시 보내지 "
                       "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다."))
             v = [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
-                 f"넘는다. 복구할 자리는 `= Scope/{scope}`다."]
+                 f"넘는다. 복구할 키는 `session={json.dumps(session, ensure_ascii=False)}`, "
+                 f"저장 위치는 `= Scope/{scope}`다."]
             if not stop:
                 v.append(RECOVERY_NOTE + " " + retry)
             if stop:
@@ -450,7 +459,7 @@ def replace(session: str, text: str | None = None,
                 # 자기 초안이다. 해시 불일치와 다른 점이 그것이다 — 거기서는 다른
                 # 기기의 통합이 들어와 저장본이 호출자가 모르는 것이 돼 있다.
                 # `hash`·`remaining`·넘긴 자수는 그대로 온다.
-                **_state(scope, cur, full=False, rejected_chars=len(body),
+                **_state(session, scope, cur, full=False, rejected_chars=len(body),
                          recovery=recovery(session)))
 
         # 퇴출 기록 (§9-2 12항) — 상한 초과 거부 직후의 첫 성공한 쓰기가 덜어
@@ -477,7 +486,7 @@ def replace(session: str, text: str | None = None,
                     [f"퇴출 기록부에 적지 못했다 — {e}. 상한에 밀려 잘라 낸 것은 "
                      f"기록 없이 사라질 수 없다(§9-2 12항) — 대장을 복구한 뒤 "
                      f"다시 보내라. 저장본은 그대로다."],
-                    **_state(scope, cur, full=False)) from None
+                    **_state(session, scope, cur, full=False)) from None
         # 결속을 **쓰기 전에** 세운다. 뒤에 두면 대장이 손상됐을 때 파일은
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
@@ -494,7 +503,7 @@ def replace(session: str, text: str | None = None,
         # 호출자가 가장 손대기 쉬운 것이 `text:""`다 — 가장 위험한 버튼이 가장
         # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 scope 기억은 작업
         # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
-        extra = {"filtered": sorted(set(hits))}
+        extra = {"filtered": sorted(set(hits)), "changed": body != cur}
         remaining_recovery = recovery(session)
         if remaining_recovery:
             extra["recovery"] = remaining_recovery
@@ -518,4 +527,4 @@ def replace(session: str, text: str | None = None,
                 f"직전 상태는 여기 말고 어디에도 남지 않는다.")
         # 성공에는 전문을 싣지 않는다(§9-2 5항) — 호출자가 방금 보낸 것이다.
         # `hash`는 남는다: 다음 쓰기가 재읽기 없이 연쇄한다.
-        return {"ok": True, **_state(scope, body, full=False, **extra)}
+        return {"ok": True, **_state(session, scope, body, full=False, **extra)}
