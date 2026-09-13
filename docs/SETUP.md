@@ -107,6 +107,9 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `check` | 권한 사전 검사 |
 | `validators` | **사용자 전속** — 검증기 활성화 현황·전환 (Mechanism §6-1) |
 | `raw append` / `raw status` | `_raw/` 세션 기록 — 훅 경로(아래) |
+| `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
+| `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
+| `growth plan` / `growth prompt` / `growth run` / `growth review` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
@@ -182,14 +185,15 @@ printf '%s' "$새전문" | .venv/bin/python -m osk.cli sm write   --session <키
 주입은 세션 시작 한 번으로 끝나지 않는다. **UserPromptSubmit** 훅이 user 턴을
 세어, **9턴**에 기억의 지금 전문·해시·여유·세션 키를 주입하며 "다음 도구 호출에
 **함께** 실어라"를 지시하고, **15턴**까지 갱신이 없으면 다시 주입하되 단독 턴을
-허용한다. 기억이 갱신되면(해시가 바뀌면) 계수는 처음으로 돌아간다.
+허용한다. 공유 기억의 해시 변화는 이 대화가 통합됐다는 증거가 아니다.
+완료된 원문과 실제 검토 결과를 대화별로 확인하며, 같은 대화의 재개에도 대기를 유지한다.
 
 ```
 <인스턴스>/.venv/Scripts/python.exe <인스턴스>/_governance/_engine/scripts/hooks/claude_prompt_submit.py
 ```
 
-- 계수와 마지막 해시는 **세션·기기 로컬**이다(임시 디렉터리, `session_id` 단위).
-  vault에 두면 동기화되어 공유되는데, 계수는 지식이 아니다.
+- 계수·검토 대기는 **기기 로컬**이다(vault 루트·하네스·실제 대화 ID 단위).
+  지식과 원문은 vault에 남는다. 기억이 비어 있어도 통합 시점은 알린다.
 - 두 훅 모두 **엔진을 import한다** — 등록한 인터프리터가
   인스턴스의 `.venv`여야 한다(의존이 없으면 조용히 아무것도 하지 않는다).
 - 두 훅 모두 주입문에 **그 세션의 키**를 싣는다. `scope_memory`·`append_raw`의
@@ -202,7 +206,7 @@ printf '%s' "$새전문" | .venv/bin/python -m osk.cli sm write   --session <키
 CLI `status`의 `scope_recovery`에 별도로 보이며, 읽기·주입·같은 내용의 재저장으로
 사라지지 않는다. 이는 거부된 새 초안을 보관하는 기능이 아니다.
 
-### Codex에도 두 훅을 등록한다
+### Codex에도 훅을 등록한다
 
 Codex의 MCP 등록과 훅 등록은 별개다. `~/.codex/hooks.json`에 다음처럼 등록한다.
 `<PYTHON>`은 인스턴스 가상환경의 실행 파일, `<ENGINE>`은 그 인스턴스의
@@ -228,6 +232,14 @@ Codex의 MCP 등록과 훅 등록은 별개다. `~/.codex/hooks.json`에 다음�
         "timeout": 30,
         "statusMessage": "osk 기억 통합 시점 확인"
       }]
+    }],
+    "Stop": [{
+      "hooks": [{
+        "type": "command",
+        "command": "<PYTHON> <ENGINE>/scripts/hooks/capture_stop.py",
+        "timeout": 30,
+        "statusMessage": "osk 완료된 원문 포착"
+      }]
     }]
   }
 }
@@ -244,7 +256,7 @@ SessionStart는 `overview` 호출과 안정된 세션 키도 안내한다. 결�
 착지를 추측하지 말고 확인하라고 지시한다.
 
 Codex는 새로 추가하거나 바뀐 훅 정의를 사용자가 신뢰하기 전까지 건너뛴다.
-CLI의 `/hooks`에서 위 두 정의를 확인하고 신뢰한 뒤 새 세션에서 주입을 확인한다.
+CLI의 `/hooks`에서 각 정의를 확인하고 신뢰한 뒤 새 세션에서 주입을 확인한다.
 설정 파일 존재만으로 실제 실행을 판정하지 않는다. 큰 출력은 기본 문맥 상한에서
 파일로 넘겨질 수 있으므로 주입 메시지의 저장 경로가 보이면 그 전문도 확인한다.
 계약과 설정 형식은 [Codex Hooks 문서](https://learn.chatgpt.com/docs/hooks)를 따른다.
@@ -290,8 +302,90 @@ printf '%s' '{"rounds":[{"user":"…","agent":"…"}]}' \
 어댑터는 `rounds`를 읽고 **그 뒤부터만** 보낸다. `damaged`가 참이면 기록의 index 열이
 손상된 것이며, 그 위에는 이어 쓰지 않는다(append도 같은 이유로 거부한다).
 
-전사에서 라운드를 뽑는 어댑터 자체는 하네스마다 다르므로 이 저장소에 두지 않는다 —
-프레임워크가 아는 것은 위의 봉투 계약까지다.
+동봉된 `osk.transcripts`는 Claude/Codex JSONL에서 완료된 라운드를 읽는다.
+`integration capture`는 안정된 기록 이름에 저장본 접두부를 대조한 뒤 새 꼬리만
+`raw.append_rounds`로 보낸다. 저장 후 응답이나 로컬 커서가 유실돼도 중복 append를
+하지 않는다. 미완료 라운드·손상·지원하지 않는 전사 형식은 포착 완료로 세지 않는다.
+Stop 훅도 포착만 하며 작업을 강제로 연장하지 않는다. Stop이 전사의 최종 완료 표식보다
+먼저 실행되거나 생략되면 `integration catchup`이 이미 등록된 대화의 꼬리를 따라잡는다.
+Claude의 Stop에도 같은 `scripts/hooks/capture_stop.py`를 등록한다.
+새 대화에 과거 미완료 지시를 강제로 주입하지 않으며, 전용 성장 실행이 그 검토를 맡는다.
+중단된 라운드는 중단 사실을 함께 보존하며 정상 종료나 지식 증류 성공으로 세지 않는다.
+
+파일 읽기 결과는 원본 경로·도구 결과 위치·해시 참조로 대신한다(Bylaws §2 2항).
+복합 셸 출력은 파일 전문과 실험 출력의 자동 구분을 보장할 수 없어 원본 전사 참조로
+남기고 포착 범위 진단을 기록한다. 이 경우 상세 도구 근거의 재열람에는 하네스 전사를
+보관해야 한다. 참조가 있다는 사실을 원문 바이트까지 vault에 보존했다는 뜻으로 읽지 않는다.
+
+```powershell
+$env:PYTHONPATH='_governance/_engine'
+.venv/Scripts/python.exe -m osk.cli integration capture --harness codex --conversation <대화ID> --session <고정키> --transcript <전사JSONL>
+.venv/Scripts/python.exe -m osk.cli integration prompt --harness codex --conversation <대화ID>
+```
+
+검토는 새 원문과 기존 scope 기억을 함께 읽고, 검색으로 기존 노드 갱신을 우선한다.
+MCP `create_node`·`update_node`의 `distill`에 `{key,sources,hub}`를 주면 근거와
+허브 연결까지 확인한다. `key`는 검토 작업의 고정 키, `sources`는 노드 또는 정확한
+raw 라운드 참조(선정 시 해시가 있으면 `{ref,hash}`), `hub`는 기존 착지 허브다.
+본문 저장 뒤 연결 실패는 `distillation.status="pending"`이다. 같은 요청을 재시도하면
+같은 노드에서 이어간다. 다음 worker는 `update_node(name=<기존 id>,distill={resume:<키>})`로
+저장된 본문을 재작성하지 않고 연결을 복구한다. `settle`과 `distill`은 함께 주지 않고
+증류 완료 뒤 퇴출을 처분한다.
+
+`integration review`의 stdin은 `{through,outcome,reason,targets}` JSON이다.
+`through`는 prompt가 낸 snapshot이며, 이후 대화가 늘어도 그 snapshot까지만 닫는다.
+`preserved`의 targets는 `[{key:<완료된 증류 키>}]`, `summary`는
+`[{text:<실제 scope 기억의 발췌>}]`다. `no_value`는 배울 것이 없다는 판단,
+`deferred`는 보류 사유와 다음 조치다. 요약·배울 것 없음·보류를 노드 성장으로 세지 않는다.
+다른 대화가 같은 scope를 저장해도 이 검토 결과를 대신할 수 없다.
+
+### Scope에서 Domain으로 정기 재검토
+
+`growth plan`과 `growth prompt`는 쓰기 없는 미리보기다. `growth run`은 알려진 대화의
+미포착 꼬리를 따라잡고, 검토할 원문 snapshot과 비교할 Scope 노드 집합·해시를 고정한 뒤
+제한된 외부 에이전트 실행에 그 입력을 준다. 짧게 끝난 대화도 이 전용 실행에서 Scope
+증류 기회를 갖는다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 Domain 후보가 된다.
+기본 한 번에 대화 3개와 Domain 후보 3개, 후보당 최대 8개 노드다.
+기존 Scope와 새 Scope의 조합도 비교하며,
+같은 입력 집합의 완료된 검토는 반복하지 않는다. 프로세스 종료코드 0만으로 완료하지 않고
+실제 Domain 본문·근거·허브와 입력 해시를 확인해야 한다.
+
+전용 에이전트는 마지막 응답에 prompt가 지정한 `osk_reviews` JSON만 반환한다.
+실행기는 성공한 최종 응답에서 이 결정을 읽어 기존 `integration review`·`growth review`
+검증을 적용한다. 셸 정책 때문에 에이전트의 검토 CLI 실행이 막혀도 이 경로로 등록한다.
+도구 출력 속 JSON이나 다른 manifest·선정하지 않은 대화의 결정은 받아들이지 않으며,
+`preserved`라는 선언만으로 저장을 인정하지 않는다. 직접 CLI를 사용할 때도
+`growth review --manifest <plan rid>`로 같은 검증을 거친다.
+
+에이전트 명령은 JSON argv 배열 파일로 둔다. 명령은 stdin으로 프롬프트를 읽고 종료해야
+하며, 이 인스턴스의 osk MCP에 연결돼 있어야 한다. 셸 문자열은 실행하지 않는다.
+우선 격리 mini-vault에서 실제 도구 호출을 확인한 뒤 인스턴스에 등록한다.
+
+```powershell
+.venv/Scripts/python.exe _governance/_engine/scripts/growth_run.py --command-file .osk/growth-command.json --limit 3 --timeout 600
+```
+
+후보가 없으면 모델을 띄우지 않는다. 실패·보류는 완료로 접지 않으며 후속 실행에서
+다시 검토할 수 있다. 입력 집합을 읽었다는 사실과 모든 입력을 같은 결론의 근거로
+인용하는 것은 다르다. 의미 판정·적용 범위·반례는 에이전트가 설명해야 한다.
+작업 증거는 `.osk/growth/runs/`와 Workbench `_ledger/growth.jsonl`에 남는다.
+전용 실행은 `OSK_GROWTH_WORKER=1`을 자식 프로세스에 전달한다. OSK의 세 훅은 이때
+유지보수 대화를 새 통합 대기로 포착하지 않는다. 실행 기록과 저장 노드·근거는 그대로 남는다.
+새 Domain 군집에 필요한 사용자 확인은 자동 실행이 대신하지 않는다. 기존 착지가 없으면
+제안할 군집·노드 제목과 필요한 확인을 `deferred`로 남긴다.
+
+Windows 작업 스케줄러 등록은 아래 스크립트를 **별도로 실행할 때** 활성화된다.
+기존 동일 이름 작업을 덮어쓰지 않으며 로그인된 사용자 권한으로 하루 한 번 실행한다.
+실제 릴리스·인스턴스 갱신·새 MCP 재시작과 이 등록은 구현/시험과 구별한다.
+
+```powershell
+./_governance/_engine/scripts/register_growth_task.ps1 -Python "$PWD/.venv/Scripts/python.exe" -CommandFile "$PWD/.osk/growth-command.json" -At '09:00'
+```
+
+기본은 공유 지식의 연속성이다. 다른 작업의 대화·미완료 요청을 현재 대화에 합치지는
+않지만, 그 작업에서 이미 증류된 지식은 다음 일반 작업에서도 읽을 수 있다. 이는 독립
+검토자가 앞선 결론을 보게 될 수 있다는 비용을 갖는다. 독립 검토가 명시된 실행은 별도
+고정 입력 vault와 새 하네스 문맥으로 수행한다. 새 대화 ID만으로 정보 격리가 보장되지는 않는다.
 
 ## 회귀 수트
 

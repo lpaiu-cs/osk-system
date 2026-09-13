@@ -21,18 +21,13 @@ hookSpecificOutput.additionalContext가 세션 문맥에 주입된다. 지시("C
 **맨 앞**에 세운다(3항). 문안은 `osk.evictions`가 만든다 — 전용 세션의
 프롬프트(`osk tidy prompt`)와 같은 말을 쓰기 위해서다.
 
-부수 임무: 케이던스 카운터 리셋. 재개(resume)가 시계를 이어받으면 긴 대화일수록
-증류가 덜 일어나는 것이 아니라 — 이 체계의 결정은 반대다: 재개 직후에는 증류할
-새것이 없으므로 카운터는 세션 로컬이고 재개는 0에서 시작한다.
-
-어떤 실패도 세션 시작을 막지 않는다(전부 삼키고 빈 출력). 기억과 정돈은 서로
-독립이다 — 한쪽의 실패가 다른 쪽의 주입을 막지 않는다.
+자기 대화의 완료 전사를 포착하고 durable 검토 대기를 이어받는다. 재개는
+카운터·대기를 지우지 않는다. 어떤 실패도 세션 시작을 막지 않지만 진단은 싣는다.
 """
 import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[2]        # …/_governance/_engine
@@ -83,7 +78,10 @@ def _memory_block(scope_memory, key: str) -> str:
         f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것.\n"
         f"`scope_memory`를 부를 때 `session=\"{key}\"`를 그대로 쓴다 — "
         f"세션이 바뀌어도 같은 값이어야 이 기억으로 돌아온다.\n"
-        f"약 9 user 턴마다 이 세션의 배울 점을 통합하라 — `edits`로 "
+        f"약 9 user 턴마다 자기 대화의 raw와 현재 공유 기억을 함께 검토하라. "
+        f"오래 쓸 지식은 search로 찾은 기존 Scope 노드 갱신을 우선하고 출처·허브를 "
+        f"완성한다. 요약에 머물 내용은 그 다음 scope 기억에 반영하고, 남길 것이 "
+        f"없으면 사유를 남긴다. 요약 수정은 `edits`로 "
         f"`[{{old_text, new_text}}, …]`를 **다음 도구 호출에 함께** 실어라. "
         f"앵커는 아래 전문에서 그대로 복사하고(공백·줄바꿈까지, 마지막 줄엔 "
         f"개행이 없다) 해시는 필요 없다. 전문을 통째로 갈 때만 `text`와 "
@@ -101,25 +99,47 @@ def _bootstrap(key: str, *, bound: bool) -> str:
                "군집에서 해당 프로젝트를 확인한 뒤 scope_memory를 읽어라."))
 
 
+def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
+    from osk import integration
+    try:
+        captured = integration.hook_capture(env, key)
+        harness, sid = captured["harness"], captured["conversation_id"]
+        if startup:
+            return integration.prompt(harness, sid)["text"] if captured["pending"] else ""
+        cadence = integration.tick(harness, sid)
+        if not cadence["due"] and not captured["capture_error"]:
+            return ""
+        lead = (f"[osk 케이던스 — user 턴 {cadence['unreviewed_prompts']}] "
+                + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] else
+                   "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
+        parts = [lead, integration.prompt(harness, sid)["text"]]
+        try:
+            from osk import scope_memory, write
+            if write.resolve_session(key):
+                parts.extend([scope_memory.recovery_block(key), _memory_block(scope_memory, key)])
+        except Exception as exc:
+            parts.append(f"[osk 공유 기억 판독 진단 — {type(exc).__name__}: {exc}]")
+        return "\n\n".join(p for p in parts if p)
+    except Exception as exc:
+        return f"[osk 포착·통합 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다; 대기를 완료로 처리하지 않았다.]"
+
+
 def main() -> None:
+    if os.environ.get("OSK_GROWTH_WORKER") == "1":
+        return  # maintenance evidence belongs to its run, not a new integration queue
     try:
         env = json.load(sys.stdin)
-    except Exception:
-        env = {}
+        if not isinstance(env, dict):
+            raise ValueError("hook input must be a JSON object")
+    except Exception as exc:
+        emit_context("SessionStart", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
+        return
     cwd = env.get("cwd") or os.getcwd()
-
-    # 케이던스 카운터 리셋 — 카운터는 세션·기기 로컬이다.
-    sid = env.get("session_id") or ""
-    if sid:
-        try:
-            (Path(tempfile.gettempdir()) / "osk-cadence" / f"{sid}.count"
-             ).unlink(missing_ok=True)
-        except OSError:
-            pass
 
     try:
         from osk import scope_memory, write, evictions
         key = session_key(cwd)
+        captured = capture_block(env, key, startup=True)
         scope = write.resolve_session(key)
         bootstrap = _bootstrap(key, bound=bool(scope))
         recovery = ""
@@ -128,25 +148,25 @@ def main() -> None:
         except Exception:
             recovery = "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]"
         if not scope:
-            emit_context("SessionStart", "\n\n".join(p for p in (bootstrap, recovery) if p))
+            emit_context("SessionStart", "\n\n".join(p for p in (bootstrap, recovery, captured) if p))
             return
         mem = ""
         try:
             mem = _memory_block(scope_memory, key)
-        except Exception:
-            mem = ""                                 # 기억 판독 실패가 정돈을 막지 않는다
+        except Exception as exc:
+            mem = f"[osk 공유 기억 판독 진단 — {type(exc).__name__}: {exc}]"
         banner = block = ""
         try:
             banner, block = evictions.hook_block(scope, sys.executable, str(ENGINE))
-        except Exception:
-            pass                                     # 대장 손상은 검증기·status가 말한다
+        except Exception as exc:
+            block = f"[osk 정돈 판독 진단 — {type(exc).__name__}: {exc}]"
         # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록.
-        out = "\n\n".join(p for p in (banner, bootstrap, recovery, mem, block) if p)
+        out = "\n\n".join(p for p in (banner, bootstrap, recovery, mem, captured, block) if p)
         if not out:
             return
         emit_context("SessionStart", out)
-    except Exception:
-        return                                       # 주입 실패가 세션을 막지 않는다
+    except Exception as exc:
+        emit_context("SessionStart", f"[osk 세션 시작 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
 
 
 if __name__ == "__main__":

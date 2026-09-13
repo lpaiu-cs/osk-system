@@ -139,7 +139,7 @@ def _prune_titles(s):
 
 
 def _guard(fn, *a, **kw) -> dict:
-    """쓰기 결과 또는 위반 목록. 부분 성공은 없다 — 실패면 아무것도 쓰지 않았다."""
+    """쓰기 결과 또는 위반 목록. 저장 뒤 후속 작업 실패는 응답의 상태로 남긴다."""
     try:
         return fn(*a, **kw)
     except (write.WriteError, StaleEngineError) as e:
@@ -152,19 +152,15 @@ def _guard(fn, *a, **kw) -> dict:
 
 @mcp.tool()
 def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8) -> list[dict]:
-    """검색 — `query`의 어휘가 겹쳐야 걸린다(전 Space 연합, `_raw`·Workbench
-    제외). 결과의 `title`이 그대로 다른 도구의 `name`이다. `summary`는 미리보기이니
-    인용·판단은 `read_node` 뒤에 하고, 시기는 `updated`으로 걸러 필요한 것만
-    펼쳐라."""
+    """`query`로 전 Space 어휘 검색(`_raw`·Workbench 제외). 결과 `title`이 다른 도구의
+    `name`. `summary`는 미리보기이며 인용·판단 전에 `read_node`로 확인한다."""
     return _s().view_search(query, k)
 
 
 @mcp.tool()
 def read_node(name: str) -> dict:
-    """노드 전문 읽기 — 본문 전체가 오므로 비싸다(평균 1.4k 토큰). 인용이나
-    본문 재작성 직전에만 부르고, 해시만 알려고 부르지 마라 — 쓰기 응답이
-    `new_hash`로 준다. 손잡이는 응답의 `name`(제목)이다 — 다른 도구에 그대로
-    넣고, 근거로 달 때도 그것을 쓴다. `hash`는 `expect_hash`에 그대로 넣는다."""
+    """노드 전문·해시. 인용·재작성 직전에 읽는다. 응답 `name`(제목)은 도구와
+    근거의 손잡이, `hash`는 `expect_hash`. 쓰기 응답도 `new_hash`를 준다."""
     idx = _idx()
     # 동명 노드는 **고르지 않는다** — id 갈래(아래)와 같은 규율이다. 구판은
     # 이름 갈래에만 이 방어가 없어, 쓰기 통로가 "어느 것인지 정해지지 않는다"고
@@ -265,9 +261,7 @@ def overview(session: str | None = None) -> dict:
 
 @mcp.tool()
 def run_validators() -> dict:
-    """검증기 수트 실행. 쓰기는 그 노드의 나가는 참조만 보므로 전역 상태
-    (중복 id·위상·대장 손상·파싱 실패 노드)는 이 도구로만 보인다.
-    보고 전용이니 고치는 것은 호출자의 일이다."""
+    """전역 검증(중복 id·위상·대장 손상·파싱 실패). 보고만 하며 수정하지 않는다."""
     return validate.run()
 
 
@@ -276,14 +270,22 @@ def run_validators() -> dict:
 @mcp.tool()
 def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
                 session: str | None = None, space: str | None = None,
-                edges: Edges | None = None, settle: str | None = None) -> dict:
+                edges: Edges | None = None, settle: str | None = None,
+                distill: dict | None = None) -> dict:
     """생성. 전역 유일 `title`=파일명=`name`, `body`=본문 전문.
     `space`는 전체 군집 경로(`= Scope/W1`); 모르면 `overview`.
     `session`은 저장소명 같은 고정 키(대화 id 금지). 첫 성공에 영구 결속;
     이후 `space` 생략. `bound_scope`는 새 결속만 보고한다.
     `edges`: `derived-from` 근거는 노드 제목 또는 비노드 `[[경로]]`·`[[경로#제목]]`,
     `conflicts`는 열린 사건 번호(`CASE-2026-1`).
-    `settle`=보존한 evict rid. 저장 후 처분 결과: `settlement`."""
+    `settle`=보존한 evict rid. 처분 결과: `settlement`.
+    증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록·기존 허브.
+    `distillation.status=complete`까지 같은 요청으로 재시도한다."""
+    if distill is not None:
+        from osk import distillation
+        return _guard(distillation.create_node, distill, title=title,
+                      summary=summary, body=body, drafter=drafter,
+                      session=session, space=space, edges=edges, settle=settle)
     return _guard(write.create_node, title, summary, body, drafter,
                   session, space, edges, settle)
 
@@ -295,12 +297,20 @@ def update_node(name: str, body: str | None = None,
                 add_edges: Edges | None = None,
                 remove_edges: Edges | None = None,
                 old_text: str | None = None,
-                new_text: str | None = None, settle: str | None = None) -> dict:
+                new_text: str | None = None, settle: str | None = None,
+                distill: dict | None = None) -> dict:
     """`name`의 본문·summary·엣지 수정. 기본은 해시 없는 앵커 편집:
     본문의 유일한 `old_text`를 `new_text`로 바꾼다.
     전문 `body` 치환은 `expect_hash` 필수. 엣지는 선-읽기 없는 델타.
     `dangling`=대상 없는 링크. `settle`=이 본문 갱신으로 보존한 evict rid;
-    저장 후 처분 결과: `settlement`."""
+    처분 결과: `settlement`. `distill`은 `create_node`와 같다.
+    저장 후 연결만 재개: `distill={resume:키}`."""
+    if distill is not None:
+        from osk import distillation
+        return _guard(distillation.update_node, distill, name=name, body=body,
+                      expect_hash=expect_hash, summary=summary, add_edges=add_edges,
+                      remove_edges=remove_edges, old_text=old_text,
+                      new_text=new_text, settle=settle)
     return _guard(write.update_node, name, body, expect_hash, summary,
                   add_edges, remove_edges, old_text, new_text, settle)
 
@@ -336,13 +346,11 @@ def record_candidate(type: CandidateType,
 @mcp.tool()
 def append_raw(session: str, record: RawRecord, user: str, agent: str,
                space: str | None = None) -> dict:
-    """세션 기록 append — 이 대화의 한 라운드(`user` 발화와 그에 딸린 `agent`
-    응답)를 그 scope의 불변 기록에 잇는다. `session`은 저장소 이름처럼 세션이
-    바뀌어도 같은 값이고, `record`는 **대화 하나의 이름**이라 한 대화 내내 같은
-    값을 쓴다(`2026-08-21-undo-buffer` 꼴). `space`는 `= Scope/<이름>` **두
-    마디**만 받으며 결속이 선 뒤에는 생략한다. 라운드 번호는 엔진이 매기고, 응답의 `round_ref`를
-    그대로 `create_node`의 `derived-from`에 넣으면 근거가 배선된다.
-    `filtered`가 비지 않았으면 비밀값이 치환된 것이다."""
+    """`user` 발화와 `agent` 응답 한 라운드를 불변 기록에 잇는다.
+    `session`=고정 저장소 키, `record`=이 대화 내내 같은 기록 이름.
+    `space`는 `= Scope/<이름>` 두 마디이며 결속 뒤 생략.
+    엔진이 번호를 매긴 `round_ref`를 `derived-from`으로 쓴다.
+    `filtered`는 치환된 비밀값 종류다."""
     return _guard(raw.append_round, session, record, user, agent, space)
 
 

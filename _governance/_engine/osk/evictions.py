@@ -295,8 +295,9 @@ def hook_block(scope: str, python: str, engine: str,
     """SessionStart 훅의 두 조각 — (밀림 경고, 정돈 블록). 미처분이 없으면 둘 다
     빈 문자열이다. 경고는 N일을 넘었을 때만 있고 **주입문의 맨 앞**에 선다."""
     rows = unsettled(scope)
+    transit = transit_titles()
     if not rows:
-        return "", ""
+        return "", _transit_prompt(transit)
     oldest = age_days(rows[0], now_ms)
     banner = ""
     if oldest > N_DAYS:
@@ -313,12 +314,21 @@ def hook_block(scope: str, python: str, engine: str,
     lines += [_item(r, now_ms) for r in shown]
     if len(rows) > len(shown):
         lines.append(f"- … 외 {len(rows) - len(shown)}건 (`osk tidy list`)")
-    transit = transit_titles()
     if transit:
         lines.append("Workbench 경유 노드(정돈 대상 — Workbench 계약 §3): "
                      + " · ".join(f"[[{t}]]" for t in transit))
     lines.append(_exits(scope, python, engine))
     return banner, "\n".join(lines)
+
+
+def _transit_prompt(titles: list[str]) -> str:
+    if not titles:
+        return ""
+    return ("[osk 경유 노드 정돈 — 퇴출 유무와 별개]\n"
+            + " · ".join(f"[[{t}]]" for t in titles)
+            + "\n내용과 기존 군집을 읽고 착지를 정하라. 재배정은 `move_nodes`로 하고, "
+            "응답의 `hub_links` 양쪽을 반영한다. 보호영역 승인·군집 신설 동의를 "
+            "대신하지 않는다. 본 작업이 먼저면 보류하되 성장 완료로 세지 않는다.")
 
 
 def tidy_prompt(scope: str | None, python: str, engine: str,
@@ -328,7 +338,8 @@ def tidy_prompt(scope: str | None, python: str, engine: str,
     가장 오래 밀린 scope를 고른다. 세션 키는 그 scope의 정본 키다."""
     st = status(now_ms)
     if not st:
-        return "미처분 퇴출 항목이 없다 — 정돈할 것이 없다."
+        return (_transit_prompt(transit_titles())
+                or "미처분 퇴출 항목과 경유 노드가 없다 — 정돈할 것이 없다.")
     if scope is None:
         scope = max(st, key=lambda s: (st[s]["oldest_days"], st[s]["unsettled"], s))
     elif scope not in st:

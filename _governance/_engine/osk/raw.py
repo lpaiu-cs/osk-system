@@ -141,7 +141,7 @@ _CONFINE = ("`_raw/`는 세션당 정본 하나이므로(시행령 §2 1항) 한
 
 
 def append_rounds(session: str, record: str, pairs: list,
-                  space: str | None = None) -> dict:
+                  space: str | None = None, *, replay_prefix: bool = False) -> dict:
     """라운드 여럿을 **한 번의 쓰기로** 잇는다.
 
     배치가 필요한 이유는 성능이 아니라 원자성이다. 라운드마다 따로 쓰면 세
@@ -193,12 +193,31 @@ def append_rounds(session: str, record: str, pairs: list,
         prior = read_exact(p) if p.exists() else ""
         first = _next_index(prior)
         spans = _round_spans(prior)
+        # Capture adapters resend the complete completed-round sequence. Compare
+        # the durable prefix before appending: a crash after write_raw but before
+        # its local cursor is saved must not duplicate append-only evidence.
+        replayed = []
+        if replay_prefix:
+            if len(spans) > len(norm):
+                raise write.WriteError("포착 원본이 저장된 기록보다 짧다", ["원본을 복구한 뒤 재시도하라"])
+            for (idx, (s, e)), (u, a) in zip(sorted(spans.items()), norm):
+                expected = _block(idx, escape_numeric_h2(u), escape_numeric_h2(a))
+                if _round_body(prior[s:e]) != _round_body(secrets.filter_text(expected)[0]):
+                    raise write.WriteError("포착 원본과 저장된 접두부가 다르다", [f"라운드 {idx} — 쓰지 않았다"])
+                replayed.append(idx)
+            norm = norm[len(replayed):]
+            if not norm:
+                rel = posix_rel(p.resolve(), ROOT)
+                return {"ok": True, "path": rel, "indices": replayed,
+                        "round_refs": [f"[[{rel}#{i}]]" for i in replayed],
+                        "filtered": [], "appended": 0}
         blocks, indices = [], []
         for n, (u, a) in enumerate(norm):
             indices.append(first + n)
             blocks.append(_block(first + n, escape_numeric_h2(u),
                                  escape_numeric_h2(a)))
-        _reject_replay(prior, spans, blocks)
+        if not replay_prefix:
+            _reject_replay(prior, spans, blocks)
         if prior and not prior.endswith("\n"):
             prior += "\n"
         # 되돌아온 경로를 쓴다 — 통로가 봉쇄·해소한 그 경로가 실제로 기록된
@@ -212,9 +231,12 @@ def append_rounds(session: str, record: str, pairs: list,
         # `round_ref`를 그대로 돌려준다 — 이 값이 곧 `derived-from`의 비노드
         # 대상 표기다(Mechanism §8 2항). 호출자가 경로와 index를 조립하다
         # 틀리면 근거 배선이 dangling으로 앉는다.
-        return {"ok": True, "path": rel, "indices": indices,
-                "round_refs": [f"[[{rel}#{i}]]" for i in indices],
-                "filtered": sorted(set(hits))}
+        result = {"ok": True, "path": rel, "indices": replayed + indices,
+                  "round_refs": [f"[[{rel}#{i}]]" for i in replayed + indices],
+                  "filtered": sorted(set(hits))}
+        if replay_prefix:
+            result["appended"] = len(indices)
+        return result
 
 
 def append_round(session: str, record: str, user: str, agent: str,
