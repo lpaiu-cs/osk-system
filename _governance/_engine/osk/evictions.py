@@ -130,6 +130,64 @@ def status(now_ms: int | None = None) -> dict[str, dict]:
     return out
 
 
+def require_evict(of: str) -> None:
+    """보존 요청의 원본을 쓰기 전에 확인한다. 호출부는 변경 잠금을 쥔다."""
+    if not isinstance(of, str) or not re.fullmatch(RID_RE, of):
+        raise ValueError("settle에는 보존한 evict의 rid를 준다")
+    why = _missing_evict(records(), of)
+    if why:
+        raise ValueError(why)
+
+
+def _missing_evict(recs: list[dict], of: str) -> str | None:
+    if not any(r.get("kind") == "evict" and r.get("rid") == of for r in recs):
+        return f"`{of}`는 퇴출 기록부의 evict가 아니다 — `osk tidy list`로 확인하라"
+    return None
+
+
+def require_target(target: str, idx) -> None:
+    """대장의 target은 제목이다 — id로 갱신할 때도 그 제목은 비모호해야 한다."""
+    if not idx.complete:
+        raise ValueError("vault를 전부 관측하지 못했다 — 처분을 적지 않았다: "
+                         + "; ".join(idx.scan_errors[:3])
+                         + ". 권한·잠금을 확인하고 다시 보내라")
+    r = idx.resolve(target)
+    if r[0] == "ambiguous":
+        raise ValueError(f"`{target}`는 동명이 둘 이상이라 어느 노드인지 정해지지 "
+                         f"않는다 — 처분을 적지 않았다")
+    if r[0] != "node":
+        raise ValueError(f"노드 `{target}`이 없다(파손 파일은 노드가 아니다) — "
+                         f"처분은 노드가 선 뒤에 적는다. 제목은 파일 이름 그대로, 경로 없이")
+
+
+def _record_settle(of: str, outcome: str, target: str | None) -> dict:
+    """변경 잠금·대상 검증을 끝낸 호출부 전용. 대장 잠금 안에서 원본을 재확인."""
+    rec = {"kind": "settle", "of": of, "outcome": outcome}
+    if target:
+        rec["target"] = target
+    return ledger_append(EVICTIONS, rec, expect=lambda recs: _missing_evict(recs, of))
+
+
+def _after_node_write(result: dict, of: str | None, outcome: str, target: str) -> dict:
+    """노드 저장 뒤의 영수증. 기록 실패 때문에 보존한 지식을 되돌리지 않는다.
+
+    fsync/응답 실패는 이미 기록된 뒤에도 생긴다. 미기록이라고 단정하거나
+    노드를 되돌리면 실제 settle만 남을 수 있으므로 확인 불가로 보고한다.
+    내용 보존의 판독은 호출자의 일이며, 기록 성공을 자율 성장으로 판정하지 않는다.
+    """
+    if of is not None:
+        receipt = {"of": of, "outcome": outcome, "target": target}
+        try:
+            row = _record_settle(of, outcome, target)
+            receipt.update(state="recorded", rid=row["rid"])
+        except Exception as e:
+            receipt.update(state="unconfirmed", error=str(e), note=(
+                "노드 저장은 성공했다. 처분 기록은 확인하지 못했다. 노드를 다시 쓰지 말고 "
+                "CLI tidy list/status로 확인한 뒤 필요하면 tidy settle로 기록하라."))
+        result["settlement"] = receipt
+    return result
+
+
 def settle(of: str, outcome: str, target: str | None = None) -> dict:
     """처분 기록. `outcome`은 node·merged·discarded, `target`은 노드 제목이며
     폐기에는 없다. 노드가 서 있지 않으면 적지 않는다 — 처분은 한 일의 기록이지
@@ -149,38 +207,14 @@ def settle(of: str, outcome: str, target: str | None = None) -> dict:
         raise ValueError(f"target은 노드 **제목**(파일 이름 그대로)이다 — 경로도 id도 "
                          f"아니다: `{target}`")
 
-    def expect(recs: list[dict]) -> str | None:
-        if not any(r.get("kind") == "evict" and r.get("rid") == of for r in recs):
-            return (f"`{of}`는 퇴출 기록부의 evict가 아니다 — settle은 있는 evict만 "
-                    f"가리킨다(`osk tidy list`)")
-        return None
-
-    rec: dict = {"kind": "settle", "of": of, "outcome": outcome}
-    if target:
-        rec["target"] = target
     # 노드 확인은 **변경 잠금 안**에서, 그리고 후보 파일이 아니라 **판독되는
     # 비모호 노드**로 한다(리뷰 P2). 파손 파일 하나가 그 이름의 임자가 되면
     # 증류된 적 없는 조각이 정돈 큐에서 영구히 빠진다. 잠금 순서는 다른
     # 모듈과 같다 — 변경 잠금 → 대장 잠금.
     with mutation_lock():
         if target:
-            idx = graph.Index()
-            if not idx.complete:
-                # 유일성은 전체를 봐야 말할 수 있다(리뷰 3차 P2) — 못 읽은
-                # 군집에 동명이 숨어 있으면 단일 `node`로 오판해 처분이 적히고,
-                # 그 evict는 큐에서 영구히 빠진다. 쓰기 통로와 같은 fail-closed.
-                raise ValueError("vault를 전부 관측하지 못했다 — 처분을 적지 않았다: "
-                                 + "; ".join(idx.scan_errors[:3])
-                                 + ". 권한·잠금을 확인하고 다시 보내라")
-            r = idx.resolve(target)
-            if r[0] == "ambiguous":
-                raise ValueError(f"`{target}`는 동명이 둘 이상이라 어느 노드인지 정해지지 "
-                                 f"않는다 — 처분을 적지 않았다")
-            if r[0] != "node":
-                raise ValueError(f"노드 `{target}`이 없다(파손 파일은 노드가 아니다) — "
-                                 f"처분은 노드가 선 뒤에 적는다. 제목은 파일 이름 "
-                                 f"그대로, 경로 없이")
-        return ledger_append(EVICTIONS, rec, expect=expect)
+            require_target(target, graph.Index())
+        return _record_settle(of, outcome, target)
 
 
 def schema_errors(recs: list[dict]) -> list[str]:
@@ -241,9 +275,14 @@ def _item(r: dict, now_ms: int | None) -> str:
 
 
 def _exits(scope: str, python: str, engine: str) -> str:
-    return (f"출구는 셋이다(§9-3 2항) — 노드로 증류(`create_node`, 착지 `= Scope/{scope}`; "
-            f"여러 scope에 재사용되면 Domain) · 기존 노드에 통합(`search`로 찾아 "
-            f"`update_node`) · 폐기. 어느 쪽이든 **settle을 적어야 처분이다**:\n"
+    return (f"출구는 셋이다(§9-3 2항). 본문을 읽고 `search`로 같은 주제의 노드를 찾아 "
+            f"`read_node` 뒤 기존 노드 갱신(`update_node`)을 우선한다. 새 노드가 필요하면 "
+            f"`create_node`(착지 `= Scope/{scope}`; 여러 scope에 재사용되면 Domain). "
+            f"보존하는 쓰기에 `settle=\"<evict rid>\"`를 함께 주면 저장 뒤 node·merged 처분도 "
+            f"기록한다 — 응답의 `settlement.state`를 확인하라. "
+            f"같은 내용 재저장·summary만 수정해서는 처분하지 않는다. "
+            f"이미 보존됐거나 자리값 없는 내용은 현재 기억·노드와 대조해 판단한다. "
+            f"폐기·기보존 확인·기록 재시도는 CLI로 적는다:\n"
             f"  PYTHONPATH={engine} {python} -m osk.cli tidy settle <rid> node|merged "
             f"--target \"<노드 제목>\"\n"
             f"  PYTHONPATH={engine} {python} -m osk.cli tidy settle <rid> discarded\n"

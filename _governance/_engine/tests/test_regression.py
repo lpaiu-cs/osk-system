@@ -2685,6 +2685,9 @@ def test_mcp_transport():
     except ImportError as e:
         check("MCP 클라이언트 가용", False, f"import 실패: {e}")
         return
+    from osk import evictions as ev
+    sources = [ev.record_evict("W1", "regr-tx", text)["rid"]
+               for text in ("본문", "새 본문")]
 
     async def run():
         params = StdioServerParameters(
@@ -2703,14 +2706,15 @@ def test_mcp_transport():
                 out["create"] = await call("create_node", {
                     "title": "regr-tx", "summary": "전송", "body": "본문",
                     "drafter": "fable-5", "space": "= Scope/W1",
-                    "edges": {"derived-from": "regr-tx-t"}})   # dict 인자
+                    "edges": {"derived-from": "regr-tx-t"}, "settle": sources[0]})
                 out["read"] = await call("read_node", {"name": "regr-tx"})
                 out["stale"] = await call("update_node", {
                     "name": "regr-tx", "body": "새 본문",
-                    "expect_hash": "sha256:틀림"})
+                    "expect_hash": "sha256:틀림", "settle": sources[1]})
                 out["retry"] = await call("update_node", {
                     "name": "regr-tx", "body": "새 본문",
-                    "expect_hash": out["read"]["hash"]})
+                    "expect_hash": out["read"]["hash"], "settle": sources[1]})
+                out["preserved"] = await call("read_node", {"name": "regr-tx"})
                 out["delta"] = await call("update_node", {
                     "name": "regr-tx",
                     "add_edges": {"derived-from": "regr-tx-t2"}})  # dict 인자
@@ -2738,6 +2742,13 @@ def test_mcp_transport():
           not any("sha256:" in str(v) for v in o["stale"].get("violations", [])),
           o["stale"])
     check("전송: 재읽기 후 재시도 성공(재시도 계약)", o["retry"].get("ok"), o["retry"])
+    check("전송: 생성·갱신 모두 보존 원본을 받아 저장 후 처분한다",
+          all(o[key].get("settlement", {}).get("state") == "recorded"
+              and o[key]["settlement"].get("of") == rid
+              and o[key]["settlement"].get("outcome") == outcome
+              for key, rid, outcome in (("create", sources[0], "node"),
+                                        ("retry", sources[1], "merged")))
+          and "새 본문" in o["preserved"].get("body", ""), o["retry"])
     check("전송: dict 인자(add_edges) 델타 적용",
           o["delta"].get("ok") and "regr-tx-t2" in o["delta"]["edges"]["derived-from"],
           o["delta"])
@@ -5482,6 +5493,130 @@ def test_scope_memory_cli():
 
 
 # ── 19c. 퇴출 기록부와 정돈 (Mechanism §9-2 12항 · §9-3) ─────────────────
+def test_eviction_preservation_mcp():
+    """거부→evict→MCP 노드 보존→settle. 기록 선행·no-op·거짓 실패를 잡는다.
+
+    노드 저장 전에 처분하거나 실패한 쓰기를 닫으면 원문이 사라진다.
+    ledger fsync의 응답이 불확실할 때 노드를 되돌려도 같은 손실이 생긴다.
+    """
+    import mcp_server as M
+    from osk import evictions as ev, scope_memory as wm, approvals as A
+    session = "regr-preservation"
+    fact = "분모를 고정해야 전후 비교가 가능하다."
+    initial = wm.read(session, "= Scope/W1")
+    mem = _w(wm.replace, session, fact + "\n- 남길 요약", initial["hash"], "= Scope/W1")
+    assert mem.get("ok"), mem
+    rejected = _w(wm.replace, session, "가" * 1600, mem["hash"])
+    check("보존 실험은 실제 scope 초과에서 시작한다",
+          not rejected.get("ok") and rejected.get("rejected_chars") == 1600, rejected)
+    trimmed = _w(wm.replace, session, edits=[{"old_text": fact + "\n", "new_text": ""}])
+    assert trimmed.get("ok") and trimmed.get("evicted"), trimmed
+    rid = trimmed["evicted"]
+    check("잘린 지식이 evict에 있고 scope에는 없다",
+          ev.records()[-1]["text"] == fact and fact not in wm.read(session)["text"])
+    created = M.create_node("regr-preserved-node", "비교의 전제", fact, "fable-5",
+                            session=session, settle=rid)
+    check("생성과 처분이 한 MCP 호출에서 이어진다",
+          created.get("ok") and created.get("settlement", {}).get("state") == "recorded", created)
+    check("성장 증거는 실제 노드 본문이다", fact in M.read_node("regr-preserved-node").get("body", ""))
+    check("처분은 새 노드 제목과 원 evict를 잇는다",
+          ev.records()[-1].get("of") == rid and ev.records()[-1].get("outcome") == "node"
+          and ev.records()[-1].get("target") == "regr-preserved-node")
+    p = ROOT / created["path"]
+    next_fact = "0을 해석하기 전에 양성 대조로 계측의 작동을 확인한다."
+    source = ev.record_evict("W1", session, next_fact)["rid"]
+    before, ledger = p.read_bytes(), core.EVICTIONS.read_bytes()
+    bad_create = M.create_node("regr-no-evict", "없는 원본", next_fact, "fable-5",
+                               session=session, settle="ffffffff-ffff-7fff-8fff-ffffffffffff")
+    check("없는 evict로 새 노드를 쓰지 않는다",
+          not bad_create.get("ok") and not (p.parent / "regr-no-evict.md").exists()
+          and core.EVICTIONS.read_bytes() == ledger, bad_create)
+    empty_create = M.create_node("regr-empty-evict", "빈 본문", "\n ", "fable-5",
+                                 session=session, settle=source)
+    check("빈 새 노드로 보존했다고 처분하지 않는다",
+          not empty_create.get("ok") and not (p.parent / "regr-empty-evict.md").exists()
+          and core.EVICTIONS.read_bytes() == ledger, empty_create)
+    for invalid_rid in ("missing", "ffffffff-ffff-7fff-8fff-ffffffffffff"):
+        invalid = M.update_node(created["id"], old_text=fact, new_text=fact + next_fact, settle=invalid_rid)
+        check("잘못된 형식·없는 evict는 노드와 대장 모두 쓰기 전에 거부",
+              not invalid.get("ok") and p.read_bytes() == before and core.EVICTIONS.read_bytes() == ledger, invalid)
+    bad_anchor = M.update_node(created["id"], old_text="없는 앵커", new_text=next_fact, settle=source)
+    check("노드 갱신 실패는 처분하지 않는다",
+          not bad_anchor.get("ok") and core.EVICTIONS.read_bytes() == ledger, bad_anchor)
+    noop = M.update_node(created["id"], body=M.read_node(created["id"])["body"],
+                         expect_hash=created["new_hash"], settle=source)
+    check("동일 내용 재저장은 보존 완료로 위장하지 않는다",
+          not noop.get("ok") and p.read_bytes() == before and core.EVICTIONS.read_bytes() == ledger, noop)
+    for change in ({"summary": "요약만 갱신"}, {"add_edges": {"derived-from": "W1"}},
+                   {"body": "", "expect_hash": created["new_hash"]},
+                   {"body": "\n" + fact + "\n ", "expect_hash": created["new_hash"]}):
+        metadata_only = M.update_node(created["id"], settle=source, **change)
+        check("요약·엣지·공백·본문 삭제만으로 보존 완료로 세지 않는다",
+              not metadata_only.get("ok") and p.read_bytes() == before
+              and core.EVICTIONS.read_bytes() == ledger, metadata_only)
+    with mock.patch.object(write, "_atomic_write", side_effect=OSError("node write failed")):
+        failed = M.update_node(created["id"], old_text=fact, new_text=fact + next_fact, settle=source)
+    check("디스크 쓰기 실패도 미처분을 유지한다",
+          not failed.get("ok") and p.read_bytes() == before and core.EVICTIONS.read_bytes() == ledger, failed)
+    dup = ROOT / "= Scope/W2" / p.name
+    dup.parent.mkdir(parents=True, exist_ok=True)
+    dup.write_bytes(before.replace(created["id"].encode(), core.new_node_id().encode()))
+    try:
+        ambiguous = M.update_node(created["id"], old_text=fact, new_text=fact + next_fact, settle=source)
+        check("id가 유일해도 처분 target 제목이 모호하면 갱신 전에 거부한다",
+              not ambiguous.get("ok") and p.read_bytes() == before
+              and core.EVICTIONS.read_bytes() == ledger, ambiguous)
+    finally:
+        dup.unlink()
+    merged = M.update_node(created["id"], old_text=fact, new_text=fact + "\n" + next_fact, settle=source)
+    check("기존 노드 갱신과 처분이 한 호출에서 이어진다",
+          merged.get("ok") and merged.get("settlement", {}).get("state") == "recorded", merged)
+    check("id로 갱신해도 target에는 실제 제목을 기록한다",
+          next_fact in M.read_node(created["id"]).get("body", "")
+          and ev.records()[-1].get("target") == p.stem and ev.records()[-1].get("outcome") == "merged")
+
+    # append 전 실패와 append 후 fsync/응답 실패는 호출자에게 구별되지 않는다.
+    append = ev.ledger_append
+    for after_append in (False, True):
+        claim = f"계측의 한계도 기록한다 {after_append}."
+        source = ev.record_evict("W1", session, claim)["rid"]
+
+        def interrupted(*args, **kwargs):
+            if after_append:
+                append(*args, **kwargs)
+            raise OSError("settlement acknowledgement lost")
+
+        with mock.patch.object(ev, "ledger_append", side_effect=interrupted):
+            result = M.update_node(p.stem, old_text=next_fact, new_text=next_fact + "\n" + claim, settle=source)
+        check("처분 응답 실패에도 노드 보존 성공을 정확히 보고한다",
+              result.get("ok") and result.get("settlement", {}).get("state") == "unconfirmed"
+              and claim in M.read_node(p.stem).get("body", ""), result)
+        check("기록 여부를 추측하거나 보존된 노드를 되돌리지 않는다",
+              any(r.get("of") == source for r in ev.records()) == after_append)
+
+    source = ev.record_evict("W1", session, "손상 대장 시험")["rid"]
+    before, ledger = p.read_bytes(), core.EVICTIONS.read_bytes()
+    core.EVICTIONS.write_bytes(ledger + b"{broken\n")
+    try:
+        result = M.update_node(p.stem, old_text=next_fact, new_text="새 내용", settle=source)
+        check("손상 대장은 보존 요청의 검증 단계에서 거부한다",
+              not result.get("ok") and p.read_bytes() == before, result)
+    finally:
+        core.EVICTIONS.write_bytes(ledger)
+    A.protect("= Scope/W1", "보존 경로는 승인을 대신하지 않는다")
+    approvals_before = A.APPROVALS.read_bytes()
+    before = p.read_bytes()
+    result = M.update_node(p.stem, old_text=next_fact, new_text=next_fact + "\n보호영역의 새 지식", settle=source)
+    check("보호영역은 작업본만 바뀌고 승인본은 그대로다",
+          result.get("ok") and A.state("= Scope/W1") == "pending"
+          and A.APPROVALS.read_bytes() == approvals_before, result)
+    p.write_bytes(before)  # mini-vault 보호 시험 작업본을 원복한 뒤 해제한다.
+    A.unprotect("= Scope/W1", "회귀 시험 종료")
+    check("훅은 기존 노드 검색과 같은 호출의 처분을 안내한다",
+          "settle" in ev._exits("W1", "python", "engine")
+          and ev._exits("W1", "python", "engine").index("update_node") < ev._exits("W1", "python", "engine").index("create_node"))
+
+
 def test_evictions():
     """상한 초과 거부 **직후의 첫 성공한 쓰기**가 덜어 낸 줄을 `evict`로 남기고,
     처분은 `settle`로 남긴다. 세션 시작 훅이 오래된 것부터 K개를 싣는다.
@@ -9006,7 +9141,7 @@ if __name__ == "__main__":
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
                test_write_edge_coordinates, test_write_pin_subtree_and_fork,
                test_review_empty_memory_and_incomplete_region,
-               test_review_root_reparse_and_lazy_search]:
+               test_review_root_reparse_and_lazy_search, test_eviction_preservation_mcp]:
         try:
             fn()
         except Exception as e:
