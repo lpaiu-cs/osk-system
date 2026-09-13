@@ -5383,6 +5383,14 @@ def test_scope_recovery_handoff():
                   f'session="{S}"' in out and "대신하지 않는다" in out)
         check("15턴 뒤 매 턴 재촉하지 않는다", run_hook("claude_prompt_submit.py") == "")
 
+        native.write_text("malformed native transcript\n", encoding="utf-8")
+        payload.pop("harness", None)  # Parsing during harness detection raises.
+        env.pop("OSK_HARNESS", None)
+        out = run_hook("claude_prompt_submit.py")
+        check("전사 판독 실패도 scope 복구와 세션 키를 숨기지 않는다",
+              "포착·통합 진단" in out and "[osk scope 복구 대기" in out
+              and cur in out and f'session="{S}"' in out and "대신하지 않는다" in out)
+
         same = _w(wm.replace, S, cur, r["hash"])
         check("동일 전문의 성공은 대기를 소비하지 않는다", same.get("ok") and same.get("recovery"), same)
         check("동일 전문은 changed false", same.get("changed") is False, same)
@@ -9186,7 +9194,7 @@ def test_validate_at_uses_snapshot_engine():
 
 
 def test_growth_loop_subprocesses():
-    for name in ("test_distillation.py", "test_integration.py", "test_growth.py"):
+    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py"):
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
                               capture_output=True, timeout=180,
                               stdin=subprocess.DEVNULL)

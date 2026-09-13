@@ -11,8 +11,49 @@ import json
 from pathlib import Path
 
 
-def _dump(value) -> str:
+def _structured(value) -> str:
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _unique_object(pairs):
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError("duplicate JSON key in native transcript content")
+    return value
+
+
+def _redact(value):
+    """Filter original string boundaries before JSON escaping can hide them."""
+    from . import secrets
+    if isinstance(value, str):
+        filtered = secrets.filter_text(value)[0]
+        # Native tool arguments/results can themselves contain encoded JSON.
+        # Preserve their original formatting unless an inner string was filtered.
+        try:
+            decoded = json.loads(value, object_pairs_hook=_unique_object)
+        except json.JSONDecodeError:
+            return filtered
+        if isinstance(decoded, (dict, list)):
+            cleaned = _redact(decoded)
+            if cleaned != decoded:
+                return _structured(cleaned)
+        return filtered
+    if isinstance(value, list):
+        return [_redact(item) for item in value]
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            safe_key = _redact(key) if isinstance(key, str) else key
+            if safe_key in cleaned:
+                raise ValueError("secret filtering would collapse distinct dictionary keys")
+            cleaned[safe_key] = _redact(item)
+        return cleaned
+    return value
+
+
+def _dump(value) -> str:
+    # raw.write_raw remains the mandatory final filter and append-only boundary.
+    return _structured(_redact(value))
 
 
 def _file_read(name: str) -> bool:
@@ -32,7 +73,8 @@ def _result_content(call: dict | None, content, locator: str):
             "mixed command output; may contain full file content",
             "coverage": "tool-output-reference", "source": call["input"],
             "native_result": locator,
-            "sha256": hashlib.sha256(_dump(content).encode("utf-8")).hexdigest()}
+            # A reference hashes the original native result, not its redacted display.
+            "sha256": hashlib.sha256(_structured(content).encode("utf-8")).hexdigest()}
 
 
 def read(path: str, harness: str, conversation_id: str) -> dict:

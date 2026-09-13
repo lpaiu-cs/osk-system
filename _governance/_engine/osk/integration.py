@@ -78,6 +78,8 @@ def _snapshot(s: dict) -> str | None:
 
 def _view(s: dict) -> dict:
     rs, n = s["rounds"], s["reviewed_count"]
+    repairs = s.get("repair_pending", {})
+    repair_refs = {ref for item in repairs.values() for ref in item["refs"]}
     return {"ok": not bool(s["capture_error"]), "harness": s["harness"],
             "conversation_id": s["conversation_id"], "session": s["session"],
             "record": s["record"], "transcript_path": s["transcript_path"],
@@ -85,17 +87,19 @@ def _view(s: dict) -> dict:
             "reviewed_through": rs[n-1]["id"] if n else None,
             "captured_rounds": len(rs), "reviewed_rounds": n,
             "aborted_rounds": sum(r.get("completion") == "aborted" for r in rs),
-            "pending": bool(s["capture_pending"] or len(rs) > n),
+            "pending": bool(s["capture_pending"] or len(rs) > n or repairs),
+            "repair_pending": repairs,
             "capture_pending": s["capture_pending"], "capture_error": s["capture_error"],
             "coverage": s.get("coverage"),
-            "pending_refs": [r["ref"] for r in rs[n:]], "through": _snapshot(s),
+            "pending_refs": [r["ref"] for i, r in enumerate(rs) if i >= n or r["ref"] in repair_refs],
+            "through": _snapshot(s),
             "prompt_count": s["prompt_count"], "reviewed_prompt_count": s["reviewed_prompt_count"],
             "last_review": s["reviews"][-1] if s["reviews"] else None}
 
 
 def status(harness: str, conversation_id: str) -> dict:
     with _locked(harness, conversation_id) as p:
-        return _view(_load(p, harness, conversation_id))
+        return _current_view(_load(p, harness, conversation_id), p)
 
 
 def capture(harness: str, conversation_id: str, transcript_path: str | None,
@@ -136,11 +140,11 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             s["capture_error"] = "; ".join(parsed["diagnostics"]) or None
             s["native_fingerprint"] = parsed["native_fingerprint"]
             _save(p, s)
-            return {**_view(s), "appended": result.get("appended", 0)}
+            return {**_current_view(s, p), "appended": result.get("appended", 0)}
         except Exception as exc:
             s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
             _save(p, s)
-            return _view(s)
+            return _current_view(s, p)
 
 
 def tick(harness: str, conversation_id: str) -> dict:
@@ -150,7 +154,8 @@ def tick(harness: str, conversation_id: str) -> dict:
         s["prompt_count"] += 1
         n = s["prompt_count"] - s["reviewed_prompt_count"]
         _save(p, s)
-        return {**_view(s), "due": n > 0 and n % HARD in (SOFT, 0),
+        current = _current_view(s, p)
+        return {**current, "due": bool(current["repair_pending"]) or n > 0 and n % HARD in (SOFT, 0),
                 "hard": n > 0 and n % HARD == 0, "unreviewed_prompts": n}
 
 
@@ -174,10 +179,14 @@ def acknowledge(harness: str, conversation_id: str, through: str,
     with _locked(harness, conversation_id) as p, core.mutation_lock():
         s = _load(p, harness, conversation_id)
         snap = s["snapshots"].get(through)
-        if not snap or snap["count"] <= s["reviewed_count"]:
+        if _register_repair(s, through, _review_state_locked(s, through)):
+            _save(p, s)
+        repair = s.get("repair_pending", {}).get(through)
+        if not snap or snap["count"] <= s["reviewed_count"] and not repair:
             raise ValueError("through is not an unreviewed snapshot of this conversation")
-        refs = {r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]}
-        _verify_raw(s["rounds"][s["reviewed_count"]:snap["count"]])
+        refs = set(repair["refs"]) if repair else {
+            r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]}
+        _verify_raw([r for r in s["rounds"] if r["ref"] in refs])
         receipts = []
         if outcome == "preserved":
             from . import distillation
@@ -206,21 +215,22 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                   "mechanical_preservation": outcome == "preserved", "semantic_verified": False}
         s["reviews"].append(review)
         if outcome != "deferred":
-            s["reviewed_count"] = snap["count"]
-            s["reviewed_prompt_count"] = snap["prompt_count"]
+            s["reviewed_count"] = max(s["reviewed_count"], snap["count"])
+            s["reviewed_prompt_count"] = max(s["reviewed_prompt_count"], snap["prompt_count"])
+            s.get("repair_pending", {}).pop(through, None)
         _save(p, s)
         return _view(s)
 
 
-def _review_status_locked(harness: str, conversation_id: str, through: str) -> dict:
-    # Atomic local state reads need no local mutex while the caller owns the
-    # mutation lock. Taking it here would reverse capture/ACK's lock order.
-    s = _load(state_path(harness, conversation_id), harness, conversation_id)
+def _review_state_locked(s: dict, through: str) -> dict:
     snap = s["snapshots"].get(through)
-    last = s["reviews"][-1] if s["reviews"] else {}
-    result = {"harness": harness, "conversation_id": conversation_id, "through": through,
+    last = next((r for r in reversed(s["reviews"]) if r["through"] == through), {})
+    result = {"harness": s["harness"], "conversation_id": s["conversation_id"], "through": through,
               "status": "pending", "outcome": last.get("outcome")}
-    if not snap or last.get("through") != through or last.get("outcome") == "deferred" or s["reviewed_count"] < snap["count"]:
+    repair = s.get("repair_pending", {}).get(through)
+    if repair:
+        return {**result, "reason": repair["reason"], "repair_pending": True}
+    if not snap or not last or last.get("outcome") == "deferred" or s["reviewed_count"] < snap["count"]:
         return result
     try:
         _verify_raw(s["rounds"][:snap["count"]])
@@ -244,9 +254,44 @@ def _review_status_locked(harness: str, conversation_id: str, through: str) -> d
     return {**result, "status": "complete", "review": last, "semantic_verified": False}
 
 
-def review_status(harness: str, conversation_id: str, through: str) -> dict:
+def _register_repair(s: dict, through: str, result: dict) -> bool:
+    """Keep an observed failed receipt pending until an explicit replacement ACK."""
+    prior = next((r for r in reversed(s["reviews"])
+                  if r["through"] == through and r["outcome"] != "deferred"), None)
+    if (result["status"] == "complete" or not result.get("reason") or not prior
+            or through in s.get("repair_pending", {})):
+        return False
+    s.setdefault("repair_pending", {})[through] = {
+        "reason": result["reason"], "refs": prior["refs"], "since": core.now_iso(),
+        "review_count": len(s["reviews"])}
+    return True
+
+
+def _current_view(s: dict, path: Path) -> dict:
+    # Only the latest completed receipt is discovered opportunistically. Older
+    # failed final checks are explicitly registered by review_status; there is
+    # no unbounded historical integrity scan on every prompt or capture.
     with core.mutation_lock():
-        return _review_status_locked(harness, conversation_id, through)
+        latest = next((r for r in reversed(s["reviews"]) if r["outcome"] != "deferred"), None)
+        if latest and _register_repair(s, latest["through"], _review_state_locked(s, latest["through"])):
+            _save(path, s)
+        return _view(s)
+
+
+def _review_status_locked(harness: str, conversation_id: str, through: str) -> dict:
+    # Pure while the caller owns mutation lock: never acquire the local lock or
+    # write state here. Public review_status persists failures in local→mutation order.
+    return _review_state_locked(_load(state_path(harness, conversation_id), harness, conversation_id), through)
+
+
+def review_status(harness: str, conversation_id: str, through: str) -> dict:
+    with _locked(harness, conversation_id) as p, core.mutation_lock():
+        s = _load(p, harness, conversation_id)
+        result = _review_state_locked(s, through)
+        if _register_repair(s, through, result):
+            _save(p, s)
+            result["repair_pending"] = True
+        return result
 
 
 def _known_pending(limit: int) -> tuple[list, int, list]:
@@ -259,9 +304,11 @@ def _known_pending(limit: int) -> tuple[list, int, list]:
     for p in paths:
         try:
             value = json.loads(p.read_text(encoding="utf-8"))
-            s = _load(p, value["harness"], value["conversation_id"])
-            if p != state_path(s["harness"], s["conversation_id"]):
-                raise ValueError("state filename identity mismatch")
+            with _locked(value["harness"], value["conversation_id"]) as locked_path:
+                if p != locked_path:
+                    raise ValueError("state filename identity mismatch")
+                s = _load(p, value["harness"], value["conversation_id"])
+                current = _current_view(s, p)
             changed = False
             if s.get("transcript_path"):
                 try:
@@ -269,7 +316,7 @@ def _known_pending(limit: int) -> tuple[list, int, list]:
                     changed = s.get("native_fingerprint") != {"size": native.st_size, "mtime_ns": native.st_mtime_ns}
                 except OSError:
                     changed = True
-            if _view(s)["pending"] or changed:
+            if current["pending"] or changed:
                 states.append(s)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append({"state": str(p), "error": str(exc)})
@@ -280,7 +327,7 @@ def list_pending(limit: int = 20) -> dict:
     states, remaining, errors = _known_pending(limit)
     jobs = []
     for s in states:
-        if len(s["rounds"]) <= s["reviewed_count"]:
+        if not _view(s)["pending_refs"]:
             continue
         job = prompt(s["harness"], s["conversation_id"])
         job["prompt"] = job.pop("text")
@@ -309,9 +356,15 @@ def catchup(limit: int = 20) -> dict:
 def prompt(harness: str, conversation_id: str) -> dict:
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
-        st = _view(s)
+        st = _current_view(s, p)
         count = min(len(s["rounds"]), s["reviewed_count"] + MAX_REVIEW_ROUNDS)
-        if count > s["reviewed_count"]:
+        if s.get("repair_pending"):
+            token = min(s["repair_pending"], key=lambda t: (s["snapshots"][t]["count"], t))
+            st["through"] = token
+            st["pending_refs"] = s["repair_pending"][token]["refs"]
+            st["remaining_rounds"] = len(s["rounds"]) - s["reviewed_count"]
+            st["repair"] = s["repair_pending"][token]
+        elif count > s["reviewed_count"]:
             selected = {**s, "rounds": s["rounds"][:count]}
             token = _snapshot(selected)
             # A bounded review may end inside the initial catch-up batch. Its
@@ -325,11 +378,19 @@ def prompt(harness: str, conversation_id: str) -> dict:
     # One snapshot identity for ordinary hooks and dedicated workers alike.
     # A later snapshot must not collide with an immutable distillation request.
     st["key"] = "scope-review-" + st["through"].removeprefix("sha256:") if st["pending_refs"] else None
+    if st.get("repair"):
+        st["key"] += f"-repair-{st['repair']['review_count']}"
     text = (f"[osk 대화별 통합 대기 — {harness}/{conversation_id}]\n"
             f"공유 scope 기억 session={json.dumps(st['session'], ensure_ascii=False)}와 "
             "이 대화의 검토 상태는 별개다. 공유 기억이 비어 있어도 검토한다.\n")
     if st["capture_error"]:
         text += f"포착 진단: {st['capture_error']} — 미완료로 남았다. 본 작업은 계속할 수 있다.\n"
+    if st.get("repair"):
+        text += ("이 snapshot은 이미 검토했지만 저장 영수증의 최종 확인이 실패해 복구 대기로 남았다. "
+                 "새 대화의 완료 커서는 되감지 않았다. 아래 기존 출처와 영수증을 다시 확인하고 "
+                 "같은 through로 명시적으로 재ACK하라. 허브 연결만 빠졌으면 기존 증류를 resume한다. "
+                 "본문 정정이 필요하면 현재 노드를 재검토하고 별도 증류 key로 새 증거를 만든다. "
+                 f"보류 사유: {st['repair']['reason']}\n")
     if (st.get("coverage") or {}).get("mode") == "tool-output-reference":
         text += "포착 범위: 파일 읽기·혼합 명령 결과는 native 위치와 hash 참조로 보존했다. 상세 증거를 다시 읽으려면 원래 전사 보관이 필요하다.\n"
     if not st["pending_refs"]:

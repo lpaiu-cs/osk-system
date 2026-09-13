@@ -112,15 +112,18 @@ def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
                 + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] else
                    "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
         parts = [lead, integration.prompt(harness, sid)["text"]]
+    except Exception as exc:
+        parts = [f"[osk 포착·통합 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다; 대기를 완료로 처리하지 않았다.]"]
+    # Native capture failures must not hide an independently readable scope's
+    # recovery instructions. SessionStart already emits shared memory below.
+    if not startup:
         try:
             from osk import scope_memory, write
             if write.resolve_session(key):
                 parts.extend([scope_memory.recovery_block(key), _memory_block(scope_memory, key)])
         except Exception as exc:
             parts.append(f"[osk 공유 기억 판독 진단 — {type(exc).__name__}: {exc}]")
-        return "\n\n".join(p for p in parts if p)
-    except Exception as exc:
-        return f"[osk 포착·통합 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다; 대기를 완료로 처리하지 않았다.]"
+    return "\n\n".join(p for p in parts if p)
 
 
 def main() -> None:

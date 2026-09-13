@@ -576,6 +576,15 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
                           "capture": catchup,
                           "output": core.posix_rel(directory, core.ROOT)}
                 core.ledger_append(LEDGER, result)
+            # Final checks above hold mutation lock and must not take a local
+            # integration lock. Persist failed Scope receipts in the established
+            # local→mutation order after releasing it, even after a newer ACK.
+            for job in planned["scope_jobs"]:
+                if scope_outcomes[job["key"]]["status"] != "complete":
+                    try:
+                        integration.review_status(job["harness"], job["conversation_id"], job["through"])
+                    except (ValueError, OSError) as exc:
+                        result.setdefault("repair_errors", []).append(str(exc))
             return result
         finally:
             unlock(lock)
