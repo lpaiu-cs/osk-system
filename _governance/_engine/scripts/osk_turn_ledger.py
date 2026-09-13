@@ -133,14 +133,39 @@ def _failed(r: dict | None) -> bool:
     return bool(r and (r["ok"] is False or r["is_error"]))
 
 
+def call_metadata(args: dict) -> dict:
+    """본문은 보관하지 않고 OSK 호출 키·읽기/쓰기·CAS 근거만 남긴다."""
+    if not isinstance(args, dict):
+        args = {}
+    return {"osk_session": args.get("session") if isinstance(args.get("session"), str) else None,
+            "scope_write": args.get("text") is not None or args.get("edits") is not None,
+            "expect_hash": args.get("expect_hash") if isinstance(args.get("expect_hash"), str) else None}
+
+
+def result_metadata(txt: str) -> dict:
+    try:
+        data = json.loads(txt)
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    recovery = data.get("recovery")
+    canonical = data.get("canonical_session") or (recovery.get("session") if isinstance(recovery, dict) else None)
+    return {"scope": data.get("scope") if isinstance(data.get("scope"), str) else None,
+            "canonical_session": canonical if isinstance(canonical, str) else None,
+            "hash": data.get("hash") if isinstance(data.get("hash"), str) else None,
+            "changed": data.get("changed") if isinstance(data.get("changed"), bool) else None,
+            "evicted": bool(data.get("evicted")), "recovery_pending": bool(recovery)}
+
+
 def read_corpus(projects: Path, exclude: list[str]) -> dict:
     """트랜스크립트 전수를 읽어 (과금 메시지, 도구 호출, 결과)를 접는다.
 
     반환:
       msgs:    {message.id: {ts, usage, sessions:set, tool_uses:[tid…], blocks:set}}
                — 같은 message.id는 어느 세션·파일에서 오든 **하나**다(함정 2·3)
-      uses:    {tool_use_id: {name, msg, ts, first_file, first_session, input_len}}
-      results: {tool_use_id: {text_len, ok, is_error, overflow, chars}}
+      uses:    호출·과금 식별자와 call_metadata의 본문 없는 판정 근거
+      results: 결과 크기·성공·초과폭과 result_metadata의 본문 없는 판정 근거
       files:   읽은 파일 수
     """
     msgs: dict = {}
@@ -191,7 +216,8 @@ def read_corpus(projects: Path, exclude: list[str]) -> dict:
                                 continue
                             uses[bid] = {"name": name[len(PREFIX):], "msg": mid, "ts": ent["ts"],
                                          "first_file": f.name, "first_session": sess, "project": proj,
-                                         "input_len": len(json.dumps(blk.get("input", {}), ensure_ascii=False))}
+                                         "input_len": len(json.dumps(blk.get("input", {}), ensure_ascii=False)),
+                                         **call_metadata(blk.get("input") or {})}
                             ent["tool_uses"].append(bid)
                 elif isinstance(c, list):
                     for blk in c:
@@ -208,7 +234,8 @@ def read_corpus(projects: Path, exclude: list[str]) -> dict:
                                         "ok": (okm.group(1) == "true") if okm else None,
                                         "is_error": bool(blk.get("is_error")),
                                         "overflow": tuple(int(g) for g in ov.groups()) if ov else None,
-                                        "chars": int(chm.group(1)) if chm else None}
+                                        "chars": int(chm.group(1)) if chm else None,
+                                        **result_metadata(txt)}
     return {"msgs": msgs, "uses": uses, "results": results, "files": files_scanned}
 
 
@@ -339,41 +366,76 @@ def _cost(u: dict) -> float:
 
 # ── scope 기억 에피소드 ───────────────────────────────────────────────────
 
+def _changed_write(use: dict, res: dict) -> bool | None:
+    """구판은 evict 또는 그 쓰기의 CAS 전후 해시로만 변경을 입증한다.
+
+    과거 읽기/거부의 해시는 다른 작성자가 바꿀 수 있어 이 쓰기의 직전 상태가
+    아니다. 증거 없는 edits 성공을 변경이나 no-op으로 추측하지 않는다.
+    """
+    if not use.get("scope_write") or res.get("recovery_pending"):
+        return False
+    if res.get("changed") is not None:
+        return res["changed"]
+    if res.get("evicted"):
+        return True
+    if use.get("expect_hash") and res.get("hash"):
+        return use["expect_hash"] != res["hash"]
+    return None
+
+
 def episodes(corpus: dict) -> list[dict]:
-    """경로별로 '첫 상한 초과 거부 ~ 다음 성공'을 한 에피소드로 묶고, 그 사이에
-    증류(create_node/update_node 성공)가 있었는지 본다. 같은 거부에서 시작한
+    """경로별로 같은 (OSK session, scope)의 첫 초과 ~ 실제 변경 쓰기를 묶는다.
+    사이의 create_node/update_node 성공은 동반 관측일 뿐 내용 보존·자율성의
+    판정이 아니다. 같은 거부에서 시작한
     에피소드가 여러 경로(재개·분기)에 나타나면 **가장 먼저 닫힌 것 하나**만 센다 —
     끝까지 닫히지 않은 경로만 있으면 미해결 하나다."""
     msgs, uses, results = corpus["msgs"], corpus["uses"], corpus["results"]
     best: dict = {}
-    for sess, path in session_paths(corpus).items():
-        cur = None
+    for path in session_paths(corpus).values():
+        pending = {}
+        aliases = {}
         for mid in path:
             for tid in msgs[mid]["tool_uses"]:
                 use, res = uses[tid], results.get(tid)
                 if res is None:
                     continue
                 name = use["name"]
-                if name == "scope_memory" and res["overflow"]:
+                if name != "scope_memory":
+                    for cur in pending.values():
+                        if name in DISTILL_TOOLS and res["ok"]:
+                            cur["distill"] += 1
+                        elif name == "search":
+                            cur["search"] += 1
+                    continue
+                requested = use.get("osk_session")
+                if requested and res.get("canonical_session"):
+                    aliases[requested] = res["canonical_session"]
+                session = aliases.get(requested, requested)
+                scope = res.get("scope")
+                # 누락된 키를 None끼리 묶으면 출처 불명 성공이 거부를 닫는다.
+                key = (session, scope) if session and scope else (None, tid)
+                cur = pending.get(key)
+                if res["overflow"]:
                     if cur is None:
-                        cur = {"start": use["ts"], "start_tid": tid, "rejections": 0,
+                        cur = pending[key] = {"start": use["ts"], "start_tid": tid, "rejections": 0,
+                               "session": session, "scope": scope, "unverified_writes": 0,
                                "attempted": res["overflow"][0], "distill": 0,
                                "search": 0, "tokens": 0.0, "over": res["overflow"][2]}
                     cur["rejections"] += 1
                     cur["tokens"] += _cost(use)
-                elif cur is not None:
-                    if name in DISTILL_TOOLS and res["ok"]:
-                        cur["distill"] += 1
-                    elif name == "search":
-                        cur["search"] += 1
-                    elif name == "scope_memory" and res["ok"]:
+                elif cur is not None and res["ok"]:
+                    changed = _changed_write(use, res)
+                    if changed is None:
+                        cur["unverified_writes"] += 1
+                    elif changed:
                         cur["end"] = use["ts"]
+                        cur["end_tid"] = tid
                         cur["accepted"] = res["chars"]
                         cur["trimmed"] = (cur["attempted"] - res["chars"]) if res["chars"] is not None else None
                         cur["outcome"] = "distill" if cur["distill"] else "trim"
                         _keep_earliest(best, cur)
-                        cur = None
-        if cur is not None:
+                        del pending[key]
+        for cur in pending.values():
             cur["outcome"] = "unresolved"
             cur["end"] = INF
             _keep_earliest(best, cur)
@@ -491,6 +553,9 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
         "tokens_total": round(total), "tokens_failed": round(failed_cost),
         "tools": tools,
         "scope_memory": {
+            "episode_definition": "same OSK session and scope; successful write with proven content change",
+            "distill_definition": "successful node writes during the episode; content preservation requires review",
+            "autonomy": "not_measured",
             "calls": len(sm),
             "alone_rate": round(sum(1 for _t, u in sm if u.get("alone")) / len(sm), 3) if sm else None,
             "overflow_rejections": len(overs), "overflow_tokens": round(over_tokens),
@@ -502,6 +567,7 @@ def summarize(full: dict, since: float, until: float, ledger: Path | None) -> di
             "episodes_trim": sum(1 for e in resolved if e["outcome"] == "trim"),
             "episodes_distill": sum(1 for e in resolved if e["outcome"] == "distill"),
             "episodes_unresolved": len(eps) - len(resolved),
+            "unverified_writes": sum(e["unverified_writes"] for e in eps),
             "distill_rate": round(sum(1 for e in resolved if e["outcome"] == "distill") / len(resolved), 3) if resolved else None,
             "multi_rejection_episodes": len(multi),
             "multi_rejection_with_distill": sum(1 for e in multi if e["distill"]),
@@ -533,11 +599,15 @@ def render(s: dict) -> str:
     L.append(f"  상한 초과 거부 {m['overflow_rejections']} · {m['overflow_tokens']:,}tok"
              f" (비용의 {(m['overflow_share_of_cost'] or 0)*100:.1f}%)"
              f" · 초과폭 p25/p50/p75 {m['over_p25']}/{m['over_p50']}/{m['over_p75']} · ≤100자 {(m['over_le100_share'] or 0)*100:.0f}%")
-    L.append(f"  에피소드 {m['episodes']}: 잘라서 통과 {m['episodes_trim']} · 증류 {m['episodes_distill']}"
-             f" · 미해결 {m['episodes_unresolved']} → 증류율 {(m['distill_rate'] or 0)*100:.0f}%")
-    L.append(f"  2회 이상 거부 {m['multi_rejection_episodes']} (그중 증류 {m['multi_rejection_with_distill']}"
+    rate = f"{m['distill_rate']*100:.1f}%" if m['distill_rate'] is not None else "미산정"
+    L.append(f"  에피소드 {m['episodes']}: 노드 쓰기 미동반 {m['episodes_trim']} · 동반 {m['episodes_distill']}"
+             f" · 미해결 {m['episodes_unresolved']} → 종결 중 노드 쓰기 동반율 {rate}")
+    L.append(f"  동일 OSK session·scope의 실제 변경 쓰기로 종결 · 변경 미확인 성공 {m['unverified_writes']}")
+    L.append("  내용 보존·사용자 명시 지시·훅 자율 활용 여부는 별도 판독 — 이 계기는 자율성을 재지 않는다.")
+    L.append(f"  2회 이상 거부 {m['multi_rejection_episodes']} (그중 노드 쓰기 동반 {m['multi_rejection_with_distill']}"
              f", search 호출 {m['multi_rejection_with_search']})")
-    L.append(f"  증류 없이 잘린 분량 {m['trimmed_chars_total']:,}자 (에피소드 중앙값 {m['trimmed_chars_median']})")
+    L.append(f"  노드 쓰기 미동반 초안→성공본 순감소 {m['trimmed_chars_total']:,}자"
+             f" (에피소드 중앙값 {m['trimmed_chars_median']}; evict 분량과 다른 지표)")
     e = s["evictions"]
     L.append("")
     if e is None:
