@@ -55,6 +55,13 @@ def codex_round(n, *, finished=True):
     return rs
 
 
+def codex_user_item(sid, n, text):
+    return {"type": "event_msg", "payload": {
+        "type": "item_completed", "thread_id": sid, "turn_id": f"turn-{n}",
+        "item": {"type": "UserMessage", "id": f"user-{n}",
+                 "content": [{"type": "text", "text": text}]}}}
+
+
 class IntegrationTests(unittest.TestCase):
     def setUp(self):
         self.sid = self._testMethodName
@@ -96,6 +103,63 @@ class IntegrationTests(unittest.TestCase):
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "wrong", "last_agent_message": "answer"}}) + "\n")
         self.assertFalse(self.capture("codex")["ok"])
+
+    def test_codex_native_user_item_capture_and_replay(self):
+        rows = codex_round(1)
+        rows[3] = codex_user_item(self.sid, 1, "question 1")
+        self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + rows)
+        captured = self.capture("codex")
+        self.assertEqual(captured["captured_rounds"], 1, captured)
+        self.assertFalse(captured["capture_pending"], captured)
+        text = raw.read_round(captured["pending_refs"][0])["text"]
+        self.assertEqual(text.count("question 1"), 1)
+        self.assertIn("evidence result", text)
+        self.assertIn("answer 1", text)
+        self.assertEqual(self.capture("codex")["appended"], 0)
+
+    def test_codex_mixed_user_envelopes_preserve_distinct_inputs(self):
+        header = [{"type": "session_meta", "payload": {"id": self.sid}}]
+        rows = codex_round(1)
+        legacy, native = rows[3], codex_user_item(self.sid, 1, "question 1")
+
+        def parse(inputs):
+            self.transcript(header + rows[:3] + inputs + rows[4:])
+            return transcripts.read(str(self.path), "codex", self.sid)["rounds"][0]
+
+        expected = parse([legacy])
+        for inputs in ([legacy, native], [native, legacy]):
+            actual = parse(inputs)
+            self.assertEqual(actual["user"], expected["user"])
+            self.assertEqual(actual["agent"], expected["agent"])
+        distinct = codex_user_item(self.sid, 1, "independent correction")
+        actual = parse([distinct, legacy, native])
+        self.assertLess(actual["user"].index("independent correction"), actual["user"].index("question 1"))
+        self.assertEqual(actual["user"].count("question 1"), 1)
+        self.assertEqual(parse([legacy, legacy, native, native])["user"].count("question 1"), 2)
+        rich = codex_user_item(self.sid, 1, "question 1")
+        rich["payload"]["item"]["content"].append({"type": "image", "url": "https://example.invalid/image"})
+        self.assertIn("https://example.invalid/image", parse([legacy, rich])["user"])
+
+    def test_codex_native_identity_and_completion_boundaries(self):
+        header = [{"type": "session_meta", "payload": {"id": self.sid}}]
+        rows = codex_round(1)
+        native = codex_user_item(self.sid, 1, "question 1")
+        for field in ("thread_id", "turn_id"):
+            wrong = json.loads(json.dumps(native))
+            wrong["payload"][field] = "another-conversation-or-turn"
+            self.transcript(header + rows[:3] + [wrong] + rows[4:])
+            with self.assertRaisesRegex(ValueError, "user item identity mismatch"):
+                transcripts.read(str(self.path), "codex", self.sid)
+        self.transcript(header + rows[:3] + [native] + rows[4:-1])
+        parsed = transcripts.read(str(self.path), "codex", self.sid)
+        self.assertEqual(parsed["rounds"], [])
+        self.assertTrue(parsed["pending_tail"])
+        aborted = {"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "turn-1"}}
+        self.transcript(header + rows[:3] + [native, aborted])
+        self.assertEqual(transcripts.read(str(self.path), "codex", self.sid)["rounds"][0]["completion"], "aborted")
+        # response_item user also carries injected context; it is not a fallback prompt.
+        self.transcript(header + rows[:3] + rows[4:])
+        self.assertEqual(transcripts.read(str(self.path), "codex", self.sid)["rounds"], [])
 
     def test_crash_after_raw_append_retries_without_duplicate(self):
         self.transcript(claude_round(self.sid, 1))
