@@ -348,6 +348,9 @@ def _recalled(chunk: str) -> str:
 
 def _preview(chunk: str, width: int = 60) -> str:
     """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
+    body = _round_body(chunk).splitlines()
+    if body[:3] == [_CODEX_V2, "", "### user"]:
+        chunk = "\n".join(body[2:])  # Only the header; user quotations stay visible.
     for line in chunk.splitlines():
         s = line.strip()
         if s and not _ROUND.match(s) and not s.startswith("#"):

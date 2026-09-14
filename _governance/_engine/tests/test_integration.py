@@ -140,6 +140,35 @@ class IntegrationTests(unittest.TestCase):
         rich["payload"]["item"]["content"].append({"type": "image", "url": "https://example.invalid/image"})
         self.assertIn("https://example.invalid/image", parse([legacy, rich])["user"])
 
+    def test_codex_raw_index_previews_skip_only_capture_header(self):
+        rows = [{"type": "session_meta", "payload": {"id": self.sid}}]
+        for n in (1, 2):
+            turn = codex_round(n)
+            turn[3] = codex_user_item(self.sid, n, f"question {n}")
+            rows += turn
+        self.transcript(rows)
+        captured = self.capture("codex")
+        self.assertTrue(captured["ok"], captured)
+        ref = raw.parse_ref(captured["pending_refs"][0])[0]
+        path = raw._raw_file(ref)
+        before = path.read_bytes()
+        toc = raw.read_round(ref)["index"]
+        self.assertEqual(len(toc), 2)
+        for n, item in enumerate(toc, 1):
+            self.assertIn(f"question {n}", item["preview"])
+            self.assertNotIn("osk-capture", item["preview"])
+            recalled = raw.read_round(f"{ref}#{n}")
+            self.assertIn(raw._CODEX_V2, recalled["text"])
+            self.assertEqual(item["chars"], recalled["chars"])
+        self.assertEqual(path.read_bytes(), before)
+        # A user can quote that exact comment. Skip only the recorder's header,
+        # not matching user content or all HTML comments, in either format.
+        for native in (False, True):
+            block = raw._block(1, raw._CODEX_V2, "reply", codex_native=native)
+            self.assertEqual(raw._preview(block), raw._CODEX_V2)
+            crlf = raw._block(1, "CRLF question", "reply", codex_native=native).replace("\n", "\r\n")
+            self.assertEqual(raw._preview(crlf), "CRLF question")
+
     def test_codex_native_identity_and_completion_boundaries(self):
         header = [{"type": "session_meta", "payload": {"id": self.sid}}]
         rows = codex_round(1)
