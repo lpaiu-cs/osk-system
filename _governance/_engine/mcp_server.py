@@ -240,15 +240,33 @@ def _node_view(body: str, view: str) -> dict:
     # ponytail: ATX headings only, first 40 labels (80 chars each). Range paging
     # covers heading-free/long bodies; add a Markdown parser only if richer outlines matter.
     headings, fence, offset = [], "", 0
+    list_indents, fence_indent = [], 0
     for line in body.splitlines(keepends=True):
-        mark = re.match(r" {0,3}(`{3,}|~{3,})(.*)", line)
+        # Strip list containers only for parsing; offsets still count original characters.
+        content = line.expandtabs(4)
+        if content.strip():
+            while list_indents and not content.startswith(" " * list_indents[-1]):
+                list_indents.pop()
+        indent = list_indents[-1] if list_indents else 0
+        if fence and indent < fence_indent:
+            fence = ""  # An unclosed fence ends with its containing list item.
+        content = content[indent:]
+        if not fence:
+            while item := re.match(r" {0,3}(?:[-+*]|[0-9]{1,9}[.)])( +|$)", content):
+                padding = len(item[1])
+                width = item.start(1) + (padding if 1 <= padding <= 4 else 1)
+                indent += width
+                list_indents.append(indent)
+                content = content[width:]
+        mark = re.match(r" {0,3}(`{3,}|~{3,})(.*)", content)
         if fence:
             if mark and mark[1][0] == fence[0] and len(mark[1]) >= len(fence) and not mark[2].strip():
                 fence = ""
-        elif mark:
+        elif mark and (mark[1][0] != "`" or "`" not in mark[2]):
             fence = mark[1]
+            fence_indent = indent
         else:
-            heading = re.match(r" {0,3}(#{1,6})(?:[ \t]+|$)(.*)", line)
+            heading = re.match(r" {0,3}(#{1,6})(?:[ \t]+|$)(.*)", content)
             if heading:
                 headings.append({"title": re.sub(r"[ \t]+#+[ \t]*$", "", heading[2])[:80],
                                  "level": len(heading[1]), "start": offset})

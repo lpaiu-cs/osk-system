@@ -59,6 +59,7 @@ def read_checks():
     validate.make_mini_vault(core.ROOT)
     body = ('Introduction 한글😀\n# First\n' + '가😀 value\n' * 800 +
             '\n```markdown\n# Fake\n```\n~~~\n## Also fake\n~~~\n'
+            '\n- ```python\n  # List comment\n  ```\n'
             '## Repeated\nFirst instance\n## Repeated\nSecond instance\n')
     assert write.create_node('Selective read', 'Read fixture', body,
                              'gpt-6-astra', space='= Scope/W1')['ok']
@@ -99,6 +100,25 @@ def read_checks():
                              'gpt-6-astra', space='= Scope/W1')['ok']
     many = m.read_node('Many headings', view='outline')
     assert len(many['headings']) == 40 and many['outline_truncated']
+    # List fences must hide code headings without swallowing the following section.
+    for block in (
+        '- ```python\n  # comment\n  ```\n',
+        '10. ~~~~python\n    # comment\n    ~~~\n    ## still code\n    ~~~~~\n',
+        '- item\n\n  ```python\n  # comment\n  ```\n',
+        '- outer\n  - inner\n\n    ```python\n    # comment\n    ```\n',
+        '- - ```python\n    # comment\n    ```\n',
+        '-\t```python\n\t# comment\n\t```\n',
+        '- ```python\n  # comment\n',  # Leaving the list also closes an unclosed fence.
+        '- ```python\n  # comment\n- next item\n',
+    ):
+        sample = '# Before\n\n' + block + '\n## After\n중요한 결론😀\n'
+        selected = m._node_view(sample, 'outline')
+        assert [h['title'] for h in selected['headings']] == ['Before', 'After'], (block, selected)
+        assert not selected['outline_truncated']
+        after = selected['headings'][1]
+        assert after['start'] == sample.index('## After')
+        assert m._node_view(sample, after['view'])['body'] == '## After\n중요한 결론😀\n'
+    assert m._node_view('```in`valid\n# Visible\n', 'outline')['headings'][0]['title'] == 'Visible'
     assert not validate.surface_lint(), validate.surface_lint()
 
 
@@ -118,6 +138,8 @@ async def transport_checks():
                 assert not result.isError, result
                 return json.loads(result.content[0].text)
             full = await call('read_node', {'name': 'Selective read'})
+            outline = await call('read_node', {'name': full['name'], 'view': 'outline'})
+            assert [h['title'] for h in outline['headings']] == ['First', 'Repeated', 'Repeated']
             part = await call('read_node', {'name': 'Selective read', 'view': '0:20'})
             assert part['body'] == full['body'][:20] and 'hash' not in part
             refused = await call('update_node', {'name': full['name'], 'body': part['body'],
