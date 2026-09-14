@@ -83,6 +83,10 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
         result = _claude(rows, conversation_id)
     elif harness == "codex":
         result = _codex(rows, conversation_id)
+        # Unmarked durable rounds used v3.14's event-only serialization. Keep
+        # that exact replay (including trace gating) separate from new capture.
+        result["codex_v1"] = {r["id"]: r for r in _codex(
+            rows, conversation_id, native_users=False)["rounds"]}
     else:
         raise ValueError("harness must be claude or codex")
     result["diagnostics"] = diagnostics + result["diagnostics"]
@@ -163,12 +167,41 @@ def _claude(rows: list, sid: str) -> dict:
     return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics}
 
 
-def _codex(rows: list, sid: str) -> dict:
+def _codex(rows: list, sid: str, *, native_users: bool = True) -> dict:
     identities = {r.get("payload", {}).get("id") for _, r in rows if r.get("type") == "session_meta"}
     if identities != {sid}:
         raise ValueError("Codex transcript session_meta.id does not match this conversation")
     rounds, diagnostics, users, trace, seen, calls = [], [], [], [], set(), {}
     turn = None
+    user_formats = []
+
+    def add_user(value, origin):
+        # Some harness versions emit both envelopes. Pair only plain-text
+        # mirrors, one for one; preserve the legacy bytes for captured prefixes.
+        # Rich or unrecognized content stays intact rather than being guessed away.
+        key = None
+        if origin == "legacy":
+            if isinstance(value.get("message"), str) and not any(
+                    v for k, v in value.items() if k != "message"):
+                key = value["message"]
+        else:
+            content = value["content"]
+            if (set(value) <= {"id", "content"} and len(content) == 1
+                    and isinstance(content[0], dict) and content[0].get("type") == "text"
+                    and isinstance(content[0].get("text"), str)
+                    and not any(v for k, v in content[0].items() if k not in {"type", "text"})):
+                key = content[0]["text"]
+        other = "native" if origin == "legacy" else "legacy"
+        if key is not None:
+            for i, (previous, previous_key) in enumerate(user_formats):
+                if previous == other and previous_key == key:
+                    if origin == "legacy":
+                        users[i] = _dump(value)
+                    user_formats[i] = ("paired", key)
+                    return
+        users.append(_dump(value))
+        user_formats.append((origin, key))
+
     for line, row in rows:
         typ, p = row.get("type"), row.get("payload", {})
         if not isinstance(p, dict):
@@ -178,10 +211,18 @@ def _codex(rows: list, sid: str) -> dict:
             if turn and users:
                 diagnostics.append(f"unfinished Codex turn {turn}")
             turn, users, trace = p.get("turn_id"), [], []
+            user_formats.clear()
         elif typ == "turn_context" and not turn:
             turn = p.get("turn_id")
         elif typ == "event_msg" and event == "user_message" and turn:
-            users.append(_dump({k: v for k, v in p.items() if k != "type"}))
+            add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
+        elif (native_users and typ == "event_msg" and event == "item_completed" and turn
+              and isinstance(p.get("item"), dict) and p["item"].get("type") == "UserMessage"):
+            if p.get("turn_id") != turn or p.get("thread_id") != sid:
+                raise ValueError(f"Codex user item identity mismatch at line {line}")
+            item = p["item"]
+            if isinstance(item.get("content"), list) and item["content"]:
+                add_user({k: v for k, v in item.items() if k != "type"}, "native")
         elif typ == "response_item" and turn and users:
             # event_msg user/agent text mirrors response_item. Keep native tool
             # items and assistant responses once; never mistake tool output for
@@ -210,6 +251,7 @@ def _codex(rows: list, sid: str) -> dict:
                                "completion": "completed"})
                 seen.add(turn)
             turn, users, trace = None, [], []
+            user_formats.clear()
         elif typ == "event_msg" and event == "turn_aborted" and turn:
             if p.get("turn_id") and p["turn_id"] != turn:
                 raise ValueError(f"Codex abort turn_id mismatch at line {line}")
@@ -221,5 +263,6 @@ def _codex(rows: list, sid: str) -> dict:
                                "end_line": line, "completion": "aborted"})
                 seen.add(turn)
             turn, users, trace = None, [], []
+            user_formats.clear()
     return {"rounds": rounds, "pending_tail": bool(users) or bool(diagnostics),
             "diagnostics": diagnostics}

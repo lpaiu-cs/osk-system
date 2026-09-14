@@ -306,6 +306,11 @@ printf '%s' '{"rounds":[{"user":"…","agent":"…"}]}' \
 `integration capture`는 안정된 기록 이름에 저장본 접두부를 대조한 뒤 새 꼬리만
 `raw.append_rounds`로 보낸다. 저장 후 응답이나 로컬 커서가 유실돼도 중복 append를
 하지 않는다. 미완료 라운드·손상·지원하지 않는 전사 형식은 포착 완료로 세지 않는다.
+Codex의 새 `UserMessage` 입력도 포착한다. 새 라운드는 기록 안에 직렬화 판본 표식을
+남긴다. 표식이 없는 v3.14 과거 라운드는 당시 `user_message` 형식으로 엄격히 대조해
+원문·출처 해시를 유지하고, 이후 라운드는 새 형식으로 이어 쓴다. 새 형식의 불일치를
+구형 대조로 넘기지 않는다. 과거 포착기가 생략한 native 입력은 소급해서 raw에 넣지
+않으므로 상세 확인에는 원래 전사가 필요하며, 이 한계를 통합 검토 안내에도 표시한다.
 Stop 훅도 포착만 하며 작업을 강제로 연장하지 않는다. Stop이 전사의 최종 완료 표식보다
 먼저 실행되거나 생략되면 `integration catchup`이 이미 등록된 대화의 꼬리를 따라잡는다.
 Claude의 Stop에도 같은 `scripts/hooks/capture_stop.py`를 등록한다.
@@ -360,6 +365,28 @@ raw 라운드 참조(선정 시 해시가 있으면 `{ref,hash}`), `hub`는 기�
 에이전트 명령은 JSON argv 배열 파일로 둔다. 명령은 stdin으로 프롬프트를 읽고 종료해야
 하며, 이 인스턴스의 osk MCP에 연결돼 있어야 한다. 셸 문자열은 실행하지 않는다.
 우선 격리 mini-vault에서 실제 도구 호출을 확인한 뒤 인스턴스에 등록한다.
+
+
+Codex의 ChatGPT 구독 로그인으로 실행할 때는 `codex login status`가 ChatGPT 로그인을
+보고하는지 먼저 확인한다. 별도 API 키나 다른 모델 공급자를 연결하지 않고, 다음처럼
+인증 방식을 제한한다. 실제 사용 중인 Codex 실행 파일과 이 인스턴스의 MCP 설정을 쓴다.
+
+```json
+[
+  "codex", "exec", "--json", "--sandbox", "read-only",
+  "-c", "forced_login_method=\"chatgpt\"",
+  "-c", "approval_policy=\"on-request\"",
+  "-c", "approvals_reviewer=\"auto_review\"",
+  "-"
+]
+```
+
+`exec`의 승인 정책은 `-c approval_policy=...`로 전달한다. 상위 명령의
+`-a on-request`만 붙이면 실제 실행은 `never`로 남아 `read_raw`를 거절할 수 있다.
+이 설정은 해당 실행에만 적용되며 전역 승인 설정을 바꾸지 않는다. 자동 검토도 개별
+호출을 거절할 수 있으므로, 실제 원문 읽기와 노드 저장 결과까지 확인한다.
+`forced_login_method`는 ChatGPT 인증으로 제한하며, 사용량은 구독의 Codex 한도에 포함된다.
+아래 명령은 한 번만 실행한다. 정기 실행이 필요할 때만 뒤의 스케줄러를 별도로 등록한다.
 
 ```powershell
 .venv/Scripts/python.exe _governance/_engine/scripts/growth_run.py --command-file .osk/growth-command.json --limit 3 --timeout 600

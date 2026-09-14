@@ -124,9 +124,13 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
          f"드러나게 라운드를 고쳐 보낸다."])
 
 
-def _block(index: int, user: str, agent: str) -> str:
+_CODEX_V2 = "<!-- osk-capture: codex-user-items-v2 -->"
+
+
+def _block(index: int, user: str, agent: str, *, codex_native: bool = False) -> str:
     """한 라운드 = user 발화 + 그에 속한 에이전트 응답(시행령 §2 7항)."""
-    return (f"## {index}\n\n"
+    stamp = f"{_CODEX_V2}\n\n" if codex_native else ""
+    return (f"## {index}\n\n{stamp}"
             f"### user\n\n{user.rstrip()}\n\n"
             f"### agent\n\n{agent.rstrip()}\n")
 
@@ -141,7 +145,8 @@ _CONFINE = ("`_raw/`는 세션당 정본 하나이므로(시행령 §2 1항) 한
 
 
 def append_rounds(session: str, record: str, pairs: list,
-                  space: str | None = None, *, replay_prefix: bool = False) -> dict:
+                  space: str | None = None, *, replay_prefix: bool = False,
+                  codex_v1: dict | None = None) -> dict:
     """라운드 여럿을 **한 번의 쓰기로** 잇는다.
 
     배치가 필요한 이유는 성능이 아니라 원자성이다. 라운드마다 따로 쓰면 세
@@ -153,6 +158,8 @@ def append_rounds(session: str, record: str, pairs: list,
     그 scope로 세션을 확정한다. `space`의 표기는 `create_node`와 같은 군집
     전체 경로(`"= Scope/W1"`)다 — 같은 값이 같은 뜻이어야 호출자가
     `overview`의 `clusters`를 그대로 옮겨 쓴다."""
+    if codex_v1 is not None and not replay_prefix:
+        raise ValueError("Codex capture versions require prefix replay")
     if not pairs:
         raise write.WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
     norm = []
@@ -196,12 +203,22 @@ def append_rounds(session: str, record: str, pairs: list,
         # Capture adapters resend the complete completed-round sequence. Compare
         # the durable prefix before appending: a crash after write_raw but before
         # its local cursor is saved must not duplicate append-only evidence.
-        replayed = []
+        replayed, legacy_replayed = [], []
         if replay_prefix:
             if len(spans) > len(norm):
                 raise write.WriteError("포착 원본이 저장된 기록보다 짧다", ["원본을 복구한 뒤 재시도하라"])
-            for (idx, (s, e)), (u, a) in zip(sorted(spans.items()), norm):
-                expected = _block(idx, escape_numeric_h2(u), escape_numeric_h2(a))
+            for pair, (idx, (s, e)), (u, a) in zip(pairs, sorted(spans.items()), norm):
+                native = codex_v1 is not None and _round_body(prior[s:e]).startswith(_CODEX_V2 + "\n")
+                if codex_v1 is not None and not native:
+                    # Select the recorded codec before comparing. Never fall
+                    # back after a mismatch: v2 rich input must remain checked.
+                    # The marker lives in raw so cursor loss/copies retain it.
+                    legacy = codex_v1.get(pair["id"])
+                    if legacy is None:
+                        raise write.WriteError("과거 Codex 라운드를 재현할 수 없다", [f"라운드 {idx} — 쓰지 않았다"])
+                    u, a = legacy["user"], legacy["agent"]
+                    legacy_replayed.append(idx)
+                expected = _block(idx, escape_numeric_h2(u), escape_numeric_h2(a), codex_native=native)
                 if _round_body(prior[s:e]) != _round_body(secrets.filter_text(expected)[0]):
                     raise write.WriteError("포착 원본과 저장된 접두부가 다르다", [f"라운드 {idx} — 쓰지 않았다"])
                 replayed.append(idx)
@@ -210,12 +227,12 @@ def append_rounds(session: str, record: str, pairs: list,
                 rel = posix_rel(p.resolve(), ROOT)
                 return {"ok": True, "path": rel, "indices": replayed,
                         "round_refs": [f"[[{rel}#{i}]]" for i in replayed],
-                        "filtered": [], "appended": 0}
+                        "filtered": [], "appended": 0, "codex_v1_rounds": legacy_replayed}
         blocks, indices = [], []
         for n, (u, a) in enumerate(norm):
             indices.append(first + n)
             blocks.append(_block(first + n, escape_numeric_h2(u),
-                                 escape_numeric_h2(a)))
+                                 escape_numeric_h2(a), codex_native=codex_v1 is not None))
         if not replay_prefix:
             _reject_replay(prior, spans, blocks)
         if prior and not prior.endswith("\n"):
@@ -236,6 +253,7 @@ def append_rounds(session: str, record: str, pairs: list,
                   "filtered": sorted(set(hits))}
         if replay_prefix:
             result["appended"] = len(indices)
+            result["codex_v1_rounds"] = legacy_replayed
         return result
 
 
@@ -330,6 +348,9 @@ def _recalled(chunk: str) -> str:
 
 def _preview(chunk: str, width: int = 60) -> str:
     """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
+    body = _round_body(chunk).splitlines()
+    if body[:3] == [_CODEX_V2, "", "### user"]:
+        chunk = "\n".join(body[2:])  # Only the header; user quotations stay visible.
     for line in chunk.splitlines():
         s = line.strip()
         if s and not _ROUND.match(s) and not s.startswith("#"):

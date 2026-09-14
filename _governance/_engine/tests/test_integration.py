@@ -55,6 +55,13 @@ def codex_round(n, *, finished=True):
     return rs
 
 
+def codex_user_item(sid, n, text):
+    return {"type": "event_msg", "payload": {
+        "type": "item_completed", "thread_id": sid, "turn_id": f"turn-{n}",
+        "item": {"type": "UserMessage", "id": f"user-{n}",
+                 "content": [{"type": "text", "text": text}]}}}
+
+
 class IntegrationTests(unittest.TestCase):
     def setUp(self):
         self.sid = self._testMethodName
@@ -96,6 +103,168 @@ class IntegrationTests(unittest.TestCase):
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "wrong", "last_agent_message": "answer"}}) + "\n")
         self.assertFalse(self.capture("codex")["ok"])
+
+    def test_codex_native_user_item_capture_and_replay(self):
+        rows = codex_round(1)
+        rows[3] = codex_user_item(self.sid, 1, "question 1")
+        self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + rows)
+        captured = self.capture("codex")
+        self.assertEqual(captured["captured_rounds"], 1, captured)
+        self.assertFalse(captured["capture_pending"], captured)
+        text = raw.read_round(captured["pending_refs"][0])["text"]
+        self.assertEqual(text.count("question 1"), 1)
+        self.assertIn("evidence result", text)
+        self.assertIn("answer 1", text)
+        self.assertEqual(self.capture("codex")["appended"], 0)
+
+    def test_codex_mixed_user_envelopes_preserve_distinct_inputs(self):
+        header = [{"type": "session_meta", "payload": {"id": self.sid}}]
+        rows = codex_round(1)
+        legacy, native = rows[3], codex_user_item(self.sid, 1, "question 1")
+
+        def parse(inputs):
+            self.transcript(header + rows[:3] + inputs + rows[4:])
+            return transcripts.read(str(self.path), "codex", self.sid)["rounds"][0]
+
+        expected = parse([legacy])
+        for inputs in ([legacy, native], [native, legacy]):
+            actual = parse(inputs)
+            self.assertEqual(actual["user"], expected["user"])
+            self.assertEqual(actual["agent"], expected["agent"])
+        distinct = codex_user_item(self.sid, 1, "independent correction")
+        actual = parse([distinct, legacy, native])
+        self.assertLess(actual["user"].index("independent correction"), actual["user"].index("question 1"))
+        self.assertEqual(actual["user"].count("question 1"), 1)
+        self.assertEqual(parse([legacy, legacy, native, native])["user"].count("question 1"), 2)
+        rich = codex_user_item(self.sid, 1, "question 1")
+        rich["payload"]["item"]["content"].append({"type": "image", "url": "https://example.invalid/image"})
+        self.assertIn("https://example.invalid/image", parse([legacy, rich])["user"])
+
+    def test_codex_raw_index_previews_skip_only_capture_header(self):
+        rows = [{"type": "session_meta", "payload": {"id": self.sid}}]
+        for n in (1, 2):
+            turn = codex_round(n)
+            turn[3] = codex_user_item(self.sid, n, f"question {n}")
+            rows += turn
+        self.transcript(rows)
+        captured = self.capture("codex")
+        self.assertTrue(captured["ok"], captured)
+        ref = raw.parse_ref(captured["pending_refs"][0])[0]
+        path = raw._raw_file(ref)
+        before = path.read_bytes()
+        toc = raw.read_round(ref)["index"]
+        self.assertEqual(len(toc), 2)
+        for n, item in enumerate(toc, 1):
+            self.assertIn(f"question {n}", item["preview"])
+            self.assertNotIn("osk-capture", item["preview"])
+            recalled = raw.read_round(f"{ref}#{n}")
+            self.assertIn(raw._CODEX_V2, recalled["text"])
+            self.assertEqual(item["chars"], recalled["chars"])
+        self.assertEqual(path.read_bytes(), before)
+        # A user can quote that exact comment. Skip only the recorder's header,
+        # not matching user content or all HTML comments, in either format.
+        for native in (False, True):
+            block = raw._block(1, raw._CODEX_V2, "reply", codex_native=native)
+            self.assertEqual(raw._preview(block), raw._CODEX_V2)
+            crlf = raw._block(1, "CRLF question", "reply", codex_native=native).replace("\n", "\r\n")
+            self.assertEqual(raw._preview(crlf), "CRLF question")
+
+    def test_codex_native_identity_and_completion_boundaries(self):
+        header = [{"type": "session_meta", "payload": {"id": self.sid}}]
+        rows = codex_round(1)
+        native = codex_user_item(self.sid, 1, "question 1")
+        for field in ("thread_id", "turn_id"):
+            wrong = json.loads(json.dumps(native))
+            wrong["payload"][field] = "another-conversation-or-turn"
+            self.transcript(header + rows[:3] + [wrong] + rows[4:])
+            with self.assertRaisesRegex(ValueError, "user item identity mismatch"):
+                transcripts.read(str(self.path), "codex", self.sid)
+        self.transcript(header + rows[:3] + [native] + rows[4:-1])
+        parsed = transcripts.read(str(self.path), "codex", self.sid)
+        self.assertEqual(parsed["rounds"], [])
+        self.assertTrue(parsed["pending_tail"])
+        aborted = {"type": "event_msg", "payload": {"type": "turn_aborted", "turn_id": "turn-1"}}
+        self.transcript(header + rows[:3] + [native, aborted])
+        self.assertEqual(transcripts.read(str(self.path), "codex", self.sid)["rounds"][0]["completion"], "aborted")
+        # response_item user also carries injected context; it is not a fallback prompt.
+        self.transcript(header + rows[:3] + rows[4:])
+        self.assertEqual(transcripts.read(str(self.path), "codex", self.sid)["rounds"], [])
+
+    def test_codex_upgrade_preserves_v1_rich_prefix_and_resumes_without_cursor(self):
+        reader = transcripts.read
+        for native_first in (False, True):
+            with self.subTest(native_first=native_first):
+                sid = self.sid + str(native_first)
+                header = [{"type": "session_meta", "payload": {"id": sid}}]
+                old_rows = codex_round(1)
+                old_rows[3]["payload"]["images"] = ["https://example.invalid/old.png"]
+                item = codex_user_item(sid, 1, "question 1")
+                item["payload"]["item"]["content"].append({"type": "image", "url": "https://example.invalid/old.png"})
+                old_rows.insert(3 if native_first else 4, item)
+                if native_first:
+                    old_rows.insert(4, {"type": "response_item", "payload": {
+                        "type": "message", "role": "assistant", "content": [
+                            {"type": "output_text", "text": "before legacy user"}]}})
+                self.transcript(header + old_rows)
+                # Frozen v3.14 contract: UserMessage items were ignored. The
+                # adapter supplies literal historical bytes, without a v2 stamp.
+                # Trace before the legacy user was ignored too.
+                legacy = reader(str(self.path), "codex", sid)
+                legacy.pop("codex_v1", None)
+                legacy["rounds"] = [{"id": "turn-1", "end_line": len(header + old_rows), "completion": "completed",
+                    "user": '{"images": ["https://example.invalid/old.png"], "message": "question 1"}',
+                    "agent": '{"arguments": "{}", "call_id": "tool-1", "name": "probe", "type": "function_call"}\n\n'
+                             '{"call_id": "tool-1", "output": "evidence result", "type": "function_call_output"}\n\n'
+                             '{"content": [{"text": "answer 1", "type": "output_text"}], "role": "assistant", "type": "message"}'}]
+                with mock.patch.object(transcripts, "read", return_value=legacy):
+                    first = it.capture("codex", sid, str(self.path), "capture-tests")
+                self.assertTrue(first["ok"], first)
+                old_ref = first["pending_refs"][0]
+                raw_path = raw._raw_file(raw.parse_ref(old_ref)[0])
+                before = raw_path.read_bytes()
+                self.assertNotIn(b"osk-capture", before)
+                self.assertEqual(before.count(b"https://example.invalid/old.png"), 1)
+                self.assertNotIn(b"before legacy user", before)
+                old_hash = it._load(it.state_path("codex", sid), "codex", sid)["rounds"][0]["hash"]
+                # Same snapshot must keep its token and raw source hash after upgrade.
+                upgraded = it.capture("codex", sid, str(self.path), "capture-tests")
+                self.assertTrue(upgraded["ok"], upgraded)
+                self.assertEqual(upgraded["through"], first["through"])
+                self.assertEqual(upgraded["coverage"]["codex_v1_rounds"], [1])
+                self.assertIn("옛 포착기가 생략한", it.prompt("codex", sid)["text"])
+                self.assertEqual(raw_path.read_bytes(), before)
+                it.acknowledge("codex", sid, first["through"], "no_value", "historical fixture has no durable knowledge")
+                new_rows = codex_round(2)
+                new_item = codex_user_item(sid, 2, "distinct native image input")
+                new_item["payload"]["item"]["content"].append({"type": "localImage", "path": "C:/images/new.png"})
+                new_rows.insert(4, new_item)
+                self.transcript(header + old_rows + new_rows)
+                resumed = it.capture("codex", sid, str(self.path), "capture-tests")
+                self.assertTrue(resumed["ok"], resumed)
+                self.assertEqual((resumed["captured_rounds"], resumed["reviewed_rounds"], resumed["appended"]), (2, 1, 1))
+                self.assertTrue(raw_path.read_bytes().startswith(before))
+                self.assertEqual(it._load(it.state_path("codex", sid), "codex", sid)["rounds"][0]["hash"], old_hash)
+                new_text = raw.read_round(resumed["pending_refs"][0])["text"]
+                self.assertIn("distinct native image input", new_text)
+                self.assertIn("C:/images/new.png", new_text)
+                self.assertIn("osk-capture: codex-user-items-v2", new_text)
+                self.assertEqual(it.capture("codex", sid, str(self.path), "capture-tests")["appended"], 0)
+                it.state_path("codex", sid).unlink()
+                reconstructed = it.capture("codex", sid, str(self.path), "capture-tests")
+                self.assertTrue(reconstructed["ok"], reconstructed)
+                self.assertEqual((reconstructed["captured_rounds"], reconstructed["appended"]), (2, 0))
+                # Changed native-only content of a v2 round must not fall back
+                # to its unchanged legacy envelope, even after cursor loss.
+                after = raw_path.read_bytes()
+                new_item["payload"]["item"]["content"][-1]["path"] = "C:/images/tampered.png"
+                self.transcript(header + old_rows + new_rows)
+                self.assertFalse(it.capture("codex", sid, str(self.path), "capture-tests")["ok"])
+                self.assertEqual(raw_path.read_bytes(), after)
+                new_item["payload"]["item"]["content"][-1]["path"] = "C:/images/new.png"
+                next(r for r in old_rows if r["payload"].get("type") == "user_message")["payload"]["images"] = ["https://example.invalid/changed.png"]
+                self.transcript(header + old_rows + new_rows)
+                self.assertFalse(it.capture("codex", sid, str(self.path), "capture-tests")["ok"])
+                self.assertEqual(raw_path.read_bytes(), after)
 
     def test_crash_after_raw_append_retries_without_duplicate(self):
         self.transcript(claude_round(self.sid, 1))
