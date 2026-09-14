@@ -189,6 +189,33 @@ class GrowthTests(unittest.TestCase):
             assert growth.plan()['candidates']
         """)
 
+    def test_new_versions_get_priority_without_starving_old_comparisons(self):
+        self.check_case("""
+            for name in ('A','B','C','D','E','F','G','H','I'):
+                node(name)
+            inventory = growth.plan(20)
+            register(dict(inventory, candidates=[c for c in inventory['candidates']
+                                                if c['grouping']=='comparison']))
+            # Sources were attempted in pairs, but individual batches remain untried.
+            node('Z', 'W2')
+            first = growth.plan(2)
+            assert any(s['name']=='Z' for s in first['candidates'][0]['sources']), first
+            assert all(s['name']!='Z' for s in first['candidates'][1]['sources']), first
+            assert growth.plan(2)==first, 'preview consumed the new version'
+            register(first)
+            assert write.update_node('I', old_text='I reusable observation', new_text='I changed')['ok']
+            second = growth.plan(2)
+            assert any(s['name']=='I' for s in second['candidates'][0]['sources']), second
+            assert all(s['name']!='I' for s in second['candidates'][1]['sources']), second
+            register(second)
+            picked = []
+            for i in range(4):
+                node('Z'+str(i), 'W2')  # continuous new content, limit=1 still rotates
+                selected = register(growth.plan(1))['candidates'][0]
+                picked.append({s['name'] for s in selected['sources']})
+            assert any(names <= set('ABCDEFGHI') for names in picked), picked
+        """)
+
     def test_useful_subset_does_not_create_false_evidence(self):
         self.check_case("""
             from osk import distillation, contract

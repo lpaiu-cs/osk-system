@@ -62,13 +62,17 @@ class Searcher:
             return []
         q = _tokens(query)
         qset = set(q)
+        title_query = query.strip().casefold()
         scores = self.bm25.get_scores(q)
         # 탈락 기준은 점수 부호가 아니라 질의 토큰 겹침 — 정확히 문서 절반에
         # 나오는 항은 BM25 idf가 0이라 점수로 거르면 일치가 전멸한다
         adjusted = [(float(s), (stem, p, n))
                     for s, (stem, p, n), toks in zip(scores, self.paths, self.tokens)
-                    if qset & toks]
-        ranked = sorted(adjusted, key=lambda x: -x[0])[:k]
+                    if qset & toks or stem.casefold() == title_query]
+        # A known title is a handle, not a BM25 length-normalization contest.
+        # Preserve the actual title and score; non-title queries keep their order.
+        ranked = sorted(adjusted, key=lambda x: (
+            x[1][0] != query.strip(), x[1][0].casefold() != title_query, -x[0]))[:k]
         out = []
         for score, (stem, p, n) in ranked:
             out.append({
