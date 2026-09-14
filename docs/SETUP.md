@@ -361,6 +361,28 @@ raw 라운드 참조(선정 시 해시가 있으면 `{ref,hash}`), `hub`는 기�
 하며, 이 인스턴스의 osk MCP에 연결돼 있어야 한다. 셸 문자열은 실행하지 않는다.
 우선 격리 mini-vault에서 실제 도구 호출을 확인한 뒤 인스턴스에 등록한다.
 
+
+Codex의 ChatGPT 구독 로그인으로 실행할 때는 `codex login status`가 ChatGPT 로그인을
+보고하는지 먼저 확인한다. 별도 API 키나 다른 모델 공급자를 연결하지 않고, 다음처럼
+인증 방식을 제한한다. 실제 사용 중인 Codex 실행 파일과 이 인스턴스의 MCP 설정을 쓴다.
+
+```json
+[
+  "codex", "exec", "--json", "--sandbox", "read-only",
+  "-c", "forced_login_method=\"chatgpt\"",
+  "-c", "approval_policy=\"on-request\"",
+  "-c", "approvals_reviewer=\"auto_review\"",
+  "-"
+]
+```
+
+`exec`의 승인 정책은 `-c approval_policy=...`로 전달한다. 상위 명령의
+`-a on-request`만 붙이면 실제 실행은 `never`로 남아 `read_raw`를 거절할 수 있다.
+이 설정은 해당 실행에만 적용되며 전역 승인 설정을 바꾸지 않는다. 자동 검토도 개별
+호출을 거절할 수 있으므로, 실제 원문 읽기와 노드 저장 결과까지 확인한다.
+`forced_login_method`는 ChatGPT 인증으로 제한하며, 사용량은 구독의 Codex 한도에 포함된다.
+아래 명령은 한 번만 실행한다. 정기 실행이 필요할 때만 뒤의 스케줄러를 별도로 등록한다.
+
 ```powershell
 .venv/Scripts/python.exe _governance/_engine/scripts/growth_run.py --command-file .osk/growth-command.json --limit 3 --timeout 600
 ```
