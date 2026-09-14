@@ -83,6 +83,10 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
         result = _claude(rows, conversation_id)
     elif harness == "codex":
         result = _codex(rows, conversation_id)
+        # Unmarked durable rounds used v3.14's event-only serialization. Keep
+        # that exact replay (including trace gating) separate from new capture.
+        result["codex_v1"] = {r["id"]: r for r in _codex(
+            rows, conversation_id, native_users=False)["rounds"]}
     else:
         raise ValueError("harness must be claude or codex")
     result["diagnostics"] = diagnostics + result["diagnostics"]
@@ -163,7 +167,7 @@ def _claude(rows: list, sid: str) -> dict:
     return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics}
 
 
-def _codex(rows: list, sid: str) -> dict:
+def _codex(rows: list, sid: str, *, native_users: bool = True) -> dict:
     identities = {r.get("payload", {}).get("id") for _, r in rows if r.get("type") == "session_meta"}
     if identities != {sid}:
         raise ValueError("Codex transcript session_meta.id does not match this conversation")
@@ -212,7 +216,7 @@ def _codex(rows: list, sid: str) -> dict:
             turn = p.get("turn_id")
         elif typ == "event_msg" and event == "user_message" and turn:
             add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
-        elif (typ == "event_msg" and event == "item_completed" and turn
+        elif (native_users and typ == "event_msg" and event == "item_completed" and turn
               and isinstance(p.get("item"), dict) and p["item"].get("type") == "UserMessage"):
             if p.get("turn_id") != turn or p.get("thread_id") != sid:
                 raise ValueError(f"Codex user item identity mismatch at line {line}")

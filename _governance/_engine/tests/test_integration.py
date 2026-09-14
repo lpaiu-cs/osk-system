@@ -161,6 +161,82 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(header + rows[:3] + rows[4:])
         self.assertEqual(transcripts.read(str(self.path), "codex", self.sid)["rounds"], [])
 
+    def test_codex_upgrade_preserves_v1_rich_prefix_and_resumes_without_cursor(self):
+        reader = transcripts.read
+        for native_first in (False, True):
+            with self.subTest(native_first=native_first):
+                sid = self.sid + str(native_first)
+                header = [{"type": "session_meta", "payload": {"id": sid}}]
+                old_rows = codex_round(1)
+                old_rows[3]["payload"]["images"] = ["https://example.invalid/old.png"]
+                item = codex_user_item(sid, 1, "question 1")
+                item["payload"]["item"]["content"].append({"type": "image", "url": "https://example.invalid/old.png"})
+                old_rows.insert(3 if native_first else 4, item)
+                if native_first:
+                    old_rows.insert(4, {"type": "response_item", "payload": {
+                        "type": "message", "role": "assistant", "content": [
+                            {"type": "output_text", "text": "before legacy user"}]}})
+                self.transcript(header + old_rows)
+                # Frozen v3.14 contract: UserMessage items were ignored. The
+                # adapter supplies literal historical bytes, without a v2 stamp.
+                # Trace before the legacy user was ignored too.
+                legacy = reader(str(self.path), "codex", sid)
+                legacy.pop("codex_v1", None)
+                legacy["rounds"] = [{"id": "turn-1", "end_line": len(header + old_rows), "completion": "completed",
+                    "user": '{"images": ["https://example.invalid/old.png"], "message": "question 1"}',
+                    "agent": '{"arguments": "{}", "call_id": "tool-1", "name": "probe", "type": "function_call"}\n\n'
+                             '{"call_id": "tool-1", "output": "evidence result", "type": "function_call_output"}\n\n'
+                             '{"content": [{"text": "answer 1", "type": "output_text"}], "role": "assistant", "type": "message"}'}]
+                with mock.patch.object(transcripts, "read", return_value=legacy):
+                    first = it.capture("codex", sid, str(self.path), "capture-tests")
+                self.assertTrue(first["ok"], first)
+                old_ref = first["pending_refs"][0]
+                raw_path = raw._raw_file(raw.parse_ref(old_ref)[0])
+                before = raw_path.read_bytes()
+                self.assertNotIn(b"osk-capture", before)
+                self.assertEqual(before.count(b"https://example.invalid/old.png"), 1)
+                self.assertNotIn(b"before legacy user", before)
+                old_hash = it._load(it.state_path("codex", sid), "codex", sid)["rounds"][0]["hash"]
+                # Same snapshot must keep its token and raw source hash after upgrade.
+                upgraded = it.capture("codex", sid, str(self.path), "capture-tests")
+                self.assertTrue(upgraded["ok"], upgraded)
+                self.assertEqual(upgraded["through"], first["through"])
+                self.assertEqual(upgraded["coverage"]["codex_v1_rounds"], [1])
+                self.assertIn("옛 포착기가 생략한", it.prompt("codex", sid)["text"])
+                self.assertEqual(raw_path.read_bytes(), before)
+                it.acknowledge("codex", sid, first["through"], "no_value", "historical fixture has no durable knowledge")
+                new_rows = codex_round(2)
+                new_item = codex_user_item(sid, 2, "distinct native image input")
+                new_item["payload"]["item"]["content"].append({"type": "localImage", "path": "C:/images/new.png"})
+                new_rows.insert(4, new_item)
+                self.transcript(header + old_rows + new_rows)
+                resumed = it.capture("codex", sid, str(self.path), "capture-tests")
+                self.assertTrue(resumed["ok"], resumed)
+                self.assertEqual((resumed["captured_rounds"], resumed["reviewed_rounds"], resumed["appended"]), (2, 1, 1))
+                self.assertTrue(raw_path.read_bytes().startswith(before))
+                self.assertEqual(it._load(it.state_path("codex", sid), "codex", sid)["rounds"][0]["hash"], old_hash)
+                new_text = raw.read_round(resumed["pending_refs"][0])["text"]
+                self.assertIn("distinct native image input", new_text)
+                self.assertIn("C:/images/new.png", new_text)
+                self.assertIn("osk-capture: codex-user-items-v2", new_text)
+                self.assertEqual(it.capture("codex", sid, str(self.path), "capture-tests")["appended"], 0)
+                it.state_path("codex", sid).unlink()
+                reconstructed = it.capture("codex", sid, str(self.path), "capture-tests")
+                self.assertTrue(reconstructed["ok"], reconstructed)
+                self.assertEqual((reconstructed["captured_rounds"], reconstructed["appended"]), (2, 0))
+                # Changed native-only content of a v2 round must not fall back
+                # to its unchanged legacy envelope, even after cursor loss.
+                after = raw_path.read_bytes()
+                new_item["payload"]["item"]["content"][-1]["path"] = "C:/images/tampered.png"
+                self.transcript(header + old_rows + new_rows)
+                self.assertFalse(it.capture("codex", sid, str(self.path), "capture-tests")["ok"])
+                self.assertEqual(raw_path.read_bytes(), after)
+                new_item["payload"]["item"]["content"][-1]["path"] = "C:/images/new.png"
+                next(r for r in old_rows if r["payload"].get("type") == "user_message")["payload"]["images"] = ["https://example.invalid/changed.png"]
+                self.transcript(header + old_rows + new_rows)
+                self.assertFalse(it.capture("codex", sid, str(self.path), "capture-tests")["ok"])
+                self.assertEqual(raw_path.read_bytes(), after)
+
     def test_crash_after_raw_append_retries_without_duplicate(self):
         self.transcript(claude_round(self.sid, 1))
         original = raw.append_rounds

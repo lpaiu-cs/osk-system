@@ -126,7 +126,9 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             if len(ids) != len(set(ids)) or ids[:len(s["rounds"])] != [r["id"] for r in s["rounds"]]:
                 raise ValueError("native round identity prefix changed; existing raw was not altered")
             if rounds:
-                result = raw.append_rounds(session, s["record"], rounds, s.get("space"), replay_prefix=True)
+                result = raw.append_rounds(session, s["record"], rounds, s.get("space"),
+                                           replay_prefix=True, codex_v1=parsed.get("codex_v1"))
+                s["coverage"]["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
                 stored = raw.read_exact(raw._raw_file(result["path"]))
                 spans = raw._round_spans(stored)
                 s["rounds"] = [{"id": r["id"], "ref": ref, "completion": r["completion"],
@@ -393,6 +395,8 @@ def prompt(harness: str, conversation_id: str) -> dict:
                  f"보류 사유: {st['repair']['reason']}\n")
     if (st.get("coverage") or {}).get("mode") == "tool-output-reference":
         text += "포착 범위: 파일 읽기·혼합 명령 결과는 native 위치와 hash 참조로 보존했다. 상세 증거를 다시 읽으려면 원래 전사 보관이 필요하다.\n"
+    if (st.get("coverage") or {}).get("codex_v1_rounds"):
+        text += "포착 범위: 과거 Codex 라운드는 당시 user_message 형식 그대로 보존했다. 옛 포착기가 생략한 native 입력의 상세는 원래 전사를 확인하라.\n"
     if not st["pending_refs"]:
         return {**st, "text": text + "검토할 완료 raw 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다."}
     code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(core.ROOT)!r};"
