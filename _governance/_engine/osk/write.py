@@ -855,134 +855,144 @@ def resolve_landing(session: str, space: str | None,
 def create_node(title: str, summary: str, body: str, drafter: str,
                 session: str | None = None, space: str | None = None,
                 edges: dict | None = None, settle: str | None = None) -> dict:
+    """Create an ordinary node under the shared mutation lock."""
+    with _Lock():
+        return _create_node_locked(title, summary, body, drafter, session,
+                                   space, edges, settle)
+
+
+def _create_node_locked(title: str, summary: str, body: str, drafter: str,
+                session: str | None = None, space: str | None = None,
+                edges: dict | None = None, settle: str | None = None, *, _before_write=None, _identity=None) -> dict:
     """노드 생성. id·시각은 **서버 전속**이고 author는 `agent` 고정이다(D5).
     space가 없으면 세션 라우팅으로 착지를 정하고, 라우팅이 없으면 space를
     요구한 뒤 성공 시 그 scope로 세션을 확정한다."""
-    with _Lock():
-        # 이 쓰기가 쓰는 색인은 **하나**다 (v3.7.0). 구판은 한 번의 생성에서
-        # 세 벌을 지었다 — 계약 검사·이름 유일성·검증·dangling이 각자 지었고,
-        # 그래서 체감 비용이 단가의 3배였다. 잠금 안이라 그 사이에 파일이
-        # 바뀌지 않으므로 한 벌이면 족하다.
-        idx = graph.Index()
-        _require_complete(idx)
-        if settle is not None:
-            evictions.require_evict(settle)
-        errs = (_check_edges(edges, idx) + _title_errors(title)
-                + ephemeral_session_errors(session) + routing_errors(session))
-        if errs:
-            raise WriteError("계약 위반 — 쓰지 않았다", errs)
+    # 이 쓰기가 쓰는 색인은 **하나**다 (v3.7.0). 구판은 한 번의 생성에서
+    # 세 벌을 지었다 — 계약 검사·이름 유일성·검증·dangling이 각자 지었고,
+    # 그래서 체감 비용이 단가의 3배였다. 잠금 안이라 그 사이에 파일이
+    # 바뀌지 않으므로 한 벌이면 족하다.
+    idx = graph.Index()
+    _require_complete(idx)
+    if settle is not None:
+        evictions.require_evict(settle)
+    errs = (_check_edges(edges, idx) + _title_errors(title)
+            + ephemeral_session_errors(session) + routing_errors(session))
+    if errs:
+        raise WriteError("계약 위반 — 쓰지 않았다", errs)
 
-        bound = resolve_session(session)
-        dest = space or (f"= Scope/{bound}" if bound else None)
-        if dest and bound:
-            # 결속이 선 세션에 **다른 scope**를 착지로 주는 요청은 거부한다
-            # (Mechanism §6-2 6항 — 한 세션은 한 scope에 속한다, 헌법 4조 3항).
-            # `_raw`·scope 기억은 `resolve_landing`이 이미 이 규율을 지키는데
-            # 노드 생성만 판정하고 거부하지 않았다. Domain·Person 착지는
-            # 결속과 무관하므로 건드리지 않는다.
-            dkind = graph.space_of(ROOT / dest / "x.md")
-            if dkind[0] == "scope" and dkind[1] != bound:
-                raise WriteError(
-                    "결속과 어긋나는 착지 — 쓰지 않았다",
-                    [f"세션 `{session}`은 `= Scope/{bound}`에 결속돼 있다. 한 "
-                     f"세션은 한 scope에 속하므로 다른 scope로 착지하지 않는다 "
-                     f"— 결속대로 쓰려면 `space`를 빼라. 전역 지식이면 "
-                     f"`= Domain/…`·`= Person/…`이 열려 있다."])
-        if not dest:
+    bound = resolve_session(session)
+    dest = space or (f"= Scope/{bound}" if bound else None)
+    if dest and bound:
+        # 결속이 선 세션에 **다른 scope**를 착지로 주는 요청은 거부한다
+        # (Mechanism §6-2 6항 — 한 세션은 한 scope에 속한다, 헌법 4조 3항).
+        # `_raw`·scope 기억은 `resolve_landing`이 이미 이 규율을 지키는데
+        # 노드 생성만 판정하고 거부하지 않았다. Domain·Person 착지는
+        # 결속과 무관하므로 건드리지 않는다.
+        dkind = graph.space_of(ROOT / dest / "x.md")
+        if dkind[0] == "scope" and dkind[1] != bound:
             raise WriteError(
-                "착지가 정해지지 않았다 — space를 지정하라. "
-                f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}. "
-                "session도 함께 주면(저장소 이름처럼 세션이 바뀌어도 같은 값) "
-                "그 scope로 결속되어 다음부터 space 없이 착지한다")
-        dest_dir = resolve_in_root(dest)
-        if dest_dir is None or not dest_dir.is_dir():
-            # 신설 후보 — 막는 대신 한 번 묻는다. 통과하면 디렉토리가 생긴다.
-            # (구판은 "신설은 사용자 발의다"라며 전면 거부했으나 그 문구는
-            # 규범 무근거였다 — 헌법은 형성의 자동화를 기본으로 둔다.)
-            dest_dir = _new_cluster_gate(dest, dest_dir, "이 쓰기가")
-        # 새 군집의 첫 노드는 **동명 허브 노드**다 (시행령 §3 6항). 신설
-        # 관문을 지나 방금 생겼든 이미 비어 있든, 허브 없이 출발한 군집은
-        # 이름뿐인 통이 된다 — 무엇인지 서술하는 노드가 먼저다. 이동·재배정
-        # 형성은 이 검사를 받지 않고(§3 1항의 주기 처리 보호) 검증기 보고가
-        # 채움을 독촉한다. Workbench 구획은 자체 계약이라 제외.
-        if (title != dest_dir.name and "Workbench" not in dest_dir.parts
-                and not any(dest_dir.glob("*.md"))):
-            raise WriteError(
-                "새 군집의 첫 노드는 허브 노드다 — 쓰지 않았다",
-                [f"`{dest_dir.name}` 군집이 비어 있다. 먼저 군집과 동명의 "
-                 f"허브 노드 `{dest_dir.name}`을(를) 만들어 이 군집이 무엇인지 "
-                 f"서술하고, 그 다음 이 노드를 만들어 허브에서 닿게 하라 "
-                 f"(헌법 3조 8항 · 시행령 §3 6항)"])
-        path = dest_dir / f"{title}.md"
-        kind = graph.space_of(path)      # 소속은 노드 파일 경로로 판정한다
-        _reject_governance(kind)
-        if not graph.is_node_home(kind) or not _is_cluster(kind):
-            raise WriteError(
-                f"노드를 둘 수 없는 구획이다: {dest} {kind} — 노드는 군집 안에 둔다"
-                f" (Space 루트 직속 불가, Mechanism §1 4항)")
+                "결속과 어긋나는 착지 — 쓰지 않았다",
+                [f"세션 `{session}`은 `= Scope/{bound}`에 결속돼 있다. 한 "
+                 f"세션은 한 scope에 속하므로 다른 scope로 착지하지 않는다 "
+                 f"— 결속대로 쓰려면 `space`를 빼라. 전역 지식이면 "
+                 f"`= Domain/…`·`= Person/…`이 열려 있다."])
+    if not dest:
+        raise WriteError(
+            "착지가 정해지지 않았다 — space를 지정하라. "
+            f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}. "
+            "session도 함께 주면(저장소 이름처럼 세션이 바뀌어도 같은 값) "
+            "그 scope로 결속되어 다음부터 space 없이 착지한다")
+    dest_dir = resolve_in_root(dest)
+    if dest_dir is None or not dest_dir.is_dir():
+        # 신설 후보 — 막는 대신 한 번 묻는다. 통과하면 디렉토리가 생긴다.
+        # (구판은 "신설은 사용자 발의다"라며 전면 거부했으나 그 문구는
+        # 규범 무근거였다 — 헌법은 형성의 자동화를 기본으로 둔다.)
+        dest_dir = _new_cluster_gate(dest, dest_dir, "이 쓰기가")
+    # 새 군집의 첫 노드는 **동명 허브 노드**다 (시행령 §3 6항). 신설
+    # 관문을 지나 방금 생겼든 이미 비어 있든, 허브 없이 출발한 군집은
+    # 이름뿐인 통이 된다 — 무엇인지 서술하는 노드가 먼저다. 이동·재배정
+    # 형성은 이 검사를 받지 않고(§3 1항의 주기 처리 보호) 검증기 보고가
+    # 채움을 독촉한다. Workbench 구획은 자체 계약이라 제외.
+    if (title != dest_dir.name and "Workbench" not in dest_dir.parts
+            and not any(dest_dir.glob("*.md"))):
+        raise WriteError(
+            "새 군집의 첫 노드는 허브 노드다 — 쓰지 않았다",
+            [f"`{dest_dir.name}` 군집이 비어 있다. 먼저 군집과 동명의 "
+             f"허브 노드 `{dest_dir.name}`을(를) 만들어 이 군집이 무엇인지 "
+             f"서술하고, 그 다음 이 노드를 만들어 허브에서 닿게 하라 "
+             f"(헌법 3조 8항 · 시행령 §3 6항)"])
+    path = dest_dir / f"{title}.md"
+    kind = graph.space_of(path)      # 소속은 노드 파일 경로로 판정한다
+    _reject_governance(kind)
+    if not graph.is_node_home(kind) or not _is_cluster(kind):
+        raise WriteError(
+            f"노드를 둘 수 없는 구획이다: {dest} {kind} — 노드는 군집 안에 둔다"
+            f" (Space 루트 직속 불가, Mechanism §1 4항)")
 
-        # 이름 색인 하나로 끝난다 — 구판의 `nodes ∪ broken`과 **같은 집합**임이
-        # 1,809·10,000 노드 양쪽에서 차집합 공집합으로 검증됐다(심의 실측).
-        # 이 검사 때문에 전 노드를 열 이유가 없다.
-        if title in idx.names:
-            raise WriteError(
-                f"같은 이름의 노드가 이미 있다: {title} — 생성하면 중복 후보가 된다")
-        # 전역 유일성도 **이식성 키**로 본다. 정확 일치만 보면 `Foo`와 `foo`가
-        # 다른 군집에 함께 서고, 그 둘을 한 군집으로 옮기는 순간 대소문자를
-        # 접는 파일시스템에서 한쪽이 조용히 덮인다(`move_nodes`). 제목이
-        # 전역에서 유일하다는 계약(Mechanism §8 2항)은 "모든 기기에서"여야 한다.
-        pkey = _portable_name_key(title)
-        gclash = next((s for s in idx.names if _portable_name_key(s) == pkey),
-                      None)
-        if gclash is not None:
-            raise WriteError(
-                f"이식성 기준으로 같은 이름의 노드가 이미 있다: {gclash} — "
-                f"대소문자나 유니코드 정규화만 다른 이름은 NTFS·APFS에서 같은 "
-                f"경로가 된다. 한 군집으로 모이면 한쪽이 덮인다")
-        clash = _name_collision(dest_dir, title)
-        if clash is not None:
-            raise WriteError(
-                f"같은 군집에 이미 있는 이름이다: {clash} — 대소문자나 유니코드 "
-                f"정규화만 다른 이름은 NTFS·APFS에서 **같은 경로**가 되어 그 기기의 "
-                f"체크아웃에서 충돌한다(한쪽만 남는다)")
+    # 이름 색인 하나로 끝난다 — 구판의 `nodes ∪ broken`과 **같은 집합**임이
+    # 1,809·10,000 노드 양쪽에서 차집합 공집합으로 검증됐다(심의 실측).
+    # 이 검사 때문에 전 노드를 열 이유가 없다.
+    if title in idx.names:
+        raise WriteError(
+            f"같은 이름의 노드가 이미 있다: {title} — 생성하면 중복 후보가 된다")
+    # 전역 유일성도 **이식성 키**로 본다. 정확 일치만 보면 `Foo`와 `foo`가
+    # 다른 군집에 함께 서고, 그 둘을 한 군집으로 옮기는 순간 대소문자를
+    # 접는 파일시스템에서 한쪽이 조용히 덮인다(`move_nodes`). 제목이
+    # 전역에서 유일하다는 계약(Mechanism §8 2항)은 "모든 기기에서"여야 한다.
+    pkey = _portable_name_key(title)
+    gclash = next((s for s in idx.names if _portable_name_key(s) == pkey),
+                  None)
+    if gclash is not None:
+        raise WriteError(
+            f"이식성 기준으로 같은 이름의 노드가 이미 있다: {gclash} — "
+            f"대소문자나 유니코드 정규화만 다른 이름은 NTFS·APFS에서 같은 "
+            f"경로가 된다. 한 군집으로 모이면 한쪽이 덮인다")
+    clash = _name_collision(dest_dir, title)
+    if clash is not None:
+        raise WriteError(
+            f"같은 군집에 이미 있는 이름이다: {clash} — 대소문자나 유니코드 "
+            f"정규화만 다른 이름은 NTFS·APFS에서 **같은 경로**가 되어 그 기기의 "
+            f"체크아웃에서 충돌한다(한쪽만 남는다)")
 
-        now = now_kst()
-        meta = {"id": new_node_id(),
-                "created": now, "updated": now,
-                "author": "agent", "drafter": drafter, "summary": summary}
-        for pred, tg in (edges or {}).items():
-            meta[pred] = _as_links(pred, tg)
-        data, errs = _validate_render(path, meta, body, idx)
-        if errs:
-            raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
-        if settle is not None and not _norm_body(contract.parse_bytes(path, data).body):
-            raise WriteError("보존할 본문이 없다 — 쓰지도 처분하지도 않았다")
+    now = _identity["created"] if _identity else now_kst()
+    meta = {"id": _identity["id"] if _identity else new_node_id(),
+            "created": now, "updated": now,
+            "author": "agent", "drafter": drafter, "summary": summary}
+    for pred, tg in (edges or {}).items():
+        meta[pred] = _as_links(pred, tg)
+    data, errs = _validate_render(path, meta, body, idx)
+    if errs:
+        raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
+    if settle is not None and not _norm_body(contract.parse_bytes(path, data).body):
+        raise WriteError("보존할 본문이 없다 — 쓰지도 처분하지도 않았다")
 
-        _atomic_write(path, data)
-        # 방금 쓴 노드를 손에 든 색인의 **이름 색인**에 등재한다 —
-        # `_dangling_of`가 보는 것은 쓰기 **후**의 상태여야 한다. 구판은 여기서
-        # 색인을 새로 지어 그 상태를 얻었다. 등재하지 않으면 자기 자신을
-        # 가리키는 Link가 dangling으로 잘못 실려, 오타가 아닌 것을 오타라고
-        # 알리게 된다. 판독은 `resolve`가 그때 한 번 한다(파일은 이미 있다).
-        idx.register_new(path, kind)
-        # 결속은 **scope일 때만** — Domain/Person에 결속하면 자동 라우팅이
-        # 존재하지 않는 `= Scope/<이름>`을 가리켜 그 키가 벽돌이 된다(7차 중대 C)
-        bound_now = None
-        if session and not bound and kind[0] == "scope":
-            # 결속 값은 **scope 이름**이지 말단 디렉토리명이 아니다. 구판은
-            # `dest_dir.name`을 썼고, 그래서 하위 군집(`= Scope/W1/Sub`)에서
-            # 처음 쓴 세션이 존재하지 않는 `Sub`에 묶였다 — 그 뒤 `append_raw`는
-            # `= Scope/Sub/_raw/`라는 유령 scope를 만들고, 노드 생성은 최상위
-            # 신설 관문으로 갔다. 깊이는 갈래이지 소속이 아니며(Mechanism §1
-            # 2항), 소속은 `space_of`가 이미 정확히 말해 준다.
-            bind_session(session, kind[1])
-            bound_now = kind[1]             # 실제로 결속했을 때만 보고한다
-        result = {"ok": True, "name": title,
-                "path": posix_rel(path, ROOT), "id": meta["id"],
-                "new_hash": sha256_bytes(data),
-                "bound_scope": bound_now,
-                "dangling": _dangling_of(path, meta, body, idx)}
-        return evictions._after_node_write(result, settle, "node", title)
+    if _before_write is not None:
+        _before_write(path, data)
+    _atomic_write(path, data)
+    # 방금 쓴 노드를 손에 든 색인의 **이름 색인**에 등재한다 —
+    # `_dangling_of`가 보는 것은 쓰기 **후**의 상태여야 한다. 구판은 여기서
+    # 색인을 새로 지어 그 상태를 얻었다. 등재하지 않으면 자기 자신을
+    # 가리키는 Link가 dangling으로 잘못 실려, 오타가 아닌 것을 오타라고
+    # 알리게 된다. 판독은 `resolve`가 그때 한 번 한다(파일은 이미 있다).
+    idx.register_new(path, kind)
+    # 결속은 **scope일 때만** — Domain/Person에 결속하면 자동 라우팅이
+    # 존재하지 않는 `= Scope/<이름>`을 가리켜 그 키가 벽돌이 된다(7차 중대 C)
+    bound_now = None
+    if session and not bound and kind[0] == "scope":
+        # 결속 값은 **scope 이름**이지 말단 디렉토리명이 아니다. 구판은
+        # `dest_dir.name`을 썼고, 그래서 하위 군집(`= Scope/W1/Sub`)에서
+        # 처음 쓴 세션이 존재하지 않는 `Sub`에 묶였다 — 그 뒤 `append_raw`는
+        # `= Scope/Sub/_raw/`라는 유령 scope를 만들고, 노드 생성은 최상위
+        # 신설 관문으로 갔다. 깊이는 갈래이지 소속이 아니며(Mechanism §1
+        # 2항), 소속은 `space_of`가 이미 정확히 말해 준다.
+        bind_session(session, kind[1])
+        bound_now = kind[1]             # 실제로 결속했을 때만 보고한다
+    result = {"ok": True, "name": title,
+            "path": posix_rel(path, ROOT), "id": meta["id"],
+            "new_hash": sha256_bytes(data),
+            "bound_scope": bound_now,
+            "dangling": _dangling_of(path, meta, body, idx)}
+    return evictions._after_node_write(result, settle, "node", title)
 
 
 def _require_complete(idx) -> None:
@@ -1074,10 +1084,21 @@ def _as_links(pred: str, targets) -> str | list:
 
 def update_node(name: str, body: str | None = None,
                 expect_hash: str | None = None, summary: str | None = None,
+                add_edges: dict | None = None, remove_edges: dict | None = None,
+                old_text: str | None = None, new_text: str | None = None,
+                settle: str | None = None) -> dict:
+    """Apply an ordinary node update under the shared mutation lock."""
+    with _Lock():
+        return _update_node_locked(name, body, expect_hash, summary, add_edges,
+                                   remove_edges, old_text, new_text, settle)
+
+
+def _update_node_locked(name: str, body: str | None = None,
+                expect_hash: str | None = None, summary: str | None = None,
                 add_edges: dict | None = None,
                 remove_edges: dict | None = None,
                 old_text: str | None = None,
-                new_text: str | None = None, settle: str | None = None) -> dict:
+                new_text: str | None = None, settle: str | None = None, *, _before_write=None, _stamp=None) -> dict:
     """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
     상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
 
@@ -1116,131 +1137,132 @@ def update_node(name: str, body: str | None = None,
             raise WriteError(
                 "`old_text`와 `new_text`가 같다 — 쓰지 않았다",
                 ["바뀌는 것이 없다. 고칠 내용을 `new_text`에 담아라."])
-    with _Lock():
-        idx = graph.Index()                     # 이 쓰기가 쓰는 색인은 하나다
-        _require_complete(idx)
-        if settle is not None:
-            evictions.require_evict(settle)
-        errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx)
-        if errs:
-            raise WriteError("계약 위반 — 쓰지 않았다", errs)
-        path = _live_locate(name, idx)
-        if path is None or not path.is_file():
-            raise WriteError(f"노드 없음: {name}")
-        kind = graph.space_of(path)
-        _reject_governance(kind)
-        if settle is not None:
-            evictions.require_target(path.stem, idx)
-        try:
-            n = contract.parse(path)
-        except Exception as e:
-            raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
+    idx = graph.Index()                     # 이 쓰기가 쓰는 색인은 하나다
+    _require_complete(idx)
+    if settle is not None:
+        evictions.require_evict(settle)
+    errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx)
+    if errs:
+        raise WriteError("계약 위반 — 쓰지 않았다", errs)
+    path = _live_locate(name, idx)
+    if path is None or not path.is_file():
+        raise WriteError(f"노드 없음: {name}")
+    kind = graph.space_of(path)
+    _reject_governance(kind)
+    if settle is not None:
+        evictions.require_target(path.stem, idx)
+    try:
+        n = contract.parse(path)
+    except Exception as e:
+        raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
 
-        _cas(path, expect_hash, body is not None)   # 위반 시 raise
-        if old_text is not None:
-            # **유일성이 안전 계약의 전부다.** 여러 곳에 맞으면 어디를 고칠지
-            # 호출자가 정한 바가 없고, 아무 곳이나 고르는 것은 조용히 틀린
-            # 자리를 고치는 길이다. 하네스 `Edit` 실측에서 유일성 위반은
-            # 5,454건 중 5건(0.09%)이라 이 계약은 실무에서 거의 공짜다.
-            hits = n.body.count(old_text)
-            if hits != 1:
-                raise WriteError(
-                    ("앵커가 본문에 없다 — 쓰지 않았다" if hits == 0 else
-                     f"앵커가 본문에 {hits}곳 맞는다 — 쓰지 않았다"),
-                    ([f"`old_text`가 `{name}`의 본문에 나오지 않는다. 노드가 "
-                      f"그 사이 바뀌었을 수 있다 — `read_node`로 지금 본문을 "
-                      f"보고 그대로 복사해 넣어라. 공백·줄바꿈까지 일치해야 한다."]
-                     if hits == 0 else
-                     [f"어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
-                      f"넣어 앵커를 **유일하게** 만들어라."]))
-            body = n.body.replace(old_text, new_text, 1)
-        meta = dict(n.meta)
-        replaced_summary = None
-        changed = False
-        if summary is not None and str(meta.get("summary")) != summary:
-            replaced_summary = str(meta.get("summary"))
-            meta["summary"] = summary
-            changed = True
-        # 두 루프 모두 **누적된 `meta`**에서 현재값을 읽는다. 구판은 각자
-        # `n.edges(pred)`로 **원본**을 다시 읽었고, 그래서 같은 술어에 add와
-        # remove를 함께 주면 remove가 "add가 없었던 것처럼" 계산한 값으로
-        # meta를 덮었다 — 원본에 지울 것 하나뿐이었으면 술어를 통째로 `pop`해
-        # **방금 추가한 근거까지 사라졌다.** 그러면서 `ok: true`를 냈다.
-        #
-        # "근거를 A에서 B로 바꾼다"는 드문 호출이 아니라 이관·오타 수정·근거
-        # 갱신의 자연스러운 표현이다. 실제로 v3.7.3 이관에서 두 번 걸렸고,
-        # 두 번째는 이 결함을 재현해 기록한 직후였다 — 알고도 피해지지 않았다.
-        for pred, tg in (add_edges or {}).items():
-            cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
-            have = {_edge_key(x, idx) for x in cur}
-            new = []
-            for t in _as_list(tg):
-                k = _edge_key(t, idx)
-                if k in have:
-                    continue
-                have.add(k)          # 한 호출 안의 중복도 한 번만 앉는다
-                new.append(t)
-            if new:
-                meta[pred] = _as_links(pred, cur + new)
-                changed = True
-        for pred, tg in (remove_edges or {}).items():
-            drop = {_edge_key(t, idx) for t in _as_list(tg)}
-            cur = _stored_edges(meta.get(pred))
-            keep = [t for t in cur if _edge_key(t, idx) not in drop]
-            if len(keep) != len(cur):
-                changed = True
-                if keep:
-                    meta[pred] = _as_links(pred, keep)
-                else:
-                    meta.pop(pred, None)
-        new_body = n.body if body is None else body
-        if body is not None and _norm_body(body) != _norm_body(n.body):
-            changed = True
-        extra_keys = [k for k in meta
-                      if k not in contract.ORDER and k not in contract.PREDICATES]
-        if extra_keys:
-            # 손으로 넣은 필드를 조용히 지우지 않는다 — 직렬화가 계약 필드만
-            # 쓰므로 통과시키면 무경고 소실이 된다(7차 경미 F)
+    _cas(path, expect_hash, body is not None)   # 위반 시 raise
+    if old_text is not None:
+        # **유일성이 안전 계약의 전부다.** 여러 곳에 맞으면 어디를 고칠지
+        # 호출자가 정한 바가 없고, 아무 곳이나 고르는 것은 조용히 틀린
+        # 자리를 고치는 길이다. 하네스 `Edit` 실측에서 유일성 위반은
+        # 5,454건 중 5건(0.09%)이라 이 계약은 실무에서 거의 공짜다.
+        hits = n.body.count(old_text)
+        if hits != 1:
             raise WriteError(
-                f"계약 밖 필드가 있는 노드다 — 표면으로 고칠 수 없다: {extra_keys}",
-                [f"계약 외 필드: {k}" for k in extra_keys])
-        # conflicts 표지의 부착·원상 제거는 updated을 갱신하지 않는다
-        # (시행령 §1 4항 — 헌법 3조 4항의 예외)
-        only_conflicts = (body is None and summary is None
-                          and not (add_edges or {}).keys() - {"conflicts"}
-                          and not (remove_edges or {}).keys() - {"conflicts"}
-                          and bool(add_edges or remove_edges))
-        if not changed and settle is None:
-            # 변경이 없으면 쓰지 않는다 — 내용이 그대로인데 updated만
-            # 갱신하면 "상태가 변경될 때 갱신한다"(시행령 §1 4항)에 어긋난다
-            return {"ok": True, "no_change": True, "name": name,
-                    "path": posix_rel(path, ROOT), "id": n.id,
-                    "new_hash": sha256_file(path),
-                    "edges": {p: n.edges(p) for p in contract.PREDICATES},
-                    "dangling": _dangling_of(path, n.meta, n.body, idx)}
-        if not only_conflicts:
-            meta["updated"] = now_kst()
+                ("앵커가 본문에 없다 — 쓰지 않았다" if hits == 0 else
+                 f"앵커가 본문에 {hits}곳 맞는다 — 쓰지 않았다"),
+                ([f"`old_text`가 `{name}`의 본문에 나오지 않는다. 노드가 "
+                  f"그 사이 바뀌었을 수 있다 — `read_node`로 지금 본문을 "
+                  f"보고 그대로 복사해 넣어라. 공백·줄바꿈까지 일치해야 한다."]
+                 if hits == 0 else
+                 [f"어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
+                  f"넣어 앵커를 **유일하게** 만들어라."]))
+        body = n.body.replace(old_text, new_text, 1)
+    meta = dict(n.meta)
+    replaced_summary = None
+    changed = False
+    if summary is not None and str(meta.get("summary")) != summary:
+        replaced_summary = str(meta.get("summary"))
+        meta["summary"] = summary
+        changed = True
+    # 두 루프 모두 **누적된 `meta`**에서 현재값을 읽는다. 구판은 각자
+    # `n.edges(pred)`로 **원본**을 다시 읽었고, 그래서 같은 술어에 add와
+    # remove를 함께 주면 remove가 "add가 없었던 것처럼" 계산한 값으로
+    # meta를 덮었다 — 원본에 지울 것 하나뿐이었으면 술어를 통째로 `pop`해
+    # **방금 추가한 근거까지 사라졌다.** 그러면서 `ok: true`를 냈다.
+    #
+    # "근거를 A에서 B로 바꾼다"는 드문 호출이 아니라 이관·오타 수정·근거
+    # 갱신의 자연스러운 표현이다. 실제로 v3.7.3 이관에서 두 번 걸렸고,
+    # 두 번째는 이 결함을 재현해 기록한 직후였다 — 알고도 피해지지 않았다.
+    for pred, tg in (add_edges or {}).items():
+        cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
+        have = {_edge_key(x, idx) for x in cur}
+        new = []
+        for t in _as_list(tg):
+            k = _edge_key(t, idx)
+            if k in have:
+                continue
+            have.add(k)          # 한 호출 안의 중복도 한 번만 앉는다
+            new.append(t)
+        if new:
+            meta[pred] = _as_links(pred, cur + new)
+            changed = True
+    for pred, tg in (remove_edges or {}).items():
+        drop = {_edge_key(t, idx) for t in _as_list(tg)}
+        cur = _stored_edges(meta.get(pred))
+        keep = [t for t in cur if _edge_key(t, idx) not in drop]
+        if len(keep) != len(cur):
+            changed = True
+            if keep:
+                meta[pred] = _as_links(pred, keep)
+            else:
+                meta.pop(pred, None)
+    new_body = n.body if body is None else body
+    if body is not None and _norm_body(body) != _norm_body(n.body):
+        changed = True
+    extra_keys = [k for k in meta
+                  if k not in contract.ORDER and k not in contract.PREDICATES]
+    if extra_keys:
+        # 손으로 넣은 필드를 조용히 지우지 않는다 — 직렬화가 계약 필드만
+        # 쓰므로 통과시키면 무경고 소실이 된다(7차 경미 F)
+        raise WriteError(
+            f"계약 밖 필드가 있는 노드다 — 표면으로 고칠 수 없다: {extra_keys}",
+            [f"계약 외 필드: {k}" for k in extra_keys])
+    # conflicts 표지의 부착·원상 제거는 updated을 갱신하지 않는다
+    # (시행령 §1 4항 — 헌법 3조 4항의 예외)
+    only_conflicts = (body is None and summary is None
+                      and not (add_edges or {}).keys() - {"conflicts"}
+                      and not (remove_edges or {}).keys() - {"conflicts"}
+                      and bool(add_edges or remove_edges))
+    if not changed and settle is None:
+        # 변경이 없으면 쓰지 않는다 — 내용이 그대로인데 updated만
+        # 갱신하면 "상태가 변경될 때 갱신한다"(시행령 §1 4항)에 어긋난다
+        return {"ok": True, "no_change": True, "name": name,
+                "path": posix_rel(path, ROOT), "id": n.id,
+                "new_hash": sha256_file(path),
+                "edges": {p: n.edges(p) for p in contract.PREDICATES},
+                "dangling": _dangling_of(path, n.meta, n.body, idx)}
+    if not only_conflicts:
+        meta["updated"] = _stamp or now_kst()
 
-        data, errs = _validate_render(path, meta, new_body, idx)
-        if errs:
-            raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
-        if settle is not None:
-            saved_body = _norm_body(contract.parse_bytes(path, data).body)
-            if not saved_body or saved_body == _norm_body(n.body):
-                raise WriteError("보존할 본문이 없거나 변경되지 않았다 — 쓰지도 처분하지도 않았다", [
-                    "settle은 이 호출이 보존한 evict의 rid다. 이미 노드에 보존된 내용이면 "
-                    "본문을 확인한 뒤 CLI tidy settle로 기록하라."])
-        _atomic_write(path, data)
-        out = {"ok": True, "name": name, "path": posix_rel(path, ROOT),
-               "id": n.id, "new_hash": sha256_bytes(data),
-               "updated_kept": only_conflicts,
-               "edges": {p: contract.Node(path=path, meta=meta,
-                                          body=new_body).edges(p)
-                         for p in contract.PREDICATES},
-               "dangling": _dangling_of(path, meta, new_body, idx)}
-        if replaced_summary is not None:
-            out["replaced_summary"] = replaced_summary
-        return evictions._after_node_write(out, settle, "merged", path.stem)
+    data, errs = _validate_render(path, meta, new_body, idx)
+    if errs:
+        raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
+    if settle is not None:
+        saved_body = _norm_body(contract.parse_bytes(path, data).body)
+        if not saved_body or saved_body == _norm_body(n.body):
+            raise WriteError("보존할 본문이 없거나 변경되지 않았다 — 쓰지도 처분하지도 않았다", [
+                "settle은 이 호출이 보존한 evict의 rid다. 이미 노드에 보존된 내용이면 "
+                "본문을 확인한 뒤 CLI tidy settle로 기록하라."])
+    if _before_write is not None:
+        _before_write(path, data)
+    _atomic_write(path, data)
+    out = {"ok": True, "name": name, "path": posix_rel(path, ROOT),
+           "id": n.id, "new_hash": sha256_bytes(data),
+           "updated_kept": only_conflicts,
+           "edges": {p: contract.Node(path=path, meta=meta,
+                                      body=new_body).edges(p)
+                     for p in contract.PREDICATES},
+           "dangling": _dangling_of(path, meta, new_body, idx)}
+    if replaced_summary is not None:
+        out["replaced_summary"] = replaced_summary
+    return evictions._after_node_write(out, settle, "merged", path.stem)
 
 
 def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):

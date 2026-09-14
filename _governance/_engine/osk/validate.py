@@ -713,7 +713,7 @@ _NUM_KO = dict(enumerate(
 # 검사를 비켜가는 표류를 막기 위해서다(6차 판정). `osk/raw.py`는 append_raw의
 # 통로이므로 같은 이유로 여기 든다.
 SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/raw.py",
-                   "osk/scope_memory.py")
+                   "osk/scope_memory.py", "osk/distillation.py")
 
 
 def surface_violations(engine_dir=None) -> list[str]:

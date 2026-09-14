@@ -1,0 +1,485 @@
+"""Durable, local conversation capture/review cursors; shared scope memory is not an ACK."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import shlex
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+
+from . import core, raw, scope_memory, transcripts, write
+from ._portalock import lock_exclusive, unlock
+
+SOFT, HARD = 9, 15
+MAX_REVIEW_ROUNDS = 15
+
+
+def _identity(harness: str, conversation_id: str) -> str:
+    if harness not in ("claude", "codex") or not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", conversation_id):
+        raise ValueError("explicit claude/codex harness and actual conversation_id required")
+    return hashlib.sha256(f"{core.ROOT.resolve()}\n{harness}\n{conversation_id}".encode()).hexdigest()
+
+
+def state_path(harness: str, conversation_id: str) -> Path:
+    key = _identity(harness, conversation_id)
+    root_key = hashlib.sha256(str(core.ROOT.resolve()).encode()).hexdigest()[:16]
+    return core.local_lock_path(f"osk-integration-{root_key}-{key}.json", core.ROOT).with_suffix(".json")
+
+
+@contextmanager
+def _locked(harness: str, conversation_id: str):
+    p = state_path(harness, conversation_id)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.with_suffix(".lock").open("a+b") as f:
+        lock_exclusive(f)
+        try:
+            yield p
+        finally:
+            unlock(f)
+
+
+def _load(p: Path, harness: str, sid: str) -> dict:
+    if not p.exists():
+        # Raw identity follows the native conversation across vault copies;
+        # operational ownership remains ROOT-specific in state_path.
+        record_key = hashlib.sha256((harness + "\n" + sid).encode()).hexdigest()[:32]
+        return {"version": 1, "root": str(core.ROOT.resolve()), "harness": harness,
+                "conversation_id": sid, "session": None, "space": None, "transcript_path": None,
+                "record": f"{harness}-{record_key}",
+                "rounds": [], "reviewed_count": 0, "prompt_count": 0,
+                "reviewed_prompt_count": 0, "snapshots": {}, "reviews": [],
+                "capture_pending": False, "capture_error": None,
+                "native_fingerprint": None, "coverage": None}
+    s = json.loads(p.read_text(encoding="utf-8"))
+    if (s.get("version"), s.get("root"), s.get("harness"), s.get("conversation_id")) != (
+            1, str(core.ROOT.resolve()), harness, sid):
+        raise ValueError("integration state identity/version mismatch; not reset")
+    if not (isinstance(s.get("rounds"), list) and isinstance(s.get("snapshots"), dict)
+            and isinstance(s.get("reviewed_count"), int)
+            and 0 <= s["reviewed_count"] <= len(s["rounds"])):
+        raise ValueError("damaged integration cursor; not reset")
+    return s
+
+
+def _save(p: Path, s: dict) -> None:
+    write._atomic_write(p, json.dumps(s, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+
+
+def _snapshot(s: dict) -> str | None:
+    if not s["rounds"]:
+        return None
+    return "sha256:" + hashlib.sha256(json.dumps(
+        [s["root"], s["harness"], s["conversation_id"], s["rounds"]],
+        sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _view(s: dict) -> dict:
+    rs, n = s["rounds"], s["reviewed_count"]
+    repairs = s.get("repair_pending", {})
+    repair_refs = {ref for item in repairs.values() for ref in item["refs"]}
+    return {"ok": not bool(s["capture_error"]), "harness": s["harness"],
+            "conversation_id": s["conversation_id"], "session": s["session"],
+            "record": s["record"], "transcript_path": s["transcript_path"],
+            "captured_through": rs[-1]["id"] if rs else None,
+            "reviewed_through": rs[n-1]["id"] if n else None,
+            "captured_rounds": len(rs), "reviewed_rounds": n,
+            "aborted_rounds": sum(r.get("completion") == "aborted" for r in rs),
+            "pending": bool(s["capture_pending"] or len(rs) > n or repairs),
+            "repair_pending": repairs,
+            "capture_pending": s["capture_pending"], "capture_error": s["capture_error"],
+            "coverage": s.get("coverage"),
+            "pending_refs": [r["ref"] for i, r in enumerate(rs) if i >= n or r["ref"] in repair_refs],
+            "through": _snapshot(s),
+            "prompt_count": s["prompt_count"], "reviewed_prompt_count": s["reviewed_prompt_count"],
+            "last_review": s["reviews"][-1] if s["reviews"] else None}
+
+
+def status(harness: str, conversation_id: str) -> dict:
+    with _locked(harness, conversation_id) as p:
+        return _current_view(_load(p, harness, conversation_id), p)
+
+
+def capture(harness: str, conversation_id: str, transcript_path: str | None,
+            session: str, space: str | None = None) -> dict:
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        if s["session"] and s["session"] != session:
+            raise ValueError("conversation routing key changed; existing capture was not moved")
+        s["session"] = session
+        if space is not None:
+            s["space"] = space
+        if transcript_path:
+            s["transcript_path"] = str(Path(transcript_path).resolve())
+        s["capture_pending"], s["capture_error"] = True, None
+        _save(p, s)  # Persist intent before reading or appending; failures remain pending.
+        try:
+            if not s["transcript_path"]:
+                raise ValueError("native transcript path unavailable; use integration capture with --transcript")
+            parsed = transcripts.read(s["transcript_path"], harness, conversation_id)
+            s["coverage"] = parsed["coverage"]
+            _save(p, s)  # Reference-only coverage is visible before raw capture.
+            rounds = parsed["rounds"]
+            ids = [r["id"] for r in rounds]
+            if len(ids) != len(set(ids)) or ids[:len(s["rounds"])] != [r["id"] for r in s["rounds"]]:
+                raise ValueError("native round identity prefix changed; existing raw was not altered")
+            if rounds:
+                result = raw.append_rounds(session, s["record"], rounds, s.get("space"), replay_prefix=True)
+                stored = raw.read_exact(raw._raw_file(result["path"]))
+                spans = raw._round_spans(stored)
+                s["rounds"] = [{"id": r["id"], "ref": ref, "completion": r["completion"],
+                                "hash": core.sha256_bytes(stored[slice(*spans[i])].rstrip("\n").encode("utf-8"))}
+                               for i, r, ref in zip(result["indices"], rounds, result["round_refs"])]
+                token = _snapshot(s)
+                s["snapshots"].setdefault(token, {"count": len(rounds), "prompt_count": s["prompt_count"]})
+            else:
+                result = {"appended": 0}
+            s["capture_pending"] = parsed["pending_tail"]
+            s["capture_error"] = "; ".join(parsed["diagnostics"]) or None
+            s["native_fingerprint"] = parsed["native_fingerprint"]
+            _save(p, s)
+            return {**_current_view(s, p), "appended": result.get("appended", 0)}
+        except Exception as exc:
+            s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
+            _save(p, s)
+            return _current_view(s, p)
+
+
+def tick(harness: str, conversation_id: str) -> dict:
+    """Count the actual hook event even with empty/unbound shared memory; never reset on resume."""
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        s["prompt_count"] += 1
+        n = s["prompt_count"] - s["reviewed_prompt_count"]
+        _save(p, s)
+        current = _current_view(s, p)
+        return {**current, "due": bool(current["repair_pending"]) or n > 0 and n % HARD in (SOFT, 0),
+                "hard": n > 0 and n % HARD == 0, "unreviewed_prompts": n}
+
+
+def _verify_raw(rounds: list) -> None:
+    raw_files = {}
+    for r in rounds:
+        name, index = raw.parse_ref(r["ref"])
+        if name not in raw_files:
+            text = raw.read_exact(raw._raw_file(name))
+            raw_files[name] = text, raw._round_spans(text)
+        text, spans = raw_files[name]
+        if index not in spans or core.sha256_bytes(
+                text[slice(*spans[index])].rstrip("\n").encode("utf-8")) != r["hash"]:
+            raise ValueError("raw snapshot changed; review is not acknowledged")
+
+
+def acknowledge(harness: str, conversation_id: str, through: str,
+                outcome: str, reason: str, targets: list | None = None) -> dict:
+    if outcome not in ("preserved", "summary", "no_value", "deferred") or not isinstance(reason, str) or not reason.strip():
+        raise ValueError("outcome preserved|summary|no_value|deferred and nonempty reason required")
+    with _locked(harness, conversation_id) as p, core.mutation_lock():
+        s = _load(p, harness, conversation_id)
+        snap = s["snapshots"].get(through)
+        if _register_repair(s, through, _review_state_locked(s, through)):
+            _save(p, s)
+        repair = s.get("repair_pending", {}).get(through)
+        if not snap or snap["count"] <= s["reviewed_count"] and not repair:
+            raise ValueError("through is not an unreviewed snapshot of this conversation")
+        refs = set(repair["refs"]) if repair else {
+            r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]}
+        _verify_raw([r for r in s["rounds"] if r["ref"] in refs])
+        receipts = []
+        if outcome == "preserved":
+            from . import distillation
+            if not isinstance(targets, list) or not targets:
+                raise ValueError("preserved requires completed distillation targets [{key:...}]")
+            for target in targets:
+                if not isinstance(target, dict) or not isinstance(target.get("key"), str):
+                    raise ValueError("preserved target must name a distillation key")
+                receipt = distillation._status_locked(target["key"])
+                if receipt.get("status") != "complete" or not refs.intersection(
+                        r["ref"] for r in receipt.get("sources", [])):
+                    raise ValueError("target has no complete body/source/hub receipt for this snapshot")
+                target_path = core.resolve_in_root(receipt.get("target", {}).get("path", ""))
+                if target_path is None or not raw.graph.space_of(target_path)[0] == "scope":
+                    raise ValueError("preserved integration target must be a durable Scope node")
+                receipts.append(receipt)
+        elif outcome == "summary":
+            memory = scope_memory.read(s["session"])
+            if not isinstance(targets, list) or not targets or not all(
+                    isinstance(t, dict) and isinstance(t.get("text"), str) and t["text"].strip()
+                    and t["text"] in memory["text"] for t in targets):
+                raise ValueError("summary requires exact excerpts present in current shared memory")
+            receipts = [{"scope": memory["scope"], "hash": memory["hash"], "targets": targets}]
+        review = {"through": through, "outcome": outcome, "reason": reason.strip(),
+                  "at": core.now_iso(), "refs": sorted(refs), "receipts": receipts,
+                  "mechanical_preservation": outcome == "preserved", "semantic_verified": False}
+        s["reviews"].append(review)
+        if outcome != "deferred":
+            s["reviewed_count"] = max(s["reviewed_count"], snap["count"])
+            s["reviewed_prompt_count"] = max(s["reviewed_prompt_count"], snap["prompt_count"])
+            s.get("repair_pending", {}).pop(through, None)
+        _save(p, s)
+        return _view(s)
+
+
+def _review_state_locked(s: dict, through: str) -> dict:
+    snap = s["snapshots"].get(through)
+    last = next((r for r in reversed(s["reviews"]) if r["through"] == through), {})
+    result = {"harness": s["harness"], "conversation_id": s["conversation_id"], "through": through,
+              "status": "pending", "outcome": last.get("outcome")}
+    repair = s.get("repair_pending", {}).get(through)
+    if repair:
+        return {**result, "reason": repair["reason"], "repair_pending": True}
+    if not snap or not last or last.get("outcome") == "deferred" or s["reviewed_count"] < snap["count"]:
+        return result
+    try:
+        _verify_raw(s["rounds"][:snap["count"]])
+        if last["outcome"] == "preserved":
+            from . import distillation
+            for receipt in last["receipts"]:
+                current = distillation._status_locked(receipt["key"])
+                if (current.get("status") != "complete" or current.get("sources") != receipt["sources"]
+                        or any(current.get("target", {}).get(k) != receipt["target"].get(k)
+                               for k in ("id", "path", "hash"))
+                        or any(current.get("hub", {}).get(k) != receipt["hub"].get(k)
+                               for k in ("id", "path"))):
+                    return {**result, "reason": "preserved target/source/hub receipt changed"}
+        elif last["outcome"] == "summary":
+            memory = scope_memory.read(s["session"])
+            for receipt in last["receipts"]:
+                if not all(t["text"] in memory["text"] for t in receipt["targets"]):
+                    return {**result, "reason": "reviewed summary excerpt no longer exists"}
+    except (ValueError, OSError, write.WriteError) as exc:
+        return {**result, "reason": str(exc)}
+    return {**result, "status": "complete", "review": last, "semantic_verified": False}
+
+
+def _register_repair(s: dict, through: str, result: dict) -> bool:
+    """Keep an observed failed receipt pending until an explicit replacement ACK."""
+    prior = next((r for r in reversed(s["reviews"])
+                  if r["through"] == through and r["outcome"] != "deferred"), None)
+    if (result["status"] == "complete" or not result.get("reason") or not prior
+            or through in s.get("repair_pending", {})):
+        return False
+    s.setdefault("repair_pending", {})[through] = {
+        "reason": result["reason"], "refs": prior["refs"], "since": core.now_iso(),
+        "review_count": len(s["reviews"])}
+    return True
+
+
+def _current_view(s: dict, path: Path) -> dict:
+    # Only the latest completed receipt is discovered opportunistically. Older
+    # failed final checks are explicitly registered by review_status; there is
+    # no unbounded historical integrity scan on every prompt or capture.
+    with core.mutation_lock():
+        latest = next((r for r in reversed(s["reviews"]) if r["outcome"] != "deferred"), None)
+        if latest and _register_repair(s, latest["through"], _review_state_locked(s, latest["through"])):
+            _save(path, s)
+        return _view(s)
+
+
+def _review_status_locked(harness: str, conversation_id: str, through: str) -> dict:
+    # Pure while the caller owns mutation lock: never acquire the local lock or
+    # write state here. Public review_status persists failures in local→mutation order.
+    return _review_state_locked(_load(state_path(harness, conversation_id), harness, conversation_id), through)
+
+
+def review_status(harness: str, conversation_id: str, through: str) -> dict:
+    with _locked(harness, conversation_id) as p, core.mutation_lock():
+        s = _load(p, harness, conversation_id)
+        result = _review_state_locked(s, through)
+        if _register_repair(s, through, result):
+            _save(p, s)
+            result["repair_pending"] = True
+        return result
+
+
+def _known_pending(limit: int) -> tuple[list, int, list]:
+    if not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    probe = state_path("claude", "inventory")
+    prefix = "-".join(probe.name.split("-")[:3]) + "-"
+    paths = sorted(probe.parent.glob(prefix + "*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name))
+    states, errors = [], []
+    for p in paths:
+        try:
+            value = json.loads(p.read_text(encoding="utf-8"))
+            with _locked(value["harness"], value["conversation_id"]) as locked_path:
+                if p != locked_path:
+                    raise ValueError("state filename identity mismatch")
+                s = _load(p, value["harness"], value["conversation_id"])
+                current = _current_view(s, p)
+            changed = False
+            if s.get("transcript_path"):
+                try:
+                    native = Path(s["transcript_path"]).stat()
+                    changed = s.get("native_fingerprint") != {"size": native.st_size, "mtime_ns": native.st_mtime_ns}
+                except OSError:
+                    changed = True
+            if current["pending"] or changed:
+                states.append(s)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append({"state": str(p), "error": str(exc)})
+    return states[:limit], max(0, len(states) - limit), errors
+
+
+def list_pending(limit: int = 20) -> dict:
+    states, remaining, errors = _known_pending(limit)
+    jobs = []
+    for s in states:
+        if not _view(s)["pending_refs"]:
+            continue
+        job = prompt(s["harness"], s["conversation_id"])
+        job["prompt"] = job.pop("text")
+        jobs.append(job)
+    return {"ok": not errors, "jobs": jobs, "remaining": remaining, "errors": errors}
+
+
+def catchup(limit: int = 20) -> dict:
+    """Bounded scheduler catch-up of known own vault states; never inject these in a normal session."""
+    states, remaining, errors = _known_pending(limit)
+    captures, jobs = [], []
+    for s in states:
+        try:
+            result = capture(s["harness"], s["conversation_id"], s["transcript_path"], s["session"], s.get("space"))
+            captures.append({k: result.get(k) for k in ("harness", "conversation_id", "ok", "appended", "capture_error")})
+            if result["pending_refs"]:
+                job = prompt(s["harness"], s["conversation_id"])
+                job["prompt"] = job.pop("text")
+                jobs.append(job)
+        except Exception as exc:
+            errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
+    return {"ok": not errors and all(r["ok"] for r in captures), "jobs": jobs,
+            "captures": captures, "remaining": remaining, "errors": errors}
+
+
+def prompt(harness: str, conversation_id: str) -> dict:
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        st = _current_view(s, p)
+        count = min(len(s["rounds"]), s["reviewed_count"] + MAX_REVIEW_ROUNDS)
+        if s.get("repair_pending"):
+            token = min(s["repair_pending"], key=lambda t: (s["snapshots"][t]["count"], t))
+            st["through"] = token
+            st["pending_refs"] = s["repair_pending"][token]["refs"]
+            st["remaining_rounds"] = len(s["rounds"]) - s["reviewed_count"]
+            st["repair"] = s["repair_pending"][token]
+        elif count > s["reviewed_count"]:
+            selected = {**s, "rounds": s["rounds"][:count]}
+            token = _snapshot(selected)
+            # A bounded review may end inside the initial catch-up batch. Its
+            # prompt counter does not claim newer unreviewed prompts as done.
+            s["snapshots"].setdefault(token, {"count": count, "prompt_count": min(
+                s["prompt_count"], s["reviewed_prompt_count"] + count - s["reviewed_count"])})
+            _save(p, s)
+            st["through"] = token
+            st["pending_refs"] = [r["ref"] for r in s["rounds"][s["reviewed_count"]:count]]
+            st["remaining_rounds"] = len(s["rounds"]) - count
+    # One snapshot identity for ordinary hooks and dedicated workers alike.
+    # A later snapshot must not collide with an immutable distillation request.
+    st["key"] = "scope-review-" + st["through"].removeprefix("sha256:") if st["pending_refs"] else None
+    if st.get("repair"):
+        st["key"] += f"-repair-{st['repair']['review_count']}"
+    text = (f"[osk 대화별 통합 대기 — {harness}/{conversation_id}]\n"
+            f"공유 scope 기억 session={json.dumps(st['session'], ensure_ascii=False)}와 "
+            "이 대화의 검토 상태는 별개다. 공유 기억이 비어 있어도 검토한다.\n")
+    if st["capture_error"]:
+        text += f"포착 진단: {st['capture_error']} — 미완료로 남았다. 본 작업은 계속할 수 있다.\n"
+    if st.get("repair"):
+        text += ("이 snapshot은 이미 검토했지만 저장 영수증의 최종 확인이 실패해 복구 대기로 남았다. "
+                 "새 대화의 완료 커서는 되감지 않았다. 아래 기존 출처와 영수증을 다시 확인하고 "
+                 "같은 through로 명시적으로 재ACK하라. 허브 연결만 빠졌으면 기존 증류를 resume한다. "
+                 "본문 정정이 필요하면 현재 노드를 재검토하고 별도 증류 key로 새 증거를 만든다. "
+                 f"보류 사유: {st['repair']['reason']}\n")
+    if (st.get("coverage") or {}).get("mode") == "tool-output-reference":
+        text += "포착 범위: 파일 읽기·혼합 명령 결과는 native 위치와 hash 참조로 보존했다. 상세 증거를 다시 읽으려면 원래 전사 보관이 필요하다.\n"
+    if not st["pending_refs"]:
+        return {**st, "text": text + "검토할 완료 raw 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다."}
+    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(core.ROOT)!r};"
+            f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
+            "runpy.run_module('osk.cli',run_name='__main__')")
+    argv = [sys.executable, "-c", code, "integration", "review", "--harness", harness, "--conversation", conversation_id]
+    command = ("& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+               if os.name == "nt" else shlex.join(argv))
+    from . import distillation
+    try:
+        discovered = distillation.discover(st["pending_refs"])
+    except (ValueError, OSError, write.WriteError) as exc:
+        discovered = {"proofs": [], "errors": [{"reason": str(exc)}], "truncated": False, "scanned": 0}
+    st["previous_distillations"] = discovered["proofs"]
+    st["proof_discovery"] = {k: discovered[k] for k in ("errors", "truncated", "scanned")}
+    if discovered["proofs"]:
+        text += ("기존 저장 증거가 있다. complete이면 본문을 다시 쓰지 말고 기존 key를 "
+                 "preserved ACK의 targets에 재사용하라. 허브 연결만 pending이면 "
+                 "update_node(name=proof.target.id, distill={resume:proof.key})를 부른 뒤 "
+                 "같은 key로 ACK하라. body/summary/edges/anchors/settle/expect_hash는 보내지 않는다. "
+                 "아래 증거의 실제 내용이 이번 검토 범위에 맞는지 먼저 확인하라.\n"
+                 + json.dumps(discovered["proofs"], ensure_ascii=False) + "\n")
+    if discovered["errors"] or discovered["truncated"]:
+        text += ("기존 증류 증거 조회가 불완전하다. 기존 저장 여부를 확인하기 전 "
+                 "중복 노드를 새로 만들지 말고 필요하면 deferred로 남겨라. 진단: "
+                 + json.dumps(st["proof_discovery"], ensure_ascii=False) + "\n")
+    text += (f"이번 검토 snapshot의 작업 키: {st['key']}\n"
+             f"새 증류의 distill.key는 `{st['key']}:<대상별 고정 접미사>`로 정하라. "
+             "기존 노드 ID 또는 새 노드 제목의 고정 slug를 접미사로 쓰고, 같은 대상의 "
+             "재시도에서는 그대로 재사용한다. 여러 대상에 같은 key를 쓰지 않는다. "
+             "새 snapshot은 새 작업 키를 쓴다. ACK만 유실됐다면 위 complete 증거의 "
+             "기존 key를 targets에 재사용하며, 같은 본문을 새 key로 다시 쓰지 않는다.\n")
+    text += ("먼저 아래 자기 대화 raw를 read_raw로 읽고 현재 scope_memory를 함께 읽어라. "
+             "search로 기존 노드를 찾고 같은 주제는 update_node를 우선한다. "
+             "오래 쓸 지식만 Scope 노드로 옮기며 선택한 raw 출처와 허브 Link를 distill로 완성한다. "
+             "남길 지식이 없는 라운드까지 노드에 억지로 넣지 않는다.\n"
+             + "\n".join(st["pending_refs"]) + "\n"
+             + f"실행 명령({ 'PowerShell' if os.name == 'nt' else 'shell' }):\n{command}\n위 명령에 UTF-8 JSON을 stdin으로 전달하라: "
+             + json.dumps({"through": st["through"], "outcome": "preserved|summary|no_value|deferred",
+                           "reason": "검토 범위와 선택/생략 이유", "targets": [{"key": "완료한 distill key"}]}, ensure_ascii=False)
+             + "\npreserved는 실제 노드·출처·허브 완료 영수증을 확인한다. summary는 현재 공유 기억의 "
+             "정확한 발췌를 targets=[{text:...}]로 제출하며 노드 보존 성공으로 세지 않는다. "
+             "no_value도 사유를 남기고, deferred는 대기를 유지한다. 기억 hash 변화만으로 완료되지 않는다. "
+             "기계 검사는 저장·배선만 확인하며 의미 타당성은 raw와 따로 대조한다.")
+    return {**st, "text": text}
+
+
+def hook_capture(env: dict, session: str) -> dict:
+    """Locate only the caller's native transcript, never another conversation's backlog."""
+    sid = env.get("session_id") or env.get("conversation_id") or os.environ.get("CODEX_THREAD_ID")
+    harness = env.get("harness") or os.environ.get("OSK_HARNESS")
+    path = env.get("transcript_path")
+    if not harness and path:
+        with Path(path).open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row.get("type") == "session_meta":
+                    harness = "codex"
+                    break
+                if row.get("sessionId"):
+                    harness = "claude"
+                    break
+    if not harness and os.environ.get("CODEX_THREAD_ID") == sid:
+        harness = "codex"
+    if not sid:
+        raise ValueError("hook has no actual conversation ID; capture not acknowledged")
+    candidates = []
+    if not path:
+        for kind in ([harness] if harness else ["claude", "codex"]):
+            _identity(kind, sid)
+            saved = status(kind, sid).get("transcript_path")
+            if saved:
+                candidates.append((kind, saved))
+                continue
+            base = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+            if kind == "claude":
+                matches = (base / "projects").glob(f"*/{sid}.jsonl")
+            else:
+                base = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+                matches = (base / "sessions").glob(f"*/*/*/*{sid}.jsonl")
+            candidates.extend((kind, str(p)) for p in matches if p.is_file())
+        if len(candidates) == 1:
+            harness, path = candidates[0]
+        elif len(candidates) > 1:
+            raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
+    if not harness:
+        raise ValueError("native harness/transcript unavailable; provide harness and transcript_path")
+    return capture(harness, sid, path, session, env.get("space"))

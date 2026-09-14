@@ -5249,81 +5249,50 @@ def _hook_context(raw, event):
 
 
 def test_cadence_hook():
-    """케이던스 훅 — 9턴 동승 주입, 15턴 단독 허용, 갱신은 계수를 처음으로.
-
-    무엇을 망가뜨리면 실패하는가: 9턴 전에 주입하면 · 9턴에 전문·해시·여유가
-    빠지면 · 10~14턴에 주입하면 · 15턴에 단독 허용이 빠지면 · 15턴 뒤 계수가
-    안 돌아가면 · 기억이 바뀌었는데 계수가 안 돌아가면 · 결속 없는 세션에
-    주입하면."""
-    import io, importlib, tempfile, types, uuid
-    from osk import scope_memory as wm
-    hooks = Path(__file__).resolve().parents[1] / "scripts" / "hooks"
+    """Own-conversation timing survives empty memory, resume and other writers."""
+    import io, importlib, types, uuid
+    from osk import integration, scope_memory as wm
+    hooks = ENGINE / "scripts/hooks"
     sys.path.insert(0, str(hooks))
     hook = importlib.import_module("claude_prompt_submit")
+    start_hook = importlib.import_module("claude_session_start")
+    with tempfile.TemporaryDirectory(prefix="osk-cadence-test-") as td:
+        cwd = Path(td) / "cadence-project"
+        cwd.mkdir()
+        sid = "cadence-" + uuid.uuid4().hex
+        transcript = Path(td) / "native.jsonl"
+        transcript.write_text(json.dumps({"type": "session_meta", "payload": {"id": sid}}) + "\n", encoding="utf-8")
+        payload = {"session_id": sid, "harness": "codex", "cwd": str(cwd),
+                   "transcript_path": str(transcript)}
+        write.bind_session(cwd.name, "W1")
 
-    (ROOT / "= Scope/WCad").mkdir(exist_ok=True)
-    # session_key(cwd)는 git 밖에서 디렉터리 이름으로 접히므로, 이름이 곧 세션 키다
-    cwd = Path(tempfile.mkdtemp(prefix="osk-")) / "regr-cad"
-    cwd.mkdir()
-    S = cwd.name
-    sid = f"regr-{uuid.uuid4().hex[:8]}"
-    d = Path(tempfile.gettempdir()) / "osk-cadence"
+        def turn(module=hook, event="UserPromptSubmit"):
+            buf = io.BytesIO()
+            real_in, real_out = sys.stdin, sys.stdout
+            try:
+                sys.stdin = io.StringIO(json.dumps(payload))
+                sys.stdout = types.SimpleNamespace(buffer=buf)
+                module.main()
+            finally:
+                sys.stdin, sys.stdout = real_in, real_out
+            return _hook_context(buf.getvalue(), event)
 
-    def turn():
-        buf = io.BytesIO()
-        real_in, real_out = sys.stdin, sys.stdout
-        try:
-            sys.stdin = io.StringIO(json.dumps({"session_id": sid, "cwd": str(cwd)}))
-            sys.stdout = types.SimpleNamespace(buffer=buf)
-            hook.main()
-        finally:
-            sys.stdin, sys.stdout = real_in, real_out
-        return _hook_context(buf.getvalue(), "UserPromptSubmit")
-
-    # 결속 없음 — 세기만 하고 주입하지 않는다
-    for _ in range(9):
-        out = turn()
-    check("결속 없는 세션엔 9턴에도 주입 없음", out == "", out[:80])
-    # 결속을 세우고 계수를 새로 시작한다
-    r = _w(wm.replace, S, "- 기억 한 줄\n", None, "= Scope/WCad")
-    check("결속·기억 세움", r.get("ok"), r)
-    (d / f"{sid}.count").unlink(missing_ok=True)
-    (d / f"{sid}.hash").unlink(missing_ok=True)
-
-    outs = [turn() for _ in range(15)]
-    check("1~8턴은 조용하다", all(o == "" for o in outs[:8]), [len(o) for o in outs[:8]])
-    o9 = outs[8]
-    check("9턴에 주입한다", o9 != "", o9[:80])
-    check("9턴 주입에 전문이 있다", "- 기억 한 줄" in o9, o9[-60:])
-    check("9턴 주입에 해시·여유가 있다", r["hash"] in o9 and "여유" in o9, o9[:160])
-    check("9턴은 동승을 지시한다", "함께 실어" in o9 and "따로 쓰지" in o9, o9[:200])
-    check("9턴은 edits 계약을 알린다", "edits" in o9 and "순결과" in o9, o9[:400])
-    check("10~14턴은 조용하다", all(o == "" for o in outs[9:14]), [len(o) for o in outs[9:14]])
-    o15 = outs[14]
-    check("15턴에 다시 주입한다", o15 != "" and "- 기억 한 줄" in o15, o15[:80])
-    check("15턴은 단독 턴을 허용한다", "단독 턴이어도" in o15, o15[:200])
-    check("15턴 뒤 계수는 처음으로", turn() == "")       # n=1
-    outs = [turn() for _ in range(7)]                    # n=2..8
-    check("15턴 리셋 뒤 2~8턴은 조용하다", all(o == "" for o in outs), [len(o) for o in outs])
-    o = turn()                                           # n=9 — 리셋이 없었으면 24턴이라 침묵한다
-    check("15턴 리셋 뒤 9턴째에 다시 주입한다 — 계수가 돌아갔다", "함께 실어" in o, o[:80])
-
-    # 기억이 바뀌면 계수가 처음으로 — 9턴에 못 미쳐도
-    for _ in range(3):
-        turn()                                           # n=10..12
-    r = _w(wm.replace, S, edits=[{"old_text": "- 기억 한 줄", "new_text": "- 기억 한 줄\n- 통합됨"}])
-    check("통합 성공", r.get("ok"), r)
-    o = turn()                                           # 해시가 바뀐 것을 보고 n=1
-    check("갱신 직후 턴은 조용하다", o == "")
-    outs = [turn() for _ in range(7)]                    # n=2..8 — 리셋이 없었으면 15턴에서 주입된다
-    check("갱신 후 2~8턴은 조용하다 — 계수가 돌아갔다", all(o == "" for o in outs), [len(o) for o in outs])
-    o = turn()                                           # n=9
-    check("갱신 후 9턴째에 새 전문으로 주입한다", "- 통합됨" in o, o[-60:])
-
-    for f in (d / f"{sid}.count", d / f"{sid}.hash"):
-        f.unlink(missing_ok=True)
-    import shutil
-    shutil.rmtree(cwd.parent, ignore_errors=True)
+        outs = [turn() for _ in range(9)]
+        check("빈 기억도 1~8턴은 조용하고 9턴에 검토", not any(outs[:8]) and "함께 실어" in outs[8], outs)
+        check("원문 부재를 증류 완료로 가장하지 않는다", "아직 없다" in outs[8], outs[8])
+        for _ in range(3):
+            turn()
+        before = integration.status("codex", sid)["prompt_count"]
+        turn(start_hook, "SessionStart")
+        check("같은 대화 재개는 통합 시계를 지우지 않는다", integration.status("codex", sid)["prompt_count"] == before)
+        prior = wm.read(cwd.name)
+        wm.replace(cwd.name, "- 다른 작성자가 보존한 지식", prior["hash"])
+        outs = [turn() for _ in range(3)]
+        check("다른 작성자의 공유 기억 갱신은 내 15턴 검토를 닫지 않는다",
+              not any(outs[:2]) and "단독 턴이어도" in outs[2] and "다른 작성자" in outs[2], outs)
+        check("15턴 뒤 매 턴 재촉하지 않는다", turn() == "")
+        check("내 대화의 계수는 공유 hash와 별개", integration.status("codex", sid)["prompt_count"] == 16)
+        wm.replace(cwd.name, prior["text"], wm.read(cwd.name)["hash"])
 
 
 def test_scope_recovery_handoff():
@@ -5368,6 +5337,10 @@ def test_scope_recovery_handoff():
     hooks = ENGINE / "scripts" / "hooks"
     payload = {"session_id": sid, "cwd": str(cwd), "source": "startup",
                "hook_event_name": "SessionStart", "permission_mode": "default"}
+    from osk import integration
+    native = cwd / "native.jsonl"
+    native.write_text(json.dumps({"type": "session_meta", "payload": {"id": sid}}) + "\n", encoding="utf-8")
+    payload.update(harness="codex", transcript_path=str(native))
     env = {**os.environ, "OSK_VAULT_ROOT": str(ROOT), "PYTHONPATH": str(ENGINE)}
 
     def run_hook(name):
@@ -5383,10 +5356,13 @@ def test_scope_recovery_handoff():
         unbound = cwd / "unbound"
         unbound.mkdir()
         payload["cwd"] = str(unbound)
+        payload["session_id"] = "unbound-" + sid
+        payload.pop("transcript_path")
         out = run_hook("claude_session_start.py")
         check("결속 없는 세션도 JSON으로 시작 안내를 주입한다",
               out.startswith("[osk 세션 시작") and "아직 scope 결속이 없다" in out)
         payload["cwd"] = str(cwd)
+        payload.update(session_id=sid, transcript_path=str(native))
         out = run_hook("claude_session_start.py")
         check("새 세션은 evict 없이도 복구를 싣는다", "[osk scope 복구 대기" in out, out[:300])
         check("복구는 현재 저장본과 기존 노드 우선 행동을 싣는다", cur in out and "update_node" in out and "엔트리 단위" in out)
@@ -5394,19 +5370,26 @@ def test_scope_recovery_handoff():
         check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",
               f'session="{S}"' in out and "저장 위치" in out and "대신하지 않는다" in out)
         check("훅은 표식을 소비하지 않는다", wm.recovery(S) is not None)
-        d = Path(tempfile.gettempdir()) / "osk-cadence"
-        d.mkdir(exist_ok=True)
         payload["hook_event_name"] = "UserPromptSubmit"
         payload["prompt"] = "계속"
+        # The unbound probe above uses its own ID, not this scope's conversation.
         for count in (8, 14):
-            (d / f"{sid}.count").write_text(str(count), encoding="ascii")
-            (d / f"{sid}.hash").write_text(r["hash"], encoding="utf-8")
+            while integration.status("codex", sid)["prompt_count"] < count:
+                integration.tick("codex", sid)
             out = run_hook("claude_prompt_submit.py")
             check(f"{count + 1}턴은 새 요약 추가 대신 복구를 싣는다",
                    "[osk scope 복구 대기" in out and "이 세션에서 배운 것을" not in out and cur in out)
             check("케이던스도 같은 세션 키의 복구를 안내한다",
                   f'session="{S}"' in out and "대신하지 않는다" in out)
-        check("15턴 뒤 매 턴 재촉하지 않는다", (d / f"{sid}.count").read_text() == "0")
+        check("15턴 뒤 매 턴 재촉하지 않는다", run_hook("claude_prompt_submit.py") == "")
+
+        native.write_text("malformed native transcript\n", encoding="utf-8")
+        payload.pop("harness", None)  # Parsing during harness detection raises.
+        env.pop("OSK_HARNESS", None)
+        out = run_hook("claude_prompt_submit.py")
+        check("전사 판독 실패도 scope 복구와 세션 키를 숨기지 않는다",
+              "포착·통합 진단" in out and "[osk scope 복구 대기" in out
+              and cur in out and f'session="{S}"' in out and "대신하지 않는다" in out)
 
         same = _w(wm.replace, S, cur, r["hash"])
         check("동일 전문의 성공은 대기를 소비하지 않는다", same.get("ok") and same.get("recovery"), same)
@@ -5982,15 +5965,17 @@ def test_evictions():
     check("status에 scope별 미처분·나이", stj.get("evictions", {}).get("WEvi", {}).get("unsettled") == 7
           and stj["evictions"]["WEvi"]["overdue"] is True, stj.get("evictions"))
 
-    # 전부 처분하면 — 프롬프트도 훅도 조용하다
+    # 퇴출이 0이어도 경유 노드는 독립적으로 정돈한다.
     for r in ev.unsettled():
         ev.settle(r["rid"], "discarded")
-    check("전부 처분하면 프롬프트가 없다고 말한다", "정돈할 것이 없다" in ev.tidy_prompt(None, "PY", "ENG"))
+    check("퇴출 0에도 경유 정돈 프롬프트", "[[regr-evi-transit]]" in ev.tidy_prompt(None, "PY", "ENG"))
     out3 = hook_run()
-    check("훅: 미처분이 없으면 정돈 블록도 경고도 없다", "[osk 정돈" not in out3, out3[:120])
+    check("훅: 퇴출 0에도 경유를 싣고 밀림 경고는 없다",
+          "[[regr-evi-transit]]" in out3 and "[osk 정돈이 밀렸다" not in out3, out3[:120])
     check("status는 미처분 없는 scope를 싣지 않는다", ev.status() == {}, ev.status())
 
     transit.unlink(missing_ok=True)
+    check("두 큐가 비어야 정돈할 것이 없다", "정돈할 것이 없다" in ev.tidy_prompt(None, "PY", "ENG"))
     shutil.rmtree(cwd.parent, ignore_errors=True)
 
 
@@ -9208,6 +9193,15 @@ def test_validate_at_uses_snapshot_engine():
               errors == ["검증기 FAIL: snapshot rejection"], errors)
 
 
+def test_growth_loop_subprocesses():
+    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py"):
+        proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
+                              capture_output=True, timeout=180,
+                              stdin=subprocess.DEVNULL)
+        check(f"성장 경로 격리 수트: {name}", proc.returncode == 0,
+              (proc.stdout + proc.stderr).decode("utf-8", errors="replace")[-6000:])
+
+
 if __name__ == "__main__":
     for fn in [test_posix_rel_is_os_independent, test_portable_title,
                test_cli_delegation, test_rid_monotone, test_same_ms_chain_signed,
@@ -9301,7 +9295,8 @@ if __name__ == "__main__":
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
                test_write_edge_coordinates, test_write_pin_subtree_and_fork,
                test_review_empty_memory_and_incomplete_region,
-               test_review_root_reparse_and_lazy_search, test_eviction_preservation_mcp]:
+               test_review_root_reparse_and_lazy_search, test_eviction_preservation_mcp,
+               test_growth_loop_subprocesses]:
         try:
             fn()
         except Exception as e:

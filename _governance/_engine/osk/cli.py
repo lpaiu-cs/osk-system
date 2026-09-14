@@ -141,6 +141,61 @@ def _raw_cmd(a) -> None:
         sys.exit(1)
 
 
+def _integration_cmd(a) -> None:
+    """Own-conversation capture/review; shared scope writes do not acknowledge it."""
+    from . import integration
+    try:
+        if a.integration_cmd in ("list", "catchup"):
+            fn = integration.list_pending if a.integration_cmd == "list" else integration.catchup
+            result = fn(limit=a.limit)
+        elif a.integration_cmd == "capture":
+            result = integration.capture(a.harness, a.conversation,
+                                         a.transcript, a.session, a.space)
+        elif a.integration_cmd == "prompt":
+            result = integration.prompt(a.harness, a.conversation)
+        elif a.integration_cmd == "review":
+            data = _raw_stdin()
+            if not isinstance(data, dict):
+                raise ValueError("review stdin must be a JSON object")
+            result = integration.acknowledge(
+                a.harness, a.conversation, data["through"], data["outcome"],
+                data["reason"], targets=data.get("targets"))
+        else:
+            result = integration.status(a.harness, a.conversation)
+        _emit(result)
+        if not result.get("ok", True):
+            sys.exit(1)
+    except (write.WriteError, StaleEngineError, ValueError, KeyError, OSError) as e:
+        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
+        sys.exit(1)
+
+
+def _growth_cmd(a) -> None:
+    """Bounded scheduler entry; the subprocess still uses MCP for graph writes."""
+    from . import growth
+    try:
+        if a.growth_cmd in ("plan", "prompt"):
+            result = growth.plan(limit=a.limit)
+            if a.growth_cmd == "prompt":
+                sys.stdout.buffer.write(growth.prompt(result).encode("utf-8"))
+                return
+        elif a.growth_cmd == "review":
+            result = growth.review(a.key, a.outcome, target=a.target,
+                                   reason=a.reason, manifest=a.manifest)
+        else:
+            command = json.loads(Path(a.command_file).read_text(encoding="utf-8"))
+            if not isinstance(command, list) or not command or not all(
+                    isinstance(s, str) and s for s in command):
+                raise ValueError("command file must contain a nonempty JSON argv array")
+            result = growth.run(command, limit=a.limit, timeout=a.timeout)
+        _emit(result)
+        if not result.get("ok", True):
+            sys.exit(1)
+    except (write.WriteError, StaleEngineError, ValueError, OSError) as e:
+        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
+        sys.exit(1)
+
+
 def _sm_cmd(a) -> None:
     """`osk sm` — scope 기억. `show`는 SessionStart 훅이 부르는 자리다.
 
@@ -239,6 +294,35 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--session", required=True)
     q.add_argument("--record", required=True)
     q.add_argument("--space", default=None)
+
+    p = sub.add_parser("integration", help="대화별 포착·통합 대기 (scope 공유 기억과 별개)")
+    ins = p.add_subparsers(dest="integration_cmd", required=True)
+    for name in ("list", "catchup"):
+        q = ins.add_parser(name)
+        q.add_argument("--limit", type=int, default=20)
+    for name in ("capture", "status", "prompt", "review"):
+        q = ins.add_parser(name)
+        q.add_argument("--harness", choices=("claude", "codex"), required=True)
+        q.add_argument("--conversation", required=True, help="실제 하네스 대화 ID")
+        if name == "capture":
+            q.add_argument("--transcript", required=True)
+            q.add_argument("--session", required=True, help="고정 scope 라우팅 키")
+            q.add_argument("--space", default=None)
+
+    p = sub.add_parser("growth", help="Scope→Domain 비교·검토·한정 실행")
+    gs = p.add_subparsers(dest="growth_cmd", required=True)
+    for name in ("plan", "prompt", "run"):
+        q = gs.add_parser(name)
+        q.add_argument("--limit", type=int, default=3)
+        if name == "run":
+            q.add_argument("--command-file", required=True, help="에이전트 argv 배열 JSON 파일")
+            q.add_argument("--timeout", type=int, default=600)
+    q = gs.add_parser("review")
+    q.add_argument("key")
+    q.add_argument("outcome", choices=("preserved", "no_value", "deferred"))
+    q.add_argument("--target", default=None)
+    q.add_argument("--reason", required=True)
+    q.add_argument("--manifest", required=True, help="실행 전에 고정한 plan rid")
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
@@ -364,6 +448,10 @@ def main(argv=None):
         print(json.dumps(authority.check(a.action), ensure_ascii=False, indent=2))
     elif a.cmd == "raw":
         return _raw_cmd(a)
+    elif a.cmd == "integration":
+        return _integration_cmd(a)
+    elif a.cmd == "growth":
+        return _growth_cmd(a)
     elif a.cmd == "sm":
         return _sm_cmd(a)
     elif a.cmd == "tidy":
