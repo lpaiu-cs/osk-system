@@ -13,6 +13,7 @@
 `_raw/` 쓰기 경로를 두지 않기 위해서다(Mechanism §9).
 """
 from __future__ import annotations
+import json
 import re
 from pathlib import Path
 
@@ -125,6 +126,23 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
 
 
 _CODEX_V2 = "<!-- osk-capture: codex-user-items-v2 -->"
+_CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
+
+
+def inherited_prefix(path: Path) -> dict | None:
+    """The immutable raw header survives cursor loss and vault copies."""
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as f:
+        line = f.readline().rstrip("\n")
+    if not line.startswith(_CLAUDE_PREFIX):
+        return None
+    if not line.endswith(" -->"):
+        raise write.WriteError("damaged Claude inheritance header")
+    value = json.loads(line[len(_CLAUDE_PREFIX):-4])
+    if not isinstance(value, dict) or not isinstance(value.get("rounds"), list):
+        raise write.WriteError("damaged Claude inheritance manifest")
+    return value
 
 
 def _block(index: int, user: str, agent: str, *, codex_native: bool = False) -> str:
@@ -146,7 +164,8 @@ _CONFINE = ("`_raw/`는 세션당 정본 하나이므로(시행령 §2 1항) 한
 
 def append_rounds(session: str, record: str, pairs: list,
                   space: str | None = None, *, replay_prefix: bool = False,
-                  codex_v1: dict | None = None) -> dict:
+                  codex_v1: dict | None = None,
+                  inherited: dict | None = None) -> dict:
     """라운드 여럿을 **한 번의 쓰기로** 잇는다.
 
     배치가 필요한 이유는 성능이 아니라 원자성이다. 라운드마다 따로 쓰면 세
@@ -160,6 +179,8 @@ def append_rounds(session: str, record: str, pairs: list,
     `overview`의 `clusters`를 그대로 옮겨 쓴다."""
     if codex_v1 is not None and not replay_prefix:
         raise ValueError("Codex capture versions require prefix replay")
+    if inherited is not None and (not replay_prefix or codex_v1 is not None):
+        raise ValueError("inherited prefixes require Claude capture replay")
     if not pairs:
         raise write.WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
     norm = []
@@ -198,6 +219,10 @@ def append_rounds(session: str, record: str, pairs: list,
 
         p = record_path(dest, record)
         prior = read_exact(p) if p.exists() else ""
+        if prior and inherited_prefix(p) != inherited:
+            raise write.WriteError("Claude inheritance manifest changed; raw was not altered")
+        if not prior and inherited is not None:
+            prior = _CLAUDE_PREFIX + json.dumps(inherited, ensure_ascii=False, sort_keys=True) + " -->\n\n"
         first = _next_index(prior)
         spans = _round_spans(prior)
         # Capture adapters resend the complete completed-round sequence. Compare

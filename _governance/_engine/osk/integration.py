@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import sys
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -29,9 +30,12 @@ def state_path(harness: str, conversation_id: str) -> Path:
     return core.local_lock_path(f"osk-integration-{root_key}-{key}.json", core.ROOT).with_suffix(".json")
 
 
-@contextmanager
 def _locked(harness: str, conversation_id: str):
-    p = state_path(harness, conversation_id)
+    return _locked_path(state_path(harness, conversation_id))
+
+
+@contextmanager
+def _locked_path(p: Path):
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.with_suffix(".lock").open("a+b") as f:
         lock_exclusive(f)
@@ -91,6 +95,7 @@ def _view(s: dict) -> dict:
             "repair_pending": repairs,
             "capture_pending": s["capture_pending"], "capture_error": s["capture_error"],
             "coverage": s.get("coverage"),
+            "inherited_rounds": len((s.get("inherited") or {}).get("rounds", [])),
             "pending_refs": [r["ref"] for i, r in enumerate(rs) if i >= n or r["ref"] in repair_refs],
             "through": _snapshot(s),
             "prompt_count": s["prompt_count"], "reviewed_prompt_count": s["reviewed_prompt_count"],
@@ -102,47 +107,151 @@ def status(harness: str, conversation_id: str) -> dict:
         return _current_view(_load(p, harness, conversation_id), p)
 
 
+def _inherited_rounds(s: dict, rounds: list) -> list:
+    """Reuse only the caller's copied prefix, with native ID and byte evidence."""
+    if s["harness"] != "claude" or not s["space"]:
+        return rounds
+    scope = raw._scope_of_space(s["space"])
+    path = raw.record_path(scope, s["record"])
+    inherited = raw.inherited_prefix(path) or s.get("inherited")
+    if not inherited and (path.exists() or s["rounds"]):
+        return rounds  # Existing duplicate raw is immutable; do not rewrite its codec.
+    cache = {}
+
+    def matches(pair, source):
+        name, number = raw.parse_ref(source["ref"])
+        if raw._raw_file(name).parent.parent.relative_to(core.ROOT).as_posix() != s["space"]:
+            raise ValueError("inherited source crossed scope; capture remains pending")
+        if name not in cache:
+            text = raw.read_exact(raw._raw_file(name))
+            cache[name] = text, raw._round_spans(text)
+        text, spans = cache[name]
+        block = text[slice(*spans[number])]
+        if core.sha256_bytes(block.rstrip("\n").encode()) != source["hash"]:
+            raise ValueError("inherited raw changed; capture remains pending")
+        # A raw owner may have captured another conversation's copied history.
+        # Match generated result locators by native result UUID, not raw ownership.
+        locator = re.compile(
+            r'("content": \{"coverage": "tool-output-reference", "native_result": "claude:)'
+            r'([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)(")')
+        origins = {m[3]: m[2] for m in locator.finditer(block)}
+        references = Counter(pair.get("native_results", []))
+        occurrences = Counter("claude:" + m[2] + ":" + m[3] for m in locator.finditer(pair["agent"]))
+        if any(occurrences[ref] != count for ref, count in references.items()
+               if ref.startswith("claude:" + s["conversation_id"] + ":")):
+            return False  # A dialogue quotation makes replacement ambiguous.
+        agent = locator.sub(
+            lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
+            if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
+            else m[0], pair["agent"])
+        from . import secrets
+        expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent))
+        return raw._round_body(block) == raw._round_body(secrets.filter_text(expected)[0])
+
+    if inherited is None:
+        known = {}
+        if rounds and re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
+            # ponytail: one local-state scan on first capture; index native IDs if this grows costly.
+            probe = state_path("claude", s["conversation_id"])
+            prefix = "-".join(probe.name.split("-")[:3]) + "-"
+            for candidate in sorted(probe.parent.glob(prefix + "*.json")):
+                if candidate == probe:
+                    continue
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                    if data.get("harness") != "claude" or data.get("root") != s["root"]:
+                        continue
+                    owner = _load(candidate, "claude", data["conversation_id"])
+                    if candidate != state_path("claude", owner["conversation_id"]):
+                        continue
+                    owner_scope = owner["space"] or (
+                        "= Scope/" + (write.resolve_session(owner["session"]) or ""))
+                    if owner_scope != s["space"]:
+                        continue
+                    for source in owner["rounds"]:
+                        known.setdefault(source["id"], []).append(source)
+                except (OSError, ValueError, KeyError):
+                    continue
+        shared = []
+        for pair in rounds:
+            candidates = known.get(pair["id"], [])
+            if not candidates:
+                break
+            source = next((r for r in candidates if matches(pair, r)), None)
+            if source is None:
+                raise ValueError("copied native round ID has different content; capture remains pending")
+            shared.append(source)
+        inherited = {"rounds": shared} if shared else None
+    if inherited:
+        prefix = inherited["rounds"]
+        if (len(rounds) < len(prefix)
+                or any(pair["id"] != source["id"] or not matches(pair, source)
+                       for pair, source in zip(rounds, prefix))):
+            raise ValueError("inherited native prefix changed; capture remains pending")
+        s["inherited"] = inherited
+        return rounds[len(prefix):]
+    return rounds
+
+
 def capture(harness: str, conversation_id: str, transcript_path: str | None,
             session: str, space: str | None = None) -> dict:
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
-        if s["session"] and s["session"] != session:
-            raise ValueError("conversation routing key changed; existing capture was not moved")
-        s["session"] = session
-        if space is not None:
-            s["space"] = space
-        if transcript_path:
-            s["transcript_path"] = str(Path(transcript_path).resolve())
         s["capture_pending"], s["capture_error"] = True, None
         _save(p, s)  # Persist intent before reading or appending; failures remain pending.
         try:
+            pinned = s["space"]
+            if not pinned and s["rounds"]:
+                name, _ = raw.parse_ref(s["rounds"][0]["ref"])
+                pinned = raw._raw_file(name).parent.parent.relative_to(core.ROOT).as_posix()
+            if pinned:
+                scope = raw._scope_of_space(pinned)
+                if not scope:
+                    raise ValueError("saved conversation scope is invalid; capture remains pending")
+                pinned = "= Scope/" + scope
+            destination, bound = write.resolve_landing(session, space, raw._CONFINE)
+            requested = "= Scope/" + destination if destination else None
+            if (pinned and requested and pinned != requested
+                    or s["session"] and s["session"] != session
+                    and not (bound and requested == pinned)):
+                raise ValueError("conversation scope changed; existing capture was not moved")
+            s["session"] = session
+            s["space"] = pinned or requested
+            if transcript_path:
+                s["transcript_path"] = str(Path(transcript_path).resolve())
+            _save(p, s)
             if not s["transcript_path"]:
                 raise ValueError("native transcript path unavailable; use integration capture with --transcript")
             parsed = transcripts.read(s["transcript_path"], harness, conversation_id)
             s["coverage"] = parsed["coverage"]
             _save(p, s)  # Reference-only coverage is visible before raw capture.
-            rounds = parsed["rounds"]
-            ids = [r["id"] for r in rounds]
-            if len(ids) != len(set(ids)) or ids[:len(s["rounds"])] != [r["id"] for r in s["rounds"]]:
-                raise ValueError("native round identity prefix changed; existing raw was not altered")
-            if rounds:
-                result = raw.append_rounds(session, s["record"], rounds, s.get("space"),
-                                           replay_prefix=True, codex_v1=parsed.get("codex_v1"))
-                s["coverage"]["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
-                stored = raw.read_exact(raw._raw_file(result["path"]))
-                spans = raw._round_spans(stored)
-                s["rounds"] = [{"id": r["id"], "ref": ref, "completion": r["completion"],
-                                "hash": core.sha256_bytes(stored[slice(*spans[i])].rstrip("\n").encode("utf-8"))}
-                               for i, r, ref in zip(result["indices"], rounds, result["round_refs"])]
-                token = _snapshot(s)
-                s["snapshots"].setdefault(token, {"count": len(rounds), "prompt_count": s["prompt_count"]})
-            else:
-                result = {"appended": 0}
-            s["capture_pending"] = parsed["pending_tail"]
-            s["capture_error"] = "; ".join(parsed["diagnostics"]) or None
-            s["native_fingerprint"] = parsed["native_fingerprint"]
-            _save(p, s)
-            return {**_current_view(s, p), "appended": result.get("appended", 0)}
+            # ponytail: serialize capture until its cursor is saved; use per-scope
+            # locks if capture throughput matters. Raw owns the mutation lock.
+            with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
+                rounds = _inherited_rounds(s, parsed["rounds"])
+                _save(p, s)  # Keep prefix ownership across a crash before raw append.
+                ids = [r["id"] for r in rounds]
+                if len(ids) != len(set(ids)) or ids[:len(s["rounds"])] != [r["id"] for r in s["rounds"]]:
+                    raise ValueError("native round identity prefix changed; existing raw was not altered")
+                if rounds:
+                    result = raw.append_rounds(session, s["record"], rounds, s.get("space"),
+                                               replay_prefix=True, codex_v1=parsed.get("codex_v1"),
+                                               inherited=s.get("inherited"))
+                    s["coverage"]["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
+                    stored = raw.read_exact(raw._raw_file(result["path"]))
+                    spans = raw._round_spans(stored)
+                    s["rounds"] = [{"id": r["id"], "ref": ref, "completion": r["completion"],
+                                    "hash": core.sha256_bytes(stored[slice(*spans[i])].rstrip("\n").encode("utf-8"))}
+                                   for i, r, ref in zip(result["indices"], rounds, result["round_refs"])]
+                    token = _snapshot(s)
+                    s["snapshots"].setdefault(token, {"count": len(rounds), "prompt_count": s["prompt_count"]})
+                else:
+                    result = {"appended": 0}
+                s["capture_pending"] = parsed["pending_tail"]
+                s["capture_error"] = "; ".join(parsed["diagnostics"]) or None
+                s["native_fingerprint"] = parsed["native_fingerprint"]
+                _save(p, s)
+                return {**_current_view(s, p), "appended": result.get("appended", 0)}
         except Exception as exc:
             s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
             _save(p, s)
@@ -387,6 +496,9 @@ def prompt(harness: str, conversation_id: str) -> dict:
             "이 대화의 검토 상태는 별개다. 공유 기억이 비어 있어도 검토한다.\n")
     if st["capture_error"]:
         text += f"포착 진단: {st['capture_error']} — 미완료로 남았다. 본 작업은 계속할 수 있다.\n"
+    if st["inherited_rounds"]:
+        text += (f"같은 scope에 이미 보존된 과거 {st['inherited_rounds']}라운드는 원래 raw를 참조한다. "
+                 "새 포착·이 대화의 검토 완료로 세지 않는다. 부모의 미검토 대기는 그대로 남는다.\n")
     if st.get("repair"):
         text += ("이 snapshot은 이미 검토했지만 저장 영수증의 최종 확인이 실패해 복구 대기로 남았다. "
                  "새 대화의 완료 커서는 되감지 않았다. 아래 기존 출처와 영수증을 다시 확인하고 "
@@ -449,6 +561,13 @@ def hook_capture(env: dict, session: str) -> dict:
     sid = env.get("session_id") or env.get("conversation_id") or os.environ.get("CODEX_THREAD_ID")
     harness = env.get("harness") or os.environ.get("OSK_HARNESS")
     path = env.get("transcript_path")
+    if not harness and os.environ.get("CODEX_THREAD_ID") == sid:
+        harness = "codex"
+    if not harness and path and sid and Path(path).stem == sid:
+        base = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
+        if Path(path).resolve().is_relative_to(base.resolve()):
+            # A fresh Claude file may not exist until after SessionStart.
+            harness = "claude"
     if not harness and path:
         with Path(path).open("r", encoding="utf-8") as f:
             for line in f:
@@ -461,8 +580,6 @@ def hook_capture(env: dict, session: str) -> dict:
                 if row.get("sessionId"):
                     harness = "claude"
                     break
-    if not harness and os.environ.get("CODEX_THREAD_ID") == sid:
-        harness = "codex"
     if not sid:
         raise ValueError("hook has no actual conversation ID; capture not acknowledged")
     candidates = []
