@@ -621,16 +621,32 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 path.write_bytes(native)
                 with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
                     st = it.capture(harness, sid, str(path), sid, "= Scope/W1")
-                self.assertFalse(st["ok"])
-                self.assertTrue(st["pending"])
-                self.assertIn("collapse distinct dictionary keys", st["capture_error"])
-                self.assertEqual(st["captured_rounds"], 0)
-                self.assertEqual(sink.call_count, 0)
+                self.assertTrue(st["ok"], st)
+                self.assertFalse(st["capture_pending"])
+                self.assertEqual(st["captured_rounds"], 1)
+                self.assertEqual(sink.call_count, 1)
+                raw_path, _ = raw.parse_ref(st["pending_refs"][0])
+                saved = (ROOT / raw_path).read_bytes()
+                self.assertEqual(saved.count(b"[FILTERED:github-token]"), 2)
+                self.assertIn(b"first", saved)
+                self.assertIn(b"second", saved)
+                self.assertLess(saved.index(b"first"), saved.index(b"second"))
+                for token in collision:
+                    self.assertNotIn(token.encode(), saved)
                 self.assertEqual(path.read_bytes(), native)
+                again = it.capture(harness, sid, str(path), sid, "= Scope/W1")
+                self.assertTrue(again["ok"], again)
+                self.assertEqual(again["appended"], 0)
+                self.assertEqual((ROOT / raw_path).read_bytes(), saved)
 
     def test_secret_in_duplicate_encoded_json_key_does_not_leak(self):
-        token = "ghp_" + "d" * 36
-        encoded = '{"same":' + json.dumps("before\n" + token) + ',"same":"benign"}'
+        tokens = ["ghp_" + letter * 36 for letter in "de"]
+        encoded = (' { "same" : ' + json.dumps("before\n" + tokens[0])
+                   + ', "same" : "' + tokens[1]
+                   + '", "same" : "benign", "escaped" : "\\u0061" } ')
+        expected = encoded
+        for token in tokens:
+            expected = expected.replace(token, "[FILTERED:github-token]")
         for harness in ("claude", "codex"):
             with self.subTest(harness=harness):
                 sid = self.sid + "-" + harness
@@ -645,12 +661,83 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 path.write_bytes(native)
                 with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
                     st = it.capture(harness, sid, str(path), sid, "= Scope/W1")
-                self.assertFalse(st["ok"])
-                self.assertTrue(st["pending"])
-                self.assertIn("duplicate JSON key", st["capture_error"])
-                self.assertEqual(st["captured_rounds"], 0)
-                self.assertEqual(sink.call_count, 0)
+                self.assertTrue(st["ok"], st)
+                self.assertFalse(st["capture_pending"])
+                self.assertEqual(st["captured_rounds"], 1)
+                self.assertEqual(sink.call_count, 1)
+                raw_path, _ = raw.parse_ref(st["pending_refs"][0])
+                saved = (ROOT / raw_path).read_bytes()
+                # Exact encoded content retains all duplicate pairs and whitespace.
+                self.assertIn(json.dumps(expected).encode(), saved)
+                self.assertEqual(saved.count(b"[FILTERED:github-token]"), 2)
+                for token in tokens:
+                    self.assertNotIn(token.encode(), saved)
                 self.assertEqual(path.read_bytes(), native)
+                again = it.capture(harness, sid, str(path), sid, "= Scope/W1")
+                self.assertTrue(again["ok"], again)
+                self.assertEqual(again["appended"], 0)
+                self.assertEqual((ROOT / raw_path).read_bytes(), saved)
+
+    def test_duplicate_json_dialogue_preserves_content_and_later_rounds(self):
+        dialogue = ' { "status" : "old", "status" : "new", "escaped" : "\\u0061" } '
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                sid = self.sid + "-" + harness
+                path = Path(TMP.name) / (sid + ".jsonl")
+                if harness == "claude":
+                    rows = claude_round(sid, 1)
+                    rows[0]["message"]["content"] = dialogue
+                    later = claude_round(sid, 2)
+                else:
+                    rows = [{"type": "session_meta", "payload": {"id": sid}}] + codex_round(1)
+                    rows[4]["payload"]["message"] = dialogue
+                    later = codex_round(2)
+                native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
+                path.write_bytes(native)
+                first = it.capture(harness, sid, str(path), sid, "= Scope/W1")
+                self.assertTrue(first["ok"], first)
+                self.assertFalse(first["capture_pending"])
+                self.assertEqual(first["appended"], 1)
+                raw_path, _ = raw.parse_ref(first["pending_refs"][0])
+                saved_first = (ROOT / raw_path).read_bytes()
+                self.assertEqual(transcripts._dump(dialogue), dialogue)
+                # raw._block already strips trailing whitespace from whole sections.
+                expected = dialogue.rstrip() if harness == "claude" else json.dumps(dialogue)
+                self.assertIn(expected.encode(), saved_first)
+                self.assertEqual(path.read_bytes(), native)
+                native += "".join(json.dumps(row) + "\n" for row in later).encode("utf-8")
+                path.write_bytes(native)
+                second = it.capture(harness, sid, str(path), sid, "= Scope/W1")
+                self.assertTrue(second["ok"], second)
+                self.assertFalse(second["capture_pending"])
+                self.assertEqual(second["captured_rounds"], 2)
+                self.assertEqual(second["appended"], 1)
+                saved = (ROOT / raw_path).read_bytes()
+                self.assertTrue(saved.startswith(saved_first))
+                self.assertIn(b"question 2", saved)
+                self.assertIn(b"answer 2", saved)
+                again = it.capture(harness, sid, str(path), sid, "= Scope/W1")
+                self.assertTrue(again["ok"], again)
+                self.assertEqual(again["appended"], 0)
+                self.assertEqual((ROOT / raw_path).read_bytes(), saved)
+                self.assertEqual(path.read_bytes(), native)
+
+    def test_json_literal_redaction_preserves_escapes_and_nested_secrets(self):
+        token = "ghp_" + "f" * 36
+        encoded = ('{"same":"\\ud800\\n\\u0067' + token[1:]
+                   + '","same":"benign"}')
+        nested = json.dumps({"encoded": encoded})
+        filtered = transcripts._dump(nested)
+        filtered.encode("utf-8")  # changed literals must not emit lone surrogates
+        retained = json.loads(filtered)["encoded"]
+        pairs = json.loads(retained, object_pairs_hook=list)
+        self.assertEqual(pairs, [("same", "\ud800\n[FILTERED:github-token]"),
+                                 ("same", "benign")])
+        self.assertNotIn(token[1:], filtered)
+        clean = " \t" + json.dumps(
+            {"quoted": '"backslash\\ /"', "unicode": "\ud800 한글 😀"},
+            ensure_ascii=True, indent=2).replace("/", "\\/") + "\n"
+        self.assertEqual(transcripts._dump(clean), clean)
 
     def test_secret_filter_preserves_native_reference_hash_and_clean_json(self):
         import hashlib
