@@ -39,6 +39,10 @@ python3.12 -m venv .venv && .venv/bin/pip install -r _governance/_engine/require
 엔진은 Windows에서도 돈다(잠금은 `msvcrt`, tz는 `tzdata` 패키지로 보충한다).
 이 문서의 명령은 POSIX 표기이니 아래 셋만 바꿔 읽는다.
 
+Git Bash에서 Windows 네이티브 도구를 쓰면 `/repos/...`·`/sdcard/...` 인자가
+경로로 변환될 수 있다. [네이티브 명령 경계](WINDOWS-SHELL.md)의 호출별 예외,
+출력 보존, 쓰기 후 본문·해시 검증 규칙을 따른다. OSK 버전 회귀와는 별개다.
+
 | | POSIX | Windows (PowerShell) |
 |---|---|---|
 | 인터프리터 | `python3.12` | `py -3.12` |
