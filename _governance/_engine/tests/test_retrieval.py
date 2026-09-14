@@ -131,6 +131,7 @@ async def transport_checks():
         async with ClientSession(reader, writer) as session:
             await session.initialize()
             tools = (await session.list_tools()).tools
+            assert all(t.inputSchema.get('additionalProperties') is False for t in tools)
             schema = next(t.inputSchema for t in tools if t.name == 'read_node')
             assert 'view' in schema['properties'] and schema['required'] == ['name']
             async def call(name, args):
@@ -138,6 +139,26 @@ async def transport_checks():
                 assert not result.isError, result
                 return json.loads(result.content[0].text)
             full = await call('read_node', {'name': 'Selective read'})
+            for wrong in (
+                {'old_string': 'Revised instance', 'new_string': 'Lost edit'},
+                {'summmary': 'Misspelled summary'},
+            ):
+                refused = await session.call_tool('update_node', {
+                    'name': full['name'], 'summary': 'Must not be partially saved', **wrong})
+                assert refused.isError and all(
+                    key in str(refused.content) for key in wrong), refused
+                assert await call('read_node', {'name': full['name']}) == full
+            # The shared registration boundary also rejects mistaken read options.
+            refused = await session.call_tool('read_node', {'name': full['name'], 'veiw': 'outline'})
+            assert refused.isError and 'veiw' in str(refused.content), refused
+            valid = await call('update_node', {'name': full['name'],
+                'old_text': 'Revised instance', 'new_text': 'Stored edit'})
+            assert valid['ok']
+            stored = await call('read_node', {'name': full['name']})
+            assert 'Stored edit' in stored['body'] and stored['body'] != full['body']
+            assert (await call('update_node', {'name': full['name'],
+                'old_text': 'Stored edit', 'new_text': 'Revised instance'}))['ok']
+            full = await call('read_node', {'name': full['name']})
             outline = await call('read_node', {'name': full['name'], 'view': 'outline'})
             assert [h['title'] for h in outline['headings']] == ['First', 'Repeated', 'Repeated']
             part = await call('read_node', {'name': 'Selective read', 'view': '0:20'})

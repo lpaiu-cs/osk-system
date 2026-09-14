@@ -99,9 +99,28 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
 
 
 def _claude(rows: list, sid: str) -> dict:
+    rows = [(line, r) for line, r in rows if not r.get("isSidechain") and not r.get("agentId")]
     identities = {r["sessionId"] for _, r in rows if r.get("sessionId")}
     if identities != {sid}:
-        raise ValueError("Claude transcript sessionId does not match this conversation")
+        own = next((i for i, (_, r) in enumerate(rows) if r.get("sessionId") == sid and r.get("uuid")), None)
+        if sid in identities and own is None:
+            # A freshly forked file can contain only parent history and child UI metadata.
+            return {"rounds": [], "pending_tail": False, "diagnostics": []}
+        ancestors = {r.get("uuid") for _, r in rows[:own] if r.get("uuid")} if own is not None else set()
+        by_uuid = {r["uuid"]: r for _, r in rows[:own] if r.get("uuid")} if own is not None else {}
+        chain, visited = set(), set()
+        cursor = rows[own][1].get("parentUuid") if own is not None else None
+        while cursor in by_uuid and cursor not in visited:
+            visited.add(cursor)
+            ancestor = by_uuid[cursor]
+            chain.add(ancestor.get("sessionId"))
+            cursor = ancestor.get("parentUuid") or ancestor.get("logicalParentUuid")
+        foreign = {r.get("sessionId") for _, r in rows[:own]
+                   if r.get("type") in ("user", "assistant") and r.get("sessionId") != sid}
+        if (own is None or not ancestors or rows[own][1].get("parentUuid") not in ancestors
+                or not foreign.issubset(chain)
+                or any(r.get("sessionId") not in (None, sid) for _, r in rows[own:])):
+            raise ValueError("Claude transcript sessionId does not match a linked ancestor prefix")
     rounds, diagnostics, users, trace, calls = [], [], [], [], {}
     start, final_message, final_line, final_text = None, None, None, False
     seen = set()
@@ -145,7 +164,7 @@ def _claude(rows: list, sid: str) -> dict:
                     calls[block.get("id")] = {"name": block.get("name", ""), "input": block.get("input")}
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     block = {**block, "content": _result_content(calls.get(block.get("tool_use_id")),
-                             block.get("content"), f"claude:{sid}:{uid}")}
+                             block.get("content"), f"claude:{row.get('sessionId', sid)}:{uid}")}
                 kept.append(block)
             content = kept
         if typ == "user" and not tool_result:

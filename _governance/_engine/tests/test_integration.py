@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -301,6 +302,121 @@ class IntegrationTests(unittest.TestCase):
         other = it.status("claude", self.sid + "-other")
         self.assertFalse(other["pending"])
         self.assertNotIn(st["pending_refs"][0], it.prompt("claude", self.sid + "-other")["text"])
+
+    def test_scope_routing_changes_are_recorded_and_same_scope_keys_resume(self):
+        self.transcript(claude_round(self.sid, 1))
+        first = self.capture()
+        write.bind_session(self.sid + "-renamed", "Capture")
+        resumed = it.capture("claude", self.sid, str(self.path), self.sid + "-renamed")
+        self.assertTrue(resumed["ok"], resumed)
+        self.assertEqual(first["pending_refs"], resumed["pending_refs"])
+        write.alias_session(self.sid + "-alias", self.sid + "-renamed")
+        self.assertTrue(it.capture("claude", self.sid, str(self.path), self.sid + "-alias")["ok"])
+        refused = it.capture("claude", self.sid, str(self.path), self.sid + "-elsewhere", "= Scope/W1")
+        self.assertFalse(refused["ok"])
+        self.assertTrue(it.status("claude", self.sid)["capture_pending"])
+        self.assertIn("scope changed", it.status("claude", self.sid)["capture_error"])
+        self.assertEqual(first["pending_refs"], refused["pending_refs"])
+        self.assertTrue(it.capture("claude", self.sid, str(self.path), self.sid + "-renamed")["ok"])
+
+    def test_missing_claude_native_file_persists_retry_before_harness_detection(self):
+        base = Path(TMP.name) / "claude-home"
+        native = base / "projects" / "project" / (self.sid + ".jsonl")
+        env = {"session_id": self.sid, "transcript_path": str(native)}
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(base)}, clear=False):
+            failed = it.hook_capture(env, "capture-tests")
+            self.assertFalse(failed["ok"])
+            self.assertIn("FileNotFoundError", failed["capture_error"])
+            self.assertTrue(it.state_path("claude", self.sid).exists())
+            native.parent.mkdir(parents=True)
+            native.write_text("".join(json.dumps(r) + "\n" for r in claude_round(self.sid, 1)), encoding="utf-8")
+            recovered = it.hook_capture(env, "capture-tests")
+            self.assertTrue(recovered["ok"], recovered)
+            self.assertEqual(recovered["captured_rounds"], 1)
+
+    def test_claude_copied_prefix_reuses_raw_without_inheriting_review(self):
+        parent = self.sid + "-parent"
+        rows = claude_round(parent, 1)
+        rows[1]["message"]["content"][0]["name"] = "Bash"
+        previous = None
+        for row in rows:
+            row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, parent + row["uuid"]))
+            row["parentUuid"], previous = previous, row["uuid"]
+        self.transcript(rows)
+        original = it.capture("claude", parent, str(self.path), "capture-tests")
+        self.assertEqual(original["captured_rounds"], 1)
+        source = raw.read_round(original["pending_refs"][0])["text"]
+        # The native desktop may preserve parent IDs or rewrite all IDs to the child.
+        for rewrite in (False, True):
+            child = self.sid + ("-rewrite" if rewrite else "-mixed")
+            inherited = [dict(r, sessionId=child) if rewrite else r for r in rows]
+            tail = claude_round(child, 3 if rewrite else 2)
+            tail[0]["parentUuid"] = rows[-1]["uuid"]
+            self.transcript(inherited + tail)
+            captured = it.capture("claude", child, str(self.path), "capture-tests")
+            self.assertTrue(captured["ok"], captured)
+            self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
+            self.assertEqual(captured["reviewed_rounds"], 0)
+            self.assertNotIn(original["pending_refs"][0], captured["pending_refs"])
+            self.assertIn("과거 1라운드", it.prompt("claude", child)["text"])
+            self.assertEqual(raw.record_state("capture-tests", captured["record"])["rounds"], 1)
+            self.assertEqual(raw.read_round(original["pending_refs"][0])["text"], source)
+            self.assertEqual(it.capture("claude", child, str(self.path), "capture-tests")["appended"], 0)
+            it.state_path("claude", child).unlink()
+            rebuilt = it.capture("claude", child, str(self.path), "capture-tests")
+            self.assertTrue(rebuilt["ok"], rebuilt)
+            self.assertEqual((rebuilt["appended"], rebuilt["inherited_rounds"]), (0, 1))
+            changed = json.loads(json.dumps(inherited + tail))
+            changed[0]["message"]["content"] = "changed copied question"
+            self.transcript(changed)
+            refused = it.capture("claude", child, str(self.path), "capture-tests")
+            self.assertFalse(refused["ok"])
+            self.assertIn("inherited native prefix changed", refused["capture_error"])
+        self.assertEqual(it.status("claude", parent)["reviewed_rounds"], 0)
+        # A copied vault keeps only raw; both local cursors may disappear.
+        it.state_path("claude", parent).unlink()
+        it.state_path("claude", child).unlink()
+        self.transcript(inherited + tail)
+        rebuilt = it.capture("claude", child, str(self.path), "capture-tests")
+        self.assertEqual((rebuilt["appended"], rebuilt["inherited_rounds"]), (0, 1), rebuilt)
+        name, _ = raw.parse_ref(original["pending_refs"][0])
+        source_path = raw._raw_file(name)
+        source_path.write_bytes(source_path.read_bytes().replace(b"answer 1", b"altered answer 1"))
+        refused = it.capture("claude", child, str(self.path), "capture-tests")
+        self.assertFalse(refused["ok"])
+        self.assertIn("inherited raw changed", refused["capture_error"])
+
+    def test_claude_copied_prefix_is_not_reused_across_scopes(self):
+        parent = self.sid + "-parent"
+        rows = claude_round(parent, 1)
+        rows[0]["uuid"] = str(uuid.uuid4())
+        self.transcript(rows)
+        original = it.capture("claude", parent, str(self.path), "capture-tests")
+        self.assertTrue(original["ok"], original)
+        self.transcript([dict(r, sessionId=self.sid) for r in rows])
+        copied = it.capture("claude", self.sid, str(self.path), self.sid, "= Scope/W1")
+        self.assertTrue(copied["ok"], copied)
+        self.assertEqual((copied["captured_rounds"], copied["inherited_rounds"]), (1, 0))
+        self.assertTrue(copied["pending_refs"][0].startswith("[[= Scope/W1/"))
+
+    def test_claude_foreign_history_requires_actual_parent_chain(self):
+        parent = claude_round("parent", 1)
+        child = claude_round(self.sid, 2)
+        child[0]["parentUuid"] = "unrelated"
+        self.transcript(parent + child)
+        self.assertFalse(self.capture()["ok"])
+        child[0]["parentUuid"] = parent[-1]["uuid"]
+        self.transcript(parent + child)
+        self.assertTrue(self.capture()["ok"])
+        self.transcript(parent + child + claude_round("unrelated", 3))
+        self.assertFalse(self.capture()["ok"])
+
+    def test_claude_metadata_only_fork_has_no_new_completed_round(self):
+        self.transcript(claude_round("parent", 1) + [
+            {"type": "custom-title", "sessionId": self.sid, "customTitle": "fork"}])
+        result = self.capture()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["captured_rounds"], 0)
 
     def test_exact_snapshot_ack_leaves_newer_round_pending(self):
         self.transcript(claude_round(self.sid, 1))

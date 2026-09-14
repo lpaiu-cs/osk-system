@@ -124,7 +124,9 @@ def _prune_titles(s):
     스키마 노드에서만 벗기고 properties의 키는 건드리지 않는다."""
     if not isinstance(s, dict):
         return s
-    out = {k: v for k, v in s.items() if k != "title"}
+    # Null defaults repeat optional/nullable fields; keep useful numeric defaults.
+    out = {k: v for k, v in s.items()
+           if k != "title" and not (k == "default" and v is None)}
     if "properties" in out and isinstance(out["properties"], dict):
         out["properties"] = {k: _prune_titles(v)
                              for k, v in out["properties"].items()}
@@ -432,11 +434,15 @@ def scope_memory(session: str, text: str | None = None,
 
 
 def _apply_prune() -> None:
-    """등록된 도구의 스키마에서 주석 title을 1회 걷어낸다."""
+    """Reject unknown arguments before dispatch and prune schema annotations."""
     mgr = getattr(mcp, "_tool_manager", None)
     for tool in (mgr._tools.values() if mgr else []):
         if isinstance(getattr(tool, "parameters", None), dict):
-            tool.parameters = _prune_titles(tool.parameters)
+            # FastMCP otherwise drops misspelled edits while applying valid fields.
+            model = tool.fn_metadata.arg_model
+            model.model_config["extra"] = "forbid"
+            model.model_rebuild(force=True)
+            tool.parameters = _prune_titles(model.model_json_schema(by_alias=True))
 
 
 _apply_prune()
