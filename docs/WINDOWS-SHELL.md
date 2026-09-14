@@ -49,8 +49,10 @@ GET해서 JSON을 파싱한 `body`와 의도한 문자열을 비교한다. HTTP/
 
 ## 재현 검사
 
+설치 과정에서 만든 저장소 루트의 `.venv`를 그대로 쓴다.
+
 ```powershell
-rtk proxy py -3.11 -B _governance/_engine/tests/test_windows_shell.py
+rtk proxy .venv\Scripts\python.exe -B _governance/_engine/tests/test_windows_shell.py
 ```
 
 설치된 Git Bash → RTK → 네이티브 Python의 **실제 argv**를 관측한다. 네트워크·
