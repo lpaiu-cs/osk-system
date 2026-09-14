@@ -122,16 +122,17 @@ def _claude(rows: list, sid: str) -> dict:
                 or any(r.get("sessionId") not in (None, sid) for _, r in rows[own:])):
             raise ValueError("Claude transcript sessionId does not match a linked ancestor prefix")
     rounds, diagnostics, users, trace, calls = [], [], [], [], {}
+    native_results = []
     start, final_message, final_line, final_text = None, None, None, False
     seen = set()
 
     def finish():
-        nonlocal users, trace, start, final_message, final_line, final_text
+        nonlocal users, trace, start, final_message, final_line, final_text, native_results
         if start and final_message and final_text:
             rounds.append({"id": f"{start}:{final_message}", "user": "\n\n".join(users),
                            "agent": "\n\n".join(trace), "end_line": final_line,
-                           "completion": "completed"})
-            users, trace, start = [], [], None
+                           "completion": "completed", "native_results": native_results})
+            users, trace, start, native_results = [], [], None, []
         final_message, final_line, final_text = None, None, False
 
     for line, row in rows:
@@ -163,8 +164,11 @@ def _claude(rows: list, sid: str) -> dict:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     calls[block.get("id")] = {"name": block.get("name", ""), "input": block.get("input")}
                 if isinstance(block, dict) and block.get("type") == "tool_result":
-                    block = {**block, "content": _result_content(calls.get(block.get("tool_use_id")),
-                             block.get("content"), f"claude:{row.get('sessionId', sid)}:{uid}")}
+                    call = calls.get(block.get("tool_use_id"))
+                    locator = f"claude:{row.get('sessionId', sid)}:{uid}"
+                    if start and call and (_file_read(call["name"]) or _mixed_output(call["name"])):
+                        native_results.append(locator)
+                    block = {**block, "content": _result_content(call, block.get("content"), locator)}
                 kept.append(block)
             content = kept
         if typ == "user" and not tool_result:

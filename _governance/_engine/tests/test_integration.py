@@ -319,6 +319,37 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(first["pending_refs"], refused["pending_refs"])
         self.assertTrue(it.capture("claude", self.sid, str(self.path), self.sid + "-renamed")["ok"])
 
+    def test_capture_normalizes_saved_and_requested_scope(self):
+        self.transcript(claude_round(self.sid, 1))
+        first = it.capture("claude", self.sid, str(self.path), "capture-tests", "= Scope/Capture/")
+        self.assertTrue(first["ok"], first)
+        # Also repair a successful cursor written with the previous spelling.
+        path = it.state_path("claude", self.sid)
+        state = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(state["space"], "= Scope/Capture")
+        state["space"] = "= Scope/Capture/"
+        path.write_text(json.dumps(state), encoding="utf-8")
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
+        resumed = self.capture()
+        self.assertTrue(resumed["ok"], resumed)
+        self.assertEqual(resumed["appended"], 1)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["space"], "= Scope/Capture")
+
+    def test_rejected_first_landing_does_not_pin_the_conversation(self):
+        for n, space in enumerate(("= Scope/W1", "= Scope/Absent", "Capture")):
+            sid = self.sid + str(n)
+            self.transcript(claude_round(sid, 1))
+            rejected = it.capture("claude", sid, str(self.path), "capture-tests", space)
+            self.assertFalse(rejected["ok"], rejected)
+            self.assertTrue(rejected["capture_pending"])
+            self.assertEqual(rejected["captured_rounds"], 0)
+            state = json.loads(it.state_path("claude", sid).read_text(encoding="utf-8"))
+            self.assertIsNone(state["space"])
+            self.assertFalse(raw.record_path("Capture", rejected["record"]).exists())
+            resumed = it.capture("claude", sid, str(self.path), "capture-tests")
+            self.assertTrue(resumed["ok"], resumed)
+            self.assertEqual(resumed["appended"], 1)
+
     def test_missing_claude_native_file_persists_retry_before_harness_detection(self):
         base = Path(TMP.name) / "claude-home"
         native = base / "projects" / "project" / (self.sid + ".jsonl")
@@ -351,6 +382,8 @@ class IntegrationTests(unittest.TestCase):
             child = self.sid + ("-rewrite" if rewrite else "-mixed")
             inherited = [dict(r, sessionId=child) if rewrite else r for r in rows]
             tail = claude_round(child, 3 if rewrite else 2)
+            for row in tail:
+                row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, child + row["uuid"]))
             tail[0]["parentUuid"] = rows[-1]["uuid"]
             self.transcript(inherited + tail)
             captured = it.capture("claude", child, str(self.path), "capture-tests")
@@ -385,6 +418,54 @@ class IntegrationTests(unittest.TestCase):
         refused = it.capture("claude", child, str(self.path), "capture-tests")
         self.assertFalse(refused["ok"])
         self.assertIn("inherited raw changed", refused["capture_error"])
+
+    def test_claude_fork_uses_result_origin_not_raw_owner(self):
+        grandparent, parent = self.sid + "-G", self.sid + "-P"
+        rows, previous = [], None
+        for n, sid, tool in ((1, grandparent, "Bash"), (2, parent, "Read")):
+            part = claude_round(sid, n)
+            part[1]["message"]["content"][0]["name"] = tool
+            for row in part:
+                row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, sid + row["uuid"]))
+                row["parentUuid"], previous = previous, row["uuid"]
+            rows += part
+        # Ordinary dialogue may quote a reference-shaped JSON object verbatim.
+        rows[4]["message"]["content"] = "literal example " + json.dumps({"content": {
+            "coverage": "tool-output-reference",
+            "native_result": "claude:" + grandparent + ":" + rows[2]["uuid"]}}, sort_keys=True)
+        self.transcript(rows)
+        self.assertFalse(it.state_path("claude", grandparent).exists())
+        original = it.capture("claude", parent, str(self.path), "capture-tests")
+        self.assertTrue(original["ok"], original)
+        self.assertEqual(original["captured_rounds"], 2)
+        texts = [raw.read_round(ref)["text"] for ref in original["pending_refs"]]
+        self.assertIn("claude:" + grandparent + ":", texts[0])
+        self.assertIn("claude:" + parent + ":", texts[1])
+        copied = [dict(r, sessionId=self.sid) for r in rows]
+        tail = claude_round(self.sid, 3)
+        for row in tail:
+            row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, self.sid + row["uuid"]))
+        tail[0]["parentUuid"] = previous
+        self.transcript(copied + tail)
+        result = self.capture()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["appended"], result["inherited_rounds"]), (1, 2))
+        self.assertEqual(result["reviewed_rounds"], 0)
+        self.assertEqual(self.capture()["appended"], 0)
+        it.state_path("claude", parent).unlink()
+        it.state_path("claude", self.sid).unlink()
+        self.assertEqual(self.capture()["appended"], 0)
+        changed = json.loads(json.dumps(copied + tail))
+        changed[4]["message"]["content"] = changed[4]["message"]["content"].replace(grandparent, self.sid)
+        self.transcript(changed)
+        self.assertFalse(self.capture()["ok"], "dialogue resembling a locator is not metadata")
+        changed = json.loads(json.dumps(copied + tail))
+        changed[2]["message"]["content"][0]["content"] = "different result"
+        self.transcript(changed)
+        refused = self.capture()
+        self.assertFalse(refused["ok"])
+        self.assertIn("inherited native prefix changed", refused["capture_error"])
+        self.assertEqual([raw.read_round(ref)["text"] for ref in original["pending_refs"]], texts)
 
     def test_claude_copied_prefix_is_not_reused_across_scopes(self):
         parent = self.sid + "-parent"

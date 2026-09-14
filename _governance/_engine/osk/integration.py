@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import sys
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -128,10 +129,21 @@ def _inherited_rounds(s: dict, rounds: list) -> list:
         block = text[slice(*spans[number])]
         if core.sha256_bytes(block.rstrip("\n").encode()) != source["hash"]:
             raise ValueError("inherited raw changed; capture remains pending")
-        # Forks can rewrite sessionId; only the generated native-result locator differs.
-        agent = pair["agent"].replace(
-            '"native_result": "claude:' + s["conversation_id"] + ':',
-            '"native_result": "claude:' + source["conversation_id"] + ':')
+        # A raw owner may have captured another conversation's copied history.
+        # Match generated result locators by native result UUID, not raw ownership.
+        locator = re.compile(
+            r'("content": \{"coverage": "tool-output-reference", "native_result": "claude:)'
+            r'([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)(")')
+        origins = {m[3]: m[2] for m in locator.finditer(block)}
+        references = Counter(pair.get("native_results", []))
+        occurrences = Counter("claude:" + m[2] + ":" + m[3] for m in locator.finditer(pair["agent"]))
+        if any(occurrences[ref] != count for ref, count in references.items()
+               if ref.startswith("claude:" + s["conversation_id"] + ":")):
+            return False  # A dialogue quotation makes replacement ambiguous.
+        agent = locator.sub(
+            lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
+            if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
+            else m[0], pair["agent"])
         from . import secrets
         expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent))
         return raw._round_body(block) == raw._round_body(secrets.filter_text(expected)[0])
@@ -157,8 +169,7 @@ def _inherited_rounds(s: dict, rounds: list) -> list:
                     if owner_scope != s["space"]:
                         continue
                     for source in owner["rounds"]:
-                        known.setdefault(source["id"], []).append({
-                            **source, "conversation_id": owner["conversation_id"]})
+                        known.setdefault(source["id"], []).append(source)
                 except (OSError, ValueError, KeyError):
                     continue
         shared = []
@@ -193,11 +204,16 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             if not pinned and s["rounds"]:
                 name, _ = raw.parse_ref(s["rounds"][0]["ref"])
                 pinned = raw._raw_file(name).parent.parent.relative_to(core.ROOT).as_posix()
-            destination = write.resolve_session(session)
-            requested = space or ("= Scope/" + destination if destination else None)
+            if pinned:
+                scope = raw._scope_of_space(pinned)
+                if not scope:
+                    raise ValueError("saved conversation scope is invalid; capture remains pending")
+                pinned = "= Scope/" + scope
+            destination, bound = write.resolve_landing(session, space, raw._CONFINE)
+            requested = "= Scope/" + destination if destination else None
             if (pinned and requested and pinned != requested
                     or s["session"] and s["session"] != session
-                    and not (destination and requested == pinned)):
+                    and not (bound and requested == pinned)):
                 raise ValueError("conversation scope changed; existing capture was not moved")
             s["session"] = session
             s["space"] = pinned or requested
