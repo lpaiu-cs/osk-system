@@ -14,6 +14,7 @@ pin 기록은 노출하지 않는다. 지정·해제·승인·반려의 발의�
 승인뿐이다(§6-2 8항).
 """
 from __future__ import annotations
+import re
 import sys
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
@@ -158,9 +159,12 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8) -> list[dict]:
 
 
 @mcp.tool()
-def read_node(name: str) -> dict:
-    """노드 전문·해시. 인용·재작성 직전에 읽는다. 응답 `name`(제목)은 도구와
-    근거의 손잡이, `hash`는 `expect_hash`. 쓰기 응답도 `new_hash`를 준다."""
+def read_node(name: str, view: str | None = None) -> dict:
+    """`name`의 전문·`hash`(재작성 `expect_hash`). `view`는 `outline`(목차) 또는
+    `시작:끝`(본문 0기반 문자, 끝 제외). 부분 열람은 전문 쓰기용 해시를 주지 않는다."""
+    if view is not None and (not isinstance(view, str) or not re.fullmatch(
+            r"outline|[0-9]{1,10}:[0-9]{1,10}", view)):
+        return {"error": "view는 outline 또는 시작:끝(0기반 본문 문자, 끝 제외)이다"}
     idx = _idx()
     # 동명 노드는 **고르지 않는다** — id 갈래(아래)와 같은 규율이다. 구판은
     # 이름 갈래에만 이 방어가 없어, 쓰기 통로가 "어느 것인지 정해지지 않는다"고
@@ -213,10 +217,49 @@ def read_node(name: str) -> dict:
     # 달거나 고치려는 호출자의 손에 남는 것이 id뿐이었다 — 그래서 새 엔진으로도
     # 구형 id 표기 근거가 계속 태어났다(v3.7.4 직후 하루에 3간선). 손잡이는
     # 이름이고, id는 대장·서명·사건부의 동일성으로 남는다.
+    if view is not None:
+        return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
+                "summary": str(n.meta.get("summary", "")),
+                # Distinct from a CAS token: excerpts cannot authorize full replacement.
+                "view_hash": "view:" + sha256_bytes(raw), "partial": True,
+                "body_chars": len(n.body), **_node_view(n.body, view)}
     return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
             "hash": sha256_bytes(raw),
             "body": n.body}
+
+
+def _node_view(body: str, view: str) -> dict:
+    if view != "outline":
+        start, requested_end = map(int, view.split(":"))
+        if not 0 <= start < requested_end or start >= len(body):
+            return {"error": "범위를 벗어났다 — 0 <= 시작 < 끝, 시작 < body_chars"}
+        end = min(requested_end, len(body), start + 4000)
+        return {"body": body[start:end], "start": start, "end": end,
+                "next_view": f"{end}:{requested_end}" if end < min(requested_end, len(body)) else None}
+    # ponytail: ATX headings only, first 40 labels (80 chars each). Range paging
+    # covers heading-free/long bodies; add a Markdown parser only if richer outlines matter.
+    headings, fence, offset = [], "", 0
+    for line in body.splitlines(keepends=True):
+        mark = re.match(r" {0,3}(`{3,}|~{3,})(.*)", line)
+        if fence:
+            if mark and mark[1][0] == fence[0] and len(mark[1]) >= len(fence) and not mark[2].strip():
+                fence = ""
+        elif mark:
+            fence = mark[1]
+        else:
+            heading = re.match(r" {0,3}(#{1,6})(?:[ \t]+|$)(.*)", line)
+            if heading:
+                headings.append({"title": re.sub(r"[ \t]+#+[ \t]*$", "", heading[2])[:80],
+                                 "level": len(heading[1]), "start": offset})
+                if len(headings) > 40:
+                    break
+        offset += len(line)
+    for i, heading in enumerate(headings[:40]):
+        end = headings[i + 1]["start"] if i + 1 < len(headings) else len(body)
+        heading["view"] = f"{heading['start']}:{end}"
+    return {"headings": headings[:40], "outline_truncated": len(headings) > 40,
+            "range_help": "0:body_chars 범위를 최대 4000자씩 반환. next_view로 계속 읽고 view_hash가 바뀌면 목차부터 재확인."}
 
 
 @mcp.tool()
@@ -238,11 +281,9 @@ def read_raw(ref: str | None = None, space: str | None = None,
 
 @mcp.tool()
 def overview(session: str | None = None) -> dict:
-    """구조 조망 — 무엇이 있고 어디에 둘 수 있는가. **첫 쓰기 전에 한 번** 부르면
-    착지를 추측하지 않아도 된다. `clusters`는 **허브가 있는** 군집 경로다
-    (`create_node`의 `space`에 그대로 넣는다), `open_cases`는 `conflicts`에 쓸 수 있는 사건 번호,
-    `broken`은 검색에 잡히지 않는 파손 파일이다. `session`을 주면 그 키의
-    현재 결속(`session_scope`)을 함께 돌려준다."""
+    """구조 조망. **첫 쓰기 전에 한 번** 부른다. `clusters`=허브 있는 군집 경로
+    (`create_node.space`), `open_cases`=`conflicts` 사건 번호,
+    `broken`=검색에서 빠진 파손 파일. `session`을 주면 현재 결속 `session_scope`도 반환한다."""
     idx = _idx()
     out = {
         "clusters": write._cluster_names(),

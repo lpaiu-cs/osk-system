@@ -175,10 +175,19 @@ def _plan(limit: int) -> dict:
         for left, right in itertools.combinations(batches, 2):
             yield "comparison", left + right
 
-    attempts = {c["key"]: row["rid"] for row in rows if row.get("kind") == "plan"
+    plans = [row for row in rows if row.get("kind") == "plan"]
+    attempts = {c["key"]: row["rid"] for row in plans
                 for c in row.get("candidates", [])}
+    seen_versions = {(s["id"], s["hash"]) for row in plans
+                     for c in row.get("candidates", []) for s in c["sources"]}
+    recent = {c["key"] for c in plans[-1].get("candidates", [])} if plans else set()
+    def fresh(candidate):
+        return any((s["id"], s["hash"]) not in seen_versions for s in candidate["sources"])
+
     reviewed = {row.get("key") for row in rows if row.get("kind") == "review"}
+    rotation = None
     def pending():
+        nonlocal rotation
         seen = set()
         for grouping, batch in groups():
             batch = sorted(batch, key=lambda s: s["id"])
@@ -188,10 +197,20 @@ def _plan(limit: int) -> dict:
             seen.add(key)
             if key in reviewed and _completed(key, rows, idx):
                 continue
-            yield {"key": key, "grouping": grouping, "sources": batch}
+            candidate = {"key": key, "grouping": grouping, "sources": batch}
+            # Do not immediately retry the last batch while alternatives remain.
+            if rotation is None or (key in recent, fresh(candidate), attempts.get(key, "")) < (
+                    rotation["key"] in recent, fresh(rotation), attempts.get(rotation["key"], "")):
+                rotation = candidate
+            yield candidate
 
-    # Deferred and failed attempts rotate behind comparisons not recently tried.
-    candidates = heapq.nsmallest(limit, pending(), key=lambda c: attempts.get(c["key"], ""))
+    # Prefer unseen source versions. One slot keeps older comparisons moving;
+    # with limit=1, alternate priority/rotation using recorded plans, never previews.
+    # A plan is an attempt, not proof that its sources were read or distilled.
+    candidates = heapq.nsmallest(limit, pending(), key=lambda c: (
+        not fresh(c), attempts.get(c["key"], "")))
+    if rotation and (limit > 1 or len(plans) % 2) and rotation not in candidates:
+        candidates[-1] = rotation
     for candidate in candidates:
         batch = candidate["sources"]
         ids = {s["id"] for s in batch}
