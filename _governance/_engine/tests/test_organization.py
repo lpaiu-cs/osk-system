@@ -91,6 +91,54 @@ class OrganizationTests(unittest.TestCase):
             assert organization.status(job)["status"]=="pending"
         """)
 
+    def test_missing_intermediate_hub_is_found_without_local_state(self):
+        self.case("""
+            write.create_node("Gap","Gap","Intermediate entrance","gpt-6-astra",space="= Scope/W1/Gap")
+            write.create_node("Child","Child","Nested entrance","gpt-6-astra",space="= Scope/W1/Gap/Child")
+            write.create_node("A","A","Retained nested knowledge","gpt-6-astra",space="= Scope/W1/Gap/Child")
+            wire("Child","A")
+            gap=write._live_locate("Gap",graph.Index()); original=gap.read_bytes(); gap.unlink()
+            assert not organization._state_path().exists()
+            job=organization.plan("W1")
+            assert any(i["path"]=="= Scope/W1/Gap" and i["hub"] is None for i in job["issues"]),job
+            rejected(lambda: organization.review(job["key"],"W1","complete","Disconnected subtree",after=job["snapshot"]))
+            gap.write_bytes(original)
+            wire("W1","Gap"); wire("Gap","Child")
+            now=organization.snapshot("W1")
+            assert not now["issues"],now["issues"]
+            organization.review(job["key"],"W1","complete","Complete ancestor hub chain",after=now["snapshot"])
+            assert organization.plan("W1")["status"]=="complete"
+        """)
+
+    def test_linked_worktrees_share_lock_but_not_organization_state(self):
+        self.case("""
+            import os,subprocess
+            node("Shared")
+            def git(*args):
+                r=subprocess.run(["git",*args],cwd=core.ROOT,capture_output=True,text=True)
+                assert r.returncode==0,r.stdout+r.stderr
+            git("init","--quiet")
+            git("add",".")
+            git("-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","--quiet","-m","Fixture")
+            linked=core.ROOT/"linked"
+            git("worktree","add","--quiet","--detach",str(linked),"HEAD")
+            only=node("OnlyHere"); job=organization.plan("W1")
+            before=organization._state_path().read_bytes()
+            child=("import json; from osk import core,organization; "
+                   "job=organization.plan('W1'); "
+                   "assert not job.get('missing_ids'), job; "
+                   "organization.review(job['key'],'W1','complete','This checkout only',after=job['snapshot']); "
+                   "print(json.dumps({'state':str(organization._state_path()),'lock':str(core.local_lock_path('osk-mutation.lock'))}))")
+            r=subprocess.run([sys.executable,"-B","-c",child],cwd=linked,
+                             env=dict(os.environ,OSK_VAULT_ROOT=str(linked)),capture_output=True,text=True)
+            assert r.returncode==0,r.stdout+r.stderr
+            result=json.loads(r.stdout)
+            assert result["state"]!=str(organization._state_path())
+            assert result["lock"]==str(core.local_lock_path("osk-mutation.lock"))
+            assert organization._state_path().read_bytes()==before
+            assert organization.plan("W1")["key"]==job["key"]
+        """)
+
     def test_partial_move_restarts_from_remaining_identical_nodes(self):
         self.case("""
             from unittest.mock import patch
@@ -111,6 +159,16 @@ class OrganizationTests(unittest.TestCase):
             assert not organization.snapshot("W1")["pending_moves"]
             for n in [a,b]:
                 p=write._live_locate(n["id"],graph.Index()); assert core.sha256_file(p)==n["new_hash"]
+            write.create_node("Other","Other","Another meaningful branch","gpt-6-astra",space="= Scope/W1/Other")
+            assert write.move_nodes(["A"],"= Scope/W1/Other")["ok"]
+            wire("W1","Branch"); wire("W1","Other"); wire("Branch","B"); wire("Other","A")
+            write.update_node("W1",old_text="- [[A]]",new_text="")
+            write.update_node("W1",old_text="- [[B]]",new_text="")
+            now=organization.snapshot("W1")
+            assert not now["issues"],now["issues"]
+            assert not now["pending_moves"],now["pending_moves"]
+            organization.review(job["key"],"W1","complete","Finished retry, then valid new placement",after=now["snapshot"])
+            assert organization.plan("W1")["status"]=="complete"
         """)
 
     def test_relocation_keeps_history_and_rechecks_current_navigation(self):

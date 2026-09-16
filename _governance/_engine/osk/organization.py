@@ -5,6 +5,7 @@ suppresses the exact inspected state; no new model runner or graph store exists.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -15,7 +16,10 @@ from . import core, contract, graph, write
 
 
 def _state_path() -> Path:
-    return core.local_lock_path("osk-organization.json")
+    # Worktrees share the mutation lock, but selections belong to this checkout.
+    root = os.path.normcase(str(core.ROOT.resolve()))
+    key = hashlib.sha256(root.encode()).hexdigest()[:16]
+    return core.local_lock_path(f"osk-organization-{key}.json")
 
 
 def _load() -> dict:
@@ -32,13 +36,30 @@ def _save(state: dict) -> None:
     write._atomic_write(_state_path(), json.dumps(state, ensure_ascii=False, sort_keys=True).encode())
 
 
-def record_move(plans: list, hub_links: list) -> str:
+def _retire_arrived_moves(state: dict, idx) -> None:
+    """Persist arrival, so a later legitimate placement cannot revive old intent."""
+    for key, move in list(state.get("moves", {}).items()):
+        remaining = []
+        for item in move["items"]:
+            # The destination is known; an ID lookup would parse the whole vault.
+            path = core.resolve_in_root(item["to"])
+            if path is None or not path.is_file() or idx.node(path).id != item["id"]:
+                remaining.append(item)
+        if remaining:
+            move["items"] = remaining
+        else:
+            del state["moves"][key]
+
+
+def record_move(plans: list, hub_links: list, idx) -> str:
     """Caller holds mutation lock; record intent before the first filesystem move."""
     items = [{"id": n.id, "name": src.stem, "from": core.posix_rel(src, core.ROOT),
               "to": core.posix_rel(dst, core.ROOT), "hash": core.sha256_file(src)}
              for src, dst, n in plans]
     key = core.sha256_bytes(json.dumps(items, sort_keys=True).encode())
     state = _load()
+    # Also recover arrival if a previous process stopped before its checkpoint.
+    _retire_arrived_moves(state, idx)
     state.setdefault("moves", {})[key] = {"items": items, "hub_links": hub_links}
     _save(state)
     return key
@@ -61,9 +82,10 @@ def pending_moves(scope: str, idx) -> list:
     return result
 
 
-def finish_move(key: str) -> None:
+def checkpoint_moves(idx) -> None:
+    # ponytail: rewrite the small journal per arrival; batch/append progress if large moves make this costly.
     state = _load()
-    state.get("moves", {}).pop(key, None)
+    _retire_arrived_moves(state, idx)
     _save(state)
 
 
@@ -102,7 +124,8 @@ def snapshot(scope: str, idx=None) -> dict:
     for p, node in parsed.items():
         links[p] = {write._live_locate(ref, idx) for ref in node.wikilinks()}
     clusters, issues = [], []
-    for directory in sorted({p.parent for p in parsed}):
+    directories = {d for p in parsed for d in p.parents if d.is_relative_to(base)}
+    for directory in sorted(directories):
         hub = directory / (directory.name + ".md")
         local = {p for p in parsed if p.parent == directory and p != hub}
         children = {p for p in parsed if graph.is_hub(p) and p.parent.parent == directory}

@@ -1463,7 +1463,7 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
                          if p.relative_to(ROOT).parts[:2] != dtop)
         out = []
         from . import organization
-        move_key = organization.record_move(plans, stale)
+        move_key = organization.record_move(plans, stale, idx)
         for path, target, n in plans:
             before = sha256_file(path)
             try:
@@ -1479,7 +1479,7 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
                         "path": posix_rel(target, ROOT), "new_hash": before,
                         "moved_from": posix_rel(path, ROOT),
                         "dangling": _dangling_of(target, n.meta, n.body, idx)})
-        organization.finish_move(move_key)
+            organization.checkpoint_moves(idx)
         r = {"ok": True, "moved": out, "count": len(out),
              "dest": posix_rel(dest_dir, ROOT), "hub_links": stale, "move_key": move_key}
         if crossed:
