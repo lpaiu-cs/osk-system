@@ -68,7 +68,7 @@ def run() -> dict:
     guard("참조 위상", lambda: graph.topology_check(idx))
     ok("동명 노드 중복", [f"{s}: {v}" for s, v in idx.dup_stems.items()])
     try:
-        rep["warnings"] = {"dangling_refs": graph.dangling_refs(idx)}
+        rep["warnings"] = graph.reference_report(idx)
     except Exception as e:
         rep["warnings"] = {"dangling_refs": []}
         skip("미해석 참조 경고", f"산출 실패: {e}")

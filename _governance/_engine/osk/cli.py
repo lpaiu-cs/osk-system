@@ -196,6 +196,22 @@ def _growth_cmd(a) -> None:
         sys.exit(1)
 
 
+def _organization_cmd(a) -> None:
+    from . import organization
+    try:
+        if a.organization_cmd == "review":
+            data = _raw_stdin()
+            if not isinstance(data, dict):
+                raise ValueError("organization review needs a JSON object")
+            result = organization.review(**data)
+        else:
+            result = organization.plan(a.scope, record=not a.preview)
+        _emit(result)
+    except (write.WriteError, StaleEngineError, ValueError, KeyError, TypeError, OSError) as exc:
+        _emit({"ok": False, "violations": [str(exc)]})
+        sys.exit(1)
+
+
 def _sm_cmd(a) -> None:
     """`osk sm` — scope 기억. `show`는 SessionStart 훅이 부르는 자리다.
 
@@ -308,6 +324,13 @@ def build_parser() -> argparse.ArgumentParser:
             q.add_argument("--transcript", required=True)
             q.add_argument("--session", required=True, help="고정 scope 라우팅 키")
             q.add_argument("--space", default=None)
+
+    p = sub.add_parser("organization", help="Scope 참조·허브 정돈의 선택과 검증")
+    osub = p.add_subparsers(dest="organization_cmd", required=True)
+    q = osub.add_parser("plan")
+    q.add_argument("--scope", required=True)
+    q.add_argument("--preview", action="store_true")
+    osub.add_parser("review")
 
     p = sub.add_parser("growth", help="Scope→Domain 비교·검토·한정 실행")
     gs = p.add_subparsers(dest="growth_cmd", required=True)
@@ -452,6 +475,8 @@ def main(argv=None):
         return _integration_cmd(a)
     elif a.cmd == "growth":
         return _growth_cmd(a)
+    elif a.cmd == "organization":
+        return _organization_cmd(a)
     elif a.cmd == "sm":
         return _sm_cmd(a)
     elif a.cmd == "tidy":

@@ -114,6 +114,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과 |
+| `organization plan` / `organization review` | 변경 Scope의 참조·허브·분화 검토와 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
@@ -704,6 +705,8 @@ python3 _governance/_engine/scripts/recover.py --apply
 시작하거나, 정본을 clone한 뒤 자기 원격으로 갈아탄다.
 
 ## 배경 기록
+
+참조 주소·원료 표시·변경 Scope의 지속 정돈은 [참조와 군집 조직의 지속 검토](GROWTH-INTEGRITY.md)를 따른다.
 
 구 데몬(검색 서빙 + 동기화 혼성)과 DuckDB 색인은 v2에서 폐기됐다. 그 판단과 경위는
 결정 노드에 있다 — `= Person/Decisions/2026-07-02-lavalink-swap-lock-and-daemon-demotion.md`.

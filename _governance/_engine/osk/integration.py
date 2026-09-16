@@ -455,7 +455,7 @@ def catchup(limit: int = 20) -> dict:
             result = capture(s["harness"], s["conversation_id"], s["transcript_path"], s["session"], s.get("space"))
             captures.append({k: result.get(k) for k in ("harness", "conversation_id", "ok", "appended", "capture_error")})
             if result["pending_refs"]:
-                job = prompt(s["harness"], s["conversation_id"])
+                job = prompt(s["harness"], s["conversation_id"], include_organization=False)
                 job["prompt"] = job.pop("text")
                 jobs.append(job)
         except Exception as exc:
@@ -464,7 +464,7 @@ def catchup(limit: int = 20) -> dict:
             "captures": captures, "remaining": remaining, "errors": errors}
 
 
-def prompt(harness: str, conversation_id: str) -> dict:
+def prompt(harness: str, conversation_id: str, *, include_organization: bool = True) -> dict:
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
         st = _current_view(s, p)
@@ -509,8 +509,18 @@ def prompt(harness: str, conversation_id: str) -> dict:
         text += "포착 범위: 파일 읽기·혼합 명령 결과는 native 위치와 hash 참조로 보존했다. 상세 증거를 다시 읽으려면 원래 전사 보관이 필요하다.\n"
     if (st.get("coverage") or {}).get("codex_v1_rounds"):
         text += "포착 범위: 과거 Codex 라운드는 당시 user_message 형식 그대로 보존했다. 옛 포착기가 생략한 native 입력의 상세는 원래 전사를 확인하라.\n"
+    from . import organization
+    jobs = []
+    try:
+        with core.mutation_lock():
+            scope = write.resolve_session(st["session"]) if include_organization and st.get("session") else None
+            jobs = organization.pending([scope], limit=1, record=True) if scope else []
+    except (OSError, ValueError, write.WriteError) as exc:
+        text += f"참조·조직 검토는 대기 중이다: {exc}. 아래 raw 통합은 계속한다.\n"
+    st["organization_jobs"] = jobs
+    organization_text = organization.prompt(jobs)
     if not st["pending_refs"]:
-        return {**st, "text": text + "검토할 완료 raw 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다."}
+        return {**st, "text": text + "검토할 완료 raw 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다." + organization_text}
     code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(core.ROOT)!r};"
             f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
             "runpy.run_module('osk.cli',run_name='__main__')")
@@ -553,7 +563,7 @@ def prompt(harness: str, conversation_id: str) -> dict:
              "정확한 발췌를 targets=[{text:...}]로 제출하며 노드 보존 성공으로 세지 않는다. "
              "no_value도 사유를 남기고, deferred는 대기를 유지한다. 기억 hash 변화만으로 완료되지 않는다. "
              "기계 검사는 저장·배선만 확인하며 의미 타당성은 raw와 따로 대조한다.")
-    return {**st, "text": text}
+    return {**st, "text": text + organization_text}
 
 
 def hook_capture(env: dict, session: str) -> dict:

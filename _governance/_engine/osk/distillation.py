@@ -106,8 +106,52 @@ def _hub(name: str, idx) -> dict:
 def _check_sources(job: dict, idx) -> None:
     for old in job["sources"]:
         current = _source(old["ref"], idx)
-        if current["hash"] != old["hash"] or current["path"] != old["path"]:
-            raise write.WriteError("source changed or moved; pending")
+        if current["hash"] != old["hash"] or (
+                current["path"] != old["path"] and (not old.get("id") or
+                Path(current["path"]).parts[:2] != Path(old["path"]).parts[:2])):
+            raise write.WriteError("source changed or crossed its top-level cluster; pending")
+
+
+def _retained_target(target: dict, idx) -> Path:
+    p = write._live_locate(target["id"], idx)
+    if p is None or not p.is_file():
+        raise write.WriteError("target missing; original request or review is required")
+    if (tuple(p.relative_to(ROOT).parts[:2]) != tuple(Path(target["path"]).parts[:2])
+            or graph.space_of(p)[0] not in ("scope", "domain")):
+        raise write.WriteError("target crossed its top-level cluster; pending")
+    if sha256_file(p) != target["hash"] or not write._norm_body(contract.parse(p).body):
+        raise write.WriteError("target bytes changed; pending")
+    return p
+
+
+def _placement(p: Path, idx, *, repair: bool = False, selected: dict | None = None) -> dict:
+    """Current navigation is separate from the immutable selected source/target."""
+    top = ROOT.joinpath(*p.relative_to(ROOT).parts[:2])
+    child = p
+    directory = p.parent.parent if graph.is_hub(p) else p.parent
+    current_hubs = []
+    while len(directory.relative_to(ROOT).parts) >= 2:
+        hp = directory / (directory.name + ".md")
+        if not hp.is_file() or not graph.is_hub(hp):
+            raise write.WriteError("current placement hub missing; pending")
+        hn = contract.parse(hp)
+        if (selected and posix_rel(p, ROOT) == selected["target"]["path"]
+                and posix_rel(hp, ROOT) == selected["hub"]["path"]
+                and hn.id != selected["hub"]["id"]):
+            raise write.WriteError("hub identity changed; pending")
+        if child not in {write._live_locate(ref, idx) for ref in hn.wikilinks()}:
+            if not repair:
+                raise write.WriteError("selected hub does not link to target; pending")
+            write._update_node_locked(hn.id,
+                body=hn.body.rstrip() + "\n\n- [[" + child.stem + "]]\n",
+                expect_hash=sha256_file(hp))
+        current_hubs.append({"id": hn.id, "path": posix_rel(hp, ROOT), "hash": sha256_file(hp)})
+        if directory == top:
+            break
+        child, directory = hp, directory.parent
+    if not current_hubs:
+        raise write.WriteError("current placement has no parent hub; pending")
+    return {"status": "complete", "target_path": posix_rel(p, ROOT), "hubs": current_hubs}
 
 
 def _receipt(job: dict, reason: str | None = None) -> dict:
@@ -119,23 +163,14 @@ def _receipt(job: dict, reason: str | None = None) -> dict:
 
 
 def _verify(job: dict) -> dict:
+    retained = False
     try:
         idx = graph.Index()
         write._require_complete(idx)
         _check_sources(job, idx)
         target, hub = job["target"], job["hub"]
-        p, hp = resolve_in_root(target["path"]), resolve_in_root(hub["path"])
-        if p is None or hp is None or not p.is_file() or not hp.is_file():
-            raise write.WriteError("target or hub missing; pending")
-        if graph.space_of(p)[0] not in ("scope", "domain") or p.parent != hp.parent:
-            raise write.WriteError("target left selected hub; pending")
-        node, hn = contract.parse(p), contract.parse(hp)
-        if node.id != target["id"] or sha256_file(p) != target["hash"]:
-            raise write.WriteError("target bytes changed; pending")
-        if not write._norm_body(node.body):
-            raise write.WriteError("target has no retained body; pending")
-        if hn.id != hub["id"] or not graph.is_hub(hp):
-            raise write.WriteError("hub identity changed; pending")
+        p = _retained_target(target, idx)
+        node = contract.parse(p)
         # Node.edges() intentionally drops raw anchors. Retain exact stored refs.
         actual = set()
         for ref in write._stored_edges(node.meta.get("derived-from")):
@@ -147,13 +182,17 @@ def _verify(job: dict) -> dict:
                 continue
         if not {s["ref"] for s in job["sources"]}.issubset(actual):
             raise write.WriteError("target provenance is incomplete; pending")
-        if target["name"] not in hn.wikilinks():
-            raise write.WriteError("selected hub does not link to target; pending")
+        retained = True
+        placement = _placement(p, idx, selected=job)
         receipt = _receipt(job)
-        receipt["hub"] = dict(hub, hash=sha256_file(hp))
+        receipt["preservation"] = {"status": "complete"}
+        receipt["placement"] = placement
         return receipt
     except (write.WriteError, OSError, ValueError, KeyError, TypeError) as e:
-        return _receipt(job, str(e))
+        receipt = _receipt(job, str(e))
+        receipt["preservation"] = {"status": "complete" if retained else "pending"}
+        receipt["placement"] = {"status": "pending", "reason": str(e)}
+        return receipt
 
 
 
@@ -235,29 +274,14 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
 
 
 def _wire_hub(job: dict) -> dict:
-    """Caller holds mutation lock. Repair only a journaled, still-exact output."""
+    """Resume current navigation without rewriting the historical receipt."""
     idx = graph.Index()
     write._require_complete(idx)
-    _check_sources(job, idx)
-    target, hub = job["target"], job["hub"]
-    p, hp = resolve_in_root(target["path"]), resolve_in_root(hub["path"])
-    if p is None or not p.is_file() or sha256_file(p) != target["hash"]:
-        raise write.WriteError("expected target bytes absent; original request or review is required")
-    if hp is None or not hp.is_file() or p.parent != hp.parent:
-        raise write.WriteError("selected hub missing or target moved; pending")
-    tn, hn = contract.parse(p), contract.parse(hp)
-    if (tn.id != target["id"] or graph.space_of(p)[0] not in ("scope", "domain")
-            or not write._norm_body(tn.body)):
-        raise write.WriteError("target identity/body changed; pending")
-    if hn.id != hub["id"] or not graph.is_hub(hp):
-        raise write.WriteError("hub identity changed; pending")
-    if target["name"] not in hn.wikilinks():
-        def prepare_hub(path, data):
-            job["hub"]["hash"] = sha256_bytes(data)
-            _save(job)
-        write._update_node_locked(
-            hub["id"], body=hn.body.rstrip() + "\n\n- [[" + target["name"] + "]]\n",
-            expect_hash=sha256_file(hp), _before_write=prepare_hub)
+    proof = _verify(job)
+    if proof.get("preservation", {}).get("status") != "complete":
+        raise write.WriteError(proof.get("reason", "retained knowledge is not verified"))
+    p = _retained_target(job["target"], idx)
+    _placement(p, idx, repair=True, selected=job)
     return _verify(job)
 
 
@@ -275,10 +299,11 @@ def resume(key: str, *, name: str | None = None) -> dict:
             receipt = _wire_hub(job)
         except Exception as exc:
             receipt = _receipt(job, str(exc))
-        path = resolve_in_root(target["path"])
-        saved = bool(path and path.is_file() and sha256_file(path) == target["hash"])
+        path = write._live_locate(target["id"], graph.Index())
+        saved = bool(path and path.is_file() and sha256_file(path) == target["hash"]
+                     and path.relative_to(ROOT).parts[:2] == Path(target["path"]).parts[:2])
         return {"ok": saved, "resumed": True, "node_preserved": saved,
-                "name": target["name"], "id": target["id"], "path": target["path"],
+                "name": target["name"], "id": target["id"], "path": posix_rel(path, ROOT) if saved else target["path"],
                 "new_hash": target["hash"] if saved else None, "distillation": receipt}
 
 
@@ -304,6 +329,17 @@ def _execute(operation: str, distill: dict, request: dict) -> dict:
             raise write.WriteError("distill.key is already bound to a different request")
         idx = graph.Index()
         write._require_complete(idx)
+        if job and _verify(job).get("preservation", {}).get("status") == "complete":
+            try:
+                receipt = _wire_hub(job)
+            except (write.WriteError, OSError, ValueError) as exc:
+                receipt = _verify(job)
+                receipt["reason"] = str(exc)
+            current = _retained_target(job["target"], idx)
+            return {"ok": True, "resumed": True, "node_preserved": True,
+                    "name": current.stem, "id": job["target"]["id"],
+                    "path": posix_rel(current, ROOT), "new_hash": job["target"]["hash"],
+                    "distillation": receipt}
         if not job:
             sources = _sources(distill["sources"], idx)
             hub = _hub(distill["hub"], idx)

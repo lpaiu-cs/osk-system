@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-m5lm
 created: 2026-08-02 13:22 (KST)
-updated: 2026-08-29 08:22 (KST)
+updated: 2026-09-17 03:00 (KST)
 author: user
 drafter: fable-5
 summary: "헌법이 맡긴 운영 규칙 — 노드 계약, _raw, 군집과 pin, 율령, 위임 운영, 보호영역, 사건부"
@@ -52,8 +52,10 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 
 1. domain과 facet의 형성·분화와 구성 노드의 재배정은 주기 처리로 수행하고,
    그 결과를 브리핑으로 보고한다. facet의 주기 처리는 에이전트의 관측과
-   추론 하에 자율적으로 작성된 facet(헌법 제6조 9항)에 한하며, 그 밖의
-   군집과 배치의 변경은 제안으로 브리핑한다.
+   추론 하에 자율적으로 작성된 facet(헌법 제6조 9항)에 한한다. 같은 scope
+   내부의 비고정 노드와 하위 군집도 본문에 근거해 분화·통합·재배정하고
+   결과와 이유를 보고한다. pin과 보호영역의 승인 권위는 유지한다. 최상위
+   scope의 신설·경계 변경과 그 밖의 군집·배치 변경은 제안으로 브리핑한다.
 2. Domain Space의 노드는 하나의 domain에, Person Space의 노드는 하나의
    facet에, Scope Space의 노드는 하나의 scope에 배치한다. 다른 군집과의
    연관은 Link와 파생 뷰로 표현한다.
