@@ -98,6 +98,8 @@ def _record_pair(path: Path | str) -> tuple[Path, Path]:
         raise write.WriteError("raw 저장 경로의 심볼릭 링크·우회 경로는 허용하지 않는다")
     if p.parent.name == ".records" and p.suffix.lower() == ".txt":
         d, stem = p.parent.parent, p.stem
+    elif p.parent.parent.name == ".records" and p.name == "record.txt":
+        d, stem = p.parent.parent.parent, p.parent.name
     elif p.suffix.lower() == ".md" or not p.suffix:
         d, stem = p.parent, p.stem if p.suffix else p.name
     else:
@@ -106,7 +108,15 @@ def _record_pair(path: Path | str) -> tuple[Path, Path]:
     old = d / (old_name or f"{stem}.md")
     new_dir = d / ".records"
     new_name = write._name_collision(new_dir, old.stem, ".txt", unique=True)
-    new = new_dir / (new_name or f"{old.stem}.txt")
+    long_name = write._name_collision(new_dir, old.stem, None, unique=True)
+    if new_name and long_name:
+        raise write.WriteError("raw 파일·디렉터리 별칭이 함께 있다 — 정본을 고를 수 없다")
+    if long_name or (not new_name and len((old.stem + ".txt").encode("utf-8")) > write._MAX_FILENAME_BYTES):
+        # A legacy 252-byte stem fits .md, but not .txt. Keep its whole name
+        # as a directory component, avoiding a lossy rename or alias registry.
+        new = new_dir / (long_name or old.stem) / "record.txt"
+    else:
+        new = new_dir / (new_name or f"{old.stem}.txt")
     # A symlink must not redirect the alias into another scope or outside raw.
     for candidate in (old, new):
         resolved = resolve_in_root(candidate)
@@ -269,8 +279,6 @@ def append_rounds(session: str, record: str, pairs: list,
                  f"user 발화와 그에 속한 에이전트 응답의 쌍이다 (시행령 §2 7항)"])
         norm.append((u, a))
     errs = write._title_errors(record)      # 기록 이름이 곧 파일명이다
-    if len((record + ".txt").encode("utf-8")) > write._MAX_FILENAME_BYTES:
-        errs.append("raw 파일명은 .txt를 포함해 255 UTF-8 바이트 이내여야 한다")
     if errs:
         raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
     # 세션 키는 착지 판정보다 먼저 본다 — 결속은 파일 쓰기 뒤에 오므로
@@ -504,10 +512,11 @@ def list_records(space: str) -> dict:
                           f"{_space_list()}"])
     d = ROOT / "= Scope" / scope / "_raw"
     out = []
-    files = sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt")})
+    files = sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt"),
+                    *(d / ".records").glob("*/record.txt")})
     for candidate in files:
         f = _record_file(candidate)
         text = read_exact(f)
-        out.append({"record": f.stem, "path": posix_rel(f, ROOT),
+        out.append({"record": _record_pair(f)[0].stem, "path": posix_rel(f, ROOT),
                     "rounds": len(rounds(text)), "chars": len(text)})
     return {"ok": True, "scope": scope, "records": out}

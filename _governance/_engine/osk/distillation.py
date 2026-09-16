@@ -27,7 +27,7 @@ def _load(key: str) -> dict | None:
         return None
     try:
         job = json.loads(path.read_text(encoding="utf-8"))
-        if job["key"] != key or job["version"] != 1:
+        if job["key"] != key or job["version"] not in (1, 2):
             raise ValueError("job identity mismatch")
         return job
     except (OSError, ValueError, KeyError, TypeError) as e:
@@ -259,7 +259,7 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
                     raise ValueError("journal has no stable key")
                 if _job_path(job["key"]) != path:
                     continue
-                if job.get("version") != 1:
+                if job.get("version") not in (1, 2):
                     raise ValueError("unsupported journal version")
                 if not wanted.intersection(raw.canonical_ref(source["ref"]) for source in job["sources"]):
                     continue
@@ -403,7 +403,7 @@ def _execute(operation: str, distill: dict, request: dict) -> dict:
                 if job["target"] != planned:
                     raise write.WriteError("prepared target changed; pending")
             else:
-                job = {"version": 1, "key": key, "binding": binding,
+                job = {"version": 2, "key": key, "binding": binding,
                        "sources": sources, "hub": hub, "target": planned,
                        "identity": {"id": n.id, "created": n.meta["created"]},
                        "stamp": n.meta["updated"]}
@@ -427,13 +427,17 @@ def _execute(operation: str, distill: dict, request: dict) -> dict:
                 edges["derived-from"] = (write._as_list(edges.get("derived-from", []))
                                          + [s["ref"] for s in sources])
                 request[edge_arg] = edges
+                # v1 reserved wiki-form raw edges. Replay those exact bytes;
+                # never replace the journal's expected hash to permit a retry.
+                legacy_raw = bool(job and job["version"] == 1)
                 if operation == "create":
                     result = write._create_node_locked(
-                        **request, _before_write=prepare,
+                        **request, _before_write=prepare, _legacy_raw=legacy_raw,
                         _identity=job["identity"] if job else None)
                 else:
                     result = write._update_node_locked(
-                        **request, _before_write=prepare, _stamp=job["stamp"] if job else None)
+                        **request, _before_write=prepare, _legacy_raw=legacy_raw,
+                        _stamp=job["stamp"] if job else None)
                 if job is None:
                     raise write.WriteError("no retained body was written")
             else:

@@ -6,12 +6,22 @@ dot directory. The text codec, numeric round headings, secret filtering and
 append-only prefix are unchanged. Git still preserves exact bytes through the
 existing `**/_raw/** -text` attribute.
 
+A record name at the old 252-byte UTF-8 limit cannot take `.txt` in a single
+255-byte filename. Its lossless physical path is
+`_raw/.records/<record>/record.txt`: every component fits, and the original
+name remains reversible without truncation, hashes or an alias registry.
+Case and Unicode-equivalent aliases still select one canonical record.
+
 `read_raw`, capture hooks and distillation accept both old
 `[[= Scope/<scope>/_raw/<record>.md#N]]` and new plain
 `= Scope/<scope>/_raw/.records/<record>.txt#N` coordinates. New raw Predicate
 Edges use plain YAML strings, so they do not create Obsidian wiki-link nodes.
 Old source coordinates, pending snapshot keys and historical receipt hashes
 remain readable; migration does not rewrite node bytes or acknowledge reviews.
+
+Unwritten v1 distillation journals replay their original wiki-form source
+serialization against the original target hash. New v2 journals use plain raw
+coordinates. An upgrade never replaces a reserved hash to accept changed bytes.
 
 Obsidian's native file explorer ignores dot directories; `.txt` also is not a
 native Markdown note format. This does not promise invisibility against plugins
@@ -83,6 +93,8 @@ Mechanism §9.5 replacement:
 > 받으며 확장자를 포함한 파일명 길이도 검사한다. 이식성 기준으로 같은 이름은
 > 같은 정본이다. 기존 `.md` 기록의 이관은 바이트와 라운드 번호를 보존하고
 > 구 좌표를 계속 해석한다. 구·신 저장본이 함께 있으면 덮거나 임의로 합치지 않는다.
+> 기록 이름에 `.txt`를 붙이면 파일명 상한을 넘는 경우에는 이름을 자르지 않고
+> `_raw/.records/<기록 이름>/record.txt`에 둔다. 기존 좌표도 같은 기록을 가리킨다.
 
 Mechanism §9.8 coordinate phrase:
 

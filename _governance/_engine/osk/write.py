@@ -144,13 +144,14 @@ def _portable_name_key(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
-def _name_collision(dest_dir: Path, stem: str, suffix: str = ".md", *, unique: bool = False) -> str | None:
+def _name_collision(dest_dir: Path, stem: str, suffix: str | None = ".md", *, unique: bool = False) -> str | None:
     """같은 군집에 이식성 기준으로 충돌하는 파일이 있으면 그 이름을 돌려준다.
     같은 이름 자신도 걸리므로 기존 존재 검사를 겸한다."""
     key = _portable_name_key(stem)
     hit = None
     for p in dest_dir.glob("*"):
-        if p.suffix.lower() == suffix and _portable_name_key(p.stem) == key:
+        matches = p.is_dir() if suffix is None else p.suffix.lower() == suffix
+        if matches and _portable_name_key(p.name if suffix is None else p.stem) == key:
             if not unique:
                 return p.name
             if hit is not None:
@@ -879,7 +880,8 @@ def create_node(title: str, summary: str, body: str, drafter: str,
 
 def _create_node_locked(title: str, summary: str, body: str, drafter: str,
                 session: str | None = None, space: str | None = None,
-                edges: dict | None = None, settle: str | None = None, *, _before_write=None, _identity=None) -> dict:
+                edges: dict | None = None, settle: str | None = None, *, _before_write=None,
+                _identity=None, _legacy_raw=False) -> dict:
     """노드 생성. id·시각은 **서버 전속**이고 author는 `agent` 고정이다(D5).
     space가 없으면 세션 라우팅으로 착지를 정하고, 라우팅이 없으면 space를
     요구한 뒤 성공 시 그 scope로 세션을 확정한다."""
@@ -975,7 +977,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
             "created": now, "updated": now,
             "author": "agent", "drafter": drafter, "summary": summary}
     for pred, tg in (edges or {}).items():
-        meta[pred] = _as_links(pred, tg)
+        meta[pred] = _as_links(pred, tg, legacy_raw=_legacy_raw)
     data, errs = _validate_render(path, meta, body, idx)
     if errs:
         raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
@@ -1077,7 +1079,7 @@ def _edge_key(target: str, idx) -> tuple[str, str]:
     return contract.target_stem(path), ""
 
 
-def _as_links(pred: str, targets) -> str | list:
+def _as_links(pred: str, targets, *, legacy_raw: bool = False) -> str | list:
     """입력 대상을 저장 표기로 접는다 — 맨값은 위키링크로 감싸고, 이미
     위키링크면 그대로 둔다. raw 좌표와 `derived-from`의 id는 감싸지 않는다.
 
@@ -1092,7 +1094,7 @@ def _as_links(pred: str, targets) -> str | list:
     out = []
     for t in _as_list(targets):
         s = str(t).strip()
-        if (pred == "derived-from" and "/_raw/" in s.replace("\\", "/")
+        if (not legacy_raw and pred == "derived-from" and "/_raw/" in s.replace("\\", "/")
                 and not re.match(r"^(?:\[\[\s*)?https?://", s)):
             from . import raw
             out.append(raw.canonical_ref(s))
@@ -1119,7 +1121,8 @@ def _update_node_locked(name: str, body: str | None = None,
                 add_edges: dict | None = None,
                 remove_edges: dict | None = None,
                 old_text: str | None = None,
-                new_text: str | None = None, settle: str | None = None, *, _before_write=None, _stamp=None) -> dict:
+                new_text: str | None = None, settle: str | None = None, *, _before_write=None,
+                _stamp=None, _legacy_raw=False) -> dict:
     """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
     상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
 
@@ -1222,7 +1225,7 @@ def _update_node_locked(name: str, body: str | None = None,
             have.add(k)          # 한 호출 안의 중복도 한 번만 앉는다
             new.append(t)
         if new:
-            meta[pred] = _as_links(pred, cur + new)
+            meta[pred] = _as_links(pred, cur + new, legacy_raw=_legacy_raw)
             changed = True
     for pred, tg in (remove_edges or {}).items():
         drop = {_edge_key(t, idx) for t in _as_list(tg)}
@@ -1231,7 +1234,7 @@ def _update_node_locked(name: str, body: str | None = None,
         if len(keep) != len(cur):
             changed = True
             if keep:
-                meta[pred] = _as_links(pred, keep)
+                meta[pred] = _as_links(pred, keep, legacy_raw=_legacy_raw)
             else:
                 meta.pop(pred, None)
     new_body = n.body if body is None else body

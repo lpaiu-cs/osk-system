@@ -43,7 +43,7 @@ def main():
         assert raw.canonical_ref("[[ = Scope/W1/_raw/new.md#1 ]]") == first["round_ref"]
         assert raw.canonical_ref("= Scope/W1/_raw/new.md #1") == first["round_ref"]
         assert graph.Index().resolve(url) == ("external",)
-        reject(raw.append_round, "hidden-test", "x" * 252, "q", "a")
+        reject(raw.append_round, "hidden-test", "x" * 253, "q", "a")
         # A contained symlink must not move another scope's canonical record.
         with mock.patch.object(raw, "resolve_in_root", return_value=new):
             reject(raw._record_pair, base / "redirect.md")
@@ -85,6 +85,51 @@ def main():
             assert all(path.read_bytes() == data for path, data in frozen.items())
             for path in duplicates:
                 path.unlink()  # Isolated conflicting fixtures only.
+
+        # Old 255-byte filenames remain readable and migrate without shortening.
+        # This also runs on ext4: .txt on the old stem would raise ENAMETOOLONG.
+        for name in ("x" * 252, "가" * 84, "e\u0301" * 84):
+            old = base / (name + ".md")
+            original = raw._block(1, "q", "a").encode()
+            old.write_bytes(original)
+            ref = f"= Scope/W1/_raw/{name}.md#1"
+            assert raw.read_round(ref)["index"] == 1
+            assert name in {r["record"] for r in raw.list_records("= Scope/W1")["records"]}
+            raw.migrate(apply=True)
+            dest = raw.record_path("W1", name)
+            assert dest.name == "record.txt" and dest.parent.name == name
+            assert all(len(p.encode("utf-8")) <= 255 for p in dest.relative_to(base).parts)
+            assert dest.read_bytes() == original and not old.exists()
+            assert raw.read_round(ref)["text"] == raw.read_round(str(dest) + "#1")["text"]
+            assert raw.canonical_ref(ref) == raw.canonical_ref(str(dest) + "#1")
+            alternate = write.unicodedata.normalize("NFC", name.upper())
+            assert raw.record_path("W1", alternate) == dest
+            replay = raw.append_rounds("hidden-test", name, [("q", "a")], replay_prefix=True)
+            assert replay["appended"] == 0
+            assert raw.append_round("hidden-test", alternate, "q2", "a2")["index"] == 2
+            assert dest.read_bytes().startswith(original)
+            assert name in {r["record"] for r in raw.list_records("= Scope/W1")["records"]}
+            # No old/new ambiguity or normalization-equivalent directory twin.
+            old.write_bytes(original)
+            reject(raw.read_round, ref)
+            reject(raw.migrate, apply=True)
+            old.unlink()
+            normalized = write.unicodedata.normalize("NFC", name)
+            if normalized != name:
+                twin = base / ".records" / normalized
+                twin.mkdir()
+                reject(raw.record_path, "W1", name)
+                reject(raw.append_round, "hidden-test", name, "q3", "a3")
+                twin.rmdir()
+                flat = base / ".records" / (normalized + ".txt")
+                flat.write_bytes(original)
+                reject(raw.record_path, "W1", name)
+                flat.unlink()
+        assert raw.migrate(apply=True)["count"] == 0
+
+        # New maximum-length names use the same lossless layout.
+        fresh_long = raw.append_round("hidden-test", "z" * 252, "q", "a")
+        assert (root / fresh_long["path"]).name == "record.txt"
 
         # A failed rename keeps old bytes; retry converges without changing rounds.
         crash = base / "crash.md"
