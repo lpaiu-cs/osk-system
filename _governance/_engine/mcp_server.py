@@ -286,7 +286,7 @@ def _node_view(body: str, view: str) -> dict:
 def read_raw(ref: str | None = None, space: str | None = None,
              max_chars: Annotated[int, Field(ge=200, le=100000)] = 20000) -> dict:
     """세션 기록의 **명시 회상** — `_raw/`는 검색에 걸리지 않으니 좌표로 연다.
-    `ref`는 노드 `derived-from`에 든 `[[경로#N]]` 그대로이며 그 라운드 전문이
+    `ref`는 `derived-from`의 `경로#N`(옛 `[[경로#N]]`도 허용)이며 라운드 전문이
     온다. `#N` 없이 경로만 주면 그 기록의 목차(번호·미리보기)가, `ref` 대신
     `space`(`"= Scope/W1"` 꼴)를 주면 그 scope의 기록 목록이 온다. `truncated`가
     참이면 `max_chars`를 올려 다시 부른다."""
@@ -295,7 +295,7 @@ def read_raw(ref: str | None = None, space: str | None = None,
     if space:
         return _guard(raw.list_records, space)
     return {"ok": False, "violations": [
-        "`ref`(라운드 좌표 `[[경로#N]]`) 또는 `space`(`= Scope/이름`) 중 "
+        "`ref`(라운드 좌표 `경로#N`) 또는 `space`(`= Scope/이름`) 중 "
         "하나를 준다 — 좌표를 모르면 `space`로 기록 목록부터 본다"]}
 
 
@@ -337,7 +337,7 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `space`는 전체 군집 경로(`= Scope/W1`); 모르면 `overview`.
     `session`은 저장소명 같은 고정 키(대화 id 금지). 첫 성공에 영구 결속;
     이후 `space` 생략. `bound_scope`는 새 결속만 보고한다.
-    `edges`: `derived-from` 근거는 노드 제목 또는 비노드 `[[경로]]`·`[[경로#제목]]`,
+    `edges`: `derived-from` 근거는 노드 제목, raw `경로#N`, 그 밖 비노드 `[[경로#제목]]`,
     `conflicts`는 열린 사건 번호(`CASE-2026-1`).
     `settle`=보존한 evict rid. 처분 결과: `settlement`.
     증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록·기존 허브.

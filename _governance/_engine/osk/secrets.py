@@ -51,6 +51,9 @@ def write_raw(path: Path | str, text: str) -> tuple[Path, list[str]]:
         raise ValueError(f"vault 밖 경로 — _raw 기록 거부: {path}")
     if graph.space_of(p)[0] != "raw":
         raise ValueError(f"`_raw/` 밖 경로 — 이 통로로 기록할 수 없다: {p}")
+    from . import raw
+    if p != raw._record_pair(p)[1] or p != raw._record_file(p):
+        raise ValueError("raw 쓰기는 숨김 .records의 정본 .txt 경로에만 허용한다")
     filtered, hits = filter_text(text)
     # 바이트로 쓴다 — 라운드 범위·상태 해시가 "정규화하지 않은 UTF-8 바이트"로
     # 정의돼 있으므로(Mechanism §8 3~4항), 텍스트 모드의 개행 변환이 끼면

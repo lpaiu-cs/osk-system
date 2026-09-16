@@ -120,7 +120,7 @@ def _inherited_rounds(s: dict, rounds: list) -> list:
 
     def matches(pair, source):
         name, number = raw.parse_ref(source["ref"])
-        if raw._raw_file(name).parent.parent.relative_to(core.ROOT).as_posix() != s["space"]:
+        if "/".join(raw._raw_file(name).relative_to(core.ROOT).parts[:2]) != s["space"]:
             raise ValueError("inherited source crossed scope; capture remains pending")
         if name not in cache:
             text = raw.read_exact(raw._raw_file(name))
@@ -203,7 +203,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             pinned = s["space"]
             if not pinned and s["rounds"]:
                 name, _ = raw.parse_ref(s["rounds"][0]["ref"])
-                pinned = raw._raw_file(name).parent.parent.relative_to(core.ROOT).as_posix()
+                pinned = "/".join(raw._raw_file(name).relative_to(core.ROOT).parts[:2])
             if pinned:
                 scope = raw._scope_of_space(pinned)
                 if not scope:
@@ -240,7 +240,10 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                     s["coverage"]["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
                     stored = raw.read_exact(raw._raw_file(result["path"]))
                     spans = raw._round_spans(stored)
-                    s["rounds"] = [{"id": r["id"], "ref": ref, "completion": r["completion"],
+                    # Existing snapshots bind these strings: moving raw must not
+                    # change an old review token or pretend the round was reviewed.
+                    prior_refs = {r["id"]: r["ref"] for r in s["rounds"]}
+                    s["rounds"] = [{"id": r["id"], "ref": prior_refs.get(r["id"], ref), "completion": r["completion"],
                                     "hash": core.sha256_bytes(stored[slice(*spans[i])].rstrip("\n").encode("utf-8"))}
                                    for i, r, ref in zip(result["indices"], rounds, result["round_refs"])]
                     token = _snapshot(s)
@@ -307,8 +310,8 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 if not isinstance(target, dict) or not isinstance(target.get("key"), str):
                     raise ValueError("preserved target must name a distillation key")
                 receipt = distillation._status_locked(target["key"])
-                if receipt.get("status") != "complete" or not refs.intersection(
-                        r["ref"] for r in receipt.get("sources", [])):
+                if receipt.get("status") != "complete" or not {raw.canonical_ref(ref) for ref in refs}.intersection(
+                        raw.canonical_ref(r["ref"]) for r in receipt.get("sources", [])):
                     raise ValueError("target has no complete body/source/hub receipt for this snapshot")
                 target_path = core.resolve_in_root(receipt.get("target", {}).get("path", ""))
                 if target_path is None or not raw.graph.space_of(target_path)[0] == "scope":

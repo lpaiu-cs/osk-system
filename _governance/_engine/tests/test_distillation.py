@@ -5,6 +5,7 @@ not model-behavior or semantic-quality evaluations.
 """
 from __future__ import annotations
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -116,6 +117,99 @@ def _child():
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(target.read_bytes(), saved)
+
+            def test_legacy_unwritten_journal_replays_reserved_bytes(self):
+                # Frozen v1 serialization; the fixture never calls the new
+                # legacy flag to construct its expected bytes.
+                def v1_links(pred, targets, **_):
+                    values = [str(t).strip() for t in write._as_list(targets)]
+                    values = [s if s.startswith("[[") or (pred == "derived-from" and re.match(core.ID_RE, s))
+                              else f"[[{s}]]" for s in values]
+                    return values[0] if len(values) == 1 else values
+
+                for operation in ("create", "update"):
+                    with self.subTest(operation=operation):
+                        name = self.name + "-" + operation
+                        ref = f"[[= Scope/W1/_raw/{name}-raw.md#1]]"
+                        raw_path = core.ROOT / "= Scope/W1/_raw" / (name + "-raw.md")
+                        raw_path.parent.mkdir(exist_ok=True)
+                        raw_path.write_bytes(raw._block(1, "original source", "measured answer").encode())
+                        spec = dict(self.spec, sources=[ref])
+                        request = dict(self.args, title=name)
+                        target = core.ROOT / "= Scope/W1" / (name + ".md")
+                        if operation == "update":
+                            old = write.create_node(name, "prior", "prior body", "test-model", space="= Scope/W1")
+                            request = dict(name=old["id"], body=self.args["body"], expect_hash=old["new_hash"])
+                        source = D._source(ref, None)
+                        source.update(ref=ref, path=raw_path.relative_to(core.ROOT).as_posix())
+                        atomic, save = write._atomic_write, D._save
+                        reserved = []
+
+                        def v1_save(job):
+                            job["version"] = 1
+                            save(job)
+
+                        def crash(path, data):
+                            if path == target:
+                                reserved.append(data)
+                                raise Crash()
+                            return atomic(path, data)
+
+                        with mock.patch.object(write, "_as_links", side_effect=v1_links), \
+                                mock.patch.object(D, "_sources", return_value=[source]), \
+                                mock.patch.object(D, "_save", side_effect=v1_save), \
+                                mock.patch.object(write, "_atomic_write", side_effect=crash):
+                            with self.assertRaises(Crash):
+                                D._execute(operation, spec, request)
+                        journal = D._job_path(self.key).read_bytes()
+                        job = D._load(self.key)
+                        self.assertEqual(job["target"]["hash"], core.sha256_bytes(reserved[0]))
+                        raw.migrate(apply=True)
+                        migrated = raw._raw_file(source["path"])
+                        evidence = migrated.read_bytes()
+                        migrated.write_bytes(evidence.replace(b"original source", b"changed source"))
+                        failed = D._execute(operation, spec, request)
+                        self.assertEqual(failed["distillation"]["status"], "pending")
+                        self.assertIn("source", failed["distillation"]["reason"])
+                        migrated.write_bytes(evidence)
+                        with self.assertRaises(write.WriteError):
+                            D._execute(operation, spec, dict(request, body="different request"))
+                        # A forged expected hash cannot be replaced by retry.
+                        job["target"]["hash"] = "sha256:" + "0" * 64
+                        D._save(job)
+                        failed = D._execute(operation, spec, request)
+                        self.assertEqual(failed["distillation"]["status"], "pending")
+                        self.assertIn("prepared target changed", failed["distillation"]["reason"])
+                        D._job_path(self.key).write_bytes(journal)
+                        result = D._execute(operation, spec, request)
+                        self.assertEqual(result["distillation"]["status"], "complete")
+                        self.assertEqual(target.read_bytes(), reserved[0])
+                        self.assertEqual(D._job_path(self.key).read_bytes(), journal)
+                        self.assertEqual(D.discover([ref])["proofs"][0]["key"], self.key)
+                        D._job_path(self.key).unlink()
+
+            def test_new_raw_journal_retries_in_plain_format(self):
+                record = raw.append_round(self.name, self.name + "-raw", "q", "a", "= Scope/W1")
+                self.spec["sources"] = [record["round_ref"]]
+                atomic = write._atomic_write
+                target = core.ROOT / "= Scope/W1" / (self.args["title"] + ".md")
+                reserved = []
+
+                def crash(path, data):
+                    if path == target:
+                        reserved.append(data)
+                        raise Crash()
+                    return atomic(path, data)
+
+                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                    with self.assertRaises(Crash):
+                        self.create()
+                self.assertEqual(D._load(self.key)["version"], 2)
+                out = self.create()
+                self.assertEqual(out["distillation"]["status"], "complete")
+                self.assertEqual(target.read_bytes(), reserved[0])
+                self.assertNotIn("[[", contract.parse(target).meta["derived-from"])
+                self.assertEqual(D.discover([record["round_ref"]])["proofs"][0]["key"], self.key)
 
             def test_source_mutation_blocks_resume(self):
                 with self.fail_hub():

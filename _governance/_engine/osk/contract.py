@@ -27,7 +27,8 @@ def edge_targets(value) -> list[str]:
         if m:
             out.append(m.group(1).strip())   # 비노드/사건/노드 — 위키링크 대상명
         elif s:
-            out.append(s)                     # 구형 노드 대상 — id 그대로
+            # Plain raw coordinates retain anchors in storage, not target lookup.
+            out.append(s.split("#", 1)[0] if "/_raw/" in s else s)
     return out
 
 

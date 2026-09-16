@@ -478,7 +478,7 @@ class IntegrationTests(unittest.TestCase):
         copied = it.capture("claude", self.sid, str(self.path), self.sid, "= Scope/W1")
         self.assertTrue(copied["ok"], copied)
         self.assertEqual((copied["captured_rounds"], copied["inherited_rounds"]), (1, 0))
-        self.assertTrue(copied["pending_refs"][0].startswith("[[= Scope/W1/"))
+        self.assertTrue(copied["pending_refs"][0].startswith("= Scope/W1/"))
 
     def test_claude_foreign_history_requires_actual_parent_chain(self):
         parent = claude_round("parent", 1)
@@ -793,7 +793,38 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         st = self.capture()
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["record"], "legacy-record-name")
-        self.assertIn("/legacy-record-name.md#1", st["pending_refs"][0])
+        self.assertIn("/.records/legacy-record-name.txt#1", st["pending_refs"][0])
+
+    def test_raw_migration_preserves_pending_snapshot_and_legacy_receipt_match(self):
+        from osk import distillation as D
+        self.transcript(claude_round(self.sid, 1))
+        first = it.capture("claude", self.sid, str(self.path), self.sid, "= Scope/W1")
+        state_path = it.state_path("claude", self.sid)
+        state = it._load(state_path, "claude", self.sid)
+        physical = raw._raw_file(raw.parse_ref(first["pending_refs"][0])[0])
+        legacy = physical.parent.parent / (physical.stem + ".md")
+        physical.rename(legacy)  # Simulate the pre-upgrade physical record and cursor.
+        saved = legacy.read_bytes()
+        old_ref = f"[[{legacy.relative_to(ROOT).as_posix()}#1]]"
+        state["rounds"][0]["ref"] = old_ref
+        token = it._snapshot(state)
+        state["snapshots"] = {token: {"count": 1, "prompt_count": state["prompt_count"]}}
+        it._save(state_path, state)
+        replayed = it.capture("claude", self.sid, str(self.path), self.sid)
+        self.assertTrue(replayed["ok"], replayed)
+        self.assertEqual(replayed["through"], token)
+        self.assertEqual(replayed["pending_refs"], [old_ref])
+        self.assertEqual(replayed["appended"], 0)
+        self.assertFalse(legacy.exists())
+        self.assertEqual(physical.read_bytes(), saved)
+        out = D.create_node({"key": self.sid, "sources": [old_ref], "hub": "W1"},
+                            title=self.sid, summary="retained observation",
+                            body="Observation retained with its original source.",
+                            drafter="test-model", space="= Scope/W1")
+        self.assertEqual(out["distillation"]["status"], "complete")
+        ack = it.acknowledge("claude", self.sid, token, "preserved", "fixture retained",
+                             [{"key": self.sid}])
+        self.assertTrue(ack["ok"], ack)
 
     def test_review_key_tracks_snapshot_and_recovers_saved_proof(self):
         from osk import distillation as D

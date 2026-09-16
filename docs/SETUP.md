@@ -74,9 +74,12 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 `scope_memory`.
 
 `_raw/` 세션 기록은 작업 검색에서 빠지므로(헌법 11조 3항) `read_raw`는 질의가
-아니라 **좌표**를 받는다. 노드의 `derived-from`에 든 `[[경로#N]]`을 그대로 넣으면
+아니라 **좌표**를 받는다. 노드의 `derived-from`에 든 `경로#N`을 그대로 넣으면
 그 라운드가 열린다 — 근거에서 증거로 가는 데 번역이 끼지 않는다. 좌표를 모르면
 `space`로 기록 목록부터, 경로만으로 라운드 목차부터 본다.
+
+원료의 물리 저장소는 `_raw/.records/*.txt`다. 기존 `.md` 좌표도 계속 읽을 수
+있다. 구 기록을 옮길 때는 [숨김 원료 이관 절차](raw-storage-migration.md)를 따른다.
 
 보호영역 권위와 pin은 **표면에 영구히 노출하지 않는다**(Mechanism §6-2 2항).
 지정·해제·승인·반려의 발의는 사용자 전속이므로 아래 CLI에만 있다.
@@ -111,6 +114,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `check` | 권한 사전 검사 |
 | `validators` | **사용자 전속** — 검증기 활성화 현황·전환 (Mechanism §6-1) |
 | `raw append` / `raw status` | `_raw/` 세션 기록 — 훅 경로(아래) |
+| `raw migrate` | 구 Markdown 원료의 숨김 `.txt` 이관 계획; `--apply`로 적용 |
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과 |
