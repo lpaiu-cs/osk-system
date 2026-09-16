@@ -1392,6 +1392,8 @@ def move_node(name: str, dest_space: str) -> dict:
     """군집 재배정. 이동은 바이트 불변이라 CAS가 없다(경로는 상태, 동일성은
     id). pin된 군집은 출발·도착 어느 쪽이든 거부한다(시행령 §3 4항)."""
     r = move_nodes([name], dest_space)
+    if not r["ok"]:
+        return r
     one = r["moved"][0]
     return {"ok": True, "name": one["name"], "id": one["id"],
             "path": one["path"], "new_hash": one["new_hash"],

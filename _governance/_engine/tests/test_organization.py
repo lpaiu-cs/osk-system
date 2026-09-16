@@ -130,6 +130,19 @@ class OrganizationTests(unittest.TestCase):
             assert distillation.status("retained")["preservation"]["status"]=="pending"
         """)
 
+    def test_single_move_adapter_preserves_partial_failure_response(self):
+        self.case("""
+            from unittest.mock import patch
+            a=node("A")
+            write.create_node("Branch","Branch","Related facts","gpt-6-astra",space="= Scope/W1/Branch")
+            with patch("osk.write._apply_move",side_effect=OSError("injected I/O failure")):
+                failed=write.move_node("A","= Scope/W1/Branch")
+            assert not failed["ok"] and failed["moved"]==[] and failed["remaining"]==["A"],failed
+            assert core.sha256_file(write._live_locate(a["id"],graph.Index()))==a["new_hash"]
+            assert write.move_node("A","= Scope/W1/Branch")["ok"]
+            assert not organization.snapshot("W1")["pending_moves"]
+        """)
+
     def test_cas_review_and_graph_settings_preserve_existing_preferences(self):
         self.case("""
             node("A"); job=organization.plan("W1"); old=organization.snapshot("W1")
