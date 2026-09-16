@@ -11,19 +11,23 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, graph, growth, validate, write
+from osk import core, graph, growth, validate, write, contract, organization
 validate.make_mini_vault(core.ROOT)
 def node(title, scope='W1', body=None):
     directory = core.ROOT / '= Scope' / scope
     directory.mkdir(parents=True, exist_ok=True)
     if not (directory / (scope + '.md')).exists():
         original = (core.ROOT / '= Scope/W1/W1.md').read_text(encoding='utf-8')
+        original = original.split(chr(10)+'---'+chr(10),1)[0] + chr(10)+'---'+chr(10)+'# W1'+chr(10)
         (directory / (scope + '.md')).write_text(
             original.replace('260801-zzzz-w1ix', '260801-zzzz-' + scope.lower() + 'ix')
                     .replace('W1', scope), encoding='utf-8')
     result = write.create_node(title, title, body or title + ' reusable observation',
                                'gpt-6-astra', space='= Scope/' + scope)
     assert result['ok'], result
+    hub = directory / (scope + '.md')
+    old = contract.parse(hub).body
+    write.update_node(scope, body=old.rstrip() + chr(10) + '- [[' + title + ']]', expect_hash=core.sha256_file(hub))
     return next(s for c in growth.plan(20)['candidates'] for s in c['sources']
                 if s['name'] == title)
 def register(planned=None):
@@ -38,6 +42,7 @@ def packet_worker(change='', wrapper='plain', code=0):
     source = "import json,sys; from osk import core,growth,distillation,integration; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
     if change:
         source += change + '; '
+    source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'complete','reason':'The fixture is one coherent, directly wired group.','after':organization.snapshot(j['scope'])['snapshot'],'intentional':[]} for j in p['organization_jobs']]; "
     wrappers = {
         'plain': "print(json.dumps(q))",
         'codex': "[print(json.dumps(e)) for e in [{'type':'turn.started'},{'type':'item.completed','item':{'type':'agent_message','text':json.dumps(q)}},{'type':'turn.completed'}]]",
@@ -156,6 +161,7 @@ class GrowthTests(unittest.TestCase):
             assert not result['ok'], result
             assert growth.plan()['candidates']
             worker = worker.replace("'deferred'", "'no_value'")
+            worker += "; from osk import organization; [organization.review(j['key'],j['scope'],'complete','The fixture group remains coherent.',after=organization.snapshot(j['scope'])['snapshot']) for j in plans[-1]['organization_jobs']]"
             result = growth.run([sys.executable, '-c', worker])
             assert result['ok'], result
             assert set(result['outcomes'].values()) == {'no_value'}
@@ -283,7 +289,7 @@ class GrowthTests(unittest.TestCase):
             assert result['ok'], result
             next_candidate = growth.plan(1)['candidates'][0]
             assert next_candidate['previous_distillations'][0]['key'] == candidate['distill_key']
-            worker = "import sys; from osk import core,growth; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [growth.review(c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]"
+            worker = "import sys; from osk import core,growth,organization; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [growth.review(c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(j['scope'])['snapshot']) for j in p['organization_jobs']]"
             outcome = growth.run([sys.executable,'-c',worker],limit=1)
             assert outcome['ok'], outcome
             assert len([1 for p,k in graph.Index().nodes.values() if k[0]=='domain' and not graph.is_hub(p)]) == 1

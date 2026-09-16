@@ -75,7 +75,7 @@ def _key(sources: list[dict]) -> str:
 def _source_current(source: dict, idx: graph.Index) -> bool:
     hit = idx.by_id.get(source["id"])
     return bool(hit and hit[0].stem == source["name"]
-                and core.posix_rel(hit[0], core.ROOT) == source["path"]
+                and hit[0].relative_to(core.ROOT).parts[:2] == Path(source["path"]).parts[:2]
                 and core.sha256_file(hit[0]) == source["hash"])
 
 
@@ -142,7 +142,7 @@ def _completed(key: str, rows: list[dict], idx: graph.Index) -> dict | None:
     return row
 
 
-def _plan(limit: int) -> dict:
+def _plan(limit: int, *, record_organization: bool = False) -> dict:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f"limit must be between 1 and {MAX_LIMIT}")
     idx, rows = _index(), _records()
@@ -227,7 +227,9 @@ def _plan(limit: int) -> dict:
             old_proof = _proof(old_key)
             if old_proof.get("target"):
                 candidate["previous_distillations"].append(old_proof)
-    return {"candidates": candidates, "source_count": len(sources),
+    from . import organization
+    organization_jobs = organization.pending(limit=limit, idx=idx, record=record_organization)
+    return {"candidates": candidates, "organization_jobs": organization_jobs, "source_count": len(sources),
             "cluster_count": len(clusters), "domain_count": len(domains),
             "limit": limit, "max_sources_per_candidate": 2 * BATCH_SIZE}
 
@@ -241,10 +243,11 @@ def plan(limit: int = 3) -> dict:
 def prompt(planned: dict | None = None, limit: int = 3) -> str:
     """Preview; receipts require a manifest registered by run()."""
     planned = plan(limit) if planned is None else planned
-    if not planned["candidates"] and not planned.get("scope_jobs"):
+    if not planned["candidates"] and not planned.get("scope_jobs") and not planned.get("organization_jobs"):
         return "No changed Scope comparisons need review. Do not start a model."
     cli = subprocess.list2cmdline([sys.executable, "-m", "osk.cli"])
-    return (
+    from . import organization
+    return organization.prompt(planned.get("organization_jobs", []), inventory=False) + (
         "This is a dedicated maintenance run. First process scope_jobs, if any, using "
         "each job's original session, raw references and exact through snapshot. Read its "
         "prompt and finish its integration review via the final review packet below; an empty shared "
@@ -252,7 +255,8 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "source conversations distinct. All CLI examples use "
         f"rtk proxy {cli} with OSK_VAULT_ROOT={core.ROOT} and "
         f"PYTHONPATH={Path(__file__).resolve().parent.parent}. "
-        "Then review the Domain candidates selected below. Sources newly distilled during "
+        "Review the Domain candidates selected below, then finish the selected organization_jobs. "
+        "Their CLI reviews prove current reference and navigation state separately. Sources newly distilled during "
         "this run may be compared on the next scheduled run; do not extend this batch.\n"
         "Review these bounded Scope comparisons for reusable Domain knowledge. "
         "Read source bodies and existing Domain nodes through osk MCP; search for an "
@@ -291,6 +295,9 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "\"reason\":\"<decision and limits>\",\"targets\":[{\"key\":\"<completed distillation key>\"}]}]}}. "
         "Use empty arrays when that queue is empty. Scope summary targets are exact saved "
         "{\"text\":\"<excerpt>\"} objects; omit targets for no_value/deferred. "
+        "Add organization:[{key,scope,outcome:complete|deferred,reason,after,intentional:[]}] "
+        "inside osk_reviews for selected organization_jobs not already reviewed by CLI. "
+        "Use the originally selected key and a freshly read organization snapshot as after. "
         "Use only this manifest's selected keys and scope snapshots. The supervisor applies "
         "these decisions through the same receipt APIs and revalidates persisted evidence; "
         "a declaration alone cannot prove preservation. Prefer this final packet, including "
@@ -394,7 +401,7 @@ def _final_packet(output: Path) -> dict:
 
 def _validate_packet(packet: dict, planned: dict) -> dict:
     reviews = packet.get("osk_reviews")
-    if not isinstance(reviews, dict) or set(reviews) != {"manifest", "domain", "scope"}:
+    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", "domain", "scope", "organization"}:
         raise ValueError("review packet needs exactly manifest, domain and scope")
     if reviews["manifest"] != planned["manifest"]:
         raise ValueError("review packet manifest does not match this run")
@@ -432,6 +439,21 @@ def _validate_packet(packet: dict, planned: dict) -> dict:
                         raise ValueError("Scope review needs exact target keys or saved summary excerpts")
                 elif targets is not None:
                     raise ValueError("no_value/deferred Scope reviews must omit targets")
+    allowed = {j["key"]: j["scope"] for j in planned.get("organization_jobs", [])}
+    entries, seen = reviews.get("organization", []), set()
+    if not isinstance(entries, list) or len(entries) > len(allowed):
+        raise ValueError("organization reviews exceed the selected queue")
+    for entry in entries:
+        fields = {"key", "scope", "outcome", "reason"}
+        if not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"after", "intentional"}:
+            raise ValueError("invalid organization review fields")
+        if any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields):
+            raise ValueError("organization review fields must be nonempty strings")
+        if allowed.get(entry["key"]) != entry["scope"] or entry["key"] in seen:
+            raise ValueError("unselected or duplicate organization review")
+        seen.add(entry["key"])
+        if entry["outcome"] not in {"complete", "deferred"}:
+            raise ValueError("invalid organization outcome")
     return reviews
 
 
@@ -441,7 +463,7 @@ def _apply_final_reviews(output: Path, planned: dict) -> dict:
         reviews = _validate_packet(_final_packet(output), planned)
     except (ValueError, OSError, TypeError, RecursionError) as exc:
         return {"state": "rejected", "errors": [str(exc)]}
-    result = {"state": "applied", "domain": {}, "scope": {}, "errors": []}
+    result = {"state": "applied", "domain": {}, "scope": {}, "organization": {}, "errors": []}
     for entry in reviews["domain"]:
         key = entry["key"]
         try:
@@ -465,6 +487,17 @@ def _apply_final_reviews(output: Path, planned: dict) -> dict:
                 result["scope"][key] = "recorded"
         except (ValueError, OSError) as exc:
             result["errors"].append(f"Scope {key}: {exc}")
+    from . import organization
+    selected = {j["key"]: j for j in planned.get("organization_jobs", [])}
+    for entry in reviews.get("organization", []):
+        try:
+            with core.mutation_lock():
+                done = organization.status(selected[entry["key"]])
+            if done["status"] != "complete":
+                organization.review(**entry)
+            result["organization"][entry["key"]] = "recorded"
+        except (ValueError, KeyError, OSError) as exc:
+            result["errors"].append(f"Organization {entry['key']}: {exc}")
     if result["errors"]:
         result["state"] = "incomplete"
     return result
@@ -516,10 +549,11 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
             from . import integration
             catchup = integration.catchup(limit=limit)
             with core.mutation_lock():
-                planned = _plan(limit)
+                planned = _plan(limit, record_organization=True)
+                from . import organization
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
-                if not planned["candidates"] and not planned["scope_jobs"]:
+                if not planned["candidates"] and not planned["scope_jobs"] and not planned["organization_jobs"]:
                     if not catchup.get("ok"):
                         return {"ok": False, "state": "capture_pending", "selected": 0,
                                 "capture": catchup}
@@ -562,7 +596,9 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
                 needs_review = (any(not _completed(c["key"], rows, idx) for c in planned["candidates"])
                                 or any(integration._review_status_locked(
                                     j["harness"], j["conversation_id"], j["through"])["status"] != "complete"
-                                    for j in planned["scope_jobs"]))
+                                    for j in planned["scope_jobs"]) or any(
+                                    organization.status(j, idx)["status"] != "complete"
+                                    for j in planned["organization_jobs"]))
             final_reviews = {"state": "not_needed", "errors": []}
             if needs_review:
                 final_reviews = (_apply_final_reviews(directory / "stdout.txt", planned)
@@ -581,16 +617,20 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
                 scope_outcomes = {job["key"]: integration._review_status_locked(
                     job["harness"], job["conversation_id"], job["through"])
                     for job in planned["scope_jobs"]}
+                organization_outcomes = {job["key"]: organization.status(job, idx)
+                                         for job in planned["organization_jobs"]}
                 complete = (returncode == 0 and error is None and catchup.get("ok")
                             and not final_reviews["errors"]
                             and all(receipts.values())
-                            and all(s["status"] == "complete" for s in scope_outcomes.values()))
+                            and all(s["status"] == "complete" for s in scope_outcomes.values())
+                            and all(s["status"] == "complete" for s in organization_outcomes.values()))
                 result = {"kind": "run", "manifest": manifest["rid"],
                           "ok": complete, "state": "complete" if complete else "incomplete",
-                          "selected": len(receipts) + len(scope_outcomes), "returncode": returncode,
+                          "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes), "returncode": returncode,
                           "domain_selected": len(receipts), "scope_selected": len(scope_outcomes),
                           "error": error, "cleanup_error": cleanup_error, "outcomes": outcomes,
                           "domain_outcomes": outcomes, "scope_outcomes": scope_outcomes,
+                          "organization_outcomes": organization_outcomes,
                           "final_reviews": final_reviews,
                           "capture": catchup,
                           "output": core.posix_rel(directory, core.ROOT)}

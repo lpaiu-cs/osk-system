@@ -76,7 +76,7 @@ class Node:
         표기에서 같은 목록을 얻어야 하기 때문이다."""
         return edge_targets(self.meta.get(predicate))
 
-    def wikilinks(self) -> list[str]:
+    def wikirefs(self) -> list[str]:
         """본문 Link(임베드 포함). 코드 구획(``` 펜스·인라인 백틱) 안의
         [[...]] 예시는 Link가 아니다 — 제외한다. 펜스의 경계는 **행 시작**의
         ```뿐이다(행 중간의 ```는 인라인 코드일 뿐이며, 이것과 짝지으면 실제
@@ -85,7 +85,23 @@ class Node:
         body = re.sub(r"(?m)^ {0,3}```[\s\S]*?(?:^ {0,3}```[^\n]*$|\Z)", "", self.body)
         body = re.sub(r"`[^`\n]*`", "", body)
         return [m.group(1).strip()
-                for m in re.finditer(r"!?\[\[([^\]#|]+)", body)]
+                for m in re.finditer(r"!?\[\[([^\]|]+)", body)]
+
+    def wikilinks(self) -> list[str]:
+        return [ref.split("#", 1)[0].strip() for ref in self.wikirefs()]
+
+    def references(self) -> list[tuple[str, str]]:
+        """Stored relation and complete reference; never erase a raw round anchor."""
+        refs = [("Link", ref) for ref in self.wikirefs()]
+        for relation in PREDICATES:
+            value = self.meta.get(relation)
+            for ref in value if isinstance(value, list) else [value]:
+                if ref:
+                    text = str(ref).strip()
+                    if text.startswith("[[") and text.endswith("]]"):
+                        text = text[2:-2]
+                    refs.append((relation, text.split("|", 1)[0].strip()))
+        return sorted(set(refs))
 
 
 # libyaml(C) 로더가 있으면 그것을 바닥으로 쓴다 — 실 vault 1,811건 실측으로

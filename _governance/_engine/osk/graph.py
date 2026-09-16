@@ -726,13 +726,60 @@ def topology_check(idx: Index) -> list[str]:
 
 def dangling_refs(idx: Index) -> list[str]:
     """미해석 참조 목록 — 위반이 아니라 경고(탐색 링크는 자유)."""
-    out = []
+    return reference_report(idx)["dangling_refs"]
+
+
+def reference_report(idx: Index) -> dict:
+    out, items = [], []
     for stem, (p, kind) in idx.nodes.items():
         n = idx.node(p)
-        for t in set(n.wikilinks()):
-            if idx.resolve(t)[0] == "dangling":
-                out.append(f"{stem} → {t}")
-    return sorted(out)
+        for item in reference_review(n, idx):
+            items.append(dict(item, name=stem))
+            if item["resolution"] == "dangling":
+                relation, ref = item["relation"], item["ref"]
+                out.append(f"{stem} → {ref}" if relation == "Link" else
+                           f"{stem} [{relation}] → {ref}")
+    return {"dangling_refs": sorted(out), "reference_review": items}
+
+
+def reference_review(node: contract.Node, idx: Index,
+                     previous: contract.Node | None = None) -> list[dict]:
+    """One readout for writes, global checks and durable organization work.
+
+    Resolution proves a destination category, not truth or an external URL's
+    availability. Raw remains evidence even though Obsidian can draw its Markdown.
+    """
+    import difflib
+    old = set(previous.references()) if previous else set()
+    out = []
+    for relation, ref in node.references():
+        target, sep, anchor = ref.partition("#")
+        resolution = idx.resolve(target)
+        kind = resolution[0]
+        issue = None
+        if kind in {"dangling", "ambiguous"}:
+            issue = "unresolved"
+        elif relation == "Link" and kind == "nonnode":
+            issue = "source_navigation"
+        elif relation == "derived-from" and kind == "nonnode" and resolution[1][0] == "raw":
+            from . import raw, write
+            if not anchor:
+                issue = "raw_round_required"
+            elif raw.parse_ref(ref)[1] is None:
+                issue = "raw_round_unresolved"
+            else:
+                try:
+                    raw.read_round(ref, max_chars=0)
+                except (OSError, UnicodeError, ValueError, write.WriteError):
+                    issue = "raw_round_unresolved"
+        if issue:
+            item = {"id": node.id, "relation": relation, "ref": ref,
+                    "resolution": kind, "issue": issue,
+                    "new": (relation, ref) not in old}
+            if kind == "dangling":
+                item["candidates"] = difflib.get_close_matches(target, idx.names, n=3, cutoff=0.65)
+            out.append(item)
+    return out
 
 
 def centrality(idx: Index) -> dict[str, float]:

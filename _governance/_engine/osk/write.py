@@ -641,12 +641,23 @@ def _dangling_of(path: Path, meta: dict, body: str, idx) -> list[str]:
     조용히 dangling을 쌓지 않게 한다(`list_nodes` 제거의 부작용 차단)."""
     node = meta if isinstance(meta, contract.Node) else \
         contract.Node(path=path, meta=meta, body=body)
-    out = []
-    for t in set(node.wikilinks()) | {t for p in contract.PREDICATES
-                                      for t in node.edges(p)}:
-        if idx.resolve(t)[0] == "dangling":
-            out.append(t)
-    return sorted(out)
+    return sorted({r["ref"].split("#", 1)[0] for r in graph.reference_review(node, idx)
+                   if r["resolution"] == "dangling"})
+
+
+def _reference_feedback(path, meta, body, idx, previous=None) -> dict:
+    node = contract.Node(path=path, meta=meta, body=body)
+    refs = graph.reference_review(node, idx, previous)
+    out = {"dangling": sorted({r["ref"].split("#", 1)[0] for r in refs
+                               if r["resolution"] == "dangling"})}
+    if refs:
+        out["reference_review"] = {
+            "status": "pending", "items": refs,
+            "instruction": "내용은 저장됐다. 참조 검토는 미결이다. 기존 노드는 search/read_node의 정확한 제목, "
+                           "vault 원료는 루트 기준 경로와 raw 라운드, 외부 레포 문서는 확인한 URL을 쓴다. "
+                           "원료는 지식 노드나 허브가 아니다. 빈 가짜 노드를 만들지 말라. "
+                           "organization plan --scope <scope>가 다음 검토로 이어받는다."}
+    return out
 
 
 def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
@@ -991,7 +1002,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
             "path": posix_rel(path, ROOT), "id": meta["id"],
             "new_hash": sha256_bytes(data),
             "bound_scope": bound_now,
-            "dangling": _dangling_of(path, meta, body, idx)}
+            **_reference_feedback(path, meta, body, idx)}
     return evictions._after_node_write(result, settle, "node", title)
 
 
@@ -1237,7 +1248,7 @@ def _update_node_locked(name: str, body: str | None = None,
                 "path": posix_rel(path, ROOT), "id": n.id,
                 "new_hash": sha256_file(path),
                 "edges": {p: n.edges(p) for p in contract.PREDICATES},
-                "dangling": _dangling_of(path, n.meta, n.body, idx)}
+                **_reference_feedback(path, n.meta, n.body, idx, n)}
     if not only_conflicts:
         meta["updated"] = _stamp or now_kst()
 
@@ -1259,7 +1270,7 @@ def _update_node_locked(name: str, body: str | None = None,
            "edges": {p: contract.Node(path=path, meta=meta,
                                       body=new_body).edges(p)
                      for p in contract.PREDICATES},
-           "dangling": _dangling_of(path, meta, new_body, idx)}
+           **_reference_feedback(path, meta, new_body, idx, n)}
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
     return evictions._after_node_write(out, settle, "merged", path.stem)
@@ -1389,7 +1400,7 @@ def move_node(name: str, dest_space: str) -> dict:
 
 
 def move_nodes(names: list[str], dest_space: str) -> dict:
-    """노드 여럿을 한 군집으로 옮긴다 — **전부 아니면 전무**.
+    """노드 여럿을 한 군집으로 옮긴다 — 검사 실패는 전부 거부, I/O 중단은 이어서 복구.
 
     분화(시행령 §3 7항)의 실제 모양이 이것이다: 한 갈래를 통째로 하위 군집에
     내린다. 하나씩 부르면 잠금과 색인을 N번 짓고(v3.7.0이 세운 "쓰기 1회 =
@@ -1449,15 +1460,26 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
         crossed = sorted(p.stem for p, _t, _n in plans
                          if p.relative_to(ROOT).parts[:2] != dtop)
         out = []
+        from . import organization
+        move_key = organization.record_move(plans, stale)
         for path, target, n in plans:
             before = sha256_file(path)
-            _apply_move(path, target, n, idx)
+            try:
+                _apply_move(path, target, n, idx)
+            except (OSError, WriteError) as exc:
+                return {"ok": False, "moved": out, "count": len(out),
+                        "dest": posix_rel(dest_dir, ROOT), "hub_links": stale,
+                        "move_key": move_key, "reason": str(exc),
+                        "remaining": [q.stem for q, t, _n in plans if q.is_file()],
+                        "instruction": "일부 이동 뒤 중단됐다. ID·현재 위치·hash를 읽고 remaining만 재개하라. "
+                                       "허브 배선까지 organization 검토의 미결로 유지한다."}
             out.append({"name": path.stem, "id": n.id,
                         "path": posix_rel(target, ROOT), "new_hash": before,
                         "moved_from": posix_rel(path, ROOT),
                         "dangling": _dangling_of(target, n.meta, n.body, idx)})
+        organization.finish_move(move_key)
         r = {"ok": True, "moved": out, "count": len(out),
-             "dest": posix_rel(dest_dir, ROOT), "hub_links": stale}
+             "dest": posix_rel(dest_dir, ROOT), "hub_links": stale, "move_key": move_key}
         if crossed:
             r["crossed_scope"] = {
                 "nodes": crossed,

@@ -378,7 +378,7 @@ def update_node(name: str, body: str | None = None,
 
 @mcp.tool()
 def move_nodes(names: list[str], dest_space: str) -> dict:
-    """군집 재배정 — **전부 아니면 전무**. `names`는 옮길 노드 제목의 목록이고
+    """군집 재배정 — 중단 시 남은 것 복구. `names`는 노드 제목 목록이고
     (하나여도 목록으로) `dest_space`는 `create_node`의 `space`와 같다. 없는
     군집이면 만들어지되 허브는 없다. 허브는 거부하니 군집째는 `move_cluster`다.
     응답의 `hub_links`가 **양쪽** 허브에서 뺄 것(`remove`)과 더할 것(`add`)을
