@@ -4440,12 +4440,12 @@ def test_raw_append():
     from osk import raw, secrets
     (ROOT / "= Scope/WRaw").mkdir(exist_ok=True)
     S, REC = "repo/regr-raw", "2026-08-21-regr"
-    p = ROOT / "= Scope/WRaw/_raw" / f"{REC}.md"
+    p = ROOT / "= Scope/WRaw/_raw/.records" / f"{REC}.txt"
 
     r1 = _w(raw.append_round, S, REC, "첫 질문", "첫 응답", space="= Scope/WRaw")
     check("최초 라운드는 1", r1.get("index") == 1, r1)
     check("round_ref가 근거 표기 그대로다",
-          r1.get("round_ref") == f"[[= Scope/WRaw/_raw/{REC}.md#1]]", r1)
+          r1.get("round_ref") == f"= Scope/WRaw/_raw/.records/{REC}.txt#1", r1)
     check("첫 기록이 세션을 결속한다", write.resolve_session(S) == "WRaw")
 
     r2 = _w(raw.append_round, S, REC, "둘째 질문", "둘째 응답")   # 라우팅으로 착지
@@ -4507,7 +4507,7 @@ def test_raw_append():
     # 이식성 기준으로 같은 이름은 같은 정본 (시행령 §2 1항)
     r5 = _w(raw.append_round, S, REC.upper(), "대소문자", "같은 파일")
     check("대소문자만 다른 이름은 같은 기록으로 접힌다",
-          r5.get("path", "").endswith(f"{REC}.md"), r5)
+          r5.get("path", "").endswith(f"{REC}.txt"), r5)
 
 
 # ── 18b. 훅 경로 — 실제 대화 바이트를 stdin으로 받는다 (헌법 4조 3항) ──────
@@ -4547,7 +4547,7 @@ def test_raw_cli_path():
           (st.get("rounds"), st.get("next_index")) == (3, 4), st)
 
     # 배치 원자성 — 기존 기록이 있는 상태에서 중간 거부
-    p = ROOT / SP / "_raw" / f"{REC}.md"
+    p = ROOT / SP / "_raw/.records" / f"{REC}.txt"
     before = p.read_bytes()
     r = run(["raw", "append", "--session", S, "--record", REC],
             json.dumps({"rounds": [{"user": "좋다", "agent": "응답"},
@@ -4570,7 +4570,7 @@ def test_raw_cli_path():
             json.dumps({"record": "다른이름", "user": "q", "agent": "a"},
                        ensure_ascii=False))
     check("플래그 record가 봉투를 이긴다",
-          r.get("path", "").endswith(f"{REC}.md"), r)
+          r.get("path", "").endswith(f"{REC}.txt"), r)
 
     # 손상 기록은 셀 수 없다고 말한다 — 그 위에 이어 붙이게 두지 않는다
     (ROOT / SP / "_raw" / "dmg.md").write_text(
@@ -4616,7 +4616,7 @@ def test_raw_read():
           "첫 질문" not in r.get("text", "") and "긴 것" not in r.get("text", ""))
 
     # escape 역연산 — 파일엔 `\## 7`, 회상엔 `## 7` (Mechanism §8 3항)
-    p = ROOT / SP / "_raw" / f"{REC}.md"
+    p = ROOT / w["path"]
     check("파일에는 escape된 채로 있다", "\\## 7" in p.read_text(encoding="utf-8"))
     check("회상은 escape를 되돌린다",
           "\n## 7\n" in r.get("text", "") and "\\##" not in r.get("text", ""), r)
@@ -4717,7 +4717,7 @@ def test_raw_binding_confines_scope():
     check("교차 scope는 거부", r.get("ok") is False, r)
     check("거부가 현재 결속을 알려준다", "= Scope/WBindA" in v, v)
     check("건너간 자리에 파일이 생기지 않았다",
-          not (ROOT / "= Scope/WBindB/_raw/rec.md").exists())
+          not (ROOT / "= Scope/WBindB/_raw/.records/rec.txt").exists())
     check("정본은 하나뿐", raw.record_state(S, "rec")["rounds"] == 1)
 
     # 결속과 같은 space를 중복 명시하는 것은 무해하므로 통과해야 한다
@@ -7180,7 +7180,7 @@ def test_engine_epoch_fence():
              space="= Scope/W1")
     check("전제: 두 번째 노드도 만들어졌다", r0b.get("ok"), r0b)
     h = r0["new_hash"]
-    trace = ROOT / "= Scope/W1/_raw/2026-08-30-fence.md"
+    trace = ROOT / "= Scope/W1/_raw/.records/2026-08-30-fence.txt"
     sm_before = _w(sm_mod.read, "repo/fence")
     try:
         epoch._LOADED = "0000deadbeef"
@@ -7294,11 +7294,11 @@ def test_audit_fixes_2026_09_02():
         r = _w(write.update_node, "audit-edge", add_edges={"derived-from": "W1"})
         got = str(contract.parse(p).meta.get("derived-from"))
         check("엣지를 더해도 `#라운드`가 남는다 (#26)",
-              "audrec#3" in got, got)
+              "audrec.txt#3" in got, got)
         r = _w(write.update_node, "audit-edge",
                remove_edges={"derived-from": "W1"})
         got = str(contract.parse(p).meta.get("derived-from"))
-        check("엣지를 빼도 `#라운드`가 남는다 (#26)", "audrec#3" in got, got)
+        check("엣지를 빼도 `#라운드`가 남는다 (#26)", "audrec.txt#3" in got, got)
         #    같은 호출 안의 중복은 한 번만 앉는다
         r = _w(write.update_node, "audit-edge",
                add_edges={"derived-from": ["W1", "W1", "[[W1]]"]})
@@ -7423,7 +7423,7 @@ def test_audit_fixes_2026_09_02():
         check("그 뒤에도 append가 성립한다 (#27)", r2.get("ok"), r2)
         st = R.record_state("audit-raw-sess", "audit-crlf", None)
         check("라운드 수가 정확히 세어진다 (#27)", st.get("rounds") == 2, st)
-        mine.append(ROOT / "= Scope/W1/_raw/audit-crlf.md")
+        mine.append(ROOT / r1["path"])
 
         # ⑫ scope 기억의 해시 사슬이 `\r`에 끊기지 않는다 (#27)
         #    되돌리면 — `scope_memory._read`를 `read_text`로 되돌리면 실패한다.
@@ -9194,7 +9194,7 @@ def test_validate_at_uses_snapshot_engine():
 
 
 def test_growth_loop_subprocesses():
-    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_retrieval.py", "test_organization.py"):
+    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py"):
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
                               capture_output=True, timeout=180,
                               stdin=subprocess.DEVNULL)

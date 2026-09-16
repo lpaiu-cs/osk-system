@@ -144,14 +144,19 @@ def _portable_name_key(name: str) -> str:
     return unicodedata.normalize("NFC", name).casefold()
 
 
-def _name_collision(dest_dir: Path, stem: str) -> str | None:
+def _name_collision(dest_dir: Path, stem: str, suffix: str = ".md", *, unique: bool = False) -> str | None:
     """같은 군집에 이식성 기준으로 충돌하는 파일이 있으면 그 이름을 돌려준다.
     같은 이름 자신도 걸리므로 기존 존재 검사를 겸한다."""
     key = _portable_name_key(stem)
-    for p in dest_dir.glob("*.md"):
-        if _portable_name_key(p.stem) == key:
-            return p.name
-    return None
+    hit = None
+    for p in dest_dir.glob("*"):
+        if p.suffix.lower() == suffix and _portable_name_key(p.stem) == key:
+            if not unique:
+                return p.name
+            if hit is not None:
+                raise WriteError(f"이식성 이름 충돌 — 정본을 고를 수 없다: {dest_dir / stem}")
+            hit = p.name
+    return hit
 
 
 # 전역 변경 잠금은 core가 소유한다 — 보호영역 조작(approvals)이 같은 잠금을
@@ -1061,7 +1066,8 @@ def _stored_edges(v) -> list[str]:
 
 def _edge_key(target: str, idx) -> tuple[str, str]:
     """노드는 제목으로, 비노드 근거는 전체 경로와 앵커로 구별한다."""
-    s = target.strip()
+    from . import raw
+    s = raw.canonical_ref(target).strip()
     if s.startswith("[[") and s.endswith("]]"):
         s = s[2:-2]
     path, sep, anchor = s.split("|", 1)[0].strip().partition("#")
@@ -1073,7 +1079,7 @@ def _edge_key(target: str, idx) -> tuple[str, str]:
 
 def _as_links(pred: str, targets) -> str | list:
     """입력 대상을 저장 표기로 접는다 — 맨값은 위키링크로 감싸고, 이미
-    위키링크면 그대로 둔다. `derived-from`의 id 맨값만 감싸지 않는다.
+    위키링크면 그대로 둔다. raw 좌표와 `derived-from`의 id는 감싸지 않는다.
 
     v3.7.3부터 노드 근거의 정본 표기는 **제목 위키링크**이므로, 제목을 맨값으로
     받으면 여기서 `[[제목]]`이 된다. id 맨값을 그대로 두는 것은 **구형 표기의
@@ -1086,7 +1092,11 @@ def _as_links(pred: str, targets) -> str | list:
     out = []
     for t in _as_list(targets):
         s = str(t).strip()
-        if s.startswith("[[") or (pred == "derived-from" and re.match(ID_RE, s)):
+        if (pred == "derived-from" and "/_raw/" in s.replace("\\", "/")
+                and not re.match(r"^(?:\[\[\s*)?https?://", s)):
+            from . import raw
+            out.append(raw.canonical_ref(s))
+        elif s.startswith("[[") or (pred == "derived-from" and re.match(ID_RE, s)):
             out.append(s)
         else:
             out.append(f"[[{s}]]")

@@ -17,7 +17,7 @@ import json
 import re
 from pathlib import Path
 
-from .core import ROOT, mutation_lock, posix_rel
+from .core import ROOT, mutation_lock, posix_rel, resolve_in_root, sha256_file
 # `write`의 `_title_errors`·`_name_collision`을 그대로 쓴다 — 파일명 이식성
 # 규칙(Windows 예약명·링크 파서 충돌·ext4 바이트 상한·대소문자 접기)의 정본은
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
@@ -83,12 +83,87 @@ def _next_index(text: str) -> int:
 
 
 def record_path(scope: str, record: str) -> Path:
-    """`= Scope/<scope>/_raw/<record>.md`. 이식성 기준으로 같은 이름이 이미
-    있으면 **그 파일**을 쓴다 — 대소문자·정규화만 다른 두 정본이 생기면
-    시행령 §2 1항의 '세션당 정본 하나'가 기기마다 갈라진다."""
+    """Read the existing record; new records live in hidden non-Markdown storage."""
     d = ROOT / "= Scope" / scope / "_raw"
-    hit = write._name_collision(d, record) if d.is_dir() else None
-    return d / (hit or f"{record}.md")
+    return _record_file(d / f"{record}.md")
+
+
+def _record_pair(path: Path | str) -> tuple[Path, Path]:
+    """Confined physical path and its old Markdown alias. No content conversion."""
+    p = resolve_in_root(path)
+    if p is None or graph.space_of(p)[0] != "raw":
+        raise write.WriteError("vault 밖 또는 `_raw/` 밖 경로 — 기록을 열지 않았다")
+    requested = Path(path) if Path(path).is_absolute() else ROOT / path
+    if requested.absolute() != p:
+        raise write.WriteError("raw 저장 경로의 심볼릭 링크·우회 경로는 허용하지 않는다")
+    if p.parent.name == ".records" and p.suffix.lower() == ".txt":
+        d, stem = p.parent.parent, p.stem
+    elif p.suffix.lower() == ".md" or not p.suffix:
+        d, stem = p.parent, p.stem if p.suffix else p.name
+    else:
+        raise write.WriteError("지원하지 않는 raw 기록 경로")
+    old_name = write._name_collision(d, stem, unique=True)
+    old = d / (old_name or f"{stem}.md")
+    new_dir = d / ".records"
+    new_name = write._name_collision(new_dir, old.stem, ".txt", unique=True)
+    new = new_dir / (new_name or f"{old.stem}.txt")
+    # A symlink must not redirect the alias into another scope or outside raw.
+    for candidate in (old, new):
+        resolved = resolve_in_root(candidate)
+        if resolved is None or resolved != candidate or graph.space_of(resolved) != graph.space_of(p):
+            raise write.WriteError("raw 별칭이 저장 구획을 벗어났다")
+    return old, new
+
+
+def _record_file(path: Path | str) -> Path:
+    old, new = _record_pair(path)
+    if old.exists() and new.exists():
+        raise write.WriteError("raw 구·신 저장본이 함께 있다 — 덮어쓰거나 임의로 합치지 않았다")
+    return old if old.exists() else new
+
+
+def _migrate_file(path: Path) -> Path:
+    """Caller holds mutation_lock. Rename preserves bytes and survives retry."""
+    old, new = _record_pair(path)
+    current = _record_file(path)  # Detect conflicts even for a replay with no append.
+    if current == old and old.is_file():
+        digest = sha256_file(old)
+        new.parent.mkdir(parents=True, exist_ok=True)
+        old.rename(new)
+        if sha256_file(new) != digest:
+            raise write.WriteError("raw 이관 후 해시 불일치 — 성공으로 처리하지 않았다")
+    return new
+
+
+def migrate(*, apply: bool = False) -> dict:
+    """Preview or move existing raw files. Nodes and raw content are never edited."""
+    with mutation_lock():
+        plans = []
+        for scope in _scope_names():
+            directory = ROOT / "= Scope" / scope / "_raw"
+            for path in sorted(directory.rglob("*")):
+                if path.is_file() and path.suffix.lower() == ".md":
+                    old, new = _record_pair(path)
+                    _record_file(path)  # Preflight every conflict before any rename.
+                    plans.append({"from": posix_rel(old, ROOT), "to": posix_rel(new, ROOT),
+                                  "hash": sha256_file(old), "bytes": old.stat().st_size})
+        if apply:
+            for plan in plans:
+                _migrate_file(ROOT / plan["from"])
+        return {"ok": True, "applied": apply, "count": len(plans), "files": plans}
+
+
+def canonical_ref(ref: str) -> str:
+    """Compare old wiki coordinates and new plain coordinates by the same record."""
+    value = ref.strip()
+    if value.startswith("[[") and value.endswith("]]"):
+        value = value[2:-2].strip()
+    path, sep, anchor = value.split("|", 1)[0].partition("#")
+    path = path.strip()
+    if re.match(r"^https?://", path) or "/_raw/" not in path.replace("\\", "/"):
+        return ref  # Node IDs and node links keep their existing identity.
+    _, physical = _record_pair(path)
+    return posix_rel(physical, ROOT) + (sep + anchor if sep else "")
 
 
 def _round_body(chunk: str) -> str:
@@ -194,6 +269,8 @@ def append_rounds(session: str, record: str, pairs: list,
                  f"user 발화와 그에 속한 에이전트 응답의 쌍이다 (시행령 §2 7항)"])
         norm.append((u, a))
     errs = write._title_errors(record)      # 기록 이름이 곧 파일명이다
+    if len((record + ".txt").encode("utf-8")) > write._MAX_FILENAME_BYTES:
+        errs.append("raw 파일명은 .txt를 포함해 255 UTF-8 바이트 이내여야 한다")
     if errs:
         raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
     # 세션 키는 착지 판정보다 먼저 본다 — 결속은 파일 쓰기 뒤에 오므로
@@ -249,9 +326,10 @@ def append_rounds(session: str, record: str, pairs: list,
                 replayed.append(idx)
             norm = norm[len(replayed):]
             if not norm:
+                p = _migrate_file(p)
                 rel = posix_rel(p.resolve(), ROOT)
                 return {"ok": True, "path": rel, "indices": replayed,
-                        "round_refs": [f"[[{rel}#{i}]]" for i in replayed],
+                        "round_refs": [f"{rel}#{i}" for i in replayed],
                         "filtered": [], "appended": 0, "codex_v1_rounds": legacy_replayed}
         blocks, indices = [], []
         for n, (u, a) in enumerate(norm):
@@ -265,7 +343,7 @@ def append_rounds(session: str, record: str, pairs: list,
         # 되돌아온 경로를 쓴다 — 통로가 봉쇄·해소한 그 경로가 실제로 기록된
         # 자리이고, `ROOT`도 해소된 값이라 둘의 상대 계산이 어긋나지 않는다.
         written, hits = secrets.write_raw(
-            p, prior + ("\n" if prior else "") + "\n".join(blocks))
+            _migrate_file(p), prior + ("\n" if prior else "") + "\n".join(blocks))
 
         if not bound:
             write.bind_session(session, dest, "첫 세션 기록에서 확정")
@@ -274,7 +352,7 @@ def append_rounds(session: str, record: str, pairs: list,
         # 대상 표기다(Mechanism §8 2항). 호출자가 경로와 index를 조립하다
         # 틀리면 근거 배선이 dangling으로 앉는다.
         result = {"ok": True, "path": rel, "indices": replayed + indices,
-                  "round_refs": [f"[[{rel}#{i}]]" for i in replayed + indices],
+                  "round_refs": [f"{rel}#{i}" for i in replayed + indices],
                   "filtered": sorted(set(hits))}
         if replay_prefix:
             result["appended"] = len(indices)
@@ -350,6 +428,7 @@ def _raw_file(path: str) -> Path:
         raise write.WriteError(
             "`_raw/` 밖 경로 — 이 도구로 읽지 않는다",
             [f"`{path}`는 세션 기록이 아니다. 노드는 `read_node`로 읽는다"])
+    p = _record_file(p)
     if not p.is_file():
         raise write.WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
     return p
@@ -411,7 +490,7 @@ def read_round(ref: str, max_chars: int = 20000) -> dict:
     chunk = _recalled(text[spans[index][0]:spans[index][1]])
     cut = len(chunk) > max_chars
     return {"ok": True, "path": rel, "index": index,
-            "round_ref": f"[[{rel}#{index}]]",
+            "round_ref": canonical_ref(f"{rel}#{index}"),
             "chars": len(chunk), "truncated": cut,
             "text": chunk[:max_chars] if cut else chunk}
 
@@ -425,7 +504,9 @@ def list_records(space: str) -> dict:
                           f"{_space_list()}"])
     d = ROOT / "= Scope" / scope / "_raw"
     out = []
-    for f in sorted(d.glob("*.md")) if d.is_dir() else []:
+    files = sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt")})
+    for candidate in files:
+        f = _record_file(candidate)
         text = read_exact(f)
         out.append({"record": f.stem, "path": posix_rel(f, ROOT),
                     "rounds": len(rounds(text)), "chars": len(text)})

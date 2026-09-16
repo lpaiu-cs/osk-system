@@ -596,6 +596,12 @@ class Index:
         아니며, 경로 해석은 vault 안으로 봉쇄한다([[/etc/passwd]])."""
         if re.match(r"^https?://", name):
             return ("external",)
+        if "/_raw/" in name.replace("\\", "/"):
+            from . import raw
+            try:
+                return ("nonnode", space_of(raw._raw_file(name.split("#", 1)[0])))
+            except (OSError, ValueError):
+                return ("dangling",)
         if re.match(ID_RE, name):
             # derived-from 노드 대상 — id가 정본 동일성(경로·이름은 상태).
             # id는 frontmatter 안에 있으므로 이것만은 전수 판독을 부른다.
@@ -747,7 +753,7 @@ def reference_review(node: contract.Node, idx: Index,
     """One readout for writes, global checks and durable organization work.
 
     Resolution proves a destination category, not truth or an external URL's
-    availability. Raw remains evidence even though Obsidian can draw its Markdown.
+    availability. Raw remains evidence in hidden non-Markdown storage.
     """
     import difflib
     old = set(previous.references()) if previous else set()

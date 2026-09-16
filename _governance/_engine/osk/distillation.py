@@ -62,7 +62,7 @@ def _source(ref: str, idx) -> dict:
         # Trailing round separators are not evidence; later append must not
         # invalidate the unchanged round. Hash the full stored round, untruncated.
         data = text[span[0]:span[1]].rstrip("\n").encode()
-        return {"ref": f"[[{posix_rel(p, ROOT)}#{number}]]",
+        return {"ref": raw.canonical_ref(f"{posix_rel(p, ROOT)}#{number}"),
                 "path": posix_rel(p, ROOT), "hash": sha256_bytes(data)}
     p = write._live_locate(value, idx)
     if p is None or not p.is_file() or graph.space_of(p)[0] not in ("scope", "domain"):
@@ -106,6 +106,11 @@ def _hub(name: str, idx) -> dict:
 def _check_sources(job: dict, idx) -> None:
     for old in job["sources"]:
         current = _source(old["ref"], idx)
+        if not old.get("id"):
+            if (current["hash"] != old["hash"]
+                    or raw._raw_file(current["path"]) != raw._raw_file(old["path"])):
+                raise write.WriteError("raw source changed; pending")
+            continue
         if current["hash"] != old["hash"] or (
                 current["path"] != old["path"] and (not old.get("id") or
                 Path(current["path"]).parts[:2] != Path(old["path"]).parts[:2])):
@@ -180,7 +185,7 @@ def _verify(job: dict) -> dict:
                 # An unrelated pre-existing citation need not be a valid new
                 # distillation input. Only the requested evidence is certified.
                 continue
-        if not {s["ref"] for s in job["sources"]}.issubset(actual):
+        if not {raw.canonical_ref(s["ref"]) for s in job["sources"]}.issubset(actual):
             raise write.WriteError("target provenance is incomplete; pending")
         retained = True
         placement = _placement(p, idx, selected=job)
@@ -256,7 +261,7 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
                     continue
                 if job.get("version") != 1:
                     raise ValueError("unsupported journal version")
-                if not wanted.intersection(source["ref"] for source in job["sources"]):
+                if not wanted.intersection(raw.canonical_ref(source["ref"]) for source in job["sources"]):
                     continue
                 target = resolve_in_root(job["target"]["path"])
                 if target is None or graph.space_of(target)[0] != "scope":
@@ -389,7 +394,7 @@ def _execute(operation: str, distill: dict, request: dict) -> dict:
                     stored.add(_source(ref, idx)["ref"])
                 except (write.WriteError, OSError, ValueError, TypeError):
                     continue
-            if not {source["ref"] for source in sources}.issubset(stored):
+            if not {raw.canonical_ref(source["ref"]) for source in sources}.issubset(stored):
                 raise write.WriteError("required provenance was removed; no node written")
             planned = {"name": path.stem, "id": n.id, "path": posix_rel(path, ROOT),
                        "before_hash": sha256_file(path) if path.exists() else None,
