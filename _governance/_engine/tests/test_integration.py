@@ -74,6 +74,119 @@ class IntegrationTests(unittest.TestCase):
     def capture(self, harness="claude"):
         return it.capture(harness, self.sid, str(self.path), "capture-tests")
 
+    def test_failed_codex_turn_and_inputless_retry_keep_observed_evidence(self):
+        failed = codex_round(1)
+        failed[-1]['payload'].update(last_agent_message=None, error={'message':'at capacity'})
+        retry = codex_round(2)
+        del retry[2:4]
+        self.transcript([{'type':'session_meta','payload':{'id':self.sid}}] + failed + retry)
+        parsed = transcripts.read(str(self.path), 'codex', self.sid)
+        self.assertEqual(parsed['diagnostics'], [])
+        self.assertEqual([r['completion'] for r in parsed['rounds']], ['failed','completed'])
+        self.assertIn('at capacity', parsed['rounds'][0]['agent'])
+        self.assertIn('inputless_after_terminal', parsed['rounds'][1]['user'])
+        self.assertIn('turn-1', parsed['rounds'][1]['user'])
+        self.assertIn('evidence result', parsed['rounds'][1]['agent'])
+
+    def test_goal_and_silent_heartbeat_are_labeled_native_triggers(self):
+        goal = codex_round(1)
+        goal[2]['payload']['internal_chat_message_metadata_passthrough'] = {
+            'turn_id':'turn-1', 'content_item_kinds':['goal.internal_context']}
+        goal.pop(3)
+        heartbeat = codex_round(2)
+        heartbeat[2] = {'type':'response_item','payload':{
+            'type':'function_call_output','name':'automation_update','namespace':'codex_app',
+            'output':'<heartbeat>inspect current state</heartbeat>',
+            'internal_chat_message_metadata_passthrough':{'turn_id':'turn-2'}}}
+        heartbeat.pop(3)
+        heartbeat[-3]['payload'].update(phase='final_answer',content=[{'type':'output_text','text':''}])
+        heartbeat[-1]['payload']['last_agent_message'] = None
+        rows = [{'type':'session_meta','payload':{'id':self.sid}}] + goal + heartbeat
+        self.transcript(rows)
+        parsed = transcripts.read(str(self.path), 'codex', self.sid)
+        self.assertEqual(parsed['diagnostics'], [])
+        self.assertEqual(len(parsed['rounds']), 2)
+        self.assertIn('goal', parsed['rounds'][0]['user'])
+        self.assertIn('heartbeat', parsed['rounds'][1]['user'])
+        self.assertIn('task_complete', parsed['rounds'][1]['agent'])
+        goal[2]['payload']['internal_chat_message_metadata_passthrough']['turn_id'] = 'foreign'
+        self.transcript(rows)
+        with self.assertRaises(ValueError):
+            transcripts.read(str(self.path), 'codex', self.sid)
+
+    def test_superseded_turn_is_partial_and_open_tail_stays_pending(self):
+        self.transcript([{'type':'session_meta','payload':{'id':self.sid}}]
+                        + codex_round(1, finished=False) + codex_round(2, finished=False))
+        parsed = transcripts.read(str(self.path), 'codex', self.sid)
+        self.assertEqual([r['completion'] for r in parsed['rounds']], ['interrupted'])
+        self.assertTrue(parsed['pending_tail'])
+        self.assertIn('superseded', parsed['rounds'][0]['agent'])
+        tail = codex_round(3, finished=False)
+        del tail[2:4]
+        self.transcript([{'type':'session_meta','payload':{'id':self.sid}}] + tail)
+        self.assertTrue(transcripts.read(str(self.path), 'codex', self.sid)['pending_tail'])
+
+    def test_v1_skipped_native_turn_backfills_without_renumbering(self):
+        native = codex_round(2)
+        native[3] = codex_user_item(self.sid, 2, 'question 2')
+        self.transcript([{'type':'session_meta','payload':{'id':self.sid}}]
+                        + codex_round(1) + native + codex_round(3))
+        legacy = transcripts.read(str(self.path), 'codex', self.sid)
+        legacy.pop('codex_v2')
+        legacy['rounds'] = list(legacy.pop('codex_v1').values())
+        with mock.patch.object(transcripts, 'read', return_value=legacy):
+            first = self.capture('codex')
+        self.assertEqual(first['captured_rounds'], 2)
+        old = it._load(it.state_path('codex', self.sid), 'codex', self.sid)['rounds']
+        captured = self.capture('codex')
+        self.assertTrue(captured['ok'], captured)
+        self.assertEqual(captured['appended'], 1)
+        state = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+        self.assertEqual(state['rounds'][:2], old)
+        self.assertEqual([r['id'] for r in state['rounds']], ['turn-1','turn-3','turn-2'])
+        it.state_path('codex', self.sid).unlink()
+        rebuilt = self.capture('codex')
+        self.assertEqual((rebuilt['ok'], rebuilt['appended']), (True, 0))
+
+    def test_terminal_backfill_keeps_old_raw_indices_receipts_and_crash_replay(self):
+        header = [{'type':'session_meta','payload':{'id':self.sid}}]
+        failed = codex_round(2)
+        failed[-1]['payload'].update(last_agent_message=None,error={'message':'capacity'})
+        retry = codex_round(3)
+        del retry[2:4]
+        rows = header + codex_round(1) + failed + retry + codex_round(4)
+        self.transcript(rows)
+        old = transcripts.read(str(self.path),'codex',self.sid)
+        prior_codec = old.pop('codex_v2', {r['id']:r for r in old['rounds']})
+        old['rounds'] = list(prior_codec.values())
+        with mock.patch.object(transcripts,'read',return_value=old):
+            first = self.capture('codex')
+        self.assertEqual(first['captured_rounds'], 2)
+        path = raw._raw_file(raw.parse_ref(first['pending_refs'][0])[0])
+        before = path.read_bytes()
+        it.acknowledge('codex',self.sid,first['through'],'no_value','old fixture only')
+        old_state = it._load(it.state_path('codex',self.sid),'codex',self.sid)
+        captured = self.capture('codex')
+        self.assertTrue(captured['ok'], captured)
+        self.assertEqual((captured['appended'],captured['reviewed_rounds']),(2,2))
+        self.assertTrue(path.read_bytes().startswith(before))
+        state = it._load(it.state_path('codex',self.sid),'codex',self.sid)
+        self.assertEqual(state['rounds'][:2], old_state['rounds'])
+        self.assertEqual(state['reviews'], old_state['reviews'])
+        self.assertEqual([r['id'] for r in state['rounds']],['turn-1','turn-4','turn-2','turn-3'])
+        self.transcript(rows + codex_round(5))
+        self.assertEqual(self.capture('codex')['appended'],1)
+        stable = path.read_bytes()
+        it.state_path('codex',self.sid).unlink()
+        rebuilt = self.capture('codex')
+        self.assertTrue(rebuilt['ok'], rebuilt)
+        self.assertEqual((rebuilt['captured_rounds'],rebuilt['appended']),(5,0))
+        self.assertEqual(path.read_bytes(),stable)
+        failed[-1]['payload']['error']['message'] = 'changed error'
+        self.transcript(rows + codex_round(5))
+        self.assertFalse(self.capture('codex')['ok'])
+        self.assertEqual(path.read_bytes(),stable)
+
     def test_claude_completion_and_tool_results(self):
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2, finished=False))
         st = self.capture()
@@ -159,7 +272,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertIn(f"question {n}", item["preview"])
             self.assertNotIn("osk-capture", item["preview"])
             recalled = raw.read_round(f"{ref}#{n}")
-            self.assertIn(raw._CODEX_V2, recalled["text"])
+            self.assertIn(raw._CODEX_V3, recalled["text"])
             self.assertEqual(item["chars"], recalled["chars"])
         self.assertEqual(path.read_bytes(), before)
         # A user can quote that exact comment. Skip only the recorder's header,
@@ -212,6 +325,7 @@ class IntegrationTests(unittest.TestCase):
                 # Trace before the legacy user was ignored too.
                 legacy = reader(str(self.path), "codex", sid)
                 legacy.pop("codex_v1", None)
+                legacy.pop("codex_v2", None)
                 legacy["rounds"] = [{"id": "turn-1", "end_line": len(header + old_rows), "completion": "completed",
                     "user": '{"images": ["https://example.invalid/old.png"], "message": "question 1"}',
                     "agent": '{"arguments": "{}", "call_id": "tool-1", "name": "probe", "type": "function_call"}\n\n'
@@ -248,7 +362,7 @@ class IntegrationTests(unittest.TestCase):
                 new_text = raw.read_round(resumed["pending_refs"][0])["text"]
                 self.assertIn("distinct native image input", new_text)
                 self.assertIn("C:/images/new.png", new_text)
-                self.assertIn("osk-capture: codex-user-items-v2", new_text)
+                self.assertIn("osk-capture: codex-terminal-v3", new_text)
                 self.assertEqual(it.capture("codex", sid, str(self.path), "capture-tests")["appended"], 0)
                 it.state_path("codex", sid).unlink()
                 reconstructed = it.capture("codex", sid, str(self.path), "capture-tests")
@@ -538,6 +652,86 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(st["capture_pending"])
         self.assertIn("incomplete JSONL", st["capture_error"])
 
+    def test_unstarted_missing_native_does_not_hide_active_missing_source(self):
+        absent = self.capture()
+        self.assertTrue(absent['pending'])
+        state_path = it.state_path('claude', self.sid)
+        before = state_path.read_bytes()
+        states, _, _, waiting = it._known_pending(100)
+        self.assertNotIn(self.sid, [s['conversation_id'] for s in states])
+        self.assertIn(self.sid, [s['conversation_id'] for s in waiting])
+        self.assertEqual(state_path.read_bytes(), before)
+        it.tick('claude', self.sid)
+        states, _, _, waiting = it._known_pending(100)
+        self.assertIn(self.sid, [s['conversation_id'] for s in states])
+        self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
+        self.assertFalse(self.capture()['ok'])
+        self.transcript(claude_round(self.sid,1))
+        self.assertEqual(self.capture()['appended'], 1)
+        self.path.unlink()
+        states, _, _, waiting = it._known_pending(100)
+        self.assertIn(self.sid, [s['conversation_id'] for s in states])
+        self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
+
+    def test_unstarted_native_arrival_is_discovered_without_prompt_tick(self):
+        self.capture()
+        self.transcript(claude_round(self.sid,1))
+        states, _, _, waiting = it._known_pending(100)
+        self.assertIn(self.sid, [s['conversation_id'] for s in states])
+        self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
+        self.assertEqual(self.capture()['appended'], 1)
+
+    def test_archived_codex_recovery_keeps_prefix_and_review_receipts(self):
+        self.transcript([{'type': 'session_meta', 'payload': {'id': self.sid}}] + codex_round(1))
+        first = self.capture('codex')
+        it.acknowledge('codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
+        old = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):
+            archived = Path(home) / 'archived_sessions' / f'rollout-date-{self.sid}.jsonl'
+            archived.parent.mkdir()
+            self.path.replace(archived)
+            with archived.open('a', encoding='utf-8') as f:
+                f.write(''.join(json.dumps(r) + '\n' for r in codex_round(2)))
+            recovered = it.hook_capture({'harness': 'codex', 'session_id': self.sid}, 'capture-tests')
+            self.assertTrue(recovered['ok'], recovered)
+            self.assertEqual(recovered['appended'], 1)
+            self.assertEqual(recovered['transcript_path'], str(archived.resolve()))
+            new = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+            self.assertEqual(new['rounds'][:1], old['rounds'])
+            self.assertEqual(new['reviews'], old['reviews'])
+            self.assertEqual(new['reviewed_count'], 1)
+            self.assertEqual(self.capture('codex')['appended'], 0)
+
+    def test_native_relocation_rejects_ambiguity_and_wrong_identity(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):
+            self.capture('codex')
+            archived = Path(home) / 'archived_sessions' / f'rollout-date-{self.sid}.jsonl'
+            resumed = Path(home) / 'sessions/2026/09/17' / f'rollout-date-{self.sid}_resume.jsonl'
+            archived.parent.mkdir()
+            resumed.parent.mkdir(parents=True)
+            body = [{'type': 'session_meta', 'payload': {'id': self.sid}}] + codex_round(1)
+            archived.write_text(''.join(json.dumps(r) + '\n' for r in body), encoding='utf-8')
+            states, _, _, waiting = it._known_pending(100)
+            self.assertIn(self.sid, [s['conversation_id'] for s in states])
+            self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
+            resumed.write_bytes(archived.read_bytes())
+            refused = self.capture('codex')
+            self.assertIn('multiple transcripts', refused['capture_error'])
+            self.assertEqual(refused['captured_rounds'], 0)
+            archived.unlink()
+            body[0]['payload']['id'] = 'another-conversation'
+            resumed.write_text(''.join(json.dumps(r) + '\n' for r in body), encoding='utf-8')
+            refused = self.capture('codex')
+            self.assertFalse(refused['ok'])
+            self.assertEqual(refused['transcript_path'], str(self.path.resolve()))
+            self.assertEqual(refused['captured_rounds'], 0)
+            body[0]['payload']['id'] = self.sid
+            resumed.write_text(''.join(json.dumps(r) + '\n' for r in body), encoding='utf-8')
+            self.assertEqual(self.capture('codex')['appended'], 1)
+            archived.write_bytes(resumed.read_bytes())
+            # An existing explicit source stays authoritative, even with two candidates.
+            self.assertTrue(it.capture('codex', self.sid, str(resumed), 'capture-tests')['ok'])
+
     def test_native_identity_mismatch_and_changed_prefix_fail_closed(self):
         self.transcript(claude_round("not-this-conversation", 1))
         self.assertFalse(self.capture()["ok"])
@@ -549,6 +743,25 @@ class IntegrationTests(unittest.TestCase):
         st = self.capture()
         self.assertFalse(st["ok"])
         self.assertEqual(raw.record_state("capture-tests", st["record"])["rounds"], 1)
+
+    def test_unbound_conversation_can_choose_a_stable_session_without_binding_generic_key(self):
+        self.transcript(claude_round(self.sid, 1))
+        generic = self.sid + '-unbound'
+        failed = it.capture('claude', self.sid, str(self.path), generic)
+        self.assertFalse(failed['ok'])
+        captured = it.capture('claude', self.sid, str(self.path), 'capture-tests', '= Scope/Capture')
+        self.assertTrue(captured['ok'], captured)
+        self.assertEqual(captured['captured_rounds'], 1)
+        self.assertIsNone(write.resolve_session(generic))
+        resumed = it.hook_capture({'harness': 'claude', 'session_id': self.sid}, generic)
+        self.assertTrue(resumed['ok'], resumed)
+        self.assertEqual(resumed['session'], 'capture-tests')
+        self.assertIsNone(write.resolve_session(generic))
+        other = it.capture('claude', self.sid + '-other', str(self.path), generic)
+        self.assertFalse(other['ok'])
+        self.assertIsNone(it._load(it.state_path('claude', self.sid + '-other'),
+                                  'claude', self.sid + '-other')['space'])
+        self.assertFalse(it.capture('claude', self.sid, str(self.path), generic, '= Scope/W1')['ok'])
 
     def test_hook_process_resume_keeps_pending_and_diagnostics_are_visible(self):
         self.transcript(claude_round(self.sid, 1))
@@ -584,6 +797,22 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("question 1", first)
         self.assertNotIn("question 1", second)
         self.assertFalse(self.capture("codex")["capture_pending"])
+        unknown = codex_round(3, finished=False)
+        del unknown[2:4]
+        self.transcript([{"type":"session_meta","payload":{"id":self.sid}}] + unknown
+                        + [{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-3"}}])
+        parsed = transcripts.read(str(self.path), 'codex', self.sid)
+        self.assertTrue(parsed['pending_tail'])
+        self.assertIn('missing input for aborted', parsed['diagnostics'][0])
+        # Session initialization may abort before any user/agent activity.
+        self.transcript([{"type":"session_meta","payload":{"id":self.sid}}, unknown[0],
+                         {"type":"response_item","payload":{"type":"message","role":"user",
+                          "content":[{"type":"input_text","text":"environment metadata"}],
+                          "internal_chat_message_metadata_passthrough":{
+                              "content_item_kinds":["environments.environment_context"],"turn_id":"turn-3"}}},
+                         {"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-3"}}])
+        parsed = transcripts.read(str(self.path), 'codex', self.sid)
+        self.assertEqual((parsed['rounds'],parsed['diagnostics'],parsed['pending_tail']), ([],[],False))
 
     def test_file_reads_and_mixed_exec_are_references_but_probe_output_stays(self):
         rows = claude_round(self.sid, 1)

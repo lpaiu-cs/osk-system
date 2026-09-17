@@ -77,6 +77,105 @@ class GrowthTests(unittest.TestCase):
             assert not growth.LEDGER.exists()
         """)
 
+    def test_command_check_rejects_missing_binary_without_launch_or_writes(self):
+        self.check_case("""
+            from unittest.mock import patch
+            import os
+            program = Path('bin') / ('worker.exe' if os.name == 'nt' else 'worker')
+            program.parent.mkdir()
+            program.write_text('fixture executable')
+            program.chmod(0o755)
+            with patch.dict(os.environ, {'PATH':'bin'}):
+                found = growth.check_command([program.name])
+                assert found['executable'] == str(program.resolve()), found
+            before = {str(p):p.read_bytes() for p in core.ROOT.rglob('*') if p.is_file()}
+            with patch('osk.growth.subprocess.Popen', side_effect=AssertionError('launched')):
+                assert growth.check_command([sys.executable,'--version'])['ok']
+                missing = growth.check_command([str(core.ROOT/'retired-version/codex.exe')])
+                assert not missing['ok'] and missing['state'] == 'invalid_command', missing
+                assert not growth.check_command([str(core.ROOT)])['ok']
+                for bad in ([], 'codex', ['codex', 'bad' + chr(0)]):
+                    try:
+                        growth.check_command(bad)
+                        raise AssertionError('invalid argv accepted')
+                    except ValueError:
+                        pass
+            after = {str(p):p.read_bytes() for p in core.ROOT.rglob('*') if p.is_file()}
+            assert before == after
+            node('A')
+            rejected = growth.run([str(core.ROOT/'retired-version/codex.exe')])
+            assert rejected['state'] == 'invalid_command', rejected
+            assert not growth.LEDGER.exists()
+        """)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX symlink venv execution')
+    def test_command_check_preserves_posix_venv_entrypoint(self):
+        self.check_case("""
+            import subprocess, venv
+            venv.EnvBuilder(with_pip=False, symlinks=True, system_site_packages=True).create(core.ROOT / '.venv')
+            executable = core.ROOT / '.venv/bin/python'
+            assert executable.is_symlink()
+            site = subprocess.run([str(executable), '-c',
+                "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                capture_output=True, text=True, check=True).stdout.strip()
+            (Path(site) / 'venv_probe.py').write_text("VALUE = 'venv-only'")
+            probe = "import json,sys,venv_probe; print(json.dumps([sys.prefix,venv_probe.VALUE]))"
+            expected = [str(core.ROOT / '.venv'), 'venv-only']
+            original = subprocess.run([str(executable), '-c', probe], cwd=core.ROOT,
+                                      capture_output=True, text=True, check=True)
+            assert json.loads(original.stdout) == expected
+            for entry in (str(executable), '.venv/bin/python'):
+                checked = growth.check_command([entry])
+                observed = subprocess.run([checked['executable'], '-c', probe], cwd=core.ROOT,
+                                          capture_output=True, text=True)
+                assert observed.returncode == 0, observed.stderr
+                assert json.loads(observed.stdout) == expected
+                assert checked['executable'] == str(executable)
+            node('A')
+            result = growth.run([str(executable), '-c', packet_worker(
+                "import venv_probe; assert venv_probe.VALUE == 'venv-only'")], limit=1)
+            assert result['ok'], (result, (core.ROOT / result['output'] / 'stderr.txt').read_text())
+        """)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX exec searches PATH after cwd')
+    def test_command_check_uses_posix_execution_path(self):
+        self.check_case("""
+            import os, subprocess, tempfile
+            from unittest.mock import patch
+            def worker(path, label):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('#!' + sys.executable + chr(10) + 'print(' + repr(label) + ')' + chr(10))
+                path.chmod(0o755)
+            worker(core.ROOT / 'worker', 'vault-root')
+            worker(core.ROOT / 'bin/worker', 'vault-bin')
+            worker(core.ROOT / 'bin/vault-only', 'vault-only')
+            with tempfile.TemporaryDirectory(dir=core.ROOT.parent) as directory:
+                caller = Path(directory)
+                worker(caller / 'worker', 'caller-root')
+                worker(caller / 'bin/worker', 'caller-bin')
+                worker(caller / 'bin/caller-only', 'caller-only')
+                os.chdir(caller)
+                try:
+                    for path, label in (('bin','vault-bin'), ('','vault-root'),
+                                        (':bin','vault-root'), ('missing:bin','vault-bin'),
+                                        (str(core.ROOT / 'bin'),'vault-bin')):
+                        with patch.dict(os.environ, {'PATH':path}):
+                            original = subprocess.run(['worker'], cwd=core.ROOT,
+                                capture_output=True, text=True, check=True)
+                            assert original.stdout.strip() == label
+                            checked = growth.check_command(['worker'])
+                            assert checked['ok'], checked
+                            actual = subprocess.run([checked['executable']], cwd=core.ROOT,
+                                capture_output=True, text=True, check=True)
+                            assert actual.stdout == original.stdout, (path, checked, actual.stdout)
+                            assert Path.cwd() == caller
+                    with patch.dict(os.environ, {'PATH':'bin'}):
+                        assert growth.check_command(['vault-only'])['ok']
+                        assert not growth.check_command(['caller-only'])['ok']
+                finally:
+                    os.chdir(core.ROOT)
+        """)
+
     def test_worker_hooks_do_not_feed_maintenance_into_new_conversations(self):
         self.check_case("""
             node('A')

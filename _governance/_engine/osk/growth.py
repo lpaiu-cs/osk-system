@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import shutil
 import sys
 import uuid
 
@@ -529,11 +530,29 @@ def _stop_tree(proc: subprocess.Popen) -> str | None:
     return error
 
 
-def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
-    """Scheduler entry: manifest → bounded external process → observed receipts."""
+def check_command(command: list[str]) -> dict:
+    """Resolve argv[0] without starting an agent or changing vault state."""
     if not isinstance(command, list) or not command or any(
             not isinstance(arg, str) or not arg or "\0" in arg for arg in command):
         raise ValueError("command must be a nonempty argv list")
+    program = command[0]
+    if "/" in program or "\\" in program:
+        program = str(core.ROOT / program)
+    search_path = None
+    if os.name == "posix":
+        # exec searches PATH after chdir(cwd); Windows searches from the caller.
+        search_path = os.pathsep.join(str(core.ROOT / entry) for entry in os.get_exec_path())
+    executable = shutil.which(program, path=search_path)
+    if executable:
+        executable = str(Path(executable).absolute())  # Keep venv/launcher symlink entrypoints intact.
+    return {"ok": executable is not None, "state": "ready" if executable else "invalid_command",
+            "executable": executable,
+            "violations": [] if executable else ["Growth executable is unavailable: " + command[0]]}
+
+
+def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
+    """Scheduler entry: manifest → bounded external process → observed receipts."""
+    checked = check_command(command)
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 86400:
         raise ValueError("timeout must be between 1 and 86400 seconds")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
@@ -558,6 +577,9 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
                         return {"ok": False, "state": "capture_pending", "selected": 0,
                                 "capture": catchup}
                     return {"ok": True, "state": "skipped", "selected": 0}
+                if not checked["ok"]:
+                    return checked
+                command = [checked["executable"], *command[1:]]
                 attempt = uuid.uuid4().hex
                 for candidate in planned["candidates"]:
                     candidate["distill_key"] = f"growth:{attempt}:{candidate['key']}"

@@ -190,11 +190,12 @@ def _growth_cmd(a) -> None:
             result = growth.review(a.key, a.outcome, target=a.target,
                                    reason=a.reason, manifest=a.manifest)
         else:
-            command = json.loads(Path(a.command_file).read_text(encoding="utf-8"))
+            command = json.loads(Path(a.command_file).read_text(encoding="utf-8-sig"))
             if not isinstance(command, list) or not command or not all(
                     isinstance(s, str) and s for s in command):
                 raise ValueError("command file must contain a nonempty JSON argv array")
-            result = growth.run(command, limit=a.limit, timeout=a.timeout)
+            result = (growth.check_command(command) if a.check else
+                      growth.run(command, limit=a.limit, timeout=a.timeout))
         _emit(result)
         if not result.get("ok", True):
             sys.exit(1)
@@ -349,6 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "run":
             q.add_argument("--command-file", required=True, help="에이전트 argv 배열 JSON 파일")
             q.add_argument("--timeout", type=int, default=600)
+            q.add_argument("--check", action="store_true", help="실행 파일만 확인; 모델·포착·대장 쓰기 없음")
     q = gs.add_parser("review")
     q.add_argument("key")
     q.add_argument("outcome", choices=("preserved", "no_value", "deferred"))

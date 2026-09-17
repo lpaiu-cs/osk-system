@@ -403,6 +403,15 @@ Codex의 ChatGPT 구독 로그인으로 실행할 때는 `codex login status`가
 이 설정은 해당 실행에만 적용되며 전역 승인 설정을 바꾸지 않는다. 자동 검토도 개별
 호출을 거절할 수 있으므로, 실제 원문 읽기와 노드 저장 결과까지 확인한다.
 `forced_login_method`는 ChatGPT 인증으로 제한하며, 사용량은 구독의 Codex 한도에 포함된다.
+Windows에서는 앱 내부의 버전 해시 디렉터리 대신 설치 진입점이나 PATH의 `codex`를
+사용한다. 앱 갱신 때 이전 버전 파일이 없어질 수 있다. 다음 사전검사는 실행 파일만
+확인하며 모델 호출·포착·대장 쓰기를 하지 않는다. 로그인·MCP 권한·실제 증류 검사를
+대신하지는 않는다. PowerShell이 UTF-8 BOM을 붙인 JSON 명령 파일도 읽는다.
+
+```powershell
+.venv/Scripts/python.exe _governance/_engine/scripts/growth_run.py --command-file .osk/growth-command.json --check
+```
+
 아래 명령은 한 번만 실행한다. 정기 실행이 필요할 때만 뒤의 스케줄러를 별도로 등록한다.
 
 ```powershell

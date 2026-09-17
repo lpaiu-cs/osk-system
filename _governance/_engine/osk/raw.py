@@ -211,6 +211,7 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
 
 
 _CODEX_V2 = "<!-- osk-capture: codex-user-items-v2 -->"
+_CODEX_V3 = "<!-- osk-capture: codex-terminal-v3 "
 _CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
 
 
@@ -230,12 +231,42 @@ def inherited_prefix(path: Path) -> dict | None:
     return value
 
 
-def _block(index: int, user: str, agent: str, *, codex_native: bool = False) -> str:
+def _block(index: int, user: str, agent: str, *, codex_native: bool = False,
+           codex_id: str | None = None) -> str:
     """한 라운드 = user 발화 + 그에 속한 에이전트 응답(시행령 §2 7항)."""
     stamp = f"{_CODEX_V2}\n\n" if codex_native else ""
+    if codex_id is not None:
+        stamp = _CODEX_V3 + json.dumps(codex_id) + " -->\n\n"
     return (f"## {index}\n\n{stamp}"
             f"### user\n\n{user.rstrip()}\n\n"
             f"### agent\n\n{agent.rstrip()}\n")
+
+
+def codex_capture_order(path: Path, codex_v1: dict, codex_v2: dict) -> list[str]:
+    """Recover append order after historical backfill, even without local cursors."""
+    if not path.exists():
+        return []
+    text = read_exact(path)
+    ids, legacy = [], iter(codex_v2)
+    for start, end in _round_spans(text).values():
+        header = _round_body(text[start:end]).splitlines()[0]
+        if header.startswith(_CODEX_V3):
+            if not header.endswith(" -->"):
+                raise ValueError("damaged Codex capture identity")
+            value = json.loads(header[len(_CODEX_V3):-4])
+            if not isinstance(value, str) or not value:
+                raise ValueError("damaged Codex capture identity")
+        else:
+            value = next(legacy, None)
+            if header != _CODEX_V2:
+                while value is not None and value not in codex_v1:
+                    value = next(legacy, None)
+            if value is None:
+                raise ValueError("legacy Codex capture identity prefix changed")
+        ids.append(value)
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate Codex capture identity")
+    return ids
 
 
 # scope 열거·space 표기 판정은 `graph`가 한 벌로 소유한다(`wm`도 같은 것을 쓴다).
@@ -250,6 +281,7 @@ _CONFINE = ("`_raw/`는 세션당 정본 하나이므로(시행령 §2 1항) 한
 def append_rounds(session: str, record: str, pairs: list,
                   space: str | None = None, *, replay_prefix: bool = False,
                   codex_v1: dict | None = None,
+                  codex_v2: dict | None = None,
                   inherited: dict | None = None) -> dict:
     """라운드 여럿을 **한 번의 쓰기로** 잇는다.
 
@@ -262,8 +294,10 @@ def append_rounds(session: str, record: str, pairs: list,
     그 scope로 세션을 확정한다. `space`의 표기는 `create_node`와 같은 군집
     전체 경로(`"= Scope/W1"`)다 — 같은 값이 같은 뜻이어야 호출자가
     `overview`의 `clusters`를 그대로 옮겨 쓴다."""
-    if codex_v1 is not None and not replay_prefix:
+    if (codex_v1 is not None or codex_v2 is not None) and not replay_prefix:
         raise ValueError("Codex capture versions require prefix replay")
+    if codex_v2 is not None and codex_v1 is None:
+        raise ValueError("Codex v3 capture requires both historical codecs")
     if inherited is not None and (not replay_prefix or codex_v1 is not None):
         raise ValueError("inherited prefixes require Claude capture replay")
     if not pairs:
@@ -318,17 +352,21 @@ def append_rounds(session: str, record: str, pairs: list,
             if len(spans) > len(norm):
                 raise write.WriteError("포착 원본이 저장된 기록보다 짧다", ["원본을 복구한 뒤 재시도하라"])
             for pair, (idx, (s, e)), (u, a) in zip(pairs, sorted(spans.items()), norm):
+                extended = codex_v2 is not None and _round_body(prior[s:e]).startswith(_CODEX_V3)
                 native = codex_v1 is not None and _round_body(prior[s:e]).startswith(_CODEX_V2 + "\n")
-                if codex_v1 is not None and not native:
+                if codex_v1 is not None and not extended:
                     # Select the recorded codec before comparing. Never fall
                     # back after a mismatch: v2 rich input must remain checked.
                     # The marker lives in raw so cursor loss/copies retain it.
-                    legacy = codex_v1.get(pair["id"])
+                    legacy = ((codex_v2 or {}).get(pair["id"]) if native and codex_v2 is not None
+                              else pair if native else codex_v1.get(pair["id"]))
                     if legacy is None:
                         raise write.WriteError("과거 Codex 라운드를 재현할 수 없다", [f"라운드 {idx} — 쓰지 않았다"])
                     u, a = legacy["user"], legacy["agent"]
-                    legacy_replayed.append(idx)
-                expected = _block(idx, escape_numeric_h2(u), escape_numeric_h2(a), codex_native=native)
+                    if not native:
+                        legacy_replayed.append(idx)
+                expected = _block(idx, escape_numeric_h2(u), escape_numeric_h2(a), codex_native=native,
+                                  codex_id=pair["id"] if extended else None)
                 if _round_body(prior[s:e]) != _round_body(secrets.filter_text(expected)[0]):
                     raise write.WriteError("포착 원본과 저장된 접두부가 다르다", [f"라운드 {idx} — 쓰지 않았다"])
                 replayed.append(idx)
@@ -343,7 +381,8 @@ def append_rounds(session: str, record: str, pairs: list,
         for n, (u, a) in enumerate(norm):
             indices.append(first + n)
             blocks.append(_block(first + n, escape_numeric_h2(u),
-                                 escape_numeric_h2(a), codex_native=codex_v1 is not None))
+                                 escape_numeric_h2(a), codex_native=codex_v1 is not None,
+                                 codex_id=pairs[len(replayed) + n]["id"] if codex_v2 is not None else None))
         if not replay_prefix:
             _reject_replay(prior, spans, blocks)
         if prior and not prior.endswith("\n"):
@@ -461,7 +500,8 @@ def _recalled(chunk: str) -> str:
 def _preview(chunk: str, width: int = 60) -> str:
     """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
     body = _round_body(chunk).splitlines()
-    if body[:3] == [_CODEX_V2, "", "### user"]:
+    if (body[:3] == [_CODEX_V2, "", "### user"] or len(body) >= 3
+            and body[0].startswith(_CODEX_V3) and body[1:3] == ["", "### user"]):
         chunk = "\n".join(body[2:])  # Only the header; user quotations stay visible.
     for line in chunk.splitlines():
         s = line.strip()
