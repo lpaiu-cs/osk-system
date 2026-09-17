@@ -538,9 +538,13 @@ def check_command(command: list[str]) -> dict:
     program = command[0]
     if "/" in program or "\\" in program:
         program = str(core.ROOT / program)
-    executable = shutil.which(program)
+    search_path = None
+    if os.name == "posix":
+        # exec searches PATH after chdir(cwd); Windows searches from the caller.
+        search_path = os.pathsep.join(str(core.ROOT / entry) for entry in os.get_exec_path())
+    executable = shutil.which(program, path=search_path)
     if executable:
-        executable = str(Path(executable).resolve())  # Popen runs from the vault, not the caller's cwd.
+        executable = str(Path(executable).absolute())  # Keep venv/launcher symlink entrypoints intact.
     return {"ok": executable is not None, "state": "ready" if executable else "invalid_command",
             "executable": executable,
             "violations": [] if executable else ["Growth executable is unavailable: " + command[0]]}

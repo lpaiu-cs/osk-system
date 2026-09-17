@@ -5,6 +5,11 @@
 추가했다. 이 검사는 모델이나 MCP를 시작하지 않는다. 스케줄러 등록도 같은 검사를
 먼저 거친다. 별도 API 공급자나 새로운 에이전트 실행기는 추가하지 않는다.
 
+검사 결과의 경로는 심볼릭 링크를 해소하지 않고 절대화한다. `.venv/bin/python`을
+시스템 Python으로 바꾸지 않기 위해서다. POSIX의 상대·빈 PATH 항목은 실제 실행
+디렉터리인 vault를 기준으로 검색하고, Windows는 호출 프로세스 기준 검색을 유지한다
+([Python의 실행 경로 규칙](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)).
+
 ## 포착 오류의 근인
 
 Codex native 전사의 `task_complete`에는 성공뿐 아니라 오류 종료가 들어온다.
