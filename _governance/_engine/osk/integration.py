@@ -91,6 +91,8 @@ def _view(s: dict) -> dict:
             "reviewed_through": rs[n-1]["id"] if n else None,
             "captured_rounds": len(rs), "reviewed_rounds": n,
             "aborted_rounds": sum(r.get("completion") == "aborted" for r in rs),
+            "failed_rounds": sum(r.get("completion") == "failed" for r in rs),
+            "interrupted_rounds": sum(r.get("completion") == "interrupted" for r in rs),
             "pending": bool(s["capture_pending"] or len(rs) > n or repairs),
             "repair_pending": repairs,
             "capture_pending": s["capture_pending"], "capture_error": s["capture_error"],
@@ -193,6 +195,27 @@ def _inherited_rounds(s: dict, rounds: list) -> list:
     return rounds
 
 
+def _locate_transcript(harness: str, sid: str, saved: str | None = None) -> str | None:
+    """Recover a moved native file by exact ID; ambiguity requires an explicit path."""
+    _identity(harness, sid)
+    if saved and Path(saved).exists():
+        return str(Path(saved).resolve())
+    if harness == "claude":
+        base = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
+        matches = list((base / "projects").glob(f"*/{sid}.jsonl"))
+    else:
+        base = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+        matches = []
+        for folder, prefix in ((base / "sessions", "*/*/*/"), (base / "archived_sessions", "")):
+            for suffix in (f"*-{sid}.jsonl", f"*-{sid}_*.jsonl"):
+                matches.extend(folder.glob(prefix + suffix))
+    matches = sorted({p.resolve() for p in matches if p.is_file()})
+    if len(matches) > 1:
+        raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
+    # transcripts.read checks the native identity before this path is saved.
+    return str(matches[0]) if matches else saved
+
+
 def capture(harness: str, conversation_id: str, transcript_path: str | None,
             session: str, space: str | None = None) -> dict:
     with _locked(harness, conversation_id) as p:
@@ -211,24 +234,42 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                 pinned = "= Scope/" + scope
             destination, bound = write.resolve_landing(session, space, raw._CONFINE)
             requested = "= Scope/" + destination if destination else None
+            if pinned and not requested and s["session"]:
+                # A generic cwd key must not bind unrelated conversations.
+                # Resume this native ID using its explicitly chosen session.
+                session = s["session"]
+                destination, bound = write.resolve_landing(session, pinned, raw._CONFINE)
+                requested = "= Scope/" + destination
             if (pinned and requested and pinned != requested
                     or s["session"] and s["session"] != session
-                    and not (bound and requested == pinned)):
+                    and not (bound and requested == pinned or not pinned and requested)):
                 raise ValueError("conversation scope changed; existing capture was not moved")
             s["session"] = session
             s["space"] = pinned or requested
             if transcript_path:
                 s["transcript_path"] = str(Path(transcript_path).resolve())
             _save(p, s)
-            if not s["transcript_path"]:
+            native_path = _locate_transcript(harness, conversation_id, s["transcript_path"])
+            if not native_path:
                 raise ValueError("native transcript path unavailable; use integration capture with --transcript")
-            parsed = transcripts.read(s["transcript_path"], harness, conversation_id)
+            parsed = transcripts.read(native_path, harness, conversation_id)
+            s["transcript_path"] = native_path
             s["coverage"] = parsed["coverage"]
             _save(p, s)  # Reference-only coverage is visible before raw capture.
             # ponytail: serialize capture until its cursor is saved; use per-scope
             # locks if capture throughput matters. Raw owns the mutation lock.
             with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
                 rounds = _inherited_rounds(s, parsed["rounds"])
+                if harness == "codex" and parsed.get("codex_v2") is not None and s["space"]:
+                    # Old raw coordinates/ACKs are immutable. Newly supported
+                    # historical turns append after them, with native IDs in raw.
+                    path = raw.record_path(raw._scope_of_space(s["space"]), s["record"])
+                    order = raw.codex_capture_order(path, parsed["codex_v1"], parsed["codex_v2"])
+                    by_id = {r["id"]: r for r in rounds}
+                    if len(by_id) != len(rounds) or any(rid not in by_id for rid in order):
+                        raise ValueError("native round identity prefix changed; existing raw was not altered")
+                    known = set(order)
+                    rounds = [by_id[rid] for rid in order] + [r for r in rounds if r["id"] not in known]
                 _save(p, s)  # Keep prefix ownership across a crash before raw append.
                 ids = [r["id"] for r in rounds]
                 if len(ids) != len(set(ids)) or ids[:len(s["rounds"])] != [r["id"] for r in s["rounds"]]:
@@ -236,6 +277,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                 if rounds:
                     result = raw.append_rounds(session, s["record"], rounds, s.get("space"),
                                                replay_prefix=True, codex_v1=parsed.get("codex_v1"),
+                                               codex_v2=parsed.get("codex_v2"),
                                                inherited=s.get("inherited"))
                     s["coverage"]["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
                     stored = raw.read_exact(raw._raw_file(result["path"]))
@@ -408,13 +450,13 @@ def review_status(harness: str, conversation_id: str, through: str) -> dict:
         return result
 
 
-def _known_pending(limit: int) -> tuple[list, int, list]:
+def _known_pending(limit: int) -> tuple[list, int, list, list]:
     if not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
     probe = state_path("claude", "inventory")
     prefix = "-".join(probe.name.split("-")[:3]) + "-"
     paths = sorted(probe.parent.glob(prefix + "*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name))
-    states, errors = [], []
+    states, errors, awaiting_native = [], [], []
     for p in paths:
         try:
             value = json.loads(p.read_text(encoding="utf-8"))
@@ -423,22 +465,33 @@ def _known_pending(limit: int) -> tuple[list, int, list]:
                     raise ValueError("state filename identity mismatch")
                 s = _load(p, value["harness"], value["conversation_id"])
                 current = _current_view(s, p)
-            changed = False
-            if s.get("transcript_path"):
+            changed, missing = False, False
+            native_path = _locate_transcript(s["harness"], s["conversation_id"], s.get("transcript_path"))
+            if native_path:
                 try:
-                    native = Path(s["transcript_path"]).stat()
+                    native = Path(native_path).stat()
                     changed = s.get("native_fingerprint") != {"size": native.st_size, "mtime_ns": native.st_mtime_ns}
+                except FileNotFoundError:
+                    changed, missing = True, True
                 except OSError:
                     changed = True
+            else:
+                changed, missing = True, True
+            if missing and not (s["prompt_count"] or s["rounds"] or s.get("native_fingerprint")):
+                # SessionStart may precede file creation, or no user turn ever
+                # follows. Keep the cursor; do not spend the bounded work slots.
+                awaiting_native.append({"harness": s["harness"], "conversation_id": s["conversation_id"],
+                                        "state": "awaiting_native", "transcript_path": s["transcript_path"]})
+                continue
             if current["pending"] or changed:
                 states.append(s)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append({"state": str(p), "error": str(exc)})
-    return states[:limit], max(0, len(states) - limit), errors
+    return states[:limit], max(0, len(states) - limit), errors, awaiting_native
 
 
 def list_pending(limit: int = 20) -> dict:
-    states, remaining, errors = _known_pending(limit)
+    states, remaining, errors, awaiting_native = _known_pending(limit)
     jobs = []
     for s in states:
         if not _view(s)["pending_refs"]:
@@ -446,12 +499,13 @@ def list_pending(limit: int = 20) -> dict:
         job = prompt(s["harness"], s["conversation_id"])
         job["prompt"] = job.pop("text")
         jobs.append(job)
-    return {"ok": not errors, "jobs": jobs, "remaining": remaining, "errors": errors}
+    return {"ok": not errors, "jobs": jobs, "remaining": remaining, "errors": errors,
+            "awaiting_native": awaiting_native}
 
 
 def catchup(limit: int = 20) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session."""
-    states, remaining, errors = _known_pending(limit)
+    states, remaining, errors, awaiting_native = _known_pending(limit)
     captures, jobs = [], []
     for s in states:
         try:
@@ -464,7 +518,8 @@ def catchup(limit: int = 20) -> dict:
         except Exception as exc:
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "jobs": jobs,
-            "captures": captures, "remaining": remaining, "errors": errors}
+            "captures": captures, "remaining": remaining, "errors": errors,
+            "awaiting_native": awaiting_native}
 
 
 def prompt(harness: str, conversation_id: str, *, include_organization: bool = True) -> dict:
@@ -499,6 +554,14 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
             "이 대화의 검토 상태는 별개다. 공유 기억이 비어 있어도 검토한다.\n")
     if st["capture_error"]:
         text += f"포착 진단: {st['capture_error']} — 미완료로 남았다. 본 작업은 계속할 수 있다.\n"
+    if st["failed_rounds"] or st["interrupted_rounds"]:
+        text += (f"원문에 실패 종료 {st['failed_rounds']}·종료 기록 없이 다음 턴으로 넘어간 부분 기록 "
+                 f"{st['interrupted_rounds']}건이 포함된다. 관측 보존이며 작업 성공을 뜻하지 않는다.\n")
+    if st["harness"] == "codex":
+        text += ("native_trigger는 goal·heartbeat 또는 실패·중단 뒤 입력 없는 턴이다. 앞 입력은 문맥으로만 "
+                 "보존하며 같은 의도의 재개라고 확정하지 않는다. 새 사용자 발화로 해석하지 말고, "
+                 "명시 지시 증류와 자율 성장의 증거를 구분하라. 복구된 과거 턴은 "
+                 "기존 좌표 뒤에 추가될 수 있으므로 raw 번호만으로 발생 시각을 추론하지 않는다.\n")
     if st["inherited_rounds"]:
         text += (f"같은 scope에 이미 보존된 과거 {st['inherited_rounds']}라운드는 원래 raw를 참조한다. "
                  "새 포착·이 대화의 검토 완료로 세지 않는다. 부모의 미검토 대기는 그대로 남는다.\n")
@@ -599,17 +662,9 @@ def hook_capture(env: dict, session: str) -> dict:
     if not path:
         for kind in ([harness] if harness else ["claude", "codex"]):
             _identity(kind, sid)
-            saved = status(kind, sid).get("transcript_path")
+            saved = _locate_transcript(kind, sid, status(kind, sid).get("transcript_path"))
             if saved:
                 candidates.append((kind, saved))
-                continue
-            base = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
-            if kind == "claude":
-                matches = (base / "projects").glob(f"*/{sid}.jsonl")
-            else:
-                base = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-                matches = (base / "sessions").glob(f"*/*/*/*{sid}.jsonl")
-            candidates.extend((kind, str(p)) for p in matches if p.is_file())
         if len(candidates) == 1:
             harness, path = candidates[0]
         elif len(candidates) > 1:

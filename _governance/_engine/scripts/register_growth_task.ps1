@@ -15,6 +15,8 @@ $vaultPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../../..')).Pa
 if ($pythonPath.Contains('"') -or $commandPath.Contains('"') -or $runnerPath.Contains('"')) {
     throw 'Paths must not contain a quote.'
 }
+& $pythonPath $runnerPath --command-file $commandPath --check
+if ($LASTEXITCODE -ne 0) { throw 'Growth command check failed; task was not registered.' }
 if (Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue) {
     throw "Task '$Name' already exists. Review and update it explicitly."
 }

@@ -77,6 +77,37 @@ class GrowthTests(unittest.TestCase):
             assert not growth.LEDGER.exists()
         """)
 
+    def test_command_check_rejects_missing_binary_without_launch_or_writes(self):
+        self.check_case("""
+            from unittest.mock import patch
+            import os
+            program = Path('bin') / ('worker.exe' if os.name == 'nt' else 'worker')
+            program.parent.mkdir()
+            program.write_text('fixture executable')
+            program.chmod(0o755)
+            with patch.dict(os.environ, {'PATH':'bin'}):
+                found = growth.check_command([program.name])
+                assert found['executable'] == str(program.resolve()), found
+            before = {str(p):p.read_bytes() for p in core.ROOT.rglob('*') if p.is_file()}
+            with patch('osk.growth.subprocess.Popen', side_effect=AssertionError('launched')):
+                assert growth.check_command([sys.executable,'--version'])['ok']
+                missing = growth.check_command([str(core.ROOT/'retired-version/codex.exe')])
+                assert not missing['ok'] and missing['state'] == 'invalid_command', missing
+                assert not growth.check_command([str(core.ROOT)])['ok']
+                for bad in ([], 'codex', ['codex', 'bad' + chr(0)]):
+                    try:
+                        growth.check_command(bad)
+                        raise AssertionError('invalid argv accepted')
+                    except ValueError:
+                        pass
+            after = {str(p):p.read_bytes() for p in core.ROOT.rglob('*') if p.is_file()}
+            assert before == after
+            node('A')
+            rejected = growth.run([str(core.ROOT/'retired-version/codex.exe')])
+            assert rejected['state'] == 'invalid_command', rejected
+            assert not growth.LEDGER.exists()
+        """)
+
     def test_worker_hooks_do_not_feed_maintenance_into_new_conversations(self):
         self.check_case("""
             node('A')
