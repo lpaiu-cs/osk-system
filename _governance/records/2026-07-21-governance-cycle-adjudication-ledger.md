@@ -154,7 +154,7 @@ summary: "2026-07 헌법·시행령 개정 사이클의 원소별 판정·소거
 ## 6. 후속 사이클 (07-22, 백지 재검토 + 독립 리뷰 4종)
 
 07-21 비준 이후 즉시 이어진 재검토·정련 사이클. 조문 수준 작업이 다시 완결된
-날이며, 이 사이클의 판정 원칙(부록 형태)은 [[Bylaws-Commentary]] 부록 B에
+날이며, 이 사이클의 판정 원칙(부록 형태)은 [Bylaws-Commentary 구판](https://github.com/lpaiu-cs/osk-system/blob/5e8b8e246a9fe90e2067c4cbf1ff49c5cfa74ec5/_governance/Bylaws-Commentary.md) 부록 B에
 정리했다.
 
 **주석백서 2종 신설.** `_governance/Constitution-Commentary.md`, `Bylaws-Commentary.md`
