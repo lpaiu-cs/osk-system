@@ -101,6 +101,8 @@ def _view(s: dict) -> dict:
             "pending_refs": [r["ref"] for i, r in enumerate(rs) if i >= n or r["ref"] in repair_refs],
             "through": _snapshot(s),
             "prompt_count": s["prompt_count"], "reviewed_prompt_count": s["reviewed_prompt_count"],
+            "response_growth": {k: v for k, v in s.get("response_growth", {}).items() if k != "seen"},
+            "response_growth_stop": s.get("response_growth_stop"),
             "last_review": s["reviews"][-1] if s["reviews"] else None}
 
 
@@ -646,7 +648,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     return {**st, "text": text + organization_text}
 
 
-def hook_capture(env: dict, session: str) -> dict:
+def hook_source(env: dict) -> tuple[str, str, str | None]:
     """Locate only the caller's native transcript, never another conversation's backlog."""
     sid = env.get("session_id") or env.get("conversation_id") or os.environ.get("CODEX_THREAD_ID")
     harness = env.get("harness") or os.environ.get("OSK_HARNESS")
@@ -685,4 +687,10 @@ def hook_capture(env: dict, session: str) -> dict:
             raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
     if not harness:
         raise ValueError("native harness/transcript unavailable; provide harness and transcript_path")
+    _identity(harness, sid)
+    return harness, sid, path
+
+
+def hook_capture(env: dict, session: str) -> dict:
+    harness, sid, path = hook_source(env)
     return capture(harness, sid, path, session, env.get("space"))

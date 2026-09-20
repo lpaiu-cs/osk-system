@@ -9194,7 +9194,7 @@ def test_validate_at_uses_snapshot_engine():
 
 
 def test_growth_loop_subprocesses():
-    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py"):
+    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py"):
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
                               capture_output=True, timeout=180,
                               stdin=subprocess.DEVNULL)

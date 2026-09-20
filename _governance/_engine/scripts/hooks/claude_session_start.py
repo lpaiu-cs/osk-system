@@ -65,10 +65,8 @@ def _memory_block(scope_memory, key: str) -> str:
     text = (st.get("text") or "").strip()
     if not text:
         return ""
-    # 문구는 **현행 계약**을 가르쳐야 한다. 구판은 "약 10 user 턴마다 …
-    # 전체 치환"이라 적었는데, v3.10.0의 케이던스는 9·15턴이고 쓰기의 기본은
-    # `edits` 앵커 일괄이다 — 세션의 첫 지시가 1,500자 전문 재발화를 유도해
-    # 개정이 없애려던 행동을 그대로 불렀다.
+    # 케이던스는 실행 방식별 안내가 맡는다. 이 공유 블록은 저장 경계와
+    # `edits` 계약만 가르쳐 Stop 실행기에 user 턴 재촉을 겹쳐 싣지 않는다.
     #
     # 세션 키도 싣는다. 도구의 `session`은 이 값이어야 하는데 훅만 알고
     # 호출자는 몰라서 매번 지어냈고, 그 결속은 append-only로 영구히 쌓였다.
@@ -77,7 +75,7 @@ def _memory_block(scope_memory, key: str) -> str:
         f"{st['chars']}/{st['limit']}자 · 여유 {st['limit'] - st['chars']}자]\n"
         f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것.\n"
         f"{st['session_note']}\n"
-        f"약 9 user 턴마다 자기 대화의 raw와 현재 공유 기억을 함께 검토하라. "
+        f"대화 검토 시에는 자기 대화의 raw와 현재 공유 기억을 함께 검토하라. "
         f"오래 쓸 지식은 search로 찾은 기존 Scope 노드 갱신을 우선하고 출처·허브를 "
         f"완성한다. 요약에 머물 내용은 그 다음 scope 기억에 반영하고, 남길 것이 "
         f"없으면 사유를 남긴다. 요약 수정은 `edits`로 "
@@ -99,10 +97,20 @@ def _bootstrap(key: str, *, bound: bool) -> str:
 
 
 def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
-    from osk import integration
+    from osk import integration, response_growth
     try:
         captured = integration.hook_capture(env, key)
         harness, sid = captured["harness"], captured["conversation_id"]
+        background = response_growth.initialize(env)
+        if background is not None:
+            failures = [r for r in (captured.get('response_growth_stop'), background.get('last_result'))
+                        if r and not r.get('ok', True) and r.get('state') != 'running']
+            error = captured['capture_error'] or '; '.join(r.get('error') or r['state'] for r in failures)
+            if error:
+                return f"[osk 백그라운드 검토 대기 — {error}; 본 작업은 계속한다. 완료로 처리하지 않았다.]"
+            return ("[osk 대화 검토 — 최종 답변 Stop 9회마다 원대화와 같은 하네스·모델의 "
+                    "구독 fork가 자기 대화를 검토한다. 실행 결과는 integration status에서 확인한다.]"
+                    if startup else "")
         if startup:
             return integration.prompt(harness, sid)["text"] if captured["pending"] else ""
         cadence = integration.tick(harness, sid)

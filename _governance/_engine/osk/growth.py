@@ -281,7 +281,7 @@ def _reading_plan(planned: dict) -> dict:
     fields = {"harness", "conversation_id", "session", "space", "through", "key",
               "pending_refs", "remaining_rounds", "capture_error", "failed_rounds",
               "interrupted_rounds", "inherited_rounds", "coverage", "repair",
-              "previous_distillations", "proof_discovery"}
+              "previous_distillations", "proof_discovery", "scope_recovery"}
     jobs = []
     for job in planned.get("scope_jobs", []):
         item = {k: v for k, v in job.items() if k in fields}
@@ -310,6 +310,7 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "Their CLI reviews prove current reference and navigation state separately. Sources newly distilled during "
         "this run may be compared on the next scheduled run; do not extend this batch.\n"
         "Scope jobs: read current scope_memory and read_raw(view=review) to select claims. "
+        "Follow scope_recovery instructions when present; preserve durable entries before making room. "
         "Resume a previous_deferral at its missing evidence rather than repeating its whole read. "
         "The raw view is at most 6000 characters, not an exhaustive read. Use a specific "
         "query only for supporting or contradicting evidence of a selected claim. Do not "
@@ -617,7 +618,9 @@ def check_command(command: list[str]) -> dict:
             "violations": [] if executable else ["Growth executable is unavailable: " + command[0]]}
 
 
-def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
+def run(command: list[str], limit: int = 3, timeout: int = 600, *,
+        scope_job: dict | None = None, cwd: Path | None = None,
+        worker_env: dict | None = None) -> dict:
     """Scheduler entry: manifest → bounded external process → observed receipts."""
     checked = check_command(command)
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 86400:
@@ -633,9 +636,14 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
             return {"ok": False, "state": "busy"}
         try:
             from . import integration
-            catchup = integration.catchup(limit=limit, max_rounds=SCOPE_ROUNDS_PER_JOB)
+            # A response-triggered fork owns one frozen conversation snapshot.
+            # Daily runs retain their existing cross-conversation/Domain queue.
+            catchup = (integration.catchup(limit=limit, max_rounds=SCOPE_ROUNDS_PER_JOB)
+                       if scope_job is None else
+                       {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0})
             with core.mutation_lock():
-                planned = _plan(limit)
+                planned = (_plan(limit) if scope_job is None else
+                           {"candidates": [], "scope_jobs": [], "organization_jobs": []})
                 from . import organization
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
@@ -662,7 +670,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
             directory.mkdir(parents=True, exist_ok=True)
             text = prompt(planned)
             (directory / "prompt.txt").write_text(text, encoding="utf-8")
-            env = dict(os.environ, OSK_VAULT_ROOT=str(core.ROOT),
+            env = dict(os.environ if worker_env is None else worker_env, OSK_VAULT_ROOT=str(core.ROOT),
                        PYTHONPATH=str(Path(__file__).resolve().parent.parent),
                        OSK_GROWTH_WORKER="1")
             error, returncode, cleanup_error = None, None, None
@@ -670,7 +678,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
                 try:
                     proc = subprocess.Popen(command, stdin=subprocess.PIPE,
                                             stdout=stdout, stderr=stderr,
-                                            cwd=core.ROOT, env=env, shell=False,
+                                            cwd=core.ROOT if cwd is None else cwd, env=env, shell=False,
                                             start_new_session=os.name != "nt",
                                             creationflags=0x08000200 if os.name == "nt" else 0)
                     try:

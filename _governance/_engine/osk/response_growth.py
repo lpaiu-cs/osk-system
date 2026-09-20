@@ -1,0 +1,386 @@
+"""Same-harness subscription forks; native completion and review receipts stay separate."""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+from . import core, growth, integration
+from ._portalock import lock_exclusive, unlock
+
+CONFIG = core.ROOT / '.osk/response-growth.json'
+EVERY = 9
+NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
+
+
+def configured(harness: str) -> str | None:
+    if not CONFIG.exists():
+        return None
+    settings = json.loads(CONFIG.read_text(encoding='utf-8-sig'))
+    if not isinstance(settings, dict) or set(settings) - {'codex', 'claude'}:
+        raise ValueError('response-growth.json must map harness names to native CLI paths')
+    executable = settings.get(harness)
+    if executable is not None and (not isinstance(executable, str) or not executable.strip()):
+        raise ValueError('response growth CLI path must be a nonempty string')
+    return executable
+
+
+def initialize(env: dict) -> dict | None:
+    """Baseline once at startup/input. Neither event increments the Stop counter."""
+    harness, sid, path = integration.hook_source(env)
+    if not configured(harness):
+        return None
+    with integration._locked(harness, sid) as p:
+        state = integration._load(p, harness, sid)
+        saved = state.get('response_growth')
+        if saved is None:
+            ids = profile(path, harness, sid)['finals'] if path and Path(path).exists() else []
+            saved = {'counter': 'finals', 'seen': ids, 'count': 0, 'attempted_count': 0}
+            state['response_growth'] = saved
+            integration._save(p, state)
+        return {k: v for k, v in saved.items() if k != 'seen'}
+
+
+def launch(env: dict, session: str) -> bool:
+    """Detach only a small supervisor; Stop returns before native final markers flush."""
+    harness, sid, path = integration.hook_source(env)
+    if not configured(harness):
+        return False
+    payload = {'harness': harness, 'session_id': sid, 'transcript_path': path,
+               'session': session, 'space': env.get('space')}
+    child_env = dict(os.environ, OSK_VAULT_ROOT=str(core.ROOT),
+                     PYTHONPATH=str(Path(__file__).resolve().parents[1]), OSK_GROWTH_WORKER='1')
+    log = integration.state_path(harness, sid).with_suffix('.growth.log')
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open('ab') as stderr:
+        proc = subprocess.Popen([sys.executable, '-m', 'osk.response_growth'], stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=stderr, env=child_env,
+                                cwd=core.ROOT, shell=False, start_new_session=os.name != 'nt',
+                                creationflags=0x08000200 if os.name == 'nt' else 0)
+        try:
+            proc.stdin.write(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+        finally:
+            proc.stdin.close()
+    return True
+
+
+def process_stop(env: dict, *, flush_timeout: float = 5) -> dict:
+    """One native final completion, bounded flush wait, then the existing supervisor."""
+    harness, sid, _ = integration.hook_source(env)
+    executable = configured(harness)
+    if not executable:
+        return {'ok': True, 'state': 'disabled'}
+    # ponytail: one worker per conversation; missed Stops catch up by native IDs.
+    lock_path = integration.state_path(harness, sid).with_suffix('.growth.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a+b') as lock:
+        try:
+            lock_exclusive(lock, blocking=False)
+        except OSError:
+            return {'ok': False, 'state': 'busy'}
+        try:
+            deadline = time.monotonic() + flush_timeout
+            while True:
+                try:
+                    _, _, path = integration.hook_source(env)
+                    if not path:
+                        raise ValueError('native transcript is not available yet')
+                    source = profile(path, harness, sid)
+                    if not source['active']:
+                        break
+                    error = 'native final answer is not flushed; review remains pending'
+                except (OSError, ValueError) as exc:
+                    error = str(exc)
+                if time.monotonic() >= deadline:
+                    raise ValueError(error)
+                time.sleep(0.1)
+            captured = integration.hook_capture(env, env['session'])
+            if not source['last_successful']:
+                result = {'ok': True, 'state': 'not_final'}
+            else:
+                with integration._locked(harness, sid) as p:
+                    state = integration._load(p, harness, sid)
+                    if 'response_growth' not in state:
+                        # First notification after installation counts once, never replays history.
+                        state['response_growth'] = {'counter': 'finals', 'seen': source['finals'][:-1],
+                                                    'count': 0, 'attempted_count': 0}
+                        integration._save(p, state)
+                clock = observe(source)
+                if not clock['due']:
+                    result = {'ok': not bool(captured['capture_error']), 'state': 'not_due', **clock}
+                else:
+                    job = integration.prompt(harness, sid, include_organization=False, max_rounds=EVERY)
+                    if job.get('session'):
+                        from . import scope_memory
+                        job['scope_recovery'] = scope_memory.recovery_block(job['session'])
+                    result = attempt(source, job, executable)
+        except Exception as exc:
+            result = {'ok': False, 'state': 'pending', 'error': f'{type(exc).__name__}: {exc}'}
+        finally:
+            unlock(lock)
+    with integration._locked(harness, sid) as p:
+        state = integration._load(p, harness, sid)
+        state['response_growth_stop'] = {k: result[k] for k in ('ok', 'state', 'error') if k in result}
+        integration._save(p, state)
+    return result
+
+
+def profile(path: str, harness: str, sid: str) -> dict:
+    """Read native metadata locally, without copying history into a prompt or raw."""
+    integration._identity(harness, sid)
+    native = Path(path).resolve()
+    before = native.stat()
+    result = {'harness': harness, 'conversation_id': sid, 'finals': [], 'active': False,
+              'last_successful': False,
+              'transcript_path': str(native), 'fingerprint': [before.st_size, before.st_mtime_ns]}
+    finals, identified, context, turn = set(), False, {}, None
+    with native.open(encoding='utf-8') as stream:
+        for line in stream:
+            if not line.endswith('\n'):
+                result['active'] = True
+                break  # An unflushed JSONL tail is not a completed response.
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            p = row.get('payload', {})
+            if harness == 'codex':
+                if row.get('type') == 'session_meta':
+                    if p.get('id') != sid:
+                        raise ValueError('native conversation identity mismatch')
+                    identified = True
+                    result.update({k: p.get(k) for k in ('cwd', 'cli_version', 'source', 'model_provider')})
+                elif row.get('type') == 'turn_context':
+                    result['active'] = True
+                    context = {k: p.get(k) for k in (
+                        'model', 'effort', 'cwd', 'approval_policy', 'approvals_reviewer', 'sandbox_policy')}
+                elif row.get('type') == 'event_msg' and p.get('type') == 'task_started':
+                    turn = p.get('turn_id')
+                    result['active'] = True
+                elif row.get('type') == 'event_msg' and p.get('type') == 'token_count':
+                    info = p.get('info') or {}
+                    total = info.get('total_token_usage')
+                    if isinstance(total, dict):
+                        result['usage'] = total
+                elif row.get('type') == 'event_msg' and p.get('type') == 'task_complete':
+                    identity = p.get('turn_id')
+                    if turn and identity != turn:
+                        raise ValueError('native completion turn identity mismatch')
+                    result['active'] = False
+                    result['last_successful'] = bool(identity and not p.get('error') and str(p.get('last_agent_message') or '').strip())
+                    if result['last_successful'] and identity not in finals:
+                        finals.add(identity)
+                        result['finals'].append(identity)
+                        result.update(context)
+                elif row.get('type') == 'event_msg' and p.get('type') == 'turn_aborted':
+                    result.update(active=False, last_successful=False)
+            elif row.get('sessionId') == sid and not row.get('isSidechain') and not row.get('agentId'):
+                identified = True
+                result.update({k: row[k] for k in ('cwd', 'version') if row.get(k)})
+                message = row.get('message') or {}
+                model, identity = message.get('model'), message.get('id')
+                if row.get('type') == 'user':
+                    result['active'] = True
+                if (row.get('type') == 'assistant' and identity and model and model != '<synthetic>'
+                        and message.get('stop_reason')):
+                    content = message.get('content', [])
+                    has_text = bool(content.strip()) if isinstance(content, str) else any(
+                        b.get('type') == 'text' and str(b.get('text') or '').strip()
+                        for b in content if isinstance(b, dict))
+                    successful = message['stop_reason'] == 'end_turn' and has_text
+                    # Claude writes thinking/text parts of one message separately.
+                    result['active'] = not (successful or identity in finals)
+                    result['last_successful'] = not result['active']
+                    if successful and identity not in finals:
+                        finals.add(identity)
+                        result['finals'].append(identity)
+                        result['model'] = model
+    if not identified:
+        raise ValueError('native conversation identity was not found')
+    if not _source_unchanged(result):
+        raise ValueError('native file changed during metadata read; retry after completion')
+    return result
+
+
+def _source_unchanged(source: dict) -> bool:
+    current = Path(source['transcript_path']).stat()
+    return [current.st_size, current.st_mtime_ns] == source['fingerprint']
+
+
+def subscription_env() -> dict:
+    env = dict(os.environ, OSK_GROWTH_WORKER='1')
+    for key in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'ANTHROPIC_API_KEY',
+                'ANTHROPIC_AUTH_TOKEN', 'CLAUDECODE', 'CLAUDE_CODE_SIMPLE'):
+        env.pop(key, None)
+    return env
+
+
+def observe(source: dict) -> dict:
+    """Deduplicate native completions; deployment/resume never replays old history."""
+    harness, sid = source['harness'], source['conversation_id']
+    ids = source['finals']
+    if not isinstance(ids, list) or len(ids) != len(set(ids)):
+        raise ValueError('completion identities must be unique')
+    with integration._locked(harness, sid) as path:
+        state = integration._load(path, harness, sid)
+        saved = state.get('response_growth')
+        if saved is None:
+            saved = {'counter': 'finals', 'seen': ids, 'count': 0, 'attempted_count': 0}
+            state['response_growth'] = saved
+        else:
+            if saved['counter'] != 'finals' or ids[:len(saved['seen'])] != saved['seen']:
+                raise ValueError('native completion prefix/counter changed; existing cursor was not reset')
+            # Startup/resume is not a reset: unobserved completions still count.
+            saved['count'] += len(ids) - len(saved['seen'])
+            saved['seen'] = ids
+        integration._save(path, state)
+        return {'count': saved['count'], 'attempted_count': saved['attempted_count'],
+                'due': saved['count'] - saved['attempted_count'] >= EVERY,
+                'counter': 'finals'}
+
+
+def attempt(source: dict, job: dict, executable: str) -> dict:
+    """The caller serializes one conversation; the shared growth lock limits cost."""
+    harness, sid = source['harness'], source['conversation_id']
+    clock = observe(source)
+    if not clock['due']:
+        return {'ok': True, 'state': 'not_due', **clock}
+    if job.get('capture_error') or job.get('capture_pending'):
+        return {'ok': False, 'state': 'capture_pending', **clock}
+    with integration._locked(harness, sid) as path:
+        state = integration._load(path, harness, sid)
+        saved = state['response_growth']
+        if saved['count'] - saved['attempted_count'] < EVERY:
+            return {'ok': True, 'state': 'already_claimed'}
+        saved['attempted_count'] = clock['count']
+        saved['last_result'] = {'ok': False, 'state': 'running'}
+        integration._save(path, state)  # A crashed worker is not relaunched in a tight loop.
+    try:
+        result = (run(source, job, executable) if job.get('pending_refs') else
+                  {'ok': True, 'state': 'already_reviewed'})
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        result = {'ok': False, 'state': 'blocked', 'error': str(exc)}
+    with integration._locked(harness, sid) as path:
+        state = integration._load(path, harness, sid)
+        saved = state['response_growth']
+        saved['last_result'] = {k: result[k] for k in ('ok', 'state', 'error', 'output', 'cache') if k in result}
+        if result.get('state') == 'busy':
+            saved['attempted_count'] = clock['attempted_count']
+        integration._save(path, state)
+    return result
+
+
+def command(source: dict, executable: str, env: dict) -> list[str]:
+    """Fail closed before inference. Never fall back to API credentials or a cheaper model."""
+    harness, sid = source['harness'], source['conversation_id']
+    integration._identity(harness, sid)
+    model = source.get('model')
+    if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', model):
+        raise ValueError('actual source model is unavailable')
+    if not Path(executable).is_absolute() or not Path(executable).is_file():
+        raise ValueError('configure an existing absolute native CLI path')
+    cwd = source.get('cwd')
+    if not cwd or not Path(cwd).is_dir():
+        raise ValueError('source working directory is unavailable')
+
+    def inspect(args):
+        return subprocess.run([executable, *args], cwd=cwd, env=env, shell=False,
+                              capture_output=True, text=True, encoding='utf-8',
+                              timeout=20, creationflags=NO_WINDOW)
+
+    version = inspect(['--version'])
+    expected = source.get('cli_version') if harness == 'codex' else source.get('version')
+    if version.returncode or not expected or not re.search(r'(?<![\w.])' + re.escape(expected) + r'(?![\w.])', version.stdout):
+        raise ValueError('configured CLI version differs from the source harness; fork was not started')
+    if harness == 'codex':
+        if source.get('model_provider') != 'openai':
+            raise ValueError('only a verified ChatGPT subscription provider is supported')
+        auth = inspect(['login', 'status'])
+        if auth.returncode or 'Logged in using ChatGPT' not in auth.stdout + auth.stderr:
+            raise ValueError('ChatGPT subscription login is required; no API fallback')
+        settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
+                    'model_reasoning_effort': source.get('effort'),
+                    'approval_policy': source.get('approval_policy'),
+                    'approvals_reviewer': source.get('approvals_reviewer'),
+                    'sandbox_mode': (source.get('sandbox_policy') or {}).get('type')}
+        if not settings['model_reasoning_effort'] or not settings['approval_policy'] or not settings['sandbox_mode']:
+            raise ValueError('source effort or permissions are unavailable')
+        argv = [executable, 'exec', 'fork', '--ephemeral', '--json', '--model', model]
+        for key, value in settings.items():
+            if value is not None:
+                argv += ['-c', key + '=' + json.dumps(value)]
+        policy = source['sandbox_policy']
+        if policy['type'] == 'workspace-write':
+            argv += ['-c', 'sandbox_workspace_write.writable_roots=' + json.dumps(policy.get('writable_roots', [])),
+                     '-c', 'sandbox_workspace_write.network_access=' + json.dumps(policy.get('network_access', False))]
+        return [*argv, sid, '-']
+    # Settings can select API auth even when a separate subscription is logged in.
+    base = Path(env.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude')))
+    for path in (base / 'settings.json', Path(cwd) / '.claude/settings.json', Path(cwd) / '.claude/settings.local.json'):
+        if path.exists():
+            settings = json.loads(path.read_text(encoding='utf-8'))
+            if settings.get('apiKeyHelper') or any(k in settings.get('env', {}) for k in (
+                    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+                    'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY')):
+                raise ValueError('Claude settings select an unverified API/provider path; no inference started')
+    if any(env.get(k) for k in ('ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK',
+                               'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY')):
+        raise ValueError('Claude environment selects an unverified provider')
+    auth = inspect(['auth', 'status'])
+    status = json.loads(auth.stdout) if auth.returncode == 0 else {}
+    if (status.get('authMethod') != 'claude.ai' or not status.get('loggedIn')
+            or str(status.get('subscriptionType')).lower() not in {'pro', 'max', 'team', 'enterprise'}):
+        raise ValueError('confirmed Claude subscription login is required; no API fallback')
+    return [executable, '-p', '--resume', sid, '--fork-session', '--no-session-persistence',
+            '--model', model, '--output-format', 'stream-json', '--verbose',
+            '--settings', '{"forceLoginMethod":"claudeai"}']
+
+
+def cache_usage(output: Path, source: dict) -> dict:
+    """Child usage only. Codex fork JSONL includes the parent's cumulative counters."""
+    events = [json.loads(line) for line in output.read_text(encoding='utf-8').splitlines() if line.strip()]
+    if source['harness'] == 'codex':
+        last = next((e.get('usage') for e in reversed(events) if e.get('type') == 'turn.completed'), None)
+        baseline = source.get('usage')
+        if not isinstance(last, dict) or not isinstance(baseline, dict):
+            return {'measured': False, 'reason': 'missing cumulative baseline or successful completion'}
+        values = {k: last.get(k, 0) - baseline.get(k, 0) for k in ('input_tokens', 'cached_input_tokens', 'output_tokens')}
+    else:
+        last = next((e for e in reversed(events) if e.get('type') == 'result'), {})
+        u = last.get('usage') or {}
+        if last.get('is_error') is not False or not u:
+            return {'measured': False, 'reason': 'no successful Claude usage'}
+        cached = u.get('cache_read_input_tokens', 0)
+        values = {'input_tokens': u.get('input_tokens', 0) + u.get('cache_creation_input_tokens', 0) + cached,
+                  'cached_input_tokens': cached, 'output_tokens': u.get('output_tokens', 0)}
+    if any(v < 0 for v in values.values()) or values['cached_input_tokens'] > values['input_tokens']:
+        return {'measured': False, 'reason': 'fork baseline did not match; cumulative usage is not a cache result'}
+    return {'measured': True, **values, 'cached_fraction': values['cached_input_tokens'] / values['input_tokens']
+            if values['input_tokens'] else None, 'scope': 'whole worker turn, not proof of first-request reuse'}
+
+
+def run(source: dict, job: dict, executable: str) -> dict:
+    """Use the existing supervisor, manifest, deadline and receipt validation."""
+    if any(job.get(k) != source.get(k) for k in ('harness', 'conversation_id')):
+        raise ValueError('a fork may review only its own source conversation')
+    env = subscription_env()
+    argv = command(source, executable, env)
+    if not _source_unchanged(source):
+        raise ValueError('source advanced before fork; refresh the source model and snapshot')
+    result = growth.run(argv, limit=1, timeout=600, scope_job=job, cwd=Path(source['cwd']), worker_env=env)
+    if result.get('output'):
+        try:
+            result['cache'] = (cache_usage(core.ROOT / result['output'] / 'stdout.txt', source)
+                               if _source_unchanged(source) else
+                               {'measured': False, 'reason': 'source advanced; inherited usage baseline is unconfirmed'})
+        except (ValueError, OSError) as exc:
+            result['cache'] = {'measured': False, 'reason': str(exc)}
+    return result
+
+
+if __name__ == '__main__':
+    # No conversation text is passed to this process; failures remain in local status.
+    process_stop(json.load(sys.stdin))

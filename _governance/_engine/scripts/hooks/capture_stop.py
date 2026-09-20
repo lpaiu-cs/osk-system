@@ -1,7 +1,7 @@
-"""Stop only requests capture; native completion still decides what may enter raw.
+"""Stop captures completion and, when configured, starts a background review.
 
-The scheduler's integration catchup retries a tail whose task_complete was not
-yet flushed when Stop ran. No blocking decision or forced model continuation.
+The detached helper waits briefly for the native final marker. Daily catchup retries
+missed tails. No blocking decision or forced continuation of the parent turn.
 """
 import json
 import os
@@ -18,11 +18,14 @@ def main() -> None:
         return
     try:
         from claude_session_start import session_key
-        from osk import integration
+        from osk import integration, response_growth
         env = json.load(sys.stdin)
         if not isinstance(env, dict):
             raise ValueError("hook input must be a JSON object")
-        result = integration.hook_capture(env, session_key(env.get("cwd") or os.getcwd()))
+        key = session_key(env.get("cwd") or os.getcwd())
+        if response_growth.launch(env, key):
+            return
+        result = integration.hook_capture(env, key)
         if result["capture_error"]:
             raise ValueError(result["capture_error"])
     except Exception as exc:
