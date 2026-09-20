@@ -197,17 +197,25 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
         if unfinished or missing_ids:
             current["key"] = prior["key"]
         jobs.append(current)
-        if record:
-            # Keep one unfinished selection per Scope across writes/restarts.
-            if not (unfinished or missing_ids):
-                state["plans"] = {k: p for k, p in state["plans"].items() if p["scope"] != scope}
-            state["plans"].setdefault(current["key"], current)
-            state["plans"][current["key"]]["last_attempt"] = core.now_kst()
         if len(jobs) == limit:
             break
-    if record and jobs:
-        _save(state)
+    if record:
+        record_attempts(jobs)
     return jobs
+
+
+def record_attempts(jobs: list[dict]) -> None:
+    """Caller holds the vault lock; register only the jobs actually selected."""
+    if not jobs:
+        return
+    state = _load()
+    for current in jobs:
+        scope, key = current["scope"], current["key"]
+        # The selected key retains the original unfinished snapshot across edits.
+        state["plans"] = {k: p for k, p in state["plans"].items() if p["scope"] != scope or k == key}
+        state["plans"].setdefault(key, dict(current))
+        state["plans"][key]["last_attempt"] = core.now_kst()
+    _save(state)
 
 
 def plan(scope: str, *, record: bool = True) -> dict:

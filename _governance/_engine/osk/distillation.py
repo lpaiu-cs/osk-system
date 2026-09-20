@@ -61,9 +61,8 @@ def _source(ref: str, idx) -> dict:
             raise write.WriteError("source round does not exist")
         # Trailing round separators are not evidence; later append must not
         # invalidate the unchanged round. Hash the full stored round, untruncated.
-        data = text[span[0]:span[1]].rstrip("\n").encode()
         return {"ref": raw.canonical_ref(f"{posix_rel(p, ROOT)}#{number}"),
-                "path": posix_rel(p, ROOT), "hash": sha256_bytes(data)}
+                "path": posix_rel(p, ROOT), "hash": raw.round_hash(text[span[0]:span[1]])}
     p = write._live_locate(value, idx)
     if p is None or not p.is_file() or graph.space_of(p)[0] not in ("scope", "domain"):
         raise write.WriteError("source must resolve to a Scope/Domain node or exact raw round")

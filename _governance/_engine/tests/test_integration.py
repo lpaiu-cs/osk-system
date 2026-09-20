@@ -194,8 +194,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["captured_rounds"], 1)
         self.assertTrue(st["capture_pending"])
         text = raw.read_round(st["pending_refs"][0])["text"]
-        self.assertIn("evidence result", text)
-        self.assertIn("tool_use", text)
+        self.assertNotIn("evidence result", text)
+        self.assertIn("tool_evidence_ref", text)
+        self.assertIn('"calls": 1', text)
         self.assertIn("answer 1", text)
         self.assertNotIn("question 2", text)
 
@@ -211,8 +212,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["captured_rounds"], 1)
         self.assertTrue(st["capture_pending"])
         text = raw.read_round(st["pending_refs"][0])["text"]
-        self.assertIn("function_call_output", text)
-        self.assertIn("evidence result", text)
+        self.assertIn("tool_evidence_ref", text)
+        self.assertNotIn("evidence result", text)
         self.assertEqual(text.count("question 1"), 1)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "wrong", "last_agent_message": "answer"}}) + "\n")
@@ -227,7 +228,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(captured["capture_pending"], captured)
         text = raw.read_round(captured["pending_refs"][0])["text"]
         self.assertEqual(text.count("question 1"), 1)
-        self.assertIn("evidence result", text)
+        self.assertNotIn("evidence result", text)
+        self.assertIn("tool_evidence_ref", text)
         self.assertIn("answer 1", text)
         self.assertEqual(self.capture("codex")["appended"], 0)
 
@@ -272,7 +274,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertIn(f"question {n}", item["preview"])
             self.assertNotIn("osk-capture", item["preview"])
             recalled = raw.read_round(f"{ref}#{n}")
-            self.assertIn(raw._CODEX_V3, recalled["text"])
+            self.assertIn(raw._DIALOGUE_V1, recalled["text"])
             self.assertEqual(item["chars"], recalled["chars"])
         self.assertEqual(path.read_bytes(), before)
         # A user can quote that exact comment. Skip only the recorder's header,
@@ -326,6 +328,7 @@ class IntegrationTests(unittest.TestCase):
                 legacy = reader(str(self.path), "codex", sid)
                 legacy.pop("codex_v1", None)
                 legacy.pop("codex_v2", None)
+                legacy.pop("dialogue_v1", None)
                 legacy["rounds"] = [{"id": "turn-1", "end_line": len(header + old_rows), "completion": "completed",
                     "user": '{"images": ["https://example.invalid/old.png"], "message": "question 1"}',
                     "agent": '{"arguments": "{}", "call_id": "tool-1", "name": "probe", "type": "function_call"}\n\n'
@@ -361,8 +364,8 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(it._load(it.state_path("codex", sid), "codex", sid)["rounds"][0]["hash"], old_hash)
                 new_text = raw.read_round(resumed["pending_refs"][0])["text"]
                 self.assertIn("distinct native image input", new_text)
-                self.assertIn("C:/images/new.png", new_text)
-                self.assertIn("osk-capture: codex-terminal-v3", new_text)
+                self.assertIn("attachment_ref", new_text)
+                self.assertIn("osk-capture: dialogue-v1", new_text)
                 self.assertEqual(it.capture("codex", sid, str(self.path), "capture-tests")["appended"], 0)
                 it.state_path("codex", sid).unlink()
                 reconstructed = it.capture("codex", sid, str(self.path), "capture-tests")
@@ -554,7 +557,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(original["captured_rounds"], 2)
         texts = [raw.read_round(ref)["text"] for ref in original["pending_refs"]]
         self.assertIn("claude:" + grandparent + ":", texts[0])
-        self.assertIn("claude:" + parent + ":", texts[1])
+        self.assertIn("claude:" + rows[5]["uuid"] + ":", texts[1])
         copied = [dict(r, sessionId=self.sid) for r in rows]
         tail = claude_round(self.sid, 3)
         for row in tail:
@@ -814,7 +817,7 @@ class IntegrationTests(unittest.TestCase):
         parsed = transcripts.read(str(self.path), 'codex', self.sid)
         self.assertEqual((parsed['rounds'],parsed['diagnostics'],parsed['pending_tail']), ([],[],False))
 
-    def test_file_reads_and_mixed_exec_are_references_but_probe_output_stays(self):
+    def test_all_tool_payloads_are_references_and_dialogue_stays(self):
         rows = claude_round(self.sid, 1)
         rows[1]["message"]["content"][0].update(name="Read", input={"file_path": "C:/private/source.txt"})
         rows[2]["message"]["content"][0]["content"] = "FILE_FULL_CONTENT_MUST_NOT_COPY"
@@ -827,10 +830,12 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(st["ok"], st)
         self.assertNotIn("FILE_FULL_CONTENT_MUST_NOT_COPY", text)
         self.assertNotIn("MIXED_OUTPUT_MUST_NOT_COPY", text)
-        self.assertIn("C:/private/source.txt", text)
+        self.assertNotIn("C:/private/source.txt", text)
+        self.assertIn("Read", text)
         self.assertIn("native_result", text)
         self.assertIn("sha256", text)
-        self.assertIn("evidence result", text)
+        self.assertNotIn("evidence result", text)
+        self.assertIn("answer 3", text)
         self.assertEqual(st["coverage"]["mode"], "tool-output-reference")
         self.assertIn("전사 보관", it.prompt("claude", self.sid)["text"])
 
@@ -846,7 +851,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["captured_rounds"], 2, st)
         text = raw.read_round(st["pending_refs"][0])["text"]
         self.assertNotIn("NODE_FULL_CONTENT_MUST_NOT_COPY", text)
-        self.assertIn("source-node", text)
+        self.assertIn("mcp__osk__read_node", text)
+        self.assertIn("tool_evidence_ref", text)
         self.assertIn("turn_aborted", raw.read_round(st["pending_refs"][1])["text"])
 
     def test_stop_before_flush_catchup_without_resume_and_changed_after_ack(self):
@@ -945,8 +951,76 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["appended"], 0)
         self.assertEqual(st["captured_rounds"], 3)
         parsed = transcripts.read(str(self.path), "claude", self.sid)
+        raw.append_rounds("capture-tests", self.sid + "-manual", [parsed["rounds"][-1]])
         with self.assertRaises(write.WriteError):
-            raw.append_rounds("capture-tests", st["record"], [parsed["rounds"][-1]])
+            raw.append_rounds("capture-tests", self.sid + "-manual", [parsed["rounds"][-1]])
+
+    def test_storage_boundary_retains_long_dialogue_not_native_bulk(self):
+        long_text = "USER START " + "visible statement " * 2000 + "MIDPOINT CORRECTION " + "more words " * 2000 + " USER END"
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                sid = self.sid + harness
+                path = Path(TMP.name) / (sid + ".jsonl")
+                if harness == "claude":
+                    rows = claude_round(sid, 1)
+                    rows[0]["message"]["content"] = long_text
+                else:
+                    rows = [{"type":"session_meta", "payload":{"id":sid}}] + codex_round(1)
+                    rows[4]["payload"]["message"] = long_text
+                save = lambda: path.write_text("".join(json.dumps(r)+"\n" for r in rows), encoding="utf-8")
+                save()
+                reader = transcripts.read
+                # Historical codec remains byte-exact when the next append upgrades.
+                legacy = reader(str(path), harness, sid)
+                legacy.pop("dialogue_v1")
+                with mock.patch.object(transcripts, "read", return_value=legacy):
+                    old = it.capture(harness, sid, str(path), sid, "= Scope/W1")
+                self.assertTrue(old["ok"], old)
+                old_path = raw._raw_file(raw.parse_ref(old["pending_refs"][0])[0])
+                prefix = old_path.read_bytes()
+                tail = claude_round(sid, 2) if harness == "claude" else codex_round(2)
+                rows += tail
+                save()
+                clean = reader(str(path), harness, sid)["dialogue_v1"]
+                if harness == "claude":
+                    tail[-1]["message"]["content"].insert(0, {"type":"thinking", "thinking":"OPAQUE_PAYLOAD" * 100000})
+                    tail[-1]["message"]["transport_metadata"] = "TRANSPORT_BULK" * 100000
+                    tail[1]["message"]["content"][0]["input"] = {"code":"TOOL_CODE_BULK" * 100000}
+                else:
+                    tail[-3]["payload"]["internal_chat_message_metadata_passthrough"] = {"noise":"TRANSPORT_BULK" * 100000}
+                    rows.insert(-1, {"type":"response_item", "payload":{"type":"reasoning", "encrypted_content":"OPAQUE_PAYLOAD" * 100000}})
+                    tail[4]["payload"]["arguments"] = "TOOL_CODE_BULK" * 100000
+                save()
+                noisy = reader(str(path), harness, sid)["dialogue_v1"]
+                self.assertEqual([r["user"] for r in clean.values()], [r["user"] for r in noisy.values()])
+                self.assertEqual(sum(len(r["agent"]) for r in clean.values()), sum(len(r["agent"]) for r in noisy.values()))
+                self.assertNotEqual(list(clean.values())[-1]["agent"], list(noisy.values())[-1]["agent"],
+                                    "changed tool payload must change its evidence hash")
+                upgraded = it.capture(harness, sid, str(path), sid)
+                self.assertTrue(upgraded["ok"], upgraded)
+                self.assertEqual(upgraded["appended"], 1)
+                stored = old_path.read_bytes()
+                self.assertTrue(stored.startswith(prefix))
+                new_bytes = stored[len(prefix):]
+                for noise in (b"OPAQUE_PAYLOAD", b"TRANSPORT_BULK", b"TOOL_CODE_BULK"):
+                    self.assertNotIn(noise, new_bytes)
+                self.assertIn(b"dialogue-v1", new_bytes)
+                self.assertIn(b"answer 2", new_bytes)
+                self.assertIn(b"sha256", new_bytes)
+                self.assertIn(long_text, noisy[next(iter(noisy))]["user"])
+                it.state_path(harness, sid).unlink()
+                replay = it.capture(harness, sid, str(path), sid, "= Scope/W1")
+                self.assertTrue(replay["ok"], replay)
+                self.assertEqual(replay["appended"], 0)
+                self.assertEqual(old_path.read_bytes(), stored)
+                # Visible content still participates in prefix verification.
+                if harness == "claude":
+                    tail[-1]["message"]["content"][-1]["text"] = "tampered visible reply"
+                else:
+                    tail[-3]["payload"]["content"][0]["text"] = "tampered visible reply"
+                save()
+                self.assertFalse(it.capture(harness, sid, str(path), sid)["ok"])
+                self.assertEqual(old_path.read_bytes(), stored)
 
     def test_actual_preserved_scope_node_ack_and_later_receipt_validation(self):
         from osk import contract, distillation as D
@@ -1082,6 +1156,20 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertNotEqual(later["key"], first["key"])
         self.assertEqual(later["key"], it.prompt("claude", self.sid)["key"])
         self.assertTrue(any(p["key"] == spec["key"] for p in later["previous_distillations"]))
+
+    def test_worker_batch_does_not_reduce_ordinary_cadence_or_ack_the_tail(self):
+        self.transcript([row for n in range(20) for row in claude_round(self.sid, n)])
+        original = self.capture()
+        worker = it.prompt("claude", self.sid, include_organization=False, max_rounds=3)
+        ordinary = it.prompt("claude", self.sid, include_organization=False)
+        self.assertEqual(len(worker["pending_refs"]), 3)
+        self.assertEqual(len(ordinary["pending_refs"]), 15)
+        self.assertNotEqual(worker["through"], ordinary["through"])
+        self.assertEqual(it.status("claude", self.sid)["pending_refs"], original["pending_refs"])
+        it.acknowledge("claude", self.sid, worker["through"], "no_value", "Only fixture questions in selected first three rounds.")
+        pending = it.status("claude", self.sid)["pending_refs"]
+        self.assertEqual(pending, original["pending_refs"][3:])
+        self.assertEqual(it.prompt("claude", self.sid, max_rounds=3)["pending_refs"], pending[:3])
 
     def _discovery_source(self):
         self.transcript(claude_round(self.sid, 1))
@@ -1223,8 +1311,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 saved = (ROOT / raw_path).read_bytes()
                 for token in tokens:
                     self.assertNotIn(token.encode(), saved)
-                self.assertGreaterEqual(saved.count(b"[FILTERED:github-token]"), 5)
-                self.assertIn(b"ghp_short", saved)
+                self.assertEqual(saved.count(b"[FILTERED:github-token]"), 2)
+                self.assertNotIn(b"ghp_short", saved)  # tool payload is a reference
+                self.assertIn(b"tool_evidence_ref", saved)
                 self.assertEqual(path.read_bytes(), native)  # native evidence is not edited
                 again = it.capture(harness, sid, str(path), sid, "= Scope/W1")
                 self.assertTrue(again["ok"], again)
@@ -1239,9 +1328,11 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 path = Path(TMP.name) / (sid + ".jsonl")
                 if harness == "claude":
                     rows = claude_round(sid, 1)
+                    rows[0]["message"]["content"] = [{"type":"text", "text":json.dumps(collision)}]
                     rows[1]["message"]["content"][0]["input"] = collision
                 else:
                     rows = [{"type": "session_meta", "payload": {"id": sid}}] + codex_round(1)
+                    rows[4]["payload"]["message"] = json.dumps(collision)
                     rows[5]["payload"]["arguments"] = json.dumps(collision)
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
@@ -1279,9 +1370,11 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 path = Path(TMP.name) / (sid + ".jsonl")
                 if harness == "claude":
                     rows = claude_round(sid, 1)
+                    rows[0]["message"]["content"] = [{"type":"text", "text":encoded}]
                     rows[1]["message"]["content"][0]["input"] = {"encoded": encoded}
                 else:
                     rows = [{"type": "session_meta", "payload": {"id": sid}}] + codex_round(1)
+                    rows[4]["payload"]["message"] = encoded
                     rows[5]["payload"]["arguments"] = encoded
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)

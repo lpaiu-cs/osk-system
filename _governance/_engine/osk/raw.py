@@ -17,7 +17,7 @@ import json
 import re
 from pathlib import Path
 
-from .core import ROOT, mutation_lock, posix_rel, resolve_in_root, sha256_file
+from .core import ROOT, mutation_lock, posix_rel, resolve_in_root, sha256_file, sha256_bytes
 # `write`의 `_title_errors`·`_name_collision`을 그대로 쓴다 — 파일명 이식성
 # 규칙(Windows 예약명·링크 파서 충돌·ext4 바이트 상한·대소문자 접기)의 정본은
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
@@ -212,6 +212,7 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
 
 _CODEX_V2 = "<!-- osk-capture: codex-user-items-v2 -->"
 _CODEX_V3 = "<!-- osk-capture: codex-terminal-v3 "
+_DIALOGUE_V1 = "<!-- osk-capture: dialogue-v1 "
 _CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
 
 
@@ -232,11 +233,13 @@ def inherited_prefix(path: Path) -> dict | None:
 
 
 def _block(index: int, user: str, agent: str, *, codex_native: bool = False,
-           codex_id: str | None = None) -> str:
+           codex_id: str | None = None, dialogue_id: str | None = None) -> str:
     """한 라운드 = user 발화 + 그에 속한 에이전트 응답(시행령 §2 7항)."""
     stamp = f"{_CODEX_V2}\n\n" if codex_native else ""
     if codex_id is not None:
         stamp = _CODEX_V3 + json.dumps(codex_id) + " -->\n\n"
+    if dialogue_id is not None:
+        stamp = _DIALOGUE_V1 + json.dumps(dialogue_id) + " -->\n\n"
     return (f"## {index}\n\n{stamp}"
             f"### user\n\n{user.rstrip()}\n\n"
             f"### agent\n\n{agent.rstrip()}\n")
@@ -250,10 +253,11 @@ def codex_capture_order(path: Path, codex_v1: dict, codex_v2: dict) -> list[str]
     ids, legacy = [], iter(codex_v2)
     for start, end in _round_spans(text).values():
         header = _round_body(text[start:end]).splitlines()[0]
-        if header.startswith(_CODEX_V3):
+        prefix = next((s for s in (_CODEX_V3, _DIALOGUE_V1) if header.startswith(s)), None)
+        if prefix:
             if not header.endswith(" -->"):
                 raise ValueError("damaged Codex capture identity")
-            value = json.loads(header[len(_CODEX_V3):-4])
+            value = json.loads(header[len(prefix):-4])
             if not isinstance(value, str) or not value:
                 raise ValueError("damaged Codex capture identity")
         else:
@@ -282,6 +286,7 @@ def append_rounds(session: str, record: str, pairs: list,
                   space: str | None = None, *, replay_prefix: bool = False,
                   codex_v1: dict | None = None,
                   codex_v2: dict | None = None,
+                  dialogue_v1: dict | None = None,
                   inherited: dict | None = None) -> dict:
     """라운드 여럿을 **한 번의 쓰기로** 잇는다.
 
@@ -296,6 +301,8 @@ def append_rounds(session: str, record: str, pairs: list,
     `overview`의 `clusters`를 그대로 옮겨 쓴다."""
     if (codex_v1 is not None or codex_v2 is not None) and not replay_prefix:
         raise ValueError("Codex capture versions require prefix replay")
+    if dialogue_v1 is not None and not replay_prefix:
+        raise ValueError("dialogue capture requires prefix replay")
     if codex_v2 is not None and codex_v1 is None:
         raise ValueError("Codex v3 capture requires both historical codecs")
     if inherited is not None and (not replay_prefix or codex_v1 is not None):
@@ -352,9 +359,15 @@ def append_rounds(session: str, record: str, pairs: list,
             if len(spans) > len(norm):
                 raise write.WriteError("포착 원본이 저장된 기록보다 짧다", ["원본을 복구한 뒤 재시도하라"])
             for pair, (idx, (s, e)), (u, a) in zip(pairs, sorted(spans.items()), norm):
+                readable = _round_body(prior[s:e]).startswith(_DIALOGUE_V1)
                 extended = codex_v2 is not None and _round_body(prior[s:e]).startswith(_CODEX_V3)
                 native = codex_v1 is not None and _round_body(prior[s:e]).startswith(_CODEX_V2 + "\n")
-                if codex_v1 is not None and not extended:
+                if readable:
+                    selected = (dialogue_v1 or {}).get(pair["id"])
+                    if selected is None:
+                        raise write.WriteError("dialogue-v1 replay requires its recorded codec")
+                    u, a = selected["user"], selected["agent"]
+                elif codex_v1 is not None and not extended:
                     # Select the recorded codec before comparing. Never fall
                     # back after a mismatch: v2 rich input must remain checked.
                     # The marker lives in raw so cursor loss/copies retain it.
@@ -366,7 +379,8 @@ def append_rounds(session: str, record: str, pairs: list,
                     if not native:
                         legacy_replayed.append(idx)
                 expected = _block(idx, escape_numeric_h2(u), escape_numeric_h2(a), codex_native=native,
-                                  codex_id=pair["id"] if extended else None)
+                                  codex_id=pair["id"] if extended else None,
+                                  dialogue_id=pair["id"] if readable else None)
                 if _round_body(prior[s:e]) != _round_body(secrets.filter_text(expected)[0]):
                     raise write.WriteError("포착 원본과 저장된 접두부가 다르다", [f"라운드 {idx} — 쓰지 않았다"])
                 replayed.append(idx)
@@ -379,10 +393,17 @@ def append_rounds(session: str, record: str, pairs: list,
                         "filtered": [], "appended": 0, "codex_v1_rounds": legacy_replayed}
         blocks, indices = [], []
         for n, (u, a) in enumerate(norm):
+            pair = pairs[len(replayed) + n]
+            if dialogue_v1 is not None:
+                selected = dialogue_v1.get(pair["id"])
+                if selected is None:
+                    raise write.WriteError("missing dialogue capture; wrote no partial batch")
+                u, a = selected["user"], selected["agent"]
             indices.append(first + n)
             blocks.append(_block(first + n, escape_numeric_h2(u),
                                  escape_numeric_h2(a), codex_native=codex_v1 is not None,
-                                 codex_id=pairs[len(replayed) + n]["id"] if codex_v2 is not None else None))
+                                 codex_id=pair["id"] if codex_v2 is not None else None,
+                                 dialogue_id=pair["id"] if dialogue_v1 is not None else None))
         if not replay_prefix:
             _reject_replay(prior, spans, blocks)
         if prior and not prior.endswith("\n"):
@@ -501,7 +522,7 @@ def _preview(chunk: str, width: int = 60) -> str:
     """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
     body = _round_body(chunk).splitlines()
     if (body[:3] == [_CODEX_V2, "", "### user"] or len(body) >= 3
-            and body[0].startswith(_CODEX_V3) and body[1:3] == ["", "### user"]):
+            and body[0].startswith((_CODEX_V3, _DIALOGUE_V1)) and body[1:3] == ["", "### user"]):
         chunk = "\n".join(body[2:])  # Only the header; user quotations stay visible.
     for line in chunk.splitlines():
         s = line.strip()
@@ -510,13 +531,23 @@ def _preview(chunk: str, width: int = 60) -> str:
     return ""
 
 
-def read_round(ref: str, max_chars: int = 20000) -> dict:
+def round_hash(stored: str) -> str:
+    """Hash stored evidence, excluding only append separators (not a reading view)."""
+    return sha256_bytes(stored.rstrip("\n").encode())
+
+
+def read_round(ref: str, max_chars: int = 20000, view: str = "full",
+               query: str | None = None) -> dict:
     """좌표 하나를 연다. `index`가 없으면 그 기록의 **목차**를 낸다 — 전문을
     쏟지 않는 것이 기본값이어야 세션 기록 하나가 맥락을 삼키지 않는다.
 
     돌려주는 본문은 escape를 되돌린 것이다(Mechanism §8 3항 "회상할 때 이를
     되돌린다") — 기록에 남은 `\\## 3`은 원래 대화의 `## 3`이었다."""
+    if view not in {"review", "full"}:
+        raise ValueError("view must be review or full")
     path, index = parse_ref(ref)
+    if query is not None and (view != "review" or index is None):
+        raise ValueError("query requires view=review and an exact #N round")
     p = _raw_file(path)
     text = read_exact(p)
     rel = posix_rel(p, ROOT)
@@ -535,10 +566,15 @@ def read_round(ref: str, max_chars: int = 20000) -> dict:
             "없는 라운드",
             [f"`{rel}`에 라운드 {index}이(가) 없다. 있는 라운드: "
              f"{sorted(spans) if spans else '없음'}"])
-    chunk = _recalled(text[spans[index][0]:spans[index][1]])
+    stored = text[spans[index][0]:spans[index][1]]
+    chunk = _recalled(stored)
+    identity = {"ok": True, "path": rel, "index": index,
+                "round_ref": canonical_ref(f"{rel}#{index}"), "hash": round_hash(stored)}
+    if view == "review":
+        from . import raw_view
+        return {**identity, **raw_view.project(chunk, max_chars, query)}
     cut = len(chunk) > max_chars
-    return {"ok": True, "path": rel, "index": index,
-            "round_ref": canonical_ref(f"{rel}#{index}"),
+    return {**identity, "view": "full",
             "chars": len(chunk), "truncated": cut,
             "text": chunk[:max_chars] if cut else chunk}
 
