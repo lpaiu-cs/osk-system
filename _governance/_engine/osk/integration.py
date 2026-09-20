@@ -109,7 +109,7 @@ def status(harness: str, conversation_id: str) -> dict:
         return _current_view(_load(p, harness, conversation_id), p)
 
 
-def _inherited_rounds(s: dict, rounds: list) -> list:
+def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
     """Reuse only the caller's copied prefix, with native ID and byte evidence."""
     if s["harness"] != "claude" or not s["space"]:
         return rounds
@@ -131,11 +131,15 @@ def _inherited_rounds(s: dict, rounds: list) -> list:
         block = text[slice(*spans[number])]
         if core.sha256_bytes(block.rstrip("\n").encode()) != source["hash"]:
             raise ValueError("inherited raw changed; capture remains pending")
+        readable = raw._round_body(block).startswith(raw._DIALOGUE_V1)
+        if readable:
+            pair = (dialogue_v1 or {})[pair["id"]]
         # A raw owner may have captured another conversation's copied history.
         # Match generated result locators by native result UUID, not raw ownership.
         locator = re.compile(
-            r'("content": \{"coverage": "tool-output-reference", "native_result": "claude:)'
-            r'([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)(")')
+            (r'("native_result": "claude:)' if readable else
+             r'("content": \{"coverage": "tool-output-reference", "native_result": "claude:)')
+            + r'([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)(")')
         origins = {m[3]: m[2] for m in locator.finditer(block)}
         references = Counter(pair.get("native_results", []))
         occurrences = Counter("claude:" + m[2] + ":" + m[3] for m in locator.finditer(pair["agent"]))
@@ -147,7 +151,8 @@ def _inherited_rounds(s: dict, rounds: list) -> list:
             if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
             else m[0], pair["agent"])
         from . import secrets
-        expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent))
+        expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent),
+                              dialogue_id=pair["id"] if readable else None)
         return raw._round_body(block) == raw._round_body(secrets.filter_text(expected)[0])
 
     if inherited is None:
@@ -259,7 +264,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             # ponytail: serialize capture until its cursor is saved; use per-scope
             # locks if capture throughput matters. Raw owns the mutation lock.
             with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
-                rounds = _inherited_rounds(s, parsed["rounds"])
+                rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
                 if harness == "codex" and parsed.get("codex_v2") is not None and s["space"]:
                     # Old raw coordinates/ACKs are immutable. Newly supported
                     # historical turns append after them, with native IDs in raw.
@@ -278,6 +283,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                     result = raw.append_rounds(session, s["record"], rounds, s.get("space"),
                                                replay_prefix=True, codex_v1=parsed.get("codex_v1"),
                                                codex_v2=parsed.get("codex_v2"),
+                                               dialogue_v1=parsed.get("dialogue_v1"),
                                                inherited=s.get("inherited"))
                     s["coverage"]["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
                     stored = raw.read_exact(raw._raw_file(result["path"]))
@@ -503,7 +509,7 @@ def list_pending(limit: int = 20) -> dict:
             "awaiting_native": awaiting_native}
 
 
-def catchup(limit: int = 20) -> dict:
+def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session."""
     states, remaining, errors, awaiting_native = _known_pending(limit)
     captures, jobs = [], []
@@ -512,7 +518,8 @@ def catchup(limit: int = 20) -> dict:
             result = capture(s["harness"], s["conversation_id"], s["transcript_path"], s["session"], s.get("space"))
             captures.append({k: result.get(k) for k in ("harness", "conversation_id", "ok", "appended", "capture_error")})
             if result["pending_refs"]:
-                job = prompt(s["harness"], s["conversation_id"], include_organization=False)
+                job = prompt(s["harness"], s["conversation_id"], include_organization=False,
+                             max_rounds=max_rounds)
                 job["prompt"] = job.pop("text")
                 jobs.append(job)
         except Exception as exc:
@@ -522,11 +529,14 @@ def catchup(limit: int = 20) -> dict:
             "awaiting_native": awaiting_native}
 
 
-def prompt(harness: str, conversation_id: str, *, include_organization: bool = True) -> dict:
+def prompt(harness: str, conversation_id: str, *, include_organization: bool = True,
+           max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
+    if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= MAX_REVIEW_ROUNDS:
+        raise ValueError(f"max_rounds must be between 1 and {MAX_REVIEW_ROUNDS}")
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
         st = _current_view(s, p)
-        count = min(len(s["rounds"]), s["reviewed_count"] + MAX_REVIEW_ROUNDS)
+        count = min(len(s["rounds"]), s["reviewed_count"] + max_rounds)
         if s.get("repair_pending"):
             token = min(s["repair_pending"], key=lambda t: (s["snapshots"][t]["count"], t))
             st["through"] = token
@@ -617,7 +627,11 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
              "재시도에서는 그대로 재사용한다. 여러 대상에 같은 key를 쓰지 않는다. "
              "새 snapshot은 새 작업 키를 쓴다. ACK만 유실됐다면 위 complete 증거의 "
              "기존 key를 targets에 재사용하며, 같은 본문을 새 key로 다시 쓰지 않는다.\n")
-    text += ("먼저 아래 자기 대화 raw를 read_raw로 읽고 현재 scope_memory를 함께 읽어라. "
+    text += ("현재 scope_memory와 아래 raw의 read_raw(view=review) 선별본으로 후보를 찾는다. "
+             "이미 이 대화에서 확인한 근거를 전량 재독하지 않는다. 보존할 주장이나 모순을 "
+             "확인할 때만 query로 필요한 원료 근거를 좁혀 읽는다. 원본 hash를 출처에 쓴다. "
+             "선별본 생략은 무가치의 증거가 아니며, 판정 근거가 부족하면 deferred로 남긴다. "
+             "max_chars 증가·raw 전량 이어읽기·전사 전체 shell 출력으로 우회하지 않는다. "
              "search로 기존 노드를 찾고 같은 주제는 update_node를 우선한다. "
              "오래 쓸 지식만 Scope 노드로 옮기며 선택한 raw 출처와 허브 Link를 distill로 완성한다. "
              "남길 지식이 없는 라운드까지 노드에 억지로 넣지 않는다.\n"

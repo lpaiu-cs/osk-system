@@ -284,14 +284,13 @@ def _node_view(body: str, view: str) -> dict:
 
 @mcp.tool()
 def read_raw(ref: str | None = None, space: str | None = None,
-             max_chars: Annotated[int, Field(ge=200, le=100000)] = 20000) -> dict:
-    """세션 기록의 **명시 회상** — `_raw/`는 검색에 걸리지 않으니 좌표로 연다.
-    `ref`는 `derived-from`의 `경로#N`(옛 `[[경로#N]]`도 허용)이며 라운드 전문이
-    온다. `#N` 없이 경로만 주면 그 기록의 목차(번호·미리보기)가, `ref` 대신
-    `space`(`"= Scope/W1"` 꼴)를 주면 그 scope의 기록 목록이 온다. `truncated`가
-    참이면 `max_chars`를 올려 다시 부른다."""
+             max_chars: Annotated[int, Field(ge=200, le=100000)] = 6000,
+             view: Literal["review", "full"] = "review", query: str | None = None) -> dict:
+    """대화 원료 회상: ref=경로#N, 번호 없으면 목차, space=기록 목록.
+    기본 review: 발화·답변 선별 ≤6000자. query=원본 AND 검색, full=포렌식.
+    생략≠무가치. 전량 이어읽지 않는다. hash는 원본 출처."""
     if ref:
-        return _guard(raw.read_round, ref, max_chars)
+        return _guard(raw.read_round, ref, max_chars, view, query)
     if space:
         return _guard(raw.list_records, space)
     return {"ok": False, "violations": [

@@ -180,7 +180,7 @@ class GrowthTests(unittest.TestCase):
         self.check_case("""
             node('A')
             change = "import os,subprocess; assert os.environ.get('OSK_GROWTH_WORKER')=='1'; hooks=Path(growth.__file__).resolve().parents[1]/'scripts/hooks'; results=[subprocess.run([sys.executable,'-B',str(hooks/name)],input=b'{}',capture_output=True,timeout=20) for name in ('claude_session_start.py','claude_prompt_submit.py','capture_stop.py')]; assert all(r.returncode==0 and not r.stdout and not r.stderr for r in results),results"
-            result = growth.run([sys.executable,'-c',packet_worker('from pathlib import Path; '+change)],limit=1)
+            result = growth.run([sys.executable,'-c',packet_worker('from pathlib import Path; '+change)],limit=2)
             assert result['ok'], result
             assert not growth.run(['unused-command'])['selected']
         """)
@@ -389,7 +389,7 @@ class GrowthTests(unittest.TestCase):
             next_candidate = growth.plan(1)['candidates'][0]
             assert next_candidate['previous_distillations'][0]['key'] == candidate['distill_key']
             worker = "import sys; from osk import core,growth,organization; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [growth.review(c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(j['scope'])['snapshot']) for j in p['organization_jobs']]"
-            outcome = growth.run([sys.executable,'-c',worker],limit=1)
+            outcome = growth.run([sys.executable,'-c',worker],limit=2)
             assert outcome['ok'], outcome
             assert len([1 for p,k in graph.Index().nodes.values() if k[0]=='domain' and not graph.is_hub(p)]) == 1
         """)
@@ -429,7 +429,7 @@ class GrowthTests(unittest.TestCase):
                 pass
             assert write.create_node(**request)['ok']
             change = "c=p['candidates'][0]; result=distillation.create_node({'key':c['distill_key'],'sources':[{'ref':s['id'],'hash':s['hash']} for s in c['sources']],'hub':'Principles'},title='Observed rule',summary='Rule from A and B',body='A and B support this bounded rule.',drafter='gpt-6-astra',space='= Domain/Principles'); assert result['ok'],result; q['osk_reviews']['domain'][0].update(outcome='preserved',target='Observed rule',reason='A and B support this bounded rule.')"
-            result = growth.run([sys.executable,'-c',packet_worker(change)],limit=1)
+            result = growth.run([sys.executable,'-c',packet_worker(change)],limit=2)
             assert result['ok'], result
             assert set(result['domain_outcomes'].values()) == {'preserved'}, result
             assert result['final_reviews']['state'] == 'applied', result
@@ -490,7 +490,45 @@ class GrowthTests(unittest.TestCase):
             result = growth.run([sys.executable,'-c',packet_worker(change)],limit=3)
             assert result['ok'], result
             assert 'already_complete' in result['final_reviews']['domain'].values(), result
-            assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == 3
+            assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == result['domain_selected'] == 2
+        """)
+
+    def test_total_budget_and_queue_rotation_do_not_ack_unselected_scope(self):
+        self.check_case("""
+            from osk import integration
+            node('A')
+            path = core.ROOT / 'native.jsonl'
+            rows = []
+            for i in range(7):
+                rows += [{'type':'user','sessionId':'bounded','uuid':'u'+str(i),'message':{'role':'user','content':'question '+str(i)}},
+                         {'type':'assistant','sessionId':'bounded','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
+            path.write_text(''.join(json.dumps(row)+'\\n' for row in rows),encoding='utf-8')
+            integration.capture('claude','bounded',str(path),'bounded-project',space='= Scope/W1')
+            original = integration.status('claude','bounded')
+            seen = []
+            worker = [sys.executable,'-c','import sys; sys.stdin.read()']  # no ACKs
+            for i in range(3):
+                result = growth.run(worker,limit=1)
+                assert result['selected'] == 1 and not result['ok'], result
+                plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+                queue = next(k for k in growth._QUEUES if plan[k])
+                seen.append(queue)
+                if plan['scope_jobs']:
+                    job = plan['scope_jobs'][0]
+                    assert len(job['pending_refs']) == 3 and job['remaining_rounds'] == 4, job
+                    assert job['through'] != original['through']
+                    visible = growth._reading_plan(plan)['scope_jobs'][0]
+                    assert 'prompt' not in visible and 'last_review' not in visible
+                    assert visible['through'] == job['through'] and visible['pending_refs'] == job['pending_refs']
+                    job['last_review'] = {'through':job['through'], 'outcome':'deferred', 'reason':'Search CACHE_LIMIT retest first.'}
+                    visible = growth._reading_plan(plan)['scope_jobs'][0]
+                    assert visible['previous_deferral']['reason'] == job['last_review']['reason']
+            assert seen == list(growth._QUEUES), seen
+            assert integration.status('claude','bounded')['pending_refs'] == original['pending_refs']
+            result = growth.run([sys.executable,'-c',packet_worker()],limit=3)
+            assert result['ok'] and result['selected'] == 3, result
+            state = integration.status('claude','bounded')
+            assert len(state['pending_refs']) == 4, state  # selected three only, not the whole conversation
         """)
 
 

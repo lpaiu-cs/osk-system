@@ -216,12 +216,12 @@ class IntegrationRecoveryTests(unittest.TestCase):
             worker = ('SID=' + repr(sid) + '; NATIVE=' + repr(str(native)) + '; SECOND='
                       + repr(rounds(2)) + '; LINK=' + repr('- [[' + created['name'] + ']]')
                       + '; PROOF=' + repr(proof_key) + '\\n' + worker)
-            result = growth.run([sys.executable, '-B', '-c', worker], limit=1)
+            result = growth.run([sys.executable, '-B', '-c', worker], limit=3)
             assert result['state'] == 'incomplete' and result['scope_selected'] == 1, result
             state = json.loads(it.state_path('claude', sid).read_text(encoding='utf-8'))
             assert first['through'] in state.get('repair_pending', {}), state
             assert state['reviewed_count'] == 2, state
-            again = growth.run([sys.executable, '-B', '-c', 'import sys; sys.stdin.read()'], limit=1)
+            again = growth.run([sys.executable, '-B', '-c', 'import sys; sys.stdin.read()'], limit=3)
             assert again['scope_selected'] == 1, again
             selected = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]['scope_jobs']
             assert selected[0]['through'] == first['through'], selected
