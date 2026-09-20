@@ -145,7 +145,7 @@ def _completed(key: str, rows: list[dict], idx: graph.Index) -> dict | None:
     return row
 
 
-def _plan(limit: int, *, record_organization: bool = False) -> dict:
+def _plan(limit: int) -> dict:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f"limit must be between 1 and {MAX_LIMIT}")
     idx, rows = _index(), _records()
@@ -234,7 +234,7 @@ def _plan(limit: int, *, record_organization: bool = False) -> dict:
             if old_proof.get("target"):
                 candidate["previous_distillations"].append(old_proof)
     from . import organization
-    organization_jobs = organization.pending(limit=limit, idx=idx, record=record_organization)
+    organization_jobs = organization.pending(limit=limit, idx=idx)
     return {"candidates": candidates, "organization_jobs": organization_jobs, "source_count": len(sources),
             "cluster_count": len(clusters), "domain_count": len(domains),
             "limit": limit, "max_sources_per_candidate": 2 * BATCH_SIZE}
@@ -635,7 +635,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
             from . import integration
             catchup = integration.catchup(limit=limit, max_rounds=SCOPE_ROUNDS_PER_JOB)
             with core.mutation_lock():
-                planned = _plan(limit, record_organization=True)
+                planned = _plan(limit)
                 from . import organization
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
@@ -654,6 +654,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600) -> dict:
                 for candidate in planned["candidates"]:
                     candidate["distill_key"] = f"growth:{attempt}:{candidate['key']}"
                 manifest = core.ledger_append(LEDGER, {"kind": "plan", **planned})
+                organization.record_attempts(planned["organization_jobs"])
             planned["manifest"] = manifest["rid"]
             directory = core.resolve_in_root(Path(".osk/growth/runs") / manifest["rid"])
             if directory is None:

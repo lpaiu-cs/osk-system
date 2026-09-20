@@ -531,6 +531,42 @@ class GrowthTests(unittest.TestCase):
             assert len(state['pending_refs']) == 4, state  # selected three only, not the whole conversation
         """)
 
+    def test_only_dispatched_organization_jobs_advance_attempts(self):
+        self.check_case("""
+            from unittest.mock import patch
+            from osk import integration
+            for name, scope in (('A','W1'),('B','W2'),('C','W3')):
+                node(name, scope)
+            path = core.ROOT / 'native.jsonl'
+            rows = [
+                {'type':'user','sessionId':'waiting','uuid':'u1','message':{'role':'user','content':'Keep this scoped fact.'}},
+                {'type':'assistant','sessionId':'waiting','uuid':'a1','message':{'role':'assistant','id':'m1','content':[{'type':'text','text':'A bounded fact.'}],'stop_reason':'end_turn'}}]
+            path.write_text(''.join(json.dumps(r)+'\\n' for r in rows),encoding='utf-8')
+            assert integration.capture('claude','waiting',str(path),'waiting',space='= Scope/W1')['ok']
+            worker = "import sys; from osk import core,growth,organization; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [organization.review(j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
+            visited = []
+            for i in range(8):
+                before = organization._load()['plans']
+                # Inventories and previews must never create/refresh attempts.
+                growth.plan(3)
+                assert organization._load()['plans'] == before
+                with patch.object(core, 'now_kst', return_value=f'2026-09-20T12:00:{i:02d}+09:00'):
+                    result = growth.run([sys.executable,'-c',worker],limit=3)
+                assert result['selected'] == 3 and not result['ok'], result
+                manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+                jobs = manifest['organization_jobs']
+                assert len(jobs) == 1 and len(manifest['scope_jobs']) == len(manifest['candidates']) == 1, manifest
+                selected = jobs[0]
+                visited.append(selected['scope'])
+                after = organization._load()['plans']
+                assert after[selected['key']]['last_attempt'] == f'2026-09-20T12:00:{i:02d}+09:00'
+                assert {k:v for k,v in after.items() if v['scope'] != selected['scope']} == {
+                    k:v for k,v in before.items() if v['scope'] != selected['scope']}, (before, after)
+                assert organization._load()['reviews'][selected['scope']]['outcome'] == 'deferred'
+            assert visited == ['W1','W2','W3','W1','W2','W3','W1','W2'], visited
+            assert integration.status('claude','waiting')['reviewed_rounds'] == 0
+        """)
+
 
 if __name__ == '__main__':
     unittest.main()

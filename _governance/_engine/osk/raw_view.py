@@ -8,6 +8,12 @@ from collections import Counter
 MAX_CHARS = 6000
 _ITEM_CHARS = 1200
 _SECTIONS = re.compile(r"^### (user|agent|assistant)[ \t\r]*$", re.M)
+_JSON_END = re.compile(r"(?:[ \t\r]*\n[ \t\r]*\n|\s*\Z)")
+_NATIVE_TYPES = {"text", "input_text", "output_text", "message", "agent_message",
+                 "thinking", "reasoning", "redacted_thinking", "function_call",
+                 "function_call_output", "custom_tool_call", "custom_tool_call_output",
+                 "tool_use", "tool_result", "tool_evidence_ref", "attachment_ref",
+                 "image", "image_url", "input_image", "task_complete", "turn_aborted", "superseded"}
 _OPAQUE = {"encrypted_content", "thinking", "signature",
            "internal_chat_message_metadata_passthrough"}
 
@@ -50,6 +56,19 @@ def _clean(value):
     return value
 
 
+def _native_event(value) -> bool:
+    """Only capture envelope shapes, never a JSON scalar or arbitrary data object."""
+    if isinstance(value, list):
+        return all(isinstance(item, dict) and _native_event(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+    if "type" in value:
+        return isinstance(value["type"], str) and value["type"] in _NATIVE_TYPES
+    return (isinstance(value.get("native_trigger"), str)
+            or isinstance(value.get("content"), (str, list))
+            or isinstance(value.get("message"), str))
+
+
 def _events(chunk):
     """Accept both native JSON envelopes and manually written plain raw."""
     decoder = json.JSONDecoder()
@@ -66,7 +85,11 @@ def _events(chunk):
             if cursor == len(block):
                 break
             try:
+                if block[cursor] not in "[{":
+                    raise ValueError("plain paragraph")
                 value, end = decoder.raw_decode(block, cursor)
+                if not _native_event(value) or not _JSON_END.match(block, end):
+                    raise ValueError("not a complete capture envelope")
             except ValueError:
                 end = block.find("\n\n", cursor)
                 if end < 0:
@@ -99,6 +122,10 @@ def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None) ->
             # Previous input belongs to its original turn, not a new human request.
             text = json.dumps(_clean(value), ensure_ascii=False)
             kind, priority = "native_trigger_context", 0
+        elif typ == "tool_evidence_ref":
+            text, kind, priority = json.dumps(value, ensure_ascii=False), "native_evidence_reference", 1
+        elif typ in {"task_complete", "turn_aborted", "superseded"}:
+            text, kind, priority = json.dumps(_clean(value), ensure_ascii=False), "terminal", 0
         elif role == "user" and typ not in {"tool_result", "function_call_output", "custom_tool_call_output"}:
             if isinstance(value, list) and any(isinstance(x, dict) and x.get("type") == "tool_result" for x in value):
                 text, kind, priority = "", "tool_trace", 3
@@ -110,10 +137,6 @@ def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None) ->
             text, kind, priority = _text(value), "assistant_final" if final else "assistant", 0 if final else 2
         elif role == "assistant" or role in {"agent", "plain"} and isinstance(value, (str, list)):
             text, kind, priority = _text(value), "assistant", 2
-        elif typ in {"task_complete", "turn_aborted", "superseded"}:
-            text, kind, priority = json.dumps(_clean(value), ensure_ascii=False), "terminal", 0
-        elif typ == "tool_evidence_ref":
-            text, kind, priority = json.dumps(value, ensure_ascii=False), "native_evidence_reference", 1
         else:
             text, kind, priority = "", "tool_trace", 3
         if terms:

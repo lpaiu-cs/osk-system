@@ -72,6 +72,30 @@ def main():
         assert clipped["truncated"] and len(clipped["text"]) <= 200
         assert "MIDDLE_FINDING measured" in raw_view.project(plain, query="MIDDLE_FINDING")["text"]
         assert not raw_view.project(plain, query="absent")["text"]
+
+        # Plain dialogue can start with JSON-looking tokens. Never split a
+        # number/boolean/object prefix from the condition it qualifies.
+        for statement, query in (
+                ("16 workers are sufficient.", "16 workers"),
+                ("0.05 seconds is the measured ceiling.", "0.05 ceiling"),
+                ("-2 is the lower bound.", "-2 bound"),
+                ("true means enabled.", "true enabled"),
+                ('"16 workers" is a quotation.', "16 workers quotation"),
+                ('{"workers": 16}', "workers 16"),
+                ('[{"workers": 16}]', "workers 16"),
+                ('{"type": "message", "content": "example"} is literal prose.', "message literal prose")):
+            chunk = "### user\n\n" + statement + "\n\n### agent\n\n### assistant\n\n" + statement
+            for result in (raw_view.project(chunk), raw_view.project(chunk, query=query)):
+                assert result["selected_events"] == 2 and statement in result["text"], result
+
+        reference = {"type": "tool_evidence_ref", "native_result": "claude:user1:answer1",
+                     "hash_scheme": "dialogue-tool-manifest-v1", "sha256": "a" * 64,
+                     "calls": 1, "results": 1, "tools": ["Read"]}
+        claude_ref = '### user\n\nQuestion\n\n### agent\n\n### assistant\n\n' + json.dumps([
+            {"type": "text", "text": "Read result needs verification."}]) + "\n\n" + json.dumps(reference)
+        shown = raw_view.project(claude_ref)
+        assert "native_evidence_reference" in shown["text"] and "claude:user1:answer1" in shown["text"], shown
+        assert "Read result needs verification." in shown["text"]
         print("raw reading checks passed: bounded view/search, correction, opaque omission, unchanged provenance")
 
 
