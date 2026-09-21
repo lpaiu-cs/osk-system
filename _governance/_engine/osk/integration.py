@@ -272,7 +272,8 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                     # Old raw coordinates/ACKs are immutable. Newly supported
                     # historical turns append after them, with native IDs in raw.
                     path = raw.record_path(raw._scope_of_space(s["space"]), s["record"])
-                    order = raw.codex_capture_order(path, parsed["codex_v1"], parsed["codex_v2"])
+                    order = raw.codex_capture_order(path, parsed["codex_v1"], parsed["codex_v2"],
+                                                    tuple(r["id"] for r in s["rounds"]))
                     by_id = {r["id"]: r for r in rounds}
                     if len(by_id) != len(rounds) or any(rid not in by_id for rid in order):
                         raise ValueError("native round identity prefix changed; existing raw was not altered")
@@ -475,17 +476,19 @@ def _known_pending(limit: int) -> tuple[list, int, list, list]:
                 s = _load(p, value["harness"], value["conversation_id"])
                 current = _current_view(s, p)
             changed, missing = False, False
-            native_path = _locate_transcript(s["harness"], s["conversation_id"], s.get("transcript_path"))
-            if native_path:
-                try:
-                    native = Path(native_path).stat()
-                    changed = s.get("native_fingerprint") != {"size": native.st_size, "mtime_ns": native.st_mtime_ns}
-                except FileNotFoundError:
+            try:
+                native_path = _locate_transcript(s["harness"], s["conversation_id"], s.get("transcript_path"))
+                if native_path:
+                    changed = s.get("native_fingerprint") != transcripts.native_fingerprint(
+                        native_path, s["harness"], s["conversation_id"])
+                else:
                     changed, missing = True, True
-                except OSError:
-                    changed = True
-            else:
+            except FileNotFoundError:
                 changed, missing = True, True
+            except (OSError, ValueError) as exc:
+                changed = True
+                errors.append({"state": str(p), "phase": "native_lookup", "error": str(exc)})
+                # Capture still fails closed, but stored raw remains reviewable.
             if missing and not (s["prompt_count"] or s["rounds"] or s.get("native_fingerprint")):
                 # SessionStart may precede file creation, or no user turn ever
                 # follows. Keep the cursor; do not spend the bounded work slots.

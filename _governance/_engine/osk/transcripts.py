@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 from pathlib import Path
 
 
@@ -139,12 +141,77 @@ def _tool_evidence(items: list, locator: str) -> list[str]:
                    "tools": sorted({str(x["name"]) for x in items if x.get("name")})})]
 
 
+def _native_files(path: str, harness: str, sid: str) -> list[tuple[Path, int | None]]:
+    """Follow declared Codex pages, never neighbouring tasks or filename order."""
+    current, limit, pages = Path(path).resolve(), None, []
+    while True:
+        if any(current.samefile(p) for p, _ in pages):
+            raise ValueError("cyclic Codex history_base")
+        pages.append((current, limit))
+        if harness != "codex":
+            return pages
+        with current.open("rb") as stream:
+            first = next((line for line in stream if line.strip()), b"")
+            row = json.loads(first)
+            meta = row.get("payload") if isinstance(row, dict) else None
+            if not isinstance(meta, dict) or row.get("type") != "session_meta" or meta.get("id") != sid:
+                raise ValueError("Codex history identity mismatch: session_meta.id does not match this conversation")
+            if limit is not None and limit < stream.tell():
+                raise ValueError("Codex history byte boundary excludes its identity")
+        base = meta.get("history_base")
+        if base is None:
+            return list(reversed(pages))
+        if (not isinstance(base, dict)
+                or not isinstance(base.get("thread_id"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", base["thread_id"])
+                or type(base.get("end_byte_offset")) is not int or base["end_byte_offset"] <= 0):
+            raise ValueError("invalid Codex history_base identity/byte boundary")
+        home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+        pattern = f"*[-_]{base['thread_id']}.jsonl"
+        matches = []
+        for folder, glob in (
+            (current.parent, pattern), (home / "sessions", "*/*/*/" + pattern),
+            (home / "archived_sessions", pattern)):
+            for p in folder.glob(glob):
+                # Windows extended paths and ordinary paths can name one file.
+                if p.is_file() and not any(p.samefile(other) for other in matches):
+                    matches.append(p.resolve())
+        if len(matches) != 1:
+            raise ValueError("Codex history_base source missing or ambiguous")
+        current, limit = matches.pop(), base["end_byte_offset"]
+
+
+def native_fingerprint(path: str, harness: str, sid: str) -> dict:
+    pages = _native_files(path, harness, sid)
+    stat = pages[-1][0].stat()
+    result = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    if len(pages) > 1:
+        result["history"] = [{"path": str(p), "through": limit,
+                              "size": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
+                             for p, limit in pages[:-1]]
+    return result
+
+
+def native_lines(path: str, harness: str, sid: str):
+    for native, remaining in _native_files(path, harness, sid):
+        with native.open("rb") as stream:
+            while remaining is None or remaining > 0:
+                line = stream.readline(-1 if remaining is None else remaining)
+                if not line:
+                    if remaining:
+                        raise ValueError("Codex history byte boundary exceeds source")
+                    break
+                if remaining is not None:
+                    if not line.endswith(b"\n"):
+                        raise ValueError("Codex history byte boundary splits a record")
+                    remaining -= len(line)
+                yield line
+
+
 def read(path: str, harness: str, conversation_id: str) -> dict:
-    stat = Path(path).stat()
-    data = Path(path).read_bytes()
+    fingerprint = native_fingerprint(path, harness, conversation_id)
     rows, diagnostics = [], []
-    lines = data.splitlines(keepends=True)
-    for n, line in enumerate(lines, 1):
+    for n, line in enumerate(native_lines(path, harness, conversation_id), 1):
         if not line.strip():
             continue
         try:
@@ -152,7 +219,7 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
             if not isinstance(row, dict):
                 raise ValueError("JSON record is not an object")
         except (ValueError, UnicodeError) as exc:
-            if n == len(lines) and not line.endswith(b"\n"):
+            if not line.endswith(b"\n"):
                 diagnostics.append(f"incomplete JSONL tail at line {n}")
                 break
             raise ValueError(f"unreadable transcript record at line {n}") from exc
@@ -176,7 +243,7 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
     result["dialogue_v1"] = {r["id"]: r for r in readable["rounds"]}
     result["diagnostics"] = diagnostics + result["diagnostics"]
     result["pending_tail"] = result["pending_tail"] or bool(diagnostics)
-    result["native_fingerprint"] = {"size": len(data), "mtime_ns": stat.st_mtime_ns}
+    result["native_fingerprint"] = fingerprint
     referenced = any('"tool_evidence_ref"' in r["agent"] for r in readable["rounds"])
     result["coverage"] = {"mode": "tool-output-reference" if referenced else "inline",
                           "capture_codec": "dialogue-v1",
@@ -304,7 +371,7 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
     turn = None
     user_formats = []
     resumable, final_seen = None, False
-    evidence, has_native_trace = [], False
+    evidence, has_native_trace, compaction_seen = [], False, False
 
     def finish(completion, line, terminal=None):
         nonlocal resumable
@@ -374,11 +441,13 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
                         "type": "superseded", "turn_id": turn, "next_turn_id": p.get("turn_id")}):
                     diagnostics.append(f"unfinished Codex turn {turn}")
             turn, users, trace = p.get("turn_id"), [], []
-            evidence, has_native_trace = [], False
+            evidence, has_native_trace, compaction_seen = [], False, False
             final_seen = False
             user_formats.clear()
         elif typ == "turn_context" and not turn:
             turn = p.get("turn_id")
+        elif typ == "compacted" and turn:
+            compaction_seen = True
         elif typ == "event_msg" and event == "user_message" and turn:
             add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
         elif (native_users and typ == "event_msg" and event == "item_completed" and turn
@@ -437,7 +506,10 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
                 trace.append(_dump({"type": "message", "role": "assistant", "phase": "final_answer",
                                     "content": p["last_agent_message"]}))
             # task_complete is authoritative; final_answer alone never commits.
-            if terminal_turns and p.get("error"):
+            if (compaction_seen and not users and not trace and not has_native_trace
+                    and not p.get("error") and not p.get("last_agent_message")):
+                pass  # Native maintenance completion has no dialogue to capture.
+            elif terminal_turns and p.get("error"):
                 if not finish("failed", line, p):
                     diagnostics.append(f"missing input for failed Codex turn {turn}")
             elif terminal_turns and (users or resumable) and (has_native_trace if dialogue else trace) and (
@@ -451,7 +523,7 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
                                "completion": "completed"})
                 seen.add(turn)
             turn, users, trace = None, [], []
-            evidence, has_native_trace = [], False
+            evidence, has_native_trace, compaction_seen = [], False, False
             user_formats.clear()
         elif typ == "event_msg" and event == "turn_aborted" and turn:
             if p.get("turn_id") and p["turn_id"] != turn:
@@ -467,7 +539,7 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
                                "end_line": line, "completion": "aborted"})
                 seen.add(turn)
             turn, users, trace = None, [], []
-            evidence, has_native_trace = [], False
+            evidence, has_native_trace, compaction_seen = [], False, False
             user_formats.clear()
     return {"rounds": rounds, "pending_tail": bool(users) or bool(terminal_turns and turn) or bool(diagnostics),
             "diagnostics": diagnostics}

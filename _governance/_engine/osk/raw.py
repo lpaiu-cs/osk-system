@@ -245,14 +245,16 @@ def _block(index: int, user: str, agent: str, *, codex_native: bool = False,
             f"### agent\n\n{agent.rstrip()}\n")
 
 
-def codex_capture_order(path: Path, codex_v1: dict, codex_v2: dict) -> list[str]:
+def codex_capture_order(path: Path, codex_v1: dict, codex_v2: dict,
+                        saved_ids: tuple[str, ...] = ()) -> list[str]:
     """Recover append order after historical backfill, even without local cursors."""
     if not path.exists():
         return []
     text = read_exact(path)
-    ids, legacy = [], iter(codex_v2)
+    ids = []
     for start, end in _round_spans(text).values():
-        header = _round_body(text[start:end]).splitlines()[0]
+        body = _round_body(text[start:end])
+        header = body.splitlines()[0]
         prefix = next((s for s in (_CODEX_V3, _DIALOGUE_V1) if header.startswith(s)), None)
         if prefix:
             if not header.endswith(" -->"):
@@ -261,12 +263,23 @@ def codex_capture_order(path: Path, codex_v1: dict, codex_v2: dict) -> list[str]
             if not isinstance(value, str) or not value:
                 raise ValueError("damaged Codex capture identity")
         else:
-            value = next(legacy, None)
-            if header != _CODEX_V2:
-                while value is not None and value not in codex_v1:
-                    value = next(legacy, None)
-            if value is None:
-                raise ValueError("legacy Codex capture identity prefix changed")
+            native = header == _CODEX_V2
+            codec = codex_v2 if native else codex_v1
+            candidates = [saved_ids[len(ids)]] if len(ids) < len(saved_ids) else codec
+            matches = []
+            # ponytail: cursorless legacy matching scans the codec; index body
+            # hashes if large legacy archives make this recovery path costly.
+            for rid in candidates:
+                if rid in ids or rid not in codec:
+                    continue
+                pair = codec[rid]
+                expected = _block(1, escape_numeric_h2(pair['user']),
+                                  escape_numeric_h2(pair['agent']), codex_native=native)
+                if body == _round_body(secrets.filter_text(expected)[0]):
+                    matches.append(rid)
+            if len(matches) != 1:
+                raise ValueError("legacy Codex capture identity missing, changed or ambiguous")
+            value = matches[0]
         ids.append(value)
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate Codex capture identity")

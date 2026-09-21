@@ -8,8 +8,9 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import closing
 
-from . import core, growth, integration
+from . import core, growth, integration, transcripts
 from ._portalock import lock_exclusive, unlock
 
 CONFIG = core.ROOT / '.osk/response-growth.json'
@@ -38,8 +39,9 @@ def initialize(env: dict) -> dict | None:
         state = integration._load(p, harness, sid)
         saved = state.get('response_growth')
         if saved is None:
-            ids = profile(path, harness, sid)['finals'] if path and Path(path).exists() else []
-            saved = {'counter': 'finals', 'seen': ids, 'count': 0, 'attempted_count': 0}
+            source = profile(path, harness, sid) if path and Path(path).exists() else None
+            saved = {'counter': 'finals', 'seen': source['finals'] if source else [],
+                     'count': 0, 'attempted_count': 0, 'history_baselined': source is not None}
             state['response_growth'] = saved
             integration._save(p, state)
         return {k: v for k, v in saved.items() if k != 'seen'}
@@ -136,7 +138,7 @@ def process_stop(env: dict, *, flush_timeout: float = 5) -> dict:
                     if 'response_growth' not in state:
                         # First notification after installation counts once, never replays history.
                         state['response_growth'] = {'counter': 'finals', 'seen': source['finals'][:-1],
-                                                    'count': 0, 'attempted_count': 0}
+                                                    'count': 0, 'attempted_count': 0, 'history_baselined': True}
                         integration._save(p, state)
                 clock = observe(source)
                 if not clock['due']:
@@ -162,14 +164,14 @@ def profile(path: str, harness: str, sid: str) -> dict:
     """Read native metadata locally, without copying history into a prompt or raw."""
     integration._identity(harness, sid)
     native = Path(path).resolve()
-    before = native.stat()
+    before = transcripts.native_fingerprint(str(native), harness, sid)
     result = {'harness': harness, 'conversation_id': sid, 'finals': [], 'active': False,
               'last_successful': False,
-              'transcript_path': str(native), 'fingerprint': [before.st_size, before.st_mtime_ns]}
+              'transcript_path': str(native), 'fingerprint': before}
     finals, identified, context, turn = set(), False, {}, None
-    with native.open(encoding='utf-8') as stream:
+    with closing(transcripts.native_lines(str(native), harness, sid)) as stream:
         for line in stream:
-            if not line.endswith('\n'):
+            if not line.endswith(b'\n'):
                 result['active'] = True
                 break  # An unflushed JSONL tail is not a completed response.
             if not line.strip():
@@ -181,6 +183,7 @@ def profile(path: str, harness: str, sid: str) -> dict:
                     if p.get('id') != sid:
                         raise ValueError('native conversation identity mismatch')
                     identified = True
+                    result['history_final_count'] = len(result['finals'])
                     result.update({k: p.get(k) for k in ('cwd', 'cli_version', 'source', 'originator', 'model_provider')})
                 elif row.get('type') == 'turn_context':
                     result['active'] = True
@@ -235,8 +238,8 @@ def profile(path: str, harness: str, sid: str) -> dict:
 
 
 def _source_unchanged(source: dict) -> bool:
-    current = Path(source['transcript_path']).stat()
-    return [current.st_size, current.st_mtime_ns] == source['fingerprint']
+    return transcripts.native_fingerprint(source['transcript_path'], source['harness'],
+                                         source['conversation_id']) == source['fingerprint']
 
 
 def subscription_env() -> dict:
@@ -257,14 +260,23 @@ def observe(source: dict) -> dict:
         state = integration._load(path, harness, sid)
         saved = state.get('response_growth')
         if saved is None:
-            saved = {'counter': 'finals', 'seen': ids, 'count': 0, 'attempted_count': 0}
+            saved = {'counter': 'finals', 'seen': ids, 'count': 0, 'attempted_count': 0,
+                     'history_baselined': True}
             state['response_growth'] = saved
         else:
-            if saved['counter'] != 'finals' or ids[:len(saved['seen'])] != saved['seen']:
+            # Older versions saw only the current page. Restoring an explicit
+            # history prefix must not count pre-installation finals as new Stops.
+            start = (ids.index(saved['seen'][0]) if harness == 'codex' and saved['seen']
+                     and source.get('fingerprint', {}).get('history')
+                     and saved['seen'][0] in ids else 0)
+            if harness == 'codex' and not saved['seen'] and not saved.get('history_baselined'):
+                start = source.get('history_final_count', 0)
+            if saved['counter'] != 'finals' or ids[start:start + len(saved['seen'])] != saved['seen']:
                 raise ValueError('native completion prefix/counter changed; existing cursor was not reset')
             # Startup/resume is not a reset: unobserved completions still count.
-            saved['count'] += len(ids) - len(saved['seen'])
+            saved['count'] += len(ids) - start - len(saved['seen'])
             saved['seen'] = ids
+            saved['history_baselined'] = True
         integration._save(path, state)
         return {'count': saved['count'], 'attempted_count': saved['attempted_count'],
                 'due': saved['count'] - saved['attempted_count'] >= EVERY,

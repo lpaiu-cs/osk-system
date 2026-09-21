@@ -13,6 +13,103 @@ import test_growth as base_tests
 
 
 class ResponseGrowthTests(unittest.TestCase):
+    def test_empty_legacy_baseline_excludes_ancestor_finals_once(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration
+            from unittest.mock import patch
+            import os
+            parent = core.ROOT / 'rollout-parent-own.jsonl'
+            child = core.ROOT / 'rollout-child-own_next.jsonl'
+            def finish(identity):
+                return [{'type':'event_msg','payload':{'type':'task_started','turn_id':identity}},
+                        {'type':'event_msg','payload':{'type':'task_complete','turn_id':identity,'last_agent_message':'done'}}]
+            def save(path, rows):
+                path.write_text(''.join(json.dumps(r)+chr(10) for r in rows), encoding='utf-8')
+            header = {'type':'session_meta','payload':{'id':'own'}}
+            save(parent, [header] + [r for n in range(9) for r in finish('old-'+str(n))])
+            header['payload']['history_base'] = {'thread_id':'own','end_byte_offset':parent.stat().st_size}
+            save(child, [header])
+            with integration._locked('codex','own') as path:
+                state = integration._load(path,'codex','own')
+                state['response_growth'] = {'counter':'finals','seen':[],'count':0,'attempted_count':0}
+                integration._save(path,state)
+            with patch.dict(os.environ, {'CODEX_HOME':str(core.ROOT)}):
+                for n in range(1,10):
+                    with child.open('a',encoding='utf-8') as f:
+                        f.write(''.join(json.dumps(r)+chr(10) for r in finish('new-'+str(n))))
+                    source = rg.profile(str(child),'codex','own')
+                    clock = rg.observe(source)
+                    assert clock['count'] == n and clock['due'] == (n == 9), clock
+                    assert rg.observe(source) == clock
+                # A modern baseline actually observed before these completions
+                # must count them even if they now live in an ancestor page.
+                integration.state_path('codex','own').unlink()
+                original_parent = parent.read_bytes()
+                save(parent, [{'type':'session_meta','payload':{'id':'own'}}])
+                env = {'harness':'codex','session_id':'own','transcript_path':str(parent)}
+                with patch.object(rg,'configured',return_value='unused'):
+                    rg.initialize(env)
+                parent.write_bytes(original_parent)
+                source = rg.profile(str(child),'codex','own')
+                assert rg.observe(source)['count'] == 18
+                # SessionStart before a new page exists also has no history baseline.
+                integration.state_path('codex','own').unlink()
+                original_child = child.read_bytes()
+                child.unlink()
+                with patch.object(rg,'configured',return_value='unused'):
+                    rg.initialize(dict(env,transcript_path=str(child)))
+                child.write_bytes(original_child)
+                assert rg.observe(rg.profile(str(child),'codex','own'))['count'] == 9
+        ''')
+
+    def test_paginated_final_counter_keeps_baseline_and_active_page_model(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration
+            from unittest.mock import patch
+            import os
+            folder = core.ROOT / 'native'
+            folder.mkdir()
+            parent = folder / 'rollout-first-own.jsonl'
+            child = folder / 'rollout-next-own_page.jsonl'
+            def rows(model, identity, history=None):
+                meta = {'id':'own','cli_version':model,'source':'vscode','originator':'Codex Desktop'}
+                if history is not None:
+                    meta['history_base'] = history
+                return [{'type':'session_meta','payload':meta},
+                        {'type':'event_msg','payload':{'type':'task_started','turn_id':identity}},
+                        {'type':'turn_context','payload':{'model':model}},
+                        {'type':'event_msg','payload':{'type':'task_complete','turn_id':identity,'last_agent_message':'done'}}]
+            def save(path, data):
+                path.write_text(''.join(json.dumps(r) + chr(10) for r in data), encoding='utf-8')
+            save(parent, rows('old-model', 'first'))
+            with patch.dict(os.environ, {'CODEX_HOME':str(core.ROOT)}):
+                assert rg.observe(rg.profile(str(parent),'codex','own'))['count'] == 0
+                save(child, rows('same-parent-model','second',{'thread_id':'own','end_byte_offset':parent.stat().st_size}))
+                source = rg.profile(str(child),'codex','own')
+                assert source['finals'] == ['first','second'], source
+                assert source['model'] == source['cli_version'] == 'same-parent-model', source
+                assert source['transcript_path'] == str(child.resolve()), source
+                assert rg.observe(source)['count'] == 1
+                # Upgrade from a baseline that saw only the last page: no retroactive Stops.
+                with integration._locked('codex','own') as path:
+                    state = integration._load(path,'codex','own')
+                    state['response_growth'] = {'counter':'finals','seen':['second'],'count':3,'attempted_count':0}
+                    integration._save(path,state)
+                assert rg.observe(source)['count'] == 3
+                with child.open('a',encoding='utf-8') as f:
+                    f.write(''.join(json.dumps(r) + chr(10) for r in rows('same-parent-model','third')[1:]))
+                source = rg.profile(str(child),'codex','own')
+                assert rg.observe(source)['count'] == 4
+                assert rg.observe(source)['count'] == 4
+                parent.write_bytes(parent.read_bytes().replace(b'old-model',b'bad-model'))
+                assert not rg._source_unchanged(source)
+                try:
+                    rg.observe(dict(source,finals=['first','third']))
+                    raise AssertionError('lost completion accepted')
+                except ValueError:
+                    pass
+        ''')
+
     def test_only_successful_native_final_answers_count(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'native.jsonl'
