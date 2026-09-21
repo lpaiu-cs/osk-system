@@ -19,7 +19,8 @@ class ResponseGrowthTests(unittest.TestCase):
             total = {'input_tokens': 500, 'cached_input_tokens': 400, 'output_tokens': 25}
             usage = {'type': 'event_msg', 'payload': {'type': 'token_count', 'info': {
                 'total_token_usage': total, 'last_token_usage': {'input_tokens': 500}}}}
-            rows = [{'type': 'session_meta', 'payload': {'id': 'own', 'cwd': folder}},
+            rows = [{'type': 'session_meta', 'payload': {'id': 'own', 'cwd': folder,
+                     'source': 'vscode', 'originator': 'Codex Desktop'}},
                     {'type': 'turn_context', 'payload': {'model': 'same-model', 'effort': 'high'}},
                     usage, usage,
                     {'type': 'event_msg', 'payload': {'type': 'task_complete', 'turn_id': 't1', 'last_agent_message': 'done'}},
@@ -29,6 +30,7 @@ class ResponseGrowthTests(unittest.TestCase):
             self.assertEqual(result['usage'], total)
             self.assertEqual(result['finals'], ['t1'])
             self.assertEqual(result['model'], 'same-model')
+            self.assertEqual((result['source'], result['originator']), ('vscode', 'Codex Desktop'))
             self.assertTrue(result['active'])
             with self.assertRaisesRegex(ValueError, 'identity mismatch'):
                 rg.profile(str(path), 'codex', 'other')
@@ -93,7 +95,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
             source.update(harness='codex', cli_version='0.155.0', model='parent-model', model_provider='openai',
                           effort='max', approval_policy='never', sandbox_policy={'type': 'read-only'})
-            with patch.object(rg.subprocess, 'run', side_effect=[completed('codex-cli 0.155.0'), completed('Logged in using ChatGPT')]):
+            with patch.object(rg.subprocess, 'run', side_effect=[completed('codex-cli 0.155.0'), completed('Logged in using ChatGPT'), completed('true')]):
                 command = rg.command(source, str(exe), env)
             self.assertIn('--ephemeral', command)
             self.assertEqual(command[-2:], ['own', '-'])
@@ -106,6 +108,100 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.dict(rg.os.environ, {'OPENAI_API_KEY': 'fixture', 'ANTHROPIC_API_KEY': 'fixture'}):
                 self.assertNotIn('OPENAI_API_KEY', rg.subscription_env())
                 self.assertNotIn('ANTHROPIC_API_KEY', rg.subscription_env())
+
+    def test_codex_permission_overrides_roundtrip_through_toml(self):
+        import tomllib
+        source = {'harness': 'codex', 'conversation_id': 'own', 'model': 'same-model',
+                  'effort': 'high', 'approval_policy': {'granular': {
+                      'sandbox_approval': False, 'rules': True, 'mcp_elicitations': False,
+                      'request_permissions': True, 'skill_approval': False}},
+                  'approvals_reviewer': 'auto_review'}
+        roots = [str(Path(tempfile.gettempdir()) / '한글 workspace')]
+        for slash in (False, True):
+            for env_tmp in (False, True):
+                source['sandbox_policy'] = {'type': 'workspace-write', 'writable_roots': roots,
+                    'network_access': False, 'exclude_slash_tmp': slash, 'exclude_tmpdir_env_var': env_tmp}
+                with self.subTest(slash=slash, env_tmp=env_tmp), patch.object(rg, 'preflight'):
+                    argv = rg.command(source, 'unused', {})
+                    config = tomllib.loads('\n'.join(argv[i+1] for i, v in enumerate(argv) if v == '-c'))
+                    self.assertEqual(config['approval_policy'], source['approval_policy'])
+                    self.assertEqual(config['approvals_reviewer'], source['approvals_reviewer'])
+                    self.assertEqual(config['sandbox_workspace_write'],
+                                     {k: v for k, v in source['sandbox_policy'].items() if k != 'type'})
+                    self.assertNotIn('--skip-git-repo-check', argv)
+        for policy in ({'type': 'workspace-write', 'future_restriction': True},
+                       {'type': 'read-only', 'network_access': True},
+                       {'type': 'external-sandbox'},
+                       {'type': 'workspace-write', 'writable_roots': ['relative']},
+                       {'type': 'workspace-write', 'exclude_slash_tmp': 'true'}):
+            with self.subTest(policy=policy), self.assertRaises(ValueError):
+                rg._codex_overrides({**source, 'sandbox_policy': policy})
+
+    def test_desktop_fork_preserves_app_tool_prefix_without_changing_cli_sources(self):
+        source = {'harness': 'codex', 'conversation_id': 'own', 'model': 'parent-model',
+                  'effort': 'high', 'approval_policy': 'never', 'sandbox_policy': {'type': 'read-only'}}
+        flags = ('features.code_mode_host=true',
+                 'plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true')
+        for kind, originator in (('vscode', 'Codex Desktop'), ('exec', 'Codex Desktop'), ('cli', 'codex_cli_rs')):
+            with self.subTest(source=kind), patch.object(rg, 'preflight'):
+                argv = rg.command({**source, 'source': kind, 'originator': originator}, 'unused', {})
+                self.assertEqual(argv[argv.index('--model')+1], source['model'])
+                for flag in flags:
+                    self.assertEqual(flag in argv, kind == 'vscode')
+
+    def test_codex_ineligible_source_routes_to_foreground_without_consuming_review(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory
+            from unittest.mock import patch
+            import subprocess
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', '', space='= Scope/W1')
+            native = core.ROOT / 'native.jsonl'
+            rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),
+                        'cli_version':'0.155.0','model_provider':'openai'}},
+                    {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(core.ROOT),'model':'same-model',
+                        'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
+                    {'type':'event_msg','payload':{'type':'user_message','message':'question'}},
+                    {'type':'response_item','payload':{'type':'message','role':'user',
+                        'content':[{'type':'input_text','text':'question'}]}},
+                    {'type':'response_item','payload':{'type':'message','role':'assistant',
+                        'content':[{'type':'output_text','text':'answer'}]}},
+                    {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'answer'}}]
+            native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'codex':sys.executable}))
+            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            real_run = subprocess.run
+            def inspect(argv, **kwargs):
+                if argv[0] == 'git':
+                    return real_run(argv, **kwargs)
+                return subprocess.CompletedProcess(argv, 0,
+                    'codex-cli 0.155.0' if '--version' in argv else 'Logged in using ChatGPT', '')
+            # Exercise the real Git boundary without spawning a model.
+            with patch.object(rg.subprocess,'run',side_effect=inspect):
+                start = hook.capture_block(env,'own',startup=True)
+                assert 'Git worktree' in start and '검토 경고' in start, start
+                pending = integration.status('codex','own')['pending_refs']
+                for n in range(1,16):
+                    text = hook.capture_block(env,'own')
+                    assert ('[osk 케이던스' in text) == (n in {9,15}), (n,text)
+                    assert not rg.launch(env,'own')
+                state = integration.status('codex','own')
+                assert state['pending_refs'] == pending and state['reviewed_rounds'] == 0
+                assert state['response_growth']['attempted_count'] == 0
+                real_run(['git','init','-q',str(core.ROOT)],check=True,capture_output=True)
+                assert rg.route(env)['mode'] == 'background'
+                # A future restriction must refuse even when Git/auth/version pass.
+                rows[1]['payload']['sandbox_policy']['future_restriction'] = True
+                native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
+                route = rg.route(env)
+                assert route['mode'] == 'foreground' and 'cannot be represented' in route['reason'], route
+                source = rg.profile(str(native),'codex','own')
+                with patch.object(growth,'run',side_effect=AssertionError('provider started')):
+                    result = rg.run(source, {'harness':'codex','conversation_id':'own'}, sys.executable)
+                assert result['state'] == 'unavailable', result
+        ''')
 
     def test_cumulative_fork_usage_is_not_child_usage(self):
         with tempfile.TemporaryDirectory() as folder:

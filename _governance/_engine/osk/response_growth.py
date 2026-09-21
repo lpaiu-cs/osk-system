@@ -181,7 +181,7 @@ def profile(path: str, harness: str, sid: str) -> dict:
                     if p.get('id') != sid:
                         raise ValueError('native conversation identity mismatch')
                     identified = True
-                    result.update({k: p.get(k) for k in ('cwd', 'cli_version', 'source', 'model_provider')})
+                    result.update({k: p.get(k) for k in ('cwd', 'cli_version', 'source', 'originator', 'model_provider')})
                 elif row.get('type') == 'turn_context':
                     result['active'] = True
                     context = {k: p.get(k) for k in (
@@ -302,6 +302,67 @@ def attempt(source: dict, job: dict, executable: str) -> dict:
     return result
 
 
+def _toml_value(value) -> str:
+    """Encode only the native permission/config value types we can preserve."""
+    if isinstance(value, dict) and all(isinstance(k, str) for k in value):
+        return '{' + ', '.join(json.dumps(k) + '=' + _toml_value(v) for k, v in value.items()) + '}'
+    if isinstance(value, list):
+        return '[' + ', '.join(_toml_value(v) for v in value) + ']'
+    if isinstance(value, (str, bool)):
+        return json.dumps(value, ensure_ascii=False)
+    raise ValueError('source configuration contains an unsupported TOML value')
+
+
+def _codex_overrides(source: dict) -> list[str]:
+    """Shared routing/launch gate: never silently discard a native restriction."""
+    policy = source.get('sandbox_policy')
+    if not isinstance(policy, dict):
+        raise ValueError('source sandbox policy is unavailable')
+    mode = policy.get('type')
+    fields = {'workspace-write': {'writable_roots', 'network_access', 'exclude_slash_tmp', 'exclude_tmpdir_env_var'},
+              'read-only': {'network_access'}, 'danger-full-access': set()}
+    if mode not in fields or set(policy) - fields[mode] - {'type'}:
+        raise ValueError('source sandbox restrictions cannot be represented by the fork CLI')
+    for key in fields[mode] - {'writable_roots'}:
+        if key in policy and not isinstance(policy[key], bool):
+            raise ValueError('source sandbox flags must be boolean')
+    if mode == 'read-only' and policy.get('network_access', False):
+        raise ValueError('read-only network policy cannot be represented by the fork CLI')
+    approval = source.get('approval_policy')
+    if isinstance(approval, dict):
+        granular = approval.get('granular')
+        required = {'sandbox_approval', 'rules', 'mcp_elicitations'}
+        optional = {'request_permissions', 'skill_approval'}
+        if (set(approval) != {'granular'} or not isinstance(granular, dict) or
+                not required <= set(granular) or set(granular) - required - optional or
+                not all(isinstance(v, bool) for v in granular.values())):
+            raise ValueError('source granular approval policy cannot be preserved')
+        approval = {'granular': {**dict.fromkeys(sorted(optional), False), **granular}}
+    elif approval not in ('never', 'on-request', 'untrusted'):
+        raise ValueError('source approval policy is unavailable or unsupported')
+    if not isinstance(source.get('effort'), str) or not source['effort']:
+        raise ValueError('source reasoning effort is unavailable')
+    reviewer = source.get('approvals_reviewer') or 'user'
+    if reviewer not in ('user', 'auto_review'):
+        raise ValueError('source approval reviewer is unsupported')
+    settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
+                'model_reasoning_effort': source['effort'], 'approval_policy': approval,
+                'approvals_reviewer': reviewer, 'sandbox_mode': mode}
+    if source.get('source') == 'vscode' and source.get('originator') == 'Codex Desktop':
+        # The app includes these tool definitions at the start of each request.
+        # A CLI fork without them loses the parent's cached prefix even after Stop.
+        settings['features.code_mode_host'] = True
+        settings['plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled'] = True
+    if mode == 'workspace-write':
+        roots = policy.get('writable_roots', [])
+        if not isinstance(roots, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in roots):
+            raise ValueError('source writable roots must be absolute paths')
+        settings['sandbox_workspace_write.writable_roots'] = roots
+        for key in sorted(fields[mode] - {'writable_roots'}):
+            settings['sandbox_workspace_write.' + key] = policy.get(key, False)
+    return [part for key, value in settings.items() for part in ('-c', key + '=' + _toml_value(value))]
+
+
 def preflight(source: dict, executable: str, env: dict, *, require_version: bool = True) -> None:
     """Local authentication/version queries only; used by routing and rechecked before inference."""
     harness = source['harness']
@@ -323,11 +384,18 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
             expected and not re.search(r'(?<![\w.])' + re.escape(expected) + r'(?![\w.])', version.stdout)):
         raise ValueError('configured CLI version differs from the source harness; fork was not started')
     if harness == 'codex':
+        _codex_overrides(source)
         if source.get('model_provider') != 'openai' and (require_version or source.get('model_provider')):
             raise ValueError('only a verified ChatGPT subscription provider is supported')
         auth = inspect(['login', 'status'])
         if auth.returncode or 'Logged in using ChatGPT' not in auth.stdout + auth.stderr:
             raise ValueError('ChatGPT subscription login is required; no API fallback')
+        git_env = {k: v for k, v in env.items() if not k.startswith('GIT_')}
+        git = subprocess.run(['git', '-C', cwd, 'rev-parse', '--is-inside-work-tree'],
+                             env=git_env, shell=False, capture_output=True, text=True,
+                             encoding='utf-8', timeout=5, creationflags=NO_WINDOW)
+        if git.returncode or git.stdout.strip() != 'true':
+            raise ValueError('source directory is not a Git worktree; use in-session review')
         return
     # Settings can select API auth even when a separate subscription is logged in.
     base = Path(env.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude')))
@@ -357,22 +425,8 @@ def command(source: dict, executable: str, env: dict) -> list[str]:
         raise ValueError('actual source model is unavailable')
     preflight(source, executable, env)
     if harness == 'codex':
-        settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
-                    'model_reasoning_effort': source.get('effort'),
-                    'approval_policy': source.get('approval_policy'),
-                    'approvals_reviewer': source.get('approvals_reviewer'),
-                    'sandbox_mode': (source.get('sandbox_policy') or {}).get('type')}
-        if not settings['model_reasoning_effort'] or not settings['approval_policy'] or not settings['sandbox_mode']:
-            raise ValueError('source effort or permissions are unavailable')
-        argv = [executable, 'exec', 'fork', '--ephemeral', '--json', '--model', model]
-        for key, value in settings.items():
-            if value is not None:
-                argv += ['-c', key + '=' + json.dumps(value)]
-        policy = source['sandbox_policy']
-        if policy['type'] == 'workspace-write':
-            argv += ['-c', 'sandbox_workspace_write.writable_roots=' + json.dumps(policy.get('writable_roots', [])),
-                     '-c', 'sandbox_workspace_write.network_access=' + json.dumps(policy.get('network_access', False))]
-        return [*argv, sid, '-']
+        return [executable, 'exec', 'fork', '--ephemeral', '--json', '--model', model,
+                *_codex_overrides(source), sid, '-']
     return [executable, '-p', '--resume', sid, '--fork-session', '--no-session-persistence',
             '--model', model, '--output-format', 'stream-json', '--verbose',
             '--settings', '{"forceLoginMethod":"claudeai"}']

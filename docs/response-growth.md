@@ -10,6 +10,10 @@ authentication before inference. Codex uses `exec fork --ephemeral`; Claude uses
 `--resume --fork-session --no-session-persistence`. Maintenance processes retain the
 existing `OSK_GROWTH_WORKER=1` exclusion from raw capture.
 
+Codex Desktop sources also retain the app's code-mode host and bundled app-tool
+definitions. Native `source=vscode` plus `originator=Codex Desktop` selects this path;
+CLI sources retain their existing configuration. The source model is never replaced.
+
 Each fork is limited to its original conversation's frozen review snapshot. The daily
 Domain queue remains separate. The existing 600-second process-tree deadline, final
 packet parser and stored body/source/hub receipt checks are reused. A failed attempt
@@ -30,7 +34,11 @@ both counters. Enabling the feature does not replay all old answers.
 
 Start/input hooks use local authentication/version queries, with no inference. Missing
 configuration, a missing CLI, logout, uncertain subscription auth, version mismatch or
-invalid settings route to in-session UserPromptSubmit 9/15 review with a warning. A switch
+invalid settings route to in-session UserPromptSubmit 9/15 review with a warning. Codex
+also requires a Git worktree and a representable native permission policy. Workspace
+write roots, network access and both temporary-directory exclusion flags are explicitly
+preserved. Granular approval policies use TOML inline tables, not JSON objects. Unknown
+restrictions refuse the fork at routing and again before inference. A switch
 after nine unreviewed inputs surfaces the pending review immediately. Login recovery
 restores Stop scheduling without resetting review state. Authentication is checked again
 just before inference; failure there preserves the due Stop attempt for a later retry.
@@ -64,9 +72,42 @@ cumulative: the frozen parent baseline was subtracted for the first two rows.
 The live app probes occurred during an active turn; they do not isolate every cause of
 the cache miss. Matching the model/version and the observed host flags did not establish
 app-to-worker cache reuse. Further large, unconditioned retries are not justified.
-App→worker automatic activation remains on hold. The next useful experiment is a
-bounded probe after a native final Stop. CLI→CLI evidence does not prove Desktop→CLI
-reuse for either product. Codex used 0.155.0-alpha.9.2; Claude used 2.1.251.
+These active-turn results are superseded for the tested Desktop Sol path by the
+post-Stop control below. CLI→CLI evidence alone does not prove Desktop→CLI reuse.
+Codex used 0.155.0-alpha.9.2; Claude used 2.1.251.
+
+### Actual Desktop post-Stop control
+
+One temporary task was forked through the Codex app and asked to return a fixed marker
+without tools or writes. Its actual model was `gpt-5.6-sol`. After its native final Stop,
+three ephemeral CLI workers used that same unchanged source and actual model:
+
+The [measurement record](response-growth-cache-evidence.json) contains the counters
+and protocol without private dialogue or native conversation identifiers.
+
+| Worker configuration | Child input | Cached child input | Fraction |
+| --- | ---: | ---: | ---: |
+| App host/tool definitions preserved | 210,515 | 207,872 | 98.74% |
+| Default CLI configuration, same stopped parent | 202,376 | 0 | 0% |
+| Final implementation, automatic Desktop detection | 210,515 | 210,304 | 99.90% |
+
+The first matched fork establishes reuse after an actual Desktop Stop. The higher
+repeat result can also reuse the earlier worker's identical fixed prompt; it is not
+an independent parent-reuse measurement. Each worker emitted one completed answer,
+used no tools, and retained the frozen parent usage baseline. Parent cumulative usage
+was subtracted, and the source remained unchanged throughout each worker.
+
+A local request-rendering check, rejected before provider inference, confirmed that
+default CLI and app-host forks send different tool definitions at the start of the
+request. The runner now preserves `features.code_mode_host` and the bundled
+`codex_app` MCP tool definitions for Desktop sources. Waiting for Stop alone does not
+repair that prefix difference: the default control still missed while the source was
+warm. The historical active-turn misses additionally contained incomplete-history
+warnings; these experiments do not attribute all earlier misses to one cause.
+
+The temporary Desktop task was archived. Worker forks were ephemeral. This validates
+the tested Desktop Sol transport, not all models/versions, Claude Desktop, autonomous
+growth, or a cache lifetime guarantee. No automatic instance activation was performed.
 
 Ephemeral child metadata reported no persistent path, and checks found no corresponding
 rollout files. The sampled app task listing contained no experiment children. The listing
@@ -103,10 +144,11 @@ it alone does not prove first-request reuse of the parent.
 ## Validation
 
 - Final fixed-revision formal runner: 1,570 passed, 0 failed, 4 Windows permission-mode skips.
-- New focused checks: nine passed (native completion identity, subscription/version
+- New focused checks: twelve passed (native completion identity, subscription/version
   refusal, cumulative usage accounting, durable failure state, one-conversation
   supervisor/receipt integration, ninth-Stop counting, detached native-flush handling,
-  9/15 fallback and login recovery, and authentication loss after the input check).
+  9/15 fallback and login recovery, authentication loss after the input check, TOML
+  permission roundtrips, real Git-boundary fallback, and Desktop tool-prefix selection).
 - A real hook subprocess returns before the native final record is appended; the detached
   helper then observes that record without calling a provider. Input and duplicate Stop
   events add zero to the Stop counter. Resume retains both clocks. A busy worker or
@@ -116,6 +158,9 @@ it alone does not prove first-request reuse of the parent.
 - Real Claude CLI auth checks passed with the existing Max login, refused a separate empty
   config directory, then passed again with the original login. This made zero model calls
   and did not log the user out. The routing/counter transition tests use isolated mini-vaults.
+- The installed Codex config parser accepted the generated granular approval table and
+  preserved both temporary-directory exclusions, network access and normalized write roots.
+  This used `config/read` with no model call or configuration mutation.
 - No live engine update, automatic fork configuration, shared daemon restart, or release
   has been made. The governance wording was explicitly approved before amendment.
 

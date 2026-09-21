@@ -1,0 +1,17 @@
+{
+  "date": "2026-09-21",
+  "platform": "Windows",
+  "codex_version": "0.155.0-alpha.9.2",
+  "source": "Codex Desktop",
+  "source_model": "gpt-5.6-sol",
+  "worker_model": "gpt-5.6-sol",
+  "authentication": "ChatGPT subscription verified before launch",
+  "protocol": "One actual Desktop task completed a fixed answer. Three ephemeral CLI forks used that same stopped, unchanged source, in the order below. Each returned one fixed answer without tools. Source cumulative usage was subtracted from worker cumulative usage.",
+  "runs": [
+    {"configuration": "matched app host and tool definitions", "input_tokens": 210515, "cached_input_tokens": 207872, "output_tokens": 10, "exit_code": 0},
+    {"configuration": "default CLI negative control", "input_tokens": 202376, "cached_input_tokens": 0, "output_tokens": 10, "exit_code": 0},
+    {"configuration": "final implementation with automatic Desktop detection", "input_tokens": 210515, "cached_input_tokens": 210304, "output_tokens": 10, "exit_code": 0}
+  ],
+  "limitation": "The final repeat can also reuse the first worker's identical prompt. Only the first matched fork establishes Desktop parent reuse. This is not an autonomous-growth result or a guarantee for other models, versions, or cache lifetimes.",
+  "cleanup": "Temporary Desktop task archived; worker forks ephemeral; no instance deployment."
+}
