@@ -478,8 +478,8 @@ def _known_pending(limit: int) -> tuple[list, int, list, list]:
             native_path = _locate_transcript(s["harness"], s["conversation_id"], s.get("transcript_path"))
             if native_path:
                 try:
-                    native = Path(native_path).stat()
-                    changed = s.get("native_fingerprint") != {"size": native.st_size, "mtime_ns": native.st_mtime_ns}
+                    changed = s.get("native_fingerprint") != transcripts.native_fingerprint(
+                        native_path, s["harness"], s["conversation_id"])
                 except FileNotFoundError:
                     changed, missing = True, True
                 except OSError:

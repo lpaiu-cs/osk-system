@@ -1,7 +1,7 @@
 # Response-triggered growth: implementation and experiment status
 
-Status (2026-09-21): implementation and approved Mechanism §9-3 amendment are in
-this branch. **No instance update or automatic fork configuration is enabled.**
+The runner and approved Mechanism §9-3 amendment shipped in v3.17.0.
+Automatic fork configuration remains an explicit per-instance choice.
 
 The current change adds a same-harness fork runner to the existing growth supervisor.
 It preserves the source model, Codex reasoning effort, source working directory and
@@ -50,6 +50,20 @@ IDs let a later Stop catch up, and the daily run still sees unreviewed raw. A so
 change before launch refuses the fork, preserving the pending review. Source movement
 during execution also makes cumulative cache accounting unconfirmed. A harness upgrade
 can require updating the configured native CLI path.
+
+### Codex paginated history
+
+Desktop can resume the same conversation in a new rollout file whose `history_base`
+names an ancestor and an exclusive byte offset. Capture and Stop counting follow
+only that declared chain, checking the conversation identity on every page. They do
+not combine nearby files or other tasks. Missing/ambiguous ancestors, cycles, foreign
+identities and offsets inside a JSONL record remain errors; existing raw is retained.
+
+Previously captured raw coordinates, hashes and review receipts keep their append
+order. Newly recovered historical rounds are appended for review, not marked done.
+Recovering a prefix before an existing Stop baseline adds no retroactive Stops. A
+completed native compaction with no user input or assistant trace is maintenance,
+not a missing dialogue round. User turns without a response still remain pending.
 
 ## Cache experiments (2026-09-21)
 
