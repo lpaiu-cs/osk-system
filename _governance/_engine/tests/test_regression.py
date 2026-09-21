@@ -5278,7 +5278,9 @@ def test_cadence_hook():
             return _hook_context(buf.getvalue(), event)
 
         outs = [turn() for _ in range(9)]
-        check("빈 기억도 1~8턴은 조용하고 9턴에 검토", not any(outs[:8]) and "함께 실어" in outs[8], outs)
+        check("미설정은 처음 경고하고 2~8턴은 조용하며 9턴에 검토",
+              "검토 경고" in outs[0] and "[osk 케이던스" not in outs[0]
+              and not any(outs[1:8]) and "함께 실어" in outs[8], outs)
         check("원문 부재를 증류 완료로 가장하지 않는다", "아직 없다" in outs[8], outs[8])
         for _ in range(3):
             turn()
@@ -9194,7 +9196,7 @@ def test_validate_at_uses_snapshot_engine():
 
 
 def test_growth_loop_subprocesses():
-    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py"):
+    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py"):
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
                               capture_output=True, timeout=180,
                               stdin=subprocess.DEVNULL)

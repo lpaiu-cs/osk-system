@@ -65,10 +65,8 @@ def _memory_block(scope_memory, key: str) -> str:
     text = (st.get("text") or "").strip()
     if not text:
         return ""
-    # 문구는 **현행 계약**을 가르쳐야 한다. 구판은 "약 10 user 턴마다 …
-    # 전체 치환"이라 적었는데, v3.10.0의 케이던스는 9·15턴이고 쓰기의 기본은
-    # `edits` 앵커 일괄이다 — 세션의 첫 지시가 1,500자 전문 재발화를 유도해
-    # 개정이 없애려던 행동을 그대로 불렀다.
+    # 케이던스는 실행 방식별 안내가 맡는다. 이 공유 블록은 저장 경계와
+    # `edits` 계약만 가르쳐 Stop 실행기에 user 턴 재촉을 겹쳐 싣지 않는다.
     #
     # 세션 키도 싣는다. 도구의 `session`은 이 값이어야 하는데 훅만 알고
     # 호출자는 몰라서 매번 지어냈고, 그 결속은 append-only로 영구히 쌓였다.
@@ -77,7 +75,7 @@ def _memory_block(scope_memory, key: str) -> str:
         f"{st['chars']}/{st['limit']}자 · 여유 {st['limit'] - st['chars']}자]\n"
         f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것.\n"
         f"{st['session_note']}\n"
-        f"약 9 user 턴마다 자기 대화의 raw와 현재 공유 기억을 함께 검토하라. "
+        f"대화 검토 시에는 자기 대화의 raw와 현재 공유 기억을 함께 검토하라. "
         f"오래 쓸 지식은 search로 찾은 기존 Scope 노드 갱신을 우선하고 출처·허브를 "
         f"완성한다. 요약에 머물 내용은 그 다음 scope 기억에 반영하고, 남길 것이 "
         f"없으면 사유를 남긴다. 요약 수정은 `edits`로 "
@@ -99,19 +97,37 @@ def _bootstrap(key: str, *, bound: bool) -> str:
 
 
 def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
-    from osk import integration
+    from osk import integration, response_growth
     try:
         captured = integration.hook_capture(env, key)
         harness, sid = captured["harness"], captured["conversation_id"]
+        # Always retain the input clock, even while Stop owns background scheduling.
+        # Losing CLI auth must not start the fallback's overdue work at zero again.
+        cadence = None if startup else integration.tick(harness, sid)
+        selected = response_growth.route(env)
+        if selected['mode'] == 'background':
+            failures = [r for r in (captured.get('response_growth_stop'), captured.get('response_growth', {}).get('last_result'))
+                        if r and not r.get('ok', True) and r.get('state') not in {'running', 'unavailable'}]
+            error = captured['capture_error'] or '; '.join(r.get('error') or r['state'] for r in failures)
+            if error:
+                return f"[osk 백그라운드 검토 대기 — {error}; 본 작업은 계속한다. 완료로 처리하지 않았다.]"
+            if selected['changed'] and not startup:
+                return "[osk 검토 경로 복구 — 구독 CLI를 확인했다. 기존 계수·검토 대기를 유지하고 최종 답변 Stop 기준 실행으로 돌아간다.]"
+            return ("[osk 대화 검토 — 최종 답변 Stop 9회마다 원대화와 같은 하네스·모델의 "
+                    "구독 fork가 자기 대화를 검토한다. 실행 결과는 integration status에서 확인한다.]"
+                    if startup else "")
+        warning = (f"[osk 검토 경고 — {selected['reason']}. 별도 fork 대신 이 세션에서 "
+                   "UserPromptSubmit 기준 9·15턴 통합을 수행한다. 검토 대기와 계수는 유지한다.]")
         if startup:
-            return integration.prompt(harness, sid)["text"] if captured["pending"] else ""
-        cadence = integration.tick(harness, sid)
-        if not cadence["due"] and not captured["capture_error"]:
-            return ""
+            return warning + ('\n\n' + integration.prompt(harness, sid)["text"] if captured["pending"] else '')
+        overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= integration.SOFT
+        if not cadence["due"] and not overdue_switch and not captured["capture_error"]:
+            return warning if selected['changed'] else ""
         lead = (f"[osk 케이던스 — user 턴 {cadence['unreviewed_prompts']}] "
-                + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] else
+                + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] or
+                   overdue_switch and cadence['unreviewed_prompts'] >= integration.HARD else
                    "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
-        parts = [lead, integration.prompt(harness, sid)["text"]]
+        parts = [warning, lead, integration.prompt(harness, sid)["text"]]
     except Exception as exc:
         parts = [f"[osk 포착·통합 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다; 대기를 완료로 처리하지 않았다.]"]
     # Native capture failures must not hide an independently readable scope's
