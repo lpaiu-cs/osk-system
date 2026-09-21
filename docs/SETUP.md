@@ -196,6 +196,8 @@ printf '%s' "$새전문" | .venv/bin/python -m osk.cli sm write   --session <키
 중단은 계수하지 않으며 완료 ID로 중복 Stop을 제거한다. SessionStart와 UserPromptSubmit은
 최초 기준점 설정과 포착만 맡고 이 계수를 올리지 않는다. 기존 대화를 처음 연결할 때
 과거 답변을 몰아서 실행하지 않으며, 이후 같은 대화의 재개는 계수를 초기화하지 않는다.
+UserPromptSubmit의 입력 계수는 별도로 계속 올려 fallback에 대비한다. 이 입력 계수가
+백그라운드 모델 실행을 트리거하지는 않는다.
 
 인스턴스의 기기 로컬 `.osk/response-growth.json`에 **사용할 하네스만** 등록한다.
 아래 경로는 예시이며 원대화 하네스와 같은 버전의 실제 네이티브 CLI 경로로 바꾼다.
@@ -213,14 +215,23 @@ printf '%s' "$새전문" | .venv/bin/python -m osk.cli sm write   --session <키
 자식은 전사의 최종 완료 표식을 최대 5초 기다린 뒤 원대화와 같은 실제 모델·cwd의
 일회성 fork를 실행한다. Codex는 원대화의 추론 강도와 권한도 유지한다. CLI 버전·
 구독 인증이 확인되지 않으면 실행하지 않으며 API 키/다른 모델로 대체하지 않는다.
+세션 시작/입력 훅은 모델 호출 없이 CLI 로그인·판본을 확인한다. CLI 미설정·미설치·
+미로그인·인증 불확실·판본 불일치·설정 오류는 검토 경고와 함께 기존 세션의
+UserPromptSubmit 9·15턴 주입으로 라우팅한다. 전환 시 9턴 이상 밀렸으면 그 입력에서
+즉시 검토를 안내하며, 이후 같은 상태에서는 매 턴 재촉하지 않는다. 포착/검토 커서와
+Stop/입력 계수는 전환·재개로 지우지 않는다. 다음 시작/입력에서 CLI가 복구됐음을
+확인하면 Stop 실행으로 돌아가고, 실제 fork 직전에도 다시 구독 인증을 확인한다.
 Codex의 `--ephemeral`, Claude의 `--no-session-persistence`로 정리 대화를 하네스의
 저장 세션 목록에 추가하지 않고, OSK 훅도 유지보수 raw를 포착하지 않는다.
 
 한 번의 시도는 기존 성장 실행기의 600초 상한·최종 결정·저장 영수증 검증을 쓴다.
 계수와 검토 커서는 별개다. 실패/보류는 검토를 완료하지 않고, 다음 9회 또는 기존
-일일 catchup에서 이어간다. 이미 실행 중이면 추가 모델을 띄우지 않으며 대기는 남는다.
+일일 catchup에서 이어간다. 모델 호출 전 가용성 검사 실패는 Stop 시도 횟수도 소비하지
+않으므로 로그인 복구 뒤 다음 Stop에서 재시도할 수 있다. 이미 실행 중이면 추가 모델을
+띄우지 않으며 대기는 남는다.
 `integration status --harness <하네스> --conversation <ID>`의 `response_growth`와
-`response_growth_stop`에서 계수·실행 실패를, 실행 결과의 `cache`에서 자식 사용량을
+`response_growth_stop`에서 계수·실행 실패를, `response_growth_route`에서 현재 경로와
+fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
 확인한다. 다음 시작/입력 훅에도 실패 진단을 싣는다. 로그는 기기 로컬 상태와
 `.osk/growth/runs/`에 남는다.
 

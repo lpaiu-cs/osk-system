@@ -23,8 +23,18 @@ the hook detaches a supervisor and returns. The supervisor waits up to five seco
 for the final native record, captures completed dialogue, and selects at most nine
 unreviewed rounds from that conversation. Tool requests, intermediate questions,
 failed/aborted turns, duplicate notifications and Claude sidechains do not count.
-SessionStart/UserPromptSubmit establish the initial baseline; input itself adds zero.
-Resume retains the counter. Enabling the feature does not replay all old answers.
+SessionStart/UserPromptSubmit establish the initial baseline; input adds zero to the
+Stop counter. Its separate input counter always advances, including in background mode,
+so losing CLI access cannot restart the fallback's overdue work at zero. Resume retains
+both counters. Enabling the feature does not replay all old answers.
+
+Start/input hooks use local authentication/version queries, with no inference. Missing
+configuration, a missing CLI, logout, uncertain subscription auth, version mismatch or
+invalid settings route to in-session UserPromptSubmit 9/15 review with a warning. A switch
+after nine unreviewed inputs surfaces the pending review immediately. Login recovery
+restores Stop scheduling without resetting review state. Authentication is checked again
+just before inference; failure there preserves the due Stop attempt for a later retry.
+`response_growth_route` exposes the selected mode and reason in integration status.
 
 The existing supervisor receives one Scope job including recovery instructions. It does
 not select another conversation or a Domain batch. Busy execution defers work; native
@@ -92,14 +102,20 @@ it alone does not prove first-request reuse of the parent.
 
 ## Validation
 
-- Final fixed-revision formal runner: 1,569 passed, 0 failed, 4 Windows permission-mode skips.
-- New focused checks: seven passed (native completion identity, subscription/version
+- Final fixed-revision formal runner: 1,570 passed, 0 failed, 4 Windows permission-mode skips.
+- New focused checks: nine passed (native completion identity, subscription/version
   refusal, cumulative usage accounting, durable failure state, one-conversation
-  supervisor/receipt integration, ninth-Stop counting, and detached native-flush handling).
+  supervisor/receipt integration, ninth-Stop counting, detached native-flush handling,
+  9/15 fallback and login recovery, and authentication loss after the input check).
 - A real hook subprocess returns before the native final record is appended; the detached
   helper then observes that record without calling a provider. Input and duplicate Stop
-  events add zero, resume retains the counter, and a busy worker does not consume a retry.
+  events add zero to the Stop counter. Resume retains both clocks. A busy worker or
+  unavailable CLI does not consume a retry. Fallback retains raw references and never ACKs
+  a review merely because routing changed.
 - The focused checks are included in `tests/test_regression.py` for subsequent runs.
+- Real Claude CLI auth checks passed with the existing Max login, refused a separate empty
+  config directory, then passed again with the original login. This made zero model calls
+  and did not log the user out. The routing/counter transition tests use isolated mini-vaults.
 - No live engine update, automatic fork configuration, shared daemon restart, or release
   has been made. The governance wording was explicitly approved before amendment.
 

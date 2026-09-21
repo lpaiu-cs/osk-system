@@ -100,6 +100,9 @@ class ResponseGrowthTests(unittest.TestCase):
             self.assertIn('model_reasoning_effort="max"', command)
             self.assertIn('sandbox_mode="read-only"', command)
             self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', command)
+            with patch.object(rg.subprocess, 'run', side_effect=[completed('codex-cli 0.155.0'), completed('Logged in using an API key')]):
+                with self.assertRaisesRegex(ValueError, 'ChatGPT subscription login'):
+                    rg.preflight(source, str(exe), env)
             with patch.dict(rg.os.environ, {'OPENAI_API_KEY': 'fixture', 'ANTHROPIC_API_KEY': 'fixture'}):
                 self.assertNotIn('OPENAI_API_KEY', rg.subscription_env())
                 self.assertNotIn('ANTHROPIC_API_KEY', rg.subscription_env())
@@ -137,7 +140,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 pass
         ''')
 
-    def test_prompt_does_not_count_and_ninth_stop_selects_only_own_nine_rounds(self):
+    def test_shadow_prompt_clock_does_not_trigger_a_fork_and_ninth_stop_does(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration, scope_memory
             from unittest.mock import patch
@@ -155,12 +158,13 @@ class ResponseGrowthTests(unittest.TestCase):
                 with native.open('a', encoding='utf-8') as f:
                     f.write(''.join(json.dumps(r)+'\\n' for r in rows))
             with patch.object(rg, 'run', return_value={'ok':False,'state':'incomplete'}) as worker, \
-                    patch.object(scope_memory,'recovery_block',return_value='RECOVERY_SENTINEL'):
+                    patch.object(scope_memory,'recovery_block',return_value='RECOVERY_SENTINEL'), \
+                    patch.object(rg,'preflight'):
                 for n in range(1, 10):
                     append(n)
                     hook.capture_block(env, 'own')
                     before = integration.status('claude','own')
-                    assert before['prompt_count'] == 0
+                    assert before['prompt_count'] == n, before
                     assert before['response_growth']['count'] == n-1, before
                     result = rg.process_stop(env)
                     assert worker.call_count == (1 if n == 9 else 0), result
@@ -180,6 +184,68 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.object(rg, 'run', return_value={'ok':False,'state':'busy'}):
                 assert rg.attempt(source,job,exe)['state'] == 'busy'
             assert rg.observe(source)['due'], 'busy worker consumed a due attempt'
+        ''')
+
+    def test_unavailable_cli_routes_to_9_15_input_review_and_recovers_without_reset(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', '', space='= Scope/W1')
+            native = core.ROOT/'native.jsonl'
+            native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
+                json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \
+                    patch.object(rg.subprocess,'Popen',side_effect=AssertionError('unavailable fork launched')):
+                start = hook.capture_block(env,'own',startup=True)
+                assert '검토 경고' in start and 'subscription login required' in start, start
+                assert integration.status('claude','own')['prompt_count'] == 0
+                original = integration.status('claude','own')['pending_refs']
+                for n in range(1,16):
+                    text = hook.capture_block(env,'own')
+                    assert ('[osk 케이던스' in text) == (n in {9,15}), (n,text)
+                    if n in {9,15}:
+                        assert '검토 경고' in text and original[0] in text, text
+                    assert not rg.launch(env,'own')
+                before = integration.status('claude','own')
+                assert before['prompt_count'] == 15 and before['reviewed_rounds'] == 0, before
+            with patch.object(rg,'preflight'):
+                hook.capture_block(env,'own',startup=True)
+                restored = integration.status('claude','own')
+                assert restored['response_growth_route']['mode'] == 'background'
+                assert restored['prompt_count'] == 15 and restored['pending_refs'] == original
+                assert restored['response_growth']['count'] == before['response_growth']['count']
+                hook.capture_block(env,'own')
+            # Losing auth between cadence boundaries must surface the overdue review immediately.
+            with patch.object(rg,'preflight',side_effect=ValueError('login expired')):
+                text = hook.capture_block(env,'own')
+                assert 'user 턴 17' in text and original[0] in text and '단독 턴' in text, text
+                assert integration.status('claude','own')['reviewed_rounds'] == 0
+            rg.CONFIG.write_text('{broken')
+            text = hook.capture_block(env,'own',startup=True)
+            assert '검토 경고' in text and 'UserPromptSubmit' in text
+            assert not rg.launch(env,'own'), 'bad configuration prevented capture fallback'
+        ''')
+
+    def test_login_loss_after_input_does_not_consume_stop_attempt(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration
+            from unittest.mock import patch
+            source = {'harness':'claude','conversation_id':'own','model':'same-model','finals':[]}
+            rg.observe(source)
+            source['finals'] = [str(i) for i in range(9)]
+            job = {'harness':'claude','conversation_id':'own','pending_refs':['fixture']}
+            with patch.object(rg,'preflight',side_effect=ValueError('login expired')), \
+                    patch.object(growth,'run',side_effect=AssertionError('provider started')):
+                result = rg.attempt(source,job,'unused')
+            assert result['state'] == 'unavailable', result
+            status = integration.status('claude','own')
+            assert status['response_growth']['attempted_count'] == 0
+            assert status['reviewed_rounds'] == 0 and rg.observe(source)['due']
         ''')
 
     def test_stop_detaches_and_waits_for_native_final_flush(self):

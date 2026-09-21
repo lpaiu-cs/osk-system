@@ -45,11 +45,40 @@ def initialize(env: dict) -> dict | None:
         return {k: v for k, v in saved.items() if k != 'seen'}
 
 
+def route(env: dict) -> dict:
+    """Check local CLI readiness without inference; unavailable forks use in-session review."""
+    harness, sid, path = integration.hook_source(env)
+    selected = {'mode': 'foreground', 'reason': 'subscription fork CLI is not configured'}
+    try:
+        executable = configured(harness)
+        if executable:
+            initialize(env)
+            source = (profile(path, harness, sid) if path and Path(path).exists() else
+                      {'harness': harness, 'cwd': env.get('cwd') or os.getcwd()})
+            preflight(source, executable, subscription_env(), require_version=False)
+            selected = {'mode': 'background', 'reason': None}
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        selected['reason'] = str(exc)
+    with integration._locked(harness, sid) as p:
+        state = integration._load(p, harness, sid)
+        changed = state.get('response_growth_route') != selected
+        state['response_growth_route'] = selected
+        integration._save(p, state)
+    return {**selected, 'changed': changed}
+
+
 def launch(env: dict, session: str) -> bool:
     """Detach only a small supervisor; Stop returns before native final markers flush."""
     harness, sid, path = integration.hook_source(env)
-    if not configured(harness):
-        return False
+    with integration._locked(harness, sid) as p:
+        state = integration._load(p, harness, sid)
+        if state.get('response_growth_route', {}).get('mode') == 'foreground':
+            return False
+    try:
+        if not configured(harness):
+            return False
+    except (OSError, ValueError):
+        return False  # Input/startup routing reports the error; Stop still captures raw.
     payload = {'harness': harness, 'session_id': sid, 'transcript_path': path,
                'session': session, 'space': env.get('space')}
     child_env = dict(os.environ, OSK_VAULT_ROOT=str(core.ROOT),
@@ -267,19 +296,16 @@ def attempt(source: dict, job: dict, executable: str) -> dict:
         state = integration._load(path, harness, sid)
         saved = state['response_growth']
         saved['last_result'] = {k: result[k] for k in ('ok', 'state', 'error', 'output', 'cache') if k in result}
-        if result.get('state') == 'busy':
+        if result.get('state') in {'busy', 'unavailable'}:
             saved['attempted_count'] = clock['attempted_count']
         integration._save(path, state)
     return result
 
 
-def command(source: dict, executable: str, env: dict) -> list[str]:
-    """Fail closed before inference. Never fall back to API credentials or a cheaper model."""
-    harness, sid = source['harness'], source['conversation_id']
-    integration._identity(harness, sid)
-    model = source.get('model')
-    if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', model):
-        raise ValueError('actual source model is unavailable')
+def preflight(source: dict, executable: str, env: dict, *, require_version: bool = True) -> None:
+    """Local authentication/version queries only; used by routing and rechecked before inference."""
+    harness = source['harness']
+    integration._identity(harness, 'preflight')
     if not Path(executable).is_absolute() or not Path(executable).is_file():
         raise ValueError('configure an existing absolute native CLI path')
     cwd = source.get('cwd')
@@ -289,34 +315,20 @@ def command(source: dict, executable: str, env: dict) -> list[str]:
     def inspect(args):
         return subprocess.run([executable, *args], cwd=cwd, env=env, shell=False,
                               capture_output=True, text=True, encoding='utf-8',
-                              timeout=20, creationflags=NO_WINDOW)
+                              timeout=5, creationflags=NO_WINDOW)
 
     version = inspect(['--version'])
     expected = source.get('cli_version') if harness == 'codex' else source.get('version')
-    if version.returncode or not expected or not re.search(r'(?<![\w.])' + re.escape(expected) + r'(?![\w.])', version.stdout):
+    if (version.returncode or require_version and not expected or
+            expected and not re.search(r'(?<![\w.])' + re.escape(expected) + r'(?![\w.])', version.stdout)):
         raise ValueError('configured CLI version differs from the source harness; fork was not started')
     if harness == 'codex':
-        if source.get('model_provider') != 'openai':
+        if source.get('model_provider') != 'openai' and (require_version or source.get('model_provider')):
             raise ValueError('only a verified ChatGPT subscription provider is supported')
         auth = inspect(['login', 'status'])
         if auth.returncode or 'Logged in using ChatGPT' not in auth.stdout + auth.stderr:
             raise ValueError('ChatGPT subscription login is required; no API fallback')
-        settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
-                    'model_reasoning_effort': source.get('effort'),
-                    'approval_policy': source.get('approval_policy'),
-                    'approvals_reviewer': source.get('approvals_reviewer'),
-                    'sandbox_mode': (source.get('sandbox_policy') or {}).get('type')}
-        if not settings['model_reasoning_effort'] or not settings['approval_policy'] or not settings['sandbox_mode']:
-            raise ValueError('source effort or permissions are unavailable')
-        argv = [executable, 'exec', 'fork', '--ephemeral', '--json', '--model', model]
-        for key, value in settings.items():
-            if value is not None:
-                argv += ['-c', key + '=' + json.dumps(value)]
-        policy = source['sandbox_policy']
-        if policy['type'] == 'workspace-write':
-            argv += ['-c', 'sandbox_workspace_write.writable_roots=' + json.dumps(policy.get('writable_roots', [])),
-                     '-c', 'sandbox_workspace_write.network_access=' + json.dumps(policy.get('network_access', False))]
-        return [*argv, sid, '-']
+        return
     # Settings can select API auth even when a separate subscription is logged in.
     base = Path(env.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude')))
     for path in (base / 'settings.json', Path(cwd) / '.claude/settings.json', Path(cwd) / '.claude/settings.local.json'):
@@ -334,6 +346,33 @@ def command(source: dict, executable: str, env: dict) -> list[str]:
     if (status.get('authMethod') != 'claude.ai' or not status.get('loggedIn')
             or str(status.get('subscriptionType')).lower() not in {'pro', 'max', 'team', 'enterprise'}):
         raise ValueError('confirmed Claude subscription login is required; no API fallback')
+
+
+def command(source: dict, executable: str, env: dict) -> list[str]:
+    """Fail closed before inference. Never fall back to API credentials or a cheaper model."""
+    harness, sid = source['harness'], source['conversation_id']
+    integration._identity(harness, sid)
+    model = source.get('model')
+    if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', model):
+        raise ValueError('actual source model is unavailable')
+    preflight(source, executable, env)
+    if harness == 'codex':
+        settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
+                    'model_reasoning_effort': source.get('effort'),
+                    'approval_policy': source.get('approval_policy'),
+                    'approvals_reviewer': source.get('approvals_reviewer'),
+                    'sandbox_mode': (source.get('sandbox_policy') or {}).get('type')}
+        if not settings['model_reasoning_effort'] or not settings['approval_policy'] or not settings['sandbox_mode']:
+            raise ValueError('source effort or permissions are unavailable')
+        argv = [executable, 'exec', 'fork', '--ephemeral', '--json', '--model', model]
+        for key, value in settings.items():
+            if value is not None:
+                argv += ['-c', key + '=' + json.dumps(value)]
+        policy = source['sandbox_policy']
+        if policy['type'] == 'workspace-write':
+            argv += ['-c', 'sandbox_workspace_write.writable_roots=' + json.dumps(policy.get('writable_roots', [])),
+                     '-c', 'sandbox_workspace_write.network_access=' + json.dumps(policy.get('network_access', False))]
+        return [*argv, sid, '-']
     return [executable, '-p', '--resume', sid, '--fork-session', '--no-session-persistence',
             '--model', model, '--output-format', 'stream-json', '--verbose',
             '--settings', '{"forceLoginMethod":"claudeai"}']
@@ -367,7 +406,10 @@ def run(source: dict, job: dict, executable: str) -> dict:
     if any(job.get(k) != source.get(k) for k in ('harness', 'conversation_id')):
         raise ValueError('a fork may review only its own source conversation')
     env = subscription_env()
-    argv = command(source, executable, env)
+    try:
+        argv = command(source, executable, env)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return {'ok': False, 'state': 'unavailable', 'error': str(exc)}
     if not _source_unchanged(source):
         raise ValueError('source advanced before fork; refresh the source model and snapshot')
     result = growth.run(argv, limit=1, timeout=600, scope_job=job, cwd=Path(source['cwd']), worker_env=env)

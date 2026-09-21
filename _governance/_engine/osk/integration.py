@@ -103,6 +103,7 @@ def _view(s: dict) -> dict:
             "prompt_count": s["prompt_count"], "reviewed_prompt_count": s["reviewed_prompt_count"],
             "response_growth": {k: v for k, v in s.get("response_growth", {}).items() if k != "seen"},
             "response_growth_stop": s.get("response_growth_stop"),
+            "response_growth_route": s.get("response_growth_route"),
             "last_review": s["reviews"][-1] if s["reviews"] else None}
 
 

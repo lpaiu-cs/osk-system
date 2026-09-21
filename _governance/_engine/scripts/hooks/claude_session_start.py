@@ -101,25 +101,33 @@ def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
     try:
         captured = integration.hook_capture(env, key)
         harness, sid = captured["harness"], captured["conversation_id"]
-        background = response_growth.initialize(env)
-        if background is not None:
-            failures = [r for r in (captured.get('response_growth_stop'), background.get('last_result'))
-                        if r and not r.get('ok', True) and r.get('state') != 'running']
+        # Always retain the input clock, even while Stop owns background scheduling.
+        # Losing CLI auth must not start the fallback's overdue work at zero again.
+        cadence = None if startup else integration.tick(harness, sid)
+        selected = response_growth.route(env)
+        if selected['mode'] == 'background':
+            failures = [r for r in (captured.get('response_growth_stop'), captured.get('response_growth', {}).get('last_result'))
+                        if r and not r.get('ok', True) and r.get('state') not in {'running', 'unavailable'}]
             error = captured['capture_error'] or '; '.join(r.get('error') or r['state'] for r in failures)
             if error:
                 return f"[osk 백그라운드 검토 대기 — {error}; 본 작업은 계속한다. 완료로 처리하지 않았다.]"
+            if selected['changed'] and not startup:
+                return "[osk 검토 경로 복구 — 구독 CLI를 확인했다. 기존 계수·검토 대기를 유지하고 최종 답변 Stop 기준 실행으로 돌아간다.]"
             return ("[osk 대화 검토 — 최종 답변 Stop 9회마다 원대화와 같은 하네스·모델의 "
                     "구독 fork가 자기 대화를 검토한다. 실행 결과는 integration status에서 확인한다.]"
                     if startup else "")
+        warning = (f"[osk 검토 경고 — {selected['reason']}. 별도 fork 대신 이 세션에서 "
+                   "UserPromptSubmit 기준 9·15턴 통합을 수행한다. 검토 대기와 계수는 유지한다.]")
         if startup:
-            return integration.prompt(harness, sid)["text"] if captured["pending"] else ""
-        cadence = integration.tick(harness, sid)
-        if not cadence["due"] and not captured["capture_error"]:
-            return ""
+            return warning + ('\n\n' + integration.prompt(harness, sid)["text"] if captured["pending"] else '')
+        overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= integration.SOFT
+        if not cadence["due"] and not overdue_switch and not captured["capture_error"]:
+            return warning if selected['changed'] else ""
         lead = (f"[osk 케이던스 — user 턴 {cadence['unreviewed_prompts']}] "
-                + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] else
+                + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] or
+                   overdue_switch and cadence['unreviewed_prompts'] >= integration.HARD else
                    "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
-        parts = [lead, integration.prompt(harness, sid)["text"]]
+        parts = [warning, lead, integration.prompt(harness, sid)["text"]]
     except Exception as exc:
         parts = [f"[osk 포착·통합 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다; 대기를 완료로 처리하지 않았다.]"]
     # Native capture failures must not hide an independently readable scope's
