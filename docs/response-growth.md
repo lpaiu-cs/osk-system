@@ -61,9 +61,15 @@ identities and offsets inside a JSONL record remain errors; existing raw is reta
 
 Previously captured raw coordinates, hashes and review receipts keep their append
 order. Newly recovered historical rounds are appended for review, not marked done.
+Legacy raw without embedded turn IDs retains its saved ID only after the recorded
+codec's body matches; without a cursor, the body must identify exactly one turn.
 Recovering a prefix before an existing Stop baseline adds no retroactive Stops. A
+legacy empty baseline excludes ancestor completions once; a baseline that already
+observed the full history continues counting subsequent completions normally. A
 completed native compaction with no user input or assistant trace is maintenance,
 not a missing dialogue round. User turns without a response still remain pending.
+Native lookup errors remain visible, but already stored pending raw remains in
+both the review inventory and the scheduled catch-up queue.
 
 ## Cache experiments (2026-09-21)
 

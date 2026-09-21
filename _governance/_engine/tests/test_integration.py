@@ -166,6 +166,90 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(rows)
         self.assertTrue(transcripts.read(str(self.path), 'codex', self.sid)['diagnostics'])
 
+    def test_codex_history_backfill_preserves_unmarked_v1_and_v2_raw(self):
+        for codec in ('codex_v1', 'codex_v2'):
+            with self.subTest(codec=codec), tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME':home}):
+                sid = self.sid + codec
+                parent = Path(home) / f'rollout-parent-{sid}.jsonl'
+                child = Path(home) / f'rollout-child-{sid}_next.jsonl'
+                header = {'type':'session_meta','payload':{'id':sid}}
+                def save(path, rows):
+                    path.write_text(''.join(json.dumps(r)+'\n' for r in rows), encoding='utf-8')
+                save(parent, [header] + codex_round(1))
+                save(child, [header] + codex_round(2))
+                legacy = transcripts.read(str(child), 'codex', sid)
+                legacy.pop('dialogue_v1')
+                legacy['rounds'] = list(legacy[codec].values())
+                legacy.pop('codex_v2')
+                if codec == 'codex_v1':
+                    legacy.pop('codex_v1')
+                with mock.patch.object(transcripts, 'read', return_value=legacy):
+                    first = it.capture('codex', sid, str(child), 'capture-tests')
+                self.assertTrue(first['ok'], first)
+                path = raw._raw_file(raw.parse_ref(first['pending_refs'][0])[0])
+                before = path.read_bytes()
+                self.assertNotIn(b'dialogue-v1', before)
+                self.assertNotIn(b'codex-terminal-v3', before)
+                it.acknowledge('codex', sid, first['through'], 'no_value', 'synthetic fixture')
+                prior = it._load(it.state_path('codex', sid), 'codex', sid)
+                resumed = {'type':'session_meta', 'payload':{'id':sid,'history_base':{
+                    'thread_id':sid,'end_byte_offset':parent.stat().st_size}}}
+                save(child, [resumed] + codex_round(2) + codex_round(3))
+                result = it.capture('codex', sid, str(child), 'capture-tests')
+                self.assertTrue(result['ok'], result)
+                self.assertEqual((result['appended'], result['reviewed_rounds']), (2, 1))
+                after = it._load(it.state_path('codex', sid), 'codex', sid)
+                self.assertEqual([r['id'] for r in after['rounds']], ['turn-2','turn-1','turn-3'])
+                self.assertEqual(after['rounds'][:1], prior['rounds'])
+                self.assertEqual(after['reviews'], prior['reviews'])
+                self.assertEqual(after['snapshots'][first['through']], prior['snapshots'][first['through']])
+                self.assertTrue(path.read_bytes().startswith(before))
+                # Losing the local cursor must not remap the still-unmarked raw.
+                it.state_path('codex', sid).unlink()
+                self.assertEqual(it.capture('codex', sid, str(child), 'capture-tests')['appended'], 0)
+                stable = path.read_bytes()
+                child.write_bytes(child.read_bytes().replace(b'answer 2', b'alterd 2'))
+                self.assertFalse(it.capture('codex', sid, str(child), 'capture-tests')['ok'])
+                self.assertEqual(path.read_bytes(), stable)
+
+    def test_codex_missing_ancestor_keeps_existing_raw_in_review_queue(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME':home}):
+            parent = Path(home) / f'rollout-parent-{self.sid}.jsonl'
+            child = Path(home) / f'rollout-child-{self.sid}_next.jsonl'
+            header = {'type':'session_meta','payload':{'id':self.sid}}
+            parent.write_text(''.join(json.dumps(r)+'\n' for r in [header] + codex_round(1)), encoding='utf-8')
+            header['payload']['history_base'] = {'thread_id':self.sid,'end_byte_offset':parent.stat().st_size}
+            child.write_text(''.join(json.dumps(r)+'\n' for r in [header] + codex_round(2)), encoding='utf-8')
+            first = it.capture('codex', self.sid, str(child), 'capture-tests')
+            self.assertTrue(first['ok'], first)
+            path = raw._raw_file(raw.parse_ref(first['pending_refs'][0])[0])
+            before = path.read_bytes()
+            parent.unlink()
+            listed = it.list_pending(100)
+            jobs = [j for j in listed['jobs'] if j['conversation_id'] == self.sid]
+            self.assertEqual(len(jobs), 1, listed['errors'])
+            self.assertEqual(jobs[0]['pending_refs'], first['pending_refs'])
+            self.assertFalse(listed['ok'])
+            self.assertTrue(any('history_base' in e['error'] for e in listed['errors']))
+            caught = it.catchup(100)
+            jobs = [j for j in caught['jobs'] if j['conversation_id'] == self.sid]
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0]['pending_refs'], first['pending_refs'])
+            self.assertIn('history_base', jobs[0]['capture_error'])
+            self.assertEqual(jobs[0]['reviewed_rounds'], 0)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_codex_legacy_ambiguous_body_needs_matching_saved_identity(self):
+        pair = {'user':'same question', 'agent':'same answer'}
+        self.path.write_bytes(raw._block(1, pair['user'], pair['agent']).encode('utf-8'))
+        codec = {'first':pair, 'second':pair}
+        with self.assertRaisesRegex(ValueError, 'ambiguous'):
+            raw.codex_capture_order(self.path, codec, codec)
+        self.assertEqual(raw.codex_capture_order(self.path, codec, codec, ('second',)), ['second'])
+        changed = dict(codec, second=dict(pair, agent='changed answer'))
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            raw.codex_capture_order(self.path, changed, changed, ('second',))
+
     def test_failed_codex_turn_and_inputless_retry_keep_observed_evidence(self):
         failed = codex_round(1)
         failed[-1]['payload'].update(last_agent_message=None, error={'message':'at capacity'})
