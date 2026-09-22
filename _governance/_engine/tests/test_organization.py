@@ -30,6 +30,33 @@ def rejected(fn):
 
 
 class OrganizationTests(unittest.TestCase):
+    def test_deferred_resume_context_reaches_next_job_and_growth_manifest(self):
+        self.case("""
+            from osk import growth
+            for name in ('A', 'B', 'C', 'D'):
+                node(name)
+            job = organization.plan('W1')
+            target = next(n for n in job['nodes'] if n['name']=='D')
+            reason = 'Reviewed A, B and C. Next: '+target['id']+' section Limits; verify condition X.'
+            saved = organization.review(job['key'], 'W1', 'deferred', reason)
+            again = organization.plan('W1')
+            assert again['key'] == job['key']
+            assert again['previous_deferral']['reason'] == reason, again
+            assert again['previous_deferral']['after'] == saved['after']
+            assert not again['previous_deferral']['snapshot_changed']
+            write.update_node('D', old_text='Reusable evidence', new_text='Revised evidence with condition X')
+            changed = organization.plan('W1')
+            assert changed['previous_deferral']['reason'] == reason
+            assert changed['previous_deferral']['snapshot_changed']
+            result = growth.run([sys.executable, '-B', '-c', 'import sys; p=sys.stdin.read(); assert "section Limits; verify condition X." in p'], limit=3)
+            assert result['returncode'] == 0, result
+            manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            carried = next(j for j in manifest['organization_jobs'] if j['scope']=='W1')
+            assert carried['previous_deferral'] == changed['previous_deferral']
+            organization.review(job['key'], 'W1', 'complete', 'Checked D as well.', after=organization.snapshot('W1')['snapshot'])
+            assert organization.plan('W1')['status'] == 'complete'
+        """)
+
     def test_large_body_advice_is_non_destructive_and_present_in_inventory(self):
         self.case("""
             text = 'Durable qualified conclusion. ' * 600

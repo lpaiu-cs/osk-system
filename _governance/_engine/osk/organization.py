@@ -198,6 +198,10 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
         current["review_command"] = "python -m osk.cli organization review (UTF-8 JSON stdin)"
         if unfinished or missing_ids:
             current["key"] = prior["key"]
+        if reviewed.get("outcome") == "deferred":
+            current["previous_deferral"] = {
+                k: reviewed[k] for k in ("key", "reason", "after", "at")}
+            current["previous_deferral"]["snapshot_changed"] = reviewed["after"] != current["snapshot"]
         jobs.append(current)
         if len(jobs) == limit:
             break
@@ -290,6 +294,7 @@ def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
             "저장 완료와 참조·조직 완료는 다르다. 아래 변경 Scope의 요약·크기·참조 목록을 먼저 보고 "
             "read_node(view=outline)으로 필요한 절을 골라 읽는다. 이번 작업은 최대 3개 노드의 "
             "주장을 검토하고, 긴 본문 전문을 반복해서 읽지 않는다. 지난 deferred의 다음 대상을 우선한다. "
+            "previous_deferral.snapshot_changed가 참이면 이전 판단을 현재 완료로 간주하지 말고 대상 ID의 현행 내용을 확인한다. "
             "한 절차인지 독립된 주제들인지 판단하라. 개수만으로 나누지 말고 기존 입구를 재사용하라. "
             "organization_advice가 있으면 실행 일지 누적과 허브의 본문 중복을 점검한다. "
             "허브는 현재 탐색 지도이며 단계별 보고서가 아니다. 결론·적용 조건·출처를 유지하고 "

@@ -22,6 +22,9 @@ automatically sanitized because their hashes may bind completed reviews.
 Validation uses disposable local, peer and bare Git repositories: inbound,
 uncommitted outbound and already-committed outbound legacy raw are rejected;
 hidden dialogue storage syncs; rejected bytes remain intact.
+Incoming checks compare the frozen fork point with the fetched commit. A local
+migration, including one committed while offline, can therefore propagate even
+while the remote still has the old raw path.
 
 ## Bounded repair and immediate decisions
 
@@ -46,6 +49,9 @@ that content should be discarded. Review starts with outlines and selected
 sections, covers at most three node claims per job, and records the next concrete
 target when deferred. Hubs carry navigation; durable claims keep their conditions,
 corrections and sources; repository execution diaries belong in repository docs.
+The next organization job carries the last deferred reason and inspected
+snapshot, including whether the files have changed since that decision. This
+resume context is also preserved in the growth manifest and worker prompt.
 
 ## Aged evictions
 
@@ -59,3 +65,8 @@ Each selected eviction needs a content-based decision. Preservation uses MCP
 node writes and an existing readable target. The checkpoint records the reason;
 deferred items stay pending. A settlement is structural evidence and does not
 prove that the semantic judgment was correct.
+For items selected by a growth run, a settlement alone is not review completion:
+an explicit decision must name that receipt and the selected source snapshot.
+Interrupted writes and later deferrals return to the growth queue even when the
+eviction ledger already marks the item settled. Historical settlements never
+selected for growth are not reopened merely for lacking this new review record.
