@@ -75,7 +75,7 @@ def once(root: Path = ROOT) -> str:
     return f"push 실패: {st} {detail}"
 
 
-def _apply(root: Path, fetched: str | None = None) -> tuple[str, str | None]:
+def _apply(root: Path, fetched: tuple[str, str | None] | None = None) -> tuple[str, str | None]:
     """Only worktree mutations hold the lock; return a verified commit to push."""
     mlock = open(_lock_path(root, "osk-mutation.lock"), "w")
     acquired = False
@@ -94,7 +94,7 @@ def _apply(root: Path, fetched: str | None = None) -> tuple[str, str | None]:
         mlock.close()
 
 
-def _once_locked(root: Path, fetched: str | None) -> tuple[str, str | None]:
+def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[str, str | None]:
     # 동기화 대상은 main 고정이다. HEAD를 따라가면 어떤 세션이 잠깐 다른
     # 브랜치를 checkout해 둔 사이에 그 브랜치가 정본인 양 커밋·push된다.
     switched, st, detail = vault_sync.ensure_branch(root)

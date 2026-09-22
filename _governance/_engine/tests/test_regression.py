@@ -563,6 +563,9 @@ def test_sync_graph_scale():
             note = repo / "충돌 노트.md"
             note.write_text("base\n", encoding="utf-8")
             commit("base")
+            # Both devices previously synchronized this base. Without that
+            # history, first-contact divergence is intentionally held for review.
+            git("push", "-q", "origin", "main")
             git("branch", "remote-main")
 
             if left is None:

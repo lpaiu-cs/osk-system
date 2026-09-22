@@ -92,7 +92,7 @@ def run():
                 git('update-ref', 'refs/remotes/origin/main', base)
                 return result
             if args[0] == 'rebase':
-                assert args == ['rebase', remote], args
+                assert args == ['rebase', '--onto', remote, remote], args
                 assert probe('apply') == 'locked', 'rebase is not exclusive'
             if args[0] == 'push':
                 sha = args[-1].split(':')[0]
@@ -184,6 +184,64 @@ def run():
         assert git('rev-parse', 'main', at=bare) == remote_head
         assert not git('for-each-ref', 'refs/osk-sync/')
         print('sync network boundary: PASS (real Git and independent writer)')
+
+        # Each case uses only the disposable local/peer/bare fixture above.
+        for case in ('rewrite', 'prefetched', 'rewind', 'expired-reflog', 'first-contact', 'local-moved'):
+            git('reset', '--hard', base)
+            git('reset', '--hard', base, at=peer)
+            (peer / 'discarded.txt').write_text('old upstream B')
+            git('add', '-A', at=peer)
+            git('commit', '-qm', 'old upstream B', at=peer)
+            old = git('rev-parse', 'HEAD', at=peer)
+            git('push', '-q', '--force', at=peer)
+            git('fetch', '-q', 'origin')
+            git('reset', '--hard', old)
+            (root / 'local.txt').write_text('local L')
+            git('add', '-A')
+            git('commit', '-qm', 'local L')
+            local = git('rev-parse', 'HEAD')
+            git('reset', '--hard', base, at=peer)
+            if case != 'rewind':
+                (peer / 'replacement.txt').write_text('new upstream C')
+                git('add', '-A', at=peer)
+                git('commit', '-qm', 'new upstream C', at=peer)
+            git('push', '-q', '--force', at=peer)
+            new = git('rev-parse', 'HEAD', at=peer)
+            if case in ('prefetched', 'expired-reflog'):
+                git('fetch', '-q', 'origin')
+            if case == 'expired-reflog':
+                git('reflog', 'expire', '--expire=now', 'refs/remotes/origin/main')
+            if case == 'first-contact':
+                git('update-ref', '-d', 'refs/remotes/origin/main')
+
+            def move_local(at, args, timeout, **kwargs):
+                result = original(at, args, timeout, **kwargs)
+                if args[0] == 'fetch':
+                    git('reset', '--hard', base)
+                    (root / 'other.txt').write_text('independent local history')
+                    git('add', '-A')
+                    git('commit', '-qm', 'independent local history')
+                return result
+
+            if case == 'local-moved':
+                with patch.object(vs, '_git', move_local):
+                    assert 'pull 실패' in sync.once(root)
+                assert git('rev-parse', 'main', at=bare) == new
+                assert (root / 'other.txt').read_text() == 'independent local history'
+            elif case in ('expired-reflog', 'first-contact'):
+                for _ in range(2):
+                    assert '분기점' in sync.once(root), case
+                    assert git('rev-parse', 'HEAD') == local
+                    assert git('rev-parse', 'main', at=bare) == new
+            else:
+                for _ in range(2):
+                    assert sync.once(root) == 'ok', case
+                    files = git('ls-tree', '-r', '--name-only', 'main', at=bare)
+                    assert 'local.txt' in files and 'discarded.txt' not in files, (case, files)
+                    assert git('show', 'main:local.txt', at=bare) == 'local L'
+                    assert original(bare, ['merge-base', '--is-ancestor', old, 'main'], 30).returncode == 1
+            assert not git('for-each-ref', 'refs/osk-sync/')
+        print('sync replay boundary: PASS (rewrite, prefetched, rewind, expired reflog, first contact, local moved)')
 
 
 if __name__ == '__main__':

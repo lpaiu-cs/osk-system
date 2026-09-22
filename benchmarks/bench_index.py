@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import weakref
 
 
 def memory():
@@ -80,8 +81,10 @@ def worker(a):
         if cmd["op"] == "stop":
             break
         if cmd.get("cold"):
+            previous = weakref.ref(server._index) if server._index is not None else None
             server._index = server._searcher = server._fingerprint = None
             gc.collect()
+            assert previous is None or previous() is None, "cold sample retained the previous Index"
         if cmd.get("at"):
             time.sleep(max(0, cmd["at"] - time.perf_counter()))
         counts.update(index_builds=0, search_builds=0, parsed_files=0,
@@ -109,6 +112,7 @@ def worker(a):
             idx = server._index
             result.update(cached_parses=len(idx.parsed),
                           indexed_files=len(idx._entries), complete=idx.complete)
+            del idx  # Do not keep the previous cold sample alive across gc.collect().
         if cmd["op"] == "signature":
             result["signature"] = value[0]
         emit(result)

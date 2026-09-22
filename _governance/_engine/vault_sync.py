@@ -225,9 +225,21 @@ def fetch_snapshot(vault_root, timeout=60):
     It also keeps the object reachable for GC. Never write shared FETCH_HEAD.
     """
     ref = f"refs/osk-sync/{uuid.uuid4().hex}"
-    commit, status, detail = None, "error", ""
+    snapshot, status, detail = None, "error", ""
     try:
         try:
+            # pull --rebase computes this BEFORE fetch changes origin/main's
+            # reflog. Keep the replay boundary as well as the destination SHA.
+            tracking = f"refs/remotes/origin/{SYNC_BRANCH}"
+            r = _git(vault_root, ["merge-base", "--fork-point", tracking,
+                                  SYNC_BRANCH], timeout)
+            fork_point = r.stdout.strip() if r.returncode == 0 else None
+            if r.returncode not in (0, 1):
+                # A first sync may have no tracking ref or even no local commit.
+                refs = [_git(vault_root, ["show-ref", "--verify", "--quiet", name], timeout)
+                        for name in (tracking, f"refs/heads/{SYNC_BRANCH}")]
+                if any(x.returncode not in (0, 1) for x in refs) or all(x.returncode == 0 for x in refs):
+                    raise RuntimeError(f"fork point 확인 실패: {r.stderr.strip()[-600:]}")
             r = _git(vault_root, ["fetch", "--no-write-fetch-head", "origin",
                                   f"refs/heads/{SYNC_BRANCH}:{ref}"], timeout)
             if r.returncode:
@@ -237,12 +249,12 @@ def fetch_snapshot(vault_root, timeout=60):
                 if r.returncode:
                     detail = (r.stdout + r.stderr).strip()[-600:]
                 else:
-                    commit, status = r.stdout.strip(), "ok"
+                    snapshot, status = (r.stdout.strip(), fork_point), "ok"
         except subprocess.TimeoutExpired:
             detail = f"git fetch timeout ({timeout}s)"
         except Exception as e:
             detail = repr(e)
-        yield commit, status, detail
+        yield snapshot, status, detail
     finally:
         r = _git(vault_root, ["update-ref", "-d", ref], timeout)
         if r.returncode:
@@ -253,9 +265,30 @@ def pull(vault_root, timeout=60):
     return _rebase(vault_root, ["pull", "--rebase", "origin", SYNC_BRANCH], timeout)
 
 
-def rebase_snapshot(vault_root, commit, timeout=60):
-    """Apply an immutable fetched commit. The caller holds the mutation lock."""
-    return _rebase(vault_root, ["rebase", commit], timeout)
+def rebase_snapshot(vault_root, snapshot, timeout=60):
+    """Apply a frozen destination and replay boundary under the mutation lock."""
+    commit, fork_point = snapshot
+    upstream = commit
+    try:
+        if fork_point:
+            r = _git(vault_root, ["merge-base", "--is-ancestor", fork_point, "HEAD"], timeout)
+            if r.returncode:
+                return False, "error", "fetch 중 로컬 이력이 바뀌어 분기점을 적용할 수 없다"
+            r = _git(vault_root, ["merge-base", "--is-ancestor", fork_point, commit], timeout)
+            if r.returncode == 1:
+                # The remote discarded old upstream commits: replay only ours.
+                upstream = fork_point
+            elif r.returncode:
+                return False, "error", f"원격 분기점 확인 실패: {r.stderr.strip()[-600:]}"
+        else:
+            # An expired/missing reflog cannot distinguish local work from
+            # discarded upstream commits. Only an unambiguous fast-forward is safe.
+            r = _git(vault_root, ["merge-base", "--is-ancestor", "HEAD", commit], timeout)
+            if r.returncode:
+                return False, "error", "분기점을 확인할 수 없어 이력 재적용을 보류한다(수동 개입 필요)"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, "error", f"분기점 확인 실패: {e}"
+    return _rebase(vault_root, ["rebase", "--onto", commit, upstream], timeout)
 
 
 def _rebase(vault_root, command, timeout):
