@@ -542,11 +542,18 @@ SYNC_ENABLED=1 .venv/bin/python _governance/_engine/sync_daemon.py --interval 90
 
 **동기화 대상은 `main` 고정이다**(`vault_sync.SYNC_BRANCH`). 데몬은 HEAD를 따라가지
 않는다 — 어떤 세션이 다른 브랜치를 checkout해 둔 사이에 그 브랜치가 vault의 정본인
-것처럼 커밋·push되면 정본이 조용히 갈라지기 때문이다. `pull`·`push`도 `origin main`을
+것처럼 커밋·push되면 정본이 조용히 갈라지기 때문이다. fetch·push도 `origin main`을
 명시하므로 upstream이 잘못 걸려 있어도 엉뚱한 곳으로 새지 않는다.
 
-HEAD가 `main`이 아니면 매 주기 시작에 되돌린다. 되돌릴 수 없는 경우에는 **아무것도
-하지 않고** 사유를 낸다.
+fetch·push의 네트워크 대기는 `osk-mutation.lock` 밖에서 수행한다. fetch 결과는
+호출마다 다른 임시 ref로 붙잡고, 잠금 안에서 브랜치·미완료 갱신·진행 중 Git 작업을
+다시 확인한 뒤 로컬 커밋과 rebase를 한다. 전송 중 들어온 쓰기도 여기서 함께 보존한다.
+잠금을 푼 뒤에는 그 안에서 확인한 커밋 SHA만 push한다. 이후 쓰기는 다음 주기에 싣는다.
+push가 거부되면 새 fetch부터 한 번 재시도하며, 충돌은 기존 원복 규칙을 따른다.
+임시 ref는 정상 종료·실패 시 정리한다. 강제 종료로 남아도 노트나 다음 실행에 쓰이지 않는다.
+
+HEAD가 `main`이 아니면 적용 직전에 되돌린다. 되돌릴 수 없는 경우에는 **작업 트리를
+변경하지 않고** 사유를 낸다.
 
 | 상태 | 동작 |
 |---|---|
