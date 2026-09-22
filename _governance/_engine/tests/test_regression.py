@@ -3246,6 +3246,41 @@ def test_conflict_candidates():
 
 
 # ── 15b. 정본 릴리스와 갱신 (Mechanism §1-2 · 시행령 §10 6항) ────────────
+def test_current_version_equivalent_heads():
+    """#41: 판본 문자열뿐 아니라 같은 릴리스 증빙인 병렬 극대만 수렴한다."""
+    from osk import update
+    old = {"rid": core._make_rid(1754000000000, 0), "parents": [],
+           "kind": "done", "version": "v3.16.0", "attest": "sha256:" + "a" * 64}
+    a = {"rid": core._make_rid(1754000000001, 0), "parents": [old["rid"]],
+         "kind": "done", "version": "v3.17.1", "attest": "sha256:" + "b" * 64}
+    b = dict(a, rid=core._make_rid(1754000000002, 0))
+    check("현재 판본: 동일 릴리스 병렬 적용은 동치로 수렴한다",
+          update.current_version([old, a, b]) == "v3.17.1")
+    check("현재 판본: 병렬 기록의 물리 순서와 무관하다",
+          update.current_version([old, b, a]) == "v3.17.1")
+    for title, changed in (
+            ("서로 다른 판본", {"version": "v3.16.1"}),
+            ("같은 판본의 서로 다른 증빙", {"attest": "sha256:" + "c" * 64}),
+            ("구판·현행 기록 혼합", {"attest": None})):
+        check(f"현재 판본: {title}는 미확정을 유지한다",
+              update.current_version([old, a, dict(b, **changed)]) is None)
+    legacy_a = {k: v for k, v in a.items() if k != "attest"}
+    legacy_b = {k: v for k, v in b.items() if k != "attest"}
+    check("현재 판본: 증빙 없는 구판의 병렬 기록은 추측하지 않는다",
+          update.current_version([old, legacy_a, legacy_b]) is None)
+    check("현재 판본: 구판 단일 기록과 빈 저널은 종전대로 해석한다",
+          update.current_version([old, legacy_a]) == "v3.17.1"
+          and update.current_version([]) is None)
+    for invalid in ("", "sha256:broken", ["same"]):
+        check(f"현재 판본: 같은 값이어도 부적격 증빙은 동치 근거가 아니다 {invalid!r}",
+              update.current_version([old, dict(a, attest=invalid),
+                                      dict(b, attest=invalid)]) is None)
+    next_done = dict(b, parents=[a["rid"]], version="v3.17.2",
+                     attest="sha256:" + "c" * 64)
+    check("현재 판본: 선형 갱신은 최신 인과 기록을 반환한다",
+          update.current_version([old, a, next_done]) == "v3.17.2")
+
+
 def test_release_and_update():
     from osk import release, update
     installed_engine = ROOT / "_governance/_engine"
@@ -9344,7 +9379,7 @@ if __name__ == "__main__":
                test_sync_pins_main, test_daemon_no_bare_git_spawn,
                test_publish_manifest, test_publish_guards,
                test_conflict_candidates,
-               test_release_and_update,
+               test_current_version_equivalent_heads, test_release_and_update,
                test_store_digest_confined, test_delegation_protection_scope,
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
