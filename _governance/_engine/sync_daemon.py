@@ -140,7 +140,9 @@ def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[st
         for source, ref in (("local", None), ("remote", fetched[0] if fetched else None)):
             if source == "remote" and not ref:
                 continue
-            errors = _raw_boundary(root, ref)
+            # Incoming work starts at the frozen fork point. HEAD may contain
+            # a local raw migration that has not reached the remote yet.
+            errors = _raw_boundary(root, ref, base=fetched[1] if ref else None)
             if errors:
                 return f"raw-storage ({source}) — sync paused; update the writer and repair the listed records: " + "; ".join(errors[:5]), None
     except (OSError, UnicodeError, RuntimeError) as e:

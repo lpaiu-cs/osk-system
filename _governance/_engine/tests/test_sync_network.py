@@ -251,13 +251,39 @@ def run():
         hidden = '= Scope/W1/_raw/.records/old.txt'
         bad = peer / legacy
         bad.parent.mkdir(parents=True, exist_ok=True)
-        bad.write_text('## 1\n\n<!-- osk-capture: codex-user-items-v2 -->\n\nold capture\n')
+        bad.write_text('## 1\n\n### user\n\nquestion\n\n### agent\n\nvisible answer\n')
         git('add', '-A', at=peer)
         git('commit', '-qm', 'old writer', at=peer)
         git('push', '-q', '--force', at=peer)
         before = git('rev-parse', 'HEAD')
         assert 'raw-storage (remote)' in sync.once(root)
         assert git('rev-parse', 'HEAD') == before and not (root / legacy).exists()
+
+        # A local migration of already shared raw must reach the remote, both
+        # after an explicit commit and after the offline checkpoint path.
+        shared = git('rev-parse', 'HEAD', at=peer)
+        for offline_first in (False, True):
+            git('reset', '--hard', shared, at=peer)
+            git('push', '-q', '--force', at=peer)
+            git('fetch', '-q', 'origin')
+            git('reset', '--hard', shared)
+            destination = root / hidden
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            (root / legacy).rename(destination)
+            expected = destination.read_bytes()
+            if offline_first:
+                with patch.object(vs, '_git', offline):
+                    assert 'pull 실패' in sync.once(root)
+            else:
+                git('add', '-A')
+                git('commit', '-qm', 'migrate local raw')
+            assert sync.once(root) == 'ok', 'a local repair was mistaken for incoming legacy raw'
+            remote_bytes = original(bare, ['show', 'main:' + hidden], 30, text=False)
+            assert remote_bytes.returncode == 0 and remote_bytes.stdout == expected
+            assert legacy not in git('ls-tree', '-r', '--name-only', 'main', at=bare)
+        git('reset', '--hard', before)
+        git('reset', '--hard', shared, at=peer)
+        git('push', '-q', '--force', at=peer)
         bad.unlink()
         good = peer / hidden
         good.parent.mkdir(parents=True)
