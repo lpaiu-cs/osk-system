@@ -421,6 +421,14 @@ class Index:
         # `('nonnode',…)` 대신 `('dangling',)`을 냈고, 헌법 8조의 Domain→`_raw`
         # 금지가 fail-open했다. 거르지 않아도 `resolve`가 판독 성공 노드를
         # 먼저 보므로 판정은 구판과 같다 — 순서가 곧 우선순위다.
+        self.refresh_nonnode()
+
+    def refresh_nonnode(self) -> None:
+        """Refresh evidence names without discarding unchanged node contracts.
+
+        The caller must have observed the same complete, non-racy node signature.
+        Scan errors remain on the Index so a partial refresh is never cached.
+        """
         self.nonnode: dict[str, tuple] = {}
         for base in ("_sources", "= Scope", "= Person"):
             root = ROOT / base
@@ -589,6 +597,16 @@ class Index:
             self.parsed[path] = contract.parse(path)
         return self.parsed[path]
 
+    def lookup_name(self, name: str) -> tuple[list, list[str]]:
+        """Read only this name's candidates; broken files are not name owners."""
+        live, errors = [], []
+        for p, kind in self._by_name.get(name, []):
+            if self._readable(p):
+                live.append((p, kind))
+            else:
+                errors.append(self._failed[p])
+        return live, errors
+
     def resolve(self, name: str):
         """대상명 → ('node',소속) | ('nonnode',소속) | ('ambiguous',) |
         ('dangling',) | ('external',). 경로형([[= Scope/B/b]])은 경로로 우선
@@ -630,13 +648,11 @@ class Index:
         # 하나도 없으면(전부 파손이거나 없음) 비노드로 떨어지고 마지막이
         # dangling이다. 구판의 `dup_stems → nodes → nonnode → dangling`과
         # 같은 사슬이며, 파손 파일은 여기서도 그 이름의 임자가 되지 못한다.
-        cands = self._by_name.get(name)
-        if cands:
-            live = [(p, k) for p, k in cands if self._readable(p)]
-            if len(live) > 1:
-                return ("ambiguous",)
-            if len(live) == 1:
-                return ("node", live[0][1])
+        live, _errors = self.lookup_name(name)
+        if len(live) > 1:
+            return ("ambiguous",)
+        if len(live) == 1:
+            return ("node", live[0][1])
         if name in self.nonnode:
             return ("nonnode", self.nonnode[name][1])
         return ("dangling",)

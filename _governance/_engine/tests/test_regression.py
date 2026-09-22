@@ -9075,6 +9075,95 @@ def test_review_root_reparse_and_lazy_search():
         M._index, M._searcher, M._fingerprint = None, None, None
 
 
+def test_read_cache_dependencies():
+    """A title read must stay local; evidence edits must not rebuild BM25."""
+    import mcp_server as M
+    p = ROOT / "= Scope/W1/cache-candidate.md"
+    bad = ROOT / "= Scope/W1/cache-broken.md"
+    twin = ROOT / "= Scope/W2/cache-candidate.md"
+    twin.parent.mkdir(parents=True, exist_ok=True)
+    raw_dir = ROOT / "= Scope/W1/_raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    evidence = raw_dir / "cache-evidence.txt"
+    renamed = raw_dir / "cache-renamed.txt"
+    ledger = core.LEDGER / "cache-events.jsonl"
+    try:
+        p.write_text(node_text("260922-benc-00000001", body="originalcachetoken"), encoding="utf-8")
+        bad.write_text("---\nbroken: [\n---\n", encoding="utf-8")
+        _age_all()
+        M._index, M._searcher, M._fingerprint = None, None, None
+        with mock.patch.object(graph.Index, "parse_all", side_effect=AssertionError("full parse")):
+            result = M.read_node(p.stem)
+            check("제목 조회는 전수 파싱 없이 본문·바이트 해시를 낸다",
+                  result.get("body", "").strip() == "originalcachetoken"
+                  and result.get("hash") == core.sha256_file(p))
+            check("없는 제목도 전수 파싱하지 않는다", "노드 없음" in M.read_node("cache-missing")["error"])
+            check("파손 제목을 전수 파싱 없이 보고한다", "파싱 실패" in M.read_node(bad.stem)["error"])
+            twin.write_bytes(p.read_bytes())
+            _age_all()
+            check("제목 후보 중복은 계속 거부한다", "같은 이름" in M.read_node(p.stem)["error"])
+            twin.write_text("---\nbroken: [\n---\n", encoding="utf-8")
+            _age_all()
+            check("파손된 동명 후보는 정상 후보의 소유권을 가리지 않는다",
+                  "error" not in M.read_node(p.stem))
+        twin.unlink()
+        _age_all()
+        s = M._s()
+        before = M._fingerprint
+        for path in (evidence, ledger):
+            path.write_text("new evidence\n", encoding="utf-8")
+            _age_all()
+            with mock.patch.object(M.search_mod, "Searcher", side_effect=AssertionError("BM25 rebuilt")):
+                check("비노드 변경 뒤에도 검색 결과·검색기를 재사용한다",
+                      M._s() is s and any(x["title"] == p.stem for x in M.search("originalcachetoken")))
+            check("새 비노드 이름은 같은 Index에서도 즉시 해석된다",
+                  M._index.resolve(path.stem)[0] == "nonnode")
+        check("비노드 서명은 변하고 노드 서명은 유지된다",
+              before[0] != M._fingerprint[0] and before[1] == M._fingerprint[1])
+        evidence.rename(renamed)
+        _age_all()
+        check("비노드 개명·삭제가 검색기 재사용에 가려지지 않는다",
+              M._s() is s and s.idx.resolve(evidence.stem)[0] == "dangling"
+              and s.idx.resolve(renamed.stem)[0] == "nonnode")
+        p.write_text(node_text("260922-benc-00000001", body="replacementcachetoken"), encoding="utf-8")
+        _age_all()
+        check("노드 편집은 새 검색 결과로 재구축한다",
+              any(x["title"] == p.stem for x in M.search("replacementcachetoken"))
+              and M._searcher is not s)
+        check("교체된 본문은 낡은 검색 결과에 남지 않는다",
+              not any(x["title"] == p.stem for x in M.search("originalcachetoken")))
+        signature = graph.index_signature
+
+        def incomplete(errors=None):
+            result = signature(errors)
+            if errors is not None:
+                errors.append("injected incomplete signature")
+            return result
+
+        with mock.patch.object(graph, "index_signature", incomplete):
+            first = M._s()
+            check("불완전 지문은 키로 쓰지 않고 검색기를 재사용하지 않는다",
+                  M._fingerprint is None and M._s() is not first)
+        _age_all()
+        M._s()
+        refresh = graph.Index.refresh_nonnode
+
+        def failed_refresh(idx):
+            refresh(idx)
+            idx.scan_errors.append("injected evidence refresh failure")
+
+        renamed.write_text("changed evidence\n", encoding="utf-8")
+        _age_all()
+        with mock.patch.object(graph.Index, "refresh_nonnode", failed_refresh):
+            M._idx()
+            check("비노드 새 관측이 불완전하면 캐시 키·BM25를 버린다",
+                  M._fingerprint is None and M._searcher is None and not M._index.complete)
+    finally:
+        for path in (p, bad, twin, evidence, renamed, ledger):
+            path.unlink(missing_ok=True)
+        M._index, M._searcher, M._fingerprint = None, None, None
+
+
 def test_sync_pending_git_operations():
     """사용자의 미완료 git 작업·index를 데몬이 대신 완료하지 않는다."""
     import sync_daemon, vault_sync
@@ -9588,7 +9677,8 @@ if __name__ == "__main__":
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
                test_write_edge_coordinates, test_write_pin_subtree_and_fork,
                test_review_empty_memory_and_incomplete_region,
-               test_review_root_reparse_and_lazy_search, test_eviction_preservation_mcp,
+               test_review_root_reparse_and_lazy_search, test_read_cache_dependencies,
+               test_eviction_preservation_mcp,
                test_growth_loop_subprocesses]:
         try:
             fn()

@@ -49,13 +49,13 @@ RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 mcp = FastMCP("osk-system")
 _searcher = None
 _index = None
-_fingerprint: str | None = None
+_fingerprint: tuple[str, str] | None = None
 
 
-def _vault_fingerprint() -> tuple[str, bool]:
-    """**색인이 읽는 것**의 (상대경로, mtime_ns, size) digest와, 그 채취를
-    믿을 수 있는가 — 순수 이동·개명도 경로가 바뀌므로 감지된다(파일 정본에서
-    재계산 원칙).
+def _vault_fingerprint() -> tuple[tuple[str, str], bool]:
+    """전체·노드의 (상대경로, mtime_ns, size) digest 쌍과 관측 불확실 여부.
+    순수 이동·개명도 경로가 바뀌므로 감지된다(파일 정본에서 재계산 원칙).
+    비노드만 바뀌면 이름표를 새로 읽고 노드 파싱·검색기는 재사용한다.
 
     범위가 색인보다 좁으면 그 바깥의 변경이 캐시를 무효화하지 못하고(구판은
     노드만 봐서 `_raw`·대장의 변경을 놓쳤다), 넓으면 색인과 무관한 것이 캐시를
@@ -68,11 +68,23 @@ def _vault_fingerprint() -> tuple[str, bool]:
     지문 자체에 시각을 섞지는 **않는다.** 섞으면 캐시 키가 내용과 무관한 값이
     되어 창이 닫힌 뒤에도 무엇과도 맞지 않는다. 믿을지 말지는 호출부가 정한다."""
     import hashlib
-    entries, racy = graph.index_signature()
+    errors = []
+    entries, racy = graph.index_signature(errors)
     h = hashlib.sha256()
     for rel, mtime_ns, size in entries:
         h.update(f"{rel}|{mtime_ns}|{size}\n".encode())
-    return h.hexdigest(), racy
+    full = h.hexdigest()
+    if _fingerprint is not None and full == _fingerprint[0]:
+        node_key = _fingerprint[1]
+    else:
+        nodes = hashlib.sha256()
+        for rel, mtime_ns, size in entries:
+            if graph.is_node_home(graph._space_of_parts(tuple(rel.split("/")))):
+                nodes.update(f"{rel}|{mtime_ns}|{size}\n".encode())
+        node_key = nodes.hexdigest()
+    # Evidence still invalidates the name map. Only unchanged node contracts
+    # and their BM25 can survive that refresh; uncertain scans reuse neither.
+    return (full, node_key), racy or bool(errors)
 
 
 def _idx():
@@ -82,8 +94,14 @@ def _idx():
     global _index, _searcher, _fingerprint
     fp, racy = _vault_fingerprint()
     if _index is None or racy or fp != _fingerprint:
-        _index = graph.Index()
-        _searcher = None
+        if (_index is not None and _index.complete and not racy
+                and _fingerprint is not None and fp[1] == _fingerprint[1]):
+            _index.refresh_nonnode()
+        else:
+            _index = graph.Index()
+            _searcher = None
+        if not _index.complete:
+            _searcher = None
         # 불완전 관측도 접어 두지 않는다 — 못 읽은 자리가 있는 색인을 키로
         # 붙잡으면 그 자리가 다시 읽히게 된 뒤에도 낡은 그림을 계속 쓴다.
         _fingerprint = None if (racy or not _index.complete) else fp
@@ -171,11 +189,12 @@ def read_node(name: str, view: str | None = None) -> dict:
     # 동명 노드는 **고르지 않는다** — id 갈래(아래)와 같은 규율이다. 구판은
     # 이름 갈래에만 이 방어가 없어, 쓰기 통로가 "어느 것인지 정해지지 않는다"고
     # 거부하는 상황에서 읽기는 조용히 한쪽을 돌려줬다(Mechanism §2 1항).
-    if name in idx.dup_stems:
-        return {"error": f"같은 이름의 노드가 {len(idx.dup_stems[name])}개다 "
+    matches, failures = idx.lookup_name(name)
+    if len(matches) > 1:
+        return {"error": f"같은 이름의 노드가 {len(matches)}개다 "
                          f"— 어느 것인지 정해지지 않는다: "
-                         f"{idx.dup_stems[name]} (먼저 고쳐라)"}
-    hit = idx.nodes.get(name)
+                         f"{[str(p.relative_to(ROOT)) for p, _k in matches]} (먼저 고쳐라)"}
+    hit = matches[0] if matches else None
     if not hit:
         # 쓰기 응답은 id를 돌려준다 — 그것을 핸들로 잡은 호출자에게
         # "노드 없음"은 틀린 진단이다(10차 ②)
@@ -197,7 +216,7 @@ def read_node(name: str, view: str | None = None) -> dict:
             if h:
                 hit, name = h, h[0].stem
     if not hit:
-        why = (getattr(idx, "broken", None) or {}).get(name)
+        why = "; ".join(failures)
         return {"error": f"파싱 실패 — 수동 확인 필요: {why}" if why
                 else f"노드 없음: {name}"}
     # 바이트를 **한 번** 읽고, 그 바이트에서 본문과 해시를 함께 만든다.
