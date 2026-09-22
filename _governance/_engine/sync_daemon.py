@@ -49,19 +49,34 @@ def _lock_path(root: Path = ROOT, name: str = "osk-sync.lock") -> Path:
 
 
 def once(root: Path = ROOT) -> str:
-    """ensure_branch → commit_local → pull(rebase) → push. vault_sync 자체 계약
-    순서를 따른다. 충돌·거부는 삼키지 않고 상태 문자열로 표면화한다.
+    """Fetch → locked commit/rebase/snapshot → push the captured SHA.
 
-    working-tree를 건드리는 구간 전체를 **mutation 잠금** 아래 둔다 — update가
-    파일을 반쯤 바꾼 순간에 데몬의 `git add -A`가 그 혼합 상태를 커밋·push하지
-    못하게 한다(update와 공유하는 잠금). 잡혀 있으면 이번 tick을 건너뛴다.
-
-    잠금을 얻어도 **미완료 트랜잭션 표식**(`.osk/txn/manifest.json`)이 남아 있으면
-    거부한다 — update 프로세스가 죽으면 OS가 잠금을 풀지만 working tree에는
-    half-applied 파일이 남는다. 표식이 사라지는 것은 updater의 복구가 끝났다는
-    뜻이며, 그때까지 혼합 상태를 커밋·push하지 않는다."""
+    Network waits do not exclude writers. Recheck pending transactions and Git
+    operations under the mutation lock after every fetch, including a retry.
+    """
     if not vault_sync.is_git_repo(root):
         return "git 저장소 아님"
+    if not vault_sync.has_remote(root):
+        status, _head = _apply(root)
+        return "ok (로컬 커밋만 — 원격 없음)" if status == "ok" else status
+    for _attempt in range(2):
+        with vault_sync.fetch_snapshot(root) as (fetched, st, detail):
+            # Even when offline, retain the existing local-commit behavior.
+            status, head = _apply(root, fetched)
+            if status != "ok":
+                return status
+            if st != "ok":
+                return f"pull 실패: {st} {detail}"
+        _ok, st, detail = vault_sync.push_snapshot(root, head)
+        if st == "ok":
+            return "ok"
+        if st != "rejected":
+            return f"push 실패: {st} {detail}"
+    return f"push 실패: {st} {detail}"
+
+
+def _apply(root: Path, fetched: tuple[str, str | None] | None = None) -> tuple[str, str | None]:
+    """Only worktree mutations hold the lock; return a verified commit to push."""
     mlock = open(_lock_path(root, "osk-mutation.lock"), "w")
     acquired = False
     try:
@@ -69,50 +84,41 @@ def once(root: Path = ROOT) -> str:
             lock_exclusive(mlock, blocking=False)
             acquired = True
         except OSError:
-            return "locked"          # update가 mutation 중 — 다음 주기에 맡긴다
+            return "locked", None
         if (root / ".osk" / "txn" / "manifest.json").is_file():
-            return "pending-txn"     # 갱신이 죽어 half-applied — 복구 전엔 손대지 않는다
-        return _once_locked(root)
+            return "pending-txn", None
+        return _once_locked(root, fetched)
     finally:
         if acquired:                 # 소유하지 않은 잠금은 풀지 않는다(Windows 안전)
             unlock(mlock)
         mlock.close()
 
 
-def _once_locked(root: Path) -> str:
+def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[str, str | None]:
     # 동기화 대상은 main 고정이다. HEAD를 따라가면 어떤 세션이 잠깐 다른
     # 브랜치를 checkout해 둔 사이에 그 브랜치가 정본인 양 커밋·push된다.
     switched, st, detail = vault_sync.ensure_branch(root)
     if st != "ok":
-        return f"브랜치 고정 실패 — 동기화하지 않았다: {detail}"
+        return f"브랜치 고정 실패 — 동기화하지 않았다: {detail}", None
     if switched:
         print(f"sync: {detail}", file=sys.stderr)
     msg = f"sync: {datetime.now():%Y-%m-%d %H:%M:%S} (daemon)"
     ok, st, detail = vault_sync.commit_local(root, msg)
     if st != "ok":
-        return f"commit 실패: {st} {detail}"
-    if not vault_sync.has_remote(root):
-        return "ok (로컬 커밋만 — 원격 없음)"
-    changed, st, detail = vault_sync.pull(root)
+        return f"commit 실패: {st} {detail}", None
+    if not fetched:
+        return "ok", None
+    _changed, st, detail = vault_sync.rebase_snapshot(root, fetched)
     if st == "conflict":
-        return f"pull 충돌 — 수동 개입 필요: {detail}"
+        return f"pull 충돌 — 수동 개입 필요: {detail}", None
     if st != "ok":
-        return f"pull 실패: {st} {detail}"
+        return f"pull 실패: {st} {detail}", None
     if detail:
         print(f"sync: {detail}", file=sys.stderr)
-    ok, st, detail = vault_sync.commit_push(root, msg)
-    if st == "rejected":
-        # commit_push 계약대로 호출부가 pull-rebase 후 한 번 재시도한다.
-        # 그래도 거부되면(경합 지속) 다음 주기에 맡기고 상태로 표면화한다.
-        changed, st2, d2 = vault_sync.pull(root)
-        if st2 != "ok":
-            return f"push 거부 후 pull 실패: {st2} {d2}"
-        if d2:
-            print(f"sync: {d2}", file=sys.stderr)
-        ok, st, detail = vault_sync.commit_push(root, msg)
-    if st != "ok":
-        return f"push 실패: {st} {detail}"
-    return "ok"
+    head = vault_sync._head(root, 10)
+    if not head:
+        return "push 실패: 커밋 SHA를 확인할 수 없다", None
+    return "ok", head
 
 
 def main():

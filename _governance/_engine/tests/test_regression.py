@@ -563,6 +563,9 @@ def test_sync_graph_scale():
             note = repo / "충돌 노트.md"
             note.write_text("base\n", encoding="utf-8")
             commit("base")
+            # Both devices previously synchronized this base. Without that
+            # history, first-contact divergence is intentionally held for review.
+            git("push", "-q", "origin", "main")
             git("branch", "remote-main")
 
             if left is None:
@@ -9638,6 +9641,13 @@ def test_validate_at_uses_snapshot_engine():
               errors == ["검증기 FAIL: snapshot rejection"], errors)
 
 
+def test_sync_network_subprocess():
+    proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests/test_sync_network.py")],
+                          capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
+    check("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", proc.returncode == 0,
+          (proc.stdout + proc.stderr).decode("utf-8", errors="replace"))
+
+
 def test_growth_loop_subprocesses():
     for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py"):
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
@@ -9655,7 +9665,7 @@ if __name__ == "__main__":
                test_ridless_unsign_not_swallowed, test_root_confinement_and_kst,
                test_approval_lifecycle,
                test_path_reuse, test_fingerprint_move,
-               test_sync, test_sync_graph_scale, test_conflicts_semantics,
+               test_sync, test_sync_graph_scale, test_sync_network_subprocess, test_conflicts_semantics,
                test_ledger_corruption_resilience, test_ledger_schema_segment,
                test_validate_global_invariance, test_authority_hold,
                test_self_referencing_edge, test_surface_contract,
