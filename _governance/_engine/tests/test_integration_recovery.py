@@ -62,6 +62,36 @@ def own_job(result):
 
 
 class IntegrationRecoveryTests(unittest.TestCase):
+    def test_repair_budget_requires_each_chunk_and_rechecks_completed_chunks(self):
+        self.check_case("""
+            from osk import scope_memory
+            capture(8)
+            parent = it.prompt('claude', sid)
+            scope_memory.replace(sid, 'retained summary')
+            it.acknowledge('claude', sid, parent['through'], 'summary', 'Initial review.',
+                           [{'text': 'retained summary'}])
+            scope_memory.replace(sid, 'changed summary', expect_hash=scope_memory.read(sid)['hash'])
+            assert it.review_status('claude', sid, parent['through'])['status'] == 'pending'
+            refs, tokens = [], []
+            while it.status('claude', sid)['pending']:
+                job = it.prompt('claude', sid, max_rounds=3)
+                assert 1 <= len(job['pending_refs']) <= 3, job
+                assert not set(job['pending_refs']).intersection(refs)
+                refs.extend(job['pending_refs'])
+                tokens.append(job['through'])
+                it.acknowledge('claude', sid, job['through'], 'summary', 'Reviewed this chunk.',
+                               [{'text': 'changed summary'}])
+                if len(refs) < 8:
+                    assert it.review_status('claude', sid, parent['through'])['status'] == 'pending'
+            assert len(tokens) == 3 and set(refs) == set(parent['pending_refs'])
+            assert it.review_status('claude', sid, parent['through'])['status'] == 'complete'
+            scope_memory.replace(sid, 'another summary', expect_hash=scope_memory.read(sid)['hash'])
+            assert it.review_status('claude', sid, parent['through'])['status'] == 'pending'
+            state = it.status('claude', sid)
+            assert set(state['repair_pending']) == set(tokens), state
+            assert state['reviewed_rounds'] == 8
+        """)
+
     def check_case(self, source):
         with tempfile.TemporaryDirectory(prefix="osk-integration-recovery-") as directory:
             env = dict(os.environ, OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),
