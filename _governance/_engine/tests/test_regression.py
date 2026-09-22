@@ -1399,6 +1399,114 @@ def test_stale_sealed_by_approve():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+def test_stale_changeset_before_confirmation():
+    """#38: 각 갈래의 실제 차이가 확인보다 먼저 보이고, 불완전 비교는 멈춘다."""
+    import contextlib, io
+    from osk import approvals as A, cli
+    reg = "= Domain/regr-seal-preview"
+    directory = ROOT / reg
+    saved = {p: p.read_bytes() if p.exists() else None
+             for p in (A.APPROVALS, A.MOVES)}
+
+    def decline(_prompt):
+        raise SystemExit("declined")
+
+    def preview(confirm=decline):
+        output, error = io.StringIO(), None
+        with contextlib.redirect_stdout(output), \
+                mock.patch.object(cli, "_confirm", side_effect=confirm) as prompt, \
+                mock.patch.object(A, "approve", wraps=A.approve) as approve:
+            try:
+                cli.main(["approve", reg])
+            except (SystemExit, ValueError, OSError) as exc:
+                error = str(exc)
+        return output.getvalue(), error, prompt.call_count, approve.call_count
+
+    try:
+        directory.mkdir(parents=True)
+        (directory / "a.txt").write_text("branch A", encoding="utf-8")
+        (directory / "gone.txt").write_text("old", encoding="utf-8")
+        moved_id = "260802-zzzz-9038"
+        src, dst = directory / "before.md", directory / "after.md"
+        src.write_text(node_text(moved_id), encoding="utf-8")
+        initial = A.protect(reg)
+        tree_a = initial["accepted"]
+        A.record_move(moved_id, src, dst)
+        src.rename(dst)
+        (directory / "a.txt").write_text("branch B", encoding="utf-8")
+        (directory / "branch-only.txt").write_text("B", encoding="utf-8")
+        tree_b = A._store_tree(directory)
+        forks, rid = [], initial["rid"]
+        for kind, tree, boundary in (("approve", tree_a, initial["moves_seen"]),
+                                     ("revert", tree_b, A._moves_boundary()),
+                                     ("unprotect", tree_b, A._moves_boundary())):
+            rid = core._next_rid(rid)
+            forks.append({"rid": rid, "parents": [initial["rid"]],
+                          "region": reg, "kind": kind, "base": tree,
+                          "accepted": tree if kind == "approve" else None,
+                          "moves_seen": boundary})
+        with A.APPROVALS.open("a", encoding="utf-8") as f:
+            for row in forks:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        (directory / "a.txt").write_text("working", encoding="utf-8")
+        (directory / "gone.txt").unlink()
+        for i in range(25):
+            (directory / f"new-{i:02}.txt").write_text("new", encoding="utf-8")
+        work, ledger = A.working_tree_hash(reg), A.APPROVALS.read_bytes()
+        a = A.changeset(reg, record=forks[0], expect_work=work)
+        b = A.changeset(reg, record=forks[1], expect_work=work)
+        check("stale은 갈래를 명시하지 않으면 변경집합을 고르지 않는다",
+              A.changeset(reg) is None)
+        check("각 갈래의 추가·삭제·수정을 그 승인본과 비교한다",
+              f"{reg}/branch-only.txt" in a["added"]
+              and f"{reg}/branch-only.txt" not in b["added"]
+              and f"{reg}/gone.txt" in a["removed"]
+              and f"{reg}/a.txt" in b["modified"])
+        check("이동의 생애 경계도 그 갈래를 따른다",
+              a["moves"] == [{"node": moved_id, "from": f"{reg}/before.md",
+                              "to": f"{reg}/after.md"}] and not b["moves"])
+        check("해제 갈래는 해제 직전 승인본을 보여준다",
+              A.changeset(reg, record=forks[2], expect_work=work) == b)
+        text, error, prompted, called = preview()
+        check("세 갈래 변경집합을 확인 전에 모두 보여준다",
+              prompted == 1 and called == 0 and error == "declined"
+              and all(row["rid"] in text for row in forks)
+              and text.count(f"{reg}/new-24.txt") == 3
+              and "보호 해제 갈래" in text
+              and f"{reg}/before.md → {reg}/after.md" in text)
+        check("검토 거절은 승인 기록을 만들지 않는다", A.APPROVALS.read_bytes() == ledger)
+
+        read_table = A._tree_table_for_region
+        with mock.patch.object(A, "_tree_table_for_region", side_effect=lambda r, h:
+                               None if h == tree_b else read_table(r, h)):
+            _, error, prompted, called = preview()
+        check("어느 갈래든 승인본 미해석이면 확인 전에 중단한다",
+              error and "승인본" in error and prompted == called == 0)
+        with mock.patch.object(A, "working_tree_hash", return_value=core.sha256_bytes(b"old")):
+            _, error, prompted, called = preview()
+        check("표시한 차이는 검토 대상으로 고정한 작업본에 결속된다",
+              error and "작업본이 바뀌었다" in error and prompted == called == 0)
+        with mock.patch.object(A, "_region_files", side_effect=PermissionError("unreadable")):
+            _, error, prompted, called = preview()
+        check("작업본 판독 실패를 빈 변경집합으로 승인하지 않는다",
+              error and prompted == called == 0)
+
+        def changed_after_preview(_prompt):
+            (directory / "a.txt").write_text("changed after review", encoding="utf-8")
+
+        _, error, prompted, called = preview(changed_after_preview)
+        check("확인 중 편집도 기존 작업본 CAS가 봉합을 거부한다",
+              prompted == called == 1 and error and "작업본" in error
+              and A.APPROVALS.read_bytes() == ledger)
+    finally:
+        rmtree_force(directory)
+        for path, data in saved.items():
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(data)
+
+
 # ── 위상 검증도 derived-from의 id 강제를 본다 (쓰기 통로 밖 유입) ────────
 def test_topology_rejects_wiki_node_derived_from():
     """손으로 쓰거나 다기기 동기화로 들어온 노드는 쓰기 통로를 거치지 않는다 —
@@ -9258,6 +9366,7 @@ if __name__ == "__main__":
                test_move_phantom_tail_row_harmless,
                test_move_unrecorded_outside_protection,
                test_changeset_lists_difference, test_stale_sealed_by_approve,
+               test_stale_changeset_before_confirmation,
                test_topology_rejects_wiki_node_derived_from,
                test_local_lock_path_git_shapes,
                test_revert_structure_conflict_no_partial,

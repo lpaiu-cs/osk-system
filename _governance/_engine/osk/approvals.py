@@ -545,15 +545,27 @@ def region_of(path: Path | str) -> str | None:
     return max(regions, key=len) if regions else None
 
 
-def changeset(region: str) -> dict | None:
+def changeset(region: str, *, record: dict | None = None,
+              expect_work: str | None = None) -> dict | None:
     """승인본과 작업본의 **차이** — 헌법 10조 2항이 사용자에게 검토를 요구하는
-    그 차이다. 판정할 수 없으면(미보호·stale·승인본 미해석) None.
+    그 차이다. `record`를 주면 그 승인 갈래를 기준으로 비교한다. 판정할 수
+    없으면(미보호·갈래 미지정 stale·승인본 미해석) None. `expect_work`가 있으면
+    비교한 파일 목록·해시가 그 작업본과 일치해야 한다.
 
     반환: {"added": [rel…], "removed": [rel…], "modified": [rel…]}. 해시 비교라
     내용 diff는 아니지만, 사용자가 무엇이 생기고 사라지고 바뀌는지를 파일 단위로
     보고 판단할 수 있어야 승인이 확인 절차가 된다 — 해시 두 개만 보여주는 것은
     검토가 아니다."""
-    tree = approved_hash(region)
+    recs = records()
+    if _damaged(recs):
+        return None
+    if record is not None:
+        if record.get("region") != region or record not in recs:
+            return None
+        recs = [record]  # 이동의 생애 경계도 비교하는 그 갈래를 따른다.
+    tree = approved_hash(region, recs)
+    if record is not None and record.get("kind") == "unprotect":
+        tree = record.get("base")  # 해제 갈래는 해제 직전 승인본과 비교한다.
     table = _tree_table_for_region(region, tree) if tree else None
     if table is None:
         return None
@@ -561,6 +573,9 @@ def changeset(region: str) -> dict | None:
     files = ({rel: p for rel, p in _region_files(d)}
              if d is not None and d.is_dir() else {})
     cur = {rel: sha256_file(p) for rel, p in files.items()}
+    if expect_work is not None and sha256_bytes(_manifest_blob(
+            [[rel, cur[rel]] for rel in sorted(cur)])) != expect_work:
+        raise ValueError("변경집합을 읽는 사이 작업본이 바뀌었다 — 다시 검토하라")
     cs = {
         "added": sorted(set(cur) - set(table)),
         "removed": sorted(set(table) - set(cur)),
@@ -585,6 +600,8 @@ def changeset(region: str) -> dict | None:
             now = (files[rel]).read_bytes()
         except OSError:
             continue
+        if expect_work is not None and sha256_bytes(now) != cur[rel]:
+            raise ValueError("변경집합을 읽는 사이 파일이 바뀌었다 — 다시 검토하라")
         if _fold_eol(blob) == _fold_eol(now):
             eol_only.append(rel)
     if eol_only:
@@ -592,7 +609,7 @@ def changeset(region: str) -> dict | None:
     # 이동은 이동으로 보인다(시행령 §6 4항) — 반려와 **같은 해석**(노드별
     # 사슬, 생애 경계)으로 낸다. 표시와 복원이 갈리면 사용자가 검토한 것과
     # 반려가 하는 일이 달라진다(added/removed는 tree 차이 그대로 둔다).
-    rows = _moves_since(region)
+    rows = _moves_since(region, recs)
     seen, moves = set(), []
     for rel in cs["added"] + cs["removed"]:
         row = (_latest_move(rows, "to", rel) if rel in cur and rel not in table
