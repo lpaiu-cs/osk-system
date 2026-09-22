@@ -243,6 +243,47 @@ def run():
             assert not git('for-each-ref', 'refs/osk-sync/')
         print('sync replay boundary: PASS (rewrite, prefetched, rewind, expired reflog, first contact, local moved)')
 
+        # An old peer can still write Markdown raw. Refuse it before rebase;
+        # neither silently sanitize it nor publish another local legacy record.
+        git('reset', '--hard', base)
+        git('reset', '--hard', base, at=peer)
+        legacy = '= Scope/W1/_raw/old.md'
+        hidden = '= Scope/W1/_raw/.records/old.txt'
+        bad = peer / legacy
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text('## 1\n\n<!-- osk-capture: codex-user-items-v2 -->\n\nold capture\n')
+        git('add', '-A', at=peer)
+        git('commit', '-qm', 'old writer', at=peer)
+        git('push', '-q', '--force', at=peer)
+        before = git('rev-parse', 'HEAD')
+        assert 'raw-storage (remote)' in sync.once(root)
+        assert git('rev-parse', 'HEAD') == before and not (root / legacy).exists()
+        bad.unlink()
+        good = peer / hidden
+        good.parent.mkdir(parents=True)
+        good.write_text('## 1\n\n<!-- osk-capture: dialogue-v1 "turn-1" -->\n\nvisible dialogue\n')
+        git('add', '-A', at=peer)
+        git('commit', '-qm', 'repair storage', at=peer)
+        git('push', '-q', at=peer)
+        assert sync.once(root) == 'ok'
+        assert (root / hidden).read_bytes() == good.read_bytes()
+        (root / legacy).write_text('new local legacy capture')
+        before = git('rev-parse', 'HEAD'), git('rev-parse', 'main', at=bare)
+        assert 'raw-storage (local)' in sync.once(root)
+        assert before == (git('rev-parse', 'HEAD'), git('rev-parse', 'main', at=bare))
+        assert (root / legacy).read_text() == 'new local legacy capture'
+        (root / legacy).unlink()
+        (root / hidden).write_text('## 1\n\n<!-- osk-capture: codex-user-items-v2 -->\n\nold capture\n')
+        assert 'legacy capture codec' in sync.once(root)
+        assert before == (git('rev-parse', 'HEAD'), git('rev-parse', 'main', at=bare))
+        git('checkout', '--', hidden)
+        (root / legacy).write_text('committed by an old local writer')
+        git('add', '-A')
+        git('commit', '-qm', 'old local commit')
+        assert 'raw-storage (outgoing commits)' in sync.once(root)
+        assert git('rev-parse', 'main', at=bare) == before[1]
+        print('raw storage ingress/egress: PASS (reject legacy, accept dialogue, preserve rejected bytes)')
+
 
 if __name__ == '__main__':
     run()
