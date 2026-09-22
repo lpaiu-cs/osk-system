@@ -364,9 +364,12 @@ def _cluster_names() -> list[str]:
     out = set()
 
     def walk(d: Path, prefix: str) -> None:
-        for sub in sorted(d.iterdir()):
-            if not sub.is_dir() or sub.name.startswith((".", "_")):
-                continue
+        # DirEntry already knows the type on Windows. Do not stat every node
+        # just to find the few directories.
+        with os.scandir(d) as entries:
+            dirs = [Path(e.path) for e in entries
+                    if e.is_dir() and not e.name.startswith((".", "_"))]
+        for sub in sorted(dirs):
             k = graph.space_of(sub / "x.md")
             if not (graph.is_node_home(k) and _is_cluster(k)
                     and k[:1] != GOVERNANCE):

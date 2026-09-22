@@ -291,8 +291,8 @@ def iter_nodes(errors: list | None = None):
 
 
 def index_signature(errors: list | None = None):
-    """`Index`가 읽는 것의 (상대경로, mtime_ns, 크기)와, 그중 채취 시각에 너무
-    가까워 믿을 수 없는 항목이 있었는가.
+    """`Index`가 읽는 것의 (상대경로, mtime_ns, 크기, 소속, 링크 목적지)와,
+    그중 채취 시각에 너무 가까워 믿을 수 없는 항목이 있었는가.
 
     범위가 색인과 **같아야** 한다. 좁으면 그 바깥의 변경이 캐시를 무효화하지
     못하고(구판의 지문은 노드만 봐서 `_raw`·대장의 변경을 놓쳤다), 넓으면
@@ -314,14 +314,18 @@ def index_signature(errors: list | None = None):
         if not root.exists():
             continue
         for e, parts in _scan(root, (base,), errors):
-            k = _space_of_parts(parts)
+            reparse = _is_reparse(e)
+            p = Path(e.path) if reparse else None
+            k = space_of(p) if reparse else _space_of_parts(parts)
             if is_node_home(k):
-                if not _is_md(e.name):
+                if base == "_sources" or not _is_md(e.name):
                     continue
             elif k[0] not in ("raw", "sources", "ledger"):
                 continue
             try:
                 st = e.stat()
+                # Equal metadata does not mean equal contents after retargeting.
+                target = str(p.resolve()) if reparse else ""
             except OSError:
                 continue   # 열거와 stat 사이의 삭제 — 다음 호출의 지문이 다르다
             # 창은 **양쪽**으로 닫는다. 아래만 보면 mtime이 미래인 파일 하나가
@@ -331,7 +335,7 @@ def index_signature(errors: list | None = None):
             # 쓰기와 구별되므로 의심할 이유가 없다.
             if lo <= st.st_mtime_ns <= hi:
                 racy = True
-            out.append(("/".join(parts), st.st_mtime_ns, st.st_size))
+            out.append(("/".join(parts), st.st_mtime_ns, st.st_size, k, target))
     out.sort()
     return out, racy
 
@@ -421,6 +425,14 @@ class Index:
         # `('nonnode',…)` 대신 `('dangling',)`을 냈고, 헌법 8조의 Domain→`_raw`
         # 금지가 fail-open했다. 거르지 않아도 `resolve`가 판독 성공 노드를
         # 먼저 보므로 판정은 구판과 같다 — 순서가 곧 우선순위다.
+        self.refresh_nonnode()
+
+    def refresh_nonnode(self) -> None:
+        """Refresh evidence names without discarding unchanged node contracts.
+
+        The caller must have observed the same complete, non-racy node signature.
+        Scan errors remain on the Index so a partial refresh is never cached.
+        """
         self.nonnode: dict[str, tuple] = {}
         for base in ("_sources", "= Scope", "= Person"):
             root = ROOT / base
@@ -589,6 +601,16 @@ class Index:
             self.parsed[path] = contract.parse(path)
         return self.parsed[path]
 
+    def lookup_name(self, name: str) -> tuple[list, list[str]]:
+        """Read only this name's candidates; broken files are not name owners."""
+        live, errors = [], []
+        for p, kind in self._by_name.get(name, []):
+            if self._readable(p):
+                live.append((p, kind))
+            else:
+                errors.append(self._failed[p])
+        return live, errors
+
     def resolve(self, name: str):
         """대상명 → ('node',소속) | ('nonnode',소속) | ('ambiguous',) |
         ('dangling',) | ('external',). 경로형([[= Scope/B/b]])은 경로로 우선
@@ -630,13 +652,11 @@ class Index:
         # 하나도 없으면(전부 파손이거나 없음) 비노드로 떨어지고 마지막이
         # dangling이다. 구판의 `dup_stems → nodes → nonnode → dangling`과
         # 같은 사슬이며, 파손 파일은 여기서도 그 이름의 임자가 되지 못한다.
-        cands = self._by_name.get(name)
-        if cands:
-            live = [(p, k) for p, k in cands if self._readable(p)]
-            if len(live) > 1:
-                return ("ambiguous",)
-            if len(live) == 1:
-                return ("node", live[0][1])
+        live, _errors = self.lookup_name(name)
+        if len(live) > 1:
+            return ("ambiguous",)
+        if len(live) == 1:
+            return ("node", live[0][1])
         if name in self.nonnode:
             return ("nonnode", self.nonnode[name][1])
         return ("dangling",)
