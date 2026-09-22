@@ -185,6 +185,9 @@ def _growth_cmd(a) -> None:
         elif a.growth_cmd == "review":
             result = growth.review(a.key, a.outcome, target=a.target,
                                    reason=a.reason, manifest=a.manifest)
+        elif a.growth_cmd == "checkpoint":
+            result = growth.checkpoint(growth._strict_json(
+                Path(a.file).read_text(encoding="utf-8-sig")))
         else:
             command = json.loads(Path(a.command_file).read_text(encoding="utf-8-sig"))
             if not isinstance(command, list) or not command or not all(
@@ -353,6 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--target", default=None)
     q.add_argument("--reason", required=True)
     q.add_argument("--manifest", required=True, help="실행 전에 고정한 plan rid")
+    q = gs.add_parser("checkpoint", help="완료한 개별 작업의 명시적 검토를 즉시 기록")
+    q.add_argument("--file", required=True, help="UTF-8 osk_reviews JSON 파일")
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")

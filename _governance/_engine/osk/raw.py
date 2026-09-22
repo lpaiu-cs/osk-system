@@ -216,6 +216,31 @@ _DIALOGUE_V1 = "<!-- osk-capture: dialogue-v1 "
 _CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
 
 
+def storage_error(path: str, text: str) -> str | None:
+    """Check a changed raw record, without exposing its payload in diagnostics."""
+    p = Path(path)
+    if "_raw" not in p.parts or not p.parts or p.parts[0] != "= Scope":
+        return None
+    if p.suffix.lower() == ".md":
+        return "visible Markdown raw; migrate to hidden .txt storage"
+    if any(_round_body(text[s:e]).startswith((_CODEX_V2, _CODEX_V3))
+           for s, e in _round_spans(text).values()):
+        return "legacy capture codec; restore dialogue-v1 from the native transcript"
+    return None
+
+
+def storage_violations() -> list[str]:
+    errors = []
+    for directory in (ROOT / "= Scope").glob("*/_raw"):
+        for p in directory.rglob("*"):
+            if p.is_file() and p.suffix.lower() in {".md", ".txt"}:
+                rel = posix_rel(p, ROOT)
+                error = storage_error(rel, read_exact(p))
+                if error:
+                    errors.append(f"{rel}: {error}")
+    return errors
+
+
 def inherited_prefix(path: Path) -> dict | None:
     """The immutable raw header survives cursor loss and vault copies."""
     if not path.exists():

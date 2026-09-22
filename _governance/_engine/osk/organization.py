@@ -118,7 +118,8 @@ def snapshot(scope: str, idx=None) -> dict:
         parsed[path] = node
         nodes.append({"id": node.id, "name": name, "path": core.posix_rel(path, core.ROOT),
                       "hash": core.sha256_bytes(data), "summary": str(node.meta.get("summary", "")),
-                      "hub": graph.is_hub(path), "has_body": bool(write._norm_body(node.body))})
+                      "hub": graph.is_hub(path), "has_body": bool(write._norm_body(node.body)),
+                      "body_chars": len(node.body), **write.size_feedback(path, node.body)})
         references.extend(graph.reference_review(node, idx))
     links = {}
     for p, node in parsed.items():
@@ -188,7 +189,8 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
         if missing_ids:
             current["missing_ids"] = missing_ids
         if (not prior and all(n["hub"] for n in current["nodes"]) and not current["references"]
-                and not current["issues"] and not current["pending_moves"]):
+                and not current["issues"] and not current["pending_moves"]
+                and not any(n.get("organization_advice") for n in current["nodes"])):
             continue
         if _complete(scope, state, current):
             continue
@@ -196,6 +198,10 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
         current["review_command"] = "python -m osk.cli organization review (UTF-8 JSON stdin)"
         if unfinished or missing_ids:
             current["key"] = prior["key"]
+        if reviewed.get("outcome") == "deferred":
+            current["previous_deferral"] = {
+                k: reviewed[k] for k in ("key", "reason", "after", "at")}
+            current["previous_deferral"]["snapshot_changed"] = reviewed["after"] != current["snapshot"]
         jobs.append(current)
         if len(jobs) == limit:
             break
@@ -285,8 +291,15 @@ def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
     command = ("& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
                if os.name == "nt" else shlex.join(argv))
     return ("\n[osk 참조·조직 검토]\n"
-            "저장 완료와 참조·조직 완료는 다르다. 아래 변경 Scope의 기존 본문과 허브를 읽고 "
+            "저장 완료와 참조·조직 완료는 다르다. 아래 변경 Scope의 요약·크기·참조 목록을 먼저 보고 "
+            "read_node(view=outline)으로 필요한 절을 골라 읽는다. 이번 작업은 최대 3개 노드의 "
+            "주장을 검토하고, 긴 본문 전문을 반복해서 읽지 않는다. 지난 deferred의 다음 대상을 우선한다. "
+            "previous_deferral.snapshot_changed가 참이면 이전 판단을 현재 완료로 간주하지 말고 대상 ID의 현행 내용을 확인한다. "
             "한 절차인지 독립된 주제들인지 판단하라. 개수만으로 나누지 말고 기존 입구를 재사용하라. "
+            "organization_advice가 있으면 실행 일지 누적과 허브의 본문 중복을 점검한다. "
+            "허브는 현재 탐색 지도이며 단계별 보고서가 아니다. 결론·적용 조건·출처를 유지하고 "
+            "기존 결론을 고치되 매번 진행 기록을 덧붙이지 않는다. 레포의 실행 상세는 레포 문서를 인용한다. "
+            "예산 안에 판단하지 못한 내용은 삭제하거나 완료라 하지 말고, 다음 노드 ID·절·질문을 deferred에 남긴다. "
             "같은 Scope 내부의 비고정 배치는 수행하고 변경을 보고한다. pin·보호영역·최상위 경계는 유지한다. "
             "오래 쓸 결론은 노드, 전사·레포 문서는 원료다. 원료 Markdown을 지식 노드나 허브로 승격하지 말라. "
             "외부 레포 문서는 확인한 URL로, vault 원료는 루트 기준 경로와 정확한 라운드로 인용한다. "

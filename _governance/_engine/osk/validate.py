@@ -15,7 +15,7 @@ from pathlib import Path
 from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER, EVICTIONS,
                    VALIDATORS, CASE_RE, RID_RE, ID_RE, ledger_read,
                    ledger_damage, ledger_anchor_index, resolve_one)
-from . import contract, graph, signatures, approvals, authority, secrets, evictions
+from . import contract, graph, signatures, approvals, authority, secrets, evictions, raw
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
 # 새 기록에는 두지 않으므로 필수에서 뺐다(기존 사건에는 사료로 남는다).
@@ -63,6 +63,7 @@ def run() -> dict:
 
     # 2. 배치 (Mechanism §1)
     guard("공간 배치·`_` 규칙", graph.layout_violations)
+    guard("raw 저장 경계", raw.storage_violations)
 
     # 3. 참조 위상 (헌법 8조 3항)
     guard("참조 위상", lambda: graph.topology_check(idx))

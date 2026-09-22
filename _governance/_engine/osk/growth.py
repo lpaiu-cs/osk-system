@@ -14,6 +14,7 @@ from pathlib import Path
 import signal
 import subprocess
 import shutil
+import shlex
 import sys
 import uuid
 
@@ -25,18 +26,21 @@ BATCH_SIZE = 4                 # two batches fit in one eight-source comparison
 MAX_DOMAINS = 8
 MAX_LIMIT = 20
 SCOPE_ROUNDS_PER_JOB = 3      # ordinary session cadence still uses its own 15-round cap
-_QUEUES = ("candidates", "scope_jobs", "organization_jobs")
+_QUEUES = ("candidates", "scope_jobs", "organization_jobs", "eviction_jobs")
 
 
 def _records() -> list[dict]:
     rows = core.ledger_read(LEDGER)
     errors = core.ledger_damage(rows, LEDGER)
     for row in rows:
-        if row.get("kind") not in {"plan", "review", "run"}:
+        if row.get("kind") not in {"plan", "review", "run", "eviction_review"}:
             errors.append("unknown growth record kind")
         if row.get("kind") == "review" and row.get("outcome") not in {
                 "preserved", "no_value", "deferred"}:
             errors.append("unknown growth review outcome")
+        if row.get("kind") == "eviction_review" and row.get("outcome") not in {
+                "node", "merged", "discarded", "deferred"}:
+            errors.append("unknown eviction review outcome")
     if errors:
         raise ValueError("growth ledger damaged: " + "; ".join(errors[:5]))
     return rows
@@ -233,9 +237,31 @@ def _plan(limit: int) -> dict:
             old_proof = _proof(old_key)
             if old_proof.get("target"):
                 candidate["previous_distillations"].append(old_proof)
-    from . import organization
+    from . import organization, evictions
     organization_jobs = organization.pending(limit=limit, idx=idx)
-    return {"candidates": candidates, "organization_jobs": organization_jobs, "source_count": len(sources),
+    attempts = {j["of"]: row["rid"] for row in plans for j in row.get("eviction_jobs", [])}
+    eviction_rows = evictions.records()
+    settled = {r["of"] for r in eviction_rows if r["kind"] == "settle"}
+    eviction_jobs = []
+    for r in eviction_rows:
+        if r["kind"] != "evict" or (r["rid"] not in attempts and (
+                r["rid"] in settled or evictions.age_days(r) <= evictions.N_DAYS)):
+            continue
+        job = {"key": "eviction:" + r["rid"], "of": r["rid"], "scope": r["scope"],
+               "text": r["text"], "age_days": evictions.age_days(r)}
+        state = _eviction_status(job, idx, growth_rows=rows, eviction_rows=eviction_rows)
+        if state["status"] == "complete":
+            continue
+        prior = state.get("review")
+        if prior and prior["outcome"] == "deferred":
+            job["previous_deferral"] = _deferral(prior)
+        if state.get("settlement"):
+            job["previous_settlement"] = {k: state["settlement"][k]
+                                          for k in ("rid", "outcome", "target") if k in state["settlement"]}
+        eviction_jobs.append(job)
+    eviction_jobs.sort(key=lambda j: (attempts.get(j["of"], ""), j["of"]))
+    eviction_jobs = eviction_jobs[:limit]
+    return {"candidates": candidates, "organization_jobs": organization_jobs, "eviction_jobs": eviction_jobs, "source_count": len(sources),
             "cluster_count": len(clusters), "domain_count": len(domains),
             "limit": limit, "max_sources_per_candidate": 2 * BATCH_SIZE}
 
@@ -249,6 +275,8 @@ def plan(limit: int = 3) -> dict:
 def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
     """Share the run budget across queues; recorded attempts drive fair rotation."""
     last = {key: -1 for key in _QUEUES}
+    for key in _QUEUES:
+        planned.setdefault(key, [])
     for number, row in enumerate(rows):
         if row.get("kind") == "plan":
             for key in _QUEUES:
@@ -294,14 +322,16 @@ def _reading_plan(planned: dict) -> dict:
 def prompt(planned: dict | None = None, limit: int = 3) -> str:
     """Preview; receipts require a manifest registered by run()."""
     planned = plan(limit) if planned is None else planned
-    if not planned["candidates"] and not planned.get("scope_jobs") and not planned.get("organization_jobs"):
+    if not any(planned.get(key) for key in _QUEUES):
         return "No changed Scope comparisons need review. Do not start a model."
-    cli = subprocess.list2cmdline([sys.executable, "-m", "osk.cli"])
+    argv = [sys.executable, "-m", "osk.cli"]
+    cli = (" ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+           if os.name == "nt" else shlex.join(argv))
     from . import organization
     return organization.prompt(planned.get("organization_jobs", []), inventory=False) + (
         "This is a dedicated maintenance run. First process scope_jobs, if any, using "
         "each job's original session, pending_refs and exact through snapshot. Finish its "
-        "integration review via the final review packet below; an empty shared "
+        "integration review with an immediate checkpoint; an empty shared "
         "memory or a short conversation is not a reason to omit that review. Keep unrelated "
         "source conversations distinct. All CLI examples use "
         f"rtk proxy {cli} with OSK_VAULT_ROOT={core.ROOT} and "
@@ -309,6 +339,12 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "Review the Domain candidates selected below, then finish the selected organization_jobs. "
         "Their CLI reviews prove current reference and navigation state separately. Sources newly distilled during "
         "this run may be compared on the next scheduled run; do not extend this batch.\n"
+        "For eviction_jobs, read each selected text and search current memory/nodes for what "
+        "survives. Preserve reusable facts with MCP create_node/update_node(settle=of), then "
+        "read the saved body. If already preserved, verify the existing target. Discard only "
+        "with a concrete content-based reason; uncertainty means deferred. Do not sweep the "
+        "whole eviction ledger. Checkpoint eviction:[{of,outcome:node|merged|discarded|deferred,"
+        "reason,target?}] using selected IDs only; node/merged require the actual target title.\n"
         "Scope jobs: read current scope_memory and read_raw(view=review) to select claims. "
         "Follow scope_recovery instructions when present; preserve durable entries before making room. "
         "Resume a previous_deferral at its missing evidence rather than repeating its whole read. "
@@ -355,7 +391,14 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "process exit or an ordinary write as a receipt. Do not modify source nodes merely "
         "to make the comparison pass. If no useful subset supports reusable knowledge, "
         "record no_value/deferred rather than adding false evidence.\n"
-        "After graph operations, finish with exactly one JSON object, without Markdown or "
+        "After EACH selected job, write its explicit review packet as UTF-8 JSON to a local file "
+        f"and run rtk proxy {cli} growth checkpoint --file <packet-file>. "
+        "Check ok=true before starting the next job. Use the packet below with only that job's "
+        "decision and empty arrays for the other queues. A checkpoint verifies current saved "
+        "evidence immediately, so a later timeout does not erase a completed decision. "
+        "Do not infer a review from a write or checkpoint a job you have not judged. "
+        "If shell access is unavailable, stop after this job and return the packet. "
+        "At the end finish with exactly one JSON object, without Markdown or "
         "surrounding prose: {\"osk_reviews\":{\"manifest\":\"<this manifest>\","
         "\"domain\":[{\"key\":\"<candidate key>\",\"outcome\":\"preserved|no_value|deferred\","
         "\"reason\":\"<decision, limits and omissions>\",\"target\":\"<Domain title, preserved only>\"}],"
@@ -366,11 +409,13 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "{\"text\":\"<excerpt>\"} objects; omit targets for no_value/deferred. "
         "Add organization:[{key,scope,outcome:complete|deferred,reason,after,intentional:[]}] "
         "inside osk_reviews for selected organization_jobs not already reviewed by CLI. "
+        "Add eviction:[{of,outcome:node|merged|discarded|deferred,reason,target?}] inside "
+        "osk_reviews for selected eviction_jobs; omit target unless outcome is node/merged. "
         "Use the originally selected key and a freshly read organization snapshot as after. "
         "Use only this manifest's selected keys and scope snapshots. The supervisor applies "
         "these decisions through the same receipt APIs and revalidates persisted evidence; "
-        "a declaration alone cannot prove preservation. Prefer this final packet, including "
-        "when shell policy prevents CLI review. Do not execute a command to print the packet. "
+        "a declaration alone cannot prove preservation. This final packet is a fallback for "
+        "unrecorded decisions, not a reason to postpone per-job checkpoints. Do not execute a command to print the packet. "
         "Existing CLI review remains available: "
         f"rtk proxy {cli} growth review <candidate-key> "
         "preserved|no_value|deferred --reason <decision and limits> [--target <Domain title>] "
@@ -470,7 +515,7 @@ def _final_packet(output: Path) -> dict:
 
 def _validate_packet(packet: dict, planned: dict) -> dict:
     reviews = packet.get("osk_reviews")
-    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", "domain", "scope", "organization"}:
+    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", "domain", "scope", "organization", "eviction"}:
         raise ValueError("review packet needs exactly manifest, domain and scope")
     if reviews["manifest"] != planned["manifest"]:
         raise ValueError("review packet manifest does not match this run")
@@ -523,16 +568,83 @@ def _validate_packet(packet: dict, planned: dict) -> dict:
         seen.add(entry["key"])
         if entry["outcome"] not in {"complete", "deferred"}:
             raise ValueError("invalid organization outcome")
+    allowed = {j["of"] for j in planned.get("eviction_jobs", [])}
+    entries, seen = reviews.get("eviction", []), set()
+    if not isinstance(entries, list) or len(entries) > len(allowed):
+        raise ValueError("eviction reviews exceed the selected queue")
+    for entry in entries:
+        fields = {"of", "outcome", "reason"}
+        if (not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"target"}
+                or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
+            raise ValueError("invalid eviction review fields")
+        if entry["of"] not in allowed or entry["of"] in seen:
+            raise ValueError("unselected or duplicate eviction review")
+        seen.add(entry["of"])
+        if entry["outcome"] not in {"node", "merged", "discarded", "deferred"}:
+            raise ValueError("invalid eviction outcome")
+        if entry["outcome"] in {"node", "merged"}:
+            if not isinstance(entry.get("target"), str) or not entry["target"].strip():
+                raise ValueError("preserved eviction requires a target title")
+        elif "target" in entry:
+            raise ValueError("discarded/deferred eviction has no target")
     return reviews
 
 
+def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=None) -> dict:
+    from . import evictions
+    rows = evictions.records() if eviction_rows is None else eviction_rows
+    growth_rows = _records() if growth_rows is None else growth_rows
+    original = next((r for r in rows if r["rid"] == job["of"] and r["kind"] == "evict"), None)
+    if not original or any(original[k] != job[k] for k in ("scope", "text")):
+        return {"status": "pending", "reason": "selected eviction source changed"}
+    review = core.resolve_one(growth_rows, job["of"], "of")
+    result = {"status": "pending", "review": review, "semantic_verified": False}
+    settled = [r for r in rows if r["kind"] == "settle" and r["of"] == job["of"]]
+    if not settled:
+        return result
+    last = settled[-1]
+    result["settlement"] = last
+    try:
+        if last["outcome"] != "discarded":
+            evictions.require_target(last.get("target", ""), idx or _index())
+    except ValueError as exc:
+        return {**result, "reason": str(exc)}
+    reviewed_job = next((j for r in growth_rows if review and r["kind"] == "plan"
+                         and r["rid"] == review["manifest"] for j in r.get("eviction_jobs", [])
+                         if j["of"] == job["of"]), {})
+    if (review and review["outcome"] != "deferred" and review.get("settlement") == last["rid"]
+            and all(review.get(k) == last.get(k) for k in ("outcome", "target"))
+            and all(reviewed_job.get(k) == job[k] for k in ("scope", "text"))):
+        result["status"] = "complete"
+    return result
+
+
 def _apply_final_reviews(output: Path, planned: dict) -> dict:
-    from . import integration
     try:
         reviews = _validate_packet(_final_packet(output), planned)
     except (ValueError, OSError, TypeError, RecursionError) as exc:
         return {"state": "rejected", "errors": [str(exc)]}
-    result = {"state": "applied", "domain": {}, "scope": {}, "organization": {}, "errors": []}
+    return _apply_reviews(reviews, planned)
+
+
+def checkpoint(packet: dict) -> dict:
+    """Apply explicit partial decisions now; never harvest arbitrary worker output."""
+    if not isinstance(packet, dict) or set(packet) != {"osk_reviews"}:
+        raise ValueError("checkpoint needs one osk_reviews object")
+    manifest = packet["osk_reviews"].get("manifest") if isinstance(packet["osk_reviews"], dict) else None
+    with core.mutation_lock():
+        row = next((r for r in _records() if r["kind"] == "plan" and r["rid"] == manifest), None)
+    if row is None:
+        raise ValueError("checkpoint requires a recorded growth manifest")
+    planned = {**row, "manifest": manifest}
+    reviews = _validate_packet(packet, planned)
+    result = _apply_reviews(reviews, planned)
+    return {**result, "ok": not result["errors"]}
+
+
+def _apply_reviews(reviews: dict, planned: dict) -> dict:
+    from . import integration
+    result = {"state": "applied", "domain": {}, "scope": {}, "organization": {}, "eviction": {}, "errors": []}
     for entry in reviews["domain"]:
         key = entry["key"]
         try:
@@ -567,6 +679,28 @@ def _apply_final_reviews(output: Path, planned: dict) -> dict:
             result["organization"][entry["key"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Organization {entry['key']}: {exc}")
+    from . import evictions
+    selected_evictions = {j["of"]: j for j in planned.get("eviction_jobs", [])}
+    for entry in reviews.get("eviction", []):
+        try:
+            with core.mutation_lock():
+                done = _eviction_status(selected_evictions[entry["of"]])
+                if done.get("reason"):
+                    raise ValueError(done["reason"])
+                record = {"kind": "eviction_review", "manifest": planned["manifest"], **entry}
+                if entry["outcome"] != "deferred":
+                    last = done.get("settlement")
+                    if last and any(last.get(k) != entry.get(k) for k in ("outcome", "target")):
+                        raise ValueError("eviction already has a different disposition")
+                    if not last:
+                        last = evictions._settle_locked(**entry)
+                    record["settlement"] = last["rid"]
+                previous = done.get("review") or {}
+                if any(previous.get(k) != v for k, v in record.items()):
+                    core.ledger_append(LEDGER, record)
+                result["eviction"][entry["of"]] = "recorded"
+        except (ValueError, KeyError, OSError) as exc:
+            result["errors"].append(f"Eviction {entry['of']}: {exc}")
     if result["errors"]:
         result["state"] = "incomplete"
     return result
@@ -650,7 +784,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 _select_work(planned, limit, _records())
                 planned["scope_remaining"] += planned["queued_not_selected"]["scope_jobs"]
                 planned["timeout_seconds"] = timeout
-                if not planned["candidates"] and not planned["scope_jobs"] and not planned["organization_jobs"]:
+                if not any(planned[key] for key in _QUEUES):
                     if not catchup.get("ok"):
                         return {"ok": False, "state": "capture_pending", "selected": 0,
                                 "capture": catchup}
@@ -699,7 +833,9 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                                     j["harness"], j["conversation_id"], j["through"])["status"] != "complete"
                                     for j in planned["scope_jobs"]) or any(
                                     organization.status(j, idx)["status"] != "complete"
-                                    for j in planned["organization_jobs"]))
+                                    for j in planned["organization_jobs"]) or any(
+                                    _eviction_status(j, idx)["status"] != "complete"
+                                    for j in planned["eviction_jobs"]))
             final_reviews = {"state": "not_needed", "errors": []}
             if needs_review:
                 final_reviews = (_apply_final_reviews(directory / "stdout.txt", planned)
@@ -720,18 +856,22 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     for job in planned["scope_jobs"]}
                 organization_outcomes = {job["key"]: organization.status(job, idx)
                                          for job in planned["organization_jobs"]}
+                eviction_outcomes = {job["key"]: _eviction_status(job, idx)
+                                     for job in planned["eviction_jobs"]}
                 complete = (returncode == 0 and error is None and catchup.get("ok")
                             and not final_reviews["errors"]
                             and all(receipts.values())
                             and all(s["status"] == "complete" for s in scope_outcomes.values())
-                            and all(s["status"] == "complete" for s in organization_outcomes.values()))
+                            and all(s["status"] == "complete" for s in organization_outcomes.values())
+                            and all(s["status"] == "complete" for s in eviction_outcomes.values()))
                 result = {"kind": "run", "manifest": manifest["rid"],
                           "ok": complete, "state": "complete" if complete else "incomplete",
-                          "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes), "returncode": returncode,
+                          "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes) + len(eviction_outcomes), "returncode": returncode,
                           "domain_selected": len(receipts), "scope_selected": len(scope_outcomes),
                           "error": error, "cleanup_error": cleanup_error, "outcomes": outcomes,
                           "domain_outcomes": outcomes, "scope_outcomes": scope_outcomes,
                           "organization_outcomes": organization_outcomes,
+                          "eviction_outcomes": eviction_outcomes,
                           "final_reviews": final_reviews,
                           "capture": catchup,
                           "output": core.posix_rel(directory, core.ROOT)}

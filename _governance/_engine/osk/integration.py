@@ -393,13 +393,20 @@ def _review_state_locked(s: dict, through: str) -> dict:
     last = next((r for r in reversed(s["reviews"]) if r["through"] == through), {})
     result = {"harness": s["harness"], "conversation_id": s["conversation_id"], "through": through,
               "status": "pending", "outcome": last.get("outcome")}
+    if snap and snap.get("repair_parts"):
+        parts = [_review_state_locked(s, token) for token in snap["repair_parts"]]
+        complete = all(part["status"] == "complete" for part in parts)
+        return {**result, "status": "complete" if complete else "pending",
+                "reason": None if complete else "bounded repair reviews remain pending",
+                "parts": parts, "semantic_verified": False}
     repair = s.get("repair_pending", {}).get(through)
     if repair:
         return {**result, "reason": repair["reason"], "repair_pending": True}
     if not snap or not last or last.get("outcome") == "deferred" or s["reviewed_count"] < snap["count"]:
         return result
     try:
-        _verify_raw(s["rounds"][:snap["count"]])
+        _verify_raw([r for r in s["rounds"][:snap["count"]]
+                     if not snap.get("repair_refs") or r["ref"] in snap["repair_refs"]])
         if last["outcome"] == "preserved":
             from . import distillation
             for receipt in last["receipts"]:
@@ -422,6 +429,11 @@ def _review_state_locked(s: dict, through: str) -> dict:
 
 def _register_repair(s: dict, through: str, result: dict) -> bool:
     """Keep an observed failed receipt pending until an explicit replacement ACK."""
+    if s["snapshots"].get(through, {}).get("repair_parts"):
+        changed = False
+        for token in s["snapshots"][through]["repair_parts"]:
+            changed = _register_repair(s, token, _review_state_locked(s, token)) or changed
+        return changed
     prior = next((r for r in reversed(s["reviews"])
                   if r["through"] == through and r["outcome"] != "deferred"), None)
     if (result["status"] == "complete" or not result.get("reason") or not prior
@@ -439,8 +451,15 @@ def _current_view(s: dict, path: Path) -> dict:
     # no unbounded historical integrity scan on every prompt or capture.
     with core.mutation_lock():
         latest = next((r for r in reversed(s["reviews"]) if r["outcome"] != "deferred"), None)
-        if latest and _register_repair(s, latest["through"], _review_state_locked(s, latest["through"])):
-            _save(path, s)
+        if latest:
+            token = latest["through"]
+            # A partition is still one original obligation. Check its sibling
+            # receipts, rather than only the last acknowledged chunk.
+            while parent := next((t for t, snap in s["snapshots"].items()
+                                  if token in snap.get("repair_parts", [])), None):
+                token = parent
+            if _register_repair(s, token, _review_state_locked(s, token)):
+                _save(path, s)
         return _view(s)
 
 
@@ -545,9 +564,29 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         count = min(len(s["rounds"]), s["reviewed_count"] + max_rounds)
         if s.get("repair_pending"):
             token = min(s["repair_pending"], key=lambda t: (s["snapshots"][t]["count"], t))
+            repair = s["repair_pending"][token]
+            if len(repair["refs"]) > max_rounds:
+                # Split the obligation itself, not just its displayed refs. Each
+                # part needs its own explicit ACK; the parent verifies all parts.
+                parts = []
+                for start in range(0, len(repair["refs"]), max_rounds):
+                    refs = repair["refs"][start:start + max_rounds]
+                    child = "sha256:" + hashlib.sha256(json.dumps(
+                        [token, repair["review_count"], refs], sort_keys=True).encode()).hexdigest()
+                    s["snapshots"][child] = {k: s["snapshots"][token][k]
+                                              for k in ("count", "prompt_count")}
+                    s["snapshots"][child]["repair_refs"] = refs
+                    s["repair_pending"][child] = {**repair, "refs": refs}
+                    parts.append(child)
+                s["snapshots"][token]["repair_parts"] = parts
+                del s["repair_pending"][token]
+                token = parts[0]
+                _save(p, s)
             st["through"] = token
             st["pending_refs"] = s["repair_pending"][token]["refs"]
-            st["remaining_rounds"] = len(s["rounds"]) - s["reviewed_count"]
+            st["remaining_rounds"] = (len(s["rounds"]) - s["reviewed_count"]
+                                      + sum(len(r["refs"]) for t, r in s["repair_pending"].items()
+                                            if t != token))
             st["repair"] = s["repair_pending"][token]
         elif count > s["reviewed_count"]:
             selected = {**s, "rounds": s["rounds"][:count]}

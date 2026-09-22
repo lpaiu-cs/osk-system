@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
-from osk import core, epoch  # noqa: E402
+from osk import core, epoch, raw  # noqa: E402
 from osk._portalock import lock_exclusive, unlock  # noqa: E402
 
 ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
@@ -94,6 +94,40 @@ def _apply(root: Path, fetched: tuple[str, str | None] | None = None) -> tuple[s
         mlock.close()
 
 
+def _raw_boundary(root: Path, remote: str | None = None, *, base: str | None = None) -> list[str]:
+    """Inspect changed records before commit/rebase; never repair source bytes here."""
+    def git(args):
+        result = vault_sync._git(root, args, 30, text=False)
+        if result.returncode:
+            raise RuntimeError("raw boundary Git inspection failed")
+        return result.stdout
+
+    head = vault_sync._head(root, 10)
+    if remote:
+        paths = git(["diff", "--name-only", "-z", "--diff-filter=ACMRT",
+                     base or head or "4b825dc642cb6eb9a060e54bf8d69288fbee4904", remote, "--", "= Scope"])
+    else:
+        paths = git(["ls-files", "--others", "--exclude-standard", "-z", "--", "= Scope"])
+        paths += git((["diff", "--name-only", "-z", "--diff-filter=ACMRT", head]
+                      if head else ["ls-files", "--cached", "-z"]) + ["--", "= Scope"])
+    errors = []
+    for encoded in sorted(set(paths.split(b"\0")) - {b""}):
+        path = encoded.decode("utf-8")
+        if "_raw" not in Path(path).parts or Path(path).suffix.lower() not in {".md", ".txt"}:
+            continue
+        if remote:
+            content = git(["show", f"{remote}:{path}"]).decode("utf-8")
+        else:
+            p = root / path
+            if not p.is_file():
+                continue
+            content = raw.read_exact(p)
+        error = raw.storage_error(path, content)
+        if error:
+            errors.append(f"{path}: {error}")
+    return errors
+
+
 def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[str, str | None]:
     # 동기화 대상은 main 고정이다. HEAD를 따라가면 어떤 세션이 잠깐 다른
     # 브랜치를 checkout해 둔 사이에 그 브랜치가 정본인 양 커밋·push된다.
@@ -102,6 +136,17 @@ def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[st
         return f"브랜치 고정 실패 — 동기화하지 않았다: {detail}", None
     if switched:
         print(f"sync: {detail}", file=sys.stderr)
+    try:
+        for source, ref in (("local", None), ("remote", fetched[0] if fetched else None)):
+            if source == "remote" and not ref:
+                continue
+            # Incoming work starts at the frozen fork point. HEAD may contain
+            # a local raw migration that has not reached the remote yet.
+            errors = _raw_boundary(root, ref, base=fetched[1] if ref else None)
+            if errors:
+                return f"raw-storage ({source}) — sync paused; update the writer and repair the listed records: " + "; ".join(errors[:5]), None
+    except (OSError, UnicodeError, RuntimeError) as e:
+        return f"raw-storage inspection failed — sync paused: {e}", None
     msg = f"sync: {datetime.now():%Y-%m-%d %H:%M:%S} (daemon)"
     ok, st, detail = vault_sync.commit_local(root, msg)
     if st != "ok":
@@ -118,6 +163,12 @@ def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[st
     head = vault_sync._head(root, 10)
     if not head:
         return "push 실패: 커밋 SHA를 확인할 수 없다", None
+    try:
+        errors = _raw_boundary(root, head, base=fetched[0])
+        if errors:
+            return "raw-storage (outgoing commits) — push paused: " + "; ".join(errors[:5]), None
+    except (OSError, UnicodeError, RuntimeError) as e:
+        return f"raw-storage inspection failed — push paused: {e}", None
     return "ok", head
 
 
