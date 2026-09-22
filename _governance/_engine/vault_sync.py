@@ -28,10 +28,10 @@ _GIT_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C", "GIT_TERMINAL_PROMPT": "0"
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
-def _git(vault_root, args, timeout):
+def _git(vault_root, args, timeout, *, text=True):
     return subprocess.run(
         ["git", "-C", str(vault_root), *args],
-        capture_output=True, text=True, timeout=timeout, env=_GIT_ENV,
+        capture_output=True, text=text, timeout=timeout, env=_GIT_ENV,
         creationflags=_NO_WINDOW,
     )
 
@@ -192,11 +192,12 @@ def _resolve_graph_scale(vault_root, timeout):
 
     settings = []
     for stage in (2, 3):
-        blob = _git(vault_root, ["show", f":{stage}:{path}"], timeout)
+        blob = _git(vault_root, ["show", f":{stage}:{path}"], timeout, text=False)
         if blob.returncode != 0:
             return False
         try:
-            obj = json.loads(blob.stdout, object_pairs_hook=unique_object)
+            # blob은 UTF-8이다. OS 기본 디코더·개행 변환을 피하고, 해석 실패도 원복한다.
+            obj = json.loads(blob.stdout.decode("utf-8"), object_pairs_hook=unique_object)
             if not isinstance(obj, dict):
                 return False
             scale = obj.pop("scale", None)

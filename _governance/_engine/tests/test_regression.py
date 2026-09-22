@@ -508,6 +508,12 @@ def test_sync_graph_scale():
     remote = base.replace('"scale":1', '"scale":3')
     cases = [
         ("scale", local, remote),
+        ("cp949", local.replace("all", "한글"), remote.replace("all", "한글")),
+        ("crlf", local.replace("\n", "\r\n"), remote.replace("\n", "\r\n")),
+        ("crlf-settings", local.replace("all", "local").replace("\n", "\r\n"),
+         remote.replace("\n", "\r\n")),
+        ("invalid-utf8-local", local, remote),
+        ("invalid-utf8-remote", local, remote),
         ("settings", local.replace('"all"', '"local"'), remote),
         ("json-types", local.replace("true", "false"), remote.replace("true", "0")),
         ("malformed", local.rstrip()[:-1], remote),
@@ -524,6 +530,12 @@ def test_sync_graph_scale():
     for name, left, right in cases:
         temp = Path(tempfile.mkdtemp(prefix="osk-graph-sync-"))
         repo, bare = temp / "기기 repo", temp / "origin.git"
+        left_bytes = left.encode("utf-8") if left is not None else None
+        right_bytes = right.encode("utf-8")
+        if name == "invalid-utf8-local":
+            left_bytes = left_bytes.replace(b"all", b"\xff")
+        if name == "invalid-utf8-remote":
+            right_bytes = right_bytes.replace(b"all", b"\xff")
 
         def git(*args, root=repo):
             r = vault_sync._git(root, list(args), 30)
@@ -547,7 +559,7 @@ def test_sync_graph_scale():
             graph_file = repo / path
             graph_file.parent.mkdir()
             if name != "add-add":
-                graph_file.write_text(base, encoding="utf-8")
+                graph_file.write_bytes(base.encode("utf-8"))
             note = repo / "충돌 노트.md"
             note.write_text("base\n", encoding="utf-8")
             commit("base")
@@ -556,7 +568,7 @@ def test_sync_graph_scale():
             if left is None:
                 graph_file.unlink()
             else:
-                graph_file.write_text(left, encoding="utf-8")
+                graph_file.write_bytes(left_bytes)
             (repo / "local.md").write_text("local note\n", encoding="utf-8")
             if name == "mixed-note":
                 note.write_text("local\n", encoding="utf-8")
@@ -571,7 +583,7 @@ def test_sync_graph_scale():
 
             git("checkout", "-q", "remote-main")
             graph_file.parent.mkdir(exist_ok=True)
-            graph_file.write_text(right, encoding="utf-8")
+            graph_file.write_bytes(right_bytes)
             (repo / "remote.md").write_text("remote note\n", encoding="utf-8")
             if name in ("mixed-note", "later-note"):
                 note.write_text("remote\n", encoding="utf-8")
@@ -581,32 +593,41 @@ def test_sync_graph_scale():
             git("checkout", "-q", "main")
 
             original_git = vault_sync._git
+            blob_modes = []
 
-            def fail_stage(root, args, timeout):
+            def git_faults(root, args, timeout, **kwargs):
                 if name == "stage-error" and args == ["add", "--", path]:
                     return subprocess.CompletedProcess(args, 1, "", "injected stage failure")
-                return original_git(root, args, timeout)
+                if name == "cp949" and args[0] == "show":
+                    blob_modes.append(kwargs.get("text", True))
+                    # blob 읽기의 부모 Python 기본 디코더만 Windows CP949로 모사한다.
+                    with mock.patch("subprocess._text_encoding", return_value="cp949"):
+                        return original_git(root, args, timeout, **kwargs)
+                return original_git(root, args, timeout, **kwargs)
 
             log = io.StringIO()
-            with mock.patch.object(vault_sync, "_git", side_effect=fail_stage), \
+            with mock.patch.object(vault_sync, "_git", side_effect=git_faults), \
                     contextlib.redirect_stderr(log):
                 status = sync_daemon.once(repo)
             check(f"graph {name}: 진행 작업·미병합 index가 남지 않는다",
                   vault_sync._in_progress(repo, 10) is None)
-            if name == "scale":
-                check("graph scale: 전체 동기화 성공", status == "ok", status)
-                check("graph scale: 로컬 원문을 그대로 보존",
-                      graph_file.read_bytes() == left.encode("utf-8"))
-                check("graph scale: 양쪽 노트와 후속 커밋을 보존",
+            if name == "cp949":
+                check("graph cp949: 두 blob 모두 로케일 디코더를 거치지 않는다",
+                      blob_modes == [False, False], blob_modes)
+            if name in ("scale", "cp949", "crlf"):
+                check(f"graph {name}: 전체 동기화 성공", status == "ok", status)
+                check(f"graph {name}: 로컬 원문을 그대로 보존",
+                      graph_file.read_bytes() == left_bytes)
+                check(f"graph {name}: 양쪽 노트와 후속 커밋을 보존",
                       all((repo / filename).is_file()
                           and (repo / filename).read_text() == body
                           for filename, body in (("local.md", "local note\n"),
                                                  ("remote.md", "remote note\n"),
                                                  ("later.md", "later local note\n"))))
-                check("graph scale: 원격까지 전달",
+                check(f"graph {name}: 원격까지 전달",
                       git("rev-parse", "HEAD") == git("rev-parse", "refs/heads/main", root=bare))
-                check("graph scale: 자동 해결을 로그로 알린다", path in log.getvalue())
-                check("graph scale: 다음 주기도 정상", sync_daemon.once(repo) == "ok")
+                check(f"graph {name}: 자동 해결을 로그로 알린다", path in log.getvalue())
+                check(f"graph {name}: 다음 주기도 정상", sync_daemon.once(repo) == "ok")
             else:
                 check(f"graph {name}: 수동 충돌로 보고", "pull 충돌" in status, status)
                 expected_path = "충돌 노트.md" if name == "later-note" else path
@@ -615,7 +636,7 @@ def test_sync_graph_scale():
                 check(f"graph {name}: 앞선 자동 해결까지 HEAD·index 전체 원복",
                       before == (git("rev-parse", "HEAD"), git("ls-files", "--stage")))
                 check(f"graph {name}: 로컬 파일 원문 보존",
-                      graph_file.read_bytes() == left.encode("utf-8") if left is not None
+                      graph_file.read_bytes() == left_bytes if left_bytes is not None
                       else not graph_file.exists())
                 check(f"graph {name}: 원격 변경 금지",
                       git("rev-parse", "refs/heads/main", root=bare) == remote_head)
