@@ -30,6 +30,23 @@ def rejected(fn):
 
 
 class OrganizationTests(unittest.TestCase):
+    def test_large_body_advice_is_non_destructive_and_present_in_inventory(self):
+        self.case("""
+            text = 'Durable qualified conclusion. ' * 600
+            a = node('Large', text)
+            assert a['organization_advice']['read_view'] == 'outline', a
+            p = core.ROOT / a['path']
+            assert contract.parse(p).body.strip() == text.strip()
+            current = organization.snapshot('W1')
+            item = next(n for n in current['nodes'] if n['name'] == 'Large')
+            assert item['body_chars'] > 12000 and item['organization_advice']
+            assert 'body' not in item
+            changed = write.update_node('Large', body='Qualified conclusion with its evidence retained.',
+                                        expect_hash=core.sha256_file(p))
+            assert 'organization_advice' not in changed
+            assert '최대 3개' in organization.prompt([current])
+        """)
+
     def case(self, code):
         with tempfile.TemporaryDirectory(prefix="osk-organization-test-") as d:
             env=dict(os.environ, OSK_VAULT_ROOT=d, PYTHONPATH=str(ENGINE), TEMP=d, TMP=d)
@@ -268,4 +285,3 @@ class OrganizationTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
-

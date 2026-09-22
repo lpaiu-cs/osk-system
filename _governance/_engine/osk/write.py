@@ -654,6 +654,21 @@ def _dangling_of(path: Path, meta: dict, body: str, idx) -> list[str]:
                    if r["resolution"] == "dangling"})
 
 
+def size_feedback(path, body: str) -> dict:
+    """Reading-cost hint, not a storage cap or permission to discard knowledge."""
+    hub = graph.is_hub(path)
+    # ponytail: fixed triage thresholds; calibrate from review costs if they become noisy.
+    if len(body) <= (6000 if hub else 12000):
+        return {}
+    return {"organization_advice": {
+        "body_chars": len(body), "hub": hub, "read_view": "outline",
+        "instruction": "길이는 삭제·강제 분화의 근거가 아니다. 목차와 필요한 절부터 읽고, "
+                       "현재 결론·적용 조건·근거를 한 곳에 유지하라. 단계별 실행 일지를 계속 덧붙이지 말고 "
+                       "레포의 실행 상세는 레포 기록을 인용하라. 허브에는 탐색 경로를 남기고 "
+                       "독립적으로 재사용되는 주장만 기존 또는 별도 노드로 증류하라. "
+                       "정정 전후의 판단과 출처는 보존하며 미검토 부분은 보류한다."}}
+
+
 def _reference_feedback(path, meta, body, idx, previous=None) -> dict:
     node = contract.Node(path=path, meta=meta, body=body)
     refs = graph.reference_review(node, idx, previous)
@@ -666,7 +681,7 @@ def _reference_feedback(path, meta, body, idx, previous=None) -> dict:
                            "vault 원료는 루트 기준 경로와 raw 라운드, 외부 레포 문서는 확인한 URL을 쓴다. "
                            "원료는 지식 노드나 허브가 아니다. 빈 가짜 노드를 만들지 말라. "
                            "organization plan --scope <scope>가 다음 검토로 이어받는다."}
-    return out
+    return {**out, **size_feedback(path, body)}
 
 
 def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:

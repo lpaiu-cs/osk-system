@@ -117,7 +117,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `raw migrate` | 구 Markdown 원료의 숨김 `.txt` 이관 계획; `--apply`로 적용 |
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
-| `growth plan` / `growth prompt` / `growth run` / `growth review` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과 |
+| `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `organization plan` / `organization review` | 변경 Scope의 참조·허브·분화 검토와 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
@@ -420,15 +420,19 @@ raw 라운드 참조(선정 시 해시가 있으면 `{ref,hash}`), `hub`는 기�
 미포착 꼬리를 따라잡고, 검토할 원문 snapshot과 비교할 Scope 노드 집합·해시를 고정한 뒤
 제한된 외부 에이전트 실행에 그 입력을 준다. 짧게 끝난 대화도 이 전용 실행에서 Scope
 증류 기회를 갖는다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 Domain 후보가 된다.
-기본 `--limit 3`은 Scope 통합·Domain 비교·참조 정돈을 **합쳐 최대 3건**이다.
+기본 `--limit 3`은 Scope 통합·Domain 비교·참조 정돈·14일 초과 퇴출을 **합쳐 최대 3건**이다.
 각 작업군은 기록된 시도 순서에 따라 돌아가며 기회를 받는다. Scope 통합은 새 원문
 최대 3라운드씩, Domain 비교는 후보당 최대 8개 노드다. 선택하지 않은 대기와 뒤의
-라운드는 완료하지 않는다. 기존 저장 증거의 복구는 원래 snapshot을 유지한다.
+라운드는 완료하지 않는다. 복구도 최대 3라운드씩 별도 확인하며 모든 묶음의 증거가
+유효해야 원래 snapshot이 완료된다. 원대화의 새 완료 커서는 되감지 않는다.
 기존 Scope와 새 Scope의 조합도 비교하며,
 같은 입력 집합의 완료된 검토는 반복하지 않는다. 프로세스 종료코드 0만으로 완료하지 않고
 실제 Domain 본문·근거·허브와 입력 해시를 확인해야 한다.
 
-전용 에이전트는 마지막 응답에 prompt가 지정한 `osk_reviews` JSON만 반환한다.
+전용 에이전트는 작업 한 건을 판단할 때마다 prompt가 지정한 `osk_reviews` JSON을
+UTF-8 파일에 쓰고 `growth checkpoint --file <파일>`로 즉시 기록한다. 완료한 작업과
+빈 다른 작업군만 담고 `ok=true`를 확인한 뒤 다음 작업을 시작한다. 뒤 작업의 시간
+초과는 앞서 확인된 개별 기록을 지우지 않는다. 마지막 응답에도 같은 JSON을 반환한다.
 실행기는 성공한 최종 응답에서 이 결정을 읽어 기존 `integration review`·`growth review`
 검증을 적용한다. 셸 정책 때문에 에이전트의 검토 CLI 실행이 막혀도 이 경로로 등록한다.
 도구 출력 속 JSON이나 다른 manifest·선정하지 않은 대화의 결정은 받아들이지 않으며,
