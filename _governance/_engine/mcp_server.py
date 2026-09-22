@@ -71,16 +71,16 @@ def _vault_fingerprint() -> tuple[tuple[str, str], bool]:
     errors = []
     entries, racy = graph.index_signature(errors)
     h = hashlib.sha256()
-    for rel, mtime_ns, size in entries:
-        h.update(f"{rel}|{mtime_ns}|{size}\n".encode())
+    for rel, mtime_ns, size, kind, target in entries:
+        h.update(f"{rel}|{mtime_ns}|{size}|{kind}|{target}\n".encode())
     full = h.hexdigest()
     if _fingerprint is not None and full == _fingerprint[0]:
         node_key = _fingerprint[1]
     else:
         nodes = hashlib.sha256()
-        for rel, mtime_ns, size in entries:
-            if graph.is_node_home(graph._space_of_parts(tuple(rel.split("/")))):
-                nodes.update(f"{rel}|{mtime_ns}|{size}\n".encode())
+        for rel, mtime_ns, size, kind, target in entries:
+            if graph.is_node_home(kind):
+                nodes.update(f"{rel}|{mtime_ns}|{size}|{kind}|{target}\n".encode())
         node_key = nodes.hexdigest()
     # Evidence still invalidates the name map. Only unchanged node contracts
     # and their BM25 can survive that refresh; uncertain scans reuse neither.

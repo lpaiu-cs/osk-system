@@ -291,8 +291,8 @@ def iter_nodes(errors: list | None = None):
 
 
 def index_signature(errors: list | None = None):
-    """`Index`가 읽는 것의 (상대경로, mtime_ns, 크기)와, 그중 채취 시각에 너무
-    가까워 믿을 수 없는 항목이 있었는가.
+    """`Index`가 읽는 것의 (상대경로, mtime_ns, 크기, 소속, 링크 목적지)와,
+    그중 채취 시각에 너무 가까워 믿을 수 없는 항목이 있었는가.
 
     범위가 색인과 **같아야** 한다. 좁으면 그 바깥의 변경이 캐시를 무효화하지
     못하고(구판의 지문은 노드만 봐서 `_raw`·대장의 변경을 놓쳤다), 넓으면
@@ -314,14 +314,18 @@ def index_signature(errors: list | None = None):
         if not root.exists():
             continue
         for e, parts in _scan(root, (base,), errors):
-            k = _space_of_parts(parts)
+            reparse = _is_reparse(e)
+            p = Path(e.path) if reparse else None
+            k = space_of(p) if reparse else _space_of_parts(parts)
             if is_node_home(k):
-                if not _is_md(e.name):
+                if base == "_sources" or not _is_md(e.name):
                     continue
             elif k[0] not in ("raw", "sources", "ledger"):
                 continue
             try:
                 st = e.stat()
+                # Equal metadata does not mean equal contents after retargeting.
+                target = str(p.resolve()) if reparse else ""
             except OSError:
                 continue   # 열거와 stat 사이의 삭제 — 다음 호출의 지문이 다르다
             # 창은 **양쪽**으로 닫는다. 아래만 보면 mtime이 미래인 파일 하나가
@@ -331,7 +335,7 @@ def index_signature(errors: list | None = None):
             # 쓰기와 구별되므로 의심할 이유가 없다.
             if lo <= st.st_mtime_ns <= hi:
                 racy = True
-            out.append(("/".join(parts), st.st_mtime_ns, st.st_size))
+            out.append(("/".join(parts), st.st_mtime_ns, st.st_size, k, target))
     out.sort()
     return out, racy
 
