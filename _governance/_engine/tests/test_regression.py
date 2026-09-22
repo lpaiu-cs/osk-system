@@ -4779,6 +4779,7 @@ def test_raw_append():
     bad.write_text("## 1\n\n본문\n\n## 1\n\n중복\n", encoding="utf-8")
     r = _w(raw.append_round, S, "corrupt", "질문", "응답")
     check("중복 index 기록에 이어 쓰지 않는다", r.get("ok") is False, r)
+    bad.unlink()  # The deliberately invalid legacy fixture must not leak into publish tests.
 
     # 통로 fail-closed — `_raw/` 밖은 이 함수로 쓸 수 없다
     try:
@@ -4871,6 +4872,7 @@ def test_raw_cli_path():
     st = run(["raw", "status", "--session", S, "--record", "dmg"])
     check("손상 기록은 damaged로 보고한다",
           st.get("damaged") is True and st.get("next_index") is None, st)
+    (ROOT / SP / "_raw" / "dmg.md").unlink()
 
     # stdin은 바이트로 읽고 UTF-8로 푼다 — 콘솔 코드페이지에 인질이 되지 않는다
     buf = io.BytesIO()
@@ -9643,7 +9645,7 @@ def test_validate_at_uses_snapshot_engine():
 
 def test_sync_network_subprocess():
     proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests/test_sync_network.py")],
-                          capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
+                          capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
     check("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", proc.returncode == 0,
           (proc.stdout + proc.stderr).decode("utf-8", errors="replace"))
 

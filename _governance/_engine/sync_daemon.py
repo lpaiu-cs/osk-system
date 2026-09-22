@@ -113,7 +113,7 @@ def _raw_boundary(root: Path, remote: str | None = None, *, base: str | None = N
     errors = []
     for encoded in sorted(set(paths.split(b"\0")) - {b""}):
         path = encoded.decode("utf-8")
-        if "_raw" not in Path(path).parts:
+        if "_raw" not in Path(path).parts or Path(path).suffix.lower() not in {".md", ".txt"}:
             continue
         if remote:
             content = git(["show", f"{remote}:{path}"]).decode("utf-8")

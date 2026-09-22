@@ -262,11 +262,14 @@ def run():
         good = peer / hidden
         good.parent.mkdir(parents=True)
         good.write_text('## 1\n\n<!-- osk-capture: dialogue-v1 "turn-1" -->\n\nvisible dialogue\n')
+        attachment = peer / '= Scope/W1/_raw/.records/attachment.bin'
+        attachment.write_bytes(b'\x89\xff\x00')
         git('add', '-A', at=peer)
         git('commit', '-qm', 'repair storage', at=peer)
         git('push', '-q', at=peer)
         assert sync.once(root) == 'ok'
         assert (root / hidden).read_bytes() == good.read_bytes()
+        assert (root / attachment.relative_to(peer)).read_bytes() == attachment.read_bytes()
         (root / legacy).write_text('new local legacy capture')
         before = git('rev-parse', 'HEAD'), git('rev-parse', 'main', at=bare)
         assert 'raw-storage (local)' in sync.once(root)
