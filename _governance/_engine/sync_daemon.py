@@ -98,6 +98,8 @@ def _once_locked(root: Path) -> str:
         return f"pull 충돌 — 수동 개입 필요: {detail}"
     if st != "ok":
         return f"pull 실패: {st} {detail}"
+    if detail:
+        print(f"sync: {detail}", file=sys.stderr)
     ok, st, detail = vault_sync.commit_push(root, msg)
     if st == "rejected":
         # commit_push 계약대로 호출부가 pull-rebase 후 한 번 재시도한다.
@@ -105,6 +107,8 @@ def _once_locked(root: Path) -> str:
         changed, st2, d2 = vault_sync.pull(root)
         if st2 != "ok":
             return f"push 거부 후 pull 실패: {st2} {d2}"
+        if d2:
+            print(f"sync: {d2}", file=sys.stderr)
         ok, st, detail = vault_sync.commit_push(root, msg)
     if st != "ok":
         return f"push 실패: {st} {detail}"

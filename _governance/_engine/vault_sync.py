@@ -1,8 +1,8 @@
 """_engine/vault_sync.py — 데몬이 구동하는 git 동기화 헬퍼(이벤트 구동).
 
 git은 서브프로세스 + 하드 타임아웃으로 격리하고, 요청 서빙 경로를 절대 블록하지 않게
-호출부(sync_daemon)에서 스케줄한다. 충돌은 자동으로 해결하지 않고(rebase --abort) 상태로
-표면화한다 — 사용자 데이터라 파괴적 자동 조치 금지.
+호출부(sync_daemon)에서 스케줄한다. Obsidian 그래프의 배율만 다른 충돌은 로컬 값을
+보존한다. 그 밖의 충돌은 원복(rebase --abort)·보고한다 — 사용자 데이터 임의 선택 금지.
 
 동기화 대상은 `SYNC_BRANCH`(=main) **고정**이다. 원격 연산은 전부 `origin main`을
 명시하며, HEAD가 다른 곳에 있으면 `ensure_branch`가 안전할 때만 되돌린다.
@@ -14,10 +14,13 @@ git 환경은 `LC_ALL=C`(영어 메시지 고정 → 출력 분류 안정화) + 
 각 함수는 (ok_or_changed: bool, status: str, detail: str)를 반환한다.
 status ∈ {"ok","conflict","rejected","error"}.
 """
+import json
+import math
 import os
 import subprocess
 
-_GIT_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C", "GIT_TERMINAL_PROMPT": "0"}
+_GIT_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C", "GIT_TERMINAL_PROMPT": "0",
+            "GIT_EDITOR": "true"}  # 자동 해결 뒤 rebase --continue도 비대화식이다.
 
 # CREATE_NO_WINDOW: 데몬이 pythonw(콘솔 없음)로 돌 때, 콘솔 서브시스템인 git.exe를 spawn하면
 # Windows가 매번 새 콘솔 창을 할당한다. sync 1회가 git을 여러 번 호출하므로 검은 콘솔이
@@ -25,10 +28,10 @@ _GIT_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C", "GIT_TERMINAL_PROMPT": "0"
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
-def _git(vault_root, args, timeout):
+def _git(vault_root, args, timeout, *, text=True):
     return subprocess.run(
         ["git", "-C", str(vault_root), *args],
-        capture_output=True, text=True, timeout=timeout, env=_GIT_ENV,
+        capture_output=True, text=text, timeout=timeout, env=_GIT_ENV,
         creationflags=_NO_WINDOW,
     )
 
@@ -162,9 +165,60 @@ def commit_local(vault_root, message, timeout=60):
         return (False, "error", repr(e))
 
 
+def _resolve_graph_scale(vault_root, timeout):
+    """유일한 충돌이 graph.json이고 양쪽 설정이 scale 외에는 같을 때만 해결한다.
+
+    rebase의 stage 3(theirs)가 재적용 중인 **로컬 커밋**이다. JSON을 재작성하지
+    않고 그 blob 그대로 고른다. 검색식·색상 등 다른 설정, 추가/삭제·형식 변경,
+    노트와의 혼합 충돌은 여기서 결정하지 않는다.
+    """
+    path = ".obsidian/graph.json"
+    r = _git(vault_root, ["ls-files", "--unmerged", "-z"], timeout)
+    if r.returncode != 0:
+        return False
+    entries = [entry.split("\t", 1) for entry in r.stdout.split("\0") if entry]
+    if len(entries) != 3 or any(len(e) != 2 or e[1] != path for e in entries):
+        return False
+    stages = [entry[0].split() for entry in entries]
+    if (any(len(s) != 3 or s[0] != "100644" for s in stages)
+            or {s[2] for s in stages} != {"1", "2", "3"}):
+        return False
+
+    def unique_object(pairs):
+        obj = dict(pairs)
+        if len(obj) != len(pairs):
+            raise ValueError("중복 JSON 키")
+        return obj
+
+    settings = []
+    for stage in (2, 3):
+        blob = _git(vault_root, ["show", f":{stage}:{path}"], timeout, text=False)
+        if blob.returncode != 0:
+            return False
+        try:
+            # blob은 UTF-8이다. OS 기본 디코더·개행 변환을 피하고, 해석 실패도 원복한다.
+            obj = json.loads(blob.stdout.decode("utf-8"), object_pairs_hook=unique_object)
+            if not isinstance(obj, dict):
+                return False
+            scale = obj.pop("scale", None)
+            if type(scale) not in (int, float) or not math.isfinite(scale) or scale <= 0:
+                return False
+            # JSON의 bool과 number도 구별한다(True == 1에 기대지 않는다).
+            settings.append(json.dumps(obj, sort_keys=True, allow_nan=False))
+        except (ValueError, TypeError, OverflowError):
+            return False
+    if settings[0] != settings[1]:
+        return False
+    for args in (["checkout", "--theirs", "--", path], ["add", "--", path]):
+        if _git(vault_root, args, timeout).returncode != 0:
+            return False
+    return True
+
+
 def pull(vault_root, timeout=60):
     """fetch + rebase. 호출 전 로컬 변경은 commit_local로 커밋돼 있어야 한다(autostash 미사용).
-    HEAD가 바뀌면 changed=True. 충돌이면 rebase --abort로 원복하고 ("conflict")로 표면화한다.
+    HEAD가 바뀌면 changed=True. 배율만의 충돌은 로컬 값을 보존해 계속하고,
+    나머지 충돌은 rebase --abort로 원복하고 ("conflict")로 표면화한다.
     abort가 실패하면 저장소가 충돌 상태로 남으므로 ("error")로 올린다 — 다음 주기가
     충돌 마커를 커밋하지 않게 하기 위해서다."""
     try:
@@ -175,6 +229,14 @@ def pull(vault_root, timeout=60):
         # 원격·브랜치를 **명시**한다. 인자 없는 pull은 현재 브랜치의 upstream을
         # 따르므로, upstream이 잘못 걸려 있으면 엉뚱한 브랜치를 정본에 섞는다.
         r = _git(vault_root, ["pull", "--rebase", "origin", SYNC_BRANCH], timeout)
+        resolved = set()
+        while r.returncode != 0 and _in_rebase(vault_root, timeout):
+            pick = _git(vault_root, ["rev-parse", "--verify", "REBASE_HEAD"], timeout)
+            if (pick.returncode != 0 or pick.stdout in resolved
+                    or not _resolve_graph_scale(vault_root, timeout)):
+                break
+            resolved.add(pick.stdout)  # 같은 커밋에서 멈추면 다시 고르지 않는다.
+            r = _git(vault_root, ["rebase", "--continue"], timeout)
         if r.returncode != 0:
             out = (r.stdout + r.stderr)
             low = out.lower()
@@ -185,10 +247,15 @@ def pull(vault_root, timeout=60):
                     return (False, "error",
                             ("rebase --abort 실패 — 저장소가 충돌 상태다(수동 개입 필요): "
                              + (ab.stdout + ab.stderr).strip())[-600:])
-                return (False, "conflict", out.strip()[-600:])
+                # 뒤쪽 hint가 파일명을 밀어내지 않게 실제 충돌 진단을 따로 남긴다.
+                conflicts = "\n".join(line for line in out.splitlines()
+                                      if line.startswith("CONFLICT "))
+                return (False, "conflict", (conflicts + "\n" + out.strip()[-600:]).strip())
             return (False, "error", out.strip()[-600:])
         after = _head(vault_root, timeout)
-        return (before != after, "ok", "")
+        detail = (f".obsidian/graph.json 배율 충돌 {len(resolved)}개 자동 해결 — 로컬 값 보존"
+                  if resolved else "")
+        return (before != after, "ok", detail)
     except subprocess.TimeoutExpired:
         return (False, "error", f"git pull timeout ({timeout}s)")
     except Exception as e:  # noqa: BLE001
