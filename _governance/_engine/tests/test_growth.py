@@ -58,6 +58,28 @@ def packet_worker(change='', wrapper='plain', code=0):
 
 
 class GrowthTests(unittest.TestCase):
+    def test_cli_checkpoint_survives_later_worker_failure_without_closing_other_jobs(self):
+        self.check_case("""
+            node('A', 'W1')
+            node('B', 'W2')
+            change = "from pathlib import Path; import subprocess; q['osk_reviews']['domain']=q['osk_reviews']['domain'][:1]; q['osk_reviews']['scope']=[]; checkpoint=core.ROOT/'checkpoint.json'; checkpoint.write_text(json.dumps(q),encoding='utf-8'); done=subprocess.run([sys.executable,'-B','-m','osk.cli','growth','checkpoint','--file',str(checkpoint)],capture_output=True,text=True); assert done.returncode==0 and json.loads(done.stdout)['ok'],done; sys.exit(7)"
+            result = growth.run([sys.executable, '-B', '-c', packet_worker(change)], limit=3)
+            assert not result['ok'] and result['returncode'] == 7, result
+            assert list(result['domain_outcomes'].values()).count('no_value') == 1, result
+            assert 'pending' in result['domain_outcomes'].values(), result
+            rows = [r for r in core.ledger_read(growth.LEDGER) if r['kind'] == 'review']
+            assert len(rows) == 1
+            packet = json.loads((core.ROOT/'checkpoint.json').read_text(encoding='utf-8'))
+            assert growth.checkpoint(packet)['ok']  # Retry is idempotent.
+            assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == 1
+            packet['osk_reviews']['domain'][0]['key'] = 'unselected'
+            try:
+                growth.checkpoint(packet)
+                raise AssertionError('unselected checkpoint accepted')
+            except ValueError:
+                pass
+        """)
+
     def check_case(self, source):
         with tempfile.TemporaryDirectory(prefix="osk-growth-test-") as directory:
             env = dict(os.environ, OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),
@@ -523,7 +545,7 @@ class GrowthTests(unittest.TestCase):
                     job['last_review'] = {'through':job['through'], 'outcome':'deferred', 'reason':'Search CACHE_LIMIT retest first.'}
                     visible = growth._reading_plan(plan)['scope_jobs'][0]
                     assert visible['previous_deferral']['reason'] == job['last_review']['reason']
-            assert seen == list(growth._QUEUES), seen
+            assert seen == ['candidates', 'scope_jobs', 'organization_jobs'], seen
             assert integration.status('claude','bounded')['pending_refs'] == original['pending_refs']
             result = growth.run([sys.executable,'-c',packet_worker()],limit=3)
             assert result['ok'] and result['selected'] == 3, result
@@ -565,6 +587,42 @@ class GrowthTests(unittest.TestCase):
                 assert organization._load()['reviews'][selected['scope']]['outcome'] == 'deferred'
             assert visited == ['W1','W2','W3','W1','W2','W3','W1','W2'], visited
             assert integration.status('claude','waiting')['reviewed_rounds'] == 0
+        """)
+
+    def test_aged_evictions_get_bounded_slots_and_explicit_decisions(self):
+        self.check_case("""
+            from unittest.mock import patch
+            from osk import evictions
+            node('A')
+            items = [evictions.record_evict('W1', 'session', 'Temporary observation '+str(i)) for i in range(3)]
+            assert not growth.plan()['eviction_jobs']  # Young entries retain the session-hook path.
+            with patch.object(evictions, 'age_days', return_value=17):
+                preview = growth.plan(1)
+                assert preview['eviction_jobs'][0]['of'] == items[0]['rid']
+                worker = [sys.executable, '-B', '-c', 'import sys; sys.stdin.read()']
+                selected = []
+                for _ in range(3):
+                    result = growth.run(worker, limit=1)
+                    assert result['selected'] == 1 and not result['ok'], result
+                    manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+                    selected.extend(manifest['eviction_jobs'])
+                assert len(selected) == 1 and selected[0]['of'] == items[0]['rid'], selected
+                assert growth.plan(1)['eviction_jobs'][0]['of'] == items[1]['rid']  # Unattempted work progresses.
+                assert len(evictions.unsettled()) == 3
+                packet = {'osk_reviews': {'manifest':manifest['rid'], 'domain':[], 'scope':[],
+                          'eviction':[{'of':items[0]['rid'],'outcome':'discarded',
+                                       'reason':'Only the completed fixture job counter; no durable claim.'}]}}
+                assert growth.checkpoint(packet)['ok']
+                assert len(evictions.unsettled()) == 2
+                assert growth._eviction_status(selected[0])['status'] == 'complete'
+                assert growth.checkpoint(packet)['ok']
+                assert len([r for r in evictions.records() if r['kind']=='settle']) == 1
+                packet['osk_reviews']['eviction'][0]['of'] = items[1]['rid']
+                try:
+                    growth.checkpoint(packet)
+                    raise AssertionError('unselected eviction accepted')
+                except ValueError:
+                    pass
         """)
 
 

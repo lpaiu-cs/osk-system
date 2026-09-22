@@ -160,11 +160,13 @@ def require_target(target: str, idx) -> None:
                          f"처분은 노드가 선 뒤에 적는다. 제목은 파일 이름 그대로, 경로 없이")
 
 
-def _record_settle(of: str, outcome: str, target: str | None) -> dict:
+def _record_settle(of: str, outcome: str, target: str | None, reason: str | None = None) -> dict:
     """변경 잠금·대상 검증을 끝낸 호출부 전용. 대장 잠금 안에서 원본을 재확인."""
     rec = {"kind": "settle", "of": of, "outcome": outcome}
     if target:
         rec["target"] = target
+    if reason:
+        rec["reason"] = reason
     return ledger_append(EVICTIONS, rec, expect=lambda recs: _missing_evict(recs, of))
 
 
@@ -188,12 +190,19 @@ def _after_node_write(result: dict, of: str | None, outcome: str, target: str) -
     return result
 
 
-def settle(of: str, outcome: str, target: str | None = None) -> dict:
+def settle(of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
+    with mutation_lock():
+        return _settle_locked(of, outcome, target, reason)
+
+
+def _settle_locked(of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
     """처분 기록. `outcome`은 node·merged·discarded, `target`은 노드 제목이며
     폐기에는 없다. 노드가 서 있지 않으면 적지 않는다 — 처분은 한 일의 기록이지
     하겠다는 약속이 아니다. `of`는 잠금 안에서 다시 확인한다."""
     if outcome not in OUTCOMES:
         raise ValueError(f"outcome은 {'·'.join(OUTCOMES)} 중 하나다 — `{outcome}`은 아니다")
+    if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+        raise ValueError("settlement reason must be nonempty text")
     target = (target or "").strip() or None
     if outcome == "discarded" and target:
         raise ValueError("폐기(discarded)에는 target이 없다 — 어디로도 가지 않았다")
@@ -211,10 +220,9 @@ def settle(of: str, outcome: str, target: str | None = None) -> dict:
     # 비모호 노드**로 한다(리뷰 P2). 파손 파일 하나가 그 이름의 임자가 되면
     # 증류된 적 없는 조각이 정돈 큐에서 영구히 빠진다. 잠금 순서는 다른
     # 모듈과 같다 — 변경 잠금 → 대장 잠금.
-    with mutation_lock():
-        if target:
-            require_target(target, graph.Index())
-        return _record_settle(of, outcome, target)
+    if target:
+        require_target(target, graph.Index())
+    return _record_settle(of, outcome, target, reason)
 
 
 def schema_errors(recs: list[dict]) -> list[str]:
