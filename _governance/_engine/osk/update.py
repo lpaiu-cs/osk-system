@@ -372,11 +372,20 @@ def managed_paths(recs: list[dict]) -> dict[str, str]:
 def current_version(recs: list[dict] | None = None) -> str | None:
     """현재 판본 — `done` 기록의 **인과 극대**(물리 마지막 행이 아니다).
     update.jsonl은 union 병합되는 대장이므로 파일 순서는 정본이 아니다
-    (core 판정 계약 · sibling `last_applied_hash`와 같은 규율). 극대가 여럿
-    (다기기 동시 갱신)이면 미확정으로 None."""
+    (core 판정 계약 · sibling `last_applied_hash`와 같은 규율). 병렬 극대도
+    version과 릴리스 증빙 해시(attest)가 모두 같으면 같은 판본이다. 증빙 없는
+    구판 기록은 유일 극대일 때만 읽고, 동치를 증명할 수 없는 분기는 None."""
     recs = ledger_read(UPDATE_JOURNAL) if recs is None else recs
     maxima = causal_maxima(recs, "done", field="kind")
-    return maxima[0].get("version") if len(maxima) == 1 else None
+    if len(maxima) <= 1:
+        return maxima[0].get("version") if maxima else None
+    version, attest = maxima[0].get("version"), maxima[0].get("attest")
+    if (isinstance(version, str) and version and isinstance(attest, str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", attest)
+            and all((r.get("version"), r.get("attest")) == (version, attest)
+                    for r in maxima)):
+        return version
+    return None
 
 
 def has_history(recs: list[dict] | None = None) -> bool:

@@ -32,13 +32,13 @@ DELEGATED = {"update": "정본 릴리스로 갱신 (osk.update로 위임)",
              "release": "[정본 전용] 정식 릴리스 선언 (osk.release로 위임)"}
 
 
-def _print_changeset(region: str) -> None:
+def _print_changeset(region: str, *, record: dict | None = None,
+                     expect_work: str | None = None) -> None:
     """헌법 10조 2항 — 사용자는 **차이를 검토하여** 승인·반려한다. 해시 두 개는
     검토가 아니므로 무엇이 생기고 사라지고 바뀌는지를 파일 단위로 낸다."""
-    cs = approvals.changeset(region)
+    cs = approvals.changeset(region, record=record, expect_work=expect_work)
     if cs is None:
-        print("  (차이를 판정할 수 없다 — 승인본 미해석)")
-        return
+        raise ValueError("차이를 판정할 수 없다 — 승인본을 복구한 뒤 다시 검토하라")
     moved = {m["to"] for m in cs.get("moves", [])} \
         | {m["from"] for m in cs.get("moves", [])}
     for label, key in (("추가", "added"), ("삭제", "removed"), ("수정", "modified")):
@@ -46,20 +46,16 @@ def _print_changeset(region: str) -> None:
         if not rows:
             continue
         print(f"  {label} {len(rows)}건")
-        for r in rows[:20]:
+        for r in rows:
             print(f"    {r}")
-        if len(rows) > 20:
-            print(f"    … 외 {len(rows) - 20}건")
     for m in cs.get("moves", []):
         print(f"  이동  {m['from']} → {m['to']}")
     eol = cs.get("eol_only") or []
     if eol:
         print(f"  그중 {len(eol)}건은 **줄바꿈만** 다릅니다 — 내용은 그대로입니다"
               f"(EOL 고정 이행). `git diff`가 빈 출력인 이유가 이것입니다.")
-        for r in eol[:10]:
+        for r in eol:
             print(f"    ~ {r}")
-        if len(eol) > 10:
-            print(f"    … 외 {len(eol) - 10}건")
     legacy = cs.get("legacy_excluded") or []
     if legacy:
         print(f"  개정 전 승인본 — 제외 구획 항목 {len(legacy)}건이 승인본에만 "
@@ -509,10 +505,15 @@ def main(argv=None):
             # 현재 작업본을 새 승인본으로 삼는다(Mechanism §3 5항).
             forks = approvals.divergence(a.region)
             work = approvals.working_tree_hash(a.region)
+            if not forks or work is None:
+                raise ValueError("갈래 또는 작업본을 판정할 수 없다 — 봉합하지 않았다")
             print(f"영역이 stale입니다 — 승인 기록이 {len(forks)}갈래로 갈렸습니다.")
             for f in forks:
                 print(f"  갈래 {f.get('rid')} {f.get('kind')} "
-                      f"accepted={f.get('accepted')} at={f.get('at')}")
+                      f"base={f.get('base')} accepted={f.get('accepted')} at={f.get('at')}")
+                if f.get("kind") == "unprotect":
+                    print("  보호 해제 갈래 — 해제 직전 승인본과 현재 작업본의 차이:")
+                _print_changeset(a.region, record=f, expect_work=work)
             print(f"현재 작업본: {work}")
             _confirm("이 작업본을 새 승인본으로 삼아 갈래를 봉합합니까? [y/N] ")
             # 검토한 갈래 집합을 프롬프트 **전에** 고정해 넘긴다 — 프롬프트
@@ -530,7 +531,7 @@ def main(argv=None):
         base = approvals.approved_hash(a.region)
         work = approvals.working_tree_hash(a.region)
         print(f"승인 대상: {a.region}\n승인본→작업본: {base} → {work}")
-        _print_changeset(a.region)
+        _print_changeset(a.region, expect_work=work)
         _confirm("검토한 이 변경집합을 승인본으로 받아들입니까? [y/N] ")
         rec = approvals.approve(a.region, base, expect_work=work, reason=a.reason)
         print("승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
@@ -545,7 +546,7 @@ def main(argv=None):
         work = approvals.working_tree_hash(a.region)
         print(f"반려 대상: {a.region} — 작업본을 승인본으로 원상 복원합니다")
         print(f"버릴 변경집합(작업본→승인본): {work} → {base}")
-        _print_changeset(a.region)
+        _print_changeset(a.region, expect_work=work)
         _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
         rec = approvals.revert(a.region, base, expect_work=work, reason=a.reason)
         print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])

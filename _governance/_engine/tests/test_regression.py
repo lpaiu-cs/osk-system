@@ -1399,6 +1399,114 @@ def test_stale_sealed_by_approve():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+def test_stale_changeset_before_confirmation():
+    """#38: 각 갈래의 실제 차이가 확인보다 먼저 보이고, 불완전 비교는 멈춘다."""
+    import contextlib, io
+    from osk import approvals as A, cli
+    reg = "= Domain/regr-seal-preview"
+    directory = ROOT / reg
+    saved = {p: p.read_bytes() if p.exists() else None
+             for p in (A.APPROVALS, A.MOVES)}
+
+    def decline(_prompt):
+        raise SystemExit("declined")
+
+    def preview(confirm=decline):
+        output, error = io.StringIO(), None
+        with contextlib.redirect_stdout(output), \
+                mock.patch.object(cli, "_confirm", side_effect=confirm) as prompt, \
+                mock.patch.object(A, "approve", wraps=A.approve) as approve:
+            try:
+                cli.main(["approve", reg])
+            except (SystemExit, ValueError, OSError) as exc:
+                error = str(exc)
+        return output.getvalue(), error, prompt.call_count, approve.call_count
+
+    try:
+        directory.mkdir(parents=True)
+        (directory / "a.txt").write_text("branch A", encoding="utf-8")
+        (directory / "gone.txt").write_text("old", encoding="utf-8")
+        moved_id = "260802-zzzz-9038"
+        src, dst = directory / "before.md", directory / "after.md"
+        src.write_text(node_text(moved_id), encoding="utf-8")
+        initial = A.protect(reg)
+        tree_a = initial["accepted"]
+        A.record_move(moved_id, src, dst)
+        src.rename(dst)
+        (directory / "a.txt").write_text("branch B", encoding="utf-8")
+        (directory / "branch-only.txt").write_text("B", encoding="utf-8")
+        tree_b = A._store_tree(directory)
+        forks, rid = [], initial["rid"]
+        for kind, tree, boundary in (("approve", tree_a, initial["moves_seen"]),
+                                     ("revert", tree_b, A._moves_boundary()),
+                                     ("unprotect", tree_b, A._moves_boundary())):
+            rid = core._next_rid(rid)
+            forks.append({"rid": rid, "parents": [initial["rid"]],
+                          "region": reg, "kind": kind, "base": tree,
+                          "accepted": tree if kind == "approve" else None,
+                          "moves_seen": boundary})
+        with A.APPROVALS.open("a", encoding="utf-8") as f:
+            for row in forks:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        (directory / "a.txt").write_text("working", encoding="utf-8")
+        (directory / "gone.txt").unlink()
+        for i in range(25):
+            (directory / f"new-{i:02}.txt").write_text("new", encoding="utf-8")
+        work, ledger = A.working_tree_hash(reg), A.APPROVALS.read_bytes()
+        a = A.changeset(reg, record=forks[0], expect_work=work)
+        b = A.changeset(reg, record=forks[1], expect_work=work)
+        check("stale은 갈래를 명시하지 않으면 변경집합을 고르지 않는다",
+              A.changeset(reg) is None)
+        check("각 갈래의 추가·삭제·수정을 그 승인본과 비교한다",
+              f"{reg}/branch-only.txt" in a["added"]
+              and f"{reg}/branch-only.txt" not in b["added"]
+              and f"{reg}/gone.txt" in a["removed"]
+              and f"{reg}/a.txt" in b["modified"])
+        check("이동의 생애 경계도 그 갈래를 따른다",
+              a["moves"] == [{"node": moved_id, "from": f"{reg}/before.md",
+                              "to": f"{reg}/after.md"}] and not b["moves"])
+        check("해제 갈래는 해제 직전 승인본을 보여준다",
+              A.changeset(reg, record=forks[2], expect_work=work) == b)
+        text, error, prompted, called = preview()
+        check("세 갈래 변경집합을 확인 전에 모두 보여준다",
+              prompted == 1 and called == 0 and error == "declined"
+              and all(row["rid"] in text for row in forks)
+              and text.count(f"{reg}/new-24.txt") == 3
+              and "보호 해제 갈래" in text
+              and f"{reg}/before.md → {reg}/after.md" in text)
+        check("검토 거절은 승인 기록을 만들지 않는다", A.APPROVALS.read_bytes() == ledger)
+
+        read_table = A._tree_table_for_region
+        with mock.patch.object(A, "_tree_table_for_region", side_effect=lambda r, h:
+                               None if h == tree_b else read_table(r, h)):
+            _, error, prompted, called = preview()
+        check("어느 갈래든 승인본 미해석이면 확인 전에 중단한다",
+              error and "승인본" in error and prompted == called == 0)
+        with mock.patch.object(A, "working_tree_hash", return_value=core.sha256_bytes(b"old")):
+            _, error, prompted, called = preview()
+        check("표시한 차이는 검토 대상으로 고정한 작업본에 결속된다",
+              error and "작업본이 바뀌었다" in error and prompted == called == 0)
+        with mock.patch.object(A, "_region_files", side_effect=PermissionError("unreadable")):
+            _, error, prompted, called = preview()
+        check("작업본 판독 실패를 빈 변경집합으로 승인하지 않는다",
+              error and prompted == called == 0)
+
+        def changed_after_preview(_prompt):
+            (directory / "a.txt").write_text("changed after review", encoding="utf-8")
+
+        _, error, prompted, called = preview(changed_after_preview)
+        check("확인 중 편집도 기존 작업본 CAS가 봉합을 거부한다",
+              prompted == called == 1 and error and "작업본" in error
+              and A.APPROVALS.read_bytes() == ledger)
+    finally:
+        rmtree_force(directory)
+        for path, data in saved.items():
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(data)
+
+
 # ── 위상 검증도 derived-from의 id 강제를 본다 (쓰기 통로 밖 유입) ────────
 def test_topology_rejects_wiki_node_derived_from():
     """손으로 쓰거나 다기기 동기화로 들어온 노드는 쓰기 통로를 거치지 않는다 —
@@ -3138,6 +3246,41 @@ def test_conflict_candidates():
 
 
 # ── 15b. 정본 릴리스와 갱신 (Mechanism §1-2 · 시행령 §10 6항) ────────────
+def test_current_version_equivalent_heads():
+    """#41: 판본 문자열뿐 아니라 같은 릴리스 증빙인 병렬 극대만 수렴한다."""
+    from osk import update
+    old = {"rid": core._make_rid(1754000000000, 0), "parents": [],
+           "kind": "done", "version": "v3.16.0", "attest": "sha256:" + "a" * 64}
+    a = {"rid": core._make_rid(1754000000001, 0), "parents": [old["rid"]],
+         "kind": "done", "version": "v3.17.1", "attest": "sha256:" + "b" * 64}
+    b = dict(a, rid=core._make_rid(1754000000002, 0))
+    check("현재 판본: 동일 릴리스 병렬 적용은 동치로 수렴한다",
+          update.current_version([old, a, b]) == "v3.17.1")
+    check("현재 판본: 병렬 기록의 물리 순서와 무관하다",
+          update.current_version([old, b, a]) == "v3.17.1")
+    for title, changed in (
+            ("서로 다른 판본", {"version": "v3.16.1"}),
+            ("같은 판본의 서로 다른 증빙", {"attest": "sha256:" + "c" * 64}),
+            ("구판·현행 기록 혼합", {"attest": None})):
+        check(f"현재 판본: {title}는 미확정을 유지한다",
+              update.current_version([old, a, dict(b, **changed)]) is None)
+    legacy_a = {k: v for k, v in a.items() if k != "attest"}
+    legacy_b = {k: v for k, v in b.items() if k != "attest"}
+    check("현재 판본: 증빙 없는 구판의 병렬 기록은 추측하지 않는다",
+          update.current_version([old, legacy_a, legacy_b]) is None)
+    check("현재 판본: 구판 단일 기록과 빈 저널은 종전대로 해석한다",
+          update.current_version([old, legacy_a]) == "v3.17.1"
+          and update.current_version([]) is None)
+    for invalid in ("", "sha256:broken", ["same"]):
+        check(f"현재 판본: 같은 값이어도 부적격 증빙은 동치 근거가 아니다 {invalid!r}",
+              update.current_version([old, dict(a, attest=invalid),
+                                      dict(b, attest=invalid)]) is None)
+    next_done = dict(b, parents=[a["rid"]], version="v3.17.2",
+                     attest="sha256:" + "c" * 64)
+    check("현재 판본: 선형 갱신은 최신 인과 기록을 반환한다",
+          update.current_version([old, a, next_done]) == "v3.17.2")
+
+
 def test_release_and_update():
     from osk import release, update
     installed_engine = ROOT / "_governance/_engine"
@@ -9236,7 +9379,7 @@ if __name__ == "__main__":
                test_sync_pins_main, test_daemon_no_bare_git_spawn,
                test_publish_manifest, test_publish_guards,
                test_conflict_candidates,
-               test_release_and_update,
+               test_current_version_equivalent_heads, test_release_and_update,
                test_store_digest_confined, test_delegation_protection_scope,
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
@@ -9258,6 +9401,7 @@ if __name__ == "__main__":
                test_move_phantom_tail_row_harmless,
                test_move_unrecorded_outside_protection,
                test_changeset_lists_difference, test_stale_sealed_by_approve,
+               test_stale_changeset_before_confirmation,
                test_topology_rejects_wiki_node_derived_from,
                test_local_lock_path_git_shapes,
                test_revert_structure_conflict_no_partial,
