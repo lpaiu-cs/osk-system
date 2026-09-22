@@ -451,8 +451,15 @@ def _current_view(s: dict, path: Path) -> dict:
     # no unbounded historical integrity scan on every prompt or capture.
     with core.mutation_lock():
         latest = next((r for r in reversed(s["reviews"]) if r["outcome"] != "deferred"), None)
-        if latest and _register_repair(s, latest["through"], _review_state_locked(s, latest["through"])):
-            _save(path, s)
+        if latest:
+            token = latest["through"]
+            # A partition is still one original obligation. Check its sibling
+            # receipts, rather than only the last acknowledged chunk.
+            while parent := next((t for t, snap in s["snapshots"].items()
+                                  if token in snap.get("repair_parts", [])), None):
+                token = parent
+            if _register_repair(s, token, _review_state_locked(s, token)):
+                _save(path, s)
         return _view(s)
 
 

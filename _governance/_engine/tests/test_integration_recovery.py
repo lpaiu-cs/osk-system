@@ -86,9 +86,9 @@ class IntegrationRecoveryTests(unittest.TestCase):
             assert len(tokens) == 3 and set(refs) == set(parent['pending_refs'])
             assert it.review_status('claude', sid, parent['through'])['status'] == 'complete'
             scope_memory.replace(sid, 'another summary', expect_hash=scope_memory.read(sid)['hash'])
-            assert it.review_status('claude', sid, parent['through'])['status'] == 'pending'
             state = it.status('claude', sid)
             assert set(state['repair_pending']) == set(tokens), state
+            assert it.review_status('claude', sid, parent['through'])['status'] == 'pending'
             assert state['reviewed_rounds'] == 8
         """)
 
