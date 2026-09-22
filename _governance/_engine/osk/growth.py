@@ -38,6 +38,9 @@ def _records() -> list[dict]:
         if row.get("kind") == "review" and row.get("outcome") not in {
                 "preserved", "no_value", "deferred"}:
             errors.append("unknown growth review outcome")
+        if row.get("kind") == "eviction_review" and row.get("outcome") not in {
+                "node", "merged", "discarded", "deferred"}:
+            errors.append("unknown eviction review outcome")
     if errors:
         raise ValueError("growth ledger damaged: " + "; ".join(errors[:5]))
     return rows
@@ -237,16 +240,27 @@ def _plan(limit: int) -> dict:
     from . import organization, evictions
     organization_jobs = organization.pending(limit=limit, idx=idx)
     attempts = {j["of"]: row["rid"] for row in plans for j in row.get("eviction_jobs", [])}
-    overdue = [r for r in evictions.unsettled() if evictions.age_days(r) > evictions.N_DAYS]
-    overdue.sort(key=lambda r: (attempts.get(r["rid"], ""), r["rid"]))
+    eviction_rows = evictions.records()
+    settled = {r["of"] for r in eviction_rows if r["kind"] == "settle"}
     eviction_jobs = []
-    for r in overdue[:limit]:
+    for r in eviction_rows:
+        if r["kind"] != "evict" or (r["rid"] not in attempts and (
+                r["rid"] in settled or evictions.age_days(r) <= evictions.N_DAYS)):
+            continue
         job = {"key": "eviction:" + r["rid"], "of": r["rid"], "scope": r["scope"],
                "text": r["text"], "age_days": evictions.age_days(r)}
-        prior = next((x for x in reversed(rows) if x["kind"] == "eviction_review" and x.get("of") == r["rid"]), None)
-        if prior:
+        state = _eviction_status(job, idx, growth_rows=rows, eviction_rows=eviction_rows)
+        if state["status"] == "complete":
+            continue
+        prior = state.get("review")
+        if prior and prior["outcome"] == "deferred":
             job["previous_deferral"] = _deferral(prior)
+        if state.get("settlement"):
+            job["previous_settlement"] = {k: state["settlement"][k]
+                                          for k in ("rid", "outcome", "target") if k in state["settlement"]}
         eviction_jobs.append(job)
+    eviction_jobs.sort(key=lambda j: (attempts.get(j["of"], ""), j["of"]))
+    eviction_jobs = eviction_jobs[:limit]
     return {"candidates": candidates, "organization_jobs": organization_jobs, "eviction_jobs": eviction_jobs, "source_count": len(sources),
             "cluster_count": len(clusters), "domain_count": len(domains),
             "limit": limit, "max_sources_per_candidate": 2 * BATCH_SIZE}
@@ -576,22 +590,33 @@ def _validate_packet(packet: dict, planned: dict) -> dict:
     return reviews
 
 
-def _eviction_status(job: dict, idx=None) -> dict:
+def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=None) -> dict:
     from . import evictions
-    rows = evictions.records()
+    rows = evictions.records() if eviction_rows is None else eviction_rows
+    growth_rows = _records() if growth_rows is None else growth_rows
     original = next((r for r in rows if r["rid"] == job["of"] and r["kind"] == "evict"), None)
     if not original or any(original[k] != job[k] for k in ("scope", "text")):
         return {"status": "pending", "reason": "selected eviction source changed"}
+    review = core.resolve_one(growth_rows, job["of"], "of")
+    result = {"status": "pending", "review": review, "semantic_verified": False}
     settled = [r for r in rows if r["kind"] == "settle" and r["of"] == job["of"]]
     if not settled:
-        return {"status": "pending"}
+        return result
     last = settled[-1]
+    result["settlement"] = last
     try:
         if last["outcome"] != "discarded":
             evictions.require_target(last.get("target", ""), idx or _index())
     except ValueError as exc:
-        return {"status": "pending", "reason": str(exc)}
-    return {"status": "complete", "settlement": last, "semantic_verified": False}
+        return {**result, "reason": str(exc)}
+    reviewed_job = next((j for r in growth_rows if review and r["kind"] == "plan"
+                         and r["rid"] == review["manifest"] for j in r.get("eviction_jobs", [])
+                         if j["of"] == job["of"]), {})
+    if (review and review["outcome"] != "deferred" and review.get("settlement") == last["rid"]
+            and all(review.get(k) == last.get(k) for k in ("outcome", "target"))
+            and all(reviewed_job.get(k) == job[k] for k in ("scope", "text"))):
+        result["status"] = "complete"
+    return result
 
 
 def _apply_final_reviews(output: Path, planned: dict) -> dict:
@@ -662,14 +687,17 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 done = _eviction_status(selected_evictions[entry["of"]])
                 if done.get("reason"):
                     raise ValueError(done["reason"])
-                if entry["outcome"] == "deferred":
-                    core.ledger_append(LEDGER, {"kind": "eviction_review", "manifest": planned["manifest"], **entry})
-                else:
+                record = {"kind": "eviction_review", "manifest": planned["manifest"], **entry}
+                if entry["outcome"] != "deferred":
                     last = done.get("settlement")
                     if last and any(last.get(k) != entry.get(k) for k in ("outcome", "target")):
                         raise ValueError("eviction already has a different disposition")
-                    if not last or not last.get("reason"):
-                        evictions._settle_locked(**entry)
+                    if not last:
+                        last = evictions._settle_locked(**entry)
+                    record["settlement"] = last["rid"]
+                previous = done.get("review") or {}
+                if any(previous.get(k) != v for k, v in record.items()):
+                    core.ledger_append(LEDGER, record)
                 result["eviction"][entry["of"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Eviction {entry['of']}: {exc}")

@@ -58,6 +58,47 @@ def packet_worker(change='', wrapper='plain', code=0):
 
 
 class GrowthTests(unittest.TestCase):
+    def test_eviction_settlement_needs_review_and_deferred_returns_to_queue(self):
+        for deferred in (True, False):
+            self.check_case("""
+            from unittest.mock import patch
+            from osk import evictions
+            item = evictions.record_evict('W1', 'session', 'Reusable fact; second claim needs verification.')
+            with patch.object(evictions, 'age_days', return_value=17):
+                action = "from osk import evictions, write; j=p['eviction_jobs'][0]; saved=write.create_node('Partial', 'Partial evidence', 'Only the first claim is verified.', 'fixture', space='= Scope/W1', settle=j['of']); assert saved['ok']; "
+                if DEFERRED_CASE:
+                    action += "q['osk_reviews']['eviction']=[{'of':j['of'],'outcome':'deferred','reason':'First claim saved; resume second claim against the source.'}]; assert growth.checkpoint(q)['ok']"
+                else:
+                    action += "sys.exit(7)"
+                result = growth.run([sys.executable, '-B', '-c', packet_worker(action)], limit=1)
+                assert not result['ok'], result
+                assert result['eviction_outcomes']['eviction:'+item['rid']]['status'] == 'pending', result
+                manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+                job = manifest['eviction_jobs'][0]
+                assert item['rid'] not in {r['rid'] for r in evictions.unsettled()}
+                again = growth.plan()['eviction_jobs']
+                assert any(j['of']==item['rid'] for j in again), again
+                assert again[0]['previous_settlement']['target'] == 'Partial'
+                if DEFERRED_CASE:
+                    assert again[0]['previous_deferral']['reason'].startswith('First claim saved')
+                packet = {'osk_reviews': {'manifest':manifest['rid'], 'domain':[], 'scope':[],
+                          'eviction':[{'of':item['rid'],'outcome':'node','target':'Partial',
+                                       'reason':'Both claims now checked; second is a one-off value.'}]}}
+                assert growth.checkpoint(packet)['ok']
+                assert growth._eviction_status(job)['status'] == 'complete'
+                count = len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='eviction_review'])
+                assert growth.checkpoint(packet)['ok']
+                assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='eviction_review']) == count
+                assert not growth.plan()['eviction_jobs']
+                # A later explicit deferral must supersede even a completed review.
+                packet['osk_reviews']['eviction'] = [{'of':item['rid'],'outcome':'deferred','reason':'Reopen a newly disputed condition.'}]
+                assert growth.checkpoint(packet)['ok']
+                assert growth._eviction_status(job)['status'] == 'pending'
+                assert growth.plan()['eviction_jobs'][0]['of'] == item['rid']
+                packet['osk_reviews']['eviction'] = [{'of':item['rid'],'outcome':'node','target':'Partial','reason':'Dispute resolved against the source.'}]
+                assert growth.checkpoint(packet)['ok']
+            """.replace('DEFERRED_CASE', repr(deferred)))
+
     def test_cli_checkpoint_survives_later_worker_failure_without_closing_other_jobs(self):
         self.check_case("""
             node('A', 'W1')
