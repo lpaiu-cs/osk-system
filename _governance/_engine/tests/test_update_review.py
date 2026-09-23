@@ -109,6 +109,64 @@ assert approvals.state('_governance') == 'clean'
                                     capture_output=True, text=True, encoding='utf-8', timeout=90)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
+    def test_apply_stops_and_restarts_the_vault_daemon(self):
+        with tempfile.TemporaryDirectory() as td:
+            script = r'''
+import subprocess, sys
+from unittest import mock
+from osk import core, update
+from osk._portalock import lock_exclusive, unlock
+engine = core.ROOT / '_governance/_engine'
+engine.mkdir(parents=True)
+fake = engine / 'sync_daemon.py'
+fake.write_text("import time\nfrom osk import core\nfrom osk._portalock import lock_exclusive\n"
+                "f = open(core.local_lock_path('osk-sync.lock'), 'w')\n"
+                "lock_exclusive(f, blocking=False)\nprint('ready', flush=True)\ntime.sleep(300)\n")
+daemon = subprocess.Popen([sys.executable, str(fake)], stdout=subprocess.PIPE, text=True)
+try:
+    assert daemon.stdout.readline().strip() == 'ready'
+    assert daemon.pid in update._daemon_pids()
+    info = {}
+    with mock.patch.object(update, 'DAEMON_RESTART_WAIT', 1):
+        with update._daemon_stopped(info):
+            assert daemon.wait(timeout=30) is not None, 'daemon still running during apply'
+            rival = open(core.local_lock_path('osk-sync.lock'), 'w')
+            try:
+                lock_exclusive(rival, blocking=False)
+            except OSError:
+                pass            # held by the update, so a relaunched daemon cannot start
+            else:
+                raise AssertionError('singleton not held during apply')
+            finally:
+                rival.close()
+    assert daemon.pid in info['stopped'], info
+    # A temp vault has no scheduled task or service, so the restart is reported, not faked.
+    assert info['restarted'] is False and info['note'], info
+    probe = open(core.local_lock_path('osk-sync.lock'), 'w')
+    lock_exclusive(probe, blocking=False)
+    unlock(probe)
+    probe.close()
+    # A held singleton with no matching daemon process is refused, not guessed at.
+    holder = open(core.local_lock_path('osk-sync.lock'), 'w')
+    lock_exclusive(holder, blocking=False)
+    try:
+        with update._daemon_stopped({}):
+            raise AssertionError('entered without the singleton')
+    except update.UpdateError as e:
+        assert '프로세스를 찾지 못했다' in str(e), e
+    finally:
+        unlock(holder)
+        holder.close()
+finally:
+    if daemon.poll() is None:
+        daemon.kill()
+'''
+            result = subprocess.run([sys.executable, '-c', script],
+                                    env=dict(os.environ, OSK_VAULT_ROOT=str(Path(td) / 'vault'),
+                                             PYTHONPATH=str(ENGINE)),
+                                    capture_output=True, text=True, encoding='utf-8', timeout=180)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()
