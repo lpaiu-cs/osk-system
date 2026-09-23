@@ -27,3 +27,26 @@ Do not globally replace paths in old raw records or approval objects.
 Release declaration no longer requires a separate interactive approval. Instance
 updates use the content-bound confirmation checkpoint described in
 [SETUP](SETUP.md#정본-릴리스와-갱신). General protected-region authority is unchanged.
+
+## Recovering a vault stopped by v3.20.1
+
+A vault that still has `= Scope` stops working after an update to v3.20.1. The
+MCP server, hooks, sync daemon, CLI and `osk.update` itself all fail with
+`RuntimeError: Legacy Space layout detected`. No data was moved. Because the
+vault's own updater cannot start, run the updater from a v3.21.0 checkout
+against the vault:
+
+```bash
+git clone --depth 1 --branch v3.21.0 https://github.com/lpaiu-cs/osk-system osk-v3.21.0
+OSK_VAULT_ROOT=/path/to/vault PYTHONPATH=osk-v3.21.0/_governance/_engine \
+  /path/to/vault/.venv/bin/python -m osk.update --to v3.21.0 --apply
+```
+
+On Windows, set the two variables with `$env:` and use
+`.venv\Scripts\python.exe`. The first run shows the changeset, exits with code
+2 and `approval_required: true`. Review it, stop the daemon if it is running,
+and run the same command once more. The vault then runs v3.21.0 on its
+existing `= Scope` roots. Restart the harness, MCP server and daemon afterwards.
+
+Do not rename the roots by hand to silence the error: ledgers, approval objects
+and raw coordinates still refer to the old names.
