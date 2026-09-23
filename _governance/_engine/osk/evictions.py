@@ -22,6 +22,7 @@ scope 기억의 상한 초과 거부 **직후의 첫 성공한 쓰기**가 저�
 지우지 않는다 — 처분 뒤에도 "무엇이 잘려 어디로 갔는가"가 남는다.
 """
 from __future__ import annotations
+from .core import SCOPE
 import re
 import time
 from datetime import datetime
@@ -286,7 +287,7 @@ def _exits(scope: str, python: str, engine: str) -> str:
     return (f"출구는 셋이다(§9-3 2항). 본문을 읽고 `search`로 같은 주제의 노드를 찾아 "
             f"`read_node` 뒤 같은 주장·적용 조건의 갱신(`update_node`)을 우선한다. "
             f"같은 프로젝트라는 이유만으로 독립 주장을 합치지 않는다. 새 노드가 필요하면 "
-            f"`create_node`(착지 `Scope/{scope}`; 여러 scope에 재사용되면 Domain). "
+            f"`create_node`(착지 `{SCOPE}/{scope}`; 여러 scope에 재사용되면 Domain). "
             f"보존하는 쓰기에 `settle=\"<evict rid>\"`를 함께 주면 저장 뒤 node·merged 처분도 "
             f"기록한다 — 응답의 `settlement.state`를 확인하라. "
             f"같은 내용 재저장·summary만 수정해서는 처분하지 않는다. "
@@ -310,12 +311,12 @@ def hook_block(scope: str, python: str, engine: str,
     oldest = age_days(rows[0], now_ms)
     banner = ""
     if oldest > N_DAYS:
-        banner = (f"[osk 정돈이 밀렸다 — Scope/{scope} 미처분 {len(rows)}건, 가장 "
+        banner = (f"[osk 정돈이 밀렸다 — {SCOPE}/{scope} 미처분 {len(rows)}건, 가장 "
                   f"오래된 것 {oldest}일 (기준 {N_DAYS}일)] 아래 항목을 먼저 처분하라. "
                   f"그래도 밀리면 `osk tidy prompt`가 전용 세션의 프롬프트를 낸다.")
     shown = rows[:K]
     lines = [
-        f"[osk 정돈 — Scope/{scope} 미처분 퇴출 {len(rows)}건 중 오래된 {len(shown)}건]",
+        f"[osk 정돈 — {SCOPE}/{scope} 미처분 퇴출 {len(rows)}건 중 오래된 {len(shown)}건]",
         "scope 기억에서 상한에 밀려 잘려 나간 조각이다(Mechanism §9-2 12항). "
         "**첫 도구 호출에 처분을 함께 실어라** — 벽이 아니다: 본 작업이 먼저면 "
         "넘어가도 되고, 항목은 대장에 남는다.",
@@ -352,12 +353,12 @@ def tidy_prompt(scope: str | None, python: str, engine: str,
     if scope is None:
         scope = max(st, key=lambda s: (st[s]["oldest_days"], st[s]["unsettled"], s))
     elif scope not in st:
-        return (f"Scope/{scope}에는 미처분 항목이 없다. 있는 scope: "
+        return (f"{SCOPE}/{scope}에는 미처분 항목이 없다. 있는 scope: "
                 + ", ".join(sorted(st)))
     rows = unsettled(scope)
     session = rows[-1].get("session")
     lines = [
-        f"이 세션은 `Scope/{scope}`의 **전용 정돈 세션**이다(Mechanism §9-3 3항). "
+        f"이 세션은 `{SCOPE}/{scope}`의 **전용 정돈 세션**이다(Mechanism §9-3 3항). "
         f"본 작업은 없다 — 아래 미처분 퇴출 {len(rows)}건을 전부 처분하고 끝낸다.",
         f"osk 도구를 부를 때 `session=\"{session}\"`을 쓴다 — 이 scope의 정본 키다. "
         f"승인은 우회하지 않는다.",

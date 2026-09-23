@@ -247,8 +247,8 @@ def run():
         # neither silently sanitize it nor publish another local legacy record.
         git('reset', '--hard', base)
         git('reset', '--hard', base, at=peer)
-        legacy = 'Scope/W1/_raw/old.md'
-        hidden = 'Scope/W1/_raw/.records/old.txt'
+        legacy = '00_Scope/W1/_raw/old.md'
+        hidden = '00_Scope/W1/_raw/.records/old.txt'
         bad = peer / legacy
         bad.parent.mkdir(parents=True, exist_ok=True)
         bad.write_text('## 1\n\n### user\n\nquestion\n\n### agent\n\nvisible answer\n')
@@ -288,7 +288,7 @@ def run():
         good = peer / hidden
         good.parent.mkdir(parents=True)
         good.write_text('## 1\n\n<!-- osk-capture: dialogue-v1 "turn-1" -->\n\nvisible dialogue\n')
-        attachment = peer / 'Scope/W1/_raw/.records/attachment.bin'
+        attachment = peer / '00_Scope/W1/_raw/.records/attachment.bin'
         attachment.write_bytes(b'\x89\xff\x00')
         git('add', '-A', at=peer)
         git('commit', '-qm', 'repair storage', at=peer)

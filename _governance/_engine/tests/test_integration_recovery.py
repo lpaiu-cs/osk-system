@@ -31,7 +31,7 @@ def rounds(n):
     return ''.join(json.dumps(row) + '\\n' for row in rows)
 def capture(n):
     native.write_text(rounds(n), encoding='utf-8')
-    result = it.capture('claude', sid, str(native), sid, 'Scope/W1')
+    result = it.capture('claude', sid, str(native), sid, '00_Scope/W1')
     assert result['ok'], result
     return result
 def preserved(through, key=None):
@@ -45,7 +45,7 @@ def setup(ack=True):
     created = D.create_node({'key':proof_key,'sources':first['pending_refs'],'hub':'W1'},
                             title='Retained observation', summary='Recovery evidence',
                             body='A completed observation worth retaining.',
-                            drafter='fable-5', space='Scope/W1')
+                            drafter='fable-5', space='00_Scope/W1')
     assert created['distillation']['status'] == 'complete', created
     if ack:
         assert not preserved(first['through'])['pending']
@@ -237,7 +237,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
                 "job = plan['scope_jobs'][0]",
                 "it.acknowledge('claude', SID, job['through'], 'preserved', 'Retained useful observation.', [{'key':PROOF}])",
                 "Path(NATIVE).write_text(SECOND, encoding='utf-8')",
-                "newer = it.capture('claude', SID, NATIVE, SID, 'Scope/W1')",
+                "newer = it.capture('claude', SID, NATIVE, SID, '00_Scope/W1')",
                 "assert newer['ok'], newer",
                 "it.acknowledge('claude', SID, newer['through'], 'no_value', 'The later check is transient.')",
                 "for candidate in plan['candidates']:",

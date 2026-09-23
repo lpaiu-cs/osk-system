@@ -1,6 +1,6 @@
 # 태그를 사람이 읽는 표면(GitHub Release)에 비춘다.
 #
-# 이 워크플로는 **권위를 만들지 않는다**. 비준은 정본에서의 릴리스 선언과
+# 이 워크플로는 **권위를 만들지 않는다**. 증빙은 정본에서의 릴리스 선언과
 # `release.json`이 이미 끝냈고(시행령 §10 6항), 여기서는 그 사실을 옮겨 적을
 # 뿐이다. 그래서 증빙이 없거나 태그와 어긋나면 Release를 만들지 않고 실패한다 —
 # 정식 릴리스가 아닌 태그가 정식처럼 보이는 쪽이 안 보이는 쪽보다 나쁘다.
@@ -57,6 +57,8 @@ jobs:
           {
             printf '비준증빙 `release.json` — 파일 %s건의 내용 해시로 이 판본을 고정한다.\n' "$num"
             printf '인스턴스는 증빙과 전수 대조한 것만 적용한다.\n\n'
+            printf '첫 적용 요청은 변경집합과 하네스 재시작 필요성을 보여주고 멈춘다. 사용자 명시 재승인 뒤에만 같은 명령을 다시 실행한다.\n\n'
+            printf 'v3.20.x에서 처음 전환할 때는 새 릴리스 체크아웃의 엔진을 PYTHONPATH로, 실제 인스턴스를 OSK_VAULT_ROOT로 지정한다. 자세한 절차는 SETUP을 따른다.\n\n'
             printf '```bash\n'
             printf 'PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply --to %s\n' "$TAG"
             printf '```\n\n'

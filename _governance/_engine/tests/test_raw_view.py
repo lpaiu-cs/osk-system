@@ -26,7 +26,7 @@ def main():
             {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"text": "Keep cache rule; confirm CACHE_LIMIT in the retest evidence."}]},
         ]
         agent = "\n\n".join(json.dumps(x) for x in events)
-        first = raw.append_round("reading-test", "evidence", user, agent, "Scope/W1")
+        first = raw.append_round("reading-test", "evidence", user, agent, "00_Scope/W1")
         ref = first["round_ref"]
         path = core.ROOT / first["path"]
         before = path.read_bytes()
@@ -45,7 +45,7 @@ def main():
         assert hits["hash"] == view["hash"] == distillation._source(ref, graph.Index())["hash"]
         assert path.read_bytes() == before, "reading must not rewrite immutable evidence"
         assert "opaque-secret" in raw.read_round(ref, 3000000)["text"], "legacy full view changed"
-        raw.append_round("reading-test", "evidence", "next", "next answer", "Scope/W1")
+        raw.append_round("reading-test", "evidence", "next", "next answer", "00_Scope/W1")
         assert raw.read_round(ref, view="review")["hash"] == view["hash"], "append changed source identity"
         for bad in (dict(query=""), dict(query="x" * 201), dict(view="full", query="cache")):
             assert not mcp_server.read_raw(ref, **bad)["ok"], bad

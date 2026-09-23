@@ -22,8 +22,8 @@ sys.path.insert(0, str(ENGINE))
 from osk import core, integration as it, raw, scope_memory, transcripts, validate, write
 
 validate.make_mini_vault(ROOT)
-(ROOT / "Scope/Capture").mkdir()
-scope_memory.replace("capture-tests", "", space="Scope/Capture")
+(ROOT / "00_Scope/Capture").mkdir()
+scope_memory.replace("capture-tests", "", space="00_Scope/Capture")
 
 
 def claude_round(sid, n, *, finished=True):
@@ -587,7 +587,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(it.tick("claude", self.sid)["due"])
         self.assertIn("공유 기억이 비어 있어도", it.prompt("claude", self.sid)["text"])
         cur = scope_memory.read("capture-tests")
-        scope_memory.replace("other-writer", "other session writes shared memory", cur["hash"], "Scope/Capture")
+        scope_memory.replace("other-writer", "other session writes shared memory", cur["hash"], "00_Scope/Capture")
         resumed = it.hook_capture({"harness": "claude", "session_id": self.sid, "transcript_path": str(self.path)}, "capture-tests")
         self.assertEqual(resumed["prompt_count"], 9)
         self.assertIsNone(resumed["reviewed_through"])
@@ -605,7 +605,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(first["pending_refs"], resumed["pending_refs"])
         write.alias_session(self.sid + "-alias", self.sid + "-renamed")
         self.assertTrue(it.capture("claude", self.sid, str(self.path), self.sid + "-alias")["ok"])
-        refused = it.capture("claude", self.sid, str(self.path), self.sid + "-elsewhere", "Scope/W1")
+        refused = it.capture("claude", self.sid, str(self.path), self.sid + "-elsewhere", "00_Scope/W1")
         self.assertFalse(refused["ok"])
         self.assertTrue(it.status("claude", self.sid)["capture_pending"])
         self.assertIn("scope changed", it.status("claude", self.sid)["capture_error"])
@@ -614,22 +614,22 @@ class IntegrationTests(unittest.TestCase):
 
     def test_capture_normalizes_saved_and_requested_scope(self):
         self.transcript(claude_round(self.sid, 1))
-        first = it.capture("claude", self.sid, str(self.path), "capture-tests", "Scope/Capture/")
+        first = it.capture("claude", self.sid, str(self.path), "capture-tests", "00_Scope/Capture/")
         self.assertTrue(first["ok"], first)
         # Also repair a successful cursor written with the previous spelling.
         path = it.state_path("claude", self.sid)
         state = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(state["space"], "Scope/Capture")
-        state["space"] = "Scope/Capture/"
+        self.assertEqual(state["space"], "00_Scope/Capture")
+        state["space"] = "00_Scope/Capture/"
         path.write_text(json.dumps(state), encoding="utf-8")
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
         resumed = self.capture()
         self.assertTrue(resumed["ok"], resumed)
         self.assertEqual(resumed["appended"], 1)
-        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["space"], "Scope/Capture")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["space"], "00_Scope/Capture")
 
     def test_rejected_first_landing_does_not_pin_the_conversation(self):
-        for n, space in enumerate(("Scope/W1", "Scope/Absent", "Capture")):
+        for n, space in enumerate(("00_Scope/W1", "00_Scope/Absent", "Capture")):
             sid = self.sid + str(n)
             self.transcript(claude_round(sid, 1))
             rejected = it.capture("claude", sid, str(self.path), "capture-tests", space)
@@ -768,10 +768,10 @@ class IntegrationTests(unittest.TestCase):
         original = it.capture("claude", parent, str(self.path), "capture-tests")
         self.assertTrue(original["ok"], original)
         self.transcript([dict(r, sessionId=self.sid) for r in rows])
-        copied = it.capture("claude", self.sid, str(self.path), self.sid, "Scope/W1")
+        copied = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         self.assertTrue(copied["ok"], copied)
         self.assertEqual((copied["captured_rounds"], copied["inherited_rounds"]), (1, 0))
-        self.assertTrue(copied["pending_refs"][0].startswith("Scope/W1/"))
+        self.assertTrue(copied["pending_refs"][0].startswith("00_Scope/W1/"))
 
     def test_claude_foreign_history_requires_actual_parent_chain(self):
         parent = claude_round("parent", 1)
@@ -928,7 +928,7 @@ class IntegrationTests(unittest.TestCase):
         generic = self.sid + '-unbound'
         failed = it.capture('claude', self.sid, str(self.path), generic)
         self.assertFalse(failed['ok'])
-        captured = it.capture('claude', self.sid, str(self.path), 'capture-tests', 'Scope/Capture')
+        captured = it.capture('claude', self.sid, str(self.path), 'capture-tests', '00_Scope/Capture')
         self.assertTrue(captured['ok'], captured)
         self.assertEqual(captured['captured_rounds'], 1)
         self.assertIsNone(write.resolve_session(generic))
@@ -940,7 +940,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(other['ok'])
         self.assertIsNone(it._load(it.state_path('claude', self.sid + '-other'),
                                   'claude', self.sid + '-other')['space'])
-        self.assertFalse(it.capture('claude', self.sid, str(self.path), generic, 'Scope/W1')['ok'])
+        self.assertFalse(it.capture('claude', self.sid, str(self.path), generic, '00_Scope/W1')['ok'])
 
     def test_hook_process_resume_keeps_pending_and_diagnostics_are_visible(self):
         self.transcript(claude_round(self.sid, 1))
@@ -1090,7 +1090,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_unbound_incomplete_capture_retains_explicit_landing_for_catchup(self):
         self.transcript(claude_round(self.sid, 1, finished=False))
-        pending = it.capture("claude", self.sid, str(self.path), self.sid, "Scope/Capture")
+        pending = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/Capture")
         self.assertTrue(pending["capture_pending"])
         self.assertIsNone(write.resolve_session(self.sid))
         self.transcript(claude_round(self.sid, 1))
@@ -1150,7 +1150,7 @@ class IntegrationTests(unittest.TestCase):
                 legacy = reader(str(path), harness, sid)
                 legacy.pop("dialogue_v1")
                 with mock.patch.object(transcripts, "read", return_value=legacy):
-                    old = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                    old = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(old["ok"], old)
                 old_path = raw._raw_file(raw.parse_ref(old["pending_refs"][0])[0])
                 prefix = old_path.read_bytes()
@@ -1185,7 +1185,7 @@ class IntegrationTests(unittest.TestCase):
                 self.assertIn(b"sha256", new_bytes)
                 self.assertIn(long_text, noisy[next(iter(noisy))]["user"])
                 it.state_path(harness, sid).unlink()
-                replay = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                replay = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(replay["ok"], replay)
                 self.assertEqual(replay["appended"], 0)
                 self.assertEqual(old_path.read_bytes(), stored)
@@ -1201,16 +1201,16 @@ class IntegrationTests(unittest.TestCase):
     def test_actual_preserved_scope_node_ack_and_later_receipt_validation(self):
         from osk import contract, distillation as D
         self.transcript(claude_round(self.sid, 1))
-        st = it.capture("claude", self.sid, str(self.path), self.sid, space="Scope/W1")
+        st = it.capture("claude", self.sid, str(self.path), self.sid, space="00_Scope/W1")
         ref = st["pending_refs"][0]
         spec = {"key": self.sid, "sources": [ref], "hub": "W1"}
         args = {"title": "A retained integration decision", "summary": "bounded retry",
                 "body": "A retry is identified by native identity rather than repeated wording.",
-                "drafter": "fable-5", "space": "Scope/W1"}
+                "drafter": "fable-5", "space": "00_Scope/W1"}
         created = D.create_node(spec, **args)
         self.assertEqual(created["distillation"]["status"], "complete")
         node = contract.parse(core.ROOT / created["path"])
-        hub = contract.parse(core.ROOT / "Scope/W1/W1.md")
+        hub = contract.parse(core.ROOT / "00_Scope/W1/W1.md")
         self.assertIn(ref, write._stored_edges(node.meta["derived-from"]))
         self.assertIn(created["name"], hub.wikilinks())
         ack = it.acknowledge("claude", self.sid, st["through"], "preserved",
@@ -1235,10 +1235,10 @@ class IntegrationTests(unittest.TestCase):
 from pathlib import Path
 sys.path.insert(0, os.environ['OSK_PROBE_ENGINE'])
 from osk import core, integration as it, raw, validate
-if not (core.ROOT / 'Scope/W1').is_dir():
+if not (core.ROOT / '00_Scope/W1').is_dir():
     validate.make_mini_vault(core.ROOT)
 sid = os.environ['OSK_PROBE_SID']
-st = it.capture('claude', sid, os.environ['OSK_PROBE_TRANSCRIPT'], 'copy-session', 'Scope/W1')
+st = it.capture('claude', sid, os.environ['OSK_PROBE_TRANSCRIPT'], 'copy-session', '00_Scope/W1')
 assert st['ok'], st
 print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended': st['appended'],
                   'state_path': str(it.state_path('claude', sid)),
@@ -1277,7 +1277,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
     def test_raw_migration_preserves_pending_snapshot_and_legacy_receipt_match(self):
         from osk import distillation as D
         self.transcript(claude_round(self.sid, 1))
-        first = it.capture("claude", self.sid, str(self.path), self.sid, "Scope/W1")
+        first = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         state_path = it.state_path("claude", self.sid)
         state = it._load(state_path, "claude", self.sid)
         physical = raw._raw_file(raw.parse_ref(first["pending_refs"][0])[0])
@@ -1299,7 +1299,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         out = D.create_node({"key": self.sid, "sources": [old_ref], "hub": "W1"},
                             title=self.sid, summary="retained observation",
                             body="Observation retained with its original source.",
-                            drafter="test-model", space="Scope/W1")
+                            drafter="test-model", space="00_Scope/W1")
         self.assertEqual(out["distillation"]["status"], "complete")
         ack = it.acknowledge("claude", self.sid, token, "preserved", "fixture retained",
                              [{"key": self.sid}])
@@ -1308,13 +1308,13 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
     def test_review_key_tracks_snapshot_and_recovers_saved_proof(self):
         from osk import distillation as D
         self.transcript(claude_round(self.sid, 1))
-        it.capture("claude", self.sid, str(self.path), self.sid, "Scope/W1")
+        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         first = it.prompt("claude", self.sid)
         self.assertEqual(first["key"], it.prompt("claude", self.sid)["key"])
         spec = {"key": first["key"] + ":stable-target", "sources": first["pending_refs"], "hub": "W1"}
         saved = D.create_node(spec, title="Snapshot-specific retained observation", summary="native observation",
                               body="The observation is preserved before its review acknowledgement arrives.",
-                              drafter="fable-5", space="Scope/W1")
+                              drafter="fable-5", space="00_Scope/W1")
         self.assertEqual(saved["distillation"]["status"], "complete")
         retry = it.prompt("claude", self.sid)
         self.assertEqual(first["key"], retry["key"])
@@ -1349,7 +1349,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
 
     def _discovery_source(self):
         self.transcript(claude_round(self.sid, 1))
-        return it.capture("claude", self.sid, str(self.path), self.sid, "Scope/W1")
+        return it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
 
     def _discovery_save(self, st, key, title=None):
         from osk import distillation as D
@@ -1357,7 +1357,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         return D.create_node({"key": key, "sources": st["pending_refs"], "hub": "W1"},
                              title=title or self.sid + "-node", summary="lost ACK recovery",
                              body="Keep the already retained decision and finish its missing acknowledgement.",
-                             drafter="fable-5", space="Scope/W1")
+                             drafter="fable-5", space="00_Scope/W1")
 
     def test_saved_scope_without_ack_is_discovered_and_reused(self):
         from osk import distillation as D, graph
@@ -1391,7 +1391,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         other_sid = self.sid + "-other"
         other_path = Path(TMP.name) / (other_sid + ".jsonl")
         other_path.write_text("".join(json.dumps(row) + "\n" for row in claude_round(other_sid, 1)), encoding="utf-8")
-        other = it.capture("claude", other_sid, str(other_path), other_sid, "Scope/W1")
+        other = it.capture("claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
         other_key = self.sid + "-unrelated"
         self._discovery_save(other, other_key, self.sid + "-other-node")
         # Model a journal in the same common git directory with a different ROOT.
@@ -1417,7 +1417,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         st = self._discovery_source()
         key = self.sid + "-interrupted"
         atomic = write._atomic_write
-        hub = ROOT / "Scope/W1/W1.md"
+        hub = ROOT / "00_Scope/W1/W1.md"
         def fail_hub(path, data):
             if path == hub:
                 raise OSError("injected lost hub write")
@@ -1479,7 +1479,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
                 with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
-                    st = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                    st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertEqual(st["captured_rounds"], 1)
                 self.assertEqual(sink.call_count, 1)  # mandatory final filter still runs
@@ -1491,7 +1491,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 self.assertNotIn(b"ghp_short", saved)  # tool payload is a reference
                 self.assertIn(b"tool_evidence_ref", saved)
                 self.assertEqual(path.read_bytes(), native)  # native evidence is not edited
-                again = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                again = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(again["ok"], again)
                 self.assertEqual(again["appended"], 0)
                 self.assertEqual((ROOT / raw_path).read_bytes(), saved)
@@ -1513,7 +1513,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
                 with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
-                    st = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                    st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertFalse(st["capture_pending"])
                 self.assertEqual(st["captured_rounds"], 1)
@@ -1527,7 +1527,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 for token in collision:
                     self.assertNotIn(token.encode(), saved)
                 self.assertEqual(path.read_bytes(), native)
-                again = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                again = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(again["ok"], again)
                 self.assertEqual(again["appended"], 0)
                 self.assertEqual((ROOT / raw_path).read_bytes(), saved)
@@ -1555,7 +1555,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
                 with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
-                    st = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                    st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertFalse(st["capture_pending"])
                 self.assertEqual(st["captured_rounds"], 1)
@@ -1568,7 +1568,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 for token in tokens:
                     self.assertNotIn(token.encode(), saved)
                 self.assertEqual(path.read_bytes(), native)
-                again = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                again = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(again["ok"], again)
                 self.assertEqual(again["appended"], 0)
                 self.assertEqual((ROOT / raw_path).read_bytes(), saved)
@@ -1589,7 +1589,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                     later = codex_round(2)
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
-                first = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                first = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(first["ok"], first)
                 self.assertFalse(first["capture_pending"])
                 self.assertEqual(first["appended"], 1)
@@ -1602,7 +1602,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 self.assertEqual(path.read_bytes(), native)
                 native += "".join(json.dumps(row) + "\n" for row in later).encode("utf-8")
                 path.write_bytes(native)
-                second = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                second = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(second["ok"], second)
                 self.assertFalse(second["capture_pending"])
                 self.assertEqual(second["captured_rounds"], 2)
@@ -1611,7 +1611,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 self.assertTrue(saved.startswith(saved_first))
                 self.assertIn(b"question 2", saved)
                 self.assertIn(b"answer 2", saved)
-                again = it.capture(harness, sid, str(path), sid, "Scope/W1")
+                again = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(again["ok"], again)
                 self.assertEqual(again["appended"], 0)
                 self.assertEqual((ROOT / raw_path).read_bytes(), saved)

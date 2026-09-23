@@ -20,6 +20,7 @@ working_memory는 인지과학 은유(한 마음의 사유물)라 "내 세션의
 없고, 통합할 때마다 자리값 못하는 엔트리가 퇴출되므로 decay 스케줄러도 없다.
 """
 from __future__ import annotations
+from .core import SCOPE
 import hashlib
 import json
 import unicodedata
@@ -182,11 +183,11 @@ def _runs_key(session: str) -> str:
 
 
 def sm_dir() -> Path:
-    return ROOT / "Scope" / "Workbench" / "_scope_memory"
+    return ROOT / SCOPE / "Workbench" / "_scope_memory"
 
 
 def sm_path(scope: str) -> Path:
-    """`Scope/Workbench/_scope_memory/<scope>.md`. scope의 지도가 scope 밖에 사는 것은
+    """`00_Scope/Workbench/_scope_memory/<scope>.md`. scope의 지도가 scope 밖에 사는 것은
     scope 디렉토리를 노드만으로 깔끔히 두기 위해서이고, 접근이 어차피 엔진을
     지나므로 물리 자리가 사용성을 좌우하지 않는다."""
     return sm_dir() / f"{scope}.md"
@@ -218,7 +219,7 @@ def _read(p: Path) -> str:
 def session_note(session: str, scope: str | None) -> str:
     """훅과 도구 응답이 같은 호출 키를 이어 준다. scope 이름은 키가 아니다."""
     return (f"`scope_memory`의 `session={json.dumps(session, ensure_ascii=False)}`를 그대로 쓴다. "
-            f"`Scope/{scope}`는 저장 위치이며 session 키를 대신하지 않는다.")
+            f"`{SCOPE}/{scope}`는 저장 위치이며 session 키를 대신하지 않는다.")
 
 
 def _state(session: str, scope: str, text: str, *, full: bool = True, **extra) -> dict:
@@ -269,7 +270,7 @@ def _landing(session: str, space: str | None) -> tuple[str, str | None]:
     if scope not in graph.scope_names():
         raise write.WriteError(
             "결속이 가리키는 scope가 없다 — 아무것도 하지 않았다",
-            [f"세션 `{session}`은 `Scope/{scope}`에 결속돼 있으나 그 scope가 "
+            [f"세션 `{session}`은 `{SCOPE}/{scope}`에 결속돼 있으나 그 scope가 "
              f"없다. 가능한 space: {graph.space_list()}"])
     return scope, bound
 
@@ -438,7 +439,7 @@ def replace(session: str, text: str | None = None,
                       "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다."))
             v = [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
                  f"넘는다. 복구할 키는 `session={json.dumps(session, ensure_ascii=False)}`, "
-                 f"저장 위치는 `Scope/{scope}`다."]
+                 f"저장 위치는 `{SCOPE}/{scope}`다."]
             if not stop:
                 v.append(RECOVERY_NOTE + " " + retry)
             if stop:

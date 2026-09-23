@@ -59,6 +59,6 @@ DENY osk-sync.lock
 
 # ── 빈 골격 ─────────────────────────────────────────────────
 # 내려받은 사람이 자기 인스턴스를 시작할 자리. 내용은 나가지 않는다.
-SKEL Scope/
-SKEL Domain/
-SKEL Person/
+SKEL 00_Scope/
+SKEL 00_Domain/
+SKEL 00_Person/

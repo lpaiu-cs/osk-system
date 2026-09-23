@@ -140,7 +140,8 @@ def _fsync_file(p: Path) -> None:
 
 def _fsync_journal_home(root: Path) -> None:
     """갱신 저널의 디렉터리 엔트리를 ROOT까지 내구화 — osk.update와 같은 규율."""
-    d = root / "Scope" / "Workbench" / "_ledger"
+    d = next((root / name / "Workbench/_ledger" for name in ("00_Scope", "= Scope", "Scope")
+              if (root / name / "Workbench/_ledger/update.jsonl").is_file()), root)
     root_real = Path(os.path.realpath(root))
     while True:
         _fsync_dir(d)
@@ -210,10 +211,13 @@ def _canon_rel(root: Path, rel: str) -> str | None:
 
 
 def _journal_done(root: Path, txn: str) -> bool:
-    j = root / "Scope/Workbench/_ledger/update.jsonl"
-    if not j.is_file():
-        return False
-    for line in j.read_text(encoding="utf-8", errors="ignore").splitlines():
+    # Recovery must not import a possibly half-replaced engine. Read the original
+    # journal at any supported physical root; transaction ids are unique.
+    journals = [root / name / "Workbench/_ledger/update.jsonl"
+                for name in ("00_Scope", "= Scope", "Scope")]
+    lines = (line for j in journals if j.is_file()
+             for line in j.read_text(encoding="utf-8", errors="ignore").splitlines())
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -231,7 +235,7 @@ def main(argv=None) -> int:
     ap.add_argument("--root", help="vault 루트 (기본: 이 스크립트에서 3단계 위)")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
-    root = Path(a.root).resolve() if a.root else \
+    root = Path(a.root).resolve() if a.root else\
         Path(__file__).resolve().parent.parent.parent.parent
     if not a.apply:
         return _report(root)
@@ -240,7 +244,7 @@ def main(argv=None) -> int:
     # 되살린 환경에서도 데몬이 half-applied를 커밋하지 못하게 한다.
     try:
         with _exclusive(_lock_path(root, "osk-sync.lock"),
-                        "동기화 데몬이 실행 중이다 — 복구 전에 데몬을 멈춘다"), \
+                        "동기화 데몬이 실행 중이다 — 복구 전에 데몬을 멈춘다"),\
                 _exclusive(_lock_path(root, "osk-mutation.lock"),
                            "다른 갱신·복구가 진행 중이다 — 잠시 후 다시 실행한다"):
             return _recover(root)
