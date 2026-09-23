@@ -42,7 +42,7 @@ def packet_worker(change='', wrapper='plain', code=0):
     source = "import json,sys; from osk import core,growth,distillation,integration; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
     if change:
         source += change + '; '
-    source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'complete','reason':'The fixture is one coherent, directly wired group.','after':organization.snapshot(j['scope'])['snapshot'],'intentional':[]} for j in p['organization_jobs']]; "
+    source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'complete','reason':'The fixture is one coherent, directly wired group.','after':organization.snapshot(j['scope'])['snapshot'],'intentional':[],'checked':[{'unit':u['unit'],'reason':'Known fixture claim and conditions'} for u in j['review_units']]} for j in p['organization_jobs']]; "
     wrappers = {
         'plain': "print(json.dumps(q))",
         'codex': "[print(json.dumps(e)) for e in [{'type':'turn.started'},{'type':'item.completed','item':{'type':'agent_message','text':json.dumps(q)}},{'type':'turn.completed'}]]",
@@ -58,6 +58,23 @@ def packet_worker(change='', wrapper='plain', code=0):
 
 
 class GrowthTests(unittest.TestCase):
+    def test_execution_order_rotates_even_when_every_queue_is_selected(self):
+        self.check_case("""
+            rows, first = [], []
+            for _ in range(8):
+                planned = {key:[{'key':key}] for key in growth._QUEUES}
+                growth._select_work(planned,4,rows)
+                order = planned['work_order']
+                first.append(order[0]['queue'])
+                assert len(order) == 4 and {i['queue'] for i in order} == set(growth._QUEUES)
+                rows.append({'kind':'plan',**planned})
+            assert first[:4] == list(growth._QUEUES), first
+            assert first[4:] == first[:4], first
+            daily = {key:[{'key':key}] for key in growth._QUEUES}
+            growth._select_work(daily,4,[dict(row,work_context='stop:W1') for row in rows])
+            assert daily['work_order'][0]['queue'] == growth._QUEUES[0], daily
+        """)
+
     def test_eviction_settlement_needs_review_and_deferred_returns_to_queue(self):
         for deferred in (True, False):
             self.check_case("""
@@ -323,7 +340,7 @@ class GrowthTests(unittest.TestCase):
             assert not result['ok'], result
             assert growth.plan()['candidates']
             worker = worker.replace("'deferred'", "'no_value'")
-            worker += "; from osk import organization; [organization.review(j['key'],j['scope'],'complete','The fixture group remains coherent.',after=organization.snapshot(j['scope'])['snapshot']) for j in plans[-1]['organization_jobs']]"
+            worker += "; from osk import organization; [organization.review(j['key'],j['scope'],'complete','The fixture group remains coherent.',after=organization.snapshot(j['scope'])['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in j['review_units']]) for j in plans[-1]['organization_jobs']]"
             result = growth.run([sys.executable, '-c', worker])
             assert result['ok'], result
             assert set(result['outcomes'].values()) == {'no_value'}
@@ -451,7 +468,7 @@ class GrowthTests(unittest.TestCase):
             assert result['ok'], result
             next_candidate = growth.plan(1)['candidates'][0]
             assert next_candidate['previous_distillations'][0]['key'] == candidate['distill_key']
-            worker = "import sys; from osk import core,growth,organization; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [growth.review(c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(j['scope'])['snapshot']) for j in p['organization_jobs']]"
+            worker = "import sys; from osk import core,growth,organization; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [growth.review(c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(j['scope'])['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in j['review_units']]) for j in p['organization_jobs']]"
             outcome = growth.run([sys.executable,'-c',worker],limit=2)
             assert outcome['ok'], outcome
             assert len([1 for p,k in graph.Index().nodes.values() if k[0]=='domain' and not graph.is_hub(p)]) == 1
@@ -496,6 +513,12 @@ class GrowthTests(unittest.TestCase):
             assert result['ok'], result
             assert set(result['domain_outcomes'].values()) == {'preserved'}, result
             assert result['final_reviews']['state'] == 'applied', result
+            # Newly created Domain knowledge is pending its own organization
+            # review; the Scope review cannot acknowledge it implicitly.
+            pending = growth.plan()['organization_jobs']
+            assert [j['scope'] for j in pending] == ['= Domain/Principles'], pending
+            reviewed = growth.run([sys.executable,'-c',packet_worker()],limit=1)
+            assert reviewed['ok'], reviewed
             assert growth.run(['unused-command'])['state'] == 'skipped'
         """)
 

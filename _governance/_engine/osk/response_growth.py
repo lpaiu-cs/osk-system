@@ -375,10 +375,13 @@ def _codex_overrides(source: dict) -> list[str]:
     return [part for key, value in settings.items() for part in ('-c', key + '=' + _toml_value(value))]
 
 
-def preflight(source: dict, executable: str, env: dict, *, require_version: bool = True) -> None:
+def preflight(source: dict, executable: str, env: dict, *, require_version: bool = True) -> str:
     """Local authentication/version queries only; used by routing and rechecked before inference."""
     harness = source['harness']
     integration._identity(harness, 'preflight')
+    if harness == 'codex':
+        from . import native_cli
+        executable = native_cli.resolve(executable, version=source.get('cli_version'), env=env)
     if not Path(executable).is_absolute() or not Path(executable).is_file():
         raise ValueError('configure an existing absolute native CLI path')
     cwd = source.get('cwd')
@@ -408,7 +411,7 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
                              encoding='utf-8', timeout=5, creationflags=NO_WINDOW)
         if git.returncode or git.stdout.strip() != 'true':
             raise ValueError('source directory is not a Git worktree; use in-session review')
-        return
+        return executable
     # Settings can select API auth even when a separate subscription is logged in.
     base = Path(env.get('CLAUDE_CONFIG_DIR', str(Path.home() / '.claude')))
     for path in (base / 'settings.json', Path(cwd) / '.claude/settings.json', Path(cwd) / '.claude/settings.local.json'):
@@ -426,6 +429,7 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
     if (status.get('authMethod') != 'claude.ai' or not status.get('loggedIn')
             or str(status.get('subscriptionType')).lower() not in {'pro', 'max', 'team', 'enterprise'}):
         raise ValueError('confirmed Claude subscription login is required; no API fallback')
+    return executable
 
 
 def command(source: dict, executable: str, env: dict) -> list[str]:
@@ -435,7 +439,7 @@ def command(source: dict, executable: str, env: dict) -> list[str]:
     model = source.get('model')
     if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', model):
         raise ValueError('actual source model is unavailable')
-    preflight(source, executable, env)
+    executable = preflight(source, executable, env)
     if harness == 'codex':
         return [executable, 'exec', 'fork', '--ephemeral', '--json', '--model', model,
                 *_codex_overrides(source), sid, '-']

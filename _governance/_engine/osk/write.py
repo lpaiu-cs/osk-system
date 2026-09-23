@@ -654,6 +654,14 @@ def _dangling_of(path: Path, meta: dict, body: str, idx) -> list[str]:
                    if r["resolution"] == "dangling"})
 
 
+CLAIM_GUIDANCE = (
+    "기존 노드 갱신은 같은 주장과 적용 조건을 정정할 때 우선한다. 같은 프로젝트·절차의 다음 단계라는 "
+    "이유만으로 한 노드에 합치지 않는다. 독립적으로 검증·재사용할 결론은 기존 또는 새 노드에 보존한다. "
+    "분화는 대상에 결론·조건·근거를 먼저 보존하고 되읽은 뒤 허브 양쪽을 연결하고, 마지막에 원문의 "
+    "해당 구간만 짧은 결론과 링크로 접는다. 사실과 변경 이유를 보존하되 중복 문단을 영구히 쌓지 않는다. "
+)
+
+
 def size_feedback(path, body: str) -> dict:
     """Reading-cost hint, not a storage cap or permission to discard knowledge."""
     hub = graph.is_hub(path)
@@ -662,7 +670,7 @@ def size_feedback(path, body: str) -> dict:
         return {}
     return {"organization_advice": {
         "body_chars": len(body), "hub": hub, "read_view": "outline",
-        "instruction": "길이는 삭제·강제 분화의 근거가 아니다. 목차와 필요한 절부터 읽고, "
+        "instruction": CLAIM_GUIDANCE + "길이는 삭제·강제 분화의 근거가 아니다. 목차와 필요한 절부터 읽고, "
                        "현재 결론·적용 조건·근거를 한 곳에 유지하라. 단계별 실행 일지를 계속 덧붙이지 말고 "
                        "레포의 실행 상세는 레포 기록을 인용하라. 허브에는 탐색 경로를 남기고 "
                        "독립적으로 재사용되는 주장만 기존 또는 별도 노드로 증류하라. "
