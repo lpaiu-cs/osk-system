@@ -13,6 +13,37 @@ import test_growth as base_tests
 
 
 class ResponseGrowthTests(unittest.TestCase):
+    def test_resumed_codex_uses_only_its_own_runtime_version(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = {'harness':'codex','conversation_id':'own','cwd':folder,
+                      'cli_version':'0.155.0-alpha.9.2','model':'parent-model',
+                      'model_provider':'openai','effort':'high','approval_policy':'never',
+                      'sandbox_policy':{'type':'read-only'}}
+            executable = str(Path(sys.executable).resolve())
+            runtime = {'CODEX_THREAD_ID':'own','CODEX_VERSION':'0.155.0-alpha.16'}
+            calls = []
+            def inspect(argv, **kwargs):
+                calls.append(argv)
+                output = ('true' if argv[0] == 'git' else
+                          'codex-cli 0.155.0-alpha.16' if '--version' in argv else
+                          'Logged in using ChatGPT')
+                return subprocess.CompletedProcess(argv, 0, output, '')
+            with patch.object(rg.subprocess, 'run', side_effect=inspect):
+                argv = rg.command(source, executable, runtime)
+                self.assertEqual(argv[0], executable)
+                self.assertEqual(argv[argv.index('--model')+1], 'parent-model')
+                self.assertIn('--ephemeral', argv)
+                self.assertEqual(source['cli_version'], '0.155.0-alpha.9.2')
+                for env in ({}, {**runtime,'CODEX_THREAD_ID':'another'},
+                            {'CODEX_VERSION':runtime['CODEX_VERSION']},
+                            {**runtime,'CODEX_VERSION':'0.156.0'}):
+                    with self.subTest(env=env), self.assertRaisesRegex(ValueError, 'version differs'):
+                        rg.command(source, executable, env)
+                with self.assertRaisesRegex(ValueError, 'runtime version'):
+                    rg.command(source, executable, {**runtime,'CODEX_VERSION':'invalid'})
+            self.assertTrue(all(c[1:] in (['--version'], ['login','status']) or c[0]=='git'
+                                for c in calls), 'preflight started inference')
+
     def test_desktop_update_resolves_only_matching_sibling_and_keeps_auth_gate(self):
         from osk import native_cli, growth
         with tempfile.TemporaryDirectory() as folder:
@@ -46,10 +77,57 @@ class ResponseGrowthTests(unittest.TestCase):
                           'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}
                 with self.assertRaisesRegex(ValueError, 'ChatGPT subscription'):
                     rg.command(source, str(old), {})
+                source['cli_version'] = '0.154.0'  # Creation version survives an app update.
+                with self.assertRaisesRegex(ValueError, 'ChatGPT subscription'):
+                    rg.command(source, str(old), {'CODEX_THREAD_ID':'own',
+                                                'CODEX_VERSION':'0.155.0-alpha.16'})
             self.assertTrue(all(Path(c[0]) != base / 'codex.exe' for c in calls))
             foreign = Path(folder) / 'other-cli.exe'
             with patch.object(native_cli.subprocess, 'run', side_effect=AssertionError('foreign scan')):
                 self.assertEqual(native_cli.resolve(str(foreign), version='0.155.0-alpha.16'), str(foreign))
+
+    def test_runtime_version_recovery_preserves_counters_and_reaches_supervisor(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration
+            from unittest.mock import patch, Mock
+            import os, subprocess
+            native = core.ROOT / 'native.jsonl'
+            rows = [
+                {'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),
+                    'cli_version':'0.155.0-alpha.9.2','model_provider':'openai'}},
+                {'type':'turn_context','payload':{'model':'parent-model','effort':'high',
+                    'cwd':str(core.ROOT),'approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
+                {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'done'}}]
+            native.write_text(''.join(json.dumps(r)+chr(10) for r in rows), encoding='utf-8')
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'codex':sys.executable}))
+            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT)}
+            with integration._locked('codex','own') as p:
+                saved = integration._load(p,'codex','own')
+                clock = {'counter':'finals','seen':['t1'],'count':9,'attempted_count':0,'history_baselined':True}
+                saved.update(prompt_count=15, response_growth=clock)
+                integration._save(p,saved)
+            def inspect(argv, **kwargs):
+                assert argv[0]=='git' or argv[1:] in (['--version'],['login','status']), argv
+                output = ('true' if argv[0]=='git' else 'codex-cli 0.155.0-alpha.16'
+                          if '--version' in argv else 'Logged in using ChatGPT')
+                return subprocess.CompletedProcess(argv,0,output,'')
+            with patch.object(rg.subprocess,'run',side_effect=inspect), patch.dict(os.environ,
+                    {'CODEX_THREAD_ID':'other','CODEX_VERSION':'0.155.0-alpha.16'}):
+                assert rg.route(env)['mode']=='foreground'
+                with patch.dict(os.environ,{'CODEX_THREAD_ID':'own'}):
+                    assert rg.route(env)['mode']=='background'
+                    with patch.object(rg.subprocess,'Popen',return_value=Mock()) as launch:
+                        assert rg.launch(env,'own')
+                        inherited = launch.call_args.kwargs['env']
+                        assert inherited['CODEX_THREAD_ID']=='own'
+                        assert inherited['CODEX_VERSION']=='0.155.0-alpha.16'
+                        assert inherited['OSK_GROWTH_WORKER']=='1'
+            state = integration._load(integration.state_path('codex','own'),'codex','own')
+            assert state['response_growth']==clock and state['prompt_count']==15, state
+            assert state['reviewed_count']==saved['reviewed_count']
+            assert state['rounds']==saved['rounds']
+        ''')
 
     def test_empty_legacy_baseline_excludes_ancestor_finals_once(self):
         base_tests.GrowthTests().check_case('''
