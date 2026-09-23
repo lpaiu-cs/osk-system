@@ -284,7 +284,8 @@ def _item(r: dict, now_ms: int | None) -> str:
 
 def _exits(scope: str, python: str, engine: str) -> str:
     return (f"출구는 셋이다(§9-3 2항). 본문을 읽고 `search`로 같은 주제의 노드를 찾아 "
-            f"`read_node` 뒤 기존 노드 갱신(`update_node`)을 우선한다. 새 노드가 필요하면 "
+            f"`read_node` 뒤 같은 주장·적용 조건의 갱신(`update_node`)을 우선한다. "
+            f"같은 프로젝트라는 이유만으로 독립 주장을 합치지 않는다. 새 노드가 필요하면 "
             f"`create_node`(착지 `= Scope/{scope}`; 여러 scope에 재사용되면 Domain). "
             f"보존하는 쓰기에 `settle=\"<evict rid>\"`를 함께 주면 저장 뒤 node·merged 처분도 "
             f"기록한다 — 응답의 `settlement.state`를 확인하라. "

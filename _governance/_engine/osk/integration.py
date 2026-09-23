@@ -677,7 +677,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
              "확인할 때만 query로 필요한 원료 근거를 좁혀 읽는다. 원본 hash를 출처에 쓴다. "
              "선별본 생략은 무가치의 증거가 아니며, 판정 근거가 부족하면 deferred로 남긴다. "
              "max_chars 증가·raw 전량 이어읽기·전사 전체 shell 출력으로 우회하지 않는다. "
-             "search로 기존 노드를 찾고 같은 주제는 update_node를 우선한다. "
+             "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE +
              "오래 쓸 지식만 Scope 노드로 옮기며 선택한 raw 출처와 허브 Link를 distill로 완성한다. "
              "남길 지식이 없는 라운드까지 노드에 억지로 넣지 않는다.\n"
              + "\n".join(st["pending_refs"]) + "\n"

@@ -13,6 +13,44 @@ import test_growth as base_tests
 
 
 class ResponseGrowthTests(unittest.TestCase):
+    def test_desktop_update_resolves_only_matching_sibling_and_keeps_auth_gate(self):
+        from osk import native_cli, growth
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder) / 'OpenAI/Codex/bin'
+            old = base / ('1' * 16) / 'codex.exe'
+            same = base / ('2' * 16) / 'codex.exe'
+            newer = base / ('3' * 16) / 'codex.exe'
+            for p in (same, newer, base / 'codex.exe'):
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.touch()
+                p.chmod(0o700)
+            calls = []
+            def inspect(argv, **kwargs):
+                calls.append(argv)
+                if Path(argv[0]) == old:
+                    return subprocess.CompletedProcess(argv, 1, '', 'retired binary cannot start')
+                text = ('codex-cli ' + ('0.155.0-alpha.16' if Path(argv[0]) == same else '0.156.0')
+                        if argv[1:] == ['--version'] else 'Logged in using an API key')
+                return subprocess.CompletedProcess(argv, 0, text, '')
+            with patch.object(native_cli.subprocess, 'run', side_effect=inspect):
+                self.assertEqual(native_cli.resolve(str(old), version='0.155.0-alpha.16'), str(same))
+                self.assertEqual(native_cli.resolve(str(old)), str(newer))
+                self.assertEqual(growth.check_command([str(old)])['executable'], str(newer))
+                self.assertEqual(growth.check_command([str(same)], follow_desktop_update=False)['executable'], str(same))
+                old.parent.mkdir(); old.touch()
+                self.assertEqual(native_cli.resolve(str(old)), str(newer))
+                with self.assertRaisesRegex(ValueError, 'matching Codex'):
+                    native_cli.resolve(str(old), version='0.154.0')
+                source = {'harness':'codex','conversation_id':'own','cwd':folder,
+                          'cli_version':'0.155.0-alpha.16','model':'same-model','model_provider':'openai',
+                          'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}
+                with self.assertRaisesRegex(ValueError, 'ChatGPT subscription'):
+                    rg.command(source, str(old), {})
+            self.assertTrue(all(Path(c[0]) != base / 'codex.exe' for c in calls))
+            foreign = Path(folder) / 'other-cli.exe'
+            with patch.object(native_cli.subprocess, 'run', side_effect=AssertionError('foreign scan')):
+                self.assertEqual(native_cli.resolve(str(foreign), version='0.155.0-alpha.16'), str(foreign))
+
     def test_empty_legacy_baseline_excludes_ancestor_finals_once(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration
@@ -477,6 +515,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from osk import integration, scope_memory
             from unittest.mock import patch
             node('Unrelated Domain candidate')
+            node('Other Scope claim', scope='W2')
             scope_memory.replace('own', '', space='= Scope/W1')
             native = core.ROOT / 'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'one-off question'}}) + '\\n' +
@@ -490,6 +529,9 @@ class ResponseGrowthTests(unittest.TestCase):
                 result = growth.run([sys.executable,'-c',script], scope_job=job, cwd=source_cwd)
             assert result['ok'], result
             assert result['domain_selected'] == 0 and result['scope_selected'] == 1, result
+            manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            assert [j['scope'] for j in manifest['organization_jobs']] == ['W1'], manifest
+            assert result['selected'] == 2 and manifest['timeout_seconds'] == 600
             assert integration.status('claude','own')['reviewed_rounds'] == 1
             assert growth.plan()['candidates'], 'unrelated Domain work was incorrectly acknowledged'
         ''')

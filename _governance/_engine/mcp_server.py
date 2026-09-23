@@ -378,9 +378,9 @@ def update_node(name: str, body: str | None = None,
                 old_text: str | None = None,
                 new_text: str | None = None, settle: str | None = None,
                 distill: dict | None = None) -> dict:
-    """`name`의 본문·summary·엣지 수정. 기본은 해시 없는 앵커 편집:
-    본문의 유일한 `old_text`를 `new_text`로 바꾼다.
-    전문 `body` 치환은 `expect_hash` 필수. 엣지는 선-읽기 없는 델타.
+    """`name`의 같은 주장·조건을 정정한다. 독립 주장은 분화한다.
+    `old_text`→`new_text`는 유일 앵커 치환(해시 불필요).
+    전문 `body`는 `expect_hash` 필수. 엣지는 선-읽기 없는 델타.
     `dangling`=대상 없는 링크. `settle`=이 본문 갱신으로 보존한 evict rid;
     처분 결과: `settlement`. `distill`은 `create_node`와 같다.
     저장 후 연결만 재개: `distill={resume:키}`."""

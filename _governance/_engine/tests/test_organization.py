@@ -26,10 +26,107 @@ def rejected(fn):
     try: fn()
     except (ValueError, write.WriteError): return
     raise AssertionError("invalid completion was accepted")
+def finish_review(scope, reason, intentional=None):
+    # These tiny synthetic facts are known to the fixture. Exercise the same
+    # bounded receipt protocol a reader must use, including multi-batch progress.
+    for _ in range(30):
+        job = organization.plan(scope)
+        if job.get('status') == 'complete': return
+        checked = [{'unit':u['unit'], 'reason':reason} for u in job['review_units']]
+        outcome = 'complete' if job['coverage']['remaining'] <= len(checked) else 'deferred'
+        organization.review(job['key'],scope,outcome,reason,after=job['snapshot'],
+                            checked=checked,intentional=intentional)
+    raise AssertionError('fixture review did not finish')
 """
 
 
 class OrganizationTests(unittest.TestCase):
+    def test_later_selected_destination_cannot_disappear_before_completion(self):
+        self.case("""
+            node('A'); original = organization.plan('W1')
+            added = node('Later destination')
+            later = organization.plan('W1')
+            assert later['key'] == original['key']
+            path = write._live_locate(added['id'], graph.Index()); path.unlink()
+            write.update_node('W1',old_text='- [[Later destination]]',new_text='')
+            missing = organization.plan('W1')
+            assert added['id'] in missing['missing_ids']
+            rejected(lambda: finish_review('W1','The first node alone remains'))
+        """)
+
+    def test_existing_domain_review_is_separate_and_duplicate_pages_have_unique_ids(self):
+        self.case("""
+            request = dict(title='Principles',summary='Shared principles',body='General conclusions',
+                           drafter='fixture',space='= Domain/Principles')
+            rejected(lambda: write.create_node(**request))
+            assert write.create_node(**request)['ok']  # fixture confirmation only
+            result = write.create_node('Rule','Qualified rule','Identical paragraph. '*1000,
+                                       'fixture',space='= Domain/Principles')
+            assert result['ok']; wire('Principles','Rule')
+            current = organization.snapshot('= Domain/Principles')
+            ids = [u['unit'] for u in current['units']]
+            assert len(ids) == len(set(ids)) and len(ids) > 3
+            assert not organization.pending(['W1']), 'empty Scope must not claim Domain work'
+            assert organization.pending()[0]['scope'] == '= Domain/Principles'
+            finish_review('= Domain/Principles','Synthetic rule has one explicitly bounded condition')
+            assert organization.plan('= Domain/Principles')['status'] == 'complete'
+            rejected(lambda: organization.plan('= Person/think'))
+        """)
+
+    def test_partial_read_cannot_complete_scope_and_append_keeps_prior_coverage(self):
+        self.case("""
+            body = '\\n\\n'.join('## Claim '+str(i)+'\\n'+('bounded evidence '+str(i)+' ')*170 for i in range(20))
+            node('Large', body)
+            job = organization.plan('W1')
+            assert job['coverage']['remaining'] > 3
+            assert len(job['review_units']) == 3
+            assert all(u['chars'] <= 4000 for u in job['review_units'])
+            assert sum(u['chars'] for u in job['review_units']) <= 12000
+            rejected(lambda: organization.review(job['key'],'W1','complete','Same procedure',after=job['snapshot']))
+            checked = [{'unit':u['unit'],'reason':'Independent fixture claim '+u['view']} for u in job['review_units']]
+            rejected(lambda: organization.review(job['key'],'W1','complete','Read three only',after=job['snapshot'],checked=checked))
+            assert not organization._load().get('coverage'), 'failed completion must not mutate receipts'
+            saved = organization.review(job['key'],'W1','deferred','Continue at the next selected range',after=job['snapshot'],checked=checked)
+            before = organization.plan('W1')
+            from osk import growth
+            packet = {'osk_reviews':{'manifest':'fixture','domain':[],'scope':[],
+                      'organization':[{'key':job['key'],'scope':'W1','outcome':'deferred',
+                      'reason':'Forged later selection','checked':[{'unit':before['review_units'][0]['unit'],'reason':'not in manifest'}]}]}}
+            rejected(lambda: growth._validate_packet(packet,{'manifest':'fixture','candidates':[],
+                     'scope_jobs':[],'organization_jobs':[job]}))
+            for malformed in ([], {}, None):
+                packet['osk_reviews']['organization'][0]['checked'][0]['unit'] = malformed
+                rejected(lambda: growth._validate_packet(packet,{'manifest':'fixture','candidates':[],
+                         'scope_jobs':[],'organization_jobs':[job]}))
+            assert saved['remaining_units'] == job['coverage']['remaining'] - 3
+            write.update_node('Large',old_text='## Claim 19',new_text='## Claim 19 revised')
+            after = organization.plan('W1')
+            assert after['coverage']['remaining'] == before['coverage']['remaining']
+            assert not {u['unit'] for u in checked} & {u['unit'] for u in after['review_units']}
+            write.update_node('Large',summary='Updated current result; earlier claim text unchanged')
+            assert organization.plan('W1')['coverage']['remaining'] == after['coverage']['remaining'] + 1
+            # Stale and unselected units cannot be claimed, even with a current snapshot.
+            rejected(lambda: organization.review(after['key'],'W1','deferred','replay',after=after['snapshot'],checked=checked))
+            changed = after['review_units'][0]
+            write.update_node('Large',old_text='## Claim 3',new_text='## Claim 3 changed')
+            rejected(lambda: organization.review(after['key'],'W1','deferred','old bytes',after=after['snapshot'],checked=[{'unit':changed['unit'],'reason':'old claim'}]))
+            finish_review('W1','Each synthetic claim is bounded and retained in this fixture')
+            assert organization.status(job)['status'] == 'complete'
+            write.update_node('Large',old_text='## Claim 0',new_text='## Claim 0 corrected')
+            reopened = organization.plan('W1')
+            assert 0 < reopened['coverage']['remaining'] < 4, reopened['coverage']
+            # A pre-upgrade blanket completion cannot suppress semantic review.
+            state = organization._load(); state.pop('coverage')
+            state['reviews']['W1']['after'] = organization.snapshot('W1')['snapshot']
+            organization._save(state)
+            assert organization.plan('W1')['coverage']['remaining'] > 3
+            node('Small unselected', 'Another independent fixture claim')
+            selected = organization.plan('W1')
+            compact = organization.readout([selected])[0]
+            assert len(compact['nodes']) < len(selected['nodes'])
+            assert compact['review_units'] == selected['review_units'] and compact['other_nodes'] > 0
+        """)
+
     def test_deferred_resume_context_reaches_next_job_and_growth_manifest(self):
         self.case("""
             from osk import growth
@@ -53,7 +150,7 @@ class OrganizationTests(unittest.TestCase):
             manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
             carried = next(j for j in manifest['organization_jobs'] if j['scope']=='W1')
             assert carried['previous_deferral'] == changed['previous_deferral']
-            organization.review(job['key'], 'W1', 'complete', 'Checked D as well.', after=organization.snapshot('W1')['snapshot'])
+            finish_review('W1', 'Checked D as well.')
             assert organization.plan('W1')['status'] == 'complete'
         """)
 
@@ -93,7 +190,7 @@ class OrganizationTests(unittest.TestCase):
             rejected(lambda: organization.review(job["key"],"W1","complete","Keep question",after=current["snapshot"],intentional=intent))
             write.update_node("A",remove_edges={"derived-from":"docs/missing.md"})
             current=organization.snapshot("W1")
-            organization.review(job["key"],"W1","complete","Bad source removed, question remains",after=current["snapshot"],intentional=intent)
+            finish_review("W1", "Bad source removed, question remains", intentional=intent)
             assert organization.plan("W1")["status"]=="complete"
             import subprocess,os
             r=subprocess.run([sys.executable,"-B","-c","from osk import organization; assert organization.plan('W1')['status']=='complete'"],env=os.environ,capture_output=True)
@@ -129,7 +226,7 @@ class OrganizationTests(unittest.TestCase):
             write.update_node("W1",old_text="- [[B]]",new_text="")
             now=organization.snapshot("W1")
             assert not now["issues"],now["issues"]
-            organization.review(job["key"],"W1","complete","One meaningful branch; original IDs retained",after=now["snapshot"])
+            finish_review("W1", "One meaningful branch; original IDs retained")
             assert organization.status(job)["status"]=="complete"
             path=write._live_locate(a["id"],graph.Index()); path.unlink()
             assert organization.status(job)["status"]=="pending"
@@ -150,7 +247,7 @@ class OrganizationTests(unittest.TestCase):
             wire("W1","Gap"); wire("Gap","Child")
             now=organization.snapshot("W1")
             assert not now["issues"],now["issues"]
-            organization.review(job["key"],"W1","complete","Complete ancestor hub chain",after=now["snapshot"])
+            finish_review("W1", "Complete ancestor hub chain")
             assert organization.plan("W1")["status"]=="complete"
         """)
 
@@ -171,7 +268,7 @@ class OrganizationTests(unittest.TestCase):
             child=("import json; from osk import core,organization; "
                    "job=organization.plan('W1'); "
                    "assert not job.get('missing_ids'), job; "
-                   "organization.review(job['key'],'W1','complete','This checkout only',after=job['snapshot']); "
+                   "organization.review(job['key'],'W1','complete','This checkout only',after=job['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in job['review_units']]); "
                    "print(json.dumps({'state':str(organization._state_path()),'lock':str(core.local_lock_path('osk-mutation.lock'))}))")
             r=subprocess.run([sys.executable,"-B","-c",child],cwd=linked,
                              env=dict(os.environ,OSK_VAULT_ROOT=str(linked)),capture_output=True,text=True)
@@ -211,7 +308,7 @@ class OrganizationTests(unittest.TestCase):
             now=organization.snapshot("W1")
             assert not now["issues"],now["issues"]
             assert not now["pending_moves"],now["pending_moves"]
-            organization.review(job["key"],"W1","complete","Finished retry, then valid new placement",after=now["snapshot"])
+            finish_review("W1", "Finished retry, then valid new placement")
             assert organization.plan("W1")["status"]=="complete"
         """)
 

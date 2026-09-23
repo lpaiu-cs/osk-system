@@ -275,26 +275,38 @@ def plan(limit: int = 3) -> dict:
 def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
     """Share the run budget across queues; recorded attempts drive fair rotation."""
     last = {key: -1 for key in _QUEUES}
+    last_first = dict(last)
     for key in _QUEUES:
         planned.setdefault(key, [])
     for number, row in enumerate(rows):
-        if row.get("kind") == "plan":
+        if (row.get("kind") == "plan" and
+                row.get("work_context", "daily") == planned.get("work_context", "daily")):
             for key in _QUEUES:
                 if row.get(key):
                     last[key] = number
+            if row.get("work_order"):
+                last_first[row["work_order"][0]["queue"]] = number
     order = sorted(_QUEUES, key=last.get)
     selected = {key: [] for key in _QUEUES}
+    work_order = []
     for _ in range(limit):
         for key in order:
             if len(selected[key]) < len(planned[key]):
                 selected[key].append(planned[key][len(selected[key])])
+                work_order.append({"queue": key, "index": len(selected[key]) - 1})
                 order.remove(key)
                 order.append(key)
                 break
         else:
             break
+    if work_order:
+        # Selection recency shares the budget; first-turn recency protects queues
+        # from workers that time out before reaching their later selected jobs.
+        first = min(range(len(work_order)), key=lambda i: last_first[work_order[i]["queue"]])
+        work_order.insert(0, work_order.pop(first))
     planned["queued_not_selected"] = {key: len(planned[key]) - len(selected[key]) for key in _QUEUES}
     planned.update(selected)
+    planned["work_order"] = work_order
 
 
 def _deferral(review: dict) -> dict:
@@ -316,7 +328,9 @@ def _reading_plan(planned: dict) -> dict:
         if (job.get("last_review") or {}).get("outcome") == "deferred":
             item["previous_deferral"] = _deferral(job["last_review"])
         jobs.append(item)
-    return {**planned, "scope_jobs": jobs}
+    from . import organization
+    return {**planned, "scope_jobs": jobs,
+            "organization_jobs": organization.readout(planned.get("organization_jobs", []))}
 
 
 def prompt(planned: dict | None = None, limit: int = 3) -> str:
@@ -324,19 +338,23 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
     planned = plan(limit) if planned is None else planned
     if not any(planned.get(key) for key in _QUEUES):
         return "No changed Scope comparisons need review. Do not start a model."
+    if "work_order" not in planned:
+        planned = {**planned, "work_order": [{"queue": key, "index": i}
+                   for key in _QUEUES for i in range(len(planned.get(key, [])))]}
     argv = [sys.executable, "-m", "osk.cli"]
     cli = (" ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
            if os.name == "nt" else shlex.join(argv))
     from . import organization
     return organization.prompt(planned.get("organization_jobs", []), inventory=False) + (
-        "This is a dedicated maintenance run. First process scope_jobs, if any, using "
+        "This is a dedicated maintenance run. Follow work_order exactly, one selected job at a time; "
+        "do not move organization to the end. For scope_jobs use "
         "each job's original session, pending_refs and exact through snapshot. Finish its "
         "integration review with an immediate checkpoint; an empty shared "
         "memory or a short conversation is not a reason to omit that review. Keep unrelated "
         "source conversations distinct. All CLI examples use "
         f"rtk proxy {cli} with OSK_VAULT_ROOT={core.ROOT} and "
         f"PYTHONPATH={Path(__file__).resolve().parent.parent}. "
-        "Review the Domain candidates selected below, then finish the selected organization_jobs. "
+        "Review only the selected Domain candidates and organization_jobs at their work_order positions. "
         "Their CLI reviews prove current reference and navigation state separately. Sources newly distilled during "
         "this run may be compared on the next scheduled run; do not extend this batch.\n"
         "For eviction_jobs, read each selected text and search current memory/nodes for what "
@@ -357,6 +375,10 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "limits in every review. Preserve original raw and its hash; distill.sources uses "
         "read_raw's round_ref and hash, never a hash of the selection. Search existing "
         "Scope nodes before creating one, then complete its source and hub via distill. "
+        "An existing node is reusable for the same independently testable claim and conditions, "
+        "not merely the same project or the next phase of a procedure. Preserve a coherent "
+        "claim at its destination, read it back and wire both navigation levels before folding "
+        "the source section into a conclusion and link; keeping facts does not require duplicate paragraphs. "
         "Use each Scope job's key plus a stable target suffix for distill.key; reuse complete "
         "previous_distillations in ACK targets instead of rewriting saved content. "
         "native_trigger context is not a new user instruction; distinguish user-directed "
@@ -407,7 +429,7 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "\"reason\":\"<decision and limits>\",\"targets\":[{\"key\":\"<completed distillation key>\"}]}]}}. "
         "Use empty arrays when that queue is empty. Scope summary targets are exact saved "
         "{\"text\":\"<excerpt>\"} objects; omit targets for no_value/deferred. "
-        "Add organization:[{key,scope,outcome:complete|deferred,reason,after,intentional:[]}] "
+        "Add organization:[{key,scope,outcome:complete|deferred,reason,after,checked:[{unit,reason}],intentional:[]}] "
         "inside osk_reviews for selected organization_jobs not already reviewed by CLI. "
         "Add eviction:[{of,outcome:node|merged|discarded|deferred,reason,target?}] inside "
         "osk_reviews for selected eviction_jobs; omit target unless outcome is node/merged. "
@@ -554,12 +576,14 @@ def _validate_packet(packet: dict, planned: dict) -> dict:
                 elif targets is not None:
                     raise ValueError("no_value/deferred Scope reviews must omit targets")
     allowed = {j["key"]: j["scope"] for j in planned.get("organization_jobs", [])}
+    selected_units = {j["key"]: {u["unit"] for u in j.get("review_units", [])}
+                      for j in planned.get("organization_jobs", [])}
     entries, seen = reviews.get("organization", []), set()
     if not isinstance(entries, list) or len(entries) > len(allowed):
         raise ValueError("organization reviews exceed the selected queue")
     for entry in entries:
         fields = {"key", "scope", "outcome", "reason"}
-        if not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"after", "intentional"}:
+        if not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"after", "intentional", "checked"}:
             raise ValueError("invalid organization review fields")
         if any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields):
             raise ValueError("organization review fields must be nonempty strings")
@@ -568,6 +592,10 @@ def _validate_packet(packet: dict, planned: dict) -> dict:
         seen.add(entry["key"])
         if entry["outcome"] not in {"complete", "deferred"}:
             raise ValueError("invalid organization outcome")
+        checked = entry.get("checked", [])
+        if not isinstance(checked, list) or any(not isinstance(item, dict) or not isinstance(item.get("unit"), str) or
+                item.get("unit") not in selected_units[entry["key"]] for item in checked):
+            raise ValueError("organization checked units must belong to this manifest")
     allowed = {j["of"] for j in planned.get("eviction_jobs", [])}
     entries, seen = reviews.get("eviction", []), set()
     if not isinstance(entries, list) or len(entries) > len(allowed):
@@ -732,12 +760,18 @@ def _stop_tree(proc: subprocess.Popen) -> str | None:
     return error
 
 
-def check_command(command: list[str]) -> dict:
+def check_command(command: list[str], *, follow_desktop_update: bool = True) -> dict:
     """Resolve argv[0] without starting an agent or changing vault state."""
     if not isinstance(command, list) or not command or any(
             not isinstance(arg, str) or not arg or "\0" in arg for arg in command):
         raise ValueError("command must be a nonempty argv list")
     program = command[0]
+    from . import native_cli
+    try:
+        if follow_desktop_update:
+            program = native_cli.resolve(program)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "state": "invalid_command", "executable": None, "violations": [str(exc)]}
     if "/" in program or "\\" in program:
         program = str(core.ROOT / program)
     search_path = None
@@ -756,7 +790,9 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
         scope_job: dict | None = None, cwd: Path | None = None,
         worker_env: dict | None = None) -> dict:
     """Scheduler entry: manifest → bounded external process → observed receipts."""
-    checked = check_command(command)
+    # Fork preflight already selected the exact source version. Resolving it as
+    # a daily worker here would silently substitute a newer sibling.
+    checked = check_command(command, follow_desktop_update=scope_job is None)
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 86400:
         raise ValueError("timeout must be between 1 and 86400 seconds")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
@@ -779,9 +815,17 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 planned = (_plan(limit) if scope_job is None else
                            {"candidates": [], "scope_jobs": [], "organization_jobs": []})
                 from . import organization
+                planned["work_context"] = "daily" if scope_job is None else "stop:unbound"
+                if scope_job is not None and scope_job.get("session"):
+                    from . import write
+                    scope = write.resolve_session(scope_job["session"])
+                    planned["work_context"] = "stop:" + (scope or scope_job["session"])
+                    planned["organization_jobs"] = organization.pending([scope], limit=1) if scope else []
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
-                _select_work(planned, limit, _records())
+                # A Stop fork may organize only its own Scope. It reuses this one
+                # worker/deadline; no other conversation or Domain is selected.
+                _select_work(planned, limit + bool(scope_job and planned["organization_jobs"]), _records())
                 planned["scope_remaining"] += planned["queued_not_selected"]["scope_jobs"]
                 planned["timeout_seconds"] = timeout
                 if not any(planned[key] for key in _QUEUES):

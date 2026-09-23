@@ -118,7 +118,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
-| `organization plan` / `organization review` | 변경 Scope의 참조·허브·분화 검토와 완료 확인 |
+| `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
@@ -204,6 +204,12 @@ UserPromptSubmit의 입력 계수는 별도로 계속 올려 fallback에 대비�
 명령 문자열이나 모델을 설정하는 파일이 아니다. 활성화 전 같은 출발 환경에서
 구독 인증·실제 MCP 쓰기·캐시 적중을 확인한다.
 
+Windows Codex 앱은 `OpenAI/Codex/bin/<16자리 해시>/codex.exe`가 실제 앱 판본이다.
+이 형식의 경로를 등록하면 앱 갱신 후 같은 설치 폴더의 형제 경로에서 **원 전사와
+정확히 같은 CLI 버전**을 찾는다. 없으면 기존 세션 내 검토로 돌아간다. 이름이 고정된
+`bin/codex.exe`나 별도 설치 CLI가 최신 앱 판본이라는 보장은 없다. 다른 형식의
+명시 경로는 자동 교체하지 않는다.
+
 ```json
 {
   "codex": "C:/path/to/codex.exe",
@@ -226,6 +232,14 @@ Stop/입력 계수는 전환·재개로 지우지 않는다. 다음 시작/입�
 확인하면 Stop 실행으로 돌아가고, 실제 fork 직전에도 다시 구독 인증을 확인한다.
 Codex의 `--ephemeral`, Claude의 `--no-session-persistence`로 정리 대화를 하네스의
 저장 세션 목록에 추가하지 않고, OSK 훅도 유지보수 raw를 포착하지 않는다.
+
+Stop의 한 작업자는 원 대화 검토와 **같은 Scope의 조직 작업 1건**을 기존 600초 안에
+처리한다. 다른 대화나 Domain을 붙이지 않는다. 정기 실행은 `work_order` 순서로
+작업하고 매번 첫 차례를 순환하므로, 조직 검토를 항상 마지막으로 미루지 않는다.
+조직 작업은 최대 3개 구간·구간당 4000자를 선택한다. `checked=[{unit,reason}]`로
+각 구간의 주장·조건·유지/분화 이유를 기록하며, 미검토 구간이 남으면 `deferred`로
+부분 진척을 남긴다. 이전의 포괄적인 완료 기록은 구간별 검토를 대신하지 않는다.
+현재 문안·구현 경계는 [조직 검토 변경](hub-growth-review.md)을 따른다.
 
 한 번의 시도는 기존 성장 실행기의 600초 상한·최종 결정·저장 영수증 검증을 쓴다.
 계수와 검토 커서는 별개다. 실패/보류는 검토를 완료하지 않고, 다음 9회 또는 기존
@@ -463,9 +477,10 @@ Codex의 ChatGPT 구독 로그인으로 실행할 때는 `codex login status`가
 이 설정은 해당 실행에만 적용되며 전역 승인 설정을 바꾸지 않는다. 자동 검토도 개별
 호출을 거절할 수 있으므로, 실제 원문 읽기와 노드 저장 결과까지 확인한다.
 `forced_login_method`는 ChatGPT 인증으로 제한하며, 사용량은 구독의 Codex 한도에 포함된다.
-Windows에서는 앱 내부의 버전 해시 디렉터리 대신 설치 진입점이나 PATH의 `codex`를
-사용한다. 앱 갱신 때 이전 버전 파일이 없어질 수 있다. 다음 사전검사는 실행 파일만
-확인하며 모델 호출·포착·대장 쓰기를 하지 않는다. 로그인·MCP 권한·실제 증류 검사를
+Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 등록한다. 정기 실행은
+그 설치 폴더의 가장 새 CLI를, Stop fork는 원 세션과 정확히 같은 판본을 선택한다.
+별도 설치 CLI/PATH를 명시하면 그 선택을 유지하므로 별도 업데이트가 필요하다.
+다음 사전검사는 경로와 로컬 판본만 확인하며 모델 호출·포착·대장 쓰기를 하지 않는다. 로그인·MCP 권한·실제 증류 검사를
 대신하지는 않는다. PowerShell이 UTF-8 BOM을 붙인 JSON 명령 파일도 읽는다.
 
 ```powershell
