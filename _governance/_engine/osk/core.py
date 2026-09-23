@@ -34,6 +34,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import epoch
+from .layout import space_roots, adapt_path
 from ._portalock import lock_exclusive, unlock
 
 B36 = string.digits + string.ascii_lowercase
@@ -49,15 +50,9 @@ def vault_root() -> Path:
 
 
 ROOT = vault_root()
-# A legacy vault must not silently start a fresh ledger under the renamed root.
-_legacy_spaces = [name for name in ("= Scope", "= Domain", "= Person")
-                  if (ROOT / name).exists()]
-if _legacy_spaces:
-    raise RuntimeError(
-        "Legacy Space layout detected: " + ", ".join(_legacy_spaces) +
-        ". Migrate the vault and stored path references before using this release; "
-        "see docs/space-layout-migration.md. No data was moved.")
-LEDGER = ROOT / "Scope/Workbench/_ledger"
+SPACE_ROOTS = space_roots(ROOT)
+SCOPE, DOMAIN, PERSON = (SPACE_ROOTS[k] for k in ("Scope", "Domain", "Person"))
+LEDGER = ROOT / SCOPE / "Workbench/_ledger"
 SIGNATURES = LEDGER / "signatures.jsonl"
 CANDIDATES = LEDGER / "case" / "candidates.jsonl"
 PINS = LEDGER / "pins.jsonl"
@@ -290,6 +285,10 @@ def resolve_in_root(rel_or_abs: str | Path) -> Path | None:
     실패는 호출부에서 언제나 거부·불일치 쪽으로 처리한다."""
     try:
         p = Path(rel_or_abs)
+        if p.is_absolute() and p.is_relative_to(ROOT):
+            p = Path(adapt_path(p.relative_to(ROOT).as_posix(), SPACE_ROOTS))
+        elif not p.is_absolute():
+            p = Path(adapt_path(str(p), SPACE_ROOTS))
         cand = p if p.is_absolute() else ROOT / p
         real = Path(os.path.realpath(cand))
         root = Path(os.path.realpath(ROOT))

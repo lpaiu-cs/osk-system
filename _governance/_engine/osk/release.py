@@ -1,15 +1,9 @@
 """osk.release — 정식 릴리스 선언 (정본 저장소 쪽).
 
-구현 근거: 시행령 §10 6항(정식 릴리스는 사용자가 정본 저장소의 대화형
-확인으로 선언하며, 파일 전체의 상태를 비준증빙으로 고정한다),
-Mechanism §1-2 2항(release.json 형식·선언의 전제·커밋과 태그).
-
-비준증빙 `release.json`은 저장소 루트에 두는, 릴리스에 담긴 전 파일
-(자신 제외)의 경로→내용 해시 목록이다. 통치 문서는 특수한 노드이고
-서명은 각 인스턴스 사용자의 **수용 기록**이지 정본의 비준·효력 요건이
-아니다(헌법 3조 6항 · 시행령 §10 2항) — 정본의 비준은 이 증빙을 만드는
-사용자의 대화형 확정이 담당한다. 에이전트는 보고 모드까지만 돌릴 수 있고,
-`--apply`는 대화형 단말을 요구한다.
+구현 근거: 시행령 §10 6항·Mechanism §1-2 2항.
+release.json은 릴리스 전 파일(자신 제외)의 경로→내용 해시 목록이다.
+선언은 검사 후 비대화형으로 수행할 수 있다. 인스턴스 수용에 필요한
+사용자 명시 승인은 osk.update의 변경집합 확인 관문에서 받는다.
 
 선언의 전제 (전부 fail-closed):
 1. **깨끗한 작업 트리** — 증빙은 커밋과 일치해야 한다.
@@ -325,34 +319,15 @@ def run(version: str, apply: bool = False, root: Path | None = None) -> dict:
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="osk-release",
-        description="정식 릴리스 선언 — 기본은 보고, 선언은 --apply (대화형 전속)")
+        description="정식 릴리스 선언 — 기본은 보고, 선언은 --apply (비대화형 지원)")
     ap.add_argument("--version", required=True, help="vX.Y.Z")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
-    if a.apply and not sys.stdin.isatty():
-        sys.exit("릴리스 선언은 사용자의 비준 행위다 — 대화형 단말에서만 한다"
-                 " (시행령 §10 6항)")
     try:
         rep = run(a.version, a.apply)
     except ReleaseError as e:
         sys.exit(f"[중단] {e}")
     print(json.dumps(rep, ensure_ascii=False, indent=2))
-    if rep.get("applied") and sys.stdin.isatty():
-        # 작업 트리 동기화 — 릴리스는 이미 커밋·태그로 성립했고 이것은 그
-        # 뒤의 편의다. run()이 자동으로 하지 않는 이유(작업 트리 CAS 부재 —
-        # 강제할 수 없는 보장을 강제한 척하지 않는다)는 그대로 두되, 선언자가
-        # 그 자리에서 확인하고 수행하는 길을 연다. worktree_sync 안내만으로는
-        # 세 릴리스 연속(v3.1.3~v3.3.0) 이 단계가 남아, 다음 커밋이 증빙을
-        # 구판으로 되돌릴 뻔했다(실측).
-        try:
-            ans = input(f"작업 트리의 {ATTESTATION}을 릴리스에 맞춥니까? [y/N] ")
-        except EOFError:
-            ans = ""
-        if ans.strip().lower() == "y":
-            r = _git(ROOT, "checkout", a.version, "--", ATTESTATION)
-            print("동기화 완료" if r.returncode == 0 else
-                  f"동기화 실패(릴리스는 성립) — 수동: git checkout "
-                  f"{a.version} -- {ATTESTATION}")
 
 
 if __name__ == "__main__":

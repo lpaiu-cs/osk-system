@@ -8,8 +8,9 @@
 체제: 서명이 노드 단위 '확인'이었던 것과 달리, 보호는 **구획(영역) 단위**의
 '수용'이다. 엔진은 각 보호영역의 **승인본**(사용자가 마지막으로 승인한 영역
 전체의 상태)을 내용 주소 저장소에 보존하고, 에이전트는 **작업본**에 평소처럼
-쓴다. 지정·해제·승인·반려는 사용자 전속이며 대화형 단말에서만 발의한다
-(§6-2 2항 — 이 모듈의 쓰기 함수는 MCP 표면에 노출하지 않는다).
+쓴다. 지정·해제·승인·반려는 사용자 전속이다. 업데이트의 통치 구획 수용은
+변경집합 재승인 후 비대화형으로 기록하며, 나머지는 대화형 단말에서 발의한다
+(§3 7항·§6-2 2항 — 이 모듈의 쓰기 함수는 MCP 표면에 노출하지 않는다).
 
 판정은 다른 `_ledger` 대장과 같은 인과 극대다(core). 영역의 인과 극대가
 유일하지 않으면 stale — 승인·반려를 보류하고 사용자의 새 기록이 봉합한다.
@@ -750,59 +751,65 @@ def approve(region: str, base: str, expect_work: str,
     거부된다 — 사용자가 본 적 없는 갈래를 함께 봉합하지 않는다. 성립한 기록이
     그 모든 head를 이어 분기를 봉합한다(Mechanism §3 5항 · 시행령 §6 3항의
     "해소는 사용자의 새 검토")."""
-    with mutation_lock():   # 엔진이 내는 변경을 직렬화
-        d = resolve_in_root(region)
-        if d is None or not d.is_dir():
-            raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
-        reg = posix_rel(d, Path(os.path.realpath(ROOT)))
-        recs = records()
-        st = state(reg, recs)
-        if st == "unprotected":
-            raise ValueError(f"보호 중이 아니다: {reg}")
-        sealing = (st == "stale")
-        if expect_work is None or (base is None) != sealing \
-                or (seal_heads is not None) != sealing or (sealing and not seal_heads):
+    with mutation_lock():
+        return _approve_locked(region, base, expect_work, reason, seal_heads)
+
+
+def _approve_locked(region: str, base: str, expect_work: str,
+                    reason: str = "", seal_heads: list[str] | None = None) -> dict:
+    """Shared CAS; updater already owns the mutation lock across its transaction."""
+    d = resolve_in_root(region)
+    if d is None or not d.is_dir():
+        raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
+    reg = posix_rel(d, Path(os.path.realpath(ROOT)))
+    recs = records()
+    st = state(reg, recs)
+    if st == "unprotected":
+        raise ValueError(f"보호 중이 아니다: {reg}")
+    sealing = (st == "stale")
+    if expect_work is None or (base is None) != sealing\
+            or (seal_heads is not None) != sealing or (sealing and not seal_heads):
+        raise ValueError(
+            "stale 영역의 봉합 승인은 base 없이(None), 검토한 갈래 집합"
+            f"(seal_heads)과 함께 한다 — 현행 승인본이 유일하지 않다: {reg}"
+            if sealing else
+            "base·expect_work(검토한 승인본·작업본)는 필수다 — 양측 CAS를 "
+            "건너뛸 수 없다 (base=None·seal_heads는 stale 봉합에서만)")
+    if sealing:
+        now_heads = {r["rid"] for r in causal_maxima(recs, reg, None, "region")}
+        if now_heads != set(seal_heads):
             raise ValueError(
-                "stale 영역의 봉합 승인은 base 없이(None), 검토한 갈래 집합"
-                f"(seal_heads)과 함께 한다 — 현행 승인본이 유일하지 않다: {reg}"
-                if sealing else
-                "base·expect_work(검토한 승인본·작업본)는 필수다 — 양측 CAS를 "
-                "건너뛸 수 없다 (base=None·seal_heads는 stale 봉합에서만)")
-        if sealing:
-            now_heads = {r["rid"] for r in causal_maxima(recs, reg, None, "region")}
-            if now_heads != set(seal_heads):
-                raise ValueError(
-                    "갈래가 그 사이 바뀌었다(다른 기기 기록 유입) — 갈래를 다시 "
-                    f"보고 봉합하라: 검토={sorted(seal_heads)} 현행={sorted(now_heads)}")
-        cur = approved_hash(reg, recs)
-        if not sealing and cur != base:
-            raise ValueError(
-                f"검토가 전제한 승인본이 현행이 아니다 (승인본 측 CAS): 전제={base} 현행={cur}")
-        # 작업본을 **한 번** 읽어 박제하고, 그 **같은** tree를 작업본 측 CAS에
-        # 쓴다 — 검사한 상태와 박제한 상태가 언제나 동일해야 검토하지 않은 변경이
-        # 끼어들 창(TOCTOU)이 없다. 별도 판독으로 검사하고 또 다른 판독을 박제하면
-        # 그 사이 에이전트가 쓴 상태가 승인본이 된다.
-        accepted = _store_tree(d)         # 승인 시점 작업본을 박제·해시(단일 판독)
-        if accepted != expect_work:
-            raise ValueError(
-                "검토한 작업본이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측 CAS)")
-        if not sealing and accepted == cur:
-            raise ValueError("변경집합이 없다 — 승인할 pending 차이가 없다")
-        # 승인본 측 CAS를 **대장 잠금 안에서 다시** 본다 — 위 검사와 append 사이에
-        # 영역 전수 판독(_store_tree)이 있어 창이 길다. 그 사이 다른 기기의 승인이
-        # 동기화로 들어오면, 못 본 채 붙은 이 행이 그 기록의 인과 자식이 되어
-        # 사용자가 검토한 적 없는 승인본을 조용히 대체하고 행의 base도 거짓이 된다.
-        return ledger_append(APPROVALS, {
-            "kind": "approve", "region": reg, "base": base,
-            "accepted": accepted, "moves_seen": _moves_boundary(),
-            "reason": reason},
-            expect=lambda recs2: (
-                None if ({r["rid"] for r in causal_maxima(recs2, reg, None,
-                                                          "region")}
-                         == set(seal_heads) if sealing
-                         else approved_hash(reg, recs2) == base) else
-                "승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 검토하라"
-                f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
+                "갈래가 그 사이 바뀌었다(다른 기기 기록 유입) — 갈래를 다시 "
+                f"보고 봉합하라: 검토={sorted(seal_heads)} 현행={sorted(now_heads)}")
+    cur = approved_hash(reg, recs)
+    if not sealing and cur != base:
+        raise ValueError(
+            f"검토가 전제한 승인본이 현행이 아니다 (승인본 측 CAS): 전제={base} 현행={cur}")
+    # 작업본을 **한 번** 읽어 박제하고, 그 **같은** tree를 작업본 측 CAS에
+    # 쓴다 — 검사한 상태와 박제한 상태가 언제나 동일해야 검토하지 않은 변경이
+    # 끼어들 창(TOCTOU)이 없다. 별도 판독으로 검사하고 또 다른 판독을 박제하면
+    # 그 사이 에이전트가 쓴 상태가 승인본이 된다.
+    accepted = _store_tree(d)         # 승인 시점 작업본을 박제·해시(단일 판독)
+    if accepted != expect_work:
+        raise ValueError(
+            "검토한 작업본이 그 사이 바뀌었다 — 다시 검토하라 (작업본 측 CAS)")
+    if not sealing and accepted == cur:
+        raise ValueError("변경집합이 없다 — 승인할 pending 차이가 없다")
+    # 승인본 측 CAS를 **대장 잠금 안에서 다시** 본다 — 위 검사와 append 사이에
+    # 영역 전수 판독(_store_tree)이 있어 창이 길다. 그 사이 다른 기기의 승인이
+    # 동기화로 들어오면, 못 본 채 붙은 이 행이 그 기록의 인과 자식이 되어
+    # 사용자가 검토한 적 없는 승인본을 조용히 대체하고 행의 base도 거짓이 된다.
+    return ledger_append(APPROVALS, {
+        "kind": "approve", "region": reg, "base": base,
+        "accepted": accepted, "moves_seen": _moves_boundary(),
+        "reason": reason},
+        expect=lambda recs2: (
+            None if ({r["rid"] for r in causal_maxima(recs2, reg, None,
+                                                      "region")}
+                     == set(seal_heads) if sealing
+                     else approved_hash(reg, recs2) == base) else
+            "승인본이 그 사이 바뀌었다(다른 기기 기록 유입) — 다시 검토하라"
+            f" (승인본 측 CAS): 전제={base} 현행={approved_hash(reg, recs2)}"))
 
 
 def _chain_position(node: str, chain: list[dict]) -> str | None:

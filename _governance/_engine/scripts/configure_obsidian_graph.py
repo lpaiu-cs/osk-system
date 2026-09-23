@@ -7,7 +7,8 @@ from pathlib import Path
 import os
 import tempfile
 
-QUERY = '(path:"Scope/" OR path:"Domain/" OR path:"Person/") [id] [summary] -path:"/_"'
+QUERY = '(' + ' OR '.join(f'path:"{prefix}{kind}/"' for prefix in ("00_", "= ", "")
+                         for kind in ("Scope", "Domain", "Person")) + ') [id] [summary] -path:"/_"'
 
 
 def configure(root: Path, apply: bool = False) -> dict:
@@ -56,4 +57,3 @@ if __name__ == "__main__":
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     print(json.dumps(configure(args.vault_root, args.apply), ensure_ascii=False, indent=2))
-

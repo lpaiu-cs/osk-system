@@ -14,16 +14,16 @@ from pathlib import Path
 from osk import core, graph, growth, validate, write, contract, organization
 validate.make_mini_vault(core.ROOT)
 def node(title, scope='W1', body=None):
-    directory = core.ROOT / 'Scope' / scope
+    directory = core.ROOT / '00_Scope' / scope
     directory.mkdir(parents=True, exist_ok=True)
     if not (directory / (scope + '.md')).exists():
-        original = (core.ROOT / 'Scope/W1/W1.md').read_text(encoding='utf-8')
+        original = (core.ROOT / '00_Scope/W1/W1.md').read_text(encoding='utf-8')
         original = original.split(chr(10)+'---'+chr(10),1)[0] + chr(10)+'---'+chr(10)+'# W1'+chr(10)
         (directory / (scope + '.md')).write_text(
             original.replace('260801-zzzz-w1ix', '260801-zzzz-' + scope.lower() + 'ix')
                     .replace('W1', scope), encoding='utf-8')
     result = write.create_node(title, title, body or title + ' reusable observation',
-                               'gpt-6-astra', space='Scope/' + scope)
+                               'gpt-6-astra', space='00_Scope/' + scope)
     assert result['ok'], result
     hub = directory / (scope + '.md')
     old = contract.parse(hub).body
@@ -102,7 +102,7 @@ class GrowthTests(unittest.TestCase):
             from osk import evictions
             item = evictions.record_evict('W1', 'session', 'Reusable fact; second claim needs verification.')
             with patch.object(evictions, 'age_days', return_value=17):
-                action = "from osk import evictions, write; j=p['eviction_jobs'][0]; saved=write.create_node('Partial', 'Partial evidence', 'Only the first claim is verified.', 'fixture', space='Scope/W1', settle=j['of']); assert saved['ok']; "
+                action = "from osk import evictions, write; j=p['eviction_jobs'][0]; saved=write.create_node('Partial', 'Partial evidence', 'Only the first claim is verified.', 'fixture', space='00_Scope/W1', settle=j['of']); assert saved['ok']; "
                 if DEFERRED_CASE:
                     action += "q['osk_reviews']['eviction']=[{'of':j['of'],'outcome':'deferred','reason':'First claim saved; resume second claim against the source.'}]; assert growth.checkpoint(q)['ok']"
                 else:
@@ -426,7 +426,7 @@ class GrowthTests(unittest.TestCase):
             from osk import distillation, contract
             for name in ('A','B','Noise','Other'):
                 node(name)
-            request = dict(title='Principles',summary='General knowledge',body='Reusable principles.',drafter='gpt-6-astra',space='Domain/Principles')
+            request = dict(title='Principles',summary='General knowledge',body='Reusable principles.',drafter='gpt-6-astra',space='00_Domain/Principles')
             try:
                 write.create_node(**request)  # the user-only confirmation gate remains intact
             except write.WriteError:
@@ -438,11 +438,11 @@ class GrowthTests(unittest.TestCase):
             result = distillation.create_node(
                 {'key':candidate['key'],'sources':[{'ref':s['id'],'hash':s['hash']} for s in selected],'hub':'Principles'},
                 title='Shared rule',summary='Rule from A and B',body='A and B support this rule, with limited scope.',
-                drafter='gpt-6-astra',space='Domain/Principles')
+                drafter='gpt-6-astra',space='00_Domain/Principles')
             assert result['ok'], result
             receipt = growth.review(candidate['key'],'preserved',target='Shared rule',
                 reason='A and B support the rule; Noise and Other are unrelated and omitted.',manifest=manifest['rid'])
-            actual = contract.parse(core.ROOT / 'Domain/Principles/Shared rule.md').edges('derived-from')
+            actual = contract.parse(core.ROOT / '00_Domain/Principles/Shared rule.md').edges('derived-from')
             assert set(actual) == {s['id'] for s in selected}, actual
             assert len(receipt['omitted_sources']) == 2
             assert candidate['key'] not in {c['key'] for c in growth.plan(20)['candidates']}
@@ -472,7 +472,7 @@ class GrowthTests(unittest.TestCase):
             from osk import distillation
             node('A')
             node('B')
-            request = dict(title='Principles',summary='General knowledge',body='Reusable principles.',drafter='gpt-6-astra',space='Domain/Principles')
+            request = dict(title='Principles',summary='General knowledge',body='Reusable principles.',drafter='gpt-6-astra',space='00_Domain/Principles')
             try:
                 write.create_node(**request)
             except write.WriteError:
@@ -484,7 +484,7 @@ class GrowthTests(unittest.TestCase):
             result = distillation.create_node(
                 {'key':candidate['distill_key'],'sources':[{'ref':s['id'],'hash':s['hash']} for s in candidate['sources']],'hub':'Principles'},
                 title='Retained rule',summary='Previously written rule',body='A and B support this bounded rule.',
-                drafter='gpt-6-astra',space='Domain/Principles')
+                drafter='gpt-6-astra',space='00_Domain/Principles')
             assert result['ok'], result
             next_candidate = growth.plan(1)['candidates'][0]
             assert next_candidate['previous_distillations'][0]['key'] == candidate['distill_key']
@@ -501,7 +501,7 @@ class GrowthTests(unittest.TestCase):
             user = {'type':'user','sessionId':'short','uuid':'u1','message':{'role':'user','content':'Report this temporary completed job.'}}
             final = {'type':'assistant','sessionId':'short','uuid':'a1','message':{'role':'assistant','id':'m1','content':[{'type':'text','text':'Temporary job finished.'}],'stop_reason':'end_turn'}}
             path.write_text(json.dumps(user)+'\\n',encoding='utf-8')
-            state = integration.capture('claude','short',str(path),'short-project',space='Scope/W1')
+            state = integration.capture('claude','short',str(path),'short-project',space='00_Scope/W1')
             assert state['capture_pending'], state
             with path.open('a',encoding='utf-8') as f:
                 f.write(json.dumps(final)+'\\n')
@@ -522,13 +522,13 @@ class GrowthTests(unittest.TestCase):
         self.check_case("""
             node('A')
             node('B')
-            request = dict(title='Principles',summary='General knowledge',body='Reusable principles.',drafter='gpt-6-astra',space='Domain/Principles')
+            request = dict(title='Principles',summary='General knowledge',body='Reusable principles.',drafter='gpt-6-astra',space='00_Domain/Principles')
             try:
                 write.create_node(**request)
             except write.WriteError:
                 pass
             assert write.create_node(**request)['ok']
-            change = "c=p['candidates'][0]; result=distillation.create_node({'key':c['distill_key'],'sources':[{'ref':s['id'],'hash':s['hash']} for s in c['sources']],'hub':'Principles'},title='Observed rule',summary='Rule from A and B',body='A and B support this bounded rule.',drafter='gpt-6-astra',space='Domain/Principles'); assert result['ok'],result; q['osk_reviews']['domain'][0].update(outcome='preserved',target='Observed rule',reason='A and B support this bounded rule.')"
+            change = "c=p['candidates'][0]; result=distillation.create_node({'key':c['distill_key'],'sources':[{'ref':s['id'],'hash':s['hash']} for s in c['sources']],'hub':'Principles'},title='Observed rule',summary='Rule from A and B',body='A and B support this bounded rule.',drafter='gpt-6-astra',space='00_Domain/Principles'); assert result['ok'],result; q['osk_reviews']['domain'][0].update(outcome='preserved',target='Observed rule',reason='A and B support this bounded rule.')"
             result = growth.run([sys.executable,'-c',packet_worker(change)],limit=2)
             assert result['ok'], result
             assert set(result['domain_outcomes'].values()) == {'preserved'}, result
@@ -536,7 +536,7 @@ class GrowthTests(unittest.TestCase):
             # Newly created Domain knowledge is pending its own organization
             # review; the Scope review cannot acknowledge it implicitly.
             pending = growth.plan()['organization_jobs']
-            assert [j['scope'] for j in pending] == ['Domain/Principles'], pending
+            assert [j['scope'] for j in pending] == ['00_Domain/Principles'], pending
             reviewed = growth.run([sys.executable,'-c',packet_worker()],limit=1)
             assert reviewed['ok'], reviewed
             assert growth.run(['unused-command'])['state'] == 'skipped'
@@ -609,7 +609,7 @@ class GrowthTests(unittest.TestCase):
                 rows += [{'type':'user','sessionId':'bounded','uuid':'u'+str(i),'message':{'role':'user','content':'question '+str(i)}},
                          {'type':'assistant','sessionId':'bounded','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(row)+'\\n' for row in rows),encoding='utf-8')
-            integration.capture('claude','bounded',str(path),'bounded-project',space='Scope/W1')
+            integration.capture('claude','bounded',str(path),'bounded-project',space='00_Scope/W1')
             original = integration.status('claude','bounded')
             seen = []
             worker = [sys.executable,'-c','import sys; sys.stdin.read()']  # no ACKs
@@ -648,7 +648,7 @@ class GrowthTests(unittest.TestCase):
                 {'type':'user','sessionId':'waiting','uuid':'u1','message':{'role':'user','content':'Keep this scoped fact.'}},
                 {'type':'assistant','sessionId':'waiting','uuid':'a1','message':{'role':'assistant','id':'m1','content':[{'type':'text','text':'A bounded fact.'}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows),encoding='utf-8')
-            assert integration.capture('claude','waiting',str(path),'waiting',space='Scope/W1')['ok']
+            assert integration.capture('claude','waiting',str(path),'waiting',space='00_Scope/W1')['ok']
             worker = "import sys; from osk import core,growth,organization; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [organization.review(j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
             visited = []
             for i in range(8):

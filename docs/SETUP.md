@@ -18,8 +18,8 @@ _governance/
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
     scripts/           발행 매니페스트, launchd/systemd 예시
-Scope/ Domain/ Person/   지식 공간
-Scope/Workbench/_ledger/     대장 — 승인·pin·세션 라우팅·갱신 저널 (append-only)
+00_Scope/ 00_Domain/ 00_Person/   지식 공간
+00_Scope/Workbench/_ledger/     대장 — 승인·pin·세션 라우팅·갱신 저널 (append-only)
 ```
 
 ## 준비
@@ -358,7 +358,7 @@ Personalization에는 저장 경계를 간단히 두어도 된다. 다만 훅의
 ```bash
 printf '%s' '{"rounds":[{"user":"…","agent":"…"}]}' \
   | .venv/bin/python -m osk.cli raw append \
-      --session <세션 키> --record <대화 이름> --space "Scope/<이름>"
+      --session <세션 키> --record <대화 이름> --space "00_Scope/<이름>"
 ```
 
 - 봉투는 세 모양을 받는다 — `{"rounds":[…]}` · 라운드 하나(`{"user":…,"agent":…}`) ·
@@ -680,7 +680,7 @@ osk status                      # pending인 영역이 보인다
 osk approve "<영역>"            # 변경집합이 "줄바꿈만 다름"으로 표시한다
 
 # 5) **승인 결과를 커밋한다** — 이게 없으면 다른 기기에 도달하지 않는다
-#    `osk approve`는 `Scope/Workbench/_ledger/approvals.jsonl`에 행을 더하고
+#    `osk approve`는 `00_Scope/Workbench/_ledger/approvals.jsonl`에 행을 더하고
 #    `_ledger/approved/objects/`에 새 manifest·blob을 쓰지만 **git commit은 하지
 #    않는다.** 1단계에서 데몬을 멈췄으므로 대신 커밋해 줄 것도 없다. 그대로
 #    push하면 2단계의 정규화 커밋만 올라가고, 다른 기기는 정규화된 파일만 받고
@@ -747,7 +747,7 @@ osk validate                    # 전 영역 clean
 **갱신**으로 받아들인다. 데이터 동기화 데몬(위)과는 다른 축이다 — 데몬은
 인스턴스 자신의 원격만 다루고 정본에 닿지 않는다.
 
-**정본에서 — 릴리스 선언** (사용자의 비준 행위, 대화형 단말 전속):
+**정본에서 — 릴리스 선언** (에이전트의 비대화형 실행 가능, 별도 버전 승인 없음):
 
 ```bash
 PYTHONPATH=_governance/_engine python3 -m osk.release --version vX.Y.Z --apply
@@ -773,11 +773,24 @@ git checkout vX.Y.Z -- release.json
 
 ```bash
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update            # 보고
-PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 적용
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 첫 요청: 확인 후 중단
 ```
 
 `osk.cli`를 거쳐도 같다 — `... -m osk.cli update --apply`. 위임 명령은 인자를
 해석하지 않고 그대로 넘긴다(`--help`도 위임 대상의 사용법이 나온다).
+
+첫 `--apply`는 종료코드 2와 `approval_required: true`를 반환한다. 이때 에이전트는
+**멈추고** 변경사항과 하네스/MCP 서버·데몬의 재시작 필요성을 사용자에게 설명한
+뒤 명시적 재승인을 요청한다. 응답 없이 자동 재시도하지 않는다. 사용자가 승인하면
+데몬을 멈추고 **같은 명령을 한 번 더** 실행한다. 대화형 단말은 필요 없다.
+확인은 1시간 동안 그 릴리스 증빙과 정확한 로컬 변경집합에만 유효하며 재시도에서
+소비된다. 대상 변경·만료·실패 후에는 다시 확인한다. 이 표식은 사용자 발화의
+인증 수단이 아니라 선의의 에이전트가 한 번 멈추도록 하는 확인 지점이다.
+
+v3.20.x의 updater에는 이 관문이 없다. 최초 전환 때는 **검토한 v3.21.0 체크아웃의
+엔진**을 `PYTHONPATH`로 지정하고 `OSK_VAULT_ROOT`는 실제 인스턴스로 지정해
+`-m osk.update --to v3.21.0 --apply`를 실행한다. 인스턴스에 코드를 먼저 복사하거나
+이미 실행 중인 MCP를 중단할 필요는 없다. 적용 재승인 뒤에만 데몬을 멈춘다.
 
 - 출처는 둘이다: `git`(기본 — 정본을 태그로 얕게 받는다. `--to vX.Y.Z`로
   버전 고정) · `bundle`(`--from <경로>` — 디렉터리·tar 오프라인 반입).
@@ -786,7 +799,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 적�
   불일치·증빙 부재는 중단이고, 증빙 밖의 미추적 파일은 적용하지 않는다(막지도
   않는다). 적용은 오직 증빙이 모는 파일만 하고 하나하나를 해시로 검증한다.
 - 적용 범위는 릴리스 안의 발행 매니페스트가 정하고(별도 갱신 매니페스트
-  없음), **인스턴스 소유 바닥**(`= ` Space·`_ledger/`·`_raw/`·`_sources/`·
+  없음), **인스턴스 소유 바닥**(`00_` 및 기존 호환 Space·`_ledger/`·`_raw/`·`_sources/`·
   `.osk/`)에는 무엇이 와도 쓰지 않는다.
 - 로컬 수정이 있는 문서는 덮지 않고 `<이름>.upstream-<버전>` 사본을 옆에
   둔다(병합은 수동). **엔진 파일의 로컬 수정은 갱신 전체를 중단한다** —
@@ -799,10 +812,12 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply    # 적�
   내용이 다르면 **편입을 시작하지 않는다** — 그 사이드카를 쓰지 못한 채 원본을
   덮으면 지금 파일의 수정이 어디에도 남지 않기 때문이다. 그 파일을 확인해
   필요한 것을 챙긴 뒤 옮기거나 지우고 다시 실행한다.
-- 갱신이 통치 문서를 덮으면 그 차이가 통치 구획 보호영역의 변경집합으로
-  남는다 — diff를 확인하고 `osk approve _governance`로 승인하는 것이
-  **수용의 기록**이다(효력 요건은 아니다). 미처리 변경집합은 `osk status`의
-  `protected_regions`에 `pending`으로 드러난다.
+- 보호 중인 통치 구획은 적용 전 보고의 `governance`에 기존 로컬 차이까지
+  포함한다. 확인한 작업본이 그대로 적용되면 같은 트랜잭션에서 **수용 기록**을
+  남기므로 별도의 적용 후 `approve _governance`는 필요 없다. stale은 먼저
+  해소해야 한다. 다른 보호영역의 승인 절차와 최초 보호 지정은 그대로다.
+- 새 배포판은 `00_Scope`·`00_Domain`·`00_Person`을 쓴다. 기존 vault는 대장·승인본·
+  원료 좌표가 가리키는 물리 이름을 유지한다. [경로 호환 규칙](space-layout-migration.md)을 따른다.
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면
   실행 중인 MCP 서버·데몬을 재시작한다.
 - **갱신은 인스턴스당 한 번이다.** 한 인스턴스를 여러 기기에서 쓰더라도
@@ -847,4 +862,4 @@ python3 _governance/_engine/scripts/recover.py --apply
 참조 주소·원료 표시·변경 Scope의 지속 정돈은 [참조와 군집 조직의 지속 검토](GROWTH-INTEGRITY.md)를 따른다.
 
 구 데몬(검색 서빙 + 동기화 혼성)과 DuckDB 색인은 v2에서 폐기됐다. 그 판단과 경위는
-결정 노드에 있다 — `Person/Decisions/2026-07-02-lavalink-swap-lock-and-daemon-demotion.md`.
+결정 노드에 있다 — `00_Person/Decisions/2026-07-02-lavalink-swap-lock-and-daemon-demotion.md`.

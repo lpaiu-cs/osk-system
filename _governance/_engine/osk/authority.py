@@ -9,13 +9,14 @@
 않는다(헌법 11조 3항).
 """
 from __future__ import annotations
+from .core import PERSON
 import re
 from pathlib import Path
 
 from .core import ROOT
 from . import contract, approvals
 
-DELEGATION_FACET = ROOT / "Person" / "Delegation"
+DELEGATION_FACET = ROOT / PERSON / "Delegation"
 # 위임 Facet의 정본 region key — 권한 판정은 **이 정확한 region**의 승인본으로만
 # 한다(하위 영역만 보호된 경우로 우회되지 않게).
 DELEGATION_REGION = DELEGATION_FACET.relative_to(ROOT).as_posix()

@@ -13,6 +13,7 @@
 `_raw/` 쓰기 경로를 두지 않기 위해서다(Mechanism §9).
 """
 from __future__ import annotations
+from .core import SCOPE
 import json
 import re
 from pathlib import Path
@@ -84,7 +85,7 @@ def _next_index(text: str) -> int:
 
 def record_path(scope: str, record: str) -> Path:
     """Read the existing record; new records live in hidden non-Markdown storage."""
-    d = ROOT / "Scope" / scope / "_raw"
+    d = ROOT / SCOPE / scope / "_raw"
     return _record_file(d / f"{record}.md")
 
 
@@ -150,7 +151,7 @@ def migrate(*, apply: bool = False) -> dict:
     with mutation_lock():
         plans = []
         for scope in _scope_names():
-            directory = ROOT / "Scope" / scope / "_raw"
+            directory = ROOT / SCOPE / scope / "_raw"
             for path in sorted(directory.rglob("*")):
                 if path.is_file() and path.suffix.lower() == ".md":
                     old, new = _record_pair(path)
@@ -219,7 +220,7 @@ _CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
 def storage_error(path: str, text: str) -> str | None:
     """Check a changed raw record, without exposing its payload in diagnostics."""
     p = Path(path)
-    if "_raw" not in p.parts or not p.parts or p.parts[0] != "Scope":
+    if "_raw" not in p.parts or not p.parts or p.parts[0] not in {"00_Scope", "= Scope", "Scope"}:
         return None
     if p.suffix.lower() == ".md":
         return "visible Markdown raw; migrate to hidden .txt storage"
@@ -231,7 +232,7 @@ def storage_error(path: str, text: str) -> str | None:
 
 def storage_violations() -> list[str]:
     errors = []
-    for directory in (ROOT / "Scope").glob("*/_raw"):
+    for directory in (ROOT / SCOPE).glob("*/_raw"):
         for p in directory.rglob("*"):
             if p.is_file() and p.suffix.lower() in {".md", ".txt"}:
                 rel = posix_rel(p, ROOT)
@@ -335,7 +336,7 @@ def append_rounds(session: str, record: str, pairs: list,
 
     착지는 세션 라우팅이 정한다 — 결속이 없으면 `space`를 요구하고, 성공하면
     그 scope로 세션을 확정한다. `space`의 표기는 `create_node`와 같은 군집
-    전체 경로(`"Scope/W1"`)다 — 같은 값이 같은 뜻이어야 호출자가
+    전체 경로(`"00_Scope/W1"`)다 — 같은 값이 같은 뜻이어야 호출자가
     `overview`의 `clusters`를 그대로 옮겨 쓴다."""
     if (codex_v1 is not None or codex_v2 is not None) and not replay_prefix:
         raise ValueError("Codex capture versions require prefix replay")
@@ -378,7 +379,7 @@ def append_rounds(session: str, record: str, pairs: list,
             # `resolve_landing`이 검사했으므로 여기 남는 것은 낡은 결속뿐이다.
             raise write.WriteError(
                 "결속이 가리키는 scope가 없다 — 쓰지 않았다",
-                [f"세션 `{session}`은 `Scope/{dest}`에 결속돼 있으나 그 scope가 "
+                [f"세션 `{session}`은 `{SCOPE}/{dest}`에 결속돼 있으나 그 scope가 "
                  f"없다. 가능한 space: {_space_list()}"])
 
         p = record_path(dest, record)
@@ -624,7 +625,7 @@ def list_records(space: str) -> dict:
         raise write.WriteError(
             "없는 scope", [f"`{space}`는 scope가 아니다. 가능한 space: "
                           f"{_space_list()}"])
-    d = ROOT / "Scope" / scope / "_raw"
+    d = ROOT / SCOPE / scope / "_raw"
     out = []
     files = sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt"),
                     *(d / ".records").glob("*/record.txt")})

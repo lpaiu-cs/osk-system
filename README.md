@@ -206,9 +206,10 @@ the governing text.
 
 Ratification is the user's explicit act in the canonical repository, fixed by
 the release attestation (`release.json`, containing file content hashes).
-Instances receive releases through the updater. Changes to governance files
-remain a protected-region changeset: the user's approval records that instance's
-acceptance, rather than determining the rules' validity.
+Release declaration can run noninteractively without a separate version approval.
+The first update-apply attempt shows its changeset and the required harness
+restart, then stops for explicit user confirmation. A matching retry applies it
+and records acceptance of the protected governance region in the same transaction.
 See [installation and operations](docs/SETUP.md).
 
 ## What's in this repository
@@ -216,7 +217,7 @@ See [installation and operations](docs/SETUP.md).
 The engine, governing documents, and operating guides. **Not** your knowledge
 corpus, approval ledgers, other operational ledgers, or session transcripts.
 
-The empty `Scope/`, `Domain/`, and `Person/` directories are starting points
+The empty `00_Scope/`, `00_Domain/`, and `00_Person/` directories are starting points
 for your own instance. Personal data belongs in that instance, not in this public
 repository.
 

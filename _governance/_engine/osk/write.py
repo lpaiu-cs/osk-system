@@ -27,6 +27,7 @@ CAS (Mechanism §6-2 4항): `expect_hash`는 **본문 전체 치환**에 결속�
 않는다. 거부 응답에 현재 해시를 담지 않는다 — 담으면 관측 증명이 연극이 된다.
 """
 from __future__ import annotations
+from .core import DOMAIN, PERSON, SCOPE
 import json, os, re, tempfile, time, unicodedata
 from pathlib import Path
 
@@ -386,12 +387,12 @@ def _cluster_names() -> list[str]:
                 out.add(path)
                 walk(sub, path)
 
-    for space in ("Scope", "Domain", "Person"):
+    for space in (SCOPE, DOMAIN, PERSON):
         d = ROOT / space
         if d.is_dir():
             walk(d, space)
-    if (ROOT / "Scope/Workbench/transit").is_dir():
-        out.add("Scope/Workbench/transit")
+    if (ROOT / SCOPE / "Workbench/transit").is_dir():
+        out.add(f"{SCOPE}/Workbench/transit")
     return sorted(out)
 
 
@@ -446,8 +447,8 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
     # 하위 허브를 참조한다. 구판은 하위를 막았고, 그래서 규범에 있는 분화를
     # 표면으로 수행할 길이 없었다.
     parent = dest_dir.parent.resolve()
-    roots = {(ROOT / "Scope").resolve(), (ROOT / "Domain").resolve(),
-             (ROOT / "Person").resolve()}
+    roots = {(ROOT / SCOPE).resolve(), (ROOT / DOMAIN).resolve(),
+             (ROOT / PERSON).resolve()}
     top_level = parent in roots
     if not top_level and not (parent / f"{parent.name}.md").is_file():
         raise WriteError(
@@ -648,7 +649,7 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
 def _dangling_of(path: Path, meta: dict, body: str, idx) -> list[str]:
     """그 노드의 미해석 참조 — 위반이 아니라 경고. 응답에 실어 에이전트가
     조용히 dangling을 쌓지 않게 한다(`list_nodes` 제거의 부작용 차단)."""
-    node = meta if isinstance(meta, contract.Node) else \
+    node = meta if isinstance(meta, contract.Node) else\
         contract.Node(path=path, meta=meta, body=body)
     return sorted({r["ref"].split("#", 1)[0] for r in graph.reference_review(node, idx)
                    if r["resolution"] == "dangling"})
@@ -745,7 +746,7 @@ def ephemeral_session_errors(session: str | None) -> list[str]:
     오지 않으므로, 대장에는 죽은 행만 쌓인다.
 
     도구 설명이 이미 금지하고 있었으나 **설명은 강제가 아니었고**, 실측으로
-    두 건이 굳었다(2026-08-24 관측: `Scope/Arel-Wars-2`·`Scope/gh-hint`).
+    두 건이 굳었다(2026-08-24 관측: `= Scope/Arel-Wars-2`·`= Scope/gh-hint`).
     형식이 어긋난 `space`를 조용히 버리지 않는 `resolve_landing`의 규율과
     같은 이유로 여기서도 거부한다 — 버리면 호출자는 왜 다음 세션이 기억을
     잃는지 영영 모른다.
@@ -878,8 +879,8 @@ def resolve_landing(session: str, space: str | None,
     if not scope:
         raise WriteError(
             "space 표기 아님 — 쓰지 않았다",
-            [f"`{space}`는 space 표기가 아니다 — `Scope/<이름>` **두 마디**로 "
-             f"준다. `overview`의 `clusters`에는 `Person/…`이나 더 깊은 경로도 "
+            [f"`{space}`는 space 표기가 아니다 — `{SCOPE}/<이름>` **두 마디**로 "
+             f"준다. `overview`의 `clusters`에는 `{PERSON}/…`이나 더 깊은 경로도 "
              f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {graph.space_list()}"])
     if scope not in graph.scope_names():
         raise WriteError(
@@ -888,7 +889,7 @@ def resolve_landing(session: str, space: str | None,
     if bound and scope != bound:
         raise WriteError(
             "결속과 어긋나는 착지 — 쓰지 않았다",
-            [f"세션 `{session}`은 `Scope/{bound}`에 결속돼 있다. {confine_note} "
+            [f"세션 `{session}`은 `{SCOPE}/{bound}`에 결속돼 있다. {confine_note} "
              f"결속대로 쓰려면 `space`를 빼라."])
     return scope, bound
 
@@ -925,7 +926,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
         raise WriteError("계약 위반 — 쓰지 않았다", errs)
 
     bound = resolve_session(session)
-    dest = space or (f"Scope/{bound}" if bound else None)
+    dest = space or (f"{SCOPE}/{bound}" if bound else None)
     if dest and bound:
         # 결속이 선 세션에 **다른 scope**를 착지로 주는 요청은 거부한다
         # (Mechanism §6-2 6항 — 한 세션은 한 scope에 속한다, 헌법 4조 3항).
@@ -936,10 +937,10 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
         if dkind[0] == "scope" and dkind[1] != bound:
             raise WriteError(
                 "결속과 어긋나는 착지 — 쓰지 않았다",
-                [f"세션 `{session}`은 `Scope/{bound}`에 결속돼 있다. 한 "
+                [f"세션 `{session}`은 `{SCOPE}/{bound}`에 결속돼 있다. 한 "
                  f"세션은 한 scope에 속하므로 다른 scope로 착지하지 않는다 "
                  f"— 결속대로 쓰려면 `space`를 빼라. 전역 지식이면 "
-                 f"`Domain/…`·`Person/…`이 열려 있다."])
+                 f"`{DOMAIN}/…`·`{PERSON}/…`이 열려 있다."])
     if not dest:
         raise WriteError(
             "착지가 정해지지 않았다 — space를 지정하라. "
@@ -1578,7 +1579,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
         if sdir in ddir.parents or sdir == ddir:
             raise WriteError(
                 f"자기 안으로 옮길 수 없다: {posix_rel(sdir, ROOT)} → {dest_parent}")
-        if not (ddir / f"{ddir.name}.md").is_file() \
+        if not (ddir / f"{ddir.name}.md").is_file()\
                 and ddir.parent.resolve() not in {
                     (ROOT / s).resolve() for s in graph.NODE_SPACES}:
             raise WriteError(

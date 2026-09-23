@@ -39,7 +39,7 @@ def _print_changeset(region: str, *, record: dict | None = None,
     cs = approvals.changeset(region, record=record, expect_work=expect_work)
     if cs is None:
         raise ValueError("차이를 판정할 수 없다 — 승인본을 복구한 뒤 다시 검토하라")
-    moved = {m["to"] for m in cs.get("moves", [])} \
+    moved = {m["to"] for m in cs.get("moves", [])}\
         | {m["from"] for m in cs.get("moves", [])}
     for label, key in (("추가", "added"), ("삭제", "removed"), ("수정", "modified")):
         rows = [r for r in cs[key] if r not in moved]
@@ -476,7 +476,7 @@ def main(argv=None):
         }, ensure_ascii=False, indent=2))
     elif a.cmd in ("search", "view"):
         s = search.Searcher()
-        rows = s.work_search(a.query, a.k) if a.cmd == "search" \
+        rows = s.work_search(a.query, a.k) if a.cmd == "search"\
             else s.view_search(a.query, a.k)
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     elif a.cmd == "check":

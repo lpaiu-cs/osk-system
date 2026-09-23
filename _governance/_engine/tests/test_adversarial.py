@@ -76,13 +76,13 @@ MANIFEST = ("MAP  _governance/ -> _governance/\n"
             "MAP  docs/ -> docs/\n"
             "KEEP LICENSE\nKEEP README.md\n"
             "DENY _ledger/\nDENY __pycache__/\nDENY .osk/\n"
-            "SKEL Scope/\nSKEL Domain/\n")
+            "SKEL 00_Scope/\nSKEL 00_Domain/\n")
 
 # 인스턴스 소유 바닥 — 갱신이 절대 건드리면 안 되는 것들(I3)
 FLOOR = {
-    "Scope/W1/node.md": node("260802-advf-0001", "인스턴스 지식 노드"),
-    "Scope/Workbench/_ledger/signatures.jsonl": '{"kind":"sign"}\n',
-    "Person/Module/pref.md": node("260802-advf-0002", "인스턴스 선호"),
+    "00_Scope/W1/node.md": node("260802-advf-0001", "인스턴스 지식 노드"),
+    "00_Scope/Workbench/_ledger/signatures.jsonl": '{"kind":"sign"}\n',
+    "00_Person/Module/pref.md": node("260802-advf-0002", "인스턴스 선호"),
     "_sources/img.bin": "raw\n",
 }
 
@@ -189,7 +189,7 @@ def recover(inst: Path, apply: bool = True):
 # ── 불변식 검사 ──────────────────────────────────────────────────────────
 
 def journal(inst: Path) -> list[dict]:
-    j = inst / "Scope/Workbench/_ledger/update.jsonl"
+    j = inst / "00_Scope/Workbench/_ledger/update.jsonl"
     if not j.is_file():
         return []
     out = []
@@ -311,7 +311,7 @@ def scenario_crash_midway(tmp: Path, rnd: random.Random, trial: int) -> None:
     if (inst / ".osk/txn/manifest.json").is_file():
         HIT["pending_txn"] += 1                  # 트랜잭션 도중에 죽였다
     mixed = any((inst / r).read_text(encoding="utf-8") == v2[r]
-                for r in v2 if (inst / r).is_file()) and \
+                for r in v2 if (inst / r).is_file()) and\
         any((inst / r).read_text(encoding="utf-8") == v1[r]
             for r in v1 if (inst / r).is_file())
     if mixed:
@@ -350,16 +350,16 @@ def scenario_malicious_release(tmp: Path, rnd: random.Random, trial: int) -> Non
     run_update(inst, can, "--apply", "--adopt")
 
     attacks = [
-        ("바닥 직접 침범", {"Scope/W1/node.md": "침범\n"},
-         "MAP  Scope/ -> Scope/\n"),
-        ("대장 침범", {"Scope/Workbench/_ledger/signatures.jsonl": "위조\n"},
-         "MAP  Scope/ -> Scope/\n"),
+        ("바닥 직접 침범", {"00_Scope/W1/node.md": "침범\n"},
+         "MAP  00_Scope/ -> 00_Scope/\n"),
+        ("대장 침범", {"00_Scope/Workbench/_ledger/signatures.jsonl": "위조\n"},
+         "MAP  00_Scope/ -> 00_Scope/\n"),
         ("경로 탈출", {"_governance/x.md": "탈출\n"},
          "MAP  _governance/ -> ../payload/\n"),
-        ("SKEL 바닥 파고들기", {}, "SKEL Scope/Workbench/_ledger\n"),
+        ("SKEL 바닥 파고들기", {}, "SKEL 00_Scope/Workbench/_ledger\n"),
         ("SKEL 루트 탈출", {}, "SKEL ../payload\n"),
         ("바닥 재진입(..)", {"_governance/y.md": "재진입\n"},
-         "MAP  _governance/ -> docs/../Scope/\n"),
+         "MAP  _governance/ -> docs/../00_Scope/\n"),
     ]
     name, files, extra_map = attacks[trial % len(attacks)]
     ev = base / f"evil-{trial}"
@@ -379,7 +379,7 @@ def scenario_malicious_release(tmp: Path, rnd: random.Random, trial: int) -> Non
     (ev / "release.json").write_text(json.dumps(att, ensure_ascii=False),
                                      encoding="utf-8")
     r = run_update(inst, ev, "--apply")      # 성공/실패 무관 — 불변식만 본다
-    blocked = r.returncode != 0 or "쓰지 않는다" in (r.stdout or "") \
+    blocked = r.returncode != 0 or "쓰지 않는다" in (r.stdout or "")\
         or "봉쇄" in (r.stdout or "") or "바닥" in (r.stdout or "")
     if blocked or not (inst.parent / "payload").exists():
         HIT["attack_blocked"] += 1

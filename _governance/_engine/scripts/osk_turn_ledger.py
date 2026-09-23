@@ -304,7 +304,7 @@ def window(corpus: dict, until: float) -> dict:
 # ── 과금 항등식 ─────────────────────────────────────────────────────────────
 
 def _prompt(u: dict) -> int:
-    return int(u.get("input_tokens", 0) or 0) + int(u.get("cache_creation_input_tokens", 0) or 0) \
+    return int(u.get("input_tokens", 0) or 0) + int(u.get("cache_creation_input_tokens", 0) or 0)\
         + int(u.get("cache_read_input_tokens", 0) or 0)
 
 
