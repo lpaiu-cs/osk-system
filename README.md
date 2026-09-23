@@ -1,97 +1,213 @@
-# osk-system
+<p align="center">
+  <strong>English</strong> · <a href="README.ko.md">한국어</a>
+</p>
 
-에이전트의 장기 기억을 위한 지식 그래프 체계.
+<p align="center">
+  <img src="docs/assets/readme/hero.svg" alt="osk-system — Long-term memory. Human authority." width="100%">
+</p>
 
-## Problem
+<p align="center">
+  <strong>Give your agents a memory you can actually inspect.</strong><br>
+  A local Markdown knowledge graph with traceable evidence and human-controlled approval.
+</p>
 
-에이전트가 쓰는 지식 저장소에서는 한 가지가 계속 흐려진다 — **무엇이 사용자가
-확인한 것이고 무엇이 에이전트가 만든 후보인가.** 그 구별이 흔들리면 저장소는
-"그럴듯한 것이 쌓인 곳"이 되고, 회상은 신뢰할 수 없게 된다.
+<p align="center">
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-18232d?style=for-the-badge&amp;logo=python&amp;logoColor=efc875" alt="Python"></a>
+  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-18232d?style=for-the-badge&amp;logo=modelcontextprotocol&amp;logoColor=ffffff" alt="Model Context Protocol"></a>
+  <a href="https://daringfireball.net/projects/markdown/"><img src="https://img.shields.io/badge/Markdown-18232d?style=for-the-badge&amp;logo=markdown&amp;logoColor=ffffff" alt="Markdown"></a>
+  <a href="https://obsidian.md/"><img src="https://img.shields.io/badge/Obsidian-18232d?style=for-the-badge&amp;logo=obsidian&amp;logoColor=b6a0ef" alt="Obsidian"></a>
+  <a href="https://git-scm.com/"><img src="https://img.shields.io/badge/Git-18232d?style=for-the-badge&amp;logo=git&amp;logoColor=f08d75" alt="Git"></a>
+</p>
 
-osk-system은 그 구별을 사람의 기억이나 관행이 아니라 **기계가 틀리지 않게
-판정하도록** 만든 체계다. 세 구조가 그것을 떠받친다.
+<p align="center">
+  <a href="https://github.com/lpaiu-cs/osk-system/releases"><img src="https://img.shields.io/github/v/release/lpaiu-cs/osk-system?style=flat-square&amp;color=9bd8c4&amp;labelColor=18232d" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-e8c47c?style=flat-square&amp;labelColor=18232d" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/data-local%20files-9bd8c4?style=flat-square&amp;labelColor=18232d" alt="Data stored in local files">
+</p>
 
-**권위를 노드 밖으로 뺐다.** 승인은 노드 안의 필드가 아니라 별도 대장의
-기록이다 — 사용자가 마지막으로 승인한 구획 전체의 상태(**승인본**)를 엔진이
-따로 보존한다. 에이전트가 노드를 고쳐도 권위를 고칠 수 없고, 고치면 그 차이가
-**변경집합**으로 남아 사용자의 승인이나 반려를 기다린다. 지정·해제·승인·반려의
-발의는 사용자 전속이다.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="docs/SETUP.md">Setup guide</a> ·
+  <a href="#governance">Design &amp; governance</a>
+</p>
 
-**판정을 시간이 아니라 인과로 한다.** 대장의 각 기록은 직전 head를 참조해
-인과 DAG를 이루고, 판정은 시간순 마지막이 아니라 **인과 극대**다. 여러 기기의
-병합으로 극대가 하나로 정해지지 않으면 보수적으로 미확정이며, 갈래 전부를 잇는
-사용자의 새 기록이 이를 해소한다. 모르면 유효라고 하지 않는다.
+---
 
-**외부 표면이 계약 검증의 강제 지점이다.** 에이전트가 파일을 손으로 쓰면 노드
-계약도 참조 위상도 거치지 않는다. 그래서 MCP 도구를 두되, 그은 선은 "읽기
-전용"이 아니라 **권위 비노출**이다 — 보호영역 권위와 pin은 영구히 노출하지
-않고, 노드 쓰기는 검증을 통과시켜 연다.
+## Keep the context. Keep the evidence.
 
-관통하는 태도가 하나 있다. **강제할 수 없는 것을 강제한 척하지 않는다.** 권한
-검사는 적용 봉투를 기계로 평가할 수 있기 전까지 언제나 보류를 낸다.
+Agent memory needs more than storage. It needs a reliable distinction between
+**what a person has approved and what an agent has only proposed**.
+osk-system keeps knowledge in local files, connects it to its sources, and
+records approval separately from the notes an agent can edit.
+
+| What you need | How osk-system helps |
+|---|---|
+| Context across conversations | Project-scoped memory and MCP search and reading tools |
+| Recall you can trace | References from knowledge nodes to source nodes and specific conversation rounds |
+| Changes a person can review | Protected-region snapshots and explicit changesets |
+| Knowledge you can read and keep | Markdown files, an Obsidian graph, and optional Git synchronization |
+
+## The stack
+
+A Python engine exposes MCP tools over stdio, stores knowledge in Markdown,
+and retrieves it with BM25. Obsidian is an optional way to explore the graph;
+Git synchronization is opt-in. Capture and periodic-review adapters currently
+support **Codex and Claude Code**. See the
+[runtime dependencies](_governance/_engine/requirements.txt).
+
+## Quick start
+
+You need Python 3.12 and Git. On macOS or Linux:
+
+```bash
+git clone https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+cd my-osk-vault
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r _governance/_engine/requirements.txt
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
+```
+
+1. Register the MCP server using [.mcp.json.example](.mcp.json.example), replacing
+   `<REPO>` with your instance's absolute path. Follow the
+   [setup guide](docs/SETUP.md) for client-specific registration, hooks, and
+   Windows commands. The detailed operations and governance documents are
+   currently in Korean.
+2. If you use Obsidian, open `my-osk-vault` as a vault.
+3. Before enabling synchronization, point your instance at **your own private
+   remote**. Do not push personal notes, ledgers, or transcripts to the public
+   upstream repository.
+
+> Connecting MCP does not enable automatic capture or periodic review by itself.
+> Configure the hooks for your harness. See [harness coverage](#harness-coverage).
+
+## Usage
+
+**Recall → inspect the evidence → update reviewed knowledge.** With MCP connected,
+you can ask your agent:
+
+```text
+Find prior decisions about this project. Read the source notes before drawing conclusions.
+
+Record the verified outcome of this task in the project's Scope,
+link its evidence, and show me what still needs my review.
+```
+
+In Obsidian, explore connections between clusters in the global graph, then open
+a note beside its local graph to read the surrounding context. **The graph shows
+connections, not approval status.** Use the engine's `status` command to check
+protected regions; review their changesets in the human approval workflow.
+
+```bash
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli status
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli search "project decisions"
+```
+
+## Why the distinction matters
+
+In an agent-written knowledge base, one boundary keeps getting blurred:
+**what the user has confirmed versus what an agent has merely produced**.
+Once that distinction is lost, a memory becomes a collection of plausible
+claims, and recall becomes unreliable.
+
+osk-system makes this distinction mechanically checkable instead of leaving it
+to convention. Three design choices support it:
+
+- **Authority lives outside the node.** Approval is a record in a separate
+  ledger, not a field an agent can edit. The engine preserves the last
+  user-approved snapshot of an entire protected region. Edits become a
+  changeset awaiting approval or rejection. Protecting, unprotecting,
+  approving, and reverting are user-only operations.
+- **Causality, not timestamps, determines the result.** Ledger records reference
+  their parents to form a causal DAG. The engine uses causal maxima, not
+  last-write-wins. If a multi-device merge leaves incomparable heads, the
+  result remains unresolved until a new user record joins all branches.
+- **MCP writes pass through contract validation.** The surface is not read-only:
+  validated node writes are available, while protected-region authority and
+  pin controls are not exposed. Direct filesystem writes do not pass through
+  these checks.
+
+The principle is simple: **do not claim to enforce what you cannot enforce.**
+Authorization remains unresolved unless the engine can evaluate its applicability.
+Protected regions help recover from honest mistakes; they are **not a security
+boundary against someone with arbitrary write access to the vault**.
+See the [engine's limitations](_governance/_engine/README.md#알려진-한계).
 
 ## Harness coverage
 
-자동 포착·주기 통합·구독 fork의 하네스 어댑터는 현재 **Codex와 Claude Code**에
-한정되어 있다. 다른 MCP 클라이언트에서 도구를 호출할 수 있다는 사실만으로
-세션 훅과 자율적인 지식 성장이 연결되었다고 보지 않는다.
+Automatic capture, periodic integration, and subscription-backed forks currently
+have adapters for **Codex and Claude Code**. Being able to call MCP tools from
+another client does not mean session hooks or autonomous knowledge growth are
+connected.
 
-| 실행 조건 | 대화 검토 경로 |
+| Runtime conditions | Conversation review path |
 |---|---|
-| 지원 하네스의 훅과 구독 CLI가 연결되고 로그인·판본 검사를 통과 | 성공한 최종 답변 **Stop 9회마다** 같은 하네스·모델의 백그라운드 fork |
-| CLI 미설정·미설치·미로그인·구독 인증 불확실·판본 불일치·보존 불가능한 권한·Codex 비Git 작업 폴더 등 | **검토 경고**와 함께 현재 세션의 **UserPromptSubmit 9·15턴 통합**으로 전환 |
-| 아직 어댑터가 없는 하네스 | 자동 포착·계수·fallback을 보장하지 않음. 하네스별 연결과 검증이 필요 |
+| Supported hooks and subscription CLI; authentication and version checks pass | A background fork using the same harness and model after every **9 successful final-answer Stop events** |
+| CLI unavailable or unconfigured; login, subscription, version, or permission checks fail; Codex task directory is not a Git repository | A **review warning** and in-session integration at **UserPromptSubmit turns 9 and 15** |
+| Harness without an adapter | No guarantee of automatic capture, counting, or fallback; integration and verification are still required |
 
-입력 계수는 백그라운드 모드에서도 유지한다. 실행 경로가 바뀌어도 검토 대기와
-두 계수를 초기화하지 않으며, 전환 시 이미 9턴을 넘긴 대기는 바로 안내한다.
-로그인이 복구되면 Stop 실행으로 돌아간다. 구독 확인 실패를 API 과금으로 대체하지 않는다.
+Input counts continue in background mode. Switching paths does not reset pending
+reviews or either counter; a pending review already past turn 9 is surfaced
+immediately. When login recovers, review returns to Stop-based execution.
+Failed subscription checks do not silently fall back to paid API calls.
 
-**캐시 재사용은 별도 검증 대상이다.** 실제 Codex 앱의 최종 답변 직후 같은 Sol
-모델로 fork하여 98.74% 적중을 확인했다. 같은 원세션도 기본 CLI 구성은 0%였으므로,
-앱에서 출발하면 앱용 도구 정의를 자동 보존한다. 판본·모델별 보편적 보장은 아니며,
-구현·설치·캐시 적중·실제 노드 성장을 구별한다.
-[설치와 fallback 동작](docs/SETUP.md), [실험 결과와 한계](docs/response-growth.md)를 본다.
+<details>
+<summary>Cache evidence, review boundaries, and future harness support</summary>
 
-노드 갱신의 단위는 같은 **주장과 적용 조건**이다. 같은 프로젝트의 다음 단계라는
-이유로 실행 일지를 계속 누적하지 않는다. 조직 검토는 읽은 구간의 판단을 기록하며,
-일부 구간만 읽은 상태를 군집 전체 완료로 세지 않는다. [구간 검토와 안전한 분화](docs/hub-growth-review.md).
+Cache reuse is a separate verification target. A fork immediately after a final
+answer in the Codex app, using the same Sol model, achieved a **98.74% cache hit
+rate** in one measured experiment. The default CLI configuration on the same
+source session achieved 0%, so app-originated forks preserve app tool definitions
+automatically. This is not a universal guarantee across versions or models.
+Implementation, installation, cache hits, and actual node growth are different
+claims. See [setup and fallback behavior](docs/SETUP.md) and
+[experimental evidence and limitations](docs/response-growth.md).
 
-하네스 커버리지 확대는 후속 과제다. 새로운 하네스마다 대화/완료 식별자, 전사
-저장 경계, 훅 이벤트, 구독 인증, 일회성 실행과 실패 시 대체 경로를 검증해야 한다.
+Updates belong together when they concern the same **claim and applicability
+conditions**, not simply the next task in a project. Organization review records
+the ranges actually read; reading only part of a cluster does not complete the
+whole cluster's review. See [bounded review and safe splitting](docs/hub-growth-review.md).
+
+Each additional harness needs verification of conversation and completion IDs,
+transcript boundaries, hook events, subscription authentication, one-shot
+execution, and failure fallbacks.
+
+</details>
 
 ## Governance
 
-체계를 규정하는 규범은 어느 지식 Space에도 속하지 않는 상설 통치 구획
-`_governance/`에 있다 — system을 규정하는 규범은 system이 조직하는 지식이
-아니기 때문이다.
+The rules defining the system live in `_governance/`, outside the knowledge
+Spaces: the rules that organize knowledge are not themselves knowledge being
+organized by the system.
 
-| 문서 | 무엇을 정하는가 |
+| Document | Responsibility |
 |---|---|
-| [Constitution.md](_governance/Constitution.md) | **헌법** — Space·노드·참조 위상·위임·보호영역·사건·개정의 기본 질서 |
-| [Bylaws.md](_governance/Bylaws.md) | **시행령** — 헌법이 맡긴 운영 규칙: 노드 계약, `_raw` 계약, 군집과 pin, 율령, 위임 운영, 보호영역, 사건부 |
-| [Mechanism.md](_governance/Mechanism.md) | **물리 최소 사양** — 배치 선언표, id·시각 형식, 대장 규약, 외부 표면(MCP) 계약, 링크 문법, 비밀값 필터 |
-| [Workbench-Contract.md](_governance/Workbench-Contract.md) | **Workbench 계약** — 운영 활동 scope의 특별 지위와 정돈 규율 |
+| [Constitution](_governance/Constitution.md) | Spaces, nodes, reference topology, delegation, protected regions, cases, and amendments |
+| [Bylaws](_governance/Bylaws.md) | Operating rules for node and raw-record contracts, clusters, pins, delegation, and protected regions |
+| [Mechanism](_governance/Mechanism.md) | Physical layout, identifiers, timestamps, ledgers, MCP contracts, link syntax, and secret filtering |
+| [Workbench contract](_governance/Workbench-Contract.md) | The special status and organization rules of the operational Workbench scope |
 
-처음 읽는다면 **Constitution → Bylaws → Mechanism** 순서를 권한다. Mechanism의
-§3(승인 기록부)과 §6-2(외부 표면)가 위에서 말한 세 구조의 물리 사양이다.
+Read **Constitution → Bylaws → Mechanism**. Mechanism §3 (approval ledger) and
+§6-2 (external surface) specify the mechanisms described above. These documents
+are currently in Korean; this README is an introduction, not a replacement for
+the governing text.
 
-통치 문서의 비준은 이 정본 저장소에 대한 사용자의 확정 행위이며, 정식
-릴리스의 비준증빙(`release.json`, 파일별 내용 해시 목록)으로 고정된다.
-인스턴스는 릴리스를 갱신으로 받고, 갱신이 통치 문서를 덮으면 그 차이가 통치
-구획 보호영역의 변경집합으로 남는다 — **사용자의 승인이 그 인스턴스의 수용
-기록**이다. 승인은 수용의 기록이지 효력의 요건이 아니다
-([docs/SETUP.md](docs/SETUP.md)).
+Ratification is the user's explicit act in the canonical repository, fixed by
+the release attestation (`release.json`, containing file content hashes).
+Instances receive releases through the updater. Changes to governance files
+remain a protected-region changeset: the user's approval records that instance's
+acceptance, rather than determining the rules' validity.
+See [installation and operations](docs/SETUP.md).
 
-## Not included
+## What's in this repository
 
-지식 코퍼스(개념·결정·프로젝트 노드), 승인 기록부를 비롯한 모든 대장,
-운영 세션 기록.
+The engine, governing documents, and operating guides. **Not** your knowledge
+corpus, approval ledgers, other operational ledgers, or session transcripts.
 
-빈 `= Scope/`·`= Domain/`·`= Person/` 디렉터리는 내려받은 사람이 자기
-인스턴스를 시작할 자리다 — 규범이 정하는 배치(Mechanism §1)와 동형이다.
-
-설치·운용 방법은 [docs/SETUP.md](docs/SETUP.md)를 본다.
+The empty `= Scope/`, `= Domain/`, and `= Person/` directories are starting points
+for your own instance. Personal data belongs in that instance, not in this public
+repository.
 
 ## License
 
-MIT
+[MIT](LICENSE)

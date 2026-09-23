@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
+  <title id="title">osk-system</title>
+  <desc id="desc">Long-term memory. Human authority. An abstract network of connected nodes accompanies the project wordmark.</desc>
+  <rect width="1280" height="360" rx="20" fill="#101b24"/>
+  <path d="M694 0v360" stroke="#293640"/>
+  <path d="M0 344h1280" stroke="#9bd8c4" stroke-width="3"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="54" y="57" fill="#9bd8c4" font-size="13" font-weight="600" letter-spacing="3">LOCAL FILES. LASTING CONTEXT.</text>
+    <text x="50" y="145" fill="#f5f3eb" font-size="76" font-weight="700" letter-spacing="-4">osk-system</text>
+    <text x="54" y="208" fill="#f5f3eb" font-size="32" font-weight="400">Long-term memory.</text>
+    <text x="54" y="251" fill="#9bd8c4" font-size="32" font-weight="400">Human authority.</text>
+    <text x="55" y="307" fill="#a2afb8" font-size="12" font-weight="600" letter-spacing="2">TRACEABLE</text>
+    <circle cx="167" cy="303" r="2" fill="#e8c47c"/>
+    <text x="184" y="307" fill="#a2afb8" font-size="12" font-weight="600" letter-spacing="2">REVIEWABLE</text>
+    <circle cx="315" cy="303" r="2" fill="#e8c47c"/>
+    <text x="332" y="307" fill="#a2afb8" font-size="12" font-weight="600" letter-spacing="2">YOURS</text>
+  </g>
+  <g fill="none" stroke="#344751" stroke-width="1.5">
+    <path d="M963 178 841 103 772 139 787 213 865 234 963 178 1050 269 1143 240 1161 151 1089 80 963 178"/>
+    <path d="M841 103 814 51M841 103 924 64M841 103 865 234M841 103 787 213M772 139 738 94M787 213 748 259M865 234 836 296M865 234 923 284M1050 269 1011 313M1050 269 1119 312M1050 269 1161 151M1143 240 1203 279M1143 240 1225 207M1161 151 1216 107M1161 151 1216 170M1089 80 1116 35M1089 80 1032 39M1089 80 1216 107M963 178 1161 151M963 178 924 64M963 178 923 284"/>
+  </g>
+  <g fill="none" stroke="#9bd8c4" stroke-width="1.5" opacity=".7">
+    <path d="M841 103 963 178 1050 269"/>
+  </g>
+  <g fill="#617782">
+    <circle cx="814" cy="51" r="4"/><circle cx="738" cy="94" r="4"/>
+    <circle cx="748" cy="259" r="4"/><circle cx="836" cy="296" r="4"/>
+    <circle cx="1011" cy="313" r="4"/><circle cx="1119" cy="312" r="4"/>
+    <circle cx="1203" cy="279" r="4"/><circle cx="1225" cy="207" r="4"/>
+    <circle cx="1216" cy="107" r="4"/><circle cx="1216" cy="170" r="4"/>
+    <circle cx="1116" cy="35" r="4"/><circle cx="1032" cy="39" r="4"/>
+  </g>
+  <g fill="#9bd8c4">
+    <circle cx="772" cy="139" r="7"/><circle cx="787" cy="213" r="8"/>
+    <circle cx="865" cy="234" r="10"/><circle cx="924" cy="64" r="6"/>
+    <circle cx="923" cy="284" r="6"/>
+  </g>
+  <g fill="#b6a0df">
+    <circle cx="1089" cy="80" r="11"/><circle cx="1161" cy="151" r="10"/>
+    <circle cx="1143" cy="240" r="8"/>
+  </g>
+  <circle cx="841" cy="103" r="27" fill="#9bd8c4" opacity=".08"/>
+  <circle cx="841" cy="103" r="15" fill="#9bd8c4"/>
+  <circle cx="1050" cy="269" r="25" fill="#b6a0df" opacity=".08"/>
+  <circle cx="1050" cy="269" r="14" fill="#b6a0df"/>
+  <circle cx="963" cy="178" r="45" fill="#e8c47c" opacity=".07"/>
+  <circle cx="963" cy="178" r="32" fill="#101b24" stroke="#e8c47c" stroke-opacity=".35"/>
+  <circle cx="963" cy="178" r="21" fill="#e8c47c"/>
+  <circle cx="963" cy="178" r="7" fill="#101b24"/>
+</svg>
