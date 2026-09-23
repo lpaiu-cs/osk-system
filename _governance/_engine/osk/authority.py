@@ -15,7 +15,7 @@ from pathlib import Path
 from .core import ROOT
 from . import contract, approvals
 
-DELEGATION_FACET = ROOT / "= Person" / "Delegation"
+DELEGATION_FACET = ROOT / "Person" / "Delegation"
 # 위임 Facet의 정본 region key — 권한 판정은 **이 정확한 region**의 승인본으로만
 # 한다(하위 영역만 보호된 경우로 우회되지 않게).
 DELEGATION_REGION = DELEGATION_FACET.relative_to(ROOT).as_posix()
@@ -40,7 +40,7 @@ def covering_regions() -> list[str]:
     """위임 Facet을 덮는 보호영역 — Facet 자신과 그 **상위** 구획들.
 
     헌법 10조 1항: "상위 구획의 보호는 그 하위 전체에 미치며, 에이전트는 하위에
-    보호의 예외를 만들 수 없다." 그래서 사용자가 Facet 대신 `= Person`을
+    보호의 예외를 만들 수 없다." 그래서 사용자가 Facet 대신 `Person`을
     지정했어도 위임은 성립한다. 반대로 Facet **하위**만 지정한 것은 덮지 못한다
     — 하위 구획만 protect해 Facet의 미보호를 우회할 수 없다(헌법 7조 3항)."""
     reg = DELEGATION_REGION

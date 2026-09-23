@@ -1,0 +1,34 @@
+# One-time exception explicitly authorized by the repository owner.
+name: release-v3.20.1-once
+on:
+  push:
+    branches: [main]
+    paths: [release.json]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the authorized v3.20.1 hotfix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/contents/release.json?ref=$RELEASE_SHA" --jq .content | base64 -d > release.json
+          version=$(python3 -c 'import json; print(json.load(open("release.json"))["version"])')
+          [ "$version" = v3.20.1 ] || exit 0
+          if gh release view v3.20.1 --repo "$REPO" >/dev/null 2>&1; then exit 0; fi
+          if gh api "repos/$REPO/git/ref/tags/v3.20.1" > tag.json 2>/dev/null; then
+            python3 -c 'import json,os; assert json.load(open("tag.json"))["object"]["sha"] == os.environ["RELEASE_SHA"], "Tag already points elsewhere"'
+          fi
+          cat > notes.md <<'NOTES'
+          Hotfix: distribution Space roots are now Scope/, Domain/, and Person/, without equals signs or spaces. Engine paths, publishing skeletons, setup documentation, and tests use the new layout.
+
+          Existing vaults are not automatically migrated. Keep v3.20.0 until stored paths, ledger references, and approval snapshots can be migrated together. The new engine explicitly refuses legacy roots to prevent silently starting an empty ledger. See docs/space-layout-migration.md.
+
+          This release was explicitly authorized by the repository owner as a one-time noninteractive exception. Normal interactive release policy is unchanged.
+          NOTES
+          gh release create v3.20.1 --repo "$REPO" --target "$RELEASE_SHA" --title v3.20.1 --notes-file notes.md

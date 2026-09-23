@@ -133,7 +133,7 @@ def _index():
 def _scope_path(scope: str) -> Path:
     if not isinstance(scope, str) or not scope or "\\" in scope:
         raise ValueError("scope must name one existing Scope or Domain cluster")
-    parts = scope.split("/") if scope.startswith("= Domain/") else ["= Scope", scope]
+    parts = scope.split("/") if scope.startswith("Domain/") else ["Scope", scope]
     if len(parts) != 2 or not parts[1] or "/" in parts[1] or parts[1] in {".", "..", "Workbench"}:
         raise ValueError("organization requires an existing top-level Scope or Domain cluster")
     p = core.resolve_in_root(Path(*parts))
@@ -211,7 +211,7 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
     idx = _index() if idx is None else idx
     state, jobs = _load(), []
     scopes = sorted(set(scopes if scopes is not None else
-                        [k[1] if k[0] == "scope" else "= Domain/" + k[1]
+                        [k[1] if k[0] == "scope" else "Domain/" + k[1]
                          for _, k in idx.nodes.values() if k[0] in {"scope", "domain"}] +
                         [p["scope"] for p in state["plans"].values()]))
     attempts = {p["scope"]: p.get("last_attempt", "") for p in state["plans"].values()}
@@ -223,7 +223,7 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
         reviewed = state["reviews"].get(scope, {})
         unfinished = prior and not (reviewed.get("key") == prior["key"] and reviewed.get("outcome") == "complete")
         if not prior and not any((k[0] == "scope" and k[1] == scope) or
-                                (k[0] == "domain" and "= Domain/" + k[1] == scope)
+                                (k[0] == "domain" and "Domain/" + k[1] == scope)
                                 for _, k in idx.nodes.values()):
             continue  # A raw-only capture has no knowledge organization to review yet.
         current = snapshot(scope, idx)

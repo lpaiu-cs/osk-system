@@ -63,12 +63,12 @@ def writer(a):
         op, seq = cmd.get("op", "update"), cmd["seq"]
         if op == "update":
             result = write.update_node("node-00020", summary=f"측정 {seq}")
-            parsed = contract.parse(a.root / "= Scope/Bench00/node-00020.md")
+            parsed = contract.parse(a.root / "Scope/Bench00/node-00020.md")
             assert parsed.meta["summary"] == f"측정 {seq}"
         elif op == "create":
             result = write.create_node(f"created-{seq}", "새 노드 측정", "[[Bench00]]",
-                                       "agent", space="= Scope/Bench00")
-            assert (a.root / f"= Scope/Bench00/created-{seq}.md").exists()
+                                       "agent", space="Scope/Bench00")
+            assert (a.root / f"Scope/Bench00/created-{seq}.md").exists()
         else:
             raise ValueError(op)
         assert result["ok"], result
@@ -181,7 +181,7 @@ def run(a):
                     "writer": result, **state})
             # The fetch-time writer must have been included in this tick.
             assert git(local, "rev-parse", "HEAD") == git(remote, "rev-parse", "main")
-            assert f"측정 {seq}" in git(remote, "show", "main:= Scope/Bench00/node-00020.md")
+            assert f"측정 {seq}" in git(remote, "show", "main:Scope/Bench00/node-00020.md")
 
         try:
             record({"phase": "metadata", "nodes": a.nodes, "clone_ms": clone_ms,
@@ -203,7 +203,7 @@ def run(a):
             git(peer, "pull", "--rebase", "origin", "main")
             tick("real-push-retry", 0, delay=a.delay, reject=True)
             git(peer, "pull", "--rebase", "origin", "main")
-            bulk = peer / "= Scope/Bench00/_raw/.records/bulk"
+            bulk = peer / "Scope/Bench00/_raw/.records/bulk"
             bulk.mkdir(parents=True)
             rng = random.Random(17)
             for i in range(16):

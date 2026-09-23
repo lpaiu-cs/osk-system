@@ -7,7 +7,7 @@ from pathlib import Path
 import os
 import tempfile
 
-QUERY = '(path:"= Scope/" OR path:"= Domain/" OR path:"= Person/") [id] [summary] -path:"/_"'
+QUERY = '(path:"Scope/" OR path:"Domain/" OR path:"Person/") [id] [summary] -path:"/_"'
 
 
 def configure(root: Path, apply: bool = False) -> dict:

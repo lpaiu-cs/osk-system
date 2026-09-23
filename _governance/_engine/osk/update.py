@@ -12,7 +12,7 @@
 - MAP 대상 → 적용   - KEEP(정본 저장소 전용) → 건너뜀
 - SKEL → 없는 자리에만 골격
 그리고 무엇이 와도 **인스턴스 소유 바닥**(Mechanism §1-2 5항)에는 쓰지
-않는다 — `= ` Space 루트 아래(골격 제외)·`_ledger/`·`_raw/`·`_sources/`·
+않는다 — `Scope`·`Domain`·`Person` 루트 아래(골격 제외)·`_ledger/`·`_raw/`·`_sources/`·
 `.osk/`. 바닥은 매니페스트가 아니라 이 모듈의 상수다.
 
 적용 규율 (Mechanism §1-2 6항):
@@ -45,7 +45,7 @@ VERSION_RE = r"^v\d+\.\d+\.\d+$"             # 릴리스·태그·자동 탐색�
 
 # 인스턴스 소유 바닥 — 릴리스·매니페스트가 무엇을 말하든 쓰지 않는다.
 # (골격 .gitkeep은 디렉터리가 없을 때만 예외 — _skel에서 별도 처리)
-FLOOR_HEADS = ("= Domain", "= Person", "= Scope",
+FLOOR_HEADS = ("Domain", "Person", "Scope", "= Domain", "= Person", "= Scope",
                "_ledger", "_raw", "_sources", ".osk", ".git")
 
 
@@ -64,7 +64,7 @@ def _within(base: Path, rel: str) -> Path | None:
     """rel을 base 안으로 봉쇄한 **정규 절대 경로** — 아니면 None. release 증빙
     key와 (다기기 병합되는) 저널 path는 **신뢰 밖 입력**이므로, 어느 I/O 전에도
     이 봉쇄를 통과한다. 두 겹으로 막는다: ①`.`/`..` segment·절대경로를 문자열
-    단계에서 거부(정규화 전 판정 우회 차단 — `docs/../= Scope/`로 바닥 재진입
+    단계에서 거부(정규화 전 판정 우회 차단 — `docs/../Scope/`로 바닥 재진입
     금지) ②남은 심볼릭 재배치는 realpath로 흡수해 base 안인지 확인. 반환값의
     base-상대(canonical)에만 floor·I/O를 걸어야 한다."""
     try:
@@ -101,9 +101,9 @@ def _canon_rel(base: Path, rel: str) -> str | None:
 
 
 # 골격을 만들어도 되는 곳은 **최상위 Space 루트 셋**뿐이다. 그 아래는 전부
-# 인스턴스 소유 바닥이므로, `SKEL = Scope/UserData/newdir` 같은 지시는 사용자
+# 인스턴스 소유 바닥이므로, `SKEL Scope/UserData/newdir` 같은 지시는 사용자
 # 영역에 디렉터리를 만들게 된다 — 접두만 보지 않고 정확히 이 셋만 허용한다.
-SKEL_ROOTS = ("= Scope", "= Domain", "= Person")
+SKEL_ROOTS = ("Scope", "Domain", "Person")
 
 
 def _allowed_skel(s: str) -> Path | None:

@@ -175,7 +175,7 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
                     if candidate != state_path("claude", owner["conversation_id"]):
                         continue
                     owner_scope = owner["space"] or (
-                        "= Scope/" + (write.resolve_session(owner["session"]) or ""))
+                        "Scope/" + (write.resolve_session(owner["session"]) or ""))
                     if owner_scope != s["space"]:
                         continue
                     for source in owner["rounds"]:
@@ -239,15 +239,15 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                 scope = raw._scope_of_space(pinned)
                 if not scope:
                     raise ValueError("saved conversation scope is invalid; capture remains pending")
-                pinned = "= Scope/" + scope
+                pinned = "Scope/" + scope
             destination, bound = write.resolve_landing(session, space, raw._CONFINE)
-            requested = "= Scope/" + destination if destination else None
+            requested = "Scope/" + destination if destination else None
             if pinned and not requested and s["session"]:
                 # A generic cwd key must not bind unrelated conversations.
                 # Resume this native ID using its explicitly chosen session.
                 session = s["session"]
                 destination, bound = write.resolve_landing(session, pinned, raw._CONFINE)
-                requested = "= Scope/" + destination
+                requested = "Scope/" + destination
             if (pinned and requested and pinned != requested
                     or s["session"] and s["session"] != session
                     and not (bound and requested == pinned or not pinned and requested)):

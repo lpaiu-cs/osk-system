@@ -313,7 +313,7 @@ def read_raw(ref: str | None = None, space: str | None = None,
     if space:
         return _guard(raw.list_records, space)
     return {"ok": False, "violations": [
-        "`ref`(라운드 좌표 `경로#N`) 또는 `space`(`= Scope/이름`) 중 "
+        "`ref`(라운드 좌표 `경로#N`) 또는 `space`(`Scope/이름`) 중 "
         "하나를 준다 — 좌표를 모르면 `space`로 기록 목록부터 본다"]}
 
 
@@ -352,7 +352,7 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
                 edges: Edges | None = None, settle: str | None = None,
                 distill: dict | None = None) -> dict:
     """생성. 전역 유일 `title`=파일명=`name`, `body`=본문 전문.
-    `space`는 전체 군집 경로(`= Scope/W1`); 모르면 `overview`.
+    `space`는 전체 군집 경로(`Scope/W1`); 모르면 `overview`.
     `session`은 저장소명 같은 고정 키(대화 id 금지). 첫 성공에 영구 결속;
     이후 `space` 생략. `bound_scope`는 새 결속만 보고한다.
     `edges`: `derived-from` 근거는 노드 제목, raw `경로#N`, 그 밖 비노드 `[[경로#제목]]`,
@@ -427,7 +427,7 @@ def append_raw(session: str, record: RawRecord, user: str, agent: str,
                space: str | None = None) -> dict:
     """`user` 발화와 `agent` 응답 한 라운드를 불변 기록에 잇는다.
     `session`=고정 저장소 키, `record`=이 대화 내내 같은 기록 이름.
-    `space`는 `= Scope/<이름>` 두 마디이며 결속 뒤 생략.
+    `space`는 `Scope/<이름>` 두 마디이며 결속 뒤 생략.
     엔진이 번호를 매긴 `round_ref`를 `derived-from`으로 쓴다.
     `filtered`는 치환된 비밀값 종류다."""
     return _guard(raw.append_round, session, record, user, agent, space)
@@ -443,7 +443,7 @@ def scope_memory(session: str, text: str | None = None,
     아무것도 없이 부르면 읽는다. 쓰기는 **`edits`가 기본** —
     `[{old_text,new_text},…]`, 앵커는 본문에 정확히 한 번, 전부 아니면 전무,
     상한은 순결과에만, 해시 불요. `text`는 전체 치환이라 `expect_hash` 필수.
-    `session`은 `create_node`와 같은 값, `space`는 `= Scope/<이름>` **두 마디**만.
+    `session`은 `create_node`와 같은 값, `space`는 `Scope/<이름>` **두 마디**만.
     상한 1500자."""
     if text is None and edits is None:
         return _guard(scope_memory_mod.read, session, space)

@@ -45,8 +45,8 @@ def run(a):
                 for i in range(a.warm):
                     for variant in list(processes)[::1 if i % 2 else -1]:
                         call(variant, op, 'warm', i)
-            for kind, path in [('raw', '= Scope/Bench00/_raw/.records/sample.txt'),
-                               ('ledger', '= Scope/Workbench/_ledger/bench.jsonl')]:
+            for kind, path in [('raw', 'Scope/Bench00/_raw/.records/sample.txt'),
+                               ('ledger', 'Scope/Workbench/_ledger/bench.jsonl')]:
                 if a.only and a.only != kind:
                     continue
                 p = a.root / path

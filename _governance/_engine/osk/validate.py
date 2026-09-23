@@ -218,8 +218,8 @@ def run() -> dict:
     # `_wm`도 함께 훑는다 — 통로에는 필터가 걸려 있지만(osk/wm.py), 통로 밖
     # 유입(수동 편집·구 엔진 기기에서의 동기화·나중에 추가된 패턴)은 그 필터를
     # 지나지 않는다. §9 1항이 검증기를 집행 지점으로 두는 이유가 그것이다.
-    for d in sorted([*(ROOT / "= Scope").rglob("_raw"),
-                     *(ROOT / "= Scope").rglob("_scope_memory")]):
+    for d in sorted([*(ROOT / "Scope").rglob("_raw"),
+                     *(ROOT / "Scope").rglob("_scope_memory")]):
         if not d.is_dir():
             continue
         for p in sorted(d.rglob("*")):
@@ -790,13 +790,13 @@ def make_mini_vault(dst) -> None:
     """fixture·회귀 시험용 최소 vault 골격."""
     from pathlib import Path
     dst = Path(dst)
-    for d in ["= Scope/W1", "= Scope/Workbench/_ledger/case",
-              "= Scope/Workbench/transit", "= Domain",
-              "= Person/Delegation", "= Person/Module", "_sources"]:
+    for d in ["Scope/W1", "Scope/Workbench/_ledger/case",
+              "Scope/Workbench/transit", "Domain",
+              "Person/Delegation", "Person/Module", "_sources"]:
         (dst / d).mkdir(parents=True, exist_ok=True)
     # W1 허브 노드 — 첫-노드 규칙(시행령 §3 6항) 아래에서 시험들이 W1에
     # 자유로 노드를 만들 수 있으려면 허브가 먼저 서 있어야 한다.
-    idx_md = dst / "= Scope/W1/W1.md"
+    idx_md = dst / "Scope/W1/W1.md"
     if not idx_md.exists():
         idx_md.write_text(
             '---\nid: "260801-zzzz-w1ix"\ncreated: "2026-08-01 00:00 (KST)"\n'

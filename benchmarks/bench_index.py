@@ -48,7 +48,7 @@ def worker(a):
     from osk import contract, graph, search
     imported = {"import_ms": (time.perf_counter()-start)*1000,
                 "import_cpu_ms": (time.process_time()-cpu)*1000, **memory()}
-    target = a.target or next((a.root / "= Scope").glob("osk-system/*.md")).stem
+    target = a.target or next((a.root / "Scope").glob("osk-system/*.md")).stem
     counts = {}
     original_index, original_search, original_parse = (
         graph.Index.__init__, search.Searcher.__init__, contract.parse)
@@ -124,7 +124,7 @@ def fixture(a):
     for i in range(a.nodes):
         group = f"Bench{i % 20:02d}"
         name = group if i < 20 else f"node-{i:05d}"
-        p = a.root / "= Scope" / group / (name + ".md")
+        p = a.root / "Scope" / group / (name + ".md")
         p.parent.mkdir(parents=True, exist_ok=True)
         # Fixed size, bilingual, non-identical vocabulary, 2 links per node.
         neighbor = i + 20 if i + 20 < a.nodes else i % 20
@@ -139,10 +139,10 @@ def fixture(a):
                    "author: agent\ndrafter: agent\nsummary: 색인 성능 합성 표본\n---\n\n" + body)
         p.write_text(content, encoding="utf-8")
         sizes.append(len(content.encode()))
-    raw = a.root / "= Scope/Bench00/_raw/.records/sample.txt"
+    raw = a.root / "Scope/Bench00/_raw/.records/sample.txt"
     raw.parent.mkdir(parents=True)
     raw.write_text("# 1\n\n사용자: 합성 원료\n에이전트: 관측 결과\n", encoding="utf-8")
-    ledger = a.root / "= Scope/Workbench/_ledger/bench.jsonl"
+    ledger = a.root / "Scope/Workbench/_ledger/bench.jsonl"
     ledger.parent.mkdir(parents=True)
     ledger.write_text("{}\n", encoding="utf-8")
     info = {"synthetic": True, "generator": 2, "nodes": a.nodes, "bytes": sum(sizes),
@@ -213,9 +213,9 @@ def run(a):
                 changes = [("node", "search"), ("raw", "search"), ("ledger", "search")]
                 if not a.search_only:
                     changes.insert(0, ("node", "read_node"))
-                paths = {"node": a.root / "= Scope/Bench00/node-00020.md",
-                         "raw": a.root / "= Scope/Bench00/_raw/.records/sample.txt",
-                         "ledger": a.root / "= Scope/Workbench/_ledger/bench.jsonl"}
+                paths = {"node": a.root / "Scope/Bench00/node-00020.md",
+                         "raw": a.root / "Scope/Bench00/_raw/.records/sample.txt",
+                         "ledger": a.root / "Scope/Workbench/_ledger/bench.jsonl"}
                 for kind, op in changes:
                     p = paths[kind]
                     original = p.read_bytes()

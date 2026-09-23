@@ -140,7 +140,7 @@ def _fsync_file(p: Path) -> None:
 
 def _fsync_journal_home(root: Path) -> None:
     """갱신 저널의 디렉터리 엔트리를 ROOT까지 내구화 — osk.update와 같은 규율."""
-    d = root / "= Scope" / "Workbench" / "_ledger"
+    d = root / "Scope" / "Workbench" / "_ledger"
     root_real = Path(os.path.realpath(root))
     while True:
         _fsync_dir(d)
@@ -210,7 +210,7 @@ def _canon_rel(root: Path, rel: str) -> str | None:
 
 
 def _journal_done(root: Path, txn: str) -> bool:
-    j = root / "= Scope/Workbench/_ledger/update.jsonl"
+    j = root / "Scope/Workbench/_ledger/update.jsonl"
     if not j.is_file():
         return False
     for line in j.read_text(encoding="utf-8", errors="ignore").splitlines():

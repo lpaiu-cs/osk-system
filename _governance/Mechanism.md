@@ -22,11 +22,11 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 
    | 경로 | 소속 | 내용 |
    |---|---|---|
-   | `= Scope/<이름>/` | Scope Space의 scope | 노드 + `_raw/` |
-   | `= Scope/<이름>/<하위>/…` | 같은 scope의 하위 군집 | 노드 (재귀) |
-   | `= Scope/Workbench/` | Workbench scope (헌법 4조 5항) | 아래 3항 |
-   | `= Domain/<이름>/` | Domain Space의 domain | 노드 |
-   | `= Person/<facet>/` | Person Space의 facet | 노드 |
+   | `Scope/<이름>/` | Scope Space의 scope | 노드 + `_raw/` |
+   | `Scope/<이름>/<하위>/…` | 같은 scope의 하위 군집 | 노드 (재귀) |
+   | `Scope/Workbench/` | Workbench scope (헌법 4조 5항) | 아래 3항 |
+   | `Domain/<이름>/` | Domain Space의 domain | 노드 |
+   | `Person/<facet>/` | Person Space의 facet | 노드 |
    | `_governance/` | 통치 구획 (Space 밖, 헌법 3조 6항) | 통치 문서 + `records/` |
    | `_governance/_engine/` | 엔진 | 코드·동기화 도구·회귀 수트 |
    | `_sources/` | 공용 원자료 구획 | 비노드 (이미지·pdf 등) |
@@ -45,11 +45,11 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    `signatures.jsonl`은 구체제 서명 기록부의 보존 기록이며 새 기록을
    추가하지 않는다. `_raw/`는 운영 세션 기록이고, `_scope_memory/`는 scope별 공유
    기억이다(§9-2).
-4. **접두 규칙**: `= ` 접두는 Space 루트의 강조 표기다. 밑줄 접두 구획에는
+4. **접두 규칙**: Space 루트는 `Scope`·`Domain`·`Person`으로 표기하며 `=`와 공백 접두를 쓰지 않는다. 밑줄 접두 구획에는
    노드를 두지 않는다 — 유일한 예외가 `_governance/`로, Space 밖의 통치
    구획으로서 통치 문서·사료를 특수한 노드로 담는다(헌법 3조 6항 · 시행령
-   §10 1항). 노드 군집은 2항의 표에 선언된 경로(`= Scope/`·`= Domain/`·
-   `= Person/`과 그 하위 군집, `transit/`, `_governance/`)뿐이다. 그 밖의
+   §10 1항). 노드 군집은 2항의 표에 선언된 경로(`Scope/`·`Domain/`·
+   `Person/`과 그 하위 군집, `transit/`, `_governance/`)뿐이다. 그 밖의
    루트 디렉토리는 엔진·저장소 지원 구획이며 노드를 두지 않는다. 통치
    구획의 노드는 표면 쓰기의 대상이 아니고 검색·중심성에 산입하지 않는다
    (시행령 §10 1항).
@@ -111,7 +111,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    만든다. **별도의 갱신 매니페스트는 두지 않는다.** 직전 릴리스에서 관리하던
    파일이 이번 릴리스에서 빠졌으면 인스턴스에서도 제거한다 — 안 하면 하류가
    정본과 다른 프레임워크를 실행한다. 관리 집합의 정본은 갱신 저널(7항)이다.
-5. **인스턴스 소유 바닥**: `= ` 접두 Space 루트 아래(골격 제외)·`_ledger/`·
+5. **인스턴스 소유 바닥**: `Scope`·`Domain`·`Person` 루트 아래(골격 제외)·`_ledger/`·
    `_raw/`·`_sources/`·`.osk/`(로컬 설정)에는 릴리스·매니페스트가 무엇을
    말하든 쓰지도 지우지도 않는다 — 이 바닥은 매니페스트와 무관한 엔진
    상수다. 골격(SKEL)은 루트 안으로 봉쇄된 **최상위 Space 루트**에만 만든다 —
@@ -502,7 +502,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
      비노드 대상은 경로 위키링크를 따옴표로 감싼다: `derived-from: "[[경로]]"`
      또는 `derived-from: "[[경로#제목]]"`. 여럿이면 목록으로 섞어 쓸 수 있다.
      `_raw/` 기록은 비노드 위키링크의 예외로, 라운드 번호를 붙인 평문 좌표를
-     YAML 문자열로 쓴다: `derived-from: "= Scope/<scope>/_raw/.records/<기록 이름>.txt#N"`.
+     YAML 문자열로 쓴다: `derived-from: "Scope/<scope>/_raw/.records/<기록 이름>.txt#N"`.
      기존 `.md` 경로와 위키링크 표기는 계속 해석한다. 노드 대상을 `id` 맨값으로
      적은 기존 표기는 계속 해석한다 — 동일성의 정본은 여전히 `id`이며
      (§2 3항), 바뀌는 것은 참조 표기이지 동일성이 아니다.
@@ -573,7 +573,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    이 통로를 지나며 치환됐으므로 평소에는 일치하고, 패턴이 늘어 과거 기록까지
    새로 치환돼야 하는 경우에는 접두부가 어긋나 거부된다. 증거를 소급해 고쳐
    쓰지 않고 멈추는 쪽이 감사 추적을 지킨다.
-5. 세션 기록의 물리 자리는 `= Scope/<scope>/_raw/.records/<기록 이름>.txt`다.
+5. 세션 기록의 물리 자리는 `Scope/<scope>/_raw/.records/<기록 이름>.txt`다.
    Markdown이 아닌 파일을 숨김 디렉터리에 두어 원료가 Obsidian 네이티브의
    노트로 표시되지 않게 한다. 기록 이름은 노드 제목과 같은 이식성 규칙을
    받으며 확장자를 포함한 파일명 길이도 검사한다. 이식성 기준으로 같은 이름은
@@ -603,7 +603,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 
 ## §9-2 scope 기억
 
-1. 물리 자리는 `= Scope/Workbench/_scope_memory/<scope 이름>.md`이며 scope당
+1. 물리 자리는 `Scope/Workbench/_scope_memory/<scope 이름>.md`이며 scope당
    하나다. **모든 세션과 기기가 같은 것을 본다** — 세션 한정 작업 상태는
    적지 않는다. 이름이 이 공유성을 말한다(구명 working_memory는 한 마음의
    사유물로 읽혀 세션 한정 상태의 유입을 불렀고, 실측 후 개명했다).

@@ -62,8 +62,8 @@ def read_checks():
             '\n- ```python\n  # List comment\n  ```\n'
             '## Repeated\nFirst instance\n## Repeated\nSecond instance\n')
     assert write.create_node('Selective read', 'Read fixture', body,
-                             'gpt-6-astra', space='= Scope/W1')['ok']
-    path = core.ROOT / '= Scope/W1/Selective read.md'
+                             'gpt-6-astra', space='Scope/W1')['ok']
+    path = core.ROOT / 'Scope/W1/Selective read.md'
     path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
     full = m.read_node('Selective read')
     outline = m.read_node(full['id'], view='outline')
@@ -93,11 +93,11 @@ def read_checks():
     assert m.read_node(full['name'], view='outline')['view_hash'] != outline['view_hash']
     # A heading-free body is still pageable; huge outlines have a visible ceiling.
     assert write.create_node('No headings', 'Plain', 'plain ' * 900,
-                             'gpt-6-astra', space='= Scope/W1')['ok']
+                             'gpt-6-astra', space='Scope/W1')['ok']
     assert not m.read_node('No headings', view='outline')['headings']
     assert m.read_node('No headings', view='0:5000')['next_view']
     assert write.create_node('Many headings', 'Outline', '\n'.join(f'# H{i}' for i in range(100)),
-                             'gpt-6-astra', space='= Scope/W1')['ok']
+                             'gpt-6-astra', space='Scope/W1')['ok']
     many = m.read_node('Many headings', view='outline')
     assert len(many['headings']) == 40 and many['outline_truncated']
     # List fences must hide code headings without swallowing the following section.

@@ -386,12 +386,12 @@ def _cluster_names() -> list[str]:
                 out.add(path)
                 walk(sub, path)
 
-    for space in ("= Scope", "= Domain", "= Person"):
+    for space in ("Scope", "Domain", "Person"):
         d = ROOT / space
         if d.is_dir():
             walk(d, space)
-    if (ROOT / "= Scope/Workbench/transit").is_dir():
-        out.add("= Scope/Workbench/transit")
+    if (ROOT / "Scope/Workbench/transit").is_dir():
+        out.add("Scope/Workbench/transit")
     return sorted(out)
 
 
@@ -446,8 +446,8 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
     # 하위 허브를 참조한다. 구판은 하위를 막았고, 그래서 규범에 있는 분화를
     # 표면으로 수행할 길이 없었다.
     parent = dest_dir.parent.resolve()
-    roots = {(ROOT / "= Scope").resolve(), (ROOT / "= Domain").resolve(),
-             (ROOT / "= Person").resolve()}
+    roots = {(ROOT / "Scope").resolve(), (ROOT / "Domain").resolve(),
+             (ROOT / "Person").resolve()}
     top_level = parent in roots
     if not top_level and not (parent / f"{parent.name}.md").is_file():
         raise WriteError(
@@ -745,7 +745,7 @@ def ephemeral_session_errors(session: str | None) -> list[str]:
     오지 않으므로, 대장에는 죽은 행만 쌓인다.
 
     도구 설명이 이미 금지하고 있었으나 **설명은 강제가 아니었고**, 실측으로
-    두 건이 굳었다(2026-08-24 관측: `= Scope/Arel-Wars-2`·`= Scope/gh-hint`).
+    두 건이 굳었다(2026-08-24 관측: `Scope/Arel-Wars-2`·`Scope/gh-hint`).
     형식이 어긋난 `space`를 조용히 버리지 않는 `resolve_landing`의 규율과
     같은 이유로 여기서도 거부한다 — 버리면 호출자는 왜 다음 세션이 기억을
     잃는지 영영 모른다.
@@ -878,8 +878,8 @@ def resolve_landing(session: str, space: str | None,
     if not scope:
         raise WriteError(
             "space 표기 아님 — 쓰지 않았다",
-            [f"`{space}`는 space 표기가 아니다 — `= Scope/<이름>` **두 마디**로 "
-             f"준다. `overview`의 `clusters`에는 `= Person/…`이나 더 깊은 경로도 "
+            [f"`{space}`는 space 표기가 아니다 — `Scope/<이름>` **두 마디**로 "
+             f"준다. `overview`의 `clusters`에는 `Person/…`이나 더 깊은 경로도 "
              f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {graph.space_list()}"])
     if scope not in graph.scope_names():
         raise WriteError(
@@ -888,7 +888,7 @@ def resolve_landing(session: str, space: str | None,
     if bound and scope != bound:
         raise WriteError(
             "결속과 어긋나는 착지 — 쓰지 않았다",
-            [f"세션 `{session}`은 `= Scope/{bound}`에 결속돼 있다. {confine_note} "
+            [f"세션 `{session}`은 `Scope/{bound}`에 결속돼 있다. {confine_note} "
              f"결속대로 쓰려면 `space`를 빼라."])
     return scope, bound
 
@@ -925,7 +925,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
         raise WriteError("계약 위반 — 쓰지 않았다", errs)
 
     bound = resolve_session(session)
-    dest = space or (f"= Scope/{bound}" if bound else None)
+    dest = space or (f"Scope/{bound}" if bound else None)
     if dest and bound:
         # 결속이 선 세션에 **다른 scope**를 착지로 주는 요청은 거부한다
         # (Mechanism §6-2 6항 — 한 세션은 한 scope에 속한다, 헌법 4조 3항).
@@ -936,10 +936,10 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
         if dkind[0] == "scope" and dkind[1] != bound:
             raise WriteError(
                 "결속과 어긋나는 착지 — 쓰지 않았다",
-                [f"세션 `{session}`은 `= Scope/{bound}`에 결속돼 있다. 한 "
+                [f"세션 `{session}`은 `Scope/{bound}`에 결속돼 있다. 한 "
                  f"세션은 한 scope에 속하므로 다른 scope로 착지하지 않는다 "
                  f"— 결속대로 쓰려면 `space`를 빼라. 전역 지식이면 "
-                 f"`= Domain/…`·`= Person/…`이 열려 있다."])
+                 f"`Domain/…`·`Person/…`이 열려 있다."])
     if not dest:
         raise WriteError(
             "착지가 정해지지 않았다 — space를 지정하라. "
@@ -1020,13 +1020,13 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     # 알리게 된다. 판독은 `resolve`가 그때 한 번 한다(파일은 이미 있다).
     idx.register_new(path, kind)
     # 결속은 **scope일 때만** — Domain/Person에 결속하면 자동 라우팅이
-    # 존재하지 않는 `= Scope/<이름>`을 가리켜 그 키가 벽돌이 된다(7차 중대 C)
+    # 존재하지 않는 `Scope/<이름>`을 가리켜 그 키가 벽돌이 된다(7차 중대 C)
     bound_now = None
     if session and not bound and kind[0] == "scope":
         # 결속 값은 **scope 이름**이지 말단 디렉토리명이 아니다. 구판은
-        # `dest_dir.name`을 썼고, 그래서 하위 군집(`= Scope/W1/Sub`)에서
+        # `dest_dir.name`을 썼고, 그래서 하위 군집(`Scope/W1/Sub`)에서
         # 처음 쓴 세션이 존재하지 않는 `Sub`에 묶였다 — 그 뒤 `append_raw`는
-        # `= Scope/Sub/_raw/`라는 유령 scope를 만들고, 노드 생성은 최상위
+        # `Scope/Sub/_raw/`라는 유령 scope를 만들고, 노드 생성은 최상위
         # 신설 관문으로 갔다. 깊이는 갈래이지 소속이 아니며(Mechanism §1
         # 2항), 소속은 `space_of`가 이미 정확히 말해 준다.
         bind_session(session, kind[1])

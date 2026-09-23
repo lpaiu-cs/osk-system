@@ -369,7 +369,7 @@ class ResponseGrowthTests(unittest.TestCase):
             import subprocess
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='= Scope/W1')
+            scope_memory.replace('own', '', space='Scope/W1')
             native = core.ROOT / 'native.jsonl'
             rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),
                         'cli_version':'0.155.0','model_provider':'openai'}},
@@ -455,7 +455,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='= Scope/W1')
+            scope_memory.replace('own', '', space='Scope/W1')
             native = core.ROOT / 'native.jsonl'
             rg.CONFIG.parent.mkdir(exist_ok=True)
             rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
@@ -501,7 +501,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='= Scope/W1')
+            scope_memory.replace('own', '', space='Scope/W1')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
@@ -561,7 +561,7 @@ class ResponseGrowthTests(unittest.TestCase):
         base_tests.GrowthTests().check_case('''
             import os, subprocess, time
             from osk import response_growth as rg, integration, scope_memory
-            scope_memory.replace(core.ROOT.name, '', space='= Scope/W1')
+            scope_memory.replace(core.ROOT.name, '', space='Scope/W1')
             native = core.ROOT / 'native.jsonl'
             rg.CONFIG.parent.mkdir(exist_ok=True)
             rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
@@ -594,7 +594,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             node('Unrelated Domain candidate')
             node('Other Scope claim', scope='W2')
-            scope_memory.replace('own', '', space='= Scope/W1')
+            scope_memory.replace('own', '', space='Scope/W1')
             native = core.ROOT / 'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'one-off question'}}) + '\\n' +
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','stop_reason':'end_turn','content':[{'type':'text','text':'one-off answer'}]}}) + '\\n')

@@ -33,7 +33,7 @@ def edge_targets(value) -> list[str]:
 
 
 def target_stem(name: str) -> str:
-    """PE·Link 대상명의 **동일성 키**. 경로형 `[[= Scope/W1/N]]`과 스템형
+    """PE·Link 대상명의 **동일성 키**. 경로형 `[[Scope/W1/N]]`과 스템형
     `[[N]]`은 같은 대상이므로 마지막 요소의 stem으로 접는다 — 표기 차이가
     중복 등재나 무효한 제거로 새지 않게 한다.
 

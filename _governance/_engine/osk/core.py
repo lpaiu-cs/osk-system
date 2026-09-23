@@ -49,7 +49,15 @@ def vault_root() -> Path:
 
 
 ROOT = vault_root()
-LEDGER = ROOT / "= Scope/Workbench/_ledger"
+# A legacy vault must not silently start a fresh ledger under the renamed root.
+_legacy_spaces = [name for name in ("= Scope", "= Domain", "= Person")
+                  if (ROOT / name).exists()]
+if _legacy_spaces:
+    raise RuntimeError(
+        "Legacy Space layout detected: " + ", ".join(_legacy_spaces) +
+        ". Migrate the vault and stored path references before using this release; "
+        "see docs/space-layout-migration.md. No data was moved.")
+LEDGER = ROOT / "Scope/Workbench/_ledger"
 SIGNATURES = LEDGER / "signatures.jsonl"
 CANDIDATES = LEDGER / "case" / "candidates.jsonl"
 PINS = LEDGER / "pins.jsonl"
@@ -266,7 +274,7 @@ def posix_rel(p: Path, relative_to: Path) -> str:
 
     `str(Path)`는 OS 표기를 낸다. Windows에서는 구분자가 역슬래시(`_engine\osk`)로
     나오는데, 이 체계의 규칙은 전부 슬래시로 쓰인다(매니페스트 `DENY _engine/`,
-    pin 대상 `= Scope/W2/`, 대장의 `path`). 그래서 OS 표기를 그대로 비교에 넘기면
+    pin 대상 `Scope/W2/`, 대장의 `path`). 그래서 OS 표기를 그대로 비교에 넘기면
     규칙이 **조용히 안 걸린다** — 실측으로 Windows에서 DENY 8개가 0건을 제외했고
     `move_node`의 pin 거부가 통과했다.
 

@@ -34,8 +34,8 @@
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli validate   # 검증기 전체
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli status
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli search "질의"
-PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli protect "= Person/Delegation" --reason "..."  # 사용자 전속
-PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli approve "= Person/Delegation" --reason "..."  # 사용자 전속
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli protect "Person/Delegation" --reason "..."  # 사용자 전속
+PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli approve "Person/Delegation" --reason "..."  # 사용자 전속
 # 동기화 데몬: SYNC_ENABLED=1 nohup .venv/bin/python _governance/_engine/sync_daemon.py &
 ```
 

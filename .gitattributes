@@ -17,7 +17,7 @@
 # 뒤집혔다: 한정하면 지켜지는 것이 아니라, 한정해서 흔들렸다.
 #
 # 실측: `core.autocrlf=true`(Git for Windows 설치 기본값)인 기기에서 체크아웃하면
-# `= Person/…`의 노드가 CRLF가 되어 그 기기의 모든 보호영역이 "전 파일 수정"
+# `Person/…`의 노드가 CRLF가 되어 그 기기의 모든 보호영역이 "전 파일 수정"
 # pending이 된다. 거기서 승인하면 반대편이 pending이 되는 핑퐁이다. `git diff`는
 # 빈 출력이라 원인이 보이지 않는다.
 *                                   text=auto eol=lf

@@ -216,7 +216,7 @@ See [installation and operations](docs/SETUP.md).
 The engine, governing documents, and operating guides. **Not** your knowledge
 corpus, approval ledgers, other operational ledgers, or session transcripts.
 
-The empty `= Scope/`, `= Domain/`, and `= Person/` directories are starting points
+The empty `Scope/`, `Domain/`, and `Person/` directories are starting points
 for your own instance. Personal data belongs in that instance, not in this public
 repository.
 

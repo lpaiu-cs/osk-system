@@ -18,8 +18,8 @@ _governance/
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
     scripts/           발행 매니페스트, launchd/systemd 예시
-= Scope/ = Domain/ = Person/   지식 공간
-= Scope/Workbench/_ledger/     대장 — 승인·pin·세션 라우팅·갱신 저널 (append-only)
+Scope/ Domain/ Person/   지식 공간
+Scope/Workbench/_ledger/     대장 — 승인·pin·세션 라우팅·갱신 저널 (append-only)
 ```
 
 ## 준비
@@ -358,7 +358,7 @@ Personalization에는 저장 경계를 간단히 두어도 된다. 다만 훅의
 ```bash
 printf '%s' '{"rounds":[{"user":"…","agent":"…"}]}' \
   | .venv/bin/python -m osk.cli raw append \
-      --session <세션 키> --record <대화 이름> --space "= Scope/<이름>"
+      --session <세션 키> --record <대화 이름> --space "Scope/<이름>"
 ```
 
 - 봉투는 세 모양을 받는다 — `{"rounds":[…]}` · 라운드 하나(`{"user":…,"agent":…}`) ·
@@ -680,7 +680,7 @@ osk status                      # pending인 영역이 보인다
 osk approve "<영역>"            # 변경집합이 "줄바꿈만 다름"으로 표시한다
 
 # 5) **승인 결과를 커밋한다** — 이게 없으면 다른 기기에 도달하지 않는다
-#    `osk approve`는 `= Scope/Workbench/_ledger/approvals.jsonl`에 행을 더하고
+#    `osk approve`는 `Scope/Workbench/_ledger/approvals.jsonl`에 행을 더하고
 #    `_ledger/approved/objects/`에 새 manifest·blob을 쓰지만 **git commit은 하지
 #    않는다.** 1단계에서 데몬을 멈췄으므로 대신 커밋해 줄 것도 없다. 그대로
 #    push하면 2단계의 정규화 커밋만 올라가고, 다른 기기는 정규화된 파일만 받고
@@ -847,4 +847,4 @@ python3 _governance/_engine/scripts/recover.py --apply
 참조 주소·원료 표시·변경 Scope의 지속 정돈은 [참조와 군집 조직의 지속 검토](GROWTH-INTEGRITY.md)를 따른다.
 
 구 데몬(검색 서빙 + 동기화 혼성)과 DuckDB 색인은 v2에서 폐기됐다. 그 판단과 경위는
-결정 노드에 있다 — `= Person/Decisions/2026-07-02-lavalink-swap-lock-and-daemon-demotion.md`.
+결정 노드에 있다 — `Person/Decisions/2026-07-02-lavalink-swap-lock-and-daemon-demotion.md`.

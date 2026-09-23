@@ -20,8 +20,8 @@ from osk import approvals as A  # noqa: E402
 
 errs: list[str] = []
 ROOT = core.ROOT
-REG = "= Person/Delegation"
-regdir = ROOT / "= Person" / "Delegation"
+REG = "Person/Delegation"
+regdir = ROOT / "Person" / "Delegation"
 regdir.mkdir(parents=True, exist_ok=True)
 (regdir / "d.md").write_text("v1", encoding="utf-8")
 

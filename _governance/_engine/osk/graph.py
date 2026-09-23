@@ -29,7 +29,7 @@ def _load_cases() -> dict[str, dict]:
                 out[f.stem] = c
     return out
 
-NODE_SPACES = ("= Domain", "= Person", "= Scope")
+NODE_SPACES = ("Domain", "Person", "Scope")
 W_LINK, W_DERIVED = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값 (Link·derived-from)
 
 # `Path.rglob("*.md")`은 Windows에서 **대소문자를 무시한다** — pathlib이
@@ -168,9 +168,9 @@ def _space_of_parts(parts: tuple) -> tuple:
     if not parts:
         return ("support",)
     head = parts[0]
-    if head == "= Domain":
+    if head == "Domain":
         return ("domain", parts[1] if len(parts) > 2 else None)
-    if head == "= Person":
+    if head == "Person":
         return ("person", parts[1] if len(parts) > 2 else None)
     if head == "_governance":
         # 통치 구획 — Space 밖의 상설 구획. 통치 문서·사료는 특수한 노드다
@@ -179,7 +179,7 @@ def _space_of_parts(parts: tuple) -> tuple:
         if "_engine" in parts:
             return ("engine",)
         return ("governance",)
-    if head == "= Scope":
+    if head == "Scope":
         s = parts[1] if len(parts) > 1 else None
         if s == "Workbench":
             if "_ledger" in parts:
@@ -434,7 +434,7 @@ class Index:
         Scan errors remain on the Index so a partial refresh is never cached.
         """
         self.nonnode: dict[str, tuple] = {}
-        for base in ("_sources", "= Scope", "= Person"):
+        for base in ("_sources", "Scope", "Person"):
             root = ROOT / base
             if not root.exists():
                 continue
@@ -613,7 +613,7 @@ class Index:
 
     def resolve(self, name: str):
         """대상명 → ('node',소속) | ('nonnode',소속) | ('ambiguous',) |
-        ('dangling',) | ('external',). 경로형([[= Scope/B/b]])은 경로로 우선
+        ('dangling',) | ('external',). 경로형([[Scope/B/b]])은 경로로 우선
         해석한다 — 파일명 우회를 막는다. 다만 URL은 `/`가 있어도 경로가
         아니며, 경로 해석은 vault 안으로 봉쇄한다([[/etc/passwd]])."""
         if re.match(r"^https?://", name):
@@ -832,7 +832,7 @@ def centrality(idx: Index) -> dict[str, float]:
 def _score_key(idx: "Index", t: str) -> str:
     """중심성 점수는 노드 **stem**으로 키잡는다(score 초기화가 stem이므로).
     대상 표기를 그 노드의 stem으로 접는다 — id형은 by_id로, 경로형·stem형은
-    마지막 요소 stem으로. 경로형(`[[= Scope/X/design]]`)을 raw 문자열로 키잡으면
+    마지막 요소 stem으로. 경로형(`[[Scope/X/design]]`)을 raw 문자열로 키잡으면
     참조된 노드가 유입 중심성을 통째로 놓친다."""
     if re.match(ID_RE, t) and t in idx.by_id:
         return idx.by_id[t][0].stem
@@ -844,8 +844,8 @@ def _score_key(idx: "Index", t: str) -> str:
 # `wm`이 같은 판정을 쓰므로 여기 한 벌만 둔다 — 두 벌이면 조용히 갈라진다.
 
 def scope_names() -> list[str]:
-    """`= Scope/` 아래의 scope 이름. Workbench도 하나의 scope다(헌법 4조 5항)."""
-    d = ROOT / "= Scope"
+    """`Scope/` 아래의 scope 이름. Workbench도 하나의 scope다(헌법 4조 5항)."""
+    d = ROOT / "Scope"
     return sorted(x.name for x in d.iterdir()
                   if x.is_dir() and not x.name.startswith(".")) if d.is_dir() else []
 
@@ -853,12 +853,12 @@ def scope_names() -> list[str]:
 def space_list() -> str:
     """거부 메시지에 싣는 유효 space 목록 — 틀린 값을 준 호출자가 다음에 무엇을
     써야 하는지 그 자리에서 알 수 있어야 한다."""
-    return ", ".join(f"= Scope/{s}" for s in scope_names())
+    return ", ".join(f"Scope/{s}" for s in scope_names())
 
 
 def scope_of_space(space: str) -> str | None:
-    """`"= Scope/<이름>"` → `<이름>`. 맨 이름은 접지 않는다 — `create_node`가
+    """`"Scope/<이름>"` → `<이름>`. 맨 이름은 접지 않는다 — `create_node`가
     맨 이름을 거부하는 것과 같은 규율이며, 같은 표면에서 같은 인자가 다른
     관대함을 가지면 호출자가 규칙을 하나로 배우지 못한다."""
     parts = [x for x in (space or "").strip().strip("/").split("/") if x]
-    return parts[1] if len(parts) == 2 and parts[0] == "= Scope" else None
+    return parts[1] if len(parts) == 2 and parts[0] == "Scope" else None

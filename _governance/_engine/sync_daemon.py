@@ -105,11 +105,11 @@ def _raw_boundary(root: Path, remote: str | None = None, *, base: str | None = N
     head = vault_sync._head(root, 10)
     if remote:
         paths = git(["diff", "--name-only", "-z", "--diff-filter=ACMRT",
-                     base or head or "4b825dc642cb6eb9a060e54bf8d69288fbee4904", remote, "--", "= Scope"])
+                     base or head or "4b825dc642cb6eb9a060e54bf8d69288fbee4904", remote, "--", "Scope"])
     else:
-        paths = git(["ls-files", "--others", "--exclude-standard", "-z", "--", "= Scope"])
+        paths = git(["ls-files", "--others", "--exclude-standard", "-z", "--", "Scope"])
         paths += git((["diff", "--name-only", "-z", "--diff-filter=ACMRT", head]
-                      if head else ["ls-files", "--cached", "-z"]) + ["--", "= Scope"])
+                      if head else ["ls-files", "--cached", "-z"]) + ["--", "Scope"])
     errors = []
     for encoded in sorted(set(paths.split(b"\0")) - {b""}):
         path = encoded.decode("utf-8")

@@ -39,14 +39,14 @@ def _child():
                 self.name = self._testMethodName
                 self.key = "test-" + self.name
                 self.source = write.create_node(self.name + "-source", "source",
-                                                "observed evidence", "fable-5", space="= Scope/W1")
+                                                "observed evidence", "fable-5", space="Scope/W1")
                 self.spec = {"key": self.key,
                              "sources": [{"ref": self.source["id"], "hash": self.source["new_hash"]}],
                              "hub": "W1"}
                 self.args = {"title": self.name + "-target", "summary": "retained decision",
                              "body": "Use a bounded operation because retries can lose their response.",
-                             "drafter": "fable-5", "space": "= Scope/W1"}
-                self.hub = core.ROOT / "= Scope/W1/W1.md"
+                             "drafter": "fable-5", "space": "Scope/W1"}
+                self.hub = core.ROOT / "Scope/W1/W1.md"
 
             def tearDown(self):
                 D._job_path(self.key).unlink(missing_ok=True)
@@ -87,7 +87,7 @@ def _child():
 
             def test_crash_before_node_uses_reserved_identity(self):
                 atomic = write._atomic_write
-                target = core.ROOT / "= Scope/W1" / (self.args["title"] + ".md")
+                target = core.ROOT / "Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     if path == target:
                         raise Crash()
@@ -104,7 +104,7 @@ def _child():
 
             def test_crash_after_node_before_hub(self):
                 atomic = write._atomic_write
-                target = core.ROOT / "= Scope/W1" / (self.args["title"] + ".md")
+                target = core.ROOT / "Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     atomic(path, data)
                     if path == target:
@@ -130,15 +130,15 @@ def _child():
                 for operation in ("create", "update"):
                     with self.subTest(operation=operation):
                         name = self.name + "-" + operation
-                        ref = f"[[= Scope/W1/_raw/{name}-raw.md#1]]"
-                        raw_path = core.ROOT / "= Scope/W1/_raw" / (name + "-raw.md")
+                        ref = f"[[Scope/W1/_raw/{name}-raw.md#1]]"
+                        raw_path = core.ROOT / "Scope/W1/_raw" / (name + "-raw.md")
                         raw_path.parent.mkdir(exist_ok=True)
                         raw_path.write_bytes(raw._block(1, "original source", "measured answer").encode())
                         spec = dict(self.spec, sources=[ref])
                         request = dict(self.args, title=name)
-                        target = core.ROOT / "= Scope/W1" / (name + ".md")
+                        target = core.ROOT / "Scope/W1" / (name + ".md")
                         if operation == "update":
-                            old = write.create_node(name, "prior", "prior body", "test-model", space="= Scope/W1")
+                            old = write.create_node(name, "prior", "prior body", "test-model", space="Scope/W1")
                             request = dict(name=old["id"], body=self.args["body"], expect_hash=old["new_hash"])
                         source = D._source(ref, None)
                         source.update(ref=ref, path=raw_path.relative_to(core.ROOT).as_posix())
@@ -189,10 +189,10 @@ def _child():
                         D._job_path(self.key).unlink()
 
             def test_new_raw_journal_retries_in_plain_format(self):
-                record = raw.append_round(self.name, self.name + "-raw", "q", "a", "= Scope/W1")
+                record = raw.append_round(self.name, self.name + "-raw", "q", "a", "Scope/W1")
                 self.spec["sources"] = [record["round_ref"]]
                 atomic = write._atomic_write
-                target = core.ROOT / "= Scope/W1" / (self.args["title"] + ".md")
+                target = core.ROOT / "Scope/W1" / (self.args["title"] + ".md")
                 reserved = []
 
                 def crash(path, data):
@@ -240,7 +240,7 @@ def _child():
                     dict(self.spec, hub="missing-hub"),
                     dict(self.spec, hub=self.source["name"]),
                     dict(self.spec, sources=["missing-source"]),
-                    dict(self.spec, sources=["[[= Scope/W1/_raw/missing.md#1]]"]),
+                    dict(self.spec, sources=["[[Scope/W1/_raw/missing.md#1]]"]),
                     dict(self.spec, sources=[dict(self.spec["sources"][0], hash="stale")]),
                 ):
                     with self.assertRaises(write.WriteError):
@@ -248,7 +248,7 @@ def _child():
                 with self.assertRaises(write.WriteError):
                     D.create_node(self.spec, **dict(self.args, body=" \n"))
                 self.assertIsNone(D._load(self.key))
-                self.assertFalse((core.ROOT / "= Scope/W1" / (self.args["title"] + ".md")).exists())
+                self.assertFalse((core.ROOT / "Scope/W1" / (self.args["title"] + ".md")).exists())
 
             def test_key_cannot_bind_different_request(self):
                 out = self.create()
@@ -258,7 +258,7 @@ def _child():
 
             def test_update_records_before_hash(self):
                 existing = write.create_node(self.args["title"], "old", "old knowledge",
-                                             "fable-5", space="= Scope/W1")
+                                             "fable-5", space="Scope/W1")
                 out = D.update_node(self.spec, name=existing["id"],
                                     body=self.args["body"], expect_hash=existing["new_hash"])
                 self.assertEqual(out["distillation"]["status"], "complete")
@@ -269,7 +269,7 @@ def _child():
                 self.assertEqual(again["id"], existing["id"])
 
             def test_domain_distillation_uses_scope_provenance(self):
-                domain = core.ROOT / "= Domain" / self.name
+                domain = core.ROOT / "Domain" / self.name
                 domain.mkdir()
                 write.create_node(self.name, "domain hub", "general reusable knowledge",
                                   "fable-5", space=domain.relative_to(core.ROOT).as_posix())
@@ -282,7 +282,7 @@ def _child():
             def test_exact_raw_anchor_and_append_stability(self):
                 record = raw.append_rounds(self.name, self.name,
                     [{"user": "first observation", "agent": "first result"},
-                     {"user": "second observation", "agent": "second result"}], space="= Scope/W1")
+                     {"user": "second observation", "agent": "second result"}], space="Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
@@ -329,7 +329,7 @@ def _child():
 
             def test_later_worker_cannot_create_missing_reserved_target(self):
                 atomic = write._atomic_write
-                target = core.ROOT / "= Scope/W1" / (self.args["title"] + ".md")
+                target = core.ROOT / "Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     if path == target:
                         raise Crash()
@@ -385,16 +385,16 @@ def _child():
                 self.assertEqual(D.status(self.key)["status"], "pending")
 
             def test_unrelated_existing_citation_survives(self):
-                record = core.ROOT / "= Scope/W1/_raw/legacy-reference.md"
+                record = core.ROOT / "Scope/W1/_raw/legacy-reference.md"
                 record.parent.mkdir(exist_ok=True)
                 record.write_text("legacy section content", encoding="utf-8")
-                self.args["edges"] = {"derived-from": "[[= Scope/W1/_raw/legacy-reference.md#section]]"}
+                self.args["edges"] = {"derived-from": "[[Scope/W1/_raw/legacy-reference.md#section]]"}
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
 
             def test_anchor_normalization_noop_is_rejected(self):
                 existing = write.create_node(self.args["title"], "old", "retained knowledge",
-                                             "fable-5", space="= Scope/W1")
+                                             "fable-5", space="Scope/W1")
                 with self.assertRaises(write.WriteError):
                     D.update_node(self.spec, name=existing["id"],
                                   old_text="retained knowledge", new_text="retained knowledge  ")
@@ -403,7 +403,7 @@ def _child():
 
             def test_required_provenance_cannot_be_removed(self):
                 existing = write.create_node(self.args["title"], "old", "old retained knowledge",
-                                             "fable-5", space="= Scope/W1")
+                                             "fable-5", space="Scope/W1")
                 with self.assertRaises(write.WriteError):
                     D.update_node(self.spec, name=existing["id"], body="new retained knowledge",
                                   expect_hash=existing["new_hash"],

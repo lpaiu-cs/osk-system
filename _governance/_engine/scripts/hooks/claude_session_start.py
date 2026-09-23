@@ -71,7 +71,7 @@ def _memory_block(scope_memory, key: str) -> str:
     # 세션 키도 싣는다. 도구의 `session`은 이 값이어야 하는데 훅만 알고
     # 호출자는 몰라서 매번 지어냈고, 그 결속은 append-only로 영구히 쌓였다.
     return (
-        f"[osk scope 기억 — = Scope/{st['scope']} · "
+        f"[osk scope 기억 — Scope/{st['scope']} · "
         f"{st['chars']}/{st['limit']}자 · 여유 {st['limit'] - st['chars']}자]\n"
         f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것.\n"
         f"{st['session_note']}\n"
