@@ -274,21 +274,18 @@ def plan(limit: int = 3) -> dict:
 
 def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
     """Share the run budget across queues; recorded attempts drive fair rotation."""
-    last = {key: (-1, 0) for key in _QUEUES}
+    last = {key: -1 for key in _QUEUES}
+    last_first = dict(last)
     for key in _QUEUES:
         planned.setdefault(key, [])
     for number, row in enumerate(rows):
         if (row.get("kind") == "plan" and
                 row.get("work_context", "daily") == planned.get("work_context", "daily")):
-            prior_order = list(dict.fromkeys(item["queue"] for item in row.get("work_order", [])))
-            if not prior_order:
-                prior_order = [key for key in _QUEUES if row.get(key)]
             for key in _QUEUES:
                 if row.get(key):
-                    # Rotate the first turn, not just selection: a worker can
-                    # time out before reaching queues selected in its manifest.
-                    position = prior_order.index(key)
-                    last[key] = (number, (position - 1) % len(prior_order))
+                    last[key] = number
+            if row.get("work_order"):
+                last_first[row["work_order"][0]["queue"]] = number
     order = sorted(_QUEUES, key=last.get)
     selected = {key: [] for key in _QUEUES}
     work_order = []
@@ -302,6 +299,11 @@ def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
                 break
         else:
             break
+    if work_order:
+        # Selection recency shares the budget; first-turn recency protects queues
+        # from workers that time out before reaching their later selected jobs.
+        first = min(range(len(work_order)), key=lambda i: last_first[work_order[i]["queue"]])
+        work_order.insert(0, work_order.pop(first))
     planned["queued_not_selected"] = {key: len(planned[key]) - len(selected[key]) for key in _QUEUES}
     planned.update(selected)
     planned["work_order"] = work_order

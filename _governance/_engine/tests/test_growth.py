@@ -58,6 +58,26 @@ def packet_worker(change='', wrapper='plain', code=0):
 
 
 class GrowthTests(unittest.TestCase):
+    def test_first_turn_is_fair_when_budget_cannot_select_every_queue(self):
+        self.check_case("""
+            for limit in (3, 1, 2, 4, 5):
+                rows, first = [], []
+                for _ in range(8):
+                    planned = {key:[{'key':key+'-0'}, {'key':key+'-1'}] for key in growth._QUEUES}
+                    growth._select_work(planned,limit,rows)
+                    order = planned['work_order']
+                    first.append(order[0]['queue'])
+                    assert len(order) == limit
+                    assert len({(i['queue'],i['index']) for i in order}) == limit
+                    for key in growth._QUEUES:
+                        assert [i['index'] for i in order if i['queue']==key] == list(range(len(planned[key])))
+                        assert len(planned[key]) + planned['queued_not_selected'][key] == 2
+                    rows.append({'kind':'plan',**planned})
+                # Even if each worker stops after its first job, every queue
+                # receives a turn within four attempts under the default budget.
+                assert all(set(first[n:n+4]) == set(growth._QUEUES) for n in range(5)), (limit,first)
+        """)
+
     def test_execution_order_rotates_even_when_every_queue_is_selected(self):
         self.check_case("""
             rows, first = [], []
