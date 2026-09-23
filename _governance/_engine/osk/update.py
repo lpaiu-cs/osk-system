@@ -24,7 +24,7 @@
 - 기존 인스턴스의 최초 편입은 `--adopt`로 현재 릴리스를 기준선 삼는다.
 """
 from __future__ import annotations
-import argparse, errno, json, os, re, shutil, stat, subprocess, sys, tarfile, tempfile, time
+import argparse, base64, errno, json, os, re, shutil, signal, stat, subprocess, sys, tarfile, tempfile, time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -699,6 +699,135 @@ def _sync_lock_path() -> Path:
     return core_mutation_lock_path()
 
 
+DAEMON_RESTART_WAIT = 30   # 초 — 멈춘 데몬이 다시 보일 때까지 기다리는 한도
+
+
+def _daemon_script() -> Path:
+    return ROOT / "_governance" / "_engine" / "sync_daemon.py"
+
+
+def _powershell(script: str) -> str:
+    """인용 규칙을 거치지 않도록 EncodedCommand로 넘기고 UTF-8로 받는다."""
+    code = "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n" + script
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                        base64.b64encode(code.encode("utf-16-le")).decode()],
+                       capture_output=True, timeout=120)
+    return r.stdout.decode("utf-8", "replace")
+
+
+def _daemon_pids() -> list[int]:
+    """이 vault의 `sync_daemon.py`를 **절대 경로로** 실행 중인 프로세스들.
+    예약 작업·launchd·systemd 예시가 모두 절대 경로로 띄운다. Windows의 venv
+    pythonw는 실제 인터프리터를 자식으로 띄우므로 둘 다 걸린다."""
+    target = str(_daemon_script())
+    if os.name == "nt":
+        rows = _powershell("Get-CimInstance Win32_Process -Filter \"Name LIKE 'python%'\" | "
+                           "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
+        fold = lambda s: s.replace("/", "\\").lower()
+        pairs = [line.partition("\t")[::2] for line in rows.splitlines()]
+    else:
+        rows = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True,
+                              text=True, timeout=60).stdout
+        fold = lambda s: s
+        pairs = [line.strip().partition(" ")[::2] for line in rows.splitlines()]
+    return [int(pid) for pid, cmd in pairs
+            if pid.strip().isdigit() and fold(target) in fold(cmd)]
+
+
+def _kill(pids: list[int]) -> None:
+    for pid in pids:
+        if os.name == "nt":          # /T: venv 런처와 자식 인터프리터를 함께
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=60)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def _lock_within(f, seconds: float, busy: str) -> None:
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            return lock_exclusive(f, blocking=False)
+        except OSError:
+            if time.monotonic() > deadline:
+                raise UpdateError(busy)
+            time.sleep(0.05)
+
+
+def _start_daemon() -> dict:
+    """멈춘 데몬을 다시 띄우고 돌아왔는지 보고한다. Windows는 그 데몬을 띄우는
+    예약 작업을 실행하고, launchd KeepAlive·systemd Restart=always는 잠금이
+    풀리면 스스로 다시 띄운다."""
+    via = "launchd KeepAlive / systemd Restart=always"
+    if os.name == "nt":
+        path = str(_daemon_script()).lower().replace("'", "''")
+        task = _powershell(
+            "$p = '__P__'\n"
+            "$t = Get-ScheduledTask | Where-Object { (($_.Actions | ForEach-Object "
+            "{ \"$($_.Execute) $($_.Arguments)\" }) -join ' ').ToLower().Replace('/', '\\')"
+            ".Contains($p) } | Select-Object -First 1\n"
+            "if ($t) { Start-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath; "
+            "$t.TaskPath + $t.TaskName }".replace("__P__", path)).strip()
+        if not task:
+            return {"restarted": False,
+                    "note": "이 vault의 데몬을 띄우는 예약 작업이 없다 — 데몬을 직접 띄운다"}
+        via = f"scheduled task {task}"
+    deadline = time.monotonic() + DAEMON_RESTART_WAIT
+    while time.monotonic() < deadline:
+        if _daemon_pids():
+            return {"restarted": True, "via": via}
+        time.sleep(2)
+    return {"restarted": False, "via": via,
+            "note": f"{DAEMON_RESTART_WAIT}초 안에 데몬이 돌아오지 않았다 — 데몬을 직접 띄운다"}
+
+
+@contextmanager
+def _daemon_stopped(info: dict):
+    """적용 내내 데몬 싱글턴(osk-sync.lock)을 쥔다. 이 vault의 데몬이 쥐고
+    있으면 **mutation 잠금을 먼저 잡고** 그 데몬을 끝낸다 — 그러면 데몬은
+    작업 트리 변경 구간 안에 있지 않고, Git 전송 중 강제 종료는 데몬이 이미
+    견딘다(SETUP 동기화 데몬). 풀리는 즉시 싱글턴을 넘겨받아, 서비스 관리자가
+    먼저 띄운 구판 데몬이 적용 도중 끼어들지 못하게 한다. 끝나면(실패해도)
+    멈춘 데몬을 다시 띄우고 결과를 `info`에 남긴다."""
+    from sync_daemon import _lock_path as _dlp
+    f = open(_dlp(ROOT, "osk-sync.lock"), "w")
+    held = False
+    try:
+        try:
+            lock_exclusive(f, blocking=False)
+            held = True
+        except OSError:
+            pids = _daemon_pids()
+            if not pids:
+                raise UpdateError(
+                    "동기화 데몬 잠금이 잡혀 있는데 이 vault의 sync_daemon.py 프로세스를 "
+                    "찾지 못했다 — 데몬을 멈춘 뒤 다시 실행한다")
+            m = open(_sync_lock_path(), "w")
+            try:
+                _lock_within(m, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
+                                     "잠시 후 다시 실행한다")
+                try:
+                    _kill(pids)
+                    info["stopped"] = pids
+                    _lock_within(f, 30, "데몬을 멈췄는데 싱글턴 잠금이 풀리지 않는다 — "
+                                        "다시 실행한다")
+                    held = True
+                finally:
+                    unlock(m)
+            finally:
+                m.close()
+        yield
+    finally:
+        if held:
+            unlock(f)
+        f.close()
+        if "stopped" in info:
+            info.update(_start_daemon())
+
+
 # ── 계획과 적용 ──────────────────────────────────────────────────────────
 
 def plan(tree: Path, targets: list, adopt: bool) -> dict:
@@ -886,11 +1015,10 @@ def run(source: str | None = None, ref: str | None = None,
     # 잠금 순서는 데몬과 같다: **싱글턴 → mutation**. 싱글턴(osk-sync.lock)은
     # probe로 잠깐 잡았다 놓으면 그 틈에 구버전 데몬이 떠 버리므로(TOCTOU),
     # 갱신 **수명 내내 보유**한다 — 구·신 데몬 모두 이 잠금을 먼저 잡기 때문에
-    # 새 mutation 규약을 모르는 구 데몬의 동시 실행까지 함께 막힌다.
-    from sync_daemon import _lock_path as _dlp
-    with _exclusive(_dlp(ROOT, "osk-sync.lock"),
-                    "동기화 데몬이 실행 중이다 — 갱신 전에 데몬을 멈춘다"
-                    "(구버전 데몬은 갱신의 잠금 규약을 모른다)"),\
+    # 새 mutation 규약을 모르는 구 데몬의 동시 실행까지 함께 막힌다. 데몬이
+    # 쥐고 있으면 `_daemon_stopped`가 멈추고 적용 뒤 다시 띄운다.
+    daemon: dict = {}
+    with _daemon_stopped(daemon),\
             _exclusive(_sync_lock_path(),
                        "다른 갱신이 vault를 잠갔다 — 잠시 후 다시 실행한다"):
         # 복구는 어떤 상태 판정보다 먼저다(잠금 안에서). 저널은 **관대하게**
@@ -909,7 +1037,9 @@ def run(source: str | None = None, ref: str | None = None,
         rep = _run_locked(source, ref, bundle, True, adopt, reviewed)
         if recovered:
             rep["recovered"] = recovered
-        return rep
+    if daemon:
+        rep["daemon"] = daemon
+    return rep
 
 
 def _request_approval(report: dict) -> dict:
@@ -919,10 +1049,10 @@ def _request_approval(report: dict) -> dict:
     return dict(report, ok=False, approval_required=True, instruction=(
         "여기서 멈추고 사용자에게 이번 업데이트 변경사항과 하네스 재시작 필요성을 "
         "설명한 뒤 명시적 재승인을 요청하라. 기존 구현·릴리스 승인으로 대신하지 마라. "
-        "사용자 재승인을 받기 전에는 자동 재시도하지 마라. 재승인 후 데몬을 멈추고 "
-        "같은 명령을 1시간 안에 한 번 재시도하면 적용한다. 릴리스·로컬 변경집합이 "
-        "달라지거나 적용이 실패하면 새 확인을 요구한다. 적용 후 모든 연결 하네스의 "
-        "MCP 서버와 동기화 데몬을 재시작해야 한다."))
+        "사용자 재승인을 받기 전에는 자동 재시도하지 마라. 재승인 후 같은 명령을 "
+        "1시간 안에 한 번 재시도하면 적용한다 — 이 vault의 동기화 데몬은 적용 단계가 "
+        "멈추고 끝나면 다시 띄운다. 릴리스·로컬 변경집합이 달라지거나 적용이 실패하면 "
+        "새 확인을 요구한다. 적용 후 모든 연결 하네스의 MCP 서버를 재시작해야 한다."))
 
 
 def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list) -> dict:
@@ -1171,7 +1301,8 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         out.update(applied=True, applied_files=len(applied),
                    removed=removed, sidecars=sidecars, skel_created=made_skel,
                    governance_accepted=bool(accept_governance),
-                   note="엔진이 갱신되었으면 실행 중인 서버·데몬을 재시작한다")
+                   note="엔진이 갱신되었으면 실행 중인 MCP 서버를 재시작한다 — "
+                        "이 기기의 동기화 데몬은 갱신이 멈췄다 다시 띄운다(daemon)")
         return out
 
 

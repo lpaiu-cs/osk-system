@@ -33,20 +33,21 @@ updates use the content-bound confirmation checkpoint described in
 A vault that still has `= Scope` stops working after an update to v3.20.1. The
 MCP server, hooks, sync daemon, CLI and `osk.update` itself all fail with
 `RuntimeError: Legacy Space layout detected`. No data was moved. Because the
-vault's own updater cannot start, run the updater from a v3.21.0 checkout
-against the vault:
+vault's own updater cannot start, run the updater from a v3.21.1 (or newer)
+checkout against the vault:
 
 ```bash
-git clone --depth 1 --branch v3.21.0 https://github.com/lpaiu-cs/osk-system osk-v3.21.0
-OSK_VAULT_ROOT=/path/to/vault PYTHONPATH=osk-v3.21.0/_governance/_engine \
-  /path/to/vault/.venv/bin/python -m osk.update --to v3.21.0 --apply
+git clone --depth 1 --branch v3.21.1 https://github.com/lpaiu-cs/osk-system osk-v3.21.1
+OSK_VAULT_ROOT=/path/to/vault PYTHONPATH=osk-v3.21.1/_governance/_engine \
+  /path/to/vault/.venv/bin/python -m osk.update --to v3.21.1 --apply
 ```
 
 On Windows, set the two variables with `$env:` and use
 `.venv\Scripts\python.exe`. The first run shows the changeset, exits with code
-2 and `approval_required: true`. Review it, stop the daemon if it is running,
-and run the same command once more. The vault then runs v3.21.0 on its
-existing `= Scope` roots. Restart the harness, MCP server and daemon afterwards.
+2 and `approval_required: true`. Review it and run the same command once more.
+The vault then runs v3.21.1 on its existing `= Scope` roots. The daemon could
+not start under v3.20.1, so the update has none to restart: start it again,
+and restart the harness and MCP server.
 
 Do not rename the roots by hand to silence the error: ledgers, approval objects
 and raw coordinates still refer to the old names.
