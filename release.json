@@ -1,6 +1,6 @@
 {
- "version": "v3.21.0",
- "at": "2026-09-24T07:30:19+09:00",
+ "version": "v3.21.1",
+ "at": "2026-09-24T08:04:40+09:00",
  "files": {
   ".gitattributes": "sha256:12beb285384a937c76b0cd632721a8c898063018b93a780a3ba408f3b7cd92c1",
   ".github/workflows/release.yml": "sha256:dab79409365e1d1173ed37990606479af8f91cadc6f0d77a0fc8ac547e367a90",
@@ -45,7 +45,7 @@
   "_governance/_engine/osk/secrets.py": "sha256:258c4415f6903b25f7dd70ab39a7580135b61281312ccdb24bf484b08e433b5a",
   "_governance/_engine/osk/signatures.py": "sha256:16be1028d959793302c8def27094cf4ef8f46991f989c661f04700439f831a8b",
   "_governance/_engine/osk/transcripts.py": "sha256:e5ef24550e8d3aa3a80410f427be2940ba02dac44f7b7940876b9ebbaf2db13f",
-  "_governance/_engine/osk/update.py": "sha256:a6a09154ed063023187335459f198c4431c1fcf38a7703ba296bcee1dce2ceae",
+  "_governance/_engine/osk/update.py": "sha256:b7312a92b6fd2ea6ea520f3a501b5d3f6034bcaba862b696b4995a7500217094",
   "_governance/_engine/osk/validate.py": "sha256:2a19cfe9fed1c1753ddb08973493e0072c1af7d9cf77a94bb1ef70446e280dfd",
   "_governance/_engine/osk/write.py": "sha256:968063a8272386e9b8cc27d2e381fd3b38b3d7628d99c13ee5c423bb54f6af4a",
   "_governance/_engine/requirements.txt": "sha256:062511e03858388684210f5d5fd04369e7e5eb062ab20c8385ff63644dd3476e",
@@ -75,7 +75,7 @@
   "_governance/_engine/tests/test_retrieval.py": "sha256:4a9f5760a1136dd29e95b6588912657ea8d8d955a3a79da3bbb00c174b6b1c46",
   "_governance/_engine/tests/test_space_layout.py": "sha256:1011cd449058ce8985713649a1e2c8aa0cb993c000da53c541e0173d3a82a5ef",
   "_governance/_engine/tests/test_sync_network.py": "sha256:fcaf6cfe78df0c02ffc083017ca6b35c6a156817c81cc8432da5295d272c40c2",
-  "_governance/_engine/tests/test_update_review.py": "sha256:219fe9dd510de0924f112e6c3efd45e78cd5244c44efc3248434e09e1dcaef9f",
+  "_governance/_engine/tests/test_update_review.py": "sha256:372e4bb5febe5c60a8dc571027bfcb663ec829b3714ff1cfe4d6eff183db15c5",
   "_governance/_engine/tests/test_windows_shell.py": "sha256:8916e1eaf74a0224333e8da9182db80d0b900f2456e42499ebd2b1d599adc513",
   "_governance/_engine/vault_sync.py": "sha256:8b97e52591b1caee3b8d54411ff7d0012a591a1c5c0563e22c56c4e0b1f7f121",
   "_governance/records/2026-07-06-second-brain-reconstitution.md": "sha256:d28b67c44f85b808f44536b824db1db4b3bfeccedf5f37c5cb513419ac9276d0",
@@ -111,7 +111,7 @@
   "docs/GROWTH-IMPLEMENTATION.md": "sha256:aa13ee9e20ea5c5a88c2f6b9cc60d4ea4944478eefb8267dce515a5d95c5a0f7",
   "docs/GROWTH-INTEGRITY.md": "sha256:38ec9a37a3a691f3eb5c8bbbeb9dabad908bc8bf2ba22d91d31e8261af5854ed",
   "docs/REVIEW-FIXES-2026-09-09.md": "sha256:14327e17a25b619316a85c2dc00fe0cd466b9d78067cc1d55926432a5b6ae4cd",
-  "docs/SETUP.md": "sha256:2f3fcc3657dda29ec80cdb567672a0a5695d7bb5e0cf27a9274bbe7b00312d01",
+  "docs/SETUP.md": "sha256:1983aa6bb6030ffbfbf85c01b2606c6a12947a7b90f9d38fa9aa913bb3964404",
   "docs/WINDOWS-SHELL.md": "sha256:f9ab8206cb46e2c3eb431431d730ecbf174c4641e2286531a078c04764932053",
   "docs/assets/readme/hero.svg": "sha256:0c5e006dcea7b097577b3c7a9ee54f7823676cb0b6c5a086c7f216d1c1e88cca",
   "docs/assets/readme/obsidian-graph.png": "sha256:f329d2531247288ed860feec62691546ebcb380cc2a4734b06bf2a602e67954f",
@@ -126,6 +126,6 @@
   "docs/response-growth-cache-evidence.json": "sha256:7f34434c39c34cc91d50ea00a237e7dfb7874d8a896447510e0590085e7ea9f6",
   "docs/response-growth-governance-proposal.md": "sha256:9d5fe3c9805cf9b21bc4c0c80bc123a2c50e9a9ba13f7d7c10a2c85cd8a7f87b",
   "docs/response-growth.md": "sha256:bc75a5420089373db97834e5129950934c7cc8cc8d0bcfa486f4508295fbaeac",
-  "docs/space-layout-migration.md": "sha256:9a7047b8ebf29d3605c6797b01eb644dce9943e7316f5527e9d9497f750fe579"
+  "docs/space-layout-migration.md": "sha256:20a0c227c676fc7df6e52a2aeeda90fcd950fa114c5dae1dd30b7d7bffd77c9b"
  }
 }
