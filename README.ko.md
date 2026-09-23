@@ -40,6 +40,12 @@ osk-system은 **사용자가 확인한 지식과 에이전트가 만든 후보�
 장기 기억 체계다. 지식은 로컬 파일에, 근거는 추적 가능한 참조에,
 승인은 노드와 분리된 기록부에 남긴다.
 
+<p align="center">
+  <a href="docs/assets/readme/obsidian-graph.png"><img src="docs/assets/readme/obsidian-graph.png" alt="실제 osk-system 보관함의 Obsidian 전체 그래프: 초록색과 보라색 지식 노드들이 군집을 이루며 연결된 모습" width="680"></a>
+  <br>
+  <sub>지식이 쌓인 실제 보관함의 Obsidian 그래프. 새 인스턴스의 지식 공간은 비어 있습니다. 클릭하면 원본 크기로 볼 수 있습니다.</sub>
+</p>
+
 | 필요한 것 | osk-system의 방식 |
 |---|---|
 | 다음 대화에서도 이어지는 맥락 | 프로젝트별 Scope 기억과 MCP 검색·열람 |
@@ -77,6 +83,12 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 > 해당 하네스의 훅 설정이 필요하다. 아래 [지원 범위](#harness-coverage)를 확인한다.
 
 ## 사용하기
+
+<p align="center">
+  <a href="docs/assets/readme/obsidian-note-local-graph.png"><img src="docs/assets/readme/obsidian-note-local-graph.png" alt="왼쪽에는 osk-system 설계 노트의 속성·본문·관련 기록, 오른쪽에는 로컬 그래프가 열린 Obsidian 사용 화면" width="100%"></a>
+  <br>
+  <sub>지식 노트와 로컬 그래프를 나란히 읽는 실제 사용 화면. 클릭하면 원본 크기로 볼 수 있습니다.</sub>
+</p>
 
 **회상 → 근거 열람 → 검토한 지식 반영.** MCP를 연결한 에이전트에게 다음처럼
 요청할 수 있다:

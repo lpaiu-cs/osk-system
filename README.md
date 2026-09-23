@@ -41,6 +41,12 @@ Agent memory needs more than storage. It needs a reliable distinction between
 osk-system keeps knowledge in local files, connects it to its sources, and
 records approval separately from the notes an agent can edit.
 
+<p align="center">
+  <a href="docs/assets/readme/obsidian-graph.png"><img src="docs/assets/readme/obsidian-graph.png" alt="A real osk-system vault in Obsidian: connected clusters of green and purple knowledge nodes" width="680"></a>
+  <br>
+  <sub>A real, populated vault in Obsidian. Fresh instances start with empty knowledge Spaces. Click to view full size.</sub>
+</p>
+
 | What you need | How osk-system helps |
 |---|---|
 | Context across conversations | Project-scoped memory and MCP search and reading tools |
@@ -82,6 +88,12 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 > Configure the hooks for your harness. See [harness coverage](#harness-coverage).
 
 ## Usage
+
+<p align="center">
+  <a href="docs/assets/readme/obsidian-note-local-graph.png"><img src="docs/assets/readme/obsidian-note-local-graph.png" alt="Obsidian with an osk-system design note, its metadata and linked records on the left, and a local graph on the right" width="100%"></a>
+  <br>
+  <sub>Read a knowledge note alongside its local graph. Original capture from a Korean-language vault; click to view full size.</sub>
+</p>
 
 **Recall → inspect the evidence → update reviewed knowledge.** With MCP connected,
 you can ask your agent:
