@@ -379,9 +379,20 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
     """Local authentication/version queries only; used by routing and rechecked before inference."""
     harness = source['harness']
     integration._identity(harness, 'preflight')
+    expected = source.get('cli_version') if harness == 'codex' else source.get('version')
     if harness == 'codex':
         from . import native_cli
-        executable = native_cli.resolve(executable, version=source.get('cli_version'), env=env)
+        # session_meta keeps the creation version when Desktop resumes an old
+        # conversation after an update. Hooks and their detached supervisor inherit
+        # the running harness version; bind it to this conversation before using it.
+        if source.get('conversation_id') and env.get('CODEX_THREAD_ID') == source['conversation_id']:
+            runtime_version = env.get('CODEX_VERSION')
+            if runtime_version is not None:
+                if (not isinstance(runtime_version, str) or
+                        not re.fullmatch(r'\d+\.\d+\.\d+(?:-[\w.]+)?', runtime_version)):
+                    raise ValueError('invalid Codex runtime version; review remains pending')
+                expected = runtime_version
+        executable = native_cli.resolve(executable, version=expected, env=env)
     if not Path(executable).is_absolute() or not Path(executable).is_file():
         raise ValueError('configure an existing absolute native CLI path')
     cwd = source.get('cwd')
@@ -394,7 +405,6 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
                               timeout=5, creationflags=NO_WINDOW)
 
     version = inspect(['--version'])
-    expected = source.get('cli_version') if harness == 'codex' else source.get('version')
     if (version.returncode or require_version and not expected or
             expected and not re.search(r'(?<![\w.])' + re.escape(expected) + r'(?![\w.])', version.stdout)):
         raise ValueError('configured CLI version differs from the source harness; fork was not started')
