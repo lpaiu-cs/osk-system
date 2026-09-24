@@ -6,6 +6,10 @@
 #
 # macOS는 참고용이다(실패해도 막지 않는다) — NFC/NFD 파일명과 대소문자 무시
 # 파일시스템(`.MD`)에서 알려진 차이가 있다.
+#
+# 임시 경로는 정규 경로가 아닐 수 있다 — Windows 러너는 8.3 이름(RUNNER~1),
+# macOS는 /var → /private/var 링크다. 날것 철자와 정규 철자가 섞이는 결함을
+# Linux에서도 잡도록 Linux 잡은 심볼릭 링크 별칭을 TMPDIR로 쓴다.
 
 name: ci
 
@@ -44,5 +48,11 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: 의존성
         run: python -m pip install -r _governance/_engine/requirements.txt
+      - name: 임시 경로 별칭 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p /tmp/osk-real
+          ln -sfn /tmp/osk-real /tmp/osk-alias
+          echo "TMPDIR=/tmp/osk-alias" >> "$GITHUB_ENV"
       - name: 회귀 수트
         run: python _governance/_engine/tests/test_regression.py
