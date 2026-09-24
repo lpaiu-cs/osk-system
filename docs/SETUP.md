@@ -888,6 +888,14 @@ v3.20.x의 updater에는 이 관문이 없다. 최초 전환 때는 **검토한 
   포함한다. 확인한 작업본이 그대로 적용되면 같은 트랜잭션에서 **수용 기록**을
   남기므로 별도의 적용 후 `approve _governance`는 필요 없다. stale은 먼저
   해소해야 한다. 다른 보호영역의 승인 절차와 최초 보호 지정은 그대로다.
+- 통치 구획에 지정 이력이 없으면(새 설치·지정 전의 기존 설치) 확인한 적용이
+  같은 트랜잭션에서 그 구획을 **보호영역으로 지정한다** — 적용 뒤 구획이 비준증빙의
+  내용과 정확히 같을 때만이고, 보고의 `governance.protect`가 `establish`, 결과의
+  `governance_protected`가 `established`다. 로컬 차이(고친 통치 문서·충돌 사이드카·
+  증빙 밖 파일)가 있으면 `withheld`로 지정하지 않고 그 경로를 `governance.unattested`에
+  싣는다 — 검토한 뒤 `osk protect _governance`로 직접 지정한다. 사용자가 해제한
+  구획은 다시 지정하지 않는다(`released`). 미보호 통치 구획은 `status`의 `warnings`와
+  `validate`의 `warnings.governance_unprotected`로 알린다(FAIL이 아니다).
 - 새 배포판은 `00_Scope`·`00_Domain`·`00_Person`을 쓴다. 기존 vault는 대장·승인본·
   원료 좌표가 가리키는 물리 이름을 유지한다. [경로 호환 규칙](space-layout-migration.md)을 따른다.
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면

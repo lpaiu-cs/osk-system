@@ -202,9 +202,17 @@ Windows (PowerShell):
 `"approval_required": true`로 끝난다. `"ok": false`와, 에이전트에게 멈추고
 사용자에게 물으라고 지시하는 한국어 `instruction`도 함께 나온다. 둘 다 예상된
 결과다. 갓 clone한 vault라면 계획의 `rebaseline`에 프레임워크 파일이 전부
-올라온다. 내용은 이미 같으니 기준선만 기록된다. 한 시간 안에 **같은 명령을 한 번
-더** 실행하면 적용된다. `--apply`는 언제나 이렇게
+올라온다. 내용은 이미 같으니 기준선만 기록된다. 계획의 `governance`에는
+`"protect": "establish"`도 나온다. 적용하면 `_governance/`가 보호영역이 되고,
+릴리스의 파일 그대로가 승인본이 된다. 한 시간 안에 **같은 명령을 한 번
+더** 실행하면 적용된다. 결과에 `"governance_protected": "established"`가 나온다.
+`--apply`는 언제나 이렇게
 동작한다([최신 릴리스로 갱신하기](#최신-릴리스로-갱신하기) 참고).
+
+이 단계 전에 `_governance/` 아래 파일을 고쳤다면 계획에 `"protect": "withheld"`가
+나오고, 다른 파일이 `unattested`에 올라온다. 갱신은 그대로 적용되지만
+`_governance/`는 보호되지 않은 채 남는다. 그 파일들을 검토한 뒤 CLI의 `protect`
+명령으로 직접 보호한다.
 
 기준선은 `00_Scope/Workbench/_ledger/update.jsonl`에 기록된다. 직접 커밋하거나,
 나중에 동기화 데몬에 맡긴다. 1단계에서 원격을 지웠다면 `git push`는 건너뛴다.
@@ -217,7 +225,8 @@ git push
 
 **확인:** `.venv/bin/python -m osk.update`가 `"current": "v3.22.2"`를 출력한다.
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
-깨끗하다.
+깨끗하다. `osk.cli status`가 `"protected_regions": {"_governance": "clean"}`을
+보여 준다.
 
 ## 3단계: Claude Code 연결
 

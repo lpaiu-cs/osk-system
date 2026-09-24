@@ -253,6 +253,8 @@ Release declaration can run noninteractively without a separate version approval
 The first update-apply attempt shows its changeset and the required harness
 restart, then stops for explicit user confirmation. A matching retry applies it
 and records acceptance of the protected governance region in the same transaction.
+On an install where the governance region was never protected, the same confirmed
+retry protects it, but only when its files match the release attestation exactly.
 See [installation and operations](docs/SETUP.md).
 
 ## What's in this repository

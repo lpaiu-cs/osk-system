@@ -212,9 +212,17 @@ The first run changes none of your files. It prints the plan, then exits with
 code 2 and `"approval_required": true`. It also shows `"ok": false` and a Korean
 `instruction` that tells an agent to stop and ask you. Both are expected. On a
 fresh clone, the plan lists every framework file under `rebaseline`. Their
-content already matches, so only the baseline is recorded. Run **the same
-command again**, within an hour, to apply it. Every `--apply` works this way
+content already matches, so only the baseline is recorded. The plan's
+`governance` also shows `"protect": "establish"`: applying will make
+`_governance/` a protected region, with the release's own files as the approved
+state. Run **the same command again**, within an hour, to apply it. The result
+shows `"governance_protected": "established"`. Every `--apply` works this way
 (see [Keeping up to date](#keeping-up-to-date)).
+
+If you edited a file under `_governance/` before this step, the plan shows
+`"protect": "withheld"` and lists the differing files under `unattested`. The
+update still applies, but it leaves `_governance/` unprotected. Review those
+files, then protect the folder yourself with the CLI's `protect` command.
 
 The baseline is written to `00_Scope/Workbench/_ledger/update.jsonl`. Commit it,
 or let the sync daemon do so later. Skip `git push` if you removed the remote in
@@ -228,6 +236,7 @@ git push
 
 **Check:** `.venv/bin/python -m osk.update` prints `"current": "v3.22.2"`. On
 Windows, use `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
+`osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 
 ## Step 3: Connect Claude Code
 
