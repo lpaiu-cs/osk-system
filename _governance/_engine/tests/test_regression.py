@@ -25,6 +25,17 @@ os.environ.update({"GIT_CONFIG_COUNT": str(_n + 1),
                    f"GIT_CONFIG_KEY_{_n}": "init.defaultBranch",
                    f"GIT_CONFIG_VALUE_{_n}": "osk-fixture-default"})
 sys.path.insert(0, str(ENGINE))
+# git 없는 vault의 잠금·상태 자리(core.local_lock_path)는 임시 디렉터리다 — 시험
+# vault마다 osk-integration-* 따위가 실 임시 디렉터리에 쌓였다. 이 실행과 자식
+# 프로세스의 임시 자리를 _TMP 안으로 돌리고(env 상속), 끝에서 _TMP째 지운다.
+# 둘 다 돌려야 한다 — 부모와 자식(훅)이 다른 자리를 보면 상태를 못 나눈다.
+REAL_TMP = Path(tempfile.gettempdir())
+_LEAK_BEFORE = {p.name for p in REAL_TMP.glob("osk-integration-*.json")}
+RUN_TMP = Path(_TMP.name) / "tmp"
+RUN_TMP.mkdir()
+for _k in ("TMPDIR", "TEMP", "TMP"):
+    os.environ[_k] = str(RUN_TMP)
+tempfile.tempdir = str(RUN_TMP)
 
 from osk import (core, graph, validate, authority, contract, write,  # noqa: E402
                  publish)  # noqa: E402
@@ -10176,6 +10187,29 @@ if __name__ == "__main__":
         except Exception as e:
             FAIL.append(f"{fn.__name__} 예외: {e!r}\n"
                         + "".join(traceback.format_exc().splitlines(True)[-6:]))
+    # 이 실행의 몫만 센다 — 같은 기기에서 옛 수트가 동시에 돌면 그 누출도 실 임시
+    # 디렉터리에 쌓인다(2026-09-24 실측). 격리 수트(자식)의 상태가 실행 자리에
+    # 모였는가(돌림이 통째로 빠짐)와, 이 실행의 vault를 가리키는 상태가 실 임시
+    # 디렉터리에 새로 생겼는가(일부 우회)를 함께 본다.
+    mini = f"osk-integration-{hashlib.sha256(str(ROOT).encode()).hexdigest()[:16]}-"
+    caught = [p for p in RUN_TMP.glob("osk-integration-*.json") if not p.name.startswith(mini)]
+    run_root = Path(_TMP.name).resolve()
+    try:
+        _TMP.cleanup()
+    except OSError:
+        pass                                  # 남은 자리는 아래 검사가 드러낸다
+    leaked = []
+    for name in sorted({p.name for p in REAL_TMP.glob("osk-integration-*.json")} - _LEAK_BEFORE):
+        try:
+            root = json.loads((REAL_TMP / name).read_text(encoding="utf-8")).get("root", "")
+        except (OSError, ValueError):
+            continue
+        if Path(str(root)).is_relative_to(run_root):
+            leaked.append(name)
+    check("수트가 실 임시 디렉터리에 osk-integration-*·실행 자리를 남기지 않는다",
+          caught and not leaked and not Path(_TMP.name).exists(),
+          f"실행 자리 포착 {len(caught)}건 · 실 임시 누출 {len(leaked)}건 {leaked[:3]}"
+          f" · 실행 자리 {_TMP.name} 잔존={Path(_TMP.name).exists()}")
     print(f"회귀 수트: 통과 {len(PASS)} / 실패 {len(FAIL)} / 생략 {len(SKIP)}"
           f"  (mini-vault: {MINI})")
     for f in FAIL:
