@@ -197,16 +197,26 @@ def _live_locate(name: str, idx) -> Path | None:
             # 이름 중복과 **같은 이유로** 거부한다. 여기서 한쪽을 고르면 읽기
             # 표면이 고른 쪽과 갈리는데, 사본은 바이트가 같아 CAS가 그것을
             # 막지 못한다 — 에이전트가 읽지 않은 파일이 갱신된다(재현 확인).
-            raise WriteError(
-                f"같은 id의 노드가 {len(idx.dup_ids[nid])}개다 — 어느 것인지 "
-                f"정해지지 않아 고치지 않았다: {idx.dup_ids[nid]}")
+            _refuse_dup_id(sorted(idx.dup_ids[nid]))
         hit = idx.by_id.get(nid)
         hits = [hit[0]] if hit else []
     if len(hits) > 1:
         raise WriteError(
             f"같은 이름의 노드가 {len(hits)}개다 — 어느 것인지 정해지지 않아 "
             f"고치지 않았다: {[posix_rel(h, ROOT) for h in hits]}")
+    # 이름으로 잡은 노드도 id가 겹쳤으면 고르지 않는다. 사본은 제목이 달라
+    # (`Alpha`·`Alpha restored`) 위의 동명 거부를 비켜 가고, 각자 이름으로
+    # 고쳐져 조용히 갈라졌다 — id 핸들만 거부하던 구판(2026-09-24 재현).
+    twins = idx.id_twins(hits[0]) if hits else []
+    if twins:
+        _refuse_dup_id(twins)
     return hits[0] if hits else None
+
+
+def _refuse_dup_id(paths: list[str]):
+    msg = (f"같은 id의 노드가 {len(paths)}개다 — 어느 것인지 정해지지 않아 "
+           f"고치지 않았다: {paths}")
+    raise WriteError(msg, [msg, graph.DUP_ID_ADVICE])
 
 
 # 옵시디언 태그 방어 (Mechanism §8 7항). `#1227` 같은 순수 숫자 참조는

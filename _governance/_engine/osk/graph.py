@@ -17,6 +17,9 @@ from pathlib import Path
 from .core import ROOT, LEDGER, ID_RE, resolve_in_root, SPACE_ROOTS, adapt_path
 from . import contract
 
+# 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
+_ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?(?![0-9a-z])")
+
 
 def _load_cases() -> dict[str, dict]:
     """사건부 헤더 일괄 로드 — conflicts 적격 판정용."""
@@ -435,6 +438,7 @@ class Index:
         self.parsed: dict[Path, contract.Node] = {}
         self._failed: dict[Path, str] = {}
         self._all_parsed = False
+        self._id_tokens: dict[str, list[Path]] | None = None
         for p, k in self._entries:
             self.names[p.stem] = (p, k)
             self._by_name.setdefault(p.stem, []).append((p, k))
@@ -620,6 +624,43 @@ class Index:
         cur = self.names.get(stem)
         if cur is not None and cur[0] == src:
             self.names[stem] = (dst, kind)
+        self._id_tokens = None          # 옛 경로를 쥔 후보표는 동 id를 오보한다
+
+    def _node_bytes(self):
+        """노드 파일 전부의 바이트 — 판독(YAML) 없이. 못 여는 파일은 판독도
+        실패하므로 노드가 아니다(`_readable`과 같은 판정)."""
+        for p, _k in self._entries:
+            try:
+                yield p, p.read_bytes()
+            except OSError:
+                continue
+
+    def id_twins(self, path: Path) -> list[str]:
+        """`path` 노드와 id가 같은 **판독되는** 노드 전부(자신 포함, POSIX 경로) —
+        겹치지 않으면 빈 목록. `dup_ids`의 한 id판이다.
+
+        이름 핸들은 그 이름의 후보만 연다(전수 판독 없음). 그래서 이름으로 잡은
+        노드의 id가 사본과 겹쳐도 보이지 않았고, 두 사본이 이름으로 각자 읽히고
+        고쳐져 조용히 갈라졌다(2026-09-24 재현) — Mechanism §2 1항은 동 id면
+        읽기도 쓰기도 거부한다. 후보표는 바이트의 id꼴 토큰에서 한 번 짓고
+        (근거로 id를 적은 노드도 후보가 되지만 판독이 걸러낸다), 판정은 계약
+        파서로 한다 — 정규식이 판정하면 따옴표 표기 같은 노드가 미아가 된다.
+        """
+        # ponytail: 색인당 전 노드 파일을 한 번 연다(2k 노드 ≈0.2 s). 수만 노드에서
+        # 이름 쓰기가 무거워지면 id 후보표를 지문과 함께 접어 둔다.
+        if not self._readable(path) or not self.parsed[path].id:
+            return []
+        nid = self.parsed[path].id
+        if self._all_parsed:
+            return sorted(self.dup_ids.get(nid, []))
+        if self._id_tokens is None:
+            self._id_tokens = {}
+            for p, data in self._node_bytes():
+                for t in set(_ID_TOKEN.findall(data)):
+                    self._id_tokens.setdefault(t.decode(), []).append(p)
+        same = [p for p in dict.fromkeys([path, *self._id_tokens.get(nid, ())])
+                if self._readable(p) and self.parsed[p].id == nid]
+        return sorted(p.relative_to(ROOT).as_posix() for p in same) if len(same) > 1 else []
 
     def node(self, path: Path) -> contract.Node:
         if path not in self.parsed:
@@ -685,6 +726,15 @@ class Index:
         if name in self.nonnode:
             return ("nonnode", self.nonnode[name][1])
         return ("dangling",)
+
+
+# 동 id 거부의 다음 행동 — 읽기·쓰기·후보 상정이 같은 말을 한다.
+DUP_ID_ADVICE = (
+    "id가 겹친 사본은 복제·백업 복원·동기화 충돌에서 온다(표면은 id를 겹쳐 "
+    "만들지 않는다). 충돌 후보(`record_candidate`)가 아니라 동일성 사고라 표면으로 "
+    "고치지 않는다 — 사용자가 두 파일을 비교해 남길 쪽을 정하고, 다른 쪽의 고유한 "
+    "내용을 옮긴 뒤 그 파일을 vault 밖으로 치운다. 그때까지 둘 다 이름으로도 "
+    "id로도 읽거나 고치지 않는다")
 
 
 def topology_check(idx: Index) -> list[str]:

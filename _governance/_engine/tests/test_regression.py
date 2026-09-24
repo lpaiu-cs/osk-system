@@ -7685,6 +7685,77 @@ def test_duplicate_id_refused():
         _age_all()
 
 
+# ── 동 id는 이름 핸들로도 고르지 않는다 (v4.0.0) ───────────────────────
+def test_duplicate_id_by_name_refused():
+    """제목이 다른 사본(복원·동기화 충돌)은 **이름으로도** 읽히거나 고쳐지지 않는다.
+
+    구판은 id 핸들만 거부했다. 이름 핸들은 그 이름의 후보만 열어 id가 겹친 줄
+    몰랐고, 두 사본이 각자 이름으로 읽히고 고쳐져 조용히 갈라졌다. 이동도
+    통과했고, 후보 상정은 "자기 자신과의 충돌"이라며 거부해 갈 길을 주지
+    않았다(2026-09-24 재현). Mechanism §2 1항은 동 id면 읽기도 쓰기도 거부한다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · `_live_locate`의 이름 갈래 `id_twins` 검사를 지우면 → 쓰기·이동·상정 단언
+      · `read_node`의 이름 갈래 검사를 지우면 → 읽기 단언
+      · 후보표를 계약 파서 대신 `id: ` 줄 정규식으로 판정하면 → 따옴표 사본 단언
+      · 검사가 전수 판독(`parse_all`)을 부르면 → 성능 계약 단언
+    """
+    import mcp_server as M
+    p = ROOT / "00_Scope/W1/regr-dupn.md"
+    other = ROOT / "00_Scope/regr-dupn-c"
+    twin = other / "regr-dupn restored.md"
+    other.mkdir(parents=True, exist_ok=True)
+    try:
+        r0 = _w(write.create_node, "regr-dupn", "요약", "ORIGINAL", "fable-5",
+                space="00_Scope/W1")
+        check("전제: 생성", r0.get("ok"), r0)
+        nid = r0["id"]
+        twin.write_bytes(p.read_bytes())
+        _age_all()
+        before = (p.read_bytes(), twin.read_bytes())
+        want = sorted(core.posix_rel(x, ROOT) for x in (p, twin))
+        M._index, M._searcher, M._fingerprint = None, None, None
+        with mock.patch.object(graph.Index, "parse_all",
+                               side_effect=AssertionError("full parse")):
+            for h in ("regr-dupn", "regr-dupn restored"):
+                rr = M.read_node(h)
+                check(f"이름 읽기는 사본을 내주지 않는다: {h}",
+                      "error" in rr and str(want) in rr["error"], rr)
+                check(f"읽기 거부가 갈 길을 준다: {h}",
+                      "record_candidate" in rr.get("error", ""), rr)
+            r1 = _w(write.update_node, "regr-dupn", old_text="ORIGINAL", new_text="X")
+            check("이름 쓰기는 거부한다(전수 판독 없이)",
+                  r1.get("ok") is False and str(want) in str(r1), r1)
+        r2 = _w(write.update_node, "regr-dupn restored", summary="사본 고침")
+        check("사본 이름 쓰기도 거부한다", r2.get("ok") is False, r2)
+        mv = _w(write.move_nodes, ["regr-dupn restored"], "00_Scope/W1")
+        check("사본 이동도 거부한다", mv.get("ok") is False and twin.is_file(), mv)
+        rc = _w(write.record_candidate, "duplication",
+                ["regr-dupn", "regr-dupn restored"], "사본")
+        check("후보 상정은 동일성 사고로 거부하고 해소 길을 준다",
+              rc.get("ok") is False
+              and any("동일성 사고" in v for v in rc.get("violations", [])), rc)
+        check("어느 쪽도 바뀌지 않았다", (p.read_bytes(), twin.read_bytes()) == before)
+
+        # 손으로 id에 따옴표를 친 사본도 같은 id다 — 판정은 계약 파서가 한다
+        twin.write_bytes(before[1].replace(f"id: {nid}".encode(),
+                                           f'id: "{nid}"'.encode()))
+        _age_all()
+        check("전제: 따옴표 사본도 같은 id로 판독된다", contract.parse(twin).id == nid)
+        r3 = _w(write.update_node, "regr-dupn", summary="고침")
+        check("따옴표 사본도 이름 쓰기를 막는다", r3.get("ok") is False, r3)
+
+        twin.unlink()
+        _age_all()
+        check("사본을 치우면 이름 읽기 복구", "error" not in M.read_node("regr-dupn"))
+        r4 = _w(write.update_node, "regr-dupn", summary="고침")
+        check("사본을 치우면 이름 쓰기 복구", r4.get("ok"), r4)
+    finally:
+        p.unlink(missing_ok=True)
+        shutil.rmtree(other, ignore_errors=True)
+        _age_all()
+
+
 # ── 판독 계약: 깊이 가드와 탭 (v3.7.0) ──────────────────────────────────
 def test_parse_guards():
     """C 로더로 바꾸면서 (a) 프로세스를 죽이는 입력과 (b) 거부되던 것이
@@ -10693,6 +10764,7 @@ if __name__ == "__main__":
                test_nested_clusters,
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
+               test_duplicate_id_by_name_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_node_place_rule,
                test_traversal_deterministic, test_index_split,

@@ -209,12 +209,15 @@ def read_node(name: str, view: str | None = None) -> dict:
         nid = str(name).strip()
         if _re.match(_ID, nid):
             if nid in idx.dup_ids:
-                return {"error": f"같은 id의 노드가 {len(idx.dup_ids[nid])}개다 "
-                                 f"— 어느 것인지 정해지지 않는다: "
-                                 f"{idx.dup_ids[nid]} (먼저 고쳐라)"}
+                return _dup_id_error(sorted(idx.dup_ids[nid]))
             h = idx.by_id.get(nid)
             if h:
                 hit, name = h, h[0].stem
+    # 이름으로 잡은 노드도 id가 겹쳤으면 내주지 않는다 — 제목이 다른 사본이
+    # 이름으로 각자 읽혀 갈라졌다(Mechanism §2 1항, 2026-09-24 재현).
+    twins = idx.id_twins(hit[0]) if hit else []
+    if twins:
+        return _dup_id_error(twins)
     if not hit:
         why = "; ".join(failures)
         return {"error": f"파싱 실패 — 수동 확인 필요: {why}" if why
@@ -248,6 +251,11 @@ def read_node(name: str, view: str | None = None) -> dict:
             "meta": {k: str(v) for k, v in n.meta.items()},
             "hash": sha256_bytes(raw),
             "body": n.body}
+
+
+def _dup_id_error(paths: list[str]) -> dict:
+    return {"error": f"같은 id의 노드가 {len(paths)}개다 — 어느 것인지 정해지지 "
+                     f"않는다: {paths}. {graph.DUP_ID_ADVICE}"}
 
 
 def _node_view(body: str, view: str) -> dict:
