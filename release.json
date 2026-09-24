@@ -1,6 +1,6 @@
 {
- "version": "v3.21.1",
- "at": "2026-09-24T08:04:40+09:00",
+ "version": "v3.21.2",
+ "at": "2026-09-24T11:31:18+09:00",
  "files": {
   ".gitattributes": "sha256:12beb285384a937c76b0cd632721a8c898063018b93a780a3ba408f3b7cd92c1",
   ".github/workflows/release.yml": "sha256:dab79409365e1d1173ed37990606479af8f91cadc6f0d77a0fc8ac547e367a90",
@@ -19,7 +19,7 @@
   "_governance/_engine/README.md": "sha256:c3a0e4b8e066f9e31cefd10192903b0e02724f89010790dd64cc7fec6d46c584",
   "_governance/_engine/mcp_server.py": "sha256:bda6b701c2a0f06233316920e70834903a26fd4825c191a47429cdf79e580b66",
   "_governance/_engine/osk/__init__.py": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "_governance/_engine/osk/_fixture_approvals.py": "sha256:3312cdd75f96be7a6168121091c87908442927e51ad455bcbceb925d925800fb",
+  "_governance/_engine/osk/_fixture_approvals.py": "sha256:0eb8f6a3f8d7e38b9c9e39826b66cb001c58dcb0cb0f37f5a6dd7adafa35fbb2",
   "_governance/_engine/osk/_portalock.py": "sha256:4e9685429ad96e0b89831aab3638be8e9b015864e18f2354a660f2889c8ed29f",
   "_governance/_engine/osk/approvals.py": "sha256:a0f1438698e5d41184d9fcffede4fc8ff6c0cde9ed8c3718971260fd8ae2adcd",
   "_governance/_engine/osk/authority.py": "sha256:861557107c9974b6da61ae174fda0a069eae48c72ae7918355f96b82b29b30e2",
@@ -73,7 +73,7 @@
   "_governance/_engine/tests/test_regression.py": "sha256:c8e43e192f28eda20c013f0b80bff7e1d17b5b17f910aebecab86c9d452064a9",
   "_governance/_engine/tests/test_response_growth.py": "sha256:6f5f6e7c17278c01ff7e31b951dfe946a0288072a629f3435b4009cf325e991b",
   "_governance/_engine/tests/test_retrieval.py": "sha256:4a9f5760a1136dd29e95b6588912657ea8d8d955a3a79da3bbb00c174b6b1c46",
-  "_governance/_engine/tests/test_space_layout.py": "sha256:1011cd449058ce8985713649a1e2c8aa0cb993c000da53c541e0173d3a82a5ef",
+  "_governance/_engine/tests/test_space_layout.py": "sha256:51b9a71c09214b767b5b9732efbfde1573f07f5c7903724162a5ecfca2a12ebc",
   "_governance/_engine/tests/test_sync_network.py": "sha256:fcaf6cfe78df0c02ffc083017ca6b35c6a156817c81cc8432da5295d272c40c2",
   "_governance/_engine/tests/test_update_review.py": "sha256:372e4bb5febe5c60a8dc571027bfcb663ec829b3714ff1cfe4d6eff183db15c5",
   "_governance/_engine/tests/test_windows_shell.py": "sha256:8916e1eaf74a0224333e8da9182db80d0b900f2456e42499ebd2b1d599adc513",
