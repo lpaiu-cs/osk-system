@@ -3,9 +3,9 @@
 Raw transcripts are evidence, not knowledge nodes. New records use
 `00_Scope/<scope>/_raw/.records/<record>.txt`: a non-Markdown extension inside
 a dot directory. (A vault that kept a legacy `= Scope` or `Scope` root uses that
-root name; see [Space paths](space-layout-migration.md).) The text codec, numeric round headings, secret filtering and
-append-only prefix are unchanged. Git still preserves exact bytes through the
-existing `**/_raw/** -text` attribute.
+root name; see [Space paths](space-layout-migration.md).) The text codec, numeric
+round headings, secret filtering and append-only prefix are unchanged. Git still
+preserves exact bytes through the existing `**/_raw/** -text` attribute.
 
 A record name at the old 252-byte UTF-8 limit cannot take `.txt` in a single
 255-byte filename. Its lossless physical path is
