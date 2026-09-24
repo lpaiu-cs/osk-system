@@ -23,9 +23,12 @@ def main() -> None:
         if not isinstance(env, dict):
             raise ValueError("hook input must be a JSON object")
         key = session_key(env.get("cwd") or os.getcwd())
-        if response_growth.launch(env, key):
-            return
-        result = integration.hook_capture(env, key)
+        try:
+            if response_growth.launch(env, key):
+                return
+            result = integration.hook_capture(env, key)
+        except integration.SubagentEvent:
+            return  # The root conversation's own Stop owns its state.
         if result["capture_error"]:
             raise ValueError(result["capture_error"])
     except Exception as exc:

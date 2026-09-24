@@ -129,6 +129,8 @@ def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
                    overdue_switch and cadence['unreviewed_prompts'] >= integration.HARD else
                    "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
         parts = [warning, lead, integration.prompt(harness, sid)["text"]]
+    except integration.SubagentEvent:
+        return None  # Not this subagent's conversation: no capture, route or root review text.
     except Exception as exc:
         parts = [f"[osk 포착·통합 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다; 대기를 완료로 처리하지 않았다.]"]
     # Native capture failures must not hide an independently readable scope's
@@ -159,6 +161,8 @@ def main() -> None:
         from osk import scope_memory, write, evictions
         key = session_key(cwd)
         captured = capture_block(env, key, startup=True)
+        if captured is None:
+            return
         scope = write.resolve_session(key)
         bootstrap = _bootstrap(key, bound=bool(scope))
         recovery = ""

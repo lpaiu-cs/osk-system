@@ -118,6 +118,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
+| `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
@@ -208,24 +209,62 @@ Windows Codex 앱은 `OpenAI/Codex/bin/<16자리 해시>/codex.exe`가 실제 �
 이 형식의 경로를 등록하면 앱 갱신 후 같은 설치 폴더의 형제 경로에서 **원 전사와
 정확히 같은 CLI 버전**을 찾는다. 없으면 기존 세션 내 검토로 돌아간다. 이름이 고정된
 `bin/codex.exe`나 별도 설치 CLI가 최신 앱 판본이라는 보장은 없다. 다른 형식의
-명시 경로는 자동 교체하지 않는다.
+명시 경로는 자동 교체하지 않는다. Claude 앱의 `Claude/claude-code/<버전>/claude.exe`
+경로도 원 전사의 `version`과 정확히 같은 형제 폴더만 사용하며, 없으면 세션 내 검토로
+돌아간다. 전사 판본이 아직 없으면 등록 경로를 검사하고, 앱이 그 판본을 지웠으면 설치된
+최신 형제로 준비 상태만 확인한다. 실행은 항상 전사 판본과 정확히 일치해야 한다.
 
 ```json
 {
   "codex": "C:/path/to/codex.exe",
-  "claude": "C:/path/to/claude.exe"
+  "claude": "C:/Users/<사용자>/AppData/Roaming/Claude/claude-code/<버전>/claude.exe"
 }
+```
+
+**Claude fork 준비.** fork는 Claude 앱의 호스트 인증을 넘겨받지 않고 CLI 자체의 claude.ai
+로그인만 쓴다. 앱 안의 세션이 로그인돼 있어도 CLI 로그인은 따로 필요하다.
+
+1. `"claude"`에 `%APPDATA%\Claude\claude-code\<버전>\claude.exe`의 절대 경로를 등록한다.
+   `<버전>`은 원대화의 판본과 같아야 한다.
+2. Claude 앱 밖의 일반 PowerShell에서 `& "$env:APPDATA\Claude\claude-code\<버전>\claude.exe" auth login`을
+   실행해 Pro/Max/Team/Enterprise claude.ai 계정으로 로그인한다. API 키 로그인은 거부된다.
+3. `fork doctor --harness claude`(아래)에서 `auth`가 `authMethod=claude.ai`, 구독 종류
+   `pro`·`max`·`team`·`enterprise`이고 `cli_version`이 원 전사 판본과 같은지 확인한다.
+   `loggedIn=False`이면 2단계를 다시 한다.
+
+**사용 전 점검 — `fork doctor`.** 등록 뒤 모델 호출 없이 판정을 미리 본다. 시작/입력 훅의
+`route()`와 같은 검사로 백그라운드 fork 여부와 거부 사유를 내고, 등록 CLI·실제 선택
+파일과 판본, 원 전사의 판본·모델·권한(Claude 권한 모드, Codex 샌드박스·승인), 로그인
+요약(계정·토큰 제외), 엔드포인트(Codex 최상위 주소는 fork에서 고정값으로 대체,
+`OPENAI_BASE_URL`은 제거, 고정을 덮는 설정은 층별 경로와 함께 거부; Claude `ANTHROPIC_BASE_URL`
+처리), 작업 폴더의 Git·신뢰 여부를 보여준다. 상태·설정 파일은 쓰지 않는다.
+`--session`을 생략하면 현재 폴더의 새 대화 기준이다. Codex 재개 대화의 현재 앱 판본은
+그 대화의 훅 안에서만 알 수 있으므로, 밖에서 실행한 doctor는 전사 판본으로 판정한다.
+
+```powershell
+$env:PYTHONPATH='_governance/_engine'
+.venv/Scripts/python.exe -m osk.cli fork doctor --harness codex --session <대화ID> [--transcript <전사JSONL>] [--json]
 ```
 
 기존 세 훅 등록 경로는 유지한다. Stop은 숨김 프로세스를 띄우고 즉시 반환한다.
 자식은 전사의 최종 완료 표식을 최대 5초 기다린 뒤 원대화와 같은 실제 모델·cwd의
 일회성 fork를 실행한다. Codex는 원대화의 추론 강도와 권한도 유지한다. CLI 버전·
 구독 인증이 확인되지 않으면 실행하지 않으며 API 키/다른 모델로 대체하지 않는다.
+Codex fork는 `-c openai_base_url`로 공식 백엔드(`https://chatgpt.com/backend-api/codex`)를
+고정하고 `OPENAI_BASE_URL`을 넘기지 않으므로 최상위 로컬 브리지·프록시를 거치지 않는다. 고정을
+덮을 수 있는 설정 — 활성 profile이 정한 provider·주소·추론 강도·승인·샌드박스 값,
+`model_providers.openai`의 다른 주소, 공식이 아닌 `chatgpt_base_url` — 과 `chatgpt-web/` 모델은
+실행하지 않는다. 사용자 `config.toml`뿐 아니라 `%ProgramData%\OpenAI\Codex\config.toml`과
+프로젝트 루트(기본 `.git`)부터 작업 폴더까지의 `.codex/config.toml`도 층마다 따로 검사한다.
+Claude fork는 원대화의 권한 모드를 그대로 쓰며, 입력 뒤 모드를 바꿔 Stop의 모드가 전사와
+다르면 실행하지 않는다. 실행 argv는 run 폴더의 `argv.json`에 남는다.
 Codex 앱의 전사는 앱용 도구 정의도 보존한다. 쓰기 가능 경로·네트워크·임시 폴더
 제외 플래그와 구조화된 승인 정책을 명시적으로 전달하며, 표현할 수 없는 제한은
-실행하지 않는다. Codex 작업 폴더가 Git 작업 트리가 아니어도 세션 내 검토로 돌린다.
+실행하지 않는다. Codex 작업 폴더가 Git 작업 트리도, `config.toml`의 `trusted` 프로젝트(Codex가
+쓰는 정규화 키)도
+아니면 세션 내 검토로 돌린다.
 세션 시작/입력 훅은 모델 호출 없이 CLI 로그인·판본을 확인한다. CLI 미설정·미설치·
-미로그인·인증 불확실·판본 불일치·설정/권한 오류·Codex 비Git 작업 폴더는 검토 경고와 함께 기존 세션의
+미로그인·인증 불확실·판본 불일치·설정/권한 오류·Codex 비Git·미신뢰 작업 폴더는 검토 경고와 함께 기존 세션의
 UserPromptSubmit 9·15턴 주입으로 라우팅한다. 전환 시 9턴 이상 밀렸으면 그 입력에서
 즉시 검토를 안내하며, 이후 같은 상태에서는 매 턴 재촉하지 않는다. 포착/검토 커서와
 Stop/입력 계수는 전환·재개로 지우지 않는다. 다음 시작/입력에서 CLI가 복구됐음을
@@ -234,7 +273,10 @@ Codex가 업데이트 뒤 오래된 대화를 재개하면 전사의 생성 시�
 그대로 남을 수 있다. 훅·분리 작업자 환경의 `CODEX_THREAD_ID`가 원 대화와 같을
 때만 `CODEX_VERSION`을 현재 하네스 판본으로 사용하고, 선택한 실행 파일의
 `--version`과 정확히 대조한다. 다른 대화·외부 실행의 환경을 원 대화에 적용하지
-않으며 현재 판본 정보가 없으면 전사 판본의 엄격한 검사를 유지한다.
+않으며 현재 판본 정보가 없으면 전사 판본의 엄격한 검사를 유지한다. Codex 훅 환경에는
+이 변수가 없으므로, 훅은 가장 가까운 Codex 조상 프로세스가 앱 관리 `codex.exe`일 때만
+그 `--version`을 이 대화에 묶어 확인과 분리 작업자에 넘긴다. 부모 `session_id`와 자식
+전사를 함께 보내는 Codex 하위 에이전트 훅은 어떤 대화 상태도 바꾸지 않는다.
 Codex의 `--ephemeral`, Claude의 `--no-session-persistence`로 정리 대화를 하네스의
 저장 세션 목록에 추가하지 않고, OSK 훅도 유지보수 raw를 포착하지 않는다.
 

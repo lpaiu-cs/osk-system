@@ -35,10 +35,21 @@ both counters. Enabling the feature does not replay all old answers.
 Start/input hooks use local authentication/version queries, with no inference. Missing
 configuration, a missing CLI, logout, uncertain subscription auth, version mismatch or
 invalid settings route to in-session UserPromptSubmit 9/15 review with a warning. Codex
-also requires a Git worktree and a representable native permission policy. Workspace
+also requires a Git worktree or a project trusted in Codex `config.toml` under Codex's
+normalized key, no active profile that sets a key the fork pins (provider, base URL,
+effort, approval or sandbox), no `model_providers.openai` or `chatgpt_base_url` other than
+the first-party one in any config layer (system, user, or project `.codex/` from the
+project root down to cwd), a source model outside the `chatgpt-web/` bridge route, and a
+representable native permission policy once a final answer recorded it. The fork pins
+`openai_base_url` to `https://chatgpt.com/backend-api/codex` and drops `OPENAI_BASE_URL`,
+so a top-level local bridge or proxy is bypassed; each run folder keeps its `argv.json`. Workspace
 write roots, network access and both temporary-directory exclusion flags are explicitly
 preserved. Granular approval policies use TOML inline tables, not JSON objects. Unknown
-restrictions refuse the fork at routing and again before inference. A switch
+restrictions refuse the fork at routing and again before inference. A Claude fork runs
+with the source conversation's permission mode (`permissionMode` in force at its last
+final answer) passed verbatim as `--permission-mode`, with no extra bypass flag; a missing
+or unknown mode, or one that changes before launch, refuses the fork. A switch after the
+prompt writes no transcript row, so a Stop whose `permission_mode` differs also refuses. A switch
 after nine unreviewed inputs surfaces the pending review immediately. Login recovery
 restores Stop scheduling without resetting review state. Authentication is checked again
 just before inference; failure there preserves the due Stop attempt for a later retry.
@@ -46,10 +57,24 @@ just before inference; failure there preserves the due Stop attempt for a later 
 
 The existing supervisor receives one Scope job including recovery instructions. It does
 not select another conversation or a Domain batch. Busy execution defers work; native
-IDs let a later Stop catch up, and the daily run still sees unreviewed raw. A source
-change before launch refuses the fork, preserving the pending review. Source movement
+IDs let a later Stop catch up, and the daily run still sees unreviewed raw. A new turn
+or changed source metadata before launch refuses the fork without spending the Stop
+attempt, preserving the pending review; native trailer rows written after Stop do not. Source movement
 during execution also makes cumulative cache accounting unconfirmed. A harness upgrade
 can require updating the configured native CLI path.
+
+### 로컬 브리지·프록시
+
+Tools such as codex-chatgpt-web write a top-level `openai_base_url` (for example
+`http://127.0.0.1:17841/v1`) into Codex `config.toml`. The bridge's safety cannot be
+verified from osk. The fork therefore bypasses it instead of trusting it: `-c openai_base_url`
+pins the Codex backend and `OPENAI_BASE_URL` is dropped. Account, model and subscription
+limits stay the source's. Settings that win over `-c` remain refusals, in every config
+layer: any key the fork pins that an active profile sets, `model_providers.openai.base_url`
+unless it names the backend, and a `chatgpt_base_url` other than `https://chatgpt.com/backend-api/`.
+A `chatgpt-web/*` source model runs through the bridge's ChatGPT Web route, not the Codex
+backend. It is refused by name at routing, before any native query. `osk fork doctor` shows these
+facts and the routing verdict without writing state or settings. It does not install or remove a bridge.
 
 ### Codex paginated history
 

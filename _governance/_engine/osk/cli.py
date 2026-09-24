@@ -203,6 +203,27 @@ def _growth_cmd(a) -> None:
         sys.exit(1)
 
 
+def _fork_cmd(a) -> None:
+    """`osk fork doctor` — route()의 판정과 근거를 **읽기만** 한다. 상태·설정을 쓰지 않는다."""
+    from . import response_growth
+    try:
+        reports = [response_growth.doctor(h, a.session, a.transcript)
+                   for h in ([a.harness] if a.harness else ("claude", "codex"))]
+    except (ValueError, OSError) as e:
+        _emit({"ok": False, "violations": [str(e)]})
+        sys.exit(1)
+    if a.json:
+        return _emit(reports)
+    lines = []
+    for r in reports:
+        v = r.pop("verdict")
+        lines.append(f"{r.pop('harness')}: {v['mode']}" + (f" — {v['reason']}" if v["reason"] else ""))
+        lines += [f"  {k}: " + (", ".join(f"{x}={y}" for x, y in val.items())
+                                if isinstance(val, dict) else str(val)) for k, val in r.items()]
+    sys.stdout.buffer.write(("\n".join(lines) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
 def _organization_cmd(a) -> None:
     from . import organization
     try:
@@ -359,6 +380,14 @@ def build_parser() -> argparse.ArgumentParser:
     q = gs.add_parser("checkpoint", help="완료한 개별 작업의 명시적 검토를 즉시 기록")
     q.add_argument("--file", required=True, help="UTF-8 osk_reviews JSON 파일")
 
+    p = sub.add_parser("fork", help="구독 fork 준비 점검 (읽기 전용)")
+    fs = p.add_subparsers(dest="fork_cmd", required=True)
+    q = fs.add_parser("doctor", help="route()의 판정과 근거 — 상태·설정을 쓰지 않는다")
+    q.add_argument("--harness", choices=("claude", "codex"), default=None, help="기본: 둘 다")
+    q.add_argument("--session", default=None, help="실제 하네스 대화 ID")
+    q.add_argument("--transcript", default=None, help="전사 경로 (기본: 훅과 같은 방식으로 찾는다)")
+    q.add_argument("--json", action="store_true")
+
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
     ws = p.add_subparsers(dest="sm_cmd", required=True)
@@ -489,6 +518,8 @@ def main(argv=None):
         return _growth_cmd(a)
     elif a.cmd == "organization":
         return _organization_cmd(a)
+    elif a.cmd == "fork":
+        return _fork_cmd(a)
     elif a.cmd == "sm":
         return _sm_cmd(a)
     elif a.cmd == "tidy":
