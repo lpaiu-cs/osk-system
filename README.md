@@ -161,8 +161,8 @@ to convention. Three design choices support it:
 
 The principle is simple: **do not claim to enforce what you cannot enforce.**
 Authorization remains unresolved unless the engine can evaluate its applicability.
-Protected regions help recover from honest mistakes; they are **not a security
-boundary against someone with arbitrary write access to the vault**.
+Protected regions help prevent and recover from honest mistakes; they are **not a
+security boundary against someone with arbitrary write access to the vault**.
 See the [engine's limitations](_governance/_engine/README.md#알려진-한계).
 
 ## Harness coverage
@@ -222,8 +222,8 @@ execution, and failure fallbacks.
 - **Node bodies are not secret-filtered.** This is by design. The secret filter
   covers raw transcripts, Scope memory, and writes distilled from raw records.
   Keep secrets out of notes: they are committed and synchronized.
-- **Protected regions are not a security boundary.** They help recover from
-  honest mistakes; see [Why the distinction matters](#why-the-distinction-matters).
+- **Protected regions are not a security boundary.** They help prevent and
+  recover from honest mistakes; see [Why the distinction matters](#why-the-distinction-matters).
 - **Autonomous growth is experimental.** Its effect is still being measured
   ([issue #20](https://github.com/lpaiu-cs/osk-system/issues/20)).
 - **The governing documents are in Korean only.**
