@@ -213,7 +213,7 @@ git commit -m "Record osk release baseline"
 git push
 ```
 
-**확인:** `.venv/bin/python -m osk.update`가 `"current": "v3.22.2"`을 출력한다.
+**확인:** `.venv/bin/python -m osk.update`가 `"current": "v3.22.2"`를 출력한다.
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다.
 

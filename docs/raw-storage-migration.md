@@ -69,7 +69,7 @@ raw citations use the plain form automatically.
 
 The user approved these replacements on 2026-09-17. They are reflected in
 Bylaws and Mechanism in this change; formal release/deployment is separate.
-Paths are quoted with the `00_Scope` root that Mechanism uses since v3.21.0.
+Paths are quoted with the `00_Scope` root that Mechanism has used since v3.21.0.
 
 Bylaws §1.3 raw-specific sentence:
 
