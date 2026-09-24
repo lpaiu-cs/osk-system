@@ -452,8 +452,6 @@ def append_rounds(session: str, record: str, pairs: list,
         written, hits = secrets.write_raw(
             _migrate_file(p), prior + ("\n" if prior else "") + "\n".join(blocks))
 
-        if not bound:
-            write.bind_session(session, dest, "첫 세션 기록에서 확정")
         rel = posix_rel(written, ROOT)
         # `round_ref`를 그대로 돌려준다 — 이 값이 곧 `derived-from`의 비노드
         # 대상 표기다(Mechanism §8 2항). 호출자가 경로와 index를 조립하다
@@ -461,6 +459,8 @@ def append_rounds(session: str, record: str, pairs: list,
         result = {"ok": True, "path": rel, "indices": replayed + indices,
                   "round_refs": [f"{rel}#{i}" for i in replayed + indices],
                   "filtered": sorted(set(hits))}
+        if not bound:
+            write.bind_after_write(result, session, dest, "첫 세션 기록에서 확정")
         if replay_prefix:
             result["appended"] = len(indices)
             result["codex_v1_rounds"] = legacy_replayed
@@ -472,7 +472,8 @@ def append_round(session: str, record: str, user: str, agent: str,
     """라운드 하나 — 표면(`append_raw`)이 부르는 단수형."""
     r = append_rounds(session, record, [{"user": user, "agent": agent}], space)
     return {"ok": True, "path": r["path"], "index": r["indices"][0],
-            "round_ref": r["round_refs"][0], "filtered": r["filtered"]}
+            "round_ref": r["round_refs"][0], "filtered": r["filtered"],
+            **({"binding": r["binding"]} if "binding" in r else {})}
 
 
 def record_state(session: str, record: str, space: str | None = None) -> dict:

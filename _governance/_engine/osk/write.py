@@ -833,6 +833,26 @@ def bind_session(session: str, scope: str, reason: str = "") -> dict:
         "scope": scope, "reason": reason or "최초 작업에서 확정"})
 
 
+def bind_after_write(result: dict, session: str, scope: str, reason: str = "") -> bool:
+    """파일을 **쓴 뒤**의 결속. 실패를 쓰기 실패로 올리지 않고 영수증으로 남긴다.
+
+    올리면 표면은 `ok:false`를 내는데 파일은 서 있다 — 호출자는 잃은 줄 알고
+    재시도하고, 그 재시도는 이름 충돌·중복 라운드로 거부된다(v4 감사 실측:
+    공유 위반으로 라우팅 대장 append가 실패한 경우). 대장 append는 기록된 뒤에도
+    (fsync) 실패할 수 있으므로 "미기록"이 아니라 "확인 불가"다 —
+    `evictions._after_node_write`의 처분 영수증과 같은 규율."""
+    try:
+        bind_session(session, scope, reason)
+        return True
+    except Exception as e:
+        result["binding"] = {
+            "state": "unconfirmed", "scope": scope, "error": f"{type(e).__name__}: {e}",
+            "note": (f"쓴 것은 저장됐다 — 다시 보내지 마라. 세션 결속은 확인하지 "
+                     f"못했다: 다음 쓰기에 같은 session과 space `{SCOPE}/{scope}`를 "
+                     f"함께 주면 결속이 선다.")}
+        return False
+
+
 def alias_session(alt: str, canonical: str, reason: str = "") -> dict:
     """구 이름 → 정본 이름 별칭. 개명 이력을 대장에 남기는 일이며 MCP 표면에
     노출하지 않는다 — 이름의 정본을 정하는 것은 사용자의 일이다."""
@@ -1008,7 +1028,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     idx.register_new(path, kind)
     # 결속은 **scope일 때만** — Domain/Person에 결속하면 자동 라우팅이
     # 존재하지 않는 `Scope/<이름>`을 가리켜 그 키가 벽돌이 된다(7차 중대 C)
-    bound_now = None
+    bound_now, receipt = None, {}
     if session and not bound and kind[0] == "scope":
         # 결속 값은 **scope 이름**이지 말단 디렉토리명이 아니다. 구판은
         # `dest_dir.name`을 썼고, 그래서 하위 군집(`Scope/W1/Sub`)에서
@@ -1016,12 +1036,12 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
         # `Scope/Sub/_raw/`라는 유령 scope를 만들고, 노드 생성은 최상위
         # 신설 관문으로 갔다. 깊이는 갈래이지 소속이 아니며(Mechanism §1
         # 2항), 소속은 `space_of`가 이미 정확히 말해 준다.
-        bind_session(session, kind[1])
-        bound_now = kind[1]             # 실제로 결속했을 때만 보고한다
+        if bind_after_write(receipt, session, kind[1]):
+            bound_now = kind[1]         # 실제로 결속했을 때만 보고한다
     result = {"ok": True, "name": title,
             "path": posix_rel(path, ROOT), "id": meta["id"],
             "new_hash": sha256_bytes(data),
-            "bound_scope": bound_now,
+            "bound_scope": bound_now, **receipt,
             **_reference_feedback(path, meta, body, idx)}
     return evictions._after_node_write(result, settle, "node", title)
 

@@ -2729,6 +2729,38 @@ def test_contract_values():
           not r["ok"] and not (ROOT / "00_Scope/W1/regr-drafter-bad.md").exists(), r)
 
 
+def test_bind_after_write_receipt():
+    """파일을 쓴 뒤 결속 append가 실패하면 `ok:false`가 아니라 영수증이다 —
+    구판은 노드가 선 채로 실패를 보고해 재시도가 이름 충돌로 거부됐다."""
+    import mcp_server as M
+    real = write.ledger_append
+
+    def failing(path, record, expect=None):
+        if path == core.ROUTING:
+            raise PermissionError(13, "공유 위반 모사", str(path))
+        return real(path, record, expect)
+
+    with mock.patch.object(write, "ledger_append", failing):
+        r = M.create_node("regr-bindfail", "s", "본문", "fable-5",
+                          session="regr-bindfail-a", space="00_Scope/W1")
+        rr = M.append_raw("regr-bindfail-b", "regr-bindfail-rec", "질문", "응답",
+                          space="00_Scope/W1")
+    check("결속 실패에도 노드 생성은 ok", r.get("ok") and r.get("id") and r.get("new_hash"), r)
+    check("결속은 확인 불가 영수증으로 남는다",
+          (r.get("binding") or {}).get("state") == "unconfirmed"
+          and r.get("bound_scope") is None and "PermissionError" in r["binding"]["error"], r)
+    check("노드는 실제로 섰다", (ROOT / "00_Scope/W1/regr-bindfail.md").exists())
+    check("raw 기록도 ok와 영수증",
+          rr.get("ok") and rr.get("index") == 1
+          and (rr.get("binding") or {}).get("state") == "unconfirmed", rr)
+    # 영수증이 안내한 대로 — 같은 session과 space로 다음 쓰기를 하면 결속이 선다
+    r2 = _w(write.create_node, "regr-bindfail-2", "s", "본문", "fable-5",
+            session="regr-bindfail-a", space="00_Scope/W1")
+    check("안내대로 다음 쓰기에서 결속이 선다",
+          r2.get("ok") and r2.get("bound_scope") == "W1" and "binding" not in r2
+          and write.resolve_session("regr-bindfail-a") == "W1", r2)
+
+
 def test_write_cas_body_bound():
     # 서명이 폐지됐으므로 CAS는 **본문 전체 치환**에만 결속한다(Mechanism
     # §6-2 4항) — 부분 변경(엣지 델타·summary)에는 요구하지 않는다.
@@ -10263,7 +10295,7 @@ if __name__ == "__main__":
                test_self_referencing_edge, test_surface_contract,
                test_ledger_row_shape,
                test_broken_delegation_isolated, test_write_contract,
-               test_contract_values,
+               test_contract_values, test_bind_after_write_receipt,
                test_write_cas_body_bound, test_anchor_edit,
                test_edge_single_list_roundtrip,
                test_write_move_and_pin,
