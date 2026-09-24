@@ -16,10 +16,13 @@ from unittest import mock
 
 ENGINE = Path(__file__).resolve().parents[1]
 TMP = tempfile.TemporaryDirectory(prefix="osk-integration-test-")
-ROOT = Path(TMP.name) / "vault"
-os.environ["OSK_VAULT_ROOT"] = str(ROOT)
+# The runner's temp may be a non-canonical spelling (Windows 8.3 RUNNER~1, macOS
+# /var -> /private/var). Hand the engine that raw spelling, but build every
+# expected path from the root the engine canonicalised at its boundary.
+os.environ["OSK_VAULT_ROOT"] = str(Path(TMP.name) / "vault")
 sys.path.insert(0, str(ENGINE))
 from osk import core, integration as it, raw, scope_memory, transcripts, validate, write
+ROOT = core.ROOT
 
 validate.make_mini_vault(ROOT)
 (ROOT / "00_Scope/Capture").mkdir()
