@@ -44,10 +44,15 @@ assert approvals.state(region) == 'clean'
 assert approvals.working_tree_hash(region) == snapshot
 assert approvals.APPROVALS.read_bytes() == before
 assert space_roots(core.ROOT)['Scope'] == core.SCOPE
+# The validator's isolated fixture builds its mini-vault in this vault's layout.
+import tempfile
+with tempfile.TemporaryDirectory() as fx:
+    problems = validate.fixture_approval_lifecycle(fx)
+assert problems == [], problems
 '''
                 result = subprocess.run([sys.executable, '-c', f'PREFIX={prefix!r}\n' + script],
                                         env=dict(os.environ, OSK_VAULT_ROOT=td, PYTHONPATH=str(ENGINE)),
-                                        capture_output=True, text=True, encoding='utf-8', timeout=60)
+                                        capture_output=True, text=True, encoding='utf-8', timeout=180)
                 self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
     def test_ambiguous_roots_refused_and_empty_skeleton_does_not_split_ledger(self):
