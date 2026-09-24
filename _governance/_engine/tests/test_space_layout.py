@@ -1,4 +1,5 @@
 """Three physical layouts preserve graph, raw coordinates and approval trees."""
+import itertools
 import os
 from pathlib import Path
 import subprocess
@@ -66,6 +67,38 @@ assert problems == [], problems
             (root / '00_Scope/.gitkeep').touch()
             self.assertEqual(space_roots(root)['Scope'], '= Scope')
             (root / '00_Scope/new-ledger').write_text('conflicting data')
+            with self.assertRaisesRegex(RuntimeError, 'Ambiguous Space roots'):
+                space_roots(root)
+
+    def test_os_metadata_does_not_populate_a_root(self):
+        # Opening an empty root in Finder or Explorer must not stop the engine.
+        sys.path.insert(0, str(ENGINE))
+        from osk.layout import space_roots
+        metadata = ('.gitkeep', '.DS_Store', 'Thumbs.db', 'desktop.ini', '._.DS_Store')
+        for data, stray in itertools.permutations(('00_', '= ', ''), 2):
+            for name in metadata:
+                with self.subTest(data=data, stray=stray, name=name), \
+                        tempfile.TemporaryDirectory() as td:
+                    root = Path(td)
+                    (root / (data + 'Scope/proj')).mkdir(parents=True)
+                    (root / (data + 'Scope/proj/n.md')).write_text('data')
+                    (root / (stray + 'Scope')).mkdir()
+                    (root / (stray + 'Scope') / name).touch()
+                    self.assertEqual(space_roots(root)['Scope'], data + 'Scope')
+                    # Control: real data in both roots is still refused.
+                    (root / (stray + 'Scope/other.md')).write_text('data')
+                    with self.assertRaisesRegex(RuntimeError, 'Ambiguous Space roots'):
+                        space_roots(root)
+
+    def test_metadata_name_on_a_directory_is_still_data(self):
+        sys.path.insert(0, str(ENGINE))
+        from osk.layout import space_roots
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / '= Scope/proj').mkdir(parents=True)
+            (root / '= Scope/proj/n.md').write_text('data')
+            (root / '00_Scope/._proj').mkdir(parents=True)
+            (root / '00_Scope/._proj/n.md').write_text('data')
             with self.assertRaisesRegex(RuntimeError, 'Ambiguous Space roots'):
                 space_roots(root)
 
