@@ -9657,20 +9657,55 @@ def test_validate_at_uses_snapshot_engine():
               errors == ["검증기 FAIL: snapshot rejection"], errors)
 
 
-def test_sync_network_subprocess():
-    proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests/test_sync_network.py")],
-                          capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
-    check("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", proc.returncode == 0,
-          (proc.stdout + proc.stderr).decode("utf-8", errors="replace"))
-
-
-def test_growth_loop_subprocesses():
-    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py"):
+def _suite(label, name):
+    """격리 수트 하나를 돌려 한 줄로 판정한다. 시간 초과·기동 실패도 그 수트의
+    FAIL로 남긴다 — 예외가 러너로 새면 뒤의 수트가 조용히 실행되지 않는다."""
+    try:
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
                               capture_output=True, timeout=180,
                               stdin=subprocess.DEVNULL)
-        check(f"성장 경로 격리 수트: {name}", proc.returncode == 0,
-              (proc.stdout + proc.stderr).decode("utf-8", errors="replace")[-6000:])
+    except Exception as e:
+        out = (getattr(e, "stdout", None) or b"") + (getattr(e, "stderr", None) or b"")
+        check(label, False, f"{e!r}\n" + out.decode("utf-8", errors="replace")[-6000:])
+        return
+    check(label, proc.returncode == 0,
+          (proc.stdout + proc.stderr).decode("utf-8", errors="replace")[-6000:])
+
+
+def test_sync_network_subprocess():
+    _suite("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", "test_sync_network.py")
+
+
+GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py")
+
+
+def test_growth_loop_subprocesses():
+    for name in GROWTH_SUITES:
+        _suite(f"성장 경로 격리 수트: {name}", name)
+
+
+def test_suite_timeout_is_isolated():
+    """한 격리 수트의 시간 초과는 그 수트의 FAIL이고, 뒤의 수트는 계속 돈다."""
+    first, rest = GROWTH_SUITES[0], GROWTH_SUITES[1:]
+
+    def run(cmd, **kw):
+        if cmd[-1].endswith(first):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), output=b"partial")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    n_pass, n_fail = len(PASS), len(FAIL)
+    error = None
+    with mock.patch("subprocess.run", side_effect=run):
+        try:
+            test_growth_loop_subprocesses()
+        except Exception as e:
+            error = e
+    passed, failed = PASS[n_pass:], FAIL[n_fail:]
+    del PASS[n_pass:], FAIL[n_fail:]
+    check("수트 시간 초과가 러너 밖으로 새지 않는다", error is None, repr(error))
+    check("시간 초과는 그 수트 이름의 FAIL 한 줄",
+          len(failed) == 1 and first in failed[0] and "partial" in failed[0], failed)
+    check("뒤의 수트는 전부 계속 실행된다",
+          [x.rsplit(": ", 1)[-1] for x in passed] == list(rest), passed)
 
 
 if __name__ == "__main__":
@@ -9770,6 +9805,7 @@ if __name__ == "__main__":
                test_review_root_reparse_and_lazy_search, test_read_cache_dependencies,
                test_reparse_cache_membership,
                test_eviction_preservation_mcp,
+               test_suite_timeout_is_isolated,
                test_growth_loop_subprocesses]:
         try:
             fn()
