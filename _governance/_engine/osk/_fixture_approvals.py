@@ -20,8 +20,8 @@ from osk import approvals as A  # noqa: E402
 
 errs: list[str] = []
 ROOT = core.ROOT
-REG = "00_Person/Delegation"
-regdir = ROOT / "00_Person" / "Delegation"
+REG = core.PERSON + "/Delegation"      # mini-vault는 부모 vault의 레이아웃을 따른다
+regdir = ROOT / core.PERSON / "Delegation"
 regdir.mkdir(parents=True, exist_ok=True)
 (regdir / "d.md").write_text("v1", encoding="utf-8")
 
