@@ -5,7 +5,7 @@
 This tutorial is for people who use Claude Code or Codex but have never set up
 osk-system. It starts from an empty folder and ends with a verified setup. At the
 end, your agent writes its first memory, then finds it and reads it back. Written
-for release v3.22.0.
+for release v3.22.2.
 
 For more detail on any step, follow the links to [SETUP.md](SETUP.md), the
 operator reference (in Korean).
@@ -136,7 +136,7 @@ Never edit these files by hand.
 
 Clone a release tag, not the `main` branch, which moves between releases. The
 updater compares your files with a release. Starting exactly on one lets Step 2
-record a clean baseline. `v3.22.0` works as written. You can use the newest tag
+record a clean baseline. `v3.22.2` works as written. You can use the newest tag
 from the [releases page](https://github.com/lpaiu-cs/osk-system/releases) instead,
 as long as you use the same tag again in Step 2.
 
@@ -144,7 +144,7 @@ Run these in the folder that will contain the vault, such as `C:/osk` on
 Windows (create it first). The commands are the same on every OS:
 
 ```bash
-git clone --branch v3.22.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -196,13 +196,13 @@ from local edits. The updater downloads the release from GitHub to compare.
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v3.22.0 --apply
+.venv/bin/python -m osk.update --to v3.22.2 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v3.22.0 --apply
+.venv\Scripts\python.exe -m osk.update --to v3.22.2 --apply
 ```
 
 The first run changes none of your files. It prints the plan, then exits with
@@ -223,7 +223,7 @@ git commit -m "Record osk release baseline"
 git push
 ```
 
-**Check:** `.venv/bin/python -m osk.update` prints `"current": "v3.22.0"`. On
+**Check:** `.venv/bin/python -m osk.update` prints `"current": "v3.22.2"`. On
 Windows, use `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
 
 ## Step 3: Connect Claude Code

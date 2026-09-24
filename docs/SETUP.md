@@ -26,7 +26,7 @@ _governance/
 
 ## 준비
 
-Python 3.12. 실의존성은 네 가지뿐이다 — `mcp`, `pydantic`, `PyYAML`, `rank-bm25`.
+Python 3.11 이상(명령 예시는 3.12 기준이니 설치한 판본으로 바꿔 쓴다). 실의존성은 네 가지뿐이다 — `mcp`, `pydantic`, `PyYAML`, `rank-bm25`.
 
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -r _governance/_engine/requirements.txt

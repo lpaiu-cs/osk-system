@@ -4,7 +4,7 @@
 
 Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사람을 위한 따라하기
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
-첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v3.22.0 릴리스 기준이다.
+첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v3.22.2 릴리스 기준이다.
 
 단계마다 더 자세한 내용은 운용 참고서인 [SETUP.md](SETUP.md)로 이어지는 링크를
 따라가면 된다.
@@ -127,7 +127,7 @@ Markdown 파일 하나다. 머리말에는 다음이 들어간다.
 
 `main` 브랜치가 아니라 릴리스 태그를 clone한다. `main`은 릴리스 사이에도 움직인다.
 갱신기는 파일을 릴리스와 대조하므로, 정확히 한 릴리스에서 출발해야 2단계에서 깨끗한
-기준선을 기록할 수 있다. `v3.22.0`은 적힌 그대로 쓰면 된다.
+기준선을 기록할 수 있다. `v3.22.2`는 적힌 그대로 쓰면 된다.
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)의 최신 태그를 써도
 되지만, 그때는 2단계에서도 같은 태그를 쓴다.
 
@@ -135,7 +135,7 @@ vault를 담을 폴더(Windows라면 `C:/osk` 등, 먼저 만들어 둔다)에�
 OS에서나 같은 명령이다.
 
 ```bash
-git clone --branch v3.22.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -187,13 +187,13 @@ $env:PYTHONPATH = "_governance\_engine"
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v3.22.0 --apply
+.venv/bin/python -m osk.update --to v3.22.2 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v3.22.0 --apply
+.venv\Scripts\python.exe -m osk.update --to v3.22.2 --apply
 ```
 
 첫 실행은 어떤 파일도 바꾸지 않는다. 계획을 출력한 뒤 종료코드 2와
@@ -213,7 +213,7 @@ git commit -m "Record osk release baseline"
 git push
 ```
 
-**확인:** `.venv/bin/python -m osk.update`가 `"current": "v3.22.0"`을 출력한다.
+**확인:** `.venv/bin/python -m osk.update`가 `"current": "v3.22.2"`을 출력한다.
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다.
 

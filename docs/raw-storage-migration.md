@@ -1,8 +1,9 @@
 # Hidden raw storage
 
 Raw transcripts are evidence, not knowledge nodes. New records use
-`Scope/<scope>/_raw/.records/<record>.txt`: a non-Markdown extension inside a
-dot directory. The text codec, numeric round headings, secret filtering and
+`00_Scope/<scope>/_raw/.records/<record>.txt`: a non-Markdown extension inside
+a dot directory. (A vault that kept a legacy `= Scope` or `Scope` root uses that
+root name; see [Space paths](space-layout-migration.md).) The text codec, numeric round headings, secret filtering and
 append-only prefix are unchanged. Git still preserves exact bytes through the
 existing `**/_raw/** -text` attribute.
 
@@ -13,8 +14,8 @@ name remains reversible without truncation, hashes or an alias registry.
 Case and Unicode-equivalent aliases still select one canonical record.
 
 `read_raw`, capture hooks and distillation accept both old
-`[[Scope/<scope>/_raw/<record>.md#N]]` and new plain
-`Scope/<scope>/_raw/.records/<record>.txt#N` coordinates. New raw Predicate
+`[[00_Scope/<scope>/_raw/<record>.md#N]]` and new plain
+`00_Scope/<scope>/_raw/.records/<record>.txt#N` coordinates. New raw Predicate
 Edges use plain YAML strings, so they do not create Obsidian wiki-link nodes.
 Old source coordinates, pending snapshot keys and historical receipt hashes
 remain readable; migration does not rewrite node bytes or acknowledge reviews.
@@ -68,6 +69,7 @@ raw citations use the plain form automatically.
 
 The user approved these replacements on 2026-09-17. They are reflected in
 Bylaws and Mechanism in this change; formal release/deployment is separate.
+Paths are quoted with the `00_Scope` root that Mechanism uses since v3.21.0.
 
 Bylaws §1.3 raw-specific sentence:
 
@@ -77,7 +79,7 @@ Bylaws §1.3 raw-specific sentence:
 Mechanism §8.2 raw-specific sentence:
 
 > `_raw/` 기록은 비노드 위키링크의 예외로, 라운드 번호를 붙인 평문 좌표를
-> YAML 문자열로 쓴다: `derived-from: "Scope/<scope>/_raw/.records/<기록 이름>.txt#N"`.
+> YAML 문자열로 쓴다: `derived-from: "00_Scope/<scope>/_raw/.records/<기록 이름>.txt#N"`.
 > 기존 `.md` 경로와 위키링크 표기는 계속 해석한다.
 
 Mechanism §8.3 coordinate sentence:
@@ -87,7 +89,7 @@ Mechanism §8.3 coordinate sentence:
 
 Mechanism §9.5 replacement:
 
-> 세션 기록의 물리 자리는 `Scope/<scope>/_raw/.records/<기록 이름>.txt`다.
+> 세션 기록의 물리 자리는 `00_Scope/<scope>/_raw/.records/<기록 이름>.txt`다.
 > Markdown이 아닌 파일을 숨김 디렉터리에 두어 원료가 Obsidian 네이티브의
 > 노트로 표시되지 않게 한다. 기록 이름은 노드 제목과 같은 이식성 규칙을
 > 받으며 확장자를 포함한 파일명 길이도 검사한다. 이식성 기준으로 같은 이름은
