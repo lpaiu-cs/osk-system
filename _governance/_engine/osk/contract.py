@@ -51,64 +51,98 @@ def target_stem(name: str) -> str:
 
 
 _LIST_ITEM_RE = re.compile(r" {0,3}(?:[-+*]|[0-9]{1,9}[.)])( +|$)")
+_QUOTE_RE = re.compile(r" {0,3}> ?")
 _FENCE_MARK_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 _BREAK_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")  # `* * *`·`---` — 목록 항목보다 먼저
+# 문단을 끊는 HTML 블록 시작(1~6형). 7형(태그 하나뿐인 행)은 문단을 끊지 못한다.
+_HTML_RE = re.compile(
+    r" {0,3}(?:<(?:script|pre|style|textarea)(?:[ \t>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\["
+    r"|</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup"
+    r"|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset"
+    r"|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol"
+    r"|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr"
+    r"|track|ul)(?:[ \t>]|/>|$))", re.I)
+_HTML7_RE = re.compile(r" {0,3}</?[A-Za-z][A-Za-z0-9-]*(?:[ \t][^<>]*)?/?>[ \t]*$")
 _TICKS_RE = re.compile(r"`+")
-# 문단을 끊는 행 — 목록 안 문단 뒤에서 이것이 아니면 게으른 연속행이다
-_BLOCK_STARTS = (_BREAK_RE, _LIST_ITEM_RE, _HEADING_RE,
+# 문단을 끊는 행 — 컨테이너를 못 채운 행이 이것이 아니면 게으른 연속행이다
+_BLOCK_STARTS = (_BREAK_RE, _LIST_ITEM_RE, _HEADING_RE, _HTML_RE,
                  re.compile(r" {0,3}(?:>|`{3,}[^`]*$|~{3,})"))
 _INDENTED_RE = re.compile(r"(?m)^(?: {4}| {0,3}\t)")
 
 
+def _fence_mark(content: str):
+    mark = _FENCE_MARK_RE.match(content)
+    return mark if mark and (mark[1][0] != "`" or "`" not in mark[2]) else None
+
+
 def md_lines(text: str):
     """본문을 행 단위로 훑어 `(offset, line, content, code)`를 낸다. content는
-    목록 컨테이너를 벗긴(탭은 4칸) 판독용 행, code는 그 행이 코드 블록(펜스
-    행 포함·들여쓰기 코드)에 속하는지다.
+    컨테이너(목록 항목·인용 `>`)를 벗긴(탭은 4칸) 판독용 행, code는 그 행이 코드
+    블록(펜스 행 포함·들여쓰기 코드)에 속하는지다.
 
     태그 방어·Link 추출·목차가 **이 판정 한 벌**을 쓴다. 셋이 갈리면 목차가
     코드로 보는 예시를 그래프는 Link로 세고 쓰기는 그 코드를 고친다(v3.22.1
     실측: `~~~`·들여쓰기·목록 속 펜스에서 `#123abc`가 `#123 abc`로 바뀌었다)."""
-    # ponytail: 인용(>) 컨테이너·setext 제목·HTML 블록은 가리지 않는다 —
-    # 거기서 코드가 갈리면 CommonMark 파서로 바꾼다.
-    fence, fence_indent, list_indents, para, offset = "", 0, [], False, 0
+    # ponytail: HTML 블록 내부(빈 행까지의 원문)는 가리지 않는다 — 거기서 코드가
+    # 갈리면 CommonMark 파서로 바꾼다.
+    fence, fence_depth, stack, offset = "", 0, [], 0   # stack: 항목 내용 폭(int)·인용(">")
+    para = False
     for line in text.split("\n"):
         content = line.expandtabs(4)
-        indent = list_indents[-1] if list_indents else 0
-        if content.strip():
-            depth = len(list_indents)
-            while depth and not content.startswith(" " * list_indents[depth - 1]):
-                depth -= 1
-            indent = list_indents[depth - 1] if depth else 0
-            # 덜 들여쓴 행도 문단의 게으른 연속행이면 목록 항목을 닫지 않는다
-            if not (para and depth < len(list_indents)
-                    and not any(r.match(content[indent:]) for r in _BLOCK_STARTS)):
-                del list_indents[depth:]
-        else:
-            para = False
-        if fence and indent < fence_indent:
-            fence = ""  # 닫히지 않은 펜스는 그것을 담은 목록 항목과 함께 끝난다
-        content = content[indent:]
-        code = bool(fence)
+        pos = matched = 0
+        for c in stack:
+            if c == ">":
+                if not (m := _QUOTE_RE.match(content, pos)):
+                    break
+                pos = m.end()
+            elif content[pos:].strip():
+                if not content.startswith(" " * c, pos):
+                    break
+                pos += c
+            matched += 1
+        rest = content[pos:]
+        tip = opened = code = False
+        if fence and matched < fence_depth:
+            fence = ""  # 닫히지 않은 펜스는 그것을 담은 컨테이너와 함께 끝난다
         if fence:
-            mark = _FENCE_MARK_RE.match(content)
+            code = True
+            mark = _FENCE_MARK_RE.match(rest)
             if mark and mark[1][0] == fence[0] and len(mark[1]) >= len(fence) and not mark[2].strip():
                 fence = ""
-        elif content.startswith("    ") and content.strip() and not para:
-            code = True  # 들여쓰기 코드 — 문단을 끊지는 못한다(빈 행이 앞서야 한다)
-        elif content.strip():
-            while not _BREAK_RE.match(content) and (item := _LIST_ITEM_RE.match(content)):
+        elif not rest.strip():
+            if matched < len(stack):
+                del stack[matched:]   # 빈 행은 인용을 닫는다
+            para = False
+        elif para and matched < len(stack) and not any(r.match(rest) for r in _BLOCK_STARTS):
+            pass   # 컨테이너를 못 채워도 문단의 게으른 연속행이면 닫지 않는다
+        else:
+            tip = para and matched == len(stack)   # 열린 문단을 이을 수 있는 행
+            del stack[matched:]
+            while not rest.startswith("    "):
+                if m := _QUOTE_RE.match(rest):
+                    stack.append(">")
+                    rest, opened = rest[m.end():], True
+                    continue
+                item = not _BREAK_RE.match(rest) and _LIST_ITEM_RE.match(rest)
+                if not item:
+                    break
                 padding = len(item[1])
                 width = item.start(1) + (padding if 1 <= padding <= 4 else 1)
-                indent += width
-                list_indents.append(indent)
-                content = content[width:]
-            mark = _FENCE_MARK_RE.match(content)
-            if mark and (mark[1][0] != "`" or "`" not in mark[2]):
-                fence, fence_indent, code = mark[1], indent, True
-            para = (bool(content.strip()) and not code  # 빈 항목(`-`)은 문단을 열지 않는다
-                    and not _HEADING_RE.match(content) and not _BREAK_RE.match(content))
-        yield offset, line, content, code
+                stack.append(width)
+                rest, opened = rest[width:], True
+            tip = tip and not opened
+            if not rest.strip():
+                para = False
+            elif rest.startswith("    "):
+                code, para = not tip, tip   # 들여쓰기 코드 — 문단을 끊지는 못한다
+            elif mark := _fence_mark(rest):
+                fence, fence_depth, code, para = mark[1], len(stack), True, False
+            else:
+                # 문단 글만 게으르게 이어진다 — 제목·구분선·HTML 블록 뒤 행은 잇지 못한다
+                para = not (any(r.match(rest) for r in (_HEADING_RE, _BREAK_RE, _HTML_RE))
+                            or (not tip and _HTML7_RE.match(rest)))
+        yield offset, line, rest, code
         offset += len(line) + 1
 
 

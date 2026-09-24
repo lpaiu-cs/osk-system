@@ -5588,6 +5588,39 @@ def test_code_region_block_boundaries():
             f.unlink()
 
 
+def test_code_region_commonmark_rules():
+    """코드 판정의 CommonMark 컨테이너·블록 규칙(v3.22.2 차등 퍼징). 공유 판정이
+    구판보다 나빠진 자리들이다 — 글을 코드로 읽으면 `#123abc` 태그 방어가 빠지고
+    Link가 사라지며(scope 경계 검사도 함께 빠진다), 코드를 글로 읽으면 코드
+    바이트가 바뀌고 예시가 Link로 센다. 각 본문의 `#1ab [[X]]`는 모두 글이거나
+    모두 코드다."""
+    import mcp_server
+    cases = {  # 이름: (본문, 글인가)
+        # 인용(>)도 컨테이너다 — 빈 인용·HTML 블록 뒤 행은 게으르게 잇지 못한다
+        "empty-quote-in-item": ("- >\nb\n    ~~~ #1ab [[X]]", True),
+        "html-comment-ends-list": ("- 항목\n<!-- 주석 -->\n  ```\n#1ab [[X]]", False),
+        "html-in-item": ("- <div>\n텍스트\n  ```\n#1ab [[X]]", False),
+        "empty-quote": (">\n    #1ab [[X]]", False),
+        "quote-lazy": ("> 인용\n    #1ab [[X]]", True),
+        "quote-fence": ("> [!note]\n> ```\n> #1ab [[X]]\n> ```", False),
+        "quote-fence-ends": ("> ```\n> 코드\n#1ab [[X]]", True),
+        "quote-list-para": ("> - a\n>\n>     #1ab [[X]]", True),
+        # 표지 뒤 5칸 이상이면 항목은 들여쓰기 코드로 시작한다 — 문단이 아니다
+        "item-starts-code": ("-     code\nf\n  ```\n#1ab [[X]]\n  ```", False),
+    }
+    for label, (body, prose) in cases.items():
+        tags = write._space_numeric_tags(body)
+        links = contract.Node(Path("x.md"), {}, body.replace("\r\n", "\n")).wikilinks()
+        check(f"[{label}] 태그 방어는 글에만",
+              tags == (body.replace("#1ab", "#1 ab") if prose else body), tags)
+        check(f"[{label}] 글의 Link만 센다", links == (["X"] if prose else []), links)
+    outline = {"- 항목\n<div>\n    # 제목": [], "* >\n목\n    ```\n  # 제목": ["제목"],
+               "3.     e\n]\n    ######": []}
+    for body, want in outline.items():
+        got = [h["title"] for h in mcp_server._node_view(body, "outline")["headings"]]
+        check(f"목차 {body!r}", got == want, got)
+
+
 # ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
 def test_cluster_overview():
     """각 군집은 동명 허브 노드를 두고, 전 노드가 허브에서 **Link의 방향**을
@@ -10233,7 +10266,7 @@ if __name__ == "__main__":
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
                test_obsidian_tag_defense, test_code_regions_are_not_prose,
-               test_code_region_block_boundaries,
+               test_code_region_block_boundaries, test_code_region_commonmark_rules,
                test_index_node_not_delegation,
                test_read_is_bound_to_bytes,
                test_incomplete_scan_refuses_writes,
