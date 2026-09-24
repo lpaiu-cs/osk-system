@@ -1309,6 +1309,37 @@ def test_dir_entries_durable_before_ledger():
         if POSIX_MODE:
             check("반려: 실제 디렉터리 fsync가 revert 기록보다 앞선다(POSIX)",
                   before_ledger("os-dir", regdir, A.APPROVALS), ev[:8])
+        else:
+            skip("반려: 실제 디렉터리 fsync가 revert 기록보다 앞선다(POSIX)",
+                 "Windows는 디렉터리를 열 수 없어 fsync_dir가 의도된 no-op이다 "
+                 "(NTFS 메타데이터 저널)")
+
+        # 승인본 재기록이 부모를 대신 내구화해 주지 않는 자리 — 승인 파일이 없는
+        # 하위 디렉터리의 삭제, 영역 밖의 원위치(들어온 이동)·현위치(나간 이동)
+        sub = regdir / "sub"
+        sub.mkdir(exist_ok=True)
+        (sub / "extra.md").write_text("추가", encoding="utf-8")
+        run(lambda: A.revert(reg, A.approved_hash(reg),
+                             A.working_tree_hash(reg), "내구화"))
+        check("반려: 승인 파일이 없는 하위 디렉터리의 삭제도 revert 기록 전에 내구화된다",
+              not (sub / "extra.md").exists()
+              and before_ledger("dir", sub, A.APPROVALS), ev[:8])
+        away = ROOT / "00_Scope" / "W1"
+        for label, nid, start, dest, outside in (
+                ("들어온", "260925-zzzz-dur1", away, reg, away),
+                ("나간", "260925-zzzz-dur2", regdir, "00_Scope/W1", away)):
+            stem = f"regr-dur-{nid[-4:]}-{tag}"
+            (start / f"{stem}.md").write_text(node_text(nid), encoding="utf-8")
+            if start == regdir:
+                A.approve(reg, A.approved_hash(reg), A.working_tree_hash(reg), "내구화")
+            check(f"{label} 이동 성립", write.move_node(stem, dest)["ok"])
+            run(lambda: A.revert(reg, A.approved_hash(reg),
+                                 A.working_tree_hash(reg), "내구화"))
+            check(f"반려: {label} 이동의 원상 복구가 영역 밖 엔트리까지 revert "
+                  f"기록 전에 내구화한다",
+                  (start / f"{stem}.md").is_file()
+                  and before_ledger("dir", outside, A.APPROVALS), ev[:8])
+            (away / f"{stem}.md").unlink(missing_ok=True)
 
         # 노드 쓰기(write._atomic_write)와 대장의 첫 생성
         deep = ROOT / "00_Scope" / "DUR" / "nest" / f"n{tag}"

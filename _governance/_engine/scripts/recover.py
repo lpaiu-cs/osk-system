@@ -27,7 +27,7 @@ except ModuleNotFoundError:          # Windows
     import msvcrt
     _WINDOWS = True
 
-# 아래 잠금·fsync·경로 규율은 엔진(osk/_portalock.py·osk/update.py)과 **의도적으로
+# 아래 잠금·fsync·경로 규율은 엔진(osk/_portalock.py·osk/core.py·osk/update.py)과 **의도적으로
 # 중복**된다. 이 스크립트의 존재 이유가 "엔진이 반쯤 교체돼 import가 깨져도 복구가
 # 성립한다"이므로, 엔진을 import해 규율을 공유할 수 없다.
 
