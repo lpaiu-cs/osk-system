@@ -65,7 +65,8 @@ def md_lines(text: str):
     태그 방어·Link 추출·목차가 **이 판정 한 벌**을 쓴다. 셋이 갈리면 목차가
     코드로 보는 예시를 그래프는 Link로 세고 쓰기는 그 코드를 고친다(v3.22.1
     실측: `~~~`·들여쓰기·목록 속 펜스에서 `#123abc`가 `#123 abc`로 바뀌었다)."""
-    # ponytail: 인용(>) 컨테이너·setext 제목·HTML 블록은 가리지 않는다 —
+    # ponytail: 인용(>) 컨테이너·setext 제목·HTML 블록은 가리지 않고, 목록
+    # 항목의 게으른 연속행(들여쓰지 않은 이음 행)은 항목을 닫는 것으로 본다 —
     # 거기서 코드가 갈리면 CommonMark 파서로 바꾼다.
     fence, fence_indent, list_indents, para, offset = "", 0, [], False, 0
     for line in text.split("\n"):
