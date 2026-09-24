@@ -816,6 +816,140 @@ def test_ledger_corruption_resilience():
             approvals.APPROVALS.unlink(missing_ok=True)
 
 
+_LINE_SEPS = "a\u2028b\u2029c\x85d"
+
+
+def test_ledger_line_boundaries():
+    """행 경계는 "\\n"뿐이다(v3.22.2). ①개행 없이 끝난 완결 기록 뒤 append는 개행을
+    채운다 — 구판은 새 기록을 같은 행에 붙여 대장 전체를 '손상'으로 만들었다.
+    ②찢긴 꼬리는 여전히 손상으로 거부되고 파일은 그대로다. ③U+2028·U+2029·U+0085는
+    `ensure_ascii=False` 기록에 날것으로 서는데, 구판 `splitlines()`가 거기서 행을
+    끊어 후보 대장과 이동 대장(→ 모든 영역의 protect·approve·revert)을 막았다."""
+    seps = _LINE_SEPS
+    p = core.SIGNATURES.parent / "regr-linebound.jsonl"
+    try:
+        r1 = core.ledger_append(p, {"kind": "a"})
+        p.write_bytes(p.read_bytes().rstrip(b"\r\n"))       # 수동 복구가 남기는 꼬리
+        r2 = core.ledger_append(p, {"kind": "b", "note": seps})
+        recs = core.ledger_read(p)
+        check("개행 없는 완결 꼬리 뒤 append — 두 기록 모두 판독",
+              [r.get("rid") for r in recs] == [r1["rid"], r2["rid"]]
+              and r2["parents"] == [r1["rid"]], recs)
+        check("append 뒤 파일은 개행으로 끝난다", p.read_bytes().endswith(b"\n"))
+        check("구분 문자가 필드 안에서 왕복한다", recs[-1].get("note") == seps, recs[-1])
+        p.write_bytes(json.dumps(r1).encode() + b"\r\n")
+        check("CRLF 행도 판독된다", len(core.ledger_read(p)) == 1)
+        torn = json.dumps(r1).encode() + b'\n{"rid": "x", "kind"'
+        p.write_bytes(torn)
+        try:
+            core.ledger_append(p, {"kind": "c"})
+            check("찢긴 꼬리 뒤 append는 거부된다", False)
+        except ValueError as e:
+            check("찢긴 꼬리 뒤 append는 거부된다", "부분 행" in str(e), e)
+        check("거부된 append는 찢긴 꼬리를 묻지 않는다", p.read_bytes() == torn)
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_ledger_separators_candidate():
+    """U+2028 등을 담은 사유가 MCP `record_candidate`를 지나 후보 대장에서 왕복한다."""
+    import mcp_server as M
+    seps = _LINE_SEPS
+    a = ROOT / "00_Scope/W1/regr-ls1.md"; b = ROOT / "00_Scope/W1/regr-ls2.md"
+    a.write_text(node_text("260924-zzzz-ls01", "후보 A"), encoding="utf-8")
+    b.write_text(node_text("260924-zzzz-ls02", "후보 B"), encoding="utf-8")
+    try:
+        r = M.record_candidate("duplication", ["regr-ls1", "regr-ls2"], seps)
+        check("구분 문자 사유의 후보 상정", r.get("ok"), r)
+        try:
+            last = core.ledger_read(core.CANDIDATES)[-1]
+            check("후보 대장이 판독되고 사유가 보존된다", last.get("reason") == seps, last)
+        except ValueError as e:
+            check("후보 대장이 판독되고 사유가 보존된다", False, e)
+        r = M.record_candidate("competition", ["regr-ls1", "regr-ls2"], "다음")
+        check("그 뒤 후보 상정도 성립", r.get("ok"), r)
+    finally:
+        a.unlink(missing_ok=True); b.unlink(missing_ok=True)
+
+
+def test_ledger_separators_move():
+    """U+2028 제목 노드의 보호영역 이동 뒤에도 이동 대장이 판독되어 protect·approve·revert가 산다."""
+    from osk import approvals as A
+    import mcp_server as M
+    # 제목 검사는 이제 이 문자를 막으므로, 그 전에 생긴(손으로 만든) 노드로 시험한다
+    t = "regr\u2028ls"
+    src, dst = ROOT / f"00_Scope/W1/{t}.md", ROOT / f"00_Scope/W3/{t}.md"
+    (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
+    (ROOT / "00_Scope/W4").mkdir(parents=True, exist_ok=True)
+    src.write_text(node_text("260924-zzzz-ls03", "구분 문자 제목"), encoding="utf-8")
+    try:
+        A.protect("00_Scope/W3", "도착지 보호")
+        base = A.approved_hash("00_Scope/W3")
+        mv = M.move_nodes([t], "00_Scope/W3")
+        check("구분 문자 제목 노드의 보호영역 이동", mv.get("ok"), mv)
+        try:
+            row = A._latest_move(core.ledger_read(A.MOVES), "to", f"00_Scope/W3/{t}.md")
+            check("이동 대장이 판독되고 이동이 기록됐다",
+                  row is not None and row["node"] == "260924-zzzz-ls03", row)
+        except ValueError as e:
+            check("이동 대장이 판독되고 이동이 기록됐다", False, e)
+        check("도착 영역은 pending", A.state("00_Scope/W3") == "pending")
+        A.revert("00_Scope/W3", base, A.working_tree_hash("00_Scope/W3"), "반려")
+        check("그 뒤 반려가 성립한다(원위치 복귀)", src.is_file() and not dst.exists())
+        check("구분 문자 이동 뒤에도 다른 영역 protect 성립",
+              A.protect("00_Scope/W4", "다른 영역").get("kind") == "protect")
+        M.move_nodes([t], "00_Scope/W3")
+        A.approve("00_Scope/W3", base, A.working_tree_hash("00_Scope/W3"), "승인")
+        check("그 뒤 승인이 성립한다", A.state("00_Scope/W3") == "clean"
+              and dst.is_file())
+    finally:
+        for reg in ("00_Scope/W3", "00_Scope/W4"):
+            try: A.unprotect(reg, "정리")
+            except Exception: pass
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+def test_jsonl_readers_line_separators():
+    """대장 밖의 JSONL(제공자 출력·갱신 저널)도 행 경계는 "\\n"뿐이다 — serde_json·
+    JSON.stringify·`ensure_ascii=False`는 U+2028 등을 날것으로 둔다."""
+    import importlib.util as _ilu
+    from osk import growth, response_growth as rg, update
+    _spec = _ilu.spec_from_file_location("osk_recover_seps", ENGINE / "scripts" / "recover.py")
+    _rec = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_rec)
+
+    def ok(name, fn):
+        try:
+            check(name, fn())
+        except ValueError as e:
+            check(name, False, e)
+    td = Path(tempfile.mkdtemp(prefix="osk-seps-"))
+    saved = update.UPDATE_JOURNAL
+    try:
+        out = td / "out.jsonl"
+        packet = {"osk_reviews": {}}
+        out.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in (
+            {"type": "system", "note": _LINE_SEPS},
+            {"type": "result", "subtype": "success", "is_error": False,
+             "result": json.dumps(packet), "usage": {"input_tokens": 3, "output_tokens": 1}})),
+            encoding="utf-8")
+        ok("제공자 최종 출력 판독 — 구분 문자 행", lambda: growth._final_packet(out) == packet)
+        ok("제공자 사용량 판독 — 구분 문자 행",
+           lambda: rg.cache_usage(out, {"harness": "claude"})["measured"])
+        j = td / "00_Scope/Workbench/_ledger/update.jsonl"
+        j.parent.mkdir(parents=True)
+        j.write_text(json.dumps({"kind": "done", "txn": "TSEP", "note": _LINE_SEPS},
+                                ensure_ascii=False) + "\n", encoding="utf-8")
+        update.UPDATE_JOURNAL = j
+        ok("갱신 저널 관대한 판독 — 구분 문자 행",
+           lambda: [r.get("txn") for r in update._journal_lenient()] == ["TSEP"])
+        ok("recover.py 저널 판독 — 구분 문자 행", lambda: _rec._journal_done(td, "TSEP"))
+    finally:
+        update.UPDATE_JOURNAL = saved
+        rmtree_force(td)
+
+
 # ── 11. 대장 스키마 — 앵커 이후 parents·rid·필수 필드 강제 ──────────────
 def test_ledger_schema_segment():
     from osk import approvals
@@ -4669,6 +4803,7 @@ def test_portable_title():
     invalid = {
         "": "빈 제목", " ": "공백뿐", "foo ": "후행 공백", " foo": "선행 공백",
         "foo\t": "후행 탭", "foo\n": "후행 개행", "a\tb": "중간 제어문자",
+        "a\u2028b": "줄 구분 문자", "a\u2029b": "문단 구분 문자", "a\x85b": "NEL",
         ".foo": "선행 점", "foo.": "후행 점",
         "foo/bar": "슬래시", "foo\\bar": "역슬래시", "foo:bar": "콜론",
         'foo"bar': "따옴표", "foo|bar": "파이프", "foo?bar": "물음표",
@@ -9718,7 +9853,10 @@ if __name__ == "__main__":
                test_approval_lifecycle,
                test_path_reuse, test_fingerprint_move,
                test_sync, test_sync_graph_scale, test_sync_network_subprocess, test_conflicts_semantics,
-               test_ledger_corruption_resilience, test_ledger_schema_segment,
+               test_ledger_corruption_resilience, test_ledger_line_boundaries,
+               test_ledger_separators_candidate, test_ledger_separators_move,
+               test_jsonl_readers_line_separators,
+               test_ledger_schema_segment,
                test_validate_global_invariance, test_authority_hold,
                test_self_referencing_edge, test_surface_contract,
                test_ledger_row_shape,

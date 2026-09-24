@@ -570,7 +570,7 @@ def _journal_lenient() -> list[dict]:
         return []
     out = []
     for line in UPDATE_JOURNAL.read_text(encoding="utf-8",
-                                         errors="ignore").splitlines():
+                                         errors="ignore").split("\n"):
         line = line.strip()
         if not line:
             continue

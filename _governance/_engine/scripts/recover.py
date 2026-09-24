@@ -216,7 +216,7 @@ def _journal_done(root: Path, txn: str) -> bool:
     journals = [root / name / "Workbench/_ledger/update.jsonl"
                 for name in ("00_Scope", "= Scope", "Scope")]
     lines = (line for j in journals if j.is_file()
-             for line in j.read_text(encoding="utf-8", errors="ignore").splitlines())
+             for line in j.read_text(encoding="utf-8", errors="ignore").split("\n"))
     for line in lines:
         line = line.strip()
         if not line:

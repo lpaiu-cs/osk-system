@@ -663,7 +663,7 @@ def command(source: dict, executable: str, env: dict) -> list[str]:
 
 def cache_usage(output: Path, source: dict) -> dict:
     """Child usage only. Codex fork JSONL includes the parent's cumulative counters."""
-    events = [json.loads(line) for line in output.read_text(encoding='utf-8').splitlines() if line.strip()]
+    events = [json.loads(line) for line in output.read_text(encoding='utf-8').split('\n') if line.strip()]
     if source['harness'] == 'codex':
         last = next((e.get('usage') for e in reversed(events) if e.get('type') == 'turn.completed'), None)
         baseline = source.get('usage')

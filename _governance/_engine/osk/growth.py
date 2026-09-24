@@ -511,7 +511,7 @@ def _final_packet(output: Path) -> dict:
         whole = None
     if isinstance(whole, dict) and set(whole) == {"osk_reviews"}:
         return whole
-    events = [_strict_json(line) for line in text.splitlines() if line.strip()]
+    events = [_strict_json(line) for line in text.split("\n") if line.strip()]
     if not events or not all(isinstance(event, dict) for event in events):
         raise ValueError("unknown provider final-output format")
     final = events[-1]

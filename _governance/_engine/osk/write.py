@@ -113,8 +113,8 @@ def _title_errors(title: str) -> list[str]:
             f"본문 Link 파서가 `[[제목#헤딩]]`·`[[제목|별칭]]` 문법 때문에 여기서 "
             f"대상명을 자른다. 이 제목으로 만든 노드는 아무도 링크로 가리킬 수 "
             f"없다")
-    if any(ord(c) < 32 for c in t):
-        errs.append("제목에 제어문자를 쓸 수 없다")
+    if any(ord(c) < 32 or c in "\x85\u2028\u2029" for c in t):
+        errs.append("제목에 제어문자·줄 구분 문자를 쓸 수 없다")
     if t.startswith("."):
         errs.append(f"제목은 `.`으로 시작할 수 없다: {title!r}")
     if t.endswith((".", " ")):

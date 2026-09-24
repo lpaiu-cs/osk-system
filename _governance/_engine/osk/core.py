@@ -337,8 +337,10 @@ def _next_rid(max_rid: str | None) -> str:
 # ── 대장 읽기·손상 진단 ──────────────────────────────────────────────────
 
 def _parse_lines(text: str, path: Path) -> list[dict]:
+    # 행 경계는 "\n"뿐이다 — `splitlines()`는 U+2028·U+2029·U+0085에서도 끊는데,
+    # 기록은 `ensure_ascii=False`라 그 문자가 필드 값에 날것으로 선다.
     out = []
-    for i, line in enumerate(text.splitlines()):
+    for i, line in enumerate(text.split("\n")):
         if not line.strip():
             continue
         try:
@@ -525,7 +527,8 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
         lock_exclusive(f)
         try:
             f.seek(0)
-            records = _parse_lines(f.read(), path)
+            text = f.read()
+            records = _parse_lines(text, path)
             dmg = ledger_damage(records, path)
             if dmg:
                 raise ValueError(
@@ -539,7 +542,10 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
                 max((r["rid"] for r in records if r.get("rid")),
                     key=_rid_key, default=None))
             record["parents"] = heads(records)
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            # 판독을 통과했으니 개행 없는 꼬리는 완결 기록이다(찢긴 꼬리는 위에서
+            # 손상으로 거부된다) — 개행을 채우지 않으면 새 기록이 그 행에 붙는다.
+            lead = "\n" if text and not text.endswith("\n") else ""
+            f.write(lead + json.dumps(record, ensure_ascii=False) + "\n")
             f.flush()
             os.fsync(f.fileno())
         finally:
