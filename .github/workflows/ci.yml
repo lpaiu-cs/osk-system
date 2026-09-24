@@ -1,0 +1,48 @@
+# 정식 러너(`tests/test_regression.py`)를 기기 행렬에서 돌린다.
+#
+# pytest를 쓰지 않는다 — 러너의 check()는 실패를 모아 끝에 exit 1로 판정하고,
+# pytest는 그것을 삼킨다(conftest.py 참고). release.yml이 태그 커밋에 대해
+# 이 워크플로를 불러, 수트가 통과한 판본만 Release로 비춘다.
+#
+# macOS는 참고용이다(실패해도 막지 않는다) — NFC/NFD 파일명과 대소문자 무시
+# 파일시스템(`.MD`)에서 알려진 차이가 있다.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    continue-on-error: ${{ matrix.advisory }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.11", "3.12"]
+        advisory: [false]
+        include:
+          - os: macos-latest
+            python: "3.12"
+            advisory: true
+    env:
+      # Windows 러너의 기본 코드페이지(cp1252)로는 한국어 출력이 인코딩되지 않는다.
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 의존성
+        run: python -m pip install -r _governance/_engine/requirements.txt
+      - name: 회귀 수트
+        run: python _governance/_engine/tests/test_regression.py

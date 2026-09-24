@@ -7859,8 +7859,9 @@ def test_audit_fixes_2026_09_02():
             ENGINE / "scripts" / "publish-manifest.txt")
         check("발행 매니페스트가 release.json을 보존한다 (#41)",
               "release.json" in man["keep"], man["keep"])
-        check("발행 매니페스트가 릴리스 워크플로를 보존한다 (#41)",
-              any(k.startswith(".github/") for k in man["keep"]), man["keep"])
+        check("발행 매니페스트가 릴리스·회귀 수트 워크플로를 보존한다 (#41)",
+              {".github/workflows/release.yml", ".github/workflows/ci.yml"}
+              <= set(man["keep"]), man["keep"])
 
         # ⑳ 엔진과 **독립된** 복구 부트스트랩도 롤백을 끝낸다 (#24)
         #    되돌리면 — `scripts/recover.py`의 `_fsync_file`을 읽기 전용 핸들로
