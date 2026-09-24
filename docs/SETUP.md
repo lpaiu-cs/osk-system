@@ -37,6 +37,14 @@ python3.12 -m venv .venv && .venv/bin/pip install -r _governance/_engine/require
 2.0이 그 모듈을 없앴다 — **`requirements.txt`를 갱신으로 받았으면 pip을 다시
 돌려야** 이미 만든 venv에 반영된다.
 
+`requirements.txt`는 허용 범위다. CI가 수트를 통과시킨 **정확한 판**은
+`_governance/_engine/constraints.txt`에 있다 — 선택 사항이며, 새 기기의 동작이
+CI와 다를 때 같은 판으로 맞춰 원인을 가르는 데 쓴다(CI는 늘 이것으로 설치한다):
+
+```bash
+.venv/bin/pip install -r _governance/_engine/requirements.txt -c _governance/_engine/constraints.txt
+```
+
 ## Windows
 
 엔진은 Windows에서도 돈다(잠금은 `msvcrt`, tz는 `tzdata` 패키지로 보충한다).

@@ -46,8 +46,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+      # constraints.txt로 판을 고정한다 — 상류의 새 판이 수트를 흔들면 그것은
+      # 고정을 올리는 PR에서 드러나야지, 무관한 PR의 CI에서 드러나면 안 된다.
       - name: 의존성
-        run: python -m pip install -r _governance/_engine/requirements.txt
+        run: python -m pip install -r _governance/_engine/requirements.txt -c _governance/_engine/constraints.txt
       - name: 임시 경로 별칭 (Linux)
         if: runner.os == 'Linux'
         run: |
