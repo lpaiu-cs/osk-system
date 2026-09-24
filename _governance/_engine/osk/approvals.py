@@ -832,17 +832,32 @@ def _chain_position(node: str, chain: list[dict]) -> str | None:
     return None
 
 
-def _exact(rel: str) -> Path:
+def _exact(rel: str, names: dict | None = None) -> Path:
     """반려가 쓰거나 지울 rel의 실경로 — rel이 **바로 그 자리**일 때만.
 
     realpath가 다른 이름을 내면(대소문자만 바뀐 이름, 정션·링크 너머, vault 밖)
     그 경로로 쓰고 지우는 일은 사용자가 검토한 적 없는 다른 파일을 바꾼다 —
     방금 복원한 파일을 삭제 순회가 지우거나 남의 구획을 덮는다(실측). 판정은
-    갱신과 같은 계약(core._canon_rel)이고, 어긋나면 쓰기 전에 반려 전체를 멈춘다."""
+    갱신과 같은 계약(core._canon_rel)이고, 어긋나면 쓰기 전에 반려 전체를 멈춘다.
+
+    POSIX realpath는 대소문자·정규화를 접지 않는다(macOS 등 대소문자 무시 FS) —
+    그래서 이미 있는 구성요소는 디렉터리 목록에 **그 이름 그대로** 있는지도 본다.
+    `names`는 한 반려 안의 목록 캐시다."""
     c = _canon_rel(ROOT, rel)
+    names = {} if names is None else names
+    q = Path(os.path.realpath(ROOT))
+    for part in Path(c).parts if c else ():
+        if not os.path.lexists(q / part):
+            break                         # 여기부터는 새로 만든다 — 그 이름 그대로 생긴다
+        if q not in names:
+            names[q] = set(os.listdir(q))
+        if part not in names[q]:
+            c = None
+            break
+        q = q / part
     if c is None:
         raise ValueError(
-            f"반려할 경로가 그 이름 그대로의 자리가 아니다(대소문자만 바뀐 이름·"
+            f"반려할 경로가 그 이름 그대로의 자리가 아니다(대소문자·정규화만 바뀐 이름·"
             f"정션/링크 너머·vault 밖) — 아무것도 건드리지 않았다. 승인된 이름으로 "
             f"되돌리거나 링크를 치우거나, 지금 상태를 승인하라: {rel}")
     return Path(os.path.realpath(ROOT)) / c
@@ -1080,8 +1095,9 @@ def _stage_tree(region_dir: Path, table: dict[str, str]) -> list[tuple[Path, byt
     (그 함수를 거치지 않은 table은 복원의 근거가 아니다)."""
     region_real = Path(os.path.realpath(region_dir))
     staged: list[tuple[Path, bytes]] = []
+    names: dict = {}
     for rel, h in sorted(table.items()):
-        p = _exact(rel)                   # 정체성 훼손·vault 밖은 여기서 거부
+        p = _exact(rel, names)            # 정체성 훼손·vault 밖은 여기서 거부
         # 구조 충돌은 **쓰기 전에** 잡는다. 작업본에서 파일↔디렉터리가 뒤바뀐
         # 평범한 재구성(예: `sub/` 디렉터리를 지우고 파일 `sub`를 만듦)이면,
         # 반영 도중 mkdir·replace가 실패해 앞선 파일만 덮인 **부분 복원**이 된다.

@@ -2331,6 +2331,7 @@ def test_revert_path_identity():
     경로로 쓰고 지워 다른 구획·vault 밖 파일을 지우고, 대소문자 변경에서는
     방금 복원한 파일을 삭제 순회가 지웠다(실측). 반려는 쓰기 전에 전부 멈추고,
     열거는 링크 너머로 내려가지 않는다."""
+    import contextlib
     from osk import approvals as A
     base = ROOT / "00_Domain" / "regr-ident"
     rev = lambda reg: A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg))
@@ -2391,28 +2392,33 @@ def test_revert_path_identity():
         (cdir / "Probe.md").unlink()
         if not insensitive:
             skip("반려 정체성: 대소문자 변경", "대소문자를 구분하는 파일시스템")
-        elif not folds:
-            skip("반려 정체성: 대소문자 변경", "realpath가 대소문자를 정규화하지 않는다")
         else:
             (cdir / "Note.md").write_text("승인 노트", encoding="utf-8")
             (cdir / "Sub").mkdir()
             (cdir / "Sub" / "a.md").write_text("승인 a", encoding="utf-8")
             A.protect(creg, "지정")
-            (cdir / "junk.md").write_text("버릴 것", encoding="utf-8")
-            for old, new in (("Note.md", "note.md"), ("Sub", "sub")):
-                n = len(A.records())
-                os.rename(cdir / old, cdir / "tmp"); os.rename(cdir / "tmp", cdir / new)
-                check(f"대소문자 변경({old}→{new}) 반려는 쓰기 전에 거부",
-                      _raises(lambda: rev(creg))())
-                check(f"대소문자 변경({old}) 뒤 파일이 하나도 사라지지 않았다",
-                      _txt(cdir / "note.md") == "승인 노트"
-                      and _txt(cdir / "sub" / "a.md") == "승인 a"
-                      and (cdir / "junk.md").exists() and len(A.records()) == n)
-                os.rename(cdir / new, cdir / "tmp"); os.rename(cdir / "tmp", cdir / old)
-            rev(creg)
-            check("이름을 되돌리면 반려가 동작한다",
-                  sorted(p.name for p in cdir.iterdir()) == ["Note.md", "Sub"]
-                  and A.state(creg) == "clean")
+            # realpath가 대소문자를 접는 OS(Windows)에서는 접지 않는 realpath(macOS의
+            # 동작)로도 한 번 더 돈다 — 거기서는 디렉터리 목록 대조만이 막는다.
+            modes = [("", contextlib.nullcontext)] + ([(
+                " — realpath 미정규화",
+                lambda: mock.patch("os.path.realpath", os.path.abspath))] if folds else [])
+            for tag, ctx in modes:
+                with ctx():
+                    (cdir / "junk.md").write_text("버릴 것", encoding="utf-8")
+                    for old, new in (("Note.md", "note.md"), ("Sub", "sub")):
+                        n = len(A.records())
+                        os.rename(cdir / old, cdir / "tmp"); os.rename(cdir / "tmp", cdir / new)
+                        check(f"대소문자 변경({old}→{new}) 반려는 쓰기 전에 거부{tag}",
+                              _raises(lambda: rev(creg))())
+                        check(f"대소문자 변경({old}) 뒤 파일이 하나도 사라지지 않았다{tag}",
+                              _txt(cdir / "note.md") == "승인 노트"
+                              and _txt(cdir / "sub" / "a.md") == "승인 a"
+                              and (cdir / "junk.md").exists() and len(A.records()) == n)
+                        os.rename(cdir / new, cdir / "tmp"); os.rename(cdir / "tmp", cdir / old)
+                    rev(creg)
+                    check(f"이름을 되돌리면 반려가 동작한다{tag}",
+                          sorted(p.name for p in cdir.iterdir()) == ["Note.md", "Sub"]
+                          and A.state(creg) == "clean")
             A.unprotect(creg, "정리")
     finally:
         for l in links:
