@@ -50,6 +50,154 @@ def target_stem(name: str) -> str:
     return s[:-3] if s.endswith(".md") else s
 
 
+_LIST_ITEM_RE = re.compile(r" {0,3}(?:[-+*]|([0-9]{1,9})[.)])( +|$)")
+_QUOTE_RE = re.compile(r" {0,3}> ?")
+_FENCE_MARK_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+_HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+_BREAK_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")  # `* * *`·`---` — 목록 항목보다 먼저
+_SETEXT_RE = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")  # 문단 밑 `-`는 빈 항목이 아니라 제목 밑줄
+# 문단을 끊는 HTML 블록 시작(1~6형). 7형(태그 하나뿐인 행)은 문단을 끊지 못한다.
+_HTML_RE = re.compile(
+    r" {0,3}(?:<(?:script|pre|style|textarea)(?:[ \t>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\["
+    r"|</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup"
+    r"|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset"
+    r"|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol"
+    r"|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr"
+    r"|track|ul)(?:[ \t>]|/>|$))", re.I)
+_HTML7_RE = re.compile(r" {0,3}</?[A-Za-z][A-Za-z0-9-]*(?:[ \t][^<>]*)?/?>[ \t]*$")
+_TICKS_RE = re.compile(r"`+")
+# 문단을 끊는 행 — 컨테이너를 못 채운 행이 이것이 아니면 게으른 연속행이다
+_BLOCK_STARTS = (_BREAK_RE, _LIST_ITEM_RE, _HEADING_RE, _HTML_RE,
+                 re.compile(r" {0,3}(?:>|`{3,}[^`]*$|~{3,})"))
+_INDENTED_RE = re.compile(r"(?m)^(?: {4}| {0,3}\t)")
+
+
+def _fence_mark(content: str):
+    mark = _FENCE_MARK_RE.match(content)
+    return mark if mark and (mark[1][0] != "`" or "`" not in mark[2]) else None
+
+
+def md_lines(text: str):
+    """본문을 행 단위로 훑어 `(offset, line, content, code, cont)`를 낸다.
+    content는 컨테이너(목록 항목·인용 `>`)를 벗긴(탭은 4칸) 판독용 행, code는
+    그 행이 코드 블록(펜스 행 포함·들여쓰기 코드)에 속하는지, cont는 그 행이
+    앞 행의 문단을 잇는지다(인라인 코드는 문단 안에서 행을 넘어 닫힌다).
+
+    태그 방어·Link 추출·목차가 **이 판정 한 벌**을 쓴다. 셋이 갈리면 목차가
+    코드로 보는 예시를 그래프는 Link로 세고 쓰기는 그 코드를 고친다(v3.22.1
+    실측: `~~~`·들여쓰기·목록 속 펜스에서 `#123abc`가 `#123 abc`로 바뀌었다)."""
+    # ponytail: HTML 블록 내부(빈 행까지의 원문)는 가리지 않는다 — 거기서 코드가
+    # 갈리면 CommonMark 파서로 바꾼다.
+    fence, fence_depth, stack, offset = "", 0, [], 0   # stack: 항목 내용 폭(int)·인용(">")
+    para = empty = False
+    for line in text.split("\n"):
+        content = line.rstrip("\r").expandtabs(4)   # CRLF 본문(scope_memory)도 같은 판정
+        pos = matched = 0
+        for c in stack:
+            if c == ">":
+                if not (m := _QUOTE_RE.match(content, pos)):
+                    break
+                pos = m.end()
+            elif content[pos:].strip(" \t"):
+                if not content.startswith(" " * c, pos):
+                    break
+                pos += c
+            matched += 1
+        rest = content[pos:]
+        tip = opened = cont = code = False
+        if fence and matched < fence_depth:
+            fence = ""  # 닫히지 않은 펜스는 그것을 담은 컨테이너와 함께 끝난다
+        if fence:
+            code = True
+            mark = _FENCE_MARK_RE.match(rest)
+            if mark and mark[1][0] == fence[0] and len(mark[1]) >= len(fence) and not mark[2].strip():
+                fence = ""
+        elif not rest.strip(" \t"):   # 빈 행은 공백·탭뿐이다 — NBSP·전각 공백 행은 글이다
+            if matched < len(stack):
+                del stack[matched:]   # 빈 행은 인용을 닫는다
+            elif empty:
+                stack.pop()   # 빈 항목은 빈 행을 만나면 닫힌다(항목은 빈 행 둘로 시작하지 못한다)
+            para = empty = False
+        elif para and matched < len(stack) and not any(r.match(rest) for r in _BLOCK_STARTS):
+            cont = True   # 컨테이너를 못 채워도 문단의 게으른 연속행이면 닫지 않는다
+        else:
+            tip = para and matched == len(stack)   # 열린 문단을 이을 수 있는 행
+            del stack[matched:]
+            empty = False
+            while not rest.startswith("    "):
+                if m := _QUOTE_RE.match(rest):
+                    stack.append(">")
+                    rest, opened, empty = rest[m.end():], True, False
+                    continue
+                item = not _BREAK_RE.match(rest) and _LIST_ITEM_RE.match(rest)
+                if not item:
+                    break
+                blank_start = not rest[item.end():].strip(" \t")
+                # 문단을 끊는 첫 항목은 빈 항목·1 아닌 번호일 수 없다 — 문단의 글이다
+                if tip and not opened and (blank_start or item[1] and int(item[1]) != 1):
+                    break
+                padding = len(item[2])   # 빈 채로 시작하는 항목의 내용 열은 표지 뒤 1칸이다
+                width = item.start(2) + (padding if 1 <= padding <= 4 and not blank_start else 1)
+                stack.append(width)
+                rest, opened, empty = rest[width:], True, blank_start
+            tip = tip and not opened
+            if not rest.strip(" \t"):
+                para = False
+            elif rest.startswith("    "):
+                code, para, cont = not tip, tip, tip   # 들여쓰기 코드 — 문단을 끊지는 못한다
+            elif mark := _fence_mark(rest):
+                fence, fence_depth, code, para = mark[1], len(stack), True, False
+            else:
+                # 문단 글만 게으르게 이어진다 — 제목·구분선·HTML 블록 뒤 행은 잇지 못한다
+                para = not ((tip and _SETEXT_RE.match(rest))
+                            or any(r.match(rest) for r in (_HEADING_RE, _BREAK_RE, _HTML_RE))
+                            or (not tip and _HTML7_RE.match(rest)))
+                cont = tip and para
+        yield offset, line, rest, code, cont
+        offset += len(line) + 1
+
+
+def split_code(text: str) -> list[str]:
+    """`re.split`처럼 `[글, 코드, 글, …]`로 가른다 — 홀수 번째가 코드(코드
+    블록 행, 같은 문단 안에서 같은 길이의 백틱 열로 닫히는 인라인 코드). 이어
+    붙이면 원문이다."""
+    if "`" not in text and "~~~" not in text and not _INDENTED_RE.search(text):
+        return [text]   # 코드가 설 자리가 없다 — 대부분의 본문은 행 순회를 건너뛴다
+    # ponytail: 인라인 HTML·자동링크가 코드 스팬보다 앞서는 규칙은 가리지 않는다.
+    cuts, paras = [], []
+    for offset, line, _content, code, cont in md_lines(text):
+        if code:
+            cuts.append([offset, min(offset + len(line) + 1, len(text))])
+        elif cont:
+            paras[-1][1] = offset + len(line)
+        else:
+            paras.append([offset, offset + len(line)])
+    for a, b in paras:
+        seg = text[a:b]
+        ticks = [m.span() for m in _TICKS_RE.finditer(seg)]
+        i = free = 0
+        while i < len(ticks):
+            s, e = ticks[i]
+            lead = seg[free:s]
+            s += (len(lead) - len(lead.rstrip("\\"))) % 2  # `\``의 첫 백틱은 글자다
+            j = next((k for k in range(i + 1, len(ticks))
+                      if ticks[k][1] - ticks[k][0] == e - s), None)
+            if j is None or s == e:
+                i += 1
+                continue
+            cuts.append([a + s, a + ticks[j][1]])
+            free = ticks[j][1]
+            i = j + 1
+    out, pos = [], 0
+    for a, b in sorted(cuts):
+        if out and a == pos:
+            out[-1] += text[a:b]     # 이어지는 코드 행은 한 구획으로
+        else:
+            out += [text[pos:a], text[a:b]]
+        pos = b
+    return out + [text[pos:]]
+
+
 REQUIRED = ["id", "created", "updated", "author", "drafter", "summary"]
 PREDICATES = ["derived-from", "conflicts"]  # 헌법 8조 5항 (2술어 체제)
 ORDER = REQUIRED  # Mechanism §2 5항 — PE는 그 뒤 상호 순서 무관
@@ -78,13 +226,11 @@ class Node:
         return edge_targets(self.meta.get(predicate))
 
     def wikirefs(self) -> list[str]:
-        """본문 Link(임베드 포함). 코드 구획(``` 펜스·인라인 백틱) 안의
-        [[...]] 예시는 Link가 아니다 — 제외한다. 펜스의 경계는 **행 시작**의
-        ```뿐이다(행 중간의 ```는 인라인 코드일 뿐이며, 이것과 짝지으면 실제
-        Link가 가려지거나 예시 Link가 산입된다). 닫히지 않은 펜스는 본문 끝까지
-        코드로 본다."""
-        body = re.sub(r"(?m)^ {0,3}```[\s\S]*?(?:^ {0,3}```[^\n]*$|\Z)", "", self.body)
-        body = re.sub(r"`[^`\n]*`", "", body)
+        """본문 Link(임베드 포함). 코드 구획(`split_code` — 펜스·들여쓰기
+        코드·인라인 코드) 안의 [[...]] 예시는 Link가 아니다 — 제외한다.
+        목차·태그 방어와 같은 판정이어야 코드 예시가 scope 경계 거부를 부르지
+        않는다. 닫히지 않은 펜스는 본문 끝(또는 담은 목록 항목 끝)까지 코드다."""
+        body = "".join(split_code(self.body)[::2])
         return [m.group(1).strip()
                 for m in re.finditer(r"!?\[\[([^\]|]+)", body)]
 

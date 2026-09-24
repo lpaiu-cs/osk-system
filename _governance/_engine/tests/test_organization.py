@@ -258,7 +258,7 @@ class OrganizationTests(unittest.TestCase):
             def git(*args):
                 r=subprocess.run(["git",*args],cwd=core.ROOT,capture_output=True,text=True)
                 assert r.returncode==0,r.stdout+r.stderr
-            git("init","--quiet")
+            git("init","--quiet","-b","main")
             git("add",".")
             git("-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","--quiet","-m","Fixture")
             linked=core.ROOT/"linked"

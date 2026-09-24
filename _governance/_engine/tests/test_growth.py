@@ -187,7 +187,10 @@ class GrowthTests(unittest.TestCase):
             program.chmod(0o755)
             with patch.dict(os.environ, {'PATH':'bin'}):
                 found = growth.check_command([program.name])
-                assert found['executable'] == str(program.resolve()), found
+                # Contract: absolute, symlinks kept; POSIX searches from the vault,
+                # Windows from the caller's cwd (spelled as the caller spells it).
+                base = core.ROOT if os.name == 'posix' else Path.cwd()
+                assert found['executable'] == str(base / program), found
             before = {str(p):p.read_bytes() for p in core.ROOT.rglob('*') if p.is_file()}
             with patch('osk.growth.subprocess.Popen', side_effect=AssertionError('launched')):
                 assert growth.check_command([sys.executable,'--version'])['ok']
@@ -219,6 +222,10 @@ class GrowthTests(unittest.TestCase):
                 "import sysconfig; print(sysconfig.get_path('purelib'))"],
                 capture_output=True, text=True, check=True).stdout.strip()
             (Path(site) / 'venv_probe.py').write_text("VALUE = 'venv-only'")
+            # system_site_packages는 기반 인터프리터만 본다 — 수트가 venv에서 돌면
+            # 워커가 yaml을 못 찾는다. 수트 쪽 site 경로를 그대로 이어 준다.
+            (Path(site) / 'suite_site.pth').write_text(chr(10).join(
+                p for p in sys.path if p.endswith(('site-packages', 'dist-packages'))))
             probe = "import json,sys,venv_probe; print(json.dumps([sys.prefix,venv_probe.VALUE]))"
             expected = [str(core.ROOT / '.venv'), 'venv-only']
             original = subprocess.run([str(executable), '-c', probe], cwd=core.ROOT,

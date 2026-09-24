@@ -4,6 +4,7 @@
 # `release.json`이 이미 끝냈고(시행령 §10 6항), 여기서는 그 사실을 옮겨 적을
 # 뿐이다. 그래서 증빙이 없거나 태그와 어긋나면 Release를 만들지 않고 실패한다 —
 # 정식 릴리스가 아닌 태그가 정식처럼 보이는 쪽이 안 보이는 쪽보다 나쁘다.
+# 같은 이유로 그 태그 커밋에서 회귀 수트(ci.yml)가 통과하기 전에는 만들지 않는다.
 #
 # 발행 매니페스트에 `.github/`가 없으므로 이 파일은 릴리스 payload에 들어가지
 # 않는다. 인스턴스는 받지 않는다 — 정본의 발행 설비이지 프레임워크가 아니다.
@@ -15,11 +16,19 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write          # Release 생성. 그 외 권한은 주지 않는다.
+  contents: read
 
 jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   mirror:
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write      # Release 생성. 그 외 권한은 주지 않는다.
     steps:
       - name: 비준증빙을 확인하고 Release를 만든다
         env:

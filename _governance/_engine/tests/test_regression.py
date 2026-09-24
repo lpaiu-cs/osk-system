@@ -18,6 +18,12 @@ ENGINE = Path(__file__).resolve().parent.parent
 _TMP = tempfile.TemporaryDirectory(prefix="osk-regr-")
 MINI = Path(_TMP.name) / "mini-vault"
 os.environ["OSK_VAULT_ROOT"] = str(MINI)   # osk import 전에 — 전 모듈이 mini를 본다
+# 픽스처는 기기의 git 기본 브랜치에 기대지 않는다 — 전역 설정이 없는 CI 러너는
+# `master`를 쓴다. 일부러 낯선 이름을 주어, `-b main` 없는 init이 어디서든 드러나게 한다.
+_n = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+os.environ.update({"GIT_CONFIG_COUNT": str(_n + 1),
+                   f"GIT_CONFIG_KEY_{_n}": "init.defaultBranch",
+                   f"GIT_CONFIG_VALUE_{_n}": "osk-fixture-default"})
 sys.path.insert(0, str(ENGINE))
 # git 없는 vault의 잠금·상태 자리(core.local_lock_path)는 임시 디렉터리다 — 시험
 # vault마다 osk-integration-* 따위가 실 임시 디렉터리에 쌓였다. 이 실행과 자식
@@ -414,7 +420,7 @@ def test_sync():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         bare = td / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
 
         def clone(name):
             d = td / name
@@ -560,7 +566,7 @@ def test_sync_graph_scale():
         try:
             repo.mkdir()
             bare.mkdir()
-            git("init", "-q", "--bare", root=bare)
+            git("init", "-q", "--bare", "-b", "main", root=bare)
             git("init", "-q", "-b", "main")
             git("config", "user.name", "fixture")
             git("config", "user.email", "fixture@example.invalid")
@@ -666,7 +672,7 @@ def test_sync_pins_main():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         bare = td / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
         R = td / "R"
         subprocess.run(["git", "clone", "-q", str(bare), str(R)], check=True)
         for k, v in (("user.email", "t@t"), ("user.name", "t")):
@@ -819,6 +825,149 @@ def test_ledger_corruption_resilience():
             approvals.APPROVALS.write_bytes(backup)
         else:
             approvals.APPROVALS.unlink(missing_ok=True)
+
+
+_LINE_SEPS = "a\u2028b\u2029c\x85d"
+
+
+def test_ledger_line_boundaries():
+    """행 경계는 "\\n"뿐이다(v3.22.2). ①개행 없이 끝난 완결 기록 뒤 append는 개행을
+    채운다 — 구판은 새 기록을 같은 행에 붙여 대장 전체를 '손상'으로 만들었다.
+    ②찢긴 꼬리는 여전히 손상으로 거부되고 파일은 그대로다. ③U+2028·U+2029·U+0085는
+    `ensure_ascii=False` 기록에 날것으로 서는데, 구판 `splitlines()`가 거기서 행을
+    끊어 후보 대장과 이동 대장(→ 모든 영역의 protect·approve·revert)을 막았다."""
+    seps = _LINE_SEPS
+    p = core.SIGNATURES.parent / "regr-linebound.jsonl"
+    try:
+        r1 = core.ledger_append(p, {"kind": "a"})
+        p.write_bytes(p.read_bytes().rstrip(b"\r\n"))       # 수동 복구가 남기는 꼬리
+        r2 = core.ledger_append(p, {"kind": "b", "note": seps})
+        recs = core.ledger_read(p)
+        check("개행 없는 완결 꼬리 뒤 append — 두 기록 모두 판독",
+              [r.get("rid") for r in recs] == [r1["rid"], r2["rid"]]
+              and r2["parents"] == [r1["rid"]], recs)
+        check("append 뒤 파일은 개행으로 끝난다", p.read_bytes().endswith(b"\n"))
+        check("구분 문자가 필드 안에서 왕복한다", recs[-1].get("note") == seps, recs[-1])
+        check("새 행은 구분 문자를 이스케이프해 쓴다 — 구판 기기가 판독한다",
+              [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+              == [ln for ln in p.read_text(encoding="utf-8").split("\n") if ln.strip()])
+        with open(p, "a", encoding="utf-8") as f:              # 구판이 날것으로 쓴 행
+            f.write(json.dumps({**r2, "rid": core._next_rid(r2["rid"]), "parents": [r2["rid"]]},
+                               ensure_ascii=False) + "\n")
+        check("구판이 날것으로 쓴 구분 문자 행도 판독된다",
+              core.ledger_read(p)[-1].get("note") == seps)
+        check("그 뒤 append도 성립", core.ledger_append(p, {"kind": "d"}).get("rid"))
+        p.write_bytes(json.dumps(r1).encode() + b"\r\n")
+        check("CRLF 행도 판독된다", len(core.ledger_read(p)) == 1)
+        torn = json.dumps(r1).encode() + b'\n{"rid": "x", "kind"'
+        p.write_bytes(torn)
+        try:
+            core.ledger_append(p, {"kind": "c"})
+            check("찢긴 꼬리 뒤 append는 거부된다", False)
+        except ValueError as e:
+            check("찢긴 꼬리 뒤 append는 거부된다", "부분 행" in str(e), e)
+        check("거부된 append는 찢긴 꼬리를 묻지 않는다", p.read_bytes() == torn)
+    finally:
+        p.unlink(missing_ok=True)
+
+
+def test_ledger_separators_candidate():
+    """U+2028 등을 담은 사유가 MCP `record_candidate`를 지나 후보 대장에서 왕복한다."""
+    import mcp_server as M
+    seps = _LINE_SEPS
+    a = ROOT / "00_Scope/W1/regr-ls1.md"; b = ROOT / "00_Scope/W1/regr-ls2.md"
+    a.write_text(node_text("260924-zzzz-ls01", "후보 A"), encoding="utf-8")
+    b.write_text(node_text("260924-zzzz-ls02", "후보 B"), encoding="utf-8")
+    try:
+        r = M.record_candidate("duplication", ["regr-ls1", "regr-ls2"], seps)
+        check("구분 문자 사유의 후보 상정", r.get("ok"), r)
+        try:
+            last = core.ledger_read(core.CANDIDATES)[-1]
+            check("후보 대장이 판독되고 사유가 보존된다", last.get("reason") == seps, last)
+        except ValueError as e:
+            check("후보 대장이 판독되고 사유가 보존된다", False, e)
+        r = M.record_candidate("competition", ["regr-ls1", "regr-ls2"], "다음")
+        check("그 뒤 후보 상정도 성립", r.get("ok"), r)
+    finally:
+        a.unlink(missing_ok=True); b.unlink(missing_ok=True)
+
+
+def test_ledger_separators_move():
+    """U+2028 제목 노드의 보호영역 이동 뒤에도 이동 대장이 판독되어 protect·approve·revert가 산다."""
+    from osk import approvals as A
+    import mcp_server as M
+    # 제목 검사는 이제 이 문자를 막으므로, 그 전에 생긴(손으로 만든) 노드로 시험한다
+    t = "regr\u2028ls"
+    src, dst = ROOT / f"00_Scope/W1/{t}.md", ROOT / f"00_Scope/W3/{t}.md"
+    (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
+    (ROOT / "00_Scope/W4").mkdir(parents=True, exist_ok=True)
+    src.write_text(node_text("260924-zzzz-ls03", "구분 문자 제목"), encoding="utf-8")
+    try:
+        A.protect("00_Scope/W3", "도착지 보호")
+        base = A.approved_hash("00_Scope/W3")
+        mv = M.move_nodes([t], "00_Scope/W3")
+        check("구분 문자 제목 노드의 보호영역 이동", mv.get("ok"), mv)
+        try:
+            row = A._latest_move(core.ledger_read(A.MOVES), "to", f"00_Scope/W3/{t}.md")
+            check("이동 대장이 판독되고 이동이 기록됐다",
+                  row is not None and row["node"] == "260924-zzzz-ls03", row)
+        except ValueError as e:
+            check("이동 대장이 판독되고 이동이 기록됐다", False, e)
+        check("도착 영역은 pending", A.state("00_Scope/W3") == "pending")
+        A.revert("00_Scope/W3", base, A.working_tree_hash("00_Scope/W3"), "반려")
+        check("그 뒤 반려가 성립한다(원위치 복귀)", src.is_file() and not dst.exists())
+        check("구분 문자 이동 뒤에도 다른 영역 protect 성립",
+              A.protect("00_Scope/W4", "다른 영역").get("kind") == "protect")
+        M.move_nodes([t], "00_Scope/W3")
+        A.approve("00_Scope/W3", base, A.working_tree_hash("00_Scope/W3"), "승인")
+        check("그 뒤 승인이 성립한다", A.state("00_Scope/W3") == "clean"
+              and dst.is_file())
+    finally:
+        for reg in ("00_Scope/W3", "00_Scope/W4"):
+            try: A.unprotect(reg, "정리")
+            except Exception: pass
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+def test_jsonl_readers_line_separators():
+    """대장 밖의 JSONL(제공자 출력·갱신 저널)도 행 경계는 "\\n"뿐이다 — serde_json·
+    JSON.stringify·`ensure_ascii=False`는 U+2028 등을 날것으로 둔다."""
+    import importlib.util as _ilu
+    from osk import growth, response_growth as rg, update
+    _spec = _ilu.spec_from_file_location("osk_recover_seps", ENGINE / "scripts" / "recover.py")
+    _rec = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_rec)
+
+    def ok(name, fn):
+        try:
+            check(name, fn())
+        except ValueError as e:
+            check(name, False, e)
+    td = Path(tempfile.mkdtemp(prefix="osk-seps-"))
+    saved = update.UPDATE_JOURNAL
+    try:
+        out = td / "out.jsonl"
+        packet = {"osk_reviews": {}}
+        out.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in (
+            {"type": "system", "note": _LINE_SEPS},
+            {"type": "result", "subtype": "success", "is_error": False,
+             "result": json.dumps(packet), "usage": {"input_tokens": 3, "output_tokens": 1}})),
+            encoding="utf-8")
+        ok("제공자 최종 출력 판독 — 구분 문자 행", lambda: growth._final_packet(out) == packet)
+        ok("제공자 사용량 판독 — 구분 문자 행",
+           lambda: rg.cache_usage(out, {"harness": "claude"})["measured"])
+        j = td / "00_Scope/Workbench/_ledger/update.jsonl"
+        j.parent.mkdir(parents=True)
+        j.write_text(json.dumps({"kind": "done", "txn": "TSEP", "note": _LINE_SEPS},
+                                ensure_ascii=False) + "\n", encoding="utf-8")
+        update.UPDATE_JOURNAL = j
+        ok("갱신 저널 관대한 판독 — 구분 문자 행",
+           lambda: [r.get("txn") for r in update._journal_lenient()] == ["TSEP"])
+        ok("recover.py 저널 판독 — 구분 문자 행", lambda: _rec._journal_done(td, "TSEP"))
+    finally:
+        update.UPDATE_JOURNAL = saved
+        rmtree_force(td)
 
 
 # ── 11. 대장 스키마 — 앵커 이후 parents·rid·필수 필드 강제 ──────────────
@@ -2166,6 +2315,133 @@ def test_revert_incomplete_no_record():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 반려는 그 이름 그대로의 자리에만 쓰고 지운다 (v3.22.2) ──────────────
+def _dir_link(link: Path, target: Path) -> bool:
+    """디렉터리 링크 — Windows는 정션(관리자 불필요), POSIX는 심볼릭 링크."""
+    if os.name == "nt":
+        return subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True).returncode == 0
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
+def _files_of(d: Path) -> dict:
+    return {p.name: p.read_bytes() for p in d.iterdir() if p.is_file()}
+
+
+def _txt(p: Path) -> str | None:
+    return p.read_text(encoding="utf-8") if p.is_file() else None
+
+
+def test_revert_path_identity():
+    """영역 안 디렉터리가 정션·링크로 바뀌었거나 이름의 대소문자만 바뀌면,
+    realpath가 승인본의 그 자리가 아닌 다른 파일을 가리킨다. 구판 반려는 그
+    경로로 쓰고 지워 다른 구획·vault 밖 파일을 지우고, 대소문자 변경에서는
+    방금 복원한 파일을 삭제 순회가 지웠다(실측). 반려는 쓰기 전에 전부 멈추고,
+    열거는 링크 너머로 내려가지 않는다."""
+    import contextlib
+    from osk import approvals as A
+    base = ROOT / "00_Domain" / "regr-ident"
+    rev = lambda reg: A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg))
+    ext = Path(tempfile.mkdtemp(prefix="osk-ident-ext-"))
+    links = []
+    try:
+        # 1) 영역 안 디렉터리 → vault 안 다른 구획으로의 링크
+        reg, regdir, other = ("00_Domain/regr-ident/j", base / "j",
+                              base / "other")
+        (regdir / "sub").mkdir(parents=True)
+        (regdir / "sub" / "a.md").write_text("승인-a", encoding="utf-8")
+        (regdir / "keep.md").write_text("keep", encoding="utf-8")
+        other.mkdir()
+        for n, t in (("a.md", "남의-a"), ("o1.md", "남의-o1")):
+            (other / n).write_text(t, encoding="utf-8")
+        A.protect(reg, "지정")
+        shutil.rmtree(regdir / "sub")
+        if _dir_link(regdir / "sub", other):
+            links.append(regdir / "sub")
+            before, n = _files_of(other), len(A.records())
+            cs = A.changeset(reg) or {}
+            check("링크 너머 파일은 영역으로 열거되지 않는다",
+                  not any("/sub/" in r for r in cs.get("added", []) + cs.get("modified", []))
+                  and A.state(reg) == "pending", cs)
+            check("링크(vault 안)를 지나는 반려는 쓰기 전에 거부", _raises(lambda: rev(reg))())
+            check("다른 구획 파일은 한 바이트도 바뀌지 않았다", _files_of(other) == before)
+            check("거부된 반려는 기록되지 않는다", len(A.records()) == n)
+            os.rmdir(regdir / "sub") if os.name == "nt" else os.unlink(regdir / "sub")
+            links.remove(regdir / "sub")
+            rev(reg)
+            check("링크를 치우면 반려가 승인본을 복원한다",
+                  _txt(regdir / "sub" / "a.md") == "승인-a"
+                  and A.state(reg) == "clean" and _files_of(other) == before)
+        else:
+            skip("반려 정체성: vault 안 디렉터리 링크", "링크를 만들 수 없는 환경")
+
+        # 2) 영역 안 링크 → vault 밖 폴더
+        (ext / "x.md").write_text("밖의 사용자 파일", encoding="utf-8")
+        if _dir_link(regdir / "ext", ext):
+            links.append(regdir / "ext")
+            (regdir / "keep.md").write_text("에이전트 변경", encoding="utf-8")
+            cs = A.changeset(reg) or {}
+            check("vault 밖 링크 너머는 영역 변경집합에 들지 않는다",
+                  not any("/ext/" in r for r in cs.get("added", [])), cs)
+            rev(reg)
+            check("반려 뒤에도 vault 밖 파일이 남는다",
+                  _txt(ext / "x.md") == "밖의 사용자 파일"
+                  and _txt(regdir / "keep.md") == "keep")
+        else:
+            skip("반려 정체성: vault 밖 링크", "링크를 만들 수 없는 환경")
+
+        # 3) 대소문자만 바뀐 파일·디렉터리 이름
+        creg, cdir = "00_Domain/regr-ident/c", base / "c"
+        cdir.mkdir()
+        (cdir / "Probe.md").write_text("p", encoding="utf-8")
+        insensitive = (cdir / "probe.md").exists()
+        folds = os.path.realpath(cdir / "probe.md").endswith("Probe.md")
+        (cdir / "Probe.md").unlink()
+        if not insensitive:
+            skip("반려 정체성: 대소문자 변경", "대소문자를 구분하는 파일시스템")
+        else:
+            (cdir / "Note.md").write_text("승인 노트", encoding="utf-8")
+            (cdir / "Sub").mkdir()
+            (cdir / "Sub" / "a.md").write_text("승인 a", encoding="utf-8")
+            A.protect(creg, "지정")
+            # realpath가 대소문자를 접는 OS(Windows)에서는 접지 않는 realpath(macOS의
+            # 동작)로도 한 번 더 돈다 — 거기서는 디렉터리 목록 대조만이 막는다.
+            modes = [("", contextlib.nullcontext)] + ([(
+                " — realpath 미정규화",
+                lambda: mock.patch("os.path.realpath", os.path.abspath))] if folds else [])
+            for tag, ctx in modes:
+                with ctx():
+                    (cdir / "junk.md").write_text("버릴 것", encoding="utf-8")
+                    for old, new in (("Note.md", "note.md"), ("Sub", "sub")):
+                        n = len(A.records())
+                        os.rename(cdir / old, cdir / "tmp"); os.rename(cdir / "tmp", cdir / new)
+                        check(f"대소문자 변경({old}→{new}) 반려는 쓰기 전에 거부{tag}",
+                              _raises(lambda: rev(creg))())
+                        check(f"대소문자 변경({old}) 뒤 파일이 하나도 사라지지 않았다{tag}",
+                              _txt(cdir / "note.md") == "승인 노트"
+                              and _txt(cdir / "sub" / "a.md") == "승인 a"
+                              and (cdir / "junk.md").exists() and len(A.records()) == n)
+                        os.rename(cdir / new, cdir / "tmp"); os.rename(cdir / "tmp", cdir / old)
+                    rev(creg)
+                    check(f"이름을 되돌리면 반려가 동작한다{tag}",
+                          sorted(p.name for p in cdir.iterdir()) == ["Note.md", "Sub"]
+                          and A.state(creg) == "clean")
+            A.unprotect(creg, "정리")
+    finally:
+        for l in links:
+            try: os.rmdir(l) if os.name == "nt" else os.unlink(l)
+            except OSError: pass
+        for r in ("00_Domain/regr-ident/j", "00_Domain/regr-ident/c"):
+            try: A.unprotect(r, "정리")
+            except Exception: pass
+        shutil.rmtree(base, ignore_errors=True)
+        shutil.rmtree(ext, ignore_errors=True)
+
+
 # ── 승인본은 그 영역의 tree여야 한다 (PR #14 리뷰 [high]) ──────────────
 def test_baseline_bound_to_region():
     """승인본 manifest는 **그 영역의** tree일 때만 해석된다 — 영역 밖 항목을 섞은
@@ -3194,7 +3470,7 @@ def _pub_fixture(td):
     """사설 mini-vault + 가짜 공개 저장소 + 매니페스트."""
     pub = Path(td) / "public"
     pub.mkdir()
-    subprocess.run(["git", "init", "-q", str(pub)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(pub)], check=True)
     for k, v in (("user.email", "t@t"), ("user.name", "t")):
         subprocess.run(["git", "-C", str(pub), "config", k, v], check=True)
     (pub / "LICENSE").write_text("MIT\n", encoding="utf-8")
@@ -3497,7 +3773,7 @@ def test_release_and_update():
             (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
             (can / "README.md").write_text("readme\n", encoding="utf-8")
             (can / "LICENSE").write_text("MIT\n", encoding="utf-8")
-            git(can, "init", "-q")
+            git(can, "init", "-q", "-b", "main")
             git(can, "config", "user.email", "t@t")
             git(can, "config", "user.name", "t")
             git(can, "add", "-A")
@@ -4288,7 +4564,7 @@ def test_release_and_update():
                 (forced / "_governance/UpdDoc.md").write_text(
                     node_text("260802-uupd-0002", "정본 규범 문서", "위조판."),
                     encoding="utf-8")
-                subprocess.run(["git", "-C", str(forced), "init", "-q"],
+                subprocess.run(["git", "-C", str(forced), "init", "-q", "-b", "main"],
                                capture_output=True)
                 for _k, _v in (("user.email", "t@t"), ("user.name", "t"),
                                ("core.autocrlf", "false"), ("core.eol", "lf")):
@@ -4674,6 +4950,7 @@ def test_portable_title():
     invalid = {
         "": "빈 제목", " ": "공백뿐", "foo ": "후행 공백", " foo": "선행 공백",
         "foo\t": "후행 탭", "foo\n": "후행 개행", "a\tb": "중간 제어문자",
+        "a\u2028b": "줄 구분 문자", "a\u2029b": "문단 구분 문자", "a\x85b": "NEL",
         ".foo": "선행 점", "foo.": "후행 점",
         "foo/bar": "슬래시", "foo\\bar": "역슬래시", "foo:bar": "콜론",
         'foo"bar': "따옴표", "foo|bar": "파이프", "foo?bar": "물음표",
@@ -5147,6 +5424,223 @@ def test_obsidian_tag_defense():
     v = " ".join(r3.get("violations", []))
     check("거부가 원인을 지목", "링크로 가리킬 수" in v, v)
     check("거부가 대체 표기를 처방하지 않는다", "PR-1" not in v, v)
+
+
+def test_code_regions_are_not_prose():
+    """태그 방어·Link 추출·목차가 **같은 코드 판정**을 쓴다(v3.22.2). 구판은
+    `~~~`·들여쓰기 코드·``이중 백틱``·```` 속 ```·목록 속 펜스에서 `#123abc`를
+    `#123 abc`로 고쳐 썼고, 같은 자리의 `[[...]]` 예시를 Link로 세어 scope
+    경계 거부와 검증기 FAIL을 불렀다 — 목차만 그곳을 코드로 봤다."""
+    import mcp_server
+    forms = {
+        "tilde": "~~~\n{c}\n~~~",
+        "indented": "    {c}",
+        "double-tick": "x ``{c}`` y",
+        "nested": "````markdown\n```\n{c}\n```\n````",
+        "list-fence": "- item\n    ```\n    {c}\n    ```",
+        "single-tick": "x `{c}` y",
+        "backtick": "```\n{c}\n```",
+    }
+    xs = ROOT / "00_Scope/RegrXS"
+    xs.mkdir(exist_ok=True)
+    for stem, nid in (("RegrXS", "xshb"), ("regr-xs-target", "xstg")):
+        (xs / f"{stem}.md").write_text(
+            f'---\nid: "260801-zzzz-{nid}"\ncreated: "2026-08-01 00:00 (KST)"\n'
+            'updated: "2026-08-01 00:00 (KST)"\nauthor: "user"\ndrafter: "user"\n'
+            f'summary: "{stem}"\n---\n\n본문\n', encoding="utf-8", newline="\n")
+    try:
+        for label, form in forms.items():
+            code = form.format(c="#123abc [[regr-code-example]]")
+            body = f"본문 #9x 와 [[W1]].\n\n{code}\n"
+            name = f"regr-code-{label}"
+            r = _w(write.create_node, name, "코드 구획", body, "fable-5",
+                   space="00_Scope/W1")
+            check(f"[{label}] 생성 통과", r.get("ok"), r)
+            if not r.get("ok"):
+                continue
+            n = contract.parse(ROOT / r["path"])
+            check(f"[{label}] 생성이 코드 바이트를 보존", code in n.body, n.body)
+            check(f"[{label}] 글의 태그 방어는 그대로", "#9 x" in n.body, n.body)
+            check(f"[{label}] 코드 속 [[..]]는 Link가 아니다",
+                  n.wikilinks() == ["W1"], n.wikilinks())
+            h = hashlib.sha256((ROOT / r["path"]).read_bytes()).hexdigest()
+            u = _w(write.update_node, name, body=body + "\n추가 #7y\n", expect_hash=h)
+            n2 = contract.parse(ROOT / r["path"])
+            check(f"[{label}] 본문 교체도 코드 바이트를 보존",
+                  u.get("ok") and code in n2.body and "#7 y" in n2.body, (u, n2.body))
+            r = _w(write.create_node, f"regr-xs-{label}", "코드 구획",
+                   "예:\n\n" + form.format(c="[[regr-xs-target]]") + "\n", "fable-5",
+                   space="00_Scope/W1")
+            check(f"[{label}] 코드 속 scope 밖 예시는 거부 사유가 아니다", r.get("ok"), r)
+
+        # 외부 작성 노드 — 요약만 고쳐도 본문 전체가 다시 접히는 통로다
+        def external(stem, nid, body):
+            f = ROOT / f"00_Scope/W1/{stem}.md"
+            f.write_text(f'---\nid: "260801-zzzz-{nid}"\ncreated: "2026-08-01 00:00 (KST)"\n'
+                         'updated: "2026-08-01 00:00 (KST)"\nauthor: "user"\n'
+                         'drafter: "user"\nsummary: "external"\n---\n\n' + body,
+                         encoding="utf-8", newline="\n")
+            return f
+        ext_body = "메모.\n\n~~~\nrun #123abc\n~~~\n\n    ref #42x\n"
+        ext = external("regr-code-ext", "cext", ext_body)
+        u = _w(write.update_node, "regr-code-ext", summary="요약만 고친다")
+        check("요약 편집이 외부 노드의 코드를 고치지 않는다",
+              u.get("ok") and ext.read_text(encoding="utf-8").endswith(ext_body),
+              (u, ext.read_text(encoding="utf-8")))
+        external("regr-code-xsext", "cxsx", "구문:\n\n~~~\n[[regr-xs-target]]\n~~~\n")
+        rep = validate.run()
+        bad = [m for d in rep["fail"] for v in d.values()
+               for m in (v if isinstance(v, list) else [v]) if "regr-code-" in str(m)]
+        check("코드 속 scope 밖 예시로 검증기가 FAIL하지 않는다", not bad, bad)
+        u = _w(write.update_node, "regr-code-xsext", summary="무관한 요약 편집")
+        check("코드 속 scope 밖 예시가 무관한 편집을 막지 않는다", u.get("ok"), u)
+
+        # 목차도 같은 판정 — 코드 속 제목은 숨고, 글의 제목과 Link는 남는다
+        toc = "# 앞\n\n~~~\n# 틸드\n~~~\n\n    # 들여쓰기\n\n- item\n    ```\n    # 목록\n    ```\n\n## 뒤\n"
+        check("목차는 코드 속 제목을 숨긴다",
+              [x["title"] for x in mcp_server._node_view(toc, "outline")["headings"]]
+              == ["앞", "뒤"], mcp_server._node_view(toc, "outline"))
+        check("문단 뒤 4칸 행은 코드가 아니다(문단을 끊지 못한다)",
+              write._space_numeric_tags("글\n    #1x [[A]]") == "글\n    #1 x [[A]]"
+              and contract.Node(ext, {}, "글\n    [[A]]").wikilinks() == ["A"])
+        check("열고 닫는 백틱 수가 다르면 코드가 아니다",
+              write._space_numeric_tags("``#1x` #2x") == "``#1 x` #2 x")
+    finally:
+        rmtree_force(xs)
+
+
+def test_code_region_block_boundaries():
+    """코드 판정의 블록 경계(v3.22.2 리뷰). `* * *`·`- - -` 주제 구분선을 목록
+    항목으로 읽으면 유령 목록 들여쓰기가 남는다 — 그 안에서 연 펜스가 들여쓰지
+    않은 코드 행에서 닫혀 `#123abc`가 `#123 abc`로 바뀌고(요약 편집에서도),
+    진짜 닫는 펜스가 새 펜스를 열어 뒤의 Link가 사라졌다. 목록 항목 문단의
+    게으른 연속행(들여쓰지 않은 이음 행)이 목록을 닫으면 빈 행 뒤 항목 안의
+    4칸 문단을 코드로 읽어 Link를 놓친다 — scope 밖 직접 Link가 위상 검사
+    없이 저장됐다."""
+    import mcp_server
+    ex = "#123abc [[regr-blk-example]]"
+    cases = {
+        "hr-fence": ("* * *\n\n  ```css\np { color: #123abc; }\n  ```\n\n[[W1]]\n",
+                     "  ```css\np { color: #123abc; }\n  ```\n"),
+        # 문단 바로 밑 `- - -`도 목록이 아니다 — 뒤의 빈 행 + 4칸은 코드
+        "hr-under-para": (f"글\n- - -\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+        # 목록 내용보다 덜 들여쓴 구분선은 목록을 닫는다
+        "hr-ends-list": (f"- 항목\n* * *\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+        # 게으른 연속행은 항목을 잇는다 — 빈 행 뒤 4칸은 항목 안의 문단이다
+        "lazy": ("- 항목\n이어지는 설명\n\n    [[W1]]\n", ""),
+        # 반례: 목록이 정말 끝나면(빈 행 뒤 덜 들여쓴 문단·제목·빈 항목) 4칸은 코드
+        "list-ends": (f"- 항목\n\n글\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+        "lazy-then-ends": (f"- 항목\n이어지는 설명\n\n글\n\n    {ex}\n\n[[W1]]\n",
+                           f"    {ex}\n"),
+        "heading-ends-list": (f"- 항목\n## 제목\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+        "empty-item": (f"-\n이음 아님\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+    }
+    xb = ROOT / "00_Scope/RegrXB"
+    xb.mkdir(exist_ok=True)
+    for stem, nid in (("RegrXB", "xbhb"), ("regr-xb-target", "xbtg")):
+        (xb / f"{stem}.md").write_text(
+            f'---\nid: "260801-zzzz-{nid}"\ncreated: "2026-08-01 00:00 (KST)"\n'
+            'updated: "2026-08-01 00:00 (KST)"\nauthor: "user"\ndrafter: "user"\n'
+            f'summary: "{stem}"\n---\n\n본문\n', encoding="utf-8", newline="\n")
+    try:
+        for i, (label, (body, block)) in enumerate(cases.items()):
+            name = f"regr-blk-{label}"
+            r = _w(write.create_node, name, "블록 경계", body, "fable-5", space="00_Scope/W1")
+            check(f"[{label}] 생성 통과", r.get("ok"), r)
+            if r.get("ok"):
+                n = contract.parse(ROOT / r["path"])
+                check(f"[{label}] 생성이 코드 바이트를 보존", block in n.body, n.body)
+                check(f"[{label}] 글의 Link만 센다", n.wikilinks() == ["W1"], n.wikilinks())
+            # 외부 작성 노드 — 요약 편집·본문 교체가 코드를 다시 접는 통로다
+            f = ROOT / f"00_Scope/W1/{name}-ext.md"
+            f.write_text(f'---\nid: "260801-zzzz-blk{i}"\ncreated: "2026-08-01 00:00 (KST)"\n'
+                         'updated: "2026-08-01 00:00 (KST)"\nauthor: "user"\n'
+                         'drafter: "user"\nsummary: "external"\n---\n\n' + body,
+                         encoding="utf-8", newline="\n")
+            u = _w(write.update_node, f"{name}-ext", summary="요약만 고친다")
+            check(f"[{label}] 요약 편집이 코드를 고치지 않는다",
+                  u.get("ok") and f.read_text(encoding="utf-8").endswith(body),
+                  (u, f.read_text(encoding="utf-8")))
+            h = hashlib.sha256(f.read_bytes()).hexdigest()
+            u = _w(write.update_node, f"{name}-ext", body=body + "\n추가 #7y\n", expect_hash=h)
+            n = contract.parse(f)
+            check(f"[{label}] 본문 교체도 코드 바이트를 보존",
+                  u.get("ok") and block in n.body and "#7 y" in n.body, (u, n.body))
+            check(f"[{label}] 본문 교체 뒤에도 글의 Link만 센다",
+                  n.wikilinks() == ["W1"], n.wikilinks())
+        check("목차도 게으른 연속행 뒤 항목 속 제목을 본다",
+              [x["title"] for x in mcp_server._node_view(
+                  "- 항목\n이어지는 설명\n\n    # 항목 속 제목\n", "outline")["headings"]]
+              == ["항목 속 제목"])
+        r = _w(write.create_node, "regr-blk-xs-lazy", "블록 경계",
+               "- 항목\n이어지는 설명\n\n    [[regr-xb-target]]\n", "fable-5",
+               space="00_Scope/W1")
+        check("게으른 연속행 뒤 항목 속 scope 밖 Link는 위상 검사가 거부한다",
+              r.get("ok") is False and "regr-xb-target" in " ".join(r.get("violations", [])), r)
+        r = _w(write.create_node, "regr-blk-xs-code", "블록 경계",
+               "- 항목\n\n글\n\n    [[regr-xb-target]]\n", "fable-5", space="00_Scope/W1")
+        check("목록이 끝난 뒤 4칸 코드 속 scope 밖 예시는 거부 사유가 아니다", r.get("ok"), r)
+    finally:
+        rmtree_force(xb)
+        # 공유 W1 군집을 되돌린다 — 남으면 허브 미직결 목록(20건 상한)에서
+        # 뒤 시험의 노드를 밀어낸다
+        for f in (ROOT / "00_Scope/W1").glob("regr-blk-*.md"):
+            f.unlink()
+
+
+def test_code_region_commonmark_rules():
+    """코드 판정의 CommonMark 컨테이너·블록 규칙(v3.22.2 차등 퍼징). 공유 판정이
+    구판보다 나빠진 자리들이다 — 글을 코드로 읽으면 `#123abc` 태그 방어가 빠지고
+    Link가 사라지며(scope 경계 검사도 함께 빠진다), 코드를 글로 읽으면 코드
+    바이트가 바뀌고 예시가 Link로 센다. 각 본문의 `#1ab [[X]]`는 모두 글이거나
+    모두 코드다."""
+    import mcp_server
+    cases = {  # 이름: (본문, 글인가)
+        # 인용(>)도 컨테이너다 — 빈 인용·HTML 블록 뒤 행은 게으르게 잇지 못한다
+        "empty-quote-in-item": ("- >\nb\n    ~~~ #1ab [[X]]", True),
+        "html-comment-ends-list": ("- 항목\n<!-- 주석 -->\n  ```\n#1ab [[X]]", False),
+        "html-in-item": ("- <div>\n텍스트\n  ```\n#1ab [[X]]", False),
+        "empty-quote": (">\n    #1ab [[X]]", False),
+        "quote-lazy": ("> 인용\n    #1ab [[X]]", True),
+        "quote-fence": ("> [!note]\n> ```\n> #1ab [[X]]\n> ```", False),
+        "quote-fence-ends": ("> ```\n> 코드\n#1ab [[X]]", True),
+        "quote-list-para": ("> - a\n>\n>     #1ab [[X]]", True),
+        # 표지 뒤 5칸 이상이면 항목은 들여쓰기 코드로 시작한다 — 문단이 아니다
+        "item-starts-code": ("-     code\nf\n  ```\n#1ab [[X]]\n  ```", False),
+        # 문단을 끊는 첫 항목은 빈 항목·1 아닌 번호일 수 없다 — 문단의 글이다
+        "ord2-under-para": ("글\n2. ~~~ #1ab [[X]]", True),
+        "empty-under-para": ("글\n*\n      #1ab [[X]]", True),
+        "ord2-phantom-fence": ("글\n2. b\n    ~~~\n    #1ab [[X]]\n    ~~~", True),
+        "setext-dash": ("제목\n-\n  ```\n#1ab [[X]]\n  ```", False),
+        # 반례: 형제 항목·인용 뒤 항목은 문단을 끊는 자리가 아니다
+        "sibling-item": ("1. a\n2. b\n\n       #1ab [[X]]", False),
+        "quote-then-ord2": ("> 인용\n2. 항목\n\n       #1ab [[X]]", False),
+        # 빈 항목은 빈 행에서 닫히고, 빈 채로 시작하는 항목의 내용 열은 표지 뒤 1칸이다
+        "empty-item-blank": ("-\n\n  ```\n#1ab [[X]]\n  ```", False),
+        "blank-start-width": ("-    \n    #1ab [[X]]", True),
+        # 빈 행은 공백·탭뿐이다(NBSP·전각 공백 행은 글), CRLF 본문도 같은 판정
+        "nbsp-line": ("글\n \n    #1ab [[X]]", True),
+        "ideographic-line": ("글\n　\n    #1ab [[X]]", True),
+        "crlf": ("-\r\n  ~~~\r\n#1ab [[X]]", True),
+        # 인라인 코드는 문단 안에서 행을 넘어 닫히고, `\``의 첫 백틱은 글자다
+        "span-crosses-line": ("`#1ab [[X]]``\n`", False),
+        "span-closes-next-line": ("`a\n`` `b` #1ab [[X]] ``", True),
+        "escaped-tick": ("이슈는 \\``#1ab [[X]]`` 로 표기", True),
+        "escaped-backslash": ("\\\\`#1ab [[X]]`", False),
+        "span-stops-at-blank": ("`a\n\nb` #1ab [[X]]", True),
+        "span-stops-at-item": ("- `a\n- b` #1ab [[X]]", True),
+    }
+    for label, (body, prose) in cases.items():
+        tags = write._space_numeric_tags(body)
+        links = contract.Node(Path("x.md"), {}, body.replace("\r\n", "\n")).wikilinks()
+        check(f"[{label}] 태그 방어는 글에만",
+              tags == (body.replace("#1ab", "#1 ab") if prose else body), tags)
+        check(f"[{label}] 글의 Link만 센다", links == (["X"] if prose else []), links)
+    outline = {"- 항목\n<div>\n    # 제목": [], "* >\n목\n    ```\n  # 제목": ["제목"],
+               "3.     e\n]\n    ######": []}
+    for body, want in outline.items():
+        got = [h["title"] for h in mcp_server._node_view(body, "outline")["headings"]]
+        check(f"목차 {body!r}", got == want, got)
 
 
 # ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
@@ -6047,7 +6541,9 @@ def test_evictions():
     # git 없는 mini-vault는 루트 해시가 든 임시 경로로 떨어져 저절로 갈리므로,
     # 실제 모양 — 본 저장소 A와 그 `.git`을 `commondir`로 공유하는 linked
     # worktree B — 를 파일로 세운다(git 실행 없음). 둘의 잠금 자리는 같다.
-    wt = Path(tempfile.mkdtemp(prefix="osk-wt-"))
+    # 운영의 ROOT는 vault_root()가 정규화한 경로다 — 시험 루트도 그렇게 세운다.
+    # 날것(RUNNER~1·/var)이면 A는 그 철자, B는 commondir resolve로 실경로가 된다.
+    wt = Path(tempfile.mkdtemp(prefix="osk-wt-")).resolve()
     A, B = wt / "A", wt / "B"
     (A / ".git" / "worktrees" / "B").mkdir(parents=True)
     B.mkdir()
@@ -7835,7 +8331,7 @@ def test_audit_fixes_2026_09_02():
             src = Path(_td) / "src"
             src.mkdir()
             (src / "f.txt").write_bytes(b"a\nb\n")
-            for cmd in (["init", "-q"], ["config", "user.email", "t@t"],
+            for cmd in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"],
                         ["config", "user.name", "t"],
                         ["config", "core.autocrlf", "false"],
                         ["add", "-A"], ["commit", "-qm", "x"],
@@ -7864,8 +8360,9 @@ def test_audit_fixes_2026_09_02():
             ENGINE / "scripts" / "publish-manifest.txt")
         check("발행 매니페스트가 release.json을 보존한다 (#41)",
               "release.json" in man["keep"], man["keep"])
-        check("발행 매니페스트가 릴리스 워크플로를 보존한다 (#41)",
-              any(k.startswith(".github/") for k in man["keep"]), man["keep"])
+        check("발행 매니페스트가 릴리스·회귀 수트 워크플로를 보존한다 (#41)",
+              {".github/workflows/release.yml", ".github/workflows/ci.yml"}
+              <= set(man["keep"]), man["keep"])
 
         # ⑳ 엔진과 **독립된** 복구 부트스트랩도 롤백을 끝낸다 (#24)
         #    되돌리면 — `scripts/recover.py`의 `_fsync_file`을 읽기 전용 핸들로
@@ -8841,7 +9338,7 @@ def test_governance_amend_secrets_and_region():
         try:
             _g = lambda *a: subprocess.run(("git",) + a, cwd=str(lab),
                                            capture_output=True, text=True)
-            _g("init", "-q")
+            _g("init", "-q", "-b", "main")
             (lab / ".gitattributes").write_bytes(ga.encode("utf-8"))
             for space, path in (("_raw", "00_Scope/W/_raw/2026-09-02.md"),
                                 ("_scope_memory", "00_Scope/W/_scope_memory/W.md"),
@@ -8871,7 +9368,7 @@ def test_governance_amend_secrets_and_region():
         try:
             _g = lambda *a: subprocess.run(("git",) + a, cwd=str(lab2),
                                            capture_output=True, text=True)
-            _g("init", "-q")
+            _g("init", "-q", "-b", "main")
             _g("config", "user.email", "t@t"); _g("config", "user.name", "t")
             _g("config", "core.autocrlf", "true")
             raw_rel = "00_Scope/W/_raw/2026-09-02.md"
@@ -8937,7 +9434,9 @@ def test_governance_amend_secrets_and_region():
         #    fail-closed를 지우면 셋째 검사가 실패한다.
         def _reconcile_case(tag, name_body, work_body, idx_body, expect):
             """이름(digest)·작업 트리·색인을 각각 세워 판정을 본다."""
-            lab3 = Path(tempfile.mkdtemp(prefix="osk-obj-"))
+            # 갈아 끼우는 ROOT도 vault_root()가 주는 것처럼 정규 경로여야 한다 —
+            # 러너 임시 경로가 별칭(RUNNER~1·/var)이면 STORE만 날것으로 남는다.
+            lab3 = Path(os.path.realpath(tempfile.mkdtemp(prefix="osk-obj-")))
             try:
                 _h = hashlib.sha256(name_body).hexdigest()
                 rel3 = ("00_Scope/Workbench/_ledger/approved/objects/"
@@ -9273,7 +9772,7 @@ def test_sync_pending_git_operations():
     try:
         repo.mkdir()
         bare.mkdir()
-        git("init", "-q", "--bare", root=bare)
+        git("init", "-q", "--bare", "-b", "main", root=bare)
         git("init", "-q", "-b", "main")
         git("config", "user.name", "fixture")
         git("config", "user.email", "fixture@example.invalid")
@@ -9662,20 +10161,55 @@ def test_validate_at_uses_snapshot_engine():
               errors == ["검증기 FAIL: snapshot rejection"], errors)
 
 
-def test_sync_network_subprocess():
-    proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests/test_sync_network.py")],
-                          capture_output=True, timeout=180, stdin=subprocess.DEVNULL)
-    check("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", proc.returncode == 0,
-          (proc.stdout + proc.stderr).decode("utf-8", errors="replace"))
-
-
-def test_growth_loop_subprocesses():
-    for name in ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py"):
+def _suite(label, name):
+    """격리 수트 하나를 돌려 한 줄로 판정한다. 시간 초과·기동 실패도 그 수트의
+    FAIL로 남긴다 — 예외가 러너로 새면 뒤의 수트가 조용히 실행되지 않는다."""
+    try:
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
                               capture_output=True, timeout=180,
                               stdin=subprocess.DEVNULL)
-        check(f"성장 경로 격리 수트: {name}", proc.returncode == 0,
-              (proc.stdout + proc.stderr).decode("utf-8", errors="replace")[-6000:])
+    except Exception as e:
+        out = (getattr(e, "stdout", None) or b"") + (getattr(e, "stderr", None) or b"")
+        check(label, False, f"{e!r}\n" + out.decode("utf-8", errors="replace")[-6000:])
+        return
+    check(label, proc.returncode == 0,
+          (proc.stdout + proc.stderr).decode("utf-8", errors="replace")[-6000:])
+
+
+def test_sync_network_subprocess():
+    _suite("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", "test_sync_network.py")
+
+
+GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py")
+
+
+def test_growth_loop_subprocesses():
+    for name in GROWTH_SUITES:
+        _suite(f"성장 경로 격리 수트: {name}", name)
+
+
+def test_suite_timeout_is_isolated():
+    """한 격리 수트의 시간 초과는 그 수트의 FAIL이고, 뒤의 수트는 계속 돈다."""
+    first, rest = GROWTH_SUITES[0], GROWTH_SUITES[1:]
+
+    def run(cmd, **kw):
+        if cmd[-1].endswith(first):
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"), output=b"partial")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    n_pass, n_fail = len(PASS), len(FAIL)
+    error = None
+    with mock.patch("subprocess.run", side_effect=run):
+        try:
+            test_growth_loop_subprocesses()
+        except Exception as e:
+            error = e
+    passed, failed = PASS[n_pass:], FAIL[n_fail:]
+    del PASS[n_pass:], FAIL[n_fail:]
+    check("수트 시간 초과가 러너 밖으로 새지 않는다", error is None, repr(error))
+    check("시간 초과는 그 수트 이름의 FAIL 한 줄",
+          len(failed) == 1 and first in failed[0] and "partial" in failed[0], failed)
+    check("뒤의 수트는 전부 계속 실행된다",
+          [x.rsplit(": ", 1)[-1] for x in passed] == list(rest), passed)
 
 
 if __name__ == "__main__":
@@ -9687,7 +10221,10 @@ if __name__ == "__main__":
                test_approval_lifecycle,
                test_path_reuse, test_fingerprint_move,
                test_sync, test_sync_graph_scale, test_sync_network_subprocess, test_conflicts_semantics,
-               test_ledger_corruption_resilience, test_ledger_schema_segment,
+               test_ledger_corruption_resilience, test_ledger_line_boundaries,
+               test_ledger_separators_candidate, test_ledger_separators_move,
+               test_jsonl_readers_line_separators,
+               test_ledger_schema_segment,
                test_validate_global_invariance, test_authority_hold,
                test_self_referencing_edge, test_surface_contract,
                test_ledger_row_shape,
@@ -9716,6 +10253,7 @@ if __name__ == "__main__":
                test_approval_baseline_blobs_present,
                test_store_content_verified,
                test_revert_incomplete_no_record,
+               test_revert_path_identity,
                test_approve_precondition_under_lock,
                test_unprotect_precondition_under_lock,
                test_protect_precondition_rejects_stale,
@@ -9749,7 +10287,9 @@ if __name__ == "__main__":
                test_scope_memory_edits, test_cadence_hook, test_scope_recovery_handoff,
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
-               test_obsidian_tag_defense, test_index_node_not_delegation,
+               test_obsidian_tag_defense, test_code_regions_are_not_prose,
+               test_code_region_block_boundaries, test_code_region_commonmark_rules,
+               test_index_node_not_delegation,
                test_read_is_bound_to_bytes,
                test_incomplete_scan_refuses_writes,
                test_broken_is_reported_not_gated,
@@ -9775,6 +10315,7 @@ if __name__ == "__main__":
                test_review_root_reparse_and_lazy_search, test_read_cache_dependencies,
                test_reparse_cache_membership,
                test_eviction_preservation_mcp,
+               test_suite_timeout_is_isolated,
                test_growth_loop_subprocesses]:
         try:
             fn()

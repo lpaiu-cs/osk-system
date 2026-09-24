@@ -26,7 +26,7 @@ from .core import (ROOT, LEDGER, ledger_damage, sha256_bytes, sha256_file,
                    posix_rel,
                    resolve_in_root, ledger_append, ledger_read, causal_maxima,
                    effective_parents, heads, mutation_lock, resolve_one,
-                   _rid_key)
+                   _rid_key, _canon_rel)
 from . import signatures
 
 APPROVALS = LEDGER / "approvals.jsonl"
@@ -51,7 +51,11 @@ _SKIP_DIRS = {".git", ".venv", "__pycache__", "_ledger", "_raw",
 
 def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
     """영역 안 정규 파일 전수 — (vault 상대 POSIX 경로, 절대 경로), 경로
-    오름차순. 저장소 살림살이·대장·`_raw`는 뺀다(위 _SKIP_DIRS)."""
+    오름차순. 저장소 살림살이·대장·`_raw`는 뺀다(위 _SKIP_DIRS).
+
+    realpath가 제 이름과 다른 디렉터리(정션·심볼릭 링크)로는 내려가지 않는다 —
+    그 너머는 다른 구획이나 vault 밖이지 이 영역이 아니다. 따라가면 승인·상태가
+    남의 파일을 영역 것으로 삼고, 반려가 그 파일을 지운다(실측)."""
     out = []
     root_real = Path(os.path.realpath(ROOT))
     def scan_error(error):
@@ -61,7 +65,9 @@ def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
 
     for cur, dirs, files in os.walk(region_dir, onerror=scan_error):
         dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS
-                         and not d.startswith("."))
+                         and not d.startswith(".")
+                         and os.path.realpath(os.path.join(cur, d))
+                         == os.path.join(cur, d))
         for name in sorted(files):
             if name.startswith("."):
                 continue
@@ -826,6 +832,37 @@ def _chain_position(node: str, chain: list[dict]) -> str | None:
     return None
 
 
+def _exact(rel: str, names: dict | None = None) -> Path:
+    """반려가 쓰거나 지울 rel의 실경로 — rel이 **바로 그 자리**일 때만.
+
+    realpath가 다른 이름을 내면(대소문자만 바뀐 이름, 정션·링크 너머, vault 밖)
+    그 경로로 쓰고 지우는 일은 사용자가 검토한 적 없는 다른 파일을 바꾼다 —
+    방금 복원한 파일을 삭제 순회가 지우거나 남의 구획을 덮는다(실측). 판정은
+    갱신과 같은 계약(core._canon_rel)이고, 어긋나면 쓰기 전에 반려 전체를 멈춘다.
+
+    POSIX realpath는 대소문자·정규화를 접지 않는다(macOS 등 대소문자 무시 FS) —
+    그래서 이미 있는 구성요소는 디렉터리 목록에 **그 이름 그대로** 있는지도 본다.
+    `names`는 한 반려 안의 목록 캐시다."""
+    c = _canon_rel(ROOT, rel)
+    names = {} if names is None else names
+    q = Path(os.path.realpath(ROOT))
+    for part in Path(c).parts if c else ():
+        if not os.path.lexists(q / part):
+            break                         # 여기부터는 새로 만든다 — 그 이름 그대로 생긴다
+        if q not in names:
+            names[q] = set(os.listdir(q))
+        if part not in names[q]:
+            c = None
+            break
+        q = q / part
+    if c is None:
+        raise ValueError(
+            f"반려할 경로가 그 이름 그대로의 자리가 아니다(대소문자·정규화만 바뀐 이름·"
+            f"정션/링크 너머·vault 밖) — 아무것도 건드리지 않았다. 승인된 이름으로 "
+            f"되돌리거나 링크를 치우거나, 지금 상태를 승인하라: {rel}")
+    return Path(os.path.realpath(ROOT)) / c
+
+
 def _plan_unmoves(region_dir: Path, table: dict[str, str],
                   rows: list[dict]) -> list[tuple[Path, Path]]:
     """반려가 되돌릴 **이동**의 목록 — (지금 자리, 원위치) 쌍. 계획만 하고
@@ -878,13 +915,9 @@ def _plan_unmoves(region_dir: Path, table: dict[str, str],
             continue                      # 실물 없음 — 승인본 재생성으로 족하다
         if origin == at:
             continue                      # 제자리 순환 — 되돌릴 위치 변화 없음
-        src = resolve_in_root(at)
         if _inside_rel(origin) and origin not in table:
             continue                      # 영역 안 생성분 — 생성의 반려(삭제)
-        dst = resolve_in_root(origin or "")
-        if dst is None:
-            raise ValueError(
-                f"이동 원위치를 해석할 수 없다 — 반려 보류: {node} ← {origin!r}")
+        src, dst = _exact(at), _exact(origin or "")
         if dst.exists() or str(dst) in targets:
             raise ValueError(
                 f"이동 원위치가 이미 차 있다 — 그 자리를 치우면 반려가 이동을 "
@@ -1062,10 +1095,9 @@ def _stage_tree(region_dir: Path, table: dict[str, str]) -> list[tuple[Path, byt
     (그 함수를 거치지 않은 table은 복원의 근거가 아니다)."""
     region_real = Path(os.path.realpath(region_dir))
     staged: list[tuple[Path, bytes]] = []
+    names: dict = {}
     for rel, h in sorted(table.items()):
-        p = resolve_in_root(rel)
-        if p is None:
-            raise ValueError(f"승인본 경로가 vault 밖이다 — 복원 거부: {rel}")
+        p = _exact(rel, names)            # 정체성 훼손·vault 밖은 여기서 거부
         # 구조 충돌은 **쓰기 전에** 잡는다. 작업본에서 파일↔디렉터리가 뒤바뀐
         # 평범한 재구성(예: `sub/` 디렉터리를 지우고 파일 `sub`를 만듦)이면,
         # 반영 도중 mkdir·replace가 실패해 앞선 파일만 덮인 **부분 복원**이 된다.

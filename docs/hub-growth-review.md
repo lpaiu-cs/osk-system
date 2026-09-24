@@ -44,8 +44,10 @@ The user approved this wording before it was applied to Mechanism §9-4.
 - `work_order` is the actual execution order. The first turn rotates even when
   every queue was selected in the previous attempt. Stop forks add one organization job from
   their own Scope, reuse the same worker and retain the 600-second deadline.
-- Existing Domains use `organization plan --scope 'Domain/<name>'`; this does
-  not create a Domain, authorize Person analysis or override pinned placement.
+- Existing Domains use `organization plan --scope '00_Domain/<name>'` (a vault
+  that kept a legacy Domain root uses that root's name, such as `Domain/<name>`);
+  this does not create a Domain, authorize Person analysis or override pinned
+  placement.
 - Only a configured `OpenAI/Codex/bin/<16-hex>/codex.exe` installation is eligible
   for sibling discovery. Forks require the exact native source version and the
   existing ChatGPT authentication/permission gates. Daily runs select the newest

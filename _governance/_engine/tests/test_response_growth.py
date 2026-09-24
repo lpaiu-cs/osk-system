@@ -803,7 +803,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 state = integration.status('codex','own')
                 assert state['pending_refs'] == pending and state['reviewed_rounds'] == 0
                 assert state['response_growth']['attempted_count'] == 0
-                real_run(['git','init','-q',str(core.ROOT)],check=True,capture_output=True)
+                real_run(['git','init','-q','-b','main',str(core.ROOT)],check=True,capture_output=True)
                 assert rg.route(env)['mode'] == 'background'
                 # A future restriction must refuse even when Git/auth/version pass.
                 rows[1]['payload']['sandbox_policy']['future_restriction'] = True
@@ -1079,7 +1079,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from types import SimpleNamespace
             from unittest.mock import patch
             import io, os, subprocess
-            subprocess.run(['git','init','-q',str(core.ROOT)], check=True, capture_output=True)
+            subprocess.run(['git','init','-q','-b','main',str(core.ROOT)], check=True, capture_output=True)
             home = core.ROOT / 'claude-home'
             native = home / 'projects' / 'p' / 'own.jsonl'
             native.parent.mkdir(parents=True)

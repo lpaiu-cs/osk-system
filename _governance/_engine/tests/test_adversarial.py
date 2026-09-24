@@ -105,7 +105,7 @@ def make_canonical(root: Path, version: str, files: dict) -> None:
     (root / "README.md").write_text("readme\n", encoding="utf-8", newline="\n")
     (root / "LICENSE").write_text("MIT\n", encoding="utf-8", newline="\n")
     if not (root / ".git").exists():
-        git(root, "init", "-q")
+        git(root, "init", "-q", "-b", "main")
         git(root, "config", "user.email", "t@t")
         git(root, "config", "user.name", "t")
         git(root, "config", "core.autocrlf", "false")
@@ -138,7 +138,7 @@ def make_instance(root: Path) -> None:
         p = root / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body, encoding="utf-8")
-    git(root, "init", "-q")
+    git(root, "init", "-q", "-b", "main")
     git(root, "config", "user.email", "i@i")
     git(root, "config", "user.name", "i")
     git(root, "add", "-A")

@@ -113,8 +113,8 @@ def _title_errors(title: str) -> list[str]:
             f"본문 Link 파서가 `[[제목#헤딩]]`·`[[제목|별칭]]` 문법 때문에 여기서 "
             f"대상명을 자른다. 이 제목으로 만든 노드는 아무도 링크로 가리킬 수 "
             f"없다")
-    if any(ord(c) < 32 for c in t):
-        errs.append("제목에 제어문자를 쓸 수 없다")
+    if any(ord(c) < 32 or c in "\x85\u2028\u2029" for c in t):
+        errs.append("제목에 제어문자·줄 구분 문자를 쓸 수 없다")
     if t.startswith("."):
         errs.append(f"제목은 `.`으로 시작할 수 없다: {title!r}")
     if t.endswith((".", " ")):
@@ -218,30 +218,16 @@ def _live_locate(name: str, idx) -> Path | None:
 # 문자 집합을 따른다: 유니코드 문자·밑줄([^\W\d])과 `-`·`/`·`·`(U+00B7).
 # 마침표·쉼표·괄호·공백·전각 대시 등은 태그를 끝내므로 건드리지 않는다.
 _TAG_SPACE_RE = re.compile(r"(#\d+)(?=[^\W\d]|[-/·])")
-_CODE_SPAN_RE = re.compile(r"(`[^`\n]*`)")
-_FENCE_RE = re.compile(r"^ {0,3}```")
 
 
 def _space_numeric_tags(text: str) -> str:
     """본문의 `#<숫자>` 직결 태그화를 공백 삽입으로 끊는다.
 
-    코드 구획(펜스·인라인)은 옵시디언이 태그로 읽지 않으므로 건드리지
-    않는다 — 위험이 없는 코드를 고치면 그건 방어가 아니라 변조다. 펜스
-    경계 판정은 `wikilinks()`와 같은 규칙(행 머리 ```)을 쓴다."""
-    out, in_fence = [], False
-    for line in text.split("\n"):
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            out.append(line)
-            continue
-        if in_fence:
-            out.append(line)
-            continue
-        parts = _CODE_SPAN_RE.split(line)
-        out.append("".join(
-            seg if i % 2 else _TAG_SPACE_RE.sub(r"\1 ", seg)
-            for i, seg in enumerate(parts)))
-    return "\n".join(out)
+    코드 구획(펜스·들여쓰기 코드·인라인)은 옵시디언이 태그로 읽지 않으므로
+    건드리지 않는다 — 위험이 없는 코드를 고치면 그건 방어가 아니라 변조다.
+    구획 판정은 `wikilinks()`·목차와 같은 `contract.split_code`를 쓴다."""
+    return "".join(seg if i % 2 else _TAG_SPACE_RE.sub(r"\1 ", seg)
+                   for i, seg in enumerate(contract.split_code(text)))
 
 
 def _norm_newlines(text: str) -> str:

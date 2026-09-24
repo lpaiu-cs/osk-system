@@ -35,6 +35,12 @@
 
 ---
 
+> **Status: developer public beta.** The maintainer uses it daily on Windows 11,
+> and CI runs the test suite on Windows and Linux. macOS is not yet verified.
+> Your vault is a Git repository: keep it pushed to your own private remote, or
+> otherwise backed up, before every update. See the
+> [known limitations](#known-limitations).
+
 ## Keep the context. Keep the evidence.
 
 Agent memory needs more than storage. It needs a reliable distinction between
@@ -69,12 +75,13 @@ support **Codex and Claude Code**. See the
 tutorial. It goes from an empty folder to your agent's first saved memory, on
 macOS, Linux and Windows, with a check after every step.
 
-You need Python 3.12 and Git. Start from a release tag rather than `main`
+You need Python 3.11 or newer (the commands use 3.12; change the version to
+match yours) and Git. Start from a release tag rather than `main`
 (newer tags are on the [releases page](https://github.com/lpaiu-cs/osk-system/releases)).
 On macOS or Linux:
 
 ```bash
-git clone --branch v3.22.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python3.12 -m venv .venv
@@ -154,8 +161,8 @@ to convention. Three design choices support it:
 
 The principle is simple: **do not claim to enforce what you cannot enforce.**
 Authorization remains unresolved unless the engine can evaluate its applicability.
-Protected regions help recover from honest mistakes; they are **not a security
-boundary against someone with arbitrary write access to the vault**.
+Protected regions help prevent and recover from honest mistakes; they are **not a
+security boundary against someone with arbitrary write access to the vault**.
 See the [engine's limitations](_governance/_engine/README.md#알려진-한계).
 
 ## Harness coverage
@@ -168,7 +175,7 @@ connected.
 | Runtime conditions | Conversation review path |
 |---|---|
 | Supported hooks and subscription CLI; authentication and version checks pass | A background fork using the same harness and model after every **9 successful final-answer Stop events** |
-| CLI unavailable or unconfigured; login, subscription, version, or permission checks fail; Codex task directory is not a Git repository | A **review warning** and in-session integration at **UserPromptSubmit turns 9 and 15** |
+| CLI unavailable or unconfigured; login, subscription, version, or permission checks fail; Codex task directory is neither a Git worktree nor a trusted Codex project | A **review warning** and in-session integration at **UserPromptSubmit turns 9 and 15** |
 | Harness without an adapter | No guarantee of automatic capture, counting, or fallback; integration and verification are still required |
 
 Input counts continue in background mode. Switching paths does not reset pending
@@ -198,6 +205,28 @@ transcript boundaries, hook events, subscription authentication, one-shot
 execution, and failure fallbacks.
 
 </details>
+
+## Known limitations
+
+- **One memory per folder name.** The session key is the repository folder's
+  name (the parent of Git's common directory, so worktrees fold into their main
+  repository; outside Git, the working folder's name). Repositories with the
+  same folder name share one Scope memory and transcript destination, and
+  top-level Git submodules all share the key `modules`. Until v4, give them
+  distinct folder names.
+- **Background reviews inherit the source session's permissions.** A
+  subscription fork review runs unattended with the reviewed session's own
+  Claude Code permission mode, or Codex approval and sandbox policy. This is by
+  design. The fork re-reads that conversation, including any untrusted text it
+  contains.
+- **Node bodies are not secret-filtered.** This is by design. The secret filter
+  covers raw transcripts, Scope memory, and writes distilled from raw records.
+  Keep secrets out of notes: they are committed and synchronized.
+- **Protected regions are not a security boundary.** They help prevent and
+  recover from honest mistakes; see [Why the distinction matters](#why-the-distinction-matters).
+- **Autonomous growth is experimental.** Its effect is still being measured
+  ([issue #20](https://github.com/lpaiu-cs/osk-system/issues/20)).
+- **The governing documents are in Korean only.**
 
 ## Governance
 

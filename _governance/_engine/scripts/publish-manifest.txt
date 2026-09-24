@@ -43,6 +43,8 @@ KEEP README.ko.md
 # 지운다"에 걸려 발행이 그 둘을 지우고 커밋한다 — 비준증빙이 HEAD에서 사라진다.
 KEEP release.json
 KEEP .github/workflows/release.yml
+# release.yml이 부르는 회귀 수트 워크플로 — 지워지면 Release가 만들어지지 않는다.
+KEEP .github/workflows/ci.yml
 
 # ── 대상 안에서도 나가지 않는 것 ────────────────────────────
 # 대장은 이 인스턴스의 권위 기록이다 — 노드 id·해시·사유·세션 키가 들어 있고

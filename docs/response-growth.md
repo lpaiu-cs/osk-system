@@ -206,8 +206,9 @@ it alone does not prove first-request reuse of the parent.
 - The installed Codex config parser accepted the generated granular approval table and
   preserved both temporary-directory exclusions, network access and normalized write roots.
   This used `config/read` with no model call or configuration mutation.
-- No live engine update, automatic fork configuration, shared daemon restart, or release
-  has been made. The governance wording was explicitly approved before amendment.
+- At validation time (2026-09-21, before the v3.17.0 release), no live engine update,
+  automatic fork configuration, shared daemon restart, or release had been made. The
+  governance wording was explicitly approved before amendment.
 
 References: [Codex hooks](https://learn.chatgpt.com/docs/hooks),
 [Codex app-server](https://learn.chatgpt.com/docs/app-server),
