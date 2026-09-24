@@ -19,6 +19,7 @@ from . import contract
 
 # 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
 _ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?(?![0-9a-z])")
+_ID_TOKEN_CACHE: dict[Path, tuple[tuple[int, int], frozenset]] = {}
 
 
 def _load_cases() -> dict[str, dict]:
@@ -291,7 +292,7 @@ def _scan(root: Path, prefix: tuple, errors: list | None = None):
                 continue
 
 
-def iter_nodes(errors: list | None = None):
+def iter_nodes(errors: list | None = None, dirents: dict | None = None):
     # 통치 구획의 통치 문서·사료는 특수한 노드다(시행령 §10 1항) — 색인에
     # 있어야 명시 조회(read_node)가 도달하고 갱신 후 승인(수용 기록)이
     # 성립한다. `_engine`의 .md는 소속 판정이 ("engine",)으로 걸러낸다.
@@ -312,6 +313,8 @@ def iter_nodes(errors: list | None = None):
             p = Path(e.path)
             found.append((p, space_of(p) if _is_reparse(e)
                           else _space_of_parts(parts)))
+            if dirents is not None:
+                dirents[p] = e        # 디렉토리 판독의 stat — 동 id 후보표가 쓴다
         for p, k in sorted(found, key=lambda x: x[0]):
             if is_node_home(k):
                 yield p, k
@@ -431,8 +434,9 @@ class Index:
         # 관측이 불완전하면(디렉토리 하나라도 못 읽었으면) 유일성을 말할 수
         # 없다. 그 사실을 색인이 들고 있어야 쓰기가 거부할 수 있다.
         self.scan_errors: list[str] = []
+        self._dirents: dict = {}
         self._entries: list[tuple[Path, tuple]] = list(
-            iter_nodes(self.scan_errors))
+            iter_nodes(self.scan_errors, self._dirents))
         self.names: dict[str, tuple[Path, tuple]] = {}
         self._by_name: dict[str, list[tuple[Path, tuple]]] = {}
         self.parsed: dict[Path, contract.Node] = {}
@@ -642,6 +646,27 @@ class Index:
         keys = [str(t).encode() for t in tokens if t]
         return [p for p, data in self._node_bytes() if any(k in data for k in keys)]
 
+    def _id_token_sets(self):
+        """파일마다 바이트 속 id꼴 토큰. 디렉토리 판독의 (mtime, 크기)가 같으면
+        프로세스에 접어 둔 것을 쓴다 — 이름 쓰기마다 전 노드를 열면 2k 노드에서
+        쓰기 한 번이 수백 ms 늘었다(실측). racy 창 안의 파일은 접지 않는다."""
+        # ponytail: 캐시는 지운 경로를 비우지 않는다(프로세스 수명 동안 vault
+        # 크기에 비례). 장수 프로세스에서 문제가 되면 색인 구축 때 솎는다.
+        margin, now = racy_margin_ns(), time.time_ns()
+        for p, _k in self._entries:
+            try:
+                e = self._dirents.get(p)
+                st = e.stat() if e is not None else p.stat()
+                key = (st.st_mtime_ns, st.st_size)
+                hit = _ID_TOKEN_CACHE.get(p)
+                if hit is None or hit[0] != key:
+                    hit = (key, frozenset(t.decode() for t in _ID_TOKEN.findall(p.read_bytes())))
+                    if abs(now - key[0]) > margin:
+                        _ID_TOKEN_CACHE[p] = hit
+            except OSError:
+                continue              # 못 여는 파일은 판독도 실패한다 — 노드가 아니다
+            yield p, hit[1]
+
     def id_twins(self, path: Path) -> list[str]:
         """`path` 노드와 id가 같은 **판독되는** 노드 전부(자신 포함, POSIX 경로) —
         겹치지 않으면 빈 목록. `dup_ids`의 한 id판이다.
@@ -653,8 +678,6 @@ class Index:
         (근거로 id를 적은 노드도 후보가 되지만 판독이 걸러낸다), 판정은 계약
         파서로 한다 — 정규식이 판정하면 따옴표 표기 같은 노드가 미아가 된다.
         """
-        # ponytail: 색인당 전 노드 파일을 한 번 연다(2k 노드 ≈0.2 s). 수만 노드에서
-        # 이름 쓰기가 무거워지면 id 후보표를 지문과 함께 접어 둔다.
         if not self._readable(path) or not self.parsed[path].id:
             return []
         nid = self.parsed[path].id
@@ -662,9 +685,9 @@ class Index:
             return sorted(self.dup_ids.get(nid, []))
         if self._id_tokens is None:
             self._id_tokens = {}
-            for p, data in self._node_bytes():
-                for t in set(_ID_TOKEN.findall(data)):
-                    self._id_tokens.setdefault(t.decode(), []).append(p)
+            for p, toks in self._id_token_sets():
+                for t in toks:
+                    self._id_tokens.setdefault(t, []).append(p)
         same = [p for p in dict.fromkeys([path, *self._id_tokens.get(nid, ())])
                 if self._readable(p) and self.parsed[p].id == nid]
         return sorted(p.relative_to(ROOT).as_posix() for p in same) if len(same) > 1 else []
