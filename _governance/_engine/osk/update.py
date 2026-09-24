@@ -32,6 +32,7 @@ from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_damage,
                    ledger_read, resolve_one, sha256_file, sha256_bytes, posix_rel,
                    local_lock_path, SPACE_ROOTS, _within, _canon_rel)
 from .core import mutation_lock_path as core_mutation_lock_path
+from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from ._portalock import lock_exclusive, unlock
 from .layout import KINDS, PREFIXES, adapt_path
 from . import publish
@@ -397,55 +398,12 @@ def _fsync_file(p: Path) -> None:
         os.close(fd)
 
 
-def _fsync_dir(d: Path) -> None:
-    """디렉터리 엔트리를 내구화 — 파일만 fsync하면 rename·create·unlink가 유실될
-    수 있다. 전원 차단까지 계약하므로 실패를 삼키지 않는다: 디렉터리 fsync 개념이
-    없는 파일시스템(EINVAL·ENOTSUP)만 예외로 넘기고, 그 밖의 오류는 올려
-    트랜잭션이 durability 없이 성공한 척하지 못하게 한다."""
-    try:
-        fd = os.open(str(d), os.O_RDONLY)
-    except FileNotFoundError:
-        return                      # 이미 사라진 디렉터리 — 내구화할 대상이 없다
-    except OSError as e:
-        if e.errno in (errno.EINVAL, errno.ENOTSUP, errno.EACCES, errno.EPERM):
-            return
-        raise
-    try:
-        os.fsync(fd)
-    except OSError as e:
-        if e.errno not in (errno.EINVAL, errno.ENOTSUP):
-            raise
-    finally:
-        os.close(fd)
-
-
-def _mkdirs_durable(d: Path) -> list[Path]:
-    """`d`까지의 없는 조상을 만들고, **만든 각 디렉터리의 부모를 fsync**한다.
-    `mkdir(parents=True)` 뒤 자신만 fsync하면 그 엔트리를 소유한 부모가 내구화되지
-    않아 전원 차단 시 디렉터리째 유실된다(그 안의 파일은 done 이후에도 사라진다).
-    반환: 새로 만든 디렉터리(깊은 순) — 트랜잭션 rollback이 되돌릴 대상이다."""
-    missing = []
-    p = d
-    while not p.exists():
-        missing.append(p)
-        if p.parent == p:
-            break
-        p = p.parent
-    created = []
-    for q in reversed(missing):     # 얕은 곳부터 만든다
-        q.mkdir(exist_ok=True)
-        created.append(q)
-        _fsync_dir(q.parent)        # 그 엔트리를 소유한 부모를 내구화
-    created.reverse()
-    return created
-
-
 def _fsync_journal_home() -> None:
-    """저널 파일의 **디렉터리 엔트리**를 내구화한다. `ledger_append`는 파일만
-    fsync하므로, 저널이 이번에 처음 만들어졌으면 이름 자체가 전원 차단에
-    유실될 수 있다 — 그 상태에서 트랜잭션 표식까지 지우면 파일은 새 판인데
-    baseline·관리 이력이 통째로 사라진다. ROOT까지 조상을 함께 내구화한다
-    (대장 구획도 이번에 생겼을 수 있다)."""
+    """저널 파일의 **디렉터리 엔트리**를 내구화한다. `ledger_append`가 처음
+    만든 대장의 엔트리를 내구화하지만, 직전 실행이 행 fsync 직후·엔트리 내구화
+    전에 죽었으면 이름 자체가 전원 차단에 유실될 수 있다 — 그 상태에서 트랜잭션
+    표식까지 지우면 파일은 새 판인데 baseline·관리 이력이 통째로 사라진다. ROOT
+    까지 조상을 함께 내구화한다(대장 구획도 이번에 생겼을 수 있다)."""
     d = UPDATE_JOURNAL.parent
     root_real = Path(os.path.realpath(ROOT))
     while True:

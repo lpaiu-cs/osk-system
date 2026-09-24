@@ -19,11 +19,11 @@
 core.resolve_in_root로 vault 안에 봉쇄한다. 해석 실패는 언제나 거부 쪽이다.
 """
 from __future__ import annotations
-import json, os, re, tempfile
+import json, os, re
 from pathlib import Path
 
 from .core import (ROOT, LEDGER, ledger_damage, sha256_bytes, sha256_file,
-                   posix_rel,
+                   posix_rel, atomic_write, fsync_dir, mkdirs_durable,
                    resolve_in_root, ledger_append, ledger_read, causal_maxima,
                    effective_parents, heads, mutation_lock, resolve_one,
                    _rid_key, _canon_rel)
@@ -139,18 +139,10 @@ def _store_put(data: bytes) -> str:
                 return digest             # 정상 객체 — 멱등 반환
         except OSError:
             pass                          # 판독 불가 → 아래 원자 재기록으로 치유
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, dst)              # 원자 교체 — 손상 객체를 정상으로 치유
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    # 원자 교체 — 손상 객체를 정상으로 치유. 새 객체 디렉터리와 엔트리를
+    # 내구화한 뒤에야 돌아간다: 호출부가 이 digest를 대장에 적으므로, 순서가
+    # 뒤집히면 전원 차단 뒤 대장이 사라진 객체를 가리킨다.
+    atomic_write(dst, data)
     return digest
 
 
@@ -1024,8 +1016,10 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         # 쓰기가 덮기 전에 제자리로 돌아온다(순서가 뒤면 밖의 내용이 승인본을
         # 덮거나 이동 노드가 삭제된다).
         for now_at, home in unmoves:
-            home.parent.mkdir(parents=True, exist_ok=True)
+            mkdirs_durable(home.parent)
             os.replace(now_at, home)
+            fsync_dir(home.parent)        # revert 기록보다 엔트리가 먼저 내구화
+            fsync_dir(now_at.parent)
         _apply_tree(d, table, staged)
         # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
         # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
@@ -1126,21 +1120,10 @@ def _apply_tree(region_dir: Path, table: dict[str, str],
     들어오는 변경까지 막지는 못한다 — 그 잔여 창은 이 프로세스 밖(git pull 등)
     이라 닫을 수 없고, 그때는 영역이 pending으로 남아 다음 반려가 새 승인본으로
     복원한다."""
-    region_dir.mkdir(parents=True, exist_ok=True)
-    # 2) 승인본 내용으로 원자 교체
+    mkdirs_durable(region_dir)
+    # 2) 승인본 내용으로 원자 교체 — 엔트리까지 내구화한다(revert 기록이 뒤따른다)
     for p, data in staged:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(p.parent))
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, p)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        atomic_write(p, data)
     # 3) manifest에 없는 현재 파일 제거 (에이전트가 추가한 것)
     #    삭제 실패(권한 등)는 삼키지 않는다 — 조용히 넘기면 작업본이 승인본과
     #    다른 채로 남는데도 revert가 완료된 것처럼 기록될 수 있다.
@@ -1153,6 +1136,7 @@ def _apply_tree(region_dir: Path, table: dict[str, str],
             except OSError as e:
                 raise ValueError(
                     f"승인본 밖 파일 삭제 실패 — 복원 미완료: {rel} ({e})") from e
+            fsync_dir(p.parent)           # 삭제 엔트리 내구화
 
 
 # ── 검증기 지원 ──────────────────────────────────────────────────────────

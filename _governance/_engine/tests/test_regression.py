@@ -1200,6 +1200,146 @@ def test_store_content_verified():
         f.unlink(missing_ok=True)
 
 
+def test_dir_entries_durable_before_ledger():
+    """디렉터리 엔트리 내구화 (v4 3단계 · Mechanism §1-2 7항·§3 1항) — 파일만
+    fsync하고 부모 디렉터리를 fsync하지 않으면, 전원 차단 뒤 대장 기록은
+    남았는데 그것이 가리키는 승인본 객체·복원 파일이 사라질 수 있다(POSIX).
+    보호·승인·반려와 노드 쓰기·대장 첫 생성은 **공유 헬퍼 한 곳**
+    (`core.fsync_dir`)으로 부모를 내구화하고, 그 순서가 대장 기록보다 앞선다.
+    Windows에서 그 헬퍼는 의도된 no-op이다(디렉터리를 열 수 없고 NTFS가
+    메타데이터를 저널링한다) — 호출 순서는 두 OS에서 보고, 실제 디렉터리
+    fsync는 POSIX에서만 본다."""
+    from osk import approvals as A
+    real_fd = getattr(core, "fsync_dir", None)
+    # 헬퍼가 없는 엔진(v3.22.x)에서도 아래 순서 검사가 **각각** 실패로 드러나도록
+    # 여기서 멈추지 않는다 — 가로챌 자리가 없으면 만들어 두고(create) 호출을 센다.
+    check("core가 디렉터리 엔트리 내구화 헬퍼를 둔다", callable(real_fd))
+    real_fd = real_fd or (lambda d: None)
+    norm = lambda p: os.path.normcase(os.path.realpath(p))
+    ev = []                                   # ("dir", 경로) | ("ledger", 대장)
+    real_open, real_fsync = os.open, os.fsync
+    dir_fds = {}
+
+    def spy_open(path, flags, *a, **kw):
+        fd = real_open(path, flags, *a, **kw)
+        if os.path.isdir(path):
+            dir_fds[fd] = norm(path)
+        return fd
+
+    def spy_fsync(fd):
+        if fd in dir_fds:                     # 실제 디렉터리 fsync(POSIX)
+            ev.append(("os-dir", dir_fds[fd]))
+        return real_fsync(fd)
+
+    def spy_fd(d):
+        ev.append(("dir", norm(d)))
+        return real_fd(d)
+
+    real_append = A.ledger_append
+
+    def spy_append(path, record, expect=None):
+        ev.append(("ledger", norm(path)))
+        return real_append(path, record, expect=expect)
+
+    def before_ledger(kind, d, ledger):
+        """`d`의 `kind` 내구화가 `ledger`의 첫 기록보다 앞서 있는가."""
+        li = next((i for i, e in enumerate(ev) if e == ("ledger", norm(ledger))), None)
+        di = next((i for i, e in enumerate(ev) if e == (kind, norm(d))), None)
+        return li is not None and di is not None and di < li
+
+    def spying():
+        return [mock.patch.object(core, "fsync_dir", spy_fd, create=True),
+                mock.patch.object(A, "fsync_dir", spy_fd, create=True),
+                mock.patch.object(A, "ledger_append", spy_append),
+                mock.patch.object(os, "open", spy_open),
+                mock.patch.object(os, "fsync", spy_fsync)]
+
+    reg = "00_Scope/DUR"
+    regdir = ROOT / "00_Scope" / "DUR"
+    tag = f"{time.time_ns()}"
+    regdir.mkdir(parents=True, exist_ok=True)
+    f = regdir / "dur.md"
+    f.write_text(f"내구화 {tag}", encoding="utf-8")
+    try:
+        def run(fn):
+            before = set(A.STORE.rglob("*")) if A.STORE.exists() else set()
+            ev.clear(); dir_fds.clear()
+            ps = spying()
+            for p in ps:
+                p.start()
+            try:
+                fn()
+            finally:
+                for p in reversed(ps):
+                    p.stop()
+            return sorted(set(A.STORE.rglob("*")) - before)
+
+        for label, fn in (
+                ("보호", lambda: A.protect(reg, "내구화 시험")),
+                ("승인", lambda: (f.write_text(f"승인본 {tag}", encoding="utf-8"),
+                                 A.approve(reg, A.approved_hash(reg),
+                                           A.working_tree_hash(reg), "내구화"))),
+        ):
+            new = run(fn)
+            check(f"{label}: 새 저장소 엔트리가 생겼다", bool(new), new)
+            late = [core.posix_rel(e, ROOT) for e in new
+                    if not before_ledger("dir", e.parent, A.APPROVALS)]
+            check(f"{label}: 새 객체·객체 디렉터리의 부모가 승인 기록 **전에** "
+                  f"내구화된다(core.fsync_dir)", not late, (late, ev[:8]))
+            if POSIX_MODE:
+                late_os = [core.posix_rel(e, ROOT) for e in new
+                           if not before_ledger("os-dir", e.parent, A.APPROVALS)]
+                check(f"{label}: 실제 디렉터리 fsync가 승인 기록보다 앞선다(POSIX)",
+                      not late_os, (late_os, ev[:8]))
+            else:
+                skip(f"{label}: 실제 디렉터리 fsync가 승인 기록보다 앞선다(POSIX)",
+                     "Windows는 디렉터리를 열 수 없어 fsync_dir가 의도된 no-op이다 "
+                     "(NTFS 메타데이터 저널)")
+
+        # 반려 — 복원한 파일과 지운 파일의 부모가 revert 기록 전에 내구화된다
+        f.write_text("에이전트 변경", encoding="utf-8")
+        (regdir / "extra.md").write_text("추가", encoding="utf-8")
+        run(lambda: A.revert(reg, A.approved_hash(reg),
+                             A.working_tree_hash(reg), "내구화"))
+        check("반려: 복원이 승인본 그대로",
+              f.read_text(encoding="utf-8") == f"승인본 {tag}"
+              and not (regdir / "extra.md").exists())
+        check("반려: 복원·삭제한 엔트리의 부모가 revert 기록 전에 내구화된다",
+              before_ledger("dir", regdir, A.APPROVALS), ev[:8])
+        if POSIX_MODE:
+            check("반려: 실제 디렉터리 fsync가 revert 기록보다 앞선다(POSIX)",
+                  before_ledger("os-dir", regdir, A.APPROVALS), ev[:8])
+
+        # 노드 쓰기(write._atomic_write)와 대장의 첫 생성
+        deep = ROOT / "00_Scope" / "DUR" / "nest" / f"n{tag}"
+        run(lambda: write._atomic_write(deep / "x.json", b"{}"))
+        got = {e[1] for e in ev if e[0] == "dir"}
+        check("노드 쓰기: 파일의 부모와 새로 만든 조상의 부모를 내구화한다",
+              {norm(deep), norm(deep.parent), norm(regdir)} <= got, sorted(got))
+        led = core.LEDGER / f"dur-{tag}" / "probe.jsonl"
+        run(lambda: core.ledger_append(led, {"kind": "probe"}))
+        got = [e[1] for e in ev if e[0] == "dir"]
+        check("대장 첫 생성: 대장 디렉터리와 그 부모를 내구화한다",
+              norm(led.parent) in got and norm(led.parent.parent) in got, got)
+        run(lambda: core.ledger_append(led, {"kind": "probe"}))
+        check("기존 대장의 append는 디렉터리를 다시 fsync하지 않는다",
+              not [e for e in ev if e[0] == "dir"], ev)
+        if os.name == "nt":
+            ev.clear(); dir_fds.clear()
+            with mock.patch.object(os, "open", spy_open):
+                real_fd(regdir)
+            check("Windows의 fsync_dir는 디렉터리를 열지 않는 명시적 no-op",
+                  not dir_fds, dir_fds)
+        shutil.rmtree(led.parent, ignore_errors=True)
+    finally:
+        f.write_text(f"승인본 {tag}", encoding="utf-8")
+        (regdir / "extra.md").unlink(missing_ok=True)
+        shutil.rmtree(regdir / "nest", ignore_errors=True)
+        try: A.unprotect(reg, "정리")
+        except Exception: pass
+        shutil.rmtree(regdir, ignore_errors=True)
+
+
 # ── 대장 잠금 안 전제 재확인 — 스냅샷 중 유입 기록을 덮지 않는다 ────────
 def test_approve_precondition_under_lock():
     """승인본 측 CAS는 대장 **잠금 안에서** 다시 본다 — 작업본 스냅샷이 걸리는
@@ -10342,6 +10482,7 @@ if __name__ == "__main__":
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
                test_store_content_verified,
+               test_dir_entries_durable_before_ledger,
                test_revert_incomplete_no_record,
                test_revert_path_identity,
                test_approve_precondition_under_lock,

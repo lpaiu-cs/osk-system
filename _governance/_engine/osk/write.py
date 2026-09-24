@@ -36,7 +36,7 @@ import yaml
 from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
                    ledger_append, ledger_damage, ledger_read, mutation_lock,
                    new_node_id, now_kst, posix_rel, resolve_in_root,
-                   resolve_one, sha256_bytes, sha256_file)
+                   resolve_one, sha256_bytes, sha256_file, atomic_write)
 from . import approvals, contract, evictions, graph, signatures
 
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
@@ -285,19 +285,7 @@ def _edge_value(pred: str, v) -> str:
     return "[" + ", ".join(one(x) for x in items) + "]"
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+_atomic_write = atomic_write          # 시험이 이 이름을 가로챈다 — 호출부는 그대로
 
 
 # ── 결속 ─────────────────────────────────────────────────────────────────

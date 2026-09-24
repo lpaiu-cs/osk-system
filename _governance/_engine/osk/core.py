@@ -28,7 +28,7 @@
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
 from __future__ import annotations
-import hashlib, json, os, random, re, string, tempfile, time
+import errno, hashlib, json, os, random, re, string, tempfile, time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -267,6 +267,81 @@ def sha256_file(p: Path | str) -> str:
 
 def sha256_bytes(b: bytes) -> str:
     return "sha256:" + hashlib.sha256(b).hexdigest()
+
+
+# ── 디렉터리 엔트리 내구화 (Mechanism §1-2 7항 · §3 1항) ──────────────────
+
+def fsync_dir(d: Path) -> None:
+    """디렉터리 엔트리를 내구화 — 파일만 fsync하면 rename·create·unlink가 전원
+    차단에 유실될 수 있다(POSIX). 디렉터리 fsync 개념이 없는 파일시스템(EINVAL·
+    ENOTSUP)과 열 권한이 없는 디렉터리(EACCES·EPERM)만 넘기고, 그 밖의 오류는
+    올려 쓰기가 내구화 없이 성공한 척하지 못하게 한다.
+
+    **Windows에서는 의도된 no-op이다.** 디렉터리를 `os.open`으로 열 수 없고
+    (EACCES — 예전에는 그 예외를 삼켜 조용히 no-op이었다), NTFS는 메타데이터를
+    저널링하므로 rename·create는 전원 차단 뒤에도 옛 엔트리나 새 엔트리 중
+    하나로 남는다(찢긴 엔트리는 없다). 다만 **마지막 변경의 내구성은 보장하지
+    않는다** — 저널이 디스크에 닿기 전에 전원이 나가면 직전 상태로 돌아갈 수
+    있다. 프로세스 사망에는 두 OS 모두 안전하다(커널 캐시가 살아 있다)."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(d), os.O_RDONLY)
+    except FileNotFoundError:
+        return                      # 이미 사라진 디렉터리 — 내구화할 대상이 없다
+    except OSError as e:
+        if e.errno in (errno.EINVAL, errno.ENOTSUP, errno.EACCES, errno.EPERM):
+            return
+        raise
+    try:
+        os.fsync(fd)
+    except OSError as e:
+        if e.errno not in (errno.EINVAL, errno.ENOTSUP):
+            raise
+    finally:
+        os.close(fd)
+
+
+def mkdirs_durable(d: Path) -> list[Path]:
+    """`d`까지의 없는 조상을 만들고, **만든 각 디렉터리의 부모를 fsync**한다.
+    `mkdir(parents=True)` 뒤 자신만 fsync하면 그 엔트리를 소유한 부모가 내구화되지
+    않아 전원 차단 시 디렉터리째 유실된다(그 안의 파일은 기록 뒤에도 사라진다).
+    반환: 새로 만든 디렉터리(깊은 순) — 갱신 트랜잭션 rollback이 되돌릴 대상이다."""
+    missing = []
+    p = d
+    while not p.exists():
+        missing.append(p)
+        if p.parent == p:
+            break
+        p = p.parent
+    created = []
+    for q in reversed(missing):     # 얕은 곳부터 만든다
+        q.mkdir(exist_ok=True)
+        created.append(q)
+        fsync_dir(q.parent)         # 그 엔트리를 소유한 부모를 내구화
+    created.reverse()
+    return created
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    """원자 교체 + 내구화: 임시 파일 fsync → `os.replace` → **부모 디렉터리
+    fsync**. 호출부가 이 뒤에 그 파일을 가리키는 대장 기록을 남기므로, 엔트리가
+    기록보다 먼저 내구화돼야 전원 차단 뒤 '기록은 있는데 파일은 없는' 상태가
+    생기지 않는다. 권한은 mkstemp 기본이다 — 기존 권한을 보존해야 하는 갱신은
+    `update._write_atomic`을 쓴다."""
+    mkdirs_durable(path.parent)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    fsync_dir(path.parent)
 
 
 def posix_rel(p: Path, relative_to: Path) -> str:
@@ -562,7 +637,7 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
     """모든 `_ledger/` jsonl 공통 (Mechanism §3):
     잠금 → 전체 판독 → **구조 손상이면 거부** → parents = 현재 head 전부
     (병합 봉합) → rid = 정본 최대 rid로부터 단조 생성 → 행 단위 원자
-    append·fsync.
+    append·fsync(대장을 처음 만들었으면 그 디렉터리 엔트리까지).
 
     `expect`는 **잠금 안에서** 방금 읽은 기록으로 전제조건을 다시 보는 선택적
     검사다 — `expect(records)`가 문자열을 돌려주면 그것을 사유로 거부한다.
@@ -571,7 +646,7 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
     분기가 stale로 드러나지 않고 조용히 대체한다(그리고 행에 적은 전제가
     거짓 진술이 된다). 검사와 append를 같은 잠금에 두어야 그 창이 닫힌다."""
     record.setdefault("at", now_iso())
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdirs_durable(path.parent)
     with open(path, "a+", encoding="utf-8") as f:
         lock_exclusive(f)
         try:
@@ -600,6 +675,10 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
                     + "\n")
             f.flush()
             os.fsync(f.fileno())
+            if not text:
+                # 이번에 처음 만든 대장 — 행만 fsync하면 이름 자체가 전원 차단에
+                # 유실돼, 이 기록을 전제로 한 다음 단계가 근거 없이 남는다.
+                fsync_dir(path.parent)
         finally:
             unlock(f)
     return record
