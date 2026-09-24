@@ -7792,12 +7792,16 @@ def test_node_place_rule():
         for space in (f"{D}/_regr-misc", f"{S}/W1/_regr-sub", f"{S}/_regr-new"):
             hub = space.rsplit("/", 1)[1]
             rs = [_w(write.create_node, hub, "허브", "본문", "fable-5",
-                     space=space) for _ in range(2)]
+                     space=space)]
+            # 표식은 **1차 뒤에** 본다 — 재시도가 표식을 소비하므로 두 번 뒤에는
+            # 남긴 적이 있어도 보이지 않는다.
+            acked = space in set(write._read_ack()) - ack_before
+            rs.append(_w(write.create_node, hub, "허브", "본문", "fable-5",
+                         space=space))
             check(f"밑줄 구획 신설은 확인을 거쳐도 거부된다: {space}",
                   all(x.get("ok") is False for x in rs), rs)
             check(f"거부가 디렉토리도 확인 표식도 남기지 않는다: {space}",
-                  not (ROOT / space).exists()
-                  and space not in set(write._read_ack()) - ack_before)
+                  not (ROOT / space).exists() and not acked)
             shutil.rmtree(ROOT / space, ignore_errors=True)
         # 구판이 이미 만들어 둔 밑줄 구획 — 읽지도 쓰지도 않고 보고한다.
         priv = ROOT / S / "_regr-priv"
