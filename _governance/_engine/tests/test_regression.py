@@ -5622,6 +5622,13 @@ def test_code_region_commonmark_rules():
         "nbsp-line": ("글\n \n    #1ab [[X]]", True),
         "ideographic-line": ("글\n　\n    #1ab [[X]]", True),
         "crlf": ("-\r\n  ~~~\r\n#1ab [[X]]", True),
+        # 인라인 코드는 문단 안에서 행을 넘어 닫히고, `\``의 첫 백틱은 글자다
+        "span-crosses-line": ("`#1ab [[X]]``\n`", False),
+        "span-closes-next-line": ("`a\n`` `b` #1ab [[X]] ``", True),
+        "escaped-tick": ("이슈는 \\``#1ab [[X]]`` 로 표기", True),
+        "escaped-backslash": ("\\\\`#1ab [[X]]`", False),
+        "span-stops-at-blank": ("`a\n\nb` #1ab [[X]]", True),
+        "span-stops-at-item": ("- `a\n- b` #1ab [[X]]", True),
     }
     for label, (body, prose) in cases.items():
         tags = write._space_numeric_tags(body)

@@ -78,9 +78,10 @@ def _fence_mark(content: str):
 
 
 def md_lines(text: str):
-    """본문을 행 단위로 훑어 `(offset, line, content, code)`를 낸다. content는
-    컨테이너(목록 항목·인용 `>`)를 벗긴(탭은 4칸) 판독용 행, code는 그 행이 코드
-    블록(펜스 행 포함·들여쓰기 코드)에 속하는지다.
+    """본문을 행 단위로 훑어 `(offset, line, content, code, cont)`를 낸다.
+    content는 컨테이너(목록 항목·인용 `>`)를 벗긴(탭은 4칸) 판독용 행, code는
+    그 행이 코드 블록(펜스 행 포함·들여쓰기 코드)에 속하는지, cont는 그 행이
+    앞 행의 문단을 잇는지다(인라인 코드는 문단 안에서 행을 넘어 닫힌다).
 
     태그 방어·Link 추출·목차가 **이 판정 한 벌**을 쓴다. 셋이 갈리면 목차가
     코드로 보는 예시를 그래프는 Link로 세고 쓰기는 그 코드를 고친다(v3.22.1
@@ -103,7 +104,7 @@ def md_lines(text: str):
                 pos += c
             matched += 1
         rest = content[pos:]
-        tip = opened = code = False
+        tip = opened = cont = code = False
         if fence and matched < fence_depth:
             fence = ""  # 닫히지 않은 펜스는 그것을 담은 컨테이너와 함께 끝난다
         if fence:
@@ -118,7 +119,7 @@ def md_lines(text: str):
                 stack.pop()   # 빈 항목은 빈 행을 만나면 닫힌다(항목은 빈 행 둘로 시작하지 못한다)
             para = empty = False
         elif para and matched < len(stack) and not any(r.match(rest) for r in _BLOCK_STARTS):
-            pass   # 컨테이너를 못 채워도 문단의 게으른 연속행이면 닫지 않는다
+            cont = True   # 컨테이너를 못 채워도 문단의 게으른 연속행이면 닫지 않는다
         else:
             tip = para and matched == len(stack)   # 열린 문단을 이을 수 있는 행
             del stack[matched:]
@@ -143,7 +144,7 @@ def md_lines(text: str):
             if not rest.strip(" \t"):
                 para = False
             elif rest.startswith("    "):
-                code, para = not tip, tip   # 들여쓰기 코드 — 문단을 끊지는 못한다
+                code, para, cont = not tip, tip, tip   # 들여쓰기 코드 — 문단을 끊지는 못한다
             elif mark := _fence_mark(rest):
                 fence, fence_depth, code, para = mark[1], len(stack), True, False
             else:
@@ -151,37 +152,44 @@ def md_lines(text: str):
                 para = not ((tip and _SETEXT_RE.match(rest))
                             or any(r.match(rest) for r in (_HEADING_RE, _BREAK_RE, _HTML_RE))
                             or (not tip and _HTML7_RE.match(rest)))
-        yield offset, line, rest, code
+                cont = tip and para
+        yield offset, line, rest, code, cont
         offset += len(line) + 1
 
 
 def split_code(text: str) -> list[str]:
     """`re.split`처럼 `[글, 코드, 글, …]`로 가른다 — 홀수 번째가 코드(코드
-    블록 행, 같은 길이의 백틱 열로 닫히는 인라인 코드). 이어 붙이면 원문이다."""
+    블록 행, 같은 문단 안에서 같은 길이의 백틱 열로 닫히는 인라인 코드). 이어
+    붙이면 원문이다."""
     if "`" not in text and "~~~" not in text and not _INDENTED_RE.search(text):
         return [text]   # 코드가 설 자리가 없다 — 대부분의 본문은 행 순회를 건너뛴다
-    cuts = []
-    for offset, line, _content, code in md_lines(text):
+    # ponytail: 인라인 HTML·자동링크가 코드 스팬보다 앞서는 규칙은 가리지 않는다.
+    cuts, paras = [], []
+    for offset, line, _content, code, cont in md_lines(text):
         if code:
             cuts.append([offset, min(offset + len(line) + 1, len(text))])
-            continue
-        if "`" not in line:
-            continue
-        # ponytail: 인라인 코드는 한 행 안에서만 닫는다(문단을 넘는 스팬·백슬래시
-        # 이스케이프는 글로 본다).
-        ticks = [m.span() for m in _TICKS_RE.finditer(line)]
-        i = 0
+        elif cont:
+            paras[-1][1] = offset + len(line)
+        else:
+            paras.append([offset, offset + len(line)])
+    for a, b in paras:
+        seg = text[a:b]
+        ticks = [m.span() for m in _TICKS_RE.finditer(seg)]
+        i = free = 0
         while i < len(ticks):
-            a, b = ticks[i]
+            s, e = ticks[i]
+            lead = seg[free:s]
+            s += (len(lead) - len(lead.rstrip("\\"))) % 2  # `\``의 첫 백틱은 글자다
             j = next((k for k in range(i + 1, len(ticks))
-                      if ticks[k][1] - ticks[k][0] == b - a), None)
-            if j is None:
+                      if ticks[k][1] - ticks[k][0] == e - s), None)
+            if j is None or s == e:
                 i += 1
                 continue
-            cuts.append([offset + a, offset + ticks[j][1]])
+            cuts.append([a + s, a + ticks[j][1]])
+            free = ticks[j][1]
             i = j + 1
     out, pos = [], 0
-    for a, b in cuts:
+    for a, b in sorted(cuts):
         if out and a == pos:
             out[-1] += text[a:b]     # 이어지는 코드 행은 한 구획으로
         else:

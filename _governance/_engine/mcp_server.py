@@ -262,7 +262,7 @@ def _node_view(body: str, view: str) -> dict:
     # covers heading-free/long bodies; add a Markdown parser only if richer outlines matter.
     headings = []
     # Code regions come from the same scanner as link extraction and tag defense.
-    for offset, _line, content, code in contract.md_lines(body):
+    for offset, _line, content, code, _cont in contract.md_lines(body):
         heading = not code and re.match(r" {0,3}(#{1,6})(?:[ \t]+|$)(.*)", content)
         if heading:
             headings.append({"title": re.sub(r"[ \t]+#+[ \t]*$", "", heading[2])[:80],
