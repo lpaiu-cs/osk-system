@@ -299,6 +299,16 @@ def _is_cluster(kind: tuple) -> bool:
     return len(kind) > 1 and bool(kind[1]) and not str(kind[1]).endswith(".md")
 
 
+def _require_node_cluster(kind: tuple, dest: str) -> None:
+    """노드를 둘 자리인가 — 생성·이동·군집 이동이 같은 판정을 쓴다."""
+    _reject_governance(kind)
+    if not graph.is_node_home(kind) or not _is_cluster(kind):
+        raise WriteError(
+            f"노드를 둘 수 없는 구획이다: {dest} {kind} — 노드는 군집 안에 둔다. "
+            f"Space 루트 직속과 `_`·`.` 접두 구획은 노드 자리가 아니다 "
+            f"(Mechanism §1 4항)")
+
+
 def _reject_governance(kind: tuple) -> None:
     if kind[:1] == GOVERNANCE:
         raise WriteError(
@@ -342,8 +352,7 @@ def _cluster_names() -> list[str]:
         # DirEntry already knows the type on Windows. Do not stat every node
         # just to find the few directories.
         with os.scandir(d) as entries:
-            dirs = [Path(e.path) for e in entries
-                    if e.is_dir() and not e.name.startswith((".", "_"))]
+            dirs = [Path(e.path) for e in entries if e.is_dir()]
         for sub in sorted(dirs):
             k = graph.space_of(sub / "x.md")
             if not (graph.is_node_home(k) and _is_cluster(k)
@@ -430,6 +439,9 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
             f"**허브가 있는 군집 안**이어야 한다(Mechanism §1 2항 · 시행령 §3 7항). "
             f"`{parent.name}`에 먼저 동명 허브 노드를 만들면 그 안에 분화할 수 "
             f"있다. 지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
+    # 확인 표식·디렉토리를 남기기 **전에** 자리를 본다 — 노드 자리가 아닌 곳
+    # (`_misc`·`.notes`)은 물어볼 것도 없이 거부다.
+    _require_node_cluster(graph.space_of(dest_dir / "x.md"), dest)
     name_errs = _title_errors(dest_dir.name)
     if name_errs:
         raise WriteError("군집 이름 부적격 — 이름이 곧 디렉토리명이다", name_errs)
@@ -947,6 +959,9 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
         # (구판은 "신설은 사용자 발의다"라며 전면 거부했으나 그 문구는
         # 규범 무근거였다 — 헌법은 형성의 자동화를 기본으로 둔다.)
         dest_dir = _new_cluster_gate(dest, dest_dir, "이 쓰기가")
+    path = dest_dir / f"{title}.md"
+    kind = graph.space_of(path)      # 소속은 노드 파일 경로로 판정한다
+    _require_node_cluster(kind, dest)
     # 새 군집의 첫 노드는 **동명 허브 노드**다 (시행령 §3 6항). 신설
     # 관문을 지나 방금 생겼든 이미 비어 있든, 허브 없이 출발한 군집은
     # 이름뿐인 통이 된다 — 무엇인지 서술하는 노드가 먼저다. 이동·재배정
@@ -960,13 +975,6 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
              f"허브 노드 `{dest_dir.name}`을(를) 만들어 이 군집이 무엇인지 "
              f"서술하고, 그 다음 이 노드를 만들어 허브에서 닿게 하라 "
              f"(헌법 3조 8항 · 시행령 §3 6항)"])
-    path = dest_dir / f"{title}.md"
-    kind = graph.space_of(path)      # 소속은 노드 파일 경로로 판정한다
-    _reject_governance(kind)
-    if not graph.is_node_home(kind) or not _is_cluster(kind):
-        raise WriteError(
-            f"노드를 둘 수 없는 구획이다: {dest} {kind} — 노드는 군집 안에 둔다"
-            f" (Space 루트 직속 불가, Mechanism §1 4항)")
 
     # 이름 색인 하나로 끝난다 — 구판의 `nodes ∪ broken`과 **같은 집합**임이
     # 1,809·10,000 노드 양쪽에서 차집합 공집합으로 검증됐다(심의 실측).
@@ -1334,11 +1342,7 @@ def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
              f"(시행령 §3 6항). 군집째 옮기려면 `move_cluster`를 쓴다"])
     target = dest_dir / path.name
     dst_kind = graph.space_of(target)   # 소속은 노드 파일 경로로 판정한다
-    _reject_governance(dst_kind)
-    if not graph.is_node_home(dst_kind) or not _is_cluster(dst_kind):
-        raise WriteError(
-            f"노드를 둘 수 없는 구획이다: {dest_space} {dst_kind} —"
-            f" 노드는 군집 안에 둔다 (Space 루트 직속 불가)")
+    _require_node_cluster(dst_kind, dest_space)
     clash = _name_collision(dest_dir, path.stem)
     if clash is not None:
         raise WriteError(
@@ -1560,6 +1564,8 @@ def move_cluster(name: str, dest_parent: str) -> dict:
                 f"목적지 군집이 없다: {dest_parent} — 재편은 이미 있는 군집 "
                 f"안으로만 한다(먼저 그 군집을 만든다)")
         _reject_governance(graph.space_of(ddir / "x.md"))
+        _require_node_cluster(graph.space_of(ddir / sdir.name / "x.md"),
+                              dest_parent)
         srel, drel = sdir.relative_to(ROOT).parts, ddir.relative_to(ROOT).parts
         if srel[:2] != drel[:2]:
             raise WriteError(

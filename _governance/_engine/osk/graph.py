@@ -33,16 +33,26 @@ def _load_cases() -> dict[str, dict]:
 NODE_SPACES = (DOMAIN, PERSON, SCOPE)
 W_LINK, W_DERIVED = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값 (Link·derived-from)
 
-# `Path.rglob("*.md")`은 Windows에서 **대소문자를 무시한다** — pathlib이
-# `os.name != "nt"`로 대소문자 구분을 정하기 때문이다(실측: rglob이 `Upper.MD`·
-# `Mixed.Md`를 함께 낸다). 순회를 손으로 짜면서 이것을 놓치면 그 노드가 색인에서
-# 통째로 사라지고, `create_node`가 **다른 군집에 같은 이름을 거부 없이 만든다** —
-# 표면이 스스로 전역 동명 중복을 만드는 것이며 검증기도 그것을 보지 못한다.
-_MD_CASE_INSENSITIVE = os.name == "nt"
-
-
+# `.md` 확장자는 **어느 기기에서나** 대소문자를 무시한다. 구판은 pathlib을 따라
+# `os.name == "nt"`일 때만 무시했고, 그래서 같은 트리의 `Note.MD`가 Windows에서는
+# 노드, macOS(APFS도 대소문자 무시가 기본이다)·Linux에서는 비노드였다 — 한 vault를
+# 동기화하는 기기들이 서로 다른 노드 집합을 보았다. 노드인지는 파일명이 정하고
+# 파일명은 git이 기기마다 같게 옮기므로, 판정도 호스트가 아니라 이름에서 나온다.
+# 놓치면 그 노드가 색인에서 사라지고 `create_node`가 **다른 군집에 같은 이름을
+# 거부 없이 만든다**(v3.7.0 실측).
 def _is_md(name: str) -> bool:
-    return (name.lower() if _MD_CASE_INSENSITIVE else name).endswith(".md")
+    return name.lower().endswith(".md")
+
+
+def _off_node(parts: tuple) -> bool:
+    """노드 자리 **안의** 살림 구획인가 — 점 접두 조각(파일 포함)과 밑줄 접두
+    디렉토리. 점 접두는 도구의 살림살이이고(`.obsidian`·`.trash`·AppleDouble
+    `._x`), 밑줄 접두 구획에는 노드를 두지 않는다(Mechanism §1 4항). 구판은
+    이것을 소비자마다 따로 보았다 — 보호영역(`approvals._region_files`)은 점
+    접두를 빼는데 색인은 넣어서, 승인되지 않은 `.hidden.md`가 기억으로 읽히고
+    고쳐지는 동안 영역은 clean이었다. 판정은 여기 한 벌이다."""
+    return bool(parts) and (parts[-1].startswith(".") or any(
+        p.startswith((".", "_")) for p in parts[:-1]))
 
 
 def _is_reparse(entry) -> bool:
@@ -167,7 +177,18 @@ def space_of(path: Path) -> tuple:
 
 def _space_of_parts(parts: tuple) -> tuple:
     """**ROOT 상대** 경로 조각 → 소속. `space_of`의 판정 본체이며, 봉쇄는 하지
-    않는다 — 부르는 쪽이 이미 ROOT 아래임을 아는 경우에만 직접 쓴다."""
+    않는다 — 부르는 쪽이 이미 ROOT 아래임을 아는 경우에만 직접 쓴다.
+
+    노드 자리로 판정된 경로라도 살림 구획(`_off_node`)을 지나면 비노드다.
+    `_raw`·`_ledger`·`_engine`처럼 이름이 정해진 구획은 그보다 먼저 제 소속을
+    받으므로(`_raw/.records`는 그대로 raw) 이 판정이 건드리지 않는다."""
+    kind = _place_of_parts(parts)
+    if is_node_home(kind) and _off_node(parts[1:]):
+        return ("support",)
+    return kind
+
+
+def _place_of_parts(parts: tuple) -> tuple:
     if not parts:
         return ("support",)
     head = parts[0]
@@ -352,8 +373,9 @@ def _vault_md():
         if top.name.startswith(".") or top.name == "__pycache__":
             continue
         if top.is_dir():
-            yield from sorted(top.rglob("*.md"))
-        elif top.suffix == ".md":
+            yield from sorted(p for p in top.rglob("*")
+                              if _is_md(p.name) and p.is_file())
+        elif _is_md(top.name):
             yield top
 
 
@@ -847,10 +869,12 @@ def _score_key(idx: "Index", t: str) -> str:
 # `wm`이 같은 판정을 쓰므로 여기 한 벌만 둔다 — 두 벌이면 조용히 갈라진다.
 
 def scope_names() -> list[str]:
-    """`00_Scope/` 아래의 scope 이름. Workbench도 하나의 scope다(헌법 4조 5항)."""
+    """`00_Scope/` 아래의 scope 이름. Workbench도 하나의 scope다(헌법 4조 5항).
+    살림 구획(`_off_node` — `.x`·`_x`)은 scope가 아니다."""
     d = ROOT / SCOPE
     return sorted(x.name for x in d.iterdir()
-                  if x.is_dir() and not x.name.startswith(".")) if d.is_dir() else []
+                  if x.is_dir() and _space_of_parts(
+                      (SCOPE, x.name, "x.md")) != ("support",)) if d.is_dir() else []
 
 
 def space_list() -> str:

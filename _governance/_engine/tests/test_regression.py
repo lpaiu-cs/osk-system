@@ -7735,30 +7735,158 @@ def test_parse_guards():
     shutil.rmtree(d, ignore_errors=True)
 
 
+# ── 노드 자리의 한 판정 (v4.0.0) ─────────────────────────────────────────
+def test_node_place_rule():
+    """색인·보호영역·조망·배치 검증기·쓰기 관문이 **같은 자리 규칙**을 쓰는가.
+
+    구판은 소비자마다 따로 보았다. 보호영역은 점 접두를 빼는데 색인은 넣어서,
+    승인되지 않은 `.hidden.md`가 기억으로 읽히고 고쳐지는 동안 영역은 clean이었다.
+    밑줄 접두 군집(`_misc`)은 표면이 만들어 주고, 조망은 숨기면서 노드 수에는
+    세고, 검색은 찾고, `_priv`는 scope가 됐다(Mechanism §1 4항 — 밑줄 접두
+    구획에는 노드를 두지 않는다). `.md` 대소문자는 Windows에서만 무시해 같은
+    트리가 기기마다 다른 노드 집합이었다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · `graph._space_of_parts`의 `_off_node` 판정을 지우면 → 점·밑줄 구획의
+        파일이 색인·scope 목록에 돌아오고 배치 검증기가 조용해진다
+      · `_new_cluster_gate`의 자리 검사를 지우면 → `_misc` 신설이 확인 한 번으로
+        통과한다(디렉토리가 남는다)
+      · `move_cluster`의 자리 검사를 지우면 → 이미 있는 `_` 구획 안으로 군집이 간다
+      · `_is_md`를 호스트에 묶으면 → 대소문자 구분 호스트에서 `.MD` 노드가 빠진다
+    """
+    made = []
+    D, S = graph.DOMAIN, graph.SCOPE
+    try:
+        # (a) 점 접두 — 파일 자체든 디렉토리든 노드 자리가 아니다.
+        hid = ROOT / S / "W1/.regr-hidden.md"
+        inner = ROOT / S / "W1/.regr-notes/regr-dot-inner.md"
+        inner.parent.mkdir(parents=True, exist_ok=True)
+        made += [hid, inner.parent]
+        hid.write_text(node_text("260802-dot0-0001", "숨은 노드", "HIDDEN"),
+                       encoding="utf-8")
+        inner.write_text(node_text("260802-dot0-0002", "숨은 폴더", "INNER"),
+                         encoding="utf-8")
+        i = graph.Index()
+        check("점 접두 파일·디렉토리의 .md는 색인에 들지 않는다",
+              ".regr-hidden" not in i.names and "regr-dot-inner" not in i.names,
+              sorted(n for n in i.names if "regr-" in n))
+        r = _w(write.update_node, "regr-dot-inner", old_text="INNER",
+               new_text="EDITED")
+        check("쓰기 통로도 그 파일을 잡지 못한다",
+              r.get("ok") is False and "INNER" in inner.read_text(encoding="utf-8"),
+              r)
+        r = _w(write.create_node, "regr-dot-new", "s", "b", "fable-5",
+               space=f"{S}/W1/.regr-notes")
+        check("점 접두 구획으로의 생성은 거부된다",
+              r.get("ok") is False
+              and not (inner.parent / "regr-dot-new.md").exists(), r)
+        lv = graph.layout_violations()
+        check("배치 검증기가 점 접두 구획의 노드형 파일을 보고한다",
+              sum(".regr-hidden.md" in v or "regr-dot-inner.md" in v
+                  for v in lv) == 2, lv)
+        check("`_raw` 안의 점 구획은 그대로 raw다",
+              graph.space_of(ROOT / S / "W1/_raw/.records/x.txt")[0] == "raw")
+
+        # (b) 밑줄 접두 디렉토리 — 표면이 새로 만들지 못한다.
+        ack_before = set(write._read_ack())
+        for space in (f"{D}/_regr-misc", f"{S}/W1/_regr-sub", f"{S}/_regr-new"):
+            hub = space.rsplit("/", 1)[1]
+            rs = [_w(write.create_node, hub, "허브", "본문", "fable-5",
+                     space=space) for _ in range(2)]
+            check(f"밑줄 구획 신설은 확인을 거쳐도 거부된다: {space}",
+                  all(x.get("ok") is False for x in rs), rs)
+            check(f"거부가 디렉토리도 확인 표식도 남기지 않는다: {space}",
+                  not (ROOT / space).exists()
+                  and space not in set(write._read_ack()) - ack_before)
+            shutil.rmtree(ROOT / space, ignore_errors=True)
+        # 구판이 이미 만들어 둔 밑줄 구획 — 읽지도 쓰지도 않고 보고한다.
+        priv = ROOT / S / "_regr-priv"
+        sub = ROOT / S / "W1/_regr-sub2"
+        for d in (priv, sub):
+            d.mkdir(parents=True, exist_ok=True)
+            made.append(d)
+        (priv / "_regr-priv.md").write_text(
+            node_text("260802-und0-0001", "밑줄 scope 허브", "PRIV"),
+            encoding="utf-8")
+        (sub / "_regr-sub2.md").write_text(
+            node_text("260802-und0-0002", "밑줄 하위 허브", "SUB"),
+            encoding="utf-8")
+        i = graph.Index()
+        check("밑줄 구획의 노드형 파일은 색인에 들지 않는다",
+              "_regr-priv" not in i.names and "_regr-sub2" not in i.names)
+        check("밑줄 구획은 scope가 아니다",
+              "_regr-priv" not in graph.scope_names(), graph.scope_names())
+        check("밑줄 구획은 조망의 군집이 아니다",
+              not any("_regr-" in c for c in write._cluster_names()))
+        lv = graph.layout_violations()
+        check("배치 검증기가 밑줄 구획의 노드형 파일을 보고한다",
+              sum("_regr-priv.md" in v or "_regr-sub2.md" in v
+                  for v in lv) == 2, lv)
+        r = _w(write.create_node, "regr-und-leaf", "s", "b", "fable-5",
+               space=f"{S}/_regr-priv")
+        check("이미 있는 밑줄 구획으로의 생성도 거부된다",
+              r.get("ok") is False
+              and not (priv / "regr-und-leaf.md").exists(), r)
+        check("밑줄로 시작하는 **파일 이름**은 여전히 노드 자리다",
+              graph.is_node_home(graph._space_of_parts((D, "X", "_a.md"))))
+        # 군집째 옮기기도 같은 판정을 받는다.
+        mc = ROOT / S / "W1/regr-mc"
+        mc.mkdir(parents=True, exist_ok=True)
+        made.append(mc)
+        (mc / "regr-mc.md").write_text(
+            node_text("260802-und0-0003", "옮길 하위 허브", "MC"),
+            encoding="utf-8")
+        r = _w(write.move_cluster, "regr-mc", f"{S}/W1/_regr-sub2")
+        check("밑줄 구획 안으로는 군집을 옮기지 못한다",
+              r.get("ok") is False and (mc / "regr-mc.md").is_file()
+              and not (sub / "regr-mc").exists(), r)
+
+        # (c) `.md` 대소문자는 호스트가 아니라 이름이 정한다. 구판이 대소문자
+        # 구분 호스트(macOS·Linux)에서 계산하던 값을 씌워도 결과가 같아야 한다.
+        had = hasattr(graph, "_MD_CASE_INSENSITIVE")
+        saved = getattr(graph, "_MD_CASE_INSENSITIVE", None)
+        up = ROOT / S / "W1/regr-Host.MD"
+        made.append(up)
+        up.write_text(node_text("260802-case-0001", "대문자 확장자", "본문"),
+                      encoding="utf-8")
+        graph._MD_CASE_INSENSITIVE = False
+        try:
+            check("대소문자 구분 호스트에서도 `.MD`는 노드다",
+                  graph._is_md("Note.MD") and graph._is_md("Note.Md")
+                  and "regr-Host" in graph.Index().names)
+        finally:
+            if had:
+                graph._MD_CASE_INSENSITIVE = saved
+            else:
+                del graph._MD_CASE_INSENSITIVE
+    finally:
+        for p in made:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
+
+
 # ── 순회의 봉쇄와 대소문자 (v3.7.0) ─────────────────────────────────────
 def test_scan_confinement_and_case():
     """손으로 짠 순회가 `rglob`이 하던 두 가지를 잃지 않았는가 — 대소문자
     무시(Windows)와 vault 밖 봉쇄."""
-    # 대소문자: rglob은 Windows에서 `*.md`로 `.MD`·`.Md`를 함께 잡는다.
+    # 대소문자: `.MD`·`.Md`도 노드다 — **어느 기기에서나** (v4.0.0).
     # 놓치면 그 노드가 색인에서 사라지고 표면이 **스스로 동명 중복을 만든다.**
     up = ROOT / "00_Scope/W1/regr-Case.MD"
     try:
         up.write_text(node_text("260806-cccc-1111", "대문자 확장자", "본문"),
                       encoding="utf-8")
         i = graph.Index()
-        if os.name == "nt":
-            check("Windows: 대문자 확장자도 색인에 든다",
-                  "regr-Case" in i.names, sorted(i.names)[:5])
-            r = _w(write.create_node, "regr-Case", "충돌", "본문", "fable-5",
-                   space="00_Scope/W2")
-            check("다른 군집에 같은 이름을 만들지 못한다 — 전역 유일이 선다",
-                  r.get("ok") is False, r)
-            check("거부가 동명임을 밝힌다",
-                  any("이미 있다" in v for v in r.get("violations", [])), r)
-            (ROOT / "00_Scope/W2/regr-Case.md").unlink(missing_ok=True)
-        else:
-            check("POSIX: 대소문자를 구분한다 — rglob과 같다",
-                  "regr-Case" not in i.names)
+        check("대문자 확장자도 색인에 든다",
+              "regr-Case" in i.names, sorted(i.names)[:5])
+        r = _w(write.create_node, "regr-Case", "충돌", "본문", "fable-5",
+               space="00_Scope/W2")
+        check("다른 군집에 같은 이름을 만들지 못한다 — 전역 유일이 선다",
+              r.get("ok") is False, r)
+        check("거부가 동명임을 밝힌다",
+              any("이미 있다" in v for v in r.get("violations", [])), r)
+        (ROOT / "00_Scope/W2/regr-Case.md").unlink(missing_ok=True)
     finally:
         up.unlink(missing_ok=True)
 
@@ -10562,6 +10690,7 @@ if __name__ == "__main__":
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
                test_parse_guards, test_scan_confinement_and_case,
+               test_node_place_rule,
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,
                test_fingerprint_scope_and_racy, test_engine_epoch_fence,
