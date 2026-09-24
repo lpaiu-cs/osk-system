@@ -628,7 +628,12 @@ class Index:
         cur = self.names.get(stem)
         if cur is not None and cur[0] == src:
             self.names[stem] = (dst, kind)
-        self._id_tokens = None          # 옛 경로를 쥔 후보표는 동 id를 오보한다
+        # 옛 경로를 쥔 후보표는 동 id를 오보한다. 후보표는 `_entries`에서 다시
+        # 지어지고, Windows의 디렉토리 판독 stat은 옛 경로에도 캐시된 값을 내므로
+        # (파일을 열지 않고 접어 둔 토큰이 맞는다) 항목과 stat도 함께 옮긴다.
+        self._entries = [(dst, kind) if p == src else (p, k) for p, k in self._entries]
+        self._dirents.pop(src, None)
+        self._id_tokens = None
 
     def _node_bytes(self):
         """노드 파일 전부의 바이트 — 판독(YAML) 없이. 못 여는 파일은 판독도

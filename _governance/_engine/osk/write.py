@@ -1459,14 +1459,21 @@ def _move_topology(plans, stale, idx) -> list[str]:
         if n.id:
             new_kind[n.id] = after[src]
 
+    gone = {Path(os.path.realpath(src)) for src in after}
+
     class _After:                     # `_topology_of`가 색인에 묻는 것은 해석뿐이다
         @staticmethod
         def resolve(name):
             r = idx.resolve(name)
-            # 경로형은 옛 자리를 가리키므로(이동 뒤 dangling) 옛 판정 그대로 둔다
-            if r[0] == "node" and "/" not in name and name in new_kind:
-                return ("node", new_kind[name])
-            return r
+            if r[0] != "node":
+                return r
+            if "/" in name:
+                # 경로형은 옛 자리를 가리킨다 — 이동 뒤에는 끊긴 참조(경고)다.
+                # 옛 소속으로 판정하면 함께 옮기는 두 노드 사이의 경로형 Link가
+                # scope 간 위반으로 오판돼 이동이 거부됐다.
+                p = resolve_in_root(name)
+                return ("dangling",) if p is not None and {p, p.with_suffix(".md")} & gone else r
+            return ("node", new_kind[name]) if name in new_kind else r
 
     hub_keep = {h["hub"]: set(h["remove"]) for h in stale if "remove" in h}
     out = []

@@ -7722,7 +7722,8 @@ def test_duplicate_id_by_name_refused():
                 check(f"이름 읽기는 사본을 내주지 않는다: {h}",
                       "error" in rr and str(want) in rr["error"], rr)
                 check(f"읽기 거부가 갈 길을 준다: {h}",
-                      "record_candidate" in rr.get("error", ""), rr)
+                      "동일성 사고" in rr.get("error", "")
+                      and "vault 밖" in rr.get("error", ""), rr)
             r1 = _w(write.update_node, "regr-dupn", old_text="ORIGINAL", new_text="X")
             check("이름 쓰기는 거부한다(전수 판독 없이)",
                   r1.get("ok") is False and str(want) in str(r1), r1)
@@ -7750,6 +7751,20 @@ def test_duplicate_id_by_name_refused():
         check("사본을 치우면 이름 읽기 복구", "error" not in M.read_node("regr-dupn"))
         r4 = _w(write.update_node, "regr-dupn", summary="고침")
         check("사본을 치우면 이름 쓰기 복구", r4.get("ok"), r4)
+
+        # 이동을 반영한 색인(`retarget`)은 옛 경로를 사본으로 세지 않는다 —
+        # Windows의 디렉토리 판독 stat은 옛 경로에도 값을 내고, 접어 둔 토큰이
+        # 그 값에 맞아 옛 자리가 살아 있는 사본처럼 보였다(검증 재현).
+        _age_all()
+        graph.Index().id_twins(p)         # 토큰을 접어 둔다(racy 창 밖)
+        idx = graph.Index()
+        idx.id_twins(p)
+        moved = p.with_name("regr-dupn moved.md")
+        os.replace(p, moved)
+        idx.retarget(p, moved, graph.space_of(moved))
+        check("이동 뒤 같은 색인에서 자기 옛 경로는 사본이 아니다",
+              idx.id_twins(moved) == [], idx.id_twins(moved))
+        moved.unlink()
     finally:
         p.unlink(missing_ok=True)
         shutil.rmtree(other, ignore_errors=True)
@@ -7782,6 +7797,8 @@ def test_move_topology_refused():
         "regr-mt3": node_text("260925-rgmt-0003", body="원료에서",
                               extra='derived-from: "[[00_Scope/W1/_raw/regr-mt#1]]"\n'),
         "regr-mt4": node_text("260925-rgmt-0004", body="참조 없음"),
+        "regr-mt6": node_text("260925-rgmt-0006", body="경로형 [[00_Scope/W1/regr-mt7]]"),
+        "regr-mt7": node_text("260925-rgmt-0007", body="대상"),
     }
     try:
         for d in (mt, mx, md):
@@ -7811,6 +7828,10 @@ def test_move_topology_refused():
         _age_all()
         r5 = _w(write.move_nodes, ["regr-mt5"], "00_Scope/regr-MX")
         check("이미 있던 위반은 이동을 막지 않는다", r5.get("ok"), r5)
+        # 경로형 Link는 옛 자리를 가리킨다 — 함께 옮기면 끊긴 참조이지 위반이 아니다
+        r6 = _w(write.move_nodes, ["regr-mt6", "regr-mt7"], "00_Scope/regr-MX")
+        check("함께 옮기는 노드 사이의 경로형 Link는 이동을 막지 않는다",
+              r6.get("ok"), r6)
     finally:
         for stem in (*files, "regr-mt5"):
             (w1 / f"{stem}.md").unlink(missing_ok=True)
