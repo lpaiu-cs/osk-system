@@ -2,6 +2,8 @@
 
 인스턴스의 실행 방법. 규범이 아니라 **운용 문서**다.
 
+처음 설치한다면 [시작 안내서](GETTING-STARTED.ko.md)([English](GETTING-STARTED.md))부터 따라간다.
+
 체계 자체의 규범은 `_governance/`(헌법·시행령·Mechanism·Workbench 계약)에
 있다. 그 **정본은 정본 저장소** <https://github.com/lpaiu-cs/osk-system> 이고,
 각 인스턴스는 릴리스를 갱신으로 받는다(아래 '정본 릴리스와 갱신').
@@ -62,8 +64,11 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 쓴다(`set` 뒤 값에 따옴표를 붙이면 따옴표까지 값이 된다).
 
 데몬의 상시 실행은 `scripts/`의 launchd·systemd 예시에 해당하는 것이 없다 —
-**작업 스케줄러**에 `.venv\Scripts\python.exe _governance\_engine\sync_daemon.py`를
-등록하고 환경변수 `SYNC_ENABLED=1`을 준다.
+**작업 스케줄러**에 로그온 작업으로 등록한다. `sync_daemon.py`는 **절대 경로**로
+띄운다(`osk.update`는 그 경로로 데몬 프로세스와 작업을 찾는다). 작업 스케줄러에는
+작업별 환경변수가 없으므로 동작을
+`cmd.exe /c set SYNC_ENABLED=1&& start "" <REPO>/.venv/Scripts/pythonw.exe <REPO>/_governance/_engine/sync_daemon.py`로
+둔다. 등록 명령은 [시작 안내서](GETTING-STARTED.ko.md#선택-git으로-vault-동기화하기)에 있다.
 
 ## MCP 서버
 
@@ -90,8 +95,11 @@ Claude Code에 user scope로 등록:
 claude mcp add --scope user osk-system -- <REPO>/.venv/bin/python <REPO>/_governance/_engine/mcp_server.py
 ```
 
-설정 파일을 직접 쓰는 클라이언트(Antigravity의 `~/.gemini/config/mcp_config.json`,
-Codex 등)는 `.mcp.json.example`을 그대로 베끼고 `<REPO>`만 바꾼다. 전송은 stdio다.
+JSON 설정 파일을 직접 쓰는 클라이언트(Antigravity의
+`~/.gemini/config/mcp_config.json` 등)는 `.mcp.json.example`을 그대로 베끼고
+`<REPO>`만 바꾼다. Codex는 TOML(`~/.codex/config.toml`)을 읽으므로 JSON을 베끼지
+않고 `codex mcp add osk-system -- <REPO>/.venv/bin/python <REPO>/_governance/_engine/mcp_server.py`로
+등록한다. 전송은 stdio다.
 
 Windows에서는 두 경로의 실행 파일 부분이 `.venv\Scripts\python.exe`가 되고,
 JSON 안의 역슬래시는 `\\`로 이스케이프한다 —
@@ -632,7 +640,8 @@ launchd/systemd 예시는 `_governance/_engine/scripts/`에 있다.
 
 ### Obsidian 그래프 배율 충돌
 
-추적 중인 `.obsidian/graph.json`은 그래프 확대·축소만 해도 `scale`이 바뀐다.
+`.obsidian/graph.json`을 추적하는 vault라면(기본 `.gitignore`는 이 파일을
+무시한다) 그래프 확대·축소만 해도 `scale`이 바뀐다.
 데몬의 pull-rebase에서 **유일한 충돌 파일이 이것이고, 양쪽 JSON이 `scale` 외에는
 같으면** 재적용 중인 로컬 커밋의 파일을 그대로 보존하고 계속한다. 여러 로컬
 커밋이 쌓여 있어도 순서대로 처리하며 자동 해결 건수를 로그에 남긴다.

@@ -27,6 +27,7 @@
 
 <p align="center">
   <a href="#시작하기">시작하기</a> ·
+  <a href="docs/GETTING-STARTED.ko.md">시작 안내서</a> ·
   <a href="#사용하기">사용 예시</a> ·
   <a href="docs/SETUP.md">설치·운용 가이드</a> ·
   <a href="#governance">설계와 통치</a>
@@ -62,18 +63,28 @@ Obsidian은 지식을 탐색하는 선택적 화면이고, Git 동기화도 선�
 
 ## 시작하기
 
-Python 3.12와 Git을 준비한다. macOS·Linux 기준:
+**처음이라면** [시작 안내서](docs/GETTING-STARTED.ko.md)를 따라간다. 빈 폴더에서
+에이전트의 첫 기억까지, macOS·Linux·Windows 명령과 단계별 확인 방법을 함께 담았다.
+
+Python 3.12와 Git을 준비한다. `main`이 아니라 릴리스 태그에서 시작한다(새 태그는
+[릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다).
+macOS·Linux 기준:
 
 ```bash
-git clone https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v3.22.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
+git switch -c main
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r _governance/_engine/requirements.txt
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 ```
 
+이어서 릴리스 기준선을 기록한다([시작 안내서 2단계](docs/GETTING-STARTED.ko.md#2단계-엔진-설치와-릴리스-기준선-기록)).
+그래야 이후 갱신이 릴리스 파일과 직접 고친 파일을 구별한다.
+
 1. [.mcp.json.example](.mcp.json.example)의 `<REPO>`를 인스턴스의 절대경로로
-   바꿔 MCP 클라이언트에 등록한다. 클라이언트별 등록·훅 설정과 Windows 명령은
+   바꿔 MCP 클라이언트에 등록한다. Codex는 TOML을 읽으므로 `codex mcp add`로
+   등록한다. 클라이언트별 등록·훅 설정과 Windows 명령은
    [설치·운용 가이드](docs/SETUP.md)를 따른다.
 2. Obsidian을 쓴다면 `my-osk-vault` 폴더를 보관함으로 연다.
 3. 동기화를 켜기 전에는 원격을 **자신의 비공개 저장소**로 바꾼다.

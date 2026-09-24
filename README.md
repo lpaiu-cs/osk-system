@@ -27,6 +27,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="docs/GETTING-STARTED.md">Getting started</a> ·
   <a href="#usage">Usage</a> ·
   <a href="docs/SETUP.md">Setup guide</a> ·
   <a href="#governance">Design &amp; governance</a>
@@ -64,18 +65,30 @@ support **Codex and Claude Code**. See the
 
 ## Quick start
 
-You need Python 3.12 and Git. On macOS or Linux:
+**New to osk-system?** Follow the [Getting started](docs/GETTING-STARTED.md)
+tutorial. It goes from an empty folder to your agent's first saved memory, on
+macOS, Linux and Windows, with a check after every step.
+
+You need Python 3.12 and Git. Start from a release tag rather than `main`
+(newer tags are on the [releases page](https://github.com/lpaiu-cs/osk-system/releases)).
+On macOS or Linux:
 
 ```bash
-git clone https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v3.22.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
+git switch -c main
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r _governance/_engine/requirements.txt
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 ```
 
-1. Register the MCP server using [.mcp.json.example](.mcp.json.example), replacing
-   `<REPO>` with your instance's absolute path. Follow the
+Then record the release baseline
+([Getting started, Step 2](docs/GETTING-STARTED.md#step-2-install-the-engine-and-record-the-release-baseline)),
+so that later updates can tell release files from your own edits.
+
+1. Register the MCP server, replacing `<REPO>` with your instance's absolute
+   path. JSON-configured clients can copy [.mcp.json.example](.mcp.json.example);
+   Codex reads TOML, so register it with `codex mcp add`. Follow the
    [setup guide](docs/SETUP.md) for client-specific registration, hooks, and
    Windows commands. The detailed operations and governance documents are
    currently in Korean.
