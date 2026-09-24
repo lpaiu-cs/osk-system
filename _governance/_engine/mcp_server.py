@@ -427,15 +427,28 @@ def scope_memory(session: str, text: str | None = None,
 
 
 def _apply_prune() -> None:
-    """Reject unknown arguments before dispatch and prune schema annotations."""
-    mgr = getattr(mcp, "_tool_manager", None)
-    for tool in (mgr._tools.values() if mgr else []):
-        if isinstance(getattr(tool, "parameters", None), dict):
-            # FastMCP otherwise drops misspelled edits while applying valid fields.
-            model = tool.fn_metadata.arg_model
-            model.model_config["extra"] = "forbid"
-            model.model_rebuild(force=True)
-            tool.parameters = _prune_titles(model.model_json_schema(by_alias=True))
+    """Reject unknown arguments before dispatch and prune schema annotations.
+
+    FastMCP 내부(`_tool_manager._tools`·`fn_metadata.arg_model`)에 기댄다. 그
+    자리가 바뀐 mcp 판에서 조용히 건너뛰면 오타 인자가 버려진 채 나머지만
+    적용된다 — 기동에서 죽는다(fail-closed)."""
+    tools = getattr(getattr(mcp, "_tool_manager", None), "_tools", None)
+    if not isinstance(tools, dict) or not tools:
+        raise RuntimeError("FastMCP 도구 목록(_tool_manager._tools)을 찾지 못했다 — "
+                           "미지 인자 거부를 걸 수 없어 기동하지 않는다. "
+                           "requirements.txt의 mcp 판을 확인하라")
+    for name, tool in tools.items():
+        model = getattr(getattr(tool, "fn_metadata", None), "arg_model", None)
+        if model is None or not isinstance(getattr(tool, "parameters", None), dict):
+            raise RuntimeError(f"도구 `{name}`의 인자 모델을 찾지 못했다 — 미지 인자 "
+                               f"거부를 걸 수 없어 기동하지 않는다")
+        # FastMCP otherwise drops misspelled edits while applying valid fields.
+        model.model_config["extra"] = "forbid"
+        model.model_rebuild(force=True)
+        tool.parameters = _prune_titles(model.model_json_schema(by_alias=True))
+        if tool.parameters.get("additionalProperties") is not False:
+            raise RuntimeError(f"도구 `{name}`에 미지 인자 거부가 걸리지 않았다 — "
+                               f"기동하지 않는다")
 
 
 _apply_prune()

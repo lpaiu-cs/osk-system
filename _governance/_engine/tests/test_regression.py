@@ -2761,6 +2761,28 @@ def test_bind_after_write_receipt():
           and write.resolve_session("regr-bindfail-a") == "W1", r2)
 
 
+def test_mcp_hardening_fail_closed():
+    """미지 인자 거부는 FastMCP 내부에 기댄다 — 그 자리가 없는 mcp 판에서
+    조용히 건너뛰면 오타 인자가 버려진 채 나머지만 적용된다. 기동에서 죽어야 한다."""
+    import mcp_server as M
+    mgr = M.mcp._tool_manager
+    check("현 판에서는 전 도구가 미지 인자를 거부한다",
+          all(t.parameters.get("additionalProperties") is False
+              for t in mgr._tools.values()))
+    for label, patch in (
+            ("도구 관리자 부재", lambda: mock.patch.object(M.mcp, "_tool_manager", None)),
+            ("도구 목록 부재", lambda: mock.patch.object(mgr, "_tools", {})),
+            ("인자 모델 부재", lambda: mock.patch.object(
+                next(iter(mgr._tools.values())), "fn_metadata", None))):
+        with patch():
+            try:
+                M._apply_prune()
+                raised = None
+            except RuntimeError as e:
+                raised = e
+        check(f"FastMCP 내부 변화는 기동 실패: {label}", raised is not None)
+
+
 def test_write_cas_body_bound():
     # 서명이 폐지됐으므로 CAS는 **본문 전체 치환**에만 결속한다(Mechanism
     # §6-2 4항) — 부분 변경(엣지 델타·summary)에는 요구하지 않는다.
@@ -10296,6 +10318,7 @@ if __name__ == "__main__":
                test_ledger_row_shape,
                test_broken_delegation_isolated, test_write_contract,
                test_contract_values, test_bind_after_write_receipt,
+               test_mcp_hardening_fail_closed,
                test_write_cas_body_bound, test_anchor_edit,
                test_edge_single_list_roundtrip,
                test_write_move_and_pin,
