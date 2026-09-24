@@ -53,6 +53,7 @@ def target_stem(name: str) -> str:
 _LIST_ITEM_RE = re.compile(r" {0,3}(?:[-+*]|[0-9]{1,9}[.)])( +|$)")
 _FENCE_MARK_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+_BREAK_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")  # `* * *`·`---` — 목록 항목보다 먼저
 _TICKS_RE = re.compile(r"`+")
 _INDENTED_RE = re.compile(r"(?m)^(?: {4}| {0,3}\t)")
 
@@ -88,7 +89,7 @@ def md_lines(text: str):
         elif content.startswith("    ") and content.strip() and not para:
             code = True  # 들여쓰기 코드 — 문단을 끊지는 못한다(빈 행이 앞서야 한다)
         elif content.strip():
-            while item := _LIST_ITEM_RE.match(content):
+            while not _BREAK_RE.match(content) and (item := _LIST_ITEM_RE.match(content)):
                 padding = len(item[1])
                 width = item.start(1) + (padding if 1 <= padding <= 4 else 1)
                 indent += width
@@ -97,7 +98,7 @@ def md_lines(text: str):
             mark = _FENCE_MARK_RE.match(content)
             if mark and (mark[1][0] != "`" or "`" not in mark[2]):
                 fence, fence_indent, code = mark[1], indent, True
-            para = not code and not _HEADING_RE.match(content)
+            para = not code and not _HEADING_RE.match(content) and not _BREAK_RE.match(content)
         yield offset, line, content, code
         offset += len(line) + 1
 

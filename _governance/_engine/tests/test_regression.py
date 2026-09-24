@@ -5509,6 +5509,53 @@ def test_code_regions_are_not_prose():
         rmtree_force(xs)
 
 
+def test_code_region_block_boundaries():
+    """코드 판정의 블록 경계(v3.22.2 리뷰). `* * *`·`- - -` 주제 구분선을 목록
+    항목으로 읽으면 유령 목록 들여쓰기가 남는다 — 그 안에서 연 펜스가 들여쓰지
+    않은 코드 행에서 닫혀 `#123abc`가 `#123 abc`로 바뀌고(요약 편집에서도),
+    진짜 닫는 펜스가 새 펜스를 열어 뒤의 Link가 사라졌다."""
+    ex = "#123abc [[regr-blk-example]]"
+    cases = {
+        "hr-fence": ("* * *\n\n  ```css\np { color: #123abc; }\n  ```\n\n[[W1]]\n",
+                     "  ```css\np { color: #123abc; }\n  ```\n"),
+        # 문단 바로 밑 `- - -`도 목록이 아니다 — 뒤의 빈 행 + 4칸은 코드
+        "hr-under-para": (f"글\n- - -\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+        # 목록 내용보다 덜 들여쓴 구분선은 목록을 닫는다
+        "hr-ends-list": (f"- 항목\n* * *\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+    }
+    try:
+        for i, (label, (body, block)) in enumerate(cases.items()):
+            name = f"regr-blk-{label}"
+            r = _w(write.create_node, name, "블록 경계", body, "fable-5", space="00_Scope/W1")
+            check(f"[{label}] 생성 통과", r.get("ok"), r)
+            if r.get("ok"):
+                n = contract.parse(ROOT / r["path"])
+                check(f"[{label}] 생성이 코드 바이트를 보존", block in n.body, n.body)
+                check(f"[{label}] 글의 Link만 센다", n.wikilinks() == ["W1"], n.wikilinks())
+            # 외부 작성 노드 — 요약 편집·본문 교체가 코드를 다시 접는 통로다
+            f = ROOT / f"00_Scope/W1/{name}-ext.md"
+            f.write_text(f'---\nid: "260801-zzzz-blk{i}"\ncreated: "2026-08-01 00:00 (KST)"\n'
+                         'updated: "2026-08-01 00:00 (KST)"\nauthor: "user"\n'
+                         'drafter: "user"\nsummary: "external"\n---\n\n' + body,
+                         encoding="utf-8", newline="\n")
+            u = _w(write.update_node, f"{name}-ext", summary="요약만 고친다")
+            check(f"[{label}] 요약 편집이 코드를 고치지 않는다",
+                  u.get("ok") and f.read_text(encoding="utf-8").endswith(body),
+                  (u, f.read_text(encoding="utf-8")))
+            h = hashlib.sha256(f.read_bytes()).hexdigest()
+            u = _w(write.update_node, f"{name}-ext", body=body + "\n추가 #7y\n", expect_hash=h)
+            n = contract.parse(f)
+            check(f"[{label}] 본문 교체도 코드 바이트를 보존",
+                  u.get("ok") and block in n.body and "#7 y" in n.body, (u, n.body))
+            check(f"[{label}] 본문 교체 뒤에도 글의 Link만 센다",
+                  n.wikilinks() == ["W1"], n.wikilinks())
+    finally:
+        # 공유 W1 군집을 되돌린다 — 남으면 허브 미직결 목록(20건 상한)에서
+        # 뒤 시험의 노드를 밀어낸다
+        for f in (ROOT / "00_Scope/W1").glob("regr-blk-*.md"):
+            f.unlink()
+
+
 # ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
 def test_cluster_overview():
     """각 군집은 동명 허브 노드를 두고, 전 노드가 허브에서 **Link의 방향**을
@@ -10154,6 +10201,7 @@ if __name__ == "__main__":
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
                test_obsidian_tag_defense, test_code_regions_are_not_prose,
+               test_code_region_block_boundaries,
                test_index_node_not_delegation,
                test_read_is_bound_to_bytes,
                test_incomplete_scan_refuses_writes,
