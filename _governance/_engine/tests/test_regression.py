@@ -6396,7 +6396,9 @@ def test_evictions():
     # git 없는 mini-vault는 루트 해시가 든 임시 경로로 떨어져 저절로 갈리므로,
     # 실제 모양 — 본 저장소 A와 그 `.git`을 `commondir`로 공유하는 linked
     # worktree B — 를 파일로 세운다(git 실행 없음). 둘의 잠금 자리는 같다.
-    wt = Path(tempfile.mkdtemp(prefix="osk-wt-"))
+    # 운영의 ROOT는 vault_root()가 정규화한 경로다 — 시험 루트도 그렇게 세운다.
+    # 날것(RUNNER~1·/var)이면 A는 그 철자, B는 commondir resolve로 실경로가 된다.
+    wt = Path(tempfile.mkdtemp(prefix="osk-wt-")).resolve()
     A, B = wt / "A", wt / "B"
     (A / ".git" / "worktrees" / "B").mkdir(parents=True)
     B.mkdir()
