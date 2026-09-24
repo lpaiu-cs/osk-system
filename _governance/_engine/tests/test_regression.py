@@ -9287,7 +9287,9 @@ def test_governance_amend_secrets_and_region():
         #    fail-closed를 지우면 셋째 검사가 실패한다.
         def _reconcile_case(tag, name_body, work_body, idx_body, expect):
             """이름(digest)·작업 트리·색인을 각각 세워 판정을 본다."""
-            lab3 = Path(tempfile.mkdtemp(prefix="osk-obj-"))
+            # 갈아 끼우는 ROOT도 vault_root()가 주는 것처럼 정규 경로여야 한다 —
+            # 러너 임시 경로가 별칭(RUNNER~1·/var)이면 STORE만 날것으로 남는다.
+            lab3 = Path(os.path.realpath(tempfile.mkdtemp(prefix="osk-obj-")))
             try:
                 _h = hashlib.sha256(name_body).hexdigest()
                 rel3 = ("00_Scope/Workbench/_ledger/approved/objects/"
