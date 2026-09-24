@@ -2304,6 +2304,127 @@ def test_revert_incomplete_no_record():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+# ── 반려는 그 이름 그대로의 자리에만 쓰고 지운다 (v3.22.2) ──────────────
+def _dir_link(link: Path, target: Path) -> bool:
+    """디렉터리 링크 — Windows는 정션(관리자 불필요), POSIX는 심볼릭 링크."""
+    if os.name == "nt":
+        return subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                              capture_output=True).returncode == 0
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except OSError:
+        return False
+
+
+def _files_of(d: Path) -> dict:
+    return {p.name: p.read_bytes() for p in d.iterdir() if p.is_file()}
+
+
+def _txt(p: Path) -> str | None:
+    return p.read_text(encoding="utf-8") if p.is_file() else None
+
+
+def test_revert_path_identity():
+    """영역 안 디렉터리가 정션·링크로 바뀌었거나 이름의 대소문자만 바뀌면,
+    realpath가 승인본의 그 자리가 아닌 다른 파일을 가리킨다. 구판 반려는 그
+    경로로 쓰고 지워 다른 구획·vault 밖 파일을 지우고, 대소문자 변경에서는
+    방금 복원한 파일을 삭제 순회가 지웠다(실측). 반려는 쓰기 전에 전부 멈추고,
+    열거는 링크 너머로 내려가지 않는다."""
+    from osk import approvals as A
+    base = ROOT / "00_Domain" / "regr-ident"
+    rev = lambda reg: A.revert(reg, A.approved_hash(reg), A.working_tree_hash(reg))
+    ext = Path(tempfile.mkdtemp(prefix="osk-ident-ext-"))
+    links = []
+    try:
+        # 1) 영역 안 디렉터리 → vault 안 다른 구획으로의 링크
+        reg, regdir, other = ("00_Domain/regr-ident/j", base / "j",
+                              base / "other")
+        (regdir / "sub").mkdir(parents=True)
+        (regdir / "sub" / "a.md").write_text("승인-a", encoding="utf-8")
+        (regdir / "keep.md").write_text("keep", encoding="utf-8")
+        other.mkdir()
+        for n, t in (("a.md", "남의-a"), ("o1.md", "남의-o1")):
+            (other / n).write_text(t, encoding="utf-8")
+        A.protect(reg, "지정")
+        shutil.rmtree(regdir / "sub")
+        if _dir_link(regdir / "sub", other):
+            links.append(regdir / "sub")
+            before, n = _files_of(other), len(A.records())
+            cs = A.changeset(reg) or {}
+            check("링크 너머 파일은 영역으로 열거되지 않는다",
+                  not any("/sub/" in r for r in cs.get("added", []) + cs.get("modified", []))
+                  and A.state(reg) == "pending", cs)
+            check("링크(vault 안)를 지나는 반려는 쓰기 전에 거부", _raises(lambda: rev(reg))())
+            check("다른 구획 파일은 한 바이트도 바뀌지 않았다", _files_of(other) == before)
+            check("거부된 반려는 기록되지 않는다", len(A.records()) == n)
+            os.rmdir(regdir / "sub") if os.name == "nt" else os.unlink(regdir / "sub")
+            links.remove(regdir / "sub")
+            rev(reg)
+            check("링크를 치우면 반려가 승인본을 복원한다",
+                  _txt(regdir / "sub" / "a.md") == "승인-a"
+                  and A.state(reg) == "clean" and _files_of(other) == before)
+        else:
+            skip("반려 정체성: vault 안 디렉터리 링크", "링크를 만들 수 없는 환경")
+
+        # 2) 영역 안 링크 → vault 밖 폴더
+        (ext / "x.md").write_text("밖의 사용자 파일", encoding="utf-8")
+        if _dir_link(regdir / "ext", ext):
+            links.append(regdir / "ext")
+            (regdir / "keep.md").write_text("에이전트 변경", encoding="utf-8")
+            cs = A.changeset(reg) or {}
+            check("vault 밖 링크 너머는 영역 변경집합에 들지 않는다",
+                  not any("/ext/" in r for r in cs.get("added", [])), cs)
+            rev(reg)
+            check("반려 뒤에도 vault 밖 파일이 남는다",
+                  _txt(ext / "x.md") == "밖의 사용자 파일"
+                  and _txt(regdir / "keep.md") == "keep")
+        else:
+            skip("반려 정체성: vault 밖 링크", "링크를 만들 수 없는 환경")
+
+        # 3) 대소문자만 바뀐 파일·디렉터리 이름
+        creg, cdir = "00_Domain/regr-ident/c", base / "c"
+        cdir.mkdir()
+        (cdir / "Probe.md").write_text("p", encoding="utf-8")
+        insensitive = (cdir / "probe.md").exists()
+        folds = os.path.realpath(cdir / "probe.md").endswith("Probe.md")
+        (cdir / "Probe.md").unlink()
+        if not insensitive:
+            skip("반려 정체성: 대소문자 변경", "대소문자를 구분하는 파일시스템")
+        elif not folds:
+            skip("반려 정체성: 대소문자 변경", "realpath가 대소문자를 정규화하지 않는다")
+        else:
+            (cdir / "Note.md").write_text("승인 노트", encoding="utf-8")
+            (cdir / "Sub").mkdir()
+            (cdir / "Sub" / "a.md").write_text("승인 a", encoding="utf-8")
+            A.protect(creg, "지정")
+            (cdir / "junk.md").write_text("버릴 것", encoding="utf-8")
+            for old, new in (("Note.md", "note.md"), ("Sub", "sub")):
+                n = len(A.records())
+                os.rename(cdir / old, cdir / "tmp"); os.rename(cdir / "tmp", cdir / new)
+                check(f"대소문자 변경({old}→{new}) 반려는 쓰기 전에 거부",
+                      _raises(lambda: rev(creg))())
+                check(f"대소문자 변경({old}) 뒤 파일이 하나도 사라지지 않았다",
+                      _txt(cdir / "note.md") == "승인 노트"
+                      and _txt(cdir / "sub" / "a.md") == "승인 a"
+                      and (cdir / "junk.md").exists() and len(A.records()) == n)
+                os.rename(cdir / new, cdir / "tmp"); os.rename(cdir / "tmp", cdir / old)
+            rev(creg)
+            check("이름을 되돌리면 반려가 동작한다",
+                  sorted(p.name for p in cdir.iterdir()) == ["Note.md", "Sub"]
+                  and A.state(creg) == "clean")
+            A.unprotect(creg, "정리")
+    finally:
+        for l in links:
+            try: os.rmdir(l) if os.name == "nt" else os.unlink(l)
+            except OSError: pass
+        for r in ("00_Domain/regr-ident/j", "00_Domain/regr-ident/c"):
+            try: A.unprotect(r, "정리")
+            except Exception: pass
+        shutil.rmtree(base, ignore_errors=True)
+        shutil.rmtree(ext, ignore_errors=True)
+
+
 # ── 승인본은 그 영역의 tree여야 한다 (PR #14 리뷰 [high]) ──────────────
 def test_baseline_bound_to_region():
     """승인본 manifest는 **그 영역의** tree일 때만 해석된다 — 영역 밖 항목을 섞은
@@ -9894,6 +10015,7 @@ if __name__ == "__main__":
                test_approval_baseline_blobs_present,
                test_store_content_verified,
                test_revert_incomplete_no_record,
+               test_revert_path_identity,
                test_approve_precondition_under_lock,
                test_unprotect_precondition_under_lock,
                test_protect_precondition_rejects_stale,

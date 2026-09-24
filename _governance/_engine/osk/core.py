@@ -299,6 +299,47 @@ def resolve_in_root(rel_or_abs: str | Path) -> Path | None:
         return None
 
 
+def _within(base: Path, rel: str) -> Path | None:
+    """rel을 base 안으로 봉쇄한 **정규 절대 경로** — 아니면 None. release 증빙
+    key와 (다기기 병합되는) 저널 path는 **신뢰 밖 입력**이므로, 어느 I/O 전에도
+    이 봉쇄를 통과한다. 두 겹으로 막는다: ①`.`/`..` segment·절대경로를 문자열
+    단계에서 거부(정규화 전 판정 우회 차단 — `docs/../00_Scope/`로 바닥 재진입
+    금지) ②남은 심볼릭 재배치는 realpath로 흡수해 base 안인지 확인. 반환값의
+    base-상대(canonical)에만 floor·I/O를 걸어야 한다."""
+    try:
+        p = Path(rel)
+        if not p.parts or p.is_absolute()\
+                or any(seg in ("..", ".") for seg in p.parts):
+            return None
+        broot = Path(os.path.realpath(base))
+        real = Path(os.path.realpath(base / p))
+        if real == broot:
+            return None                          # base 자신은 파일 대상이 아니다
+        real.relative_to(broot)                  # 벗어나면 ValueError
+        return real
+    except (ValueError, OSError, TypeError):
+        return None
+
+
+def _canon_rel(base: Path, rel: str) -> str | None:
+    """봉쇄된 canonical base-상대 경로(posix) — 탈출·재진입·**경로 정체성 훼손**은
+    None. floor·I/O 판정은 raw 문자열이 아니라 이 canonical 경로에 건다. realpath가
+    lexical 경로와 다르면(경로 구성요소에 symlink) 다른 프레임워크 파일로 write가
+    재지정된 것이므로 거부한다 — symlink 탈출만이 아니라 ROOT **내부** alias도 막는다
+    (예: `docs/SETUP.md -> _engine/osk/core.py`). 정션·대소문자만 바뀐 이름도
+    realpath가 다른 자리를 내므로 같이 걸린다 — 갱신과 반려가 이 계약을 공유한다."""
+    p = _within(base, rel)
+    if p is None:
+        return None
+    try:
+        canon = p.relative_to(Path(os.path.realpath(base))).as_posix()
+    except ValueError:
+        return None
+    if canon != Path(rel).as_posix():            # lexical ≠ realpath → symlink 재지정
+        return None
+    return canon
+
+
 # ── rid — 시각 48비트 + 시퀀스 12비트 (생성 단조 표식) ────────────────────
 
 def _rid_parts(rid: str) -> tuple[int, int]:
