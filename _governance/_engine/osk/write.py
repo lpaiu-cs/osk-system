@@ -1436,6 +1436,58 @@ def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
     return out
 
 
+def _move_topology(plans, stale, idx) -> list[str]:
+    """이동 **후**의 참조 위상 중 이 이동이 **새로 만드는** 위반.
+
+    소속은 노드 파일의 경로로 정해지므로(`space_of`) 옮긴 노드에서 나가는
+    참조와 그 노드로 들어오는 참조의 판정이 함께 바뀐다. 구판은 이것을 보지
+    않고 `ok`를 냈다 — 검증기는 FAIL(scope 간 Link·derived-from, Domain의
+    `_raw` 근거)이었고 그 노드들의 무관한 다음 쓰기가 거부됐다. 같은 간선을
+    `create_node`·`update_node`는 처음부터 거부한다(2026-09-24 재현).
+
+    이미 있던 위반은 이 이동의 몫이 아니므로 세지 않는다(설계 D10 — 남이 만든
+    위반 때문에 내 쓰기가 막히면 안 된다). 출발지 허브의 Link는 `hub_links`의
+    `remove`가 닫으므로 뺀다. 들어오는 참조의 후보는 바이트에서 고르고
+    (`mentioning`), 판정은 판독한 노드로 한다 — 전수 판독을 부르지 않는다."""
+    after = {src: graph.space_of(dst) for src, dst, _n in plans}
+    moved = {src: n for src, _dst, n in plans if after[src] != graph.space_of(src)}
+    if not moved:
+        return []                     # 소속이 그대로면 판정도 그대로다
+    new_kind = {}
+    for src, n in moved.items():
+        new_kind[src.stem] = after[src]
+        if n.id:
+            new_kind[n.id] = after[src]
+
+    class _After:                     # `_topology_of`가 색인에 묻는 것은 해석뿐이다
+        @staticmethod
+        def resolve(name):
+            r = idx.resolve(name)
+            # 경로형은 옛 자리를 가리키므로(이동 뒤 dangling) 옛 판정 그대로 둔다
+            if r[0] == "node" and "/" not in name and name in new_kind:
+                return ("node", new_kind[name])
+            return r
+
+    hub_keep = {h["hub"]: set(h["remove"]) for h in stale if "remove" in h}
+    out = []
+    for p in dict.fromkeys([*moved, *idx.mentioning(new_kind)]):
+        if not idx._readable(p):
+            continue                  # 판독 불가 파일은 참조를 말하지 않는다
+        n = idx.parsed[p]
+        k0 = graph.space_of(p)
+        k1 = after.get(p, k0)
+        refs = [(t, pred) for pred in contract.PREDICATES for t in n.edges(pred)]
+        refs += [(t, None) for t in n.wikilinks()]
+        for t, pred in refs:
+            if pred is None and contract.target_stem(t) in hub_keep.get(p.stem, ()):
+                continue
+            errs = _topology_of(_After, k1, p.stem, t, pred, n.id)
+            if errs and not _topology_of(idx, k0, p.stem, t, pred, n.id):
+                # 쓰기용 꼬리("옮기는 중이면 먼저 옮기고…")는 여기서 거꾸로 읽힌다
+                out += [e.split(" — ", 1)[0] for e in errs]
+    return list(dict.fromkeys(out))   # Link와 derived-from이 같은 줄을 낸다
+
+
 def move_node(name: str, dest_space: str) -> dict:
     """군집 재배정. 이동은 바이트 불변이라 CAS가 없다(경로는 상태, 동일성은
     id). pin된 군집은 출발·도착 어느 쪽이든 거부한다(시행령 §3 4항)."""
@@ -1495,17 +1547,23 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
         srcs = {p.parent for p, _t, _n in plans}
         moved_stems = {p.stem for p, _t, _n in plans}
         stale = _hub_links(srcs - {dest_dir}, dest_dir, moved_stems, idx)
-        # 최상위 군집을 건너면 **알린다** — 거부하지는 않는다.
+        # 최상위 군집을 건너는 것 자체는 막지 않는다 — 노드 하나를 다른 scope로
+        # 재배정하는 것은 정당한 행위다. 막는 것은 이동이 **새로 만드는** 참조
+        # 위반이다(`_move_topology`). 출발지 허브의 Link만은 예외로 두고
+        # `hub_links`의 `remove`로 닫는다 — 이동 전에 지우면 허브 검사가 고아를
+        # 부르고, 이동 뒤 한 번의 편집으로 닫히는 것이 알려진 순서다.
         #
-        # 노드 하나를 다른 scope로 재배정하는 것은 정당한 행위이고(구판
-        # `move_node`가 늘 하던 일이다), 실제 위반은 출발지 허브가 계속
-        # 가리키는 것이라 `hub_links`의 `remove`를 따르면 해소된다. 그래서
-        # `move_cluster`처럼 막지 않는다 — 거기는 폴더 아래 전부의 소속이
-        # 한꺼번에 바뀌어 되돌릴 수 없이 무더기 위반이 되지만, 여기는 한 노드씩
-        # 이고 안내로 닫힌다.
-        #
-        # 다만 침묵하면 안 된다. 표면 감사에서 감사자가 이 이동을 하고 `ok:true`
-        # 를 받은 뒤 검증기 FAIL로 알게 됐다 — 응답이 그 사실을 말하지 않았다.
+        # 건넜다는 사실은 침묵하지 않는다. 표면 감사에서 감사자가 이 이동을 하고
+        # `ok:true`를 받은 뒤 검증기 FAIL로 알게 됐다.
+        bad = _move_topology(plans, stale, idx)
+        if bad:
+            raise WriteError(
+                "옮기면 참조 위상이 깨진다 — 아무것도 옮기지 않았다", bad + [
+                    "소속은 경로가 정하므로(헌법 8조 3항) 이 참조들은 이동 뒤 "
+                    "위반이 되고, 그 노드들의 무관한 다음 쓰기까지 거부된다. "
+                    "옮기기 전에 걷어내라(`update_node`의 `remove_edges`·"
+                    "`old_text`). 함께 가야 할 노드면 같은 `names`에 넣는다. "
+                    "scope를 넘어 공유할 지식이면 domain 노드로 증류해 경유한다"])
         dtop = dest_dir.relative_to(ROOT).parts[:2]
         crossed = sorted(p.stem for p, _t, _n in plans
                          if p.relative_to(ROOT).parts[:2] != dtop)

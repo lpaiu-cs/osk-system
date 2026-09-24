@@ -7756,6 +7756,69 @@ def test_duplicate_id_by_name_refused():
         _age_all()
 
 
+# ── 이동은 참조 위상을 새로 깨지 않는다 (v4.0.0) ─────────────────────────
+def test_move_topology_refused():
+    """노드를 옮기면 소속이 바뀌어 **그 노드의 나가고 들어오는 참조**의 판정이
+    바뀐다. 이동이 새로 만드는 위반은 쓰기 전에 거부한다.
+
+    구판은 scope를 건너는 `move_nodes`에 `ok`와 허브 안내만 냈다. 검증기는
+    FAIL(scope 간 Link·derived-from, Domain의 `_raw` 근거)이었고 그 노드들의
+    무관한 다음 쓰기가 거부됐다 — 같은 간선을 `create_node`는 처음부터 거부한다
+    (2026-09-24 재현).
+
+    무엇을 망가뜨리면 실패하는가:
+      · `_move_topology` 호출을 지우면 → 첫 두 거부 단언
+      · 들어오는 참조 후보(`mentioning`)를 빼면 → `regr-mt2 →` 단언
+      · 함께 옮기는 노드를 이동 후 소속으로 보지 않으면 → 묶음 이동 단언
+      · 이미 있던 위반까지 세면 → 마지막 단언(설계 D10)
+    """
+    w1 = ROOT / "00_Scope/W1"
+    mt, mx, md = (ROOT / "00_Scope/regr-MT", ROOT / "00_Scope/regr-MX",
+                  ROOT / "00_Domain/regr-MD")
+    files = {
+        "regr-mt1": node_text("260925-rgmt-0001", body="곁가지 [[regr-mt2]]"),
+        "regr-mt2": node_text("260925-rgmt-0002", body="위에 선다 [[regr-mt1]]",
+                              extra="derived-from: 260925-rgmt-0001\n"),
+        "regr-mt3": node_text("260925-rgmt-0003", body="원료에서",
+                              extra='derived-from: "[[00_Scope/W1/_raw/regr-mt#1]]"\n'),
+        "regr-mt4": node_text("260925-rgmt-0004", body="참조 없음"),
+    }
+    try:
+        for d in (mt, mx, md):
+            d.mkdir(parents=True, exist_ok=True)
+        for stem, text in files.items():
+            (w1 / f"{stem}.md").write_text(text, encoding="utf-8")
+        _age_all()
+        r1 = _w(write.move_nodes, ["regr-mt1"], "00_Scope/regr-MT")
+        v1 = " | ".join(r1.get("violations") or [])
+        check("scope를 건너 참조를 끊는 이동은 거부한다",
+              r1.get("ok") is False and "regr-mt1 → regr-mt2" in v1, r1)
+        check("들어오는 참조(Link·derived-from)도 짚는다",
+              "regr-mt2 → regr-mt1" in v1 and "regr-mt2 → 260925-rgmt-0001" in v1, v1)
+        check("고칠 길을 준다", "remove_edges" in v1 and "names" in v1, v1)
+        check("아무것도 옮기지 않았다", (w1 / "regr-mt1.md").is_file())
+        r2 = _w(write.move_nodes, ["regr-mt3"], "00_Domain/regr-MD")
+        check("`_raw` 근거를 단 노드는 Domain으로 못 간다",
+              r2.get("ok") is False and "Domain의 _raw" in str(r2)
+              and (w1 / "regr-mt3.md").is_file(), r2)
+        r3 = _w(write.move_nodes, ["regr-mt1", "regr-mt2"], "00_Scope/regr-MT")
+        check("서로 잇는 노드는 함께 옮기면 된다", r3.get("ok"), r3)
+        r4 = _w(write.move_nodes, ["regr-mt4"], "00_Domain/regr-MD")
+        check("참조 없는 노드의 건너기는 그대로 된다", r4.get("ok"), r4)
+        # 이미 있던 위반은 이 이동의 몫이 아니다(설계 D10)
+        (w1 / "regr-mt5.md").write_text(
+            node_text("260925-rgmt-0005", body="남의 scope [[regr-mt1]]"), encoding="utf-8")
+        _age_all()
+        r5 = _w(write.move_nodes, ["regr-mt5"], "00_Scope/regr-MX")
+        check("이미 있던 위반은 이동을 막지 않는다", r5.get("ok"), r5)
+    finally:
+        for stem in (*files, "regr-mt5"):
+            (w1 / f"{stem}.md").unlink(missing_ok=True)
+        for d in (mt, mx, md):
+            shutil.rmtree(d, ignore_errors=True)
+        _age_all()
+
+
 # ── 판독 계약: 깊이 가드와 탭 (v3.7.0) ──────────────────────────────────
 def test_parse_guards():
     """C 로더로 바꾸면서 (a) 프로세스를 죽이는 입력과 (b) 거부되던 것이
@@ -10764,7 +10827,7 @@ if __name__ == "__main__":
                test_nested_clusters,
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
-               test_duplicate_id_by_name_refused,
+               test_duplicate_id_by_name_refused, test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_node_place_rule,
                test_traversal_deterministic, test_index_split,

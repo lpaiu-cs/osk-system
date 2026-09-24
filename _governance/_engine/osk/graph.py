@@ -635,6 +635,13 @@ class Index:
             except OSError:
                 continue
 
+    def mentioning(self, tokens) -> list[Path]:
+        """바이트에 `tokens` 중 하나라도 나오는 노드 파일 — **후보**일 뿐이다.
+        참조인지는 부르는 쪽이 판독해서 가린다. 파일을 전부 열지만 YAML을
+        풀지 않으므로 전수 판독(`parse_all`)보다 싸다."""
+        keys = [str(t).encode() for t in tokens if t]
+        return [p for p, data in self._node_bytes() if any(k in data for k in keys)]
+
     def id_twins(self, path: Path) -> list[str]:
         """`path` 노드와 id가 같은 **판독되는** 노드 전부(자신 포함, POSIX 경로) —
         겹치지 않으면 빈 목록. `dup_ids`의 한 id판이다.
