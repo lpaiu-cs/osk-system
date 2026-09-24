@@ -78,13 +78,18 @@ def main():
             for i, path in enumerate(duplicates):
                 path.write_bytes(raw._block(1, f"different source {i}", "a").encode())
             frozen = {path: path.read_bytes() for path in duplicates}
-            reject(raw.record_path, "W1", "caf\u00e9")
-            reject(raw.append_round, "hidden-test", "caf\u00e9", "q2", "a2")
-            if suffix == ".md":
-                reject(raw.migrate, apply=True)
+            if os.path.samefile(*duplicates):
+                # APFS/HFS+ fold normalization: the second write reopened the first
+                # file, so one physical record exists and there is nothing to choose.
+                assert os.path.samefile(raw.record_path("W1", "caf\u00e9"), duplicates[0])
+            else:
+                reject(raw.record_path, "W1", "caf\u00e9")
+                reject(raw.append_round, "hidden-test", "caf\u00e9", "q2", "a2")
+                if suffix == ".md":
+                    reject(raw.migrate, apply=True)
             assert all(path.read_bytes() == data for path, data in frozen.items())
             for path in duplicates:
-                path.unlink()  # Isolated conflicting fixtures only.
+                path.unlink(missing_ok=True)  # Isolated conflicting fixtures only.
 
         # Old 255-byte filenames remain readable and migrate without shortening.
         # This also runs on ext4: .txt on the old stem would raise ENAMETOOLONG.
@@ -117,10 +122,13 @@ def main():
             normalized = write.unicodedata.normalize("NFC", name)
             if normalized != name:
                 twin = base / ".records" / normalized
-                twin.mkdir()
-                reject(raw.record_path, "W1", name)
-                reject(raw.append_round, "hidden-test", name, "q3", "a3")
-                twin.rmdir()
+                if twin.exists():  # Normalization-insensitive FS: the twin is dest.parent.
+                    assert os.path.samefile(twin, dest.parent)
+                else:
+                    twin.mkdir()
+                    reject(raw.record_path, "W1", name)
+                    reject(raw.append_round, "hidden-test", name, "q3", "a3")
+                    twin.rmdir()
                 flat = base / ".records" / (normalized + ".txt")
                 flat.write_bytes(original)
                 reject(raw.record_path, "W1", name)
