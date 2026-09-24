@@ -837,6 +837,15 @@ def test_ledger_line_boundaries():
               and r2["parents"] == [r1["rid"]], recs)
         check("append 뒤 파일은 개행으로 끝난다", p.read_bytes().endswith(b"\n"))
         check("구분 문자가 필드 안에서 왕복한다", recs[-1].get("note") == seps, recs[-1])
+        check("새 행은 구분 문자를 이스케이프해 쓴다 — 구판 기기가 판독한다",
+              [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+              == [ln for ln in p.read_text(encoding="utf-8").split("\n") if ln.strip()])
+        with open(p, "a", encoding="utf-8") as f:              # 구판이 날것으로 쓴 행
+            f.write(json.dumps({**r2, "rid": core._next_rid(r2["rid"]), "parents": [r2["rid"]]},
+                               ensure_ascii=False) + "\n")
+        check("구판이 날것으로 쓴 구분 문자 행도 판독된다",
+              core.ledger_read(p)[-1].get("note") == seps)
+        check("그 뒤 append도 성립", core.ledger_append(p, {"kind": "d"}).get("rid"))
         p.write_bytes(json.dumps(r1).encode() + b"\r\n")
         check("CRLF 행도 판독된다", len(core.ledger_read(p)) == 1)
         torn = json.dumps(r1).encode() + b'\n{"rid": "x", "kind"'

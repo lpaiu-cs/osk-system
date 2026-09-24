@@ -336,6 +336,9 @@ def _next_rid(max_rid: str | None) -> str:
 
 # ── 대장 읽기·손상 진단 ──────────────────────────────────────────────────
 
+_LINE_SEP_ESC = str.maketrans({"\x85": "\\u0085", " ": "\\u2028", " ": "\\u2029"})
+
+
 def _parse_lines(text: str, path: Path) -> list[dict]:
     # 행 경계는 "\n"뿐이다 — `splitlines()`는 U+2028·U+2029·U+0085에서도 끊는데,
     # 기록은 `ensure_ascii=False`라 그 문자가 필드 값에 날것으로 선다.
@@ -545,7 +548,10 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
             # 판독을 통과했으니 개행 없는 꼬리는 완결 기록이다(찢긴 꼬리는 위에서
             # 손상으로 거부된다) — 개행을 채우지 않으면 새 기록이 그 행에 붙는다.
             lead = "\n" if text and not text.endswith("\n") else ""
-            f.write(lead + json.dumps(record, ensure_ascii=False) + "\n")
+            # 줄 구분 문자는 이스케이프해 쓴다 — 같은 JSON 값이고, `splitlines()`로
+            # 판독하는 구판 기기가 동기화로 받은 이 행에서 대장 손상을 보지 않는다.
+            f.write(lead + json.dumps(record, ensure_ascii=False).translate(_LINE_SEP_ESC)
+                    + "\n")
             f.flush()
             os.fsync(f.fileno())
         finally:
