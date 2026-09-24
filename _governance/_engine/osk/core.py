@@ -326,7 +326,7 @@ def _canon_rel(base: Path, rel: str) -> str | None:
     None. floor·I/O 판정은 raw 문자열이 아니라 이 canonical 경로에 건다. realpath가
     lexical 경로와 다르면(경로 구성요소에 symlink) 다른 프레임워크 파일로 write가
     재지정된 것이므로 거부한다 — symlink 탈출만이 아니라 ROOT **내부** alias도 막는다
-    (예: `docs/SETUP.md -> _engine/osk/core.py`). 정션·대소문자만 바뀐 이름도
+    (예: `docs/SETUP.md -> _engine/osk/core.py`). 정션과 (Windows에서는) 대소문자만 바뀐 이름도
     realpath가 다른 자리를 내므로 같이 걸린다 — 갱신과 반려가 이 계약을 공유한다."""
     p = _within(base, rel)
     if p is None:
