@@ -7,7 +7,8 @@
 #       -c _governance/_engine/constraints.txt
 #
 # 설치되지 않는 줄(다른 플랫폼 전용 등)은 무시된다. mcp·pydantic 등을 올릴 때는
-# 이 파일도 함께 올리고 CI로 확인한다. numpy는 3.11·3.12 양쪽 휠이 있는 판이다.
+# 이 파일도 함께 올리고 CI로 확인한다. numpy는 CI가 Python 판별로 받은 판이
+# 다르다(2.5는 3.11을 지원하지 않는다).
 annotated-types==0.8.0
 anyio==4.15.1
 attrs==26.1.0
@@ -23,7 +24,8 @@ idna==3.20
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 mcp==1.30.0
-numpy==2.4.6
+numpy==2.4.6; python_version < "3.12"
+numpy==2.5.3; python_version >= "3.12"
 pycparser==3.0
 pydantic==2.13.5
 pydantic-core==2.46.5

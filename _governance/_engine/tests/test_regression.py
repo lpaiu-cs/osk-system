@@ -2723,7 +2723,7 @@ def test_contract_values():
     bad = {d: e for d in census if (e := errs(d=f'"{d}"'))}
     check("실측 drafter 전부 유효", not bad, bad)
     check("author user도 유효", not errs(a='"user"', d='"user"'))
-    # 표면 스키마를 거치지 않는 쓰기(CLI·내부 호출)도 같은 식에 막힌다
+    # 표면 스키마를 거치지 않는 쓰기(내부 호출)도 같은 식에 막힌다
     r = _w(write.create_node, "regr-drafter-bad", "s", "b", "Fable 5", space="00_Scope/W1")
     check("스키마 밖 drafter는 쓰기 통로가 거부",
           not r["ok"] and not (ROOT / "00_Scope/W1/regr-drafter-bad.md").exists(), r)
