@@ -213,6 +213,11 @@ TS_RE = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \(KST\)$"
 ID_RE = r"^\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?$"
 RID_RE = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$"
 CASE_RE = r"^CASE-\d{4}-\d+$"            # Mechanism §4 3항 — CASE-<연도>-<일련>
+# Mechanism §2 4항 — drafter는 모델명(`fable-5`·`gpt-5.6-sol`) 또는 `user`·`agent`.
+# 표면 스키마(mcp_server.Drafter)와 계약 검사가 **같은 식**을 쓴다 — 둘이 갈리면
+# 표면이 거부한 값을 손 편집·CLI가 앉히고 검증기는 통과시킨다.
+DRAFTER_RE = r"^[a-z][a-z0-9.\-]{0,39}$"
+AUTHORS = ("user", "agent")              # Mechanism §2 4항
 
 
 def now_kst() -> str:

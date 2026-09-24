@@ -2695,6 +2695,40 @@ def test_write_contract():
           not (ROOT / "00_Scope/W1/regr-w4.md").exists())
 
 
+def test_contract_values():
+    """author·drafter·시각의 **값** (Mechanism §2 2·4항) — 구판은 형식식만 봐서
+    `author: robot`·빈/정수 drafter·`2026-02-30`이 검증기와 갱신을 통과했다."""
+    ok_ts = "2026-08-01 00:00 (KST)"
+
+    def errs(a='"agent"', d='"fable-5"', c=ok_ts, nid="260801-zzzz-aaaa"):
+        text = (f'---\nid: "{nid}"\ncreated: "{c}"\nupdated: "{ok_ts}"\n'
+                f'author: {a}\ndrafter: {d}\nsummary: "s"\n---\n\nbody\n')
+        return contract.validate(contract.parse_bytes(ROOT / "00_Scope/W1/x.md",
+                                                      text.encode()))
+    for label, kw in (("author robot", {"a": '"robot"'}), ("author 빈 값", {"a": '""'}),
+                      ("drafter 빈 값", {"d": '""'}), ("drafter null", {"d": ""}),
+                      ("drafter 정수", {"d": "5"}), ("drafter 대문자·공백", {"d": '"Fable 5!"'}),
+                      ("drafter 끝 개행", {"d": '"fable-5\\n"'}),
+                      ("created 2026-02-30", {"c": "2026-02-30 10:00 (KST)",
+                                              "nid": "260230-zzzz-aaaa"}),
+                      ("created 99:99", {"c": "2026-08-01 99:99 (KST)"})):
+        check(f"계약 값 위반 적발: {label}", errs(**kw), kw)
+    # 실 vault 전수(1,968 노드)에서 나온 drafter는 전부 그대로 유효해야 한다
+    census = ("user agent sonnet-5 fable-5 gpt-6 opus-5 ox-alpha claude-opus-5 "
+              "claude-fable-5.1 kiro gpt-6-astra opus-5.5 gpt-5.6-sol x-preview-f-free "
+              "opus-4.8 claude-opus-5-5 gpt-5 opus antigravity "
+              "muse-spark-1.2-contributor-free worker orchestrator mimo-v2.5-free "
+              "claude-opus-5.5 gemini-3.1-pro claude-fable-5 sol claude-fable-5-1 "
+              "codex-gpt-5").split()
+    bad = {d: e for d in census if (e := errs(d=f'"{d}"'))}
+    check("실측 drafter 전부 유효", not bad, bad)
+    check("author user도 유효", not errs(a='"user"', d='"user"'))
+    # 표면 스키마를 거치지 않는 쓰기(CLI·내부 호출)도 같은 식에 막힌다
+    r = _w(write.create_node, "regr-drafter-bad", "s", "b", "Fable 5", space="00_Scope/W1")
+    check("스키마 밖 drafter는 쓰기 통로가 거부",
+          not r["ok"] and not (ROOT / "00_Scope/W1/regr-drafter-bad.md").exists(), r)
+
+
 def test_write_cas_body_bound():
     # 서명이 폐지됐으므로 CAS는 **본문 전체 치환**에만 결속한다(Mechanism
     # §6-2 4항) — 부분 변경(엣지 델타·summary)에는 요구하지 않는다.
@@ -10229,6 +10263,7 @@ if __name__ == "__main__":
                test_self_referencing_edge, test_surface_contract,
                test_ledger_row_shape,
                test_broken_delegation_isolated, test_write_contract,
+               test_contract_values,
                test_write_cas_body_bound, test_anchor_edit,
                test_edge_single_list_roundtrip,
                test_write_move_and_pin,

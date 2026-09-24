@@ -30,8 +30,8 @@ from osk import contract, epoch, graph, raw, validate, write  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
-from osk.core import (ROOT, StaleEngineError, posix_rel,  # noqa: E402
-                      sha256_bytes)
+from osk.core import (DRAFTER_RE, ROOT, StaleEngineError,  # noqa: E402
+                      posix_rel, sha256_bytes)
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
 # 이뤄진다(술어는 헌법 8조 5항, 충돌 유형은 Mechanism §4 3항의 목록이며,
@@ -42,7 +42,7 @@ CandidateType: TypeAlias = Literal["contradiction", "duplication",
                                    "competition", "delegation-overlap"]
 Title: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
-Drafter: TypeAlias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9.\-]{0,39}$")]
+Drafter: TypeAlias = Annotated[str, Field(pattern=DRAFTER_RE)]
 # 기록 이름도 곧 파일명이다 — 상한은 Title과 같은 자리에서 같은 이유로 건다.
 RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 
