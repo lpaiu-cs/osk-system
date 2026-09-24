@@ -682,15 +682,19 @@ class Index:
             return []
         nid = self.parsed[path].id
         if self._all_parsed:
-            return sorted(self.dup_ids.get(nid, []))
-        if self._id_tokens is None:
-            self._id_tokens = {}
-            for p, toks in self._id_token_sets():
-                for t in toks:
-                    self._id_tokens.setdefault(t, []).append(p)
-        same = [p for p in dict.fromkeys([path, *self._id_tokens.get(nid, ())])
-                if self._readable(p) and self.parsed[p].id == nid]
-        return sorted(p.relative_to(ROOT).as_posix() for p in same) if len(same) > 1 else []
+            same = [ROOT / s for s in self.dup_ids.get(nid, [])]
+        else:
+            if self._id_tokens is None:
+                self._id_tokens = {}
+                for p, toks in self._id_token_sets():
+                    for t in toks:
+                        self._id_tokens.setdefault(t, []).append(p)
+            same = [p for p in self._id_tokens.get(nid, ())
+                    if self._readable(p) and self.parsed[p].id == nid]
+        # 같은 파일로 가는 링크(도구가 만든 파일 링크)는 사본이 아니다 — 한쪽을
+        # 고치면 다른 쪽도 같은 바이트라 갈라질 수 없다.
+        others = [p for p in same if p != path and not _same_file(p, path)]
+        return sorted(q.relative_to(ROOT).as_posix() for q in [path, *others]) if others else []
 
     def node(self, path: Path) -> contract.Node:
         if path not in self.parsed:
@@ -756,6 +760,13 @@ class Index:
         if name in self.nonnode:
             return ("nonnode", self.nonnode[name][1])
         return ("dangling",)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 # 동 id 거부의 다음 행동 — 읽기·쓰기·후보 상정이 같은 말을 한다.
