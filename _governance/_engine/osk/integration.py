@@ -692,6 +692,11 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     return {**st, "text": text + organization_text}
 
 
+class SubagentEvent(Exception):
+    """Codex subagent hooks send the root session_id with the child's rollout. Not a
+    ValueError: no fallback may record it in the root conversation's state."""
+
+
 def hook_source(env: dict) -> tuple[str, str, str | None]:
     """Locate only the caller's native transcript, never another conversation's backlog."""
     sid = env.get("session_id") or env.get("conversation_id") or os.environ.get("CODEX_THREAD_ID")
@@ -732,6 +737,13 @@ def hook_source(env: dict) -> tuple[str, str, str | None]:
     if not harness:
         raise ValueError("native harness/transcript unavailable; provide harness and transcript_path")
     _identity(harness, sid)
+    if harness == "codex" and path and Path(path).is_file():
+        with Path(path).open("rb") as f:
+            first = next((line for line in f if line.strip()), b"")
+        row = json.loads(first) if first.endswith(b"\n") else None
+        meta = row.get("payload") if isinstance(row, dict) and row.get("type") == "session_meta" else None
+        if isinstance(meta, dict) and meta.get("id") != sid and meta.get("session_id") == sid:
+            raise SubagentEvent("Codex subagent hook names its root conversation; no state changed")
     return harness, sid, path
 
 

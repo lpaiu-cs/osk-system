@@ -848,6 +848,8 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
             directory.mkdir(parents=True, exist_ok=True)
             text = prompt(planned)
             (directory / "prompt.txt").write_text(text, encoding="utf-8")
+            # Exact argv (endpoint/model overrides) for audit; the prompt goes to stdin.
+            (directory / "argv.json").write_text(json.dumps(command, ensure_ascii=False), encoding="utf-8")
             env = dict(os.environ if worker_env is None else worker_env, OSK_VAULT_ROOT=str(core.ROOT),
                        PYTHONPATH=str(Path(__file__).resolve().parent.parent),
                        OSK_GROWTH_WORKER="1")
