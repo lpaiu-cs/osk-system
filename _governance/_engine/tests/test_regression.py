@@ -5607,6 +5607,14 @@ def test_code_region_commonmark_rules():
         "quote-list-para": ("> - a\n>\n>     #1ab [[X]]", True),
         # 표지 뒤 5칸 이상이면 항목은 들여쓰기 코드로 시작한다 — 문단이 아니다
         "item-starts-code": ("-     code\nf\n  ```\n#1ab [[X]]\n  ```", False),
+        # 문단을 끊는 첫 항목은 빈 항목·1 아닌 번호일 수 없다 — 문단의 글이다
+        "ord2-under-para": ("글\n2. ~~~ #1ab [[X]]", True),
+        "empty-under-para": ("글\n*\n      #1ab [[X]]", True),
+        "ord2-phantom-fence": ("글\n2. b\n    ~~~\n    #1ab [[X]]\n    ~~~", True),
+        "setext-dash": ("제목\n-\n  ```\n#1ab [[X]]\n  ```", False),
+        # 반례: 형제 항목·인용 뒤 항목은 문단을 끊는 자리가 아니다
+        "sibling-item": ("1. a\n2. b\n\n       #1ab [[X]]", False),
+        "quote-then-ord2": ("> 인용\n2. 항목\n\n       #1ab [[X]]", False),
     }
     for label, (body, prose) in cases.items():
         tags = write._space_numeric_tags(body)

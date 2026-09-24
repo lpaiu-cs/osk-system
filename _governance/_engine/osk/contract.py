@@ -50,11 +50,12 @@ def target_stem(name: str) -> str:
     return s[:-3] if s.endswith(".md") else s
 
 
-_LIST_ITEM_RE = re.compile(r" {0,3}(?:[-+*]|[0-9]{1,9}[.)])( +|$)")
+_LIST_ITEM_RE = re.compile(r" {0,3}(?:[-+*]|([0-9]{1,9})[.)])( +|$)")
 _QUOTE_RE = re.compile(r" {0,3}> ?")
 _FENCE_MARK_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 _BREAK_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")  # `* * *`·`---` — 목록 항목보다 먼저
+_SETEXT_RE = re.compile(r" {0,3}(?:=+|-+)[ \t]*$")  # 문단 밑 `-`는 빈 항목이 아니라 제목 밑줄
 # 문단을 끊는 HTML 블록 시작(1~6형). 7형(태그 하나뿐인 행)은 문단을 끊지 못한다.
 _HTML_RE = re.compile(
     r" {0,3}(?:<(?:script|pre|style|textarea)(?:[ \t>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\["
@@ -127,8 +128,12 @@ def md_lines(text: str):
                 item = not _BREAK_RE.match(rest) and _LIST_ITEM_RE.match(rest)
                 if not item:
                     break
-                padding = len(item[1])
-                width = item.start(1) + (padding if 1 <= padding <= 4 else 1)
+                blank_start = not rest[item.end():].strip()
+                # 문단을 끊는 첫 항목은 빈 항목·1 아닌 번호일 수 없다 — 문단의 글이다
+                if tip and not opened and (blank_start or item[1] and int(item[1]) != 1):
+                    break
+                padding = len(item[2])
+                width = item.start(2) + (padding if 1 <= padding <= 4 else 1)
                 stack.append(width)
                 rest, opened = rest[width:], True
             tip = tip and not opened
@@ -140,7 +145,8 @@ def md_lines(text: str):
                 fence, fence_depth, code, para = mark[1], len(stack), True, False
             else:
                 # 문단 글만 게으르게 이어진다 — 제목·구분선·HTML 블록 뒤 행은 잇지 못한다
-                para = not (any(r.match(rest) for r in (_HEADING_RE, _BREAK_RE, _HTML_RE))
+                para = not ((tip and _SETEXT_RE.match(rest))
+                            or any(r.match(rest) for r in (_HEADING_RE, _BREAK_RE, _HTML_RE))
                             or (not tip and _HTML7_RE.match(rest)))
         yield offset, line, rest, code
         offset += len(line) + 1
