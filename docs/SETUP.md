@@ -895,7 +895,11 @@ v3.20.x의 updater에는 이 관문이 없다. 최초 전환 때는 **검토한 
   증빙 밖 파일)가 있으면 `withheld`로 지정하지 않고 그 경로를 `governance.unattested`에
   싣는다 — 검토한 뒤 `osk protect _governance`로 직접 지정한다. 사용자가 해제한
   구획은 다시 지정하지 않는다(`released`). 미보호 통치 구획은 `status`의 `warnings`와
-  `validate`의 `warnings.governance_unprotected`로 알린다(FAIL이 아니다).
+  `validate`의 `warnings.governance_unprotected`로 알린다(FAIL이 아니다). 이
+  지정을 모르는 이전 엔진이 갱신을 수행한 설치는 MCP 서버 재시작 뒤 **같은 태그로**
+  `osk.update --to <태그> --apply`를 한 번 더 확인 적용하면 파일은 그대로 두고
+  지정만 기록된다. 동기화하는 기기 중 **한 기기에서만** 한다 — 동기화 전에 두
+  기기가 각각 지정하면 비교 불능 분기(stale)가 되어 사용자 봉합이 필요하다.
 - 새 배포판은 `00_Scope`·`00_Domain`·`00_Person`을 쓴다. 기존 vault는 대장·승인본·
   원료 좌표가 가리키는 물리 이름을 유지한다. [경로 호환 규칙](space-layout-migration.md)을 따른다.
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면

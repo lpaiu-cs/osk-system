@@ -449,12 +449,16 @@ def governance_warning(recs: list[dict] | None = None) -> str | None:
     지정 없이 남았다 — 통치 문서를 직접 고쳐도 검증은 PASS이고 status는
     아무것도 보이지 않았다(실측). 알리는 것까지가 엔진의 몫이고 지정은 사용자의
     확인 행위다."""
-    if not (ROOT / "_governance").is_dir() or state("_governance", recs) != "unprotected":
+    recs = records() if recs is None else recs
+    # is_protected가 먼저다 — 보호 중이면 state()의 영역 전수 해시를 하지 않는다.
+    if (not (ROOT / "_governance").is_dir() or is_protected("_governance", recs)
+            or state("_governance", recs) != "unprotected"):
         return None
     return ("통치 구획(_governance)이 보호영역이 아니다 — 통치 문서를 고쳐도 "
-            "변경집합으로 드러나지 않는다. 지정 이력이 없으면 다음 갱신의 확인 "
-            "적용이 비준증빙과 같은 내용으로 지정하고, 그 밖에는 사용자가 대화형 "
-            "단말에서 `osk protect _governance`로 지정한다")
+            "변경집합으로 드러나지 않는다. 지정 이력이 없으면 갱신의 확인 적용"
+            "(지금 판과 같은 태그의 재적용 포함)이 비준증빙과 같은 내용으로 "
+            "지정하고, 그 밖에는 사용자가 대화형 단말에서 "
+            "`osk protect _governance`로 지정한다")
 
 
 def containing_regions(path: Path | str) -> list[str]:
