@@ -377,7 +377,7 @@ def _next_rid(max_rid: str | None) -> str:
 
 # ── 대장 읽기·손상 진단 ──────────────────────────────────────────────────
 
-_LINE_SEP_ESC = str.maketrans({"\x85": "\\u0085", " ": "\\u2028", " ": "\\u2029"})
+_LINE_SEP_ESC = str.maketrans({"\x85": r"\u0085", "\u2028": r"\u2028", "\u2029": r"\u2029"})
 
 
 def _parse_lines(text: str, path: Path) -> list[dict]:
