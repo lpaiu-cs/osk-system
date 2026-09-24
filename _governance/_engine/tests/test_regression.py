@@ -5618,6 +5618,10 @@ def test_code_region_commonmark_rules():
         # 빈 항목은 빈 행에서 닫히고, 빈 채로 시작하는 항목의 내용 열은 표지 뒤 1칸이다
         "empty-item-blank": ("-\n\n  ```\n#1ab [[X]]\n  ```", False),
         "blank-start-width": ("-    \n    #1ab [[X]]", True),
+        # 빈 행은 공백·탭뿐이다(NBSP·전각 공백 행은 글), CRLF 본문도 같은 판정
+        "nbsp-line": ("글\n \n    #1ab [[X]]", True),
+        "ideographic-line": ("글\n　\n    #1ab [[X]]", True),
+        "crlf": ("-\r\n  ~~~\r\n#1ab [[X]]", True),
     }
     for label, (body, prose) in cases.items():
         tags = write._space_numeric_tags(body)

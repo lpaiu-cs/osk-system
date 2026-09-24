@@ -90,14 +90,14 @@ def md_lines(text: str):
     fence, fence_depth, stack, offset = "", 0, [], 0   # stack: 항목 내용 폭(int)·인용(">")
     para = empty = False
     for line in text.split("\n"):
-        content = line.expandtabs(4)
+        content = line.rstrip("\r").expandtabs(4)   # CRLF 본문(scope_memory)도 같은 판정
         pos = matched = 0
         for c in stack:
             if c == ">":
                 if not (m := _QUOTE_RE.match(content, pos)):
                     break
                 pos = m.end()
-            elif content[pos:].strip():
+            elif content[pos:].strip(" \t"):
                 if not content.startswith(" " * c, pos):
                     break
                 pos += c
@@ -111,7 +111,7 @@ def md_lines(text: str):
             mark = _FENCE_MARK_RE.match(rest)
             if mark and mark[1][0] == fence[0] and len(mark[1]) >= len(fence) and not mark[2].strip():
                 fence = ""
-        elif not rest.strip():
+        elif not rest.strip(" \t"):   # 빈 행은 공백·탭뿐이다 — NBSP·전각 공백 행은 글이다
             if matched < len(stack):
                 del stack[matched:]   # 빈 행은 인용을 닫는다
             elif empty:
@@ -131,7 +131,7 @@ def md_lines(text: str):
                 item = not _BREAK_RE.match(rest) and _LIST_ITEM_RE.match(rest)
                 if not item:
                     break
-                blank_start = not rest[item.end():].strip()
+                blank_start = not rest[item.end():].strip(" \t")
                 # 문단을 끊는 첫 항목은 빈 항목·1 아닌 번호일 수 없다 — 문단의 글이다
                 if tip and not opened and (blank_start or item[1] and int(item[1]) != 1):
                     break
@@ -140,7 +140,7 @@ def md_lines(text: str):
                 stack.append(width)
                 rest, opened, empty = rest[width:], True, blank_start
             tip = tip and not opened
-            if not rest.strip():
+            if not rest.strip(" \t"):
                 para = False
             elif rest.startswith("    "):
                 code, para = not tip, tip   # 들여쓰기 코드 — 문단을 끊지는 못한다
