@@ -87,6 +87,9 @@ def run() -> dict:
         try:
             rep["protected_regions"] = {
                 r: approvals.state(r) for r in approvals.protected_regions()}
+            gw = approvals.governance_warning(arecs)   # 경고일 뿐 verdict 밖
+            if gw:
+                rep["warnings"]["governance_unprotected"] = gw
         except Exception as e:
             errs.append(str(e))
     ok(f"승인 기록부 ({len(arecs)}행)", errs)

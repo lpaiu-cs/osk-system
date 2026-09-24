@@ -494,6 +494,7 @@ def main(argv=None):
             recovery = scope_memory.recovery_status()
         except Exception as e:
             recovery = {"error": str(e)}
+        gw = approvals.governance_warning()
         print(json.dumps({
             "nodes": len(idx.nodes),
             "protected_regions": {r: approvals.state(r) for r in regions},
@@ -501,6 +502,7 @@ def main(argv=None):
                             if d["effective"]],
             "evictions": ev,
             "scope_recovery": recovery,
+            **({"warnings": [gw]} if gw else {}),
             "root": str(ROOT),
         }, ensure_ascii=False, indent=2))
     elif a.cmd in ("search", "view"):

@@ -8,8 +8,9 @@
 체제: 서명이 노드 단위 '확인'이었던 것과 달리, 보호는 **구획(영역) 단위**의
 '수용'이다. 엔진은 각 보호영역의 **승인본**(사용자가 마지막으로 승인한 영역
 전체의 상태)을 내용 주소 저장소에 보존하고, 에이전트는 **작업본**에 평소처럼
-쓴다. 지정·해제·승인·반려는 사용자 전속이다. 업데이트의 통치 구획 수용은
-변경집합 재승인 후 비대화형으로 기록하며, 나머지는 대화형 단말에서 발의한다
+쓴다. 지정·해제·승인·반려는 사용자 전속이다. 업데이트의 통치 구획 수용과
+(지정 이력이 없을 때의) 최초 지정은 변경집합 재승인 후 비대화형으로 기록하며,
+나머지는 대화형 단말에서 발의한다
 (§3 7항·§6-2 2항 — 이 모듈의 쓰기 함수는 MCP 표면에 노출하지 않는다).
 
 판정은 다른 `_ledger` 대장과 같은 인과 극대다(core). 영역의 인과 극대가
@@ -19,7 +20,7 @@
 core.resolve_in_root로 vault 안에 봉쇄한다. 해석 실패는 언제나 거부 쪽이다.
 """
 from __future__ import annotations
-import json, os, re
+import contextlib, json, os, re
 from pathlib import Path
 
 from .core import (ROOT, LEDGER, ledger_damage, sha256_bytes, sha256_file,
@@ -441,6 +442,21 @@ def state(region: str, recs: list[dict] | None = None) -> str:
     return "clean" if appr is not None and appr == work else "pending"
 
 
+def governance_warning(recs: list[dict] | None = None) -> str | None:
+    """통치 구획이 보호영역이 아니면 그 안내 — 실패가 아니라 경고다.
+
+    통치 구획은 상설 보호영역인데(헌법 10조 1항) 갱신이 지정하기 전의 설치는
+    지정 없이 남았다 — 통치 문서를 직접 고쳐도 검증은 PASS이고 status는
+    아무것도 보이지 않았다(실측). 알리는 것까지가 엔진의 몫이고 지정은 사용자의
+    확인 행위다."""
+    if not (ROOT / "_governance").is_dir() or state("_governance", recs) != "unprotected":
+        return None
+    return ("통치 구획(_governance)이 보호영역이 아니다 — 통치 문서를 고쳐도 "
+            "변경집합으로 드러나지 않는다. 지정 이력이 없으면 다음 갱신의 확인 "
+            "적용이 비준증빙과 같은 내용으로 지정하고, 그 밖에는 사용자가 대화형 "
+            "단말에서 `osk protect _governance`로 지정한다")
+
+
 def containing_regions(path: Path | str) -> list[str]:
     """경로를 포함하는 보호영역 **전부** — 없으면 빈 목록. 영역은 중첩될 수
     있으므로(사용자가 하위 구획을 따로 지정) 포함 관계는 여럿일 수 있다."""
@@ -679,10 +695,15 @@ def file_in_region_baseline(region: str, path: Path | str) -> bool:
 
 # ── 발의 (사용자 전속 — 대화형 단말) ─────────────────────────────────────
 
-def protect(region: str, reason: str = "") -> dict:
+def protect(region: str, reason: str = "", *, expect_work: str | None = None,
+            _locked: bool = False) -> dict:
     """보호영역 지정 — 지정 시점 작업본을 **초기 승인본**으로 삼는다
-    (시행령 §6 5항). 이미 보호 중이면 거부(이중 지정은 승인·반려로 한다)."""
-    with mutation_lock():   # 엔진이 내는 변경을 직렬화
+    (시행령 §6 5항). 이미 보호 중이면 거부(이중 지정은 승인·반려로 한다).
+
+    갱신은 트랜잭션 내내 mutation 잠금을 쥐고(`_locked`) 확인받은 통치 구획
+    tree를 `expect_work`로 건다 — 박제한 작업본이 그와 다르면 지정하지 않는다
+    (작업본 측 CAS, 단일 판독: 검사한 tree가 곧 박제한 tree다)."""
+    with (contextlib.nullcontext() if _locked else mutation_lock()):
         d = resolve_in_root(region)
         if d is None or not d.is_dir():
             raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
@@ -707,6 +728,9 @@ def protect(region: str, reason: str = "") -> dict:
         if is_protected(reg, recs):
             raise ValueError(f"이미 보호 중인 영역이다: {reg}")
         accepted = _store_tree(d)
+        if expect_work is not None and accepted != expect_work:
+            raise ValueError(
+                "확인한 작업본이 그 사이 바뀌었다 — 지정하지 않았다 (작업본 측 CAS)")
         return ledger_append(APPROVALS, {
             "kind": "protect", "region": reg, "base": None,
             "accepted": accepted, "moves_seen": _moves_boundary(),

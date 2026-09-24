@@ -970,13 +970,28 @@ def _request_approval(report: dict) -> dict:
         "사용자 재승인을 받기 전에는 자동 재시도하지 마라. 재승인 후 같은 명령을 "
         "1시간 안에 한 번 재시도하면 적용한다 — 이 vault의 동기화 데몬은 적용 단계가 "
         "멈추고 끝나면 다시 띄운다. 릴리스·로컬 변경집합이 달라지거나 적용이 실패하면 "
-        "새 확인을 요구한다. 적용 후 모든 연결 하네스의 MCP 서버를 재시작해야 한다."))
+        "새 확인을 요구한다. 적용 후 모든 연결 하네스의 MCP 서버를 재시작해야 한다."
+        + _PROTECT_NOTE.get(report.get("governance", {}).get("protect"), "")))
 
 
-def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list) -> dict:
+# 통치 구획 지정 여부는 확인 대상의 일부다 — 사용자가 무엇에 답하는지 알게 한다.
+_PROTECT_NOTE = {
+    "establish": " 이 적용은 통치 구획(_governance)을 비준증빙 내용 그대로 "
+                 "보호영역으로 지정한다 — 이후 통치 문서의 로컬 수정은 pending으로 "
+                 "드러난다. 이것도 함께 알린다.",
+    "withheld": " 통치 구획에 비준증빙과 다른 로컬 내용(governance.unattested)이 "
+                "있어 보호영역으로 지정하지 않는다 — 사용자가 차이를 검토한 뒤 "
+                "대화형 단말에서 `osk protect _governance`로 지정할 수 있다고 함께 "
+                "알린다.",
+}
+
+
+def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
+                       targets: list, rel: dict) -> dict:
     """Hash the exact post-update region, including pre-existing local changes."""
     from . import approvals
-    state = approvals.state("_governance")
+    recs = approvals.records()
+    state = approvals.state("_governance", recs)
     if state == "stale":
         raise UpdateError("통치 구획 승인본이 stale이다 — 사용자 검토로 먼저 해소한다")
     files = {rel: sha256_file(path) for rel, path in
@@ -992,9 +1007,28 @@ def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list) ->
             files[dest] = sha256_bytes(data)
     for dest in p["remove"]:
         files.pop(dest, None)
-    return {"state": state, "base": base, "before": before,
-            "after": sha256_bytes(approvals._manifest_blob(sorted(files.items()))),
-            "existing_changes": prior if state == "pending" else None}
+    out = {"state": state, "base": base, "before": before,
+           "after": sha256_bytes(approvals._manifest_blob(sorted(files.items()))),
+           "existing_changes": prior if state == "pending" else None}
+    if state != "unprotected":
+        return out
+    # 통치 구획은 상설 보호영역이다(헌법 10조 1항). 지정 이력이 없는 설치에서는
+    # 확인받은 적용이 지정까지 한다 — 단 적용 뒤 구획이 **비준증빙이 정한 내용과
+    # 정확히 같을 때만**. 로컬 차이(충돌 사이드카·증빙 밖 파일 포함)를 초기
+    # 승인본으로 축복하지 않고 보고한다. 사용자가 해제한 구획은 다시 지정하지
+    # 않는다(해제는 제도의 개정과 함께 한다 — 시행령 §6 1항).
+    if any(r.get("region") == "_governance" for r in recs):
+        out["protect"] = "released"
+        return out
+    attested = {dest: rel["files"][src] for src, dest in targets
+                if dest.startswith("_governance/")
+                and not approvals._excluded_rel(dest, "_governance")}
+    diff = sorted(k for k in files.keys() | attested.keys()
+                  if files.get(k) != attested.get(k))
+    out["protect"] = "withheld" if diff or approvals._damaged(recs) else "establish"
+    if diff:
+        out["unattested"] = diff[:20]
+    return out
 
 
 def _run_locked(source: str | None, ref: str | None, bundle: str | None,
@@ -1098,7 +1132,7 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
             raise UpdateError(
                 "사이드카 경로가 정식 관리 파일과 겹친다 — 갱신을 중단한다"
                 "(관리 파일을 되덮게 된다):\n  " + "\n  ".join(side_collide[:10]))
-        governance = _governance_review(tree, p, side_write, ad_write)
+        governance = _governance_review(tree, p, side_write, ad_write, targets, rel)
         out["governance"] = governance
         out["restart_required"] = True
         out["attestation"] = attest_id
@@ -1144,7 +1178,8 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         touch += [posix_rel(d / ".gitkeep", ROOT) for d in skel if not d.exists()]
         from . import approvals
         accept_governance = governance["base"] and governance["after"] != governance["base"]
-        if accept_governance:
+        establish = governance.get("protect") == "establish"
+        if accept_governance or establish:
             touch.append(posix_rel(approvals.APPROVALS, ROOT))
         _txn_begin(txn, v, touch)
         ledger_append(UPDATE_JOURNAL, {"kind": "begin", "txn": txn,
@@ -1176,6 +1211,10 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
                 approvals._approve_locked("_governance", governance["base"],
                                           governance["after"],
                                           f"osk.update {v}; user confirmation: {reviewed}")
+            if establish:                     # 확인받은 증빙 tree 그대로만 지정
+                approvals.protect("_governance",
+                                  f"osk.update {v}; user confirmation: {reviewed}",
+                                  expect_work=governance["after"], _locked=True)
         except (OSError, ValueError) as e:
             _txn_recover(ledger_read(UPDATE_JOURNAL))   # done(txn) 없음 → rollback
             ledger_append(UPDATE_JOURNAL,
@@ -1219,6 +1258,8 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         out.update(applied=True, applied_files=len(applied),
                    removed=removed, sidecars=sidecars, skel_created=made_skel,
                    governance_accepted=bool(accept_governance),
+                   governance_protected=("established" if establish
+                                         else governance.get("protect")),
                    note="엔진이 갱신되었으면 실행 중인 MCP 서버를 재시작한다 — "
                         "이 기기의 동기화 데몬은 갱신이 멈췄다 다시 띄운다(daemon)")
         return out

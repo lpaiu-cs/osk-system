@@ -3977,6 +3977,136 @@ def test_current_version_equivalent_heads():
           update.current_version([old, a, next_done]) == "v3.17.2")
 
 
+def test_fresh_install_protects_governance():
+    """새 설치(GETTING-STARTED 2단계) — 태그 clone 위의 두 번째 `--apply`가 통치
+    구획을 비준증빙 내용 그대로 보호영역으로 지정한다(사용자 판정 2026-09-24).
+    v3.22.1 실측: 안내를 따르면 protected_regions `{}`로 끝났고, 통치 문서를 직접
+    고쳐도 validate PASS·status 침묵이었다. 고쳐 둔 통치 문서는 축복하지 않고,
+    미보호 설치에는 status·validate가 경고한다(실패가 아니다).
+
+    정본은 이 저장소의 `_governance/`를 임시 git 저장소에 담아 로컬 태그로
+    만든다(네트워크 없음). 설치는 안내 그대로 자식 프로세스가 clone 안의 엔진으로
+    돈다 — 수트의 OSK_VAULT_ROOT를 물려주지 않는다."""
+    from osk import release
+    src, tag = ENGINE.parents[1], "v9.40.0"
+    ls = subprocess.run(["git", "-C", str(src), "ls-files", "-z", "--",
+                         "_governance", ".gitattributes"],
+                        capture_output=True, text=True, encoding="utf-8")
+    if ls.returncode != 0 or not ls.stdout:
+        skip("새 설치의 통치 구획 보호", "엔진이 git 작업 트리 안에 있지 않다")
+        return
+
+    def git(root, *a):
+        r = subprocess.run(["git", "-C", str(root), *a], capture_output=True,
+                           text=True, encoding="utf-8", timeout=300)
+        assert r.returncode == 0, (a, r.stderr)
+        return r.stdout
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(os.path.realpath(td))
+        can = td / "canon"
+        for rel in filter(None, ls.stdout.split("\0")):
+            if (src / rel).is_file():
+                (can / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src / rel, can / rel)
+        for space in ("00_Scope", "00_Domain", "00_Person"):
+            (can / space).mkdir(exist_ok=True)
+            (can / space / ".gitkeep").write_bytes(b"")
+        git(can, "init", "-q", "-b", "main")
+        for k, v in (("user.name", "fixture"), ("user.email", "f@x"),
+                     ("core.autocrlf", "false"), ("core.eol", "lf")):
+            git(can, "config", k, v)
+        git(can, "add", "-A")
+        git(can, "commit", "-qm", "canon")
+        (can / "release.json").write_bytes(json.dumps(
+            release.build_attestation(can, tag), ensure_ascii=False).encode())
+        git(can, "add", "release.json")
+        git(can, "commit", "-qm", "release")
+        git(can, "tag", tag)
+
+        env = {k: v for k, v in os.environ.items() if k != "OSK_VAULT_ROOT"}
+
+        def install(name, edit=None):
+            v = td / name
+            git(td, "clone", "-q", "-c", "core.autocrlf=false", "--branch", tag,
+                str(can), str(v))
+            (v / ".osk").mkdir()
+            (v / ".osk/config.json").write_text(json.dumps(
+                {"upstream": {"source": "git", "url": str(can), "pin": None}}),
+                encoding="utf-8")
+            if edit:
+                edit(v)
+            e = dict(env, PYTHONPATH=str(v / "_governance/_engine"),
+                     PYTHONIOENCODING="utf-8")
+
+            def run(*a):
+                r = subprocess.run([sys.executable, "-m", *a], cwd=v, env=e,
+                                   capture_output=True, text=True,
+                                   encoding="utf-8", timeout=600)
+                try:
+                    return r.returncode, json.loads(r.stdout)
+                except ValueError:
+                    return r.returncode, {"stdout": r.stdout[-300:],
+                                          "stderr": r.stderr[-600:]}
+            first = run("osk.update", "--to", tag, "--apply")
+            second = run("osk.update", "--to", tag, "--apply")
+            return v, run, first, second
+
+        def brief(code, r):                   # 실패 보고는 판정에 쓴 필드만
+            return code, {k: r[k] for k in ("governance", "governance_protected",
+                                            "applied", "stdout", "stderr") if k in r}
+
+        v, run, (c1, r1), (c2, r2) = install("fresh")
+        check("새 설치: 첫 --apply는 통치 구획 지정을 확인 대상으로 보인다",
+              c1 == 2 and r1.get("approval_required")
+              and r1.get("governance", {}).get("protect") == "establish"
+              and "보호영역으로 지정" in r1.get("instruction", ""), brief(c1, r1))
+        check("새 설치: 확인한 재시도가 적용과 함께 통치 구획을 지정한다",
+              c2 == 0 and r2.get("applied")
+              and r2.get("governance_protected") == "established", brief(c2, r2))
+        _, st = run("osk.cli", "status")
+        check("새 설치: 통치 구획이 clean 보호영역이고 경고가 없다",
+              st.get("protected_regions") == {"_governance": "clean"}
+              and "warnings" not in st, st)
+        ledger = v / "00_Scope/Workbench/_ledger/approvals.jsonl"
+        rows = [json.loads(x) for x in ledger.read_text(encoding="utf-8").splitlines()
+                if x.strip()] if ledger.is_file() else []
+        check("새 설치: 지정 기록은 protect 한 행이고 확인한 검토에 결속된다",
+              [(x.get("kind"), x.get("region")) for x in rows]
+              == [("protect", "_governance")]
+              and r2.get("review_id", "?") in rows[0].get("reason", ""), rows)
+        bylaws = v / "_governance/Bylaws.md"
+        bylaws.write_bytes(bylaws.read_bytes() + "\n로컬 수정\n".encode())
+        _, st = run("osk.cli", "status")
+        check("새 설치 뒤 통치 문서 직접 수정은 pending으로 드러난다",
+              st.get("protected_regions") == {"_governance": "pending"}, st)
+
+        def edit(vault):
+            b = vault / "_governance/Bylaws.md"
+            b.write_bytes(b.read_bytes() + "\n로컬 수정\n".encode())
+        v, run, (c1, r1), (c2, r2) = install("edited", edit)
+        check("고쳐 둔 통치 문서가 있으면 지정을 보류하고 그 경로를 보인다",
+              c1 == 2 and r1.get("governance", {}).get("protect") == "withheld"
+              and "_governance/Bylaws.md" in r1["governance"].get("unattested", []),
+              brief(c1, r1))
+        check("보류된 설치의 적용은 지정 없이 끝난다(축복하지 않는다)",
+              c2 == 0 and r2.get("applied")
+              and r2.get("governance_protected") == "withheld"
+              and not (v / "00_Scope/Workbench/_ledger/approvals.jsonl").exists(),
+              brief(c2, r2))
+        _, st = run("osk.cli", "status")
+        check("미보호 통치 구획은 status가 경고한다",
+              st.get("protected_regions") == {}
+              and any("_governance" in w for w in st.get("warnings", [])), st)
+        cv, rep = run("osk.cli", "validate")
+        check("미보호 통치 구획은 validate가 경고하되 FAIL로 세지 않는다",
+              cv == 0 and rep.get("verdict") == "PASS"
+              and "_governance" in rep.get("warnings", {}).get(
+                  "governance_unprotected", ""),
+              (cv, rep.get("fail"), rep.get("warnings", {}).get(
+                  "governance_unprotected")))
+
+
 def test_release_and_update():
     from osk import release, update
     def confirmed_update(*args, **kwargs):
@@ -10962,6 +11092,7 @@ if __name__ == "__main__":
                test_publish_manifest, test_publish_guards,
                test_conflict_candidates,
                test_current_version_equivalent_heads, test_release_and_update,
+               test_fresh_install_protects_governance,
                test_store_digest_confined, test_delegation_protection_scope,
                test_approve_requires_expect_work,
                test_approval_baseline_blobs_present,
