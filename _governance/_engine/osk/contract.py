@@ -55,6 +55,9 @@ _FENCE_MARK_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 _HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 _BREAK_RE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")  # `* * *`·`---` — 목록 항목보다 먼저
 _TICKS_RE = re.compile(r"`+")
+# 문단을 끊는 행 — 목록 안 문단 뒤에서 이것이 아니면 게으른 연속행이다
+_BLOCK_STARTS = (_BREAK_RE, _LIST_ITEM_RE, _HEADING_RE,
+                 re.compile(r" {0,3}(?:>|`{3,}[^`]*$|~{3,})"))
 _INDENTED_RE = re.compile(r"(?m)^(?: {4}| {0,3}\t)")
 
 
@@ -66,18 +69,23 @@ def md_lines(text: str):
     태그 방어·Link 추출·목차가 **이 판정 한 벌**을 쓴다. 셋이 갈리면 목차가
     코드로 보는 예시를 그래프는 Link로 세고 쓰기는 그 코드를 고친다(v3.22.1
     실측: `~~~`·들여쓰기·목록 속 펜스에서 `#123abc`가 `#123 abc`로 바뀌었다)."""
-    # ponytail: 인용(>) 컨테이너·setext 제목·HTML 블록은 가리지 않고, 목록
-    # 항목의 게으른 연속행(들여쓰지 않은 이음 행)은 항목을 닫는 것으로 본다 —
+    # ponytail: 인용(>) 컨테이너·setext 제목·HTML 블록은 가리지 않는다 —
     # 거기서 코드가 갈리면 CommonMark 파서로 바꾼다.
     fence, fence_indent, list_indents, para, offset = "", 0, [], False, 0
     for line in text.split("\n"):
         content = line.expandtabs(4)
+        indent = list_indents[-1] if list_indents else 0
         if content.strip():
-            while list_indents and not content.startswith(" " * list_indents[-1]):
-                list_indents.pop()
+            depth = len(list_indents)
+            while depth and not content.startswith(" " * list_indents[depth - 1]):
+                depth -= 1
+            indent = list_indents[depth - 1] if depth else 0
+            # 덜 들여쓴 행도 문단의 게으른 연속행이면 목록 항목을 닫지 않는다
+            if not (para and depth < len(list_indents)
+                    and not any(r.match(content[indent:]) for r in _BLOCK_STARTS)):
+                del list_indents[depth:]
         else:
             para = False
-        indent = list_indents[-1] if list_indents else 0
         if fence and indent < fence_indent:
             fence = ""  # 닫히지 않은 펜스는 그것을 담은 목록 항목과 함께 끝난다
         content = content[indent:]
@@ -98,7 +106,8 @@ def md_lines(text: str):
             mark = _FENCE_MARK_RE.match(content)
             if mark and (mark[1][0] != "`" or "`" not in mark[2]):
                 fence, fence_indent, code = mark[1], indent, True
-            para = not code and not _HEADING_RE.match(content) and not _BREAK_RE.match(content)
+            para = (bool(content.strip()) and not code  # 빈 항목(`-`)은 문단을 열지 않는다
+                    and not _HEADING_RE.match(content) and not _BREAK_RE.match(content))
         yield offset, line, content, code
         offset += len(line) + 1
 

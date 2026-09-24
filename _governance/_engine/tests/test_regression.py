@@ -5513,7 +5513,11 @@ def test_code_region_block_boundaries():
     """코드 판정의 블록 경계(v3.22.2 리뷰). `* * *`·`- - -` 주제 구분선을 목록
     항목으로 읽으면 유령 목록 들여쓰기가 남는다 — 그 안에서 연 펜스가 들여쓰지
     않은 코드 행에서 닫혀 `#123abc`가 `#123 abc`로 바뀌고(요약 편집에서도),
-    진짜 닫는 펜스가 새 펜스를 열어 뒤의 Link가 사라졌다."""
+    진짜 닫는 펜스가 새 펜스를 열어 뒤의 Link가 사라졌다. 목록 항목 문단의
+    게으른 연속행(들여쓰지 않은 이음 행)이 목록을 닫으면 빈 행 뒤 항목 안의
+    4칸 문단을 코드로 읽어 Link를 놓친다 — scope 밖 직접 Link가 위상 검사
+    없이 저장됐다."""
+    import mcp_server
     ex = "#123abc [[regr-blk-example]]"
     cases = {
         "hr-fence": ("* * *\n\n  ```css\np { color: #123abc; }\n  ```\n\n[[W1]]\n",
@@ -5522,7 +5526,22 @@ def test_code_region_block_boundaries():
         "hr-under-para": (f"글\n- - -\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
         # 목록 내용보다 덜 들여쓴 구분선은 목록을 닫는다
         "hr-ends-list": (f"- 항목\n* * *\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+        # 게으른 연속행은 항목을 잇는다 — 빈 행 뒤 4칸은 항목 안의 문단이다
+        "lazy": ("- 항목\n이어지는 설명\n\n    [[W1]]\n", ""),
+        # 반례: 목록이 정말 끝나면(빈 행 뒤 덜 들여쓴 문단·제목·빈 항목) 4칸은 코드
+        "list-ends": (f"- 항목\n\n글\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+        "lazy-then-ends": (f"- 항목\n이어지는 설명\n\n글\n\n    {ex}\n\n[[W1]]\n",
+                           f"    {ex}\n"),
+        "heading-ends-list": (f"- 항목\n## 제목\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
+        "empty-item": (f"-\n이음 아님\n\n    {ex}\n\n[[W1]]\n", f"    {ex}\n"),
     }
+    xb = ROOT / "00_Scope/RegrXB"
+    xb.mkdir(exist_ok=True)
+    for stem, nid in (("RegrXB", "xbhb"), ("regr-xb-target", "xbtg")):
+        (xb / f"{stem}.md").write_text(
+            f'---\nid: "260801-zzzz-{nid}"\ncreated: "2026-08-01 00:00 (KST)"\n'
+            'updated: "2026-08-01 00:00 (KST)"\nauthor: "user"\ndrafter: "user"\n'
+            f'summary: "{stem}"\n---\n\n본문\n', encoding="utf-8", newline="\n")
     try:
         for i, (label, (body, block)) in enumerate(cases.items()):
             name = f"regr-blk-{label}"
@@ -5549,7 +5568,20 @@ def test_code_region_block_boundaries():
                   u.get("ok") and block in n.body and "#7 y" in n.body, (u, n.body))
             check(f"[{label}] 본문 교체 뒤에도 글의 Link만 센다",
                   n.wikilinks() == ["W1"], n.wikilinks())
+        check("목차도 게으른 연속행 뒤 항목 속 제목을 본다",
+              [x["title"] for x in mcp_server._node_view(
+                  "- 항목\n이어지는 설명\n\n    # 항목 속 제목\n", "outline")["headings"]]
+              == ["항목 속 제목"])
+        r = _w(write.create_node, "regr-blk-xs-lazy", "블록 경계",
+               "- 항목\n이어지는 설명\n\n    [[regr-xb-target]]\n", "fable-5",
+               space="00_Scope/W1")
+        check("게으른 연속행 뒤 항목 속 scope 밖 Link는 위상 검사가 거부한다",
+              r.get("ok") is False and "regr-xb-target" in " ".join(r.get("violations", [])), r)
+        r = _w(write.create_node, "regr-blk-xs-code", "블록 경계",
+               "- 항목\n\n글\n\n    [[regr-xb-target]]\n", "fable-5", space="00_Scope/W1")
+        check("목록이 끝난 뒤 4칸 코드 속 scope 밖 예시는 거부 사유가 아니다", r.get("ok"), r)
     finally:
+        rmtree_force(xb)
         # 공유 W1 군집을 되돌린다 — 남으면 허브 미직결 목록(20건 상한)에서
         # 뒤 시험의 노드를 밀어낸다
         for f in (ROOT / "00_Scope/W1").glob("regr-blk-*.md"):
