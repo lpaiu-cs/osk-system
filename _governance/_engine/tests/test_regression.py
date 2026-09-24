@@ -18,6 +18,12 @@ ENGINE = Path(__file__).resolve().parent.parent
 _TMP = tempfile.TemporaryDirectory(prefix="osk-regr-")
 MINI = Path(_TMP.name) / "mini-vault"
 os.environ["OSK_VAULT_ROOT"] = str(MINI)   # osk import 전에 — 전 모듈이 mini를 본다
+# 픽스처는 기기의 git 기본 브랜치에 기대지 않는다 — 전역 설정이 없는 CI 러너는
+# `master`를 쓴다. 일부러 낯선 이름을 주어, `-b main` 없는 init이 어디서든 드러나게 한다.
+_n = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+os.environ.update({"GIT_CONFIG_COUNT": str(_n + 1),
+                   f"GIT_CONFIG_KEY_{_n}": "init.defaultBranch",
+                   f"GIT_CONFIG_VALUE_{_n}": "osk-fixture-default"})
 sys.path.insert(0, str(ENGINE))
 
 from osk import (core, graph, validate, authority, contract, write,  # noqa: E402
@@ -403,7 +409,7 @@ def test_sync():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         bare = td / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
 
         def clone(name):
             d = td / name
@@ -549,7 +555,7 @@ def test_sync_graph_scale():
         try:
             repo.mkdir()
             bare.mkdir()
-            git("init", "-q", "--bare", root=bare)
+            git("init", "-q", "--bare", "-b", "main", root=bare)
             git("init", "-q", "-b", "main")
             git("config", "user.name", "fixture")
             git("config", "user.email", "fixture@example.invalid")
@@ -655,7 +661,7 @@ def test_sync_pins_main():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         bare = td / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
         R = td / "R"
         subprocess.run(["git", "clone", "-q", str(bare), str(R)], check=True)
         for k, v in (("user.email", "t@t"), ("user.name", "t")):
@@ -3183,7 +3189,7 @@ def _pub_fixture(td):
     """사설 mini-vault + 가짜 공개 저장소 + 매니페스트."""
     pub = Path(td) / "public"
     pub.mkdir()
-    subprocess.run(["git", "init", "-q", str(pub)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(pub)], check=True)
     for k, v in (("user.email", "t@t"), ("user.name", "t")):
         subprocess.run(["git", "-C", str(pub), "config", k, v], check=True)
     (pub / "LICENSE").write_text("MIT\n", encoding="utf-8")
@@ -3486,7 +3492,7 @@ def test_release_and_update():
             (can / "docs/UPD-SETUP.md").write_text("# 설치\n", encoding="utf-8")
             (can / "README.md").write_text("readme\n", encoding="utf-8")
             (can / "LICENSE").write_text("MIT\n", encoding="utf-8")
-            git(can, "init", "-q")
+            git(can, "init", "-q", "-b", "main")
             git(can, "config", "user.email", "t@t")
             git(can, "config", "user.name", "t")
             git(can, "add", "-A")
@@ -4277,7 +4283,7 @@ def test_release_and_update():
                 (forced / "_governance/UpdDoc.md").write_text(
                     node_text("260802-uupd-0002", "정본 규범 문서", "위조판."),
                     encoding="utf-8")
-                subprocess.run(["git", "-C", str(forced), "init", "-q"],
+                subprocess.run(["git", "-C", str(forced), "init", "-q", "-b", "main"],
                                capture_output=True)
                 for _k, _v in (("user.email", "t@t"), ("user.name", "t"),
                                ("core.autocrlf", "false"), ("core.eol", "lf")):
@@ -7824,7 +7830,7 @@ def test_audit_fixes_2026_09_02():
             src = Path(_td) / "src"
             src.mkdir()
             (src / "f.txt").write_bytes(b"a\nb\n")
-            for cmd in (["init", "-q"], ["config", "user.email", "t@t"],
+            for cmd in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"],
                         ["config", "user.name", "t"],
                         ["config", "core.autocrlf", "false"],
                         ["add", "-A"], ["commit", "-qm", "x"],
@@ -8830,7 +8836,7 @@ def test_governance_amend_secrets_and_region():
         try:
             _g = lambda *a: subprocess.run(("git",) + a, cwd=str(lab),
                                            capture_output=True, text=True)
-            _g("init", "-q")
+            _g("init", "-q", "-b", "main")
             (lab / ".gitattributes").write_bytes(ga.encode("utf-8"))
             for space, path in (("_raw", "00_Scope/W/_raw/2026-09-02.md"),
                                 ("_scope_memory", "00_Scope/W/_scope_memory/W.md"),
@@ -8860,7 +8866,7 @@ def test_governance_amend_secrets_and_region():
         try:
             _g = lambda *a: subprocess.run(("git",) + a, cwd=str(lab2),
                                            capture_output=True, text=True)
-            _g("init", "-q")
+            _g("init", "-q", "-b", "main")
             _g("config", "user.email", "t@t"); _g("config", "user.name", "t")
             _g("config", "core.autocrlf", "true")
             raw_rel = "00_Scope/W/_raw/2026-09-02.md"
@@ -9262,7 +9268,7 @@ def test_sync_pending_git_operations():
     try:
         repo.mkdir()
         bare.mkdir()
-        git("init", "-q", "--bare", root=bare)
+        git("init", "-q", "--bare", "-b", "main", root=bare)
         git("init", "-q", "-b", "main")
         git("config", "user.name", "fixture")
         git("config", "user.email", "fixture@example.invalid")
