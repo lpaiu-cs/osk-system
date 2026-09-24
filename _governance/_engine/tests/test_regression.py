@@ -6072,7 +6072,21 @@ def test_session_key_repo_identity():
           (a / ".git/osk-repo-identity").is_file()
           and (a / ".git/osk-repo-identity").read_text(encoding="ascii").split() == [ra])
     write.bind_session("api", "W1")                  # 표면의 첫 쓰기 — 동일성 모름
-    check("무소유 결속은 처음 쓰는 저장소가 소유한다", hook.session_key(str(a)) == "api")
+    held, real_append = [], write.ledger_append
+
+    def spy(*args, **kw):
+        # 소유 행도 working-tree 변경이다 — 데몬의 commit→rebase와 같은 잠금을 잡는다.
+        with open(core.mutation_lock_path(), "w") as fh:
+            try:
+                core.lock_exclusive(fh, blocking=False)
+                core.unlock(fh)
+                held.append(False)
+            except OSError:
+                held.append(True)
+        return real_append(*args, **kw)
+    with mock.patch.object(write, "ledger_append", spy):
+        check("무소유 결속은 처음 쓰는 저장소가 소유한다", hook.session_key(str(a)) == "api")
+    check("소유 행은 변경 잠금 안에서 쓴다", held == [True], held)
     check("소유는 한 행", [r.get("repo") for r in rows()] == [None, [ra]], rows())
     hook.session_key(str(a))
     check("소유 뒤 재사용은 쓰지 않는다", len(rows()) == 2)
@@ -6085,6 +6099,11 @@ def test_session_key_repo_identity():
     check("같은 저장소의 다른 자리(다른 기기)는 같은 키·같은 결속",
           hook.session_key(str(far)) == "api" and len(rows()) == 2
           and write.resolve_session("api") == "W1")
+    cache = a / ".git/osk-repo-identity"
+    cache.write_text(ra[:10], encoding="ascii")     # 쓰다 끊긴 캐시
+    check("잘린 동일성 캐시는 다시 재어 제 키를 지킨다",
+          hook.session_key(str(a)) == "api" and cache.read_text(encoding="ascii").split() == [ra]
+          and len(rows()) == 2, cache.read_text(encoding="ascii"))
 
     # 훅 전 경로 — SessionStart 주입과 UserPromptSubmit 포착이 남의 scope에 닿지 않는다.
     from osk import scope_memory as sm

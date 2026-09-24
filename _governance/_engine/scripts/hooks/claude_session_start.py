@@ -28,6 +28,7 @@ hookSpecificOutput.additionalContext가 세션 문맥에 주입된다. 지시("C
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -68,8 +69,10 @@ def _checkout(cwd: str) -> tuple[str, list[str] | None]:
         cache = gd / "osk-repo-identity"
         try:
             roots = cache.read_text(encoding="ascii").split()
-        except OSError:
+        except (OSError, UnicodeError):
             roots = []
+        if not all(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", x) for x in roots):
+            roots = []      # 쓰다 끊긴 캐시는 남의 동일성이 된다 — 다시 잰다
         if not roots and out[1] == "false":
             # ponytail: 첫 계산은 이력 전체를 걷는다(초대형 저장소는 수 초) — 캐시가 이후를 맡는다.
             roots = sorted(_git(cwd, "rev-list", "--max-parents=0", "HEAD").split())

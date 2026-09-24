@@ -906,14 +906,17 @@ def repo_session(name: str, repo: list[str]) -> str:
     `<이름>-<뿌리 앞 8자>`를 쓴다 — 뿌리는 어느 기기·사본에서나 같으므로 파생
     키도 같다. 두 기기의 동시 소유는 병합 뒤 rid가 작은 쪽이 소유자다.
 
-    쓰기는 판정과 같은 잠금 안에서 다시 확인한다(`ledger_append`의 `expect`)."""
+    쓰기는 판정과 같은 잠금 안에서 다시 확인한다(`ledger_append`의 `expect`).
+    대장 행도 working-tree 변경이므로 `mutation_lock` 안에서 쓴다 — 데몬의
+    commit→rebase 사이에 끼면 rebase가 멈추거나 `--abort`가 행을 지운다."""
     key, row = _repo_claim(ledger_read(ROUTING), name, repo)
     if row:
         def same(recs):
             k, r = _repo_claim(recs, name, repo)
             return None if k == key and r and r["scope"] == row["scope"] else "소유 판정이 바뀌었다"
         try:
-            ledger_append(ROUTING, row, expect=same)
+            with mutation_lock():
+                ledger_append(ROUTING, row, expect=same)
         except ValueError:
             key = _repo_claim(ledger_read(ROUTING), name, repo)[0]
     return key
