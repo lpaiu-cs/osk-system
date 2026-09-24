@@ -33,8 +33,9 @@ from pathlib import Path
 
 import yaml
 
-from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE,
-                   ledger_append, ledger_damage, ledger_read, mutation_lock,
+from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
+                   _rid_key, causal_maxima, ledger_append, ledger_damage,
+                   ledger_read, mutation_lock,
                    new_node_id, now_kst, posix_rel, resolve_in_root,
                    resolve_one, sha256_bytes, sha256_file, atomic_write)
 from . import approvals, contract, evictions, graph, signatures
@@ -869,6 +870,53 @@ def alias_session(alt: str, canonical: str, reason: str = "") -> dict:
     return ledger_append(ROUTING, {
         "kind": "alias", "session": alt, "canonical": canonical,
         "reason": reason or "개명 이력"})
+
+
+def _repo_owner(recs: list[dict], key: str) -> dict | None:
+    """그 키의 **첫 소유 기록** — `repo`를 적은 결속 중 rid가 가장 작은 것.
+    한 번 선 소유는 뒤의 행(구판이 쓴 무소유 재결속 포함)이 바꾸지 않는다."""
+    rows = [r for r in recs if r.get("session") == key and r.get("kind") == "bind"
+            and isinstance(r.get("repo"), list) and re.match(RID_RE, str(r.get("rid")))]
+    return min(rows, key=lambda r: _rid_key(r["rid"]), default=None)
+
+
+def _repo_claim(recs: list[dict], name: str, repo: list[str]) -> tuple[str, dict | None]:
+    """(이 저장소의 세션 키, 새로 적을 결속 행 또는 None)."""
+    key = canonical_session(name, recs) or name
+    owner = _repo_owner(recs, key)
+    if owner and not set(owner["repo"]) & set(repo):
+        return f"{name}-{repo[0][:8]}", None          # 남의 키 — 파생 키로 비켜 선다
+    maxima = causal_maxima(recs, key, field="session")
+    scopes = {r.get("scope") for r in maxima if r.get("kind") == "bind"}
+    # 무소유 결속은 소유하고(첫 사용 신뢰), 내 소유 키가 같은 scope로 분기했으면
+    # (두 기기의 동시 소유) 봉합한다. scope가 갈린 분기는 지금처럼 미확정으로 둔다.
+    if (len(scopes) == 1 and all(r.get("kind") == "bind" for r in maxima)
+            and (owner is None or len(maxima) > 1)):
+        return name, {"kind": "bind", "session": key, "scope": scopes.pop(),
+                      "repo": repo, "reason": "저장소 동일성 기록"}
+    return name, None
+
+
+def repo_session(name: str, repo: list[str]) -> str:
+    """저장소 폴더 이름 + 저장소 동일성(정렬된 뿌리 커밋) → 그 저장소의 세션 키.
+
+    폴더 이름만 키로 쓰면 무관한 두 저장소(`C:/a/api`·`D:/b/api`)가 한 결속을
+    나눠 가져 서로의 기억을 주입받고 서로의 대화를 포착했다. 결속 행에 `repo`를
+    적고, 그 키의 첫 소유자와 뿌리가 겹치지 않는 저장소는 파생 키
+    `<이름>-<뿌리 앞 8자>`를 쓴다 — 뿌리는 어느 기기·사본에서나 같으므로 파생
+    키도 같다. 두 기기의 동시 소유는 병합 뒤 rid가 작은 쪽이 소유자다.
+
+    쓰기는 판정과 같은 잠금 안에서 다시 확인한다(`ledger_append`의 `expect`)."""
+    key, row = _repo_claim(ledger_read(ROUTING), name, repo)
+    if row:
+        def same(recs):
+            k, r = _repo_claim(recs, name, repo)
+            return None if k == key and r and r["scope"] == row["scope"] else "소유 판정이 바뀌었다"
+        try:
+            ledger_append(ROUTING, row, expect=same)
+        except ValueError:
+            key = _repo_claim(ledger_read(ROUTING), name, repo)[0]
+    return key
 
 
 def resolve_landing(session: str, space: str | None,

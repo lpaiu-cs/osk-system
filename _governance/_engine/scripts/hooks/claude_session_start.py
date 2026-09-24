@@ -11,7 +11,9 @@ hookSpecificOutput.additionalContext가 세션 문맥에 주입된다. 지시("C
 
 세션 키는 cwd가 속한 git 저장소의 **본 저장소 디렉터리 이름**이다. 워크트리
 안에서도 본 저장소 이름으로 접힌다(`git-common-dir`의 부모) — 워크트리 이름은
-세션마다 달라 키가 되지 못한다. 결속이 없어도 `overview`로 착지를 확인하도록
+세션마다 달라 키가 되지 못한다. 서브모듈·bare 저장소는 자기 이름을 받는다.
+이름이 같은 **무관한** 저장소는 뿌리 커밋이 달라 파생 키(`<이름>-<뿌리 앞 8자>`)로
+갈린다(`session_key`). 결속이 없어도 `overview`로 착지를 확인하도록
 안내한다. 아직 없는 착지를 훅이 대신 정하지 않는다.
 
 **정돈도 같은 길로 싣는다**(Mechanism §9-3 1항). 세션이 곧 주기다 — 별도
@@ -43,20 +45,57 @@ def emit_context(event: str, text: str) -> None:
     sys.stdout.buffer.flush()
 
 
-def session_key(cwd: str) -> str:
+def _git(cwd: str, *args: str) -> str:
+    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
+                       timeout=10, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _checkout(cwd: str) -> tuple[str, list[str] | None]:
+    """(저장소 이름, 저장소 동일성). 동일성은 정렬된 뿌리 커밋 — 어느 기기·사본
+    에서나 같고 네트워크가 필요 없다. Git 밖·커밋 없는 저장소·얕은 사본은 None
+    (얕은 사본의 뿌리는 경계라 깊이에 따라 바뀐다). 사본마다 공통 디렉터리에
+    캐시해 훅이 매 턴 이력을 걷지 않는다."""
     try:
-        r = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, timeout=10,
-            stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
-        if r.returncode == 0 and r.stdout.strip():
-            gd = Path(r.stdout.strip())
-            if not gd.is_absolute():
-                gd = Path(cwd) / gd
-            return gd.resolve().parent.name
+        out = _git(cwd, "rev-parse", "--git-common-dir", "--is-shallow-repository").splitlines()
+        if len(out) != 2:
+            return Path(cwd).name, None
+        gd = Path(out[0])
+        gd = (gd if gd.is_absolute() else Path(cwd) / gd).resolve()
+        # `.git`(워크트리 포함)은 본 저장소 폴더, 서브모듈(`.git/modules/<이름>`)과
+        # bare(`shop.git`)는 자기 이름이다 — `modules`·bare의 부모로 접히지 않게.
+        name = gd.parent.name if gd.name.startswith(".") else gd.name.removesuffix(".git")
+        cache = gd / "osk-repo-identity"
+        try:
+            roots = cache.read_text(encoding="ascii").split()
+        except OSError:
+            roots = []
+        if not roots and out[1] == "false":
+            # ponytail: 첫 계산은 이력 전체를 걷는다(초대형 저장소는 수 초) — 캐시가 이후를 맡는다.
+            roots = sorted(_git(cwd, "rev-list", "--max-parents=0", "HEAD").split())
+            if roots:
+                try:
+                    cache.write_text("\n".join(roots) + "\n", encoding="ascii")
+                except OSError:
+                    pass
+        return name, roots or None
     except Exception:
-        pass
-    return Path(cwd).name
+        return Path(cwd).name, None
+
+
+def session_key(cwd: str) -> str:
+    """세션 키를 정하는 **유일한** 자리 — 세 훅이 모두 이것을 부른다.
+
+    이름만으로는 무관한 두 저장소가 한 키를 나눠 가지므로, Git 저장소는 결속의
+    소유자와 뿌리가 다르면 파생 키를 받는다(`write.repo_session`)."""
+    name, repo = _checkout(cwd)
+    if not repo:
+        return name
+    try:
+        from osk import write
+        return write.repo_session(name, repo)
+    except Exception:
+        return name
 
 
 def _memory_block(scope_memory, key: str) -> str:

@@ -70,6 +70,9 @@ That is supported; see [space-layout-migration.md](space-layout-migration.md).
   `~/code/my-app`, the *session key* is `my-app`.
 - A Git worktree gets the name of its main repository. A folder outside Git gets
   its own folder name.
+- If another, unrelated repository already owns that name, the hook gives you
+  `my-app-<first 8 hex of your root commit>` instead. The owner is the
+  repository that first used the binding; its root commits are recorded with it.
 - Your first successful write binds the key to a scope, permanently. From then
   on, every session in that repository lands in that scope, on any device.
 

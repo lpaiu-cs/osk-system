@@ -6038,6 +6038,153 @@ def test_ephemeral_session_key():
           write.ephemeral_session_errors(None) == [])
 
 
+def test_session_key_repo_identity():
+    """폴더 이름이 같은 **무관한** 저장소는 한 결속을 나누지 않는다.
+
+    v3.22까지 키는 폴더 이름뿐이라 `a/api`가 세운 결속을 `b/api`가 이어받아 남의
+    기억을 주입받고 자기 대화를 남의 `_raw`에 포착했다. 서브모듈은 모두
+    `modules`, bare 저장소의 워크트리는 bare의 부모 이름을 받았다."""
+    import importlib, uuid
+    sys.path.insert(0, str(ENGINE / "scripts/hooks"))
+    hook = importlib.import_module("claude_session_start")
+    base = Path(os.path.realpath(tempfile.mkdtemp(prefix="osk-repokey-", dir=RUN_TMP)))
+    g = lambda *a, cwd=None: subprocess.run(
+        ["git", "-c", "user.name=x", "-c", "user.email=x@x.invalid",
+         "-c", "protocol.file.allow=always", *a],
+        cwd=cwd, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+
+    def repo(path, msg):
+        path.mkdir(parents=True)
+        g("init", "-q", str(path))
+        g("commit", "-q", "--allow-empty", "-m", msg, cwd=path)
+        return g("rev-parse", "HEAD", cwd=path).stdout.decode().strip()
+
+    a, b, loose = base / "a/api", base / "b/api", base / "c/Downloads"
+    ra, rb = repo(a, "alpha 뿌리"), repo(b, "beta 뿌리")
+    loose.mkdir(parents=True)
+    core.ROUTING.unlink(missing_ok=True)
+    rows = lambda: [r for r in core.ledger_read(core.ROUTING) if r.get("session") == "api"]
+
+    check("Git 밖 폴더는 전과 같이 폴더 이름", hook.session_key(str(loose)) == "Downloads")
+    check("결속 전에는 두 저장소 모두 폴더 이름이고 아무것도 쓰지 않는다",
+          hook.session_key(str(a)) == hook.session_key(str(b)) == "api" and not rows())
+    check("동일성은 사본마다 캐시된다",
+          (a / ".git/osk-repo-identity").is_file()
+          and (a / ".git/osk-repo-identity").read_text(encoding="ascii").split() == [ra])
+    write.bind_session("api", "W1")                  # 표면의 첫 쓰기 — 동일성 모름
+    check("무소유 결속은 처음 쓰는 저장소가 소유한다", hook.session_key(str(a)) == "api")
+    check("소유는 한 행", [r.get("repo") for r in rows()] == [None, [ra]], rows())
+    hook.session_key(str(a))
+    check("소유 뒤 재사용은 쓰지 않는다", len(rows()) == 2)
+    kb = hook.session_key(str(b))
+    check("무관한 같은 이름 저장소는 파생 키", kb == f"api-{rb[:8]}", kb)
+    check("파생 키는 남의 결속을 받지 않는다", write.resolve_session(kb) is None)
+    check("비켜 선 저장소는 행을 쓰지 않는다", len(rows()) == 2)
+    far = base / "device2/api"
+    g("clone", "-q", str(a), str(far))
+    check("같은 저장소의 다른 자리(다른 기기)는 같은 키·같은 결속",
+          hook.session_key(str(far)) == "api" and len(rows()) == 2
+          and write.resolve_session("api") == "W1")
+
+    # 훅 전 경로 — SessionStart 주입과 UserPromptSubmit 포착이 남의 scope에 닿지 않는다.
+    from osk import scope_memory as sm
+    marker = "ALPHA-ONLY-" + uuid.uuid4().hex[:8]
+    memory = ROOT / "00_Scope/Workbench/_scope_memory/W1.md"
+    prior = memory.read_bytes() if memory.exists() else None
+    sm.replace("api", f"- {marker}", sm.read("api")["hash"])
+    home = base / "home"
+    (home / ".claude").mkdir(parents=True)
+    env = {**os.environ, "OSK_VAULT_ROOT": str(ROOT), "PYTHONPATH": str(ENGINE),
+           "CLAUDE_CONFIG_DIR": str(home / ".claude"), "CODEX_HOME": str(home / ".codex")}
+    sid = str(uuid.uuid4())
+    tpath = home / f"{sid}.jsonl"
+    secret = "BETA-PRIVATE-" + uuid.uuid4().hex[:8]
+    tpath.write_text("".join(json.dumps(x) + "\n" for x in [
+        {"type": "user", "sessionId": sid, "uuid": "u-1", "isSidechain": False,
+         "message": {"role": "user", "content": secret}},
+        {"type": "assistant", "sessionId": sid, "uuid": "a-1", "isSidechain": False,
+         "message": {"role": "assistant", "id": "m-1", "stop_reason": "end_turn",
+                     "content": [{"type": "text", "text": "답"}]}}]), encoding="utf-8")
+
+    def run(script, event, cwd, conversation=sid):
+        p = {"cwd": str(cwd), "session_id": conversation, "harness": "claude", "source": "startup",
+             "transcript_path": str(tpath), "hook_event_name": event, "prompt": "다음"}
+        out = subprocess.run([sys.executable, str(ENGINE / "scripts/hooks" / script)],
+                             input=json.dumps(p).encode(), capture_output=True, env=env,
+                             cwd=str(cwd), timeout=120)
+        return out.stdout.decode("utf-8", "replace")
+
+    started = run("claude_session_start.py", "SessionStart", b)
+    check("b의 SessionStart는 a의 기억을 주입하지 않고 파생 키를 알린다",
+          marker not in started and f'session=\\"{kb}\\"' in started, started[:600])
+    check("a의 SessionStart는 제 기억을 받는다",
+          marker in run("claude_session_start.py", "SessionStart", a, str(uuid.uuid4())))
+    run("claude_prompt_submit.py", "UserPromptSubmit", b)
+    leaked = [p for p in (ROOT / "00_Scope/W1").rglob("*")
+              if p.is_file() and secret in p.read_text(encoding="utf-8", errors="ignore")]
+    check("b의 대화는 a의 scope에 포착되지 않는다", not leaked, leaked)
+    g("commit", "-q", "--allow-empty", "-m", "둘째", cwd=a)
+    shallow = base / "shallow/api"
+    g("clone", "-q", "--depth", "1", a.as_uri(), str(shallow))
+    check("얕은 사본은 동일성이 없어 전과 같이 이름만 쓴다",
+          hook.session_key(str(shallow)) == "api" and len(rows()) == 2
+          and not (shallow / ".git/osk-repo-identity").exists())
+    (ROOT / "00_Scope/W2").mkdir(exist_ok=True)
+    write.bind_session(kb, "W2")
+    check("파생 키는 제 결속으로 간다",
+          hook.session_key(str(b)) == kb and write.resolve_session(kb) == "W2")
+
+    # 서브모듈과 bare 저장소의 워크트리는 자기 이름을 받는다(`modules`·부모 아님).
+    lib = base / "seed/lib"
+    repo(lib, "lib 뿌리")
+    for sup in ("sa", "sb"):
+        repo(base / sup, f"{sup} 뿌리")
+        g("submodule", "add", "-q", str(lib), f"vendor-{sup}", cwd=base / sup)
+    for name in ("shop", "blog"):
+        seed = base / "seed" / name
+        repo(seed, f"{name} 뿌리")
+        g("clone", "-q", "--bare", str(seed), str(base / "src" / f"{name}.git"))
+        g("worktree", "add", "-q", str(base / "src" / name / "main"),
+          cwd=base / "src" / f"{name}.git")
+    got = [hook.session_key(str(p)) for p in (base / "sa/vendor-sa", base / "sb/vendor-sb",
+                                              base / "src/shop/main", base / "src/blog/main")]
+    check("서브모듈·bare 워크트리는 자기 저장소 이름", got == ["vendor-sa", "vendor-sb", "shop", "blog"], got)
+
+    # 두 기기의 동시 소유 — 병합(union)이 무소유 결속 아래 두 소유 행을 남긴다.
+    core.ROUTING.unlink(missing_ok=True)
+    legacy = write.bind_session("api", "W1")
+    ms = core._rid_parts(legacy["rid"])[0]
+
+    def claim(rid_ms, who):
+        with open(core.ROUTING, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"rid": core._make_rid(rid_ms, 0), "parents": [legacy["rid"]],
+                                "kind": "bind", "session": "api", "scope": "W1",
+                                "repo": [who], "at": core.now_iso()}) + "\n")
+    claim(ms + 20, rb)          # 파일 순서가 아닌 rid가 소유를 가린다
+    claim(ms + 10, ra)
+    check("분기는 미확정(현행 규칙)", write.resolve_session("api") is None)
+    order = [hook.session_key(str(b)), hook.session_key(str(a)), hook.session_key(str(b))]
+    check("rid가 작은 소유가 이기고 순서와 무관하다", order == [kb, "api", kb], order)
+    check("소유자가 한 행으로 봉합한다",
+          write.resolve_session("api") == "W1" and len(rows()) == 4, rows())
+    # 같은 저장소를 두 기기가 동시에 소유한 분기도 봉합된다.
+    core.ROUTING.unlink(missing_ok=True)
+    legacy = write.bind_session("api", "W1")
+    ms = core._rid_parts(legacy["rid"])[0]
+    claim(ms + 10, ra)
+    claim(ms + 20, ra)
+    check("같은 저장소의 동시 소유도 풀린다",
+          hook.session_key(str(far)) == "api" and write.resolve_session("api") == "W1")
+    # 구판 기기의 판독 — 새 필드는 손상도 판정 변화도 아니다.
+    check("repo 필드는 대장 손상이 아니다",
+          core.ledger_damage(core.ledger_read(core.ROUTING)) == [])
+    core.ROUTING.unlink(missing_ok=True)
+    if prior is None:
+        memory.unlink(missing_ok=True)
+    else:
+        memory.write_bytes(prior)
+
+
 # ── 19. scope 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
 def test_scope_memory():
     """상한은 저장 용량의 제한이 아니라 문턱이다. 그래서 초과는 **거부**하고,
@@ -10835,7 +10982,8 @@ if __name__ == "__main__":
                test_scope_memory, test_workbench_state_not_evidence,
                test_scope_memory_edits, test_cadence_hook, test_scope_recovery_handoff,
                test_scope_memory_cli, test_new_cluster_two_phase,
-               test_ephemeral_session_key, test_cluster_overview,
+               test_ephemeral_session_key, test_session_key_repo_identity,
+               test_cluster_overview,
                test_obsidian_tag_defense, test_code_regions_are_not_prose,
                test_code_region_block_boundaries, test_code_region_commonmark_rules,
                test_index_node_not_delegation,
