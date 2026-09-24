@@ -187,7 +187,10 @@ class GrowthTests(unittest.TestCase):
             program.chmod(0o755)
             with patch.dict(os.environ, {'PATH':'bin'}):
                 found = growth.check_command([program.name])
-                assert found['executable'] == str(program.resolve()), found
+                # Contract: absolute, symlinks kept; POSIX searches from the vault,
+                # Windows from the caller's cwd (spelled as the caller spells it).
+                base = core.ROOT if os.name == 'posix' else Path.cwd()
+                assert found['executable'] == str(base / program), found
             before = {str(p):p.read_bytes() for p in core.ROOT.rglob('*') if p.is_file()}
             with patch('osk.growth.subprocess.Popen', side_effect=AssertionError('launched')):
                 assert growth.check_command([sys.executable,'--version'])['ok']
