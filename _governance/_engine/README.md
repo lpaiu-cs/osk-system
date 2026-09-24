@@ -48,7 +48,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli approve "00_Person/De
 `read_node(name)`은 기존처럼 전문·메타데이터·쓰기용 `hash`를 준다. 긴 노드는
 `read_node(name, view="outline")`으로 먼저 목차를 볼 수 있다. ATX 제목(`#`~`######`)
 40개까지, 제목당 80자까지 반환하고 잘렸으면 `outline_truncated`가 참이다. 코드
-펜스 안의 제목은 제외한다. 각 항목의 `view`는 그 제목부터 다음 제목 직전까지다.
+블록(펜스·들여쓰기) 안의 제목은 제외한다. 각 항목의 `view`는 그 제목부터 다음 제목 직전까지다.
 
 `view="0:4000"`처럼 본문의 0기반 문자 범위(끝 제외)를 주면 최대 4,000자씩 읽는다.
 좌표는 frontmatter를 제외하고 줄바꿈을 LF로 정규화한 본문 기준이며 바이트·토큰

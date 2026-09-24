@@ -50,6 +50,92 @@ def target_stem(name: str) -> str:
     return s[:-3] if s.endswith(".md") else s
 
 
+_LIST_ITEM_RE = re.compile(r" {0,3}(?:[-+*]|[0-9]{1,9}[.)])( +|$)")
+_FENCE_MARK_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
+_HEADING_RE = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+_TICKS_RE = re.compile(r"`+")
+_INDENTED_RE = re.compile(r"(?m)^(?: {4}| {0,3}\t)")
+
+
+def md_lines(text: str):
+    """본문을 행 단위로 훑어 `(offset, line, content, code)`를 낸다. content는
+    목록 컨테이너를 벗긴(탭은 4칸) 판독용 행, code는 그 행이 코드 블록(펜스
+    행 포함·들여쓰기 코드)에 속하는지다.
+
+    태그 방어·Link 추출·목차가 **이 판정 한 벌**을 쓴다. 셋이 갈리면 목차가
+    코드로 보는 예시를 그래프는 Link로 세고 쓰기는 그 코드를 고친다(v3.22.1
+    실측: `~~~`·들여쓰기·목록 속 펜스에서 `#123abc`가 `#123 abc`로 바뀌었다)."""
+    # ponytail: 인용(>) 컨테이너·setext 제목·HTML 블록은 가리지 않는다 —
+    # 거기서 코드가 갈리면 CommonMark 파서로 바꾼다.
+    fence, fence_indent, list_indents, para, offset = "", 0, [], False, 0
+    for line in text.split("\n"):
+        content = line.expandtabs(4)
+        if content.strip():
+            while list_indents and not content.startswith(" " * list_indents[-1]):
+                list_indents.pop()
+        else:
+            para = False
+        indent = list_indents[-1] if list_indents else 0
+        if fence and indent < fence_indent:
+            fence = ""  # 닫히지 않은 펜스는 그것을 담은 목록 항목과 함께 끝난다
+        content = content[indent:]
+        code = bool(fence)
+        if fence:
+            mark = _FENCE_MARK_RE.match(content)
+            if mark and mark[1][0] == fence[0] and len(mark[1]) >= len(fence) and not mark[2].strip():
+                fence = ""
+        elif content.startswith("    ") and content.strip() and not para:
+            code = True  # 들여쓰기 코드 — 문단을 끊지는 못한다(빈 행이 앞서야 한다)
+        elif content.strip():
+            while item := _LIST_ITEM_RE.match(content):
+                padding = len(item[1])
+                width = item.start(1) + (padding if 1 <= padding <= 4 else 1)
+                indent += width
+                list_indents.append(indent)
+                content = content[width:]
+            mark = _FENCE_MARK_RE.match(content)
+            if mark and (mark[1][0] != "`" or "`" not in mark[2]):
+                fence, fence_indent, code = mark[1], indent, True
+            para = not code and not _HEADING_RE.match(content)
+        yield offset, line, content, code
+        offset += len(line) + 1
+
+
+def split_code(text: str) -> list[str]:
+    """`re.split`처럼 `[글, 코드, 글, …]`로 가른다 — 홀수 번째가 코드(코드
+    블록 행, 같은 길이의 백틱 열로 닫히는 인라인 코드). 이어 붙이면 원문이다."""
+    if "`" not in text and "~~~" not in text and not _INDENTED_RE.search(text):
+        return [text]   # 코드가 설 자리가 없다 — 대부분의 본문은 행 순회를 건너뛴다
+    cuts = []
+    for offset, line, _content, code in md_lines(text):
+        if code:
+            cuts.append([offset, min(offset + len(line) + 1, len(text))])
+            continue
+        if "`" not in line:
+            continue
+        # ponytail: 인라인 코드는 한 행 안에서만 닫는다(문단을 넘는 스팬·백슬래시
+        # 이스케이프는 글로 본다).
+        ticks = [m.span() for m in _TICKS_RE.finditer(line)]
+        i = 0
+        while i < len(ticks):
+            a, b = ticks[i]
+            j = next((k for k in range(i + 1, len(ticks))
+                      if ticks[k][1] - ticks[k][0] == b - a), None)
+            if j is None:
+                i += 1
+                continue
+            cuts.append([offset + a, offset + ticks[j][1]])
+            i = j + 1
+    out, pos = [], 0
+    for a, b in cuts:
+        if out and a == pos:
+            out[-1] += text[a:b]     # 이어지는 코드 행은 한 구획으로
+        else:
+            out += [text[pos:a], text[a:b]]
+        pos = b
+    return out + [text[pos:]]
+
+
 REQUIRED = ["id", "created", "updated", "author", "drafter", "summary"]
 PREDICATES = ["derived-from", "conflicts"]  # 헌법 8조 5항 (2술어 체제)
 ORDER = REQUIRED  # Mechanism §2 5항 — PE는 그 뒤 상호 순서 무관
@@ -78,13 +164,11 @@ class Node:
         return edge_targets(self.meta.get(predicate))
 
     def wikirefs(self) -> list[str]:
-        """본문 Link(임베드 포함). 코드 구획(``` 펜스·인라인 백틱) 안의
-        [[...]] 예시는 Link가 아니다 — 제외한다. 펜스의 경계는 **행 시작**의
-        ```뿐이다(행 중간의 ```는 인라인 코드일 뿐이며, 이것과 짝지으면 실제
-        Link가 가려지거나 예시 Link가 산입된다). 닫히지 않은 펜스는 본문 끝까지
-        코드로 본다."""
-        body = re.sub(r"(?m)^ {0,3}```[\s\S]*?(?:^ {0,3}```[^\n]*$|\Z)", "", self.body)
-        body = re.sub(r"`[^`\n]*`", "", body)
+        """본문 Link(임베드 포함). 코드 구획(`split_code` — 펜스·들여쓰기
+        코드·인라인 코드) 안의 [[...]] 예시는 Link가 아니다 — 제외한다.
+        목차·태그 방어와 같은 판정이어야 코드 예시가 scope 경계 거부를 부르지
+        않는다. 닫히지 않은 펜스는 본문 끝(또는 담은 목록 항목 끝)까지 코드다."""
+        body = "".join(split_code(self.body)[::2])
         return [m.group(1).strip()
                 for m in re.finditer(r"!?\[\[([^\]|]+)", body)]
 

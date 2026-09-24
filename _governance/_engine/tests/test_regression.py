@@ -5415,6 +5415,89 @@ def test_obsidian_tag_defense():
     check("거부가 대체 표기를 처방하지 않는다", "PR-1" not in v, v)
 
 
+def test_code_regions_are_not_prose():
+    """태그 방어·Link 추출·목차가 **같은 코드 판정**을 쓴다(v3.22.2). 구판은
+    `~~~`·들여쓰기 코드·``이중 백틱``·```` 속 ```·목록 속 펜스에서 `#123abc`를
+    `#123 abc`로 고쳐 썼고, 같은 자리의 `[[...]]` 예시를 Link로 세어 scope
+    경계 거부와 검증기 FAIL을 불렀다 — 목차만 그곳을 코드로 봤다."""
+    import mcp_server
+    forms = {
+        "tilde": "~~~\n{c}\n~~~",
+        "indented": "    {c}",
+        "double-tick": "x ``{c}`` y",
+        "nested": "````markdown\n```\n{c}\n```\n````",
+        "list-fence": "- item\n    ```\n    {c}\n    ```",
+        "single-tick": "x `{c}` y",
+        "backtick": "```\n{c}\n```",
+    }
+    xs = ROOT / "00_Scope/RegrXS"
+    xs.mkdir(exist_ok=True)
+    for stem, nid in (("RegrXS", "xshb"), ("regr-xs-target", "xstg")):
+        (xs / f"{stem}.md").write_text(
+            f'---\nid: "260801-zzzz-{nid}"\ncreated: "2026-08-01 00:00 (KST)"\n'
+            'updated: "2026-08-01 00:00 (KST)"\nauthor: "user"\ndrafter: "user"\n'
+            f'summary: "{stem}"\n---\n\n본문\n', encoding="utf-8", newline="\n")
+    try:
+        for label, form in forms.items():
+            code = form.format(c="#123abc [[regr-code-example]]")
+            body = f"본문 #9x 와 [[W1]].\n\n{code}\n"
+            name = f"regr-code-{label}"
+            r = _w(write.create_node, name, "코드 구획", body, "fable-5",
+                   space="00_Scope/W1")
+            check(f"[{label}] 생성 통과", r.get("ok"), r)
+            if not r.get("ok"):
+                continue
+            n = contract.parse(ROOT / r["path"])
+            check(f"[{label}] 생성이 코드 바이트를 보존", code in n.body, n.body)
+            check(f"[{label}] 글의 태그 방어는 그대로", "#9 x" in n.body, n.body)
+            check(f"[{label}] 코드 속 [[..]]는 Link가 아니다",
+                  n.wikilinks() == ["W1"], n.wikilinks())
+            h = hashlib.sha256((ROOT / r["path"]).read_bytes()).hexdigest()
+            u = _w(write.update_node, name, body=body + "\n추가 #7y\n", expect_hash=h)
+            n2 = contract.parse(ROOT / r["path"])
+            check(f"[{label}] 본문 교체도 코드 바이트를 보존",
+                  u.get("ok") and code in n2.body and "#7 y" in n2.body, (u, n2.body))
+            r = _w(write.create_node, f"regr-xs-{label}", "코드 구획",
+                   "예:\n\n" + form.format(c="[[regr-xs-target]]") + "\n", "fable-5",
+                   space="00_Scope/W1")
+            check(f"[{label}] 코드 속 scope 밖 예시는 거부 사유가 아니다", r.get("ok"), r)
+
+        # 외부 작성 노드 — 요약만 고쳐도 본문 전체가 다시 접히는 통로다
+        def external(stem, nid, body):
+            f = ROOT / f"00_Scope/W1/{stem}.md"
+            f.write_text(f'---\nid: "260801-zzzz-{nid}"\ncreated: "2026-08-01 00:00 (KST)"\n'
+                         'updated: "2026-08-01 00:00 (KST)"\nauthor: "user"\n'
+                         'drafter: "user"\nsummary: "external"\n---\n\n' + body,
+                         encoding="utf-8", newline="\n")
+            return f
+        ext_body = "메모.\n\n~~~\nrun #123abc\n~~~\n\n    ref #42x\n"
+        ext = external("regr-code-ext", "cext", ext_body)
+        u = _w(write.update_node, "regr-code-ext", summary="요약만 고친다")
+        check("요약 편집이 외부 노드의 코드를 고치지 않는다",
+              u.get("ok") and ext.read_text(encoding="utf-8").endswith(ext_body),
+              (u, ext.read_text(encoding="utf-8")))
+        external("regr-code-xsext", "cxsx", "구문:\n\n~~~\n[[regr-xs-target]]\n~~~\n")
+        rep = validate.run()
+        bad = [m for d in rep["fail"] for v in d.values()
+               for m in (v if isinstance(v, list) else [v]) if "regr-code-" in str(m)]
+        check("코드 속 scope 밖 예시로 검증기가 FAIL하지 않는다", not bad, bad)
+        u = _w(write.update_node, "regr-code-xsext", summary="무관한 요약 편집")
+        check("코드 속 scope 밖 예시가 무관한 편집을 막지 않는다", u.get("ok"), u)
+
+        # 목차도 같은 판정 — 코드 속 제목은 숨고, 글의 제목과 Link는 남는다
+        toc = "# 앞\n\n~~~\n# 틸드\n~~~\n\n    # 들여쓰기\n\n- item\n    ```\n    # 목록\n    ```\n\n## 뒤\n"
+        check("목차는 코드 속 제목을 숨긴다",
+              [x["title"] for x in mcp_server._node_view(toc, "outline")["headings"]]
+              == ["앞", "뒤"], mcp_server._node_view(toc, "outline"))
+        check("문단 뒤 4칸 행은 코드가 아니다(문단을 끊지 못한다)",
+              write._space_numeric_tags("글\n    #1x [[A]]") == "글\n    #1 x [[A]]"
+              and contract.Node(ext, {}, "글\n    [[A]]").wikilinks() == ["A"])
+        check("열고 닫는 백틱 수가 다르면 코드가 아니다",
+              write._space_numeric_tags("``#1x` #2x") == "``#1 x` #2 x")
+    finally:
+        rmtree_force(xs)
+
+
 # ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
 def test_cluster_overview():
     """각 군집은 동명 허브 노드를 두고, 전 노드가 허브에서 **Link의 방향**을
@@ -10055,7 +10138,8 @@ if __name__ == "__main__":
                test_scope_memory_edits, test_cadence_hook, test_scope_recovery_handoff,
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_cluster_overview,
-               test_obsidian_tag_defense, test_index_node_not_delegation,
+               test_obsidian_tag_defense, test_code_regions_are_not_prose,
+               test_index_node_not_delegation,
                test_read_is_bound_to_bytes,
                test_incomplete_scan_refuses_writes,
                test_broken_is_reported_not_gated,
