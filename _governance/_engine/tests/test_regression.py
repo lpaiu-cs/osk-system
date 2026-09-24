@@ -5615,6 +5615,9 @@ def test_code_region_commonmark_rules():
         # 반례: 형제 항목·인용 뒤 항목은 문단을 끊는 자리가 아니다
         "sibling-item": ("1. a\n2. b\n\n       #1ab [[X]]", False),
         "quote-then-ord2": ("> 인용\n2. 항목\n\n       #1ab [[X]]", False),
+        # 빈 항목은 빈 행에서 닫히고, 빈 채로 시작하는 항목의 내용 열은 표지 뒤 1칸이다
+        "empty-item-blank": ("-\n\n  ```\n#1ab [[X]]\n  ```", False),
+        "blank-start-width": ("-    \n    #1ab [[X]]", True),
     }
     for label, (body, prose) in cases.items():
         tags = write._space_numeric_tags(body)

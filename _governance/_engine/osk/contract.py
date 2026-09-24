@@ -88,7 +88,7 @@ def md_lines(text: str):
     # ponytail: HTML 블록 내부(빈 행까지의 원문)는 가리지 않는다 — 거기서 코드가
     # 갈리면 CommonMark 파서로 바꾼다.
     fence, fence_depth, stack, offset = "", 0, [], 0   # stack: 항목 내용 폭(int)·인용(">")
-    para = False
+    para = empty = False
     for line in text.split("\n"):
         content = line.expandtabs(4)
         pos = matched = 0
@@ -114,16 +114,19 @@ def md_lines(text: str):
         elif not rest.strip():
             if matched < len(stack):
                 del stack[matched:]   # 빈 행은 인용을 닫는다
-            para = False
+            elif empty:
+                stack.pop()   # 빈 항목은 빈 행을 만나면 닫힌다(항목은 빈 행 둘로 시작하지 못한다)
+            para = empty = False
         elif para and matched < len(stack) and not any(r.match(rest) for r in _BLOCK_STARTS):
             pass   # 컨테이너를 못 채워도 문단의 게으른 연속행이면 닫지 않는다
         else:
             tip = para and matched == len(stack)   # 열린 문단을 이을 수 있는 행
             del stack[matched:]
+            empty = False
             while not rest.startswith("    "):
                 if m := _QUOTE_RE.match(rest):
                     stack.append(">")
-                    rest, opened = rest[m.end():], True
+                    rest, opened, empty = rest[m.end():], True, False
                     continue
                 item = not _BREAK_RE.match(rest) and _LIST_ITEM_RE.match(rest)
                 if not item:
@@ -132,10 +135,10 @@ def md_lines(text: str):
                 # 문단을 끊는 첫 항목은 빈 항목·1 아닌 번호일 수 없다 — 문단의 글이다
                 if tip and not opened and (blank_start or item[1] and int(item[1]) != 1):
                     break
-                padding = len(item[2])
-                width = item.start(2) + (padding if 1 <= padding <= 4 else 1)
+                padding = len(item[2])   # 빈 채로 시작하는 항목의 내용 열은 표지 뒤 1칸이다
+                width = item.start(2) + (padding if 1 <= padding <= 4 and not blank_start else 1)
                 stack.append(width)
-                rest, opened = rest[width:], True
+                rest, opened, empty = rest[width:], True, blank_start
             tip = tip and not opened
             if not rest.strip():
                 para = False
