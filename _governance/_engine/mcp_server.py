@@ -247,10 +247,17 @@ def read_node(name: str, view: str | None = None) -> dict:
                 # Distinct from a CAS token: excerpts cannot authorize full replacement.
                 "view_hash": "view:" + sha256_bytes(raw), "partial": True,
                 "body_chars": len(n.body), **_node_view(n.body, view)}
+    h = sha256_bytes(raw)
+    _SEEN[posix_rel(hit[0], ROOT)] = h
     return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
-            "hash": sha256_bytes(raw),
+            "hash": h,
             "body": n.body}
+
+
+# 이 세션(서버 프로세스)이 `read_node`로 전문을 읽은 판 — 경로 → 해시. 근거를 다시
+# 대어 재검토를 닫을 때 읽은 판 그대로인지 본다(Mechanism §4-1).
+_SEEN: dict[str, str] = {}
 
 
 def _dup_id_error(paths: list[str]) -> dict:
@@ -380,7 +387,7 @@ def update_node(name: str, body: str | None = None,
                       remove_edges=remove_edges, old_text=old_text,
                       new_text=new_text, settle=settle)
     return _guard(write.update_node, name, body, expect_hash, summary,
-                  add_edges, remove_edges, old_text, new_text, settle)
+                  add_edges, remove_edges, old_text, new_text, settle, _seen=_SEEN)
 
 
 @mcp.tool()

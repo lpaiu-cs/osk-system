@@ -19,10 +19,11 @@ from . import contract, graph
 RECHECKS = LEDGER / "rechecks.jsonl"
 BASELINE = "기준선"
 CARRIED = "이어받음"
-CLOSE = ("근거와 노드를 읽는다. 노드가 맞으면 update_node(name, add_edges={\"derived-from\": target})로 "
-         "그 근거를 다시 댄다(unchanged). 고쳐야 하면 그 수정이 next의 노드들까지 고치게 만들지 "
-         "않을 때만 같은 호출로 고친다(updated). 그런 수정이거나 cascade가 참이면 고치지 않고 "
-         "수정안을 사용자에게 올린다")
+CLOSE = ("근거와 노드를 read_node로 전문 읽는다. 노드가 맞으면 update_node(name, add_edges="
+         "{\"derived-from\": target})로 그 근거를 다시 댄다(unchanged). 고쳐야 하면 그 수정이 next의 "
+         "노드들까지 고치게 만들지 않을 때만 같은 호출로 고친다(updated). 그런 수정이거나 cascade가 "
+         "참이면 고치지 않고 수정안을 사용자에게 올린다. 읽은 뒤 어느 쪽이 바뀌었으면 완료가 "
+         "적히지 않는다(recheck_unread)")
 _ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _FRONT = re.compile(r"---\r?\n.*?\n---\r?\n", re.S)
 _ALREADY = "재검토 대장에 이미 기록이 있다"
@@ -65,9 +66,10 @@ def _name(ref: str) -> tuple[str, str] | None:
     return name, heading
 
 
-def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str] | None:
-    """근거 하나의 (대상 키, 상태 해시). 추적하지 않거나 해석되지 않으면 None.
-    키는 노드면 id, 비노드면 vault 상대 경로이고, 제목 범위면 `#제목`이 붙는다."""
+def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] | None:
+    """근거 하나의 (대상 키, 상태 해시). 추적하지 않거나 대상 파일이 해석되지 않으면
+    None. 키는 노드면 id, 비노드면 vault 상대 경로이고, 제목 범위면 `#제목`이 붙는다.
+    파일은 있는데 제목이 없거나 둘 이상이면 상태가 None이다 — 추적은 계속된다."""
     parsed = _name(ref)
     if parsed is None:
         return None
@@ -85,8 +87,9 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str] | None:
         if key:
             if not heading:
                 out = (key, sha256_bytes(data))
-            elif (rng := heading_range(data, heading)) is not None:
-                out = (f"{key}#{heading}", sha256_bytes(rng))
+            else:
+                rng = heading_range(data, heading)
+                out = (f"{key}#{heading}", None if rng is None else sha256_bytes(rng))
     if cache is not None:
         cache[(name, heading)] = out
     return out
@@ -150,9 +153,11 @@ def _latest(records: list[dict], node: str | None = None) -> dict[tuple, list[di
     return out
 
 
-def _verdict(maxima: list[dict], node_state: str, target_state: str) -> str | None:
+def _verdict(maxima: list[dict], node_state: str, target_state: str | None) -> str | None:
     """완료면 None, 후보면 그 까닭. 극대가 여럿이어도 상태가 같으면 하나로 본다
     (두 기기가 같은 점검을 따로 적은 경우)."""
+    if target_state is None:
+        return "근거를 해석할 수 없다"
     if not maxima:
         return "기록 없음"
     states = {(m.get("node_state"), m.get("target_state")) for m in maxima}
@@ -166,6 +171,17 @@ def _verdict(maxima: list[dict], node_state: str, target_state: str) -> str | No
     return None
 
 
+def _read() -> tuple[list[dict], bool]:
+    """재검토 대장과, 그 판독을 믿을 수 있는가. 판독 실패(불완전한 행)나 구조 손상이면
+    완료 상태를 믿을 수 없다 — 쌍은 후보로 남고 완료는 적히지 않지만, 노드 쓰기는
+    막지 않는다."""
+    try:
+        recs = ledger_read(RECHECKS)
+    except (OSError, ValueError):
+        return [], False
+    return recs, not ledger_damage(recs, RECHECKS)
+
+
 def candidates(idx=None) -> tuple[list[dict], bool]:
     """(재검토 후보, 기준선 대기). 읽기만 한다.
 
@@ -173,8 +189,8 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
     곳)와 `cascade`(대상의 지금 판이 재검토로 고친 판인가)를 싣는다. 재검토로 고친
     노드의 재전파가 또 수정을 부르면 그 수정은 사람이 본다(시행령 §7 2항)."""
     idx = idx or graph.Index()
-    recs = ledger_read(RECHECKS)
-    damaged = bool(ledger_damage(recs, RECHECKS))
+    recs, ok = _read()
+    damaged = not ok
     latest = {} if damaged else _latest(recs)
     revised = {r.get("node_state") for r in recs
                if r.get("kind") == "complete" and r.get("result") == "updated"}
@@ -196,14 +212,15 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
     out = []
     for name, nid, ns, ps, kind in rows:
         for key, (ts, ref) in ps.items():
-            why = "대장 손상" if damaged else _verdict(latest.get((nid, key), []), ns, ts)
+            why = ("대장을 믿을 수 없다" if damaged and ts is not None
+                   else _verdict(latest.get((nid, key), []), ns, ts))
             if why:
                 out.append({"node": name, "target": ref, "why": why, "id": nid, "key": key,
                             "scope": kind[1] if kind[0] == "scope" else None,
                             "node_state": ns, "target_state": ts, "cascade": cascade(key),
                             "next": sorted(set(cited.get(nid, [])))})
     _mark_escalated(out)
-    return out, not recs
+    return out, ok and not recs
 
 
 def _mark_escalated(items: list[dict]) -> None:
@@ -246,8 +263,8 @@ def report(idx=None, limit: int = 5) -> dict:
 def complete_keys(idx, path: Path, meta: dict) -> set[str]:
     """이 노드의 쌍 가운데 지금 점검 완료인 대상 키."""
     ps = pairs(idx, meta)
-    recs = ledger_read(RECHECKS) if ps else []
-    if not recs or ledger_damage(recs, RECHECKS):
+    recs, ok = _read() if ps else ([], False)
+    if not recs or not ok:
         return set()
     latest = _latest(recs, meta["id"])
     ns = sha256_bytes(path.read_bytes())
@@ -295,15 +312,17 @@ def change(nid: str, key: str, ref: str, idx) -> dict:
     """마지막 점검 뒤 무엇이 바뀌었는가 — 검토자에게 싣는 변경분. 바뀐 쪽(`side`)의
     diff를 볼트의 git 이력에서 그때의 판(상태 해시가 같은 판)을 찾아 만든다.
     찾지 못하면 전문을 읽으라는 메모만 낸다."""
-    recs = ledger_read(RECHECKS)
-    maxima = [] if ledger_damage(recs, RECHECKS) else _latest(recs, nid).get((nid, key), [])
+    recs, ok = _read()
+    maxima = _latest(recs, nid).get((nid, key), []) if ok else []
     node = idx.by_id.get(nid)
     parsed = _name(ref)
     hit = idx.locate(parsed[0]) if parsed and parsed[0] else None
+    now = target(ref, idx)
+    if now and now[1] is None:
+        return {"note": "근거의 제목을 해석할 수 없다 — 없거나 둘 이상이다"}
     if not maxima or node is None or hit is None:
         return {"note": "점검 기록이 없다 — 근거와 노드의 전문을 읽는다"}
     m, heading = maxima[-1], parsed[1]
-    now = target(ref, idx)
     if now and now[1] != m.get("target_state"):
         side, path, want = "target", hit[0], m.get("target_state")
     else:
@@ -327,7 +346,7 @@ def ensure_baseline(idx=None) -> int:
         return 0
     rows = [_row(nid, ns, key, ts, "bound", BASELINE)
             for _name, nid, ns, ps, _kind in _citing(idx or graph.Index(), {})
-            for key, (ts, _ref) in ps.items()]
+            for key, (ts, _ref) in ps.items() if ts is not None]
     try:
         ledger_extend(RECHECKS, rows, expect=lambda recs: _ALREADY if recs else None)
     except ValueError as e:
@@ -337,8 +356,46 @@ def ensure_baseline(idx=None) -> int:
     return len(rows)
 
 
+def _presented(nid: str, key: str) -> str | None:
+    """정기 실행 작업이 그 쌍을 마지막으로 보여 줄 때의 근거 상태. 없으면 None."""
+    try:
+        from . import growth
+        rows = growth._records()
+    except Exception:
+        return None
+    want = f"recheck:{nid}:{key}"
+    for r in reversed(rows):
+        for job in r.get("recheck_jobs", []) if r.get("kind") == "plan" else []:
+            if job.get("key") == want:
+                return job.get("target_state")
+    return None
+
+
+def _reviewed(idx, meta: dict, rel: str, pre: str, key: str, ts: str, ref: str,
+              seen: dict | None) -> bool:
+    """다시 댄 근거가 검토자가 읽은 두 상태 그대로인가. `seen`은 표면이 `read_node`로
+    전문을 읽은 판(경로 → 해시)이다. 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다.
+    비노드 근거는 표면으로 읽지 못하므로 정기 실행 작업이 보여 준 상태와 대조한다."""
+    if seen is None:
+        return True
+    if seen.get(rel) != pre:
+        return False
+    parsed = _name(ref)
+    hit = idx.locate(parsed[0]) if parsed and parsed[0] else None
+    if hit is None:
+        return False
+    if graph.is_node_home(hit[1]):
+        try:
+            return seen.get(posix_rel(hit[0], ROOT)) == sha256_bytes(hit[0].read_bytes())
+        except OSError:
+            return False
+    shown = _presented(meta["id"], key)
+    return shown is None or shown == ts
+
+
 def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozenset(),
-                reasserted=frozenset(), changed: bool = True) -> dict:
+                reasserted=frozenset(), changed: bool = True, pre: str | None = None,
+                seen: dict | None = None) -> dict:
     """노드 쓰기가 성공한 뒤의 완료 기록(§4-1).
 
     새 배선은 `bound`, 다시 댄 근거는 본문을 함께 고쳤으면 `updated`·아니면
@@ -349,19 +406,30 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
     ps = pairs(idx, meta)
     if not ps:
         return {}
+    if RECHECKS.exists() and not _read()[1]:
+        return {"recheck_error": "재검토 대장을 읽을 수 없거나 손상됐다 — 완료를 적지 않았다"
+                                 "(쌍은 후보로 남고 검증기가 대장을 보고한다)"}
     ns = sha256_bytes(path.read_bytes())
-    rows, closed = [], []
+    rel = posix_rel(path, ROOT)
+    rows, closed, unread = [], [], []
     for key, (ts, ref) in ps.items():
+        if ts is None:
+            continue                  # 해석되지 않는 근거에는 완료가 없다
         if key not in before:
             rows.append(_row(meta["id"], ns, key, ts, "bound"))
         elif key in reasserted:
+            if not _reviewed(idx, meta, rel, pre or ns, key, ts, ref, seen):
+                unread.append(ref)
+                continue
             closed.append(ref)
             if changed or key not in prior:
                 rows.append(_row(meta["id"], ns, key, ts, "updated" if changed else "unchanged"))
         elif changed and key in prior:
             rows.append(_row(meta["id"], ns, key, ts, "unchanged", CARRIED))
+    out = {"recheck_unread": {"targets": unread, "why": (
+        "근거나 노드가 read_node로 읽은 판과 달라 완료를 적지 않았다 — 다시 읽고 대라")}} if unread else {}
     try:
         ledger_extend(RECHECKS, rows)
     except Exception as e:
-        return {"recheck_error": f"재검토 완료를 기록하지 못했다 — 후보로 남는다: {e}"}
-    return {"rechecked": closed} if closed else {}
+        return {**out, "recheck_error": f"재검토 완료를 기록하지 못했다 — 후보로 남는다: {e}"}
+    return {**out, "rechecked": closed} if closed else out

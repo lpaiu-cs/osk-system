@@ -185,6 +185,18 @@ def _with_change(jobs: list[dict], idx: graph.Index) -> list[dict]:
     return jobs
 
 
+def _pick_rechecks(idx: graph.Index, limit: int, scope: str | None = None,
+                   rows: list[dict] | None = None) -> list[dict]:
+    """고를 재검토 작업 — 시도한 적 없는 것부터, 그다음 가장 오래전에 시도한 것부터
+    `limit`개. 정기 실행과 Stop fork가 같이 쓴다: 자르고 나서 돌리면 앞쪽이 계속
+    열려 있을 때 뒤쪽이 영영 뽑히지 않는다."""
+    rows = _records() if rows is None else rows
+    tried = {j["key"]: r["rid"] for r in rows if r.get("kind") == "plan"
+             for j in r.get("recheck_jobs", [])}
+    jobs = sorted(_recheck_jobs(idx, scope), key=lambda j: (tried.get(j["key"], ""), j["key"]))
+    return _with_change(jobs[:limit], idx)
+
+
 def _recheck_status(job: dict, idx: graph.Index) -> dict:
     """그 쌍이 더는 후보가 아니면 완료다 — 다시 대어 닫았거나 근거를 뺐다."""
     from . import rechecks
@@ -193,7 +205,10 @@ def _recheck_status(job: dict, idx: graph.Index) -> dict:
         return {"status": "complete", "reason": "node gone"}
     meta = idx.node(hit[0]).meta
     if job["target_key"] not in rechecks.pairs(idx, meta):
-        return {"status": "complete", "reason": "basis removed"}
+        # 근거를 뺐거나, 남아 있지만 대상 파일이 사라졌다(dangling으로 따로 보고된다).
+        stored = meta.get("derived-from") or []
+        kept = job["target"] in (stored if isinstance(stored, list) else [stored])
+        return {"status": "complete", "reason": "basis dangling" if kept else "basis removed"}
     if job["target_key"] in rechecks.complete_keys(idx, hit[0], meta):
         return {"status": "complete"}
     open_ = [i for i in rechecks.candidates(idx)[0]
@@ -315,8 +330,7 @@ def _plan(limit: int) -> dict:
         eviction_jobs.append(job)
     eviction_jobs.sort(key=lambda j: (attempts.get(j["of"], ""), j["of"]))
     eviction_jobs = eviction_jobs[:limit]
-    tried = {j["key"]: row["rid"] for row in plans for j in row.get("recheck_jobs", [])}
-    recheck_jobs = _with_change(sorted(_recheck_jobs(idx), key=lambda j: (tried.get(j["key"], ""), j["key"]))[:limit], idx)
+    recheck_jobs = _pick_rechecks(idx, limit, rows=rows)
     return {"candidates": candidates, "organization_jobs": organization_jobs, "eviction_jobs": eviction_jobs,
             "recheck_jobs": recheck_jobs, "source_count": len(sources),
             "cluster_count": len(clusters), "domain_count": len(domains),
@@ -428,7 +442,8 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "reason,target?}] using selected IDs only; node/merged require the actual target title.\n"
         "For recheck_jobs, node cites target as derived-from and target changed since node was "
         "last checked; change holds the diff of the side that changed, or a note to read the full "
-        "text. Read both through osk MCP. If node still holds, call update_node(name=node, "
+        "text. Read both in full through osk read_node (a check records only against what you "
+        "read). If node still holds, call update_node(name=node, "
         "add_edges={\"derived-from\": target}) with nothing else. If node needs a correction and "
         "cascade is false, read the nodes in next (they cite node): when your correction would not "
         "require changing any of them, apply it and name the same target in add_edges in that "
@@ -938,7 +953,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     planned["organization_jobs"] = organization.pending([scope], limit=1) if scope else []
                     # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
                     idx = _index()
-                    planned["recheck_jobs"] = (_with_change(_recheck_jobs(idx, scope)[:limit], idx)
+                    planned["recheck_jobs"] = (_pick_rechecks(idx, limit, scope)
                                                if scope and not daily_active() else [])
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)

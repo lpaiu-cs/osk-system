@@ -1299,11 +1299,14 @@ def update_node(name: str, body: str | None = None,
                 expect_hash: str | None = None, summary: str | None = None,
                 add_edges: dict | None = None, remove_edges: dict | None = None,
                 old_text: str | None = None, new_text: str | None = None,
-                settle: str | None = None) -> dict:
-    """Apply an ordinary node update under the shared mutation lock."""
+                settle: str | None = None, *, _seen: dict | None = None) -> dict:
+    """Apply an ordinary node update under the shared mutation lock.
+
+    `_seen` is the surface's record of what its caller read in full (path → hash);
+    a recheck closes only against those states (Mechanism §4-1)."""
     with _Lock():
         return _update_node_locked(name, body, expect_hash, summary, add_edges,
-                                   remove_edges, old_text, new_text, settle)
+                                   remove_edges, old_text, new_text, settle, _seen=_seen)
 
 
 def _update_node_locked(name: str, body: str | None = None,
@@ -1312,7 +1315,7 @@ def _update_node_locked(name: str, body: str | None = None,
                 remove_edges: dict | None = None,
                 old_text: str | None = None,
                 new_text: str | None = None, settle: str | None = None, *, _before_write=None,
-                _stamp=None, _legacy_raw=False) -> dict:
+                _stamp=None, _legacy_raw=False, _seen=None) -> dict:
     """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
     상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
 
@@ -1374,6 +1377,7 @@ def _update_node_locked(name: str, body: str | None = None,
     # 근거 재검토(Mechanism §4-1) — 쓰기 전의 쌍과 완료 상태, 이 호출이 다시 댄 근거
     _baseline(idx)
     rc_before = rechecks.pairs(idx, n.meta)
+    rc_pre = sha256_file(path)                 # 검토자가 읽었어야 할 노드의 판
     rc_prior = rechecks.complete_keys(idx, path, n.meta) if rc_before else set()
     rc_again = {t[0] for ref in _as_list((add_edges or {}).get("derived-from", []))
                 if (t := rechecks.target(str(ref), idx)) and t[0] in rc_before}
@@ -1467,7 +1471,7 @@ def _update_node_locked(name: str, body: str | None = None,
         if rc_again:     # 바꿀 것 없이 근거를 다시 댔다 — 점검 완료(unchanged)
             res.update(rechecks.after_write(idx, path, n.meta, before=rc_before.keys(),
                                             prior=rc_prior, reasserted=rc_again,
-                                            changed=False))
+                                            changed=False, pre=rc_pre, seen=_seen))
         return res
     if not only_conflicts:
         meta["updated"] = _stamp or now_kst()
@@ -1490,7 +1494,8 @@ def _update_node_locked(name: str, body: str | None = None,
            "edges": _edge_report(contract.Node(path=path, meta=meta, body=new_body)),
            **_reference_feedback(path, meta, new_body, idx, n)}
     out.update(rechecks.after_write(idx, path, meta, before=rc_before.keys(),
-                                    prior=rc_prior, reasserted=rc_again))
+                                    prior=rc_prior, reasserted=rc_again,
+                                    pre=rc_pre, seen=_seen))
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
     return evictions._after_node_write(out, settle, "merged", path.stem)

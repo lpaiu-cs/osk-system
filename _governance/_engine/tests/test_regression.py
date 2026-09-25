@@ -8391,6 +8391,17 @@ def test_rechecks():
               rechecks.heading_range(b"## A\n1\n## A\n2\n", "A") is None)
         check("raw 라운드는 추적하지 않는다",
               rechecks.target("00_Scope/W1/_raw/.records/x.txt#1", graph.Index()) is None)
+        # 제목이 사라져도 근거는 남는다 — 해석 불능 후보이지 뺀 근거가 아니다
+        src.write_text(src.read_text(encoding="utf-8").replace("## A", "## A2"),
+                       encoding="utf-8")
+        _age_all()
+        check("제목이 사라진 근거는 해석 불능 후보로 남는다",
+              why("regr-rc-H", ref) == {"근거를 해석할 수 없다"})
+        from osk import growth
+        hid = graph.Index().node(W / "regr-rc-H.md").id
+        job = {"id": hid, "target_key": "_sources/regr-rc.md#A", "target": ref}
+        check("그 작업은 근거를 뺀 것으로 닫히지 않는다",
+              growth._recheck_status(job, graph.Index())["status"] == "pending")
 
         # 변경분: 점검 때의 판(상태 해시가 같은 판)을 이력에서 찾아 바뀐 쪽의 diff를 싣는다
         from unittest import mock
@@ -8423,6 +8434,31 @@ def test_rechecks():
             with mock.patch.object(rechecks, "ROOT", Path(g)):
                 got = rechecks._versions("a b.md", "2026-09-02T10:00:00+09:00")
             check("git 이력에서 점검 시각 앞뒤의 판을 꺼낸다", got == [b"old\n", b"new\n"], got)
+
+        # 다시 대기는 검토자가 읽은 판에만 완료를 적는다(표면의 `read_node` 기록)
+        n_rel, t_rel = "00_Scope/W1/regr-rc-N.md", "00_Scope/W1/regr-rc-T.md"
+        seen = {n_rel: core.sha256_file(W / "regr-rc-N.md"), t_rel: core.sha256_file(t)}
+        _w(write.update_node, "regr-rc-T", old_text="4판", new_text="5판")    # 읽은 뒤 바뀐다
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+               _seen=seen)
+        check("읽은 뒤 근거가 바뀌었으면 완료를 적지 않는다",
+              r.get("recheck_unread") and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
+        seen[t_rel] = core.sha256_file(t)
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+               _seen={**seen, n_rel: "sha256:0"})
+        check("읽지 않은 노드 판으로도 완료를 적지 않는다", r.get("recheck_unread"), r)
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+               _seen=seen)
+        check("읽은 판 그대로면 완료를 적는다", r.get("rechecked") and not why("regr-rc-N"), r)
+
+        # 대장을 읽지 못해도 노드 쓰기는 된다 — 완료만 믿지 않는다
+        good = led.read_bytes()
+        led.write_bytes(good + '{"kind": "complete", "node'.encode())
+        r = _w(write.update_node, "regr-rc-N", old_text="또 고친 주장.", new_text="다시 고친 주장.")
+        check("찢긴 대장 행이 있어도 노드를 고칠 수 있다",
+              r.get("ok") and r.get("recheck_error"), r)
+        check("그동안 쌍은 완료로 보지 않는다", why("regr-rc-N") == {"대장을 믿을 수 없다"})
+        led.write_bytes(good)
 
         # 기준선: 기록이 없는 대장에서 첫 쓰기는 기존 쌍을 먼저 적는다
         led.unlink(missing_ok=True)

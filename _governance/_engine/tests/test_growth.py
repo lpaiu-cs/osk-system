@@ -216,6 +216,19 @@ class GrowthTests(unittest.TestCase):
             assert not rechecks.report(graph.Index()), rechecks.report(graph.Index())
         """)
 
+    def test_recheck_pick_rotates_by_attempts_in_a_fork_scope(self):
+        self.check_case("""
+            node('A')
+            for title in ('B1', 'B2'):
+                assert write.create_node(title, title, title + ' relies on A.', 'gpt-6-astra',
+                                         space='00_Scope/W1', edges={'derived-from': 'A'})['ok']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            first = growth._pick_rechecks(graph.Index(), 1, 'W1')
+            register({**growth.plan(3), 'scope_jobs': [], 'recheck_jobs': first})
+            again = growth._pick_rechecks(graph.Index(), 1, 'W1')
+            assert {first[0]['node'], again[0]['node']} == {'B1', 'B2'}, (first, again)
+        """)
+
     def check_case(self, source):
         with tempfile.TemporaryDirectory(prefix="osk-growth-test-") as directory:
             env = dict(os.environ, OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),
