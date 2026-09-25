@@ -5290,10 +5290,8 @@ def test_raw_space_misdiagnosis():
 def test_raw_binding_confines_scope():
     """결속이 선 세션에 다른 `space`를 주면 **쓰기 전에** 거부한다.
 
-    허용하면 같은 기록 이름이 두 scope에 앉아 시행령 §2 1항의 '세션당 정본
-    하나'가 깨지고, 결속은 그대로라 다음 호출은 원래 자리로 돌아가 한 대화가
-    두 파일을 오간다. `_raw/`는 append-only이고 표면에 삭제가 없으므로 쓴 뒤에
-    알리는 것으로는 되돌릴 수 없다."""
+    한 세션은 한 scope에 속하고 세션당 `_raw/` 정본은 하나다(시행령 §2 1항).
+    `_raw/`는 append-only이고 표면에 삭제가 없으므로 쓰기 전에 막는다."""
     from osk import raw
     for n in ("WBindA", "WBindB"):
         (ROOT / f"00_Scope/{n}").mkdir(exist_ok=True)
@@ -5326,10 +5324,9 @@ def test_raw_binding_confines_scope():
 
 # ── 18e. 재시도 중복 거부 (Mechanism §9 7항 · 시행령 §2 1항) ────────────────
 def test_raw_replay_rejected():
-    """응답이 유실되면 호출자는 같은 배치를 다시 보낸다. `_raw/`는 append-only이고
-    표면에 삭제가 없으므로 그렇게 생긴 중복은 되돌릴 수 없다 — 쓰기 전에 막는다.
-    조용히 접지 않고 **거부**하는 것은, 접으면 쓰지 않고 성공을 보고하는 것이 되어
-    호출자가 무슨 일이 있었는지 모르기 때문이다."""
+    """응답이 유실되면 호출자는 같은 배치를 다시 보낸다. 직전 꼬리와 내용이
+    같은 배치는 쓰지 않되, 조용히 접지 않고 **거부**한다 — 호출자가 무슨 일이
+    있었는지 알게 한다."""
     from osk import raw
     (ROOT / "00_Scope/WRawRp").mkdir(exist_ok=True)
     SP, S = "00_Scope/WRawRp", "repo/regr-replay"
@@ -5643,7 +5640,7 @@ def test_code_region_commonmark_rules():
         check(f"목차 {body!r}", got == want, got)
 
 
-# ── 22. 군집 개요 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
+# ── 22. 군집 허브 노드 (시행령 §3 6항 · Mechanism §6-1) ────────────────────
 def test_cluster_overview():
     """각 군집은 동명 허브 노드를 두고, 전 노드가 허브에서 **Link의 방향**을
     따라 도달 가능해야 한다(헌법 3조 8항). 도달은 허브가 가리키는 것으로
@@ -5782,8 +5779,8 @@ def test_ephemeral_session_key():
 # ── 19. scope 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
 def test_scope_memory():
     """상한은 저장 용량의 제한이 아니라 문턱이다. 그래서 초과는 **거부**하고,
-    거부는 **전문과 순서**를 함께 돌려준다 — 자동 절단·자동 요약을 두면 그
-    신호가 조용히 소비되어 아무 일도 일어나지 않는다."""
+    거부는 잔여·해시·넘긴 자수와 정리 안내를 돌려준다(전문은 싣지 않는다 —
+    §9-2 5항). 자동 절단·자동 요약은 두지 않는다."""
     from osk import scope_memory as wm
     for n in ("WWm", "WWmB"):
         (ROOT / f"00_Scope/{n}").mkdir(exist_ok=True)
@@ -5891,7 +5888,7 @@ def test_scope_memory():
     check("거부가 보낸 글자수를 센다",
           over.get("rejected_chars") == wm.LIMIT + 1, over)
 
-    # 정규화 — 없으면 같은 글이 기기에 따라 두 배로 세어져 상한이 기기 의존이 된다
+    # 정규화 — 상한은 NFC 정본 형태 위에서 잰다 (Mechanism §9-2 9항)
     nfd = _w(wm.replace, S, "가" * 10, _w(wm.read, S)["hash"])
     check("NFD 자모는 NFC로 접혀 세어진다", nfd.get("chars") == 10, nfd)
 
@@ -6462,7 +6459,7 @@ def test_evictions():
     check("status: 미처분 4·가장 오래된 20일·밀림",
           st.get("WEvi") == {"unsettled": 4, "oldest_days": 20, "overdue": True}, st)
 
-    # 거부 없는 정리는 기록하지 않는다 — 자리값 못하는 엔트리를 지우는 정상이다
+    # 거부 없는 정리는 기록하지 않는다 (Mechanism §9-2 12항)
     r = _w(wm.replace, S, "# 머리\n- 갑 첫 줄\n- 을 둘째 줄\n- 병 셋째 줄", None, "00_Scope/WEvi")
     check("첫 쓰기", r.get("ok"), r)
     r = _w(wm.replace, S, edits=[{"old_text": "\n- 병 셋째 줄", "new_text": ""}])
