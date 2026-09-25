@@ -19,7 +19,7 @@ from . import contract, graph
 RECHECKS = LEDGER / "rechecks.jsonl"
 BASELINE = "기준선"
 CARRIED = "이어받음"
-CLOSE = ("근거와 노드를 read_node로 전문 읽는다. 노드가 맞으면 update_node(name, add_edges="
+CLOSE = ("근거와 노드를 read_node로 읽는다(전문이나 필요한 범위). 노드가 맞으면 update_node(name, add_edges="
          "{\"derived-from\": target})로 그 근거를 다시 댄다(unchanged). 고쳐야 하면 그 수정이 next의 "
          "노드들까지 고치게 만들지 않을 때만 같은 호출로 고친다(updated). 그런 수정이거나 cascade가 "
          "참이면 고치지 않고 수정안을 사용자에게 올린다. 읽은 뒤 어느 쪽이 바뀌었으면 완료가 "
@@ -373,9 +373,10 @@ def _presented(nid: str, key: str) -> str | None:
 
 def _reviewed(idx, meta: dict, rel: str, pre: str, key: str, ts: str, ref: str,
               seen: dict | None) -> bool:
-    """다시 댄 근거가 검토자가 읽은 두 상태 그대로인가. `seen`은 표면이 `read_node`로
-    전문을 읽은 판(경로 → 해시)이다. 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다.
-    비노드 근거는 표면으로 읽지 못하므로 정기 실행 작업이 보여 준 상태와 대조한다."""
+    """다시 댄 근거가 검토자가 본 두 상태 그대로인가. `seen`은 표면이 `read_node`로
+    읽은 판(경로 → 해시)이다. 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다.
+    비노드 근거는 표면으로 읽지 못하므로 정기 실행 작업이 보여 준 상태와 대조하고,
+    보여 준 적이 없으면 확인할 수 없으므로 완료를 적지 않는다."""
     if seen is None:
         return True
     if seen.get(rel) != pre:
@@ -390,7 +391,7 @@ def _reviewed(idx, meta: dict, rel: str, pre: str, key: str, ts: str, ref: str,
         except OSError:
             return False
     shown = _presented(meta["id"], key)
-    return shown is None or shown == ts
+    return shown is not None and shown == ts
 
 
 def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozenset(),
@@ -427,7 +428,8 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
         elif changed and key in prior:
             rows.append(_row(meta["id"], ns, key, ts, "unchanged", CARRIED))
     out = {"recheck_unread": {"targets": unread, "why": (
-        "근거나 노드가 read_node로 읽은 판과 달라 완료를 적지 않았다 — 다시 읽고 대라")}} if unread else {}
+        "노드나 근거가 read_node로 읽은 판과 달라 완료를 적지 않았다 — 다시 읽고 대라. "
+        "비노드 근거는 정기 실행 작업이 보여 준 판으로만 닫힌다")}} if unread else {}
     try:
         ledger_extend(RECHECKS, rows)
     except Exception as e:

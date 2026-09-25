@@ -1496,6 +1496,11 @@ def _update_node_locked(name: str, body: str | None = None,
     out.update(rechecks.after_write(idx, path, meta, before=rc_before.keys(),
                                     prior=rc_prior, reasserted=rc_again,
                                     pre=rc_pre, seen=_seen))
+    # 쓰기 직전 판을 읽었던 호출자는 방금 쓴 판도 안다 — 쓰기 응답의 해시를 다음
+    # `expect_hash`로 잇는 것과 같은 규율이다. 읽지 않았으면 잇지 않는다.
+    rel = posix_rel(path, ROOT)
+    if _seen is not None and _seen.get(rel) == rc_pre:
+        _seen[rel] = sha256_bytes(data)
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
     return evictions._after_node_write(out, settle, "merged", path.stem)

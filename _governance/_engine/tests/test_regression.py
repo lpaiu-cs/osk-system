@@ -8322,7 +8322,7 @@ def test_rechecks():
     from osk import rechecks
     W = ROOT / "00_Scope/W1"
     src = ROOT / "_sources" / "regr-rc.md"
-    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New")]
+    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New", "W")]
     led = rechecks.RECHECKS
     lbefore = led.read_bytes() if led.exists() else None
 
@@ -8450,6 +8450,56 @@ def test_rechecks():
         r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
                _seen=seen)
         check("읽은 판 그대로면 완료를 적는다", r.get("rechecked") and not why("regr-rc-N"), r)
+
+        # 부분 열람도 읽은 판을 고정한다 — 전문 치환용 해시는 여전히 주지 않는다
+        import mcp_server as M
+        M._SEEN.clear()
+        v = M.read_node("regr-rc-T", view="outline")
+        check("부분 열람은 CAS 해시를 주지 않고 읽은 판만 기억한다",
+              "hash" not in v and M._SEEN.get(t_rel) == core.sha256_file(t), v)
+        # 읽은 판을 고친 쓰기는 쓴 판을 잇는다 — 쓰기 응답 해시의 CAS 연쇄와 같다
+        _w(write.update_node, "regr-rc-T", old_text="5판", new_text="6판")
+        seen2 = {n_rel: core.sha256_file(W / "regr-rc-N.md"), t_rel: core.sha256_file(t)}
+        _w(write.update_node, "regr-rc-N", old_text="밖에서 더한 줄.",
+           new_text="밖에서 더한 줄을 고쳤다.", _seen=seen2)
+        check("읽은 판을 고친 쓰기는 쓴 판을 잇는다",
+              seen2[n_rel] == core.sha256_file(W / "regr-rc-N.md"))
+        blind = {}
+        _w(write.update_node, "regr-rc-N", old_text="줄을 고쳤다.", new_text="줄을 고쳤다!",
+           _seen=blind)
+        check("쓰기 전 판을 읽지 않은 쓰기는 잇지 않는다", n_rel not in blind, blind)
+        seen2[n_rel] = core.sha256_file(W / "regr-rc-N.md")
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+               _seen=seen2)
+        check("이은 판으로 근거를 다시 대면 완료를 적는다",
+              r.get("rechecked") and not why("regr-rc-N"), r)
+
+        # 비노드 근거는 정기 실행 작업이 보여 준 판으로만 닫힌다
+        fref = "[[_sources/regr-rc.md]]"
+        _w(write.create_node, "regr-rc-W", "s", "파일 근거.", "fable-5", space="00_Scope/W1",
+           edges={"derived-from": fref})
+        src.write_text(src.read_text(encoding="utf-8") + "\n덧붙임.\n", encoding="utf-8")
+        _age_all()
+        w_rel = "00_Scope/W1/regr-rc-W.md"
+        sw = {w_rel: core.sha256_file(W / "regr-rc-W.md")}
+        r = _w(write.update_node, "regr-rc-W", add_edges={"derived-from": fref}, _seen=sw)
+        check("보여 준 적 없는 비노드 근거는 완료를 적지 않는다",
+              r.get("recheck_unread") and why("regr-rc-W") == {"근거가 바뀌었다"}, r)
+        gled = growth.LEDGER
+        gbefore = gled.read_bytes() if gled.exists() else None
+        try:
+            wid = graph.Index().node(W / "regr-rc-W.md").id
+            core.ledger_append(gled, {"kind": "plan", "recheck_jobs": [{
+                "key": f"recheck:{wid}:_sources/regr-rc.md",
+                "target_state": rechecks.target(fref, graph.Index())[1]}]})
+            r = _w(write.update_node, "regr-rc-W", add_edges={"derived-from": fref}, _seen=sw)
+            check("정기 작업이 보여 준 판이면 완료를 적는다",
+                  r.get("rechecked") and not why("regr-rc-W"), r)
+        finally:
+            if gbefore is None:
+                gled.unlink(missing_ok=True)
+            else:
+                gled.write_bytes(gbefore)
 
         # 대장을 읽지 못해도 노드 쓰기는 된다 — 완료만 믿지 않는다
         good = led.read_bytes()
