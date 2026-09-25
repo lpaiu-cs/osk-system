@@ -11347,6 +11347,63 @@ def test_write_edge_coordinates():
             core.ROUTING.write_bytes(prior_route)
 
 
+def test_node_heading_edge_coordinates():
+    """Node heading edges survive create/add/remove and independently trigger rechecks.
+
+    Dropping the anchor in _edge_key must fail both storage and propagation checks.
+    """
+    from osk import rechecks
+    base = ROOT / "00_Scope/W1/regr-heading-edges"
+    space = base.relative_to(ROOT).as_posix()
+    before = rechecks.RECHECKS.read_bytes() if rechecks.RECHECKS.exists() else None
+    try:
+        base.mkdir(parents=True)
+        write.create_node(base.name, "hub", "hub", "fable-5", space=space)
+        target = write.create_node("regr-heading-target", "source",
+                                   "## A\n\nFirst result.\n\n## B\n\nSecond result.",
+                                   "fable-5", space=space)
+        a, b = (f"[[{target['name']}#{h}]]" for h in ("A", "B"))
+        made = write.create_node("regr-heading-claim", "claim", "Uses both results.",
+                                 "fable-5", space=space, edges={"derived-from": [a, b]})
+        path = ROOT / made["path"]
+
+        def stored():
+            return write._stored_edges(contract.parse(path).meta.get("derived-from"))
+
+        def pending():
+            return {i["target"] for i in rechecks.candidates(graph.Index())[0]
+                    if i["node"] == path.stem}
+
+        check("creation preserves two headings of the same node", stored() == [a, b], stored())
+        again = write.update_node(path.stem, add_edges={"derived-from": [
+            f"[[{target['name']}#A|first]]", f"[[{target['name']}.md#B]]"]})
+        check("heading aliases and md suffix deduplicate only the same range",
+              again.get("no_change") and stored() == [a, b], stored())
+        write.update_node(target["name"], old_text="Second result.", new_text="Second result revised.")
+        check("changing only B schedules the node's B reference", pending() == {b}, pending())
+        write.update_node(path.stem, add_edges={"derived-from": b})
+        check("reasserting B closes its recheck and preserves A", not pending() and stored() == [a, b])
+        write.update_node(path.stem, remove_edges={"derived-from": b})
+        check("removing B leaves A", stored() == [a], stored())
+        write.update_node(path.stem, add_edges={"derived-from": b})
+        check("adding B beside A preserves both headings", stored() == [a, b], stored())
+        write.update_node(path.stem, add_edges={"derived-from": target["id"]})
+        whole = f"[[{target['name']}]]"
+        check("whole-node and heading references remain distinct", stored() == [a, b, whole], stored())
+        write.update_node(path.stem, remove_edges={"derived-from": target["id"]})
+        check("removing the whole-node reference leaves both headings", stored() == [a, b], stored())
+        write.update_node(target["name"], old_text="First result.", new_text="First result revised.")
+        check("changing only A schedules only A", pending() == {a}, pending())
+        write.update_node(path.stem, remove_edges={"derived-from": a}, add_edges={"derived-from": a})
+        check("remove and readd A preserves B and closes A", stored() == [b, a] and not pending(), stored())
+    finally:
+        rmtree_force(base)
+        if before is None:
+            rechecks.RECHECKS.unlink(missing_ok=True)
+        else:
+            rechecks.RECHECKS.write_bytes(before)
+
+
 def test_derived_from_once_per_round():
     """한 세션에서 같은 노드를 세 번 고쳐도 raw 근거는 라운드마다 한 번만 앉는다.
 
@@ -11619,10 +11676,10 @@ def test_validate_at_uses_snapshot_engine():
 SUITE_SKIP = 77     # 격리 수트가 "환경 때문에 돌지 못했다"를 알리는 종료 코드
 
 
-def _suite(label, name, timeout=180):
+def _suite(label, name, timeout=180, *, required=False):
     """격리 수트 하나를 돌려 한 줄로 판정한다. 시간 초과·기동 실패도 그 수트의
     FAIL로 남긴다 — 예외가 러너로 새면 뒤의 수트가 조용히 실행되지 않는다.
-    종료 코드 77은 SKIP이다(통과로 세지 않는다) — 사유는 출력 마지막 줄이다."""
+    종료 코드 77은 SKIP이다. 필수 수트면 실행되지 않은 것도 FAIL이다."""
     try:
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
                               capture_output=True, timeout=timeout,
@@ -11632,7 +11689,7 @@ def _suite(label, name, timeout=180):
         check(label, False, f"{e!r}\n" + out.decode("utf-8", errors="replace")[-6000:])
         return
     out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
-    if proc.returncode == SUITE_SKIP:
+    if proc.returncode == SUITE_SKIP and not required:
         skip(label, (out.strip().splitlines() or [""])[-1])
         return
     check(label, proc.returncode == 0, out[-6000:])
@@ -11644,9 +11701,14 @@ def test_sync_network_subprocess():
 
 def test_upgrade_matrix_subprocess():
     """구 릴리스가 만들고 쓴 vault를 그 릴리스 자신의 updater로 후보에 올린다
-    (v3.20.1 사고의 경로). 이력·태그가 없는 얕은 checkout이면 SKIP이다."""
+    (v3.20.1 사고의 경로). full을 요청했으면 이력 부재도 실패다."""
     _suite("업그레이드 경로 행렬(구 릴리스 vault → 자기 updater → 후보)",
-           "test_upgrade_matrix.py", timeout=1500)
+           "test_upgrade_matrix.py", timeout=1500,
+           required=os.environ.get("OSK_MATRIX") == "full")
+
+
+def test_release_workflow_subprocess():
+    _suite("정식 발행은 검증한 SHA를 태그로 공개한다", "test_release_workflow.py")
 
 
 GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py")
@@ -11692,6 +11754,14 @@ def test_suite_skip_is_not_pass():
     check("종료 코드 77은 사유와 함께 SKIP으로만 남는다",
           (len(PASS), len(FAIL)) == counts[:2]
           and skipped == ["skip-probe — SKIP: no release history"], skipped)
+    counts = len(PASS), len(FAIL), len(SKIP)
+    with mock.patch("subprocess.run", return_value=done), mock.patch.dict(os.environ, {"OSK_MATRIX": "full"}):
+        test_upgrade_matrix_subprocess()
+    failed = FAIL[counts[1]:]
+    del FAIL[counts[1]:]
+    check("full 행렬이 실행되지 않으면 SKIP이 아니라 실패다",
+          len(failed) == 1 and "no release history" in failed[0]
+          and (len(PASS), len(SKIP)) == (counts[0], counts[2]), failed)
 
 
 if __name__ == "__main__":
@@ -11803,14 +11873,16 @@ if __name__ == "__main__":
                test_sync_pending_git_operations, test_publish_binds_checked_bytes,
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
-               test_write_edge_coordinates, test_derived_from_once_per_round,
+                test_write_edge_coordinates, test_node_heading_edge_coordinates,
+                test_derived_from_once_per_round,
                test_write_pin_subtree_and_fork,
                test_review_empty_memory_and_incomplete_region,
                test_review_root_reparse_and_lazy_search, test_read_cache_dependencies,
                test_reparse_cache_membership,
                test_eviction_preservation_mcp,
                test_suite_timeout_is_isolated, test_suite_skip_is_not_pass,
-               test_growth_loop_subprocesses, test_upgrade_matrix_subprocess]:
+                test_growth_loop_subprocesses, test_release_workflow_subprocess,
+                test_upgrade_matrix_subprocess]:
         try:
             fn()
         except Exception as e:

@@ -1210,8 +1210,8 @@ def _stored_edges(v) -> list[str]:
 
 
 def _edge_key(target: str, idx) -> tuple[str, str]:
-    """노드는 해석된 노드의 제목으로, 비노드 근거는 전체 경로와 앵커로 구별한다.
-    id·제목·경로 어느 표기든 같은 노드면 같은 키다. 해석되지 않는 이름만 표기
+    """노드는 해석된 제목과 절 앵커, 비노드 근거는 전체 경로와 앵커로 구별한다.
+    id·제목·경로 어느 표기든 같은 노드의 같은 범위면 같은 키다. 해석되지 않는 이름만 표기
     규칙(`contract.target_stem`)으로 접는다 — 제목에 든 `.md`를 떼지 않기 위해서다."""
     from . import raw
     s = raw.canonical_ref(target).strip()
@@ -1229,8 +1229,8 @@ def _edge_key(target: str, idx) -> tuple[str, str]:
             return path.removesuffix(".md"), anchor
     hit = idx.locate(path) if path else None
     if hit and graph.is_node_home(hit[1]):
-        return hit[0].stem, ""
-    return contract.target_stem(path), ""
+        return hit[0].stem, anchor.strip()
+    return contract.target_stem(path), anchor.strip()
 
 
 def _id_title(s: str, idx) -> str | None:
@@ -1256,7 +1256,7 @@ def _merge_edges(cur: list[str], add, idx) -> list[str]:
     **다른 라운드**는 앵커가 달라 다른 근거로 남는다.
 
     `cur`는 키로 줄이지 않는다. 키는 "이미 있는가"를 묻는 데만 쓴다. 저장 목록을
-    키로 줄이면 키가 거친 자리(노드의 절 앵커·별칭)마다 저장된 근거를 조용히
+    키로 줄이면 해석 규칙이 달라진 자리마다 저장된 근거를 조용히
     지우게 된다. 저장 목록의 되풀이는 바이트가 같을 때만 접는다(`_update_node_locked`)."""
     seen = {_edge_key(t, idx) for t in cur}
     out = list(cur)
