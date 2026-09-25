@@ -1,10 +1,10 @@
-# 태그를 사람이 읽는 표면(GitHub Release)에 비춘다.
+# 검증한 정식 릴리스 커밋을 태그와 GitHub Release로 공개한다.
 #
 # 이 워크플로는 **권위를 만들지 않는다**. 증빙은 정본에서의 릴리스 선언과
 # `release.json`이 이미 끝냈고(시행령 §10 6항), 여기서는 그 사실을 옮겨 적을
-# 뿐이다. 그래서 증빙이 없거나 태그와 어긋나면 Release를 만들지 않고 실패한다 —
-# 정식 릴리스가 아닌 태그가 정식처럼 보이는 쪽이 안 보이는 쪽보다 나쁘다.
-# 같은 이유로 그 태그 커밋에서 회귀 수트(ci.yml)가 통과하기 전에는 만들지 않는다.
+# 뿐이다. 로컬 osk.release로 만든 비준증빙 커밋을 브랜치로만 먼저 보낸다.
+# updater는 git 태그를 읽으므로, 회귀 수트와 전체 업그레이드 행렬이 통과하기
+# 전에는 원격 태그도 만들지 않는다. 실행 시작의 SHA가 검증·공개의 같은 대상이다.
 #
 # 발행 매니페스트에 `.github/`가 없으므로 이 파일은 릴리스 payload에 들어가지
 # 않는다. 인스턴스는 받지 않는다 — 정본의 발행 설비이지 프레임워크가 아니다.
@@ -12,8 +12,16 @@
 name: release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "정식 릴리스 버전 (vX.Y.Z)"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -21,22 +29,40 @@ permissions:
 jobs:
   test:
     uses: ./.github/workflows/ci.yml
+    with:
+      upgrade-matrix: full
+      release-candidate: ${{ inputs.version }}=${{ github.sha }}
     permissions:
       contents: read
 
   mirror:
     needs: test
     runs-on: ubuntu-latest
-    permissions:
-      contents: write      # Release 생성. 그 외 권한은 주지 않는다.
     steps:
+      # CI 중 기본 브랜치의 workflow가 바뀌어도 고정 SHA를 발행할 수 있어야 한다.
+      # GITHUB_TOKEN에는 Workflows: write를 줄 수 없으므로 저장소 한정 App을 쓴다.
+      - name: 발행용 저장소 토큰을 만든다
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.OSK_RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OSK_RELEASE_APP_PRIVATE_KEY }}
+          repositories: ${{ github.repository }}
+          permission-contents: write
+          permission-workflows: write
       - name: 비준증빙을 확인하고 Release를 만든다
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          TAG: ${{ inputs.version }}
+          COMMIT: ${{ github.sha }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::정식 버전은 vX.Y.Z여야 한다."
+            exit 1
+          fi
 
           # 이미 있으면 손대지 않는다 — 손으로 쓴 노트를 덮지 않기 위해서다.
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
@@ -44,11 +70,18 @@ jobs:
             exit 0
           fi
 
-          # 저장소를 checkout하지 않는다. 필요한 것은 그 태그의 release.json
-          # 한 장뿐이고, 외부 action을 하나도 쓰지 않는 편이 공급망에 안전하다.
-          if ! gh api "repos/$REPO/contents/release.json?ref=$TAG" --jq '.content' \
+          # 브랜치가 움직여도 검증한 커밋의 증빙만 읽는다. 태그는 아직 공개하지 않았다.
+          if ! gh api "repos/$REPO/contents/release.json?ref=$COMMIT" --jq '.content' \
                | base64 -d > release.json; then
-            echo "::error::$TAG 에 release.json이 없다 — 정식 릴리스 태그가 아니다."
+            echo "::error::$COMMIT 에 release.json이 없다 — 정식 릴리스 커밋이 아니다."
+            exit 1
+          fi
+
+          # 실패 뒤 재시도는 같은 태그 커밋에만 허용한다. 다른 커밋을 덮지 않는다.
+          existing=$(gh api "repos/$REPO/git/matching-refs/tags/$TAG" \
+                       --jq ".[] | select(.ref == \"refs/tags/$TAG\") | .object.sha")
+          if [ -n "$existing" ] && [ "$existing" != "$COMMIT" ]; then
+            echo "::error::$TAG 는 검증한 커밋과 다르다."
             exit 1
           fi
 
@@ -61,7 +94,7 @@ jobs:
           fi
 
           notes=$(gh api -X POST "repos/$REPO/releases/generate-notes" \
-                    -f tag_name="$TAG" --jq '.body')
+                    -f tag_name="$TAG" -f target_commitish="$COMMIT" --jq '.body')
 
           {
             printf '비준증빙 `release.json` — 파일 %s건의 내용 해시로 이 판본을 고정한다.\n' "$num"
@@ -75,4 +108,5 @@ jobs:
             printf -- '---\n\n%s\n' "$notes"
           } > notes.md
 
-          gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file notes.md
+          # --target의 정확한 SHA로 태그를 만들면서 정식 Release를 공개한다.
+          gh release create "$TAG" --repo "$REPO" --target "$COMMIT" --title "$TAG" --notes-file notes.md

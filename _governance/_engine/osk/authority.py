@@ -63,7 +63,7 @@ def _baseline_nodes() -> list[Path] | None:
             continue
         pre = DELEGATION_REGION + "/"
         return [p for p in (approvals.resolve_in_root(rel) for rel in sorted(table)
-                            if rel.startswith(pre) and rel.endswith(".md"))
+                            if rel.startswith(pre) and rel.lower().endswith(".md"))
                 if p is not None]
     return None
 
@@ -82,14 +82,15 @@ def enumerate_delegations() -> list[dict]:
     if nodes is None:                      # 미보호 — 성립한 위임이 없다
         if not DELEGATION_FACET.exists():
             return out
-        nodes = sorted(DELEGATION_FACET.glob("*.md"))   # 보고용(전부 미성립)
+        nodes = sorted(p for p in DELEGATION_FACET.iterdir()   # 보고용(전부 미성립)
+                       if p.name.lower().endswith(".md") and p.is_file())
     for p in nodes:
         # 군집 허브 노드(헌법 3조 8항)는 위임이 아니다 — Delegation Facet도
         # 노드 군집이라 동명 허브를 두는데, 그것을 위임으로 열거하면 절 형식
         # 검사가 영구 실패한다(v3.3.0 실측: 허브 승인 직후 위임 3요건 FAIL).
         # 허브에 위임 절을 위장시키는 것도, Facet만 허브 예외로 하는 것도
         # 답이 아니다 — 열거가 거른다(시행령 §5 1항).
-        if p == DELEGATION_FACET / f"{DELEGATION_FACET.name}.md":
+        if p.parent == DELEGATION_FACET and p.stem == DELEGATION_FACET.name:
             continue
         rel = str(p.relative_to(ROOT))
         if not p.is_file():                # 승인본에는 있으나 작업본에서 사라짐

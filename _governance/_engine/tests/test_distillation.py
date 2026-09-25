@@ -268,6 +268,56 @@ def _child():
                 self.assertEqual(again["distillation"]["status"], "complete")
                 self.assertEqual(again["id"], existing["id"])
 
+            def test_mcp_update_rechecks_use_observed_states(self):
+                import mcp_server as M
+                from osk import rechecks
+
+                for case in ("fresh", "source_changed", "target_changed", "unread"):
+                    with self.subTest(case=case):
+                        M._SEEN.clear()
+                        existing = write.create_node(self.args["title"] + "-" + case,
+                            "old", "old knowledge", "fable-5", space="00_Scope/W1",
+                            edges={"derived-from": self.source["id"]})
+                        if case != "unread":
+                            M.read_node(self.source["id"])
+                            M.read_node(existing["id"])
+                        if case == "source_changed":
+                            write.update_node(self.source["id"], old_text="observed evidence",
+                                              new_text="corrected evidence")
+                        if case == "target_changed":
+                            write.update_node(existing["id"], old_text="old knowledge",
+                                              new_text="old knowledge\nConcurrent addition.")
+                        spec = dict(self.spec, sources=[self.source["id"]])
+                        request = dict(name=existing["id"], old_text="old knowledge",
+                                       new_text="revised knowledge", distill=spec)
+
+                        def pending():
+                            return [r for r in rechecks.candidates()[0] if r["id"] == existing["id"]]
+
+                        try:
+                            out = M.update_node(**request)
+                            self.assertTrue(out["ok"], out)
+                            self.assertEqual(out["distillation"]["status"], "complete")
+                            self.assertEqual(bool(out.get("recheck_unread")), case != "fresh", out)
+                            self.assertEqual(bool(pending()), case != "fresh")
+                            # Process-local reads must not change the persisted request binding.
+                            M._SEEN.clear()
+                            again = M.update_node(**request)
+                            self.assertTrue(again["resumed"], again)
+                            self.assertEqual(again["new_hash"], out["new_hash"])
+                            resumed = M.update_node(existing["id"], distill={"resume": self.key})
+                            self.assertTrue(resumed["resumed"], resumed)
+                            self.assertEqual(bool(pending()), case != "fresh")
+                            M.read_node(self.source["id"])
+                            M.read_node(existing["id"])
+                            closed = M.update_node(existing["id"],
+                                                   add_edges={"derived-from": self.source["id"]})
+                            self.assertTrue(closed.get("rechecked"), closed)
+                            self.assertFalse(pending())
+                        finally:
+                            D._job_path(self.key).unlink(missing_ok=True)
+                            M._SEEN.clear()
+
             def test_domain_distillation_uses_scope_provenance(self):
                 domain = core.ROOT / "00_Domain" / self.name
                 domain.mkdir()
@@ -398,6 +448,17 @@ def _child():
                 with self.assertRaises(write.WriteError):
                     D.update_node(self.spec, name=existing["id"],
                                   old_text="retained knowledge", new_text="retained knowledge  ")
+                self.assertIsNone(D._load(self.key))
+                self.assertEqual(core.sha256_file(core.ROOT / existing["path"]), existing["new_hash"])
+
+            def test_required_provenance_alias_cannot_be_removed(self):
+                existing = write.create_node(self.args["title"], "old", "old retained knowledge",
+                                             "fable-5", space="00_Scope/W1")
+                alias = "[[" + self.name + "-source|근거]]"
+                with self.assertRaises(write.WriteError):
+                    D.update_node(self.spec, name=existing["id"], body="new retained knowledge",
+                                  expect_hash=existing["new_hash"],
+                                  remove_edges={"derived-from": alias})
                 self.assertIsNone(D._load(self.key))
                 self.assertEqual(core.sha256_file(core.ROOT / existing["path"]), existing["new_hash"])
 

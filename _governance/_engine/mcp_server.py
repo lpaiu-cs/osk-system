@@ -26,12 +26,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import contract, epoch, graph, raw, validate, write  # noqa: E402
+from osk import contract, epoch, graph, raw, rechecks, validate, write  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
-from osk.core import (ROOT, StaleEngineError, posix_rel,  # noqa: E402
-                      sha256_bytes)
+from osk.core import (DRAFTER_RE, ROOT, StaleEngineError,  # noqa: E402
+                      posix_rel, sha256_bytes)
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
 # 이뤄진다(술어는 헌법 8조 5항, 충돌 유형은 Mechanism §4 3항의 목록이며,
@@ -42,7 +42,7 @@ CandidateType: TypeAlias = Literal["contradiction", "duplication",
                                    "competition", "delegation-overlap"]
 Title: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
-Drafter: TypeAlias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9.\-]{0,39}$")]
+Drafter: TypeAlias = Annotated[str, Field(pattern=DRAFTER_RE)]
 # 기록 이름도 곧 파일명이다 — 상한은 Title과 같은 자리에서 같은 이유로 건다.
 RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 
@@ -209,12 +209,15 @@ def read_node(name: str, view: str | None = None) -> dict:
         nid = str(name).strip()
         if _re.match(_ID, nid):
             if nid in idx.dup_ids:
-                return {"error": f"같은 id의 노드가 {len(idx.dup_ids[nid])}개다 "
-                                 f"— 어느 것인지 정해지지 않는다: "
-                                 f"{idx.dup_ids[nid]} (먼저 고쳐라)"}
+                return _dup_id_error(sorted(idx.dup_ids[nid]))
             h = idx.by_id.get(nid)
             if h:
                 hit, name = h, h[0].stem
+    # 이름으로 잡은 노드도 id가 겹쳤으면 내주지 않는다 — 제목이 다른 사본이
+    # 이름으로 각자 읽혀 갈라졌다(Mechanism §2 1항, 2026-09-24 재현).
+    twins = idx.id_twins(hit[0]) if hit else []
+    if twins:
+        return _dup_id_error(twins)
     if not hit:
         why = "; ".join(failures)
         return {"error": f"파싱 실패 — 수동 확인 필요: {why}" if why
@@ -238,16 +241,30 @@ def read_node(name: str, view: str | None = None) -> dict:
     # 달거나 고치려는 호출자의 손에 남는 것이 id뿐이었다 — 그래서 새 엔진으로도
     # 구형 id 표기 근거가 계속 태어났다(v3.7.4 직후 하루에 3간선). 손잡이는
     # 이름이고, id는 대장·서명·사건부의 동일성으로 남는다.
+    h = sha256_bytes(raw)
+    _SEEN[posix_rel(hit[0], ROOT)] = rechecks.state(raw)
     if view is not None:
         return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
                 "summary": str(n.meta.get("summary", "")),
                 # Distinct from a CAS token: excerpts cannot authorize full replacement.
-                "view_hash": "view:" + sha256_bytes(raw), "partial": True,
+                "view_hash": "view:" + h, "partial": True,
                 "body_chars": len(n.body), **_node_view(n.body, view)}
     return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
-            "hash": sha256_bytes(raw),
+            "hash": h,
             "body": n.body}
+
+
+# 이 세션(서버 프로세스)이 `read_node`로 읽은 판 — 경로 → 그때 본문의 상태
+# (`rechecks.state`). 부분 열람도 판을 고정하므로 넣는다. 근거를 다시 대어 재검토를
+# 닫을 때 읽은 주장 그대로인지 보는 데만 쓴다(Mechanism §4-1) — 응답에 싣지 않으며
+# CAS 증거(`expect_hash`)가 아니다. 부분 열람이 전문 치환을 허가하지 않는 규율은 그대로다.
+_SEEN: dict[str, str] = {}
+
+
+def _dup_id_error(paths: list[str]) -> dict:
+    return {"error": f"같은 id의 노드가 {len(paths)}개다 — 어느 것인지 정해지지 "
+                     f"않는다: {paths}. {graph.DUP_ID_ADVICE}"}
 
 
 def _node_view(body: str, view: str) -> dict:
@@ -305,6 +322,12 @@ def overview(session: str | None = None) -> dict:
         "nodes": len(idx.nodes),
         **_engine_state(),
     }
+    try:
+        rc = rechecks.report(idx)
+    except Exception as e:                      # 조망은 죽지 않는다(시행령 §11)
+        rc = {"error": f"{type(e).__name__}: {e}"}
+    if rc:
+        out["rechecks"] = rc
     if session:
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
@@ -364,9 +387,9 @@ def update_node(name: str, body: str | None = None,
         return _guard(distillation.update_node, distill, name=name, body=body,
                       expect_hash=expect_hash, summary=summary, add_edges=add_edges,
                       remove_edges=remove_edges, old_text=old_text,
-                      new_text=new_text, settle=settle)
+                      new_text=new_text, settle=settle, _seen=_SEEN)
     return _guard(write.update_node, name, body, expect_hash, summary,
-                  add_edges, remove_edges, old_text, new_text, settle)
+                  add_edges, remove_edges, old_text, new_text, settle, _seen=_SEEN)
 
 
 @mcp.tool()
@@ -427,15 +450,28 @@ def scope_memory(session: str, text: str | None = None,
 
 
 def _apply_prune() -> None:
-    """Reject unknown arguments before dispatch and prune schema annotations."""
-    mgr = getattr(mcp, "_tool_manager", None)
-    for tool in (mgr._tools.values() if mgr else []):
-        if isinstance(getattr(tool, "parameters", None), dict):
-            # FastMCP otherwise drops misspelled edits while applying valid fields.
-            model = tool.fn_metadata.arg_model
-            model.model_config["extra"] = "forbid"
-            model.model_rebuild(force=True)
-            tool.parameters = _prune_titles(model.model_json_schema(by_alias=True))
+    """Reject unknown arguments before dispatch and prune schema annotations.
+
+    FastMCP 내부(`_tool_manager._tools`·`fn_metadata.arg_model`)에 기댄다. 그
+    자리가 바뀐 mcp 판에서 조용히 건너뛰면 오타 인자가 버려진 채 나머지만
+    적용된다 — 기동에서 죽는다(fail-closed)."""
+    tools = getattr(getattr(mcp, "_tool_manager", None), "_tools", None)
+    if not isinstance(tools, dict) or not tools:
+        raise RuntimeError("FastMCP 도구 목록(_tool_manager._tools)을 찾지 못했다 — "
+                           "미지 인자 거부를 걸 수 없어 기동하지 않는다. "
+                           "requirements.txt의 mcp 판을 확인하라")
+    for name, tool in tools.items():
+        model = getattr(getattr(tool, "fn_metadata", None), "arg_model", None)
+        if model is None or not isinstance(getattr(tool, "parameters", None), dict):
+            raise RuntimeError(f"도구 `{name}`의 인자 모델을 찾지 못했다 — 미지 인자 "
+                               f"거부를 걸 수 없어 기동하지 않는다")
+        # FastMCP otherwise drops misspelled edits while applying valid fields.
+        model.model_config["extra"] = "forbid"
+        model.model_rebuild(force=True)
+        tool.parameters = _prune_titles(model.model_json_schema(by_alias=True))
+        if tool.parameters.get("additionalProperties") is not False:
+            raise RuntimeError(f"도구 `{name}`에 미지 인자 거부가 걸리지 않았다 — "
+                               f"기동하지 않는다")
 
 
 _apply_prune()

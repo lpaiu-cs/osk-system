@@ -70,6 +70,9 @@ That is supported; see [space-layout-migration.md](space-layout-migration.md).
   `~/code/my-app`, the *session key* is `my-app`.
 - A Git worktree gets the name of its main repository. A folder outside Git gets
   its own folder name.
+- If another, unrelated repository already owns that name, the hook gives you
+  `my-app-<first 8 hex of your root commit>` instead. The owner is the
+  repository that first used the binding; its root commits are recorded with it.
 - Your first successful write binds the key to a scope, permanently. From then
   on, every session in that repository lands in that scope, on any device.
 
@@ -209,9 +212,35 @@ The first run changes none of your files. It prints the plan, then exits with
 code 2 and `"approval_required": true`. It also shows `"ok": false` and a Korean
 `instruction` that tells an agent to stop and ask you. Both are expected. On a
 fresh clone, the plan lists every framework file under `rebaseline`. Their
-content already matches, so only the baseline is recorded. Run **the same
-command again**, within an hour, to apply it. Every `--apply` works this way
-(see [Keeping up to date](#keeping-up-to-date)).
+content already matches, so only the baseline is recorded. Review the plan, then
+run **the same command again**, within an hour, to apply it. Every `--apply`
+requires this confirmation (see [Keeping up to date](#keeping-up-to-date)).
+
+**With v3.22.2, as used above, protection is a separate step.** This release does
+not show `governance.protect` or establish protection during an update. Review
+the files under `_governance/`, then run:
+
+macOS/Linux:
+
+```bash
+.venv/bin/python -m osk.cli protect _governance
+```
+
+Windows (PowerShell):
+
+```powershell
+.venv\Scripts\python.exe -m osk.cli protect _governance
+```
+
+Confirm with `y` yourself in the terminal. This records the current files as the
+initial approved state; review any edits you made before confirming.
+
+**If you selected a v4.0.0 or later release instead,** a clean clone's update
+plan shows `governance.protect` as `"establish"`. The confirmed update reports
+`"governance_protected": "established"`, so the separate `protect` command is
+unnecessary. If governance files differ from that release, the plan instead
+shows `"protect": "withheld"` and lists them under `unattested`. The update leaves
+the folder unprotected; review those files and use the `protect` command above.
 
 The baseline is written to `00_Scope/Workbench/_ledger/update.jsonl`. Commit it,
 or let the sync daemon do so later. Skip `git push` if you removed the remote in
@@ -223,8 +252,10 @@ git commit -m "Record osk release baseline"
 git push
 ```
 
-**Check:** `.venv/bin/python -m osk.update` prints `"current": "v3.22.2"`. On
-Windows, use `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
+**Check:** `.venv/bin/python -m osk.update` reports the selected version as
+`current` (`v3.22.2` in this example). On Windows, use
+`.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
+`osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 
 ## Step 3: Connect Claude Code
 
@@ -964,6 +995,9 @@ About the `엔진 파일에 로컬 수정이 있다` error ("engine files have l
   [Mechanism](../_governance/Mechanism.md). The
   [Workbench contract](../_governance/Workbench-Contract.md) covers the
   operational scope.
+- [FORMAT.md](FORMAT.md) describes the on-disk format in English: vault layout,
+  node files, ledgers and the release attestation. It is a non-normative
+  commentary on the Mechanism.
 - The [engine README](../_governance/_engine/README.md) includes its
   [known limits](../_governance/_engine/README.md#알려진-한계).
 - The [README](../README.md) gives the project overview and design rationale.

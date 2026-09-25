@@ -37,6 +37,14 @@ python3.12 -m venv .venv && .venv/bin/pip install -r _governance/_engine/require
 2.0이 그 모듈을 없앴다 — **`requirements.txt`를 갱신으로 받았으면 pip을 다시
 돌려야** 이미 만든 venv에 반영된다.
 
+`requirements.txt`는 허용 범위다. CI가 수트를 통과시킨 **정확한 판**은
+`_governance/_engine/constraints.txt`에 있다 — 선택 사항이며, 새 기기의 동작이
+CI와 다를 때 같은 판으로 맞춰 원인을 가르는 데 쓴다(CI는 늘 이것으로 설치한다):
+
+```bash
+.venv/bin/pip install -r _governance/_engine/requirements.txt -c _governance/_engine/constraints.txt
+```
+
 ## Windows
 
 엔진은 Windows에서도 돈다(잠금은 `msvcrt`, tz는 `tzdata` 패키지로 보충한다).
@@ -130,6 +138,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
+| `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
 | `approve` / `revert` | **사용자 전속** — 변경집합 승인·반려 |
@@ -164,7 +173,12 @@ scope 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한
 첫 성공이 그 키를 영구 결속하므로, 하네스가 주는 1회용 대화 id(UUID)를 그대로 넘기면
 다음 세션이 같은 기억에 닿지 못한다 — 쓰기 표면은 UUID 꼴 키를 거부한다(Mechanism §6-2 6항).
 동봉된 훅은 **본 저장소 디렉터리 이름**을 키로 쓴다(워크트리는 `git-common-dir`의 부모로
-접히므로 워크트리마다 키가 갈리지 않는다).
+접히므로 워크트리마다 키가 갈리지 않는다. 서브모듈·bare 저장소는 자기 이름). 결속 행에는
+저장소의 뿌리 커밋(`repo`)이 함께 적히고, 그 키의 첫 소유자와 뿌리가 겹치지 않는 저장소는
+`<이름>-<뿌리 앞 8자>` 키를 받는다. 뿌리는 체크아웃한 브랜치가 아니라 브랜치·원격 추적
+브랜치 전체의 뿌리 합집합이다(stash·notes 제외). 사본마다 `<git 공통 디렉터리>/osk-repo-identity`에
+캐시되고, 브랜치 끝점이 바뀌면 새 커밋만 걸어 뿌리를 더한다. 한 번 배정된 파생 키는 결속 행에
+그 저장소의 뿌리와 함께 기록되어, 뒤에 받은 브랜치가 뿌리를 더해도 바뀌지 않는다.
 
 **출력은 JSON이 아니라 전문 그대로다.** 훅이 이 값을 문맥에 그대로 넣으므로, 감싸는
 껍데기가 있으면 훅마다 벗기는 코드를 쓰게 된다. 결속이 없으면 빈 출력이고 주입할 것도
@@ -593,6 +607,34 @@ Windows 작업 스케줄러 등록은 아래 스크립트를 **별도로 실행�
 검토자가 앞선 결론을 보게 될 수 있다는 비용을 갖는다. 독립 검토가 명시된 실행은 별도
 고정 입력 vault와 새 하네스 문맥으로 수행한다. 새 대화 ID만으로 정보 격리가 보장되지는 않는다.
 
+### 근거 재검토 (`rechecks`)
+
+`derived-from` 대상의 본문이 바뀌면 그 대상을 인용한 노드가 재검토 후보가 된다(시행령
+§7 2·3항 · Mechanism §4-1). 대상은 노드, 비노드 파일, 그 안의 `#제목` 범위다. 노드는
+본문만 보므로 요약·배선만 바뀐 노드는 후보를 만들지 않는다. raw 라운드는 추가만 되는
+기록이라 후보를 만들지 않는다.
+
+- **보는 곳:** `overview`의 `rechecks`(후보 수·앞 5건·닫는 법), 검증기 경고 `rechecks`,
+  `osk rechecks`(전체).
+- **처리하는 곳:** 정기 실행이 후보를 `recheck_jobs`로 받아 처리한다. 다른 일을 하던
+  세션에는 맡기지 않는다. 정기 실행이 최근 3일 안에 돌지 않았으면 세션 시작에 경고를
+  싣고, 대화 검토(fork)가 그 대화 scope의 후보를 맡는다. Domain의 후보는 정기 실행만
+  맡는다.
+- **사용자 검토:** 재검토는 에이전트가 먼저 한다. 에이전트가 하는 수정은 그 노드를
+  인용한 노드들(`next`)까지 고치게 만들지 않는 것에 한한다. 그런 수정과, 재검토로 고친
+  근거를 인용한 노드(`cascade`)의 수정은 하지 않고 수정안을 올린다. 올린 항목은
+  `overview`의 `rechecks.escalated`와 세션 시작 알림에 보이고, 근거를 다시 대면 닫힌다.
+- **닫는 법:** 근거를 읽고 노드를 확인한 뒤 `update_node(name, add_edges={"derived-from":
+  target})`로 그 근거를 다시 댄다. 같은 호출에서 본문을 고치면 `updated`, 그대로 두면
+  `unchanged`가 `rechecks.jsonl`에 남는다. 완료는 그 세션이 `read_node`로 읽은 판(전문이나
+  필요한 범위)에만 적힌다 — 읽은 뒤 어느 쪽 본문이 바뀌었으면 응답의 `recheck_unread`가
+  알리고 후보로 남는다. 비노드 근거(`_sources/…`)는 표면으로 읽지 못하므로 정기 실행 작업이
+  보여 준 판으로만 닫힌다. 근거가 더는 맞지 않으면 `remove_edges`로 뺀다.
+- **기록:** 새 배선은 `bound`다. 엔진으로 노드의 본문을 고치면 완료였던 근거는 완료로
+  이어진다. 엔진 밖에서 본문을 고치거나 반려로 옛 본문이 돌아오면 다시 후보다.
+- **기준선:** 기록이 하나도 없는 대장이면 첫 세션 시작·쓰기·성장 실행이 그때의 근거를
+  `bound`(사유 `기준선`)로 한 번 적는다.
+
 ## 회귀 수트
 
 ```bash
@@ -819,7 +861,38 @@ object로 만들어 **원자적 교체**로 설치된다 — 그 사이 다른 �
 git checkout vX.Y.Z -- release.json
 ```
 
-태그 push는 git으로 직접 한다.
+로컬 태그를 원격에 먼저 push하지 않는다. updater는 GitHub Release 화면이 아닌
+git 태그를 읽으므로, 태그를 먼저 공개하면 발행 검사가 끝나기 전에 갱신 후보가 된다.
+정식 릴리스는 비준증빙 커밋을 `main`으로 먼저 보내고 `release` workflow로 공개한다.
+
+첫 발행 전에 정본 저장소에 발행용 **GitHub App**을 설치한다. 설치 대상은 이
+저장소로 한정하고, 저장소 권한은 **Contents: write**와
+**Workflows: write**로 설정한다. Actions 저장소 변수
+`OSK_RELEASE_APP_CLIENT_ID`에 App의 Client ID를, 저장소 secret
+`OSK_RELEASE_APP_PRIVATE_KEY`에 App의 private key를 등록한다.
+검사 중 main의 workflow 파일이 바뀌면 고정된 후보의 발행에도 Workflows 쓰기
+권한이 필요하며, 기본 `GITHUB_TOKEN`에는 이 권한을 줄 수 없다
+([GitHub 발행 API](https://docs.github.com/en/rest/releases/releases#create-a-release)).
+workflow는 검사 통과 뒤 현재 저장소와 두 권한에 한정된 단기 토큰을 발급하고,
+job이 끝나면 폐기한다. 설정 누락·권한 부족이면 토큰 발급이 실패하며 기본 토큰으로
+대체하지 않는다([App 토큰 action](https://github.com/actions/create-github-app-token)).
+
+등록을 마치면 비준증빙 커밋을 보내고 발행 검사를 시작한다:
+
+```bash
+git push origin HEAD:main
+gh workflow run release.yml --ref main -f version=vX.Y.Z
+```
+
+Actions의 `release` 실행에서 고정된 SHA와 선언한 버전을 확인한다. workflow는 그
+SHA의 전체 회귀 수트와 **8개 조합의 전체 업그레이드 행렬**을 먼저 실행한다.
+행렬을 실행할 이력이 없으면 실패이며, 필수 검사가 통과한 뒤에만 같은 SHA에
+원격 태그와 정식 GitHub Release를 함께 만든다. 실행 중 브랜치가 움직여도 대상은
+바뀌지 않는다. `vX.Y.Z` 정식 형식을 그대로 쓰며 별도 RC 판본은 만들지 않는다.
+
+workflow 실행 전에 최종 후보를 실제 인스턴스의 사본에 적용해 데이터 보존과
+재시작 후 재검토 기준선을 확인한다. 원본 인스턴스의 갱신 승인은 아래 절차로
+따로 받는다. 실패한 발행을 재시도할 때는 같은 비준증빙 커밋에서 실행한다.
 
 **인스턴스에서 — 갱신**:
 
@@ -877,6 +950,18 @@ v3.20.x의 updater에는 이 관문이 없다. 최초 전환 때는 **검토한 
   포함한다. 확인한 작업본이 그대로 적용되면 같은 트랜잭션에서 **수용 기록**을
   남기므로 별도의 적용 후 `approve _governance`는 필요 없다. stale은 먼저
   해소해야 한다. 다른 보호영역의 승인 절차와 최초 보호 지정은 그대로다.
+- 통치 구획에 지정 이력이 없으면(새 설치·지정 전의 기존 설치) 확인한 적용이
+  같은 트랜잭션에서 그 구획을 **보호영역으로 지정한다** — 적용 뒤 구획이 비준증빙의
+  내용과 정확히 같을 때만이고, 보고의 `governance.protect`가 `establish`, 결과의
+  `governance_protected`가 `established`다. 로컬 차이(고친 통치 문서·충돌 사이드카·
+  증빙 밖 파일)가 있으면 `withheld`로 지정하지 않고 그 경로를 `governance.unattested`에
+  싣는다 — 검토한 뒤 `osk protect _governance`로 직접 지정한다. 사용자가 해제한
+  구획은 다시 지정하지 않는다(`released`). 미보호 통치 구획은 `status`의 `warnings`와
+  `validate`의 `warnings.governance_unprotected`로 알린다(FAIL이 아니다). 이
+  지정을 모르는 이전 엔진이 갱신을 수행한 설치는 MCP 서버 재시작 뒤 **같은 태그로**
+  `osk.update --to <태그> --apply`를 한 번 더 확인 적용하면 파일은 그대로 두고
+  지정만 기록된다. 동기화하는 기기 중 **한 기기에서만** 한다 — 동기화 전에 두
+  기기가 각각 지정하면 비교 불능 분기(stale)가 되어 사용자 봉합이 필요하다.
 - 새 배포판은 `00_Scope`·`00_Domain`·`00_Person`을 쓴다. 기존 vault는 대장·승인본·
   원료 좌표가 가리키는 물리 이름을 유지한다. [경로 호환 규칙](space-layout-migration.md)을 따른다.
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면

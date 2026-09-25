@@ -1,8 +1,8 @@
 # 정식 러너(`tests/test_regression.py`)를 기기 행렬에서 돌린다.
 #
 # pytest를 쓰지 않는다 — 러너의 check()는 실패를 모아 끝에 exit 1로 판정하고,
-# pytest는 그것을 삼킨다(conftest.py 참고). release.yml이 태그 커밋에 대해
-# 이 워크플로를 불러, 수트가 통과한 판본만 Release로 비춘다.
+# pytest는 그것을 삼킨다(conftest.py 참고). release.yml이 공개 전 후보 커밋에
+# 이 워크플로를 불러, 수트가 통과한 판본만 태그와 Release로 공개한다.
 #
 # macOS는 참고용이다(실패해도 막지 않는다) — NFC/NFD 파일명과 대소문자 무시
 # 파일시스템(`.MD`)에서 알려진 차이가 있다.
@@ -10,6 +10,12 @@
 # 임시 경로는 정규 경로가 아닐 수 있다 — Windows 러너는 8.3 이름(RUNNER~1),
 # macOS는 /var → /private/var 링크다. 날것 철자와 정규 철자가 섞이는 결함을
 # Linux에서도 잡도록 Linux 잡은 심볼릭 링크 별칭을 TMPDIR로 쓴다.
+#
+# 업그레이드 경로 행렬(tests/test_upgrade_matrix.py)은 구 릴리스의 커밋과 태그가
+# 있어야 돈다 — 그래서 checkout은 전체 이력(fetch-depth: 0)이다. 얕은 checkout이면
+# 그 수트는 SKIP이다. 후보는 checkout한 HEAD다: PR은 임시 clone 안에서 만든 버림
+# 릴리스로, release.yml은 아직 공개하지 않은 버전과 SHA를 지정한다.
+# PR은 PR_CELLS만, release.yml은 전 셀을 돈다. full의 SKIP은 실패다.
 
 name: ci
 
@@ -18,6 +24,15 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+    inputs:
+      upgrade-matrix:
+        description: "full이면 업그레이드 경로 행렬의 전 셀을 돈다 (기본: PR 셀)"
+        type: string
+        default: ""
+      release-candidate:
+        description: "공개 전 비준증빙 커밋: vX.Y.Z=정확한 SHA"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -41,13 +56,19 @@ jobs:
     env:
       # Windows 러너의 기본 코드페이지(cp1252)로는 한국어 출력이 인코딩되지 않는다.
       PYTHONUTF8: "1"
+      OSK_MATRIX: ${{ inputs.upgrade-matrix }}
+      OSK_MATRIX_CANDIDATE: ${{ inputs.release-candidate }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0      # 업그레이드 경로 행렬: 구 릴리스의 커밋·태그
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+      # constraints.txt로 판을 고정한다 — 상류의 새 판이 수트를 흔들면 그것은
+      # 고정을 올리는 PR에서 드러나야지, 무관한 PR의 CI에서 드러나면 안 된다.
       - name: 의존성
-        run: python -m pip install -r _governance/_engine/requirements.txt
+        run: python -m pip install -r _governance/_engine/requirements.txt -c _governance/_engine/constraints.txt
       - name: 임시 경로 별칭 (Linux)
         if: runner.os == 'Linux'
         run: |
