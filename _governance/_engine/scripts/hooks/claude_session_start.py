@@ -46,19 +46,40 @@ def emit_context(event: str, text: str) -> None:
     sys.stdout.buffer.flush()
 
 
-def _git(cwd: str, *args: str) -> str:
-    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
-                       timeout=10, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
-    return r.stdout.strip() if r.returncode == 0 else ""
+def _git(cwd: str, *args: str, input: str | None = None) -> str | None:
+    """git의 표준 출력. 실패(비영 종료·시간 초과)는 None — 빈 출력과 구별한다."""
+    io = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
+                           timeout=10, creationflags=_NO_WINDOW, **io)
+    except subprocess.TimeoutExpired:
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _shas(path: Path) -> list[str]:
+    """캐시의 해시 목록. 읽을 수 없거나 쓰다 끊겼으면 빈 목록이다 — 끊긴 캐시는
+    남의 동일성이 되므로 다시 잰다."""
+    try:
+        got = path.read_text(encoding="ascii").split()
+    except (OSError, UnicodeError):
+        return []
+    return got if all(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", x) for x in got) else []
 
 
 def _checkout(cwd: str) -> tuple[str, list[str] | None]:
-    """(저장소 이름, 저장소 동일성). 동일성은 정렬된 뿌리 커밋 — 어느 기기·사본
-    에서나 같고 네트워크가 필요 없다. Git 밖·커밋 없는 저장소·얕은 사본은 None
-    (얕은 사본의 뿌리는 경계라 깊이에 따라 바뀐다). 사본마다 공통 디렉터리에
-    캐시해 훅이 매 턴 이력을 걷지 않는다."""
+    """(저장소 이름, 저장소 동일성). 동일성은 저장소가 공유하는 이력 — 브랜치와
+    원격 추적 브랜치 — 의 뿌리 커밋 합집합이다. 어느 브랜치를 체크아웃했는지와
+    무관하고, 같은 저장소의 사본끼리는 기기가 달라도 겹치며, 네트워크가 필요 없다.
+    기기에만 있는 stash·notes는 넣지 않는다. Git 밖·커밋 없는 저장소·얕은 사본은
+    None이다(얕은 사본의 뿌리는 경계라 깊이에 따라 바뀐다).
+
+    사본마다 공통 디렉터리에 뿌리와 이미 걸은 끝점을 캐시한다. 끝점이 바뀌면 새로
+    온 커밋만 걸어 뿌리를 더하므로(뒤에 받은 orphan 브랜치 등), 훅이 매 턴 이력을
+    다시 걷지 않는다. 뿌리는 더해지기만 한다."""
     try:
-        out = _git(cwd, "rev-parse", "--git-common-dir", "--is-shallow-repository").splitlines()
+        out = (_git(cwd, "rev-parse", "--git-common-dir", "--is-shallow-repository")
+               or "").splitlines()
         if len(out) != 2:
             return Path(cwd).name, None
         gd = Path(out[0])
@@ -66,21 +87,27 @@ def _checkout(cwd: str) -> tuple[str, list[str] | None]:
         # `.git`(워크트리 포함)은 본 저장소 폴더, 서브모듈(`.git/modules/<이름>`)과
         # bare(`shop.git`)는 자기 이름이다 — `modules`·bare의 부모로 접히지 않게.
         name = gd.parent.name if gd.name.startswith(".") else gd.name.removesuffix(".git")
-        cache = gd / "osk-repo-identity"
-        try:
-            roots = cache.read_text(encoding="ascii").split()
-        except (OSError, UnicodeError):
-            roots = []
-        if not all(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", x) for x in roots):
-            roots = []      # 쓰다 끊긴 캐시는 남의 동일성이 된다 — 다시 잰다
-        if not roots and out[1] == "false":
-            # ponytail: 첫 계산은 이력 전체를 걷는다(초대형 저장소는 수 초) — 캐시가 이후를 맡는다.
-            roots = sorted(_git(cwd, "rev-list", "--max-parents=0", "HEAD").split())
-            if roots:
+        if out[1] != "false":
+            return name, None
+        cache, walked = gd / "osk-repo-identity", gd / "osk-repo-identity.tips"
+        roots = _shas(cache)
+        seen = _shas(walked) if roots else []      # 뿌리가 없으면 처음부터 다시 걷는다
+        tips = _git(cwd, "for-each-ref", "--format=%(objectname)", "refs/heads", "refs/remotes")
+        new = sorted(set((tips or "").split()) - set(seen))
+        if tips is not None and new:
+            # ponytail: 첫 계산은 이력 전체를 걷는다(초대형 저장소는 수 초) — 이후엔 새 커밋만.
+            found = _git(cwd, "rev-list", "--max-parents=0", "--ignore-missing", "--stdin",
+                         input="".join(f"{t}\n" for t in new) + "".join(f"^{s}\n" for s in seen))
+            if found is not None:
+                grown = sorted(set(roots) | set(found.split()))
                 try:
-                    cache.write_text("\n".join(roots) + "\n", encoding="ascii")
+                    if grown != roots:
+                        cache.write_text("".join(f"{x}\n" for x in grown), encoding="ascii")
+                    walked.write_text("".join(f"{x}\n" for x in sorted(set(tips.split()))),
+                                      encoding="ascii")
                 except OSError:
                     pass
+                roots = grown
         return name, roots or None
     except Exception:
         return Path(cwd).name, None

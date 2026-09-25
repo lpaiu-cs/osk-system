@@ -6334,6 +6334,65 @@ def test_session_key_repo_identity():
         memory.write_bytes(prior)
 
 
+def test_session_key_identity_ignores_checkout():
+    """저장소 동일성은 처음 훅이 돈 브랜치의 뿌리가 아니다.
+
+    main과 orphan `gh-pages`가 있는 저장소에서 한 사본은 `gh-pages`에서, 다른
+    사본은 main에서 처음 훅을 돌려도 둘은 같은 저장소다. 한 브랜치만 받은 사본이
+    뒤에 다른 브랜치를 받으면 캐시가 그 뿌리를 더한다."""
+    import importlib
+    sys.path.insert(0, str(ENGINE / "scripts/hooks"))
+    hook = importlib.import_module("claude_session_start")
+    base = Path(os.path.realpath(tempfile.mkdtemp(prefix="osk-repoid-", dir=RUN_TMP)))
+    g = lambda *a, cwd=None: subprocess.run(
+        ["git", "-c", "user.name=x", "-c", "user.email=x@x.invalid", *a],
+        cwd=cwd, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+    head = lambda p: g("rev-parse", "HEAD", cwd=p).stdout.decode().strip()
+    origin = base / "origin/site"
+    origin.mkdir(parents=True)
+    g("init", "-q", "-b", "main", str(origin))
+    g("commit", "-q", "--allow-empty", "-m", "본문 뿌리", cwd=origin)
+    r_main = head(origin)
+    g("checkout", "-q", "--orphan", "gh-pages", cwd=origin)
+    g("commit", "-q", "--allow-empty", "-m", "페이지 뿌리", cwd=origin)
+    r_pages = head(origin)
+    g("checkout", "-q", "main", cwd=origin)
+    both = sorted([r_main, r_pages])
+
+    a, b, c = base / "devA/site", base / "devB/site", base / "devC/site"
+    g("clone", "-q", str(origin), str(a))
+    g("checkout", "-q", "gh-pages", cwd=a)          # A는 gh-pages에서 처음 훅을 돌린다
+    g("clone", "-q", str(origin), str(b))           # B는 main에서
+    core.ROUTING.unlink(missing_ok=True)
+    rows = lambda: [r for r in core.ledger_read(core.ROUTING) if r.get("session") == "site"]
+    ia, ib = hook._checkout(str(a))[1], hook._checkout(str(b))[1]
+    check("동일성은 체크아웃한 브랜치와 무관한 뿌리 합집합이다", ia == ib == both, (ia, ib))
+    write.bind_session("site", "W1")
+    check("gh-pages에서 처음 돈 사본이 소유한다",
+          hook.session_key(str(a)) == "site" and [r.get("repo") for r in rows()] == [None, both],
+          rows())
+    check("main에서 도는 다른 사본도 같은 키·같은 결속",
+          hook.session_key(str(b)) == "site" and write.resolve_session("site") == "W1"
+          and len(rows()) == 2, rows())
+
+    g("clone", "-q", "--single-branch", "-b", "main", str(origin), str(c))
+    check("한 브랜치만 받은 사본은 그 뿌리만 안다", hook._checkout(str(c))[1] == [r_main])
+    check("그래도 겹치므로 같은 키다", hook.session_key(str(c)) == "site" and len(rows()) == 2)
+    g("fetch", "-q", "origin", "gh-pages:refs/remotes/origin/gh-pages", cwd=c)
+    check("뒤에 받은 orphan 브랜치의 뿌리가 캐시에 더해진다",
+          hook._checkout(str(c))[1] == both
+          and (c / ".git/osk-repo-identity").read_text(encoding="ascii").split() == both)
+
+    (b / "scratch.txt").write_text("임시", encoding="utf-8")
+    g("stash", "-q", "-u", cwd=b)                   # -u의 미추적 커밋은 부모가 없는 뿌리다
+    check("기기에만 있는 stash의 뿌리는 동일성에 들지 않는다", hook._checkout(str(b))[1] == both)
+    g("commit", "-q", "--allow-empty", "-m", "다음", cwd=b)
+    check("새 커밋은 뿌리를 바꾸지 않고 걸은 끝점만 옮긴다",
+          hook._checkout(str(b))[1] == both
+          and head(b) in (b / ".git/osk-repo-identity.tips").read_text(encoding="ascii").split())
+    core.ROUTING.unlink(missing_ok=True)
+
+
 # ── 19. scope 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
 def test_scope_memory():
     """상한은 저장 용량의 제한이 아니라 문턱이다. 그래서 초과는 **거부**하고,
@@ -11133,6 +11192,7 @@ if __name__ == "__main__":
                test_scope_memory_edits, test_cadence_hook, test_scope_recovery_handoff,
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_session_key_repo_identity,
+               test_session_key_identity_ignores_checkout,
                test_cluster_overview,
                test_obsidian_tag_defense, test_code_regions_are_not_prose,
                test_code_region_block_boundaries, test_code_region_commonmark_rules,
