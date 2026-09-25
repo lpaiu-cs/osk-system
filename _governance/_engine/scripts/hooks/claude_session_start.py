@@ -159,7 +159,7 @@ def _memory_block(scope_memory, key: str) -> str:
 def _bootstrap(key: str, *, bound: bool) -> str:
     arg = json.dumps(key, ensure_ascii=False)
     return (f"[osk 세션 시작 — session={arg}]\n"
-            f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집과 열린 사건을 "
+            f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집·열린 사건·근거 재검토 후보를 "
             "확인하라. 기억을 묻는 질문에는 `search`를 먼저 쓴다. "
             + ("아래 scope 기억을 통합의 출발점으로 삼는다."
                if bound else "아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 "
@@ -227,8 +227,12 @@ def main() -> None:
     cwd = env.get("cwd") or os.getcwd()
 
     try:
-        from osk import scope_memory, write, evictions
+        from osk import scope_memory, write, evictions, rechecks
         key = session_key(cwd)
+        try:
+            rechecks.ensure_baseline()
+        except Exception:
+            pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다
         captured = capture_block(env, key, startup=True)
         if captured is None:
             return

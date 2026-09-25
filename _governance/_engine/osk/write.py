@@ -38,7 +38,7 @@ from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
                    ledger_read, mutation_lock,
                    new_node_id, now_kst, posix_rel, resolve_in_root,
                    resolve_one, sha256_bytes, sha256_file, atomic_write)
-from . import approvals, contract, evictions, graph, signatures
+from . import approvals, contract, evictions, graph, rechecks, signatures
 
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
@@ -1116,6 +1116,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     if settle is not None and not _norm_body(contract.parse_bytes(path, data).body):
         raise WriteError("보존할 본문이 없다 — 쓰지도 처분하지도 않았다")
 
+    _baseline(idx)
     if _before_write is not None:
         _before_write(path, data)
     _atomic_write(path, data)
@@ -1142,7 +1143,17 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
             "new_hash": sha256_bytes(data),
             "bound_scope": bound_now, **receipt,
             **_reference_feedback(path, meta, body, idx)}
+    result.update(rechecks.after_write(idx, path, meta))
     return evictions._after_node_write(result, settle, "node", title)
+
+
+def _baseline(idx) -> None:
+    """재검토 기준선(`rechecks.ensure_baseline`). 적지 못해도 쓰기를 막지 않는다 —
+    그 근거들이 후보로 남을 뿐이다."""
+    try:
+        rechecks.ensure_baseline(idx)
+    except Exception:
+        pass
 
 
 def _require_complete(idx) -> None:
@@ -1360,6 +1371,12 @@ def _update_node_locked(name: str, body: str | None = None,
         raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
 
     _cas(path, expect_hash, body is not None)   # 위반 시 raise
+    # 근거 재검토(Mechanism §4-1) — 쓰기 전의 쌍과 완료 상태, 이 호출이 다시 댄 근거
+    _baseline(idx)
+    rc_before = rechecks.pairs(idx, n.meta)
+    rc_prior = rechecks.complete_keys(idx, path, n.meta) if rc_before else set()
+    rc_again = {t[0] for ref in _as_list((add_edges or {}).get("derived-from", []))
+                if (t := rechecks.target(str(ref), idx)) and t[0] in rc_before}
     if old_text is not None:
         # **유일성이 안전 계약의 전부다.** 여러 곳에 맞으면 어디를 고칠지
         # 호출자가 정한 바가 없고, 아무 곳이나 고르는 것은 조용히 틀린
@@ -1442,11 +1459,16 @@ def _update_node_locked(name: str, body: str | None = None,
     if not changed and settle is None:
         # 변경이 없으면 쓰지 않는다 — 내용이 그대로인데 updated만
         # 갱신하면 "상태가 변경될 때 갱신한다"(시행령 §1 4항)에 어긋난다
-        return {"ok": True, "no_change": True, "name": name,
-                "path": posix_rel(path, ROOT), "id": n.id,
-                "new_hash": sha256_file(path),
-                "edges": _edge_report(n),
-                **_reference_feedback(path, n.meta, n.body, idx, n)}
+        res = {"ok": True, "no_change": True, "name": name,
+               "path": posix_rel(path, ROOT), "id": n.id,
+               "new_hash": sha256_file(path),
+               "edges": _edge_report(n),
+               **_reference_feedback(path, n.meta, n.body, idx, n)}
+        if rc_again:     # 바꿀 것 없이 근거를 다시 댔다 — 점검 완료(unchanged)
+            res.update(rechecks.after_write(idx, path, n.meta, before=rc_before.keys(),
+                                            prior=rc_prior, reasserted=rc_again,
+                                            changed=False))
+        return res
     if not only_conflicts:
         meta["updated"] = _stamp or now_kst()
 
@@ -1467,6 +1489,8 @@ def _update_node_locked(name: str, body: str | None = None,
            "updated_kept": only_conflicts,
            "edges": _edge_report(contract.Node(path=path, meta=meta, body=new_body)),
            **_reference_feedback(path, meta, new_body, idx, n)}
+    out.update(rechecks.after_write(idx, path, meta, before=rc_before.keys(),
+                                    prior=rc_prior, reasserted=rc_again))
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
     return evictions._after_node_write(out, settle, "merged", path.stem)

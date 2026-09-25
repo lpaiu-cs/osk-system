@@ -645,7 +645,16 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
     동기화로 들어오면, 그것을 못 본 행이 그 기록의 **인과 자식**으로 붙어
     분기가 stale로 드러나지 않고 조용히 대체한다(그리고 행에 적은 전제가
     거짓 진술이 된다). 검사와 append를 같은 잠금에 두어야 그 창이 닫힌다."""
-    record.setdefault("at", now_iso())
+    return ledger_extend(path, [record], expect)[0]
+
+
+def ledger_extend(path: Path, new: list[dict], expect=None) -> list[dict]:
+    """`ledger_append`의 여러 기록판 — 한 잠금·한 fsync로 차례로 잇는다.
+    첫 기록은 현재 head 전부를, 다음 기록은 바로 앞 기록을 `parents`로 받는다."""
+    if not new:
+        return []
+    for record in new:
+        record.setdefault("at", now_iso())
     mkdirs_durable(path.parent)
     with open(path, "a+", encoding="utf-8") as f:
         lock_exclusive(f)
@@ -662,17 +671,19 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
                 why = expect(records)
                 if why:
                     raise ValueError(why)
-            record["rid"] = _next_rid(
-                max((r["rid"] for r in records if r.get("rid")),
-                    key=_rid_key, default=None))
-            record["parents"] = heads(records)
+            last = max((r["rid"] for r in records if r.get("rid")),
+                       key=_rid_key, default=None)
+            hs, rows = heads(records), []
+            for record in new:
+                record["rid"] = last = _next_rid(last)
+                record["parents"], hs = hs, [last]
+                # 줄 구분 문자는 이스케이프해 쓴다 — 같은 JSON 값이고, `splitlines()`로
+                # 판독하는 구판 기기가 동기화로 받은 이 행에서 대장 손상을 보지 않는다.
+                rows.append(json.dumps(record, ensure_ascii=False).translate(_LINE_SEP_ESC))
             # 판독을 통과했으니 개행 없는 꼬리는 완결 기록이다(찢긴 꼬리는 위에서
             # 손상으로 거부된다) — 개행을 채우지 않으면 새 기록이 그 행에 붙는다.
             lead = "\n" if text and not text.endswith("\n") else ""
-            # 줄 구분 문자는 이스케이프해 쓴다 — 같은 JSON 값이고, `splitlines()`로
-            # 판독하는 구판 기기가 동기화로 받은 이 행에서 대장 손상을 보지 않는다.
-            f.write(lead + json.dumps(record, ensure_ascii=False).translate(_LINE_SEP_ESC)
-                    + "\n")
+            f.write(lead + "\n".join(rows) + "\n")
             f.flush()
             os.fsync(f.fileno())
             if not text:
@@ -681,4 +692,4 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
                 fsync_dir(path.parent)
         finally:
             unlock(f)
-    return record
+    return new

@@ -78,6 +78,15 @@ def run() -> dict:
         rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
         skip("미해석 참조 경고", f"산출 실패: {e}")
 
+    # 근거 재검토 후보 (시행령 §7 2항) — 표시일 뿐 verdict 밖이다.
+    try:
+        from . import rechecks
+        rc = rechecks.report(idx)
+        if rc:
+            rep["warnings"]["rechecks"] = rc
+    except Exception as e:
+        skip("근거 재검토 후보", f"산출 실패: {e}")
+
     # 4. 승인 기록부 (시행령 §6 · Mechanism §3) — 보호영역 현황.
     #    판독 실패는 플래그로 남긴다 — 빈 recs를 검사한 헛 PASS를 막는다.
     errs, arecs, appr_ok = [], [], True
