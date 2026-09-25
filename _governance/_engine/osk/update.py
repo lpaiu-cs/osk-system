@@ -13,7 +13,7 @@
 - MAP 대상 → 적용   - KEEP(정본 저장소 전용) → 건너뜀
 - SKEL → 없는 자리에만 골격
 그리고 무엇이 와도 **인스턴스 소유 바닥**(Mechanism §1-2 5항)에는 쓰지
-않는다 — `00_Scope`·`00_Domain`·`00_Person`과 호환 루트 아래(골격 제외)·`_ledger/`·`_raw/`·`_sources/`·
+않는다 — `00_Scope`·`00_Domain`·`00_Person`과 이름이 다른 같은 Space의 루트 아래(골격 제외)·`_ledger/`·`_raw/`·`_sources/`·
 `.osk/`. 바닥은 매니페스트가 아니라 이 모듈의 상수다.
 
 적용 규율 (Mechanism §1-2 6항):
@@ -949,8 +949,8 @@ def run(source: str | None = None, ref: str | None = None,
         bundle: str | None = None, apply: bool = False,
         adopt: bool = False) -> dict:
     """기본은 보고. `apply`면 **가장 먼저** mutation 잠금을 잡고 미완료 트랜잭션을
-    복구한 뒤에야 상태를 판정한다 — 복구가 판정 뒤에 오면 half-applied 상태가
-    drift·adopt 거부로 오판되어 복구에 도달하지 못한다(Mechanism §1-2 7항)."""
+    복구한 뒤에야 상태를 판정한다(Mechanism §1-2 7항) — 복구가 판정 뒤에 오면
+    half-applied 상태가 drift·adopt 거부로 오판되어 복구에 도달하지 못한다."""
     if not apply:
         return _run_locked(source, ref, bundle, False, adopt)
     reviewed = None
