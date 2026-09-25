@@ -609,10 +609,14 @@ maximum among `review` records with that key.
   `update_node` whose `add_edges` names an existing target again appends
   `updated` when the same call changes the node and `unchanged` when it does
   not; this closes a candidate. Through the MCP surface it records only the
-  states the caller read: the node and a node target as last read in full with
-  `read_node` in that session, and a non-node target as last presented by a
-  scheduled recheck job. Otherwise the response reports `recheck_unread` and
-  the pair stays a candidate. Every other pair that was complete before an
+  states the caller read: the node and a node target as last read with
+  `read_node` in that session, in full or in part, and a non-node target as
+  last presented by a scheduled recheck job; a non-node target that no job
+  presented does not close through the surface. A write through the surface
+  carries the state it wrote forward when the caller had read the state it
+  replaced. Otherwise the response reports `recheck_unread` and the pair stays
+  a candidate. These read states only bind a check: a partial read still gives
+  no `hash` for `expect_hash`. Every other pair that was complete before an
   engine write is appended again with the new `node_state`, as `unchanged` with
   reason `이어받음`. A ledger without records receives one `bound` record with
   reason `기준선` for every tracked pair, at the first session start or node
