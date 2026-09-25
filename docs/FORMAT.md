@@ -1,8 +1,8 @@
 # osk-system on-disk format
 
-> **Non-normative commentary.** This document explains
-> [`_governance/Mechanism.md`](../_governance/Mechanism.md) as of the v4.0.0 line
-> (commit `745fe37`), as a commentary under [Bylaws](../_governance/Bylaws.md) §10 5.
+> **Non-normative commentary.** This document explains the
+> [`_governance/Mechanism.md`](../_governance/Mechanism.md) of the release it
+> ships with, as a commentary under [Bylaws](../_governance/Bylaws.md) §10 5.
 > The Mechanism, written in Korean, governs. Where this text and the Mechanism
 > conflict, the Mechanism wins.
 
@@ -70,9 +70,9 @@ Space root is a top-level cluster; a directory inside a cluster is a
 sub-cluster, to any depth. A node belongs to its top-level cluster however deep
 it sits (Mechanism §1 2). The hub of a cluster is the node whose file name
 equals the directory name, as in `00_Domain/Chess/Chess.md`; nothing inside
-the file marks it (Bylaws §3 6–7). The engine places nodes only inside
-clusters, never directly in a Space root, and outside Workbench the first node
-it creates in an empty cluster is that cluster's hub. It opens a sub-cluster
+the file marks it (Bylaws §3 6–7). Nodes live only inside clusters: a file
+directly in a Space root is not a node. Outside Workbench, the first node the
+engine creates in an empty cluster is that cluster's hub. It opens a sub-cluster
 only inside a cluster that has a hub (Mechanism §6-2 3).
 
 **Workbench.** `00_Scope/Workbench/` is a scope with a fixed inner layout
@@ -185,7 +185,7 @@ in any order (Mechanism §2 5). No other key is allowed.
 
 When the engine writes a node, it writes each required value as a double-quoted
 JSON string. The Predicate Edges follow: one target as a scalar, several as a
-flow list, a `derived-from` target that is an id unquoted and every other
+flow list, a `derived-from` target stored as an id unquoted and every other
 target double-quoted. Then come the closing `---`, one blank line, and the body
 with line endings converted to LF, leading newlines and trailing whitespace
 removed, the tag guard of section 2.2 applied, and one final newline.
@@ -233,8 +233,9 @@ The body is Markdown, as Obsidian reads it.
   that does not.
 - A node cannot cite itself.
 - The engine also reads a node target written as the bare id
-  (`derived-from: 260802-1720-k7f2m9x3`), and stores a target it receives as an
-  id in that form. It also reads raw coordinates written as wikilinks or with a
+  (`derived-from: 260802-1720-k7f2m9x3`). A target it receives as an id is
+  stored as the title wikilink; an id that resolves to no node, or to several,
+  is stored as given. It also reads raw coordinates written as wikilinks or with a
   `.md` record path (section 6.1), and stores every raw target it receives as
   the plain `.txt` coordinate.
 
@@ -253,13 +254,12 @@ form.
 4. A name containing `/` is a vault-relative path, tried as given and with
    `.md` appended, confined to the vault.
 5. Any other name is a node title. When no readable node has that title, it
-   is matched against the file names, without extension, of files under
-   `_sources/`, the `_raw/` directories and `_ledger/`; this is how
+   is matched against the names of files under `_sources/`, the `_raw/`
+   directories and `_ledger/`, with or without the extension; this is how
    `[[CASE-<year>-<n>]]` finds its case file.
 
-An embed therefore resolves when written with its vault path
-(`![[_sources/diagram.png]]`) or with its name without extension
-(`![[diagram]]`); `![[diagram.png]]` is reported as dangling.
+An embed therefore resolves when written with its file name, as Obsidian writes
+it (`![[diagram.png]]`), or with its vault path (`![[_sources/diagram.png]]`).
 
 Two readable nodes with the same title or id make the name ambiguous, and it
 resolves to neither. A name that resolves to nothing is *dangling*: a warning,
@@ -369,13 +369,13 @@ Every `*.jsonl` file under `00_Scope/Workbench/_ledger/` is a ledger
 | `validators.jsonl` | `activate`, `deactivate` | `rule` | `osk validators` (user) | §6-1 |
 | `pins.jsonl` | `pin`, `unpin` | `target` | not appended by the engine | §6 |
 | `growth.jsonl` | `plan`, `review`, `run`, `eviction_review` | `key` (reviews) | growth runner | none |
-| `rechecks.jsonl` | `complete` | (`node`, `target`) | not appended by the engine | §4-1 |
+| `rechecks.jsonl` | `complete` | (`node`, `target`) | node writes; session start | §4-1 |
 | `migration/events.jsonl` | `archive`, `move`, `transform`, `hold`, `drop` | none | not appended by the engine | §5 |
 | `signatures.jsonl` | preserved records | none | never appended | §3 9 |
 
 The validator checks every ledger in the table for valid JSON and for the
-presence, format and uniqueness of rids, except `growth.jsonl`, which the
-growth runner checks when it reads it. Optional fields below are marked "opt.".
+presence, format and uniqueness of rids. Optional fields below are marked
+"opt.".
 
 ### 4.2 Approvals
 
@@ -568,17 +568,46 @@ A candidate `key` is `sha256:` of the compact JSON list of `[id, file hash]`
 pairs of its source nodes, sorted. A candidate's decision is the single causal
 maximum among `review` records with that key.
 
-### 4.10 Rechecks, migration and signatures
+### 4.10 Rechecks
+
+`rechecks.jsonl` records completed checks of `derived-from` pairs
+(Mechanism §4-1; Bylaws §7 2–3):
+
+| Field | Value |
+|---|---|
+| `kind` | `complete` |
+| `node` | the citing node's id |
+| `node_state` | `sha256:` of the citing node file as written |
+| `target` | a node id or a vault-relative file path, with `#<heading>` appended for a heading range |
+| `target_state` | `sha256:` of the target file's bytes, or of the heading range |
+| `result` | `bound`, `updated` or `unchanged` |
+| `reason` | opt. text |
+
+- **Tracked targets.** Nodes, non-node files, and heading ranges in either. A
+  heading range runs from the first byte of its heading line to the byte before
+  the next heading of the same or a higher level, or to the end of the file.
+  Lines in code regions are not headings, and a heading text that occurs twice
+  does not resolve (Mechanism §8 4). Raw rounds only grow and external URLs have
+  no state; neither is tracked. A target that does not resolve gets no record
+  and is reported as dangling.
+- **State.** A pair (`node`, `target`) is complete when its single causal
+  maximum matches both current states; several maxima that agree on both states
+  count as one. Any other pair makes the citing node a recheck candidate, listed
+  by `overview`, the validator's warnings and `osk rechecks`.
+- **Writers.** A node write appends `bound` for each pair it wires. An
+  `update_node` whose `add_edges` names an existing target again appends
+  `updated` when the same call changes the node and `unchanged` when it does
+  not; this closes a candidate. Every other pair that was complete before an
+  engine write is appended again with the new `node_state`, as `unchanged` with
+  reason `이어받음`. A ledger without records receives one `bound` record with
+  reason `기준선` for every tracked pair, at the first session start or node
+  write.
+
+### 4.11 Migration and signatures
 
 The engine reads these for the integrity checks of section 4.1 and appends to
-none of them.
+neither of them.
 
-- **`rechecks.jsonl`** (Mechanism §4-1): `kind` (`complete`), `node` (the
-  citing node's id), `node_state`, `target` (a node id or a non-node
-  coordinate), `target_state` (both `sha256:` state hashes), `result`
-  (`bound`, `updated` or `unchanged`), opt. `reason`. A check of the pair
-  (`node`, `target`) is complete when its single causal maximum matches both
-  current states.
 - **`migration/events.jsonl`** (Mechanism §5 2): `kind`, `source`, `dest`
   (path or null), `before`, `after` (hash or null), `rule`, opt. `note`. A
   migration also keeps a manifest in `migration/` and closes the ledger when it
@@ -785,9 +814,6 @@ The canonical repository declares a release with an attestation at its root
   Without it, the source is the canonical Git repository, with no pin.
 
 ## 8. Compatibility promise
-
-> **Proposal awaiting the maintainer's approval.** This section states a
-> policy; it applies only once the maintainer adopts it.
 
 For the v4 line:
 
