@@ -10,6 +10,11 @@
 # 임시 경로는 정규 경로가 아닐 수 있다 — Windows 러너는 8.3 이름(RUNNER~1),
 # macOS는 /var → /private/var 링크다. 날것 철자와 정규 철자가 섞이는 결함을
 # Linux에서도 잡도록 Linux 잡은 심볼릭 링크 별칭을 TMPDIR로 쓴다.
+#
+# 업그레이드 경로 행렬(tests/test_upgrade_matrix.py)은 구 릴리스의 커밋과 태그가
+# 있어야 돈다 — 그래서 checkout은 전체 이력(fetch-depth: 0)이다. 얕은 checkout이면
+# 그 수트는 SKIP이다. 후보는 checkout한 HEAD다: PR은 임시 clone 안에서 만든 버림
+# 릴리스로, 릴리스 태그는 그 태그 자체로. PR은 PR_CELLS만, release.yml은 전 셀을 돈다.
 
 name: ci
 
@@ -18,6 +23,11 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+    inputs:
+      upgrade-matrix:
+        description: "full이면 업그레이드 경로 행렬의 전 셀을 돈다 (기본: PR 셀)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -41,8 +51,11 @@ jobs:
     env:
       # Windows 러너의 기본 코드페이지(cp1252)로는 한국어 출력이 인코딩되지 않는다.
       PYTHONUTF8: "1"
+      OSK_MATRIX: ${{ inputs.upgrade-matrix }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0      # 업그레이드 경로 행렬: 구 릴리스의 커밋·태그
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}

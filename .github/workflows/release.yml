@@ -21,6 +21,8 @@ permissions:
 jobs:
   test:
     uses: ./.github/workflows/ci.yml
+    with:
+      upgrade-matrix: full    # 이 태그를 후보로 전 셀 — 구 릴리스 vault가 자기 updater로 온다
     permissions:
       contents: read
 
