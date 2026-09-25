@@ -122,7 +122,7 @@ def _citing(idx, cache: dict):
             continue
         ps = pairs(idx, n.meta, cache)
         if ps:
-            yield name, n.id, sha256_bytes(data), ps
+            yield name, n.id, sha256_bytes(data), ps, kind
 
 
 def _latest(records: list[dict], node: str | None = None) -> dict[tuple, list[dict]]:
@@ -178,11 +178,12 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
     damaged = bool(ledger_damage(recs, RECHECKS))
     latest = {} if damaged else _latest(recs)
     out = []
-    for name, nid, ns, ps in _citing(idx, {}):
+    for name, nid, ns, ps, kind in _citing(idx, {}):
         for key, (ts, ref) in ps.items():
             why = "대장 손상" if damaged else _verdict(latest.get((nid, key), []), ns, ts)
             if why:
-                out.append({"node": name, "target": ref, "why": why})
+                out.append({"node": name, "target": ref, "why": why, "id": nid,
+                            "key": key, "scope": kind[1] if kind[0] == "scope" else None})
     return out, not recs
 
 
@@ -194,7 +195,8 @@ def report(idx=None, limit: int = 5) -> dict:
     if pending:
         return {"baseline_pending": len(items),
                 "note": "재검토 기록이 없다 — 다음 쓰기나 세션 시작이 지금 근거를 기준선으로 적는다"}
-    return {"count": len(items), "items": items[:limit], "close": CLOSE}
+    return {"count": len(items), "close": CLOSE,
+            "items": [{k: i[k] for k in ("node", "target", "why")} for i in items[:limit]]}
 
 
 def complete_keys(idx, path: Path, meta: dict) -> set[str]:
@@ -225,7 +227,7 @@ def ensure_baseline(idx=None) -> int:
     if RECHECKS.exists() and RECHECKS.stat().st_size:
         return 0
     rows = [_row(nid, ns, key, ts, "bound", BASELINE)
-            for _name, nid, ns, ps in _citing(idx or graph.Index(), {})
+            for _name, nid, ns, ps, _kind in _citing(idx or graph.Index(), {})
             for key, (ts, _ref) in ps.items()]
     try:
         ledger_extend(RECHECKS, rows, expect=lambda recs: _ALREADY if recs else None)

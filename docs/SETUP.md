@@ -615,6 +615,10 @@ Windows 작업 스케줄러 등록은 아래 스크립트를 **별도로 실행�
 
 - **보는 곳:** `overview`의 `rechecks`(후보 수·앞 5건·닫는 법), 검증기 경고 `rechecks`,
   `osk rechecks`(전체).
+- **처리하는 곳:** 정기 실행이 후보를 `recheck_jobs`로 받아 처리한다. 다른 일을 하던
+  세션에는 맡기지 않는다. 정기 실행이 최근 3일 안에 돌지 않았으면 세션 시작에 경고를
+  싣고, 대화 검토(fork)가 그 대화 scope의 후보를 맡는다. Domain의 후보는 정기 실행만
+  맡는다.
 - **닫는 법:** 근거를 읽고 노드를 확인한 뒤 `update_node(name, add_edges={"derived-from":
   target})`로 그 근거를 다시 댄다. 같은 호출에서 본문을 고치면 `updated`, 그대로 두면
   `unchanged`가 `rechecks.jsonl`에 남는다. 근거가 더는 맞지 않으면 `remove_edges`로 뺀다.

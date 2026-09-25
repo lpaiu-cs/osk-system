@@ -214,6 +214,23 @@ def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
+def _recheck_note(rechecks) -> str:
+    """정기 실행이 없으면 근거 재검토 후보가 쌓인다 — 본 세션에 알린다. 처리는
+    대화 검토(fork)가 이 scope 몫을 맡는다. 정기 실행이 돌면 아무것도 싣지 않는다."""
+    try:
+        from osk import growth
+        if growth.daily_active():
+            return ""
+        items, pending = rechecks.candidates()
+    except Exception as exc:
+        return f"[osk 근거 재검토 판독 진단 — {type(exc).__name__}: {exc}]"
+    if not items or pending:
+        return ""
+    return (f"[osk 근거 재검토 — 후보 {len(items)}건. 정기 실행이 최근 3일 안에 돌지 않아 "
+            "대화 검토(fork)가 이 scope의 후보를 맡는다. Domain의 후보는 정기 실행이 맡으니 "
+            "SETUP의 'Scope에서 Domain으로 정기 재검토'로 켠다. 본 작업은 계속한다.]")
+
+
 def main() -> None:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return  # maintenance evidence belongs to its run, not a new integration queue
@@ -233,6 +250,7 @@ def main() -> None:
             rechecks.ensure_baseline()
         except Exception:
             pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다
+        recheck = _recheck_note(rechecks)
         captured = capture_block(env, key, startup=True)
         if captured is None:
             return
@@ -244,7 +262,7 @@ def main() -> None:
         except Exception:
             recovery = "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]"
         if not scope:
-            emit_context("SessionStart", "\n\n".join(p for p in (bootstrap, recovery, captured) if p))
+            emit_context("SessionStart", "\n\n".join(p for p in (bootstrap, recheck, recovery, captured) if p))
             return
         mem = ""
         try:
@@ -257,7 +275,7 @@ def main() -> None:
         except Exception as exc:
             block = f"[osk 정돈 판독 진단 — {type(exc).__name__}: {exc}]"
         # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록.
-        out = "\n\n".join(p for p in (banner, bootstrap, recovery, mem, captured, block) if p)
+        out = "\n\n".join(p for p in (banner, bootstrap, recheck, recovery, mem, captured, block) if p)
         if not out:
             return
         emit_context("SessionStart", out)

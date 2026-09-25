@@ -26,7 +26,7 @@ BATCH_SIZE = 4                 # two batches fit in one eight-source comparison
 MAX_DOMAINS = 8
 MAX_LIMIT = 20
 SCOPE_ROUNDS_PER_JOB = 3      # ordinary session cadence still uses its own 15-round cap
-_QUEUES = ("candidates", "scope_jobs", "organization_jobs", "eviction_jobs")
+_QUEUES = ("candidates", "scope_jobs", "organization_jobs", "eviction_jobs", "recheck_jobs")
 
 
 def _records() -> list[dict]:
@@ -149,6 +149,44 @@ def _completed(key: str, rows: list[dict], idx: graph.Index) -> dict | None:
     return row
 
 
+def daily_active(days: int = 3) -> bool:
+    """정기 실행이 최근 `days`일 안에 작업을 계획했는가. 대장으로 보므로 어느
+    기기에서 돌았든 같다."""
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    for r in reversed(_records()):
+        if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily":
+            try:
+                return datetime.fromisoformat(r["at"]) >= cutoff
+            except (KeyError, TypeError, ValueError):
+                return False
+    return False
+
+
+def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
+    """근거 재검토 후보를 작업으로 낸다(시행령 §7 2항). `scope`를 주면 그 scope의
+    노드만 — Stop fork는 원 대화의 scope만 다룬다(Mechanism §9-4 3항)."""
+    from . import rechecks
+    items, pending = rechecks.candidates(idx)
+    return [] if pending else [
+        {"key": f"recheck:{i['id']}:{i['key']}", "node": i["node"], "target": i["target"],
+         "why": i["why"], "id": i["id"], "target_key": i["key"]}
+        for i in items if scope is None or i["scope"] == scope]
+
+
+def _recheck_status(job: dict, idx: graph.Index) -> dict:
+    """그 쌍이 더는 후보가 아니면 완료다 — 다시 대어 닫았거나 근거를 뺐다."""
+    from . import rechecks
+    hit = idx.by_id.get(job["id"])
+    if hit is None:
+        return {"status": "complete", "reason": "node gone"}
+    meta = idx.node(hit[0]).meta
+    if job["target_key"] not in rechecks.pairs(idx, meta):
+        return {"status": "complete", "reason": "basis removed"}
+    done = job["target_key"] in rechecks.complete_keys(idx, hit[0], meta)
+    return {"status": "complete" if done else "pending"}
+
+
 def _plan(limit: int) -> dict:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f"limit must be between 1 and {MAX_LIMIT}")
@@ -261,7 +299,10 @@ def _plan(limit: int) -> dict:
         eviction_jobs.append(job)
     eviction_jobs.sort(key=lambda j: (attempts.get(j["of"], ""), j["of"]))
     eviction_jobs = eviction_jobs[:limit]
-    return {"candidates": candidates, "organization_jobs": organization_jobs, "eviction_jobs": eviction_jobs, "source_count": len(sources),
+    tried = {j["key"]: row["rid"] for row in plans for j in row.get("recheck_jobs", [])}
+    recheck_jobs = sorted(_recheck_jobs(idx), key=lambda j: (tried.get(j["key"], ""), j["key"]))[:limit]
+    return {"candidates": candidates, "organization_jobs": organization_jobs, "eviction_jobs": eviction_jobs,
+            "recheck_jobs": recheck_jobs, "source_count": len(sources),
             "cluster_count": len(clusters), "domain_count": len(domains),
             "limit": limit, "max_sources_per_candidate": 2 * BATCH_SIZE}
 
@@ -363,6 +404,12 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "with a concrete content-based reason; uncertainty means deferred. Do not sweep the "
         "whole eviction ledger. Checkpoint eviction:[{of,outcome:node|merged|discarded|deferred,"
         "reason,target?}] using selected IDs only; node/merged require the actual target title.\n"
+        "For recheck_jobs, node cites target as derived-from and target changed since node was "
+        "last checked. Read both through osk MCP. If node still holds, call update_node(name=node, "
+        "add_edges={\"derived-from\": target}) with nothing else; if it does not, correct node and "
+        "name the same target in add_edges in that update_node call. Do not edit target for this "
+        "job. That call records the check; recheck_jobs take no packet entry or checkpoint. "
+        "Uncertainty leaves the job open.\n"
         "Scope jobs: read current scope_memory and read_raw(view=review) to select claims. "
         "Follow scope_recovery instructions when present; preserve durable entries before making room. "
         "Resume a previous_deferral at its missing evidence rather than repeating its whole read. "
@@ -812,6 +859,11 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                        if scope_job is None else
                        {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0})
             with core.mutation_lock():
+                try:
+                    from . import rechecks
+                    rechecks.ensure_baseline()
+                except Exception:
+                    pass        # 못 적으면 그 근거들이 후보로 남을 뿐이다
                 planned = (_plan(limit) if scope_job is None else
                            {"candidates": [], "scope_jobs": [], "organization_jobs": []})
                 from . import organization
@@ -821,6 +873,9 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     scope = write.resolve_session(scope_job["session"])
                     planned["work_context"] = "stop:" + (scope or scope_job["session"])
                     planned["organization_jobs"] = organization.pending([scope], limit=1) if scope else []
+                    # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
+                    planned["recheck_jobs"] = (_recheck_jobs(_index(), scope)[:limit]
+                                               if scope and not daily_active() else [])
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
                 # A Stop fork may organize only its own Scope. It reuses this one
@@ -904,20 +959,25 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                                          for job in planned["organization_jobs"]}
                 eviction_outcomes = {job["key"]: _eviction_status(job, idx)
                                      for job in planned["eviction_jobs"]}
+                recheck_outcomes = {job["key"]: _recheck_status(job, idx)
+                                    for job in planned["recheck_jobs"]}
                 complete = (returncode == 0 and error is None and catchup.get("ok")
                             and not final_reviews["errors"]
                             and all(receipts.values())
                             and all(s["status"] == "complete" for s in scope_outcomes.values())
                             and all(s["status"] == "complete" for s in organization_outcomes.values())
-                            and all(s["status"] == "complete" for s in eviction_outcomes.values()))
+                            and all(s["status"] == "complete" for s in eviction_outcomes.values())
+                            and all(s["status"] == "complete" for s in recheck_outcomes.values()))
                 result = {"kind": "run", "manifest": manifest["rid"],
                           "ok": complete, "state": "complete" if complete else "incomplete",
-                          "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes) + len(eviction_outcomes), "returncode": returncode,
+                          "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes)
+                          + len(eviction_outcomes) + len(recheck_outcomes), "returncode": returncode,
                           "domain_selected": len(receipts), "scope_selected": len(scope_outcomes),
                           "error": error, "cleanup_error": cleanup_error, "outcomes": outcomes,
                           "domain_outcomes": outcomes, "scope_outcomes": scope_outcomes,
                           "organization_outcomes": organization_outcomes,
                           "eviction_outcomes": eviction_outcomes,
+                          "recheck_outcomes": recheck_outcomes,
                           "final_reviews": final_reviews,
                           "capture": catchup,
                           "output": core.posix_rel(directory, core.ROOT)}

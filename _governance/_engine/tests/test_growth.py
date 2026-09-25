@@ -158,6 +158,28 @@ class GrowthTests(unittest.TestCase):
                 pass
         """)
 
+    def test_recheck_jobs_queue_in_daily_runs_and_fork_scope(self):
+        self.check_case("""
+            node('A')
+            assert write.create_node('B', 'b', 'B relies on A.', 'gpt-6-astra', space='00_Scope/W1',
+                                     edges={'derived-from': 'A'})['ok']
+            assert not growth.plan(3)['recheck_jobs']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            planned = growth.plan(3)
+            jobs = planned['recheck_jobs']
+            assert [(j['node'], j['target']) for j in jobs] == [('B', '[[A]]')], jobs
+            assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'pending'
+            assert 'For recheck_jobs' in growth.prompt(planned)
+            assert [j['node'] for j in growth._recheck_jobs(graph.Index(), 'W1')] == ['B']
+            assert not growth._recheck_jobs(graph.Index(), 'W2')   # a fork keeps to its scope
+            assert not growth.daily_active()
+            register(planned)
+            assert growth.daily_active()
+            write.update_node('B', add_edges={'derived-from': 'A'})
+            assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'complete'
+            assert not growth.plan(3)['recheck_jobs']
+        """)
+
     def check_case(self, source):
         with tempfile.TemporaryDirectory(prefix="osk-growth-test-") as directory:
             env = dict(os.environ, OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),
