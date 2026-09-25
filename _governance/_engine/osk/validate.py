@@ -103,7 +103,7 @@ def run() -> dict:
     for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, VALIDATORS,
               approvals.MOVES, EVICTIONS,
               LEDGER / "migration" / "events.jsonl", LEDGER / "rechecks.jsonl",
-              LEDGER / "update.jsonl"]:
+              LEDGER / "update.jsonl", LEDGER / "growth.jsonl"]:
         try:
             ledgers.append((p, ledger_read(p)))
         except Exception as e:

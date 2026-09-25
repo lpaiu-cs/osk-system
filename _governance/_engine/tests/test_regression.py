@@ -8216,6 +8216,77 @@ def test_same_file_link_is_duplicate():
         _age_all()
 
 
+def test_format_alignment():
+    """엔진은 Mechanism이 정한 배치·표기대로 읽고 쓴다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · Space 루트 바로 아래 파일을 노드로 보면 → 루트 파일 단언(§1 2항)
+      · 비노드를 확장자 없는 이름으로만 색인하면 → 임베드 단언(§8 5항)
+      · 허브를 `<이름>.md` 철자로만 찾으면 → 허브 단언(§1 4항)
+      · 새 id 근거를 맨값으로 적으면 → 제목 위키링크 단언(§8 2항)
+      · 검증기가 growth.jsonl을 빼면 → 성장 대장 단언(§3 2항)
+      · `---`로 감싼 사건 헤더도 읽으면 → 사건 헤더 단언(§4 4항)"""
+    rootfile = ROOT / core.DOMAIN / "regr-rootfile.md"
+    img = ROOT / "_sources" / "regr-diagram.png"
+    hubdir = ROOT / core.DOMAIN / "RegrHubCase"
+    growth = core.LEDGER / "growth.jsonl"
+    gbefore = growth.read_bytes() if growth.exists() else None
+    case = core.LEDGER / "case" / "CASE-2026-9300.md"
+    made = [ROOT / "00_Scope/W1/regr-fmt-src.md", ROOT / "00_Scope/W1/regr-fmt-use.md"]
+    try:
+        rootfile.write_text(node_text("260925-0000-rootfile"), encoding="utf-8")
+        check("Space 루트 바로 아래 파일은 노드 자리가 아니다",
+              graph.space_of(rootfile)[0] == "support", graph.space_of(rootfile))
+        check("배치 검증기가 루트 바로 아래 노드형 파일을 보고한다",
+              any("regr-rootfile.md" in v for v in graph.layout_violations()))
+        rootfile.unlink()
+
+        img.parent.mkdir(exist_ok=True)
+        img.write_bytes(b"\x89PNG")
+        check("임베드는 확장자까지 쓴 파일 이름으로 해석된다",
+              graph.Index().resolve("regr-diagram.png")[0] == "nonnode")
+
+        hubdir.mkdir(parents=True, exist_ok=True)
+        check("허브 파일이 없는 군집", graph.hub_file(hubdir) is None)
+        (hubdir / "RegrHubCase.MD").write_text(node_text("260925-0001-hubcase1"),
+                                               encoding="utf-8")
+        check("확장자 대소문자와 무관하게 허브를 찾는다",
+              graph.hub_file(hubdir) is not None)
+        shutil.rmtree(hubdir)
+
+        ra = _w(write.create_node, "regr-fmt-src", "s", "근거.", "fable-5",
+                space="00_Scope/W1")
+        rb = _w(write.create_node, "regr-fmt-use", "s", "쓴다.", "fable-5",
+                space="00_Scope/W1", edges={"derived-from": ra["id"]})
+        text = made[1].read_text(encoding="utf-8")
+        check("새 id 근거는 제목 위키링크로 적는다",
+              rb.get("ok") and 'derived-from: "[[regr-fmt-src]]"' in text
+              and ra["id"] not in text, text[:400])
+        _w(write.update_node, "regr-fmt-use", add_edges={"derived-from": ra["id"]})
+        check("같은 근거를 id로 다시 더해도 한 번만 앉는다",
+              made[1].read_text(encoding="utf-8").count("regr-fmt-src") == 1)
+
+        with open(growth, "a", encoding="utf-8") as f:
+            f.write('{"kind": "plan"}\n')
+        check("검증기가 growth.jsonl의 rid 손상을 보고한다",
+              "growth.jsonl" in str(validate.run()["fail"]))
+
+        case.write_text("---\ncase_no: CASE-2026-9300\n---\n\n본문\n", encoding="utf-8")
+        check("`---`로 감싼 사건 헤더는 읽지 않는다", S.parse_case(case) is None)
+    finally:
+        rootfile.unlink(missing_ok=True)
+        img.unlink(missing_ok=True)
+        shutil.rmtree(hubdir, ignore_errors=True)
+        case.unlink(missing_ok=True)
+        for p in made:
+            p.unlink(missing_ok=True)
+        if gbefore is None:
+            growth.unlink(missing_ok=True)
+        else:
+            growth.write_bytes(gbefore)
+        _age_all()
+
+
 # ── 이동은 참조 위상을 새로 깨지 않는다 (v4.0.0) ─────────────────────────
 def test_move_topology_refused():
     """노드를 옮기면 소속이 바뀌어 **그 노드의 나가고 들어오는 참조**의 판정이
@@ -11414,6 +11485,7 @@ if __name__ == "__main__":
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
                test_duplicate_id_by_name_refused, test_same_file_link_is_duplicate,
+               test_format_alignment,
                test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_node_place_rule,

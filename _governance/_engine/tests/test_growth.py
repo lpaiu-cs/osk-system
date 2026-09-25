@@ -450,7 +450,7 @@ class GrowthTests(unittest.TestCase):
             receipt = growth.review(candidate['key'],'preserved',target='Shared rule',
                 reason='A and B support the rule; Noise and Other are unrelated and omitted.',manifest=manifest['rid'])
             actual = contract.parse(core.ROOT / '00_Domain/Principles/Shared rule.md').edges('derived-from')
-            assert set(actual) == {s['id'] for s in selected}, actual
+            assert set(actual) == {s['name'] for s in selected}, actual
             assert len(receipt['omitted_sources']) == 2
             assert candidate['key'] not in {c['key'] for c in growth.plan(20)['candidates']}
             distillation._job_path(candidate['key']).unlink()
