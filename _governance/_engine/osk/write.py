@@ -1388,12 +1388,10 @@ def _update_node_locked(name: str, body: str | None = None,
     # "근거를 A에서 B로 바꾼다"는 드문 호출이 아니라 이관·오타 수정·근거
     # 갱신의 자연스러운 표현이다. 실제로 v3.7.3 이관에서 두 번 걸렸고,
     # 두 번째는 이 결함을 재현해 기록한 직후였다 — 알고도 피해지지 않았다.
-    for pred, tg in (add_edges or {}).items():
-        cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
-        merged = _merge_edges(cur, tg, idx)  # 한 호출 안의 중복도 한 번만 앉는다
-        if len(merged) != len(cur):
-            meta[pred] = _as_links(pred, merged, legacy_raw=_legacy_raw)
-            changed = True
+    #
+    # 제거가 먼저다. id와 제목은 같은 근거이므로(`_edge_key`), 저장된 id 표기를
+    # 빼고 제목으로 다시 대는 호출이 뒤의 제거에 지워지지 않는다. 같은 근거를
+    # 함께 빼고 대면 남는다 — 근거를 조용히 잃지 않는다.
     for pred, tg in (remove_edges or {}).items():
         drop = {_edge_key(t, idx) for t in _as_list(tg)}
         cur = _stored_edges(meta.get(pred))
@@ -1404,6 +1402,12 @@ def _update_node_locked(name: str, body: str | None = None,
                 meta[pred] = _as_links(pred, keep, legacy_raw=_legacy_raw)
             else:
                 meta.pop(pred, None)
+    for pred, tg in (add_edges or {}).items():
+        cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
+        merged = _merge_edges(cur, tg, idx)  # 한 호출 안의 중복도 한 번만 앉는다
+        if len(merged) != len(cur):
+            meta[pred] = _as_links(pred, merged, legacy_raw=_legacy_raw)
+            changed = True
     # 저장 목록에서 바이트가 같은 되풀이는 이 쓰기에서 접는다 — 위의 추가·제거가 옛
     # 표기를 정규 표기로 다시 적어 겹친 것까지. 접기만으로는 쓰지 않는다(`changed` 불변).
     # ponytail: 바이트 비교만 한다(해소가 없어 공짜이고 실패하지 않는다). 키로 접으면

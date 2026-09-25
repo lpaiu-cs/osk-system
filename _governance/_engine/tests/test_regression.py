@@ -7938,7 +7938,12 @@ def test_edge_delta_is_cumulative():
            space="00_Scope/W1", edges={"derived-from": a["id"]})
     p = ROOT / "00_Scope/W1/regr-ed-src.md"
     try:
-        check("전제: 구형 id 근거 하나", r.get("ok"), r)
+        # 엔진은 id를 제목으로 적는다 — 구형 표기는 손으로 되돌려 만든다.
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            'derived-from: "[[regr-ed-a]]"', f"derived-from: {a['id']}"), encoding="utf-8")
+        _age_all()
+        check("전제: 구형 id 근거 하나",
+              r.get("ok") and contract.parse(p).meta.get("derived-from") == a["id"], r)
         # 지울 것이 **하나뿐**인 상태 — 구판이 술어를 통째로 지우던 자리다.
         r1 = _w(write.update_node, "regr-ed-src",
                 add_edges={"derived-from": "regr-ed-a"},
