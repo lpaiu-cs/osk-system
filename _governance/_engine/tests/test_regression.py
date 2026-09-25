@@ -10999,6 +10999,118 @@ def test_write_edge_coordinates():
             core.ROUTING.write_bytes(prior_route)
 
 
+def test_derived_from_once_per_round():
+    """한 세션에서 같은 노드를 세 번 고쳐도 raw 근거는 라운드마다 한 번만 앉는다.
+
+    실측(2026-09-25, v3.22.2): 한 세션에서 `update_node`를 세 번 받은 노드의 응답이
+    `derived-from`에 같은 기록 경로를 세 번 실었다. 저장본은 그 기록의 서로 다른
+    라운드 셋이었는데, 응답이 해석용 `Node.edges`(raw 앵커를 버린다)로 보고해 같은
+    근거가 겹친 것처럼 보였다. 저장본의 진짜 중복은 생성이 만들었다 — 같은 근거를
+    두 번 받으면 두 번 적었고(distill의 `sources`와 `edges`가 같은 라운드를 줄 때,
+    실 인스턴스 3건), 갱신은 새로 더하는 것만 걸러 이미 앉은 중복을 남겼다.
+
+    합치기의 키는 "이미 있는가"만 묻는다. 저장 목록을 키로 줄이면 키가 거친
+    자리(URL의 `.md`, 노드의 절 앵커)마다 서로 다른 근거가 지워진다(PR #90 리뷰).
+
+    무엇을 망가뜨리면 실패하는가:
+      · 응답 `edges`를 `Node.edges`로 되돌리면 → ①의 응답 단언
+      · 갱신의 바이트 되풀이 접기를 지우면 → ②의 본문 쓰기·표기 변형 단언
+      · 생성이 `_merge_edges`를 건너뛰면 → ③
+      · `graph.reference_report`의 중복 보고를 지우면 → ②의 경고 단언
+      · `_edge_key`가 앵커를 버리면 → ①의 저장 단언(다른 라운드가 하나로 접힌다)
+      · `_edge_key`가 URL에서도 `.md`를 떼면 → ④의 URL 단언 셋
+      · `_merge_edges`가 저장 목록까지 키로 줄이면 → ④의 저장 근거 단언
+    """
+    from osk import raw
+    base = ROOT / "00_Scope/W1/regr-edge-once"
+    space = base.relative_to(ROOT).as_posix()
+    prior_route = core.ROUTING.read_bytes() if core.ROUTING.exists() else None
+    record = None
+
+    def stored(p):
+        return write._stored_edges(contract.parse(p).meta.get("derived-from"))
+
+    def warned():
+        return [d for d in graph.reference_report(graph.Index())["duplicate_edges"]
+                if d.startswith("regr-edge-once")]
+    try:
+        base.mkdir(parents=True)
+        write.create_node(base.name, "test hub", "hub", "fable-5", space=space)
+        r = raw.append_rounds("regr-edge-once", base.name,
+                              [{"user": f"u{i}", "agent": f"a{i}"} for i in (1, 2, 3)],
+                              space="00_Scope/W1")
+        record = ROOT / r["path"]
+        r1, r2, r3 = r["round_refs"]
+
+        # ① 관측 경로 — 한 세션에서 세 번 고치며 매번 그 세션의 기록을 근거로 단다.
+        #    앞서 단 라운드를 다른 표기로 되풀어 달아도 같은 근거다.
+        a = base / "regr-edge-once-a.md"
+        write.create_node(a.stem, "a", "claim", "fable-5", space=space)
+        for i, refs in enumerate(([r1], [r2, r1], [r3, f"[[{r2}]]"]), 1):
+            out = write.update_node(a.stem, summary=f"a{i}",
+                                    add_edges={"derived-from": refs})
+        check("세 번 고쳐도 라운드마다 한 번만 저장된다", stored(a) == [r1, r2, r3], stored(a))
+        check("응답도 라운드 좌표째 한 번씩 보고한다",
+              sorted(out["edges"]["derived-from"]) == [r1, r2, r3], out.get("edges"))
+
+        # ② 이미 저장된 중복(구판의 생성·손 편집이 남긴 것)은 다음 쓰기에서 접힌다.
+        b = base / "regr-edge-once-b.md"
+        b.write_text(node_text("260802-zzzz-once", body="claim",
+                               extra=f'derived-from: ["{r1}", "{r1}", "{r2}"]\n'),
+                     encoding="utf-8")
+        check("검증기가 저장된 중복을 경고한다",
+              warned() == [f"regr-edge-once-b [derived-from] → {r1}"], warned())
+        write.update_node(b.stem, old_text="claim", new_text="claim v2")
+        check("본문만 고치는 쓰기에서도 중복이 접힌다", stored(b) == [r1, r2], stored(b))
+        write.update_node(b.stem, add_edges={"derived-from": [r3, r1]})
+        check("접힌 뒤의 추가도 한 번씩만 앉는다", stored(b) == [r1, r2, r3], stored(b))
+        check("접힌 뒤에는 경고가 없다", warned() == [], warned())
+        #    표기만 다른 중복은 추가가 정규 표기로 다시 적은 뒤 바이트 비교로 접힌다.
+        v = base / "regr-edge-once-v.md"
+        v.write_text(node_text("260802-zzzz-oncv", body="claim",
+                               extra=f'derived-from: ["{r1}", "[[{r1}]]"]\n'),
+                     encoding="utf-8")
+        write.update_node(v.stem, add_edges={"derived-from": r2})
+        check("표기만 다른 중복이 접혀도 새 근거는 앉는다", stored(v) == [r1, r2], stored(v))
+
+        # ③ 생성도 같은 합치기를 지난다.
+        c = base / "regr-edge-once-c.md"
+        write.create_node(c.stem, "c", "claim", "fable-5", space=space,
+                          edges={"derived-from": [r1, f"[[{r1}]]", r1]})
+        check("생성도 같은 근거를 한 번만 적는다", stored(c) == [r1], stored(c))
+
+        # ④ 서로 다른 근거는 합치지 않는다. URL은 확장자까지 주소이고, 저장된 근거는
+        #    키로 지우지 않는다.
+        code = "https://github.com/o/r/blob/abc/Makefile"
+        doc = code + ".md"
+        u = base / "regr-edge-once-u.md"
+        write.create_node(u.stem, "u", "claim", "fable-5", space=space,
+                          edges={"derived-from": [code, doc]})
+        check("생성이 확장자만 다른 두 URL을 모두 적는다",
+              stored(u) == [f"[[{code}]]", f"[[{doc}]]"], stored(u))
+        write.update_node(u.stem, remove_edges={"derived-from": code})
+        check("한 URL을 빼도 다른 URL은 남는다", stored(u) == [f"[[{doc}]]"], stored(u))
+        write.update_node(u.stem, add_edges={"derived-from": code})
+        check("있는 URL 곁에 확장자만 다른 URL을 더할 수 있다",
+              stored(u) == [f"[[{doc}]]", f"[[{code}]]"], stored(u))
+        s = base / "regr-edge-once-s.md"
+        kept = [f"[[{code}]]", f"[[{doc}]]", f"[[{a.stem}#s1]]", f"[[{a.stem}#s2]]"]
+        s.write_text(node_text("260802-zzzz-oncs", body="claim",
+                               extra=f"derived-from: {json.dumps(kept)}\n"),
+                     encoding="utf-8")
+        write.update_node(s.stem, add_edges={"derived-from": r1})
+        check("근거를 더해도 저장된 근거는 키로 지워지지 않는다(URL 둘·절 앵커 둘)",
+              stored(s) == kept + [r1], stored(s))
+    finally:
+        rmtree_force(base)
+        if record is not None:
+            record.unlink(missing_ok=True)
+        if prior_route is None:
+            core.ROUTING.unlink(missing_ok=True)
+        else:
+            core.ROUTING.write_bytes(prior_route)
+
+
 def test_write_pin_subtree_and_fork():
     """Cluster moves preserve contained pins; unresolved pin is not unpin."""
     from osk import approvals
@@ -11315,7 +11427,8 @@ if __name__ == "__main__":
                test_sync_pending_git_operations, test_publish_binds_checked_bytes,
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
-               test_write_edge_coordinates, test_write_pin_subtree_and_fork,
+               test_write_edge_coordinates, test_derived_from_once_per_round,
+               test_write_pin_subtree_and_fork,
                test_review_empty_memory_and_incomplete_region,
                test_review_root_reparse_and_lazy_search, test_read_cache_dependencies,
                test_reparse_cache_membership,
