@@ -11156,23 +11156,37 @@ def test_validate_at_uses_snapshot_engine():
               errors == ["검증기 FAIL: snapshot rejection"], errors)
 
 
-def _suite(label, name):
+SUITE_SKIP = 77     # 격리 수트가 "환경 때문에 돌지 못했다"를 알리는 종료 코드
+
+
+def _suite(label, name, timeout=180):
     """격리 수트 하나를 돌려 한 줄로 판정한다. 시간 초과·기동 실패도 그 수트의
-    FAIL로 남긴다 — 예외가 러너로 새면 뒤의 수트가 조용히 실행되지 않는다."""
+    FAIL로 남긴다 — 예외가 러너로 새면 뒤의 수트가 조용히 실행되지 않는다.
+    종료 코드 77은 SKIP이다(통과로 세지 않는다) — 사유는 출력 마지막 줄이다."""
     try:
         proc = subprocess.run([sys.executable, "-B", str(ENGINE / "tests" / name)],
-                              capture_output=True, timeout=180,
+                              capture_output=True, timeout=timeout,
                               stdin=subprocess.DEVNULL)
     except Exception as e:
         out = (getattr(e, "stdout", None) or b"") + (getattr(e, "stderr", None) or b"")
         check(label, False, f"{e!r}\n" + out.decode("utf-8", errors="replace")[-6000:])
         return
-    check(label, proc.returncode == 0,
-          (proc.stdout + proc.stderr).decode("utf-8", errors="replace")[-6000:])
+    out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+    if proc.returncode == SUITE_SKIP:
+        skip(label, (out.strip().splitlines() or [""])[-1])
+        return
+    check(label, proc.returncode == 0, out[-6000:])
 
 
 def test_sync_network_subprocess():
     _suite("동기화 네트워크·적용 잠금·고정 SHA의 프로세스 경계", "test_sync_network.py")
+
+
+def test_upgrade_matrix_subprocess():
+    """구 릴리스가 만들고 쓴 vault를 그 릴리스 자신의 updater로 후보에 올린다
+    (v3.20.1 사고의 경로). 이력·태그가 없는 얕은 checkout이면 SKIP이다."""
+    _suite("업그레이드 경로 행렬(구 릴리스 vault → 자기 updater → 후보)",
+           "test_upgrade_matrix.py", timeout=1500)
 
 
 GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py")
@@ -11205,6 +11219,19 @@ def test_suite_timeout_is_isolated():
           len(failed) == 1 and first in failed[0] and "partial" in failed[0], failed)
     check("뒤의 수트는 전부 계속 실행된다",
           [x.rsplit(": ", 1)[-1] for x in passed] == list(rest), passed)
+
+
+def test_suite_skip_is_not_pass():
+    """격리 수트의 종료 코드 77은 SKIP 한 줄이다 — 통과로도 실패로도 세지 않는다."""
+    done = subprocess.CompletedProcess([], SUITE_SKIP, b"...\nSKIP: no release history\n", b"")
+    counts = len(PASS), len(FAIL), len(SKIP)
+    with mock.patch("subprocess.run", return_value=done):
+        _suite("skip-probe", "test_upgrade_matrix.py", timeout=5)
+    skipped = SKIP[counts[2]:]
+    del SKIP[counts[2]:]
+    check("종료 코드 77은 사유와 함께 SKIP으로만 남는다",
+          (len(PASS), len(FAIL)) == counts[:2]
+          and skipped == ["skip-probe — SKIP: no release history"], skipped)
 
 
 if __name__ == "__main__":
@@ -11320,8 +11347,8 @@ if __name__ == "__main__":
                test_review_root_reparse_and_lazy_search, test_read_cache_dependencies,
                test_reparse_cache_membership,
                test_eviction_preservation_mcp,
-               test_suite_timeout_is_isolated,
-               test_growth_loop_subprocesses]:
+               test_suite_timeout_is_isolated, test_suite_skip_is_not_pass,
+               test_growth_loop_subprocesses, test_upgrade_matrix_subprocess]:
         try:
             fn()
         except Exception as e:
