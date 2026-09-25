@@ -770,13 +770,20 @@ def run_cell(up: Upstream, cand: str, work: Path, start: str, layout: str) -> di
         mc = _drive(vault, "mcp", {"key": KEY, "names": names, "space": f"{S}/W1",
                                    "rounds": [a["round1"], b["round2"]],
                                    "legacy": a["legacy"]})
+        # v4 enforces Mechanism §1 4항: `_` directories are not node places. The files
+        # stay byte-identical (the data check above); the release notes carry the move.
         if a["legacy"]:
-            lost = {n: r.get("error") for n, r in mc["legacy"].items() if "error" in r}
-            check("legacy: nodes S's surface put under `_` directories stay readable, valid nodes",
-                  not lost and not rejected, {"read_node": lost, "validator": rejected})
+            unread = {n for n, r in mc["legacy"].items() if "error" in r}
+            named = {d for d in aside
+                     if any(f"/{d}/" in str(m).replace("\\", "/") for m in rejected)}
+            check("legacy: v4 does not read nodes under `_` directories; the validator names each",
+                  unread == set(a["legacy"]) and named == set(aside),
+                  {"read_node": sorted(unread), "validator": rejected})
         if "_inbox" in a["legacy"]:
-            check("legacy: the session S bound to its `_inbox` scope keeps its memory",
-                  "Inbox memory." in (mc["inbox_memory"].get("text") or ""), mc["inbox_memory"])
+            check("legacy: the session bound to `_inbox` is refused, naming the missing scope",
+                  "_inbox" in json.dumps(mc["inbox_memory"], ensure_ascii=False)
+                  and "Inbox memory." not in (mc["inbox_memory"].get("text") or ""),
+                  mc["inbox_memory"])
         ov = mc["overview"]
         check("mcp: the server starts and lists its tools", len(mc["tools"]) >= 12, mc["tools"])
         check("mcp: overview sees every node, nothing broken",
