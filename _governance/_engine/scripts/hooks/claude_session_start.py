@@ -159,7 +159,7 @@ def _memory_block(scope_memory, key: str) -> str:
 def _bootstrap(key: str, *, bound: bool) -> str:
     arg = json.dumps(key, ensure_ascii=False)
     return (f"[osk 세션 시작 — session={arg}]\n"
-            f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집과 열린 사건을 "
+            f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집·열린 사건·근거 재검토 후보를 "
             "확인하라. 기억을 묻는 질문에는 `search`를 먼저 쓴다. "
             + ("아래 scope 기억을 통합의 출발점으로 삼는다."
                if bound else "아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 "
@@ -214,6 +214,34 @@ def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
+def _recheck_note(rechecks) -> str:
+    """근거 재검토에서 본 세션이 알아야 할 것 — 사용자 검토를 기다리는 수정, 그리고
+    정기 실행이 없을 때 쌓이는 후보(그 처리는 대화 검토 fork가 이 scope 몫을 맡는다).
+    둘 다 없으면 아무것도 싣지 않는다."""
+    try:
+        from osk import growth
+        daily = growth.daily_active()
+        if daily and not any(r.get("kind") == "recheck_review" for r in growth._records()):
+            return ""
+        items, pending = rechecks.candidates()
+    except Exception as exc:
+        return f"[osk 근거 재검토 판독 진단 — {type(exc).__name__}: {exc}]"
+    if pending:
+        return ""
+    held = sum("escalated" in i for i in items)
+    notes = []
+    if held:
+        notes.append(f"[osk 근거 재검토 — 사용자 검토 대기 {held}건. 재검토로 고친 수정이 그 "
+                     "노드를 인용한 노드들까지 고치게 만든다. overview의 rechecks.escalated에서 "
+                     "수정안을 보고 정한다.]")
+    if not daily and len(items) > held:
+        notes.append(f"[osk 근거 재검토 — 후보 {len(items) - held}건. 정기 실행이 최근 3일 안에 "
+                     "돌지 않아 대화 검토(fork)가 이 scope의 후보를 맡는다. Domain의 후보는 정기 "
+                     "실행이 맡으니 SETUP의 'Scope에서 Domain으로 정기 재검토'로 켠다. 본 작업은 "
+                     "계속한다.]")
+    return "\n".join(notes)
+
+
 def main() -> None:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return  # maintenance evidence belongs to its run, not a new integration queue
@@ -227,8 +255,13 @@ def main() -> None:
     cwd = env.get("cwd") or os.getcwd()
 
     try:
-        from osk import scope_memory, write, evictions
+        from osk import scope_memory, write, evictions, rechecks
         key = session_key(cwd)
+        try:
+            rechecks.ensure_baseline()
+        except Exception:
+            pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다
+        recheck = _recheck_note(rechecks)
         captured = capture_block(env, key, startup=True)
         if captured is None:
             return
@@ -240,7 +273,7 @@ def main() -> None:
         except Exception:
             recovery = "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]"
         if not scope:
-            emit_context("SessionStart", "\n\n".join(p for p in (bootstrap, recovery, captured) if p))
+            emit_context("SessionStart", "\n\n".join(p for p in (bootstrap, recheck, recovery, captured) if p))
             return
         mem = ""
         try:
@@ -253,7 +286,7 @@ def main() -> None:
         except Exception as exc:
             block = f"[osk 정돈 판독 진단 — {type(exc).__name__}: {exc}]"
         # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록.
-        out = "\n\n".join(p for p in (banner, bootstrap, recovery, mem, captured, block) if p)
+        out = "\n\n".join(p for p in (banner, bootstrap, recheck, recovery, mem, captured, block) if p)
         if not out:
             return
         emit_context("SessionStart", out)

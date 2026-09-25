@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import contract, epoch, graph, raw, validate, write  # noqa: E402
+from osk import contract, epoch, graph, raw, rechecks, validate, write  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
@@ -241,16 +241,25 @@ def read_node(name: str, view: str | None = None) -> dict:
     # 달거나 고치려는 호출자의 손에 남는 것이 id뿐이었다 — 그래서 새 엔진으로도
     # 구형 id 표기 근거가 계속 태어났다(v3.7.4 직후 하루에 3간선). 손잡이는
     # 이름이고, id는 대장·서명·사건부의 동일성으로 남는다.
+    h = sha256_bytes(raw)
+    _SEEN[posix_rel(hit[0], ROOT)] = h
     if view is not None:
         return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
                 "summary": str(n.meta.get("summary", "")),
                 # Distinct from a CAS token: excerpts cannot authorize full replacement.
-                "view_hash": "view:" + sha256_bytes(raw), "partial": True,
+                "view_hash": "view:" + h, "partial": True,
                 "body_chars": len(n.body), **_node_view(n.body, view)}
     return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
             "meta": {k: str(v) for k, v in n.meta.items()},
-            "hash": sha256_bytes(raw),
+            "hash": h,
             "body": n.body}
+
+
+# 이 세션(서버 프로세스)이 `read_node`로 읽은 판 — 경로 → 그때 파일 바이트의 해시.
+# 부분 열람도 파일의 판을 고정하므로 넣는다. 근거를 다시 대어 재검토를 닫을 때
+# 읽은 판 그대로인지 보는 데만 쓴다(Mechanism §4-1) — 응답에 싣지 않으며 CAS
+# 증거(`expect_hash`)가 아니다. 부분 열람이 전문 치환을 허가하지 않는 규율은 그대로다.
+_SEEN: dict[str, str] = {}
 
 
 def _dup_id_error(paths: list[str]) -> dict:
@@ -313,6 +322,12 @@ def overview(session: str | None = None) -> dict:
         "nodes": len(idx.nodes),
         **_engine_state(),
     }
+    try:
+        rc = rechecks.report(idx)
+    except Exception as e:                      # 조망은 죽지 않는다(시행령 §11)
+        rc = {"error": f"{type(e).__name__}: {e}"}
+    if rc:
+        out["rechecks"] = rc
     if session:
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
@@ -374,7 +389,7 @@ def update_node(name: str, body: str | None = None,
                       remove_edges=remove_edges, old_text=old_text,
                       new_text=new_text, settle=settle)
     return _guard(write.update_node, name, body, expect_hash, summary,
-                  add_edges, remove_edges, old_text, new_text, settle)
+                  add_edges, remove_edges, old_text, new_text, settle, _seen=_SEEN)
 
 
 @mcp.tool()

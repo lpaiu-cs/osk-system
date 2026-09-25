@@ -26,15 +26,17 @@ BATCH_SIZE = 4                 # two batches fit in one eight-source comparison
 MAX_DOMAINS = 8
 MAX_LIMIT = 20
 SCOPE_ROUNDS_PER_JOB = 3      # ordinary session cadence still uses its own 15-round cap
-_QUEUES = ("candidates", "scope_jobs", "organization_jobs", "eviction_jobs")
+_QUEUES = ("candidates", "scope_jobs", "organization_jobs", "eviction_jobs", "recheck_jobs")
 
 
 def _records() -> list[dict]:
     rows = core.ledger_read(LEDGER)
     errors = core.ledger_damage(rows, LEDGER)
     for row in rows:
-        if row.get("kind") not in {"plan", "review", "run", "eviction_review"}:
+        if row.get("kind") not in {"plan", "review", "run", "eviction_review", "recheck_review"}:
             errors.append("unknown growth record kind")
+        if row.get("kind") == "recheck_review" and row.get("outcome") != "escalated":
+            errors.append("unknown recheck review outcome")
         if row.get("kind") == "review" and row.get("outcome") not in {
                 "preserved", "no_value", "deferred"}:
             errors.append("unknown growth review outcome")
@@ -149,6 +151,73 @@ def _completed(key: str, rows: list[dict], idx: graph.Index) -> dict | None:
     return row
 
 
+def daily_active(days: int = 3) -> bool:
+    """정기 실행이 최근 `days`일 안에 작업을 계획했는가. 대장으로 보므로 어느
+    기기에서 돌았든 같다."""
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    for r in reversed(_records()):
+        if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily":
+            try:
+                return datetime.fromisoformat(r["at"]) >= cutoff
+            except (KeyError, TypeError, ValueError):
+                return False
+    return False
+
+
+def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
+    """근거 재검토 후보를 작업으로 낸다(시행령 §7 2항). `scope`를 주면 그 scope의
+    노드만 — Stop fork는 원 대화의 scope만 다룬다(Mechanism §9-4 3항)."""
+    from . import rechecks
+    items, pending = rechecks.candidates(idx)
+    return [] if pending else [
+        {"key": f"recheck:{i['id']}:{i['key']}", "node": i["node"], "target": i["target"],
+         "why": i["why"], "cascade": i["cascade"], "next": i["next"], "id": i["id"],
+         "target_key": i["key"], "node_state": i["node_state"], "target_state": i["target_state"]}
+        for i in items if "escalated" not in i and (scope is None or i["scope"] == scope)]
+
+
+def _with_change(jobs: list[dict], idx: graph.Index) -> list[dict]:
+    """선택한 작업에만 마지막 점검 뒤의 변경분을 싣는다 — 후보 전부가 아니다."""
+    from . import rechecks
+    for job in jobs:
+        job["change"] = rechecks.change(job["id"], job["target_key"], job["target"], idx)
+    return jobs
+
+
+def _pick_rechecks(idx: graph.Index, limit: int, scope: str | None = None,
+                   rows: list[dict] | None = None) -> list[dict]:
+    """고를 재검토 작업 — 시도한 적 없는 것부터, 그다음 가장 오래전에 시도한 것부터
+    `limit`개. 정기 실행과 Stop fork가 같이 쓴다: 자르고 나서 돌리면 앞쪽이 계속
+    열려 있을 때 뒤쪽이 영영 뽑히지 않는다."""
+    rows = _records() if rows is None else rows
+    tried = {j["key"]: r["rid"] for r in rows if r.get("kind") == "plan"
+             for j in r.get("recheck_jobs", [])}
+    jobs = sorted(_recheck_jobs(idx, scope), key=lambda j: (tried.get(j["key"], ""), j["key"]))
+    return _with_change(jobs[:limit], idx)
+
+
+def _recheck_status(job: dict, idx: graph.Index) -> dict:
+    """그 쌍이 더는 후보가 아니면 완료다 — 다시 대어 닫았거나 근거를 뺐다."""
+    from . import rechecks
+    hit = idx.by_id.get(job["id"])
+    if hit is None:
+        return {"status": "complete", "reason": "node gone"}
+    meta = idx.node(hit[0]).meta
+    if job["target_key"] not in rechecks.pairs(idx, meta):
+        # 근거를 뺐거나, 남아 있지만 대상 파일이 사라졌다(dangling으로 따로 보고된다).
+        stored = meta.get("derived-from") or []
+        kept = job["target"] in (stored if isinstance(stored, list) else [stored])
+        return {"status": "complete", "reason": "basis dangling" if kept else "basis removed"}
+    if job["target_key"] in rechecks.complete_keys(idx, hit[0], meta):
+        return {"status": "complete"}
+    open_ = [i for i in rechecks.candidates(idx)[0]
+             if i["id"] == job["id"] and i["key"] == job["target_key"]]
+    if open_ and "escalated" in open_[0]:
+        return {"status": "complete", "reason": "escalated to the user"}
+    return {"status": "pending"}
+
+
 def _plan(limit: int) -> dict:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f"limit must be between 1 and {MAX_LIMIT}")
@@ -261,7 +330,9 @@ def _plan(limit: int) -> dict:
         eviction_jobs.append(job)
     eviction_jobs.sort(key=lambda j: (attempts.get(j["of"], ""), j["of"]))
     eviction_jobs = eviction_jobs[:limit]
-    return {"candidates": candidates, "organization_jobs": organization_jobs, "eviction_jobs": eviction_jobs, "source_count": len(sources),
+    recheck_jobs = _pick_rechecks(idx, limit, rows=rows)
+    return {"candidates": candidates, "organization_jobs": organization_jobs, "eviction_jobs": eviction_jobs,
+            "recheck_jobs": recheck_jobs, "source_count": len(sources),
             "cluster_count": len(clusters), "domain_count": len(domains),
             "limit": limit, "max_sources_per_candidate": 2 * BATCH_SIZE}
 
@@ -287,6 +358,12 @@ def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
             if row.get("work_order"):
                 last_first[row["work_order"][0]["queue"]] = number
     order = sorted(_QUEUES, key=last.get)
+    # 첫 차례가 가장 오래된 큐를 먼저 뽑는다 — 한도가 큐 수보다 작아도 첫 차례가
+    # 큐마다 한 번씩 돈다(첫 작업 뒤 시간이 다 된 워커에도 굶는 큐가 없다).
+    lead = min((key for key in _QUEUES if planned[key]), key=last_first.get, default=None)
+    if lead is not None:
+        order.remove(lead)
+        order.insert(0, lead)
     selected = {key: [] for key in _QUEUES}
     work_order = []
     for _ in range(limit):
@@ -363,6 +440,18 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "with a concrete content-based reason; uncertainty means deferred. Do not sweep the "
         "whole eviction ledger. Checkpoint eviction:[{of,outcome:node|merged|discarded|deferred,"
         "reason,target?}] using selected IDs only; node/merged require the actual target title.\n"
+        "For recheck_jobs, node cites target as derived-from and target changed since node was "
+        "last checked; change holds the diff of the side that changed, or a note to read the full "
+        "text. Read both through osk read_node, in full or the ranges you need (a check records "
+        "only against the versions you read). If node still holds, call update_node(name=node, "
+        "add_edges={\"derived-from\": target}) with nothing else. If node needs a correction and "
+        "cascade is false, read the nodes in next (they cite node): when your correction would not "
+        "require changing any of them, apply it and name the same target in add_edges in that "
+        "update_node call. Do not apply a correction that would require changing a node in next, "
+        "and never correct node when cascade is true (target was itself just corrected by a "
+        "recheck); instead checkpoint recheck:[{key,outcome:escalated,reason,proposal}] for the "
+        "user, naming the next nodes affected. Do not edit target for this job. An update_node "
+        "call records a check without a packet entry. Uncertainty leaves the job open.\n"
         "Scope jobs: read current scope_memory and read_raw(view=review) to select claims. "
         "Follow scope_recovery instructions when present; preserve durable entries before making room. "
         "Resume a previous_deferral at its missing evidence rather than repeating its whole read. "
@@ -433,6 +522,8 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "inside osk_reviews for selected organization_jobs not already reviewed by CLI. "
         "Add eviction:[{of,outcome:node|merged|discarded|deferred,reason,target?}] inside "
         "osk_reviews for selected eviction_jobs; omit target unless outcome is node/merged. "
+        "Add recheck:[{key,outcome:escalated,reason,proposal}] inside osk_reviews only for "
+        "recheck_jobs you escalate to the user. "
         "Use the originally selected key and a freshly read organization snapshot as after. "
         "Use only this manifest's selected keys and scope snapshots. The supervisor applies "
         "these decisions through the same receipt APIs and revalidates persisted evidence; "
@@ -537,7 +628,7 @@ def _final_packet(output: Path) -> dict:
 
 def _validate_packet(packet: dict, planned: dict) -> dict:
     reviews = packet.get("osk_reviews")
-    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", "domain", "scope", "organization", "eviction"}:
+    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", "domain", "scope", "organization", "eviction", "recheck"}:
         raise ValueError("review packet needs exactly manifest, domain and scope")
     if reviews["manifest"] != planned["manifest"]:
         raise ValueError("review packet manifest does not match this run")
@@ -615,6 +706,20 @@ def _validate_packet(packet: dict, planned: dict) -> dict:
                 raise ValueError("preserved eviction requires a target title")
         elif "target" in entry:
             raise ValueError("discarded/deferred eviction has no target")
+    allowed = {j["key"] for j in planned.get("recheck_jobs", [])}
+    entries, seen = reviews.get("recheck", []), set()
+    if not isinstance(entries, list) or len(entries) > len(allowed):
+        raise ValueError("recheck reviews exceed the selected queue")
+    for entry in entries:
+        fields = {"key", "outcome", "reason", "proposal"}
+        if (not isinstance(entry, dict) or set(entry) != fields
+                or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
+            raise ValueError("invalid recheck review fields")
+        if entry["key"] not in allowed or entry["key"] in seen:
+            raise ValueError("unselected or duplicate recheck review")
+        seen.add(entry["key"])
+        if entry["outcome"] != "escalated":
+            raise ValueError("a recheck review only escalates; a check closes through update_node")
     return reviews
 
 
@@ -729,6 +834,26 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 result["eviction"][entry["of"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Eviction {entry['of']}: {exc}")
+    from . import rechecks
+    selected_rechecks = {j["key"]: j for j in planned.get("recheck_jobs", [])}
+    for entry in reviews.get("recheck", []):
+        job = selected_rechecks[entry["key"]]
+        try:
+            with core.mutation_lock():
+                now = [i for i in rechecks.candidates(_index())[0]
+                       if i["id"] == job["id"] and i["key"] == job["target_key"]]
+                if not now:
+                    raise ValueError("the recheck is already closed")
+                if (now[0]["node_state"], now[0]["target_state"]) != (job["node_state"], job["target_state"]):
+                    raise ValueError("node or target changed since selection — review again")
+                if "escalated" not in now[0]:
+                    core.ledger_append(LEDGER, {
+                        "kind": "recheck_review", "manifest": planned["manifest"], **entry,
+                        "node": job["node"], "target": job["target"],
+                        "node_state": job["node_state"], "target_state": job["target_state"]})
+            result.setdefault("recheck", {})[entry["key"]] = "recorded"
+        except (ValueError, OSError) as exc:
+            result["errors"].append(f"Recheck {entry['key']}: {exc}")
     if result["errors"]:
         result["state"] = "incomplete"
     return result
@@ -812,6 +937,11 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                        if scope_job is None else
                        {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0})
             with core.mutation_lock():
+                try:
+                    from . import rechecks
+                    rechecks.ensure_baseline()
+                except Exception:
+                    pass        # 못 적으면 그 근거들이 후보로 남을 뿐이다
                 planned = (_plan(limit) if scope_job is None else
                            {"candidates": [], "scope_jobs": [], "organization_jobs": []})
                 from . import organization
@@ -821,6 +951,10 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     scope = write.resolve_session(scope_job["session"])
                     planned["work_context"] = "stop:" + (scope or scope_job["session"])
                     planned["organization_jobs"] = organization.pending([scope], limit=1) if scope else []
+                    # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
+                    idx = _index()
+                    planned["recheck_jobs"] = (_pick_rechecks(idx, limit, scope)
+                                               if scope and not daily_active() else [])
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
                 # A Stop fork may organize only its own Scope. It reuses this one
@@ -904,20 +1038,25 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                                          for job in planned["organization_jobs"]}
                 eviction_outcomes = {job["key"]: _eviction_status(job, idx)
                                      for job in planned["eviction_jobs"]}
+                recheck_outcomes = {job["key"]: _recheck_status(job, idx)
+                                    for job in planned["recheck_jobs"]}
                 complete = (returncode == 0 and error is None and catchup.get("ok")
                             and not final_reviews["errors"]
                             and all(receipts.values())
                             and all(s["status"] == "complete" for s in scope_outcomes.values())
                             and all(s["status"] == "complete" for s in organization_outcomes.values())
-                            and all(s["status"] == "complete" for s in eviction_outcomes.values()))
+                            and all(s["status"] == "complete" for s in eviction_outcomes.values())
+                            and all(s["status"] == "complete" for s in recheck_outcomes.values()))
                 result = {"kind": "run", "manifest": manifest["rid"],
                           "ok": complete, "state": "complete" if complete else "incomplete",
-                          "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes) + len(eviction_outcomes), "returncode": returncode,
+                          "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes)
+                          + len(eviction_outcomes) + len(recheck_outcomes), "returncode": returncode,
                           "domain_selected": len(receipts), "scope_selected": len(scope_outcomes),
                           "error": error, "cleanup_error": cleanup_error, "outcomes": outcomes,
                           "domain_outcomes": outcomes, "scope_outcomes": scope_outcomes,
                           "organization_outcomes": organization_outcomes,
                           "eviction_outcomes": eviction_outcomes,
+                          "recheck_outcomes": recheck_outcomes,
                           "final_reviews": final_reviews,
                           "capture": catchup,
                           "output": core.posix_rel(directory, core.ROOT)}

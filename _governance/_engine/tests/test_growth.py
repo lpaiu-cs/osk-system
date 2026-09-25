@@ -74,24 +74,25 @@ class GrowthTests(unittest.TestCase):
                         assert len(planned[key]) + planned['queued_not_selected'][key] == 2
                     rows.append({'kind':'plan',**planned})
                 # Even if each worker stops after its first job, every queue
-                # receives a turn within four attempts under the default budget.
-                assert all(set(first[n:n+4]) == set(growth._QUEUES) for n in range(5)), (limit,first)
+                # receives a turn within one attempt per queue.
+                q = len(growth._QUEUES)
+                assert all(set(first[n:n+q]) == set(growth._QUEUES) for n in range(9-q)), (limit,first)
         """)
 
     def test_execution_order_rotates_even_when_every_queue_is_selected(self):
         self.check_case("""
-            rows, first = [], []
-            for _ in range(8):
+            rows, first, q = [], [], len(growth._QUEUES)
+            for _ in range(2 * q):
                 planned = {key:[{'key':key}] for key in growth._QUEUES}
-                growth._select_work(planned,4,rows)
+                growth._select_work(planned,q,rows)
                 order = planned['work_order']
                 first.append(order[0]['queue'])
-                assert len(order) == 4 and {i['queue'] for i in order} == set(growth._QUEUES)
+                assert len(order) == q and {i['queue'] for i in order} == set(growth._QUEUES)
                 rows.append({'kind':'plan',**planned})
-            assert first[:4] == list(growth._QUEUES), first
-            assert first[4:] == first[:4], first
+            assert first[:q] == list(growth._QUEUES), first
+            assert first[q:] == first[:q], first
             daily = {key:[{'key':key}] for key in growth._QUEUES}
-            growth._select_work(daily,4,[dict(row,work_context='stop:W1') for row in rows])
+            growth._select_work(daily,q,[dict(row,work_context='stop:W1') for row in rows])
             assert daily['work_order'][0]['queue'] == growth._QUEUES[0], daily
         """)
 
@@ -156,6 +157,76 @@ class GrowthTests(unittest.TestCase):
                 raise AssertionError('unselected checkpoint accepted')
             except ValueError:
                 pass
+        """)
+
+    def test_recheck_jobs_queue_in_daily_runs_and_fork_scope(self):
+        self.check_case("""
+            node('A')
+            assert write.create_node('B', 'b', 'B relies on A.', 'gpt-6-astra', space='00_Scope/W1',
+                                     edges={'derived-from': 'A'})['ok']
+            assert not growth.plan(3)['recheck_jobs']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            planned = growth.plan(3)
+            jobs = planned['recheck_jobs']
+            assert [(j['node'], j['target']) for j in jobs] == [('B', '[[A]]')], jobs
+            assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'pending'
+            assert 'For recheck_jobs' in growth.prompt(planned)
+            assert [j['node'] for j in growth._recheck_jobs(graph.Index(), 'W1')] == ['B']
+            assert not growth._recheck_jobs(graph.Index(), 'W2')   # a fork keeps to its scope
+            assert not growth.daily_active()
+            register(planned)
+            assert growth.daily_active()
+            write.update_node('B', add_edges={'derived-from': 'A'})
+            assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'complete'
+            assert not growth.plan(3)['recheck_jobs']
+        """)
+
+    def test_recheck_escalation_holds_a_second_correction_for_the_user(self):
+        self.check_case("""
+            from osk import rechecks
+            node('A')
+            for title, body, basis in (('B', 'B relies on A.', 'A'), ('C', 'C relies on B.', 'B')):
+                assert write.create_node(title, title, body, 'gpt-6-astra', space='00_Scope/W1',
+                                         edges={'derived-from': basis})['ok']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            jobs = growth.plan(3)['recheck_jobs']
+            assert [(j['node'], j['cascade'], j['next']) for j in jobs] == [('B', False, ['C'])], jobs
+            # the agent's own correction of B is autonomous; C's recheck is then a cascade
+            write.update_node('B', old_text='B relies on A.', new_text='B relies on revised A.',
+                              add_edges={'derived-from': 'A'})
+            planned = growth.plan(3)
+            jobs = planned['recheck_jobs']
+            assert [(j['node'], j['cascade']) for j in jobs] == [('C', True)], jobs
+            manifest = register({**planned, 'scope_jobs': []})   # as run() records it
+            packet = {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
+                      'recheck': [{'key': jobs[0]['key'], 'outcome': 'unchanged',
+                                   'reason': 'x', 'proposal': 'y'}]}}
+            try:
+                growth.checkpoint(packet)
+                raise AssertionError('a recheck review closed a check without update_node')
+            except ValueError:
+                pass
+            packet['osk_reviews']['recheck'][0]['outcome'] = 'escalated'
+            assert growth.checkpoint(packet)['ok']
+            assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'complete'
+            assert not growth.plan(3)['recheck_jobs'], 'an escalated check returned to the agent queue'
+            held = rechecks.report(graph.Index()).get('escalated')
+            assert [h['node'] for h in held] == ['C'] and held[0]['proposal'] == 'y', held
+            write.update_node('C', add_edges={'derived-from': 'B'})   # the user's decision
+            assert not rechecks.report(graph.Index()), rechecks.report(graph.Index())
+        """)
+
+    def test_recheck_pick_rotates_by_attempts_in_a_fork_scope(self):
+        self.check_case("""
+            node('A')
+            for title in ('B1', 'B2'):
+                assert write.create_node(title, title, title + ' relies on A.', 'gpt-6-astra',
+                                         space='00_Scope/W1', edges={'derived-from': 'A'})['ok']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            first = growth._pick_rechecks(graph.Index(), 1, 'W1')
+            register({**growth.plan(3), 'scope_jobs': [], 'recheck_jobs': first})
+            again = growth._pick_rechecks(graph.Index(), 1, 'W1')
+            assert {first[0]['node'], again[0]['node']} == {'B1', 'B2'}, (first, again)
         """)
 
     def check_case(self, source):

@@ -8306,6 +8306,234 @@ def test_format_alignment():
         _age_all()
 
 
+def test_rechecks():
+    """근거의 상태가 바뀌면 참조 노드가 재검토 후보가 되고, 점검 완료는 기록된다
+    (시행령 §7 2·3항 · Mechanism §4-1 · §8 4항).
+
+    무엇을 망가뜨리면 실패하는가:
+      · 생성이 `bound`를 적지 않으면 → 생성 직후 완료 단언
+      · 판정이 대상 상태를 안 보면 → 근거 변경 후보 단언
+      · 다시 댄 근거를 닫지 않으면 → unchanged·updated 단언
+      · 이어 적기가 없으면 → 노드만 고친 뒤 완료 단언
+      · 판정이 노드 상태를 안 보면 → 엔진 밖 변경 후보 단언
+      · 제목 범위가 다음 동급 제목에서 끊기지 않으면 → 다른 절 변경 단언
+      · 중복 제목을 해석하면 → 해석 불능 단언
+      · 쓰기가 기준선보다 제 기록을 먼저 적으면 → 기준선 단언"""
+    from osk import rechecks
+    W = ROOT / "00_Scope/W1"
+    src = ROOT / "_sources" / "regr-rc.md"
+    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New", "W")]
+    led = rechecks.RECHECKS
+    lbefore = led.read_bytes() if led.exists() else None
+
+    def why(title, ref=None):
+        items, _ = rechecks.candidates(graph.Index())
+        return {i["why"] for i in items if i["node"] == title
+                and (ref is None or i["target"] == ref)}
+
+    def last(title, **kw):
+        nid = graph.Index().node(W / f"{title}.md").id
+        rs = [r for r in core.ledger_read(led) if r.get("node") == nid
+              and all(r.get(k) == v for k, v in kw.items())]
+        return rs[-1] if rs else {}
+
+    try:
+        _w(write.create_node, "regr-rc-T", "s", "근거 1판.", "fable-5", space="00_Scope/W1")
+        rn = _w(write.create_node, "regr-rc-N", "s", "주장.", "fable-5",
+                space="00_Scope/W1", edges={"derived-from": "regr-rc-T"})
+        check("전제: 근거를 단 생성", rn.get("ok"), rn)
+        check("생성은 bound를 적고 쌍은 완료다",
+              not why("regr-rc-N") and last("regr-rc-N").get("result") == "bound",
+              last("regr-rc-N"))
+
+        _w(write.update_node, "regr-rc-T", old_text="1판", new_text="2판")
+        check("근거가 바뀌면 후보다", why("regr-rc-N") == {"근거가 바뀌었다"})
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"})
+        check("바꿀 것 없이 다시 대면 unchanged로 닫힌다",
+              r.get("no_change") and r.get("rechecked") == ["[[regr-rc-T]]"]
+              and not why("regr-rc-N") and last("regr-rc-N").get("result") == "unchanged", r)
+
+        _w(write.update_node, "regr-rc-T", old_text="2판", new_text="3판")
+        r = _w(write.update_node, "regr-rc-N", old_text="주장.", new_text="고친 주장.",
+               add_edges={"derived-from": "regr-rc-T"})
+        check("본문과 함께 다시 대면 updated로 닫힌다",
+              r.get("ok") and not why("regr-rc-N")
+              and last("regr-rc-N").get("result") == "updated", r)
+
+        _w(write.update_node, "regr-rc-N", old_text="고친 주장.", new_text="또 고친 주장.")
+        check("노드만 고치면 완료가 이어진다",
+              not why("regr-rc-N")
+              and last("regr-rc-N").get("reason") == rechecks.CARRIED, last("regr-rc-N"))
+
+        p = W / "regr-rc-N.md"
+        p.write_bytes(p.read_bytes() + "밖에서 더한 줄.\n".encode())
+        _age_all()
+        check("엔진 밖에서 노드가 바뀌면 후보다", why("regr-rc-N") == {"노드가 바뀌었다"})
+
+        src.parent.mkdir(exist_ok=True)
+        src.write_text("# 계획\n\n## A\n\n가.\n\n```\n## 코드 속\n```\n\n## B\n\n나.\n",
+                       encoding="utf-8")
+        ref = "[[_sources/regr-rc.md#A]]"
+        _w(write.create_node, "regr-rc-H", "s", "절 근거.", "fable-5",
+           space="00_Scope/W1", edges={"derived-from": ref})
+        check("제목 범위 근거도 완료로 시작한다", not why("regr-rc-H", ref))
+        src.write_text(src.read_text(encoding="utf-8").replace("나.", "다."), encoding="utf-8")
+        _age_all()
+        check("다른 절이 바뀌어도 그 절의 근거는 완료다", not why("regr-rc-H", ref))
+        src.write_text(src.read_text(encoding="utf-8").replace("가.", "라."), encoding="utf-8")
+        _age_all()
+        check("그 절이 바뀌면 후보다", why("regr-rc-H", ref) == {"근거가 바뀌었다"})
+        data = src.read_bytes()
+        check("코드 속 `##`는 제목이 아니다",
+              rechecks.heading_range(data, "코드 속") is None
+              and b"## B" not in rechecks.heading_range(data, "A"))
+        check("중복 제목은 해석 불능이다",
+              rechecks.heading_range(b"## A\n1\n## A\n2\n", "A") is None)
+        check("raw 라운드는 추적하지 않는다",
+              rechecks.target("00_Scope/W1/_raw/.records/x.txt#1", graph.Index()) is None)
+        # 제목이 사라져도 근거는 남는다 — 해석 불능 후보이지 뺀 근거가 아니다
+        src.write_text(src.read_text(encoding="utf-8").replace("## A", "## A2"),
+                       encoding="utf-8")
+        _age_all()
+        check("제목이 사라진 근거는 해석 불능 후보로 남는다",
+              why("regr-rc-H", ref) == {"근거를 해석할 수 없다"})
+        from osk import growth
+        hid = graph.Index().node(W / "regr-rc-H.md").id
+        job = {"id": hid, "target_key": "_sources/regr-rc.md#A", "target": ref}
+        check("그 작업은 근거를 뺀 것으로 닫히지 않는다",
+              growth._recheck_status(job, graph.Index())["status"] == "pending")
+
+        # 변경분: 점검 때의 판(상태 해시가 같은 판)을 이력에서 찾아 바뀐 쪽의 diff를 싣는다
+        from unittest import mock
+        t = W / "regr-rc-T.md"
+        old_t = t.read_bytes()
+        _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"})
+        _w(write.update_node, "regr-rc-T", old_text="3판", new_text="4판")
+        idx = graph.Index()
+        nid = idx.node(W / "regr-rc-N.md").id
+        tkey = rechecks.target("[[regr-rc-T]]", idx)[0]
+        with mock.patch.object(rechecks, "_versions", return_value=[b"other", old_t]):
+            ch = rechecks.change(nid, tkey, "[[regr-rc-T]]", idx)
+        check("점검 때의 판을 골라 근거의 diff를 싣는다",
+              ch.get("side") == "target" and "-근거 3판." in ch.get("diff", "")
+              and "+근거 4판." in ch.get("diff", ""), ch)
+        with mock.patch.object(rechecks, "_versions", return_value=[b"other"]):
+            ch = rechecks.change(nid, tkey, "[[regr-rc-T]]", idx)
+        check("판을 못 찾으면 전문을 읽으라고 한다", "diff" not in ch and ch.get("note"), ch)
+        with tempfile.TemporaryDirectory() as g:
+            def git(*a, when="2026-09-01T10:00:00+09:00"):
+                subprocess.run(["git", "-C", g, *a], check=True, capture_output=True,
+                               env=dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when,
+                                        GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                                        GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
+            git("init", "-q")
+            (Path(g) / "a b.md").write_bytes(b"old\n")
+            git("add", "-A"); git("commit", "-qm", "1")
+            (Path(g) / "a b.md").write_bytes(b"new\n")
+            git("add", "-A"); git("commit", "-qm", "2", when="2026-09-03T10:00:00+09:00")
+            with mock.patch.object(rechecks, "ROOT", Path(g)):
+                got = rechecks._versions("a b.md", "2026-09-02T10:00:00+09:00")
+            check("git 이력에서 점검 시각 앞뒤의 판을 꺼낸다", got == [b"old\n", b"new\n"], got)
+
+        # 다시 대기는 검토자가 읽은 판에만 완료를 적는다(표면의 `read_node` 기록)
+        n_rel, t_rel = "00_Scope/W1/regr-rc-N.md", "00_Scope/W1/regr-rc-T.md"
+        seen = {n_rel: core.sha256_file(W / "regr-rc-N.md"), t_rel: core.sha256_file(t)}
+        _w(write.update_node, "regr-rc-T", old_text="4판", new_text="5판")    # 읽은 뒤 바뀐다
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+               _seen=seen)
+        check("읽은 뒤 근거가 바뀌었으면 완료를 적지 않는다",
+              r.get("recheck_unread") and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
+        seen[t_rel] = core.sha256_file(t)
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+               _seen={**seen, n_rel: "sha256:0"})
+        check("읽지 않은 노드 판으로도 완료를 적지 않는다", r.get("recheck_unread"), r)
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+               _seen=seen)
+        check("읽은 판 그대로면 완료를 적는다", r.get("rechecked") and not why("regr-rc-N"), r)
+
+        # 부분 열람도 읽은 판을 고정한다 — 전문 치환용 해시는 여전히 주지 않는다
+        import mcp_server as M
+        M._SEEN.clear()
+        v = M.read_node("regr-rc-T", view="outline")
+        check("부분 열람은 CAS 해시를 주지 않고 읽은 판만 기억한다",
+              "hash" not in v and M._SEEN.get(t_rel) == core.sha256_file(t), v)
+        # 읽은 판을 고친 쓰기는 쓴 판을 잇는다 — 쓰기 응답 해시의 CAS 연쇄와 같다
+        _w(write.update_node, "regr-rc-T", old_text="5판", new_text="6판")
+        seen2 = {n_rel: core.sha256_file(W / "regr-rc-N.md"), t_rel: core.sha256_file(t)}
+        _w(write.update_node, "regr-rc-N", old_text="밖에서 더한 줄.",
+           new_text="밖에서 더한 줄을 고쳤다.", _seen=seen2)
+        check("읽은 판을 고친 쓰기는 쓴 판을 잇는다",
+              seen2[n_rel] == core.sha256_file(W / "regr-rc-N.md"))
+        blind = {}
+        _w(write.update_node, "regr-rc-N", old_text="줄을 고쳤다.", new_text="줄을 고쳤다!",
+           _seen=blind)
+        check("쓰기 전 판을 읽지 않은 쓰기는 잇지 않는다", n_rel not in blind, blind)
+        seen2[n_rel] = core.sha256_file(W / "regr-rc-N.md")
+        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+               _seen=seen2)
+        check("이은 판으로 근거를 다시 대면 완료를 적는다",
+              r.get("rechecked") and not why("regr-rc-N"), r)
+
+        # 비노드 근거는 정기 실행 작업이 보여 준 판으로만 닫힌다
+        fref = "[[_sources/regr-rc.md]]"
+        _w(write.create_node, "regr-rc-W", "s", "파일 근거.", "fable-5", space="00_Scope/W1",
+           edges={"derived-from": fref})
+        src.write_text(src.read_text(encoding="utf-8") + "\n덧붙임.\n", encoding="utf-8")
+        _age_all()
+        w_rel = "00_Scope/W1/regr-rc-W.md"
+        sw = {w_rel: core.sha256_file(W / "regr-rc-W.md")}
+        r = _w(write.update_node, "regr-rc-W", add_edges={"derived-from": fref}, _seen=sw)
+        check("보여 준 적 없는 비노드 근거는 완료를 적지 않는다",
+              r.get("recheck_unread") and why("regr-rc-W") == {"근거가 바뀌었다"}, r)
+        gled = growth.LEDGER
+        gbefore = gled.read_bytes() if gled.exists() else None
+        try:
+            wid = graph.Index().node(W / "regr-rc-W.md").id
+            core.ledger_append(gled, {"kind": "plan", "recheck_jobs": [{
+                "key": f"recheck:{wid}:_sources/regr-rc.md",
+                "target_state": rechecks.target(fref, graph.Index())[1]}]})
+            r = _w(write.update_node, "regr-rc-W", add_edges={"derived-from": fref}, _seen=sw)
+            check("정기 작업이 보여 준 판이면 완료를 적는다",
+                  r.get("rechecked") and not why("regr-rc-W"), r)
+        finally:
+            if gbefore is None:
+                gled.unlink(missing_ok=True)
+            else:
+                gled.write_bytes(gbefore)
+
+        # 대장을 읽지 못해도 노드 쓰기는 된다 — 완료만 믿지 않는다
+        good = led.read_bytes()
+        led.write_bytes(good + '{"kind": "complete", "node'.encode())
+        r = _w(write.update_node, "regr-rc-N", old_text="또 고친 주장.", new_text="다시 고친 주장.")
+        check("찢긴 대장 행이 있어도 노드를 고칠 수 있다",
+              r.get("ok") and r.get("recheck_error"), r)
+        check("그동안 쌍은 완료로 보지 않는다", why("regr-rc-N") == {"대장을 믿을 수 없다"})
+        led.write_bytes(good)
+
+        # 기준선: 기록이 없는 대장에서 첫 쓰기는 기존 쌍을 먼저 적는다
+        led.unlink(missing_ok=True)
+        old = W / "regr-rc-Old.md"
+        old.write_text(node_text("260925-0002-rcold001",
+                                 extra='derived-from: "[[regr-rc-T]]"\n'), encoding="utf-8")
+        _age_all()
+        _w(write.create_node, "regr-rc-New", "s", "새 노드.", "fable-5", space="00_Scope/W1")
+        check("첫 쓰기가 기존 쌍을 기준선으로 적는다",
+              not why("regr-rc-Old")
+              and last("regr-rc-Old").get("reason") == rechecks.BASELINE, last("regr-rc-Old"))
+        rows = core.ledger_read(led)
+        check("한 번에 적은 기록은 앞 기록을 부모로 잇는다",
+              all(b["parents"] == [a["rid"]] for a, b in zip(rows, rows[1:])), rows[:2])
+        check("기록이 있으면 기준선은 다시 적지 않는다", rechecks.ensure_baseline() == 0)
+    finally:
+        for p in made + [src]:
+            p.unlink(missing_ok=True)
+        if lbefore is None:
+            led.unlink(missing_ok=True)
+        else:
+            led.write_bytes(lbefore)
+        _age_all()
+
+
 # ── 이동은 참조 위상을 새로 깨지 않는다 (v4.0.0) ─────────────────────────
 def test_move_topology_refused():
     """노드를 옮기면 소속이 바뀌어 **그 노드의 나가고 들어오는 참조**의 판정이
@@ -11531,7 +11759,7 @@ if __name__ == "__main__":
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
                test_duplicate_id_by_name_refused, test_same_file_link_is_duplicate,
-               test_format_alignment,
+               test_format_alignment, test_rechecks,
                test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_node_place_rule,

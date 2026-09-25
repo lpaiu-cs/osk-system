@@ -320,6 +320,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("validate", help="검증기 수트 전체 실행")
     sub.add_parser("status", help="체계 현황")
+    sub.add_parser("rechecks", help="근거 재검토 후보 전체 (시행령 §7 2항)")
     p = sub.add_parser("search", help="작업 검색")
     p.add_argument("query"); p.add_argument("-k", type=int, default=8)
     p = sub.add_parser("view", help="열람 검색")
@@ -455,6 +456,11 @@ def main(argv=None):
 
     if a.cmd == "validate":
         validate.main()
+    elif a.cmd == "rechecks":
+        from . import rechecks
+        items, pending = rechecks.candidates()
+        _emit({"baseline_pending": pending, "count": len(items), "items": items,
+               "close": rechecks.CLOSE})
     elif a.cmd == "validators":
         # 활성화·해제는 사용자 전속이다(시행령 §11 3항) — 표면(MCP)에는 없다.
         known = ["cluster-overview"]
