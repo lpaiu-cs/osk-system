@@ -75,7 +75,7 @@ def run() -> dict:
     try:
         rep["warnings"] = graph.reference_report(idx)
     except Exception as e:
-        rep["warnings"] = {"dangling_refs": []}
+        rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
         skip("미해석 참조 경고", f"산출 실패: {e}")
 
     # 4. 승인 기록부 (시행령 §6 · Mechanism §3) — 보호영역 현황.

@@ -878,7 +878,8 @@ def dangling_refs(idx: Index) -> list[str]:
 
 
 def reference_report(idx: Index) -> dict:
-    out, items = [], []
+    from . import write
+    out, items, dups = [], [], []
     for stem, (p, kind) in idx.nodes.items():
         n = idx.node(p)
         for item in reference_review(n, idx):
@@ -887,7 +888,16 @@ def reference_report(idx: Index) -> dict:
                 relation, ref = item["relation"], item["ref"]
                 out.append(f"{stem} → {ref}" if relation == "Link" else
                            f"{stem} [{relation}] → {ref}")
-    return {"dangling_refs": sorted(out), "reference_review": items}
+        # 한 노드 안에서 바이트까지 같은 근거가 되풀린 엣지. 위반이 아니라 경고다 —
+        # 엣지 집합은 같고, 그 노드의 다음 쓰기가 접는다(`write._update_node_locked`).
+        for relation in contract.PREDICATES:
+            seen = set()
+            for ref in write._stored_edges(n.meta.get(relation)):
+                if ref in seen:
+                    dups.append(f"{stem} [{relation}] → {ref}")
+                seen.add(ref)
+    return {"dangling_refs": sorted(out), "duplicate_edges": sorted(dups),
+            "reference_review": items}
 
 
 def reference_review(node: contract.Node, idx: Index,

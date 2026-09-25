@@ -675,6 +675,14 @@ def size_feedback(path, body: str) -> dict:
                        "정정 전후의 판단과 출처는 보존하며 미검토 부분은 보류한다."}}
 
 
+def _edge_report(node) -> dict:
+    """응답의 엣지 — 저장된 근거를 **좌표째** 싣는다. `Node.edges`는 해석용이라
+    raw 라운드 앵커를 버린다. 그래서 한 기록의 다른 라운드들이 같은 경로로
+    되풀려 보였다(2026-09-25 실측: `#42`·`#34`·`#41`이 같은 경로 셋으로 보고됐다)."""
+    refs = node.references()
+    return {p: [r for rel, r in refs if rel == p] for p in contract.PREDICATES}
+
+
 def _reference_feedback(path, meta, body, idx, previous=None) -> dict:
     node = contract.Node(path=path, meta=meta, body=body)
     refs = graph.reference_review(node, idx, previous)
@@ -1101,7 +1109,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
             "created": now, "updated": now,
             "author": "agent", "drafter": drafter, "summary": summary}
     for pred, tg in (edges or {}).items():
-        meta[pred] = _as_links(pred, tg, legacy_raw=_legacy_raw)
+        meta[pred] = _as_links(pred, _merge_edges([], tg, idx), legacy_raw=_legacy_raw)
     data, errs = _validate_render(path, meta, body, idx)
     if errs:
         raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
@@ -1201,6 +1209,23 @@ def _edge_key(target: str, idx) -> tuple[str, str]:
     if ("/" in path or sep) and idx.resolve(path)[0] != "node":
         return path.removesuffix(".md"), anchor
     return contract.target_stem(path), ""
+
+
+def _merge_edges(cur: list[str], add, idx) -> list[str]:
+    """저장 목록 `cur` 뒤에 `add`를 잇되, 같은 근거(`_edge_key`)는 처음 것 하나만 남긴다.
+
+    엣지를 더하는 자리는 모두 이 한 벌을 지난다 — 생성, 갱신의 추가, 그리고 그 둘을
+    부르는 증류. 구판은 갱신의 추가만 새 대상을 걸렀다. 그래서 생성은 받은 만큼
+    적었고(distill의 `sources`와 `edges`가 같은 라운드를 줄 때), 저장 목록에 이미
+    든 중복은 그대로 이어 적었다. 같은 기록의 **다른 라운드**는 앵커가 달라 다른
+    근거로 남는다."""
+    seen, out = set(), []
+    for t in [*cur, *_as_list(add)]:
+        k = _edge_key(t, idx)
+        if k not in seen:
+            seen.add(k)
+            out.append(t)
+    return out
 
 
 def _as_links(pred: str, targets, *, legacy_raw: bool = False) -> str | list:
@@ -1329,6 +1354,14 @@ def _update_node_locked(name: str, body: str | None = None,
         replaced_summary = str(meta.get("summary"))
         meta["summary"] = summary
         changed = True
+    # 이미 저장된 중복은 이 쓰기에서 접는다 — 접기만으로는 쓰지 않는다(`changed` 불변).
+    # ponytail: 바이트가 같은 되풀이만 접는다(해소가 없어 공짜이고 실패하지 않는다).
+    # 표기만 다른 같은 근거는 그 술어에 엣지를 더하는 쓰기의 `_merge_edges`가 접는다.
+    # 모든 쓰기에서 키로 접으려면 raw 근거마다 해소 비용(Windows 실측 ~7 ms)을 낸다.
+    for pred in contract.PREDICATES:
+        cur = _stored_edges(meta.get(pred))
+        if len(set(cur)) != len(cur):
+            meta[pred] = list(dict.fromkeys(cur))
     # 두 루프 모두 **누적된 `meta`**에서 현재값을 읽는다. 구판은 각자
     # `n.edges(pred)`로 **원본**을 다시 읽었고, 그래서 같은 술어에 add와
     # remove를 함께 주면 remove가 "add가 없었던 것처럼" 계산한 값으로
@@ -1340,16 +1373,11 @@ def _update_node_locked(name: str, body: str | None = None,
     # 두 번째는 이 결함을 재현해 기록한 직후였다 — 알고도 피해지지 않았다.
     for pred, tg in (add_edges or {}).items():
         cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
-        have = {_edge_key(x, idx) for x in cur}
-        new = []
-        for t in _as_list(tg):
-            k = _edge_key(t, idx)
-            if k in have:
-                continue
-            have.add(k)          # 한 호출 안의 중복도 한 번만 앉는다
-            new.append(t)
-        if new:
-            meta[pred] = _as_links(pred, cur + new, legacy_raw=_legacy_raw)
+        merged = _merge_edges(cur, tg, idx)  # 한 호출 안의 중복도 한 번만 앉는다
+        # 길이로 비교하지 않는다 — 표기만 다른 중복이 하나 접히고 새 근거가 하나
+        # 앉으면 길이가 같아 새 근거를 잃는다.
+        if merged != cur:
+            meta[pred] = _as_links(pred, merged, legacy_raw=_legacy_raw)
             changed = True
     for pred, tg in (remove_edges or {}).items():
         drop = {_edge_key(t, idx) for t in _as_list(tg)}
@@ -1384,7 +1412,7 @@ def _update_node_locked(name: str, body: str | None = None,
         return {"ok": True, "no_change": True, "name": name,
                 "path": posix_rel(path, ROOT), "id": n.id,
                 "new_hash": sha256_file(path),
-                "edges": {p: n.edges(p) for p in contract.PREDICATES},
+                "edges": _edge_report(n),
                 **_reference_feedback(path, n.meta, n.body, idx, n)}
     if not only_conflicts:
         meta["updated"] = _stamp or now_kst()
@@ -1404,9 +1432,7 @@ def _update_node_locked(name: str, body: str | None = None,
     out = {"ok": True, "name": name, "path": posix_rel(path, ROOT),
            "id": n.id, "new_hash": sha256_bytes(data),
            "updated_kept": only_conflicts,
-           "edges": {p: contract.Node(path=path, meta=meta,
-                                      body=new_body).edges(p)
-                     for p in contract.PREDICATES},
+           "edges": _edge_report(contract.Node(path=path, meta=meta, body=new_body)),
            **_reference_feedback(path, meta, new_body, idx, n)}
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
