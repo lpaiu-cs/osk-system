@@ -74,24 +74,25 @@ class GrowthTests(unittest.TestCase):
                         assert len(planned[key]) + planned['queued_not_selected'][key] == 2
                     rows.append({'kind':'plan',**planned})
                 # Even if each worker stops after its first job, every queue
-                # receives a turn within four attempts under the default budget.
-                assert all(set(first[n:n+4]) == set(growth._QUEUES) for n in range(5)), (limit,first)
+                # receives a turn within one attempt per queue.
+                q = len(growth._QUEUES)
+                assert all(set(first[n:n+q]) == set(growth._QUEUES) for n in range(9-q)), (limit,first)
         """)
 
     def test_execution_order_rotates_even_when_every_queue_is_selected(self):
         self.check_case("""
-            rows, first = [], []
-            for _ in range(8):
+            rows, first, q = [], [], len(growth._QUEUES)
+            for _ in range(2 * q):
                 planned = {key:[{'key':key}] for key in growth._QUEUES}
-                growth._select_work(planned,4,rows)
+                growth._select_work(planned,q,rows)
                 order = planned['work_order']
                 first.append(order[0]['queue'])
-                assert len(order) == 4 and {i['queue'] for i in order} == set(growth._QUEUES)
+                assert len(order) == q and {i['queue'] for i in order} == set(growth._QUEUES)
                 rows.append({'kind':'plan',**planned})
-            assert first[:4] == list(growth._QUEUES), first
-            assert first[4:] == first[:4], first
+            assert first[:q] == list(growth._QUEUES), first
+            assert first[q:] == first[:q], first
             daily = {key:[{'key':key}] for key in growth._QUEUES}
-            growth._select_work(daily,4,[dict(row,work_context='stop:W1') for row in rows])
+            growth._select_work(daily,q,[dict(row,work_context='stop:W1') for row in rows])
             assert daily['work_order'][0]['queue'] == growth._QUEUES[0], daily
         """)
 

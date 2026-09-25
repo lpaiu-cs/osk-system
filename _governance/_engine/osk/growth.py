@@ -328,6 +328,12 @@ def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
             if row.get("work_order"):
                 last_first[row["work_order"][0]["queue"]] = number
     order = sorted(_QUEUES, key=last.get)
+    # 첫 차례가 가장 오래된 큐를 먼저 뽑는다 — 한도가 큐 수보다 작아도 첫 차례가
+    # 큐마다 한 번씩 돈다(첫 작업 뒤 시간이 다 된 워커에도 굶는 큐가 없다).
+    lead = min((key for key in _QUEUES if planned[key]), key=last_first.get, default=None)
+    if lead is not None:
+        order.remove(lead)
+        order.insert(0, lead)
     selected = {key: [] for key in _QUEUES}
     work_order = []
     for _ in range(limit):
