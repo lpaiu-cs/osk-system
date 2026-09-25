@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 from .core import (LEDGER, ID_RE, ROOT, causal_maxima, effective_parents, ledger_damage,
-                   ledger_extend, ledger_read, posix_rel, resolve_in_root, sha256_bytes)
+                   ledger_extend, ledger_read, posix_rel, sha256_bytes)
 from . import contract, graph
 
 RECHECKS = LEDGER / "rechecks.jsonl"
@@ -53,24 +53,6 @@ def heading_range(data: bytes, heading: str) -> bytes | None:
     return text[off:end].encode("utf-8")
 
 
-def _locate(name: str, idx) -> tuple[Path, tuple] | None:
-    """`graph.Index.resolve`와 같은 순서로 대상 파일 하나를 찾는다."""
-    if re.match(ID_RE, name):
-        return None if name in idx.dup_ids else idx.by_id.get(name)
-    if "/" in name:
-        p = resolve_in_root(name)
-        if p is None:
-            return None
-        for c in (p, p.with_suffix(".md")):
-            if c.is_file():
-                return c, graph.space_of(c)
-        return None
-    live, _errors = idx.lookup_name(name)
-    if len(live) == 1:
-        return live[0]
-    return None if live else idx.nonnode.get(name)
-
-
 def _name(ref: str) -> tuple[str, str] | None:
     """저장 표기 → (대상 이름, 제목). 추적하지 않는 raw·URL은 None."""
     s = str(ref).strip()
@@ -92,7 +74,7 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str] | None:
     name, heading = parsed
     if cache is not None and (name, heading) in cache:
         return cache[(name, heading)]
-    out, hit = None, _locate(name, idx) if name else None
+    out, hit = None, idx.locate(name) if name else None
     if hit:
         path, kind = hit
         try:
@@ -317,7 +299,7 @@ def change(nid: str, key: str, ref: str, idx) -> dict:
     maxima = [] if ledger_damage(recs, RECHECKS) else _latest(recs, nid).get((nid, key), [])
     node = idx.by_id.get(nid)
     parsed = _name(ref)
-    hit = _locate(parsed[0], idx) if parsed and parsed[0] else None
+    hit = idx.locate(parsed[0]) if parsed and parsed[0] else None
     if not maxima or node is None or hit is None:
         return {"note": "점검 기록이 없다 — 근거와 노드의 전문을 읽는다"}
     m, heading = maxima[-1], parsed[1]
