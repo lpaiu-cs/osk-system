@@ -17,6 +17,10 @@ from pathlib import Path
 from .core import ROOT, LEDGER, ID_RE, resolve_in_root, SPACE_ROOTS, adapt_path
 from . import contract
 
+# 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
+_ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?(?![0-9a-z])")
+_ID_TOKEN_CACHE: dict[Path, tuple[tuple[int, int], frozenset]] = {}
+
 
 def _load_cases() -> dict[str, dict]:
     """사건부 헤더 일괄 로드 — conflicts 적격 판정용."""
@@ -33,16 +37,26 @@ def _load_cases() -> dict[str, dict]:
 NODE_SPACES = (DOMAIN, PERSON, SCOPE)
 W_LINK, W_DERIVED = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값 (Link·derived-from)
 
-# `Path.rglob("*.md")`은 Windows에서 **대소문자를 무시한다** — pathlib이
-# `os.name != "nt"`로 대소문자 구분을 정하기 때문이다(실측: rglob이 `Upper.MD`·
-# `Mixed.Md`를 함께 낸다). 순회를 손으로 짜면서 이것을 놓치면 그 노드가 색인에서
-# 통째로 사라지고, `create_node`가 **다른 군집에 같은 이름을 거부 없이 만든다** —
-# 표면이 스스로 전역 동명 중복을 만드는 것이며 검증기도 그것을 보지 못한다.
-_MD_CASE_INSENSITIVE = os.name == "nt"
-
-
+# `.md` 확장자는 **어느 기기에서나** 대소문자를 무시한다. 구판은 pathlib을 따라
+# `os.name == "nt"`일 때만 무시했고, 그래서 같은 트리의 `Note.MD`가 Windows에서는
+# 노드, macOS(APFS도 대소문자 무시가 기본이다)·Linux에서는 비노드였다 — 한 vault를
+# 동기화하는 기기들이 서로 다른 노드 집합을 보았다. 노드인지는 파일명이 정하고
+# 파일명은 git이 기기마다 같게 옮기므로, 판정도 호스트가 아니라 이름에서 나온다.
+# 놓치면 그 노드가 색인에서 사라지고 `create_node`가 **다른 군집에 같은 이름을
+# 거부 없이 만든다**(v3.7.0 실측).
 def _is_md(name: str) -> bool:
-    return (name.lower() if _MD_CASE_INSENSITIVE else name).endswith(".md")
+    return name.lower().endswith(".md")
+
+
+def _off_node(parts: tuple) -> bool:
+    """노드 자리 **안의** 살림 구획인가 — 점 접두 조각(파일 포함)과 밑줄 접두
+    디렉토리. 점 접두는 도구의 살림살이이고(`.obsidian`·`.trash`·AppleDouble
+    `._x`), 밑줄 접두 구획에는 노드를 두지 않는다(Mechanism §1 4항). 구판은
+    이것을 소비자마다 따로 보았다 — 보호영역(`approvals._region_files`)은 점
+    접두를 빼는데 색인은 넣어서, 승인되지 않은 `.hidden.md`가 기억으로 읽히고
+    고쳐지는 동안 영역은 clean이었다. 판정은 여기 한 벌이다."""
+    return bool(parts) and (parts[-1].startswith(".") or any(
+        p.startswith((".", "_")) for p in parts[:-1]))
 
 
 def _is_reparse(entry) -> bool:
@@ -167,7 +181,18 @@ def space_of(path: Path) -> tuple:
 
 def _space_of_parts(parts: tuple) -> tuple:
     """**ROOT 상대** 경로 조각 → 소속. `space_of`의 판정 본체이며, 봉쇄는 하지
-    않는다 — 부르는 쪽이 이미 ROOT 아래임을 아는 경우에만 직접 쓴다."""
+    않는다 — 부르는 쪽이 이미 ROOT 아래임을 아는 경우에만 직접 쓴다.
+
+    노드 자리로 판정된 경로라도 살림 구획(`_off_node`)을 지나면 비노드다.
+    `_raw`·`_ledger`·`_engine`처럼 이름이 정해진 구획은 그보다 먼저 제 소속을
+    받으므로(`_raw/.records`는 그대로 raw) 이 판정이 건드리지 않는다."""
+    kind = _place_of_parts(parts)
+    if is_node_home(kind) and _off_node(parts[1:]):
+        return ("support",)
+    return kind
+
+
+def _place_of_parts(parts: tuple) -> tuple:
     if not parts:
         return ("support",)
     head = parts[0]
@@ -267,7 +292,7 @@ def _scan(root: Path, prefix: tuple, errors: list | None = None):
                 continue
 
 
-def iter_nodes(errors: list | None = None):
+def iter_nodes(errors: list | None = None, dirents: dict | None = None):
     # 통치 구획의 통치 문서·사료는 특수한 노드다(시행령 §10 1항) — 색인에
     # 있어야 명시 조회(read_node)가 도달하고 갱신 후 승인(수용 기록)이
     # 성립한다. `_engine`의 .md는 소속 판정이 ("engine",)으로 걸러낸다.
@@ -288,6 +313,8 @@ def iter_nodes(errors: list | None = None):
             p = Path(e.path)
             found.append((p, space_of(p) if _is_reparse(e)
                           else _space_of_parts(parts)))
+            if dirents is not None:
+                dirents[p] = e        # 디렉토리 판독의 stat — 동 id 후보표가 쓴다
         for p, k in sorted(found, key=lambda x: x[0]):
             if is_node_home(k):
                 yield p, k
@@ -352,8 +379,9 @@ def _vault_md():
         if top.name.startswith(".") or top.name == "__pycache__":
             continue
         if top.is_dir():
-            yield from sorted(top.rglob("*.md"))
-        elif top.suffix == ".md":
+            yield from sorted(p for p in top.rglob("*")
+                              if _is_md(p.name) and p.is_file())
+        elif _is_md(top.name):
             yield top
 
 
@@ -406,13 +434,15 @@ class Index:
         # 관측이 불완전하면(디렉토리 하나라도 못 읽었으면) 유일성을 말할 수
         # 없다. 그 사실을 색인이 들고 있어야 쓰기가 거부할 수 있다.
         self.scan_errors: list[str] = []
+        self._dirents: dict = {}
         self._entries: list[tuple[Path, tuple]] = list(
-            iter_nodes(self.scan_errors))
+            iter_nodes(self.scan_errors, self._dirents))
         self.names: dict[str, tuple[Path, tuple]] = {}
         self._by_name: dict[str, list[tuple[Path, tuple]]] = {}
         self.parsed: dict[Path, contract.Node] = {}
         self._failed: dict[Path, str] = {}
         self._all_parsed = False
+        self._id_tokens: dict[str, list[Path]] | None = None
         for p, k in self._entries:
             self.names[p.stem] = (p, k)
             self._by_name.setdefault(p.stem, []).append((p, k))
@@ -598,6 +628,78 @@ class Index:
         cur = self.names.get(stem)
         if cur is not None and cur[0] == src:
             self.names[stem] = (dst, kind)
+        # 옛 경로를 쥔 후보표는 동 id를 오보한다. 후보표는 `_entries`에서 다시
+        # 지어지고, Windows의 디렉토리 판독 stat은 옛 경로에도 캐시된 값을 내므로
+        # (파일을 열지 않고 접어 둔 토큰이 맞는다) 항목과 stat도 함께 옮긴다.
+        self._entries = [(dst, kind) if p == src else (p, k) for p, k in self._entries]
+        self._dirents.pop(src, None)
+        self._id_tokens = None
+
+    def _node_bytes(self):
+        """노드 파일 전부의 바이트 — 판독(YAML) 없이. 못 여는 파일은 판독도
+        실패하므로 노드가 아니다(`_readable`과 같은 판정)."""
+        for p, _k in self._entries:
+            try:
+                yield p, p.read_bytes()
+            except OSError:
+                continue
+
+    def mentioning(self, tokens) -> list[Path]:
+        """바이트에 `tokens` 중 하나라도 나오는 노드 파일 — **후보**일 뿐이다.
+        참조인지는 부르는 쪽이 판독해서 가린다. 파일을 전부 열지만 YAML을
+        풀지 않으므로 전수 판독(`parse_all`)보다 싸다."""
+        keys = [str(t).encode() for t in tokens if t]
+        return [p for p, data in self._node_bytes() if any(k in data for k in keys)]
+
+    def _id_token_sets(self):
+        """파일마다 바이트 속 id꼴 토큰. 디렉토리 판독의 (mtime, 크기)가 같으면
+        프로세스에 접어 둔 것을 쓴다 — 이름 쓰기마다 전 노드를 열면 2k 노드에서
+        쓰기 한 번이 수백 ms 늘었다(실측). racy 창 안의 파일은 접지 않는다."""
+        # ponytail: 캐시는 지운 경로를 비우지 않는다(프로세스 수명 동안 vault
+        # 크기에 비례). 장수 프로세스에서 문제가 되면 색인 구축 때 솎는다.
+        margin, now = racy_margin_ns(), time.time_ns()
+        for p, _k in self._entries:
+            try:
+                e = self._dirents.get(p)
+                st = e.stat() if e is not None else p.stat()
+                key = (st.st_mtime_ns, st.st_size)
+                hit = _ID_TOKEN_CACHE.get(p)
+                if hit is None or hit[0] != key:
+                    hit = (key, frozenset(t.decode() for t in _ID_TOKEN.findall(p.read_bytes())))
+                    if abs(now - key[0]) > margin:
+                        _ID_TOKEN_CACHE[p] = hit
+            except OSError:
+                continue              # 못 여는 파일은 판독도 실패한다 — 노드가 아니다
+            yield p, hit[1]
+
+    def id_twins(self, path: Path) -> list[str]:
+        """`path` 노드와 id가 같은 **판독되는** 노드 전부(자신 포함, POSIX 경로) —
+        겹치지 않으면 빈 목록. `dup_ids`의 한 id판이다.
+
+        이름 핸들은 그 이름의 후보만 연다(전수 판독 없음). 그래서 이름으로 잡은
+        노드의 id가 사본과 겹쳐도 보이지 않았고, 두 사본이 이름으로 각자 읽히고
+        고쳐져 조용히 갈라졌다(2026-09-24 재현) — Mechanism §2 1항은 동 id면
+        읽기도 쓰기도 거부한다. 후보표는 바이트의 id꼴 토큰에서 한 번 짓고
+        (근거로 id를 적은 노드도 후보가 되지만 판독이 걸러낸다), 판정은 계약
+        파서로 한다 — 정규식이 판정하면 따옴표 표기 같은 노드가 미아가 된다.
+        """
+        if not self._readable(path) or not self.parsed[path].id:
+            return []
+        nid = self.parsed[path].id
+        if self._all_parsed:
+            same = [ROOT / s for s in self.dup_ids.get(nid, [])]
+        else:
+            if self._id_tokens is None:
+                self._id_tokens = {}
+                for p, toks in self._id_token_sets():
+                    for t in toks:
+                        self._id_tokens.setdefault(t, []).append(p)
+            same = [p for p in self._id_tokens.get(nid, ())
+                    if self._readable(p) and self.parsed[p].id == nid]
+        # 같은 파일로 가는 파일 링크도 한 노드를 두 자리에 두는 중복 소속이다 —
+        # 사본과 같이 거부한다(Mechanism §2 1항).
+        others = [p for p in same if p != path]
+        return sorted(q.relative_to(ROOT).as_posix() for q in [path, *others]) if others else []
 
     def node(self, path: Path) -> contract.Node:
         if path not in self.parsed:
@@ -663,6 +765,23 @@ class Index:
         if name in self.nonnode:
             return ("nonnode", self.nonnode[name][1])
         return ("dangling",)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+# 동 id 거부의 다음 행동 — 읽기·쓰기·후보 상정이 같은 말을 한다.
+DUP_ID_ADVICE = (
+    "id가 겹친 사본은 복제·백업 복원·동기화 충돌에서 온다(표면은 id를 겹쳐 "
+    "만들지 않는다). 같은 파일로 가는 파일 링크도 한 노드를 두 자리에 두는 중복 "
+    "소속이다. 충돌 후보(`record_candidate`)가 아니라 동일성 사고라 표면으로 "
+    "고치지 않는다 — 링크면 링크를 지워 한 자리만 남기고, 사본이면 사용자가 두 "
+    "파일을 비교해 남길 쪽을 정하고 다른 쪽의 고유한 내용을 옮긴 뒤 그 파일을 "
+    "vault 밖으로 치운다. 그때까지 둘 다 이름으로도 id로도 읽거나 고치지 않는다")
 
 
 def topology_check(idx: Index) -> list[str]:
@@ -847,10 +966,12 @@ def _score_key(idx: "Index", t: str) -> str:
 # `wm`이 같은 판정을 쓰므로 여기 한 벌만 둔다 — 두 벌이면 조용히 갈라진다.
 
 def scope_names() -> list[str]:
-    """`00_Scope/` 아래의 scope 이름. Workbench도 하나의 scope다(헌법 4조 5항)."""
+    """`00_Scope/` 아래의 scope 이름. Workbench도 하나의 scope다(헌법 4조 5항).
+    살림 구획(`_off_node` — `.x`·`_x`)은 scope가 아니다."""
     d = ROOT / SCOPE
     return sorted(x.name for x in d.iterdir()
-                  if x.is_dir() and not x.name.startswith(".")) if d.is_dir() else []
+                  if x.is_dir() and _space_of_parts(
+                      (SCOPE, x.name, "x.md")) != ("support",)) if d.is_dir() else []
 
 
 def space_list() -> str:

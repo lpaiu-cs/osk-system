@@ -32,6 +32,7 @@ from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_damage,
                    ledger_read, resolve_one, sha256_file, sha256_bytes, posix_rel,
                    local_lock_path, SPACE_ROOTS, _within, _canon_rel)
 from .core import mutation_lock_path as core_mutation_lock_path
+from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from ._portalock import lock_exclusive, unlock
 from .layout import KINDS, PREFIXES, adapt_path
 from . import publish
@@ -397,55 +398,12 @@ def _fsync_file(p: Path) -> None:
         os.close(fd)
 
 
-def _fsync_dir(d: Path) -> None:
-    """디렉터리 엔트리를 내구화 — 파일만 fsync하면 rename·create·unlink가 유실될
-    수 있다. 전원 차단까지 계약하므로 실패를 삼키지 않는다: 디렉터리 fsync 개념이
-    없는 파일시스템(EINVAL·ENOTSUP)만 예외로 넘기고, 그 밖의 오류는 올려
-    트랜잭션이 durability 없이 성공한 척하지 못하게 한다."""
-    try:
-        fd = os.open(str(d), os.O_RDONLY)
-    except FileNotFoundError:
-        return                      # 이미 사라진 디렉터리 — 내구화할 대상이 없다
-    except OSError as e:
-        if e.errno in (errno.EINVAL, errno.ENOTSUP, errno.EACCES, errno.EPERM):
-            return
-        raise
-    try:
-        os.fsync(fd)
-    except OSError as e:
-        if e.errno not in (errno.EINVAL, errno.ENOTSUP):
-            raise
-    finally:
-        os.close(fd)
-
-
-def _mkdirs_durable(d: Path) -> list[Path]:
-    """`d`까지의 없는 조상을 만들고, **만든 각 디렉터리의 부모를 fsync**한다.
-    `mkdir(parents=True)` 뒤 자신만 fsync하면 그 엔트리를 소유한 부모가 내구화되지
-    않아 전원 차단 시 디렉터리째 유실된다(그 안의 파일은 done 이후에도 사라진다).
-    반환: 새로 만든 디렉터리(깊은 순) — 트랜잭션 rollback이 되돌릴 대상이다."""
-    missing = []
-    p = d
-    while not p.exists():
-        missing.append(p)
-        if p.parent == p:
-            break
-        p = p.parent
-    created = []
-    for q in reversed(missing):     # 얕은 곳부터 만든다
-        q.mkdir(exist_ok=True)
-        created.append(q)
-        _fsync_dir(q.parent)        # 그 엔트리를 소유한 부모를 내구화
-    created.reverse()
-    return created
-
-
 def _fsync_journal_home() -> None:
-    """저널 파일의 **디렉터리 엔트리**를 내구화한다. `ledger_append`는 파일만
-    fsync하므로, 저널이 이번에 처음 만들어졌으면 이름 자체가 전원 차단에
-    유실될 수 있다 — 그 상태에서 트랜잭션 표식까지 지우면 파일은 새 판인데
-    baseline·관리 이력이 통째로 사라진다. ROOT까지 조상을 함께 내구화한다
-    (대장 구획도 이번에 생겼을 수 있다)."""
+    """저널 파일의 **디렉터리 엔트리**를 내구화한다. `ledger_append`가 처음
+    만든 대장의 엔트리를 내구화하지만, 직전 실행이 행 fsync 직후·엔트리 내구화
+    전에 죽었으면 이름 자체가 전원 차단에 유실될 수 있다 — 그 상태에서 트랜잭션
+    표식까지 지우면 파일은 새 판인데 baseline·관리 이력이 통째로 사라진다. ROOT
+    까지 조상을 함께 내구화한다(대장 구획도 이번에 생겼을 수 있다)."""
     d = UPDATE_JOURNAL.parent
     root_real = Path(os.path.realpath(ROOT))
     while True:
@@ -1012,13 +970,28 @@ def _request_approval(report: dict) -> dict:
         "사용자 재승인을 받기 전에는 자동 재시도하지 마라. 재승인 후 같은 명령을 "
         "1시간 안에 한 번 재시도하면 적용한다 — 이 vault의 동기화 데몬은 적용 단계가 "
         "멈추고 끝나면 다시 띄운다. 릴리스·로컬 변경집합이 달라지거나 적용이 실패하면 "
-        "새 확인을 요구한다. 적용 후 모든 연결 하네스의 MCP 서버를 재시작해야 한다."))
+        "새 확인을 요구한다. 적용 후 모든 연결 하네스의 MCP 서버를 재시작해야 한다."
+        + _PROTECT_NOTE.get(report.get("governance", {}).get("protect"), "")))
 
 
-def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list) -> dict:
+# 통치 구획 지정 여부는 확인 대상의 일부다 — 사용자가 무엇에 답하는지 알게 한다.
+_PROTECT_NOTE = {
+    "establish": " 이 적용은 통치 구획(_governance)을 비준증빙 내용 그대로 "
+                 "보호영역으로 지정한다 — 이후 통치 문서의 로컬 수정은 pending으로 "
+                 "드러난다. 이것도 함께 알린다.",
+    "withheld": " 통치 구획에 비준증빙과 다른 로컬 내용(governance.unattested)이 "
+                "있거나 승인 기록부가 손상돼 보호영역으로 지정하지 않는다 — 사용자가 "
+                "차이를 검토한 뒤(손상은 수동 복구가 먼저다) 대화형 단말에서 "
+                "`osk protect _governance`로 지정할 수 있다고 함께 알린다.",
+}
+
+
+def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
+                       targets: list, rel: dict) -> dict:
     """Hash the exact post-update region, including pre-existing local changes."""
     from . import approvals
-    state = approvals.state("_governance")
+    recs = approvals.records()
+    state = approvals.state("_governance", recs)
     if state == "stale":
         raise UpdateError("통치 구획 승인본이 stale이다 — 사용자 검토로 먼저 해소한다")
     files = {rel: sha256_file(path) for rel, path in
@@ -1034,9 +1007,28 @@ def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list) ->
             files[dest] = sha256_bytes(data)
     for dest in p["remove"]:
         files.pop(dest, None)
-    return {"state": state, "base": base, "before": before,
-            "after": sha256_bytes(approvals._manifest_blob(sorted(files.items()))),
-            "existing_changes": prior if state == "pending" else None}
+    out = {"state": state, "base": base, "before": before,
+           "after": sha256_bytes(approvals._manifest_blob(sorted(files.items()))),
+           "existing_changes": prior if state == "pending" else None}
+    if state != "unprotected":
+        return out
+    # 통치 구획은 상설 보호영역이다(헌법 10조 1항). 지정 이력이 없는 설치에서는
+    # 확인받은 적용이 지정까지 한다 — 단 적용 뒤 구획이 **비준증빙이 정한 내용과
+    # 정확히 같을 때만**. 로컬 차이(충돌 사이드카·증빙 밖 파일 포함)를 초기
+    # 승인본으로 축복하지 않고 보고한다. 사용자가 해제한 구획은 다시 지정하지
+    # 않는다(해제는 제도의 개정과 함께 한다 — 시행령 §6 1항).
+    if any(r.get("region") == "_governance" for r in recs):
+        out["protect"] = "released"
+        return out
+    attested = {dest: rel["files"][src] for src, dest in targets
+                if dest.startswith("_governance/")
+                and not approvals._excluded_rel(dest, "_governance")}
+    diff = sorted(k for k in files.keys() | attested.keys()
+                  if files.get(k) != attested.get(k))
+    out["protect"] = "withheld" if diff or approvals._damaged(recs) else "establish"
+    if diff:
+        out["unattested"] = diff[:20]
+    return out
 
 
 def _run_locked(source: str | None, ref: str | None, bundle: str | None,
@@ -1140,7 +1132,7 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
             raise UpdateError(
                 "사이드카 경로가 정식 관리 파일과 겹친다 — 갱신을 중단한다"
                 "(관리 파일을 되덮게 된다):\n  " + "\n  ".join(side_collide[:10]))
-        governance = _governance_review(tree, p, side_write, ad_write)
+        governance = _governance_review(tree, p, side_write, ad_write, targets, rel)
         out["governance"] = governance
         out["restart_required"] = True
         out["attestation"] = attest_id
@@ -1186,7 +1178,8 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         touch += [posix_rel(d / ".gitkeep", ROOT) for d in skel if not d.exists()]
         from . import approvals
         accept_governance = governance["base"] and governance["after"] != governance["base"]
-        if accept_governance:
+        establish = governance.get("protect") == "establish"
+        if accept_governance or establish:
             touch.append(posix_rel(approvals.APPROVALS, ROOT))
         _txn_begin(txn, v, touch)
         ledger_append(UPDATE_JOURNAL, {"kind": "begin", "txn": txn,
@@ -1218,6 +1211,10 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
                 approvals._approve_locked("_governance", governance["base"],
                                           governance["after"],
                                           f"osk.update {v}; user confirmation: {reviewed}")
+            if establish:                     # 확인받은 증빙 tree 그대로만 지정
+                approvals.protect("_governance",
+                                  f"osk.update {v}; user confirmation: {reviewed}",
+                                  expect_work=governance["after"], _locked=True)
         except (OSError, ValueError) as e:
             _txn_recover(ledger_read(UPDATE_JOURNAL))   # done(txn) 없음 → rollback
             ledger_append(UPDATE_JOURNAL,
@@ -1261,6 +1258,8 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         out.update(applied=True, applied_files=len(applied),
                    removed=removed, sidecars=sidecars, skel_created=made_skel,
                    governance_accepted=bool(accept_governance),
+                   governance_protected=("established" if establish
+                                         else governance.get("protect")),
                    note="엔진이 갱신되었으면 실행 중인 MCP 서버를 재시작한다 — "
                         "이 기기의 동기화 데몬은 갱신이 멈췄다 다시 띄운다(daemon)")
         return out

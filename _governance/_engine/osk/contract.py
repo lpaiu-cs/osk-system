@@ -6,10 +6,11 @@ Mechanism §2(id·시각 형식·drafter 단수·모델명·필드 순서).
 from __future__ import annotations
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 import yaml
 
-from .core import ID_RE, TS_RE
+from .core import AUTHORS, DRAFTER_RE, ID_RE, TS_FMT, TS_RE
 
 def edge_targets(value) -> list[str]:
     """PE 스칼라·목록을 **대상명 목록**으로 읽는다(시행령 §1 3항 · Mechanism
@@ -380,6 +381,14 @@ def parse_bytes(path: Path | str, data: bytes) -> Node:
     return Node(path=p, meta=meta, body=t[end + 5:], fm_keys=keys)
 
 
+def _real_ts(s: str) -> bool:
+    try:
+        datetime.strptime(s, TS_FMT)
+        return True
+    except ValueError:
+        return False
+
+
 def validate(node: Node) -> list[str]:
     """계약 위반 목록. 빈 목록 = 통과."""
     errs = []
@@ -397,7 +406,9 @@ def validate(node: Node) -> list[str]:
     if not re.match(ID_RE, str(m["id"])):
         errs.append(f"id 형식 위반: {m['id']}")
     for k in ("created", "updated"):
-        if not re.match(TS_RE, str(m[k])):
+        # 식은 자릿수만 본다 — `2026-02-30`·`99:99`도 통과한다. 실재하는
+        # 시각인지는 달력으로 판정한다.
+        if not re.match(TS_RE, str(m[k])) or not _real_ts(str(m[k])):
             errs.append(f"{k} 시각 형식 위반: {m[k]}")
     ca = str(m["created"])
     if str(m["id"])[:6] != ca[2:4] + ca[5:7] + ca[8:10]:
@@ -413,13 +424,18 @@ def validate(node: Node) -> list[str]:
             errs.append("summary에 Link·Predicate Edge 금지")
         if "\n" in s:
             errs.append("summary는 물리적 한 줄이어야 한다")
-    if isinstance(m.get("drafter"), list):
+    if m["author"] not in AUTHORS:
+        errs.append(f"author는 user 또는 agent: {m['author']!r} (Mechanism §2 4항)")
+    dr = m["drafter"]
+    if isinstance(dr, list):
         errs.append("drafter는 대표 기초자 하나(단수)")
-    dr = str(m.get("drafter", ""))
-    if ":" in dr:
+    elif isinstance(dr, str) and ":" in dr:
         errs.append(f"drafter는 접두 없는 모델명: {dr} (Mechanism §2 4항)")
     elif dr in ("claude", "codex", "claude-code", "gemini-cli"):
         errs.append(f"drafter는 하네스명이 아니라 모델명: {dr}")
+    elif not isinstance(dr, str) or not re.fullmatch(DRAFTER_RE, dr):
+        errs.append(f"drafter 형식 위반: {dr!r} — 소문자로 시작하는 소문자·숫자·"
+                    f"`.`·`-` 40자 이내의 모델명, 또는 user·agent (Mechanism §2 4항)")
     stem = node.path.stem
     sid = str(m["id"])
     for pred in PREDICATES:

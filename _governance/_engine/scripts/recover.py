@@ -27,7 +27,7 @@ except ModuleNotFoundError:          # Windows
     import msvcrt
     _WINDOWS = True
 
-# 아래 잠금·fsync·경로 규율은 엔진(osk/_portalock.py·osk/update.py)과 **의도적으로
+# 아래 잠금·fsync·경로 규율은 엔진(osk/_portalock.py·osk/core.py·osk/update.py)과 **의도적으로
 # 중복**된다. 이 스크립트의 존재 이유가 "엔진이 반쯤 교체돼 import가 깨져도 복구가
 # 성립한다"이므로, 엔진을 import해 규율을 공유할 수 없다.
 
@@ -84,8 +84,11 @@ def _exclusive(path: Path, busy: str):
 
 
 def _fsync_dir(d: Path) -> None:
-    """엔진의 osk.update._fsync_dir와 같은 정책 — 디렉터리 fsync 개념이 없는
-    파일시스템만 예외로 넘기고 그 밖의 오류는 올린다."""
+    """엔진의 osk.core.fsync_dir와 같은 정책 — 디렉터리 fsync 개념이 없는
+    파일시스템만 예외로 넘기고 그 밖의 오류는 올린다. Windows는 의도된 no-op이다
+    (디렉터리를 열 수 없고, NTFS 메타데이터 저널이 엔트리 일관성을 맡는다)."""
+    if _WINDOWS:
+        return
     try:
         fd = os.open(str(d), os.O_RDONLY)
     except FileNotFoundError:

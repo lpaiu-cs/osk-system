@@ -30,8 +30,8 @@ from osk import contract, epoch, graph, raw, validate, write  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
-from osk.core import (ROOT, StaleEngineError, posix_rel,  # noqa: E402
-                      sha256_bytes)
+from osk.core import (DRAFTER_RE, ROOT, StaleEngineError,  # noqa: E402
+                      posix_rel, sha256_bytes)
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
 # 이뤄진다(술어는 헌법 8조 5항, 충돌 유형은 Mechanism §4 3항의 목록이며,
@@ -42,7 +42,7 @@ CandidateType: TypeAlias = Literal["contradiction", "duplication",
                                    "competition", "delegation-overlap"]
 Title: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
-Drafter: TypeAlias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9.\-]{0,39}$")]
+Drafter: TypeAlias = Annotated[str, Field(pattern=DRAFTER_RE)]
 # 기록 이름도 곧 파일명이다 — 상한은 Title과 같은 자리에서 같은 이유로 건다.
 RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 
@@ -209,12 +209,15 @@ def read_node(name: str, view: str | None = None) -> dict:
         nid = str(name).strip()
         if _re.match(_ID, nid):
             if nid in idx.dup_ids:
-                return {"error": f"같은 id의 노드가 {len(idx.dup_ids[nid])}개다 "
-                                 f"— 어느 것인지 정해지지 않는다: "
-                                 f"{idx.dup_ids[nid]} (먼저 고쳐라)"}
+                return _dup_id_error(sorted(idx.dup_ids[nid]))
             h = idx.by_id.get(nid)
             if h:
                 hit, name = h, h[0].stem
+    # 이름으로 잡은 노드도 id가 겹쳤으면 내주지 않는다 — 제목이 다른 사본이
+    # 이름으로 각자 읽혀 갈라졌다(Mechanism §2 1항, 2026-09-24 재현).
+    twins = idx.id_twins(hit[0]) if hit else []
+    if twins:
+        return _dup_id_error(twins)
     if not hit:
         why = "; ".join(failures)
         return {"error": f"파싱 실패 — 수동 확인 필요: {why}" if why
@@ -248,6 +251,11 @@ def read_node(name: str, view: str | None = None) -> dict:
             "meta": {k: str(v) for k, v in n.meta.items()},
             "hash": sha256_bytes(raw),
             "body": n.body}
+
+
+def _dup_id_error(paths: list[str]) -> dict:
+    return {"error": f"같은 id의 노드가 {len(paths)}개다 — 어느 것인지 정해지지 "
+                     f"않는다: {paths}. {graph.DUP_ID_ADVICE}"}
 
 
 def _node_view(body: str, view: str) -> dict:
@@ -427,15 +435,28 @@ def scope_memory(session: str, text: str | None = None,
 
 
 def _apply_prune() -> None:
-    """Reject unknown arguments before dispatch and prune schema annotations."""
-    mgr = getattr(mcp, "_tool_manager", None)
-    for tool in (mgr._tools.values() if mgr else []):
-        if isinstance(getattr(tool, "parameters", None), dict):
-            # FastMCP otherwise drops misspelled edits while applying valid fields.
-            model = tool.fn_metadata.arg_model
-            model.model_config["extra"] = "forbid"
-            model.model_rebuild(force=True)
-            tool.parameters = _prune_titles(model.model_json_schema(by_alias=True))
+    """Reject unknown arguments before dispatch and prune schema annotations.
+
+    FastMCP 내부(`_tool_manager._tools`·`fn_metadata.arg_model`)에 기댄다. 그
+    자리가 바뀐 mcp 판에서 조용히 건너뛰면 오타 인자가 버려진 채 나머지만
+    적용된다 — 기동에서 죽는다(fail-closed)."""
+    tools = getattr(getattr(mcp, "_tool_manager", None), "_tools", None)
+    if not isinstance(tools, dict) or not tools:
+        raise RuntimeError("FastMCP 도구 목록(_tool_manager._tools)을 찾지 못했다 — "
+                           "미지 인자 거부를 걸 수 없어 기동하지 않는다. "
+                           "requirements.txt의 mcp 판을 확인하라")
+    for name, tool in tools.items():
+        model = getattr(getattr(tool, "fn_metadata", None), "arg_model", None)
+        if model is None or not isinstance(getattr(tool, "parameters", None), dict):
+            raise RuntimeError(f"도구 `{name}`의 인자 모델을 찾지 못했다 — 미지 인자 "
+                               f"거부를 걸 수 없어 기동하지 않는다")
+        # FastMCP otherwise drops misspelled edits while applying valid fields.
+        model.model_config["extra"] = "forbid"
+        model.model_rebuild(force=True)
+        tool.parameters = _prune_titles(model.model_json_schema(by_alias=True))
+        if tool.parameters.get("additionalProperties") is not False:
+            raise RuntimeError(f"도구 `{name}`에 미지 인자 거부가 걸리지 않았다 — "
+                               f"기동하지 않는다")
 
 
 _apply_prune()

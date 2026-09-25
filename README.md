@@ -208,12 +208,13 @@ execution, and failure fallbacks.
 
 ## Known limitations
 
-- **One memory per folder name.** The session key is the repository folder's
-  name (the parent of Git's common directory, so worktrees fold into their main
-  repository; outside Git, the working folder's name). Repositories with the
-  same folder name share one Scope memory and transcript destination, and
-  top-level Git submodules all share the key `modules`. Until v4, give them
-  distinct folder names.
+- **Folders outside Git share by name.** The session key is the repository
+  folder's name (worktrees fold into their main repository; submodules and bare
+  repositories use their own name). Since v4 an unrelated Git repository whose
+  root commits differ from the key's owner gets `<name>-<first 8 hex of its root>`
+  instead, so it neither receives nor writes the other's Scope memory. Folders
+  outside Git, repositories without commits and shallow clones have no identity
+  and still share by folder name.
 - **Background reviews inherit the source session's permissions.** A
   subscription fork review runs unattended with the reviewed session's own
   Claude Code permission mode, or Codex approval and sandbox policy. This is by
@@ -252,6 +253,8 @@ Release declaration can run noninteractively without a separate version approval
 The first update-apply attempt shows its changeset and the required harness
 restart, then stops for explicit user confirmation. A matching retry applies it
 and records acceptance of the protected governance region in the same transaction.
+On an install where the governance region was never protected, the same confirmed
+retry protects it, but only when its files match the release attestation exactly.
 See [installation and operations](docs/SETUP.md).
 
 ## What's in this repository

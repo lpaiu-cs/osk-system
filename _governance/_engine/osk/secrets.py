@@ -4,8 +4,10 @@
 Mechanism §9(패턴 7종·Python re·양성/음성 fixture와 함께 활성화).
 """
 from __future__ import annotations
-import os, re, tempfile
+import re
 from pathlib import Path
+
+from .core import atomic_write
 
 # 이 표는 **Mechanism §9 1항의 사본**이다 — 조문이 필터의 정본이고, 둘이
 # 같은지는 검증기가 대조한다(`validate.declared_secret_patterns`). 여기만
@@ -70,18 +72,7 @@ def write_raw(path: Path | str, text: str) -> tuple[Path, list[str]]:
             raise ValueError(
                 f"append 아님 — 기존 {len(prior)}바이트가 접두부로 보존되지 "
                 f"않았다. `_raw/`는 불변이며 append만 허용한다: {p}")
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(p.parent))
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, p)      # 원자 교체 — 미치환 중간 상태를 남기지 않는다
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    atomic_write(p, data)       # 원자 교체 — 미치환 중간 상태를 남기지 않는다
     return p, hits
 
 

@@ -58,8 +58,11 @@ def run() -> dict:
         for e in contract.validate(n):
             errs.append(f"{stem}: {e}")
         if n.id in ids:
-            errs.append(f"id 중복 {n.id}: {stem} & {ids[n.id]}")
-        ids[n.id] = stem
+            other, q = ids[n.id]
+            link = (" — 같은 파일로 가는 링크다: 링크를 지워 한 자리만 남긴다"
+                    if graph._same_file(p, q) else "")
+            errs.append(f"id 중복 {n.id}: {stem} & {other}{link}")
+        ids[n.id] = (stem, p)
     ok(f"노드 계약 ({len(idx.nodes) + len(broken)}개)", errs)
 
     # 2. 배치 (Mechanism §1)
@@ -87,6 +90,9 @@ def run() -> dict:
         try:
             rep["protected_regions"] = {
                 r: approvals.state(r) for r in approvals.protected_regions()}
+            gw = approvals.governance_warning(arecs)   # 경고일 뿐 verdict 밖
+            if gw:
+                rep["warnings"]["governance_unprotected"] = gw
         except Exception as e:
             errs.append(str(e))
     ok(f"승인 기록부 ({len(arecs)}행)", errs)
@@ -104,7 +110,7 @@ def run() -> dict:
             errs.append(str(e))
     ok("대장 JSON 무결", errs)
 
-    # 6. 대장 구조 손상 — rid 부재·형식 위반·중복 (Mechanism §3 7항 · §3 2항).
+    # 6. 대장 구조 손상 — rid 부재·형식 위반·중복 (Mechanism §3 8항 · §3 2항).
     #    중복 rid는 기록의 동일성을 깨뜨려 판정을 뒤집으므로 전 대장에 건다.
     dmg = []
     for p, rs in ledgers:

@@ -8,8 +8,9 @@
 체제: 서명이 노드 단위 '확인'이었던 것과 달리, 보호는 **구획(영역) 단위**의
 '수용'이다. 엔진은 각 보호영역의 **승인본**(사용자가 마지막으로 승인한 영역
 전체의 상태)을 내용 주소 저장소에 보존하고, 에이전트는 **작업본**에 평소처럼
-쓴다. 지정·해제·승인·반려는 사용자 전속이다. 업데이트의 통치 구획 수용은
-변경집합 재승인 후 비대화형으로 기록하며, 나머지는 대화형 단말에서 발의한다
+쓴다. 지정·해제·승인·반려는 사용자 전속이다. 업데이트의 통치 구획 수용과
+(지정 이력이 없을 때의) 최초 지정은 변경집합 재승인 후 비대화형으로 기록하며,
+나머지는 대화형 단말에서 발의한다
 (§3 7항·§6-2 2항 — 이 모듈의 쓰기 함수는 MCP 표면에 노출하지 않는다).
 
 판정은 다른 `_ledger` 대장과 같은 인과 극대다(core). 영역의 인과 극대가
@@ -19,11 +20,11 @@
 core.resolve_in_root로 vault 안에 봉쇄한다. 해석 실패는 언제나 거부 쪽이다.
 """
 from __future__ import annotations
-import json, os, re, tempfile
+import contextlib, json, os, re
 from pathlib import Path
 
 from .core import (ROOT, LEDGER, ledger_damage, sha256_bytes, sha256_file,
-                   posix_rel,
+                   posix_rel, atomic_write, fsync_dir, mkdirs_durable,
                    resolve_in_root, ledger_append, ledger_read, causal_maxima,
                    effective_parents, heads, mutation_lock, resolve_one,
                    _rid_key, _canon_rel)
@@ -139,18 +140,10 @@ def _store_put(data: bytes) -> str:
                 return digest             # 정상 객체 — 멱등 반환
         except OSError:
             pass                          # 판독 불가 → 아래 원자 재기록으로 치유
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(dst.parent))
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, dst)              # 원자 교체 — 손상 객체를 정상으로 치유
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    # 원자 교체 — 손상 객체를 정상으로 치유. 새 객체 디렉터리와 엔트리를
+    # 내구화한 뒤에야 돌아간다: 호출부가 이 digest를 대장에 적으므로, 순서가
+    # 뒤집히면 전원 차단 뒤 대장이 사라진 객체를 가리킨다.
+    atomic_write(dst, data)
     return digest
 
 
@@ -449,6 +442,25 @@ def state(region: str, recs: list[dict] | None = None) -> str:
     return "clean" if appr is not None and appr == work else "pending"
 
 
+def governance_warning(recs: list[dict] | None = None) -> str | None:
+    """통치 구획이 보호영역이 아니면 그 안내 — 실패가 아니라 경고다.
+
+    통치 구획은 상설 보호영역인데(헌법 10조 1항) 갱신이 지정하기 전의 설치는
+    지정 없이 남았다 — 통치 문서를 직접 고쳐도 검증은 PASS이고 status는
+    아무것도 보이지 않았다(실측). 알리는 것까지가 엔진의 몫이고 지정은 사용자의
+    확인 행위다."""
+    recs = records() if recs is None else recs
+    # is_protected가 먼저다 — 보호 중이면 state()의 영역 전수 해시를 하지 않는다.
+    if (not (ROOT / "_governance").is_dir() or is_protected("_governance", recs)
+            or state("_governance", recs) != "unprotected"):
+        return None
+    return ("통치 구획(_governance)이 보호영역이 아니다 — 통치 문서를 고쳐도 "
+            "변경집합으로 드러나지 않는다. 지정 이력이 없으면 갱신의 확인 적용"
+            "(지금 판과 같은 태그의 재적용 포함)이 비준증빙과 같은 내용으로 "
+            "지정하고, 그 밖에는 사용자가 대화형 단말에서 "
+            "`osk protect _governance`로 지정한다")
+
+
 def containing_regions(path: Path | str) -> list[str]:
     """경로를 포함하는 보호영역 **전부** — 없으면 빈 목록. 영역은 중첩될 수
     있으므로(사용자가 하위 구획을 따로 지정) 포함 관계는 여럿일 수 있다."""
@@ -687,10 +699,15 @@ def file_in_region_baseline(region: str, path: Path | str) -> bool:
 
 # ── 발의 (사용자 전속 — 대화형 단말) ─────────────────────────────────────
 
-def protect(region: str, reason: str = "") -> dict:
+def protect(region: str, reason: str = "", *, expect_work: str | None = None,
+            _locked: bool = False) -> dict:
     """보호영역 지정 — 지정 시점 작업본을 **초기 승인본**으로 삼는다
-    (시행령 §6 5항). 이미 보호 중이면 거부(이중 지정은 승인·반려로 한다)."""
-    with mutation_lock():   # 엔진이 내는 변경을 직렬화
+    (시행령 §6 5항). 이미 보호 중이면 거부(이중 지정은 승인·반려로 한다).
+
+    갱신은 트랜잭션 내내 mutation 잠금을 쥐고(`_locked`) 확인받은 통치 구획
+    tree를 `expect_work`로 건다 — 박제한 작업본이 그와 다르면 지정하지 않는다
+    (작업본 측 CAS, 단일 판독: 검사한 tree가 곧 박제한 tree다)."""
+    with (contextlib.nullcontext() if _locked else mutation_lock()):
         d = resolve_in_root(region)
         if d is None or not d.is_dir():
             raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
@@ -715,6 +732,9 @@ def protect(region: str, reason: str = "") -> dict:
         if is_protected(reg, recs):
             raise ValueError(f"이미 보호 중인 영역이다: {reg}")
         accepted = _store_tree(d)
+        if expect_work is not None and accepted != expect_work:
+            raise ValueError(
+                "확인한 작업본이 그 사이 바뀌었다 — 지정하지 않았다 (작업본 측 CAS)")
         return ledger_append(APPROVALS, {
             "kind": "protect", "region": reg, "base": None,
             "accepted": accepted, "moves_seen": _moves_boundary(),
@@ -1024,8 +1044,10 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         # 쓰기가 덮기 전에 제자리로 돌아온다(순서가 뒤면 밖의 내용이 승인본을
         # 덮거나 이동 노드가 삭제된다).
         for now_at, home in unmoves:
-            home.parent.mkdir(parents=True, exist_ok=True)
+            mkdirs_durable(home.parent)
             os.replace(now_at, home)
+            fsync_dir(home.parent)        # revert 기록보다 엔트리가 먼저 내구화
+            fsync_dir(now_at.parent)
         _apply_tree(d, table, staged)
         # 복원 완료 최종 확인 — 작업본 tree가 실제로 승인본과 일치할 때만 기록한다.
         # 삭제·쓰기가 부분 실패해 작업본이 여전히 pending인데도 '복원을 마친 뒤에만
@@ -1126,21 +1148,10 @@ def _apply_tree(region_dir: Path, table: dict[str, str],
     들어오는 변경까지 막지는 못한다 — 그 잔여 창은 이 프로세스 밖(git pull 등)
     이라 닫을 수 없고, 그때는 영역이 pending으로 남아 다음 반려가 새 승인본으로
     복원한다."""
-    region_dir.mkdir(parents=True, exist_ok=True)
-    # 2) 승인본 내용으로 원자 교체
+    mkdirs_durable(region_dir)
+    # 2) 승인본 내용으로 원자 교체 — 엔트리까지 내구화한다(revert 기록이 뒤따른다)
     for p, data in staged:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(p.parent))
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, p)
-        except BaseException:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
+        atomic_write(p, data)
     # 3) manifest에 없는 현재 파일 제거 (에이전트가 추가한 것)
     #    삭제 실패(권한 등)는 삼키지 않는다 — 조용히 넘기면 작업본이 승인본과
     #    다른 채로 남는데도 revert가 완료된 것처럼 기록될 수 있다.
@@ -1153,6 +1164,7 @@ def _apply_tree(region_dir: Path, table: dict[str, str],
             except OSError as e:
                 raise ValueError(
                     f"승인본 밖 파일 삭제 실패 — 복원 미완료: {rel} ({e})") from e
+            fsync_dir(p.parent)           # 삭제 엔트리 내구화
 
 
 # ── 검증기 지원 ──────────────────────────────────────────────────────────

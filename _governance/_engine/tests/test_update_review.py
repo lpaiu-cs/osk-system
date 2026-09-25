@@ -168,5 +168,73 @@ finally:
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
 
+    def test_governance_protection_is_part_of_the_transaction(self):
+        with tempfile.TemporaryDirectory() as td:
+            script = r'''
+import json
+from unittest import mock
+from osk import approvals, core, update
+root = core.ROOT
+bundle = root.parent / 'bundle'
+(bundle / '_governance/_engine/scripts').mkdir(parents=True)
+(bundle / '_governance/_engine/scripts/publish-manifest.txt').write_text(
+    'MAP _governance/ -> _governance/\nSKEL 00_Scope/\n')
+(bundle / '_governance/Policy.md').write_text('v1')
+files = {p.relative_to(bundle).as_posix(): core.sha256_file(p)
+         for p in bundle.rglob('*') if p.is_file()}
+(bundle / 'release.json').write_text(json.dumps({'version': 'v9.41.0', 'files': files}))
+for rel in files:                      # a fresh clone: same bytes, no baseline yet
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_bytes((bundle / rel).read_bytes())
+def run():
+    rep = update.run(source='bundle', bundle=str(bundle), apply=True)
+    return update.run(source='bundle', bundle=str(bundle), apply=True) \
+        if rep.get('approval_required') else rep
+# An install that an older engine already baselined (no protect step) gets
+# protected by rerunning the same release: nothing to write but the protect row.
+real_review = update._governance_review
+def older_engine(*a):
+    out = real_review(*a)
+    out.pop('protect', None)
+    return out
+with mock.patch.object(update, '_governance_review', side_effect=older_engine):
+    rep = run()
+assert rep['applied'] and rep['governance_protected'] is None, rep
+assert approvals.state('_governance') == 'unprotected'
+real = approvals.protect
+def fail_after_protect(*a, **kw):
+    real(*a, **kw)
+    raise OSError('injected failure after protect')
+with mock.patch.object(approvals, 'protect', side_effect=fail_after_protect):
+    try: run()
+    except update.UpdateError as e: assert '원상복구' in str(e), e
+    else: raise AssertionError('expected rollback')
+assert not approvals.APPROVALS.exists() and approvals.state('_governance') == 'unprotected'
+assert update.current_version() == 'v9.41.0'
+rep = run()
+assert rep['governance_protected'] == 'established' and rep['applied_files'] == 0, rep
+assert approvals.state('_governance') == 'clean'
+# A later update of a protected region is acceptance, not a second protect.
+(bundle / '_governance/Policy.md').write_text('v2')
+files['_governance/Policy.md'] = core.sha256_file(bundle / '_governance/Policy.md')
+(bundle / 'release.json').write_text(json.dumps({'version': 'v9.41.1', 'files': files}))
+rep = run()
+assert rep['governance_accepted'] and rep['governance_protected'] is None, rep
+assert [r['kind'] for r in approvals.records()] == ['protect', 'approve']
+# A region the user released is not re-protected by an update.
+approvals.unprotect('_governance')
+(bundle / '_governance/Policy.md').write_text('v3')
+files['_governance/Policy.md'] = core.sha256_file(bundle / '_governance/Policy.md')
+(bundle / 'release.json').write_text(json.dumps({'version': 'v9.41.2', 'files': files}))
+rep = run()
+assert rep['governance_protected'] == 'released', rep
+assert approvals.state('_governance') == 'unprotected'
+'''
+            result = subprocess.run([sys.executable, '-c', script],
+                                    env=dict(os.environ, OSK_VAULT_ROOT=str(Path(td) / 'vault'),
+                                             PYTHONPATH=str(ENGINE)),
+                                    capture_output=True, text=True, encoding='utf-8', timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
 if __name__ == '__main__':
     unittest.main()

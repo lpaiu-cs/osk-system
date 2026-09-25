@@ -37,6 +37,14 @@ python3.12 -m venv .venv && .venv/bin/pip install -r _governance/_engine/require
 2.0이 그 모듈을 없앴다 — **`requirements.txt`를 갱신으로 받았으면 pip을 다시
 돌려야** 이미 만든 venv에 반영된다.
 
+`requirements.txt`는 허용 범위다. CI가 수트를 통과시킨 **정확한 판**은
+`_governance/_engine/constraints.txt`에 있다 — 선택 사항이며, 새 기기의 동작이
+CI와 다를 때 같은 판으로 맞춰 원인을 가르는 데 쓴다(CI는 늘 이것으로 설치한다):
+
+```bash
+.venv/bin/pip install -r _governance/_engine/requirements.txt -c _governance/_engine/constraints.txt
+```
+
 ## Windows
 
 엔진은 Windows에서도 돈다(잠금은 `msvcrt`, tz는 `tzdata` 패키지로 보충한다).
@@ -164,7 +172,12 @@ scope 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한
 첫 성공이 그 키를 영구 결속하므로, 하네스가 주는 1회용 대화 id(UUID)를 그대로 넘기면
 다음 세션이 같은 기억에 닿지 못한다 — 쓰기 표면은 UUID 꼴 키를 거부한다(Mechanism §6-2 6항).
 동봉된 훅은 **본 저장소 디렉터리 이름**을 키로 쓴다(워크트리는 `git-common-dir`의 부모로
-접히므로 워크트리마다 키가 갈리지 않는다).
+접히므로 워크트리마다 키가 갈리지 않는다. 서브모듈·bare 저장소는 자기 이름). 결속 행에는
+저장소의 뿌리 커밋(`repo`)이 함께 적히고, 그 키의 첫 소유자와 뿌리가 겹치지 않는 저장소는
+`<이름>-<뿌리 앞 8자>` 키를 받는다. 뿌리는 체크아웃한 브랜치가 아니라 브랜치·원격 추적
+브랜치 전체의 뿌리 합집합이다(stash·notes 제외). 사본마다 `<git 공통 디렉터리>/osk-repo-identity`에
+캐시되고, 브랜치 끝점이 바뀌면 새 커밋만 걸어 뿌리를 더한다. 한 번 배정된 파생 키는 결속 행에
+그 저장소의 뿌리와 함께 기록되어, 뒤에 받은 브랜치가 뿌리를 더해도 바뀌지 않는다.
 
 **출력은 JSON이 아니라 전문 그대로다.** 훅이 이 값을 문맥에 그대로 넣으므로, 감싸는
 껍데기가 있으면 훅마다 벗기는 코드를 쓰게 된다. 결속이 없으면 빈 출력이고 주입할 것도
@@ -877,6 +890,18 @@ v3.20.x의 updater에는 이 관문이 없다. 최초 전환 때는 **검토한 
   포함한다. 확인한 작업본이 그대로 적용되면 같은 트랜잭션에서 **수용 기록**을
   남기므로 별도의 적용 후 `approve _governance`는 필요 없다. stale은 먼저
   해소해야 한다. 다른 보호영역의 승인 절차와 최초 보호 지정은 그대로다.
+- 통치 구획에 지정 이력이 없으면(새 설치·지정 전의 기존 설치) 확인한 적용이
+  같은 트랜잭션에서 그 구획을 **보호영역으로 지정한다** — 적용 뒤 구획이 비준증빙의
+  내용과 정확히 같을 때만이고, 보고의 `governance.protect`가 `establish`, 결과의
+  `governance_protected`가 `established`다. 로컬 차이(고친 통치 문서·충돌 사이드카·
+  증빙 밖 파일)가 있으면 `withheld`로 지정하지 않고 그 경로를 `governance.unattested`에
+  싣는다 — 검토한 뒤 `osk protect _governance`로 직접 지정한다. 사용자가 해제한
+  구획은 다시 지정하지 않는다(`released`). 미보호 통치 구획은 `status`의 `warnings`와
+  `validate`의 `warnings.governance_unprotected`로 알린다(FAIL이 아니다). 이
+  지정을 모르는 이전 엔진이 갱신을 수행한 설치는 MCP 서버 재시작 뒤 **같은 태그로**
+  `osk.update --to <태그> --apply`를 한 번 더 확인 적용하면 파일은 그대로 두고
+  지정만 기록된다. 동기화하는 기기 중 **한 기기에서만** 한다 — 동기화 전에 두
+  기기가 각각 지정하면 비교 불능 분기(stale)가 되어 사용자 봉합이 필요하다.
 - 새 배포판은 `00_Scope`·`00_Domain`·`00_Person`을 쓴다. 기존 vault는 대장·승인본·
   원료 좌표가 가리키는 물리 이름을 유지한다. [경로 호환 규칙](space-layout-migration.md)을 따른다.
 - 갱신 이력은 `_ledger/update.jsonl`(운영 저널)에 남고, 엔진이 갱신됐으면
