@@ -1206,21 +1206,31 @@ def _edge_key(target: str, idx) -> tuple[str, str]:
         s = s[2:-2]
     path, sep, anchor = s.split("|", 1)[0].strip().partition("#")
     path = path.strip().replace("\\", "/")
-    if ("/" in path or sep) and idx.resolve(path)[0] != "node":
-        return path.removesuffix(".md"), anchor
+    if "/" in path or sep:
+        kind = idx.resolve(path)[0]
+        if kind == "external":
+            # URL은 확장자까지 주소다 — `…/Makefile`과 `…/Makefile.md`는 다른 근거다.
+            # `.md` 생략은 vault 안 경로의 표기 규칙이다(`resolve`가 `p`와 `p.md`를 본다).
+            return path, anchor
+        if kind != "node":
+            return path.removesuffix(".md"), anchor
     return contract.target_stem(path), ""
 
 
 def _merge_edges(cur: list[str], add, idx) -> list[str]:
-    """저장 목록 `cur` 뒤에 `add`를 잇되, 같은 근거(`_edge_key`)는 처음 것 하나만 남긴다.
+    """저장 목록 `cur` 뒤에 `add` 가운데 아직 없는 근거(`_edge_key`)만 잇는다.
 
     엣지를 더하는 자리는 모두 이 한 벌을 지난다 — 생성, 갱신의 추가, 그리고 그 둘을
     부르는 증류. 구판은 갱신의 추가만 새 대상을 걸렀다. 그래서 생성은 받은 만큼
-    적었고(distill의 `sources`와 `edges`가 같은 라운드를 줄 때), 저장 목록에 이미
-    든 중복은 그대로 이어 적었다. 같은 기록의 **다른 라운드**는 앵커가 달라 다른
-    근거로 남는다."""
-    seen, out = set(), []
-    for t in [*cur, *_as_list(add)]:
+    적었다(distill의 `sources`와 `edges`가 같은 라운드를 줄 때). 같은 기록의
+    **다른 라운드**는 앵커가 달라 다른 근거로 남는다.
+
+    `cur`는 키로 줄이지 않는다. 키는 "이미 있는가"를 묻는 데만 쓴다. 저장 목록을
+    키로 줄이면 키가 거친 자리(노드의 절 앵커·별칭)마다 저장된 근거를 조용히
+    지우게 된다. 저장 목록의 되풀이는 바이트가 같을 때만 접는다(`_update_node_locked`)."""
+    seen = {_edge_key(t, idx) for t in cur}
+    out = list(cur)
+    for t in _as_list(add):
         k = _edge_key(t, idx)
         if k not in seen:
             seen.add(k)
@@ -1354,14 +1364,6 @@ def _update_node_locked(name: str, body: str | None = None,
         replaced_summary = str(meta.get("summary"))
         meta["summary"] = summary
         changed = True
-    # 이미 저장된 중복은 이 쓰기에서 접는다 — 접기만으로는 쓰지 않는다(`changed` 불변).
-    # ponytail: 바이트가 같은 되풀이만 접는다(해소가 없어 공짜이고 실패하지 않는다).
-    # 표기만 다른 같은 근거는 그 술어에 엣지를 더하는 쓰기의 `_merge_edges`가 접는다.
-    # 모든 쓰기에서 키로 접으려면 raw 근거마다 해소 비용(Windows 실측 ~7 ms)을 낸다.
-    for pred in contract.PREDICATES:
-        cur = _stored_edges(meta.get(pred))
-        if len(set(cur)) != len(cur):
-            meta[pred] = list(dict.fromkeys(cur))
     # 두 루프 모두 **누적된 `meta`**에서 현재값을 읽는다. 구판은 각자
     # `n.edges(pred)`로 **원본**을 다시 읽었고, 그래서 같은 술어에 add와
     # remove를 함께 주면 remove가 "add가 없었던 것처럼" 계산한 값으로
@@ -1374,9 +1376,7 @@ def _update_node_locked(name: str, body: str | None = None,
     for pred, tg in (add_edges or {}).items():
         cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
         merged = _merge_edges(cur, tg, idx)  # 한 호출 안의 중복도 한 번만 앉는다
-        # 길이로 비교하지 않는다 — 표기만 다른 중복이 하나 접히고 새 근거가 하나
-        # 앉으면 길이가 같아 새 근거를 잃는다.
-        if merged != cur:
+        if len(merged) != len(cur):
             meta[pred] = _as_links(pred, merged, legacy_raw=_legacy_raw)
             changed = True
     for pred, tg in (remove_edges or {}).items():
@@ -1389,6 +1389,15 @@ def _update_node_locked(name: str, body: str | None = None,
                 meta[pred] = _as_links(pred, keep, legacy_raw=_legacy_raw)
             else:
                 meta.pop(pred, None)
+    # 저장 목록에서 바이트가 같은 되풀이는 이 쓰기에서 접는다 — 위의 추가·제거가 옛
+    # 표기를 정규 표기로 다시 적어 겹친 것까지. 접기만으로는 쓰지 않는다(`changed` 불변).
+    # ponytail: 바이트 비교만 한다(해소가 없어 공짜이고 실패하지 않는다). 키로 접으면
+    # raw 근거마다 해소 비용(Windows 실측 ~7 ms)을 내고, 키가 거친 자리에서 서로 다른
+    # 근거를 지운다.
+    for pred in contract.PREDICATES:
+        cur = _stored_edges(meta.get(pred))
+        if len(set(cur)) != len(cur):
+            meta[pred] = list(dict.fromkeys(cur))
     new_body = n.body if body is None else body
     if body is not None and _norm_body(body) != _norm_body(n.body):
         changed = True

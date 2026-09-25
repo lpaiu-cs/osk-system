@@ -11009,13 +11009,17 @@ def test_derived_from_once_per_round():
     두 번 받으면 두 번 적었고(distill의 `sources`와 `edges`가 같은 라운드를 줄 때,
     실 인스턴스 3건), 갱신은 새로 더하는 것만 걸러 이미 앉은 중복을 남겼다.
 
+    합치기의 키는 "이미 있는가"만 묻는다. 저장 목록을 키로 줄이면 키가 거친
+    자리(URL의 `.md`, 노드의 절 앵커)마다 서로 다른 근거가 지워진다(PR #90 리뷰).
+
     무엇을 망가뜨리면 실패하는가:
       · 응답 `edges`를 `Node.edges`로 되돌리면 → ①의 응답 단언
-      · 갱신의 저장 목록 접기를 지우면 → ②의 본문 쓰기 단언
-      · 추가의 변경 판정을 길이 비교로 바꾸면 → ②의 표기 변형 단언(새 근거를 잃는다)
+      · 갱신의 바이트 되풀이 접기를 지우면 → ②의 본문 쓰기·표기 변형 단언
       · 생성이 `_merge_edges`를 건너뛰면 → ③
       · `graph.reference_report`의 중복 보고를 지우면 → ②의 경고 단언
       · `_edge_key`가 앵커를 버리면 → ①의 저장 단언(다른 라운드가 하나로 접힌다)
+      · `_edge_key`가 URL에서도 `.md`를 떼면 → ④의 URL 단언 셋
+      · `_merge_edges`가 저장 목록까지 키로 줄이면 → ④의 저장 근거 단언
     """
     from osk import raw
     base = ROOT / "00_Scope/W1/regr-edge-once"
@@ -11061,7 +11065,7 @@ def test_derived_from_once_per_round():
         write.update_node(b.stem, add_edges={"derived-from": [r3, r1]})
         check("접힌 뒤의 추가도 한 번씩만 앉는다", stored(b) == [r1, r2, r3], stored(b))
         check("접힌 뒤에는 경고가 없다", warned() == [], warned())
-        #    표기만 다른 중복은 그 술어에 근거를 더하는 쓰기가 접는다 — 새 근거를 잃지 않고.
+        #    표기만 다른 중복은 추가가 정규 표기로 다시 적은 뒤 바이트 비교로 접힌다.
         v = base / "regr-edge-once-v.md"
         v.write_text(node_text("260802-zzzz-oncv", body="claim",
                                extra=f'derived-from: ["{r1}", "[[{r1}]]"]\n'),
@@ -11074,6 +11078,29 @@ def test_derived_from_once_per_round():
         write.create_node(c.stem, "c", "claim", "fable-5", space=space,
                           edges={"derived-from": [r1, f"[[{r1}]]", r1]})
         check("생성도 같은 근거를 한 번만 적는다", stored(c) == [r1], stored(c))
+
+        # ④ 서로 다른 근거는 합치지 않는다. URL은 확장자까지 주소이고, 저장된 근거는
+        #    키로 지우지 않는다.
+        code = "https://github.com/o/r/blob/abc/Makefile"
+        doc = code + ".md"
+        u = base / "regr-edge-once-u.md"
+        write.create_node(u.stem, "u", "claim", "fable-5", space=space,
+                          edges={"derived-from": [code, doc]})
+        check("생성이 확장자만 다른 두 URL을 모두 적는다",
+              stored(u) == [f"[[{code}]]", f"[[{doc}]]"], stored(u))
+        write.update_node(u.stem, remove_edges={"derived-from": code})
+        check("한 URL을 빼도 다른 URL은 남는다", stored(u) == [f"[[{doc}]]"], stored(u))
+        write.update_node(u.stem, add_edges={"derived-from": code})
+        check("있는 URL 곁에 확장자만 다른 URL을 더할 수 있다",
+              stored(u) == [f"[[{doc}]]", f"[[{code}]]"], stored(u))
+        s = base / "regr-edge-once-s.md"
+        kept = [f"[[{code}]]", f"[[{doc}]]", f"[[{a.stem}#s1]]", f"[[{a.stem}#s2]]"]
+        s.write_text(node_text("260802-zzzz-oncs", body="claim",
+                               extra=f"derived-from: {json.dumps(kept)}\n"),
+                     encoding="utf-8")
+        write.update_node(s.stem, add_edges={"derived-from": r1})
+        check("근거를 더해도 저장된 근거는 키로 지워지지 않는다(URL 둘·절 앵커 둘)",
+              stored(s) == kept + [r1], stored(s))
     finally:
         rmtree_force(base)
         if record is not None:
