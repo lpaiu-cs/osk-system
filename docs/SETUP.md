@@ -625,7 +625,9 @@ Windows 작업 스케줄러 등록은 아래 스크립트를 **별도로 실행�
   `overview`의 `rechecks.escalated`와 세션 시작 알림에 보이고, 근거를 다시 대면 닫힌다.
 - **닫는 법:** 근거를 읽고 노드를 확인한 뒤 `update_node(name, add_edges={"derived-from":
   target})`로 그 근거를 다시 댄다. 같은 호출에서 본문을 고치면 `updated`, 그대로 두면
-  `unchanged`가 `rechecks.jsonl`에 남는다. 근거가 더는 맞지 않으면 `remove_edges`로 뺀다.
+  `unchanged`가 `rechecks.jsonl`에 남는다. 완료는 그 세션이 `read_node`로 전문을 읽은
+  판에만 적힌다 — 읽은 뒤 어느 쪽이 바뀌었으면 응답의 `recheck_unread`가 알리고 후보로
+  남는다. 근거가 더는 맞지 않으면 `remove_edges`로 뺀다.
 - **기록:** 새 배선은 `bound`다. 엔진으로 노드를 고치면 완료였던 근거는 완료로 이어진다.
   엔진 밖에서 노드를 고치거나 반려로 옛 판이 돌아오면 다시 후보다.
 - **기준선:** 기록이 하나도 없는 대장이면 첫 세션 시작이나 첫 쓰기가 그때의 근거를
