@@ -586,9 +586,9 @@ maximum among `review` records with that key.
 |---|---|
 | `kind` | `complete` |
 | `node` | the citing node's id |
-| `node_state` | `sha256:` of the citing node file as written |
+| `node_state` | `sha256:` of the citing node's body as written |
 | `target` | a node id or a vault-relative file path, with `#<heading>` appended for a heading range |
-| `target_state` | `sha256:` of the target file's bytes, or of the heading range |
+| `target_state` | `sha256:` of a node target's body, a non-node target's file, or the heading range |
 | `result` | `bound`, `updated` or `unchanged` |
 | `reason` | opt. text |
 
@@ -601,27 +601,34 @@ maximum among `review` records with that key.
   record and is reported as dangling. A heading that is gone or duplicated in
   a file that exists keeps the pair tracked without a state: it is a candidate
   that no record can complete.
+- **Relevant state** (Mechanism §4-1 1, Bylaws §7). Both states hash raw bytes
+  without normalization. A node's state is its body: the bytes after the line
+  that closes its frontmatter. A non-node file's state is the whole file, and a
+  heading range's is the range. A change to a node's summary or edges changes
+  neither its state as a target nor as a citing node, since the body carries a
+  claim's content and reasons (Constitution art. 8).
 - **State.** A pair (`node`, `target`) is complete when its single causal
   maximum matches both current states; several maxima that agree on both states
   count as one. Any other pair makes the citing node a recheck candidate, listed
   by `overview`, the validator's warnings and `osk rechecks`.
 - **Writers.** A node write appends `bound` for each pair it wires. An
   `update_node` whose `add_edges` names an existing target again appends
-  `updated` when the same call changes the node and `unchanged` when it does
-  not; this closes a candidate. Through the MCP surface it records only the
-  states the caller read: the node and a node target as last read with
-  `read_node` in that session, in full or in part, and a non-node target as
-  last presented by a scheduled recheck job; a non-node target that no job
+  `updated` when the same call changes the node's body and `unchanged` when it
+  does not; this closes a candidate. Through the MCP surface it records only
+  the states the caller read: the node's and a node target's body as last read
+  with `read_node` in that session, in full or in part, and a non-node target
+  as last presented by a scheduled recheck job; a non-node target that no job
   presented does not close through the surface. A write through the surface
   carries the state it wrote forward when the caller had read the state it
   replaced. Otherwise the response reports `recheck_unread` and the pair stays
   a candidate. These read states only bind a check: a partial read still gives
-  no `hash` for `expect_hash`. Every other pair that was complete before an
-  engine write is appended again with the new `node_state`, as `unchanged` with
-  reason `이어받음`. A ledger without records receives one `bound` record with
-  reason `기준선` for every tracked pair, at the first session start or node
-  write. A ledger that cannot be read or is damaged records nothing; its
-  pairs stay candidates and node writes proceed.
+  no `hash` for `expect_hash`. When an engine write changes a node's body,
+  every other pair of that node that was complete before is appended again
+  with the new `node_state`, as `unchanged` with reason `이어받음`. A ledger
+  without records receives one `bound` record with reason `기준선` for every
+  tracked pair, at the first session start, node write or growth run. A ledger
+  that cannot be read or is damaged records nothing; its pairs stay candidates
+  and node writes proceed.
 - **Escalation** (Bylaws §7 2). The scheduled growth run takes candidates as
   `recheck_jobs`. A job carries `next`, the nodes that cite the node under
   review, and `cascade`, true when the target's current state came from a

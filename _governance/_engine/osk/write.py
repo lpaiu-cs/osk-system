@@ -1302,8 +1302,8 @@ def update_node(name: str, body: str | None = None,
                 settle: str | None = None, *, _seen: dict | None = None) -> dict:
     """Apply an ordinary node update under the shared mutation lock.
 
-    `_seen` is the surface's record of what its caller read in full (path → hash);
-    a recheck closes only against those states (Mechanism §4-1)."""
+    `_seen` is the surface's record of the bodies its caller read (path →
+    `rechecks.state`); a recheck closes only against those states (Mechanism §4-1)."""
     with _Lock():
         return _update_node_locked(name, body, expect_hash, summary, add_edges,
                                    remove_edges, old_text, new_text, settle, _seen=_seen)
@@ -1377,7 +1377,7 @@ def _update_node_locked(name: str, body: str | None = None,
     # 근거 재검토(Mechanism §4-1) — 쓰기 전의 쌍과 완료 상태, 이 호출이 다시 댄 근거
     _baseline(idx)
     rc_before = rechecks.pairs(idx, n.meta)
-    rc_pre = sha256_file(path)                 # 검토자가 읽었어야 할 노드의 판
+    rc_pre = rechecks.state(path.read_bytes())  # 검토자가 읽었어야 할 노드의 본문
     rc_prior = rechecks.complete_keys(idx, path, n.meta) if rc_before else set()
     rc_again = {t[0] for ref in _as_list((add_edges or {}).get("derived-from", []))
                 if (t := rechecks.target(str(ref), idx)) and t[0] in rc_before}
@@ -1496,11 +1496,11 @@ def _update_node_locked(name: str, body: str | None = None,
     out.update(rechecks.after_write(idx, path, meta, before=rc_before.keys(),
                                     prior=rc_prior, reasserted=rc_again,
                                     pre=rc_pre, seen=_seen))
-    # 쓰기 직전 판을 읽었던 호출자는 방금 쓴 판도 안다 — 쓰기 응답의 해시를 다음
+    # 쓰기 직전 본문을 읽었던 호출자는 방금 쓴 본문도 안다 — 쓰기 응답의 해시를 다음
     # `expect_hash`로 잇는 것과 같은 규율이다. 읽지 않았으면 잇지 않는다.
     rel = posix_rel(path, ROOT)
     if _seen is not None and _seen.get(rel) == rc_pre:
-        _seen[rel] = sha256_bytes(data)
+        _seen[rel] = rechecks.state(data)
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
     return evictions._after_node_write(out, settle, "merged", path.stem)

@@ -242,7 +242,7 @@ def read_node(name: str, view: str | None = None) -> dict:
     # 구형 id 표기 근거가 계속 태어났다(v3.7.4 직후 하루에 3간선). 손잡이는
     # 이름이고, id는 대장·서명·사건부의 동일성으로 남는다.
     h = sha256_bytes(raw)
-    _SEEN[posix_rel(hit[0], ROOT)] = h
+    _SEEN[posix_rel(hit[0], ROOT)] = rechecks.state(raw)
     if view is not None:
         return {"name": hit[0].stem, "path": posix_rel(hit[0], ROOT), "id": n.id,
                 "summary": str(n.meta.get("summary", "")),
@@ -255,10 +255,10 @@ def read_node(name: str, view: str | None = None) -> dict:
             "body": n.body}
 
 
-# 이 세션(서버 프로세스)이 `read_node`로 읽은 판 — 경로 → 그때 파일 바이트의 해시.
-# 부분 열람도 파일의 판을 고정하므로 넣는다. 근거를 다시 대어 재검토를 닫을 때
-# 읽은 판 그대로인지 보는 데만 쓴다(Mechanism §4-1) — 응답에 싣지 않으며 CAS
-# 증거(`expect_hash`)가 아니다. 부분 열람이 전문 치환을 허가하지 않는 규율은 그대로다.
+# 이 세션(서버 프로세스)이 `read_node`로 읽은 판 — 경로 → 그때 본문의 상태
+# (`rechecks.state`). 부분 열람도 판을 고정하므로 넣는다. 근거를 다시 대어 재검토를
+# 닫을 때 읽은 주장 그대로인지 보는 데만 쓴다(Mechanism §4-1) — 응답에 싣지 않으며
+# CAS 증거(`expect_hash`)가 아니다. 부분 열람이 전문 치환을 허가하지 않는 규율은 그대로다.
 _SEEN: dict[str, str] = {}
 
 

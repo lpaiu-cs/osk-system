@@ -8318,11 +8318,14 @@ def test_rechecks():
       · 판정이 노드 상태를 안 보면 → 엔진 밖 변경 후보 단언
       · 제목 범위가 다음 동급 제목에서 끊기지 않으면 → 다른 절 변경 단언
       · 중복 제목을 해석하면 → 해석 불능 단언
-      · 쓰기가 기준선보다 제 기록을 먼저 적으면 → 기준선 단언"""
+      · 쓰기가 기준선보다 제 기록을 먼저 적으면 → 기준선 단언
+      · 상태를 파일 전체로 재면 → 요약·배선만 바뀐 근거·노드 단언
+      · 본문 경계가 판독과 어긋나면 → `parse_bytes` 대조 단언"""
     from osk import rechecks
     W = ROOT / "00_Scope/W1"
     src = ROOT / "_sources" / "regr-rc.md"
-    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New", "W")]
+    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New", "W", "S", "R")]
+    st = lambda f: rechecks.state(f.read_bytes())
     led = rechecks.RECHECKS
     lbefore = led.read_bytes() if led.exists() else None
 
@@ -8345,6 +8348,33 @@ def test_rechecks():
         check("생성은 bound를 적고 쌍은 완료다",
               not why("regr-rc-N") and last("regr-rc-N").get("result") == "bound",
               last("regr-rc-N"))
+
+        # 관련 상태는 본문이다(헌법 8조) — 요약·배선만 바뀐 노드는 근거로서도, 참조
+        # 노드로서도 바뀌지 않았다
+        for raw_ in (b"---\nid: x\n---\n\nbody\n", b"---\r\nid: x\r\n---\r\n\r\nbody\r\n"):
+            got = raw_[contract.body_offset(raw_):].decode().replace("\r\n", "\n")
+            check("본문 경계는 판독(parse_bytes)과 같다",
+                  got == contract.parse_bytes("x.md", raw_).body, got)
+        _w(write.create_node, "regr-rc-S", "s", "요약 실험 근거.", "fable-5", space="00_Scope/W1")
+        _w(write.create_node, "regr-rc-R", "s", "요약 실험 주장.", "fable-5",
+           space="00_Scope/W1", edges={"derived-from": "regr-rc-S"})
+        _w(write.update_node, "regr-rc-S", summary="근거 요약만 바꾼다")
+        _w(write.update_node, "regr-rc-S", add_edges={"derived-from": "regr-rc-T"})
+        check("근거의 요약·배선만 바뀌면 후보가 아니다", not why("regr-rc-R"))
+        rows0 = len(core.ledger_read(led))
+        _w(write.update_node, "regr-rc-R", summary="참조 노드 요약만 바꾼다")
+        check("참조 노드의 요약만 바뀌면 완료가 그대로이고 새로 적지 않는다",
+              not why("regr-rc-R") and len(core.ledger_read(led)) == rows0)
+        _w(write.update_node, "regr-rc-S", old_text="근거.", new_text="근거를 고쳤다.")
+        check("근거의 본문이 바뀌면 후보다", why("regr-rc-R") == {"근거가 바뀌었다"})
+        r_rel, s_rel = "00_Scope/W1/regr-rc-R.md", "00_Scope/W1/regr-rc-S.md"
+        seen3 = {r_rel: st(W / "regr-rc-R.md"), s_rel: st(W / "regr-rc-S.md")}
+        _w(write.update_node, "regr-rc-S", summary="읽은 뒤 요약만 바뀐다")
+        r = _w(write.update_node, "regr-rc-R", summary="요약과 함께 다시 댄다",
+               add_edges={"derived-from": "regr-rc-S"}, _seen=seen3)
+        check("읽은 뒤 요약만 바뀐 근거를 요약과 함께 다시 대면 unchanged로 닫힌다",
+              r.get("rechecked") and not why("regr-rc-R")
+              and last("regr-rc-R").get("result") == "unchanged", r)
 
         _w(write.update_node, "regr-rc-T", old_text="1판", new_text="2판")
         check("근거가 바뀌면 후보다", why("regr-rc-N") == {"근거가 바뀌었다"})
@@ -8437,13 +8467,13 @@ def test_rechecks():
 
         # 다시 대기는 검토자가 읽은 판에만 완료를 적는다(표면의 `read_node` 기록)
         n_rel, t_rel = "00_Scope/W1/regr-rc-N.md", "00_Scope/W1/regr-rc-T.md"
-        seen = {n_rel: core.sha256_file(W / "regr-rc-N.md"), t_rel: core.sha256_file(t)}
+        seen = {n_rel: st(W / "regr-rc-N.md"), t_rel: st(t)}
         _w(write.update_node, "regr-rc-T", old_text="4판", new_text="5판")    # 읽은 뒤 바뀐다
         r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
                _seen=seen)
         check("읽은 뒤 근거가 바뀌었으면 완료를 적지 않는다",
               r.get("recheck_unread") and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
-        seen[t_rel] = core.sha256_file(t)
+        seen[t_rel] = st(t)
         r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
                _seen={**seen, n_rel: "sha256:0"})
         check("읽지 않은 노드 판으로도 완료를 적지 않는다", r.get("recheck_unread"), r)
@@ -8456,19 +8486,19 @@ def test_rechecks():
         M._SEEN.clear()
         v = M.read_node("regr-rc-T", view="outline")
         check("부분 열람은 CAS 해시를 주지 않고 읽은 판만 기억한다",
-              "hash" not in v and M._SEEN.get(t_rel) == core.sha256_file(t), v)
+              "hash" not in v and M._SEEN.get(t_rel) == st(t), v)
         # 읽은 판을 고친 쓰기는 쓴 판을 잇는다 — 쓰기 응답 해시의 CAS 연쇄와 같다
         _w(write.update_node, "regr-rc-T", old_text="5판", new_text="6판")
-        seen2 = {n_rel: core.sha256_file(W / "regr-rc-N.md"), t_rel: core.sha256_file(t)}
+        seen2 = {n_rel: st(W / "regr-rc-N.md"), t_rel: st(t)}
         _w(write.update_node, "regr-rc-N", old_text="밖에서 더한 줄.",
            new_text="밖에서 더한 줄을 고쳤다.", _seen=seen2)
         check("읽은 판을 고친 쓰기는 쓴 판을 잇는다",
-              seen2[n_rel] == core.sha256_file(W / "regr-rc-N.md"))
+              seen2[n_rel] == st(W / "regr-rc-N.md"))
         blind = {}
         _w(write.update_node, "regr-rc-N", old_text="줄을 고쳤다.", new_text="줄을 고쳤다!",
            _seen=blind)
         check("쓰기 전 판을 읽지 않은 쓰기는 잇지 않는다", n_rel not in blind, blind)
-        seen2[n_rel] = core.sha256_file(W / "regr-rc-N.md")
+        seen2[n_rel] = st(W / "regr-rc-N.md")
         r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
                _seen=seen2)
         check("이은 판으로 근거를 다시 대면 완료를 적는다",
@@ -8481,7 +8511,7 @@ def test_rechecks():
         src.write_text(src.read_text(encoding="utf-8") + "\n덧붙임.\n", encoding="utf-8")
         _age_all()
         w_rel = "00_Scope/W1/regr-rc-W.md"
-        sw = {w_rel: core.sha256_file(W / "regr-rc-W.md")}
+        sw = {w_rel: st(W / "regr-rc-W.md")}
         r = _w(write.update_node, "regr-rc-W", add_edges={"derived-from": fref}, _seen=sw)
         check("보여 준 적 없는 비노드 근거는 완료를 적지 않는다",
               r.get("recheck_unread") and why("regr-rc-W") == {"근거가 바뀌었다"}, r)

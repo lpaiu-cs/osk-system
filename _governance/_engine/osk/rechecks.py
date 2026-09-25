@@ -1,10 +1,14 @@
-"""근거 재검토 — `derived-from` 대상의 상태가 바뀐 참조 노드를 후보로 표시하고
+"""근거 재검토 — `derived-from` 대상의 본문이 바뀐 참조 노드를 후보로 표시하고
 점검 완료를 기록한다(시행령 §7 2·3항 · Mechanism §4-1 · §8 4항).
 
 추적하는 대상은 상태가 바뀔 수 있는 것이다 — 노드(id로 식별), 비노드 파일(vault
 상대 경로), 그 안의 제목 범위(`#제목`). raw 라운드는 추가만 되는 기록이라 상태가
 바뀌지 않고, 외부 URL은 상태를 잴 수 없다. 해석되지 않는 대상은 완료를 만들지
-않는다 — dangling으로 따로 보고된다."""
+않는다 — dangling으로 따로 보고된다.
+
+상태는 관련 상태만 잰다(`state`) — 노드는 본문, 비노드는 파일 전체, 제목을 지정한
+근거는 그 제목 범위다. 관계 주장의 내용과 이유는 본문이 맡으므로(헌법 8조) 요약이나
+배선만 바뀐 노드는 근거로서도, 참조 노드로서도 바뀌지 않은 것이다."""
 from __future__ import annotations
 
 import difflib
@@ -22,30 +26,33 @@ CARRIED = "이어받음"
 CLOSE = ("근거와 노드를 read_node로 읽는다(전문이나 필요한 범위). 노드가 맞으면 update_node(name, add_edges="
          "{\"derived-from\": target})로 그 근거를 다시 댄다(unchanged). 고쳐야 하면 그 수정이 next의 "
          "노드들까지 고치게 만들지 않을 때만 같은 호출로 고친다(updated). 그런 수정이거나 cascade가 "
-         "참이면 고치지 않고 수정안을 사용자에게 올린다. 읽은 뒤 어느 쪽이 바뀌었으면 완료가 "
-         "적히지 않는다(recheck_unread)")
+         "참이면 고치지 않고 수정안을 사용자에게 올린다. 읽은 뒤 어느 쪽 본문이 바뀌었으면 "
+         "완료가 적히지 않는다(recheck_unread)")
 _ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
-_FRONT = re.compile(r"---\r?\n.*?\n---\r?\n", re.S)
 _ALREADY = "재검토 대장에 이미 기록이 있다"
+
+
+def state(data: bytes, node: bool = True) -> str:
+    """관련 상태의 해시(Mechanism §4-1 1항) — 노드는 frontmatter를 닫는 행의 다음
+    바이트부터 끝까지, 비노드는 파일 전체. 정규화하지 않은 바이트로 잰다."""
+    return sha256_bytes(data[contract.body_offset(data):] if node else data)
 
 
 def heading_range(data: bytes, heading: str) -> bytes | None:
     """제목 범위(§8 4항) — 제목 행의 첫 바이트부터 다음 동급 이상 제목의 직전
-    바이트까지. 제목이 없거나 둘 이상이면 None(해석 불능). 코드 구획의 `#` 행은
-    제목이 아니다."""
+    바이트까지. 제목이 없거나 둘 이상이면 None(해석 불능). 코드 구획의 `#` 행과
+    frontmatter는 제목이 아니다."""
     # ponytail: ATX 제목만 본다. setext(밑줄) 제목이 근거가 되면 여기에 더한다.
     try:
-        text = data.decode("utf-8")
+        text = data[contract.body_offset(data):].decode("utf-8")
     except UnicodeDecodeError:
         return None
-    m = _FRONT.match(text)
-    start = m.end() if m else 0
     found = []
-    for off, _line, content, code, _cont in contract.md_lines(text[start:]):
+    for off, _line, content, code, _cont in contract.md_lines(text):
         h = None if code else _ATX.match(content)
         if h:
             title = re.sub(r"(?:^|[ \t]+)#+$", "", h.group(2) or "").strip()
-            found.append((start + off, len(h.group(1)), title))
+            found.append((off, len(h.group(1)), title))
     hits = [f for f in found if f[2] == heading]
     if len(hits) != 1:
         return None
@@ -86,7 +93,7 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] |
             data = key = None
         if key:
             if not heading:
-                out = (key, sha256_bytes(data))
+                out = (key, state(data, graph.is_node_home(kind)))
             else:
                 rng = heading_range(data, heading)
                 out = (f"{key}#{heading}", None if rng is None else sha256_bytes(rng))
@@ -120,7 +127,7 @@ def _citing(idx, cache: dict):
             continue
         ps = pairs(idx, n.meta, cache)
         if ps:
-            yield name, n.id, sha256_bytes(data), ps, kind
+            yield name, n.id, state(data), ps, kind
 
 
 def _latest(records: list[dict], node: str | None = None) -> dict[tuple, list[dict]]:
@@ -192,7 +199,7 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
     recs, ok = _read()
     damaged = not ok
     latest = {} if damaged else _latest(recs)
-    revised = {r.get("node_state") for r in recs
+    revised = {(r.get("node"), r.get("node_state")) for r in recs
                if r.get("kind") == "complete" and r.get("result") == "updated"}
     rows, cited, fh = list(_citing(idx, {})), {}, {}
     for name, _nid, _ns, ps, _kind in rows:
@@ -204,10 +211,10 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
         if tid not in fh:
             hit = idx.by_id.get(tid) if re.match(ID_RE, tid) else None
             try:
-                fh[tid] = sha256_bytes(hit[0].read_bytes()) if hit else None
+                fh[tid] = state(hit[0].read_bytes()) if hit else None
             except OSError:
                 fh[tid] = None
-        return fh[tid] is not None and fh[tid] in revised
+        return fh[tid] is not None and (tid, fh[tid]) in revised
 
     out = []
     for name, nid, ns, ps, kind in rows:
@@ -267,7 +274,7 @@ def complete_keys(idx, path: Path, meta: dict) -> set[str]:
     if not recs or not ok:
         return set()
     latest = _latest(recs, meta["id"])
-    ns = sha256_bytes(path.read_bytes())
+    ns = state(path.read_bytes())
     return {k for k, (ts, _ref) in ps.items()
             if _verdict(latest.get((meta["id"], k), []), ns, ts) is None}
 
@@ -324,10 +331,12 @@ def change(nid: str, key: str, ref: str, idx) -> dict:
         return {"note": "점검 기록이 없다 — 근거와 노드의 전문을 읽는다"}
     m, heading = maxima[-1], parsed[1]
     if now and now[1] != m.get("target_state"):
-        side, path, want = "target", hit[0], m.get("target_state")
+        side, path, want, body = "target", hit[0], m.get("target_state"), graph.is_node_home(hit[1])
     else:
-        side, path, want, heading = "node", node[0], m.get("node_state"), ""
-    cut = (lambda b: heading_range(b, heading)) if heading else (lambda b: b)
+        side, path, want, heading, body = "node", node[0], m.get("node_state"), "", True
+    # 상태를 잰 그 범위끼리 비교한다(`state`) — 요약·배선의 변경은 변경분이 아니다
+    cut = ((lambda b: heading_range(b, heading)) if heading else
+           (lambda b: b[contract.body_offset(b):]) if body else (lambda b: b))
     for old in _versions(posix_rel(path, ROOT), str(m.get("at", ""))):
         old = cut(old)
         if old is not None and sha256_bytes(old) == want:
@@ -374,7 +383,8 @@ def _presented(nid: str, key: str) -> str | None:
 def _reviewed(idx, meta: dict, rel: str, pre: str, key: str, ts: str, ref: str,
               seen: dict | None) -> bool:
     """다시 댄 근거가 검토자가 본 두 상태 그대로인가. `seen`은 표면이 `read_node`로
-    읽은 판(경로 → 해시)이다. 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다.
+    읽은 노드의 본문 상태(경로 → `state`)다 — 읽은 뒤 요약·배선만 바뀌었으면 읽은
+    주장은 그대로다. 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다.
     비노드 근거는 표면으로 읽지 못하므로 정기 실행 작업이 보여 준 상태와 대조하고,
     보여 준 적이 없으면 확인할 수 없으므로 완료를 적지 않는다."""
     if seen is None:
@@ -387,7 +397,7 @@ def _reviewed(idx, meta: dict, rel: str, pre: str, key: str, ts: str, ref: str,
         return False
     if graph.is_node_home(hit[1]):
         try:
-            return seen.get(posix_rel(hit[0], ROOT)) == sha256_bytes(hit[0].read_bytes())
+            return seen.get(posix_rel(hit[0], ROOT)) == state(hit[0].read_bytes())
         except OSError:
             return False
     shown = _presented(meta["id"], key)
@@ -400,17 +410,20 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
     """노드 쓰기가 성공한 뒤의 완료 기록(§4-1).
 
     새 배선은 `bound`, 다시 댄 근거는 본문을 함께 고쳤으면 `updated`·아니면
-    `unchanged`, 쓰기 직전 완료였던 그 밖의 근거는 새 노드 상태로 이어 적는다
-    (`unchanged`, 사유 `이어받음`) — 이어 적지 않으면 노드를 고칠 때마다 근거가
-    전부 후보가 된다. 반려로 옛 바이트가 돌아오면 노드 상태가 어긋나 다시 후보가
-    된다. 기록이 실패해도 쓰기는 성공이다 — 완료를 주장하지 않고 후보로 남는다."""
+    `unchanged`, 쓰기 직전 완료였던 그 밖의 근거는 본문이 바뀌었으면 새 노드
+    상태로 이어 적는다(`unchanged`, 사유 `이어받음`) — 이어 적지 않으면 노드를
+    고칠 때마다 근거가 전부 후보가 된다. 요약·배선만 바뀐 쓰기는 노드 상태가
+    그대로라 이을 것이 없다. `pre`는 쓰기 직전 본문 상태다. 반려로 옛 본문이
+    돌아오면 노드 상태가 어긋나 다시 후보가 된다. 기록이 실패해도 쓰기는
+    성공이다 — 완료를 주장하지 않고 후보로 남는다."""
     ps = pairs(idx, meta)
     if not ps:
         return {}
     if RECHECKS.exists() and not _read()[1]:
         return {"recheck_error": "재검토 대장을 읽을 수 없거나 손상됐다 — 완료를 적지 않았다"
                                  "(쌍은 후보로 남고 검증기가 대장을 보고한다)"}
-    ns = sha256_bytes(path.read_bytes())
+    ns = state(path.read_bytes())
+    changed = changed and (pre is None or ns != pre)
     rel = posix_rel(path, ROOT)
     rows, closed, unread = [], [], []
     for key, (ts, ref) in ps.items():
@@ -428,8 +441,8 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
         elif changed and key in prior:
             rows.append(_row(meta["id"], ns, key, ts, "unchanged", CARRIED))
     out = {"recheck_unread": {"targets": unread, "why": (
-        "노드나 근거가 read_node로 읽은 판과 달라 완료를 적지 않았다 — 다시 읽고 대라. "
-        "비노드 근거는 정기 실행 작업이 보여 준 판으로만 닫힌다")}} if unread else {}
+        "노드나 근거의 본문이 read_node로 읽은 판과 달라 완료를 적지 않았다 — 다시 읽고 "
+        "대라. 비노드 근거는 정기 실행 작업이 보여 준 판으로만 닫힌다")}} if unread else {}
     try:
         ledger_extend(RECHECKS, rows)
     except Exception as e:
