@@ -349,13 +349,11 @@ def _execute(operation: str, distill: dict, request: dict) -> dict:
             hub = _hub(distill["hub"], idx)
             # 호출자가 필수 출처를 빼라고 하면 거부한다 — 증류가 그 출처를 다시 대어
             # 요청을 조용히 뒤집지 않는다(같은 근거를 빼고 대면 남는 것이 쓰기의 규칙이다).
-            removed = set()
-            for ref in write._as_list((request.get("remove_edges") or {}).get("derived-from", [])):
-                try:
-                    removed.add(_source(str(ref), idx)["ref"])
-                except (write.WriteError, OSError, ValueError, TypeError):
-                    continue
-            if removed & {raw.canonical_ref(s["ref"]) for s in sources}:
+            # 비교는 실제 제거와 같은 동일성(`write._edge_key`)으로 한다 — 별칭·경로·id
+            # 어느 표기로 빼든 쓰기가 빼는 것이면 여기서도 잡힌다.
+            removed = {write._edge_key(str(ref), idx) for ref in
+                       write._as_list((request.get("remove_edges") or {}).get("derived-from", []))}
+            if removed & {write._edge_key(s["ref"], idx) for s in sources}:
                 raise write.WriteError("required provenance was removed; no node written")
             if operation == "create":
                 supplied_body = request.get("body")

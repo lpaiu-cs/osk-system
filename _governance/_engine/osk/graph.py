@@ -734,6 +734,25 @@ class Index:
                 errors.append(self._failed[p])
         return live, errors
 
+    def locate(self, name: str):
+        """`resolve`와 같은 순서로 대상 파일 하나를 찾는다 — (경로, 소속). 외부 주소·
+        모호·dangling이면 None. 제목은 파일 이름에서 `.md`만 뗀 것이므로, 제목에 든
+        `.md`(`README.md`)도 제목의 일부로 찾는다."""
+        if re.match(r"^https?://", name):
+            return None
+        if re.match(ID_RE, name):
+            return None if name in self.dup_ids else self.by_id.get(name)
+        if "/" in name:
+            p = resolve_in_root(name)
+            for cand in ((p, p.with_suffix(".md")) if p is not None else ()):
+                if cand.is_file():
+                    return cand, space_of(cand)
+            return None
+        live, _errors = self.lookup_name(name)
+        if len(live) == 1:
+            return live[0]
+        return None if live else self.nonnode.get(name)
+
     def resolve(self, name: str):
         """대상명 → ('node',소속) | ('nonnode',소속) | ('ambiguous',) |
         ('dangling',) | ('external',). 경로형([[00_Scope/B/b]])은 경로로 우선

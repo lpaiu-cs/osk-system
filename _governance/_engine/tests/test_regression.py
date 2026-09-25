@@ -8237,7 +8237,8 @@ def test_format_alignment():
     growth = core.LEDGER / "growth.jsonl"
     gbefore = growth.read_bytes() if growth.exists() else None
     case = core.LEDGER / "case" / "CASE-2026-9300.md"
-    made = [ROOT / "00_Scope/W1/regr-fmt-src.md", ROOT / "00_Scope/W1/regr-fmt-use.md"]
+    made = [ROOT / "00_Scope/W1/regr-fmt-src.md", ROOT / "00_Scope/W1/regr-fmt-use.md",
+            ROOT / "00_Scope/W1/regr-fmt-doc.md.md", ROOT / "00_Scope/W1/regr-fmt-doc.md"]
     try:
         rootfile.write_text(node_text("260925-0000-rootfile"), encoding="utf-8")
         check("Space 루트 바로 아래 파일은 노드 자리가 아니다",
@@ -8270,6 +8271,19 @@ def test_format_alignment():
         _w(write.update_node, "regr-fmt-use", add_edges={"derived-from": ra["id"]})
         check("같은 근거를 id로 다시 더해도 한 번만 앉는다",
               made[1].read_text(encoding="utf-8").count("regr-fmt-src") == 1)
+        # 제목에 든 `.md`는 제목의 일부다 — 해석된 노드의 제목이 근거의 동일성이다
+        rd = _w(write.create_node, "regr-fmt-doc.md", "s", "문서 이름.", "fable-5",
+                space="00_Scope/W1")
+        rp = _w(write.create_node, "regr-fmt-doc", "s", "짧은 이름.", "fable-5",
+                space="00_Scope/W1")
+        _w(write.update_node, "regr-fmt-use", add_edges={"derived-from": [rd["id"], rp["id"]]})
+        got = str(contract.parse(made[1]).meta.get("derived-from"))
+        check("`.md`로 끝나는 제목과 짧은 제목은 다른 근거로 남는다",
+              "[[regr-fmt-doc.md]]" in got and "[[regr-fmt-doc]]" in got, got)
+        _w(write.update_node, "regr-fmt-use", remove_edges={"derived-from": rd["id"]})
+        got = str(contract.parse(made[1]).meta.get("derived-from"))
+        check("id로 빼면 그 노드의 제목 링크가 빠진다",
+              "[[regr-fmt-doc.md]]" not in got and "[[regr-fmt-doc]]" in got, got)
 
         with open(growth, "a", encoding="utf-8") as f:
             f.write('{"kind": "plan"}\n')

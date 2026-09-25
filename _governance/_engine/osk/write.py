@@ -1199,7 +1199,9 @@ def _stored_edges(v) -> list[str]:
 
 
 def _edge_key(target: str, idx) -> tuple[str, str]:
-    """노드는 제목으로, 비노드 근거는 전체 경로와 앵커로 구별한다."""
+    """노드는 해석된 노드의 제목으로, 비노드 근거는 전체 경로와 앵커로 구별한다.
+    id·제목·경로 어느 표기든 같은 노드면 같은 키다. 해석되지 않는 이름만 표기
+    규칙(`contract.target_stem`)으로 접는다 — 제목에 든 `.md`를 떼지 않기 위해서다."""
     from . import raw
     s = raw.canonical_ref(target).strip()
     if s.startswith("[[") and s.endswith("]]"):
@@ -1214,7 +1216,10 @@ def _edge_key(target: str, idx) -> tuple[str, str]:
             return path, anchor
         if kind != "node":
             return path.removesuffix(".md"), anchor
-    return (_id_title(path, idx) or contract.target_stem(path)), ""
+    hit = idx.locate(path) if path else None
+    if hit and graph.is_node_home(hit[1]):
+        return hit[0].stem, ""
+    return contract.target_stem(path), ""
 
 
 def _id_title(s: str, idx) -> str | None:
