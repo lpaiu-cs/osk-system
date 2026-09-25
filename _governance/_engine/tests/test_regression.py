@@ -5779,8 +5779,8 @@ def test_ephemeral_session_key():
 # ── 19. scope 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
 def test_scope_memory():
     """상한은 저장 용량의 제한이 아니라 문턱이다. 그래서 초과는 **거부**하고,
-    거부는 **전문과 순서**를 함께 돌려준다 — 자동 절단·자동 요약은 두지
-    않는다."""
+    거부는 잔여·해시·넘긴 자수와 정리 안내를 돌려준다(전문은 싣지 않는다 —
+    §9-2 5항). 자동 절단·자동 요약은 두지 않는다."""
     from osk import scope_memory as wm
     for n in ("WWm", "WWmB"):
         (ROOT / f"00_Scope/{n}").mkdir(exist_ok=True)
