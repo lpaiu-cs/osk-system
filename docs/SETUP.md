@@ -865,19 +865,15 @@ git checkout vX.Y.Z -- release.json
 git 태그를 읽으므로, 태그를 먼저 공개하면 발행 검사가 끝나기 전에 갱신 후보가 된다.
 정식 릴리스는 비준증빙 커밋을 `main`으로 먼저 보내고 `release` workflow로 공개한다.
 
-첫 발행 전에 정본 저장소에 발행용 **GitHub App**을 설치한다. 설치 대상은 이
-저장소로 한정하고, 저장소 권한은 **Contents: write**와
-**Workflows: write**로 설정한다. Actions 저장소 변수
-`OSK_RELEASE_APP_CLIENT_ID`에 App의 Client ID를, 저장소 secret
-`OSK_RELEASE_APP_PRIVATE_KEY`에 App의 private key를 등록한다.
-검사 중 main의 workflow 파일이 바뀌면 고정된 후보의 발행에도 Workflows 쓰기
-권한이 필요하며, 기본 `GITHUB_TOKEN`에는 이 권한을 줄 수 없다
+workflow는 GitHub가 제공하는 `GITHUB_TOKEN`을 사용하고, 검사 통과 뒤 실행되는
+발행 job에만 **Contents: write**를 부여한다. 별도 App·변수·secret 등록은 필요 없다.
+발행 직전 원격 `main`의 SHA와 검증한 후보의 SHA를 비교한다. 다르거나 조회에
+실패하면 태그·Release를 만들지 않는다. 이 경우 새 후보로 전체 검사를 다시 한다.
+기본 토큰은 Workflows 쓰기 권한이 없으므로, 후보와 기본 브랜치의 workflow가
+다른 상태까지 발행하지 않는다
 ([GitHub 발행 API](https://docs.github.com/en/rest/releases/releases#create-a-release)).
-workflow는 검사 통과 뒤 현재 저장소와 두 권한에 한정된 단기 토큰을 발급하고,
-job이 끝나면 폐기한다. 설정 누락·권한 부족이면 토큰 발급이 실패하며 기본 토큰으로
-대체하지 않는다([App 토큰 action](https://github.com/actions/create-github-app-token)).
 
-등록을 마치면 비준증빙 커밋을 보내고 발행 검사를 시작한다:
+비준증빙 커밋을 보내고 발행 검사를 시작한다:
 
 ```bash
 git push origin HEAD:main
@@ -887,8 +883,8 @@ gh workflow run release.yml --ref main -f version=vX.Y.Z
 Actions의 `release` 실행에서 고정된 SHA와 선언한 버전을 확인한다. workflow는 그
 SHA의 전체 회귀 수트와 **8개 조합의 전체 업그레이드 행렬**을 먼저 실행한다.
 행렬을 실행할 이력이 없으면 실패이며, 필수 검사가 통과한 뒤에만 같은 SHA에
-원격 태그와 정식 GitHub Release를 함께 만든다. 실행 중 브랜치가 움직여도 대상은
-바뀌지 않는다. `vX.Y.Z` 정식 형식을 그대로 쓰며 별도 RC 판본은 만들지 않는다.
+원격 태그와 정식 GitHub Release를 함께 만든다. 실행 중 브랜치가 움직여도 대상을
+바꾸지 않고 발행을 중단한다. `vX.Y.Z` 정식 형식을 그대로 쓰며 별도 RC 판본은 만들지 않는다.
 
 workflow 실행 전에 최종 후보를 실제 인스턴스의 사본에 적용해 데이터 보존과
 재시작 후 재검토 기준선을 확인한다. 원본 인스턴스의 갱신 승인은 아래 절차로
