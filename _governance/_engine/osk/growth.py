@@ -33,8 +33,10 @@ def _records() -> list[dict]:
     rows = core.ledger_read(LEDGER)
     errors = core.ledger_damage(rows, LEDGER)
     for row in rows:
-        if row.get("kind") not in {"plan", "review", "run", "eviction_review"}:
+        if row.get("kind") not in {"plan", "review", "run", "eviction_review", "recheck_review"}:
             errors.append("unknown growth record kind")
+        if row.get("kind") == "recheck_review" and row.get("outcome") != "escalated":
+            errors.append("unknown recheck review outcome")
         if row.get("kind") == "review" and row.get("outcome") not in {
                 "preserved", "no_value", "deferred"}:
             errors.append("unknown growth review outcome")
@@ -170,8 +172,9 @@ def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
     items, pending = rechecks.candidates(idx)
     return [] if pending else [
         {"key": f"recheck:{i['id']}:{i['key']}", "node": i["node"], "target": i["target"],
-         "why": i["why"], "id": i["id"], "target_key": i["key"]}
-        for i in items if scope is None or i["scope"] == scope]
+         "why": i["why"], "cascade": i["cascade"], "next": i["next"], "id": i["id"],
+         "target_key": i["key"], "node_state": i["node_state"], "target_state": i["target_state"]}
+        for i in items if "escalated" not in i and (scope is None or i["scope"] == scope)]
 
 
 def _with_change(jobs: list[dict], idx: graph.Index) -> list[dict]:
@@ -191,8 +194,13 @@ def _recheck_status(job: dict, idx: graph.Index) -> dict:
     meta = idx.node(hit[0]).meta
     if job["target_key"] not in rechecks.pairs(idx, meta):
         return {"status": "complete", "reason": "basis removed"}
-    done = job["target_key"] in rechecks.complete_keys(idx, hit[0], meta)
-    return {"status": "complete" if done else "pending"}
+    if job["target_key"] in rechecks.complete_keys(idx, hit[0], meta):
+        return {"status": "complete"}
+    open_ = [i for i in rechecks.candidates(idx)[0]
+             if i["id"] == job["id"] and i["key"] == job["target_key"]]
+    if open_ and "escalated" in open_[0]:
+        return {"status": "complete", "reason": "escalated to the user"}
+    return {"status": "pending"}
 
 
 def _plan(limit: int) -> dict:
@@ -421,10 +429,14 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "For recheck_jobs, node cites target as derived-from and target changed since node was "
         "last checked; change holds the diff of the side that changed, or a note to read the full "
         "text. Read both through osk MCP. If node still holds, call update_node(name=node, "
-        "add_edges={\"derived-from\": target}) with nothing else; if it does not, correct node and "
-        "name the same target in add_edges in that update_node call. Do not edit target for this "
-        "job. That call records the check; recheck_jobs take no packet entry or checkpoint. "
-        "Uncertainty leaves the job open.\n"
+        "add_edges={\"derived-from\": target}) with nothing else. If node needs a correction and "
+        "cascade is false, read the nodes in next (they cite node): when your correction would not "
+        "require changing any of them, apply it and name the same target in add_edges in that "
+        "update_node call. Do not apply a correction that would require changing a node in next, "
+        "and never correct node when cascade is true (target was itself just corrected by a "
+        "recheck); instead checkpoint recheck:[{key,outcome:escalated,reason,proposal}] for the "
+        "user, naming the next nodes affected. Do not edit target for this job. An update_node "
+        "call records a check without a packet entry. Uncertainty leaves the job open.\n"
         "Scope jobs: read current scope_memory and read_raw(view=review) to select claims. "
         "Follow scope_recovery instructions when present; preserve durable entries before making room. "
         "Resume a previous_deferral at its missing evidence rather than repeating its whole read. "
@@ -495,6 +507,8 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "inside osk_reviews for selected organization_jobs not already reviewed by CLI. "
         "Add eviction:[{of,outcome:node|merged|discarded|deferred,reason,target?}] inside "
         "osk_reviews for selected eviction_jobs; omit target unless outcome is node/merged. "
+        "Add recheck:[{key,outcome:escalated,reason,proposal}] inside osk_reviews only for "
+        "recheck_jobs you escalate to the user. "
         "Use the originally selected key and a freshly read organization snapshot as after. "
         "Use only this manifest's selected keys and scope snapshots. The supervisor applies "
         "these decisions through the same receipt APIs and revalidates persisted evidence; "
@@ -599,7 +613,7 @@ def _final_packet(output: Path) -> dict:
 
 def _validate_packet(packet: dict, planned: dict) -> dict:
     reviews = packet.get("osk_reviews")
-    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", "domain", "scope", "organization", "eviction"}:
+    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", "domain", "scope", "organization", "eviction", "recheck"}:
         raise ValueError("review packet needs exactly manifest, domain and scope")
     if reviews["manifest"] != planned["manifest"]:
         raise ValueError("review packet manifest does not match this run")
@@ -677,6 +691,20 @@ def _validate_packet(packet: dict, planned: dict) -> dict:
                 raise ValueError("preserved eviction requires a target title")
         elif "target" in entry:
             raise ValueError("discarded/deferred eviction has no target")
+    allowed = {j["key"] for j in planned.get("recheck_jobs", [])}
+    entries, seen = reviews.get("recheck", []), set()
+    if not isinstance(entries, list) or len(entries) > len(allowed):
+        raise ValueError("recheck reviews exceed the selected queue")
+    for entry in entries:
+        fields = {"key", "outcome", "reason", "proposal"}
+        if (not isinstance(entry, dict) or set(entry) != fields
+                or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
+            raise ValueError("invalid recheck review fields")
+        if entry["key"] not in allowed or entry["key"] in seen:
+            raise ValueError("unselected or duplicate recheck review")
+        seen.add(entry["key"])
+        if entry["outcome"] != "escalated":
+            raise ValueError("a recheck review only escalates; a check closes through update_node")
     return reviews
 
 
@@ -791,6 +819,26 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 result["eviction"][entry["of"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Eviction {entry['of']}: {exc}")
+    from . import rechecks
+    selected_rechecks = {j["key"]: j for j in planned.get("recheck_jobs", [])}
+    for entry in reviews.get("recheck", []):
+        job = selected_rechecks[entry["key"]]
+        try:
+            with core.mutation_lock():
+                now = [i for i in rechecks.candidates(_index())[0]
+                       if i["id"] == job["id"] and i["key"] == job["target_key"]]
+                if not now:
+                    raise ValueError("the recheck is already closed")
+                if (now[0]["node_state"], now[0]["target_state"]) != (job["node_state"], job["target_state"]):
+                    raise ValueError("node or target changed since selection — review again")
+                if "escalated" not in now[0]:
+                    core.ledger_append(LEDGER, {
+                        "kind": "recheck_review", "manifest": planned["manifest"], **entry,
+                        "node": job["node"], "target": job["target"],
+                        "node_state": job["node_state"], "target_state": job["target_state"]})
+            result.setdefault("recheck", {})[entry["key"]] = "recorded"
+        except (ValueError, OSError) as exc:
+            result["errors"].append(f"Recheck {entry['key']}: {exc}")
     if result["errors"]:
         result["state"] = "incomplete"
     return result

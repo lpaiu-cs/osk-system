@@ -215,20 +215,31 @@ def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
 
 
 def _recheck_note(rechecks) -> str:
-    """정기 실행이 없으면 근거 재검토 후보가 쌓인다 — 본 세션에 알린다. 처리는
-    대화 검토(fork)가 이 scope 몫을 맡는다. 정기 실행이 돌면 아무것도 싣지 않는다."""
+    """근거 재검토에서 본 세션이 알아야 할 것 — 사용자 검토를 기다리는 수정, 그리고
+    정기 실행이 없을 때 쌓이는 후보(그 처리는 대화 검토 fork가 이 scope 몫을 맡는다).
+    둘 다 없으면 아무것도 싣지 않는다."""
     try:
         from osk import growth
-        if growth.daily_active():
+        daily = growth.daily_active()
+        if daily and not any(r.get("kind") == "recheck_review" for r in growth._records()):
             return ""
         items, pending = rechecks.candidates()
     except Exception as exc:
         return f"[osk 근거 재검토 판독 진단 — {type(exc).__name__}: {exc}]"
-    if not items or pending:
+    if pending:
         return ""
-    return (f"[osk 근거 재검토 — 후보 {len(items)}건. 정기 실행이 최근 3일 안에 돌지 않아 "
-            "대화 검토(fork)가 이 scope의 후보를 맡는다. Domain의 후보는 정기 실행이 맡으니 "
-            "SETUP의 'Scope에서 Domain으로 정기 재검토'로 켠다. 본 작업은 계속한다.]")
+    held = sum("escalated" in i for i in items)
+    notes = []
+    if held:
+        notes.append(f"[osk 근거 재검토 — 사용자 검토 대기 {held}건. 재검토로 고친 수정이 그 "
+                     "노드를 인용한 노드들까지 고치게 만든다. overview의 rechecks.escalated에서 "
+                     "수정안을 보고 정한다.]")
+    if not daily and len(items) > held:
+        notes.append(f"[osk 근거 재검토 — 후보 {len(items) - held}건. 정기 실행이 최근 3일 안에 "
+                     "돌지 않아 대화 검토(fork)가 이 scope의 후보를 맡는다. Domain의 후보는 정기 "
+                     "실행이 맡으니 SETUP의 'Scope에서 Domain으로 정기 재검토'로 켠다. 본 작업은 "
+                     "계속한다.]")
+    return "\n".join(notes)
 
 
 def main() -> None:

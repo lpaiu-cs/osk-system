@@ -181,6 +181,41 @@ class GrowthTests(unittest.TestCase):
             assert not growth.plan(3)['recheck_jobs']
         """)
 
+    def test_recheck_escalation_holds_a_second_correction_for_the_user(self):
+        self.check_case("""
+            from osk import rechecks
+            node('A')
+            for title, body, basis in (('B', 'B relies on A.', 'A'), ('C', 'C relies on B.', 'B')):
+                assert write.create_node(title, title, body, 'gpt-6-astra', space='00_Scope/W1',
+                                         edges={'derived-from': basis})['ok']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            jobs = growth.plan(3)['recheck_jobs']
+            assert [(j['node'], j['cascade'], j['next']) for j in jobs] == [('B', False, ['C'])], jobs
+            # the agent's own correction of B is autonomous; C's recheck is then a cascade
+            write.update_node('B', old_text='B relies on A.', new_text='B relies on revised A.',
+                              add_edges={'derived-from': 'A'})
+            planned = growth.plan(3)
+            jobs = planned['recheck_jobs']
+            assert [(j['node'], j['cascade']) for j in jobs] == [('C', True)], jobs
+            manifest = register({**planned, 'scope_jobs': []})   # as run() records it
+            packet = {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
+                      'recheck': [{'key': jobs[0]['key'], 'outcome': 'unchanged',
+                                   'reason': 'x', 'proposal': 'y'}]}}
+            try:
+                growth.checkpoint(packet)
+                raise AssertionError('a recheck review closed a check without update_node')
+            except ValueError:
+                pass
+            packet['osk_reviews']['recheck'][0]['outcome'] = 'escalated'
+            assert growth.checkpoint(packet)['ok']
+            assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'complete'
+            assert not growth.plan(3)['recheck_jobs'], 'an escalated check returned to the agent queue'
+            held = rechecks.report(graph.Index()).get('escalated')
+            assert [h['node'] for h in held] == ['C'] and held[0]['proposal'] == 'y', held
+            write.update_node('C', add_edges={'derived-from': 'B'})   # the user's decision
+            assert not rechecks.report(graph.Index()), rechecks.report(graph.Index())
+        """)
+
     def check_case(self, source):
         with tempfile.TemporaryDirectory(prefix="osk-growth-test-") as directory:
             env = dict(os.environ, OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),

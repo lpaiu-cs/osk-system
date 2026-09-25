@@ -19,8 +19,10 @@ from . import contract, graph
 RECHECKS = LEDGER / "rechecks.jsonl"
 BASELINE = "기준선"
 CARRIED = "이어받음"
-CLOSE = ("근거를 읽고 노드를 확인한 뒤 update_node(name, add_edges={\"derived-from\": target})로 "
-         "그 근거를 다시 댄다 — 본문을 함께 고치면 updated, 그대로면 unchanged로 닫힌다")
+CLOSE = ("근거와 노드를 읽는다. 노드가 맞으면 update_node(name, add_edges={\"derived-from\": target})로 "
+         "그 근거를 다시 댄다(unchanged). 고쳐야 하면 그 수정이 next의 노드들까지 고치게 만들지 "
+         "않을 때만 같은 호출로 고친다(updated). 그런 수정이거나 cascade가 참이면 고치지 않고 "
+         "수정안을 사용자에게 올린다")
 _ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _FRONT = re.compile(r"---\r?\n.*?\n---\r?\n", re.S)
 _ALREADY = "재검토 대장에 이미 기록이 있다"
@@ -183,19 +185,62 @@ def _verdict(maxima: list[dict], node_state: str, target_state: str) -> str | No
 
 
 def candidates(idx=None) -> tuple[list[dict], bool]:
-    """(재검토 후보, 기준선 대기). 읽기만 한다."""
+    """(재검토 후보, 기준선 대기). 읽기만 한다.
+
+    후보마다 `next`(이 노드를 인용한 노드들 — 이 노드를 고치면 다음에 재검토될
+    곳)와 `cascade`(대상의 지금 판이 재검토로 고친 판인가)를 싣는다. 재검토로 고친
+    노드의 재전파가 또 수정을 부르면 그 수정은 사람이 본다(시행령 §7 2항)."""
     idx = idx or graph.Index()
     recs = ledger_read(RECHECKS)
     damaged = bool(ledger_damage(recs, RECHECKS))
     latest = {} if damaged else _latest(recs)
+    revised = {r.get("node_state") for r in recs
+               if r.get("kind") == "complete" and r.get("result") == "updated"}
+    rows, cited, fh = list(_citing(idx, {})), {}, {}
+    for name, _nid, _ns, ps, _kind in rows:
+        for key in ps:
+            cited.setdefault(key.split("#", 1)[0], []).append(name)
+
+    def cascade(key: str) -> bool:
+        tid = key.split("#", 1)[0]
+        if tid not in fh:
+            hit = idx.by_id.get(tid) if re.match(ID_RE, tid) else None
+            try:
+                fh[tid] = sha256_bytes(hit[0].read_bytes()) if hit else None
+            except OSError:
+                fh[tid] = None
+        return fh[tid] is not None and fh[tid] in revised
+
     out = []
-    for name, nid, ns, ps, kind in _citing(idx, {}):
+    for name, nid, ns, ps, kind in rows:
         for key, (ts, ref) in ps.items():
             why = "대장 손상" if damaged else _verdict(latest.get((nid, key), []), ns, ts)
             if why:
-                out.append({"node": name, "target": ref, "why": why, "id": nid,
-                            "key": key, "scope": kind[1] if kind[0] == "scope" else None})
+                out.append({"node": name, "target": ref, "why": why, "id": nid, "key": key,
+                            "scope": kind[1] if kind[0] == "scope" else None,
+                            "node_state": ns, "target_state": ts, "cascade": cascade(key),
+                            "next": sorted(set(cited.get(nid, [])))})
+    _mark_escalated(out)
     return out, not recs
+
+
+def _mark_escalated(items: list[dict]) -> None:
+    """사람에게 올린 후보에 `escalated`를 붙인다 — 그때의 두 상태가 지금과 같은 동안만."""
+    try:
+        from . import growth
+        rows = growth._records()
+    except Exception:
+        return
+    if not items or not any(r.get("kind") == "recheck_review" for r in rows):
+        return
+    par = effective_parents(rows)
+    for i in items:
+        top = causal_maxima(rows, f"recheck:{i['id']}:{i['key']}", par, "key")
+        r = top[0] if len(top) == 1 else {}
+        if (r.get("kind") == "recheck_review" and r.get("outcome") == "escalated"
+                and r.get("node_state") == i["node_state"]
+                and r.get("target_state") == i["target_state"]):
+            i["escalated"] = {"reason": r.get("reason"), "proposal": r.get("proposal")}
 
 
 def report(idx=None, limit: int = 5) -> dict:
@@ -206,8 +251,14 @@ def report(idx=None, limit: int = 5) -> dict:
     if pending:
         return {"baseline_pending": len(items),
                 "note": "재검토 기록이 없다 — 다음 쓰기나 세션 시작이 지금 근거를 기준선으로 적는다"}
-    return {"count": len(items), "close": CLOSE,
-            "items": [{k: i[k] for k in ("node", "target", "why")} for i in items[:limit]]}
+    mine = [i for i in items if "escalated" not in i]
+    out = {"count": len(mine), "close": CLOSE,
+           "items": [{k: i[k] for k in ("node", "target", "why", "cascade", "next")} for i in mine[:limit]]}
+    held = [{"node": i["node"], "target": i["target"], **i["escalated"]}
+            for i in items if "escalated" in i]
+    if held:
+        out["escalated"] = held      # 사람 검토 대기 — 에이전트의 큐에서 빠진다
+    return out
 
 
 def complete_keys(idx, path: Path, meta: dict) -> set[str]:
