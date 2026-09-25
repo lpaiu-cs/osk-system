@@ -87,19 +87,15 @@ _StrictLoader.add_constructor(
 
 def parse_case(case_path: Path) -> dict | None:
     """사건 파일 머리의 기계 판정 헤더(Mechanism §4 4항)를 구조적으로 파싱.
-    헤더가 '---'로 열리면 frontmatter 규약(계약과 같은 종결자), 아니면 유산
-    관용(첫 빈 줄까지)을 쓴다. 어느 쪽이든 중복 키는 거부한다."""
+    헤더는 첫 빈 줄까지다. frontmatter가 아니므로 `---`로 감싸지 않는다 —
+    감싼 파일은 대장 구획의 노드형 파일로 배치 검사가 잡는다. 중복 키는 거부한다."""
     try:
         text = case_path.read_text(encoding="utf-8")
     except OSError:
         return None
     if text.startswith("---\n"):
-        end = text.find("\n---\n", 4)
-        if end < 0:
-            return None
-        head = text[4:end]
-    else:
-        head = text.split("\n\n", 1)[0]
+        return None
+    head = text.split("\n\n", 1)[0]
     try:
         data = yaml.load(head, Loader=_StrictLoader)
     except (yaml.YAMLError, TypeError):

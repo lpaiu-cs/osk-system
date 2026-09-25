@@ -7938,7 +7938,12 @@ def test_edge_delta_is_cumulative():
            space="00_Scope/W1", edges={"derived-from": a["id"]})
     p = ROOT / "00_Scope/W1/regr-ed-src.md"
     try:
-        check("전제: 구형 id 근거 하나", r.get("ok"), r)
+        # 엔진은 id를 제목으로 적는다 — 구형 표기는 손으로 되돌려 만든다.
+        p.write_text(p.read_text(encoding="utf-8").replace(
+            'derived-from: "[[regr-ed-a]]"', f"derived-from: {a['id']}"), encoding="utf-8")
+        _age_all()
+        check("전제: 구형 id 근거 하나",
+              r.get("ok") and contract.parse(p).meta.get("derived-from") == a["id"], r)
         # 지울 것이 **하나뿐**인 상태 — 구판이 술어를 통째로 지우던 자리다.
         r1 = _w(write.update_node, "regr-ed-src",
                 add_edges={"derived-from": "regr-ed-a"},
@@ -8213,6 +8218,91 @@ def test_same_file_link_is_duplicate():
     finally:
         p.unlink(missing_ok=True)
         shutil.rmtree(other, ignore_errors=True)
+        _age_all()
+
+
+def test_format_alignment():
+    """엔진은 Mechanism이 정한 배치·표기대로 읽고 쓴다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · Space 루트 바로 아래 파일을 노드로 보면 → 루트 파일 단언(§1 2항)
+      · 비노드를 확장자 없는 이름으로만 색인하면 → 임베드 단언(§8 5항)
+      · 허브를 `<이름>.md` 철자로만 찾으면 → 허브 단언(§1 4항)
+      · 새 id 근거를 맨값으로 적으면 → 제목 위키링크 단언(§8 2항)
+      · 검증기가 growth.jsonl을 빼면 → 성장 대장 단언(§3 2항)
+      · `---`로 감싼 사건 헤더도 읽으면 → 사건 헤더 단언(§4 4항)"""
+    rootfile = ROOT / core.DOMAIN / "regr-rootfile.md"
+    img = ROOT / "_sources" / "regr-diagram.png"
+    hubdir = ROOT / core.DOMAIN / "RegrHubCase"
+    growth = core.LEDGER / "growth.jsonl"
+    gbefore = growth.read_bytes() if growth.exists() else None
+    case = core.LEDGER / "case" / "CASE-2026-9300.md"
+    made = [ROOT / "00_Scope/W1/regr-fmt-src.md", ROOT / "00_Scope/W1/regr-fmt-use.md",
+            ROOT / "00_Scope/W1/regr-fmt-doc.md.md", ROOT / "00_Scope/W1/regr-fmt-doc.md"]
+    try:
+        rootfile.write_text(node_text("260925-0000-rootfile"), encoding="utf-8")
+        check("Space 루트 바로 아래 파일은 노드 자리가 아니다",
+              graph.space_of(rootfile)[0] == "support", graph.space_of(rootfile))
+        check("배치 검증기가 루트 바로 아래 노드형 파일을 보고한다",
+              any("regr-rootfile.md" in v for v in graph.layout_violations()))
+        rootfile.unlink()
+
+        img.parent.mkdir(exist_ok=True)
+        img.write_bytes(b"\x89PNG")
+        check("임베드는 확장자까지 쓴 파일 이름으로 해석된다",
+              graph.Index().resolve("regr-diagram.png")[0] == "nonnode")
+
+        hubdir.mkdir(parents=True, exist_ok=True)
+        check("허브 파일이 없는 군집", graph.hub_file(hubdir) is None)
+        (hubdir / "RegrHubCase.MD").write_text(node_text("260925-0001-hubcase1"),
+                                               encoding="utf-8")
+        check("확장자 대소문자와 무관하게 허브를 찾는다",
+              graph.hub_file(hubdir) is not None)
+        shutil.rmtree(hubdir)
+
+        ra = _w(write.create_node, "regr-fmt-src", "s", "근거.", "fable-5",
+                space="00_Scope/W1")
+        rb = _w(write.create_node, "regr-fmt-use", "s", "쓴다.", "fable-5",
+                space="00_Scope/W1", edges={"derived-from": ra["id"]})
+        text = made[1].read_text(encoding="utf-8")
+        check("새 id 근거는 제목 위키링크로 적는다",
+              rb.get("ok") and 'derived-from: "[[regr-fmt-src]]"' in text
+              and ra["id"] not in text, text[:400])
+        _w(write.update_node, "regr-fmt-use", add_edges={"derived-from": ra["id"]})
+        check("같은 근거를 id로 다시 더해도 한 번만 앉는다",
+              made[1].read_text(encoding="utf-8").count("regr-fmt-src") == 1)
+        # 제목에 든 `.md`는 제목의 일부다 — 해석된 노드의 제목이 근거의 동일성이다
+        rd = _w(write.create_node, "regr-fmt-doc.md", "s", "문서 이름.", "fable-5",
+                space="00_Scope/W1")
+        rp = _w(write.create_node, "regr-fmt-doc", "s", "짧은 이름.", "fable-5",
+                space="00_Scope/W1")
+        _w(write.update_node, "regr-fmt-use", add_edges={"derived-from": [rd["id"], rp["id"]]})
+        got = str(contract.parse(made[1]).meta.get("derived-from"))
+        check("`.md`로 끝나는 제목과 짧은 제목은 다른 근거로 남는다",
+              "[[regr-fmt-doc.md]]" in got and "[[regr-fmt-doc]]" in got, got)
+        _w(write.update_node, "regr-fmt-use", remove_edges={"derived-from": rd["id"]})
+        got = str(contract.parse(made[1]).meta.get("derived-from"))
+        check("id로 빼면 그 노드의 제목 링크가 빠진다",
+              "[[regr-fmt-doc.md]]" not in got and "[[regr-fmt-doc]]" in got, got)
+
+        with open(growth, "a", encoding="utf-8") as f:
+            f.write('{"kind": "plan"}\n')
+        check("검증기가 growth.jsonl의 rid 손상을 보고한다",
+              "growth.jsonl" in str(validate.run()["fail"]))
+
+        case.write_text("---\ncase_no: CASE-2026-9300\n---\n\n본문\n", encoding="utf-8")
+        check("`---`로 감싼 사건 헤더는 읽지 않는다", S.parse_case(case) is None)
+    finally:
+        rootfile.unlink(missing_ok=True)
+        img.unlink(missing_ok=True)
+        shutil.rmtree(hubdir, ignore_errors=True)
+        case.unlink(missing_ok=True)
+        for p in made:
+            p.unlink(missing_ok=True)
+        if gbefore is None:
+            growth.unlink(missing_ok=True)
+        else:
+            growth.write_bytes(gbefore)
         _age_all()
 
 
@@ -11414,6 +11504,7 @@ if __name__ == "__main__":
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
                test_duplicate_id_by_name_refused, test_same_file_link_is_duplicate,
+               test_format_alignment,
                test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_node_place_rule,

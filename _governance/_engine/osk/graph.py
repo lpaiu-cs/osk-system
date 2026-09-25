@@ -187,8 +187,9 @@ def _space_of_parts(parts: tuple) -> tuple:
     `_raw`·`_ledger`·`_engine`처럼 이름이 정해진 구획은 그보다 먼저 제 소속을
     받으므로(`_raw/.records`는 그대로 raw) 이 판정이 건드리지 않는다."""
     kind = _place_of_parts(parts)
-    if is_node_home(kind) and _off_node(parts[1:]):
-        return ("support",)
+    if is_node_home(kind) and (_off_node(parts[1:]) or (
+            len(parts) == 2 and kind[0] != "governance" and _is_md(parts[1]))):
+        return ("support",)       # 노드는 군집 안에만 둔다 — Space 루트 바로 아래는 아니다
     return kind
 
 
@@ -236,6 +237,22 @@ def is_hub(path: Path) -> bool:
     노드"). 배치가 정본이라는 원칙(§3 3항)에서 읽어 내는 것이지 새로 선언하는
     것이 아니다. 이 판정이 서야 검증기가 층을 가로질러 도달을 셀 수 있다."""
     return path.parent.name == path.stem
+
+
+def hub_file(d: Path) -> Path | None:
+    """군집 `d`의 허브 파일, 없으면 None. 확장자는 대소문자를 가리지 않는다
+    (Mechanism §1 4항) — 대소문자를 가리는 파일시스템의 `<이름>.MD`도 허브다."""
+    p = d / f"{d.name}.md"
+    if p.is_file():
+        return p
+    try:
+        with os.scandir(d) as it:
+            for e in it:
+                if _is_md(e.name) and e.name[:-3] == d.name and e.is_file():
+                    return Path(e.path)
+    except OSError:
+        pass
+    return None
 
 
 def is_node_home(kind: tuple) -> bool:
@@ -479,6 +496,7 @@ class Index:
                     found.append((p, k))
             for p, k in sorted(found, key=lambda x: x[0]):
                 self.nonnode[p.stem] = (p, k)
+                self.nonnode[p.name] = (p, k)   # `![[diagram.png]]` — 옵시디언 표기
 
     # ── 계약 색인 — 묻는 것만 짓는다 ─────────────────────────────────
     def _readable(self, p: Path) -> bool:
@@ -715,6 +733,25 @@ class Index:
             else:
                 errors.append(self._failed[p])
         return live, errors
+
+    def locate(self, name: str):
+        """`resolve`와 같은 순서로 대상 파일 하나를 찾는다 — (경로, 소속). 외부 주소·
+        모호·dangling이면 None. 제목은 파일 이름에서 `.md`만 뗀 것이므로, 제목에 든
+        `.md`(`README.md`)도 제목의 일부로 찾는다."""
+        if re.match(r"^https?://", name):
+            return None
+        if re.match(ID_RE, name):
+            return None if name in self.dup_ids else self.by_id.get(name)
+        if "/" in name:
+            p = resolve_in_root(name)
+            for cand in ((p, p.with_suffix(".md")) if p is not None else ()):
+                if cand.is_file():
+                    return cand, space_of(cand)
+            return None
+        live, _errors = self.lookup_name(name)
+        if len(live) == 1:
+            return live[0]
+        return None if live else self.nonnode.get(name)
 
     def resolve(self, name: str):
         """대상명 → ('node',소속) | ('nonnode',소속) | ('ambiguous',) |

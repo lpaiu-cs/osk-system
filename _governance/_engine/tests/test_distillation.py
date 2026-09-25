@@ -401,6 +401,17 @@ def _child():
                 self.assertIsNone(D._load(self.key))
                 self.assertEqual(core.sha256_file(core.ROOT / existing["path"]), existing["new_hash"])
 
+            def test_required_provenance_alias_cannot_be_removed(self):
+                existing = write.create_node(self.args["title"], "old", "old retained knowledge",
+                                             "fable-5", space="00_Scope/W1")
+                alias = "[[" + self.name + "-source|근거]]"
+                with self.assertRaises(write.WriteError):
+                    D.update_node(self.spec, name=existing["id"], body="new retained knowledge",
+                                  expect_hash=existing["new_hash"],
+                                  remove_edges={"derived-from": alias})
+                self.assertIsNone(D._load(self.key))
+                self.assertEqual(core.sha256_file(core.ROOT / existing["path"]), existing["new_hash"])
+
             def test_required_provenance_cannot_be_removed(self):
                 existing = write.create_node(self.args["title"], "old", "old retained knowledge",
                                              "fable-5", space="00_Scope/W1")

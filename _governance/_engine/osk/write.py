@@ -377,7 +377,7 @@ def _cluster_names() -> list[str]:
             # 헛걸음시킨다). 허브를 세우는 첫 쓰기는 이 목록을 거치지 않고
             # 관문이 안내하므로 잃는 것이 없다.
             path = f"{prefix}/{sub.name}"
-            if (sub / f"{sub.name}.md").is_file():
+            if graph.hub_file(sub):
                 out.add(path)
                 walk(sub, path)
 
@@ -444,7 +444,7 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
     roots = {(ROOT / SCOPE).resolve(), (ROOT / DOMAIN).resolve(),
              (ROOT / PERSON).resolve()}
     top_level = parent in roots
-    if not top_level and not (parent / f"{parent.name}.md").is_file():
+    if not top_level and not graph.hub_file(parent):
         raise WriteError(
             f"선언되지 않은 군집이다: {dest}. 신설은 Space 루트 바로 아래이거나 "
             f"**허브가 있는 군집 안**이어야 한다(Mechanism §1 2항 · 시행령 §3 7항). "
@@ -1199,7 +1199,9 @@ def _stored_edges(v) -> list[str]:
 
 
 def _edge_key(target: str, idx) -> tuple[str, str]:
-    """노드는 제목으로, 비노드 근거는 전체 경로와 앵커로 구별한다."""
+    """노드는 해석된 노드의 제목으로, 비노드 근거는 전체 경로와 앵커로 구별한다.
+    id·제목·경로 어느 표기든 같은 노드면 같은 키다. 해석되지 않는 이름만 표기
+    규칙(`contract.target_stem`)으로 접는다 — 제목에 든 `.md`를 떼지 않기 위해서다."""
     from . import raw
     s = raw.canonical_ref(target).strip()
     if s.startswith("[[") and s.endswith("]]"):
@@ -1214,7 +1216,24 @@ def _edge_key(target: str, idx) -> tuple[str, str]:
             return path, anchor
         if kind != "node":
             return path.removesuffix(".md"), anchor
+    hit = idx.locate(path) if path else None
+    if hit and graph.is_node_home(hit[1]):
+        return hit[0].stem, ""
     return contract.target_stem(path), ""
+
+
+def _id_title(s: str, idx) -> str | None:
+    """id 맨값이 가리키는 노드의 제목. 해석되지 않거나 모호하면 None."""
+    if re.match(ID_RE, s) and s not in idx.dup_ids and s in idx.by_id:
+        return idx.by_id[s][0].stem
+    return None
+
+
+def _titled(t, idx):
+    """새로 받은 노드 대상의 id 맨값을 제목 위키링크로 적는다(Mechanism §8 2항).
+    해석되지 않거나 모호한 id는 받은 그대로 둔다 — dangling·모호로 보고된다."""
+    title = _id_title(str(t).strip(), idx)
+    return f"[[{title}]]" if title else t
 
 
 def _merge_edges(cur: list[str], add, idx) -> list[str]:
@@ -1231,6 +1250,7 @@ def _merge_edges(cur: list[str], add, idx) -> list[str]:
     seen = {_edge_key(t, idx) for t in cur}
     out = list(cur)
     for t in _as_list(add):
+        t = _titled(t, idx)
         k = _edge_key(t, idx)
         if k not in seen:
             seen.add(k)
@@ -1246,10 +1266,10 @@ def _as_links(pred: str, targets, *, legacy_raw: bool = False) -> str | list:
     받으면 여기서 `[[제목]]`이 된다. id 맨값을 그대로 두는 것은 **구형 표기의
     호환**이다(§8 2항 — 계속 해석한다).
 
-    id 입력을 제목으로 **정규화하지 않는다.** 정규화하려면 id→노드 해석이
-    필요하고 그것은 전수 판독을 부르는데, 이 함수는 `add_edges`·`remove_edges`
-    경로에서 **이미 저장된 간선까지** 다시 접는 자리라 호출자가 요청하지 않은
-    간선을 바꾸게 된다. 구형 표기의 이관은 별도 작업이다."""
+    이 함수는 id를 제목으로 바꾸지 않는다. `add_edges`·`remove_edges` 경로에서
+    **이미 저장된 간선까지** 다시 접는 자리라, 바꾸면 호출자가 요청하지 않은
+    간선이 바뀐다. 새로 받은 id는 `_merge_edges`가 `_titled`로 먼저 제목으로
+    적는다."""
     out = []
     for t in _as_list(targets):
         s = str(t).strip()
@@ -1373,12 +1393,10 @@ def _update_node_locked(name: str, body: str | None = None,
     # "근거를 A에서 B로 바꾼다"는 드문 호출이 아니라 이관·오타 수정·근거
     # 갱신의 자연스러운 표현이다. 실제로 v3.7.3 이관에서 두 번 걸렸고,
     # 두 번째는 이 결함을 재현해 기록한 직후였다 — 알고도 피해지지 않았다.
-    for pred, tg in (add_edges or {}).items():
-        cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
-        merged = _merge_edges(cur, tg, idx)  # 한 호출 안의 중복도 한 번만 앉는다
-        if len(merged) != len(cur):
-            meta[pred] = _as_links(pred, merged, legacy_raw=_legacy_raw)
-            changed = True
+    #
+    # 제거가 먼저다. id와 제목은 같은 근거이므로(`_edge_key`), 저장된 id 표기를
+    # 빼고 제목으로 다시 대는 호출이 뒤의 제거에 지워지지 않는다. 같은 근거를
+    # 함께 빼고 대면 남는다 — 근거를 조용히 잃지 않는다.
     for pred, tg in (remove_edges or {}).items():
         drop = {_edge_key(t, idx) for t in _as_list(tg)}
         cur = _stored_edges(meta.get(pred))
@@ -1389,6 +1407,12 @@ def _update_node_locked(name: str, body: str | None = None,
                 meta[pred] = _as_links(pred, keep, legacy_raw=_legacy_raw)
             else:
                 meta.pop(pred, None)
+    for pred, tg in (add_edges or {}).items():
+        cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
+        merged = _merge_edges(cur, tg, idx)  # 한 호출 안의 중복도 한 번만 앉는다
+        if len(merged) != len(cur):
+            meta[pred] = _as_links(pred, merged, legacy_raw=_legacy_raw)
+            changed = True
     # 저장 목록에서 바이트가 같은 되풀이는 이 쓰기에서 접는다 — 위의 추가·제거가 옛
     # 표기를 정규 표기로 다시 적어 겹친 것까지. 접기만으로는 쓰지 않는다(`changed` 불변).
     # ponytail: 바이트 비교만 한다(해소가 없어 공짜이고 실패하지 않는다). 키로 접으면
@@ -1534,8 +1558,8 @@ def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
     여기만 경로를 내면 호출자가 변환을 스스로 해야 한다(감사 지적)."""
     out = []
     for h in sorted(srcs):
-        hub = h / f"{h.name}.md"
-        if not hub.is_file():
+        hub = graph.hub_file(h)
+        if hub is None:
             continue
         try:
             n = idx.node(hub)
@@ -1544,8 +1568,8 @@ def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
         gone = sorted({contract.target_stem(t) for t in n.wikilinks()} & moved)
         if gone:
             out.append({"hub": hub.stem, "remove": gone})
-    dhub = dest / f"{dest.name}.md"
-    if dhub.is_file():
+    dhub = graph.hub_file(dest)
+    if dhub:
         try:
             have = {contract.target_stem(t) for t in idx.node(dhub).wikilinks()}
             need = sorted(moved - have)
@@ -1774,7 +1798,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
         if sdir in ddir.parents or sdir == ddir:
             raise WriteError(
                 f"자기 안으로 옮길 수 없다: {posix_rel(sdir, ROOT)} → {dest_parent}")
-        if not (ddir / f"{ddir.name}.md").is_file()\
+        if not graph.hub_file(ddir)\
                 and ddir.parent.resolve() not in {
                     (ROOT / s).resolve() for s in graph.NODE_SPACES}:
             raise WriteError(
