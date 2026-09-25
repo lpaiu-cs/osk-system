@@ -107,7 +107,7 @@ def run() -> dict:
             errs.append(str(e))
     ok("대장 JSON 무결", errs)
 
-    # 6. 대장 구조 손상 — rid 부재·형식 위반·중복 (Mechanism §3 7항 · §3 2항).
+    # 6. 대장 구조 손상 — rid 부재·형식 위반·중복 (Mechanism §3 8항 · §3 2항).
     #    중복 rid는 기록의 동일성을 깨뜨려 판정을 뒤집으므로 전 대장에 건다.
     dmg = []
     for p, rs in ledgers:

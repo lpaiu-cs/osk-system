@@ -24,7 +24,7 @@
   원천 차단되고(항상 DAG), 새 봉합 기록으로 해소되는 길이 남는다.
 - **구조 손상** — rid 부재·rid 형식 위반·rid 중복은 기록의 동일성 자체가
   깨진 상태다. 판정은 fail-closed(미확정)로 두되 `ledger_damage`가 이를
-  표면화하고, 회복은 Mechanism §3 7항의 수동 복구가 담당한다. 이 상태에서는
+  표면화하고, 회복은 Mechanism §3 8항의 수동 복구가 담당한다. 이 상태에서는
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
 from __future__ import annotations
@@ -490,7 +490,7 @@ def ledger_read(path: Path) -> list[dict]:
 def ledger_damage(records: list[dict], path: Path | str = "") -> list[str]:
     """기록의 **동일성**이 깨진 구조 손상 목록 — rid 부재·형식 위반·중복.
     정규화로 흡수하면 안 되는(해소를 새 기록에 맡길 수 없는) 이상이며,
-    Mechanism §3 7항의 수동 복구 대상이다. 빈 목록이면 건전."""
+    Mechanism §3 8항의 수동 복구 대상이다. 빈 목록이면 건전."""
     out, seen = [], {}
     where = f"{path}:" if path else "행"
     for i, r in enumerate(records):
@@ -656,7 +656,7 @@ def ledger_append(path: Path, record: dict, expect=None) -> dict:
             dmg = ledger_damage(records, path)
             if dmg:
                 raise ValueError(
-                    f"대장 손상 — 수동 복구 절차 필요 (Mechanism §3 7항): "
+                    f"대장 손상 — 수동 복구 절차 필요 (Mechanism §3 8항): "
                     + "; ".join(dmg[:5]))
             if expect is not None:
                 why = expect(records)
