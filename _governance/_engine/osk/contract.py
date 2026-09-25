@@ -334,6 +334,17 @@ def parse(path: Path | str) -> Node:
     return parse_bytes(p, p.read_bytes())
 
 
+# `parse_bytes`와 같은 경계를 바이트로 — 첫 행 `---` 뒤에 처음 오는 `---` 행이 닫는다.
+_FM_SPAN = re.compile(rb"---(?:\r\n|\r|\n).*?(?:\r\n|\r|\n)---(?:\r\n|\r|\n)", re.S)
+
+
+def body_offset(data: bytes) -> int:
+    """frontmatter를 닫는 행의 다음 바이트 — 본문이 시작하는 자리. 정규화하지 않은
+    바이트에서 잰다(Mechanism §4-1 1항). frontmatter가 없으면 0."""
+    m = _FM_SPAN.match(data)
+    return m.end() if m else 0
+
+
 def parse_bytes(path: Path | str, data: bytes) -> Node:
     """**주어진 바이트**에서 판독한다.
 
