@@ -374,10 +374,10 @@ def cluster_overview_report(idx: "graph.Index") -> dict:
 def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
     """`stem` 노드가 **본문 Link로** 가리키는 군집 구성원 (헌법 8조 4항).
 
-    Predicate Edge는 세지 않는다. 도달이 `derived-from`을 세면 고아를 지우는
-    가장 싼 길이 근거를 하나 더 다는 것이 되어, 검증기의 압력이 증거 계층으로
-    샌다 — 근거는 조건부인데(헌법 9조 1항) 도달은 필수이므로, 필수를 조건부
-    위에 얹지 않는다(Mechanism §6-1 3항).
+    Predicate Edge는 세지 않는다(Mechanism §6-1 3항). 도달이 `derived-from`을
+    세면 고아를 지우는 가장 싼 길이 근거를 하나 더 다는 것이 되어, 검증기의
+    압력이 증거 계층으로 샌다 — 근거는 조건부인데(헌법 9조 1항) 도달은
+    필수이므로, 필수를 조건부 위에 얹지 않는다.
 
     이름형·경로형 Link 모두 마지막 조각으로 접는다. 구성원이 아닌 대상 —
     군집 밖 노드·비노드 — 은 마지막 교집합에서 떨어진다."""
