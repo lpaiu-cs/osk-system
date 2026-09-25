@@ -559,7 +559,7 @@ not listed in Mechanism §1 3; `osk/growth.py` defines the payloads.
 
 | `kind` | Fields |
 |---|---|
-| `plan` | the run manifest: selected `candidates`, `scope_jobs`, `organization_jobs`, `eviction_jobs` and bookkeeping; its `rid` names the run |
+| `plan` | the run manifest: selected `candidates`, `scope_jobs`, `organization_jobs`, `eviction_jobs`, `recheck_jobs` and bookkeeping; its `rid` names the run |
 | `review` | `key`, `manifest` (a plan rid), `candidate`, `outcome` (`preserved`, `no_value` or `deferred`), `target`, `reason`, `distillation` (a receipt or null); opt. `omitted_sources` |
 | `run` | `manifest`, `ok`, `state`, counts, per-queue outcomes, `output` (the run directory `.osk/growth/runs/<rid>/`) |
 | `eviction_review` | `manifest`, `of`, `outcome` (`node`, `merged`, `discarded` or `deferred`); opt. `target`, `reason`, `settlement` (a settle rid) |
