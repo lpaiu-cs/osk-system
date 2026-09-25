@@ -26,7 +26,7 @@ gh() {
       if [ "$REF_FAILURE" = 1 ]; then return 1; fi
       printf '%s' "$EXISTING" ;;
     *"releases/generate-notes"*) printf 'Release notes\n' ;;
-    "release create "*) return 0 ;;
+    "release create "*) return "$RELEASE_FAILURE" ;;
     *) printf 'Unexpected gh call\n' >&2; return 1 ;;
   esac
 }
@@ -37,15 +37,18 @@ gh() {
 class ReleaseWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.workflow = yaml.load(WORKFLOW.read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
-        self.step = self.workflow['jobs']['mirror']['steps'][0]
+        self.steps = self.workflow['jobs']['mirror']['steps']
+        self.step = next(step for step in self.steps if 'run' in step)
 
-    def run_publication(self, *, tag='v4.0.0', version='v4.0.0', existing='', ref_failure='0'):
+    def run_publication(self, *, tag='v4.0.0', version='v4.0.0', existing='', ref_failure='0',
+                        release_failure='0'):
         with tempfile.TemporaryDirectory(prefix='osk-release-workflow-') as td:
             path = Path(td)
             script, calls = path / 'publish.sh', path / 'calls.txt'
             script.write_text(STUB + self.step['run'], encoding='utf-8', newline='\n')
             env = dict(os.environ, TAG=tag, COMMIT=SHA, REPO='fixture/repo',
                        CALLS=calls.as_posix(), EXISTING=existing, REF_FAILURE=ref_failure,
+                       RELEASE_FAILURE=release_failure,
                        ATTESTATION=base64.b64encode(json.dumps({'version': version, 'files': {}}).encode()).decode())
             # The workflow uses python3; point the shell at this test's interpreter.
             wrapper = path / 'python3'
@@ -83,6 +86,26 @@ class ReleaseWorkflowTests(unittest.TestCase):
         proc, calls = self.run_publication(existing=SHA)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn('--target ' + SHA, calls[-1])
+
+    def test_token_can_publish_workflows_after_the_default_branch_moves(self):
+        # GitHub requires Contents + Workflows write when the pinned commit's
+        # workflows differ from the default branch. GITHUB_TOKEN cannot do this.
+        token_step = next((step for step in self.steps if 'id' in step and
+                           self.step['env']['GH_TOKEN'] ==
+                           '${{ steps.' + step['id'] + '.outputs.token }}'), None)
+        self.assertIsNotNone(token_step, 'publication must use the App token output')
+        self.assertLess(self.steps.index(token_step), self.steps.index(self.step))
+        self.assertTrue(token_step['uses'].startswith('actions/create-github-app-token@'))
+        settings = token_step['with']
+        self.assertEqual(settings['repositories'], '${{ github.repository }}')
+        self.assertEqual({k: v for k, v in settings.items() if k.startswith('permission-')},
+                         {'permission-contents': 'write', 'permission-workflows': 'write'})
+        self.assertEqual(settings.get('skip-token-revoke', 'false'), 'false')
+
+    def test_publication_api_failure_is_not_reported_as_success(self):
+        proc, calls = self.run_publication(release_failure='1')
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(sum(call.startswith('release create ') for call in calls), 1)
 
 
 if __name__ == '__main__':

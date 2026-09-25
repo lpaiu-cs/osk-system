@@ -863,7 +863,21 @@ git checkout vX.Y.Z -- release.json
 
 로컬 태그를 원격에 먼저 push하지 않는다. updater는 GitHub Release 화면이 아닌
 git 태그를 읽으므로, 태그를 먼저 공개하면 발행 검사가 끝나기 전에 갱신 후보가 된다.
-정식 릴리스는 비준증빙 커밋을 `main`으로 먼저 보내고 `release` workflow로 공개한다:
+정식 릴리스는 비준증빙 커밋을 `main`으로 먼저 보내고 `release` workflow로 공개한다.
+
+첫 발행 전에 정본 저장소에 발행용 **GitHub App**을 설치한다. 설치 대상은 이
+저장소로 한정하고, 저장소 권한은 **Contents: write**와
+**Workflows: write**로 설정한다. Actions 저장소 변수
+`OSK_RELEASE_APP_CLIENT_ID`에 App의 Client ID를, 저장소 secret
+`OSK_RELEASE_APP_PRIVATE_KEY`에 App의 private key를 등록한다.
+검사 중 main의 workflow 파일이 바뀌면 고정된 후보의 발행에도 Workflows 쓰기
+권한이 필요하며, 기본 `GITHUB_TOKEN`에는 이 권한을 줄 수 없다
+([GitHub 발행 API](https://docs.github.com/en/rest/releases/releases#create-a-release)).
+workflow는 검사 통과 뒤 현재 저장소와 두 권한에 한정된 단기 토큰을 발급하고,
+job이 끝나면 폐기한다. 설정 누락·권한 부족이면 토큰 발급이 실패하며 기본 토큰으로
+대체하지 않는다([App 토큰 action](https://github.com/actions/create-github-app-token)).
+
+등록을 마치면 비준증빙 커밋을 보내고 발행 검사를 시작한다:
 
 ```bash
 git push origin HEAD:main
