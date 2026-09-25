@@ -696,9 +696,9 @@ class Index:
                         self._id_tokens.setdefault(t, []).append(p)
             same = [p for p in self._id_tokens.get(nid, ())
                     if self._readable(p) and self.parsed[p].id == nid]
-        # 같은 파일로 가는 링크(도구가 만든 파일 링크)는 사본이 아니다 — 한쪽을
-        # 고치면 다른 쪽도 같은 바이트라 갈라질 수 없다.
-        others = [p for p in same if p != path and not _same_file(p, path)]
+        # 같은 파일로 가는 파일 링크도 한 노드를 두 자리에 두는 중복 소속이다 —
+        # 사본과 같이 거부한다(Mechanism §2 1항).
+        others = [p for p in same if p != path]
         return sorted(q.relative_to(ROOT).as_posix() for q in [path, *others]) if others else []
 
     def node(self, path: Path) -> contract.Node:
@@ -777,10 +777,11 @@ def _same_file(a: Path, b: Path) -> bool:
 # 동 id 거부의 다음 행동 — 읽기·쓰기·후보 상정이 같은 말을 한다.
 DUP_ID_ADVICE = (
     "id가 겹친 사본은 복제·백업 복원·동기화 충돌에서 온다(표면은 id를 겹쳐 "
-    "만들지 않는다). 충돌 후보(`record_candidate`)가 아니라 동일성 사고라 표면으로 "
-    "고치지 않는다 — 사용자가 두 파일을 비교해 남길 쪽을 정하고, 다른 쪽의 고유한 "
-    "내용을 옮긴 뒤 그 파일을 vault 밖으로 치운다. 그때까지 둘 다 이름으로도 "
-    "id로도 읽거나 고치지 않는다")
+    "만들지 않는다). 같은 파일로 가는 파일 링크도 한 노드를 두 자리에 두는 중복 "
+    "소속이다. 충돌 후보(`record_candidate`)가 아니라 동일성 사고라 표면으로 "
+    "고치지 않는다 — 링크면 링크를 지워 한 자리만 남기고, 사본이면 사용자가 두 "
+    "파일을 비교해 남길 쪽을 정하고 다른 쪽의 고유한 내용을 옮긴 뒤 그 파일을 "
+    "vault 밖으로 치운다. 그때까지 둘 다 이름으로도 id로도 읽거나 고치지 않는다")
 
 
 def topology_check(idx: Index) -> list[str]:

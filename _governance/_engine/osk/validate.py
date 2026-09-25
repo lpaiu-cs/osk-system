@@ -58,8 +58,11 @@ def run() -> dict:
         for e in contract.validate(n):
             errs.append(f"{stem}: {e}")
         if n.id in ids:
-            errs.append(f"id 중복 {n.id}: {stem} & {ids[n.id]}")
-        ids[n.id] = stem
+            other, q = ids[n.id]
+            link = (" — 같은 파일로 가는 링크다: 링크를 지워 한 자리만 남긴다"
+                    if graph._same_file(p, q) else "")
+            errs.append(f"id 중복 {n.id}: {stem} & {other}{link}")
+        ids[n.id] = (stem, p)
     ok(f"노드 계약 ({len(idx.nodes) + len(broken)}개)", errs)
 
     # 2. 배치 (Mechanism §1)

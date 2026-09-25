@@ -8170,6 +8170,52 @@ def test_duplicate_id_by_name_refused():
         _age_all()
 
 
+def test_same_file_link_is_duplicate():
+    """같은 파일로 가는 파일 링크도 한 노드를 두 자리에 두는 **중복 소속**이다.
+
+    사본과 같이 이름으로도 id로도 읽거나 고치지 않고, 거부와 검증기는 링크를
+    지우라고 알린다(Mechanism §2 1항).
+
+    무엇을 망가뜨리면 실패하는가:
+      · `id_twins`가 같은 파일을 후보에서 빼면 → 읽기·쓰기 거부 단언
+      · 검증기가 같은 파일을 가리지 않으면 → 링크 안내 단언"""
+    import mcp_server as M
+    p = ROOT / "00_Scope/W1/regr-link.md"
+    other = ROOT / "00_Scope/regr-link-c"
+    alias = other / "regr-link alias.md"
+    other.mkdir(parents=True, exist_ok=True)
+    try:
+        r0 = _w(write.create_node, "regr-link", "요약", "ORIGINAL", "fable-5",
+                space="00_Scope/W1")
+        check("전제: 생성", r0.get("ok"), r0)
+        try:
+            os.link(p, alias)
+        except OSError as e:
+            skip("같은 파일로 가는 링크는 중복 소속이다", f"이 파일시스템에 링크를 만들 수 없다: {e}")
+            return
+        _age_all()
+        before = p.read_bytes()
+        M._index, M._searcher, M._fingerprint = None, None, None
+        for h in ("regr-link", "regr-link alias"):
+            rr = M.read_node(h)
+            check(f"링크 이름 읽기도 거부한다: {h}",
+                  "error" in rr and "동일성 사고" in rr["error"], rr)
+        r1 = _w(write.update_node, "regr-link", summary="고침")
+        check("링크가 걸린 노드는 이름 쓰기를 거부한다", r1.get("ok") is False, r1)
+        check("거부가 링크를 지우라고 알린다", "링크를 지워" in str(r1), r1)
+        check("바이트는 그대로다", p.read_bytes() == before)
+        fails = str(validate.run()["fail"])
+        check("검증기가 링크를 id 중복으로 보고하고 지우라고 알린다",
+              "id 중복" in fails and "같은 파일로 가는 링크" in fails, fails[:600])
+        alias.unlink()
+        _age_all()
+        check("링크를 지우면 이름 읽기 복구", "error" not in M.read_node("regr-link"))
+    finally:
+        p.unlink(missing_ok=True)
+        shutil.rmtree(other, ignore_errors=True)
+        _age_all()
+
+
 # ── 이동은 참조 위상을 새로 깨지 않는다 (v4.0.0) ─────────────────────────
 def test_move_topology_refused():
     """노드를 옮기면 소속이 바뀌어 **그 노드의 나가고 들어오는 참조**의 판정이
@@ -10681,7 +10727,11 @@ def test_reparse_cache_membership():
                 return
             _age_all()
             M._index, M._searcher, M._fingerprint = None, None, None
-            check("실제 파일 링크의 정상 노드 조회", "error" not in M.read_node(alias.stem))
+            # 같은 노드로 가는 파일 링크는 한 노드를 두 자리에 두는 중복 소속이다 —
+            # 저장 방식의 변용을 허용하지 않으므로 사본과 같이 거부한다(Mechanism §2 1항).
+            rr = M.read_node(alias.stem)
+            check("실제 파일 링크는 중복 소속으로 거부하고 링크를 지우라고 한다",
+                  "error" in rr and "링크를 지워" in rr["error"], rr)
             alias.unlink()
             alias.symlink_to(evidence)
             check("실제 파일 링크도 비노드 전환 뒤 노드 후보에서 제거한다",
@@ -11251,7 +11301,8 @@ if __name__ == "__main__":
                test_nested_clusters,
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
-               test_duplicate_id_by_name_refused, test_move_topology_refused,
+               test_duplicate_id_by_name_refused, test_same_file_link_is_duplicate,
+               test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_node_place_rule,
                test_traversal_deterministic, test_index_split,
