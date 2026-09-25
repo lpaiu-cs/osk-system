@@ -311,14 +311,15 @@ def resume(key: str, *, name: str | None = None) -> dict:
                 "new_hash": target["hash"] if saved else None, "distillation": receipt}
 
 
-def _execute(operation: str, distill: dict, request: dict) -> dict:
+def _execute(operation: str, distill: dict, request: dict, *,
+             _seen: dict | None = None) -> dict:
     if not isinstance(distill, dict) or set(distill) != {"key", "sources", "hub"}:
         raise write.WriteError("distill requires exactly key, sources, hub")
     key = distill["key"]
     _job_path(key)
     if request.get("settle") is not None:
         raise write.WriteError("distill and eviction settle are separate completion operations")
-    # Bind the key to the complete caller request, before secret filtering.
+    # Bind the key to the caller request, not process-local observations, before filtering.
     binding = sha256_bytes(json.dumps(
         [operation, distill, request], ensure_ascii=False, sort_keys=True).encode())
     request = dict(request)
@@ -444,7 +445,7 @@ def _execute(operation: str, distill: dict, request: dict) -> dict:
                 else:
                     result = write._update_node_locked(
                         **request, _before_write=prepare, _legacy_raw=legacy_raw,
-                        _stamp=job["stamp"] if job else None)
+                        _stamp=job["stamp"] if job else None, _seen=_seen)
                 if job is None:
                     raise write.WriteError("no retained body was written")
             else:
@@ -472,10 +473,10 @@ def create_node(distill: dict, **kwargs) -> dict:
     return _execute("create", distill, kwargs)
 
 
-def update_node(distill: dict, **kwargs) -> dict:
+def update_node(distill: dict, *, _seen: dict | None = None, **kwargs) -> dict:
     if isinstance(distill, dict) and set(distill) == {"resume"}:
         if not isinstance(kwargs.get("name"), str) or any(
                 value is not None for key, value in kwargs.items() if key != "name"):
             raise write.WriteError("resume accepts only name and distill={resume:key}; no mutations")
         return resume(distill["resume"], name=kwargs["name"])
-    return _execute("update", distill, kwargs)
+    return _execute("update", distill, kwargs, _seen=_seen)

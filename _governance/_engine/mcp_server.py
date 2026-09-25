@@ -387,7 +387,7 @@ def update_node(name: str, body: str | None = None,
         return _guard(distillation.update_node, distill, name=name, body=body,
                       expect_hash=expect_hash, summary=summary, add_edges=add_edges,
                       remove_edges=remove_edges, old_text=old_text,
-                      new_text=new_text, settle=settle)
+                      new_text=new_text, settle=settle, _seen=_SEEN)
     return _guard(write.update_node, name, body, expect_hash, summary,
                   add_edges, remove_edges, old_text, new_text, settle, _seen=_SEEN)
 
