@@ -421,11 +421,12 @@ class Upstream:
     source repository."""
 
     def __init__(self, source: str, work: Path):
+        # A local repository or bundle is fixed against the caller's directory
+        # before any git call runs in `work`.
+        self.source = str(Path(source).resolve()) if Path(source).exists() else source
+        self.work = work
         self.path = work / "upstream"
-        _git("clone", "-q", "--no-checkout", source, str(self.path))
-        self.head = next(sha for sha, _, ref in (
-            ln.partition("\t") for ln in _git("ls-remote", source, "HEAD", cwd=work).splitlines())
-            if ref == "HEAD")
+        _git("clone", "-q", "--no-checkout", self.source, str(self.path))
         self.moved = {}
         for tag, sha in RELEASES.items():
             if not self.has(sha):
@@ -446,6 +447,19 @@ class Upstream:
         if not self.has(sha):
             raise CellFailure(f"{tag}: commit {sha} is not in the source history")
         _git("tag", "-f", tag, sha, cwd=self.path)
+
+    @property
+    def head(self) -> str:
+        """The source HEAD. Only the default candidate needs it: a bundle made with
+        --branches --tags has none, and a named candidate runs without it."""
+        if not hasattr(self, "_head"):
+            self._head = next((sha for sha, _, ref in (
+                ln.partition("\t") for ln in _git("ls-remote", self.source, "HEAD", cwd=self.work).splitlines())
+                if ref == "HEAD"), None)
+        if self._head is None:
+            raise CellFailure("the source has no HEAD; name the candidate with "
+                              "OSK_MATRIX_CANDIDATE=<tag>[=<sha>]")
+        return self._head
 
     def head_candidate(self) -> tuple[str, str]:
         """The source HEAD as the candidate: its own release tag when HEAD is a
