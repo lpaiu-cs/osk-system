@@ -368,7 +368,7 @@ Every `*.jsonl` file under `00_Scope/Workbench/_ledger/` is a ledger
 | `update.jsonl` | `begin`, `apply`, `remove`, `skip`, `done`, `rollback` | `path` | updater | §1-2 7 |
 | `validators.jsonl` | `activate`, `deactivate` | `rule` | `osk validators` (user) | §6-1 |
 | `pins.jsonl` | `pin`, `unpin` | `target` | not appended by the engine | §6 |
-| `growth.jsonl` | `plan`, `review`, `run`, `eviction_review` | `key` (reviews) | growth runner | none |
+| `growth.jsonl` | `plan`, `review`, `run`, `eviction_review`, `recheck_review` | `key` (reviews) | growth runner | none |
 | `rechecks.jsonl` | `complete` | (`node`, `target`) | node writes; session start | §4-1 |
 | `migration/events.jsonl` | `archive`, `move`, `transform`, `hold`, `drop` | none | not appended by the engine | §5 |
 | `signatures.jsonl` | preserved records | none | never appended | §3 9 |
@@ -563,6 +563,7 @@ not listed in Mechanism §1 3; `osk/growth.py` defines the payloads.
 | `review` | `key`, `manifest` (a plan rid), `candidate`, `outcome` (`preserved`, `no_value` or `deferred`), `target`, `reason`, `distillation` (a receipt or null); opt. `omitted_sources` |
 | `run` | `manifest`, `ok`, `state`, counts, per-queue outcomes, `output` (the run directory `.osk/growth/runs/<rid>/`) |
 | `eviction_review` | `manifest`, `of`, `outcome` (`node`, `merged`, `discarded` or `deferred`); opt. `target`, `reason`, `settlement` (a settle rid) |
+| `recheck_review` | `key` (`recheck:<node id>:<target key>`), `manifest`, `outcome` (`escalated`), `reason`, `proposal`, `node`, `target`, `node_state`, `target_state` |
 
 A candidate `key` is `sha256:` of the compact JSON list of `[id, file hash]`
 pairs of its source nodes, sorted. A candidate's decision is the single causal
@@ -602,6 +603,15 @@ maximum among `review` records with that key.
   reason `이어받음`. A ledger without records receives one `bound` record with
   reason `기준선` for every tracked pair, at the first session start or node
   write.
+- **Escalation** (Bylaws §7 2). The scheduled growth run takes candidates as
+  `recheck_jobs`. A job carries `next`, the nodes that cite the node under
+  review, and `cascade`, true when the target's current state came from a
+  recheck `updated`. The agent does not apply a correction that would require
+  changing a node in `next`, nor any correction when `cascade` is true; it
+  records a growth `recheck_review` (section 4.9) instead. While the recorded
+  `node_state` and `target_state` still hold, the pair leaves the agent's queue
+  and is listed under `overview` `rechecks.escalated`; naming the target again
+  closes it.
 
 ### 4.11 Migration and signatures
 
