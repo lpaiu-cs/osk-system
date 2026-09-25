@@ -216,6 +216,23 @@ class GrowthTests(unittest.TestCase):
             assert not rechecks.report(graph.Index()), rechecks.report(graph.Index())
         """)
 
+    def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):
+        self.check_case("""
+            from osk import rechecks
+            node('A')
+            for title, body, basis in (('B', 'Old B.', 'A'), ('C', 'C relies on B.', 'B'),
+                                       ('X', 'Old X.', 'A'), ('Y', 'Y relies on X.', 'X')):
+                assert write.create_node(title, title, body, 'gpt-6-astra', space='00_Scope/W1',
+                                         edges={'derived-from': basis})['ok']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            write.update_node('B', old_text='Old B.', new_text='The same claim.',
+                              add_edges={'derived-from': 'A'})
+            write.update_node('X', old_text='Old X.', new_text='The same claim.')
+            cascades = {i['node']: i['cascade'] for i in rechecks.candidates(graph.Index())[0]}
+            assert cascades['C'] is True, cascades
+            assert cascades['Y'] is False, cascades
+        """)
+
     def test_recheck_pick_rotates_by_attempts_in_a_fork_scope(self):
         self.check_case("""
             node('A')

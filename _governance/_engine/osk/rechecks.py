@@ -199,7 +199,7 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
     recs, ok = _read()
     damaged = not ok
     latest = {} if damaged else _latest(recs)
-    revised = {r.get("node_state") for r in recs
+    revised = {(r.get("node"), r.get("node_state")) for r in recs
                if r.get("kind") == "complete" and r.get("result") == "updated"}
     rows, cited, fh = list(_citing(idx, {})), {}, {}
     for name, _nid, _ns, ps, _kind in rows:
@@ -214,7 +214,7 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
                 fh[tid] = state(hit[0].read_bytes()) if hit else None
             except OSError:
                 fh[tid] = None
-        return fh[tid] is not None and fh[tid] in revised
+        return fh[tid] is not None and (tid, fh[tid]) in revised
 
     out = []
     for name, nid, ns, ps, kind in rows:
