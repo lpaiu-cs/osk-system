@@ -6393,6 +6393,34 @@ def test_session_key_identity_ignores_checkout():
     core.ROUTING.unlink(missing_ok=True)
 
 
+def test_derived_session_key_is_stable():
+    """배정된 파생 키는 뿌리가 더해져도 옮겨지지 않는다.
+
+    이름을 남이 소유한 저장소는 가장 작은 뿌리로 파생 키를 받는다. 그 뒤 해시가 더
+    작은 orphan 브랜치를 받아 뿌리가 늘어도, 이미 결속된 파생 키를 계속 쓴다."""
+    other, m, g = "a" * 40, "f2c23286" + "0" * 32, "64cad3f2" + "0" * 32
+    grown = sorted([g, m])
+    core.ROUTING.unlink(missing_ok=True)
+    rows = lambda k: [r for r in core.ledger_read(core.ROUTING) if r.get("session") == k]
+    write.bind_session("site", "W1")
+    check("다른 저장소가 이름을 소유한다",
+          write.repo_session("site", [other]) == "site" and rows("site")[-1].get("repo") == [other])
+    k1 = write.repo_session("site", [m])
+    check("이름이 남의 것이면 가장 작은 뿌리의 파생 키", k1 == "site-f2c23286", k1)
+    (ROOT / "00_Scope/W2").mkdir(exist_ok=True)
+    write.bind_session(k1, "W2")                     # 표면의 첫 쓰기 — 동일성 모름
+    got = write.repo_session("site", grown)
+    check("소유 기록 전에 뿌리가 늘어도 이미 결속된 파생 키를 쓴다", got == k1, got)
+    check("그 파생 키를 이 저장소가 소유한다",
+          [r.get("repo") for r in rows(k1)] == [None, grown], rows(k1))
+    check("뿌리가 는 뒤 다시 불러도 같은 키이고 행을 더 쓰지 않는다",
+          write.repo_session("site", grown) == k1 and len(rows(k1)) == 2)
+    check("한 뿌리만 아는 다른 사본도 같은 파생 키", write.repo_session("site", [m]) == k1)
+    check("결속은 그대로다", write.resolve_session(k1) == "W2")
+    check("새로 가장 작아진 뿌리의 키는 생기지 않는다", not rows("site-64cad3f2"))
+    core.ROUTING.unlink(missing_ok=True)
+
+
 # ── 19. scope 기억 — 상한이 곧 승격의 문턱 (Mechanism §9-2) ─────────────────
 def test_scope_memory():
     """상한은 저장 용량의 제한이 아니라 문턱이다. 그래서 초과는 **거부**하고,
@@ -11193,6 +11221,7 @@ if __name__ == "__main__":
                test_scope_memory_cli, test_new_cluster_two_phase,
                test_ephemeral_session_key, test_session_key_repo_identity,
                test_session_key_identity_ignores_checkout,
+               test_derived_session_key_is_stable,
                test_cluster_overview,
                test_obsidian_tag_defense, test_code_regions_are_not_prose,
                test_code_region_block_boundaries, test_code_region_commonmark_rules,

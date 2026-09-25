@@ -880,21 +880,47 @@ def _repo_owner(recs: list[dict], key: str) -> dict | None:
     return min(rows, key=lambda r: _rid_key(r["rid"]), default=None)
 
 
+def _derived_key(recs: list[dict], name: str, repo: list[str]) -> str:
+    """이름을 남이 소유할 때 이 저장소가 쓰는 파생 키 `<이름>-<뿌리 앞 8자>`.
+
+    배정된 파생 키는 옮겨지지 않는다 — 뒤에 받은 브랜치가 뿌리를 더해 가장 작은
+    뿌리가 바뀌어도 그대로다. 그래서 ① 내 뿌리와 겹치는 소유자가 있는 파생 키,
+    ② 소유 기록 전이라도 내 뿌리로 만든 파생 키 중 이미 결속된 것, ③ 둘 다
+    없을 때만 가장 작은 뿌리로 만든 새 키 순으로 고른다."""
+    mine, pat = set(repo), re.compile(re.escape(name) + r"-[0-9a-f]{8}")
+    owned = {}
+    for k in {r.get("session") for r in recs if pat.fullmatch(str(r.get("session", "")))}:
+        o = _repo_owner(recs, k)
+        if o and set(o["repo"]) & mine:
+            owned[k] = _rid_key(o["rid"])
+    if owned:
+        return min(owned, key=owned.get)
+    bound = {r.get("session") for r in recs if r.get("kind") == "bind"}
+    for root in repo:                                   # 정렬된 뿌리 — 어느 기기에서나 같은 순서
+        k = f"{name}-{root[:8]}"
+        if k in bound and _repo_owner(recs, k) is None:
+            return k
+    return f"{name}-{repo[0][:8]}"
+
+
 def _repo_claim(recs: list[dict], name: str, repo: list[str]) -> tuple[str, dict | None]:
     """(이 저장소의 세션 키, 새로 적을 결속 행 또는 None)."""
     key = canonical_session(name, recs) or name
-    owner = _repo_owner(recs, key)
+    owner, out = _repo_owner(recs, key), name
     if owner and not set(owner["repo"]) & set(repo):
-        return f"{name}-{repo[0][:8]}", None          # 남의 키 — 파생 키로 비켜 선다
+        out = key = _derived_key(recs, name, repo)      # 남의 키 — 파생 키로 비켜 선다
+        owner = _repo_owner(recs, key)
+        if owner and not set(owner["repo"]) & set(repo):
+            return out, None                            # 파생 키마저 남의 것(앞 8자 충돌)
     maxima = causal_maxima(recs, key, field="session")
     scopes = {r.get("scope") for r in maxima if r.get("kind") == "bind"}
     # 무소유 결속은 소유하고(첫 사용 신뢰), 내 소유 키가 같은 scope로 분기했으면
     # (두 기기의 동시 소유) 봉합한다. scope가 갈린 분기는 지금처럼 미확정으로 둔다.
     if (len(scopes) == 1 and all(r.get("kind") == "bind" for r in maxima)
             and (owner is None or len(maxima) > 1)):
-        return name, {"kind": "bind", "session": key, "scope": scopes.pop(),
-                      "repo": repo, "reason": "저장소 동일성 기록"}
-    return name, None
+        return out, {"kind": "bind", "session": key, "scope": scopes.pop(),
+                     "repo": repo, "reason": "저장소 동일성 기록"}
+    return out, None
 
 
 def repo_session(name: str, repo: list[str]) -> str:
