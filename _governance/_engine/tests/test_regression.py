@@ -8392,6 +8392,38 @@ def test_rechecks():
         check("raw 라운드는 추적하지 않는다",
               rechecks.target("00_Scope/W1/_raw/.records/x.txt#1", graph.Index()) is None)
 
+        # 변경분: 점검 때의 판(상태 해시가 같은 판)을 이력에서 찾아 바뀐 쪽의 diff를 싣는다
+        from unittest import mock
+        t = W / "regr-rc-T.md"
+        old_t = t.read_bytes()
+        _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"})
+        _w(write.update_node, "regr-rc-T", old_text="3판", new_text="4판")
+        idx = graph.Index()
+        nid = idx.node(W / "regr-rc-N.md").id
+        tkey = rechecks.target("[[regr-rc-T]]", idx)[0]
+        with mock.patch.object(rechecks, "_versions", return_value=[b"other", old_t]):
+            ch = rechecks.change(nid, tkey, "[[regr-rc-T]]", idx)
+        check("점검 때의 판을 골라 근거의 diff를 싣는다",
+              ch.get("side") == "target" and "-근거 3판." in ch.get("diff", "")
+              and "+근거 4판." in ch.get("diff", ""), ch)
+        with mock.patch.object(rechecks, "_versions", return_value=[b"other"]):
+            ch = rechecks.change(nid, tkey, "[[regr-rc-T]]", idx)
+        check("판을 못 찾으면 전문을 읽으라고 한다", "diff" not in ch and ch.get("note"), ch)
+        with tempfile.TemporaryDirectory() as g:
+            def git(*a, when="2026-09-01T10:00:00+09:00"):
+                subprocess.run(["git", "-C", g, *a], check=True, capture_output=True,
+                               env=dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when,
+                                        GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                                        GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t"))
+            git("init", "-q")
+            (Path(g) / "a b.md").write_bytes(b"old\n")
+            git("add", "-A"); git("commit", "-qm", "1")
+            (Path(g) / "a b.md").write_bytes(b"new\n")
+            git("add", "-A"); git("commit", "-qm", "2", when="2026-09-03T10:00:00+09:00")
+            with mock.patch.object(rechecks, "ROOT", Path(g)):
+                got = rechecks._versions("a b.md", "2026-09-02T10:00:00+09:00")
+            check("git 이력에서 점검 시각 앞뒤의 판을 꺼낸다", got == [b"old\n", b"new\n"], got)
+
         # 기준선: 기록이 없는 대장에서 첫 쓰기는 기존 쌍을 먼저 적는다
         led.unlink(missing_ok=True)
         old = W / "regr-rc-Old.md"

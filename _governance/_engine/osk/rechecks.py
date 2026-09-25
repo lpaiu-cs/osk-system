@@ -7,7 +7,9 @@
 않는다 — dangling으로 따로 보고된다."""
 from __future__ import annotations
 
+import difflib
 import re
+import subprocess
 from pathlib import Path
 
 from .core import (LEDGER, ID_RE, ROOT, causal_maxima, effective_parents, ledger_damage,
@@ -67,9 +69,8 @@ def _locate(name: str, idx) -> tuple[Path, tuple] | None:
     return None if live else idx.nonnode.get(name)
 
 
-def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str] | None:
-    """근거 하나의 (대상 키, 상태 해시). 추적하지 않거나 해석되지 않으면 None.
-    키는 노드면 id, 비노드면 vault 상대 경로이고, 제목 범위면 `#제목`이 붙는다."""
+def _name(ref: str) -> tuple[str, str] | None:
+    """저장 표기 → (대상 이름, 제목). 추적하지 않는 raw·URL은 None."""
     s = str(ref).strip()
     if s.startswith("[[") and s.endswith("]]"):
         s = s[2:-2]
@@ -77,6 +78,16 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str] | None:
     if "/_raw/" in s.replace("\\", "/") or re.match(r"^https?://", s):
         return None
     name, _, heading = (x.strip() for x in s.partition("#"))
+    return name, heading
+
+
+def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str] | None:
+    """근거 하나의 (대상 키, 상태 해시). 추적하지 않거나 해석되지 않으면 None.
+    키는 노드면 id, 비노드면 vault 상대 경로이고, 제목 범위면 `#제목`이 붙는다."""
+    parsed = _name(ref)
+    if parsed is None:
+        return None
+    name, heading = parsed
     if cache is not None and (name, heading) in cache:
         return cache[(name, heading)]
     out, hit = None, _locate(name, idx) if name else None
@@ -218,6 +229,61 @@ def _row(node: str, node_state: str, key: str, target_state: str, result: str,
     if reason:
         row["reason"] = reason
     return row
+
+
+def _versions(rel: str, at: str) -> list[bytes]:
+    """`at` 바로 앞과 바로 뒤에 그 경로를 바꾼 커밋의 판. 이력이 없으면 빈 목록."""
+    out = []
+    for args in (("-1", f"--before={at}"), ("--reverse", f"--after={at}")):
+        try:
+            r = subprocess.run(["git", "-C", str(ROOT), "log", *args, "--format=%H", "--", rel],
+                               capture_output=True, timeout=20)
+            sha = r.stdout.decode("ascii", "replace").split()[:1] if r.returncode == 0 else []
+            if sha:
+                b = subprocess.run(["git", "-C", str(ROOT), "show", f"{sha[0]}:./{rel}"],
+                                   capture_output=True, timeout=20)
+                if b.returncode == 0:
+                    out.append(b.stdout)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return out
+
+
+def _diff(old: bytes, new: bytes, limit: int = 3000) -> str | None:
+    try:
+        a, b = old.decode("utf-8").splitlines(), new.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    text = "\n".join(difflib.unified_diff(a, b, "checked", "now", n=2, lineterm=""))
+    return text if len(text) <= limit else text[:limit] + "\n… (잘림)"
+
+
+def change(nid: str, key: str, ref: str, idx) -> dict:
+    """마지막 점검 뒤 무엇이 바뀌었는가 — 검토자에게 싣는 변경분. 바뀐 쪽(`side`)의
+    diff를 볼트의 git 이력에서 그때의 판(상태 해시가 같은 판)을 찾아 만든다.
+    찾지 못하면 전문을 읽으라는 메모만 낸다."""
+    recs = ledger_read(RECHECKS)
+    maxima = [] if ledger_damage(recs, RECHECKS) else _latest(recs, nid).get((nid, key), [])
+    node = idx.by_id.get(nid)
+    parsed = _name(ref)
+    hit = _locate(parsed[0], idx) if parsed and parsed[0] else None
+    if not maxima or node is None or hit is None:
+        return {"note": "점검 기록이 없다 — 근거와 노드의 전문을 읽는다"}
+    m, heading = maxima[-1], parsed[1]
+    now = target(ref, idx)
+    if now and now[1] != m.get("target_state"):
+        side, path, want = "target", hit[0], m.get("target_state")
+    else:
+        side, path, want, heading = "node", node[0], m.get("node_state"), ""
+    cut = (lambda b: heading_range(b, heading)) if heading else (lambda b: b)
+    for old in _versions(posix_rel(path, ROOT), str(m.get("at", ""))):
+        old = cut(old)
+        if old is not None and sha256_bytes(old) == want:
+            new = cut(path.read_bytes())
+            diff = None if new is None else _diff(old, new)
+            if diff is not None:
+                return {"side": side, "diff": diff}
+    return {"side": side, "note": "점검 때의 판을 이력에서 찾지 못했다 — 전문을 읽는다"}
 
 
 def ensure_baseline(idx=None) -> int:

@@ -174,6 +174,14 @@ def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
         for i in items if scope is None or i["scope"] == scope]
 
 
+def _with_change(jobs: list[dict], idx: graph.Index) -> list[dict]:
+    """선택한 작업에만 마지막 점검 뒤의 변경분을 싣는다 — 후보 전부가 아니다."""
+    from . import rechecks
+    for job in jobs:
+        job["change"] = rechecks.change(job["id"], job["target_key"], job["target"], idx)
+    return jobs
+
+
 def _recheck_status(job: dict, idx: graph.Index) -> dict:
     """그 쌍이 더는 후보가 아니면 완료다 — 다시 대어 닫았거나 근거를 뺐다."""
     from . import rechecks
@@ -300,7 +308,7 @@ def _plan(limit: int) -> dict:
     eviction_jobs.sort(key=lambda j: (attempts.get(j["of"], ""), j["of"]))
     eviction_jobs = eviction_jobs[:limit]
     tried = {j["key"]: row["rid"] for row in plans for j in row.get("recheck_jobs", [])}
-    recheck_jobs = sorted(_recheck_jobs(idx), key=lambda j: (tried.get(j["key"], ""), j["key"]))[:limit]
+    recheck_jobs = _with_change(sorted(_recheck_jobs(idx), key=lambda j: (tried.get(j["key"], ""), j["key"]))[:limit], idx)
     return {"candidates": candidates, "organization_jobs": organization_jobs, "eviction_jobs": eviction_jobs,
             "recheck_jobs": recheck_jobs, "source_count": len(sources),
             "cluster_count": len(clusters), "domain_count": len(domains),
@@ -411,7 +419,8 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "whole eviction ledger. Checkpoint eviction:[{of,outcome:node|merged|discarded|deferred,"
         "reason,target?}] using selected IDs only; node/merged require the actual target title.\n"
         "For recheck_jobs, node cites target as derived-from and target changed since node was "
-        "last checked. Read both through osk MCP. If node still holds, call update_node(name=node, "
+        "last checked; change holds the diff of the side that changed, or a note to read the full "
+        "text. Read both through osk MCP. If node still holds, call update_node(name=node, "
         "add_edges={\"derived-from\": target}) with nothing else; if it does not, correct node and "
         "name the same target in add_edges in that update_node call. Do not edit target for this "
         "job. That call records the check; recheck_jobs take no packet entry or checkpoint. "
@@ -880,7 +889,8 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     planned["work_context"] = "stop:" + (scope or scope_job["session"])
                     planned["organization_jobs"] = organization.pending([scope], limit=1) if scope else []
                     # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
-                    planned["recheck_jobs"] = (_recheck_jobs(_index(), scope)[:limit]
+                    idx = _index()
+                    planned["recheck_jobs"] = (_with_change(_recheck_jobs(idx, scope)[:limit], idx)
                                                if scope and not daily_active() else [])
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
