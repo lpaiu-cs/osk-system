@@ -26,6 +26,9 @@ gh() {
       if [ "$REF_FAILURE" = 1 ]; then return 1; fi
       printf '%s' "$EXISTING" ;;
     *"releases/generate-notes"*) printf 'Release notes\n' ;;
+    *"git/ref/heads/main"*)
+      if [ "$MAIN_FAILURE" = 1 ]; then return 1; fi
+      printf '%s' "$MAIN_SHA" ;;
     "release create "*) return "$RELEASE_FAILURE" ;;
     *) printf 'Unexpected gh call\n' >&2; return 1 ;;
   esac
@@ -41,14 +44,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.step = next(step for step in self.steps if 'run' in step)
 
     def run_publication(self, *, tag='v4.0.0', version='v4.0.0', existing='', ref_failure='0',
-                        release_failure='0'):
+                        release_failure='0', main_sha=SHA, main_failure='0'):
         with tempfile.TemporaryDirectory(prefix='osk-release-workflow-') as td:
             path = Path(td)
             script, calls = path / 'publish.sh', path / 'calls.txt'
             script.write_text(STUB + self.step['run'], encoding='utf-8', newline='\n')
             env = dict(os.environ, TAG=tag, COMMIT=SHA, REPO='fixture/repo',
                        CALLS=calls.as_posix(), EXISTING=existing, REF_FAILURE=ref_failure,
-                       RELEASE_FAILURE=release_failure,
+                       RELEASE_FAILURE=release_failure, MAIN_SHA=main_sha, MAIN_FAILURE=main_failure,
                        ATTESTATION=base64.b64encode(json.dumps({'version': version, 'files': {}}).encode()).decode())
             # The workflow uses python3; point the shell at this test's interpreter.
             wrapper = path / 'python3'
@@ -87,20 +90,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn('--target ' + SHA, calls[-1])
 
-    def test_token_can_publish_workflows_after_the_default_branch_moves(self):
-        # GitHub requires Contents + Workflows write when the pinned commit's
-        # workflows differ from the default branch. GITHUB_TOKEN cannot do this.
-        token_step = next((step for step in self.steps if 'id' in step and
-                           self.step['env']['GH_TOKEN'] ==
-                           '${{ steps.' + step['id'] + '.outputs.token }}'), None)
-        self.assertIsNotNone(token_step, 'publication must use the App token output')
-        self.assertLess(self.steps.index(token_step), self.steps.index(self.step))
-        self.assertTrue(token_step['uses'].startswith('actions/create-github-app-token@'))
-        settings = token_step['with']
-        self.assertEqual(settings['repositories'], '${{ github.repository }}')
-        self.assertEqual({k: v for k, v in settings.items() if k.startswith('permission-')},
-                         {'permission-contents': 'write', 'permission-workflows': 'write'})
-        self.assertEqual(settings.get('skip-token-revoke', 'false'), 'false')
+    def test_builtin_token_has_write_permission_only_for_publication(self):
+        self.assertEqual(self.step['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertEqual(self.workflow['permissions'], {'contents': 'read'})
+        self.assertEqual(self.workflow['jobs']['test']['permissions'], {'contents': 'read'})
+        self.assertEqual(self.workflow['jobs']['mirror']['permissions'], {'contents': 'write'})
+
+    def test_moved_or_unknown_main_does_not_publish(self):
+        for changes in ({'main_sha': 'b' * 40}, {'main_sha': ''}, {'main_failure': '1'}):
+            with self.subTest(changes=changes):
+                proc, calls = self.run_publication(**changes)
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertFalse(any(call.startswith('release create ') for call in calls), calls)
 
     def test_publication_api_failure_is_not_reported_as_success(self):
         proc, calls = self.run_publication(release_failure='1')

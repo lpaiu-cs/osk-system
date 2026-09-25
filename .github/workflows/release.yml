@@ -38,21 +38,12 @@ jobs:
   mirror:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      # CI 중 기본 브랜치의 workflow가 바뀌어도 고정 SHA를 발행할 수 있어야 한다.
-      # GITHUB_TOKEN에는 Workflows: write를 줄 수 없으므로 저장소 한정 App을 쓴다.
-      - name: 발행용 저장소 토큰을 만든다
-        id: release-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ vars.OSK_RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.OSK_RELEASE_APP_PRIVATE_KEY }}
-          repositories: ${{ github.repository }}
-          permission-contents: write
-          permission-workflows: write
       - name: 비준증빙을 확인하고 Release를 만든다
         env:
-          GH_TOKEN: ${{ steps.release-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.version }}
           COMMIT: ${{ github.sha }}
           REPO: ${{ github.repository }}
@@ -107,6 +98,14 @@ jobs:
             printf '설치·운용은 [docs/SETUP.md](../blob/%s/docs/SETUP.md)에 있다.\n\n' "$TAG"
             printf -- '---\n\n%s\n' "$notes"
           } > notes.md
+
+          # 기본 토큰으로 발행할 후보는 현재 main과 같아야 한다. main이 움직이면
+          # 다른 workflow를 포함할 수 있으므로 새 후보로 전체 검사를 다시 한다.
+          main_sha=$(gh api "repos/$REPO/git/ref/heads/main" --jq '.object.sha')
+          if [ "$main_sha" != "$COMMIT" ]; then
+            echo "::error::main이 검증한 커밋과 다르다 — 새 후보를 검증한 뒤 발행한다."
+            exit 1
+          fi
 
           # --target의 정확한 SHA로 태그를 만들면서 정식 Release를 공개한다.
           gh release create "$TAG" --repo "$REPO" --target "$COMMIT" --title "$TAG" --notes-file notes.md
