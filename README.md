@@ -247,6 +247,9 @@ Read **Constitution → Bylaws → Mechanism**. Mechanism §3 (approval ledger) 
 are currently in Korean; this README is an introduction, not a replacement for
 the governing text.
 
+[docs/FORMAT.md](docs/FORMAT.md) is an English, non-normative commentary on the
+on-disk format that the Mechanism defines.
+
 Ratification is the user's explicit act in the canonical repository, fixed by
 the release attestation (`release.json`, containing file content hashes).
 Release declaration can run noninteractively without a separate version approval.
