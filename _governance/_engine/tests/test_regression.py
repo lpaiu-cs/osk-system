@@ -6418,6 +6418,25 @@ def test_derived_session_key_is_stable():
     check("한 뿌리만 아는 다른 사본도 같은 파생 키", write.repo_session("site", [m]) == k1)
     check("결속은 그대로다", write.resolve_session(k1) == "W2")
     check("새로 가장 작아진 뿌리의 키는 생기지 않는다", not rows("site-64cad3f2"))
+
+    # 소유 행을 못 적어도(읽기 전용 대장·공유 위반) 판정한 파생 키를 쓴다.
+    core.ROUTING.unlink(missing_ok=True)
+    write.bind_session("site", "W1")
+    write.repo_session("site", [other])
+    kb = f"site-{m[:8]}"
+    write.bind_session(kb, "W2")                     # 표면의 첫 쓰기 — 소유 기록 전
+    before = core.ROUTING.read_bytes()
+    with mock.patch.object(write, "ledger_append", side_effect=PermissionError("읽기 전용")):
+        try:
+            got = write.repo_session("site", [m])
+        except Exception as e:
+            got = e
+    check("소유 행을 못 적어도 판정한 파생 키를 쓴다 — 남이 소유한 이름으로 물러서지 않는다",
+          got == kb, got)
+    check("못 적은 행은 남지 않는다", core.ROUTING.read_bytes() == before)
+    check("다음 호출이 소유를 적는다",
+          write.repo_session("site", [m]) == kb and [r.get("repo") for r in rows(kb)] == [None, [m]],
+          rows(kb))
     core.ROUTING.unlink(missing_ok=True)
 
 

@@ -943,8 +943,16 @@ def repo_session(name: str, repo: list[str]) -> str:
         try:
             with mutation_lock():
                 ledger_append(ROUTING, row, expect=same)
-        except ValueError:
-            key = _repo_claim(ledger_read(ROUTING), name, repo)[0]
+        except ValueError:                          # 판정이 그사이 바뀌었다 — 다시 판정한다
+            try:
+                key = _repo_claim(ledger_read(ROUTING), name, repo)[0]
+            except Exception:
+                pass
+        except Exception:
+            # 소유 행을 못 적어도(읽기 전용 대장·공유 위반·낡은 엔진) 판정한 키를
+            # 쓴다 — 행은 다음 훅이 다시 적는다. 원래 이름으로 물러서면 남이 소유한
+            # 이름의 기억이 주입된다.
+            pass
     return key
 
 
