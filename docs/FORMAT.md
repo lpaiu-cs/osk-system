@@ -468,8 +468,16 @@ repository name.
 A record is appended before the rename, for every move whose source or
 destination lies in a protected region, and for every later move of a node
 that already appears in the ledger. It is a log of physical events, not a
-ledger of decisions: a record whose destination does not contain a file with
-that id is ignored.
+ledger of decisions. A revert reads a node's records, within the lifetime
+bounded by `moves_seen` (section 4.2), as one chain:
+
+- the node returns to the source of the first record in the chain that touches
+  the region;
+- the node's current position is the destination of the latest record that
+  still holds a file with that id. A destination without that file, such as
+  the target of a rename that failed or a place the node has since left, is
+  skipped for this lookup only; its record still counts for the return
+  position.
 
 ### 4.5 Case docket
 
@@ -589,8 +597,10 @@ maximum among `review` records with that key.
   the next heading of the same or a higher level, or to the end of the file.
   Lines in code regions are not headings, and a heading text that occurs twice
   does not resolve (Mechanism §8 4). Raw rounds only grow and external URLs have
-  no state; neither is tracked. A target that does not resolve gets no record
-  and is reported as dangling.
+  no state; neither is tracked. A target whose file does not resolve gets no
+  record and is reported as dangling. A heading that is gone or duplicated in
+  a file that exists keeps the pair tracked without a state: it is a candidate
+  that no record can complete.
 - **State.** A pair (`node`, `target`) is complete when its single causal
   maximum matches both current states; several maxima that agree on both states
   count as one. Any other pair makes the citing node a recheck candidate, listed
@@ -598,11 +608,16 @@ maximum among `review` records with that key.
 - **Writers.** A node write appends `bound` for each pair it wires. An
   `update_node` whose `add_edges` names an existing target again appends
   `updated` when the same call changes the node and `unchanged` when it does
-  not; this closes a candidate. Every other pair that was complete before an
+  not; this closes a candidate. Through the MCP surface it records only the
+  states the caller read: the node and a node target as last read in full with
+  `read_node` in that session, and a non-node target as last presented by a
+  scheduled recheck job. Otherwise the response reports `recheck_unread` and
+  the pair stays a candidate. Every other pair that was complete before an
   engine write is appended again with the new `node_state`, as `unchanged` with
   reason `이어받음`. A ledger without records receives one `bound` record with
   reason `기준선` for every tracked pair, at the first session start or node
-  write.
+  write. A ledger that cannot be read or is damaged records nothing; its
+  pairs stay candidates and node writes proceed.
 - **Escalation** (Bylaws §7 2). The scheduled growth run takes candidates as
   `recheck_jobs`. A job carries `next`, the nodes that cite the node under
   review, and `cascade`, true when the target's current state came from a
