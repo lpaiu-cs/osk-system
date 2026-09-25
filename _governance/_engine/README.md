@@ -68,11 +68,18 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli approve "00_Person/De
 군집 배치 쌍의 열거 비용은 그대로이며, 자율 사용률·실제 토큰 절약·Domain 성장
 효과는 배포 후 별도로 관측해야 한다.
 
+## 근거 재검토
+
+`derived-from` 대상의 본문 또는 지정한 제목 범위가 바뀌면 참조 노드를 재검토
+후보로 표시한다. 요약·배선만 바뀐 노드는 전파하지 않는다. 완료 기록은
+`_ledger/rechecks.jsonl`에 남기며, `overview`·`osk rechecks`·검증기에서 상태를 본다.
+정기 성장 실행과 대화 검토 fork가 후보를 처리하며, 수정이 다음 참조 노드의
+수정까지 요하면 사용자 검토로 올린다. 본문 Link는 재검토 전파에 포함하지 않는다.
+상태·기준선·완료 절차는 [FORMAT §4.10](../../docs/FORMAT.md#410-rechecks)과
+[SETUP](../../docs/SETUP.md)을 따른다.
+
 ## 미구현 (후속 개정 대상)
 
-- 근거 상태 변경 **주기 스캔**과 `_ledger/rechecks.jsonl` 완료 기록·재검토 브리핑
-  (시행령 §7 2항·Mechanism §4-1이 정한 완료 기록·`node_state` 결속·판정이 모두
-  미구현이다 — 검증기가 그 파일의 JSON 무결성만 본다)
 - 정합성 주기 스캔·충돌 후보 감지(사건부 자동 채널) — 근거 키 계산기만 예약
 - 브리핑 4채널 생성기 / 중심성 기반 랭킹 통합 / 임베딩 검색
 - 정돈의 **출구 자동화** — §9-3의 정돈 실행(세션 시작 훅 주입·`osk tidy`)은

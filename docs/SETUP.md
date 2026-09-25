@@ -861,7 +861,24 @@ object로 만들어 **원자적 교체**로 설치된다 — 그 사이 다른 �
 git checkout vX.Y.Z -- release.json
 ```
 
-태그 push는 git으로 직접 한다.
+로컬 태그를 원격에 먼저 push하지 않는다. updater는 GitHub Release 화면이 아닌
+git 태그를 읽으므로, 태그를 먼저 공개하면 발행 검사가 끝나기 전에 갱신 후보가 된다.
+정식 릴리스는 비준증빙 커밋을 `main`으로 먼저 보내고 `release` workflow로 공개한다:
+
+```bash
+git push origin HEAD:main
+gh workflow run release.yml --ref main -f version=vX.Y.Z
+```
+
+Actions의 `release` 실행에서 고정된 SHA와 선언한 버전을 확인한다. workflow는 그
+SHA의 전체 회귀 수트와 **8개 조합의 전체 업그레이드 행렬**을 먼저 실행한다.
+행렬을 실행할 이력이 없으면 실패이며, 필수 검사가 통과한 뒤에만 같은 SHA에
+원격 태그와 정식 GitHub Release를 함께 만든다. 실행 중 브랜치가 움직여도 대상은
+바뀌지 않는다. `vX.Y.Z` 정식 형식을 그대로 쓰며 별도 RC 판본은 만들지 않는다.
+
+workflow 실행 전에 최종 후보를 실제 인스턴스의 사본에 적용해 데이터 보존과
+재시작 후 재검토 기준선을 확인한다. 원본 인스턴스의 갱신 승인은 아래 절차로
+따로 받는다. 실패한 발행을 재시도할 때는 같은 비준증빙 커밋에서 실행한다.
 
 **인스턴스에서 — 갱신**:
 
