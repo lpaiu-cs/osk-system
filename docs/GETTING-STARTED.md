@@ -976,6 +976,9 @@ About the `엔진 파일에 로컬 수정이 있다` error ("engine files have l
   [Mechanism](../_governance/Mechanism.md). The
   [Workbench contract](../_governance/Workbench-Contract.md) covers the
   operational scope.
+- [FORMAT.md](FORMAT.md) describes the on-disk format in English: vault layout,
+  node files, ledgers and the release attestation. It is a non-normative
+  commentary on the Mechanism.
 - The [engine README](../_governance/_engine/README.md) includes its
   [known limits](../_governance/_engine/README.md#알려진-한계).
 - The [README](../README.md) gives the project overview and design rationale.
