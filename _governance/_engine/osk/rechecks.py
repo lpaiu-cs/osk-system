@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -289,16 +290,17 @@ def _row(node: str, node_state: str, key: str, target_state: str, result: str,
 
 
 def _versions(rel: str, at: str) -> list[bytes]:
-    """`at` 바로 앞과 바로 뒤에 그 경로를 바꾼 커밋의 판. 이력이 없으면 빈 목록."""
-    out = []
+    """`at` 바로 앞과 바로 뒤에 그 경로를 바꾼 커밋의 판. 이력이 없으면 빈 목록.
+    정기 실행은 Windows에서 창 없이(`pythonw`) 돈다 — 콘솔 프로그램인 git에 창을 만들지 않는다."""
+    out, quiet = [], 0x08000000 if os.name == "nt" else 0
     for args in (("-1", f"--before={at}"), ("--reverse", f"--after={at}")):
         try:
             r = subprocess.run(["git", "-C", str(ROOT), "log", *args, "--format=%H", "--", rel],
-                               capture_output=True, timeout=20)
+                               capture_output=True, timeout=20, creationflags=quiet)
             sha = r.stdout.decode("ascii", "replace").split()[:1] if r.returncode == 0 else []
             if sha:
                 b = subprocess.run(["git", "-C", str(ROOT), "show", f"{sha[0]}:./{rel}"],
-                                   capture_output=True, timeout=20)
+                                   capture_output=True, timeout=20, creationflags=quiet)
                 if b.returncode == 0:
                     out.append(b.stdout)
         except (OSError, subprocess.SubprocessError):
