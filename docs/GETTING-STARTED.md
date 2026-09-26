@@ -414,6 +414,15 @@ which is the default on Codex 0.154. In a new session, ask the agent: *"What
 session key did the osk hook give you?"* It should answer with the repository
 name.
 
+**Check both hosts at once:** after you have opened a new session in each host,
+run `doctor` from the vault root with `PYTHONPATH` set (Step 2):
+`.venv/bin/python -m osk.cli doctor`, or on Windows
+`.venv\Scripts\python.exe -m osk.cli doctor`. For Claude Code and Codex it shows
+whether MCP and the three hooks point at this vault, when each hook last ran on
+this device, and whether the agent called `overview` after the session started.
+A hook that is registered but never ran needs a new session (Claude Code) or
+trust in `/hooks` (Codex). `doctor` only reads.
+
 ## Step 5: Your first session
 
 Open Claude Code or Codex **inside a project repository**, such as
@@ -585,6 +594,7 @@ Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 | `integration list` | List conversations whose captured rounds wait for review. |
 | `protect <folder>`, `approve <folder>`, `revert <folder>` | Protect a folder, or accept or undo its pending changeset. These ask `[y/N]` and refuse to run without an interactive terminal. |
 | `fork doctor` | Check whether fork reviews can run. Read-only. |
+| `doctor` | Check how Claude Code and Codex are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
 
 ## Optional: browse the vault in Obsidian
 
@@ -933,7 +943,7 @@ library.
 | `No module named 'mcp.server.fastmcp'` | You are using a different Python, or mcp 2.x is installed. Use the vault's `.venv` Python and reinstall `_governance/_engine/requirements.txt`, which pins `mcp<2`. |
 | Windows: `ZoneInfoNotFoundError` for `Asia/Seoul` | The venv lacks the `tzdata` package. Reinstall the requirements into it. |
 | `claude mcp list` shows no *Connected*, or Codex cannot start the server | The registered command must use the vault's `.venv` Python (`.venv/Scripts/python.exe` on Windows). Run the same command in a terminal to see the error. A healthy server prints nothing and waits for a client; press Ctrl+C to stop it. |
-| No osk text at session start | Claude Code loads hooks only at startup, so open a new session and check `/hooks`. In Codex, trust the entries in `/hooks`. In both, registering MCP does not install the hooks, and each hook command must use the vault's `.venv` Python. Run the hand test from Step 3b. |
+| No osk text at session start | Claude Code loads hooks only at startup, so open a new session and check `/hooks`. In Codex, trust the entries in `/hooks`. In both, registering MCP does not install the hooks, and each hook command must use the vault's `.venv` Python. Run the hand test from Step 3b. `doctor` shows which hook is registered but never ran on this device. |
 | Hook text repeats `착지 미정` or `scope 결속이 없다` | This repository's key is not bound yet. Create or choose its scope (Step 5, item 2). |
 
 **Write refusals your agent may report**

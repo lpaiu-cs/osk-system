@@ -104,7 +104,7 @@ engine directory never contain node-shaped files. Directories at the vault
 root whose names begin with `.` (`.git`, `.obsidian`, …) are not scanned.
 
 **Device-owned state.** Locks, confirmation markers, recovery markers, work
-queues and release-check results are not part of the vault. They live in the repository's Git directory
+queues, release-check results and hook-run records are not part of the vault. They live in the repository's Git directory
 (the common directory for worktrees), or in the system temporary directory when
 the vault has no Git directory, and they are never synchronized. `.osk/`
 inside the vault is untracked.

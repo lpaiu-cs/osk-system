@@ -28,6 +28,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
 from osk import (contract, epoch, graph, raw, rechecks, update_check,  # noqa: E402
                  validate, write)
+from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
@@ -339,6 +340,12 @@ def overview(session: str | None = None) -> dict:
     if up:
         out["update"] = up
     if session:
+        try:
+            # 세션 시작 훅이 이 호출을 안내한다 — 그 뒤에 불렸으면 훅 문맥이 모델에
+            # 닿았다고 `doctor`가 짐작한다(기기 로컬 기록, osk.harness.runs).
+            hook_runs.record_overview(session)
+        except Exception:
+            pass
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
         # 노출하지 않는다"고 못박는다. 착지 판단에는 `session_scope`로 족하다.

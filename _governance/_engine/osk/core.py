@@ -374,16 +374,29 @@ def spawn_worker(module: str, *, env: dict | None = None, stdin: bytes | None = 
     return proc
 
 
+_PS_BARE = re.compile(r"[\w\-./\\:=+%]+")
+
+
+def shell_join(argv) -> str:
+    """사람이나 에이전트가 제 터미널에 붙여 넣을 **한 줄 명령** — Windows는 PowerShell,
+    그 밖은 POSIX 셸의 인용이다. 경로를 문자열에 이어 붙이면 공백 든 경로가 여러
+    인자로 갈린다. 특수 문자가 없는 인자는 그대로 두고, 인용한 명령 이름 앞에는
+    PowerShell의 호출 연산자 `&`를 둔다."""
+    argv = [str(a) for a in argv]
+    if os.name != "nt":
+        return shlex.join(argv)
+    quoted = [a if _PS_BARE.fullmatch(a) else "'" + a.replace("'", "''") + "'" for a in argv]
+    return ("& " if quoted and quoted[0] != argv[0] else "") + " ".join(quoted)
+
+
 def cli_command(*args: str) -> str:
     """이 vault의 `osk.cli`를 부르는 **한 줄 명령** — 에이전트가 제 셸에 그대로
     붙인다. vault 루트와 엔진 자리를 명령 안에 실으므로 작업 폴더·`PYTHONPATH`와
-    무관하다. Windows는 PowerShell 인용, 그 밖은 POSIX 셸 인용이다."""
+    무관하다."""
     code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(ROOT)!r};"
             f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
             "runpy.run_module('osk.cli',run_name='__main__')")
-    argv = [sys.executable, "-c", code, *args]
-    return ("& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
-            if os.name == "nt" else shlex.join(argv))
+    return shell_join([sys.executable, "-c", code, *args])
 
 
 def posix_rel(p: Path, relative_to: Path) -> str:

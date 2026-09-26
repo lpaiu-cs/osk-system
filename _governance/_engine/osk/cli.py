@@ -11,6 +11,7 @@ from pathlib import Path
 from .core import ROOT, StaleEngineError
 from . import (graph, approvals, authority, raw, scope_memory, validate, search,
                write, evictions)
+from . import harness as adapters
 
 ENGINE = Path(__file__).resolve().parents[1]     # …/_governance/_engine
 
@@ -208,7 +209,7 @@ def _fork_cmd(a) -> None:
     from . import response_growth
     try:
         reports = [response_growth.doctor(h, a.session, a.transcript)
-                   for h in ([a.harness] if a.harness else ("claude", "codex"))]
+                   for h in ([a.harness] if a.harness else adapters.fork_names())]
     except (ValueError, OSError) as e:
         _emit({"ok": False, "violations": [str(e)]})
         sys.exit(1)
@@ -222,6 +223,20 @@ def _fork_cmd(a) -> None:
                                 if isinstance(val, dict) else str(val)) for k, val in r.items()]
     sys.stdout.buffer.write(("\n".join(lines) + "\n").encode("utf-8"))
     sys.stdout.buffer.flush()
+
+
+def _doctor_cmd(a) -> None:
+    """`osk doctor` — 이 기기의 하네스 연결을 **읽기만** 하며 점검한다. 실패 항목이
+    있으면 종료코드 1이다(경고는 0)."""
+    from . import doctor
+    rep = doctor.report(a.harness)
+    if a.json:
+        _emit(rep)
+    else:
+        sys.stdout.buffer.write(doctor.text(rep).encode("utf-8"))
+        sys.stdout.buffer.flush()
+    if not rep["ok"]:
+        sys.exit(1)
 
 
 def _organization_cmd(a) -> None:
@@ -349,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         q.add_argument("--limit", type=int, default=20)
     for name in ("capture", "status", "prompt", "review"):
         q = ins.add_parser(name)
-        q.add_argument("--harness", choices=("claude", "codex"), required=True)
+        q.add_argument("--harness", choices=adapters.NAMES, required=True)
         q.add_argument("--conversation", required=True, help="실제 하네스 대화 ID")
         if name == "capture":
             q.add_argument("--transcript", required=True)
@@ -384,10 +399,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("fork", help="구독 fork 준비 점검 (읽기 전용)")
     fs = p.add_subparsers(dest="fork_cmd", required=True)
     q = fs.add_parser("doctor", help="route()의 판정과 근거 — 상태·설정을 쓰지 않는다")
-    q.add_argument("--harness", choices=("claude", "codex"), default=None, help="기본: 둘 다")
+    q.add_argument("--harness", choices=adapters.fork_names(), default=None, help="기본: 모두")
     q.add_argument("--session", default=None, help="실제 하네스 대화 ID")
     q.add_argument("--transcript", default=None, help="전사 경로 (기본: 훅과 같은 방식으로 찾는다)")
     q.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("doctor", help="이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행, 전달, "
+                                      "판본, fork (읽기 전용)")
+    p.add_argument("--harness", choices=adapters.NAMES, default=None, help="기본: 모두")
+    p.add_argument("--json", action="store_true")
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
@@ -535,6 +555,8 @@ def main(argv=None):
         return _organization_cmd(a)
     elif a.cmd == "fork":
         return _fork_cmd(a)
+    elif a.cmd == "doctor":
+        return _doctor_cmd(a)
     elif a.cmd == "sm":
         return _sm_cmd(a)
     elif a.cmd == "tidy":
