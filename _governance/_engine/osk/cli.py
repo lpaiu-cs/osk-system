@@ -191,9 +191,8 @@ def _growth_cmd(a) -> None:
                 Path(a.file).read_text(encoding="utf-8-sig")))
         else:
             command = json.loads(Path(a.command_file).read_text(encoding="utf-8-sig"))
-            if not isinstance(command, list) or not command or not all(
-                    isinstance(s, str) and s for s in command):
-                raise ValueError("command file must contain a nonempty JSON argv array")
+            # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
+            # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
             result = (growth.check_command(command) if a.check else
                       growth.run(command, limit=a.limit, timeout=a.timeout))
         _emit(result)

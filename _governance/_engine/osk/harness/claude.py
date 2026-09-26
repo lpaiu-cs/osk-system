@@ -20,6 +20,7 @@ class Claude(Adapter):
     fork = True
     guide = "3b"
     reload = "Claude Code는 훅을 세션을 시작할 때 읽는다 — 새 세션을 열고 `/hooks`에서 확인한다"
+    login = "auth login"
 
     def home(self) -> Path:
         return Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
@@ -75,6 +76,41 @@ class Claude(Adapter):
 
     def hook_files(self):
         return [self.home() / "settings.json"]
+
+    def cli_candidates(self):
+        # Windows 데스크톱 앱은 판마다 CLI를 `Claude/claude-code/<판>/`에 둔다. 스토어(MSIX)
+        # 설치는 그 폴더가 패키지의 LocalCache 아래로 옮겨진다.
+        if os.name != "nt":
+            return []
+        roots = []
+        if os.environ.get("APPDATA"):
+            roots.append(Path(os.environ["APPDATA"]) / "Claude" / "claude-code")
+        if os.environ.get("LOCALAPPDATA"):
+            roots += Path(os.environ["LOCALAPPDATA"]).glob(
+                "Packages/Claude_*/LocalCache/Roaming/Claude/claude-code")
+        return [p for root in roots for p in root.glob("*/claude.exe")]
+
+    def growth_argv(self, cli, python, server, root):
+        # 사람이 없는 실행이다. 내장 도구는 모두 끈다(`--tools ""`) — 설정의 허용 규칙이 있어도
+        # 파일·셸 도구로 MCP의 보호를 비껴가지 못한다. 남는 이 vault의 MCP 도구는 묻지 않고
+        # 허용하고, 그 밖은 묻지 않고 거절한다(dontAsk). 로그인은 claude.ai 구독만 쓴다 —
+        # 실행기가 이 선언을 보고 fork와 같은 자격을 적용한다(`subscription_only`).
+        config = json.dumps({"mcpServers": {MCP_NAME: {"command": python, "args": [server],
+                                                       "env": {"OSK_VAULT_ROOT": root}}}})
+        return [cli, "-p", "--output-format", "stream-json", "--verbose",
+                "--settings", '{"forceLoginMethod":"claudeai"}', "--tools", "",
+                "--strict-mcp-config", "--mcp-config", config,
+                "--allowedTools", f"mcp__{MCP_NAME}", "--permission-mode", "dontAsk"]
+
+    def subscription_only(self, argv):
+        # `growth_argv`가 싣는 선언 — `--settings`의 forceLoginMethod가 claude.ai 구독이다.
+        for flag, value in zip(argv, argv[1:]):
+            if flag == "--settings":
+                try:
+                    return json.loads(value).get("forceLoginMethod") == "claudeai"
+                except (ValueError, AttributeError):
+                    return False
+        return False
 
 
 ADAPTER = Claude()

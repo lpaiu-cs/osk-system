@@ -181,7 +181,9 @@ Before it writes, it shows the plan and asks you to confirm. It backs up every
 configuration file it changes and touches only this vault's osk entries (see
 the [setup tool](SETUP.md#설치-도구-setup)). Then do the steps it lists under
 "할 일", such as trusting the hooks in Codex, and continue at
-[Step 5](#step-5-your-first-session). The manual steps below do the same by hand.
+[Step 5](#step-5-your-first-session). The wizard also asks whether to turn on the
+optional features: background fork reviews, a daily review run and Git sync. The
+manual steps below do the same by hand.
 
 macOS/Linux:
 
@@ -654,6 +656,13 @@ Before you start it:
   finds and restarts the daemon by that path. It cannot find a daemon that was
   started with a relative path.
 
+**With v4.1.0 or newer, one command does it.**
+`python _governance/_engine/scripts/setup.py --apply --sync` checks the points
+above, then registers the daemon with this device's service manager (Task
+Scheduler, launchd or systemd) and starts it. It asks for confirmation the same
+way as in Step 2 (see the [setup tool](SETUP.md#설치-도구-setup)). The steps below
+do the same by hand.
+
 Try one round first.
 
 macOS/Linux:
@@ -757,6 +766,10 @@ harness, model, working folder and permission mode. It reviews up to 9 rounds
 that have not been reviewed yet, and writes knowledge through MCP. It runs on
 your **subscription** login, and never falls back to paid API calls. You turn
 it on per device and per harness.
+
+With v4.1.0 or newer, `python _governance/_engine/scripts/setup.py --apply --fork`
+does item 1: it finds this device's CLIs and writes them into the file. Items 2
+and 3, signing in and checking, are yours.
 
 1. **Tell osk which CLI to use.** Create `<vault>/.osk/response-growth.json`.
    Everything under `.osk/` stays on this device: Git ignores it. The file may

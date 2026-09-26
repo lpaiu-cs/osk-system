@@ -125,21 +125,11 @@ def latest_release_tag(url: str, *, timeout: float = 60,
       경로다. 끝나지 않는 확인은 확인 잠금을 영영 쥔다."""
     query = ["ls-remote", "--tags", "--refs", url]
     if unattended:
-        env = {k: v for k, v in os.environ.items() if k not in ("GIT_ASKPASS", "SSH_ASKPASS")}
-        env.update(LC_ALL="C", LANG="C", GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            r = subprocess.run(
-                ["git", "-c", "core.askPass=", *query], stdin=subprocess.DEVNULL,
-                stdout=out, stderr=err, timeout=timeout, env=env,
-                creationflags=0x08000000 if os.name == "nt" else 0)
-            out.seek(0)
-            err.seek(0)
-            stdout = out.read().decode("utf-8", "replace")
-            stderr = err.read().decode("utf-8", "replace")
+        code, stdout, stderr = git_unattended(query, timeout=timeout)
     else:
         r = subprocess.run(["git", *query], capture_output=True, text=True, timeout=timeout)
-        stdout, stderr = r.stdout, r.stderr
-    if r.returncode != 0:
+        code, stdout, stderr = r.returncode, r.stdout, r.stderr
+    if code != 0:
         raise UpdateError(f"정본 태그 조회 실패({url}): {stderr.strip()[-200:]}")
     best = None
     for line in stdout.splitlines():
@@ -148,6 +138,22 @@ def latest_release_tag(url: str, *, timeout: float = 60,
         if key and (best is None or key > best[0]):
             best = (key, name)
     return best[1] if best else None
+
+
+def git_unattended(args: list[str], *, timeout: float) -> tuple[int, str, str]:
+    """사람에게 묻지 않는 git — (종료코드, 표준 출력, 표준 오류). 규율은
+    `latest_release_tag`의 `unattended`와 같다(인증 도우미·창·파이프)."""
+    env = {k: v for k, v in os.environ.items() if k not in ("GIT_ASKPASS", "SSH_ASKPASS")}
+    env.update(LC_ALL="C", LANG="C", GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        r = subprocess.run(
+            ["git", "-c", "core.askPass=", *args], stdin=subprocess.DEVNULL,
+            stdout=out, stderr=err, timeout=timeout, env=env,
+            creationflags=0x08000000 if os.name == "nt" else 0)
+        out.seek(0)
+        err.seek(0)
+        return (r.returncode, out.read().decode("utf-8", "replace"),
+                err.read().decode("utf-8", "replace"))
 
 
 def tag_exists(url: str, tag: str) -> bool:

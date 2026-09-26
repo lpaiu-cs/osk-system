@@ -47,7 +47,7 @@ SETUP = r'''
 import json, os, subprocess, sys, time
 from pathlib import Path
 from unittest import mock
-from osk import core, harness, update, validate
+from osk import core, harness, services, update, validate
 from osk import setup as S
 from osk.harness import base
 root = core.ROOT
@@ -89,6 +89,29 @@ def baseline(version='v4.0.0'):
 '''
 
 
+# The OS service manager, in memory: the same answers `osk.services` gets from a real one.
+FAKE_SERVICES = r'''
+class Fake(services.Backend):
+    name = 'fake'
+    rows = {}
+    def ident(self, kind):
+        return f'osk-{kind}-{services.tag()}'
+    def entries(self):
+        return [dict(r) for r in self.rows.values()]
+    def definition(self, kind, job):
+        return {'argv': [job['python'], *job['args']], 'at': job['at']}
+    def install(self, kind, job, stamp):
+        i = self.ident(kind)
+        self.rows[i] = {'id': i, 'name': i, 'tokens': [job['python'], *job['args']],
+                        'definition': self.definition(kind, job)}
+        return {'id': i, 'installed': True}
+    def remove(self, entry, stamp):
+        del self.rows[entry['id']]
+        return {'id': entry['id'], 'removed': True, 'backup': str(home / 'backup')}
+mock.patch.object(S.services, 'backend', lambda run=None: Fake()).start()
+'''
+
+
 def _run(script: str) -> subprocess.CompletedProcess:
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -100,6 +123,7 @@ def _run(script: str) -> subprocess.CompletedProcess:
                if k not in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS', 'OSK_GROWTH_WORKER')}
         env.update(OSK_VAULT_ROOT=str(td / 'vault'), PYTHONPATH=str(ENGINE), PYTHONUTF8='1',
                    OSK_UPDATE_CHECK='0', HOME=str(home), USERPROFILE=str(home),
+                   APPDATA=str(home / 'AppData' / 'Roaming'), LOCALAPPDATA=str(home / 'AppData' / 'Local'),
                    CLAUDE_CONFIG_DIR=str(home / '.claude'), CODEX_HOME=str(home / '.codex'),
                    OSK_TEST_BIN=str(bin_dir), OSK_TEST_LOG=str(td / 'cli.log'),
                    PATH=str(bin_dir) + os.pathsep + os.environ.get('PATH', ''))
@@ -355,6 +379,157 @@ rep = json.loads(out)
 assert code == 0 and rep['python'] == str(vpy) and rep['root'] == str(root), (out, err)
 code, out, err = run_boot('doctor', '--json')
 assert code == 0 and 'hosts' in json.loads(out), (out, err)
+''')
+
+    def test_chosen_features_go_through_the_same_confirmation(self):
+        self.check_case(FAKE_SERVICES + r'''
+fake_clis()
+baseline()
+S.run(apply=True)
+S.run(apply=True)                       # hosts connected; only the chosen features remain
+rep, _ = S.run()
+assert not rep['changes'] and not any(k in rep for k in ('fork', 'schedule', 'sync')), rep
+# fork: the CLI each host would use is written once confirmed.
+rep, code = S.run(apply=True, fork=True)
+assert code == 2 and {n: e['action'] for n, e in rep['fork']['entries'].items()} == \
+    {'claude': 'add', 'codex': 'add'}, rep.get('fork')
+assert any('auth login' in s for s in rep['human']) and any('fork doctor' in s for s in rep['human']), rep['human']
+rep, code = S.run(apply=True, fork=True)
+config_file = root / '.osk' / 'response-growth.json'
+config = read(config_file)
+assert code == 0 and rep['ok'] and set(config) == {'claude', 'codex'} and Path(config['claude']).is_file(), rep
+# A CLI the user chose stays chosen.
+mine = bin_dir / 'my-claude.exe'
+mine.write_text('', encoding='utf-8')
+config_file.write_text(json.dumps({**config, 'claude': str(mine)}), encoding='utf-8')
+rep, code = S.run(apply=True, fork=True)
+assert code == 0 and not rep['changes'] and rep['fork']['entries']['claude'] == {'action': 'keep', 'path': str(mine)}, rep
+# Daily run: the command is this vault's MCP only, the subscription only, no other tool.
+rep, code = S.run(apply=True, schedule='claude', at='07:30')
+argv = rep['schedule']['command']['argv']
+assert code == 2 and rep['schedule']['command']['action'] == 'add', rep
+assert argv[1] == '-p' and argv[argv.index('--permission-mode') + 1] == 'dontAsk', argv
+assert argv[argv.index('--allowedTools') + 1] == 'mcp__osk-system' and '--strict-mcp-config' in argv, argv
+assert json.loads(argv[argv.index('--settings') + 1]) == {'forceLoginMethod': 'claudeai'}, argv
+assert argv[argv.index('--tools') + 1] == '', argv          # no built-in tool, whatever settings allow
+assert harness.get('claude').subscription_only(argv), argv  # the runner applies the fork's credentials
+server_entry = json.loads(argv[argv.index('--mcp-config') + 1])['mcpServers']['osk-system']
+assert server_entry['args'] == [server.as_posix()] and server_entry['env'] == {'OSK_VAULT_ROOT': root.as_posix()}, argv
+assert rep['schedule']['task']['action'] == 'add' and '07:30' in rep['schedule']['task']['command'], rep['schedule']
+assert any('--limit 1' in s for s in rep['human']), rep['human']
+rep, code = S.run(apply=True, schedule='claude', at='07:30')
+command_file = root / '.osk' / 'growth-command.json'
+assert code == 0 and rep['ok'] and read(command_file) == argv, rep
+assert Fake.rows[f'osk-growth-{services.tag()}']['definition']['at'] == '07:30'
+# A new time replaces the task and keeps the command file, which may carry the user's edits.
+rep, code = S.run(apply=True, schedule='claude', at='08:00')
+assert code == 2 and rep['schedule']['command']['action'] == 'keep' and rep['schedule']['task']['action'] == 'replace', rep
+# The confirmation covers the chosen features: 08:00 was asked, 09:30 was not.
+rep, code = S.run(apply=True, schedule='claude', at='09:30')
+assert code == 2 and Fake.rows[f'osk-growth-{services.tag()}']['definition']['at'] == '07:30', rep
+rep, _ = S.run(schedule='claude', at='25:00')
+assert not rep['ok'] and 'HH:MM' in rep['errors'][0], rep
+# setup writes no daily command for Codex; the user's own command file is used as it is.
+command_file.unlink()
+rep, code = S.run(apply=True, schedule='codex')
+assert code == 1 and not rep['ok'] and '만들지 않는다' in rep['errors'][0] and not command_file.exists(), rep
+import shutil
+command_file.write_text(json.dumps([shutil.which('codex'), 'exec', '-']), encoding='utf-8')
+rep, _ = S.run(schedule='codex')
+assert rep['ok'] and rep['schedule']['command']['action'] == 'keep', rep
+# Sync: a local main, a private origin, and a push that does not ask.
+rep, _ = S.run(sync=True)
+assert not rep['ok'] and 'main' in rep['errors'][0] and 'origin' in rep['errors'][0], rep
+git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
+git('add', '-A')
+git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vault')
+git('remote', 'add', 'origin', 'git@github.com:LPAIU-CS/osk-system.git')
+rep, _ = S.run(sync=True)
+assert not rep['ok'] and '정본' in rep['errors'][0], rep
+bare = root.parent / 'private.git'
+git('remote', 'set-url', 'origin', str(bare))
+rep, _ = S.run(sync=True)
+assert not rep['ok'] and 'push' in rep['errors'][0], rep      # the remote is not there yet
+subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True, capture_output=True)
+rep, code = S.run(apply=True, sync=True)
+assert code == 2 and rep['sync']['task']['action'] == 'add' and rep['sync']['origin'] == str(bare), rep
+assert any('비공개' in s for s in rep['human']), rep['human']
+rep, code = S.run(apply=True, sync=True)
+assert code == 0 and rep['ok'] and f'osk-sync-{services.tag()}' in Fake.rows, rep
+# Uninstalling one feature leaves the hosts and the other features.
+rep, code = S.run(apply=True, uninstall=True, sync=True)
+assert code == 2 and rep['hosts'] == [] and 'fork' not in rep and rep['sync']['task']['action'] == 'remove', rep
+rep, code = S.run(apply=True, uninstall=True, sync=True)
+assert code == 0 and f'osk-sync-{services.tag()}' not in Fake.rows and f'osk-growth-{services.tag()}' in Fake.rows, rep
+assert osk_entries(read(claude_home / 'settings.json'), 'start'), 'uninstalling sync removed a hook'
+# Uninstalling everything takes every osk registration of this vault, not the command file.
+S.run(apply=True, uninstall=True)
+rep, code = S.run(apply=True, uninstall=True)
+assert code == 0 and rep['ok'] and not Fake.rows and not config_file.exists() and command_file.exists(), rep
+assert not osk_entries(read(claude_home / 'settings.json'), 'start')
+''')
+
+    def test_a_feature_that_changed_after_confirmation_is_not_written(self):
+        self.check_case(FAKE_SERVICES + r'''
+fake_clis()
+baseline()
+p = S.plan(fork=True, schedule='claude')
+config_file = root / '.osk' / 'response-growth.json'
+config_file.parent.mkdir(parents=True, exist_ok=True)
+config_file.write_text(json.dumps({'claude': str(py)}), encoding='utf-8')
+(root / '.osk' / 'growth-command.json').write_text('["x"]', encoding='utf-8')
+result = S._apply(p)
+steps = {s['step']: s for s in result['steps']}
+assert not result['ok'] and '바뀌었다' in steps['fork CLI']['error'], result
+assert '생겼다' in steps['growth command']['error'] and not Fake.rows, result
+assert read(config_file) == {'claude': str(py)}
+''')
+
+    def test_sync_checks_and_confirms_every_push_target(self):
+        self.check_case(FAKE_SERVICES + r'''
+fake_clis()
+baseline()
+S.run(apply=True)
+S.run(apply=True)
+git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
+git('add', '-A')
+git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vault')
+private, second = root.parent / 'private.git', root.parent / 'second.git'
+for bare in (private, second):
+    subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True, capture_output=True)
+git('remote', 'add', 'origin', str(private))
+# The fetch URL is private, but pushes go to the public canonical repository.
+git('config', 'remote.origin.pushurl', 'https://github.com/lpaiu-cs/osk-system.git')
+rep, code = S.run(apply=True, sync=True)
+assert code == 1 and '정본' in rep['errors'][0] and not Fake.rows, rep
+# Every push target is shown and confirmed; a target added afterwards needs a new confirmation.
+git('config', 'remote.origin.pushurl', str(private))
+rep, code = S.run(apply=True, sync=True)
+assert code == 2 and rep['sync']['push'] == [str(private)], rep
+git('config', '--add', 'remote.origin.pushurl', str(second))
+rep, code = S.run(apply=True, sync=True)
+assert code == 2 and rep['sync']['push'] == [str(private), str(second)] and not Fake.rows, rep
+assert any(str(second) in s for s in rep['human']), rep['human']
+rep, code = S.run(apply=True, sync=True)
+assert code == 0 and rep['ok'] and f'osk-sync-{services.tag()}' in Fake.rows, rep
+''')
+
+    def test_uninstall_without_a_service_manager_still_removes_the_hosts(self):
+        self.check_case(r'''
+fake_clis()
+baseline()
+S.run(apply=True)
+S.run(apply=True)
+assert osk_entries(read(claude_home / 'settings.json'), 'start')
+mock.patch.object(S.services, 'backend', lambda run=None: None).start()
+rep, code = S.run(apply=True, uninstall=True)
+assert code == 2 and rep['approval_required'] and 'errors' not in rep, rep
+assert (rep['schedule']['task']['action'], rep['sync']['task']['action']) == ('absent', 'absent'), rep
+rep, code = S.run(apply=True, uninstall=True)
+assert code == 0 and rep['ok'] and not osk_entries(read(claude_home / 'settings.json'), 'start'), rep
+# Registering a feature still needs one.
+rep, _ = S.run(schedule='claude')
+assert not rep['ok'] and '서비스 관리자' in rep['errors'][0], rep
 ''')
 
 
