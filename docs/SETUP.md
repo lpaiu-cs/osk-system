@@ -57,6 +57,7 @@ python _governance/_engine/scripts/setup.py                 # 계획을 본다 �
 python _governance/_engine/scripts/setup.py --apply         # 확인을 요청하고 멈춘다(종료코드 2)
 python _governance/_engine/scripts/setup.py --apply         # 확인 뒤 1시간 안에 한 번 더 — 적용한다
 python _governance/_engine/scripts/setup.py --interactive   # 단말에서 확인받아 적용한다
+python _governance/_engine/scripts/setup.py --apply --fork --schedule claude --sync   # 고른 기능도 함께
 python _governance/_engine/scripts/setup.py --uninstall --apply   # 이 vault의 osk 등록만 걷어 낸다
 python _governance/_engine/scripts/setup.py doctor          # 연결을 점검한다(읽기만)
 ```
@@ -76,6 +77,25 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
 - **확인.** `osk.update`와 같다. 첫 `--apply`는 계획과 `approval_required`를 내고
   멈춘다. 같은 명령을 1시간 안에 다시 부르면 계획이 그대로일 때만 적용한다. 할 일이
   없으면 확인 없이 끝난다.
+- **고르는 기능.** 셋 다 기본은 꺼져 있고 플래그로 고른다. 마법사는 물어서 고른다.
+  - `--fork` — 백그라운드 fork 검토(아래 '대화별 검토 훅')가 부를 CLI를
+    `.osk/response-growth.json`에 적는다. Windows 데스크톱 앱이 둔 CLI가 있으면 가장
+    새로 설치된 것, 없으면 PATH의 CLI다. 이미 적힌 경로가 살아 있으면 그대로 둔다.
+    구독 로그인과 `fork doctor`는 사람이 한다(`human`).
+  - `--schedule <하네스>`(`--at HH:MM`, 기본 09:00) — 매일 한 번 도는 정기 실행(아래
+    'Scope에서 Domain으로 정기 재검토')을 등록한다. 명령 파일 `.osk/growth-command.json`이
+    없으면 그 하네스의 무인 명령을 만든다. 지금은 Claude만이다 — 이 vault의 MCP 서버만
+    붙이고(`--strict-mcp-config`), 그 서버의 도구만 허용해 나머지는 묻지 않고 거절하며
+    (`--permission-mode dontAsk`), claude.ai 구독 로그인만 쓴다. Codex는 명령 파일을 직접
+    만든다. 있는 명령 파일은 덮지 않는다. 정기 실행은 한 기기에만 둔다 — 결과는 대장으로
+    모든 기기가 나눈다.
+  - `--sync` — 동기화 데몬(아래 '동기화 데몬')을 상시 서비스로 등록하고 띄운다. 먼저
+    vault가 저장소 루트인지, 로컬 `main`이 있는지, `origin`이 공개 정본이 아닌지, 묻지
+    않고 push할 수 있는지(`git push --dry-run`)를 확인한다. origin이 비공개인지는 사람이
+    확인한다.
+- **해제.** `--uninstall`만 주면 이 vault의 osk 등록을 다 걷는다 — fork 설정의 항목, 정기
+  실행 작업, 동기화 데몬(Windows는 떠 있는 데몬도 멈춘다)까지다. 명령 파일은 남긴다.
+  기능 플래그를 함께 주면 그 기능만, `--harness`를 주면 그 호스트의 것만 걷는다.
 
 vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 폴더는
 `CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다.
@@ -101,8 +121,28 @@ vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 �
   항목으로 바꾼다 — 겹쳐 만들지 않는다.
 - 호스트 CLI가 PATH에 없으면 MCP 등록은 사람이 할 명령(`manual`)으로 남긴다.
 - 사람이 할 일은 보고의 `human`에 있다: Codex 훅 신뢰(`/hooks`), 세션 재시작, 기준선
-  커밋, 새 세션 뒤의 연결 점검.
-- 정기 실행과 동기화 데몬의 등록은 아직 setup이 하지 않는다 — 아래 해당 절을 따른다.
+  커밋, 새 세션 뒤의 연결 점검, 고른 기능의 구독 로그인·첫 정기 실행·origin 확인.
+
+고른 기능의 운영체제 등록은 아래뿐이다(`osk.services`). `<해시>`는 vault 경로의 해시
+여덟 자리다 — 한 기기의 여러 vault가 겹치지 않는다.
+
+| 운영체제 | 등록 | 자리 | 쓰는 방법 |
+|---|---|---|---|
+| Windows | 정기 실행(매일)·동기화 데몬(로그온할 때) | 작업 스케줄러의 `osk-growth-<해시>`·`osk-sync-<해시>` | `Register-ScheduledTask` |
+| macOS | 〃 | `~/Library/LaunchAgents/com.osk-system.{growth,sync}.<해시>.plist` | `launchctl bootstrap` |
+| Linux | 〃 | `~/.config/systemd/user/osk-growth-<해시>.{service,timer}`·`osk-sync-<해시>.service` | `systemctl --user enable --now` |
+
+- 이 vault의 등록인지는 명령이 이 vault의 `growth_run.py`·`sync_daemon.py`를 부르는지로
+  가린다. 옛 안내서의 이름(`osk-domain-growth`·`osk-sync-daemon`, 예시의
+  `com.example.ltm-vault-daemon`·`ltm-vault-daemon`)으로 손수 만든 등록도 명령이 이 vault
+  안의 파일을 부르면 이 vault의 것이다 — 걷어 내고 위의 이름으로 만든다(`replace`).
+  이 vault를 부르는 다른 등록은 `notes`로 알리고 건드리지 않는다.
+- 바꾸거나 걷어 내는 등록의 원래 정의는 먼저 `~/.osk-system/backups/`에 남긴다(Windows
+  작업은 내보낸 XML). 서비스 관리자의 폴더에 두면 관리자가 백업까지 읽는다.
+- Windows 작업은 `pythonw.exe`로 돌아 창이 뜨지 않는다. 정기 실행의 보고는 실행마다
+  `.osk/growth/scheduler/<시각>.log`에, 데몬의 알림은 git 디렉터리의 `osk-sync-daemon.log`에
+  남는다. 동기화 작업은 `cmd.exe`로 `SYNC_ENABLED=1`을 세우고 데몬을 떼어 띄운다.
+- 실행 직전에 다시 계획해, 확인한 뒤 등록이 바뀌었으면 하지 않는다.
 
 ## Windows
 
@@ -136,7 +176,8 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 띄운다(`osk.update`는 그 경로로 데몬 프로세스와 작업을 찾는다). 작업 스케줄러에는
 작업별 환경변수가 없으므로 동작을
 `cmd.exe /c set SYNC_ENABLED=1&& start "" <REPO>/.venv/Scripts/pythonw.exe <REPO>/_governance/_engine/sync_daemon.py`로
-둔다. 등록 명령은 [시작 안내서](GETTING-STARTED.ko.md#선택-git으로-vault-동기화하기)에 있다.
+둔다. `setup --sync`가 이 작업을 만든다(위 '설치 도구'). 손으로 하는 등록 명령은
+[시작 안내서](GETTING-STARTED.ko.md#선택-git으로-vault-동기화하기)에 있다.
 
 ## MCP 서버
 
@@ -709,7 +750,8 @@ raw 조회 상한이 fork 입력 전체를 제한하지 않는다. 캐시 미적
 새 Domain 군집에 필요한 사용자 확인은 자동 실행이 대신하지 않는다. 기존 착지가 없으면
 제안할 군집·노드 제목과 필요한 확인을 `deferred`로 남긴다.
 
-Windows 작업 스케줄러 등록은 아래 스크립트를 **별도로 실행할 때** 활성화된다.
+운영체제의 매일 작업은 `setup --schedule`이 등록한다(위 '설치 도구' — Windows·macOS·
+Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 실행할 때** 활성화된다.
 기존 동일 이름 작업을 덮어쓰지 않으며 로그인된 사용자 권한으로 하루 한 번 실행한다.
 실제 릴리스·인스턴스 갱신·새 MCP 재시작과 이 등록은 구현/시험과 구별한다.
 
@@ -794,6 +836,7 @@ HEAD가 `main`이 아니면 적용 직전에 되돌린다. 되돌릴 수 없는 
 | 다른 브랜치·detached, 추적 파일 수정 있음 | **거부** — 진행 중 작업일 수 있어 옮기지도 감추지도 않는다 |
 | 로컬에 `main` 없음 | 거부 |
 
+상시 서비스는 `setup --sync`가 운영체제마다 등록한다(위 '설치 도구'). 손으로 쓰는
 launchd/systemd 예시는 `_governance/_engine/scripts/`에 있다.
 
 ### Obsidian 그래프 배율 충돌

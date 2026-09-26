@@ -24,6 +24,7 @@ class Codex(Adapter):
     status = {"start": "osk: loading scope memory", "input": "osk: checking review cadence",
               "stop": "osk: capturing the finished round"}
     trust = "Codex에서 `/hooks`를 열어 osk 훅 세 개를 검토하고 신뢰한다"
+    login = "login"
 
     def home(self) -> Path:
         return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
@@ -86,6 +87,12 @@ class Codex(Adapter):
     def hook_files(self):
         # 훅은 `hooks.json`에도, `config.toml`의 `[hooks]` 표에도 둘 수 있다.
         return [self.home() / "hooks.json", self.home() / "config.toml"]
+
+    def cli_candidates(self):
+        # Windows 데스크톱 앱이 둔 CLI — 갱신마다 `bin/<해시>/`가 새로 생긴다.
+        if os.name != "nt" or not os.environ.get("LOCALAPPDATA"):
+            return []
+        return list((Path(os.environ["LOCALAPPDATA"]) / "OpenAI" / "Codex" / "bin").glob("*/codex.exe"))
 
     def trusted(self, file, event, group, index):
         """신뢰 기록은 `config.toml`의 `[hooks.state."<파일>:<사건>:<묶음>:<순번>"]`에

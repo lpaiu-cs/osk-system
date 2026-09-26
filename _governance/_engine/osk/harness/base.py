@@ -111,6 +111,7 @@ class Adapter:
     matchers = {event: "|".join(causes) for event, causes in sources.items()}
     status: dict[str, str] = {}     # 사건 → 훅이 도는 동안 호스트 화면의 문구(지원 호스트만)
     trust = ""       # 새로 쓴 훅을 호스트가 돌리기 전에 사용자가 할 일 — 없으면 빈 문자열
+    login = ""       # 구독 로그인 — CLI 뒤에 붙이는 인자. fork·정기 실행이 쓰는 자격이다
 
     def fires_on(self, event: str, matcher) -> frozenset[str]:
         """그 matcher의 등록이 불리는 원인 — 원인이 없는 사건은 `{"*"}`(늘 불린다).
@@ -204,6 +205,15 @@ class Adapter:
         return {}
 
     def hook_files(self) -> list[Path]:
+        return []
+
+    def cli_candidates(self) -> list[Path]:
+        """PATH 밖에서 이 호스트의 네이티브 CLI가 놓이는 자리 — 데스크톱 앱이 둔 CLI."""
+        return []
+
+    def growth_argv(self, cli: str, python: str, server: str, root: str) -> list[str]:
+        """정기 실행이 부르는 무인 에이전트 명령 — stdin으로 프롬프트를 읽고 끝난다. 이
+        vault의 MCP 서버만 붙이고 구독 로그인만 쓴다. 지원하지 않으면 빈 목록."""
         return []
 
     def hook_group(self, event: str, command: str) -> dict:

@@ -169,6 +169,7 @@ python _governance/_engine/scripts/setup.py --interactive
 서버와 훅 세 개를 등록한다. 쓰기 전에 계획을 보여 주고 확인을 받는다. 바꾸는 설정 파일은
 모두 백업하고, 이 vault의 osk 항목만 건드린다([설치 도구](SETUP.md#설치-도구-setup)).
 그다음 "할 일"로 나열된 것(Codex의 훅 신뢰 등)을 하고 [5단계](#5단계-첫-세션)로 간다.
+마법사는 선택 기능(백그라운드 fork 검토, 매일 도는 정기 실행, Git 동기화)을 켤지도 묻는다.
 아래 수동 절차는 같은 일을 손으로 한다.
 
 macOS/Linux:
@@ -632,6 +633,11 @@ Windows (PowerShell):
 - 데몬은 `sync_daemon.py`의 **절대 경로**로 시작한다. `osk.update`는 그 경로로
   데몬을 찾아 다시 띄우므로, 상대 경로로 시작한 데몬은 찾지 못한다.
 
+**v4.1.0 이상에서는 명령 하나로 할 수 있다.**
+`python _governance/_engine/scripts/setup.py --apply --sync`가 위 전제를 확인하고, 이
+기기의 서비스 관리자(작업 스케줄러·launchd·systemd)에 데몬을 등록해 띄운다. 확인은
+2단계와 같다([설치 도구](SETUP.md#설치-도구-setup)). 아래는 같은 일을 손으로 하는 절차다.
+
 먼저 한 번만 돌려 본다.
 
 macOS/Linux:
@@ -733,6 +739,9 @@ Stop 훅이 성공한 최종 답변 9회마다 대화의 숨은 일회성 *fork*
 대화의 하네스, 모델, 작업 폴더, 권한 모드를 그대로 이어받는다. 아직 검토하지 않은
 라운드를 최대 9개 검토하고, 지식은 MCP로 쓴다. 실행은 **구독** 로그인으로만 하며,
 유료 API 호출로 대체하는 일은 없다. 기기마다, 하네스마다 따로 켠다.
+
+v4.1.0 이상에서는 `python _governance/_engine/scripts/setup.py --apply --fork`가 1번을
+한다 — 이 기기의 CLI를 찾아 파일에 적는다. 2·3번(로그인과 확인)은 직접 한다.
 
 1. **osk에 쓸 CLI를 알려 준다.** `<vault>/.osk/response-growth.json`을 만든다.
    `.osk/` 아래의 모든 것은 이 기기에만 남는다(Git이 무시한다). 이 파일에는

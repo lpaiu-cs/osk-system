@@ -58,6 +58,9 @@ jobs:
       PYTHONUTF8: "1"
       OSK_MATRIX: ${{ inputs.upgrade-matrix }}
       OSK_MATRIX_CANDIDATE: ${{ inputs.release-candidate }}
+      # Windows 잡은 작업 스케줄러에 이 수트의 임시 vault 작업을 실제로 등록하고 걷어 본다
+      # (tests/test_services.py). 개발 기기에서는 켜지 않는다 — 기기의 스케줄러를 건드린다.
+      OSK_TEST_REAL_TASKS: ${{ matrix.os == 'windows-latest' && '1' || '' }}
     steps:
       - uses: actions/checkout@v5
         with:

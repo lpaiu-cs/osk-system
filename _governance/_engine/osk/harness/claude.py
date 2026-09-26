@@ -20,6 +20,7 @@ class Claude(Adapter):
     fork = True
     guide = "3b"
     reload = "Claude Code는 훅을 세션을 시작할 때 읽는다 — 새 세션을 열고 `/hooks`에서 확인한다"
+    login = "auth login"
 
     def home(self) -> Path:
         return Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
@@ -75,6 +76,29 @@ class Claude(Adapter):
 
     def hook_files(self):
         return [self.home() / "settings.json"]
+
+    def cli_candidates(self):
+        # Windows 데스크톱 앱은 판마다 CLI를 `Claude/claude-code/<판>/`에 둔다. 스토어(MSIX)
+        # 설치는 그 폴더가 패키지의 LocalCache 아래로 옮겨진다.
+        if os.name != "nt":
+            return []
+        roots = []
+        if os.environ.get("APPDATA"):
+            roots.append(Path(os.environ["APPDATA"]) / "Claude" / "claude-code")
+        if os.environ.get("LOCALAPPDATA"):
+            roots += Path(os.environ["LOCALAPPDATA"]).glob(
+                "Packages/Claude_*/LocalCache/Roaming/Claude/claude-code")
+        return [p for root in roots for p in root.glob("*/claude.exe")]
+
+    def growth_argv(self, cli, python, server, root):
+        # 도구는 이 vault의 MCP만 허용하고 나머지는 묻지 않고 거절한다(dontAsk) — 사람이 없는
+        # 실행이다. 로그인은 claude.ai 구독만 쓴다(fork와 같다).
+        config = json.dumps({"mcpServers": {MCP_NAME: {"command": python, "args": [server],
+                                                       "env": {"OSK_VAULT_ROOT": root}}}})
+        return [cli, "-p", "--output-format", "stream-json", "--verbose",
+                "--settings", '{"forceLoginMethod":"claudeai"}',
+                "--strict-mcp-config", "--mcp-config", config,
+                "--allowedTools", f"mcp__{MCP_NAME}", "--permission-mode", "dontAsk"]
 
 
 ADAPTER = Claude()

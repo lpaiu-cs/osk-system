@@ -10,6 +10,9 @@
     기준선으로 적는다. 그 갱신의 계획(`review_id`)이 이 계획의 확인에 묶인다.
   · MCP 서버 — 호스트 CLI로 등록한다. CLI가 PATH에 없으면 사람이 할 명령으로 남긴다.
   · 훅 — 호스트의 훅 설정 파일에 세 훅을 병합한다.
+  · 고를 때만(`--fork`·`--schedule`·`--sync`) — 백그라운드 fork가 부를 CLI
+    (`.osk/response-growth.json`), 정기 실행(`.osk/growth-command.json`과 운영체제의 매일
+    작업), 동기화 데몬(운영체제의 상시 서비스). 운영체제 등록은 `osk.services`가 한다.
 
 vault 밖에는 사용자가 확인한 계획의 osk 등록 항목만 쓴다. 원래 파일은 옆에
 `<이름>.osk-backup-<시각>`으로 백업하고, 이 vault의 osk 항목만 더하거나 바꾸거나 걷어
@@ -26,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,7 +37,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import core, update
+from . import core, services, update
 from . import harness as adapters
 from .doctor import _engine_dir, _python
 from .harness import base
@@ -41,9 +45,12 @@ from .harness import base
 TICKET = "osk-setup-confirmation.json"
 CONFIRM_WITHIN = 3600
 CHANGES = ("add", "replace", "remove")
+AT = "09:00"                      # 정기 실행의 기본 시각
+_AT = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 INSTRUCTION = ("여기서 멈추고 사용자에게 이 계획을 설명한 뒤 명시적 확인을 받는다 — 기준선과 "
-               "통치 구획 보호, 호스트별 MCP·훅 변경, 백업 자리, 사용자가 할 일(human). 확인 "
+               "통치 구획 보호, 호스트별 MCP·훅 변경, 고른 기능(fork CLI·정기 실행의 명령과 "
+               "시각·동기화 데몬의 origin), 백업 자리, 사용자가 할 일(human). 확인 "
                "전에는 다시 실행하지 않는다. 확인 뒤 같은 명령을 1시간 안에 한 번 다시 실행하면 "
                "적용한다. 계획이 그 사이 달라지면 새 확인을 요구한다.")
 
@@ -190,6 +197,150 @@ def _mcp(adapter, uninstall: bool) -> dict:
     return out
 
 
+def _native_cli(adapter) -> str | None:
+    """fork·정기 실행이 부를 네이티브 CLI — 데스크톱 앱이 둔 CLI가 있으면 가장 새로 설치된
+    것이다(판이 바뀌면 `native_cli`가 같은 설치의 새 판을 따라간다). 없으면 PATH의 CLI."""
+    found = sorted((p for p in adapter.cli_candidates() if p.is_file()),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    path = found[0] if found else shutil.which(adapter.cli)
+    return Path(path).as_posix() if path else None
+
+
+def _synced(path: Path) -> bool:
+    """그 파일이 Git에 실려 다른 기기로 가는가 — `.osk/`를 무시하지 않는 옛 vault의 함정이다."""
+    try:
+        r = subprocess.run(["git", "-C", str(core.ROOT), "check-ignore", "-q", str(path)],
+                           capture_output=True, timeout=30, stdin=subprocess.DEVNULL,
+                           creationflags=_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 1          # 0 무시된다 · 1 무시되지 않는다 · 128 저장소가 아니다
+
+
+def _fork(targets: list, uninstall: bool) -> dict:
+    """백그라운드 fork가 부를 CLI(`.osk/response-growth.json`) — 호스트마다 `keep`·`add`·
+    `replace`·`remove`, CLI를 찾지 못하면 `manual`. 적힌 경로가 살아 있으면 그대로 둔다 —
+    사용자가 고른 CLI일 수 있다."""
+    from . import response_growth
+    path = response_growth.CONFIG
+    out: dict = {"file": str(path), "entries": {}}
+    try:
+        current = _read_json(path)
+    except (OSError, ValueError, SetupError) as e:
+        return {**out, "error": f"{type(e).__name__}: {e}"}
+    for adapter in targets:
+        have = current.get(adapter.name)
+        if not adapter.fork or (uninstall and have is None):
+            continue
+        if uninstall:
+            out["entries"][adapter.name] = {"action": "remove", "path": have}
+        elif isinstance(have, str) and Path(have).is_file():
+            out["entries"][adapter.name] = {"action": "keep", "path": have}
+        else:
+            cli = _native_cli(adapter)
+            out["entries"][adapter.name] = ({"action": "replace" if have else "add", "path": cli}
+                                            if cli else {"action": "manual"})
+    if not uninstall and out["entries"] and _synced(path):
+        out["notes"] = [f"{path}이 Git에서 빠지지 않는다 — 이 기기의 CLI 경로가 다른 기기로 "
+                        "간다. `.gitignore`에 `.osk/`를 둔다"]
+    return out
+
+
+def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
+    """정기 실행 — 에이전트 명령 파일(`.osk/growth-command.json`)과 운영체제의 매일 작업.
+    명령 파일이 이미 있으면 그대로 쓴다(사용자가 고친 명령일 수 있다). 없으면 고른
+    하네스가 내는 무인 명령을 만든다 — 어댑터가 내지 않으면 사용자가 만든다."""
+    from . import growth
+    file = core.ROOT / ".osk" / "growth-command.json"
+    out: dict = {"command_file": str(file), "at": at}
+    if uninstall:
+        out["task"] = services.plan(manager, "growth", None, True)
+        return out
+    if not _AT.fullmatch(at):
+        return {**out, "error": f"시각은 24시간제 HH:MM이다 — {at!r}"}
+    if file.is_file():
+        try:
+            argv = json.loads(file.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as e:
+            return {**out, "error": f"명령 파일을 읽지 못했다 — {e}"}
+        out["command"] = {"action": "keep", "argv": argv}
+    else:
+        if not harness:
+            return {**out, "error": "정기 실행에 쓸 하네스를 고른다 — 예: `--schedule claude`"}
+        adapter = adapters.get(harness)
+        cli = _native_cli(adapter)
+        if not cli:
+            return {**out, "error": f"{adapter.title} CLI를 찾지 못했다 — 설치한 뒤 다시 실행한다"}
+        argv = adapter.growth_argv(cli, _python().as_posix(), _server().as_posix(), core.ROOT.as_posix())
+        if not argv:
+            return {**out, "error": f"{adapter.title}의 정기 실행 명령은 setup이 만들지 않는다 — 명령 "
+                                    "파일을 직접 만든 뒤 다시 실행한다(SETUP 'Scope에서 Domain으로 "
+                                    "정기 재검토')"}
+        out["command"] = {"action": "add", "argv": argv, "harness": harness}
+    try:
+        checked = growth.check_command(argv)
+    except ValueError as e:
+        checked = {"ok": False, "violations": [str(e)]}
+    if not checked["ok"]:
+        return {**out, "error": "명령을 쓸 수 없다 — " + "; ".join(checked["violations"])}
+    out["task"] = services.plan(manager, "growth", services.job("growth", command_file=file, at=at), False)
+    notes = []
+    if out["task"].get("action") == "add" and growth.daily_active():
+        notes.append("최근 3일 안에 정기 실행이 돌았다 — 다른 기기에 등록돼 있으면 한 곳에만 둔다"
+                     "(결과는 대장으로 모든 기기가 나눈다)")
+    if out["command"]["action"] == "add" and _synced(file):
+        notes.append(f"{file}이 Git에서 빠지지 않는다 — `.gitignore`에 `.osk/`를 둔다")
+    if notes:
+        out["notes"] = notes
+    return out
+
+
+def _canonical(url: str) -> bool:
+    """origin이 공개 정본인가 — HTTPS·SSH 표기, `.git`, 대소문자를 가리지 않는다."""
+    def norm(u: str) -> str:
+        u = re.sub(r"\.git$", "", u.strip().rstrip("/").lower())
+        return re.sub(r"^[a-z+]+://", "", u).split("@")[-1].replace(":", "/")
+    return norm(url) == norm(update.DEFAULT_UPSTREAM)
+
+
+def _sync_checks() -> tuple[str | None, list[str]]:
+    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 개인 원격 `origin`, 묻지 않는 push."""
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(core.ROOT), *args], capture_output=True, text=True,
+                              timeout=60, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    try:
+        top = git("rev-parse", "--show-toplevel")
+        if top.returncode or base.fold(top.stdout.strip()) != base.fold(str(core.ROOT)):
+            return None, ["vault가 Git 저장소의 루트가 아니다 — 데몬은 저장소 루트에서만 돈다"]
+        url = git("remote", "get-url", "origin").stdout.strip() or None
+        main = git("rev-parse", "--verify", "--quiet", "refs/heads/main").returncode == 0
+        errors = [] if main else ["로컬 `main` 브랜치가 없다 — 데몬은 `main`만 동기화한다"]
+        if not url:
+            errors.append("`origin`이 없다 — 개인 저장소를 origin으로 둔다(시작 안내서 1단계)")
+        elif _canonical(url):
+            errors.append("origin이 공개 정본 저장소다 — 개인 저장소를 origin으로 둔다")
+        elif main:
+            code, out, err = update.git_unattended(
+                ["-C", str(core.ROOT), "push", "--dry-run", "--porcelain", "origin", "main"], timeout=90)
+            # 원격이 앞서 있으면 거절(`[rejected]`)되지만 인증은 통과했다 — 데몬은 먼저 rebase한다.
+            if code and "[rejected]" not in out:
+                errors.append("묻지 않고 push하지 못했다 — 자격 증명 도우미·토큰·ssh-agent를 갖춘다: "
+                              + (err or out).strip()[-200:])
+        return url, errors
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, [f"git을 실행하지 못했다 — {e}"]
+
+
+def _sync(manager, uninstall: bool) -> dict:
+    """동기화 데몬 — 전제를 확인한 뒤 운영체제의 상시 서비스로 둔다."""
+    if uninstall:
+        return {"task": services.plan(manager, "sync", None, True)}
+    url, errors = _sync_checks()
+    if errors:
+        return {"origin": url, "error": "; ".join(errors)}
+    return {"origin": url, "task": services.plan(manager, "sync", services.job("sync"), False)}
+
+
 def _release() -> str:
     try:
         version = json.loads((core.ROOT / update.ATTESTATION).read_text(encoding="utf-8"))["version"]
@@ -222,7 +373,7 @@ def _baseline(uninstall: bool) -> dict | None:
             "governance": (rep.get("governance") or {}).get("protect")}
 
 
-def _human(items: list[dict], baseline: dict | None, uninstall: bool) -> list[str]:
+def _human(items: list[dict], baseline: dict | None, uninstall: bool, extras: dict) -> list[str]:
     steps = []
     for item in items:
         adapter, mcp, hooks = adapters.get(item["harness"]), item["mcp"], item["hooks"]
@@ -232,33 +383,97 @@ def _human(items: list[dict], baseline: dict | None, uninstall: bool) -> list[st
             steps.append(adapter.trust)
         if hooks.get("changed") or mcp.get("action") in CHANGES:
             steps.append(f"{adapter.title}의 세션을 새로 연다 — 훅과 MCP는 세션을 시작할 때 읽힌다")
-    if not items:
+    if not items and not uninstall:
         steps.append("이 기기에서 Claude Code·Codex의 흔적(설정 폴더·PATH의 CLI)을 찾지 못했다 — "
                      "설치한 뒤 다시 실행하거나 --harness로 고른다")
     if baseline and baseline.get("state") == "record":
         steps.append("기준선 기록(`00_Scope/Workbench/_ledger/update.jsonl`)을 커밋한다")
+    if not uninstall:
+        steps += _extras_human(extras)
     if not uninstall and items:
         steps.append("새 세션을 연 뒤 `setup.py doctor`로 연결을 확인한다")
     return steps
 
 
-def plan(only: list[str] | None = None, uninstall: bool = False) -> dict:
+def _extras_human(extras: dict) -> list[str]:
+    steps = []
+    fork = extras.get("fork") or {}
+    for name, e in fork.get("entries", {}).items():
+        adapter = adapters.get(name)
+        if e["action"] == "manual":
+            steps.append(f"{adapter.title} fork: 네이티브 CLI를 찾지 못했다 — `{fork['file']}`에 "
+                         f"`{name}` CLI의 절대 경로를 적는다(시작 안내서 '백그라운드 fork 검토')")
+        elif e["action"] in ("add", "replace"):
+            steps.append(f"{adapter.title} fork: `{e['path']} {adapter.login}`로 구독 로그인하고 "
+                         f"`osk.cli fork doctor --harness {name}`로 확인한다")
+    s = extras.get("schedule") or {}
+    if s.get("command", {}).get("harness"):
+        adapter = adapters.get(s["command"]["harness"])
+        steps.append(f"정기 실행은 {adapter.title}의 구독 로그인으로 돈다 — "
+                     f"`{s['command']['argv'][0]} {adapter.login}`")
+    if s.get("task", {}).get("action") in ("add", "replace"):
+        steps.append("정기 실행을 한 번 직접 돌려 결과를 확인한다: `" + core.shell_join(
+            [str(_python()), str(services.script("growth")), "--command-file", s["command_file"],
+             "--limit", "1"]) + "`")
+    y = extras.get("sync") or {}
+    if y.get("task", {}).get("action") in ("add", "replace"):
+        steps.append(f"origin({y['origin']})이 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 "
+                     "커밋해 이 원격에 올린다")
+    if any((extras.get(k) or {}).get("task", {}).get("backend") == "systemd"
+           and extras[k]["task"].get("action") in ("add", "replace") for k in ("schedule", "sync")):
+        steps.append("로그아웃한 뒤에도 돌게 하려면 `loginctl enable-linger $USER`를 실행한다")
+    return steps
+
+
+def _extras_changes(extras: dict) -> bool:
+    fork = extras.get("fork") or {}
+    return (any(e["action"] in CHANGES for e in fork.get("entries", {}).values())
+            or any((extras.get(k) or {}).get("task", {}).get("action") in CHANGES
+                   for k in ("schedule", "sync"))
+            or (extras.get("schedule") or {}).get("command", {}).get("action") == "add")
+
+
+def _extras_errors(extras: dict) -> list[str]:
+    names = {"fork": "fork", "schedule": "정기 실행", "sync": "동기화 데몬"}
+    return [f"{names[k]}: {e}" for k, part in extras.items()
+            for e in (part.get("error"), part.get("task", {}).get("error")) if e]
+
+
+def plan(only: list[str] | None = None, uninstall: bool = False, *, fork: bool = False,
+         schedule: str | None = None, at: str = AT, sync: bool = False) -> dict:
+    """계획 — 호스트의 MCP·훅과 기준선, 고른 기능(fork·정기 실행·동기화). 해제에서 기능을
+    고르면 그 기능만 걷는다. 아무것도 고르지 않으면 이 vault의 osk 등록을 다 걷는다 —
+    `--harness`로 호스트를 고른 해제는 그 호스트의 것(fork 설정 포함)만이다."""
+    features = fork or schedule is not None or sync
+    everything = uninstall and not features
     items = [{"harness": a.name, "title": a.title, "mcp": _mcp(a, uninstall),
-              "hooks": _hooks(a, uninstall)} for a in hosts(only)]
+              "hooks": _hooks(a, uninstall)} for a in (hosts(only) if everything or not uninstall else [])]
     baseline = _baseline(uninstall)
+    extras: dict = {}
+    if fork or everything:
+        pool = (hosts(only) if not uninstall else
+                [adapters.get(n) for n in dict.fromkeys(only)] if only else list(adapters.ADAPTERS))
+        extras["fork"] = _fork(pool, uninstall)
+    system = not only and everything
+    manager = services.backend() if schedule is not None or sync or system else None
+    if schedule is not None or system:
+        extras["schedule"] = _schedule(manager, schedule or None, at, uninstall)
+    if sync or system:
+        extras["sync"] = _sync(manager, uninstall)
     changes = (bool(baseline and baseline.get("state") == "record")
-               or any(i["hooks"].get("changed") or i["mcp"].get("run") for i in items))
+               or any(i["hooks"].get("changed") or i["mcp"].get("run") for i in items)
+               or _extras_changes(extras))
     errors = [f"{i['title']} {part}: {i[part]['error']}" for i in items for part in ("mcp", "hooks")
-              if i[part].get("error")]
+              if i[part].get("error")] + _extras_errors(extras)
     if baseline and baseline.get("state") == "error":
         errors.append(f"기준선: {baseline['error']}")
     # 확인 대상은 osk 조치다 — 설정 파일의 다른 내용은 쓰기 직전에 최신으로 다시 읽으므로
     # (`_write_hooks`) 그것이 바뀌었다고 다시 확인받을 일은 없다.
     identity = {"root": str(core.ROOT), "python": str(_python()), "uninstall": uninstall,
-                "items": _shown(items), "baseline": baseline}
+                "items": _shown(items), "baseline": baseline, **extras}
     return {"ok": not errors, "root": str(core.ROOT), "python": str(_python()),
-            "uninstall": uninstall, "baseline": baseline, "hosts": items,
-            "human": _human(items, baseline, uninstall), "changes": changes,
+            "uninstall": uninstall, "baseline": baseline, "hosts": items, **extras,
+            "human": _human(items, baseline, uninstall, extras), "changes": changes,
             **({"errors": errors} if errors else {}),
             "review_id": core.sha256_bytes(json.dumps(identity, ensure_ascii=False, sort_keys=True,
                                                       separators=(",", ":")).encode("utf-8"))}
@@ -373,13 +588,104 @@ def _apply(p: dict) -> dict:
             backups += [result.pop("backup")] if result.get("backup") else []
             done.append(result)
             ok &= result["ok"]
+    for result in _apply_extras(p, stamp):
+        backups += result.pop("backups", [])
+        done.append(result)
+        ok &= result["ok"]
     return {"ok": ok, "applied": True, "uninstall": p["uninstall"], "steps": done,
             "backups": backups, "human": p["human"]}
 
 
-def run(*, apply: bool = False, uninstall: bool = False, only: list[str] | None = None) -> tuple[dict, int]:
+def _write_fork(approved: dict, uninstall: bool, stamp: str) -> dict:
+    """fork 설정을 쓴다 — 확인한 호스트의 항목만 더하거나 걷고, 다른 키는 그대로 둔다."""
+    path = Path(approved["file"])
+    step = {"step": "fork CLI", "file": str(path)}
+    now = _fork([adapters.get(n) for n in approved["entries"]], uninstall)
+    if ({n: e["action"] for n, e in now.get("entries", {}).items()}
+            != {n: e["action"] for n, e in approved["entries"].items()}):
+        return {**step, "ok": False, "error": "확인 뒤 fork 설정이 바뀌었다 — 쓰지 않았다. "
+                                              "setup을 다시 계획해 확인받는다"}
+    data = _read_json(path)
+    for name, e in approved["entries"].items():
+        if e["action"] in ("add", "replace"):
+            data[name] = e["path"]
+        elif e["action"] == "remove":
+            data.pop(name, None)
+    backup = _backup(path, stamp)
+    if data:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        core.atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    else:
+        path.unlink(missing_ok=True)
+    return {**step, "ok": True, **({"backups": [backup]} if backup else {})}
+
+
+def _write_command(approved: dict) -> dict:
+    """정기 실행의 명령 파일을 만든다 — 그 사이 생겼으면 덮지 않는다."""
+    path = Path(approved["command_file"])
+    step = {"step": "growth command", "file": str(path)}
+    if path.exists():
+        return {**step, "ok": False, "error": "확인 뒤 명령 파일이 생겼다 — 덮지 않았다. "
+                                              "setup을 다시 계획해 확인받는다"}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    core.atomic_write(path, (json.dumps(approved["command"]["argv"], ensure_ascii=False, indent=2)
+                             + "\n").encode("utf-8"))
+    return {**step, "ok": True}
+
+
+def _stop_daemon() -> list[int]:
+    """이 vault의 데몬을 멈춘다 — 작업 스케줄러의 작업은 데몬을 띄우고 끝나므로 작업을 지워도
+    데몬은 남는다. 갱신과 같은 규율로 작업 트리 변경 잠금을 먼저 잡는다."""
+    from ._portalock import unlock
+    pids = update._daemon_pids()
+    if pids:
+        with open(update._sync_lock_path(), "w") as lock:
+            update._lock_within(lock, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
+                                           "잠시 후 다시 실행한다")
+            try:
+                update._kill(pids)
+            finally:
+                unlock(lock)
+    return pids
+
+
+def _apply_extras(p: dict, stamp: str) -> list[dict]:
+    """고른 기능을 적용한다 — fork 설정, 정기 실행(명령 파일 → 작업), 동기화 데몬."""
+    out, uninstall = [], p["uninstall"]
+    fork = p.get("fork") or {}
+    if any(e["action"] in CHANGES for e in fork.get("entries", {}).values()):
+        try:
+            out.append(_write_fork(fork, uninstall, stamp))
+        except (OSError, ValueError, SetupError) as e:
+            out.append({"step": "fork CLI", "ok": False, "error": f"{type(e).__name__}: {e}"})
+    manager = services.backend() if "schedule" in p or "sync" in p else None
+    for kind, key in (("growth", "schedule"), ("sync", "sync")):
+        part = p.get(key)
+        if not part:
+            continue
+        if kind == "growth" and part.get("command", {}).get("action") == "add":
+            out.append(_write_command(part))
+            if not out[-1]["ok"]:
+                continue
+        if part.get("task", {}).get("action") not in CHANGES:
+            continue
+        job = None if uninstall else (services.job(kind, command_file=Path(part["command_file"]),
+                                                   at=part["at"]) if kind == "growth" else services.job(kind))
+        try:
+            result = services.apply(manager, kind, job, part["task"], uninstall, stamp)
+            if kind == "sync" and uninstall and result["ok"] and os.name == "nt":
+                result["stopped"] = _stop_daemon()
+        except (OSError, ValueError, subprocess.SubprocessError, update.UpdateError) as e:
+            result = {"step": f"{kind} ({manager.name})", "ok": False, "error": f"{type(e).__name__}: {e}"}
+        out.append(result)
+    return out
+
+
+def run(*, apply: bool = False, uninstall: bool = False, only: list[str] | None = None,
+        fork: bool = False, schedule: str | None = None, at: str = AT,
+        sync: bool = False) -> tuple[dict, int]:
     """(보고, 종료코드). 계획은 0, 확인 요청은 2, 적용 실패는 1."""
-    p = plan(only, uninstall)
+    p = plan(only, uninstall, fork=fork, schedule=schedule, at=at, sync=sync)
     if not apply:
         return report(p), 0
     if not p["ok"]:
@@ -418,6 +724,27 @@ def text(rep: dict) -> str:
             lines.append(f"  훅 {hooks['file']}: " + ", ".join(f"{k} {v}" for k, v in hooks["events"].items())
                          + (f" ({hooks['error']})" if hooks.get("error") else ""))
         lines += [f"  참고: {n}" for n in hooks.get("notes", [])]
+    fork = rep.get("fork")
+    if fork:
+        lines.append(f"fork CLI {fork['file']}: " + (", ".join(
+            f"{n} {e['action']}" + (f" ({e['path']})" if e.get("path") else "")
+            for n, e in fork.get("entries", {}).items()) or "대상 없음"))
+    for key, title in (("schedule", "정기 실행"), ("sync", "동기화 데몬")):
+        part = rep.get(key)
+        if not part:
+            continue
+        task = part.get("task", {})
+        lines.append(f"{title}: {task.get('action', '-')}" + (f" {task['id']}" if task.get("id") else "")
+                     + (f" — {task['command']}" if task.get("command") else ""))
+        if part.get("command"):
+            lines.append(f"  명령 파일 {part['command_file']}: {part['command']['action']} — "
+                         + core.shell_join(part["command"]["argv"]))
+        if part.get("origin"):
+            lines.append(f"  origin: {part['origin']}")
+        lines += [f"  걷는다: {i}" for i in task.get("remove", [])]
+    for part in (rep.get("fork"), rep.get("schedule"), rep.get("sync")):
+        for n in (part or {}).get("notes", []) + (part or {}).get("task", {}).get("notes", []):
+            lines.append(f"참고: {n}")
     for step in rep.get("steps", []):
         lines.append(f"{'완료' if step['ok'] else '실패'}: {step['step']}"
                      + (f" — {step.get('error') or step.get('output')}" if not step["ok"] else ""))
@@ -427,11 +754,19 @@ def text(rep: dict) -> str:
     return "\n".join(lines)
 
 
-def _interactive(uninstall: bool, only: list[str] | None) -> int:
-    """마법사 — 계획을 보여 주고 단말에서 확인받아 적용한다(선택 경로)."""
+def _interactive(uninstall: bool, only: list[str] | None, choices: dict) -> int:
+    """마법사 — 고를 기능을 묻고, 계획을 보여 주고, 단말에서 확인받아 적용한다(선택 경로)."""
     if not sys.stdin.isatty():
         sys.exit("중단 — --interactive는 대화형 단말에서 쓴다. 에이전트는 --apply 두 단계를 쓴다")
-    p = plan(only, uninstall)
+    if not uninstall and not (choices["fork"] or choices["schedule"] is not None or choices["sync"]):
+        yes = lambda q: input(q).strip().lower() == "y"
+        choices["fork"] = yes("백그라운드 fork 검토를 켤까요? 대화의 답변 9회마다 구독으로 검토를 "
+                              "돌립니다 [y/N] ")
+        pick = input("매일 한 번 도는 정기 실행을 등록할까요? 쓸 하네스(claude·codex)를 적거나 "
+                     "Enter로 건너뜁니다: ").strip().lower()
+        choices["schedule"] = pick if pick in adapters.fork_names() else None
+        choices["sync"] = yes("Git 동기화 데몬을 등록할까요? origin이 개인 저장소여야 합니다 [y/N] ")
+    p = plan(only, uninstall, **choices)
     print(text(report(p)))
     if not p["ok"] or not p["changes"]:
         print("할 일이 없다." if p["ok"] else "계획에 오류가 있어 적용하지 않는다.")
@@ -453,12 +788,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="이 호스트만 잇는다(여러 번 쓸 수 있다)")
     ap.add_argument("--interactive", action="store_true",
                     help="계획을 보여 주고 단말에서 확인받아 적용한다")
+    ap.add_argument("--fork", action="store_true",
+                    help="백그라운드 fork 검토가 부를 CLI를 적는다(.osk/response-growth.json)")
+    ap.add_argument("--schedule", nargs="?", const="", metavar="HARNESS",
+                    help="매일 도는 정기 실행을 등록한다 — 명령 파일이 없으면 그 하네스로 만든다")
+    ap.add_argument("--at", default=AT, help=f"정기 실행 시각(24시간제 HH:MM, 기본 {AT})")
+    ap.add_argument("--sync", action="store_true",
+                    help="Git 동기화 데몬을 상시 서비스로 등록한다(origin이 개인 저장소여야 한다)")
     a = ap.parse_args(argv)
+    if a.schedule and a.schedule not in adapters.fork_names():
+        ap.error(f"--schedule은 {', '.join(adapters.fork_names())} 중 하나다")
+    choices = {"fork": a.fork, "schedule": a.schedule, "at": a.at, "sync": a.sync}
     if a.interactive:
         if a.apply:
             ap.error("--interactive와 --apply는 함께 쓰지 않는다")
-        return _interactive(a.uninstall, a.harness)
-    out, code = run(apply=a.apply, uninstall=a.uninstall, only=a.harness)
+        return _interactive(a.uninstall, a.harness, choices)
+    out, code = run(apply=a.apply, uninstall=a.uninstall, only=a.harness, **choices)
     sys.stdout.buffer.write((json.dumps(out, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return code
 

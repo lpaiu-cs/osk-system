@@ -19,13 +19,25 @@ order. Where a step says to ask, ask and wait; do not guess the user's answer.
 
 If something is missing, tell the user what to install and stop.
 
-## 2. Ask the user two things
+## 2. Ask the user
 
 - **Where** to create the vault, for example `~/osk-vault`. The folder must not
   exist yet.
 - **Which private Git repository** will hold it. It should be empty and private,
   because the vault stores conversation records and personal notes. The user may
   have none yet; the vault then stays local.
+- **Which optional features** to turn on. Each is off unless the user says yes,
+  and each becomes one flag of `setup.py` in steps 4 and 6:
+  - Background fork reviews (`--fork`): every ninth answer, the host reviews the
+    conversation in a hidden one-off fork on the user's subscription.
+  - A daily review run (`--schedule claude`, optionally `--at 07:30`): once a day,
+    on the user's Claude subscription, the run reviews what the sessions left and
+    compares the Scope notes for Domain knowledge. Register it on one device only.
+    `setup.py` writes the command for Claude only; a Codex user who already has
+    `.osk/growth-command.json` can use `--schedule` with it.
+  - Git sync (`--sync`): a background daemon commits the vault every 15 minutes
+    and pushes it. It needs the private repository and a push that does not ask
+    for a password.
 
 ## 3. Clone the newest release
 
@@ -49,10 +61,11 @@ With a private repository: `git remote set-url origin <private-url>` and
 
 ## 4. Plan the installation
 
-From the vault root, with the Python from step 1:
+From the vault root, with the Python from step 1, adding the flags of the
+features the user chose in step 2:
 
 ```bash
-python _governance/_engine/scripts/setup.py --apply
+python _governance/_engine/scripts/setup.py --apply [--fork] [--schedule claude] [--sync]
 ```
 
 The first run creates `.venv` and installs the dependencies. This takes a
@@ -70,16 +83,24 @@ Summarize the report for the user:
   file they go into. Mention every `notes` line.
 - That each changed file is copied next to itself as
   `<name>.osk-backup-<time>` first.
+- For the chosen features:
+  - `fork`: the CLI each host's fork will run (`entries`).
+  - `schedule`: the daily command (`command.argv`), the time (`at`), and what
+    happens to the OS task (`task`).
+  - `sync`: the `origin` the daemon will push to, and the OS service (`task`).
+  - An OS registration that `task.remove` lists is this vault's older one; it is
+    replaced. Its definition is kept first in `~/.osk-system/backups/`.
 - The `human` steps the user will have to do.
 
 Ask the user to confirm. If `errors` is present, show it and stop.
 
 ## 6. Apply
 
-After the user says yes, run the same command within an hour:
+After the user says yes, run the same command, with the same flags, within an
+hour:
 
 ```bash
-python _governance/_engine/scripts/setup.py --apply
+python _governance/_engine/scripts/setup.py --apply [--fork] [--schedule claude] [--sync]
 ```
 
 It applies and reports `steps`, `backups` and `human`. If it asks for
@@ -112,15 +133,16 @@ vault, when each hook last ran on this device, and whether the agent called
 `overview` after the session started. Report failures to the user. A hook that
 has not run yet needs a new session (Claude Code) or trust (Codex).
 
-## Optional features
+## Optional features later
 
-`setup.py` does not register these yet. Ask the user before you set any of them
-up, and follow the sections of [GETTING-STARTED](GETTING-STARTED.md): syncing
-the vault with Git, the scheduled review from Scope to Domain, and background
-fork reviews.
+The user can turn a feature on later with the same two steps, for example
+`setup.py --apply --sync`. The hosts that are already connected come out as
+`keep`.
 
 ## Removing
 
 `python _governance/_engine/scripts/setup.py --uninstall --apply`, confirmed the
-same way, removes only this vault's osk entries and keeps backups. It does not
-delete the vault.
+same way, removes only this vault's osk entries and keeps backups. That includes
+the fork settings, the daily task and the sync daemon. It does not delete the
+vault. To remove one feature only, add its flag, for example
+`--uninstall --sync --apply`.
