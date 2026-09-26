@@ -238,7 +238,8 @@ ticket = core.local_lock_path(update.CONFIRMATION)
 state, applied = {'id': 'r1'}, []
 def fake_run(source=None, ref=None, bundle=None, apply=False, adopt=False):
     # The updater's own gate: under its lock it plans again and applies only the confirmed plan.
-    if apply and 'drift' in state:
+    # A pending drift lands on the next call, whether a plan or that locked re-plan.
+    if 'drift' in state:
         state['id'] = state.pop('drift')
     plan = {'review_id': state['id'], 'files': 133, 'rebaseline': ['a'], 'add': [], 'update': [],
             'conflict': [], 'governance': {'protect': 'establish'}}
@@ -252,12 +253,16 @@ def fake_run(source=None, ref=None, bundle=None, apply=False, adopt=False):
     applied.append(plan['review_id'])
     baseline()
     return {'ok': True, 'governance_protected': 'established'}
-with mock.patch.object(S.update, 'run', fake_run):
-    # The release plan changes between the user's confirmation and the updater's lock
-    # (PR #106 review): nothing is applied and no confirmation of the unseen plan is left.
-    S.run(apply=True, only=['claude'])
+record = S._record_baseline
+def drifting(b):
     state['drift'] = 'r2'
-    rep, code = S.run(apply=True, only=['claude'])
+    return record(b)
+with mock.patch.object(S.update, 'run', fake_run):
+    # The release plan changes after the user confirmed this setup plan, before the baseline
+    # step (PR #106 review): nothing is applied and no confirmation of the unseen plan is left.
+    S.run(apply=True, only=['claude'])
+    with mock.patch.object(S, '_record_baseline', drifting):
+        rep, code = S.run(apply=True, only=['claude'])
     step = rep['steps'][0]
     assert code == 1 and step['step'] == 'baseline' and not step['ok'] and '바뀌었다' in step['error'], rep
     assert not applied and update.current_version() is None and not ticket.exists(), (applied, ticket)
