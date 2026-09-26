@@ -347,8 +347,11 @@ class Systemd(Backend):
         return f"osk-{kind}-{tag()}"
 
     def active(self, kind: str) -> bool:
+        # 켜짐 링크(`is-enabled`)만으로는 모른다 — `enable --now`는 링크를 만든 뒤 시작에서
+        # 실패할 수 있다. 정기 실행은 timer를 본다(oneshot service는 실행 사이에 늘 꺼져 있다).
         unit = self.ident(kind) + (".timer" if kind == "growth" else ".service")
-        return self._ok(["systemctl", "--user", "is-enabled", unit])
+        return (self._ok(["systemctl", "--user", "is-enabled", unit])
+                and self._ok(["systemctl", "--user", "is-active", unit]))
 
     def entries(self) -> list[dict]:
         out = []

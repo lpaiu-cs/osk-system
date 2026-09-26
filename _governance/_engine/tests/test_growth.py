@@ -296,6 +296,21 @@ class GrowthTests(unittest.TestCase):
             assert result['ok'], result
             seen = json.loads((core.ROOT / 'seen-env.json').read_text(encoding='utf-8'))
             assert seen == {'ANTHROPIC_API_KEY': None, 'ANTHROPIC_AUTH_TOKEN': None}, seen
+            # The scheduler's real entry reads the command from the file and runs it the same way.
+            import subprocess
+            node('B')
+            (core.ROOT / 'seen-env.json').unlink()
+            command_file = core.ROOT / '.osk' / 'growth-command.json'
+            command_file.parent.mkdir(parents=True, exist_ok=True)
+            command_file.write_text(json.dumps(argv), encoding='utf-8')
+            entry = Path(growth.__file__).resolve().parents[1] / 'scripts' / 'growth_run.py'
+            for extra in (['--check'], ['--limit', '1']):
+                done = subprocess.run([sys.executable, str(entry), '--command-file', str(command_file), *extra],
+                                      env={**os.environ, **env}, capture_output=True, text=True,
+                                      encoding='utf-8', timeout=120)
+                assert done.returncode == 0 and json.loads(done.stdout)['ok'], (extra, done.stdout, done.stderr)
+            seen = json.loads((core.ROOT / 'seen-env.json').read_text(encoding='utf-8'))
+            assert seen == {'ANTHROPIC_API_KEY': None, 'ANTHROPIC_AUTH_TOKEN': None}, seen
             # Settings that choose an API key helper stop it before the model too.
             (config / 'settings.json').write_text(json.dumps({'apiKeyHelper': 'echo key'}), encoding='utf-8')
             with patch.dict(os.environ, env):

@@ -192,24 +192,33 @@ assert '\\' + m.ident('growth') in m.store
 
     def test_a_failed_activation_is_retried_not_kept(self):
         self.check_case(r'''
-# The service manager, with state: a unit or agent is on only after its command succeeded.
-on, failing = set(), {'enable', 'bootstrap'}
+# The service manager, with state. Like systemctl, `enable --now` links the unit before it starts
+# it, so a failed start leaves the unit enabled but not running.
+enabled, running, failing = set(), set(), {'enable', 'bootstrap'}
 def manager(argv):
     calls.append(argv)
     verb = argv[2] if argv[0] == 'systemctl' else argv[1]
-    if verb in failing:
-        failing.discard(verb)
-        return subprocess.CompletedProcess(argv, 1, b'', b'Failed to connect to bus')
+    units = [a for a in argv[3:] if a != '--now']
     if verb == 'enable':
-        on.update(a for a in argv[3:] if a != '--now')
+        enabled.update(units)
+        if 'enable' in failing:
+            failing.discard('enable')
+            return subprocess.CompletedProcess(argv, 1, b'', b'Job for the unit failed to start')
+        running.update(units)
     elif verb == 'disable':
-        on.difference_update(argv[3:])
+        enabled.difference_update(units)
+        running.difference_update(units)
     elif verb == 'bootstrap':
-        on.add(plistlib.loads(Path(argv[3]).read_bytes())['Label'])
+        if 'bootstrap' in failing:
+            failing.discard('bootstrap')
+            return subprocess.CompletedProcess(argv, 1, b'', b'Bootstrap failed')
+        running.add(plistlib.loads(Path(argv[3]).read_bytes())['Label'])
     elif verb == 'bootout':
-        on.discard(argv[2].rsplit('/', 1)[-1])
-    elif verb in ('is-enabled', 'print'):
-        return subprocess.CompletedProcess(argv, 0 if argv[-1].rsplit('/', 1)[-1] in on else 1, b'', b'')
+        running.discard(argv[2].rsplit('/', 1)[-1])
+    elif verb == 'is-enabled':
+        return subprocess.CompletedProcess(argv, 0 if argv[-1] in enabled else 1, b'', b'')
+    elif verb in ('is-active', 'print'):
+        return subprocess.CompletedProcess(argv, 0 if argv[-1].rsplit('/', 1)[-1] in running else 1, b'', b'')
     return subprocess.CompletedProcess(argv, 0, b'', b'')
 for m, kind in ((services.Systemd(manager), 'growth'), (services.Launchd(manager), 'sync')):
     job = growth if kind == 'growth' else sync
@@ -219,7 +228,9 @@ for m, kind in ((services.Systemd(manager), 'growth'), (services.Launchd(manager
         raise AssertionError('the failed activation was reported as done')
     except OSError:
         pass
-    # The definition is on disk but not on: the next run retries instead of `keep`.
+    if kind == 'growth':      # the timer is linked though its start failed
+        assert m._ok(['systemctl', '--user', 'is-enabled', m.ident(kind) + '.timer'])
+    # The definition is on disk but not running: the next run retries instead of `keep`.
     assert any(e['name'] == m.ident(kind) for e in m.entries())
     p = services.plan(m, kind, job, False)
     assert (p['action'], p['remove']) == ('replace', [m.ident(kind)]), p

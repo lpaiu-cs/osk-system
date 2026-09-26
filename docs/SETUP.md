@@ -145,9 +145,11 @@ vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 �
   `.osk/growth/scheduler/<시각>.log`에, 데몬의 알림은 git 디렉터리의 `osk-sync-daemon.log`에
   남는다. 동기화 작업은 `cmd.exe`로 `SYNC_ENABLED=1`을 세우고 데몬을 떼어 띄운다.
 - 실행 직전에 다시 계획해, 확인한 뒤 등록이 바뀌었으면 하지 않는다.
-- 정의가 같아도 서비스 관리자에 올라가 켜져 있지 않으면 다시 등록한다 — 등록 명령이
-  실패해 파일만 남았거나 사용자가 꺼 둔 경우다(`launchctl print`·`systemctl --user
-  is-enabled`, 작업 스케줄러의 사용 여부).
+- 정의가 같아도 서비스 관리자에 올라가 실제로 돌고 있지 않으면 다시 등록한다 — 등록
+  명령이 실패해 파일만 남았거나 사용자가 꺼 둔 경우다. launchd는 `launchctl print`,
+  작업 스케줄러는 작업의 사용 여부를 본다. systemd는 `is-enabled`와 `is-active`를 함께
+  본다 — `enable --now`는 링크를 만든 뒤 시작에서 실패할 수 있다. 정기 실행은 timer를
+  본다(oneshot service는 실행 사이에 늘 꺼져 있다).
 - 서비스 관리자가 없는 기기에서는 등록하지 못한다(오류). 해제는 걷을 등록이 없다고 알리고
   다른 해제를 계속한다.
 
