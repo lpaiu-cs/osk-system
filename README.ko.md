@@ -71,13 +71,16 @@ Obsidian은 지식을 탐색하는 선택적 화면이고, Git 동기화도 선�
 **처음이라면** [시작 안내서](docs/GETTING-STARTED.ko.md)를 따라간다. 빈 폴더에서
 에이전트의 첫 기억까지, macOS·Linux·Windows 명령과 단계별 확인 방법을 함께 담았다.
 
+**v3 vault를 갱신한다면** v4를 적용하기 전에 [판 올리기](docs/UPGRADING.ko.md)를 읽는다.
+v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
+
 Python 3.11 이상과 Git을 준비한다(아래 명령은 3.12 기준이니 설치한 판본으로
 바꿔 쓴다). `main`이 아니라 릴리스 태그에서 시작한다(새 태그는
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다).
 macOS·Linux 기준:
 
 ```bash
-git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python3.12 -m venv .venv

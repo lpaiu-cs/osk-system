@@ -8823,6 +8823,109 @@ def test_node_place_rule():
                 p.unlink(missing_ok=True)
 
 
+def test_upgrading_underscore_scope():
+    """docs/UPGRADING의 밑줄 구획 이행 절차가 v4에서 실제로 닫히는가. v3가 만들어
+    둔 `_` scope와 그 결속·scope 기억을, 폴더·허브·기억 파일을 밑줄 없이 옮기고
+    `write.bind_session` 한 줄로 결속을 새 행으로 바꿔 옮긴다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · `bind_session`이 이미 결속된 키에 새 결속을 적지 못하면 → 옮긴 뒤 쓰기 단언
+      · 문서의 호출 모양 `write.bind_session(<키>, <scope>, <사유>)`가 바뀌면 → 같은 단언
+      · scope 기억 자리가 문서의 `_scope_memory/<scope>.md`와 달라지면 → 기억 단언"""
+    from osk import scope_memory
+    S = graph.SCOPE
+    key = "regr-upgrade-key"
+    old, new = ROOT / S / "_regr-legacy", ROOT / S / "regr-legacy"
+    mem = ROOT / S / "Workbench/_scope_memory"
+    mem_old, mem_new = mem / "_regr-legacy.md", mem / "regr-legacy.md"
+    try:
+        old.mkdir(parents=True)
+        (old / "_regr-legacy.md").write_text(
+            node_text("260926-upg0-0001", "옛 scope 허브", "HUB"), encoding="utf-8")
+        mem.mkdir(parents=True, exist_ok=True)
+        mem_old.write_text("- 옛 scope의 기억.", encoding="utf-8")
+        write.bind_session(key, "_regr-legacy", "v3가 만든 결속")
+        _age_all()
+        r = _w(write.create_node, "regr-upgrade-a", "s", "b", "fable-5", session=key)
+        check("v4는 밑줄 scope에 결속된 세션의 쓰기를 거부한다",
+              r.get("ok") is False and not (old / "regr-upgrade-a.md").exists(), r)
+        # UPGRADING: 폴더·허브·기억 파일을 밑줄 없이 옮기고 결속을 새 행으로 바꾼다
+        old.rename(new)
+        (new / "_regr-legacy.md").rename(new / "regr-legacy.md")
+        mem_old.rename(mem_new)
+        write.bind_session(key, "regr-legacy", "v4 upgrade")
+        _age_all()
+        r = _w(write.create_node, "regr-upgrade-a", "s", "b", "fable-5", session=key)
+        check("옮긴 뒤 같은 세션의 쓰기가 새 scope에 앉는다",
+              r.get("ok") and (new / "regr-upgrade-a.md").exists(), r)
+        m = _w(scope_memory.read, key)
+        check("옮긴 scope 기억을 같은 세션이 읽는다",
+              m.get("ok") and "옛 scope의 기억" in m.get("text", ""), m)
+        check("옮긴 폴더에는 배치 위반이 없다",
+              not [v for v in graph.layout_violations() if "regr-legacy" in v],
+              graph.layout_violations())
+    finally:
+        shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(new, ignore_errors=True)
+        for p in (mem_old, mem_new):
+            p.unlink(missing_ok=True)
+        _age_all()
+
+
+def test_upgrading_protected_scope():
+    """docs/UPGRADING의 보호영역 개명 절차가 v4에서 닫히는가 (PR #103 리뷰). 보호
+    지정은 경로(`region`)에 묶여 이동을 따라가지 않는다. 먼저 옮기면 옛 영역은 승인도
+    해제도 되지 않는 pending이 되고 새 경로는 보호 밖이다. 문서대로 해제 → 이동 →
+    곧바로 새 경로 지정을 하면 새 경로가 보호되고 옛 영역은 해제로 닫히며, 그 뒤에
+    고친 링크는 새 영역의 변경집합으로 검토된다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · 보호가 이동을 따라가게 바뀌면 → 첫 단언(문서가 적은 까닭이 사실이 아니게 된다)
+      · 해제나 재지정이 빠지거나 성립하지 않으면 → 둘째 단언"""
+    from osk import approvals
+    S = graph.SCOPE
+    old, new = ROOT / S / "_regr-guarded", ROOT / S / "regr-guarded"
+    reg_old, reg_new = f"{S}/_regr-guarded", f"{S}/regr-guarded"
+    kept = approvals.APPROVALS.read_bytes() if approvals.APPROVALS.exists() else None
+
+    def move(src, dst):
+        src.rename(dst)
+        (dst / f"{src.name}.md").rename(dst / f"{dst.name}.md")
+
+    try:
+        old.mkdir(parents=True)
+        (old / "_regr-guarded.md").write_text(
+            node_text("260926-upg0-0002", "보호된 옛 scope 허브", "HUB"), encoding="utf-8")
+        approvals.protect(reg_old, "v3에서 지정")
+        move(old, new)
+        check("해제 없이 옮기면 옛 영역은 pending에 묶이고 새 경로는 보호 밖이다",
+              approvals.state(reg_old) == "pending"
+              and approvals.region_of(new / "regr-guarded.md") is None,
+              (approvals.state(reg_old), approvals.region_of(new / "regr-guarded.md")))
+        # UPGRADING: 되돌린 뒤 해제 → 이동 → 새 경로 지정
+        move(new, old)
+        approvals.unprotect(reg_old, "v4 upgrade")
+        move(old, new)
+        approvals.protect(reg_new, "v4 upgrade")
+        check("문서대로 옮기면 새 경로가 보호되고 옛 영역은 해제로 닫힌다",
+              approvals.state(reg_new) == "clean"
+              and approvals.state(reg_old) == "unprotected"
+              and approvals.region_of(new / "regr-guarded.md") == reg_new,
+              (approvals.state(reg_new), approvals.state(reg_old)))
+        hub = new / "regr-guarded.md"
+        hub.write_text(hub.read_text(encoding="utf-8") + "고친 링크\n", encoding="utf-8")
+        check("다시 지정한 뒤 고친 것은 새 영역의 변경집합이 된다",
+              approvals.state(reg_new) == "pending", approvals.state(reg_new))
+    finally:
+        if kept is None:
+            approvals.APPROVALS.unlink(missing_ok=True)
+        else:
+            approvals.APPROVALS.write_bytes(kept)
+        shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(new, ignore_errors=True)
+        _age_all()
+
+
 # ── 순회의 봉쇄와 대소문자 (v3.7.0) ─────────────────────────────────────
 def test_scan_confinement_and_case():
     """손으로 짠 순회가 `rglob`이 하던 두 가지를 잃지 않았는가 — 대소문자
@@ -11866,7 +11969,8 @@ if __name__ == "__main__":
                test_format_alignment, test_rechecks,
                test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
-               test_node_place_rule,
+               test_node_place_rule, test_upgrading_underscore_scope,
+               test_upgrading_protected_scope,
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,
                test_fingerprint_scope_and_racy, test_engine_epoch_fence,
