@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,8 @@ from .harness import base, runs
 
 LEVELS = ("ok", "info", "warn", "fail")
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+DUP_RECENT = 7 * 24 * 3600   # 중복 호출을 알리는 기간(초) — 등록을 고친 뒤에는 사라진다
+_ONE = "등록을 하나로 줄인다 — osk는 같은 호출을 한 번만 처리하지만 호스트는 매번 두 번 띄운다"
 
 
 def _engine_dir() -> Path:
@@ -164,6 +167,9 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
     if mine:
         h = mine[0]
         where = f"등록({h['file']})"
+        if len(mine) > 1:
+            places = ", ".join(sorted({str(m["file"]) for m in mine}))
+            where = f"같은 사건이 {len(mine)}곳에 등록돼 있다({places})"
         if not _runnable(h["tokens"][0]):
             return _item("fail", f"훅 {name}", f"{where} · 명령의 Python이 없다: {h['tokens'][0]}", fix)
         # 신뢰는 지금 등록의 것이고, 실행 기록은 호스트·사건별이라 옛 등록의 실행도 남는다.
@@ -172,6 +178,8 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
             detail = (f"{where} · 지금 등록에 신뢰 기록이 없다 — {ran}은 이 등록이 신뢰된 증거가 아니다"
                       if run else f"{where} · 신뢰 기록도, 이 기기의 실행 기록도 없다")
             return _item("warn", f"훅 {name}", detail, adapter.reload)
+        if len(mine) > 1:
+            return _item("warn", f"훅 {name}", f"{where} · {ran}" if run else where, _ONE)
         if run:
             return _item("ok", f"훅 {name}", f"{where} · {ran}")
         # 실행 기록은 기록을 남기는 판의 훅이 처음 불린 때부터 쌓인다.
@@ -256,6 +264,13 @@ def _host(adapter, records: dict) -> dict:
     items = [_item("warn", "설정 판독", e) for e in errors]
     items += _mcp(adapter, servers)
     items += [_hook(adapter, event, hooks, ran.get(event)) for event in adapters.SCRIPTS]
+    now = time.time()
+    for event in adapters.SCRIPTS:
+        at = records.get("duplicates", {}).get(prefix + event)
+        if isinstance(at, (int, float)) and 0 <= now - at < DUP_RECENT:
+            items.append(_item("warn", f"중복 호출 {adapter.events[event]}",
+                               f"같은 호출이 두 번 들어와 한 번만 처리했다(마지막 {_kst(at)}) — 등록이 겹친다",
+                               _ONE + ". 설정 파일에 한 곳뿐이면 프로젝트 설정·플러그인 같은 다른 자리를 본다"))
     delivery = _delivery(ran.get("start"), records["overview"])
     if delivery:
         items.append(delivery)
@@ -267,7 +282,7 @@ def _host(adapter, records: dict) -> dict:
 
 def report(only: str | None = None) -> dict:
     """호스트별 점검 결과. `only`는 하네스 이름 하나로 좁힌다."""
-    records = runs.read()
+    records = {**runs.read(), "duplicates": runs.duplicates()}
     engine = _engine(records)
     hosts = [_host(a, records) for a in adapters.ADAPTERS if only in (None, a.name)]
     items = engine + [i for h in hosts for i in h["items"]]

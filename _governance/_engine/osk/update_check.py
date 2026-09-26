@@ -17,6 +17,7 @@
 from __future__ import annotations
 import json
 import os
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -35,6 +36,9 @@ RETRY_AFTER = 3600                   # 실패한 확인을 다시 하기까지(�
 # 건너뛰지 않도록 하루보다 짧다.
 NOTICE_EVERY = 20 * 3600
 TIMEOUT = 20                         # 분리 프로세스의 태그 조회 한도(초)
+# 릴리스 노트의 주소 규칙을 아는 출처 — GitHub 저장소(https·ssh). 그 밖의 출처는 링크를 싣지 않는다.
+_GITHUB = re.compile(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+                     r"([\w.-]+)/([\w.-]+?)(?:\.git)?/?")
 
 
 def _read(name: str) -> dict:
@@ -186,8 +190,21 @@ def _claim(version: str) -> bool:
     return True
 
 
+def notes_url(version: str) -> str | None:
+    """그 판의 릴리스 노트 주소 — 출처가 GitHub 저장소일 때만. 메이저 판이면 노트 머리가
+    이행 안내를 가리킨다."""
+    try:
+        m = _GITHUB.fullmatch(_url(_upstream()))
+    except update.UpdateError:
+        return None
+    return f"https://github.com/{m[1]}/{m[2]}/releases/tag/{version}" if m else None
+
+
 def _how(latest: str) -> str:
-    return (f"갱신은 사용자가 요청할 때만 한다. 이 vault를 여러 기기에서 쓰면 갱신은 한 "
+    notes = notes_url(latest)
+    read = (f"먼저 릴리스 노트({notes})를 읽는다 — 메이저 판이면 노트 머리가 가리키는 이행 "
+            f"안내가 먼저다. " if notes else "")
+    return (f"갱신은 사용자가 요청할 때만 한다. {read}이 vault를 여러 기기에서 쓰면 갱신은 한 "
             f"기기에서만 한다 — 다른 기기가 이미 갱신했으면 동기화 뒤 이 알림이 사라지고, "
             f"이 기기에서는 서버·데몬 재시작과 requirements.txt가 바뀌었을 때의 pip 재실행만 "
             f"한다. 요청을 받으면 "
@@ -203,8 +220,9 @@ def session_notice() -> tuple[str, str]:
     if not avail or not _claim(avail["latest"]):
         return "", ""
     latest, cur = avail["latest"], avail["current"]
+    notes = notes_url(latest)
     user = (f"osk-system 새 릴리스 {latest} (이 vault는 {cur}) — 적용하려면 에이전트에게 "
-            f"\"osk 업데이트해 줘\"라고 요청한다.")
+            f"\"osk 업데이트해 줘\"라고 요청한다." + (f" 릴리스 노트: {notes}" if notes else ""))
     agent = (f"[osk 새 릴리스 — {latest} · 이 vault {cur}] 사용자 화면에 같은 알림을 "
              f"띄웠다. 먼저 권하거나 실행하지 않는다. " + _how(latest))
     return agent, user
@@ -216,7 +234,8 @@ def surface() -> dict | None:
     avail = available()
     if not avail:
         return None
-    out = {**avail, "how": _how(avail["latest"])}
+    notes = notes_url(avail["latest"])
+    out = {**avail, **({"notes": notes} if notes else {}), "how": _how(avail["latest"])}
     if _claim(avail["latest"]):
         out["notify"] = "이 기기에서 아직 알리지 않았다 — 사용자에게 한 줄로 알린다"
     return out

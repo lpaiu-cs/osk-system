@@ -399,6 +399,54 @@ r = subprocess.run(shell, capture_output=True, text=True, encoding='utf-8', time
 assert r.returncode == 0 and json.loads(r.stdout) == echo[3:], (line, r.stdout, r.stderr)
 ''')
 
+    def test_a_second_registration_of_one_event_is_handled_once(self):
+        self.check_case(r'''
+import concurrent.futures
+from osk import doctor
+from osk._portalock import lock_exclusive, unlock
+proj = root.parent / 'proj'
+proj.mkdir()
+transcript = rows(claude_home / 'projects' / 'p' / 'd1.jsonl', {'sessionId': 'd1', 'type': 'user'})
+payload = {'session_id': 'd1', 'transcript_path': str(transcript), 'cwd': str(proj),
+           'hook_event_name': 'SessionStart', 'source': 'startup'}
+def start():
+    r = subprocess.run([py, str(tested_hooks / 'claude_session_start.py')], cwd=str(proj),
+                       input=json.dumps(payload).encode('utf-8'), capture_output=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+# Two registrations of one event fire together: one answers, the other stays silent.
+with concurrent.futures.ThreadPoolExecutor(2) as pool:
+    outs = list(pool.map(lambda _: start(), range(2)))
+assert sorted(bool(o) for o in outs) == [False, True], outs
+assert 'claude/start' in runs.duplicates(), runs.duplicates()
+# The next real event is not the same call: the transcript has grown.
+with transcript.open('a', encoding='utf-8') as f:
+    f.write(json.dumps({'sessionId': 'd1', 'type': 'assistant'}) + '\n')
+assert start(), 'the next event was taken for a duplicate'
+# Without a transcript, only calls that arrive together count as one.
+env = {'session_id': 's', 'hook_event_name': 'UserPromptSubmit', 'prompt': 'q'}
+assert runs.first_call('codex', 'input', env) is True
+assert runs.first_call('codex', 'input', env) is False
+assert runs.first_call('claude', 'input', env) is True, 'another host'
+assert runs.first_call('codex', 'stop', env) is True, 'another event'
+with mock.patch.object(runs.time, 'time', return_value=time.time() + runs.BLIND + 1):
+    assert runs.first_call('codex', 'input', env) is True, 'a later turn with the same prompt'
+# When the claim cannot be judged, the call is handled.
+with open(core.local_lock_path(runs.LOCK), 'w') as held:
+    lock_exclusive(held)
+    assert runs.first_call('codex', 'input', env) is True
+    unlock(held)
+# doctor names the doubled registration and the observed duplicate call.
+script = hooks_dir / 'claude_session_start.py'
+rows(claude_home / 'settings.json', {'hooks': {'SessionStart': [
+    {'hooks': [{'type': 'command', 'command': f'"{py}" "{script}"'}]},
+    {'hooks': [{'type': 'command', 'command': py, 'args': [str(script)]}]}]}})
+checks = {i['check']: i for i in doctor.report('claude')['hosts'][0]['items']}
+assert checks['훅 SessionStart']['level'] == 'warn', checks['훅 SessionStart']
+assert '2곳' in checks['훅 SessionStart']['detail'] and checks['훅 SessionStart']['fix'] == doctor._ONE
+assert checks['중복 호출 SessionStart']['level'] == 'warn', checks
+''')
+
     def test_recording_waits_briefly_and_keeps_recent_sessions(self):
         self.check_case(r'''
 from osk._portalock import lock_exclusive, unlock

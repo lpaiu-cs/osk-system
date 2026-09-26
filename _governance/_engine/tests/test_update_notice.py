@@ -121,6 +121,26 @@ assert update_check.available() is None and update_check.surface() is None
 assert update_check.session_notice() == ('', '')
 ''')
 
+    def test_notice_links_the_release_notes_of_a_github_source(self):
+        self.check_case(r'''
+done('v4.0.0', '0')
+# The local test source has no release page, so no link is made up.
+cached()
+agent, user = update_check.session_notice()
+assert user and 'releases/tag' not in user + agent, (user, agent)
+assert 'notes' not in update_check.surface()
+notice = core.local_lock_path(update_check.NOTICE)
+link = 'https://github.com/o/r/releases/tag/v4.10.0'
+for url in ('https://github.com/o/r.git', 'git@github.com:o/r.git', 'https://github.com/o/r'):
+    configure(url=url)
+    cached(url=url)
+    notice.unlink()
+    agent, user = update_check.session_notice()
+    assert user.endswith(' 릴리스 노트: ' + link), (url, user)
+    assert link in agent and '이행 안내' in agent, (url, agent)
+    assert update_check.surface()['notes'] == link, url
+''')
+
     def test_switches_pins_and_failures(self):
         self.check_case(r'''
 # Without a known version there is nothing to compare, so nothing is checked.
@@ -271,8 +291,8 @@ cached()
 project = root.parent / 'my-app'
 project.mkdir()
 hook = Path(update.__file__).resolve().parents[1] / 'scripts/hooks/claude_session_start.py'
-def start():
-    payload = {'session_id': 'hook-release', 'cwd': str(project),
+def start(session='hook-release'):
+    payload = {'session_id': session, 'cwd': str(project),
                'hook_event_name': 'SessionStart', 'source': 'startup'}
     r = subprocess.run([sys.executable, str(hook)], input=json.dumps(payload).encode(),
                        capture_output=True, timeout=90)
@@ -284,7 +304,7 @@ assert text.startswith('[osk 세션 시작'), text[:200]
 assert text.index('[osk 새 릴리스 — v4.10.0 · 이 vault v4.0.0]') > 0, text
 assert 'v4.10.0' in first['systemMessage'], first
 assert 'osk 업데이트해 줘' in first['systemMessage'], first
-second = start()
+second = start('hook-release-later')      # the next session on this device the same day
 assert 'systemMessage' not in second, second
 assert '[osk 새 릴리스' not in second['hookSpecificOutput']['additionalContext'], second
 ''')

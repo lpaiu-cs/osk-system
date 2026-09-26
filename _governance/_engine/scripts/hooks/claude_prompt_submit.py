@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 def main() -> None:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return
-    from claude_session_start import capture_block, emit_context, note_run, session_key
+    from claude_session_start import capture_block, emit_context, first_call, note_run, session_key
     try:
         env = json.load(sys.stdin)
         if not isinstance(env, dict):
@@ -25,6 +25,8 @@ def main() -> None:
     try:
         key = session_key(env.get("cwd") or os.getcwd())
         host = note_run("input", env, key)
+        if not first_call("input", env, host):
+            return
         body = capture_block(env, key)
     except Exception as exc:
         body = f"[osk hook diagnostic - {type(exc).__name__}: {exc}; user work may continue.]"

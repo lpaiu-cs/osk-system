@@ -75,6 +75,16 @@ def note_run(event: str, env: dict | None, key: str | None):
     return host
 
 
+def first_call(event: str, env: dict, host) -> bool:
+    """같은 사건이 두 자리에 등록돼 두 번 불렸으면 두 번째 호출은 거짓이다 — 호출자는
+    아무것도 내지 않고 끝낸다(`osk.harness.runs.first_call`). 판정 실패는 호출을 막지 않는다."""
+    try:
+        from osk.harness import runs
+        return runs.first_call(host.name if host else None, event, env)
+    except Exception:
+        return True
+
+
 def _git(cwd: str, *args: str, input: str | None = None) -> str | None:
     """git의 표준 출력. 실패(비영 종료·시간 초과)는 None — 빈 출력과 구별한다."""
     io = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
@@ -301,6 +311,8 @@ def main() -> None:
         from osk import scope_memory, write, evictions, rechecks
         key = session_key(cwd)
         host = note_run("start", env, key)
+        if not first_call("start", env, host):
+            return
         try:
             rechecks.ensure_baseline()
         except Exception:

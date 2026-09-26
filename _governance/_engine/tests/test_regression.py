@@ -6739,6 +6739,8 @@ def test_cadence_hook():
         def turn(module=hook, event="UserPromptSubmit"):
             buf = io.BytesIO()
             real_in, real_out = sys.stdin, sys.stdout
+            # 턴마다 다른 사건이다 — 같은 입력의 되풀이는 이중 등록의 두 번째 호출로 가려진다.
+            payload["turn_id"] = uuid.uuid4().hex
             try:
                 sys.stdin = io.StringIO(json.dumps(payload))
                 sys.stdout = types.SimpleNamespace(buffer=buf)
@@ -6818,6 +6820,7 @@ def test_scope_recovery_handoff():
     def run_hook(name):
         event = "SessionStart" if name == "claude_session_start.py" else "UserPromptSubmit"
         payload["hook_event_name"] = event
+        payload["turn_id"] = uuid.uuid4().hex   # 호출마다 다른 사건(이중 등록 판정과 구별)
         sub = subprocess.run([sys.executable, str(hooks / name)],
                              input=json.dumps(payload).encode("utf-8"), capture_output=True,
                              env=env, cwd=str(cwd), timeout=30)
@@ -7380,7 +7383,9 @@ def test_evictions():
         buf = io.BytesIO()
         real_in, real_out = sys.stdin, sys.stdout
         try:
-            sys.stdin = io.StringIO(json.dumps({"session_id": "regr-evi-hook", "cwd": str(cwd)}))
+            # 호출마다 다른 세션 시작이다 — 같은 입력의 되풀이는 이중 등록으로 가려진다.
+            sys.stdin = io.StringIO(json.dumps({"session_id": "regr-evi-hook", "cwd": str(cwd),
+                                                "turn_id": os.urandom(8).hex()}))
             sys.stdout = types.SimpleNamespace(buffer=buf)
             hook.main()
         finally:
