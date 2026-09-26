@@ -7,6 +7,7 @@ MCP entry the real CLI would write, so no case touches the developer's configura
 """
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ if name == 'claude':
     elif args[:2] == ['mcp', 'remove']:
         servers.pop(args[-1], None)
     path.write_text(json.dumps(data), encoding='utf-8')
-else:
+elif name == 'codex':
     path = Path(os.environ['CODEX_HOME']) / 'config.toml'
     text = path.read_text(encoding='utf-8') if path.is_file() else ''
     if args[:2] in (['mcp', 'add'], ['mcp', 'remove']):
@@ -65,8 +66,8 @@ engine = root / '_governance' / '_engine'
 hooks_dir = engine / 'scripts' / 'hooks'
 server = engine / 'mcp_server.py'
 vpy = root / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
-def fake_clis():
-    for name in ('claude', 'codex'):
+def fake_clis(names=('claude', 'codex')):
+    for name in names:
         if os.name == 'nt':
             (bin_dir / f'{name}.cmd').write_text(f'@"{py}" "{bin_dir / "fake_cli.py"}" {name} %*\r\n',
                                                  encoding='utf-8')
@@ -112,6 +113,13 @@ mock.patch.object(S.services, 'backend', lambda run=None: Fake()).start()
 '''
 
 
+def _case_path(bin_dir: Path) -> str:
+    """The case's PATH: fake CLIs first, and without the developer's Kiro launcher — a `kiro`
+    on PATH alone makes Kiro a host, so leaving it would make results depend on the device."""
+    kept = [p for p in os.environ.get('PATH', '').split(os.pathsep) if p and not shutil.which('kiro', path=p)]
+    return os.pathsep.join([str(bin_dir), *kept])
+
+
 def _run(script: str) -> subprocess.CompletedProcess:
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -120,13 +128,14 @@ def _run(script: str) -> subprocess.CompletedProcess:
         bin_dir.mkdir()
         (bin_dir / 'fake_cli.py').write_text(FAKE_CLI, encoding='utf-8')
         env = {k: v for k, v in os.environ.items()
-               if k not in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS', 'OSK_GROWTH_WORKER')}
+               if k not in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS', 'OSK_GROWTH_WORKER',
+                            'KIRO_SESSION_ID')}
         env.update(OSK_VAULT_ROOT=str(td / 'vault'), PYTHONPATH=str(ENGINE), PYTHONUTF8='1',
                    OSK_UPDATE_CHECK='0', HOME=str(home), USERPROFILE=str(home),
                    APPDATA=str(home / 'AppData' / 'Roaming'), LOCALAPPDATA=str(home / 'AppData' / 'Local'),
                    CLAUDE_CONFIG_DIR=str(home / '.claude'), CODEX_HOME=str(home / '.codex'),
                    OSK_TEST_BIN=str(bin_dir), OSK_TEST_LOG=str(td / 'cli.log'),
-                   PATH=str(bin_dir) + os.pathsep + os.environ.get('PATH', ''))
+                   PATH=_case_path(bin_dir))
         return subprocess.run([sys.executable, '-c', script], env=env, capture_output=True,
                               text=True, encoding='utf-8', errors='replace', timeout=300)
 
@@ -530,6 +539,131 @@ assert code == 0 and rep['ok'] and not osk_entries(read(claude_home / 'settings.
 # Registering a feature still needs one.
 rep, _ = S.run(schedule='claude')
 assert not rep['ok'] and '서비스 관리자' in rep['errors'][0], rep
+''')
+
+    def test_kiro_gets_its_own_hook_file_and_a_merged_mcp_entry(self):
+        self.check_case(r'''
+fake_clis(('claude', 'codex', 'kiro'))   # `kiro` is the IDE launcher: setup must never run it
+baseline()
+kiro_home = home / '.kiro'
+hooks = kiro_home / 'hooks'
+hooks.mkdir(parents=True)
+mcp_json = kiro_home / 'settings' / 'mcp.json'
+mcp_json.parent.mkdir(parents=True)
+other = {'command': 'node', 'args': ['other.js'], 'disabled': True}
+mcp_json.write_text(json.dumps({'mcpServers': {'other': other}, 'note': 'kept'}), encoding='utf-8')
+mine = hooks / 'osk-system.json'
+lint = hooks / 'lint.json'
+lint.write_text(json.dumps({'version': 'v1', 'hooks': [{'name': 'lint', 'trigger': 'PostFileSave',
+                'action': {'type': 'command', 'command': 'npm run lint'}}]}), encoding='utf-8')
+assert 'kiro' in [a.name for a in S.hosts()]
+rep, code = S.run(only=['kiro'])
+k = rep['hosts'][0]
+assert (k['mcp']['action'], k['mcp']['file']) == ('add', str(mcp_json)), k
+assert k['hooks']['file'] == str(mine) and set(k['hooks']['events'].values()) == {'add'}, k
+assert 'content' not in k['mcp'] and 'content' not in k['hooks'], 'the plan shows no file bodies'
+assert rep['changes'] and any('신뢰' in s for s in rep['human']), rep['human']
+S.run(apply=True, only=['kiro'])
+rep, code = S.run(apply=True, only=['kiro'])
+assert code == 0 and rep['ok'], rep
+data = read(mcp_json)
+assert data['note'] == 'kept' and data['mcpServers']['other'] == other, data
+assert data['mcpServers']['osk-system'] == {'command': vpy.as_posix(), 'args': [server.as_posix()]}, data
+assert any(b.startswith(str(mcp_json) + '.osk-backup-') for b in rep['backups']), rep['backups']
+written = read(mine)
+assert written['version'] == 'v1', written
+assert [h['trigger'] for h in written['hooks']] == ['SessionStart', 'UserPromptSubmit', 'Stop'], written
+for h, event in zip(written['hooks'], ('start', 'input', 'stop')):
+    assert h['action']['type'] == 'command' and base.mentions(base.command_tokens(h), hooks_dir / base.SCRIPTS[event]), h
+assert read(lint)['hooks'][0]['name'] == 'lint'
+assert not [c for c in calls() if c[0] == 'kiro'], calls()
+# Planned again, everything is kept.
+rep, _ = S.run(only=['kiro'])
+k = rep['hosts'][0]
+assert k['mcp']['action'] == 'keep' and set(k['hooks']['events'].values()) == {'keep'}, k
+assert not rep['changes'], rep
+# An MCP change alone is still a change to apply.
+data = read(mcp_json)
+del data['mcpServers']['osk-system']
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+rep, _ = S.run(only=['kiro'])
+assert rep['hosts'][0]['mcp']['action'] == 'add' and rep['changes'], rep
+S.run(apply=True, only=['kiro'])
+rep, code = S.run(apply=True, only=['kiro'])
+assert code == 0 and 'osk-system' in read(mcp_json)['mcpServers'], (rep, read(mcp_json))
+# Another vault's registration under the name is replaced only as confirmed: if it changed
+# after the plan, nothing is written.
+elsewhere = {'command': py, 'args': ['/elsewhere/_governance/_engine/mcp_server.py']}
+data = read(mcp_json)
+data['mcpServers']['osk-system'] = elsewhere
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+p = S.plan(['kiro'])
+assert p['hosts'][0]['mcp']['action'] == 'replace' and p['hosts'][0]['mcp']['replaces'], p['hosts'][0]['mcp']
+data['mcpServers']['osk-system'] = {'command': py, 'args': ['/third/_governance/_engine/mcp_server.py']}
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+before = mcp_json.read_bytes()
+res = S._apply(p)
+steps = {s['step']: s for s in res['steps']}
+assert not res['ok'] and '다시 계획' in steps['kiro mcp']['error'] and mcp_json.read_bytes() == before, res
+S.run(apply=True, only=['kiro'])
+rep, code = S.run(apply=True, only=['kiro'])
+assert code == 0 and read(mcp_json)['mcpServers']['osk-system']['args'] == [server.as_posix()], read(mcp_json)
+# A path update does not lift the user's policy on the entry (PR #108 review). This vault's
+# entry run by another Python keeps every field but its command, including a restriction
+# added while the plan waited for confirmation.
+policy = {'disabled': True, 'disabledTools': ['append_raw'], 'autoApprove': ['search'], 'timeout': 60000}
+data = read(mcp_json)
+data['mcpServers']['osk-system'] = {'command': '/old/python', 'args': [server.as_posix()],
+                                    'env': {'A': '1'}, **policy}
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+p = S.plan(['kiro'])
+assert p['hosts'][0]['mcp']['action'] == 'replace', p['hosts'][0]['mcp']
+data['mcpServers']['osk-system']['disabledTools'].append('create_node')
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+res = S._apply(p)
+assert res['ok'], res
+assert read(mcp_json)['mcpServers']['osk-system'] == {
+    'command': vpy.as_posix(), 'args': [server.as_posix()], 'env': {'A': '1'},
+    **policy, 'disabledTools': ['append_raw', 'create_node']}, read(mcp_json)
+# Another vault's entry keeps only the policy: its environment points at that vault.
+data = read(mcp_json)
+data['mcpServers']['osk-system'] = {'command': py, 'args': ['/elsewhere/_governance/_engine/mcp_server.py'],
+                                    'env': {'OSK_VAULT_ROOT': '/elsewhere'}, 'cwd': '/elsewhere', **policy}
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+S.run(apply=True, only=['kiro'])
+rep, code = S.run(apply=True, only=['kiro'])
+assert code == 0 and read(mcp_json)['mcpServers']['osk-system'] == {
+    'command': vpy.as_posix(), 'args': [server.as_posix()], **policy}, (rep, read(mcp_json))
+# A hook the user added to osk's file stays, even one Kiro cannot read; osk's own entries are
+# replaced, not doubled.
+added = {'name': 'mine too', 'trigger': 'Stop', 'action': {'type': 'command', 'command': 'echo hi'}}
+odd = {'name': 'no trigger'}
+drifted = read(mine)
+drifted['hooks'] += [added, odd]
+drifted['hooks'][0]['action']['command'] = base.hook_line(['/old/python', hooks_dir / base.SCRIPTS['start']])
+mine.write_text(json.dumps(drifted), encoding='utf-8')
+rep, _ = S.run(only=['kiro'])
+assert rep['hosts'][0]['hooks']['events'] == {'SessionStart': 'replace', 'UserPromptSubmit': 'keep',
+                                              'Stop': 'keep'}, rep['hosts'][0]
+S.run(apply=True, only=['kiro'])
+rep, code = S.run(apply=True, only=['kiro'])
+assert code == 0 and rep['ok'], rep
+now = read(mine)['hooks']
+assert added in now and odd in now and sum(
+    base.mentions(base.command_tokens(h), hooks_dir / base.SCRIPTS['start']) for h in now) == 1, now
+# Uninstall takes out only osk's entries: the user's hooks keep osk's file alive.
+S.run(apply=True, uninstall=True, only=['kiro'])
+rep, code = S.run(apply=True, uninstall=True, only=['kiro'])
+assert code == 0 and read(mine)['hooks'] == [added, odd], read(mine)
+assert read(mcp_json) == {'mcpServers': {'other': other}, 'note': 'kept'}, read(mcp_json)
+# Without other entries the file goes — an empty Kiro hook file fails Kiro's schema.
+mine.write_text(json.dumps({'version': 'v1', 'hooks': [kiro_hook for kiro_hook in drifted['hooks'][:1]]}),
+                encoding='utf-8')
+S.run(apply=True, uninstall=True, only=['kiro'])
+rep, code = S.run(apply=True, uninstall=True, only=['kiro'])
+assert code == 0 and not mine.exists() and lint.exists(), rep
+assert any(p.name.startswith('osk-system.json.osk-backup-') for p in hooks.iterdir())
+assert not [c for c in calls() if c[0] == 'kiro'], calls()
 ''')
 
 

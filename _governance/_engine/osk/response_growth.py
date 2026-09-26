@@ -74,6 +74,9 @@ def route(env: dict) -> dict:
 def check(harness: str, sid: str | None, path: str | None, cwd: str) -> dict:
     """route()'s decision without its state writes; shared with `fork doctor`."""
     try:
+        if not adapters.get(harness).fork:
+            # B-grade host: in-session review is its design, not a missing setting.
+            return {'mode': 'foreground', 'reason': f'{adapters.get(harness).title} has no subscription fork'}
         executable = configured(harness)
         if not executable:
             return {'mode': 'foreground', 'reason': 'subscription fork CLI is not configured'}

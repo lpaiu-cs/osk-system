@@ -607,7 +607,26 @@ Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 | `integration list` | List conversations whose captured rounds wait for review. |
 | `protect <folder>`, `approve <folder>`, `revert <folder>` | Protect a folder, or accept or undo its pending changeset. These ask `[y/N]` and refuse to run without an interactive terminal. |
 | `fork doctor` | Check whether fork reviews can run. Read-only. |
-| `doctor` | Check how Claude Code and Codex are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
+| `doctor` | Check how Claude Code, Codex and Kiro are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
+
+## Optional: connect Kiro
+
+Kiro also uses the three hooks and its conversation transcript. It has no subscription
+fork, so conversation reviews run inside the session at turns 9 and 15 instead of in a
+background fork. The `setup` of step 2 also connects Kiro when this device has it (a
+`~/.kiro` folder or `kiro` on PATH). By hand, it takes the two steps below. The file
+contents are in 'Kiro에 잇는다' in [SETUP](SETUP.md).
+
+**Ka. Register the MCP server.** Add an `osk-system` entry to `mcpServers` in
+`~/.kiro/settings/mcp.json`. Kiro has no registration CLI.
+
+**Kb. Register the hooks.** Put the three hooks (SessionStart, UserPromptSubmit and Stop)
+in `~/.kiro/hooks/osk-system.json`. Their commands call the same scripts as in 3b.
+
+**Check:** Kiro runs hooks **only in trusted workspace folders**. When Kiro asks whether to
+trust a folder you open, allow it. Then ask the agent in a new chat for the session key the
+osk hook gave it. It should answer with the repository name. `doctor --harness kiro`
+checks it too.
 
 ## Optional: browse the vault in Obsidian
 

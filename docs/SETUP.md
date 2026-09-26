@@ -71,7 +71,8 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
   담는다. 적용할 때는 그 `review_id`를 갱신의 확인표에 적고 적용을 한 번만 부른다. 갱신은
   잠금 안에서 계획을 다시 세워 그 계획일 때만 적용한다. 그 사이 계획이 달라졌으면
   적용하지 않고 확인표도 지운다. `_governance` 보호도 그 갱신이 성립시킨다.
-- **하네스.** 이 기기에서 흔적(설정 폴더나 PATH의 CLI)이 있는 호스트를 잇는다.
+- **하네스.** 이 기기에서 흔적(설정 폴더나 PATH의 CLI)이 있는 호스트를 잇는다 — Claude
+  Code·Codex, 그리고 구독 fork가 없는 Kiro(아래 'Kiro에 잇는다').
   `--harness claude`처럼 고를 수 있다. 등록은 이 vault의 엔진 사본과 `.venv`의 Python을
   부른다.
 - **확인.** `osk.update`와 같다. 첫 `--apply`는 계획과 `approval_required`를 내고
@@ -108,6 +109,8 @@ vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 �
 | Claude Code | 훅 세 개 | `~/.claude/settings.json` | `hooks`에 병합 |
 | Codex | MCP 서버 | `~/.codex/config.toml` | `codex mcp add osk-system` |
 | Codex | 훅 세 개 | `~/.codex/hooks.json` | `hooks`에 병합 |
+| Kiro | MCP 서버 | `~/.kiro/settings/mcp.json` | `mcpServers`에 병합 — 등록 CLI가 없다 |
+| Kiro | 훅 세 개 | `~/.kiro/hooks/osk-system.json` | osk의 훅 파일 — 사용자 항목은 남기고, 비면 지운다 |
 
 - 쓰기 전에 원래 파일을 옆에 `<이름>.osk-backup-<YYYYMMDD-HHMMSS>`로 복사한다.
 - 이 vault의 osk 항목만 더하거나 바꾸거나 걷어 낸다 — 명령이 이 vault의 스크립트·서버를
@@ -119,11 +122,18 @@ vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 �
 - MCP 등록이 이 vault의 것인지는 호스트 CLI가 고치는 파일의 등록으로만 가린다 —
   Claude Code는 설정 폴더를 옮겼으면 그 안의 `.claude.json`이다. 다른 파일의 등록은
   `notes`로 알리고 건드리지 않는다. 확인한 명령이 실행 직전에도 같은지 다시 본다.
+  Kiro는 등록 CLI가 없어 `mcp.json`에 직접 쓴다 — 훅 파일처럼 쓰기 직전의 최신 파일에
+  osk 서버 항목만 병합하고, 확인한 조치와 그것이 바꿀 남의 등록이 그대로일 때만 쓴다.
+  항목을 바꿀 때 사용자가 건 정책(`disabled`·`disabledTools`·`autoApprove`·`timeout` 등)은
+  남긴다 — 이 vault의 옛 항목은 실행 경로만 바꾸고, 다른 vault의 항목은 그 환경·작업 폴더를
+  버리고 정책만 남긴다.
+  `kiro` 명령(IDE 실행기)은 판본을 물을 때(`doctor`)만 부른다.
 - 다시 실행하면 이미 맞는 항목은 `keep`이다. 이 vault의 옛 항목(다른 Python 등)은 새
   항목으로 바꾼다 — 겹쳐 만들지 않는다.
 - 호스트 CLI가 PATH에 없으면 MCP 등록은 사람이 할 명령(`manual`)으로 남긴다.
-- 사람이 할 일은 보고의 `human`에 있다: Codex 훅 신뢰(`/hooks`), 세션 재시작, 기준선
-  커밋, 새 세션 뒤의 연결 점검, 고른 기능의 구독 로그인·첫 정기 실행·origin 확인.
+- 사람이 할 일은 보고의 `human`에 있다: Codex 훅 신뢰(`/hooks`), Kiro 작업 폴더 신뢰,
+  세션 재시작, 기준선 커밋, 새 세션 뒤의 연결 점검, 고른 기능의 구독 로그인·첫 정기
+  실행·origin 확인.
 
 고른 기능의 운영체제 등록은 아래뿐이다(`osk.services`). `<해시>`는 vault 경로의 해시
 여덟 자리다 — 한 기기의 여러 vault가 겹치지 않는다.
@@ -520,9 +530,56 @@ CLI의 `/hooks`에서 각 정의를 확인하고 신뢰한 뒤 새 세션에서 
 Personalization에는 저장 경계를 간단히 두어도 된다. 다만 훅의 설치·신뢰·새 세션
 실행을 확인하기 전에는 `overview`·scope 읽기와 주기적 통합 안내를 제거하지 않는다.
 
+### Kiro에 잇는다
+
+Kiro는 B 등급이다 — 시작·입력·종료 훅과 대화 전사는 있고, 구독 fork는 없다. 대화
+검토는 fork 대신 이 세션에서 9·15턴으로 한다. `setup`이 아래 두 파일을 쓰고, 손으로
+할 때도 같다. `<PYTHON>`·`<ENGINE>`은 Codex 절과 같다.
+
+`~/.kiro/settings/mcp.json`:
+
+```json
+{"mcpServers": {"osk-system": {"command": "<PYTHON>", "args": ["<ENGINE>/mcp_server.py"]}}}
+```
+
+`~/.kiro/hooks/osk-system.json`:
+
+```json
+{
+  "version": "v1",
+  "hooks": [
+    {"name": "osk start", "trigger": "SessionStart",
+     "action": {"type": "command", "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_session_start.py"}},
+    {"name": "osk input", "trigger": "UserPromptSubmit",
+     "action": {"type": "command", "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_prompt_submit.py"}},
+    {"name": "osk stop", "trigger": "Stop",
+     "action": {"type": "command", "command": "<PYTHON> <ENGINE>/scripts/hooks/capture_stop.py"}}
+  ]
+}
+```
+
+- Kiro는 `~/.kiro/hooks/`의 JSON을 모두 읽고, 작업 폴더의 `.kiro/hooks/`도 읽는다. 훅은
+  **신뢰한 작업 폴더에서만** 돈다. 명령은 셸로 돈다(Windows는 `cmd.exe`) — 공백 든
+  경로는 쌍따옴표로 싼다. 제한 시간은 기본 60초다.
+- 훅은 stdin JSON으로 `session_id`·`hook_event_name`·`cwd`(입력 훅은 `prompt`도)를
+  받고, 환경에 `KIRO_SESSION_ID`가 있다. 그것이 `session_id`와 같을 때 osk는 Kiro의
+  훅으로 안다.
+- 시작·입력 훅이 0으로 끝나면 stdout 평문이 그대로 문맥에 실린다(`<HOOK_INSTRUCTION>`에
+  싸인다). 그래서 Kiro에는 JSON 봉투가 아닌 평문을 낸다. 사용자 화면만의 자리는 없고,
+  종료 훅의 출력은 어디에도 실리지 않는다.
+- Kiro는 전사 경로를 주지 않는다. 훅이 대화 ID로
+  `~/.kiro/sessions/<작업 폴더 해시>/<대화 ID>/messages.jsonl`을 찾아 포착한다. 발화와
+  답변(`Say`)은 그대로 남기고, 도구 호출·결과·하위 에이전트·도구 승인은 해시 참조 한
+  줄로 대신한다(dialogue-v1). 추론(`Reasoning`)과 문맥 압축 요약은 싣지 않는다. 턴이
+  `end_turn`으로 끝나지 않았으면 그 종료 기록을 남긴다 — 취소는 aborted, 오류·거부는
+  failed, 그 밖은 interrupted다.
+- 확인한 판은 Kiro 1.1.70(에이전트 확장 1.1.158)이다 — 번들의 훅 실행기와 로컬 전사
+  26개(249턴)로 확인했다. `doctor`는 판본을 `kiro --version`으로 읽는다. Kiro 전사에는
+  판본이 없다.
+
 ### 연결 점검 (`doctor`)
 
-`osk doctor`는 이 기기에서 하네스가 osk에 이어졌는지 호스트(Claude Code·Codex)마다
+`osk doctor`는 이 기기에서 하네스가 osk에 이어졌는지 호스트(Claude Code·Codex·Kiro)마다
 읽기만 하며 점검한다. 상태와 설정을 쓰지 않는다. `--json`은 같은 결과를 JSON으로
 내고, `--harness`는 호스트 하나로 좁힌다. 설정이 osk를 띄우지 못하는 경우(Python
 3.11 미만, `mcp` 패키지 없음, 등록 명령의 Python 없음, 등록한 MCP Python이 서버를
@@ -534,7 +591,8 @@ CLI가 모두 없다)는 건너뛴다.
   부르는지 본다 — 훅과 서버는 자기 파일 자리로 vault를 찾으므로 다른 자리의 엔진을
   부르는 등록은 이 vault가 아니다. 읽는 자리는 Claude Code가 `~/.claude.json`(MCP)과
   `~/.claude/settings.json`(훅), Codex가 `~/.codex/config.toml`(MCP·`[hooks]` 표)과
-  `~/.codex/hooks.json`(훅)이며 `CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다. 실행 형식
+  `~/.codex/hooks.json`(훅), Kiro가 `~/.kiro/settings/mcp.json`(MCP)과
+  `~/.kiro/hooks/*.json`(훅)이며 `CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다. 실행 형식
   (`command`와 `args`)과 셸 형식 한 줄을 모두 읽는다. MCP 등록의 Python은 한 번 띄워
   판본과 서버가 import하는 패키지를 본다 — 이 명령을 돌리는 Python이 아니라 등록된
   Python이 서버를 띄운다. 안내하는 명령은 공백 든 경로도 그대로 쓰도록 인용한다 —
@@ -543,7 +601,8 @@ CLI가 모두 없다)는 건너뛴다.
 - **실행.** 세 훅은 불릴 때마다 호스트·사건별 마지막 시각을 이 기기에 남긴다(Git
   디렉터리의 `osk-hook-runs.json`, 동기화되지 않는다). 적는 것은 호스트 이름·세션
   키·그 훅을 돌린 Python 경로·시각뿐이다. 등록됐는데 기록이 없으면 Claude Code에는
-  새 세션을, Codex에는 `/hooks`의 신뢰를 안내한다. Codex는 `config.toml`의
+  새 세션을, Codex에는 `/hooks`의 신뢰를, Kiro에는 작업 폴더 신뢰와 새 채팅을 안내한다.
+  Codex는 `config.toml`의
   `[hooks.state]`에 지금 등록의 신뢰 기록이 있는지 먼저 본다. 실행 기록은
   호스트·사건별이라 옛 등록의 실행일 수 있으므로, 신뢰 기록이 없으면 실행 기록이
   있어도 경고한다(신뢰 기록이 있으면 정의가 바뀌었는지는 실행 기록이 말한다). 문서의 자리 밖(프로젝트 설정·플러그인)에 등록한 훅도 실행 기록으로 드러나고,
@@ -567,7 +626,8 @@ CLI가 모두 없다)는 건너뛴다.
   이어 쓴 옛 대화는 옛 판으로 보인다. 더 새 판이면 경고한다 — 훅 입출력이나 전사 형식이
   바뀌었을 수 있다는 뜻이고, 동작을 막지 않는다.
 - **fork.** 구독 fork를 설정했으면 `fork doctor`와 같은 판정(`response_growth.check`)을
-  한 줄로 싣는다. 인증 상태는 조회하되 추론은 띄우지 않는다.
+  한 줄로 싣는다. 인증 상태는 조회하되 추론은 띄우지 않는다. fork가 없는 Kiro에는 이
+  항목이 없다.
 
 호스트마다 다른 것 — 판별, 전사 위치, 훅 출력 형식, MCP·훅 등록 자리, 신뢰 기록,
 확인한 판본 — 은 엔진의 `osk/harness/` 어댑터 한 곳에 있다. 포착과 훅 스크립트와

@@ -20,7 +20,9 @@ def _notice(host, message: str) -> None:
         output = host.hook_notice("stop", message) if host else {"systemMessage": message}
     except Exception:
         output = {"systemMessage": message}
-    sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode("utf-8"))
+    # 평문 호스트(Kiro)는 종료 훅의 출력을 어디에도 싣지 않는다 — 어댑터가 빈 문자열을 준다.
+    data = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+    sys.stdout.buffer.write(data.encode("utf-8"))
 
 
 def main() -> None:

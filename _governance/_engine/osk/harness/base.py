@@ -28,8 +28,10 @@ def fold(text: str) -> str:
 
 def command_tokens(entry: dict) -> list[str]:
     """등록된 훅·MCP 명령의 토큰. 실행 형식(`command` + `args`)은 그대로 쓰고, 셸
-    형식 한 줄은 그 기기 셸의 규칙으로 가른다."""
+    형식 한 줄은 그 기기 셸의 규칙으로 가른다. Kiro 훅은 명령을 `action.command`에 둔다."""
     command, args = entry.get("command"), entry.get("args")
+    if command is None and isinstance(entry.get("action"), dict):
+        command = entry["action"].get("command")
     if not isinstance(command, str) or not command.strip():
         return []
     if isinstance(args, list):
@@ -112,6 +114,7 @@ class Adapter:
     status: dict[str, str] = {}     # 사건 → 훅이 도는 동안 호스트 화면의 문구(지원 호스트만)
     trust = ""       # 새로 쓴 훅을 호스트가 돌리기 전에 사용자가 할 일 — 없으면 빈 문자열
     login = ""       # 구독 로그인 — CLI 뒤에 붙이는 인자. fork·정기 실행이 쓰는 자격이다
+    mcp_direct = False  # MCP 등록 CLI가 없어 setup이 설정 파일에 직접 쓰는가(`mcp_write`)
 
     def fires_on(self, event: str, matcher) -> frozenset[str]:
         """그 matcher의 등록이 불리는 원인 — 원인이 없는 사건은 `{"*"}`(늘 불린다).
@@ -153,16 +156,18 @@ class Adapter:
         return None
 
     # ── 훅 출력 ───────────────────────────────────────────────────────────
-    def hook_output(self, event: str, text: str, system_message: str = "") -> dict:
-        """문맥 주입. `system_message`는 모델 문맥이 아니라 사용자 화면에 뜬다."""
+    def hook_output(self, event: str, text: str, system_message: str = "") -> dict | str:
+        """문맥 주입 — JSON 봉투, 또는 평문을 그대로 받는 호스트면 문자열.
+        `system_message`는 모델 문맥이 아니라 사용자 화면에 뜬다."""
         output = {"hookSpecificOutput": {"hookEventName": self.events[event],
                                          "additionalContext": text}}
         if system_message:
             output["systemMessage"] = system_message
         return output
 
-    def hook_notice(self, event: str, message: str) -> dict:
-        """사용자 화면에만 뜨는 알림 — 결정·계속 요구를 싣지 않는다."""
+    def hook_notice(self, event: str, message: str) -> dict | str:
+        """사용자 화면에만 뜨는 알림 — 결정·계속 요구를 싣지 않는다. 그런 자리가 없는
+        호스트는 빈 문자열이다."""
         return {"systemMessage": message}
 
     # ── 판본 ──────────────────────────────────────────────────────────────
@@ -204,8 +209,26 @@ class Adapter:
         """설정 파일 하나의 MCP 서버 표 — 이름 → 항목."""
         return {}
 
+    def mcp_write(self, data: dict, python: str, server: str | None) -> dict:
+        """`mcp_direct` 호스트에서 설정 파일 `data`에 osk 등록을 넣은 새 내용 — `server`가
+        None이면 osk 등록을 걷는다. 다른 서버와 다른 키는 그대로 둔다."""
+        raise NotImplementedError
+
     def hook_files(self) -> list[Path]:
+        """훅 등록을 읽는 파일 — 첫 자리가 설치가 osk 훅을 쓰는 파일이다."""
         return []
+
+    def hook_table(self, data: dict):
+        """훅 설정 파일의 사건 → 묶음 표. 표가 아니면 그 값을 그대로 돌려준다 — 호출자가
+        가린다."""
+        return data.get("hooks", {})
+
+    def hook_content(self, data: dict, table: dict) -> dict | None:
+        """새 사건 표를 담은 파일 내용 — None이면 파일을 지운다."""
+        content = {k: v for k, v in data.items() if k != "hooks"}
+        if table:
+            content["hooks"] = table
+        return content
 
     def cli_candidates(self) -> list[Path]:
         """PATH 밖에서 이 호스트의 네이티브 CLI가 놓이는 자리 — 데스크톱 앱이 둔 CLI."""
@@ -252,7 +275,7 @@ class Adapter:
             except (OSError, ValueError) as exc:
                 errors.append(f"{file}: {type(exc).__name__}: {exc}")
                 continue
-            for event, g, i, entry, matcher in _groups((data or {}).get("hooks")):
+            for event, g, i, entry, matcher in _groups(self.hook_table(data or {})):
                 hooks.append({"file": file, "event": event, "group": g, "index": i,
                               "matcher": matcher, "tokens": command_tokens(entry)})
         return servers, hooks, errors
