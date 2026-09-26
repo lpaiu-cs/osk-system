@@ -91,14 +91,26 @@ class Claude(Adapter):
         return [p for root in roots for p in root.glob("*/claude.exe")]
 
     def growth_argv(self, cli, python, server, root):
-        # 도구는 이 vault의 MCP만 허용하고 나머지는 묻지 않고 거절한다(dontAsk) — 사람이 없는
-        # 실행이다. 로그인은 claude.ai 구독만 쓴다(fork와 같다).
+        # 사람이 없는 실행이다. 내장 도구는 모두 끈다(`--tools ""`) — 설정의 허용 규칙이 있어도
+        # 파일·셸 도구로 MCP의 보호를 비껴가지 못한다. 남는 이 vault의 MCP 도구는 묻지 않고
+        # 허용하고, 그 밖은 묻지 않고 거절한다(dontAsk). 로그인은 claude.ai 구독만 쓴다 —
+        # 실행기가 이 선언을 보고 fork와 같은 자격을 적용한다(`subscription_only`).
         config = json.dumps({"mcpServers": {MCP_NAME: {"command": python, "args": [server],
                                                        "env": {"OSK_VAULT_ROOT": root}}}})
         return [cli, "-p", "--output-format", "stream-json", "--verbose",
-                "--settings", '{"forceLoginMethod":"claudeai"}',
+                "--settings", '{"forceLoginMethod":"claudeai"}', "--tools", "",
                 "--strict-mcp-config", "--mcp-config", config,
                 "--allowedTools", f"mcp__{MCP_NAME}", "--permission-mode", "dontAsk"]
+
+    def subscription_only(self, argv):
+        # `growth_argv`가 싣는 선언 — `--settings`의 forceLoginMethod가 claude.ai 구독이다.
+        for flag, value in zip(argv, argv[1:]):
+            if flag == "--settings":
+                try:
+                    return json.loads(value).get("forceLoginMethod") == "claudeai"
+                except (ValueError, AttributeError):
+                    return False
+        return False
 
 
 ADAPTER = Claude()

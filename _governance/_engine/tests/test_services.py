@@ -178,12 +178,56 @@ assert action['arguments'] == f'/c set SYNC_ENABLED=1&& start "" "{sync["python"
 # `osk.update` finds the task that starts this daemon by the daemon path in its action.
 assert str(daemon_py).lower().replace('/', '\\') in (action['execute'] + ' ' + action['arguments']).lower().replace('/', '\\')
 assert services.plan(m, 'sync', sync, False)['action'] == 'keep'
+# A task switched off in Task Scheduler is registered again: the user chose the feature.
+m.store['\\' + m.ident('sync')]['enabled'] = False
+assert services.plan(m, 'sync', sync, False)['action'] == 'replace'
+m.store['\\' + m.ident('sync')]['enabled'] = True
 # A registration that appears after the confirmation is not overwritten.
 p = services.plan(m, 'growth', None, True)
 m.store['\\osk-domain-growth'] = dict(m.store['\\' + m.ident('growth')], name='osk-domain-growth')
 result = services.apply(m, 'growth', None, p, True, '20260927-090002')
 assert not result['ok'] and '바뀌었다' in result['error'], result
 assert '\\' + m.ident('growth') in m.store
+''')
+
+    def test_a_failed_activation_is_retried_not_kept(self):
+        self.check_case(r'''
+# The service manager, with state: a unit or agent is on only after its command succeeded.
+on, failing = set(), {'enable', 'bootstrap'}
+def manager(argv):
+    calls.append(argv)
+    verb = argv[2] if argv[0] == 'systemctl' else argv[1]
+    if verb in failing:
+        failing.discard(verb)
+        return subprocess.CompletedProcess(argv, 1, b'', b'Failed to connect to bus')
+    if verb == 'enable':
+        on.update(a for a in argv[3:] if a != '--now')
+    elif verb == 'disable':
+        on.difference_update(argv[3:])
+    elif verb == 'bootstrap':
+        on.add(plistlib.loads(Path(argv[3]).read_bytes())['Label'])
+    elif verb == 'bootout':
+        on.discard(argv[2].rsplit('/', 1)[-1])
+    elif verb in ('is-enabled', 'print'):
+        return subprocess.CompletedProcess(argv, 0 if argv[-1].rsplit('/', 1)[-1] in on else 1, b'', b'')
+    return subprocess.CompletedProcess(argv, 0, b'', b'')
+for m, kind in ((services.Systemd(manager), 'growth'), (services.Launchd(manager), 'sync')):
+    job = growth if kind == 'growth' else sync
+    p = services.plan(m, kind, job, False)
+    try:
+        services.apply(m, kind, job, p, False, '20260927-090000')
+        raise AssertionError('the failed activation was reported as done')
+    except OSError:
+        pass
+    # The definition is on disk but not on: the next run retries instead of `keep`.
+    assert any(e['name'] == m.ident(kind) for e in m.entries())
+    p = services.plan(m, kind, job, False)
+    assert (p['action'], p['remove']) == ('replace', [m.ident(kind)]), p
+    assert services.apply(m, kind, job, p, False, '20260927-090001')['ok']
+    assert services.plan(m, kind, job, False)['action'] == 'keep'
+# Without a service manager nothing can be registered, and nothing needs removing.
+assert services.plan(None, 'sync', None, True)['action'] == 'absent'
+assert services.plan(None, 'sync', sync, False)['action'] == 'error'
 ''')
 
     @unittest.skipUnless(os.name == 'nt' and os.environ.get('OSK_TEST_REAL_TASKS') == '1',

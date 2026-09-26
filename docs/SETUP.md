@@ -84,15 +84,17 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
     구독 로그인과 `fork doctor`는 사람이 한다(`human`).
   - `--schedule <하네스>`(`--at HH:MM`, 기본 09:00) — 매일 한 번 도는 정기 실행(아래
     'Scope에서 Domain으로 정기 재검토')을 등록한다. 명령 파일 `.osk/growth-command.json`이
-    없으면 그 하네스의 무인 명령을 만든다. 지금은 Claude만이다 — 이 vault의 MCP 서버만
-    붙이고(`--strict-mcp-config`), 그 서버의 도구만 허용해 나머지는 묻지 않고 거절하며
-    (`--permission-mode dontAsk`), claude.ai 구독 로그인만 쓴다. Codex는 명령 파일을 직접
-    만든다. 있는 명령 파일은 덮지 않는다. 정기 실행은 한 기기에만 둔다 — 결과는 대장으로
-    모든 기기가 나눈다.
+    없으면 그 하네스의 무인 명령을 만든다. 지금은 Claude만이다 — 내장 도구를 모두 끄고
+    (`--tools ""`) 이 vault의 MCP 서버만 붙인다(`--strict-mcp-config`). 설정의 허용 규칙이
+    있어도 파일·셸 도구로 MCP의 보호를 비껴가지 못한다. 그 서버의 도구는 묻지 않고 허용하고
+    나머지는 거절한다(`--permission-mode dontAsk`). 로그인은 claude.ai 구독만 쓴다 — 실행
+    때의 자격 확인은 아래 '정기 재검토'. Codex는 명령 파일을 직접 만든다. 있는 명령 파일은
+    덮지 않는다. 정기 실행은 한 기기에만 둔다 — 결과는 대장으로 모든 기기가 나눈다.
   - `--sync` — 동기화 데몬(아래 '동기화 데몬')을 상시 서비스로 등록하고 띄운다. 먼저
-    vault가 저장소 루트인지, 로컬 `main`이 있는지, `origin`이 공개 정본이 아닌지, 묻지
-    않고 push할 수 있는지(`git push --dry-run`)를 확인한다. origin이 비공개인지는 사람이
-    확인한다.
+    vault가 저장소 루트인지, 로컬 `main`이 있는지, `origin`의 fetch 주소와 모든 push 대상
+    (`pushurl`·`pushInsteadOf`를 푼 실제 전송 자리)이 공개 정본이 아닌지, 묻지 않고 push할
+    수 있는지(`git push --dry-run`)를 확인한다. push 대상은 계획에 실려 확인받는다. 그것이
+    모두 비공개인지는 사람이 확인한다.
 - **해제.** `--uninstall`만 주면 이 vault의 osk 등록을 다 걷는다 — fork 설정의 항목, 정기
   실행 작업, 동기화 데몬(Windows는 떠 있는 데몬도 멈춘다)까지다. 명령 파일은 남긴다.
   기능 플래그를 함께 주면 그 기능만, `--harness`를 주면 그 호스트의 것만 걷는다.
@@ -143,6 +145,11 @@ vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 �
   `.osk/growth/scheduler/<시각>.log`에, 데몬의 알림은 git 디렉터리의 `osk-sync-daemon.log`에
   남는다. 동기화 작업은 `cmd.exe`로 `SYNC_ENABLED=1`을 세우고 데몬을 떼어 띄운다.
 - 실행 직전에 다시 계획해, 확인한 뒤 등록이 바뀌었으면 하지 않는다.
+- 정의가 같아도 서비스 관리자에 올라가 켜져 있지 않으면 다시 등록한다 — 등록 명령이
+  실패해 파일만 남았거나 사용자가 꺼 둔 경우다(`launchctl print`·`systemctl --user
+  is-enabled`, 작업 스케줄러의 사용 여부).
+- 서비스 관리자가 없는 기기에서는 등록하지 못한다(오류). 해제는 걷을 등록이 없다고 알리고
+  다른 해제를 계속한다.
 
 ## Windows
 
@@ -682,6 +689,12 @@ UTF-8 파일에 쓰고 `growth checkpoint --file <파일>`로 즉시 기록한�
 에이전트 명령은 JSON argv 배열 파일로 둔다. 명령은 stdin으로 프롬프트를 읽고 종료해야
 하며, 이 인스턴스의 osk MCP에 연결돼 있어야 한다. 셸 문자열은 실행하지 않는다.
 우선 격리 mini-vault에서 실제 도구 호출을 확인한 뒤 인스턴스에 등록한다.
+
+구독 로그인만 쓰겠다고 밝힌 명령(Claude의 `--settings '{"forceLoginMethod":"claudeai"}'`,
+`setup --schedule claude`가 만드는 명령)은 fork와 같은 자격으로만 돈다. 실행기는 API 자격
+변수(`ANTHROPIC_API_KEY` 등)를 걷고, 모델을 부르기 전에 claude.ai 구독 로그인(`auth
+status`), 설정의 `apiKeyHelper`·API 환경 키, 공급자 전환 변수를 확인한다. 확인하지 못하면
+계획도 모델 호출도 없이 `unavailable`로 끝난다 — API 과금으로 대체하지 않는다.
 
 
 Codex의 ChatGPT 구독 로그인으로 실행할 때는 `codex login status`가 ChatGPT 로그인을

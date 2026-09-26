@@ -886,9 +886,10 @@ def _stop_tree(proc: subprocess.Popen) -> str | None:
 
 
 def check_command(command: list[str], *, follow_desktop_update: bool = True) -> dict:
-    """Resolve argv[0] without starting an agent or changing vault state."""
-    if not isinstance(command, list) or not command or any(
-            not isinstance(arg, str) or not arg or "\0" in arg for arg in command):
+    """Resolve argv[0] without starting an agent or changing vault state. Later arguments may be
+    empty: an empty value is a real argument (Claude's `--tools ""` turns every built-in tool off)."""
+    if not isinstance(command, list) or not command or not isinstance(command[0], str) or not command[0] or any(
+            not isinstance(arg, str) or "\0" in arg for arg in command):
         raise ValueError("command must be a nonempty argv list")
     program = command[0]
     from . import native_cli
@@ -922,6 +923,19 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
         raise ValueError("timeout must be between 1 and 86400 seconds")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f"limit must be between 1 and {MAX_LIMIT}")
+    if scope_job is None and worker_env is None and checked["ok"]:
+        # 구독 로그인만 쓰겠다고 밝힌 명령은 fork와 같은 자격으로만 띄운다 — API 자격 변수를
+        # 걷고, 구독 로그인·설정·공급자를 모델을 부르기 전에 확인한다. 확인하지 못하면 돌지 않는다.
+        from . import harness as adapters
+        declared = next((a.name for a in adapters.ADAPTERS if a.subscription_only(command)), None)
+        if declared:
+            from . import response_growth
+            worker_env = response_growth.subscription_env()
+            try:
+                response_growth.preflight({"harness": declared, "cwd": str(core.ROOT)},
+                                          checked["executable"], worker_env, require_version=False)
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                return {"ok": False, "state": "unavailable", "error": str(exc)}
     lock_path = core.local_lock_path("osk-growth-run.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a") as lock:

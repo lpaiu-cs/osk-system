@@ -256,6 +256,53 @@ class GrowthTests(unittest.TestCase):
                                     creationflags=0x08000000 if os.name == "nt" else 0)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_a_subscription_command_runs_only_on_a_confirmed_subscription(self):
+        self.check_case("""
+            import os
+            from unittest.mock import patch
+            from osk import harness
+            node('A')
+            fake = core.ROOT / 'fake-claude.py'
+            fake.write_text(chr(10).join([
+                "import json, os, sys",
+                "args = sys.argv[1:]",
+                "if args == ['--version']: print('2.1.281 (Claude Code)'); sys.exit(0)",
+                "if args[:2] == ['auth', 'status']: print(os.environ['OSK_TEST_AUTH']); sys.exit(0)",
+                "open(os.path.join(os.environ['OSK_VAULT_ROOT'], 'seen-env.json'), 'w').write(json.dumps("
+                "{k: os.environ.get(k) for k in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN')}))",
+                packet_worker(wrapper='claude')]), encoding='utf-8')
+            if os.name == 'nt':
+                cli = core.ROOT / 'claude.cmd'
+                cli.write_text('@"' + sys.executable + '" "' + str(fake) + '" %*' + chr(13) + chr(10), encoding='utf-8')
+            else:
+                cli = core.ROOT / 'claude'
+                cli.write_text('#!/bin/sh' + chr(10) + 'exec "' + sys.executable + '" "' + str(fake) + '" "$@"' + chr(10),
+                               encoding='utf-8')
+                cli.chmod(0o755)
+            argv = harness.get('claude').growth_argv(str(cli), sys.executable, 'server.py', str(core.ROOT))
+            config = core.ROOT / 'claude-config'
+            config.mkdir()
+            env = {'CLAUDE_CONFIG_DIR': str(config), 'ANTHROPIC_API_KEY': 'sk-ant-test', 'ANTHROPIC_AUTH_TOKEN': 'tok',
+                   'OSK_TEST_AUTH': json.dumps({'loggedIn': True, 'authMethod': 'apiKey'})}
+            # An API-key login is refused before any plan or model call.
+            with patch.dict(os.environ, env):
+                refused = growth.run(argv)
+            assert refused['state'] == 'unavailable' and 'subscription' in refused['error'], refused
+            assert not growth.LEDGER.exists() and not (core.ROOT / 'seen-env.json').exists()
+            # On a confirmed subscription the command runs, and no API credential reaches it.
+            env['OSK_TEST_AUTH'] = json.dumps({'loggedIn': True, 'authMethod': 'claude.ai', 'subscriptionType': 'max'})
+            with patch.dict(os.environ, env):
+                result = growth.run(argv)
+            assert result['ok'], result
+            seen = json.loads((core.ROOT / 'seen-env.json').read_text(encoding='utf-8'))
+            assert seen == {'ANTHROPIC_API_KEY': None, 'ANTHROPIC_AUTH_TOKEN': None}, seen
+            # Settings that choose an API key helper stop it before the model too.
+            (config / 'settings.json').write_text(json.dumps({'apiKeyHelper': 'echo key'}), encoding='utf-8')
+            with patch.dict(os.environ, env):
+                refused = growth.run(argv)
+            assert refused['state'] == 'unavailable' and 'API' in refused['error'], refused
+        """)
+
     def test_empty_inventory_does_not_launch(self):
         self.check_case("""
             from unittest.mock import patch
@@ -285,7 +332,7 @@ class GrowthTests(unittest.TestCase):
                 missing = growth.check_command([str(core.ROOT/'retired-version/codex.exe')])
                 assert not missing['ok'] and missing['state'] == 'invalid_command', missing
                 assert not growth.check_command([str(core.ROOT)])['ok']
-                for bad in ([], 'codex', ['codex', 'bad' + chr(0)]):
+                for bad in ([], 'codex', ['codex', 'bad' + chr(0)], [''], ['', '--tools']):
                     try:
                         growth.check_command(bad)
                         raise AssertionError('invalid argv accepted')

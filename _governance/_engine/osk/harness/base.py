@@ -216,6 +216,11 @@ class Adapter:
         vault의 MCP 서버만 붙이고 구독 로그인만 쓴다. 지원하지 않으면 빈 목록."""
         return []
 
+    def subscription_only(self, argv: list[str]) -> bool:
+        """그 명령이 이 호스트의 구독 로그인만 쓰겠다고 밝혔는가 — 정기 실행은 그런 명령을
+        fork와 같은 자격(API 자격 변수를 걷고, 구독·설정·공급자를 먼저 확인)으로만 띄운다."""
+        return False
+
     def hook_group(self, event: str, command: str) -> dict:
         """설치가 `hooks.<사건>`에 넣는 묶음 하나 — 훅 하나를 담는다."""
         entry = {"type": "command", "command": command, "timeout": 30}

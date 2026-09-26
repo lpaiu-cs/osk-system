@@ -303,22 +303,28 @@ def _canonical(url: str) -> bool:
     return norm(url) == norm(update.DEFAULT_UPSTREAM)
 
 
-def _sync_checks() -> tuple[str | None, list[str]]:
-    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 개인 원격 `origin`, 묻지 않는 push."""
+def _sync_checks() -> tuple[str | None, list[str], list[str]]:
+    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 개인 원격 `origin`, 묻지 않는 push.
+    (fetch 주소, push 대상들, 오류). push 대상은 `pushurl`과 `pushInsteadOf`를 푼 실제 전송
+    자리다 — fetch 주소만 보면 다른 곳으로 가는 push를 확인하지 못한다."""
     def git(*args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["git", "-C", str(core.ROOT), *args], capture_output=True, text=True,
                               timeout=60, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
     try:
         top = git("rev-parse", "--show-toplevel")
         if top.returncode or base.fold(top.stdout.strip()) != base.fold(str(core.ROOT)):
-            return None, ["vault가 Git 저장소의 루트가 아니다 — 데몬은 저장소 루트에서만 돈다"]
+            return None, [], ["vault가 Git 저장소의 루트가 아니다 — 데몬은 저장소 루트에서만 돈다"]
         url = git("remote", "get-url", "origin").stdout.strip() or None
+        pushes = [u.strip() for u in git("remote", "get-url", "--push", "--all", "origin").stdout.splitlines()
+                  if u.strip()] if url else []
         main = git("rev-parse", "--verify", "--quiet", "refs/heads/main").returncode == 0
         errors = [] if main else ["로컬 `main` 브랜치가 없다 — 데몬은 `main`만 동기화한다"]
+        public = [u for u in dict.fromkeys([url, *pushes]) if u and _canonical(u)]
         if not url:
             errors.append("`origin`이 없다 — 개인 저장소를 origin으로 둔다(시작 안내서 1단계)")
-        elif _canonical(url):
-            errors.append("origin이 공개 정본 저장소다 — 개인 저장소를 origin으로 둔다")
+        elif public:
+            errors.append("origin의 fetch·push 대상에 공개 정본 저장소가 있다(" + ", ".join(public)
+                          + ") — 개인 저장소만 둔다")
         elif main:
             code, out, err = update.git_unattended(
                 ["-C", str(core.ROOT), "push", "--dry-run", "--porcelain", "origin", "main"], timeout=90)
@@ -326,19 +332,21 @@ def _sync_checks() -> tuple[str | None, list[str]]:
             if code and "[rejected]" not in out:
                 errors.append("묻지 않고 push하지 못했다 — 자격 증명 도우미·토큰·ssh-agent를 갖춘다: "
                               + (err or out).strip()[-200:])
-        return url, errors
+        return url, pushes, errors
     except (OSError, subprocess.SubprocessError) as e:
-        return None, [f"git을 실행하지 못했다 — {e}"]
+        return None, [], [f"git을 실행하지 못했다 — {e}"]
 
 
 def _sync(manager, uninstall: bool) -> dict:
-    """동기화 데몬 — 전제를 확인한 뒤 운영체제의 상시 서비스로 둔다."""
+    """동기화 데몬 — 전제를 확인한 뒤 운영체제의 상시 서비스로 둔다. push 대상은 계획에 실려
+    확인 대상이 된다."""
     if uninstall:
         return {"task": services.plan(manager, "sync", None, True)}
-    url, errors = _sync_checks()
+    url, pushes, errors = _sync_checks()
     if errors:
-        return {"origin": url, "error": "; ".join(errors)}
-    return {"origin": url, "task": services.plan(manager, "sync", services.job("sync"), False)}
+        return {"origin": url, "push": pushes, "error": "; ".join(errors)}
+    return {"origin": url, "push": pushes,
+            "task": services.plan(manager, "sync", services.job("sync"), False)}
 
 
 def _release() -> str:
@@ -417,8 +425,8 @@ def _extras_human(extras: dict) -> list[str]:
              "--limit", "1"]) + "`")
     y = extras.get("sync") or {}
     if y.get("task", {}).get("action") in ("add", "replace"):
-        steps.append(f"origin({y['origin']})이 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 "
-                     "커밋해 이 원격에 올린다")
+        steps.append("origin의 push 대상(" + ", ".join(y.get("push") or [y["origin"]])
+                     + ")이 모두 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 커밋해 그곳에 올린다")
     if any((extras.get(k) or {}).get("task", {}).get("backend") == "systemd"
            and extras[k]["task"].get("action") in ("add", "replace") for k in ("schedule", "sync")):
         steps.append("로그아웃한 뒤에도 돌게 하려면 `loginctl enable-linger $USER`를 실행한다")
@@ -740,7 +748,7 @@ def text(rep: dict) -> str:
             lines.append(f"  명령 파일 {part['command_file']}: {part['command']['action']} — "
                          + core.shell_join(part["command"]["argv"]))
         if part.get("origin"):
-            lines.append(f"  origin: {part['origin']}")
+            lines.append(f"  origin: {part['origin']} — push: {', '.join(part.get('push') or [])}")
         lines += [f"  걷는다: {i}" for i in task.get("remove", [])]
     for part in (rep.get("fork"), rep.get("schedule"), rep.get("sync")):
         for n in (part or {}).get("notes", []) + (part or {}).get("task", {}).get("notes", []):

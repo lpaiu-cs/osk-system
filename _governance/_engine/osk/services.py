@@ -117,6 +117,17 @@ class Backend:
     def remove(self, entry: dict, stamp: str) -> dict:
         raise NotImplementedError
 
+    def active(self, kind: str) -> bool:
+        """이 vault의 등록이 서비스 관리자에 올라가 켜져 있는가. 정의 파일만으로는 알 수 없다 —
+        등록 명령이 실패하면 파일만 남고, 그때 `keep`으로 보면 다시 등록하지 않는다."""
+        return True
+
+    def _ok(self, argv: list[str]) -> bool:
+        try:
+            return self._run(argv).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     def _call(self, argv: list[str], *, check: bool = True) -> str:
         r = self._run(argv)
         out, err = _text(r.stdout), _text(r.stderr)
@@ -138,7 +149,7 @@ $rows = @(Get-ScheduledTask | ForEach-Object {
       triggers = @($_.Triggers | ForEach-Object { [pscustomobject]@{
         kind = [string]$_.CimClass.CimClassName; start = [string]$_.StartBoundary } });
       battery = [bool]$_.Settings.DisallowStartIfOnBatteries;
-      limit = [string]$_.Settings.ExecutionTimeLimit }
+      limit = [string]$_.Settings.ExecutionTimeLimit; enabled = [bool]$_.Settings.Enabled }
   }
 })
 ConvertTo-Json -InputObject $rows -Depth 6 -Compress
@@ -213,7 +224,8 @@ class TaskScheduler(Backend):
             out.append({"id": row["path"] + row["name"], "name": row["name"], "path": row["path"],
                         "tokens": [t for a in actions for t in _win_tokens(a["execute"], a["arguments"])],
                         "definition": {"actions": actions, "trigger": trigger,
-                                       "battery": bool(row.get("battery")), "limit": row.get("limit")}})
+                                       "battery": bool(row.get("battery")), "limit": row.get("limit"),
+                                       "enabled": row.get("enabled", True) is not False}})
         return out
 
     def _spec(self, kind: str, job: dict) -> dict:
@@ -234,7 +246,8 @@ class TaskScheduler(Backend):
         return {"actions": [{"execute": s["execute"], "arguments": s["arguments"], "workdir": s["workdir"]}],
                 "trigger": (["MSFT_TaskDailyTrigger", s["at"]] if kind == "growth"
                             else ["MSFT_TaskLogonTrigger", None]),
-                "battery": False, "limit": f"PT{s['minutes']}M" if s["minutes"] else "PT0S"}
+                "battery": False, "limit": f"PT{s['minutes']}M" if s["minutes"] else "PT0S",
+                "enabled": True}          # 꺼 둔 작업은 다시 등록해 켠다 — 사용자가 고른 기능이다
 
     def install(self, kind: str, job: dict, stamp: str) -> dict:
         spec = self._spec(kind, job)
@@ -261,6 +274,9 @@ class Launchd(Backend):
 
     def _domain(self) -> str:
         return f"gui/{os.getuid() if hasattr(os, 'getuid') else 0}"
+
+    def active(self, kind: str) -> bool:
+        return self._ok(["launchctl", "print", f"{self._domain()}/{self.ident(kind)}"])
 
     def entries(self) -> list[dict]:
         out = []
@@ -329,6 +345,10 @@ class Systemd(Backend):
 
     def ident(self, kind: str) -> str:
         return f"osk-{kind}-{tag()}"
+
+    def active(self, kind: str) -> bool:
+        unit = self.ident(kind) + (".timer" if kind == "growth" else ".service")
+        return self._ok(["systemctl", "--user", "is-enabled", unit])
 
     def entries(self) -> list[dict]:
         out = []
@@ -408,6 +428,10 @@ def plan(manager: Backend | None, kind: str, job: dict | None, uninstall: bool) 
     """등록 하나의 조치 — `keep`·`add`·`replace`·`remove`·`absent`. 이 vault의 옛 등록은
     `remove`에 싣고, 이 vault를 부르지만 osk 등록이 아닌 것은 `notes`로 알린다."""
     if manager is None:
+        # 등록할 수 없다는 뜻이지 걷을 것이 있다는 뜻이 아니다 — 해제는 다른 등록의 해제를 막지 않는다.
+        if uninstall:
+            return {"action": "absent", "notes": ["이 기기에서 서비스 관리자를 찾지 못했다 — "
+                                                  "걷을 운영체제 등록이 없다"]}
         return {"action": "error", "error": "이 기기의 서비스 관리자(작업 스케줄러·launchd·"
                                             "systemd)를 찾지 못했다 — SETUP의 수동 절차를 따른다"}
     out: dict = {"backend": manager.name, "id": manager.ident(kind)}
@@ -424,7 +448,7 @@ def plan(manager: Backend | None, kind: str, job: dict | None, uninstall: bool) 
     if uninstall:
         out["action"] = "remove" if mine else "absent"
     elif (len(mine) == 1 and mine[0]["name"] == manager.ident(kind)
-          and mine[0]["definition"] == manager.definition(kind, job)):
+          and mine[0]["definition"] == manager.definition(kind, job) and manager.active(kind)):
         out["action"] = "keep"
     else:
         out["action"] = "replace" if mine else "add"

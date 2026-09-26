@@ -411,6 +411,8 @@ assert code == 2 and rep['schedule']['command']['action'] == 'add', rep
 assert argv[1] == '-p' and argv[argv.index('--permission-mode') + 1] == 'dontAsk', argv
 assert argv[argv.index('--allowedTools') + 1] == 'mcp__osk-system' and '--strict-mcp-config' in argv, argv
 assert json.loads(argv[argv.index('--settings') + 1]) == {'forceLoginMethod': 'claudeai'}, argv
+assert argv[argv.index('--tools') + 1] == '', argv          # no built-in tool, whatever settings allow
+assert harness.get('claude').subscription_only(argv), argv  # the runner applies the fork's credentials
 server_entry = json.loads(argv[argv.index('--mcp-config') + 1])['mcpServers']['osk-system']
 assert server_entry['args'] == [server.as_posix()] and server_entry['env'] == {'OSK_VAULT_ROOT': root.as_posix()}, argv
 assert rep['schedule']['task']['action'] == 'add' and '07:30' in rep['schedule']['task']['command'], rep['schedule']
@@ -481,6 +483,53 @@ steps = {s['step']: s for s in result['steps']}
 assert not result['ok'] and '바뀌었다' in steps['fork CLI']['error'], result
 assert '생겼다' in steps['growth command']['error'] and not Fake.rows, result
 assert read(config_file) == {'claude': str(py)}
+''')
+
+    def test_sync_checks_and_confirms_every_push_target(self):
+        self.check_case(FAKE_SERVICES + r'''
+fake_clis()
+baseline()
+S.run(apply=True)
+S.run(apply=True)
+git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
+git('add', '-A')
+git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vault')
+private, second = root.parent / 'private.git', root.parent / 'second.git'
+for bare in (private, second):
+    subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True, capture_output=True)
+git('remote', 'add', 'origin', str(private))
+# The fetch URL is private, but pushes go to the public canonical repository.
+git('config', 'remote.origin.pushurl', 'https://github.com/lpaiu-cs/osk-system.git')
+rep, code = S.run(apply=True, sync=True)
+assert code == 1 and '정본' in rep['errors'][0] and not Fake.rows, rep
+# Every push target is shown and confirmed; a target added afterwards needs a new confirmation.
+git('config', 'remote.origin.pushurl', str(private))
+rep, code = S.run(apply=True, sync=True)
+assert code == 2 and rep['sync']['push'] == [str(private)], rep
+git('config', '--add', 'remote.origin.pushurl', str(second))
+rep, code = S.run(apply=True, sync=True)
+assert code == 2 and rep['sync']['push'] == [str(private), str(second)] and not Fake.rows, rep
+assert any(str(second) in s for s in rep['human']), rep['human']
+rep, code = S.run(apply=True, sync=True)
+assert code == 0 and rep['ok'] and f'osk-sync-{services.tag()}' in Fake.rows, rep
+''')
+
+    def test_uninstall_without_a_service_manager_still_removes_the_hosts(self):
+        self.check_case(r'''
+fake_clis()
+baseline()
+S.run(apply=True)
+S.run(apply=True)
+assert osk_entries(read(claude_home / 'settings.json'), 'start')
+mock.patch.object(S.services, 'backend', lambda run=None: None).start()
+rep, code = S.run(apply=True, uninstall=True)
+assert code == 2 and rep['approval_required'] and 'errors' not in rep, rep
+assert (rep['schedule']['task']['action'], rep['sync']['task']['action']) == ('absent', 'absent'), rep
+rep, code = S.run(apply=True, uninstall=True)
+assert code == 0 and rep['ok'] and not osk_entries(read(claude_home / 'settings.json'), 'start'), rep
+# Registering a feature still needs one.
+rep, _ = S.run(schedule='claude')
+assert not rep['ok'] and '서비스 관리자' in rep['errors'][0], rep
 ''')
 
 

@@ -87,7 +87,8 @@ Summarize the report for the user:
   - `fork`: the CLI each host's fork will run (`entries`).
   - `schedule`: the daily command (`command.argv`), the time (`at`), and what
     happens to the OS task (`task`).
-  - `sync`: the `origin` the daemon will push to, and the OS service (`task`).
+  - `sync`: the `origin`, every `push` target the daemon will push to (all must
+    be private), and the OS service (`task`).
   - An OS registration that `task.remove` lists is this vault's older one; it is
     replaced. Its definition is kept first in `~/.osk-system/backups/`.
 - The `human` steps the user will have to do.
