@@ -28,7 +28,7 @@ def main() -> None:
         return
     host = None
     try:
-        from claude_session_start import note_run, session_key
+        from claude_session_start import first_call, note_run, session_key
         try:
             env = json.load(sys.stdin)
             if not isinstance(env, dict):
@@ -39,6 +39,8 @@ def main() -> None:
         from osk import integration, response_growth
         key = session_key(env.get("cwd") or os.getcwd())
         host = note_run("stop", env, key)
+        if not first_call("stop", env, host):
+            return
         try:
             if response_growth.launch(env, key):
                 return

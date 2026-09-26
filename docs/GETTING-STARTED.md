@@ -858,8 +858,8 @@ You do not need to watch the releases page. Once a day, the session-start hook
 and the MCP `overview` ask the canonical repository for its release tags
 (`git ls-remote`; nothing from your vault is sent). When a newer release exists,
 Claude Code and Codex show a warning such as
-`osk-system 새 릴리스 v4.1.0 (이 vault는 v4.0.0) — …` once a day per device.
-Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
+`osk-system 새 릴리스 v4.1.0 (이 vault는 v4.0.0) — …` once a day per device,
+ending with the link to that release's notes. Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
 steps below with you: it shows the changeset and waits for your approval. The
 check runs in the background, so the notice appears from the session after the
 check. To check right now, run `osk.update --check`, which only asks for the
