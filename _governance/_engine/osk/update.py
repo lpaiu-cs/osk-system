@@ -111,27 +111,33 @@ def latest_release_tag(url: str, *, timeout: float = 60,
     받으면 릴리스 이후의 개발 커밋이 딸려 와 attestation과 어긋난다.
 
     `unattended`는 사람이 없는 확인(`update_check`의 분리 프로세스)이다.
-    - 자격 증명을 묻지 않는다(프롬프트·창 모두).
+    - 사람에게 묻지 않는다. 저장된 자격 증명은 쓰되, 없으면 조회 실패로 끝난다.
+      git은 터미널에 묻기 전에 `GIT_ASKPASS`, `core.askPass`, `SSH_ASKPASS` 순으로
+      인증 도우미를 띄우므로 `GIT_TERMINAL_PROMPT=0`만으로는 창이 뜬다. 두 환경
+      변수를 걷어 내고 `-c core.askPass=`로 빈 도우미를 준다. git은 빈 도우미를
+      실행하지 않고 `SSH_ASKPASS`로 넘어가지도 않는다. Git Credential Manager는
+      `GCM_INTERACTIVE=never`면 창을 띄우지 않는다.
     - Windows에서 콘솔 창을 만들지 않는다. 창 없는 부모가 콘솔 프로그램인 git을
       띄우면 Windows가 새 콘솔을 할당한다(vault_sync가 데몬의 검은 창을 막는 규율).
     - 출력은 파이프가 아니라 임시 파일로 받는다. Windows의 `subprocess.run`은 시한을
       넘긴 자식을 죽인 뒤 파이프를 시한 없이 다시 비우는데, git이 남긴 손자(자격 증명
       도우미)가 파이프를 쥐면 그 대기가 끝나지 않는다 — overview 무기한 행과 같은
       경로다. 끝나지 않는 확인은 확인 잠금을 영영 쥔다."""
-    cmd = ["git", "ls-remote", "--tags", "--refs", url]
+    query = ["ls-remote", "--tags", "--refs", url]
     if unattended:
+        env = {k: v for k, v in os.environ.items() if k not in ("GIT_ASKPASS", "SSH_ASKPASS")}
+        env.update(LC_ALL="C", LANG="C", GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             r = subprocess.run(
-                cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err, timeout=timeout,
-                env={**os.environ, "LC_ALL": "C", "LANG": "C",
-                     "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"},
+                ["git", "-c", "core.askPass=", *query], stdin=subprocess.DEVNULL,
+                stdout=out, stderr=err, timeout=timeout, env=env,
                 creationflags=0x08000000 if os.name == "nt" else 0)
             out.seek(0)
             err.seek(0)
             stdout = out.read().decode("utf-8", "replace")
             stderr = err.read().decode("utf-8", "replace")
     else:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(["git", *query], capture_output=True, text=True, timeout=timeout)
         stdout, stderr = r.stdout, r.stderr
     if r.returncode != 0:
         raise UpdateError(f"정본 태그 조회 실패({url}): {stderr.strip()[-200:]}")

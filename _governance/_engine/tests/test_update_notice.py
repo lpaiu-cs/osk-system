@@ -176,8 +176,11 @@ def fake_run(cmd, **kw):
         kw['stdout'].write(TAGS.encode())
         return subprocess.CompletedProcess(cmd, 0)
     return subprocess.CompletedProcess(cmd, 0, TAGS, '')
+os.environ['GIT_ASKPASS'] = os.environ['SSH_ASKPASS'] = 'ask'
 with mock.patch.object(update.subprocess, 'run', side_effect=fake_run):
     assert update.latest_release_tag('U', timeout=5, unattended=True) == 'v1.2.3'
+    assert seen['cmd'][:3] == ['git', '-c', 'core.askPass='], seen['cmd']
+    assert not {'GIT_ASKPASS', 'SSH_ASKPASS'} & set(seen['env']), seen
     assert seen['stdin'] is subprocess.DEVNULL and seen['timeout'] == 5, seen
     # No pipe: a lingering grandchild cannot hold the timed-out wait open.
     assert hasattr(seen['stdout'], 'write') and hasattr(seen['stderr'], 'write'), seen
@@ -186,6 +189,7 @@ with mock.patch.object(update.subprocess, 'run', side_effect=fake_run):
     assert seen['env']['GCM_INTERACTIVE'] == 'never', seen
     assert seen['creationflags'] == (0x08000000 if os.name == 'nt' else 0), seen
     assert update.latest_release_tag('U') == 'v1.2.3'
+    assert seen['cmd'][:2] == ['git', 'ls-remote'], seen['cmd']
     assert 'env' not in seen and 'stdin' not in seen and seen['timeout'] == 60, seen
     assert seen['capture_output'] is True, seen
 # A real timeout ends the check with a recorded error instead of hanging.
@@ -203,6 +207,61 @@ assert all(kw[k] is subprocess.DEVNULL for k in ('stdin', 'stdout', 'stderr')), 
 assert kw['env']['OSK_VAULT_ROOT'] == str(core.ROOT) and kw['cwd'] == core.ROOT, kw
 assert kw['start_new_session'] == (os.name != 'nt'), kw
 assert kw['creationflags'] == (0x08000200 if os.name == 'nt' else 0), kw
+''')
+
+    def test_unattended_query_never_asks_for_credentials(self):
+        self.check_case(r'''
+import http.server, threading
+class Deny(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(401)
+        self.send_header('WWW-Authenticate', 'Basic realm="osk"')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Deny)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+url = 'http://127.0.0.1:%d/osk.git' % server.server_address[1]
+# An askpass that answers and notes each prompt. Git finds a script's
+# interpreter by name on PATH on Windows and by its path elsewhere.
+asked = root.parent / 'asked.txt'
+askpass = root.parent / 'askpass.py'
+askpass.write_text('#!' + Path(sys.executable).as_posix() + '\n'
+                   'import os, sys\n'
+                   'with open(os.environ["OSK_ASKED"], "a", encoding="utf-8") as f:\n'
+                   '    f.write(sys.argv[-1] + "\\n")\n'
+                   'print("secret")\n', encoding='utf-8')
+askpass.chmod(0o755)
+gitconfig = root.parent / 'gitconfig'
+# No system or user credential helper, and no terminal prompt even when attended:
+# a harness that cannot reach the askpass fails here instead of waiting for input.
+os.environ.update(GIT_CONFIG_GLOBAL=str(gitconfig), GIT_CONFIG_NOSYSTEM='1',
+                  GIT_TERMINAL_PROMPT='0', GCM_INTERACTIVE='never', OSK_ASKED=str(asked),
+                  NO_PROXY='127.0.0.1', no_proxy='127.0.0.1',
+                  PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
+def prompts(route, unattended):
+    """The prompts one denied query put to the askpass reached through `route`."""
+    gitconfig.write_text('[core]\n\taskPass = %s\n' % askpass.as_posix()
+                         if route == 'core.askPass' else '', encoding='utf-8')
+    for name in ('GIT_ASKPASS', 'SSH_ASKPASS'):
+        if name == route:
+            os.environ[name] = str(askpass)
+        else:
+            os.environ.pop(name, None)
+    asked.unlink(missing_ok=True)
+    try:
+        update.latest_release_tag(url, timeout=60, unattended=unattended)
+    except update.UpdateError as e:
+        return (asked.read_text(encoding='utf-8') if asked.exists() else ''), str(e)
+    raise AssertionError('a denied query returned tags')
+for route in ('GIT_ASKPASS', 'core.askPass', 'SSH_ASKPASS'):
+    shown, _ = prompts(route, unattended=False)
+    assert 'Username' in shown, (route, 'the harness did not reach the askpass', shown)
+    shown, error = prompts(route, unattended=True)
+    assert shown == '', (route, shown)
+    assert 'could not read Username' in error, (route, error)
+server.shutdown()
 ''')
 
     def test_session_start_shows_the_user_and_briefs_the_agent_once(self):
