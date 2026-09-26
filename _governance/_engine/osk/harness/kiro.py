@@ -17,11 +17,14 @@ import os
 import re
 from pathlib import Path
 
-from .base import MCP_NAME, Adapter
+from .base import MCP_NAME, Adapter, command_tokens, mentions
 
 _SEMVER = r"\d+\.\d+\.\d+(?:-[\w.]+)?"
 # setup이 소유하는 훅 파일 — Kiro는 hooks 폴더의 JSON을 모두 읽는다.
 HOOK_FILE = "osk-system.json"
+# MCP 항목에서 사용자가 건 정책(Kiro 번들의 선언 형식) — 실행 경로를 바꿔도 남긴다.
+# 실행 자리(`command`·`args`·`cwd`·`env`)와 원격 연결(`url`·`headers`·`oauth`)은 그 서버의 것이다.
+_POLICY = ("disabled", "disabledTools", "autoApprove", "timeout", "waitForReady", "versionNegotiation")
 
 
 class Kiro(Adapter):
@@ -69,9 +72,16 @@ class Kiro(Adapter):
         return data.get("mcpServers") or {}
 
     def mcp_write(self, data, python, server):
-        servers = {k: v for k, v in (data.get("mcpServers") or {}).items() if k != MCP_NAME}
-        if server:
-            servers[MCP_NAME] = {"command": python, "args": [server]}
+        servers = dict(data.get("mcpServers") or {})
+        if not server:
+            servers.pop(MCP_NAME, None)
+            return {**data, "mcpServers": servers}
+        old = servers.get(MCP_NAME)
+        old = old if isinstance(old, dict) else {}
+        # 경로 갱신이 차단 해제가 되지 않게 한다. 이 vault의 서버를 가리키던 항목은 다 남기고
+        # 실행 경로만 바꾼다. 다른 vault의 항목은 정책만 남긴다 — 그 환경은 그 vault를 가리킨다.
+        kept = old if mentions(command_tokens(old), Path(server)) else {k: old[k] for k in _POLICY if k in old}
+        servers[MCP_NAME] = {**kept, "command": python, "args": [server]}
         return {**data, "mcpServers": servers}
 
     def hook_files(self):

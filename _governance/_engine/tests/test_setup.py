@@ -608,6 +608,32 @@ assert not res['ok'] and '다시 계획' in steps['kiro mcp']['error'] and mcp_j
 S.run(apply=True, only=['kiro'])
 rep, code = S.run(apply=True, only=['kiro'])
 assert code == 0 and read(mcp_json)['mcpServers']['osk-system']['args'] == [server.as_posix()], read(mcp_json)
+# A path update does not lift the user's policy on the entry (PR #108 review). This vault's
+# entry run by another Python keeps every field but its command, including a restriction
+# added while the plan waited for confirmation.
+policy = {'disabled': True, 'disabledTools': ['append_raw'], 'autoApprove': ['search'], 'timeout': 60000}
+data = read(mcp_json)
+data['mcpServers']['osk-system'] = {'command': '/old/python', 'args': [server.as_posix()],
+                                    'env': {'A': '1'}, **policy}
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+p = S.plan(['kiro'])
+assert p['hosts'][0]['mcp']['action'] == 'replace', p['hosts'][0]['mcp']
+data['mcpServers']['osk-system']['disabledTools'].append('create_node')
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+res = S._apply(p)
+assert res['ok'], res
+assert read(mcp_json)['mcpServers']['osk-system'] == {
+    'command': vpy.as_posix(), 'args': [server.as_posix()], 'env': {'A': '1'},
+    **policy, 'disabledTools': ['append_raw', 'create_node']}, read(mcp_json)
+# Another vault's entry keeps only the policy: its environment points at that vault.
+data = read(mcp_json)
+data['mcpServers']['osk-system'] = {'command': py, 'args': ['/elsewhere/_governance/_engine/mcp_server.py'],
+                                    'env': {'OSK_VAULT_ROOT': '/elsewhere'}, 'cwd': '/elsewhere', **policy}
+mcp_json.write_text(json.dumps(data), encoding='utf-8')
+S.run(apply=True, only=['kiro'])
+rep, code = S.run(apply=True, only=['kiro'])
+assert code == 0 and read(mcp_json)['mcpServers']['osk-system'] == {
+    'command': vpy.as_posix(), 'args': [server.as_posix()], **policy}, (rep, read(mcp_json))
 # A hook the user added to osk's file stays, even one Kiro cannot read; osk's own entries are
 # replaced, not doubled.
 added = {'name': 'mine too', 'trigger': 'Stop', 'action': {'type': 'command', 'command': 'echo hi'}}
