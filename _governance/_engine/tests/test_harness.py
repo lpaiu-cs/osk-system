@@ -7,6 +7,7 @@ own configuration or starts a real host CLI.
 """
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -50,6 +51,13 @@ def rows(path, *items):
 '''
 
 
+def _case_path(bin_dir: Path) -> str:
+    """The case's PATH: fake CLIs first, and without the developer's Kiro launcher — a `kiro`
+    on PATH alone makes Kiro a host, so leaving it would make results depend on the device."""
+    kept = [p for p in os.environ.get('PATH', '').split(os.pathsep) if p and not shutil.which('kiro', path=p)]
+    return os.pathsep.join([str(bin_dir), *kept])
+
+
 def _run(script: str) -> subprocess.CompletedProcess:
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -57,11 +65,12 @@ def _run(script: str) -> subprocess.CompletedProcess:
         home.mkdir()
         bin_dir.mkdir()
         env = {k: v for k, v in os.environ.items()
-               if k not in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS', 'OSK_GROWTH_WORKER')}
+               if k not in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS', 'OSK_GROWTH_WORKER',
+                            'KIRO_SESSION_ID')}
         env.update(OSK_VAULT_ROOT=str(td / 'vault'), PYTHONPATH=str(ENGINE), PYTHONUTF8='1',
                    OSK_UPDATE_CHECK='0', HOME=str(home), USERPROFILE=str(home),
                    CLAUDE_CONFIG_DIR=str(home / '.claude'), CODEX_HOME=str(home / '.codex'),
-                   OSK_TEST_BIN=str(bin_dir), PATH=str(bin_dir) + os.pathsep + os.environ.get('PATH', ''))
+                   OSK_TEST_BIN=str(bin_dir), PATH=_case_path(bin_dir))
         return subprocess.run([sys.executable, '-c', script], env=env, capture_output=True,
                               text=True, encoding='utf-8', errors='replace', timeout=240)
 
@@ -147,12 +156,12 @@ try:
 except integration.SubagentEvent as exc:
     assert 'Codex subagent' in str(exc), exc
 
-assert harness.NAMES == ('claude', 'codex') and harness.fork_names() == ('claude', 'codex')
+assert harness.NAMES == ('claude', 'codex', 'kiro') and harness.fork_names() == ('claude', 'codex')
 try:
     integration._identity('gemini', 'x')
     raise AssertionError('unknown harness accepted')
 except ValueError as exc:
-    assert str(exc) == 'explicit claude/codex harness and actual conversation_id required', exc
+    assert str(exc) == 'explicit claude/codex/kiro harness and actual conversation_id required', exc
 # Transcripts are found where each host keeps them; two candidates need an explicit path.
 mine = rows(claude_home / 'projects' / 'p2' / 'c1.jsonl', {'sessionId': 'c1'})
 assert integration._locate_transcript('claude', 'c1') == str(mine.resolve())
@@ -179,17 +188,22 @@ for argv in (['integration', 'status', '--harness', 'gemini', '--conversation', 
     assert r.returncode == 2 and 'invalid choice' in r.stderr, (argv, r.returncode, r.stderr)
 
 # Both A hosts take one hook envelope; the unknown host gets the same.
-for adapter in (*harness.ADAPTERS, harness.FALLBACK):
+for adapter in (harness.get('claude'), harness.get('codex'), harness.FALLBACK):
     assert adapter.hook_output('start', 't') == {
         'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': 't'}}
     assert adapter.hook_output('input', 't', 'm') == {
         'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 't'},
         'systemMessage': 'm'}
     assert adapter.hook_notice('stop', 'm') == {'systemMessage': 'm'}
+# Kiro takes the context as plain text and has no user-only channel.
+kiro = harness.get('kiro')
+assert kiro.hook_output('input', 't', 'm') == 't' and kiro.hook_notice('stop', 'm') == ''
 claude, codex = harness.get('claude'), harness.get('codex')
 assert claude.parse_version('2.1.280 (Claude Code)') == '2.1.280'
 assert codex.parse_version('codex-cli 0.155.0-alpha.16') == '0.155.0-alpha.16'
 assert claude.parse_version('codex-cli 1.0.0') is None and codex.parse_version('2.1.280 (Claude Code)') is None
+assert kiro.parse_version('1.1.70\n8ce1870416c7dc7e51fffb01765d93ef7ad55102\nx64') == '1.1.70'
+assert kiro.parse_version('2.1.280 (Claude Code)') is None
 resumed = rows(root.parent / 'versions.jsonl', {'sessionId': 'v', 'version': '2.1.200'},
                {'sessionId': 'v', 'version': '2.1.281'}, 'torn')
 assert claude.transcript_version(str(resumed)) == '2.1.281'
@@ -477,6 +491,104 @@ assert len(seen) == runs.KEEP and 's0' not in seen and f's{runs.KEEP + 4}' in se
 core.local_lock_path(runs.STATE).write_text('{broken', encoding='utf-8')
 assert runs.read() == {'runs': {}, 'overview': {}}
 assert runs.record_overview('again') and runs.read()['overview'].keys() == {'again'}
+''')
+
+    def test_kiro_hooks_answer_in_plain_text_and_capture_its_own_transcript(self):
+        self.check_case(r'''
+from osk import doctor, write
+from osk.harness import base
+proj = root.parent / 'proj'
+proj.mkdir()
+write.bind_session('proj', 'W1')
+sid = 'sess_0f8a2c4e-1111-4222-8333-944455556666'
+transcript = home / '.kiro' / 'sessions' / 'ws1' / sid / 'messages.jsonl'
+def row(n, payload):
+    return {'id': f'r{n}', 'timestamp': f'2026-09-27T00:00:{n:02d}Z', 'payload': payload}
+rows(transcript,
+     row(1, {'type': 'user', 'content': '첫 질문', 'images': [], 'documents': []}),
+     row(2, {'type': 'turn_start', 'executionId': 'e1'}),
+     row(3, {'type': 'assistant', 'operationType': 'Reasoning', 'content': 'internal thought', 'executionId': 'e1'}),
+     row(4, {'type': 'assistant', 'operationType': 'Say', 'content': '읽어 보겠습니다.', 'executionId': 'e1'}),
+     row(5, {'type': 'tool_call', 'toolCallId': 't1', 'toolName': 'read_file', 'args': {'path': 'a.txt'},
+             'executionId': 'e1'}),
+     row(6, {'type': 'tool_result', 'toolCallId': 't1', 'content': 'FILE BODY', 'executionId': 'e1'}),
+     row(7, {'type': 'assistant', 'operationType': 'Say', 'content': '답은 42입니다.', 'executionId': 'e1'}),
+     row(8, {'type': 'turn_end', 'stopReason': 'end_turn', 'executionId': 'e1'}),
+     row(9, {'type': 'user', 'content': '두 번째', 'images': [], 'documents': []}),
+     row(10, {'type': 'turn_start', 'executionId': 'e2'}),
+     row(11, {'type': 'turn_end', 'stopReason': 'cancelled', 'executionId': 'e2'}),
+     # A turn that never ended is superseded by the next one; a turn with no user row was
+     # started by something else (an agent hook) and is marked, not given a made-up input.
+     row(12, {'type': 'user', 'content': '세 번째', 'images': [], 'documents': []}),
+     row(13, {'type': 'turn_start', 'executionId': 'e3'}),
+     row(14, {'type': 'assistant', 'operationType': 'Say', 'content': '하다 만 답', 'executionId': 'e3'}),
+     row(15, {'type': 'user', 'content': '네 번째', 'images': [], 'documents': []}),
+     row(16, {'type': 'turn_start', 'executionId': 'e4'}),
+     row(17, {'type': 'assistant', 'operationType': 'Say', 'content': '넷째 답', 'executionId': 'e4'}),
+     row(18, {'type': 'turn_end', 'stopReason': 'end_turn', 'executionId': 'e4'}),
+     row(19, {'type': 'turn_start', 'executionId': 'e5'}),
+     row(20, {'type': 'assistant', 'operationType': 'Say', 'content': '훅이 시킨 일', 'executionId': 'e5'}),
+     row(21, {'type': 'turn_end', 'stopReason': 'end_turn', 'executionId': 'e5'}),
+     # The next prompt, before its turn starts, waits as the tail.
+     row(22, {'type': 'user', 'content': '다섯 번째', 'images': [], 'documents': []}))
+def hook(name, payload, **extra):
+    r = subprocess.run([py, str(tested_hooks / name)], input=json.dumps(payload).encode('utf-8'),
+                       capture_output=True, timeout=120, cwd=str(proj),
+                       env={**os.environ, 'KIRO_SESSION_ID': sid, **extra})
+    assert r.returncode == 0, r.stderr
+    return r.stdout.decode('utf-8')
+given = {'session_id': sid, 'cwd': str(proj)}
+# Kiro puts the start and input hooks' stdout into the context as it is — plain text, not JSON.
+out = hook('claude_session_start.py', {**given, 'hook_event_name': 'SessionStart'})
+assert out.startswith('[osk 세션 시작 — session="proj"]'), out
+assert 'Kiro has no subscription fork' in out, out
+out = hook('claude_prompt_submit.py', {**given, 'hook_event_name': 'UserPromptSubmit', 'prompt': '두 번째'})
+assert not out.lstrip().startswith('{'), out
+# Kiro shows the stop hook's output nowhere: it prints nothing, and it captures the transcript
+# found by the conversation ID, since Kiro gives no transcript path.
+assert hook('capture_stop.py', {**given, 'hook_event_name': 'Stop'}) == ''
+st = integration.status('kiro', sid)
+assert (st['captured_rounds'], st['aborted_rounds'], st['interrupted_rounds']) == (5, 1, 1), st
+assert st['capture_pending'] and not st['capture_error'], st
+assert Path(st['transcript_path']) == transcript.resolve(), st
+text = (root / st['pending_refs'][0].split('#')[0]).read_text(encoding='utf-8')
+assert text.count('<!-- osk-capture: dialogue-v1 ') == 5, text
+assert '첫 질문' in text and '읽어 보겠습니다.' in text and '답은 42입니다.' in text, text
+assert '"type": "superseded"' in text and '하다 만 답' in text and '넷째 답' in text, text
+assert '"native_trigger": "inputless"' in text and '다섯 번째' not in text, text
+# A transcript in another conversation's folder is not read.
+other = integration.capture('kiro', 'sess_other', str(transcript), 'proj')
+assert 'does not match' in (other['capture_error'] or ''), other
+# When capture fails, Kiro's stop hook still prints nothing: it has no place to show a notice.
+assert hook('capture_stop.py', {'session_id': 'sess_missing', 'cwd': str(proj), 'hook_event_name': 'Stop'},
+            KIRO_SESSION_ID='sess_missing') == ''
+assert integration.status('kiro', 'sess_missing')['capture_error'], 'the failure is kept in the state'
+# Reasoning is outside the capture scope; tool payloads are references (Bylaws §2 2).
+assert 'internal thought' not in text and 'FILE BODY' not in text, text
+assert '"tool_evidence_ref"' in text and '"read_file"' in text, text
+assert '"stopReason": "cancelled"' in text, text
+assert {'kiro/start', 'kiro/input', 'kiro/stop'} <= set(runs.read()['runs']), runs.read()['runs']
+# Another host's hook started from a Kiro terminal keeps its own identity and envelope.
+claude_t = rows(claude_home / 'projects' / 'p' / 'c9.jsonl', {'type': 'user', 'sessionId': 'c9'})
+out = hook('claude_session_start.py', {'session_id': 'c9', 'transcript_path': str(claude_t),
+                                       'cwd': str(proj), 'hook_event_name': 'SessionStart', 'source': 'startup'})
+assert json.loads(out)['hookSpecificOutput']['hookEventName'] == 'SessionStart', out
+assert 'claude/start' in runs.read()['runs'], runs.read()['runs']
+# doctor reads Kiro's own hook file format, its MCP settings file and `kiro --version`.
+kiro = harness.get('kiro')
+table = {}
+for event in harness.SCRIPTS:
+    command = base.hook_line([py, hooks_dir / harness.SCRIPTS[event]])
+    table.setdefault(kiro.events[event], []).append(kiro.hook_group(event, command))
+rows(home / '.kiro' / 'hooks' / 'osk-system.json', kiro.hook_content({}, table))
+rows(home / '.kiro' / 'settings' / 'mcp.json', kiro.mcp_write({}, py, str(server)))
+fake_cli('kiro', '1.1.70')
+rep = doctor.report('kiro')
+got = {i['check']: i for i in rep['hosts'][0]['items']}
+assert got['MCP']['level'] == 'ok', got
+assert all(got[f'훅 {n}']['level'] == 'ok' for n in ('SessionStart', 'UserPromptSubmit', 'Stop')), got
+assert got['판본']['level'] == 'ok' and '1.1.70' in got['판본']['detail'], got
+assert 'fork' not in got, got
 ''')
 
 

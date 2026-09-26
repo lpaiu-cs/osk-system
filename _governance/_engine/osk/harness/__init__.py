@@ -16,10 +16,10 @@ import os
 import re
 from pathlib import Path
 
-from . import claude, codex
+from . import claude, codex, kiro
 from .base import MCP_NAME, SCRIPTS, Adapter  # noqa: F401
 
-ADAPTERS = (claude.ADAPTER, codex.ADAPTER)
+ADAPTERS = (claude.ADAPTER, codex.ADAPTER, kiro.ADAPTER)
 NAMES = tuple(a.name for a in ADAPTERS)
 # 호스트를 판별하지 못했을 때 쓰는 출력 — 두 A 호스트가 함께 받는 계약이다.
 FALLBACK = ADAPTERS[0]

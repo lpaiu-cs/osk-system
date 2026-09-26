@@ -49,7 +49,8 @@ def emit_context(event: str, text: str, system_message: str = "", host=None) -> 
     — `[osk …]` 평문은 Codex에서 JSON으로 오인된다. `system_message`는 모델 문맥이
     아니라 **사용자 화면**에 경고로 뜬다(최상위 `systemMessage`).
 
-    엔진을 들이지 못해도 진단은 나가야 하므로, 그때는 같은 계약을 여기서 쓴다."""
+    엔진을 들이지 못해도 진단은 나가야 하므로, 그때는 같은 계약을 여기서 쓴다.
+    평문을 그대로 받는 호스트(Kiro)의 어댑터는 문자열을 돌려준다."""
     try:
         from osk import harness
         output = (host or harness.FALLBACK).hook_output(event, text, system_message)
@@ -57,7 +58,8 @@ def emit_context(event: str, text: str, system_message: str = "", host=None) -> 
         output = {"hookSpecificOutput": {"hookEventName": _EVENTS[event], "additionalContext": text}}
         if system_message:
             output["systemMessage"] = system_message
-    sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode("utf-8"))
+    data = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+    sys.stdout.buffer.write(data.encode("utf-8"))
     sys.stdout.buffer.flush()
 
 

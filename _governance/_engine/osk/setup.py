@@ -99,9 +99,9 @@ def _hooks(adapter, uninstall: bool) -> dict:
     path = files[0]
     try:
         data = _read_json(path)
-        table = data.get("hooks", {})
+        table = adapter.hook_table(data)
         if not isinstance(table, dict):
-            raise SetupError(f"{path}: `hooks`가 JSON 객체가 아니다")
+            raise SetupError(f"{path}: `hooks`가 {adapter.title}의 훅 형식이 아니다")
         _servers, registered, _errors = adapter.registrations()
     except (OSError, ValueError, SetupError) as e:
         return {"file": str(path), "error": f"{type(e).__name__}: {e}", "events": {}, "changed": False}
@@ -146,16 +146,14 @@ def _hooks(adapter, uninstall: bool) -> dict:
     if notes:
         out["notes"] = sorted(notes)
     if out["changed"]:
-        content = {k: v for k, v in data.items() if k != "hooks"}
-        if new:
-            content["hooks"] = new
-        out["content"] = content
+        out["content"] = adapter.hook_content(data, new)
     return out
 
 
 def _mcp(adapter, uninstall: bool) -> dict:
     """MCP 등록의 조치 — 호스트 CLI로 실행할 명령(`run`)이나, CLI가 없을 때 사람이 할
-    명령(`manual`). 제 것인지는 CLI가 실제로 고치는 파일(`mcp_target`)의 등록으로만
+    명령(`manual`). 등록 CLI가 없는 호스트(`mcp_direct`)는 설정 파일의 새 내용(`content`,
+    보고에는 싣지 않는다)이다. 제 것인지는 CLI가 실제로 고치는 파일(`mcp_target`)의 등록으로만
     가린다. 다른 파일에서 찾은 등록으로 CLI를 부르면, 그 파일이 아닌 곳에 있는 남의
     등록이 바뀐다."""
     server, python, target = _server(), _python(), adapter.mcp_target()
@@ -188,6 +186,17 @@ def _mcp(adapter, uninstall: bool) -> dict:
         others = [s["tokens"] for s in named if s not in mine]
         if others:
             out["replaces"] = [" ".join(t) for t in others]
+    if adapter.mcp_direct:
+        # 등록 CLI가 없는 호스트(Kiro) — 설정 파일에 직접 병합한다. 쓰기 직전의 최신 파일로
+        # 다시 계획해 쓴다(`_write_mcp`).
+        if out["action"] in CHANGES:
+            try:
+                data = _read_json(target)
+            except (OSError, ValueError, SetupError) as e:
+                return {"action": "error", "error": f"{type(e).__name__}: {e}"}
+            out["content"] = adapter.mcp_write(data, python.as_posix(),
+                                               None if uninstall else server.as_posix())
+        return out
     if runs:
         out["files"] = [str(target)] if target and target.is_file() else []
         if shutil.which(adapter.cli):
@@ -392,8 +401,8 @@ def _human(items: list[dict], baseline: dict | None, uninstall: bool, extras: di
         if hooks.get("changed") or mcp.get("action") in CHANGES:
             steps.append(f"{adapter.title}의 세션을 새로 연다 — 훅과 MCP는 세션을 시작할 때 읽힌다")
     if not items and not uninstall:
-        steps.append("이 기기에서 Claude Code·Codex의 흔적(설정 폴더·PATH의 CLI)을 찾지 못했다 — "
-                     "설치한 뒤 다시 실행하거나 --harness로 고른다")
+        steps.append(f"이 기기에서 {'·'.join(a.title for a in adapters.ADAPTERS)}의 흔적(설정 폴더·"
+                     "PATH의 CLI)을 찾지 못했다 — 설치한 뒤 다시 실행하거나 --harness로 고른다")
     if baseline and baseline.get("state") == "record":
         steps.append("기준선 기록(`00_Scope/Workbench/_ledger/update.jsonl`)을 커밋한다")
     if not uninstall:
@@ -469,14 +478,15 @@ def plan(only: list[str] | None = None, uninstall: bool = False, *, fork: bool =
     if sync or system:
         extras["sync"] = _sync(manager, uninstall)
     changes = (bool(baseline and baseline.get("state") == "record")
-               or any(i["hooks"].get("changed") or i["mcp"].get("run") for i in items)
+               or any(i["hooks"].get("changed") or i["mcp"].get("run") or "content" in i["mcp"]
+                      for i in items)
                or _extras_changes(extras))
     errors = [f"{i['title']} {part}: {i[part]['error']}" for i in items for part in ("mcp", "hooks")
               if i[part].get("error")] + _extras_errors(extras)
     if baseline and baseline.get("state") == "error":
         errors.append(f"기준선: {baseline['error']}")
     # 확인 대상은 osk 조치다 — 설정 파일의 다른 내용은 쓰기 직전에 최신으로 다시 읽으므로
-    # (`_write_hooks`) 그것이 바뀌었다고 다시 확인받을 일은 없다.
+    # (`_write`) 그것이 바뀌었다고 다시 확인받을 일은 없다.
     identity = {"root": str(core.ROOT), "python": str(_python()), "uninstall": uninstall,
                 "items": _shown(items), "baseline": baseline, **extras}
     return {"ok": not errors, "root": str(core.ROOT), "python": str(_python()),
@@ -489,7 +499,8 @@ def plan(only: list[str] | None = None, uninstall: bool = False, *, fork: bool =
 
 def _shown(items: list[dict]) -> list[dict]:
     """계획 항목에서 새 파일 내용(`content`)을 뺀 것 — 보고와 확인의 대상이다."""
-    return [{**i, "hooks": {k: v for k, v in i["hooks"].items() if k != "content"}} for i in items]
+    return [{**i, **{part: {k: v for k, v in i[part].items() if k != "content"} for part in ("mcp", "hooks")}}
+            for i in items]
 
 
 def report(p: dict) -> dict:
@@ -525,31 +536,46 @@ def _record_baseline(b: dict) -> dict:
             "governance_protected": rep.get("governance_protected")}
 
 
-def _write_hooks(adapter, approved: dict, uninstall: bool, stamp: str) -> dict:
-    """훅 설정을 쓴다 — 계획 때의 사본이 아니라 쓰기 직전의 최신 파일에 osk 조치만
-    병합한다. 확인을 기다리거나 앞 단계를 적용하는 사이 다른 도구나 사용자가 고친 것
-    (권한 제한·다른 훅)을 지우지 않기 위해서다. 확인한 osk 조치(`events`)가 그 사이
-    달라졌으면 쓰지 않는다. 읽는 동안 파일이 바뀌면 다시 읽는다."""
-    path = Path(approved["file"])
-    step = {"step": f"{adapter.name} hooks", "file": str(path)}
+def _write(step: dict, path: Path, replan, keys: tuple, approved: dict, stamp: str) -> dict:
+    """확인한 계획의 파일을 쓴다 — 계획 때의 사본이 아니라 쓰기 직전의 최신 파일로 다시
+    계획한 내용이다. 확인을 기다리거나 앞 단계를 적용하는 사이 다른 도구나 사용자가 고친 것
+    (권한 제한·다른 훅·다른 서버)을 지우지 않기 위해서다. 확인한 osk 조치(`keys`)가 그 사이
+    달라졌으면 쓰지 않는다. 읽는 동안 파일이 바뀌면 다시 읽는다. 새 내용이 None이면
+    파일을 지운다(백업은 남긴다)."""
+    key = keys[0]
     for _attempt in range(3):
         before = path.read_bytes() if path.is_file() else None
-        fresh = _hooks(adapter, uninstall)
+        fresh = replan()
         if fresh.get("error"):
             return {**step, "ok": False, "error": fresh["error"]}
-        if fresh["events"] != approved["events"]:
-            return {**step, "ok": False, "error": "확인 뒤 osk 훅 항목이 바뀌었다 — 쓰지 않았다. "
+        if [fresh.get(k) for k in keys] != [approved.get(k) for k in keys]:
+            return {**step, "ok": False, "error": "확인 뒤 osk 항목이 바뀌었다 — 쓰지 않았다. "
                                                   "setup을 다시 계획해 확인받는다"}
-        if not fresh["changed"]:
-            return {**step, "ok": True, "events": fresh["events"]}
+        if "content" not in fresh:
+            return {**step, "ok": True, key: fresh[key]}
         if (path.read_bytes() if path.is_file() else None) != before:
             continue
         backup = _backup(path, stamp)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        core.atomic_write(path, (json.dumps(fresh["content"], ensure_ascii=False, indent=2)
-                                 + "\n").encode("utf-8"))
-        return {**step, "ok": True, "events": fresh["events"], **({"backup": backup} if backup else {})}
+        if fresh["content"] is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            core.atomic_write(path, (json.dumps(fresh["content"], ensure_ascii=False, indent=2)
+                                     + "\n").encode("utf-8"))
+        return {**step, "ok": True, key: fresh[key], **({"backup": backup} if backup else {})}
     return {**step, "ok": False, "error": "쓰는 동안 설정 파일이 계속 바뀌었다 — 쓰지 않았다"}
+
+
+def _write_hooks(adapter, approved: dict, uninstall: bool, stamp: str) -> dict:
+    return _write({"step": f"{adapter.name} hooks", "file": approved["file"]}, Path(approved["file"]),
+                  lambda: _hooks(adapter, uninstall), ("events",), approved, stamp)
+
+
+def _write_mcp(adapter, approved: dict, uninstall: bool, stamp: str) -> dict:
+    """등록 CLI가 없는 호스트의 MCP 설정 파일에 osk 서버 항목만 병합한다. 확인한 조치와
+    그것이 바꿀 남의 등록(`replaces`)이 그대로일 때만 쓴다."""
+    return _write({"step": f"{adapter.name} mcp", "file": approved["file"]}, Path(approved["file"]),
+                  lambda: _mcp(adapter, uninstall), ("action", "replaces"), approved, stamp)
 
 
 def _apply(p: dict) -> dict:
@@ -587,6 +613,15 @@ def _apply(p: dict) -> dict:
                 done.append({"step": f"{adapter.name} mcp", "command": core.shell_join(argv),
                              "ok": code == 0 or removing, "returncode": code, "output": output})
                 ok &= code == 0 or removing
+        if "content" in mcp:
+            try:
+                result = _write_mcp(adapter, mcp, p["uninstall"], stamp)
+            except OSError as e:
+                result = {"step": f"{adapter.name} mcp", "file": mcp["file"], "ok": False,
+                          "error": f"{type(e).__name__}: {e}"}
+            backups += [result.pop("backup")] if result.get("backup") else []
+            done.append(result)
+            ok &= result["ok"]
         if hooks.get("changed"):
             try:
                 result = _write_hooks(adapter, hooks, p["uninstall"], stamp)
@@ -727,6 +762,7 @@ def text(rep: dict) -> str:
     for h in rep.get("hosts", []):
         mcp, hooks = h["mcp"], h["hooks"]
         lines.append(f"{h['title']}: MCP {mcp.get('action')}"
+                     + (f" {mcp['file']}" if adapters.get(h["harness"]).mcp_direct and mcp.get("file") else "")
                      + (f" ({mcp['error']})" if mcp.get("error") else ""))
         if hooks.get("file"):
             lines.append(f"  훅 {hooks['file']}: " + ", ".join(f"{k} {v}" for k, v in hooks["events"].items())

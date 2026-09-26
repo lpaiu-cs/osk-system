@@ -586,7 +586,24 @@ scope가 결속되기 전에는 이 대화의 라운드를 포착할 수 없다.
 | `integration list` | 포착된 라운드가 검토를 기다리는 대화를 나열한다. |
 | `protect <폴더>`, `approve <폴더>`, `revert <폴더>` | 폴더를 보호하거나, 대기 중인 변경집합을 승인하거나 반려한다. `[y/N]`으로 묻고, 대화형 단말이 아니면 실행을 거부한다. |
 | `fork doctor` | fork 검토가 돌 수 있는지 점검한다. 읽기 전용이다. |
-| `doctor` | 이 기기에서 Claude Code·Codex가 어떻게 이어졌는지 점검한다: MCP·훅 등록, 훅마다 마지막으로 불린 시각, 세션 시작 문구가 에이전트에게 닿았는지, 호스트 판본, fork. 읽기 전용이며, 동작할 수 없는 설정이 있을 때만 종료코드 1이다. |
+| `doctor` | 이 기기에서 Claude Code·Codex·Kiro가 어떻게 이어졌는지 점검한다: MCP·훅 등록, 훅마다 마지막으로 불린 시각, 세션 시작 문구가 에이전트에게 닿았는지, 호스트 판본, fork. 읽기 전용이며, 동작할 수 없는 설정이 있을 때만 종료코드 1이다. |
+
+## 선택: Kiro 연결
+
+Kiro도 세 훅과 대화 전사를 쓴다. 구독 fork는 없어서, 대화 검토는 백그라운드 fork 대신
+세션 안에서 9·15턴으로 한다. 2단계의 `setup`은 이 기기에 Kiro(`~/.kiro` 폴더나 PATH의
+`kiro`)가 있으면 Kiro도 잇는다. 손으로 할 때는 아래 두 단계다. 파일 내용은
+[SETUP](SETUP.md)의 'Kiro에 잇는다'에 있다.
+
+**Ka. MCP 서버를 등록한다.** `~/.kiro/settings/mcp.json`의 `mcpServers`에
+`osk-system` 항목을 더한다. Kiro에는 등록 CLI가 없다.
+
+**Kb. 훅을 등록한다.** `~/.kiro/hooks/osk-system.json`에 SessionStart·
+UserPromptSubmit·Stop 훅 세 개를 둔다. 명령은 3b와 같은 스크립트를 부른다.
+
+**확인:** Kiro는 **신뢰한 작업 폴더에서만** 훅을 돌린다. 폴더를 열 때 신뢰할지 물으면
+허락한다. 그다음 새 채팅에서 에이전트에게 osk 훅이 알려 준 세션 키를 묻는다. 저장소
+이름으로 답해야 한다. `doctor --harness kiro`로도 확인한다.
 
 ## 선택: Obsidian으로 vault 둘러보기
 

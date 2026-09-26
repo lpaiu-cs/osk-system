@@ -15,7 +15,8 @@ order. Where a step says to ask, ask and wait; do not guess the user's answer.
 
 - Python 3.11 or newer: `python3 --version`, or `py -3.11 --version` on Windows.
 - Git, with `user.name` and `user.email` set.
-- At least one host: Claude Code or Codex.
+- At least one host: Claude Code, Codex or Kiro. Kiro has no subscription fork, so
+  `--fork` and `--schedule` are for Claude Code and Codex only.
 
 If something is missing, tell the user what to install and stop.
 
@@ -110,7 +111,8 @@ approval again, the plan changed in between: show the new plan and ask again.
 ## 7. Hand over the human steps
 
 Tell the user each line of `human`, for example trusting the three osk hooks in
-Codex with `/hooks`, and starting a new session in each host. Commit the
+Codex with `/hooks`, trusting the workspace folder in Kiro, and starting a new
+session in each host. Commit the
 recorded baseline:
 
 ```bash
@@ -132,7 +134,8 @@ python _governance/_engine/scripts/setup.py doctor
 For each host it shows whether the MCP server and the three hooks point at this
 vault, when each hook last ran on this device, and whether the agent called
 `overview` after the session started. Report failures to the user. A hook that
-has not run yet needs a new session (Claude Code) or trust (Codex).
+has not run yet needs a new session (Claude Code), trust (Codex) or a trusted
+workspace folder and a new chat (Kiro).
 
 ## Optional features later
 
