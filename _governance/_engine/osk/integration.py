@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import core, raw, scope_memory, transcripts, write
+from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 
 SOFT, HARD = 9, 15
@@ -18,8 +19,8 @@ MAX_REVIEW_ROUNDS = 15
 
 
 def _identity(harness: str, conversation_id: str) -> str:
-    if harness not in ("claude", "codex") or not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", conversation_id):
-        raise ValueError("explicit claude/codex harness and actual conversation_id required")
+    if harness not in adapters.NAMES or not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", conversation_id):
+        raise ValueError(f"explicit {'/'.join(adapters.NAMES)} harness and actual conversation_id required")
     return hashlib.sha256(f"{core.ROOT.resolve()}\n{harness}\n{conversation_id}".encode()).hexdigest()
 
 
@@ -207,16 +208,7 @@ def _locate_transcript(harness: str, sid: str, saved: str | None = None) -> str 
     _identity(harness, sid)
     if saved and Path(saved).exists():
         return str(Path(saved).resolve())
-    if harness == "claude":
-        base = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
-        matches = list((base / "projects").glob(f"*/{sid}.jsonl"))
-    else:
-        base = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-        matches = []
-        for folder, prefix in ((base / "sessions", "*/*/*/"), (base / "archived_sessions", "")):
-            for suffix in (f"*-{sid}.jsonl", f"*-{sid}_*.jsonl"):
-                matches.extend(folder.glob(prefix + suffix))
-    matches = sorted({p.resolve() for p in matches if p.is_file()})
+    matches = sorted({p.resolve() for p in adapters.get(harness).transcripts(sid) if p.is_file()})
     if len(matches) > 1:
         raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
     # transcripts.read checks the native identity before this path is saved.
@@ -693,33 +685,14 @@ class SubagentEvent(Exception):
 
 def hook_source(env: dict) -> tuple[str, str, str | None]:
     """Locate only the caller's native transcript, never another conversation's backlog."""
-    sid = env.get("session_id") or env.get("conversation_id") or os.environ.get("CODEX_THREAD_ID")
-    harness = env.get("harness") or os.environ.get("OSK_HARNESS")
+    sid = adapters.session_id(env)
     path = env.get("transcript_path")
-    if not harness and os.environ.get("CODEX_THREAD_ID") == sid:
-        harness = "codex"
-    if not harness and path and sid and Path(path).stem == sid:
-        base = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
-        if Path(path).resolve().is_relative_to(base.resolve()):
-            # A fresh Claude file may not exist until after SessionStart.
-            harness = "claude"
-    if not harness and path:
-        with Path(path).open("r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                if row.get("type") == "session_meta":
-                    harness = "codex"
-                    break
-                if row.get("sessionId"):
-                    harness = "claude"
-                    break
     if not sid:
         raise ValueError("hook has no actual conversation ID; capture not acknowledged")
+    harness = adapters.detect(env, sid, path)
     candidates = []
     if not path:
-        for kind in ([harness] if harness else ["claude", "codex"]):
+        for kind in ([harness] if harness else list(adapters.NAMES)):
             _identity(kind, sid)
             saved = _locate_transcript(kind, sid, status(kind, sid).get("transcript_path"))
             if saved:
@@ -731,14 +704,32 @@ def hook_source(env: dict) -> tuple[str, str, str | None]:
     if not harness:
         raise ValueError("native harness/transcript unavailable; provide harness and transcript_path")
     _identity(harness, sid)
-    if harness == "codex" and path and Path(path).is_file():
-        with Path(path).open("rb") as f:
-            first = next((line for line in f if line.strip()), b"")
-        row = json.loads(first) if first.endswith(b"\n") else None
-        meta = row.get("payload") if isinstance(row, dict) and row.get("type") == "session_meta" else None
-        if isinstance(meta, dict) and meta.get("id") != sid and meta.get("session_id") == sid:
-            raise SubagentEvent("Codex subagent hook names its root conversation; no state changed")
+    reason = adapters.get(harness).subagent(path, sid) if path and Path(path).is_file() else None
+    if reason:
+        raise SubagentEvent(reason)
     return harness, sid, path
+
+
+def recent_transcript(harness: str) -> str | None:
+    """이 vault가 가장 최근에 포착한 그 하네스 대화의 전사 — `doctor`가 판본을 읽는다.
+    상태를 쓰지 않는다."""
+    probe = state_path(harness, "inventory")
+    prefix = "-".join(probe.name.split("-")[:3]) + "-"
+    dated = []
+    for p in probe.parent.glob(prefix + "*.json"):
+        try:
+            dated.append((p.stat().st_mtime_ns, p))
+        except OSError:
+            continue                     # 그 사이 사라진 상태
+    for _, p in sorted(dated, reverse=True):
+        try:
+            s = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        path = s.get("transcript_path") if isinstance(s, dict) and s.get("harness") == harness else None
+        if isinstance(path, str) and Path(path).is_file():
+            return path
+    return None
 
 
 def hook_capture(env: dict, session: str) -> dict:

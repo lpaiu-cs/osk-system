@@ -136,6 +136,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
+| `doctor` | 이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정. 읽기만 한다 (아래) |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
@@ -409,6 +410,45 @@ CLI의 `/hooks`에서 각 정의를 확인하고 신뢰한 뒤 새 세션에서 
 
 Personalization에는 저장 경계를 간단히 두어도 된다. 다만 훅의 설치·신뢰·새 세션
 실행을 확인하기 전에는 `overview`·scope 읽기와 주기적 통합 안내를 제거하지 않는다.
+
+### 연결 점검 (`doctor`)
+
+`osk doctor`는 이 기기에서 하네스가 osk에 이어졌는지 호스트(Claude Code·Codex)마다
+읽기만 하며 점검한다. 상태와 설정을 쓰지 않는다. `--json`은 같은 결과를 JSON으로
+내고, `--harness`는 호스트 하나로 좁힌다. 설정이 osk를 띄우지 못하는 경우(Python
+3.11 미만, `mcp` 패키지 없음, 등록 명령의 Python 없음)만 실패이며 종료코드 1이다.
+등록하지 않은 기능은 경고다. 이 기기에서 흔적이 없는 호스트(설정 폴더·실행 기록·PATH의
+CLI가 모두 없다)는 건너뛴다.
+
+- **등록.** MCP 서버와 세 훅이 이 vault의 엔진 사본(`<vault>/_governance/_engine`)을
+  부르는지 본다 — 훅과 서버는 자기 파일 자리로 vault를 찾으므로 다른 자리의 엔진을
+  부르는 등록은 이 vault가 아니다. 읽는 자리는 Claude Code가 `~/.claude.json`(MCP)과
+  `~/.claude/settings.json`(훅), Codex가 `~/.codex/config.toml`(MCP·`[hooks]` 표)과
+  `~/.codex/hooks.json`(훅)이며 `CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다. 실행 형식
+  (`command`와 `args`)과 셸 형식 한 줄을 모두 읽는다.
+- **실행.** 세 훅은 불릴 때마다 호스트·사건별 마지막 시각을 이 기기에 남긴다(Git
+  디렉터리의 `osk-hook-runs.json`, 동기화되지 않는다). 적는 것은 호스트 이름·세션
+  키·그 훅을 돌린 Python 경로·시각뿐이다. 등록됐는데 기록이 없으면 Claude Code에는
+  새 세션을, Codex에는 `/hooks`의 신뢰를 안내한다. Codex는 `config.toml`의
+  `[hooks.state]`에 신뢰 기록이 있는지도 함께 본다(정의가 바뀌었는지는 실행 기록이
+  말한다). 문서의 자리 밖(프로젝트 설정·플러그인)에 등록한 훅도 실행 기록으로 드러나고,
+  입력을 읽지 못해 호스트를 알아보지 못한 실행은 엔진 항목에 따로 보인다. 기록은 이
+  판의 훅이 처음 불린 때부터 쌓인다.
+- **전달.** 세션 시작 훅은 `overview(session=…)` 호출을 안내한다. 그 세션 키의
+  `overview`가 세션 시작 뒤에 불렸으면 훅 문맥이 모델에 닿았다고 본다. 짐작이지
+  증명이 아니다 — 기록이 없으면 새 세션에서 세션 키를 물어 확인하라고 안내한다.
+- **판본.** 이 vault가 가장 최근에 포착한 대화의 판본(없으면 PATH의 CLI가 내는
+  `--version`)을 어댑터가 확인한 판과 비교한다. Codex 전사는 대화를 만든 판을 적으므로
+  이어 쓴 옛 대화는 옛 판으로 보인다. 더 새 판이면 경고한다 — 훅 입출력이나 전사 형식이
+  바뀌었을 수 있다는 뜻이고, 동작을 막지 않는다.
+- **fork.** 구독 fork를 설정했으면 `fork doctor`와 같은 판정(`response_growth.check`)을
+  한 줄로 싣는다. 인증 상태는 조회하되 추론은 띄우지 않는다.
+
+호스트마다 다른 것 — 판별, 전사 위치, 훅 출력 형식, MCP·훅 등록 자리, 신뢰 기록,
+확인한 판본 — 은 엔진의 `osk/harness/` 어댑터 한 곳에 있다. 포착과 훅 스크립트와
+`doctor`는 하네스 이름을 직접 가르지 않고 이 등록부에 묻는다. 전사 형식 해석
+(`osk/transcripts.py`)과 구독 fork(`osk/response_growth.py`)는 제 모듈에 있고,
+어댑터는 fork 지원 여부만 선언한다.
 
 ### 세션 기록 훅 (`raw append`)
 

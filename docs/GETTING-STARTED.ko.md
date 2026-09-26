@@ -402,6 +402,13 @@ Codex는 새로 추가되거나 바뀐 훅 정의를 사용자가 신뢰하기 �
 기본값이다). 새 세션에서 에이전트에게 *"osk 훅이 알려 준 세션 키가 뭐야?"* 하고
 물으면 저장소 이름으로 답해야 한다.
 
+**두 호스트를 한 번에 확인:** 각 호스트에서 새 세션을 한 번 연 뒤, `PYTHONPATH`를
+설정한 채(2단계) vault 루트에서 `doctor`를 실행한다: `.venv/bin/python -m osk.cli doctor`,
+Windows는 `.venv\Scripts\python.exe -m osk.cli doctor`. Claude Code와 Codex마다 MCP와
+세 훅이 이 vault를 가리키는지, 훅마다 이 기기에서 마지막으로 불린 시각, 세션 시작 뒤
+에이전트가 `overview`를 불렀는지를 보인다. 등록됐는데 한 번도 불리지 않은 훅은 Claude
+Code에서는 새 세션을, Codex에서는 `/hooks`의 신뢰를 요구한다. `doctor`는 읽기만 한다.
+
 ## 5단계: 첫 세션
 
 Claude Code나 Codex를 vault가 아니라 `~/code/my-app` 같은 **프로젝트 저장소
@@ -571,6 +578,7 @@ scope가 결속되기 전에는 이 대화의 라운드를 포착할 수 없다.
 | `integration list` | 포착된 라운드가 검토를 기다리는 대화를 나열한다. |
 | `protect <폴더>`, `approve <폴더>`, `revert <폴더>` | 폴더를 보호하거나, 대기 중인 변경집합을 승인하거나 반려한다. `[y/N]`으로 묻고, 대화형 단말이 아니면 실행을 거부한다. |
 | `fork doctor` | fork 검토가 돌 수 있는지 점검한다. 읽기 전용이다. |
+| `doctor` | 이 기기에서 Claude Code·Codex가 어떻게 이어졌는지 점검한다: MCP·훅 등록, 훅마다 마지막으로 불린 시각, 세션 시작 문구가 에이전트에게 닿았는지, 호스트 판본, fork. 읽기 전용이며, 동작할 수 없는 설정이 있을 때만 종료코드 1이다. |
 
 ## 선택: Obsidian으로 vault 둘러보기
 
@@ -907,7 +915,7 @@ Windows (PowerShell):
 | `No module named 'mcp.server.fastmcp'` | 다른 Python을 쓰고 있거나 mcp 2.x가 설치돼 있다. vault의 `.venv` Python을 쓰고, `mcp<2`로 묶인 `_governance/_engine/requirements.txt`를 다시 설치한다. |
 | Windows: `Asia/Seoul`에 대한 `ZoneInfoNotFoundError` | venv에 `tzdata` 패키지가 없다. 의존성을 그 venv에 다시 설치한다. |
 | `claude mcp list`에 *Connected*가 없거나, Codex가 서버를 시작하지 못한다 | 등록한 명령이 vault의 `.venv` Python(Windows는 `.venv/Scripts/python.exe`)을 써야 한다. 같은 명령을 터미널에서 직접 실행해 오류를 본다. 정상 서버는 아무것도 출력하지 않고 클라이언트를 기다린다. Ctrl+C로 멈춘다. |
-| 세션 시작에 osk 문구가 없다 | Claude Code는 시작할 때만 훅을 읽으므로 새 세션을 열고 `/hooks`를 확인한다. Codex에서는 `/hooks`에서 항목을 신뢰한다. 두 하네스 모두 MCP 등록만으로는 훅이 설치되지 않으며, 훅 명령마다 vault의 `.venv` Python을 써야 한다. 3b의 손 실행 시험을 돌려 본다. |
+| 세션 시작에 osk 문구가 없다 | Claude Code는 시작할 때만 훅을 읽으므로 새 세션을 열고 `/hooks`를 확인한다. Codex에서는 `/hooks`에서 항목을 신뢰한다. 두 하네스 모두 MCP 등록만으로는 훅이 설치되지 않으며, 훅 명령마다 vault의 `.venv` Python을 써야 한다. 3b의 손 실행 시험을 돌려 본다. `doctor`는 등록됐지만 이 기기에서 한 번도 불리지 않은 훅을 가려 준다. |
 | 훅 문구에 `착지 미정`이나 `scope 결속이 없다`가 되풀이된다 | 이 저장소의 키가 아직 결속되지 않았다. scope를 만들거나 고른다(5단계 2번). |
 
 **에이전트가 전하는 쓰기 거부**

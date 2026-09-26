@@ -39,15 +39,40 @@ sys.path.insert(0, str(ENGINE))
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
-def emit_context(event: str, text: str, system_message: str = "") -> None:
-    """두 하네스의 JSON 계약 — `[osk …]` 평문은 Codex에서 JSON으로 오인된다.
-    `system_message`는 모델 문맥이 아니라 **사용자 화면**에 경고로 뜬다(두 하네스의
-    최상위 `systemMessage`)."""
-    output = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
-    if system_message:
-        output["systemMessage"] = system_message
+# osk의 훅 사건 → 두 A 호스트의 사건 이름. 엔진을 들이지 못한 진단에만 쓴다.
+_EVENTS = {"start": "SessionStart", "input": "UserPromptSubmit", "stop": "Stop"}
+
+
+def emit_context(event: str, text: str, system_message: str = "", host=None) -> None:
+    """문맥 주입 — `event`는 osk의 사건(`start`·`input`)이고 형식은 호스트 어댑터가
+    정한다(`osk.harness`). 호스트를 모르면 두 A 호스트가 함께 받는 JSON 계약으로 낸다
+    — `[osk …]` 평문은 Codex에서 JSON으로 오인된다. `system_message`는 모델 문맥이
+    아니라 **사용자 화면**에 경고로 뜬다(최상위 `systemMessage`).
+
+    엔진을 들이지 못해도 진단은 나가야 하므로, 그때는 같은 계약을 여기서 쓴다."""
+    try:
+        from osk import harness
+        output = (host or harness.FALLBACK).hook_output(event, text, system_message)
+    except Exception:
+        output = {"hookSpecificOutput": {"hookEventName": _EVENTS[event], "additionalContext": text}}
+        if system_message:
+            output["systemMessage"] = system_message
     sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode("utf-8"))
     sys.stdout.buffer.flush()
+
+
+def note_run(event: str, env: dict | None, key: str | None):
+    """이 기기에서 이 훅이 불렸다는 기록(`osk.harness.runs`) — `doctor`가 등록과 대조한다.
+    훅을 부른 호스트를 돌려준다(출력 형식). 판별·기록 실패는 훅을 막지 않는다."""
+    host = None
+    try:
+        from osk import harness
+        from osk.harness import runs
+        host = harness.host_of(env) if isinstance(env, dict) else None
+        runs.record_run(host.name if host else None, event, key)
+    except Exception:
+        pass
+    return host
 
 
 def _git(cwd: str, *args: str, input: str | None = None) -> str | None:
@@ -266,13 +291,16 @@ def main() -> None:
         if not isinstance(env, dict):
             raise ValueError("hook input must be a JSON object")
     except Exception as exc:
-        emit_context("SessionStart", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
+        note_run("start", None, None)
+        emit_context("start", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
         return
     cwd = env.get("cwd") or os.getcwd()
 
+    host = None
     try:
         from osk import scope_memory, write, evictions, rechecks
         key = session_key(cwd)
+        host = note_run("start", env, key)
         try:
             rechecks.ensure_baseline()
         except Exception:
@@ -290,8 +318,8 @@ def main() -> None:
         except Exception:
             recovery = "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]"
         if not scope:
-            emit_context("SessionStart", "\n\n".join(
-                p for p in (bootstrap, notice, recheck, recovery, captured) if p), shown)
+            emit_context("start", "\n\n".join(
+                p for p in (bootstrap, notice, recheck, recovery, captured) if p), shown, host)
             return
         mem = ""
         try:
@@ -308,9 +336,10 @@ def main() -> None:
                                       captured, block) if p)
         if not out:
             return
-        emit_context("SessionStart", out, shown)
+        emit_context("start", out, shown, host)
     except Exception as exc:
-        emit_context("SessionStart", f"[osk 세션 시작 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
+        emit_context("start", f"[osk 세션 시작 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]",
+                     host=host)
 
 
 if __name__ == "__main__":

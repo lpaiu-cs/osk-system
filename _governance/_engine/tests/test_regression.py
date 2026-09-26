@@ -11715,7 +11715,7 @@ def test_release_workflow_subprocess():
     _suite("정식 발행은 검증한 SHA를 태그로 공개한다", "test_release_workflow.py")
 
 
-GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py")
+GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py")
 
 
 def test_growth_loop_subprocesses():

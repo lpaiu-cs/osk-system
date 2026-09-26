@@ -11,6 +11,7 @@ import time
 from contextlib import closing
 
 from . import core, growth, integration, transcripts
+from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 
 CONFIG = core.ROOT / '.osk/response-growth.json'
@@ -28,7 +29,7 @@ def configured(harness: str) -> str | None:
     if not CONFIG.exists():
         return None
     settings = json.loads(CONFIG.read_text(encoding='utf-8-sig'))
-    if not isinstance(settings, dict) or set(settings) - {'codex', 'claude'}:
+    if not isinstance(settings, dict) or set(settings) - set(adapters.fork_names()):
         raise ValueError('response-growth.json must map harness names to native CLI paths')
     executable = settings.get(harness)
     if executable is not None and (not isinstance(executable, str) or not executable.strip()):
