@@ -179,17 +179,29 @@ S.run(apply=True)
 rep, code = S.run(apply=True)
 assert code == 0 and rep['ok'], rep
 assert len(osk_entries(read(settings), 'start')) == 1 and '/old/python' not in settings.read_text(encoding='utf-8')
-# A plan that changed after the request needs a new confirmation.
+# An osk entry that changed after the request needs a new confirmation.
 S.run(apply=True, uninstall=True)
-(codex_home / 'hooks.json').write_text(json.dumps({**read(codex_home / 'hooks.json'), 'note': 1}),
-                                       encoding='utf-8')
+data = read(settings)
+data['hooks']['SessionStart'] = [g for g in data['hooks']['SessionStart'] if not any(
+    base.mentions(base.command_tokens(h), hooks_dir / 'claude_session_start.py') for h in g['hooks'])]
+settings.write_text(json.dumps(data), encoding='utf-8')
 rep, code = S.run(apply=True, uninstall=True)
 assert code == 2 and rep['approval_required'], 'applied a plan the user had not seen'
+# Other changes made after the request are kept: the write merges into the newest file
+# (PR #106 review) — a permission rule and another tool's hook must not be lost.
+data = read(settings)
+data['permissions'] = {'deny': ['Bash(rm:*)']}
+data['hooks']['PreToolUse'].append({'matcher': 'Edit', 'hooks': [{'type': 'command', 'command': 'echo guard'}]})
+settings.write_text(json.dumps(data), encoding='utf-8')
+(codex_home / 'hooks.json').write_text(json.dumps({**read(codex_home / 'hooks.json'), 'note': 1}),
+                                       encoding='utf-8')
 # Uninstall takes out only this vault's entries.
 rep, code = S.run(apply=True, uninstall=True)
 assert code == 0 and rep['ok'], rep
 left = read(settings)
-assert left['theme'] == 'dark' and left['hooks']['PreToolUse'] == others['hooks']['PreToolUse'], left
+assert left['permissions'] == {'deny': ['Bash(rm:*)']} and len(left['hooks']['PreToolUse']) == 2, left
+assert read(codex_home / 'hooks.json')['note'] == 1, read(codex_home / 'hooks.json')
+assert left['theme'] == 'dark' and others['hooks']['PreToolUse'][0] in left['hooks']['PreToolUse'], left
 assert others['hooks']['Stop'][0] in left['hooks']['Stop'], left
 assert not any(osk_entries(left, e) for e in base.SCRIPTS), left
 assert 'SessionStart' not in read(codex_home / 'hooks.json').get('hooks', {}), read(codex_home / 'hooks.json')
@@ -222,37 +234,102 @@ assert (codex_home / 'hooks.json').read_text(encoding='utf-8') == '{broken'
         self.check_case(r'''
 fake_clis()
 (root / 'release.json').write_text(json.dumps({'version': 'v4.0.0', 'files': {}}), encoding='utf-8')
-seen, plans = [], []
+ticket = core.local_lock_path(update.CONFIRMATION)
+state, applied = {'id': 'r1'}, []
 def fake_run(source=None, ref=None, bundle=None, apply=False, adopt=False):
-    seen.append((ref, apply))
+    # The updater's own gate: under its lock it plans again and applies only the confirmed plan.
+    if apply and 'drift' in state:
+        state['id'] = state.pop('drift')
+    plan = {'review_id': state['id'], 'files': 133, 'rebaseline': ['a'], 'add': [], 'update': [],
+            'conflict': [], 'governance': {'protect': 'establish'}}
     if not apply:
-        return {'review_id': plans.pop(0), 'files': 133, 'rebaseline': ['a'], 'add': [], 'update': [],
-                'conflict': [], 'governance': {'protect': 'establish'}}
-    if len([s for s in seen if s[1]]) % 2:
-        return {'ok': False, 'approval_required': True}
+        return plan
+    pending = json.loads(ticket.read_text(encoding='utf-8')) if ticket.is_file() else {}
+    if pending.get('review_id') != plan['review_id']:
+        update.confirm(plan['review_id'])
+        return {**plan, 'ok': False, 'approval_required': True}
+    ticket.unlink()
+    applied.append(plan['review_id'])
     baseline()
     return {'ok': True, 'governance_protected': 'established'}
 with mock.patch.object(S.update, 'run', fake_run):
-    # The release changed after the user confirmed: the baseline is not recorded.
-    plans += ['r0', 'r0', 'changed']      # the request, the confirmed plan, the check before applying
+    # The release plan changes between the user's confirmation and the updater's lock
+    # (PR #106 review): nothing is applied and no confirmation of the unseen plan is left.
     S.run(apply=True, only=['claude'])
+    state['drift'] = 'r2'
     rep, code = S.run(apply=True, only=['claude'])
-    assert code == 1 and rep['steps'][0]['step'] == 'baseline' and not rep['steps'][0]['ok'], rep
-    assert not [s for s in seen if s[1]] and update.current_version() is None, seen
-    plans += ['r1'] * 4
+    step = rep['steps'][0]
+    assert code == 1 and step['step'] == 'baseline' and not step['ok'] and '바뀌었다' in step['error'], rep
+    assert not applied and update.current_version() is None and not ticket.exists(), (applied, ticket)
+    # Planned and confirmed again, that plan is applied, through one call to the updater.
     rep, _ = S.run(only=['claude'])
     b = rep['baseline']
-    assert (b['state'], b['version'], b['review_id'], b['governance']) == ('record', 'v4.0.0', 'r1', 'establish'), b
+    assert (b['state'], b['version'], b['review_id'], b['governance']) == ('record', 'v4.0.0', 'r2', 'establish'), b
     assert any('update.jsonl' in step for step in rep['human']), rep['human']
     S.run(apply=True, only=['claude'])
     rep, code = S.run(apply=True, only=['claude'])
     step = rep['steps'][0]
     assert code == 0 and step == {'step': 'baseline', 'ok': True, 'current': 'v4.0.0',
                                   'governance_protected': 'established'}, rep
-    assert seen[-3:] == [('v4.0.0', False), ('v4.0.0', True), ('v4.0.0', True)], seen
+    assert applied == ['r2'], applied
 # Once recorded, the baseline is not planned again.
 rep, _ = S.run(only=['claude'])
 assert rep['baseline'] == {'state': 'recorded', 'current': 'v4.0.0'}, rep['baseline']
+''')
+
+    def test_a_confirmed_plan_merges_into_the_newest_settings(self):
+        self.check_case(r'''
+fake_clis()
+baseline()
+settings = claude_home / 'settings.json'
+settings.write_text(json.dumps({'hooks': {}}), encoding='utf-8')
+p = S.plan(['claude'])
+# While the user reads the plan, another tool tightens the settings (PR #106 review).
+guard = {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'echo guard'}]}
+settings.write_text(json.dumps({'permissions': {'deny': ['Bash(rm:*)']}, 'hooks': {'PreToolUse': [guard]}}),
+                    encoding='utf-8')
+res = S._apply(p)
+kept = read(settings)
+assert res['ok'] and kept['permissions'] == {'deny': ['Bash(rm:*)']}, (res, kept)
+assert kept['hooks']['PreToolUse'] == [guard], kept
+assert all(len(osk_entries(kept, e)) == 1 for e in base.SCRIPTS), kept
+# If what the plan would change changed after the plan, nothing is written or run: here
+# the osk hook appeared by hand, and another vault took the MCP name.
+S.run(apply=True, uninstall=True, only=['claude'])
+S.run(apply=True, uninstall=True, only=['claude'])
+p = S.plan(['claude'])
+start = harness.get('claude').hook_group('start', S._command('start'))
+settings.write_text(json.dumps({'hooks': {'SessionStart': [start]}}), encoding='utf-8')
+(claude_home / '.claude.json').write_text(json.dumps({'mcpServers': {'osk-system': {
+    'command': py, 'args': ['/elsewhere/_governance/_engine/mcp_server.py']}}}), encoding='utf-8')
+before, ran = settings.read_bytes(), len(calls())
+res = S._apply(p)
+steps = {s['step']: s for s in res['steps']}
+assert not res['ok'] and '다시 계획' in steps['claude hooks']['error'], res
+assert '다시 계획' in steps['claude mcp']['error'] and len(calls()) == ran, (res, calls()[ran:])
+assert settings.read_bytes() == before
+''')
+
+    def test_mcp_ownership_is_judged_in_the_file_the_cli_changes(self):
+        self.check_case(r'''
+fake_clis()
+baseline()
+elsewhere = '/elsewhere/_governance/_engine/mcp_server.py'
+# The CLI changes $CLAUDE_CONFIG_DIR/.claude.json; ~/.claude.json holds an older entry of this
+# vault (PR #106 review). Uninstall must not remove the other vault's current entry.
+(home / '.claude.json').write_text(json.dumps({'mcpServers': {'osk-system': {
+    'command': vpy.as_posix(), 'args': [server.as_posix()]}}}), encoding='utf-8')
+(claude_home / '.claude.json').write_text(json.dumps({'mcpServers': {'osk-system': {
+    'command': py, 'args': [elsewhere]}}}), encoding='utf-8')
+rep, _ = S.run(uninstall=True, only=['claude'])
+mcp = rep['hosts'][0]['mcp']
+assert mcp['action'] == 'absent' and 'run' not in mcp and 'manual' not in mcp, mcp
+assert any(str(home / '.claude.json') in n for n in mcp['notes']), mcp
+assert mcp['file'] == str(claude_home / '.claude.json'), mcp
+# Installing replaces the other vault's entry only as a confirmed, named step.
+rep, _ = S.run(only=['claude'])
+mcp = rep['hosts'][0]['mcp']
+assert mcp['action'] == 'replace' and elsewhere in mcp['replaces'][0], mcp
 ''')
 
     def test_the_bootstrap_prepares_nothing_for_a_plan_and_hands_over_to_the_engine(self):

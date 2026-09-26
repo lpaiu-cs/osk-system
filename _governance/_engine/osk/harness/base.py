@@ -190,7 +190,14 @@ class Adapter:
         return core.shell_join(argv) if argv else ""
 
     def mcp_files(self) -> list[Path]:
+        """MCP 등록을 읽는 파일 — 첫 자리가 호스트 CLI가 등록을 고치는 파일이다."""
         return []
+
+    def mcp_target(self) -> Path | None:
+        """호스트 CLI(`mcp_argv`·`mcp_remove_argv`)가 등록을 고치는 파일 — 설치가 이
+        파일의 등록만 제 것인지 가려 바꾸거나 걷어 낸다."""
+        files = self.mcp_files()
+        return files[0] if files else None
 
     def mcp_servers(self, data: dict) -> dict:
         """설정 파일 하나의 MCP 서버 표 — 이름 → 항목."""

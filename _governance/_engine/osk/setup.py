@@ -148,8 +148,10 @@ def _hooks(adapter, uninstall: bool) -> dict:
 
 def _mcp(adapter, uninstall: bool) -> dict:
     """MCP 등록의 조치 — 호스트 CLI로 실행할 명령(`run`)이나, CLI가 없을 때 사람이 할
-    명령(`manual`)."""
-    server, python = _server(), _python()
+    명령(`manual`). 제 것인지는 CLI가 실제로 고치는 파일(`mcp_target`)의 등록으로만
+    가린다. 다른 파일에서 찾은 등록으로 CLI를 부르면, 그 파일이 아닌 곳에 있는 남의
+    등록이 바뀐다."""
+    server, python, target = _server(), _python(), adapter.mcp_target()
     try:
         servers, _hooks, errors = adapter.registrations()
     except (OSError, ValueError) as e:
@@ -157,11 +159,17 @@ def _mcp(adapter, uninstall: bool) -> dict:
     mcp_errors = [e for e in errors if any(str(f) in e for f in adapter.mcp_files())]
     if mcp_errors:
         return {"action": "error", "error": "; ".join(mcp_errors)}
-    named = [s for s in servers if s["name"] == base.MCP_NAME]
+    ours = {base.fold(str(target))} if target else set()
+    named = [s for s in servers if s["name"] == base.MCP_NAME and base.fold(str(s["file"])) in ours]
     mine = [s for s in named if base.mentions(s["tokens"], server)]
     want = [base.fold(python.as_posix())]
     same = [s for s in mine if [base.fold(t) for t in base.before(s["tokens"], server)] == want]
-    out: dict = {}
+    out: dict = {"file": str(target) if target else None}
+    elsewhere = sorted({str(s["file"]) for s in servers
+                        if s["name"] == base.MCP_NAME and base.fold(str(s["file"])) not in ours})
+    if elsewhere:
+        out["notes"] = [f"{f}에도 {base.MCP_NAME} 등록이 있다 — setup은 CLI가 고치는 파일만 다룬다"
+                        for f in elsewhere]
     if uninstall:
         out["action"], runs = ("remove", [adapter.mcp_remove_argv()]) if mine else ("absent", [])
     elif len(named) == 1 and same:
@@ -174,7 +182,7 @@ def _mcp(adapter, uninstall: bool) -> dict:
         if others:
             out["replaces"] = [" ".join(t) for t in others]
     if runs:
-        out["files"] = [str(f) for f in adapter.mcp_files() if f.is_file()]
+        out["files"] = [str(target)] if target and target.is_file() else []
         if shutil.which(adapter.cli):
             out["run"] = runs
         else:
@@ -244,8 +252,10 @@ def plan(only: list[str] | None = None, uninstall: bool = False) -> dict:
               if i[part].get("error")]
     if baseline and baseline.get("state") == "error":
         errors.append(f"기준선: {baseline['error']}")
+    # 확인 대상은 osk 조치다 — 설정 파일의 다른 내용은 쓰기 직전에 최신으로 다시 읽으므로
+    # (`_write_hooks`) 그것이 바뀌었다고 다시 확인받을 일은 없다.
     identity = {"root": str(core.ROOT), "python": str(_python()), "uninstall": uninstall,
-                "items": items, "baseline": baseline}
+                "items": _shown(items), "baseline": baseline}
     return {"ok": not errors, "root": str(core.ROOT), "python": str(_python()),
             "uninstall": uninstall, "baseline": baseline, "hosts": items,
             "human": _human(items, baseline, uninstall), "changes": changes,
@@ -254,10 +264,14 @@ def plan(only: list[str] | None = None, uninstall: bool = False) -> dict:
                                                       separators=(",", ":")).encode("utf-8"))}
 
 
+def _shown(items: list[dict]) -> list[dict]:
+    """계획 항목에서 새 파일 내용(`content`)을 뺀 것 — 보고와 확인의 대상이다."""
+    return [{**i, "hooks": {k: v for k, v in i["hooks"].items() if k != "content"}} for i in items]
+
+
 def report(p: dict) -> dict:
     """사람과 에이전트에게 보이는 계획 — 새 파일 내용은 싣지 않는다."""
-    hosts_ = [{**i, "hooks": {k: v for k, v in i["hooks"].items() if k != "content"}} for i in p["hosts"]]
-    return {**p, "hosts": hosts_}
+    return {**p, "hosts": _shown(p["hosts"])}
 
 
 def _backup(path: Path, stamp: str) -> str | None:
@@ -269,18 +283,50 @@ def _backup(path: Path, stamp: str) -> str | None:
 
 
 def _record_baseline(b: dict) -> dict:
-    """확인한 기준선 계획을 적용한다 — 갱신의 확인 관문을 같은 계획으로 두 번 지난다.
-    확인은 이 setup 계획의 확인이 대신한다: 그 계획이 이 `review_id`를 담았다."""
+    """확인한 기준선 계획을 적용한다. 사용자가 확인한 이 setup 계획이 그 갱신 계획의
+    `review_id`를 담았으므로, 그것을 갱신의 확인표에 적고 적용을 한 번만 부른다. 갱신은
+    잠금 안에서 계획을 다시 세워 그 `review_id`일 때만 적용한다. 그 사이 계획이
+    바뀌었으면 적용하지 않고, 사용자에게 보이지 않은 새 계획의 확인표도 남기지 않는다."""
     version = b["version"]
     try:
-        if update.run(ref=version)["review_id"] != b["review_id"]:
-            return {"ok": False, "error": "기준선 계획이 확인 뒤 바뀌었다 — setup을 다시 계획한다"}
-        first = update.run(ref=version, apply=True)
-        rep = update.run(ref=version, apply=True) if first.get("approval_required") else first
+        update.confirm(b["review_id"])
+        rep = update.run(ref=version, apply=True)
     except update.UpdateError as e:
+        update.withdraw()
         return {"ok": False, "error": str(e)}
+    if rep.get("approval_required"):
+        update.withdraw()
+        return {"ok": False, "error": "기준선 계획이 확인 뒤 바뀌었다 — 적용하지 않았다. "
+                                      "setup을 다시 계획해 확인받는다"}
     return {"ok": bool(rep.get("ok")), "current": update.current_version(),
             "governance_protected": rep.get("governance_protected")}
+
+
+def _write_hooks(adapter, approved: dict, uninstall: bool, stamp: str) -> dict:
+    """훅 설정을 쓴다 — 계획 때의 사본이 아니라 쓰기 직전의 최신 파일에 osk 조치만
+    병합한다. 확인을 기다리거나 앞 단계를 적용하는 사이 다른 도구나 사용자가 고친 것
+    (권한 제한·다른 훅)을 지우지 않기 위해서다. 확인한 osk 조치(`events`)가 그 사이
+    달라졌으면 쓰지 않는다. 읽는 동안 파일이 바뀌면 다시 읽는다."""
+    path = Path(approved["file"])
+    step = {"step": f"{adapter.name} hooks", "file": str(path)}
+    for _attempt in range(3):
+        before = path.read_bytes() if path.is_file() else None
+        fresh = _hooks(adapter, uninstall)
+        if fresh.get("error"):
+            return {**step, "ok": False, "error": fresh["error"]}
+        if fresh["events"] != approved["events"]:
+            return {**step, "ok": False, "error": "확인 뒤 osk 훅 항목이 바뀌었다 — 쓰지 않았다. "
+                                                  "setup을 다시 계획해 확인받는다"}
+        if not fresh["changed"]:
+            return {**step, "ok": True, "events": fresh["events"]}
+        if (path.read_bytes() if path.is_file() else None) != before:
+            continue
+        backup = _backup(path, stamp)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        core.atomic_write(path, (json.dumps(fresh["content"], ensure_ascii=False, indent=2)
+                                 + "\n").encode("utf-8"))
+        return {**step, "ok": True, "events": fresh["events"], **({"backup": backup} if backup else {})}
+    return {**step, "ok": False, "error": "쓰는 동안 설정 파일이 계속 바뀌었다 — 쓰지 않았다"}
 
 
 def _apply(p: dict) -> dict:
@@ -292,6 +338,16 @@ def _apply(p: dict) -> dict:
         ok &= result["ok"]
     for item in p["hosts"]:
         adapter, mcp, hooks = adapters.get(item["harness"]), item["mcp"], item["hooks"]
+        if mcp.get("run"):
+            # 확인한 명령이 지금도 같은 명령인지 다시 본다 — 그 사이 다른 등록이 생겼으면
+            # 확인한 적 없는 등록을 바꾸게 된다.
+            now = _mcp(adapter, p["uninstall"])
+            if (now.get("action"), now.get("run")) != (mcp.get("action"), mcp.get("run")):
+                done.append({"step": f"{adapter.name} mcp", "ok": False,
+                             "error": "확인 뒤 MCP 등록이 바뀌었다 — 실행하지 않았다. "
+                                      "setup을 다시 계획해 확인받는다"})
+                ok = False
+                mcp = {}
         if mcp.get("run"):
             backups += [b for f in mcp["files"] for b in [_backup(Path(f), stamp)] if b]
             cli = shutil.which(adapter.cli)
@@ -309,19 +365,14 @@ def _apply(p: dict) -> dict:
                              "ok": code == 0 or removing, "returncode": code, "output": output})
                 ok &= code == 0 or removing
         if hooks.get("changed"):
-            path = Path(hooks["file"])
             try:
-                backup = _backup(path, stamp)
-                backups += [backup] if backup else []
-                path.parent.mkdir(parents=True, exist_ok=True)
-                core.atomic_write(path, (json.dumps(hooks["content"], ensure_ascii=False, indent=2)
-                                         + "\n").encode("utf-8"))
-                done.append({"step": f"{adapter.name} hooks", "file": str(path), "ok": True,
-                             "events": hooks["events"]})
+                result = _write_hooks(adapter, hooks, p["uninstall"], stamp)
             except OSError as e:
-                done.append({"step": f"{adapter.name} hooks", "file": str(path), "ok": False,
-                             "error": f"{type(e).__name__}: {e}"})
-                ok = False
+                result = {"step": f"{adapter.name} hooks", "file": hooks["file"], "ok": False,
+                          "error": f"{type(e).__name__}: {e}"}
+            backups += [result.pop("backup")] if result.get("backup") else []
+            done.append(result)
+            ok &= result["ok"]
     return {"ok": ok, "applied": True, "uninstall": p["uninstall"], "steps": done,
             "backups": backups, "human": p["human"]}
 
