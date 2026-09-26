@@ -8,6 +8,8 @@ overview), 판본이 확인한 범위인가, 구독 fork가 준비됐는가. 등
 
 상태와 설정을 쓰지 않는다. 호스트 CLI에는 `--version`만 묻고, fork 판정은
 `fork doctor`와 같은 `response_growth.check`다(인증 상태 조회는 하되 추론은 없다).
+MCP 등록의 해석기는 한 번 띄워 판본과 서버가 import하는 패키지만 본다 — 이 명령을
+돌리는 Python이 아니라 등록된 Python이 서버를 띄우기 때문이다.
 실패(`fail`)는 설정이 osk를 띄우지 못하는 경우뿐이다 — 등록하지 않은 기능은 경고다.
 """
 from __future__ import annotations
@@ -56,6 +58,39 @@ def _runnable(program: str) -> bool:
     return Path(program).is_file() if Path(program).is_absolute() else shutil.which(program) is not None
 
 
+def _pip(prefix) -> str:
+    """그 해석기에 엔진 의존성을 까는 한 줄."""
+    engine = _engine_dir()
+    return core.shell_join([*prefix, "-m", "pip", "install", "-r", engine / "requirements.txt",
+                            "-c", engine / "constraints.txt"])
+
+
+# 등록된 해석기가 서버를 띄울 수 있는가 — 판본, 그리고 `mcp_server.py`가 기동에 import하는 것.
+_PROBE = ("import sys\n"
+          "if sys.version_info < (3, 11):\n"
+          "    print('Python %d.%d.%d' % sys.version_info[:3]); sys.exit(3)\n"
+          "import zoneinfo, mcp.server.fastmcp, pydantic, yaml, rank_bm25\n"
+          "zoneinfo.ZoneInfo('Asia/Seoul')\n")
+_PROBED: dict[tuple, tuple[str, str] | None] = {}
+
+
+def _probe(prefix) -> tuple[str, str] | None:
+    """등록 명령의 해석기 부분으로 `_PROBE`를 돌린다. 되면 None, 안 되면 (종류, 사유) —
+    종류는 `version`(3.11 미만)이나 `import`다. 같은 해석기는 한 번만 띄운다."""
+    key = tuple(prefix)
+    if key not in _PROBED:
+        try:
+            r = subprocess.run([*key, "-c", _PROBE], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=60, stdin=subprocess.DEVNULL,
+                               creationflags=_NO_WINDOW)
+            last = ((r.stderr or r.stdout).strip().splitlines() or [f"종료 코드 {r.returncode}"])[-1]
+            _PROBED[key] = (None if r.returncode == 0 else
+                            ("version", r.stdout.strip()) if r.returncode == 3 else ("import", last))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _PROBED[key] = ("import", f"{type(exc).__name__}: {exc}")
+    return _PROBED[key]
+
+
 def _engine(records: dict) -> list[dict]:
     items = []
     v = sys.version_info
@@ -67,8 +102,7 @@ def _engine(records: dict) -> list[dict]:
                            f"훅·MCP 등록 명령은 {_python()}를 쓴다"))
     if importlib.util.find_spec("mcp") is None:
         items.append(_item("fail", "mcp 패키지", "이 Python에 `mcp`가 없다 — MCP 서버가 뜨지 않는다",
-                           f"{sys.executable} -m pip install -r _governance/_engine/requirements.txt "
-                           "-c _governance/_engine/constraints.txt"))
+                           _pip([sys.executable])))
     else:
         items.append(_item("ok", "mcp 패키지", "설치됨"))
     try:
@@ -96,9 +130,19 @@ def _mcp(adapter, servers: list[dict]) -> list[dict]:
     fix = adapter.mcp_command(_python(), server) or None
     mine = [s for s in servers if base.mentions(s["tokens"], server)]
     if mine:
-        return [_item("ok", "MCP", f"{s['name']} ({s['file']})") if _runnable(s["tokens"][0]) else
-                _item("fail", "MCP", f"{s['name']}의 Python이 없다: {s['tokens'][0]} ({s['file']})", fix)
-                for s in mine]
+        out = []
+        for s in mine:
+            where, prefix = f"{s['name']} ({s['file']})", base.before(s["tokens"], server)
+            if not _runnable(s["tokens"][0]):
+                out.append(_item("fail", "MCP", f"{s['name']}의 Python이 없다: {s['tokens'][0]} ({s['file']})",
+                                 fix))
+            elif prefix and (bad := _probe(prefix)):
+                kind, why = bad
+                out.append(_item("fail", "MCP", f"{where} · 등록된 Python으로 서버가 뜨지 않는다 — {why}",
+                                 fix if kind == "version" else _pip(prefix)))
+            else:
+                out.append(_item("ok", "MCP", where))
+        return out
     other = next(((s, base.refers(s["tokens"], server.name)) for s in servers
                   if base.refers(s["tokens"], server.name)), None)
     if other:
@@ -113,7 +157,7 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
     script = _engine_dir() / "scripts" / "hooks" / adapters.SCRIPTS[event]
     files = ", ".join(str(f) for f in adapter.hook_files())
     fix = (f"안내서(docs/GETTING-STARTED.md) {adapter.guide}단계대로 hooks.{name}에 "
-           f"`{_python()} {script}`를 등록한다")
+           f"`{base.hook_line([_python(), script])}`를 등록한다")
     ran = f"마지막 실행 {_kst(run.get('at'))}" if run else ""
     same = [h for h in hooks if h["event"] == name]
     mine = [h for h in same if base.mentions(h["tokens"], script)]
@@ -122,12 +166,15 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
         where = f"등록({h['file']})"
         if not _runnable(h["tokens"][0]):
             return _item("fail", f"훅 {name}", f"{where} · 명령의 Python이 없다: {h['tokens'][0]}", fix)
+        # 신뢰는 지금 등록의 것이고, 실행 기록은 호스트·사건별이라 옛 등록의 실행도 남는다.
+        # 그래서 신뢰부터 본다 — 지난 실행이 지금 등록의 미신뢰를 가리지 않게.
+        if adapter.trusted(h["file"], name, h["group"], h["index"]) is False:
+            detail = (f"{where} · 지금 등록에 신뢰 기록이 없다 — {ran}은 이 등록이 신뢰된 증거가 아니다"
+                      if run else f"{where} · 신뢰 기록도, 이 기기의 실행 기록도 없다")
+            return _item("warn", f"훅 {name}", detail, adapter.reload)
         if run:
             return _item("ok", f"훅 {name}", f"{where} · {ran}")
         # 실행 기록은 기록을 남기는 판의 훅이 처음 불린 때부터 쌓인다.
-        if adapter.trusted(h["file"], name, h["group"], h["index"]) is False:
-            return _item("warn", f"훅 {name}", f"{where} · 신뢰 기록도, 이 기기의 실행 기록도 없다",
-                         adapter.reload)
         return _item("warn", f"훅 {name}", f"{where} · 이 기기의 실행 기록이 아직 없다", adapter.reload)
     if run:
         return _item("info", f"훅 {name}", f"문서의 등록 자리({files})에는 없지만 이 기기에서 불렸다 · {ran}"

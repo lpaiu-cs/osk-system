@@ -350,6 +350,55 @@ host = json.loads(text)['hosts'][0]
 assert code == 0 and host['in_use'] is False and [i['level'] for i in host['items']] == ['info'], host
 ''')
 
+    def test_doctor_probes_the_registered_python_puts_trust_first_and_quotes_paths(self):
+        self.check_case(r'''
+from osk import doctor
+from osk.harness import base
+claude, codex = harness.get('claude'), harness.get('codex')
+def mcp_item(entry):
+    rows(home / '.claude.json', {'mcpServers': {'osk-system': {'type': 'stdio', **entry}}})
+    return doctor._mcp(claude, claude.registrations()[0])[0]
+# The registered interpreter, not the one running doctor, must start the server.
+bare = root.parent / 'bare'
+subprocess.run([py, '-m', 'venv', '--without-pip', str(bare)], check=True, capture_output=True)
+bare_py = str(bare / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python'))
+item = mcp_item({'command': bare_py, 'args': [str(server)]})
+assert item['level'] == 'fail' and 'mcp' in item['detail'], item
+assert item['fix'] == doctor._pip([bare_py]) and 'pip' in item['fix'], item
+old = root.parent / 'old_python.py'
+old.write_text("import sys\nprint('Python 3.10.9')\nsys.exit(3)\n", encoding='utf-8')
+item = mcp_item({'command': py, 'args': [str(old), str(server)]})
+assert item['level'] == 'fail' and 'Python 3.10.9' in item['detail'], item
+assert item['fix'] == claude.mcp_command(doctor._python(), server), item
+assert mcp_item({'command': py, 'args': [str(server)]})['level'] == 'ok'
+# A run left by an earlier registration does not stand in for trust in the current one.
+rows(codex_home / 'hooks.json', {'hooks': {'UserPromptSubmit': [{'hooks': [
+    {'type': 'command', 'command': base.hook_line([py, hooks_dir / 'claude_prompt_submit.py'])}]}]}})
+(codex_home / 'config.toml').write_text('', encoding='utf-8')
+runs.record_run('codex', 'input', 'proj')
+def hook_item():
+    return doctor._hook(codex, 'input', codex.registrations()[1], runs.read()['runs'].get('codex/input'))
+item = hook_item()
+assert item['level'] == 'warn' and '신뢰 기록이 없다' in item['detail'], item
+key = json.dumps(str(codex_home / 'hooks.json') + ':user_prompt_submit:0:0')
+(codex_home / 'config.toml').write_text(f'[hooks.state.{key}]\ntrusted_hash = "sha256:{"0" * 64}"\n',
+                                         encoding='utf-8')
+assert hook_item()['level'] == 'ok', hook_item()
+# Paths with spaces survive the shell that will read the command.
+spaced = ['C:/My Vault/.venv/python.exe' if os.name == 'nt' else '/My Vault/.venv/bin/python',
+          'C:/My Vault/_governance/_engine/mcp_server.py' if os.name == 'nt' else '/My Vault/_engine/mcp_server.py']
+assert base.command_tokens({'command': base.hook_line(spaced)}) == spaced
+assert claude.mcp_command(*spaced) == core.shell_join(
+    ['claude', 'mcp', 'add', '--scope', 'user', 'osk-system', '--', *spaced])
+assert codex.mcp_command(*spaced) == core.shell_join(['codex', 'mcp', 'add', 'osk-system', '--', *spaced])
+echo = [py, '-c', 'import json,sys;print(json.dumps(sys.argv[1:]))', 'a b', "it's", '--x=y', spaced[1]]
+line = core.shell_join(echo)
+shell = (['powershell', '-NoProfile', '-NonInteractive', '-Command', line] if os.name == 'nt'
+         else ['sh', '-c', line])
+r = subprocess.run(shell, capture_output=True, text=True, encoding='utf-8', timeout=60)
+assert r.returncode == 0 and json.loads(r.stdout) == echo[3:], (line, r.stdout, r.stderr)
+''')
+
     def test_recording_waits_briefly_and_keeps_recent_sessions(self):
         self.check_case(r'''
 from osk._portalock import lock_exclusive, unlock

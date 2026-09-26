@@ -69,7 +69,8 @@ class Codex(Adapter):
         return version if isinstance(version, str) and re.fullmatch(_SEMVER, version) else None
 
     def mcp_command(self, python, server):
-        return f"codex mcp add {MCP_NAME} -- {python} {server}"
+        from .. import core
+        return core.shell_join(["codex", "mcp", "add", MCP_NAME, "--", python, server])
 
     def mcp_files(self):
         return [self.home() / "config.toml"]

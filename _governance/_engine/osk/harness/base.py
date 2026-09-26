@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 from pathlib import Path
 
 MCP_NAME = "osk-system"
@@ -39,10 +40,24 @@ def command_tokens(entry: dict) -> list[str]:
     return [t.strip("\"'") for t in tokens]
 
 
+def hook_line(argv) -> str:
+    """셸 형식 등록 한 줄 — `command_tokens`가 되읽어 같은 토큰을 얻는 표기다. Windows는
+    명령줄 규칙(쌍따옴표), 그 밖은 POSIX 셸 인용이다. 경로를 이어 붙이면 공백 든 경로가
+    여러 토큰으로 갈린다."""
+    argv = [str(a) for a in argv]
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
 def mentions(tokens: list[str], target: Path) -> bool:
     """명령이 그 파일을 부르는가 — 경로 표기(구분자·대소문자)와 무관하게 잰다."""
     want = fold(str(target))
     return any(fold(t) == want for t in tokens)
+
+
+def before(tokens: list[str], target: Path) -> list[str]:
+    """명령에서 그 파일 앞의 토큰 — 해석기와 그 선택지(`py -3.11` 등)다. 없으면 빈 목록."""
+    want = fold(str(target))
+    return next((tokens[:i] for i, t in enumerate(tokens) if fold(t) == want), [])
 
 
 def refers(tokens: list[str], name: str) -> str | None:
