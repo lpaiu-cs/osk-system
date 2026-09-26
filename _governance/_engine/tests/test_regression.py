@@ -36,6 +36,10 @@ RUN_TMP.mkdir()
 for _k in ("TMPDIR", "TEMP", "TMP"):
     os.environ[_k] = str(RUN_TMP)
 tempfile.tempdir = str(RUN_TMP)
+# 새 릴리스 확인(osk.update_check)은 정본에 태그를 묻는 분리 프로세스를 띄운다.
+# 수트는 네트워크에 기대지 않고 자식 프로세스를 남기지 않는다 — 격리 수트도 이
+# 값을 물려받으며, 확인 자체를 시험하는 test_update_notice.py만 걷어 낸다.
+os.environ["OSK_UPDATE_CHECK"] = "0"
 
 from osk import (core, graph, validate, authority, contract, write,  # noqa: E402
                  publish)  # noqa: E402
@@ -11711,7 +11715,7 @@ def test_release_workflow_subprocess():
     _suite("정식 발행은 검증한 SHA를 태그로 공개한다", "test_release_workflow.py")
 
 
-GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py")
+GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py")
 
 
 def test_growth_loop_subprocesses():

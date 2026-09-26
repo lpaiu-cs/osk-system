@@ -28,7 +28,7 @@
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
 from __future__ import annotations
-import errno, hashlib, json, os, random, re, string, tempfile, time
+import errno, hashlib, json, os, random, re, shlex, string, subprocess, sys, tempfile, time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -342,6 +342,48 @@ def atomic_write(path: Path, data: bytes) -> None:
             os.unlink(tmp)
         raise
     fsync_dir(path.parent)
+
+
+# Windows CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP — 콘솔 창 없이, 부모와 떨어져
+_DETACHED = 0x08000200
+
+
+def spawn_worker(module: str, *, env: dict | None = None, stdin: bytes | None = None,
+                 stderr=None) -> subprocess.Popen:
+    """이 vault 엔진의 모듈을 **분리 프로세스**로 띄우고 기다리지 않는다 — 훅과
+    표면은 곧바로 돌아간다. 부모가 끝나도 자식은 남는다(POSIX는 새 세션, Windows는
+    새 프로세스 그룹이며 콘솔 창을 만들지 않는다).
+
+    부모의 표준 입출력은 물려주지 않는다. stdio로 도는 MCP 표면의 파이프를 자식이
+    쥐면 표면의 입력을 가로채거나 표면의 종료를 붙잡는다. `stdin`을 주면 그 바이트만
+    넘기고 닫는다. `stderr`는 열린 파일을 주면 거기 쓰고, 주지 않으면 버린다."""
+    child_env = {**os.environ, "OSK_VAULT_ROOT": str(ROOT),
+                 "PYTHONPATH": str(Path(__file__).resolve().parents[1]), **(env or {})}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", module],
+        stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL if stderr is None else stderr,
+        env=child_env, cwd=ROOT, shell=False, start_new_session=os.name != "nt",
+        creationflags=_DETACHED if os.name == "nt" else 0)
+    if stdin is not None:
+        try:
+            proc.stdin.write(stdin)
+        finally:
+            proc.stdin.close()
+    return proc
+
+
+def cli_command(*args: str) -> str:
+    """이 vault의 `osk.cli`를 부르는 **한 줄 명령** — 에이전트가 제 셸에 그대로
+    붙인다. vault 루트와 엔진 자리를 명령 안에 실으므로 작업 폴더·`PYTHONPATH`와
+    무관하다. Windows는 PowerShell 인용, 그 밖은 POSIX 셸 인용이다."""
+    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(ROOT)!r};"
+            f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
+            "runpy.run_module('osk.cli',run_name='__main__')")
+    argv = [sys.executable, "-c", code, *args]
+    return ("& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+            if os.name == "nt" else shlex.join(argv))
 
 
 def posix_rel(p: Path, relative_to: Path) -> str:

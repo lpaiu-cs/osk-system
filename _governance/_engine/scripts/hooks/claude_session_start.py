@@ -39,9 +39,13 @@ sys.path.insert(0, str(ENGINE))
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
-def emit_context(event: str, text: str) -> None:
-    """두 하네스의 JSON 계약 — `[osk …]` 평문은 Codex에서 JSON으로 오인된다."""
+def emit_context(event: str, text: str, system_message: str = "") -> None:
+    """두 하네스의 JSON 계약 — `[osk …]` 평문은 Codex에서 JSON으로 오인된다.
+    `system_message`는 모델 문맥이 아니라 **사용자 화면**에 경고로 뜬다(두 하네스의
+    최상위 `systemMessage`)."""
     output = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+    if system_message:
+        output["systemMessage"] = system_message
     sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode("utf-8"))
     sys.stdout.buffer.flush()
 
@@ -242,6 +246,18 @@ def _recheck_note(rechecks) -> str:
     return "\n".join(notes)
 
 
+def _release_notice() -> tuple[str, str]:
+    """(에이전트 문맥, 사용자 화면) — 새 릴리스를 이 기기에서 아직 알리지 않았을 때만.
+    확인은 기다리지 않는다: 지난 확인이 낡았으면 분리 프로세스로 띄우고, 이번
+    세션에는 지난 결과만 싣는다(`osk.update_check`)."""
+    try:
+        from osk import update_check
+        update_check.ensure_fresh()
+        return update_check.session_notice()
+    except Exception as exc:
+        return f"[osk 릴리스 확인 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", ""
+
+
 def main() -> None:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return  # maintenance evidence belongs to its run, not a new integration queue
@@ -265,6 +281,7 @@ def main() -> None:
         captured = capture_block(env, key, startup=True)
         if captured is None:
             return
+        notice, shown = _release_notice()
         scope = write.resolve_session(key)
         bootstrap = _bootstrap(key, bound=bool(scope))
         recovery = ""
@@ -273,7 +290,8 @@ def main() -> None:
         except Exception:
             recovery = "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]"
         if not scope:
-            emit_context("SessionStart", "\n\n".join(p for p in (bootstrap, recheck, recovery, captured) if p))
+            emit_context("SessionStart", "\n\n".join(
+                p for p in (bootstrap, notice, recheck, recovery, captured) if p), shown)
             return
         mem = ""
         try:
@@ -286,10 +304,11 @@ def main() -> None:
         except Exception as exc:
             block = f"[osk 정돈 판독 진단 — {type(exc).__name__}: {exc}]"
         # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록.
-        out = "\n\n".join(p for p in (banner, bootstrap, recheck, recovery, mem, captured, block) if p)
+        out = "\n\n".join(p for p in (banner, bootstrap, notice, recheck, recovery, mem,
+                                      captured, block) if p)
         if not out:
             return
-        emit_context("SessionStart", out)
+        emit_context("SessionStart", out, shown)
     except Exception as exc:
         emit_context("SessionStart", f"[osk 세션 시작 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
 

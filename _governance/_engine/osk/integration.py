@@ -6,8 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
-import sys
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
@@ -643,12 +641,8 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     organization_text = organization.prompt(jobs)
     if not st["pending_refs"]:
         return {**st, "text": text + "검토할 완료 raw 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다." + organization_text}
-    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(core.ROOT)!r};"
-            f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
-            "runpy.run_module('osk.cli',run_name='__main__')")
-    argv = [sys.executable, "-c", code, "integration", "review", "--harness", harness, "--conversation", conversation_id]
-    command = ("& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
-               if os.name == "nt" else shlex.join(argv))
+    command = core.cli_command("integration", "review", "--harness", harness,
+                               "--conversation", conversation_id)
     from . import distillation
     try:
         discovered = distillation.discover(st["pending_refs"])
