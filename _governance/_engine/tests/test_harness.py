@@ -445,6 +445,19 @@ checks = {i['check']: i for i in doctor.report('claude')['hosts'][0]['items']}
 assert checks['훅 SessionStart']['level'] == 'warn', checks['훅 SessionStart']
 assert '2곳' in checks['훅 SessionStart']['detail'] and checks['훅 SessionStart']['fix'] == doctor._ONE
 assert checks['중복 호출 SessionStart']['level'] == 'warn', checks
+# Matchers with no start cause in common run one group per start: not a duplicate (PR #105 review).
+def start_groups(*matchers):
+    rows(claude_home / 'settings.json', {'hooks': {'SessionStart': [
+        {'matcher': m, 'hooks': [{'type': 'command', 'command': f'"{py}" "{script}"'}]} for m in matchers]}})
+    return {i['check']: i for i in doctor.report('claude')['hosts'][0]['items']}['훅 SessionStart']
+item = start_groups('startup', 'resume|clear|compact')
+assert item['level'] == 'ok' and '겹치지 않는다' in item['detail'], item
+item = start_groups('startup|resume', 'resume')
+assert item['level'] == 'warn' and '— resume에 함께 불린다' in item['detail'], item
+codex = harness.get('codex')
+assert codex.fires_on('input', 'anything') == frozenset({'*'}), 'events without causes always run'
+assert codex.fires_on('start', '*') == codex.fires_on('start', None) == frozenset(codex.sources['start'])
+assert codex.fires_on('start', '(') == frozenset(), 'a matcher that is not a regex is compared by name'
 ''')
 
     def test_recording_waits_briefly_and_keeps_recent_sessions(self):

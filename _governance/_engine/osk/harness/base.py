@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -66,7 +67,7 @@ def refers(tokens: list[str], name: str) -> str | None:
 
 
 def _groups(hooks):
-    """`{"hooks": {사건: [{"matcher", "hooks": [항목…]}]}}`의 (사건, 묶음, 순번, 항목).
+    """`{"hooks": {사건: [{"matcher", "hooks": [항목…]}]}}`의 (사건, 묶음, 순번, 항목, matcher).
     목록이 아닌 값(Codex의 `[hooks.state]` 같은 표)은 사건이 아니므로 건너뛴다."""
     if not isinstance(hooks, dict):
         return
@@ -75,9 +76,10 @@ def _groups(hooks):
             continue
         for g, group in enumerate(groups):
             entries = group.get("hooks") if isinstance(group, dict) else None
+            matcher = group.get("matcher") if isinstance(group, dict) else None
             for i, entry in enumerate(entries if isinstance(entries, list) else []):
                 if isinstance(entry, dict):
-                    yield event, g, i, entry
+                    yield event, g, i, entry, matcher
 
 
 def read_config(file: Path) -> dict | None:
@@ -102,6 +104,24 @@ class Adapter:
     guide = ""       # 안내서(GETTING-STARTED)에서 훅을 등록하는 단계
     reload = ""      # 등록했는데 이 기기에서 돌지 않았을 때 사용자가 할 일
     events = {"start": "SessionStart", "input": "UserPromptSubmit", "stop": "Stop"}
+    # matcher가 고르는 원인 — SessionStart는 시작 원인마다 맞는 묶음만 돈다. 나머지 사건은
+    # matcher 없이 늘 모든 등록이 돈다.
+    sources = {"start": ("startup", "resume", "clear", "compact")}
+
+    def fires_on(self, event: str, matcher) -> frozenset[str]:
+        """그 matcher의 등록이 불리는 원인 — 원인이 없는 사건은 `{"*"}`(늘 불린다).
+        matcher는 원인 이름 전체에 맞는 정규식으로 읽는다. 정규식이 아니면 이름 그대로
+        비교한다 — 겹침을 넓게 짐작해 필요한 등록을 지우라고 하지 않는다."""
+        domain = self.sources.get(event)
+        if not domain:
+            return frozenset({"*"})
+        if not isinstance(matcher, str) or matcher in ("", "*"):
+            return frozenset(domain)
+        try:
+            pattern = re.compile(matcher)
+        except re.error:
+            return frozenset(s for s in domain if s == matcher)
+        return frozenset(s for s in domain if pattern.fullmatch(s))
 
     # ── 판별 ──────────────────────────────────────────────────────────────
     def home(self) -> Path:
@@ -187,7 +207,7 @@ class Adapter:
             except (OSError, ValueError) as exc:
                 errors.append(f"{file}: {type(exc).__name__}: {exc}")
                 continue
-            for event, g, i, entry in _groups((data or {}).get("hooks")):
+            for event, g, i, entry, matcher in _groups((data or {}).get("hooks")):
                 hooks.append({"file": file, "event": event, "group": g, "index": i,
-                              "tokens": command_tokens(entry)})
+                              "matcher": matcher, "tokens": command_tokens(entry)})
         return servers, hooks, errors

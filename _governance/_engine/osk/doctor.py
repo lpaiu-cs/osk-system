@@ -30,7 +30,8 @@ from .harness import base, runs
 LEVELS = ("ok", "info", "warn", "fail")
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 DUP_RECENT = 7 * 24 * 3600   # 중복 호출을 알리는 기간(초) — 등록을 고친 뒤에는 사라진다
-_ONE = "등록을 하나로 줄인다 — osk는 같은 호출을 한 번만 처리하지만 호스트는 매번 두 번 띄운다"
+_ONE = ("같은 호출에 함께 걸리는 등록을 하나로 합친다(SessionStart는 matcher의 원인이 겹치지 않게 "
+        "나눠도 된다) — osk는 같은 호출을 한 번만 처리하지만 호스트는 매번 두 번 띄운다")
 
 
 def _engine_dir() -> Path:
@@ -167,9 +168,18 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
     if mine:
         h = mine[0]
         where = f"등록({h['file']})"
+        # 등록이 여럿이어도 matcher의 원인이 서로 배타적이면(SessionStart의 startup·resume)
+        # 한 호출에 하나만 돈다 — 함께 불리는 원인이 있을 때만 중복이다.
+        fires = [adapter.fires_on(event, m.get("matcher")) for m in mine]
+        shared = sorted({s for k, a in enumerate(fires) for b in fires[k + 1:] for s in a & b})
         if len(mine) > 1:
             places = ", ".join(sorted({str(m["file"]) for m in mine}))
-            where = f"같은 사건이 {len(mine)}곳에 등록돼 있다({places})"
+            if not shared:
+                where = f"등록 {len(mine)}곳({places}) — matcher의 원인이 겹치지 않는다"
+            else:
+                where = f"같은 사건이 {len(mine)}곳에 등록돼 있다({places})"
+                if shared != ["*"]:
+                    where += f" — {'·'.join(shared)}에 함께 불린다"
         if not _runnable(h["tokens"][0]):
             return _item("fail", f"훅 {name}", f"{where} · 명령의 Python이 없다: {h['tokens'][0]}", fix)
         # 신뢰는 지금 등록의 것이고, 실행 기록은 호스트·사건별이라 옛 등록의 실행도 남는다.
@@ -178,7 +188,7 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
             detail = (f"{where} · 지금 등록에 신뢰 기록이 없다 — {ran}은 이 등록이 신뢰된 증거가 아니다"
                       if run else f"{where} · 신뢰 기록도, 이 기기의 실행 기록도 없다")
             return _item("warn", f"훅 {name}", detail, adapter.reload)
-        if len(mine) > 1:
+        if shared:
             return _item("warn", f"훅 {name}", f"{where} · {ran}" if run else where, _ONE)
         if run:
             return _item("ok", f"훅 {name}", f"{where} · {ran}")
