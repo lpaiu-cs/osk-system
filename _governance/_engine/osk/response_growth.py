@@ -181,20 +181,12 @@ def launch(env: dict, session: str) -> bool:
         return False  # Input/startup routing reports the error; Stop still captures raw.
     payload = {'harness': harness, 'session_id': sid, 'transcript_path': path,
                'session': session, 'space': env.get('space'), 'permission_mode': env.get('permission_mode')}
-    child_env = dict(os.environ, OSK_VAULT_ROOT=str(core.ROOT),
-                     PYTHONPATH=str(Path(__file__).resolve().parents[1]), OSK_GROWTH_WORKER='1',
-                     **runtime_env(harness, sid))
     log = integration.state_path(harness, sid).with_suffix('.growth.log')
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as stderr:
-        proc = subprocess.Popen([sys.executable, '-m', 'osk.response_growth'], stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL, stderr=stderr, env=child_env,
-                                cwd=core.ROOT, shell=False, start_new_session=os.name != 'nt',
-                                creationflags=0x08000200 if os.name == 'nt' else 0)
-        try:
-            proc.stdin.write(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
-        finally:
-            proc.stdin.close()
+        core.spawn_worker('osk.response_growth', stderr=stderr,
+                          env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid)},
+                          stdin=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
     return True
 
 

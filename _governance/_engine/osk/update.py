@@ -97,22 +97,56 @@ def load_config() -> dict:
 
 # ── 출처 — 전송만 다르고 검증은 같다 (Mechanism §1-2 3항) ────────────────
 
-def latest_release_tag(url: str) -> str | None:
+def _semver(tag) -> tuple[int, int, int] | None:
+    """`vX.Y.Z`(VERSION_RE)의 정수 세 쌍 — 그 형식이 아니면 None. 판본의 순서는
+    문자열이 아니라 이 값으로 잰다(`v4.10.0`이 `v4.9.0`보다 새롭다)."""
+    m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag) if isinstance(tag, str) else None
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def latest_release_tag(url: str, *, timeout: float = 60,
+                       unattended: bool = False) -> str | None:
     """정본의 정식 릴리스 태그 중 최신 semver(`vX.Y.Z`) — 없으면 None.
     갱신의 기본은 브랜치 HEAD가 아니라 태그다(Mechanism §1-2 3항) — HEAD를
-    받으면 릴리스 이후의 개발 커밋이 딸려 와 attestation과 어긋난다."""
-    r = subprocess.run(["git", "ls-remote", "--tags", "--refs", url],
-                       capture_output=True, text=True, timeout=60)
+    받으면 릴리스 이후의 개발 커밋이 딸려 와 attestation과 어긋난다.
+
+    `unattended`는 사람이 없는 확인(`update_check`의 분리 프로세스)이다.
+    - 사람에게 묻지 않는다. 저장된 자격 증명은 쓰되, 없으면 조회 실패로 끝난다.
+      git은 터미널에 묻기 전에 `GIT_ASKPASS`, `core.askPass`, `SSH_ASKPASS` 순으로
+      인증 도우미를 띄우므로 `GIT_TERMINAL_PROMPT=0`만으로는 창이 뜬다. 두 환경
+      변수를 걷어 내고 `-c core.askPass=`로 빈 도우미를 준다. git은 빈 도우미를
+      실행하지 않고 `SSH_ASKPASS`로 넘어가지도 않는다. Git Credential Manager는
+      `GCM_INTERACTIVE=never`면 창을 띄우지 않는다.
+    - Windows에서 콘솔 창을 만들지 않는다. 창 없는 부모가 콘솔 프로그램인 git을
+      띄우면 Windows가 새 콘솔을 할당한다(vault_sync가 데몬의 검은 창을 막는 규율).
+    - 출력은 파이프가 아니라 임시 파일로 받는다. Windows의 `subprocess.run`은 시한을
+      넘긴 자식을 죽인 뒤 파이프를 시한 없이 다시 비우는데, git이 남긴 손자(자격 증명
+      도우미)가 파이프를 쥐면 그 대기가 끝나지 않는다 — overview 무기한 행과 같은
+      경로다. 끝나지 않는 확인은 확인 잠금을 영영 쥔다."""
+    query = ["ls-remote", "--tags", "--refs", url]
+    if unattended:
+        env = {k: v for k, v in os.environ.items() if k not in ("GIT_ASKPASS", "SSH_ASKPASS")}
+        env.update(LC_ALL="C", LANG="C", GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            r = subprocess.run(
+                ["git", "-c", "core.askPass=", *query], stdin=subprocess.DEVNULL,
+                stdout=out, stderr=err, timeout=timeout, env=env,
+                creationflags=0x08000000 if os.name == "nt" else 0)
+            out.seek(0)
+            err.seek(0)
+            stdout = out.read().decode("utf-8", "replace")
+            stderr = err.read().decode("utf-8", "replace")
+    else:
+        r = subprocess.run(["git", *query], capture_output=True, text=True, timeout=timeout)
+        stdout, stderr = r.stdout, r.stderr
     if r.returncode != 0:
-        raise UpdateError(f"정본 태그 조회 실패({url}): {r.stderr.strip()[-200:]}")
+        raise UpdateError(f"정본 태그 조회 실패({url}): {stderr.strip()[-200:]}")
     best = None
-    for line in r.stdout.splitlines():
+    for line in stdout.splitlines():
         name = line.rsplit("refs/tags/", 1)[-1].strip()
-        m = re.match(r"^v(\d+)\.(\d+)\.(\d+)$", name)
-        if m:
-            key = tuple(int(g) for g in m.groups())
-            if best is None or key > best[0]:
-                best = (key, name)
+        key = _semver(name)
+        if key and (best is None or key > best[0]):
+            best = (key, name)
     return best[1] if best else None
 
 
@@ -1275,7 +1309,21 @@ def main(argv=None):
     ap.add_argument("--source", choices=("git", "bundle"))
     ap.add_argument("--adopt", action="store_true",
                     help="기존 인스턴스의 최초 편입 — 현재 릴리스를 기준선 삼는다")
+    ap.add_argument("--check", action="store_true",
+                    help="정본의 최신 릴리스 태그만 묻는다 — 받지도 적용하지도 않는다")
     a = ap.parse_args(argv)
+    if a.check:
+        if a.apply or a.adopt or a.to or a.bundle or a.source:
+            sys.exit("[중단] --check는 다른 선택지와 함께 쓰지 않는다 — 태그만 묻는다")
+        from . import update_check
+        try:
+            rep = update_check.check()
+        except UpdateError as e:
+            sys.exit(f"[중단] {e}")
+        print(json.dumps(rep, ensure_ascii=False, indent=2))
+        if rep.get("error"):
+            raise SystemExit(1)
+        return
     try:
         rep = run(a.source, a.to, a.bundle, a.apply, a.adopt)
     except UpdateError as e:

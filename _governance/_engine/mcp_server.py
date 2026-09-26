@@ -26,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import contract, epoch, graph, raw, rechecks, validate, write  # noqa: E402
+from osk import (contract, epoch, graph, raw, rechecks, update_check,  # noqa: E402
+                 validate, write)
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
@@ -328,6 +329,15 @@ def overview(session: str | None = None) -> dict:
         rc = {"error": f"{type(e).__name__}: {e}"}
     if rc:
         out["rechecks"] = rc
+    try:
+        # 새 릴리스는 있을 때만 싣는다 — 훅이 없는 하네스도 이 길로 알게 된다. 확인이
+        # 낡았으면 기다리지 않고 분리 프로세스로 띄운다(osk.update_check).
+        update_check.ensure_fresh()
+        up = update_check.surface()
+    except Exception as e:
+        up = {"error": f"{type(e).__name__}: {e}"}
+    if up:
+        out["update"] = up
     if session:
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에

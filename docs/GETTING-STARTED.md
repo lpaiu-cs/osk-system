@@ -566,6 +566,7 @@ out of 1,500, and M characters still free (`여유`).
 | `[osk 참조·조직 검토]` | Work to tidy links and hubs among this scope's nodes. |
 | `[osk 정돈 — …]`, `[osk 정돈이 밀렸다 — …]` | Evicted scope-memory lines waiting to be settled. `밀렸다` means overdue: older than 14 days. |
 | `[osk scope 복구 대기 — …]` | The scope memory hit its limit. The agent should prune entries or move them into nodes. |
+| `[osk 새 릴리스 — vX.Y.Z · 이 vault vA.B.C]` | A newer release is out. The same notice appears on your screen as a warning, once a day per device. Ask the agent to update ([Keeping up to date](#keeping-up-to-date)); nothing is applied until you approve the changeset. |
 | Anything containing `진단` or `diagnostic` | A hook step failed. Your work continues, and nothing was marked done. See [Troubleshooting](#troubleshooting). |
 
 ## Everyday commands
@@ -846,6 +847,17 @@ full design, see
 [response-growth.md](response-growth.md).
 
 ## Keeping up to date
+
+You do not need to watch the releases page. Once a day, the session-start hook
+and the MCP `overview` ask the canonical repository for its release tags
+(`git ls-remote`; nothing from your vault is sent). When a newer release exists,
+Claude Code and Codex show a warning such as
+`osk-system 새 릴리스 v4.1.0 (이 vault는 v4.0.0) — …` once a day per device.
+Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
+steps below with you: it shows the changeset and waits for your approval. The
+check runs in the background, so the notice appears from the session after the
+check. To check right now, run `osk.update --check`, which only asks for the
+tags. To turn the checks off, add `"update_check": false` to `.osk/config.json`.
 
 Releases always come from the canonical repository, whatever your `origin` is.
 Run these from the vault root with `PYTHONPATH` set (Step 2).

@@ -11,8 +11,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
-import sys
 from pathlib import Path
 
 from . import core, contract, graph, write
@@ -367,12 +365,7 @@ def readout(jobs: list[dict]) -> list[dict]:
 def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
     if not jobs:
         return ""
-    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(core.ROOT)!r};"
-            f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
-            "runpy.run_module('osk.cli',run_name='__main__')")
-    argv = [sys.executable, "-c", code, "organization"]
-    command = ("& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
-               if os.name == "nt" else shlex.join(argv))
+    command = core.cli_command("organization")
     return ("\n[osk 참조·조직 검토]\n"
             "저장 완료와 참조·조직 완료는 다르다. 아래 선택된 군집의 요약·크기·참조 목록을 먼저 보고 "
             "이번 작업의 판정 대상은 review_units의 최대 3개 구간(각 4000자 이하)이다. read_node(name=id, view=view)로 읽는다. "

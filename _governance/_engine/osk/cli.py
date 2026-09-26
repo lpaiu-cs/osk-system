@@ -500,6 +500,12 @@ def main(argv=None):
             recovery = scope_memory.recovery_status()
         except Exception as e:
             recovery = {"error": str(e)}
+        try:
+            # 판본과 마지막 릴리스 확인 — 네트워크에 닿지 않는다(`osk.update --check`)
+            from . import update_check
+            release = update_check.report()
+        except Exception as e:
+            release = {"error": str(e)}
         gw = approvals.governance_warning()
         print(json.dumps({
             "nodes": len(idx.nodes),
@@ -508,6 +514,7 @@ def main(argv=None):
                             if d["effective"]],
             "evictions": ev,
             "scope_recovery": recovery,
+            "update": release,
             **({"warnings": [gw]} if gw else {}),
             "root": str(ROOT),
         }, ensure_ascii=False, indent=2))

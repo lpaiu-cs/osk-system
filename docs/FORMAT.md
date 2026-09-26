@@ -103,8 +103,8 @@ layout violation: `_sources/`, `_ledger/`, the Workbench root, `docs/` and the
 engine directory never contain node-shaped files. Directories at the vault
 root whose names begin with `.` (`.git`, `.obsidian`, …) are not scanned.
 
-**Device-owned state.** Locks, confirmation markers, recovery markers and work
-queues are not part of the vault. They live in the repository's Git directory
+**Device-owned state.** Locks, confirmation markers, recovery markers, work
+queues and release-check results are not part of the vault. They live in the repository's Git directory
 (the common directory for worktrees), or in the system temporary directory when
 the vault has no Git directory, and they are never synchronized. `.osk/`
 inside the vault is untracked.
@@ -846,8 +846,16 @@ The canonical repository declares a release with an attestation at its root
   `_governance` has no approval records and the updated region equals the
   attested files exactly, the update appends `protect` instead.
 - **`.osk/config.json`.**
-  `{"upstream": {"source": "git" | "bundle", "url": "<repository URL>", "pin": "<version>" | null}}`.
+  `{"upstream": {"source": "git" | "bundle", "url": "<repository URL>", "pin": "<version>" | null}, "update_check": true | false}`.
   Without it, the source is the canonical Git repository, with no pin.
+  `update_check` is optional; `false` turns off the release check below.
+- **Release check.** When the last check is a day old (an hour, if it failed),
+  the session-start hook and `overview` start a background
+  `git ls-remote --tags` on the upstream URL. The newest `vX.Y.Z` tag,
+  compared with the journal's current version, is announced once a day per
+  device and never applied. The result and the notice marker are device-owned
+  state (`osk-release-check.json`, `osk-release-notice.json`). There is no check
+  with a pin, a `bundle` source, or no known current version.
 
 ## 8. Compatibility promise
 

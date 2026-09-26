@@ -23,6 +23,7 @@
 | `osk/evictions.py` | Mechanism §9-2 12항·§9-3 — 퇴출 기록부(evict·settle)와 정돈 실행(훅 주입·`status`·`tidy`) |
 | `osk/epoch.py` | 판본 관문 — 이 프로세스가 적재한 엔진과 디스크의 대조 |
 | `osk/update.py`·`osk/release.py` | Mechanism §1-2 — 정본 릴리스와 인스턴스 갱신(크래시-안전 트랜잭션) |
+| `osk/update_check.py` | 새 릴리스 알림 — 태그만 묻는 하루 한 번의 분리 확인, 훅·`overview`·`status` 표시(적용하지 않는다) |
 | `osk/publish.py` | Mechanism §1 1항 — 공개 미러 발행(allowlist) |
 | `mcp_server.py` | MCP 노출 — 조회·검증·노드 쓰기·충돌 후보 기록(보호영역 권위·pin 미노출) |
 
