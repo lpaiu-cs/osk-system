@@ -93,7 +93,19 @@ and `_raw` coordinates record. For each folder that `validate` reports:
 1. If the folder is a Scope, settle its pending evictions first. List them with
    `.venv/bin/python -m osk.cli tidy list` and record each disposition with
    `tidy settle`.
-2. Rename the folder and its hub to a name without the prefix. The hub is the
+2. Check protected regions before you move anything. `protected_regions` in
+   `.venv/bin/python -m osk.cli status` lists each region and its state.
+   - If the folder itself, or a folder under it, is a protected region, first
+     settle each such region's pending changeset with `approve` or `revert`.
+     Then release it with `.venv/bin/python -m osk.cli unprotect <old path>`.
+     A protection is tied to its path and does not follow a move. If you move
+     the folder without releasing the protection, three things are blocked. The
+     old path can no longer be approved, because the directory is gone. It
+     cannot be released either, because its changes are pending. The new path
+     stays unprotected.
+   - If only a folder above it is a protected region, there is nothing to do
+     here.
+3. Rename the folder and its hub to a name without the prefix. The hub is the
    node named like its folder:
 
    ```bash
@@ -101,9 +113,15 @@ and `_raw` coordinates record. For each folder that `validate` reports:
    git mv "00_Scope/W1/drafts/_drafts.md" "00_Scope/W1/drafts/drafts.md"
    ```
 
+   Right away, protect each region you released in step 2 again, at its new
+   path: `.venv/bin/python -m osk.cli protect <new path>`. The working copy at
+   that moment becomes the initial approved state, so do this before you change
+   anything else. Later edits then become that region's changeset, which you
+   review in step 5.
+
    The hub's title changes with its file name, so update the links to it, such
    as `[[_drafts]]` in the parent hub.
-3. If you renamed a top-level Scope, such as `00_Scope/_inbox` to
+4. If you renamed a top-level Scope, such as `00_Scope/_inbox` to
    `00_Scope/inbox`:
    - Rename its scope memory, `00_Scope/Workbench/_scope_memory/_inbox.md`, to
      `inbox.md`.
@@ -119,10 +137,14 @@ and `_raw` coordinates record. For each folder that `validate` reports:
      .venv/bin/python -c "from osk import write; print(write.bind_session('<key>', 'inbox', 'v4 upgrade'))"
      ```
 
-4. If the folder lies in a protected region, the move becomes a changeset of
-   that region. Review it and approve it with
-   `.venv/bin/python -m osk.cli approve <region>`.
-5. Commit, restart the sessions, and run `validate` again.
+5. Review the changesets of protected regions. In a region that contains the
+   folder, the move is the changeset. In a region you protected again in step 3,
+   the links and coordinates you fixed afterwards are. Review each, then approve
+   it with `.venv/bin/python -m osk.cli approve <region>`.
+6. Commit, restart the sessions, and run `validate` again.
+
+If you already moved a protected folder without releasing it, rename the folder
+and its hub back, then start again from step 2.
 
 For a node file whose name begins with `.`, rename the file without the dot.
 

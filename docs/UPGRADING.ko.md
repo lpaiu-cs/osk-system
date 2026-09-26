@@ -84,16 +84,30 @@ v4는 대신 옮기지 않는다 — 개명은 대장·승인본·`_raw` 좌표�
 
 1. 그 폴더가 Scope이면 미처분 퇴출부터 처분한다. `.venv/bin/python -m osk.cli tidy list`로
    보고 `tidy settle`로 기록한다.
-2. 폴더와 허브를 접두 없는 이름으로 옮긴다. 허브는 폴더와 이름이 같은 노드다:
+2. 옮기기 전에 보호영역을 본다. `.venv/bin/python -m osk.cli status`의
+   `protected_regions`가 영역과 그 상태를 보인다.
+   - 폴더 자신이나 그 아래 폴더가 보호영역이면, 영역마다 미처리 변경집합을 먼저
+     `approve` 또는 `revert`로 처분한다. 그다음
+     `.venv/bin/python -m osk.cli unprotect <옛 경로>`로 해제한다. 보호 지정은
+     경로에 묶여 있어 이동을 따라가지 않는다. 해제하지 않고 옮기면 세 가지가
+     막힌다. 옛 경로는 디렉터리가 없어 승인할 수 없고, 미처리 변경이 남아 해제할
+     수도 없다. 새 경로는 보호 밖에 남는다.
+   - 폴더를 담은 상위 폴더만 보호영역이면 여기서 할 일은 없다.
+3. 폴더와 허브를 접두 없는 이름으로 옮긴다. 허브는 폴더와 이름이 같은 노드다:
 
    ```bash
    git mv "00_Scope/W1/_drafts" "00_Scope/W1/drafts"
    git mv "00_Scope/W1/drafts/_drafts.md" "00_Scope/W1/drafts/drafts.md"
    ```
 
+   2에서 해제한 영역은 곧바로 새 경로로 다시 지정한다:
+   `.venv/bin/python -m osk.cli protect <새 경로>`. 지정할 때의 작업본이 초기
+   승인본이 되므로, 다른 것을 고치기 전에 지정한다. 그 뒤에 고친 것은 그 영역의
+   변경집합이 되어 5에서 검토한다.
+
    허브의 제목은 파일 이름을 따라 바뀌므로, 부모 허브의 `[[_drafts]]`처럼 허브를
    가리키던 링크를 고친다.
-3. 최상위 Scope를 옮겼다면(예: `00_Scope/_inbox` → `00_Scope/inbox`):
+4. 최상위 Scope를 옮겼다면(예: `00_Scope/_inbox` → `00_Scope/inbox`):
    - scope 기억 `00_Scope/Workbench/_scope_memory/_inbox.md`를 `inbox.md`로 옮긴다.
    - 그 안의 `_raw/`도 함께 옮겨졌으므로, 옛 경로를 적은 `derived-from` 좌표
      (`00_Scope/_inbox/_raw/…#N`)는 해석되지 않는다. `validate`의 `dangling_refs`가
@@ -106,9 +120,13 @@ v4는 대신 옮기지 않는다 — 개명은 대장·승인본·`_raw` 좌표�
      .venv/bin/python -c "from osk import write; print(write.bind_session('<키>', 'inbox', 'v4 upgrade'))"
      ```
 
-4. 폴더가 보호영역 안이면 이동은 그 영역의 변경집합이 된다. 검토한 뒤
+5. 보호영역의 변경집합을 검토한다. 폴더를 담은 보호영역에서는 이동이, 3에서 다시
+   지정한 영역에서는 그 뒤에 고친 링크·좌표가 변경집합이다. 검토한 뒤
    `.venv/bin/python -m osk.cli approve <영역>`으로 승인한다.
-5. 커밋하고, 세션을 다시 시작하고, `validate`를 다시 실행한다.
+6. 커밋하고, 세션을 다시 시작하고, `validate`를 다시 실행한다.
+
+보호영역을 해제하지 않고 이미 옮겼다면, 폴더와 허브를 원래 이름으로 되돌린 뒤 2부터
+다시 한다.
 
 이름이 `.`로 시작하는 노드 파일은 점을 뺀 이름으로 바꾼다.
 
