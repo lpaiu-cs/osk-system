@@ -26,6 +26,7 @@
 | `osk/update_check.py` | 새 릴리스 알림 — 태그만 묻는 하루 한 번의 분리 확인, 훅·`overview`·`status` 표시(적용하지 않는다) |
 | `osk/harness/` | 하네스 어댑터 — 호스트(Claude Code·Codex)마다 다른 판별·전사 위치·훅 출력·등록 자리·신뢰·확인한 판본의 한 자리, 훅 실행 기록(`runs.py`) |
 | `osk/doctor.py` | `osk doctor` — 이 기기의 하네스 연결 점검(등록·실행·전달·판본·fork, 읽기 전용) |
+| `osk/setup.py`·`scripts/setup.py` | Mechanism §1-2 8항 — 설치 도구: `.venv` 준비(부트스트랩), 릴리스 기준선, 하네스 MCP·훅 등록과 해제(확인한 계획만, 백업, 이 vault의 osk 항목만) |
 | `osk/publish.py` | Mechanism §1 1항 — 공개 미러 발행(allowlist) |
 | `mcp_server.py` | MCP 노출 — 조회·검증·노드 쓰기·충돌 후보 기록(보호영역 권위·pin 미노출) |
 

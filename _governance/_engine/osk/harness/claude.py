@@ -57,9 +57,11 @@ class Claude(Adapter):
                 return version
         return None
 
-    def mcp_command(self, python, server):
-        from .. import core
-        return core.shell_join(["claude", "mcp", "add", "--scope", "user", MCP_NAME, "--", python, server])
+    def mcp_argv(self, python, server):
+        return ["claude", "mcp", "add", "--scope", "user", MCP_NAME, "--", str(python), str(server)]
+
+    def mcp_remove_argv(self):
+        return ["claude", "mcp", "remove", "--scope", "user", MCP_NAME]
 
     def mcp_files(self):
         # `claude mcp add --scope user`가 쓰는 자리. 설정 폴더를 옮기면 그 안에도 둔다.

@@ -78,7 +78,16 @@ macOS, Linux and Windows, with a check after every step.
 **Updating a v3 vault?** Read [Upgrading](docs/UPGRADING.md) before you apply
 v4: it lists the placements v4 no longer reads and how to move them.
 
-You need Python 3.11 or newer (the commands use 3.12; change the version to
+**Let your agent install it.** Paste this into Claude Code or Codex:
+
+```text
+Install osk-system on this device. Read https://github.com/lpaiu-cs/osk-system/blob/main/docs/INSTALL-AGENT.md and follow it step by step. Ask me before anything outside the new vault changes.
+```
+
+The agent clones the newest release, runs the [setup tool](docs/SETUP.md#설치-도구-setup),
+shows you the plan and applies it only after you confirm.
+
+**To install by hand**, you need Python 3.11 or newer (the commands use 3.12; change the version to
 match yours) and Git. Start from a release tag rather than `main`
 (newer tags are on the [releases page](https://github.com/lpaiu-cs/osk-system/releases)).
 On macOS or Linux:
@@ -94,7 +103,9 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 
 Then record the release baseline
 ([Getting started, Step 2](docs/GETTING-STARTED.md#step-2-install-the-engine-and-record-the-release-baseline)),
-so that later updates can tell release files from your own edits.
+so that later updates can tell release files from your own edits. From v4.1.0,
+`python _governance/_engine/scripts/setup.py --interactive` does this and the
+host registration below in one step: it shows the plan and asks before it writes.
 
 1. Register the MCP server, replacing `<REPO>` with your instance's absolute
    path. JSON-configured clients can copy [.mcp.json.example](.mcp.json.example);

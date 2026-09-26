@@ -168,6 +168,21 @@ URL, or nothing if you removed the remote.
 
 ## Step 2: Install the engine and record the release baseline
 
+**Or let one command do Steps 2 to 4** (v4.1.0 or newer). From the vault root,
+with Python 3.11 or newer (`py -3.12` on Windows):
+
+```bash
+python _governance/_engine/scripts/setup.py --interactive
+```
+
+It creates `.venv`, installs the dependencies, records the release baseline,
+and registers the MCP server and the three hooks for Claude Code and Codex.
+Before it writes, it shows the plan and asks you to confirm. It backs up every
+configuration file it changes and touches only this vault's osk entries (see
+the [setup tool](SETUP.md#설치-도구-setup)). Then do the steps it lists under
+"할 일", such as trusting the hooks in Codex, and continue at
+[Step 5](#step-5-your-first-session). The manual steps below do the same by hand.
+
 macOS/Linux:
 
 ```bash
