@@ -952,7 +952,7 @@ def run(source: str | None = None, ref: str | None = None,
         preview = _run_locked(source, ref, bundle, False, adopt)
         with _exclusive(local_lock_path("osk-update-review.lock"),
                         "다른 업데이트 확인이 진행 중이다 — 잠시 후 재시도한다"):
-            ticket = local_lock_path("osk-update-confirmation.json")
+            ticket = local_lock_path(CONFIRMATION)
             try:
                 pending = json.loads(ticket.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -994,10 +994,25 @@ def run(source: str | None = None, ref: str | None = None,
     return rep
 
 
+CONFIRMATION = "osk-update-confirmation.json"   # 기기 로컬 확인표 {review_id, at}
+
+
+def confirm(review_id: str) -> None:
+    """이 갱신 계획이 확인됐다고 적는다 — 1시간 안의 다음 `--apply` 한 번이, 잠금 안에서
+    다시 세운 계획이 이 `review_id`일 때만 적용한다. 설치 도구(`osk.setup`)는 사용자가
+    확인한 자기 계획에 담긴 `review_id`를 여기 적고 적용을 한 번만 부른다."""
+    _write_atomic(local_lock_path(CONFIRMATION), json.dumps(
+        {"review_id": review_id, "at": time.time()}).encode())
+
+
+def withdraw() -> None:
+    """확인표를 지운다 — 사용자에게 보이지 않은 계획의 확인이 남지 않게."""
+    local_lock_path(CONFIRMATION).unlink(missing_ok=True)
+
+
 def _request_approval(report: dict) -> dict:
     """A workflow checkpoint, not proof of a human utterance or a security boundary."""
-    _write_atomic(local_lock_path("osk-update-confirmation.json"), json.dumps(
-        {"review_id": report["review_id"], "at": time.time()}).encode())
+    confirm(report["review_id"])
     return dict(report, ok=False, approval_required=True, instruction=(
         "여기서 멈추고 사용자에게 이번 업데이트 변경사항과 하네스 재시작 필요성을 "
         "설명한 뒤 명시적 재승인을 요청하라. 기존 구현·릴리스 승인으로 대신하지 마라. "

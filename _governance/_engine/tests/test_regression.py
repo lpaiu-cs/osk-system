@@ -9068,18 +9068,25 @@ def test_fingerprint_scope_and_racy():
         check("같은 시각·다른 크기도 지문을 바꾼다 — 크기가 서명에 실린다",
               fp2 != M._vault_fingerprint()[0])
 
-        # racy 창 — 아래로도 위로도 닫혀 있어야 한다
-        _age_all()
-        check("전제: 지금은 안정적", not graph.index_signature()[1])
-        b.write_text(node_text("260802-zzzz-rg07"), encoding="utf-8")
-        check("방금 쓴 파일이 있으면 racy가 선다", graph.index_signature()[1])
-        # 미래 mtime은 racy가 **아니다** — 아래만 닫으면 그 파일 하나로 읽기
-        # 캐시가 영구히 죽는다(실측: 20k에서 80 ms → 6.8~9.2 s)
-        _age_all()
-        future = time.time() + 86_400
-        os.utime(b, (future, future))
-        check("먼 미래의 mtime은 racy가 아니다 — 창은 위로도 닫힌다",
-              not graph.index_signature()[1])
+        # racy 창 — 아래로도 위로도 닫혀 있어야 한다. 여유는 아래 캐시 시험처럼
+        # 고정한다: 실측 여유는 10 ms대라, 쓰기와 판정 사이가 그보다 길어지면(부하 걸린
+        # CI) 방금 쓴 파일이 창 밖으로 나가 판정 논리가 아니라 시계를 시험하게 된다.
+        held_margin = graph._racy_margin_cache
+        graph._racy_margin_cache = 5_000_000_000
+        try:
+            _age_all()
+            check("전제: 지금은 안정적", not graph.index_signature()[1])
+            b.write_text(node_text("260802-zzzz-rg07"), encoding="utf-8")
+            check("방금 쓴 파일이 있으면 racy가 선다", graph.index_signature()[1])
+            # 미래 mtime은 racy가 **아니다** — 아래만 닫으면 그 파일 하나로 읽기
+            # 캐시가 영구히 죽는다(실측: 20k에서 80 ms → 6.8~9.2 s)
+            _age_all()
+            future = time.time() + 86_400
+            os.utime(b, (future, future))
+            check("먼 미래의 mtime은 racy가 아니다 — 창은 위로도 닫힌다",
+                  not graph.index_signature()[1])
+        finally:
+            graph._racy_margin_cache = held_margin
         _age_all()
 
         # racy 창에서는 캐시를 접지 않는다. 여유를 넉넉히 **고정해** 시험이
@@ -11823,7 +11830,7 @@ def test_release_workflow_subprocess():
     _suite("정식 발행은 검증한 SHA를 태그로 공개한다", "test_release_workflow.py")
 
 
-GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py")
+GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py", "test_setup.py")
 
 
 def test_growth_loop_subprocesses():

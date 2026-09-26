@@ -158,6 +158,19 @@ URL이 보이고, 원격을 지웠다면 아무것도 나오지 않는다.
 
 ## 2단계: 엔진 설치와 릴리스 기준선 기록
 
+**2~4단계를 명령 하나로 할 수도 있다**(v4.1.0 이상). vault 루트에서 Python 3.11
+이상으로(Windows는 `py -3.12`) 실행한다:
+
+```bash
+python _governance/_engine/scripts/setup.py --interactive
+```
+
+`.venv`를 만들어 의존성을 설치하고, 릴리스 기준선을 기록하고, Claude Code·Codex에 MCP
+서버와 훅 세 개를 등록한다. 쓰기 전에 계획을 보여 주고 확인을 받는다. 바꾸는 설정 파일은
+모두 백업하고, 이 vault의 osk 항목만 건드린다([설치 도구](SETUP.md#설치-도구-setup)).
+그다음 "할 일"로 나열된 것(Codex의 훅 신뢰 등)을 하고 [5단계](#5단계-첫-세션)로 간다.
+아래 수동 절차는 같은 일을 손으로 한다.
+
 macOS/Linux:
 
 ```bash

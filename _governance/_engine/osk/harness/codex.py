@@ -21,6 +21,9 @@ class Codex(Adapter):
     guide = "4b"
     reload = ("Codex는 새로 추가하거나 바뀐 훅을 `/hooks`에서 신뢰하기 전까지 건너뛴다 — "
               "신뢰한 뒤 새 세션을 연다")
+    status = {"start": "osk: loading scope memory", "input": "osk: checking review cadence",
+              "stop": "osk: capturing the finished round"}
+    trust = "Codex에서 `/hooks`를 열어 osk 훅 세 개를 검토하고 신뢰한다"
 
     def home(self) -> Path:
         return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
@@ -68,9 +71,11 @@ class Codex(Adapter):
         version = meta.get("cli_version") if isinstance(meta, dict) else None
         return version if isinstance(version, str) and re.fullmatch(_SEMVER, version) else None
 
-    def mcp_command(self, python, server):
-        from .. import core
-        return core.shell_join(["codex", "mcp", "add", MCP_NAME, "--", python, server])
+    def mcp_argv(self, python, server):
+        return ["codex", "mcp", "add", MCP_NAME, "--", str(python), str(server)]
+
+    def mcp_remove_argv(self):
+        return ["codex", "mcp", "remove", MCP_NAME]
 
     def mcp_files(self):
         return [self.home() / "config.toml"]

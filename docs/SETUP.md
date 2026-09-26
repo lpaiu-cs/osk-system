@@ -19,7 +19,7 @@ _governance/
     sync_daemon.py     동기화 데몬(git만; 검색·색인은 서빙하지 않는다)
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
-    scripts/           발행 매니페스트, launchd/systemd 예시
+    scripts/           설치 도구(setup.py), 발행 매니페스트, launchd/systemd 예시
 00_Scope/ 00_Domain/ 00_Person/   지식 공간
 00_Scope/Workbench/_ledger/     대장 — 승인·pin·세션 라우팅·갱신 저널 (append-only)
 ```
@@ -44,6 +44,65 @@ CI와 다를 때 같은 판으로 맞춰 원인을 가르는 데 쓴다(CI는 �
 ```bash
 .venv/bin/pip install -r _governance/_engine/requirements.txt -c _governance/_engine/constraints.txt
 ```
+
+## 설치 도구 (`setup`)
+
+`_governance/_engine/scripts/setup.py`가 준비·기준선·하네스 연결을 한 명령으로 한다.
+에이전트에게 붙여 넣는 설치 프롬프트([INSTALL-AGENT](INSTALL-AGENT.md)), 선택
+마법사(`--interactive`), 이 문서의 수동 절차가 모두 같은 결과에 닿는다. vault 루트에서
+시스템 Python(3.11 이상)으로 실행한다:
+
+```bash
+python _governance/_engine/scripts/setup.py                 # 계획을 본다 — 아무것도 바꾸지 않는다
+python _governance/_engine/scripts/setup.py --apply         # 확인을 요청하고 멈춘다(종료코드 2)
+python _governance/_engine/scripts/setup.py --apply         # 확인 뒤 1시간 안에 한 번 더 — 적용한다
+python _governance/_engine/scripts/setup.py --interactive   # 단말에서 확인받아 적용한다
+python _governance/_engine/scripts/setup.py --uninstall --apply   # 이 vault의 osk 등록만 걷어 낸다
+python _governance/_engine/scripts/setup.py doctor          # 연결을 점검한다(읽기만)
+```
+
+- **준비.** `.venv`가 없거나 서버가 import하는 패키지를 들이지 못하면, `--apply`·
+  `--interactive`일 때 `.venv`를 만들고 `requirements.txt`를 `constraints.txt`의 판으로
+  설치한다. 계획만 보는 호출은 그 사실만 알린다. pip의 출력은 표준 오류로 가고, 표준
+  출력은 JSON 보고 하나다.
+- **기준선.** 갱신 저널에 기록이 없으면 `release.json`의 판으로 `osk.update --to <판>
+  --apply`와 같은 갱신을 계획에 싣는다. 확인한 setup 계획이 그 갱신의 계획(`review_id`)을
+  담는다. 적용할 때는 그 `review_id`를 갱신의 확인표에 적고 적용을 한 번만 부른다. 갱신은
+  잠금 안에서 계획을 다시 세워 그 계획일 때만 적용한다. 그 사이 계획이 달라졌으면
+  적용하지 않고 확인표도 지운다. `_governance` 보호도 그 갱신이 성립시킨다.
+- **하네스.** 이 기기에서 흔적(설정 폴더나 PATH의 CLI)이 있는 호스트를 잇는다.
+  `--harness claude`처럼 고를 수 있다. 등록은 이 vault의 엔진 사본과 `.venv`의 Python을
+  부른다.
+- **확인.** `osk.update`와 같다. 첫 `--apply`는 계획과 `approval_required`를 내고
+  멈춘다. 같은 명령을 1시간 안에 다시 부르면 계획이 그대로일 때만 적용한다. 할 일이
+  없으면 확인 없이 끝난다.
+
+vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 폴더는
+`CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다.
+
+| 호스트 | 항목 | 파일 | 쓰는 방법 |
+|---|---|---|---|
+| Claude Code | MCP 서버 | `~/.claude.json`(설정 폴더를 옮겼으면 그 안의 `.claude.json`) | `claude mcp add --scope user osk-system` |
+| Claude Code | 훅 세 개 | `~/.claude/settings.json` | `hooks`에 병합 |
+| Codex | MCP 서버 | `~/.codex/config.toml` | `codex mcp add osk-system` |
+| Codex | 훅 세 개 | `~/.codex/hooks.json` | `hooks`에 병합 |
+
+- 쓰기 전에 원래 파일을 옆에 `<이름>.osk-backup-<YYYYMMDD-HHMMSS>`로 복사한다.
+- 이 vault의 osk 항목만 더하거나 바꾸거나 걷어 낸다 — 명령이 이 vault의 스크립트·서버를
+  부르는지로 알아본다. 다른 항목과 다른 vault의 osk 항목은 그대로 두고 계획의 `notes`로
+  알린다.
+- 훅 파일은 쓰기 직전에 다시 읽어, 그 최신 내용에 osk 항목만 병합한다. 확인을 기다리는
+  사이 다른 도구나 사용자가 고친 것(권한 제한·다른 훅)은 그대로 남는다. 확인한 osk
+  조치 자체가 그 사이 달라졌으면 쓰지 않고 다시 확인을 요구한다.
+- MCP 등록이 이 vault의 것인지는 호스트 CLI가 고치는 파일의 등록으로만 가린다 —
+  Claude Code는 설정 폴더를 옮겼으면 그 안의 `.claude.json`이다. 다른 파일의 등록은
+  `notes`로 알리고 건드리지 않는다. 확인한 명령이 실행 직전에도 같은지 다시 본다.
+- 다시 실행하면 이미 맞는 항목은 `keep`이다. 이 vault의 옛 항목(다른 Python 등)은 새
+  항목으로 바꾼다 — 겹쳐 만들지 않는다.
+- 호스트 CLI가 PATH에 없으면 MCP 등록은 사람이 할 명령(`manual`)으로 남긴다.
+- 사람이 할 일은 보고의 `human`에 있다: Codex 훅 신뢰(`/hooks`), 세션 재시작, 기준선
+  커밋, 새 세션 뒤의 연결 점검.
+- 정기 실행과 동기화 데몬의 등록은 아직 setup이 하지 않는다 — 아래 해당 절을 따른다.
 
 ## Windows
 
@@ -901,7 +960,8 @@ osk validate                    # 전 영역 clean
 그래서 사용자가 읽어야 할 안내는 노트가 아니라 문서에 먼저 쓴다.
 
 - README와 시작 안내서(영·한)의 설치 태그(`git clone --branch`·`osk.update --to`)를 새
-  버전으로 올린다.
+  버전으로 올린다. [INSTALL-AGENT](INSTALL-AGENT.md)와 README의 설치 프롬프트는 태그를
+  적지 않는다 — 에이전트가 정본의 최신 정식 태그를 찾아 clone한다.
 - 형식이나 기본 동작이 비호환으로 바뀌면 [판 올리기](UPGRADING.ko.md)에 이행 안내를 쓴다
   — 무엇이 더는 받아들여지지 않는지, 사용자가 무엇을 해야 하는지. 발행 노트는 이
   문서를 가리킨다.

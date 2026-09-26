@@ -107,6 +107,10 @@ class Adapter:
     # matcher가 고르는 원인 — SessionStart는 시작 원인마다 맞는 묶음만 돈다. 나머지 사건은
     # matcher 없이 늘 모든 등록이 돈다.
     sources = {"start": ("startup", "resume", "clear", "compact")}
+    # 설치(`osk.setup`)가 훅 설정 파일에 넣는 묶음의 호스트별 필드 — 모든 원인에 한 묶음.
+    matchers = {event: "|".join(causes) for event, causes in sources.items()}
+    status: dict[str, str] = {}     # 사건 → 훅이 도는 동안 호스트 화면의 문구(지원 호스트만)
+    trust = ""       # 새로 쓴 훅을 호스트가 돌리기 전에 사용자가 할 일 — 없으면 빈 문자열
 
     def fires_on(self, event: str, matcher) -> frozenset[str]:
         """그 matcher의 등록이 불리는 원인 — 원인이 없는 사건은 `{"*"}`(늘 불린다).
@@ -170,12 +174,30 @@ class Adapter:
         return None
 
     # ── 등록 ──────────────────────────────────────────────────────────────
+    def mcp_argv(self, python: Path, server: Path) -> list[str]:
+        """이 vault의 MCP 서버를 등록하는 호스트 CLI 명령(인자 목록) — 없으면 빈 목록."""
+        return []
+
+    def mcp_remove_argv(self) -> list[str]:
+        """osk MCP 등록을 걷어 내는 호스트 CLI 명령 — 없으면 빈 목록."""
+        return []
+
     def mcp_command(self, python: Path, server: Path) -> str:
-        """이 vault의 MCP 서버를 등록하는 한 줄 — 없으면 빈 문자열."""
-        return ""
+        """사용자가 터미널에 붙일 등록 한 줄 — `mcp_argv`를 그 기기 셸의 규칙으로 인용한다.
+        없으면 빈 문자열."""
+        from .. import core
+        argv = self.mcp_argv(python, server)
+        return core.shell_join(argv) if argv else ""
 
     def mcp_files(self) -> list[Path]:
+        """MCP 등록을 읽는 파일 — 첫 자리가 호스트 CLI가 등록을 고치는 파일이다."""
         return []
+
+    def mcp_target(self) -> Path | None:
+        """호스트 CLI(`mcp_argv`·`mcp_remove_argv`)가 등록을 고치는 파일 — 설치가 이
+        파일의 등록만 제 것인지 가려 바꾸거나 걷어 낸다."""
+        files = self.mcp_files()
+        return files[0] if files else None
 
     def mcp_servers(self, data: dict) -> dict:
         """설정 파일 하나의 MCP 서버 표 — 이름 → 항목."""
@@ -183,6 +205,14 @@ class Adapter:
 
     def hook_files(self) -> list[Path]:
         return []
+
+    def hook_group(self, event: str, command: str) -> dict:
+        """설치가 `hooks.<사건>`에 넣는 묶음 하나 — 훅 하나를 담는다."""
+        entry = {"type": "command", "command": command, "timeout": 30}
+        if event in self.status:
+            entry["statusMessage"] = self.status[event]
+        group = {"hooks": [entry]}
+        return {"matcher": self.matchers[event], **group} if event in self.matchers else group
 
     def trusted(self, file: Path, event: str, group: int, index: int) -> bool | None:
         """호스트가 그 훅을 신뢰했다고 기록했는가 — 신뢰 관문이 없거나 알 수 없으면 None."""
