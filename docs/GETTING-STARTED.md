@@ -5,7 +5,7 @@
 This tutorial is for people who use Claude Code or Codex but have never set up
 osk-system. It starts from an empty folder and ends with a verified setup. At the
 end, your agent writes its first memory, then finds it and reads it back. Written
-for release v3.22.2.
+for release v4.0.0.
 
 For more detail on any step, follow the links to [SETUP.md](SETUP.md), the
 operator reference (in Korean).
@@ -139,7 +139,7 @@ Never edit these files by hand.
 
 Clone a release tag, not the `main` branch, which moves between releases. The
 updater compares your files with a release. Starting exactly on one lets Step 2
-record a clean baseline. `v3.22.2` works as written. You can use the newest tag
+record a clean baseline. `v4.0.0` works as written. You can use the newest tag
 from the [releases page](https://github.com/lpaiu-cs/osk-system/releases) instead,
 as long as you use the same tag again in Step 2.
 
@@ -147,7 +147,7 @@ Run these in the folder that will contain the vault, such as `C:/osk` on
 Windows (create it first). The commands are the same on every OS:
 
 ```bash
-git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -199,13 +199,13 @@ from local edits. The updater downloads the release from GitHub to compare.
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v3.22.2 --apply
+.venv/bin/python -m osk.update --to v4.0.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v3.22.2 --apply
+.venv\Scripts\python.exe -m osk.update --to v4.0.0 --apply
 ```
 
 The first run changes none of your files. It prints the plan, then exits with
@@ -216,9 +216,12 @@ content already matches, so only the baseline is recorded. Review the plan, then
 run **the same command again**, within an hour, to apply it. Every `--apply`
 requires this confirmation (see [Keeping up to date](#keeping-up-to-date)).
 
-**With v3.22.2, as used above, protection is a separate step.** This release does
-not show `governance.protect` or establish protection during an update. Review
-the files under `_governance/`, then run:
+The same update protects `_governance`. On a clean clone the plan shows
+`governance.protect` as `"establish"`, and the confirmed update reports
+`"governance_protected": "established"`. If governance files differ from the
+release, the plan shows `"protect": "withheld"` and lists them under
+`unattested`, and the update leaves the folder unprotected. Review those files,
+then protect the folder yourself:
 
 macOS/Linux:
 
@@ -233,14 +236,7 @@ Windows (PowerShell):
 ```
 
 Confirm with `y` yourself in the terminal. This records the current files as the
-initial approved state; review any edits you made before confirming.
-
-**If you selected a v4.0.0 or later release instead,** a clean clone's update
-plan shows `governance.protect` as `"establish"`. The confirmed update reports
-`"governance_protected": "established"`, so the separate `protect` command is
-unnecessary. If governance files differ from that release, the plan instead
-shows `"protect": "withheld"` and lists them under `unattested`. The update leaves
-the folder unprotected; review those files and use the `protect` command above.
+initial approved state.
 
 The baseline is written to `00_Scope/Workbench/_ledger/update.jsonl`. Commit it,
 or let the sync daemon do so later. Skip `git push` if you removed the remote in
@@ -253,7 +249,7 @@ git push
 ```
 
 **Check:** `.venv/bin/python -m osk.update` reports the selected version as
-`current` (`v3.22.2` in this example). On Windows, use
+`current` (`v4.0.0` in this example). On Windows, use
 `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
 `osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 
@@ -860,7 +856,8 @@ check. To check right now, run `osk.update --check`, which only asks for the
 tags. To turn the checks off, add `"update_check": false` to `.osk/config.json`.
 
 Releases always come from the canonical repository, whatever your `origin` is.
-Run these from the vault root with `PYTHONPATH` set (Step 2).
+Run these from the vault root with `PYTHONPATH` set (Step 2). Before you move to
+a new major version, such as from v3 to v4, read [Upgrading](UPGRADING.md).
 
 macOS/Linux:
 

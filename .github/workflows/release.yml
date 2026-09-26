@@ -96,6 +96,7 @@ jobs:
             printf 'PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update --apply --to %s\n' "$TAG"
             printf '```\n\n'
             printf '설치·운용은 [docs/SETUP.md](../blob/%s/docs/SETUP.md)에 있다.\n\n' "$TAG"
+            printf '메이저 판을 올릴 때는 [docs/UPGRADING.md](../blob/%s/docs/UPGRADING.md)를 먼저 읽는다.\n\n' "$TAG"
             printf -- '---\n\n%s\n' "$notes"
           } > notes.md
 

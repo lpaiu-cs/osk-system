@@ -8823,6 +8823,55 @@ def test_node_place_rule():
                 p.unlink(missing_ok=True)
 
 
+def test_upgrading_underscore_scope():
+    """docs/UPGRADING의 밑줄 구획 이행 절차가 v4에서 실제로 닫히는가. v3가 만들어
+    둔 `_` scope와 그 결속·scope 기억을, 폴더·허브·기억 파일을 밑줄 없이 옮기고
+    `write.bind_session` 한 줄로 결속을 새 행으로 바꿔 옮긴다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · `bind_session`이 이미 결속된 키에 새 결속을 적지 못하면 → 옮긴 뒤 쓰기 단언
+      · 문서의 호출 모양 `write.bind_session(<키>, <scope>, <사유>)`가 바뀌면 → 같은 단언
+      · scope 기억 자리가 문서의 `_scope_memory/<scope>.md`와 달라지면 → 기억 단언"""
+    from osk import scope_memory
+    S = graph.SCOPE
+    key = "regr-upgrade-key"
+    old, new = ROOT / S / "_regr-legacy", ROOT / S / "regr-legacy"
+    mem = ROOT / S / "Workbench/_scope_memory"
+    mem_old, mem_new = mem / "_regr-legacy.md", mem / "regr-legacy.md"
+    try:
+        old.mkdir(parents=True)
+        (old / "_regr-legacy.md").write_text(
+            node_text("260926-upg0-0001", "옛 scope 허브", "HUB"), encoding="utf-8")
+        mem.mkdir(parents=True, exist_ok=True)
+        mem_old.write_text("- 옛 scope의 기억.", encoding="utf-8")
+        write.bind_session(key, "_regr-legacy", "v3가 만든 결속")
+        _age_all()
+        r = _w(write.create_node, "regr-upgrade-a", "s", "b", "fable-5", session=key)
+        check("v4는 밑줄 scope에 결속된 세션의 쓰기를 거부한다",
+              r.get("ok") is False and not (old / "regr-upgrade-a.md").exists(), r)
+        # UPGRADING: 폴더·허브·기억 파일을 밑줄 없이 옮기고 결속을 새 행으로 바꾼다
+        old.rename(new)
+        (new / "_regr-legacy.md").rename(new / "regr-legacy.md")
+        mem_old.rename(mem_new)
+        write.bind_session(key, "regr-legacy", "v4 upgrade")
+        _age_all()
+        r = _w(write.create_node, "regr-upgrade-a", "s", "b", "fable-5", session=key)
+        check("옮긴 뒤 같은 세션의 쓰기가 새 scope에 앉는다",
+              r.get("ok") and (new / "regr-upgrade-a.md").exists(), r)
+        m = _w(scope_memory.read, key)
+        check("옮긴 scope 기억을 같은 세션이 읽는다",
+              m.get("ok") and "옛 scope의 기억" in m.get("text", ""), m)
+        check("옮긴 폴더에는 배치 위반이 없다",
+              not [v for v in graph.layout_violations() if "regr-legacy" in v],
+              graph.layout_violations())
+    finally:
+        shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(new, ignore_errors=True)
+        for p in (mem_old, mem_new):
+            p.unlink(missing_ok=True)
+        _age_all()
+
+
 # ── 순회의 봉쇄와 대소문자 (v3.7.0) ─────────────────────────────────────
 def test_scan_confinement_and_case():
     """손으로 짠 순회가 `rglob`이 하던 두 가지를 잃지 않았는가 — 대소문자
@@ -11866,7 +11915,7 @@ if __name__ == "__main__":
                test_format_alignment, test_rechecks,
                test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
-               test_node_place_rule,
+               test_node_place_rule, test_upgrading_underscore_scope,
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,
                test_fingerprint_scope_and_racy, test_engine_epoch_fence,

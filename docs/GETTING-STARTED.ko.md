@@ -4,7 +4,7 @@
 
 Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사람을 위한 따라하기
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
-첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v3.22.2 릴리스 기준이다.
+첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v4.0.0 릴리스 기준이다.
 
 단계마다 더 자세한 내용은 운용 참고서인 [SETUP.md](SETUP.md)로 이어지는 링크를
 따라가면 된다.
@@ -129,7 +129,7 @@ Markdown 파일 하나다. 머리말에는 다음이 들어간다.
 
 `main` 브랜치가 아니라 릴리스 태그를 clone한다. `main`은 릴리스 사이에도 움직인다.
 갱신기는 파일을 릴리스와 대조하므로, 정확히 한 릴리스에서 출발해야 2단계에서 깨끗한
-기준선을 기록할 수 있다. `v3.22.2`는 적힌 그대로 쓰면 된다.
+기준선을 기록할 수 있다. `v4.0.0`은 적힌 그대로 쓰면 된다.
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)의 최신 태그를 써도
 되지만, 그때는 2단계에서도 같은 태그를 쓴다.
 
@@ -137,7 +137,7 @@ vault를 담을 폴더(Windows라면 `C:/osk` 등, 먼저 만들어 둔다)에�
 OS에서나 같은 명령이다.
 
 ```bash
-git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -189,13 +189,13 @@ $env:PYTHONPATH = "_governance\_engine"
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v3.22.2 --apply
+.venv/bin/python -m osk.update --to v4.0.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v3.22.2 --apply
+.venv\Scripts\python.exe -m osk.update --to v4.0.0 --apply
 ```
 
 첫 실행은 어떤 파일도 바꾸지 않는다. 계획을 출력한 뒤 종료코드 2와
@@ -206,9 +206,11 @@ Windows (PowerShell):
 **같은 명령을 한 번 더** 실행하면 적용된다. `--apply`는 언제나 이 확인을
 거친다([최신 릴리스로 갱신하기](#최신-릴리스로-갱신하기) 참고).
 
-**위 예제의 v3.22.2에서는 보호 지정을 별도로 한다.** 이 릴리스는
-`governance.protect`를 출력하거나 갱신 중 보호를 지정하지 않는다.
-`_governance/` 아래 파일을 검토한 뒤 실행한다.
+같은 갱신이 `_governance`를 보호영역으로 지정한다. 깨끗한 clone의 계획에는
+`governance.protect`가 `"establish"`로 나오고, 확인한 적용은
+`"governance_protected": "established"`를 보고한다. 통치 파일이 릴리스와 다르면
+계획에 `"protect": "withheld"`와 차이 파일의 `unattested`가 나오고, 갱신은 그 구획을
+보호하지 않은 채 남긴다. 해당 파일을 검토한 뒤 직접 지정한다.
 
 macOS/Linux:
 
@@ -222,15 +224,7 @@ Windows (PowerShell):
 .venv\Scripts\python.exe -m osk.cli protect _governance
 ```
 
-터미널에서 직접 `y`로 확인한다. 현재 파일이 초기 승인본이 되므로, 직접 수정한
-내용이 있다면 확인 전에 함께 검토한다.
-
-**대신 v4.0.0 이상 릴리스를 골랐다면**, 깨끗한 clone의 갱신 계획에
-`governance.protect`가 `"establish"`로 나온다. 확인 후 적용 결과가
-`"governance_protected": "established"`이면 별도 `protect` 명령은 필요 없다.
-통치 파일이 해당 릴리스와 다르면 계획에 `"protect": "withheld"`와 차이 파일의
-`unattested`가 나온다. 갱신은 그 구획을 보호하지 않은 채 남기므로, 해당 파일을
-검토한 뒤 위의 `protect` 명령으로 직접 지정한다.
+터미널에서 직접 `y`로 확인한다. 현재 파일이 초기 승인본이 된다.
 
 기준선은 `00_Scope/Workbench/_ledger/update.jsonl`에 기록된다. 직접 커밋하거나,
 나중에 동기화 데몬에 맡긴다. 1단계에서 원격을 지웠다면 `git push`는 건너뛴다.
@@ -242,7 +236,7 @@ git push
 ```
 
 **확인:** `.venv/bin/python -m osk.update`의 `current`가 선택한 버전을 가리킨다
-(위 예제에서는 `v3.22.2`).
+(위 예제에서는 `v4.0.0`).
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다. `osk.cli status`가 `"protected_regions": {"_governance": "clean"}`을
 보여 준다.
@@ -836,7 +830,8 @@ Stop 훅이 성공한 최종 답변 9회마다 대화의 숨은 일회성 *fork*
 (태그만 묻는다). 확인을 끄려면 `.osk/config.json`에 `"update_check": false`를 둔다.
 
 릴리스는 `origin`이 어디를 가리키든 언제나 정본 저장소에서 받는다. `PYTHONPATH`를
-설정한 채(2단계) vault 루트에서 실행한다.
+설정한 채(2단계) vault 루트에서 실행한다. v3에서 v4처럼 메이저 판을 올릴 때는 먼저
+[판 올리기](UPGRADING.ko.md)를 읽는다.
 
 macOS/Linux:
 

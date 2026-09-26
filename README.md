@@ -75,13 +75,16 @@ support **Codex and Claude Code**. See the
 tutorial. It goes from an empty folder to your agent's first saved memory, on
 macOS, Linux and Windows, with a check after every step.
 
+**Updating a v3 vault?** Read [Upgrading](docs/UPGRADING.md) before you apply
+v4: it lists the placements v4 no longer reads and how to move them.
+
 You need Python 3.11 or newer (the commands use 3.12; change the version to
 match yours) and Git. Start from a release tag rather than `main`
 (newer tags are on the [releases page](https://github.com/lpaiu-cs/osk-system/releases)).
 On macOS or Linux:
 
 ```bash
-git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python3.12 -m venv .venv
