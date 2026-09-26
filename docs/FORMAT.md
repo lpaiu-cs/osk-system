@@ -562,8 +562,8 @@ pressure of its size limit (Mechanism §9-2 12):
 
 ### 4.9 Growth ledger
 
-`growth.jsonl` is the work record of the Scope-to-Domain growth runner. It is
-not listed in Mechanism §1 3; `osk/growth.py` defines the payloads.
+`growth.jsonl` is the work record of the Scope-to-Domain growth runner
+(Mechanism §1 3, §9-4); `osk/growth.py` defines the payloads.
 
 | `kind` | Fields |
 |---|---|
@@ -611,30 +611,30 @@ maximum among `review` records with that key.
   maximum matches both current states; several maxima that agree on both states
   count as one. Any other pair makes the citing node a recheck candidate, listed
   by `overview`, the validator's warnings and `osk rechecks`.
-- **Writers.** A node write appends `bound` for each pair it wires. An
-  `update_node` whose `add_edges` names an existing target again appends
-  `updated` when the same call changes the node's body and `unchanged` when it
-  does not; this closes a candidate. Through the MCP surface it records only
-  the states the caller read: the node's and a node target's body as last read
-  with `read_node` in that session, in full or in part, and a non-node target
-  as last presented by a scheduled recheck job; a non-node target that no job
-  presented does not close through the surface. A write through the surface
+- **Writers** (Mechanism §4-1 2–3). A node write appends `bound` for each pair
+  it wires. An `update_node` whose `add_edges` names an existing target again
+  appends `updated` when the same call changes the node's body and `unchanged`
+  when it does not; this closes a candidate. Through the MCP surface it records
+  only the states the caller read: the node's and a node target's body as last
+  read with `read_node` in that session, in full or in part, and a non-node
+  target as last presented by a scheduled recheck job; a non-node target that no
+  job presented does not close through the surface. A write through the surface
   carries the state it wrote forward when the caller had read the state it
-  replaced. Otherwise the response reports `recheck_unread` and the pair stays
-  a candidate. These read states only bind a check: a partial read still gives
-  no `hash` for `expect_hash`. When an engine write changes a node's body,
-  every other pair of that node that was complete before is appended again
-  with the new `node_state`, as `unchanged` with reason `이어받음`. A ledger
-  without records receives one `bound` record with reason `기준선` for every
-  tracked pair, at the first session start, node write or growth run. A ledger
-  that cannot be read or is damaged records nothing; its pairs stay candidates
-  and node writes proceed.
-- **Escalation** (Bylaws §7 2). The scheduled growth run takes candidates as
-  `recheck_jobs`. A job carries `next`, the nodes that cite the node under
-  review, and `cascade`, true when the target's current state came from a
-  recheck `updated`. The agent does not apply a correction that would require
-  changing a node in `next`, nor any correction when `cascade` is true; it
-  records a growth `recheck_review` (section 4.9) instead. While the recorded
+  replaced. Otherwise the response reports `recheck_unread` and the pair stays a
+  candidate. These read states only bind a check: a partial read still gives no
+  `hash` for `expect_hash`. When an engine write changes a node's body, every
+  other pair of that node that was complete before is appended again with the
+  new `node_state`, as `unchanged` with reason `이어받음`. A ledger without records
+  receives one `bound` record with reason `기준선` for every tracked pair that has
+  a state, at the first session start, node write or growth run. A ledger that
+  cannot be read or is damaged records nothing; its pairs stay candidates and
+  node writes proceed.
+- **Escalation** (Bylaws §7 2; Mechanism §4-1 4). The scheduled growth run takes
+  candidates as `recheck_jobs`. A job carries `next`, the nodes that cite the
+  node under review, and `cascade`, true when the target's current state came
+  from a recheck `updated`. The agent does not apply a correction that would
+  require changing a node in `next`, nor any correction when `cascade` is true;
+  it records a growth `recheck_review` (section 4.9) instead. While the recorded
   `node_state` and `target_state` still hold, the pair leaves the agent's queue
   and is listed under `overview` `rechecks.escalated`; naming the target again
   closes it.
