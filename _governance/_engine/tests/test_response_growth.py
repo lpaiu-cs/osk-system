@@ -1263,6 +1263,12 @@ class HookBudgetTests(unittest.TestCase):
                     integration.tick('claude','own')
                 small = hook.capture_block(env,'own',budget=2800)
             assert len(small) <= 2800 and '[osk 케이던스 — user 턴 30]' in small, small
+            # The one line can fold too (Kiro, 2026-09-27): the folded line still names it and where to read it.
+            from osk.hook_text import assemble
+            line = hook._memory(scope_memory, 'own', ('claude','own'), gate=True, keep=85)
+            assert '이 대화에 앞서 실은 전문과' in line.text and line.label.startswith('scope 기억'), line
+            folded, gone = assemble([line], 200, session='own')
+            assert gone == {'memory'} and 'scope_memory(session="own")' in folded, folded
         ''')
 
 

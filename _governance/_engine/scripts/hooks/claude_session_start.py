@@ -286,11 +286,11 @@ def _memory(scope_memory, key: str, ident, *, gate: bool, keep: int):
     full = _memory_block(scope_memory, key, st)
     if not full:
         return Block("memory", "")
+    # 한 줄로 실어도 접힐 수 있다 — 그때도 접은 줄이 무엇을 어디서 읽을지 말해야 한다(Kiro 실측).
+    pull = f"`scope_memory(session={json.dumps(key, ensure_ascii=False)})`"
     if gate and ident and integration.memory_seen(*ident, st["hash"]):
-        return Block("memory", _memory_line(st, key), keep)
-    arg = json.dumps(key, ensure_ascii=False)
-    return Block("memory", full, keep, label=f"scope 기억 전문(여유 {st['limit'] - st['chars']}자)",
-                 pull=f"`scope_memory(session={arg})`",
+        return Block("memory", _memory_line(st, key), keep, label="scope 기억(이 대화에 실은 전문과 같다)", pull=pull)
+    return Block("memory", full, keep, label=f"scope 기억 전문(여유 {st['limit'] - st['chars']}자)", pull=pull,
                  on_shown=(lambda: integration.note_memory(*ident, st["hash"])) if ident else None)
 
 
