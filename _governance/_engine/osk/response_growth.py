@@ -11,6 +11,7 @@ import time
 from contextlib import closing
 
 from . import core, growth, integration, transcripts
+from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 
 CONFIG = core.ROOT / '.osk/response-growth.json'
@@ -28,7 +29,7 @@ def configured(harness: str) -> str | None:
     if not CONFIG.exists():
         return None
     settings = json.loads(CONFIG.read_text(encoding='utf-8-sig'))
-    if not isinstance(settings, dict) or set(settings) - {'codex', 'claude'}:
+    if not isinstance(settings, dict) or set(settings) - set(adapters.fork_names()):
         raise ValueError('response-growth.json must map harness names to native CLI paths')
     executable = settings.get(harness)
     if executable is not None and (not isinstance(executable, str) or not executable.strip()):
@@ -73,6 +74,9 @@ def route(env: dict) -> dict:
 def check(harness: str, sid: str | None, path: str | None, cwd: str) -> dict:
     """route()'s decision without its state writes; shared with `fork doctor`."""
     try:
+        if not adapters.get(harness).fork:
+            # B-grade host: in-session review is its design, not a missing setting.
+            return {'mode': 'foreground', 'reason': f'{adapters.get(harness).title} has no subscription fork'}
         executable = configured(harness)
         if not executable:
             return {'mode': 'foreground', 'reason': 'subscription fork CLI is not configured'}
@@ -181,20 +185,12 @@ def launch(env: dict, session: str) -> bool:
         return False  # Input/startup routing reports the error; Stop still captures raw.
     payload = {'harness': harness, 'session_id': sid, 'transcript_path': path,
                'session': session, 'space': env.get('space'), 'permission_mode': env.get('permission_mode')}
-    child_env = dict(os.environ, OSK_VAULT_ROOT=str(core.ROOT),
-                     PYTHONPATH=str(Path(__file__).resolve().parents[1]), OSK_GROWTH_WORKER='1',
-                     **runtime_env(harness, sid))
     log = integration.state_path(harness, sid).with_suffix('.growth.log')
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as stderr:
-        proc = subprocess.Popen([sys.executable, '-m', 'osk.response_growth'], stdin=subprocess.PIPE,
-                                stdout=subprocess.DEVNULL, stderr=stderr, env=child_env,
-                                cwd=core.ROOT, shell=False, start_new_session=os.name != 'nt',
-                                creationflags=0x08000200 if os.name == 'nt' else 0)
-        try:
-            proc.stdin.write(json.dumps(payload, ensure_ascii=False).encode('utf-8'))
-        finally:
-            proc.stdin.close()
+        core.spawn_worker('osk.response_growth', stderr=stderr,
+                          env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid)},
+                          stdin=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
     return True
 
 

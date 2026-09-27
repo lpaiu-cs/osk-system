@@ -12,17 +12,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 def main() -> None:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return
-    from claude_session_start import capture_block, emit_context, session_key
+    from claude_session_start import (_budget, capture_block, emit_context, first_call, normalize,
+                                      note_run, session_key)
     try:
         env = json.load(sys.stdin)
         if not isinstance(env, dict):
             raise ValueError("hook input must be a JSON object")
-        body = capture_block(env, session_key(env.get("cwd") or os.getcwd()))
+    except Exception as exc:
+        note_run("input", None, None)
+        emit_context("input", f"[osk hook diagnostic - {type(exc).__name__}: {exc}; user work may continue.]")
+        return
+    env = normalize(env)
+    host = None
+    try:
+        key = session_key(env.get("cwd") or os.getcwd())
+        host = note_run("input", env, key)
+        # A host may call its input event more than once per user turn (Antigravity's
+        # PreInvocation fires before every model call); only the first is osk's input.
+        if host is not None and not host.fires("input", env):
+            return
+        if not first_call("input", env, host):
+            return
+        body = capture_block(env, key, budget=_budget(env, host))
     except Exception as exc:
         body = f"[osk hook diagnostic - {type(exc).__name__}: {exc}; user work may continue.]"
     if body:
-        emit_context("UserPromptSubmit", body)
+        emit_context("input", body, host=host)
 
 
 if __name__ == "__main__":
     main()
+    from claude_session_start import finish
+    finish()

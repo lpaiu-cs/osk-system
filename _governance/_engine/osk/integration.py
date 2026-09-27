@@ -6,13 +6,12 @@ import hashlib
 import json
 import os
 import re
-import shlex
-import sys
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 
 from . import core, raw, scope_memory, transcripts, write
+from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 
 SOFT, HARD = 9, 15
@@ -20,8 +19,8 @@ MAX_REVIEW_ROUNDS = 15
 
 
 def _identity(harness: str, conversation_id: str) -> str:
-    if harness not in ("claude", "codex") or not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", conversation_id):
-        raise ValueError("explicit claude/codex harness and actual conversation_id required")
+    if harness not in adapters.NAMES or not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", conversation_id):
+        raise ValueError(f"explicit {'/'.join(adapters.NAMES)} harness and actual conversation_id required")
     return hashlib.sha256(f"{core.ROOT.resolve()}\n{harness}\n{conversation_id}".encode()).hexdigest()
 
 
@@ -113,6 +112,41 @@ def status(harness: str, conversation_id: str) -> dict:
         return _current_view(_load(p, harness, conversation_id), p)
 
 
+def blocked(limit: int = 10) -> dict:
+    """Conversations whose capture is stuck on this device, newest first (§9-3 3항).
+    `observed` is the cursor's last save; the hooks keep only a one-line notice."""
+    from datetime import datetime
+    probe = state_path("claude", "probe")
+    rows = []
+    for p in probe.parent.glob("-".join(probe.name.split("-")[:3]) + "-*.json"):
+        try:
+            s = json.loads(p.read_text(encoding="utf-8"))
+            if s.get("capture_error") and s.get("root") == str(core.ROOT.resolve()):
+                rows.append({"harness": s["harness"], "conversation_id": s["conversation_id"],
+                             "error": s["capture_error"], "observed": datetime.fromtimestamp(
+                                 p.stat().st_mtime, core.KST).strftime(core.TS_FMT)})
+        except (OSError, ValueError, KeyError):
+            continue
+    rows.sort(key=lambda r: r["observed"], reverse=True)
+    return {"count": len(rows), "conversations": rows[:limit]}
+
+
+def memory_seen(harness: str, conversation_id: str, digest: str) -> bool:
+    """Was this conversation last given the shared memory at exactly `digest`? A hook then
+    carries one line instead of the whole text; a changed hash carries the whole again."""
+    with _locked(harness, conversation_id) as p:
+        return _load(p, harness, conversation_id).get("memory_shown") == digest
+
+
+def note_memory(harness: str, conversation_id: str, digest: str) -> None:
+    """The hook's output really carried the whole shared memory at `digest`."""
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        if s.get("memory_shown") != digest:
+            s["memory_shown"] = digest
+            _save(p, s)
+
+
 def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
     """Reuse only the caller's copied prefix, with native ID and byte evidence."""
     if s["harness"] != "claude" or not s["space"]:
@@ -150,14 +184,19 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         if any(occurrences[ref] != count for ref, count in references.items()
                if ref.startswith("claude:" + s["conversation_id"] + ":")):
             return False  # A dialogue quotation makes replacement ambiguous.
-        agent = locator.sub(
-            lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
-            if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
-            else m[0], pair["agent"])
         from . import secrets
-        expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent),
-                              dialogue_id=pair["id"] if readable else None)
-        return raw._round_body(block) == raw._round_body(secrets.filter_text(expected)[0])
+        # The copy may hold the tool evidence in message order; the original
+        # captured append order, which the rows' timestamps still give.
+        for text in filter(None, (pair["agent"], pair.get("agent_time_order"))):
+            agent = locator.sub(
+                lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
+                if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
+                else m[0], text)
+            expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent),
+                                  dialogue_id=pair["id"] if readable else None)
+            if raw._round_body(block) == raw._round_body(secrets.filter_text(expected)[0]):
+                return True
+        return False
 
     if inherited is None:
         known = {}
@@ -209,16 +248,7 @@ def _locate_transcript(harness: str, sid: str, saved: str | None = None) -> str 
     _identity(harness, sid)
     if saved and Path(saved).exists():
         return str(Path(saved).resolve())
-    if harness == "claude":
-        base = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude")))
-        matches = list((base / "projects").glob(f"*/{sid}.jsonl"))
-    else:
-        base = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-        matches = []
-        for folder, prefix in ((base / "sessions", "*/*/*/"), (base / "archived_sessions", "")):
-            for suffix in (f"*-{sid}.jsonl", f"*-{sid}_*.jsonl"):
-                matches.extend(folder.glob(prefix + suffix))
-    matches = sorted({p.resolve() for p in matches if p.is_file()})
+    matches = sorted({p.resolve() for p in adapters.get(harness).transcripts(sid) if p.is_file()})
     if len(matches) > 1:
         raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
     # transcripts.read checks the native identity before this path is saved.
@@ -556,7 +586,7 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
 
 
 def prompt(harness: str, conversation_id: str, *, include_organization: bool = True,
-           max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
+           max_rounds: int = MAX_REVIEW_ROUNDS, organization_in_text: bool = True) -> dict:
     if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= MAX_REVIEW_ROUNDS:
         raise ValueError(f"max_rounds must be between 1 and {MAX_REVIEW_ROUNDS}")
     with _locked(harness, conversation_id) as p:
@@ -641,14 +671,12 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         text += f"참조·조직 검토는 대기 중이다: {exc}. 아래 raw 통합은 계속한다.\n"
     st["organization_jobs"] = jobs
     organization_text = organization.prompt(jobs)
+    if not organization_in_text:
+        organization_text = ""  # the hook budgets organization_jobs as its own block (`osk.hook_text`)
     if not st["pending_refs"]:
         return {**st, "text": text + "검토할 완료 raw 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다." + organization_text}
-    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(core.ROOT)!r};"
-            f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
-            "runpy.run_module('osk.cli',run_name='__main__')")
-    argv = [sys.executable, "-c", code, "integration", "review", "--harness", harness, "--conversation", conversation_id]
-    command = ("& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
-               if os.name == "nt" else shlex.join(argv))
+    command = core.cli_command("integration", "review", "--harness", harness,
+                               "--conversation", conversation_id)
     from . import distillation
     try:
         discovered = distillation.discover(st["pending_refs"])
@@ -699,33 +727,14 @@ class SubagentEvent(Exception):
 
 def hook_source(env: dict) -> tuple[str, str, str | None]:
     """Locate only the caller's native transcript, never another conversation's backlog."""
-    sid = env.get("session_id") or env.get("conversation_id") or os.environ.get("CODEX_THREAD_ID")
-    harness = env.get("harness") or os.environ.get("OSK_HARNESS")
+    sid = adapters.session_id(env)
     path = env.get("transcript_path")
-    if not harness and os.environ.get("CODEX_THREAD_ID") == sid:
-        harness = "codex"
-    if not harness and path and sid and Path(path).stem == sid:
-        base = Path(os.environ.get("CLAUDE_CONFIG_DIR", str(Path.home() / ".claude"))) / "projects"
-        if Path(path).resolve().is_relative_to(base.resolve()):
-            # A fresh Claude file may not exist until after SessionStart.
-            harness = "claude"
-    if not harness and path:
-        with Path(path).open("r", encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                if row.get("type") == "session_meta":
-                    harness = "codex"
-                    break
-                if row.get("sessionId"):
-                    harness = "claude"
-                    break
     if not sid:
         raise ValueError("hook has no actual conversation ID; capture not acknowledged")
+    harness = adapters.detect(env, sid, path)
     candidates = []
     if not path:
-        for kind in ([harness] if harness else ["claude", "codex"]):
+        for kind in ([harness] if harness else list(adapters.NAMES)):
             _identity(kind, sid)
             saved = _locate_transcript(kind, sid, status(kind, sid).get("transcript_path"))
             if saved:
@@ -737,14 +746,32 @@ def hook_source(env: dict) -> tuple[str, str, str | None]:
     if not harness:
         raise ValueError("native harness/transcript unavailable; provide harness and transcript_path")
     _identity(harness, sid)
-    if harness == "codex" and path and Path(path).is_file():
-        with Path(path).open("rb") as f:
-            first = next((line for line in f if line.strip()), b"")
-        row = json.loads(first) if first.endswith(b"\n") else None
-        meta = row.get("payload") if isinstance(row, dict) and row.get("type") == "session_meta" else None
-        if isinstance(meta, dict) and meta.get("id") != sid and meta.get("session_id") == sid:
-            raise SubagentEvent("Codex subagent hook names its root conversation; no state changed")
+    reason = adapters.get(harness).subagent(path, sid) if path and Path(path).is_file() else None
+    if reason:
+        raise SubagentEvent(reason)
     return harness, sid, path
+
+
+def recent_transcript(harness: str) -> str | None:
+    """이 vault가 가장 최근에 포착한 그 하네스 대화의 전사 — `doctor`가 판본을 읽는다.
+    상태를 쓰지 않는다."""
+    probe = state_path(harness, "inventory")
+    prefix = "-".join(probe.name.split("-")[:3]) + "-"
+    dated = []
+    for p in probe.parent.glob(prefix + "*.json"):
+        try:
+            dated.append((p.stat().st_mtime_ns, p))
+        except OSError:
+            continue                     # 그 사이 사라진 상태
+    for _, p in sorted(dated, reverse=True):
+        try:
+            s = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        path = s.get("transcript_path") if isinstance(s, dict) and s.get("harness") == harness else None
+        if isinstance(path, str) and Path(path).is_file():
+            return path
+    return None
 
 
 def hook_capture(env: dict, session: str) -> dict:

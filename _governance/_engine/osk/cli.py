@@ -11,6 +11,7 @@ from pathlib import Path
 from .core import ROOT, StaleEngineError
 from . import (graph, approvals, authority, raw, scope_memory, validate, search,
                write, evictions)
+from . import harness as adapters
 
 ENGINE = Path(__file__).resolve().parents[1]     # …/_governance/_engine
 
@@ -190,9 +191,8 @@ def _growth_cmd(a) -> None:
                 Path(a.file).read_text(encoding="utf-8-sig")))
         else:
             command = json.loads(Path(a.command_file).read_text(encoding="utf-8-sig"))
-            if not isinstance(command, list) or not command or not all(
-                    isinstance(s, str) and s for s in command):
-                raise ValueError("command file must contain a nonempty JSON argv array")
+            # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
+            # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
             result = (growth.check_command(command) if a.check else
                       growth.run(command, limit=a.limit, timeout=a.timeout))
         _emit(result)
@@ -208,7 +208,7 @@ def _fork_cmd(a) -> None:
     from . import response_growth
     try:
         reports = [response_growth.doctor(h, a.session, a.transcript)
-                   for h in ([a.harness] if a.harness else ("claude", "codex"))]
+                   for h in ([a.harness] if a.harness else adapters.fork_names())]
     except (ValueError, OSError) as e:
         _emit({"ok": False, "violations": [str(e)]})
         sys.exit(1)
@@ -224,6 +224,20 @@ def _fork_cmd(a) -> None:
     sys.stdout.buffer.flush()
 
 
+def _doctor_cmd(a) -> None:
+    """`osk doctor` — 이 기기의 하네스 연결을 **읽기만** 하며 점검한다. 실패 항목이
+    있으면 종료코드 1이다(경고는 0)."""
+    from . import doctor
+    rep = doctor.report(a.harness)
+    if a.json:
+        _emit(rep)
+    else:
+        sys.stdout.buffer.write(doctor.text(rep).encode("utf-8"))
+        sys.stdout.buffer.flush()
+    if not rep["ok"]:
+        sys.exit(1)
+
+
 def _organization_cmd(a) -> None:
     from . import organization
     try:
@@ -234,6 +248,8 @@ def _organization_cmd(a) -> None:
             result = organization.review(**data)
         else:
             result = organization.plan(a.scope, record=not a.preview)
+            if result.get("key"):   # 훅은 규칙의 요지만 싣는다 — 전문은 작업 직전 여기서 읽는다
+                result = {**result, "guidance": organization.guidance()}
         _emit(result)
     except (write.WriteError, StaleEngineError, ValueError, KeyError, TypeError, OSError) as exc:
         _emit({"ok": False, "violations": [str(exc)]})
@@ -349,7 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
         q.add_argument("--limit", type=int, default=20)
     for name in ("capture", "status", "prompt", "review"):
         q = ins.add_parser(name)
-        q.add_argument("--harness", choices=("claude", "codex"), required=True)
+        q.add_argument("--harness", choices=adapters.NAMES, required=True)
         q.add_argument("--conversation", required=True, help="실제 하네스 대화 ID")
         if name == "capture":
             q.add_argument("--transcript", required=True)
@@ -384,10 +400,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("fork", help="구독 fork 준비 점검 (읽기 전용)")
     fs = p.add_subparsers(dest="fork_cmd", required=True)
     q = fs.add_parser("doctor", help="route()의 판정과 근거 — 상태·설정을 쓰지 않는다")
-    q.add_argument("--harness", choices=("claude", "codex"), default=None, help="기본: 둘 다")
+    q.add_argument("--harness", choices=adapters.fork_names(), default=None, help="기본: 모두")
     q.add_argument("--session", default=None, help="실제 하네스 대화 ID")
     q.add_argument("--transcript", default=None, help="전사 경로 (기본: 훅과 같은 방식으로 찾는다)")
     q.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("doctor", help="이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행, 전달, "
+                                      "판본, fork (읽기 전용)")
+    p.add_argument("--harness", choices=adapters.NAMES, default=None, help="기본: 모두")
+    p.add_argument("--json", action="store_true")
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
@@ -500,6 +521,18 @@ def main(argv=None):
             recovery = scope_memory.recovery_status()
         except Exception as e:
             recovery = {"error": str(e)}
+        try:
+            # 포착이 막힌 대화 — 훅은 막힌 동안 한 줄만 싣는다(§9-3 3항)
+            from . import integration
+            capture = integration.blocked()
+        except Exception as e:
+            capture = {"error": str(e)}
+        try:
+            # 판본과 마지막 릴리스 확인 — 네트워크에 닿지 않는다(`osk.update --check`)
+            from . import update_check
+            release = update_check.report()
+        except Exception as e:
+            release = {"error": str(e)}
         gw = approvals.governance_warning()
         print(json.dumps({
             "nodes": len(idx.nodes),
@@ -508,6 +541,8 @@ def main(argv=None):
                             if d["effective"]],
             "evictions": ev,
             "scope_recovery": recovery,
+            "capture_blocked": capture,
+            "update": release,
             **({"warnings": [gw]} if gw else {}),
             "root": str(ROOT),
         }, ensure_ascii=False, indent=2))
@@ -528,6 +563,8 @@ def main(argv=None):
         return _organization_cmd(a)
     elif a.cmd == "fork":
         return _fork_cmd(a)
+    elif a.cmd == "doctor":
+        return _doctor_cmd(a)
     elif a.cmd == "sm":
         return _sm_cmd(a)
     elif a.cmd == "tidy":

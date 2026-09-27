@@ -427,7 +427,11 @@ def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
 #   7400 → 7500: working_memory → scope_memory 개명 + 공유성 가르침(모든
 #     세션과 기기가 같은 것을 본다 — 세션 한정 상태 금지). 실측으로 세션
 #     한정 상태가 유입돼 개명했고, 그 이유가 설명에 실려야 재발을 막는다.
-SCHEMA_BUDGET = 7500
+#   7500 → 7700: `overview`의 `include` — 훅이 호스트 한도(Claude Code 1만 자·Kiro
+#     3천 자) 때문에 접은 블록을 돌려받는 통로(Mechanism §9-3 1항, 2026-09-27
+#     개정). 대부분 스키마(블록 이름 열거 +136)다. 정확한 호출은 훅의 접은 줄이
+#     알려 주므로 설명은 한 문장(+52)으로 둔다.
+SCHEMA_BUDGET = 7700
 
 # 마지막 표면 린트의 상주 비용 분해 — surface_lint가 채우고 run이 보고에 싣는다.
 _last_surface_cost: dict | None = None

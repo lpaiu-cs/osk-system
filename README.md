@@ -66,7 +66,7 @@ records approval separately from the notes an agent can edit.
 A Python engine exposes MCP tools over stdio, stores knowledge in Markdown,
 and retrieves it with BM25. Obsidian is an optional way to explore the graph;
 Git synchronization is opt-in. Capture and periodic-review adapters currently
-support **Codex and Claude Code**. See the
+support **Codex, Claude Code, Kiro and Antigravity**. See the
 [runtime dependencies](_governance/_engine/requirements.txt).
 
 ## Quick start
@@ -75,13 +75,25 @@ support **Codex and Claude Code**. See the
 tutorial. It goes from an empty folder to your agent's first saved memory, on
 macOS, Linux and Windows, with a check after every step.
 
-You need Python 3.11 or newer (the commands use 3.12; change the version to
+**Updating a v3 vault?** Read [Upgrading](docs/UPGRADING.md) before you apply
+v4: it lists the placements v4 no longer reads and how to move them.
+
+**Let your agent install it.** Paste this into Claude Code or Codex:
+
+```text
+Install osk-system on this device. Read https://github.com/lpaiu-cs/osk-system/blob/main/docs/INSTALL-AGENT.md and follow it step by step. Ask me before anything outside the new vault changes.
+```
+
+The agent clones the newest release, runs the [setup tool](docs/SETUP.md#설치-도구-setup),
+shows you the plan and applies it only after you confirm.
+
+**To install by hand**, you need Python 3.11 or newer (the commands use 3.12; change the version to
 match yours) and Git. Start from a release tag rather than `main`
 (newer tags are on the [releases page](https://github.com/lpaiu-cs/osk-system/releases)).
 On macOS or Linux:
 
 ```bash
-git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python3.12 -m venv .venv
@@ -91,7 +103,9 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 
 Then record the release baseline
 ([Getting started, Step 2](docs/GETTING-STARTED.md#step-2-install-the-engine-and-record-the-release-baseline)),
-so that later updates can tell release files from your own edits.
+so that later updates can tell release files from your own edits. From v4.1.0,
+`python _governance/_engine/scripts/setup.py --interactive` does this and the
+host registration below in one step: it shows the plan and asks before it writes.
 
 1. Register the MCP server, replacing `<REPO>` with your instance's absolute
    path. JSON-configured clients can copy [.mcp.json.example](.mcp.json.example);
@@ -167,8 +181,10 @@ See the [engine's limitations](_governance/_engine/README.md#알려진-한계).
 
 ## Harness coverage
 
-Automatic capture, periodic integration, and subscription-backed forks currently
-have adapters for **Codex and Claude Code**. Being able to call MCP tools from
+Automatic capture and periodic integration currently have adapters for **Codex,
+Claude Code, Kiro and Antigravity**. Subscription-backed forks are for Codex and
+Claude Code only; Kiro and Antigravity always integrate in-session at turns 9 and
+15. Being able to call MCP tools from
 another client does not mean session hooks or autonomous knowledge growth are
 connected.
 

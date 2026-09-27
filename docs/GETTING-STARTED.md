@@ -5,7 +5,7 @@
 This tutorial is for people who use Claude Code or Codex but have never set up
 osk-system. It starts from an empty folder and ends with a verified setup. At the
 end, your agent writes its first memory, then finds it and reads it back. Written
-for release v3.22.2.
+for release v4.1.0.
 
 For more detail on any step, follow the links to [SETUP.md](SETUP.md), the
 operator reference (in Korean).
@@ -139,7 +139,7 @@ Never edit these files by hand.
 
 Clone a release tag, not the `main` branch, which moves between releases. The
 updater compares your files with a release. Starting exactly on one lets Step 2
-record a clean baseline. `v3.22.2` works as written. You can use the newest tag
+record a clean baseline. `v4.1.0` works as written. You can use the newest tag
 from the [releases page](https://github.com/lpaiu-cs/osk-system/releases) instead,
 as long as you use the same tag again in Step 2.
 
@@ -147,7 +147,7 @@ Run these in the folder that will contain the vault, such as `C:/osk` on
 Windows (create it first). The commands are the same on every OS:
 
 ```bash
-git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -167,6 +167,23 @@ later pull unreleased upstream changes into your vault.
 URL, or nothing if you removed the remote.
 
 ## Step 2: Install the engine and record the release baseline
+
+**Or let one command do Steps 2 to 4** (v4.1.0 or newer). From the vault root,
+with Python 3.11 or newer (`py -3.12` on Windows):
+
+```bash
+python _governance/_engine/scripts/setup.py --interactive
+```
+
+It creates `.venv`, installs the dependencies, records the release baseline,
+and registers the MCP server and the three hooks for Claude Code and Codex.
+Before it writes, it shows the plan and asks you to confirm. It backs up every
+configuration file it changes and touches only this vault's osk entries (see
+the [setup tool](SETUP.md#설치-도구-setup)). Then do the steps it lists under
+"할 일", such as trusting the hooks in Codex, and continue at
+[Step 5](#step-5-your-first-session). The wizard also asks whether to turn on the
+optional features: background fork reviews, a daily review run and Git sync. The
+manual steps below do the same by hand.
 
 macOS/Linux:
 
@@ -199,13 +216,13 @@ from local edits. The updater downloads the release from GitHub to compare.
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v3.22.2 --apply
+.venv/bin/python -m osk.update --to v4.1.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v3.22.2 --apply
+.venv\Scripts\python.exe -m osk.update --to v4.1.0 --apply
 ```
 
 The first run changes none of your files. It prints the plan, then exits with
@@ -216,9 +233,12 @@ content already matches, so only the baseline is recorded. Review the plan, then
 run **the same command again**, within an hour, to apply it. Every `--apply`
 requires this confirmation (see [Keeping up to date](#keeping-up-to-date)).
 
-**With v3.22.2, as used above, protection is a separate step.** This release does
-not show `governance.protect` or establish protection during an update. Review
-the files under `_governance/`, then run:
+The same update protects `_governance`. On a clean clone the plan shows
+`governance.protect` as `"establish"`, and the confirmed update reports
+`"governance_protected": "established"`. If governance files differ from the
+release, the plan shows `"protect": "withheld"` and lists them under
+`unattested`, and the update leaves the folder unprotected. Review those files,
+then protect the folder yourself:
 
 macOS/Linux:
 
@@ -233,14 +253,7 @@ Windows (PowerShell):
 ```
 
 Confirm with `y` yourself in the terminal. This records the current files as the
-initial approved state; review any edits you made before confirming.
-
-**If you selected a v4.0.0 or later release instead,** a clean clone's update
-plan shows `governance.protect` as `"establish"`. The confirmed update reports
-`"governance_protected": "established"`, so the separate `protect` command is
-unnecessary. If governance files differ from that release, the plan instead
-shows `"protect": "withheld"` and lists them under `unattested`. The update leaves
-the folder unprotected; review those files and use the `protect` command above.
+initial approved state.
 
 The baseline is written to `00_Scope/Workbench/_ledger/update.jsonl`. Commit it,
 or let the sync daemon do so later. Skip `git push` if you removed the remote in
@@ -253,7 +266,7 @@ git push
 ```
 
 **Check:** `.venv/bin/python -m osk.update` reports the selected version as
-`current` (`v3.22.2` in this example). On Windows, use
+`current` (`v4.1.0` in this example). On Windows, use
 `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
 `osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 
@@ -414,6 +427,15 @@ which is the default on Codex 0.154. In a new session, ask the agent: *"What
 session key did the osk hook give you?"* It should answer with the repository
 name.
 
+**Check both hosts at once:** after you have opened a new session in each host,
+run `doctor` from the vault root with `PYTHONPATH` set (Step 2):
+`.venv/bin/python -m osk.cli doctor`, or on Windows
+`.venv\Scripts\python.exe -m osk.cli doctor`. For Claude Code and Codex it shows
+whether MCP and the three hooks point at this vault, when each hook last ran on
+this device, and whether the agent called `overview` after the session started.
+A hook that is registered but never ran needs a new session (Claude Code) or
+trust in `/hooks` (Codex). `doctor` only reads.
+
 ## Step 5: Your first session
 
 Open Claude Code or Codex **inside a project repository**, such as
@@ -437,11 +459,11 @@ configured. …]`. That means reviews happen in this session at your 9th and 15t
 message, which is normal.
 
 Until the scope is bound, this conversation's rounds cannot be captured. From
-your second message on, the hook text therefore carries a capture diagnostic,
-`포착 진단: WriteError: 착지 미정 …` ("landing undecided"), and a
-`[osk 케이던스 — user 턴 N]` line on every message, although no review is due.
-Both stop after step 2 below. The review warning stays until you set up fork
-reviews.
+your second message on, the hook text therefore carries a one-line capture notice,
+`[osk 포착 대기 — WriteError: 착지 미정 …]` ("capture waiting — landing undecided"),
+on every message, although no review is due. With fork reviews on it reads
+`[osk 백그라운드 검토 대기 — …]` instead. It stops after step 2 below. The review
+warning stays until you set up fork reviews.
 
 1. **Look around.** Prompt:
 
@@ -561,11 +583,13 @@ out of 1,500, and M characters still free (`여유`).
 | `[osk scope 기억 — 00_Scope/… · N/1500자 · 여유 M자]` | The scope memory: characters used out of 1,500, characters free, then its hash and full text. |
 | `[osk 검토 경고 — <reason>. …]` | Background fork reviews are not running, for the reason given. Reviews happen in this session at user turns 9 and 15. Normal if you have not set up fork reviews. |
 | `[osk 대화 검토 — …]` | Fork reviews are on: one runs after every 9 successful final answers. |
-| `[osk 케이던스 — user 턴 N]` | A review is due. At turn 9 the agent reviews along with its next tool call. At turn 15 it may spend a whole turn on the review. Before the scope is bound, it appears on every message because capture fails (Step 5). |
+| `[osk 케이던스 — user 턴 N]` | A review is due. At turn 9 the agent reviews along with its next tool call. At turn 15 it may spend a whole turn on the review. |
+| `[osk 포착 대기 — <error>. …]` | Capturing this conversation's transcript is stuck. Normal before the scope is bound (Step 5). The wait and the count are kept, and turns 9 and 15 carry the review text as usual. If it continues after binding, see `capture_blocked` in the CLI `status`. |
 | `[osk 대화별 통합 대기 — …]` | This conversation's review queue, with instructions for the agent. |
 | `[osk 참조·조직 검토]` | Work to tidy links and hubs among this scope's nodes. |
 | `[osk 정돈 — …]`, `[osk 정돈이 밀렸다 — …]` | Evicted scope-memory lines waiting to be settled. `밀렸다` means overdue: older than 14 days. |
 | `[osk scope 복구 대기 — …]` | The scope memory hit its limit. The agent should prune entries or move them into nodes. |
+| `[osk 새 릴리스 — vX.Y.Z · 이 vault vA.B.C]` | A newer release is out. The same notice appears on your screen as a warning, once a day per device. Ask the agent to update ([Keeping up to date](#keeping-up-to-date)); nothing is applied until you approve the changeset. |
 | Anything containing `진단` or `diagnostic` | A hook step failed. Your work continues, and nothing was marked done. See [Troubleshooting](#troubleshooting). |
 
 ## Everyday commands
@@ -584,6 +608,46 @@ Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 | `integration list` | List conversations whose captured rounds wait for review. |
 | `protect <folder>`, `approve <folder>`, `revert <folder>` | Protect a folder, or accept or undo its pending changeset. These ask `[y/N]` and refuse to run without an interactive terminal. |
 | `fork doctor` | Check whether fork reviews can run. Read-only. |
+| `doctor` | Check how Claude Code, Codex, Kiro and Antigravity are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
+
+## Optional: connect Kiro
+
+Kiro also uses the three hooks and its conversation transcript. It has no subscription
+fork, so conversation reviews run inside the session at turns 9 and 15 instead of in a
+background fork. The `setup` of step 2 also connects Kiro when this device has it (a
+`~/.kiro` folder or `kiro` on PATH). By hand, it takes the two steps below. The file
+contents are in 'Kiro에 잇는다' in [SETUP](SETUP.md).
+
+**Ka. Register the MCP server.** Add an `osk-system` entry to `mcpServers` in
+`~/.kiro/settings/mcp.json`. Kiro has no registration CLI.
+
+**Kb. Register the hooks.** Put the three hooks (SessionStart, UserPromptSubmit and Stop)
+in `~/.kiro/hooks/osk-system.json`. Their commands call the same scripts as in 3b.
+
+**Check:** Kiro runs hooks **only in trusted workspace folders**. When Kiro asks whether to
+trust a folder you open, allow it. Then ask the agent in a new chat for the session key the
+osk hook gave it. It should answer with the repository name. `doctor --harness kiro`
+checks it too.
+
+## Optional: connect Antigravity
+
+Antigravity (the 2.0 app) also uses the three hooks and its conversation transcript. Like
+Kiro, it has no subscription fork, so conversation reviews run inside the session at turns
+9 and 15. The `setup` of step 2 also connects Antigravity when this device has it (a
+`~/.gemini/config` folder). You don't need to install the `agy` CLI. By hand, it takes the
+two steps below. The file contents are in 'Antigravity에 잇는다' in [SETUP](SETUP.md).
+
+**Aa. Register the MCP server.** Add an `osk-system` entry to `mcpServers` in
+`~/.gemini/config/mcp_config.json`. Antigravity has no registration CLI.
+
+**Ab. Register the hooks.** Put the three hooks (SessionStart, PreInvocation and Stop)
+under the hook name `osk-system` in `~/.gemini/config/hooks.json`. Their commands call the
+same scripts as in 3b. On Windows the commands are written without quotes, so the Python
+and vault paths must not contain spaces or cmd special characters such as `&`.
+
+**Check:** Ask the agent in a new conversation for the session key the osk hook gave it. It
+should answer with the repository name. `doctor --harness antigravity` checks it
+too.
 
 ## Optional: browse the vault in Obsidian
 
@@ -631,6 +695,13 @@ Before you start it:
 - Start the daemon with the **absolute path** of `sync_daemon.py`. `osk.update`
   finds and restarts the daemon by that path. It cannot find a daemon that was
   started with a relative path.
+
+**With v4.1.0 or newer, one command does it.**
+`python _governance/_engine/scripts/setup.py --apply --sync` checks the points
+above, then registers the daemon with this device's service manager (Task
+Scheduler, launchd or systemd) and starts it. It asks for confirmation the same
+way as in Step 2 (see the [setup tool](SETUP.md#설치-도구-setup)). The steps below
+do the same by hand.
 
 Try one round first.
 
@@ -735,6 +806,10 @@ harness, model, working folder and permission mode. It reviews up to 9 rounds
 that have not been reviewed yet, and writes knowledge through MCP. It runs on
 your **subscription** login, and never falls back to paid API calls. You turn
 it on per device and per harness.
+
+With v4.1.0 or newer, `python _governance/_engine/scripts/setup.py --apply --fork`
+does item 1: it finds this device's CLIs and writes them into the file. Items 2
+and 3, signing in and checking, are yours.
 
 1. **Tell osk which CLI to use.** Create `<vault>/.osk/response-growth.json`.
    Everything under `.osk/` stays on this device: Git ignores it. The file may
@@ -847,8 +922,20 @@ full design, see
 
 ## Keeping up to date
 
+You do not need to watch the releases page. Once a day, the session-start hook
+and the MCP `overview` ask the canonical repository for its release tags
+(`git ls-remote`; nothing from your vault is sent). When a newer release exists,
+Claude Code and Codex show a warning such as
+`osk-system 새 릴리스 v4.2.0 (이 vault는 v4.1.0) — …` once a day per device,
+ending with the link to that release's notes. Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
+steps below with you: it shows the changeset and waits for your approval. The
+check runs in the background, so the notice appears from the session after the
+check. To check right now, run `osk.update --check`, which only asks for the
+tags. To turn the checks off, add `"update_check": false` to `.osk/config.json`.
+
 Releases always come from the canonical repository, whatever your `origin` is.
-Run these from the vault root with `PYTHONPATH` set (Step 2).
+Run these from the vault root with `PYTHONPATH` set (Step 2). Before you move to
+a new major version, such as from v3 to v4, read [Upgrading](UPGRADING.md).
 
 macOS/Linux:
 
@@ -921,7 +1008,7 @@ library.
 | `No module named 'mcp.server.fastmcp'` | You are using a different Python, or mcp 2.x is installed. Use the vault's `.venv` Python and reinstall `_governance/_engine/requirements.txt`, which pins `mcp<2`. |
 | Windows: `ZoneInfoNotFoundError` for `Asia/Seoul` | The venv lacks the `tzdata` package. Reinstall the requirements into it. |
 | `claude mcp list` shows no *Connected*, or Codex cannot start the server | The registered command must use the vault's `.venv` Python (`.venv/Scripts/python.exe` on Windows). Run the same command in a terminal to see the error. A healthy server prints nothing and waits for a client; press Ctrl+C to stop it. |
-| No osk text at session start | Claude Code loads hooks only at startup, so open a new session and check `/hooks`. In Codex, trust the entries in `/hooks`. In both, registering MCP does not install the hooks, and each hook command must use the vault's `.venv` Python. Run the hand test from Step 3b. |
+| No osk text at session start | Claude Code loads hooks only at startup, so open a new session and check `/hooks`. In Codex, trust the entries in `/hooks`. In both, registering MCP does not install the hooks, and each hook command must use the vault's `.venv` Python. Run the hand test from Step 3b. `doctor` shows which hook is registered but never ran on this device. |
 | Hook text repeats `착지 미정` or `scope 결속이 없다` | This repository's key is not bound yet. Create or choose its scope (Step 5, item 2). |
 
 **Write refusals your agent may report**

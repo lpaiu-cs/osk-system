@@ -87,6 +87,7 @@ RELEASES = {
     "v3.20.1": "6f27819144d974eefecc27035ba9791abeab407d",
     "v3.21.2": "56ca7dc3e045e27f702e6497b1ba7c9802186502",
     "v3.22.2": "bf32df027350b9dcfeafac43881d2ffd80d8e8d0",
+    "v4.0.0": "40ecbfd37762a0d8cd04bc6480f0953acae61538",
 }
 LAYOUTS = {"=": "= ", "bare": "", "00_": "00_"}
 # (start, layout) -> the release whose fresh install gave the vault that layout
@@ -100,11 +101,14 @@ CELLS = {
     ("v3.22.2", "00_"): None,
     ("v3.22.2", "="): "v3.20.0",
     ("v3.22.2", "bare"): "v3.20.1",
+    ("v4.0.0", "00_"): None,
+    ("v4.0.0", "="): "v3.20.0",
+    ("v4.0.0", "bare"): "v3.20.1",
 }
 # Per PR: the oldest updater (no gate, no baseline, legacy roots), the newest
 # release on its shipped layout, and the newest release on the legacy layout
 # (most early vaults). The release workflow runs every cell (OSK_MATRIX=full).
-PR_CELLS = [("v3.20.0", "="), ("v3.22.2", "00_"), ("v3.22.2", "=")]
+PR_CELLS = [("v3.20.0", "="), ("v4.0.0", "00_"), ("v4.0.0", "=")]
 # How each release's own docs make a vault. Until v3.22 the README said "clone
 # and switch to your own remote" and nothing recorded a release baseline, so the
 # first update stops on "engine drift" and tells the user to rerun with --adopt.
@@ -708,8 +712,12 @@ def run_cell(up: Upstream, cand: str, work: Path, start: str, layout: str) -> di
         check("S: region clean after its approvals", a["region_A"] == b["region_B"] == "clean",
               f"{a['region_A']}/{b['region_B']}")
         check("S: its hooks captured the conversation quietly", not conv.said, conv.said)
+        # What an older surface put under `_` directories is judged in its own checks: from
+        # v4, S's validator names those placements too (Mechanism §1 4항).
+        aside = [n for n in a["legacy"] if n.startswith("_")]
         v = _validate(vault)
-        check("S: its own validator passes the vault", v.get("verdict") == "PASS", v.get("fail"))
+        rest = _split(v, aside)[0]
+        check("S: its own validator passes the vault (legacy placements aside)", not rest, rest)
         facts["legacy_accepted_by_S"] = a["legacy"]
         before = _snapshot(vault)
 
@@ -740,9 +748,15 @@ def run_cell(up: Upstream, cand: str, work: Path, start: str, layout: str) -> di
             else:
                 changed.append(rel if new is not None else f"{rel} (deleted)")
         journal = f"{S}/Workbench/_ledger/update.jsonl"       # the updater's own; an adopt starts it
-        added = sorted(r for r in after if r not in before and r not in framework | {journal})
+        # From v4, S's updater records the accepted governance region in the approval store:
+        # content-addressed objects, each named by the sha256 of its bytes.
+        store = f"{S}/Workbench/_ledger/approved/objects/"
+        stored = {r for r in after if r not in before and r.startswith(store)
+                  and r[len(store):].replace("/", "") == hashlib.sha256(after[r]).hexdigest()}
+        added = sorted(r for r in after
+                       if r not in before and r not in framework | {journal} | stored)
         facts["data"] = {"files": sum(r not in framework for r in before),
-                         "ledgers_grown": sorted(grown)}
+                         "ledgers_grown": sorted(grown), "objects_stored": len(stored)}
         check("data: every file byte-identical, ledgers only appended", not changed, changed[:10])
         check("data: no new file outside the framework", not added, added[:10])
         bad = sorted(p for p, h in mapped.items() if not (vault / p).is_file()
@@ -762,8 +776,6 @@ def run_cell(up: Upstream, cand: str, work: Path, start: str, layout: str) -> di
         check("version: nothing left to apply", not any(report.get(k) for k in (
             "add", "update", "remove", "rebaseline", "conflict", "engine_drift")),
               {k: report.get(k) for k in ("add", "update", "remove", "rebaseline", "conflict")})
-        # What S's surface put under `_` directories is judged in its own checks.
-        aside = [n for n in a["legacy"] if n.startswith("_")]
         v = _validate(vault)
         facts["validate"] = {"verdict": v.get("verdict"), "warnings": _warnings(v)}
         rest, rejected = _split(v, aside)

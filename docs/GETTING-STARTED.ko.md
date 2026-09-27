@@ -4,7 +4,7 @@
 
 Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사람을 위한 따라하기
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
-첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v3.22.2 릴리스 기준이다.
+첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v4.1.0 릴리스 기준이다.
 
 단계마다 더 자세한 내용은 운용 참고서인 [SETUP.md](SETUP.md)로 이어지는 링크를
 따라가면 된다.
@@ -129,7 +129,7 @@ Markdown 파일 하나다. 머리말에는 다음이 들어간다.
 
 `main` 브랜치가 아니라 릴리스 태그를 clone한다. `main`은 릴리스 사이에도 움직인다.
 갱신기는 파일을 릴리스와 대조하므로, 정확히 한 릴리스에서 출발해야 2단계에서 깨끗한
-기준선을 기록할 수 있다. `v3.22.2`는 적힌 그대로 쓰면 된다.
+기준선을 기록할 수 있다. `v4.1.0`은 적힌 그대로 쓰면 된다.
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)의 최신 태그를 써도
 되지만, 그때는 2단계에서도 같은 태그를 쓴다.
 
@@ -137,7 +137,7 @@ vault를 담을 폴더(Windows라면 `C:/osk` 등, 먼저 만들어 둔다)에�
 OS에서나 같은 명령이다.
 
 ```bash
-git clone --branch v3.22.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -157,6 +157,20 @@ vault를 공개 저장소에 push하지 않는다. 아직 개인 원격이 없�
 URL이 보이고, 원격을 지웠다면 아무것도 나오지 않는다.
 
 ## 2단계: 엔진 설치와 릴리스 기준선 기록
+
+**2~4단계를 명령 하나로 할 수도 있다**(v4.1.0 이상). vault 루트에서 Python 3.11
+이상으로(Windows는 `py -3.12`) 실행한다:
+
+```bash
+python _governance/_engine/scripts/setup.py --interactive
+```
+
+`.venv`를 만들어 의존성을 설치하고, 릴리스 기준선을 기록하고, Claude Code·Codex에 MCP
+서버와 훅 세 개를 등록한다. 쓰기 전에 계획을 보여 주고 확인을 받는다. 바꾸는 설정 파일은
+모두 백업하고, 이 vault의 osk 항목만 건드린다([설치 도구](SETUP.md#설치-도구-setup)).
+그다음 "할 일"로 나열된 것(Codex의 훅 신뢰 등)을 하고 [5단계](#5단계-첫-세션)로 간다.
+마법사는 선택 기능(백그라운드 fork 검토, 매일 도는 정기 실행, Git 동기화)을 켤지도 묻는다.
+아래 수동 절차는 같은 일을 손으로 한다.
 
 macOS/Linux:
 
@@ -189,13 +203,13 @@ $env:PYTHONPATH = "_governance\_engine"
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v3.22.2 --apply
+.venv/bin/python -m osk.update --to v4.1.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v3.22.2 --apply
+.venv\Scripts\python.exe -m osk.update --to v4.1.0 --apply
 ```
 
 첫 실행은 어떤 파일도 바꾸지 않는다. 계획을 출력한 뒤 종료코드 2와
@@ -206,9 +220,11 @@ Windows (PowerShell):
 **같은 명령을 한 번 더** 실행하면 적용된다. `--apply`는 언제나 이 확인을
 거친다([최신 릴리스로 갱신하기](#최신-릴리스로-갱신하기) 참고).
 
-**위 예제의 v3.22.2에서는 보호 지정을 별도로 한다.** 이 릴리스는
-`governance.protect`를 출력하거나 갱신 중 보호를 지정하지 않는다.
-`_governance/` 아래 파일을 검토한 뒤 실행한다.
+같은 갱신이 `_governance`를 보호영역으로 지정한다. 깨끗한 clone의 계획에는
+`governance.protect`가 `"establish"`로 나오고, 확인한 적용은
+`"governance_protected": "established"`를 보고한다. 통치 파일이 릴리스와 다르면
+계획에 `"protect": "withheld"`와 차이 파일의 `unattested`가 나오고, 갱신은 그 구획을
+보호하지 않은 채 남긴다. 해당 파일을 검토한 뒤 직접 지정한다.
 
 macOS/Linux:
 
@@ -222,15 +238,7 @@ Windows (PowerShell):
 .venv\Scripts\python.exe -m osk.cli protect _governance
 ```
 
-터미널에서 직접 `y`로 확인한다. 현재 파일이 초기 승인본이 되므로, 직접 수정한
-내용이 있다면 확인 전에 함께 검토한다.
-
-**대신 v4.0.0 이상 릴리스를 골랐다면**, 깨끗한 clone의 갱신 계획에
-`governance.protect`가 `"establish"`로 나온다. 확인 후 적용 결과가
-`"governance_protected": "established"`이면 별도 `protect` 명령은 필요 없다.
-통치 파일이 해당 릴리스와 다르면 계획에 `"protect": "withheld"`와 차이 파일의
-`unattested`가 나온다. 갱신은 그 구획을 보호하지 않은 채 남기므로, 해당 파일을
-검토한 뒤 위의 `protect` 명령으로 직접 지정한다.
+터미널에서 직접 `y`로 확인한다. 현재 파일이 초기 승인본이 된다.
 
 기준선은 `00_Scope/Workbench/_ledger/update.jsonl`에 기록된다. 직접 커밋하거나,
 나중에 동기화 데몬에 맡긴다. 1단계에서 원격을 지웠다면 `git push`는 건너뛴다.
@@ -242,7 +250,7 @@ git push
 ```
 
 **확인:** `.venv/bin/python -m osk.update`의 `current`가 선택한 버전을 가리킨다
-(위 예제에서는 `v3.22.2`).
+(위 예제에서는 `v4.1.0`).
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다. `osk.cli status`가 `"protected_regions": {"_governance": "clean"}`을
 보여 준다.
@@ -402,6 +410,13 @@ Codex는 새로 추가되거나 바뀐 훅 정의를 사용자가 신뢰하기 �
 기본값이다). 새 세션에서 에이전트에게 *"osk 훅이 알려 준 세션 키가 뭐야?"* 하고
 물으면 저장소 이름으로 답해야 한다.
 
+**두 호스트를 한 번에 확인:** 각 호스트에서 새 세션을 한 번 연 뒤, `PYTHONPATH`를
+설정한 채(2단계) vault 루트에서 `doctor`를 실행한다: `.venv/bin/python -m osk.cli doctor`,
+Windows는 `.venv\Scripts\python.exe -m osk.cli doctor`. Claude Code와 Codex마다 MCP와
+세 훅이 이 vault를 가리키는지, 훅마다 이 기기에서 마지막으로 불린 시각, 세션 시작 뒤
+에이전트가 `overview`를 불렀는지를 보인다. 등록됐는데 한 번도 불리지 않은 훅은 Claude
+Code에서는 새 세션을, Codex에서는 `/hooks`의 신뢰를 요구한다. `doctor`는 읽기만 한다.
+
 ## 5단계: 첫 세션
 
 Claude Code나 Codex를 vault가 아니라 `~/code/my-app` 같은 **프로젝트 저장소
@@ -429,9 +444,9 @@ fork 검토를 켜지 않았다면
 검토가 이 세션 안에서 9번째와 15번째 메시지에 이뤄진다는 뜻이며, 정상이다.
 
 scope가 결속되기 전에는 이 대화의 라운드를 포착할 수 없다. 그래서 두 번째
-메시지부터는 메시지마다 훅 문구에 포착 진단(`포착 진단: WriteError: 착지 미정 …`)과
-`[osk 케이던스 — user 턴 N]` 줄이 붙는다. 실제로 검토할 때가 된 것은 아니다. 둘 다
-아래 2번을 마치면 멈춘다. 검토 경고는 fork 검토를 설정할 때까지 남는다.
+메시지부터는 메시지마다 훅 문구에 포착 대기 한 줄(`[osk 포착 대기 — WriteError: 착지 미정 …]`,
+fork 검토를 켰다면 `[osk 백그라운드 검토 대기 — …]`)이 붙는다. 실제로 검토할 때가 된
+것은 아니다. 아래 2번을 마치면 멈춘다. 검토 경고는 fork 검토를 설정할 때까지 남는다.
 
 1. **둘러보기.** 프롬프트:
 
@@ -547,11 +562,13 @@ scope가 결속되기 전에는 이 대화의 라운드를 포착할 수 없다.
 | `[osk scope 기억 — 00_Scope/… · N/1500자 · 여유 M자]` | scope 기억. 1,500자 중 쓴 글자 수와 남은 글자 수, 이어서 hash와 전문이 나온다. |
 | `[osk 검토 경고 — <이유>. …]` | 적힌 이유로 백그라운드 fork 검토가 돌지 않는다. 검토는 이 세션 안에서 user 턴 9와 15에 이뤄진다. fork 검토를 설정하지 않았다면 정상이다. |
 | `[osk 대화 검토 — …]` | fork 검토가 켜져 있다. 성공한 최종 답변 9회마다 한 번씩 돈다. |
-| `[osk 케이던스 — user 턴 N]` | 검토할 때가 됐다. 9턴에는 에이전트가 다음 도구 호출에 검토를 함께 싣는다. 15턴에는 한 턴을 통째로 검토에 써도 된다. scope가 결속되기 전에는 포착이 실패해서 메시지마다 나온다(5단계). |
+| `[osk 케이던스 — user 턴 N]` | 검토할 때가 됐다. 9턴에는 에이전트가 다음 도구 호출에 검토를 함께 싣는다. 15턴에는 한 턴을 통째로 검토에 써도 된다. |
+| `[osk 포착 대기 — <오류>. …]` | 이 대화의 원문 포착이 막혔다. scope가 결속되기 전이면 정상이다(5단계). 대기와 계수는 유지되고 9·15턴에는 평소대로 검토 문구가 실린다. 결속 뒤에도 계속되면 CLI `status`의 `capture_blocked`를 본다. |
 | `[osk 대화별 통합 대기 — …]` | 이 대화의 검토 대기열과 에이전트에게 주는 지시. |
 | `[osk 참조·조직 검토]` | 이 scope 노드들의 링크와 허브를 정돈하는 작업. |
 | `[osk 정돈 — …]`, `[osk 정돈이 밀렸다 — …]` | 처분을 기다리는 퇴출된 scope 기억 줄. `밀렸다`는 가장 오래된 항목이 14일을 넘겼다는 뜻이다. |
 | `[osk scope 복구 대기 — …]` | scope 기억이 상한에 닿았다. 에이전트가 항목을 정리하거나 노드로 옮겨야 한다. |
+| `[osk 새 릴리스 — vX.Y.Z · 이 vault vA.B.C]` | 새 릴리스가 나왔다. 같은 알림이 사용자 화면에도 경고로 뜨며, 기기마다 하루 한 번이다. 에이전트에게 갱신을 요청한다([최신 릴리스로 갱신하기](#최신-릴리스로-갱신하기)). 변경집합을 승인하기 전에는 아무것도 적용되지 않는다. |
 | `진단`이나 `diagnostic`이 든 문구 | 훅의 한 단계가 실패했다. 작업은 계속되며, 무엇도 완료로 처리되지 않았다. [문제 해결](#문제-해결)을 본다. |
 
 ## 자주 쓰는 명령
@@ -570,6 +587,42 @@ scope가 결속되기 전에는 이 대화의 라운드를 포착할 수 없다.
 | `integration list` | 포착된 라운드가 검토를 기다리는 대화를 나열한다. |
 | `protect <폴더>`, `approve <폴더>`, `revert <폴더>` | 폴더를 보호하거나, 대기 중인 변경집합을 승인하거나 반려한다. `[y/N]`으로 묻고, 대화형 단말이 아니면 실행을 거부한다. |
 | `fork doctor` | fork 검토가 돌 수 있는지 점검한다. 읽기 전용이다. |
+| `doctor` | 이 기기에서 Claude Code·Codex·Kiro·Antigravity가 어떻게 이어졌는지 점검한다: MCP·훅 등록, 훅마다 마지막으로 불린 시각, 세션 시작 문구가 에이전트에게 닿았는지, 호스트 판본, fork. 읽기 전용이며, 동작할 수 없는 설정이 있을 때만 종료코드 1이다. |
+
+## 선택: Kiro 연결
+
+Kiro도 세 훅과 대화 전사를 쓴다. 구독 fork는 없어서, 대화 검토는 백그라운드 fork 대신
+세션 안에서 9·15턴으로 한다. 2단계의 `setup`은 이 기기에 Kiro(`~/.kiro` 폴더나 PATH의
+`kiro`)가 있으면 Kiro도 잇는다. 손으로 할 때는 아래 두 단계다. 파일 내용은
+[SETUP](SETUP.md)의 'Kiro에 잇는다'에 있다.
+
+**Ka. MCP 서버를 등록한다.** `~/.kiro/settings/mcp.json`의 `mcpServers`에
+`osk-system` 항목을 더한다. Kiro에는 등록 CLI가 없다.
+
+**Kb. 훅을 등록한다.** `~/.kiro/hooks/osk-system.json`에 SessionStart·
+UserPromptSubmit·Stop 훅 세 개를 둔다. 명령은 3b와 같은 스크립트를 부른다.
+
+**확인:** Kiro는 **신뢰한 작업 폴더에서만** 훅을 돌린다. 폴더를 열 때 신뢰할지 물으면
+허락한다. 그다음 새 채팅에서 에이전트에게 osk 훅이 알려 준 세션 키를 묻는다. 저장소
+이름으로 답해야 한다. `doctor --harness kiro`로도 확인한다.
+
+## 선택: Antigravity 연결
+
+Antigravity(2.0 앱)도 세 훅과 대화 전사를 쓴다. 구독 fork는 없어서, 대화 검토는 Kiro처럼
+세션 안에서 9·15턴으로 한다. 2단계의 `setup`은 이 기기에 Antigravity(`~/.gemini/config`
+폴더)가 있으면 Antigravity도 잇는다. `agy` CLI는 따로 설치하지 않아도 된다. 손으로 할
+때는 아래 두 단계다. 파일 내용은 [SETUP](SETUP.md)의 'Antigravity에 잇는다'에 있다.
+
+**Aa. MCP 서버를 등록한다.** `~/.gemini/config/mcp_config.json`의 `mcpServers`에
+`osk-system` 항목을 더한다. Antigravity에는 등록 CLI가 없다.
+
+**Ab. 훅을 등록한다.** `~/.gemini/config/hooks.json`의 `osk-system` 이름 아래에
+SessionStart·PreInvocation·Stop 훅 세 개를 둔다. 명령은 3b와 같은 스크립트를 부른다.
+Windows에서는 명령을 따옴표 없이 쓰므로 Python과 vault 경로에 공백과 `&` 같은 cmd
+특수문자가 없어야 한다.
+
+**확인:** 새 대화에서 에이전트에게 osk 훅이 알려 준 세션 키를 묻는다. 저장소 이름으로
+답해야 한다. `doctor --harness antigravity`로도 확인한다.
 
 ## 선택: Obsidian으로 vault 둘러보기
 
@@ -615,6 +668,11 @@ Windows (PowerShell):
   하나를 쓴다.
 - 데몬은 `sync_daemon.py`의 **절대 경로**로 시작한다. `osk.update`는 그 경로로
   데몬을 찾아 다시 띄우므로, 상대 경로로 시작한 데몬은 찾지 못한다.
+
+**v4.1.0 이상에서는 명령 하나로 할 수 있다.**
+`python _governance/_engine/scripts/setup.py --apply --sync`가 위 전제를 확인하고, 이
+기기의 서비스 관리자(작업 스케줄러·launchd·systemd)에 데몬을 등록해 띄운다. 확인은
+2단계와 같다([설치 도구](SETUP.md#설치-도구-setup)). 아래는 같은 일을 손으로 하는 절차다.
 
 먼저 한 번만 돌려 본다.
 
@@ -717,6 +775,9 @@ Stop 훅이 성공한 최종 답변 9회마다 대화의 숨은 일회성 *fork*
 대화의 하네스, 모델, 작업 폴더, 권한 모드를 그대로 이어받는다. 아직 검토하지 않은
 라운드를 최대 9개 검토하고, 지식은 MCP로 쓴다. 실행은 **구독** 로그인으로만 하며,
 유료 API 호출로 대체하는 일은 없다. 기기마다, 하네스마다 따로 켠다.
+
+v4.1.0 이상에서는 `python _governance/_engine/scripts/setup.py --apply --fork`가 1번을
+한다 — 이 기기의 CLI를 찾아 파일에 적는다. 2·3번(로그인과 확인)은 직접 한다.
 
 1. **osk에 쓸 CLI를 알려 준다.** `<vault>/.osk/response-growth.json`을 만든다.
    `.osk/` 아래의 모든 것은 이 기기에만 남는다(Git이 무시한다). 이 파일에는
@@ -825,8 +886,18 @@ Stop 훅이 성공한 최종 답변 9회마다 대화의 숨은 일회성 *fork*
 
 ## 최신 릴리스로 갱신하기
 
+릴리스 페이지를 지켜볼 필요는 없다. 세션 시작 훅과 MCP `overview`가 하루에 한 번
+정본 저장소에 릴리스 태그를 묻는다(`git ls-remote` — vault의 내용은 보내지 않는다).
+새 릴리스가 있으면 Claude Code·Codex 화면에
+`osk-system 새 릴리스 v4.2.0 (이 vault는 v4.1.0) — …` 같은 경고가 기기마다 하루 한 번
+뜬다. 경고 끝에 그 판의 릴리스 노트 주소가 붙는다. 에이전트에게 **"osk 업데이트해 줘"**라고 요청하면 에이전트가 아래 절차를 함께
+밟는다 — 변경집합을 보여 주고 사용자의 승인을 기다린다. 확인은 백그라운드에서 돌므로
+알림은 확인한 다음 세션부터 보인다. 지금 확인하려면 `osk.update --check`를 실행한다
+(태그만 묻는다). 확인을 끄려면 `.osk/config.json`에 `"update_check": false`를 둔다.
+
 릴리스는 `origin`이 어디를 가리키든 언제나 정본 저장소에서 받는다. `PYTHONPATH`를
-설정한 채(2단계) vault 루트에서 실행한다.
+설정한 채(2단계) vault 루트에서 실행한다. v3에서 v4처럼 메이저 판을 올릴 때는 먼저
+[판 올리기](UPGRADING.ko.md)를 읽는다.
 
 macOS/Linux:
 
@@ -897,7 +968,7 @@ Windows (PowerShell):
 | `No module named 'mcp.server.fastmcp'` | 다른 Python을 쓰고 있거나 mcp 2.x가 설치돼 있다. vault의 `.venv` Python을 쓰고, `mcp<2`로 묶인 `_governance/_engine/requirements.txt`를 다시 설치한다. |
 | Windows: `Asia/Seoul`에 대한 `ZoneInfoNotFoundError` | venv에 `tzdata` 패키지가 없다. 의존성을 그 venv에 다시 설치한다. |
 | `claude mcp list`에 *Connected*가 없거나, Codex가 서버를 시작하지 못한다 | 등록한 명령이 vault의 `.venv` Python(Windows는 `.venv/Scripts/python.exe`)을 써야 한다. 같은 명령을 터미널에서 직접 실행해 오류를 본다. 정상 서버는 아무것도 출력하지 않고 클라이언트를 기다린다. Ctrl+C로 멈춘다. |
-| 세션 시작에 osk 문구가 없다 | Claude Code는 시작할 때만 훅을 읽으므로 새 세션을 열고 `/hooks`를 확인한다. Codex에서는 `/hooks`에서 항목을 신뢰한다. 두 하네스 모두 MCP 등록만으로는 훅이 설치되지 않으며, 훅 명령마다 vault의 `.venv` Python을 써야 한다. 3b의 손 실행 시험을 돌려 본다. |
+| 세션 시작에 osk 문구가 없다 | Claude Code는 시작할 때만 훅을 읽으므로 새 세션을 열고 `/hooks`를 확인한다. Codex에서는 `/hooks`에서 항목을 신뢰한다. 두 하네스 모두 MCP 등록만으로는 훅이 설치되지 않으며, 훅 명령마다 vault의 `.venv` Python을 써야 한다. 3b의 손 실행 시험을 돌려 본다. `doctor`는 등록됐지만 이 기기에서 한 번도 불리지 않은 훅을 가려 준다. |
 | 훅 문구에 `착지 미정`이나 `scope 결속이 없다`가 되풀이된다 | 이 저장소의 키가 아직 결속되지 않았다. scope를 만들거나 고른다(5단계 2번). |
 
 **에이전트가 전하는 쓰기 거부**

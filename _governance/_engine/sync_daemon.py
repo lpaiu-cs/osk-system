@@ -173,6 +173,11 @@ def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[st
 
 
 def main():
+    if sys.stderr is None:
+        # 콘솔 없이 떴다(Windows 작업의 `pythonw.exe`) — 알림을 버리지 않고 기기 로컬 로그에
+        # 남긴다. 추적 트리 밖이라 데몬 자신의 `git add -A`가 싣지 않는다.
+        sys.stdout = sys.stderr = open(_lock_path(ROOT, "osk-sync-daemon.log"), "a",
+                                       encoding="utf-8", buffering=1)
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=int, default=900, help="초 (기본 15분)")
     ap.add_argument("--once", action="store_true")

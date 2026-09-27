@@ -36,6 +36,10 @@ RUN_TMP.mkdir()
 for _k in ("TMPDIR", "TEMP", "TMP"):
     os.environ[_k] = str(RUN_TMP)
 tempfile.tempdir = str(RUN_TMP)
+# 새 릴리스 확인(osk.update_check)은 정본에 태그를 묻는 분리 프로세스를 띄운다.
+# 수트는 네트워크에 기대지 않고 자식 프로세스를 남기지 않는다 — 격리 수트도 이
+# 값을 물려받으며, 확인 자체를 시험하는 test_update_notice.py만 걷어 낸다.
+os.environ["OSK_UPDATE_CHECK"] = "0"
 
 from osk import (core, graph, validate, authority, contract, write,  # noqa: E402
                  publish)  # noqa: E402
@@ -6735,6 +6739,8 @@ def test_cadence_hook():
         def turn(module=hook, event="UserPromptSubmit"):
             buf = io.BytesIO()
             real_in, real_out = sys.stdin, sys.stdout
+            # 턴마다 다른 사건이다 — 같은 입력의 되풀이는 이중 등록의 두 번째 호출로 가려진다.
+            payload["turn_id"] = uuid.uuid4().hex
             try:
                 sys.stdin = io.StringIO(json.dumps(payload))
                 sys.stdout = types.SimpleNamespace(buffer=buf)
@@ -6814,6 +6820,7 @@ def test_scope_recovery_handoff():
     def run_hook(name):
         event = "SessionStart" if name == "claude_session_start.py" else "UserPromptSubmit"
         payload["hook_event_name"] = event
+        payload["turn_id"] = uuid.uuid4().hex   # 호출마다 다른 사건(이중 등록 판정과 구별)
         sub = subprocess.run([sys.executable, str(hooks / name)],
                              input=json.dumps(payload).encode("utf-8"), capture_output=True,
                              env=env, cwd=str(cwd), timeout=30)
@@ -7376,7 +7383,9 @@ def test_evictions():
         buf = io.BytesIO()
         real_in, real_out = sys.stdin, sys.stdout
         try:
-            sys.stdin = io.StringIO(json.dumps({"session_id": "regr-evi-hook", "cwd": str(cwd)}))
+            # 호출마다 다른 세션 시작이다 — 같은 입력의 되풀이는 이중 등록으로 가려진다.
+            sys.stdin = io.StringIO(json.dumps({"session_id": "regr-evi-hook", "cwd": str(cwd),
+                                                "turn_id": os.urandom(8).hex()}))
             sys.stdout = types.SimpleNamespace(buffer=buf)
             hook.main()
         finally:
@@ -7389,6 +7398,19 @@ def test_evictions():
     check("훅: 기억 전문이 있다", mem and mem in out, out[:200])
     check("훅: 정돈 블록이 기억 뒤에", out.index("[osk scope 기억") < out.index("[osk 정돈 —"), out[:200])
     check("훅: 처분 명령에 실제 인터프리터", sys.executable in out and "tidy settle" in out, out[-300:])
+    # 호스트 한도(Kiro 3천 자·Claude Code 1만 자) — 넘치면 블록째 접는다(§9-3 1항). 밀림 경고는
+    # 접지 않고, 접은 정돈은 건수와 overview include 한 줄로 남는다.
+    real_budget = hook._budget
+    try:
+        hook._budget = lambda env, host=None: 1200
+        small = hook_run()
+    finally:
+        hook._budget = real_budget
+    check("한도: 예산 안에 싣는다", len(small) <= 1200, len(small))
+    check("한도: 밀림 경고는 접지 않고 맨 앞", small.startswith("[osk 정돈이 밀렸다"), small[:80])
+    check("한도: 정돈은 블록째 접고 건수·조회 경로를 남긴다",
+          "[osk 정돈 —" not in small and "[osk 접음" in small and "퇴출 8건(가장 오래된" in small
+          and "경유 노드" in small and '"tidy"' in small and f'overview(session="{S}"' in small, small[-500:])
     r = _w(wm.replace, S, "", _w(wm.read, S)["hash"])
     check("비움", r.get("ok"), r)
     out2 = hook_run()
@@ -8819,6 +8841,109 @@ def test_node_place_rule():
                 p.unlink(missing_ok=True)
 
 
+def test_upgrading_underscore_scope():
+    """docs/UPGRADING의 밑줄 구획 이행 절차가 v4에서 실제로 닫히는가. v3가 만들어
+    둔 `_` scope와 그 결속·scope 기억을, 폴더·허브·기억 파일을 밑줄 없이 옮기고
+    `write.bind_session` 한 줄로 결속을 새 행으로 바꿔 옮긴다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · `bind_session`이 이미 결속된 키에 새 결속을 적지 못하면 → 옮긴 뒤 쓰기 단언
+      · 문서의 호출 모양 `write.bind_session(<키>, <scope>, <사유>)`가 바뀌면 → 같은 단언
+      · scope 기억 자리가 문서의 `_scope_memory/<scope>.md`와 달라지면 → 기억 단언"""
+    from osk import scope_memory
+    S = graph.SCOPE
+    key = "regr-upgrade-key"
+    old, new = ROOT / S / "_regr-legacy", ROOT / S / "regr-legacy"
+    mem = ROOT / S / "Workbench/_scope_memory"
+    mem_old, mem_new = mem / "_regr-legacy.md", mem / "regr-legacy.md"
+    try:
+        old.mkdir(parents=True)
+        (old / "_regr-legacy.md").write_text(
+            node_text("260926-upg0-0001", "옛 scope 허브", "HUB"), encoding="utf-8")
+        mem.mkdir(parents=True, exist_ok=True)
+        mem_old.write_text("- 옛 scope의 기억.", encoding="utf-8")
+        write.bind_session(key, "_regr-legacy", "v3가 만든 결속")
+        _age_all()
+        r = _w(write.create_node, "regr-upgrade-a", "s", "b", "fable-5", session=key)
+        check("v4는 밑줄 scope에 결속된 세션의 쓰기를 거부한다",
+              r.get("ok") is False and not (old / "regr-upgrade-a.md").exists(), r)
+        # UPGRADING: 폴더·허브·기억 파일을 밑줄 없이 옮기고 결속을 새 행으로 바꾼다
+        old.rename(new)
+        (new / "_regr-legacy.md").rename(new / "regr-legacy.md")
+        mem_old.rename(mem_new)
+        write.bind_session(key, "regr-legacy", "v4 upgrade")
+        _age_all()
+        r = _w(write.create_node, "regr-upgrade-a", "s", "b", "fable-5", session=key)
+        check("옮긴 뒤 같은 세션의 쓰기가 새 scope에 앉는다",
+              r.get("ok") and (new / "regr-upgrade-a.md").exists(), r)
+        m = _w(scope_memory.read, key)
+        check("옮긴 scope 기억을 같은 세션이 읽는다",
+              m.get("ok") and "옛 scope의 기억" in m.get("text", ""), m)
+        check("옮긴 폴더에는 배치 위반이 없다",
+              not [v for v in graph.layout_violations() if "regr-legacy" in v],
+              graph.layout_violations())
+    finally:
+        shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(new, ignore_errors=True)
+        for p in (mem_old, mem_new):
+            p.unlink(missing_ok=True)
+        _age_all()
+
+
+def test_upgrading_protected_scope():
+    """docs/UPGRADING의 보호영역 개명 절차가 v4에서 닫히는가 (PR #103 리뷰). 보호
+    지정은 경로(`region`)에 묶여 이동을 따라가지 않는다. 먼저 옮기면 옛 영역은 승인도
+    해제도 되지 않는 pending이 되고 새 경로는 보호 밖이다. 문서대로 해제 → 이동 →
+    곧바로 새 경로 지정을 하면 새 경로가 보호되고 옛 영역은 해제로 닫히며, 그 뒤에
+    고친 링크는 새 영역의 변경집합으로 검토된다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · 보호가 이동을 따라가게 바뀌면 → 첫 단언(문서가 적은 까닭이 사실이 아니게 된다)
+      · 해제나 재지정이 빠지거나 성립하지 않으면 → 둘째 단언"""
+    from osk import approvals
+    S = graph.SCOPE
+    old, new = ROOT / S / "_regr-guarded", ROOT / S / "regr-guarded"
+    reg_old, reg_new = f"{S}/_regr-guarded", f"{S}/regr-guarded"
+    kept = approvals.APPROVALS.read_bytes() if approvals.APPROVALS.exists() else None
+
+    def move(src, dst):
+        src.rename(dst)
+        (dst / f"{src.name}.md").rename(dst / f"{dst.name}.md")
+
+    try:
+        old.mkdir(parents=True)
+        (old / "_regr-guarded.md").write_text(
+            node_text("260926-upg0-0002", "보호된 옛 scope 허브", "HUB"), encoding="utf-8")
+        approvals.protect(reg_old, "v3에서 지정")
+        move(old, new)
+        check("해제 없이 옮기면 옛 영역은 pending에 묶이고 새 경로는 보호 밖이다",
+              approvals.state(reg_old) == "pending"
+              and approvals.region_of(new / "regr-guarded.md") is None,
+              (approvals.state(reg_old), approvals.region_of(new / "regr-guarded.md")))
+        # UPGRADING: 되돌린 뒤 해제 → 이동 → 새 경로 지정
+        move(new, old)
+        approvals.unprotect(reg_old, "v4 upgrade")
+        move(old, new)
+        approvals.protect(reg_new, "v4 upgrade")
+        check("문서대로 옮기면 새 경로가 보호되고 옛 영역은 해제로 닫힌다",
+              approvals.state(reg_new) == "clean"
+              and approvals.state(reg_old) == "unprotected"
+              and approvals.region_of(new / "regr-guarded.md") == reg_new,
+              (approvals.state(reg_new), approvals.state(reg_old)))
+        hub = new / "regr-guarded.md"
+        hub.write_text(hub.read_text(encoding="utf-8") + "고친 링크\n", encoding="utf-8")
+        check("다시 지정한 뒤 고친 것은 새 영역의 변경집합이 된다",
+              approvals.state(reg_new) == "pending", approvals.state(reg_new))
+    finally:
+        if kept is None:
+            approvals.APPROVALS.unlink(missing_ok=True)
+        else:
+            approvals.APPROVALS.write_bytes(kept)
+        shutil.rmtree(old, ignore_errors=True)
+        shutil.rmtree(new, ignore_errors=True)
+        _age_all()
+
+
 # ── 순회의 봉쇄와 대소문자 (v3.7.0) ─────────────────────────────────────
 def test_scan_confinement_and_case():
     """손으로 짠 순회가 `rglob`이 하던 두 가지를 잃지 않았는가 — 대소문자
@@ -8956,18 +9081,25 @@ def test_fingerprint_scope_and_racy():
         check("같은 시각·다른 크기도 지문을 바꾼다 — 크기가 서명에 실린다",
               fp2 != M._vault_fingerprint()[0])
 
-        # racy 창 — 아래로도 위로도 닫혀 있어야 한다
-        _age_all()
-        check("전제: 지금은 안정적", not graph.index_signature()[1])
-        b.write_text(node_text("260802-zzzz-rg07"), encoding="utf-8")
-        check("방금 쓴 파일이 있으면 racy가 선다", graph.index_signature()[1])
-        # 미래 mtime은 racy가 **아니다** — 아래만 닫으면 그 파일 하나로 읽기
-        # 캐시가 영구히 죽는다(실측: 20k에서 80 ms → 6.8~9.2 s)
-        _age_all()
-        future = time.time() + 86_400
-        os.utime(b, (future, future))
-        check("먼 미래의 mtime은 racy가 아니다 — 창은 위로도 닫힌다",
-              not graph.index_signature()[1])
+        # racy 창 — 아래로도 위로도 닫혀 있어야 한다. 여유는 아래 캐시 시험처럼
+        # 고정한다: 실측 여유는 10 ms대라, 쓰기와 판정 사이가 그보다 길어지면(부하 걸린
+        # CI) 방금 쓴 파일이 창 밖으로 나가 판정 논리가 아니라 시계를 시험하게 된다.
+        held_margin = graph._racy_margin_cache
+        graph._racy_margin_cache = 5_000_000_000
+        try:
+            _age_all()
+            check("전제: 지금은 안정적", not graph.index_signature()[1])
+            b.write_text(node_text("260802-zzzz-rg07"), encoding="utf-8")
+            check("방금 쓴 파일이 있으면 racy가 선다", graph.index_signature()[1])
+            # 미래 mtime은 racy가 **아니다** — 아래만 닫으면 그 파일 하나로 읽기
+            # 캐시가 영구히 죽는다(실측: 20k에서 80 ms → 6.8~9.2 s)
+            _age_all()
+            future = time.time() + 86_400
+            os.utime(b, (future, future))
+            check("먼 미래의 mtime은 racy가 아니다 — 창은 위로도 닫힌다",
+                  not graph.index_signature()[1])
+        finally:
+            graph._racy_margin_cache = held_margin
         _age_all()
 
         # racy 창에서는 캐시를 접지 않는다. 여유를 넉넉히 **고정해** 시험이
@@ -11711,7 +11843,7 @@ def test_release_workflow_subprocess():
     _suite("정식 발행은 검증한 SHA를 태그로 공개한다", "test_release_workflow.py")
 
 
-GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py")
+GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integration_recovery.py", "test_growth.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py", "test_setup.py", "test_services.py")
 
 
 def test_growth_loop_subprocesses():
@@ -11862,7 +11994,8 @@ if __name__ == "__main__":
                test_format_alignment, test_rechecks,
                test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
-               test_node_place_rule,
+               test_node_place_rule, test_upgrading_underscore_scope,
+               test_upgrading_protected_scope,
                test_traversal_deterministic, test_index_split,
                test_one_index_per_write,
                test_fingerprint_scope_and_racy, test_engine_epoch_fence,

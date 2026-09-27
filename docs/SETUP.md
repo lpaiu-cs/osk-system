@@ -19,7 +19,7 @@ _governance/
     sync_daemon.py     동기화 데몬(git만; 검색·색인은 서빙하지 않는다)
     vault_sync.py      순수 git 헬퍼
     tests/             회귀 수트
-    scripts/           발행 매니페스트, launchd/systemd 예시
+    scripts/           설치 도구(setup.py), 발행 매니페스트, launchd/systemd 예시
 00_Scope/ 00_Domain/ 00_Person/   지식 공간
 00_Scope/Workbench/_ledger/     대장 — 승인·pin·세션 라우팅·갱신 저널 (append-only)
 ```
@@ -44,6 +44,127 @@ CI와 다를 때 같은 판으로 맞춰 원인을 가르는 데 쓴다(CI는 �
 ```bash
 .venv/bin/pip install -r _governance/_engine/requirements.txt -c _governance/_engine/constraints.txt
 ```
+
+## 설치 도구 (`setup`)
+
+`_governance/_engine/scripts/setup.py`가 준비·기준선·하네스 연결을 한 명령으로 한다.
+에이전트에게 붙여 넣는 설치 프롬프트([INSTALL-AGENT](INSTALL-AGENT.md)), 선택
+마법사(`--interactive`), 이 문서의 수동 절차가 모두 같은 결과에 닿는다. vault 루트에서
+시스템 Python(3.11 이상)으로 실행한다:
+
+```bash
+python _governance/_engine/scripts/setup.py                 # 계획을 본다 — 아무것도 바꾸지 않는다
+python _governance/_engine/scripts/setup.py --apply         # 확인을 요청하고 멈춘다(종료코드 2)
+python _governance/_engine/scripts/setup.py --apply         # 확인 뒤 1시간 안에 한 번 더 — 적용한다
+python _governance/_engine/scripts/setup.py --interactive   # 단말에서 확인받아 적용한다
+python _governance/_engine/scripts/setup.py --apply --fork --schedule claude --sync   # 고른 기능도 함께
+python _governance/_engine/scripts/setup.py --uninstall --apply   # 이 vault의 osk 등록만 걷어 낸다
+python _governance/_engine/scripts/setup.py doctor          # 연결을 점검한다(읽기만)
+```
+
+- **준비.** `.venv`가 없거나 서버가 import하는 패키지를 들이지 못하면, `--apply`·
+  `--interactive`일 때 `.venv`를 만들고 `requirements.txt`를 `constraints.txt`의 판으로
+  설치한다. 계획만 보는 호출은 그 사실만 알린다. pip의 출력은 표준 오류로 가고, 표준
+  출력은 JSON 보고 하나다.
+- **기준선.** 갱신 저널에 기록이 없으면 `release.json`의 판으로 `osk.update --to <판>
+  --apply`와 같은 갱신을 계획에 싣는다. 확인한 setup 계획이 그 갱신의 계획(`review_id`)을
+  담는다. 적용할 때는 그 `review_id`를 갱신의 확인표에 적고 적용을 한 번만 부른다. 갱신은
+  잠금 안에서 계획을 다시 세워 그 계획일 때만 적용한다. 그 사이 계획이 달라졌으면
+  적용하지 않고 확인표도 지운다. `_governance` 보호도 그 갱신이 성립시킨다.
+- **하네스.** 이 기기에서 흔적(설정 폴더나 PATH의 CLI)이 있는 호스트를 잇는다 — Claude
+  Code·Codex, 그리고 구독 fork가 없는 Kiro·Antigravity(아래 'Kiro에 잇는다'·'Antigravity에
+  잇는다').
+  `--harness claude`처럼 고를 수 있다. 등록은 이 vault의 엔진 사본과 `.venv`의 Python을
+  부른다.
+- **확인.** `osk.update`와 같다. 첫 `--apply`는 계획과 `approval_required`를 내고
+  멈춘다. 같은 명령을 1시간 안에 다시 부르면 계획이 그대로일 때만 적용한다. 할 일이
+  없으면 확인 없이 끝난다.
+- **고르는 기능.** 셋 다 기본은 꺼져 있고 플래그로 고른다. 마법사는 물어서 고른다.
+  - `--fork` — 백그라운드 fork 검토(아래 '대화별 검토 훅')가 부를 CLI를
+    `.osk/response-growth.json`에 적는다. Windows 데스크톱 앱이 둔 CLI가 있으면 가장
+    새로 설치된 것, 없으면 PATH의 CLI다. 이미 적힌 경로가 살아 있으면 그대로 둔다.
+    구독 로그인과 `fork doctor`는 사람이 한다(`human`).
+  - `--schedule <하네스>`(`--at HH:MM`, 기본 09:00) — 매일 한 번 도는 정기 실행(아래
+    'Scope에서 Domain으로 정기 재검토')을 등록한다. 명령 파일 `.osk/growth-command.json`이
+    없으면 그 하네스의 무인 명령을 만든다. 지금은 Claude만이다 — 내장 도구를 모두 끄고
+    (`--tools ""`) 이 vault의 MCP 서버만 붙인다(`--strict-mcp-config`). 설정의 허용 규칙이
+    있어도 파일·셸 도구로 MCP의 보호를 비껴가지 못한다. 그 서버의 도구는 묻지 않고 허용하고
+    나머지는 거절한다(`--permission-mode dontAsk`). 로그인은 claude.ai 구독만 쓴다 — 실행
+    때의 자격 확인은 아래 '정기 재검토'. Codex는 명령 파일을 직접 만든다. 있는 명령 파일은
+    덮지 않는다. 정기 실행은 한 기기에만 둔다 — 결과는 대장으로 모든 기기가 나눈다.
+  - `--sync` — 동기화 데몬(아래 '동기화 데몬')을 상시 서비스로 등록하고 띄운다. 먼저
+    vault가 저장소 루트인지, 로컬 `main`이 있는지, `origin`의 fetch 주소와 모든 push 대상
+    (`pushurl`·`pushInsteadOf`를 푼 실제 전송 자리)이 공개 정본이 아닌지, 묻지 않고 push할
+    수 있는지(`git push --dry-run`)를 확인한다. push 대상은 계획에 실려 확인받는다. 그것이
+    모두 비공개인지는 사람이 확인한다.
+- **해제.** `--uninstall`만 주면 이 vault의 osk 등록을 다 걷는다 — fork 설정의 항목, 정기
+  실행 작업, 동기화 데몬(Windows는 떠 있는 데몬도 멈춘다)까지다. 명령 파일은 남긴다.
+  기능 플래그를 함께 주면 그 기능만, `--harness`를 주면 그 호스트의 것만 걷는다.
+
+vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 폴더는
+`CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다.
+
+| 호스트 | 항목 | 파일 | 쓰는 방법 |
+|---|---|---|---|
+| Claude Code | MCP 서버 | `~/.claude.json`(설정 폴더를 옮겼으면 그 안의 `.claude.json`) | `claude mcp add --scope user osk-system` |
+| Claude Code | 훅 세 개 | `~/.claude/settings.json` | `hooks`에 병합 |
+| Codex | MCP 서버 | `~/.codex/config.toml` | `codex mcp add osk-system` |
+| Codex | 훅 세 개 | `~/.codex/hooks.json` | `hooks`에 병합 |
+| Kiro | MCP 서버 | `~/.kiro/settings/mcp.json` | `mcpServers`에 병합 — 등록 CLI가 없다 |
+| Kiro | 훅 세 개 | `~/.kiro/hooks/osk-system.json` | osk의 훅 파일 — 사용자 항목은 남기고, 비면 지운다 |
+| Antigravity | MCP 서버 | `~/.gemini/config/mcp_config.json` | `mcpServers`에 병합 — 등록 CLI가 없다 |
+| Antigravity | 훅 세 개 | `~/.gemini/config/hooks.json` | 훅 이름 `osk-system` 아래 — 다른 이름은 남기고, 비면 지운다 |
+
+- 쓰기 전에 원래 파일을 옆에 `<이름>.osk-backup-<YYYYMMDD-HHMMSS>`로 복사한다.
+- 이 vault의 osk 항목만 더하거나 바꾸거나 걷어 낸다 — 명령이 이 vault의 스크립트·서버를
+  부르는지로 알아본다. 다른 항목과 다른 vault의 osk 항목은 그대로 두고 계획의 `notes`로
+  알린다.
+- 훅 파일은 쓰기 직전에 다시 읽어, 그 최신 내용에 osk 항목만 병합한다. 확인을 기다리는
+  사이 다른 도구나 사용자가 고친 것(권한 제한·다른 훅)은 그대로 남는다. 확인한 osk
+  조치 자체가 그 사이 달라졌으면 쓰지 않고 다시 확인을 요구한다.
+- MCP 등록이 이 vault의 것인지는 호스트 CLI가 고치는 파일의 등록으로만 가린다 —
+  Claude Code는 설정 폴더를 옮겼으면 그 안의 `.claude.json`이다. 다른 파일의 등록은
+  `notes`로 알리고 건드리지 않는다. 확인한 명령이 실행 직전에도 같은지 다시 본다.
+  Kiro·Antigravity는 등록 CLI가 없어 MCP 설정 파일에 직접 쓴다 — 훅 파일처럼 쓰기 직전의 최신 파일에
+  osk 서버 항목만 병합하고, 확인한 조치와 그것이 바꿀 남의 등록이 그대로일 때만 쓴다.
+  항목을 바꿀 때 사용자가 건 정책(`disabled`·`disabledTools`·`autoApprove`·`timeout` 등)은
+  남긴다 — 이 vault의 옛 항목은 실행 경로만 바꾸고, 다른 vault의 항목은 그 환경·작업 폴더를
+  버리고 정책만 남긴다.
+  `kiro` 명령(IDE 실행기)은 판본을 물을 때(`doctor`)만 부른다.
+- 다시 실행하면 이미 맞는 항목은 `keep`이다. 이 vault의 옛 항목(다른 Python 등)은 새
+  항목으로 바꾼다 — 겹쳐 만들지 않는다.
+- 호스트 CLI가 PATH에 없으면 MCP 등록은 사람이 할 명령(`manual`)으로 남긴다.
+- 사람이 할 일은 보고의 `human`에 있다: Codex 훅 신뢰(`/hooks`), Kiro 작업 폴더 신뢰,
+  세션 재시작, 기준선 커밋, 새 세션 뒤의 연결 점검, 고른 기능의 구독 로그인·첫 정기
+  실행·origin 확인.
+
+고른 기능의 운영체제 등록은 아래뿐이다(`osk.services`). `<해시>`는 vault 경로의 해시
+여덟 자리다 — 한 기기의 여러 vault가 겹치지 않는다.
+
+| 운영체제 | 등록 | 자리 | 쓰는 방법 |
+|---|---|---|---|
+| Windows | 정기 실행(매일)·동기화 데몬(로그온할 때) | 작업 스케줄러의 `osk-growth-<해시>`·`osk-sync-<해시>` | `Register-ScheduledTask` |
+| macOS | 〃 | `~/Library/LaunchAgents/com.osk-system.{growth,sync}.<해시>.plist` | `launchctl bootstrap` |
+| Linux | 〃 | `~/.config/systemd/user/osk-growth-<해시>.{service,timer}`·`osk-sync-<해시>.service` | `systemctl --user enable --now` |
+
+- 이 vault의 등록인지는 명령이 이 vault의 `growth_run.py`·`sync_daemon.py`를 부르는지로
+  가린다. 옛 안내서의 이름(`osk-domain-growth`·`osk-sync-daemon`, 예시의
+  `com.example.ltm-vault-daemon`·`ltm-vault-daemon`)으로 손수 만든 등록도 명령이 이 vault
+  안의 파일을 부르면 이 vault의 것이다 — 걷어 내고 위의 이름으로 만든다(`replace`).
+  이 vault를 부르는 다른 등록은 `notes`로 알리고 건드리지 않는다.
+- 바꾸거나 걷어 내는 등록의 원래 정의는 먼저 `~/.osk-system/backups/`에 남긴다(Windows
+  작업은 내보낸 XML). 서비스 관리자의 폴더에 두면 관리자가 백업까지 읽는다.
+- Windows 작업은 `pythonw.exe`로 돌아 창이 뜨지 않는다. 정기 실행의 보고는 실행마다
+  `.osk/growth/scheduler/<시각>.log`에, 데몬의 알림은 git 디렉터리의 `osk-sync-daemon.log`에
+  남는다. 동기화 작업은 `cmd.exe`로 `SYNC_ENABLED=1`을 세우고 데몬을 떼어 띄운다.
+- 실행 직전에 다시 계획해, 확인한 뒤 등록이 바뀌었으면 하지 않는다.
+- 정의가 같아도 서비스 관리자에 올라가 실제로 돌고 있지 않으면 다시 등록한다 — 등록
+  명령이 실패해 파일만 남았거나 사용자가 꺼 둔 경우다. launchd는 `launchctl print`,
+  작업 스케줄러는 작업의 사용 여부를 본다. systemd는 `is-enabled`와 `is-active`를 함께
+  본다 — `enable --now`는 링크를 만든 뒤 시작에서 실패할 수 있다. 정기 실행은 timer를
+  본다(oneshot service는 실행 사이에 늘 꺼져 있다).
+- 서비스 관리자가 없는 기기에서는 등록하지 못한다(오류). 해제는 걷을 등록이 없다고 알리고
+  다른 해제를 계속한다.
 
 ## Windows
 
@@ -77,7 +198,8 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 띄운다(`osk.update`는 그 경로로 데몬 프로세스와 작업을 찾는다). 작업 스케줄러에는
 작업별 환경변수가 없으므로 동작을
 `cmd.exe /c set SYNC_ENABLED=1&& start "" <REPO>/.venv/Scripts/pythonw.exe <REPO>/_governance/_engine/sync_daemon.py`로
-둔다. 등록 명령은 [시작 안내서](GETTING-STARTED.ko.md#선택-git으로-vault-동기화하기)에 있다.
+둔다. `setup --sync`가 이 작업을 만든다(위 '설치 도구'). 손으로 하는 등록 명령은
+[시작 안내서](GETTING-STARTED.ko.md#선택-git으로-vault-동기화하기)에 있다.
 
 ## MCP 서버
 
@@ -136,6 +258,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
+| `doctor` | 이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정. 읽기만 한다 (아래) |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
@@ -338,6 +461,28 @@ fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
 <인스턴스>/.venv/Scripts/python.exe <인스턴스>/_governance/_engine/scripts/hooks/claude_prompt_submit.py
 ```
 
+- 원문 포착이 막히면(포착 오류) 9·15턴 사이에는 `[osk 포착 대기 — <오류>]` 한 줄만
+  싣는다. 검토할 원문이 없는데 검토 전문을 매 턴 다시 싣지 않는다. 대기와 계수는
+  유지되고, 9·15턴에는 평소처럼 상태·scope 기억과 함께 싣는다. 막힌 대화는 CLI
+  `status`의 `capture_blocked`에 마지막 관측 시점과 함께 보인다.
+- 훅 문맥은 **호스트가 받는 길이 안에** 싣는다. Claude Code는 1만 자를 넘는 문맥을
+  파일로 빼고 모델에 앞 2KB만 보이며, Kiro는 3,000자에서 자른다. 그래서 호스트별
+  예산(Claude Code·Codex·Antigravity 9,500자, Kiro 2,800자) 안에 블록 단위로 싣고, 넘치면
+  우선순위가 낮은 블록부터 통째로 접어 끝의 `[osk 접음 — …]` 한 줄에 건수와 읽는
+  곳을 남긴다. 접는 순서는 새 릴리스·근거 재검토 안내, 조직 검토, 대화 검토 대기,
+  정돈, scope 복구 대기, scope 기억이다. 검토 턴의 대화 검토 대기는 가장 늦게 접는다.
+  밀림 경고·세션 키·케이던스 줄은 접지 않는다. 접은 정돈·조직 검토·복구 대기는
+  `overview(session=…, include=[…])`로, 대화 검토 지시는 CLI `integration prompt`의
+  `text`로 읽는다. 접었다는 사실은 처분도 검토 완료도 아니다.
+- 검토 턴의 scope 기억은 이 대화에 같은 해시의 전문을 이미 실었으면 해시 한 줄로 싣고,
+  해시가 바뀌면 다시 전문을 싣는다. 세션 시작(압축 뒤 포함)과 scope 복구 대기 중에는
+  늘 전문이다 — 복구는 현재 엔트리를 정리하는 일이라 앵커를 베낄 전문이 필요하다.
+- 조직 검토는 훅에 착수·완료 조건과 판정이 결속되는 값(key·snapshot·coverage·
+  review_units와 그 노드의 hash, previous_deferral, 채워진 references·issues)만 싣는다.
+  `read_node`가 돌려준 `view_hash`가 그 노드의 `'view:'+hash`와 다르면 선택 뒤 본문이
+  바뀐 것이니 새 plan으로 범위를 다시 확인한다. 전체 규칙과
+  군집·노드 목록은 CLI `organization plan`의 `guidance`와 본문이 준다. 별도 실행기가
+  없는 경로에서는 포착 대기와 따로, 세션 시작에도 싣는다.
 - 계수·검토 대기는 **기기 로컬**이다(vault 루트·하네스·실제 대화 ID 단위).
   지식과 원문은 vault에 남는다. 기억이 비어 있어도 통합 시점은 알린다.
 - 두 훅 모두 **엔진을 import한다** — 등록한 인터프리터가
@@ -409,6 +554,173 @@ CLI의 `/hooks`에서 각 정의를 확인하고 신뢰한 뒤 새 세션에서 
 
 Personalization에는 저장 경계를 간단히 두어도 된다. 다만 훅의 설치·신뢰·새 세션
 실행을 확인하기 전에는 `overview`·scope 읽기와 주기적 통합 안내를 제거하지 않는다.
+
+### Kiro에 잇는다
+
+Kiro는 B 등급이다 — 시작·입력·종료 훅과 대화 전사는 있고, 구독 fork는 없다. 대화
+검토는 fork 대신 이 세션에서 9·15턴으로 한다. Kiro는 훅 출력을 3,000자에서 자르므로
+(시작은 앞, 입력은 뒤를 남긴다) osk는 2,800자 안에 블록 단위로 싣고 나머지는 한 줄로
+접는다(위 UserPromptSubmit 절). `setup`이 아래 두 파일을 쓰고, 손으로 할 때도 같다.
+`<PYTHON>`·`<ENGINE>`은 Codex 절과 같다.
+
+`~/.kiro/settings/mcp.json`:
+
+```json
+{"mcpServers": {"osk-system": {"command": "<PYTHON>", "args": ["<ENGINE>/mcp_server.py"]}}}
+```
+
+`~/.kiro/hooks/osk-system.json`:
+
+```json
+{
+  "version": "v1",
+  "hooks": [
+    {"name": "osk start", "trigger": "SessionStart",
+     "action": {"type": "command", "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_session_start.py"}},
+    {"name": "osk input", "trigger": "UserPromptSubmit",
+     "action": {"type": "command", "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_prompt_submit.py"}},
+    {"name": "osk stop", "trigger": "Stop",
+     "action": {"type": "command", "command": "<PYTHON> <ENGINE>/scripts/hooks/capture_stop.py"}}
+  ]
+}
+```
+
+- Kiro는 `~/.kiro/hooks/`의 JSON을 모두 읽고, 작업 폴더의 `.kiro/hooks/`도 읽는다. 훅은
+  **신뢰한 작업 폴더에서만** 돈다. 명령은 셸로 돈다(Windows는 `cmd.exe`) — 공백 든
+  경로는 쌍따옴표로 싼다. 제한 시간은 기본 60초다.
+- 훅은 stdin JSON으로 `session_id`·`hook_event_name`·`cwd`(입력 훅은 `prompt`도)를
+  받고, 환경에 `KIRO_SESSION_ID`가 있다. 그것이 `session_id`와 같을 때 osk는 Kiro의
+  훅으로 안다.
+- 시작·입력 훅이 0으로 끝나면 stdout 평문이 그대로 문맥에 실린다(`<HOOK_INSTRUCTION>`에
+  싸인다). 그래서 Kiro에는 JSON 봉투가 아닌 평문을 낸다. 사용자 화면만의 자리는 없고,
+  종료 훅의 출력은 어디에도 실리지 않는다.
+- Kiro는 전사 경로를 주지 않는다. 훅이 대화 ID로
+  `~/.kiro/sessions/<작업 폴더 해시>/<대화 ID>/messages.jsonl`을 찾아 포착한다. 발화와
+  답변(`Say`)은 그대로 남기고, 도구 호출·결과·하위 에이전트·도구 승인은 해시 참조 한
+  줄로 대신한다(dialogue-v1). 추론(`Reasoning`)과 문맥 압축 요약은 싣지 않는다. 턴이
+  `end_turn`으로 끝나지 않았으면 그 종료 기록을 남긴다 — 취소는 aborted, 오류·거부는
+  failed, 그 밖은 interrupted다.
+- 확인한 판은 Kiro 1.1.70(에이전트 확장 1.1.158)이다 — 번들의 훅 실행기와 로컬 전사
+  26개(249턴)로 확인했다. `doctor`는 판본을 `kiro --version`으로 읽는다. Kiro 전사에는
+  판본이 없다.
+
+### Antigravity에 잇는다
+
+Antigravity(2.0 앱)도 B 등급이다 — 시작·입력·종료 훅과 대화 전사는 있고, 구독 fork는
+없다. `agy` CLI는 앱의 대화를 불러오지 못하고, 비대화 모드에 fork가 없다. 대화 검토는
+이 세션에서 9·15턴으로 한다. `setup`이 아래 두 파일을 쓰고, 손으로 할 때도 같다.
+`<PYTHON>`·`<ENGINE>`은 Codex 절과 같다.
+
+`~/.gemini/config/mcp_config.json`:
+
+```json
+{"mcpServers": {"osk-system": {"command": "<PYTHON>", "args": ["<ENGINE>/mcp_server.py"]}}}
+```
+
+`~/.gemini/config/hooks.json`:
+
+```json
+{
+  "osk-system": {
+    "SessionStart": [{"type": "command", "timeout": 30,
+                      "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_session_start.py"}],
+    "PreInvocation": [{"type": "command", "timeout": 30,
+                       "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_prompt_submit.py"}],
+    "Stop": [{"type": "command", "timeout": 30,
+              "command": "<PYTHON> <ENGINE>/scripts/hooks/capture_stop.py"}]
+  }
+}
+```
+
+- 최상위 키는 훅 이름이다. osk는 `osk-system` 이름 아래만 고치고, 다른 이름과 그
+  `enabled`는 그대로 둔다. 앱 안내문은 훅을 customization root의 `hooks.json`에 두라고
+  하며, 전역 root가 `~/.gemini/config/`다. 작업 폴더의 `.agents/hooks.json`도 같은
+  형식으로 읽힌다 — 실측은 이 자리로 했다. 훅은 턴마다 다시 읽힌다.
+- 명령은 Windows에서 `cmd /c`, 그 밖에서 `sh -c`로 돌고, 작업 폴더는 `hooks.json`이 있는
+  폴더다. 제한 시간은 기본 30초다. Windows에서는 명령 속 큰따옴표가 `\"`로 넘어가 cmd가
+  경로를 찾지 못하므로 명령을 인용 없이 쓴다. 그래서 인터프리터와 vault 경로에 공백과 cmd
+  특수문자(`&` `|` `<` `>` `^` `%` `!` `(` `)` `,` `;` `=`)가 없어야 한다 — 인용 없는 `&`는
+  명령을 가른다. 그런 경로면 setup은 쓰기 전에 멈춘다. 다른 호스트만 이으려면 `--harness`로
+  고른다.
+- SessionStart는 첫 입력이 전사에 기록된 뒤 한 번 불린다. 앱 안내문에는 없는 사건이며,
+  2.17.0에서 불리는 것을 실측했다. PreInvocation은 모델을 부를 때마다 불린다 — osk는
+  `invocationNum`이 0인 호출(사용자 입력 뒤 첫 호출)만 입력으로 처리한다. Stop은 최종
+  답변이 전사에 기록된 뒤 불린다.
+- stdin JSON은 camelCase다(`conversationId`·`workspacePaths`·`transcriptPath`). 환경의
+  `ANTIGRAVITY_CONVERSATION_ID`가 `conversationId`와 같을 때 osk는 Antigravity의 훅으로
+  안다. 훅의 작업 폴더가 작업 폴더가 아니므로 세션 키는 `workspacePaths`의 첫 폴더로 정한다.
+- 문맥은 `{"injectSteps": [{"ephemeralMessage": …}]}`로 싣는다. 실린 단계는 전사에 남아
+  다음 턴에도 문맥에 있다. 16,040자까지 그대로 닿았으므로 예산은 기본 9,500자다. 실을
+  것이 없으면 `{}`를 낸다. 사용자 화면만의 자리는 없고, 종료 훅은 종료를 막지 않는다.
+- 전사는 `transcriptPath`(`~/.gemini/antigravity/brain/<대화 ID>/.system_generated/logs/transcript_full.jsonl`)다.
+  사용자 요청(`<USER_REQUEST>` 안쪽)과 답변은 그대로 남기고, 도구 호출·결과는 해시 참조
+  한 줄로 대신한다(dialogue-v1). 요청은 바이트 그대로다 — 래퍼의 끝은 호스트 블록만 뒤따르는
+  마지막 닫는 태그라서 사용자가 친 닫는 태그도 요청에 남고, 모르는 형식의 입력은 통째로
+  남긴다. 추론, 주입된 문맥, 체크포인트, 요청에 붙는 메타데이터는 싣지 않는다. 최종 답변 없이 다음 입력을 만난 턴은 그 종료 기록을 남긴다 — 오류가 있으면
+  failed, 그 밖은 interrupted다.
+- 확인한 판은 Antigravity 2.17.0이다 — 이 기기에서 훅을 실제로 돌리고 로컬 전사로
+  확인했다. 전사에 판본이 없고 판본을 물을 CLI도 없어 `doctor`는 판본을 비교하지 못한다.
+
+### 연결 점검 (`doctor`)
+
+`osk doctor`는 이 기기에서 하네스가 osk에 이어졌는지 호스트(Claude Code·Codex·Kiro·Antigravity)마다
+읽기만 하며 점검한다. 상태와 설정을 쓰지 않는다. `--json`은 같은 결과를 JSON으로
+내고, `--harness`는 호스트 하나로 좁힌다. 설정이 osk를 띄우지 못하는 경우(Python
+3.11 미만, `mcp` 패키지 없음, 등록 명령의 Python 없음, 등록한 MCP Python이 서버를
+띄우지 못함)만 실패이며 종료코드 1이다.
+등록하지 않은 기능은 경고다. 이 기기에서 흔적이 없는 호스트(설정 폴더·실행 기록·PATH의
+CLI가 모두 없다)는 건너뛴다.
+
+- **등록.** MCP 서버와 세 훅이 이 vault의 엔진 사본(`<vault>/_governance/_engine`)을
+  부르는지 본다 — 훅과 서버는 자기 파일 자리로 vault를 찾으므로 다른 자리의 엔진을
+  부르는 등록은 이 vault가 아니다. 읽는 자리는 Claude Code가 `~/.claude.json`(MCP)과
+  `~/.claude/settings.json`(훅), Codex가 `~/.codex/config.toml`(MCP·`[hooks]` 표)과
+  `~/.codex/hooks.json`(훅), Kiro가 `~/.kiro/settings/mcp.json`(MCP)과
+  `~/.kiro/hooks/*.json`(훅), Antigravity가 `~/.gemini/config/mcp_config.json`(MCP)과
+  `~/.gemini/config/hooks.json`(훅)이며 `CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다. 실행 형식
+  (`command`와 `args`)과 셸 형식 한 줄을 모두 읽는다. MCP 등록의 Python은 한 번 띄워
+  판본과 서버가 import하는 패키지를 본다 — 이 명령을 돌리는 Python이 아니라 등록된
+  Python이 서버를 띄운다. 안내하는 명령은 공백 든 경로도 그대로 쓰도록 인용한다 —
+  터미널에 붙일 명령은 PowerShell·POSIX 규칙으로, 훅 설정에 넣을 한 줄은 doctor가
+  등록을 읽는 규칙으로.
+- **실행.** 세 훅은 불릴 때마다 호스트·사건별 마지막 시각을 이 기기에 남긴다(Git
+  디렉터리의 `osk-hook-runs.json`, 동기화되지 않는다). 적는 것은 호스트 이름·세션
+  키·그 훅을 돌린 Python 경로·시각뿐이다. 등록됐는데 기록이 없으면 Claude Code에는
+  새 세션을, Codex에는 `/hooks`의 신뢰를, Kiro에는 작업 폴더 신뢰와 새 채팅을, Antigravity에는
+  새 대화를 안내한다.
+  Codex는 `config.toml`의
+  `[hooks.state]`에 지금 등록의 신뢰 기록이 있는지 먼저 본다. 실행 기록은
+  호스트·사건별이라 옛 등록의 실행일 수 있으므로, 신뢰 기록이 없으면 실행 기록이
+  있어도 경고한다(신뢰 기록이 있으면 정의가 바뀌었는지는 실행 기록이 말한다). 문서의 자리 밖(프로젝트 설정·플러그인)에 등록한 훅도 실행 기록으로 드러나고,
+  입력을 읽지 못해 호스트를 알아보지 못한 실행은 엔진 항목에 따로 보인다. 기록은 이
+  판의 훅이 처음 불린 때부터 쌓인다.
+- **중복.** 같은 사건이 두 자리에 등록되면 호스트는 훅을 같은 입력으로 두 번 띄운다.
+  osk는 두 번째 호출을 한 번 처리한 것으로 보고 아무것도 내지 않는다 — 문맥을 두 번
+  싣거나 검토 계수를 두 번 올리거나 검토 fork를 두 번 띄우지 않는다. 같은 호출은 호스트·
+  사건·입력과 전사 크기가 같고 2분 안에 온 것이다. 다음 턴은 전사가 자라 입력이
+  달라진다. 전사 크기를 잴 수 없는 입력은 5초 안에 함께 온 것만 같은 호출로 본다. 판정
+  기록은 Git 디렉터리의 `osk-hook-claims.json`이며, 판정하지 못하면 처리한다. doctor는
+  문서의 자리에서 같은 호출에 함께 걸리는 등록이 둘 이상이거나, 지난 7일 안에 중복
+  호출이 있었으면 경고한다. SessionStart는 묶음의 matcher가 고르는 시작 원인(`startup`·
+  `resume`·`clear`·`compact`)이 겹칠 때만 함께 걸린다 — `startup` 묶음과 `resume` 묶음에
+  따로 둔 등록은 중복이 아니다.
+- **전달.** 세션 시작 훅은 `overview(session=…)` 호출을 안내한다. 그 세션 키의
+  `overview`가 세션 시작 뒤에 불렸으면 훅 문맥이 모델에 닿았다고 본다. 짐작이지
+  증명이 아니다 — 기록이 없으면 새 세션에서 세션 키를 물어 확인하라고 안내한다.
+- **판본.** 이 vault가 가장 최근에 포착한 대화의 판본(없으면 PATH의 CLI가 내는
+  `--version`)을 어댑터가 확인한 판과 비교한다. Codex 전사는 대화를 만든 판을 적으므로
+  이어 쓴 옛 대화는 옛 판으로 보인다. 더 새 판이면 경고한다 — 훅 입출력이나 전사 형식이
+  바뀌었을 수 있다는 뜻이고, 동작을 막지 않는다. Antigravity는 전사에 판본이 없고 판본을
+  물을 CLI도 없어 알 수 없다고만 적는다.
+- **fork.** 구독 fork를 설정했으면 `fork doctor`와 같은 판정(`response_growth.check`)을
+  한 줄로 싣는다. 인증 상태는 조회하되 추론은 띄우지 않는다. fork가 없는 Kiro·Antigravity에는 이
+  항목이 없다.
+
+호스트마다 다른 것 — 판별, 전사 위치, 훅 출력 형식, MCP·훅 등록 자리, 신뢰 기록,
+확인한 판본 — 은 엔진의 `osk/harness/` 어댑터 한 곳에 있다. 포착과 훅 스크립트와
+`doctor`는 하네스 이름을 직접 가르지 않고 이 등록부에 묻는다. 전사 형식 해석
+(`osk/transcripts.py`)과 구독 fork(`osk/response_growth.py`)는 제 모듈에 있고,
+어댑터는 fork 지원 여부만 선언한다.
 
 ### 세션 기록 훅 (`raw append`)
 
@@ -527,6 +839,12 @@ UTF-8 파일에 쓰고 `growth checkpoint --file <파일>`로 즉시 기록한�
 하며, 이 인스턴스의 osk MCP에 연결돼 있어야 한다. 셸 문자열은 실행하지 않는다.
 우선 격리 mini-vault에서 실제 도구 호출을 확인한 뒤 인스턴스에 등록한다.
 
+구독 로그인만 쓰겠다고 밝힌 명령(Claude의 `--settings '{"forceLoginMethod":"claudeai"}'`,
+`setup --schedule claude`가 만드는 명령)은 fork와 같은 자격으로만 돈다. 실행기는 API 자격
+변수(`ANTHROPIC_API_KEY` 등)를 걷고, 모델을 부르기 전에 claude.ai 구독 로그인(`auth
+status`), 설정의 `apiKeyHelper`·API 환경 키, 공급자 전환 변수를 확인한다. 확인하지 못하면
+계획도 모델 호출도 없이 `unavailable`로 끝난다 — API 과금으로 대체하지 않는다.
+
 
 Codex의 ChatGPT 구독 로그인으로 실행할 때는 `codex login status`가 ChatGPT 로그인을
 보고하는지 먼저 확인한다. 별도 API 키나 다른 모델 공급자를 연결하지 않고, 다음처럼
@@ -594,7 +912,8 @@ raw 조회 상한이 fork 입력 전체를 제한하지 않는다. 캐시 미적
 새 Domain 군집에 필요한 사용자 확인은 자동 실행이 대신하지 않는다. 기존 착지가 없으면
 제안할 군집·노드 제목과 필요한 확인을 `deferred`로 남긴다.
 
-Windows 작업 스케줄러 등록은 아래 스크립트를 **별도로 실행할 때** 활성화된다.
+운영체제의 매일 작업은 `setup --schedule`이 등록한다(위 '설치 도구' — Windows·macOS·
+Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 실행할 때** 활성화된다.
 기존 동일 이름 작업을 덮어쓰지 않으며 로그인된 사용자 권한으로 하루 한 번 실행한다.
 실제 릴리스·인스턴스 갱신·새 MCP 재시작과 이 등록은 구현/시험과 구별한다.
 
@@ -679,6 +998,7 @@ HEAD가 `main`이 아니면 적용 직전에 되돌린다. 되돌릴 수 없는 
 | 다른 브랜치·detached, 추적 파일 수정 있음 | **거부** — 진행 중 작업일 수 있어 옮기지도 감추지도 않는다 |
 | 로컬에 `main` 없음 | 거부 |
 
+상시 서비스는 `setup --sync`가 운영체제마다 등록한다(위 '설치 도구'). 손으로 쓰는
 launchd/systemd 예시는 `_governance/_engine/scripts/`에 있다.
 
 ### Obsidian 그래프 배율 충돌
@@ -841,6 +1161,16 @@ osk validate                    # 전 영역 clean
 **갱신**으로 받아들인다. 데이터 동기화 데몬(위)과는 다른 축이다 — 데몬은
 인스턴스 자신의 원격만 다루고 정본에 닿지 않는다.
 
+**정본에서 — 릴리스 전 점검.** 발행 노트는 workflow가 PR 목록으로 자동으로 만든다.
+그래서 사용자가 읽어야 할 안내는 노트가 아니라 문서에 먼저 쓴다.
+
+- README와 시작 안내서(영·한)의 설치 태그(`git clone --branch`·`osk.update --to`)를 새
+  버전으로 올린다. [INSTALL-AGENT](INSTALL-AGENT.md)와 README의 설치 프롬프트는 태그를
+  적지 않는다 — 에이전트가 정본의 최신 정식 태그를 찾아 clone한다.
+- 형식이나 기본 동작이 비호환으로 바뀌면 [판 올리기](UPGRADING.ko.md)에 이행 안내를 쓴다
+  — 무엇이 더는 받아들여지지 않는지, 사용자가 무엇을 해야 하는지. 발행 노트는 이
+  문서를 가리킨다.
+
 **정본에서 — 릴리스 선언** (에이전트의 비대화형 실행 가능, 별도 버전 승인 없음):
 
 ```bash
@@ -881,7 +1211,7 @@ gh workflow run release.yml --ref main -f version=vX.Y.Z
 ```
 
 Actions의 `release` 실행에서 고정된 SHA와 선언한 버전을 확인한다. workflow는 그
-SHA의 전체 회귀 수트와 **8개 조합의 전체 업그레이드 행렬**을 먼저 실행한다.
+SHA의 전체 회귀 수트와 **11개 조합의 전체 업그레이드 행렬**을 먼저 실행한다.
 행렬을 실행할 이력이 없으면 실패이며, 필수 검사가 통과한 뒤에만 같은 SHA에
 원격 태그와 정식 GitHub Release를 함께 만든다. 실행 중 브랜치가 움직여도 대상을
 바꾸지 않고 발행을 중단한다. `vX.Y.Z` 정식 형식을 그대로 쓰며 별도 RC 판본은 만들지 않는다.
@@ -890,7 +1220,7 @@ workflow 실행 전에 최종 후보를 실제 인스턴스의 사본에 적용�
 재시작 후 재검토 기준선을 확인한다. 원본 인스턴스의 갱신 승인은 아래 절차로
 따로 받는다. 실패한 발행을 재시도할 때는 같은 비준증빙 커밋에서 실행한다.
 
-**인스턴스에서 — 갱신**:
+**인스턴스에서 — 갱신** (메이저 판을 올릴 때는 먼저 [판 올리기](UPGRADING.ko.md)를 읽는다):
 
 ```bash
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.update            # 보고
@@ -980,6 +1310,38 @@ python3 _governance/_engine/scripts/recover.py --apply
   기본은 보고다. 커밋된 트랜잭션은 파일을 두고 표식만 정리하고(roll-forward),
   미커밋이면 pre-image로 되돌린다(rollback). 백업이 없거나 손상되면 아무것도
   지우지 않고 중단한다. 복구가 끝나기 전에는 동기화 데몬도 tick을 거부한다.
+
+**새 릴리스 알림** (`osk.update_check`). 인스턴스는 정본의 새 정식 릴리스를 스스로
+알아차려 알린다. 적용은 하지 않는다 — 적용은 위의 확인 관문을 지난 `--apply`뿐이다.
+
+- **확인.** 정본에 태그 목록만 묻는다(`git ls-remote` — vault의 내용은 보내지 않는다).
+  출처는 갱신과 같은 `.osk/config.json`의 upstream이다. 세션 시작 훅과 MCP `overview`가
+  지난 확인이 하루(실패했으면 한 시간)보다 오래됐을 때 분리 프로세스로 띄우고 기다리지
+  않는다 — 그 결과는 다음 세션부터 보인다. 분리 프로세스는 자격 증명을 묻지 않고
+  콘솔 창을 띄우지 않는다. 결과는 기기 로컬(Git 디렉터리의 `osk-release-check.json`)이며
+  동기화되지 않는다. 지금 확인하려면 `osk.update --check`를 쓴다 — 받지도 적용하지도
+  않고, 다른 선택지와 함께 쓰지 않는다.
+- **비교.** 판본은 갱신 저널(`current`)에서 매번 다시 읽는다. 다른 기기가 갱신하고 그
+  저널이 동기화로 들어오면 확인을 다시 하지 않아도 알림이 사라진다 — 그 기기에서 할
+  일은 위의 재시작과 pip 재실행뿐이다.
+- **알림.** 새 릴리스가 있으면 기기마다 하루 한 번 알린다. Claude Code·Codex에서는
+  세션 시작 훅이 사용자 화면에 경고(`systemMessage`)를 띄우고, 에이전트 문맥에
+  `[osk 새 릴리스 — …]`와 갱신 명령을 싣는다. 출처가 GitHub 저장소이면 두 자리 모두
+  그 판의 릴리스 노트 주소를 싣는다 — 메이저 판이면 노트 머리가 이행 안내를 가리킨다.
+  사용자 화면만의 자리가 없는 Kiro·Antigravity에서는 에이전트가 사용자에게 한 줄로 전하게
+  하고, 그 블록이 실제로 문맥에 실렸을 때만 알린 것으로 적는다 — 한도에 밀려 접혔으면
+  `overview`가 이어받는다. `overview`는 새 릴리스가 있는 동안 `update` 필드(`latest`·
+  `current`·`how`, GitHub 출처면 `notes`)를 싣고, 그 기기에서 아직 알리지 않았으면
+  `notify`를 더한다 — 훅이 없는 MCP 클라이언트도 이 길로 안다. 정기 실행과 fork의
+  `overview`는 사용자에게 닿지 않으므로 `notify`를 싣지 않고 알림도 쓰지 않는다. `status`는
+  언제나 `update`에 판본과 마지막 확인을 싣는다.
+- **적용.** 사용자가 갱신을 요청하면 에이전트는 `--to <새 판> --apply`로 위의 두
+  단계를 밟는다. 알림은 적용 승인을 대신하지 않는다.
+- **끄기.** `.osk/config.json`에 `"update_check": false`를 두거나 환경에
+  `OSK_UPDATE_CHECK=0`을 둔다(회귀 수트가 이 값을 쓴다). 판본을 고정했거나(`pin`)
+  출처가 `bundle`이면 확인하지도 알리지도 않는다. 갱신 저널에서 판본을 정할 수 없는
+  설치(기준선 미기록·갈라진 저널)도 비교할 것이 없어 하지 않는다 — `status`의
+  `update.auto_off`가 이유를 보인다.
 
 ## 적대적 하네스
 
