@@ -88,6 +88,40 @@ def refers(tokens: list[str], name: str) -> str | None:
     return next((t for t in tokens if fold(t).endswith("/" + fold(name))), None)
 
 
+# 인용 없는 cmd 명령에서 명령을 가르거나 뜻이 바뀌는 문자(공백 말고) — 연산자·이스케이프·구분자.
+_CMD_OPS = re.compile(r"[&|<>^(),;=]")
+# 쌍따옴표 안에서도 cmd가 푸는 문자 — 인용으로 지킬 수 없다.
+_CMD_LIVE = re.compile(r'["%!]')
+
+
+def cmd_line(argv) -> str:
+    """cmd가 읽을 명령줄 — 빈 인자와 공백·cmd 특수문자가 든 인자를 쌍따옴표로 싼다. Windows는
+    배치 파일(npm이 까는 `claude.cmd`·`codex.cmd`)을 `cmd /c`로 돌리는데, 인자 목록의
+    `list2cmdline`은 공백만 보고 인용해 `C:/R&D/...`가 `&`에서 갈린다. 쌍따옴표 안에서도 cmd가
+    푸는 글자가 든 인자는 올린다."""
+    argv = [str(a) for a in argv]
+    for a in argv:
+        if _CMD_LIVE.search(a):
+            raise ValueError(f'cmd가 쌍따옴표 안에서도 푸는 글자(" % !)가 든 인자다: {a}')
+    return " ".join(f'"{a}"' if not a or re.search(r"\s", a) or _CMD_OPS.search(a) else a for a in argv)
+
+
+def paste_line(argvs) -> str:
+    """사람이 제 터미널에 붙일 호스트 CLI 명령 한 줄 — 명령마다 `core.shell_join`이고 `;`로 잇는다.
+    다만 Windows에서 cmd 특수문자가 든 인자가 있으면 `cmd /d /c --%` 뒤에 cmd의 인용으로 쓰고
+    cmd의 `&`로 잇는다. PowerShell은 공백 없는 인자를 `.cmd` CLI에 인용 없이 넘겨 cmd가
+    `C:/R&D/...`를 가르고, npm이 함께 까는 `.ps1`에는 `--%`까지 인자로 넘긴다. cmd는 실행 대상을
+    PATHEXT(`.exe`·`.cmd`)로만 찾고 실행 정책과도 무관하다(2026-09-27 Windows PowerShell 5.1 실측)."""
+    from .. import core
+    argvs = [[str(a) for a in argv] for argv in argvs]
+    if os.name == "nt" and any(_CMD_OPS.search(a) for argv in argvs for a in argv):
+        try:
+            return "cmd /d /c --% " + " & ".join(cmd_line(argv) for argv in argvs)
+        except ValueError:
+            pass    # 그 글자는 어느 표기로도 `.cmd` CLI에 온전히 닿지 않는다 — `.exe`·`.ps1`이 받는 표기를 둔다
+    return " ; ".join(core.shell_join(argv) for argv in argvs)
+
+
 def _groups(hooks):
     """`{"hooks": {사건: [{"matcher", "hooks": [항목…]}]}}`의 (사건, 묶음, 순번, 항목, matcher).
     목록이 아닌 값(Codex의 `[hooks.state]` 같은 표)은 사건이 아니므로 건너뛴다."""
@@ -229,11 +263,10 @@ class Adapter:
         return []
 
     def mcp_command(self, python: Path, server: Path) -> str:
-        """사용자가 터미널에 붙일 등록 한 줄 — `mcp_argv`를 그 기기 셸의 규칙으로 인용한다.
-        없으면 빈 문자열."""
-        from .. import core
+        """사용자가 터미널에 붙일 등록 한 줄 — `mcp_argv`를 그 기기 셸의 규칙으로 인용한다
+        (`paste_line`). 없으면 빈 문자열."""
         argv = self.mcp_argv(python, server)
-        return core.shell_join(argv) if argv else ""
+        return paste_line([argv]) if argv else ""
 
     def mcp_files(self) -> list[Path]:
         """MCP 등록을 읽는 파일 — 첫 자리가 호스트 CLI가 등록을 고치는 파일이다."""
