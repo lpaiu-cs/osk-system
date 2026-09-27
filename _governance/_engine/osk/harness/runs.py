@@ -99,9 +99,12 @@ def first_call(host: str | None, event: str, env: dict) -> bool:
     key = core.sha256_bytes(json.dumps([name, env, size], ensure_ascii=False, sort_keys=True,
                                        default=str).encode("utf-8"))
     window = WINDOW if size is not None else BLIND
-    now, first = time.time(), [True]
+    first = [True]
 
     def change(data):
+        # 시각은 잠금을 잡은 뒤에 잰다. 먼저 재면 잠금을 기다리는 사이 앞 호출이 남긴 기록이
+        # 이 호출보다 늦어 미래의 기록으로 버려지고, 두 호출이 모두 처리된다.
+        now = time.time()
         live = {k: v for k, v in data["claims"].items()
                 if isinstance(v, (int, float)) and 0 <= now - v < WINDOW}
         at = live.get(key)

@@ -500,7 +500,7 @@ if os.name == 'nt':
 
     def test_a_second_registration_of_one_event_is_handled_once(self):
         self.check_case(r'''
-import concurrent.futures
+import concurrent.futures, itertools
 from osk import doctor
 from osk._portalock import lock_exclusive, unlock
 proj = root.parent / 'proj'
@@ -508,8 +508,12 @@ proj.mkdir()
 transcript = rows(claude_home / 'projects' / 'p' / 'd1.jsonl', {'sessionId': 'd1', 'type': 'user'})
 payload = {'session_id': 'd1', 'transcript_path': str(transcript), 'cwd': str(proj),
            'hook_event_name': 'SessionStart', 'source': 'startup'}
+# These hooks wait up to 30 s for the lock, so both calls are judged and the claim decides, not the
+# runner's speed. With the product's short wait a slow runner leaves the second call unjudged, and
+# an unjudged call answers by design (the held lock below).
+launch = 'import runpy, sys; from osk.harness import runs; runs.WAIT = 30; runpy.run_path(sys.argv[1], run_name="__main__")'
 def start():
-    r = subprocess.run([py, str(tested_hooks / 'claude_session_start.py')], cwd=str(proj),
+    r = subprocess.run([py, '-c', launch, str(tested_hooks / 'claude_session_start.py')], cwd=str(proj),
                        input=json.dumps(payload).encode('utf-8'), capture_output=True, timeout=120)
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
@@ -530,6 +534,15 @@ assert runs.first_call('claude', 'input', env) is True, 'another host'
 assert runs.first_call('codex', 'stop', env) is True, 'another event'
 with mock.patch.object(runs.time, 'time', return_value=time.time() + runs.BLIND + 1):
     assert runs.first_call('codex', 'input', env) is True, 'a later turn with the same prompt'
+# A claim made while this call waited for the lock is the earlier call's, not a future one.
+real, again = runs._update, {**env, 'prompt': 'r'}
+def claimed_while_waiting(change, *args):
+    with mock.patch.object(runs, '_update', real):
+        assert runs.first_call('codex', 'input', again) is True
+    return real(change, *args)
+with mock.patch.object(runs.time, 'time', side_effect=itertools.count(time.time(), 0.01).__next__), \
+        mock.patch.object(runs, '_update', claimed_while_waiting):
+    assert runs.first_call('codex', 'input', again) is False, 'both calls were handled'
 # When the claim cannot be judged, the call is handled.
 with open(core.local_lock_path(runs.LOCK), 'w') as held:
     lock_exclusive(held)
