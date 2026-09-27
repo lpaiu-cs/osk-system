@@ -22,7 +22,11 @@ def _notice(host, message: str) -> None:
         output = {"systemMessage": message}
     # 평문 호스트(Kiro)는 종료 훅의 출력을 어디에도 싣지 않는다 — 어댑터가 빈 문자열을 준다.
     data = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
-    sys.stdout.buffer.write(data.encode("utf-8"))
+    try:
+        from claude_session_start import emit_raw
+        emit_raw(data)
+    except Exception:
+        sys.stdout.buffer.write(data.encode("utf-8"))
 
 
 def main() -> None:
@@ -30,7 +34,7 @@ def main() -> None:
         return
     host = None
     try:
-        from claude_session_start import first_call, note_run, session_key
+        from claude_session_start import first_call, normalize, note_run, session_key
         try:
             env = json.load(sys.stdin)
             if not isinstance(env, dict):
@@ -39,6 +43,7 @@ def main() -> None:
             note_run("stop", None, None)
             raise
         from osk import integration, response_growth
+        env = normalize(env)
         key = session_key(env.get("cwd") or os.getcwd())
         host = note_run("stop", env, key)
         if not first_call("stop", env, host):
@@ -58,3 +63,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    from claude_session_start import finish
+    finish()

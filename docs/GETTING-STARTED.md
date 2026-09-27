@@ -608,7 +608,7 @@ Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 | `integration list` | List conversations whose captured rounds wait for review. |
 | `protect <folder>`, `approve <folder>`, `revert <folder>` | Protect a folder, or accept or undo its pending changeset. These ask `[y/N]` and refuse to run without an interactive terminal. |
 | `fork doctor` | Check whether fork reviews can run. Read-only. |
-| `doctor` | Check how Claude Code, Codex and Kiro are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
+| `doctor` | Check how Claude Code, Codex, Kiro and Antigravity are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
 
 ## Optional: connect Kiro
 
@@ -628,6 +628,26 @@ in `~/.kiro/hooks/osk-system.json`. Their commands call the same scripts as in 3
 trust a folder you open, allow it. Then ask the agent in a new chat for the session key the
 osk hook gave it. It should answer with the repository name. `doctor --harness kiro`
 checks it too.
+
+## Optional: connect Antigravity
+
+Antigravity (the 2.0 app) also uses the three hooks and its conversation transcript. Like
+Kiro, it has no subscription fork, so conversation reviews run inside the session at turns
+9 and 15. The `setup` of step 2 also connects Antigravity when this device has it (a
+`~/.gemini/config` folder). You don't need to install the `agy` CLI. By hand, it takes the
+two steps below. The file contents are in 'Antigravity에 잇는다' in [SETUP](SETUP.md).
+
+**Aa. Register the MCP server.** Add an `osk-system` entry to `mcpServers` in
+`~/.gemini/config/mcp_config.json`. Antigravity has no registration CLI.
+
+**Ab. Register the hooks.** Put the three hooks (SessionStart, PreInvocation and Stop)
+under the hook name `osk-system` in `~/.gemini/config/hooks.json`. Their commands call the
+same scripts as in 3b. On Windows the commands are written without quotes, so the Python
+and vault paths must not contain spaces.
+
+**Check:** Ask the agent in a new conversation for the session key the osk hook gave it. It
+should answer with the repository name. `doctor --harness antigravity` checks it
+too.
 
 ## Optional: browse the vault in Obsidian
 

@@ -241,8 +241,13 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
         if Path(path).parent.name != conversation_id:
             raise ValueError("Kiro transcript folder does not match this conversation")
         result = readable = _kiro(rows, conversation_id)
+    elif harness == "antigravity":
+        # Steps carry no conversation ID either: the file sits in `brain/<ID>/`.
+        if conversation_id not in Path(path).parts:
+            raise ValueError("Antigravity transcript folder does not match this conversation")
+        result = readable = _antigravity(rows, conversation_id)
     else:
-        raise ValueError("harness must be claude, codex or kiro")
+        raise ValueError("harness must be claude, codex, kiro or antigravity")
     if [r["id"] for r in readable["rounds"]] != [r["id"] for r in result["rounds"]]:
         raise ValueError("dialogue capture changed native completion boundaries")
     result["dialogue_v1"] = {r["id"]: r for r in readable["rounds"]}
@@ -638,3 +643,86 @@ def _kiro(rows: list, sid: str) -> dict:
                    {k: p[k] for k in ("type", "stopReason", "stopDetails") if k in p})
             turn, users, trace, evidence = None, [], [], []
     return {"rounds": rounds, "pending_tail": bool(turn or queued), "diagnostics": diagnostics}
+
+
+# Antigravity steps that are context, not dialogue: hook and system injections, the
+# checkpoint and the compaction history. ERROR_MESSAGE is kept as an event.
+_AG_CONTEXT = {"EPHEMERAL_MESSAGE", "SYSTEM_MESSAGE", "CHECKPOINT", "CONVERSATION_HISTORY"}
+_AG_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?</USER_REQUEST>", re.S)
+
+
+def _ag_user(content) -> str:
+    """The user's own words — the input wraps them in <USER_REQUEST> and appends system
+    metadata (local time, settings changes) that the user did not write."""
+    if not isinstance(content, str):
+        return _dump(content)
+    m = _AG_REQUEST.search(content)
+    return m.group(1).strip() if m else content
+
+
+def _ag_final(step) -> bool:
+    """A finished reply: done, with text, and no further tool call."""
+    return (step is not None and step.get("type") == "PLANNER_RESPONSE" and step.get("status") == "DONE"
+            and not step.get("tool_calls") and isinstance(step.get("content"), str)
+            and bool(step["content"].strip()))
+
+
+def _antigravity(rows: list, sid: str) -> dict:
+    """Antigravity `transcript_full.jsonl` rows are steps `{step_index, source, type,
+    status, content, tool_calls, thinking}`. A USER_INPUT opens a round; replies are
+    PLANNER_RESPONSE text (thinking is internal); tool calls and the steps that answer
+    them become one evidence reference. There is no turn-end row: a round ends at the
+    next USER_INPUT, or at the end of the file once its last step is a finished reply
+    (Stop runs after that step is written)."""
+    rounds, seen = [], set()
+    start, users, trace, evidence, errors = None, [], [], [], []
+    last = last_line = None
+
+    def finish(completion, terminal=None):
+        rid = f"{start}:{last.get('step_index') if last else start}"
+        agent = trace + _tool_evidence(evidence, f"antigravity:{sid}:{start}")
+        if terminal is not None:
+            agent.append(_dump(terminal))
+        if rid not in seen:
+            rounds.append({"id": rid, "user": "\n\n".join(users), "agent": "\n\n".join(agent),
+                           "end_line": last_line, "completion": completion})
+            seen.add(rid)
+
+    for line, row in rows:
+        typ, idx = row.get("type"), row.get("step_index")
+        if typ is None or idx is None:
+            raise ValueError(f"unsupported Antigravity step at line {line}")
+        locator = f"antigravity:{sid}:{idx}"
+        if typ == "USER_INPUT":
+            if start is not None:
+                if _ag_final(last):
+                    finish("completed")
+                else:
+                    finish("failed" if errors else "interrupted",
+                           {"type": "superseded", "step_index": last.get("step_index") if last else start,
+                            "next_step_index": idx, **({"errors": errors} if errors else {})})
+            start, users, trace, evidence, errors = idx, [_ag_user(row.get("content"))], [], [], []
+            last, last_line = row, line
+        elif start is None or typ in _AG_CONTEXT:
+            continue
+        elif typ == "ERROR_MESSAGE":
+            errors.append(_reference(row.get("content"), locator))
+            last, last_line = row, line
+        elif typ == "PLANNER_RESPONSE":
+            content = row.get("content")
+            if isinstance(content, str) and content.strip():
+                trace.append(content)
+            for n, call in enumerate(row.get("tool_calls") or []):
+                if isinstance(call, dict):
+                    evidence.append({"type": "tool_call_ref", "name": call.get("name"), "call_id": f"{idx}:{n}",
+                                     **_reference(call.get("args"), locator)})
+            last, last_line = row, line
+        else:
+            # GENERIC, VIEW_FILE, RUN_COMMAND, MCP_TOOL, … — the steps that answer tool calls.
+            evidence.append({"type": "tool_result_ref", "tool_use_id": str(idx),
+                             "content": _reference(row.get("content"), locator)})
+            last, last_line = row, line
+    if start is not None and _ag_final(last):
+        finish("completed")
+        start = None
+    return {"rounds": rounds, "pending_tail": start is not None, "diagnostics": []}

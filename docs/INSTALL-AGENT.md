@@ -15,8 +15,8 @@ order. Where a step says to ask, ask and wait; do not guess the user's answer.
 
 - Python 3.11 or newer: `python3 --version`, or `py -3.11 --version` on Windows.
 - Git, with `user.name` and `user.email` set.
-- At least one host: Claude Code, Codex or Kiro. Kiro has no subscription fork, so
-  `--fork` and `--schedule` are for Claude Code and Codex only.
+- At least one host: Claude Code, Codex, Kiro or Antigravity. Kiro and Antigravity have
+  no subscription fork, so `--fork` and `--schedule` are for Claude Code and Codex only.
 
 If something is missing, tell the user what to install and stop.
 
@@ -134,8 +134,8 @@ python _governance/_engine/scripts/setup.py doctor
 For each host it shows whether the MCP server and the three hooks point at this
 vault, when each hook last ran on this device, and whether the agent called
 `overview` after the session started. Report failures to the user. A hook that
-has not run yet needs a new session (Claude Code), trust (Codex) or a trusted
-workspace folder and a new chat (Kiro).
+has not run yet needs a new session (Claude Code), trust (Codex), a trusted
+workspace folder and a new chat (Kiro) or a new conversation (Antigravity).
 
 ## Optional features later
 
