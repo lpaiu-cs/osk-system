@@ -44,8 +44,9 @@ def command_tokens(entry: dict) -> list[str]:
     return tokens[1:] if tokens[:1] == ["&"] else tokens
 
 
-# 따옴표 없이도 cmd·bash·PowerShell이 한 낱말로 읽는 인자.
-_BARE = re.compile(r"[\w\-./:~]+")
+# 따옴표 없이 그 셸이 한 낱말로 읽는 인자. cmd는 제 특수문자만 피하면 된다 — 따옴표를 받지
+# 못하는 Antigravity는 그 밖을 거부하고 이 줄을 그대로 쓴다.
+_BARE = {"cmd": r'[^\s&|<>^(),;=%!"]+', "bash": r"[\w\-./:~]+", "powershell": r"[\w\-./:~]+"}
 # 쌍따옴표 안에서도 그 셸이 푸는 글자 — 인용으로 지킬 수 없다.
 _LIVE = {"cmd": '"%!', "bash": '"$`\\', "powershell": '"$`“”„'}
 
@@ -63,7 +64,7 @@ def hook_line(argv, shell: str = "cmd") -> str:
         if live := sorted(set(a) & set(_LIVE[shell])):
             raise ValueError(f"훅 명령에 쓸 수 없는 경로다({a}) — {shell} 셸은 쌍따옴표 안의 {' '.join(live)}도 "
                              "푼다. vault를 그 글자가 없는 경로로 옮기거나, 이 호스트를 빼려면 setup의 --harness로 고른다")
-    words = [a if _BARE.fullmatch(a) else f'"{a}"' for a in argv]
+    words = [a if re.fullmatch(_BARE[shell], a) else f'"{a}"' for a in argv]
     line = " ".join(words)
     return f"& {line}" if shell == "powershell" and words[:1] != argv[:1] else line
 
@@ -139,6 +140,8 @@ class Adapter:
     # Windows에서 셸 형식 훅 한 줄을 도는 셸(`hook_line`) — 기본은 명령을 `cmd /c`로 넘기는
     # 호스트다. POSIX의 호스트는 모두 `sh -c`류로 돌린다.
     hook_shell = "cmd"
+    # 아무것도 싣지 않는 훅 호출의 출력 — JSON 결과만 받는 호스트(Antigravity)는 `{}`다.
+    silence = ""
 
     def fires_on(self, event: str, matcher) -> frozenset[str]:
         """그 matcher의 등록이 불리는 원인 — 원인이 없는 사건은 `{"*"}`(늘 불린다).
@@ -178,6 +181,15 @@ class Adapter:
     def subagent(self, path: str, sid: str) -> str | None:
         """하위 에이전트의 훅이 뿌리 대화를 이름으로 댔으면 그 사유."""
         return None
+
+    def normalize(self, env: dict) -> dict:
+        """제 형식의 훅 입력을 공통 키(`session_id`·`cwd`·`transcript_path`)로 옮긴 사본 —
+        제 것이 아니면 그대로."""
+        return env
+
+    def fires(self, event: str, env: dict) -> bool:
+        """이 호출이 osk의 그 사건인가 — 호스트가 같은 사건을 더 자주 부르면 거짓으로 거른다."""
+        return True
 
     # ── 훅 출력 ───────────────────────────────────────────────────────────
     def hook_output(self, event: str, text: str, system_message: str = "") -> dict | str:

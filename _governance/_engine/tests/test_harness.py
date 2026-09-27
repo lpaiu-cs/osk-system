@@ -66,7 +66,7 @@ def _run(script: str) -> subprocess.CompletedProcess:
         bin_dir.mkdir()
         env = {k: v for k, v in os.environ.items()
                if k not in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS', 'OSK_GROWTH_WORKER',
-                            'KIRO_SESSION_ID')}
+                            'KIRO_SESSION_ID', 'ANTIGRAVITY_CONVERSATION_ID')}
         env.update(OSK_VAULT_ROOT=str(td / 'vault'), PYTHONPATH=str(ENGINE), PYTHONUTF8='1',
                    OSK_UPDATE_CHECK='0', HOME=str(home), USERPROFILE=str(home),
                    CLAUDE_CONFIG_DIR=str(home / '.claude'), CODEX_HOME=str(home / '.codex'),
@@ -156,12 +156,12 @@ try:
 except integration.SubagentEvent as exc:
     assert 'Codex subagent' in str(exc), exc
 
-assert harness.NAMES == ('claude', 'codex', 'kiro') and harness.fork_names() == ('claude', 'codex')
+assert harness.NAMES == ('claude', 'codex', 'kiro', 'antigravity') and harness.fork_names() == ('claude', 'codex')
 try:
     integration._identity('gemini', 'x')
     raise AssertionError('unknown harness accepted')
 except ValueError as exc:
-    assert str(exc) == 'explicit claude/codex/kiro harness and actual conversation_id required', exc
+    assert str(exc) == 'explicit claude/codex/kiro/antigravity harness and actual conversation_id required', exc
 # Transcripts are found where each host keeps them; two candidates need an explicit path.
 mine = rows(claude_home / 'projects' / 'p2' / 'c1.jsonl', {'sessionId': 'c1'})
 assert integration._locate_transcript('claude', 'c1') == str(mine.resolve())
@@ -198,6 +198,25 @@ for adapter in (harness.get('claude'), harness.get('codex'), harness.FALLBACK):
 # Kiro takes the context as plain text and has no user-only channel.
 kiro = harness.get('kiro')
 assert kiro.hook_output('input', 't', 'm') == 't' and kiro.hook_notice('stop', 'm') == ''
+# Antigravity takes JSON only: context is an injected step, and a silent call is `{}`.
+ag = harness.get('antigravity')
+assert json.loads(ag.hook_output('start', 't', 'm')) == {'injectSteps': [{'ephemeralMessage': 't'}]}
+assert ag.hook_output('input', '') == ag.hook_output('stop', 't') == ag.hook_notice('stop', 'm') == ag.silence == '{}'
+assert ag.fires('input', {'invocationNum': 0}) and not ag.fires('input', {'invocationNum': 2})
+assert ag.fires('start', {}) and ag.fires('stop', {'invocationNum': 3})
+seen = harness.normalize({'conversationId': 'a1', 'workspacePaths': ['c:/w'], 'transcriptPath': '/t.jsonl'})
+assert (seen['session_id'], seen['cwd'], seen['transcript_path']) == ('a1', 'c:/w', '/t.jsonl'), seen
+assert harness.normalize({'session_id': 's', 'cwd': 'x'}) == {'session_id': 's', 'cwd': 'x'}
+if os.name == 'nt':   # cmd /c cannot take a quoted path, and unquoted `&` splits the command
+    for odd in ('C:/Program Files/py.exe', 'C:/R&D/py.exe'):
+        try:
+            ag.hook_command([odd, 'C:/v/hook.py'])
+            raise AssertionError(f'{odd} was accepted for cmd /c')
+        except ValueError as exc:
+            assert 'Antigravity' in str(exc), exc
+assert ag.hook_command(['C:/py/python.exe', 'C:/v/hook.py']) == 'C:/py/python.exe C:/v/hook.py'
+if os.name == 'nt':   # what cmd reads unquoted stays unquoted — a quote would not survive `cmd /c`
+    assert ag.hook_command(["C:/O'Brien+1/py.exe", 'C:/v/hook.py']) == "C:/O'Brien+1/py.exe C:/v/hook.py"
 claude, codex = harness.get('claude'), harness.get('codex')
 assert claude.parse_version('2.1.280 (Claude Code)') == '2.1.280'
 assert codex.parse_version('codex-cli 0.155.0-alpha.16') == '0.155.0-alpha.16'
@@ -422,10 +441,17 @@ import shutil
 from osk import doctor
 from osk.harness import base
 # A vault under C:/R&D/: an unquoted `&` ends the command in cmd, bash and PowerShell alike.
+# Each host gets a line its shell reads, or refuses the path before setup writes anything —
+# only Antigravity, which takes no quotes on Windows.
+def line_of(a, argv):
+    try:
+        return a.hook_command(argv)
+    except ValueError:
+        assert os.name == 'nt' and a.name == 'antigravity', a.name
 lab = ['C:/R&D/osk/.venv/Scripts/python.exe', 'C:/R&D/osk/_governance/_engine/scripts/hooks/claude_session_start.py']
 for a in harness.ADAPTERS:
-    tokens = base.command_tokens({'command': a.hook_command(lab)})
-    assert tokens == lab, (a.name, a.hook_command(lab))    # doctor checks tokens[0] as the Python
+    line = line_of(a, lab)
+    assert line is None or base.command_tokens({'command': line}) == lab, (a.name, line)  # tokens[0]: the Python
 # Run each host's line the way that host runs it (Windows): Claude Code in Git Bash, Codex in
 # its session's PowerShell, Kiro through Node's `spawn(command, {shell: true})`.
 amp = root.parent / 'R&D'
@@ -437,7 +463,9 @@ if os.name == 'nt':    # Git Bash is `<Git>/bin/bash.exe`; `git` may be `<Git>/c
     bash = next(p / 'bin' / 'bash.exe' for p in Path(shutil.which('git')).resolve().parents
                 if (p / 'bin' / 'bash.exe').is_file())
 for a in harness.ADAPTERS:
-    line = a.hook_command(argv)
+    line = line_of(a, argv)
+    if line is None:
+        continue
     run = (['sh', '-c', line] if os.name != 'nt' else
            f'cmd.exe /d /s /c "{line}"' if a.hook_shell == 'cmd' else
            ['powershell', '-NoProfile', '-Command', line] if a.hook_shell == 'powershell' else
@@ -633,6 +661,109 @@ got = {i['check']: i for i in rep['hosts'][0]['items']}
 assert got['MCP']['level'] == 'ok', got
 assert all(got[f'훅 {n}']['level'] == 'ok' for n in ('SessionStart', 'UserPromptSubmit', 'Stop')), got
 assert got['판본']['level'] == 'ok' and '1.1.70' in got['판본']['detail'], got
+assert 'fork' not in got, got
+''')
+
+    def test_antigravity_hooks_answer_in_json_and_capture_its_own_transcript(self):
+        self.check_case(r'''
+from osk import doctor, write
+from osk.harness import base
+proj = root.parent / 'proj'
+proj.mkdir()
+write.bind_session('proj', 'W1')
+sid = 'a7c1d2e3-1111-4222-8333-944455556666'
+transcript = home / '.gemini' / 'antigravity' / 'brain' / sid / '.system_generated' / 'logs' / 'transcript_full.jsonl'
+def step(n, typ, source='MODEL', **extra):
+    return {'step_index': n, 'source': source, 'type': typ, 'status': 'DONE',
+            'created_at': f'2026-09-27T00:00:{n:02d}Z', **extra}
+def ask(text):
+    return ('<USER_REQUEST>\n' + text + '\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n'
+            'The current local time is: 2026-09-27T16:14:05+09:00.\n</ADDITIONAL_METADATA>')
+tricky = ('    들여쓴 첫 줄\n이 코드의 "</USER_REQUEST>" 다음 문장도 보존한다.\n</USER_REQUEST>\n'
+          '줄 머리의 닫는 태그 뒤도 사용자의 말이다.')
+rows(transcript,
+     step(0, 'USER_INPUT', 'USER_EXPLICIT', content=ask('첫 질문')),
+     step(1, 'EPHEMERAL_MESSAGE', 'SYSTEM_SDK', content='[osk 세션 시작 — 주입된 문맥]'),
+     step(2, 'PLANNER_RESPONSE', content='읽어 보겠습니다.', thinking='internal thought',
+          tool_calls=[{'name': 'view_file', 'args': {'AbsolutePath': 'a.txt'}}]),
+     step(3, 'GENERIC', content='FILE BODY'),
+     step(4, 'PLANNER_RESPONSE', content='답은 42입니다.'),
+     # A turn that ended in an error before any reply is failed, not completed.
+     step(5, 'USER_INPUT', 'USER_EXPLICIT', content=ask('두 번째')),
+     step(6, 'PLANNER_RESPONSE', tool_calls=[{'name': 'run_command', 'args': {'CommandLine': 'ls'}}]),
+     step(7, 'ERROR_MESSAGE', 'SYSTEM', content='model error'),
+     # The user's words stay byte for byte: indentation, and a closing tag they typed.
+     step(8, 'USER_INPUT', 'USER_EXPLICIT', content=ask(tricky) + '\n<USER_SETTINGS_CHANGE>\n'
+          'The user changed setting `Model Selection`.\n</USER_SETTINGS_CHANGE>'),
+     step(9, 'CHECKPOINT', 'SYSTEM', content='checkpoint'),
+     step(10, 'PLANNER_RESPONSE', content='셋째 답'),
+     # The next prompt, before its reply, waits as the tail.
+     step(11, 'USER_INPUT', 'USER_EXPLICIT', content=ask('네 번째')))
+hooks_home = home / '.gemini' / 'config'
+hooks_home.mkdir(parents=True, exist_ok=True)
+def hook(name, payload, **extra):
+    # Antigravity runs a hook in the folder of its hooks.json, not in the workspace.
+    r = subprocess.run([py, str(tested_hooks / name)], input=json.dumps(payload).encode('utf-8'),
+                       capture_output=True, timeout=120, cwd=str(hooks_home),
+                       env={**os.environ, 'ANTIGRAVITY_CONVERSATION_ID': sid, **extra})
+    assert r.returncode == 0, r.stderr
+    return r.stdout.decode('utf-8')
+given = {'conversationId': sid, 'workspacePaths': [str(proj)], 'transcriptPath': str(transcript),
+         'artifactDirectoryPath': str(transcript.parents[2]), 'modelName': 'gemini-3.8-flash-high'}
+# The start hook injects the context as a step; the session key comes from the workspace.
+out = json.loads(hook('claude_session_start.py', given))
+text = out['injectSteps'][0]['ephemeralMessage']
+assert text.startswith('[osk 세션 시작 — session="proj"]'), text
+assert 'Antigravity has no subscription fork' in text, text
+# PreInvocation runs before every model call: only the first after an input is osk's input.
+before = integration.status('antigravity', sid)['prompt_count']
+assert hook('claude_prompt_submit.py', {**given, 'invocationNum': 3, 'initialNumSteps': 11}) == '{}'
+assert integration.status('antigravity', sid)['prompt_count'] == before, 'a later model call ticked the clock'
+out = hook('claude_prompt_submit.py', {**given, 'invocationNum': 0, 'initialNumSteps': 11})
+assert out == '{}' or 'injectSteps' in json.loads(out), out
+assert integration.status('antigravity', sid)['prompt_count'] == before + 1
+# Stop answers `{}` (no decision) and captures the transcript it was given.
+assert hook('capture_stop.py', {**given, 'executionNum': 0,
+            'terminationReason': 'NO_TOOL_CALL', 'fullyIdle': True, 'error': ''}) == '{}'
+st = integration.status('antigravity', sid)
+assert (st['captured_rounds'], st['failed_rounds']) == (3, 1), st
+assert st['capture_pending'] and not st['capture_error'], st
+assert Path(st['transcript_path']) == transcript.resolve(), st
+raw_text = (root / st['pending_refs'][0].split('#')[0]).read_text(encoding='utf-8')
+assert raw_text.count('<!-- osk-capture: dialogue-v1 ') == 3, raw_text
+assert '첫 질문' in raw_text and '읽어 보겠습니다.' in raw_text and '답은 42입니다.' in raw_text, raw_text
+assert '셋째 답' in raw_text and '"type": "superseded"' in raw_text and '네 번째' not in raw_text, raw_text
+assert '### user\n\n' + tricky + '\n' in raw_text, raw_text
+# Hook context, thinking, tool payloads and the system metadata are not the dialogue.
+for outside in ('주입된 문맥', 'internal thought', 'FILE BODY', 'ADDITIONAL_METADATA', 'checkpoint',
+                'USER_SETTINGS_CHANGE', 'Model Selection'):
+    assert outside not in raw_text, (outside, raw_text)
+# An input of a shape the parser does not know is kept whole rather than cut.
+from osk import transcripts
+for odd in ('no wrapper', '<USER_REQUEST>\nopen only', '<USER_REQUEST>\nx\n</USER_REQUEST>\ntrailing'):
+    assert transcripts._ag_user(odd) == odd, odd
+assert '"tool_evidence_ref"' in raw_text and '"view_file"' in raw_text, raw_text
+# A transcript in another conversation's folder is not read.
+other = integration.capture('antigravity', 'b8d2e3f4-0000-4000-8000-000000000000', str(transcript), 'proj')
+assert 'does not match' in (other['capture_error'] or ''), other
+# When capture fails, Stop still answers JSON and lets the agent stop.
+assert hook('capture_stop.py', {**given, 'conversationId': 'c9e3f4a5-0000-4000-8000-000000000000',
+                                'transcriptPath': str(root.parent / 'missing.jsonl')},
+            ANTIGRAVITY_CONVERSATION_ID='c9e3f4a5-0000-4000-8000-000000000000') == '{}'
+assert {'antigravity/start', 'antigravity/input', 'antigravity/stop'} <= set(runs.read()['runs']), runs.read()['runs']
+# doctor reads the named hook in ~/.gemini/config/hooks.json and the global MCP file.
+ag = harness.get('antigravity')
+table = {}
+for event in harness.SCRIPTS:
+    command = ag.hook_command([py, hooks_dir / harness.SCRIPTS[event]])
+    table.setdefault(ag.events[event], []).append(ag.hook_group(event, command))
+rows(hooks_home / 'hooks.json', ag.hook_content({}, table))
+rows(hooks_home / 'mcp_config.json', ag.mcp_write({}, py, str(server)))
+rep = doctor.report('antigravity')
+got = {i['check']: i for i in rep['hosts'][0]['items']}
+assert got['MCP']['level'] == 'ok', got
+assert all(got[f'훅 {n}']['level'] == 'ok' for n in ('SessionStart', 'PreInvocation', 'Stop')), got
+assert got['판본']['level'] == 'info', got
 assert 'fork' not in got, got
 ''')
 

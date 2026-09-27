@@ -63,7 +63,7 @@ osk-system은 **사용자가 확인한 지식과 에이전트가 만든 후보�
 
 Python 엔진과 MCP 도구를 중심으로, Markdown에 지식을 저장하고 BM25로 검색한다.
 Obsidian은 지식을 탐색하는 선택적 화면이고, Git 동기화도 선택 사항이다.
-자동 포착·주기 검토 어댑터는 현재 **Codex와 Claude Code**를 지원한다.
+자동 포착·주기 검토 어댑터는 현재 **Codex·Claude Code·Kiro·Antigravity**를 지원한다.
 런타임 의존성은 [requirements.txt](_governance/_engine/requirements.txt)를 본다.
 
 ## 시작하기
@@ -89,7 +89,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 macOS·Linux 기준:
 
 ```bash
-git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python3.12 -m venv .venv
@@ -174,8 +174,9 @@ osk-system은 그 구별을 사람의 기억이나 관행이 아니라 **기계�
 
 ## Harness coverage
 
-자동 포착·주기 통합·구독 fork의 하네스 어댑터는 현재 **Codex와 Claude Code**에
-한정되어 있다. 다른 MCP 클라이언트에서 도구를 호출할 수 있다는 사실만으로
+자동 포착·주기 통합의 하네스 어댑터는 현재 **Codex·Claude Code·Kiro·Antigravity**에
+있다. 구독 fork는 Codex와 Claude Code뿐이고, Kiro와 Antigravity는 늘 현재 세션의 9·15턴에
+통합한다. 다른 MCP 클라이언트에서 도구를 호출할 수 있다는 사실만으로
 세션 훅과 자율적인 지식 성장이 연결되었다고 보지 않는다.
 
 | 실행 조건 | 대화 검토 경로 |

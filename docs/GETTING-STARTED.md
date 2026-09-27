@@ -5,7 +5,7 @@
 This tutorial is for people who use Claude Code or Codex but have never set up
 osk-system. It starts from an empty folder and ends with a verified setup. At the
 end, your agent writes its first memory, then finds it and reads it back. Written
-for release v4.0.0.
+for release v4.1.0.
 
 For more detail on any step, follow the links to [SETUP.md](SETUP.md), the
 operator reference (in Korean).
@@ -140,7 +140,7 @@ Never edit these files by hand.
 
 Clone a release tag, not the `main` branch, which moves between releases. The
 updater compares your files with a release. Starting exactly on one lets Step 2
-record a clean baseline. `v4.0.0` works as written. You can use the newest tag
+record a clean baseline. `v4.1.0` works as written. You can use the newest tag
 from the [releases page](https://github.com/lpaiu-cs/osk-system/releases) instead,
 as long as you use the same tag again in Step 2.
 
@@ -148,7 +148,7 @@ Run these in the folder that will contain the vault, such as `C:/osk` on
 Windows (create it first). The commands are the same on every OS:
 
 ```bash
-git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -217,13 +217,13 @@ from local edits. The updater downloads the release from GitHub to compare.
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v4.0.0 --apply
+.venv/bin/python -m osk.update --to v4.1.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v4.0.0 --apply
+.venv\Scripts\python.exe -m osk.update --to v4.1.0 --apply
 ```
 
 The first run changes none of your files. It prints the plan, then exits with
@@ -267,7 +267,7 @@ git push
 ```
 
 **Check:** `.venv/bin/python -m osk.update` reports the selected version as
-`current` (`v4.0.0` in this example). On Windows, use
+`current` (`v4.1.0` in this example). On Windows, use
 `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
 `osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 
@@ -609,7 +609,7 @@ Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 | `integration list` | List conversations whose captured rounds wait for review. |
 | `protect <folder>`, `approve <folder>`, `revert <folder>` | Protect a folder, or accept or undo its pending changeset. These ask `[y/N]` and refuse to run without an interactive terminal. |
 | `fork doctor` | Check whether fork reviews can run. Read-only. |
-| `doctor` | Check how Claude Code, Codex and Kiro are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
+| `doctor` | Check how Claude Code, Codex, Kiro and Antigravity are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
 
 ## Optional: connect Kiro
 
@@ -629,6 +629,26 @@ in `~/.kiro/hooks/osk-system.json`. Their commands call the same scripts as in 3
 trust a folder you open, allow it. Then ask the agent in a new chat for the session key the
 osk hook gave it. It should answer with the repository name. `doctor --harness kiro`
 checks it too.
+
+## Optional: connect Antigravity
+
+Antigravity (the 2.0 app) also uses the three hooks and its conversation transcript. Like
+Kiro, it has no subscription fork, so conversation reviews run inside the session at turns
+9 and 15. The `setup` of step 2 also connects Antigravity when this device has it (a
+`~/.gemini/config` folder). You don't need to install the `agy` CLI. By hand, it takes the
+two steps below. The file contents are in 'Antigravity에 잇는다' in [SETUP](SETUP.md).
+
+**Aa. Register the MCP server.** Add an `osk-system` entry to `mcpServers` in
+`~/.gemini/config/mcp_config.json`. Antigravity has no registration CLI.
+
+**Ab. Register the hooks.** Put the three hooks (SessionStart, PreInvocation and Stop)
+under the hook name `osk-system` in `~/.gemini/config/hooks.json`. Their commands call the
+same scripts as in 3b. On Windows the commands are written without quotes, so the Python
+and vault paths must not contain spaces or cmd special characters such as `&`.
+
+**Check:** Ask the agent in a new conversation for the session key the osk hook gave it. It
+should answer with the repository name. `doctor --harness antigravity` checks it
+too.
 
 ## Optional: browse the vault in Obsidian
 
@@ -907,7 +927,7 @@ You do not need to watch the releases page. Once a day, the session-start hook
 and the MCP `overview` ask the canonical repository for its release tags
 (`git ls-remote`; nothing from your vault is sent). When a newer release exists,
 Claude Code and Codex show a warning such as
-`osk-system 새 릴리스 v4.1.0 (이 vault는 v4.0.0) — …` once a day per device,
+`osk-system 새 릴리스 v4.2.0 (이 vault는 v4.1.0) — …` once a day per device,
 ending with the link to that release's notes. Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
 steps below with you: it shows the changeset and waits for your approval. The
 check runs in the background, so the notice appears from the session after the

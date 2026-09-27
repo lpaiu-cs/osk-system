@@ -4,7 +4,7 @@
 
 Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사람을 위한 따라하기
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
-첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v4.0.0 릴리스 기준이다.
+첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v4.1.0 릴리스 기준이다.
 
 단계마다 더 자세한 내용은 운용 참고서인 [SETUP.md](SETUP.md)로 이어지는 링크를
 따라가면 된다.
@@ -129,7 +129,7 @@ Markdown 파일 하나다. 머리말에는 다음이 들어간다.
 
 `main` 브랜치가 아니라 릴리스 태그를 clone한다. `main`은 릴리스 사이에도 움직인다.
 갱신기는 파일을 릴리스와 대조하므로, 정확히 한 릴리스에서 출발해야 2단계에서 깨끗한
-기준선을 기록할 수 있다. `v4.0.0`은 적힌 그대로 쓰면 된다.
+기준선을 기록할 수 있다. `v4.1.0`은 적힌 그대로 쓰면 된다.
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)의 최신 태그를 써도
 되지만, 그때는 2단계에서도 같은 태그를 쓴다.
 
@@ -137,7 +137,7 @@ vault를 담을 폴더(Windows라면 `C:/osk` 등, 먼저 만들어 둔다)에�
 OS에서나 같은 명령이다.
 
 ```bash
-git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -203,13 +203,13 @@ $env:PYTHONPATH = "_governance\_engine"
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v4.0.0 --apply
+.venv/bin/python -m osk.update --to v4.1.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v4.0.0 --apply
+.venv\Scripts\python.exe -m osk.update --to v4.1.0 --apply
 ```
 
 첫 실행은 어떤 파일도 바꾸지 않는다. 계획을 출력한 뒤 종료코드 2와
@@ -250,7 +250,7 @@ git push
 ```
 
 **확인:** `.venv/bin/python -m osk.update`의 `current`가 선택한 버전을 가리킨다
-(위 예제에서는 `v4.0.0`).
+(위 예제에서는 `v4.1.0`).
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다. `osk.cli status`가 `"protected_regions": {"_governance": "clean"}`을
 보여 준다.
@@ -587,7 +587,7 @@ fork 검토를 켰다면 `[osk 백그라운드 검토 대기 — …]`)이 붙�
 | `integration list` | 포착된 라운드가 검토를 기다리는 대화를 나열한다. |
 | `protect <폴더>`, `approve <폴더>`, `revert <폴더>` | 폴더를 보호하거나, 대기 중인 변경집합을 승인하거나 반려한다. `[y/N]`으로 묻고, 대화형 단말이 아니면 실행을 거부한다. |
 | `fork doctor` | fork 검토가 돌 수 있는지 점검한다. 읽기 전용이다. |
-| `doctor` | 이 기기에서 Claude Code·Codex·Kiro가 어떻게 이어졌는지 점검한다: MCP·훅 등록, 훅마다 마지막으로 불린 시각, 세션 시작 문구가 에이전트에게 닿았는지, 호스트 판본, fork. 읽기 전용이며, 동작할 수 없는 설정이 있을 때만 종료코드 1이다. |
+| `doctor` | 이 기기에서 Claude Code·Codex·Kiro·Antigravity가 어떻게 이어졌는지 점검한다: MCP·훅 등록, 훅마다 마지막으로 불린 시각, 세션 시작 문구가 에이전트에게 닿았는지, 호스트 판본, fork. 읽기 전용이며, 동작할 수 없는 설정이 있을 때만 종료코드 1이다. |
 
 ## 선택: Kiro 연결
 
@@ -605,6 +605,24 @@ UserPromptSubmit·Stop 훅 세 개를 둔다. 명령은 3b와 같은 스크립�
 **확인:** Kiro는 **신뢰한 작업 폴더에서만** 훅을 돌린다. 폴더를 열 때 신뢰할지 물으면
 허락한다. 그다음 새 채팅에서 에이전트에게 osk 훅이 알려 준 세션 키를 묻는다. 저장소
 이름으로 답해야 한다. `doctor --harness kiro`로도 확인한다.
+
+## 선택: Antigravity 연결
+
+Antigravity(2.0 앱)도 세 훅과 대화 전사를 쓴다. 구독 fork는 없어서, 대화 검토는 Kiro처럼
+세션 안에서 9·15턴으로 한다. 2단계의 `setup`은 이 기기에 Antigravity(`~/.gemini/config`
+폴더)가 있으면 Antigravity도 잇는다. `agy` CLI는 따로 설치하지 않아도 된다. 손으로 할
+때는 아래 두 단계다. 파일 내용은 [SETUP](SETUP.md)의 'Antigravity에 잇는다'에 있다.
+
+**Aa. MCP 서버를 등록한다.** `~/.gemini/config/mcp_config.json`의 `mcpServers`에
+`osk-system` 항목을 더한다. Antigravity에는 등록 CLI가 없다.
+
+**Ab. 훅을 등록한다.** `~/.gemini/config/hooks.json`의 `osk-system` 이름 아래에
+SessionStart·PreInvocation·Stop 훅 세 개를 둔다. 명령은 3b와 같은 스크립트를 부른다.
+Windows에서는 명령을 따옴표 없이 쓰므로 Python과 vault 경로에 공백과 `&` 같은 cmd
+특수문자가 없어야 한다.
+
+**확인:** 새 대화에서 에이전트에게 osk 훅이 알려 준 세션 키를 묻는다. 저장소 이름으로
+답해야 한다. `doctor --harness antigravity`로도 확인한다.
 
 ## 선택: Obsidian으로 vault 둘러보기
 
@@ -871,7 +889,7 @@ v4.1.0 이상에서는 `python _governance/_engine/scripts/setup.py --apply --fo
 릴리스 페이지를 지켜볼 필요는 없다. 세션 시작 훅과 MCP `overview`가 하루에 한 번
 정본 저장소에 릴리스 태그를 묻는다(`git ls-remote` — vault의 내용은 보내지 않는다).
 새 릴리스가 있으면 Claude Code·Codex 화면에
-`osk-system 새 릴리스 v4.1.0 (이 vault는 v4.0.0) — …` 같은 경고가 기기마다 하루 한 번
+`osk-system 새 릴리스 v4.2.0 (이 vault는 v4.1.0) — …` 같은 경고가 기기마다 하루 한 번
 뜬다. 경고 끝에 그 판의 릴리스 노트 주소가 붙는다. 에이전트에게 **"osk 업데이트해 줘"**라고 요청하면 에이전트가 아래 절차를 함께
 밟는다 — 변경집합을 보여 주고 사용자의 승인을 기다린다. 확인은 백그라운드에서 돌므로
 알림은 확인한 다음 세션부터 보인다. 지금 확인하려면 `osk.update --check`를 실행한다

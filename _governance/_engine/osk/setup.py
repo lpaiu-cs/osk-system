@@ -70,7 +70,8 @@ def _server() -> Path:
 def _command(adapter, event: str) -> str:
     """훅 설정에 넣을 한 줄 — 호스트가 명령을 넘기는 셸의 인용이고, doctor가 등록을 읽는
     규칙으로 되읽힌다. 경로는 `/`로 쓴다: 호스트가 어느 셸로 돌리든(PowerShell·cmd·bash)
-    같은 파일을 가리킨다. 그 셸이 풀 수 없는 경로면 어댑터가 올린다."""
+    같은 파일을 가리킨다. 그 셸이 풀 수 없는 경로면 어댑터가 올린다(Antigravity의 cmd는
+    따옴표를 풀지 못한다)."""
     return adapter.hook_command([_python().as_posix(), _script(event).as_posix()])
 
 

@@ -72,11 +72,13 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
   잠금 안에서 계획을 다시 세워 그 계획일 때만 적용한다. 그 사이 계획이 달라졌으면
   적용하지 않고 확인표도 지운다. `_governance` 보호도 그 갱신이 성립시킨다.
 - **하네스.** 이 기기에서 흔적(설정 폴더나 PATH의 CLI)이 있는 호스트를 잇는다 — Claude
-  Code·Codex, 그리고 구독 fork가 없는 Kiro(아래 'Kiro에 잇는다').
+  Code·Codex, 그리고 구독 fork가 없는 Kiro·Antigravity(아래 'Kiro에 잇는다'·'Antigravity에
+  잇는다').
   `--harness claude`처럼 고를 수 있다. 등록은 이 vault의 엔진 사본과 `.venv`의 Python을
   부른다. 훅 명령 한 줄은 그 호스트가 훅을 돌리는 셸의 인용으로 쓴다 — Windows에서 Claude
   Code는 Git Bash, Codex는 PowerShell, Kiro는 `cmd.exe`다. 공백이나 `&` 같은 셸 특수문자가
-  든 경로는 쌍따옴표로 싸고, PowerShell에는 명령 앞에 `&`를 둔다. 쌍따옴표 안에서도 그 셸이
+  든 경로는 쌍따옴표로 싸고, PowerShell에는 명령 앞에 `&`를 둔다(Antigravity는 따옴표를 받지
+  못해 그런 경로를 거부한다). 쌍따옴표 안에서도 그 셸이
   푸는 글자(cmd의 `%` `!`, bash·PowerShell의 `$` `` ` ``)가 든 경로면 아무것도 쓰기 전에
   멈춘다 — 그 호스트를 빼려면 `--harness`로 나머지를 고른다.
 - **확인.** `osk.update`와 같다. 첫 `--apply`는 계획과 `approval_required`를 내고
@@ -115,6 +117,8 @@ vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 �
 | Codex | 훅 세 개 | `~/.codex/hooks.json` | `hooks`에 병합 |
 | Kiro | MCP 서버 | `~/.kiro/settings/mcp.json` | `mcpServers`에 병합 — 등록 CLI가 없다 |
 | Kiro | 훅 세 개 | `~/.kiro/hooks/osk-system.json` | osk의 훅 파일 — 사용자 항목은 남기고, 비면 지운다 |
+| Antigravity | MCP 서버 | `~/.gemini/config/mcp_config.json` | `mcpServers`에 병합 — 등록 CLI가 없다 |
+| Antigravity | 훅 세 개 | `~/.gemini/config/hooks.json` | 훅 이름 `osk-system` 아래 — 다른 이름은 남기고, 비면 지운다 |
 
 - 쓰기 전에 원래 파일을 옆에 `<이름>.osk-backup-<YYYYMMDD-HHMMSS>`로 복사한다.
 - 이 vault의 osk 항목만 더하거나 바꾸거나 걷어 낸다 — 명령이 이 vault의 스크립트·서버를
@@ -126,7 +130,7 @@ vault 밖에서 쓰는 파일은 아래뿐이다(Mechanism §1-2 8항). 설정 �
 - MCP 등록이 이 vault의 것인지는 호스트 CLI가 고치는 파일의 등록으로만 가린다 —
   Claude Code는 설정 폴더를 옮겼으면 그 안의 `.claude.json`이다. 다른 파일의 등록은
   `notes`로 알리고 건드리지 않는다. 확인한 명령이 실행 직전에도 같은지 다시 본다.
-  Kiro는 등록 CLI가 없어 `mcp.json`에 직접 쓴다 — 훅 파일처럼 쓰기 직전의 최신 파일에
+  Kiro·Antigravity는 등록 CLI가 없어 MCP 설정 파일에 직접 쓴다 — 훅 파일처럼 쓰기 직전의 최신 파일에
   osk 서버 항목만 병합하고, 확인한 조치와 그것이 바꿀 남의 등록이 그대로일 때만 쓴다.
   항목을 바꿀 때 사용자가 건 정책(`disabled`·`disabledTools`·`autoApprove`·`timeout` 등)은
   남긴다 — 이 vault의 옛 항목은 실행 경로만 바꾸고, 다른 vault의 항목은 그 환경·작업 폴더를
@@ -468,7 +472,7 @@ fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
   `status`의 `capture_blocked`에 마지막 관측 시점과 함께 보인다.
 - 훅 문맥은 **호스트가 받는 길이 안에** 싣는다. Claude Code는 1만 자를 넘는 문맥을
   파일로 빼고 모델에 앞 2KB만 보이며, Kiro는 3,000자에서 자른다. 그래서 호스트별
-  예산(Claude Code·Codex 9,500자, Kiro 2,800자) 안에 블록 단위로 싣고, 넘치면
+  예산(Claude Code·Codex·Antigravity 9,500자, Kiro 2,800자) 안에 블록 단위로 싣고, 넘치면
   우선순위가 낮은 블록부터 통째로 접어 끝의 `[osk 접음 — …]` 한 줄에 건수와 읽는
   곳을 남긴다. 접는 순서는 새 릴리스·근거 재검토 안내, 조직 검토, 대화 검토 대기,
   정돈, scope 복구 대기, scope 기억이다. 검토 턴의 대화 검토 대기는 가장 늦게 접는다.
@@ -605,9 +609,66 @@ Kiro는 B 등급이다 — 시작·입력·종료 훅과 대화 전사는 있고
   26개(249턴)로 확인했다. `doctor`는 판본을 `kiro --version`으로 읽는다. Kiro 전사에는
   판본이 없다.
 
+### Antigravity에 잇는다
+
+Antigravity(2.0 앱)도 B 등급이다 — 시작·입력·종료 훅과 대화 전사는 있고, 구독 fork는
+없다. `agy` CLI는 앱의 대화를 불러오지 못하고, 비대화 모드에 fork가 없다. 대화 검토는
+이 세션에서 9·15턴으로 한다. `setup`이 아래 두 파일을 쓰고, 손으로 할 때도 같다.
+`<PYTHON>`·`<ENGINE>`은 Codex 절과 같다.
+
+`~/.gemini/config/mcp_config.json`:
+
+```json
+{"mcpServers": {"osk-system": {"command": "<PYTHON>", "args": ["<ENGINE>/mcp_server.py"]}}}
+```
+
+`~/.gemini/config/hooks.json`:
+
+```json
+{
+  "osk-system": {
+    "SessionStart": [{"type": "command", "timeout": 30,
+                      "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_session_start.py"}],
+    "PreInvocation": [{"type": "command", "timeout": 30,
+                       "command": "<PYTHON> <ENGINE>/scripts/hooks/claude_prompt_submit.py"}],
+    "Stop": [{"type": "command", "timeout": 30,
+              "command": "<PYTHON> <ENGINE>/scripts/hooks/capture_stop.py"}]
+  }
+}
+```
+
+- 최상위 키는 훅 이름이다. osk는 `osk-system` 이름 아래만 고치고, 다른 이름과 그
+  `enabled`는 그대로 둔다. 앱 안내문은 훅을 customization root의 `hooks.json`에 두라고
+  하며, 전역 root가 `~/.gemini/config/`다. 작업 폴더의 `.agents/hooks.json`도 같은
+  형식으로 읽힌다 — 실측은 이 자리로 했다. 훅은 턴마다 다시 읽힌다.
+- 명령은 Windows에서 `cmd /c`, 그 밖에서 `sh -c`로 돌고, 작업 폴더는 `hooks.json`이 있는
+  폴더다. 제한 시간은 기본 30초다. Windows에서는 명령 속 큰따옴표가 `\"`로 넘어가 cmd가
+  경로를 찾지 못하므로 명령을 인용 없이 쓴다. 그래서 인터프리터와 vault 경로에 공백과 cmd
+  특수문자(`&` `|` `<` `>` `^` `%` `!` `(` `)` `,` `;` `=`)가 없어야 한다 — 인용 없는 `&`는
+  명령을 가른다. 그런 경로면 setup은 쓰기 전에 멈춘다. 다른 호스트만 이으려면 `--harness`로
+  고른다.
+- SessionStart는 첫 입력이 전사에 기록된 뒤 한 번 불린다. 앱 안내문에는 없는 사건이며,
+  2.17.0에서 불리는 것을 실측했다. PreInvocation은 모델을 부를 때마다 불린다 — osk는
+  `invocationNum`이 0인 호출(사용자 입력 뒤 첫 호출)만 입력으로 처리한다. Stop은 최종
+  답변이 전사에 기록된 뒤 불린다.
+- stdin JSON은 camelCase다(`conversationId`·`workspacePaths`·`transcriptPath`). 환경의
+  `ANTIGRAVITY_CONVERSATION_ID`가 `conversationId`와 같을 때 osk는 Antigravity의 훅으로
+  안다. 훅의 작업 폴더가 작업 폴더가 아니므로 세션 키는 `workspacePaths`의 첫 폴더로 정한다.
+- 문맥은 `{"injectSteps": [{"ephemeralMessage": …}]}`로 싣는다. 실린 단계는 전사에 남아
+  다음 턴에도 문맥에 있다. 16,040자까지 그대로 닿았으므로 예산은 기본 9,500자다. 실을
+  것이 없으면 `{}`를 낸다. 사용자 화면만의 자리는 없고, 종료 훅은 종료를 막지 않는다.
+- 전사는 `transcriptPath`(`~/.gemini/antigravity/brain/<대화 ID>/.system_generated/logs/transcript_full.jsonl`)다.
+  사용자 요청(`<USER_REQUEST>` 안쪽)과 답변은 그대로 남기고, 도구 호출·결과는 해시 참조
+  한 줄로 대신한다(dialogue-v1). 요청은 바이트 그대로다 — 래퍼의 끝은 호스트 블록만 뒤따르는
+  마지막 닫는 태그라서 사용자가 친 닫는 태그도 요청에 남고, 모르는 형식의 입력은 통째로
+  남긴다. 추론, 주입된 문맥, 체크포인트, 요청에 붙는 메타데이터는 싣지 않는다. 최종 답변 없이 다음 입력을 만난 턴은 그 종료 기록을 남긴다 — 오류가 있으면
+  failed, 그 밖은 interrupted다.
+- 확인한 판은 Antigravity 2.17.0이다 — 이 기기에서 훅을 실제로 돌리고 로컬 전사로
+  확인했다. 전사에 판본이 없고 판본을 물을 CLI도 없어 `doctor`는 판본을 비교하지 못한다.
+
 ### 연결 점검 (`doctor`)
 
-`osk doctor`는 이 기기에서 하네스가 osk에 이어졌는지 호스트(Claude Code·Codex·Kiro)마다
+`osk doctor`는 이 기기에서 하네스가 osk에 이어졌는지 호스트(Claude Code·Codex·Kiro·Antigravity)마다
 읽기만 하며 점검한다. 상태와 설정을 쓰지 않는다. `--json`은 같은 결과를 JSON으로
 내고, `--harness`는 호스트 하나로 좁힌다. 설정이 osk를 띄우지 못하는 경우(Python
 3.11 미만, `mcp` 패키지 없음, 등록 명령의 Python 없음, 등록한 MCP Python이 서버를
@@ -620,7 +681,8 @@ CLI가 모두 없다)는 건너뛴다.
   부르는 등록은 이 vault가 아니다. 읽는 자리는 Claude Code가 `~/.claude.json`(MCP)과
   `~/.claude/settings.json`(훅), Codex가 `~/.codex/config.toml`(MCP·`[hooks]` 표)과
   `~/.codex/hooks.json`(훅), Kiro가 `~/.kiro/settings/mcp.json`(MCP)과
-  `~/.kiro/hooks/*.json`(훅)이며 `CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다. 실행 형식
+  `~/.kiro/hooks/*.json`(훅), Antigravity가 `~/.gemini/config/mcp_config.json`(MCP)과
+  `~/.gemini/config/hooks.json`(훅)이며 `CLAUDE_CONFIG_DIR`·`CODEX_HOME`을 따른다. 실행 형식
   (`command`와 `args`)과 셸 형식 한 줄을 모두 읽는다. MCP 등록의 Python은 한 번 띄워
   판본과 서버가 import하는 패키지를 본다 — 이 명령을 돌리는 Python이 아니라 등록된
   Python이 서버를 띄운다. 안내하는 명령은 공백 든 경로도 그대로 쓰도록 인용한다 —
@@ -629,7 +691,8 @@ CLI가 모두 없다)는 건너뛴다.
 - **실행.** 세 훅은 불릴 때마다 호스트·사건별 마지막 시각을 이 기기에 남긴다(Git
   디렉터리의 `osk-hook-runs.json`, 동기화되지 않는다). 적는 것은 호스트 이름·세션
   키·그 훅을 돌린 Python 경로·시각뿐이다. 등록됐는데 기록이 없으면 Claude Code에는
-  새 세션을, Codex에는 `/hooks`의 신뢰를, Kiro에는 작업 폴더 신뢰와 새 채팅을 안내한다.
+  새 세션을, Codex에는 `/hooks`의 신뢰를, Kiro에는 작업 폴더 신뢰와 새 채팅을, Antigravity에는
+  새 대화를 안내한다.
   Codex는 `config.toml`의
   `[hooks.state]`에 지금 등록의 신뢰 기록이 있는지 먼저 본다. 실행 기록은
   호스트·사건별이라 옛 등록의 실행일 수 있으므로, 신뢰 기록이 없으면 실행 기록이
@@ -652,9 +715,10 @@ CLI가 모두 없다)는 건너뛴다.
 - **판본.** 이 vault가 가장 최근에 포착한 대화의 판본(없으면 PATH의 CLI가 내는
   `--version`)을 어댑터가 확인한 판과 비교한다. Codex 전사는 대화를 만든 판을 적으므로
   이어 쓴 옛 대화는 옛 판으로 보인다. 더 새 판이면 경고한다 — 훅 입출력이나 전사 형식이
-  바뀌었을 수 있다는 뜻이고, 동작을 막지 않는다.
+  바뀌었을 수 있다는 뜻이고, 동작을 막지 않는다. Antigravity는 전사에 판본이 없고 판본을
+  물을 CLI도 없어 알 수 없다고만 적는다.
 - **fork.** 구독 fork를 설정했으면 `fork doctor`와 같은 판정(`response_growth.check`)을
-  한 줄로 싣는다. 인증 상태는 조회하되 추론은 띄우지 않는다. fork가 없는 Kiro에는 이
+  한 줄로 싣는다. 인증 상태는 조회하되 추론은 띄우지 않는다. fork가 없는 Kiro·Antigravity에는 이
   항목이 없다.
 
 호스트마다 다른 것 — 판별, 전사 위치, 훅 출력 형식, MCP·훅 등록 자리, 신뢰 기록,
@@ -1152,7 +1216,7 @@ gh workflow run release.yml --ref main -f version=vX.Y.Z
 ```
 
 Actions의 `release` 실행에서 고정된 SHA와 선언한 버전을 확인한다. workflow는 그
-SHA의 전체 회귀 수트와 **8개 조합의 전체 업그레이드 행렬**을 먼저 실행한다.
+SHA의 전체 회귀 수트와 **11개 조합의 전체 업그레이드 행렬**을 먼저 실행한다.
 행렬을 실행할 이력이 없으면 실패이며, 필수 검사가 통과한 뒤에만 같은 SHA에
 원격 태그와 정식 GitHub Release를 함께 만든다. 실행 중 브랜치가 움직여도 대상을
 바꾸지 않고 발행을 중단한다. `vX.Y.Z` 정식 형식을 그대로 쓰며 별도 RC 판본은 만들지 않는다.
