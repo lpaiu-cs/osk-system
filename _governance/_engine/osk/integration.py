@@ -131,6 +131,22 @@ def blocked(limit: int = 10) -> dict:
     return {"count": len(rows), "conversations": rows[:limit]}
 
 
+def memory_seen(harness: str, conversation_id: str, digest: str) -> bool:
+    """Was this conversation last given the shared memory at exactly `digest`? A hook then
+    carries one line instead of the whole text; a changed hash carries the whole again."""
+    with _locked(harness, conversation_id) as p:
+        return _load(p, harness, conversation_id).get("memory_shown") == digest
+
+
+def note_memory(harness: str, conversation_id: str, digest: str) -> None:
+    """The hook's output really carried the whole shared memory at `digest`."""
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        if s.get("memory_shown") != digest:
+            s["memory_shown"] = digest
+            _save(p, s)
+
+
 def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
     """Reuse only the caller's copied prefix, with native ID and byte evidence."""
     if s["harness"] != "claude" or not s["space"]:
@@ -570,7 +586,7 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
 
 
 def prompt(harness: str, conversation_id: str, *, include_organization: bool = True,
-           max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
+           max_rounds: int = MAX_REVIEW_ROUNDS, organization_in_text: bool = True) -> dict:
     if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= MAX_REVIEW_ROUNDS:
         raise ValueError(f"max_rounds must be between 1 and {MAX_REVIEW_ROUNDS}")
     with _locked(harness, conversation_id) as p:
@@ -655,6 +671,8 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         text += f"참조·조직 검토는 대기 중이다: {exc}. 아래 raw 통합은 계속한다.\n"
     st["organization_jobs"] = jobs
     organization_text = organization.prompt(jobs)
+    if not organization_in_text:
+        organization_text = ""  # the hook budgets organization_jobs as its own block (`osk.hook_text`)
     if not st["pending_refs"]:
         return {**st, "text": text + "검토할 완료 raw 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다." + organization_text}
     command = core.cli_command("integration", "review", "--harness", harness,

@@ -154,6 +154,51 @@ class OrganizationTests(unittest.TestCase):
             assert organization.plan('W1')['status'] == 'complete'
         """)
 
+    def test_hook_readout_keeps_what_the_judgement_binds_to(self):
+        self.case("""
+            from osk import cli
+            for name in ('A', 'B', 'C', 'D'):
+                node(name)
+            job = organization.plan('W1')
+            organization.review(job['key'], 'W1', 'deferred', 'Reviewed A. Next: D section Limits.')
+            write.update_node('D', old_text='Reusable evidence', new_text='Revised evidence')
+            job = organization.plan('W1')
+            short = organization.hook_readout(job)
+            assert 'review_command' not in short and 'clusters' not in short, short
+            # Only the selected nodes' file hashes stay, under the plan's own field names.
+            full = {n['id']: n['hash'] for n in job['nodes']}
+            picked = list(dict.fromkeys(u['id'] for u in job['review_units']))
+            assert short['nodes'] == [{'id': i, 'hash': full[i]} for i in picked], short['nodes']
+            assert len(picked) < len(job['nodes'])
+            prior = short['previous_deferral']
+            assert prior['snapshot_changed'] and prior['reason'].endswith('section Limits.'), prior
+            assert [u['unit'] for u in short['review_units']] == [u['unit'] for u in job['review_units']]
+            assert all(set(u) <= {'unit', 'id', 'name', 'view', 'chars'} for u in short['review_units'])
+            text = organization.hook_prompt([job])
+            assert text.startswith('[osk 참조·조직 검토 — scope W1') and organization.HOOK_GUIDANCE in text
+            assert json.loads(text.rsplit(chr(10), 1)[1]) == [short]
+            assert 'references·issues' not in text
+            # Filled lists stay, bounded; the whole rule text is where the work begins.
+            job['references'] = [{'ref': str(i)} for i in range(12)]
+            short = organization.hook_readout(job)
+            assert len(short['references']) == 10 and short['references_total'] == 12, short
+            assert 'references·issues' in organization.hook_prompt([job])
+            got = {}
+            cli._emit = got.update
+            cli.main(['organization', 'plan', '--scope', 'W1', '--preview'])
+            assert got['guidance'] == organization.guidance() and got['key'] == job['key'], got.keys()
+            # The kept hash is what read_node's view_hash is checked against: a section inserted
+            # after selection shifts the selected views, and the mismatch shows it.
+            import mcp_server as M
+            unit = short['review_units'][0]
+            expected = 'view:' + next(n['hash'] for n in short['nodes'] if n['id'] == unit['id'])
+            assert M.read_node(name=unit['id'], view=unit['view'])['view_hash'] == expected
+            current = M.read_node(name=unit['id'])
+            inserted = '## Inserted' + chr(10) * 2 + 'New section' + chr(10) * 2 + current['body']
+            assert write.update_node(current['name'], body=inserted, expect_hash=current['hash'])['ok']
+            assert M.read_node(name=unit['id'], view=unit['view'])['view_hash'] != expected
+        """)
+
     def test_large_body_advice_is_non_destructive_and_present_in_inventory(self):
         self.case("""
             text = 'Durable qualified conclusion. ' * 600

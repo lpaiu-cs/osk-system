@@ -115,6 +115,10 @@ class Adapter:
     trust = ""       # 새로 쓴 훅을 호스트가 돌리기 전에 사용자가 할 일 — 없으면 빈 문자열
     login = ""       # 구독 로그인 — CLI 뒤에 붙이는 인자. fork·정기 실행이 쓰는 자격이다
     mcp_direct = False  # MCP 등록 CLI가 없어 setup이 설정 파일에 직접 쓰는가(`mcp_write`)
+    # 시작·입력 훅 문맥의 글자 예산(`osk.hook_text`). Claude Code는 1만 자를 넘는 문맥을
+    # 파일로 빼고 모델에 앞 2KB만 보인다(2026-09-27 실측: 본문 최대 9,981·저장 최소 10,031).
+    # Codex는 7,321자까지 그대로 실린 것만 확인했다.
+    hook_budget = 9_500
 
     def fires_on(self, event: str, matcher) -> frozenset[str]:
         """그 matcher의 등록이 불리는 원인 — 원인이 없는 사건은 `{"*"}`(늘 불린다).

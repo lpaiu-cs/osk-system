@@ -304,8 +304,23 @@ def hook_block(scope: str, python: str, engine: str,
                now_ms: int | None = None) -> tuple[str, str]:
     """SessionStart 훅의 두 조각 — (밀림 경고, 정돈 블록). 미처분이 없으면 둘 다
     빈 문자열이다. 경고는 N일을 넘었을 때만 있고 **주입문의 맨 앞**에 선다."""
+    parts = hook_parts(scope, python, engine, now_ms)
+    return parts["banner"], parts["block"]
+
+
+def hook_parts(scope: str, python: str, engine: str, now_ms: int | None = None) -> dict:
+    """`hook_block`의 두 조각과, 예산이 모자랄 때 정돈 블록 대신 남길 한 줄의 말
+    (`label` — 건수·가장 오래된 나이와 할 일, `osk.hook_text`)."""
     rows = unsettled(scope)
     transit = transit_titles()
+    counts = ([f"퇴출 {len(rows)}건(가장 오래된 {age_days(rows[0], now_ms)}일)"] if rows else []) + (
+        [f"경유 노드 {len(transit)}개"] if transit else [])
+    label = f"정돈 {'·'.join(counts)} — 첫 도구 호출에 처분을 함께 싣는다" if counts else ""
+    banner, block = _hook_block(scope, python, engine, now_ms, rows, transit)
+    return {"banner": banner, "block": block, "label": label}
+
+
+def _hook_block(scope: str, python: str, engine: str, now_ms, rows, transit) -> tuple[str, str]:
     if not rows:
         return "", _transit_prompt(transit)
     oldest = age_days(rows[0], now_ms)
@@ -334,11 +349,12 @@ def hook_block(scope: str, python: str, engine: str,
 def _transit_prompt(titles: list[str]) -> str:
     if not titles:
         return ""
+    # 지시가 목록 앞에 선다 — 머리를 남기는 호스트에서 목록 끝이 잘려도 할 일은 남는다.
     return ("[osk 경유 노드 정돈 — 퇴출 유무와 별개]\n"
-            + " · ".join(f"[[{t}]]" for t in titles)
-            + "\n내용과 기존 군집을 읽고 착지를 정하라. 재배정은 `move_nodes`로 하고, "
-            "응답의 `hub_links` 양쪽을 반영한다. 보호영역 승인·군집 신설 동의를 "
-            "대신하지 않는다. 본 작업이 먼저면 보류하되 성장 완료로 세지 않는다.")
+            "내용과 기존 군집을 읽고 착지를 정해 **첫 도구 호출에 처분을 함께 실어라**(§9-3 1항). "
+            "재배정은 `move_nodes`로 하고, 응답의 `hub_links` 양쪽을 반영한다. 보호영역 승인·군집 "
+            "신설 동의를 대신하지 않는다. 본 작업이 먼저면 보류하되 성장 완료로 세지 않는다.\n"
+            + " · ".join(f"[[{t}]]" for t in titles))
 
 
 def tidy_prompt(scope: str | None, python: str, engine: str,

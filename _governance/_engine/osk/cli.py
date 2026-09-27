@@ -248,6 +248,8 @@ def _organization_cmd(a) -> None:
             result = organization.review(**data)
         else:
             result = organization.plan(a.scope, record=not a.preview)
+            if result.get("key"):   # 훅은 규칙의 요지만 싣는다 — 전문은 작업 직전 여기서 읽는다
+                result = {**result, "guidance": organization.guidance()}
         _emit(result)
     except (write.WriteError, StaleEngineError, ValueError, KeyError, TypeError, OSError) as exc:
         _emit({"ok": False, "violations": [str(exc)]})

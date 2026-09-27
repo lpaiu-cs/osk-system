@@ -7398,6 +7398,19 @@ def test_evictions():
     check("훅: 기억 전문이 있다", mem and mem in out, out[:200])
     check("훅: 정돈 블록이 기억 뒤에", out.index("[osk scope 기억") < out.index("[osk 정돈 —"), out[:200])
     check("훅: 처분 명령에 실제 인터프리터", sys.executable in out and "tidy settle" in out, out[-300:])
+    # 호스트 한도(Kiro 3천 자·Claude Code 1만 자) — 넘치면 블록째 접는다(§9-3 1항). 밀림 경고는
+    # 접지 않고, 접은 정돈은 건수와 overview include 한 줄로 남는다.
+    real_budget = hook._budget
+    try:
+        hook._budget = lambda env, host=None: 1200
+        small = hook_run()
+    finally:
+        hook._budget = real_budget
+    check("한도: 예산 안에 싣는다", len(small) <= 1200, len(small))
+    check("한도: 밀림 경고는 접지 않고 맨 앞", small.startswith("[osk 정돈이 밀렸다"), small[:80])
+    check("한도: 정돈은 블록째 접고 건수·조회 경로를 남긴다",
+          "[osk 정돈 —" not in small and "[osk 접음" in small and "퇴출 8건(가장 오래된" in small
+          and "경유 노드" in small and '"tidy"' in small and f'overview(session="{S}"' in small, small[-500:])
     r = _w(wm.replace, S, "", _w(wm.read, S)["hash"])
     check("비움", r.get("ok"), r)
     out2 = hook_run()
