@@ -44,31 +44,42 @@ def command_tokens(entry: dict) -> list[str]:
     return tokens[1:] if tokens[:1] == ["&"] else tokens
 
 
+# 인용 없는 cmd 명령에서 명령을 가르거나 뜻이 바뀌는 문자(공백 말고) — 연산자·이스케이프·구분자.
+_CMD_OPS = "&|<>^(),;="
+# 쌍따옴표 안에서도 그 셸이 푸는 글자 — 인용으로 지킬 수 없다.
+_LIVE = {"cmd": '"%!', "bash": '"$`\\', "powershell": '"$`“”„'}
 # 따옴표 없이 그 셸이 한 낱말로 읽는 인자. cmd는 제 특수문자만 피하면 된다 — 따옴표를 받지
 # 못하는 Antigravity는 그 밖을 거부하고 이 줄을 그대로 쓴다. bash·PowerShell은 둘 다 명령
 # 자리에서도 맨 낱말로 읽는 글자만이다(2026-09-27 Git Bash·PowerShell 5.1 실측) — Claude
 # Code는 Git Bash가 없으면 PowerShell로 돌리고, 거기서 따옴표로 시작하는 줄은 식이다.
-_BARE = {"cmd": r'[^\s&|<>^(),;=%!"]+', "bash": r"[\w\-./:~@+=%^!#\]]+", "powershell": r"[\w\-./:~@+=%^!#\]]+"}
-# 쌍따옴표 안에서도 그 셸이 푸는 글자 — 인용으로 지킬 수 없다.
-_LIVE = {"cmd": '"%!', "bash": '"$`\\', "powershell": '"$`“”„'}
+_BARE = {"cmd": rf"[^\s{re.escape(_CMD_OPS + _LIVE['cmd'])}]+",
+         "bash": r"[\w\-./:~@+=%^!#\]]+", "powershell": r"[\w\-./:~@+=%^!#\]]+"}
+
+
+def _line(argv: list[str], shell: str) -> str:
+    """그 셸(`cmd`·`bash`·`powershell`)이 읽을 Windows 명령줄 — 셸 특수문자가 든 인자와 빈
+    인자를 쌍따옴표로 싸고, PowerShell은 따옴표로 시작하는 명령 앞에 `&`를 둔다. 쌍따옴표
+    안에서도 그 셸이 푸는 글자가 든 인자는 올린다."""
+    for a in argv:
+        if live := sorted(set(a) & set(_LIVE[shell])):
+            raise ValueError(f"{shell} 셸이 쌍따옴표 안에서도 푸는 글자({' '.join(live)})가 든 인자다: {a}")
+    words = [a if re.fullmatch(_BARE[shell], a) else f'"{a}"' for a in argv]
+    line = " ".join(words)
+    return f"& {line}" if shell == "powershell" and words[:1] != argv[:1] else line
 
 
 def hook_line(argv, shell: str = "cmd") -> str:
     """셸 형식 등록 한 줄 — `command_tokens`가 되읽어 같은 토큰을 얻는 표기다. POSIX는 셸
-    인용이다. Windows는 호스트가 명령을 넘기는 셸(`Adapter.hook_shell`)의 규칙이다: 셸
-    특수문자가 든 인자를 쌍따옴표로 싸고, PowerShell은 따옴표로 시작하는 명령 앞에 `&`를
-    둔다. 인용 없는 `&`는 명령을 갈라, 설치는 성공한 듯 보여도 훅이 돌지 않는다. 쌍따옴표
-    안에서도 그 셸이 푸는 글자가 든 인자는 올린다."""
+    인용이고, Windows는 호스트가 명령을 넘기는 셸(`Adapter.hook_shell`)의 명령줄(`_line`)이다.
+    인용 없는 `&`는 명령을 갈라, 설치는 성공한 듯 보여도 훅이 돌지 않는다."""
     argv = [str(a) for a in argv]
     if os.name != "nt":
         return shlex.join(argv)
-    for a in argv:
-        if live := sorted(set(a) & set(_LIVE[shell])):
-            raise ValueError(f"훅 명령에 쓸 수 없는 경로다({a}) — {shell} 셸은 쌍따옴표 안의 {' '.join(live)}도 "
-                             "푼다. vault를 그 글자가 없는 경로로 옮기거나, 이 호스트를 빼려면 setup의 --harness로 고른다")
-    words = [a if re.fullmatch(_BARE[shell], a) else f'"{a}"' for a in argv]
-    line = " ".join(words)
-    return f"& {line}" if shell == "powershell" and words[:1] != argv[:1] else line
+    try:
+        return _line(argv, shell)
+    except ValueError as e:
+        raise ValueError(f"훅 명령에 쓸 수 없는 경로다 — {e}. vault를 그 글자가 없는 경로로 옮기거나, "
+                         "이 호스트를 빼려면 setup의 --harness로 고른다") from None
 
 
 def mentions(tokens: list[str], target: Path) -> bool:
@@ -88,22 +99,11 @@ def refers(tokens: list[str], name: str) -> str | None:
     return next((t for t in tokens if fold(t).endswith("/" + fold(name))), None)
 
 
-# 인용 없는 cmd 명령에서 명령을 가르거나 뜻이 바뀌는 문자(공백 말고) — 연산자·이스케이프·구분자.
-_CMD_OPS = re.compile(r"[&|<>^(),;=]")
-# 쌍따옴표 안에서도 cmd가 푸는 문자 — 인용으로 지킬 수 없다.
-_CMD_LIVE = re.compile(r'["%!]')
-
-
 def cmd_line(argv) -> str:
-    """cmd가 읽을 명령줄 — 빈 인자와 공백·cmd 특수문자가 든 인자를 쌍따옴표로 싼다. Windows는
-    배치 파일(npm이 까는 `claude.cmd`·`codex.cmd`)을 `cmd /c`로 돌리는데, 인자 목록의
-    `list2cmdline`은 공백만 보고 인용해 `C:/R&D/...`가 `&`에서 갈린다. 쌍따옴표 안에서도 cmd가
-    푸는 글자가 든 인자는 올린다."""
-    argv = [str(a) for a in argv]
-    for a in argv:
-        if _CMD_LIVE.search(a):
-            raise ValueError(f'cmd가 쌍따옴표 안에서도 푸는 글자(" % !)가 든 인자다: {a}')
-    return " ".join(f'"{a}"' if not a or re.search(r"\s", a) or _CMD_OPS.search(a) else a for a in argv)
+    """cmd가 읽을 명령줄(`_line`) — Windows는 배치 파일(npm이 까는 `claude.cmd`·`codex.cmd`)을
+    `cmd /c`로 돌리는데, 인자 목록의 `list2cmdline`은 공백만 보고 인용해 `C:/R&D/...`가 `&`에서
+    갈린다. 쌍따옴표 안에서도 cmd가 푸는 글자가 든 인자는 올린다."""
+    return _line([str(a) for a in argv], "cmd")
 
 
 def paste_line(argvs) -> str:
@@ -114,7 +114,7 @@ def paste_line(argvs) -> str:
     PATHEXT(`.exe`·`.cmd`)로만 찾고 실행 정책과도 무관하다(2026-09-27 Windows PowerShell 5.1 실측)."""
     from .. import core
     argvs = [[str(a) for a in argv] for argv in argvs]
-    if os.name == "nt" and any(_CMD_OPS.search(a) for argv in argvs for a in argv):
+    if os.name == "nt" and any(set(a) & set(_CMD_OPS) for argv in argvs for a in argv):
         try:
             return "cmd /d /c --% " + " & ".join(cmd_line(argv) for argv in argvs)
         except ValueError:
