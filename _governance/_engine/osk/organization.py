@@ -405,8 +405,9 @@ def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
 # 작업 직전에 `plan`이 준다(2026-09-27 독립 검토: 규칙은 문서가 아니라 쓰는 순간에).
 HOOK_GUIDANCE = (
     "저장 완료와 참조·조직 완료는 다르다. 이번 대상은 아래 review_units의 구간뿐이다(군집 전체가 아니다). "
-    "`read_node(name=id, view=view)`로 읽고 주장·적용 조건이 현행과 맞는지 판정한다. view_hash가 달라졌으면 "
-    "새 plan으로 범위를 다시 확인한다. previous_deferral.snapshot_changed가 참이면 이전 판단을 이어받지 말고 "
+    "`read_node(name=id, view=view)`로 읽고 주장·적용 조건이 현행과 맞는지 판정한다. 돌려받은 view_hash가 "
+    "그 노드의 'view:'+hash(아래 nodes)와 다르면 선택 뒤 본문이 바뀐 것이니 새 plan으로 범위를 다시 확인한 뒤 "
+    "읽는다. previous_deferral.snapshot_changed가 참이면 이전 판단을 이어받지 말고 "
     "현행을 확인한다. 틀린 곳은 그 자리에서 고치되 정정 전후의 판단과 출처를 보존하고, 고친 구간은 다음 "
     "검토로 넘긴다. 판단하지 못한 내용은 지우거나 완료라 하지 않는다. pin·보호영역·최상위 경계를 유지하고 "
     "원료를 노드·허브로 승격하지 않는다. 제출 전에 접두부 + `plan --scope <scope> --preview`로 최신 "
@@ -425,6 +426,11 @@ def hook_readout(job: dict) -> dict:
     out = {k: job[k] for k in ("scope", "key", "snapshot", "coverage") if k in job}
     out["review_units"] = [{k: u[k] for k in ("unit", "id", "name", "view", "chars") if k in u}
                            for u in job.get("review_units", [])]
+    # 구간의 view는 선택 당시 파일의 위치다. read_node의 view_hash('view:'+파일 해시)와 맞춰 볼
+    # 선택 노드의 해시는 남긴다 — 없으면 다른 세션의 삽입으로 밀린 구간을 읽고도 제출이 통과한다.
+    hashes = {n["id"]: n["hash"] for n in job.get("nodes", [])}
+    selected = dict.fromkeys(u["id"] for u in job.get("review_units", []) if u["id"] in hashes)
+    out["nodes"] = [{"id": i, "hash": hashes[i]} for i in selected]
     prior = job.get("previous_deferral")
     if prior:
         out["previous_deferral"] = {k: prior[k] for k in ("snapshot_changed", "at", "reason") if k in prior}

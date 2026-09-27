@@ -475,7 +475,9 @@ fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
   해시가 바뀌면 다시 전문을 싣는다. 세션 시작(압축 뒤 포함)과 scope 복구 대기 중에는
   늘 전문이다 — 복구는 현재 엔트리를 정리하는 일이라 앵커를 베낄 전문이 필요하다.
 - 조직 검토는 훅에 착수·완료 조건과 판정이 결속되는 값(key·snapshot·coverage·
-  review_units·previous_deferral, 채워진 references·issues)만 싣는다. 전체 규칙과
+  review_units와 그 노드의 hash, previous_deferral, 채워진 references·issues)만 싣는다.
+  `read_node`가 돌려준 `view_hash`가 그 노드의 `'view:'+hash`와 다르면 선택 뒤 본문이
+  바뀐 것이니 새 plan으로 범위를 다시 확인한다. 전체 규칙과
   군집·노드 목록은 CLI `organization plan`의 `guidance`와 본문이 준다. 별도 실행기가
   없는 경로에서는 포착 대기와 따로, 세션 시작에도 싣는다.
 - 계수·검토 대기는 **기기 로컬**이다(vault 루트·하네스·실제 대화 ID 단위).
