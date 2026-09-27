@@ -13,10 +13,10 @@ Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사�
 
 - **`<vault>`**: vault 폴더의 절대 경로(`/Users/you/my-osk-vault`,
   `C:/osk/my-osk-vault` 등). Windows에서도 슬래시(`/`)로 적는다 —
-  PowerShell·JSON·TOML 어디서나 이스케이프 없이 통한다. 경로에는 **공백을 넣지
-  않는다.** 훅 명령은 평범한 명령줄이라, 공백 없는 경로여야 어느 셸에서도 따옴표가
-  필요 없다. Windows에서 `C:/osk` 같은 폴더를 쓰면 공백이 든 사용자 이름도 피할 수
-  있다.
+  PowerShell·JSON·TOML 어디서나 이스케이프 없이 통한다. 경로에는 **공백이나 `&`·`%`·`$`
+  같은 셸 특수문자를 넣지 않는다.** 훅 명령은 평범한 명령줄이라, 그런 글자가 없는 경로여야
+  어느 셸에서도 따옴표가 필요 없다. Windows에서 `C:/osk` 같은 폴더를 쓰면 공백이 든 사용자
+  이름도 피할 수 있다.
 - **`my-app`**: 자신의 프로젝트 저장소 하나를 가리키는 예시 이름.
 - **셸.** Windows 명령은 PowerShell용이고, macOS/Linux 명령은 bash나 zsh용이다.
   `.venv`로 시작하는 명령은 vault 루트에서 실행한다.

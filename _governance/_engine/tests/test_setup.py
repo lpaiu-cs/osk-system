@@ -552,6 +552,40 @@ rep, _ = S.run(schedule='claude')
 assert not rep['ok'] and '서비스 관리자' in rep['errors'][0], rep
 ''')
 
+    def test_a_path_the_hook_shell_would_split_is_quoted_or_refused_before_writing(self):
+        self.check_case(r'''
+fake_clis()
+baseline()
+(home / '.kiro').mkdir()
+mock.patch.object(S, '_mcp', lambda adapter, uninstall: {'action': 'keep'}).start()   # hooks only
+# A vault under C:/R&D/: setup writes each host the line its shell reads (test_harness runs them),
+# and reads it back as osk's own — the next plan keeps everything.
+lab = Path('C:/R&D/osk/.venv/Scripts/python.exe')
+with mock.patch.object(S, '_python', lambda: lab):
+    S.run(apply=True)
+    rep, code = S.run(apply=True)
+    assert code == 0 and rep['ok'], rep
+    rep, _ = S.run()
+    assert not rep['changes'] and all(set(h['hooks']['events'].values()) == {'keep'} for h in rep['hosts']), rep
+    quoted = f'"{lab.as_posix()}"' if os.name == 'nt' else f"'{lab.as_posix()}'"
+    for adapter in S.hosts():
+        table = adapter.hook_table(read(adapter.hook_files()[0]))
+        lines = [h.get('command') or h['action']['command'] for g in sum(table.values(), []) for h in g['hooks']]
+        assert len(lines) == 3 and all(quoted in line for line in lines), (adapter.name, lines)
+        assert all(h['tokens'][0] == lab.as_posix() for h in adapter.registrations()[1]), adapter.name
+# What a host's shell expands even inside double quotes is refused before anything is written.
+if os.name == 'nt':
+    files = {p: p.read_bytes() for a in S.hosts() for p in a.hook_files() if p.is_file()}
+    with mock.patch.object(S, '_python', lambda: Path('C:/R&D/100%/.venv/Scripts/python.exe')):
+        rep, code = S.run(apply=True)
+        assert code == 1 and not rep['applied'], rep
+        assert [e for e in rep['errors'] if e.startswith('Kiro hooks:') and '100%' in e] == rep['errors'], rep
+        assert S.plan(['kiro'], uninstall=True)['ok'], 'uninstall does not need a line it cannot write'
+        rep, code = S.run(apply=True, only=['claude', 'codex'])
+        assert code == 2 and rep['approval_required'], 'the other hosts can still be connected'
+    assert {p: p.read_bytes() for p in files} == files
+''')
+
     def test_kiro_gets_its_own_hook_file_and_a_merged_mcp_entry(self):
         self.check_case(r'''
 fake_clis(('claude', 'codex', 'kiro'))   # `kiro` is the IDE launcher: setup must never run it

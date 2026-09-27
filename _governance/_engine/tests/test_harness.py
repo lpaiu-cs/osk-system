@@ -215,6 +215,8 @@ if os.name == 'nt':   # cmd /c cannot take a quoted path, and unquoted `&` split
         except ValueError as exc:
             assert 'Antigravity' in str(exc), exc
 assert ag.hook_command(['C:/py/python.exe', 'C:/v/hook.py']) == 'C:/py/python.exe C:/v/hook.py'
+if os.name == 'nt':   # what cmd reads unquoted stays unquoted — a quote would not survive `cmd /c`
+    assert ag.hook_command(["C:/O'Brien+1/py.exe", 'C:/v/hook.py']) == "C:/O'Brien+1/py.exe C:/v/hook.py"
 claude, codex = harness.get('claude'), harness.get('codex')
 assert claude.parse_version('2.1.280 (Claude Code)') == '2.1.280'
 assert codex.parse_version('codex-cli 0.155.0-alpha.16') == '0.155.0-alpha.16'
@@ -431,6 +433,69 @@ shell = (['powershell', '-NoProfile', '-NonInteractive', '-Command', line] if os
          else ['sh', '-c', line])
 r = subprocess.run(shell, capture_output=True, text=True, encoding='utf-8', timeout=60)
 assert r.returncode == 0 and json.loads(r.stdout) == echo[3:], (line, r.stdout, r.stderr)
+''')
+
+    def test_a_hook_line_runs_in_the_shell_its_host_uses(self):
+        self.check_case(r'''
+import shutil
+from osk import doctor
+from osk.harness import base
+# A vault under C:/R&D/: an unquoted `&` ends the command in cmd, bash and PowerShell alike.
+# Each host gets a line its shell reads, or refuses the path before setup writes anything —
+# only Antigravity, which takes no quotes on Windows.
+def line_of(a, argv):
+    try:
+        return a.hook_command(argv)
+    except ValueError:
+        assert os.name == 'nt' and a.name == 'antigravity', a.name
+lab = ['C:/R&D/osk/.venv/Scripts/python.exe', 'C:/R&D/osk/_governance/_engine/scripts/hooks/claude_session_start.py']
+for a in harness.ADAPTERS:
+    line = line_of(a, lab)
+    assert line is None or base.command_tokens({'command': line}) == lab, (a.name, line)  # tokens[0]: the Python
+# Run each host's line the way that host runs it (Windows): Claude Code in Git Bash, Codex in
+# its session's PowerShell, Kiro through Node's `spawn(command, {shell: true})`.
+amp = root.parent / 'R&D'
+subprocess.run([py, '-m', 'venv', '--without-pip', str(amp / 'venv')], check=True, capture_output=True)
+probe = amp / 'probe.py'
+probe.write_text('import json, sys; print(json.dumps(sys.argv))', encoding='utf-8')
+argv = [(amp / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')).as_posix(), probe.as_posix()]
+if os.name == 'nt':    # Git Bash is `<Git>/bin/bash.exe`; `git` may be `<Git>/cmd` or `<Git>/mingw64/bin`
+    bash = next(p / 'bin' / 'bash.exe' for p in Path(shutil.which('git')).resolve().parents
+                if (p / 'bin' / 'bash.exe').is_file())
+for a in harness.ADAPTERS:
+    line = line_of(a, argv)
+    if line is None:
+        continue
+    run = (['sh', '-c', line] if os.name != 'nt' else
+           f'cmd.exe /d /s /c "{line}"' if a.hook_shell == 'cmd' else
+           ['powershell', '-NoProfile', '-Command', line] if a.hook_shell == 'powershell' else
+           [str(bash), '-c', line])
+    r = subprocess.run(run, capture_output=True, text=True, encoding='utf-8', timeout=60)
+    assert r.returncode == 0 and json.loads(r.stdout) == argv[1:], (a.name, line, r.stdout, r.stderr)
+# Without Git Bash, Claude Code runs the line in PowerShell, where a quoted command is only an
+# expression: what both shells read bare stays bare, as before (#115 review, `C:/work@home/...`).
+if os.name == 'nt':    # relative to the case folder: the temp root itself may hold a space
+    plain = 'w@h+1#2=3^4%5!6~7]8'
+    shutil.copytree(amp / 'venv', root.parent / plain / 'venv')
+    shutil.copy(probe, root.parent / plain / 'probe.py')
+    argv = [f'./{plain}/venv/Scripts/python.exe', f'./{plain}/probe.py']
+    assert harness.get('claude').hook_command(argv) == harness.get('codex').hook_command(argv) == ' '.join(argv)
+    for run in (['powershell', '-NoProfile', '-Command'], [str(bash), '-c']):
+        r = subprocess.run(run + [' '.join(argv)], cwd=root.parent, capture_output=True, text=True,
+                           encoding='utf-8', timeout=60)
+        assert r.returncode == 0 and json.loads(r.stdout) == argv[1:], (run[0], r.stdout, r.stderr)
+# What a shell still expands inside double quotes cannot be quoted: setup refuses it, doctor says why.
+if os.name == 'nt':
+    for a, path in ((harness.get('kiro'), 'C:/R&D/100%/python.exe'), (harness.get('claude'), 'C:/R&D/$x/python.exe'),
+                    (harness.get('codex'), 'C:/R&D/$x/python.exe')):
+        try:
+            a.hook_command([path, lab[1]])
+            raise AssertionError((a.name, path))
+        except ValueError as e:
+            assert path in str(e) and '--harness' in str(e), e
+        with mock.patch.object(doctor, '_python', lambda: Path(path)):
+            item = doctor._hook(a, 'start', [], None)
+        assert path in item['fix'], item
 ''')
 
     def test_a_second_registration_of_one_event_is_handled_once(self):

@@ -160,8 +160,11 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
     name = adapter.events[event]
     script = _engine_dir() / "scripts" / "hooks" / adapters.SCRIPTS[event]
     files = ", ".join(str(f) for f in adapter.hook_files())
-    fix = (f"안내서(docs/GETTING-STARTED.md) {adapter.guide}단계대로 hooks.{name}에 "
-           f"`{base.hook_line([_python(), script])}`를 등록한다")
+    try:
+        fix = (f"안내서(docs/GETTING-STARTED.md) {adapter.guide}단계대로 hooks.{name}에 "
+               f"`{adapter.hook_command([_python().as_posix(), script.as_posix()])}`를 등록한다")
+    except ValueError as e:
+        fix = str(e)
     ran = f"마지막 실행 {_kst(run.get('at'))}" if run else ""
     same = [h for h in hooks if h["event"] == name]
     mine = [h for h in same if base.mentions(h["tokens"], script)]

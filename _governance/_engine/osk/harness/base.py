@@ -10,7 +10,6 @@ import json
 import os
 import re
 import shlex
-import subprocess
 from pathlib import Path
 
 MCP_NAME = "osk-system"
@@ -40,15 +39,36 @@ def command_tokens(entry: dict) -> list[str]:
         tokens = shlex.split(command, posix=os.name != "nt")
     except ValueError:
         tokens = command.split()
-    return [t.strip("\"'") for t in tokens]
+    tokens = [t.strip("\"'") for t in tokens]
+    # PowerShell의 호출 연산자 — `hook_line`이 따옴표로 시작하는 명령 앞에 둔다.
+    return tokens[1:] if tokens[:1] == ["&"] else tokens
 
 
-def hook_line(argv) -> str:
-    """셸 형식 등록 한 줄 — `command_tokens`가 되읽어 같은 토큰을 얻는 표기다. Windows는
-    명령줄 규칙(쌍따옴표), 그 밖은 POSIX 셸 인용이다. 경로를 이어 붙이면 공백 든 경로가
-    여러 토큰으로 갈린다."""
+# 따옴표 없이 그 셸이 한 낱말로 읽는 인자. cmd는 제 특수문자만 피하면 된다 — 따옴표를 받지
+# 못하는 Antigravity는 그 밖을 거부하고 이 줄을 그대로 쓴다. bash·PowerShell은 둘 다 명령
+# 자리에서도 맨 낱말로 읽는 글자만이다(2026-09-27 Git Bash·PowerShell 5.1 실측) — Claude
+# Code는 Git Bash가 없으면 PowerShell로 돌리고, 거기서 따옴표로 시작하는 줄은 식이다.
+_BARE = {"cmd": r'[^\s&|<>^(),;=%!"]+', "bash": r"[\w\-./:~@+=%^!#\]]+", "powershell": r"[\w\-./:~@+=%^!#\]]+"}
+# 쌍따옴표 안에서도 그 셸이 푸는 글자 — 인용으로 지킬 수 없다.
+_LIVE = {"cmd": '"%!', "bash": '"$`\\', "powershell": '"$`“”„'}
+
+
+def hook_line(argv, shell: str = "cmd") -> str:
+    """셸 형식 등록 한 줄 — `command_tokens`가 되읽어 같은 토큰을 얻는 표기다. POSIX는 셸
+    인용이다. Windows는 호스트가 명령을 넘기는 셸(`Adapter.hook_shell`)의 규칙이다: 셸
+    특수문자가 든 인자를 쌍따옴표로 싸고, PowerShell은 따옴표로 시작하는 명령 앞에 `&`를
+    둔다. 인용 없는 `&`는 명령을 갈라, 설치는 성공한 듯 보여도 훅이 돌지 않는다. 쌍따옴표
+    안에서도 그 셸이 푸는 글자가 든 인자는 올린다."""
     argv = [str(a) for a in argv]
-    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    if os.name != "nt":
+        return shlex.join(argv)
+    for a in argv:
+        if live := sorted(set(a) & set(_LIVE[shell])):
+            raise ValueError(f"훅 명령에 쓸 수 없는 경로다({a}) — {shell} 셸은 쌍따옴표 안의 {' '.join(live)}도 "
+                             "푼다. vault를 그 글자가 없는 경로로 옮기거나, 이 호스트를 빼려면 setup의 --harness로 고른다")
+    words = [a if re.fullmatch(_BARE[shell], a) else f'"{a}"' for a in argv]
+    line = " ".join(words)
+    return f"& {line}" if shell == "powershell" and words[:1] != argv[:1] else line
 
 
 def mentions(tokens: list[str], target: Path) -> bool:
@@ -119,6 +139,9 @@ class Adapter:
     # 파일로 빼고 모델에 앞 2KB만 보인다(2026-09-27 실측: 본문 최대 9,981·저장 최소 10,031).
     # Codex는 7,321자까지 그대로 실린 것만 확인했다.
     hook_budget = 9_500
+    # Windows에서 셸 형식 훅 한 줄을 도는 셸(`hook_line`) — 기본은 명령을 `cmd /c`로 넘기는
+    # 호스트다. POSIX의 호스트는 모두 `sh -c`류로 돌린다.
+    hook_shell = "cmd"
     # 아무것도 싣지 않는 훅 호출의 출력 — JSON 결과만 받는 호스트(Antigravity)는 `{}`다.
     silence = ""
     # 사용자 화면만의 알림 자리(훅의 `systemMessage`)가 있는가 — 없으면 모델이 전한다.
@@ -262,9 +285,9 @@ class Adapter:
         return False
 
     def hook_command(self, argv) -> str:
-        """훅 설정에 넣을 명령 한 줄 — 그 호스트가 명령을 넘기는 셸이 풀 수 있는 표기다.
-        풀 수 없으면 올린다(설치가 그 파일의 오류로 보인다)."""
-        return hook_line(argv)
+        """훅 설정에 넣을 명령 한 줄 — 그 호스트가 명령을 넘기는 셸(`hook_shell`)이 풀 수 있는
+        표기다. 풀 수 없으면 올린다(설치가 그 파일의 오류로 보인다)."""
+        return hook_line(argv, self.hook_shell)
 
     def hook_group(self, event: str, command: str) -> dict:
         """설치가 `hooks.<사건>`에 넣는 묶음 하나 — 훅 하나를 담는다."""
