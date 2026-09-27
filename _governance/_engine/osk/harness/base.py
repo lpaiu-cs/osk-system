@@ -68,6 +68,39 @@ def refers(tokens: list[str], name: str) -> str | None:
     return next((t for t in tokens if fold(t).endswith("/" + fold(name))), None)
 
 
+# 인용 없는 cmd 명령에서 명령을 가르거나 뜻이 바뀌는 문자(공백 말고) — 연산자·이스케이프·구분자.
+_CMD_OPS = re.compile(r"[&|<>^(),;=]")
+# 쌍따옴표 안에서도 cmd가 푸는 문자 — 인용으로 지킬 수 없다.
+_CMD_LIVE = re.compile(r'["%!]')
+
+
+def cmd_line(argv) -> str:
+    """cmd가 읽을 명령줄 — 빈 인자와 공백·cmd 특수문자가 든 인자를 쌍따옴표로 싼다. Windows는
+    배치 파일(npm이 까는 `claude.cmd`·`codex.cmd`)을 `cmd /c`로 돌리는데, 인자 목록의
+    `list2cmdline`은 공백만 보고 인용해 `C:/R&D/...`가 `&`에서 갈린다. 쌍따옴표 안에서도 cmd가
+    푸는 글자가 든 인자는 올린다."""
+    argv = [str(a) for a in argv]
+    for a in argv:
+        if _CMD_LIVE.search(a):
+            raise ValueError(f'cmd가 쌍따옴표 안에서도 푸는 글자(" % !)가 든 인자다: {a}')
+    return " ".join(f'"{a}"' if not a or re.search(r"\s", a) or _CMD_OPS.search(a) else a for a in argv)
+
+
+def paste_line(argv) -> str:
+    """사람이 제 터미널에 붙일 호스트 CLI 명령 — `core.shell_join`이다. 다만 Windows에서 CLI가
+    배치 파일이면 PowerShell도 공백 없는 인자를 인용 없이 넘겨, cmd가 `C:/R&D/...`를 `&`에서
+    가른다. cmd 특수문자가 든 인자가 있으면 PowerShell의 `--%` 뒤에 cmd의 인용으로 쓴다 — `.exe`
+    CLI도 같은 인자를 받는다(2026-09-27 Windows PowerShell 5.1 실측). `--%`는 줄 끝까지 간다."""
+    from .. import core
+    argv = [str(a) for a in argv]
+    if os.name == "nt" and any(_CMD_OPS.search(a) for a in argv[1:]):
+        try:
+            return f"{argv[0]} --% {cmd_line(argv[1:])}"
+        except ValueError:
+            pass    # 그 글자는 어느 표기로도 배치 CLI에 온전히 닿지 않는다 — `.exe` CLI의 표기를 둔다
+    return core.shell_join(argv)
+
+
 def _groups(hooks):
     """`{"hooks": {사건: [{"matcher", "hooks": [항목…]}]}}`의 (사건, 묶음, 순번, 항목, matcher).
     목록이 아닌 값(Codex의 `[hooks.state]` 같은 표)은 사건이 아니므로 건너뛴다."""
@@ -204,11 +237,10 @@ class Adapter:
         return []
 
     def mcp_command(self, python: Path, server: Path) -> str:
-        """사용자가 터미널에 붙일 등록 한 줄 — `mcp_argv`를 그 기기 셸의 규칙으로 인용한다.
-        없으면 빈 문자열."""
-        from .. import core
+        """사용자가 터미널에 붙일 등록 한 줄 — `mcp_argv`를 그 기기 셸의 규칙으로 인용한다
+        (`paste_line`). 없으면 빈 문자열."""
         argv = self.mcp_argv(python, server)
-        return core.shell_join(argv) if argv else ""
+        return paste_line(argv) if argv else ""
 
     def mcp_files(self) -> list[Path]:
         """MCP 등록을 읽는 파일 — 첫 자리가 호스트 CLI가 등록을 고치는 파일이다."""
