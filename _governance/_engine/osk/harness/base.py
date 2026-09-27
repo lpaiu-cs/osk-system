@@ -45,8 +45,10 @@ def command_tokens(entry: dict) -> list[str]:
 
 
 # 따옴표 없이 그 셸이 한 낱말로 읽는 인자. cmd는 제 특수문자만 피하면 된다 — 따옴표를 받지
-# 못하는 Antigravity는 그 밖을 거부하고 이 줄을 그대로 쓴다.
-_BARE = {"cmd": r'[^\s&|<>^(),;=%!"]+', "bash": r"[\w\-./:~]+", "powershell": r"[\w\-./:~]+"}
+# 못하는 Antigravity는 그 밖을 거부하고 이 줄을 그대로 쓴다. bash·PowerShell은 둘 다 명령
+# 자리에서도 맨 낱말로 읽는 글자만이다(2026-09-27 Git Bash·PowerShell 5.1 실측) — Claude
+# Code는 Git Bash가 없으면 PowerShell로 돌리고, 거기서 따옴표로 시작하는 줄은 식이다.
+_BARE = {"cmd": r'[^\s&|<>^(),;=%!"]+', "bash": r"[\w\-./:~@+=%^!#\]]+", "powershell": r"[\w\-./:~@+=%^!#\]]+"}
 # 쌍따옴표 안에서도 그 셸이 푸는 글자 — 인용으로 지킬 수 없다.
 _LIVE = {"cmd": '"%!', "bash": '"$`\\', "powershell": '"$`“”„'}
 

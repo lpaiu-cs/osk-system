@@ -78,7 +78,9 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
   부른다. 훅 명령 한 줄은 그 호스트가 훅을 돌리는 셸의 인용으로 쓴다 — Windows에서 Claude
   Code는 Git Bash, Codex는 PowerShell, Kiro는 `cmd.exe`다. 공백이나 `&` 같은 셸 특수문자가
   든 경로는 쌍따옴표로 싸고, PowerShell에는 명령 앞에 `&`를 둔다(Antigravity는 따옴표를 받지
-  못해 그런 경로를 거부한다). 쌍따옴표 안에서도 그 셸이
+  못해 그런 경로를 거부한다). Claude Code는 Git Bash가 없으면 PowerShell로 돌리므로, 그런
+  기기에서는 따옴표가 필요한 경로의 훅이 돌지 않는다 — 두 셸이 모두 그대로 읽는 `@` `+` `#`
+  같은 글자는 싸지 않는다. 쌍따옴표 안에서도 그 셸이
   푸는 글자(cmd의 `%` `!`, bash·PowerShell의 `$` `` ` ``)가 든 경로면 아무것도 쓰기 전에
   멈춘다 — 그 호스트를 빼려면 `--harness`로 나머지를 고른다.
 - **확인.** `osk.update`와 같다. 첫 `--apply`는 계획과 `approval_required`를 내고

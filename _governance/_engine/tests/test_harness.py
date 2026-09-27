@@ -472,6 +472,17 @@ for a in harness.ADAPTERS:
            [str(bash), '-c', line])
     r = subprocess.run(run, capture_output=True, text=True, encoding='utf-8', timeout=60)
     assert r.returncode == 0 and json.loads(r.stdout) == argv[1:], (a.name, line, r.stdout, r.stderr)
+# Without Git Bash, Claude Code runs the line in PowerShell, where a quoted command is only an
+# expression: what both shells read bare stays bare, as before (#115 review, `C:/work@home/...`).
+if os.name == 'nt':
+    plain = root.parent / 'w@h+1#2=3^4%5!6~7]8'
+    shutil.copytree(amp / 'venv', plain / 'venv')
+    shutil.copy(probe, plain / 'probe.py')
+    argv = [(plain / 'venv/Scripts/python.exe').as_posix(), (plain / 'probe.py').as_posix()]
+    assert harness.get('claude').hook_command(argv) == harness.get('codex').hook_command(argv) == ' '.join(argv)
+    for run in (['powershell', '-NoProfile', '-Command'], [str(bash), '-c']):
+        r = subprocess.run(run + [' '.join(argv)], capture_output=True, text=True, encoding='utf-8', timeout=60)
+        assert r.returncode == 0 and json.loads(r.stdout) == argv[1:], (run[0], r.stdout, r.stderr)
 # What a shell still expands inside double quotes cannot be quoted: setup refuses it, doctor says why.
 if os.name == 'nt':
     for a, path in ((harness.get('kiro'), 'C:/R&D/100%/python.exe'), (harness.get('claude'), 'C:/R&D/$x/python.exe'),

@@ -21,8 +21,8 @@ class Claude(Adapter):
     guide = "3b"
     reload = "Claude Code는 훅을 세션을 시작할 때 읽는다 — 새 세션을 열고 `/hooks`에서 확인한다"
     login = "auth login"
-    # 셸 형식 훅은 Git Bash로 돈다 — PowerShell은 Git Bash가 없을 때만이고, osk가 쓰는 Git for
-    # Windows에 Git Bash가 있다(2026-09-27 2.1.251에서 실측).
+    # 셸 형식 훅은 Git Bash로 돈다(2026-09-27 2.1.251에서 실측). Git Bash가 없으면 PowerShell이라,
+    # 인용 없이 두는 글자는 PowerShell도 맨 낱말로 읽는 것만이다(`base._BARE`).
     hook_shell = "bash"
 
     def home(self) -> Path:
