@@ -458,6 +458,10 @@ fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
 <인스턴스>/.venv/Scripts/python.exe <인스턴스>/_governance/_engine/scripts/hooks/claude_prompt_submit.py
 ```
 
+- 원문 포착이 막히면(포착 오류) 9·15턴 사이에는 `[osk 포착 대기 — <오류>]` 한 줄만
+  싣는다. 검토할 원문이 없는데 검토 전문을 매 턴 다시 싣지 않는다. 대기와 계수는
+  유지되고, 9·15턴에는 평소처럼 상태·scope 기억과 함께 싣는다. 막힌 대화는 CLI
+  `status`의 `capture_blocked`에 마지막 관측 시점과 함께 보인다.
 - 계수·검토 대기는 **기기 로컬**이다(vault 루트·하네스·실제 대화 ID 단위).
   지식과 원문은 vault에 남는다. 기억이 비어 있어도 통합 시점은 알린다.
 - 두 훅 모두 **엔진을 import한다** — 등록한 인터프리터가

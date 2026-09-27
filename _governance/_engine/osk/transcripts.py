@@ -281,16 +281,26 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
             raise ValueError("Claude transcript sessionId does not match a linked ancestor prefix")
     rounds, diagnostics, users, trace, calls = [], [], [], [], {}
     native_results = []
-    evidence = []
+    evidence = []  # (native row timestamp, event) in file order
     start, final_message, final_line, final_text = None, None, None, False
     seen = set()
 
     def finish():
         nonlocal users, trace, start, final_message, final_line, final_text, native_results, evidence
         if start and final_message and final_text:
-            rounds.append({"id": f"{start}:{final_message}", "user": "\n\n".join(users),
-                           "agent": "\n\n".join(trace + _tool_evidence(evidence, f"claude:{start}:{final_message}")), "end_line": final_line,
-                           "completion": "completed", "native_results": native_results})
+            locator = f"claude:{start}:{final_message}"
+            events = [e for _, e in evidence]
+            found = {"id": f"{start}:{final_message}", "user": "\n\n".join(users),
+                     "agent": "\n\n".join(trace + _tool_evidence(events, locator)), "end_line": final_line,
+                     "completion": "completed", "native_results": native_results}
+            # A resumed or forked copy rewrites rows in message order, so results
+            # that streamed between parallel calls move after them. Row timestamps
+            # survive the copy: the original append order is offered only to match
+            # a copied prefix, never to capture.
+            timed = [e for _, e in sorted(evidence, key=lambda x: x[0])]
+            if timed != events and all(t for t, _ in evidence):
+                found["agent_time_order"] = "\n\n".join(trace + _tool_evidence(timed, locator))
+            rounds.append(found)
             users, trace, start, native_results = [], [], None, []
             evidence = []
         final_message, final_line, final_text = None, None, False
@@ -328,7 +338,7 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
                     event = _dialogue_event(block, locator) if isinstance(block, dict) else None
                     if event and event["type"] in {"tool_call_ref", "tool_result_ref"}:
                         if start:
-                            evidence.append(event)
+                            evidence.append((row.get("timestamp") or "", event))
                         continue
                     values = [event] if event is not None else _dialogue_content([block], locator)
                     if start and (typ != "user" or tool_result):

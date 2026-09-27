@@ -232,8 +232,13 @@ def capture_block(env: dict, key: str, *, startup: bool = False) -> str:
         if startup:
             return warning + ('\n\n' + integration.prompt(harness, sid)["text"] if captured["pending"] else '')
         overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= integration.SOFT
-        if not cadence["due"] and not overdue_switch and not captured["capture_error"]:
-            return warning if selected['changed'] else ""
+        if not cadence["due"] and not overdue_switch:
+            # A stuck capture has no raw to review: one line between the 9·15 turns,
+            # not the whole review every turn. The wait and the count stay (§9-3 1항).
+            blocked = (f"[osk 포착 대기 — {captured['capture_error']}. 이 대화의 검토 대기와 계수는 "
+                       "유지하고 9·15턴에는 상태와 함께 싣는다. 본 작업은 계속한다; 완료로 처리하지 "
+                       "않았다. 처음 보면 사용자에게 한 번 알린다.]" if captured["capture_error"] else "")
+            return "\n\n".join(p for p in (warning if selected['changed'] else "", blocked) if p)
         lead = (f"[osk 케이던스 — user 턴 {cadence['unreviewed_prompts']}] "
                 + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] or
                    overdue_switch and cadence['unreviewed_prompts'] >= integration.HARD else

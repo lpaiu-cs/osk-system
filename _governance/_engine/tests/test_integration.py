@@ -776,6 +776,45 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual((copied["captured_rounds"], copied["inherited_rounds"]), (1, 0))
         self.assertTrue(copied["pending_refs"][0].startswith("00_Scope/W1/"))
 
+    def test_claude_copied_prefix_matches_streamed_tool_order(self):
+        # Streaming execution appends a result between the parallel calls of one
+        # message; a resumed copy rewrites them in message order and keeps the
+        # rows' timestamps. The copy must still reuse the parent's raw.
+        parent = self.sid + "-streamed"
+        ids = lambda name: str(uuid.uuid5(uuid.NAMESPACE_URL, parent + name))
+
+        def row(role, content, name, second, stop=None, message_id=None):
+            return {"type": role, "sessionId": parent, "uuid": ids(name), "isSidechain": False,
+                    "timestamp": f"2026-09-27T09:13:{second:02d}.000Z",
+                    "message": {"role": role, "content": content, "id": message_id, "stop_reason": stop}}
+        call = lambda n: [{"type": "tool_use", "id": f"call-{n}", "name": "probe", "input": {"n": n}}]
+        result = lambda n: [{"type": "tool_result", "tool_use_id": f"call-{n}", "content": f"evidence {n}"}]
+        q, c1, r1, c2, r2, end = (row("user", "question", "q", 1),
+                                  row("assistant", call(1), "c1", 2, "tool_use", "m-1"),
+                                  row("user", result(1), "r1", 3),
+                                  row("assistant", call(2), "c2", 4, "tool_use", "m-1"),
+                                  row("user", result(2), "r2", 5),
+                                  row("assistant", [{"type": "text", "text": "answer"}], "end", 6, "end_turn", "m-2"))
+        self.transcript([q, c1, r1, c2, r2, end])
+        self.assertEqual(it.capture("claude", parent, str(self.path), "capture-tests")["captured_rounds"], 1)
+        for child, changed in ((self.sid + "-copied", False), (self.sid + "-altered", True)):
+            tail = claude_round(child, 2)
+            for n, r in enumerate(tail):
+                r["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, child + str(n)))
+                r["timestamp"] = f"2026-09-27T09:14:{n:02d}.000Z"
+            copied = json.loads(json.dumps([dict(r, sessionId=child) for r in (q, c1, c2, r1, r2, end)]))
+            if changed:  # Order is forgiven, content is not.
+                copied[3]["message"]["content"][0]["content"] = "other evidence"
+            self.transcript(copied + tail)
+            captured = it.capture("claude", child, str(self.path), "capture-tests")
+            if changed:
+                self.assertFalse(captured["ok"])
+                self.assertIn("copied native round ID has different content", captured["capture_error"])
+            else:
+                self.assertTrue(captured["ok"], captured)
+                self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
+                self.assertEqual(it.capture("claude", child, str(self.path), "capture-tests")["appended"], 0)
+
     def test_claude_foreign_history_requires_actual_parent_chain(self):
         parent = claude_round("parent", 1)
         child = claude_round(self.sid, 2)

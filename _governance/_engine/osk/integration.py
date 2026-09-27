@@ -112,6 +112,25 @@ def status(harness: str, conversation_id: str) -> dict:
         return _current_view(_load(p, harness, conversation_id), p)
 
 
+def blocked(limit: int = 10) -> dict:
+    """Conversations whose capture is stuck on this device, newest first (§9-3 3항).
+    `observed` is the cursor's last save; the hooks keep only a one-line notice."""
+    from datetime import datetime
+    probe = state_path("claude", "probe")
+    rows = []
+    for p in probe.parent.glob("-".join(probe.name.split("-")[:3]) + "-*.json"):
+        try:
+            s = json.loads(p.read_text(encoding="utf-8"))
+            if s.get("capture_error") and s.get("root") == str(core.ROOT.resolve()):
+                rows.append({"harness": s["harness"], "conversation_id": s["conversation_id"],
+                             "error": s["capture_error"], "observed": datetime.fromtimestamp(
+                                 p.stat().st_mtime, core.KST).strftime(core.TS_FMT)})
+        except (OSError, ValueError, KeyError):
+            continue
+    rows.sort(key=lambda r: r["observed"], reverse=True)
+    return {"count": len(rows), "conversations": rows[:limit]}
+
+
 def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
     """Reuse only the caller's copied prefix, with native ID and byte evidence."""
     if s["harness"] != "claude" or not s["space"]:
@@ -149,14 +168,19 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         if any(occurrences[ref] != count for ref, count in references.items()
                if ref.startswith("claude:" + s["conversation_id"] + ":")):
             return False  # A dialogue quotation makes replacement ambiguous.
-        agent = locator.sub(
-            lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
-            if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
-            else m[0], pair["agent"])
         from . import secrets
-        expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent),
-                              dialogue_id=pair["id"] if readable else None)
-        return raw._round_body(block) == raw._round_body(secrets.filter_text(expected)[0])
+        # The copy may hold the tool evidence in message order; the original
+        # captured append order, which the rows' timestamps still give.
+        for text in filter(None, (pair["agent"], pair.get("agent_time_order"))):
+            agent = locator.sub(
+                lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
+                if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
+                else m[0], text)
+            expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent),
+                                  dialogue_id=pair["id"] if readable else None)
+            if raw._round_body(block) == raw._round_body(secrets.filter_text(expected)[0]):
+                return True
+        return False
 
     if inherited is None:
         known = {}
