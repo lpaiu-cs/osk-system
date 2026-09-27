@@ -982,7 +982,9 @@ class ResponseGrowthTests(unittest.TestCase):
                     text = hook.capture_block(env,'own')
                     if n in {9,15}:
                         assert '[osk 케이던스' in text and '포착 진단' in text, (n,text)
-                        assert 'shared memory sentinel' in text, 'the review turn still carries memory'
+                        # The review turn still carries memory: the text once, then its hash line.
+                        assert ('shared memory sentinel' in text) == (n == 9), (n,text)
+                        assert n == 9 or 'scope_memory(session="own")' in text, text
                     else:
                         assert text.startswith('[osk 포착 대기 — ValueError: copied native round ID'), (n,text)
                         assert '\\n' not in text and 'shared memory sentinel' not in text, (n,text)
@@ -1174,6 +1176,93 @@ class ResponseGrowthTests(unittest.TestCase):
                 route = rg.route({'harness': 'claude', 'session_id': 'own', 'transcript_path': str(native)})
             assert {k: route[k] for k in ('mode', 'reason')} == ready['verdict'], route
             assert snapshot() != before
+        ''')
+
+
+class HookBudgetTests(unittest.TestCase):
+    """Hosts cut hook text (Claude Code swaps >10,000 chars for a 2KB preview, Kiro keeps 3,000):
+    whole blocks fold, lowest keep first, and one line says where they are."""
+
+    def test_assemble_folds_whole_blocks_lowest_first(self):
+        from osk.hook_text import Block, assemble
+        shown = []
+        blocks = [Block('banner', '[osk 정돈이 밀렸다 — x]'),
+                  Block('memory', 'M' * 300, 95, label='기억', pull='`scope_memory(session="k")`',
+                        on_shown=lambda: shown.append('memory')),
+                  Block('organization', 'O' * 300, 60, label='조직 검토', pull='overview:organization'),
+                  Block('tidy', 'T' * 300, 80, label='정돈', pull='overview:tidy',
+                        on_shown=lambda: shown.append('tidy'))]
+        text, folded = assemble(blocks, 10_000, session='k')
+        self.assertEqual((folded, shown), (set(), ['memory', 'tidy']))
+        self.assertNotIn('[osk 접음', text)
+        shown.clear()
+        text, folded = assemble(blocks, 700, session='k')
+        self.assertLessEqual(len(text), 700)
+        self.assertEqual(folded, {'organization', 'tidy'})
+        self.assertEqual(shown, ['memory'], 'a folded block was not delivered')
+        self.assertTrue(text.startswith('[osk 정돈이 밀렸다'))
+        self.assertIn('M' * 300, text)
+        self.assertNotIn('T' * 10, text)
+        self.assertTrue(text.endswith('[osk 접음 — 훅 한도 700자 안에 싣지 못한 것: 조직 검토 · 정돈. '
+                                      '읽는 곳: `overview(session="k", include=["organization", "tidy"])`]'), text)
+
+    def test_unfoldable_blocks_alone_are_cut_at_a_line(self):
+        from osk.hook_text import Block, assemble
+        text, _ = assemble([Block('lead', 'line\n' * 100)], 120)
+        self.assertLessEqual(len(text), 120)
+        self.assertTrue(text.endswith('\n[osk 생략 — 훅 한도]'), text)
+
+    def test_start_keeps_its_warning_when_organization_cannot_be_read(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            env = {'harness':'claude','session_id':'own','cwd':str(core.ROOT),'session':'own'}
+            idle = {'harness':'claude','conversation_id':'own','pending':False,'capture_error':None}
+            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
+                    patch.object(integration,'hook_capture',return_value=idle), \\
+                    patch.object(hook,'_organization_jobs',side_effect=ValueError('damaged organization state')):
+                start = hook.capture_block(env,'own',startup=True)
+            assert '검토 경고' in start and '참조·조직 검토 판독 진단' in start, start
+            assert 'damaged organization state' in start and '포착·통합 진단' not in start, start
+        ''')
+
+    def test_hosts_declare_their_limit(self):
+        from osk import harness
+        self.assertEqual(harness.get('kiro').hook_budget, 2_800)
+        self.assertEqual({harness.get(n).hook_budget for n in ('claude', 'codex')}, {9_500})
+
+    def test_review_turn_carries_memory_once_per_hash(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', 'first memory sentinel', space='00_Scope/W1')
+            native = core.ROOT/'native.jsonl'
+            native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
+                json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
+                hook.capture_block(env,'own',startup=True)
+                seen = {}
+                for n in range(1,25):
+                    if n == 20:
+                        scope_memory.replace('own', 'second memory sentinel', scope_memory.read('own')['hash'])
+                    seen[n] = hook.capture_block(env,'own')
+            assert 'first memory sentinel' in seen[9], seen[9]
+            assert 'first memory sentinel' not in seen[15] and 'scope_memory(session="own")' in seen[15], seen[15]
+            assert '출처·허브를 완성한다' in seen[15], 'the one line keeps the node-first guidance'
+            assert 'second memory sentinel' in seen[24], 'a changed hash carries the whole text again'
+            # Kiro's limit folds whole blocks; the review itself is pulled by command.
+            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
+                while integration.status('claude','own')['prompt_count'] < 29:
+                    integration.tick('claude','own')
+                small = hook.capture_block(env,'own',budget=2800)
+            assert len(small) <= 2800 and '[osk 케이던스 — user 턴 30]' in small, small
         ''')
 
 

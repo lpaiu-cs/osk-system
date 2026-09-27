@@ -44,6 +44,8 @@ CandidateType: TypeAlias = Literal["contradiction", "duplication",
                                    "competition", "delegation-overlap"]
 Title: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
+# 훅이 호스트 한도 때문에 접은 블록(osk.hook_text) — overview가 돌려준다.
+HookSection: TypeAlias = Literal["tidy", "organization", "recovery"]
 Drafter: TypeAlias = Annotated[str, Field(pattern=DRAFTER_RE)]
 # 기록 이름도 곧 파일명이다 — 상한은 Title과 같은 자리에서 같은 이유로 건다.
 RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
@@ -311,11 +313,35 @@ def read_raw(ref: str | None = None, space: str | None = None,
         "하나를 준다 — 좌표를 모르면 `space`로 기록 목록부터 본다"]}
 
 
+def _hook_sections(session: str, include) -> dict:
+    """훅이 한도 때문에 접은 블록 — 훅이 실었을 글 그대로 돌려준다(`osk.hook_text`)."""
+    from osk import core, evictions, organization
+    scope = write.resolve_session(session)
+    out = {}
+    for name in dict.fromkeys(include):
+        try:
+            if name == "recovery":
+                out[name] = scope_memory_mod.recovery_block(session)
+            elif not scope:
+                out[name] = ""
+            elif name == "tidy":
+                parts = evictions.hook_parts(scope, sys.executable, str(Path(__file__).resolve().parent))
+                out[name] = "\n\n".join(p for p in (parts["banner"], parts["block"]) if p)
+            else:
+                with core.mutation_lock():
+                    jobs = organization.pending([scope], limit=1, record=False)
+                out[name] = organization.hook_prompt(jobs)
+        except Exception as e:                  # 조망은 죽지 않는다(시행령 §11)
+            out[name] = f"{type(e).__name__}: {e}"
+    return out
+
+
 @mcp.tool()
-def overview(session: str | None = None) -> dict:
+def overview(session: str | None = None, include: list[HookSection] | None = None) -> dict:
     """구조 조망. **첫 쓰기 전에 한 번** 부른다. `clusters`=허브 있는 군집 경로
     (`create_node.space`), `open_cases`=`conflicts` 사건 번호,
-    `broken`=검색에서 빠진 파손 파일. `session`을 주면 현재 결속 `session_scope`도 반환한다."""
+    `broken`=검색에서 빠진 파손 파일. `session`을 주면 현재 결속 `session_scope`도 반환한다.
+    `include`=훅 `[osk 접음]` 줄이 알려 준 블록 → `included`."""
     idx = _idx()
     out = {
         "clusters": write._cluster_names(),
@@ -350,6 +376,8 @@ def overview(session: str | None = None) -> dict:
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
         # 노출하지 않는다"고 못박는다. 착지 판단에는 `session_scope`로 족하다.
         out["session_scope"] = write.resolve_session(session)
+        if include:
+            out["included"] = _hook_sections(session, include)
     return out
 
 

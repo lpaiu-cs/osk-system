@@ -362,12 +362,9 @@ def readout(jobs: list[dict]) -> list[dict]:
     return result
 
 
-def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
-    if not jobs:
-        return ""
-    command = core.cli_command("organization")
-    return ("\n[osk 참조·조직 검토]\n"
-            "저장 완료와 참조·조직 완료는 다르다. 아래 선택된 군집의 요약·크기·참조 목록을 먼저 보고 "
+def guidance() -> str:
+    """The whole rule text — growth prompts and `plan` carry it; hooks carry `HOOK_GUIDANCE`."""
+    return ("저장 완료와 참조·조직 완료는 다르다. 아래 선택된 군집의 요약·크기·참조 목록을 먼저 보고 "
             "이번 작업의 판정 대상은 review_units의 최대 3개 구간(각 4000자 이하)이다. read_node(name=id, view=view)로 읽는다. "
             "반환된 view_hash가 선택 노드의 'view:'+hash와 다르면 새 plan에서 범위를 확인한 뒤 읽는다. "
             "이는 군집 전체의 검토가 아니다. 조건이나 출처가 구간 밖이면 필요한 근거 구간만 표적 조회한다. "
@@ -392,6 +389,63 @@ def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
             "coverage.remaining이 이번 checked 수보다 크면 전체 완료가 아니므로 deferred로 부분 진척을 저장한다. "
             "처음 선택한 key와 최신 after=snapshot, scope, outcome=complete|deferred, reason, checked, "
             "intentional=[{id,relation:Link,ref,reason}]를 organization review의 JSON stdin으로 낸다. "
-            "정돈이 불필요하면 현재 구조가 맞는 이유를 기록하고, 미완료면 deferred로 남긴다.\n"
+            "정돈이 불필요하면 현재 구조가 맞는 이유를 기록하고, 미완료면 deferred로 남긴다.")
+
+
+def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
+    if not jobs:
+        return ""
+    command = core.cli_command("organization")
+    return ("\n[osk 참조·조직 검토]\n" + guidance() + "\n"
             + "실행 명령 접두부: " + command + "\n"
             + (json.dumps(readout(jobs), ensure_ascii=False) if inventory else "목록은 아래 organization_jobs에 있다.\n"))
+
+
+# 훅에 싣는 몫 — 착수와 완료의 조건, 판정이 결속되는 값. 나머지 규칙과 군집·노드 목록은
+# 작업 직전에 `plan`이 준다(2026-09-27 독립 검토: 규칙은 문서가 아니라 쓰는 순간에).
+HOOK_GUIDANCE = (
+    "저장 완료와 참조·조직 완료는 다르다. 이번 대상은 아래 review_units의 구간뿐이다(군집 전체가 아니다). "
+    "`read_node(name=id, view=view)`로 읽고 주장·적용 조건이 현행과 맞는지 판정한다. view_hash가 달라졌으면 "
+    "새 plan으로 범위를 다시 확인한다. previous_deferral.snapshot_changed가 참이면 이전 판단을 이어받지 말고 "
+    "현행을 확인한다. 틀린 곳은 그 자리에서 고치되 정정 전후의 판단과 출처를 보존하고, 고친 구간은 다음 "
+    "검토로 넘긴다. 판단하지 못한 내용은 지우거나 완료라 하지 않는다. pin·보호영역·최상위 경계를 유지하고 "
+    "원료를 노드·허브로 승격하지 않는다. 제출 전에 접두부 + `plan --scope <scope> --preview`로 최신 "
+    "snapshot을 읽어 after에 넣는다. coverage.remaining이 checked 수보다 크면 outcome=deferred로 내고 "
+    "reason에 다음 대상(노드 ID·절·질문)을 남긴다. 접두부 + `review`에 JSON stdin으로 "
+    "{key, after, scope, outcome: complete|deferred, reason, checked: [{unit, reason}], "
+    "intentional: [{id, relation: Link, ref, reason}]}을 낸다. 중단되면 같은 key로 plan부터 다시 읽어 "
+    "잇는다. 전체 규칙은 plan 응답의 guidance에 있다.")
+_FLAGGED = (" references·issues가 있으면 실제 근거로 수리하고, 탐색 질문 Link만 개별 사유와 함께 "
+            "intentional에 남긴다. PE 미해석은 이 예외로 닫지 않는다.")
+_LIST_CAP = 10
+
+
+def hook_readout(job: dict) -> dict:
+    """훅에 싣는 계획 — 판정이 결속되는 값과 채워진 목록만, 필드 이름은 `plan`과 같다."""
+    out = {k: job[k] for k in ("scope", "key", "snapshot", "coverage") if k in job}
+    out["review_units"] = [{k: u[k] for k in ("unit", "id", "name", "view", "chars") if k in u}
+                           for u in job.get("review_units", [])]
+    prior = job.get("previous_deferral")
+    if prior:
+        out["previous_deferral"] = {k: prior[k] for k in ("snapshot_changed", "at", "reason") if k in prior}
+    broken = [c for c in job.get("clusters", []) if c.get("missing_links") or c.get("branch_bypass")]
+    for name, items in (("issues", job.get("issues")), ("references", job.get("references")),
+                        ("pending_moves", job.get("pending_moves")), ("missing_ids", job.get("missing_ids")),
+                        ("clusters", broken)):
+        if items:
+            out[name] = items[:_LIST_CAP]
+            if len(items) > _LIST_CAP:
+                out[name + "_total"] = len(items)
+    return out
+
+
+def hook_prompt(jobs: list[dict]) -> str:
+    """조직 검토의 훅 블록. 빈 목록이면 빈 문자열이다."""
+    if not jobs:
+        return ""
+    head = " · ".join(f"scope {j['scope']} 남은 구간 {j['coverage']['remaining']}/{j['coverage']['total']}"
+                      for j in jobs)
+    flagged = any(j.get("references") or j.get("issues") for j in jobs)
+    return (f"[osk 참조·조직 검토 — {head}]\n" + HOOK_GUIDANCE + (_FLAGGED if flagged else "") + "\n"
+            + "실행 명령 접두부: " + core.cli_command("organization") + "\n"
+            + json.dumps([hook_readout(j) for j in jobs], ensure_ascii=False))

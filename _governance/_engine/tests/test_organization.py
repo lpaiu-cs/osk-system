@@ -154,6 +154,36 @@ class OrganizationTests(unittest.TestCase):
             assert organization.plan('W1')['status'] == 'complete'
         """)
 
+    def test_hook_readout_keeps_what_the_judgement_binds_to(self):
+        self.case("""
+            from osk import cli
+            for name in ('A', 'B', 'C', 'D'):
+                node(name)
+            job = organization.plan('W1')
+            organization.review(job['key'], 'W1', 'deferred', 'Reviewed A. Next: D section Limits.')
+            write.update_node('D', old_text='Reusable evidence', new_text='Revised evidence')
+            job = organization.plan('W1')
+            short = organization.hook_readout(job)
+            assert 'nodes' not in short and 'review_command' not in short and 'clusters' not in short, short
+            prior = short['previous_deferral']
+            assert prior['snapshot_changed'] and prior['reason'].endswith('section Limits.'), prior
+            assert [u['unit'] for u in short['review_units']] == [u['unit'] for u in job['review_units']]
+            assert all(set(u) <= {'unit', 'id', 'name', 'view', 'chars'} for u in short['review_units'])
+            text = organization.hook_prompt([job])
+            assert text.startswith('[osk 참조·조직 검토 — scope W1') and organization.HOOK_GUIDANCE in text
+            assert json.loads(text.rsplit(chr(10), 1)[1]) == [short]
+            assert 'references·issues' not in text
+            # Filled lists stay, bounded; the whole rule text is where the work begins.
+            job['references'] = [{'ref': str(i)} for i in range(12)]
+            short = organization.hook_readout(job)
+            assert len(short['references']) == 10 and short['references_total'] == 12, short
+            assert 'references·issues' in organization.hook_prompt([job])
+            got = {}
+            cli._emit = got.update
+            cli.main(['organization', 'plan', '--scope', 'W1', '--preview'])
+            assert got['guidance'] == organization.guidance() and got['key'] == job['key'], got.keys()
+        """)
+
     def test_large_body_advice_is_non_destructive_and_present_in_inventory(self):
         self.case("""
             text = 'Durable qualified conclusion. ' * 600

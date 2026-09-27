@@ -265,6 +265,9 @@ out = M.overview(session='proj')
 assert 'session_scope' in out and not set(out) - {'clusters', 'open_cases', 'broken', 'nodes', 'engine_rev',
                                                   'engine_stale', 'rechecks', 'update', 'session_scope'}, out
 assert runs.read()['overview']['proj'] >= runs.read()['runs']['claude/start']['at']
+# Blocks a hook folded for its host's limit come back by name (osk.hook_text).
+out = M.overview(session='proj', include=['tidy', 'organization', 'recovery'])
+assert set(out['included']) == {'tidy', 'organization', 'recovery'}, out
 # A fork's own overview is not evidence that the user's session received the text.
 with mock.patch.dict(os.environ, {'OSK_GROWTH_WORKER': '1'}):
     M.overview(session='fork-own')

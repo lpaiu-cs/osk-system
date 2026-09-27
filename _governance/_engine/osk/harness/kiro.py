@@ -8,6 +8,8 @@
     `KIRO_SESSION_ID`를 둔다. 전사 경로는 주지 않는다.
   · 시작·입력 훅이 0으로 끝나면 stdout 평문이 `<HOOK_INSTRUCTION>`에 싸여 문맥에 실린다.
     JSON을 풀지 않고, 사용자 화면만의 자리도 없다. 종료 훅의 출력은 어디에도 실리지 않는다.
+  · 그 평문은 3,000자에서 잘린다 — 시작 훅은 앞, 입력 훅은 뒤를 남긴다. 그래서 예산은
+    포장·표식의 여유를 둔 2,800자다(`hook_budget`, `osk.hook_text`).
   · 전사는 `~/.kiro/sessions/<작업 폴더 해시>/<대화 ID>/messages.jsonl`이다(`osk.transcripts`).
   · MCP 등록 CLI가 없다 — setup이 `~/.kiro/settings/mcp.json`에 직접 병합한다.
 """
@@ -38,6 +40,7 @@ class Kiro(Adapter):
     sources: dict = {}      # 세 사건 모두 matcher가 없다 — 늘 모든 등록이 돈다
     matchers: dict = {}
     mcp_direct = True
+    hook_budget = 2_800
 
     def home(self) -> Path:
         return Path.home() / ".kiro"
