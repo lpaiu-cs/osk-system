@@ -93,7 +93,7 @@ match yours) and Git. Start from a release tag rather than `main`
 On macOS or Linux:
 
 ```bash
-git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python3.12 -m venv .venv
