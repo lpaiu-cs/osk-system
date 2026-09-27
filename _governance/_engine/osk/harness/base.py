@@ -86,19 +86,20 @@ def cmd_line(argv) -> str:
     return " ".join(f'"{a}"' if not a or re.search(r"\s", a) or _CMD_OPS.search(a) else a for a in argv)
 
 
-def paste_line(argv) -> str:
-    """사람이 제 터미널에 붙일 호스트 CLI 명령 — `core.shell_join`이다. 다만 Windows에서 CLI가
-    배치 파일이면 PowerShell도 공백 없는 인자를 인용 없이 넘겨, cmd가 `C:/R&D/...`를 `&`에서
-    가른다. cmd 특수문자가 든 인자가 있으면 PowerShell의 `--%` 뒤에 cmd의 인용으로 쓴다 — `.exe`
-    CLI도 같은 인자를 받는다(2026-09-27 Windows PowerShell 5.1 실측). `--%`는 줄 끝까지 간다."""
+def paste_line(argvs) -> str:
+    """사람이 제 터미널에 붙일 호스트 CLI 명령 한 줄 — 명령마다 `core.shell_join`이고 `;`로 잇는다.
+    다만 Windows에서 cmd 특수문자가 든 인자가 있으면 `cmd /d /c --%` 뒤에 cmd의 인용으로 쓰고
+    cmd의 `&`로 잇는다. PowerShell은 공백 없는 인자를 `.cmd` CLI에 인용 없이 넘겨 cmd가
+    `C:/R&D/...`를 가르고, npm이 함께 까는 `.ps1`에는 `--%`까지 인자로 넘긴다. cmd는 실행 대상을
+    PATHEXT(`.exe`·`.cmd`)로만 찾고 실행 정책과도 무관하다(2026-09-27 Windows PowerShell 5.1 실측)."""
     from .. import core
-    argv = [str(a) for a in argv]
-    if os.name == "nt" and any(_CMD_OPS.search(a) for a in argv[1:]):
+    argvs = [[str(a) for a in argv] for argv in argvs]
+    if os.name == "nt" and any(_CMD_OPS.search(a) for argv in argvs for a in argv):
         try:
-            return f"{argv[0]} --% {cmd_line(argv[1:])}"
+            return "cmd /d /c --% " + " & ".join(cmd_line(argv) for argv in argvs)
         except ValueError:
-            pass    # 그 글자는 어느 표기로도 배치 CLI에 온전히 닿지 않는다 — `.exe` CLI의 표기를 둔다
-    return core.shell_join(argv)
+            pass    # 그 글자는 어느 표기로도 `.cmd` CLI에 온전히 닿지 않는다 — `.exe`·`.ps1`이 받는 표기를 둔다
+    return " ; ".join(core.shell_join(argv) for argv in argvs)
 
 
 def _groups(hooks):
@@ -240,7 +241,7 @@ class Adapter:
         """사용자가 터미널에 붙일 등록 한 줄 — `mcp_argv`를 그 기기 셸의 규칙으로 인용한다
         (`paste_line`). 없으면 빈 문자열."""
         argv = self.mcp_argv(python, server)
-        return paste_line(argv) if argv else ""
+        return paste_line([argv]) if argv else ""
 
     def mcp_files(self) -> list[Path]:
         """MCP 등록을 읽는 파일 — 첫 자리가 호스트 CLI가 등록을 고치는 파일이다."""

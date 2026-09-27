@@ -207,8 +207,7 @@ def _mcp(adapter, uninstall: bool) -> dict:
         out["files"] = [str(target)] if target and target.is_file() else []
         cli = shutil.which(adapter.cli)
         if not cli:
-            # 경로를 싣는 등록 명령이 늘 마지막이다 — `paste_line`의 `--%`는 줄 끝까지 간다.
-            out["manual"] = " ; ".join(base.paste_line(argv) for argv in runs)
+            out["manual"] = base.paste_line(runs)
             return out
         try:
             for argv in runs:

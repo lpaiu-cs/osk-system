@@ -69,7 +69,11 @@ vpy = root / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python
 def fake_clis(names=('claude', 'codex')):
     for name in names:
         if os.name == 'nt':
+            # What npm installs: a `.cmd`, and a `.ps1` that PowerShell prefers, handing `$args` on
+            # the way npm's cmd-shim does.
             (bin_dir / f'{name}.cmd').write_text(f'@"{py}" "{bin_dir / "fake_cli.py"}" {name} %*\r\n',
+                                                 encoding='utf-8')
+            (bin_dir / f'{name}.ps1').write_text(f'& "{py}" "{bin_dir / "fake_cli.py"}" {name} $args\n',
                                                  encoding='utf-8')
         else:
             path = bin_dir / name
@@ -290,16 +294,17 @@ if os.name == 'nt':
         assert code == 1 and rep['applied'] is False, rep
         assert any('배치 파일' in e and '--harness' in e for e in rep['errors']), rep['errors']
     assert state() == before
-    # Without a CLI on PATH the step is left to the user. PowerShell also hands a `.cmd` CLI `C:/R&D/...`
-    # unquoted, so the line must still reach the CLI the user installs afterwards.
+    # Without a CLI on PATH the step is left to the user. PowerShell hands a `.cmd` CLI `C:/R&D/...`
+    # unquoted, and npm's `.ps1`, which it prefers when scripts may run, `--%` as an argument (PR #116
+    # review): the line must still reach the CLI the user installs afterwards.
     full, moved = os.environ['PATH'], Path('C:/R&D/moved/.venv/Scripts/python.exe')
     os.environ['PATH'] = str(bin_dir.parent)
     with mock.patch.object(S, '_python', lambda: moved):
         rep, _ = S.run(only=['claude'])
     os.environ['PATH'] = full
     manual = rep['hosts'][0]['mcp']['manual']
-    r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', manual],
-                       capture_output=True, text=True, timeout=120)
+    r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                        '-Command', manual], capture_output=True, text=True, timeout=120)
     assert r.returncode == 0 and calls()[-2:] == [
         ['claude', 'mcp', 'remove', '--scope', 'user', 'osk-system'],
         ['claude', 'mcp', 'add', '--scope', 'user', 'osk-system', '--', moved.as_posix(), server.as_posix()]], \
