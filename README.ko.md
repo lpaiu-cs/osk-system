@@ -35,10 +35,17 @@
 
 ---
 
-> **상태: 개발자 공개 베타.** 관리자가 Windows 11에서 매일 쓰고 있고, CI가
-> Windows와 Linux에서 테스트 수트를 돌린다. macOS는 아직 검증하지 않았다.
-> vault는 Git 저장소다 — 갱신하기 전에 자신의 비공개 원격에 push해 두거나
-> 따로 백업한다. [알려진 한계](#알려진-한계)를 먼저 본다.
+> **상태: 개발자 공개 베타.** 관리자가 Windows 11에서 매일 쓰고 있다. CI는
+> Windows와 Linux에서 테스트 수트를 돌리고, macOS에서는 결과가 병합을 막지 않는
+> 작업으로 돌린다 — macOS에서의 일상 사용은 아직 검증하지 않았다. vault는 Git
+> 저장소다 — 갱신하기 전에 자신의 비공개 원격에 push해 두거나 따로 백업한다.
+> [알려진 한계](#알려진-한계)를 먼저 본다.
+
+**에이전트로 설치하기.** Claude Code·Codex·Kiro·Antigravity에 이 한 줄을 붙여 넣는다:
+
+```text
+https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/INSTALL-AGENT.md 를 읽고 이 기기에 osk-system을 설치해 줘.
+```
 
 ## 기억이 쌓여도, 근거는 흐려지지 않게
 
@@ -68,50 +75,48 @@ Obsidian은 지식을 탐색하는 선택적 화면이고, Git 동기화도 선�
 
 ## 시작하기
 
+**에이전트에게 맡기기.** Claude Code·Codex·Kiro·Antigravity에 이 한 줄을 붙여 넣는다:
+
+```text
+https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/INSTALL-AGENT.md 를 읽고 이 기기에 osk-system을 설치해 줘.
+```
+
+에이전트가 vault를 만들 자리와 켤 선택 기능을 묻고, 최신 릴리스를 clone한 뒤
+[설치 도구](docs/SETUP.md#설치-도구-setup)를 돌린다. 설치 도구는 계획을 보여 주고,
+확인을 받아야 적용한다.
+
 **처음이라면** [시작 안내서](docs/GETTING-STARTED.ko.md)를 따라간다. 빈 폴더에서
 에이전트의 첫 기억까지, macOS·Linux·Windows 명령과 단계별 확인 방법을 함께 담았다.
 
 **v3 vault를 갱신한다면** v4를 적용하기 전에 [판 올리기](docs/UPGRADING.ko.md)를 읽는다.
 v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 
-**에이전트에게 맡기기.** Claude Code나 Codex에 이렇게 붙여 넣는다:
-
-```text
-이 기기에 osk-system을 설치해 줘. https://github.com/lpaiu-cs/osk-system/blob/main/docs/INSTALL-AGENT.md 를 읽고 순서대로 따라 해. 새 vault 밖의 무언가를 바꾸기 전에는 나에게 먼저 물어 봐.
-```
-
-에이전트가 최신 릴리스를 clone하고 [설치 도구](docs/SETUP.md#설치-도구-setup)로 계획을 보여 준
-뒤, 확인을 받아야 적용한다.
-
-**직접 설치한다면** Python 3.11 이상과 Git을 준비한다(아래 명령은 3.12 기준이니 설치한 판본으로
-바꿔 쓴다). `main`이 아니라 릴리스 태그에서 시작한다(새 태그는
-[릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다).
-macOS·Linux 기준:
+**직접 설치한다면** Python 3.11 이상과 Git을 준비한다. `main`이 아니라 릴리스 태그에서
+시작한다(새 태그는 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다):
 
 ```bash
 git clone --branch v4.1.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r _governance/_engine/requirements.txt
-PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
+python _governance/_engine/scripts/setup.py --interactive
 ```
 
-이어서 릴리스 기준선을 기록한다([시작 안내서 2단계](docs/GETTING-STARTED.ko.md#2단계-엔진-설치와-릴리스-기준선-기록)).
-그래야 이후 갱신이 릴리스 파일과 직접 고친 파일을 구별한다. v4.1.0부터는
-`python _governance/_engine/scripts/setup.py --interactive`가 이것과 아래의 호스트 등록을
-한 번에 한다 — 계획을 보여 주고, 쓰기 전에 확인을 받는다.
+`python`이 없으면 `python3`를, Windows에서는 `py -3.12`를 쓴다. 설치 도구는 `.venv`를 만들어
+의존성을 설치하고 릴리스 기준선을 기록한다 — 그래야 이후 갱신이 릴리스 파일과 직접 고친
+파일을 구별한다. 이어서 이 기기에서 찾은 호스트(Claude Code·Codex·Kiro·Antigravity)에 MCP
+서버와 훅 세 개를 등록한다. 쓰기 전에 계획을 보여 주고 확인을 받는다. 그 뒤
+`python _governance/_engine/scripts/setup.py doctor`로 연결을 점검한다. 같은 과정을 한
+명령씩 따라가려면 [시작 안내서 2단계](docs/GETTING-STARTED.ko.md#2단계-엔진-설치와-릴리스-기준선-기록)를 본다.
 
-1. [.mcp.json.example](.mcp.json.example)의 `<REPO>`를 인스턴스의 절대경로로
-   바꿔 MCP 클라이언트에 등록한다. Codex는 TOML을 읽으므로 `codex mcp add`로
-   등록한다. 클라이언트별 등록·훅 설정과 Windows 명령은
-   [설치·운용 가이드](docs/SETUP.md)를 따른다.
-2. Obsidian을 쓴다면 `my-osk-vault` 폴더를 보관함으로 연다.
-3. 동기화를 켜기 전에는 원격을 **자신의 비공개 저장소**로 바꾼다.
-   개인 노트·대장·대화 기록을 공개 정본에 올리지 않는다.
+- **다른 MCP 클라이언트:** [.mcp.json.example](.mcp.json.example)을 복사해 `<REPO>`를 vault의
+  절대경로로 바꾼다(Windows의 인터프리터는 `.venv/Scripts/python.exe`). 클라이언트별 등록·훅
+  설정과 Windows 명령은 [설치·운용 가이드](docs/SETUP.md)를 따른다.
+- **Obsidian:** `my-osk-vault` 폴더를 보관함으로 연다.
+- **동기화:** 켜기 전에 원격을 **자신의 비공개 저장소**로 바꾼다. 개인 노트·대장·대화 기록을
+  공개 정본에 올리지 않는다.
 
-> MCP 연결만으로 자동 포착과 주기 검토가 켜지지는 않는다.
-> 해당 하네스의 훅 설정이 필요하다. 아래 [지원 범위](#harness-coverage)를 확인한다.
+> MCP 서버만으로는 자동 포착과 주기 검토가 켜지지 않는다 — 훅이 켠다. 설치 도구는 둘 다
+> 등록한다. 클라이언트를 손으로 이었다면 훅도 함께 등록한다. [지원 범위](#harness-coverage)를 본다.
 
 ## 사용하기
 
@@ -182,7 +187,7 @@ osk-system은 그 구별을 사람의 기억이나 관행이 아니라 **기계�
 | 실행 조건 | 대화 검토 경로 |
 |---|---|
 | 지원 하네스의 훅과 구독 CLI가 연결되고 로그인·판본 검사를 통과 | 성공한 최종 답변 **Stop 9회마다** 같은 하네스·모델의 백그라운드 fork |
-| CLI 미설정·미설치·미로그인·구독 인증 불확실·판본 불일치·보존 불가능한 권한·Codex 비Git·미신뢰 작업 폴더 등 | **검토 경고**와 함께 현재 세션의 **UserPromptSubmit 9·15턴 통합**으로 전환 |
+| CLI 미설정·미설치·미로그인·구독 인증 불확실·판본 불일치·보존 불가능한 권한·Codex 비Git·미신뢰 작업 폴더 등 | **검토 경고**와 함께 현재 세션의 **입력 9·15턴 통합**(UserPromptSubmit, Antigravity는 PreInvocation)으로 전환 |
 | 아직 어댑터가 없는 하네스 | 자동 포착·계수·fallback을 보장하지 않음. 하네스별 연결과 검증이 필요 |
 
 입력 계수는 백그라운드 모드에서도 유지한다. 실행 경로가 바뀌어도 검토 대기와
@@ -219,6 +224,10 @@ osk-system은 그 구별을 사람의 기억이나 관행이 아니라 **기계�
   비밀값을 적지 않는다.
 - **보호영역은 보안 경계가 아니다.** 선의의 실수를 막고 되돌리는 장치다
   ([Problem](#problem) 참고).
+- **Windows의 Antigravity는 인용 없는 경로가 필요하다.** 훅을 `cmd`로 돌리는데 cmd가
+  인용된 경로를 읽지 못한다. 그래서 vault와 Python 경로에 공백과 cmd 특수문자
+  (`& | < > ^ % ! ( ) , ; =`)가 없어야 한다. 설치 도구는 그런 경로면 쓰기 전에 멈춘다 —
+  다른 호스트만 이으려면 `--harness`로 고른다.
 - **자율 성장은 실험 단계다.** 효과는 아직 측정 중이다
   ([이슈 #20](https://github.com/lpaiu-cs/osk-system/issues/20)).
 - **통치 문서는 한국어로만 제공된다.**
@@ -246,7 +255,8 @@ osk-system은 그 구별을 사람의 기억이나 관행이 아니라 **기계�
 멈춘다. 사용자의 명시적 재승인 뒤 같은 변경집합을 적용하며, 보호 중인 통치
 구획의 수용 기록도 함께 남긴다. 통치 구획을 한 번도 지정하지 않은 설치라면
 그 구획이 비준증빙과 정확히 같을 때 같은 재승인으로 보호를 지정한다. 승인은
-수용의 기록이지 효력의 요건이 아니다
+수용의 기록이지 효력의 요건이 아니다. 새 릴리스는 기기마다 하루 한 번 세션 시작이나
+`overview`로 알리고, 갱신은 사용자가 요청할 때만 한다
 ([docs/SETUP.md](docs/SETUP.md)).
 
 ## Not included
