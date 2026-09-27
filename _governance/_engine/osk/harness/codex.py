@@ -25,6 +25,9 @@ class Codex(Adapter):
               "stop": "osk: capturing the finished round"}
     trust = "Codex에서 `/hooks`를 열어 osk 훅 세 개를 검토하고 신뢰한다"
     login = "login"
+    # 훅은 세션의 셸로 돈다 — Windows에서는 PowerShell(`-NoProfile -Command`)이다
+    # (2026-09-27 0.154.0·0.158.0-alpha.2에서 실측).
+    hook_shell = "powershell"
 
     def home(self) -> Path:
         return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))

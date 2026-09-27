@@ -15,9 +15,10 @@ operator reference (in Korean).
 - **`<vault>`** is the absolute path of your vault folder, such as
   `/Users/you/my-osk-vault` or `C:/osk/my-osk-vault`. On Windows, write it
   with forward slashes, which work in PowerShell, JSON and TOML without escaping.
-  Pick a path **without spaces**: hook commands are plain command lines, and a
-  path without spaces needs no quoting in any shell. On Windows, a folder such
-  as `C:/osk` also avoids a user name that contains a space.
+  Pick a path **without spaces or shell special characters** such as `&`, `%` or
+  `$`: hook commands are plain command lines, and such a path needs no quoting in
+  any shell. On Windows, a folder such as `C:/osk` also avoids a user name that
+  contains a space.
 - **`my-app`** stands for one of your project repositories.
 - **Shells.** Windows commands are for PowerShell. macOS/Linux commands are for
   bash or zsh. Commands that start with `.venv` run from the vault root.

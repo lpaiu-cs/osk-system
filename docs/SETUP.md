@@ -74,7 +74,11 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
 - **하네스.** 이 기기에서 흔적(설정 폴더나 PATH의 CLI)이 있는 호스트를 잇는다 — Claude
   Code·Codex, 그리고 구독 fork가 없는 Kiro(아래 'Kiro에 잇는다').
   `--harness claude`처럼 고를 수 있다. 등록은 이 vault의 엔진 사본과 `.venv`의 Python을
-  부른다.
+  부른다. 훅 명령 한 줄은 그 호스트가 훅을 돌리는 셸의 인용으로 쓴다 — Windows에서 Claude
+  Code는 Git Bash, Codex는 PowerShell, Kiro는 `cmd.exe`다. 공백이나 `&` 같은 셸 특수문자가
+  든 경로는 쌍따옴표로 싸고, PowerShell에는 명령 앞에 `&`를 둔다. 쌍따옴표 안에서도 그 셸이
+  푸는 글자(cmd의 `%` `!`, bash·PowerShell의 `$` `` ` ``)가 든 경로면 아무것도 쓰기 전에
+  멈춘다 — 그 호스트를 빼려면 `--harness`로 나머지를 고른다.
 - **확인.** `osk.update`와 같다. 첫 `--apply`는 계획과 `approval_required`를 내고
   멈춘다. 같은 명령을 1시간 안에 다시 부르면 계획이 그대로일 때만 적용한다. 할 일이
   없으면 확인 없이 끝난다.
@@ -583,8 +587,8 @@ Kiro는 B 등급이다 — 시작·입력·종료 훅과 대화 전사는 있고
 ```
 
 - Kiro는 `~/.kiro/hooks/`의 JSON을 모두 읽고, 작업 폴더의 `.kiro/hooks/`도 읽는다. 훅은
-  **신뢰한 작업 폴더에서만** 돈다. 명령은 셸로 돈다(Windows는 `cmd.exe`) — 공백 든
-  경로는 쌍따옴표로 싼다. 제한 시간은 기본 60초다.
+  **신뢰한 작업 폴더에서만** 돈다. 명령은 셸로 돈다(Windows는 `cmd.exe`) — 공백이나 `&`
+  같은 셸 특수문자가 든 경로는 쌍따옴표로 싼다. 제한 시간은 기본 60초다.
 - 훅은 stdin JSON으로 `session_id`·`hook_event_name`·`cwd`(입력 훅은 `prompt`도)를
   받고, 환경에 `KIRO_SESSION_ID`가 있다. 그것이 `session_id`와 같을 때 osk는 Kiro의
   훅으로 안다.
@@ -620,8 +624,8 @@ CLI가 모두 없다)는 건너뛴다.
   (`command`와 `args`)과 셸 형식 한 줄을 모두 읽는다. MCP 등록의 Python은 한 번 띄워
   판본과 서버가 import하는 패키지를 본다 — 이 명령을 돌리는 Python이 아니라 등록된
   Python이 서버를 띄운다. 안내하는 명령은 공백 든 경로도 그대로 쓰도록 인용한다 —
-  터미널에 붙일 명령은 PowerShell·POSIX 규칙으로, 훅 설정에 넣을 한 줄은 doctor가
-  등록을 읽는 규칙으로.
+  터미널에 붙일 명령은 PowerShell·POSIX 규칙으로, 훅 설정에 넣을 한 줄은 setup과 같이
+  그 호스트가 훅을 돌리는 셸의 규칙으로('설치 도구'의 하네스).
 - **실행.** 세 훅은 불릴 때마다 호스트·사건별 마지막 시각을 이 기기에 남긴다(Git
   디렉터리의 `osk-hook-runs.json`, 동기화되지 않는다). 적는 것은 호스트 이름·세션
   키·그 훅을 돌린 Python 경로·시각뿐이다. 등록됐는데 기록이 없으면 Claude Code에는

@@ -67,10 +67,11 @@ def _server() -> Path:
     return _engine_dir() / "mcp_server.py"
 
 
-def _command(event: str) -> str:
-    """훅 설정에 넣을 한 줄 — doctor가 등록을 읽는 규칙으로 인용한다. 경로는 `/`로
-    쓴다: 호스트가 어느 셸로 돌리든(PowerShell·cmd·bash) 같은 파일을 가리킨다."""
-    return base.hook_line([_python().as_posix(), _script(event).as_posix()])
+def _command(adapter, event: str) -> str:
+    """훅 설정에 넣을 한 줄 — 호스트가 명령을 넘기는 셸의 인용이고, doctor가 등록을 읽는
+    규칙으로 되읽힌다. 경로는 `/`로 쓴다: 호스트가 어느 셸로 돌리든(PowerShell·cmd·bash)
+    같은 파일을 가리킨다. 그 셸이 풀 수 없는 경로면 어댑터가 올린다."""
+    return adapter.hook_command([_python().as_posix(), _script(event).as_posix()])
 
 
 def hosts(only: list[str] | None = None) -> list:
@@ -129,7 +130,12 @@ def _hooks(adapter, uninstall: bool) -> dict:
                     and base.mentions(h["tokens"], script):
                 notes.add(f"{name}: {h['file']}에도 이 vault의 훅이 등록돼 있다 — 한 곳으로 줄인다"
                           "(osk는 같은 호출을 한 번만 처리한다)")
-        desired = adapter.hook_group(event, _command(event))
+        try:
+            desired = adapter.hook_group(event, _command(adapter, event))
+        except ValueError as e:
+            if not uninstall:
+                return {"file": str(path), "error": f"{type(e).__name__}: {e}", "events": {}, "changed": False}
+            desired = None
         if uninstall:
             action, result = ("remove" if mine else "absent"), kept
         elif mine == 1 and desired in groups:
