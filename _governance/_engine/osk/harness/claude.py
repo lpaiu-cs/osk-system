@@ -95,6 +95,8 @@ class Claude(Adapter):
         # 파일·셸 도구로 MCP의 보호를 비껴가지 못한다. 남는 이 vault의 MCP 도구는 묻지 않고
         # 허용하고, 그 밖은 묻지 않고 거절한다(dontAsk). 로그인은 claude.ai 구독만 쓴다 —
         # 실행기가 이 선언을 보고 fork와 같은 자격을 적용한다(`subscription_only`).
+        # ponytail: 설정 JSON이 argv에 실려, 배치 파일 CLI(npm `claude.cmd`) 뒤에서는 vault 경로의 `&`를
+        # cmd가 가른다 — `growth.check_command`가 거절한다. 그런 설치를 살려야 하면 `--mcp-config`에 파일을 준다.
         config = json.dumps({"mcpServers": {MCP_NAME: {"command": python, "args": [server],
                                                        "env": {"OSK_VAULT_ROOT": root}}}})
         return [cli, "-p", "--output-format", "stream-json", "--verbose",

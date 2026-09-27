@@ -905,11 +905,32 @@ def check_command(command: list[str], *, follow_desktop_update: bool = True) -> 
         # exec searches PATH after chdir(cwd); Windows searches from the caller.
         search_path = os.pathsep.join(str(core.ROOT / entry) for entry in os.get_exec_path())
     executable = shutil.which(program, path=search_path)
-    if executable:
-        executable = str(Path(executable).absolute())  # Keep venv/launcher symlink entrypoints intact.
-    return {"ok": executable is not None, "state": "ready" if executable else "invalid_command",
-            "executable": executable,
-            "violations": [] if executable else ["Growth executable is unavailable: " + command[0]]}
+    if not executable:
+        return {"ok": False, "state": "invalid_command", "executable": None,
+                "violations": ["Growth executable is unavailable: " + command[0]]}
+    executable = str(Path(executable).absolute())  # Keep venv/launcher symlink entrypoints intact.
+    # Windows starts a batch file (an npm `claude.cmd`) through cmd.exe, which reads the line
+    # list2cmdline wrote by its own rules: it toggles quotes on `\"` too, so a JSON argument can
+    # leave a path's `&` outside quotes and split the command. Refuse what cmd would change.
+    acted = (_cmd_acts_on(subprocess.list2cmdline([executable, *command[1:]]))
+             if os.name == "nt" and Path(executable).suffix.lower() in (".bat", ".cmd") else None)
+    if acted:
+        return {"ok": False, "state": "invalid_command", "executable": executable,
+                "violations": [f"Growth executable is a batch file: cmd.exe would act on {acted!r} in "
+                               f"its arguments and change them — use the native CLI (.exe): {executable}"]}
+    return {"ok": True, "state": "ready", "executable": executable, "violations": []}
+
+
+def _cmd_acts_on(line: str) -> str | None:
+    """The first character cmd.exe would act on in a command line: an operator or escape outside
+    quotes, an expansion or line break anywhere. None when cmd passes the line on unchanged."""
+    quoted = False
+    for ch in line:
+        if ch == '"':
+            quoted = not quoted
+        elif ch in "%!\r\n" or not quoted and ch in "&|<>^":
+            return ch
+    return None
 
 
 def run(command: list[str], limit: int = 3, timeout: int = 600, *,

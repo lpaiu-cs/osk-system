@@ -91,7 +91,10 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
     있어도 파일·셸 도구로 MCP의 보호를 비껴가지 못한다. 그 서버의 도구는 묻지 않고 허용하고
     나머지는 거절한다(`--permission-mode dontAsk`). 로그인은 claude.ai 구독만 쓴다 — 실행
     때의 자격 확인은 아래 '정기 재검토'. Codex는 명령 파일을 직접 만든다. 있는 명령 파일은
-    덮지 않는다. 정기 실행은 한 기기에만 둔다 — 결과는 대장으로 모든 기기가 나눈다.
+    덮지 않는다. Windows에서 CLI가 배치 파일(npm 설치의 `claude.cmd`)이면 cmd가 인자를 다시
+    읽는다 — vault 경로에 `&`·`^`·`%`·`!`가 있으면 인자가 바뀌므로 계획에서 멈춘다. 그때는
+    네이티브 CLI(`claude.exe`)를 쓴다. 정기 실행은 한 기기에만 둔다 — 결과는 대장으로 모든
+    기기가 나눈다.
   - `--sync` — 동기화 데몬(아래 '동기화 데몬')을 상시 서비스로 등록하고 띄운다. 먼저
     vault가 저장소 루트인지, 로컬 `main`이 있는지, `origin`의 fetch 주소와 모든 push 대상
     (`pushurl`·`pushInsteadOf`를 푼 실제 전송 자리)이 공개 정본이 아닌지, 묻지 않고 push할
