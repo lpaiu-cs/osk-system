@@ -23,6 +23,11 @@ os.environ["OSK_VAULT_ROOT"] = str(Path(TMP.name) / "vault")
 sys.path.insert(0, str(ENGINE))
 from osk import core, integration as it, raw, scope_memory, transcripts, validate, write
 ROOT = core.ROOT
+# `core.ROOT` is fixed when osk is first imported. Loaded after another suite in one
+# process, this module would get that suite's vault — once the repository itself — and
+# write into it. Stop before the first write.
+if ROOT != Path(os.environ["OSK_VAULT_ROOT"]).resolve():
+    raise RuntimeError(f"test_integration needs its own process: osk is already bound to {ROOT}")
 
 validate.make_mini_vault(ROOT)
 (ROOT / "00_Scope/Capture").mkdir()

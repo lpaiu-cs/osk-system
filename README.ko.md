@@ -89,7 +89,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 macOS·Linux 기준:
 
 ```bash
-git clone --branch v4.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python3.12 -m venv .venv
