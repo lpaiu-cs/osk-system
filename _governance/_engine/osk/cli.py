@@ -520,6 +520,12 @@ def main(argv=None):
         except Exception as e:
             recovery = {"error": str(e)}
         try:
+            # 포착이 막힌 대화 — 훅은 막힌 동안 한 줄만 싣는다(§9-3 3항)
+            from . import integration
+            capture = integration.blocked()
+        except Exception as e:
+            capture = {"error": str(e)}
+        try:
             # 판본과 마지막 릴리스 확인 — 네트워크에 닿지 않는다(`osk.update --check`)
             from . import update_check
             release = update_check.report()
@@ -533,6 +539,7 @@ def main(argv=None):
                             if d["effective"]],
             "evictions": ev,
             "scope_recovery": recovery,
+            "capture_blocked": capture,
             "update": release,
             **({"warnings": [gw]} if gw else {}),
             "root": str(ROOT),

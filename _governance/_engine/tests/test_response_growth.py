@@ -961,6 +961,39 @@ class ResponseGrowthTests(unittest.TestCase):
             assert not rg.launch(env,'own'), 'bad configuration prevented capture fallback'
         ''')
 
+    def test_stuck_capture_keeps_one_line_between_review_turns(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', 'shared memory sentinel', space='00_Scope/W1')
+            native = core.ROOT/'native.jsonl'
+            native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
+                json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            stuck = ValueError('copied native round ID has different content; capture remains pending')
+            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
+                    patch.object(integration,'_inherited_rounds',side_effect=stuck):
+                assert '검토 경고' in hook.capture_block(env,'own',startup=True)
+                for n in range(1,16):
+                    text = hook.capture_block(env,'own')
+                    if n in {9,15}:
+                        assert '[osk 케이던스' in text and '포착 진단' in text, (n,text)
+                        assert 'shared memory sentinel' in text, 'the review turn still carries memory'
+                    else:
+                        assert text.startswith('[osk 포착 대기 — ValueError: copied native round ID'), (n,text)
+                        assert '\\n' not in text and 'shared memory sentinel' not in text, (n,text)
+                state = integration.status('claude','own')
+                assert state['prompt_count'] == 15 and state['capture_pending'], state
+                assert state['reviewed_rounds'] == 0, 'a stuck capture is not a review'
+                blocked = integration.blocked()
+                assert blocked['count'] == 1 and blocked['conversations'][0]['conversation_id'] == 'own', blocked
+                assert blocked['conversations'][0]['observed'].endswith('(KST)'), blocked
+        ''')
+
     def test_login_loss_after_input_does_not_consume_stop_attempt(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration
