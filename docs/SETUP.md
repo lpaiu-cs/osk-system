@@ -1328,10 +1328,13 @@ python3 _governance/_engine/scripts/recover.py --apply
   세션 시작 훅이 사용자 화면에 경고(`systemMessage`)를 띄우고, 에이전트 문맥에
   `[osk 새 릴리스 — …]`와 갱신 명령을 싣는다. 출처가 GitHub 저장소이면 두 자리 모두
   그 판의 릴리스 노트 주소를 싣는다 — 메이저 판이면 노트 머리가 이행 안내를 가리킨다.
-  `overview`는 새 릴리스가 있는 동안 `update` 필드(`latest`·`current`·`how`, GitHub
-  출처면 `notes`)를 싣고, 그 기기에서 아직 알리지 않았으면
-  `notify`를 더한다 — 훅이 없는 MCP 클라이언트도 이 길로 안다. `status`는 언제나
-  `update`에 판본과 마지막 확인을 싣는다.
+  사용자 화면만의 자리가 없는 Kiro·Antigravity에서는 에이전트가 사용자에게 한 줄로 전하게
+  하고, 그 블록이 실제로 문맥에 실렸을 때만 알린 것으로 적는다 — 한도에 밀려 접혔으면
+  `overview`가 이어받는다. `overview`는 새 릴리스가 있는 동안 `update` 필드(`latest`·
+  `current`·`how`, GitHub 출처면 `notes`)를 싣고, 그 기기에서 아직 알리지 않았으면
+  `notify`를 더한다 — 훅이 없는 MCP 클라이언트도 이 길로 안다. 정기 실행과 fork의
+  `overview`는 사용자에게 닿지 않으므로 `notify`를 싣지 않고 알림도 쓰지 않는다. `status`는
+  언제나 `update`에 판본과 마지막 확인을 싣는다.
 - **적용.** 사용자가 갱신을 요청하면 에이전트는 `--to <새 판> --apply`로 위의 두
   단계를 밟는다. 알림은 적용 승인을 대신하지 않는다.
 - **끄기.** `.osk/config.json`에 `"update_check": false`를 두거나 환경에

@@ -594,10 +594,11 @@ def _apply(p: dict) -> dict:
     for item in p["hosts"]:
         adapter, mcp, hooks = adapters.get(item["harness"]), item["mcp"], item["hooks"]
         if mcp.get("run"):
-            # 확인한 명령이 지금도 같은 명령인지 다시 본다 — 그 사이 다른 등록이 생겼으면
-            # 확인한 적 없는 등록을 바꾸게 된다.
+            # 확인한 명령이 지금도 같은 명령인지, 그것이 걷는 남의 등록(`replaces`)도 같은지
+            # 다시 본다 — 이름으로 걷는 명령은 그 사이 다른 vault가 그 이름을 가져가도
+            # 같아서, 확인한 적 없는 등록을 지우게 된다.
             now = _mcp(adapter, p["uninstall"])
-            if (now.get("action"), now.get("run")) != (mcp.get("action"), mcp.get("run")):
+            if any(now.get(k) != mcp.get(k) for k in ("action", "run", "replaces")):
                 done.append({"step": f"{adapter.name} mcp", "ok": False,
                              "error": "확인 뒤 MCP 등록이 바뀌었다 — 실행하지 않았다. "
                                       "setup을 다시 계획해 확인받는다"})

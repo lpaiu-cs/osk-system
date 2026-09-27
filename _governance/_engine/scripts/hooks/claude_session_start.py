@@ -420,16 +420,19 @@ def _recheck_note(rechecks) -> str:
     return "\n".join(notes)
 
 
-def _release_notice() -> tuple[str, str]:
-    """(에이전트 문맥, 사용자 화면) — 새 릴리스를 이 기기에서 아직 알리지 않았을 때만.
-    확인은 기다리지 않는다: 지난 확인이 낡았으면 분리 프로세스로 띄우고, 이번
-    세션에는 지난 결과만 싣는다(`osk.update_check`)."""
+def _release_notice(host=None) -> tuple[str, str, object]:
+    """(에이전트 문맥, 사용자 화면, 블록이 실렸을 때 부를 것) — 새 릴리스를 이 기기에서
+    아직 알리지 않았을 때만. 확인은 기다리지 않는다: 지난 확인이 낡았으면 분리 프로세스로
+    띄우고, 이번 세션에는 지난 결과만 싣는다(`osk.update_check`). 사용자 화면이 없는
+    호스트는 블록이 실렸을 때만 알린 것으로 적는다."""
     try:
         from osk import update_check
         update_check.ensure_fresh()
-        return update_check.session_notice()
+        screen = host is None or host.screen
+        agent, user = update_check.session_notice(screen=screen)
+        return agent, user, (None if screen or not agent else update_check.mark_notified)
     except Exception as exc:
-        return f"[osk 릴리스 확인 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", ""
+        return f"[osk 릴리스 확인 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", "", None
 
 
 def main() -> None:
@@ -463,8 +466,9 @@ def main() -> None:
         if found is None:
             return
         captured, ident = found
-        notice, shown = _release_notice()
-        notice = Block("notice", notice, 40, label="새 릴리스 알림(overview의 update)")
+        notice, shown, notified = _release_notice(host)
+        notice = Block("notice", notice, 40, label="새 릴리스 알림(overview의 update)",
+                       on_shown=notified)
         scope = write.resolve_session(key)
         bootstrap = Block("bootstrap", _bootstrap(key, bound=bool(scope)))
         try:

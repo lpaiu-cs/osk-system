@@ -309,6 +309,48 @@ assert 'systemMessage' not in second, second
 assert '[osk 새 릴리스' not in second['hookSpecificOutput']['additionalContext'], second
 ''')
 
+    def test_a_host_without_a_user_screen_relays_the_notice_through_the_agent(self):
+        self.check_case(r'''
+done('v4.0.0', '0')
+cached()
+project = root.parent / 'my-app'
+project.mkdir()
+hook = Path(update.__file__).resolve().parents[1] / 'scripts/hooks/claude_session_start.py'
+def start(sid):
+    # Antigravity: camelCase input; the context comes back only as an injected step.
+    payload = {'conversationId': sid, 'workspacePaths': [str(project)],
+               'transcriptPath': str(root.parent / sid / 'transcript_full.jsonl')}
+    r = subprocess.run([sys.executable, str(hook)], input=json.dumps(payload).encode(),
+                       capture_output=True, timeout=90,
+                       env={**os.environ, 'ANTIGRAVITY_CONVERSATION_ID': sid})
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.decode('utf-8'))
+first = start('a1')
+assert 'systemMessage' not in first, first
+text = first['injectSteps'][0]['ephemeralMessage']
+line = text[text.index('[osk 새 릴리스 — v4.10.0 · 이 vault v4.0.0]'):]
+assert '사용자에게 한 줄로 전한다' in line and 'osk 업데이트해 줘' in line, line
+second = start('a2')      # it was shown: the next conversation on this device the same day
+assert '[osk 새 릴리스' not in second['injectSteps'][0]['ephemeralMessage'], second
+''')
+
+    def test_the_notice_is_spent_only_where_it_reaches_the_user(self):
+        self.check_case(r'''
+done('v4.0.0', '0')
+cached()
+# A growth worker's overview reaches no user: no `notify`, and the notice stays (PR #114 review).
+with mock.patch.dict(os.environ, {'OSK_GROWTH_WORKER': '1'}):
+    seen = update_check.surface()
+assert seen['latest'] == 'v4.10.0' and 'notify' not in seen, seen
+# Without a user screen the notice is spent when its block was shown, not when it was built.
+agent, user = update_check.session_notice(screen=False)
+assert user == '' and '사용자에게 한 줄로 전한다' in agent, agent
+assert update_check.session_notice(screen=False) == (agent, ''), 'spent before it was shown'
+update_check.mark_notified()
+assert update_check.session_notice(screen=False) == ('', '') == update_check.session_notice()
+assert 'notify' not in update_check.surface()
+''')
+
     def test_overview_carries_the_release_for_hosts_without_hooks(self):
         self.check_case(r'''
 done('v4.0.0', '0')

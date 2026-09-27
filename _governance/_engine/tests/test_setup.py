@@ -368,6 +368,17 @@ assert mcp['file'] == str(claude_home / '.claude.json'), mcp
 rep, _ = S.run(only=['claude'])
 mcp = rep['hosts'][0]['mcp']
 assert mcp['action'] == 'replace' and elsewhere in mcp['replaces'][0], mcp
+# If a third vault took the name after the plan, the confirmed commands are the same but the
+# entry they would remove is not: nothing runs (PR #114 review).
+p = S.plan(['claude'])
+third = '/third/_governance/_engine/mcp_server.py'
+(claude_home / '.claude.json').write_text(json.dumps({'mcpServers': {'osk-system': {
+    'command': py, 'args': [third]}}}), encoding='utf-8')
+ran = len(calls())
+res = S._apply(p)
+steps = {s['step']: s for s in res['steps']}
+assert not res['ok'] and '다시 계획' in steps['claude mcp']['error'] and len(calls()) == ran, (res, calls()[ran:])
+assert read(claude_home / '.claude.json')['mcpServers']['osk-system']['args'] == [third]
 ''')
 
     def test_the_bootstrap_prepares_nothing_for_a_plan_and_hands_over_to_the_engine(self):

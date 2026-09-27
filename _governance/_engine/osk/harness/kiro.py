@@ -41,6 +41,7 @@ class Kiro(Adapter):
     matchers: dict = {}
     mcp_direct = True
     hook_budget = 2_800
+    screen = False          # 훅 출력은 모두 모델 문맥이다
 
     def home(self) -> Path:
         return Path.home() / ".kiro"

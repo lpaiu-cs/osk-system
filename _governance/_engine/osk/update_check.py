@@ -178,16 +178,30 @@ def ensure_fresh():
     return core.spawn_worker("osk.update_check")
 
 
+def _seen(version: str) -> bool:
+    """이 기기가 이 릴리스를 `NOTICE_EVERY` 안에 이미 알렸는가."""
+    seen = _read(NOTICE)
+    at = seen.get("at")
+    return (seen.get("version") == version and isinstance(at, (int, float))
+            and 0 <= time.time() - at < NOTICE_EVERY)
+
+
 def _claim(version: str) -> bool:
     """이 기기가 이 릴리스를 `NOTICE_EVERY` 안에 알리지 않았으면 표식을 남기고
-    참이다. 훅(사용자 화면)과 표면(`overview`)이 이 표식 하나를 나눠 쓴다."""
-    seen, now = _read(NOTICE), time.time()
-    at = seen.get("at")
-    if (seen.get("version") == version and isinstance(at, (int, float))
-            and 0 <= now - at < NOTICE_EVERY):
+    참이다. 훅(사용자 화면)과 표면(`overview`)이 이 표식 하나를 나눠 쓴다 — 표식은
+    사용자에게 닿는 길에서만 남긴다."""
+    if _seen(version):
         return False
-    _write(NOTICE, {"version": version, "at": now})
+    _write(NOTICE, {"version": version, "at": time.time()})
     return True
+
+
+def mark_notified() -> None:
+    """사용자 화면이 없는 호스트에서 알림 블록이 문맥에 실렸을 때 표식을 남긴다 — 접혔으면
+    남기지 않아 `overview`의 `notify`가 전달을 이어받는다."""
+    avail = available()
+    if avail:
+        _claim(avail["latest"])
 
 
 def notes_url(version: str) -> str | None:
@@ -213,16 +227,26 @@ def _how(latest: str) -> str:
             f"재승인을 받는다.")
 
 
-def session_notice() -> tuple[str, str]:
+def session_notice(screen: bool = True) -> tuple[str, str]:
     """(에이전트 문맥, 사용자 화면) — 알릴 새 릴리스가 있고 이 기기에서 아직 알리지
-    않았을 때만. 사용자 화면의 문구는 모델 문맥이 아니다(훅의 `systemMessage`)."""
+    않았을 때만. 사용자 화면의 문구는 모델 문맥이 아니다(훅의 `systemMessage`).
+
+    사용자 화면이 없는 호스트(`screen=False`, Kiro·Antigravity)에서는 모델이 전달하는
+    유일한 길이라 사용자에게 한 줄로 전하게 하고, 표식은 남기지 않는다 — 그 블록이 실제로
+    실렸을 때 훅이 `mark_notified`로 남긴다."""
     avail = available()
-    if not avail or not _claim(avail["latest"]):
+    if not avail or _seen(avail["latest"]):
         return "", ""
     latest, cur = avail["latest"], avail["current"]
+    if screen:
+        _claim(latest)
     notes = notes_url(latest)
     user = (f"osk-system 새 릴리스 {latest} (이 vault는 {cur}) — 적용하려면 에이전트에게 "
             f"\"osk 업데이트해 줘\"라고 요청한다." + (f" 릴리스 노트: {notes}" if notes else ""))
+    if not screen:
+        return (f"[osk 새 릴리스 — {latest} · 이 vault {cur}] 이 호스트에는 사용자 화면 알림이 "
+                f"없다 — 사용자에게 한 줄로 전한다: {user} 먼저 권하거나 실행하지 않는다. "
+                + _how(latest)), ""
     agent = (f"[osk 새 릴리스 — {latest} · 이 vault {cur}] 사용자 화면에 같은 알림을 "
              f"띄웠다. 먼저 권하거나 실행하지 않는다. " + _how(latest))
     return agent, user
@@ -236,7 +260,8 @@ def surface() -> dict | None:
         return None
     notes = notes_url(avail["latest"])
     out = {**avail, **({"notes": notes} if notes else {}), "how": _how(avail["latest"])}
-    if _claim(avail["latest"]):
+    # 성장 워커(정기 실행·fork)의 조회는 사용자에게 닿지 않는다 — 표식을 쓰지 않는다.
+    if os.environ.get("OSK_GROWTH_WORKER") != "1" and _claim(avail["latest"]):
         out["notify"] = "이 기기에서 아직 알리지 않았다 — 사용자에게 한 줄로 알린다"
     return out
 

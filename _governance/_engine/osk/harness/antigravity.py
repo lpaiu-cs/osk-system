@@ -46,6 +46,7 @@ class Antigravity(Adapter):
     matchers: dict = {}
     mcp_direct = True
     silence = "{}"          # 아무것도 싣지 않는 호출도 JSON 결과를 낸다
+    screen = False          # 주입은 모델 문맥의 단계뿐이다
 
     def home(self) -> Path:
         return Path.home() / ".gemini" / "config"

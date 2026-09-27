@@ -121,6 +121,8 @@ class Adapter:
     hook_budget = 9_500
     # 아무것도 싣지 않는 훅 호출의 출력 — JSON 결과만 받는 호스트(Antigravity)는 `{}`다.
     silence = ""
+    # 사용자 화면만의 알림 자리(훅의 `systemMessage`)가 있는가 — 없으면 모델이 전한다.
+    screen = True
 
     def fires_on(self, event: str, matcher) -> frozenset[str]:
         """그 matcher의 등록이 불리는 원인 — 원인이 없는 사건은 `{"*"}`(늘 불린다).
