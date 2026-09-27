@@ -643,7 +643,7 @@ two steps below. The file contents are in 'Antigravity에 잇는다' in [SETUP](
 **Ab. Register the hooks.** Put the three hooks (SessionStart, PreInvocation and Stop)
 under the hook name `osk-system` in `~/.gemini/config/hooks.json`. Their commands call the
 same scripts as in 3b. On Windows the commands are written without quotes, so the Python
-and vault paths must not contain spaces.
+and vault paths must not contain spaces or cmd special characters such as `&`.
 
 **Check:** Ask the agent in a new conversation for the session key the osk hook gave it. It
 should answer with the repository name. `doctor --harness antigravity` checks it

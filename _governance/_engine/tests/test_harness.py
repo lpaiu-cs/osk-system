@@ -207,12 +207,13 @@ assert ag.fires('start', {}) and ag.fires('stop', {'invocationNum': 3})
 seen = harness.normalize({'conversationId': 'a1', 'workspacePaths': ['c:/w'], 'transcriptPath': '/t.jsonl'})
 assert (seen['session_id'], seen['cwd'], seen['transcript_path']) == ('a1', 'c:/w', '/t.jsonl'), seen
 assert harness.normalize({'session_id': 's', 'cwd': 'x'}) == {'session_id': 's', 'cwd': 'x'}
-if os.name == 'nt':   # cmd /c cannot take a quoted path; sh -c can
-    try:
-        ag.hook_command(['C:/Program Files/py.exe', 'C:/v/hook.py'])
-        raise AssertionError('a quoted command was accepted for cmd /c')
-    except ValueError as exc:
-        assert 'Antigravity' in str(exc), exc
+if os.name == 'nt':   # cmd /c cannot take a quoted path, and unquoted `&` splits the command
+    for odd in ('C:/Program Files/py.exe', 'C:/R&D/py.exe'):
+        try:
+            ag.hook_command([odd, 'C:/v/hook.py'])
+            raise AssertionError(f'{odd} was accepted for cmd /c')
+        except ValueError as exc:
+            assert 'Antigravity' in str(exc), exc
 assert ag.hook_command(['C:/py/python.exe', 'C:/v/hook.py']) == 'C:/py/python.exe C:/v/hook.py'
 claude, codex = harness.get('claude'), harness.get('codex')
 assert claude.parse_version('2.1.280 (Claude Code)') == '2.1.280'
@@ -625,6 +626,8 @@ def step(n, typ, source='MODEL', **extra):
 def ask(text):
     return ('<USER_REQUEST>\n' + text + '\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n'
             'The current local time is: 2026-09-27T16:14:05+09:00.\n</ADDITIONAL_METADATA>')
+tricky = ('    들여쓴 첫 줄\n이 코드의 "</USER_REQUEST>" 다음 문장도 보존한다.\n</USER_REQUEST>\n'
+          '줄 머리의 닫는 태그 뒤도 사용자의 말이다.')
 rows(transcript,
      step(0, 'USER_INPUT', 'USER_EXPLICIT', content=ask('첫 질문')),
      step(1, 'EPHEMERAL_MESSAGE', 'SYSTEM_SDK', content='[osk 세션 시작 — 주입된 문맥]'),
@@ -636,7 +639,9 @@ rows(transcript,
      step(5, 'USER_INPUT', 'USER_EXPLICIT', content=ask('두 번째')),
      step(6, 'PLANNER_RESPONSE', tool_calls=[{'name': 'run_command', 'args': {'CommandLine': 'ls'}}]),
      step(7, 'ERROR_MESSAGE', 'SYSTEM', content='model error'),
-     step(8, 'USER_INPUT', 'USER_EXPLICIT', content=ask('세 번째')),
+     # The user's words stay byte for byte: indentation, and a closing tag they typed.
+     step(8, 'USER_INPUT', 'USER_EXPLICIT', content=ask(tricky) + '\n<USER_SETTINGS_CHANGE>\n'
+          'The user changed setting `Model Selection`.\n</USER_SETTINGS_CHANGE>'),
      step(9, 'CHECKPOINT', 'SYSTEM', content='checkpoint'),
      step(10, 'PLANNER_RESPONSE', content='셋째 답'),
      # The next prompt, before its reply, waits as the tail.
@@ -675,9 +680,15 @@ raw_text = (root / st['pending_refs'][0].split('#')[0]).read_text(encoding='utf-
 assert raw_text.count('<!-- osk-capture: dialogue-v1 ') == 3, raw_text
 assert '첫 질문' in raw_text and '읽어 보겠습니다.' in raw_text and '답은 42입니다.' in raw_text, raw_text
 assert '셋째 답' in raw_text and '"type": "superseded"' in raw_text and '네 번째' not in raw_text, raw_text
+assert '### user\n\n' + tricky + '\n' in raw_text, raw_text
 # Hook context, thinking, tool payloads and the system metadata are not the dialogue.
-for outside in ('주입된 문맥', 'internal thought', 'FILE BODY', 'ADDITIONAL_METADATA', 'checkpoint'):
+for outside in ('주입된 문맥', 'internal thought', 'FILE BODY', 'ADDITIONAL_METADATA', 'checkpoint',
+                'USER_SETTINGS_CHANGE', 'Model Selection'):
     assert outside not in raw_text, (outside, raw_text)
+# An input of a shape the parser does not know is kept whole rather than cut.
+from osk import transcripts
+for odd in ('no wrapper', '<USER_REQUEST>\nopen only', '<USER_REQUEST>\nx\n</USER_REQUEST>\ntrailing'):
+    assert transcripts._ag_user(odd) == odd, odd
 assert '"tool_evidence_ref"' in raw_text and '"view_file"' in raw_text, raw_text
 # A transcript in another conversation's folder is not read.
 other = integration.capture('antigravity', 'b8d2e3f4-0000-4000-8000-000000000000', str(transcript), 'proj')

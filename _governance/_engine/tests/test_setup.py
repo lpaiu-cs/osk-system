@@ -703,15 +703,17 @@ rep, _ = S.run(only=['antigravity'])
 a = rep['hosts'][0]
 assert a['mcp']['action'] == 'keep' and set(a['hooks']['events'].values()) == {'keep'}, a
 assert not rep['changes'], rep
-# On Windows a path with a space cannot be registered: setup refuses before writing anything,
-# and says how to connect the other hosts. Removing osk's hooks never needs the path.
+# On Windows a path cmd would split — a space, or `&` and the like without one — cannot be
+# registered: setup refuses before writing anything, and says how to connect the other hosts.
+# Removing osk's hooks never needs the path.
 if os.name == 'nt':
     before = hooks_json.read_bytes()
-    with mock.patch.object(S, '_python', lambda: Path('C:/Program Files/Python/python.exe')):
-        rep, code = S.run(apply=True, only=['antigravity'])
-        assert code == 1 and any('--harness' in e for e in rep['errors']), rep
-        rep, _ = S.run(uninstall=True, only=['antigravity'])
-        assert rep['ok'] and set(rep['hosts'][0]['hooks']['events'].values()) == {'remove'}, rep
+    for odd in ('C:/Program Files/Python/python.exe', 'C:/R&D/Python/python.exe'):
+        with mock.patch.object(S, '_python', lambda: Path(odd)):
+            rep, code = S.run(apply=True, only=['antigravity'])
+            assert code == 1 and any('--harness' in e for e in rep['errors']), (odd, rep)
+            rep, _ = S.run(uninstall=True, only=['antigravity'])
+            assert rep['ok'] and set(rep['hosts'][0]['hooks']['events'].values()) == {'remove'}, rep
     assert hooks_json.read_bytes() == before
 # Uninstall takes out only osk's name; with nothing else left the file goes.
 S.run(apply=True, uninstall=True, only=['antigravity'])

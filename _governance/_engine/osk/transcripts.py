@@ -648,16 +648,20 @@ def _kiro(rows: list, sid: str) -> dict:
 # Antigravity steps that are context, not dialogue: hook and system injections, the
 # checkpoint and the compaction history. ERROR_MESSAGE is kept as an event.
 _AG_CONTEXT = {"EPHEMERAL_MESSAGE", "SYSTEM_MESSAGE", "CHECKPOINT", "CONVERSATION_HISTORY"}
-_AG_REQUEST = re.compile(r"<USER_REQUEST>\n?(.*?)\n?</USER_REQUEST>", re.S)
+# The host wraps the user's words and appends its own blocks (`\n<TAG>\n…\n</TAG>`). The
+# wrapper ends at the last closing tag that only host blocks follow, so a closing tag the user
+# typed stays in their words.
+_AG_REQUEST = re.compile(r"<USER_REQUEST>\n(.*)\n</USER_REQUEST>((?:\n<([A-Z][A-Z0-9_]*)>\n.*?\n</\3>)*)", re.S)
 
 
 def _ag_user(content) -> str:
-    """The user's own words — the input wraps them in <USER_REQUEST> and appends system
-    metadata (local time, settings changes) that the user did not write."""
+    """The user's own words, byte for byte — the input wraps them in <USER_REQUEST> and
+    appends system metadata (local time, settings changes) that the user did not write. An
+    input of another shape is kept whole: raw capture must not lose what the user wrote."""
     if not isinstance(content, str):
         return _dump(content)
-    m = _AG_REQUEST.search(content)
-    return m.group(1).strip() if m else content
+    m = _AG_REQUEST.fullmatch(content)
+    return m.group(1) if m else content
 
 
 def _ag_final(step) -> bool:

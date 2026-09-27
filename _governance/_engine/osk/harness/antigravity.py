@@ -30,6 +30,8 @@ HOOK_NAME = MCP_NAME        # hooks.json에서 osk가 소유하는 훅 이름
 _FLAT = {"SessionStart", "PreInvocation", "PostInvocation", "Stop"}
 _POLICY = ("disabled", "disabledTools", "timeout")
 _APPS = ("antigravity", "antigravity-cli", "antigravity-ide")     # 2.0 앱·CLI·IDE의 전사 자리
+# 인용 없는 cmd 명령에서 뜻이 바뀌는 문자 — 공백, 연산자·이스케이프·변수 확장, 구분자.
+_CMD_SPECIAL = re.compile(r'[\s&|<>^%!()",;=]')
 
 
 class Antigravity(Adapter):
@@ -84,12 +86,15 @@ class Antigravity(Adapter):
 
     def hook_command(self, argv):
         argv = [str(a) for a in argv]
-        # Windows에서는 명령을 `cmd /c`에 넘기며 큰따옴표를 `\"`로 바꿔, 인용이 필요한(공백 든)
-        # 경로를 cmd가 찾지 못한다. POSIX의 `sh -c`는 인용을 푼다.
-        # ponytail: 공백 경로는 거부한다 — 필요해지면 8.3 짧은 경로로 바꿔 등록한다.
-        if os.name == "nt" and any(re.search(r"\s", a) for a in argv):
-            raise ValueError("Antigravity는 Windows에서 따옴표 든 훅 명령을 풀지 못한다 — 인터프리터와 "
-                             "vault 경로에 공백이 없어야 한다. 다른 호스트만 이으려면 --harness로 고른다")
+        # Windows에서는 명령을 `cmd /c`에 넘기며 큰따옴표를 `\"`로 바꿔, 인용이 필요한 경로(공백,
+        # `&` 같은 cmd 특수문자)를 cmd가 풀지 못한다 — `&`는 명령을 가른다. POSIX의 `sh -c`는
+        # 인용을 푼다.
+        # ponytail: 그런 경로는 거부한다 — 필요해지면 실제 앱에서 확인한 뒤 공백은 8.3 짧은 경로로,
+        # 특수문자는 `^` 이스케이프로 등록한다.
+        if os.name == "nt" and any(_CMD_SPECIAL.search(a) for a in argv):
+            raise ValueError("Antigravity는 Windows에서 훅 명령을 인용 없이 cmd로 돌린다 — 인터프리터와 "
+                             "vault 경로에 공백과 cmd 특수문자(& | < > ^ % ! ( ) , ; =)가 없어야 한다. "
+                             "다른 호스트만 이으려면 --harness로 고른다")
         return hook_line(argv)
 
     def mcp_files(self):

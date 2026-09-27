@@ -618,7 +618,8 @@ Antigravity(2.0 앱)도 세 훅과 대화 전사를 쓴다. 구독 fork는 없�
 
 **Ab. 훅을 등록한다.** `~/.gemini/config/hooks.json`의 `osk-system` 이름 아래에
 SessionStart·PreInvocation·Stop 훅 세 개를 둔다. 명령은 3b와 같은 스크립트를 부른다.
-Windows에서는 명령을 따옴표 없이 쓰므로 Python과 vault 경로에 공백이 없어야 한다.
+Windows에서는 명령을 따옴표 없이 쓰므로 Python과 vault 경로에 공백과 `&` 같은 cmd
+특수문자가 없어야 한다.
 
 **확인:** 새 대화에서 에이전트에게 osk 훅이 알려 준 세션 키를 묻는다. 저장소 이름으로
 답해야 한다. `doctor --harness antigravity`로도 확인한다.
