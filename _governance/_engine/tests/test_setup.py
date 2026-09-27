@@ -129,7 +129,7 @@ def _run(script: str) -> subprocess.CompletedProcess:
         (bin_dir / 'fake_cli.py').write_text(FAKE_CLI, encoding='utf-8')
         env = {k: v for k, v in os.environ.items()
                if k not in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS', 'OSK_GROWTH_WORKER',
-                            'KIRO_SESSION_ID')}
+                            'KIRO_SESSION_ID', 'ANTIGRAVITY_CONVERSATION_ID')}
         env.update(OSK_VAULT_ROOT=str(td / 'vault'), PYTHONPATH=str(ENGINE), PYTHONUTF8='1',
                    OSK_UPDATE_CHECK='0', HOME=str(home), USERPROFILE=str(home),
                    APPDATA=str(home / 'AppData' / 'Roaming'), LOCALAPPDATA=str(home / 'AppData' / 'Local'),
@@ -336,7 +336,7 @@ assert all(len(osk_entries(kept, e)) == 1 for e in base.SCRIPTS), kept
 S.run(apply=True, uninstall=True, only=['claude'])
 S.run(apply=True, uninstall=True, only=['claude'])
 p = S.plan(['claude'])
-start = harness.get('claude').hook_group('start', S._command('start'))
+start = harness.get('claude').hook_group('start', S._command(harness.get('claude'), 'start'))
 settings.write_text(json.dumps({'hooks': {'SessionStart': [start]}}), encoding='utf-8')
 (claude_home / '.claude.json').write_text(json.dumps({'mcpServers': {'osk-system': {
     'command': py, 'args': ['/elsewhere/_governance/_engine/mcp_server.py']}}}), encoding='utf-8')
@@ -664,6 +664,66 @@ rep, code = S.run(apply=True, uninstall=True, only=['kiro'])
 assert code == 0 and not mine.exists() and lint.exists(), rep
 assert any(p.name.startswith('osk-system.json.osk-backup-') for p in hooks.iterdir())
 assert not [c for c in calls() if c[0] == 'kiro'], calls()
+''')
+
+    def test_antigravity_gets_its_own_hook_name_and_a_merged_mcp_entry(self):
+        self.check_case(r'''
+fake_clis()
+baseline()
+config = home / '.gemini' / 'config'
+config.mkdir(parents=True)
+mcp_json, hooks_json = config / 'mcp_config.json', config / 'hooks.json'
+other = {'command': 'node', 'args': ['other.js']}
+mcp_json.write_text(json.dumps({'mcpServers': {'other': other}}), encoding='utf-8')
+lint = {'PostToolUse': [{'matcher': 'run_command', 'hooks': [{'type': 'command', 'command': 'npm run lint'}]}]}
+quiet = {'enabled': False, 'Stop': [{'type': 'command', 'command': 'echo bye'}]}
+hooks_json.write_text(json.dumps({'lint': lint, 'quiet': quiet}), encoding='utf-8')
+assert 'antigravity' in [a.name for a in S.hosts()]
+rep, code = S.run(only=['antigravity'])
+a = rep['hosts'][0]
+assert (a['mcp']['action'], a['mcp']['file']) == ('add', str(mcp_json)), a
+assert a['hooks']['file'] == str(hooks_json) and a['hooks']['events'] == {
+    'SessionStart': 'add', 'PreInvocation': 'add', 'Stop': 'add'}, a
+S.run(apply=True, only=['antigravity'])
+rep, code = S.run(apply=True, only=['antigravity'])
+assert code == 0 and rep['ok'], rep
+assert read(mcp_json) == {'mcpServers': {'other': other, 'osk-system': {
+    'command': vpy.as_posix(), 'args': [server.as_posix()]}}}, read(mcp_json)
+written = read(hooks_json)
+assert (written['lint'], written['quiet']) == (lint, quiet), written
+mine = written['osk-system']
+assert set(mine) == {'SessionStart', 'PreInvocation', 'Stop'}, mine
+for event in ('start', 'input', 'stop'):
+    [h] = mine[harness.get('antigravity').events[event]]
+    # The flat events hold handlers, not matcher groups, and Windows' `cmd /c` gets no quotes.
+    assert h['type'] == 'command' and '"' not in h['command'], h
+    assert base.mentions(base.command_tokens(h), hooks_dir / base.SCRIPTS[event]), h
+# Planned again, everything is kept.
+rep, _ = S.run(only=['antigravity'])
+a = rep['hosts'][0]
+assert a['mcp']['action'] == 'keep' and set(a['hooks']['events'].values()) == {'keep'}, a
+assert not rep['changes'], rep
+# On Windows a path cmd would split — a space, or `&` and the like without one — cannot be
+# registered: setup refuses before writing anything, and says how to connect the other hosts.
+# Removing osk's hooks never needs the path.
+if os.name == 'nt':
+    before = hooks_json.read_bytes()
+    for odd in ('C:/Program Files/Python/python.exe', 'C:/R&D/Python/python.exe'):
+        with mock.patch.object(S, '_python', lambda: Path(odd)):
+            rep, code = S.run(apply=True, only=['antigravity'])
+            assert code == 1 and any('--harness' in e for e in rep['errors']), (odd, rep)
+            rep, _ = S.run(uninstall=True, only=['antigravity'])
+            assert rep['ok'] and set(rep['hosts'][0]['hooks']['events'].values()) == {'remove'}, rep
+    assert hooks_json.read_bytes() == before
+# Uninstall takes out only osk's name; with nothing else left the file goes.
+S.run(apply=True, uninstall=True, only=['antigravity'])
+rep, code = S.run(apply=True, uninstall=True, only=['antigravity'])
+assert code == 0 and read(hooks_json) == {'lint': lint, 'quiet': quiet}, read(hooks_json)
+assert read(mcp_json) == {'mcpServers': {'other': other}}, read(mcp_json)
+hooks_json.write_text(json.dumps({'osk-system': mine}), encoding='utf-8')
+S.run(apply=True, uninstall=True, only=['antigravity'])
+rep, code = S.run(apply=True, uninstall=True, only=['antigravity'])
+assert code == 0 and not hooks_json.exists(), rep
 ''')
 
 

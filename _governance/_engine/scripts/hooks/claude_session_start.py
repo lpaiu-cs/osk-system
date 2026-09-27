@@ -45,6 +45,30 @@ _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 # osk의 훅 사건 → 두 A 호스트의 사건 이름. 엔진을 들이지 못한 진단에만 쓴다.
 _EVENTS = {"start": "SessionStart", "input": "UserPromptSubmit", "stop": "Stop"}
+# 이 호출을 부른 호스트와 무엇을 냈는지 — 아무것도 내지 않은 호출의 끝(`finish`)이 본다.
+_OUT = {"host": None, "written": False}
+
+
+def emit_raw(data: str) -> None:
+    sys.stdout.buffer.write(data.encode("utf-8"))
+    sys.stdout.buffer.flush()
+    _OUT["written"] = True
+
+
+def finish() -> None:
+    """아무것도 내지 않은 호출의 끝 — JSON 결과만 받는 호스트(Antigravity)에는 빈 객체를 낸다."""
+    host = _OUT["host"]
+    if not _OUT["written"] and host is not None and host.silence:
+        emit_raw(host.silence)
+
+
+def normalize(env: dict) -> dict:
+    """호스트마다 다른 훅 입력을 공통 키로(`osk.harness.normalize`) — 실패하면 그대로 둔다."""
+    try:
+        from osk import harness
+        return harness.normalize(env)
+    except Exception:
+        return env
 
 
 def emit_context(event: str, text: str, system_message: str = "", host=None) -> None:
@@ -62,9 +86,7 @@ def emit_context(event: str, text: str, system_message: str = "", host=None) -> 
         output = {"hookSpecificOutput": {"hookEventName": _EVENTS[event], "additionalContext": text}}
         if system_message:
             output["systemMessage"] = system_message
-    data = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
-    sys.stdout.buffer.write(data.encode("utf-8"))
-    sys.stdout.buffer.flush()
+    emit_raw(output if isinstance(output, str) else json.dumps(output, ensure_ascii=False))
 
 
 def note_run(event: str, env: dict | None, key: str | None):
@@ -75,6 +97,7 @@ def note_run(event: str, env: dict | None, key: str | None):
         from osk import harness
         from osk.harness import runs
         host = harness.host_of(env) if isinstance(env, dict) else None
+        _OUT["host"] = host
         runs.record_run(host.name if host else None, event, key)
     except Exception:
         pass
@@ -420,6 +443,7 @@ def main() -> None:
         note_run("start", None, None)
         emit_context("start", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
         return
+    env = normalize(env)
     cwd = env.get("cwd") or os.getcwd()
 
     host = None
@@ -474,3 +498,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    finish()

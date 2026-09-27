@@ -66,7 +66,7 @@ records approval separately from the notes an agent can edit.
 A Python engine exposes MCP tools over stdio, stores knowledge in Markdown,
 and retrieves it with BM25. Obsidian is an optional way to explore the graph;
 Git synchronization is opt-in. Capture and periodic-review adapters currently
-support **Codex and Claude Code**. See the
+support **Codex, Claude Code, Kiro and Antigravity**. See the
 [runtime dependencies](_governance/_engine/requirements.txt).
 
 ## Quick start
@@ -181,8 +181,10 @@ See the [engine's limitations](_governance/_engine/README.md#알려진-한계).
 
 ## Harness coverage
 
-Automatic capture, periodic integration, and subscription-backed forks currently
-have adapters for **Codex and Claude Code**. Being able to call MCP tools from
+Automatic capture and periodic integration currently have adapters for **Codex,
+Claude Code, Kiro and Antigravity**. Subscription-backed forks are for Codex and
+Claude Code only; Kiro and Antigravity always integrate in-session at turns 9 and
+15. Being able to call MCP tools from
 another client does not mean session hooks or autonomous knowledge growth are
 connected.
 

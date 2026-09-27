@@ -236,8 +236,8 @@ def _version(adapter, cli: str | None) -> dict:
         except (OSError, subprocess.TimeoutExpired):
             pass
     if not version:
-        return _item("info", "판본", f"알 수 없다 — 포착한 대화도 PATH의 `{adapter.cli}`도 판본을 주지 "
-                     f"않았다 (검증 {adapter.verified})")
+        asked = f"포착한 대화도 PATH의 `{adapter.cli}`도" if adapter.cli else "판본을 물을 CLI가 없고 포착한 대화도"
+        return _item("info", "판본", f"알 수 없다 — {asked} 판본을 주지 않았다 (검증 {adapter.verified})")
     if adapters.newer(version, adapter.verified):
         return _item("warn", "판본", f"{source} {version} — 검증한 {adapter.verified}보다 새 판이다. "
                      "훅 입출력이나 전사 형식이 바뀌었을 수 있다",

@@ -119,6 +119,8 @@ class Adapter:
     # 파일로 빼고 모델에 앞 2KB만 보인다(2026-09-27 실측: 본문 최대 9,981·저장 최소 10,031).
     # Codex는 7,321자까지 그대로 실린 것만 확인했다.
     hook_budget = 9_500
+    # 아무것도 싣지 않는 훅 호출의 출력 — JSON 결과만 받는 호스트(Antigravity)는 `{}`다.
+    silence = ""
 
     def fires_on(self, event: str, matcher) -> frozenset[str]:
         """그 matcher의 등록이 불리는 원인 — 원인이 없는 사건은 `{"*"}`(늘 불린다).
@@ -158,6 +160,15 @@ class Adapter:
     def subagent(self, path: str, sid: str) -> str | None:
         """하위 에이전트의 훅이 뿌리 대화를 이름으로 댔으면 그 사유."""
         return None
+
+    def normalize(self, env: dict) -> dict:
+        """제 형식의 훅 입력을 공통 키(`session_id`·`cwd`·`transcript_path`)로 옮긴 사본 —
+        제 것이 아니면 그대로."""
+        return env
+
+    def fires(self, event: str, env: dict) -> bool:
+        """이 호출이 osk의 그 사건인가 — 호스트가 같은 사건을 더 자주 부르면 거짓으로 거른다."""
+        return True
 
     # ── 훅 출력 ───────────────────────────────────────────────────────────
     def hook_output(self, event: str, text: str, system_message: str = "") -> dict | str:
@@ -247,6 +258,11 @@ class Adapter:
         """그 명령이 이 호스트의 구독 로그인만 쓰겠다고 밝혔는가 — 정기 실행은 그런 명령을
         fork와 같은 자격(API 자격 변수를 걷고, 구독·설정·공급자를 먼저 확인)으로만 띄운다."""
         return False
+
+    def hook_command(self, argv) -> str:
+        """훅 설정에 넣을 명령 한 줄 — 그 호스트가 명령을 넘기는 셸이 풀 수 있는 표기다.
+        풀 수 없으면 올린다(설치가 그 파일의 오류로 보인다)."""
+        return hook_line(argv)
 
     def hook_group(self, event: str, command: str) -> dict:
         """설치가 `hooks.<사건>`에 넣는 묶음 하나 — 훅 하나를 담는다."""
