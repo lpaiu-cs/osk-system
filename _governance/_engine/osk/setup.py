@@ -206,11 +206,28 @@ def _mcp(adapter, uninstall: bool) -> dict:
         return out
     if runs:
         out["files"] = [str(target)] if target and target.is_file() else []
-        if shutil.which(adapter.cli):
-            out["run"] = runs
-        else:
-            out["manual"] = " ; ".join(core.shell_join(argv) for argv in runs)
+        cli = shutil.which(adapter.cli)
+        if not cli:
+            out["manual"] = base.paste_line(runs)
+            return out
+        try:
+            for argv in runs:
+                _invocation(cli, argv)
+        except ValueError as e:
+            return {"action": "error", "error": f"PATH의 {adapter.cli}가 배치 파일({cli})이라 Windows가 "
+                                                f"cmd로 돌린다 — {e}. vault를 그 글자가 없는 경로로 옮기거나, "
+                                                "이 호스트를 빼려면 --harness로 고른다"}
+        out["run"] = runs
     return out
+
+
+def _invocation(cli: str, argv: list[str]) -> list[str] | str:
+    """호스트 CLI를 부르는 `subprocess` 인자 — `argv[0]` 자리에 PATH에서 찾은 CLI를 둔다. 배치
+    파일이면 cmd가 읽을 명령줄이다(`base.cmd_line`). 넘길 수 없는 인자면 올린다."""
+    command = [cli, *argv[1:]]
+    if os.name == "nt" and Path(cli).suffix.lower() in (".bat", ".cmd"):
+        return base.cmd_line(command)
+    return command
 
 
 def _native_cli(adapter) -> str | None:
@@ -610,11 +627,11 @@ def _apply(p: dict) -> dict:
             cli = shutil.which(adapter.cli)
             for argv in mcp["run"]:
                 try:
-                    r = subprocess.run([cli or argv[0], *argv[1:]], capture_output=True, text=True,
+                    r = subprocess.run(_invocation(cli or argv[0], argv), capture_output=True, text=True,
                                        encoding="utf-8", errors="replace", timeout=120,
                                        stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
                     code, output = r.returncode, (r.stdout + r.stderr).strip()[-400:]
-                except (OSError, subprocess.SubprocessError) as e:
+                except (OSError, ValueError, subprocess.SubprocessError) as e:
                     code, output = None, f"{type(e).__name__}: {e}"
                 # 옛 등록을 걷는 명령은 그 등록이 다른 범위에 있으면 실패할 수 있다 — 뒤의 등록이 판정한다.
                 removing = argv == adapter.mcp_remove_argv() and mcp["action"] == "replace"

@@ -361,6 +361,32 @@ class GrowthTests(unittest.TestCase):
             assert not growth.LEDGER.exists()
         """)
 
+    @unittest.skipUnless(os.name == 'nt', 'only Windows runs a batch file through cmd.exe')
+    def test_command_check_refuses_a_batch_cli_that_cmd_would_split(self):
+        # An npm install puts `claude.cmd` on PATH. cmd.exe reads list2cmdline's `\"` as a quote
+        # toggle, so the MCP config JSON leaves the vault path outside quotes and `&` splits it.
+        self.check_case("""
+            import subprocess
+            from osk import harness
+            probe = core.ROOT / 'probe.py'
+            probe.write_text('import json, sys; print(json.dumps(sys.argv[1:]))', encoding='utf-8')
+            cli = core.ROOT / 'claude.cmd'
+            cli.write_text('@"' + sys.executable + '" "' + str(probe) + '" %*' + chr(13) + chr(10), encoding='utf-8')
+            for root in ('C:/vault', 'C:/My Vault (x86)', 'C:/R&D/vault', 'C:/My R&D/vault'):
+                argv = harness.get('claude').growth_argv(str(cli), root + '/.venv/Scripts/python.exe',
+                                                         root + '/_governance/_engine/mcp_server.py', root)
+                seen = subprocess.run(argv, capture_output=True, text=True, encoding='utf-8')
+                intact = seen.returncode == 0 and json.loads(seen.stdout) == argv[1:]
+                assert intact == ('&' not in root), (root, seen.stdout, seen.stderr)  # cmd's own verdict
+                checked = growth.check_command(argv)
+                assert checked['ok'] == intact, (root, checked)
+                assert intact or 'cmd.exe' in checked['violations'][0], checked
+            # The daily run refuses before it plans or starts anything.
+            node('A')
+            refused = growth.run(argv)
+            assert refused['state'] == 'invalid_command' and not growth.LEDGER.exists(), refused
+        """)
+
     @unittest.skipIf(os.name == 'nt', 'POSIX symlink venv execution')
     def test_command_check_preserves_posix_venv_entrypoint(self):
         self.check_case("""

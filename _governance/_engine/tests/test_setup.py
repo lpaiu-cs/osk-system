@@ -69,7 +69,11 @@ vpy = root / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python
 def fake_clis(names=('claude', 'codex')):
     for name in names:
         if os.name == 'nt':
+            # What npm installs: a `.cmd`, and a `.ps1` that PowerShell prefers, handing `$args` on
+            # the way npm's cmd-shim does.
             (bin_dir / f'{name}.cmd').write_text(f'@"{py}" "{bin_dir / "fake_cli.py"}" {name} %*\r\n',
+                                                 encoding='utf-8')
+            (bin_dir / f'{name}.ps1').write_text(f'& "{py}" "{bin_dir / "fake_cli.py"}" {name} $args\n',
                                                  encoding='utf-8')
         else:
             path = bin_dir / name
@@ -261,6 +265,50 @@ assert code == 0 and rep['ok'] and (codex_home / 'hooks.json').is_file() and not
 rep, code = S.run(apply=True, only=['codex'])
 assert code == 1 and not rep['ok'] and 'hooks' in rep['errors'][0], rep
 assert (codex_home / 'hooks.json').read_text(encoding='utf-8') == '{broken'
+''')
+
+    def test_a_batch_file_cli_gets_a_command_line_cmd_reads(self):
+        self.check_case(r'''
+fake_clis()
+baseline()
+# npm installs the CLIs as `claude.cmd`/`codex.cmd`, like the fake ones here, and Windows runs a batch
+# file through `cmd /c`. An unquoted `&` splits the command there: the CLI registers `C:/R`, and cmd
+# tries to run `D/osk/...`.
+odd = Path('C:/R&D/osk/.venv/Scripts/python.exe' if os.name == 'nt' else '/R&D/osk/.venv/bin/python')
+with mock.patch.object(S, '_python', lambda: odd):
+    S.run(apply=True, only=['claude', 'codex'])
+    rep, code = S.run(apply=True, only=['claude', 'codex'])
+    assert code == 0 and rep['ok'], rep
+    added = [c for c in calls() if c[1:3] == ['mcp', 'add']]
+    assert [c[0] for c in added] == ['claude', 'codex'], calls()
+    assert all(c[-2:] == [odd.as_posix(), server.as_posix()] for c in added), added
+    rep, _ = S.run(only=['claude', 'codex'])
+    assert [h['mcp']['action'] for h in rep['hosts']] == ['keep', 'keep'], rep['hosts']
+if os.name == 'nt':
+    # cmd expands `%` and `!` even inside double quotes: the plan stops before anything runs or is written.
+    state = lambda: (len(calls()), read(claude_home / '.claude.json'), (claude_home / 'settings.json').read_bytes())
+    before = state()
+    for bad in ('C:/100%/osk/python.exe', 'C:/Hi!/osk/python.exe'):
+        with mock.patch.object(S, '_python', lambda: Path(bad)):
+            rep, code = S.run(apply=True, only=['claude'])
+        assert code == 1 and rep['applied'] is False, rep
+        assert any('배치 파일' in e and '--harness' in e for e in rep['errors']), rep['errors']
+    assert state() == before
+    # Without a CLI on PATH the step is left to the user. PowerShell hands a `.cmd` CLI `C:/R&D/...`
+    # unquoted, and npm's `.ps1`, which it prefers when scripts may run, `--%` as an argument (PR #116
+    # review): the line must still reach the CLI the user installs afterwards.
+    full, moved = os.environ['PATH'], Path('C:/R&D/moved/.venv/Scripts/python.exe')
+    os.environ['PATH'] = str(bin_dir.parent)
+    with mock.patch.object(S, '_python', lambda: moved):
+        rep, _ = S.run(only=['claude'])
+    os.environ['PATH'] = full
+    manual = rep['hosts'][0]['mcp']['manual']
+    r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                        '-Command', manual], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0 and calls()[-2:] == [
+        ['claude', 'mcp', 'remove', '--scope', 'user', 'osk-system'],
+        ['claude', 'mcp', 'add', '--scope', 'user', 'osk-system', '--', moved.as_posix(), server.as_posix()]], \
+        (manual, r.stdout, r.stderr, calls()[-2:])
 ''')
 
     def test_the_baseline_is_bound_to_the_update_plan(self):

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 
 from .base import MCP_NAME, Adapter, command_tokens, hook_line, mentions
@@ -30,8 +29,6 @@ HOOK_NAME = MCP_NAME        # hooks.json에서 osk가 소유하는 훅 이름
 _FLAT = {"SessionStart", "PreInvocation", "PostInvocation", "Stop"}
 _POLICY = ("disabled", "disabledTools", "timeout")
 _APPS = ("antigravity", "antigravity-cli", "antigravity-ide")     # 2.0 앱·CLI·IDE의 전사 자리
-# 인용 없는 cmd 명령에서 뜻이 바뀌는 문자 — 공백, 연산자·이스케이프·변수 확장, 구분자.
-_CMD_SPECIAL = re.compile(r'[\s&|<>^%!()",;=]')
 
 
 class Antigravity(Adapter):
@@ -92,11 +89,15 @@ class Antigravity(Adapter):
         # 인용을 푼다.
         # ponytail: 그런 경로는 거부한다 — 필요해지면 실제 앱에서 확인한 뒤 공백은 8.3 짧은 경로로,
         # 특수문자는 `^` 이스케이프로 등록한다.
-        if os.name == "nt" and any(_CMD_SPECIAL.search(a) for a in argv):
+        try:
+            line = hook_line(argv)          # cmd의 인용 규칙은 `base` 한 곳에 있다
+        except ValueError:
+            line = None
+        if os.name == "nt" and line != " ".join(argv):
             raise ValueError("Antigravity는 Windows에서 훅 명령을 인용 없이 cmd로 돌린다 — 인터프리터와 "
                              "vault 경로에 공백과 cmd 특수문자(& | < > ^ % ! ( ) , ; =)가 없어야 한다. "
                              "다른 호스트만 이으려면 --harness로 고른다")
-        return hook_line(argv)
+        return line
 
     def mcp_files(self):
         return [self.home() / "mcp_config.json"]
