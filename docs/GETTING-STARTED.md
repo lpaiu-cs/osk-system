@@ -177,7 +177,8 @@ python _governance/_engine/scripts/setup.py --interactive
 ```
 
 It creates `.venv`, installs the dependencies, records the release baseline,
-and registers the MCP server and the three hooks for Claude Code and Codex.
+and registers the MCP server and the three hooks for the hosts it finds on this
+device: Claude Code, Codex, Kiro and Antigravity.
 Before it writes, it shows the plan and asks you to confirm. It backs up every
 configuration file it changes and touches only this vault's osk entries (see
 the [setup tool](SETUP.md#설치-도구-setup)). Then do the steps it lists under

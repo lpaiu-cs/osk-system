@@ -165,8 +165,8 @@ URL이 보이고, 원격을 지웠다면 아무것도 나오지 않는다.
 python _governance/_engine/scripts/setup.py --interactive
 ```
 
-`.venv`를 만들어 의존성을 설치하고, 릴리스 기준선을 기록하고, Claude Code·Codex에 MCP
-서버와 훅 세 개를 등록한다. 쓰기 전에 계획을 보여 주고 확인을 받는다. 바꾸는 설정 파일은
+`.venv`를 만들어 의존성을 설치하고, 릴리스 기준선을 기록하고, 이 기기에서 찾은 호스트
+(Claude Code·Codex·Kiro·Antigravity)에 MCP 서버와 훅 세 개를 등록한다. 쓰기 전에 계획을 보여 주고 확인을 받는다. 바꾸는 설정 파일은
 모두 백업하고, 이 vault의 osk 항목만 건드린다([설치 도구](SETUP.md#설치-도구-setup)).
 그다음 "할 일"로 나열된 것(Codex의 훅 신뢰 등)을 하고 [5단계](#5단계-첫-세션)로 간다.
 마법사는 선택 기능(백그라운드 fork 검토, 매일 도는 정기 실행, Git 동기화)을 켤지도 묻는다.

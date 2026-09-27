@@ -35,11 +35,17 @@
 
 ---
 
-> **Status: developer public beta.** The maintainer uses it daily on Windows 11,
-> and CI runs the test suite on Windows and Linux. macOS is not yet verified.
-> Your vault is a Git repository: keep it pushed to your own private remote, or
-> otherwise backed up, before every update. See the
-> [known limitations](#known-limitations).
+> **Status: developer public beta.** The maintainer uses it daily on Windows 11.
+> CI runs the test suite on Windows and Linux, and on macOS as a non-blocking
+> job; daily use on macOS is not yet verified. Your vault is a Git repository:
+> keep it pushed to your own private remote, or otherwise backed up, before every
+> update. See the [known limitations](#known-limitations).
+
+**Set it up with your agent.** Paste this line into Claude Code, Codex, Kiro or Antigravity:
+
+```text
+Read https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/INSTALL-AGENT.md and install osk-system on this device.
+```
 
 ## Keep the context. Keep the evidence.
 
@@ -71,6 +77,16 @@ support **Codex, Claude Code, Kiro and Antigravity**. See the
 
 ## Quick start
 
+**Let your agent install it.** Paste this line into Claude Code, Codex, Kiro or Antigravity:
+
+```text
+Read https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/INSTALL-AGENT.md and install osk-system on this device.
+```
+
+The agent asks where to create the vault and which optional features you want,
+clones the newest release and runs the [setup tool](docs/SETUP.md#설치-도구-setup).
+The setup tool shows you its plan and applies it only after you confirm.
+
 **New to osk-system?** Follow the [Getting started](docs/GETTING-STARTED.md)
 tutorial. It goes from an empty folder to your agent's first saved memory, on
 macOS, Linux and Windows, with a check after every step.
@@ -78,48 +94,40 @@ macOS, Linux and Windows, with a check after every step.
 **Updating a v3 vault?** Read [Upgrading](docs/UPGRADING.md) before you apply
 v4: it lists the placements v4 no longer reads and how to move them.
 
-**Let your agent install it.** Paste this into Claude Code or Codex:
-
-```text
-Install osk-system on this device. Read https://github.com/lpaiu-cs/osk-system/blob/main/docs/INSTALL-AGENT.md and follow it step by step. Ask me before anything outside the new vault changes.
-```
-
-The agent clones the newest release, runs the [setup tool](docs/SETUP.md#설치-도구-setup),
-shows you the plan and applies it only after you confirm.
-
-**To install by hand**, you need Python 3.11 or newer (the commands use 3.12; change the version to
-match yours) and Git. Start from a release tag rather than `main`
-(newer tags are on the [releases page](https://github.com/lpaiu-cs/osk-system/releases)).
-On macOS or Linux:
+**To install by hand**, you need Python 3.11 or newer and Git. Start from a
+release tag rather than `main` (newer tags are on the
+[releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
 git clone --branch v4.1.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -r _governance/_engine/requirements.txt
-PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
+python _governance/_engine/scripts/setup.py --interactive
 ```
 
-Then record the release baseline
-([Getting started, Step 2](docs/GETTING-STARTED.md#step-2-install-the-engine-and-record-the-release-baseline)),
-so that later updates can tell release files from your own edits. From v4.1.0,
-`python _governance/_engine/scripts/setup.py --interactive` does this and the
-host registration below in one step: it shows the plan and asks before it writes.
+Use `python3` if `python` is missing, or `py -3.12` on Windows. The setup tool
+creates `.venv`, installs the dependencies and records the release baseline, so
+that later updates can tell release files from your own edits. It then connects
+the hosts it finds on this device (Claude Code, Codex, Kiro and Antigravity) by
+registering the MCP server and the three hooks. It shows the plan and asks
+before it writes. Afterwards, `python _governance/_engine/scripts/setup.py doctor`
+checks each connection.
+[Getting started](docs/GETTING-STARTED.md#step-2-install-the-engine-and-record-the-release-baseline)
+shows the same steps one command at a time.
 
-1. Register the MCP server, replacing `<REPO>` with your instance's absolute
-   path. JSON-configured clients can copy [.mcp.json.example](.mcp.json.example);
-   Codex reads TOML, so register it with `codex mcp add`. Follow the
-   [setup guide](docs/SETUP.md) for client-specific registration, hooks, and
-   Windows commands. The detailed operations and governance documents are
-   currently in Korean.
-2. If you use Obsidian, open `my-osk-vault` as a vault.
-3. Before enabling synchronization, point your instance at **your own private
-   remote**. Do not push personal notes, ledgers, or transcripts to the public
-   upstream repository.
+- **Another MCP client:** copy [.mcp.json.example](.mcp.json.example) and replace
+  `<REPO>` with the vault's absolute path (on Windows the interpreter is
+  `.venv/Scripts/python.exe`). The [setup guide](docs/SETUP.md) covers
+  client-specific registration, hooks and Windows commands. The detailed
+  operations and governance documents are currently in Korean.
+- **Obsidian:** open `my-osk-vault` as a vault.
+- **Sync:** before enabling synchronization, point your instance at **your own
+  private remote**. Do not push personal notes, ledgers, or transcripts to the
+  public upstream repository.
 
-> Connecting MCP does not enable automatic capture or periodic review by itself.
-> Configure the hooks for your harness. See [harness coverage](#harness-coverage).
+> The MCP server alone does not turn on automatic capture or periodic review;
+> the hooks do. The setup tool registers both. If you connect a client by hand,
+> add its hooks too. See [harness coverage](#harness-coverage).
 
 ## Usage
 
@@ -191,7 +199,7 @@ connected.
 | Runtime conditions | Conversation review path |
 |---|---|
 | Supported hooks and subscription CLI; authentication and version checks pass | A background fork using the same harness and model after every **9 successful final-answer Stop events** |
-| CLI unavailable or unconfigured; login, subscription, version, or permission checks fail; Codex task directory is neither a Git worktree nor a trusted Codex project | A **review warning** and in-session integration at **UserPromptSubmit turns 9 and 15** |
+| CLI unavailable or unconfigured; login, subscription, version, or permission checks fail; Codex task directory is neither a Git worktree nor a trusted Codex project | A **review warning** and in-session integration at **input turns 9 and 15** (UserPromptSubmit; PreInvocation on Antigravity) |
 | Harness without an adapter | No guarantee of automatic capture, counting, or fallback; integration and verification are still required |
 
 Input counts continue in background mode. Switching paths does not reset pending
@@ -241,6 +249,11 @@ execution, and failure fallbacks.
   Keep secrets out of notes: they are committed and synchronized.
 - **Protected regions are not a security boundary.** They help prevent and
   recover from honest mistakes; see [Why the distinction matters](#why-the-distinction-matters).
+- **Antigravity on Windows needs plain paths.** It runs hooks through `cmd`,
+  which cannot read a quoted path. The vault and Python paths must not contain
+  spaces or cmd special characters (`& | < > ^ % ! ( ) , ; =`). The setup tool
+  refuses such a path before writing anything; `--harness` connects the other
+  hosts.
 - **Autonomous growth is experimental.** Its effect is still being measured
   ([issue #20](https://github.com/lpaiu-cs/osk-system/issues/20)).
 - **The governing documents are in Korean only.**
@@ -274,6 +287,8 @@ restart, then stops for explicit user confirmation. A matching retry applies it
 and records acceptance of the protected governance region in the same transaction.
 On an install where the governance region was never protected, the same confirmed
 retry protects it, but only when its files match the release attestation exactly.
+A newer release is announced once a day per device, at session start or in
+`overview`; nothing is applied until you ask for the update.
 See [installation and operations](docs/SETUP.md).
 
 ## What's in this repository
