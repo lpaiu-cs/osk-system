@@ -1,19 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360" role="img" aria-labelledby="title desc">
   <title id="title">osk-system</title>
-  <desc id="desc">Long-term memory. Human authority. An abstract network of connected nodes accompanies the project wordmark.</desc>
+  <desc id="desc">Let your sessions grow into knowledge. An abstract network of connected nodes accompanies the project wordmark.</desc>
   <rect width="1280" height="360" rx="20" fill="#101b24"/>
   <path d="M694 0v360" stroke="#293640"/>
   <path d="M0 344h1280" stroke="#9bd8c4" stroke-width="3"/>
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
     <text x="54" y="57" fill="#9bd8c4" font-size="13" font-weight="600" letter-spacing="3">LOCAL FILES. LASTING CONTEXT.</text>
     <text x="50" y="145" fill="#f5f3eb" font-size="76" font-weight="700" letter-spacing="-4">osk-system</text>
-    <text x="54" y="208" fill="#f5f3eb" font-size="32" font-weight="400">Long-term memory.</text>
-    <text x="54" y="251" fill="#9bd8c4" font-size="32" font-weight="400">Human authority.</text>
+    <text x="54" y="208" fill="#f5f3eb" font-size="32" font-weight="400">Let your sessions</text>
+    <text x="54" y="251" fill="#9bd8c4" font-size="32" font-weight="400">grow into knowledge.</text>
     <text x="55" y="307" fill="#a2afb8" font-size="12" font-weight="600" letter-spacing="2">TRACEABLE</text>
     <circle cx="167" cy="303" r="2" fill="#e8c47c"/>
-    <text x="184" y="307" fill="#a2afb8" font-size="12" font-weight="600" letter-spacing="2">REVIEWABLE</text>
-    <circle cx="315" cy="303" r="2" fill="#e8c47c"/>
-    <text x="332" y="307" fill="#a2afb8" font-size="12" font-weight="600" letter-spacing="2">YOURS</text>
+    <text x="184" y="307" fill="#a2afb8" font-size="12" font-weight="600" letter-spacing="2">CONNECTED</text>
+    <circle cx="302" cy="303" r="2" fill="#e8c47c"/>
+    <text x="319" y="307" fill="#a2afb8" font-size="12" font-weight="600" letter-spacing="2">YOURS</text>
   </g>
   <g fill="none" stroke="#344751" stroke-width="1.5">
     <path d="M963 178 841 103 772 139 787 213 865 234 963 178 1050 269 1143 240 1161 151 1089 80 963 178"/>
