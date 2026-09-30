@@ -3,12 +3,12 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme/hero.svg" alt="osk-system — Long-term memory. Human authority." width="100%">
+  <img src="docs/assets/readme/hero.svg" alt="osk-system — Let your sessions grow into knowledge." width="100%">
 </p>
 
 <p align="center">
-  <strong>Give your agents a memory you can actually inspect.</strong><br>
-  A local Markdown knowledge graph with traceable evidence and human-controlled approval.
+  <strong>Let your sessions grow into knowledge.</strong><br>
+  A local Markdown memory where your conversations with agents grow into sourced, connected knowledge that comes back to work in the next session.
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/GETTING-STARTED.md">Getting started</a> ·
-  <a href="#usage">Usage</a> ·
+  <a href="#how-knowledge-grows">How it grows</a> ·
   <a href="docs/SETUP.md">Setup guide</a> ·
   <a href="#governance">Design &amp; governance</a>
 </p>
@@ -47,25 +47,106 @@
 Read https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/INSTALL-AGENT.md and install osk-system on this device.
 ```
 
-## Keep the context. Keep the evidence.
+## Why it exists
 
-Agent memory needs more than storage. It needs a reliable distinction between
-**what a person has approved and what an agent has only proposed**.
-osk-system keeps knowledge in local files, connects it to its sources, and
-records approval separately from the notes an agent can edit.
+It began as a one-line request: build me an LLM wiki. What came back was an
+inconsistent storage scheme, blobs of unneeded information, and a structure
+people could not comfortably read. Left alone, a memory like that drifts into a
+plausible-sounding graph with no evidence behind it.
+
+So osk-system started with a constitution. **What to keep as memory, how to
+merge or connect it with what is already there, and when to split a topic that
+has grown**: these choices are written down as rules, and the engine and the
+agents grow the memory by them. The aim is not a wiki that only looks
+impressive, but a working space that people can read and actually use. Not an
+archive where records pile up without end, but a place where experience grows
+into knowledge for the next decision.
+
+The constitution defines the system in its first sentence:
+
+> osk-system sustains the memory that belongs to its user, with its sources,
+> context, relations and authority, and puts it back to work for later
+> understanding, judgment, audit and work.
 
 <p align="center">
   <a href="docs/assets/readme/obsidian-graph.png"><img src="docs/assets/readme/obsidian-graph.png" alt="A real osk-system vault in Obsidian: connected clusters of green and purple knowledge nodes" width="680"></a>
   <br>
-  <sub>A real, populated vault in Obsidian. Fresh instances start with empty knowledge Spaces. Click to view full size.</sub>
+  <sub>A real vault that has grown, in Obsidian. Fresh instances start with empty knowledge Spaces. Click to view full size.</sub>
 </p>
 
-| What you need | How osk-system helps |
+| What you need | How osk-system does it |
 |---|---|
-| Context across conversations | Project-scoped memory and MCP search and reading tools |
-| Recall you can trace | References from knowledge nodes to source nodes and specific conversation rounds |
-| Changes a person can review | Protected-region snapshots and explicit changesets |
-| Knowledge you can read and keep | Markdown files, an Obsidian graph, and optional Git synchronization |
+| Context that carries into the next conversation | Each session starts with the project's shared memory loaded; the agent searches and reads nodes as needed |
+| Knowledge that grows instead of scattering | The same claim updates its existing node; new knowledge grows by connecting to what is already there |
+| Recall you can trace | From a node to its source nodes and to specific conversation rounds |
+| Memory people can read and edit | Local Markdown files, an Obsidian graph, and optional Git synchronization |
+
+## How knowledge grows
+
+Conversations become knowledge in a loop of five steps. On a host whose hooks
+are connected (Claude Code, Codex, Kiro, Antigravity), the loop runs within your
+sessions: capture is mechanical, and the agent reviews and distills when the
+hooks prompt it.
+
+1. **Capture.** The hooks record every round of the conversation in `_raw/`:
+   what you and the agent said, verbatim, with tool calls and results as
+   references. Raw records are evidence, not nodes.
+2. **Review and distill.** At turns 9 and 15 (or, with a subscription fork, in
+   the background after every 9 final answers), the agent reviews the new rounds
+   together with the shared memory and distills what will last into nodes. Each
+   node cites its evidence with `derived-from`, down to the conversation round.
+3. **Connect and organize.** A node about the same claim is updated, not
+   duplicated. New nodes stand first; a hub covering the topic links them
+   afterwards and splits into branches as the topic grows. Knowledge used beyond
+   one project is distilled again into Domain (by a scheduled run or on request).
+4. **Recall.** When the next session starts, the project's shared memory (scope
+   memory) is loaded into context, and the agent searches and reads nodes and
+   their evidence.
+5. **Recheck.** When evidence changes, the nodes that cite it become recheck
+   candidates, and the effect spreads along the citations.
+
+**A node is a function of its future reuse.** Keep as a node what will serve
+later searches, decisions and work more than once; leave out one-off work state
+and anything cheap to recompute. And **all knowledge starts at the periphery and
+grows toward the center through connection**: center and periphery are one
+continuous spectrum, not layers.
+
+## Three Spaces
+
+Each node belongs to one of three Spaces, by where it mainly applies.
+
+| Space | What it holds |
+|---|---|
+| **Scope** | Memory formed within a project or activity. The raw records of its sessions (`_raw/`) are kept here too |
+| **Domain** | Knowledge reused across contexts, not tied to one project |
+| **Person** | The user model: records the user leaves, understanding about the user, and delegation. An agent's inference about the user is not taken as the user's fact without the user's confirmation |
+
+The governing documents belong to no Space: the rules that define the system are
+not knowledge the system organizes.
+
+## Your memory, your authority
+
+- **The memory belongs to you.** Agents run it under your authority. A
+  delegation that outlasts a session holds only once you approve a delegation
+  node stating its subject, scope and conditions; when its scope is unclear, the
+  agent holds back.
+- **Agents are not blocked.** They write and revise nodes directly, and every
+  node records who decided its content (author) and who drafted it (drafter).
+  MCP writes pass through node-contract validation.
+- **Trust comes from sources, relations and history, not from an approval
+  stamp.** You can trust what you can trace.
+- **Protected regions make changes reviewable and reversible.** In the parts you
+  choose (the governing documents and delegation are always protected), edits
+  still take effect at once. The engine keeps the state you last approved (the
+  **approved snapshot**), and the difference remains as a **changeset** for you
+  to approve or revert. Protecting, unprotecting, approving and reverting are
+  yours alone. These records live in ledgers outside the nodes, and records from
+  several devices are judged by causality (a DAG), not by timestamps.
+- **The system does not claim to enforce what it cannot.** Protected regions
+  undo honest mistakes; they are not a security boundary against someone with
+  arbitrary write access to the vault. Authorization checks hold back when they
+  cannot be evaluated mechanically. See the
+  [engine's limitations](_governance/_engine/README.md#알려진-한계).
 
 ## The stack
 
@@ -137,14 +218,13 @@ shows the same steps one command at a time.
   <sub>Read a knowledge note alongside its local graph. Original capture from a Korean-language vault; click to view full size.</sub>
 </p>
 
-**Recall → inspect the evidence → update reviewed knowledge.** With MCP connected,
-you can ask your agent:
+**Recall → inspect the evidence → update the memory.** With the hooks connected,
+capture and recall happen on their own. When you need to, ask your agent:
 
 ```text
 Find prior decisions about this project. Read the source notes before drawing conclusions.
 
-Record the verified outcome of this task in the project's Scope,
-link its evidence, and show me what still needs my review.
+Record the verified outcome of this task in the project's memory and link its evidence.
 ```
 
 In Obsidian, explore connections between clusters in the global graph, then open
@@ -156,36 +236,6 @@ protected regions; review their changesets in the human approval workflow.
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli status
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli search "project decisions"
 ```
-
-## Why the distinction matters
-
-In an agent-written knowledge base, one boundary keeps getting blurred:
-**what the user has confirmed versus what an agent has merely produced**.
-Once that distinction is lost, a memory becomes a collection of plausible
-claims, and recall becomes unreliable.
-
-osk-system makes this distinction mechanically checkable instead of leaving it
-to convention. Three design choices support it:
-
-- **Authority lives outside the node.** Approval is a record in a separate
-  ledger, not a field an agent can edit. The engine preserves the last
-  user-approved snapshot of an entire protected region. Edits become a
-  changeset awaiting approval or rejection. Protecting, unprotecting,
-  approving, and reverting are user-only operations.
-- **Causality, not timestamps, determines the result.** Ledger records reference
-  their parents to form a causal DAG. The engine uses causal maxima, not
-  last-write-wins. If a multi-device merge leaves incomparable heads, the
-  result remains unresolved until a new user record joins all branches.
-- **MCP writes pass through contract validation.** The surface is not read-only:
-  validated node writes are available, while protected-region authority and
-  pin controls are not exposed. Direct filesystem writes do not pass through
-  these checks.
-
-The principle is simple: **do not claim to enforce what you cannot enforce.**
-Authorization remains unresolved unless the engine can evaluate its applicability.
-Protected regions help prevent and recover from honest mistakes; they are **not a
-security boundary against someone with arbitrary write access to the vault**.
-See the [engine's limitations](_governance/_engine/README.md#알려진-한계).
 
 ## Harness coverage
 
@@ -248,7 +298,7 @@ execution, and failure fallbacks.
   covers raw transcripts, Scope memory, and writes distilled from raw records.
   Keep secrets out of notes: they are committed and synchronized.
 - **Protected regions are not a security boundary.** They help prevent and
-  recover from honest mistakes; see [Why the distinction matters](#why-the-distinction-matters).
+  recover from honest mistakes; see [Your memory, your authority](#your-memory-your-authority).
 - **Antigravity on Windows needs plain paths.** It runs hooks through `cmd`,
   which cannot read a quoted path. The vault and Python paths must not contain
   spaces or cmd special characters (`& | < > ^ % ! ( ) , ; =`). The setup tool
@@ -272,7 +322,7 @@ organized by the system.
 | [Workbench contract](_governance/Workbench-Contract.md) | The special status and organization rules of the operational Workbench scope |
 
 Read **Constitution → Bylaws → Mechanism**. Mechanism §3 (approval ledger) and
-§6-2 (external surface) specify the mechanisms described above. These documents
+§6-2 (external surface) specify the protected regions and MCP writes described above. These documents
 are currently in Korean; this README is an introduction, not a replacement for
 the governing text.
 

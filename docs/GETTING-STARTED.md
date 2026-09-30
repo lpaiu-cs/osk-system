@@ -36,13 +36,13 @@ operator reference (in Korean).
   read it in any editor or explore it as a graph in Obsidian.
 - **An MCP server with 12 tools.** Your agents use them to search, read and write
   knowledge *nodes*. The engine validates every write.
-- **Hooks for Claude Code and Codex.** They do three things:
+- **Hooks for Claude Code and Codex** (Kiro and Antigravity too). They do three things:
   - give each new session its project's memory;
   - capture each finished conversation round;
   - schedule reviews that turn conversations into knowledge.
-- **Human authority.** For any folder you protect, the engine keeps the last
-  snapshot you approved. Agent edits wait as a changeset that only you can
-  approve or revert.
+- **Changes you can review and undo.** For any folder you protect, the engine
+  keeps the last snapshot you approved. Agent edits still take effect at once;
+  the difference stays as a changeset that only you can approve or revert.
 - **Optional extras.** Git sync to your private remote, background reviews on
   your Claude or ChatGPT subscription, and a knowledge-only Obsidian graph.
 
