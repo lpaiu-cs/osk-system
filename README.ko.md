@@ -161,7 +161,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 시작한다(새 태그는 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다):
 
 ```bash
-git clone --branch v4.1.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive

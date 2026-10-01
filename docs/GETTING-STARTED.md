@@ -5,7 +5,7 @@
 This tutorial is for people who use Claude Code or Codex but have never set up
 osk-system. It starts from an empty folder and ends with a verified setup. At the
 end, your agent writes its first memory, then finds it and reads it back. Written
-for release v4.1.1.
+for release v4.1.2.
 
 For more detail on any step, follow the links to [SETUP.md](SETUP.md), the
 operator reference (in Korean).
@@ -140,7 +140,7 @@ Never edit these files by hand.
 
 Clone a release tag, not the `main` branch, which moves between releases. The
 updater compares your files with a release. Starting exactly on one lets Step 2
-record a clean baseline. `v4.1.1` works as written. You can use the newest tag
+record a clean baseline. `v4.1.2` works as written. You can use the newest tag
 from the [releases page](https://github.com/lpaiu-cs/osk-system/releases) instead,
 as long as you use the same tag again in Step 2.
 
@@ -148,7 +148,7 @@ Run these in the folder that will contain the vault, such as `C:/osk` on
 Windows (create it first). The commands are the same on every OS:
 
 ```bash
-git clone --branch v4.1.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v4.1.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -218,13 +218,13 @@ from local edits. The updater downloads the release from GitHub to compare.
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v4.1.1 --apply
+.venv/bin/python -m osk.update --to v4.1.2 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v4.1.1 --apply
+.venv\Scripts\python.exe -m osk.update --to v4.1.2 --apply
 ```
 
 The first run changes none of your files. It prints the plan, then exits with
@@ -268,7 +268,7 @@ git push
 ```
 
 **Check:** `.venv/bin/python -m osk.update` reports the selected version as
-`current` (`v4.1.1` in this example). On Windows, use
+`current` (`v4.1.2` in this example). On Windows, use
 `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
 `osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 
@@ -928,7 +928,7 @@ You do not need to watch the releases page. Once a day, the session-start hook
 and the MCP `overview` ask the canonical repository for its release tags
 (`git ls-remote`; nothing from your vault is sent). When a newer release exists,
 Claude Code and Codex show a warning such as
-`osk-system 새 릴리스 v4.2.0 (이 vault는 v4.1.1) — …` once a day per device,
+`osk-system 새 릴리스 v4.2.0 (이 vault는 v4.1.2) — …` once a day per device,
 ending with the link to that release's notes. Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
 steps below with you: it shows the changeset and waits for your approval. The
 check runs in the background, so the notice appears from the session after the
