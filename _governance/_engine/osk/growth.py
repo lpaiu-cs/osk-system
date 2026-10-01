@@ -589,6 +589,9 @@ def _strict_json(text: str):
     return json.loads(text, object_pairs_hook=pairs, parse_constant=invalid)
 
 
+_TRAILING = {"system", "rate_limit_event"}     # provider events that carry no answer
+
+
 def _final_packet(output: Path) -> dict:
     """Read provider final messages, never JSON found inside tool output or prose."""
     if output.stat().st_size > 8 * 1024 * 1024:
@@ -605,7 +608,10 @@ def _final_packet(output: Path) -> dict:
     events = [_strict_json(line) for line in text.split("\n") if line.strip()]
     if not events or not all(isinstance(event, dict) for event in events):
         raise ValueError("unknown provider final-output format")
-    final = events[-1]
+    # Claude Code appends session metadata after its final result: task notifications and
+    # summaries (`system`) and rate-limit notices. The answer is the last event that is not
+    # such metadata; another assistant turn after a result still means no final result.
+    final = next((event for event in reversed(events) if event.get("type") not in _TRAILING), {})
     if final.get("type") == "turn.completed":
         starts = [i for i, event in enumerate(events) if event.get("type") == "turn.started"]
         turn = events[starts[-1]:] if starts else []
