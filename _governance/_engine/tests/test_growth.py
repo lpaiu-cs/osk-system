@@ -52,6 +52,11 @@ def packet_worker(change='', wrapper='plain', code=0):
         'codex_late_error': "[print(json.dumps(e)) for e in [{'type':'turn.started'},{'type':'item.completed','item':{'type':'agent_message','text':json.dumps(q)}},{'type':'turn.completed'},{'type':'error','message':'later failure'}]]",
         'claude_tool': "[print(json.dumps(e)) for e in [{'type':'user','message':{'content':[{'type':'tool_result','content':json.dumps(q)}]}},{'type':'result','subtype':'success','is_error':False,'result':'No final packet.'}]]",
         'claude_error': "print(json.dumps({'type':'result','subtype':'error_during_execution','is_error':True,'result':json.dumps(q)}))",
+        # Claude Code 2.1.281 appends session metadata after the final result; a forked
+        # conversation with background tasks is woken by their notifications and answers again.
+        'claude_trailing': "[print(json.dumps(e)) for e in [{'type':'system','subtype':'init'},{'type':'assistant','message':{'content':[{'type':'text','text':'done'}]}},{'type':'result','subtype':'success','is_error':False,'result':json.dumps(q)},{'type':'system','subtype':'task_notification'},{'type':'rate_limit_event'},{'type':'system','subtype':'post_turn_summary'},{'type':'system','subtype':'task_summary'}]]",
+        'claude_two_turns': "[print(json.dumps(e)) for e in [{'type':'result','subtype':'success','is_error':False,'result':'Monitoring the job.'},{'type':'system','subtype':'task_notification'},{'type':'system','subtype':'init'},{'type':'assistant','message':{'content':[{'type':'text','text':'done'}]}},{'type':'result','subtype':'success','is_error':False,'result':json.dumps(q)},{'type':'system','subtype':'task_summary'}]]",
+        'claude_continued': "[print(json.dumps(e)) for e in [{'type':'result','subtype':'success','is_error':False,'result':json.dumps(q)},{'type':'assistant','message':{'content':[{'type':'text','text':'One more thing.'}]}},{'type':'system','subtype':'task_summary'}]]",
     }
     return source + wrappers[wrapper] + '; sys.exit(' + str(code) + ')'
 """
@@ -727,7 +732,7 @@ class GrowthTests(unittest.TestCase):
 
     def test_final_provider_messages_accept_codex_and_claude(self):
         self.check_case("""
-            for wrapper in ('codex','claude'):
+            for wrapper in ('codex','claude','claude_trailing','claude_two_turns'):
                 node(wrapper)
                 result = growth.run([sys.executable,'-c',packet_worker(wrapper=wrapper)],limit=1)
                 assert result['ok'], result
@@ -737,7 +742,7 @@ class GrowthTests(unittest.TestCase):
     def test_tool_output_unfinished_and_failed_provider_packets_are_ignored(self):
         self.check_case("""
             node('A')
-            for wrapper in ('codex_tool','codex_no_complete','codex_late_error','claude_tool','claude_error'):
+            for wrapper in ('codex_tool','codex_no_complete','codex_late_error','claude_tool','claude_error','claude_continued'):
                 result = growth.run([sys.executable,'-c',packet_worker(wrapper=wrapper)])
                 assert not result['ok'], (wrapper,result)
                 assert result['final_reviews']['state'] == 'rejected', (wrapper,result)
