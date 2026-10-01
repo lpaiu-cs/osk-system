@@ -16,6 +16,13 @@ from ._portalock import lock_exclusive, unlock
 
 CONFIG = core.ROOT / '.osk/response-growth.json'
 EVERY = 9
+# A fork that starts but keeps failing must not leave the review nowhere: after this many
+# consecutive unfinished fork reviews the conversation reviews in-session at turns 9 and 15,
+# and the fork is tried again once RETRY_AFTER has passed since the last failure.
+FALLBACK_AFTER = 2
+RETRY_AFTER = 24 * 3600
+# Results that say nothing about the fork itself (another worker, a missing CLI, raw not captured).
+_NOT_FORK_FAILURES = {'busy', 'unavailable', 'capture_pending', 'running'}
 NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 OPENAI_ENDPOINT = 'https://chatgpt.com/backend-api/codex'  # ChatGPT-login Codex backend; forks pin it.
 # Keys the fork pins with -c. A native profile's own value wins over -c, so an active profile may not set them.
@@ -65,6 +72,12 @@ def route(env: dict) -> dict:
         selected = {'mode': 'foreground', 'reason': str(exc)}
     with integration._locked(harness, sid) as p:
         state = integration._load(p, harness, sid)
+        failed = (state.get('response_growth') or {}).get('failed') or {}
+        if (selected['mode'] == 'background' and failed.get('count', 0) >= FALLBACK_AFTER
+                and 0 <= time.time() - failed.get('at', 0) < RETRY_AFTER):
+            selected = {'mode': 'foreground', 'reason': f"the last {failed['count']} subscription fork "
+                        f"reviews did not finish ({failed.get('reason')}); the fork is tried again a day "
+                        "after the last failure"}
         changed = state.get('response_growth_route') != selected
         state['response_growth_route'] = selected
         integration._save(p, state)
@@ -423,6 +436,12 @@ def attempt(source: dict, job: dict, executable: str) -> dict:
         state = integration._load(path, harness, sid)
         saved = state['response_growth']
         saved['last_result'] = {k: result[k] for k in ('ok', 'state', 'error', 'output', 'cache') if k in result}
+        if result.get('ok'):
+            saved.pop('failed', None)
+        elif result.get('state') not in _NOT_FORK_FAILURES:
+            count = (saved.get('failed') or {}).get('count', 0) + 1
+            saved['failed'] = {'count': count, 'at': time.time(),
+                               'reason': result.get('error') or result.get('state')}
         if result.get('state') in {'busy', 'unavailable'}:
             saved['attempted_count'] = clock['attempted_count']
         integration._save(path, state)

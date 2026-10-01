@@ -961,6 +961,49 @@ class ResponseGrowthTests(unittest.TestCase):
             assert not rg.launch(env,'own'), 'bad configuration prevented capture fallback'
         ''')
 
+    def test_failing_forks_fall_back_to_9_15_review_and_retry_a_day_later(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', '', space='00_Scope/W1')
+            native = core.ROOT/'native.jsonl'
+            native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
+                json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            source = {'harness':'claude','conversation_id':'own','finals':[]}
+            job = {'pending_refs':['fixture'], 'capture_error':None}
+            def stop(n, result):
+                source['finals'] = [str(i) for i in range(9 * n)]
+                with patch.object(rg, 'run', return_value=result):
+                    return rg.attempt(source, job, 'unused')
+            with patch.object(rg, 'preflight'):
+                rg.observe(source)
+                # One unfinished fork review keeps the fork; a busy worker says nothing about it.
+                assert stop(1, {'ok': False, 'state': 'incomplete'})['state'] == 'incomplete'
+                assert stop(2, {'ok': False, 'state': 'busy'})['state'] == 'busy'
+                assert rg.route(env)['mode'] == 'background'
+                # The second unfinished review in a row hands the review to the session
+                # (measured 2026-10-01: rejected forks left 82 conversations waiting).
+                stop(3, {'ok': False, 'state': 'rejected', 'error': 'provider output has no successful final result'})
+                route = rg.route(env)
+                assert route['mode'] == 'foreground' and 'did not finish' in route['reason'], route
+                assert 'no successful final result' in route['reason'], route
+                assert rg.route(env)['changed'] is False, 'the reason must be stable between turns'
+                assert not rg.launch(env, 'own'), 'a failing fork was launched again'
+                text = hook.capture_block(env, 'own', startup=True)
+                assert '검토 경고' in text and 'did not finish' in text, text
+                # A day after the last failure the fork is tried again; a finished review clears the run.
+                with patch.object(rg.time, 'time', return_value=rg.time.time() + rg.RETRY_AFTER + 1):
+                    assert rg.route(env)['mode'] == 'background'
+                stop(4, {'ok': True, 'state': 'complete'})
+                assert 'failed' not in integration.status('claude', 'own')['response_growth']
+                assert rg.route(env)['mode'] == 'background'
+        ''')
+
     def test_stuck_capture_keeps_one_line_between_review_turns(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration, scope_memory
