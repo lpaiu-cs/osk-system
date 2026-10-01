@@ -249,12 +249,13 @@ connected.
 | Runtime conditions | Conversation review path |
 |---|---|
 | Supported hooks and subscription CLI; authentication and version checks pass | A background fork using the same harness and model after every **9 successful final-answer Stop events** |
-| CLI unavailable or unconfigured; login, subscription, version, or permission checks fail; Codex task directory is neither a Git worktree nor a trusted Codex project | A **review warning** and in-session integration at **input turns 9 and 15** (UserPromptSubmit; PreInvocation on Antigravity) |
+| CLI unavailable or unconfigured; login, subscription, version, or permission checks fail; Codex task directory is neither a Git worktree nor a trusted Codex project; the last two fork reviews did not finish (the fork is tried again a day later) | A **review warning** and in-session integration at **input turns 9 and 15** (UserPromptSubmit; PreInvocation on Antigravity) |
 | Harness without an adapter | No guarantee of automatic capture, counting, or fallback; integration and verification are still required |
 
 Input counts continue in background mode. Switching paths does not reset pending
 reviews or either counter; a pending review already past turn 9 is surfaced
-immediately. When login recovers, review returns to Stop-based execution.
+immediately. When login recovers, or a day after two fork reviews in a row failed
+to finish, review returns to Stop-based execution.
 Failed subscription checks do not silently fall back to paid API calls.
 
 <details>
