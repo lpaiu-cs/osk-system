@@ -1095,6 +1095,75 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(reviewed["pending"])
         self.assertEqual(it.prompt("claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
 
+    def test_relocated_capture_io_failure_keeps_candidate_until_cursor_recovery(self):
+        for failure in ("append", "read", "decode"):
+            for retry in ("pathless", "catchup"):
+                with self.subTest(failure=failure, retry=retry):
+                    sid = f"{self.sid}-{failure}-{retry}"
+                    self.transcript(claude_round(sid, 1))
+                    first = it.capture("claude", sid, str(self.path), "capture-tests")
+                    it.acknowledge("claude", sid, first["through"], "no_value", "Completed fixture only.")
+                    state_path = it.state_path("claude", sid)
+                    before = it._load(state_path, "claude", sid)
+                    raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
+                    candidate = self.path.with_name(sid + ".relocated.jsonl")
+                    candidate.write_text("".join(json.dumps(r) + "\n" for r in
+                                                claude_round(sid, 1) + claude_round(sid, 2)), encoding="utf-8")
+                    append, read = raw.append_rounds, raw.read_exact
+                    stored = False
+
+                    def fail_after_append(*args, **kwargs):
+                        nonlocal stored
+                        result = append(*args, **kwargs)
+                        stored = True
+                        if failure == "append":
+                            raise OSError("Raw was written, but the write outcome was not returned.")
+                        return result
+
+                    def fail_cursor_read(*args, **kwargs):
+                        nonlocal stored
+                        if stored and failure != "append":
+                            stored = False
+                            if failure == "decode":
+                                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "Temporary read failure.")
+                            raise PermissionError("Temporary raw read failure after append.")
+                        return read(*args, **kwargs)
+
+                    with mock.patch.object(raw, "append_rounds", fail_after_append), \
+                            mock.patch.object(raw, "read_exact", fail_cursor_read):
+                        failed = it.capture("claude", sid, str(candidate), "capture-tests")
+                    self.assertFalse(failed["ok"], failed)
+                    self.assertTrue(failed["capture_pending"])
+                    self.assertEqual((failed["captured_rounds"], failed["reviewed_rounds"]), (1, 1))
+                    self.assertEqual(failed["pending_refs"], [])
+                    self.assertEqual(raw.record_state("capture-tests", first["record"])["rounds"], 2)
+                    raw_after_append = raw_path.read_bytes()
+                    failed_state = it._load(state_path, "claude", sid)
+                    self.assertEqual(failed_state["transcript_path"], before["transcript_path"])
+                    self.assertEqual(failed_state.get("capture_path"), str(candidate.resolve()))
+                    # A second transient native-read failure must not lose this intent either.
+                    with mock.patch.object(transcripts, "read", side_effect=PermissionError("Native temporarily locked.")):
+                        self.assertFalse(it.capture("claude", sid, None, "capture-tests")["ok"])
+                    self.assertEqual(it._load(state_path, "claude", sid).get("capture_path"), str(candidate.resolve()))
+                    if retry == "pathless":
+                        recovered = it.capture("claude", sid, None, "capture-tests")
+                    else:
+                        caught = it.catchup(100)
+                        recovered = next(c for c in caught["captures"] if c["conversation_id"] == sid)
+                    self.assertTrue(recovered["ok"], recovered)
+                    self.assertEqual(recovered["appended"], 0)
+                    after = it._load(state_path, "claude", sid)
+                    self.assertEqual(after["transcript_path"], str(candidate.resolve()))
+                    self.assertNotIn("capture_path", after)
+                    self.assertEqual(after["rounds"][:1], before["rounds"])
+                    self.assertEqual(after["reviews"], before["reviews"])
+                    self.assertEqual(after["snapshots"][first["through"]], before["snapshots"][first["through"]])
+                    self.assertEqual((len(after["rounds"]), after["reviewed_count"]), (2, 1))
+                    self.assertEqual(raw_path.read_bytes(), raw_after_append)
+                    job = it.prompt("claude", sid, include_organization=False)
+                    self.assertEqual(job["pending_refs"], [after["rounds"][1]["ref"]])
+                    self.assertEqual(job["raw_review"], {"state": "verified", "rounds": 1, "error": None})
+
     def test_unbound_conversation_can_choose_a_stable_session_without_binding_generic_key(self):
         self.transcript(claude_round(self.sid, 1))
         generic = self.sid + '-unbound'

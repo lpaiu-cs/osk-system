@@ -291,6 +291,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
         s.pop("capture_failure_phase", None)
         _save(p, s)  # Persist intent before reading or appending; failures remain pending.
         phase = "landing"
+        raw_replayed = False
         try:
             pinned = s["space"]
             if not pinned and s["rounds"]:
@@ -327,7 +328,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                     phase = "awaiting_native"
                 raise ValueError("native transcript path unavailable; use integration capture with --transcript")
             # Retain the attempted source across a crash, separately from the last
-            # accepted source. A normal rejection clears this intent below.
+            # accepted source. Only a validation rejection clears this intent below.
             s["capture_path"] = native_path
             _save(p, s)
             phase = "read"
@@ -362,6 +363,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                                                codex_v2=parsed.get("codex_v2"),
                                                dialogue_v1=parsed.get("dialogue_v1"),
                                                inherited=s.get("inherited"))
+                    raw_replayed = True
                     coverage["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
                     stored = raw.read_exact(raw._raw_file(result["path"]))
                     spans = raw._round_spans(stored)
@@ -393,7 +395,10 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                          else "awaiting_native")
             s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
             s["capture_failure_phase"] = phase
-            if phase != "landing":
+            # I/O failures can follow a committed raw write, including inside
+            # append_rounds. Keep its source until replay repairs the cursor.
+            # Only a validation refusal before raw replay can discard the candidate.
+            if phase != "landing" and not raw_replayed and isinstance(exc, ValueError):
                 s.pop("capture_path", None)
             _save(p, s)
             return _current_view(s, p)
