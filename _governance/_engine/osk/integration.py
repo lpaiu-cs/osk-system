@@ -58,6 +58,11 @@ def _load(p: Path, harness: str, sid: str) -> dict:
                 "capture_pending": False, "capture_error": None,
                 "native_fingerprint": None, "coverage": None}
     s = json.loads(p.read_text(encoding="utf-8"))
+    return _validate_state(s, harness, sid)
+
+
+def _validate_state(s: dict, harness: str, sid: str) -> dict:
+    """Validate already read bytes; status reports must not reread or repair them."""
     if (s.get("version"), s.get("root"), s.get("harness"), s.get("conversation_id")) != (
             1, str(core.ROOT.resolve()), harness, sid):
         raise ValueError("integration state identity/version mismatch; not reset")

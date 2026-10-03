@@ -275,6 +275,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
+| `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
 | `doctor` | 이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정. 읽기만 한다 (아래) |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |

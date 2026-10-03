@@ -944,11 +944,15 @@ def _cmd_acts_on(line: str) -> str | None:
 
 
 def run(command: list[str], limit: int = 3, timeout: int = 600, *,
-        scope_job: dict | None = None, cwd: Path | None = None,
-        worker_env: dict | None = None) -> dict:
+         scope_job: dict | None = None, cwd: Path | None = None,
+         worker_env: dict | None = None, invocation: str = "unknown") -> dict:
     """Scheduler entry: manifest → bounded external process → observed receipts."""
     # Fork preflight already selected the exact source version. Resolving it as
     # a daily worker here would silently substitute a newer sibling.
+    if invocation not in {"unknown", "manual", "user_request", "scheduled", "stop_hook"}:
+        raise ValueError("unknown growth invocation")
+    if invocation == "stop_hook" and scope_job is None:
+        raise ValueError("stop_hook requires its own conversation job")
     checked = check_command(command, follow_desktop_update=scope_job is None)
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 86400:
         raise ValueError("timeout must be between 1 and 86400 seconds")
@@ -991,6 +995,10 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                            {"candidates": [], "scope_jobs": [], "organization_jobs": []})
                 from . import organization
                 planned["work_context"] = "daily" if scope_job is None else "stop:unbound"
+                # Queue ownership is not the trigger. Keep older `daily` semantics for
+                # selection/fallback, and record only the caller's explicit attribution.
+                planned["invocation"] = invocation
+                planned["engine_rev"] = core.epoch.loaded()
                 if scope_job is not None and scope_job.get("session"):
                     from . import write
                     scope = write.resolve_session(scope_job["session"])
