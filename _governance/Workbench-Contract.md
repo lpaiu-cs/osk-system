@@ -1,9 +1,9 @@
 ---
 id: 260802-114u-xbxp
 created: 2026-08-02 13:22 (KST)
-updated: 2026-09-02 23:14 (KST)
+updated: 2026-10-04 01:21 (KST)
 author: user
-drafter: fable-5.1
+drafter: opus-5.5
 summary: "Workbench scope 헌장 — 구획과 경계, 경유 노드 정돈의 4출구, 참조 예외의 운영"
 derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
@@ -27,7 +27,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 1. **작업 상태** — 진행 중인 작업을 위한 계획·중간 산물·진행 기록·미해결
    질문. 노드가 아닌 임시 데이터로 Workbench의 루트에 직접 두며, 작업 종료
    시 검토하여 기억 후보에는 헌법 제9조의 보존 판별과 공간 배정을 적용하고
-   나머지는 정리한다. 판정의 맥락(`_raw/` 라운드 제목 등)도 작업 상태의
+   나머지는 정리한다. 판정의 맥락(`_cited/` 라운드 제목 등)도 작업 상태의
    기록으로 남긴다.
 2. **경유 노드** — scope 사이에 공유될 지식의 과도기 상태를 담는 노드.
    Workbench 안에서 노드는 경유 노드 구획에만 둔다.
@@ -36,9 +36,9 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    비노드 제도 기록이며 append-only로 유지하고(승인본 보관은 내용 주소
    불변), 작업 정리의 대상이 아니다. 구체제 서명 기록부는 보존 기록으로
    함께 남긴다.
-4. **`_raw/`** — Workbench 작업을 수행한 세션의 기록만을 담는다(정돈·심의
-   등 system 운영 세션). 다른 scope에서 진행된 세션의 기록은 반입하지
-   않는다. 전처리 요지를 남기고 원문은 무손실 콜드 티어로 이동한다.
+4. **`_cited/`** — Workbench 작업을 수행한 세션(정돈·심의 등 system 운영
+   세션)의 기록 중 인용·검증에 쓰는 라운드만 담는다. 다른 scope에서 진행된
+   세션의 기록은 반입하지 않는다.
 
 ## 3. 정돈
 
@@ -51,7 +51,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    반려를 받는다(헌법 제10조). 출구는 넷이다.
    - **Domain 이동** — 전역 자격을 통과한 경유 노드는 같은 ID와 내용으로
      Domain Space로 이동한다. 참조는 이동을 살아남는다. 이동 전에 헌법
-     제9조 1항의 근거 배선을 충족하고, `_raw/` 인용이 남아 있으면 근거
+     제9조 1항의 근거 배선을 충족하고, `_cited/` 인용이 남아 있으면 근거
      노드로 증류하여 대체한다 — 근거 노드는 발원 scope의 노드, 제도
      기록(사건부·records), 또는 Person Space의 요약 노드가 담는다.
    - **scope 이동** — 한 scope에 결속된 지식으로 판명되고, 모든 유입 참조가

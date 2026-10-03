@@ -26,8 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import (contract, epoch, graph, raw, rechecks, update_check,  # noqa: E402
-                 validate, write)
+from osk import (contract, epoch, graph, integration, raw, rechecks,  # noqa: E402
+                 update_check, validate, write)
 from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
@@ -47,8 +47,6 @@ Summary: TypeAlias = Annotated[str, Field(min_length=1, max_length=80)]
 # 훅이 호스트 한도 때문에 접은 블록(osk.hook_text) — overview가 돌려준다.
 HookSection: TypeAlias = Literal["tidy", "organization", "recovery"]
 Drafter: TypeAlias = Annotated[str, Field(pattern=DRAFTER_RE)]
-# 기록 이름도 곧 파일명이다 — 상한은 Title과 같은 자리에서 같은 이유로 건다.
-RawRecord: TypeAlias = Annotated[str, Field(min_length=1, max_length=120)]
 
 mcp = FastMCP("osk-system")
 _searcher = None
@@ -181,7 +179,7 @@ def _guard(fn, *a, **kw) -> dict:
 
 @mcp.tool()
 def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8) -> list[dict]:
-    """`query`로 전 Space 어휘 검색(`_raw`·Workbench 제외). 결과 `title`이 다른 도구의
+    """`query`로 전 Space 어휘 검색(인용 기록·Workbench 제외). 결과 `title`이 다른 도구의
     `name`. `summary`는 미리보기이며 인용·판단 전에 `read_node`로 확인한다."""
     return _s().view_search(query, k)
 
@@ -302,10 +300,10 @@ def _node_view(body: str, view: str) -> dict:
 
 
 @mcp.tool()
-def read_raw(ref: str | None = None, space: str | None = None,
-             max_chars: Annotated[int, Field(ge=200, le=100000)] = 6000,
-             view: Literal["review", "full"] = "review", query: str | None = None) -> dict:
-    """대화 원료 회상: ref=경로#N, 번호 없으면 목차, space=기록 목록.
+def read_cited(ref: str | None = None, space: str | None = None,
+               max_chars: Annotated[int, Field(ge=200, le=100000)] = 6000,
+               view: Literal["review", "full"] = "review", query: str | None = None) -> dict:
+    """인용 기록 회상: ref=경로#N, 번호 없으면 목차, space=기록 목록.
     기본 review: 발화·답변 선별 ≤6000자. query=원본 AND 검색, full=포렌식.
     생략≠무가치. 전량 이어읽지 않는다. hash는 원본 출처."""
     if ref:
@@ -470,14 +468,12 @@ def record_candidate(type: CandidateType,
 
 
 @mcp.tool()
-def append_raw(session: str, record: RawRecord, user: str, agent: str,
-               space: str | None = None) -> dict:
-    """`user` 발화와 `agent` 응답 한 라운드를 불변 기록에 잇는다.
-    `session`=고정 저장소 키, `record`=이 대화 내내 같은 기록 이름.
-    `space`는 `00_Scope/<이름>` 두 마디이며 결속 뒤 생략.
-    엔진이 번호를 매긴 `round_ref`를 `derived-from`으로 쓴다.
-    `filtered`는 치환된 비밀값 종류다."""
-    return _guard(raw.append_round, session, record, user, agent, space)
+def cite_round(conversation: str, quote: str | None = None, turn: str | None = None,
+               note: str | None = None, user: str | None = None) -> dict:
+    """근거가 필요한 원본 턴 하나를 남긴다. `conversation`=훅이 준 `<하네스>/<대화 ID>`.
+    `quote`(사용자 발화 일부)·`turn`(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
+    전문을 보내지 않는다. `note`=요지, `user`=원본이 없을 때만. 같은 턴은 같은 `round_ref`."""
+    return _guard(integration.cite, conversation, quote, turn, note, user=user)
 
 
 @mcp.tool()

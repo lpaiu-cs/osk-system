@@ -44,7 +44,7 @@ _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")   # 저장소 접근의 유일
 # 강하게 적용되는 자리인데 빠져 있었다: 케이던스가 15턴마다 쓰므로 그 구획을
 # 담은 영역은 계속 pending이 되고, **반려가 다른 기기의 공유 기억까지 지운다**.
 # 되돌릴 것이 없는 자리를 되돌림의 대상으로 두지 않는다.
-_SKIP_DIRS = {".git", ".venv", "__pycache__", "_ledger", "_raw",
+_SKIP_DIRS = {".git", ".venv", "__pycache__", "_ledger", "_cited", "_raw",
               "_scope_memory"}
 
 

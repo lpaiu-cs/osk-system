@@ -435,19 +435,21 @@ class OrganizationTests(unittest.TestCase):
             assert distillation.status("by-id")["status"]=="complete"
         """)
 
-    def test_other_scope_damage_does_not_hide_raw_integration_prompt(self):
+    def test_other_scope_damage_does_not_hide_integration_prompt(self):
         self.case("""
             from osk import integration
             transcript=core.ROOT/"trial.jsonl"
             rows=[{"type":"user","sessionId":"trial","uuid":"u","message":{"role":"user","content":"Observed a durable rule"}},
                   {"type":"assistant","sessionId":"trial","uuid":"a","message":{"role":"assistant","id":"m","stop_reason":"end_turn","content":[{"type":"text","text":"A bounded conclusion"}]}}]
             transcript.write_text(chr(10).join(json.dumps(r) for r in rows),encoding="utf-8")
+            from osk import write
+            write.bind_session("trial","W1")  # tracking alone binds nothing
             st=integration.capture("claude","trial",str(transcript),"trial",space="00_Scope/W1")
             assert st["pending_refs"],st
             broken=core.ROOT/"00_Scope/W2/Broken.md"; broken.parent.mkdir(parents=True)
             broken.write_text("No frontmatter",encoding="utf-8")
             result=integration.prompt("claude","trial")
-            assert st["pending_refs"][0] in result["text"],result
+            assert 'cite_round(conversation="claude/trial"' in result["text"],result
             assert "organization needs" in result["text"],result
         """)
 

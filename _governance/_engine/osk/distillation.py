@@ -61,8 +61,12 @@ def _source(ref: str, idx) -> dict:
             raise write.WriteError("source round does not exist")
         # Trailing round separators are not evidence; later append must not
         # invalidate the unchanged round. Hash the full stored round, untruncated.
-        return {"ref": raw.canonical_ref(f"{posix_rel(p, ROOT)}#{number}"),
-                "path": posix_rel(p, ROOT), "hash": raw.round_hash(text[span[0]:span[1]])}
+        source = {"ref": raw.canonical_ref(f"{posix_rel(p, ROOT)}#{number}"),
+                  "path": posix_rel(p, ROOT), "hash": raw.round_hash(text[span[0]:span[1]])}
+        native = raw.cited_native(text[span[0]:span[1]])
+        if native:
+            source["native"] = native  # The cited original turn binds review receipts.
+        return source
     p = write._live_locate(value, idx)
     if p is None or not p.is_file() or graph.space_of(p)[0] not in ("scope", "domain"):
         raise write.WriteError("source must resolve to a Scope/Domain node or exact raw round")
@@ -237,8 +241,10 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
     with write._Lock():
         idx = graph.Index()
         write._require_complete(idx)
-        wanted = {_source(ref, idx)["ref"] for ref in raw_refs}
-        if any("#" not in ref for ref in wanted):
+        # Original-turn refs are not vault paths; a proof cites them through a cited round.
+        wanted = {ref for ref in raw_refs if raw.is_native(ref)}
+        wanted |= {_source(ref, idx)["ref"] for ref in raw_refs if not raw.is_native(ref)}
+        if any("#" not in ref for ref in wanted if not raw.is_native(ref)):
             raise write.WriteError("proof discovery accepts exact raw round references only")
         # Preserve local_lock_path's vault-specific fallback suffix; in a shared
         # git directory, canonical _job_path(key) below still excludes other ROOTs.
@@ -260,7 +266,9 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
                     continue
                 if job.get("version") not in (1, 2):
                     raise ValueError("unsupported journal version")
-                if not wanted.intersection(raw.canonical_ref(source["ref"]) for source in job["sources"]):
+                if not wanted.intersection(
+                        {raw.canonical_ref(source["ref"]) for source in job["sources"]}
+                        | {source["native"] for source in job["sources"] if source.get("native")}):
                     continue
                 target = resolve_in_root(job["target"]["path"])
                 if target is None or graph.space_of(target)[0] != "scope":

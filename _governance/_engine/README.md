@@ -18,7 +18,7 @@
 | `osk/validate.py` | 시행령 §11 — 검증기 수트(보고 전용)·보호영역 생애 fixture |
 | `osk/cli.py` | 사용자 명령 — protect·unprotect·approve·revert는 대화형 확인 강제(사용자 전속) |
 | `osk/write.py` | Mechanism §6-2 3항 — 노드 쓰기의 단일 통로(계약·위상·세션 라우팅) |
-| `osk/raw.py` | 헌법 4조 3~4항·Mechanism §9 4~8항 — `_raw/` append와 좌표 회상 |
+| `osk/raw.py` | 헌법 4조 3~4항·Mechanism §9 4~9항 — 인용 기록(`_cited/`, 호환 `_raw/`) append와 좌표 회상 |
 | `osk/scope_memory.py` | Mechanism §9-2 — scope 기억(상한·앵커 일괄·거부 계약) |
 | `osk/evictions.py` | Mechanism §9-2 12항·§9-3 — 퇴출 기록부(evict·settle)와 정돈 실행(훅 주입·`status`·`tidy`) |
 | `osk/epoch.py` | 판본 관문 — 이 프로세스가 적재한 엔진과 디스크의 대조 |

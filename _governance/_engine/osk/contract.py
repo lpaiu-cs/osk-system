@@ -29,7 +29,7 @@ def edge_targets(value) -> list[str]:
             out.append(m.group(1).strip())   # 비노드/사건/노드 — 위키링크 대상명
         elif s:
             # Plain raw coordinates retain anchors in storage, not target lookup.
-            out.append(s.split("#", 1)[0] if "/_raw/" in s else s)
+            out.append(s.split("#", 1)[0] if any(f"/{d}/" in s for d in ("_cited", "_raw")) else s)
     return out
 
 

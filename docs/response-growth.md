@@ -8,7 +8,7 @@ It preserves the source model, Codex reasoning effort, source working directory 
 permission policy. It requires a matching native CLI version and confirmed subscription
 authentication before inference. Codex uses `exec fork --ephemeral`; Claude uses
 `--resume --fork-session --no-session-persistence`. Maintenance processes retain the
-existing `OSK_GROWTH_WORKER=1` exclusion from raw capture.
+existing `OSK_GROWTH_WORKER=1` exclusion from conversation tracking.
 
 Codex Desktop sources also retain the app's code-mode host and bundled app-tool
 definitions. Native `source=vscode` plus `originator=Codex Desktop` selects this path;
@@ -57,7 +57,7 @@ just before inference; failure there preserves the due Stop attempt for a later 
 
 The existing supervisor receives one Scope job including recovery instructions. It does
 not select another conversation or a Domain batch. Busy execution defers work; native
-IDs let a later Stop catch up, and the daily run still sees unreviewed raw. A new turn
+IDs let a later Stop catch up. The daily run has no conversation context and does not review original turns. A new turn
 or changed source metadata before launch refuses the fork without spending the Stop
 attempt, preserving the pending review; native trailer rows written after Stop do not. Source movement
 during execution also makes cumulative cache accounting unconfirmed. A harness upgrade
@@ -84,16 +84,14 @@ only that declared chain, checking the conversation identity on every page. They
 not combine nearby files or other tasks. Missing/ambiguous ancestors, cycles, foreign
 identities and offsets inside a JSONL record remain errors; existing raw is retained.
 
-Previously captured raw coordinates, hashes and review receipts keep their append
-order. Newly recovered historical rounds are appended for review, not marked done.
-Legacy raw without embedded turn IDs retains its saved ID only after the recorded
-codec's body matches; without a cursor, the body must identify exactly one turn.
+Previously tracked turns, stored raw coordinates, hashes and review receipts keep their
+order. A historical turn recognized later follows them for review and is not marked done.
 Recovering a prefix before an existing Stop baseline adds no retroactive Stops. A
 legacy empty baseline excludes ancestor completions once; a baseline that already
 observed the full history continues counting subsequent completions normally. A
 completed native compaction with no user input or assistant trace is maintenance,
 not a missing dialogue round. User turns without a response still remain pending.
-Native lookup errors remain visible, but already stored pending raw remains in
+Native lookup errors remain visible, but rounds an older engine stored in raw remain in
 both the review inventory and the scheduled catch-up queue.
 
 ## Cache experiments (2026-09-21)

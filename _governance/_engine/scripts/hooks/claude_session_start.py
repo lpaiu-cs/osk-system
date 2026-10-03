@@ -225,7 +225,7 @@ def _memory_block(scope_memory, key: str, st: dict | None = None) -> str:
         f"{st['chars']}/{st['limit']}자 · 여유 {st['limit'] - st['chars']}자]\n"
         f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것.\n"
         f"{st['session_note']}\n"
-        f"대화 검토 시에는 자기 대화의 raw와 현재 공유 기억을 함께 검토하라. "
+        f"대화 검토 시에는 자기 대화와 현재 공유 기억을 함께 검토하라. "
         f"오래 쓸 지식은 search로 찾은 기존 Scope 노드 갱신을 우선하고 출처·허브를 "
         f"완성한다. 요약에 머물 내용은 그 다음 scope 기억에 반영하고, 남길 것이 "
         f"없으면 사유를 남긴다. 요약 수정은 `edits`로 "
@@ -236,9 +236,12 @@ def _memory_block(scope_memory, key: str, st: dict | None = None) -> str:
         f"hash: {st['hash']}\n---\n{text}")
 
 
-def _bootstrap(key: str, *, bound: bool) -> str:
+def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None) -> str:
     arg = json.dumps(key, ensure_ascii=False)
-    return (f"[osk 세션 시작 — session={arg}]\n"
+    # `cite_round(conversation=…)` names this conversation by the pair below.
+    conversation = (f" · conversation={json.dumps(ident[0] + '/' + ident[1], ensure_ascii=False)}"
+                    if ident else "")
+    return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
             f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집·열린 사건·근거 재검토 후보를 "
             "확인하라. 기억을 묻는 질문에는 `search`를 먼저 쓴다. "
             + ("아래 scope 기억을 통합의 출발점으로 삼는다."
@@ -470,7 +473,7 @@ def main() -> None:
         notice = Block("notice", notice, 40, label="새 릴리스 알림(overview의 update)",
                        on_shown=notified)
         scope = write.resolve_session(key)
-        bootstrap = Block("bootstrap", _bootstrap(key, bound=bool(scope)))
+        bootstrap = Block("bootstrap", _bootstrap(key, bound=bool(scope), ident=ident))
         try:
             recovery = _recovery(scope_memory, key)
         except Exception:

@@ -88,13 +88,15 @@ are connected (Claude Code, Codex, Kiro, Antigravity), the loop runs within your
 sessions: capture is mechanical, and the agent reviews and distills when the
 hooks prompt it.
 
-1. **Capture.** The hooks record every round of the conversation in `_raw/`:
-   what you and the agent said, verbatim, with tool calls and results as
-   references. Raw records are evidence, not nodes.
+1. **Capture.** The hooks track each finished turn of the conversation on your
+   device, as a reference into the harness's own transcript and a hash. The
+   conversation stays in that transcript; nothing is copied into the vault.
 2. **Review and distill.** At turns 9 and 15 (or, with a subscription fork, in
-   the background after every 9 final answers), the agent reviews the new rounds
-   together with the shared memory and distills what will last into nodes. Each
-   node cites its evidence with `derived-from`, down to the conversation round.
+   the background after every 9 final answers), the agent reviews the new turns,
+   which it holds in context, together with the shared memory and distills what
+   will last into nodes. It cites only the turns a node needs as evidence: the
+   engine copies your words from the transcript into `_cited/`, and the node's
+   `derived-from` points to that round.
 3. **Connect and organize.** A node about the same claim is updated, not
    duplicated. New nodes stand first; a hub covering the topic links them
    afterwards and splits into branches as the topic grows. Knowledge used beyond
@@ -117,7 +119,7 @@ Each node belongs to one of three Spaces, by where it mainly applies.
 
 | Space | What it holds |
 |---|---|
-| **Scope** | Memory formed within a project or activity. The raw records of its sessions (`_raw/`) are kept here too |
+| **Scope** | Memory formed within a project or activity. The conversation rounds its nodes cite (`_cited/`) are kept here too |
 | **Domain** | Knowledge reused across contexts, not tied to one project |
 | **Person** | The user model: records the user leaves, understanding about the user, and delegation. An agent's inference about the user is not taken as the user's fact without the user's confirmation |
 
@@ -293,10 +295,10 @@ execution, and failure fallbacks.
 - **Background reviews inherit the source session's permissions.** A
   subscription fork review runs unattended with the reviewed session's own
   Claude Code permission mode, or Codex approval and sandbox policy. This is by
-  design. The fork re-reads that conversation, including any untrusted text it
-  contains.
+  design. The fork carries that conversation as its context, including any
+  untrusted text it contains.
 - **Node bodies are not secret-filtered.** This is by design. The secret filter
-  covers raw transcripts, Scope memory, and writes distilled from raw records.
+  covers cited records, Scope memory, and writes distilled from cited records.
   Keep secrets out of notes: they are committed and synchronized.
 - **Protected regions are not a security boundary.** They help prevent and
   recover from honest mistakes; see [Your memory, your authority](#your-memory-your-authority).
@@ -318,7 +320,7 @@ organized by the system.
 | Document | Responsibility |
 |---|---|
 | [Constitution](_governance/Constitution.md) | Spaces, nodes, reference topology, delegation, protected regions, cases, and amendments |
-| [Bylaws](_governance/Bylaws.md) | Operating rules for node and raw-record contracts, clusters, pins, delegation, and protected regions |
+| [Bylaws](_governance/Bylaws.md) | Operating rules for node and cited-record contracts, clusters, pins, delegation, and protected regions |
 | [Mechanism](_governance/Mechanism.md) | Physical layout, identifiers, timestamps, ledgers, MCP contracts, link syntax, and secret filtering |
 | [Workbench contract](_governance/Workbench-Contract.md) | The special status and organization rules of the operational Workbench scope |
 

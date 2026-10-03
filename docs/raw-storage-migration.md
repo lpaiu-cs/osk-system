@@ -1,24 +1,30 @@
 # Hidden raw storage
 
-Raw transcripts are evidence, not knowledge nodes. New records use
-`00_Scope/<scope>/_raw/.records/<record>.txt`: a non-Markdown extension inside
-a dot directory. (A vault that kept a legacy `= Scope` or `Scope` root uses that
-root name; see [Space paths](space-layout-migration.md).) The text codec, numeric
-round headings, secret filtering and append-only prefix are unchanged. Git still
-preserves exact bytes through the existing `**/_raw/** -text` attribute.
+Cited records are evidence, not knowledge nodes. New records use
+`00_Scope/<scope>/_cited/.records/<record>.txt`: a non-Markdown extension inside
+a dot directory. Records that older engines wrote under `_raw/` keep the same
+hidden layout, `00_Scope/<scope>/_raw/.records/<record>.txt`, and
+`raw migrate` below still moves their legacy Markdown form there. (A vault that
+kept a legacy `= Scope` or `Scope` root uses that root name; see
+[Space paths](space-layout-migration.md).) The text codec, numeric round
+headings, secret filtering and append-only prefix are unchanged. Git preserves
+exact bytes through the `**/_cited/** -text` and `**/_raw/** -text` attributes.
 
 A record name at the old 252-byte UTF-8 limit cannot take `.txt` in a single
 255-byte filename. Its lossless physical path is
-`_raw/.records/<record>/record.txt`: every component fits, and the original
-name remains reversible without truncation, hashes or an alias registry.
-Case and Unicode-equivalent aliases still select one canonical record.
+`.records/<record>/record.txt` under `_cited/` or `_raw/`: every component
+fits, and the original name remains reversible without truncation, hashes or an
+alias registry. Case and Unicode-equivalent aliases still select one canonical
+record.
 
-`read_raw`, capture hooks and distillation accept both old
-`[[00_Scope/<scope>/_raw/<record>.md#N]]` and new plain
-`00_Scope/<scope>/_raw/.records/<record>.txt#N` coordinates. New raw Predicate
-Edges use plain YAML strings, so they do not create Obsidian wiki-link nodes.
-Old source coordinates, pending snapshot keys and historical receipt hashes
-remain readable; migration does not rewrite node bytes or acknowledge reviews.
+`read_cited`, which replaces `read_raw`, and distillation accept the old
+`[[00_Scope/<scope>/_raw/<record>.md#N]]`, the plain
+`00_Scope/<scope>/_raw/.records/<record>.txt#N` and the new
+`00_Scope/<scope>/_cited/.records/<record>.txt#N` coordinates. New record
+Predicate Edges use plain YAML strings, so they do not create Obsidian wiki-link
+nodes. Old source coordinates, pending snapshot keys and historical receipt
+hashes remain readable; migration does not rewrite node bytes or acknowledge
+reviews.
 
 Unwritten v1 distillation journals replay their original wiki-form source
 serialization against the original target hash. New v2 journals use plain raw
@@ -26,8 +32,8 @@ coordinates. An upgrade never replaces a reserved hash to accept changed bytes.
 
 Obsidian's native file explorer ignores dot directories; `.txt` also is not a
 native Markdown note format. This does not promise invisibility against plugins
-specifically installed to expose hidden files. Raw is opened through `read_raw`,
-not by clicking a note in Obsidian. See [accepted formats](https://obsidian.md/help/Files%2Band%2Bfolders/Accepted%2Bfile%2Bformats)
+specifically installed to expose hidden files. Records are opened through
+`read_cited`, not by clicking a note in Obsidian. See [accepted formats](https://obsidian.md/help/Files%2Band%2Bfolders/Accepted%2Bfile%2Bformats)
 and the [Show Dotfiles author's description of native behavior](https://community.obsidian.md/plugins/show-dotfiles).
 
 ## Migration
@@ -50,8 +56,8 @@ The first command previews every source, destination, size and SHA-256. The
 second holds the normal vault mutation lock, renames files without changing
 bytes and verifies each destination hash. The final command should report zero
 remaining Markdown records. An interrupted migration can be retried; conflicting
-old/new copies are refused rather than overwritten. The regular capture path
-also migrates a legacy record when it next appends or verifies an exact replay.
+old/new copies are refused rather than overwritten. The next citation into a
+legacy `.md` record also migrates it.
 
 No original transcript is deleted or rewritten. The old physical filename
 disappears because the same file is moved. A physical rollback requires the
@@ -64,6 +70,9 @@ show those old references as unresolved nodes if its `hideUnresolved` setting is
 off. Keep the existing node-only graph view during rollout; rewrite old node
 citations through MCP only as a separately verified graph change. Newly written
 raw citations use the plain form automatically.
+
+The section below records the governance text approved on 2026-09-17; the
+2026-10-04 amendment moves new records to `_cited/`.
 
 ## Approved governance text
 

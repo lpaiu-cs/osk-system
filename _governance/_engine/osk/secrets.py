@@ -39,20 +39,20 @@ def filter_text(text: str) -> tuple[str, list[str]]:
 
 
 def write_raw(path: Path | str, text: str) -> tuple[Path, list[str]]:
-    """`_raw/` 원본 기록의 **단일 통로** (Mechanism §9 · 시행령 §2 3항).
+    """인용 기록(`_cited/`, 호환 `_raw/`)의 **단일 통로** (Mechanism §9 · 시행령 §2 3항).
 
-    필터를 우회하는 _raw 쓰기 경로를 두지 않기 위해, 원본을 파일로 남기는
+    필터를 우회하는 기록 쓰기 경로를 두지 않기 위해, 대화를 파일로 남기는
     코드는 장래에도 이 함수를 통과해야 한다 — 치환은 호출자 재량이 아니다.
-    vault 밖 경로·`_raw/` 밖 경로는 기록하지 않고 거부한다(fail-closed).
+    vault 밖 경로·기록 구획 밖 경로는 기록하지 않고 거부한다(fail-closed).
     `text`는 **파일 전문**이며, 기존 파일이 있으면 그 바이트를 접두부로
     보존해야 한다(아래 append 판정). 반환은 (기록한 경로, 적중 패턴 목록)."""
     from .core import resolve_in_root
     from . import graph
     p = resolve_in_root(path)
     if p is None:
-        raise ValueError(f"vault 밖 경로 — _raw 기록 거부: {path}")
+        raise ValueError(f"vault 밖 경로 — 인용 기록 거부: {path}")
     if graph.space_of(p)[0] != "raw":
-        raise ValueError(f"`_raw/` 밖 경로 — 이 통로로 기록할 수 없다: {p}")
+        raise ValueError(f"인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 이 통로로 기록할 수 없다: {p}")
     from . import raw
     if p != raw._record_pair(p)[1] or p != raw._record_file(p):
         raise ValueError("raw 쓰기는 숨김 .records의 정본 .txt 경로에만 허용한다")
@@ -61,7 +61,7 @@ def write_raw(path: Path | str, text: str) -> tuple[Path, list[str]]:
     # 정의돼 있으므로(Mechanism §8 3~4항), 텍스트 모드의 개행 변환이 끼면
     # Windows에서 쓴 기록만 해시가 달라진다.
     data = filtered.encode("utf-8")
-    # Mechanism §9 4항 — `_raw/` 쓰기는 기존 파일의 정확한 바이트를 새 파일의
+    # Mechanism §9 4항 — 기록 쓰기는 기존 파일의 정확한 바이트를 새 파일의
     # 접두부로 보존하는 append만 허용한다. 판정은 **치환 뒤** 바이트로 한다:
     # 기존 파일도 이 통로를 지나며 치환됐으므로 평소에는 그대로 일치하고,
     # 패턴이 늘어 과거 기록까지 새로 치환돼야 하는 경우에만 접두부가 어긋나
@@ -71,7 +71,7 @@ def write_raw(path: Path | str, text: str) -> tuple[Path, list[str]]:
         if not data.startswith(prior):
             raise ValueError(
                 f"append 아님 — 기존 {len(prior)}바이트가 접두부로 보존되지 "
-                f"않았다. `_raw/`는 불변이며 append만 허용한다: {p}")
+                f"않았다. 인용 기록은 불변이며 append만 허용한다: {p}")
     atomic_write(p, data)       # 원자 교체 — 미치환 중간 상태를 남기지 않는다
     return p, hits
 
