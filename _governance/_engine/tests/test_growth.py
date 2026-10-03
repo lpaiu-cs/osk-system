@@ -164,6 +164,41 @@ class GrowthTests(unittest.TestCase):
                 pass
         """)
 
+    def test_scope_checkpoint_survives_worker_failure_and_resumes_only_pending_work(self):
+        self.check_case("""
+            from osk import integration
+            node('A')
+            for sid in ('first', 'second'):
+                path = core.ROOT / (sid + '.jsonl')
+                rows = [
+                    {'type':'user','sessionId':sid,'uuid':sid+'-u','message':{'role':'user','content':'fixture question'}},
+                    {'type':'assistant','sessionId':sid,'uuid':sid+'-a','message':{
+                        'role':'assistant','id':sid+'-m','content':[{'type':'text','text':'fixture answer'}],
+                        'stop_reason':'end_turn'}}]
+                path.write_text(''.join(json.dumps(row)+'\\n' for row in rows), encoding='utf-8')
+                assert integration.capture('claude',sid,str(path),'checkpoint-fixture',space='00_Scope/W1')['ok']
+            change = "q['osk_reviews']['domain']=[]; q['osk_reviews']['scope']=q['osk_reviews']['scope'][:1]; (core.ROOT/'saved-checkpoint.json').write_text(json.dumps(q),encoding='utf-8'); assert growth.checkpoint(q)['ok']; sys.exit(7)"
+            result = growth.run([sys.executable,'-B','-c',packet_worker(change)],limit=3)
+            assert not result['ok'] and result['returncode'] == 7, result
+            first_plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            assert [j['conversation_id'] for j in first_plan['scope_jobs']] == ['first']
+            assert integration.status('claude','first')['reviewed_rounds'] == 1
+            packet = json.loads((core.ROOT/'saved-checkpoint.json').read_text(encoding='utf-8'))
+            assert growth.checkpoint(packet)['ok']
+            before = integration._load(integration.state_path('claude','first'),'claude','first')
+            assert len(before['reviews']) == 1
+            retry = growth.run([sys.executable,'-B','-c','import sys; sys.stdin.read()'],limit=3)
+            assert not retry['ok']
+            next_plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            assert [j['conversation_id'] for j in next_plan['scope_jobs']] == ['second'], next_plan
+            visible = growth._reading_plan(next_plan)['scope_jobs'][0]
+            assert visible['raw_review'] == {'state':'verified','rounds':1,'error':None}
+            assert visible['capture_recovery']['state'] == 'ready'
+            after = integration._load(integration.state_path('claude','first'),'claude','first')
+            assert after == before
+            assert integration.status('claude','second')['reviewed_rounds'] == 0
+        """)
+
     def test_recheck_jobs_queue_in_daily_runs_and_fork_scope(self):
         self.check_case("""
             node('A')
