@@ -131,10 +131,14 @@ def _engine_state() -> dict:
 
     `engine_stale`이 `None`이면 판정 불가다 — 그 상태에서 쓰기는 관문이
     거부한다(core._fence)."""
+    from osk import core
+    state = {"engine_rev": epoch.loaded(), "engine_observed_at": core.now_iso()}
     try:
-        return {"engine_rev": epoch.loaded(), "engine_stale": epoch.stale()}
+        disk = epoch.on_disk()
+        return {**state, "engine_disk_rev": disk,
+                "engine_stale": None if epoch.loaded() == epoch.UNKNOWN else epoch.loaded() != disk}
     except epoch.EpochError:
-        return {"engine_rev": epoch.loaded(), "engine_stale": None}
+        return {**state, "engine_disk_rev": None, "engine_stale": None}
 
 
 def _prune_titles(s):

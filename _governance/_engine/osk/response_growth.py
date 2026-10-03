@@ -715,7 +715,8 @@ def run(source: dict, job: dict, executable: str) -> dict:
         # A new turn or changed model/policy never forks; retry, never spend the attempt.
         return {'ok': False, 'state': 'unavailable', 'error': 'source advanced before fork; review remains pending'}
     source = fresh  # Fork, and measure cache, from the snapshot just checked.
-    result = growth.run(argv, limit=1, timeout=600, scope_job=job, cwd=Path(source['cwd']), worker_env=env)
+    result = growth.run(argv, limit=1, timeout=600, scope_job=job, cwd=Path(source['cwd']),
+                        worker_env=env, invocation='stop_hook')
     if result.get('output'):
         try:
             result['cache'] = (cache_usage(core.ROOT / result['output'] / 'stdout.txt', source)

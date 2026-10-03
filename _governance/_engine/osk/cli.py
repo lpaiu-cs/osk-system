@@ -175,10 +175,13 @@ def _integration_cmd(a) -> None:
 
 
 def _growth_cmd(a) -> None:
-    """Bounded scheduler entry; the subprocess still uses MCP for graph writes."""
+    """Bounded growth execution and read-only evidence reporting."""
     from . import growth
     try:
-        if a.growth_cmd in ("plan", "prompt"):
+        if a.growth_cmd == "status":
+            from . import growth_status
+            result = growth_status.report(since=a.since, until=a.until, preflight=a.preflight)
+        elif a.growth_cmd in ("plan", "prompt"):
             result = growth.plan(limit=a.limit)
             if a.growth_cmd == "prompt":
                 sys.stdout.buffer.write(growth.prompt(result).encode("utf-8"))
@@ -194,7 +197,7 @@ def _growth_cmd(a) -> None:
             # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
             # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
             result = (growth.check_command(command) if a.check else
-                      growth.run(command, limit=a.limit, timeout=a.timeout))
+                      growth.run(command, limit=a.limit, timeout=a.timeout, invocation=a.invocation))
         _emit(result)
         if not result.get("ok", True):
             sys.exit(1)
@@ -381,6 +384,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("growth", help="Scope→Domain 비교·검토·한정 실행")
     gs = p.add_subparsers(dest="growth_cmd", required=True)
+    q = gs.add_parser("status", help="읽기 전용 성장 상태·기간별 증거 — 검토·복구·모델 실행 없음")
+    q.add_argument("--since", help="이력 시작 ISO 시각(시간대 필수, 포함)")
+    q.add_argument("--until", help="이력 끝 ISO 시각(시간대 필수, 제외; 기본 현재)")
+    q.add_argument("--preflight", action="store_true", help="기존 fork doctor로 CLI·구독 인증도 조회(추론 없음)")
     for name in ("plan", "prompt", "run"):
         q = gs.add_parser(name)
         q.add_argument("--limit", type=int, default=3)
@@ -388,6 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
             q.add_argument("--command-file", required=True, help="에이전트 argv 배열 JSON 파일")
             q.add_argument("--timeout", type=int, default=600)
             q.add_argument("--check", action="store_true", help="실행 파일만 확인; 모델·포착·대장 쓰기 없음")
+            q.add_argument("--invocation", choices=("manual", "user_request", "scheduled", "unknown"),
+                           default="unknown", help="명시한 기동 원인; 생략하면 추정하지 않는다")
     q = gs.add_parser("review")
     q.add_argument("key")
     q.add_argument("outcome", choices=("preserved", "no_value", "deferred"))

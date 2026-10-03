@@ -166,10 +166,10 @@ def _receipt(job: dict, reason: str | None = None) -> dict:
     return out
 
 
-def _verify(job: dict) -> dict:
+def _verify(job: dict, idx=None) -> dict:
     retained = False
     try:
-        idx = graph.Index()
+        idx = graph.Index() if idx is None else idx
         write._require_complete(idx)
         _check_sources(job, idx)
         target, hub = job["target"], job["hub"]
@@ -200,14 +200,14 @@ def _verify(job: dict) -> dict:
 
 
 
-def _verify_receipt_locked(receipt: dict) -> dict:
+def _verify_receipt_locked(receipt: dict, idx=None) -> dict:
     """Recheck a synchronized receipt without requiring a local recovery journal."""
     if (not isinstance(receipt, dict)
             or not all(k in receipt for k in ("key", "sources", "target", "hub"))
             or not isinstance(receipt["sources"], list) or not receipt["sources"]
             or not isinstance(receipt["target"], dict) or not isinstance(receipt["hub"], dict)):
         raise write.WriteError("incomplete distillation receipt")
-    return _verify(receipt)
+    return _verify(receipt, idx=idx)
 
 
 def verify_receipt(receipt: dict) -> dict:
