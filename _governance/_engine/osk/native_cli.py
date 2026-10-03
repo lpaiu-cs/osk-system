@@ -92,25 +92,36 @@ def runtime_codex() -> str | None:
 
 def resolve(executable: str, *, version: str | None = None, env=None) -> str:
     path = Path(executable)
-    # Claude Desktop keeps each release in Claude/claude-code/<version>/. Follow only
-    # the source's exact version; without one an existing configured file stays pinned.
+    # Desktop uses <version>/claude.exe or <version>/<build hash>/claude.exe.
+    # Follow only the source's version within the configured installation.
+    release = path.parent
+    if re.fullmatch(r'[0-9a-f]{12}', release.name):
+        release = release.parent
+    base = release.parent
     if (path.is_absolute() and path.name.lower() in ('claude', 'claude.exe')
-            and re.fullmatch(SEMVER, path.parent.name)
-            and [p.name.lower() for p in list(path.parents)[1:3]] == ['claude-code', 'claude']):
-        if version is None:
-            if path.is_file():
-                return executable
-            # Desktop prunes old releases. Only routing lacks a version (no inference);
-            # command() always requires the transcript's exact version.
-            installed = [(_order(c.parent.name), str(c)) for c in path.parent.parent.glob('*/' + path.name)
-                         if re.fullmatch(SEMVER, c.parent.name) and c.is_file()
-                         and c.resolve().parent.parent == path.parent.parent.resolve()]
-            return max(installed)[1] if installed else executable
-        candidate = path.parent.parent / version / path.name
-        if (not re.fullmatch(SEMVER, version) or not candidate.is_file()
-                or candidate.resolve().parent.parent != path.parent.parent.resolve()):
+            and re.fullmatch(SEMVER, release.name)
+            and [base.name.lower(), base.parent.name.lower()] == ['claude-code', 'claude']):
+        if version is not None and not re.fullmatch(SEMVER, version):
             raise ValueError('matching Claude Desktop CLI is unavailable; review remains pending')
-        return str(candidate)
+        if (version is None or version == release.name) and path.is_file() and (
+                path.resolve() == base.resolve() / path.relative_to(base)):
+            return executable
+        installed = []
+        for directory in ([base / version] if version else base.iterdir()):
+            if not re.fullmatch(SEMVER, directory.name):
+                continue
+            for candidate in [directory / path.name, *directory.glob('*/' + path.name)]:
+                if candidate.parent != directory and not re.fullmatch(r'[0-9a-f]{12}', candidate.parent.name):
+                    continue
+                if candidate.is_file() and candidate.resolve() == base.resolve() / candidate.relative_to(base):
+                    installed.append((_order(directory.name), str(candidate)))
+        if not installed:
+            raise ValueError('matching Claude Desktop CLI is unavailable; review remains pending')
+        newest = max(v for v, _ in installed)
+        choices = [p for v, p in installed if v == newest]
+        if len(choices) != 1:
+            raise ValueError('matching Claude Desktop CLI is ambiguous; pin the source build explicitly')
+        return choices[0]
     # Only Desktop's versioned directory is relocatable. PATH entries and other
     # installations remain explicitly pinned; bin/codex.exe may be much older.
     if not _managed_codex(path):

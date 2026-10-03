@@ -179,11 +179,61 @@ class GrowthTests(unittest.TestCase):
             assert [j['node'] for j in growth._recheck_jobs(graph.Index(), 'W1')] == ['B']
             assert not growth._recheck_jobs(graph.Index(), 'W2')   # a fork keeps to its scope
             assert not growth.daily_active()
-            register(planned)
+            manifest = register(planned)
+            assert not growth.daily_active(), 'a plan is not completed work'
+            core.ledger_append(growth.LEDGER, {'kind':'run','manifest':manifest['rid'],'ok':True})
             assert growth.daily_active()
             write.update_node('B', add_edges={'derived-from': 'A'})
             assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'complete'
             assert not growth.plan(3)['recheck_jobs']
+        """)
+
+    def test_latest_daily_result_controls_recheck_handoff(self):
+        self.check_case("""
+            from datetime import datetime, timedelta, timezone
+            from unittest.mock import patch
+            planned = register()
+            assert not growth.daily_active()
+            core.ledger_append(growth.LEDGER, {'kind':'run','manifest':planned['rid'],'ok':True})
+            assert growth.daily_active()
+            core.ledger_append(growth.LEDGER, {'kind':'plan','work_context':'stop:W1'})
+            assert growth.daily_active(), 'Stop work must not replace daily health'
+            latest = register()
+            assert not growth.daily_active(), 'a newer unfinished plan supersedes old success'
+            core.ledger_append(growth.LEDGER, {'kind':'run','manifest':latest['rid'],'ok':False})
+            assert not growth.daily_active(), 'failed daily work must yield rechecks to forks'
+            core.ledger_append(growth.LEDGER, {'kind':'run','manifest':latest['rid'],'ok':True})
+            assert growth.daily_active()
+            rows = growth._records()
+            old = (datetime.now(timezone.utc)-timedelta(days=4)).isoformat()
+            for row in rows:
+                row['at'] = old
+            with patch.object(growth,'_records',return_value=rows):
+                assert not growth.daily_active(), 'expired success does not suppress fallback'
+        """)
+
+    def test_unrelated_capture_error_does_not_fail_completed_selected_work(self):
+        self.check_case("""
+            from osk import integration
+            from unittest.mock import patch
+            node('A')
+            catchup = {'ok':False,'jobs':[],'captures':[], 'remaining':1,
+                       'errors':[{'conversation_id':'other','error':'native identity mismatch'}]}
+            with patch.object(integration,'catchup',return_value=catchup):
+                result = growth.run([sys.executable,'-c',packet_worker()],limit=3)
+                assert result['ok'] and result['selected'], result
+                assert not result['capture']['ok'] and result['capture']['errors']==catchup['errors']
+                assert growth.run(['unused-command'])['state']=='capture_pending'
+            native = core.ROOT/'native.jsonl'
+            native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u',
+                'message':{'role':'user','content':'question'}})+'\\n'+json.dumps(
+                {'type':'assistant','sessionId':'own','uuid':'a','message':{'role':'assistant',
+                 'id':'m','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}})+'\\n',encoding='utf-8')
+            assert integration.capture('claude','own',str(native),'own',space='00_Scope/W1')['ok']
+            job = integration.prompt('claude','own')
+            job.update(ok=False,capture_error='selected conversation capture failed')
+            result = growth.run([sys.executable,'-c',packet_worker()],scope_job=job)
+            assert not result['ok'], 'the selected conversation capture error remains a blocker'
         """)
 
     def test_recheck_escalation_holds_a_second_correction_for_the_user(self):

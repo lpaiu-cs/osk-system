@@ -138,6 +138,56 @@ class ResponseGrowthTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'version differs'):
                     rg.command(fresh, gone, env)
 
+    def test_claude_desktop_hash_directory_keeps_version_and_installation_boundary(self):
+        from osk import native_cli, growth
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder) / 'Claude/claude-code'
+            old = base / '2.1.280/claude.exe'
+            same = base / '2.1.286/635c1867224a/claude.exe'
+            newer = base / '2.1.287/abcdef012345/claude.exe'
+            for p in (same, newer):
+                p.parent.mkdir(parents=True)
+                p.touch()
+                p.chmod(0o700)
+            self.assertEqual(native_cli.resolve(str(old), version='2.1.286'), str(same))
+            self.assertEqual(native_cli.resolve(str(same), version='2.1.287'), str(newer))
+            self.assertEqual(native_cli.resolve(str(old)), str(newer))
+            self.assertEqual(growth.check_command([str(old)])['executable'], str(newer))
+            self.assertEqual(native_cli.resolve(str(same)), str(same))
+            for version in ('2.1.285', '../2.1.286'):
+                with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'matching Claude'):
+                    native_cli.resolve(str(old), version=version)
+            source = {'harness':'claude', 'conversation_id':'own', 'model':'same-model',
+                      'version':'2.1.286', 'permission_mode':'default', 'cwd':folder}
+            def inspect(argv, **kwargs):
+                self.assertEqual(argv[0], str(same))
+                self.assertIn(argv[1:], (['--version'], ['auth', 'status']))
+                text = ('2.1.286 (Claude Code)' if argv[1:] == ['--version'] else
+                        json.dumps({'loggedIn':True, 'authMethod':'claude.ai', 'subscriptionType':'max'}))
+                return subprocess.CompletedProcess(argv, 0, text, '')
+            with patch.object(rg.subprocess, 'run', side_effect=inspect):
+                self.assertEqual(rg.command(source, str(old), {'CLAUDE_CONFIG_DIR':folder})[0], str(same))
+            # Two unpinned builds of one version are ambiguous; an existing explicit pin is not.
+            other = same.parent.parent / 'abcdef012345/claude.exe'
+            other.parent.mkdir(); other.touch()
+            with self.assertRaisesRegex(ValueError, 'ambiguous'):
+                native_cli.resolve(str(old), version='2.1.286')
+            self.assertEqual(native_cli.resolve(str(same), version='2.1.286'), str(same))
+            # A hash-shaped symlink must not select a binary outside this installation.
+            other.unlink(); other.parent.rmdir()
+            foreign = Path(folder) / 'foreign'
+            foreign.mkdir(); (foreign / 'claude.exe').touch()
+            try:
+                other.parent.symlink_to(foreign, target_is_directory=True)
+            except OSError:
+                pass
+            else:
+                self.assertEqual(native_cli.resolve(str(old), version='2.1.286'), str(same))
+            junk = base / '2.1.288/not-a-build/claude.exe'
+            junk.parent.mkdir(parents=True); junk.touch()
+            with self.assertRaisesRegex(ValueError, 'matching Claude'):
+                native_cli.resolve(str(old), version='2.1.288')
+
     def test_runtime_version_recovery_preserves_counters_and_reaches_supervisor(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration
