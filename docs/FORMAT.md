@@ -24,13 +24,13 @@ use `/`.
 | Predicate Edge | A typed reference in frontmatter: `derived-from` or `conflicts` |
 | ledger | An append-only JSON Lines file under `_ledger/` |
 | region | A directory under approval control (a protected region) |
-| raw record | The append-only transcript of one session, in rounds |
+| cited record | The append-only record of one session's conversation rounds that nodes cite |
 | scope memory | One short shared note per scope |
 
 Contents: [1. Vault layout](#1-vault-layout) ·
 [2. Node files](#2-node-files) · [3. Identity](#3-identity) ·
 [4. Ledgers](#4-ledgers) · [5. Approval store](#5-approval-store) ·
-[6. Raw records and scope memory](#6-raw-records-and-scope-memory) ·
+[6. Cited records and scope memory](#6-cited-records-and-scope-memory) ·
 [7. Release attestation and updates](#7-release-attestation-and-updates) ·
 [8. Compatibility promise](#8-compatibility-promise)
 
@@ -41,7 +41,7 @@ A vault is one self-contained directory tree, normally a Git repository
 
 | Path | Contents | Nodes |
 |---|---|---|
-| `00_Scope/<scope>/` | a scope: nodes, sub-clusters, and `_raw/` | yes |
+| `00_Scope/<scope>/` | a scope: nodes, sub-clusters, and `_cited/` (section 6.1) | yes |
 | `00_Scope/Workbench/` | the operational scope (table below) | in `transit/` only |
 | `00_Domain/<domain>/` | a domain | yes |
 | `00_Person/<facet>/` | a facet | yes |
@@ -61,7 +61,7 @@ file-manager metadata (`.DS_Store`, `Thumbs.db`, `desktop.ini`, `._*` files)
 counts as empty. If two roots of one Space contain data, the engine stops and
 merges nothing. A Space root is a local directory, not a symbolic link or
 junction. Engine updates never rename a root, and paths stored in ledgers,
-approval objects and raw coordinates are never rewritten; a stored path that
+approval objects and record coordinates are never rewritten; a stored path that
 begins with any of the three spellings resolves to the root in use. Renaming a
 root, or moving data between roots, is a separate reviewed change.
 
@@ -83,7 +83,7 @@ only inside a cluster that has a hub (Mechanism §6-2 3).
 | files directly in `Workbench/` | work state, not nodes |
 | `transit/` | transit nodes, the only nodes in Workbench |
 | `_ledger/` | the ledgers (section 4) and the approval store (section 5) |
-| `_raw/` | raw records of Workbench sessions |
+| `_cited/` | cited records of Workbench sessions (section 6.1) |
 | `_scope_memory/` | one scope-memory file per scope (section 6.2) |
 
 **Where nodes live.** Nodes live in the node compartments: the clusters of the
@@ -111,10 +111,10 @@ inside the vault is untracked.
 
 **Git attributes.** The vault's `.gitattributes` checks every text file out
 with LF line endings (`* text=auto eol=lf`), because approval trees and update
-checks hash raw bytes. It exempts `_ledger/approved/objects/`, `_raw/` and
-`_scope_memory/` from conversion (`-text`), because their bytes are content.
-It merges `_ledger/**/*.jsonl` with `merge=union`, so that lines appended on
-two devices both survive (Mechanism §3 1).
+checks hash raw bytes. It exempts `_ledger/approved/objects/`, `_cited/`,
+`_raw/` and `_scope_memory/` from conversion (`-text`), because their bytes are
+content. It merges `_ledger/**/*.jsonl` with `merge=union`, so that lines
+appended on two devices both survive (Mechanism §3 1).
 
 ## 2. Node files
 
@@ -129,7 +129,7 @@ updated: "2026-08-02 15:30 (KST)"
 author: "agent"
 drafter: "opus-5.5"
 summary: "One line, at most 80 characters, without links"
-derived-from: ["[[Source node]]", "00_Scope/my-app/_raw/.records/session-1.txt#12"]
+derived-from: ["[[Source node]]", "00_Scope/my-app/_cited/.records/claude-3f9c2a7e5b1d4c8e9a0b6d2f7e1c5a39.txt#2"]
 ---
 
 Body in Markdown, with links such as [[Another node]].
@@ -208,7 +208,7 @@ The body is Markdown, as Obsidian reads it.
 - **Tag guard** (Mechanism §8 7): when the engine writes a node body or a scope
   memory, it inserts one space after `#<digits>` when a character that would
   extend an Obsidian tag follows directly: a letter, `_`, `-`, `/` or `·`. So
-  `#1227은` is written `#1227 은`. Code regions and raw records are left
+  `#1227은` is written `#1227 은`. Code regions and cited records are left
   unchanged.
 - **Delegation clause** (Mechanism §7): a standing delegation node, kept in
   `00_Person/Delegation/`, has a `## 위임` section with four list items:
@@ -224,20 +224,20 @@ The body is Markdown, as Obsidian reads it.
 | Target | Stored form |
 |---|---|
 | a node | its title as a quoted wikilink: `"[[Title]]"` |
-| a raw round | the plain coordinate, quoted: `"00_Scope/<scope>/_raw/.records/<record>.txt#N"` |
+| a cited round | the plain coordinate, quoted: `"00_Scope/<scope>/_cited/.records/<record>.txt#N"` |
 | another non-node file | a quoted path wikilink: `"[[_sources/plan.pdf]]"` or `"[[path#Heading]]"` |
 
 - A node target never uses a path: paths break when nodes move, and titles are
   unique.
-- A raw target names its round (`#N`) (Bylaws §1 3); the engine reports one
-  that does not.
+- A cited-record target names its round (`#N`) (Bylaws §1 3); the engine
+  reports one that does not.
 - A node cannot cite itself.
 - The engine also reads a node target written as the bare id
   (`derived-from: 260802-1720-k7f2m9x3`). A target it receives as an id is
   stored as the title wikilink; an id that resolves to no node, or to several,
-  is stored as given. It also reads raw coordinates written as wikilinks or with a
-  `.md` record path (section 6.1), and stores every raw target it receives as
-  the plain `.txt` coordinate.
+  is stored as given. It also reads record coordinates written as wikilinks,
+  with a `.md` record path or under `_raw/` (section 6.1), and stores every
+  record target it receives as the plain `.txt` coordinate.
 
 `conflicts` is a case marker (Mechanism §8 2; Bylaws §9 4). Its target is
 either `"[[CASE-<year>-<n>]]"`, an open (`docketed`) case that lists the node as
@@ -249,14 +249,14 @@ form.
 **Resolving a name.** For Links and Predicate Edges alike:
 
 1. An `http://` or `https://` URL is external.
-2. A name containing `/_raw/` is a raw record.
+2. A name containing `/_cited/` or `/_raw/` is a cited record.
 3. A name matching the id pattern is a node id.
 4. A name containing `/` is a vault-relative path, tried as given and with
    `.md` appended, confined to the vault.
 5. Any other name is a node title. When no readable node has that title, it
-   is matched against the names of files under `_sources/`, the `_raw/`
-   directories and `_ledger/`, with or without the extension; this is how
-   `[[CASE-<year>-<n>]]` finds its case file.
+   is matched against the names of files under `_sources/`, the record
+   directories (`_cited/`, `_raw/`) and `_ledger/`, with or without the
+   extension; this is how `[[CASE-<year>-<n>]]` finds its case file.
 
 An embed therefore resolves when written with its file name, as Obsidian writes
 it (`![[diagram.png]]`), or with its vault path (`![[_sources/diagram.png]]`).
@@ -596,8 +596,8 @@ maximum among `review` records with that key.
   heading range runs from the first byte of its heading line to the byte before
   the next heading of the same or a higher level, or to the end of the file.
   Lines in code regions are not headings, and a heading text that occurs twice
-  does not resolve (Mechanism §8 4). Raw rounds only grow and external URLs have
-  no state; neither is tracked. A target whose file does not resolve gets no
+  does not resolve (Mechanism §8 4). Cited records only grow and external URLs
+  have no state; neither is tracked. A target whose file does not resolve gets no
   record and is reported as dangling. A heading that is gone or duplicated in
   a file that exists keeps the pair tracked without a state: it is a candidate
   that no record can complete.
@@ -664,13 +664,14 @@ A protected region's approved snapshot is kept as content-addressed objects
   tree hash is `sha256:` of the manifest bytes. A region that is empty or
   deleted has the tree `[]`.
 - **Exclusions.** Below the region root, the tree leaves out directories named
-  `.git`, `.venv`, `__pycache__`, `_ledger`, `_raw` or `_scope_memory`; every
-  file or directory whose name begins with `.`; symbolic links and special
-  files; and directories whose real path differs from their path (links and
-  junctions). The name of the region root itself is not tested.
+  `.git`, `.venv`, `__pycache__`, `_ledger`, `_cited`, `_raw` or
+  `_scope_memory`; every file or directory whose name begins with `.`;
+  symbolic links and special files; and directories whose real path differs
+  from their path (links and junctions). The name of the region root itself is
+  not tested.
 - **Region roots.** A region cannot be the vault root or a path with `.git`,
-  `.venv`, `__pycache__`, `_ledger`, `_raw` or `_scope_memory` as a component.
-  A region root whose name begins with `.` is allowed.
+  `.venv`, `__pycache__`, `_ledger`, `_cited`, `_raw` or `_scope_memory` as a
+  component. A region root whose name begins with `.` is allowed.
 - **Objects.** Every file's bytes and every manifest are stored at
   `00_Scope/Workbench/_ledger/approved/objects/<first 2 hex>/<remaining 62 hex>`
   of their SHA-256. The same content is stored once, and merging two devices'
@@ -691,29 +692,45 @@ A protected region's approved snapshot is kept as content-addressed objects
   maxima for the region, `unprotected` otherwise. The changeset lists the
   added, removed and modified paths, and moved nodes.
 
-## 6. Raw records and scope memory
+## 6. Cited records and scope memory
 
-### 6.1 Raw records
+### 6.1 Cited records
 
-Raw records are the append-only transcripts of sessions (Mechanism §8 3, §9).
+Cited records keep, in append-only files, the conversation rounds needed for
+citation and verification (Constitution Article 4 3–4; Bylaws §2;
+Mechanism §8 3, §9). The conversation itself stays in the harness's
+transcript: the hooks track each finished turn only in a device-local cursor,
+as `native:<harness>:<conversation ID>:<turn ID>` with a hash, and a round
+enters a record only when the MCP tool `cite_round` cites that turn
+(Mechanism §9 9).
 
-- **Path.** `00_Scope/<scope>/_raw/.records/<record>.txt`. When
+- **Path.** `00_Scope/<scope>/_cited/.records/<record>.txt`. When
   `<record>.txt` would be longer than 255 bytes, the record is
-  `00_Scope/<scope>/_raw/.records/<record>/record.txt`. The engine also reads
-  a record stored as `00_Scope/<scope>/_raw/<record>.md` as the same record. It
-  renames that file, bytes unchanged, to the `.txt` path when it next appends to
-  it, and `osk raw migrate --apply` renames all of them. When both forms exist,
-  the engine refuses to choose. The validator reports `.md` raw records.
-- **Names.** Record names follow the title rules of section 3; two names that
-  match after NFC normalization with letter case ignored are the same record
-  (Mechanism §9 5). The MCP surface limits them to 120 characters.
+  `00_Scope/<scope>/_cited/.records/<record>/record.txt` (Mechanism §9 5).
+- **Records in `_raw/`.** Records that older engines wrote under
+  `00_Scope/<scope>/_raw/`, in the same two layouts or as
+  `00_Scope/<scope>/_raw/<record>.md`, read as cited records of the same name.
+  A record with the same name in `_raw/` stays the canonical record and takes
+  new citations; a new record is created in `_cited/`. Nothing is moved from
+  `_raw/` to `_cited/`. The engine renames a `.md` record, bytes unchanged, to
+  its `.txt` path when a citation next appends to it, and
+  `osk raw migrate --apply` renames all of them. When both forms exist, the
+  engine refuses to choose. The validator reports `.md` records.
+- **Names.** The engine names a conversation's record
+  `<harness>-<32 hex digits>`, derived from the harness and the conversation
+  ID. Record names follow the title rules of section 3; two names that match
+  after NFC normalization with letter case ignored are the same record
+  (Mechanism §9 5).
 - **Encoding.** UTF-8, with bytes kept exactly: no line-ending conversion on
   reading, writing or checkout.
-- **Layout.** A round is one user message and the agent reply that belongs to
-  it (Bylaws §2 7). Rounds are separated by one blank line:
+- **Layout.** A round is one user message and the record of the agent reply
+  that belongs to it (Bylaws §2 7). Rounds are separated by one blank line. In
+  a cited round, the agent section is empty or holds a short gist:
 
 ```text
 ## 1
+
+<!-- osk-cited: {"agent_sha256": "sha256:…", "conversation": "<conversation ID>", "harness": "claude", "source": "<transcript path>", "turn": "<turn ID>", "user_by": "engine"} -->
 
 ### user
 
@@ -721,7 +738,7 @@ Raw records are the append-only transcripts of sessions (Mechanism §8 3, §9).
 
 ### agent
 
-<agent reply>
+<empty, or a short gist>
 
 ## 2
 
@@ -730,35 +747,46 @@ Raw records are the append-only transcripts of sessions (Mechanism §8 3, §9).
 
 - **Round headings.** A round begins with the line `## <n>`, where `<n>` is a
   positive decimal index; the reader allows trailing spaces, tabs or a CR. The
-  engine assigns indexes: they start at 1 and strictly increase. A record whose
-  indexes do not start at 1 or do not strictly increase takes no further appends
-  (Mechanism §9 6).
+  engine assigns indexes: they start at 1 and strictly increase. They number
+  the record's rounds, not the turns of the conversation (Bylaws §2 7). A
+  record whose indexes do not start at 1 or do not strictly increase takes no
+  further appends (Mechanism §9 6).
 - **Escaping.** A message line that looks like a round heading (`## <digits>`,
   possibly after backslashes) is stored with one more `\` in front, and reading
   a round removes it again (Mechanism §8 3).
-- **Capture stamps.** Capture adapters put the line
-  `<!-- osk-capture: dialogue-v1 "<id>" -->` and a blank line after a round
-  heading. A record may begin with a one-line header
-  `<!-- osk-capture: claude-inherited-v1 {…} -->` and a blank line. The
+- **Citation header.** A cited round carries the line
+  `<!-- osk-cited: {…} -->` and a blank line after its heading. The JSON
+  object names the original turn, with sorted keys: `agent_sha256` (`sha256:`
+  of the agent's reply; null for a turn still in progress and for a round whose
+  words the caller supplied), `conversation` (the conversation ID), `harness`,
+  `source` (the transcript the engine read, or null), `turn` (the turn ID) and
+  `user_by`. `user_by` is `engine` when the engine copied the user's words from
+  the transcript, and `caller` when the transcript was unreadable and the
+  caller supplied them. Rounds that older engines captured carry
+  `<!-- osk-capture: dialogue-v1 "<id>" -->` in the same place, and such a
+  record may begin with a one-line header
+  `<!-- osk-capture: claude-inherited-v1 {…} -->` and a blank line; the
   validator reports rounds stamped `codex-user-items-v2` or `codex-terminal-v3`.
 - **Coordinates.** `<record path>#<n>`, with one `#` (Mechanism §8 3).
-  `[[<record path>#<n>]]` and the `.md` record path also resolve. A round runs
-  from the first byte of its heading line to the byte before the next round
-  heading, or to the end of the file.
-- **Round hash.** The hash that `read_raw` reports and that distillation
+  `[[<record path>#<n>]]`, the `.md` record path and `_raw/` record paths also
+  resolve. A round runs from the first byte of its heading line to the byte
+  before the next round heading, or to the end of the file.
+- **Round hash.** The hash that `read_cited` reports and that distillation
   receipts store is `sha256:` of the round's UTF-8 bytes without trailing
   newlines, so that appending a round leaves the hash of the round before it
   unchanged.
 - **Append only** (Mechanism §9 4). A write succeeds only when the file's
   current bytes are a prefix of the new bytes, compared after secret filtering.
-  A batch of rounds is written whole or not at all, and a batch whose round
-  bodies equal the record's last rounds is refused as a retry (Mechanism §9 7).
+  A citation appends one round. Citing a turn that the record already cites,
+  including one cited while still in progress, writes nothing and returns that
+  round's coordinate (Mechanism §9 9). A round whose body equals the record's
+  last round is refused as a retry (Mechanism §9 7).
 - **Secret filter** (Mechanism §9 1–3). Before writing, matches of seven
   patterns are replaced with `[FILTERED:<name>]`: `pem-private-key`,
   `aws-access-key`, `github-token`, `openai-style-key`, `slack-token`,
   `google-api-key` and `bearer-header`. Mechanism §9 1 lists the Python `re`
   patterns; token boundaries are ASCII word characters only. The validator
-  reports any match found in `_raw/` or `_scope_memory/`.
+  reports any match found in `_cited/`, `_raw/` or `_scope_memory/`.
 
 ### 6.2 Scope memory
 
@@ -822,8 +850,8 @@ The canonical repository declares a release with an attestation at its root
   deleted, unless it was changed locally.
 - **Instance-owned floor** (Mechanism §1-2 5). The updater never writes or
   deletes below any Space root in any spelling (apart from creating an empty
-  top-level root), nor in `_ledger/`, `_raw/`, `_sources/`, `.osk/` or
-  `.git/`.
+  top-level root), nor in `_ledger/`, `_cited/`, `_raw/`, `_sources/`, `.osk/`
+  or `.git/`.
 - **Local changes** (Mechanism §1-2 6). A managed file equal to its baseline is
   replaced. A locally changed document stays, and the release's copy is placed
   beside it as `<path>.upstream-<version>`. A locally changed engine file stops
@@ -870,10 +898,10 @@ For the v4 line:
 3. Every form this document lists as read continues to be read: the
    `= Scope` and `Scope` Space-root spellings (likewise for Domain and
    Person), four-character id random parts, bare-id
-   `derived-from` targets, `.md` raw records and wikilink raw coordinates,
-   ledger records without `parents`, update records without `txn`, approval
-   records without `moves_seen`, case files with `pre_sign`, and
-   `signatures.jsonl`.
+   `derived-from` targets, `_raw/` records (`.md` records included) and
+   wikilink record coordinates, ledger records without `parents`, update
+   records without `txn`, approval records without `moves_seen`, case files
+   with `pre_sign`, and `signatures.jsonl`.
 
 New ledgers and new optional fields in ledger records are compatible, since
 v4 readers ignore fields they do not use. A new record kind in an existing
