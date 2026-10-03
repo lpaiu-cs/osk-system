@@ -105,6 +105,102 @@ class GrowthStatusTests(unittest.TestCase):
             assert out['unknown_time']==['unclocked'],out
         ''')
 
+    def test_eviction_reports_real_review_settlement_and_completion_separately(self):
+        self.check_case('''
+            from osk import evictions
+            saved=write.create_node('Retained','retained','A reusable claim.','test',space='00_Scope/W1')
+            assert saved['ok'],saved
+            cases={'node':'node','merged':'merged','discarded':'discarded','deferred':'deferred',
+                   'unreviewed':None,'settled_unreviewed':None,'settled_deferred':'deferred'}
+            with patch.object(core,'now_iso',return_value=AT):
+                jobs={}
+                for name in cases:
+                    row=evictions.record_evict('W1','test','Anonymous source '+name)
+                    jobs[name]={'key':'eviction:'+row['rid'],'of':row['rid'],
+                                'scope':row['scope'],'text':row['text']}
+                plan=core.ledger_append(growth.LEDGER,{'kind':'plan','candidates':[],
+                    'scope_jobs':[],'eviction_jobs':list(jobs.values())})
+                evictions.settle(jobs['settled_unreviewed']['of'],'merged',target='Retained')
+                evictions.settle(jobs['settled_deferred']['of'],'node',target='Retained')
+                reviews=[]
+                for name,outcome in cases.items():
+                    if outcome is None: continue
+                    entry={'of':jobs[name]['of'],'outcome':outcome,'reason':'Fixture review decision.'}
+                    if outcome in ('node','merged'): entry['target']='Retained'
+                    reviews.append(entry)
+                done=growth.checkpoint({'osk_reviews':{'manifest':plan['rid'],'domain':[],
+                                       'scope':[],'eviction':reviews}})
+                assert done['ok'],done
+                outcomes={job['key']:growth._eviction_status(job) for job in jobs.values()}
+                core.ledger_append(growth.LEDGER,{'kind':'run','manifest':plan['rid'],
+                                   'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
+            with patch.object(core,'now_iso',return_value=END):
+                core.ledger_append(growth.LEDGER,{'kind':'run','manifest':plan['rid'],
+                                   'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
+            before=files()
+            result=report()
+            assert result['ok'],result
+            runs=result['runs']
+            assert runs['runs']==1 and runs['outside_window']==1,runs
+            assert runs['items'][0]['queues']['eviction']=={
+                'by_status':{'complete':3,'pending':4},
+                'by_review':{'node':1,'merged':1,'discarded':1,'deferred':2,'unreviewed':2},
+                'by_settlement':{'node':2,'merged':2,'discarded':1,'unsettled':2}},runs
+            assert before==files(),'eviction report changed evidence'
+        ''')
+
+    def test_cursor_enumeration_failure_is_unavailable_not_empty(self):
+        self.check_case('''
+            empty=report()
+            assert empty['ok'] and empty['integration']['conversations']==0,empty
+            path,state=cursor('a',1,reviews=[{'through':'fixed','at':AT,'outcome':'no_value','receipts':[]}])
+            before=files()
+            def deny_listing(original):
+                def read(directory):
+                    if Path(directory)==path.parent:
+                        raise PermissionError(13,'fixture directory listing denied',str(directory))
+                    return original(directory)
+                return read
+            # Exercise the OS boundary: glob suppresses scandir errors, while
+            # an explicit directory read must propagate them on every platform.
+            with patch.object(os,'scandir',side_effect=deny_listing(os.scandir)), \
+                 patch.object(os,'listdir',side_effect=deny_listing(os.listdir)):
+                assert json.loads(path.read_text(encoding='utf-8'))==state
+                result=report()
+            assert not result['ok'] and result['integration'] is None,result
+            assert result['reviews'] is None and result['preservation'] is None,result
+            assert any(e['section']=='integration' and 'PermissionError' in e['error']
+                       for e in result['errors']),result
+            assert before==files(),'failed report changed evidence'
+        ''')
+
+    @unittest.skipUnless(os.name=='posix' and os.geteuid()!=0,
+                         'requires unprivileged POSIX directory permissions')
+    def test_cursor_directory_search_without_list_permission_fails_cli(self):
+        self.check_case('''
+            import subprocess
+            path,state=cursor('a',1)
+            before=files()
+            original_mode=path.parent.stat().st_mode
+            try:
+                path.parent.chmod(0o111)
+                assert json.loads(path.read_text(encoding='utf-8'))==state
+                try: os.listdir(path.parent)
+                except PermissionError: pass
+                else: raise AssertionError('filesystem did not deny directory listing')
+                result=report()
+                assert not result['ok'] and result['integration'] is None,result
+                proc=subprocess.run([sys.executable,'-B','-m','osk.cli','growth','status'],
+                                    capture_output=True,text=True,encoding='utf-8')
+                assert proc.returncode==1,(proc.stdout,proc.stderr)
+                output=json.loads(proc.stdout)
+                assert output['integration'] is None and output['reviews'] is None,output
+                assert output['preservation'] is None,output
+            finally:
+                path.parent.chmod(original_mode)
+            assert before==files(),'permission failure changed evidence'
+        ''')
+
     def test_read_only_repeatable_report_and_real_cli(self):
         self.check_case('''
             import subprocess

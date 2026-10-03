@@ -38,7 +38,8 @@ def _states() -> list[dict]:
     probe = integration.state_path('claude', 'inventory')
     prefix = '-'.join(probe.name.split('-')[:3]) + '-'
     states = []
-    for path in sorted(probe.parent.glob(prefix + '*.json')):
+    # glob can suppress directory access errors and report a false empty inventory.
+    for path in sorted(p for p in probe.parent.iterdir() if p.match(prefix + '*.json')):
         data = json.loads(path.read_text(encoding='utf-8'))
         if path != integration.state_path(data['harness'], data['conversation_id']):
             raise ValueError(f'integration state filename identity mismatch: {path.name}')
@@ -95,6 +96,16 @@ def _runs(rows: list[dict], since: datetime | None, until: datetime) -> dict:
         queues = {}
         for name in ('domain', 'scope', 'organization', 'eviction', 'recheck'):
             outcomes = row.get(name + '_outcomes', row.get('outcomes', {}) if name == 'domain' else {})
+            if name == 'eviction':
+                # Settlement can precede review or survive a later deferral.
+                queues[name] = {
+                    'by_status': dict(Counter(o.get('status', 'unknown') for o in outcomes.values())),
+                    'by_review': dict(Counter((o.get('review') or {}).get('outcome', 'unreviewed')
+                                              for o in outcomes.values())),
+                    'by_settlement': dict(Counter((o.get('settlement') or {}).get('outcome', 'unsettled')
+                                                  for o in outcomes.values())),
+                }
+                continue
             counts = Counter()
             for outcome in outcomes.values():
                 if isinstance(outcome, dict):

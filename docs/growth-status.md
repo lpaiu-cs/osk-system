@@ -41,6 +41,10 @@ POSIX에서는 `PYTHONPATH=_governance/_engine .venv/bin/python -B -m osk.cli gr
 
 재검토 작업은 근거 제거, 대상 소실, dangling, 사용자 상신으로도 큐에서 닫힐 수 있다.
 `runs.items[].queues.recheck`는 이 사유를 구별하며 직접 판독 성공에 더하지 않는다.
+퇴출 큐인 `runs.items[].queues.eviction`은 완료 상태(`by_status`), 검토 결정(`by_review`),
+처분(`by_settlement`)을 각각 집계한다. `node`·`merged`·`discarded`·`deferred`와 검토 미기록
+(`unreviewed`)을 구별하며, 처분 미기록은 `unsettled`다. 처분 뒤에도 검토가 없거나 보류되면
+완료 상태는 `pending`일 수 있다. 세 집계는 같은 작업의 서로 다른 분류이므로 합산하지 않는다.
 노드 수, 영수증 수, `no_value` 결정을 의미적 성장이나 후속 재사용 횟수로 바꾸지 않는다.
 이 보고서에서 `semantic_growth`·`downstream_reuse`는 `not_measured`다.
 
@@ -75,6 +79,7 @@ Stop 전에 사용자가 저장을 직접 요청했는지는 별도 원문 판�
 운영 경로와 식별자가 포함되므로 실 인스턴스 보고서는 공개 저장소에 커밋하지 않는다.
 날짜를 판독할 수 없는 이력은 `unknown_time`, 기간 밖 기록은 `outside_window`에 분리한다.
 손상된 구역은 `null`과 `errors`로 표시하고 명령은 실패 코드로 끝난다. 손상을 0건으로 처리하지 않는다.
+커서 디렉터리가 비어 있으면 0건이지만, 목록을 읽을 권한이 없으면 대화·검토·보존 구역은 판독 불가다.
 
 관측은 `started_at`부터 `finished_at`까지의 읽기 구간이며 원자적 snapshot이 아니다.
 다른 프로세스가 그 사이에 쓴 결과가 섞일 수 있다. 시점 고정 비교에는 동결한 fixture 또는 별도 복제본을 쓴다.
