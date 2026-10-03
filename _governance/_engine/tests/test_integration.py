@@ -1096,6 +1096,13 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(it.prompt("claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
 
     def test_relocated_capture_io_failure_keeps_candidate_until_cursor_recovery(self):
+        # Catch up only this fault matrix, not every unrelated suite fixture.
+        state_path_for = it.state_path
+        state_dir = Path(TMP.name) / self.sid
+        patcher = mock.patch.object(it, "state_path", side_effect=lambda harness, sid:
+                                    state_dir / state_path_for(harness, sid).name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         for failure in ("append", "read", "decode"):
             for retry in ("pathless", "catchup"):
                 with self.subTest(failure=failure, retry=retry):
