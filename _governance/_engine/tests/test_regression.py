@@ -2763,7 +2763,7 @@ def test_surface_contract():
         ('def sneak():\n    return ledger_append(SIGNATURES, {})\n\n\n',
          "osk/write.py", "def create_node", "권위 대장에 기록"),
         ('def sneak_raw():\n    return ledger_append(PINS, {})\n\n\n',
-         "osk/raw.py", "def append_round", "권위 대장에 기록"),
+         "osk/raw.py", "def append_rounds", "권위 대장에 기록"),
     ):
         with tempfile.TemporaryDirectory() as td:
             eng = Path(td) / "_engine"
@@ -2843,6 +2843,22 @@ def _w(fn, *a, **kw):
         return {"ok": False, "violations": e.violations, **e.extra}
 
 
+def _append_round(session, record, user, agent, space=None):
+    """라운드 하나 — 인용 통로(`raw.append_rounds`)의 단수형. 표면은 `cite_round`로만 쓴다."""
+    from osk import raw
+    r = raw.append_rounds(session, record, [{"user": user, "agent": agent}], space)
+    return {"ok": True, "path": r["path"], "index": r["indices"][0],
+            "round_ref": r["round_refs"][0], "filtered": r["filtered"],
+            **({"binding": r["binding"]} if "binding" in r else {})}
+
+
+def _rounds_of(session, record):
+    """세션 기록의 라운드 수 — 결속된 scope의 그 기록을 센다."""
+    from osk import raw
+    path = raw.record_path(write.resolve_session(session), record)
+    return len(raw.rounds(raw.read_exact(path))) if path.exists() else 0
+
+
 def test_write_contract():
     wipe_sig()
     r = write.create_node("regr-w1", "쓰기 통로 시험", "본문",
@@ -2918,14 +2934,14 @@ def test_bind_after_write_receipt():
     with mock.patch.object(write, "ledger_append", failing):
         r = M.create_node("regr-bindfail", "s", "본문", "fable-5",
                           session="regr-bindfail-a", space="00_Scope/W1")
-        rr = M.append_raw("regr-bindfail-b", "regr-bindfail-rec", "질문", "응답",
-                          space="00_Scope/W1")
+        rr = _w(_append_round, "regr-bindfail-b", "regr-bindfail-rec", "질문", "응답",
+                space="00_Scope/W1")  # cite_round가 지나는 기록 통로
     check("결속 실패에도 노드 생성은 ok", r.get("ok") and r.get("id") and r.get("new_hash"), r)
     check("결속은 확인 불가 영수증으로 남는다",
           (r.get("binding") or {}).get("state") == "unconfirmed"
           and r.get("bound_scope") is None and "PermissionError" in r["binding"]["error"], r)
     check("노드는 실제로 섰다", (ROOT / "00_Scope/W1/regr-bindfail.md").exists())
-    check("raw 기록도 ok와 영수증",
+    check("인용 기록도 ok와 영수증",
           rr.get("ok") and rr.get("index") == 1
           and (rr.get("binding") or {}).get("state") == "unconfirmed", rr)
     # 영수증이 안내한 대로 — 같은 session과 space로 다음 쓰기를 하면 결속이 선다
@@ -3230,6 +3246,17 @@ def test_surface_smoke():
             node_text(f"260802-zzzz-rg{nm[-1]}1", f"{nm} 허브"), encoding="utf-8")
     node = ROOT / "00_Scope/W1/regr-smoke.md"
     node.write_text(node_text("260802-zzzz-rg60", "스모크"), encoding="utf-8")
+    # cite_round은 추적 중인 대화의 원본 턴을 인용한다 — 대화 하나를 추적해 둔다.
+    from osk import integration
+    talk = Path(tempfile.mkdtemp(prefix="osk-regr-talk-")) / "regr-smoke-talk.jsonl"
+    talk.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in (
+        {"type": "user", "sessionId": "regr-smoke-talk", "uuid": "u1",
+         "message": {"role": "user", "content": "질문"}},
+        {"type": "assistant", "sessionId": "regr-smoke-talk", "uuid": "a1",
+         "message": {"role": "assistant", "id": "m1", "stop_reason": "end_turn",
+                     "content": [{"type": "text", "text": "응답"}]}})), encoding="utf-8")
+    tracked = integration.capture("claude", "regr-smoke-talk", str(talk), "repo/smoke-raw", "00_Scope/W1")
+    check("스모크 대화가 추적된다", tracked.get("ok"), tracked)
     calls = {
         "overview": lambda: M.overview("repo/smoke"),
         "search": lambda: M.search("스모크", 3),
@@ -3242,9 +3269,8 @@ def test_surface_smoke():
         "move_cluster": lambda: M.move_cluster("WSmoke2", "00_Scope/W1/WSmoke3"),
         "record_candidate": lambda: M.record_candidate(
             "duplication", ["regr-smoke", "regr-smoke2"], "스모크"),
-        "append_raw": lambda: M.append_raw("repo/smoke-raw", "regr-smoke-rec",
-                                           "질문", "응답", space="00_Scope/W1"),
-        "read_raw": lambda: M.read_raw("[[00_Scope/W1/_raw/regr-smoke-rec.md#1]]"),
+        "cite_round": lambda: M.cite_round("claude/regr-smoke-talk", quote="질문"),
+        "read_cited": lambda: M.read_cited(space="00_Scope/W1"),
         "scope_memory": lambda: M.scope_memory("repo/smoke-wm",
                                                    space="00_Scope/W1"),
     }
@@ -5414,29 +5440,29 @@ def test_posix_rel_is_os_independent():
     check("pin 대상 표기와 일치한다", pin == "00_Scope/W2/", pin)
 
 
-# ── 18. `_raw/` 기록 통로 (헌법 4조 3~4항 · 시행령 §2 · Mechanism §9 4~6항) ──
+# ── 18. 인용 기록 통로 (헌법 4조 3~4항 · 시행령 §2 · Mechanism §9 4~6항) ──
 def test_raw_append():
-    """`_raw/`는 증거다. 이 수트가 지키는 것은 세 가지다 — 한 번 쓴 바이트가
+    """인용 기록은 증거다. 이 수트가 지키는 것은 세 가지다 — 한 번 쓴 바이트가
     다시는 바뀌지 않는 것, 라운드 번호가 이미 쓴 근거 참조를 배신하지 않는 것,
     그리고 비밀값이 이 통로를 우회해 남지 않는 것."""
     from osk import raw, secrets
     (ROOT / "00_Scope/WRaw").mkdir(exist_ok=True)
     S, REC = "repo/regr-raw", "2026-08-21-regr"
-    p = ROOT / "00_Scope/WRaw/_raw/.records" / f"{REC}.txt"
+    p = ROOT / "00_Scope/WRaw/_cited/.records" / f"{REC}.txt"
 
-    r1 = _w(raw.append_round, S, REC, "첫 질문", "첫 응답", space="00_Scope/WRaw")
+    r1 = _w(_append_round, S, REC, "첫 질문", "첫 응답", space="00_Scope/WRaw")
     check("최초 라운드는 1", r1.get("index") == 1, r1)
     check("round_ref가 근거 표기 그대로다",
-          r1.get("round_ref") == f"00_Scope/WRaw/_raw/.records/{REC}.txt#1", r1)
+          r1.get("round_ref") == f"00_Scope/WRaw/_cited/.records/{REC}.txt#1", r1)
     check("첫 기록이 세션을 결속한다", write.resolve_session(S) == "WRaw")
 
-    r2 = _w(raw.append_round, S, REC, "둘째 질문", "둘째 응답")   # 라우팅으로 착지
+    r2 = _w(_append_round, S, REC, "둘째 질문", "둘째 응답")   # 라우팅으로 착지
     check("index 단조 증가", r2.get("index") == 2, r2)
     body = p.read_text(encoding="utf-8")
     check("먼저 쓴 라운드가 그대로 남는다", "첫 질문" in body and "첫 응답" in body)
 
     # 대화 본문의 숫자 H2가 라운드 제목으로 오독되지 않는다 (Mechanism §8 3항)
-    _w(raw.append_round, S, REC, "본문에 ## 24 가 있다", "응답\n## 7\n끝")
+    _w(_append_round, S, REC, "본문에 ## 24 가 있다", "응답\n## 7\n끝")
     body = p.read_text(encoding="utf-8")
     check("escape로 라운드 수가 늘지 않는다", raw.rounds(body) == [1, 2, 3],
           raw.rounds(body))
@@ -5447,7 +5473,7 @@ def test_raw_append():
     # 비밀값은 통로에서 치환된다 (시행령 §2 3항 — 우회 경로를 두지 않는다).
     # fixture를 쪼개 쓰는 이유: 릴리스의 비밀값 스캔이 전 파일을 훑으므로
     # (release.py, secrets.py만 자기 면제) 소스에 완전형을 두면 선언이 막힌다.
-    r4 = _w(raw.append_round, S, REC,
+    r4 = _w(_append_round, S, REC,
             "키 " + "AKIA" + "IOSFODNN7EXAMPLE" + " 준다", "받았다")
     body = p.read_text(encoding="utf-8")
     check("비밀값이 기록에 남지 않는다", ("AKIA" + "IOSFODNN7EXAMPLE") not in body)
@@ -5466,7 +5492,7 @@ def test_raw_append():
     # 손상된 index 열 위에는 이어 쓰지 않는다 (Mechanism §9 6항)
     bad = ROOT / "00_Scope/WRaw/_raw/corrupt.md"
     bad.write_text("## 1\n\n본문\n\n## 1\n\n중복\n", encoding="utf-8")
-    r = _w(raw.append_round, S, "corrupt", "질문", "응답")
+    r = _w(_append_round, S, "corrupt", "질문", "응답")
     check("중복 index 기록에 이어 쓰지 않는다", r.get("ok") is False, r)
     bad.unlink()  # The deliberately invalid legacy fixture must not leak into publish tests.
 
@@ -5479,91 +5505,24 @@ def test_raw_append():
 
     # 라운드는 쌍이다 / 착지·이름은 fail-closed
     check("빈 응답을 거부한다",
-          _w(raw.append_round, S, REC, "질문만", "  ").get("ok") is False)
+          _w(_append_round, S, REC, "질문만", "  ").get("ok") is False)
     check("결속 없는 세션은 착지를 요구한다",
-          _w(raw.append_round, "repo/unbound-raw", "r", "q", "a").get("ok") is False)
+          _w(_append_round, "repo/unbound-raw", "r", "q", "a").get("ok") is False)
     check("맨 scope 이름을 거부한다",
-          _w(raw.append_round, "repo/x", "r", "q", "a", space="WRaw").get("ok") is False)
+          _w(_append_round, "repo/x", "r", "q", "a", space="WRaw").get("ok") is False)
     check("Windows 예약 장치명을 기록 이름으로 거부한다",
-          _w(raw.append_round, S, "COM1", "q", "a").get("ok") is False)
+          _w(_append_round, S, "COM1", "q", "a").get("ok") is False)
 
     # 이식성 기준으로 같은 이름은 같은 정본 (시행령 §2 1항)
-    r5 = _w(raw.append_round, S, REC.upper(), "대소문자", "같은 파일")
+    r5 = _w(_append_round, S, REC.upper(), "대소문자", "같은 파일")
     check("대소문자만 다른 이름은 같은 기록으로 접힌다",
           r5.get("path", "").endswith(f"{REC}.txt"), r5)
 
 
-# ── 18b. 훅 경로 — 실제 대화 바이트를 stdin으로 받는다 (헌법 4조 3항) ──────
-def test_raw_cli_path():
-    """표면의 `append_raw`는 에이전트가 **서술한** 라운드를 받는다. 전량 포착은
-    전사를 그대로 나를 수 있어야 성립하므로, 같은 통로에 기계 입력 경로를 둔다.
-    여기서 지키는 것은 봉투 계약과 **배치의 원자성**이다 — 라운드마다 따로
-    쓰면 중간 거부에서 '있었던 대화의 일부'가 남는다."""
-    from osk import cli, raw
+# ── 18b. CLI 출력은 UTF-8 바이트다 — 콘솔 코드페이지에 인질이 되지 않는다 ──
+def test_cli_emit_utf8():
+    from osk import cli
     import io, types
-    (ROOT / "00_Scope/WRawCli").mkdir(exist_ok=True)
-    SP, S, REC = "00_Scope/WRawCli", "hook/regr", "2026-08-21-hook"
-
-    def run(argv, payload=None):
-        out, real_emit, real_stdin = {}, cli._emit, sys.stdin
-        try:
-            cli._emit = out.update
-            if payload is not None:
-                sys.stdin = types.SimpleNamespace(
-                    isatty=lambda: False,
-                    buffer=io.BytesIO(payload.encode("utf-8")))
-            try:
-                cli.main(argv)
-            except SystemExit as e:
-                out["exit"] = e.code
-        finally:
-            cli._emit, sys.stdin = real_emit, real_stdin
-        return out
-
-    r = run(["raw", "append", "--session", S, "--record", REC, "--space", SP],
-            json.dumps({"rounds": [{"user": f"질문{i}", "agent": f"응답{i}"}
-                                   for i in (1, 2, 3)]}, ensure_ascii=False))
-    check("배치가 한 번에 이어진다", r.get("indices") == [1, 2, 3], r)
-
-    st = run(["raw", "status", "--session", S, "--record", REC])
-    check("status가 기록된 분량을 센다",
-          (st.get("rounds"), st.get("next_index")) == (3, 4), st)
-
-    # 배치 원자성 — 기존 기록이 있는 상태에서 중간 거부
-    p = ROOT / SP / "_raw/.records" / f"{REC}.txt"
-    before = p.read_bytes()
-    r = run(["raw", "append", "--session", S, "--record", REC],
-            json.dumps({"rounds": [{"user": "좋다", "agent": "응답"},
-                                   {"user": "나쁘다", "agent": "  "}]},
-                       ensure_ascii=False))
-    check("중간 거부는 배치 전체를 무른다", r.get("ok") is False, r)
-    check("거부 시 종료코드가 0이 아니다", r.get("exit") == 1, r)
-    check("거부는 기존 기록을 건드리지 않는다", p.read_bytes() == before)
-
-    # 봉투 모양 — 라운드 하나만 보낼 때 감싸기를 강요하지 않는다
-    r = run(["raw", "append", "--session", S, "--record", REC],
-            json.dumps({"user": "홑겹", "agent": "응답"}, ensure_ascii=False))
-    check("라운드 하나는 감싸지 않아도 된다", r.get("indices") == [4], r)
-    r = run(["raw", "append", "--session", S, "--record", REC],
-            json.dumps([{"user": "배열", "agent": "응답"}], ensure_ascii=False))
-    check("배열 봉투도 받는다", r.get("indices") == [5], r)
-
-    # 플래그가 봉투를 이긴다 — 거는 쪽의 뜻이 생성기의 값보다 앞선다
-    r = run(["raw", "append", "--session", S, "--record", REC],
-            json.dumps({"record": "다른이름", "user": "q", "agent": "a"},
-                       ensure_ascii=False))
-    check("플래그 record가 봉투를 이긴다",
-          r.get("path", "").endswith(f"{REC}.txt"), r)
-
-    # 손상 기록은 셀 수 없다고 말한다 — 그 위에 이어 붙이게 두지 않는다
-    (ROOT / SP / "_raw" / "dmg.md").write_text(
-        "## 2\n\n본문\n\n## 1\n\n역행\n", encoding="utf-8")
-    st = run(["raw", "status", "--session", S, "--record", "dmg"])
-    check("손상 기록은 damaged로 보고한다",
-          st.get("damaged") is True and st.get("next_index") is None, st)
-    (ROOT / SP / "_raw" / "dmg.md").unlink()
-
-    # stdin은 바이트로 읽고 UTF-8로 푼다 — 콘솔 코드페이지에 인질이 되지 않는다
     buf = io.BytesIO()
     real = sys.stdout
     try:
@@ -5612,14 +5571,14 @@ def test_raw_read():
           r3.get("truncated") is True and r3.get("chars") > 3000, r3)
 
     # 좌표가 없으면 목차까지만 — 본문을 쏟지 않는다
-    idx = _w(raw.read_round, f"{SP}/_raw/{REC}.md")
+    idx = _w(raw.read_round, f"{SP}/_cited/{REC}.md")
     check("index 없으면 목차", idx.get("rounds") == 3 and "text" not in idx, idx)
     check("목차는 미리보기만 싣는다",
           [x["preview"] for x in idx["index"]][:2] == ["첫 질문", "둘째 질문"], idx)
 
     # 표기 관용 — 저장 표기·맨 표기 모두 같은 좌표로 읽힌다
-    for label, ref in (("위키링크", f"[[{SP}/_raw/{REC}.md#1]]"),
-                       ("맨 표기", f"{SP}/_raw/{REC}.md#1")):
+    for label, ref in (("위키링크", f"[[{SP}/_cited/{REC}.md#1]]"),
+                       ("맨 표기", f"{SP}/_cited/{REC}.md#1")):
         check(f"좌표 표기: {label}", _w(raw.read_round, ref).get("index") == 1)
 
     # scope의 기록 목록 — 좌표를 모를 때의 출발점
@@ -5630,10 +5589,10 @@ def test_raw_read():
     # 봉쇄는 쓰기와 같은 규율이다 — 읽기라고 느슨하면 vault 밖을 읽는 창이 된다
     for label, ref in (
             ("vault 밖 탈출", "[[../../../../etc/passwd]]"),
-            ("_raw 밖 노드", f"[[{SP}/어떤노드.md]]"),
-            ("없는 기록", f"[[{SP}/_raw/없다.md#1]]")):
+            ("기록 구획 밖 노드", f"[[{SP}/어떤노드.md]]"),
+            ("없는 기록", f"[[{SP}/_cited/없다.md#1]]")):
         check(f"회상 봉쇄: {label}", _w(raw.read_round, ref).get("ok") is False)
-    miss = _w(raw.read_round, f"[[{SP}/_raw/{REC}.md#9]]")
+    miss = _w(raw.read_round, f"[[{SP}/_cited/{REC}.md#9]]")
     check("없는 라운드는 있는 것을 알려준다",
           miss.get("ok") is False and "[1, 2, 3]" in str(miss.get("violations")),
           miss)
@@ -5654,29 +5613,25 @@ def test_raw_space_misdiagnosis():
     from osk import raw
     (ROOT / "00_Scope/WRawSp").mkdir(exist_ok=True)
     S = "repo/regr-space"
-    ok = _w(raw.append_round, S, "rec", "q", "a", space="00_Scope/WRawSp")
+    ok = _w(_append_round, S, "rec", "q", "a", space="00_Scope/WRawSp")
     check("결속을 만든다", ok.get("index") == 1, ok)
     check("결속이 섰다", write.resolve_session(S) == "WRawSp")
 
-    r = _w(raw.append_round, S, "rec", "q2", "a2", space="WRawSp")   # 맨 이름
+    r = _w(_append_round, S, "rec", "q2", "a2", space="WRawSp")   # 맨 이름
     v = " ".join(r.get("violations", []))
     check("형식 오류를 space 자신의 문제로 지목한다",
           r.get("ok") is False and "space 표기가 아니다" in v, r)
     check("결속이 있는데 '결속이 없다'고 하지 않는다", "결속이 없다" not in v, r)
 
     # 진짜 미결속·없는 scope의 진단은 그대로여야 한다 (오진을 반대로 만들지 않기)
-    r2 = _w(raw.append_round, "repo/regr-unbound-2", "rec", "q", "a")
+    r2 = _w(_append_round, "repo/regr-unbound-2", "rec", "q", "a")
     check("진짜 미결속은 결속을 지목한다",
           "결속이 없다" in " ".join(r2.get("violations", [])), r2)
-    r3 = _w(raw.append_round, S, "rec", "q", "a", space="00_Scope/없는스코프")
+    r3 = _w(_append_round, S, "rec", "q", "a", space="00_Scope/없는스코프")
     check("없는 scope는 scope를 지목한다",
           "scope가 아니다" in " ".join(r3.get("violations", [])), r3)
     check("결속만으로도 계속 이어진다",
-          _w(raw.append_round, S, "rec", "q3", "a3").get("index") == 2)
-
-    # status도 같은 규율 — 조용히 0을 내지 않는다
-    check("status도 형식 오류를 거부한다",
-          _w(raw.record_state, S, "rec", "WRawSp").get("ok") is False)
+          _w(_append_round, S, "rec", "q3", "a3").get("index") == 2)
 
 
 # ── 18d-2. 한 세션의 기록이 여러 scope로 번지지 않는다 (Mechanism §6-2 6항) ──
@@ -5699,8 +5654,8 @@ def test_raw_binding_confines_scope():
     check("교차 scope는 거부", r.get("ok") is False, r)
     check("거부가 현재 결속을 알려준다", "00_Scope/WBindA" in v, v)
     check("건너간 자리에 파일이 생기지 않았다",
-          not (ROOT / "00_Scope/WBindB/_raw/.records/rec.txt").exists())
-    check("정본은 하나뿐", raw.record_state(S, "rec")["rounds"] == 1)
+          not (ROOT / "00_Scope/WBindB/_cited/.records/rec.txt").exists())
+    check("정본은 하나뿐", _rounds_of(S, "rec") == 1)
 
     # 결속과 같은 space를 중복 명시하는 것은 무해하므로 통과해야 한다
     check("결속과 같은 space는 통과",
@@ -5729,8 +5684,8 @@ def test_raw_replay_rejected():
     r = _w(raw.append_rounds, S, "rec", B)
     check("같은 배치 재시도는 거부", r.get("ok") is False, r)
     check("거부가 어디를 보라고 알려준다",
-          "read_raw" in " ".join(r.get("violations", [])), r)
-    check("거부는 아무것도 쓰지 않았다", raw.record_state(S, "rec")["rounds"] == 2)
+          "read_cited" in " ".join(r.get("violations", [])), r)
+    check("거부는 아무것도 쓰지 않았다", _rounds_of(S, "rec") == 2)
 
     check("꼬리 일부만 재시도해도 거부",
           _w(raw.append_rounds, S, "rec", [B[1]]).get("ok") is False)
@@ -6151,7 +6106,7 @@ def test_ephemeral_session_key():
 
     rr = _w(raw.append_rounds, U, "rec", [{"user": "q", "agent": "a"}],
             space="00_Scope/W1")
-    check("append_raw도 거부", rr.get("ok") is False, rr)
+    check("인용 기록 쓰기도 거부", rr.get("ok") is False, rr)
     check("raw 거부는 원인을 세션 키로 지목",
           "1회용 대화 id" in " ".join(rr.get("violations", [])), rr)
 
@@ -9461,7 +9416,7 @@ def test_engine_epoch_fence():
              space="00_Scope/W1")
     check("전제: 두 번째 노드도 만들어졌다", r0b.get("ok"), r0b)
     h = r0["new_hash"]
-    trace = ROOT / "00_Scope/W1/_raw/.records/2026-08-30-fence.txt"
+    trace = ROOT / "00_Scope/W1/_cited/.records/2026-08-30-fence.txt"
     sm_before = _w(sm_mod.read, "repo/fence")
     try:
         epoch._LOADED = "0000deadbeef"
@@ -9475,7 +9430,7 @@ def test_engine_epoch_fence():
             "record_candidate": lambda: _w(write.record_candidate,
                                            "duplication",
                                            ["regr-fence", "regr-fence-b"]),
-            "append_raw": lambda: _w(raw_mod.append_round, "repo/fence",
+            "cite_round": lambda: _w(_append_round, "repo/fence",
                                      "2026-08-30-fence", "u", "a",
                                      "00_Scope/W1"),
             "scope_memory": lambda: _w(sm_mod.replace, "repo/fence", "기억"),
@@ -9494,7 +9449,7 @@ def test_engine_epoch_fence():
         check("update_node: 본문 그대로",
               "새 본문" not in target.read_text(encoding="utf-8"))
         check("move_node: 제자리 그대로", target.exists())
-        check("append_raw: 기록이 생기지 않았다", not trace.exists())
+        check("cite_round: 기록이 생기지 않았다", not trace.exists())
         check("scope_memory: 기억이 바뀌지 않았다",
               _w(sm_mod.read, "repo/fence").get("text")
               == sm_before.get("text"))
@@ -9697,13 +9652,13 @@ def test_audit_fixes_2026_09_02():
         # ⑪ `_raw`는 `\r`이 섞여도 계속 이어 쓸 수 있다 (#27)
         #    되돌리면 — `raw.read_exact`를 `read_text`로 되돌리면 둘째가 실패한다.
         write.bind_session("audit-raw-sess", "W1", "감사 회귀 시험")
-        r1 = _w(R.append_round, "audit-raw-sess", "audit-crlf",
+        r1 = _w(_append_round, "audit-raw-sess", "audit-crlf",
                 "도구 출력\r\n두 줄", "응답")
         check("전제: `\\r`이 든 라운드가 기록된다 (#27)", r1.get("ok"), r1)
-        r2 = _w(R.append_round, "audit-raw-sess", "audit-crlf", "다음", "응답2")
+        r2 = _w(_append_round, "audit-raw-sess", "audit-crlf", "다음", "응답2")
         check("그 뒤에도 append가 성립한다 (#27)", r2.get("ok"), r2)
-        st = R.record_state("audit-raw-sess", "audit-crlf", None)
-        check("라운드 수가 정확히 세어진다 (#27)", st.get("rounds") == 2, st)
+        n = _rounds_of("audit-raw-sess", "audit-crlf")
+        check("라운드 수가 정확히 세어진다 (#27)", n == 2, n)
         mine.append(ROOT / r1["path"])
 
         # ⑫ scope 기억의 해시 사슬이 `\r`에 끊기지 않는다 (#27)
@@ -10811,7 +10766,8 @@ def test_governance_amend_secrets_and_region():
                                            capture_output=True, text=True)
             _g("init", "-q", "-b", "main")
             (lab / ".gitattributes").write_bytes(ga.encode("utf-8"))
-            for space, path in (("_raw", "00_Scope/W/_raw/2026-09-02.md"),
+            for space, path in (("_cited", "00_Scope/W/_cited/.records/claude-x.txt"),
+                                ("_raw", "00_Scope/W/_raw/2026-09-02.md"),
                                 ("_scope_memory", "00_Scope/W/_scope_memory/W.md"),
                                 ("일반 노드", "00_Person/누구.md")):
                 out = _g("check-attr", "text", "--", path).stdout.strip()
@@ -11971,7 +11927,7 @@ if __name__ == "__main__":
                test_stale_region_not_unprotected,
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
-               test_baseline_pass, test_raw_append, test_raw_cli_path,
+               test_baseline_pass, test_raw_append, test_cli_emit_utf8,
                test_raw_read, test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_scope_memory, test_workbench_state_not_evidence,

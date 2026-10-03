@@ -639,7 +639,7 @@ def hook(name, payload, **extra):
 given = {'session_id': sid, 'cwd': str(proj)}
 # Kiro puts the start and input hooks' stdout into the context as it is — plain text, not JSON.
 out = hook('claude_session_start.py', {**given, 'hook_event_name': 'SessionStart'})
-assert out.startswith('[osk 세션 시작 — session="proj"]'), out
+assert out.startswith(f'[osk 세션 시작 — session="proj" · conversation="kiro/{sid}"]'), out
 assert 'Kiro has no subscription fork' in out, out
 out = hook('claude_prompt_submit.py', {**given, 'hook_event_name': 'UserPromptSubmit', 'prompt': '두 번째'})
 assert not out.lstrip().startswith('{'), out
@@ -650,8 +650,11 @@ st = integration.status('kiro', sid)
 assert (st['captured_rounds'], st['aborted_rounds'], st['interrupted_rounds']) == (5, 1, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
 assert Path(st['transcript_path']) == transcript.resolve(), st
-text = (root / st['pending_refs'][0].split('#')[0]).read_text(encoding='utf-8')
-assert text.count('<!-- osk-capture: dialogue-v1 ') == 5, text
+# Capture tracks the turns; their dialogue stays in Kiro's own file (Bylaws §2 2).
+from osk import transcripts
+turns = list(transcripts.read(str(transcript), 'kiro', sid)['dialogue_v1'].values())
+text = '\n'.join(t['user'] + '\n' + t['agent'] for t in turns)
+assert len(turns) == 5 and not (root / '00_Scope' / 'W1' / '_cited').exists(), turns
 assert '첫 질문' in text and '읽어 보겠습니다.' in text and '답은 42입니다.' in text, text
 assert '"type": "superseded"' in text and '하다 만 답' in text and '넷째 답' in text, text
 assert '"native_trigger": "inputless"' in text and '다섯 번째' not in text, text
@@ -739,7 +742,7 @@ given = {'conversationId': sid, 'workspacePaths': [str(proj)], 'transcriptPath':
 # The start hook injects the context as a step; the session key comes from the workspace.
 out = json.loads(hook('claude_session_start.py', given))
 text = out['injectSteps'][0]['ephemeralMessage']
-assert text.startswith('[osk 세션 시작 — session="proj"]'), text
+assert text.startswith(f'[osk 세션 시작 — session="proj" · conversation="antigravity/{sid}"]'), text
 assert 'Antigravity has no subscription fork' in text, text
 # PreInvocation runs before every model call: only the first after an input is osk's input.
 before = integration.status('antigravity', sid)['prompt_count']
@@ -755,17 +758,18 @@ st = integration.status('antigravity', sid)
 assert (st['captured_rounds'], st['failed_rounds']) == (3, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
 assert Path(st['transcript_path']) == transcript.resolve(), st
-raw_text = (root / st['pending_refs'][0].split('#')[0]).read_text(encoding='utf-8')
-assert raw_text.count('<!-- osk-capture: dialogue-v1 ') == 3, raw_text
+from osk import transcripts
+turns = list(transcripts.read(str(transcript), 'antigravity', sid)['dialogue_v1'].values())
+raw_text = '\n'.join(t['user'] + '\n' + t['agent'] for t in turns)
+assert len(turns) == 3 and not (root / '00_Scope' / 'W1' / '_cited').exists(), turns
 assert '첫 질문' in raw_text and '읽어 보겠습니다.' in raw_text and '답은 42입니다.' in raw_text, raw_text
 assert '셋째 답' in raw_text and '"type": "superseded"' in raw_text and '네 번째' not in raw_text, raw_text
-assert '### user\n\n' + tricky + '\n' in raw_text, raw_text
+assert tricky in [t['user'] for t in turns], turns
 # Hook context, thinking, tool payloads and the system metadata are not the dialogue.
 for outside in ('주입된 문맥', 'internal thought', 'FILE BODY', 'ADDITIONAL_METADATA', 'checkpoint',
                 'USER_SETTINGS_CHANGE', 'Model Selection'):
     assert outside not in raw_text, (outside, raw_text)
 # An input of a shape the parser does not know is kept whole rather than cut.
-from osk import transcripts
 for odd in ('no wrapper', '<USER_REQUEST>\nopen only', '<USER_REQUEST>\nx\n</USER_REQUEST>\ntrailing'):
     assert transcripts._ag_user(odd) == odd, odd
 assert '"tool_evidence_ref"' in raw_text and '"view_file"' in raw_text, raw_text

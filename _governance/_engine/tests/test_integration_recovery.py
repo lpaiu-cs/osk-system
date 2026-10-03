@@ -42,7 +42,9 @@ def setup(ack=True):
     first = capture(1)
     first['review_key'] = it.prompt('claude', sid)['key']
     proof_key = first['review_key'] + ':retained-observation'
-    created = D.create_node({'key':proof_key,'sources':first['pending_refs'],'hub':'W1'},
+    # A node's source is a cited round of the original turn, not the turn's ref itself.
+    first['cited'] = it.cite('claude/' + sid, turn='-1')['round_ref']
+    created = D.create_node({'key':proof_key,'sources':[first['cited']],'hub':'W1'},
                             title='Retained observation', summary='Recovery evidence',
                             body='A completed observation worth retaining.',
                             drafter='fable-5', space='00_Scope/W1')
@@ -67,7 +69,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             from osk import scope_memory
             capture(8)
             parent = it.prompt('claude', sid)
-            scope_memory.replace(sid, 'retained summary')
+            scope_memory.replace(sid, 'retained summary', space='00_Scope/W1')
             it.acknowledge('claude', sid, parent['through'], 'summary', 'Initial review.',
                            [{'text': 'retained summary'}])
             scope_memory.replace(sid, 'changed summary', expect_hash=scope_memory.read(sid)['hash'])
@@ -207,7 +209,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             assert prompt['key'] != old_key, prompt
             assert prompt['key'] == it.prompt('claude', sid)['key']
             key = prompt['key'] + ':retained-observation'
-            repaired = D.update_node({'key':key,'sources':first['pending_refs'],'hub':'W1'},
+            repaired = D.update_node({'key':key,'sources':[first['cited']],'hub':'W1'},
                                      name=created['id'], body='Rechecked observation with corrected evidence.',
                                      expect_hash=changed['new_hash'])
             assert repaired['distillation']['status'] == 'complete', repaired
@@ -246,11 +248,13 @@ class IntegrationRecoveryTests(unittest.TestCase):
             worker = ('SID=' + repr(sid) + '; NATIVE=' + repr(str(native)) + '; SECOND='
                       + repr(rounds(2)) + '; LINK=' + repr('- [[' + created['name'] + ']]')
                       + '; PROOF=' + repr(proof_key) + '\\n' + worker)
-            result = growth.run([sys.executable, '-B', '-c', worker], limit=3)
+            fork_job = it.prompt('claude', sid, include_organization=False, max_rounds=3)
+            result = growth.run([sys.executable, '-B', '-c', worker], limit=3, scope_job=fork_job)
             assert result['state'] == 'incomplete' and result['scope_selected'] == 1, result
             state = json.loads(it.state_path('claude', sid).read_text(encoding='utf-8'))
             assert first['through'] in state.get('repair_pending', {}), state
             assert state['reviewed_count'] == 2, state
+            # The failed receipt needs no dialogue, so the daily worker takes the repair.
             again = growth.run([sys.executable, '-B', '-c', 'import sys; sys.stdin.read()'], limit=3)
             assert again['scope_selected'] == 1, again
             selected = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]['scope_jobs']

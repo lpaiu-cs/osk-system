@@ -35,9 +35,10 @@ Per cell, everything as S's users do it, with S's own code:
 4. check with the candidate: exit codes, version, every mapped file against the
    candidate's release.json (an oracle read from its manifest, not the updater),
    every other file byte-identical (ledgers only appended), the validator, MCP over
-   stdio (overview, search, read_node by name and id, read_raw, scope memory,
+   stdio (overview, search, read_node by name and id, read_cited, scope memory,
    run_validators), the SessionStart hook keeping the key, binding and memory and
-   carrying S's eviction to tidy, the conversation captured on across the update,
+   carrying S's eviction to tidy, the conversation tracked on across the update
+   (S's recorded rounds still read; the candidate copies no dialogue into the vault),
    the protected region's revert and approve, governance protection, and a second
    update to the same tag (candidate's updater) changing no file, a third a no-op.
 
@@ -386,13 +387,15 @@ def _drive_mcp(cfg: dict) -> dict:
                 out["search"] = hits if isinstance(hits, list) else [hits]
                 out["read"] = {n: await call("read_node", {"name": n}) for n in cfg["names"]}
                 out["read_id"] = await call("read_node", {"name": out["read"]["Alpha"].get("id", "?")})
-                out["raw"] = {ref: await call("read_raw", {"ref": ref, "view": "full"})
+                # v4.2 renamed read_raw; an older candidate still answers to the old name.
+                read = "read_cited" if "read_cited" in out["tools"] else "read_raw"
+                out["raw"] = {ref: await call(read, {"ref": ref, "view": "full"})
                               for ref in cfg["rounds"]}
-                records = (await call("read_raw", {"space": cfg["space"]})).get("records") or []
-                talk = [r["path"] for r in records if r.get("record") != "matrix-log"]
-                out["conversation"] = {"records": records} if len(talk) != 1 else {
-                    str(n): await call("read_raw", {"ref": f"{talk[0]}#{n}", "view": "full"})
-                    for n in (1, 2, 3)}
+                records = (await call(read, {"space": cfg["space"]})).get("records") or []
+                talk = [r for r in records if r.get("record") != "matrix-log"]
+                out["conversation"] = {"records": records, "rounds": {
+                    str(n): await call(read, {"ref": f"{t['path']}#{n}", "view": "full"})
+                    for t in talk[:1] for n in range(1, t["rounds"] + 1)}}
                 out["memory"] = await call("scope_memory", {"session": cfg["key"]})
                 out["legacy"] = {n: await call("read_node", {"name": n}) for n in cfg["legacy"]}
                 if "_inbox" in cfg["legacy"]:
@@ -839,9 +842,11 @@ def run_cell(up: Upstream, cand: str, work: Path, start: str, layout: str) -> di
         raw_bad = {ref: r for ref, r in mc["raw"].items() if r.get("ok") is False or "error" in r}
         check("mcp: raw rounds S wrote still read", not raw_bad, raw_bad)
         talk = mc["conversation"]
-        check("mcp: the hook-captured record reads, S's rounds and the candidate's",
-              [f"matrix answer {n}" in json.dumps(talk.get(str(n)), ensure_ascii=False)
-               for n in (1, 2, 3)] == [True] * 3, talk)
+        said = json.dumps(talk["rounds"], ensure_ascii=False)
+        check("mcp: what S's hooks recorded still reads; the candidate copies no dialogue",
+              len([r for r in talk["records"] if r.get("record") != "matrix-log"]) <= 1
+              and all(f"matrix answer {n}" in said for n in range(1, len(talk["rounds"]) + 1))
+              and "matrix answer 3" not in said, talk)
         check("mcp: scope memory reads what S wrote",
               "keep vaults working after updates." in (mc["memory"].get("text") or ""),
               mc["memory"])

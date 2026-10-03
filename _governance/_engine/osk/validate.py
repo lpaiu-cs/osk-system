@@ -234,7 +234,7 @@ def run() -> dict:
     # `_wm`도 함께 훑는다 — 통로에는 필터가 걸려 있지만(osk/wm.py), 통로 밖
     # 유입(수동 편집·구 엔진 기기에서의 동기화·나중에 추가된 패턴)은 그 필터를
     # 지나지 않는다. §9 1항이 검증기를 집행 지점으로 두는 이유가 그것이다.
-    for d in sorted([*(ROOT / SCOPE).rglob("_raw"),
+    for d in sorted([*(ROOT / SCOPE).rglob("_cited"), *(ROOT / SCOPE).rglob("_raw"),
                      *(ROOT / SCOPE).rglob("_scope_memory")]):
         if not d.is_dir():
             continue
@@ -249,7 +249,7 @@ def run() -> dict:
             _, hits = secrets.filter_text(text)
             if hits:
                 errs.append(f"{p.relative_to(ROOT)}: {sorted(set(hits))}")
-    ok("_raw·_scope_memory 비밀값 미기록", errs)
+    ok("인용 기록·_scope_memory 비밀값 미기록", errs)
 
     # 14. 정합성 검사 — 충돌 후보 (헌법 12조 1·2항). 기계 판정이 가능한 유형만
     #     검출해 **보고**한다. 상정·각하는 사용자 전속이므로 대장에 자동으로
@@ -431,6 +431,8 @@ def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
 #     3천 자) 때문에 접은 블록을 돌려받는 통로(Mechanism §9-3 1항, 2026-09-27
 #     개정). 대부분 스키마(블록 이름 열거 +136)다. 정확한 호출은 훅의 접은 줄이
 #     알려 주므로 설명은 한 문장(+52)으로 둔다.
+#   7700 유지(2026-10-04): append_raw·read_raw → cite_round·read_cited(시행령 §2 2항
+#     개정). 인용은 턴 좌표만 받고 발화는 엔진이 옮기므로 라운드 본문 인자가 빠졌다.
 SCHEMA_BUDGET = 7700
 
 # 마지막 표면 린트의 상주 비용 분해 — surface_lint가 채우고 run이 보고에 싣는다.
@@ -609,7 +611,7 @@ def cli_commands() -> tuple[set[str], set[str]]:
 
     잎을 따로 돌려주는 이유: `raw`·`sm`은 그 자체로 칠 수 있는 명령이 아니라
     하위 명령을 요구하는 묶음이다. 안내문이 적어야 하는 것은 사용자가 실제로
-    치는 `raw append` 쪽이고, 묶음 이름을 적는 것은 잘못이 아니다."""
+    치는 `raw migrate` 쪽이고, 묶음 이름을 적는 것은 잘못이 아니다."""
     import argparse as _ap
     from .cli import build_parser
     allc: set[str] = set()
@@ -731,9 +733,9 @@ _NUM_KO = dict(enumerate(
 
 
 # 표면이 거치는 쓰기 통로 — 금지 심벌 검사를 여기까지 건다. 코드를 옮겨
-# 검사를 비켜가는 표류를 막기 위해서다(6차 판정). `osk/raw.py`는 append_raw의
-# 통로이므로 같은 이유로 여기 든다.
-SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/raw.py",
+# 검사를 비켜가는 표류를 막기 위해서다(6차 판정). `osk/integration.py`·`osk/raw.py`는
+# cite_round의 통로이므로 같은 이유로 여기 든다.
+SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/raw.py", "osk/integration.py",
                    "osk/scope_memory.py", "osk/distillation.py")
 
 

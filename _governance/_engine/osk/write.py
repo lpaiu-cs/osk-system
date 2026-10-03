@@ -606,10 +606,9 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
         # 파일의 실재를 조건으로 걸지 않는데, 구판은 dangling을 먼저 걸러
         # "없는 `_raw` 라운드"를 Domain 노드에 다는 것이 통과했다(그 파일이
         # 생기는 순간 검증기 FAIL이 된다).
-        if (r[0] == "dangling" and kind[0] == "domain"
-                and "/_raw/" in str(name).replace("\\", "/")):
-            return [f"Domain의 _raw 직접 참조: {stem} → {name} — 대상이 아직 "
-                    f"없어도 그 자리는 `_raw` 구획이다. 근거는 노드로 증류해 "
+        if r[0] == "dangling" and kind[0] == "domain" and graph.is_record_ref(str(name)):
+            return [f"Domain의 인용 기록 직접 참조: {stem} → {name} — 대상이 아직 "
+                    f"없어도 그 자리는 인용 기록 구획이다. 근거는 노드로 증류해 "
                     f"참조한다(헌법 8조 3항)"]
         return []                       # dangling은 경고이지 위반이 아니다
     if r[0] == "ambiguous":
@@ -1284,7 +1283,7 @@ def _as_links(pred: str, targets, *, legacy_raw: bool = False) -> str | list:
     out = []
     for t in _as_list(targets):
         s = str(t).strip()
-        if (not legacy_raw and pred == "derived-from" and "/_raw/" in s.replace("\\", "/")
+        if (not legacy_raw and pred == "derived-from" and graph.is_record_ref(s)
                 and not re.match(r"^(?:\[\[\s*)?https?://", s)):
             from . import raw
             out.append(raw.canonical_ref(s))

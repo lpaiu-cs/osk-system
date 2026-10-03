@@ -37,6 +37,16 @@ def _load_cases() -> dict[str, dict]:
 NODE_SPACES = (DOMAIN, PERSON, SCOPE)
 W_LINK, W_DERIVED = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값 (Link·derived-from)
 
+# 인용 기록 구획(헌법 4조 3항). 새 기록은 `_cited/`에 쓰고, `_raw/`의 기록도 같은
+# 이름의 인용 기록으로 읽는다(Mechanism §9 5항). 둘은 같은 소속 `('raw', scope)`다.
+RECORD_DIRS = ("_cited", "_raw")
+
+
+def is_record_ref(ref: str) -> bool:
+    """`…/_cited/…`·`…/_raw/…` 꼴 — 인용 기록 구획을 가리키는 표기인가."""
+    s = (ref or "").replace("\\", "/")
+    return any(f"/{d}/" in s for d in RECORD_DIRS)
+
 # `.md` 확장자는 **어느 기기에서나** 대소문자를 무시한다. 구판은 pathlib을 따라
 # `os.name == "nt"`일 때만 무시했고, 그래서 같은 트리의 `Note.MD`가 Windows에서는
 # 노드, macOS(APFS도 대소문자 무시가 기본이다)·Linux에서는 비노드였다 — 한 vault를
@@ -213,12 +223,12 @@ def _place_of_parts(parts: tuple) -> tuple:
         if s == "Workbench":
             if "_ledger" in parts:
                 return ("ledger",)
-            if "_raw" in parts:
+            if any(d in parts for d in RECORD_DIRS):
                 return ("raw", "Workbench")
             if "transit" in parts:
                 return ("workbench-transit",)
             return ("workbench",)
-        if "_raw" in parts:
+        if any(d in parts for d in RECORD_DIRS):
             return ("raw", s)
         return ("scope", s)
     if head == "_sources":
@@ -760,7 +770,7 @@ class Index:
         아니며, 경로 해석은 vault 안으로 봉쇄한다([[/etc/passwd]])."""
         if re.match(r"^https?://", name):
             return ("external",)
-        if "/_raw/" in name.replace("\\", "/"):
+        if is_record_ref(name):
             from . import raw
             try:
                 return ("nonnode", space_of(raw._raw_file(name.split("#", 1)[0])))

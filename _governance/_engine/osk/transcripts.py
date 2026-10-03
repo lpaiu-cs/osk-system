@@ -45,7 +45,7 @@ def _dump(value) -> str:
 
 def _file_read(name: str) -> bool:
     return name.lower().split("__")[-1].split(".")[-1] in {
-        "read", "read_file", "readfile", "view_image", "read_node", "read_raw"}
+        "read", "read_file", "readfile", "view_image", "read_node", "read_raw", "read_cited"}
 
 
 def _mixed_output(name: str) -> bool:
@@ -230,12 +230,6 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
     elif harness == "codex":
         result = _codex(rows, conversation_id)
         readable = _codex(rows, conversation_id, dialogue=True)
-        # Unmarked durable rounds used v3.14's event-only serialization. Keep
-        # that exact replay (including trace gating) separate from new capture.
-        result["codex_v1"] = {r["id"]: r for r in _codex(
-            rows, conversation_id, native_users=False, terminal_turns=False)["rounds"]}
-        result["codex_v2"] = {r["id"]: r for r in _codex(
-            rows, conversation_id, terminal_turns=False)["rounds"]}
     elif harness == "kiro":
         # Kiro rows carry no conversation ID; the folder is the conversation's own.
         if Path(path).parent.name != conversation_id:
@@ -251,6 +245,7 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
     if [r["id"] for r in readable["rounds"]] != [r["id"] for r in result["rounds"]]:
         raise ValueError("dialogue capture changed native completion boundaries")
     result["dialogue_v1"] = {r["id"]: r for r in readable["rounds"]}
+    result["tail"] = readable.get("tail")
     result["diagnostics"] = diagnostics + result["diagnostics"]
     result["pending_tail"] = result["pending_tail"] or bool(diagnostics)
     result["native_fingerprint"] = fingerprint
@@ -379,11 +374,12 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
                     isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()
                     for b in content))
     finish()
-    return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics}
+    # The open turn is not a round, but its user words may be cited (Mechanism §9 9항).
+    return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics,
+            "tail": {"id": start, "user": "\n\n".join(users)} if start and users else None}
 
 
-def _codex(rows: list, sid: str, *, native_users: bool = True,
-           terminal_turns: bool = True, dialogue: bool = False) -> dict:
+def _codex(rows: list, sid: str, *, dialogue: bool = False) -> dict:
     identities = {r.get("payload", {}).get("id") for _, r in rows if r.get("type") == "session_meta"}
     if identities != {sid}:
         raise ValueError("Codex transcript session_meta.id does not match this conversation")
@@ -456,8 +452,8 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
             raise ValueError(f"unsupported Codex payload at line {line}")
         event = p.get("type")
         if typ == "event_msg" and event == "task_started":
-            if turn and (users or terminal_turns and (has_native_trace if dialogue else trace)):
-                if not terminal_turns or not finish("interrupted", line - 1, {
+            if turn and (users or (has_native_trace if dialogue else trace)):
+                if not finish("interrupted", line - 1, {
                         "type": "superseded", "turn_id": turn, "next_turn_id": p.get("turn_id")}):
                     diagnostics.append(f"unfinished Codex turn {turn}")
             turn, users, trace = p.get("turn_id"), [], []
@@ -470,23 +466,23 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
             compaction_seen = True
         elif typ == "event_msg" and event == "user_message" and turn:
             add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
-        elif (native_users and typ == "event_msg" and event == "item_completed" and turn
+        elif (typ == "event_msg" and event == "item_completed" and turn
               and isinstance(p.get("item"), dict) and p["item"].get("type") == "UserMessage"):
             if p.get("turn_id") != turn or p.get("thread_id") != sid:
                 raise ValueError(f"Codex user item identity mismatch at line {line}")
             item = p["item"]
             if isinstance(item.get("content"), list) and item["content"]:
                 add_user({k: v for k, v in item.items() if k != "type"}, "native")
-        elif typ == "response_item" and turn and (users or terminal_turns):
+        elif typ == "response_item" and turn:
             meta = p.get("internal_chat_message_metadata_passthrough") or {}
-            if terminal_turns and meta.get("turn_id") not in (None, turn):
+            if meta.get("turn_id") not in (None, turn):
                 raise ValueError(f"Codex response identity mismatch at line {line}")
             goal = (event == "message" and p.get("role") == "user"
                     and meta.get("content_item_kinds") == ["goal.internal_context"])
             heartbeat = (event == "function_call_output" and not p.get("call_id")
                          and (p.get("namespace"), p.get("name")) == ("codex_app", "automation_update")
                          and meta.get("turn_id") == turn)
-            if terminal_turns and (goal or heartbeat):
+            if goal or heartbeat:
                 # These are native execution triggers, not new human requests.
                 trigger = ({"content": _dialogue_content(p.get("content", p.get("output", "")),
                                                         f"codex:{sid}:{turn}:trigger")} if dialogue else {"item": p})
@@ -529,40 +525,29 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
             if (compaction_seen and not users and not trace and not has_native_trace
                     and not p.get("error") and not p.get("last_agent_message")):
                 pass  # Native maintenance completion has no dialogue to capture.
-            elif terminal_turns and p.get("error"):
+            elif p.get("error"):
                 if not finish("failed", line, p):
                     diagnostics.append(f"missing input for failed Codex turn {turn}")
-            elif terminal_turns and (users or resumable) and (has_native_trace if dialogue else trace) and (
+            elif (users or resumable) and (has_native_trace if dialogue else trace) and (
                     str(p.get("last_agent_message") or "").strip() or final_seen):
                 finish("completed", line, p if not p.get("last_agent_message") else None)
-            elif not users or not (has_native_trace if dialogue else trace) or not str(p.get("last_agent_message") or "").strip():
+            else:
                 diagnostics.append(f"incomplete content for completed Codex turn {turn}")
-            elif turn not in seen:
-                rounds.append({"id": turn, "user": "\n\n".join(users),
-                               "agent": "\n\n".join(trace), "end_line": line,
-                               "completion": "completed"})
-                seen.add(turn)
             turn, users, trace = None, [], []
             evidence, has_native_trace, compaction_seen = [], False, False
             user_formats.clear()
         elif typ == "event_msg" and event == "turn_aborted" and turn:
             if p.get("turn_id") and p["turn_id"] != turn:
                 raise ValueError(f"Codex abort turn_id mismatch at line {line}")
-            if terminal_turns:
-                if not finish("aborted", line, p) and (has_native_trace if dialogue else trace):
-                    diagnostics.append(f"missing input for aborted Codex turn {turn}")
-            elif users and turn not in seen:
-                # Native abort is a terminal record, not successful work. Keep
-                # its partial observations separate from the next user task.
-                rounds.append({"id": turn, "user": "\n\n".join(users),
-                               "agent": "\n\n".join(trace + [_dump(p)]),
-                               "end_line": line, "completion": "aborted"})
-                seen.add(turn)
+            # Native abort is a terminal record, not successful work.
+            if not finish("aborted", line, p) and (has_native_trace if dialogue else trace):
+                diagnostics.append(f"missing input for aborted Codex turn {turn}")
             turn, users, trace = None, [], []
             evidence, has_native_trace, compaction_seen = [], False, False
             user_formats.clear()
-    return {"rounds": rounds, "pending_tail": bool(users) or bool(terminal_turns and turn) or bool(diagnostics),
-            "diagnostics": diagnostics}
+    return {"rounds": rounds, "pending_tail": bool(users) or bool(turn) or bool(diagnostics),
+            "diagnostics": diagnostics,
+            "tail": {"id": turn, "user": "\n\n".join(users)} if turn and users else None}
 
 
 # Kiro `turn_end.stopReason` → completion. Only end_turn is success; the rest keep their

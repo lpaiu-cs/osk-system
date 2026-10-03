@@ -95,53 +95,13 @@ def _raw_stdin():
         sys.exit(f"stdin 판독 실패 — {type(e).__name__}: {e}")
 
 
-def _raw_rounds(env) -> list:
-    """봉투에서 라운드 목록을 꺼낸다. 배열 그대로 · `rounds` 키 · 라운드 하나를
-    모두 받는다 — 한 라운드만 보내는 흔한 경우에 감싸기를 강요하지 않는다."""
-    if isinstance(env, list):
-        return env
-    if isinstance(env, dict):
-        if isinstance(env.get("rounds"), list):
-            return env["rounds"]
-        if "user" in env or "agent" in env:
-            return [env]
-    return []
-
-
 def _raw_cmd(a) -> None:
-    """`osk raw` — 하네스 훅이 실제 대화 바이트를 넣는 경로.
-
-    표면의 `append_raw`는 에이전트가 **서술한** 라운드를 받는다. 헌법 4조
-    3항이 명하는 것은 전량 포착이므로, 전사를 그대로 나를 수 있는 경로가
-    따로 필요하다 — 같은 통로·같은 계약을 쓰고 입력만 기계에서 온다."""
-    if a.raw_cmd == "migrate":
-        try:
-            _emit(raw.migrate(apply=a.apply))
-        except (write.WriteError, StaleEngineError, OSError) as e:
-            _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
-            sys.exit(1)
-        return
-    if a.raw_cmd == "status":
-        try:
-            _emit(raw.record_state(a.session, a.record, a.space))
-        except (write.WriteError, StaleEngineError) as e:
-            _emit({"ok": False, "violations": e.violations})
-            sys.exit(1)
-        return
-    env = _raw_stdin()
-    meta = env if isinstance(env, dict) else {}
-    # 플래그가 봉투를 이긴다 — 봉투는 전사 생성기가, 플래그는 그것을 거는
-    # 사람이 쓴다. 어느 자리로 왔는지 모호하면 거는 쪽의 뜻을 따른다.
-    session = a.session or meta.get("session")
-    record = a.record or meta.get("record")
-    space = a.space or meta.get("space")
-    missing = [k for k, v in (("session", session), ("record", record)) if not v]
-    if missing:
-        sys.exit(f"필수 값 없음: {', '.join(missing)} — 플래그나 봉투로 준다")
+    """`osk raw migrate` — `_raw/`의 Markdown 기록을 숨김 `.txt`로 옮긴다(Mechanism §9 5항).
+    대화를 기록에 옮겨 쌓는 경로는 두지 않는다 — 인용은 `cite_round`가 맡는다."""
     try:
-        _emit(raw.append_rounds(session, record, _raw_rounds(env), space))
-    except (write.WriteError, StaleEngineError) as e:
-        _emit({"ok": False, "violations": e.violations})
+        _emit(raw.migrate(apply=a.apply))
+    except (write.WriteError, StaleEngineError, OSError) as e:
+        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
         sys.exit(1)
 
 
@@ -346,20 +306,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query"); p.add_argument("-k", type=int, default=8)
     p = sub.add_parser("check", help="권한 사전 검사")
     p.add_argument("action")
-    # `raw`는 하네스 훅이 부르는 **기계 경로**다 — 대화형 확인을 걸지 않는다.
-    # 사용자 전속 행위가 아니라 표면의 `append_raw`와 같은 행위이고, 거는
-    # 순간 훅에서 쓸 수 없어 자동 포착이 성립하지 않는다.
-    p = sub.add_parser("raw", help="`_raw/` 세션 기록 (훅 경로)")
+    p = sub.add_parser("raw", help="`_raw/` 기록의 숨김 저장 이관")
     rs = p.add_subparsers(dest="raw_cmd", required=True)
     q = rs.add_parser("migrate", help="기존 Markdown 원료의 숨김 .txt 이관 계획")
     q.add_argument("--apply", action="store_true", help="계획을 적용; 생략하면 읽기 전용")
-    q = rs.add_parser("append", help="라운드 append — 본문은 stdin JSON")
-    q.add_argument("--session"); q.add_argument("--record")
-    q.add_argument("--space", default=None)
-    q = rs.add_parser("status", help="기록의 현재 라운드 수 — 중복 방지용")
-    q.add_argument("--session", required=True)
-    q.add_argument("--record", required=True)
-    q.add_argument("--space", default=None)
 
     p = sub.add_parser("integration", help="대화별 포착·통합 대기 (scope 공유 기억과 별개)")
     ins = p.add_subparsers(dest="integration_cmd", required=True)

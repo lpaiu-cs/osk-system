@@ -985,11 +985,12 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert '검토 경고' in start and 'subscription login required' in start, start
                 assert integration.status('claude','own')['prompt_count'] == 0
                 original = integration.status('claude','own')['pending_refs']
+                cue = 'cite_round(conversation="claude/own"'
                 for n in range(1,16):
                     text = hook.capture_block(env,'own')
                     assert ('[osk 케이던스' in text) == (n in {9,15}), (n,text)
                     if n in {9,15}:
-                        assert '검토 경고' in text and original[0] in text, text
+                        assert '검토 경고' in text and cue in text, text
                     assert not rg.launch(env,'own')
                 before = integration.status('claude','own')
                 assert before['prompt_count'] == 15 and before['reviewed_rounds'] == 0, before
@@ -1003,7 +1004,7 @@ class ResponseGrowthTests(unittest.TestCase):
             # Losing auth between cadence boundaries must surface the overdue review immediately.
             with patch.object(rg,'preflight',side_effect=ValueError('login expired')):
                 text = hook.capture_block(env,'own')
-                assert 'user 턴 17' in text and original[0] in text and '단독 턴' in text, text
+                assert 'user 턴 17' in text and cue in text and '단독 턴' in text, text
                 assert integration.status('claude','own')['reviewed_rounds'] == 0
             rg.CONFIG.write_text('{broken')
             text = hook.capture_block(env,'own',startup=True)
