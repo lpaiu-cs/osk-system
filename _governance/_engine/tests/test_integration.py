@@ -877,10 +877,14 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["captured_rounds"], 1)
         self.assertTrue(st["capture_pending"])
         self.assertIn("incomplete JSONL", st["capture_error"])
+        job = it.prompt("claude", self.sid, include_organization=False)
+        self.assertEqual(job["raw_review"]["state"], "verified")
+        self.assertEqual(job["raw_review"]["rounds"], 1)
 
     def test_unstarted_missing_native_does_not_hide_active_missing_source(self):
         absent = self.capture()
         self.assertTrue(absent['pending'])
+        self.assertEqual(absent["capture_recovery"]["state"], "awaiting_input")
         state_path = it.state_path('claude', self.sid)
         before = state_path.read_bytes()
         states, _, _, waiting = it._known_pending(100)
@@ -891,7 +895,9 @@ class IntegrationTests(unittest.TestCase):
         states, _, _, waiting = it._known_pending(100)
         self.assertIn(self.sid, [s['conversation_id'] for s in states])
         self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
-        self.assertFalse(self.capture()['ok'])
+        missing = self.capture()
+        self.assertFalse(missing['ok'])
+        self.assertEqual(missing["capture_recovery"]["state"], "action_required")
         self.transcript(claude_round(self.sid,1))
         self.assertEqual(self.capture()['appended'], 1)
         self.path.unlink()
@@ -970,11 +976,208 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(st["ok"])
         self.assertEqual(raw.record_state("capture-tests", st["record"])["rounds"], 1)
 
+    def test_rejected_explicit_native_path_keeps_the_verified_source(self):
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                sid = self.sid + "-" + harness
+                def rows(identity, count):
+                    if harness == "claude":
+                        return sum((claude_round(identity, n) for n in range(1, count + 1)), [])
+                    return ([{"type": "session_meta", "payload": {"id": identity}}]
+                            + sum((codex_round(n) for n in range(1, count + 1)), []))
+                self.transcript(rows(sid, 1))
+                first = it.capture(harness, sid, str(self.path), "capture-tests")
+                it.acknowledge(harness, sid, first["through"], "no_value", "Completed fixture only.")
+                state_path = it.state_path(harness, sid)
+                before = it._load(state_path, harness, sid)
+                raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
+                raw_before = raw_path.read_bytes()
+                other = self.path.with_suffix(".foreign.jsonl")
+                other.write_text("".join(json.dumps(r) + "\n" for r in rows("foreign", 1)), encoding="utf-8")
+                refused = it.capture(harness, sid, str(other), "capture-tests")
+                self.assertFalse(refused["ok"], refused)
+                self.assertEqual(refused["capture_recovery"]["phase"], "read")
+                self.assertEqual(raw_path.read_bytes(), raw_before)
+                self.assertEqual(it._load(state_path, harness, sid)["transcript_path"], before["transcript_path"])
+                self.transcript(rows(sid, 2))
+                recovered = it.capture(harness, sid, None, "capture-tests")
+                self.assertTrue(recovered["ok"], recovered)
+                self.assertEqual(recovered["appended"], 1)
+                after = it._load(state_path, harness, sid)
+                self.assertEqual(after["rounds"][:1], before["rounds"])
+                self.assertEqual(after["reviews"], before["reviews"])
+                self.assertEqual(after["reviewed_count"], 1)
+                self.assertEqual(it.review_status(harness, sid, first["through"])["status"], "complete")
+                self.assertEqual(it.capture(harness, sid, None, "capture-tests")["appended"], 0)
+
+    def test_changed_prefix_at_another_path_does_not_replace_the_verified_source(self):
+        self.transcript(claude_round(self.sid, 1))
+        first = self.capture()
+        it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
+        state_path = it.state_path("claude", self.sid)
+        before = it._load(state_path, "claude", self.sid)
+        raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
+        raw_before = raw_path.read_bytes()
+        changed = claude_round(self.sid, 1) + claude_round(self.sid, 2)
+        changed[0]["message"]["content"] = "A rewritten old question."
+        candidate = self.path.with_suffix(".changed.jsonl")
+        candidate.write_text("".join(json.dumps(r) + "\n" for r in changed), encoding="utf-8")
+        refused = it.capture("claude", self.sid, str(candidate), "capture-tests")
+        self.assertFalse(refused["ok"], refused)
+        self.assertEqual(refused["capture_recovery"]["phase"], "replay")
+        self.assertEqual(raw_path.read_bytes(), raw_before)
+        after = it._load(state_path, "claude", self.sid)
+        self.assertEqual(after["transcript_path"], before["transcript_path"])
+        for key in ("rounds", "reviews", "reviewed_count", "snapshots", "native_fingerprint", "coverage"):
+            self.assertEqual(after[key], before[key], key)
+        recovered = it.capture("claude", self.sid, None, "capture-tests")
+        self.assertTrue(recovered["ok"], recovered)
+        self.assertEqual(recovered["appended"], 0)
+
+    def test_relocated_capture_crash_replays_candidate_without_duplicate_raw(self):
+        self.transcript(claude_round(self.sid, 1))
+        first = self.capture()
+        it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
+        state_path = it.state_path("claude", self.sid)
+        before = it._load(state_path, "claude", self.sid)
+        candidate = self.path.with_suffix(".relocated.jsonl")
+        candidate.write_text("".join(json.dumps(r) + "\n" for r in
+                                    claude_round(self.sid, 1) + claude_round(self.sid, 2)), encoding="utf-8")
+        append = raw.append_rounds
+        def crash(*args, **kwargs):
+            append(*args, **kwargs)
+            raise SystemExit("Power loss after appending the relocated tail.")
+        with mock.patch.object(raw, "append_rounds", crash):
+            with self.assertRaises(SystemExit):
+                it.capture("claude", self.sid, str(candidate), "capture-tests")
+        crashed = it._load(state_path, "claude", self.sid)
+        self.assertEqual(crashed["transcript_path"], before["transcript_path"])
+        self.assertEqual(crashed.get("capture_path"), str(candidate.resolve()))
+        caught = it.catchup(100)
+        job = next(j for j in caught["jobs"] if j["conversation_id"] == self.sid)
+        self.assertEqual(job["raw_review"]["state"], "verified")
+        recovered = it._load(state_path, "claude", self.sid)
+        self.assertEqual(recovered["transcript_path"], str(candidate.resolve()))
+        self.assertNotIn("capture_path", recovered)
+        self.assertEqual(recovered["rounds"][:1], before["rounds"])
+        self.assertEqual(recovered["reviews"], before["reviews"])
+        self.assertEqual(recovered["reviewed_count"], 1)
+        self.assertEqual(len(recovered["rounds"]), 2)
+        self.assertEqual(it.capture("claude", self.sid, None, "capture-tests")["appended"], 0)
+
+    def test_missing_native_and_unavailable_raw_have_separate_recovery_states(self):
+        self.transcript(claude_round(self.sid, 1))
+        first = self.capture()
+        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
+        raw_before = raw_path.read_bytes()
+        self.path.unlink()
+        missing = it.capture("claude", self.sid, None, "capture-tests")
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["capture_recovery"]["state"], "action_required")
+        self.assertEqual(missing["capture_recovery"]["phase"], "source")
+        job = it.prompt("claude", self.sid, include_organization=False)
+        self.assertEqual(job["raw_review"], {"state": "verified", "rounds": 1, "error": None})
+        self.assertEqual(job["through"], first["through"])
+        self.assertEqual(raw_path.read_bytes(), raw_before)
+        raw_path.write_bytes(raw_before.replace(b"question 1", b"altered question"))
+        blocked = it.prompt("claude", self.sid, include_organization=False)
+        self.assertEqual(blocked["raw_review"]["state"], "unavailable")
+        self.assertTrue(blocked["raw_review"]["error"])
+        with self.assertRaises((ValueError, write.WriteError)):
+            it.acknowledge("claude", self.sid, first["through"], "no_value", "Fixture only.")
+        self.assertEqual(it.status("claude", self.sid)["reviewed_rounds"], 0)
+        raw_path.write_bytes(raw_before)
+        # This ACK judges only the verified, completed fixture; it cannot close capture.
+        reviewed = it.acknowledge("claude", self.sid, first["through"], "no_value", "Captured fixture has no reusable claim.")
+        self.assertTrue(reviewed["capture_pending"])
+        self.assertTrue(reviewed["capture_error"])
+        self.assertTrue(reviewed["pending"])
+        self.assertEqual(it.prompt("claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
+
+    def test_relocated_capture_io_failure_keeps_candidate_until_cursor_recovery(self):
+        # Catch up only this fault matrix, not every unrelated suite fixture.
+        state_path_for = it.state_path
+        state_dir = Path(TMP.name) / self.sid
+        patcher = mock.patch.object(it, "state_path", side_effect=lambda harness, sid:
+                                    state_dir / state_path_for(harness, sid).name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for failure in ("append", "read", "decode"):
+            for retry in ("pathless", "catchup"):
+                with self.subTest(failure=failure, retry=retry):
+                    sid = f"{self.sid}-{failure}-{retry}"
+                    self.transcript(claude_round(sid, 1))
+                    first = it.capture("claude", sid, str(self.path), "capture-tests")
+                    it.acknowledge("claude", sid, first["through"], "no_value", "Completed fixture only.")
+                    state_path = it.state_path("claude", sid)
+                    before = it._load(state_path, "claude", sid)
+                    raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
+                    candidate = self.path.with_name(sid + ".relocated.jsonl")
+                    candidate.write_text("".join(json.dumps(r) + "\n" for r in
+                                                claude_round(sid, 1) + claude_round(sid, 2)), encoding="utf-8")
+                    append, read = raw.append_rounds, raw.read_exact
+                    stored = False
+
+                    def fail_after_append(*args, **kwargs):
+                        nonlocal stored
+                        result = append(*args, **kwargs)
+                        stored = True
+                        if failure == "append":
+                            raise OSError("Raw was written, but the write outcome was not returned.")
+                        return result
+
+                    def fail_cursor_read(*args, **kwargs):
+                        nonlocal stored
+                        if stored and failure != "append":
+                            stored = False
+                            if failure == "decode":
+                                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "Temporary read failure.")
+                            raise PermissionError("Temporary raw read failure after append.")
+                        return read(*args, **kwargs)
+
+                    with mock.patch.object(raw, "append_rounds", fail_after_append), \
+                            mock.patch.object(raw, "read_exact", fail_cursor_read):
+                        failed = it.capture("claude", sid, str(candidate), "capture-tests")
+                    self.assertFalse(failed["ok"], failed)
+                    self.assertTrue(failed["capture_pending"])
+                    self.assertEqual((failed["captured_rounds"], failed["reviewed_rounds"]), (1, 1))
+                    self.assertEqual(failed["pending_refs"], [])
+                    self.assertEqual(raw.record_state("capture-tests", first["record"])["rounds"], 2)
+                    raw_after_append = raw_path.read_bytes()
+                    failed_state = it._load(state_path, "claude", sid)
+                    self.assertEqual(failed_state["transcript_path"], before["transcript_path"])
+                    self.assertEqual(failed_state.get("capture_path"), str(candidate.resolve()))
+                    # A second transient native-read failure must not lose this intent either.
+                    with mock.patch.object(transcripts, "read", side_effect=PermissionError("Native temporarily locked.")):
+                        self.assertFalse(it.capture("claude", sid, None, "capture-tests")["ok"])
+                    self.assertEqual(it._load(state_path, "claude", sid).get("capture_path"), str(candidate.resolve()))
+                    if retry == "pathless":
+                        recovered = it.capture("claude", sid, None, "capture-tests")
+                    else:
+                        caught = it.catchup(100)
+                        recovered = next(c for c in caught["captures"] if c["conversation_id"] == sid)
+                    self.assertTrue(recovered["ok"], recovered)
+                    self.assertEqual(recovered["appended"], 0)
+                    after = it._load(state_path, "claude", sid)
+                    self.assertEqual(after["transcript_path"], str(candidate.resolve()))
+                    self.assertNotIn("capture_path", after)
+                    self.assertEqual(after["rounds"][:1], before["rounds"])
+                    self.assertEqual(after["reviews"], before["reviews"])
+                    self.assertEqual(after["snapshots"][first["through"]], before["snapshots"][first["through"]])
+                    self.assertEqual((len(after["rounds"]), after["reviewed_count"]), (2, 1))
+                    self.assertEqual(raw_path.read_bytes(), raw_after_append)
+                    job = it.prompt("claude", sid, include_organization=False)
+                    self.assertEqual(job["pending_refs"], [after["rounds"][1]["ref"]])
+                    self.assertEqual(job["raw_review"], {"state": "verified", "rounds": 1, "error": None})
+
     def test_unbound_conversation_can_choose_a_stable_session_without_binding_generic_key(self):
         self.transcript(claude_round(self.sid, 1))
         generic = self.sid + '-unbound'
         failed = it.capture('claude', self.sid, str(self.path), generic)
         self.assertFalse(failed['ok'])
+        self.assertEqual(failed["capture_recovery"]["phase"], "landing")
+        self.assertTrue(failed["capture_recovery"]["next_action"])
         captured = it.capture('claude', self.sid, str(self.path), 'capture-tests', '00_Scope/Capture')
         self.assertTrue(captured['ok'], captured)
         self.assertEqual(captured['captured_rounds'], 1)
@@ -1139,6 +1342,8 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(claude_round(self.sid, 1, finished=False))
         pending = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/Capture")
         self.assertTrue(pending["capture_pending"])
+        self.assertEqual(pending["capture_recovery"]["state"], "pending")
+        self.assertEqual(it.prompt("claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
         self.assertIsNone(write.resolve_session(self.sid))
         self.transcript(claude_round(self.sid, 1))
         done = it.catchup(100)

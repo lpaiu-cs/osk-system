@@ -85,6 +85,28 @@ def _snapshot(s: dict) -> str | None:
         sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def _capture_recovery(s: dict) -> dict:
+    """Advice only; it never relaxes capture identity or acknowledges stored raw."""
+    phase = s.get("capture_failure_phase", "unknown")
+    if s.get("capture_error"):
+        actions = {
+            "awaiting_native": "같은 대화의 원본이 생성된 뒤 다시 capture한다.",
+            "landing": "기존 대화의 scope를 유지하며 명시적인 세션 키와 착지를 확인한다.",
+            "source": "같은 대화 ID의 원본을 복구하거나 올바른 전사 경로를 명시한다.",
+            "read": "원본의 대화 ID·형식·연결된 과거 전사를 확인하고 같은 대화로 재시도한다.",
+            "replay": "저장된 raw와 원본 접두부·저장 경로를 확인한다. 기존 좌표나 검토 커서를 초기화하지 않는다.",
+        }
+        return {"state": "awaiting_input" if phase == "awaiting_native" else "action_required",
+                "phase": phase, "next_action": actions.get(
+                    phase, "원본 경로·대화 신원·착지를 확인하고 같은 대화를 다시 capture한다.")}
+    if s.get("capture_pending"):
+        return {"state": "pending",
+                "next_action": "종료 기록을 확인한 뒤 같은 대화를 다시 capture한다. 열린 꼬리를 완료로 처리하지 않는다."}
+    if not (s.get("native_fingerprint") or s["rounds"]):
+        return {"state": "awaiting_input", "next_action": "같은 대화의 원본이 생성된 뒤 다시 capture한다."}
+    return {"state": "ready", "next_action": None}
+
+
 def _view(s: dict) -> dict:
     rs, n = s["rounds"], s["reviewed_count"]
     repairs = s.get("repair_pending", {})
@@ -101,6 +123,7 @@ def _view(s: dict) -> dict:
             "pending": bool(s["capture_pending"] or len(rs) > n or repairs),
             "repair_pending": repairs,
             "capture_pending": s["capture_pending"], "capture_error": s["capture_error"],
+            "capture_recovery": _capture_recovery(s),
             "coverage": s.get("coverage"),
             "inherited_rounds": len((s.get("inherited") or {}).get("rounds", [])),
             "pending_refs": [r["ref"] for i, r in enumerate(rs) if i >= n or r["ref"] in repair_refs],
@@ -265,7 +288,10 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
         s["capture_pending"], s["capture_error"] = True, None
+        s.pop("capture_failure_phase", None)
         _save(p, s)  # Persist intent before reading or appending; failures remain pending.
+        phase = "landing"
+        raw_replayed = False
         try:
             pinned = s["space"]
             if not pinned and s["rounds"]:
@@ -290,19 +316,31 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                 raise ValueError("conversation scope changed; existing capture was not moved")
             s["session"] = session
             s["space"] = pinned or requested
-            if transcript_path:
-                s["transcript_path"] = str(Path(transcript_path).resolve())
+            requested_path = (str(Path(transcript_path).resolve()) if transcript_path else
+                              s.get("capture_path") or s["transcript_path"])
+            if not s["transcript_path"]:
+                s["transcript_path"] = requested_path  # First-capture intent survives an absent/unflushed file.
             _save(p, s)
-            native_path = _locate_transcript(harness, conversation_id, s["transcript_path"])
+            phase = "source"
+            native_path = _locate_transcript(harness, conversation_id, requested_path)
             if not native_path:
+                if not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
+                    phase = "awaiting_native"
                 raise ValueError("native transcript path unavailable; use integration capture with --transcript")
+            # Retain the attempted source across a crash, separately from the last
+            # accepted source. Only a validation rejection clears this intent below.
+            s["capture_path"] = native_path
+            _save(p, s)
+            phase = "read"
             parsed = transcripts.read(native_path, harness, conversation_id)
-            s["transcript_path"] = native_path
-            s["coverage"] = parsed["coverage"]
+            coverage = parsed["coverage"]
+            if not s["rounds"]:
+                s["coverage"] = coverage
             _save(p, s)  # Reference-only coverage is visible before raw capture.
             # ponytail: serialize capture until its cursor is saved; use per-scope
             # locks if capture throughput matters. Raw owns the mutation lock.
             with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
+                phase = "replay" if s["space"] else "landing"
                 rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
                 if harness == "codex" and parsed.get("codex_v2") is not None and s["space"]:
                     # Old raw coordinates/ACKs are immutable. Newly supported
@@ -325,7 +363,8 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                                                codex_v2=parsed.get("codex_v2"),
                                                dialogue_v1=parsed.get("dialogue_v1"),
                                                inherited=s.get("inherited"))
-                    s["coverage"]["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
+                    raw_replayed = True
+                    coverage["codex_v1_rounds"] = result.get("codex_v1_rounds", [])
                     stored = raw.read_exact(raw._raw_file(result["path"]))
                     spans = raw._round_spans(stored)
                     # Existing snapshots bind these strings: moving raw must not
@@ -340,11 +379,27 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                     result = {"appended": 0}
                 s["capture_pending"] = parsed["pending_tail"]
                 s["capture_error"] = "; ".join(parsed["diagnostics"]) or None
+                # Replace an established source only after identity and raw-prefix replay
+                # succeed. A rejected explicit path must not poison later pathless retries.
+                s["transcript_path"] = native_path
+                s.pop("capture_path", None)
+                s["coverage"] = coverage
+                if s["capture_error"]:
+                    s["capture_failure_phase"] = "read"
                 s["native_fingerprint"] = parsed["native_fingerprint"]
                 _save(p, s)
                 return {**_current_view(s, p), "appended": result.get("appended", 0)}
         except Exception as exc:
+            if isinstance(exc, FileNotFoundError) and phase in {"source", "read"}:
+                phase = ("source" if s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")
+                         else "awaiting_native")
             s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
+            s["capture_failure_phase"] = phase
+            # I/O failures can follow a committed raw write, including inside
+            # append_rounds. Keep its source until replay repairs the cursor.
+            # Only a validation refusal before raw replay can discard the candidate.
+            if phase != "landing" and not raw_replayed and isinstance(exc, ValueError):
+                s.pop("capture_path", None)
             _save(p, s)
             return _current_view(s, p)
 
@@ -532,7 +587,8 @@ def _known_pending(limit: int) -> tuple[list, int, list, list]:
                 current = _current_view(s, p)
             changed, missing = False, False
             try:
-                native_path = _locate_transcript(s["harness"], s["conversation_id"], s.get("transcript_path"))
+                native_path = _locate_transcript(
+                    s["harness"], s["conversation_id"], s.get("capture_path") or s.get("transcript_path"))
                 if native_path:
                     changed = s.get("native_fingerprint") != transcripts.native_fingerprint(
                         native_path, s["harness"], s["conversation_id"])
@@ -576,8 +632,10 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
     captures, jobs = [], []
     for s in states:
         try:
-            result = capture(s["harness"], s["conversation_id"], s["transcript_path"], s["session"], s.get("space"))
-            captures.append({k: result.get(k) for k in ("harness", "conversation_id", "ok", "appended", "capture_error")})
+            result = capture(s["harness"], s["conversation_id"],
+                             s.get("capture_path") or s["transcript_path"], s["session"], s.get("space"))
+            captures.append({k: result.get(k) for k in (
+                "harness", "conversation_id", "ok", "appended", "capture_error", "capture_recovery")})
             if result["pending_refs"]:
                 job = prompt(s["harness"], s["conversation_id"], include_organization=False,
                              max_rounds=max_rounds)
@@ -635,6 +693,18 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
             st["through"] = token
             st["pending_refs"] = [r["ref"] for r in s["rounds"][s["reviewed_count"]:count]]
             st["remaining_rounds"] = len(s["rounds"]) - count
+        selected_refs = set(st["pending_refs"])
+        st["raw_review"] = {"state": "none", "rounds": len(selected_refs), "error": None}
+        if selected_refs:
+            try:
+                with core.mutation_lock():
+                    selected_rounds = [r for r in s["rounds"] if r["ref"] in selected_refs]
+                    if {r["ref"] for r in selected_rounds} != selected_refs:
+                        raise ValueError("selected raw coordinates are missing from the saved cursor")
+                    _verify_raw(selected_rounds)
+                st["raw_review"]["state"] = "verified"
+            except (ValueError, OSError, write.WriteError) as exc:
+                st["raw_review"].update(state="unavailable", error=str(exc))
     # One snapshot identity for ordinary hooks and dedicated workers alike.
     # A later snapshot must not collide with an immutable distillation request.
     st["key"] = "scope-review-" + st["through"].removeprefix("sha256:") if st["pending_refs"] else None
@@ -645,6 +715,14 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
             "이 대화의 검토 상태는 별개다. 공유 기억이 비어 있어도 검토한다.\n")
     if st["capture_error"]:
         text += f"포착 진단: {st['capture_error']} — 미완료로 남았다. 본 작업은 계속할 수 있다.\n"
+    if st["capture_recovery"]["next_action"]:
+        text += f"포착 재개: {st['capture_recovery']['next_action']}\n"
+    if st["raw_review"]["state"] == "verified":
+        text += ("이번 검토 범위의 저장된 raw 좌표·해시는 일치한다. 원본 포착의 미완료와 구분해 "
+                 "이 범위만 검토할 수 있다. 원본 소실을 no_value의 사유로 쓰거나 미포착 꼬리를 ACK하지 않는다.\n")
+    elif st["raw_review"]["state"] == "unavailable":
+        text += ("저장된 raw 검증 실패로 이번 범위의 증류·ACK를 보류한다. 원본 좌표·해시를 복구한 뒤 "
+                 f"다시 검토한다: {st['raw_review']['error']}\n")
     if st["failed_rounds"] or st["interrupted_rounds"]:
         text += (f"원문에 실패 종료 {st['failed_rounds']}·종료 기록 없이 다음 턴으로 넘어간 부분 기록 "
                  f"{st['interrupted_rounds']}건이 포함된다. 관측 보존이며 작업 성공을 뜻하지 않는다.\n")

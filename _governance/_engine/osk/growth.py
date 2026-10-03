@@ -402,7 +402,8 @@ def _reading_plan(planned: dict) -> dict:
     fields = {"harness", "conversation_id", "session", "space", "through", "key",
               "pending_refs", "remaining_rounds", "capture_error", "failed_rounds",
               "interrupted_rounds", "inherited_rounds", "coverage", "repair",
-              "previous_distillations", "proof_discovery", "scope_recovery"}
+              "previous_distillations", "proof_discovery", "scope_recovery",
+              "capture_recovery", "raw_review"}
     jobs = []
     for job in planned.get("scope_jobs", []):
         item = {k: v for k, v in job.items() if k in fields}
