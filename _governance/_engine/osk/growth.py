@@ -152,14 +152,18 @@ def _completed(key: str, rows: list[dict], idx: graph.Index) -> dict | None:
 
 
 def daily_active(days: int = 3) -> bool:
-    """정기 실행이 최근 `days`일 안에 작업을 계획했는가. 대장으로 보므로 어느
-    기기에서 돌았든 같다."""
+    """최신 정기 실행이 최근 `days`일 안에 선택 작업을 완료했는가.
+    실패하거나 결과가 없는 새 계획은 과거 성공으로 덮지 않는다."""
     from datetime import datetime, timedelta, timezone
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    for r in reversed(_records()):
+    rows = _records()
+    for r in reversed(rows):
         if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily":
             try:
-                return datetime.fromisoformat(r["at"]) >= cutoff
+                result = next((x for x in reversed(rows) if x.get("kind") == "run"
+                               and x.get("manifest") == r["rid"]), None)
+                return bool(result and result.get("ok") is True
+                            and cutoff <= datetime.fromisoformat(result["at"]) <= datetime.now(timezone.utc))
             except (KeyError, TypeError, ValueError):
                 return False
     return False
@@ -1081,7 +1085,11 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                                      for job in planned["eviction_jobs"]}
                 recheck_outcomes = {job["key"]: _recheck_status(job, idx)
                                     for job in planned["recheck_jobs"]}
-                complete = (returncode == 0 and error is None and catchup.get("ok")
+                # Catch-up includes unrelated conversations. Their failures remain visible
+                # in capture; only selected conversations can block this bounded run.
+                complete = (returncode == 0 and error is None
+                            and all(j.get("ok", True) and not j.get("capture_error")
+                                    for j in planned["scope_jobs"])
                             and not final_reviews["errors"]
                             and all(receipts.values())
                             and all(s["status"] == "complete" for s in scope_outcomes.values())
