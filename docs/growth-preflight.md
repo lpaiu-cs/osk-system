@@ -113,6 +113,7 @@ Codex의 `history_base`는 페이지 경로와 끝 바이트를, `forked_from_id
 `send_message_to_thread`가 전달한 기동 입력은 `native_trigger=thread_message`로 구별한다.
 해당 namespace·도구 이름·현재 turn ID가 일치하고 call ID가 없는 native 전달만 해당한다.
 일반 도구 결과와 다른 턴의 결과는 입력으로 해석하지 않는다. 사용자 발화 수로 세지 않는다.
+이미 사용자 입력이나 재개 문맥이 있던 턴은 기존 codec을 유지해 저장된 raw의 바이트를 바꾸지 않는다.
 
 실패 단계가 없는 구 커서는 오류 문구와 원본 재탐색으로 안내를 보완한다. `basis`는
 `legacy_diagnostic`, `source_lookup`, `source_lookup_failed` 등 판정 근거를 표시한다.

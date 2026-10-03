@@ -175,6 +175,35 @@ class CodexForkTests(unittest.TestCase):
             self.assertEqual([r["id"] for r in refused["rounds"]], ["p1"])
             self.assertTrue(refused["pending_tail"])
 
+    def test_delivered_message_keeps_existing_input_and_resumable_raw_bytes(self):
+        for resume in (False, True):
+            with self.subTest(resume=resume):
+                sid = self.child + ("-resume" if resume else "-input")
+                delivered = event("response_item", type="function_call_output", namespace="codex_app",
+                                  name="ordinary_fixture", output="delivered task",
+                                  internal_chat_message_metadata_passthrough={"turn_id": "c1"})
+                rows = turn(sid, "c1")
+                if resume:
+                    prior = turn(sid, "prior")
+                    prior[-1] = event("event_msg", type="turn_aborted", turn_id="prior")
+                    rows[1] = delivered
+                    rows = prior + rows
+                else:
+                    rows.insert(2, delivered)
+                path = self.page(sid, sid, rows)
+                # In dialogue-v1 the tool result's name is outside the serialized
+                # evidence. This records the original ordinary-result codec.
+                first = it.capture("codex", sid, str(path), "forks")
+                self.assertTrue(first["ok"], first)
+                stored = raw._raw_file(raw.parse_ref(first["pending_refs"][0])[0])
+                before = stored.read_bytes()
+                delivered["payload"]["name"] = "send_message_to_thread"
+                self.page(sid, sid, rows)
+                repeated = it.capture("codex", sid, None, "forks")
+                self.assertTrue(repeated["ok"], repeated)
+                self.assertEqual(repeated["appended"], 0)
+                self.assertEqual(stored.read_bytes(), before)
+
     def test_inherited_raw_change_is_refused_without_appending(self):
         parent, child = self.fork()
         first = it.capture("codex", self.parent, str(parent), "forks")

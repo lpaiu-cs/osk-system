@@ -543,9 +543,12 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
             delivered = (event == "function_call_output" and not p.get("call_id")
                          and p.get("namespace") == "codex_app"
                          and p.get("name") in {"automation_update", "send_message_to_thread"}
-                         and meta.get("turn_id") == turn)
+                         and meta.get("turn_id") == turn
+                         and (p["name"] != "send_message_to_thread" or not users and not resumable))
             if terminal_turns and (goal or delivered):
                 # These are native execution triggers, not new human requests.
+                # Keep the recorded codec for turns that already had input or
+                # resumable context; only the previously uncapturable case grows.
                 trigger = ({"content": _dialogue_content(p.get("content", p.get("output", "")),
                                                         f"codex:{sid}:{turn}:trigger")} if dialogue else {"item": p})
                 kind = ("goal" if goal else "heartbeat" if p["name"] == "automation_update" else "thread_message")
