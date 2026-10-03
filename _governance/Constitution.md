@@ -1,9 +1,9 @@
 ---
 id: 260802-114u-w9vj
 created: 2026-08-02 13:22 (KST)
-updated: 2026-09-24 06:41 (KST)
+updated: 2026-10-04 01:21 (KST)
 author: user
-drafter: user
+drafter: opus-5.5
 summary: "osk-system 최상위 규범 — 노드·비노드와 Space, 참조 위상, 위임, 보호영역, 사건, 개정·이행"
 derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
@@ -67,9 +67,10 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    노드 사이의 locality(주제·활동·시간·출처의 가까움) 신호를 보존한다.
 2. **Scope Space** — 각 scope에서 관측된 비노드 기록을 바탕으로 형성되거나,
    해당 scope의 맥락에 주로 결속되는 기억·지식을 보존한다.
-3. system이 참여한 세션을 가진 scope에는 비노드 보관 구획인 `_raw/`를 둔다.
-   `_raw/`는 노드를 갖지 않으며, 해당 세션의 대화 기록을 전량 포착하여 보존한다.
-4. `_raw/`의 기록은 append-only로만 갱신한다.
+3. system이 참여한 세션을 가진 scope에는 비노드 보관 구획인 `_cited/`를 둔다.
+   `_cited/`는 노드를 갖지 않으며, 해당 세션의 대화 기록을 인용·검증에 필요한
+   범위에서 보존한다.
+4. `_cited/`의 기록은 append-only로만 갱신한다.
 5. **Workbench** — system의 운영 활동(진행 중 작업·공유 지식의 과도기·절차
    대장의 보관)을 경계로 하는 특별한 지위의 scope다. 이 scope는 작업 검색과
    중심성 계산에서 제외된다. 모든 노드는 Workbench scope의 노드를 참조할 수
@@ -176,7 +177,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
      비노드는 직접 참조하지 않는다. scope 사이에 공유되는 지식은 domain 노드로
      증류하여 경유한다.
    - Domain Space와 Person Space의 노드 — 모든 공간의 노드와 비노드를
-     참조할 수 있다. 다만 Domain Space의 노드는 `_raw`의 세션 기록을 직접
+     참조할 수 있다. 다만 Domain Space의 노드는 `_cited/`의 세션 기록을 직접
      참조하지 않는다 — 세션 기록에서 나온 근거는 노드로 증류하여 참조한다.
    - 통치 구획(제3조 6항)의 통치 문서·사료, system 밖의 외부 참조, 공용
      원자료 구획(`_sources/`)의 비노드는 소속의 제한 없이 참조할 수 있다 —
@@ -255,7 +256,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    부분그래프의 규모를 나타낸다. 모든 노드는 실제 의존에 따라 중심성 계산에
    참여하며, Link와 Predicate Edge는 각 관계에 정해진 가중으로 산입한다.
 3. 검색은 다음 세 계약을 구별한다.
-   - **작업 검색** — 모든 Space를 대상으로 하는 연합 검색이다. `_raw/`와
+   - **작업 검색** — 모든 Space를 대상으로 하는 연합 검색이다. `_cited/`와
      Workbench scope는 대상에서 제외한다. locality는 순위 자질이며 검색
      관문이 아니다. 검색은 파일의 현재 상태 — 보호영역에서는 작업본 — 를
      대상으로 하며, 검색 결과로 행동 권한을 추정하지 않는다.
