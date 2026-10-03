@@ -11848,7 +11848,10 @@ GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_integratio
 
 def test_growth_loop_subprocesses():
     for name in GROWTH_SUITES:
-        _suite(f"성장 경로 격리 수트: {name}", name)
+        # The 72-case capture suite exceeds 180s on hosted Windows runners
+        # while still progressing. Keep a finite budget for its durable I/O.
+        timeout = 300 if os.name == "nt" and name == "test_integration.py" else 180
+        _suite(f"성장 경로 격리 수트: {name}", name, timeout=timeout)
 
 
 def test_suite_timeout_is_isolated():
