@@ -5490,7 +5490,8 @@ def test_raw_append():
     check("거부는 파일을 건드리지 않는다", p.read_bytes() == before)
 
     # 손상된 index 열 위에는 이어 쓰지 않는다 (Mechanism §9 6항)
-    bad = ROOT / "00_Scope/WRaw/_raw/corrupt.md"
+    bad = ROOT / "00_Scope/WRaw/_raw/corrupt.md"   # 구판 기록 — 새 기록은 _cited에 선다
+    bad.parent.mkdir(exist_ok=True)
     bad.write_text("## 1\n\n본문\n\n## 1\n\n중복\n", encoding="utf-8")
     r = _w(_append_round, S, "corrupt", "질문", "응답")
     check("중복 index 기록에 이어 쓰지 않는다", r.get("ok") is False, r)
@@ -8585,8 +8586,8 @@ def test_move_topology_refused():
         check("고칠 길을 준다", "remove_edges" in v1 and "names" in v1, v1)
         check("아무것도 옮기지 않았다", (w1 / "regr-mt1.md").is_file())
         r2 = _w(write.move_nodes, ["regr-mt3"], "00_Domain/regr-MD")
-        check("`_raw` 근거를 단 노드는 Domain으로 못 간다",
-              r2.get("ok") is False and "Domain의 _raw" in str(r2)
+        check("인용 기록 근거를 단 노드는 Domain으로 못 간다",
+              r2.get("ok") is False and "Domain의 인용 기록" in str(r2)
               and (w1 / "regr-mt3.md").is_file(), r2)
         r3 = _w(write.move_nodes, ["regr-mt1", "regr-mt2"], "00_Scope/regr-MT")
         check("서로 잇는 노드는 함께 옮기면 된다", r3.get("ok"), r3)

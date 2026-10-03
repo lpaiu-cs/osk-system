@@ -1,7 +1,7 @@
 """osk.graph — 공간 배치·참조 위상·중심성.
 
 구현 근거: Mechanism §1(선언표·`_` 규칙), 헌법 8조(참조 위상·conflicts 예외,
-Domain의 _raw 직접 참조 금지), 헌법 4조 5항(Workbench 예외),
+Domain의 인용 기록 직접 참조 금지), 헌법 4조 5항(Workbench 예외),
 헌법 11조 2항 + 시행령 §7 1항(중심성 산입: 노드 향 Link·derived-from,
 conflicts·비노드 대상·Workbench 비산입).
 """
@@ -904,7 +904,7 @@ def topology_check(idx: Index) -> list[str]:
                             f"(Workbench 계약 4.2)")
                 continue
             if kind[0] == "domain" and tkind[0] == "raw":
-                errs.append(f"Domain의 _raw 직접 참조: {stem} → {name}")
+                errs.append(f"Domain의 인용 기록 직접 참조: {stem} → {name}")
                 continue
             if kind[0] == "scope":
                 ok = (

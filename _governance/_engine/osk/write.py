@@ -624,7 +624,7 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
                 f"권위의 출처로 참조하지 않는다(Workbench 계약 4.2). "
                 f"근거는 그 지식이 나온 곳이다."]
     if kind[0] == "domain" and tkind[0] == "raw":
-        return [f"Domain의 _raw 직접 참조: {stem} → {name}"]
+        return [f"Domain의 인용 기록 직접 참조: {stem} → {name}"]
     if kind[0] == "scope":
         ok = ((tkind[0] == "scope" and tkind[1] == kind[1])
               or (tkind[0] == "raw" and tkind[1] == kind[1])
