@@ -89,6 +89,31 @@ def _capture_recovery(s: dict) -> dict:
     """Advice only; it never relaxes capture identity or acknowledges stored raw."""
     phase = s.get("capture_failure_phase", "unknown")
     if s.get("capture_error"):
+        basis = "recorded_phase" if phase != "unknown" else "legacy_diagnostic"
+        if phase == "unknown":
+            error = s["capture_error"]
+            if any(t in error for t in ("착지", "세션 키", "scope changed", "scope is invalid")):
+                phase = "landing"
+            elif any(t in error for t in ("prefix", "접두부", "저장된 기록보다 짧다")):
+                phase = "replay"
+            elif any(t in error for t in ("identity", "session_meta", "sessionId", "history_base")):
+                phase = "read"
+            elif "FileNotFoundError" in error or "native transcript path unavailable" in error:
+                phase = "source"
+                try:
+                    found = _locate_transcript(s["harness"], s["conversation_id"],
+                                               s.get("capture_path") or s.get("transcript_path"))
+                    available = bool(found and Path(found).is_file())
+                    missing = not found or not Path(found).exists()
+                except (OSError, ValueError):
+                    basis = "source_lookup_failed"
+                else:
+                    basis = "source_lookup"
+                    if available:
+                        return {"state": "retryable", "phase": phase, "basis": basis,
+                                "next_action": "같은 ID의 원본 후보를 찾았다. 현재 엔진으로 capture하여 신원·접두부를 다시 검증한다."}
+                    if missing and not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
+                        phase = "awaiting_native"
         actions = {
             "awaiting_native": "같은 대화의 원본이 생성된 뒤 다시 capture한다.",
             "landing": "기존 대화의 scope를 유지하며 명시적인 세션 키와 착지를 확인한다.",
@@ -97,14 +122,15 @@ def _capture_recovery(s: dict) -> dict:
             "replay": "저장된 raw와 원본 접두부·저장 경로를 확인한다. 기존 좌표나 검토 커서를 초기화하지 않는다.",
         }
         return {"state": "awaiting_input" if phase == "awaiting_native" else "action_required",
-                "phase": phase, "next_action": actions.get(
+                "phase": phase, "basis": basis, "next_action": actions.get(
                     phase, "원본 경로·대화 신원·착지를 확인하고 같은 대화를 다시 capture한다.")}
     if s.get("capture_pending"):
-        return {"state": "pending",
+        return {"state": "pending", "phase": "tail", "basis": "saved_cursor",
                 "next_action": "종료 기록을 확인한 뒤 같은 대화를 다시 capture한다. 열린 꼬리를 완료로 처리하지 않는다."}
     if not (s.get("native_fingerprint") or s["rounds"]):
-        return {"state": "awaiting_input", "next_action": "같은 대화의 원본이 생성된 뒤 다시 capture한다."}
-    return {"state": "ready", "next_action": None}
+        return {"state": "awaiting_input", "phase": "unobserved", "basis": "saved_cursor",
+                "next_action": "같은 대화의 원본이 생성된 뒤 다시 capture한다."}
+    return {"state": "ready", "phase": "complete", "basis": "saved_cursor", "next_action": None}
 
 
 def _view(s: dict) -> dict:
@@ -175,9 +201,10 @@ def note_memory(harness: str, conversation_id: str, digest: str) -> None:
             _save(p, s)
 
 
-def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
+def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None,
+                      codex_v1: dict | None = None, codex_v2: dict | None = None) -> list:
     """Reuse only the caller's copied prefix, with native ID and byte evidence."""
-    if s["harness"] != "claude" or not s["space"]:
+    if s["harness"] not in {"claude", "codex"} or not s["space"]:
         return rounds
     scope = raw._scope_of_space(s["space"])
     path = raw.record_path(scope, s["record"])
@@ -198,6 +225,20 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         if core.sha256_bytes(block.rstrip("\n").encode()) != source["hash"]:
             raise ValueError("inherited raw changed; capture remains pending")
         readable = raw._round_body(block).startswith(raw._DIALOGUE_V1)
+        if s["harness"] == "codex":
+            body = raw._round_body(block)
+            extended = body.startswith(raw._CODEX_V3)
+            native = body.startswith(raw._CODEX_V2 + "\n")
+            selected = ((dialogue_v1 or {}).get(pair["id"]) if readable else pair if extended else
+                        ((codex_v2 if native else codex_v1) or {}).get(pair["id"]))
+            if selected is None:
+                return False
+            expected = raw._block(number, raw.escape_numeric_h2(selected["user"]),
+                                  raw.escape_numeric_h2(selected["agent"]), codex_native=native,
+                                  codex_id=pair["id"] if extended else None,
+                                  dialogue_id=pair["id"] if readable else None)
+            from . import secrets
+            return body == raw._round_body(secrets.filter_text(expected)[0])
         if readable:
             pair = (dialogue_v1 or {})[pair["id"]]
         # A raw owner may have captured another conversation's copied history.
@@ -228,19 +269,21 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
 
     if inherited is None:
         known = {}
-        if rounds and re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
+        if rounds and (s["harness"] == "codex" and rounds[0].get("origin_conversation_id") not in (
+                None, s["conversation_id"]) or s["harness"] == "claude" and
+                re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0])):
             # ponytail: one local-state scan on first capture; index native IDs if this grows costly.
-            probe = state_path("claude", s["conversation_id"])
+            probe = state_path(s["harness"], s["conversation_id"])
             prefix = "-".join(probe.name.split("-")[:3]) + "-"
             for candidate in sorted(probe.parent.glob(prefix + "*.json")):
                 if candidate == probe:
                     continue
                 try:
                     data = json.loads(candidate.read_text(encoding="utf-8"))
-                    if data.get("harness") != "claude" or data.get("root") != s["root"]:
+                    if data.get("harness") != s["harness"] or data.get("root") != s["root"]:
                         continue
-                    owner = _load(candidate, "claude", data["conversation_id"])
-                    if candidate != state_path("claude", owner["conversation_id"]):
+                    owner = _load(candidate, s["harness"], data["conversation_id"])
+                    if candidate != state_path(s["harness"], owner["conversation_id"]):
                         continue
                     owner_scope = owner["space"] or (
                         (SCOPE + '/') + (write.resolve_session(owner["session"]) or ""))
@@ -252,6 +295,8 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
                     continue
         shared = []
         for pair in rounds:
+            if s["harness"] == "codex" and pair.get("origin_conversation_id") in (None, s["conversation_id"]):
+                break
             candidates = known.get(pair["id"], [])
             if not candidates:
                 break
@@ -341,7 +386,8 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             # locks if capture throughput matters. Raw owns the mutation lock.
             with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
                 phase = "replay" if s["space"] else "landing"
-                rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
+                rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"),
+                                           parsed.get("codex_v1"), parsed.get("codex_v2"))
                 if harness == "codex" and parsed.get("codex_v2") is not None and s["space"]:
                     # Old raw coordinates/ACKs are immutable. Newly supported
                     # historical turns append after them, with native IDs in raw.
@@ -727,13 +773,16 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         text += (f"원문에 실패 종료 {st['failed_rounds']}·종료 기록 없이 다음 턴으로 넘어간 부분 기록 "
                  f"{st['interrupted_rounds']}건이 포함된다. 관측 보존이며 작업 성공을 뜻하지 않는다.\n")
     if st["harness"] == "codex":
-        text += ("native_trigger는 goal·heartbeat 또는 실패·중단 뒤 입력 없는 턴이다. 앞 입력은 문맥으로만 "
+        text += ("native_trigger는 goal·heartbeat·다른 대화에서 전달된 메시지 또는 실패·중단 뒤 입력 없는 턴이다. 앞 입력은 문맥으로만 "
                  "보존하며 같은 의도의 재개라고 확정하지 않는다. 새 사용자 발화로 해석하지 말고, "
                  "명시 지시 증류와 자율 성장의 증거를 구분하라. 복구된 과거 턴은 "
                  "기존 좌표 뒤에 추가될 수 있으므로 raw 번호만으로 발생 시각을 추론하지 않는다.\n")
     if st["inherited_rounds"]:
         text += (f"같은 scope에 이미 보존된 과거 {st['inherited_rounds']}라운드는 원래 raw를 참조한다. "
-                 "새 포착·이 대화의 검토 완료로 세지 않는다. 부모의 미검토 대기는 그대로 남는다.\n")
+                  "새 포착·이 대화의 검토 완료로 세지 않는다. 부모의 미검토 대기는 그대로 남는다.\n")
+    if (st.get("coverage") or {}).get("ancestor_pending_tails"):
+        text += ("fork 부모의 선언된 history 범위에 미완료 꼬리가 있다. 자식의 종료로 부모 라운드를 "
+                 "완료하거나 ACK하지 않는다. 부모 원본·검토 대기를 별도로 확인한다.\n")
     if st.get("repair"):
         text += ("이 snapshot은 이미 검토했지만 저장 영수증의 최종 확인이 실패해 복구 대기로 남았다. "
                  "새 대화의 완료 커서는 되감지 않았다. 아래 기존 출처와 영수증을 다시 확인하고 "

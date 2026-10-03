@@ -98,6 +98,34 @@ ACK가 없는 Scope 후보의 순환 선택 결함은 M4에 남는다. 완료 ch
 선택 기회의 공정성은 별개의 기준이다. 인증 충돌에 대한 추가 재시도도 반복 재현 없이
 도입하지 않는다.
 
+## Codex fork와 구 상태의 재평가
+
+Codex의 `history_base`는 페이지 경로와 끝 바이트를, `forked_from_id`는 부모 대화를 선언한다.
+각 페이지의 신원·순환·유일 경로·바이트 경계를 확인한다. 같은 대화의 페이지는 이어 읽되,
+부모와 자식의 턴은 따로 판독한다. 자식 이벤트로 부모의 미완료 턴을 끝내지 않는다.
+부모 범위의 미완료 꼬리는 `coverage.ancestor_pending_tails`와 검토 안내에 남긴다.
+
+같은 Scope에 부모 라운드가 이미 저장됐다면 native ID·기존 raw 해시·기록된 codec의 본문을
+대조해 `inherited`로 참조한다. 자식 파일의 `codex-inherited-v1` 헤더는 커서 유실 뒤에도
+이 관계를 유지한다. 부모의 ACK·미검토 대기는 그대로 두며, 다른 Scope의 raw는 재사용하지 않는다.
+원본 부모 라운드가 저장된 적 없다면 검증된 history의 완료 라운드를 자식 raw에 보존한다.
+
+`send_message_to_thread`가 전달한 기동 입력은 `native_trigger=thread_message`로 구별한다.
+해당 namespace·도구 이름·현재 turn ID가 일치하고 call ID가 없는 native 전달만 해당한다.
+일반 도구 결과와 다른 턴의 결과는 입력으로 해석하지 않는다. 사용자 발화 수로 세지 않는다.
+
+실패 단계가 없는 구 커서는 오류 문구와 원본 재탐색으로 안내를 보완한다. `basis`는
+`legacy_diagnostic`, `source_lookup`, `source_lookup_failed` 등 판정 근거를 표시한다.
+원본 후보를 발견한 `retryable`도 복구 완료가 아니다. 입력·라운드·지문이 모두 비어 있어도
+실제 원본이 존재할 수 있으므로 세 필드만으로 `awaiting_input`을 판정하지 않는다.
+`growth status`는 대기 상태와 실패 단계의 분포를 읽으며, 조회로 capture·ACK를 수행하지 않는다.
+
+`tests/test_codex_forks.py`는 페이지를 포함한 fork, 부모 raw·ACK·미검토 대기 보존,
+커서 유실 재생, Scope 경계, 잘못된 부모·턴, 열린 부모 꼬리, 전달된 기동 메시지와 구 상태를
+독립된 임시 vault에서 검증한다. 실제 복제본의 결과와 남은 조치는
+[M2의 후속 복제본 재생](v4.2-milestones.md)에 기록한다.
+운영 인스턴스 적용과 모델의 검토·보존은 이 시험에 포함하지 않는다.
+
 ## 검증 결과
 
 정식 `tests/test_regression.py` 수트는 **1567 통과 / 실패 0 / Windows 권한 검사 생략 4**다.

@@ -34,6 +34,14 @@ POSIX에서는 `PYTHONPATH=_governance/_engine .venv/bin/python -B -m osk.cli gr
 기존 커서를 읽은 값이므로 이번 보고서가 새 복구 작업을 등록하지 않는다. 새로 발견한 영수증 불일치는
 `preservation`에 따로 나타난다.
 
+`integration.capture_recovery_states`는 포착 대기·오류 대화의 안내 상태를,
+`capture_failure_phases`는 오류 대화의 실패 단계를 집계한다. 각 `items[].capture_recovery`에
+같은 분류·판정 근거(`basis`)·다음 행동을 싣는다. 단계가 없는 구 오류는 저장된 오류 문구로
+추정하며, 원본 부재 오류만 같은 ID의 파일을 재탐색한다. 내용 파싱·포착·상태 쓰기는 하지 않는다.
+원본 후보가 있는 `retryable`은 신원·접두부를 검증할 다음 capture가 필요하다. 입력·라운드·지문이
+모두 비어 있고 재탐색에서도 파일이 없을 때만 입력 미관측으로 분류한다. `pending`은 저장된 꼬리
+상태이며 새 엔진으로 재판독해도 열린 꼬리라는 증거가 아니다. 알 수 없는 오류는 `unknown`으로 남긴다.
+
 `native_exit_zero`는 모델 프로세스가 0으로 종료된 실행 수다. `recorded_nonempty_complete`는
 과거 실행이 빈 선택 없이 완료로 기록된 수다. 당시 결과를 소급 정정하거나 지금도 유효하다고 인증하는 값은
 아니다. 현재 영수증 검증 결과와 별도로 읽는다. 같은 본문이 남아 있어도 허브 연결이 사라졌으면
