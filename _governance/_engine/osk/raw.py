@@ -215,6 +215,7 @@ _CODEX_V2 = "<!-- osk-capture: codex-user-items-v2 -->"
 _CODEX_V3 = "<!-- osk-capture: codex-terminal-v3 "
 _DIALOGUE_V1 = "<!-- osk-capture: dialogue-v1 "
 _CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
+_CODEX_PREFIX = "<!-- osk-capture: codex-inherited-v1 "
 
 
 def storage_error(path: str, text: str) -> str | None:
@@ -248,13 +249,14 @@ def inherited_prefix(path: Path) -> dict | None:
         return None
     with path.open("r", encoding="utf-8") as f:
         line = f.readline().rstrip("\n")
-    if not line.startswith(_CLAUDE_PREFIX):
+    prefix = next((s for s in (_CLAUDE_PREFIX, _CODEX_PREFIX) if line.startswith(s)), None)
+    if prefix is None:
         return None
     if not line.endswith(" -->"):
-        raise write.WriteError("damaged Claude inheritance header")
-    value = json.loads(line[len(_CLAUDE_PREFIX):-4])
+        raise write.WriteError("damaged capture inheritance header")
+    value = json.loads(line[len(prefix):-4])
     if not isinstance(value, dict) or not isinstance(value.get("rounds"), list):
-        raise write.WriteError("damaged Claude inheritance manifest")
+        raise write.WriteError("damaged capture inheritance manifest")
     return value
 
 
@@ -344,8 +346,8 @@ def append_rounds(session: str, record: str, pairs: list,
         raise ValueError("dialogue capture requires prefix replay")
     if codex_v2 is not None and codex_v1 is None:
         raise ValueError("Codex v3 capture requires both historical codecs")
-    if inherited is not None and (not replay_prefix or codex_v1 is not None):
-        raise ValueError("inherited prefixes require Claude capture replay")
+    if inherited is not None and not replay_prefix:
+        raise ValueError("inherited prefixes require capture replay")
     if not pairs:
         raise write.WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
     norm = []
@@ -385,9 +387,10 @@ def append_rounds(session: str, record: str, pairs: list,
         p = record_path(dest, record)
         prior = read_exact(p) if p.exists() else ""
         if prior and inherited_prefix(p) != inherited:
-            raise write.WriteError("Claude inheritance manifest changed; raw was not altered")
+            raise write.WriteError("capture inheritance manifest changed; raw was not altered")
         if not prior and inherited is not None:
-            prior = _CLAUDE_PREFIX + json.dumps(inherited, ensure_ascii=False, sort_keys=True) + " -->\n\n"
+            marker = _CODEX_PREFIX if codex_v1 is not None else _CLAUDE_PREFIX
+            prior = marker + json.dumps(inherited, ensure_ascii=False, sort_keys=True) + " -->\n\n"
         first = _next_index(prior)
         spans = _round_spans(prior)
         # Capture adapters resend the complete completed-round sequence. Compare

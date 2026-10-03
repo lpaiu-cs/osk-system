@@ -62,6 +62,25 @@ class GrowthStatusTests(unittest.TestCase):
                  'semantic_growth':'not_measured','downstream_reuse':'not_measured','autonomy':'not_inferred'}
         ''')
 
+    def test_legacy_capture_reasons_are_counted_without_repair_or_reclassification_writes(self):
+        self.check_case('''
+            cursor('empty',capture_pending=True,capture_error='ValueError: native transcript path unavailable')
+            cursor('landing',capture_pending=True,capture_error='WriteError: 착지 미정')
+            cursor('fork',capture_pending=True,capture_error='ValueError: Codex history identity mismatch')
+            cursor('prefix',capture_pending=True,capture_error='ValueError: native round identity prefix changed')
+            cursor('tail',capture_pending=True)
+            before=files()
+            with patch.object(integration,'_locate_transcript',return_value=None), \\
+                 patch.object(integration,'_save',side_effect=AssertionError('report must not save')):
+                result=report()
+            assert result['ok'],result
+            counts=result['integration']
+            assert counts['capture_failure_phases']=={'awaiting_native':1,'landing':1,'read':1,'replay':1},counts
+            assert counts['capture_recovery_states']=={'awaiting_input':1,'action_required':3,'pending':1},counts
+            assert files()==before
+            assert all(i['capture_recovery']['next_action'] for i in counts['items'])
+        ''')
+
     def test_recorded_exit_success_empty_selection_and_dispositions_are_distinct(self):
         self.check_case('''
             rows=[]
