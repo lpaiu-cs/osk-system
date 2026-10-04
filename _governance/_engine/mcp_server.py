@@ -179,8 +179,8 @@ def _guard(fn, *a, **kw) -> dict:
 
 @mcp.tool()
 def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8) -> list[dict]:
-    """`query`로 전 Space 어휘 검색(인용 기록·Workbench 제외). 결과 `title`이 다른 도구의
-    `name`. `summary`는 미리보기이며 인용·판단 전에 `read_node`로 확인한다."""
+    """query로 전 Space 어휘 검색(인용 기록·Workbench 제외). 결과 title이 다른 도구의
+    name. summary는 미리보기이며 인용·판단 전에 read_node로 확인한다."""
     return _s().view_search(query, k)
 
 
@@ -303,9 +303,11 @@ def _node_view(body: str, view: str) -> dict:
 def read_cited(ref: str | None = None, space: str | None = None,
                max_chars: Annotated[int, Field(ge=200, le=100000)] = 6000,
                view: Literal["review", "full"] = "review", query: str | None = None) -> dict:
-    """인용 기록 회상: ref=경로#N, 번호 없으면 목차, space=기록 목록.
-    기본 review: 발화·답변 선별 ≤6000자. query=원본 AND 검색, full=포렌식.
-    생략≠무가치. 전량 이어읽지 않는다. hash는 원본 출처."""
+    """인용 기록 회상: ref=경로#N(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의
+    그 턴만, previous=앞 턴), space=기록 목록. 기본 review: 발화·답변 선별 ≤6000자,
+    query=원본 AND 검색, full=포렌식. 생략≠무가치. 전량 이어읽기 금지. hash=원본 출처."""
+    if ref and raw.is_native(ref):
+        return _guard(lambda: {"ok": True, **integration.read_turns([ref], max_chars, view, query)["turns"][0]})
     if ref:
         return _guard(raw.read_round, ref, max_chars, view, query)
     if space:
@@ -470,9 +472,9 @@ def record_candidate(type: CandidateType,
 @mcp.tool()
 def cite_round(conversation: str, quote: str | None = None, turn: str | None = None,
                note: str | None = None, user: str | None = None) -> dict:
-    """근거가 필요한 원본 턴 하나를 남긴다. `conversation`=훅이 준 `<하네스>/<대화 ID>`.
-    `quote`(사용자 발화 일부)·`turn`(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
-    전문을 보내지 않는다. `note`=요지, `user`=원본이 없을 때만. 같은 턴은 같은 `round_ref`."""
+    """근거로 쓸 원본 턴 하나를 남긴다. conversation=훅이 준 <하네스>/<대화 ID>.
+    quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
+    전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref."""
     return _guard(integration.cite, conversation, quote, turn, note, user=user)
 
 

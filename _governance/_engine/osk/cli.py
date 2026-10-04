@@ -117,8 +117,6 @@ def _integration_cmd(a) -> None:
                                          a.transcript, a.session, a.space)
         elif a.integration_cmd == "prompt":
             result = integration.prompt(a.harness, a.conversation)
-        elif a.integration_cmd == "read":
-            result = integration.read_turns(a.ref, a.max_chars, a.view, a.query)
         elif a.integration_cmd == "review":
             data = _raw_stdin()
             if not isinstance(data, dict):
@@ -326,12 +324,6 @@ def build_parser() -> argparse.ArgumentParser:
             q.add_argument("--transcript", required=True)
             q.add_argument("--session", required=True, help="고정 scope 라우팅 키")
             q.add_argument("--space", default=None)
-    q = ins.add_parser("read", help="끝난 대화의 미검토 턴만 이 기기의 원본 전사에서 읽는다(쓰기 없음)")
-    q.add_argument("--ref", action="append", required=True,
-                   help="원본 턴 native:<하네스>:<대화 ID>:<턴 ID> — 여럿이면 반복한다")
-    q.add_argument("--max-chars", type=int, default=6000)
-    q.add_argument("--view", choices=("review", "full"), default="review")
-    q.add_argument("--query", default=None)
 
     p = sub.add_parser("organization", help="Scope 참조·허브 정돈의 선택과 검증")
     osub = p.add_subparsers(dest="organization_cmd", required=True)

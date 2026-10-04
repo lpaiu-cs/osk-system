@@ -1791,7 +1791,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 self.assertEqual((ROOT / cited["path"]).read_bytes(), saved)
 
     def test_batch_reads_only_the_unreviewed_turns_of_an_ended_conversation(self):
-        from osk import cli
+        import mcp_server
         # Inventory only this test's conversations.
         state_path_for = it.state_path
         state_dir = Path(TMP.name) / self.sid
@@ -1821,7 +1821,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual(set(jobs), {sid})
         job = jobs[sid]
         self.assertEqual(job["pending_refs"], [raw.native_ref("claude", sid, f"user-{n}") for n in (3, 4, 5)])
-        self.assertIn(job["read_command"], job["prompt"])
+        # A sandboxed worker reads them through MCP, not the CLI.
+        self.assertIn("read_cited(ref=", job["prompt"])
+        self.assertNotIn("read_command", job)
         read = it.read_turns(job["pending_refs"])["turns"]
         self.assertEqual([t["position"] for t in read], [3, 4, 5])
         self.assertTrue(all(f"question {t['position']}" in t["text"] for t in read), read)
@@ -1830,11 +1832,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         # Earlier context only on demand, one turn back at a time.
         [back] = it.read_turns([read[0]["previous"]])["turns"]
         self.assertEqual((back["position"], back["previous"]), (2, raw.native_ref("claude", sid, "user-1")))
-        out = {}
-        with mock.patch.object(cli, "_emit", out.update):
-            cli.main(["integration", "read", "--ref", job["pending_refs"][0], "--view", "full"])
-        self.assertEqual(out["turns"][0]["position"], 3)
-        self.assertIn("answer 3", out["turns"][0]["text"])
+        out = mcp_server.read_cited(job["pending_refs"][0], view="full")
+        self.assertEqual((out["ok"], out["position"]), (True, 3), out)
+        self.assertIn("answer 3", out["text"])
         with self.assertRaisesRegex(ValueError, "not a completed turn"):
             it.read_turns([raw.native_ref("claude", sid, "user-9")])
         done = it.acknowledge("claude", sid, job["through"], "no_value", "ended fixture turns")

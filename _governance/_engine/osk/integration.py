@@ -854,13 +854,12 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  "대화 내용을 새로 판단하지 않는다.\n")
     elif turns and offline:
         # The conversation ended before its own review: read only these turns from this
-        # device's transcript, earlier context only on demand (Mechanism §9-4 3항).
-        st["read_command"] = core.cli_command("integration", "read", *[
-            arg for ref in st["pending_refs"] if raw.is_native(ref) for arg in ("--ref", ref)])
-        text += (f"원본 턴 {turns}개는 검토 시점 전에 끝난 대화의 미검토 턴이다. 이 기기의 원본 전사에서 "
-                 f"그 턴만 읽는다:\n{st['read_command']}\n"
+        # device's transcript, earlier context only on demand (Mechanism §9-4 3항). MCP
+        # reads them; a sandboxed worker cannot run the CLI.
+        text += (f"원본 턴 {turns}개는 검토 시점 전에 끝난 대화의 미검토 턴이다. 각 턴을 "
+                 "read_cited(ref=<그 원본 턴>)로 이 기기의 원본 전사에서 그 턴만 읽는다. "
                  "턴마다 선별본(≤6000자)과 바로 앞 턴의 `previous`가 온다. 앞선 맥락은 판단에 꼭 필요할 때만 "
-                 "`--ref <previous>`로 한 턴씩 거슬러 읽고, 대화 전체를 읽지 않는다. 노드로 옮길 지식이 나온 턴만 "
+                 "`previous`로 한 턴씩 거슬러 읽고, 대화 전체를 읽지 않는다. 노드로 옮길 지식이 나온 턴만 "
                  f"cite_round(conversation=\"{harness}/{conversation_id}\", turn=<턴 ID>)로 인용하고, 받은 "
                  "round_ref를 distill.sources로 써 출처와 허브 Link를 완성한다.\n")
     elif turns:
