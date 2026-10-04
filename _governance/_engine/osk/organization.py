@@ -152,9 +152,12 @@ def snapshot(scope: str, idx=None) -> dict:
         data = path.read_bytes()
         node = contract.parse_bytes(path, data)
         parsed[path] = node
-        units.extend(_units(node))
+        digest = core.sha256_bytes(data)
+        # read_node(view=...)가 이 바이트에서 돌려줄 view_hash다. unit 속 sha256은 구간
+        # 내용 키라 view_hash와 같을 수 없다 — 작업자가 그것과 비교해 결정을 버렸다(10-04).
+        units.extend({**u, "expect_view_hash": "view:" + digest} for u in _units(node))
         nodes.append({"id": node.id, "name": name, "path": core.posix_rel(path, core.ROOT),
-                      "hash": core.sha256_bytes(data), "summary": str(node.meta.get("summary", "")),
+                      "hash": digest, "summary": str(node.meta.get("summary", "")),
                       "hub": graph.is_hub(path), "has_body": bool(write._norm_body(node.body)),
                       "body_chars": len(node.body), **write.size_feedback(path, node.body)})
         references.extend(graph.reference_review(node, idx))
@@ -366,7 +369,8 @@ def guidance() -> str:
     """The whole rule text — growth prompts and `plan` carry it; hooks carry `HOOK_GUIDANCE`."""
     return ("저장 완료와 참조·조직 완료는 다르다. 아래 선택된 군집의 요약·크기·참조 목록을 먼저 보고 "
             "이번 작업의 판정 대상은 review_units의 최대 3개 구간(각 4000자 이하)이다. read_node(name=id, view=view)로 읽는다. "
-            "반환된 view_hash가 선택 노드의 'view:'+hash와 다르면 새 plan에서 범위를 확인한 뒤 읽는다. "
+            "반환된 view_hash가 그 구간의 expect_view_hash와 다르면 새 plan에서 범위를 확인한 뒤 읽는다"
+            "(unit 속 sha256은 구간 내용 키라 비교 대상이 아니다). "
             "이는 군집 전체의 검토가 아니다. 조건이나 출처가 구간 밖이면 필요한 근거 구간만 표적 조회한다. "
             "이전 deferred의 질문과 필요한 근거부터 이어서 확인한다. 예산 안에 판단하지 못하면 checked에 넣지 말고 "
             "필요한 절과 질문을 deferred에 남긴다. 긴 본문 전문을 반복해서 읽지 않는다. "
@@ -406,8 +410,9 @@ def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
 HOOK_GUIDANCE = (
     "저장 완료와 참조·조직 완료는 다르다. 이번 대상은 아래 review_units의 구간뿐이다(군집 전체가 아니다). "
     "`read_node(name=id, view=view)`로 읽고 주장·적용 조건이 현행과 맞는지 판정한다. 돌려받은 view_hash가 "
-    "그 노드의 'view:'+hash(아래 nodes)와 다르면 선택 뒤 본문이 바뀐 것이니 새 plan으로 범위를 다시 확인한 뒤 "
-    "읽는다. previous_deferral.snapshot_changed가 참이면 이전 판단을 이어받지 말고 "
+    "그 구간의 expect_view_hash와 다르면(unit 속 sha256은 구간 내용 키라 비교하지 않는다) 선택 뒤 본문이 "
+    "바뀐 것이니 새 plan으로 범위를 다시 확인한 뒤 읽는다. "
+    "previous_deferral.snapshot_changed가 참이면 이전 판단을 이어받지 말고 "
     "현행을 확인한다. 틀린 곳은 그 자리에서 고치되 정정 전후의 판단과 출처를 보존하고, 고친 구간은 다음 "
     "검토로 넘긴다. 판단하지 못한 내용은 지우거나 완료라 하지 않는다. pin·보호영역·최상위 경계를 유지하고 "
     "원료를 노드·허브로 승격하지 않는다. 제출 전에 접두부 + `plan --scope <scope> --preview`로 최신 "
@@ -424,13 +429,10 @@ _LIST_CAP = 10
 def hook_readout(job: dict) -> dict:
     """훅에 싣는 계획 — 판정이 결속되는 값과 채워진 목록만, 필드 이름은 `plan`과 같다."""
     out = {k: job[k] for k in ("scope", "key", "snapshot", "coverage") if k in job}
-    out["review_units"] = [{k: u[k] for k in ("unit", "id", "name", "view", "chars") if k in u}
-                           for u in job.get("review_units", [])]
-    # 구간의 view는 선택 당시 파일의 위치다. read_node의 view_hash('view:'+파일 해시)와 맞춰 볼
-    # 선택 노드의 해시는 남긴다 — 없으면 다른 세션의 삽입으로 밀린 구간을 읽고도 제출이 통과한다.
-    hashes = {n["id"]: n["hash"] for n in job.get("nodes", [])}
-    selected = dict.fromkeys(u["id"] for u in job.get("review_units", []) if u["id"] in hashes)
-    out["nodes"] = [{"id": i, "hash": hashes[i]} for i in selected]
+    # 구간의 view는 선택 당시 파일의 위치다. read_node의 view_hash와 맞춰 볼 expect_view_hash는
+    # 남긴다 — 없으면 다른 세션의 삽입으로 밀린 구간을 읽고도 제출이 통과한다.
+    out["review_units"] = [{k: u[k] for k in ("unit", "id", "name", "view", "chars", "expect_view_hash")
+                            if k in u} for u in job.get("review_units", [])]
     prior = job.get("previous_deferral")
     if prior:
         out["previous_deferral"] = {k: prior[k] for k in ("snapshot_changed", "at", "reason") if k in prior}

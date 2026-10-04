@@ -164,16 +164,14 @@ class OrganizationTests(unittest.TestCase):
             write.update_node('D', old_text='Reusable evidence', new_text='Revised evidence')
             job = organization.plan('W1')
             short = organization.hook_readout(job)
-            assert 'review_command' not in short and 'clusters' not in short, short
-            # Only the selected nodes' file hashes stay, under the plan's own field names.
+            assert not {'review_command', 'clusters', 'nodes'} & set(short), short
+            # The selected units stay whole, under the plan's own field names; each carries its
+            # node's file hash as the view_hash to expect, so the node inventory is not needed.
+            assert short['review_units'] == job['review_units'], short['review_units']
             full = {n['id']: n['hash'] for n in job['nodes']}
-            picked = list(dict.fromkeys(u['id'] for u in job['review_units']))
-            assert short['nodes'] == [{'id': i, 'hash': full[i]} for i in picked], short['nodes']
-            assert len(picked) < len(job['nodes'])
+            assert all(u['expect_view_hash'] == 'view:' + full[u['id']] for u in short['review_units'])
             prior = short['previous_deferral']
             assert prior['snapshot_changed'] and prior['reason'].endswith('section Limits.'), prior
-            assert [u['unit'] for u in short['review_units']] == [u['unit'] for u in job['review_units']]
-            assert all(set(u) <= {'unit', 'id', 'name', 'view', 'chars'} for u in short['review_units'])
             text = organization.hook_prompt([job])
             assert text.startswith('[osk 참조·조직 검토 — scope W1') and organization.HOOK_GUIDANCE in text
             assert json.loads(text.rsplit(chr(10), 1)[1]) == [short]
@@ -187,16 +185,36 @@ class OrganizationTests(unittest.TestCase):
             cli._emit = got.update
             cli.main(['organization', 'plan', '--scope', 'W1', '--preview'])
             assert got['guidance'] == organization.guidance() and got['key'] == job['key'], got.keys()
-            # The kept hash is what read_node's view_hash is checked against: a section inserted
+            assert got['review_units'] == job['review_units'], got['review_units']  # the field guidance names
+            # expect_view_hash is what read_node's view_hash is checked against: a section inserted
             # after selection shifts the selected views, and the mismatch shows it.
             import mcp_server as M
             unit = short['review_units'][0]
-            expected = 'view:' + next(n['hash'] for n in short['nodes'] if n['id'] == unit['id'])
+            expected = unit['expect_view_hash']
             assert M.read_node(name=unit['id'], view=unit['view'])['view_hash'] == expected
             current = M.read_node(name=unit['id'])
             inserted = '## Inserted' + chr(10) * 2 + 'New section' + chr(10) * 2 + current['body']
             assert write.update_node(current['name'], body=inserted, expect_hash=current['hash'])['ok']
             assert M.read_node(name=unit['id'], view=unit['view'])['view_hash'] != expected
+        """)
+
+    def test_each_review_unit_carries_the_view_hash_read_node_returns(self):
+        self.case("""
+            # A growth worker compared the sha256 inside each unit with view_hash; that key covers
+            # the range content, never the file, so every reviewed range was deferred (2026-10-04).
+            import mcp_server as M
+            node('Large', (chr(10) * 2).join('## Claim ' + str(i) + chr(10) + ('bounded evidence ' + str(i) + ' ') * 170
+                                             for i in range(2)))
+            node('Small')
+            job = organization.plan('W1')
+            units = organization.readout([job])[0]['review_units']
+            assert len(units) == 3 and len({u['id'] for u in units}) == 2, units  # one node, two ranges
+            for u in units:
+                got = M.read_node(name=u['id'], view=u['view'])['view_hash']
+                assert u['expect_view_hash'] == got, (u, got)
+                assert u['unit'].split(':')[2] not in got, u
+            assert organization.hook_readout(job)['review_units'] == units
+            assert all('expect_view_hash' in text for text in (organization.guidance(), organization.HOOK_GUIDANCE))
         """)
 
     def test_large_body_advice_is_non_destructive_and_present_in_inventory(self):
