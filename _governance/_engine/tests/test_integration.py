@@ -874,6 +874,68 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len(job2["pending_refs"]), 1)
         self.assertNotEqual(job["through"], job2["through"])
 
+    def test_changed_original_turn_never_closes_its_old_snapshot(self):
+        rows = claude_round(self.sid, 1) + claude_round(self.sid, 2)
+        second = len(claude_round(self.sid, 1))
+        self.transcript(rows)
+        first = self.capture()
+        ref = raw.native_ref("claude", self.sid, "user-2")
+        # The same turn ID now carries other words.
+        rows[second]["message"]["content"] = "question 2, for every project"
+        self.transcript(rows)
+        [seen] = it.read_turns([ref])["turns"]
+        self.assertTrue(seen["changed"], seen)
+        with self.assertRaisesRegex(ValueError, "changed after this snapshot"):
+            it.acknowledge("claude", self.sid, first["through"], "no_value", "judged the old words")
+        again = self.capture()
+        self.assertEqual((again["ok"], again["appended"], again["changed"]), (True, 0, 1))
+        self.assertNotEqual(again["through"], first["through"])
+        [seen] = it.read_turns([ref])["turns"]
+        self.assertNotIn("changed", seen)
+        self.assertTrue(seen["hash"])
+        with self.assertRaisesRegex(ValueError, "not an unreviewed snapshot"):
+            it.acknowledge("claude", self.sid, first["through"], "no_value", "judged the old words")
+        done = it.acknowledge("claude", self.sid, again["through"], "no_value", "judged the current words")
+        self.assertEqual((done["reviewed_rounds"], done["pending"]), (2, False))
+        # A reviewed turn keeps the version its review judged.
+        rows[second]["message"]["content"] = "question 2, changed after its review"
+        self.transcript(rows)
+        later = self.capture()
+        self.assertEqual((later["ok"], later["changed"], later["reviewed_rounds"], later["pending"]),
+                         (True, 0, 2, False))
+        # Without the transcript an original turn cannot be closed; a deferral closes nothing.
+        self.transcript(rows + claude_round(self.sid, 3))
+        third = self.capture()
+        self.path.unlink()
+        with self.assertRaisesRegex(ValueError, "not on this device"):
+            it.acknowledge("claude", self.sid, third["through"], "no_value", "unread")
+        it.acknowledge("claude", self.sid, third["through"], "deferred", "the transcript is away")
+
+    def test_recited_turn_reports_the_stored_record_and_what_it_sees_now(self):
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2, finished=False))
+        self.capture()
+        first = it.cite(f"claude/{self.sid}", turn="user-2")
+        self.assertIsNone(first["agent_sha256"])  # the open turn has no reply yet
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
+        again = it.cite(f"claude/{self.sid}", turn="user-2", note="a later gist")
+        self.assertEqual((again["reused"], again["round_ref"]), (True, first["round_ref"]))
+        # The record is append-only: the answer reports what it holds, this read apart.
+        self.assertIsNone(again["agent_sha256"])
+        self.assertTrue(again["observed"]["agent_sha256"])
+        self.assertFalse(again["note_saved"])
+        _, header = raw.find_cited(ROOT / again["path"], raw.native_ref("claude", self.sid, "user-2"))
+        self.assertIsNone(header["agent_sha256"])
+        # Words the caller supplied while the transcript was away stay the caller's.
+        away = self.path.with_suffix(".away")
+        self.path.rename(away)
+        kept = it.cite(f"claude/{self.sid}", user="question 1", turn="user-1")
+        self.assertEqual(kept["user_by"], "caller")
+        away.rename(self.path)
+        back = it.cite(f"claude/{self.sid}", turn="user-1")
+        self.assertEqual((back["reused"], back["user_by"]), (True, "caller"))
+        self.assertEqual(back["observed"]["user_by"], "engine")
+        self.assertNotIn("note_saved", back)
+
 
     def test_review_manifests_are_bounded_and_find_root_specific_states(self):
         self.transcript([r for n in range(1, 19) for r in claude_round(self.sid, n)])

@@ -386,13 +386,28 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                     # Tracking writes nothing, but citing a turn needs its landing (Mechanism §9 9항).
                     raise write.WriteError("착지 미정 — 추적하지 않았다. 결속된 세션 키 또는 명시 space로 capture한다")
                 # Existing snapshots bind the saved entries: keep them, add the new turns.
+                # An unreviewed original turn whose words changed under its ID is tracked
+                # as it reads now, and snapshots taken before the change are dropped: no
+                # review closes words the reviewer did not see. A reviewed turn keeps the
+                # version its review judged.
                 prior = {r["id"]: r for r in s["rounds"]}
-                s["rounds"] = [prior.get(r["id"]) or {
-                    "id": r["id"], "ref": raw.native_ref(harness, conversation_id, turn_key(harness, r["id"])),
-                    "completion": r["completion"], "hash": _turn_hashes(r, parsed.get("dialogue_v1"))[0]}
-                    for r in rounds]
+                tracked, changed = [], []
+                for i, r in enumerate(rounds):
+                    hashes = _turn_hashes(r, parsed.get("dialogue_v1"))
+                    entry = prior.get(r["id"])
+                    if (entry and raw.is_native(entry["ref"]) and entry["hash"] not in hashes
+                            and i >= s["reviewed_count"]):
+                        entry = {**entry, "hash": hashes[0]}
+                        changed.append(i)
+                    tracked.append(entry or {
+                        "id": r["id"], "ref": raw.native_ref(harness, conversation_id, turn_key(harness, r["id"])),
+                        "completion": r["completion"], "hash": hashes[0]})
+                s["rounds"] = tracked
+                if changed:
+                    s["snapshots"] = {t: v for t, v in s["snapshots"].items()
+                                      if v.get("repair_refs") or v["count"] <= changed[0]}
                 appended = len(s["rounds"]) - len(prior)
-                if appended:
+                if appended or changed:
                     token = _snapshot(s)
                     s["snapshots"].setdefault(token, {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
                 s["capture_pending"] = parsed["pending_tail"]
@@ -406,7 +421,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                     s["capture_failure_phase"] = "read"
                 s["native_fingerprint"] = parsed["native_fingerprint"]
                 _save(p, s)
-                return {**_current_view(s, p), "appended": appended}
+                return {**_current_view(s, p), "appended": appended, "changed": len(changed)}
         except Exception as exc:
             if isinstance(exc, FileNotFoundError) and phase in {"source", "read"}:
                 phase = ("source" if s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")
@@ -450,6 +465,21 @@ def _verify_raw(rounds: list) -> None:
             raise ValueError("raw snapshot changed; review is not acknowledged")
 
 
+def _verify_native(s: dict, rounds: list) -> None:
+    """An original turn has no vault copy: this device's transcript must still hold the
+    words the snapshot tracked, or the review would close what its reviewer did not read."""
+    native = [r for r in rounds if raw.is_native(r["ref"])]
+    if not native:
+        return
+    source = _locate_transcript(s["harness"], s["conversation_id"], s.get("capture_path") or s["transcript_path"])
+    if not (source and Path(source).is_file()):
+        raise ValueError("the original transcript is not on this device; review is not acknowledged")
+    parsed = transcripts.read(source, s["harness"], s["conversation_id"])
+    current = {r["id"]: _turn_hashes(r, parsed.get("dialogue_v1")) for r in parsed["rounds"]}
+    if any(r["hash"] not in current.get(r["id"], []) for r in native):
+        raise ValueError("an original turn changed after this snapshot; capture again and review the current one")
+
+
 def acknowledge(harness: str, conversation_id: str, through: str,
                 outcome: str, reason: str, targets: list | None = None) -> dict:
     if outcome not in ("preserved", "summary", "no_value", "deferred") or not isinstance(reason, str) or not reason.strip():
@@ -465,6 +495,9 @@ def acknowledge(harness: str, conversation_id: str, through: str,
         refs = set(repair["refs"]) if repair else {
             r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]}
         _verify_raw([r for r in s["rounds"] if r["ref"] in refs])
+        if not repair and outcome != "deferred":
+            # A repair rechecks receipts only; a deferral closes nothing.
+            _verify_native(s, [r for r in s["rounds"] if r["ref"] in refs])
         receipts = []
         if outcome == "preserved":
             from . import distillation
@@ -948,10 +981,20 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
             "agent_sha256": core.sha256_bytes(agent.encode("utf-8")) if agent else None, "user_by": by}
     result = raw.append_rounds(session, s["record"], [{"user": words, "agent": (note or "").strip()}],
                                space or s["space"], cited=meta)
-    return {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
-            "index": result["indices"][0], "turn": rid, "reused": result.get("reused", False),
-            "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
-            **({"binding": result["binding"]} if "binding" in result else {})}
+    out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
+           "index": result["indices"][0], "turn": rid, "reused": result.get("reused", False),
+           "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
+           **({"binding": result["binding"]} if "binding" in result else {})}
+    if out["reused"]:
+        # The record is append-only: report what it holds, and what this read saw apart.
+        kept = result["cited"]
+        out.update(user_by=kept.get("user_by"), agent_sha256=kept.get("agent_sha256"))
+        seen = {k: v for k, v in (("user_by", by), ("agent_sha256", meta["agent_sha256"])) if kept.get(k) != v}
+        if seen:
+            out["observed"] = seen
+        if (note or "").strip():
+            out["note_saved"] = False
+    return out
 
 
 def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
@@ -977,16 +1020,21 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
                 raise ValueError(f"the transcript of {harness}/{sid} is not on this device")
             parsed = transcripts.read(source, harness, sid)
             shown = parsed.get("dialogue_v1") or {}
-            conversations[harness, sid] = [(turn_key(harness, r["id"]), shown.get(r["id"], r))
-                                           for r in parsed["rounds"]]
-        turns = conversations[harness, sid]
-        at = next((i for i, (key, _) in enumerate(turns) if key == turn), None)
+            tracked = {turn_key(harness, r["id"]): r["hash"] for r in s["rounds"] if raw.is_native(r["ref"])}
+            conversations[harness, sid] = tracked, [
+                (turn_key(harness, r["id"]), shown.get(r["id"], r), _turn_hashes(r, parsed.get("dialogue_v1")))
+                for r in parsed["rounds"]]
+        tracked, turns = conversations[harness, sid]
+        at = next((i for i, (key, _, _) in enumerate(turns) if key == turn), None)
         if at is None:
             raise ValueError(f"{turn} is not a completed turn of {harness}/{sid}")
-        pair = turns[at][1]
+        _, pair, hashes = turns[at]
         chunk = raw._block(at + 1, pair["user"], pair["agent"]).rstrip("\n")
-        item = {"ref": ref, "turn": turn, "position": at + 1, "turns": len(turns),
+        item = {"ref": ref, "turn": turn, "hash": hashes[0], "position": at + 1, "turns": len(turns),
                 "previous": raw.native_ref(harness, sid, turns[at - 1][0]) if at else None}
+        if turn in tracked and tracked[turn] not in hashes:
+            # Changed since tracking: its review waits for the next capture's snapshot.
+            item["changed"] = True
         if view == "review":
             item.update(raw_view.project(chunk, max_chars, query))
         else:

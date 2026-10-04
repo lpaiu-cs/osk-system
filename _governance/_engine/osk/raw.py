@@ -377,8 +377,9 @@ def append_rounds(session: str, record: str, pairs: list,
             existing = find_cited(p, native_ref(cited["harness"], cited["conversation"], cited["turn"]))
             if existing is not None:
                 rel = posix_rel(p.resolve(), ROOT)
-                return {"ok": True, "path": rel, "indices": [existing],
-                        "round_refs": [f"{rel}#{existing}"], "filtered": [], "reused": True}
+                index, header = existing
+                return {"ok": True, "path": rel, "indices": [index], "round_refs": [f"{rel}#{index}"],
+                        "filtered": [], "reused": True, "cited": header}
         prior = read_exact(p) if p.exists() else ""
         first = _next_index(prior)
         indices = [first + n for n in range(len(norm))]
@@ -404,15 +405,16 @@ def append_rounds(session: str, record: str, pairs: list,
         return result
 
 
-def find_cited(path: Path, native: str) -> int | None:
-    """같은 원본 턴을 이미 인용한 라운드의 index — 재인용은 새 라운드를 쓰지 않는다
-    (Mechanism §9 9항)."""
+def find_cited(path: Path, native: str) -> tuple[int, dict] | None:
+    """같은 원본 턴을 이미 인용한 라운드의 index와 그 머리말 — 재인용은 새 라운드를
+    쓰지 않는다(Mechanism §9 9항)."""
     if not path.exists():
         return None
     text = read_exact(path)
     for index, (start, end) in sorted(_round_spans(text).items()):
-        if cited_native(text[start:end]) == native:
-            return index
+        header = cited_header(text[start:end])
+        if header and native_ref(header["harness"], header["conversation"], header["turn"]) == native:
+            return index, header
     return None
 
 
