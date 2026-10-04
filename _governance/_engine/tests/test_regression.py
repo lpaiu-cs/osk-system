@@ -20,10 +20,16 @@ MINI = Path(_TMP.name) / "mini-vault"
 os.environ["OSK_VAULT_ROOT"] = str(MINI)   # osk import 전에 — 전 모듈이 mini를 본다
 # 픽스처는 기기의 git 기본 브랜치에 기대지 않는다 — 전역 설정이 없는 CI 러너는
 # `master`를 쓴다. 일부러 낯선 이름을 주어, `-b main` 없는 init이 어디서든 드러나게 한다.
+# 자동 정비(`maintenance run --auto`·`gc --auto`)도 끈다 — 커밋 뒤 분리 실행된
+# 정비가 픽스처의 `.git/objects`를 고치는 동안 수트가 그 트리를 복사·삭제하면
+# 파일이 사라져 죽는다(macOS CI 실측: `maintenance.lock`·`bitmap-ref-tips_*` 부재).
 _n = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
-os.environ.update({"GIT_CONFIG_COUNT": str(_n + 1),
-                   f"GIT_CONFIG_KEY_{_n}": "init.defaultBranch",
-                   f"GIT_CONFIG_VALUE_{_n}": "osk-fixture-default"})
+_cfg = (("init.defaultBranch", "osk-fixture-default"),
+        ("maintenance.auto", "false"), ("gc.auto", "0"))
+os.environ["GIT_CONFIG_COUNT"] = str(_n + len(_cfg))
+for _i, (_k, _v) in enumerate(_cfg, _n):
+    os.environ[f"GIT_CONFIG_KEY_{_i}"] = _k
+    os.environ[f"GIT_CONFIG_VALUE_{_i}"] = _v
 sys.path.insert(0, str(ENGINE))
 # git 없는 vault의 잠금·상태 자리(core.local_lock_path)는 임시 디렉터리다 — 시험
 # vault마다 osk-integration-* 따위가 실 임시 디렉터리에 쌓였다. 이 실행과 자식
@@ -4952,8 +4958,9 @@ def test_release_and_update():
             _ver_now = update.current_version()
             if _ver_now:                     # 같은 버전으로 다시 릴리스(force-move 모사)
                 forced = Path(td) / "forced"
-                shutil.copytree(can, forced)
-                rmtree_force(forced / ".git")
+                # 작업 트리만 복사한다 — 정본의 `.git`은 새 이력으로 갈아 낄
+                # 것이고, 읽는 동안 git 정비가 고치면 복사가 죽는다.
+                shutil.copytree(can, forced, ignore=shutil.ignore_patterns(".git"))
                 (forced / "_governance/UpdDoc.md").write_text(
                     node_text("260802-uupd-0002", "정본 규범 문서", "위조판."),
                     encoding="utf-8")
