@@ -788,6 +788,23 @@ class GrowthTests(unittest.TestCase):
             assert {s['status'] for s in fresh['organization_outcomes'].values()} == {'complete'}, fresh
         """)
 
+    def test_prompt_units_carry_the_view_hash_read_node_returns(self):
+        self.check_case("""
+            # The worker sees only this prompt. On 2026-10-04 it compared view_hash with the sha256
+            # inside each unit (a range content key) and deferred every range it had read.
+            import mcp_server as M
+            node('A')
+            node('B')
+            text = growth.prompt(growth.plan(3))
+            assert organization.guidance() in text and 'expect_view_hash' in organization.guidance()
+            units = [u for j in json.loads(text.rsplit(chr(10), 1)[1])['organization_jobs'] for u in j['review_units']]
+            assert units
+            for u in units:
+                got = M.read_node(name=u['id'], view=u['view'])['view_hash']
+                assert u['expect_view_hash'] == got, (u, got)
+                assert u['unit'].split(':')[2] not in got, u
+        """)
+
     def test_final_packet_applies_only_observed_domain_preservation(self):
         self.check_case("""
             node('A')
