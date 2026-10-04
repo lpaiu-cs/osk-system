@@ -289,11 +289,13 @@ def _sm_cmd(a) -> None:
 
 def _tidy_cmd(a) -> None:
     """`osk tidy` — 정돈 (Mechanism §9-3). `list`는 미처분, `prompt`는 전용
-    세션의 프롬프트(전문 그대로 — 붙여 넣는 값이다), `settle`은 처분 기록.
+    세션의 프롬프트(전문 그대로 — 붙여 넣는 값이다), `settle`은 처분 기록,
+    `discard`는 경유 노드의 폐기(Workbench 계약 §3).
 
     settle은 에이전트가 부르는 **기계 경로**다 — 상주 스키마에 여유가 없어
     표면 도구로 두지 않았고, 대화형 확인을 걸면 훅이 지시한 첫 도구 호출에
-    실을 수 없다. 권위 행위가 아니다(§6-2 2항의 넷이 아니다)."""
+    실을 수 없다. 권위 행위가 아니다(§6-2 2항의 넷이 아니다). discard는 노드를
+    지우므로 사용자가 확인한 해시(`--confirm`)가 있어야 실행한다."""
     try:
         if a.tidy_cmd == "list":
             rows = evictions.unsettled(a.scope)
@@ -305,10 +307,15 @@ def _tidy_cmd(a) -> None:
             out = evictions.tidy_prompt(a.scope, sys.executable, str(ENGINE))
             sys.stdout.buffer.write(out.encode("utf-8"))
             sys.stdout.buffer.flush()
+        elif a.tidy_cmd == "discard":
+            _emit(evictions.discard_transit(a.title, a.confirm))
         else:
-            rec = evictions.settle(a.of, a.outcome, a.target)
-            _emit({"ok": True, "rid": rec["rid"], "of": a.of,
-                   "outcome": a.outcome, "target": rec.get("target")})
+            recs = evictions.settle_many(a.of, a.outcome, a.target, a.reason)
+            out = {"ok": True, "rid": recs[0]["rid"], "of": a.of,
+                   "outcome": a.outcome, "target": recs[0].get("target")}
+            if len(recs) > 1:
+                out["records"] = [{"rid": r["rid"], "target": r.get("target")} for r in recs]
+            _emit(out)
     except ValueError as e:
         sys.exit(f"[중단] {e}")
 
@@ -432,7 +439,12 @@ def build_parser() -> argparse.ArgumentParser:
     q = ts.add_parser("settle", help="처분 기록 — 노드로 증류·기존 노드에 통합·폐기")
     q.add_argument("of", help="대상 evict의 rid")
     q.add_argument("outcome", choices=evictions.OUTCOMES)
-    q.add_argument("--target", default=None, help="노드 제목 (폐기면 없음)")
+    q.add_argument("--target", action="append", default=None,
+                   help="노드 제목 (폐기면 없음, 여럿이면 되풀이)")
+    q.add_argument("--reason", default=None, help="처분의 판단 이유")
+    q = ts.add_parser("discard", help="경유 노드 폐기 — 유입 참조가 없을 때, 사용자 확인 뒤")
+    q.add_argument("title", help="Workbench 경유 노드 제목")
+    q.add_argument("--confirm", default=None, help="확인받은 판의 해시 (없으면 계획만 낸다)")
 
     p = sub.add_parser("validators",
                        help="[사용자 전속] 검증기 활성화 현황·전환 (Mechanism §6-1)")

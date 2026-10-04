@@ -7377,6 +7377,9 @@ def test_evictions():
     check("경유 노드를 싣는다", "[[regr-evi-transit]]" in block, block)
     check("settle 명령·출구·벽 아님", "tidy settle" in block and "PYTHONPATH=ENG PY" in block
           and "벽이 아니다" in block and "00_Scope/WEvi" in block, block)
+    # 경유 노드의 출구는 넷이다 — 착지만 말하면 내용을 옮겨 둔 노드를 다시 착지시킨다(10-04)
+    check("경유 노드의 네 출구와 폐기 명령을 싣는다",
+          "출구 넷" in block and "tidy discard" in block and "git 이력" in block, block)
 
     # 훅 실행 — 경고가 맨 앞, 기억, 정돈 블록 순. 결속은 위 첫 쓰기가 세웠고,
     # git 밖의 cwd는 디렉터리 이름으로 접히므로 이름이 곧 세션 키다.
@@ -7463,6 +7466,22 @@ def test_evictions():
     stj = json.loads(sio.getvalue())
     check("status에 scope별 미처분·나이", stj.get("evictions", {}).get("WEvi", {}).get("unsettled") == 7
           and stj["evictions"]["WEvi"]["overdue"] is True, stj.get("evictions"))
+    # 한 조각이 여러 노드로 갔으면 대상마다 settle을 하나씩, 사유와 함께 적는다
+    second = ev.unsettled("WEvi")[0]["rid"]
+    o, _ = run(["tidy", "settle", second, "merged", "--target", "W1",
+                "--target", "regr-evi-transit", "--reason", "두 노드로 나뉘어 옮겨졌다"])
+    rows = [r for r in core.ledger_read(core.EVICTIONS)
+            if r.get("kind") == "settle" and r.get("of") == second]
+    check("tidy settle: 대상마다 settle 하나와 사유",
+          o.get("ok") and len(o.get("records", [])) == 2
+          and {r.get("target") for r in rows} == {"W1", "regr-evi-transit"}
+          and all(r.get("reason") == "두 노드로 나뉘어 옮겨졌다" for r in rows), o)
+    third = ev.unsettled("WEvi")[0]["rid"]
+    o, _ = run(["tidy", "settle", third, "merged", "--target", "W1", "--target", "regr-없는-노드"])
+    check("tidy settle: 대상 하나라도 없으면 아무것도 적지 않는다",
+          str(o.get("exit", "")).startswith("[중단]")
+          and not [r for r in core.ledger_read(core.EVICTIONS)
+                   if r.get("kind") == "settle" and r.get("of") == third], o)
 
     # 퇴출이 0이어도 경유 노드는 독립적으로 정돈한다.
     for r in ev.unsettled():
@@ -7472,6 +7491,36 @@ def test_evictions():
     check("훅: 퇴출 0에도 경유를 싣고 밀림 경고는 없다",
           "[[regr-evi-transit]]" in out3 and "[osk 정돈이 밀렸다" not in out3, out3[:120])
     check("status는 미처분 없는 scope를 싣지 않는다", ev.status() == {}, ev.status())
+
+    # 폐기 — 경유 노드만, 들어오는 참조·scope 기억 언급이 없을 때, 확인받은 판만 지운다
+    o, _ = run(["tidy", "discard", "W1"])
+    check("tidy discard: 경유 노드가 아니면 중단", str(o.get("exit", "")).startswith("[중단]")
+          and (ROOT / "00_Scope/W1/W1.md").exists(), o)
+    ref = _w(write.create_node, "regr-evi-cites-transit", "s", "[[regr-evi-transit]]를 본다.",
+             "fable-5", space="00_Scope/W1")
+    o, _ = run(["tidy", "discard", "regr-evi-transit"])
+    check("tidy discard: 들어오는 참조가 있으면 중단",
+          "regr-evi-cites-transit" in str(o.get("exit", "")) and transit.exists(), o)
+    (ROOT / ref["path"]).unlink()
+    from osk import scope_memory as sm
+    mention = sm.sm_dir() / "regr-evi-mention.md"
+    mention.write_text("경유 regr-evi-transit 참고\n", encoding="utf-8")
+    o, _ = run(["tidy", "discard", "regr-evi-transit"])
+    check("tidy discard: scope 기억이 가리키면 중단",
+          "regr-evi-mention" in str(o.get("exit", "")) and transit.exists(), o)
+    mention.unlink()
+    o, _ = run(["tidy", "discard", "regr-evi-transit"])
+    plan = o.get("plan", {})
+    check("tidy discard: 확인 없이는 지울 판만 알린다",
+          o.get("ok") is False and plan.get("hash") == core.sha256_file(transit)
+          and transit.exists(), o)
+    o, _ = run(["tidy", "discard", "regr-evi-transit", "--confirm", "sha256:" + "0" * 64])
+    check("tidy discard: 확인한 판이 아니면 중단",
+          str(o.get("exit", "")).startswith("[중단]") and transit.exists(), o)
+    o, _ = run(["tidy", "discard", "regr-evi-transit", "--confirm", plan.get("hash", "")])
+    check("tidy discard: 확인받은 판을 지운다",
+          o.get("ok") and o.get("discarded", {}).get("title") == "regr-evi-transit"
+          and not transit.exists(), o)
 
     transit.unlink(missing_ok=True)
     check("두 큐가 비어야 정돈할 것이 없다", "정돈할 것이 없다" in ev.tidy_prompt(None, "PY", "ENG"))
@@ -8353,10 +8402,12 @@ def test_rechecks():
     from osk import rechecks
     W = ROOT / "00_Scope/W1"
     src = ROOT / "_sources" / "regr-rc.md"
-    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New", "W", "S", "R")]
+    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New", "W", "S", "R", "Hub")]
     st = lambda f: rechecks.state(f.read_bytes())
     led = rechecks.RECHECKS
     lbefore = led.read_bytes() if led.exists() else None
+    hub = W / "W1.md"
+    hub_before = hub.read_bytes()
 
     def why(title, ref=None):
         items, _ = rechecks.candidates(graph.Index())
@@ -8450,6 +8501,18 @@ def test_rechecks():
               rechecks.heading_range(b"## A\n1\n## A\n2\n", "A") is None)
         check("raw 라운드는 추적하지 않는다",
               rechecks.target("00_Scope/W1/_raw/.records/x.txt#1", graph.Index()) is None)
+        # 허브는 갈래의 입구다 — 허브 본문이 바뀌어도 그 허브를 인용한 노드는 후보가
+        # 아니다(시행령 §7 2항 단서). 제목 범위로 가리켜도 같다.
+        check("허브는 제목 범위로 가리켜도 추적하지 않는다",
+              rechecks.target("[[W1]]", graph.Index()) is None
+              and rechecks.target("[[W1#W1]]", graph.Index()) is None)
+        _w(write.create_node, "regr-rc-Hub", "s", "허브를 인용한 주장.", "fable-5",
+           space="00_Scope/W1", edges={"derived-from": "W1"})
+        hub.write_bytes(hub_before + "\n허브에 덧붙인 링크 목록.\n".encode())
+        _age_all()
+        check("허브 본문이 바뀌어도 그 허브를 인용한 노드는 후보가 아니다",
+              not why("regr-rc-Hub"))
+        hub.write_bytes(hub_before)
         # 제목이 사라져도 근거는 남는다 — 해석 불능 후보이지 뺀 근거가 아니다
         src.write_text(src.read_text(encoding="utf-8").replace("## A", "## A2"),
                        encoding="utf-8")
@@ -8584,6 +8647,7 @@ def test_rechecks():
               all(b["parents"] == [a["rid"]] for a, b in zip(rows, rows[1:])), rows[:2])
         check("기록이 있으면 기준선은 다시 적지 않는다", rechecks.ensure_baseline() == 0)
     finally:
+        hub.write_bytes(hub_before)
         for p in made + [src]:
             p.unlink(missing_ok=True)
         if lbefore is None:

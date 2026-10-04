@@ -280,7 +280,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
-| `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
+| `tidy list` / `tidy prompt` / `tidy settle` / `tidy discard` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록, 경유 노드 폐기 (Mechanism §9-3 · Workbench 계약 §3, 아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
 | `approve` / `revert` | **사용자 전속** — 변경집합 승인·반려 |
 | `store-reconcile` | 내용 주소 저장소를 파일 이름 기준으로 판독·이행 (EOL 이행) |
@@ -334,12 +334,24 @@ scope 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한
 결속이 선 세션이 시작되면 훅은 그 scope의 미처분 항목 중 **오래된 것부터 3건**과
 Workbench의 경유 노드를 함께 실어 첫 도구 호출에 처분을 함께 실으라고 지시한다. 벽이
 아니다 — 본 작업이 먼저면 넘어가도 되고 항목은 대장에 남는다. 출구는 노드로 증류·기존
-노드에 통합·폐기이며, 어느 쪽이든 `settle`을 적어야 처분이다:
+노드에 통합·폐기이며, 어느 쪽이든 `settle`을 적어야 처분이다. 판단 이유는 `--reason`으로
+남기고, 한 조각이 여러 노드로 갔으면 `--target`을 되풀이한다(대상마다 `settle`이 하나씩
+적힌다):
 
 ```bash
 .venv/bin/python -m osk.cli tidy list                                  # scope별 미처분·나이
-.venv/bin/python -m osk.cli tidy settle <rid> node --target "<노드 제목>"   # 증류 (통합은 merged)
-.venv/bin/python -m osk.cli tidy settle <rid> discarded                # 폐기
+.venv/bin/python -m osk.cli tidy settle <rid> node --target "<노드 제목>" --reason "<이유>"   # 증류 (통합은 merged)
+.venv/bin/python -m osk.cli tidy settle <rid> discarded --reason "<이유>"                    # 폐기
+```
+
+경유 노드의 출구는 넷이다(Workbench 계약 §3) — Domain 이동·scope 이동·통합·폐기. 정리
+세션이 내용을 정본 노드로 옮기고 경유지에 남긴 노드도 있으므로, 착지시키기 전에 경유지에
+온 경위(vault git 이력)를 본다. 폐기는 들어오는 참조와 scope 기억의 언급이 없을 때만 되고,
+사용자가 확인한 판에서만 지운다 — 기록은 vault의 git 이력이 맡는다:
+
+```bash
+.venv/bin/python -m osk.cli tidy discard "<경유 노드 제목>"                    # 지울 판의 해시를 알린다
+.venv/bin/python -m osk.cli tidy discard "<경유 노드 제목>" --confirm <hash>   # 확인받은 판을 지운다
 ```
 
 건너뛴 것은 `osk status`의 `evictions`에 보인다. 가장 오래된 항목이 **14일**을 넘으면
