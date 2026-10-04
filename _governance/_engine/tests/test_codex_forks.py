@@ -109,6 +109,31 @@ class CodexForkTests(unittest.TestCase):
         self.assertEqual((found["captured_rounds"], found["inherited_rounds"]), (1, 1))
         self.assertEqual(it.capture("codex", self.child, None, "forks")["appended"], 0)
         self.assertIn("부모 대화를 capture해 그쪽에서 검토한다", self.guidance())
+        # Cited or read through the child, the turn still names its parent.
+        cited = it.cite("codex/" + self.child, quote="question p1")
+        _, header = raw.find_cited(core.ROOT / cited["path"], raw.native_ref("codex", self.parent, "p1"))
+        self.assertEqual(header["conversation"], self.parent)
+        [own] = it.read_turns([raw.native_ref("codex", self.child, "c1")])["turns"]
+        [back] = it.read_turns([own["previous"]])["turns"]  # the parent's own transcript, untracked here
+        self.assertEqual((back["ref"], back["turn"]), (raw.native_ref("codex", self.parent, "p1"), "p1"))
+
+    def test_parent_turns_keep_their_owner_when_cited_or_read_from_the_child(self):
+        parent, child = self.fork()
+        it.capture("codex", self.parent, str(parent), "forks")
+        it.capture("codex", self.child, str(child), "forks")
+        cited = it.cite("codex/" + self.child, quote="question p1")
+        _, header = raw.find_cited(core.ROOT / cited["path"], raw.native_ref("codex", self.parent, "p1"))
+        self.assertEqual((cited["turn"], header["conversation"]), ("p1", self.parent))
+        # The parent's own citation of that turn is the same round of the same record.
+        again = it.cite("codex/" + self.parent, quote="question p1")
+        self.assertEqual((again["reused"], again["round_ref"]), (True, cited["round_ref"]))
+        [own] = it.read_turns([raw.native_ref("codex", self.child, "c1")])["turns"]
+        self.assertEqual(own["previous"], raw.native_ref("codex", self.parent, "p1"))
+        # A child coordinate cannot pass for the parent's turn.
+        with self.assertRaisesRegex(ValueError, "belongs to the fork parent; read native:codex:"):
+            it.read_turns([raw.native_ref("codex", self.child, "p1")])
+        [back] = it.read_turns([own["previous"]])["turns"]
+        self.assertEqual((back["ref"], back["position"], back["previous"]), (own["previous"], 1, None))
 
     def test_paginated_parent_and_child_follow_declared_byte_bounds(self):
         first = self.page(self.parent, self.parent + "-old", turn(self.parent, "p1"))
@@ -157,6 +182,11 @@ class CodexForkTests(unittest.TestCase):
         # The parent reviews its turn in its own scope; the child does not take it over.
         self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
         self.assertEqual(it.status("codex", self.parent)["pending_refs"], [raw.native_ref("codex", self.parent, "p1")])
+        # Evidence the child needs from that turn still names the parent.
+        cited = it.cite("codex/" + self.child, quote="question p1")
+        _, header = raw.find_cited(core.ROOT / cited["path"], raw.native_ref("codex", self.parent, "p1"))
+        self.assertEqual(header["conversation"], self.parent)
+        self.assertTrue(cited["path"].startswith("00_Scope/Forks/"), cited)
 
     def test_parent_cursor_with_stored_and_native_turns_is_left_alone(self):
         parent = self.page(self.parent, self.parent, turn(self.parent, "p1") + turn(self.parent, "p2"))

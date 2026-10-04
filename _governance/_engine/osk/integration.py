@@ -51,16 +51,20 @@ def _load(p: Path, harness: str, sid: str) -> dict:
     if not p.exists():
         # Raw identity follows the native conversation across vault copies;
         # operational ownership remains ROOT-specific in state_path.
-        record_key = hashlib.sha256((harness + "\n" + sid).encode()).hexdigest()[:32]
         return {"version": 1, "root": str(core.ROOT.resolve()), "harness": harness,
                 "conversation_id": sid, "session": None, "space": None, "transcript_path": None,
-                "record": f"{harness}-{record_key}",
+                "record": _record(harness, sid),
                 "rounds": [], "reviewed_count": 0, "prompt_count": 0,
                 "reviewed_prompt_count": 0, "snapshots": {}, "reviews": [],
                 "capture_pending": False, "capture_error": None,
                 "native_fingerprint": None, "coverage": None}
     s = json.loads(p.read_text(encoding="utf-8"))
     return _validate_state(s, harness, sid)
+
+
+def _record(harness: str, sid: str) -> str:
+    key = hashlib.sha256((harness + "\n" + sid).encode()).hexdigest()[:32]
+    return f"{harness}-{key}"
 
 
 def _validate_state(s: dict, harness: str, sid: str) -> dict:
@@ -1005,10 +1009,11 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
         parsed = transcripts.read(source, harness, sid)
         shown = parsed.get("dialogue_v1") or {}
         turns = [{"id": turn_key(harness, r["id"]), "user": shown.get(r["id"], r)["user"],
-                  "agent": shown.get(r["id"], r)["agent"]} for r in parsed["rounds"]]
+                  "agent": shown.get(r["id"], r)["agent"], "owner": r.get("origin_conversation_id") or sid}
+                 for r in parsed["rounds"]]
         tail = parsed.get("tail")
         if tail and tail.get("user") and turn_key(harness, tail["id"]) not in {t["id"] for t in turns}:
-            turns.append({"id": turn_key(harness, tail["id"]), "user": tail["user"], "agent": None})
+            turns.append({"id": turn_key(harness, tail["id"]), "user": tail["user"], "agent": None, "owner": sid})
         if isinstance(turn, str) and not re.fullmatch(r"-?\d+", turn.strip()):
             matched = [t for t in turns if t["id"] == turn_key(harness, turn.strip())]
         elif turn is not None:
@@ -1025,15 +1030,22 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
             seen = [f"{t['id']}: {' '.join(t['user'].split())[:40]}" for t in (matched or turns)[-5:]]
             raise ValueError(f"{len(matched)} turns match; narrow by quote or turn. Candidates: {seen}")
         words, rid, agent, by = matched[0]["user"], matched[0]["id"], matched[0]["agent"], "engine"
+        owner = matched[0]["owner"]
     else:
         if not user.strip():
             raise ValueError("user= needs the words to keep")
-        words, agent, by = user, None, "caller"
+        words, agent, by, owner = user, None, "caller", sid
         rid = (turn_key(harness, turn.strip()) if isinstance(turn, str) and turn.strip() else
                "caller-" + core.sha256_bytes(user.encode("utf-8")).removeprefix("sha256:")[:16])
-    meta = {"harness": harness, "conversation": sid, "turn": rid, "source": source,
+    meta = {"harness": harness, "conversation": owner, "turn": rid, "source": source,
             "agent_sha256": core.sha256_bytes(agent.encode("utf-8")) if agent else None, "user_by": by}
-    result = raw.append_rounds(session, s["record"], [{"user": words, "agent": (note or "").strip()}],
+    record = s["record"]
+    if owner != sid:
+        # A fork parent's turn keeps its owner: the citation names the parent and joins
+        # the parent's record, so the parent citing the same turn reuses that round.
+        with _locked(harness, owner) as pp:
+            record = _load(pp, harness, owner)["record"]
+    result = raw.append_rounds(session, record, [{"user": words, "agent": (note or "").strip()}],
                                space or s["space"], cited=meta)
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
            "index": result["indices"][0], "turn": rid, "reused": result.get("reused", False),
@@ -1076,16 +1088,18 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
             shown = parsed.get("dialogue_v1") or {}
             tracked = {turn_key(harness, r["id"]): r["hash"] for r in s["rounds"] if raw.is_native(r["ref"])}
             conversations[harness, sid] = tracked, [
-                (turn_key(harness, r["id"]), shown.get(r["id"], r), _turn_hashes(r, parsed.get("dialogue_v1")))
-                for r in parsed["rounds"]]
+                (turn_key(harness, r["id"]), shown.get(r["id"], r), _turn_hashes(r, parsed.get("dialogue_v1")),
+                 r.get("origin_conversation_id") or sid) for r in parsed["rounds"]]
         tracked, turns = conversations[harness, sid]
-        at = next((i for i, (key, _, _) in enumerate(turns) if key == turn), None)
+        at = next((i for i, (key, *_) in enumerate(turns) if key == turn), None)
         if at is None:
             raise ValueError(f"{turn} is not a completed turn of {harness}/{sid}")
-        _, pair, hashes = turns[at]
+        _, pair, hashes, owner = turns[at]
+        if owner != sid:
+            raise ValueError(f"{turn} belongs to the fork parent; read {raw.native_ref(harness, owner, turn)}")
         chunk = raw._block(at + 1, pair["user"], pair["agent"]).rstrip("\n")
         item = {"ref": ref, "turn": turn, "hash": hashes[0], "position": at + 1, "turns": len(turns),
-                "previous": raw.native_ref(harness, sid, turns[at - 1][0]) if at else None}
+                "previous": raw.native_ref(harness, turns[at - 1][3], turns[at - 1][0]) if at else None}
         if turn in tracked and tracked[turn] not in hashes:
             # Changed since tracking: its review waits for the next capture's snapshot.
             item["changed"] = True
