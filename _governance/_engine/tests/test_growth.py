@@ -859,6 +859,21 @@ class GrowthTests(unittest.TestCase):
             assert {s['status'] for s in fresh['organization_outcomes'].values()} == {'complete'}, fresh
         """)
 
+    def test_organization_packet_is_held_to_the_snapshot_in_its_plan(self):
+        self.check_case("""
+            node('A')
+            node('B')
+            # Another session swaps A's evidence after the plan. Unit keys cover bodies only,
+            # so the planned snapshot is what tells the reviewed state from the current one.
+            change = "from osk import write; assert write.update_node('A',add_edges={'derived-from':'B'})['ok']"
+            stale = growth.run([sys.executable,'-c',packet_worker(change)],limit=3)
+            assert any('changed after inspection' in e for e in stale['final_reviews']['errors']), stale
+            assert {s['status'] for s in stale['organization_outcomes'].values()} != {'complete'}, stale
+            fresh = growth.run([sys.executable,'-c',packet_worker()],limit=3)
+            assert fresh['ok'], fresh
+            assert {s['status'] for s in fresh['organization_outcomes'].values()} == {'complete'}, fresh
+        """)
+
     def test_final_packet_applies_only_observed_domain_preservation(self):
         self.check_case("""
             node('A')
