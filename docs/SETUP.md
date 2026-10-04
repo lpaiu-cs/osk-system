@@ -847,15 +847,18 @@ raw 라운드 참조(선정 시 해시가 있으면 `{ref,hash}`), `hub`는 기�
 같은 입력 집합의 완료된 검토는 반복하지 않는다. 프로세스 종료코드 0만으로 완료하지 않고
 실제 Domain 본문·근거·허브와 입력 해시를 확인해야 한다.
 
-전용 에이전트는 작업 한 건을 판단할 때마다 prompt가 지정한 `osk_reviews` JSON을
-UTF-8 파일에 쓰고 `growth checkpoint --file <파일>`로 즉시 기록한다. 완료한 작업과
-빈 다른 작업군만 담고 `ok=true`를 확인한 뒤 다음 작업을 시작한다. 뒤 작업의 시간
-초과는 앞서 확인된 개별 기록을 지우지 않는다. 마지막 응답에도 같은 JSON을 반환한다.
-실행기는 성공한 최종 응답에서 이 결정을 읽어 기존 `integration review`·`growth review`
-검증을 적용한다. 셸 정책 때문에 에이전트의 검토 CLI 실행이 막혀도 이 경로로 등록한다.
+전용 에이전트는 osk MCP 도구만 쓰고 osk CLI나 셸을 실행하지 않는다. 샌드박스 안의
+에이전트는 CLI를 실행할 수 없고, 시도할 때마다 시간 예산을 쓴다. 판단한 결정은 prompt가
+지정한 `osk_reviews` JSON 하나로 마지막 응답에 모아 반환한다. 실행 중 MCP로 쓴 노드·raw
+기록·보존 영수증·처분은 남지만, 결과 묶음으로만 전하는 결정(Scope 통합 ACK, Domain
+no_value·deferred, 정돈·퇴출 판정, 재검토 상신)은 시간 초과로 끊기면 사라진다. 그래서
+시간 제한 전에 남은 작업을 보류로 담아 응답을 끝낸다. 실행기는 성공한 최종 응답에서 이
+결정을 읽어 기존 `integration review`·`growth review`·정돈 검토 검증을 샌드박스 밖에서
+적용한다. 정돈 결정은 snapshot 없이 받고, 에이전트가 읽은 뒤 바뀐 검토 단위는 거절한다.
 도구 출력 속 JSON이나 다른 manifest·선정하지 않은 대화의 결정은 받아들이지 않으며,
-`preserved`라는 선언만으로 저장을 인정하지 않는다. 직접 CLI를 사용할 때도
-`growth review --manifest <plan rid>`로 같은 검증을 거친다.
+`preserved`라는 선언만으로 저장을 인정하지 않는다. 사람이 셸에서 직접 검토할 때는
+`growth review --manifest <plan rid>`로 같은 검증을 거치고, 작업 한 건씩
+`growth checkpoint --file <파일>`로 기록할 수 있다.
 
 에이전트 명령은 JSON argv 배열 파일로 둔다. 명령은 stdin으로 프롬프트를 읽고 종료해야
 하며, 이 인스턴스의 osk MCP에 연결돼 있어야 한다. 셸 문자열은 실행하지 않는다.

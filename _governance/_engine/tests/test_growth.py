@@ -42,7 +42,7 @@ def packet_worker(change='', wrapper='plain', code=0):
     source = "import json,sys; from osk import core,growth,distillation,integration; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
     if change:
         source += change + '; '
-    source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'complete','reason':'The fixture is one coherent, directly wired group.','after':organization.snapshot(j['scope'])['snapshot'],'intentional':[],'checked':[{'unit':u['unit'],'reason':'Known fixture claim and conditions'} for u in j['review_units']]} for j in p['organization_jobs']]; "
+    source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'complete','reason':'The fixture is one coherent, directly wired group.','intentional':[],'checked':[{'unit':u['unit'],'reason':'Known fixture claim and conditions'} for u in j['review_units']]} for j in p['organization_jobs']]; "
     wrappers = {
         'plain': "print(json.dumps(q))",
         'codex': "[print(json.dumps(e)) for e in [{'type':'turn.started'},{'type':'item.completed','item':{'type':'agent_message','text':json.dumps(q)}},{'type':'turn.completed'}]]",
@@ -754,6 +754,23 @@ class GrowthTests(unittest.TestCase):
             assert result['scope_selected'] == 1 and result['domain_selected'] == 0, result
             assert {r['status'] for r in result['scope_outcomes'].values()} == {'complete'}
             assert growth.run(['unused-command'])['state'] == 'skipped'
+        """)
+
+    def test_organization_packet_without_snapshot_refuses_a_unit_changed_after_reading(self):
+        self.check_case("""
+            node('A')
+            assert 'Use osk MCP tools only' in growth.prompt(growth.plan(3))
+            assert 'growth checkpoint --file' not in growth.prompt(growth.plan(3))
+            # The worker has no CLI snapshot. A unit it read that changes before the
+            # runner applies the packet no longer matches its content key.
+            change = ("from osk import write; n=core.ROOT/'00_Scope/W1/A.md'; "
+                      "assert write.update_node('A',body='Changed after the worker read it.',expect_hash=core.sha256_file(n))['ok']")
+            stale = growth.run([sys.executable,'-c',packet_worker(change)],limit=3)
+            assert any('changed review unit' in e for e in stale['final_reviews']['errors']), stale
+            assert {s['status'] for s in stale['organization_outcomes'].values()} != {'complete'}, stale
+            fresh = growth.run([sys.executable,'-c',packet_worker()],limit=3)
+            assert fresh['ok'], fresh
+            assert {s['status'] for s in fresh['organization_outcomes'].values()} == {'complete'}, fresh
         """)
 
     def test_final_packet_applies_only_observed_domain_preservation(self):
