@@ -432,6 +432,8 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "Review only the selected Domain candidates and organization_jobs at their work_order positions. "
         "Where the organization guidance names CLI plan or review, read the selected units with "
         "read_node(name=id, view=view) and report the decision in the packet without after. "
+        "The runner holds that decision to the snapshot in your plan: if this run writes any "
+        "node in that scope, report the job as deferred without checked units. "
         "Sources newly distilled during "
         "this run may be compared on the next scheduled run; do not extend this batch.\n"
         "For eviction_jobs, read each selected text and search current memory/nodes for what "
@@ -516,7 +518,7 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "{\"text\":\"<excerpt>\"} objects; omit targets for no_value/deferred. "
         "Add organization:[{key,scope,outcome:complete|deferred,reason,checked:[{unit,reason}],intentional:[]}] "
         "inside osk_reviews for selected organization_jobs; the runner checks them against the "
-        "current state, and a checked unit that changed since you read it is refused. "
+        "snapshot in your plan, so a scope changed since then is left for a fresh plan. "
         "Add eviction:[{of,outcome:node|merged|discarded|deferred,reason,target?}] inside "
         "osk_reviews for selected eviction_jobs; omit target unless outcome is node/merged. "
         "Add recheck:[{key,outcome:escalated,reason,proposal}] inside osk_reviews only for "
@@ -803,10 +805,11 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
         try:
             with core.mutation_lock():
                 done = organization.status(selected[entry["key"]])
-                # A worker without the CLI cannot read the snapshot. The current one stands in:
-                # each checked unit is content-keyed, so a unit changed since the worker read
-                # it is refused, and complete still rechecks the current wiring.
-                entry = {"after": organization.snapshot(entry["scope"])["snapshot"], **entry}
+                # A worker without the CLI cannot read a fresh snapshot, so it is held to the
+                # one its plan gave it. Unit keys cover bodies, not references: any change in the
+                # scope since the plan — another session's edges or the worker's own writes —
+                # leaves the job for a fresh plan instead of completing what was not reviewed.
+                entry = {"after": selected[entry["key"]]["snapshot"], **entry}
             if done["status"] != "complete":
                 organization.review(**entry)
             result["organization"][entry["key"]] = "recorded"
