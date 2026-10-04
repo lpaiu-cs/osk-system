@@ -62,6 +62,7 @@ def _integration(states: list[dict]) -> dict:
             'repair_jobs': len(state.get('repair_pending', {})), 'repair_rounds': len(repairs),
             'review_pending_rounds': len(set(view['pending_refs'])),
             'capture_pending': view['capture_pending'], 'capture_error': view['capture_error'],
+            'capture_recovery': view['capture_recovery'],
             'last_route': view['response_growth_route'],
             'last_fork_result': view['response_growth'].get('last_result'),
             'round_endings': dict(Counter(r.get('completion', 'unknown') for r in state['rounds'])),
@@ -73,8 +74,12 @@ def _integration(states: list[dict]) -> dict:
             'conversations_with_review_pending': sum(i['review_pending_rounds'] > 0 for i in items),
             'capture_pending_conversations': sum(bool(i['capture_pending']) for i in items),
             'capture_error_conversations': sum(bool(i['capture_error']) for i in items),
+            'capture_recovery_states': dict(Counter(i['capture_recovery']['state'] for i in items
+                                                    if i['capture_pending'] or i['capture_error'])),
+            'capture_failure_phases': dict(Counter(i['capture_recovery']['phase'] for i in items
+                                                   if i['capture_error'])),
             'uncaptured_rounds': None,
-            'basis': 'stored cursors; native tails are not scanned or counted as reviewed raw',
+            'basis': 'stored cursors; legacy missing-source advice may locate a file, but native tails are not parsed or counted as reviewed',
             'items': items}
 
 

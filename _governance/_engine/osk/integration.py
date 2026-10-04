@@ -91,6 +91,31 @@ def _capture_recovery(s: dict) -> dict:
     """Advice only; it never relaxes capture identity or acknowledges stored raw."""
     phase = s.get("capture_failure_phase", "unknown")
     if s.get("capture_error"):
+        basis = "recorded_phase" if phase != "unknown" else "legacy_diagnostic"
+        if phase == "unknown":
+            error = s["capture_error"]
+            if any(t in error for t in ("착지", "세션 키", "scope changed", "scope is invalid")):
+                phase = "landing"
+            elif any(t in error for t in ("prefix", "접두부", "저장된 기록보다 짧다")):
+                phase = "replay"
+            elif any(t in error for t in ("identity", "session_meta", "sessionId", "history_base")):
+                phase = "read"
+            elif "FileNotFoundError" in error or "native transcript path unavailable" in error:
+                phase = "source"
+                try:
+                    found = _locate_transcript(s["harness"], s["conversation_id"],
+                                               s.get("capture_path") or s.get("transcript_path"))
+                    available = bool(found and Path(found).is_file())
+                    missing = not found or not Path(found).exists()
+                except (OSError, ValueError):
+                    basis = "source_lookup_failed"
+                else:
+                    basis = "source_lookup"
+                    if available:
+                        return {"state": "retryable", "phase": phase, "basis": basis,
+                                "next_action": "같은 ID의 원본 후보를 찾았다. 현재 엔진으로 capture하여 신원·접두부를 다시 검증한다."}
+                    if missing and not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
+                        phase = "awaiting_native"
         actions = {
             "awaiting_native": "같은 대화의 원본이 생성된 뒤 다시 capture한다.",
             "landing": "기존 대화의 scope를 유지하며 명시적인 세션 키와 착지를 확인한다.",
@@ -99,14 +124,15 @@ def _capture_recovery(s: dict) -> dict:
             "replay": "추적 중인 턴 순서와 원본 접두부(이어받은 부모 턴 포함)를 확인한다. 기존 좌표나 검토 커서를 초기화하지 않는다.",
         }
         return {"state": "awaiting_input" if phase == "awaiting_native" else "action_required",
-                "phase": phase, "next_action": actions.get(
+                "phase": phase, "basis": basis, "next_action": actions.get(
                     phase, "원본 경로·대화 신원·착지를 확인하고 같은 대화를 다시 capture한다.")}
     if s.get("capture_pending"):
-        return {"state": "pending",
+        return {"state": "pending", "phase": "tail", "basis": "saved_cursor",
                 "next_action": "종료 기록을 확인한 뒤 같은 대화를 다시 capture한다. 열린 꼬리를 완료로 처리하지 않는다."}
     if not (s.get("native_fingerprint") or s["rounds"]):
-        return {"state": "awaiting_input", "next_action": "같은 대화의 원본이 생성된 뒤 다시 capture한다."}
-    return {"state": "ready", "next_action": None}
+        return {"state": "awaiting_input", "phase": "unobserved", "basis": "saved_cursor",
+                "next_action": "같은 대화의 원본이 생성된 뒤 다시 capture한다."}
+    return {"state": "ready", "phase": "complete", "basis": "saved_cursor", "next_action": None}
 
 
 def _view(s: dict) -> dict:
@@ -198,8 +224,29 @@ def _turn_hashes(pair: dict, dialogue_v1: dict | None = None) -> list[str]:
     return [digest(a) for a in filter(None, (shown["agent"], shown.get("agent_time_order")))] or [digest("")]
 
 
+def _fork_parent_turns(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
+    """A Codex fork declares each page's owner. The parent's turns stay the parent's to
+    review — by its own cursor, in its own scope — and never become this conversation's
+    new work, whether or not the parent is tracked here. They are kept as references with
+    their hashes, so a later capture refuses a changed parent prefix."""
+    parent = [r for r in rounds if r.get("origin_conversation_id") not in (None, s["conversation_id"])]
+    if rounds[:len(parent)] != parent:
+        raise ValueError("Codex fork parent turns must precede the conversation's own; capture remains pending")
+    known = (s.get("inherited") or {}).get("rounds")
+    if known is not None and ([k["id"] for k in known] != [r["id"] for r in parent] or any(
+            k["hash"] not in _turn_hashes(r, dialogue_v1) for k, r in zip(known, parent))):
+        raise ValueError("inherited native prefix changed; capture remains pending")
+    if parent and known is None:
+        s["inherited"] = {"rounds": [
+            {"id": r["id"], "ref": raw.native_ref("codex", r["origin_conversation_id"], r["id"]),
+             "hash": _turn_hashes(r, dialogue_v1)[0]} for r in parent]}
+    return rounds[len(parent):]
+
+
 def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
     """Reuse only the caller's copied prefix, with native ID and byte evidence."""
+    if s["harness"] == "codex":
+        return _fork_parent_turns(s, rounds, dialogue_v1)
     if s["harness"] != "claude" or not s["space"]:
         return rounds
     scope = raw._scope_of_space(s["space"])
@@ -826,12 +873,19 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         text += (f"원문에 실패 종료 {st['failed_rounds']}·종료 기록 없이 다음 턴으로 넘어간 부분 기록 "
                  f"{st['interrupted_rounds']}건이 포함된다. 관측 보존이며 작업 성공을 뜻하지 않는다.\n")
     if st["harness"] == "codex":
-        text += ("native_trigger는 goal·heartbeat 또는 실패·중단 뒤 입력 없는 턴이다. 앞 입력은 문맥으로만 "
+        text += ("native_trigger는 goal·heartbeat·다른 대화에서 전달된 메시지 또는 실패·중단 뒤 입력 없는 턴이다. 앞 입력은 문맥으로만 "
                  "보존하며 같은 의도의 재개라고 확정하지 않는다. 새 사용자 발화로 해석하지 말고, "
                  "명시 지시 증류와 자율 성장의 증거를 구분하라.\n")
-    if st["inherited_rounds"]:
+    if st["inherited_rounds"] and st["harness"] == "codex":
+        text += (f"fork 부모 대화의 과거 {st['inherited_rounds']}턴은 부모의 몫이다 — 이 대화의 검토 대상이 "
+                 "아니고, 부모의 검토 대기도 그대로 남는다. 부모가 이 기기에서 추적되지 않으면 그 턴은 부모 "
+                 "대화를 capture해 그쪽에서 검토한다.\n")
+    elif st["inherited_rounds"]:
         text += (f"같은 scope의 부모 대화가 이미 추적한 과거 {st['inherited_rounds']}라운드는 이 대화의 "
                  "검토 대상이 아니다. 부모의 미검토 대기는 그대로 남는다.\n")
+    if (st.get("coverage") or {}).get("ancestor_pending_tails"):
+        text += ("fork 부모의 선언된 history 범위에 미완료 꼬리가 있다. 자식의 종료로 부모 턴을 "
+                 "완료하거나 ACK하지 않는다. 부모 원본·검토 대기를 별도로 확인한다.\n")
     if st.get("repair"):
         text += ("이 snapshot은 이미 검토했지만 저장 영수증의 최종 확인이 실패해 복구 대기로 남았다. "
                  "새 대화의 완료 커서는 되감지 않았다. 아래 기존 출처와 영수증을 다시 확인하고 "
