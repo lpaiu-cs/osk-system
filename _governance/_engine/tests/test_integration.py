@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -1788,6 +1789,78 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 again = it.cite(f"{harness}/{sid}", turn="-1")
                 self.assertTrue(again["reused"])
                 self.assertEqual((ROOT / cited["path"]).read_bytes(), saved)
+
+    def test_batch_reads_only_the_unreviewed_turns_of_an_ended_conversation(self):
+        from osk import cli
+        # Inventory only this test's conversations.
+        state_path_for = it.state_path
+        state_dir = Path(TMP.name) / self.sid
+        patcher = mock.patch.object(it, "state_path", side_effect=lambda harness, sid:
+                                    state_dir / state_path_for(harness, sid).name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        talks = {}
+        for name, count in (("done", 2), ("short", 5), ("running", 3)):
+            sid = f"{self.sid}-{name}"
+            path = Path(TMP.name) / f"{sid}.jsonl"
+            path.write_text("".join(json.dumps(r) + "\n" for n in range(1, count + 1)
+                                    for r in claude_round(sid, n)), encoding="utf-8")
+            st = it.capture("claude", sid, str(path), "capture-tests")
+            self.assertTrue(st["ok"], st)
+            talks[name] = sid, path, st
+        sid, path, st = talks["done"]
+        it.acknowledge("claude", sid, st["through"], "no_value", "fixture turns only")
+        sid, path, st = talks["short"]
+        first = it.prompt("claude", sid, include_organization=False, max_rounds=2)
+        it.acknowledge("claude", sid, first["through"], "no_value", "first two fixture turns")
+        ended = time.time() - it.ENDED_AFTER - 60
+        for name in ("done", "short"):
+            os.utime(talks[name][1], (ended, ended))
+        jobs = {j["conversation_id"]: j for j in it.list_pending(100)["jobs"]}
+        # A fully reviewed conversation is not read; a running one keeps its own cadence.
+        self.assertEqual(set(jobs), {sid})
+        job = jobs[sid]
+        self.assertEqual(job["pending_refs"], [raw.native_ref("claude", sid, f"user-{n}") for n in (3, 4, 5)])
+        self.assertIn(job["read_command"], job["prompt"])
+        read = it.read_turns(job["pending_refs"])["turns"]
+        self.assertEqual([t["position"] for t in read], [3, 4, 5])
+        self.assertTrue(all(f"question {t['position']}" in t["text"] for t in read), read)
+        self.assertNotIn("question 2", json.dumps(read))
+        self.assertEqual(read[0]["previous"], raw.native_ref("claude", sid, "user-2"))
+        # Earlier context only on demand, one turn back at a time.
+        [back] = it.read_turns([read[0]["previous"]])["turns"]
+        self.assertEqual((back["position"], back["previous"]), (2, raw.native_ref("claude", sid, "user-1")))
+        out = {}
+        with mock.patch.object(cli, "_emit", out.update):
+            cli.main(["integration", "read", "--ref", job["pending_refs"][0], "--view", "full"])
+        self.assertEqual(out["turns"][0]["position"], 3)
+        self.assertIn("answer 3", out["turns"][0]["text"])
+        with self.assertRaisesRegex(ValueError, "not a completed turn"):
+            it.read_turns([raw.native_ref("claude", sid, "user-9")])
+        done = it.acknowledge("claude", sid, job["through"], "no_value", "ended fixture turns")
+        self.assertEqual((done["reviewed_rounds"], done["pending"]), (5, False))
+        self.assertNotIn(sid, [j["conversation_id"] for j in it.list_pending(100)["jobs"]])
+
+    def test_complete_review_restarts_the_conversation_cadence(self):
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
+        self.capture()
+        for _ in range(6):
+            it.tick("claude", self.sid)
+        path = it.state_path("claude", self.sid)
+        state = it._load(path, "claude", self.sid)
+        state["response_growth"] = {"counter": "finals", "seen": ["final"], "count": 6,
+                                    "attempted_count": 0, "history_baselined": True}
+        it._save(path, state)
+        part = it.prompt("claude", self.sid, include_organization=False, max_rounds=2)
+        it.acknowledge("claude", self.sid, part["through"], "no_value", "first two fixture turns")
+        state = it._load(path, "claude", self.sid)
+        # A partial review leaves both counts running.
+        self.assertEqual((state["reviewed_prompt_count"], state["response_growth"]["attempted_count"]), (2, 0))
+        rest = it.prompt("claude", self.sid, include_organization=False)
+        it.acknowledge("claude", self.sid, rest["through"], "no_value", "last fixture turn")
+        state = it._load(path, "claude", self.sid)
+        self.assertEqual((state["reviewed_prompt_count"], state["response_growth"]["attempted_count"]), (6, 6))
+        self.assertEqual(it.tick("claude", self.sid)["unreviewed_prompts"], 1)
 
 
 if __name__ == "__main__":

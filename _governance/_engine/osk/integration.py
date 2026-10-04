@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,6 +17,7 @@ from ._portalock import lock_exclusive, unlock
 
 SOFT, HARD = 9, 15
 MAX_REVIEW_ROUNDS = 15
+ENDED_AFTER = 3600  # seconds without a transcript change: the conversation ended (Mechanism §9-4 3항)
 
 
 def _identity(harness: str, conversation_id: str) -> str:
@@ -497,6 +499,12 @@ def acknowledge(harness: str, conversation_id: str, through: str,
             s["reviewed_count"] = max(s["reviewed_count"], snap["count"])
             s["reviewed_prompt_count"] = max(s["reviewed_prompt_count"], snap["prompt_count"])
             s.get("repair_pending", {}).pop(through, None)
+            if s["reviewed_count"] == len(s["rounds"]) and not s.get("repair_pending"):
+                # Every tracked turn is reviewed, whoever reviewed it: the conversation's
+                # user-turn and Stop counts start over (Mechanism §9-3 1항).
+                s["reviewed_prompt_count"] = s["prompt_count"]
+                if s.get("response_growth"):
+                    s["response_growth"]["attempted_count"] = s["response_growth"]["count"]
         _save(p, s)
         return _view(s)
 
@@ -592,6 +600,20 @@ def review_status(harness: str, conversation_id: str, through: str) -> dict:
         return result
 
 
+def _ended_source(s: dict) -> str | None:
+    """This device's transcript of a conversation that has gone quiet. A worker without
+    the conversation reads its unreviewed turns there; a conversation still running keeps
+    its own review cadence, where the turns are already in context."""
+    try:
+        path = _locate_transcript(s["harness"], s["conversation_id"],
+                                  s.get("capture_path") or s["transcript_path"])
+        if path and time.time() - Path(path).stat().st_mtime >= ENDED_AFTER:
+            return path
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def _known_pending(limit: int) -> tuple[list, int, list, list]:
     if not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
@@ -628,10 +650,11 @@ def _known_pending(limit: int) -> tuple[list, int, list, list]:
                 awaiting_native.append({"harness": s["harness"], "conversation_id": s["conversation_id"],
                                         "state": "awaiting_native", "transcript_path": s["transcript_path"]})
                 continue
-            # A worker without the conversation can review only stored rounds and receipts;
-            # original turns wait for their own conversation (Mechanism §9-4 3항).
-            if changed or current["repair_pending"] or any(
-                    not raw.is_native(ref) for ref in current["pending_refs"]):
+            # A worker without the conversation takes stored rounds, receipts, and the
+            # unreviewed turns of a conversation that ended on this device (Mechanism §9-4 3항).
+            pending = current["pending_refs"]
+            if (changed or current["repair_pending"] or any(not raw.is_native(ref) for ref in pending)
+                    or pending and _ended_source(s)):
                 states.append(s)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append({"state": str(p), "error": str(exc)})
@@ -686,10 +709,11 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         st = _current_view(s, p)
         count = min(len(s["rounds"]), s["reviewed_count"] + max_rounds)
         if offline:
-            # A worker without this conversation reviews stored rounds only; the
-            # first original turn ends its bounded range.
+            # A worker without this conversation takes stored rounds, and original turns
+            # only once the conversation has ended on this device (Mechanism §9-4 3항).
+            ended = _ended_source(s)
             stored = s["reviewed_count"]
-            while stored < count and not raw.is_native(s["rounds"][stored]["ref"]):
+            while stored < count and (ended or not raw.is_native(s["rounds"][stored]["ref"])):
                 stored += 1
             count = stored
         if s.get("repair_pending"):
@@ -824,10 +848,21 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     stored = [ref for ref in st["pending_refs"] if not raw.is_native(ref)]
     text += "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. "
     turns = len(st["pending_refs"]) - len(stored)
-    if turns and offline:
-        # Only a receipt repair reaches a worker without the conversation.
-        text += (f"원본 턴 {turns}개의 원문은 이 작업자에게 없다 — 기존 출처·허브 영수증만 다시 확인하고 "
+    if turns and offline and st.get("repair"):
+        # A receipt repair needs no dialogue.
+        text += (f"원본 턴 {turns}개의 원문은 읽지 않는다 — 기존 출처·허브 영수증만 다시 확인하고 "
                  "대화 내용을 새로 판단하지 않는다.\n")
+    elif turns and offline:
+        # The conversation ended before its own review: read only these turns from this
+        # device's transcript, earlier context only on demand (Mechanism §9-4 3항).
+        st["read_command"] = core.cli_command("integration", "read", *[
+            arg for ref in st["pending_refs"] if raw.is_native(ref) for arg in ("--ref", ref)])
+        text += (f"원본 턴 {turns}개는 검토 시점 전에 끝난 대화의 미검토 턴이다. 이 기기의 원본 전사에서 "
+                 f"그 턴만 읽는다:\n{st['read_command']}\n"
+                 "턴마다 선별본(≤6000자)과 바로 앞 턴의 `previous`가 온다. 앞선 맥락은 판단에 꼭 필요할 때만 "
+                 "`--ref <previous>`로 한 턴씩 거슬러 읽고, 대화 전체를 읽지 않는다. 노드로 옮길 지식이 나온 턴만 "
+                 f"cite_round(conversation=\"{harness}/{conversation_id}\", turn=<턴 ID>)로 인용하고, 받은 "
+                 "round_ref를 distill.sources로 써 출처와 허브 Link를 완성한다.\n")
     elif turns:
         # The reviewer holds these turns in context. Citing is the only vault write of
         # dialogue, and only for evidence a node needs (Mechanism §9 9항).
@@ -918,6 +953,49 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
             "index": result["indices"][0], "turn": rid, "reused": result.get("reused", False),
             "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
             **({"binding": result["binding"]} if "binding" in result else {})}
+
+
+def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
+               query: str | None = None) -> dict:
+    """Original turns from this device's transcript, for a reviewer without the conversation.
+    Only the named turns are read, never the whole conversation; each names the turn
+    before it as `previous`, for earlier context only when a judgment needs it
+    (Mechanism §9-4 3항). Nothing is written."""
+    from . import raw_view
+    if view not in {"review", "full"} or not isinstance(refs, list) or not 1 <= len(refs) <= MAX_REVIEW_ROUNDS:
+        raise ValueError(f"1..{MAX_REVIEW_ROUNDS} original-turn refs and view review|full are required")
+    out, conversations = [], {}
+    for ref in refs:
+        parts = ref.split(":", 3) if raw.is_native(ref) else []
+        if len(parts) != 4:
+            raise ValueError("ref must be native:<harness>:<conversation ID>:<turn ID>")
+        _, harness, sid, turn = parts
+        if (harness, sid) not in conversations:
+            with _locked(harness, sid) as p:
+                s = _load(p, harness, sid)
+            source = _locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
+            if not (source and Path(source).is_file()):
+                raise ValueError(f"the transcript of {harness}/{sid} is not on this device")
+            parsed = transcripts.read(source, harness, sid)
+            shown = parsed.get("dialogue_v1") or {}
+            conversations[harness, sid] = [(turn_key(harness, r["id"]), shown.get(r["id"], r))
+                                           for r in parsed["rounds"]]
+        turns = conversations[harness, sid]
+        at = next((i for i, (key, _) in enumerate(turns) if key == turn), None)
+        if at is None:
+            raise ValueError(f"{turn} is not a completed turn of {harness}/{sid}")
+        pair = turns[at][1]
+        chunk = raw._block(at + 1, pair["user"], pair["agent"]).rstrip("\n")
+        item = {"ref": ref, "turn": turn, "position": at + 1, "turns": len(turns),
+                "previous": raw.native_ref(harness, sid, turns[at - 1][0]) if at else None}
+        if view == "review":
+            item.update(raw_view.project(chunk, max_chars, query))
+        else:
+            cut = len(chunk) > max_chars
+            item.update(view="full", chars=len(chunk), truncated=cut,
+                        text=chunk[:max_chars] if cut else chunk)
+        out.append(item)
+    return {"ok": True, "turns": out}
 
 
 class SubagentEvent(Exception):

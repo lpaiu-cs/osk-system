@@ -192,7 +192,7 @@ def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None) ->
             "clipped_events": clipped, "omitted_events": dict(omitted),
             "query": query,
             "reading_note": "Selection of user/assistant text, not an exhaustive read or verified conclusion. "
-                            "Use a specific query for supporting or contradicting evidence; do not sweep the raw. "
+                            "Use a specific query for supporting or contradicting evidence; do not sweep the record or the conversation. "
                             "A call is not its result: query the displayed call ID to find related output. "
-                            "New dialogue raw stores tool payloads in its native evidence reference; a reference is not a verified result. "
+                            "Dialogue keeps tool payloads as native evidence references; a reference is not a verified result. "
                             "Unresolved evidence remains deferred."}

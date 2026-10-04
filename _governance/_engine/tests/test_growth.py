@@ -815,6 +815,34 @@ class GrowthTests(unittest.TestCase):
             assert growth.run(['unused-command'])['state'] == 'skipped'
         """)
 
+    def test_daily_run_reads_an_ended_conversation_and_restarts_its_cadence(self):
+        self.check_case("""
+            import os, time
+            from osk import integration
+            path = core.ROOT / 'ended.jsonl'
+            rows = []
+            for i in range(1, 4):
+                rows += [{'type':'user','sessionId':'ended','uuid':'u'+str(i),'message':{'role':'user','content':'question '+str(i)}},
+                         {'type':'assistant','sessionId':'ended','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
+            path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
+            assert integration.capture('claude','ended',str(path),'ended-project',space='00_Scope/W1')['ok']
+            for _ in range(5):
+                integration.tick('claude','ended')
+            # Still running: its turns stay with the conversation's own review cadence.
+            assert growth.run(['unused-command'])['state'] == 'skipped'
+            old = time.time() - integration.ENDED_AFTER - 60
+            os.utime(path, (old, old))
+            result = growth.run([sys.executable,'-c',packet_worker()],limit=3)
+            assert result['ok'] and result['scope_selected'] == 1, result
+            plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            job = growth._reading_plan(plan)['scope_jobs'][0]
+            assert job['pending_refs'] == ['native:claude:ended:u' + str(i) for i in (1, 2, 3)], job
+            assert 'integration read' in job['read_command'], job
+            state = integration.status('claude','ended')
+            assert (state['reviewed_rounds'], state['pending']) == (3, False), state
+            assert state['prompt_count'] == state['reviewed_prompt_count'] == 5, state
+        """)
+
     def test_final_packet_applies_only_observed_domain_preservation(self):
         self.check_case("""
             node('A')

@@ -403,7 +403,7 @@ def _reading_plan(planned: dict) -> dict:
               "pending_refs", "remaining_rounds", "capture_error", "failed_rounds",
               "interrupted_rounds", "inherited_rounds", "coverage", "repair",
               "previous_distillations", "proof_discovery", "scope_recovery",
-              "capture_recovery", "raw_review"}
+              "capture_recovery", "raw_review", "read_command"}
     jobs = []
     for job in planned.get("scope_jobs", []):
         item = {k: v for k, v in job.items() if k in fields}
@@ -457,9 +457,13 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "recheck); instead checkpoint recheck:[{key,outcome:escalated,reason,proposal}] for the "
         "user, naming the next nodes affected. Do not edit target for this job. An update_node "
         "call records a check without a packet entry. Uncertainty leaves the job open.\n"
-        "Scope jobs: pending_refs starting with native: are original turns; a Stop fork holds "
-        "them in context, so judge them there, never re-read, and cite only a turn a node needs "
-        "as evidence with cite_round(conversation, quote), using its round_ref as distill source. "
+        "Scope jobs: pending_refs starting with native: are original turns. A Stop fork holds "
+        "them in context: judge them there and never re-read. Otherwise they are the unreviewed "
+        "turns of a conversation that ended before its own review: read only those turns with "
+        "the job's read_command (a review view per turn), read a turn's previous only when a "
+        "judgment needs earlier context, and never read the whole conversation. Cite only a turn "
+        "a node needs as evidence with cite_round(conversation, turn or quote), using its "
+        "round_ref as distill source. "
         "For stored rounds read current scope_memory and read_cited(view=review) to select claims. "
         "Follow scope_recovery instructions when present; preserve durable entries before making room. "
         "Resume a previous_deferral at its missing evidence rather than repeating its whole read. "
