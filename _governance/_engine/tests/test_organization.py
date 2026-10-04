@@ -265,10 +265,16 @@ class OrganizationTests(unittest.TestCase):
             nxt = organization.plan('W1')
             assert 'B' not in {u['name'] for u in nxt['review_units']}, nxt['review_units']
             assert nxt['coverage']['handoff'] == 1, nxt['coverage']
+            rest = [{'unit': u['unit'], 'reason': 'ok'} for u in nxt['review_units']]
             rejected(lambda: organization.review(nxt['key'], 'W1', 'complete', 'Handed-off range is unread',
-                                                 after=nxt['snapshot'],
-                                                 checked=[{'unit': u['unit'], 'reason': 'ok'}
-                                                          for u in nxt['review_units']]))
+                                                 after=nxt['snapshot'], checked=rest))
+            organization.review(nxt['key'], 'W1', 'deferred', 'Only the handed-off range remains',
+                                after=nxt['snapshot'], checked=rest)
+            # 남은 구간이 모두 넘김 중이면 완료가 아니라 넘김이라고 답하고, 정기 실행도 고르지 않는다
+            waiting = organization.plan('W1')
+            assert waiting['status'] == 'handoff' and waiting['handoff'] == 1, waiting
+            assert not organization.pending(['W1']), 'a cooling range is not offered to anyone yet'
+            assert organization.status(job)['status'] == 'pending'
             # 냉각이 지나면 다른 검토자에게 다시 온다
             state = organization._load()
             state['handoff']['W1'] = {u: at - organization.HANDOFF_SECONDS - 1

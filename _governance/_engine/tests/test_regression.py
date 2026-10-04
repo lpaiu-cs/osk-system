@@ -7498,17 +7498,30 @@ def test_evictions():
           and (ROOT / "00_Scope/W1/W1.md").exists(), o)
     ref = _w(write.create_node, "regr-evi-cites-transit", "s", "[[regr-evi-transit]]를 본다.",
              "fable-5", space="00_Scope/W1")
-    o, _ = run(["tidy", "discard", "regr-evi-transit"])
-    check("tidy discard: 들어오는 참조가 있으면 중단",
-          "regr-evi-cites-transit" in str(o.get("exit", "")) and transit.exists(), o)
+    # id로 불러도 실제 제목으로 적힌 참조·기억을 찾는다(PR #135 리뷰 P1)
+    for handle in ("regr-evi-transit", "260903-zzzz-evtr"):
+        o, _ = run(["tidy", "discard", handle])
+        check(f"tidy discard: 들어오는 참조가 있으면 중단({handle})",
+              "regr-evi-cites-transit" in str(o.get("exit", "")) and transit.exists(), o)
     (ROOT / ref["path"]).unlink()
     from osk import scope_memory as sm
     mention = sm.sm_dir() / "regr-evi-mention.md"
     mention.write_text("경유 regr-evi-transit 참고\n", encoding="utf-8")
-    o, _ = run(["tidy", "discard", "regr-evi-transit"])
-    check("tidy discard: scope 기억이 가리키면 중단",
-          "regr-evi-mention" in str(o.get("exit", "")) and transit.exists(), o)
+    for handle in ("regr-evi-transit", "260903-zzzz-evtr"):
+        o, _ = run(["tidy", "discard", handle])
+        check(f"tidy discard: scope 기억이 가리키면 중단({handle})",
+              "regr-evi-mention" in str(o.get("exit", "")) and transit.exists(), o)
     mention.unlink()
+    # 제목에 `.md`가 든 노드(`X.md.md`)의 `[[X.md]]` 참조도 그래프의 해석으로 잡는다
+    dot = ROOT / "00_Scope/Workbench/transit/regr-evi-dot.md.md"
+    dot.write_text(node_text("260903-zzzz-evdt", "제목에 .md가 든 경유 노드"), encoding="utf-8")
+    ref2 = _w(write.create_node, "regr-evi-cites-dot", "s", "[[regr-evi-dot.md]]를 본다.",
+              "fable-5", space="00_Scope/W1")
+    o, _ = run(["tidy", "discard", "regr-evi-dot.md"])
+    check("tidy discard: 제목에 .md가 든 노드의 참조도 잡는다",
+          "regr-evi-cites-dot" in str(o.get("exit", "")) and dot.exists(), o)
+    (ROOT / ref2["path"]).unlink()
+    dot.unlink()
     o, _ = run(["tidy", "discard", "regr-evi-transit"])
     plan = o.get("plan", {})
     check("tidy discard: 확인 없이는 지울 판만 알린다",
@@ -7517,10 +7530,14 @@ def test_evictions():
     o, _ = run(["tidy", "discard", "regr-evi-transit", "--confirm", "sha256:" + "0" * 64])
     check("tidy discard: 확인한 판이 아니면 중단",
           str(o.get("exit", "")).startswith("[중단]") and transit.exists(), o)
-    o, _ = run(["tidy", "discard", "regr-evi-transit", "--confirm", plan.get("hash", "")])
-    check("tidy discard: 확인받은 판을 지운다",
+    before = transit.read_bytes()
+    o, _ = run(["tidy", "discard", "260903-zzzz-evtr", "--confirm", plan.get("hash", "")])
+    copy = Path(o["copy"]) if o.get("copy") else None
+    check("tidy discard: 확인받은 판을 지우고 이 기기에 사본을 남긴다",
           o.get("ok") and o.get("discarded", {}).get("title") == "regr-evi-transit"
-          and not transit.exists(), o)
+          and not transit.exists() and copy is not None and copy.read_bytes() == before, o)
+    if copy is not None:
+        copy.unlink(missing_ok=True)
 
     transit.unlink(missing_ok=True)
     check("두 큐가 비어야 정돈할 것이 없다", "정돈할 것이 없다" in ev.tidy_prompt(None, "PY", "ENG"))

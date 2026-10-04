@@ -309,7 +309,16 @@ def plan(scope: str, *, record: bool = True) -> dict:
     with core.mutation_lock():
         _scope_path(scope)
         jobs = pending([scope], limit=1, record=record)
-        return jobs[0] if jobs else {"scope": scope, "status": "complete"}
+        if jobs:
+            return jobs[0]
+        # 남은 구간이 모두 넘김 중이라 고르지 않은 것은 완료가 아니다 — 다음 검토자의 차례다
+        state = _load()
+        waiting = [u for u in _remaining(snapshot(scope), state) if u["unit"] in _cooling(state, scope)]
+        if waiting:
+            return {"scope": scope, "status": "handoff", "handoff": len(waiting),
+                    "reason": "remaining ranges were corrected by their last reviewer; "
+                              "another reviewer takes them after the cooling period"}
+        return {"scope": scope, "status": "complete"}
 
 
 def review(key: str, scope: str, outcome: str, reason: str, after: str = "",

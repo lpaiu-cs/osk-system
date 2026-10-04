@@ -381,9 +381,10 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 receipt = _verify(job)
                 receipt["reason"] = str(exc)
             current = _retained_target(job["target"], idx)
+            # 증류한 문단이 남은 채 다른 문단이 고쳐졌을 수 있다 — 지금 판의 해시를 준다
             return {"ok": True, "resumed": True, "node_preserved": True,
                     "name": current.stem, "id": job["target"]["id"],
-                    "path": posix_rel(current, ROOT), "new_hash": job["target"]["hash"],
+                    "path": posix_rel(current, ROOT), "new_hash": sha256_file(current),
                     "distillation": receipt}
         if not job:
             sources = _sources(distill["sources"], idx)

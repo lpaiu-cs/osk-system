@@ -417,6 +417,10 @@ def _child():
                                   expect_hash=core.sha256_file(target))
                 self.assertEqual(D.status(self.key)["status"], "complete")
                 self.assertEqual(D.verify_receipt(receipt)["status"], "complete")
+                # 같은 요청을 다시 보내면 옛 판이 아니라 지금 판의 해시를 준다(PR #135 리뷰)
+                again = self.create()
+                self.assertTrue(again["resumed"])
+                self.assertEqual(again["new_hash"], core.sha256_file(target))
                 write.update_node(out["id"], old_text="bounded operation", new_text="bounded retry")
                 self.assertEqual(D.status(self.key)["status"], "pending")
 

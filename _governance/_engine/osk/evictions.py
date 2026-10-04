@@ -301,9 +301,10 @@ def discard_transit(title: str, confirm: str | None = None) -> dict:
     들어오는 참조(Link·Predicate Edge)가 남았거나 scope 기억이 그 노드를 가리키면
     거부한다 — 재배선·정정이 먼저다. `confirm` 없이 부르면 지울 판(해시)만 알린다.
     사용자에게 확인받은 그 해시로 다시 부를 때만 지운다 — 확인한 뒤 바뀐 판은 지우지
-    않는다. 기록은 vault의 git 이력이 맡는다(새 대장을 두지 않는다)."""
-    from . import contract, scope_memory, write   # write·scope_memory가 이 모듈을 부른다 — 순환을 피한다
-    from .core import ROOT, posix_rel, sha256_file
+    않는다. 새 대장은 두지 않는다. 지우기 전 판은 이 기기에 사본으로 남긴다 — 동기화
+    전의 판은 vault git 이력에 없을 수 있다."""
+    from . import scope_memory, write   # 둘 다 이 모듈을 부른다 — 순환을 피한다
+    from .core import ROOT, local_lock_path, posix_rel, sha256_file
     with mutation_lock():
         idx = graph.Index()
         if not idx.complete:
@@ -314,21 +315,25 @@ def discard_transit(title: str, confirm: str | None = None) -> dict:
             raise ValueError(f"`{title}`는 Workbench 경유 노드가 아니다 — 폐기는 경유 노드의 "
                              f"출구다(Workbench 계약 §3)")
         path = hit[0]
-        nid = idx.node(path).id
+        # 입력이 id·경로여도 실제 제목과 id로 찾는다 — 참조와 기억은 그 둘로 적힌다
+        name, nid = path.stem, idx.node(path).id
         inbound = []
-        for p in idx.mentioning([title, nid]):
+        for p in idx.mentioning([name, nid]):
             if p == path:
                 continue
             try:
                 n = idx.node(p)
             except Exception:
                 continue          # 판독되지 않는 파일은 참조를 말하지 않는다
-            refs = [t for pred in contract.PREDICATES for t in n.edges(pred)] + list(n.wikilinks())
-            if any(write._live_locate(contract.target_stem(t), idx) == path for t in refs):
-                inbound.append(p.stem)
+            # 그래프와 같은 해석(`Index.locate` — 제목·id·경로, 제목 속 `.md` 포함)으로 대조한다
+            for _relation, text in n.references():
+                found = idx.locate(text.split("#", 1)[0].strip())
+                if found and graph._same_file(found[0], path):
+                    inbound.append(p.stem)
+                    break
         memory = sorted(f.stem for f in scope_memory.sm_dir().glob("*.md")
                         if any(k in f.read_text(encoding="utf-8", errors="replace")
-                               for k in (title, nid)))
+                               for k in (name, nid)))
         where = []
         if inbound:
             where.append("노드 " + ", ".join(sorted(inbound)))
@@ -337,15 +342,17 @@ def discard_transit(title: str, confirm: str | None = None) -> dict:
         if where:
             raise ValueError("폐기하지 않았다 — 이 노드를 가리키는 곳을 먼저 재배선·정정하라: "
                              + "; ".join(where))
-        plan = {"title": title, "id": nid, "path": posix_rel(path, ROOT), "hash": sha256_file(path)}
+        plan = {"title": name, "id": nid, "path": posix_rel(path, ROOT), "hash": sha256_file(path)}
         if confirm is None:
             return {"ok": False, "plan": plan, "next": (
                 "사용자에게 확인받은 뒤 같은 명령에 --confirm <hash>를 붙여 다시 실행한다. "
-                "지운 노드는 vault git 이력의 직전 판에서 되살린다")}
+                "지운 판은 이 기기의 사본(응답의 copy)이나, 동기화된 판이면 vault git 이력에서 되살린다")}
         if confirm != plan["hash"]:
             raise ValueError("확인한 판과 지금 판이 다르다 — 폐기하지 않았다. 다시 확인받아라")
+        copy = local_lock_path(f"osk-discarded-{nid}.md")
+        write._atomic_write(copy, path.read_bytes())
         path.unlink()
-        return {"ok": True, "discarded": plan}
+        return {"ok": True, "discarded": plan, "copy": str(copy)}
 
 
 def _item(r: dict, now_ms: int | None) -> str:
