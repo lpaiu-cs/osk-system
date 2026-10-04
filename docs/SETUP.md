@@ -279,7 +279,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `validators` | **사용자 전속** — 검증기 활성화 현황·전환 (Mechanism §6-1) |
 | `raw migrate` | `_raw/` 구 Markdown 기록의 숨김 `.txt` 이관 계획; `--apply`로 적용 |
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
-| `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
+| `integration list` / `integration catchup` / `integration read` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기·끝난 대화의 미검토 턴 읽기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
@@ -776,9 +776,20 @@ cite_round(conversation="claude/<대화 ID>", quote="그 턴 사용자 발화의
 비밀값 치환·숫자 H2 escape·append-only 규칙을 그대로 따르며, 처음 쓸 때 세션 키를
 그 scope로 결속한다.
 
-정기 실행처럼 대화 원문이 없는 작업자는 원본 턴을 검토하지 않는다. 구판이 `_raw/`에
-저장한 라운드와 이미 검토한 snapshot의 영수증 복구만 맡는다. 구판 커서의 저장 라운드는
-그대로 검토 대기에 남고, 새 턴은 그 뒤에 원본 좌표로 붙는다.
+검토 시점에 닿지 않고 끝난 대화 — 원본 전사가 1시간 넘게 바뀌지 않은 대화 — 는 정기
+실행이 맡는다. 그 대화의 미검토 턴만 이 기기의 원본 전사에서 읽는다.
+
+```text
+integration read --ref native:claude:<대화 ID>:<턴 ID> [--ref …]
+```
+
+턴마다 6000자 선별본과 바로 앞 턴의 `previous`가 온다. 앞선 맥락은 판단에 필요할 때만
+`previous`로 한 턴씩 거슬러 읽고 대화 전체를 읽지 않는다. 미검토 턴이 없는 대화는 읽지
+않고, 아직 이어지는 대화는 자기 검토 주기에 맡긴다. 구판이 `_raw/`에 저장한 라운드와
+이미 검토한 snapshot의 영수증 복구도 정기 실행이 맡는다. 구판 커서의 저장 라운드는
+그대로 검토 대기에 남고, 새 턴은 그 뒤에 원본 좌표로 붙는다. 대화가 추적한 턴을 모두
+검토하면 — 그 대화 안에서든 Stop fork나 정기 실행에서든 — 그 대화의 Stop·user 턴 계수는
+0부터 다시 센다.
 
 Claude가 복제한 과거 대화(resume·fork)는 같은 scope의 부모 커서가 같은 턴을 추적하면
 그 턴을 자식의 검토 대상에서 뺀다. 결과 위치에 박힌 대화 ID의 차이는 무시하고 내용
@@ -820,9 +831,10 @@ MCP `create_node`·`update_node`의 `distill`에 `{key,sources,hub}`를 주면 �
 
 `growth plan`과 `growth prompt`는 쓰기 없는 미리보기다. `growth run`은 알려진 대화의
 미포착 꼬리를 따라잡고, 검토할 snapshot과 비교할 Scope 노드 집합·해시를 고정한 뒤
-제한된 외부 에이전트 실행에 그 입력을 준다. 이 정기 실행은 대화 원문이 없으므로 구판이
-저장한 라운드와 영수증 복구만 Scope 통합으로 맡고, 원본 턴은 그 대화와 Stop fork에
-남긴다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 Domain 후보가 된다.
+제한된 외부 에이전트 실행에 그 입력을 준다. Scope 통합으로는 검토 시점 전에 끝난 대화의
+미검토 턴(원본 전사에서 그 턴만 읽는다), 구판이 저장한 라운드, 영수증 복구를 맡는다.
+짧게 끝난 대화도 여기서 증류 기회를 갖는다. 아직 이어지는 대화의 턴은 그 대화와 Stop
+fork에 남긴다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 Domain 후보가 된다.
 기본 `--limit 3`은 Scope 통합·Domain 비교·참조 정돈·14일 초과 퇴출을 **합쳐 최대 3건**이다.
 각 작업군은 기록된 시도 순서에 따라 돌아가며 기회를 받는다. Scope 통합은 새 원문
 최대 3라운드씩, Domain 비교는 후보당 최대 8개 노드다. 선택하지 않은 대기와 뒤의

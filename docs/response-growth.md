@@ -57,7 +57,7 @@ just before inference; failure there preserves the due Stop attempt for a later 
 
 The existing supervisor receives one Scope job including recovery instructions. It does
 not select another conversation or a Domain batch. Busy execution defers work; native
-IDs let a later Stop catch up. The daily run has no conversation context and does not review original turns. A new turn
+IDs let a later Stop catch up. The daily run takes original turns only after the conversation has ended, reading just its unreviewed turns from the transcript. A new turn
 or changed source metadata before launch refuses the fork without spending the Stop
 attempt, preserving the pending review; native trailer rows written after Stop do not. Source movement
 during execution also makes cumulative cache accounting unconfirmed. A harness upgrade

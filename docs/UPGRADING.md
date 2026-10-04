@@ -28,9 +28,10 @@ rewrite your notes and records, and there is nothing to migrate.
   citations there. Rounds stored before the update and not yet reviewed stay in
   the review queue.
 - **New turns are reviewed in their conversation.** The conversation reviews
-  them at turns 9 and 15, or its Stop fork does. The daily or explicit
-  `growth run` has no conversation context: it reviews only rounds stored in
-  `_raw/` and receipt repairs.
+  them at turns 9 and 15, or its Stop fork does. A conversation that ends
+  before its review is picked up by the daily or explicit `growth run`, which
+  reads only its unreviewed turns from this device's transcript (`integration
+  read`). The run also reviews rounds stored in `_raw/` and receipt repairs.
 - **Ratification.** The amendment to the governing documents behind this
   change takes effect only when a release ratifies it. Its reasons are recorded
   in `_governance/records/2026-10-04-cited-capture.md`.

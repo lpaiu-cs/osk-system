@@ -615,7 +615,7 @@ Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 | `search "<words>"` | Search the nodes. Cited records are not searched. |
 | `sm show --session <key>` | Print a scope's memory. |
 | `tidy list` | List evicted scope-memory lines that are not settled yet. |
-| `integration list` | List conversations with review work that needs no conversation context: rounds an older release stored in `_raw/`, or a finished review whose receipt needs repair. New turns are reviewed in their own conversation. |
+| `integration list` | List review work for a run outside the conversation: the unreviewed turns of conversations that ended before their own review (read from this device's transcript), rounds an older release stored in `_raw/`, and finished reviews whose receipts need repair. A conversation still going on reviews its own turns. |
 | `protect <folder>`, `approve <folder>`, `revert <folder>` | Protect a folder, or accept or undo its pending changeset. These ask `[y/N]` and refuse to run without an interactive terminal. |
 | `fork doctor` | Check whether fork reviews can run. Read-only. |
 | `doctor` | Check how Claude Code, Codex, Kiro and Antigravity are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |

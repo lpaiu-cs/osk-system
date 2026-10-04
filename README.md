@@ -96,7 +96,9 @@ hooks prompt it.
    which it holds in context, together with the shared memory and distills what
    will last into nodes. It cites only the turns a node needs as evidence: the
    engine copies your words from the transcript into `_cited/`, and the node's
-   `derived-from` points to that round.
+   `derived-from` points to that round. A conversation that ends before its
+   review is picked up later by the batch growth run, which reads only its
+   unreviewed turns from the transcript on this device.
 3. **Connect and organize.** A node about the same claim is updated, not
    duplicated. New nodes stand first; a hub covering the topic links them
    afterwards and splits into branches as the topic grows. Knowledge used beyond
