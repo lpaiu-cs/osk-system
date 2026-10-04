@@ -911,6 +911,30 @@ class IntegrationTests(unittest.TestCase):
             it.acknowledge("claude", self.sid, third["through"], "no_value", "unread")
         it.acknowledge("claude", self.sid, third["through"], "deferred", "the transcript is away")
 
+    def test_scripted_codex_exec_run_is_not_tracked_or_reviewed(self):
+        path = it.state_path("codex", self.sid)
+        old = it._load(path, "codex", self.sid)
+        # An earlier engine left an open-tail error on this run.
+        old.update(session="capture-tests", capture_pending=True, capture_error="ValueError: old open tail")
+        it._save(path, old)
+        meta = {"type": "session_meta", "payload": {"id": self.sid, "originator": "codex_exec", "source": "exec"}}
+        self.transcript([meta] + codex_round(1) + codex_round(2))
+        found = self.capture("codex")
+        self.assertEqual((found["ok"], found["captured_rounds"], found["pending"], found["excluded"]),
+                         (True, 0, False, "codex_exec"))
+        self.assertIsNone(found["capture_error"])
+        ended = time.time() - it.ENDED_AFTER - 60
+        os.utime(self.path, (ended, ended))
+        self.assertNotIn(self.sid, [j["conversation_id"] for j in it.list_pending(100)["jobs"]])
+        # An interactive Codex conversation is still tracked.
+        meta["payload"].update(originator="codex_cli_rs", source="cli")
+        other = f"{self.sid}-interactive"
+        meta["payload"]["id"] = other
+        talk = Path(TMP.name) / f"{other}.jsonl"
+        talk.write_text("".join(json.dumps(r) + "\n" for r in [meta] + codex_round(1)), encoding="utf-8")
+        tracked = it.capture("codex", other, str(talk), "capture-tests")
+        self.assertEqual((tracked["ok"], tracked["captured_rounds"], tracked["excluded"]), (True, 1, None))
+
     def test_recited_turn_reports_the_stored_record_and_what_it_sees_now(self):
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2, finished=False))
         self.capture()

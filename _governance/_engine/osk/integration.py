@@ -156,7 +156,7 @@ def _view(s: dict) -> dict:
             "repair_pending": repairs,
             "capture_pending": s["capture_pending"], "capture_error": s["capture_error"],
             "capture_recovery": _capture_recovery(s),
-            "coverage": s.get("coverage"),
+            "coverage": s.get("coverage"), "excluded": s.get("excluded"),
             "inherited_rounds": len((s.get("inherited") or {}).get("rounds", [])),
             "pending_refs": [r["ref"] for i, r in enumerate(rs) if i >= n or r["ref"] in repair_refs],
             "through": _snapshot(s),
@@ -413,6 +413,15 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             _save(p, s)
             phase = "read"
             parsed = transcripts.read(native_path, harness, conversation_id)
+            if parsed.get("originator") == "codex_exec":
+                # A scripted `codex exec` run — osk's own scheduled runs included — is not a
+                # conversation to learn from: its turns are neither tracked nor reviewed
+                # (Mechanism §9-4 3항). Rounds an earlier engine stored keep their review.
+                s.update(excluded="codex_exec", capture_pending=False, capture_error=None,
+                         transcript_path=native_path, native_fingerprint=parsed["native_fingerprint"])
+                s.pop("capture_path", None)
+                _save(p, s)
+                return {**_current_view(s, p), "appended": 0, "changed": 0}
             coverage = parsed["coverage"]
             if not s["rounds"]:
                 s["coverage"] = coverage

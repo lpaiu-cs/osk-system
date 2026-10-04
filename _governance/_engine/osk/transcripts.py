@@ -250,6 +250,8 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
     elif harness == "codex":
         result = _codex_history(pages, conversation_id)
         readable = _codex_history(pages, conversation_id, dialogue=True)
+        # The conversation's own page names how it was started (`codex_exec` for a script).
+        result["originator"] = pages[-1][0][1].get("payload", {}).get("originator")
     elif harness == "kiro":
         # Kiro rows carry no conversation ID; the folder is the conversation's own.
         if Path(path).parent.name != conversation_id:
