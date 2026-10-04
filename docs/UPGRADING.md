@@ -30,8 +30,8 @@ rewrite your notes and records, and there is nothing to migrate.
 - **New turns are reviewed in their conversation.** The conversation reviews
   them at turns 9 and 15, or its Stop fork does. A conversation that ends
   before its review is picked up by the daily or explicit `growth run`, which
-  reads only its unreviewed turns from this device's transcript (`integration
-  read`). The run also reviews rounds stored in `_raw/` and receipt repairs.
+  reads only its unreviewed turns from this device's transcript through
+  `read_cited`. The run also reviews rounds stored in `_raw/` and receipt repairs.
 - **Ratification.** The amendment to the governing documents behind this
   change takes effect only when a release ratifies it. Its reasons are recorded
   in `_governance/records/2026-10-04-cited-capture.md`.

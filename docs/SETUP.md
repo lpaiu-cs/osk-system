@@ -279,7 +279,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `validators` | **사용자 전속** — 검증기 활성화 현황·전환 (Mechanism §6-1) |
 | `raw migrate` | `_raw/` 구 Markdown 기록의 숨김 `.txt` 이관 계획; `--apply`로 적용 |
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
-| `integration list` / `integration catchup` / `integration read` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기·끝난 대화의 미검토 턴 읽기 |
+| `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
@@ -777,14 +777,15 @@ cite_round(conversation="claude/<대화 ID>", quote="그 턴 사용자 발화의
 그 scope로 결속한다.
 
 검토 시점에 닿지 않고 끝난 대화 — 원본 전사가 12시간 넘게 바뀌지 않은 대화 — 는 정기
-실행이 맡는다. 그 대화의 미검토 턴만 이 기기의 원본 전사에서 읽는다.
+실행이 맡는다. 실행 에이전트는 그 대화의 미검토 턴만 MCP `read_cited`로 이 기기의 원본
+전사에서 읽는다.
 
 ```text
-integration read --ref native:claude:<대화 ID>:<턴 ID> [--ref …]
+read_cited(ref="native:claude:<대화 ID>:<턴 ID>")
 ```
 
 턴마다 6000자 선별본과 바로 앞 턴의 `previous`가 온다. 앞선 맥락은 판단에 필요할 때만
-`previous`로 한 턴씩 거슬러 읽고 대화 전체를 읽지 않는다. 미검토 턴이 없는 대화는 읽지
+`previous`를 같은 방식으로 한 턴씩 거슬러 읽고 대화 전체를 읽지 않는다. 쓰기는 없다. 미검토 턴이 없는 대화는 읽지
 않고, 아직 이어지는 대화는 자기 검토 주기에 맡긴다. 구판이 `_raw/`에 저장한 라운드와
 이미 검토한 snapshot의 영수증 복구도 정기 실행이 맡는다. 구판 커서의 저장 라운드는
 그대로 검토 대기에 남고, 새 턴은 그 뒤에 원본 좌표로 붙는다. 대화가 추적한 턴을 모두
@@ -844,15 +845,17 @@ fork에 남긴다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 D
 같은 입력 집합의 완료된 검토는 반복하지 않는다. 프로세스 종료코드 0만으로 완료하지 않고
 실제 Domain 본문·근거·허브와 입력 해시를 확인해야 한다.
 
-전용 에이전트는 작업 한 건을 판단할 때마다 prompt가 지정한 `osk_reviews` JSON을
-UTF-8 파일에 쓰고 `growth checkpoint --file <파일>`로 즉시 기록한다. 완료한 작업과
-빈 다른 작업군만 담고 `ok=true`를 확인한 뒤 다음 작업을 시작한다. 뒤 작업의 시간
-초과는 앞서 확인된 개별 기록을 지우지 않는다. 마지막 응답에도 같은 JSON을 반환한다.
-실행기는 성공한 최종 응답에서 이 결정을 읽어 기존 `integration review`·`growth review`
-검증을 적용한다. 셸 정책 때문에 에이전트의 검토 CLI 실행이 막혀도 이 경로로 등록한다.
+전용 에이전트는 osk MCP 도구만 쓰고 osk CLI나 셸을 실행하지 않는다. 샌드박스 안의
+에이전트는 CLI를 실행할 수 없고, 시도할 때마다 시간 예산을 쓴다. 판단한 결정은 prompt가
+지정한 `osk_reviews` JSON 하나로 마지막 응답에 모아 반환한다. 실행 도중에는 저장하지
+않으므로 시간 제한 전에 남은 작업을 보류로 담아 응답을 끝낸다. 시간 초과로 끊긴 실행은
+결정을 남기지 않는다. 실행기는 성공한 최종 응답에서 이 결정을 읽어 기존
+`integration review`·`growth review`·정돈 검토 검증을 샌드박스 밖에서 적용한다. 정돈
+결정은 snapshot 없이 받고, 에이전트가 읽은 뒤 바뀐 검토 단위는 거절한다.
 도구 출력 속 JSON이나 다른 manifest·선정하지 않은 대화의 결정은 받아들이지 않으며,
-`preserved`라는 선언만으로 저장을 인정하지 않는다. 직접 CLI를 사용할 때도
-`growth review --manifest <plan rid>`로 같은 검증을 거친다.
+`preserved`라는 선언만으로 저장을 인정하지 않는다. 사람이 셸에서 직접 검토할 때는
+`growth review --manifest <plan rid>`로 같은 검증을 거치고, 작업 한 건씩
+`growth checkpoint --file <파일>`로 기록할 수 있다.
 
 에이전트 명령은 JSON argv 배열 파일로 둔다. 명령은 stdin으로 프롬프트를 읽고 종료해야
 하며, 이 인스턴스의 osk MCP에 연결돼 있어야 한다. 셸 문자열은 실행하지 않는다.
