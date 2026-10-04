@@ -17,7 +17,7 @@ from ._portalock import lock_exclusive, unlock
 
 SOFT, HARD = 9, 15
 MAX_REVIEW_ROUNDS = 15
-ENDED_AFTER = 3600  # seconds without a transcript change: the conversation ended (Mechanism §9-4 3항)
+ENDED_AFTER = 6 * 3600  # seconds without a transcript change: the conversation ended (Mechanism §9-4 3항)
 
 
 def _identity(harness: str, conversation_id: str) -> str:
