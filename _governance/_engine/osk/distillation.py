@@ -1,6 +1,8 @@
 """Bounded, resumable node -> provenance -> hub completion.
 
-Receipts prove persisted bytes and references, never semantic correctness.
+Receipts prove persisted text and references, never semantic correctness. A
+receipt binds the paragraphs its write added or changed, so an unrelated later
+edit of the same node keeps it; receipts written before that bind the whole file.
 The local journal is written before either graph write. All graph changes still
 use write's ordinary validator/render/CAS path under one mutation lock.
 """
@@ -8,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from . import contract, graph, raw, secrets, write
@@ -116,6 +119,34 @@ def _check_sources(job: dict, idx) -> None:
             raise write.WriteError("source changed or crossed its top-level cluster; pending")
 
 
+_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d+[.)])\s")
+_HEADING = re.compile(r"^ {0,3}#{1,6}(?:\s|$)")
+
+
+def _segments(body: str) -> list[str]:
+    """보존 확인의 단위 해시 — 빈 줄로 나뉜 문단이고, 목록은 항목 하나씩이다. 제목 줄은
+    단위가 아니다. 항목을 하나씩 재는 것은 목록에 한 줄 덧붙인 증류가 같은 목록의 다른
+    항목이 고쳐질 때마다 깨지지 않게 하려는 것이다."""
+    out, cur = [], []
+    for block in re.split(r"\n[ \t]*\n", body):
+        for line in block.splitlines():
+            if _HEADING.match(line) or (_ITEM.match(line) and cur):
+                out.append(cur)
+                cur = []
+            if not _HEADING.match(line):
+                cur.append(line)
+        out.append(cur)
+        cur = []
+    texts = ("\n".join(s).strip() for s in out)
+    return [sha256_bytes(t.encode()) for t in texts if t]
+
+
+def _added_segments(old_body: str, new_body: str) -> list[str]:
+    """이 쓰기가 더하거나 바꾼 단위 — 영수증이 결속하는 것은 이것뿐이다."""
+    before = set(_segments(old_body))
+    return sorted({s for s in _segments(new_body) if s not in before})
+
+
 def _retained_target(target: dict, idx) -> Path:
     p = write._live_locate(target["id"], idx)
     if p is None or not p.is_file():
@@ -123,7 +154,14 @@ def _retained_target(target: dict, idx) -> Path:
     if (tuple(p.relative_to(ROOT).parts[:2]) != tuple(Path(target["path"]).parts[:2])
             or graph.space_of(p)[0] not in ("scope", "domain")):
         raise write.WriteError("target crossed its top-level cluster; pending")
-    if sha256_file(p) != target["hash"] or not write._norm_body(contract.parse(p).body):
+    body = contract.parse(p).body
+    if not write._norm_body(body):
+        raise write.WriteError("target bytes changed; pending")
+    if target.get("paragraphs"):
+        # 증류한 단위가 그대로 남아 있으면 보존이다 — 같은 노드의 무관한 편집은 깨지 않는다.
+        if not set(target["paragraphs"]) <= set(_segments(body)):
+            raise write.WriteError("distilled paragraphs changed; pending")
+    elif sha256_file(p) != target["hash"]:
         raise write.WriteError("target bytes changed; pending")
     return p
 
@@ -303,12 +341,14 @@ def resume(key: str, *, name: str | None = None) -> dict:
             receipt = _wire_hub(job)
         except Exception as exc:
             receipt = _receipt(job, str(exc))
-        path = write._live_locate(target["id"], graph.Index())
-        saved = bool(path and path.is_file() and sha256_file(path) == target["hash"]
-                     and path.relative_to(ROOT).parts[:2] == Path(target["path"]).parts[:2])
+        try:
+            path = _retained_target(target, graph.Index())   # 영수증과 같은 보존 판정
+        except (write.WriteError, OSError, ValueError):
+            path = None
+        saved = path is not None
         return {"ok": saved, "resumed": True, "node_preserved": saved,
                 "name": target["name"], "id": target["id"], "path": posix_rel(path, ROOT) if saved else target["path"],
-                "new_hash": target["hash"] if saved else None, "distillation": receipt}
+                "new_hash": sha256_file(path) if saved else None, "distillation": receipt}
 
 
 def _execute(operation: str, distill: dict, request: dict, *,
@@ -341,9 +381,10 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 receipt = _verify(job)
                 receipt["reason"] = str(exc)
             current = _retained_target(job["target"], idx)
+            # 증류한 문단이 남은 채 다른 문단이 고쳐졌을 수 있다 — 지금 판의 해시를 준다
             return {"ok": True, "resumed": True, "node_preserved": True,
                     "name": current.stem, "id": job["target"]["id"],
-                    "path": posix_rel(current, ROOT), "new_hash": job["target"]["hash"],
+                    "path": posix_rel(current, ROOT), "new_hash": sha256_file(current),
                     "distillation": receipt}
         if not job:
             sources = _sources(distill["sources"], idx)
@@ -407,6 +448,11 @@ def _execute(operation: str, distill: dict, request: dict, *,
             planned = {"name": path.stem, "id": n.id, "path": posix_rel(path, ROOT),
                        "before_hash": sha256_file(path) if path.exists() else None,
                        "hash": sha256_bytes(data)}
+            added = _added_segments(contract.parse(path).body if path.exists() else "", n.body)
+            # 더한 단위가 없으면(삭제만 한 쓰기) 파일 전체에 결속한다. 이 판 이전에 시작한
+            # 작업은 그 작업의 형식(파일 전체)을 그대로 잇는다.
+            if added and (job is None or "paragraphs" in job["target"]):
+                planned["paragraphs"] = added
             if job:
                 if job["target"] != planned:
                     raise write.WriteError("prepared target changed; pending")

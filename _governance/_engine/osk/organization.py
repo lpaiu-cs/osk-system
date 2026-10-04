@@ -11,12 +11,19 @@ import hashlib
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 from . import core, contract, graph, write
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
 REVIEW_UNITS = 3
+# 계획 뒤 검토자가 고친 구간은 다른 검토자에게 넘긴다. update_node는 검토자 신원을
+# 싣지 않으므로 시간으로 가른다 — 정기 실행은 하루 간격이고 한 세션은 반나절 안이다.
+# ponytail: 시간 냉각은 신원의 근사다. 쓰기가 검토자를 싣게 되면 신원으로 가른다.
+HANDOFF_SECONDS = 12 * 3600
+# 문단 경계가 없는 긴 문단에서 쓸 차선의 경계 — 줄바꿈이나 문장 끝.
+_SOFT_BREAK = re.compile(r"\n|[.!?。](?=\s)")
 
 
 def _units(node) -> list[dict]:
@@ -29,6 +36,12 @@ def _units(node) -> list[dict]:
             cut = bisect_right(breaks, end)
             if cut and breaks[cut - 1] > start:
                 end = breaks[cut - 1]
+            else:
+                # 창 안에 문단 경계가 없다 — 문장 중간에서 자르지 않도록 마지막 줄바꿈이나
+                # 문장 끝에서 자르고, 그것도 없을 때만 REVIEW_CHARS에서 끊는다.
+                soft = [m.end() for m in _SOFT_BREAK.finditer(body, start, end)]
+                if soft and soft[-1] > start:
+                    end = soft[-1]
         text = body[start:end]
         if text.strip():
             # The summary belongs to the first range. Updating it must not
@@ -206,6 +219,13 @@ def _complete(scope: str, state: dict, current: dict) -> bool:
                 not _unresolved(current, row.get("intentional", [])))
 
 
+def _cooling(state: dict, scope: str) -> set:
+    """넘김 중인 구간 — 계획 뒤 검토자가 고친 노드의 구간으로, 아직 냉각 시간 안이다."""
+    now = time.time()
+    return {unit for unit, at in state.get("handoff", {}).get(scope, {}).items()
+            if isinstance(at, (int, float)) and now - at < HANDOFF_SECONDS}
+
+
 def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> list[dict]:
     """Caller holds the vault lock. Pending references survive missing local state."""
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
@@ -241,8 +261,15 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
         remaining = _remaining(current, state)
         sizes = {n["id"]: n["body_chars"] for n in current["nodes"]}
         remaining.sort(key=lambda u: -sizes[u["id"]])
-        current["review_units"] = remaining[:REVIEW_UNITS]
+        cooling = _cooling(state, scope)
+        offered = [u for u in remaining if u["unit"] not in cooling]
+        if (remaining and not offered and not current["issues"] and not current["references"]
+                and not current["pending_moves"]):
+            continue  # 남은 구간이 모두 넘김 중이다 — 고친 검토자가 아닌 다음 검토자의 몫
+        current["review_units"] = offered[:REVIEW_UNITS]
         current["coverage"] = {"remaining": len(remaining), "total": len(current.pop("units"))}
+        if len(offered) < len(remaining):
+            current["coverage"]["handoff"] = len(remaining) - len(offered)
         current["reason"] = "references or changed knowledge need organization review"
         current["review_command"] = "python -m osk.cli organization review (UTF-8 JSON stdin)"
         if unfinished or missing_ids:
@@ -282,7 +309,16 @@ def plan(scope: str, *, record: bool = True) -> dict:
     with core.mutation_lock():
         _scope_path(scope)
         jobs = pending([scope], limit=1, record=record)
-        return jobs[0] if jobs else {"scope": scope, "status": "complete"}
+        if jobs:
+            return jobs[0]
+        # 남은 구간이 모두 넘김 중이라 고르지 않은 것은 완료가 아니다 — 다음 검토자의 차례다
+        state = _load()
+        waiting = [u for u in _remaining(snapshot(scope), state) if u["unit"] in _cooling(state, scope)]
+        if waiting:
+            return {"scope": scope, "status": "handoff", "handoff": len(waiting),
+                    "reason": "remaining ranges were corrected by their last reviewer; "
+                              "another reviewer takes them after the cooling period"}
+        return {"scope": scope, "status": "complete"}
 
 
 def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
@@ -341,6 +377,18 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
             state["moves"] = {k: m for k, m in state.get("moves", {}).items()
                               if any(Path(i["from"]).parts[:2] != _scope_path(scope).relative_to(core.ROOT).parts
                                      for i in m["items"])}
+        # 계획 뒤 바뀌거나 새로 생긴 노드는 이 검토자가 고친 것이다 — 그 구간은 자기
+        # 정정을 스스로 검토하지 않도록 냉각 시간 동안 다른 검토자에게 넘긴다(넘김).
+        planned = {n["id"]: n["hash"] for n in selected["nodes"]}
+        edited = {n["id"] for n in current["nodes"] if planned.get(n["id"]) != n["hash"]}
+        covered = state["coverage"][scope]
+        handoff = {u: at for u, at in state.get("handoff", {}).get(scope, {}).items()
+                   if u in live and u not in covered}
+        now = time.time()
+        for u in current["units"]:
+            if u["id"] in edited and u["unit"] not in covered:
+                handoff.setdefault(u["unit"], now)
+        state.setdefault("handoff", {})[scope] = handoff
         _save(state)
         return row
 
@@ -389,7 +437,8 @@ def guidance() -> str:
             "중단 시 같은 ID의 현재 위치부터 확인해 남은 작업을 이어라. "
             "완료 전에 organization plan --scope <scope> --preview로 최신 snapshot을 읽고, "
             "검토한 각 구간의 주장·적용 조건·분화 또는 유지 이유를 checked=[{unit,reason}]에 남긴다. "
-            "checked는 선택한 구간의 현행 본문에 결속된다. 수정한 구간은 새 plan으로 다시 읽고 다음 작업에서 검토한다. "
+            "checked는 선택한 구간의 현행 본문에 결속된다. 계획 뒤 고치거나 만든 노드의 구간은 review 때 "
+            "넘김으로 기록돼 12시간 동안 계획에 오지 않는다(coverage.handoff) — 자기 정정은 다른 검토자가 본다. "
             "coverage.remaining이 이번 checked 수보다 크면 전체 완료가 아니므로 deferred로 부분 진척을 저장한다. "
             "처음 선택한 key와 최신 after=snapshot, scope, outcome=complete|deferred, reason, checked, "
             "intentional=[{id,relation:Link,ref,reason}]를 organization review의 JSON stdin으로 낸다. "

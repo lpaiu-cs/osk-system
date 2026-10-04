@@ -234,6 +234,57 @@ class OrganizationTests(unittest.TestCase):
             assert '최대 3개' in organization.prompt([current])
         """)
 
+    def test_long_paragraph_is_cut_at_a_sentence_end(self):
+        self.case("""
+            # 문단 경계가 없으면 4000자에서 끊어 문장 중간을 잘랐다 — 문장 끝에서 자른다(10-04).
+            body = ''.join('Measured value stays within the bounded range for case ' + str(i) + '. '
+                           for i in range(160))
+            node('Ledger', body)
+            n = contract.parse(write._live_locate('Ledger', graph.Index()))
+            units = organization._units(n)
+            assert len(units) > 2, units
+            for u in units[:-1]:
+                end = int(u['view'].split(':')[1])
+                assert u['chars'] <= 4000 and n.body[end - 1] == '.', (u, n.body[end - 9:end + 9])
+        """)
+
+    def test_units_a_reviewer_corrected_are_handed_to_another_reviewer(self):
+        self.case("""
+            # 고친 구간은 다음 검토로 넘긴다 — 같은 계획이 곧바로 다시 고르면 고친 이가 자기
+            # 정정을 검토하거나 끝없이 미루게 된다(Pelican 17/19, 10-04).
+            node('A', 'First independent claim.')
+            node('B', 'Second independent claim.')
+            job = organization.plan('W1')
+            assert {'A', 'B'} <= {u['name'] for u in job['review_units']}, job['review_units']
+            write.update_node('B', old_text='Second', new_text='Corrected second')
+            current = organization.snapshot('W1')
+            checked = [{'unit': u['unit'], 'reason': 'The claim holds'} for u in job['review_units']
+                       if u['name'] == 'A']
+            organization.review(job['key'], 'W1', 'deferred', 'A checked; B corrected in this review',
+                                after=current['snapshot'], checked=checked)
+            nxt = organization.plan('W1')
+            assert 'B' not in {u['name'] for u in nxt['review_units']}, nxt['review_units']
+            assert nxt['coverage']['handoff'] == 1, nxt['coverage']
+            rest = [{'unit': u['unit'], 'reason': 'ok'} for u in nxt['review_units']]
+            rejected(lambda: organization.review(nxt['key'], 'W1', 'complete', 'Handed-off range is unread',
+                                                 after=nxt['snapshot'], checked=rest))
+            organization.review(nxt['key'], 'W1', 'deferred', 'Only the handed-off range remains',
+                                after=nxt['snapshot'], checked=rest)
+            # 남은 구간이 모두 넘김 중이면 완료가 아니라 넘김이라고 답하고, 정기 실행도 고르지 않는다
+            waiting = organization.plan('W1')
+            assert waiting['status'] == 'handoff' and waiting['handoff'] == 1, waiting
+            assert not organization.pending(['W1']), 'a cooling range is not offered to anyone yet'
+            assert organization.status(job)['status'] == 'pending'
+            # 냉각이 지나면 다른 검토자에게 다시 온다
+            state = organization._load()
+            state['handoff']['W1'] = {u: at - organization.HANDOFF_SECONDS - 1
+                                      for u, at in state['handoff']['W1'].items()}
+            organization._save(state)
+            later = organization.plan('W1')
+            assert 'B' in {u['name'] for u in later['review_units']}, later['review_units']
+            assert 'handoff' not in later['coverage'], later['coverage']
+        """)
+
     def case(self, code):
         with tempfile.TemporaryDirectory(prefix="osk-organization-test-") as d:
             env=dict(os.environ, OSK_VAULT_ROOT=d, PYTHONPATH=str(ENGINE), TEMP=d, TMP=d)

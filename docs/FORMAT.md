@@ -597,7 +597,10 @@ maximum among `review` records with that key.
   the next heading of the same or a higher level, or to the end of the file.
   Lines in code regions are not headings, and a heading text that occurs twice
   does not resolve (Mechanism §8 4). Raw rounds only grow and external URLs have
-  no state; neither is tracked. A target whose file does not resolve gets no
+  no state; neither is tracked. A hub node, the node named after its cluster
+  folder, is the entrance to a branch, so a change to it is not a change of
+  evidence: a hub target is not tracked, even through a heading range (Bylaws §7
+  2). A target whose file does not resolve gets no
   record and is reported as dangling. A heading that is gone or duplicated in
   a file that exists keeps the pair tracked without a state: it is a candidate
   that no record can complete.
