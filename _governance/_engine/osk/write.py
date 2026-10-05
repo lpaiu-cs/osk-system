@@ -1500,9 +1500,26 @@ def _update_node_locked(name: str, body: str | None = None,
     rel = posix_rel(path, ROOT)
     if _seen is not None and _seen.get(rel) == rc_pre:
         _seen[rel] = rechecks.state(data)
+    if old_text is None and body is not None:
+        # 전문 치환은 긴 글을 다시 쓰다 흘릴 수 있다. 감시하지 않고 무엇이 빠졌는지 비춘다 —
+        # 선의의 에이전트는 보면 스스로 되살린다(헌법 1조 3항). 앵커 편집은 지울 글을
+        # 호출자가 `old_text`에 직접 적었으므로 비출 것이 없다.
+        dropped = _dropped(n.body, _norm_body(new_body))
+        if dropped:
+            out["dropped"] = dropped
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
     return evictions._after_node_write(out, settle, "merged", path.stem)
+
+
+def _dropped(old_body: str, new_body: str) -> list[str]:
+    """옛 본문의 단위(문단·목록 항목·제목) 가운데 새 본문에 글자 그대로 없는 것.
+    고쳐 쓴 단위도 옛 판이 나온다 — 고친 것인지 흘린 것인지는 읽는 쪽이 가른다.
+    많으면 앞의 10개를 300자까지만 싣고 나머지는 개수로 알린다."""
+    from . import distillation      # distillation이 write를 부르므로 쓸 때 읽는다
+    gone = [t for t in distillation._segment_texts(old_body) if t not in new_body]
+    shown = [t if len(t) <= 300 else t[:299] + "…" for t in gone[:10]]
+    return shown + ([f"… 외 {len(gone) - 10}개"] if len(gone) > 10 else [])
 
 
 def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
