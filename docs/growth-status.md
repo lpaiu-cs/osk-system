@@ -19,10 +19,10 @@ POSIX에서는 `PYTHONPATH=_governance/_engine .venv/bin/python -B -m osk.cli gr
 
 | 구역 | 단위와 판정 |
 |---|---|
-| `integration` | 이 기기·vault의 저장된 대화 커서. 포착 라운드, 최초 검토 대기, 복구 검토, 포착 대기·오류를 분리 |
+| `integration` | 이 기기·vault의 저장된 대화 커서. 포착 라운드, 최초 검토 대기, 정정으로 다시 연 검토, 포착 대기·오류를 분리 |
 | `reviews` | 기간 안에 기록한 대화 검토 결정. `preserved`, `summary`, `no_value`, `deferred`를 그대로 구별 |
 | `runs` | 기간 안에 결과가 기록된 성장 실행. 선택 작업 수, 기록된 `ok`, native 종료 코드, 작업별 처분을 별도 표시 |
-| `preservation` | 기간 안의 보존 결정이 참조한 서로 다른 저장 영수증. 본문·출처와 현재 배치를 실제 파일에 다시 대조 |
+| `preservation` | 기간 안의 보존 결정이 참조한 서로 다른 저장 영수증. ACK 뒤의 구조 신호(대상 노드·최상위 군집·출처 링크)를 실제 파일에 대조 |
 | `organization` | 현재 정돈 대기 군집의 본문 구간. `remaining_units`의 분모는 `units_in_pending_scopes` |
 | `evictions` | 현재 미처분 퇴출 항목과 전체 이력의 처분 기록. 노드 보존이나 의미 판단의 성공률이 아님 |
 | `recheck_history` | 기간 안의 기준선·새 근거 결속·자동 이어받음·직접 판독 유지·본문 수정 기록 |
@@ -31,8 +31,8 @@ POSIX에서는 `PYTHONPATH=_governance/_engine .venv/bin/python -B -m osk.cli gr
 `review_pending_rounds`는 최초 검토 대기와 복구 검토의 합집합이다. 두 집합에 든 라운드는 한 번만 센다.
 `repair_jobs`는 작업 수이고 `repair_rounds`는 원문 라운드 수다. 아직 포착하지 못한 native 꼬리는
 저장 커서만으로 셀 수 없어 `uncaptured_rounds: null`로 낸다. 포착 대기 대화 수를 라운드 수에 더하지 않는다.
-기존 커서를 읽은 값이므로 이번 보고서가 새 복구 작업을 등록하지 않는다. 새로 발견한 영수증 불일치는
-`preservation`에 따로 나타난다.
+기존 커서를 읽은 값이며 보고서는 상태를 쓰지 않는다. ACK 뒤 구조 신호가 깨진 영수증은
+`preservation`에 나타나고, 검토를 다시 열지 않는다.
 
 `integration.capture_recovery_states`는 포착 대기·오류 대화의 안내 상태를,
 `capture_failure_phases`는 오류 대화의 실패 단계를 집계한다. 각 `items[].capture_recovery`에
@@ -44,8 +44,8 @@ POSIX에서는 `PYTHONPATH=_governance/_engine .venv/bin/python -B -m osk.cli gr
 
 `native_exit_zero`는 모델 프로세스가 0으로 종료된 실행 수다. `recorded_nonempty_complete`는
 과거 실행이 빈 선택 없이 완료로 기록된 수다. 당시 결과를 소급 정정하거나 지금도 유효하다고 인증하는 값은
-아니다. 현재 영수증 검증 결과와 별도로 읽는다. 같은 본문이 남아 있어도 허브 연결이 사라졌으면
-`body_and_sources: complete`, `placement: pending`이 동시에 나올 수 있다.
+아니다. 현재 구조 신호와 별도로 읽는다. 허브 연결이 사라져도 구조 신호는 `intact`다. 허브 배치는
+정돈이 맡는다.
 
 재검토 작업은 근거 제거, 대상 소실, dangling, 사용자 상신으로도 큐에서 닫힐 수 있다.
 `runs.items[].queues.recheck`는 이 사유를 구별하며 직접 판독 성공에 더하지 않는다.

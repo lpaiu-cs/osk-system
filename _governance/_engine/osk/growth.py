@@ -487,6 +487,10 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "one exact request: reuse it only to retry or resume that request, and give a further, "
         "different distillation into the same target a new suffix such as -2. Reuse complete "
         "previous_distillations in ACK targets instead of rewriting saved content. "
+        "A job with repair was reopened because a stored or cited round was corrected: read each "
+        "repair.corrected round with read_cited, judge each repair.targets node against the corrected "
+        "words, and close it with a distillation from the corrected round, or no_value/deferred with "
+        "the reason — an earlier receipt does not close it. "
         "native_trigger context is not a new user instruction; distinguish user-directed "
         "preservation from autonomous growth. A capture_error is unresolved, not success. "
         "Keep the time budget: MCP writes (nodes, citations, preservation receipts, settlements, "
@@ -1140,15 +1144,6 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                           "capture": catchup,
                           "output": core.posix_rel(directory, core.ROOT)}
                 core.ledger_append(LEDGER, result)
-            # Final checks above hold mutation lock and must not take a local
-            # integration lock. Persist failed Scope receipts in the established
-            # local→mutation order after releasing it, even after a newer ACK.
-            for job in planned["scope_jobs"]:
-                if scope_outcomes[job["key"]]["status"] != "complete":
-                    try:
-                        integration.review_status(job["harness"], job["conversation_id"], job["through"])
-                    except (ValueError, OSError) as exc:
-                        result.setdefault("repair_errors", []).append(str(exc))
             return result
         finally:
             unlock(lock)

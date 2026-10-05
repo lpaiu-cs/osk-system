@@ -31,7 +31,14 @@ rewrite your notes and records, and there is nothing to migrate.
   them at turns 9 and 15, or its Stop fork does. A conversation that ends
   before its review is picked up by the daily or explicit `growth run`, which
   reads only its unreviewed turns from this device's transcript through
-  `read_cited`. The run also reviews rounds stored in `_raw/` and receipt repairs.
+  `read_cited`. The run also reviews rounds stored in `_raw/`.
+- **Closed reviews stay closed.** After a review is acknowledged, osk checks
+  only that its node still exists, stays in its top-level cluster and still
+  cites its source; a break is reported in `growth status`, not reopened.
+  Editing the node, moving its hub link or pruning shared memory no longer
+  sends the conversation back for review. Repair entries that the earlier
+  recheck left are closed the first time osk sees that conversation. If you
+  correct a stored or cited round, register it with `integration reopen`.
   Scripted `codex exec` runs, osk's own scheduled runs included, are neither
   tracked nor reviewed.
 - **Ratification.** The amendment to the governing documents behind this
