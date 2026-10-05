@@ -558,7 +558,8 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "{\"text\":\"<excerpt>\"} objects; omit targets for no_value/deferred. "
         "Add organization:[{key,scope,outcome:complete|deferred,reason,checked:[{unit,reason}],intentional:[]}] "
         "inside osk_reviews for selected organization_jobs; the runner checks them against the "
-        "snapshot in your plan, so a scope changed since then is left for a fresh plan. "
+        "snapshot in your plan, so a scope changed since then is not completed, while the units "
+        "you checked and left unchanged are kept as deferred progress. "
         "Add eviction:[{of,outcome:node|merged|discarded|deferred,reason,target?}] inside "
         "osk_reviews for selected eviction_jobs; omit target unless outcome is node/merged. "
         "Add recheck:[{key,outcome:escalated,reason,proposal}] inside osk_reviews only for "
@@ -848,7 +849,9 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 # A worker without the CLI cannot read a fresh snapshot, so it is held to the
                 # one its plan gave it. Unit keys cover bodies, not references: any change in the
                 # scope since the plan — another session's edges or the worker's own writes —
-                # leaves the job for a fresh plan instead of completing what was not reviewed.
+                # keeps the job from completing what was not reviewed. Units it checked that
+                # are still unchanged stay as deferred progress, and the units its own writes
+                # changed go to another reviewer (organization.review).
                 entry = {"after": selected[entry["key"]]["snapshot"], **entry}
             if done["status"] != "complete":
                 organization.review(**entry)
