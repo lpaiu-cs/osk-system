@@ -705,7 +705,9 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     text += ("현재 scope_memory와 아래 raw의 read_raw(view=review) 선별본으로 후보를 찾는다. "
              "이미 이 대화에서 확인한 근거를 전량 재독하지 않는다. 보존할 주장이나 모순을 "
              "확인할 때만 query로 필요한 원료 근거를 좁혀 읽는다. 원본 hash를 출처에 쓴다. "
-             "선별본 생략은 무가치의 증거가 아니며, 판정 근거가 부족하면 deferred로 남긴다. "
+             "선별본 생략은 무가치의 증거가 아니다. 원래 세션도 선의로 일했다 — 대화가 진술한 "
+             "도구 결과는 그 세션의 보고로 받아 진술된 만큼 쓰고, 도구 원문이 안 보인다는 이유로 "
+             "보류하지 않는다. 진술되지 않은 것은 지어내지 않는다. "
              "max_chars 증가·raw 전량 이어읽기·전사 전체 shell 출력으로 우회하지 않는다. "
              "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE +
              "오래 쓸 지식만 Scope 노드로 옮기며 선택한 raw 출처와 허브 Link를 distill로 완성한다. "
