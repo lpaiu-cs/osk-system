@@ -1732,6 +1732,85 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
         self.assertFalse(it.status("claude", self.sid)["pending"])
 
+    def antigravity(self, cid, steps):
+        path = Path(TMP.name) / cid / "transcript_full.jsonl"   # the file sits under its conversation
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(s) + "\n" for s in steps), encoding="utf-8")
+        return path
+
+    def test_original_turn_read_filters_secrets_and_hashes_the_original(self):
+        # Antigravity keeps the user's words and its replies as written; only a citation filtered them.
+        token = "ghp_" + "c" * 36
+        step = lambda i, typ, text: {"step_index": i, "source": "x", "type": typ, "status": "DONE", "content": text}
+        path = self.antigravity(self.sid, [step(0, "USER_INPUT", f"<USER_REQUEST>\nuse {token}\n</USER_REQUEST>"),
+                                           step(1, "PLANNER_RESPONSE", f"stored {token}")])
+        st = it.capture("antigravity", self.sid, str(path), self.sid, "00_Scope/W1")
+        tracked = json.loads(it.state_path("antigravity", self.sid).read_text(encoding="utf-8"))["rounds"][0]["hash"]
+        for view in ("full", "review"):
+            got = it.read_turns(st["pending_refs"], view=view)["turns"][0]
+            self.assertNotIn(token, json.dumps(got, ensure_ascii=False))
+            self.assertEqual(got["filtered"], ["github-token"])
+            self.assertEqual(got["hash"], tracked)  # the original is what was tracked
+
+    def test_turn_hash_keeps_the_locators_a_user_writes(self):
+        said = lambda target: {"id": "u1:m1", "user": f"retarget native:claude:{target}:turn-1", "agent": "done"}
+        self.assertNotEqual(it._turn_hashes(said("session-A")), it._turn_hashes(said("session-B")))
+        # A resumed copy rewrites only the result locators the parser wrote.
+        copy = lambda sid: {"id": "u1:m1", "user": "q", "agent": json.dumps(
+            {"type": "tool_evidence_ref", "native_result": f"claude:{sid}:m1"})}
+        self.assertEqual(it._turn_hashes(copy("parent")), it._turn_hashes(copy("child")))
+
+    def test_changed_words_under_one_turn_id_are_cited_anew_and_unbind_the_old_receipt(self):
+        from osk import distillation as D
+        rows = claude_round(self.sid, 1)
+        rows[0]["message"]["content"] = "apply the rule to project A only"
+        self.transcript(rows)
+        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        first = it.cite(f"claude/{self.sid}", turn="-1")
+        again = it.cite(f"claude/{self.sid}", turn="-1")
+        self.assertTrue(again["reused"])
+        self.assertEqual(again["round_ref"], first["round_ref"])
+        saved = D.create_node({"key": self.sid, "sources": [first["round_ref"]], "hub": "W1"},
+                              title=self.sid, summary="scope of a rule", body="The rule applies to project A only.",
+                              drafter="test-model", space="00_Scope/W1")
+        self.assertEqual(saved["distillation"]["status"], "complete")
+        rows[0]["message"]["content"] = "apply the rule to every project"
+        self.transcript(rows)
+        changed = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        with self.assertRaises(ValueError):  # the receipt cited the earlier words
+            it.acknowledge("claude", self.sid, changed["through"], "preserved", "Kept.", [{"key": self.sid}])
+        second = it.cite(f"claude/{self.sid}", turn="-1")
+        self.assertFalse(second["reused"])
+        self.assertEqual(second["supersedes"], first["round_ref"])
+        self.assertNotEqual(second["round_ref"], first["round_ref"])
+        self.assertIn("every project", (ROOT / second["path"]).read_text(encoding="utf-8"))
+
+    def test_open_kiro_and_antigravity_turns_are_cited_under_their_final_ids(self):
+        step = lambda i, typ, text: {"step_index": i, "source": "x", "type": typ, "status": "DONE", "content": text}
+        steps = [step(0, "USER_INPUT", "<USER_REQUEST>\nfirst\n</USER_REQUEST>"), step(1, "PLANNER_RESPONSE", "answered"),
+                 step(2, "USER_INPUT", "<USER_REQUEST>\nthe current request\n</USER_REQUEST>")]
+        ag = self.antigravity(self.sid, steps)
+        it.capture("antigravity", self.sid, str(ag), self.sid, "00_Scope/W1")
+        self.assertEqual(it.cite(f"antigravity/{self.sid}", turn="-1")["turn"], "2")
+        self.assertEqual(it.cite(f"antigravity/{self.sid}", quote="current request")["turn"], "2")
+        self.antigravity(self.sid, steps + [step(3, "PLANNER_RESPONSE", "answered now")])
+        done = it.capture("antigravity", self.sid, str(ag), self.sid, "00_Scope/W1")
+        self.assertIn(f"native:antigravity:{self.sid}:2", done["pending_refs"])
+        cid = self.sid + "-kiro"
+        kiro = Path(TMP.name) / cid / "messages.jsonl"  # Kiro's folder is the conversation's
+        kiro.parent.mkdir(parents=True, exist_ok=True)
+        row = lambda n, payload: json.dumps({"id": f"r{n}", "timestamp": n, "payload": payload}) + "\n"
+        open_turn = [row(1, {"type": "user", "content": "the current request"}),
+                     row(2, {"type": "turn_start", "executionId": "exec-1"})]
+        kiro.write_text("".join(open_turn), encoding="utf-8")
+        it.capture("kiro", cid, str(kiro), self.sid, "00_Scope/W1")
+        self.assertEqual(it.cite(f"kiro/{cid}", turn="-1")["turn"], "exec-1")
+        kiro.write_text("".join(open_turn + [
+            row(3, {"type": "assistant", "operationType": "Say", "content": "done"}),
+            row(4, {"type": "turn_end", "executionId": "exec-1", "stopReason": "end_turn"})]), encoding="utf-8")
+        done = it.capture("kiro", cid, str(kiro), self.sid, "00_Scope/W1")
+        self.assertIn(f"native:kiro:{cid}:exec-1", done["pending_refs"])
+
     def test_record_identity_survives_vault_copy(self):
         import shutil
         self.transcript(claude_round(self.sid, 1))

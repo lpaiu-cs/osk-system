@@ -692,7 +692,10 @@ def _kiro(rows: list, sid: str) -> dict:
             finish(completion, line, None if completion == "completed" and trace else
                    {k: p[k] for k in ("type", "stopReason", "stopDetails") if k in p})
             turn, users, trace, evidence = None, [], [], []
-    return {"rounds": rounds, "pending_tail": bool(turn or queued), "diagnostics": diagnostics}
+    # The open turn's words under the executionId its finished round will keep, so the
+    # current request can be cited while it is being answered.
+    return {"rounds": rounds, "pending_tail": bool(turn or queued), "diagnostics": diagnostics,
+            "tail": {"id": turn, "user": "\n\n".join(users)} if turn and users else None}
 
 
 # Antigravity steps that are context, not dialogue: hook and system injections, the
@@ -779,4 +782,6 @@ def _antigravity(rows: list, sid: str) -> dict:
     if start is not None and _ag_final(last):
         finish("completed")
         start = None
-    return {"rounds": rounds, "pending_tail": start is not None, "diagnostics": []}
+    # The open round is named by its user input step, the part of its id that stays when it ends.
+    return {"rounds": rounds, "pending_tail": start is not None, "diagnostics": [],
+            "tail": {"id": str(start), "user": "\n\n".join(users)} if start is not None and users else None}

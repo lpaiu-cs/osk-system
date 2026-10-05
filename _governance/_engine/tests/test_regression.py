@@ -7494,6 +7494,29 @@ def test_evictions():
           and not transit.exists() and copy is not None and copy.read_bytes() == before, o)
     if copy is not None:
         copy.unlink(missing_ok=True)
+    # 사본 이름은 확인받은 판의 해시다(#138 리뷰 P1). 손편집한 id가 경로 문자를 품어도
+    # vault 밖을 쓰지 않고, 같은 id의 다른 판이 앞 사본을 덮지 않는다.
+    escape = Path(os.path.normpath(core.local_lock_path("osk-discarded-x/../../../regr-evi-outside.md")))
+    escape.write_text("관련 없는 파일\n", encoding="utf-8")
+    copies = []
+    for n, body in enumerate(("첫 판", "둘째 판"), 1):
+        transit.write_text(node_text("x/../../../regr-evi-outside", "경로 문자를 품은 id", body),
+                           encoding="utf-8")
+        h = run(["tidy", "discard", "regr-evi-transit"])[0].get("plan", {}).get("hash", "")
+        o, _ = run(["tidy", "discard", "regr-evi-transit", "--confirm", h])
+        copies.append(Path(o["copy"]) if o.get("copy") else None)
+        check(f"tidy discard: 사본은 확인한 판의 해시 이름으로 잠금 자리에 남는다({n})",
+              o.get("ok") and not transit.exists() and copies[-1]
+              == core.local_lock_path("osk-discarded-" + h.removeprefix("sha256:") + ".md"), o)
+    check("tidy discard: 경로 문자를 품은 id가 vault 밖 파일을 덮지 않는다",
+          escape.read_text(encoding="utf-8") == "관련 없는 파일\n", escape)
+    check("tidy discard: 같은 id의 다른 판이 앞 사본을 덮지 않는다",
+          None not in copies and copies[0] != copies[1]
+          and "첫 판" in copies[0].read_text(encoding="utf-8"), copies)
+    escape.unlink(missing_ok=True)
+    for c in copies:
+        if c is not None:
+            c.unlink(missing_ok=True)
 
     transit.unlink(missing_ok=True)
     check("두 큐가 비어야 정돈할 것이 없다", "정돈할 것이 없다" in ev.tidy_prompt(None, "PY", "ENG"))

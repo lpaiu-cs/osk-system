@@ -373,13 +373,18 @@ def append_rounds(session: str, record: str, pairs: list,
                  f"없다. 가능한 space: {_space_list()}"])
 
         p = record_path(dest, record)
+        supersedes = None
         if cited is not None:
             existing = find_cited(p, native_ref(cited["harness"], cited["conversation"], cited["turn"]))
             if existing is not None:
                 rel = posix_rel(p.resolve(), ROOT)
                 index, header = existing
-                return {"ok": True, "path": rel, "indices": [index], "round_refs": [f"{rel}#{index}"],
-                        "filtered": [], "reused": True, "cited": header}
+                # Reuse only a citation of the same words. Words changed under the same turn ID
+                # are new evidence: append them and keep the earlier round (append-only).
+                if header.get("user_sha256") in (None, cited.get("user_sha256")):
+                    return {"ok": True, "path": rel, "indices": [index], "round_refs": [f"{rel}#{index}"],
+                            "filtered": [], "reused": True, "cited": header}
+                supersedes = f"{rel}#{index}"
         prior = read_exact(p) if p.exists() else ""
         first = _next_index(prior)
         indices = [first + n for n in range(len(norm))]
@@ -400,22 +405,25 @@ def append_rounds(session: str, record: str, pairs: list,
         result = {"ok": True, "path": rel, "indices": indices,
                   "round_refs": [f"{rel}#{i}" for i in indices],
                   "filtered": sorted(set(hits))}
+        if supersedes:
+            result["supersedes"] = supersedes
         if not bound:
             write.bind_after_write(result, session, dest, "첫 세션 기록에서 확정")
         return result
 
 
 def find_cited(path: Path, native: str) -> tuple[int, dict] | None:
-    """같은 원본 턴을 이미 인용한 라운드의 index와 그 머리말 — 재인용은 새 라운드를
-    쓰지 않는다(Mechanism §9 9항)."""
+    """같은 원본 턴을 마지막으로 인용한 라운드의 index와 그 머리말 — 같은 발화의 재인용은
+    새 라운드를 쓰지 않는다(Mechanism §9 9항)."""
     if not path.exists():
         return None
     text = read_exact(path)
+    found = None
     for index, (start, end) in sorted(_round_spans(text).items()):
         header = cited_header(text[start:end])
         if header and native_ref(header["harness"], header["conversation"], header["turn"]) == native:
-            return index, header
-    return None
+            found = index, header
+    return found
 
 
 # ── 명시 회상 (시행령 §2 5항) ────────────────────────────────────────────

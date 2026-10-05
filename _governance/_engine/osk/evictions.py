@@ -349,7 +349,10 @@ def discard_transit(title: str, confirm: str | None = None) -> dict:
                 "지운 판은 이 기기의 사본(응답의 copy)이나, 동기화된 판이면 vault git 이력에서 되살린다")}
         if confirm != plan["hash"]:
             raise ValueError("확인한 판과 지금 판이 다르다 — 폐기하지 않았다. 다시 확인받아라")
-        copy = local_lock_path(f"osk-discarded-{nid}.md")
+        # 사본 이름은 확인받은 판의 해시다 — frontmatter의 id는 검증 전 값이라 경로 문자가
+        # 들어 있으면 vault 밖을 가리키고, 같은 id의 다른 판(다른 worktree, 다시 만든 노드)은
+        # 앞 사본을 덮는다(#138 리뷰 P1).
+        copy = local_lock_path(f"osk-discarded-{plan['hash'].removeprefix('sha256:')}.md")
         write._atomic_write(copy, path.read_bytes())
         path.unlink()
         return {"ok": True, "discarded": plan, "copy": str(copy)}

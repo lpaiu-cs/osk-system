@@ -209,22 +209,26 @@ def note_memory(harness: str, conversation_id: str, digest: str) -> None:
 
 def turn_key(harness: str, round_id: str) -> str:
     """The original turn's identity for citations and review refs. A Claude round is
-    `<first user row>:<final message>`; its first user row already names the turn while
-    it is still open, so a citation of the open turn and of the finished round agree."""
-    return round_id.split(":", 1)[0] if harness == "claude" else round_id
+    `<first user row>:<final message>` and an Antigravity round `<user input step>:<last
+    step>`; the first part already names the turn while it is still open, so a citation of
+    the open turn and of the finished round agree."""
+    return round_id.split(":", 1)[0] if harness in ("claude", "antigravity") else round_id
 
 
-_SESSION_LOCATOR = re.compile(r"claude:[A-Za-z0-9_.-]+:")
+# Only the locators the parser writes into `native_result` fields; words that merely mention
+# a locator are hashed as written.
+_SESSION_LOCATOR = re.compile(r'("native_result":\s*")claude:[A-Za-z0-9_.-]+:')
 
 
 def _turn_hashes(pair: dict, dialogue_v1: dict | None = None) -> list[str]:
     """Local evidence of what was reviewed — the dialogue text never enters the vault.
     The first hash is the turn's own; a resumed copy also offers its original row order.
     A copy may rewrite result locators with its own conversation ID, so that part is
-    left out: a copied turn hashes the same in parent and child."""
+    left out: a copied turn hashes the same in parent and child. The user's words and any
+    locator they mention are hashed as they are."""
     shown = (dialogue_v1 or {}).get(pair["id"], pair)
-    digest = lambda agent: core.sha256_bytes(_SESSION_LOCATOR.sub(
-        "claude:*:", json.dumps([shown["user"], agent], ensure_ascii=False)).encode("utf-8"))
+    digest = lambda agent: core.sha256_bytes(json.dumps(
+        [shown["user"], _SESSION_LOCATOR.sub(r"\1claude:*:", agent)], ensure_ascii=False).encode("utf-8"))
     return [digest(a) for a in filter(None, (shown["agent"], shown.get("agent_time_order")))] or [digest("")]
 
 
@@ -531,19 +535,23 @@ def _verify_raw(rounds: list) -> None:
         raise ValueError("raw snapshot changed; review is not acknowledged")
 
 
-def _verify_native(s: dict, rounds: list) -> None:
+def _verify_native(s: dict, rounds: list) -> dict:
     """An original turn has no vault copy: this device's transcript must still hold the
-    words the snapshot tracked, or the review would close what its reviewer did not read."""
+    words the snapshot tracked, or the review would close what its reviewer did not read.
+    Returns each turn's user words hash, which a citation of that turn must match."""
     native = [r for r in rounds if raw.is_native(r["ref"])]
     if not native:
-        return
+        return {}
     source = _locate_transcript(s["harness"], s["conversation_id"], s.get("capture_path") or s["transcript_path"])
     if not (source and Path(source).is_file()):
         raise ValueError("the original transcript is not on this device; review is not acknowledged")
     parsed = transcripts.read(source, s["harness"], s["conversation_id"])
-    current = {r["id"]: _turn_hashes(r, parsed.get("dialogue_v1")) for r in parsed["rounds"]}
+    shown = parsed.get("dialogue_v1") or {}
+    current = {r["id"]: _turn_hashes(r, shown) for r in parsed["rounds"]}
     if any(r["hash"] not in current.get(r["id"], []) for r in native):
         raise ValueError("an original turn changed after this snapshot; capture again and review the current one")
+    words = {r["id"]: core.sha256_bytes(shown.get(r["id"], r)["user"].encode("utf-8")) for r in parsed["rounds"]}
+    return {r["ref"]: words.get(r["id"]) for r in native}
 
 
 def acknowledge(harness: str, conversation_id: str, through: str,
@@ -559,9 +567,10 @@ def acknowledge(harness: str, conversation_id: str, through: str,
         refs = set(repair["refs"]) if repair else {
             r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]}
         _verify_raw([r for r in s["rounds"] if r["ref"] in refs])
+        words = {}
         if not repair and outcome != "deferred":
             # A reopened review rereads only its corrected stored rounds; a deferral closes nothing.
-            _verify_native(s, [r for r in s["rounds"] if r["ref"] in refs])
+            words = _verify_native(s, [r for r in s["rounds"] if r["ref"] in refs])
         receipts = []
         if outcome == "preserved":
             from . import distillation
@@ -572,9 +581,11 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                     raise ValueError("preserved target must name a distillation key")
                 receipt = distillation._status_locked(target["key"])
                 sources = receipt.get("sources", [])
-                # A cited round binds through the original turn it cites (Mechanism §9 9항).
+                # A cited round binds through the original turn it cites (Mechanism §9 9항), and
+                # only while the turn holds the words it cited.
                 bound = ({raw.canonical_ref(r["ref"]) for r in sources}
-                         | {r["native"] for r in sources if r.get("native")})
+                         | {r["native"] for r in sources if r.get("native") and r.get("native_user")
+                            in (None, words.get(r["native"], r.get("native_user")))})
                 if receipt.get("status") != "complete" or not {raw.canonical_ref(ref) for ref in refs} & bound:
                     raise ValueError("target has no complete body/source/hub receipt for this snapshot")
                 target_path = core.resolve_in_root(receipt.get("target", {}).get("path", ""))
@@ -1057,7 +1068,9 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
         rid = (turn_key(harness, turn.strip()) if isinstance(turn, str) and turn.strip() else
                "caller-" + core.sha256_bytes(user.encode("utf-8")).removeprefix("sha256:")[:16])
     meta = {"harness": harness, "conversation": owner, "turn": rid, "source": source,
-            "agent_sha256": core.sha256_bytes(agent.encode("utf-8")) if agent else None, "user_by": by}
+            "agent_sha256": core.sha256_bytes(agent.encode("utf-8")) if agent else None, "user_by": by,
+            # The words the citation copied: the same turn ID with other words is other evidence.
+            "user_sha256": core.sha256_bytes(words.encode("utf-8"))}
     record = s["record"]
     if owner != sid:
         # A fork parent's turn keeps its owner: the citation names the parent and joins
@@ -1070,6 +1083,8 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
            "index": result["indices"][0], "turn": rid, "reused": result.get("reused", False),
            "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
            **({"binding": result["binding"]} if "binding" in result else {})}
+    if result.get("supersedes"):
+        out["supersedes"] = result["supersedes"]   # the turn's words changed since that citation
     if out["reused"]:
         # The record is append-only: report what it holds, and what this read saw apart.
         kept = result["cited"]
@@ -1088,7 +1103,7 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
     Only the named turns are read, never the whole conversation; each names the turn
     before it as `previous`, for earlier context only when a judgment needs it
     (Mechanism §9-4 3항). Nothing is written."""
-    from . import raw_view
+    from . import raw_view, secrets
     if view not in {"review", "full"} or not isinstance(refs, list) or not 1 <= len(refs) <= MAX_REVIEW_ROUNDS:
         raise ValueError(f"1..{MAX_REVIEW_ROUNDS} original-turn refs and view review|full are required")
     out, conversations = [], {}
@@ -1116,9 +1131,13 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
         _, pair, hashes, owner = turns[at]
         if owner != sid:
             raise ValueError(f"{turn} belongs to the fork parent; read {raw.native_ref(harness, owner, turn)}")
-        chunk = raw._block(at + 1, pair["user"], pair["agent"]).rstrip("\n")
+        # The hash binds the original; the text leaving through MCP is filtered first, as a citation
+        # is — not every parser redacts (Antigravity words and replies, Kiro string replies).
+        chunk, hits = secrets.filter_text(raw._block(at + 1, pair["user"], pair["agent"]).rstrip("\n"))
         item = {"ref": ref, "turn": turn, "hash": hashes[0], "position": at + 1, "turns": len(turns),
                 "previous": raw.native_ref(harness, turns[at - 1][3], turns[at - 1][0]) if at else None}
+        if hits:
+            item["filtered"] = sorted(set(hits))
         if turn in tracked and tracked[turn] not in hashes:
             # Changed since tracking: its review waits for the next capture's snapshot.
             item["changed"] = True
