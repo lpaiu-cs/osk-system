@@ -1090,9 +1090,11 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
         rid = (turn_key(harness, turn.strip()) if isinstance(turn, str) and turn.strip() else
                "caller-" + core.sha256_bytes(user.encode("utf-8")).removeprefix("sha256:")[:16])
     meta = {"harness": harness, "conversation": owner, "turn": rid, "source": source,
-            "agent_sha256": core.sha256_bytes(agent.encode("utf-8")) if agent else None, "user_by": by,
-            # The words the citation copied: the same turn ID with other words is other evidence.
-            "user_sha256": core.sha256_bytes(words.encode("utf-8"))}
+            "agent_sha256": core.sha256_bytes(agent.encode("utf-8")) if agent else None, "user_by": by}
+    if by == "engine":
+        # The words the engine copied: the same turn ID with other words is other evidence. A
+        # caller's recollection is not the turn's words and does not decide that.
+        meta["user_sha256"] = core.sha256_bytes(words.encode("utf-8"))
     record = s["record"]
     if owner != sid:
         # A fork parent's turn keeps its owner: the citation names the parent and joins

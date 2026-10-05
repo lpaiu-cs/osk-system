@@ -379,9 +379,11 @@ def append_rounds(session: str, record: str, pairs: list,
             if existing is not None:
                 rel = posix_rel(p.resolve(), ROOT)
                 index, header = existing
-                # Reuse only a citation of the same words. Words changed under the same turn ID
-                # are new evidence: append them and keep the earlier round (append-only).
-                if header.get("user_sha256") in (None, cited.get("user_sha256")):
+                # Reuse unless both copies came from the transcript and the words differ. Words
+                # changed under the same turn ID are new evidence: append them and keep the
+                # earlier round (append-only).
+                old, new = header.get("user_sha256"), cited.get("user_sha256")
+                if not (old and new) or old == new:
                     return {"ok": True, "path": rel, "indices": [index], "round_refs": [f"{rel}#{index}"],
                             "filtered": [], "reused": True, "cited": header}
                 supersedes = f"{rel}#{index}"
