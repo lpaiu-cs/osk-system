@@ -1066,13 +1066,16 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
         tail = parsed.get("tail")
         if tail and tail.get("user") and turn_key(harness, tail["id"]) not in {t["id"] for t in turns}:
             turns.append({"id": turn_key(harness, tail["id"]), "user": tail["user"], "agent": None, "owner": sid})
-        if isinstance(turn, str) and not re.fullmatch(r"-?\d+", turn.strip()):
-            matched = [t for t in turns if t["id"] == turn_key(harness, turn.strip())]
-        elif turn is not None:
-            n = int(turn)
+        # Only "-N" counts back from the latest. Any other string is a turn ID — Antigravity's are
+        # step numbers ("2"), and the ID read_cited returns must name the same turn here.
+        n = (turn if isinstance(turn, int) and not isinstance(turn, bool) else
+             int(turn) if isinstance(turn, str) and re.fullmatch(r"-\d+", turn.strip()) else None)
+        if n is not None:
             if n >= 0:
                 raise ValueError("a relative turn counts back from the latest: -1, -2, ...")
             matched = turns[n:n + 1 or None] if -n <= len(turns) else []
+        elif isinstance(turn, str) and turn.strip():
+            matched = [t for t in turns if t["id"] == turn_key(harness, turn.strip())]
         elif quote and quote.strip():
             needle = " ".join(quote.split())
             matched = [t for t in turns if needle in " ".join(t["user"].split())]

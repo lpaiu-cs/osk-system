@@ -1811,6 +1811,23 @@ class IntegrationTests(unittest.TestCase):
         done = it.capture("kiro", cid, str(kiro), self.sid, "00_Scope/W1")
         self.assertIn(f"native:kiro:{cid}:exec-1", done["pending_refs"])
 
+    def test_numeric_turn_ids_name_turns_and_only_minus_counts_back(self):
+        # Antigravity turn IDs are step numbers. The ID read_cited returns must cite that turn,
+        # even where the same words repeat and a quote cannot tell the turns apart.
+        step = lambda i, typ, text: {"step_index": i, "source": "x", "type": typ, "status": "DONE", "content": text}
+        path = self.antigravity(self.sid, [step(0, "USER_INPUT", "<USER_REQUEST>\nretry\n</USER_REQUEST>"),
+                                           step(1, "PLANNER_RESPONSE", "first"),
+                                           step(2, "USER_INPUT", "<USER_REQUEST>\nretry\n</USER_REQUEST>"),
+                                           step(3, "PLANNER_RESPONSE", "second")])
+        st = it.capture("antigravity", self.sid, str(path), self.sid, "00_Scope/W1")
+        read = it.read_turns(st["pending_refs"], view="full")["turns"]
+        self.assertEqual([t["turn"] for t in read], ["0", "2"])
+        for t in read:
+            self.assertEqual(it.cite(f"antigravity/{self.sid}", turn=t["turn"])["turn"], t["turn"])
+        self.assertEqual(it.cite(f"antigravity/{self.sid}", turn="-1")["turn"], "2")
+        with self.assertRaisesRegex(ValueError, "counts back"):
+            it.cite(f"antigravity/{self.sid}", turn=1)  # a position counts back; 1 is none
+
     def test_record_identity_survives_vault_copy(self):
         import shutil
         self.transcript(claude_round(self.sid, 1))
@@ -1880,7 +1897,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         with self.assertRaisesRegex(ValueError, "3 turns match"):
             it.cite(conversation, quote="question")
         with self.assertRaisesRegex(ValueError, "relative turn"):
-            it.cite(conversation, turn="2")
+            it.cite(conversation, turn=2)
+        with self.assertRaisesRegex(ValueError, "0 turns match"):
+            it.cite(conversation, turn="2")  # a string other than "-N" is a turn ID
         with self.assertRaisesRegex(ValueError, "transcript is readable"):
             it.cite(conversation, user="words supplied by the caller")
         with self.assertRaisesRegex(ValueError, "harness"):
