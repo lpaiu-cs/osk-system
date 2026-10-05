@@ -472,7 +472,9 @@ Stop의 한 작업자는 원 대화 검토와 **같은 Scope의 조직 작업 1�
 계수와 검토 커서는 별개다. 실패/보류는 검토를 완료하지 않고, 다음 9회 또는 기존
 일일 catchup에서 이어간다. 모델 호출 전 가용성 검사 실패는 Stop 시도 횟수도 소비하지
 않으므로 로그인 복구 뒤 다음 Stop에서 재시도할 수 있다. 이미 실행 중이면 추가 모델을
-띄우지 않으며 대기는 남는다.
+띄우지 않으며 대기는 남는다. Claude CLI가 다른 Claude 프로세스의 OAuth 토큰 갱신과 겹쳐
+추론 전에 끝나면(`Failed to refresh OAuth token`) 60초 뒤 한 번만 다시 띄운다. 그 전에 원
+대화가 나아가지 않았는지 다시 확인하며, 두 번째도 같으면 위의 실패로 센다.
 `integration status --harness <하네스> --conversation <ID>`의 `response_growth`와
 `response_growth_stop`에서 계수·실행 실패를, `response_growth_route`에서 현재 경로와
 fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
@@ -923,6 +925,9 @@ Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 �
 다시 검토할 수 있다. 입력 집합을 읽었다는 사실과 모든 입력을 같은 결론의 근거로
 인용하는 것은 다르다. 의미 판정·적용 범위·반례는 에이전트가 설명해야 한다.
 작업 증거는 `.osk/growth/runs/`와 Workbench `_ledger/growth.jsonl`에 남는다.
+명령에 `--model`(`-m`)이 있으면 실행 계획에 그 이름을 적고, 작업자가 새로 만드는 노드의
+`drafter`로 쓰게 지시한다. Codex 작업자는 자기 정확한 모델명을 알지 못한다. Claude API 이름
+(`claude-…`)은 vault 표기(`opus-5.5`)와 달라 넣지 않는다.
 600초 기본 상한은 유지한다. 원문 조회는 전체를 출력하지 않고 `read_raw`의 기본
 `view="review"`로 사용자 발화와 답변 선별본(최대 6000자)을 읽는다. 필요한 주장·반례만
 `query`로 전체 라운드에서 검색한다. 공백으로 나눈 검색어는 모두 포함해야 하며,

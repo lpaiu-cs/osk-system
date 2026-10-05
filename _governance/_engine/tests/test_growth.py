@@ -514,6 +514,23 @@ class GrowthTests(unittest.TestCase):
                     os.chdir(core.ROOT)
         """)
 
+    def test_worker_is_told_the_runs_model_as_drafter(self):
+        # Codex workers guessed their model on all 88 nodes of the 2026-10-05 batch.
+        self.check_case("""
+            assert growth._drafter(['codex', 'exec', '--model', 'gpt-5.6-sol', '-']) == 'gpt-5.6-sol'
+            assert growth._drafter(['codex', 'exec', '-m', 'gpt-5.6-sol', '-']) == 'gpt-5.6-sol'
+            assert growth._drafter(['claude', '-p', '--model', 'claude-opus-5-5', '--verbose']) is None
+            assert growth._drafter(['codex', 'exec', '--model', 'Not A Name', '-']) is None
+            assert growth._drafter(['codex', 'exec', '-']) is None
+            node('A')
+            result = growth.run([sys.executable, '-c', packet_worker(), '--model', 'gpt-5.6-sol'], limit=2)
+            assert result['ok'], result
+            text = (core.ROOT / result['output'] / 'prompt.txt').read_text(encoding='utf-8')
+            assert 'Every create_node uses drafter "gpt-5.6-sol"' in text, text[:600]
+            assert 'not notes about this review' in text and 'such as -2' in text
+            assert [r for r in core.ledger_read(growth.LEDGER) if r['kind'] == 'plan'][-1]['drafter'] == 'gpt-5.6-sol'
+        """)
+
     def test_worker_hooks_do_not_feed_maintenance_into_new_conversations(self):
         self.check_case("""
             node('A')

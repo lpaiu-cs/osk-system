@@ -23,6 +23,8 @@ FALLBACK_AFTER = 2
 RETRY_AFTER = 24 * 3600
 # Results that say nothing about the fork itself (another worker, a missing CLI, raw not captured).
 _NOT_FORK_FAILURES = {'busy', 'unavailable', 'capture_pending', 'running'}
+AUTH_RACE = 'Failed to refresh OAuth token'
+AUTH_RACE_WAIT = 60
 NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 OPENAI_ENDPOINT = 'https://chatgpt.com/backend-api/codex'  # ChatGPT-login Codex backend; forks pin it.
 # Keys the fork pins with -c. A native profile's own value wins over -c, so an active profile may not set them.
@@ -699,23 +701,47 @@ def cache_usage(output: Path, source: dict) -> dict:
             if values['input_tokens'] else None, 'scope': 'whole worker turn, not proof of first-request reuse'}
 
 
+def _auth_race(result: dict) -> bool:
+    """The Claude CLI exits before inference while another Claude process refreshes the shared
+    OAuth token ("usually transient; retry in a minute") — 14 of 86 forks, 2026-09-25..10-05.
+    Only the CLI's own final result counts: a reviewed conversation may quote the message."""
+    if result.get('returncode') in (0, None) or not result.get('output'):
+        return False
+    try:
+        lines = (core.ROOT / result['output'] / 'stdout.txt').read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        return False
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get('type') == 'result':
+            return event.get('is_error') is True and str(event.get('result', '')).startswith(AUTH_RACE)
+    return False
+
+
 def run(source: dict, job: dict, executable: str) -> dict:
     """Use the existing supervisor, manifest, deadline and receipt validation."""
     if any(job.get(k) != source.get(k) for k in ('harness', 'conversation_id')):
         raise ValueError('a fork may review only its own source conversation')
     env = subscription_env()
-    try:
-        argv = command(source, executable, env)
-        # Native trailers (stop summary, title) land seconds after Stop and change only the file.
-        fresh = profile(source['transcript_path'], source['harness'], source['conversation_id'])
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        return {'ok': False, 'state': 'unavailable', 'error': str(exc)}
-    if fresh['active'] or any(fresh.get(k) != source.get(k)
-                              for k in (fresh.keys() | source.keys()) - {'fingerprint', 'usage'}):
-        # A new turn or changed model/policy never forks; retry, never spend the attempt.
-        return {'ok': False, 'state': 'unavailable', 'error': 'source advanced before fork; review remains pending'}
-    source = fresh  # Fork, and measure cache, from the snapshot just checked.
-    result = growth.run(argv, limit=1, timeout=600, scope_job=job, cwd=Path(source['cwd']), worker_env=env)
+    for retry in (False, True):
+        try:
+            argv = command(source, executable, env)
+            # Native trailers (stop summary, title) land seconds after Stop and change only the file.
+            fresh = profile(source['transcript_path'], source['harness'], source['conversation_id'])
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            return {'ok': False, 'state': 'unavailable', 'error': str(exc)}
+        if fresh['active'] or any(fresh.get(k) != source.get(k)
+                                  for k in (fresh.keys() | source.keys()) - {'fingerprint', 'usage'}):
+            # A new turn or changed model/policy never forks; retry, never spend the attempt.
+            return {'ok': False, 'state': 'unavailable', 'error': 'source advanced before fork; review remains pending'}
+        source = fresh  # Fork, and measure cache, from the snapshot just checked.
+        result = growth.run(argv, limit=1, timeout=600, scope_job=job, cwd=Path(source['cwd']), worker_env=env)
+        if retry or not _auth_race(result):
+            break
+        time.sleep(AUTH_RACE_WAIT)  # once: a second race stays a failed attempt, as before
     if result.get('output'):
         try:
             result['cache'] = (cache_usage(core.ROOT / result['output'] / 'stdout.txt', source)

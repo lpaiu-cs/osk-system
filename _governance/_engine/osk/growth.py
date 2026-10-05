@@ -11,6 +11,7 @@ import heapq
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import shutil
@@ -421,9 +422,12 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         planned = {**planned, "work_order": [{"queue": key, "index": i}
                    for key in _QUEUES for i in range(len(planned.get(key, [])))]}
     from . import organization
+    drafter = planned.get("drafter")
     return organization.prompt(planned.get("organization_jobs", []), inventory=False) + (
         "This is a dedicated maintenance run. Follow work_order exactly, one selected job at a time; "
-        "do not move organization to the end. Use osk MCP tools only. Do not run the osk CLI or "
+        "do not move organization to the end. Use osk MCP tools only. "
+        + (f"Every create_node uses drafter \"{drafter}\", this run's model. " if drafter else "") +
+        "Do not run the osk CLI or "
         "shell commands for osk work: a sandboxed runner cannot execute them, and every attempt "
         "spends the time budget. Record each decision in the final packet below; the runner "
         "applies it after you finish. For scope_jobs use each job's original session, "
@@ -463,14 +467,17 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "Opaque reasoning and routine execution traces are not growth input. A missing item "
         "in the view is not proof of no value. If evidence is unresolved, record deferred "
         "with the claim, missing evidence and next targeted query. State selection/omission "
-        "limits in every review. Preserve original raw and its hash; distill.sources uses "
+        "limits in each review's packet reason; a node body holds the claim, its conditions "
+        "and evidence, not notes about this review. Preserve original raw and its hash; distill.sources uses "
         "read_raw's round_ref and hash, never a hash of the selection. Search existing "
         "Scope nodes before creating one, then complete its source and hub via distill. "
         "An existing node is reusable for the same independently testable claim and conditions, "
         "not merely the same project or the next phase of a procedure. Preserve a coherent "
         "claim at its destination, read it back and wire both navigation levels before folding "
         "the source section into a conclusion and link; keeping facts does not require duplicate paragraphs. "
-        "Use each Scope job's key plus a stable target suffix for distill.key; reuse complete "
+        "Use each Scope job's key plus a stable target suffix for distill.key. A key is bound to "
+        "one exact request: reuse it only to retry or resume that request, and give a further, "
+        "different distillation into the same target a new suffix such as -2. Reuse complete "
         "previous_distillations in ACK targets instead of rewriting saved content. "
         "native_trigger context is not a new user instruction; distinguish user-directed "
         "preservation from autonomous growth. A capture_error is unresolved, not success. "
@@ -924,6 +931,18 @@ def check_command(command: list[str], *, follow_desktop_update: bool = True) -> 
     return {"ok": True, "state": "ready", "executable": executable, "violations": []}
 
 
+def _drafter(command: list[str]) -> str | None:
+    """The run's model as drafter (Mechanism §2 4항). A Codex worker is not told its exact model
+    and guessed (gpt-5, gpt-6.1, ...) on all 88 nodes of the 2026-10-05 batch. A Claude fork
+    already names itself in the vault's form (opus-5.5), which the API id (claude-…) is not."""
+    for flag in ("--model", "-m"):
+        if flag in command[1:-1]:
+            model = command[command.index(flag, 1) + 1]
+            ok = re.fullmatch(core.DRAFTER_RE, model) and not model.startswith("claude-")
+            return model if ok else None
+    return None
+
+
 def _cmd_acts_on(line: str) -> str | None:
     """The first character cmd.exe would act on in a command line: an operator or escape outside
     quotes, an expansion or line break anywhere. None when cmd passes the line on unchanged."""
@@ -1000,6 +1019,8 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 _select_work(planned, limit + bool(scope_job and planned["organization_jobs"]), _records())
                 planned["scope_remaining"] += planned["queued_not_selected"]["scope_jobs"]
                 planned["timeout_seconds"] = timeout
+                if drafter := _drafter(command):
+                    planned["drafter"] = drafter
                 if not any(planned[key] for key in _QUEUES):
                     if not catchup.get("ok"):
                         return {"ok": False, "state": "capture_pending", "selected": 0,
