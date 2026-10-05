@@ -41,6 +41,10 @@ rewrite your notes and records, and there is nothing to migrate.
   correct a stored or cited round, register it with `integration reopen`.
   Scripted `codex exec` runs, osk's own scheduled runs included, are neither
   tracked nor reviewed.
+- **Full-body edits show what they dropped.** A full-body `update_node` also
+  returns `dropped`: the paragraphs, list items and headings of the old body that
+  the new body no longer contains word for word. Anything dropped by mistake can
+  be restored with an anchor edit.
 - **Ratification.** The amendment to the governing documents behind this
   change takes effect only when a release ratifies it. Its reasons are recorded
   in `_governance/records/2026-10-04-cited-capture.md`.
