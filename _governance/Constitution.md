@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-w9vj
 created: 2026-08-02 13:22 (KST)
-updated: 2026-10-04 01:21 (KST)
+updated: 2026-10-06 07:25 (KST)
 author: user
 drafter: opus-5.5
 summary: "osk-system 최상위 규범 — 노드·비노드와 Space, 참조 위상, 위임, 보호영역, 사건, 개정·이행"
@@ -19,6 +19,8 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    구성된다.
 2. system이 보존하는 모든 노드와 비노드는 사용자에게 귀속되며, 에이전트는 사용자의
    주권 아래 system을 운용한다.
+3. system은 에이전트가 선의로 운용한다고 가정한다. 이 가정은 원료를 남긴 세션의
+   에이전트에게도 같다.
 
 ## 제2조 — 지식의 정의
 
