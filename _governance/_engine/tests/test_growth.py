@@ -585,6 +585,26 @@ class GrowthTests(unittest.TestCase):
             assert [r for r in core.ledger_read(growth.LEDGER) if r['kind'] == 'plan'][-1]['drafter'] == 'gpt-5.6-sol'
         """)
 
+    def test_reviews_keep_current_claims_and_bind_existing_ones_by_evidence_line(self):
+        # 2026-10-05: an old round must not roll back a newer claim, and a round that only
+        # supports a held claim gets a `## 근거` line instead of a rewritten body.
+        self.check_case("""
+            from osk import integration
+            node('A')
+            worker = growth.prompt(growth.plan(3))
+            assert 'never replace, weaken or reorder a current claim' in worker
+            assert '"## 근거" section' in worker and '42cf0fc0#1' in worker
+            path = core.ROOT / 'held.jsonl'
+            rows = [{'type':'user','sessionId':'held','uuid':'u1','message':{'role':'user','content':'question'}},
+                    {'type':'assistant','sessionId':'held','uuid':'a1','message':{'role':'assistant','id':'m1',
+                     'content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
+            path.write_text(''.join(json.dumps(r) + '\\n' for r in rows), encoding='utf-8')
+            assert integration.capture('claude','held',str(path),'held-project',space='00_Scope/W1')['ok']
+            own = integration.prompt('claude','held')['text']
+            assert '현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다' in own
+            assert '`## 근거` 절' in own and '`42cf0fc0#1`' in own
+        """)
+
     def test_worker_hooks_do_not_feed_maintenance_into_new_conversations(self):
         self.check_case("""
             node('A')
