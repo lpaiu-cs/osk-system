@@ -1,10 +1,10 @@
 ---
 id: 260802-114u-w9vj
 created: 2026-08-02 13:22 (KST)
-updated: 2026-10-06 02:00 (KST)
+updated: 2026-10-04 01:21 (KST)
 author: user
 drafter: opus-5.5
-summary: "osk-system 최상위 규범 — 선의 가정, 노드·비노드와 Space, 참조 위상, 위임, 보호영역, 사건, 개정·이행"
+summary: "osk-system 최상위 규범 — 노드·비노드와 Space, 참조 위상, 위임, 보호영역, 사건, 개정·이행"
 derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
 
@@ -19,12 +19,6 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    구성된다.
 2. system이 보존하는 모든 노드와 비노드는 사용자에게 귀속되며, 에이전트는 사용자의
    주권 아래 system을 운용한다.
-3. system은 에이전트가 선의로 운용한다고 가정한다. 에이전트의 잘못은 악의가
-   아닌 실수로 다루며, system은 실수를 감시하는 대신 무엇이 바뀌었는지 보여
-   주어 에이전트가 스스로 고치게 한다.
-4. 3항의 가정은 원료를 남긴 세션의 에이전트에게도 같다. 대화를 검토하는
-   에이전트는 그 세션이 진술한 관측과 결과를 그 세션의 보고로 받아 다시
-   감사하지 않으며, 진술되지 않은 것을 지어내지 않는다.
 
 ## 제2조 — 지식의 정의
 

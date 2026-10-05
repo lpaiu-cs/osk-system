@@ -41,18 +41,9 @@ rewrite your notes and records, and there is nothing to migrate.
   correct a stored or cited round, register it with `integration reopen`.
   Scripted `codex exec` runs, osk's own scheduled runs included, are neither
   tracked nor reviewed.
-- **Reviews take the session at its word.** A review uses what the
-  conversation states about tool results as that session's report. It does
-  not defer a claim because the tool output itself is not in the record, and it
-  does not add what the conversation does not state. A review that was deferred
-  only for tool output is judged from the dialogue when its turn comes again.
-  A full-body `update_node` also returns `dropped`: the paragraphs, list items
-  and headings of the old body that the new body no longer contains word for
-  word. Anything lost by mistake can be restored with an anchor edit.
-- **Ratification.** The amendments to the governing documents behind these
-  changes take effect only when a release ratifies them. Their reasons are
-  recorded in `_governance/records/2026-10-04-cited-capture.md` and
-  `_governance/records/2026-10-06-good-faith-agents.md`.
+- **Ratification.** The amendment to the governing documents behind this
+  change takes effect only when a release ratifies it. Its reasons are recorded
+  in `_governance/records/2026-10-04-cited-capture.md`.
 
 ## From v3.x to v4
 

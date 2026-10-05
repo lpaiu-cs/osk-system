@@ -3089,51 +3089,6 @@ def test_anchor_edit():
     check("지워졌다", "또 바꿈" not in contract.parse(p).body)
 
 
-def test_full_body_dropped():
-    """전문 치환은 흘린 것을 비춘다 — 옛 본문의 단위(문단·목록 항목·제목) 가운데 새 본문에
-    글자 그대로 없는 것을 `dropped`로 돌려준다(헌법 1조 3항).
-
-    무엇을 망가뜨리면 이 시험이 실패하는가: 흘린 문단을 싣지 않으면 · 옮기기만 한 문단을
-    실으면 · 고친 항목 하나 대신 목록 전체를 실으면 · 앵커 편집에도 실으면 · 많을 때
-    자르지 않으면."""
-    body = ("## 결정\n\n첫 문단은 그대로 둔다.\n\n둘째 문단은 흘릴 것이다.\n\n"
-            "- 항목 하나\n- 항목 둘\n- 항목 셋\n")
-    p = ROOT / "00_Scope/W1/regr-dropped.md"
-    try:
-        r = _w(write.create_node, "regr-dropped", "전문 치환 거울 시험", body, "opus-5",
-               space="00_Scope/W1")
-        check("시험 노드 생성", r.get("ok"), r)
-
-        # 둘째 문단을 흘리고, 둘째 항목을 고쳐 쓰고, 첫 문단을 뒤로 옮긴다
-        new = "## 결정\n\n- 항목 하나\n- 둘째 항목\n- 항목 셋\n\n첫 문단은 그대로 둔다.\n"
-        r = _w(write.update_node, "regr-dropped", body=new, expect_hash=core.sha256_file(p))
-        check("전문 치환 통과", r.get("ok"), r)
-        check("흘린 문단과 고쳐 쓴 항목의 옛 판만 비춘다",
-              r.get("dropped") == ["둘째 문단은 흘릴 것이다.", "- 항목 둘"], r.get("dropped"))
-
-        moved = "첫 문단은 그대로 둔다.\n\n## 결정\n\n- 항목 하나\n- 둘째 항목\n- 항목 셋\n"
-        r = _w(write.update_node, "regr-dropped", body=moved, expect_hash=core.sha256_file(p))
-        check("옮기기만 한 전문 치환에는 dropped가 없다", r.get("ok") and "dropped" not in r, r)
-
-        r = _w(write.update_node, "regr-dropped", old_text="\n- 항목 셋", new_text="")
-        check("앵커 편집에는 dropped가 없다", r.get("ok") and "dropped" not in r, r)
-
-        many = "\n\n".join(f"문단 {i} " + "가" * 400 for i in range(12))
-        r = _w(write.update_node, "regr-dropped", body=many, expect_hash=core.sha256_file(p))
-        check("긴 본문으로 바꾼다", r.get("ok"), r)
-        r = _w(write.update_node, "regr-dropped", body="모두 지웠다.",
-               expect_hash=core.sha256_file(p))
-        d = r.get("dropped") or []
-        check("많으면 앞의 10개와 남은 개수만 싣는다",
-              len(d) == 11 and d[-1] == "… 외 2개", d[-1:])
-        check("긴 단위는 300자에서 자른다",
-              all(len(t) == 300 and t.endswith("…") for t in d[:10]), [len(t) for t in d])
-    finally:
-        # 공유 mini-vault의 W1에 노드를 남기지 않는다 — 군집 보고의 미직결 목록은 앞의
-        # 20개만 실어, 이름순으로 끼어든 노드가 뒤 시험이 찾는 노드를 밀어낸다.
-        p.unlink(missing_ok=True)
-
-
 def test_edge_single_list_roundtrip():
     """손으로/정본에서 단일 원소 리스트로 저장된 엣지(`derived-from: [<id>]`)를
     가진 노드가 그 엣지를 건드리지 않는 갱신에서 왕복 불일치로 거부되지 않는다
@@ -12031,7 +11986,7 @@ if __name__ == "__main__":
                test_broken_delegation_isolated, test_write_contract,
                test_contract_values, test_bind_after_write_receipt,
                test_mcp_hardening_fail_closed,
-               test_write_cas_body_bound, test_anchor_edit, test_full_body_dropped,
+               test_write_cas_body_bound, test_anchor_edit,
                test_edge_single_list_roundtrip,
                test_write_move_and_pin,
                test_write_routing, test_write_session_alias,
