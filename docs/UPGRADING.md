@@ -2,9 +2,41 @@
 
 **English** · [한국어](UPGRADING.ko.md)
 
-Read this before you apply a release with a new major version. Routine updates
-are covered in [Getting started, Keeping up to date](GETTING-STARTED.md#keeping-up-to-date)
+Read this before you apply a release with a new major version, or a release
+listed below. Routine updates are covered in
+[Getting started, Keeping up to date](GETTING-STARTED.md#keeping-up-to-date)
 and in [SETUP](SETUP.md) (Korean).
+
+## From v4.1 to v4.2
+
+v4.2 stops copying conversations into the vault. The hooks track each finished
+turn on the device, and the conversation stays in the harness's transcript. A
+node cites only the turns it needs: the new MCP tool `cite_round` copies your
+words from the transcript into `00_Scope/<scope>/_cited/`. v4.2 does not move or
+rewrite your notes and records, and there is nothing to migrate.
+
+- **Rename the tools in client settings.** `cite_round` and `read_cited`
+  replace `append_raw` and `read_raw`; `read_cited` takes the same arguments as
+  `read_raw`. If an MCP client's allow or deny list names the old tools, such
+  as `autoApprove` or `disabledTools`, a Claude Code permission rule like
+  `mcp__osk-system__read_raw`, or a Codex approval setting, change it to the
+  new names. The CLI commands `raw append` and `raw status` are gone;
+  `raw migrate` stays.
+- **`_raw/` stays.** Records that earlier releases wrote under `_raw/` stay
+  where they are and stay readable, and the coordinates that nodes cite keep
+  resolving. A conversation that already has a `_raw/` record adds its new
+  citations there. Rounds stored before the update and not yet reviewed stay in
+  the review queue.
+- **New turns are reviewed in their conversation.** The conversation reviews
+  them at turns 9 and 15, or its Stop fork does. A conversation that ends
+  before its review is picked up by the daily or explicit `growth run`, which
+  reads only its unreviewed turns from this device's transcript through
+  `read_cited`. The run also reviews rounds stored in `_raw/` and receipt repairs.
+  Scripted `codex exec` runs, osk's own scheduled runs included, are neither
+  tracked nor reviewed.
+- **Ratification.** The amendment to the governing documents behind this
+  change takes effect only when a release ratifies it. Its reasons are recorded
+  in `_governance/records/2026-10-04-cited-capture.md`.
 
 ## From v3.x to v4
 

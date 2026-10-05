@@ -26,30 +26,30 @@ def main():
             {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"text": "Keep cache rule; confirm CACHE_LIMIT in the retest evidence."}]},
         ]
         agent = "\n\n".join(json.dumps(x) for x in events)
-        first = raw.append_round("reading-test", "evidence", user, agent, "00_Scope/W1")
-        ref = first["round_ref"]
+        first = raw.append_rounds("reading-test", "evidence", [{"user": user, "agent": agent}], "00_Scope/W1")
+        ref = first["round_refs"][0]
         path = core.ROOT / first["path"]
         before = path.read_bytes()
-        view = mcp_server.read_raw(ref, max_chars=100000)
+        view = mcp_server.read_cited(ref, max_chars=100000)
         assert view["ok"] and view["view"] == "review", view
         assert view["chars"] > 1000000 and len(view["text"]) <= 6000
         assert "Keep the cache rule" in view["text"] and "confirm CACHE_LIMIT" in view["text"]
         assert "opaque-secret" not in view["text"] and "routine args" not in view["text"]
         assert "was 16" not in view["text"] and view["selection_only"]
-        hits = mcp_server.read_raw(ref, query="CACHE_LIMIT")
+        hits = mcp_server.read_cited(ref, query="CACHE_LIMIT")
         assert "was 16" in hits["text"] and "corrected to 8" in hits["text"], hits
         assert "opaque-secret" not in hits["text"] and len(hits["text"]) <= 6000
-        command = mcp_server.read_raw(ref, query="remote checksum")
+        command = mcp_server.read_cited(ref, query="remote checksum")
         assert "call remote-check-77" in command["text"]
-        assert "abcdef0123456789" in mcp_server.read_raw(ref, query="remote-check-77")["text"]
+        assert "abcdef0123456789" in mcp_server.read_cited(ref, query="remote-check-77")["text"]
         assert hits["hash"] == view["hash"] == distillation._source(ref, graph.Index())["hash"]
         assert path.read_bytes() == before, "reading must not rewrite immutable evidence"
         assert "opaque-secret" in raw.read_round(ref, 3000000)["text"], "legacy full view changed"
-        raw.append_round("reading-test", "evidence", "next", "next answer", "00_Scope/W1")
+        raw.append_rounds("reading-test", "evidence", [{"user": "next", "agent": "next answer"}], "00_Scope/W1")
         assert raw.read_round(ref, view="review")["hash"] == view["hash"], "append changed source identity"
         for bad in (dict(query=""), dict(query="x" * 201), dict(view="full", query="cache")):
-            assert not mcp_server.read_raw(ref, **bad)["ok"], bad
-        assert not mcp_server.read_raw(first["path"], query="cache")["ok"]
+            assert not mcp_server.read_cited(ref, **bad)["ok"], bad
+        assert not mcp_server.read_cited(first["path"], query="cache")["ok"]
 
         # Claude content arrays and unlabelled final answers remain useful;
         # thinking never becomes visible evidence, including inside search results.

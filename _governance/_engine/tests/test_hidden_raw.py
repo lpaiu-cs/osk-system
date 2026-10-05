@@ -18,6 +18,10 @@ def main():
         base = root / "00_Scope/W1/_raw"
         base.mkdir(exist_ok=True)
 
+        def append_round(session, record, user, agent, space=None):
+            r = raw.append_rounds(session, record, [{"user": user, "agent": agent}], space)
+            return {"path": r["path"], "index": r["indices"][0], "round_ref": r["round_refs"][0]}
+
         def reject(fn, *args, **kwargs):
             try:
                 fn(*args, **kwargs)
@@ -25,14 +29,15 @@ def main():
                 return
             raise AssertionError("unsafe operation accepted")
 
-        # New writes are neither Markdown files nor Obsidian wiki links.
-        first = raw.append_round("hidden-test", "new", "observation", "answer", "00_Scope/W1")
+        # New writes are neither Markdown files nor Obsidian wiki links, and live in _cited.
+        first = append_round("hidden-test", "new", "observation", "answer", "00_Scope/W1")
         new = root / first["path"]
         assert new.suffix == ".txt" and new.parent.name == ".records"
+        assert new.parent.parent == root / "00_Scope/W1/_cited"
         assert "[[" not in first["round_ref"]
-        assert not (base / "new.md").exists()
-        assert raw.read_round("[[00_Scope/W1/_raw/new.md#1]]")["text"] == raw.read_round(first["round_ref"])["text"]
-        assert graph.Index().resolve("00_Scope/W1/_raw/new.md") == ("nonnode", ("raw", "W1"))
+        assert not (base / "new.md").exists() and not (base / ".records/new.txt").exists()
+        assert raw.read_round("[[00_Scope/W1/_cited/new.md#1]]")["text"] == raw.read_round(first["round_ref"])["text"]
+        assert graph.Index().resolve("00_Scope/W1/_cited/new.md") == ("nonnode", ("raw", "W1"))
         reject(secrets.write_raw, base / "bypass.md", "not allowed")
         assert not (base / "bypass.md").exists()
         url = "https://example.invalid/_raw/evidence.md#1"
@@ -40,17 +45,17 @@ def main():
         assert write._as_links("derived-from", url) == f"[[{url}]]"
         assert write._as_links("derived-from", f"[[{url}]]") == f"[[{url}]]"
         assert write._as_links("derived-from", f"[[ {url} ]]") == f"[[ {url} ]]"
-        assert raw.canonical_ref("[[ 00_Scope/W1/_raw/new.md#1 ]]") == first["round_ref"]
-        assert raw.canonical_ref("00_Scope/W1/_raw/new.md #1") == first["round_ref"]
+        assert raw.canonical_ref("[[ 00_Scope/W1/_cited/new.md#1 ]]") == first["round_ref"]
+        assert raw.canonical_ref("00_Scope/W1/_cited/new.md #1") == first["round_ref"]
         assert graph.Index().resolve(url) == ("external",)
-        reject(raw.append_round, "hidden-test", "x" * 253, "q", "a")
+        reject(append_round, "hidden-test", "x" * 253, "q", "a")
         # A contained symlink must not move another scope's canonical record.
         with mock.patch.object(raw, "resolve_in_root", return_value=new):
             reject(raw._record_pair, base / "redirect.md")
 
         # CRLF, Unicode, escaped headings and markers survive a byte-exact rename.
         old = base / "Legacy.MD"
-        original = (raw._block(1, "질문\r\n\\## 2", "답변", codex_native=True)
+        original = (f"## 1\n\n{raw._CODEX_V2}\n\n### user\n\n질문\r\n\\## 2\n\n### agent\n\n답변\n"
                     .replace("\n", "\r\n").encode())
         old.write_bytes(original)
         legacy = "[[00_Scope/W1/_raw/Legacy.MD#1]]"
@@ -68,7 +73,7 @@ def main():
         # Duplicate destinations fail closed, including a same-byte duplicate.
         old.write_bytes(original)
         reject(raw.migrate, apply=True)
-        reject(raw.append_round, "hidden-test", "Legacy", "new question", "new answer")
+        reject(append_round, "hidden-test", "Legacy", "new question", "new answer")
         assert old.read_bytes() == dest.read_bytes() == original
         old.unlink()  # Test fixture cleanup only.
 
@@ -84,7 +89,7 @@ def main():
                 assert os.path.samefile(raw.record_path("W1", "caf\u00e9"), duplicates[0])
             else:
                 reject(raw.record_path, "W1", "caf\u00e9")
-                reject(raw.append_round, "hidden-test", "caf\u00e9", "q2", "a2")
+                reject(append_round, "hidden-test", "caf\u00e9", "q2", "a2")
                 if suffix == ".md":
                     reject(raw.migrate, apply=True)
             assert all(path.read_bytes() == data for path, data in frozen.items())
@@ -109,9 +114,7 @@ def main():
             assert raw.canonical_ref(ref) == raw.canonical_ref(str(dest) + "#1")
             alternate = write.unicodedata.normalize("NFC", name.upper())
             assert raw.record_path("W1", alternate) == dest
-            replay = raw.append_rounds("hidden-test", name, [("q", "a")], replay_prefix=True)
-            assert replay["appended"] == 0
-            assert raw.append_round("hidden-test", alternate, "q2", "a2")["index"] == 2
+            assert append_round("hidden-test", alternate, "q2", "a2")["index"] == 2
             assert dest.read_bytes().startswith(original)
             assert name in {r["record"] for r in raw.list_records("00_Scope/W1")["records"]}
             # No old/new ambiguity or normalization-equivalent directory twin.
@@ -127,7 +130,7 @@ def main():
                 else:
                     twin.mkdir()
                     reject(raw.record_path, "W1", name)
-                    reject(raw.append_round, "hidden-test", name, "q3", "a3")
+                    reject(append_round, "hidden-test", name, "q3", "a3")
                     twin.rmdir()
                 flat = base / ".records" / (normalized + ".txt")
                 flat.write_bytes(original)
@@ -136,8 +139,9 @@ def main():
         assert raw.migrate(apply=True)["count"] == 0
 
         # New maximum-length names use the same lossless layout.
-        fresh_long = raw.append_round("hidden-test", "z" * 252, "q", "a")
+        fresh_long = append_round("hidden-test", "z" * 252, "q", "a")
         assert (root / fresh_long["path"]).name == "record.txt"
+        assert "_cited" in Path(fresh_long["path"]).parts
 
         # A failed rename keeps old bytes; retry converges without changing rounds.
         crash = base / "crash.md"
@@ -148,13 +152,11 @@ def main():
         raw.migrate(apply=True)
         assert raw.read_round("00_Scope/W1/_raw/crash.md#1")["index"] == 1
 
-        # Existing capture retries migrate even when there is nothing to append.
+        # The next append to a visible legacy record migrates it and keeps its rounds.
         retry = base / "retry.md"
         retry.write_bytes(raw._block(1, "q", "a").encode())
-        replay = raw.append_rounds("hidden-test", "retry", [{"user": "q", "agent": "a"}], replay_prefix=True)
-        assert replay["appended"] == 0 and not retry.exists()
-        appended = raw.append_round("hidden-test", "retry", "q2", "a2")
-        assert appended["index"] == 2
+        appended = append_round("hidden-test", "retry", "q2", "a2")
+        assert appended["index"] == 2 and not retry.exists()
         assert raw.read_round("00_Scope/W1/_raw/retry.md")["rounds"] == 2
 
         # Old receipts still verify after migration; new PE values are plain.
@@ -174,14 +176,14 @@ def main():
         assert target.read_bytes() == saved
         assert D.verify_receipt(historic)["status"] == "complete"
         assert D.status("legacy-proof")["status"] == "complete"
-        raw.append_round("hidden-test", "proof", "later", "reply")
+        append_round("hidden-test", "proof", "later", "reply")
         assert D.verify_receipt(historic)["status"] == "complete"
         proof_path = raw._raw_file("00_Scope/W1/_raw/proof.md")
         proof_path.write_bytes(proof_path.read_bytes().replace(b"verified result", b"tampered result"))
         assert D.verify_receipt(historic)["status"] == "pending"
         reject(raw.read_round, "../../outside.md#1")
         assert not list(base.glob("*.md")) and not list(base.glob("*.MD"))
-        print("PASS hidden storage, aliases, byte identity, conflict/retry, replay, provenance")
+        print("PASS hidden storage, aliases, byte identity, conflict/retry, provenance")
 
 
 if __name__ == "__main__":

@@ -189,8 +189,8 @@ def _child():
                         D._job_path(self.key).unlink()
 
             def test_new_raw_journal_retries_in_plain_format(self):
-                record = raw.append_round(self.name, self.name + "-raw", "q", "a", "00_Scope/W1")
-                self.spec["sources"] = [record["round_ref"]]
+                record = raw.append_rounds(self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
+                self.spec["sources"] = [record["round_refs"][0]]
                 atomic = write._atomic_write
                 target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
                 reserved = []
@@ -209,7 +209,7 @@ def _child():
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(target.read_bytes(), reserved[0])
                 self.assertNotIn("[[", contract.parse(target).meta["derived-from"])
-                self.assertEqual(D.discover([record["round_ref"]])["proofs"][0]["key"], self.key)
+                self.assertEqual(D.discover([record["round_refs"][0]])["proofs"][0]["key"], self.key)
 
             def test_source_mutation_blocks_resume(self):
                 with self.fail_hub():

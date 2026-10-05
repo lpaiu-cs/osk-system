@@ -45,7 +45,7 @@ def _dump(value) -> str:
 
 def _file_read(name: str) -> bool:
     return name.lower().split("__")[-1].split(".")[-1] in {
-        "read", "read_file", "readfile", "view_image", "read_node", "read_raw"}
+        "read", "read_file", "readfile", "view_image", "read_node", "read_raw", "read_cited"}
 
 
 def _mixed_output(name: str) -> bool:
@@ -144,6 +144,7 @@ def _tool_evidence(items: list, locator: str) -> list[str]:
 def _native_files(path: str, harness: str, sid: str) -> list[tuple[Path, int | None]]:
     """Follow declared Codex pages, never neighbouring tasks or filename order."""
     current, limit, pages = Path(path).resolve(), None, []
+    allowed = {sid}
     while True:
         if any(current.samefile(p) for p, _ in pages):
             raise ValueError("cyclic Codex history_base")
@@ -154,13 +155,22 @@ def _native_files(path: str, harness: str, sid: str) -> list[tuple[Path, int | N
             first = next((line for line in stream if line.strip()), b"")
             row = json.loads(first)
             meta = row.get("payload") if isinstance(row, dict) else None
-            if not isinstance(meta, dict) or row.get("type") != "session_meta" or meta.get("id") != sid:
+            if (not isinstance(meta, dict) or row.get("type") != "session_meta"
+                    or not isinstance(meta.get("id"), str) or meta["id"] not in allowed):
                 raise ValueError("Codex history identity mismatch: session_meta.id does not match this conversation")
             if limit is not None and limit < stream.tell():
                 raise ValueError("Codex history byte boundary excludes its identity")
         base = meta.get("history_base")
         if base is None:
             return list(reversed(pages))
+        # A page may continue its own conversation or the explicitly declared
+        # fork parent. A history filename alone never authorizes a foreign ID.
+        allowed = {meta["id"]}
+        parent = meta.get("forked_from_id")
+        if parent is not None:
+            if not isinstance(parent, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", parent):
+                raise ValueError("invalid Codex fork parent identity")
+            allowed.add(parent)
         if (not isinstance(base, dict)
                 or not isinstance(base.get("thread_id"), str)
                 or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", base["thread_id"])
@@ -192,50 +202,56 @@ def native_fingerprint(path: str, harness: str, sid: str) -> dict:
     return result
 
 
+def _page_lines(native: Path, remaining: int | None):
+    with native.open("rb") as stream:
+        while remaining is None or remaining > 0:
+            line = stream.readline(-1 if remaining is None else remaining)
+            if not line:
+                if remaining:
+                    raise ValueError("Codex history byte boundary exceeds source")
+                break
+            if remaining is not None:
+                if not line.endswith(b"\n"):
+                    raise ValueError("Codex history byte boundary splits a record")
+                remaining -= len(line)
+            yield line
+
+
 def native_lines(path: str, harness: str, sid: str):
     for native, remaining in _native_files(path, harness, sid):
-        with native.open("rb") as stream:
-            while remaining is None or remaining > 0:
-                line = stream.readline(-1 if remaining is None else remaining)
-                if not line:
-                    if remaining:
-                        raise ValueError("Codex history byte boundary exceeds source")
-                    break
-                if remaining is not None:
-                    if not line.endswith(b"\n"):
-                        raise ValueError("Codex history byte boundary splits a record")
-                    remaining -= len(line)
-                yield line
+        yield from _page_lines(native, remaining)
 
 
 def read(path: str, harness: str, conversation_id: str) -> dict:
     fingerprint = native_fingerprint(path, harness, conversation_id)
-    rows, diagnostics = [], []
-    for n, line in enumerate(native_lines(path, harness, conversation_id), 1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-            if not isinstance(row, dict):
-                raise ValueError("JSON record is not an object")
-        except (ValueError, UnicodeError) as exc:
-            if not line.endswith(b"\n"):
-                diagnostics.append(f"incomplete JSONL tail at line {n}")
-                break
-            raise ValueError(f"unreadable transcript record at line {n}") from exc
-        rows.append((n, row))
+    rows, diagnostics, pages = [], [], []
+    n = 0
+    for native, limit in _native_files(path, harness, conversation_id):
+        page = []
+        for line in _page_lines(native, limit):
+            n += 1
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("JSON record is not an object")
+            except (ValueError, UnicodeError) as exc:
+                if not line.endswith(b"\n"):
+                    diagnostics.append(f"incomplete JSONL tail at line {n}")
+                    break
+                raise ValueError(f"unreadable transcript record at line {n}") from exc
+            page.append((n, row))
+        rows.extend(page)
+        pages.append(page)
     if harness == "claude":
         result = _claude(rows, conversation_id)
         readable = _claude(rows, conversation_id, dialogue=True)
     elif harness == "codex":
-        result = _codex(rows, conversation_id)
-        readable = _codex(rows, conversation_id, dialogue=True)
-        # Unmarked durable rounds used v3.14's event-only serialization. Keep
-        # that exact replay (including trace gating) separate from new capture.
-        result["codex_v1"] = {r["id"]: r for r in _codex(
-            rows, conversation_id, native_users=False, terminal_turns=False)["rounds"]}
-        result["codex_v2"] = {r["id"]: r for r in _codex(
-            rows, conversation_id, terminal_turns=False)["rounds"]}
+        result = _codex_history(pages, conversation_id)
+        readable = _codex_history(pages, conversation_id, dialogue=True)
+        # The conversation's own page names how it was started (`codex_exec` for a script).
+        result["originator"] = pages[-1][0][1].get("payload", {}).get("originator")
     elif harness == "kiro":
         # Kiro rows carry no conversation ID; the folder is the conversation's own.
         if Path(path).parent.name != conversation_id:
@@ -251,6 +267,7 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
     if [r["id"] for r in readable["rounds"]] != [r["id"] for r in result["rounds"]]:
         raise ValueError("dialogue capture changed native completion boundaries")
     result["dialogue_v1"] = {r["id"]: r for r in readable["rounds"]}
+    result["tail"] = readable.get("tail")
     result["diagnostics"] = diagnostics + result["diagnostics"]
     result["pending_tail"] = result["pending_tail"] or bool(diagnostics)
     result["native_fingerprint"] = fingerprint
@@ -258,7 +275,45 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
     result["coverage"] = {"mode": "tool-output-reference" if referenced else "inline",
                           "capture_codec": "dialogue-v1",
                           "limitation": "User/assistant dialogue is preserved; tool payloads and attachments are native references. Internal reasoning and transport metadata are outside capture scope. Referenced evidence requires its native transcript."}
+    if result.get("ancestor_pending_tails"):
+        result["coverage"]["ancestor_pending_tails"] = result["ancestor_pending_tails"]
     return result
+
+
+def _codex_history(pages: list, sid: str, **codec) -> dict:
+    """Parse each native owner independently; child turns cannot finish a parent tail.
+    A fork's parent turns carry `origin_conversation_id`: they stay the parent's."""
+    groups = []
+    for page in pages:
+        meta = page[0][1].get("payload", {}) if page else {}
+        owner = meta.get("id") if isinstance(meta, dict) else None
+        if not isinstance(owner, str) or not owner or page[0][1].get("type") != "session_meta":
+            raise ValueError("Codex page identity missing")
+        if any(not isinstance(r.get("payload"), dict) or r["payload"].get("id") != owner
+               for _, r in page if r.get("type") == "session_meta"):
+            raise ValueError("Codex page contains a foreign session identity")
+        if groups and groups[-1][0] == owner:
+            groups[-1][1].extend(page)
+        else:
+            if groups and meta.get("forked_from_id") != groups[-1][0]:
+                raise ValueError("Codex fork does not declare its history owner")
+            groups.append((owner, page[:]))
+    if not groups or groups[-1][0] != sid or len({g[0] for g in groups}) != len(groups):
+        raise ValueError("Codex fork lineage does not end in this conversation")
+    if len(groups) == 1:
+        return _codex(groups[0][1], sid, **codec)
+    rounds, diagnostics, ancestor_pending = [], [], 0
+    for owner, rows in groups:
+        parsed = _codex(rows, owner, **codec)
+        rounds.extend({**r, "origin_conversation_id": owner} for r in parsed["rounds"])
+        if owner != sid:
+            ancestor_pending += bool(parsed["pending_tail"])
+        else:
+            diagnostics.extend(parsed["diagnostics"])
+    if len({r["id"] for r in rounds}) != len(rounds):
+        raise ValueError("duplicate Codex turn identity across fork owners")
+    return {**parsed, "rounds": rounds, "diagnostics": diagnostics,
+            "ancestor_pending_tails": ancestor_pending}
 
 
 def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
@@ -379,11 +434,12 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
                     isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()
                     for b in content))
     finish()
-    return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics}
+    # The open turn is not a round, but its user words may be cited (Mechanism §9 9항).
+    return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics,
+            "tail": {"id": start, "user": "\n\n".join(users)} if start and users else None}
 
 
-def _codex(rows: list, sid: str, *, native_users: bool = True,
-           terminal_turns: bool = True, dialogue: bool = False) -> dict:
+def _codex(rows: list, sid: str, *, dialogue: bool = False) -> dict:
     identities = {r.get("payload", {}).get("id") for _, r in rows if r.get("type") == "session_meta"}
     if identities != {sid}:
         raise ValueError("Codex transcript session_meta.id does not match this conversation")
@@ -456,8 +512,8 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
             raise ValueError(f"unsupported Codex payload at line {line}")
         event = p.get("type")
         if typ == "event_msg" and event == "task_started":
-            if turn and (users or terminal_turns and (has_native_trace if dialogue else trace)):
-                if not terminal_turns or not finish("interrupted", line - 1, {
+            if turn and (users or (has_native_trace if dialogue else trace)):
+                if not finish("interrupted", line - 1, {
                         "type": "superseded", "turn_id": turn, "next_turn_id": p.get("turn_id")}):
                     diagnostics.append(f"unfinished Codex turn {turn}")
             turn, users, trace = p.get("turn_id"), [], []
@@ -470,27 +526,32 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
             compaction_seen = True
         elif typ == "event_msg" and event == "user_message" and turn:
             add_user({k: v for k, v in p.items() if k != "type"}, "legacy")
-        elif (native_users and typ == "event_msg" and event == "item_completed" and turn
+        elif (typ == "event_msg" and event == "item_completed" and turn
               and isinstance(p.get("item"), dict) and p["item"].get("type") == "UserMessage"):
             if p.get("turn_id") != turn or p.get("thread_id") != sid:
                 raise ValueError(f"Codex user item identity mismatch at line {line}")
             item = p["item"]
             if isinstance(item.get("content"), list) and item["content"]:
                 add_user({k: v for k, v in item.items() if k != "type"}, "native")
-        elif typ == "response_item" and turn and (users or terminal_turns):
+        elif typ == "response_item" and turn:
             meta = p.get("internal_chat_message_metadata_passthrough") or {}
-            if terminal_turns and meta.get("turn_id") not in (None, turn):
+            if meta.get("turn_id") not in (None, turn):
                 raise ValueError(f"Codex response identity mismatch at line {line}")
             goal = (event == "message" and p.get("role") == "user"
                     and meta.get("content_item_kinds") == ["goal.internal_context"])
-            heartbeat = (event == "function_call_output" and not p.get("call_id")
-                         and (p.get("namespace"), p.get("name")) == ("codex_app", "automation_update")
-                         and meta.get("turn_id") == turn)
-            if terminal_turns and (goal or heartbeat):
-                # These are native execution triggers, not new human requests.
+            delivered = (event == "function_call_output" and not p.get("call_id")
+                         and p.get("namespace") == "codex_app"
+                         and p.get("name") in {"automation_update", "send_message_to_thread"}
+                         and meta.get("turn_id") == turn
+                         and (p["name"] != "send_message_to_thread" or not users and not resumable))
+            if goal or delivered:
+                # These are native execution triggers, not new human requests. A turn
+                # that already had input or resumable context reads as before, so its
+                # tracked hash holds; only the formerly untrackable turn is new.
                 trigger = ({"content": _dialogue_content(p.get("content", p.get("output", "")),
                                                         f"codex:{sid}:{turn}:trigger")} if dialogue else {"item": p})
-                users.append(_dump({"native_trigger": "goal" if goal else "heartbeat", **trigger}))
+                kind = "goal" if goal else "heartbeat" if p["name"] == "automation_update" else "thread_message"
+                users.append(_dump({"native_trigger": kind, **trigger}))
                 user_formats.append(("trigger", None))
                 continue
             if event == "message" and p.get("role") == "assistant" and p.get("phase") == "final_answer":
@@ -529,40 +590,29 @@ def _codex(rows: list, sid: str, *, native_users: bool = True,
             if (compaction_seen and not users and not trace and not has_native_trace
                     and not p.get("error") and not p.get("last_agent_message")):
                 pass  # Native maintenance completion has no dialogue to capture.
-            elif terminal_turns and p.get("error"):
+            elif p.get("error"):
                 if not finish("failed", line, p):
                     diagnostics.append(f"missing input for failed Codex turn {turn}")
-            elif terminal_turns and (users or resumable) and (has_native_trace if dialogue else trace) and (
+            elif (users or resumable) and (has_native_trace if dialogue else trace) and (
                     str(p.get("last_agent_message") or "").strip() or final_seen):
                 finish("completed", line, p if not p.get("last_agent_message") else None)
-            elif not users or not (has_native_trace if dialogue else trace) or not str(p.get("last_agent_message") or "").strip():
+            else:
                 diagnostics.append(f"incomplete content for completed Codex turn {turn}")
-            elif turn not in seen:
-                rounds.append({"id": turn, "user": "\n\n".join(users),
-                               "agent": "\n\n".join(trace), "end_line": line,
-                               "completion": "completed"})
-                seen.add(turn)
             turn, users, trace = None, [], []
             evidence, has_native_trace, compaction_seen = [], False, False
             user_formats.clear()
         elif typ == "event_msg" and event == "turn_aborted" and turn:
             if p.get("turn_id") and p["turn_id"] != turn:
                 raise ValueError(f"Codex abort turn_id mismatch at line {line}")
-            if terminal_turns:
-                if not finish("aborted", line, p) and (has_native_trace if dialogue else trace):
-                    diagnostics.append(f"missing input for aborted Codex turn {turn}")
-            elif users and turn not in seen:
-                # Native abort is a terminal record, not successful work. Keep
-                # its partial observations separate from the next user task.
-                rounds.append({"id": turn, "user": "\n\n".join(users),
-                               "agent": "\n\n".join(trace + [_dump(p)]),
-                               "end_line": line, "completion": "aborted"})
-                seen.add(turn)
+            # Native abort is a terminal record, not successful work.
+            if not finish("aborted", line, p) and (has_native_trace if dialogue else trace):
+                diagnostics.append(f"missing input for aborted Codex turn {turn}")
             turn, users, trace = None, [], []
             evidence, has_native_trace, compaction_seen = [], False, False
             user_formats.clear()
-    return {"rounds": rounds, "pending_tail": bool(users) or bool(terminal_turns and turn) or bool(diagnostics),
-            "diagnostics": diagnostics}
+    return {"rounds": rounds, "pending_tail": bool(users) or bool(turn) or bool(diagnostics),
+            "diagnostics": diagnostics,
+            "tail": {"id": turn, "user": "\n\n".join(users)} if turn and users else None}
 
 
 # Kiro `turn_end.stopReason` → completion. Only end_turn is success; the rest keep their
@@ -642,7 +692,10 @@ def _kiro(rows: list, sid: str) -> dict:
             finish(completion, line, None if completion == "completed" and trace else
                    {k: p[k] for k in ("type", "stopReason", "stopDetails") if k in p})
             turn, users, trace, evidence = None, [], [], []
-    return {"rounds": rounds, "pending_tail": bool(turn or queued), "diagnostics": diagnostics}
+    # The open turn's words under the executionId its finished round will keep, so the
+    # current request can be cited while it is being answered.
+    return {"rounds": rounds, "pending_tail": bool(turn or queued), "diagnostics": diagnostics,
+            "tail": {"id": turn, "user": "\n\n".join(users)} if turn and users else None}
 
 
 # Antigravity steps that are context, not dialogue: hook and system injections, the
@@ -729,4 +782,6 @@ def _antigravity(rows: list, sid: str) -> dict:
     if start is not None and _ag_final(last):
         finish("completed")
         start = None
-    return {"rounds": rounds, "pending_tail": start is not None, "diagnostics": []}
+    # The open round is named by its user input step, the part of its id that stays when it ends.
+    return {"rounds": rounds, "pending_tail": start is not None, "diagnostics": [],
+            "tail": {"id": str(start), "user": "\n\n".join(users)} if start is not None and users else None}

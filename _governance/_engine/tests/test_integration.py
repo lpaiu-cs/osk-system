@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -71,6 +72,28 @@ def codex_user_item(sid, n, text):
                  "content": [{"type": "text", "text": text}]}}}
 
 
+def legacy_cursor(harness, sid, transcript, scope="Capture"):
+    """Rewrite a fresh cursor as the full-capture engine (<= v4.1) left it: each completed
+    round stored in `_raw/` and tracked by its block hash. Upgraded instances keep these."""
+    path = it.state_path(harness, sid)
+    s = it._load(path, harness, sid)
+    parsed = transcripts.read(str(transcript), harness, sid)
+    shown = parsed["dialogue_v1"]
+    record = ROOT / "00_Scope" / scope / "_raw/.records" / (s["record"] + ".txt")
+    blocks = [raw._block(i, raw.escape_numeric_h2(shown[r["id"]]["user"]),
+                         raw.escape_numeric_h2(shown[r["id"]]["agent"]), dialogue_id=r["id"])
+              for i, r in enumerate(parsed["rounds"], 1)]
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_bytes("\n".join(blocks).encode("utf-8"))
+    rel = record.relative_to(ROOT).as_posix()
+    s["rounds"] = [{"id": r["id"], "ref": f"{rel}#{i}", "completion": r["completion"],
+                    "hash": core.sha256_bytes(block.rstrip("\n").encode("utf-8"))}
+                   for i, (r, block) in enumerate(zip(parsed["rounds"], blocks), 1)]
+    s["snapshots"] = {it._snapshot(s): {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]}}
+    it._save(path, s)
+    return s, record
+
+
 class IntegrationTests(unittest.TestCase):
     def setUp(self):
         self.sid = self._testMethodName
@@ -82,44 +105,6 @@ class IntegrationTests(unittest.TestCase):
     def capture(self, harness="claude"):
         return it.capture(harness, self.sid, str(self.path), "capture-tests")
 
-    def test_codex_paginated_history_preserves_raw_receipts_and_byte_boundary(self):
-        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):
-            folder = Path(home) / 'sessions/2026/09/21'
-            folder.mkdir(parents=True)
-            parent = folder / f'rollout-first-{self.sid}.jsonl'
-            child = folder / f'rollout-second-{self.sid}_continuation.jsonl'
-            header = {'type': 'session_meta', 'payload': {'id': self.sid}}
-            parent.write_text(''.join(json.dumps(r) + '\n' for r in [header] + codex_round(1)), encoding='utf-8')
-            first = it.capture('codex', self.sid, str(parent), 'capture-tests')
-            it.acknowledge('codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
-            before = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
-            raw_path = raw._raw_file(raw.parse_ref(first['pending_refs'][0])[0])
-            raw_before = raw_path.read_bytes()
-            offset = parent.stat().st_size
-            # The declared history excludes later events in the ancestor file.
-            with parent.open('a', encoding='utf-8') as f:
-                f.write(''.join(json.dumps(r) + '\n' for r in codex_round(99)))
-            child_header = {'type': 'session_meta', 'payload': {'id': self.sid,
-                'history_base': {'thread_id': self.sid, 'end_byte_offset': offset}}}
-            child.write_text(''.join(json.dumps(r) + '\n' for r in [child_header] + codex_round(2)), encoding='utf-8')
-            child_name = '\\\\?\\' + str(child.resolve()) if os.name == 'nt' else str(child)
-            captured = it.capture('codex', self.sid, child_name, 'capture-tests')
-            self.assertTrue(captured['ok'], captured)
-            self.assertEqual((captured['appended'], captured['captured_rounds'], captured['reviewed_rounds']), (1, 2, 1))
-            after = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
-            self.assertEqual(after['rounds'][:1], before['rounds'])
-            self.assertEqual(after['reviews'], before['reviews'])
-            self.assertEqual(after['snapshots'][first['through']], before['snapshots'][first['through']])
-            self.assertTrue(raw_path.read_bytes().startswith(raw_before))
-            self.assertNotIn('question 99', raw_path.read_text(encoding='utf-8'))
-            self.assertEqual(it.capture('codex', self.sid, str(child), 'capture-tests')['appended'], 0)
-            it.state_path('codex', self.sid).unlink()
-            self.assertEqual(it.capture('codex', self.sid, str(child), 'capture-tests')['appended'], 0)
-            original = raw_path.read_bytes()
-            parent.write_bytes(parent.read_bytes().replace(b'answer 1', b'alterd 1'))
-            refused = it.capture('codex', self.sid, str(child), 'capture-tests')
-            self.assertFalse(refused['ok'])
-            self.assertEqual(raw_path.read_bytes(), original)
 
     def test_codex_history_rejects_missing_foreign_cyclic_and_partial_sources(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):
@@ -174,89 +159,6 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(rows)
         self.assertTrue(transcripts.read(str(self.path), 'codex', self.sid)['diagnostics'])
 
-    def test_codex_history_backfill_preserves_unmarked_v1_and_v2_raw(self):
-        for codec in ('codex_v1', 'codex_v2'):
-            with self.subTest(codec=codec), tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME':home}):
-                sid = self.sid + codec
-                parent = Path(home) / f'rollout-parent-{sid}.jsonl'
-                child = Path(home) / f'rollout-child-{sid}_next.jsonl'
-                header = {'type':'session_meta','payload':{'id':sid}}
-                def save(path, rows):
-                    path.write_text(''.join(json.dumps(r)+'\n' for r in rows), encoding='utf-8')
-                save(parent, [header] + codex_round(1))
-                save(child, [header] + codex_round(2))
-                legacy = transcripts.read(str(child), 'codex', sid)
-                legacy.pop('dialogue_v1')
-                legacy['rounds'] = list(legacy[codec].values())
-                legacy.pop('codex_v2')
-                if codec == 'codex_v1':
-                    legacy.pop('codex_v1')
-                with mock.patch.object(transcripts, 'read', return_value=legacy):
-                    first = it.capture('codex', sid, str(child), 'capture-tests')
-                self.assertTrue(first['ok'], first)
-                path = raw._raw_file(raw.parse_ref(first['pending_refs'][0])[0])
-                before = path.read_bytes()
-                self.assertNotIn(b'dialogue-v1', before)
-                self.assertNotIn(b'codex-terminal-v3', before)
-                it.acknowledge('codex', sid, first['through'], 'no_value', 'synthetic fixture')
-                prior = it._load(it.state_path('codex', sid), 'codex', sid)
-                resumed = {'type':'session_meta', 'payload':{'id':sid,'history_base':{
-                    'thread_id':sid,'end_byte_offset':parent.stat().st_size}}}
-                save(child, [resumed] + codex_round(2) + codex_round(3))
-                result = it.capture('codex', sid, str(child), 'capture-tests')
-                self.assertTrue(result['ok'], result)
-                self.assertEqual((result['appended'], result['reviewed_rounds']), (2, 1))
-                after = it._load(it.state_path('codex', sid), 'codex', sid)
-                self.assertEqual([r['id'] for r in after['rounds']], ['turn-2','turn-1','turn-3'])
-                self.assertEqual(after['rounds'][:1], prior['rounds'])
-                self.assertEqual(after['reviews'], prior['reviews'])
-                self.assertEqual(after['snapshots'][first['through']], prior['snapshots'][first['through']])
-                self.assertTrue(path.read_bytes().startswith(before))
-                # Losing the local cursor must not remap the still-unmarked raw.
-                it.state_path('codex', sid).unlink()
-                self.assertEqual(it.capture('codex', sid, str(child), 'capture-tests')['appended'], 0)
-                stable = path.read_bytes()
-                child.write_bytes(child.read_bytes().replace(b'answer 2', b'alterd 2'))
-                self.assertFalse(it.capture('codex', sid, str(child), 'capture-tests')['ok'])
-                self.assertEqual(path.read_bytes(), stable)
-
-    def test_codex_missing_ancestor_keeps_existing_raw_in_review_queue(self):
-        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME':home}):
-            parent = Path(home) / f'rollout-parent-{self.sid}.jsonl'
-            child = Path(home) / f'rollout-child-{self.sid}_next.jsonl'
-            header = {'type':'session_meta','payload':{'id':self.sid}}
-            parent.write_text(''.join(json.dumps(r)+'\n' for r in [header] + codex_round(1)), encoding='utf-8')
-            header['payload']['history_base'] = {'thread_id':self.sid,'end_byte_offset':parent.stat().st_size}
-            child.write_text(''.join(json.dumps(r)+'\n' for r in [header] + codex_round(2)), encoding='utf-8')
-            first = it.capture('codex', self.sid, str(child), 'capture-tests')
-            self.assertTrue(first['ok'], first)
-            path = raw._raw_file(raw.parse_ref(first['pending_refs'][0])[0])
-            before = path.read_bytes()
-            parent.unlink()
-            listed = it.list_pending(100)
-            jobs = [j for j in listed['jobs'] if j['conversation_id'] == self.sid]
-            self.assertEqual(len(jobs), 1, listed['errors'])
-            self.assertEqual(jobs[0]['pending_refs'], first['pending_refs'])
-            self.assertFalse(listed['ok'])
-            self.assertTrue(any('history_base' in e['error'] for e in listed['errors']))
-            caught = it.catchup(100)
-            jobs = [j for j in caught['jobs'] if j['conversation_id'] == self.sid]
-            self.assertEqual(len(jobs), 1)
-            self.assertEqual(jobs[0]['pending_refs'], first['pending_refs'])
-            self.assertIn('history_base', jobs[0]['capture_error'])
-            self.assertEqual(jobs[0]['reviewed_rounds'], 0)
-            self.assertEqual(path.read_bytes(), before)
-
-    def test_codex_legacy_ambiguous_body_needs_matching_saved_identity(self):
-        pair = {'user':'same question', 'agent':'same answer'}
-        self.path.write_bytes(raw._block(1, pair['user'], pair['agent']).encode('utf-8'))
-        codec = {'first':pair, 'second':pair}
-        with self.assertRaisesRegex(ValueError, 'ambiguous'):
-            raw.codex_capture_order(self.path, codec, codec)
-        self.assertEqual(raw.codex_capture_order(self.path, codec, codec, ('second',)), ['second'])
-        changed = dict(codec, second=dict(pair, agent='changed answer'))
-        with self.assertRaisesRegex(ValueError, 'changed'):
-            raw.codex_capture_order(self.path, changed, changed, ('second',))
 
     def test_failed_codex_turn_and_inputless_retry_keep_observed_evidence(self):
         failed = codex_round(1)
@@ -310,66 +212,6 @@ class IntegrationTests(unittest.TestCase):
         self.transcript([{'type':'session_meta','payload':{'id':self.sid}}] + tail)
         self.assertTrue(transcripts.read(str(self.path), 'codex', self.sid)['pending_tail'])
 
-    def test_v1_skipped_native_turn_backfills_without_renumbering(self):
-        native = codex_round(2)
-        native[3] = codex_user_item(self.sid, 2, 'question 2')
-        self.transcript([{'type':'session_meta','payload':{'id':self.sid}}]
-                        + codex_round(1) + native + codex_round(3))
-        legacy = transcripts.read(str(self.path), 'codex', self.sid)
-        legacy.pop('codex_v2')
-        legacy['rounds'] = list(legacy.pop('codex_v1').values())
-        with mock.patch.object(transcripts, 'read', return_value=legacy):
-            first = self.capture('codex')
-        self.assertEqual(first['captured_rounds'], 2)
-        old = it._load(it.state_path('codex', self.sid), 'codex', self.sid)['rounds']
-        captured = self.capture('codex')
-        self.assertTrue(captured['ok'], captured)
-        self.assertEqual(captured['appended'], 1)
-        state = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
-        self.assertEqual(state['rounds'][:2], old)
-        self.assertEqual([r['id'] for r in state['rounds']], ['turn-1','turn-3','turn-2'])
-        it.state_path('codex', self.sid).unlink()
-        rebuilt = self.capture('codex')
-        self.assertEqual((rebuilt['ok'], rebuilt['appended']), (True, 0))
-
-    def test_terminal_backfill_keeps_old_raw_indices_receipts_and_crash_replay(self):
-        header = [{'type':'session_meta','payload':{'id':self.sid}}]
-        failed = codex_round(2)
-        failed[-1]['payload'].update(last_agent_message=None,error={'message':'capacity'})
-        retry = codex_round(3)
-        del retry[2:4]
-        rows = header + codex_round(1) + failed + retry + codex_round(4)
-        self.transcript(rows)
-        old = transcripts.read(str(self.path),'codex',self.sid)
-        prior_codec = old.pop('codex_v2', {r['id']:r for r in old['rounds']})
-        old['rounds'] = list(prior_codec.values())
-        with mock.patch.object(transcripts,'read',return_value=old):
-            first = self.capture('codex')
-        self.assertEqual(first['captured_rounds'], 2)
-        path = raw._raw_file(raw.parse_ref(first['pending_refs'][0])[0])
-        before = path.read_bytes()
-        it.acknowledge('codex',self.sid,first['through'],'no_value','old fixture only')
-        old_state = it._load(it.state_path('codex',self.sid),'codex',self.sid)
-        captured = self.capture('codex')
-        self.assertTrue(captured['ok'], captured)
-        self.assertEqual((captured['appended'],captured['reviewed_rounds']),(2,2))
-        self.assertTrue(path.read_bytes().startswith(before))
-        state = it._load(it.state_path('codex',self.sid),'codex',self.sid)
-        self.assertEqual(state['rounds'][:2], old_state['rounds'])
-        self.assertEqual(state['reviews'], old_state['reviews'])
-        self.assertEqual([r['id'] for r in state['rounds']],['turn-1','turn-4','turn-2','turn-3'])
-        self.transcript(rows + codex_round(5))
-        self.assertEqual(self.capture('codex')['appended'],1)
-        stable = path.read_bytes()
-        it.state_path('codex',self.sid).unlink()
-        rebuilt = self.capture('codex')
-        self.assertTrue(rebuilt['ok'], rebuilt)
-        self.assertEqual((rebuilt['captured_rounds'],rebuilt['appended']),(5,0))
-        self.assertEqual(path.read_bytes(),stable)
-        failed[-1]['payload']['error']['message'] = 'changed error'
-        self.transcript(rows + codex_round(5))
-        self.assertFalse(self.capture('codex')['ok'])
-        self.assertEqual(path.read_bytes(),stable)
 
     def test_claude_completion_and_tool_results(self):
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2, finished=False))
@@ -377,12 +219,15 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["captured_rounds"], 1)
         self.assertTrue(st["capture_pending"])
-        text = raw.read_round(st["pending_refs"][0])["text"]
+        self.assertFalse(raw.record_path("Capture", st["record"]).exists())  # tracking copies no dialogue
+        [turn] = self.turns()
+        text = turn["user"] + "\n" + turn["agent"]
         self.assertNotIn("evidence result", text)
         self.assertIn("tool_evidence_ref", text)
         self.assertIn('"calls": 1', text)
         self.assertIn("answer 1", text)
         self.assertNotIn("question 2", text)
+
 
     def test_end_turn_thinking_is_not_a_final_response(self):
         self.transcript(claude_round(self.sid, 1)[:-1])
@@ -395,13 +240,15 @@ class IntegrationTests(unittest.TestCase):
         st = self.capture("codex")
         self.assertEqual(st["captured_rounds"], 1)
         self.assertTrue(st["capture_pending"])
-        text = raw.read_round(st["pending_refs"][0])["text"]
+        [turn] = self.turns("codex")
+        text = turn["user"] + "\n" + turn["agent"]
         self.assertIn("tool_evidence_ref", text)
         self.assertNotIn("evidence result", text)
         self.assertEqual(text.count("question 1"), 1)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "wrong", "last_agent_message": "answer"}}) + "\n")
         self.assertFalse(self.capture("codex")["ok"])
+
 
     def test_codex_native_user_item_capture_and_replay(self):
         rows = codex_round(1)
@@ -410,12 +257,14 @@ class IntegrationTests(unittest.TestCase):
         captured = self.capture("codex")
         self.assertEqual(captured["captured_rounds"], 1, captured)
         self.assertFalse(captured["capture_pending"], captured)
-        text = raw.read_round(captured["pending_refs"][0])["text"]
+        [turn] = self.turns("codex")
+        text = turn["user"] + "\n" + turn["agent"]
         self.assertEqual(text.count("question 1"), 1)
         self.assertNotIn("evidence result", text)
         self.assertIn("tool_evidence_ref", text)
         self.assertIn("answer 1", text)
         self.assertEqual(self.capture("codex")["appended"], 0)
+
 
     def test_codex_mixed_user_envelopes_preserve_distinct_inputs(self):
         header = [{"type": "session_meta", "payload": {"id": self.sid}}]
@@ -440,34 +289,6 @@ class IntegrationTests(unittest.TestCase):
         rich["payload"]["item"]["content"].append({"type": "image", "url": "https://example.invalid/image"})
         self.assertIn("https://example.invalid/image", parse([legacy, rich])["user"])
 
-    def test_codex_raw_index_previews_skip_only_capture_header(self):
-        rows = [{"type": "session_meta", "payload": {"id": self.sid}}]
-        for n in (1, 2):
-            turn = codex_round(n)
-            turn[3] = codex_user_item(self.sid, n, f"question {n}")
-            rows += turn
-        self.transcript(rows)
-        captured = self.capture("codex")
-        self.assertTrue(captured["ok"], captured)
-        ref = raw.parse_ref(captured["pending_refs"][0])[0]
-        path = raw._raw_file(ref)
-        before = path.read_bytes()
-        toc = raw.read_round(ref)["index"]
-        self.assertEqual(len(toc), 2)
-        for n, item in enumerate(toc, 1):
-            self.assertIn(f"question {n}", item["preview"])
-            self.assertNotIn("osk-capture", item["preview"])
-            recalled = raw.read_round(f"{ref}#{n}")
-            self.assertIn(raw._DIALOGUE_V1, recalled["text"])
-            self.assertEqual(item["chars"], recalled["chars"])
-        self.assertEqual(path.read_bytes(), before)
-        # A user can quote that exact comment. Skip only the recorder's header,
-        # not matching user content or all HTML comments, in either format.
-        for native in (False, True):
-            block = raw._block(1, raw._CODEX_V2, "reply", codex_native=native)
-            self.assertEqual(raw._preview(block), raw._CODEX_V2)
-            crlf = raw._block(1, "CRLF question", "reply", codex_native=native).replace("\n", "\r\n")
-            self.assertEqual(raw._preview(crlf), "CRLF question")
 
     def test_codex_native_identity_and_completion_boundaries(self):
         header = [{"type": "session_meta", "payload": {"id": self.sid}}]
@@ -490,102 +311,6 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(header + rows[:3] + rows[4:])
         self.assertEqual(transcripts.read(str(self.path), "codex", self.sid)["rounds"], [])
 
-    def test_codex_upgrade_preserves_v1_rich_prefix_and_resumes_without_cursor(self):
-        reader = transcripts.read
-        for native_first in (False, True):
-            with self.subTest(native_first=native_first):
-                sid = self.sid + str(native_first)
-                header = [{"type": "session_meta", "payload": {"id": sid}}]
-                old_rows = codex_round(1)
-                old_rows[3]["payload"]["images"] = ["https://example.invalid/old.png"]
-                item = codex_user_item(sid, 1, "question 1")
-                item["payload"]["item"]["content"].append({"type": "image", "url": "https://example.invalid/old.png"})
-                old_rows.insert(3 if native_first else 4, item)
-                if native_first:
-                    old_rows.insert(4, {"type": "response_item", "payload": {
-                        "type": "message", "role": "assistant", "content": [
-                            {"type": "output_text", "text": "before legacy user"}]}})
-                self.transcript(header + old_rows)
-                # Frozen v3.14 contract: UserMessage items were ignored. The
-                # adapter supplies literal historical bytes, without a v2 stamp.
-                # Trace before the legacy user was ignored too.
-                legacy = reader(str(self.path), "codex", sid)
-                legacy.pop("codex_v1", None)
-                legacy.pop("codex_v2", None)
-                legacy.pop("dialogue_v1", None)
-                legacy["rounds"] = [{"id": "turn-1", "end_line": len(header + old_rows), "completion": "completed",
-                    "user": '{"images": ["https://example.invalid/old.png"], "message": "question 1"}',
-                    "agent": '{"arguments": "{}", "call_id": "tool-1", "name": "probe", "type": "function_call"}\n\n'
-                             '{"call_id": "tool-1", "output": "evidence result", "type": "function_call_output"}\n\n'
-                             '{"content": [{"text": "answer 1", "type": "output_text"}], "role": "assistant", "type": "message"}'}]
-                with mock.patch.object(transcripts, "read", return_value=legacy):
-                    first = it.capture("codex", sid, str(self.path), "capture-tests")
-                self.assertTrue(first["ok"], first)
-                old_ref = first["pending_refs"][0]
-                raw_path = raw._raw_file(raw.parse_ref(old_ref)[0])
-                before = raw_path.read_bytes()
-                self.assertNotIn(b"osk-capture", before)
-                self.assertEqual(before.count(b"https://example.invalid/old.png"), 1)
-                self.assertNotIn(b"before legacy user", before)
-                old_hash = it._load(it.state_path("codex", sid), "codex", sid)["rounds"][0]["hash"]
-                # Same snapshot must keep its token and raw source hash after upgrade.
-                upgraded = it.capture("codex", sid, str(self.path), "capture-tests")
-                self.assertTrue(upgraded["ok"], upgraded)
-                self.assertEqual(upgraded["through"], first["through"])
-                self.assertEqual(upgraded["coverage"]["codex_v1_rounds"], [1])
-                self.assertIn("옛 포착기가 생략한", it.prompt("codex", sid)["text"])
-                self.assertEqual(raw_path.read_bytes(), before)
-                it.acknowledge("codex", sid, first["through"], "no_value", "historical fixture has no durable knowledge")
-                new_rows = codex_round(2)
-                new_item = codex_user_item(sid, 2, "distinct native image input")
-                new_item["payload"]["item"]["content"].append({"type": "localImage", "path": "C:/images/new.png"})
-                new_rows.insert(4, new_item)
-                self.transcript(header + old_rows + new_rows)
-                resumed = it.capture("codex", sid, str(self.path), "capture-tests")
-                self.assertTrue(resumed["ok"], resumed)
-                self.assertEqual((resumed["captured_rounds"], resumed["reviewed_rounds"], resumed["appended"]), (2, 1, 1))
-                self.assertTrue(raw_path.read_bytes().startswith(before))
-                self.assertEqual(it._load(it.state_path("codex", sid), "codex", sid)["rounds"][0]["hash"], old_hash)
-                new_text = raw.read_round(resumed["pending_refs"][0])["text"]
-                self.assertIn("distinct native image input", new_text)
-                self.assertIn("attachment_ref", new_text)
-                self.assertIn("osk-capture: dialogue-v1", new_text)
-                self.assertEqual(it.capture("codex", sid, str(self.path), "capture-tests")["appended"], 0)
-                it.state_path("codex", sid).unlink()
-                reconstructed = it.capture("codex", sid, str(self.path), "capture-tests")
-                self.assertTrue(reconstructed["ok"], reconstructed)
-                self.assertEqual((reconstructed["captured_rounds"], reconstructed["appended"]), (2, 0))
-                # Changed native-only content of a v2 round must not fall back
-                # to its unchanged legacy envelope, even after cursor loss.
-                after = raw_path.read_bytes()
-                new_item["payload"]["item"]["content"][-1]["path"] = "C:/images/tampered.png"
-                self.transcript(header + old_rows + new_rows)
-                self.assertFalse(it.capture("codex", sid, str(self.path), "capture-tests")["ok"])
-                self.assertEqual(raw_path.read_bytes(), after)
-                new_item["payload"]["item"]["content"][-1]["path"] = "C:/images/new.png"
-                next(r for r in old_rows if r["payload"].get("type") == "user_message")["payload"]["images"] = ["https://example.invalid/changed.png"]
-                self.transcript(header + old_rows + new_rows)
-                self.assertFalse(it.capture("codex", sid, str(self.path), "capture-tests")["ok"])
-                self.assertEqual(raw_path.read_bytes(), after)
-
-    def test_crash_after_raw_append_retries_without_duplicate(self):
-        self.transcript(claude_round(self.sid, 1))
-        original = raw.append_rounds
-
-        def crash(*args, **kwargs):
-            original(*args, **kwargs)
-            raise SystemExit("simulated power loss after raw append")
-
-        with mock.patch.object(raw, "append_rounds", crash):
-            with self.assertRaises(SystemExit):
-                self.capture()
-        self.assertTrue(it.status("claude", self.sid)["pending"])
-        st = self.capture()
-        self.assertEqual(st["appended"], 0)
-        self.assertEqual(st["captured_rounds"], 1)
-        self.assertEqual(raw.record_state("capture-tests", st["record"])["rounds"], 1)
-        it.state_path("claude", self.sid).unlink()
-        self.assertEqual(self.capture()["appended"], 0)
 
     def test_resume_empty_memory_and_other_writer_never_ack(self):
         self.transcript(claude_round(self.sid, 1))
@@ -666,107 +391,6 @@ class IntegrationTests(unittest.TestCase):
             self.assertTrue(recovered["ok"], recovered)
             self.assertEqual(recovered["captured_rounds"], 1)
 
-    def test_claude_copied_prefix_reuses_raw_without_inheriting_review(self):
-        parent = self.sid + "-parent"
-        rows = claude_round(parent, 1)
-        rows[1]["message"]["content"][0]["name"] = "Bash"
-        previous = None
-        for row in rows:
-            row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, parent + row["uuid"]))
-            row["parentUuid"], previous = previous, row["uuid"]
-        self.transcript(rows)
-        original = it.capture("claude", parent, str(self.path), "capture-tests")
-        self.assertEqual(original["captured_rounds"], 1)
-        source = raw.read_round(original["pending_refs"][0])["text"]
-        # The native desktop may preserve parent IDs or rewrite all IDs to the child.
-        for rewrite in (False, True):
-            child = self.sid + ("-rewrite" if rewrite else "-mixed")
-            inherited = [dict(r, sessionId=child) if rewrite else r for r in rows]
-            tail = claude_round(child, 3 if rewrite else 2)
-            for row in tail:
-                row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, child + row["uuid"]))
-            tail[0]["parentUuid"] = rows[-1]["uuid"]
-            self.transcript(inherited + tail)
-            captured = it.capture("claude", child, str(self.path), "capture-tests")
-            self.assertTrue(captured["ok"], captured)
-            self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
-            self.assertEqual(captured["reviewed_rounds"], 0)
-            self.assertNotIn(original["pending_refs"][0], captured["pending_refs"])
-            self.assertIn("과거 1라운드", it.prompt("claude", child)["text"])
-            self.assertEqual(raw.record_state("capture-tests", captured["record"])["rounds"], 1)
-            self.assertEqual(raw.read_round(original["pending_refs"][0])["text"], source)
-            self.assertEqual(it.capture("claude", child, str(self.path), "capture-tests")["appended"], 0)
-            it.state_path("claude", child).unlink()
-            rebuilt = it.capture("claude", child, str(self.path), "capture-tests")
-            self.assertTrue(rebuilt["ok"], rebuilt)
-            self.assertEqual((rebuilt["appended"], rebuilt["inherited_rounds"]), (0, 1))
-            changed = json.loads(json.dumps(inherited + tail))
-            changed[0]["message"]["content"] = "changed copied question"
-            self.transcript(changed)
-            refused = it.capture("claude", child, str(self.path), "capture-tests")
-            self.assertFalse(refused["ok"])
-            self.assertIn("inherited native prefix changed", refused["capture_error"])
-        self.assertEqual(it.status("claude", parent)["reviewed_rounds"], 0)
-        # A copied vault keeps only raw; both local cursors may disappear.
-        it.state_path("claude", parent).unlink()
-        it.state_path("claude", child).unlink()
-        self.transcript(inherited + tail)
-        rebuilt = it.capture("claude", child, str(self.path), "capture-tests")
-        self.assertEqual((rebuilt["appended"], rebuilt["inherited_rounds"]), (0, 1), rebuilt)
-        name, _ = raw.parse_ref(original["pending_refs"][0])
-        source_path = raw._raw_file(name)
-        source_path.write_bytes(source_path.read_bytes().replace(b"answer 1", b"altered answer 1"))
-        refused = it.capture("claude", child, str(self.path), "capture-tests")
-        self.assertFalse(refused["ok"])
-        self.assertIn("inherited raw changed", refused["capture_error"])
-
-    def test_claude_fork_uses_result_origin_not_raw_owner(self):
-        grandparent, parent = self.sid + "-G", self.sid + "-P"
-        rows, previous = [], None
-        for n, sid, tool in ((1, grandparent, "Bash"), (2, parent, "Read")):
-            part = claude_round(sid, n)
-            part[1]["message"]["content"][0]["name"] = tool
-            for row in part:
-                row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, sid + row["uuid"]))
-                row["parentUuid"], previous = previous, row["uuid"]
-            rows += part
-        # Ordinary dialogue may quote a reference-shaped JSON object verbatim.
-        rows[4]["message"]["content"] = "literal example " + json.dumps({"content": {
-            "coverage": "tool-output-reference",
-            "native_result": "claude:" + grandparent + ":" + rows[2]["uuid"]}}, sort_keys=True)
-        self.transcript(rows)
-        self.assertFalse(it.state_path("claude", grandparent).exists())
-        original = it.capture("claude", parent, str(self.path), "capture-tests")
-        self.assertTrue(original["ok"], original)
-        self.assertEqual(original["captured_rounds"], 2)
-        texts = [raw.read_round(ref)["text"] for ref in original["pending_refs"]]
-        self.assertIn("claude:" + grandparent + ":", texts[0])
-        self.assertIn("claude:" + rows[5]["uuid"] + ":", texts[1])
-        copied = [dict(r, sessionId=self.sid) for r in rows]
-        tail = claude_round(self.sid, 3)
-        for row in tail:
-            row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, self.sid + row["uuid"]))
-        tail[0]["parentUuid"] = previous
-        self.transcript(copied + tail)
-        result = self.capture()
-        self.assertTrue(result["ok"], result)
-        self.assertEqual((result["appended"], result["inherited_rounds"]), (1, 2))
-        self.assertEqual(result["reviewed_rounds"], 0)
-        self.assertEqual(self.capture()["appended"], 0)
-        it.state_path("claude", parent).unlink()
-        it.state_path("claude", self.sid).unlink()
-        self.assertEqual(self.capture()["appended"], 0)
-        changed = json.loads(json.dumps(copied + tail))
-        changed[4]["message"]["content"] = changed[4]["message"]["content"].replace(grandparent, self.sid)
-        self.transcript(changed)
-        self.assertFalse(self.capture()["ok"], "dialogue resembling a locator is not metadata")
-        changed = json.loads(json.dumps(copied + tail))
-        changed[2]["message"]["content"][0]["content"] = "different result"
-        self.transcript(changed)
-        refused = self.capture()
-        self.assertFalse(refused["ok"])
-        self.assertIn("inherited native prefix changed", refused["capture_error"])
-        self.assertEqual([raw.read_round(ref)["text"] for ref in original["pending_refs"]], texts)
 
     def test_claude_copied_prefix_is_not_reused_across_scopes(self):
         parent = self.sid + "-parent"
@@ -779,7 +403,8 @@ class IntegrationTests(unittest.TestCase):
         copied = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         self.assertTrue(copied["ok"], copied)
         self.assertEqual((copied["captured_rounds"], copied["inherited_rounds"]), (1, 0))
-        self.assertTrue(copied["pending_refs"][0].startswith("00_Scope/W1/"))
+        self.assertEqual(copied["pending_refs"], [raw.native_ref("claude", self.sid, rows[0]["uuid"])])
+
 
     def test_claude_copied_prefix_matches_streamed_tool_order(self):
         # Streaming execution appends a result between the parallel calls of one
@@ -878,8 +503,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(st["capture_pending"])
         self.assertIn("incomplete JSONL", st["capture_error"])
         job = it.prompt("claude", self.sid, include_organization=False)
-        self.assertEqual(job["raw_review"]["state"], "verified")
+        self.assertEqual(job["raw_review"]["state"], "native")
         self.assertEqual(job["raw_review"]["rounds"], 1)
+
 
     def test_unstarted_missing_native_does_not_hide_active_missing_source(self):
         absent = self.capture()
@@ -968,13 +594,17 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(claude_round("not-this-conversation", 1))
         self.assertFalse(self.capture()["ok"])
         self.transcript(claude_round(self.sid, 1))
-        self.assertTrue(self.capture()["ok"])
-        changed = claude_round(self.sid, 1)
-        changed[0]["message"]["content"] = "rewritten old question"
-        self.transcript(changed)
+        first = self.capture()
+        self.assertTrue(first["ok"])
+        # A rewound transcript no longer holds the tracked turn.
+        rewound = claude_round(self.sid, 1)
+        rewound[0]["uuid"] = "user-1-rewound"
+        self.transcript(rewound)
         st = self.capture()
         self.assertFalse(st["ok"])
-        self.assertEqual(raw.record_state("capture-tests", st["record"])["rounds"], 1)
+        self.assertIn("identity prefix changed", st["capture_error"])
+        self.assertEqual(st["pending_refs"], first["pending_refs"])
+
 
     def test_rejected_explicit_native_path_keeps_the_verified_source(self):
         for harness in ("claude", "codex"):
@@ -990,14 +620,11 @@ class IntegrationTests(unittest.TestCase):
                 it.acknowledge(harness, sid, first["through"], "no_value", "Completed fixture only.")
                 state_path = it.state_path(harness, sid)
                 before = it._load(state_path, harness, sid)
-                raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
-                raw_before = raw_path.read_bytes()
                 other = self.path.with_suffix(".foreign.jsonl")
                 other.write_text("".join(json.dumps(r) + "\n" for r in rows("foreign", 1)), encoding="utf-8")
                 refused = it.capture(harness, sid, str(other), "capture-tests")
                 self.assertFalse(refused["ok"], refused)
                 self.assertEqual(refused["capture_recovery"]["phase"], "read")
-                self.assertEqual(raw_path.read_bytes(), raw_before)
                 self.assertEqual(it._load(state_path, harness, sid)["transcript_path"], before["transcript_path"])
                 self.transcript(rows(sid, 2))
                 recovered = it.capture(harness, sid, None, "capture-tests")
@@ -1010,22 +637,20 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(it.review_status(harness, sid, first["through"])["status"], "complete")
                 self.assertEqual(it.capture(harness, sid, None, "capture-tests")["appended"], 0)
 
+
     def test_changed_prefix_at_another_path_does_not_replace_the_verified_source(self):
         self.transcript(claude_round(self.sid, 1))
         first = self.capture()
         it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
         state_path = it.state_path("claude", self.sid)
         before = it._load(state_path, "claude", self.sid)
-        raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
-        raw_before = raw_path.read_bytes()
         changed = claude_round(self.sid, 1) + claude_round(self.sid, 2)
-        changed[0]["message"]["content"] = "A rewritten old question."
+        changed[0]["uuid"] = "user-1-rewritten"
         candidate = self.path.with_suffix(".changed.jsonl")
         candidate.write_text("".join(json.dumps(r) + "\n" for r in changed), encoding="utf-8")
         refused = it.capture("claude", self.sid, str(candidate), "capture-tests")
         self.assertFalse(refused["ok"], refused)
         self.assertEqual(refused["capture_recovery"]["phase"], "replay")
-        self.assertEqual(raw_path.read_bytes(), raw_before)
         after = it._load(state_path, "claude", self.sid)
         self.assertEqual(after["transcript_path"], before["transcript_path"])
         for key in ("rounds", "reviews", "reviewed_count", "snapshots", "native_fingerprint", "coverage"):
@@ -1034,43 +659,13 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(recovered["ok"], recovered)
         self.assertEqual(recovered["appended"], 0)
 
-    def test_relocated_capture_crash_replays_candidate_without_duplicate_raw(self):
-        self.transcript(claude_round(self.sid, 1))
-        first = self.capture()
-        it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
-        state_path = it.state_path("claude", self.sid)
-        before = it._load(state_path, "claude", self.sid)
-        candidate = self.path.with_suffix(".relocated.jsonl")
-        candidate.write_text("".join(json.dumps(r) + "\n" for r in
-                                    claude_round(self.sid, 1) + claude_round(self.sid, 2)), encoding="utf-8")
-        append = raw.append_rounds
-        def crash(*args, **kwargs):
-            append(*args, **kwargs)
-            raise SystemExit("Power loss after appending the relocated tail.")
-        with mock.patch.object(raw, "append_rounds", crash):
-            with self.assertRaises(SystemExit):
-                it.capture("claude", self.sid, str(candidate), "capture-tests")
-        crashed = it._load(state_path, "claude", self.sid)
-        self.assertEqual(crashed["transcript_path"], before["transcript_path"])
-        self.assertEqual(crashed.get("capture_path"), str(candidate.resolve()))
-        caught = it.catchup(100)
-        job = next(j for j in caught["jobs"] if j["conversation_id"] == self.sid)
-        self.assertEqual(job["raw_review"]["state"], "verified")
-        recovered = it._load(state_path, "claude", self.sid)
-        self.assertEqual(recovered["transcript_path"], str(candidate.resolve()))
-        self.assertNotIn("capture_path", recovered)
-        self.assertEqual(recovered["rounds"][:1], before["rounds"])
-        self.assertEqual(recovered["reviews"], before["reviews"])
-        self.assertEqual(recovered["reviewed_count"], 1)
-        self.assertEqual(len(recovered["rounds"]), 2)
-        self.assertEqual(it.capture("claude", self.sid, None, "capture-tests")["appended"], 0)
 
     def test_missing_native_and_unavailable_raw_have_separate_recovery_states(self):
         self.transcript(claude_round(self.sid, 1))
-        first = self.capture()
-        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)
-        raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
-        raw_before = raw_path.read_bytes()
+        self.capture()
+        state, record = legacy_cursor("claude", self.sid, self.path)
+        through = it._snapshot(state)
+        raw_before = record.read_bytes()
         self.path.unlink()
         missing = it.capture("claude", self.sid, None, "capture-tests")
         self.assertFalse(missing["ok"])
@@ -1078,22 +673,23 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(missing["capture_recovery"]["phase"], "source")
         job = it.prompt("claude", self.sid, include_organization=False)
         self.assertEqual(job["raw_review"], {"state": "verified", "rounds": 1, "error": None})
-        self.assertEqual(job["through"], first["through"])
-        self.assertEqual(raw_path.read_bytes(), raw_before)
-        raw_path.write_bytes(raw_before.replace(b"question 1", b"altered question"))
+        self.assertEqual(job["through"], through)
+        self.assertEqual(record.read_bytes(), raw_before)
+        record.write_bytes(raw_before.replace(b"question 1", b"altered question"))
         blocked = it.prompt("claude", self.sid, include_organization=False)
         self.assertEqual(blocked["raw_review"]["state"], "unavailable")
         self.assertTrue(blocked["raw_review"]["error"])
         with self.assertRaises((ValueError, write.WriteError)):
-            it.acknowledge("claude", self.sid, first["through"], "no_value", "Fixture only.")
+            it.acknowledge("claude", self.sid, through, "no_value", "Fixture only.")
         self.assertEqual(it.status("claude", self.sid)["reviewed_rounds"], 0)
-        raw_path.write_bytes(raw_before)
-        # This ACK judges only the verified, completed fixture; it cannot close capture.
-        reviewed = it.acknowledge("claude", self.sid, first["through"], "no_value", "Captured fixture has no reusable claim.")
+        record.write_bytes(raw_before)
+        # This ACK judges only the verified stored round; it cannot close capture.
+        reviewed = it.acknowledge("claude", self.sid, through, "no_value", "Stored fixture has no reusable claim.")
         self.assertTrue(reviewed["capture_pending"])
         self.assertTrue(reviewed["capture_error"])
         self.assertTrue(reviewed["pending"])
         self.assertEqual(it.prompt("claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
+
 
     def test_relocated_capture_io_failure_keeps_candidate_until_cursor_recovery(self):
         # Catch up only this fault matrix, not every unrelated suite fixture.
@@ -1103,73 +699,45 @@ class IntegrationTests(unittest.TestCase):
                                     state_dir / state_path_for(harness, sid).name)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for failure in ("append", "read", "decode"):
-            for retry in ("pathless", "catchup"):
-                with self.subTest(failure=failure, retry=retry):
-                    sid = f"{self.sid}-{failure}-{retry}"
-                    self.transcript(claude_round(sid, 1))
-                    first = it.capture("claude", sid, str(self.path), "capture-tests")
-                    it.acknowledge("claude", sid, first["through"], "no_value", "Completed fixture only.")
-                    state_path = it.state_path("claude", sid)
-                    before = it._load(state_path, "claude", sid)
-                    raw_path = raw._raw_file(raw.parse_ref(before["rounds"][0]["ref"])[0])
-                    candidate = self.path.with_name(sid + ".relocated.jsonl")
-                    candidate.write_text("".join(json.dumps(r) + "\n" for r in
-                                                claude_round(sid, 1) + claude_round(sid, 2)), encoding="utf-8")
-                    append, read = raw.append_rounds, raw.read_exact
-                    stored = False
-
-                    def fail_after_append(*args, **kwargs):
-                        nonlocal stored
-                        result = append(*args, **kwargs)
-                        stored = True
-                        if failure == "append":
-                            raise OSError("Raw was written, but the write outcome was not returned.")
-                        return result
-
-                    def fail_cursor_read(*args, **kwargs):
-                        nonlocal stored
-                        if stored and failure != "append":
-                            stored = False
-                            if failure == "decode":
-                                raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "Temporary read failure.")
-                            raise PermissionError("Temporary raw read failure after append.")
-                        return read(*args, **kwargs)
-
-                    with mock.patch.object(raw, "append_rounds", fail_after_append), \
-                            mock.patch.object(raw, "read_exact", fail_cursor_read):
-                        failed = it.capture("claude", sid, str(candidate), "capture-tests")
+        for retry in ("pathless", "catchup"):
+            with self.subTest(retry=retry):
+                sid = f"{self.sid}-{retry}"
+                self.transcript(claude_round(sid, 1))
+                first = it.capture("claude", sid, str(self.path), "capture-tests")
+                it.acknowledge("claude", sid, first["through"], "no_value", "Completed fixture only.")
+                state_path = it.state_path("claude", sid)
+                before = it._load(state_path, "claude", sid)
+                candidate = self.path.with_name(sid + ".relocated.jsonl")
+                candidate.write_text("".join(json.dumps(r) + "\n" for r in
+                                            claude_round(sid, 1) + claude_round(sid, 2)), encoding="utf-8")
+                # A transient read failure, explicit or pathless, keeps the candidate source.
+                for attempt in (str(candidate), None):
+                    with mock.patch.object(transcripts, "read", side_effect=PermissionError("Native temporarily locked.")):
+                        failed = it.capture("claude", sid, attempt, "capture-tests")
                     self.assertFalse(failed["ok"], failed)
                     self.assertTrue(failed["capture_pending"])
                     self.assertEqual((failed["captured_rounds"], failed["reviewed_rounds"]), (1, 1))
-                    self.assertEqual(failed["pending_refs"], [])
-                    self.assertEqual(raw.record_state("capture-tests", first["record"])["rounds"], 2)
-                    raw_after_append = raw_path.read_bytes()
                     failed_state = it._load(state_path, "claude", sid)
                     self.assertEqual(failed_state["transcript_path"], before["transcript_path"])
                     self.assertEqual(failed_state.get("capture_path"), str(candidate.resolve()))
-                    # A second transient native-read failure must not lose this intent either.
-                    with mock.patch.object(transcripts, "read", side_effect=PermissionError("Native temporarily locked.")):
-                        self.assertFalse(it.capture("claude", sid, None, "capture-tests")["ok"])
-                    self.assertEqual(it._load(state_path, "claude", sid).get("capture_path"), str(candidate.resolve()))
-                    if retry == "pathless":
-                        recovered = it.capture("claude", sid, None, "capture-tests")
-                    else:
-                        caught = it.catchup(100)
-                        recovered = next(c for c in caught["captures"] if c["conversation_id"] == sid)
-                    self.assertTrue(recovered["ok"], recovered)
-                    self.assertEqual(recovered["appended"], 0)
-                    after = it._load(state_path, "claude", sid)
-                    self.assertEqual(after["transcript_path"], str(candidate.resolve()))
-                    self.assertNotIn("capture_path", after)
-                    self.assertEqual(after["rounds"][:1], before["rounds"])
-                    self.assertEqual(after["reviews"], before["reviews"])
-                    self.assertEqual(after["snapshots"][first["through"]], before["snapshots"][first["through"]])
-                    self.assertEqual((len(after["rounds"]), after["reviewed_count"]), (2, 1))
-                    self.assertEqual(raw_path.read_bytes(), raw_after_append)
-                    job = it.prompt("claude", sid, include_organization=False)
-                    self.assertEqual(job["pending_refs"], [after["rounds"][1]["ref"]])
-                    self.assertEqual(job["raw_review"], {"state": "verified", "rounds": 1, "error": None})
+                if retry == "pathless":
+                    recovered = it.capture("claude", sid, None, "capture-tests")
+                else:
+                    caught = it.catchup(100)
+                    recovered = next(c for c in caught["captures"] if c["conversation_id"] == sid)
+                self.assertTrue(recovered["ok"], recovered)
+                self.assertEqual(recovered["appended"], 1)
+                after = it._load(state_path, "claude", sid)
+                self.assertEqual(after["transcript_path"], str(candidate.resolve()))
+                self.assertNotIn("capture_path", after)
+                self.assertEqual(after["rounds"][:1], before["rounds"])
+                self.assertEqual(after["reviews"], before["reviews"])
+                self.assertEqual(after["snapshots"][first["through"]], before["snapshots"][first["through"]])
+                self.assertEqual((len(after["rounds"]), after["reviewed_count"]), (2, 1))
+                job = it.prompt("claude", sid, include_organization=False)
+                self.assertEqual(job["pending_refs"], [after["rounds"][1]["ref"]])
+                self.assertEqual(job["raw_review"], {"state": "native", "rounds": 1, "error": None})
+
 
     def test_unbound_conversation_can_choose_a_stable_session_without_binding_generic_key(self):
         self.transcript(claude_round(self.sid, 1))
@@ -1220,8 +788,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(st["capture_pending"])
         self.assertEqual(st["captured_rounds"], 2)
         self.assertEqual(st["aborted_rounds"], 1)
-        first = raw.read_round(st["pending_refs"][0])["text"]
-        second = raw.read_round(st["pending_refs"][1])["text"]
+        first, second = (t["user"] + "\n" + t["agent"] for t in self.turns("codex"))
         self.assertIn("turn_aborted", first)
         self.assertIn("question 1", first)
         self.assertNotIn("question 1", second)
@@ -1243,6 +810,7 @@ class IntegrationTests(unittest.TestCase):
         parsed = transcripts.read(str(self.path), 'codex', self.sid)
         self.assertEqual((parsed['rounds'],parsed['diagnostics'],parsed['pending_tail']), ([],[],False))
 
+
     def test_all_tool_payloads_are_references_and_dialogue_stays(self):
         rows = claude_round(self.sid, 1)
         rows[1]["message"]["content"][0].update(name="Read", input={"file_path": "C:/private/source.txt"})
@@ -1252,8 +820,8 @@ class IntegrationTests(unittest.TestCase):
         more[2]["message"]["content"][0]["content"] = "MIXED_OUTPUT_MUST_NOT_COPY"
         self.transcript(rows + more + claude_round(self.sid, 3))
         st = self.capture()
-        text = "\n".join(raw.read_round(ref)["text"] for ref in st["pending_refs"])
         self.assertTrue(st["ok"], st)
+        text = "\n".join(t["user"] + "\n" + t["agent"] for t in self.turns())
         self.assertNotIn("FILE_FULL_CONTENT_MUST_NOT_COPY", text)
         self.assertNotIn("MIXED_OUTPUT_MUST_NOT_COPY", text)
         self.assertNotIn("C:/private/source.txt", text)
@@ -1263,7 +831,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn("evidence result", text)
         self.assertIn("answer 3", text)
         self.assertEqual(st["coverage"]["mode"], "tool-output-reference")
-        self.assertIn("전사 보관", it.prompt("claude", self.sid)["text"])
+
 
     def test_codex_structured_read_reference_and_abort_without_reply(self):
         rows = [{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1)
@@ -1275,11 +843,13 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(rows)
         st = self.capture("codex")
         self.assertEqual(st["captured_rounds"], 2, st)
-        text = raw.read_round(st["pending_refs"][0])["text"]
+        first, second = self.turns("codex")
+        text = first["user"] + "\n" + first["agent"]
         self.assertNotIn("NODE_FULL_CONTENT_MUST_NOT_COPY", text)
         self.assertIn("mcp__osk__read_node", text)
         self.assertIn("tool_evidence_ref", text)
-        self.assertIn("turn_aborted", raw.read_round(st["pending_refs"][1])["text"])
+        self.assertIn("turn_aborted", second["agent"])
+
 
     def test_stop_before_flush_catchup_without_resume_and_changed_after_ack(self):
         self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1, finished=False))
@@ -1287,24 +857,114 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(pending["capture_pending"])
         self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1))
         caught = it.catchup(100)
-        job = next(j for j in caught["jobs"] if j["conversation_id"] == self.sid)
+        capture = next(c for c in caught["captures"] if c["conversation_id"] == self.sid)
+        self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
+        self.assertNotIn(self.sid, [j["conversation_id"] for j in caught["jobs"]])
+        # The conversation itself reviews its turns at its next prompt.
+        job = it.prompt("codex", self.sid, include_organization=False)
         self.assertEqual(len(job["pending_refs"]), 1)
-        self.assertIn(sys.executable, job["prompt"])
+        self.assertIn(sys.executable, job["text"])
         it.acknowledge("codex", self.sid, job["through"], "no_value", "bounded test round")
         self.assertEqual(it.review_status("codex", self.sid, job["through"])["status"], "complete")
         self.assertFalse(it.status("codex", self.sid)["pending"])
-        # The session can append and exit before Stop; fingerprint is a hint to
-        # revalidate raw's durable prefix, never proof that new work was reviewed.
+        # The session can append and exit before Stop; the fingerprint only says to look again.
         self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1) + codex_round(2))
-        caught = it.catchup(100)
-        job2 = next(j for j in caught["jobs"] if j["conversation_id"] == self.sid)
+        it.catchup(100)
+        job2 = it.prompt("codex", self.sid, include_organization=False)
         self.assertEqual(len(job2["pending_refs"]), 1)
         self.assertNotEqual(job["through"], job2["through"])
+
+    def test_changed_original_turn_never_closes_its_old_snapshot(self):
+        rows = claude_round(self.sid, 1) + claude_round(self.sid, 2)
+        second = len(claude_round(self.sid, 1))
+        self.transcript(rows)
+        first = self.capture()
+        ref = raw.native_ref("claude", self.sid, "user-2")
+        # The same turn ID now carries other words.
+        rows[second]["message"]["content"] = "question 2, for every project"
+        self.transcript(rows)
+        [seen] = it.read_turns([ref])["turns"]
+        self.assertTrue(seen["changed"], seen)
+        with self.assertRaisesRegex(ValueError, "changed after this snapshot"):
+            it.acknowledge("claude", self.sid, first["through"], "no_value", "judged the old words")
+        again = self.capture()
+        self.assertEqual((again["ok"], again["appended"], again["changed"]), (True, 0, 1))
+        self.assertNotEqual(again["through"], first["through"])
+        [seen] = it.read_turns([ref])["turns"]
+        self.assertNotIn("changed", seen)
+        self.assertTrue(seen["hash"])
+        with self.assertRaisesRegex(ValueError, "not an unreviewed snapshot"):
+            it.acknowledge("claude", self.sid, first["through"], "no_value", "judged the old words")
+        done = it.acknowledge("claude", self.sid, again["through"], "no_value", "judged the current words")
+        self.assertEqual((done["reviewed_rounds"], done["pending"]), (2, False))
+        # A reviewed turn keeps the version its review judged.
+        rows[second]["message"]["content"] = "question 2, changed after its review"
+        self.transcript(rows)
+        later = self.capture()
+        self.assertEqual((later["ok"], later["changed"], later["reviewed_rounds"], later["pending"]),
+                         (True, 0, 2, False))
+        # Without the transcript an original turn cannot be closed; a deferral closes nothing.
+        self.transcript(rows + claude_round(self.sid, 3))
+        third = self.capture()
+        self.path.unlink()
+        with self.assertRaisesRegex(ValueError, "not on this device"):
+            it.acknowledge("claude", self.sid, third["through"], "no_value", "unread")
+        it.acknowledge("claude", self.sid, third["through"], "deferred", "the transcript is away")
+
+    def test_scripted_codex_exec_run_is_not_tracked_or_reviewed(self):
+        path = it.state_path("codex", self.sid)
+        old = it._load(path, "codex", self.sid)
+        # An earlier engine left an open-tail error on this run.
+        old.update(session="capture-tests", capture_pending=True, capture_error="ValueError: old open tail")
+        it._save(path, old)
+        meta = {"type": "session_meta", "payload": {"id": self.sid, "originator": "codex_exec", "source": "exec"}}
+        self.transcript([meta] + codex_round(1) + codex_round(2))
+        found = self.capture("codex")
+        self.assertEqual((found["ok"], found["captured_rounds"], found["pending"], found["excluded"]),
+                         (True, 0, False, "codex_exec"))
+        self.assertIsNone(found["capture_error"])
+        ended = time.time() - it.ENDED_AFTER - 60
+        os.utime(self.path, (ended, ended))
+        self.assertNotIn(self.sid, [j["conversation_id"] for j in it.list_pending(100)["jobs"]])
+        # An interactive Codex conversation is still tracked.
+        meta["payload"].update(originator="codex_cli_rs", source="cli")
+        other = f"{self.sid}-interactive"
+        meta["payload"]["id"] = other
+        talk = Path(TMP.name) / f"{other}.jsonl"
+        talk.write_text("".join(json.dumps(r) + "\n" for r in [meta] + codex_round(1)), encoding="utf-8")
+        tracked = it.capture("codex", other, str(talk), "capture-tests")
+        self.assertEqual((tracked["ok"], tracked["captured_rounds"], tracked["excluded"]), (True, 1, None))
+
+    def test_recited_turn_reports_the_stored_record_and_what_it_sees_now(self):
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2, finished=False))
+        self.capture()
+        first = it.cite(f"claude/{self.sid}", turn="user-2")
+        self.assertIsNone(first["agent_sha256"])  # the open turn has no reply yet
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
+        again = it.cite(f"claude/{self.sid}", turn="user-2", note="a later gist")
+        self.assertEqual((again["reused"], again["round_ref"]), (True, first["round_ref"]))
+        # The record is append-only: the answer reports what it holds, this read apart.
+        self.assertIsNone(again["agent_sha256"])
+        self.assertTrue(again["observed"]["agent_sha256"])
+        self.assertFalse(again["note_saved"])
+        _, header = raw.find_cited(ROOT / again["path"], raw.native_ref("claude", self.sid, "user-2"))
+        self.assertIsNone(header["agent_sha256"])
+        # Words the caller supplied while the transcript was away stay the caller's.
+        away = self.path.with_suffix(".away")
+        self.path.rename(away)
+        kept = it.cite(f"claude/{self.sid}", user="question 1", turn="user-1")
+        self.assertEqual(kept["user_by"], "caller")
+        away.rename(self.path)
+        back = it.cite(f"claude/{self.sid}", turn="user-1")
+        self.assertEqual((back["reused"], back["user_by"]), (True, "caller"))
+        self.assertEqual(back["observed"]["user_by"], "engine")
+        self.assertNotIn("note_saved", back)
+
 
     def test_review_manifests_are_bounded_and_find_root_specific_states(self):
         self.transcript([r for n in range(1, 19) for r in claude_round(self.sid, n)])
         self.capture()
-        job = next(j for j in it.list_pending(100)["jobs"] if j["conversation_id"] == self.sid)
+        job = it.prompt("claude", self.sid, include_organization=False)
         self.assertEqual(len(job["pending_refs"]), 15)
         self.assertEqual(job["remaining_rounds"], 3)
         ack = it.acknowledge("claude", self.sid, job["through"], "no_value", "first fifteen reviewed")
@@ -1319,24 +979,14 @@ class IntegrationTests(unittest.TestCase):
             git_path = Path(TMP.name) / (git_sid + ".jsonl")
             git_path.write_text("".join(json.dumps(r) + "\n" for r in claude_round(git_sid, 1)), encoding="utf-8")
             it.capture("claude", git_sid, str(git_path), "capture-tests")
-            self.assertTrue(any(j["conversation_id"] == git_sid for j in it.list_pending()["jobs"]))
+            git_path.write_text("".join(json.dumps(r) + "\n" for r in
+                                        claude_round(git_sid, 1) + claude_round(git_sid, 2)), encoding="utf-8")
+            states, _, _, _ = it._known_pending(100)
+            self.assertIn(git_sid, [s["conversation_id"] for s in states])
         finally:
             import shutil
             shutil.rmtree(ROOT / ".git")
 
-    def test_source_hash_matches_distillation_and_tampering_rejects_ack(self):
-        from osk import distillation, graph
-        rows = claude_round(self.sid, 1)
-        rows[0]["message"]["content"] = "## 12\nsecret ghp_" + "a" * 36
-        self.transcript(rows)
-        st = self.capture()
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
-        source = distillation._source(st["pending_refs"][0], graph.Index())
-        self.assertEqual(s["rounds"][0]["hash"], source["hash"])
-        path = raw._raw_file(source["path"])
-        path.write_bytes(path.read_bytes().replace(b"answer 1", b"tampered"))
-        with self.assertRaises(ValueError):
-            it.acknowledge("claude", self.sid, st["through"], "no_value", "stale raw is not acknowledged")
 
     def test_unbound_incomplete_capture_retains_explicit_landing_for_catchup(self):
         self.transcript(claude_round(self.sid, 1, finished=False))
@@ -1347,9 +997,14 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(write.resolve_session(self.sid))
         self.transcript(claude_round(self.sid, 1))
         done = it.catchup(100)
-        job = next(j for j in done["jobs"] if j["conversation_id"] == self.sid)
-        self.assertEqual(len(job["pending_refs"]), 1)
+        capture = next(c for c in done["captures"] if c["conversation_id"] == self.sid)
+        self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
+        # Tracking writes nothing, so it binds nothing; the first citation lands the key.
+        self.assertIsNone(write.resolve_session(self.sid))
+        cited = it.cite(f"claude/{self.sid}", quote="question 1")
+        self.assertTrue(cited["round_ref"].startswith("00_Scope/Capture/_cited/"), cited)
         self.assertEqual(write.resolve_session(self.sid), "Capture")
+
 
     def test_claude_hook_detects_identity_after_leading_metadata(self):
         self.transcript([{"type": "file-history-snapshot", "snapshot": {}},
@@ -1396,20 +1051,10 @@ class IntegrationTests(unittest.TestCase):
                     rows = [{"type":"session_meta", "payload":{"id":sid}}] + codex_round(1)
                     rows[4]["payload"]["message"] = long_text
                 save = lambda: path.write_text("".join(json.dumps(r)+"\n" for r in rows), encoding="utf-8")
-                save()
-                reader = transcripts.read
-                # Historical codec remains byte-exact when the next append upgrades.
-                legacy = reader(str(path), harness, sid)
-                legacy.pop("dialogue_v1")
-                with mock.patch.object(transcripts, "read", return_value=legacy):
-                    old = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
-                self.assertTrue(old["ok"], old)
-                old_path = raw._raw_file(raw.parse_ref(old["pending_refs"][0])[0])
-                prefix = old_path.read_bytes()
                 tail = claude_round(sid, 2) if harness == "claude" else codex_round(2)
                 rows += tail
                 save()
-                clean = reader(str(path), harness, sid)["dialogue_v1"]
+                clean = transcripts.read(str(path), harness, sid)["dialogue_v1"]
                 if harness == "claude":
                     tail[-1]["message"]["content"].insert(0, {"type":"thinking", "thinking":"OPAQUE_PAYLOAD" * 100000})
                     tail[-1]["message"]["transport_metadata"] = "TRANSPORT_BULK" * 100000
@@ -1419,42 +1064,29 @@ class IntegrationTests(unittest.TestCase):
                     rows.insert(-1, {"type":"response_item", "payload":{"type":"reasoning", "encrypted_content":"OPAQUE_PAYLOAD" * 100000}})
                     tail[4]["payload"]["arguments"] = "TOOL_CODE_BULK" * 100000
                 save()
-                noisy = reader(str(path), harness, sid)["dialogue_v1"]
+                noisy = transcripts.read(str(path), harness, sid)["dialogue_v1"]
                 self.assertEqual([r["user"] for r in clean.values()], [r["user"] for r in noisy.values()])
                 self.assertEqual(sum(len(r["agent"]) for r in clean.values()), sum(len(r["agent"]) for r in noisy.values()))
                 self.assertNotEqual(list(clean.values())[-1]["agent"], list(noisy.values())[-1]["agent"],
                                     "changed tool payload must change its evidence hash")
-                upgraded = it.capture(harness, sid, str(path), sid)
-                self.assertTrue(upgraded["ok"], upgraded)
-                self.assertEqual(upgraded["appended"], 1)
-                stored = old_path.read_bytes()
-                self.assertTrue(stored.startswith(prefix))
-                new_bytes = stored[len(prefix):]
-                for noise in (b"OPAQUE_PAYLOAD", b"TRANSPORT_BULK", b"TOOL_CODE_BULK"):
-                    self.assertNotIn(noise, new_bytes)
-                self.assertIn(b"dialogue-v1", new_bytes)
-                self.assertIn(b"answer 2", new_bytes)
-                self.assertIn(b"sha256", new_bytes)
                 self.assertIn(long_text, noisy[next(iter(noisy))]["user"])
-                it.state_path(harness, sid).unlink()
-                replay = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
-                self.assertTrue(replay["ok"], replay)
-                self.assertEqual(replay["appended"], 0)
-                self.assertEqual(old_path.read_bytes(), stored)
-                # Visible content still participates in prefix verification.
-                if harness == "claude":
-                    tail[-1]["message"]["content"][-1]["text"] = "tampered visible reply"
-                else:
-                    tail[-3]["payload"]["content"][0]["text"] = "tampered visible reply"
-                save()
-                self.assertFalse(it.capture(harness, sid, str(path), sid)["ok"])
-                self.assertEqual(old_path.read_bytes(), stored)
+                st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                self.assertTrue(st["ok"], st)
+                self.assertEqual(st["captured_rounds"], 2)
+                record = ROOT / it.cite(f"{harness}/{sid}", quote="MIDPOINT CORRECTION")["path"]
+                it.cite(f"{harness}/{sid}", turn="-1")
+                stored = record.read_bytes()
+                for kept in (b"USER START", b"MIDPOINT CORRECTION", b"USER END", b"question 2"):
+                    self.assertIn(kept, stored)
+                for noise in (b"OPAQUE_PAYLOAD", b"TRANSPORT_BULK", b"TOOL_CODE_BULK", b"answer 2"):
+                    self.assertNotIn(noise, stored)
+
 
     def test_actual_preserved_scope_node_ack_and_later_receipt_validation(self):
         from osk import contract, distillation as D
         self.transcript(claude_round(self.sid, 1))
         st = it.capture("claude", self.sid, str(self.path), self.sid, space="00_Scope/W1")
-        ref = st["pending_refs"][0]
+        ref = it.cite(f"claude/{self.sid}", quote="question 1")["round_ref"]
         spec = {"key": self.sid, "sources": [ref], "hub": "W1"}
         args = {"title": "A retained integration decision", "summary": "bounded retry",
                 "body": "A retry is identified by native identity rather than repeated wording.",
@@ -1465,8 +1097,9 @@ class IntegrationTests(unittest.TestCase):
         hub = contract.parse(core.ROOT / "00_Scope/W1/W1.md")
         self.assertIn(ref, write._stored_edges(node.meta["derived-from"]))
         self.assertIn(created["name"], hub.wikilinks())
+        # The cited round binds the review of the original turn it cites.
         ack = it.acknowledge("claude", self.sid, st["through"], "preserved",
-                             "The raw observation is retained in the existing project cluster.",
+                             "The cited observation is retained in the existing project cluster.",
                              [{"key": spec["key"]}])
         self.assertFalse(ack["pending"])
         self.assertEqual(ack["reviewed_rounds"], 1)
@@ -1480,40 +1113,6 @@ class IntegrationTests(unittest.TestCase):
         write.update_node(created["id"], body="Changed after review.", expect_hash=created["new_hash"])
         self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "pending")
 
-    def test_raw_record_identity_survives_vault_copy_without_duplicate(self):
-        import shutil
-        self.transcript(claude_round(self.sid, 1))
-        code = """import json, os, sys
-from pathlib import Path
-sys.path.insert(0, os.environ['OSK_PROBE_ENGINE'])
-from osk import core, integration as it, raw, validate
-if not (core.ROOT / '00_Scope/W1').is_dir():
-    validate.make_mini_vault(core.ROOT)
-sid = os.environ['OSK_PROBE_SID']
-st = it.capture('claude', sid, os.environ['OSK_PROBE_TRANSCRIPT'], 'copy-session', '00_Scope/W1')
-assert st['ok'], st
-print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended': st['appended'],
-                  'state_path': str(it.state_path('claude', sid)),
-                  'raw_rounds': raw.record_state('copy-session', st['record'])['rounds']}))
-"""
-        with tempfile.TemporaryDirectory(prefix="osk-vault-copy-test-") as folder:
-            first, second = Path(folder) / "original", Path(folder) / "copy"
-            first.mkdir()
-            results = []
-            for root in (first, second):
-                env = {**os.environ, "OSK_VAULT_ROOT": str(root), "OSK_PROBE_ENGINE": str(ENGINE),
-                       "OSK_PROBE_SID": self.sid, "OSK_PROBE_TRANSCRIPT": str(self.path)}
-                result = subprocess.run([sys.executable, "-B", "-c", code], env=env,
-                                        capture_output=True, text=True, timeout=30)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                results.append(json.loads(result.stdout))
-                if root == first:
-                    shutil.copytree(first, second)
-            self.assertEqual(results[0]["record"], results[1]["record"])
-            self.assertEqual(results[0]["refs"], results[1]["refs"])
-            self.assertNotEqual(results[0]["state_path"], results[1]["state_path"])
-            self.assertEqual([r["appended"] for r in results], [1, 0])
-            self.assertEqual([r["raw_rounds"] for r in results], [1, 1])
 
     def test_existing_saved_record_name_is_preserved(self):
         self.transcript(claude_round(self.sid, 1))
@@ -1524,19 +1123,20 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         st = self.capture()
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["record"], "legacy-record-name")
-        self.assertIn("/.records/legacy-record-name.txt#1", st["pending_refs"][0])
+        cited = it.cite(f"claude/{self.sid}", turn="-1")
+        self.assertIn("/.records/legacy-record-name.txt#1", cited["round_ref"])
+
 
     def test_raw_migration_preserves_pending_snapshot_and_legacy_receipt_match(self):
         from osk import distillation as D
         self.transcript(claude_round(self.sid, 1))
-        first = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        state_path = it.state_path("claude", self.sid)
-        state = it._load(state_path, "claude", self.sid)
-        physical = raw._raw_file(raw.parse_ref(first["pending_refs"][0])[0])
+        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        state, physical = legacy_cursor("claude", self.sid, self.path, "W1")
         legacy = physical.parent.parent / (physical.stem + ".md")
-        physical.rename(legacy)  # Simulate the pre-upgrade physical record and cursor.
+        physical.rename(legacy)  # Simulate the pre-upgrade visible record and cursor.
         saved = legacy.read_bytes()
         old_ref = f"[[{legacy.relative_to(ROOT).as_posix()}#1]]"
+        state_path = it.state_path("claude", self.sid)
         state["rounds"][0]["ref"] = old_ref
         token = it._snapshot(state)
         state["snapshots"] = {token: {"count": 1, "prompt_count": state["prompt_count"]}}
@@ -1546,6 +1146,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual(replayed["through"], token)
         self.assertEqual(replayed["pending_refs"], [old_ref])
         self.assertEqual(replayed["appended"], 0)
+        self.assertEqual(legacy.read_bytes(), saved)  # tracking never rewrites a record
+        moved = raw.migrate(apply=True)
+        self.assertIn(legacy.relative_to(ROOT).as_posix(), [f["from"] for f in moved["files"]])
         self.assertFalse(legacy.exists())
         self.assertEqual(physical.read_bytes(), saved)
         out = D.create_node({"key": self.sid, "sources": [old_ref], "hub": "W1"},
@@ -1557,13 +1160,15 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                              [{"key": self.sid}])
         self.assertTrue(ack["ok"], ack)
 
+
     def test_review_key_tracks_snapshot_and_recovers_saved_proof(self):
         from osk import distillation as D
         self.transcript(claude_round(self.sid, 1))
         it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         first = it.prompt("claude", self.sid)
         self.assertEqual(first["key"], it.prompt("claude", self.sid)["key"])
-        spec = {"key": first["key"] + ":stable-target", "sources": first["pending_refs"], "hub": "W1"}
+        cited = it.cite(f"claude/{self.sid}", turn="-1")["round_ref"]
+        spec = {"key": first["key"] + ":stable-target", "sources": [cited], "hub": "W1"}
         saved = D.create_node(spec, title="Snapshot-specific retained observation", summary="native observation",
                               body="The observation is preserved before its review acknowledgement arrives.",
                               drafter="fable-5", space="00_Scope/W1")
@@ -1574,9 +1179,6 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual(proof["status"], "complete")
         self.assertIn(spec["key"], retry["text"])
         self.assertIn("대상별 고정 접미사", retry["text"])
-        for listed in (it.list_pending(100), it.catchup(100)):
-            job = next(j for j in listed["jobs"] if j["conversation_id"] == self.sid)
-            self.assertEqual(job["key"], first["key"])
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
         it.capture("claude", self.sid, str(self.path), self.sid)
         later = it.prompt("claude", self.sid)
@@ -1584,6 +1186,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertNotEqual(later["key"], first["key"])
         self.assertEqual(later["key"], it.prompt("claude", self.sid)["key"])
         self.assertTrue(any(p["key"] == spec["key"] for p in later["previous_distillations"]))
+
 
     def test_worker_batch_does_not_reduce_ordinary_cadence_or_ack_the_tail(self):
         self.transcript([row for n in range(20) for row in claude_round(self.sid, n)])
@@ -1601,30 +1204,30 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
 
     def _discovery_source(self):
         self.transcript(claude_round(self.sid, 1))
-        return it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        st = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        return {**st, "cited": it.cite(f"claude/{self.sid}", turn="-1")["round_ref"]}
+
 
     def _discovery_save(self, st, key, title=None):
         from osk import distillation as D
         self.addCleanup(D._job_path(key).unlink, missing_ok=True)
-        return D.create_node({"key": key, "sources": st["pending_refs"], "hub": "W1"},
+        return D.create_node({"key": key, "sources": [st["cited"]], "hub": "W1"},
                              title=title or self.sid + "-node", summary="lost ACK recovery",
                              body="Keep the already retained decision and finish its missing acknowledgement.",
                              drafter="fable-5", space="00_Scope/W1")
 
+
     def test_saved_scope_without_ack_is_discovered_and_reused(self):
-        from osk import distillation as D, graph
+        from osk import graph
         st = self._discovery_source()
         key = self.sid + "-opaque-worker-key"
         saved = self._discovery_save(st, key)
         target = core.ROOT / saved["path"]
         before = target.read_bytes()
-        next_prompt = it.prompt("claude", self.sid)
-        proofs = next_prompt["previous_distillations"]
+        own = it.prompt("claude", self.sid)
+        proofs = own["previous_distillations"]
         self.assertEqual([proof["key"] for proof in proofs], [key])
         self.assertEqual(proofs[0]["status"], "complete")
-        catchup = it.catchup(limit=100)
-        own = next(job for job in catchup["jobs"] if job["conversation_id"] == self.sid)
-        self.assertEqual([proof["key"] for proof in own["previous_distillations"]], [key])
         nodes_before = set(graph.Index().nodes)
         ack = it.acknowledge("claude", self.sid, own["through"], "preserved",
                              "Reuse the verified saved decision; the previous ACK was lost.",
@@ -1633,6 +1236,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual(it.review_status("claude", self.sid, own["through"])["status"], "complete")
         self.assertEqual(target.read_bytes(), before)
         self.assertEqual(set(graph.Index().nodes), nodes_before)
+
 
     def test_discovery_excludes_other_conversation_and_root(self):
         import hashlib
@@ -1644,6 +1248,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         other_path = Path(TMP.name) / (other_sid + ".jsonl")
         other_path.write_text("".join(json.dumps(row) + "\n" for row in claude_round(other_sid, 1)), encoding="utf-8")
         other = it.capture("claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
+        other["cited"] = it.cite(f"claude/{other_sid}", turn="-1")["round_ref"]
         other_key = self.sid + "-unrelated"
         self._discovery_save(other, other_key, self.sid + "-other-node")
         # Model a journal in the same common git directory with a different ROOT.
@@ -1663,6 +1268,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertFalse(found["errors"], found)
         self.assertNotIn(other_key, json.dumps(it.prompt("claude", self.sid)))
         self.assertNotIn(foreign_key, json.dumps(it.prompt("claude", self.sid)))
+
 
     def test_discovered_pending_hub_resumes_without_body_rewrite(self):
         from osk import distillation as D
@@ -1706,48 +1312,6 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertTrue(prompt["pending"])
 
 
-
-    def test_native_secret_strings_are_filtered_before_json_capture(self):
-        tokens = ["ghp_" + letter * 36 for letter in "uakv"]
-        fence = chr(96) * 3
-        block = lambda token: fence + "text\n" + token + "\n" + fence
-        nested = {"items": [{"\n" + tokens[2]: block(tokens[3])}], "benign": "ghp_short"}
-        for harness in ("claude", "codex"):
-            with self.subTest(harness=harness):
-                sid = self.sid + "-" + harness
-                path = Path(TMP.name) / (sid + ".jsonl")
-                if harness == "claude":
-                    rows = claude_round(sid, 1)
-                    rows[0]["message"]["content"] = [{"type": "text", "text": block(tokens[0])}]
-                    rows[1]["message"]["content"][0]["input"] = nested
-                    rows[2]["message"]["content"][0]["content"] = {"result": [block(tokens[3])]}
-                    rows[-1]["message"]["content"][0]["text"] = block(tokens[1])
-                else:
-                    rows = [{"type": "session_meta", "payload": {"id": sid}}] + codex_round(1)
-                    rows[4]["payload"]["message"] = block(tokens[0])
-                    rows[5]["payload"]["arguments"] = json.dumps(nested)
-                    rows[6]["payload"]["output"] = json.dumps({"result": [block(tokens[3])]})
-                    rows[7]["payload"]["content"][0]["text"] = block(tokens[1])
-                native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
-                path.write_bytes(native)
-                with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
-                    st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
-                self.assertTrue(st["ok"], st)
-                self.assertEqual(st["captured_rounds"], 1)
-                self.assertEqual(sink.call_count, 1)  # mandatory final filter still runs
-                raw_path, _ = raw.parse_ref(st["pending_refs"][0])
-                saved = (ROOT / raw_path).read_bytes()
-                for token in tokens:
-                    self.assertNotIn(token.encode(), saved)
-                self.assertEqual(saved.count(b"[FILTERED:github-token]"), 2)
-                self.assertNotIn(b"ghp_short", saved)  # tool payload is a reference
-                self.assertIn(b"tool_evidence_ref", saved)
-                self.assertEqual(path.read_bytes(), native)  # native evidence is not edited
-                again = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
-                self.assertTrue(again["ok"], again)
-                self.assertEqual(again["appended"], 0)
-                self.assertEqual((ROOT / raw_path).read_bytes(), saved)
-
     def test_secret_dictionary_key_collision_does_not_drop_evidence(self):
         collision = {"ghp_" + "a" * 36: "first", "ghp_" + "b" * 36: "second"}
         for harness in ("claude", "codex"):
@@ -1764,14 +1328,12 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                     rows[5]["payload"]["arguments"] = json.dumps(collision)
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
-                with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
-                    st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertFalse(st["capture_pending"])
                 self.assertEqual(st["captured_rounds"], 1)
-                self.assertEqual(sink.call_count, 1)
-                raw_path, _ = raw.parse_ref(st["pending_refs"][0])
-                saved = (ROOT / raw_path).read_bytes()
+                cited = it.cite(f"{harness}/{sid}", turn="-1")
+                saved = (ROOT / cited["path"]).read_bytes()
                 self.assertEqual(saved.count(b"[FILTERED:github-token]"), 2)
                 self.assertIn(b"first", saved)
                 self.assertIn(b"second", saved)
@@ -1779,10 +1341,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 for token in collision:
                     self.assertNotIn(token.encode(), saved)
                 self.assertEqual(path.read_bytes(), native)
-                again = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
-                self.assertTrue(again["ok"], again)
-                self.assertEqual(again["appended"], 0)
-                self.assertEqual((ROOT / raw_path).read_bytes(), saved)
+
 
     def test_secret_in_duplicate_encoded_json_key_does_not_leak(self):
         tokens = ["ghp_" + letter * 36 for letter in "de"]
@@ -1806,24 +1365,19 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                     rows[5]["payload"]["arguments"] = encoded
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
-                with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
-                    st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertFalse(st["capture_pending"])
                 self.assertEqual(st["captured_rounds"], 1)
-                self.assertEqual(sink.call_count, 1)
-                raw_path, _ = raw.parse_ref(st["pending_refs"][0])
-                saved = (ROOT / raw_path).read_bytes()
+                cited = it.cite(f"{harness}/{sid}", turn="-1")
+                saved = (ROOT / cited["path"]).read_bytes()
                 # Exact encoded content retains all duplicate pairs and whitespace.
                 self.assertIn(json.dumps(expected).encode(), saved)
                 self.assertEqual(saved.count(b"[FILTERED:github-token]"), 2)
                 for token in tokens:
                     self.assertNotIn(token.encode(), saved)
                 self.assertEqual(path.read_bytes(), native)
-                again = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
-                self.assertTrue(again["ok"], again)
-                self.assertEqual(again["appended"], 0)
-                self.assertEqual((ROOT / raw_path).read_bytes(), saved)
+
 
     def test_duplicate_json_dialogue_preserves_content_and_later_rounds(self):
         dialogue = ' { "status" : "old", "status" : "new", "escaped" : "\\u0061" } '
@@ -1845,8 +1399,8 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 self.assertTrue(first["ok"], first)
                 self.assertFalse(first["capture_pending"])
                 self.assertEqual(first["appended"], 1)
-                raw_path, _ = raw.parse_ref(first["pending_refs"][0])
-                saved_first = (ROOT / raw_path).read_bytes()
+                cited = it.cite(f"{harness}/{sid}", turn="-1")
+                saved_first = (ROOT / cited["path"]).read_bytes()
                 self.assertEqual(transcripts._dump(dialogue), dialogue)
                 # raw._block already strips trailing whitespace from whole sections.
                 expected = dialogue.rstrip() if harness == "claude" else json.dumps(dialogue)
@@ -1857,17 +1411,14 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 second = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(second["ok"], second)
                 self.assertFalse(second["capture_pending"])
-                self.assertEqual(second["captured_rounds"], 2)
-                self.assertEqual(second["appended"], 1)
-                saved = (ROOT / raw_path).read_bytes()
+                self.assertEqual((second["captured_rounds"], second["appended"]), (2, 1))
+                self.assertEqual(it.cite(f"{harness}/{sid}", turn="-1")["index"], 2)
+                saved = (ROOT / cited["path"]).read_bytes()
                 self.assertTrue(saved.startswith(saved_first))
                 self.assertIn(b"question 2", saved)
-                self.assertIn(b"answer 2", saved)
-                again = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
-                self.assertTrue(again["ok"], again)
-                self.assertEqual(again["appended"], 0)
-                self.assertEqual((ROOT / raw_path).read_bytes(), saved)
+                self.assertNotIn(b"answer 2", saved)
                 self.assertEqual(path.read_bytes(), native)
+
 
     def test_json_literal_redaction_preserves_escapes_and_nested_secrets(self):
         token = "ghp_" + "f" * 36
@@ -1899,6 +1450,601 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         unchanged = ' { "items" : [ "normal text", "ghp_short" ], "n": 3 } '
         self.assertEqual(transcripts._dump(unchanged), unchanged)
 
+    def turns(self, harness="claude"):
+        """The parsed dialogue — tracked by hash, copied into the vault only by `cite`."""
+        return list(transcripts.read(str(self.path), harness, self.sid)["dialogue_v1"].values())
+
+    def test_codex_paginated_history_keeps_receipts_and_byte_boundary(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):
+            folder = Path(home) / 'sessions/2026/09/21'
+            folder.mkdir(parents=True)
+            parent = folder / f'rollout-first-{self.sid}.jsonl'
+            child = folder / f'rollout-second-{self.sid}_continuation.jsonl'
+            header = {'type': 'session_meta', 'payload': {'id': self.sid}}
+            parent.write_text(''.join(json.dumps(r) + '\n' for r in [header] + codex_round(1)), encoding='utf-8')
+            first = it.capture('codex', self.sid, str(parent), 'capture-tests')
+            it.acknowledge('codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
+            before = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+            offset = parent.stat().st_size
+            # The declared history excludes later events in the ancestor file.
+            with parent.open('a', encoding='utf-8') as f:
+                f.write(''.join(json.dumps(r) + '\n' for r in codex_round(99)))
+            child_header = {'type': 'session_meta', 'payload': {'id': self.sid,
+                'history_base': {'thread_id': self.sid, 'end_byte_offset': offset}}}
+            child.write_text(''.join(json.dumps(r) + '\n' for r in [child_header] + codex_round(2)), encoding='utf-8')
+            child_name = '\\\\?\\' + str(child.resolve()) if os.name == 'nt' else str(child)
+            captured = it.capture('codex', self.sid, child_name, 'capture-tests')
+            self.assertTrue(captured['ok'], captured)
+            self.assertEqual((captured['appended'], captured['captured_rounds'], captured['reviewed_rounds']), (1, 2, 1))
+            after = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+            self.assertEqual(after['rounds'][:1], before['rounds'])
+            self.assertEqual(after['reviews'], before['reviews'])
+            self.assertEqual(after['snapshots'][first['through']], before['snapshots'][first['through']])
+            self.assertEqual([r['id'] for r in after['rounds']], ['turn-1', 'turn-2'])
+            self.assertNotIn('question 99', json.dumps(transcripts.read(str(child), 'codex', self.sid)['dialogue_v1']))
+            self.assertFalse(raw.record_path('Capture', captured['record']).exists())
+            self.assertEqual(it.capture('codex', self.sid, str(child), 'capture-tests')['appended'], 0)
+            # A lost local cursor tracks the same original turns again, under the same refs.
+            refs = [r['ref'] for r in after['rounds']]
+            it.state_path('codex', self.sid).unlink()
+            rebuilt = it.capture('codex', self.sid, str(child), 'capture-tests')
+            self.assertEqual((rebuilt['appended'], rebuilt['pending_refs']), (2, refs))
+
+    def test_codex_missing_ancestor_keeps_tracked_turns_pending(self):
+        with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME':home}):
+            parent = Path(home) / f'rollout-parent-{self.sid}.jsonl'
+            child = Path(home) / f'rollout-child-{self.sid}_next.jsonl'
+            header = {'type':'session_meta','payload':{'id':self.sid}}
+            parent.write_text(''.join(json.dumps(r)+'\n' for r in [header] + codex_round(1)), encoding='utf-8')
+            header['payload']['history_base'] = {'thread_id':self.sid,'end_byte_offset':parent.stat().st_size}
+            child.write_text(''.join(json.dumps(r)+'\n' for r in [header] + codex_round(2)), encoding='utf-8')
+            first = it.capture('codex', self.sid, str(child), 'capture-tests')
+            self.assertTrue(first['ok'], first)
+            parent.unlink()
+            listed = it.list_pending(100)
+            self.assertFalse(listed['ok'])
+            self.assertTrue(any('history_base' in e['error'] for e in listed['errors']))
+            # An offline worker has no copy of these turns; they wait for their own conversation.
+            self.assertNotIn(self.sid, [j['conversation_id'] for j in listed['jobs']])
+            caught = it.catchup(100)
+            capture = next(c for c in caught['captures'] if c['conversation_id'] == self.sid)
+            self.assertFalse(capture['ok'])
+            self.assertIn('history_base', capture['capture_error'])
+            self.assertNotIn(self.sid, [j['conversation_id'] for j in caught['jobs']])
+            st = it.status('codex', self.sid)
+            self.assertEqual((st['pending_refs'], st['reviewed_rounds']), (first['pending_refs'], 0))
+
+    def test_codex_recovered_past_turn_follows_tracked_turns(self):
+        native = codex_round(2)
+        native[3] = codex_user_item(self.sid, 2, 'question 2')
+        self.transcript([{'type':'session_meta','payload':{'id':self.sid}}]
+                        + codex_round(1) + native + codex_round(3))
+        # An older parser skipped turn-2; the cursor tracked the others in its order.
+        older = transcripts.read(str(self.path), 'codex', self.sid)
+        older['rounds'] = [r for r in older['rounds'] if r['id'] != 'turn-2']
+        with mock.patch.object(transcripts, 'read', return_value=older):
+            first = self.capture('codex')
+        self.assertEqual(first['captured_rounds'], 2)
+        it.acknowledge('codex', self.sid, first['through'], 'no_value', 'fixture turns only')
+        old = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+        captured = self.capture('codex')
+        self.assertTrue(captured['ok'], captured)
+        self.assertEqual((captured['appended'], captured['reviewed_rounds']), (1, 2))
+        state = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+        self.assertEqual(state['rounds'][:2], old['rounds'])
+        self.assertEqual(state['reviews'], old['reviews'])
+        self.assertEqual([r['id'] for r in state['rounds']], ['turn-1', 'turn-3', 'turn-2'])
+        self.assertEqual(captured['pending_refs'], [raw.native_ref('codex', self.sid, 'turn-2')])
+        # Without the local cursor, the turns are tracked again in transcript order.
+        it.state_path('codex', self.sid).unlink()
+        rebuilt = self.capture('codex')
+        self.assertEqual((rebuilt['ok'], rebuilt['appended']), (True, 3))
+
+    def test_cited_record_index_previews_skip_only_recorder_headers(self):
+        rows = [{"type": "session_meta", "payload": {"id": self.sid}}]
+        for n in (1, 2):
+            turn = codex_round(n)
+            turn[3] = codex_user_item(self.sid, n, f"question {n}")
+            rows += turn
+        self.transcript(rows)
+        self.assertTrue(self.capture("codex")["ok"])
+        refs = [it.cite(f"codex/{self.sid}", quote=f"question {n}")["round_ref"] for n in (1, 2)]
+        name = raw.parse_ref(refs[0])[0]
+        path = raw._raw_file(name)
+        before = path.read_bytes()
+        toc = raw.read_round(name)["index"]
+        self.assertEqual(len(toc), 2)
+        for n, item in enumerate(toc, 1):
+            self.assertIn(f"question {n}", item["preview"])
+            self.assertNotIn("osk-cited", item["preview"])
+            recalled = raw.read_round(f"{name}#{n}")
+            self.assertEqual(raw.cited_header(recalled["text"])["turn"], f"turn-{n}")
+            self.assertEqual(item["chars"], recalled["chars"])
+        self.assertEqual(path.read_bytes(), before)
+        # A user can quote a recorder header. Skip only the header, not matching user
+        # content or all HTML comments, in the cited and the older stored formats.
+        for stamp in ("", raw._CODEX_V2 + "\n\n", raw._DIALOGUE_V1 + '"turn-1" -->\n\n',
+                      raw._CITED + '{"conversation": "c", "harness": "codex", "turn": "t"} -->\n\n'):
+            block = f"## 1\n\n{stamp}### user\n\n{raw._CODEX_V2}\n\n### agent\n\nreply\n"
+            self.assertEqual(raw._preview(block), raw._CODEX_V2)
+            crlf = f"## 1\n\n{stamp}### user\n\nCRLF question\n\n### agent\n\nreply\n".replace("\n", "\r\n")
+            self.assertEqual(raw._preview(crlf), "CRLF question")
+
+    def test_crash_during_capture_retries_without_duplicate(self):
+        self.transcript(claude_round(self.sid, 1))
+        with mock.patch.object(transcripts, "read", side_effect=SystemExit("simulated power loss mid-capture")):
+            with self.assertRaises(SystemExit):
+                self.capture()
+        self.assertTrue(it.status("claude", self.sid)["pending"])
+        st = self.capture()
+        self.assertEqual((st["appended"], st["captured_rounds"]), (1, 1))
+        self.assertEqual(self.capture()["appended"], 0)
+        it.state_path("claude", self.sid).unlink()
+        again = self.capture()
+        self.assertEqual((again["appended"], again["pending_refs"]), (1, st["pending_refs"]))
+
+    def test_claude_copied_prefix_is_not_reviewed_again_by_the_child(self):
+        parent = self.sid + "-parent"
+        rows = claude_round(parent, 1)
+        rows[1]["message"]["content"][0]["name"] = "Bash"
+        previous = None
+        for row in rows:
+            row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, parent + row["uuid"]))
+            row["parentUuid"], previous = previous, row["uuid"]
+        self.transcript(rows)
+        original = it.capture("claude", parent, str(self.path), "capture-tests")
+        self.assertEqual(original["captured_rounds"], 1)
+        # The native desktop may preserve parent IDs or rewrite all IDs to the child.
+        for rewrite in (False, True):
+            child = self.sid + ("-rewrite" if rewrite else "-mixed")
+            inherited = [dict(r, sessionId=child) if rewrite else r for r in rows]
+            tail = claude_round(child, 3 if rewrite else 2)
+            for row in tail:
+                row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, child + row["uuid"]))
+            tail[0]["parentUuid"] = rows[-1]["uuid"]
+            self.transcript(inherited + tail)
+            captured = it.capture("claude", child, str(self.path), "capture-tests")
+            self.assertTrue(captured["ok"], captured)
+            self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
+            self.assertEqual(captured["reviewed_rounds"], 0)
+            self.assertNotIn(original["pending_refs"][0], captured["pending_refs"])
+            self.assertIn("과거 1라운드", it.prompt("claude", child)["text"])
+            self.assertEqual(it.capture("claude", child, str(self.path), "capture-tests")["appended"], 0)
+            it.state_path("claude", child).unlink()
+            rebuilt = it.capture("claude", child, str(self.path), "capture-tests")
+            self.assertTrue(rebuilt["ok"], rebuilt)
+            self.assertEqual((rebuilt["appended"], rebuilt["inherited_rounds"]), (1, 1))
+            changed = json.loads(json.dumps(inherited + tail))
+            changed[0]["message"]["content"] = "changed copied question"
+            self.transcript(changed)
+            refused = it.capture("claude", child, str(self.path), "capture-tests")
+            self.assertFalse(refused["ok"])
+            self.assertIn("inherited native prefix changed", refused["capture_error"])
+        self.assertEqual(it.status("claude", parent)["reviewed_rounds"], 0)
+        # Without both local cursors the copy is the child's own history again.
+        it.state_path("claude", parent).unlink()
+        it.state_path("claude", child).unlink()
+        self.transcript(inherited + tail)
+        rebuilt = it.capture("claude", child, str(self.path), "capture-tests")
+        self.assertEqual((rebuilt["appended"], rebuilt["inherited_rounds"]), (2, 0), rebuilt)
+
+    def test_claude_fork_copy_matches_turns_whichever_session_owns_rows(self):
+        grandparent, parent = self.sid + "-G", self.sid + "-P"
+        rows, previous = [], None
+        for n, sid, tool in ((1, grandparent, "Bash"), (2, parent, "Read")):
+            part = claude_round(sid, n)
+            part[1]["message"]["content"][0]["name"] = tool
+            for row in part:
+                row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, sid + row["uuid"]))
+                row["parentUuid"], previous = previous, row["uuid"]
+            rows += part
+        # Ordinary dialogue may quote a reference-shaped JSON object verbatim.
+        rows[4]["message"]["content"] = "literal example " + json.dumps({"content": {
+            "coverage": "tool-output-reference",
+            "native_result": "claude:" + grandparent + ":" + rows[2]["uuid"]}}, sort_keys=True)
+        self.transcript(rows)
+        self.assertFalse(it.state_path("claude", grandparent).exists())
+        original = it.capture("claude", parent, str(self.path), "capture-tests")
+        self.assertTrue(original["ok"], original)
+        self.assertEqual(original["captured_rounds"], 2)
+        # The copy rewrites every row, and so every result locator, to the child's ID.
+        copied = [dict(r, sessionId=self.sid) for r in rows]
+        tail = claude_round(self.sid, 3)
+        for row in tail:
+            row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, self.sid + row["uuid"]))
+        tail[0]["parentUuid"] = previous
+        self.transcript(copied + tail)
+        result = self.capture()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((result["appended"], result["inherited_rounds"]), (1, 2))
+        self.assertEqual(result["reviewed_rounds"], 0)
+        self.assertEqual(self.capture()["appended"], 0)
+        changed = json.loads(json.dumps(copied + tail))
+        changed[2]["message"]["content"][0]["content"] = "different result"
+        self.transcript(changed)
+        refused = self.capture()
+        self.assertFalse(refused["ok"])
+        self.assertIn("inherited native prefix changed", refused["capture_error"])
+
+    def test_relocated_capture_crash_keeps_candidate_for_catchup(self):
+        self.transcript(claude_round(self.sid, 1))
+        first = self.capture()
+        it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
+        state_path = it.state_path("claude", self.sid)
+        before = it._load(state_path, "claude", self.sid)
+        candidate = self.path.with_suffix(".relocated.jsonl")
+        candidate.write_text("".join(json.dumps(r) + "\n" for r in
+                                    claude_round(self.sid, 1) + claude_round(self.sid, 2)), encoding="utf-8")
+        with mock.patch.object(transcripts, "read", side_effect=SystemExit("Power loss while reading the relocated source.")):
+            with self.assertRaises(SystemExit):
+                it.capture("claude", self.sid, str(candidate), "capture-tests")
+        crashed = it._load(state_path, "claude", self.sid)
+        self.assertEqual(crashed["transcript_path"], before["transcript_path"])
+        self.assertEqual(crashed.get("capture_path"), str(candidate.resolve()))
+        caught = it.catchup(100)
+        capture = next(c for c in caught["captures"] if c["conversation_id"] == self.sid)
+        self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
+        # The new turn waits for its own conversation; no offline worker reviews it.
+        self.assertNotIn(self.sid, [j["conversation_id"] for j in caught["jobs"]])
+        recovered = it._load(state_path, "claude", self.sid)
+        self.assertEqual(recovered["transcript_path"], str(candidate.resolve()))
+        self.assertNotIn("capture_path", recovered)
+        self.assertEqual(recovered["rounds"][:1], before["rounds"])
+        self.assertEqual(recovered["reviews"], before["reviews"])
+        self.assertEqual((len(recovered["rounds"]), recovered["reviewed_count"]), (2, 1))
+        self.assertEqual(it.capture("claude", self.sid, None, "capture-tests")["appended"], 0)
+
+    def test_cited_round_filters_secrets_and_its_tampering_reopens_review(self):
+        from osk import distillation as D, graph
+        token = "ghp_" + "a" * 36
+        rows = claude_round(self.sid, 1)
+        rows[0]["message"]["content"] = "## 12\nsecret " + token
+        self.transcript(rows)
+        st = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        cited = it.cite(f"claude/{self.sid}", turn="-1", note="the question that carried a secret")
+        stored = (ROOT / cited["path"]).read_text(encoding="utf-8")
+        self.assertNotIn(token, stored)
+        self.assertIn("[FILTERED:github-token]", stored)
+        self.assertIn("\\## 12", stored)  # a numeric H2 in the words is escaped, not a round
+        self.assertNotIn(token, it.state_path("claude", self.sid).read_text(encoding="utf-8"))
+        source = D._source(cited["round_ref"], graph.Index())
+        self.assertEqual(source["native"], st["pending_refs"][0])
+        saved = D.create_node({"key": self.sid, "sources": [cited["round_ref"]], "hub": "W1"},
+                              title=self.sid, summary="cited question",
+                              body="The question is kept with its cited turn.", drafter="test-model",
+                              space="00_Scope/W1")
+        self.assertEqual(saved["distillation"]["status"], "complete")
+        it.acknowledge("claude", self.sid, st["through"], "preserved", "Cited and kept.", [{"key": self.sid}])
+        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
+        path = ROOT / cited["path"]
+        path.write_bytes(path.read_bytes().replace(b"secret", b"tampered"))
+        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "pending")
+
+    def antigravity(self, cid, steps):
+        path = Path(TMP.name) / cid / "transcript_full.jsonl"   # the file sits under its conversation
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(s) + "\n" for s in steps), encoding="utf-8")
+        return path
+
+    def test_original_turn_read_filters_secrets_and_hashes_the_original(self):
+        # Antigravity keeps the user's words and its replies as written; only a citation filtered them.
+        token = "ghp_" + "c" * 36
+        step = lambda i, typ, text: {"step_index": i, "source": "x", "type": typ, "status": "DONE", "content": text}
+        path = self.antigravity(self.sid, [step(0, "USER_INPUT", f"<USER_REQUEST>\nuse {token}\n</USER_REQUEST>"),
+                                           step(1, "PLANNER_RESPONSE", f"stored {token}")])
+        st = it.capture("antigravity", self.sid, str(path), self.sid, "00_Scope/W1")
+        tracked = json.loads(it.state_path("antigravity", self.sid).read_text(encoding="utf-8"))["rounds"][0]["hash"]
+        for view in ("full", "review"):
+            got = it.read_turns(st["pending_refs"], view=view)["turns"][0]
+            self.assertNotIn(token, json.dumps(got, ensure_ascii=False))
+            self.assertEqual(got["filtered"], ["github-token"])
+            self.assertEqual(got["hash"], tracked)  # the original is what was tracked
+
+    def test_turn_hash_keeps_the_locators_a_user_writes(self):
+        said = lambda target: {"id": "u1:m1", "user": f"retarget native:claude:{target}:turn-1", "agent": "done"}
+        self.assertNotEqual(it._turn_hashes(said("session-A")), it._turn_hashes(said("session-B")))
+        # A resumed copy rewrites only the result locators the parser wrote.
+        copy = lambda sid: {"id": "u1:m1", "user": "q", "agent": json.dumps(
+            {"type": "tool_evidence_ref", "native_result": f"claude:{sid}:m1"})}
+        self.assertEqual(it._turn_hashes(copy("parent")), it._turn_hashes(copy("child")))
+
+    def test_changed_words_under_one_turn_id_are_cited_anew_and_unbind_the_old_receipt(self):
+        from osk import distillation as D
+        rows = claude_round(self.sid, 1)
+        rows[0]["message"]["content"] = "apply the rule to project A only"
+        self.transcript(rows)
+        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        first = it.cite(f"claude/{self.sid}", turn="-1")
+        again = it.cite(f"claude/{self.sid}", turn="-1")
+        self.assertTrue(again["reused"])
+        self.assertEqual(again["round_ref"], first["round_ref"])
+        saved = D.create_node({"key": self.sid, "sources": [first["round_ref"]], "hub": "W1"},
+                              title=self.sid, summary="scope of a rule", body="The rule applies to project A only.",
+                              drafter="test-model", space="00_Scope/W1")
+        self.assertEqual(saved["distillation"]["status"], "complete")
+        rows[0]["message"]["content"] = "apply the rule to every project"
+        self.transcript(rows)
+        changed = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        with self.assertRaises(ValueError):  # the receipt cited the earlier words
+            it.acknowledge("claude", self.sid, changed["through"], "preserved", "Kept.", [{"key": self.sid}])
+        second = it.cite(f"claude/{self.sid}", turn="-1")
+        self.assertFalse(second["reused"])
+        self.assertEqual(second["supersedes"], first["round_ref"])
+        self.assertNotEqual(second["round_ref"], first["round_ref"])
+        self.assertIn("every project", (ROOT / second["path"]).read_text(encoding="utf-8"))
+
+    def test_open_kiro_and_antigravity_turns_are_cited_under_their_final_ids(self):
+        step = lambda i, typ, text: {"step_index": i, "source": "x", "type": typ, "status": "DONE", "content": text}
+        steps = [step(0, "USER_INPUT", "<USER_REQUEST>\nfirst\n</USER_REQUEST>"), step(1, "PLANNER_RESPONSE", "answered"),
+                 step(2, "USER_INPUT", "<USER_REQUEST>\nthe current request\n</USER_REQUEST>")]
+        ag = self.antigravity(self.sid, steps)
+        it.capture("antigravity", self.sid, str(ag), self.sid, "00_Scope/W1")
+        self.assertEqual(it.cite(f"antigravity/{self.sid}", turn="-1")["turn"], "2")
+        self.assertEqual(it.cite(f"antigravity/{self.sid}", quote="current request")["turn"], "2")
+        self.antigravity(self.sid, steps + [step(3, "PLANNER_RESPONSE", "answered now")])
+        done = it.capture("antigravity", self.sid, str(ag), self.sid, "00_Scope/W1")
+        self.assertIn(f"native:antigravity:{self.sid}:2", done["pending_refs"])
+        cid = self.sid + "-kiro"
+        kiro = Path(TMP.name) / cid / "messages.jsonl"  # Kiro's folder is the conversation's
+        kiro.parent.mkdir(parents=True, exist_ok=True)
+        row = lambda n, payload: json.dumps({"id": f"r{n}", "timestamp": n, "payload": payload}) + "\n"
+        open_turn = [row(1, {"type": "user", "content": "the current request"}),
+                     row(2, {"type": "turn_start", "executionId": "exec-1"})]
+        kiro.write_text("".join(open_turn), encoding="utf-8")
+        it.capture("kiro", cid, str(kiro), self.sid, "00_Scope/W1")
+        self.assertEqual(it.cite(f"kiro/{cid}", turn="-1")["turn"], "exec-1")
+        kiro.write_text("".join(open_turn + [
+            row(3, {"type": "assistant", "operationType": "Say", "content": "done"}),
+            row(4, {"type": "turn_end", "executionId": "exec-1", "stopReason": "end_turn"})]), encoding="utf-8")
+        done = it.capture("kiro", cid, str(kiro), self.sid, "00_Scope/W1")
+        self.assertIn(f"native:kiro:{cid}:exec-1", done["pending_refs"])
+
+    def test_numeric_turn_ids_name_turns_and_only_minus_counts_back(self):
+        # Antigravity turn IDs are step numbers. The ID read_cited returns must cite that turn,
+        # even where the same words repeat and a quote cannot tell the turns apart.
+        step = lambda i, typ, text: {"step_index": i, "source": "x", "type": typ, "status": "DONE", "content": text}
+        path = self.antigravity(self.sid, [step(0, "USER_INPUT", "<USER_REQUEST>\nretry\n</USER_REQUEST>"),
+                                           step(1, "PLANNER_RESPONSE", "first"),
+                                           step(2, "USER_INPUT", "<USER_REQUEST>\nretry\n</USER_REQUEST>"),
+                                           step(3, "PLANNER_RESPONSE", "second")])
+        st = it.capture("antigravity", self.sid, str(path), self.sid, "00_Scope/W1")
+        read = it.read_turns(st["pending_refs"], view="full")["turns"]
+        self.assertEqual([t["turn"] for t in read], ["0", "2"])
+        for t in read:
+            self.assertEqual(it.cite(f"antigravity/{self.sid}", turn=t["turn"])["turn"], t["turn"])
+        self.assertEqual(it.cite(f"antigravity/{self.sid}", turn="-1")["turn"], "2")
+        with self.assertRaisesRegex(ValueError, "counts back"):
+            it.cite(f"antigravity/{self.sid}", turn=1)  # a position counts back; 1 is none
+
+    def test_record_identity_survives_vault_copy(self):
+        import shutil
+        self.transcript(claude_round(self.sid, 1))
+        code = """import json, os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ['OSK_PROBE_ENGINE'])
+from osk import core, integration as it, raw, validate
+if not (core.ROOT / '00_Scope/W1').is_dir():
+    validate.make_mini_vault(core.ROOT)
+sid = os.environ['OSK_PROBE_SID']
+st = it.capture('claude', sid, os.environ['OSK_PROBE_TRANSCRIPT'], 'copy-session', '00_Scope/W1')
+assert st['ok'], st
+cited = it.cite('claude/' + sid, turn='-1')
+print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended': st['appended'],
+                  'state_path': str(it.state_path('claude', sid)), 'cited': cited['round_ref'],
+                  'reused': cited['reused']}))
+"""
+        with tempfile.TemporaryDirectory(prefix="osk-vault-copy-test-") as folder:
+            first, second = Path(folder) / "original", Path(folder) / "copy"
+            first.mkdir()
+            results = []
+            for root in (first, second):
+                env = {**os.environ, "OSK_VAULT_ROOT": str(root), "OSK_PROBE_ENGINE": str(ENGINE),
+                       "OSK_PROBE_SID": self.sid, "OSK_PROBE_TRANSCRIPT": str(self.path)}
+                result = subprocess.run([sys.executable, "-B", "-c", code], env=env,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                results.append(json.loads(result.stdout))
+                if root == first:
+                    shutil.copytree(first, second)
+            self.assertEqual(results[0]["record"], results[1]["record"])
+            self.assertEqual(results[0]["refs"], results[1]["refs"])
+            self.assertNotEqual(results[0]["state_path"], results[1]["state_path"])
+            # The local cursor stays behind; the copied record already holds the citation.
+            self.assertEqual([r["appended"] for r in results], [1, 1])
+            self.assertEqual(results[0]["cited"], results[1]["cited"])
+            self.assertEqual([r["reused"] for r in results], [False, True])
+
+    def test_cite_keeps_user_words_and_points_at_the_original_turn(self):
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2)
+                        + claude_round(self.sid, 3, finished=False))
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        self.assertEqual(st["pending_refs"], [raw.native_ref("claude", self.sid, f"user-{n}") for n in (1, 2)])
+        self.assertFalse(raw.record_path("Capture", st["record"]).exists())
+        conversation = f"claude/{self.sid}"
+        cited = it.cite(conversation, quote="  question\n1 ")
+        self.assertTrue(cited["round_ref"].startswith("00_Scope/Capture/_cited/.records/"), cited)
+        self.assertEqual((cited["turn"], cited["user_by"], cited["reused"]), ("user-1", "engine", False))
+        text = raw.read_round(cited["round_ref"])["text"]
+        self.assertIn("question 1", text)
+        self.assertNotIn("answer 1", text)  # the reply stays in the transcript, kept as its hash
+        header = raw.cited_header(text)
+        self.assertEqual((header["harness"], header["conversation"], header["turn"]), ("claude", self.sid, "user-1"))
+        self.assertEqual(header["agent_sha256"], cited["agent_sha256"])
+        self.assertEqual(raw.cited_native(text), st["pending_refs"][0])
+        # The same turn, named again either way, keeps its one coordinate.
+        again = it.cite(conversation, turn="user-1")
+        self.assertEqual((again["round_ref"], again["reused"]), (cited["round_ref"], True))
+        # The open turn is citable before it finishes and agrees with its finished round.
+        open_turn = it.cite(conversation, turn="-1", note="decision under discussion")
+        self.assertEqual((open_turn["turn"], open_turn["agent_sha256"]), ("user-3", None))
+        self.assertIn("decision under discussion", raw.read_round(open_turn["round_ref"])["text"])
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
+        self.capture()
+        self.assertEqual(it.cite(conversation, quote="question 3")["round_ref"], open_turn["round_ref"])
+        with self.assertRaisesRegex(ValueError, "3 turns match"):
+            it.cite(conversation, quote="question")
+        with self.assertRaisesRegex(ValueError, "relative turn"):
+            it.cite(conversation, turn=2)
+        with self.assertRaisesRegex(ValueError, "0 turns match"):
+            it.cite(conversation, turn="2")  # a string other than "-N" is a turn ID
+        with self.assertRaisesRegex(ValueError, "transcript is readable"):
+            it.cite(conversation, user="words supplied by the caller")
+        with self.assertRaisesRegex(ValueError, "harness"):
+            it.cite("claude:" + self.sid, quote="question 1")
+
+    def test_cite_without_transcript_marks_caller_supplied_words(self):
+        self.transcript(claude_round(self.sid, 1))
+        self.capture()
+        self.path.unlink()
+        conversation = f"claude/{self.sid}"
+        with self.assertRaisesRegex(ValueError, "pass user="):
+            it.cite(conversation, quote="question 1")
+        cited = it.cite(conversation, user="question 1, as the agent recalls it", turn="user-1:final-1")
+        self.assertEqual((cited["user_by"], cited["turn"], cited["agent_sha256"]), ("caller", "user-1", None))
+        self.assertEqual(raw.cited_header(raw.read_round(cited["round_ref"])["text"])["user_by"], "caller")
+        self.assertTrue(it.cite(conversation, user="anything", turn="user-1")["reused"])
+
+    def test_offline_review_takes_stored_rounds_and_leaves_turns_to_their_conversation(self):
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
+        self.capture()
+        state, record = legacy_cursor("claude", self.sid, self.path)
+        stored = [r["ref"] for r in state["rounds"]]
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
+        st = self.capture()
+        turn = raw.native_ref("claude", self.sid, "user-3")
+        self.assertEqual((st["appended"], st["pending_refs"]), (1, stored + [turn]))
+        # The conversation itself sees both: stored rounds to read, its own turn to cite.
+        online = it.prompt("claude", self.sid, include_organization=False)
+        self.assertEqual(online["pending_refs"], st["pending_refs"])
+        self.assertIn("read_cited", online["text"])
+        self.assertIn(f'cite_round(conversation="claude/{self.sid}"', online["text"])
+        # An offline worker has only the stored rounds.
+        job = next(j for j in it.list_pending(100)["jobs"] if j["conversation_id"] == self.sid)
+        self.assertEqual(job["pending_refs"], stored)
+        self.assertEqual(job["raw_review"]["state"], "verified")
+        self.assertNotIn("cite_round", job["prompt"])
+        it.acknowledge("claude", self.sid, job["through"], "no_value", "stored fixture rounds only")
+        self.assertNotIn(self.sid, [j["conversation_id"] for j in it.list_pending(100)["jobs"]])
+        rest = it.prompt("claude", self.sid, include_organization=False)
+        self.assertEqual((rest["pending_refs"], rest["raw_review"]["state"]), ([turn], "native"))
+        # A same-name record in `_raw/` stays the record and takes the new citation.
+        cited = it.cite(f"claude/{self.sid}", turn="-1")
+        self.assertEqual(cited["path"], record.relative_to(ROOT).as_posix())
+        self.assertEqual(cited["index"], 3)
+
+    def test_native_secret_strings_never_reach_cursor_or_cited_record(self):
+        tokens = ["ghp_" + letter * 36 for letter in "uakv"]
+        fence = chr(96) * 3
+        block = lambda token: fence + "text\n" + token + "\n" + fence
+        nested = {"items": [{"\n" + tokens[2]: block(tokens[3])}], "benign": "ghp_short"}
+        for harness in ("claude", "codex"):
+            with self.subTest(harness=harness):
+                sid = self.sid + "-" + harness
+                path = Path(TMP.name) / (sid + ".jsonl")
+                if harness == "claude":
+                    rows = claude_round(sid, 1)
+                    rows[0]["message"]["content"] = [{"type": "text", "text": block(tokens[0])}]
+                    rows[1]["message"]["content"][0]["input"] = nested
+                    rows[2]["message"]["content"][0]["content"] = {"result": [block(tokens[3])]}
+                    rows[-1]["message"]["content"][0]["text"] = block(tokens[1])
+                else:
+                    rows = [{"type": "session_meta", "payload": {"id": sid}}] + codex_round(1)
+                    rows[4]["payload"]["message"] = block(tokens[0])
+                    rows[5]["payload"]["arguments"] = json.dumps(nested)
+                    rows[6]["payload"]["output"] = json.dumps({"result": [block(tokens[3])]})
+                    rows[7]["payload"]["content"][0]["text"] = block(tokens[1])
+                native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
+                path.write_bytes(native)
+                st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                self.assertTrue(st["ok"], st)
+                self.assertEqual(st["captured_rounds"], 1)
+                with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
+                    cited = it.cite(f"{harness}/{sid}", turn="-1", note="the reply is kept as its hash")
+                self.assertEqual(sink.call_count, 1)  # mandatory final filter still runs
+                saved = (ROOT / cited["path"]).read_bytes()
+                cursor = it.state_path(harness, sid).read_bytes()
+                for token in tokens:
+                    self.assertNotIn(token.encode(), saved)
+                    self.assertNotIn(token.encode(), cursor)
+                self.assertEqual(saved.count(b"[FILTERED:github-token]"), 1)  # the user's words only
+                self.assertTrue(cited["agent_sha256"])
+                self.assertEqual(path.read_bytes(), native)  # native evidence is not edited
+                again = it.cite(f"{harness}/{sid}", turn="-1")
+                self.assertTrue(again["reused"])
+                self.assertEqual((ROOT / cited["path"]).read_bytes(), saved)
+
+    def test_batch_reads_only_the_unreviewed_turns_of_an_ended_conversation(self):
+        import mcp_server
+        # Inventory only this test's conversations.
+        state_path_for = it.state_path
+        state_dir = Path(TMP.name) / self.sid
+        patcher = mock.patch.object(it, "state_path", side_effect=lambda harness, sid:
+                                    state_dir / state_path_for(harness, sid).name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        talks = {}
+        for name, count in (("done", 2), ("short", 5), ("running", 3)):
+            sid = f"{self.sid}-{name}"
+            path = Path(TMP.name) / f"{sid}.jsonl"
+            path.write_text("".join(json.dumps(r) + "\n" for n in range(1, count + 1)
+                                    for r in claude_round(sid, n)), encoding="utf-8")
+            st = it.capture("claude", sid, str(path), "capture-tests")
+            self.assertTrue(st["ok"], st)
+            talks[name] = sid, path, st
+        sid, path, st = talks["done"]
+        it.acknowledge("claude", sid, st["through"], "no_value", "fixture turns only")
+        sid, path, st = talks["short"]
+        first = it.prompt("claude", sid, include_organization=False, max_rounds=2)
+        it.acknowledge("claude", sid, first["through"], "no_value", "first two fixture turns")
+        ended = time.time() - it.ENDED_AFTER - 60
+        for name in ("done", "short"):
+            os.utime(talks[name][1], (ended, ended))
+        jobs = {j["conversation_id"]: j for j in it.list_pending(100)["jobs"]}
+        # A fully reviewed conversation is not read; a running one keeps its own cadence.
+        self.assertEqual(set(jobs), {sid})
+        job = jobs[sid]
+        self.assertEqual(job["pending_refs"], [raw.native_ref("claude", sid, f"user-{n}") for n in (3, 4, 5)])
+        # A sandboxed worker reads them through MCP, not the CLI.
+        self.assertIn("read_cited(ref=", job["prompt"])
+        self.assertNotIn("read_command", job)
+        read = it.read_turns(job["pending_refs"])["turns"]
+        self.assertEqual([t["position"] for t in read], [3, 4, 5])
+        self.assertTrue(all(f"question {t['position']}" in t["text"] for t in read), read)
+        self.assertNotIn("question 2", json.dumps(read))
+        self.assertEqual(read[0]["previous"], raw.native_ref("claude", sid, "user-2"))
+        # Earlier context only on demand, one turn back at a time.
+        [back] = it.read_turns([read[0]["previous"]])["turns"]
+        self.assertEqual((back["position"], back["previous"]), (2, raw.native_ref("claude", sid, "user-1")))
+        out = mcp_server.read_cited(job["pending_refs"][0], view="full")
+        self.assertEqual((out["ok"], out["position"]), (True, 3), out)
+        self.assertIn("answer 3", out["text"])
+        with self.assertRaisesRegex(ValueError, "not a completed turn"):
+            it.read_turns([raw.native_ref("claude", sid, "user-9")])
+        done = it.acknowledge("claude", sid, job["through"], "no_value", "ended fixture turns")
+        self.assertEqual((done["reviewed_rounds"], done["pending"]), (5, False))
+        self.assertNotIn(sid, [j["conversation_id"] for j in it.list_pending(100)["jobs"]])
+
+    def test_complete_review_restarts_the_conversation_cadence(self):
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
+        self.capture()
+        for _ in range(6):
+            it.tick("claude", self.sid)
+        path = it.state_path("claude", self.sid)
+        state = it._load(path, "claude", self.sid)
+        state["response_growth"] = {"counter": "finals", "seen": ["final"], "count": 6,
+                                    "attempted_count": 0, "history_baselined": True}
+        it._save(path, state)
+        part = it.prompt("claude", self.sid, include_organization=False, max_rounds=2)
+        it.acknowledge("claude", self.sid, part["through"], "no_value", "first two fixture turns")
+        state = it._load(path, "claude", self.sid)
+        # A partial review leaves both counts running.
+        self.assertEqual((state["reviewed_prompt_count"], state["response_growth"]["attempted_count"]), (2, 0))
+        rest = it.prompt("claude", self.sid, include_organization=False)
+        it.acknowledge("claude", self.sid, rest["through"], "no_value", "last fixture turn")
+        state = it._load(path, "claude", self.sid)
+        self.assertEqual((state["reviewed_prompt_count"], state["response_growth"]["attempted_count"]), (6, 6))
+        self.assertEqual(it.tick("claude", self.sid)["unreviewed_prompts"], 1)
 
 
 if __name__ == "__main__":

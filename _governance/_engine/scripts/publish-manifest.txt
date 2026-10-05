@@ -51,6 +51,7 @@ KEEP .github/workflows/ci.yml
 # 프레임워크가 아니라 개인 이력이다.
 DENY _ledger/
 # 운영 세션 기록과 원자료.
+DENY _cited/
 DENY _raw/
 DENY _sources/
 # 도구·빌드 부산물.

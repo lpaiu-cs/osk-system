@@ -1,8 +1,9 @@
-"""osk.raw — `_raw/` 세션 기록의 라운드 append.
+"""osk.raw — 인용 기록(`_cited/`, `_raw/` 호환)의 라운드 append.
 
-구현 근거: 헌법 4조 3~4항(세션을 가진 scope의 `_raw/`·append-only),
-시행령 §2(세션당 정본 하나·포착 범위·라운드 제목), Mechanism §8 3항(라운드
-제목 문법과 숫자 H2 escape)·§9 4항(접두부 보존 append).
+구현 근거: 헌법 4조 3~4항(세션을 가진 scope의 `_cited/`·append-only),
+시행령 §2(세션당 정본 하나·보존 범위·라운드 제목), Mechanism §8 3항(라운드
+제목 문법과 숫자 H2 escape)·§9 4~5항(접두부 보존 append·물리 자리와 `_raw/` 읽기)·
+§9 9항(원본 턴 좌표를 담은 인용 라운드).
 
 라운드 index는 **엔진 전속**이다. 호출자가 번호를 고르면 중복·역행이 계약
 위반으로 들어오는데(Mechanism §8 3항), 그것은 `[[경로#index]]` 라운드 참조의
@@ -83,17 +84,24 @@ def _next_index(text: str) -> int:
     return (seen[-1] + 1) if seen else 1
 
 
+CITED = graph.RECORD_DIRS[0]
+
+
 def record_path(scope: str, record: str) -> Path:
-    """Read the existing record; new records live in hidden non-Markdown storage."""
-    d = ROOT / SCOPE / scope / "_raw"
-    return _record_file(d / f"{record}.md")
+    """The record's canonical file. A same-name record in `_raw/` stays canonical and
+    takes new rounds; otherwise the record lives in hidden `_cited/.records` storage
+    (Mechanism §9 5항 — one record per session, no copy across the two)."""
+    legacy = _record_file(ROOT / SCOPE / scope / "_raw" / f"{record}.md")
+    if legacy.exists():
+        return legacy
+    return _record_file(ROOT / SCOPE / scope / CITED / f"{record}.md")
 
 
 def _record_pair(path: Path | str) -> tuple[Path, Path]:
     """Confined physical path and its old Markdown alias. No content conversion."""
     p = resolve_in_root(path)
     if p is None or graph.space_of(p)[0] != "raw":
-        raise write.WriteError("vault 밖 또는 `_raw/` 밖 경로 — 기록을 열지 않았다")
+        raise write.WriteError("vault 밖 또는 인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 기록을 열지 않았다")
     requested = Path(path) if Path(path).is_absolute() else ROOT / path
     if requested.absolute() != p:
         raise write.WriteError("raw 저장 경로의 심볼릭 링크·우회 경로는 허용하지 않는다")
@@ -171,7 +179,7 @@ def canonical_ref(ref: str) -> str:
         value = value[2:-2].strip()
     path, sep, anchor = value.split("|", 1)[0].partition("#")
     path = path.strip()
-    if re.match(r"^https?://", path) or "/_raw/" not in path.replace("\\", "/"):
+    if re.match(r"^https?://", path) or not graph.is_record_ref(path):
         return ref  # Node IDs and node links keep their existing identity.
     _, physical = _record_pair(path)
     return posix_rel(physical, ROOT) + (sep + anchor if sep else "")
@@ -206,7 +214,7 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
     raise write.WriteError(
         "재시도로 보이는 중복 — 쓰지 않았다",
         [f"직전 라운드 {last}의 내용과 바이트가 같다. 응답을 못 받아 다시 "
-         f"보내는 것이라면 이미 기록됐다 — `read_raw`로 목차를 보고 마지막 "
+         f"보내는 것이라면 이미 기록됐다 — `read_cited`로 목차를 보고 마지막 "
          f"index를 확인하라. 정말 같은 대화가 다시 오간 것이면 그 사실이 "
          f"드러나게 라운드를 고쳐 보낸다."])
 
@@ -215,12 +223,45 @@ _CODEX_V2 = "<!-- osk-capture: codex-user-items-v2 -->"
 _CODEX_V3 = "<!-- osk-capture: codex-terminal-v3 "
 _DIALOGUE_V1 = "<!-- osk-capture: dialogue-v1 "
 _CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
+# 인용 라운드의 원본 턴 좌표(Mechanism §9 9항): harness·conversation·turn·source·
+# agent_sha256·user_by. 이 머리말이 그 라운드의 원본 신원이다 — 커서가 없어도 남는다.
+_CITED = "<!-- osk-cited: "
+
+
+def native_ref(harness: str, conversation: str, turn: str) -> str:
+    """원본 턴의 좌표 — vault 안의 경로가 아니다. 검토 커서와 인용 머리말이 같은 값을 쓴다."""
+    return f"native:{harness}:{conversation}:{turn}"
+
+
+def is_native(ref: str) -> bool:
+    return isinstance(ref, str) and ref.startswith("native:")
+
+
+def cited_header(chunk: str) -> dict | None:
+    """라운드 본문 첫 줄의 인용 머리말 → 값. 머리말이 없으면 None, 손상이면 거부."""
+    header = (_round_body(chunk).splitlines() or [""])[0]
+    if not header.startswith(_CITED):
+        return None
+    if not header.endswith(" -->"):
+        raise write.WriteError("damaged citation header")
+    value = json.loads(header[len(_CITED):-4])
+    if not isinstance(value, dict) or not all(
+            isinstance(value.get(k), str) and value[k] for k in ("harness", "conversation", "turn")):
+        raise write.WriteError("damaged citation header")
+    return value
+
+
+def cited_native(chunk: str) -> str | None:
+    """인용 라운드가 가리키는 원본 턴의 `native_ref` — 인용 라운드가 아니면 None."""
+    value = cited_header(chunk)
+    return native_ref(value["harness"], value["conversation"], value["turn"]) if value else None
 
 
 def storage_error(path: str, text: str) -> str | None:
     """Check a changed raw record, without exposing its payload in diagnostics."""
     p = Path(path)
-    if "_raw" not in p.parts or not p.parts or p.parts[0] not in {"00_Scope", "= Scope", "Scope"}:
+    if (not any(d in p.parts for d in graph.RECORD_DIRS) or not p.parts
+            or p.parts[0] not in {"00_Scope", "= Scope", "Scope"}):
         return None
     if p.suffix.lower() == ".md":
         return "visible Markdown raw; migrate to hidden .txt storage"
@@ -232,7 +273,7 @@ def storage_error(path: str, text: str) -> str | None:
 
 def storage_violations() -> list[str]:
     errors = []
-    for directory in (ROOT / SCOPE).glob("*/_raw"):
+    for directory in sorted(d for name in graph.RECORD_DIRS for d in (ROOT / SCOPE).glob(f"*/{name}")):
         for p in directory.rglob("*"):
             if p.is_file() and p.suffix.lower() in {".md", ".txt"}:
                 rel = posix_rel(p, ROOT)
@@ -258,58 +299,15 @@ def inherited_prefix(path: Path) -> dict | None:
     return value
 
 
-def _block(index: int, user: str, agent: str, *, codex_native: bool = False,
-           codex_id: str | None = None, dialogue_id: str | None = None) -> str:
-    """한 라운드 = user 발화 + 그에 속한 에이전트 응답(시행령 §2 7항)."""
-    stamp = f"{_CODEX_V2}\n\n" if codex_native else ""
-    if codex_id is not None:
-        stamp = _CODEX_V3 + json.dumps(codex_id) + " -->\n\n"
-    if dialogue_id is not None:
-        stamp = _DIALOGUE_V1 + json.dumps(dialogue_id) + " -->\n\n"
+def _block(index: int, user: str, agent: str, *, dialogue_id: str | None = None,
+           cited: dict | None = None) -> str:
+    """한 라운드 = user 발화 + 그에 속한 에이전트 응답의 기록(시행령 §2 7항).
+    `dialogue_id`는 옛 포착 라운드를 대조할 때만 쓴다 — 새로 쓰는 라운드는 인용뿐이다."""
+    stamp = (_CITED + json.dumps(cited, ensure_ascii=False, sort_keys=True) + " -->\n\n" if cited is not None
+             else _DIALOGUE_V1 + json.dumps(dialogue_id) + " -->\n\n" if dialogue_id is not None else "")
     return (f"## {index}\n\n{stamp}"
             f"### user\n\n{user.rstrip()}\n\n"
             f"### agent\n\n{agent.rstrip()}\n")
-
-
-def codex_capture_order(path: Path, codex_v1: dict, codex_v2: dict,
-                        saved_ids: tuple[str, ...] = ()) -> list[str]:
-    """Recover append order after historical backfill, even without local cursors."""
-    if not path.exists():
-        return []
-    text = read_exact(path)
-    ids = []
-    for start, end in _round_spans(text).values():
-        body = _round_body(text[start:end])
-        header = body.splitlines()[0]
-        prefix = next((s for s in (_CODEX_V3, _DIALOGUE_V1) if header.startswith(s)), None)
-        if prefix:
-            if not header.endswith(" -->"):
-                raise ValueError("damaged Codex capture identity")
-            value = json.loads(header[len(prefix):-4])
-            if not isinstance(value, str) or not value:
-                raise ValueError("damaged Codex capture identity")
-        else:
-            native = header == _CODEX_V2
-            codec = codex_v2 if native else codex_v1
-            candidates = [saved_ids[len(ids)]] if len(ids) < len(saved_ids) else codec
-            matches = []
-            # ponytail: cursorless legacy matching scans the codec; index body
-            # hashes if large legacy archives make this recovery path costly.
-            for rid in candidates:
-                if rid in ids or rid not in codec:
-                    continue
-                pair = codec[rid]
-                expected = _block(1, escape_numeric_h2(pair['user']),
-                                  escape_numeric_h2(pair['agent']), codex_native=native)
-                if body == _round_body(secrets.filter_text(expected)[0]):
-                    matches.append(rid)
-            if len(matches) != 1:
-                raise ValueError("legacy Codex capture identity missing, changed or ambiguous")
-            value = matches[0]
-        ids.append(value)
-    if len(ids) != len(set(ids)):
-        raise ValueError("duplicate Codex capture identity")
-    return ids
 
 
 # scope 열거·space 표기 판정은 `graph`가 한 벌로 소유한다(`wm`도 같은 것을 쓴다).
@@ -317,20 +315,18 @@ _scope_names, _space_list, _scope_of_space = (
     graph.scope_names, graph.space_list, graph.scope_of_space)
 
 # 착지 판정(형식 → 실재 → 결속)은 `write.resolve_landing`이 한 벌로 소유한다.
-_CONFINE = ("`_raw/`는 세션당 정본 하나이므로(시행령 §2 1항) 한 세션의 기록을 "
+_CONFINE = ("인용 기록은 세션당 정본 하나이므로(시행령 §2 1항) 한 세션의 기록을 "
             "다른 scope로 번지게 하지 않는다 —")
 
 
 def append_rounds(session: str, record: str, pairs: list,
-                  space: str | None = None, *, replay_prefix: bool = False,
-                  codex_v1: dict | None = None,
-                  codex_v2: dict | None = None,
-                  dialogue_v1: dict | None = None,
-                  inherited: dict | None = None) -> dict:
-    """라운드 여럿을 **한 번의 쓰기로** 잇는다.
+                  space: str | None = None, *, cited: dict | None = None) -> dict:
+    """라운드 여럿을 **한 번의 쓰기로** 잇는다. `cited`는 인용 라운드 하나의 원본 턴
+    좌표다(Mechanism §9 9항) — 그 라운드는 응답 원문 없이 요지만 둘 수 있고, 같은
+    턴의 재인용은 쓰지 않고 기존 좌표를 돌려준다.
 
     배치가 필요한 이유는 성능이 아니라 원자성이다. 라운드마다 따로 쓰면 세
-    번째에서 거부됐을 때 앞의 둘만 남아, `_raw/`가 "있었던 대화의 일부"가
+    번째에서 거부됐을 때 앞의 둘만 남아, 기록이 "있었던 대화의 일부"가
     된다 — 표면이 부분 성공을 만들지 않는 것과 같은 규율을 이 경로에도
     건다(Mechanism §6-2 3항). index는 배치 안에서도 엔진이 이어 매긴다.
 
@@ -338,26 +334,20 @@ def append_rounds(session: str, record: str, pairs: list,
     그 scope로 세션을 확정한다. `space`의 표기는 `create_node`와 같은 군집
     전체 경로(`"00_Scope/W1"`)다 — 같은 값이 같은 뜻이어야 호출자가
     `overview`의 `clusters`를 그대로 옮겨 쓴다."""
-    if (codex_v1 is not None or codex_v2 is not None) and not replay_prefix:
-        raise ValueError("Codex capture versions require prefix replay")
-    if dialogue_v1 is not None and not replay_prefix:
-        raise ValueError("dialogue capture requires prefix replay")
-    if codex_v2 is not None and codex_v1 is None:
-        raise ValueError("Codex v3 capture requires both historical codecs")
-    if inherited is not None and (not replay_prefix or codex_v1 is not None):
-        raise ValueError("inherited prefixes require Claude capture replay")
+    if cited is not None and len(pairs) != 1:
+        raise ValueError("a citation appends exactly one round")
     if not pairs:
         raise write.WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
     norm = []
     for i, r in enumerate(pairs):
         u = r.get("user") if isinstance(r, dict) else (r[0] if r else "")
         a = r.get("agent") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")
-        if not (u or "").strip() or not (a or "").strip():
+        if not (u or "").strip() or not (a or "").strip() and cited is None:
             raise write.WriteError(
                 "라운드는 user 발화와 그 응답을 함께 담는다",
                 [f"{i + 1}번째 라운드의 user·agent 중 빈 쪽이 있다 — 한 라운드는 "
                  f"user 발화와 그에 속한 에이전트 응답의 쌍이다 (시행령 §2 7항)"])
-        norm.append((u, a))
+        norm.append((u, a or ""))
     errs = write._title_errors(record)      # 기록 이름이 곧 파일명이다
     if errs:
         raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
@@ -383,68 +373,26 @@ def append_rounds(session: str, record: str, pairs: list,
                  f"없다. 가능한 space: {_space_list()}"])
 
         p = record_path(dest, record)
-        prior = read_exact(p) if p.exists() else ""
-        if prior and inherited_prefix(p) != inherited:
-            raise write.WriteError("Claude inheritance manifest changed; raw was not altered")
-        if not prior and inherited is not None:
-            prior = _CLAUDE_PREFIX + json.dumps(inherited, ensure_ascii=False, sort_keys=True) + " -->\n\n"
-        first = _next_index(prior)
-        spans = _round_spans(prior)
-        # Capture adapters resend the complete completed-round sequence. Compare
-        # the durable prefix before appending: a crash after write_raw but before
-        # its local cursor is saved must not duplicate append-only evidence.
-        replayed, legacy_replayed = [], []
-        if replay_prefix:
-            if len(spans) > len(norm):
-                raise write.WriteError("포착 원본이 저장된 기록보다 짧다", ["원본을 복구한 뒤 재시도하라"])
-            for pair, (idx, (s, e)), (u, a) in zip(pairs, sorted(spans.items()), norm):
-                readable = _round_body(prior[s:e]).startswith(_DIALOGUE_V1)
-                extended = codex_v2 is not None and _round_body(prior[s:e]).startswith(_CODEX_V3)
-                native = codex_v1 is not None and _round_body(prior[s:e]).startswith(_CODEX_V2 + "\n")
-                if readable:
-                    selected = (dialogue_v1 or {}).get(pair["id"])
-                    if selected is None:
-                        raise write.WriteError("dialogue-v1 replay requires its recorded codec")
-                    u, a = selected["user"], selected["agent"]
-                elif codex_v1 is not None and not extended:
-                    # Select the recorded codec before comparing. Never fall
-                    # back after a mismatch: v2 rich input must remain checked.
-                    # The marker lives in raw so cursor loss/copies retain it.
-                    legacy = ((codex_v2 or {}).get(pair["id"]) if native and codex_v2 is not None
-                              else pair if native else codex_v1.get(pair["id"]))
-                    if legacy is None:
-                        raise write.WriteError("과거 Codex 라운드를 재현할 수 없다", [f"라운드 {idx} — 쓰지 않았다"])
-                    u, a = legacy["user"], legacy["agent"]
-                    if not native:
-                        legacy_replayed.append(idx)
-                expected = _block(idx, escape_numeric_h2(u), escape_numeric_h2(a), codex_native=native,
-                                  codex_id=pair["id"] if extended else None,
-                                  dialogue_id=pair["id"] if readable else None)
-                if _round_body(prior[s:e]) != _round_body(secrets.filter_text(expected)[0]):
-                    raise write.WriteError("포착 원본과 저장된 접두부가 다르다", [f"라운드 {idx} — 쓰지 않았다"])
-                replayed.append(idx)
-            norm = norm[len(replayed):]
-            if not norm:
-                p = _migrate_file(p)
+        supersedes = None
+        if cited is not None:
+            existing = find_cited(p, native_ref(cited["harness"], cited["conversation"], cited["turn"]))
+            if existing is not None:
                 rel = posix_rel(p.resolve(), ROOT)
-                return {"ok": True, "path": rel, "indices": replayed,
-                        "round_refs": [f"{rel}#{i}" for i in replayed],
-                        "filtered": [], "appended": 0, "codex_v1_rounds": legacy_replayed}
-        blocks, indices = [], []
-        for n, (u, a) in enumerate(norm):
-            pair = pairs[len(replayed) + n]
-            if dialogue_v1 is not None:
-                selected = dialogue_v1.get(pair["id"])
-                if selected is None:
-                    raise write.WriteError("missing dialogue capture; wrote no partial batch")
-                u, a = selected["user"], selected["agent"]
-            indices.append(first + n)
-            blocks.append(_block(first + n, escape_numeric_h2(u),
-                                 escape_numeric_h2(a), codex_native=codex_v1 is not None,
-                                 codex_id=pair["id"] if codex_v2 is not None else None,
-                                 dialogue_id=pair["id"] if dialogue_v1 is not None else None))
-        if not replay_prefix:
-            _reject_replay(prior, spans, blocks)
+                index, header = existing
+                # Reuse unless both copies came from the transcript and the words differ. Words
+                # changed under the same turn ID are new evidence: append them and keep the
+                # earlier round (append-only).
+                old, new = header.get("user_sha256"), cited.get("user_sha256")
+                if not (old and new) or old == new:
+                    return {"ok": True, "path": rel, "indices": [index], "round_refs": [f"{rel}#{index}"],
+                            "filtered": [], "reused": True, "cited": header}
+                supersedes = f"{rel}#{index}"
+        prior = read_exact(p) if p.exists() else ""
+        first = _next_index(prior)
+        indices = [first + n for n in range(len(norm))]
+        blocks = [_block(i, escape_numeric_h2(u), escape_numeric_h2(a), cited=cited)
+                  for i, (u, a) in zip(indices, norm)]
+        _reject_replay(prior, _round_spans(prior), blocks)
         if prior and not prior.endswith("\n"):
             prior += "\n"
         # 되돌아온 경로를 쓴다 — 통로가 봉쇄·해소한 그 경로가 실제로 기록된
@@ -456,56 +404,33 @@ def append_rounds(session: str, record: str, pairs: list,
         # `round_ref`를 그대로 돌려준다 — 이 값이 곧 `derived-from`의 비노드
         # 대상 표기다(Mechanism §8 2항). 호출자가 경로와 index를 조립하다
         # 틀리면 근거 배선이 dangling으로 앉는다.
-        result = {"ok": True, "path": rel, "indices": replayed + indices,
-                  "round_refs": [f"{rel}#{i}" for i in replayed + indices],
+        result = {"ok": True, "path": rel, "indices": indices,
+                  "round_refs": [f"{rel}#{i}" for i in indices],
                   "filtered": sorted(set(hits))}
+        if supersedes:
+            result["supersedes"] = supersedes
         if not bound:
             write.bind_after_write(result, session, dest, "첫 세션 기록에서 확정")
-        if replay_prefix:
-            result["appended"] = len(indices)
-            result["codex_v1_rounds"] = legacy_replayed
         return result
 
 
-def append_round(session: str, record: str, user: str, agent: str,
-                 space: str | None = None) -> dict:
-    """라운드 하나 — 표면(`append_raw`)이 부르는 단수형."""
-    r = append_rounds(session, record, [{"user": user, "agent": agent}], space)
-    return {"ok": True, "path": r["path"], "index": r["indices"][0],
-            "round_ref": r["round_refs"][0], "filtered": r["filtered"],
-            **({"binding": r["binding"]} if "binding" in r else {})}
-
-
-def record_state(session: str, record: str, space: str | None = None) -> dict:
-    """기록의 현재 상태 — 어댑터가 **이미 기록된 분량을 건너뛰는** 데 쓴다.
-
-    자동 포착의 진짜 위험은 유실이 아니라 중복이다. 훅은 같은 대화에 대해
-    여러 번 깨어나는데, 그때마다 처음부터 이어 붙이면 같은 라운드가 다른
-    번호로 두 번 앉아 기록이 대화가 아니게 된다. 어느 쪽도 그것을 사후에
-    되돌릴 수 없으므로(`_raw/`는 append-only다), 붙이기 전에 세는 자리를
-    둔다 — 어댑터는 `rounds`를 읽고 그 뒤부터만 보낸다."""
-    dest, bound = write.resolve_landing(session, space, _CONFINE)
-    if not dest or dest not in _scope_names():
-        return {"ok": True, "bound": bound, "scope": None, "path": None,
-                "exists": False, "rounds": 0, "next_index": 1, "damaged": False}
-    p = record_path(dest, record)
-    text = read_exact(p) if p.exists() else ""
-    seen = rounds(text)
-    try:
-        nxt, damaged = _next_index(text), False
-    except write.WriteError:
-        # 손상 기록에 다음 번호를 알려주면 어댑터가 그 위에 이어 붙이려 든다.
-        # 셀 수 없다는 사실을 그대로 낸다 — append도 같은 이유로 거부한다.
-        nxt, damaged = None, True
-    return {"ok": True, "bound": bound, "scope": dest,
-            "path": posix_rel(p.resolve(), ROOT) if p.exists() else None,
-            "exists": p.exists(), "rounds": len(seen),
-            "next_index": nxt, "damaged": damaged}
+def find_cited(path: Path, native: str) -> tuple[int, dict] | None:
+    """같은 원본 턴을 마지막으로 인용한 라운드의 index와 그 머리말 — 같은 발화의 재인용은
+    새 라운드를 쓰지 않는다(Mechanism §9 9항)."""
+    if not path.exists():
+        return None
+    text = read_exact(path)
+    found = None
+    for index, (start, end) in sorted(_round_spans(text).items()):
+        header = cited_header(text[start:end])
+        if header and native_ref(header["harness"], header["conversation"], header["turn"]) == native:
+            found = index, header
+    return found
 
 
 # ── 명시 회상 (시행령 §2 5항) ────────────────────────────────────────────
 #
-# `_raw/`는 작업 검색에서 빠진다(헌법 11조 3항). 빠진 것을 도구 없이 읽으려면
+# 인용 기록은 작업 검색에서 빠진다(헌법 11조 3항). 빠진 것을 도구 없이 읽으려면
 # 경로를 손으로 찾아야 하는데, 기록은 엔진 계약의 언어로 쓰여 있다 — 라운드
 # 제목, escape된 숫자 H2, `[[경로#N]]` 좌표. 그 언어를 아는 쪽이 읽는 자리를
 # 내주는 것이 맞다. 검색이 아니라 **좌표로 여는** 회상이므로 11조 3항의 제외와
@@ -534,7 +459,7 @@ def _raw_file(path: str) -> Path:
         raise write.WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
     if graph.space_of(p)[0] != "raw":
         raise write.WriteError(
-            "`_raw/` 밖 경로 — 이 도구로 읽지 않는다",
+            "인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 이 도구로 읽지 않는다",
             [f"`{path}`는 세션 기록이 아니다. 노드는 `read_node`로 읽는다"])
     p = _record_file(p)
     if not p.is_file():
@@ -562,7 +487,7 @@ def _preview(chunk: str, width: int = 60) -> str:
     """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
     body = _round_body(chunk).splitlines()
     if (body[:3] == [_CODEX_V2, "", "### user"] or len(body) >= 3
-            and body[0].startswith((_CODEX_V3, _DIALOGUE_V1)) and body[1:3] == ["", "### user"]):
+            and body[0].startswith((_CODEX_V3, _DIALOGUE_V1, _CITED)) and body[1:3] == ["", "### user"]):
         chunk = "\n".join(body[2:])  # Only the header; user quotations stay visible.
     for line in chunk.splitlines():
         s = line.strip()
@@ -626,10 +551,11 @@ def list_records(space: str) -> dict:
         raise write.WriteError(
             "없는 scope", [f"`{space}`는 scope가 아니다. 가능한 space: "
                           f"{_space_list()}"])
-    d = ROOT / SCOPE / scope / "_raw"
     out = []
-    files = sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt"),
-                    *(d / ".records").glob("*/record.txt")})
+    files = sorted({f for name in graph.RECORD_DIRS
+                    for d in (ROOT / SCOPE / scope / name,)
+                    for f in (*d.glob("*.md"), *(d / ".records").glob("*.txt"),
+                              *(d / ".records").glob("*/record.txt"))})
     for candidate in files:
         f = _record_file(candidate)
         text = read_exact(f)

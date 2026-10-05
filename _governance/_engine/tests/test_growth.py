@@ -30,6 +30,24 @@ def node(title, scope='W1', body=None):
     write.update_node(scope, body=old.rstrip() + chr(10) + '- [[' + title + ']]', expect_hash=core.sha256_file(hub))
     return next(s for c in growth.plan(20)['candidates'] for s in c['sources']
                 if s['name'] == title)
+def legacy(sid, transcript, scope='W1'):
+    # Rewrite a fresh cursor as the full-capture engine (<= v4.1) left it: rounds stored
+    # in _raw/. The daily worker reviews only these; original turns stay with their conversation.
+    from osk import integration, raw, transcripts
+    path = integration.state_path('claude', sid)
+    s = integration._load(path, 'claude', sid)
+    shown = list(transcripts.read(str(transcript), 'claude', sid)['dialogue_v1'].values())
+    record = core.ROOT / '00_Scope' / scope / '_raw' / '.records' / (s['record'] + '.txt')
+    blocks = [raw._block(i, raw.escape_numeric_h2(r['user']), raw.escape_numeric_h2(r['agent']),
+                         dialogue_id=r['id']) for i, r in enumerate(shown, 1)]
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_bytes(chr(10).join(blocks).encode('utf-8'))
+    rel = record.relative_to(core.ROOT).as_posix()
+    s['rounds'] = [{'id': r['id'], 'ref': rel + '#' + str(i), 'completion': r['completion'],
+                    'hash': core.sha256_bytes(b.rstrip(chr(10)).encode('utf-8'))}
+                   for i, (r, b) in enumerate(zip(shown, blocks), 1)]
+    s['snapshots'] = {integration._snapshot(s): {'count': len(s['rounds']), 'prompt_count': s['prompt_count']}}
+    integration._save(path, s)
 def register(planned=None):
     planned = growth.plan(20) if planned is None else planned
     with core.mutation_lock():
@@ -177,6 +195,7 @@ class GrowthTests(unittest.TestCase):
                         'stop_reason':'end_turn'}}]
                 path.write_text(''.join(json.dumps(row)+'\\n' for row in rows), encoding='utf-8')
                 assert integration.capture('claude',sid,str(path),'checkpoint-fixture',space='00_Scope/W1')['ok']
+                legacy(sid, path)
             change = "q['osk_reviews']['domain']=[]; q['osk_reviews']['scope']=q['osk_reviews']['scope'][:1]; (core.ROOT/'saved-checkpoint.json').write_text(json.dumps(q),encoding='utf-8'); assert growth.checkpoint(q)['ok']; sys.exit(7)"
             result = growth.run([sys.executable,'-B','-c',packet_worker(change)],limit=3)
             assert not result['ok'] and result['returncode'] == 7, result
@@ -784,7 +803,7 @@ class GrowthTests(unittest.TestCase):
             assert len([1 for p,k in graph.Index().nodes.values() if k[0]=='domain' and not graph.is_hub(p)]) == 1
         """)
 
-    def test_short_finished_transcript_runs_same_actor_without_domain_candidates(self):
+    def test_short_finished_transcript_waits_for_its_own_fork(self):
         self.check_case("""
             from osk import integration
             path = core.ROOT / 'native.jsonl'
@@ -795,17 +814,51 @@ class GrowthTests(unittest.TestCase):
             assert state['capture_pending'], state
             with path.open('a',encoding='utf-8') as f:
                 f.write(json.dumps(final)+'\\n')
+            # The daily run tracks the finished turn but has no copy of it to review.
+            assert growth.run(['unused-command'])['state'] == 'skipped'
+            assert integration.status('claude','short')['captured_rounds'] == 1
+            # The conversation's own Stop fork holds the turn and reviews it.
+            job = integration.prompt('claude','short',include_organization=False)
             for change in (
                     "q['osk_reviews']['scope'][0]['through']='stale-snapshot'",
                     "q['osk_reviews']['scope'][0].update(outcome='preserved',targets=[{'key':'missing-proof'}])"):
-                rejected = growth.run([sys.executable,'-c',packet_worker(change)])
+                rejected = growth.run([sys.executable,'-c',packet_worker(change)],scope_job=job)
                 assert not rejected['ok'] and rejected['final_reviews']['errors'], rejected
             worker = packet_worker()
-            result = growth.run([sys.executable,'-c',worker])
+            result = growth.run([sys.executable,'-c',worker],scope_job=job)
             assert result['ok'], result
             assert result['scope_selected'] == 1 and result['domain_selected'] == 0, result
             assert {r['status'] for r in result['scope_outcomes'].values()} == {'complete'}
             assert growth.run(['unused-command'])['state'] == 'skipped'
+        """)
+
+    def test_daily_run_reads_an_ended_conversation_and_restarts_its_cadence(self):
+        self.check_case("""
+            import os, time
+            from osk import integration
+            path = core.ROOT / 'ended.jsonl'
+            rows = []
+            for i in range(1, 4):
+                rows += [{'type':'user','sessionId':'ended','uuid':'u'+str(i),'message':{'role':'user','content':'question '+str(i)}},
+                         {'type':'assistant','sessionId':'ended','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
+            path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
+            assert integration.capture('claude','ended',str(path),'ended-project',space='00_Scope/W1')['ok']
+            for _ in range(5):
+                integration.tick('claude','ended')
+            # Still running: its turns stay with the conversation's own review cadence.
+            assert growth.run(['unused-command'])['state'] == 'skipped'
+            old = time.time() - integration.ENDED_AFTER - 60
+            os.utime(path, (old, old))
+            result = growth.run([sys.executable,'-c',packet_worker()],limit=3)
+            assert result['ok'] and result['scope_selected'] == 1, result
+            plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            job = growth._reading_plan(plan)['scope_jobs'][0]
+            assert job['pending_refs'] == ['native:claude:ended:u' + str(i) for i in (1, 2, 3)], job
+            assert 'read_command' not in job, job
+            assert 'read_cited(ref=' in growth.prompt(plan), 'a sandboxed worker reads through MCP'
+            state = integration.status('claude','ended')
+            assert (state['reviewed_rounds'], state['pending']) == (3, False), state
+            assert state['prompt_count'] == state['reviewed_prompt_count'] == 5, state
         """)
 
     def test_organization_packet_without_snapshot_refuses_a_unit_changed_after_reading(self):
@@ -949,6 +1002,7 @@ class GrowthTests(unittest.TestCase):
                          {'type':'assistant','sessionId':'bounded','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(row)+'\\n' for row in rows),encoding='utf-8')
             integration.capture('claude','bounded',str(path),'bounded-project',space='00_Scope/W1')
+            legacy('bounded', path)
             original = integration.status('claude','bounded')
             seen = []
             worker = [sys.executable,'-c','import sys; sys.stdin.read()']  # no ACKs
@@ -988,6 +1042,7 @@ class GrowthTests(unittest.TestCase):
                 {'type':'assistant','sessionId':'waiting','uuid':'a1','message':{'role':'assistant','id':'m1','content':[{'type':'text','text':'A bounded fact.'}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows),encoding='utf-8')
             assert integration.capture('claude','waiting',str(path),'waiting',space='00_Scope/W1')['ok']
+            legacy('waiting', path)
             worker = "import sys; from osk import core,growth,organization; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [organization.review(j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
             visited = []
             for i in range(8):

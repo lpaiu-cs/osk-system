@@ -50,7 +50,7 @@ VERSION_RE = r"^v\d+\.\d+\.\d+$"             # 릴리스·태그·자동 탐색�
 # 인스턴스 소유 바닥 — 릴리스·매니페스트가 무엇을 말하든 쓰지 않는다.
 # (골격 .gitkeep은 디렉터리가 없을 때만 예외 — _skel에서 별도 처리)
 SKEL_ROOTS = tuple(prefix + kind for prefix in PREFIXES for kind in KINDS)
-FLOOR_HEADS = SKEL_ROOTS + ("_ledger", "_raw", "_sources", ".osk", ".git")
+FLOOR_HEADS = SKEL_ROOTS + ("_ledger", "_cited", "_raw", "_sources", ".osk", ".git")
 
 
 class UpdateError(RuntimeError):
@@ -61,7 +61,7 @@ def _floor(rel: str) -> bool:
     head = rel.split("/", 1)[0]
     if head in FLOOR_HEADS:
         return True
-    return any(f"/{seg}/" in f"/{rel}" for seg in ("_ledger", "_raw"))
+    return any(f"/{seg}/" in f"/{rel}" for seg in ("_ledger", "_cited", "_raw"))
 
 
 # 골격을 만들어도 되는 곳은 **최상위 Space 루트 셋**뿐이다. 그 아래는 전부

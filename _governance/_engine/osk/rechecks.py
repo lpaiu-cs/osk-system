@@ -69,7 +69,7 @@ def _name(ref: str) -> tuple[str, str] | None:
     if s.startswith("[[") and s.endswith("]]"):
         s = s[2:-2]
     s = s.split("|", 1)[0].strip()
-    if "/_raw/" in s.replace("\\", "/") or re.match(r"^https?://", s):
+    if graph.is_record_ref(s) or re.match(r"^https?://", s):
         return None
     name, _, heading = (x.strip() for x in s.partition("#"))
     return name, heading

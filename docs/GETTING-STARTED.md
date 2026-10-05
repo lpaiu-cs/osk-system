@@ -38,7 +38,8 @@ operator reference (in Korean).
   knowledge *nodes*. The engine validates every write.
 - **Hooks for Claude Code and Codex** (Kiro and Antigravity too). They do three things:
   - give each new session its project's memory;
-  - capture each finished conversation round;
+  - track each finished turn of the conversation, without copying it into the
+    vault;
   - schedule reviews that turn conversations into knowledge.
 - **Changes you can review and undo.** For any folder you protect, the engine
   keeps the last snapshot you approved. Agent edits still take effect at once;
@@ -92,10 +93,13 @@ is a *cluster*. Each cluster has a *hub*: a node with the same name as the
 folder, written before any other node in it. Writes through MCP are validated.
 Files you edit by hand are not checked until you run `validate`.
 
-**Raw records.** The hooks capture each finished conversation round into the
-scope's `_raw/` folder. A round is your message plus the agent's visible answer.
-Raw records are append-only, and search never returns them. Nodes cite a round
-as evidence by its coordinate, such as `<record path>#12`.
+**Cited records.** The hooks track each finished turn of a conversation on this
+device; the conversation itself stays in the harness's transcript. When a node
+needs a turn as evidence, the agent cites it with `cite_round`: the engine copies
+your message from the transcript into the scope's `_cited/` folder and keeps the
+agent's answer only as its location and hash. Cited records are append-only, and
+search never returns them. Nodes cite a round by its coordinate, such as
+`<record path>#12`. Records that older releases wrote to `_raw/` stay readable.
 
 **Scope memory.** Each scope has one short note of at most 1,500 characters. It
 holds the lessons that matter right now, and the hooks inject it at the start of
@@ -111,8 +115,9 @@ interactive terminal. Agents cannot approve anything through MCP. This protects
 against honest mistakes. It is not security against someone who can write to
 your disk.
 
-**Reviews.** A review reads new raw rounds and saves what matters as nodes or
-scope memory.
+**Reviews.** A review goes over the conversation's new turns, which the agent
+already has in context, and saves what matters as nodes or scope memory. It
+cites only the turns those nodes need.
 
 - By default, the hooks ask the agent to review in the session, at your 9th and
   15th message.
@@ -449,23 +454,26 @@ each osk tool the first time; allow it.
 session-start text begins like this:
 
 ```text
-[osk 세션 시작 — session="my-app"]
+[osk 세션 시작 — session="my-app" · conversation="claude/<conversation ID>"]
 이 세션에서 `overview(session="my-app")`를 한 번 불러 … 아직 scope 결속이 없다. 착지를 추측하지 말고 …
 ```
 
 In English: *"Session start, key `my-app`. Call `overview` once. There is no
 scope binding yet, so don't guess where to write; confirm the project first."*
+`conversation` names this conversation (`codex/…` in Codex); the agent passes it
+to `cite_round` when it cites a turn.
 
 Without fork reviews, it also says `[osk 검토 경고 — subscription fork CLI is not
 configured. …]`. That means reviews happen in this session at your 9th and 15th
 message, which is normal.
 
-Until the scope is bound, this conversation's rounds cannot be captured. From
-your second message on, the hook text therefore carries a one-line capture notice,
-`[osk 포착 대기 — WriteError: 착지 미정 …]` ("capture waiting — landing undecided"),
-on every message, although no review is due. With fork reviews on it reads
-`[osk 백그라운드 검토 대기 — …]` instead. It stops after step 2 below. The review
-warning stays until you set up fork reviews.
+Until the scope is bound, this conversation's turns are not tracked: there is no
+scope to cite them into. From your second message on, the hook text therefore
+carries a one-line capture notice, `[osk 포착 대기 — WriteError: 착지 미정 …]`
+("capture waiting — landing undecided"), on every message, although no review
+is due. With fork reviews on it reads `[osk 백그라운드 검토 대기 — …]` instead.
+It stops after step 2 below. The review warning stays until you set up fork
+reviews.
 
 1. **Look around.** Prompt:
 
@@ -547,8 +555,8 @@ warning stays until you set up fork reviews.
    .venv\Scripts\python.exe -m osk.cli sm show --session my-app
    ```
 
-   **Check:** the folder lists the hub and the new node, plus `_raw/` once a
-   round has been captured. `search` returns the new node. `sm show` prints
+   **Check:** the folder lists the hub and the new node, plus `_cited/` once the
+   agent has cited a turn. `search` returns the new node. `sm show` prints
    your scope-memory line. For a key that is not bound yet, or a scope memory
    that is still empty, `sm show` prints nothing and exits 0; that is not an
    error.
@@ -564,7 +572,7 @@ out of 1,500, and M characters still free (`여유`).
 - The binding is a row in `00_Scope/Workbench/_ledger/routing.jsonl` that maps
   the session key `my-app` to the scope `my-app`.
 - Later writes with that key land in that scope without a `space` argument.
-  That includes nodes, scope memory and captured conversations, from any
+  That includes nodes, scope memory and cited conversation turns, from any
   conversation, device or worktree of the repository.
 - A session belongs to exactly one scope. A write from `my-app` into another
   scope is refused, and the refusal says the session `…에 결속돼 있다` ("is
@@ -581,12 +589,12 @@ out of 1,500, and M characters still free (`여유`).
 
 | Starts with | Meaning |
 |---|---|
-| `[osk 세션 시작 — session="…"]` | Session start. Shows the session key and asks the agent to call `overview`. `아직 scope 결속이 없다` means "not bound yet". |
+| `[osk 세션 시작 — session="…" · conversation="…"]` | Session start. Shows the session key and this conversation's `<harness>/<ID>`, the value `cite_round` takes, and asks the agent to call `overview`. `아직 scope 결속이 없다` means "not bound yet". |
 | `[osk scope 기억 — 00_Scope/… · N/1500자 · 여유 M자]` | The scope memory: characters used out of 1,500, characters free, then its hash and full text. |
 | `[osk 검토 경고 — <reason>. …]` | Background fork reviews are not running, for the reason given. Reviews happen in this session at user turns 9 and 15. Normal if you have not set up fork reviews. |
 | `[osk 대화 검토 — …]` | Fork reviews are on: one runs after every 9 successful final answers. |
 | `[osk 케이던스 — user 턴 N]` | A review is due. At turn 9 the agent reviews along with its next tool call. At turn 15 it may spend a whole turn on the review. |
-| `[osk 포착 대기 — <error>. …]` | Capturing this conversation's transcript is stuck. Normal before the scope is bound (Step 5). The wait and the count are kept, and turns 9 and 15 carry the review text as usual. If it continues after binding, see `capture_blocked` in the CLI `status`. |
+| `[osk 포착 대기 — <error>. …]` | Tracking this conversation's turns is stuck. Normal before the scope is bound (Step 5). The wait and the count are kept, and turns 9 and 15 carry the review text as usual. If it continues after binding, see `capture_blocked` in the CLI `status`. |
 | `[osk 대화별 통합 대기 — …]` | This conversation's review queue, with instructions for the agent. |
 | `[osk 참조·조직 검토]` | Work to tidy links and hubs among this scope's nodes. |
 | `[osk 정돈 — …]`, `[osk 정돈이 밀렸다 — …]` | Evicted scope-memory lines waiting to be settled. `밀렸다` means overdue: older than 14 days. |
@@ -604,10 +612,10 @@ Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 |---|---|
 | `validate` | Check the whole vault: node contracts, links and ledgers. Expect `"verdict": "PASS"`. |
 | `status` | See protected regions (`clean` or `pending`), unsettled evictions, and scope-memory recovery. |
-| `search "<words>"` | Search the nodes. Raw records are not searched. |
+| `search "<words>"` | Search the nodes. Cited records are not searched. |
 | `sm show --session <key>` | Print a scope's memory. |
 | `tidy list` | List evicted scope-memory lines that are not settled yet. |
-| `integration list` | List conversations whose captured rounds wait for review. |
+| `integration list` | List review work for a run outside the conversation: the unreviewed turns of conversations that ended before their own review (read from this device's transcript), rounds an older release stored in `_raw/`, and finished reviews whose receipts need repair. A conversation still going on reviews its own turns. |
 | `protect <folder>`, `approve <folder>`, `revert <folder>` | Protect a folder, or accept or undo its pending changeset. These ask `[y/N]` and refuse to run without an interactive terminal. |
 | `fork doctor` | Check whether fork reviews can run. Read-only. |
 | `doctor` | Check how Claude Code, Codex, Kiro and Antigravity are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
@@ -653,7 +661,7 @@ too.
 
 ## Optional: browse the vault in Obsidian
 
-The graph can show only knowledge nodes, without raw records or governance
+The graph can show only knowledge nodes, without cited records or governance
 files. To set that up, preview the change first and then apply it. If Obsidian
 has this vault open, close it first: Obsidian writes the same settings file
 itself when you use the graph.
@@ -804,7 +812,7 @@ To keep the daemon running in the background:
 Without fork reviews, reviews happen inside your sessions, at turns 9 and 15.
 With them, the Stop hook launches a hidden, one-shot *fork* of the conversation
 after every 9 successful final answers. The fork keeps the conversation's
-harness, model, working folder and permission mode. It reviews up to 9 rounds
+harness, model, working folder and permission mode. It reviews up to 9 turns
 that have not been reviewed yet, and writes knowledge through MCP. It runs on
 your **subscription** login, and never falls back to paid API calls. You turn
 it on per device and per harness.
