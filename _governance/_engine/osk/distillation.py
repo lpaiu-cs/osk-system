@@ -3,6 +3,8 @@
 Receipts prove persisted text and references, never semantic correctness. A
 receipt binds the paragraphs its write added or changed, so an unrelated later
 edit of the same node keeps it; receipts written before that bind the whole file.
+That full check is for the write and its acknowledgement. After acknowledgement
+only `structure` is observed, and it reports rather than reopens.
 The local journal is written before either graph write. All graph changes still
 use write's ordinary validator/render/CAS path under one mutation lock.
 """
@@ -240,6 +242,27 @@ def _verify(job: dict, idx=None) -> dict:
         receipt["placement"] = {"status": "pending", "reason": str(e)}
         return receipt
 
+
+
+def structure(receipt: dict, idx=None) -> str | None:
+    """ACK 뒤의 구조 신호 — 대상이 남았는가, 같은 최상위 군집에 있는가, 출처를 아직
+    `derived-from`으로 다는가. 문단·허브·출처 해시는 ACK 때 확인했고 다시 보지 않는다.
+    걸리면 그 이유를 돌려줄 뿐 검토를 다시 열지 않는다."""
+    try:
+        idx = graph.Index() if idx is None else idx
+        target = receipt["target"]
+        p = write._live_locate(target["id"], idx)
+        if p is None or not p.is_file():
+            return "target missing"
+        if p.relative_to(ROOT).parts[:2] != Path(target["path"]).parts[:2]:
+            return "target left its top-level cluster"
+        kept = {write._edge_key(ref, idx)
+                for ref in write._stored_edges(contract.parse(p).meta.get("derived-from"))}
+        if any(write._edge_key(s["ref"], idx) not in kept for s in receipt["sources"]):
+            return "target no longer cites its source"
+    except (write.WriteError, OSError, ValueError, KeyError, TypeError) as e:
+        return str(e)
+    return None
 
 
 def _verify_receipt_locked(receipt: dict, idx=None) -> dict:

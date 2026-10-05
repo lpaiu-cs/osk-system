@@ -1,7 +1,8 @@
 """Read-only growth evidence: inventory now, recorded decisions in a time window.
 
-Never call integration.status/list_pending: those can register repair work. A
-report is an observation, not an acknowledgement or a semantic growth verdict.
+Never call integration.status/list_pending: those write state (they close repair
+entries left by the pre-4.2 receipt recheck). A report is an observation, not an
+acknowledgement or a semantic growth verdict.
 """
 from __future__ import annotations
 
@@ -182,17 +183,14 @@ def _organization(idx) -> dict:
 def _preservation(receipts: list[dict], idx) -> dict:
     from . import distillation
     unique = {json.dumps(r, sort_keys=True): r for r in receipts}
-    items = []
-    for receipt in unique.values():
-        current = distillation._verify_receipt_locked(receipt, idx=idx)
-        items.append({'key': current['key'], 'target_id': current['target'].get('id'),
-                      'body_and_sources': current.get('preservation', {}).get('status', 'unknown'),
-                      'placement': current.get('placement', {}).get('status', 'unknown'),
-                      'status': current['status'], 'reason': current.get('reason')})
+    items = [{'key': r['key'], 'target_id': r['target'].get('id'),
+              'structure': distillation.structure(r, idx)} for r in unique.values()]
     return {'receipt_versions': len(items),
-            'body_and_sources': dict(Counter(i['body_and_sources'] for i in items)),
-            'placement': dict(Counter(i['placement'] for i in items)), 'items': items,
-            'basis': 'distinct saved receipts in the history window, checked against files now; not new-node counts'}
+            'structure': dict(Counter('broken' if i['structure'] else 'intact' for i in items)),
+            'items': items,
+            'basis': 'distinct saved receipts in the history window; after acknowledgement only the target, '
+                     'its top-level cluster and its derived-from sources are checked, and a break is reported, '
+                     'not reopened; not new-node counts'}
 
 
 def report(*, since: str | None = None, until: str | None = None, preflight: bool = False) -> dict:

@@ -1110,8 +1110,17 @@ class IntegrationTests(unittest.TestCase):
                                 **dict(args, title="A sibling retained decision", body="Another reusable observation."))
         self.assertEqual(sibling["distillation"]["status"], "complete")
         self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
-        write.update_node(created["id"], body="Changed after review.", expect_hash=created["new_hash"])
-        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "pending")
+        # After ACK only structure is observed: a body edit keeps the review closed.
+        changed = write.update_node(created["id"], body="Changed after review.", expect_hash=created["new_hash"])
+        after = it.review_status("claude", self.sid, st["through"])
+        self.assertEqual(after["status"], "complete")
+        self.assertNotIn("structure", after)
+        # Dropping the source is reported, still without reopening the conversation's review.
+        write.update_node(created["id"], remove_edges={"derived-from": ref}, expect_hash=changed["new_hash"])
+        broken = it.review_status("claude", self.sid, st["through"])
+        self.assertEqual(broken["status"], "complete")
+        self.assertEqual(broken["structure"], [{"key": spec["key"], "reason": "target no longer cites its source"}])
+        self.assertFalse(it.status("claude", self.sid)["pending"])
 
 
     def test_existing_saved_record_name_is_preserved(self):
@@ -1694,7 +1703,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual((len(recovered["rounds"]), recovered["reviewed_count"]), (2, 1))
         self.assertEqual(it.capture("claude", self.sid, None, "capture-tests")["appended"], 0)
 
-    def test_cited_round_filters_secrets_and_its_tampering_reopens_review(self):
+    def test_cited_round_filters_secrets_and_a_later_hand_edit_does_not_reopen_review(self):
         from osk import distillation as D, graph
         token = "ghp_" + "a" * 36
         rows = claude_round(self.sid, 1)
@@ -1716,9 +1725,12 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(saved["distillation"]["status"], "complete")
         it.acknowledge("claude", self.sid, st["through"], "preserved", "Cited and kept.", [{"key": self.sid}])
         self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
+        # Records are append-only; ACK checked the round, and nothing rechecks it later. A real
+        # correction is registered by its corrector (reopen), which a hand edit skips.
         path = ROOT / cited["path"]
         path.write_bytes(path.read_bytes().replace(b"secret", b"tampered"))
-        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "pending")
+        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
+        self.assertFalse(it.status("claude", self.sid)["pending"])
 
     def test_record_identity_survives_vault_copy(self):
         import shutil

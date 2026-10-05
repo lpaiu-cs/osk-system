@@ -1,4 +1,4 @@
-"""Receipt invalidation must remain reviewable without rewinding capture cursors.
+"""After acknowledgement only structure is observed; only a registered correction reopens.
 
 Run: python _governance/_engine/tests/test_integration_recovery.py
 Every case uses a subprocess mini-vault; no native user transcript is read.
@@ -15,7 +15,7 @@ ENGINE = Path(__file__).resolve().parents[1]
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, distillation as D, growth, integration as it, validate, write
+from osk import core, distillation as D, growth, integration as it, raw, transcripts, validate, write
 validate.make_mini_vault(core.ROOT)
 sid = 'receipt-recovery'
 native = core.ROOT / 'native.jsonl'
@@ -52,48 +52,46 @@ def setup(ack=True):
     if ack:
         assert not preserved(first['through'])['pending']
     return first, created
+def stored(n):
+    # The full-capture engine (<= v4.1) kept each round in `_raw/`, tracked by its hash.
+    capture(n)
+    path = it.state_path('claude', sid)
+    s = it._load(path, 'claude', sid)
+    parsed = transcripts.read(str(native), 'claude', sid)
+    shown = parsed['dialogue_v1']
+    record = core.ROOT / '00_Scope/W1/_raw/.records' / (s['record'] + '.txt')
+    blocks = [raw._block(i, raw.escape_numeric_h2(shown[r['id']]['user']),
+                         raw.escape_numeric_h2(shown[r['id']]['agent']), dialogue_id=r['id'])
+              for i, r in enumerate(parsed['rounds'], 1)]
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_bytes('\\n'.join(blocks).encode('utf-8'))
+    rel = record.relative_to(core.ROOT).as_posix()
+    s['rounds'] = [{'id': r['id'], 'ref': f'{rel}#{i}', 'completion': r['completion'],
+                    'hash': core.sha256_bytes(block.rstrip('\\n').encode('utf-8'))}
+                   for i, (r, block) in enumerate(zip(parsed['rounds'], blocks), 1)]
+    through = it._snapshot(s)
+    s['snapshots'] = {through: {'count': len(s['rounds']), 'prompt_count': s['prompt_count']}}
+    it._save(path, s)
+    return record, through, [r['ref'] for r in s['rounds']]
+def correct(record, old, new):
+    data = record.read_bytes()  # bytes: a text write would also change every line ending
+    assert old.encode() in data, old
+    record.write_bytes(data.replace(old.encode(), new.encode()))
 def remove_link(created):
     result = write.update_node('W1', old_text='- [[' + created['name'] + ']]', new_text='')
     assert result['ok'], result
-def repair_link(created):
-    result = D.resume(proof_key, name=created['id'])
-    assert result['distillation']['status'] == 'complete', result
-def own_job(result):
-    return next(j for j in result['jobs'] if j['conversation_id'] == sid)
+def own_jobs(result):
+    return [j for j in result['jobs'] if j['conversation_id'] == sid]
+def refused(call):
+    try:
+        call()
+    except ValueError:
+        return
+    raise AssertionError('accepted')
 """
 
 
 class IntegrationRecoveryTests(unittest.TestCase):
-    def test_repair_budget_requires_each_chunk_and_rechecks_completed_chunks(self):
-        self.check_case("""
-            from osk import scope_memory
-            capture(8)
-            parent = it.prompt('claude', sid)
-            scope_memory.replace(sid, 'retained summary', space='00_Scope/W1')
-            it.acknowledge('claude', sid, parent['through'], 'summary', 'Initial review.',
-                           [{'text': 'retained summary'}])
-            scope_memory.replace(sid, 'changed summary', expect_hash=scope_memory.read(sid)['hash'])
-            assert it.review_status('claude', sid, parent['through'])['status'] == 'pending'
-            refs, tokens = [], []
-            while it.status('claude', sid)['pending']:
-                job = it.prompt('claude', sid, max_rounds=3)
-                assert 1 <= len(job['pending_refs']) <= 3, job
-                assert not set(job['pending_refs']).intersection(refs)
-                refs.extend(job['pending_refs'])
-                tokens.append(job['through'])
-                it.acknowledge('claude', sid, job['through'], 'summary', 'Reviewed this chunk.',
-                               [{'text': 'changed summary'}])
-                if len(refs) < 8:
-                    assert it.review_status('claude', sid, parent['through'])['status'] == 'pending'
-            assert len(tokens) == 3 and set(refs) == set(parent['pending_refs'])
-            assert it.review_status('claude', sid, parent['through'])['status'] == 'complete'
-            scope_memory.replace(sid, 'another summary', expect_hash=scope_memory.read(sid)['hash'])
-            state = it.status('claude', sid)
-            assert set(state['repair_pending']) == set(tokens), state
-            assert it.review_status('claude', sid, parent['through'])['status'] == 'pending'
-            assert state['reviewed_rounds'] == 8
-        """)
-
     def check_case(self, source):
         with tempfile.TemporaryDirectory(prefix="osk-integration-recovery-") as directory:
             env = dict(os.environ, OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),
@@ -105,131 +103,143 @@ class IntegrationRecoveryTests(unittest.TestCase):
                 creationflags=0x08000000 if os.name == "nt" else 0)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_unchanged_transcript_queues_repair_and_same_through_reack(self):
+    def test_edits_after_ack_keep_the_review_closed(self):
+        # 2026-10-05: a third of an explicit batch re-reviewed closed batches after such edits.
         self.check_case("""
+            from osk import scope_memory
             first, created = setup()
-            original = native.read_bytes()
             remove_link(created)
-            failed = it.review_status('claude', sid, first['through'])
-            assert failed['status'] == 'pending', failed
+            changed = write.update_node(created['id'], body='A revised observation.',
+                                        expect_hash=created['new_hash'])
+            assert changed['ok'], changed
+            second = capture(2)
+            scope_memory.replace(sid, 'retained summary', space='00_Scope/W1')
+            it.acknowledge('claude', sid, second['through'], 'summary', 'Kept as shared memory.',
+                           [{'text': 'retained summary'}])
+            scope_memory.replace(sid, 'pruned summary', expect_hash=scope_memory.read(sid)['hash'])
+            for through in (first['through'], second['through']):
+                done = it.review_status('claude', sid, through)
+                assert done['status'] == 'complete' and 'structure' not in done, done
             state = it.status('claude', sid)
-            assert state['pending'], state
-            assert state['reviewed_rounds'] == 1, state
-            assert first['through'] in state['repair_pending'], state
-            assert state['pending_refs'] == first['pending_refs'], state
-            job = own_job(it.list_pending())
-            assert job['through'] == first['through'], job
-            assert '복구 대기' in job['prompt'], job
-            caught = it.catchup()
-            assert own_job(caught)['through'] == first['through'], caught
-            assert caught['captures'][0]['appended'] == 0, caught
-            assert native.read_bytes() == original
-            repair_link(created)
-            assert it.status('claude', sid)['pending']  # Repair needs an explicit replacement ACK.
-            done = preserved(first['through'])
-            assert not done['pending'] and done['reviewed_rounds'] == 1, done
-            assert it.review_status('claude', sid, first['through'])['status'] == 'complete'
+            assert not state['pending'] and state['repair_pending'] == {}, state
+            assert not own_jobs(it.list_pending())
         """)
 
-    def test_repair_survives_new_tail_and_defer_without_rewinding(self):
+    def test_structural_break_is_reported_not_reopened(self):
+        self.check_case("""
+            first, created = setup()
+            dropped = write.update_node(created['id'], remove_edges={'derived-from': first['cited']},
+                                        expect_hash=created['new_hash'])
+            assert dropped['ok'], dropped
+            done = it.review_status('claude', sid, first['through'])
+            assert done['status'] == 'complete', done
+            assert done['structure'] == [{'key': proof_key, 'reason': 'target no longer cites its source'}], done
+            (core.ROOT / created['path']).unlink()
+            gone = it.review_status('claude', sid, first['through'])
+            assert gone['structure'][0]['reason'] == 'target missing', gone
+            path = it.state_path('claude', sid)
+            before = path.read_bytes()
+            with core.mutation_lock():
+                assert it._review_status_locked('claude', sid, first['through'])['status'] == 'complete'
+            assert path.read_bytes() == before  # A status read never writes the cursor.
+            assert not it.status('claude', sid)['pending']
+        """)
+
+    def test_pre_42_recheck_repairs_close_and_correction_repairs_stay(self):
         self.check_case("""
             first, created = setup()
             remove_link(created)
-            assert it.review_status('claude', sid, first['through'])['status'] == 'pending'
+            second = capture(2)
+            it.acknowledge('claude', sid, second['through'], 'no_value', 'A one-off check.')
+            path = it.state_path('claude', sid)
+            state = json.loads(path.read_text(encoding='utf-8'))
+            # The earlier recheck reopened the first review after its hub link moved; a
+            # correction (registered with its own reason) reopened the second.
+            state['repair_pending'] = {
+                first['through']: {'reason': 'preserved target/source/hub receipt changed',
+                                   'refs': first['pending_refs'], 'since': '2026-10-01T00:00:00+09:00',
+                                   'review_count': 1},
+                second['through']: {'reason': 'User-authorized correction changed a stored round',
+                                    'refs': second['pending_refs'], 'since': '2026-09-20T00:00:00+09:00',
+                                    'review_count': 2}}
+            path.write_text(json.dumps(state), encoding='utf-8')
+            view = it.tick('claude', sid)
+            assert list(view['repair_pending']) == [second['through']] and view['pending'], view
+            assert it.review_status('claude', sid, first['through'])['status'] == 'complete'
+            assert it.prompt('claude', sid)['through'] == second['through']
+        """)
+
+    def test_correction_reopens_the_reviews_that_read_the_round(self):
+        self.check_case("""
+            record, through, refs = stored(2)
+            done = it.acknowledge('claude', sid, through, 'no_value', 'Both stored rounds were one-off checks.')
+            assert not done['pending'] and done['reviewed_rounds'] == 2, done
+            for bad in ([], ['native:claude:' + sid + ':user-1'], [refs[0][:-1] + '9']):
+                refused(lambda: it.reopen('claude', sid, bad, 'A stored round was corrected.'))
+            refused(lambda: it.reopen('claude', sid, [refs[0]], ' '))
+            # Records are append-only. Removing a secret found later is the exception, and the
+            # corrector registers it; nothing would notice the corrected bytes on its own.
+            correct(record, 'question 1', 'question one')
+            assert not it.status('claude', sid)['pending']
+            view = it.reopen('claude', sid, [refs[0]], 'A secret was removed from round 1.')
+            assert view['pending'] and view['reviewed_rounds'] == 2, view  # the cursor is not rewound
+            assert view['repair_pending'][through]['reason'] == 'A secret was removed from round 1.', view
+            assert set(view['pending_refs']) == set(refs), view
+            job = own_jobs(it.list_pending())[0]
+            assert job['through'] == through and '복구 대기' in job['prompt'], job
+            again = it.acknowledge('claude', sid, through, 'no_value', 'The corrected round is still a one-off check.')
+            assert not again['pending'] and again['repair_pending'] == {}, again
+            assert it.review_status('claude', sid, through)['status'] == 'complete'
+        """)
+
+    def test_reopened_review_is_split_into_bounded_parts(self):
+        self.check_case("""
+            record, through, refs = stored(8)
+            it.acknowledge('claude', sid, through, 'no_value', 'Initial review.')
+            correct(record, 'question 1', 'question one')
+            correct(record, 'question 8', 'question eight')
+            it.reopen('claude', sid, [refs[0], refs[7]], 'Two stored rounds were corrected.')
+            seen, tokens = [], []
+            while it.status('claude', sid)['pending']:
+                job = it.prompt('claude', sid, max_rounds=3)
+                assert 1 <= len(job['pending_refs']) <= 3, job
+                assert not set(job['pending_refs']).intersection(seen)
+                seen.extend(job['pending_refs'])
+                tokens.append(job['through'])
+                it.acknowledge('claude', sid, job['through'], 'no_value', 'Reviewed this corrected part.')
+                if len(seen) < 8:
+                    assert it.review_status('claude', sid, through)['status'] == 'pending'
+            assert len(tokens) == 3 and set(seen) == set(refs)
+            assert it.review_status('claude', sid, through)['status'] == 'complete'
+            assert it.status('claude', sid)['reviewed_rounds'] == 8
+        """)
+
+    def test_reopened_review_survives_new_tail_and_defer_without_rewinding(self):
+        self.check_case("""
+            record, through, refs = stored(1)
+            it.acknowledge('claude', sid, through, 'no_value', 'Initial stored review.')
+            correct(record, 'question 1', 'question one')
+            it.reopen('claude', sid, refs, 'Round 1 was corrected.')
             repair_key = it.prompt('claude', sid)['key']
             newer = capture(2)
             done = it.acknowledge('claude', sid, newer['through'], 'no_value',
                                   'The later round is a one-off check.')
             assert done['reviewed_rounds'] == 2, done
-            assert done['pending'] and first['through'] in done['repair_pending'], done
-            assert done['last_review']['refs'] == newer['pending_refs'][1:], done
-            assert it.prompt('claude', sid)['through'] == first['through']
-            deferred = it.acknowledge('claude', sid, first['through'], 'deferred',
-                                      'Still checking the retained source.')
+            assert done['pending'] and through in done['repair_pending'], done
+            assert it.prompt('claude', sid)['through'] == through
+            deferred = it.acknowledge('claude', sid, through, 'deferred', 'Still checking the corrected round.')
             assert deferred['pending'] and deferred['reviewed_rounds'] == 2, deferred
             assert it.prompt('claude', sid)['key'] == repair_key
-            repair_link(created)
-            repaired = preserved(first['through'])
+            repaired = it.acknowledge('claude', sid, through, 'no_value', 'The corrected round is still a one-off check.')
             assert not repaired['pending'] and repaired['reviewed_rounds'] == 2, repaired
             assert it.review_status('claude', sid, newer['through'])['status'] == 'complete'
-            assert it.review_status('claude', sid, first['through'])['status'] == 'complete'
         """)
 
-    def test_native_resume_discovers_latest_invalid_receipt_and_prompts_now(self):
-        self.check_case("""
-            first, created = setup()
-            remove_link(created)
-            resumed = it.hook_capture({'harness':'claude','session_id':sid,
-                                       'transcript_path':str(native)}, sid)
-            assert resumed['pending'] and resumed['reviewed_rounds'] == 1, resumed
-            assert first['through'] in resumed['repair_pending'], resumed
-            assert it.tick('claude', sid)['due']
-            prompt = it.prompt('claude', sid)
-            assert prompt['through'] == first['through'], prompt
-            assert prompt['key'] == it.prompt('claude', sid)['key']
-            assert any(p['key'] == proof_key for p in prompt['previous_distillations']), prompt
-            repair_link(created)
-            assert not preserved(prompt['through'])['pending']
-        """)
-
-    def test_explicit_old_final_failure_persists_after_newer_ack(self):
-        self.check_case("""
-            first, created = setup()
-            newer = capture(2)
-            it.acknowledge('claude', sid, newer['through'], 'no_value', 'Transient later check.')
-            assert it.review_status('claude', sid, first['through'])['status'] == 'complete'
-            remove_link(created)
-            assert not it.status('claude', sid)['pending']  # No all-history integrity scan.
-            path = it.state_path('claude', sid)
-            before = path.read_bytes()
-            with core.mutation_lock():
-                failed = it._review_status_locked('claude', sid, first['through'])
-            assert failed['status'] == 'pending', failed
-            assert path.read_bytes() == before  # Mutation-lock caller never takes local lock/writes.
-            assert it.review_status('claude', sid, first['through'])['status'] == 'pending'
-            state = it.status('claude', sid)
-            assert state['pending'] and state['reviewed_rounds'] == 2, state
-            assert own_job(it.catchup())['through'] == first['through']
-        """)
-
-    def test_changed_target_requires_replacement_proof_for_same_snapshot(self):
-        self.check_case("""
-            first, created = setup()
-            old_key = first['review_key']
-            changed = write.update_node(created['id'], body='Concurrent revised observation.',
-                                        expect_hash=created['new_hash'])
-            assert changed['ok'], changed
-            assert it.review_status('claude', sid, first['through'])['status'] == 'pending'
-            try:
-                preserved(first['through'])
-                raise AssertionError('stale target proof acknowledged')
-            except ValueError:
-                pass
-            prompt = it.prompt('claude', sid)
-            assert prompt['key'] != old_key, prompt
-            assert prompt['key'] == it.prompt('claude', sid)['key']
-            key = prompt['key'] + ':retained-observation'
-            repaired = D.update_node({'key':key,'sources':[first['cited']],'hub':'W1'},
-                                     name=created['id'], body='Rechecked observation with corrected evidence.',
-                                     expect_hash=changed['new_hash'])
-            assert repaired['distillation']['status'] == 'complete', repaired
-            done = preserved(first['through'], key)
-            assert not done['pending'] and done['reviewed_rounds'] == 1, done
-            state = json.loads(it.state_path('claude', sid).read_text(encoding='utf-8'))
-            assert len(state['reviews']) == 2 and state['reviews'][0]['receipts'][0]['key'] == proof_key
-            assert it.review_status('claude', sid, first['through'])['status'] == 'complete'
-            changed_again = write.update_node(created['id'], body='A later independent correction.',
-                                              expect_hash=repaired['new_hash'])
-            assert changed_again['ok'], changed_again
-            assert it.review_status('claude', sid, first['through'])['status'] == 'pending'
-            assert it.prompt('claude', sid)['key'] != prompt['key']
-        """)
-
-    def test_growth_final_invalidation_is_selected_again_after_newer_ack(self):
+    def test_growth_run_does_not_reopen_after_a_later_edit(self):
         self.check_case("""
             first, created = setup(ack=False)
-            # Worker completes selected A, then another completed round B. Its
-            # last action invalidates A, after both ACKs and before final checks.
+            # Worker completes selected A, then another completed round B. Its last action
+            # unlinks A's node from the hub, after both ACKs and before the final checks.
             worker = '\\n'.join([
                 'import json,sys',
                 'from pathlib import Path',
@@ -250,15 +260,12 @@ class IntegrationRecoveryTests(unittest.TestCase):
                       + '; PROOF=' + repr(proof_key) + '\\n' + worker)
             fork_job = it.prompt('claude', sid, include_organization=False, max_rounds=3)
             result = growth.run([sys.executable, '-B', '-c', worker], limit=3, scope_job=fork_job)
-            assert result['state'] == 'incomplete' and result['scope_selected'] == 1, result
+            assert result['scope_selected'] == 1, result
+            assert all(o['status'] == 'complete' for o in result['scope_outcomes'].values()), result
             state = json.loads(it.state_path('claude', sid).read_text(encoding='utf-8'))
-            assert first['through'] in state.get('repair_pending', {}), state
-            assert state['reviewed_count'] == 2, state
-            # The failed receipt needs no dialogue, so the daily worker takes the repair.
+            assert not state.get('repair_pending') and state['reviewed_count'] == 2, state
             again = growth.run([sys.executable, '-B', '-c', 'import sys; sys.stdin.read()'], limit=3)
-            assert again['scope_selected'] == 1, again
-            selected = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]['scope_jobs']
-            assert selected[0]['through'] == first['through'], selected
+            assert not again.get('scope_selected'), again
         """)
 
 

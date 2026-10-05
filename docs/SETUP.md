@@ -280,6 +280,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `raw migrate` | `_raw/` 구 Markdown 기록의 숨김 `.txt` 이관 계획; `--apply`로 적용 |
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
+| `integration reopen` | 저장 라운드를 정정한 쪽이 그 라운드를 읽은 검토를 다시 연다(`--ref` 반복, `--reason`) |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
@@ -803,7 +804,7 @@ read_cited(ref="native:claude:<대화 ID>:<턴 ID>")
 `previous`를 같은 방식으로 한 턴씩 거슬러 읽고 대화 전체를 읽지 않는다. 쓰기는 없다. 미검토 턴이 없는 대화는 읽지
 않고, 아직 이어지는 대화는 자기 검토 주기에 맡긴다. 스크립트로 한 번 돌린 `codex exec`
 실행은 osk 정기 실행 자신을 포함해 추적하지도 검토하지도 않는다. 구판이 `_raw/`에 저장한 라운드와
-이미 검토한 snapshot의 영수증 복구도 정기 실행이 맡는다. 구판 커서의 저장 라운드는
+정정으로 다시 연 검토도 정기 실행이 맡는다. 구판 커서의 저장 라운드는
 그대로 검토 대기에 남고, 새 턴은 그 뒤에 원본 좌표로 붙는다. 대화가 추적한 턴을 모두
 검토하면 — 그 대화 안에서든 Stop fork나 정기 실행에서든 — 그 대화의 Stop·user 턴 계수는
 0부터 다시 센다.
@@ -844,12 +845,17 @@ MCP `create_node`·`update_node`의 `distill`에 `{key,sources,hub}`를 주면 �
 `deferred`는 보류 사유와 다음 조치다. 요약·배울 것 없음·보류를 노드 성장으로 세지 않는다.
 다른 대화가 같은 scope를 저장해도 이 검토 결과를 대신할 수 없다.
 
+ACK 뒤에는 대상 노드·최상위 군집·출처 링크만 본다. 본문 편집·허브 이동·scope 기억 정리는
+닫힌 검토를 다시 열지 않는다. 구조 신호가 깨지면 `review_status`의 `structure`와 `growth status`에
+보고만 한다. 저장 기록을 정정했다면 정정한 쪽이 `integration reopen --ref <라운드> --reason <사유>`로
+그 라운드를 읽은 검토를 다시 연다. 이전 릴리스의 상시 재확인이 남긴 복구 대기는 그 대화를 처음 볼 때 닫힌다.
+
 ### Scope에서 Domain으로 정기 재검토
 
 `growth plan`과 `growth prompt`는 쓰기 없는 미리보기다. `growth run`은 알려진 대화의
 미포착 꼬리를 따라잡고, 검토할 snapshot과 비교할 Scope 노드 집합·해시를 고정한 뒤
 제한된 외부 에이전트 실행에 그 입력을 준다. Scope 통합으로는 검토 시점 전에 끝난 대화의
-미검토 턴(원본 전사에서 그 턴만 읽는다), 구판이 저장한 라운드, 영수증 복구를 맡는다.
+미검토 턴(원본 전사에서 그 턴만 읽는다), 구판이 저장한 라운드, 정정으로 다시 연 검토를 맡는다.
 짧게 끝난 대화도 여기서 증류 기회를 갖는다. 아직 이어지는 대화의 턴은 그 대화와 Stop
 fork에 남긴다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 Domain 후보가 된다.
 기본 `--limit 3`은 Scope 통합·Domain 비교·참조 정돈·14일 초과 퇴출을 **합쳐 최대 3건**이다.

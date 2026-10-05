@@ -508,21 +508,27 @@ def tick(harness: str, conversation_id: str) -> dict:
                 "hard": n > 0 and n % HARD == 0, "unreviewed_prompts": n}
 
 
-def _verify_raw(rounds: list) -> None:
-    """Stored rounds must still match their saved hashes. An original-turn ref has no
-    vault copy to check — the reviewer judged the turn from the conversation itself."""
-    raw_files = {}
-    for r in rounds:
-        if raw.is_native(r["ref"]):
-            continue
-        name, index = raw.parse_ref(r["ref"])
+def _stored_hashes(refs) -> dict:
+    """Each stored round's hash as it is in the vault now (None if the round is gone)."""
+    raw_files, out = {}, {}
+    for ref in refs:
+        name, index = raw.parse_ref(ref)
         if name not in raw_files:
             text = raw.read_exact(raw._raw_file(name))
             raw_files[name] = text, raw._round_spans(text)
         text, spans = raw_files[name]
-        if index not in spans or core.sha256_bytes(
-                text[slice(*spans[index])].rstrip("\n").encode("utf-8")) != r["hash"]:
-            raise ValueError("raw snapshot changed; review is not acknowledged")
+        out[ref] = (core.sha256_bytes(text[slice(*spans[index])].rstrip("\n").encode("utf-8"))
+                    if index in spans else None)
+    return out
+
+
+def _verify_raw(rounds: list) -> None:
+    """Stored rounds must still match their saved hashes. An original-turn ref has no
+    vault copy to check — the reviewer judged the turn from the conversation itself."""
+    stored = [r for r in rounds if not raw.is_native(r["ref"])]
+    current = _stored_hashes([r["ref"] for r in stored])
+    if any(current[r["ref"]] != r["hash"] for r in stored):
+        raise ValueError("raw snapshot changed; review is not acknowledged")
 
 
 def _verify_native(s: dict, rounds: list) -> None:
@@ -547,8 +553,6 @@ def acknowledge(harness: str, conversation_id: str, through: str,
     with _locked(harness, conversation_id) as p, core.mutation_lock():
         s = _load(p, harness, conversation_id)
         snap = s["snapshots"].get(through)
-        if _register_repair(s, through, _review_state_locked(s, through)):
-            _save(p, s)
         repair = s.get("repair_pending", {}).get(through)
         if not snap or snap["count"] <= s["reviewed_count"] and not repair:
             raise ValueError("through is not an unreviewed snapshot of this conversation")
@@ -556,7 +560,7 @@ def acknowledge(harness: str, conversation_id: str, through: str,
             r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]}
         _verify_raw([r for r in s["rounds"] if r["ref"] in refs])
         if not repair and outcome != "deferred":
-            # A repair rechecks receipts only; a deferral closes nothing.
+            # A reopened review rereads only its corrected stored rounds; a deferral closes nothing.
             _verify_native(s, [r for r in s["rounds"] if r["ref"] in refs])
         receipts = []
         if outcome == "preserved":
@@ -618,79 +622,84 @@ def _review_state_locked(s: dict, through: str) -> dict:
         return {**result, "reason": repair["reason"], "repair_pending": True}
     if not snap or not last or last.get("outcome") == "deferred" or s["reviewed_count"] < snap["count"]:
         return result
-    try:
-        _verify_raw([r for r in s["rounds"][:snap["count"]]
-                     if not snap.get("repair_refs") or r["ref"] in snap["repair_refs"]])
-        if last["outcome"] == "preserved":
-            from . import distillation
-            for receipt in last["receipts"]:
-                current = distillation._status_locked(receipt["key"])
-                if (current.get("status") != "complete" or current.get("sources") != receipt["sources"]
-                        or any(current.get("target", {}).get(k) != receipt["target"].get(k)
-                               for k in ("id", "path", "hash"))
-                        or any(current.get("hub", {}).get(k) != receipt["hub"].get(k)
-                               for k in ("id", "path"))):
-                    return {**result, "reason": "preserved target/source/hub receipt changed"}
-        elif last["outcome"] == "summary":
-            memory = scope_memory.read(s["session"])
-            for receipt in last["receipts"]:
-                if not all(t["text"] in memory["text"] for t in receipt["targets"]):
-                    return {**result, "reason": "reviewed summary excerpt no longer exists"}
-    except (ValueError, OSError, write.WriteError) as exc:
-        return {**result, "reason": str(exc)}
-    return {**result, "status": "complete", "review": last, "semantic_verified": False}
+    # ACK가 출처·대상·출처 링크·허브를 확인했다. 그 뒤에는 구조 신호만 보고 검토를 다시 열지
+    # 않는다 — 문단 편집·허브 이동·scope 기억 정리는 보존을 무르지 않는다. 출처 라운드는
+    # append-only라 바뀌지 않고, 정정은 정정하는 쪽이 reopen으로 등록한다.
+    out = {**result, "status": "complete", "review": last, "semantic_verified": False}
+    if last["outcome"] == "preserved":
+        from . import distillation
+        idx = raw.graph.Index()
+        broken = [{"key": r["key"], "reason": why} for r in last["receipts"]
+                  if (why := distillation.structure(r, idx))]
+        if broken:
+            out["structure"] = broken
+    return out
 
 
-def _register_repair(s: dict, through: str, result: dict) -> bool:
-    """Keep an observed failed receipt pending until an explicit replacement ACK."""
+def _register_repair(s: dict, through: str, reason: str) -> bool:
+    """Reopen an acknowledged review until an explicit replacement ACK."""
     if s["snapshots"].get(through, {}).get("repair_parts"):
-        changed = False
-        for token in s["snapshots"][through]["repair_parts"]:
-            changed = _register_repair(s, token, _review_state_locked(s, token)) or changed
-        return changed
+        return any([_register_repair(s, token, reason) for token in s["snapshots"][through]["repair_parts"]])
     prior = next((r for r in reversed(s["reviews"])
                   if r["through"] == through and r["outcome"] != "deferred"), None)
-    if (result["status"] == "complete" or not result.get("reason") or not prior
-            or through in s.get("repair_pending", {})):
+    if not prior or through in s.get("repair_pending", {}):
         return False
     s.setdefault("repair_pending", {})[through] = {
-        "reason": result["reason"], "refs": prior["refs"], "since": core.now_iso(),
+        "reason": reason, "refs": prior["refs"], "since": core.now_iso(),
         "review_count": len(s["reviews"])}
     return True
 
 
-def _current_view(s: dict, path: Path) -> dict:
-    # Only the latest completed receipt is discovered opportunistically. Older
-    # failed final checks are explicitly registered by review_status; there is
-    # no unbounded historical integrity scan on every prompt or capture.
-    with core.mutation_lock():
-        latest = next((r for r in reversed(s["reviews"]) if r["outcome"] != "deferred"), None)
-        if latest:
-            token = latest["through"]
-            # A partition is still one original obligation. Check its sibling
-            # receipts, rather than only the last acknowledged chunk.
-            while parent := next((t for t, snap in s["snapshots"].items()
-                                  if token in snap.get("repair_parts", [])), None):
-                token = parent
-            if _register_repair(s, token, _review_state_locked(s, token)):
-                _save(path, s)
+def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
+    """Stored rounds are append-only (헌법 4조 4항). A correction is the exception, and the
+    corrector registers it here: the corrected rounds take their current bytes and every
+    acknowledged review that read them is reviewed again. No later check looks for it."""
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("reopen requires the correction's reason")
+    with _locked(harness, conversation_id) as p, core.mutation_lock():
+        s = _load(p, harness, conversation_id)
+        wanted = {raw.canonical_ref(ref) for ref in refs or []}
+        rounds = [r for r in s["rounds"] if r["ref"] in wanted]
+        if not wanted or len(rounds) != len(wanted) or any(raw.is_native(r["ref"]) for r in rounds):
+            raise ValueError("reopen takes stored rounds this conversation tracks; an original turn is not corrected here")
+        current = _stored_hashes([r["ref"] for r in rounds])
+        if None in current.values():
+            raise ValueError("a corrected round is missing from its record")
+        tokens = {v["through"] for v in s["reviews"] if v["outcome"] != "deferred" and wanted & set(v["refs"])}
+        if not tokens:
+            raise ValueError("no acknowledged review read these rounds")
+        for r in rounds:
+            r["hash"] = current[r["ref"]]
+        for token in sorted(tokens):
+            _register_repair(s, token, reason.strip())
+        _save(p, s)
         return _view(s)
 
 
+# 4.2 이전에는 ACK 뒤 영수증과 요약 발췌를 상시 다시 확인하고, 바뀌면 검토를 다시 열었다.
+# 그 사유로 열린 복구 대기만 처음 볼 때 닫는다. 출처 정정으로 연 것(사유가 다르다)은 남긴다.
+_RECHECK_REASONS = {"preserved target/source/hub receipt changed",
+                    "reviewed summary excerpt no longer exists"}
+
+
+def _current_view(s: dict, path: Path) -> dict:
+    old = [token for token, repair in s.get("repair_pending", {}).items()
+           if repair.get("reason") in _RECHECK_REASONS]
+    for token in old:
+        del s["repair_pending"][token]
+    if old:
+        _save(path, s)
+    return _view(s)
+
+
 def _review_status_locked(harness: str, conversation_id: str, through: str) -> dict:
-    # Pure while the caller owns mutation lock: never acquire the local lock or
-    # write state here. Public review_status persists failures in local→mutation order.
+    # Pure while the caller owns mutation lock: never acquire the local lock or write state.
     return _review_state_locked(_load(state_path(harness, conversation_id), harness, conversation_id), through)
 
 
 def review_status(harness: str, conversation_id: str, through: str) -> dict:
     with _locked(harness, conversation_id) as p, core.mutation_lock():
-        s = _load(p, harness, conversation_id)
-        result = _review_state_locked(s, through)
-        if _register_repair(s, through, result):
-            _save(p, s)
-            result["repair_pending"] = True
-        return result
+        return _review_state_locked(_load(p, harness, conversation_id), through)
 
 
 def _ended_source(s: dict) -> str | None:
@@ -900,11 +909,11 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         text += ("fork 부모의 선언된 history 범위에 미완료 꼬리가 있다. 자식의 종료로 부모 턴을 "
                  "완료하거나 ACK하지 않는다. 부모 원본·검토 대기를 별도로 확인한다.\n")
     if st.get("repair"):
-        text += ("이 snapshot은 이미 검토했지만 저장 영수증의 최종 확인이 실패해 복구 대기로 남았다. "
-                 "새 대화의 완료 커서는 되감지 않았다. 아래 기존 출처와 영수증을 다시 확인하고 "
-                 "같은 through로 명시적으로 재ACK하라. 허브 연결만 빠졌으면 기존 증류를 resume한다. "
-                 "본문 정정이 필요하면 현재 노드를 재검토하고 별도 증류 key로 새 증거를 만든다. "
-                 f"보류 사유: {st['repair']['reason']}\n")
+        text += ("이 snapshot은 이미 검토했지만, 그 뒤 저장 라운드가 정정되어 다시 열렸다(복구 대기). "
+                 "새 대화의 완료 커서는 되감지 않았다. 정정된 라운드를 다시 읽고, 이전 증류가 정정 전 "
+                 "내용에 기댔다면 현재 노드를 재검토해 별도 증류 key로 새 증거를 만든다. "
+                 "같은 through로 명시적으로 재ACK하라. "
+                 f"정정 사유: {st['repair']['reason']}\n")
     from . import organization
     jobs = []
     try:
@@ -950,9 +959,9 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     text += "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. "
     turns = len(st["pending_refs"]) - len(stored)
     if turns and offline and st.get("repair"):
-        # A receipt repair needs no dialogue.
-        text += (f"원본 턴 {turns}개의 원문은 읽지 않는다 — 기존 출처·허브 영수증만 다시 확인하고 "
-                 "대화 내용을 새로 판단하지 않는다.\n")
+        # Only stored rounds are corrected; the original turns in the range were not.
+        text += (f"원본 턴 {turns}개는 정정되지 않았으니 원문을 다시 읽지 않는다 — 정정된 저장 "
+                 "라운드만 새로 판단한다.\n")
     elif turns and offline:
         # The conversation ended before its own review: read only these turns from this
         # device's transcript, earlier context only on demand (Mechanism §9-4 3항). MCP

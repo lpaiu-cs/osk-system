@@ -242,7 +242,7 @@ class GrowthStatusTests(unittest.TestCase):
             assert before==files(),'CLI changed files or mtimes'
         ''')
 
-    def test_saved_body_and_current_placement_are_independent(self):
+    def test_preservation_reports_structure_not_placement(self):
         self.check_case('''
             from osk import distillation
             source=write.create_node('Source','source','Reusable source claim.','test',space='00_Scope/W1')
@@ -252,17 +252,23 @@ class GrowthStatusTests(unittest.TestCase):
             assert receipt['status']=='complete',result
             cursor('a',1,1,reviews=[{'through':'frozen','at':AT,'outcome':'preserved','receipts':[receipt,receipt]}])
             good=report()['preservation']
-            assert good['receipt_versions']==1 and good['placement']=={'complete':1},good
+            assert good['receipt_versions']==1 and good['structure']=={'intact':1},good
+            # A hub that stops linking the target is organization's to fix, not a lost preservation.
             hub=core.ROOT/'00_Scope/W1/W1.md'
             before=hub.read_text(encoding='utf-8')
             after=before.replace('[[Retained]]','').replace('[['+result['id']+']]','')
             assert before!=after,before
             hub.write_text(after,encoding='utf-8')
-            partial=report()
-            assert partial['ok'],partial
-            proof=partial['preservation']
-            assert proof['body_and_sources']=={'complete':1} and proof['placement']=={'pending':1},proof
-            assert partial['reviews']['outcomes']=={'preserved':1},partial
+            unlinked=report()
+            assert unlinked['ok'] and unlinked['preservation']['structure']=={'intact':1},unlinked
+            hub.write_text(before,encoding='utf-8')
+            dropped=write.update_node(result['id'],remove_edges={'derived-from':source['id']},expect_hash=result['new_hash'])
+            assert dropped['ok'],dropped
+            broken=report()
+            proof=broken['preservation']
+            assert proof['structure']=={'broken':1},proof
+            assert proof['items'][0]['structure']=='target no longer cites its source',proof
+            assert broken['reviews']['outcomes']=={'preserved':1},broken
         ''')
 
     def test_corrupt_state_and_ledger_are_unavailable_not_zero(self):
