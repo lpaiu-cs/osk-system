@@ -437,6 +437,44 @@ def _child():
                                   new_text="third fact, rewritten")
                 self.assertEqual(D.status(self.key)["status"], "pending")
 
+            def test_distilled_heading_is_a_unit_of_the_receipt(self):
+                # 결론이 제목에만 있으면 문단만 재는 영수증은 그 제목을 지워도 보존으로 남았다(#138 리뷰 P2).
+                out = D.create_node(self.spec, **dict(
+                    self.args, body="## Retry only idempotent requests\n\nVerified on Linux."))
+                self.assertEqual(out["distillation"]["status"], "complete")
+                self.assertEqual(len(out["distillation"]["target"]["paragraphs"]), 2)
+                write.update_node(out["id"], old_text="## Retry only idempotent requests",
+                                  new_text="### Retry only idempotent requests")
+                self.assertEqual(D.status(self.key)["status"], "complete")  # 단계만 바꿨다
+                # 이 수정 전에 만든 영수증은 문단만 결속했고, 그대로 맞는다
+                earlier = dict(out["distillation"], target=dict(
+                    out["distillation"]["target"], paragraphs=[core.sha256_bytes(b"Verified on Linux.")]))
+                self.assertEqual(D.verify_receipt(earlier)["status"], "complete")
+                write.update_node(out["id"], old_text="### Retry only idempotent requests", new_text="")
+                self.assertEqual(D.status(self.key)["status"], "pending")
+                self.assertEqual(D.verify_receipt(out["distillation"])["status"], "pending")
+
+            def test_journal_saved_before_heading_units_replays_its_binding(self):
+                # 업그레이드 전에 저장하고 쓰기 전에 끊긴 저널은 문단만 결속했다(#141 리뷰 P2).
+                atomic = write._atomic_write
+                target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
+                def crash(path, data):
+                    if path == target:
+                        raise Crash()
+                    return atomic(path, data)
+                args = dict(self.args, body="## Retry only idempotent requests\n\nVerified on Linux.")
+                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                    with self.assertRaises(Crash):
+                        D.create_node(self.spec, **args)
+                job = D._load(self.key)
+                self.assertFalse(target.exists())
+                job["target"]["paragraphs"] = [core.sha256_bytes(b"Verified on Linux.")]  # the earlier engine's
+                D._save(job)
+                again = D.create_node(self.spec, **args)
+                self.assertEqual(again["distillation"]["status"], "complete")
+                self.assertEqual(again["id"], job["target"]["id"])
+                self.assertEqual(again["distillation"]["target"]["paragraphs"], job["target"]["paragraphs"])
+
             def test_legacy_whole_file_receipt_keeps_its_binding(self):
                 out = self.create()
                 legacy = dict(out["distillation"])

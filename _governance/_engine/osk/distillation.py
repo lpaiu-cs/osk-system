@@ -121,19 +121,25 @@ def _check_sources(job: dict, idx) -> None:
 
 _ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d+[.)])\s")
 _HEADING = re.compile(r"^ {0,3}#{1,6}(?:\s|$)")
+_HEADING_MARKS = re.compile(r"^ {0,3}#{1,6}(?:\s+|$)|\s+#+\s*$")   # 여는 표식과 닫는 `#`열
 
 
-def _segments(body: str) -> list[str]:
-    """보존 확인의 단위 해시 — 빈 줄로 나뉜 문단이고, 목록은 항목 하나씩이다. 제목 줄은
-    단위가 아니다. 항목을 하나씩 재는 것은 목록에 한 줄 덧붙인 증류가 같은 목록의 다른
-    항목이 고쳐질 때마다 깨지지 않게 하려는 것이다."""
+def _segments(body: str, headings: bool = True) -> list[str]:
+    """보존 확인의 단위 해시 — 빈 줄로 나뉜 문단이고, 목록은 항목 하나씩, 제목은 줄 하나씩이다.
+    항목을 하나씩 재는 것은 목록에 한 줄 덧붙인 증류가 같은 목록의 다른 항목이 고쳐질 때마다
+    깨지지 않게 하려는 것이다. 제목도 단위다 — 증류한 결론이 제목에만 있으면 문단만 재는
+    영수증은 그 제목이 지워져도 보존으로 남는다(#138 리뷰 P2). 제목은 표식(`#`)을 떼고 재어
+    단계만 바꾼 것은 잃은 것으로 보지 않는다."""
     out, cur = [], []
     for block in re.split(r"\n[ \t]*\n", body):
         for line in block.splitlines():
             if _HEADING.match(line) or (_ITEM.match(line) and cur):
                 out.append(cur)
                 cur = []
-            if not _HEADING.match(line):
+            if _HEADING.match(line):
+                if headings:
+                    out.append([_HEADING_MARKS.sub("", line)])
+            else:
                 cur.append(line)
         out.append(cur)
         cur = []
@@ -141,10 +147,10 @@ def _segments(body: str) -> list[str]:
     return [sha256_bytes(t.encode()) for t in texts if t]
 
 
-def _added_segments(old_body: str, new_body: str) -> list[str]:
+def _added_segments(old_body: str, new_body: str, headings: bool = True) -> list[str]:
     """이 쓰기가 더하거나 바꾼 단위 — 영수증이 결속하는 것은 이것뿐이다."""
-    before = set(_segments(old_body))
-    return sorted({s for s in _segments(new_body) if s not in before})
+    before = set(_segments(old_body, headings))
+    return sorted({s for s in _segments(new_body, headings) if s not in before})
 
 
 def _retained_target(target: dict, idx) -> Path:
@@ -448,7 +454,11 @@ def _execute(operation: str, distill: dict, request: dict, *,
             planned = {"name": path.stem, "id": n.id, "path": posix_rel(path, ROOT),
                        "before_hash": sha256_file(path) if path.exists() else None,
                        "hash": sha256_bytes(data)}
-            added = _added_segments(contract.parse(path).body if path.exists() else "", n.body)
+            old_body = contract.parse(path).body if path.exists() else ""
+            added = _added_segments(old_body, n.body)
+            if job and job["target"].get("paragraphs") == _added_segments(old_body, n.body, headings=False):
+                # 제목이 단위가 되기 전에 저장한 미완료 저널은 그때 예약한 결속으로 재생한다(#141 리뷰).
+                added = job["target"]["paragraphs"]
             # 더한 단위가 없으면(삭제만 한 쓰기) 파일 전체에 결속한다. 이 판 이전에 시작한
             # 작업은 그 작업의 형식(파일 전체)을 그대로 잇는다.
             if added and (job is None or "paragraphs" in job["target"]):
