@@ -191,8 +191,12 @@ def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None) ->
             "visible_events": len(entries), "selected_events": len(selected),
             "clipped_events": clipped, "omitted_events": dict(omitted),
             "query": query,
-            "reading_note": "Selection of user/assistant text, not an exhaustive read or verified conclusion. "
+            # 2026-10-06 사용자 결정 — 원래 세션의 보고를 다시 감사하지 않는다. 처음 문안("a reference
+            # is not a verified result. Unresolved evidence remains deferred.")은 지어내지 말라는
+            # 뜻이었으나 도구 참조를 미해결 근거로 읽혀 보류를 불렀다.
+            "reading_note": "Selection of user/assistant text, not an exhaustive read. "
                             "Use a specific query for supporting or contradicting evidence; do not sweep the record or the conversation. "
                             "A call is not its result: query the displayed call ID to find related output. "
-                            "Dialogue keeps tool payloads as native evidence references; a reference is not a verified result. "
-                            "Unresolved evidence remains deferred."}
+                            "Tool payloads stay as native references. The session acted in good faith: what its "
+                            "dialogue states about a result is its report, so use it as stated and do not invent "
+                            "what it does not state."}
