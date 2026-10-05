@@ -280,7 +280,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `raw migrate` | `_raw/` 구 Markdown 기록의 숨김 `.txt` 이관 계획; `--apply`로 적용 |
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
-| `integration reopen` | 저장 라운드를 정정한 쪽이 그 라운드를 읽은 검토를 다시 연다(`--ref` 반복, `--reason`) |
+| `integration reopen` | 저장·인용 라운드를 정정한 쪽이 그 라운드를 읽은 검토를 다시 연다(`--ref` 반복, `--reason`) |
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
@@ -849,8 +849,10 @@ MCP `create_node`·`update_node`의 `distill`에 `{key,sources,hub}`를 주면 �
 
 ACK 뒤에는 대상 노드·최상위 군집·출처 링크만 본다. 본문 편집·허브 이동·scope 기억 정리는
 닫힌 검토를 다시 열지 않는다. 구조 신호가 깨지면 `review_status`의 `structure`와 `growth status`에
-보고만 한다. 저장 기록을 정정했다면 정정한 쪽이 `integration reopen --ref <라운드> --reason <사유>`로
-그 라운드를 읽은 검토를 다시 연다. 이전 릴리스의 상시 재확인이 남긴 복구 대기는 그 대화를 처음 볼 때 닫힌다.
+보고만 한다. 저장 기록이나 인용 기록을 정정했다면 정정한 쪽이 `integration reopen --ref <라운드> --reason <사유>`로
+그 라운드를 읽은 검토를 다시 연다 — 대화가 추적한 라운드든, 그 라운드를 출처로 쓴 보존 영수증이든 같다. 구판
+커서의 좌표 표기도 받는다. 다시 연 검토가 닫히기 전에 또 정정하면 새 토큰으로 옮겨, 앞선 판을 읽은 ACK는
+그 검토를 닫지 못한다. 이전 릴리스의 상시 재확인이 남긴 복구 대기는 그 대화를 처음 볼 때 닫힌다.
 
 ### Scope에서 Domain으로 정기 재검토
 

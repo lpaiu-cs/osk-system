@@ -326,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
         q = ins.add_parser(name)
         q.add_argument("--limit", type=int, default=20)
     for name in ("capture", "status", "prompt", "review", "reopen"):
-        q = ins.add_parser(name, help="저장 라운드를 정정한 쪽이 그 라운드를 읽은 검토를 다시 연다"
+        q = ins.add_parser(name, help="저장·인용 라운드를 정정한 쪽이 그 라운드를 읽은 검토를 다시 연다"
                            if name == "reopen" else None)
         q.add_argument("--harness", choices=adapters.NAMES, required=True)
         q.add_argument("--conversation", required=True, help="실제 하네스 대화 ID")
@@ -335,7 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
             q.add_argument("--session", required=True, help="고정 scope 라우팅 키")
             q.add_argument("--space", default=None)
         if name == "reopen":
-            q.add_argument("--ref", action="append", required=True, help="정정한 저장 라운드 좌표(반복 가능)")
+            q.add_argument("--ref", action="append", required=True, help="정정한 저장·인용 라운드 좌표(반복 가능)")
             q.add_argument("--reason", required=True, help="정정 사유")
 
     p = sub.add_parser("organization", help="Scope 참조·허브 정돈의 선택과 검증")

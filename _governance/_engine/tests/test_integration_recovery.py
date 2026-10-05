@@ -192,6 +192,66 @@ class IntegrationRecoveryTests(unittest.TestCase):
             assert it.review_status('claude', sid, through)['status'] == 'complete'
         """)
 
+    def test_correction_reopens_a_review_under_old_cursor_coordinates(self):
+        self.check_case("""
+            record, through, refs = stored(2)
+            path = it.state_path('claude', sid)
+            s = it._load(path, 'claude', sid)
+            # Cursors from before the hidden record layout keep their visible wiki coordinates.
+            old = ['[[' + r['ref'].replace('/.records/', '/').replace('.txt#', '.md#') + ']]' for r in s['rounds']]
+            for r, ref in zip(s['rounds'], old):
+                r['ref'] = ref
+            it._save(path, s)
+            it.acknowledge('claude', sid, through, 'no_value', 'Both stored rounds were one-off checks.')
+            correct(record, 'question 1', 'question one')
+            for ref in (refs[0], old[0]):  # either spelling names the same round
+                view = it.reopen('claude', sid, [ref], 'A secret was removed from round 1.')
+                assert through in view['repair_pending'] and set(view['pending_refs']) == set(old), view
+            done = it.acknowledge('claude', sid, through, 'no_value', 'The corrected round is still a one-off check.')
+            assert not done['pending'], done
+        """)
+
+    def test_correction_of_a_cited_round_reopens_the_review_its_receipt_closed(self):
+        self.check_case("""
+            first, created = setup()
+            cited = core.ROOT / first['cited'].split('#')[0]
+            correct(cited, 'question 1', 'question one')
+            view = it.reopen('claude', sid, [first['cited']], 'A secret was removed from the cited words.')
+            assert first['through'] in view['repair_pending'], view
+            refused(lambda: preserved(first['through']))  # its receipt cited the earlier bytes
+            again = D.update_node({'key': proof_key + '-2', 'sources': [first['cited']], 'hub': 'W1'},
+                                  name=created['id'], body='A completed observation, rechecked against its corrected words.',
+                                  expect_hash=created['new_hash'])
+            assert again['distillation']['status'] == 'complete', again
+            done = preserved(first['through'], proof_key + '-2')
+            assert not done['pending'] and done['repair_pending'] == {}, done
+        """)
+
+    def test_a_newer_correction_is_not_closed_by_an_ack_of_the_earlier_one(self):
+        self.check_case("""
+            record, through, refs = stored(1)
+            it.acknowledge('claude', sid, through, 'no_value', 'Initial stored review.')
+            correct(record, 'question 1', 'question one')
+            it.reopen('claude', sid, refs, 'First correction.')
+            earlier = it.prompt('claude', sid)
+            assert earlier['through'] == through, earlier
+            correct(record, 'question one', 'question uno')
+            assert it.reopen('claude', sid, refs, 'Second correction.')['pending']
+            # The reviewer read the first correction; its ACK names a token that closes nothing now.
+            refused(lambda: it.acknowledge('claude', sid, earlier['through'], 'no_value', 'Read the first correction.'))
+            latest = it.prompt('claude', sid)
+            assert latest['through'] != earlier['through'] and latest['key'] != earlier['key'], latest
+            assert latest['repair']['reason'] == 'Second correction.', latest
+            done = it.acknowledge('claude', sid, latest['through'], 'no_value', 'Read the second correction.')
+            assert not done['pending'] and done['repair_pending'] == {}, done
+            assert it.review_status('claude', sid, through)['status'] == 'complete'
+            # The same correction registered twice is one obligation, not two.
+            correct(record, 'question uno', 'question one again')
+            it.reopen('claude', sid, refs, 'Third correction.')
+            twice = it.reopen('claude', sid, refs, 'Third correction.')
+            assert len(twice['repair_pending']) == 1, twice
+        """)
+
     def test_reopened_review_is_split_into_bounded_parts(self):
         self.check_case("""
             record, through, refs = stored(8)

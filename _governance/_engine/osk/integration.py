@@ -647,42 +647,64 @@ def _review_state_locked(s: dict, through: str) -> dict:
     return out
 
 
-def _register_repair(s: dict, through: str, reason: str) -> bool:
-    """Reopen an acknowledged review until an explicit replacement ACK."""
-    if s["snapshots"].get(through, {}).get("repair_parts"):
-        return any([_register_repair(s, token, reason) for token in s["snapshots"][through]["repair_parts"]])
+def _register_repair(s: dict, through: str, reason: str, version: str) -> bool:
+    """Reopen an acknowledged review until an explicit replacement ACK. A review already
+    reopened by an earlier correction moves to a new token for this version: an ACK of the
+    earlier bytes names the old token, which no longer closes anything."""
+    snap = s["snapshots"].get(through, {})
+    if snap.get("repair_parts"):
+        return any([_register_repair(s, token, reason, version) for token in snap["repair_parts"]])
+    pending = s.setdefault("repair_pending", {})
+    if through in pending:
+        if pending[through].get("version") == version:
+            return False
+        child = "sha256:" + hashlib.sha256(json.dumps([through, version]).encode()).hexdigest()
+        s["snapshots"][child] = {"count": snap["count"], "prompt_count": snap["prompt_count"],
+                                 "repair_refs": pending[through]["refs"]}
+        snap["repair_parts"] = [child]
+        pending[child] = {**pending.pop(through), "reason": reason, "since": core.now_iso(),
+                          "review_count": len(s["reviews"]), "version": version}
+        return True
     prior = next((r for r in reversed(s["reviews"])
                   if r["through"] == through and r["outcome"] != "deferred"), None)
-    if not prior or through in s.get("repair_pending", {}):
+    if not prior:
         return False
-    s.setdefault("repair_pending", {})[through] = {
-        "reason": reason, "refs": prior["refs"], "since": core.now_iso(),
-        "review_count": len(s["reviews"])}
+    pending[through] = {"reason": reason, "refs": prior["refs"], "since": core.now_iso(),
+                        "review_count": len(s["reviews"]), "version": version}
     return True
 
 
 def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
-    """Stored rounds are append-only (헌법 4조 4항). A correction is the exception, and the
-    corrector registers it here: the corrected rounds take their current bytes and every
-    acknowledged review that read them is reviewed again. No later check looks for it."""
+    """Stored and cited records are append-only (헌법 4조 4항). A correction is the exception,
+    and the corrector registers it here. A corrected round this conversation tracks takes its
+    current bytes; every acknowledged review that read it — as its own round, or through a
+    receipt citing it — is reviewed again. No later check looks for any of this."""
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("reopen requires the correction's reason")
     with _locked(harness, conversation_id) as p, core.mutation_lock():
         s = _load(p, harness, conversation_id)
         wanted = {raw.canonical_ref(ref) for ref in refs or []}
-        rounds = [r for r in s["rounds"] if r["ref"] in wanted]
-        if not wanted or len(rounds) != len(wanted) or any(raw.is_native(r["ref"]) for r in rounds):
-            raise ValueError("reopen takes stored rounds this conversation tracks; an original turn is not corrected here")
-        current = _stored_hashes([r["ref"] for r in rounds])
+        if not wanted or any(raw.is_native(ref) for ref in wanted):
+            raise ValueError("reopen takes corrected stored or cited rounds; an original turn is not corrected here")
+        current = _stored_hashes(sorted(wanted))
         if None in current.values():
             raise ValueError("a corrected round is missing from its record")
-        tokens = {v["through"] for v in s["reviews"] if v["outcome"] != "deferred" and wanted & set(v["refs"])}
+
+        def read(review):
+            # Old cursors keep their original coordinates: compare both sides canonically.
+            seen = {raw.canonical_ref(ref) for ref in review["refs"]}
+            seen |= {raw.canonical_ref(src["ref"]) for receipt in review.get("receipts", [])
+                     for src in receipt.get("sources", [])}
+            return bool(wanted & seen)
+        tokens = {v["through"] for v in s["reviews"] if v["outcome"] != "deferred" and read(v)}
         if not tokens:
-            raise ValueError("no acknowledged review read these rounds")
-        for r in rounds:
-            r["hash"] = current[r["ref"]]
+            raise ValueError("no acknowledged review of this conversation read these rounds")
+        for r in s["rounds"]:
+            if raw.canonical_ref(r["ref"]) in wanted:
+                r["hash"] = current[raw.canonical_ref(r["ref"])]
+        version = core.sha256_bytes(json.dumps(sorted(current.items())).encode("utf-8"))
         for token in sorted(tokens):
-            _register_repair(s, token, reason.strip())
+            _register_repair(s, token, reason.strip(), version)
         _save(p, s)
         return _view(s)
 

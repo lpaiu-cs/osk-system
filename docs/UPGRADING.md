@@ -38,7 +38,7 @@ rewrite your notes and records, and there is nothing to migrate.
   Editing the node, moving its hub link or pruning shared memory no longer
   sends the conversation back for review. Repair entries that the earlier
   recheck left are closed the first time osk sees that conversation. If you
-  correct a stored round, register it with `integration reopen`.
+  correct a stored or cited round, register it with `integration reopen`.
   Scripted `codex exec` runs, osk's own scheduled runs included, are neither
   tracked nor reviewed.
 - **Ratification.** The amendment to the governing documents behind this
