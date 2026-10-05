@@ -218,6 +218,19 @@ class IntegrationRecoveryTests(unittest.TestCase):
             correct(cited, 'question 1', 'question one')
             view = it.reopen('claude', sid, [first['cited']], 'A secret was removed from the cited words.')
             assert first['through'] in view['repair_pending'], view
+            # The cited round is not among the review's own refs: the repair names it, and the node
+            # whose receipt cited it, for whoever rereads — the conversation or a worker.
+            repair = view['repair_pending'][first['through']]
+            assert repair['corrected'] == [raw.canonical_ref(first['cited'])], repair
+            assert [(t['key'], t['id']) for t in repair['targets']] == [(proof_key, created['id'])], repair
+            text = it.prompt('claude', sid)['text']
+            assert raw.canonical_ref(first['cited']) in text and created['name'] in text, text
+            # A worker's scope job is the listed job, read through the worker's field filter.
+            job = own_jobs(it.list_pending())[0]
+            seen = growth._reading_plan({'scope_jobs': [job]})['scope_jobs'][0]
+            assert seen['repair']['corrected'] == repair['corrected'], seen
+            assert seen['repair']['targets'] == repair['targets'], seen
+            assert 'repair.corrected' in growth.prompt(growth.plan(3))
             refused(lambda: preserved(first['through']))  # its receipt cited the earlier bytes
             again = D.update_node({'key': proof_key + '-2', 'sources': [first['cited']], 'hub': 'W1'},
                                   name=created['id'], body='A completed observation, rechecked against its corrected words.',
@@ -242,6 +255,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             latest = it.prompt('claude', sid)
             assert latest['through'] != earlier['through'] and latest['key'] != earlier['key'], latest
             assert latest['repair']['reason'] == 'Second correction.', latest
+            assert latest['repair']['corrected'] == [raw.canonical_ref(refs[0])], latest
             done = it.acknowledge('claude', sid, latest['through'], 'no_value', 'Read the second correction.')
             assert not done['pending'] and done['repair_pending'] == {}, done
             assert it.review_status('claude', sid, through)['status'] == 'complete'

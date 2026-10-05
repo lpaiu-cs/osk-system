@@ -647,30 +647,39 @@ def _review_state_locked(s: dict, through: str) -> dict:
     return out
 
 
-def _register_repair(s: dict, through: str, reason: str, version: str) -> bool:
-    """Reopen an acknowledged review until an explicit replacement ACK. A review already
-    reopened by an earlier correction moves to a new token for this version: an ACK of the
-    earlier bytes names the old token, which no longer closes anything."""
+def _register_repair(s: dict, through: str, reason: str, version: str,
+                     corrected: list, targets: list) -> bool:
+    """Reopen an acknowledged review until an explicit replacement ACK. The repair keeps the
+    corrected coordinates and the nodes whose receipts cited them: they are what a reviewer
+    rereads, and a cited round is not among the review's own refs. A review already reopened by
+    an earlier correction moves to a new token for this version — an ACK of the earlier bytes
+    names the old token, which no longer closes anything — and keeps both corrections."""
     snap = s["snapshots"].get(through, {})
     if snap.get("repair_parts"):
-        return any([_register_repair(s, token, reason, version) for token in snap["repair_parts"]])
+        return any([_register_repair(s, token, reason, version, corrected, targets)
+                    for token in snap["repair_parts"]])
     pending = s.setdefault("repair_pending", {})
     if through in pending:
-        if pending[through].get("version") == version:
+        old = pending[through]
+        if old.get("version") == version:
             return False
         child = "sha256:" + hashlib.sha256(json.dumps([through, version]).encode()).hexdigest()
         s["snapshots"][child] = {"count": snap["count"], "prompt_count": snap["prompt_count"],
-                                 "repair_refs": pending[through]["refs"]}
+                                 "repair_refs": old["refs"]}
         snap["repair_parts"] = [child]
+        kept = {t["key"]: t for t in old.get("targets", []) + targets}
         pending[child] = {**pending.pop(through), "reason": reason, "since": core.now_iso(),
-                          "review_count": len(s["reviews"]), "version": version}
+                          "review_count": len(s["reviews"]), "version": version,
+                          "corrected": sorted(set(old.get("corrected", [])) | set(corrected)),
+                          "targets": [kept[k] for k in sorted(kept)]}
         return True
     prior = next((r for r in reversed(s["reviews"])
                   if r["through"] == through and r["outcome"] != "deferred"), None)
     if not prior:
         return False
     pending[through] = {"reason": reason, "refs": prior["refs"], "since": core.now_iso(),
-                        "review_count": len(s["reviews"]), "version": version}
+                        "review_count": len(s["reviews"]), "version": version,
+                        "corrected": corrected, "targets": targets}
     return True
 
 
@@ -690,21 +699,33 @@ def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
         if None in current.values():
             raise ValueError("a corrected round is missing from its record")
 
-        def read(review):
+        hits = {}   # through -> (corrected refs it read, receipts that cited them, by key)
+        for v in s["reviews"]:
+            if v["outcome"] == "deferred":
+                continue
             # Old cursors keep their original coordinates: compare both sides canonically.
-            seen = {raw.canonical_ref(ref) for ref in review["refs"]}
-            seen |= {raw.canonical_ref(src["ref"]) for receipt in review.get("receipts", [])
-                     for src in receipt.get("sources", [])}
-            return bool(wanted & seen)
-        tokens = {v["through"] for v in s["reviews"] if v["outcome"] != "deferred" and read(v)}
-        if not tokens:
+            read = wanted & {raw.canonical_ref(ref) for ref in v["refs"]}
+            cited = {}
+            for receipt in v.get("receipts", []):
+                hit = wanted & {raw.canonical_ref(src["ref"]) for src in receipt.get("sources", [])}
+                if hit:
+                    read |= hit
+                    cited[receipt["key"]] = {"key": receipt["key"], "id": receipt["target"]["id"],
+                                             "name": receipt["target"].get("name"),
+                                             "path": receipt["target"]["path"]}
+            if read:
+                seen, targets = hits.setdefault(v["through"], (set(), {}))
+                seen |= read
+                targets.update(cited)
+        if not hits:
             raise ValueError("no acknowledged review of this conversation read these rounds")
         for r in s["rounds"]:
             if raw.canonical_ref(r["ref"]) in wanted:
                 r["hash"] = current[raw.canonical_ref(r["ref"])]
         version = core.sha256_bytes(json.dumps(sorted(current.items())).encode("utf-8"))
-        for token in sorted(tokens):
-            _register_repair(s, token, reason.strip(), version)
+        for token, (read, targets) in sorted(hits.items()):
+            _register_repair(s, token, reason.strip(), version, sorted(read),
+                             [targets[k] for k in sorted(targets)])
         _save(p, s)
         return _view(s)
 
@@ -947,6 +968,13 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  "내용에 기댔다면 현재 노드를 재검토해 별도 증류 key로 새 증거를 만든다. "
                  "같은 through로 명시적으로 재ACK하라. "
                  f"정정 사유: {st['repair']['reason']}\n")
+        if st["repair"].get("corrected"):
+            # A corrected cited round is not among the review's refs; name it to be read.
+            text += ("정정된 라운드(`read_cited`로 정정본을 읽는다): "
+                     + ", ".join(st["repair"]["corrected"]) + "\n")
+        if st["repair"].get("targets"):
+            text += ("그 라운드를 출처로 쓴 노드(정정본에 비추어 다시 판단한다): "
+                     + ", ".join(t.get("name") or t["id"] for t in st["repair"]["targets"]) + "\n")
     from . import organization
     jobs = []
     try:
@@ -992,9 +1020,9 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     text += "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. "
     turns = len(st["pending_refs"]) - len(stored)
     if turns and offline and st.get("repair"):
-        # Only stored rounds are corrected; the original turns in the range were not.
-        text += (f"원본 턴 {turns}개는 정정되지 않았으니 원문을 다시 읽지 않는다 — 정정된 저장 "
-                 "라운드만 새로 판단한다.\n")
+        # Only stored and cited rounds are corrected; the original turns in the range were not.
+        text += (f"원본 턴 {turns}개는 정정되지 않았으니 원문을 다시 읽지 않는다 — 정정된 라운드만 "
+                 "새로 판단한다.\n")
     elif turns and offline:
         # The conversation ended before its own review: read only these turns from this
         # device's transcript, earlier context only on demand (Mechanism §9-4 3항). MCP
