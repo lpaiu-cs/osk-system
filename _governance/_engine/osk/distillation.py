@@ -68,7 +68,10 @@ def _source(ref: str, idx) -> dict:
                   "path": posix_rel(p, ROOT), "hash": raw.round_hash(text[span[0]:span[1]])}
         native = raw.cited_native(text[span[0]:span[1]])
         if native:
-            source["native"] = native  # The cited original turn binds review receipts.
+            source["native"] = native  # The cited original turn binds review receipts,
+            words = raw.cited_header(text[span[0]:span[1]]).get("user_sha256")
+            if words:
+                source["native_user"] = words  # with the words it cited.
         return source
     p = write._live_locate(value, idx)
     if p is None or not p.is_file() or graph.space_of(p)[0] not in ("scope", "domain"):
