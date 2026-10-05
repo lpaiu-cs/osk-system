@@ -287,7 +287,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
-| `tidy list` / `tidy prompt` / `tidy settle` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록 (Mechanism §9-3, 아래) |
+| `tidy list` / `tidy prompt` / `tidy settle` / `tidy discard` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록, 경유 노드 폐기 (Mechanism §9-3 · Workbench 계약 §3, 아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
 | `approve` / `revert` | **사용자 전속** — 변경집합 승인·반려 |
 | `store-reconcile` | 내용 주소 저장소를 파일 이름 기준으로 판독·이행 (EOL 이행) |
@@ -341,12 +341,24 @@ scope 기억은 그 scope에서 **지금 살아 있는 배울 점**이며 상한
 결속이 선 세션이 시작되면 훅은 그 scope의 미처분 항목 중 **오래된 것부터 3건**과
 Workbench의 경유 노드를 함께 실어 첫 도구 호출에 처분을 함께 실으라고 지시한다. 벽이
 아니다 — 본 작업이 먼저면 넘어가도 되고 항목은 대장에 남는다. 출구는 노드로 증류·기존
-노드에 통합·폐기이며, 어느 쪽이든 `settle`을 적어야 처분이다:
+노드에 통합·폐기이며, 어느 쪽이든 `settle`을 적어야 처분이다. 판단 이유는 `--reason`으로
+남기고, 한 조각이 여러 노드로 갔으면 `--target`을 되풀이한다(대상마다 `settle`이 하나씩
+적힌다):
 
 ```bash
 .venv/bin/python -m osk.cli tidy list                                  # scope별 미처분·나이
-.venv/bin/python -m osk.cli tidy settle <rid> node --target "<노드 제목>"   # 증류 (통합은 merged)
-.venv/bin/python -m osk.cli tidy settle <rid> discarded                # 폐기
+.venv/bin/python -m osk.cli tidy settle <rid> node --target "<노드 제목>" --reason "<이유>"   # 증류 (통합은 merged)
+.venv/bin/python -m osk.cli tidy settle <rid> discarded --reason "<이유>"                    # 폐기
+```
+
+경유 노드의 출구는 넷이다(Workbench 계약 §3) — Domain 이동·scope 이동·통합·폐기. 정리
+세션이 내용을 정본 노드로 옮기고 경유지에 남긴 노드도 있으므로, 착지시키기 전에 경유지에
+온 경위(vault git 이력)를 본다. 폐기는 들어오는 참조와 scope 기억의 언급이 없을 때만 되고,
+사용자가 확인한 판에서만 지운다 — 기록은 vault의 git 이력이 맡는다:
+
+```bash
+.venv/bin/python -m osk.cli tidy discard "<경유 노드 제목>"                    # 지울 판의 해시를 알린다
+.venv/bin/python -m osk.cli tidy discard "<경유 노드 제목>" --confirm <hash>   # 확인받은 판을 지운다
 ```
 
 건너뛴 것은 `osk status`의 `evictions`에 보인다. 가장 오래된 항목이 **14일**을 넘으면
@@ -467,7 +479,9 @@ Stop의 한 작업자는 원 대화 검토와 **같은 Scope의 조직 작업 1�
 계수와 검토 커서는 별개다. 실패/보류는 검토를 완료하지 않고, 다음 9회 또는 기존
 일일 catchup에서 이어간다. 모델 호출 전 가용성 검사 실패는 Stop 시도 횟수도 소비하지
 않으므로 로그인 복구 뒤 다음 Stop에서 재시도할 수 있다. 이미 실행 중이면 추가 모델을
-띄우지 않으며 대기는 남는다.
+띄우지 않으며 대기는 남는다. Claude CLI가 다른 Claude 프로세스의 OAuth 토큰 갱신과 겹쳐
+추론 전에 끝나면(`Failed to refresh OAuth token`) 60초 뒤 한 번만 다시 띄운다. 그 전에 원
+대화가 나아가지 않았는지 다시 확인하며, 두 번째도 같으면 위의 실패로 센다.
 `integration status --harness <하네스> --conversation <ID>`의 `response_growth`와
 `response_growth_stop`에서 계수·실행 실패를, `response_growth_route`에서 현재 경로와
 fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
@@ -507,9 +521,10 @@ fallback 사유를, 실행 결과의 `cache`에서 자식 사용량을
   해시가 바뀌면 다시 전문을 싣는다. 세션 시작(압축 뒤 포함)과 scope 복구 대기 중에는
   늘 전문이다 — 복구는 현재 엔트리를 정리하는 일이라 앵커를 베낄 전문이 필요하다.
 - 조직 검토는 훅에 착수·완료 조건과 판정이 결속되는 값(key·snapshot·coverage·
-  review_units와 그 노드의 hash, previous_deferral, 채워진 references·issues)만 싣는다.
-  `read_node`가 돌려준 `view_hash`가 그 노드의 `'view:'+hash`와 다르면 선택 뒤 본문이
-  바뀐 것이니 새 plan으로 범위를 다시 확인한다. 전체 규칙과
+  review_units, previous_deferral, 채워진 references·issues)만 싣는다. review_units의 각
+  구간은 `expect_view_hash`(`'view:'`+그 노드의 파일 해시)를 싣는다. `read_node`가 돌려준
+  `view_hash`가 그 값과 다르면 선택 뒤 본문이 바뀐 것이니 새 plan으로 범위를 다시 확인한다.
+  unit 문자열 속 sha256은 구간 내용 키라 비교 대상이 아니다. 전체 규칙과
   군집·노드 목록은 CLI `organization plan`의 `guidance`와 본문이 준다. 별도 실행기가
   없는 경로에서는 포착 대기와 따로, 세션 시작에도 싣는다.
 - 계수·검토 대기는 **기기 로컬**이다(vault 루트·하네스·실제 대화 ID 단위).
@@ -909,6 +924,9 @@ Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 �
 다시 검토할 수 있다. 입력 집합을 읽었다는 사실과 모든 입력을 같은 결론의 근거로
 인용하는 것은 다르다. 의미 판정·적용 범위·반례는 에이전트가 설명해야 한다.
 작업 증거는 `.osk/growth/runs/`와 Workbench `_ledger/growth.jsonl`에 남는다.
+명령에 `--model`(`-m`)이 있으면 실행 계획에 그 이름을 적고, 작업자가 새로 만드는 노드의
+`drafter`로 쓰게 지시한다. Codex 작업자는 자기 정확한 모델명을 알지 못한다. Claude API 이름
+(`claude-…`)은 vault 표기(`opus-5.5`)와 달라 넣지 않는다.
 600초 기본 상한은 유지한다. 저장 기록 조회는 전체를 출력하지 않고 `read_cited`의 기본
 `view="review"`로 사용자 발화와 답변 선별본(최대 6000자)을 읽는다. 필요한 주장·반례만
 `query`로 전체 라운드에서 검색한다. 공백으로 나눈 검색어는 모두 포함해야 하며,

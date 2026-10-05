@@ -941,8 +941,9 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  + json.dumps(st["proof_discovery"], ensure_ascii=False) + "\n")
     text += (f"이번 검토 snapshot의 작업 키: {st['key']}\n"
              f"새 증류의 distill.key는 `{st['key']}:<대상별 고정 접미사>`로 정하라. "
-             "기존 노드 ID 또는 새 노드 제목의 고정 slug를 접미사로 쓰고, 같은 대상의 "
-             "재시도에서는 그대로 재사용한다. 여러 대상에 같은 key를 쓰지 않는다. "
+             "기존 노드 ID 또는 새 노드 제목의 고정 slug를 접미사로 쓴다. key는 한 요청에 "
+             "결속되므로 그 요청의 재시도와 resume에만 그대로 재사용하고, 같은 대상에 다른 "
+             "내용을 더 증류하면 접미사 뒤에 -2·-3을 붙인다. 여러 대상에 같은 key를 쓰지 않는다. "
              "새 snapshot은 새 작업 키를 쓴다. ACK만 유실됐다면 위 complete 증거의 "
              "기존 key를 targets에 재사용하며, 같은 본문을 새 key로 다시 쓰지 않는다.\n")
     stored = [ref for ref in st["pending_refs"] if not raw.is_native(ref)]

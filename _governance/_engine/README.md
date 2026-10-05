@@ -88,7 +88,8 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli approve "00_Person/De
 - 정합성 주기 스캔·충돌 후보 감지(사건부 자동 채널) — 근거 키 계산기만 예약
 - 브리핑 4채널 생성기 / 중심성 기반 랭킹 통합 / 임베딩 검색
 - 정돈의 **출구 자동화** — §9-3의 정돈 실행(세션 시작 훅 주입·`osk tidy`)은
-  구현됐으나, 경유 노드의 Domain·scope 이동 판정과 수행은 에이전트가 한다
+  구현됐으나, 경유 노드의 출구(Domain·scope 이동·통합·폐기) 판정과 수행은 에이전트가
+  한다. 폐기는 사용자 확인 뒤 `osk tidy discard`가 지운다
 - 활성화된 자동 집행 현재 0건 — 제도(`osk validators`)와 첫 규칙
   (`cluster-overview`)은 구현돼 있고 검사도 돌지만 보고 전용이다
 

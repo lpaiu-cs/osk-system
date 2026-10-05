@@ -3,8 +3,9 @@
 
 추적하는 대상은 상태가 바뀔 수 있는 것이다 — 노드(id로 식별), 비노드 파일(vault
 상대 경로), 그 안의 제목 범위(`#제목`). raw 라운드는 추가만 되는 기록이라 상태가
-바뀌지 않고, 외부 URL은 상태를 잴 수 없다. 해석되지 않는 대상은 완료를 만들지
-않는다 — dangling으로 따로 보고된다.
+바뀌지 않고, 외부 URL은 상태를 잴 수 없다. 허브 노드는 갈래의 입구라 그 변경을
+전파하지 않는다(시행령 §7 2항 단서) — 제목 범위로 가리켜도 같다. 해석되지 않는
+대상은 완료를 만들지 않는다 — dangling으로 따로 보고된다.
 
 상태는 관련 상태만 잰다(`state`) — 노드는 본문, 비노드는 파일 전체, 제목을 지정한
 근거는 그 제목 범위다. 관계 주장의 내용과 이유는 본문이 맡으므로(헌법 8조) 요약이나
@@ -77,7 +78,8 @@ def _name(ref: str) -> tuple[str, str] | None:
 def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] | None:
     """근거 하나의 (대상 키, 상태 해시). 추적하지 않거나 대상 파일이 해석되지 않으면
     None. 키는 노드면 id, 비노드면 vault 상대 경로이고, 제목 범위면 `#제목`이 붙는다.
-    파일은 있는데 제목이 없거나 둘 이상이면 상태가 None이다 — 추적은 계속된다."""
+    파일은 있는데 제목이 없거나 둘 이상이면 상태가 None이다 — 추적은 계속된다.
+    허브 노드는 추적하지 않는다 — 후보·기준선·완료 기록이 모두 이 판정을 지난다."""
     parsed = _name(ref)
     if parsed is None:
         return None
@@ -85,6 +87,8 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] |
     if cache is not None and (name, heading) in cache:
         return cache[(name, heading)]
     out, hit = None, idx.locate(name) if name else None
+    if hit and graph.is_node_home(hit[1]) and graph.is_hub(hit[0]):
+        hit = None
     if hit:
         path, kind = hit
         try:

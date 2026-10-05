@@ -405,6 +405,48 @@ def _child():
                                   expect_hash=core.sha256_file(target))
                 self.assertEqual(D.verify_receipt(receipt)["status"], "pending")
 
+            def test_unrelated_edit_keeps_the_distilled_paragraph_receipt(self):
+                # 파일 전체에 결속한 영수증은 무관한 편집 하나에도 깨져, 이미 보존한 내용을
+                # 다시 증류하는 형식 수정이 되풀이됐다(10-04 repair-1~8).
+                out = self.create()
+                receipt = out["distillation"]
+                self.assertTrue(receipt["target"].get("paragraphs"))
+                target = core.ROOT / out["path"]
+                body = contract.parse(target).body
+                write.update_node(out["id"], body=body.rstrip() + "\n\nA later, unrelated note.\n",
+                                  expect_hash=core.sha256_file(target))
+                self.assertEqual(D.status(self.key)["status"], "complete")
+                self.assertEqual(D.verify_receipt(receipt)["status"], "complete")
+                # 같은 요청을 다시 보내면 옛 판이 아니라 지금 판의 해시를 준다(PR #135 리뷰)
+                again = self.create()
+                self.assertTrue(again["resumed"])
+                self.assertEqual(again["new_hash"], core.sha256_file(target))
+                write.update_node(out["id"], old_text="bounded operation", new_text="bounded retry")
+                self.assertEqual(D.status(self.key)["status"], "pending")
+
+            def test_list_item_receipt_survives_an_edit_of_another_item(self):
+                existing = write.create_node(self.args["title"], "list", "- first fact\n- second fact",
+                                             "fable-5", space="00_Scope/W1")
+                out = D.update_node(self.spec, name=existing["id"], old_text="- second fact",
+                                    new_text="- second fact\n- distilled third fact")
+                self.assertEqual(out["distillation"]["status"], "complete")
+                self.assertEqual(len(out["distillation"]["target"]["paragraphs"]), 1)
+                write.update_node(existing["id"], old_text="- first fact", new_text="- first fact, corrected")
+                self.assertEqual(D.status(self.key)["status"], "complete")
+                write.update_node(existing["id"], old_text="distilled third fact",
+                                  new_text="third fact, rewritten")
+                self.assertEqual(D.status(self.key)["status"], "pending")
+
+            def test_legacy_whole_file_receipt_keeps_its_binding(self):
+                out = self.create()
+                legacy = dict(out["distillation"])
+                legacy["target"] = {k: v for k, v in legacy["target"].items() if k != "paragraphs"}
+                target = core.ROOT / out["path"]
+                body = contract.parse(target).body
+                write.update_node(out["id"], body=body.rstrip() + "\n\nA later, unrelated note.\n",
+                                  expect_hash=core.sha256_file(target))
+                self.assertEqual(D.verify_receipt(legacy)["status"], "pending")
+
             def test_two_jobs_same_hub_keep_receipts_complete(self):
                 self.create()
                 second_key = self.key + "-second"

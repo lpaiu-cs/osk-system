@@ -568,6 +568,23 @@ class GrowthTests(unittest.TestCase):
                     os.chdir(core.ROOT)
         """)
 
+    def test_worker_is_told_the_runs_model_as_drafter(self):
+        # Codex workers guessed their model on all 88 nodes of the 2026-10-05 batch.
+        self.check_case("""
+            assert growth._drafter(['codex', 'exec', '--model', 'gpt-5.6-sol', '-']) == 'gpt-5.6-sol'
+            assert growth._drafter(['codex', 'exec', '-m', 'gpt-5.6-sol', '-']) == 'gpt-5.6-sol'
+            assert growth._drafter(['claude', '-p', '--model', 'claude-opus-5-5', '--verbose']) is None
+            assert growth._drafter(['codex', 'exec', '--model', 'Not A Name', '-']) is None
+            assert growth._drafter(['codex', 'exec', '-']) is None
+            node('A')
+            result = growth.run([sys.executable, '-c', packet_worker(), '--model', 'gpt-5.6-sol'], limit=2)
+            assert result['ok'], result
+            text = (core.ROOT / result['output'] / 'prompt.txt').read_text(encoding='utf-8')
+            assert 'Every create_node uses drafter "gpt-5.6-sol"' in text, text[:600]
+            assert 'not notes about this review' in text and 'such as -2' in text
+            assert [r for r in core.ledger_read(growth.LEDGER) if r['kind'] == 'plan'][-1]['drafter'] == 'gpt-5.6-sol'
+        """)
+
     def test_worker_hooks_do_not_feed_maintenance_into_new_conversations(self):
         self.check_case("""
             node('A')
@@ -847,6 +864,8 @@ class GrowthTests(unittest.TestCase):
     def test_organization_packet_without_snapshot_refuses_a_unit_changed_after_reading(self):
         self.check_case("""
             node('A')
+            assert 'Use osk MCP tools only' in growth.prompt(growth.plan(3))
+            assert 'growth checkpoint --file' not in growth.prompt(growth.plan(3))
             # The worker has no CLI snapshot. A unit it read that changes before the
             # runner applies the packet no longer matches its content key.
             change = ("from osk import write; n=core.ROOT/'00_Scope/W1/A.md'; "
@@ -872,6 +891,23 @@ class GrowthTests(unittest.TestCase):
             fresh = growth.run([sys.executable,'-c',packet_worker()],limit=3)
             assert fresh['ok'], fresh
             assert {s['status'] for s in fresh['organization_outcomes'].values()} == {'complete'}, fresh
+        """)
+
+    def test_prompt_units_carry_the_view_hash_read_node_returns(self):
+        self.check_case("""
+            # The worker sees only this prompt. On 2026-10-04 it compared view_hash with the sha256
+            # inside each unit (a range content key) and deferred every range it had read.
+            import mcp_server as M
+            node('A')
+            node('B')
+            text = growth.prompt(growth.plan(3))
+            assert organization.guidance() in text and 'expect_view_hash' in organization.guidance()
+            units = [u for j in json.loads(text.rsplit(chr(10), 1)[1])['organization_jobs'] for u in j['review_units']]
+            assert units
+            for u in units:
+                got = M.read_node(name=u['id'], view=u['view'])['view_hash']
+                assert u['expect_view_hash'] == got, (u, got)
+                assert u['unit'].split(':')[2] not in got, u
         """)
 
     def test_final_packet_applies_only_observed_domain_preservation(self):

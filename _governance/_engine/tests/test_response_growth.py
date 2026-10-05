@@ -1143,6 +1143,39 @@ class ResponseGrowthTests(unittest.TestCase):
             assert status['reviewed_rounds'] == 0 and rg.observe(source)['due']
         ''')
 
+    def test_claude_auth_refresh_race_retries_the_fork_once(self):
+        # 14 of 86 Claude forks (2026-09-25..10-05) exited before inference with this message.
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg
+            from unittest.mock import patch
+            native = core.ROOT / 'native.jsonl'
+            native.write_text(json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','cwd':str(core.ROOT),
+                'message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn',
+                           'content':[{'type':'text','text':'answer'}]}})+'\\n', encoding='utf-8')
+            source = rg.profile(str(native),'claude','own')
+            job = {'harness':'claude','conversation_id':'own','pending_refs':['fixture']}
+            (core.ROOT / 'raced').mkdir()
+            (core.ROOT / 'raced/stdout.txt').write_text(json.dumps({'type':'result','is_error':True,
+                'result':'Failed to refresh OAuth token: another Claude Code process is refreshing it'})+'\\n', encoding='utf-8')
+            # A reviewed conversation may quote the message; only the CLI's own final result counts.
+            (core.ROOT / 'quoted').mkdir()
+            (core.ROOT / 'quoted/stdout.txt').write_text(json.dumps({'type':'assistant','message':{'content':[
+                {'type':'text','text':'Failed to refresh OAuth token appeared in this conversation.'}]}})+'\\n'+json.dumps(
+                {'type':'result','is_error':True,'result':'Reached the turn limit'})+'\\n', encoding='utf-8')
+            raced = {'ok':False,'state':'incomplete','returncode':1,'output':'raced'}
+            quoted = {'ok':False,'state':'incomplete','returncode':1,'output':'quoted'}
+            other = {'ok':False,'state':'incomplete','returncode':1}
+            done = {'ok':True,'state':'complete','returncode':0}
+            for runs, calls, waits, final in (([raced, done], 2, 1, done), ([raced, raced], 2, 1, raced),
+                                               ([other, done], 1, 0, other), ([quoted, done], 1, 0, quoted)):
+                with patch.object(rg,'preflight',return_value='claude'), patch.object(rg.time,'sleep') as wait, \\
+                        patch.object(rg,'cache_usage',return_value={}), \\
+                        patch.object(growth,'run',side_effect=runs) as fork:
+                    result = rg.run(source,job,'unused')
+                assert fork.call_count == calls and wait.call_count == waits, (runs, fork.call_count)
+                assert result['state'] == final['state'] and result.get('returncode') == final['returncode'], result
+        ''')
+
     def test_stop_detaches_and_waits_for_native_final_flush(self):
         base_tests.GrowthTests().check_case('''
             import os, subprocess, time
