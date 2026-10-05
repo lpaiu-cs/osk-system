@@ -219,9 +219,9 @@ The body is Markdown, as Obsidian reads it.
 - **Evidence section**: a claim node may end with a `## 근거` section, one list
   item per cited round that its `derived-from` names:
   `- <date> · <coordinate> · 지지|조건|반례 — <what the round showed>`. The
-  coordinate is the first 8 hex characters of the record name and the round
-  number, such as `42cf0fc0#1`; consecutive rounds that make one point share a
-  line (`42cf0fc0#41–42`). Only independent support, a condition or a
+  coordinate, written as code rather than a link, is the first 8 hex
+  characters of the record name and the round number, such as `42cf0fc0#1`;
+  consecutive rounds that make one point share a line (`42cf0fc0#41–42`). Only independent support, a condition or a
   counterexample gets a line; actions and numbers stay in the body. A round
   that only supports a held claim is bound this way instead of by rewriting the
   claim. This is a writing convention: the engine does not read the section.

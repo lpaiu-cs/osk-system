@@ -962,7 +962,8 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
              "현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 선후가 불분명하면 보류한다. "
              "이미 노드에 있는 주장을 받치거나 조건·반례만 더하는 턴은 본문을 고쳐 쓰지 않고, distill로 그 노드 "
              "끝의 `## 근거` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 보인 것(50자 안팎)` 한 줄을 단다. "
-             "좌표는 round_ref의 기록 이름 해시 앞 8자와 라운드다(`42cf0fc0#1`, 이어진 라운드는 `#41–42`). ")
+             "좌표는 링크가 아니라 코드 글자로, round_ref의 기록 이름 해시 앞 8자와 라운드를 쓴다(`42cf0fc0#1`, "
+             "이어진 라운드는 `42cf0fc0#41–42`). ")
     turns = len(st["pending_refs"]) - len(stored)
     if turns and offline and st.get("repair"):
         # Only stored rounds are corrected; the original turns in the range were not.
