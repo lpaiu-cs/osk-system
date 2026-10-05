@@ -200,6 +200,24 @@ def _settle_locked(of: str, outcome: str, target: str | None = None, reason: str
     """처분 기록. `outcome`은 node·merged·discarded, `target`은 노드 제목이며
     폐기에는 없다. 노드가 서 있지 않으면 적지 않는다 — 처분은 한 일의 기록이지
     하겠다는 약속이 아니다. `of`는 잠금 안에서 다시 확인한다."""
+    return _record_settle(of, outcome, _check_settle(outcome, target, reason), reason)
+
+
+def settle_many(of: str, outcome: str, targets: list | None = None,
+                reason: str | None = None) -> list[dict]:
+    """대상이 여럿인 처분 — 대상마다 `settle`을 하나씩 적는다. 같은 항목의 `settle`
+    여럿은 §9-3 4항의 union이 이미 허용하므로 기록 형식은 그대로다. 대상을 전부
+    확인한 뒤에야 적는다 — 일부만 적히는 처분을 만들지 않는다."""
+    with mutation_lock():
+        idx = graph.Index()
+        checked = [_check_settle(outcome, t, reason, idx) for t in (targets or [None])]
+        if len(set(checked)) != len(checked):
+            raise ValueError("같은 target을 두 번 적지 않는다")
+        return [_record_settle(of, outcome, t, reason) for t in checked]
+
+
+def _check_settle(outcome: str, target: str | None, reason: str | None, idx=None) -> str | None:
+    """처분의 형식과 대상 노드를 확인하고 정규화한 target을 돌려준다."""
     if outcome not in OUTCOMES:
         raise ValueError(f"outcome은 {'·'.join(OUTCOMES)} 중 하나다 — `{outcome}`은 아니다")
     if reason is not None and (not isinstance(reason, str) or not reason.strip()):
@@ -222,8 +240,8 @@ def _settle_locked(of: str, outcome: str, target: str | None = None, reason: str
     # 증류된 적 없는 조각이 정돈 큐에서 영구히 빠진다. 잠금 순서는 다른
     # 모듈과 같다 — 변경 잠금 → 대장 잠금.
     if target:
-        require_target(target, graph.Index())
-    return _record_settle(of, outcome, target, reason)
+        require_target(target, idx or graph.Index())
+    return target
 
 
 def schema_errors(recs: list[dict]) -> list[str]:
@@ -277,6 +295,69 @@ def transit_titles() -> list[str]:
                   if kind and kind[0] == "workbench-transit")
 
 
+def discard_transit(title: str, confirm: str | None = None) -> dict:
+    """경유 노드의 폐기 — Workbench 계약 §3의 통합·폐기 출구를 실행한다.
+
+    들어오는 참조(Link·Predicate Edge)가 남았거나 scope 기억이 그 노드를 가리키면
+    거부한다 — 재배선·정정이 먼저다. `confirm` 없이 부르면 지울 판(해시)만 알린다.
+    사용자에게 확인받은 그 해시로 다시 부를 때만 지운다 — 확인한 뒤 바뀐 판은 지우지
+    않는다. 새 대장은 두지 않는다. 지우기 전 판은 이 기기에 사본으로 남긴다 — 동기화
+    전의 판은 vault git 이력에 없을 수 있다."""
+    from . import scope_memory, write   # 둘 다 이 모듈을 부른다 — 순환을 피한다
+    from .core import ROOT, local_lock_path, posix_rel, sha256_file
+    with mutation_lock():
+        idx = graph.Index()
+        if not idx.complete:
+            raise ValueError("vault를 전부 관측하지 못했다 — 폐기하지 않았다: "
+                             + "; ".join(idx.scan_errors[:3]))
+        hit = idx.locate(title)
+        if not hit or hit[1][0] != "workbench-transit":
+            raise ValueError(f"`{title}`는 Workbench 경유 노드가 아니다 — 폐기는 경유 노드의 "
+                             f"출구다(Workbench 계약 §3)")
+        path = hit[0]
+        # 입력이 id·경로여도 실제 제목과 id로 찾는다 — 참조와 기억은 그 둘로 적힌다
+        name, nid = path.stem, idx.node(path).id
+        inbound = []
+        for p in idx.mentioning([name, nid]):
+            if p == path:
+                continue
+            try:
+                n = idx.node(p)
+            except Exception:
+                continue          # 판독되지 않는 파일은 참조를 말하지 않는다
+            # 그래프와 같은 해석(`Index.locate` — 제목·id·경로, 제목 속 `.md` 포함)으로 대조한다
+            for _relation, text in n.references():
+                found = idx.locate(text.split("#", 1)[0].strip())
+                if found and graph._same_file(found[0], path):
+                    inbound.append(p.stem)
+                    break
+        memory = sorted(f.stem for f in scope_memory.sm_dir().glob("*.md")
+                        if any(k in f.read_text(encoding="utf-8", errors="replace")
+                               for k in (name, nid)))
+        where = []
+        if inbound:
+            where.append("노드 " + ", ".join(sorted(inbound)))
+        if memory:
+            where.append("scope 기억 " + ", ".join(memory))
+        if where:
+            raise ValueError("폐기하지 않았다 — 이 노드를 가리키는 곳을 먼저 재배선·정정하라: "
+                             + "; ".join(where))
+        plan = {"title": name, "id": nid, "path": posix_rel(path, ROOT), "hash": sha256_file(path)}
+        if confirm is None:
+            return {"ok": False, "plan": plan, "next": (
+                "사용자에게 확인받은 뒤 같은 명령에 --confirm <hash>를 붙여 다시 실행한다. "
+                "지운 판은 이 기기의 사본(응답의 copy)이나, 동기화된 판이면 vault git 이력에서 되살린다")}
+        if confirm != plan["hash"]:
+            raise ValueError("확인한 판과 지금 판이 다르다 — 폐기하지 않았다. 다시 확인받아라")
+        # 사본 이름은 확인받은 판의 해시다 — frontmatter의 id는 검증 전 값이라 경로 문자가
+        # 들어 있으면 vault 밖을 가리키고, 같은 id의 다른 판(다른 worktree, 다시 만든 노드)은
+        # 앞 사본을 덮는다(#138 리뷰 P1).
+        copy = local_lock_path(f"osk-discarded-{plan['hash'].removeprefix('sha256:')}.md")
+        write._atomic_write(copy, path.read_bytes())
+        path.unlink()
+        return {"ok": True, "discarded": plan, "copy": str(copy)}
+
+
 def _item(r: dict, now_ms: int | None) -> str:
     body = str(r.get("text", "")).strip().replace("\n", "\n  ")
     return (f"- `{r['rid']}` · {age_days(r, now_ms)}일 전 · "
@@ -292,10 +373,10 @@ def _exits(scope: str, python: str, engine: str) -> str:
             f"기록한다 — 응답의 `settlement.state`를 확인하라. "
             f"같은 내용 재저장·summary만 수정해서는 처분하지 않는다. "
             f"이미 보존됐거나 자리값 없는 내용은 현재 기억·노드와 대조해 판단한다. "
-            f"폐기·기보존 확인·기록 재시도는 CLI로 적는다:\n"
+            f"폐기·기보존 확인·기록 재시도는 CLI로 적는다(대상이 여럿이면 --target을 되풀이한다):\n"
             f"  PYTHONPATH={engine} {python} -m osk.cli tidy settle <rid> node|merged "
-            f"--target \"<노드 제목>\"\n"
-            f"  PYTHONPATH={engine} {python} -m osk.cli tidy settle <rid> discarded\n"
+            f"--target \"<노드 제목>\" --reason \"<판단 이유>\"\n"
+            f"  PYTHONPATH={engine} {python} -m osk.cli tidy settle <rid> discarded --reason \"<판단 이유>\"\n"
             f"증류·통합이 보호영역의 노드를 바꾸면 그 차이는 변경집합으로 남아 승인을 "
             f"받는다 — 정돈이 승인을 대신하지 않는다.")
 
@@ -341,9 +422,18 @@ def _hook_block(scope: str, python: str, engine: str, now_ms, rows, transit) -> 
         lines.append(f"- … 외 {len(rows) - len(shown)}건 (`osk tidy list`)")
     if transit:
         lines.append("Workbench 경유 노드(정돈 대상 — Workbench 계약 §3): "
-                     + " · ".join(f"[[{t}]]" for t in transit))
+                     + " · ".join(f"[[{t}]]" for t in transit) + "\n" + _TRANSIT_EXITS)
     lines.append(_exits(scope, python, engine))
     return banner, "\n".join(lines)
+
+
+# 경유 노드의 출구는 넷이다(Workbench 계약 §3) — 착지만 말하면 정리 세션이 내용을 옮기고
+# 남겨 둔 노드를 다음 세션이 다시 착지시킨다(2026-10-04 실측).
+_TRANSIT_EXITS = (
+    "내용과 경유지에 온 경위(vault git 이력)를 읽고 출구 넷 중 하나를 정한다(Workbench 계약 §3). "
+    "Domain·scope 이동은 `move_nodes`로 하고 응답의 `hub_links` 양쪽을 반영한다. 같은 주장의 노드가 "
+    "이미 있으면(통합) 참조를 그 노드로 옮긴 뒤 폐기한다 — 내용을 옮겨 둔 노드를 다시 착지시키지 "
+    "않는다. 폐기는 사용자에게 확인받은 뒤 `osk tidy discard`로 한다.")
 
 
 def _transit_prompt(titles: list[str]) -> str:
@@ -351,9 +441,8 @@ def _transit_prompt(titles: list[str]) -> str:
         return ""
     # 지시가 목록 앞에 선다 — 머리를 남기는 호스트에서 목록 끝이 잘려도 할 일은 남는다.
     return ("[osk 경유 노드 정돈 — 퇴출 유무와 별개]\n"
-            "내용과 기존 군집을 읽고 착지를 정해 **첫 도구 호출에 처분을 함께 실어라**(§9-3 1항). "
-            "재배정은 `move_nodes`로 하고, 응답의 `hub_links` 양쪽을 반영한다. 보호영역 승인·군집 "
-            "신설 동의를 대신하지 않는다. 본 작업이 먼저면 보류하되 성장 완료로 세지 않는다.\n"
+            "**첫 도구 호출에 처분을 함께 실어라**(§9-3 1항). " + _TRANSIT_EXITS + " 보호영역 "
+            "승인·군집 신설 동의를 대신하지 않는다. 본 작업이 먼저면 보류하되 성장 완료로 세지 않는다.\n"
             + " · ".join(f"[[{t}]]" for t in titles))
 
 
@@ -384,6 +473,6 @@ def tidy_prompt(scope: str | None, python: str, engine: str,
     transit = transit_titles()
     if transit:
         lines += ["", "Workbench 경유 노드(정돈 대상 — Workbench 계약 §3): "
-                  + " · ".join(f"[[{t}]]" for t in transit)]
+                  + " · ".join(f"[[{t}]]" for t in transit), _TRANSIT_EXITS]
     lines += ["", _exits(scope, python, engine)]
     return "\n".join(lines)
