@@ -1088,6 +1088,63 @@ class GrowthTests(unittest.TestCase):
             assert growth._completed(key, growth._records(), graph.Index())
         """)
 
+    def test_a_runner_stopped_while_applying_keeps_what_it_applied(self):
+        self.check_case("""
+            from unittest.mock import patch
+            node('A')
+            node('B', 'W2')
+            # M2: the runner dies between two decisions of one final packet. The decision it
+            # applied stays complete, nothing records the run as done, and the next plan presents
+            # only the selection whose decision was not applied.
+            class Crash(BaseException):
+                pass
+            real, calls = growth.review, []
+            def review(*a, **kw):
+                calls.append(kw.get('key', a[0] if a else None))
+                if len(calls) == 2:
+                    raise Crash()
+                return real(*a, **kw)
+            with patch.object(growth, 'review', side_effect=review):
+                try:
+                    growth.run([sys.executable,'-c',packet_worker()], limit=3)
+                    raise AssertionError('the run went on after the runner died')
+                except Crash:
+                    pass
+            rows = core.ledger_read(growth.LEDGER)
+            reviews = [r for r in rows if r['kind']=='review']
+            assert [r['key'] for r in reviews] == calls[:1], (reviews, calls)
+            assert not [r for r in rows if r['kind']=='run']
+            assert growth._completed(calls[0], growth._records(), graph.Index())
+            keys = [c['key'] for c in growth.plan(3)['candidates']]
+            assert calls[0] not in keys and calls[1] in keys, (keys, calls)
+        """)
+
+    def test_a_runner_stopped_after_applying_does_not_present_its_decisions_again(self):
+        self.check_case("""
+            from unittest.mock import patch
+            node('A')
+            # M2: the decisions are applied, then the runner dies before it records the run and
+            # replies. Nothing applied is undone or presented again.
+            class Crash(BaseException):
+                pass
+            real = core.ledger_append
+            def append(path, record, *a, **kw):
+                if record.get('kind') == 'run':
+                    raise Crash()
+                return real(path, record, *a, **kw)
+            with patch.object(core, 'ledger_append', side_effect=append):
+                try:
+                    growth.run([sys.executable,'-c',packet_worker()], limit=3)
+                    raise AssertionError('the run went on after the runner died')
+                except Crash:
+                    pass
+            rows = core.ledger_read(growth.LEDGER)
+            assert [r for r in rows if r['kind']=='review'] and not [r for r in rows if r['kind']=='run'], rows
+            again = growth.plan(3)
+            assert not again['candidates'], again['candidates']
+            assert not again['organization_jobs'], again['organization_jobs']
+        """)
+
     def test_final_packet_saved_declaration_requires_actual_receipt(self):
         self.check_case("""
             node('A')
