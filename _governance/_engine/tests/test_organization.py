@@ -85,6 +85,11 @@ class OrganizationTests(unittest.TestCase):
             rejected(lambda: organization.review(job['key'],'W1','complete','Same procedure',after=job['snapshot']))
             checked = [{'unit':u['unit'],'reason':'Independent fixture claim '+u['view']} for u in job['review_units']]
             rejected(lambda: organization.review(job['key'],'W1','complete','Read three only',after=job['snapshot'],checked=checked))
+            # M4: progress is a unit and its claim/conditions assessment; a bare unit is not recorded.
+            rejected(lambda: organization.review(job['key'],'W1','deferred','No unit reasons',after=job['snapshot'],
+                                                 checked=[{'unit':u['unit']} for u in job['review_units']]))
+            rejected(lambda: organization.review(job['key'],'W1','deferred','Blank unit reason',after=job['snapshot'],
+                                                 checked=[{'unit':u['unit'],'reason':' '} for u in job['review_units']]))
             assert not organization._load().get('coverage'), 'failed completion must not mutate receipts'
             saved = organization.review(job['key'],'W1','deferred','Continue at the next selected range',after=job['snapshot'],checked=checked)
             before = organization.plan('W1')

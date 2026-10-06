@@ -143,6 +143,15 @@ class GrowthTests(unittest.TestCase):
                 assert again[0]['previous_settlement']['target'] == 'Partial'
                 if DEFERRED_CASE:
                     assert again[0]['previous_deferral']['reason'].startswith('First claim saved')
+                # M4: the review is checked against the settlement already recorded. A different
+                # disposition or target is set aside and the eviction stays open.
+                for outcome, target in (('merged', 'Partial'), ('node', 'Elsewhere')):
+                    mismatch = {'osk_reviews': {'manifest':manifest['rid'], 'domain':[], 'scope':[],
+                                'eviction':[{'of':item['rid'],'outcome':outcome,'target':target,
+                                             'reason':'Disagrees with the recorded settlement.'}]}}
+                    refused = growth.checkpoint(mismatch)
+                    assert not refused['ok'] and any('different disposition' in e for e in refused['errors']), refused
+                    assert growth._eviction_status(job)['status'] == 'pending'
                 packet = {'osk_reviews': {'manifest':manifest['rid'], 'domain':[], 'scope':[],
                           'eviction':[{'of':item['rid'],'outcome':'node','target':'Partial',
                                        'reason':'Both claims now checked; second is a one-off value.'}]}}
