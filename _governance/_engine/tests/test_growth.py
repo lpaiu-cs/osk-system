@@ -176,11 +176,9 @@ class GrowthTests(unittest.TestCase):
             assert growth.checkpoint(packet)['ok']  # Retry is idempotent.
             assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == 1
             packet['osk_reviews']['domain'][0]['key'] = 'unselected'
-            try:
-                growth.checkpoint(packet)
-                raise AssertionError('unselected checkpoint accepted')
-            except ValueError:
-                pass
+            refused = growth.checkpoint(packet)   # only that entry is set aside, with its reason
+            assert not refused['ok'] and any('unselected domain review' in e for e in refused['errors']), refused
+            assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == 1
         """)
 
     def test_scope_checkpoint_survives_worker_failure_and_resumes_only_pending_work(self):
@@ -311,11 +309,9 @@ class GrowthTests(unittest.TestCase):
             packet = {'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
                       'recheck': [{'key': jobs[0]['key'], 'outcome': 'unchanged',
                                    'reason': 'x', 'proposal': 'y'}]}}
-            try:
-                growth.checkpoint(packet)
-                raise AssertionError('a recheck review closed a check without update_node')
-            except ValueError:
-                pass
+            refused = growth.checkpoint(packet)
+            assert not refused['ok'] and any('only escalates' in e for e in refused['errors']), refused
+            assert growth._recheck_status(jobs[0], graph.Index())['status'] != 'complete', 'a recheck review closed a check'
             packet['osk_reviews']['recheck'][0]['outcome'] = 'escalated'
             assert growth.checkpoint(packet)['ok']
             assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'complete'
@@ -661,13 +657,12 @@ class GrowthTests(unittest.TestCase):
                 pass
             manifest = register()
             write.update_node('A', old_text='A reusable observation', new_text='Changed after selection')
+            # A decision on the selected sources is the reviewer's report and is kept, but it does
+            # not complete a comparison whose sources changed; those form a new comparison.
             for outcome in ('no_value','deferred'):
-                try:
-                    growth.review(candidate['key'], outcome, reason='Stale', manifest=manifest['rid'])
-                    raise AssertionError('stale review accepted')
-                except ValueError:
-                    pass
-            assert not [r for r in core.ledger_read(growth.LEDGER) if r.get('kind') == 'review']
+                growth.review(candidate['key'], outcome, reason='Stale', manifest=manifest['rid'])
+            assert not growth._completed(candidate['key'], growth._records(), graph.Index())
+            assert candidate['key'] not in {c['key'] for c in growth.plan()['candidates']}
         """)
 
     def test_process_exit_alone_is_not_receipt(self):
@@ -935,6 +930,21 @@ class GrowthTests(unittest.TestCase):
             assert not {u['name'] for u in nxt.get('review_units', [])} & {'A', 'B'}, nxt
             assert nxt.get('handoff') or nxt.get('coverage', {}).get('handoff'), nxt
         """)
+        self.check_case("""
+            node('A')
+            node('B')
+            # The worker also lists B, which it then corrected. B's judgment was of the old body,
+            # so only A is kept; B is named back and goes to another reviewer.
+            change = ("from osk import write; n=core.ROOT/'00_Scope/W1/B.md'; "
+                      "assert write.update_node('B',body='Corrected by the worker.',expect_hash=core.sha256_file(n))['ok']")
+            result = growth.run([sys.executable,'-c',packet_worker(change, org='deferred')], limit=3)
+            errors = result['final_reviews']['errors']
+            assert not [e for e in errors if e.startswith('Organization')], errors
+            assert any('changed after reading' in n for n in result['final_reviews']['notes']), result
+            from osk import organization
+            nxt = organization.plan('W1')
+            assert not {u['name'] for u in nxt.get('review_units', [])} & {'A', 'B'}, nxt
+        """)
 
     def test_prompt_units_carry_the_view_hash_read_node_returns(self):
         self.check_case("""
@@ -999,18 +1009,81 @@ class GrowthTests(unittest.TestCase):
             assert not [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']
         """)
 
-    def test_final_packet_manifest_and_allowlist_reject_whole_packet(self):
+    def test_a_wrong_packet_is_refused_whole_and_a_wrong_entry_only_itself(self):
         self.check_case("""
             node('A')
-            for change in (
-                    "q['osk_reviews']['manifest']='old-manifest'",
-                    "q['osk_reviews']['domain'][0]['key']='unselected'",
-                    "q['osk_reviews']['scope']=[{'harness':'claude','conversation_id':'unknown','through':'unknown','outcome':'no_value','reason':'Spoof'}]",
-                    "q['osk_reviews']['domain'].append(q['osk_reviews']['domain'][0])",
-                    "q['osk_reviews']['domain'][0]['command']='must never execute'"):
-                result = growth.run([sys.executable,'-c',packet_worker(change)])
-                assert not result['ok'] and result['final_reviews']['state'] == 'rejected', result
+            result = growth.run([sys.executable,'-c',packet_worker("q['osk_reviews']['manifest']='old-manifest'")])
+            assert not result['ok'] and result['final_reviews']['state'] == 'rejected', result
             assert not [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']
+        """)
+        for change, kept in (
+                ("q['osk_reviews']['domain'][0]['key']='unselected'", False),
+                ("q['osk_reviews']['domain'].append(q['osk_reviews']['domain'][0])", False),
+                ("q['osk_reviews']['domain'][0]['command']='must never execute'", False),
+                ("q['osk_reviews']['scope']=[{'harness':'claude','conversation_id':'unknown',"
+                 "'through':'unknown','outcome':'no_value','reason':'Spoof'}]", True)):
+            # The packet is right and one entry is not: only that entry is set aside with its
+            # reason, and the other decisions in the packet still apply (헌법 1조 3항).
+            self.check_case(f"""
+                node('A')
+                result = growth.run([sys.executable,'-c',packet_worker({change!r})])
+                assert not result['ok'] and result['final_reviews']['state'] == 'incomplete', result
+                assert result['final_reviews']['errors'], result
+                assert {{s['status'] for s in result['organization_outcomes'].values()}} == {{'complete'}}, result
+                reviews = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']
+                assert bool(reviews) == {kept}, reviews
+            """)
+        # A decision with a needless part (a target on no_value) keeps its meaning; the part is
+        # dropped and named in the notes.
+        self.check_case("""
+            node('A')
+            result = growth.run([sys.executable,'-c',packet_worker("q['osk_reviews']['domain'][0]['target']='Whatever'")])
+            assert result['ok'], result
+            assert any('target was dropped' in n for n in result['final_reviews']['notes']), result
+            assert [r['outcome'] for r in core.ledger_read(growth.LEDGER) if r['kind']=='review'] == ['no_value']
+        """)
+
+    def test_a_report_from_an_older_selection_does_not_undo_a_newer_one(self):
+        self.check_case("""
+            node('A')
+            old, new = register(), register()        # two selections of the same comparison
+            key = old['candidates'][0]['key']
+            assert key == new['candidates'][0]['key']
+            growth.review(key, 'no_value', reason='Decided on the later selection.', manifest=new['rid'])
+            assert growth._completed(key, growth._records(), graph.Index())
+            # The earlier selection's worker reports late. Its report is kept, but it does not
+            # undo the later selection's decision (the growth ledger is causal, so a late append
+            # would otherwise become the latest).
+            growth.review(key, 'deferred', reason='Late report from the earlier selection.', manifest=old['rid'])
+            assert growth._completed(key, growth._records(), graph.Index()), 'an older report reopened it'
+            assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == 2
+            # The same selection can still reopen its own decision on purpose.
+            growth.review(key, 'deferred', reason='Reopened within the later selection.', manifest=new['rid'])
+            assert not growth._completed(key, growth._records(), graph.Index())
+        """)
+
+    def test_selections_made_apart_stay_undecided_until_a_later_one(self):
+        self.check_case("""
+            node('A')
+            # Two devices select the same comparison before syncing. Neither selection follows
+            # the other, so their different reports leave it undecided (Mechanism §3 1) instead
+            # of letting the larger RID win. A selection made after the merge decides it.
+            base = growth.LEDGER.read_bytes() if growth.LEDGER.exists() else b''
+            x = register()
+            key = x['candidates'][0]['key']
+            growth.review(key, 'deferred', reason='Device X could not decide.', manifest=x['rid'])
+            branch = growth.LEDGER.read_bytes()[len(base):]
+            growth.LEDGER.write_bytes(base)
+            y = register()
+            assert y['candidates'][0]['key'] == key and core._rid_key(x['rid']) < core._rid_key(y['rid'])
+            growth.review(key, 'no_value', reason='Device Y found nothing to keep.', manifest=y['rid'])
+            growth.LEDGER.write_bytes(growth.LEDGER.read_bytes() + branch)    # the sync merge
+            rows = growth._records()
+            assert growth._latest(rows, key, 'key') is None
+            assert not growth._completed(key, rows, graph.Index()), 'the larger RID decided a fork'
+            z = register()
+            growth.review(key, 'no_value', reason='Decided after the merge.', manifest=z['rid'])
+            assert growth._completed(key, growth._records(), graph.Index())
         """)
 
     def test_final_packet_saved_declaration_requires_actual_receipt(self):
@@ -1139,11 +1212,9 @@ class GrowthTests(unittest.TestCase):
                 assert growth.checkpoint(packet)['ok']
                 assert len([r for r in evictions.records() if r['kind']=='settle']) == 1
                 packet['osk_reviews']['eviction'][0]['of'] = items[1]['rid']
-                try:
-                    growth.checkpoint(packet)
-                    raise AssertionError('unselected eviction accepted')
-                except ValueError:
-                    pass
+                refused = growth.checkpoint(packet)
+                assert not refused['ok'] and any('unselected eviction review' in e for e in refused['errors']), refused
+                assert len([r for r in evictions.records() if r['kind']=='settle']) == 1
         """)
 
 

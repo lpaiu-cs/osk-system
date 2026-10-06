@@ -92,12 +92,15 @@ class OrganizationTests(unittest.TestCase):
             packet = {'osk_reviews':{'manifest':'fixture','domain':[],'scope':[],
                       'organization':[{'key':job['key'],'scope':'W1','outcome':'deferred',
                       'reason':'Forged later selection','checked':[{'unit':before['review_units'][0]['unit'],'reason':'not in manifest'}]}]}}
-            rejected(lambda: growth._validate_packet(packet,{'manifest':'fixture','candidates':[],
-                     'scope_jobs':[],'organization_jobs':[job]}))
+            # A unit outside the manifest is dropped and named; the entry itself still applies.
+            out = growth._validate_packet(packet,{'manifest':'fixture','candidates':[],
+                                          'scope_jobs':[],'organization_jobs':[job]})
+            assert out['organization'][0]['checked'] == [] and out['notes'], out
             for malformed in ([], {}, None):
                 packet['osk_reviews']['organization'][0]['checked'][0]['unit'] = malformed
-                rejected(lambda: growth._validate_packet(packet,{'manifest':'fixture','candidates':[],
-                         'scope_jobs':[],'organization_jobs':[job]}))
+                out = growth._validate_packet(packet,{'manifest':'fixture','candidates':[],
+                                              'scope_jobs':[],'organization_jobs':[job]})
+                assert not out['organization'] and out['errors'], out   # only that entry is set aside
             assert saved['remaining_units'] == job['coverage']['remaining'] - 3
             write.update_node('Large',old_text='## Claim 19',new_text='## Claim 19 revised')
             after = organization.plan('W1')
@@ -105,11 +108,24 @@ class OrganizationTests(unittest.TestCase):
             assert not {u['unit'] for u in checked} & {u['unit'] for u in after['review_units']}
             write.update_node('Large',summary='Updated current result; earlier claim text unchanged')
             assert organization.plan('W1')['coverage']['remaining'] == after['coverage']['remaining'] + 1
-            # Stale and unselected units cannot be claimed, even with a current snapshot.
-            rejected(lambda: organization.review(after['key'],'W1','deferred','replay',after=after['snapshot'],checked=checked))
+            # Stale and unselected units cannot be claimed, even with a current snapshot: a deferred
+            # review keeps its other progress and names them back unrecorded.
+            replay = organization.review(after['key'],'W1','deferred','replay',after=after['snapshot'],checked=checked)
+            assert replay['skipped'] == [u['unit'] for u in checked] and not replay['checked'], replay
             changed = after['review_units'][0]
             write.update_node('Large',old_text='## Claim 3',new_text='## Claim 3 changed')
-            rejected(lambda: organization.review(after['key'],'W1','deferred','old bytes',after=after['snapshot'],checked=[{'unit':changed['unit'],'reason':'old claim'}]))
+            stale = organization.review(after['key'],'W1','deferred','old bytes',after=after['snapshot'],
+                                        checked=[{'unit':changed['unit'],'reason':'old claim'}])
+            assert stale['skipped'] == [changed['unit']], stale
+            assert changed['unit'] not in organization._load()['coverage']['W1']
+            rejected(lambda: organization.review(after['key'],'W1','complete','old bytes',after=after['snapshot'],
+                                                 checked=[{'unit':changed['unit'],'reason':'old claim'}]))
+            # The accepted deferred reviews handed 'Large' (edited after the plan) to another
+            # reviewer; let that cooling pass before finishing.
+            state = organization._load()
+            state['handoff']['W1'] = {u: at - organization.HANDOFF_SECONDS - 1
+                                      for u, at in state['handoff']['W1'].items()}
+            organization._save(state)
             finish_review('W1','Each synthetic claim is bounded and retained in this fixture')
             assert organization.status(job)['status'] == 'complete'
             write.update_node('Large',old_text='## Claim 0',new_text='## Claim 0 corrected')

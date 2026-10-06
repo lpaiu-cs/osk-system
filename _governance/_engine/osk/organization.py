@@ -346,10 +346,13 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
         current = snapshot(scope)
         allowed = {u["unit"] for u in selected.get("review_units", [])}
         live = {u["unit"] for u in current["units"]}
-        if any(i["unit"] not in allowed & live for i in checked):
+        skipped = [i["unit"] for i in checked if i["unit"] not in allowed & live]
+        if skipped and outcome == "complete":
             raise ValueError("unselected or changed review unit; inspect a fresh plan")
         # 구간 키가 본문을 묶으므로, 바뀌지 않은 구간의 판단은 그 뒤 scope가 바뀌어도(이
-        # 검토자의 쓰기 포함) 보류 진척으로 남긴다. 완료만 판독한 snapshot을 요구한다(아래).
+        # 검토자의 쓰기 포함) 보류 진척으로 남긴다. 바뀌었거나 고르지 않은 구간은 기록하지
+        # 않고 돌려준다. 완료만 판독한 snapshot과 모든 구간을 요구한다(아래).
+        checked = [i for i in checked if i["unit"] not in skipped]
         coverage = state.setdefault("coverage", {}).setdefault(scope, {})
         for item in checked:
             coverage[item["unit"]] = {"reason": item["reason"].strip(), "at": core.now_kst()}
@@ -372,6 +375,8 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
         row = {"key": key, "scope": scope, "outcome": outcome, "reason": reason.strip(),
                "after": current["snapshot"], "intentional": intentional, "checked": checked,
                "remaining_units": len(_remaining(current, state)), "at": core.now_kst()}
+        if skipped:
+            row["skipped"] = skipped
         state["reviews"][scope] = row
         if outcome == "complete":
             state["moves"] = {k: m for k, m in state.get("moves", {}).items()
