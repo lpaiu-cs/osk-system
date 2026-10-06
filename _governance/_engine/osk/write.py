@@ -1298,14 +1298,18 @@ def update_node(name: str, body: str | None = None,
                 expect_hash: str | None = None, summary: str | None = None,
                 add_edges: dict | None = None, remove_edges: dict | None = None,
                 old_text: str | None = None, new_text: str | None = None,
-                settle: str | None = None, *, _seen: dict | None = None) -> dict:
+                settle: str | None = None, rechecked: list | None = None, *,
+                _seen: dict | None = None) -> dict:
     """Apply an ordinary node update under the shared mutation lock.
 
+    `rechecked` names the `derived-from` targets whose recheck this call completes.
     `_seen` is the surface's record of the bodies its caller read (path →
-    `rechecks.state`); a recheck closes only against those states (Mechanism §4-1)."""
+    `rechecks.state`); a recorded read must still match for a recheck to close
+    (Mechanism §4-1)."""
     with _Lock():
         return _update_node_locked(name, body, expect_hash, summary, add_edges,
-                                   remove_edges, old_text, new_text, settle, _seen=_seen)
+                                   remove_edges, old_text, new_text, settle, rechecked,
+                                   _seen=_seen)
 
 
 def _update_node_locked(name: str, body: str | None = None,
@@ -1313,7 +1317,8 @@ def _update_node_locked(name: str, body: str | None = None,
                 add_edges: dict | None = None,
                 remove_edges: dict | None = None,
                 old_text: str | None = None,
-                new_text: str | None = None, settle: str | None = None, *, _before_write=None,
+                new_text: str | None = None, settle: str | None = None,
+                rechecked: list | None = None, *, _before_write=None,
                 _stamp=None, _legacy_raw=False, _seen=None) -> dict:
     """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
     상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
@@ -1373,13 +1378,21 @@ def _update_node_locked(name: str, body: str | None = None,
         raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
 
     _cas(path, expect_hash, body is not None)   # 위반 시 raise
-    # 근거 재검토(Mechanism §4-1) — 쓰기 전의 쌍과 완료 상태, 이 호출이 다시 댄 근거
+    # 근거 재검토(Mechanism §4-1) — 쓰기 전의 쌍과 완료 상태, 이 호출이 `rechecked`에 적은 근거.
+    # 잴 수 있는 쌍이 아닌 항목은 쓰기를 막지 않고 응답에 비춘다(헌법 1조 3항).
     _baseline(idx)
     rc_before = rechecks.pairs(idx, n.meta)
     rc_pre = rechecks.state(path.read_bytes())  # 검토자가 읽었어야 할 노드의 본문
     rc_prior = rechecks.complete_keys(idx, path, n.meta) if rc_before else set()
-    rc_again = {t[0] for ref in _as_list((add_edges or {}).get("derived-from", []))
-                if (t := rechecks.target(str(ref), idx)) and t[0] in rc_before}
+    rc_again, rc_stray = set(), []
+    for ref in _as_list(rechecked):
+        t = rechecks.target(str(ref), idx)
+        if t and t[0] in rc_before and t[1] is not None:
+            rc_again.add(t[0])
+        else:
+            rc_stray.append(str(ref))
+    rc_note = {"recheck_unmatched": {"targets": rc_stray, "why": (
+        "이 노드의 derived-from에 상태를 잴 수 있는 근거로 없다 — 닫을 쌍이 없다")}} if rc_stray else {}
     if old_text is not None:
         # **유일성이 안전 계약의 전부다.** 여러 곳에 맞으면 어디를 고칠지
         # 호출자가 정한 바가 없고, 아무 곳이나 고르는 것은 조용히 틀린
@@ -1466,10 +1479,10 @@ def _update_node_locked(name: str, body: str | None = None,
                "path": posix_rel(path, ROOT), "id": n.id,
                "new_hash": sha256_file(path),
                "edges": _edge_report(n),
-               **_reference_feedback(path, n.meta, n.body, idx, n)}
-        if rc_again:     # 바꿀 것 없이 근거를 다시 댔다 — 점검 완료(unchanged)
+               **_reference_feedback(path, n.meta, n.body, idx, n), **rc_note}
+        if rc_again:     # 바꿀 것 없이 점검을 적었다 — 점검 완료(unchanged)
             res.update(rechecks.after_write(idx, path, n.meta, before=rc_before.keys(),
-                                            prior=rc_prior, reasserted=rc_again,
+                                            prior=rc_prior, rechecked=rc_again,
                                             changed=False, pre=rc_pre, seen=_seen))
         return res
     if not only_conflicts:
@@ -1491,9 +1504,9 @@ def _update_node_locked(name: str, body: str | None = None,
            "id": n.id, "new_hash": sha256_bytes(data),
            "updated_kept": only_conflicts,
            "edges": _edge_report(contract.Node(path=path, meta=meta, body=new_body)),
-           **_reference_feedback(path, meta, new_body, idx, n)}
+           **_reference_feedback(path, meta, new_body, idx, n), **rc_note}
     out.update(rechecks.after_write(idx, path, meta, before=rc_before.keys(),
-                                    prior=rc_prior, reasserted=rc_again,
+                                    prior=rc_prior, rechecked=rc_again,
                                     pre=rc_pre, seen=_seen))
     # 쓰기 직전 본문을 읽었던 호출자는 방금 쓴 본문도 안다 — 쓰기 응답의 해시를 다음
     # `expect_hash`로 잇는 것과 같은 규율이다. 읽지 않았으면 잇지 않는다.

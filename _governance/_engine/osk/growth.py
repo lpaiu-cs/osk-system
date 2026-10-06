@@ -214,7 +214,7 @@ def _pick_rechecks(idx: graph.Index, limit: int, scope: str | None = None,
 
 
 def _recheck_status(job: dict, idx: graph.Index) -> dict:
-    """그 쌍이 더는 후보가 아니면 완료다 — 다시 대어 닫았거나 근거를 뺐다."""
+    """그 쌍이 더는 후보가 아니면 완료다 — `rechecked`로 닫았거나 근거를 뺐다."""
     from . import rechecks
     hit = idx.by_id.get(job["id"])
     if hit is None:
@@ -462,11 +462,11 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "reason,target?}] using selected IDs only; node/merged require the actual target title.\n"
         "For recheck_jobs, node cites target as derived-from and target changed since node was "
         "last checked; change holds the diff of the side that changed, or a note to read the full "
-        "text. Read both through osk read_node, in full or the ranges you need (a check records "
-        "only against the versions you read). If node still holds, call update_node(name=node, "
-        "add_edges={\"derived-from\": target}) with nothing else. If node needs a correction and "
-        "cascade is false, read the nodes in next (they cite node): when your correction would not "
-        "require changing any of them, apply it and name the same target in add_edges in that "
+        "text. Read both through osk read_node, in full or the ranges you need (a check is not "
+        "recorded when either side changed after your read). If node still holds, call "
+        "update_node(name=node, rechecked=[target]) with nothing else. If node needs a correction "
+        "and cascade is false, read the nodes in next (they cite node): when your correction would "
+        "not require changing any of them, apply it and name the same target in rechecked in that "
         "update_node call. Do not apply a correction that would require changing a node in next, "
         "and never correct node when cascade is true (target was itself just corrected by a "
         "recheck); instead report recheck:[{key,outcome:escalated,reason,proposal}] for the "

@@ -624,17 +624,19 @@ maximum among `review` records with that key.
   count as one. Any other pair makes the citing node a recheck candidate, listed
   by `overview`, the validator's warnings and `osk rechecks`.
 - **Writers** (Mechanism §4-1 2–3). A node write appends `bound` for each pair
-  it wires. An `update_node` whose `add_edges` names an existing target again
-  appends `updated` when the same call changes the node's body and `unchanged`
-  when it does not; this closes a candidate. Through the MCP surface it records
-  only the states the caller read: the node's and a node target's body as last
+  it wires. An `update_node` whose `rechecked` names an existing target appends
+  `updated` when the same call changes the node's body and `unchanged` when it
+  does not; this closes a candidate. Naming the target in `add_edges` again does
+  not. A recorded view must still hold: the node's and a node target's body as
   read with `read_node` in that session, in full or in part, and a non-node
-  target as last presented by a scheduled recheck job; a non-node target that no
-  job presented does not close through the surface. A write through the surface
-  carries the state it wrote forward when the caller had read the state it
-  replaced. Otherwise the response reports `recheck_unread` and the pair stays a
-  candidate. These read states only bind a check: a partial read still gives no
-  `hash` for `expect_hash`. When an engine write changes a node's body, every
+  target as presented by a scheduled recheck job must equal its state just
+  before the write. A side with no recorded read or presentation closes as the
+  reviewer stated. A write through the surface carries the state it wrote
+  forward when the caller had read the state it replaced. When a recorded view
+  differs, the response reports `recheck_unread` and the pair stays a candidate.
+  A `rechecked` entry that is not a measurable target of the node is reported in
+  `recheck_unmatched`, and the rest of the call still applies. These read states
+  only bind a check: a partial read still gives no `hash` for `expect_hash`. When an engine write changes a node's body, every
   other pair of that node that was complete before is appended again with the
   new `node_state`, as `unchanged` with reason `이어받음`. A ledger without records
   receives one `bound` record with reason `기준선` for every tracked pair that has

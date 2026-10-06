@@ -289,7 +289,10 @@ def _child():
                                               new_text="old knowledge\nConcurrent addition.")
                         spec = dict(self.spec, sources=[self.source["id"]])
                         request = dict(name=existing["id"], old_text="old knowledge",
-                                       new_text="revised knowledge", distill=spec)
+                                       new_text="revised knowledge", distill=spec,
+                                       rechecked=[self.source["id"]])
+                        # A recorded read must still hold; a side never read closes as stated.
+                        stale = case in ("source_changed", "target_changed")
 
                         def pending():
                             return [r for r in rechecks.candidates()[0] if r["id"] == existing["id"]]
@@ -298,8 +301,8 @@ def _child():
                             out = M.update_node(**request)
                             self.assertTrue(out["ok"], out)
                             self.assertEqual(out["distillation"]["status"], "complete")
-                            self.assertEqual(bool(out.get("recheck_unread")), case != "fresh", out)
-                            self.assertEqual(bool(pending()), case != "fresh")
+                            self.assertEqual(bool(out.get("recheck_unread")), stale, out)
+                            self.assertEqual(bool(pending()), stale)
                             # Process-local reads must not change the persisted request binding.
                             M._SEEN.clear()
                             again = M.update_node(**request)
@@ -307,16 +310,30 @@ def _child():
                             self.assertEqual(again["new_hash"], out["new_hash"])
                             resumed = M.update_node(existing["id"], distill={"resume": self.key})
                             self.assertTrue(resumed["resumed"], resumed)
-                            self.assertEqual(bool(pending()), case != "fresh")
+                            self.assertEqual(bool(pending()), stale)
                             M.read_node(self.source["id"])
                             M.read_node(existing["id"])
-                            closed = M.update_node(existing["id"],
-                                                   add_edges={"derived-from": self.source["id"]})
+                            closed = M.update_node(existing["id"], rechecked=[self.source["id"]])
                             self.assertTrue(closed.get("rechecked"), closed)
                             self.assertFalse(pending())
                         finally:
                             D._job_path(self.key).unlink(missing_ok=True)
                             M._SEEN.clear()
+
+            def test_mcp_retry_keeps_the_binding_of_a_request_without_rechecked(self):
+                import mcp_server as M
+                existing = write.create_node(self.args["title"], "old", "old knowledge",
+                                             "fable-5", space="00_Scope/W1")
+                # The request exactly as the surface sent it before `rechecked` existed: a job
+                # journaled then must resume, not count as a different request.
+                first = D.update_node(self.spec, name=existing["id"], body=None, expect_hash=None,
+                                      summary=None, add_edges=None, remove_edges=None,
+                                      old_text="old knowledge", new_text="revised knowledge",
+                                      settle=None)
+                self.assertEqual(first["distillation"]["status"], "complete", first)
+                again = M.update_node(existing["id"], old_text="old knowledge",
+                                      new_text="revised knowledge", distill=self.spec)
+                self.assertTrue(again.get("resumed"), again)
 
             def test_domain_distillation_uses_scope_provenance(self):
                 domain = core.ROOT / "00_Domain" / self.name

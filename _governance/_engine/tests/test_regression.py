@@ -8432,7 +8432,9 @@ def test_rechecks():
     무엇을 망가뜨리면 실패하는가:
       · 생성이 `bound`를 적지 않으면 → 생성 직후 완료 단언
       · 판정이 대상 상태를 안 보면 → 근거 변경 후보 단언
-      · 다시 댄 근거를 닫지 않으면 → unchanged·updated 단언
+      · `rechecked`에 적은 근거를 닫지 않으면 → unchanged·updated 단언
+      · 근거를 `add_edges`로 다시 넣기만 해도 닫으면 → 배선만 다시 넣은 단언
+      · 읽거나 보여 준 기록이 없는 쪽을 거절하면 → 기록 없음 단언
       · 이어 적기가 없으면 → 노드만 고친 뒤 완료 단언
       · 판정이 노드 상태를 안 보면 → 엔진 밖 변경 후보 단언
       · 제목 범위가 다음 동급 제목에서 끊기지 않으면 → 다른 절 변경 단언
@@ -8491,23 +8493,28 @@ def test_rechecks():
         r_rel, s_rel = "00_Scope/W1/regr-rc-R.md", "00_Scope/W1/regr-rc-S.md"
         seen3 = {r_rel: st(W / "regr-rc-R.md"), s_rel: st(W / "regr-rc-S.md")}
         _w(write.update_node, "regr-rc-S", summary="읽은 뒤 요약만 바뀐다")
-        r = _w(write.update_node, "regr-rc-R", summary="요약과 함께 다시 댄다",
-               add_edges={"derived-from": "regr-rc-S"}, _seen=seen3)
-        check("읽은 뒤 요약만 바뀐 근거를 요약과 함께 다시 대면 unchanged로 닫힌다",
+        r = _w(write.update_node, "regr-rc-R", summary="요약과 함께 점검을 적는다",
+               rechecked=["regr-rc-S"], _seen=seen3)
+        check("읽은 뒤 요약만 바뀐 근거를 요약과 함께 rechecked에 적으면 unchanged로 닫힌다",
               r.get("rechecked") and not why("regr-rc-R")
               and last("regr-rc-R").get("result") == "unchanged", r)
 
         _w(write.update_node, "regr-rc-T", old_text="1판", new_text="2판")
         check("근거가 바뀌면 후보다", why("regr-rc-N") == {"근거가 바뀌었다"})
         r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"})
-        check("바꿀 것 없이 다시 대면 unchanged로 닫힌다",
+        check("근거를 add_edges로 다시 넣기만 해서는 닫히지 않는다",
+              r.get("no_change") and "rechecked" not in r
+              and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
+        r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T", "regr-rc-S", "regr-rc-없음"])
+        check("바꿀 것 없이 rechecked에 적으면 unchanged로 닫히고, 근거가 아닌 항목은 비춘다",
               r.get("no_change") and r.get("rechecked") == ["[[regr-rc-T]]"]
+              and r.get("recheck_unmatched", {}).get("targets") == ["regr-rc-S", "regr-rc-없음"]
               and not why("regr-rc-N") and last("regr-rc-N").get("result") == "unchanged", r)
 
         _w(write.update_node, "regr-rc-T", old_text="2판", new_text="3판")
         r = _w(write.update_node, "regr-rc-N", old_text="주장.", new_text="고친 주장.",
-               add_edges={"derived-from": "regr-rc-T"})
-        check("본문과 함께 다시 대면 updated로 닫힌다",
+               rechecked=["regr-rc-T"])
+        check("본문과 함께 rechecked에 적으면 updated로 닫힌다",
               r.get("ok") and not why("regr-rc-N")
               and last("regr-rc-N").get("result") == "updated", r)
 
@@ -8570,7 +8577,7 @@ def test_rechecks():
         from unittest import mock
         t = W / "regr-rc-T.md"
         old_t = t.read_bytes()
-        _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"})
+        _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"])
         _w(write.update_node, "regr-rc-T", old_text="3판", new_text="4판")
         idx = graph.Index()
         nid = idx.node(W / "regr-rc-N.md").id
@@ -8598,20 +8605,18 @@ def test_rechecks():
                 got = rechecks._versions("a b.md", "2026-09-02T10:00:00+09:00")
             check("git 이력에서 점검 시각 앞뒤의 판을 꺼낸다", got == [b"old\n", b"new\n"], got)
 
-        # 다시 대기는 검토자가 읽은 판에만 완료를 적는다(표면의 `read_node` 기록)
+        # 표면의 `read_node` 기록이 있으면 그 판이 쓰기 직전과 같을 때만 완료를 적는다
         n_rel, t_rel = "00_Scope/W1/regr-rc-N.md", "00_Scope/W1/regr-rc-T.md"
         seen = {n_rel: st(W / "regr-rc-N.md"), t_rel: st(t)}
         _w(write.update_node, "regr-rc-T", old_text="4판", new_text="5판")    # 읽은 뒤 바뀐다
-        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
-               _seen=seen)
+        r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen=seen)
         check("읽은 뒤 근거가 바뀌었으면 완료를 적지 않는다",
               r.get("recheck_unread") and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
         seen[t_rel] = st(t)
-        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
+        r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"],
                _seen={**seen, n_rel: "sha256:0"})
-        check("읽지 않은 노드 판으로도 완료를 적지 않는다", r.get("recheck_unread"), r)
-        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
-               _seen=seen)
+        check("읽은 노드 판이 지금과 다르면 완료를 적지 않는다", r.get("recheck_unread"), r)
+        r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen=seen)
         check("읽은 판 그대로면 완료를 적는다", r.get("rechecked") and not why("regr-rc-N"), r)
 
         # 부분 열람도 읽은 판을 고정한다 — 전문 치환용 해시는 여전히 주지 않는다
@@ -8632,12 +8637,16 @@ def test_rechecks():
            _seen=blind)
         check("쓰기 전 판을 읽지 않은 쓰기는 잇지 않는다", n_rel not in blind, blind)
         seen2[n_rel] = st(W / "regr-rc-N.md")
-        r = _w(write.update_node, "regr-rc-N", add_edges={"derived-from": "regr-rc-T"},
-               _seen=seen2)
-        check("이은 판으로 근거를 다시 대면 완료를 적는다",
+        r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen=seen2)
+        check("이은 판으로 rechecked에 적으면 완료를 적는다",
               r.get("rechecked") and not why("regr-rc-N"), r)
+        # 표면이 다시 떠 읽은 기록이 비었다 — 검토자가 적은 대로 둔다(헌법 1조 3항)
+        _w(write.update_node, "regr-rc-T", old_text="6판", new_text="7판")
+        r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen={})
+        check("읽은 기록이 없으면 적은 대로 완료를 적는다",
+              r.get("rechecked") and not r.get("recheck_unread") and not why("regr-rc-N"), r)
 
-        # 비노드 근거는 정기 실행 작업이 보여 준 판으로만 닫힌다
+        # 비노드 근거는 정기 실행 작업이 보여 준 판과 대조하고, 보여 준 기록이 없으면 적은 대로 둔다
         fref = "[[_sources/regr-rc.md]]"
         _w(write.create_node, "regr-rc-W", "s", "파일 근거.", "fable-5", space="00_Scope/W1",
            edges={"derived-from": fref})
@@ -8645,17 +8654,25 @@ def test_rechecks():
         _age_all()
         w_rel = "00_Scope/W1/regr-rc-W.md"
         sw = {w_rel: st(W / "regr-rc-W.md")}
-        r = _w(write.update_node, "regr-rc-W", add_edges={"derived-from": fref}, _seen=sw)
-        check("보여 준 적 없는 비노드 근거는 완료를 적지 않는다",
-              r.get("recheck_unread") and why("regr-rc-W") == {"근거가 바뀌었다"}, r)
+        r = _w(write.update_node, "regr-rc-W", rechecked=[fref], _seen=sw)
+        check("보여 준 기록이 없는 비노드 근거는 적은 대로 완료를 적는다",
+              r.get("rechecked") and not why("regr-rc-W"), r)
+        shown = rechecks.target(fref, graph.Index())[1]
+        src.write_text(src.read_text(encoding="utf-8") + "\n또 덧붙임.\n", encoding="utf-8")
+        _age_all()
         gled = growth.LEDGER
         gbefore = gled.read_bytes() if gled.exists() else None
         try:
             wid = graph.Index().node(W / "regr-rc-W.md").id
             core.ledger_append(gled, {"kind": "plan", "recheck_jobs": [{
+                "key": f"recheck:{wid}:_sources/regr-rc.md", "target_state": shown}]})
+            r = _w(write.update_node, "regr-rc-W", rechecked=[fref], _seen=sw)
+            check("정기 작업이 보여 준 판이 지금과 다르면 완료를 적지 않는다",
+                  r.get("recheck_unread") and why("regr-rc-W") == {"근거가 바뀌었다"}, r)
+            core.ledger_append(gled, {"kind": "plan", "recheck_jobs": [{
                 "key": f"recheck:{wid}:_sources/regr-rc.md",
                 "target_state": rechecks.target(fref, graph.Index())[1]}]})
-            r = _w(write.update_node, "regr-rc-W", add_edges={"derived-from": fref}, _seen=sw)
+            r = _w(write.update_node, "regr-rc-W", rechecked=[fref], _seen=sw)
             check("정기 작업이 보여 준 판이면 완료를 적는다",
                   r.get("rechecked") and not why("regr-rc-W"), r)
         finally:
@@ -11627,7 +11644,9 @@ def test_node_heading_edge_coordinates():
         write.update_node(target["name"], old_text="Second result.", new_text="Second result revised.")
         check("changing only B schedules the node's B reference", pending() == {b}, pending())
         write.update_node(path.stem, add_edges={"derived-from": b})
-        check("reasserting B closes its recheck and preserves A", not pending() and stored() == [a, b])
+        check("re-adding B alone leaves its recheck open", pending() == {b}, pending())
+        write.update_node(path.stem, rechecked=[b])
+        check("rechecked B closes its recheck and preserves A", not pending() and stored() == [a, b])
         write.update_node(path.stem, remove_edges={"derived-from": b})
         check("removing B leaves A", stored() == [a], stored())
         write.update_node(path.stem, add_edges={"derived-from": b})
@@ -11640,7 +11659,10 @@ def test_node_heading_edge_coordinates():
         write.update_node(target["name"], old_text="First result.", new_text="First result revised.")
         check("changing only A schedules only A", pending() == {a}, pending())
         write.update_node(path.stem, remove_edges={"derived-from": a}, add_edges={"derived-from": a})
-        check("remove and readd A preserves B and closes A", stored() == [b, a] and not pending(), stored())
+        check("remove and readd A preserves B and leaves A open",
+              stored() == [b, a] and pending() == {a}, (stored(), pending()))
+        write.update_node(path.stem, rechecked=[a])
+        check("rechecked A closes it", not pending(), pending())
     finally:
         rmtree_force(base)
         if before is None:

@@ -435,7 +435,11 @@ def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
 #     개정). 인용은 턴 좌표만 받고 발화는 엔진이 옮기므로 라운드 본문 인자가 빠졌다.
 #     read_cited는 원본 턴 좌표도 받는다(Mechanism §9 8항) — 샌드박스 안의 정기
 #     실행이 CLI 없이 끝난 대화의 턴을 읽는 길이다. cite_round·search 설명을 줄여 맞췄다.
-SCHEMA_BUDGET = 7700
+#   7700 → 7800: `update_node`의 `rechecked`(Mechanism §4-1 2항 개정, 2026-10-06). 근거를
+#     다시 넣는 배선과 재검토 완료를 갈랐다 — 근거를 다른 까닭으로 다시 넣은 호출이 점검을
+#     닫지 않는다. 스키마만 자란다(+92). 쓰는 법은 후보와 함께 오는 `rechecks.close`가
+#     가르치므로 설명에는 싣지 않는다.
+SCHEMA_BUDGET = 7800
 
 # 마지막 표면 린트의 상주 비용 분해 — surface_lint가 채우고 run이 보고에 싣는다.
 _last_surface_cost: dict | None = None
