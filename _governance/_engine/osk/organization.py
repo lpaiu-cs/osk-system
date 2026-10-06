@@ -212,8 +212,9 @@ def hub_tree(base: Path, idx=None) -> str:
             members.setdefault(path.parent, []).append(path)
     lines = []
     for d in sorted(members, key=lambda p: p.relative_to(base).parts):
-        hub = d / (d.name + ".md")
-        if hub not in members[d]:
+        # 허브 판정은 graph.is_hub 그대로다 — 확장자의 대소문자를 가리지 않는다(Mechanism §1 4항)
+        hub = next((p for p in members[d] if graph.is_hub(p)), None)
+        if hub is None:
             continue
         try:
             summary = str(idx.node(hub).meta.get("summary", ""))
