@@ -381,6 +381,26 @@ class OrganizationTests(unittest.TestCase):
             assert organization.plan("W1")["status"]=="complete"
         """)
 
+    def test_a_node_written_without_its_hub_link_is_found_and_holds_completion(self):
+        self.case("""
+            # M3: a plain write that leaves its node unlinked is found again by the organization
+            # review and the validator, and the review cannot complete until the hub links it.
+            out = write.create_node("Loose","Loose","A claim nobody linked","gpt-6-astra",space="00_Scope/W1")
+            assert out["ok"], out
+            job = organization.plan("W1")
+            assert any(i["path"]=="00_Scope/W1" and "Loose" in i["missing_links"] for i in job["issues"]), job["issues"]
+            assert "Loose" in validate.cluster_overview_report(graph.Index())["00_Scope/W1"].get("orphans", [])
+            try:
+                finish_review("W1", "Read every unit")
+                raise AssertionError("an unlinked node let the review complete")
+            except ValueError as e:
+                assert "hub wiring" in str(e), e
+            wire("W1","Loose")
+            assert not organization.snapshot("W1")["issues"]
+            finish_review("W1", "Linked from its hub")
+            assert organization.plan("W1")["status"]=="complete"
+        """)
+
     def test_linked_worktrees_share_lock_but_not_organization_state(self):
         self.case("""
             import os,subprocess
