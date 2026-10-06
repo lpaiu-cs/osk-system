@@ -1064,6 +1064,30 @@ class GrowthTests(unittest.TestCase):
             assert not growth._completed(key, growth._records(), graph.Index())
         """)
 
+    def test_selections_made_apart_stay_undecided_until_a_later_one(self):
+        self.check_case("""
+            node('A')
+            # Two devices select the same comparison before syncing. Neither selection follows
+            # the other, so their different reports leave it undecided (Mechanism §3 1) instead
+            # of letting the larger RID win. A selection made after the merge decides it.
+            base = growth.LEDGER.read_bytes() if growth.LEDGER.exists() else b''
+            x = register()
+            key = x['candidates'][0]['key']
+            growth.review(key, 'deferred', reason='Device X could not decide.', manifest=x['rid'])
+            branch = growth.LEDGER.read_bytes()[len(base):]
+            growth.LEDGER.write_bytes(base)
+            y = register()
+            assert y['candidates'][0]['key'] == key and core._rid_key(x['rid']) < core._rid_key(y['rid'])
+            growth.review(key, 'no_value', reason='Device Y found nothing to keep.', manifest=y['rid'])
+            growth.LEDGER.write_bytes(growth.LEDGER.read_bytes() + branch)    # the sync merge
+            rows = growth._records()
+            assert growth._latest(rows, key, 'key') is None
+            assert not growth._completed(key, rows, graph.Index()), 'the larger RID decided a fork'
+            z = register()
+            growth.review(key, 'no_value', reason='Decided after the merge.', manifest=z['rid'])
+            assert growth._completed(key, growth._records(), graph.Index())
+        """)
+
     def test_final_packet_saved_declaration_requires_actual_receipt(self):
         self.check_case("""
             node('A')
