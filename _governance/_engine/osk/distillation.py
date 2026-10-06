@@ -193,8 +193,8 @@ def _placement(p: Path, idx, *, repair: bool = False, selected: dict | None = No
     directory = p.parent.parent if graph.is_hub(p) else p.parent
     current_hubs = []
     while len(directory.relative_to(ROOT).parts) >= 2:
-        hp = directory / (directory.name + ".md")
-        if not hp.is_file() or not graph.is_hub(hp):
+        hp = graph.hub_file(directory)
+        if hp is None:
             raise write.WriteError("current placement hub missing; pending")
         hn = contract.parse(hp)
         if (selected and posix_rel(p, ROOT) == selected["target"]["path"]
@@ -204,9 +204,10 @@ def _placement(p: Path, idx, *, repair: bool = False, selected: dict | None = No
         if child not in {write._live_locate(ref, idx) for ref in hn.wikilinks()}:
             if not repair:
                 raise write.WriteError("selected hub does not link to target; pending")
-            write._update_node_locked(hn.id,
+            # 이름으로 부른다 — id 핸들은 색인 전수 판독을 부른다(`_live_locate`). 같은 잠금 안의 색인을 잇는다.
+            write._update_node_locked(hp.stem,
                 body=hn.body.rstrip() + "\n\n- [[" + child.stem + "]]\n",
-                expect_hash=sha256_file(hp))
+                expect_hash=sha256_file(hp), _idx=idx)
         current_hubs.append({"id": hn.id, "path": posix_rel(hp, ROOT), "hash": sha256_file(hp)})
         if directory == top:
             break

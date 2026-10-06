@@ -340,6 +340,8 @@ def _child():
                 # key; the saved body is neither lost nor written again.
                 existing = write.create_node(self.args["title"], "old", "old knowledge",
                                              "fable-5", space="00_Scope/W1")
+                # A plain write hangs the node on its hub; this case resumes an unlinked one.
+                write.update_node("W1", old_text="\n\n- [[" + self.args["title"] + "]]", new_text="")
                 target = core.ROOT / existing["path"]
                 request = dict(name=existing["id"], body=self.args["body"],
                                expect_hash=existing["new_hash"])

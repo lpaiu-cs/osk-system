@@ -416,12 +416,14 @@ class OrganizationTests(unittest.TestCase):
             assert "  - 00_Scope/W1/Branch · 직속 노드 1 — Branch entry" in tree.splitlines(), tree
         """)
 
-    def test_a_node_written_without_its_hub_link_is_found_and_holds_completion(self):
+    def test_a_node_without_its_hub_link_is_found_and_holds_completion(self):
         self.case("""
-            # M3: a plain write that leaves its node unlinked is found again by the organization
-            # review and the validator, and the review cannot complete until the hub links it.
+            # M3: a plain write hangs its node on the hub; a node that loses that link through a
+            # hub edit is found again by the organization review and the validator, and the
+            # review cannot complete until the hub links it.
             out = write.create_node("Loose","Loose","A claim nobody linked","gpt-6-astra",space="00_Scope/W1")
-            assert out["ok"], out
+            assert out["ok"] and out["placed"] == ["W1"], out
+            write.update_node("W1", old_text=chr(10)*2+"- [[Loose]]", new_text="")
             job = organization.plan("W1")
             assert any(i["path"]=="00_Scope/W1" and "Loose" in i["missing_links"] for i in job["issues"]), job["issues"]
             assert "Loose" in validate.cluster_overview_report(graph.Index())["00_Scope/W1"].get("orphans", [])

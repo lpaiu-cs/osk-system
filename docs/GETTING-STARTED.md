@@ -509,14 +509,14 @@ reviews.
 
    ```text
    Record in osk, as its own node in this project's scope, that the test suite runs with `make test`.
-   Link it from the my-app hub.
    ```
 
    The agent can now leave out `space`, because the binding decides where the
-   node lands. Then it edits the hub to add the link.
+   node lands. The engine links the node from the hub in the same write by
+   appending a `- [[title]]` line to the hub body.
 
-   **Check:** the result shows `"ok": true`. This time `bound_scope` is `null`,
-   because it only reports new bindings.
+   **Check:** the result shows `"ok": true` and `"placed": ["my-app"]`. This time
+   `bound_scope` is `null`, because it only reports new bindings.
 
 4. **Find it and read it.** Prompt:
 

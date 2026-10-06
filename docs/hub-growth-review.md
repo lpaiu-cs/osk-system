@@ -44,6 +44,24 @@ worker as `hub_tree` on each scope job) with the placement rule of Bylaws §3 8 
 without opening sub-clusters; the organization review receives it as `hub_tree` on its
 job and owns differentiation.
 
+## Plain writes — decided 2026-10-07
+
+The gap is not limited to reviews. An agent writing a node during its session also needs
+the hub tree to choose a cluster folder, and an agent that picks the right folder can
+still forget the hub link. The user decided:
+
+- `overview(session=…)` returns the bound scope's hub tree as `hub_tree`, and the
+  session-start notice points to it with the placement rule of Bylaws §3 8.
+- `create_node` hangs the new node in the same write, as distillation does: from the
+  landing cluster's hub up to the top hub, each hub that does not link the level below
+  gets a `- [[title]]` line at the end of its body. A bound session that omits `space`
+  lands at the scope root and is linked from the top hub, where the organization review
+  sees it in the hub tree's direct node count.
+- If a hub write fails, the node stays. The hubs that still do not link the level below
+  are reported as `hub_links` and the reason as `placement_error`. Workbench nodes are
+  not hung. Arranging links within a hub and differentiation stay with the organization
+  review.
+
 ## Implementation contract
 
 - Existing-node reuse means the same independently testable claim and conditions,
