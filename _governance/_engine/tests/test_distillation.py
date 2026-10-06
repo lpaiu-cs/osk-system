@@ -335,6 +335,50 @@ def _child():
                                       new_text="revised knowledge", distill=self.spec)
                 self.assertTrue(again.get("resumed"), again)
 
+            def test_update_crash_after_node_before_hub_resumes_without_rewrite(self):
+                # M3: an update stopped after the body is saved resumes linking under the same
+                # key; the saved body is neither lost nor written again.
+                existing = write.create_node(self.args["title"], "old", "old knowledge",
+                                             "fable-5", space="00_Scope/W1")
+                target = core.ROOT / existing["path"]
+                request = dict(name=existing["id"], body=self.args["body"],
+                               expect_hash=existing["new_hash"])
+                atomic = write._atomic_write
+                def crash(path, data):
+                    atomic(path, data)
+                    if path == target:
+                        raise Crash()
+                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                    with self.assertRaises(Crash):
+                        D.update_node(self.spec, **request)
+                saved = target.read_bytes()
+                self.assertIn(self.args["body"].encode(), saved)
+                self.assertEqual(D.status(self.key)["status"], "pending")
+                out = D.update_node(self.spec, **request)
+                self.assertEqual(out["distillation"]["status"], "complete", out)
+                self.assertEqual(out["id"], existing["id"])
+                self.assertEqual(target.read_bytes(), saved)
+
+            def test_receipt_rereads_every_entry_up_to_the_top_cluster(self):
+                # M3: completion re-reads the local hub and every upper entry, not the write's ok.
+                (core.ROOT / "00_Scope/W1/Sub").mkdir()
+                write.create_node("Sub", "sub entry", "Sub cluster entry.", "fable-5",
+                                  space="00_Scope/W1/Sub")
+                out = D.create_node(dict(self.spec, hub="Sub"),
+                                    **dict(self.args, space="00_Scope/W1/Sub"))
+                self.assertEqual(out["distillation"]["status"], "complete", out)
+                self.assertEqual([h["path"] for h in out["distillation"]["placement"]["hubs"]],
+                                 ["00_Scope/W1/Sub/Sub.md", "00_Scope/W1/W1.md"])
+                # The upper entry stops linking the sub-cluster: the receipt is pending again,
+                # the body stays preserved, and reading the status repairs nothing.
+                write.update_node("W1", old_text="[[Sub]]", new_text="Sub")
+                top = (core.ROOT / "00_Scope/W1/W1.md").read_bytes()
+                status = D.status(self.key)
+                self.assertEqual(status["status"], "pending", status)
+                self.assertEqual(status["preservation"]["status"], "complete", status)
+                self.assertIn("does not link", status["reason"])
+                self.assertEqual((core.ROOT / "00_Scope/W1/W1.md").read_bytes(), top)
+
             def test_domain_distillation_uses_scope_provenance(self):
                 domain = core.ROOT / "00_Domain" / self.name
                 domain.mkdir()
