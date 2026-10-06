@@ -2849,6 +2849,12 @@ def _w(fn, *a, **kw):
         return {"ok": False, "violations": e.violations, **e.extra}
 
 
+def _unhang(hub, name):
+    """자리 걸기(`write._place`)가 허브 끝에 더한 `- [[이름]]` 줄을 뺀다 — 허브가 그 노드를
+    가리키지 않는 상태를 전제로 하는 시험이 쓴다. 그 상태는 이제 허브 편집으로만 생긴다."""
+    return _w(write.update_node, hub, old_text=f"\n\n- [[{name}]]", new_text="")
+
+
 def _append_round(session, record, user, agent, space=None):
     """라운드 하나 — 인용 통로(`raw.append_rounds`)의 단수형. 표면은 `cite_round`로만 쓴다."""
     from osk import raw
@@ -3165,6 +3171,11 @@ def test_write_move_and_pin():
     check("move는 바이트 불변(해시 동일)", r["ok"] and r["new_hash"] == before, r)
     check("이동 후 구 경로에 파일이 없다",
           not (ROOT / "00_Scope/W1/regr-w1.md").exists())
+    # 생성이 W1 허브에 건 줄은 scope를 건너면 scope 간 직접 참조다(헌법 8조 3항).
+    # 응답이 그 줄을 빼라고 알리고, 안내대로 빼야 vault가 검증을 통과한다.
+    check("scope를 건너면 출발지 허브의 줄을 빼라고 알린다",
+          {"hub": "W1", "remove": ["regr-w1"]} in r.get("hub_links", []), r)
+    check("안내대로 출발지 허브의 줄을 뺀다", _unhang("W1", "regr-w1").get("ok"))
     core.ledger_append(core.PINS, {"kind": "pin", "target": "00_Scope/W2/",
                                    "reason": "시험"})
     r = _w(write.move_node, "regr-w1", "00_Scope/W1")
@@ -3335,6 +3346,9 @@ def test_surface_smoke():
             check(f"표면 도구 살아 있음: {name}", not dead, out)
         except Exception as e:
             check(f"표면 도구 살아 있음: {name}", False, f"{type(e).__name__}: {e}")
+    # 생성이 W1 허브에 건 줄은 scope를 건넌 이동 뒤 scope 간 직접 참조로 남는다(헌법 8조 3항).
+    # 이동 응답의 hub_links 안내대로 뺀다.
+    check("이동 뒤 출발지 허브의 줄을 뺀다", _unhang("W1", "regr-smoke2").get("ok"))
     r = M.read_node("regr-smoke")
     check("read_node가 hash를 준다(CAS 입력)", r.get("hash", "").startswith("sha256:"))
     check("read_node 경로는 POSIX 표기", "\\" not in r.get("path", ""), r.get("path"))
@@ -3750,6 +3764,15 @@ def test_overview():
     check("열린 사건 목록을 준다", isinstance(o.get("open_cases"), list), o)
     o2 = M.overview("repo/ov")
     check("session을 주면 결속을 함께 준다", "session_scope" in o2, o2)
+    check("결속이 없으면 허브 트리를 싣지 않는다", "hub_tree" not in o2, o2)
+    r = _w(write.create_node, "regr-ov-b", "조망", "본문", "fable-5",
+           session="regr-ov", space="00_Scope/W1")
+    o3 = M.overview("regr-ov")
+    check("결속된 session이면 그 scope의 허브 트리를 준다(시행령 §3 8항)",
+          r.get("ok") and o3.get("session_scope") == "W1"
+          and o3.get("hub_tree", "").startswith("- 00_Scope/W1 · 직속 노드 "),
+          (r, o3.get("hub_tree")))
+    (ROOT / "00_Scope/W1/regr-ov-b.md").unlink(missing_ok=True)
     for c in o["clusters"]:
         (ROOT / c / "regr-ov.md").unlink(missing_ok=True)
 
@@ -6089,6 +6112,16 @@ def test_cluster_overview():
             "fable-5", space="00_Scope/OVW")
     check("순환쌍 생성", all(x.get("ok") for x in (ra, rb, rc, rd)),
           (ra, rb, rc, rd))
+    # 일반 쓰기는 노드를 허브에 건다(시행령 §3 8항). 미리 가리킨 머리에는 줄을 더하지 않는다.
+    check("일반 쓰기는 허브에 걸린다", r4.get("placed") == ["OVW"], r4)
+    hub = ROOT / "00_Scope/OVW/OVW.md"
+    check("미리 가리킨 노드에는 줄을 더하지 않는다",
+          contract.parse(hub).body.count("[[OVW-head]]") == 1)
+    # 아래 도달 판정은 허브가 머리와 a만 가리키는 상태를 전제로 한다 — 허브를 처음 본문으로
+    # 되돌린다. 걸리지 않은 노드는 이제 허브 편집으로 생긴다.
+    rr = _w(write.update_node, "OVW", body="갈래: [[OVW-head]] · [[OVW-a]]",
+            expect_hash=core.sha256_file(hub))
+    check("전제: 허브를 처음 본문으로 되돌린다", rr.get("ok"), rr)
     co = validate.cluster_overview_report(graph.Index())
     st = co.get("00_Scope/OVW")
     check("검사가 군집을 본다", st is not None, co)
@@ -6850,6 +6883,8 @@ def test_scope_recovery_handoff():
         check("새 세션은 evict 없이도 복구를 싣는다", "[osk scope 복구 대기" in out, out[:300])
         check("복구는 현재 저장본과 기존 노드 우선 행동을 싣는다", cur in out and "update_node" in out and "엔트리 단위" in out)
         check("세션 시작은 overview를 안내한다", "overview(session=" in out)
+        check("세션 시작은 허브 트리와 자리 규칙을 안내한다",
+              "hub_tree" in out and "시행령 §3 8항" in out, out[:600])
         check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",
               f'session="{S}"' in out and "저장 위치" in out and "대신하지 않는다" in out)
         check("훅은 표식을 소비하지 않는다", wm.recovery(S) is not None)
@@ -7851,6 +7886,8 @@ def test_nested_clusters():
                "fable-5", space="00_Scope/W1/regr-nc")
         check("하위 군집 신설은 한 번에(2단계 관문 없음)", r.get("ok"), r)
         made.append(base / "regr-nc")
+        check("새 하위 허브는 위 허브에 걸린다(시행령 §3 8항)",
+              r.get("placed") == ["W1"], r)
         check("허브가 폴더와 동명으로 앉는다",
               (base / "regr-nc/regr-nc.md").is_file())
         check("is_hub가 그것을 허브로 본다",
@@ -7858,8 +7895,12 @@ def test_nested_clusters():
         check("is_hub가 평범한 노드는 허브로 보지 않는다",
               not graph.is_hub(base / "regr-nc/regr-nc-a.md"))
         for nm in ("regr-nc-a", "regr-nc-b"):
-            _w(write.create_node, nm, "요", "본문", "fable-5",
-               space="00_Scope/W1/regr-nc")
+            rn = _w(write.create_node, nm, "요", "본문", "fable-5",
+                    space="00_Scope/W1/regr-nc")
+            check(f"{nm}은 하위 허브부터 최상위 허브까지 걸린다",
+                  rn.get("placed") == ["regr-nc", "W1"], rn)
+        # 최상위가 하위 허브를 가리키지 않는 상태는 허브 편집으로 생긴다
+        check("전제: 최상위에서 하위 허브 줄을 뺀다", _unhang("W1", "regr-nc").get("ok"))
 
         rep = validate.cluster_overview_report(graph.Index())
         check("묶음은 최상위 군집이다 — 하위 폴더가 따로 서지 않는다",
@@ -7893,6 +7934,86 @@ def test_nested_clusters():
     finally:
         for d in made:
             shutil.rmtree(d, ignore_errors=True)
+        _age_all()
+
+
+def test_plain_write_placement():
+    """일반 쓰기는 노드를 같은 작업 안에서 자리에 건다(시행령 §3 8항) — 착지 군집의 허브부터
+    최상위 허브까지 각 층이 아래 고리를 가리키게 한다. 허브 쓰기가 실패하면 노드는 남고, 아직
+    아래 고리를 가리키지 않는 허브만 `hub_links`로 알린다. 반증 가능성:
+      · `write._place`를 빼면 → placed 단언이 전부 실패
+      · 실패 보고가 이은 층까지 내면 → 층 사이 실패의 hub_links 단언이 실패
+      · Workbench에도 걸면 → transit 단언이 실패
+    """
+    from unittest import mock
+    import osk.core as C
+    top = ROOT / "00_Scope/W1/W1.md"
+    top_body = contract.parse(top).body
+    sub = ROOT / "00_Scope/W1/regr-pl"
+    made = []
+    real = write._update_node_locked
+
+    def refuse(name, *a, **kw):
+        if name == "W1":
+            raise write.WriteError("계약·위상 위반 — 쓰지 않았다", ["시험: 허브 쓰기 거부"])
+        return real(name, *a, **kw)
+
+    try:
+        # 결속된 세션이 space 없이 쓰면 scope 뿌리에 앉고 최상위 허브에 걸린다
+        r = _w(write.create_node, "regr-pl-bind", "자리", "본문", "fable-5",
+               session="regr-pl", space="00_Scope/W1")
+        made.append(ROOT / "00_Scope/W1/regr-pl-bind.md")
+        check("전제: 결속 쓰기", r.get("ok"), r)
+        r = _w(write.create_node, "regr-pl-root", "자리", "본문", "fable-5",
+               session="regr-pl")
+        made.append(ROOT / "00_Scope/W1/regr-pl-root.md")
+        check("space 없는 결속 쓰기는 scope 뿌리에 앉는다",
+              r.get("path") == "00_Scope/W1/regr-pl-root.md", r)
+        check("그 노드는 최상위 허브에 걸린다", r.get("placed") == ["W1"], r)
+        check("허브 끝에 Link 줄이 더해진다",
+              contract.parse(top).body.rstrip().endswith("- [[regr-pl-root]]"))
+
+        # 허브 쓰기가 실패하면 노드는 남고, 그 허브를 hub_links로 알린다
+        with mock.patch.object(write, "_update_node_locked", side_effect=refuse):
+            r = _w(write.create_node, "regr-pl-fail", "자리", "본문", "fable-5",
+                   space="00_Scope/W1")
+        made.append(ROOT / "00_Scope/W1/regr-pl-fail.md")
+        check("허브 쓰기가 실패해도 노드는 남는다",
+              r.get("ok") and (ROOT / "00_Scope/W1/regr-pl-fail.md").is_file(), r)
+        check("못 이은 허브를 hub_links로 알린다",
+              r.get("hub_links") == [{"hub": "W1", "add": ["regr-pl-fail"]}], r)
+        check("실패 사유를 싣는다",
+              "시험: 허브 쓰기 거부" in (r.get("placement_error") or []), r)
+        check("실패하면 placed를 싣지 않는다", "placed" not in r, r)
+
+        # 층 사이에서 멈추면 이은 층은 빼고 못 이은 층만 알린다
+        r = _w(write.create_node, "regr-pl", "갈래", "개요", "fable-5",
+               space="00_Scope/W1/regr-pl")
+        made.append(sub)
+        check("새 하위 허브는 위 허브에 걸린다", r.get("placed") == ["W1"], r)
+        check("전제: 최상위에서 하위 허브 줄을 뺀다", _unhang("W1", "regr-pl").get("ok"))
+        with mock.patch.object(write, "_update_node_locked", side_effect=refuse):
+            r = _w(write.create_node, "regr-pl-a", "자리", "본문", "fable-5",
+                   space="00_Scope/W1/regr-pl")
+        check("하위 허브는 이었다",
+              "[[regr-pl-a]]" in contract.parse(sub / "regr-pl.md").body)
+        check("최상위만 못 이은 층으로 알린다",
+              r.get("hub_links") == [{"hub": "W1", "add": ["regr-pl"]}], r)
+
+        # Workbench는 자체 계약이라 걸지 않는다
+        r = _w(write.create_node, "regr-pl-wb", "자리", "본문", "fable-5",
+               space="00_Scope/Workbench/transit")
+        made.append(ROOT / "00_Scope/Workbench/transit/regr-pl-wb.md")
+        check("전제: transit 쓰기", r.get("ok"), r)
+        check("Workbench에는 자리를 걸지 않는다",
+              "placed" not in r and "placement_error" not in r, r)
+    finally:
+        for p in made:
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                p.unlink(missing_ok=True)
+        _w(write.update_node, "W1", body=top_body, expect_hash=C.sha256_file(top))
         _age_all()
 
 
@@ -12135,7 +12256,7 @@ if __name__ == "__main__":
                test_id_width_and_discriminator,
                test_edge_delta_is_cumulative,
                test_name_is_the_handle,
-               test_nested_clusters,
+               test_nested_clusters, test_plain_write_placement,
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
                test_duplicate_id_by_name_refused, test_same_file_link_is_duplicate,

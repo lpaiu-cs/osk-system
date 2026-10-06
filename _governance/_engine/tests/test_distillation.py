@@ -85,6 +85,36 @@ def _child():
                 self.assertEqual(again["distillation"]["status"], "complete")
                 self.assertEqual((core.ROOT / out["path"]).read_bytes(), before)
 
+            def test_resume_refuses_a_replaced_hub_whatever_its_extension_case(self):
+                # The journal binds the selected hub's id. A hub replaced before resume stays
+                # pending even when its extension case differs; hub_file below returns the name
+                # on disk, as it does on a case-sensitive file system.
+                with self.fail_hub():
+                    out = self.create()
+                self.assertEqual(out["distillation"]["status"], "pending")
+                text = self.hub.read_text(encoding="utf-8")
+                old_id = contract.parse(self.hub).id
+                # Another valid hub: same creation date, different id.
+                other_id = old_id[:-1] + ("y" if old_id[-1] != "y" else "z")
+                def on_disk(d):
+                    return next((Path(e.path) for e in os.scandir(d) if e.is_file()
+                                 and e.name[:-3] == d.name and e.name[-3:].lower() == ".md"), None)
+                link = "[[" + self.args["title"] + "]]"
+                for name in ("W1.md", "W1.MD"):
+                    replaced = self.hub.with_name(name)
+                    self.hub.unlink()
+                    replaced.write_text(text.replace(old_id, other_id), encoding="utf-8")
+                    try:
+                        with mock.patch.object(D.graph, "hub_file", side_effect=on_disk):
+                            again = self.create()
+                        self.assertEqual(again["distillation"]["status"], "pending", (name, again))
+                        self.assertIn("hub identity changed", again["distillation"]["reason"], name)
+                        self.assertNotIn(link, replaced.read_text(encoding="utf-8"), name)
+                    finally:
+                        replaced.unlink()
+                        self.hub.write_text(text, encoding="utf-8")
+                self.assertEqual(self.create()["distillation"]["status"], "complete")
+
             def test_crash_before_node_uses_reserved_identity(self):
                 atomic = write._atomic_write
                 target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
@@ -340,6 +370,8 @@ def _child():
                 # key; the saved body is neither lost nor written again.
                 existing = write.create_node(self.args["title"], "old", "old knowledge",
                                              "fable-5", space="00_Scope/W1")
+                # A plain write hangs the node on its hub; this case resumes an unlinked one.
+                write.update_node("W1", old_text="\n\n- [[" + self.args["title"] + "]]", new_text="")
                 target = core.ROOT / existing["path"]
                 request = dict(name=existing["id"], body=self.args["body"],
                                expect_hash=existing["new_hash"])

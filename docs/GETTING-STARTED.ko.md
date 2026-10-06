@@ -486,14 +486,14 @@ scope가 결속되기 전에는 이 대화의 턴을 추적하지 않는다 — 
 
    ```text
    Record in osk, as its own node in this project's scope, that the test suite runs with `make test`.
-   Link it from the my-app hub.
    ```
 
    이제 에이전트는 `space`를 생략할 수 있다. 노드가 어디에 착지할지는 결속이
-   정한다. 그런 다음 허브를 고쳐 링크를 더한다.
+   정한다. 엔진은 같은 쓰기에서 그 노드를 허브에 건다 — 허브 본문 끝에
+   `- [[제목]]` 줄을 더한다.
 
-   **확인:** 결과에 `"ok": true`가 보인다. 이번에는 `bound_scope`가 `null`이다 —
-   새로 생긴 결속만 알려 주는 필드이기 때문이다.
+   **확인:** 결과에 `"ok": true`와 `"placed": ["my-app"]`이 보인다. 이번에는
+   `bound_scope`가 `null`이다 — 새로 생긴 결속만 알려 주는 필드이기 때문이다.
 
 4. **찾아서 읽기.** 프롬프트:
 

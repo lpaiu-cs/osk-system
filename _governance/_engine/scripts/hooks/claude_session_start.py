@@ -242,8 +242,9 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None) -> str:
     conversation = (f" · conversation={json.dumps(ident[0] + '/' + ident[1], ensure_ascii=False)}"
                     if ident else "")
     return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
-            f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집·열린 사건·근거 재검토 후보를 "
-            "확인하라. 기억을 묻는 질문에는 `search`를 먼저 쓴다. "
+            f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집·허브 트리(`hub_tree`)·열린 사건·근거 "
+            "재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다(시행령 §3 8항). "
+            "기억을 묻는 질문에는 `search`를 먼저 쓴다. "
             + ("아래 scope 기억을 통합의 출발점으로 삼는다."
                if bound else "아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 "
                "군집에서 해당 프로젝트를 확인한 뒤 scope_memory를 읽어라."))

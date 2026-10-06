@@ -381,6 +381,14 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
         # 노출하지 않는다"고 못박는다. 착지 판단에는 `session_scope`로 족하다.
         out["session_scope"] = write.resolve_session(session)
+        if out["session_scope"]:
+            # 새 노드의 자리는 이 트리에서 주제를 덮는 가장 깊은 군집이다(시행령 §3 8항)
+            from osk import organization
+            try:
+                out["hub_tree"] = organization.hub_tree(
+                    organization._scope_path(out["session_scope"]), idx)
+            except (OSError, ValueError):
+                pass
         if include:
             out["included"] = _hook_sections(session, include)
     return out

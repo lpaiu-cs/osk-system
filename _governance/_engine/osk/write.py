@@ -1007,24 +1007,64 @@ def resolve_landing(session: str, space: str | None,
 def create_node(title: str, summary: str, body: str, drafter: str,
                 session: str | None = None, space: str | None = None,
                 edges: dict | None = None, settle: str | None = None) -> dict:
-    """Create an ordinary node under the shared mutation lock."""
+    """Create an ordinary node under the shared mutation lock, then hang it in its place."""
     with _Lock():
-        return _create_node_locked(title, summary, body, drafter, session,
-                                   space, edges, settle)
+        idx = graph.Index()             # 생성과 자리 걸기가 이 한 벌을 쓴다
+        return _place(_create_node_locked(title, summary, body, drafter, session,
+                                          space, edges, settle, _idx=idx), idx)
+
+
+def _place(out: dict, idx) -> dict:
+    """새 노드를 같은 작업 안에서 자리에 건다(시행령 §3 8항) — 착지 군집의 허브부터 최상위
+    허브까지 각 층이 아래 고리를 Link로 가리키게 한다. 증류와 같은 배선이며, 허브 본문 끝에
+    `- [[제목]]` 줄을 더한다. 갈래 안의 정리는 조직 검토가 맡는다. 노드를 먼저 세웠으므로 허브
+    쓰기가 실패하면 노드는 그대로 두고, 아직 아래 고리를 가리키지 않는 허브를 `hub_links`로
+    알린다. 최상위 허브는 이을 위가 없고, Workbench는 자체 계약이라 걸지 않는다. 증류 쓰기는
+    `_create_node_locked`를 직접 부르고 자기 배선을 한다."""
+    if not out.get("ok"):
+        return out
+    path = ROOT / out["path"]
+    if (graph.space_of(path)[0] not in ("scope", "domain", "person")
+            or graph.is_hub(path) and len(path.parent.relative_to(ROOT).parts) <= 2):
+        return out
+    from . import distillation      # distillation이 write를 부르므로 쓸 때 읽는다
+    try:
+        placed = distillation._placement(path, idx, repair=True)
+        out["placed"] = [Path(h["path"]).stem for h in placed["hubs"]]
+    except (WriteError, OSError, ValueError) as e:
+        out["hub_links"] = _unwired(path, idx)
+        out["placement_error"] = list(dict.fromkeys([str(e), *getattr(e, "violations", [])]))
+    return out
+
+
+def _unwired(path: Path, idx) -> list[dict]:
+    """아래 고리를 Link로 가리키지 않는 허브 — `move_nodes`의 `hub_links`와 같은 꼴이다. 허브
+    없는 층에서 멈춘다. 그 자리는 검증기가 hubless로 알린다."""
+    out, child = [], path
+    d = path.parent.parent if graph.is_hub(path) else path.parent
+    while len(d.relative_to(ROOT).parts) >= 2 and (hub := graph.hub_file(d)) is not None:
+        try:
+            linked = child in {_live_locate(r, idx) for r in contract.parse(hub).wikilinks()}
+        except (WriteError, OSError, ValueError):
+            linked = False
+        if not linked:
+            out.append({"hub": hub.stem, "add": [child.stem]})
+        child, d = hub, d.parent
+    return out
 
 
 def _create_node_locked(title: str, summary: str, body: str, drafter: str,
                 session: str | None = None, space: str | None = None,
                 edges: dict | None = None, settle: str | None = None, *, _before_write=None,
-                _identity=None, _legacy_raw=False) -> dict:
+                _identity=None, _legacy_raw=False, _idx=None) -> dict:
     """노드 생성. id·시각은 **서버 전속**이고 author는 `agent` 고정이다(D5).
     space가 없으면 세션 라우팅으로 착지를 정하고, 라우팅이 없으면 space를
     요구한 뒤 성공 시 그 scope로 세션을 확정한다."""
     # 이 쓰기가 쓰는 색인은 **하나**다 (v3.7.0). 구판은 한 번의 생성에서
     # 세 벌을 지었다 — 계약 검사·이름 유일성·검증·dangling이 각자 지었고,
     # 그래서 체감 비용이 단가의 3배였다. 잠금 안이라 그 사이에 파일이
-    # 바뀌지 않으므로 한 벌이면 족하다.
-    idx = graph.Index()
+    # 바뀌지 않으므로 한 벌이면 족하다. 자리 걸기(`_place`)도 같은 벌을 받는다.
+    idx = graph.Index() if _idx is None else _idx
     _require_complete(idx)
     if settle is not None:
         evictions.require_evict(settle)
@@ -1319,7 +1359,7 @@ def _update_node_locked(name: str, body: str | None = None,
                 old_text: str | None = None,
                 new_text: str | None = None, settle: str | None = None,
                 rechecked: list | None = None, *, _before_write=None,
-                _stamp=None, _legacy_raw=False, _seen=None) -> dict:
+                _stamp=None, _legacy_raw=False, _seen=None, _idx=None) -> dict:
     """본문·summary·엣지 수정. 엣지는 **델타**이므로 서버가 잠금 안에서 현재
     상태에 적용한다 — 낡은 읽기가 앞선 갱신을 덮는 일이 구조적으로 없다.
 
@@ -1358,7 +1398,8 @@ def _update_node_locked(name: str, body: str | None = None,
             raise WriteError(
                 "`old_text`와 `new_text`가 같다 — 쓰지 않았다",
                 ["바뀌는 것이 없다. 고칠 내용을 `new_text`에 담아라."])
-    idx = graph.Index()                     # 이 쓰기가 쓰는 색인은 하나다
+    # 이 쓰기가 쓰는 색인은 하나다. 같은 잠금 안의 허브 배선은 앞 쓰기의 색인을 넘긴다.
+    idx = graph.Index() if _idx is None else _idx
     _require_complete(idx)
     if settle is not None:
         evictions.require_evict(settle)
