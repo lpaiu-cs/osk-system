@@ -1179,6 +1179,37 @@ class GrowthTests(unittest.TestCase):
             assert picks == ['early', 'late', 'early'], picks
         """)
 
+    def test_a_conversation_that_yields_no_job_does_not_hold_the_catch_up_slot(self):
+        self.check_case("""
+            import os, time
+            from osk import integration
+            # A Codex conversation whose original transcript is gone still dates its next turn from
+            # the stored UUIDv7 turn id, so it sorts first, yet catch-up cannot build a job from it.
+            # Catch-up moves on to the next conversation instead of spending its only slot there
+            # (#152 review: with nothing else queued, run after run reviewed nothing and B waited).
+            ended = time.time() - integration.ENDED_AFTER - 60
+            path = core.ROOT / 'b.jsonl'
+            rows = [{'type':'user','sessionId':'b','uuid':'b-u1','timestamp':'2026-10-02T01:00:00Z','message':{'role':'user','content':'question'}},
+                    {'type':'assistant','sessionId':'b','uuid':'b-a1','message':{'role':'assistant','id':'b-m1','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
+            path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
+            assert integration.capture('claude','b',str(path),'b-project',space='00_Scope/W1')['ok']
+            os.utime(path, (ended, ended))
+            with integration._locked('codex','lost') as p:
+                s = integration._load(p, 'codex', 'lost')
+                s.update(session='lost-project', space='00_Scope/W1', prompt_count=1,
+                         transcript_path=str(core.ROOT / 'gone.jsonl'),
+                         rounds=[{'id':'lost-u1:01900000-0000-7000-8000-000000000001',
+                                  'ref':'native:codex:lost:01900000-0000-7000-8000-000000000001',
+                                  'hash':'sha256:' + '0'*64, 'completion':'completed'}])
+                integration._save(p, s)
+            assert [x['conversation_id'] for x in integration._known_pending(2)[0]] == ['lost', 'b']
+            result = growth.run([sys.executable,'-c','import sys; sys.stdin.read()'], limit=1)
+            assert result.get('state') != 'capture_pending', result
+            plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            assert [j['conversation_id'] for j in plan['scope_jobs']] == ['b'], plan['scope_jobs']
+            assert integration.status('codex','lost')['capture_error'], 'the failure stays visible'
+        """)
+
     def test_every_queue_and_its_later_candidate_get_turns_while_nothing_completes(self):
         self.check_case("""
             import os, time

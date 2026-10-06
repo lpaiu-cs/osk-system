@@ -871,10 +871,16 @@ def list_pending(limit: int = 20) -> dict:
 
 
 def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None) -> dict:
-    """Bounded scheduler catch-up of known own vault states; never inject these in a normal session."""
-    states, remaining, errors, awaiting_native = _known_pending(limit, tried)
+    """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
+    작업을 만들지 못한 대화(원본 유실·포착 실패 등)는 건너뛰고 다음 대화로 `limit`을 채운다 —
+    그런 대화가 순서의 앞에 남아 한도를 차지하면 다른 대화가 영영 검토되지 않는다."""
+    if not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    states, rest, errors, awaiting_native = _known_pending(100, tried)
     captures, jobs = [], []
     for s in states:
+        if len(jobs) >= limit:
+            break
         try:
             result = capture(s["harness"], s["conversation_id"],
                              s.get("capture_path") or s["transcript_path"], s["session"], s.get("space"))
@@ -889,7 +895,7 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None)
         except Exception as exc:
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "jobs": jobs,
-            "captures": captures, "remaining": remaining, "errors": errors,
+            "captures": captures, "remaining": len(states) + rest - len(jobs), "errors": errors,
             "awaiting_native": awaiting_native}
 
 
