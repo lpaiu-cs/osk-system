@@ -802,12 +802,12 @@ def _turn_at(s: dict, native_path: str | None) -> float | None:
     return min(found) if found else None
 
 
-def _known_pending(limit: int, tried=None) -> tuple[list, int, list, list]:
+def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list]:
     """처리할 대화를 고른다. 같은 자리에서 고른 횟수(`tried(s)`)가 적은 대화가 먼저다 — 진척
     없이 끝난 대화가 예산을 계속 차지하지 않는다. 횟수가 같으면 다음 미검토 턴이 이른 대화가
     먼저다 — 옛 내용이 새 내용 뒤에 쓰이지 않게 한다. 턴의 시각을 모르면 상태를 마지막으로
-    고친 시각으로 본다."""
-    if not isinstance(limit, int) or not 1 <= limit <= 100:
+    고친 시각으로 본다. `limit`이 None이면 정렬한 대기 전체를 돌려준다."""
+    if limit is not None and (not isinstance(limit, int) or not 1 <= limit <= 100):
         raise ValueError("limit must be between 1 and 100")
     probe = state_path("claude", "inventory")
     prefix = "-".join(probe.name.split("-")[:3]) + "-"
@@ -852,6 +852,8 @@ def _known_pending(limit: int, tried=None) -> tuple[list, int, list, list]:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append({"state": str(p), "error": str(exc)})
     states = [s for *_, s in sorted(states, key=lambda t: t[:2])]
+    if limit is None:
+        return states, 0, errors, awaiting_native
     return states[:limit], max(0, len(states) - limit), errors, awaiting_native
 
 
@@ -873,10 +875,11 @@ def list_pending(limit: int = 20) -> dict:
 def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
     작업을 만들지 못한 대화(원본 유실·포착 실패 등)는 건너뛰고 다음 대화로 `limit`을 채운다 —
-    그런 대화가 순서의 앞에 남아 한도를 차지하면 다른 대화가 영영 검토되지 않는다."""
+    그런 대화가 순서의 앞에 남아 한도를 차지하면 다른 대화가 영영 검토되지 않는다. 그래서 조회에
+    상한을 두지 않고 정렬한 대기 전체를 작업이 찰 때까지 내려간다."""
     if not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
-    states, rest, errors, awaiting_native = _known_pending(100, tried)
+    states, _, errors, awaiting_native = _known_pending(None, tried)
     captures, jobs = [], []
     for s in states:
         if len(jobs) >= limit:
@@ -895,7 +898,7 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None)
         except Exception as exc:
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "jobs": jobs,
-            "captures": captures, "remaining": len(states) + rest - len(jobs), "errors": errors,
+            "captures": captures, "remaining": len(states) - len(jobs), "errors": errors,
             "awaiting_native": awaiting_native}
 
 
