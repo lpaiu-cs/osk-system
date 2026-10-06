@@ -1214,6 +1214,27 @@ class GrowthTests(unittest.TestCase):
             assert integration.status('codex','lost0')['capture_error'], 'the failure stays visible'
         """)
 
+    def test_conversation_review_carries_its_scope_hub_tree(self):
+        self.check_case("""
+            from osk import integration, organization
+            node('A')
+            # Mechanism §9-4 3: the conversation review decides node splitting and placement and
+            # carries its scope's hub tree; hub differentiation is left to the organization review.
+            path = core.ROOT / 'native.jsonl'
+            rows = [{'type':'user','sessionId':'tree','uuid':'u1','message':{'role':'user','content':'question'}},
+                    {'type':'assistant','sessionId':'tree','uuid':'a1','message':{'role':'assistant','id':'m1','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
+            path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
+            assert integration.capture('claude','tree',str(path),'tree-project',space='00_Scope/W1')['ok']
+            job = integration.prompt('claude','tree')
+            tree = organization.hub_tree(organization._scope_path('W1'))
+            assert job['hub_tree'] == tree and tree.startswith('- 00_Scope/W1 · 직속 노드 '), job['hub_tree']
+            assert '이 scope의 허브 트리:' in job['text'] and tree in job['text']
+            assert '하위 군집을 열지 않는다' in job['text']
+            reading = growth._reading_plan({'scope_jobs': [job], 'organization_jobs': []})
+            assert reading['scope_jobs'][0]['hub_tree'] == tree
+            assert 'hub_tree' in growth.prompt()
+        """)
+
     def test_every_queue_and_its_later_candidate_get_turns_while_nothing_completes(self):
         self.check_case("""
             import os, time

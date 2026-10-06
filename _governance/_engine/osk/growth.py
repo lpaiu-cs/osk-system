@@ -431,7 +431,7 @@ def _reading_plan(planned: dict) -> dict:
               "pending_refs", "remaining_rounds", "capture_error", "failed_rounds",
               "interrupted_rounds", "inherited_rounds", "coverage", "repair",
               "previous_distillations", "proof_discovery", "scope_recovery",
-              "capture_recovery", "raw_review"}
+              "capture_recovery", "raw_review", "hub_tree"}
     jobs = []
     for job in planned.get("scope_jobs", []):
         item = {k: v for k, v in job.items() if k in fields}
@@ -488,6 +488,11 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "recheck); instead report recheck:[{key,outcome:escalated,reason,proposal}] for the "
         "user, naming the next nodes affected. Do not edit target for this job. An update_node "
         "call records a check without a packet entry. Uncertainty leaves the job open.\n"
+        "Scope jobs decide node splitting and placement (Mechanism §9-4 3; Bylaws §3 8). Each "
+        "carries hub_tree, its scope's hubs with their direct node counts: descend from the top hub "
+        "to the deepest hub that covers the topic and link the node there. That cluster path is "
+        "create_node.space and its last segment is distill.hub. Hub differentiation belongs to the "
+        "organization review: do not open sub-clusters; propose one in the review reason if needed.\n"
         "Scope jobs: pending_refs starting with native: are original turns. A Stop fork holds "
         "them in context: judge them there and never re-read. Otherwise they are the unreviewed "
         "turns of a conversation that ended before its own review: read each one with "

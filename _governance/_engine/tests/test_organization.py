@@ -381,6 +381,41 @@ class OrganizationTests(unittest.TestCase):
             assert organization.plan("W1")["status"]=="complete"
         """)
 
+    def test_hub_tree_shows_every_hub_with_its_direct_nodes_in_the_review(self):
+        self.case("""
+            # Mechanism §9-4 3: the organization review owns hub differentiation and carries
+            # the scope's hub tree (hub path, direct node count, hub summary; indent = depth).
+            node("A"); node("B")
+            write.create_node("Branch","Branch entry","Branch of related facts","gpt-6-astra",space="00_Scope/W1/Branch")
+            wire("W1","Branch")
+            write.create_node("C","C","A branch fact","gpt-6-astra",space="00_Scope/W1/Branch")
+            wire("Branch","C")
+            tree = organization.hub_tree(organization._scope_path("W1"))
+            lines = tree.splitlines()
+            assert lines[0].startswith("- 00_Scope/W1 · 직속 노드 "), lines
+            assert lines[1] == "  - 00_Scope/W1/Branch · 직속 노드 1 — Branch entry", lines
+            job = organization.plan("W1")
+            assert job["hub_tree"] == tree, job.get("hub_tree")
+            assert organization.hook_readout(job)["hub_tree"] == tree
+            rule = "허브의 분화(시행령 §3 7항)는 이 검토가 맡는다"
+            assert rule in organization.guidance() and rule in organization.HOOK_GUIDANCE
+        """)
+
+    def test_hub_tree_keeps_a_hub_whose_extension_is_upper_case(self):
+        self.case("""
+            # A hub is a hub whatever the case of its .md extension (graph.is_hub, hub_file). The
+            # tree must keep such a sub-cluster as a place to put nodes (#155 review).
+            write.create_node("Branch","Branch entry","Branch of related facts","gpt-6-astra",space="00_Scope/W1/Branch")
+            wire("W1","Branch")
+            write.create_node("C","C","A branch fact","gpt-6-astra",space="00_Scope/W1/Branch")
+            wire("Branch","C")
+            branch = core.ROOT / "00_Scope/W1/Branch"
+            (branch / "Branch.md").rename(branch / "Branch.MD")
+            assert "Branch.MD" in [p.name for p in branch.iterdir()]
+            tree = organization.hub_tree(organization._scope_path("W1"), graph.Index())
+            assert "  - 00_Scope/W1/Branch · 직속 노드 1 — Branch entry" in tree.splitlines(), tree
+        """)
+
     def test_a_node_written_without_its_hub_link_is_found_and_holds_completion(self):
         self.case("""
             # M3: a plain write that leaves its node unlinked is found again by the organization
