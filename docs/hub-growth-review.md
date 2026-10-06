@@ -26,6 +26,24 @@ Approved addition to paragraph 4:
 
 The user approved this wording before it was applied to Mechanism §9-4.
 
+## Mechanism §9-4 paragraph 3 — amended 2026-10-06
+
+The user's wording replaces the sentence on the choice among keeping, merging and
+differentiating. It assigns node splitting and placement to the conversation review
+and hub differentiation to the organization review, and puts the scope's hub tree
+in both:
+
+| Before | After |
+|---|---|
+| 별도 모델 실행기를 만들지 않는다. 현재 구조 유지·기존 입구 통합·분화 중 본문에 맞는 선택을 하며 수량만으로 분화하지 않는다. | 별도 모델 실행기를 만들지 않는다. 대화 검토는 노드의 분할과 자리(시행령 §3 8항)를 정한다. 조직 검토는 허브의 분화(시행령 §3 7항)를 맡는다. 두 검토에는 그 scope의 허브 트리를 싣는다. 허브의 분화 시에는 현재 구조 유지·기존 입구 통합·분화 중 본문에 맞는 선택을 하며 수량만으로 분화하지 않는다. |
+
+The hub tree lists every hub of the scope as `- <cluster path> · 직속 노드 <n> — <hub
+summary>`, indented by depth; nodes are counted, not listed, and folders without a hub
+are not clusters. The conversation review receives it in its prompt (and the daily
+worker as `hub_tree` on each scope job) with the placement rule of Bylaws §3 8 and
+without opening sub-clusters; the organization review receives it as `hub_tree` on its
+job and owns differentiation.
+
 ## Implementation contract
 
 - Existing-node reuse means the same independently testable claim and conditions,

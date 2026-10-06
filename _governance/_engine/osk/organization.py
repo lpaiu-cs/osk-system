@@ -201,6 +201,37 @@ def snapshot(scope: str, idx=None) -> dict:
             "pending_moves": pending_moves(scope, idx)}
 
 
+def hub_tree(base: Path, idx=None) -> str:
+    """그 scope의 허브 트리(Mechanism §9-4 3항) — 허브가 있는 군집마다 군집 경로·직속 노드 수·
+    허브 요약을 한 줄로 싣고, 들여쓰기로 상하를 보인다. 노드는 수만 센다. 허브 없는 폴더는
+    군집이 아니므로(자리가 될 수 없다) 싣지 않는다."""
+    idx = _index() if idx is None else idx
+    members: dict[Path, list[Path]] = {}
+    for _name, (path, _kind) in idx.nodes.items():
+        if path.is_relative_to(base):
+            members.setdefault(path.parent, []).append(path)
+    lines = []
+    for d in sorted(members, key=lambda p: p.relative_to(base).parts):
+        hub = d / (d.name + ".md")
+        if hub not in members[d]:
+            continue
+        try:
+            summary = str(idx.node(hub).meta.get("summary", ""))
+        except Exception:
+            summary = ""
+        lines.append("  " * len(d.relative_to(base).parts)
+                     + f"- {core.posix_rel(d, core.ROOT)} · 직속 노드 {len(members[d]) - 1} — {summary}")
+    shown, size = [], 0
+    for line in lines:
+        # ponytail: 실측 최대 허브 9개·852자다. 넘치면 깊은 순서를 따라 자르고 남은 수만 알린다.
+        if size + len(line) > HUB_TREE_CAP:
+            shown.append(f"… 허브 {len(lines) - len(shown)}개 더")
+            break
+        shown.append(line)
+        size += len(line) + 1
+    return "\n".join(shown)
+
+
 def _ref_key(item: dict) -> tuple:
     return item["id"], item["relation"], item["ref"]
 
@@ -278,6 +309,7 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
             current["previous_deferral"] = {
                 k: reviewed[k] for k in ("key", "reason", "after", "at")}
             current["previous_deferral"]["snapshot_changed"] = reviewed["after"] != current["snapshot"]
+        current["hub_tree"] = hub_tree(_scope_path(scope), idx)
         jobs.append(current)
         if len(jobs) == limit:
             break
@@ -429,7 +461,9 @@ def guidance() -> str:
             "필요한 절과 질문을 deferred에 남긴다. 긴 본문 전문을 반복해서 읽지 않는다. "
             "previous_deferral.snapshot_changed가 참이면 이전 판단을 현재 완료로 간주하지 말고 대상 ID의 현행 내용을 확인한다. "
             + write.CLAIM_GUIDANCE +
-            "개수만으로 나누지 말고 기존 입구를 재사용하라. "
+            "허브의 분화(시행령 §3 7항)는 이 검토가 맡는다 — hub_tree가 그 scope의 허브와 허브마다 직속 노드 "
+            "수를 보인다. 분화 시에는 현재 구조 유지·기존 입구 통합·분화 중 본문에 맞는 선택을 하며 "
+            "수량만으로 분화하지 않는다. "
             "organization_advice가 있으면 실행 일지 누적과 허브의 본문 중복을 점검한다. "
             "허브는 현재 탐색 지도이며 단계별 보고서가 아니다. 결론·적용 조건·출처를 유지하고 "
             "기존 결론을 고치되 매번 진행 기록을 덧붙이지 않는다. 레포의 실행 상세는 레포 문서를 인용한다. "
@@ -469,7 +503,9 @@ HOOK_GUIDANCE = (
     "previous_deferral.snapshot_changed가 참이면 이전 판단을 이어받지 말고 "
     "현행을 확인한다. 틀린 곳은 그 자리에서 고치되 정정 전후의 판단과 출처를 보존하고, 고친 구간은 다음 "
     "검토로 넘긴다. 판단하지 못한 내용은 지우거나 완료라 하지 않는다. pin·보호영역·최상위 경계를 유지하고 "
-    "원료를 노드·허브로 승격하지 않는다. 제출 전에 접두부 + `plan --scope <scope> --preview`로 최신 "
+    "원료를 노드·허브로 승격하지 않는다. 허브의 분화(시행령 §3 7항)는 이 검토가 맡는다 — hub_tree가 그 "
+    "scope의 허브와 허브마다 직속 노드 수를 보인다. 분화 시에는 현재 구조 유지·기존 입구 통합·분화 중 본문에 "
+    "맞는 선택을 하며 수량만으로 분화하지 않는다. 제출 전에 접두부 + `plan --scope <scope> --preview`로 최신 "
     "snapshot을 읽어 after에 넣는다. coverage.remaining이 checked 수보다 크면 outcome=deferred로 내고 "
     "reason에 다음 대상(노드 ID·절·질문)을 남긴다. 접두부 + `review`에 JSON stdin으로 "
     "{key, after, scope, outcome: complete|deferred, reason, checked: [{unit, reason}], "
@@ -478,11 +514,12 @@ HOOK_GUIDANCE = (
 _FLAGGED = (" references·issues가 있으면 실제 근거로 수리하고, 탐색 질문 Link만 개별 사유와 함께 "
             "intentional에 남긴다. PE 미해석은 이 예외로 닫지 않는다.")
 _LIST_CAP = 10
+HUB_TREE_CAP = 3000
 
 
 def hook_readout(job: dict) -> dict:
     """훅에 싣는 계획 — 판정이 결속되는 값과 채워진 목록만, 필드 이름은 `plan`과 같다."""
-    out = {k: job[k] for k in ("scope", "key", "snapshot", "coverage") if k in job}
+    out = {k: job[k] for k in ("scope", "key", "snapshot", "coverage", "hub_tree") if k in job}
     # 구간의 view는 선택 당시 파일의 위치다. read_node의 view_hash와 맞춰 볼 expect_view_hash는
     # 남긴다 — 없으면 다른 세션의 삽입으로 밀린 구간을 읽고도 제출이 통과한다.
     out["review_units"] = [{k: u[k] for k in ("unit", "id", "name", "view", "chars", "expect_view_hash")

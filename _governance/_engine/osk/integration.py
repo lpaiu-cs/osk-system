@@ -1025,9 +1025,13 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     from . import organization
     jobs = []
     try:
+        scope = write.resolve_session(st["session"]) if st.get("session") else None
+    except (OSError, ValueError, write.WriteError):
+        scope = None
+    try:
         with core.mutation_lock():
-            scope = write.resolve_session(st["session"]) if include_organization and st.get("session") else None
-            jobs = organization.pending([scope], limit=1, record=True) if scope else []
+            jobs = (organization.pending([scope], limit=1, record=True)
+                    if scope and include_organization else [])
     except (OSError, ValueError, write.WriteError) as exc:
         text += f"참조·조직 검토는 대기 중이다: {exc}. 아래 대화 통합은 계속한다.\n"
     st["organization_jobs"] = jobs
@@ -1065,6 +1069,21 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
              "기존 key를 targets에 재사용하며, 같은 본문을 새 key로 다시 쓰지 않는다.\n")
     stored = [ref for ref in st["pending_refs"] if not raw.is_native(ref)]
     text += "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. "
+    # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
+    tree_scope = scope or (raw._scope_of_space(s["space"]) if s.get("space") else None)
+    try:
+        tree = organization.hub_tree(organization._scope_path(tree_scope)) if tree_scope else ""
+    except (OSError, ValueError):
+        tree = ""
+    st["hub_tree"] = tree
+    if tree:
+        # Mechanism §9-4 3항(2026-10-06 개정): 대화 검토는 노드의 분할과 자리를 정하고, 허브의 분화는
+        # 조직 검토가 맡는다. 자리의 정의는 시행령 §3 8항 그대로다.
+        text += ("노드의 분할과 자리는 이 검토가 정한다. 자리는 최상위 허브에서 그 주제를 덮는 하위 허브로 내려가 "
+                 "더 내려갈 곳이 없는 허브이며, 그 허브의 기존 갈래에 잇거나 없으면 새 갈래를 연다(시행령 §3 8항). "
+                 "create_node의 space에는 그 군집 경로를, distill.hub에는 그 허브의 이름(경로의 마지막 마디)을 쓴다. "
+                 "허브의 분화는 조직 검토가 맡으므로 하위 군집을 열지 않는다. 분화가 필요해 보이면 그 제안을 reason에 "
+                 "남긴다. 이 scope의 허브 트리:\n" + tree + "\n")
     # 2026-10-05 사용자 결정(#136 M5 정보 회귀 금지, M3 `## 근거` 절). 작업자 지시(growth.prompt)와 같은 규칙.
     text += ("검토하는 턴이 현행 노드보다 오래됐을 수 있다. 옛 사실은 날짜를 붙인 이력으로만 더하고, "
              "현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 선후가 불분명하면 보류한다. "
