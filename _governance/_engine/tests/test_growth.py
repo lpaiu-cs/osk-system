@@ -1148,6 +1148,37 @@ class GrowthTests(unittest.TestCase):
             assert len(state['pending_refs']) == 4, state  # selected three only, not the whole conversation
         """)
 
+    def test_scope_queue_goes_by_turn_time_and_passes_a_stalled_conversation(self):
+        self.check_case("""
+            import os, time
+            from osk import integration
+            node('A')
+            # Two ended conversations compete for one Scope slot per run (limit=3 shares the
+            # budget with the candidate and organization queues). 'early' holds the older turns
+            # although its state was touched last, so time order picks it first. A run that ends
+            # without an ACK leaves it in place; the next run gives 'late' its turn instead of
+            # choosing 'early' again (#136 M4: six such runs all chose the first conversation).
+            ended = time.time() - integration.ENDED_AFTER - 60
+            for n, (sid, day) in enumerate((('late', '02'), ('early', '01'))):
+                path = core.ROOT / (sid + '.jsonl')
+                rows = []
+                for i in range(1, 3):
+                    rows += [{'type':'user','sessionId':sid,'uuid':sid+'-u'+str(i),'timestamp':'2026-10-'+day+'T0'+str(i)+':00:00Z','message':{'role':'user','content':'question '+str(i)}},
+                             {'type':'assistant','sessionId':sid,'uuid':sid+'-a'+str(i),'message':{'role':'assistant','id':sid+'-m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
+                path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
+                assert integration.capture('claude',sid,str(path),sid+'-project',space='00_Scope/W1')['ok']
+                os.utime(path, (ended, ended))
+                os.utime(integration.state_path('claude', sid), (ended + n, ended + n))
+            worker = [sys.executable,'-c','import sys; sys.stdin.read()']   # no ACKs
+            picks = []
+            for _ in range(3):
+                result = growth.run(worker, limit=3)
+                assert not result['ok'], result
+                plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+                picks.append(plan['scope_jobs'][0]['conversation_id'])
+            assert picks == ['early', 'late', 'early'], picks
+        """)
+
     def test_only_dispatched_organization_jobs_advance_attempts(self):
         self.check_case("""
             from unittest.mock import patch

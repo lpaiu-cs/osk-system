@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import heapq
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -362,6 +363,16 @@ def plan(limit: int = 3) -> dict:
     """Read-only bounded inventory of changed/unreviewed comparison sets."""
     with core.mutation_lock():
         return _plan(limit)
+
+
+def _scope_tried(rows: list[dict]):
+    """Scope 대화를 지금 자리(검토한 라운드 수·복구 대기)에서 고른 횟수 — 계획에 남은 선택
+    시도로 센다. 진척하면 자리가 바뀌어 다시 0이다."""
+    seen = Counter((j.get("harness"), j.get("conversation_id"), j.get("reviewed_rounds"),
+                    tuple(sorted(j.get("repair_pending") or {})))
+                   for r in rows if r.get("kind") == "plan" for j in r.get("scope_jobs", []))
+    return lambda s: seen[(s["harness"], s["conversation_id"], s["reviewed_count"],
+                           tuple(sorted(s.get("repair_pending") or {})))]
 
 
 def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
@@ -1087,7 +1098,8 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
             from . import integration
             # A response-triggered fork owns one frozen conversation snapshot.
             # Daily runs retain their existing cross-conversation/Domain queue.
-            catchup = (integration.catchup(limit=limit, max_rounds=SCOPE_ROUNDS_PER_JOB)
+            catchup = (integration.catchup(limit=limit, max_rounds=SCOPE_ROUNDS_PER_JOB,
+                                           tried=_scope_tried(_records()))
                        if scope_job is None else
                        {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0})
             with core.mutation_lock():
