@@ -168,6 +168,9 @@ class GrowthTests(unittest.TestCase):
             change = "from pathlib import Path; import subprocess; q['osk_reviews']['domain']=q['osk_reviews']['domain'][:1]; q['osk_reviews']['scope']=[]; checkpoint=core.ROOT/'checkpoint.json'; checkpoint.write_text(json.dumps(q),encoding='utf-8'); done=subprocess.run([sys.executable,'-B','-m','osk.cli','growth','checkpoint','--file',str(checkpoint)],capture_output=True,text=True); assert done.returncode==0 and json.loads(done.stdout)['ok'],done; sys.exit(7)"
             result = growth.run([sys.executable, '-B', '-c', packet_worker(change)], limit=3)
             assert not result['ok'] and result['returncode'] == 7, result
+            # M2: the runner applied nothing from this failed worker; the recorded review came
+            # through the manual checkpoint, and the run record keeps the two apart.
+            assert result['final_reviews']['state'] == 'not_applied', result['final_reviews']
             assert list(result['domain_outcomes'].values()).count('no_value') == 1, result
             assert 'pending' in result['domain_outcomes'].values(), result
             rows = [r for r in core.ledger_read(growth.LEDGER) if r['kind'] == 'review']
@@ -178,6 +181,14 @@ class GrowthTests(unittest.TestCase):
             packet['osk_reviews']['domain'][0]['key'] = 'unselected'
             refused = growth.checkpoint(packet)   # only that entry is set aside, with its reason
             assert not refused['ok'] and any('unselected domain review' in e for e in refused['errors']), refused
+            assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == 1
+            # The manual path applies decisions only to a plan the runner recorded.
+            packet['osk_reviews']['manifest'] = 'not-a-recorded-plan'
+            try:
+                growth.checkpoint(packet)
+                raise AssertionError('a checkpoint applied decisions without a recorded plan')
+            except ValueError as e:
+                assert 'recorded growth manifest' in str(e), e
             assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == 1
         """)
 
