@@ -197,8 +197,9 @@ def _placement(p: Path, idx, *, repair: bool = False, selected: dict | None = No
         if hp is None:
             raise write.WriteError("current placement hub missing; pending")
         hn = contract.parse(hp)
+        # 선택한 허브는 그 군집(폴더)으로 가린다 — 확장자 표기가 바뀐 허브도 저장한 id와 대조한다.
         if (selected and posix_rel(p, ROOT) == selected["target"]["path"]
-                and posix_rel(hp, ROOT) == selected["hub"]["path"]
+                and directory == ROOT / Path(selected["hub"]["path"]).parent
                 and hn.id != selected["hub"]["id"]):
             raise write.WriteError("hub identity changed; pending")
         if child not in {write._live_locate(ref, idx) for ref in hn.wikilinks()}:
