@@ -133,8 +133,21 @@ def _preservation(candidate: dict, idx: graph.Index, target: str | None = None,
     raise ValueError("no complete current Domain distillation covers a valid subset of this comparison")
 
 
+def _latest(rows: list[dict], value: str, field: str) -> dict | None:
+    """한 항목의 지금 보고 — 더 새 선택(manifest)에서 나온 보고가 정하고, 같은 선택
+    안에서는 인과상 나중 기록이 정한다. 옛 선택의 보고가 늦게 붙어도 기록으로만 남고
+    새 선택의 보고를 되돌리지 않는다. 판정이 갈리면(극대가 둘) 정하지 않는다."""
+    mine = [r for r in rows if r.get(field) == value and isinstance(r.get("manifest"), str)]
+    if not mine:
+        return core.resolve_one(rows, value, field)
+    newest = max((r["manifest"] for r in mine), key=core._rid_key)
+    top = core.causal_maxima(rows, value, None, field,
+                             candidate=lambda r: r.get("manifest") == newest)
+    return top[0] if len(top) == 1 else None
+
+
 def _completed(key: str, rows: list[dict], idx: graph.Index) -> dict | None:
-    row = core.resolve_one(rows, key, "key")
+    row = _latest(rows, key, "key")
     if not row or row.get("kind") != "review" or row.get("outcome") == "deferred":
         return None
     candidate = row.get("candidate")
@@ -298,7 +311,7 @@ def _plan(limit: int) -> dict:
         available = related + [d for d in domains.values() if d not in related]
         candidate.update(domains=available[:MAX_DOMAINS],
                          other_domains=max(0, len(available) - MAX_DOMAINS))
-        last_review = core.resolve_one(rows, candidate["key"], "key")
+        last_review = _latest(rows, candidate["key"], "key")
         if last_review and last_review.get("outcome") == "deferred":
             candidate["previous_deferral"] = _deferral(last_review)
         previous = [c["distill_key"] for row in rows if row.get("kind") == "plan"
@@ -565,8 +578,9 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "Add recheck:[{key,outcome:escalated,reason,proposal}] inside osk_reviews only for "
         "recheck_jobs you escalate to the user. "
         "Use the originally selected key. Use only this manifest's selected keys and scope "
-        "snapshots. The runner applies these decisions through the same receipt APIs and "
-        "revalidates persisted evidence; a declaration alone cannot prove preservation. "
+        "snapshots. The runner applies these decisions through the same receipt APIs; the "
+        "write receipts record what was preserved. A malformed entry is set aside with its "
+        "reason while the other decisions in the packet still apply. "
         "Do not execute a command to print the packet. "
         "Only a preserved receipt proves structural completion; semantic validity remains "
         "your explicit judgment. Finish once every selected candidate has a disposition.\n"
@@ -596,8 +610,8 @@ def review(key: str, outcome: str, target: str | None = None, reason: str = "",
         if outcome == "preserved":
             proof = _preservation(candidate, idx, target)
             target = proof["target"]["name"]
-        elif not _current(candidate, idx):
-            raise ValueError("candidate sources or compared Domain context changed")
+        # no_value·deferred는 비교 당시의 판단으로 받는다. 출처나 비교 맥락이 그 뒤 바뀌었으면
+        # _completed가 완료로 세지 않아 새 비교로 다시 고른다 — 보고를 버릴 까닭이 없다.
         record = {"kind": "review", "key": key, "manifest": selected["rid"],
                   "candidate": candidate, "outcome": outcome, "target": target,
                   "reason": reason.strip(), "distillation": proof}
@@ -665,101 +679,125 @@ def _final_packet(output: Path) -> dict:
     return packet
 
 
+_QUEUE_IDS = {"domain": ("key",), "scope": ("harness", "conversation_id", "through"),
+              "organization": ("key",), "eviction": ("of",), "recheck": ("key",)}
+
+
 def _validate_packet(packet: dict, planned: dict) -> dict:
+    """묶음 자체(형식·manifest)가 틀리면 전체를 거절한다. 항목 하나의 잘못은 그 항목만 받지
+    않고 사유를 `errors`로 돌려준다 — 선의의 실수 하나로 같은 묶음의 다른 판정을 버리지
+    않는다(헌법 1조 3항). 같은 항목이 겹치면 어느 판정인지 정할 수 없어 모두 받지 않는다.
+    판정의 뜻이 분명한데 붙은 군더더기(보류의 targets 등)는 떼고 받으며 `notes`로 알린다."""
     reviews = packet.get("osk_reviews")
-    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", "domain", "scope", "organization", "eviction", "recheck"}:
+    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", *_QUEUE_IDS}:
         raise ValueError("review packet needs exactly manifest, domain and scope")
     if reviews["manifest"] != planned["manifest"]:
         raise ValueError("review packet manifest does not match this run")
-    selected = {c["key"] for c in planned["candidates"]}
-    jobs = {(j["harness"], j["conversation_id"], j["through"]) for j in planned["scope_jobs"]}
-    for queue, allowed, required, optional in (
-            ("domain", selected, {"key", "outcome", "reason"}, {"target"}),
-            ("scope", jobs, {"harness", "conversation_id", "through", "outcome", "reason"}, {"targets"})):
-        entries, seen = reviews[queue], set()
-        if not isinstance(entries, list) or len(entries) > len(allowed):
-            raise ValueError(f"{queue} review list exceeds the selected queue")
-        for entry in entries:
-            if not isinstance(entry, dict) or not required <= set(entry) <= required | optional:
-                raise ValueError(f"invalid {queue} review fields")
-            if any(not isinstance(entry[k], str) or not entry[k].strip() for k in required):
-                raise ValueError(f"{queue} review fields must be nonempty strings")
-            identity = entry["key"] if queue == "domain" else tuple(
-                entry[k] for k in ("harness", "conversation_id", "through"))
-            if identity not in allowed or identity in seen:
-                raise ValueError(f"unselected or duplicate {queue} review")
-            seen.add(identity)
-            outcomes = {"preserved", "no_value", "deferred"} | ({"summary"} if queue == "scope" else set())
-            if entry["outcome"] not in outcomes:
-                raise ValueError(f"invalid {queue} review outcome")
-            if "target" in entry and (entry["outcome"] != "preserved"
-                    or not isinstance(entry["target"], str) or not entry["target"].strip()):
-                raise ValueError("only preserved Domain reviews may name a target")
-            if queue == "scope":
-                targets = entry.get("targets")
-                if entry["outcome"] in {"preserved", "summary"}:
-                    field = "key" if entry["outcome"] == "preserved" else "text"
-                    if not isinstance(targets, list) or not targets or not all(
-                            isinstance(t, dict) and set(t) == {field}
-                            and isinstance(t[field], str) and t[field].strip() for t in targets):
-                        raise ValueError("Scope review needs exact target keys or saved summary excerpts")
-                elif targets is not None:
-                    raise ValueError("no_value/deferred Scope reviews must omit targets")
-    allowed = {j["key"]: j["scope"] for j in planned.get("organization_jobs", [])}
-    selected_units = {j["key"]: {u["unit"] for u in j.get("review_units", [])}
-                      for j in planned.get("organization_jobs", [])}
-    entries, seen = reviews.get("organization", []), set()
-    if not isinstance(entries, list) or len(entries) > len(allowed):
-        raise ValueError("organization reviews exceed the selected queue")
-    for entry in entries:
+    if any(not isinstance(reviews.get(q, []), list) for q in _QUEUE_IDS):
+        raise ValueError("each review queue must be a list")
+    out = {"manifest": reviews["manifest"], "errors": [], "notes": []}
+    for queue in _QUEUE_IDS:
+        entries = reviews.get(queue, [])
+        ids = [_entry_id(queue, e) for e in entries]
+        out[queue] = []
+        for entry, ident in zip(entries, ids):
+            try:
+                if ident is not None and ids.count(ident) > 1:
+                    raise ValueError("the same item is reviewed more than once in this packet")
+                out[queue].append(_check_entry(queue, entry, planned, out["notes"]))
+            except ValueError as exc:
+                out["errors"].append(f"{queue} review {ident or '?'}: {exc}")
+    return out
+
+
+def _entry_id(queue: str, entry) -> str | None:
+    fields = _QUEUE_IDS[queue]
+    if not isinstance(entry, dict) or not all(isinstance(entry.get(f), str) for f in fields):
+        return None
+    return ":".join(entry[f] for f in fields)
+
+
+def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
+    """한 항목의 계약. 맞으면 (군더더기를 뗀) 항목을 돌려주고, 아니면 ValueError."""
+    ident = _entry_id(queue, entry)
+    if queue in ("domain", "scope"):
+        allowed = ({c["key"] for c in planned["candidates"]} if queue == "domain" else
+                   {":".join((j["harness"], j["conversation_id"], j["through"])) for j in planned["scope_jobs"]})
+        required = ({"key", "outcome", "reason"} if queue == "domain" else
+                    {"harness", "conversation_id", "through", "outcome", "reason"})
+        optional = {"target"} if queue == "domain" else {"targets"}
+        if not isinstance(entry, dict) or not required <= set(entry) <= required | optional:
+            raise ValueError(f"invalid {queue} review fields")
+        if any(not isinstance(entry[k], str) or not entry[k].strip() for k in required):
+            raise ValueError(f"{queue} review fields must be nonempty strings")
+        if ident not in allowed:
+            raise ValueError(f"unselected {queue} review")
+        if entry["outcome"] not in {"preserved", "no_value", "deferred"} | ({"summary"} if queue == "scope" else set()):
+            raise ValueError(f"invalid {queue} review outcome")
+        entry = dict(entry)
+        if queue == "domain":
+            if "target" in entry and entry["outcome"] != "preserved":
+                entry.pop("target")
+                notes.append(f"domain review {ident}: only a preserved decision names a target; the target was dropped")
+            elif "target" in entry and (not isinstance(entry["target"], str) or not entry["target"].strip()):
+                raise ValueError("a preserved Domain review names its target title")
+        elif entry["outcome"] in {"preserved", "summary"}:
+            field = "key" if entry["outcome"] == "preserved" else "text"
+            targets = entry.get("targets")
+            if not isinstance(targets, list) or not targets or not all(
+                    isinstance(t, dict) and set(t) == {field}
+                    and isinstance(t[field], str) and t[field].strip() for t in targets):
+                raise ValueError("Scope review needs exact target keys or saved summary excerpts")
+        elif "targets" in entry:
+            entry.pop("targets")
+            notes.append(f"scope review {ident}: no_value and deferred close no target; the targets were dropped")
+        return entry
+    if queue == "organization":
+        jobs = {j["key"]: j for j in planned.get("organization_jobs", [])}
         fields = {"key", "scope", "outcome", "reason"}
         if not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"after", "intentional", "checked"}:
             raise ValueError("invalid organization review fields")
         if any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields):
             raise ValueError("organization review fields must be nonempty strings")
-        if allowed.get(entry["key"]) != entry["scope"] or entry["key"] in seen:
-            raise ValueError("unselected or duplicate organization review")
-        seen.add(entry["key"])
+        if entry["key"] not in jobs or jobs[entry["key"]]["scope"] != entry["scope"]:
+            raise ValueError("unselected organization review")
         if entry["outcome"] not in {"complete", "deferred"}:
             raise ValueError("invalid organization outcome")
         checked = entry.get("checked", [])
-        if not isinstance(checked, list) or any(not isinstance(item, dict) or not isinstance(item.get("unit"), str) or
-                item.get("unit") not in selected_units[entry["key"]] for item in checked):
-            raise ValueError("organization checked units must belong to this manifest")
-    allowed = {j["of"] for j in planned.get("eviction_jobs", [])}
-    entries, seen = reviews.get("eviction", []), set()
-    if not isinstance(entries, list) or len(entries) > len(allowed):
-        raise ValueError("eviction reviews exceed the selected queue")
-    for entry in entries:
+        if not isinstance(checked, list) or any(not isinstance(i, dict) or not isinstance(i.get("unit"), str)
+                                                for i in checked):
+            raise ValueError("organization checked units must be objects with a unit")
+        units = {u["unit"] for u in jobs[entry["key"]].get("review_units", [])}
+        kept = [i for i in checked if i["unit"] in units]
+        if len(kept) != len(checked):
+            notes.append(f"organization review {ident}: {len(checked) - len(kept)} checked unit(s) outside "
+                         "this manifest were dropped")
+        return {**entry, "checked": kept} if "checked" in entry else entry
+    if queue == "eviction":
         fields = {"of", "outcome", "reason"}
         if (not isinstance(entry, dict) or not fields <= set(entry) <= fields | {"target"}
                 or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
             raise ValueError("invalid eviction review fields")
-        if entry["of"] not in allowed or entry["of"] in seen:
-            raise ValueError("unselected or duplicate eviction review")
-        seen.add(entry["of"])
+        if entry["of"] not in {j["of"] for j in planned.get("eviction_jobs", [])}:
+            raise ValueError("unselected eviction review")
         if entry["outcome"] not in {"node", "merged", "discarded", "deferred"}:
             raise ValueError("invalid eviction outcome")
         if entry["outcome"] in {"node", "merged"}:
             if not isinstance(entry.get("target"), str) or not entry["target"].strip():
                 raise ValueError("preserved eviction requires a target title")
         elif "target" in entry:
-            raise ValueError("discarded/deferred eviction has no target")
-    allowed = {j["key"] for j in planned.get("recheck_jobs", [])}
-    entries, seen = reviews.get("recheck", []), set()
-    if not isinstance(entries, list) or len(entries) > len(allowed):
-        raise ValueError("recheck reviews exceed the selected queue")
-    for entry in entries:
-        fields = {"key", "outcome", "reason", "proposal"}
-        if (not isinstance(entry, dict) or set(entry) != fields
-                or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
-            raise ValueError("invalid recheck review fields")
-        if entry["key"] not in allowed or entry["key"] in seen:
-            raise ValueError("unselected or duplicate recheck review")
-        seen.add(entry["key"])
-        if entry["outcome"] != "escalated":
-            raise ValueError("a recheck review only escalates; a check closes through update_node")
-    return reviews
+            entry = {k: v for k, v in entry.items() if k != "target"}
+            notes.append(f"eviction review {ident}: discarded and deferred name no target; the target was dropped")
+        return entry
+    fields = {"key", "outcome", "reason", "proposal"}
+    if (not isinstance(entry, dict) or set(entry) != fields
+            or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
+        raise ValueError("invalid recheck review fields")
+    if entry["key"] not in {j["key"] for j in planned.get("recheck_jobs", [])}:
+        raise ValueError("unselected recheck review")
+    if entry["outcome"] != "escalated":
+        raise ValueError("a recheck review only escalates; a check closes through update_node")
+    return entry
 
 
 def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=None) -> dict:
@@ -769,7 +807,7 @@ def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=Non
     original = next((r for r in rows if r["rid"] == job["of"] and r["kind"] == "evict"), None)
     if not original or any(original[k] != job[k] for k in ("scope", "text")):
         return {"status": "pending", "reason": "selected eviction source changed"}
-    review = core.resolve_one(growth_rows, job["of"], "of")
+    review = _latest(growth_rows, job["of"], "of")
     result = {"status": "pending", "review": review, "semantic_verified": False}
     settled = [r for r in rows if r["kind"] == "settle" and r["of"] == job["of"]]
     if not settled:
@@ -816,7 +854,8 @@ def checkpoint(packet: dict) -> dict:
 
 def _apply_reviews(reviews: dict, planned: dict) -> dict:
     from . import integration
-    result = {"state": "applied", "domain": {}, "scope": {}, "organization": {}, "eviction": {}, "errors": []}
+    result = {"state": "applied", "domain": {}, "scope": {}, "organization": {}, "eviction": {},
+              "errors": list(reviews.get("errors", [])), "notes": list(reviews.get("notes", []))}
     for entry in reviews["domain"]:
         key = entry["key"]
         try:
@@ -854,7 +893,10 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 # changed go to another reviewer (organization.review).
                 entry = {"after": selected[entry["key"]]["snapshot"], **entry}
             if done["status"] != "complete":
-                organization.review(**entry)
+                row = organization.review(**entry)
+                if row.get("skipped"):
+                    result["notes"].append(f"Organization {entry['key']}: {len(row['skipped'])} checked unit(s) "
+                                           "changed after reading and were not recorded")
             result["organization"][entry["key"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Organization {entry['key']}: {exc}")
@@ -875,6 +917,10 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                         last = evictions._settle_locked(**entry)
                     record["settlement"] = last["rid"]
                 previous = done.get("review") or {}
+                if isinstance(previous.get("manifest"), str) and (
+                        core._rid_key(previous["manifest"]) > core._rid_key(planned["manifest"])):
+                    result["notes"].append(f"Eviction {entry['of']}: a newer selection already reviewed it; "
+                                           "this report is kept as history and does not change it")
                 if any(previous.get(k) != v for k, v in record.items()):
                     core.ledger_append(LEDGER, record)
                 result["eviction"][entry["of"]] = "recorded"
@@ -889,9 +935,14 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 now = [i for i in rechecks.candidates(_index())[0]
                        if i["id"] == job["id"] and i["key"] == job["target_key"]]
                 if not now:
-                    raise ValueError("the recheck is already closed")
+                    result["notes"].append(f"Recheck {entry['key']}: already closed; nothing to escalate")
+                    result.setdefault("recheck", {})[entry["key"]] = "already_closed"
+                    continue
                 if (now[0]["node_state"], now[0]["target_state"]) != (job["node_state"], job["target_state"]):
-                    raise ValueError("node or target changed since selection — review again")
+                    # 제안은 선택 때의 두 상태에 대한 것으로 남는다. 지금 쌍과 상태가 달라
+                    # 올림 표시가 붙지 않으므로, 그 쌍은 다시 선택된다.
+                    result["notes"].append(f"Recheck {entry['key']}: the node or target changed since "
+                                           "selection; the proposal is kept for the selected states")
                 if "escalated" not in now[0]:
                     core.ledger_append(LEDGER, {
                         "kind": "recheck_review", "manifest": planned["manifest"], **entry,
@@ -1130,7 +1181,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                             for c in planned["candidates"]}
                 outcomes = {}
                 for key, receipt in receipts.items():
-                    last = core.resolve_one(rows, key, "key")
+                    last = _latest(rows, key, "key")
                     outcomes[key] = receipt["outcome"] if receipt else (
                         "deferred" if last and last.get("manifest") == manifest["rid"]
                         and last.get("outcome") == "deferred" else "pending")
