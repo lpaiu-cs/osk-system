@@ -244,9 +244,10 @@ def _mark_escalated(items: list[dict]) -> None:
         return
     if not items or not any(r.get("kind") == "recheck_review" for r in rows):
         return
+    par = effective_parents(rows)
     for i in items:
-        # 더 새 선택의 보고가 정한다 — 옛 상태에 대한 제안이 늦게 붙어도 지금 상태의 올림을 덮지 않는다.
-        r = growth._latest(rows, f"recheck:{i['id']}:{i['key']}", "key") or {}
+        # 앞 선택을 이은 선택의 보고가 정한다 — 옛 상태에 대한 제안이 늦게 붙어도 지금 상태의 올림을 덮지 않는다.
+        r = growth._latest(rows, f"recheck:{i['id']}:{i['key']}", "key", par) or {}
         if (r.get("kind") == "recheck_review" and r.get("outcome") == "escalated"
                 and r.get("node_state") == i["node_state"]
                 and r.get("target_state") == i["target_state"]):

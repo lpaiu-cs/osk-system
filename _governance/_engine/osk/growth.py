@@ -133,21 +133,24 @@ def _preservation(candidate: dict, idx: graph.Index, target: str | None = None,
     raise ValueError("no complete current Domain distillation covers a valid subset of this comparison")
 
 
-def _latest(rows: list[dict], value: str, field: str) -> dict | None:
-    """한 항목의 지금 보고 — 더 새 선택(manifest)에서 나온 보고가 정하고, 같은 선택
-    안에서는 인과상 나중 기록이 정한다. 옛 선택의 보고가 늦게 붙어도 기록으로만 남고
-    새 선택의 보고를 되돌리지 않는다. 판정이 갈리면(극대가 둘) 정하지 않는다."""
-    mine = [r for r in rows if r.get(field) == value and isinstance(r.get("manifest"), str)]
-    if not mine:
-        return core.resolve_one(rows, value, field)
-    newest = max((r["manifest"] for r in mine), key=core._rid_key)
-    top = core.causal_maxima(rows, value, None, field,
-                             candidate=lambda r: r.get("manifest") == newest)
+def _latest(rows: list[dict], value: str, field: str, par=None) -> dict | None:
+    """한 항목의 지금 보고. 앞 선택(manifest)을 인과로 이은 선택이 있으면 앞 선택의 보고는
+    기록으로만 남는다 — 옛 선택의 보고가 늦게 붙어 인과 극대가 되어도 새 선택의 보고를
+    되돌리지 않는다. 서로 잇지 않은 선택(동기화 전의 두 기기)은 함께 남고, 그 보고가
+    갈리면 정하지 않는다(Mechanism §3 1항). 같은 선택 안에서는 인과상 나중 기록이 정한다.
+    `par`는 같은 `rows`의 `effective_parents`다 — 여러 항목을 판정할 때 한 번만 잰다."""
+    par = core.effective_parents(rows) if par is None else par
+    plans = {r["manifest"] for r in rows
+             if r.get(field) == value and isinstance(r.get("manifest"), str)}
+    anc = {m: core._ancestors(m, par) for m in plans}
+    kept = {m for m in plans if not any(m in anc[o] for o in plans if o != m)}
+    top = core.causal_maxima(rows, value, par, field, candidate=(
+        (lambda r: r.get("manifest") in kept) if plans else None))
     return top[0] if len(top) == 1 else None
 
 
-def _completed(key: str, rows: list[dict], idx: graph.Index) -> dict | None:
-    row = _latest(rows, key, "key")
+def _completed(key: str, rows: list[dict], idx: graph.Index, par=None) -> dict | None:
+    row = _latest(rows, key, "key", par)
     if not row or row.get("kind") != "review" or row.get("outcome") == "deferred":
         return None
     candidate = row.get("candidate")
@@ -277,6 +280,7 @@ def _plan(limit: int) -> dict:
         return any((s["id"], s["hash"]) not in seen_versions for s in candidate["sources"])
 
     reviewed = {row.get("key") for row in rows if row.get("kind") == "review"}
+    par = core.effective_parents(rows)
     rotation = None
     def pending():
         nonlocal rotation
@@ -287,7 +291,7 @@ def _plan(limit: int) -> dict:
             if key in seen:
                 continue
             seen.add(key)
-            if key in reviewed and _completed(key, rows, idx):
+            if key in reviewed and _completed(key, rows, idx, par):
                 continue
             candidate = {"key": key, "grouping": grouping, "sources": batch}
             # Do not immediately retry the last batch while alternatives remain.
@@ -311,7 +315,7 @@ def _plan(limit: int) -> dict:
         available = related + [d for d in domains.values() if d not in related]
         candidate.update(domains=available[:MAX_DOMAINS],
                          other_domains=max(0, len(available) - MAX_DOMAINS))
-        last_review = _latest(rows, candidate["key"], "key")
+        last_review = _latest(rows, candidate["key"], "key", par)
         if last_review and last_review.get("outcome") == "deferred":
             candidate["previous_deferral"] = _deferral(last_review)
         previous = [c["distill_key"] for row in rows if row.get("kind") == "plan"
@@ -334,7 +338,8 @@ def _plan(limit: int) -> dict:
             continue
         job = {"key": "eviction:" + r["rid"], "of": r["rid"], "scope": r["scope"],
                "text": r["text"], "age_days": evictions.age_days(r)}
-        state = _eviction_status(job, idx, growth_rows=rows, eviction_rows=eviction_rows)
+        state = _eviction_status(job, idx, growth_rows=rows, eviction_rows=eviction_rows,
+                                 growth_par=par)
         if state["status"] == "complete":
             continue
         prior = state.get("review")
@@ -800,14 +805,15 @@ def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
     return entry
 
 
-def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=None) -> dict:
+def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=None,
+                     growth_par=None) -> dict:
     from . import evictions
     rows = evictions.records() if eviction_rows is None else eviction_rows
     growth_rows = _records() if growth_rows is None else growth_rows
     original = next((r for r in rows if r["rid"] == job["of"] and r["kind"] == "evict"), None)
     if not original or any(original[k] != job[k] for k in ("scope", "text")):
         return {"status": "pending", "reason": "selected eviction source changed"}
-    review = _latest(growth_rows, job["of"], "of")
+    review = _latest(growth_rows, job["of"], "of", growth_par)
     result = {"status": "pending", "review": review, "semantic_verified": False}
     settled = [r for r in rows if r["kind"] == "settle" and r["of"] == job["of"]]
     if not settled:
@@ -1177,11 +1183,12 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                                  {"state": "not_applied", "errors": ["worker did not exit successfully"]})
             with core.mutation_lock():
                 rows, idx = _records(), _index()
-                receipts = {c["key"]: _completed(c["key"], rows, idx)
+                par = core.effective_parents(rows)
+                receipts = {c["key"]: _completed(c["key"], rows, idx, par)
                             for c in planned["candidates"]}
                 outcomes = {}
                 for key, receipt in receipts.items():
-                    last = _latest(rows, key, "key")
+                    last = _latest(rows, key, "key", par)
                     outcomes[key] = receipt["outcome"] if receipt else (
                         "deferred" if last and last.get("manifest") == manifest["rid"]
                         and last.get("outcome") == "deferred" else "pending")
