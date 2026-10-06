@@ -25,8 +25,8 @@ from . import contract, graph
 RECHECKS = LEDGER / "rechecks.jsonl"
 BASELINE = "기준선"
 CARRIED = "이어받음"
-CLOSE = ("근거와 노드를 read_node로 읽는다(전문이나 필요한 범위). 노드가 맞으면 update_node(name, add_edges="
-         "{\"derived-from\": target})로 그 근거를 다시 댄다(unchanged). 고쳐야 하면 그 수정이 next의 "
+CLOSE = ("근거와 노드를 read_node로 읽는다(전문이나 필요한 범위). 노드가 맞으면 update_node(name, "
+         "rechecked=[target])로 점검을 적는다(unchanged). 고쳐야 하면 그 수정이 next의 "
          "노드들까지 고치게 만들지 않을 때만 같은 호출로 고친다(updated). 그런 수정이거나 cascade가 "
          "참이면 고치지 않고 수정안을 사용자에게 올린다. 읽은 뒤 어느 쪽 본문이 바뀌었으면 "
          "완료가 적히지 않는다(recheck_unread)")
@@ -386,36 +386,38 @@ def _presented(nid: str, key: str) -> str | None:
     return None
 
 
-def _reviewed(idx, meta: dict, rel: str, pre: str, key: str, ts: str, ref: str,
+def _reviewed(idx, meta: dict, pre: str, key: str, ts: str, ref: str,
               seen: dict | None) -> bool:
-    """다시 댄 근거가 검토자가 본 두 상태 그대로인가. `seen`은 표면이 `read_node`로
-    읽은 노드의 본문 상태(경로 → `state`)다 — 읽은 뒤 요약·배선만 바뀌었으면 읽은
-    주장은 그대로다. 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다.
-    비노드 근거는 표면으로 읽지 못하므로 정기 실행 작업이 보여 준 상태와 대조하고,
-    보여 준 적이 없으면 확인할 수 없으므로 완료를 적지 않는다."""
+    """`rechecked`에 적은 근거를 검토자가 본 판이 쓰기 직전과 같은가(§4-1 3항). `seen`은
+    표면이 `read_node`로 읽은 노드의 본문 상태(노드 id → `state`)다 — id에 묶으므로 읽은
+    뒤 옮겨지거나 이름이 바뀐 노드도 그 기록과 대조한다. 읽은 뒤 요약·배선만 바뀌었으면
+    읽은 주장은 그대로다. 비노드 근거는 정기 실행 작업이 보여 준 상태와 대조한다. 읽거나
+    보여 준 기록이 없는 쪽은 검토자가 적은 대로 둔다 — 다른 길로 읽었거나 표면이 다시 떠
+    기록이 비었을 수 있다(헌법 1조 3항). 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다."""
     if seen is None:
         return True
-    if seen.get(rel) != pre:
+    if seen.get(meta["id"], pre) != pre:
         return False
     parsed = _name(ref)
     hit = idx.locate(parsed[0]) if parsed and parsed[0] else None
     if hit is None:
         return False
     if graph.is_node_home(hit[1]):
+        read = seen.get(key.split("#", 1)[0])       # 노드 근거의 키는 그 노드의 id다
         try:
-            return seen.get(posix_rel(hit[0], ROOT)) == state(hit[0].read_bytes())
+            return read is None or read == state(hit[0].read_bytes())
         except OSError:
             return False
     shown = _presented(meta["id"], key)
-    return shown is not None and shown == ts
+    return shown is None or shown == ts
 
 
 def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozenset(),
-                reasserted=frozenset(), changed: bool = True, pre: str | None = None,
+                rechecked=frozenset(), changed: bool = True, pre: str | None = None,
                 seen: dict | None = None) -> dict:
     """노드 쓰기가 성공한 뒤의 완료 기록(§4-1).
 
-    새 배선은 `bound`, 다시 댄 근거는 본문을 함께 고쳤으면 `updated`·아니면
+    새 배선은 `bound`, `rechecked`에 적은 근거는 본문을 함께 고쳤으면 `updated`·아니면
     `unchanged`, 쓰기 직전 완료였던 그 밖의 근거는 본문이 바뀌었으면 새 노드
     상태로 이어 적는다(`unchanged`, 사유 `이어받음`) — 이어 적지 않으면 노드를
     고칠 때마다 근거가 전부 후보가 된다. 요약·배선만 바뀐 쓰기는 노드 상태가
@@ -430,15 +432,14 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
                                  "(쌍은 후보로 남고 검증기가 대장을 보고한다)"}
     ns = state(path.read_bytes())
     changed = changed and (pre is None or ns != pre)
-    rel = posix_rel(path, ROOT)
     rows, closed, unread = [], [], []
     for key, (ts, ref) in ps.items():
         if ts is None:
             continue                  # 해석되지 않는 근거에는 완료가 없다
         if key not in before:
             rows.append(_row(meta["id"], ns, key, ts, "bound"))
-        elif key in reasserted:
-            if not _reviewed(idx, meta, rel, pre or ns, key, ts, ref, seen):
+        elif key in rechecked:
+            if not _reviewed(idx, meta, pre or ns, key, ts, ref, seen):
                 unread.append(ref)
                 continue
             closed.append(ref)
@@ -447,8 +448,8 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
         elif changed and key in prior:
             rows.append(_row(meta["id"], ns, key, ts, "unchanged", CARRIED))
     out = {"recheck_unread": {"targets": unread, "why": (
-        "노드나 근거의 본문이 read_node로 읽은 판과 달라 완료를 적지 않았다 — 다시 읽고 "
-        "대라. 비노드 근거는 정기 실행 작업이 보여 준 판으로만 닫힌다")}} if unread else {}
+        "노드나 근거의 본문이 read_node로 읽은 판(비노드 근거는 정기 실행 작업이 보여 준 판)과 "
+        "달라 완료를 적지 않았다 — 지금 판을 읽고 rechecked에 다시 적어라")}} if unread else {}
     try:
         ledger_extend(RECHECKS, rows)
     except Exception as e:

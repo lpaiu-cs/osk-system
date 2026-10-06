@@ -237,6 +237,8 @@ class GrowthTests(unittest.TestCase):
             core.ledger_append(growth.LEDGER, {'kind':'run','manifest':manifest['rid'],'ok':True})
             assert growth.daily_active()
             write.update_node('B', add_edges={'derived-from': 'A'})
+            assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'pending', 'wiring is not a check'
+            write.update_node('B', rechecked=['A'])
             assert growth._recheck_status(jobs[0], graph.Index())['status'] == 'complete'
             assert not growth.plan(3)['recheck_jobs']
         """)
@@ -301,7 +303,7 @@ class GrowthTests(unittest.TestCase):
             assert [(j['node'], j['cascade'], j['next']) for j in jobs] == [('B', False, ['C'])], jobs
             # the agent's own correction of B is autonomous; C's recheck is then a cascade
             write.update_node('B', old_text='B relies on A.', new_text='B relies on revised A.',
-                              add_edges={'derived-from': 'A'})
+                              rechecked=['A'])
             planned = growth.plan(3)
             jobs = planned['recheck_jobs']
             assert [(j['node'], j['cascade']) for j in jobs] == [('C', True)], jobs
@@ -318,7 +320,7 @@ class GrowthTests(unittest.TestCase):
             assert not growth.plan(3)['recheck_jobs'], 'an escalated check returned to the agent queue'
             held = rechecks.report(graph.Index()).get('escalated')
             assert [h['node'] for h in held] == ['C'] and held[0]['proposal'] == 'y', held
-            write.update_node('C', add_edges={'derived-from': 'B'})   # the user's decision
+            write.update_node('C', rechecked=['B'])   # the user's decision
             assert not rechecks.report(graph.Index()), rechecks.report(graph.Index())
         """)
 
@@ -332,7 +334,7 @@ class GrowthTests(unittest.TestCase):
                                          edges={'derived-from': basis})['ok']
             write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
             write.update_node('B', old_text='Old B.', new_text='The same claim.',
-                              add_edges={'derived-from': 'A'})
+                              rechecked=['A'])
             write.update_node('X', old_text='Old X.', new_text='The same claim.')
             cascades = {i['node']: i['cascade'] for i in rechecks.candidates(graph.Index())[0]}
             assert cascades['C'] is True, cascades
