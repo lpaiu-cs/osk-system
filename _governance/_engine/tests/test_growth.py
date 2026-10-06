@@ -1148,6 +1148,114 @@ class GrowthTests(unittest.TestCase):
             assert len(state['pending_refs']) == 4, state  # selected three only, not the whole conversation
         """)
 
+    def test_scope_queue_goes_by_turn_time_and_passes_a_stalled_conversation(self):
+        self.check_case("""
+            import os, time
+            from osk import integration
+            node('A')
+            # Two ended conversations compete for one Scope slot per run (limit=3 shares the
+            # budget with the candidate and organization queues). 'early' holds the older turns
+            # although its state was touched last, so time order picks it first. A run that ends
+            # without an ACK leaves it in place; the next run gives 'late' its turn instead of
+            # choosing 'early' again (#136 M4: six such runs all chose the first conversation).
+            ended = time.time() - integration.ENDED_AFTER - 60
+            for n, (sid, day) in enumerate((('late', '02'), ('early', '01'))):
+                path = core.ROOT / (sid + '.jsonl')
+                rows = []
+                for i in range(1, 3):
+                    rows += [{'type':'user','sessionId':sid,'uuid':sid+'-u'+str(i),'timestamp':'2026-10-'+day+'T0'+str(i)+':00:00Z','message':{'role':'user','content':'question '+str(i)}},
+                             {'type':'assistant','sessionId':sid,'uuid':sid+'-a'+str(i),'message':{'role':'assistant','id':sid+'-m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
+                path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
+                assert integration.capture('claude',sid,str(path),sid+'-project',space='00_Scope/W1')['ok']
+                os.utime(path, (ended, ended))
+                os.utime(integration.state_path('claude', sid), (ended + n, ended + n))
+            worker = [sys.executable,'-c','import sys; sys.stdin.read()']   # no ACKs
+            picks = []
+            for _ in range(3):
+                result = growth.run(worker, limit=3)
+                assert not result['ok'], result
+                plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+                picks.append(plan['scope_jobs'][0]['conversation_id'])
+            assert picks == ['early', 'late', 'early'], picks
+        """)
+
+    def test_conversations_that_yield_no_job_do_not_hold_the_catch_up_slots(self):
+        self.check_case("""
+            import os, time
+            from osk import integration
+            os.environ['CODEX_HOME'] = str(core.ROOT / 'codex-home')    # never the real sessions
+            # Codex conversations whose original transcripts are gone still date their next turn
+            # from the stored UUIDv7 turn ids, so they sort first, yet catch-up cannot build jobs
+            # from them. Catch-up walks the whole sorted queue to the next conversation that yields
+            # a job: neither the run limit nor a lookup cap lets them hold the slots (#152 review:
+            # with nothing else queued, run after run reviewed nothing and B waited).
+            ended = time.time() - integration.ENDED_AFTER - 60
+            path = core.ROOT / 'b.jsonl'
+            rows = [{'type':'user','sessionId':'b','uuid':'b-u1','timestamp':'2026-10-02T01:00:00Z','message':{'role':'user','content':'question'}},
+                    {'type':'assistant','sessionId':'b','uuid':'b-a1','message':{'role':'assistant','id':'b-m1','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
+            path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
+            assert integration.capture('claude','b',str(path),'b-project',space='00_Scope/W1')['ok']
+            os.utime(path, (ended, ended))
+            for i in range(101):
+                sid, turn = 'lost' + str(i), '01900000-0000-7000-8000-%012d' % i
+                with integration._locked('codex', sid) as p:
+                    s = integration._load(p, 'codex', sid)
+                    s.update(session='lost-project', space='00_Scope/W1', prompt_count=1,
+                             transcript_path=str(core.ROOT / 'gone.jsonl'),
+                             rounds=[{'id':sid+'-u1:'+turn, 'ref':'native:codex:'+sid+':'+turn,
+                                      'hash':'sha256:' + '0'*64, 'completion':'completed'}])
+                    integration._save(p, s)
+            first = [x['conversation_id'] for x in integration._known_pending(100)[0]]
+            assert len(first) == 100 and 'b' not in first, first[-3:]
+            result = growth.run([sys.executable,'-c','import sys; sys.stdin.read()'], limit=1)
+            assert result.get('state') != 'capture_pending', result
+            plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            assert [j['conversation_id'] for j in plan['scope_jobs']] == ['b'], plan['scope_jobs']
+            assert integration.status('codex','lost0')['capture_error'], 'the failure stays visible'
+        """)
+
+    def test_every_queue_and_its_later_candidate_get_turns_while_nothing_completes(self):
+        self.check_case("""
+            import os, time
+            from unittest.mock import patch
+            from osk import evictions, integration
+            # #136 M4 fixture: two candidates in each of the five queues and a worker that never
+            # acknowledges or submits a packet. Within five runs of limit=3 every queue is chosen,
+            # and so is the second candidate of every queue: a stalled first one holds no budget.
+            node('A')
+            node('B', 'W2')
+            for title in ('R1', 'R2'):
+                assert write.create_node(title, title, title + ' relies on A.', 'gpt-6-astra',
+                                         space='00_Scope/W1', edges={'derived-from': 'A'})['ok']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            for i in range(2):
+                evictions.record_evict('W1', 'session', 'Temporary observation ' + str(i))
+            ended = time.time() - integration.ENDED_AFTER - 60
+            for sid in ('c1', 'c2'):
+                path = core.ROOT / (sid + '.jsonl')
+                rows = [{'type':'user','sessionId':sid,'uuid':sid+'-u','message':{'role':'user','content':'question'}},
+                        {'type':'assistant','sessionId':sid,'uuid':sid+'-a','message':{'role':'assistant','id':sid+'-m','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
+                path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
+                assert integration.capture('claude', sid, str(path), sid + '-project', space='00_Scope/W1')['ok']
+                os.utime(path, (ended, ended))
+            ident = {'candidates': 'key', 'scope_jobs': 'conversation_id', 'organization_jobs': 'scope',
+                     'eviction_jobs': 'of', 'recheck_jobs': 'key'}
+            assert set(ident) == set(growth._QUEUES)
+            worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']    # never acknowledges
+            seen = {k: [] for k in ident}
+            with patch.object(evictions, 'age_days', return_value=17):
+                planned = growth.plan(3)       # Scope jobs join at run time, from the conversations
+                assert all(len(planned[k]) >= 2 for k in ident if k != 'scope_jobs'), planned
+                assert len(integration._known_pending(3)[0]) == 2
+                for _ in range(5):
+                    result = growth.run(worker, limit=3)
+                    assert not result['ok'] and result['selected'] == 3, result
+                    plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+                    for k, field in ident.items():
+                        seen[k] += [j[field] for j in plan[k]]
+            assert all(len(set(v)) >= 2 for v in seen.values()), seen
+        """)
+
     def test_only_dispatched_organization_jobs_advance_attempts(self):
         self.check_case("""
             from unittest.mock import patch

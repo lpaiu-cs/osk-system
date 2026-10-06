@@ -8,6 +8,7 @@ import os
 import re
 import time
 from collections import Counter
+from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -770,8 +771,43 @@ def _ended_source(s: dict) -> str | None:
     return None
 
 
-def _known_pending(limit: int) -> tuple[list, int, list, list]:
-    if not isinstance(limit, int) or not 1 <= limit <= 100:
+def _turn_at(s: dict, native_path: str | None) -> float | None:
+    """다음에 검토할 턴의 원래 시각(epoch 초). 복구 대기면 그 대상 가운데 가장 이른 턴이다.
+    Codex 턴 id는 UUIDv7이라 id에서 읽고, Claude는 원본 전사에서 그 사용자 발화 행의 시각을
+    읽는다. 알 수 없으면 None."""
+    repair = {ref for r in (s.get("repair_pending") or {}).values() for ref in r.get("refs", [])}
+    ids = ([r["id"] for r in s["rounds"] if r["ref"] in repair] if repair else
+           [s["rounds"][s["reviewed_count"]]["id"]] if s["reviewed_count"] < len(s["rounds"]) else [])
+    if not ids:
+        return None
+    if s["harness"] == "codex":
+        turns = [i.rsplit(":", 1)[-1] for i in ids]
+        if not all(re.match(core.RID_RE, t) for t in turns):
+            return None
+        return min(int(t.replace("-", "")[:12], 16) / 1000 for t in turns)
+    if s["harness"] != "claude" or not native_path:
+        return None
+    want, found = {i.split(":", 1)[0] for i in ids}, []
+    try:
+        for line in transcripts.native_lines(native_path, s["harness"], s["conversation_id"]):
+            for uuid in [u for u in want if u.encode() in line]:
+                row = json.loads(line)
+                if row.get("uuid") == uuid and isinstance(row.get("timestamp"), str):
+                    found.append(datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")).timestamp())
+                    want.discard(uuid)
+            if not want:
+                break
+    except (OSError, ValueError):
+        return None
+    return min(found) if found else None
+
+
+def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list]:
+    """처리할 대화를 고른다. 같은 자리에서 고른 횟수(`tried(s)`)가 적은 대화가 먼저다 — 진척
+    없이 끝난 대화가 예산을 계속 차지하지 않는다. 횟수가 같으면 다음 미검토 턴이 이른 대화가
+    먼저다 — 옛 내용이 새 내용 뒤에 쓰이지 않게 한다. 턴의 시각을 모르면 상태를 마지막으로
+    고친 시각으로 본다. `limit`이 None이면 정렬한 대기 전체를 돌려준다."""
+    if limit is not None and (not isinstance(limit, int) or not 1 <= limit <= 100):
         raise ValueError("limit must be between 1 and 100")
     probe = state_path("claude", "inventory")
     prefix = "-".join(probe.name.split("-")[:3]) + "-"
@@ -785,7 +821,7 @@ def _known_pending(limit: int) -> tuple[list, int, list, list]:
                     raise ValueError("state filename identity mismatch")
                 s = _load(p, value["harness"], value["conversation_id"])
                 current = _current_view(s, p)
-            changed, missing = False, False
+            changed, missing, native_path = False, False, None
             try:
                 native_path = _locate_transcript(
                     s["harness"], s["conversation_id"], s.get("capture_path") or s.get("transcript_path"))
@@ -811,9 +847,13 @@ def _known_pending(limit: int) -> tuple[list, int, list, list]:
             pending = current["pending_refs"]
             if (changed or current["repair_pending"] or any(not raw.is_native(ref) for ref in pending)
                     or pending and _ended_source(s)):
-                states.append(s)
+                at = _turn_at(s, native_path)
+                states.append((tried(s) if tried else 0, p.stat().st_mtime if at is None else at, s))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append({"state": str(p), "error": str(exc)})
+    states = [s for *_, s in sorted(states, key=lambda t: t[:2])]
+    if limit is None:
+        return states, 0, errors, awaiting_native
     return states[:limit], max(0, len(states) - limit), errors, awaiting_native
 
 
@@ -832,11 +872,18 @@ def list_pending(limit: int = 20) -> dict:
             "awaiting_native": awaiting_native}
 
 
-def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
-    """Bounded scheduler catch-up of known own vault states; never inject these in a normal session."""
-    states, remaining, errors, awaiting_native = _known_pending(limit)
+def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None) -> dict:
+    """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
+    작업을 만들지 못한 대화(원본 유실·포착 실패 등)는 건너뛰고 다음 대화로 `limit`을 채운다 —
+    그런 대화가 순서의 앞에 남아 한도를 차지하면 다른 대화가 영영 검토되지 않는다. 그래서 조회에
+    상한을 두지 않고 정렬한 대기 전체를 작업이 찰 때까지 내려간다."""
+    if not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    states, _, errors, awaiting_native = _known_pending(None, tried)
     captures, jobs = [], []
     for s in states:
+        if len(jobs) >= limit:
+            break
         try:
             result = capture(s["harness"], s["conversation_id"],
                              s.get("capture_path") or s["transcript_path"], s["session"], s.get("space"))
@@ -851,7 +898,7 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS) -> dict:
         except Exception as exc:
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "jobs": jobs,
-            "captures": captures, "remaining": remaining, "errors": errors,
+            "captures": captures, "remaining": len(states) - len(jobs), "errors": errors,
             "awaiting_native": awaiting_native}
 
 
