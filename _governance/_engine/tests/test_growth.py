@@ -56,11 +56,12 @@ def no_value_all():
     manifest = register()
     for candidate in manifest['candidates']:
         growth.review(candidate['key'], 'no_value', reason='No reusable synthesis in this exact set.', manifest=manifest['rid'])
-def packet_worker(change='', wrapper='plain', code=0):
+def packet_worker(change='', wrapper='plain', code=0, org='complete', read='True'):
+    # org: the organization review outcome; read: which review units u the worker read
     source = "import json,sys; from osk import core,growth,distillation,integration; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
     if change:
         source += change + '; '
-    source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'complete','reason':'The fixture is one coherent, directly wired group.','intentional':[],'checked':[{'unit':u['unit'],'reason':'Known fixture claim and conditions'} for u in j['review_units']]} for j in p['organization_jobs']]; "
+    source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'" + org + "','reason':'The fixture is one coherent, directly wired group.','intentional':[],'checked':[{'unit':u['unit'],'reason':'Known fixture claim and conditions'} for u in j['review_units'] if " + read + "]} for j in p['organization_jobs']]; "
     wrappers = {
         'plain': "print(json.dumps(q))",
         'codex': "[print(json.dumps(e)) for e in [{'type':'turn.started'},{'type':'item.completed','item':{'type':'agent_message','text':json.dumps(q)}},{'type':'turn.completed'}]]",
@@ -911,6 +912,28 @@ class GrowthTests(unittest.TestCase):
             fresh = growth.run([sys.executable,'-c',packet_worker()],limit=3)
             assert fresh['ok'], fresh
             assert {s['status'] for s in fresh['organization_outcomes'].values()} == {'complete'}, fresh
+        """)
+
+    def test_organization_packet_keeps_units_read_before_its_own_edit(self):
+        self.check_case("""
+            node('A')
+            node('B')
+            # The worker reads A, corrects B and checkpoints A as deferred. Its own write moves
+            # the scope past the planned snapshot; A's unchanged unit is still its progress and
+            # B goes to another reviewer (#136 M4: the packet was refused and nothing was kept).
+            change = ("from osk import write; n=core.ROOT/'00_Scope/W1/B.md'; "
+                      "assert write.update_node('B',body='Corrected by the worker.',expect_hash=core.sha256_file(n))['ok']")
+            result = growth.run([sys.executable,'-c',packet_worker(change, org='deferred', read="u['name']=='A'")],
+                                limit=3)
+            # B is also a Domain candidate's source, so that candidate is refused; only the
+            # organization checkpoint is under test here.
+            errors = result['final_reviews']['errors']
+            assert not [e for e in errors if e.startswith('Organization')], errors
+            assert {s['status'] for s in result['organization_outcomes'].values()} != {'complete'}, result
+            from osk import organization
+            nxt = organization.plan('W1')
+            assert not {u['name'] for u in nxt.get('review_units', [])} & {'A', 'B'}, nxt
+            assert nxt.get('handoff') or nxt.get('coverage', {}).get('handoff'), nxt
         """)
 
     def test_prompt_units_carry_the_view_hash_read_node_returns(self):

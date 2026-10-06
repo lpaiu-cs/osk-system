@@ -348,8 +348,8 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
         live = {u["unit"] for u in current["units"]}
         if any(i["unit"] not in allowed & live for i in checked):
             raise ValueError("unselected or changed review unit; inspect a fresh plan")
-        if checked and after != current["snapshot"]:
-            raise ValueError("organization changed after inspection; pending")
+        # 구간 키가 본문을 묶으므로, 바뀌지 않은 구간의 판단은 그 뒤 scope가 바뀌어도(이
+        # 검토자의 쓰기 포함) 보류 진척으로 남긴다. 완료만 판독한 snapshot을 요구한다(아래).
         coverage = state.setdefault("coverage", {}).setdefault(scope, {})
         for item in checked:
             coverage[item["unit"]] = {"reason": item["reason"].strip(), "at": core.now_kst()}
