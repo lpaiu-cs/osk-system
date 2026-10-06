@@ -386,24 +386,24 @@ def _presented(nid: str, key: str) -> str | None:
     return None
 
 
-def _reviewed(idx, meta: dict, rel: str, pre: str, key: str, ts: str, ref: str,
+def _reviewed(idx, meta: dict, pre: str, key: str, ts: str, ref: str,
               seen: dict | None) -> bool:
     """`rechecked`에 적은 근거를 검토자가 본 판이 쓰기 직전과 같은가(§4-1 3항). `seen`은
-    표면이 `read_node`로 읽은 노드의 본문 상태(경로 → `state`)다 — 읽은 뒤 요약·배선만
-    바뀌었으면 읽은 주장은 그대로다. 비노드 근거는 정기 실행 작업이 보여 준 상태와
-    대조한다. 읽거나 보여 준 기록이 없는 쪽은 검토자가 적은 대로 둔다 — 다른 길로
-    읽었거나 표면이 다시 떠 기록이 비었을 수 있다(헌법 1조 3항). 엔진 안의 호출
-    (`seen`이 None)은 지금 상태로 본다."""
+    표면이 `read_node`로 읽은 노드의 본문 상태(노드 id → `state`)다 — id에 묶으므로 읽은
+    뒤 옮겨지거나 이름이 바뀐 노드도 그 기록과 대조한다. 읽은 뒤 요약·배선만 바뀌었으면
+    읽은 주장은 그대로다. 비노드 근거는 정기 실행 작업이 보여 준 상태와 대조한다. 읽거나
+    보여 준 기록이 없는 쪽은 검토자가 적은 대로 둔다 — 다른 길로 읽었거나 표면이 다시 떠
+    기록이 비었을 수 있다(헌법 1조 3항). 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다."""
     if seen is None:
         return True
-    if seen.get(rel, pre) != pre:
+    if seen.get(meta["id"], pre) != pre:
         return False
     parsed = _name(ref)
     hit = idx.locate(parsed[0]) if parsed and parsed[0] else None
     if hit is None:
         return False
     if graph.is_node_home(hit[1]):
-        read = seen.get(posix_rel(hit[0], ROOT))
+        read = seen.get(key.split("#", 1)[0])       # 노드 근거의 키는 그 노드의 id다
         try:
             return read is None or read == state(hit[0].read_bytes())
         except OSError:
@@ -432,7 +432,6 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
                                  "(쌍은 후보로 남고 검증기가 대장을 보고한다)"}
     ns = state(path.read_bytes())
     changed = changed and (pre is None or ns != pre)
-    rel = posix_rel(path, ROOT)
     rows, closed, unread = [], [], []
     for key, (ts, ref) in ps.items():
         if ts is None:
@@ -440,7 +439,7 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
         if key not in before:
             rows.append(_row(meta["id"], ns, key, ts, "bound"))
         elif key in rechecked:
-            if not _reviewed(idx, meta, rel, pre or ns, key, ts, ref, seen):
+            if not _reviewed(idx, meta, pre or ns, key, ts, ref, seen):
                 unread.append(ref)
                 continue
             closed.append(ref)

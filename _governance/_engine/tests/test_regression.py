@@ -8490,8 +8490,8 @@ def test_rechecks():
               not why("regr-rc-R") and len(core.ledger_read(led)) == rows0)
         _w(write.update_node, "regr-rc-S", old_text="근거.", new_text="근거를 고쳤다.")
         check("근거의 본문이 바뀌면 후보다", why("regr-rc-R") == {"근거가 바뀌었다"})
-        r_rel, s_rel = "00_Scope/W1/regr-rc-R.md", "00_Scope/W1/regr-rc-S.md"
-        seen3 = {r_rel: st(W / "regr-rc-R.md"), s_rel: st(W / "regr-rc-S.md")}
+        idof = lambda title: graph.Index().node(W / f"{title}.md").id
+        seen3 = {idof("regr-rc-R"): st(W / "regr-rc-R.md"), idof("regr-rc-S"): st(W / "regr-rc-S.md")}
         _w(write.update_node, "regr-rc-S", summary="읽은 뒤 요약만 바뀐다")
         r = _w(write.update_node, "regr-rc-R", summary="요약과 함께 점검을 적는다",
                rechecked=["regr-rc-S"], _seen=seen3)
@@ -8606,15 +8606,15 @@ def test_rechecks():
             check("git 이력에서 점검 시각 앞뒤의 판을 꺼낸다", got == [b"old\n", b"new\n"], got)
 
         # 표면의 `read_node` 기록이 있으면 그 판이 쓰기 직전과 같을 때만 완료를 적는다
-        n_rel, t_rel = "00_Scope/W1/regr-rc-N.md", "00_Scope/W1/regr-rc-T.md"
-        seen = {n_rel: st(W / "regr-rc-N.md"), t_rel: st(t)}
+        n_id, t_id = idof("regr-rc-N"), idof("regr-rc-T")
+        seen = {n_id: st(W / "regr-rc-N.md"), t_id: st(t)}
         _w(write.update_node, "regr-rc-T", old_text="4판", new_text="5판")    # 읽은 뒤 바뀐다
         r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen=seen)
         check("읽은 뒤 근거가 바뀌었으면 완료를 적지 않는다",
               r.get("recheck_unread") and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
-        seen[t_rel] = st(t)
+        seen[t_id] = st(t)
         r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"],
-               _seen={**seen, n_rel: "sha256:0"})
+               _seen={**seen, n_id: "sha256:0"})
         check("읽은 노드 판이 지금과 다르면 완료를 적지 않는다", r.get("recheck_unread"), r)
         r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen=seen)
         check("읽은 판 그대로면 완료를 적는다", r.get("rechecked") and not why("regr-rc-N"), r)
@@ -8624,19 +8624,19 @@ def test_rechecks():
         M._SEEN.clear()
         v = M.read_node("regr-rc-T", view="outline")
         check("부분 열람은 CAS 해시를 주지 않고 읽은 판만 기억한다",
-              "hash" not in v and M._SEEN.get(t_rel) == st(t), v)
+              "hash" not in v and M._SEEN.get(t_id) == st(t), v)
         # 읽은 판을 고친 쓰기는 쓴 판을 잇는다 — 쓰기 응답 해시의 CAS 연쇄와 같다
         _w(write.update_node, "regr-rc-T", old_text="5판", new_text="6판")
-        seen2 = {n_rel: st(W / "regr-rc-N.md"), t_rel: st(t)}
+        seen2 = {n_id: st(W / "regr-rc-N.md"), t_id: st(t)}
         _w(write.update_node, "regr-rc-N", old_text="밖에서 더한 줄.",
            new_text="밖에서 더한 줄을 고쳤다.", _seen=seen2)
         check("읽은 판을 고친 쓰기는 쓴 판을 잇는다",
-              seen2[n_rel] == st(W / "regr-rc-N.md"))
+              seen2[n_id] == st(W / "regr-rc-N.md"))
         blind = {}
         _w(write.update_node, "regr-rc-N", old_text="줄을 고쳤다.", new_text="줄을 고쳤다!",
            _seen=blind)
-        check("쓰기 전 판을 읽지 않은 쓰기는 잇지 않는다", n_rel not in blind, blind)
-        seen2[n_rel] = st(W / "regr-rc-N.md")
+        check("쓰기 전 판을 읽지 않은 쓰기는 잇지 않는다", n_id not in blind, blind)
+        seen2[n_id] = st(W / "regr-rc-N.md")
         r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen=seen2)
         check("이은 판으로 rechecked에 적으면 완료를 적는다",
               r.get("rechecked") and not why("regr-rc-N"), r)
@@ -8645,6 +8645,16 @@ def test_rechecks():
         r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen={})
         check("읽은 기록이 없으면 적은 대로 완료를 적는다",
               r.get("rechecked") and not r.get("recheck_unread") and not why("regr-rc-N"), r)
+        # 읽은 기록은 노드 id에 묶인다 — 읽은 뒤 근거가 다른 군집으로 옮겨지고 고쳐져도 '기록
+        # 없음'이 되어 낡은 점검이 완료로 적히지 않는다
+        moved = {n_id: st(W / "regr-rc-N.md"), t_id: st(t)}
+        mv = _w(write.move_nodes, ["regr-rc-T"], "00_Scope/W1/regr-rc-sub")
+        check("전제: 근거를 하위 군집으로 옮긴다", mv.get("ok"), mv)
+        _w(write.update_node, "regr-rc-T", old_text="7판", new_text="8판")
+        r = _w(write.update_node, "regr-rc-N", rechecked=["regr-rc-T"], _seen=moved)
+        check("읽은 뒤 옮겨지고 바뀐 근거는 완료를 적지 않는다",
+              r.get("recheck_unread") and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
+        _w(write.move_nodes, ["regr-rc-T"], "00_Scope/W1")
 
         # 비노드 근거는 정기 실행 작업이 보여 준 판과 대조하고, 보여 준 기록이 없으면 적은 대로 둔다
         fref = "[[_sources/regr-rc.md]]"
@@ -8652,8 +8662,7 @@ def test_rechecks():
            edges={"derived-from": fref})
         src.write_text(src.read_text(encoding="utf-8") + "\n덧붙임.\n", encoding="utf-8")
         _age_all()
-        w_rel = "00_Scope/W1/regr-rc-W.md"
-        sw = {w_rel: st(W / "regr-rc-W.md")}
+        sw = {idof("regr-rc-W"): st(W / "regr-rc-W.md")}
         r = _w(write.update_node, "regr-rc-W", rechecked=[fref], _seen=sw)
         check("보여 준 기록이 없는 비노드 근거는 적은 대로 완료를 적는다",
               r.get("rechecked") and not why("regr-rc-W"), r)
@@ -8706,8 +8715,9 @@ def test_rechecks():
         check("기록이 있으면 기준선은 다시 적지 않는다", rechecks.ensure_baseline() == 0)
     finally:
         hub.write_bytes(hub_before)
-        for p in made + [src]:
+        for p in made + [src, W / "regr-rc-sub" / "regr-rc-T.md"]:
             p.unlink(missing_ok=True)
+        rmtree_force(W / "regr-rc-sub")
         if lbefore is None:
             led.unlink(missing_ok=True)
         else:

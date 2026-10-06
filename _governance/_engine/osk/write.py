@@ -1303,7 +1303,7 @@ def update_node(name: str, body: str | None = None,
     """Apply an ordinary node update under the shared mutation lock.
 
     `rechecked` names the `derived-from` targets whose recheck this call completes.
-    `_seen` is the surface's record of the bodies its caller read (path →
+    `_seen` is the surface's record of the bodies its caller read (node id →
     `rechecks.state`); a recorded read must still match for a recheck to close
     (Mechanism §4-1)."""
     with _Lock():
@@ -1510,9 +1510,8 @@ def _update_node_locked(name: str, body: str | None = None,
                                     pre=rc_pre, seen=_seen))
     # 쓰기 직전 본문을 읽었던 호출자는 방금 쓴 본문도 안다 — 쓰기 응답의 해시를 다음
     # `expect_hash`로 잇는 것과 같은 규율이다. 읽지 않았으면 잇지 않는다.
-    rel = posix_rel(path, ROOT)
-    if _seen is not None and _seen.get(rel) == rc_pre:
-        _seen[rel] = rechecks.state(data)
+    if _seen is not None and _seen.get(n.id) == rc_pre:
+        _seen[n.id] = rechecks.state(data)
     if old_text is None and body is not None:
         # 전문 치환은 긴 글을 다시 쓰다 흘릴 수 있다. 무엇이 빠졌는지 비추면 선의의 에이전트는
         # 스스로 되살린다(헌법 1조 3항). 앵커 편집은 지울 글을 호출자가 `old_text`에 직접
