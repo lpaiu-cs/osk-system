@@ -395,6 +395,59 @@ class GrowthTests(unittest.TestCase):
             assert not growth._needs_review(only, growth._records(), graph.Index())
         """)
 
+    def test_evidence_section_changes_do_not_propagate_and_old_records_carry_over(self):
+        # Bylaws §7 2: the 근거 section at a node's end lists its non-node evidence, so changing
+        # it is not a related-state change. A record measured before that rule carries over.
+        self.check_case("""
+            from osk import rechecks
+            first = '- 2026-10-05 · `c38d8ef2#1` · 지지 — first'
+            node('A', body=chr(10).join(['A claim.', '', '## 근거', '', first]))
+            assert write.create_node('B', 'B', 'B relies on A.', 'gpt-6-astra', space='00_Scope/W1',
+                                     edges={'derived-from': 'A'})['ok']
+            assert not rechecks.candidates(graph.Index())[0]
+            write.update_node('A', old_text=first, new_text=first + chr(10) + '- 2026-10-06 · `c38d8ef2#2` · 조건 — second')
+            assert not rechecks.candidates(graph.Index())[0], 'a 근거 line made B a recheck candidate'
+            # a record that measured the whole body, the 근거 section included
+            idx = graph.Index()
+            a, b = (idx.locate(n)[0] for n in ('A', 'B'))
+            data = a.read_bytes()
+            whole = core.sha256_bytes(data[contract.body_offset(data):])
+            assert whole != rechecks.state(data)
+            core.ledger_append(rechecks.RECHECKS, rechecks._row(idx.node(b).id, rechecks.state(b.read_bytes()),
+                                                                  idx.node(a).id, whole, 'unchanged'))
+            assert not rechecks.candidates(graph.Index())[0], 'an unchanged old-definition record stopped holding'
+            assert rechecks.ensure_baseline() == 0, 'a node write would scan every pair'
+            assert rechecks.ensure_baseline(carry=True) == 1
+            row = core.ledger_read(rechecks.RECHECKS)[-1]
+            assert row['reason'] == '이어받음' and row['target_state'] == rechecks.state(data), row
+            write.update_node('A', old_text='— second', new_text='— second, again')
+            assert not rechecks.candidates(graph.Index())[0], 'the carried record did not hold'
+            write.update_node('A', old_text='A claim.', new_text='A revised claim.')
+            assert [i['node'] for i in rechecks.candidates(graph.Index())[0]] == ['B']
+        """)
+
+    def test_evidence_section_rule_pairs_coordinates_and_reports_until_activated(self):
+        # Mechanism §6-1 4: each 근거 line has the form and a coordinate its derived-from holds.
+        self.check_case("""
+            raw = '= Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt#'
+            text = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1–2` · 지지 — pair',
+                                 '- 2026-10-05 · `c38d8ef2#3` · 반례 — no round', '- 10-05 · c38d8ef2#1 · 지지 — form'])
+            errs = validate.evidence_errors(text, [raw + '1', raw + '2'])
+            assert errs == ['짝 없는 근거 줄: c38d8ef2#3 — derived-from에 그 기록·라운드가 없다',
+                            '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
+            other = '= Scope/W1/_cited/.records/codex-c38d8ef2' + '1' * 24 + '.txt#1'
+            assert validate.evidence_errors(text, [raw + '1', raw + '2', other])[0].startswith('모호한 좌표')
+            moved = chr(10).join(['x', '', '## 근거', '', '- a', '', '## 이력', '', 'y'])
+            assert validate.evidence_errors(moved, []) == ['`## 근거` 절이 노드 끝에 있지 않다']
+            assert validate.evidence_errors('x', [raw + '1']) == []
+            node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none']))
+            rep = validate.run()
+            assert list(rep['evidence_section']) == ['A'] and not rep['evidence_section_active'], rep['evidence_section']
+            assert not any('근거 절' in f for d in rep['fail'] for f in d), rep['fail']
+            core.ledger_append(core.VALIDATORS, {'kind': 'activate', 'rule': 'evidence-section'})
+            assert any('근거 절' in f for d in validate.run()['fail'] for f in d), 'an active rule did not count'
+        """)
+
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):
         self.check_case("""
             from osk import rechecks

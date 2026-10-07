@@ -9,7 +9,9 @@
 
 상태는 관련 상태만 잰다(`state`) — 노드는 본문, 비노드는 파일 전체, 제목을 지정한
 근거는 그 제목 범위다. 관계 주장의 내용과 이유는 본문이 맡으므로(헌법 8조) 요약이나
-배선만 바뀐 노드는 근거로서도, 참조 노드로서도 바뀌지 않은 것이다."""
+배선만 바뀐 노드는 근거로서도, 참조 노드로서도 바뀌지 않은 것이다. 노드 끝의
+`## 근거` 절도 관련 상태가 아니다(시행령 §7 2항) — 그 노드의 비노드 근거 목록이라,
+줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다."""
 from __future__ import annotations
 
 import difflib
@@ -32,12 +34,56 @@ CLOSE = ("근거와 노드를 read_node로 읽는다(전문이나 필요한 범�
          "완료가 적히지 않는다(recheck_unread)")
 _ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _ALREADY = "재검토 대장에 이미 기록이 있다"
+EVIDENCE = "근거"
+
+
+def evidence_span(text: str) -> tuple[int, int] | None:
+    """노드 끝의 `## 근거` 절(Mechanism §4-1 1항) — `## 근거` 제목 행부터 본문 끝까지의
+    문자 범위. 그 뒤에 `#`·`##` 제목이 있으면 근거 절이 아니다. 코드 구획의 `#` 행은
+    제목이 아니다."""
+    last = None
+    for off, _line, content, code, _cont in contract.md_lines(text):
+        h = None if code else _ATX.match(content)
+        if h and len(h.group(1)) <= 2:
+            last = (off, len(h.group(1)), re.sub(r"(?:^|[ \t]+)#+$", "", h.group(2) or "").strip())
+    return (last[0], len(text)) if last and last[1] == 2 and last[2] == EVIDENCE else None
 
 
 def state(data: bytes, node: bool = True) -> str:
     """관련 상태의 해시(Mechanism §4-1 1항) — 노드는 frontmatter를 닫는 행의 다음
-    바이트부터 끝까지, 비노드는 파일 전체. 정규화하지 않은 바이트로 잰다."""
-    return sha256_bytes(data[contract.body_offset(data):] if node else data)
+    바이트부터 끝까지에서 노드 끝 `## 근거` 절을 뺀 것, 비노드는 파일 전체.
+    정규화하지 않은 바이트로 잰다."""
+    if not node:
+        return sha256_bytes(data)
+    body = data[contract.body_offset(data):]
+    try:
+        span = evidence_span(body.decode("utf-8"))
+    except UnicodeDecodeError:
+        span = None
+    return sha256_bytes(body if span is None else body.decode("utf-8")[:span[0]].encode("utf-8"))
+
+
+def _legacy(idx, nid: str, cache: dict) -> str | None:
+    """근거 절을 빼기 전의 정의로 잰 노드 상태 — 그 정의로 적은 기록을 잇는 데만 쓴다."""
+    if nid not in cache:
+        hit = idx.by_id.get(nid) if re.match(ID_RE, nid) else None
+        try:
+            data = hit[0].read_bytes() if hit else None
+        except OSError:
+            data = None
+        cache[nid] = None if data is None else sha256_bytes(data[contract.body_offset(data):])
+    return cache[nid]
+
+
+def _carried(maxima: list[dict], idx, nid: str, ns: str, key: str, ts: str | None,
+             cache: dict) -> bool:
+    """옛 정의(근거 절 포함)로 적은 기록이 지금 내용과 그대로인가 — 그러면 완료다."""
+    states = {(m.get("node_state"), m.get("target_state")) for m in maxima}
+    if ts is None or len(states) != 1:
+        return False
+    rns, rts = next(iter(states))
+    old_ts = _legacy(idx, key, cache) if re.match(ID_RE, key) else ts
+    return rns in (ns, _legacy(idx, nid, cache)) and rts in (ts, old_ts)
 
 
 def heading_range(data: bytes, heading: str) -> bytes | None:
@@ -221,11 +267,14 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
                 fh[tid] = None
         return fh[tid] is not None and (tid, fh[tid]) in revised
 
-    out = []
+    out, lc = [], {}
     for name, nid, ns, ps, kind in rows:
         for key, (ts, ref) in ps.items():
             why = ("대장을 믿을 수 없다" if damaged and ts is not None
                    else _verdict(latest.get((nid, key), []), ns, ts))
+            if why in ("근거가 바뀌었다", "노드가 바뀌었다") and _carried(
+                    latest.get((nid, key), []), idx, nid, ns, key, ts, lc):
+                why = None
             if why:
                 out.append({"node": name, "target": ref, "why": why, "id": nid, "key": key,
                             "scope": kind[1] if kind[0] == "scope" else None,
@@ -285,10 +334,11 @@ def complete_keys(idx, path: Path, meta: dict) -> set[str]:
     recs, ok = _read() if ps else ([], False)
     if not recs or not ok:
         return set()
-    latest = _latest(recs, meta["id"])
+    latest, lc = _latest(recs, meta["id"]), {}
     ns = state(path.read_bytes())
     return {k for k, (ts, _ref) in ps.items()
-            if _verdict(latest.get((meta["id"], k), []), ns, ts) is None}
+            if _verdict(latest.get((meta["id"], k), []), ns, ts) is None
+            or _carried(latest.get((meta["id"], k), []), idx, meta["id"], ns, k, ts, lc)}
 
 
 def _row(node: str, node_state: str, key: str, target_state: str, result: str,
@@ -360,12 +410,13 @@ def change(nid: str, key: str, ref: str, idx) -> dict:
     return {"side": side, "note": "점검 때의 판을 이력에서 찾지 못했다 — 전문을 읽는다"}
 
 
-def ensure_baseline(idx=None) -> int:
+def ensure_baseline(idx=None, *, carry: bool = False) -> int:
     """기록이 하나도 없는 대장에 지금 추적되는 쌍을 `bound`로 한 번 적는다 —
     재검토 기록이 없던 vault의 근거가 한꺼번에 후보가 되지 않게 한다. 적은 수를
-    돌려준다. 이미 기록이 있으면 아무것도 하지 않는다."""
+    돌려준다. 이미 기록이 있으면 `carry`일 때만(세션 시작·성장 실행) 옛 정의로 적은
+    기록을 이어 적고, 노드 쓰기는 전수 판독을 하지 않는다."""
     if RECHECKS.exists() and RECHECKS.stat().st_size:
-        return 0
+        return _carry(idx or graph.Index()) if carry else 0
     rows = [_row(nid, ns, key, ts, "bound", BASELINE)
             for _name, nid, ns, ps, _kind in _citing(idx or graph.Index(), {})
             for key, (ts, _ref) in ps.items() if ts is not None]
@@ -375,6 +426,25 @@ def ensure_baseline(idx=None) -> int:
         if str(e) != _ALREADY:
             raise
         return 0
+    return len(rows)
+
+
+def _carry(idx) -> int:
+    """근거 절을 빼기 전의 정의로 잰 기록을, 내용이 그대로인 쌍만 지금 정의로 다시
+    적는다(`unchanged`, 사유 `이어받음`). 적지 않으면 그 근거 절을 처음 고칠 때 그
+    쌍이 한 번 후보가 된다."""
+    recs, ok = _read()
+    if not ok or not recs:
+        return 0
+    latest, lc, rows = _latest(recs), {}, []
+    for _name, nid, ns, ps, _kind in _citing(idx, {}):
+        for key, (ts, _ref) in ps.items():
+            maxima = latest.get((nid, key), [])
+            if (ts is not None and _verdict(maxima, ns, ts) is not None
+                    and _carried(maxima, idx, nid, ns, key, ts, lc)):
+                rows.append(_row(nid, ns, key, ts, "unchanged", CARRIED))
+    if rows:
+        ledger_extend(RECHECKS, rows)
     return len(rows)
 
 

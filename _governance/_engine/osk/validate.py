@@ -300,8 +300,83 @@ def run() -> dict:
     except Exception as e:
         rep["fail"].append({"군집 허브 노드": [f"검사 자체 실패: {e}"]})
 
+    # 17. 노드 끝 근거 절 (헌법 9조 2항 · 시행령 §7 2항 · Mechanism §6-1 4항). 군집 허브
+    #     노드처럼 언제나 검사해 보고하고, verdict 산입은 활성화 뒤에만 한다.
+    try:
+        ev = evidence_section_report(idx)
+        rep["evidence_section"] = ev
+        ev_active = validator_active("evidence-section")
+        rep["evidence_section_active"] = ev_active
+        ev_errs = [f"{n}: {e}" for n, es in sorted(ev.items()) for e in es]
+        if ev_active:
+            ok("근거 절", ev_errs)
+        elif ev_errs:
+            skip("근거 절", f"비활성 — 보고만 (위반 {len(ev_errs)}건)")
+        else:
+            ok("근거 절", [])
+    except Exception as e:
+        rep["fail"].append({"근거 절": [f"검사 자체 실패: {e}"]})
+
     rep["verdict"] = "PASS" if not rep["fail"] else "FAIL"
     return rep
+
+
+_EVIDENCE_ITEM = re.compile(r"^- \d{4}-\d{2}-\d{2} · `([0-9a-f]{8})#(\d+)(?:[–-](\d+))?` · "
+                            r"(?:지지|조건|반례) — \S")
+_RECORD_REF = re.compile(r"[a-z][a-z0-9]*-([0-9a-f]{32})\.txt#(\d+)$")
+
+
+def evidence_errors(text: str, derived) -> list[str]:
+    """노드 끝 `## 근거` 절의 줄마다 형식과 `derived-from` 짝(Mechanism §6-1 4항).
+    `text`는 본문, `derived`는 frontmatter의 `derived-from` 값이다."""
+    from .rechecks import EVIDENCE, evidence_span
+    span = evidence_span(text)
+    if span is None:
+        heads = [c for _o, _l, c, code, _ in contract.md_lines(text)
+                 if not code and re.match(r"^ {0,3}## +" + EVIDENCE + r"[ \t#]*$", c)]
+        return ["`## 근거` 절이 노드 끝에 있지 않다"] if heads else []
+    refs = derived if isinstance(derived, list) else [] if derived in (None, "") else [derived]
+    rounds: dict[str, set] = {}
+    for ref in refs:
+        s = str(ref).strip()
+        s = (s[2:-2] if s.startswith("[[") and s.endswith("]]") else s).split("|", 1)[0].strip()
+        m = _RECORD_REF.search(s.replace("\\", "/")) if graph.is_record_ref(s) else None
+        if m:
+            rounds.setdefault(m.group(1)[:8], set()).add((m.group(1), int(m.group(2))))
+    errs = []
+    for line in text[span[0]:].splitlines()[1:]:
+        if not line.startswith("- "):
+            continue
+        m = _EVIDENCE_ITEM.match(line)
+        if not m:
+            errs.append(f"형식이 다른 근거 줄: {line[:60]}")
+            continue
+        prefix, first = m.group(1), int(m.group(2))
+        last = int(m.group(3) or first)
+        records = {r for r, _n in rounds.get(prefix, ())}
+        if len(records) > 1:
+            errs.append(f"모호한 좌표: {prefix} — derived-from의 기록 {len(records)}개에 걸린다")
+        elif last < first or not all((r, n) in rounds.get(prefix, ())
+                                     for r in records for n in range(first, last + 1)) or not records:
+            errs.append(f"짝 없는 근거 줄: {prefix}#{first}" + (f"–{last}" if last != first else "")
+                        + " — derived-from에 그 기록·라운드가 없다")
+    return errs
+
+
+def evidence_section_report(idx: "graph.Index") -> dict:
+    """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다."""
+    out = {}
+    for name, (path, kind) in sorted(idx.nodes.items()):
+        if kind[0] == "governance":
+            continue
+        try:
+            n = idx.node(path)
+        except Exception:
+            continue
+        errs = evidence_errors(n.body, n.meta.get("derived-from"))
+        if errs:
+            out[name] = errs
+    return out
 
 
 def validator_active(rule: str) -> bool:

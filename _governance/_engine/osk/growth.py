@@ -1133,7 +1133,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
             with core.mutation_lock():
                 try:
                     from . import rechecks
-                    rechecks.ensure_baseline()
+                    rechecks.ensure_baseline(carry=True)
                 except Exception:
                     pass        # 못 적으면 그 근거들이 후보로 남을 뿐이다
                 planned = (_plan(limit) if scope_job is None else
