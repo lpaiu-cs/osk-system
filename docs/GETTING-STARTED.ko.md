@@ -4,7 +4,7 @@
 
 Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사람을 위한 따라하기
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
-첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v4.1.2 릴리스 기준이다.
+첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v5.0.0 릴리스 기준이다.
 
 단계마다 더 자세한 내용은 운용 참고서인 [SETUP.md](SETUP.md)로 이어지는 링크를
 따라가면 된다.
@@ -131,7 +131,7 @@ scope 기억으로 남기고, 그 노드에 필요한 턴만 인용한다.
 
 `main` 브랜치가 아니라 릴리스 태그를 clone한다. `main`은 릴리스 사이에도 움직인다.
 갱신기는 파일을 릴리스와 대조하므로, 정확히 한 릴리스에서 출발해야 2단계에서 깨끗한
-기준선을 기록할 수 있다. `v4.1.2`은 적힌 그대로 쓰면 된다.
+기준선을 기록할 수 있다. `v5.0.0`은 적힌 그대로 쓰면 된다.
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)의 최신 태그를 써도
 되지만, 그때는 2단계에서도 같은 태그를 쓴다.
 
@@ -139,7 +139,7 @@ vault를 담을 폴더(Windows라면 `C:/osk` 등, 먼저 만들어 둔다)에�
 OS에서나 같은 명령이다.
 
 ```bash
-git clone --branch v4.1.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.0.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -205,13 +205,13 @@ $env:PYTHONPATH = "_governance\_engine"
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v4.1.2 --apply
+.venv/bin/python -m osk.update --to v5.0.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v4.1.2 --apply
+.venv\Scripts\python.exe -m osk.update --to v5.0.0 --apply
 ```
 
 첫 실행은 어떤 파일도 바꾸지 않는다. 계획을 출력한 뒤 종료코드 2와
@@ -252,7 +252,7 @@ git push
 ```
 
 **확인:** `.venv/bin/python -m osk.update`의 `current`가 선택한 버전을 가리킨다
-(위 예제에서는 `v4.1.2`).
+(위 예제에서는 `v5.0.0`).
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다. `osk.cli status`가 `"protected_regions": {"_governance": "clean"}`을
 보여 준다.
@@ -893,7 +893,7 @@ v4.1.0 이상에서는 `python _governance/_engine/scripts/setup.py --apply --fo
 릴리스 페이지를 지켜볼 필요는 없다. 세션 시작 훅과 MCP `overview`가 하루에 한 번
 정본 저장소에 릴리스 태그를 묻는다(`git ls-remote` — vault의 내용은 보내지 않는다).
 새 릴리스가 있으면 Claude Code·Codex 화면에
-`osk-system 새 릴리스 v5.0.0 (이 vault는 v4.1.2) — …` 같은 경고가 기기마다 하루 한 번
+`osk-system 새 릴리스 v5.1.0 (이 vault는 v5.0.0) — …` 같은 경고가 기기마다 하루 한 번
 뜬다. 경고 끝에 그 판의 릴리스 노트 주소가 붙는다. 에이전트에게 **"osk 업데이트해 줘"**라고 요청하면 에이전트가 아래 절차를 함께
 밟는다 — 변경집합을 보여 주고 사용자의 승인을 기다린다. 확인은 백그라운드에서 돌므로
 알림은 확인한 다음 세션부터 보인다. 지금 확인하려면 `osk.update --check`를 실행한다
