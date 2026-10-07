@@ -428,8 +428,16 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
             finish()
         if typ == "attachment" and new and start:
             words = _queued(row, delivered)
-            if words:
+            uid = row.get("uuid")
+            if words and not (uid and uid in seen):
+                # The message is the turn's latest activity: it moves the idle clock,
+                # and a cut stored at it closes the turn after these words on every read.
                 users.append(words)
+                if uid:
+                    seen.add(uid)
+                    last = (uid, line, _epoch(row))
+                    if uid in cuts:
+                        interrupt()
             continue
         if typ not in ("user", "assistant"):
             continue

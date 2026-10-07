@@ -341,6 +341,47 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted"])
         self.assertFalse(s["capture_pending"])
 
+    def test_absorbed_message_moves_the_idle_clock_and_its_cut_keeps_the_words(self):
+        # #164 review: the message is the turn's latest activity, and a cut stored at it
+        # closes the turn after its words on every later read.
+        base = time.time() - 23 * 3600 - 120
+        self.transcript(stamped(claude_round(self.sid, 1, finished=False), base)
+                        + stamped(queued(self.sid, "q-1", "one more thing"), base + 11 * 3600))
+        with mock.patch.object(it.time, "time", return_value=base + 12 * 3600 + 60):
+            st = self.capture()
+        self.assertTrue(st["capture_pending"], "the idle clock ignored the message")
+        st = self.capture()
+        self.assertFalse(st["capture_pending"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["rounds"][0]["cut"], "q-1")
+        self.assertIn("one more thing", self.turns(rules=it._turn_rules(s))[0]["user"])
+        self.assertEqual(len(it._verify_native(s, s["rounds"])), 1)
+
+    def test_claude_copy_reads_its_copied_prefix_with_its_parents_rules(self):
+        # #164 review: a resume or fork copy must not re-cut the turns its parent tracked
+        # before this engine; the copy's own new turns follow the new rules.
+        parent, child = self.sid + "-parent", self.sid + "-child"
+        old = time.time() - 60 * 3600
+        rows = (stamped(claude_round(parent, 1, finished=False) + queued(parent, "q-p", "noted while it ran"), old)
+                + stamped(claude_round(parent, 2), old + 13 * 3600))
+        own = stamped(claude_round(child, 3, finished=False), old + 30 * 3600) + stamped(claude_round(child, 4), old + 44 * 3600)
+        for owner, part in ((parent, rows), (child, own)):
+            for row in part:
+                if "uuid" in row:   # native rows carry UUIDs; a copy keeps them
+                    row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
+        self.transcript(rows)
+        with mock.patch.object(it, "_turn_rules", return_value=None):
+            self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
+        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+        self.assertEqual(len(tracked), 1, "the parent's legacy round joins the turn and the next prompt")
+        self.transcript([dict(r, sessionId=child) for r in rows] + own)
+        st = it.capture("claude", child, str(self.path), "capture-tests")
+        self.assertTrue(st["ok"], st)
+        self.assertEqual(st["inherited_rounds"], 1, st)
+        s = it._load(it.state_path("claude", child), "claude", child)
+        self.assertEqual(s["turns_since"], tracked[0]["id"])
+        self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted", "completed"])
+
     def test_codex_requires_matching_task_complete(self):
         self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1) + codex_round(2, finished=False))
         st = self.capture("codex")

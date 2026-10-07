@@ -252,6 +252,28 @@ def _fork_parent_turns(s: dict, rounds: list, dialogue_v1: dict | None = None) -
     return rounds[len(parent):]
 
 
+def _scope_cursors(s: dict):
+    """같은 scope의 다른 Claude 커서 — 복제된 앞부분의 주인을 찾을 때만 읽는다."""
+    probe = state_path("claude", s["conversation_id"])
+    prefix = "-".join(probe.name.split("-")[:3]) + "-"
+    for candidate in sorted(probe.parent.glob(prefix + "*.json")):
+        if candidate == probe:
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+            if data.get("harness") != "claude" or data.get("root") != s["root"]:
+                continue
+            owner = _load(candidate, "claude", data["conversation_id"])
+            if candidate != state_path("claude", owner["conversation_id"]):
+                continue
+            owner_scope = owner["space"] or (
+                (SCOPE + '/') + (write.resolve_session(owner["session"]) or ""))
+            if owner_scope == s["space"]:
+                yield owner
+        except (OSError, ValueError, KeyError):
+            continue
+
+
 def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
     """Reuse only the caller's copied prefix, with native ID and byte evidence."""
     if s["harness"] == "codex":
@@ -312,26 +334,9 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         known = {}
         if rounds and re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
             # ponytail: one local-state scan on first capture; index native IDs if this grows costly.
-            probe = state_path("claude", s["conversation_id"])
-            prefix = "-".join(probe.name.split("-")[:3]) + "-"
-            for candidate in sorted(probe.parent.glob(prefix + "*.json")):
-                if candidate == probe:
-                    continue
-                try:
-                    data = json.loads(candidate.read_text(encoding="utf-8"))
-                    if data.get("harness") != "claude" or data.get("root") != s["root"]:
-                        continue
-                    owner = _load(candidate, "claude", data["conversation_id"])
-                    if candidate != state_path("claude", owner["conversation_id"]):
-                        continue
-                    owner_scope = owner["space"] or (
-                        (SCOPE + '/') + (write.resolve_session(owner["session"]) or ""))
-                    if owner_scope != s["space"]:
-                        continue
-                    for source in owner["rounds"]:
-                        known.setdefault(source["id"], []).append(source)
-                except (OSError, ValueError, KeyError):
-                    continue
+            for owner in _scope_cursors(s):
+                for source in owner["rounds"]:
+                    known.setdefault(source["id"], []).append(source)
         shared = []
         for pair in rounds:
             candidates = known.get(pair["id"], [])
@@ -418,6 +423,8 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             _save(p, s)
             phase = "read"
             rules = _turn_rules(s)
+            if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
+                rules["since"] = _copied_since(s, native_path)
             parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
             if parsed.get("originator") == "codex_exec":
                 # A scripted `codex exec` run — osk's own scheduled runs included — is not a
@@ -766,8 +773,25 @@ def _turn_rules(s: dict) -> dict | None:
     같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
     if s["harness"] != "claude":
         return None
-    since = s["turns_since"] if "turns_since" in s else (s["rounds"][-1]["id"] if s["rounds"] else None)
-    return {"since": since, "cuts": [r["cut"] for r in s["rounds"] if r.get("cut")], "now": time.time()}
+    tracked = (s.get("inherited") or {}).get("rounds", []) + s["rounds"]
+    since = s["turns_since"] if "turns_since" in s else (tracked[-1]["id"] if tracked else None)
+    return {"since": since, "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
+
+
+def _copied_since(s: dict, native_path: str) -> str | None:
+    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계. 복제된 앞부분은 그 턴을 추적한
+    같은 scope 커서가 쓴 경계를 따른다 — 새 규칙으로 읽으면 부모가 추적한 턴과 경계·표현이
+    갈라진다. 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다."""
+    if not s["space"]:
+        return None
+    order = {r["id"]: i for i, r in enumerate(transcripts.read(native_path, "claude", s["conversation_id"])["rounds"])}
+    best = None
+    for owner in _scope_cursors(s):
+        tracked = (owner.get("inherited") or {}).get("rounds", []) + owner["rounds"]
+        bound = owner["turns_since"] if "turns_since" in owner else (tracked[-1]["id"] if tracked else None)
+        if bound in order and (best is None or order[bound] > order[best]):
+            best = bound
+    return best
 
 
 def _ended_source(s: dict) -> str | None:
