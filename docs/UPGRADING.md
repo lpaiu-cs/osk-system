@@ -45,6 +45,10 @@ rewrite your notes and records, and there is nothing to migrate.
   returns `dropped`: the paragraphs, list items and headings of the old body that
   the new body no longer contains word for word. Anything dropped by mistake can
   be restored with an anchor edit.
+- **Update every device together.** A recheck that the agent could not judge
+  is recorded in the growth ledger as a deferral (`outcome: deferred`). A v4.1
+  engine reads that record as ledger damage and stops its growth runs, so bring
+  every device that syncs the vault to this release before you use it.
 - **Ratification.** The amendment to the governing documents behind this
   change takes effect only when a release ratifies it. Its reasons are recorded
   in `_governance/records/2026-10-04-cited-capture.md`.

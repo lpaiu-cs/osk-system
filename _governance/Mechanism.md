@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-iter
 created: 2026-08-02 13:22 (KST)
-updated: 2026-10-06 22:30 (KST)
+updated: 2026-10-07 10:41 (KST)
 author: user
 drafter: opus-5.5
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"
@@ -403,7 +403,11 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    변경분을 싣는다. 사용자 검토에 올린 갱신(시행령 §7 2항)은 성장 기록부에
    `recheck_review`(`outcome: escalated`)로 수정안과 그때의 두 상태를 함께
    남긴다. 두 상태가 그대로인 동안 그 쌍은 에이전트의 작업에서 빠지며,
-   `rechecked`에 그 근거를 적은 갱신이 닫는다.
+   `rechecked`에 그 근거를 적은 갱신이 닫는다. 판단하지 못한 재검토(시행령
+   §7 2항)는 같은 기록부에 `recheck_review`(`outcome: deferred`)로 그 이유와
+   그때의 두 상태를 남긴다. 보류는 그 쌍을 닫거나 작업에서 빼지 않으며, 그
+   쌍의 다음 작업은 그 이유를 `previous_deferral`로 받는다. 그 사이 두 상태가
+   바뀌었으면 그 사실도 함께 받는다.
 
 ## §5 이행 기록 (`_ledger/migration/`)
 

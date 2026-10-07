@@ -580,7 +580,7 @@ pressure of its size limit (Mechanism §9-2 12):
 | `review` | `key`, `manifest` (a plan rid), `candidate`, `outcome` (`preserved`, `no_value` or `deferred`), `target`, `reason`, `distillation` (a receipt or null); opt. `omitted_sources` |
 | `run` | `manifest`, `ok`, `state`, counts, per-queue outcomes, `output` (the run directory `.osk/growth/runs/<rid>/`) |
 | `eviction_review` | `manifest`, `of`, `outcome` (`node`, `merged`, `discarded` or `deferred`); opt. `target`, `reason`, `settlement` (a settle rid) |
-| `recheck_review` | `key` (`recheck:<node id>:<target key>`), `manifest`, `outcome` (`escalated`), `reason`, `proposal`, `node`, `target`, `node_state`, `target_state` |
+| `recheck_review` | `key` (`recheck:<node id>:<target key>`), `manifest`, `outcome` (`escalated` or `deferred`), `reason`, `node`, `target`, `node_state`, `target_state`; `proposal` with `escalated` |
 
 A candidate `key` is `sha256:` of the compact JSON list of `[id, file hash]`
 pairs of its source nodes, sorted. A candidate's decision is the single causal
@@ -652,6 +652,11 @@ maximum among `review` records with that key.
   `node_state` and `target_state` still hold, the pair leaves the agent's queue
   and is listed under `overview` `rechecks.escalated`; naming the target again
   closes it.
+- **Deferral** (Bylaws §7 2; Mechanism §4-1 4). A recheck the agent could not
+  judge is recorded as a `recheck_review` with `outcome` `deferred` and its
+  reason. The pair stays a candidate in the agent's queue; its next job carries
+  the reason as `previous_deferral`, with `state_changed` true when the node or
+  the target changed since.
 
 ### 4.11 Migration and signatures
 
