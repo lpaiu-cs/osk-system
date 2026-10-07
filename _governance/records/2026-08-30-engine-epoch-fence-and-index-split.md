@@ -1,7 +1,7 @@
 ---
 id: 260830-0000-epoc
 created: 2026-08-30 06:20 (KST)
-updated: 2026-08-30 06:20 (KST)
+updated: 2026-08-30 08:24 (KST)
 author: user
 drafter: opus-5
 summary: "v3.7.0 — 판본 관문과 색인의 분할. 적용 시 살아 있는 MCP 서버를 한 번 전량 재기동해야 한다"
