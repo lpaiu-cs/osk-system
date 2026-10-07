@@ -252,6 +252,28 @@ def _fork_parent_turns(s: dict, rounds: list, dialogue_v1: dict | None = None) -
     return rounds[len(parent):]
 
 
+def _scope_cursors(s: dict):
+    """같은 scope의 다른 Claude 커서 — 복제된 앞부분의 주인을 찾을 때만 읽는다."""
+    probe = state_path("claude", s["conversation_id"])
+    prefix = "-".join(probe.name.split("-")[:3]) + "-"
+    for candidate in sorted(probe.parent.glob(prefix + "*.json")):
+        if candidate == probe:
+            continue
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8"))
+            if data.get("harness") != "claude" or data.get("root") != s["root"]:
+                continue
+            owner = _load(candidate, "claude", data["conversation_id"])
+            if candidate != state_path("claude", owner["conversation_id"]):
+                continue
+            owner_scope = owner["space"] or (
+                (SCOPE + '/') + (write.resolve_session(owner["session"]) or ""))
+            if owner_scope == s["space"]:
+                yield owner
+        except (OSError, ValueError, KeyError):
+            continue
+
+
 def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
     """Reuse only the caller's copied prefix, with native ID and byte evidence."""
     if s["harness"] == "codex":
@@ -312,26 +334,9 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         known = {}
         if rounds and re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
             # ponytail: one local-state scan on first capture; index native IDs if this grows costly.
-            probe = state_path("claude", s["conversation_id"])
-            prefix = "-".join(probe.name.split("-")[:3]) + "-"
-            for candidate in sorted(probe.parent.glob(prefix + "*.json")):
-                if candidate == probe:
-                    continue
-                try:
-                    data = json.loads(candidate.read_text(encoding="utf-8"))
-                    if data.get("harness") != "claude" or data.get("root") != s["root"]:
-                        continue
-                    owner = _load(candidate, "claude", data["conversation_id"])
-                    if candidate != state_path("claude", owner["conversation_id"]):
-                        continue
-                    owner_scope = owner["space"] or (
-                        (SCOPE + '/') + (write.resolve_session(owner["session"]) or ""))
-                    if owner_scope != s["space"]:
-                        continue
-                    for source in owner["rounds"]:
-                        known.setdefault(source["id"], []).append(source)
-                except (OSError, ValueError, KeyError):
-                    continue
+            for owner in _scope_cursors(s):
+                for source in owner["rounds"]:
+                    known.setdefault(source["id"], []).append(source)
         shared = []
         for pair in rounds:
             candidates = known.get(pair["id"], [])
@@ -417,7 +422,10 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             s["capture_path"] = native_path
             _save(p, s)
             phase = "read"
-            parsed = transcripts.read(native_path, harness, conversation_id)
+            rules = _turn_rules(s)
+            if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
+                rules["since"] = _copied_since(s, native_path)
+            parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
             if parsed.get("originator") == "codex_exec":
                 # A scripted `codex exec` run — osk's own scheduled runs included — is not a
                 # conversation to learn from: its turns are neither tracked nor reviewed
@@ -466,8 +474,10 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                         changed.append(i)
                     tracked.append(entry or {
                         "id": r["id"], "ref": raw.native_ref(harness, conversation_id, turn_key(harness, r["id"])),
-                        "completion": r["completion"], "hash": hashes[0]})
+                        "completion": r["completion"], "hash": hashes[0], **({"cut": r["cut"]} if r.get("cut") else {})})
                 s["rounds"] = tracked
+                if rules:
+                    s.setdefault("turns_since", rules["since"])
                 if changed:
                     s["snapshots"] = {t: v for t, v in s["snapshots"].items()
                                       if v.get("repair_refs") or v["count"] <= changed[0]}
@@ -546,7 +556,7 @@ def _verify_native(s: dict, rounds: list) -> dict:
     source = _locate_transcript(s["harness"], s["conversation_id"], s.get("capture_path") or s["transcript_path"])
     if not (source and Path(source).is_file()):
         raise ValueError("the original transcript is not on this device; review is not acknowledged")
-    parsed = transcripts.read(source, s["harness"], s["conversation_id"])
+    parsed = transcripts.read(source, s["harness"], s["conversation_id"], rules=_turn_rules(s))
     shown = parsed.get("dialogue_v1") or {}
     current = {r["id"]: _turn_hashes(r, shown) for r in parsed["rounds"]}
     if any(r["hash"] not in current.get(r["id"], []) for r in native):
@@ -757,6 +767,36 @@ def review_status(harness: str, conversation_id: str, through: str) -> dict:
         return _review_state_locked(_load(p, harness, conversation_id), through)
 
 
+def _turn_rules(s: dict) -> dict | None:
+    """Claude의 새 턴 규칙(턴 도중 메시지, 멈춘 미완료 턴)은 이 엔진이 처음 추적한 뒤의
+    턴부터다. 그 앞에 저장된 라운드는 저장된 경계와 표현 그대로 다시 읽힌다. 모든 판독이
+    같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
+    if s["harness"] != "claude":
+        return None
+    tracked = (s.get("inherited") or {}).get("rounds", []) + s["rounds"]
+    since = s["turns_since"] if "turns_since" in s else (tracked[-1]["id"] if tracked else None)
+    return {"since": since, "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
+
+
+def _copied_since(s: dict, native_path: str) -> str | None:
+    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계. 복제된 앞부분은 그 턴을 추적한
+    같은 scope 커서가 쓴 경계를 따른다 — 새 규칙으로 읽으면 부모가 옛 규칙으로 추적한 턴과
+    경계·표현이 갈라진다. 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다.
+    부모가 저장한 절단 지점은 넘기지 않는다 — 사본에서도 행 시각의 12시간 공백이 같은
+    자리를 나눈다."""
+    rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"] if s["space"] else []
+    if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
+        return None   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
+    order = {r["id"]: i for i, r in enumerate(rounds)}
+    best = None
+    for owner in _scope_cursors(s):
+        tracked = (owner.get("inherited") or {}).get("rounds", []) + owner["rounds"]
+        bound = owner["turns_since"] if "turns_since" in owner else (tracked[-1]["id"] if tracked else None)
+        if bound in order and (best is None or order[bound] > order[best]):
+            best = bound
+    return best
+
+
 def _ended_source(s: dict) -> str | None:
     """This device's transcript of a conversation that has gone quiet. A worker without
     the conversation reads its unreviewed turns there; a conversation still running keeps
@@ -845,8 +885,12 @@ def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list
             # A worker without the conversation takes stored rounds, receipts, and the
             # unreviewed turns of a conversation that ended on this device (Mechanism §9-4 3항).
             pending = current["pending_refs"]
+            # An ended Claude conversation whose last turn never finished is read once more:
+            # the idle close turns that tail into an interrupted round to review.
+            idle_tail = (s["harness"] == "claude" and s["capture_pending"] and not s["capture_error"]
+                         and s.get("space"))
             if (changed or current["repair_pending"] or any(not raw.is_native(ref) for ref in pending)
-                    or pending and _ended_source(s)):
+                    or (pending or idle_tail) and _ended_source(s)):
                 at = _turn_at(s, native_path)
                 states.append((tried(s) if tried else 0, p.stat().st_mtime if at is None else at, s))
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1161,7 +1205,7 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
     if user is None:
         if not source:
             raise ValueError("original transcript unavailable; pass user= to keep caller-supplied words")
-        parsed = transcripts.read(source, harness, sid)
+        parsed = transcripts.read(source, harness, sid, rules=_turn_rules(s))
         shown = parsed.get("dialogue_v1") or {}
         turns = [{"id": turn_key(harness, r["id"]), "user": shown.get(r["id"], r)["user"],
                   "agent": shown.get(r["id"], r)["agent"], "owner": r.get("origin_conversation_id") or sid}
@@ -1248,7 +1292,7 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
             source = _locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
             if not (source and Path(source).is_file()):
                 raise ValueError(f"the transcript of {harness}/{sid} is not on this device")
-            parsed = transcripts.read(source, harness, sid)
+            parsed = transcripts.read(source, harness, sid, rules=_turn_rules(s))
             shown = parsed.get("dialogue_v1") or {}
             tracked = {turn_key(harness, r["id"]): r["hash"] for r in s["rounds"] if raw.is_native(r["ref"])}
             conversations[harness, sid] = tracked, [
