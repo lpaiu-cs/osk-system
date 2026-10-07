@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -47,6 +48,28 @@ def claude_round(sid, n, *, finished=True):
         rs += [row("assistant", [{"type": "thinking", "thinking": "fixture reasoning"}], f"think-{n}", "end_turn", f"final-{n}"),
                row("assistant", [{"type": "text", "text": f"answer {n}"}], f"answer-{n}", "end_turn", f"final-{n}")]
     return rs
+
+
+def claude_row(sid, role, content, uid, stop=None, message_id=None):
+    return {"type": role, "sessionId": sid, "uuid": uid, "isSidechain": False,
+            "message": {"role": role, "content": content, "id": message_id, "stop_reason": stop}}
+
+
+def stamped(rows, base, step=1):
+    """Claude's ISO row timestamps, `step` seconds apart from the epoch second `base`."""
+    return [{**r, "timestamp": datetime.fromtimestamp(base + i * step, timezone.utc)
+             .strftime("%Y-%m-%dT%H:%M:%S.000Z")} for i, r in enumerate(rows)]
+
+
+def queued(sid, uid, words, *, kind="human", mode="prompt", reason="absorbed_mid_turn"):
+    """A message sent while the turn ran: Claude Code's attachment and its queue removal."""
+    rows = [{"type": "attachment", "sessionId": sid, "uuid": uid, "isSidechain": False,
+             "attachment": {"type": "queued_command", "prompt": words, "source_uuid": f"cmd-{uid}",
+                            "commandMode": mode, "origin": {"kind": kind}}}]
+    if reason:
+        rows.append({"type": "queue-operation", "operation": "remove", "reason": reason,
+                     "commandUuid": f"cmd-{uid}", "sessionId": sid})
+    return rows
 
 
 def codex_round(n, *, finished=True):
@@ -234,6 +257,89 @@ class IntegrationTests(unittest.TestCase):
         parsed = transcripts.read(str(self.path), "claude", self.sid)
         self.assertEqual(parsed["rounds"], [])
         self.assertTrue(parsed["pending_tail"])
+
+    def test_idle_claude_turn_closes_as_interrupted_and_keeps_its_boundary(self):
+        # Claude records nothing that ends an abandoned turn (2026-10-07 decision B): after
+        # 12 hours without a row it closes as interrupted at its last row, and the stored cut
+        # keeps that boundary when the conversation goes on, whichever way it goes on.
+        base = time.time() - 13 * 3600
+        first = stamped(claude_round(self.sid, 1) + claude_round(self.sid, 2, finished=False), base)
+        self.transcript(first)
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        self.assertFalse(st["capture_pending"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual([r["completion"] for r in s["rounds"]], ["completed", "interrupted"])
+        self.assertEqual(s["rounds"][1]["cut"], "result-2")
+        closed = s["rounds"][1]
+        turn = self.turns(rules=it._turn_rules(s))[1]
+        self.assertIn("question 2", turn["user"])
+        # the same turn goes on (its row stamped before the close: only the cut keeps the
+        # boundary), then a new prompt follows
+        more = (stamped([claude_row(self.sid, "assistant", [{"type": "text", "text": "late answer 2"}],
+                                    "late-2", "end_turn", "final-late-2")], base + 60)
+                + stamped(claude_round(self.sid, 3), time.time()))
+        self.transcript(first + more)
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["rounds"][1], closed, "a later row moved the closed boundary")
+        self.assertEqual([r["completion"] for r in s["rounds"]],
+                         ["completed", "interrupted", "completed", "completed"])
+        parsed = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))
+        self.assertEqual(parsed["rounds"][2]["continued_from"], closed["id"])
+        self.assertIn("late answer 2", parsed["rounds"][2]["agent"])
+        self.assertIn("question 3", parsed["rounds"][3]["user"])
+        # the closed turn still acknowledges against the transcript
+        self.assertEqual(len(it._verify_native(s, s["rounds"])), 4)
+
+    def test_claude_turn_rules_start_after_the_turns_already_tracked(self):
+        # A conversation tracked before this engine keeps its boundaries: there an unfinished
+        # turn and the prompt that followed it a day later are one round.
+        old = time.time() - 40 * 3600
+        merged = (stamped(claude_round(self.sid, 1, finished=False)
+                          + queued(self.sid, "q-1", "while you work, note this"), old)
+                  + stamped(claude_round(self.sid, 2), old + 13 * 3600))
+        self.transcript(merged)
+        with mock.patch.object(it, "_turn_rules", return_value=None):
+            self.assertTrue(self.capture()["ok"])
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        before = list(s["rounds"])
+        self.assertEqual([r["id"] for r in before], ["user-1:final-2"])
+        self.assertNotIn("turns_since", s)
+        # after the update: the stored round reads as it was; new turns follow the new rules
+        later = stamped(claude_round(self.sid, 3, finished=False), old + 20 * 3600) + stamped(
+            claude_round(self.sid, 4)[:1] + queued(self.sid, "q-4", "and also this")
+            + queued(self.sid, "n-4", "a background task ended", kind="task-notification")
+            + queued(self.sid, "d-4", "sent as its own prompt", reason="dequeued")
+            + claude_round(self.sid, 4)[1:], old + 34 * 3600)
+        self.transcript(merged + later)
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["turns_since"], "user-1:final-2")
+        self.assertEqual(s["rounds"][0], before[0], "the tracked round changed under the new rules")
+        self.assertEqual([r["completion"] for r in s["rounds"]], ["completed", "interrupted", "completed"])
+        turns = self.turns(rules=it._turn_rules(s))
+        self.assertNotIn("while you work", turns[0]["user"])
+        self.assertIn("and also this", turns[2]["user"])
+        self.assertNotIn("background task", turns[2]["user"])
+        self.assertNotIn("its own prompt", turns[2]["user"])
+
+    def test_recent_claude_tail_stays_open_until_the_conversation_ends(self):
+        self.transcript(stamped(claude_round(self.sid, 1, finished=False), time.time() - 3600))
+        ago = time.time() - 13 * 3600
+        os.utime(self.path, (ago, ago))   # the file is not touched again: its fingerprint holds
+        st = self.capture()
+        self.assertTrue(st["capture_pending"])
+        self.assertEqual(st["captured_rounds"], 0)
+        # twelve hours on, the scheduled catch-up reads the unchanged file once more and closes it
+        with mock.patch.object(it.time, "time", return_value=time.time() + 12 * 3600):
+            out = it.catchup(limit=100)
+        self.assertIn(self.sid, [j["conversation_id"] for j in out["jobs"]], out)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted"])
+        self.assertFalse(s["capture_pending"])
 
     def test_codex_requires_matching_task_complete(self):
         self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1) + codex_round(2, finished=False))
@@ -1459,9 +1565,9 @@ class IntegrationTests(unittest.TestCase):
         unchanged = ' { "items" : [ "normal text", "ghp_short" ], "n": 3 } '
         self.assertEqual(transcripts._dump(unchanged), unchanged)
 
-    def turns(self, harness="claude"):
+    def turns(self, harness="claude", rules=None):
         """The parsed dialogue — tracked by hash, copied into the vault only by `cite`."""
-        return list(transcripts.read(str(self.path), harness, self.sid)["dialogue_v1"].values())
+        return list(transcripts.read(str(self.path), harness, self.sid, rules=rules)["dialogue_v1"].values())
 
     def test_codex_paginated_history_keeps_receipts_and_byte_boundary(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):

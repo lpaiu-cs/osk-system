@@ -4,6 +4,9 @@ Claude native samples split one message into rows (even end_turn thinking/text).
 Codex native samples use event_msg.task_complete, with the matching turn_id.
 Legacy renderers exist only to verify immutable older prefixes. New capture uses
 dialogue-v1: human dialogue verbatim, operational payloads by reference (Bylaws §2).
+Claude has no native record that ends an abandoned turn: after the turns an earlier
+engine tracked, a turn left without a final answer for IDLE_CLOSE closes as interrupted
+at its last row, and the cursor keeps that cut so every later read keeps the boundary.
 """
 from __future__ import annotations
 
@@ -11,7 +14,10 @@ import hashlib
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
+
+IDLE_CLOSE = 12 * 3600  # seconds of silence after which an unfinished Claude turn closes
 
 
 def _structured(value) -> str:
@@ -222,7 +228,10 @@ def native_lines(path: str, harness: str, sid: str):
         yield from _page_lines(native, remaining)
 
 
-def read(path: str, harness: str, conversation_id: str) -> dict:
+def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = None) -> dict:
+    """`rules` (Claude only) applies the newer turn rules after `rules["since"]`, the last
+    round an earlier engine tracked: queued words join their turn, and an unfinished turn
+    closes at a stored `cuts` row or after IDLE_CLOSE of silence before `now`."""
     fingerprint = native_fingerprint(path, harness, conversation_id)
     rows, diagnostics, pages = [], [], []
     n = 0
@@ -245,8 +254,8 @@ def read(path: str, harness: str, conversation_id: str) -> dict:
         rows.extend(page)
         pages.append(page)
     if harness == "claude":
-        result = _claude(rows, conversation_id)
-        readable = _claude(rows, conversation_id, dialogue=True)
+        result = _claude(rows, conversation_id, rules=rules)
+        readable = _claude(rows, conversation_id, dialogue=True, rules=rules)
     elif harness == "codex":
         result = _codex_history(pages, conversation_id)
         readable = _codex_history(pages, conversation_id, dialogue=True)
@@ -316,7 +325,26 @@ def _codex_history(pages: list, sid: str, **codec) -> dict:
             "ancestor_pending_tails": ancestor_pending}
 
 
-def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
+def _epoch(row: dict) -> float | None:
+    try:
+        return datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")).timestamp()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _queued(row: dict, delivered: set) -> str | None:
+    """Words the user sent while the turn ran. Claude Code keeps them as a `queued_command`
+    attachment and absorbs them into that turn: no user row follows. One delivered as its
+    own next prompt is read from that prompt instead."""
+    a = row.get("attachment")
+    if (not isinstance(a, dict) or a.get("type") != "queued_command" or a.get("commandMode") != "prompt"
+            or (a.get("origin") or {}).get("kind", "human") != "human" or a.get("source_uuid") in delivered):
+        return None
+    words = a.get("prompt")
+    return words if isinstance(words, str) and words.strip() else None
+
+
+def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None = None) -> dict:
     rows = [(line, r) for line, r in rows if not r.get("isSidechain") and not r.get("agentId")]
     identities = {r["sessionId"] for _, r in rows if r.get("sessionId")}
     if identities != {sid}:
@@ -344,26 +372,49 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
     evidence = []  # (native row timestamp, event) in file order
     start, final_message, final_line, final_text = None, None, None, False
     seen = set()
+    # The newer rules apply after `since`; a stored cut closes its turn on every read.
+    since = rules.get("since") if rules else None
+    new = rules is not None and since is None
+    cuts = set(rules.get("cuts") or ()) if rules else set()
+    now = rules.get("now") if rules else None
+    delivered = {r.get("commandUuid") for _, r in rows if r.get("type") == "queue-operation"
+                 and r.get("operation") == "remove" and r.get("reason") not in (None, "absorbed_mid_turn")}
+    last = None       # (uuid, line, epoch) of the open turn's latest dialogue row
+    resumed = None    # the round an idle close just ended; its later rows continue it
+    continued = None
+
+    def emit(rid, completion, end_line, **extra):
+        nonlocal users, trace, start, native_results, evidence, new, continued, last
+        locator = f"claude:{rid}"
+        events = [e for _, e in evidence]
+        found = {"id": rid, "user": "\n\n".join(users),
+                 "agent": "\n\n".join(trace + _tool_evidence(events, locator)), "end_line": end_line,
+                 "completion": completion, "native_results": native_results, **extra}
+        if continued:
+            found["continued_from"] = continued
+        # A resumed or forked copy rewrites rows in message order, so results
+        # that streamed between parallel calls move after them. Row timestamps
+        # survive the copy: the original append order is offered only to match
+        # a copied prefix, never to capture.
+        timed = [e for _, e in sorted(evidence, key=lambda x: x[0])]
+        if timed != events and all(t for t, _ in evidence):
+            found["agent_time_order"] = "\n\n".join(trace + _tool_evidence(timed, locator))
+        rounds.append(found)
+        users, trace, start, native_results, evidence, continued, last = [], [], None, [], [], None, None
+        new = new or (rules is not None and rid == since)
+        return rid
 
     def finish():
-        nonlocal users, trace, start, final_message, final_line, final_text, native_results, evidence
+        nonlocal final_message, final_line, final_text, resumed
         if start and final_message and final_text:
-            locator = f"claude:{start}:{final_message}"
-            events = [e for _, e in evidence]
-            found = {"id": f"{start}:{final_message}", "user": "\n\n".join(users),
-                     "agent": "\n\n".join(trace + _tool_evidence(events, locator)), "end_line": final_line,
-                     "completion": "completed", "native_results": native_results}
-            # A resumed or forked copy rewrites rows in message order, so results
-            # that streamed between parallel calls move after them. Row timestamps
-            # survive the copy: the original append order is offered only to match
-            # a copied prefix, never to capture.
-            timed = [e for _, e in sorted(evidence, key=lambda x: x[0])]
-            if timed != events and all(t for t, _ in evidence):
-                found["agent_time_order"] = "\n\n".join(trace + _tool_evidence(timed, locator))
-            rounds.append(found)
-            users, trace, start, native_results = [], [], None, []
-            evidence = []
+            emit(f"{start}:{final_message}", "completed", final_line)
+            resumed = None
         final_message, final_line, final_text = None, None, False
+
+    def interrupt():
+        # No final answer will come: close the turn at its latest row, which the cursor keeps.
+        nonlocal resumed
+        resumed = emit(f"{start}:{last[0]}", "interrupted", last[1], cut=last[0])
 
     for line, row in rows:
         if row.get("isSidechain") or row.get("agentId"):
@@ -375,6 +426,11 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
         # first row, whose content may be thinking and lack the final answer.
         if final_message and not (typ == "assistant" and msg.get("id") == final_message):
             finish()
+        if typ == "attachment" and new and start:
+            words = _queued(row, delivered)
+            if words:
+                users.append(words)
+            continue
         if typ not in ("user", "assistant"):
             continue
         uid = row.get("uuid")
@@ -388,6 +444,12 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
             raise ValueError(f"unsupported Claude content at line {line}")
         tool_result = isinstance(content, list) and any(
             isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+        at = _epoch(row)
+        if (new and start and not final_message and last and last[2] is not None and at is not None
+                and at - last[2] >= IDLE_CLOSE):
+            interrupt()
+        if new and not start and resumed and (typ == "assistant" or tool_result):
+            start, continued, resumed = uid, resumed, None
         if isinstance(content, list):
             kept = []
             for block in content:
@@ -421,7 +483,7 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
             if row.get("isCompactSummary") or row.get("isMeta"):
                 continue
             if not start:
-                start = uid
+                start, resumed = uid, None
             users.append(_dump(content))
         elif start:
             if not dialogue or content:
@@ -433,7 +495,13 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False) -> dict:
                 final_text = final_text or (bool(content.strip()) if isinstance(content, str) else any(
                     isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip()
                     for b in content))
+        if start:
+            last = (uid, line, at)
+            if uid in cuts and not final_message:
+                interrupt()
     finish()
+    if new and start and now is not None and last and last[2] is not None and now - last[2] >= IDLE_CLOSE:
+        interrupt()
     # The open turn is not a round, but its user words may be cited (Mechanism §9 9항).
     return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics,
             "tail": {"id": start, "user": "\n\n".join(users)} if start and users else None}

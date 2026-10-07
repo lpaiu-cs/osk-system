@@ -32,6 +32,10 @@ rewrite your notes and records, and there is nothing to migrate.
   before its review is picked up by the daily or explicit `growth run`, which
   reads only its unreviewed turns from this device's transcript through
   `read_cited`. The run also reviews rounds stored in `_raw/`.
+- **Stalled Claude turns are reviewed too.** A Claude turn left without a final
+  answer for 12 hours closes as an interrupted round and goes to review, and a
+  message you send while a turn runs stays among that turn's words. Turns tracked
+  before the update keep their boundaries and wording.
 - **Closed reviews stay closed.** After a review is acknowledged, osk checks
   only that its node still exists, stays in its top-level cluster and still
   cites its source; a break is reported in `growth status`, not reopened.

@@ -839,6 +839,12 @@ goal·heartbeat 같은 실행 계기도 턴으로 읽으며, 늦게 인식된 �
 Stop이 전사의 최종 완료 표식보다 먼저 실행되거나 생략되면 `integration catchup`이 이미
 등록된 대화의 꼬리를 따라잡는다. Claude의 Stop에도 같은 `scripts/hooks/capture_stop.py`를
 등록한다. 중단·실패한 턴은 그 사실과 함께 추적하며 정상 종료나 증류 성공으로 세지 않는다.
+Claude 전사에는 버려진 턴을 끝내는 기록이 없다. 그래서 최종 답 없이 12시간 넘게 멈춘 Claude
+턴은 마지막 행에서 interrupted로 닫고, 그 절단 지점을 커서에 남겨 대화가 다시 이어져도 경계를
+바꾸지 않는다. 같은 턴이 뒤늦게 이어지면 그 행들은 새 라운드가 된다. 작업 도중 보낸 사용자
+메시지(Claude Code가 `queued_command` 첨부로 남기고 그 턴에 흡수한 것)는 그 턴의 사용자
+발화로 읽고 라운드를 늘리지 않는다. 두 규칙은 이 판이 처음 추적한 뒤의 턴부터 적용하며,
+그 앞에 추적한 턴은 기존 경계와 표현 그대로 읽는다.
 
 ```powershell
 $env:PYTHONPATH='_governance/_engine'
