@@ -986,6 +986,21 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
     return result
 
 
+def _needs_review(planned: dict, rows: list[dict], idx: graph.Index) -> bool:
+    """선택한 작업 가운데 아직 열린 것이 있으면 작업자의 최종 결과 묶음을 적용한다 —
+    다섯 큐 모두다. 재검토만 남은 실행도 올림과 보류를 그 묶음으로 보고한다."""
+    from . import integration, organization
+    return (any(not _completed(c["key"], rows, idx) for c in planned["candidates"])
+            or any(integration._review_status_locked(
+                j["harness"], j["conversation_id"], j["through"])["status"] != "complete"
+                for j in planned["scope_jobs"])
+            or any(organization.status(j, idx)["status"] != "complete"
+                   for j in planned["organization_jobs"])
+            or any(_eviction_status(j, idx)["status"] != "complete" for j in planned["eviction_jobs"])
+            or any(_recheck_status(j, idx)["status"] != "complete"
+                   for j in planned.get("recheck_jobs", [])))
+
+
 def _stop_tree(proc: subprocess.Popen) -> str | None:
     """Kill only the process tree/group created by this runner; report uncertain cleanup."""
     error = None
@@ -1192,15 +1207,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 except OSError as exc:
                     error = str(exc)
             with core.mutation_lock():
-                rows, idx = _records(), _index()
-                needs_review = (any(not _completed(c["key"], rows, idx) for c in planned["candidates"])
-                                or any(integration._review_status_locked(
-                                    j["harness"], j["conversation_id"], j["through"])["status"] != "complete"
-                                    for j in planned["scope_jobs"]) or any(
-                                    organization.status(j, idx)["status"] != "complete"
-                                    for j in planned["organization_jobs"]) or any(
-                                    _eviction_status(j, idx)["status"] != "complete"
-                                    for j in planned["eviction_jobs"]))
+                needs_review = _needs_review(planned, _records(), _index())
             final_reviews = {"state": "not_needed", "errors": []}
             if needs_review:
                 final_reviews = (_apply_final_reviews(directory / "stdout.txt", planned)

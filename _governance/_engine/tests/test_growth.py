@@ -379,6 +379,22 @@ class GrowthTests(unittest.TestCase):
             assert not refused['ok'] and any('invalid recheck review fields' in e for e in refused['errors']), refused
         """)
 
+    def test_a_run_whose_only_open_jobs_are_rechecks_applies_its_final_packet(self):
+        # The runner applies the worker's final packet while a selected job is open. A run
+        # left with rechecks alone must apply its escalations and deferrals too (#162 review).
+        self.check_case("""
+            node('A')
+            assert write.create_node('B', 'B', 'B relies on A.', 'gpt-6-astra', space='00_Scope/W1',
+                                     edges={'derived-from': 'A'})['ok']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            job = growth.plan(3)['recheck_jobs'][0]
+            only = {'candidates': [], 'scope_jobs': [], 'organization_jobs': [], 'eviction_jobs': [],
+                    'recheck_jobs': [job]}
+            assert growth._needs_review(only, growth._records(), graph.Index()), 'an open recheck did not ask for the packet'
+            write.update_node('B', rechecked=['A'])
+            assert not growth._needs_review(only, growth._records(), graph.Index())
+        """)
+
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):
         self.check_case("""
             from osk import rechecks

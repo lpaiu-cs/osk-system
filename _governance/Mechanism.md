@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-iter
 created: 2026-08-02 13:22 (KST)
-updated: 2026-10-07 10:55 (KST)
+updated: 2026-10-07 10:41 (KST)
 author: user
 drafter: opus-5.5
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"

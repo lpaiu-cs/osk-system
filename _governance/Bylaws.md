@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-m5lm
 created: 2026-08-02 13:22 (KST)
-updated: 2026-10-07 10:55 (KST)
+updated: 2026-10-07 10:41 (KST)
 author: user
 drafter: opus-5.5
 summary: "헌법이 맡긴 운영 규칙 — 노드 계약, _cited, 군집과 pin, 율령, 위임 운영, 보호영역, 사건부"
