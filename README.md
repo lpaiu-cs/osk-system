@@ -355,8 +355,9 @@ The empty `00_Scope/`, `00_Domain/`, and `00_Person/` directories are starting p
 for your own instance. Personal data belongs in that instance, not in this public
 repository.
 
-The [v4.2 growth milestones](docs/v4.2-milestones.md) (Korean) describe the development
-sequence and acceptance criteria.
+The [v5.0.0 growth milestones](docs/v5.0-milestones.md) (Korean) describe the development
+sequence and acceptance criteria. The plans for the next releases are in
+[v5.1.0](docs/v5.1-milestones.md) and [v5.2.0](docs/v5.2-milestones.md).
 
 ## License
 

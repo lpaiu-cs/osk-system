@@ -387,7 +387,7 @@ def _drive_mcp(cfg: dict) -> dict:
                 out["search"] = hits if isinstance(hits, list) else [hits]
                 out["read"] = {n: await call("read_node", {"name": n}) for n in cfg["names"]}
                 out["read_id"] = await call("read_node", {"name": out["read"]["Alpha"].get("id", "?")})
-                # v4.2 renamed read_raw; an older candidate still answers to the old name.
+                # v5.0 renamed read_raw; an older candidate still answers to the old name.
                 read = "read_cited" if "read_cited" in out["tools"] else "read_raw"
                 out["raw"] = {ref: await call(read, {"ref": ref, "view": "full"})
                               for ref in cfg["rounds"]}
