@@ -424,7 +424,8 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             phase = "read"
             rules = _turn_rules(s)
             if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
-                rules["since"] = _copied_since(s, native_path)
+                rules["since"], copied = _copied_rules(s, native_path)
+                rules["cuts"] = rules["cuts"] + copied
             parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
             if parsed.get("originator") == "codex_exec":
                 # A scripted `codex exec` run — osk's own scheduled runs included — is not a
@@ -778,20 +779,23 @@ def _turn_rules(s: dict) -> dict | None:
     return {"since": since, "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
 
 
-def _copied_since(s: dict, native_path: str) -> str | None:
-    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계. 복제된 앞부분은 그 턴을 추적한
-    같은 scope 커서가 쓴 경계를 따른다 — 새 규칙으로 읽으면 부모가 추적한 턴과 경계·표현이
-    갈라진다. 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다."""
-    if not s["space"]:
-        return None
-    order = {r["id"]: i for i, r in enumerate(transcripts.read(native_path, "claude", s["conversation_id"])["rounds"])}
-    best = None
+def _copied_rules(s: dict, native_path: str) -> tuple[str | None, list]:
+    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계와 절단 지점. 복제된 앞부분은 그
+    턴을 추적한 같은 scope 커서의 규칙으로 읽어야 부모가 추적한 턴과 경계·표현이 갈라지지
+    않는다. 경계는 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것이고, 절단 지점은
+    그 커서들이 저장한 것 전부다 — 다른 전사의 행 id라 이 전사에 없으면 아무것도 닫지 않는다."""
+    rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"] if s["space"] else []
+    if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
+        return None, []   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
+    order = {r["id"]: i for i, r in enumerate(rounds)}
+    best, cuts = None, []
     for owner in _scope_cursors(s):
         tracked = (owner.get("inherited") or {}).get("rounds", []) + owner["rounds"]
+        cuts += [r["cut"] for r in tracked if r.get("cut")]
         bound = owner["turns_since"] if "turns_since" in owner else (tracked[-1]["id"] if tracked else None)
         if bound in order and (best is None or order[bound] > order[best]):
             best = bound
-    return best
+    return best, cuts
 
 
 def _ended_source(s: dict) -> str | None:
