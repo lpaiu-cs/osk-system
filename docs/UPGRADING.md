@@ -7,12 +7,12 @@ listed below. Routine updates are covered in
 [Getting started, Keeping up to date](GETTING-STARTED.md#keeping-up-to-date)
 and in [SETUP](SETUP.md) (Korean).
 
-## From v4.1 to v4.2
+## From v4.1 to v5.0
 
-v4.2 stops copying conversations into the vault. The hooks track each finished
+v5.0 stops copying conversations into the vault. The hooks track each finished
 turn on the device, and the conversation stays in the harness's transcript. A
 node cites only the turns it needs: the new MCP tool `cite_round` copies your
-words from the transcript into `00_Scope/<scope>/_cited/`. v4.2 does not move or
+words from the transcript into `00_Scope/<scope>/_cited/`. v5.0 does not move or
 rewrite your notes and records, and there is nothing to migrate.
 
 - **Rename the tools in client settings.** `cite_round` and `read_cited`

@@ -306,7 +306,8 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli search "프로젝트 
 
 설치·운용 방법은 [docs/SETUP.md](docs/SETUP.md)를 본다.
 
-v4.2 개발 순서와 완료 기준은 [성장 경로 개선 마일스톤](docs/v4.2-milestones.md)에 정리한다.
+v5.0.0 개발 순서와 완료 기준은 [성장 경로 개선 마일스톤](docs/v5.0-milestones.md)에 정리한다.
+다음 판의 계획은 [v5.1.0](docs/v5.1-milestones.md)과 [v5.2.0](docs/v5.2-milestones.md)에 있다.
 
 ## License
 
