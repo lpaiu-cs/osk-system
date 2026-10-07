@@ -35,7 +35,7 @@ def _records() -> list[dict]:
     for row in rows:
         if row.get("kind") not in {"plan", "review", "run", "eviction_review", "recheck_review"}:
             errors.append("unknown growth record kind")
-        if row.get("kind") == "recheck_review" and row.get("outcome") != "escalated":
+        if row.get("kind") == "recheck_review" and row.get("outcome") not in {"escalated", "deferred"}:
             errors.append("unknown recheck review outcome")
         if row.get("kind") == "review" and row.get("outcome") not in {
                 "preserved", "no_value", "deferred"}:
@@ -193,7 +193,8 @@ def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
     return [] if pending else [
         {"key": f"recheck:{i['id']}:{i['key']}", "node": i["node"], "target": i["target"],
          "why": i["why"], "cascade": i["cascade"], "next": i["next"], "id": i["id"],
-         "target_key": i["key"], "node_state": i["node_state"], "target_state": i["target_state"]}
+         "target_key": i["key"], "node_state": i["node_state"], "target_state": i["target_state"],
+         **({"previous_deferral": i["deferred"]} if "deferred" in i else {})}
         for i in items if "escalated" not in i and (scope is None or i["scope"] == scope)]
 
 
@@ -487,7 +488,11 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "and never correct node when cascade is true (target was itself just corrected by a "
         "recheck); instead report recheck:[{key,outcome:escalated,reason,proposal}] for the "
         "user, naming the next nodes affected. Do not edit target for this job. An update_node "
-        "call records a check without a packet entry. Uncertainty leaves the job open.\n"
+        "call records a check without a packet entry. If you cannot judge, report "
+        "recheck:[{key,outcome:deferred,reason}] stating what you read and what remains: the job "
+        "stays open and its next selection receives the reason as previous_deferral (Bylaws §7 2). "
+        "Resume a previous_deferral rather than repeating its whole read; state_changed means the "
+        "node or target changed since.\n"
         "Scope jobs decide node splitting and placement (Mechanism §9-4 3; Bylaws §3 8). Each "
         "carries hub_tree, its scope's hubs with their direct node counts: descend from the top hub "
         "to the deepest hub that covers the topic and link the node there. That cluster path is "
@@ -596,8 +601,9 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "you checked and left unchanged are kept as deferred progress. "
         "Add eviction:[{of,outcome:node|merged|discarded|deferred,reason,target?}] inside "
         "osk_reviews for selected eviction_jobs; omit target unless outcome is node/merged. "
-        "Add recheck:[{key,outcome:escalated,reason,proposal}] inside osk_reviews only for "
-        "recheck_jobs you escalate to the user. "
+        "Add recheck:[{key,outcome:escalated,reason,proposal}] inside osk_reviews for "
+        "recheck_jobs you escalate to the user, and recheck:[{key,outcome:deferred,reason}] for "
+        "those you could not judge. "
         "Use the originally selected key. Use only this manifest's selected keys and scope "
         "snapshots. The runner applies these decisions through the same receipt APIs; the "
         "write receipts record what was preserved. A malformed entry is set aside with its "
@@ -810,14 +816,16 @@ def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
             entry = {k: v for k, v in entry.items() if k != "target"}
             notes.append(f"eviction review {ident}: discarded and deferred name no target; the target was dropped")
         return entry
-    fields = {"key", "outcome", "reason", "proposal"}
-    if (not isinstance(entry, dict) or set(entry) != fields
-            or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields)):
+    if not isinstance(entry, dict) or entry.get("outcome") not in {"escalated", "deferred"}:
+        raise ValueError("a recheck review only escalates or defers; a check closes through update_node")
+    fields = {"key", "outcome", "reason"} | ({"proposal"} if entry["outcome"] == "escalated" else set())
+    if entry["outcome"] == "deferred" and "proposal" in entry:
+        entry = {k: v for k, v in entry.items() if k != "proposal"}
+        notes.append(f"recheck review {ident}: a deferral carries no proposal; the proposal was dropped")
+    if set(entry) != fields or any(not isinstance(entry[k], str) or not entry[k].strip() for k in fields):
         raise ValueError("invalid recheck review fields")
     if entry["key"] not in {j["key"] for j in planned.get("recheck_jobs", [])}:
         raise ValueError("unselected recheck review")
-    if entry["outcome"] != "escalated":
-        raise ValueError("a recheck review only escalates; a check closes through update_node")
     return entry
 
 
@@ -957,14 +965,14 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 now = [i for i in rechecks.candidates(_index())[0]
                        if i["id"] == job["id"] and i["key"] == job["target_key"]]
                 if not now:
-                    result["notes"].append(f"Recheck {entry['key']}: already closed; nothing to escalate")
+                    result["notes"].append(f"Recheck {entry['key']}: already closed; nothing to record")
                     result.setdefault("recheck", {})[entry["key"]] = "already_closed"
                     continue
                 if (now[0]["node_state"], now[0]["target_state"]) != (job["node_state"], job["target_state"]):
-                    # 제안은 선택 때의 두 상태에 대한 것으로 남는다. 지금 쌍과 상태가 달라
-                    # 올림 표시가 붙지 않으므로, 그 쌍은 다시 선택된다.
+                    # 보고는 선택 때의 두 상태에 대한 것으로 남는다. 올림이면 지금 상태와 달라
+                    # 표시가 붙지 않아 그 쌍이 다시 선택되고, 보류면 다음 작업이 바뀐 사실을 함께 받는다.
                     result["notes"].append(f"Recheck {entry['key']}: the node or target changed since "
-                                           "selection; the proposal is kept for the selected states")
+                                           "selection; the report is kept for the selected states")
                 if "escalated" not in now[0]:
                     core.ledger_append(LEDGER, {
                         "kind": "recheck_review", "manifest": planned["manifest"], **entry,

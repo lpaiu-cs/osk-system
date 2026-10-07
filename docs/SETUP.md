@@ -1015,6 +1015,9 @@ Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 
   근거를 인용한 노드(`cascade`)의 수정은 하지 않고 수정안을 올린다. 올린 항목은
   `overview`의 `rechecks.escalated`와 세션 시작 알림에 보이고, `rechecked`에 그 근거를 적으면
   닫힌다.
+- **판단하지 못함:** 에이전트가 판단하지 못한 재검토는 닫지 않는다. 결과 묶음에 이유를 적은
+  보류(`deferred`)로 남기면, 그 쌍의 다음 작업이 그 이유를 `previous_deferral`로 받는다.
+  그 사이 노드나 근거가 바뀌었으면 `state_changed`가 알린다.
 - **닫는 법:** 근거를 읽고 노드를 확인한 뒤 `update_node(name, rechecked=[target])`로 점검을
   적는다. 같은 호출에서 본문을 고치면 `updated`, 그대로 두면 `unchanged`가 `rechecks.jsonl`에
   남는다. `add_edges`로 근거를 다시 넣는 것만으로는 닫히지 않는다. 그 세션이 `read_node`로

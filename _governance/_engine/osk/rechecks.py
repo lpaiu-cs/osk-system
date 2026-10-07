@@ -231,12 +231,14 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
                             "scope": kind[1] if kind[0] == "scope" else None,
                             "node_state": ns, "target_state": ts, "cascade": cascade(key),
                             "next": sorted(set(cited.get(nid, [])))})
-    _mark_escalated(out)
+    _mark_reports(out)
     return out, ok and not recs
 
 
-def _mark_escalated(items: list[dict]) -> None:
-    """사람에게 올린 후보에 `escalated`를 붙인다 — 그때의 두 상태가 지금과 같은 동안만."""
+def _mark_reports(items: list[dict]) -> None:
+    """후보에 지금 보고를 붙인다. 사람에게 올린 것은 `escalated` — 그때의 두 상태가 지금과
+    같은 동안만. 판단하지 못한 것은 `deferred` — 쌍을 닫지 않고 그 이유를 다음 작업에
+    넘긴다(시행령 §7 2항). 그 사이 두 상태가 바뀌었으면 `state_changed`가 알린다."""
     try:
         from . import growth
         rows = growth._records()
@@ -248,10 +250,15 @@ def _mark_escalated(items: list[dict]) -> None:
     for i in items:
         # 앞 선택을 이은 선택의 보고가 정한다 — 옛 상태에 대한 제안이 늦게 붙어도 지금 상태의 올림을 덮지 않는다.
         r = growth._latest(rows, f"recheck:{i['id']}:{i['key']}", "key", par) or {}
-        if (r.get("kind") == "recheck_review" and r.get("outcome") == "escalated"
-                and r.get("node_state") == i["node_state"]
-                and r.get("target_state") == i["target_state"]):
+        if r.get("kind") != "recheck_review":
+            continue
+        same = r.get("node_state") == i["node_state"] and r.get("target_state") == i["target_state"]
+        if r.get("outcome") == "escalated" and same:
             i["escalated"] = {"reason": r.get("reason"), "proposal": r.get("proposal")}
+        elif r.get("outcome") == "deferred":
+            reason = r.get("reason") or ""
+            i["deferred"] = {"reason": reason[:1200], "reason_truncated": len(reason) > 1200,
+                             "at": r.get("at"), "state_changed": not same}
 
 
 def report(idx=None, limit: int = 5) -> dict:

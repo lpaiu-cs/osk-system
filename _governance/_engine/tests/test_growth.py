@@ -344,6 +344,41 @@ class GrowthTests(unittest.TestCase):
             assert not rechecks.report(graph.Index()), rechecks.report(graph.Index())
         """)
 
+    def test_recheck_deferral_keeps_the_pair_open_and_hands_its_reason_on(self):
+        # Bylaws §7 2: a recheck the agent could not judge is not closed; its reason goes to the
+        # next recheck of the same node and target.
+        self.check_case("""
+            from osk import rechecks
+            node('A')
+            assert write.create_node('B', 'B', 'B relies on A.', 'gpt-6-astra', space='00_Scope/W1',
+                                     edges={'derived-from': 'A'})['ok']
+            write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
+            planned = growth.plan(3)
+            job = planned['recheck_jobs'][0]
+            assert 'previous_deferral' not in job, job
+            manifest = register({**planned, 'scope_jobs': []})
+            done = growth.checkpoint({'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
+                'recheck': [{'key': job['key'], 'outcome': 'deferred',
+                             'reason': 'read both; the revision may narrow B', 'proposal': 'drop me'}]}})
+            assert done['ok'] and any('carries no proposal' in n for n in done['notes']), done
+            row = [r for r in growth._records() if r.get('kind') == 'recheck_review'][-1]
+            assert row['outcome'] == 'deferred' and 'proposal' not in row, row
+            assert growth._recheck_status(job, graph.Index())['status'] == 'pending', 'a deferral closed the check'
+            assert not rechecks.report(graph.Index()).get('escalated'), 'a deferral reached the user'
+            again = growth.plan(3)['recheck_jobs']
+            assert [j['key'] for j in again] == [job['key']], again
+            handed = again[0]['previous_deferral']
+            assert handed['reason'].startswith('read both') and handed['state_changed'] is False, handed
+            write.update_node('A', old_text='A revised observation', new_text='A twice revised observation')
+            planned = growth.plan(3)
+            assert planned['recheck_jobs'][0]['previous_deferral']['state_changed'] is True, planned['recheck_jobs']
+            # an escalation still carries its proposal
+            manifest = register({**planned, 'scope_jobs': []})
+            refused = growth.checkpoint({'osk_reviews': {'manifest': manifest['rid'], 'domain': [], 'scope': [],
+                'recheck': [{'key': planned['recheck_jobs'][0]['key'], 'outcome': 'escalated', 'reason': 'x'}]}})
+            assert not refused['ok'] and any('invalid recheck review fields' in e for e in refused['errors']), refused
+        """)
+
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):
         self.check_case("""
             from osk import rechecks

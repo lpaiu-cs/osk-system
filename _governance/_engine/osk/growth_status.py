@@ -280,6 +280,7 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
             items, baseline = rechecks.candidates(idx)
             return {'baseline_pending': baseline, 'candidate_pairs': len(items),
                     'awaiting_agent': sum('escalated' not in i for i in items),
+                    'deferred': sum('deferred' in i and 'escalated' not in i for i in items),
                     'escalated': sum('escalated' in i for i in items)}
         section('rechecks', current_rechecks)
         def preservation():
