@@ -461,7 +461,7 @@ def main(argv=None):
                "close": rechecks.CLOSE})
     elif a.cmd == "validators":
         # 활성화·해제는 사용자 전속이다(시행령 §11 3항) — 표면(MCP)에는 없다.
-        known = ["cluster-overview"]
+        known = ["cluster-overview", "evidence-section"]
         rule = a.activate or a.deactivate
         if rule:
             if a.activate and a.deactivate:

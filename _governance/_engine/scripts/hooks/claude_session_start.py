@@ -461,7 +461,7 @@ def main() -> None:
         if not first_call("start", env, host):
             return
         try:
-            rechecks.ensure_baseline()
+            rechecks.ensure_baseline(carry=True)
         except Exception:
             pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다
         from osk.hook_text import Block, assemble

@@ -224,7 +224,10 @@ The body is Markdown, as Obsidian reads it.
   consecutive rounds that make one point share a line (`42cf0fc0#41–42`). Only independent support, a condition or a
   counterexample gets a line; actions and numbers stay in the body. A round
   that only supports a held claim is bound this way instead of by rewriting the
-  claim. This is a writing convention: the engine does not read the section.
+  claim. The section is not part of the node's state for rechecks (Bylaws §7 2):
+  adding a line does not make the nodes that cite this one recheck candidates. The
+  validator rule `evidence-section` checks each line's form and that its
+  coordinate is in `derived-from` (Mechanism §6-1 4); it reports until activated.
 
 ### 2.3 Predicate Edges
 
@@ -536,8 +539,8 @@ pressure of its size limit (Mechanism §9-2 12):
 
 - **`validators.jsonl`** (Mechanism §6-1): `kind` (`activate` or `deactivate`),
   `rule`, `reason`. The rule's single causal maximum decides; a rule without
-  records, or with several maxima, is inactive. The only rule is
-  `cluster-overview`.
+  records, or with several maxima, is inactive. The rules are
+  `cluster-overview` and `evidence-section`.
 - **`pins.jsonl`** (Mechanism §6): `kind` (`pin` or `unpin`), `target` (a
   vault-relative cluster path or a node id), opt. `reason`. Before moving nodes
   or clusters, the engine treats a target that has records as pinned unless its
