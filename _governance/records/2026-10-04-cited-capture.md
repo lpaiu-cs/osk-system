@@ -1,7 +1,7 @@
 ---
 id: 261004-03rc-oe3bmpx9
 created: 2026-10-04 01:21 (KST)
-updated: 2026-10-04 09:47 (KST)
+updated: 2026-10-04 14:32 (KST)
 author: user
 drafter: opus-5.5
 summary: "대화 기록을 인용·검증에 필요한 범위로 좁히고 _raw를 _cited로 개명한다 — 경위와 이행"
