@@ -39,11 +39,12 @@ EVIDENCE = "근거"
 
 def evidence_span(text: str) -> tuple[int, int] | None:
     """노드 끝의 `## 근거` 절(Mechanism §4-1 1항) — `## 근거` 제목 행부터 본문 끝까지의
-    문자 범위. 그 뒤에 `#`·`##` 제목이 있으면 근거 절이 아니다. 코드 구획의 `#` 행은
-    제목이 아니다."""
+    문자 범위. 그 뒤에 `#`·`##` 제목이 있으면 근거 절이 아니다. 노드 자신의 제목만 센다 —
+    코드 구획의 `#` 행과 인용·목록 안의 제목은 아니다."""
     last = None
-    for off, _line, content, code, _cont in contract.md_lines(text):
-        h = None if code else _ATX.match(content)
+    for off, line, content, code, _cont in contract.md_lines(text):
+        top = not code and content == line.rstrip("\r").expandtabs(4)   # 컨테이너 밖의 행
+        h = _ATX.match(content) if top else None
         if h and len(h.group(1)) <= 2:
             last = (off, len(h.group(1)), re.sub(r"(?:^|[ \t]+)#+$", "", h.group(2) or "").strip())
     return (last[0], len(text)) if last and last[1] == 2 and last[2] == EVIDENCE else None

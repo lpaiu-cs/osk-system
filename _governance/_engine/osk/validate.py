@@ -323,7 +323,7 @@ def run() -> dict:
 
 _EVIDENCE_ITEM = re.compile(r"^- \d{4}-\d{2}-\d{2} · `([0-9a-f]{8})#(\d+)(?:[–-](\d+))?` · "
                             r"(?:지지|조건|반례) — \S")
-_RECORD_REF = re.compile(r"[a-z][a-z0-9]*-([0-9a-f]{32})\.txt#(\d+)$")
+_LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
 
 
 def evidence_errors(text: str, derived) -> list[str]:
@@ -332,21 +332,29 @@ def evidence_errors(text: str, derived) -> list[str]:
     from .rechecks import EVIDENCE, evidence_span
     span = evidence_span(text)
     if span is None:
-        heads = [c for _o, _l, c, code, _ in contract.md_lines(text)
-                 if not code and re.match(r"^ {0,3}## +" + EVIDENCE + r"[ \t#]*$", c)]
+        heads = [c for _o, line, c, code, _ in contract.md_lines(text)
+                 if not code and c == line.rstrip("\r").expandtabs(4)
+                 and re.match(r"^ {0,3}## +" + EVIDENCE + r"[ \t#]*$", c)]
         return ["`## 근거` 절이 노드 끝에 있지 않다"] if heads else []
     refs = derived if isinstance(derived, list) else [] if derived in (None, "") else [derived]
     rounds: dict[str, set] = {}
     for ref in refs:
-        s = str(ref).strip()
-        s = (s[2:-2] if s.startswith("[[") and s.endswith("]]") else s).split("|", 1)[0].strip()
-        m = _RECORD_REF.search(s.replace("\\", "/")) if graph.is_record_ref(s) else None
-        if m:
-            rounds.setdefault(m.group(1)[:8], set()).add((m.group(1), int(m.group(2))))
-    errs = []
-    for line in text[span[0]:].splitlines()[1:]:
-        if not line.startswith("- "):
+        # 옛 `[[…/_raw/<기록>.md#N]]`과 새 `…/.records/<기록>.txt#N`은 같은 기록이다(시행령 §1 3항)
+        try:
+            path, number = raw.parse_ref(raw.canonical_ref(str(ref)))
+        except Exception:
             continue
+        if number is None or not graph.is_record_ref(path):
+            continue
+        p = Path(path)
+        m = re.search(r"([0-9a-f]{32})$", p.parent.name if p.name == "record.txt" else p.stem)
+        if m:
+            rounds.setdefault(m.group(1)[:8], set()).add((m.group(1), number))
+    errs = []
+    for _o, line, _c, code, _cont in list(contract.md_lines(text[span[0]:]))[1:]:
+        line = line.rstrip("\r").expandtabs(4)
+        if code or not _LIST_ITEM.match(line):
+            continue   # 목록 항목만 본다 — 표지가 `-`가 아니면 형식이 다른 줄이다
         m = _EVIDENCE_ITEM.match(line)
         if not m:
             errs.append(f"형식이 다른 근거 줄: {line[:60]}")

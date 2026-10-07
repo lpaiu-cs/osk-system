@@ -407,6 +407,9 @@ class GrowthTests(unittest.TestCase):
             assert not rechecks.candidates(graph.Index())[0]
             write.update_node('A', old_text=first, new_text=first + chr(10) + '- 2026-10-06 · `c38d8ef2#2` · 조건 — second')
             assert not rechecks.candidates(graph.Index())[0], 'a 근거 line made B a recheck candidate'
+            # only the node's own heading starts it: a quoted or listed `## 근거` is body
+            for inner in ('> ## 근거' + chr(10) + '> quoted line', '- item' + chr(10) + chr(10) + '  ## 근거' + chr(10) + '  listed'):
+                assert rechecks.evidence_span('A claim.' + chr(10) + chr(10) + inner) is None, inner
             # a record that measured the whole body, the 근거 section included
             idx = graph.Index()
             a, b = (idx.locate(n)[0] for n in ('A', 'B'))
@@ -429,17 +432,25 @@ class GrowthTests(unittest.TestCase):
     def test_evidence_section_rule_pairs_coordinates_and_reports_until_activated(self):
         # Mechanism §6-1 4: each 근거 line has the form and a coordinate its derived-from holds.
         self.check_case("""
-            raw = '= Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt#'
+            raw = '00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt#'
             text = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1–2` · 지지 — pair',
                                  '- 2026-10-05 · `c38d8ef2#3` · 반례 — no round', '- 10-05 · c38d8ef2#1 · 지지 — form'])
             errs = validate.evidence_errors(text, [raw + '1', raw + '2'])
             assert errs == ['짝 없는 근거 줄: c38d8ef2#3 — derived-from에 그 기록·라운드가 없다',
                             '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
-            other = '= Scope/W1/_cited/.records/codex-c38d8ef2' + '1' * 24 + '.txt#1'
+            other = '00_Scope/W1/_cited/.records/codex-c38d8ef2' + '1' * 24 + '.txt#1'
             assert validate.evidence_errors(text, [raw + '1', raw + '2', other])[0].startswith('모호한 좌표')
             moved = chr(10).join(['x', '', '## 근거', '', '- a', '', '## 이력', '', 'y'])
             assert validate.evidence_errors(moved, []) == ['`## 근거` 절이 노드 끝에 있지 않다']
             assert validate.evidence_errors('x', [raw + '1']) == []
+            # an old `.md` coordinate names the same record; any list marker is a list item
+            legacy = '[[00_Scope/W1/_raw/claude-c38d8ef2' + '0' * 24 + '.md#3]]'
+            assert validate.evidence_errors(text, [raw + '1', raw + '2', legacy])[:1] == [
+                '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], 'the old coordinate did not pair'
+            starred = chr(10).join(['x', '', '## 근거', '', '* 2026-10-05 · `deadbeef#9` · 지지 — star'])
+            assert validate.evidence_errors(starred, [])[0].startswith('형식이 다른 근거 줄: * 2026'), 'a * item was skipped'
+            quoted = chr(10).join(['x', '', '> ## 근거', '>', '> - a'])
+            assert validate.evidence_errors(quoted, []) == [], 'a quoted heading was read as the section'
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none']))
             rep = validate.run()
             assert list(rep['evidence_section']) == ['A'] and not rep['evidence_section_active'], rep['evidence_section']
