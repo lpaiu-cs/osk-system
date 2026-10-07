@@ -357,7 +357,8 @@ repository.
 
 The [v5.0.0 growth milestones](docs/v5.0-milestones.md) (Korean) describe the development
 sequence and acceptance criteria. The plans for the next releases are in
-[v5.1.0](docs/v5.1-milestones.md) and [v5.2.0](docs/v5.2-milestones.md).
+[v5.1.0](docs/v5.1-milestones.md) and [v5.2.0](docs/v5.2-milestones.md), which harden what v5.0.0
+builds, and in [v6.0.0](docs/v6.0-milestones.md), which extends the memory model.
 
 ## License
 
