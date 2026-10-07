@@ -323,7 +323,6 @@ def run() -> dict:
 
 _EVIDENCE_ITEM = re.compile(r"^- \d{4}-\d{2}-\d{2} · `([0-9a-f]{8})#(\d+)(?:[–-](\d+))?` · "
                             r"(?:지지|조건|반례) — \S")
-_LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
 
 
 def evidence_errors(text: str, derived) -> list[str]:
@@ -351,10 +350,10 @@ def evidence_errors(text: str, derived) -> list[str]:
         if m:
             rounds.setdefault(m.group(1)[:8], set()).add((m.group(1), number))
     errs = []
-    for _o, line, _c, code, _cont in list(contract.md_lines(text[span[0]:]))[1:]:
-        line = line.rstrip("\r").expandtabs(4)
-        if code or not _LIST_ITEM.match(line):
-            continue   # 목록 항목만 본다 — 표지가 `-`가 아니면 형식이 다른 줄이다
+    for line in text[span[0]:].split("\n")[1:]:
+        line = line.rstrip("\r")
+        if not line.strip():
+            continue   # 빈 줄 밖의 모든 줄이 근거 줄이다 — 하위 목록·문단·다른 표지도 형식 위반이다
         m = _EVIDENCE_ITEM.match(line)
         if not m:
             errs.append(f"형식이 다른 근거 줄: {line[:60]}")

@@ -76,15 +76,18 @@ def _legacy(idx, nid: str, cache: dict) -> str | None:
     return cache[nid]
 
 
+def _alike(idx, nid: str, key: str, ns: str, ts: str | None, rns, rts, cache: dict) -> bool:
+    """적힌 두 상태가 지금 두 상태와 같은가. 근거 절을 빼기 전의 정의로 적힌 상태도 그 내용이
+    그대로면 같다 — 완료·사용자 검토에 올린 기록·cascade 판정이 모두 이 판정을 쓴다."""
+    old_ts = _legacy(idx, key, cache) if re.match(ID_RE, key) else ts
+    return ts is not None and rns in (ns, _legacy(idx, nid, cache)) and rts in (ts, old_ts)
+
+
 def _carried(maxima: list[dict], idx, nid: str, ns: str, key: str, ts: str | None,
              cache: dict) -> bool:
     """옛 정의(근거 절 포함)로 적은 기록이 지금 내용과 그대로인가 — 그러면 완료다."""
     states = {(m.get("node_state"), m.get("target_state")) for m in maxima}
-    if ts is None or len(states) != 1:
-        return False
-    rns, rts = next(iter(states))
-    old_ts = _legacy(idx, key, cache) if re.match(ID_RE, key) else ts
-    return rns in (ns, _legacy(idx, nid, cache)) and rts in (ts, old_ts)
+    return len(states) == 1 and _alike(idx, nid, key, ns, ts, *next(iter(states)), cache)
 
 
 def heading_range(data: bytes, heading: str) -> bytes | None:
@@ -258,6 +261,8 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
         for key in ps:
             cited.setdefault(key.split("#", 1)[0], []).append(name)
 
+    lc = {}
+
     def cascade(key: str) -> bool:
         tid = key.split("#", 1)[0]
         if tid not in fh:
@@ -266,9 +271,10 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
                 fh[tid] = state(hit[0].read_bytes()) if hit else None
             except OSError:
                 fh[tid] = None
-        return fh[tid] is not None and (tid, fh[tid]) in revised
+        # 재검토로 고친 판이 옛 정의로 적혔어도 내용이 그대로면 그 판이다
+        return fh[tid] is not None and ((tid, fh[tid]) in revised or (tid, _legacy(idx, tid, lc)) in revised)
 
-    out, lc = [], {}
+    out = []
     for name, nid, ns, ps, kind in rows:
         for key, (ts, ref) in ps.items():
             why = ("대장을 믿을 수 없다" if damaged and ts is not None
@@ -281,11 +287,11 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
                             "scope": kind[1] if kind[0] == "scope" else None,
                             "node_state": ns, "target_state": ts, "cascade": cascade(key),
                             "next": sorted(set(cited.get(nid, [])))})
-    _mark_reports(out)
+    _mark_reports(out, idx, lc)
     return out, ok and not recs
 
 
-def _mark_reports(items: list[dict]) -> None:
+def _mark_reports(items: list[dict], idx, cache: dict) -> None:
     """후보에 지금 보고를 붙인다. 사람에게 올린 것은 `escalated` — 그때의 두 상태가 지금과
     같은 동안만. 판단하지 못한 것은 `deferred` — 쌍을 닫지 않고 그 이유를 다음 작업에
     넘긴다(시행령 §7 2항). 그 사이 두 상태가 바뀌었으면 `state_changed`가 알린다."""
@@ -302,7 +308,8 @@ def _mark_reports(items: list[dict]) -> None:
         r = growth._latest(rows, f"recheck:{i['id']}:{i['key']}", "key", par) or {}
         if r.get("kind") != "recheck_review":
             continue
-        same = r.get("node_state") == i["node_state"] and r.get("target_state") == i["target_state"]
+        same = _alike(idx, i["id"], i["key"], i["node_state"], i["target_state"],
+                      r.get("node_state"), r.get("target_state"), cache)
         if r.get("outcome") == "escalated" and same:
             i["escalated"] = {"reason": r.get("reason"), "proposal": r.get("proposal")}
         elif r.get("outcome") == "deferred":
