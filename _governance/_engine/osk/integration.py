@@ -424,8 +424,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             phase = "read"
             rules = _turn_rules(s)
             if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
-                rules["since"], copied = _copied_rules(s, native_path)
-                rules["cuts"] = rules["cuts"] + copied
+                rules["since"] = _copied_since(s, native_path)
             parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
             if parsed.get("originator") == "codex_exec":
                 # A scripted `codex exec` run — osk's own scheduled runs included — is not a
@@ -779,33 +778,23 @@ def _turn_rules(s: dict) -> dict | None:
     return {"since": since, "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
 
 
-def _copied_rules(s: dict, native_path: str) -> tuple[str | None, list]:
-    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계와 절단 지점. 복제된 앞부분은 그
-    턴을 추적한 같은 scope 커서의 규칙으로 읽어야 부모가 추적한 턴과 경계·표현이 갈라지지
-    않는다. 경계는 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것이다. 절단 지점은 그
-    커서가 그 뒤의 라운드까지 추적했고 그 라운드가 이 전사에도 있을 때만 쓴다 — 같은 조상
-    행에서 갈라진 다른 갈래가 거기서 멈춰 저장한 절단 지점은 이 전사의 경계가 아니다."""
+def _copied_since(s: dict, native_path: str) -> str | None:
+    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계. 복제된 앞부분은 그 턴을 추적한
+    같은 scope 커서가 쓴 경계를 따른다 — 새 규칙으로 읽으면 부모가 옛 규칙으로 추적한 턴과
+    경계·표현이 갈라진다. 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다.
+    부모가 저장한 절단 지점은 넘기지 않는다 — 사본에서도 행 시각의 12시간 공백이 같은
+    자리를 나눈다."""
     rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"] if s["space"] else []
     if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
-        return None, []   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
+        return None   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
     order = {r["id"]: i for i, r in enumerate(rounds)}
-    present = set()
-    for line in transcripts.native_lines(native_path, "claude", s["conversation_id"]):
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and isinstance(row.get("uuid"), str):
-            present.add(row["uuid"])
-    best, cuts = None, []
+    best = None
     for owner in _scope_cursors(s):
         tracked = (owner.get("inherited") or {}).get("rounds", []) + owner["rounds"]
-        cuts += [r["cut"] for r, after in zip(tracked, tracked[1:])
-                 if r.get("cut") and after["id"].split(":", 1)[0] in present]
         bound = owner["turns_since"] if "turns_since" in owner else (tracked[-1]["id"] if tracked else None)
         if bound in order and (best is None or order[bound] > order[best]):
             best = bound
-    return best, cuts
+    return best
 
 
 def _ended_source(s: dict) -> str | None:

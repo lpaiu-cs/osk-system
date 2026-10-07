@@ -382,32 +382,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(s["turns_since"], tracked[0]["id"])
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted", "completed"])
 
-    def test_claude_copy_keeps_the_cuts_its_parent_stored(self):
-        # #164 review (2nd round): the copy's first read also takes the cuts the parent stored.
-        # Otherwise a turn the parent closed at a cut and continued later reads as one round.
-        parent, child = self.sid + "-parent", self.sid + "-child"
-        base = time.time() - 13 * 3600
-        rows = stamped(claude_round(parent, 1, finished=False), base)
-        late = stamped([claude_row(parent, "assistant", [{"type": "text", "text": "late answer"}],
-                                   "late-1", "end_turn", "final-late-1")], base + 60)
-        own = stamped(claude_round(child, 2), time.time())
-        for owner, part in ((parent, rows + late), (child, own)):
-            for row in part:
-                row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
-        self.transcript(rows)
-        self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        self.transcript(rows + late)   # the late row was stamped before the close
-        self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
-        self.assertEqual([r["completion"] for r in tracked], ["interrupted", "completed"])
-        self.transcript([dict(r, sessionId=child) for r in rows + late] + own)
-        st = it.capture("claude", child, str(self.path), "capture-tests")
-        self.assertTrue(st["ok"], st)
-        self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (2, 1), st)
-
     def test_claude_copy_ignores_a_cut_its_sibling_stored(self):
-        # #164 review (3rd round): copies share their ancestor's rows. A sibling that stopped at
-        # a shared row and closed there does not cut the branch that went on from it.
+        # Copies share their ancestor's rows (#164 review). A sibling that stopped at a shared
+        # row and closed there does not cut the branch that went on from it, nor its copy.
         shared_owner, sibling, parent, child = (self.sid + s for s in ("-g", "-b", "-a", "-c"))
         base = time.time() - 13 * 3600
         shared = stamped(claude_round(shared_owner, 1, finished=False), base)
