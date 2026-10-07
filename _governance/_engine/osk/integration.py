@@ -782,16 +782,26 @@ def _turn_rules(s: dict) -> dict | None:
 def _copied_rules(s: dict, native_path: str) -> tuple[str | None, list]:
     """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계와 절단 지점. 복제된 앞부분은 그
     턴을 추적한 같은 scope 커서의 규칙으로 읽어야 부모가 추적한 턴과 경계·표현이 갈라지지
-    않는다. 경계는 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것이고, 절단 지점은
-    그 커서들이 저장한 것 전부다 — 다른 전사의 행 id라 이 전사에 없으면 아무것도 닫지 않는다."""
+    않는다. 경계는 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것이다. 절단 지점은 그
+    커서가 그 뒤의 라운드까지 추적했고 그 라운드가 이 전사에도 있을 때만 쓴다 — 같은 조상
+    행에서 갈라진 다른 갈래가 거기서 멈춰 저장한 절단 지점은 이 전사의 경계가 아니다."""
     rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"] if s["space"] else []
     if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
         return None, []   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
     order = {r["id"]: i for i, r in enumerate(rounds)}
+    present = set()
+    for line in transcripts.native_lines(native_path, "claude", s["conversation_id"]):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("uuid"), str):
+            present.add(row["uuid"])
     best, cuts = None, []
     for owner in _scope_cursors(s):
         tracked = (owner.get("inherited") or {}).get("rounds", []) + owner["rounds"]
-        cuts += [r["cut"] for r in tracked if r.get("cut")]
+        cuts += [r["cut"] for r, after in zip(tracked, tracked[1:])
+                 if r.get("cut") and after["id"].split(":", 1)[0] in present]
         bound = owner["turns_since"] if "turns_since" in owner else (tracked[-1]["id"] if tracked else None)
         if bound in order and (best is None or order[bound] > order[best]):
             best = bound

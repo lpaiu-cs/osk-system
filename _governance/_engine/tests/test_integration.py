@@ -405,6 +405,33 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (2, 1), st)
 
+    def test_claude_copy_ignores_a_cut_its_sibling_stored(self):
+        # #164 review (3rd round): copies share their ancestor's rows. A sibling that stopped at
+        # a shared row and closed there does not cut the branch that went on from it.
+        shared_owner, sibling, parent, child = (self.sid + s for s in ("-g", "-b", "-a", "-c"))
+        base = time.time() - 13 * 3600
+        shared = stamped(claude_round(shared_owner, 1, finished=False), base)
+        went_on = stamped([claude_row(shared_owner, "assistant", [{"type": "text", "text": "answer 1"}],
+                                      "late-1", "end_turn", "final-late-1")], base + 3600)
+        own = stamped(claude_round(child, 2), time.time())
+        for owner, part in ((shared_owner, shared), (parent, went_on), (child, own)):
+            for row in part:
+                row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
+        self.transcript([dict(r, sessionId=sibling) for r in shared])
+        self.assertTrue(it.capture("claude", sibling, str(self.path), "capture-tests")["ok"])
+        stopped = it._load(it.state_path("claude", sibling), "claude", sibling)["rounds"]
+        self.assertEqual([r["completion"] for r in stopped], ["interrupted"])
+        self.transcript([dict(r, sessionId=parent) for r in shared + went_on])
+        self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
+        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+        self.assertEqual([r["completion"] for r in tracked], ["completed"], "the sibling's cut split the parent")
+        self.transcript([dict(r, sessionId=child) for r in shared + went_on] + own)
+        st = it.capture("claude", child, str(self.path), "capture-tests")
+        self.assertTrue(st["ok"], st)
+        self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
+        s = it._load(it.state_path("claude", child), "claude", child)
+        self.assertEqual(s["inherited"]["rounds"][0]["id"], tracked[0]["id"])
+
     def test_codex_requires_matching_task_complete(self):
         self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1) + codex_round(2, finished=False))
         st = self.capture("codex")
