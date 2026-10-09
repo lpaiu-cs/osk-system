@@ -318,7 +318,7 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
         return {**out, "error": "명령을 쓸 수 없다 — " + "; ".join(checked["violations"])}
     out["task"] = services.plan(manager, "growth", services.job("growth", command_file=file, at=at), False)
     notes = []
-    if out["task"].get("action") == "add" and growth.daily_active():
+    if out["task"].get("action") == "add" and growth.daily_status()["ran"]:
         notes.append("최근 3일 안에 정기 실행이 돌았다 — 다른 기기에 등록돼 있으면 한 곳에만 둔다"
                      "(결과는 대장으로 모든 기기가 나눈다)")
     if out["command"]["action"] == "add" and _synced(file):

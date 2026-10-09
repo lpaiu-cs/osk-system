@@ -287,6 +287,82 @@ class GrowthTests(unittest.TestCase):
                 assert not growth.daily_active(), 'expired success does not suppress fallback'
         """)
 
+    def test_unfinished_organization_is_remaining_work_not_a_failed_run(self):
+        self.check_case("""
+            import subprocess
+            node('A')
+            node('B')
+            # Organization reads a scope in several passes (Mechanism §9-4 4): a pass that leaves
+            # units is progress. After v5.0.0 the scheduler logged every such daily run as failed
+            # and the session start said the daily run had not run at all.
+            command_file = core.ROOT/'command.json'
+            command_file.write_text(json.dumps([sys.executable,'-c',packet_worker(org='deferred')]),
+                                    encoding='utf-8')
+            proc = subprocess.run([sys.executable,'-B','-m','osk.cli','growth','run',
+                                   '--command-file',str(command_file),'--limit','3'],
+                                  capture_output=True,text=True,encoding='utf-8',timeout=120)
+            result = json.loads(proc.stdout)
+            assert result['state'] == 'incomplete' and not result['final_reviews']['errors'], result
+            assert {s['status'] for s in result['organization_outcomes'].values()} == {'pending'}, result
+            assert proc.returncode == 0 and not growth.run_failed(result), (proc.returncode, result)
+            status = growth.daily_status()
+            assert status['ran'] and not status['active'], status
+            assert status['last']['state'] == 'incomplete', status
+            # A run that could not run, or whose worker or packet failed, still fails.
+            assert growth.run_failed({**result, 'returncode': 1})
+            assert growth.run_failed({**result, 'final_reviews': {'state': 'rejected', 'errors': ['no packet']}})
+            assert growth.run_failed({'ok': False, 'state': 'busy'})
+            assert not growth.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
+        """)
+
+    def test_daily_status_keeps_a_plan_without_result_as_ran_not_completed(self):
+        self.check_case("""
+            assert growth.daily_status() == {'ran': False, 'active': False, 'last': None}
+            planned = register()
+            status = growth.daily_status()
+            assert status['ran'] and not status['active'] and status['last']['state'] is None, status
+            core.ledger_append(growth.LEDGER, {'kind':'run','manifest':planned['rid'],'ok':True,
+                                               'state':'complete'})
+            assert growth.daily_status()['active'] and growth.daily_active()
+        """)
+
+    def test_recheck_note_tells_an_unfinished_daily_run_from_a_missing_one(self):
+        self.check_case("""
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(growth.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            class Rechecks:
+                @staticmethod
+                def candidates():
+                    return [{'node': 'B', 'target': '[[A]]'}], False
+            ran = {'ran': True, 'active': False,
+                   'last': {'at': '2026-10-09T09:00:02+09:00', 'state': 'incomplete'}}
+            with patch.object(growth, 'daily_status', return_value=ran):
+                text = hook._recheck_note(Rechecks)
+            assert '최신 정기 실행(' in text and '다 끝내지 못해' in text, text
+            assert '돌지 않아' not in text and 'SETUP' not in text, text
+            with patch.object(growth, 'daily_status', return_value={'ran': False, 'active': False, 'last': None}):
+                text = hook._recheck_note(Rechecks)
+            assert '돌지 않아' in text and 'SETUP' in text, text
+        """)
+
+    def test_scope_job_reading_instruction_follows_the_run_context(self):
+        self.check_case("""
+            # A daily worker took the Stop-fork clause for itself and judged turns it never read
+            # (v5.0.0 operation, both daily scope reviews). Each run carries only its own case.
+            job = {'harness':'claude','conversation_id':'c','pending_refs':['native:claude:c:t'],
+                   'through':'sha256:x','key':'scope-review-x'}
+            base = {'candidates':[],'scope_jobs':[job],'organization_jobs':[],'eviction_jobs':[],
+                    'recheck_jobs':[]}
+            daily = growth.prompt({**base,'work_context':'daily'})
+            stop = growth.prompt({**base,'work_context':'stop:W1'})
+            assert 'not in your context' in daily and 'read_cited(ref=<that ref>)' in daily, daily
+            assert 'Stop fork' not in daily and 'never re-read' not in daily, daily
+            assert 'They are in your context' in stop and 'never re-read' in stop, stop
+            assert 'read_cited(ref=<that ref>)' not in stop, stop
+            assert 'not in your context' in growth.prompt(base), 'a preview is the daily inventory'
+        """)
+
     def test_unrelated_capture_error_does_not_fail_completed_selected_work(self):
         self.check_case("""
             from osk import integration

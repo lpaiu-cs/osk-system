@@ -167,22 +167,43 @@ def _completed(key: str, rows: list[dict], idx: graph.Index, par=None) -> dict |
     return row
 
 
-def daily_active(days: int = 3) -> bool:
-    """최신 정기 실행이 최근 `days`일 안에 선택 작업을 완료했는가.
-    실패하거나 결과가 없는 새 계획은 과거 성공으로 덮지 않는다."""
+def daily_status(days: int = 3) -> dict:
+    """최신 정기 실행 — `ran`은 최근 `days`일 안에 돌았는가, `active`는 그 실행이 선택 작업을
+    모두 완료했는가(Mechanism §4-1 4항), `last`는 그 실행의 시각과 상태(결과가 없으면 None)다.
+    정돈처럼 여러 번에 나눠 끝나는 작업이 남으면 돌았어도 완료가 아니다 — 둘을 섞으면 매일
+    도는 실행을 '돌지 않았다'고 알린다. 실패하거나 결과가 없는 새 계획은 과거 성공으로 덮지 않는다."""
     from datetime import datetime, timedelta, timezone
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    now = datetime.now(timezone.utc)
     rows = _records()
     for r in reversed(rows):
         if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily":
             try:
                 result = next((x for x in reversed(rows) if x.get("kind") == "run"
                                and x.get("manifest") == r["rid"]), None)
-                return bool(result and result.get("ok") is True
-                            and cutoff <= datetime.fromisoformat(result["at"]) <= datetime.now(timezone.utc))
+                at = (result or r)["at"]
+                ran = now - timedelta(days=days) <= datetime.fromisoformat(at) <= now
+                return {"ran": ran, "active": ran and bool(result) and result.get("ok") is True,
+                        "last": {"at": at, "state": result.get("state") if result else None}}
             except (KeyError, TypeError, ValueError):
-                return False
-    return False
+                break
+    return {"ran": False, "active": False, "last": None}
+
+
+def daily_active(days: int = 3) -> bool:
+    """최신 정기 실행이 최근 `days`일 안에 선택 작업을 완료했는가(`daily_status`)."""
+    return daily_status(days)["active"]
+
+
+def run_failed(result: dict) -> bool:
+    """실행이 실패했는가 — 작업이 남은 것(`incomplete`)과 가른다. `ok`는 고른 작업을 모두
+    끝냈다는 뜻이라, 여러 번에 나눠 끝나는 정돈이 남아도 거짓이다(Mechanism §9-4 4항).
+    실패는 돌지 못했거나(잠김·준비 실패), 작업자가 정상 종료하지 않았거나, 결과 묶음을
+    적용하지 못한 것이다."""
+    if result.get("kind") != "run":
+        return not result.get("ok", False)
+    final = result.get("final_reviews") or {}
+    return (result.get("returncode") != 0 or bool(result.get("error"))
+            or final.get("state") in {"rejected", "not_applied"} or bool(final.get("errors")))
 
 
 def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
@@ -498,11 +519,16 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "to the deepest hub that covers the topic and link the node there. That cluster path is "
         "create_node.space and its last segment is distill.hub. Hub differentiation belongs to the "
         "organization review: do not open sub-clusters; propose one in the review reason if needed.\n"
-        "Scope jobs: pending_refs starting with native: are original turns. A Stop fork holds "
-        "them in context: judge them there and never re-read. Otherwise they are the unreviewed "
-        "turns of a conversation that ended before its own review: read each one with "
-        "read_cited(ref=<that ref>) (a review view per turn), read its previous the same way "
-        "only when a judgment needs earlier context, and never read the whole conversation. "
+        # 두 경우를 한 문장에 담았더니 정기 실행 작업자가 자신을 Stop fork로 여겨 읽지 않고
+        # 판정했다(v5.0.0 운영 관측). 엔진은 어느 쪽인지 알므로 그 경우의 문장만 싣는다.
+        + ("Scope jobs: pending_refs starting with native: are original turns of the conversation "
+           "you were forked from. They are in your context: judge them there and never re-read them. "
+           if str(planned.get("work_context", "")).startswith("stop:") else
+           "Scope jobs: pending_refs starting with native: are original turns that are not in your "
+           "context: their conversation ended before its own review. Read each one with "
+           "read_cited(ref=<that ref>) (a review view per turn) before judging it, read its previous "
+           "the same way only when a judgment needs earlier context, and never read the whole "
+           "conversation. ") +
         "Cite only a turn a node needs as evidence with cite_round(conversation, turn or quote), "
         "using its round_ref as distill source. "
         "For stored rounds read current scope_memory and read_cited(view=review) to select claims. "

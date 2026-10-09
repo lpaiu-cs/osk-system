@@ -161,7 +161,10 @@ def _growth_cmd(a) -> None:
             result = (growth.check_command(command) if a.check else
                       growth.run(command, limit=a.limit, timeout=a.timeout, invocation=a.invocation))
         _emit(result)
-        if not result.get("ok", True):
+        # 실행은 작업이 남아도(`incomplete`) 실패가 아니다 — 남은 것을 실패 코드로 내면
+        # 운영체제 스케줄러에 매일 도는 실행이 매일 실패로 남는다.
+        if (growth.run_failed(result) if a.growth_cmd == "run" and not a.check
+                else not result.get("ok", True)):
             sys.exit(1)
     except (write.WriteError, StaleEngineError, ValueError, OSError) as e:
         _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})

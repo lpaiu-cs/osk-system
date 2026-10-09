@@ -402,7 +402,8 @@ def _recheck_note(rechecks) -> str:
     둘 다 없으면 아무것도 싣지 않는다."""
     try:
         from osk import growth
-        daily = growth.daily_active()
+        status = growth.daily_status()
+        daily = status["active"]
         if daily and not any(r.get("kind") == "recheck_review" for r in growth._records()):
             return ""
         items, pending = rechecks.candidates()
@@ -416,7 +417,15 @@ def _recheck_note(rechecks) -> str:
         notes.append(f"[osk 근거 재검토 — 사용자 검토 대기 {held}건. 재검토로 고친 수정이 그 "
                      "노드를 인용한 노드들까지 고치게 만든다. overview의 rechecks.escalated에서 "
                      "수정안을 보고 정한다.]")
-    if not daily and len(items) > held:
+    if not daily and len(items) > held and status["ran"]:
+        # 돌았지만 선택 작업이 남았다 — 여러 번에 나눠 끝나는 정돈이 남는 것은 흔하다.
+        # '돌지 않았다'고 쓰면 매일 도는 실행을 다시 켜라는 안내가 된다.
+        from datetime import datetime
+        at = datetime.fromisoformat(status["last"]["at"]).astimezone().strftime("%m-%d %H:%M")
+        notes.append(f"[osk 근거 재검토 — 후보 {len(items) - held}건. 최신 정기 실행({at})이 선택 "
+                     "작업을 다 끝내지 못해 대화 검토(fork)가 이 scope의 후보를 함께 맡는다. 본 "
+                     "작업은 계속한다.]")
+    elif not daily and len(items) > held:
         notes.append(f"[osk 근거 재검토 — 후보 {len(items) - held}건. 정기 실행이 최근 3일 안에 "
                      "돌지 않아 대화 검토(fork)가 이 scope의 후보를 맡는다. Domain의 후보는 정기 "
                      "실행이 맡으니 SETUP의 'Scope에서 Domain으로 정기 재검토'로 켠다. 본 작업은 "
