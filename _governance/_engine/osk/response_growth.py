@@ -413,6 +413,17 @@ def observe(source: dict) -> dict:
                 'counter': 'finals'}
 
 
+def _review_done(result: dict) -> bool:
+    """fork가 원대화의 검토를 마쳤는가 — 그 검토가 이 fork의 일이다. 함께 고른 정돈·재검토·
+    퇴출이 남거나(여러 번에 나눠 끝난다, Mechanism §9-4 4항) 그 결정이 거부돼도 이 시도는
+    진척했다. 남은 것을 실패로 세었더니 검토를 마친 fork가 두 번 만에 세션 안 검토로
+    넘어갔다(v5.0.0 운영 관측). 원대화의 검토가 끝나지 않은 시도만 실패다."""
+    if result.get('ok'):
+        return True
+    own = result.get('scope_outcomes') or {}
+    return bool(own) and all(s.get('status') == 'complete' for s in own.values())
+
+
 def attempt(source: dict, job: dict, executable: str) -> dict:
     """The caller serializes one conversation; the shared growth lock limits cost."""
     harness, sid = source['harness'], source['conversation_id']
@@ -438,7 +449,7 @@ def attempt(source: dict, job: dict, executable: str) -> dict:
         state = integration._load(path, harness, sid)
         saved = state['response_growth']
         saved['last_result'] = {k: result[k] for k in ('ok', 'state', 'error', 'output', 'cache') if k in result}
-        if result.get('ok'):
+        if _review_done(result):
             saved.pop('failed', None)
         elif result.get('state') not in _NOT_FORK_FAILURES:
             count = (saved.get('failed') or {}).get('count', 0) + 1

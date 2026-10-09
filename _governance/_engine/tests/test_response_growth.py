@@ -1055,6 +1055,50 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert rg.route(env)['mode'] == 'background'
         ''')
 
+    def test_fork_that_finished_its_review_is_not_failed_by_remaining_organization(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory
+            from unittest.mock import patch
+            scope_memory.replace('own', '', space='00_Scope/W1')
+            native = core.ROOT/'native.jsonl'
+            native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
+                json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            source = {'harness':'claude','conversation_id':'own','finals':[]}
+            job = {'pending_refs':['fixture'], 'capture_error':None}
+            def stop(n, result):
+                source['finals'] = [str(i) for i in range(9 * n)]
+                with patch.object(rg, 'run', return_value=result):
+                    return rg.attempt(source, job, 'unused')
+            def run(review, **changed):
+                return {'kind': 'run', 'ok': False, 'state': 'incomplete', 'returncode': 0, 'error': None,
+                        'final_reviews': {'state': 'applied', 'errors': []},
+                        'scope_outcomes': {'scope-review-x': {'status': review}},
+                        'organization_outcomes': {'organization:x': {'status': 'pending', 'remaining_units': 5}},
+                        **changed}
+            with patch.object(rg, 'preflight'):
+                rg.observe(source)
+                # The scope's organization takes several passes (Mechanism §9-4 4). After v5.0.0
+                # two forks that preserved their review were counted as failed and handed the
+                # conversation to in-session review for a day.
+                for n in (1, 2, 3):
+                    stop(n, run('complete'))
+                    assert 'failed' not in integration.status('claude', 'own')['response_growth']
+                # A refused decision for another job does not undo the review this fork made.
+                stop(4, run('complete', final_reviews={'state': 'rejected',
+                                                       'errors': ['provider output has no successful final result']}))
+                assert 'failed' not in integration.status('claude', 'own')['response_growth']
+                assert rg.route(env)['mode'] == 'background'
+                # A fork that left its own conversation's review unfinished still counts.
+                stop(5, run('pending'))
+                stop(6, run('pending', returncode=1,
+                            final_reviews={'state': 'not_applied', 'errors': ['worker did not exit successfully']}))
+                route = rg.route(env)
+                assert route['mode'] == 'foreground' and 'did not finish' in route['reason'], route
+        ''')
+
     def test_stuck_capture_keeps_one_line_between_review_turns(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration, scope_memory
