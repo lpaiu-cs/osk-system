@@ -1,9 +1,11 @@
 # Hidden raw storage
 
-Cited records are evidence, not knowledge nodes. New records use
-`00_Scope/<scope>/_cited/.records/<record>.txt`: a non-Markdown extension inside
-a dot directory. Records that older engines wrote under `_raw/` keep the same
-hidden layout, `00_Scope/<scope>/_raw/.records/<record>.txt`, and
+Cited records are evidence, not knowledge nodes. New records use the root
+`_cited/.records/<record>.txt` (v5.2; v5.0–v5.1 wrote
+`00_Scope/<scope>/_cited/.records/<record>.txt`, which the engine still reads):
+a non-Markdown extension inside a dot directory. Records that older engines
+wrote under `_raw/` keep the same hidden layout,
+`00_Scope/<scope>/_raw/.records/<record>.txt`, and
 `raw migrate` below still moves their legacy Markdown form there. (A vault that
 kept a legacy `= Scope` or `Scope` root uses that root name; see
 [Space paths](space-layout-migration.md).) The text codec, numeric round
@@ -19,8 +21,10 @@ record.
 
 `read_cited`, which replaces `read_raw`, and distillation accept the old
 `[[00_Scope/<scope>/_raw/<record>.md#N]]`, the plain
-`00_Scope/<scope>/_raw/.records/<record>.txt#N` and the new
-`00_Scope/<scope>/_cited/.records/<record>.txt#N` coordinates. New record
+`00_Scope/<scope>/_raw/.records/<record>.txt#N`, the v5.0
+`00_Scope/<scope>/_cited/.records/<record>.txt#N` and the root
+`_cited/.records/<record>.txt#N` coordinates — all of them resolve to the record
+of the same name wherever it lives. New record
 Predicate Edges use plain YAML strings, so they do not create Obsidian wiki-link
 nodes. Old source coordinates, pending snapshot keys and historical receipt
 hashes remain readable; migration does not rewrite node bytes or acknowledge

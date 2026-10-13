@@ -121,7 +121,7 @@ Each node belongs to one of three Spaces, by where it mainly applies.
 
 | Space | What it holds |
 |---|---|
-| **Scope** | Memory formed within a project or activity. The conversation rounds its nodes cite (`_cited/`) are kept here too |
+| **Scope** | Memory formed within a project or activity. The conversation rounds its nodes cite live in the root `_cited/` compartment, outside every Space |
 | **Domain** | Knowledge reused across contexts, not tied to one project |
 | **Person** | The user model: records the user leaves, understanding about the user, and delegation. An agent's inference about the user is not taken as the user's fact without the user's confirmation |
 

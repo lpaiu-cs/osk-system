@@ -198,7 +198,7 @@ def _native_files(path: str, harness: str, sid: str) -> list[tuple[Path, int | N
 
 
 def workspace(path: str, harness: str) -> dict | None:
-    """이 대화의 작업 폴더와 하네스 판본 — 일회성 작업 공간의 판별에만 쓴다(Mechanism §6-2 6항).
+    """이 대화의 작업 폴더와 하네스 판본 — 일회성 작업 폴더의 판별에만 쓴다(Mechanism §6-2 6항).
     앞쪽 행만 읽는다. Claude는 행마다, Codex는 첫 `session_meta`가 담는다. 모르면 None이다."""
     try:
         with open(path, "rb") as f:

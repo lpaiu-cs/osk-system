@@ -235,7 +235,8 @@ def run() -> dict:
     # 유입(수동 편집·구 엔진 기기에서의 동기화·나중에 추가된 패턴)은 그 필터를
     # 지나지 않는다. §9 1항이 검증기를 집행 지점으로 두는 이유가 그것이다.
     for d in sorted([*(ROOT / SCOPE).rglob("_cited"), *(ROOT / SCOPE).rglob("_raw"),
-                     *(ROOT / SCOPE).rglob("_scope_memory"), ROOT / PERSON / "_cited"]):
+                     *(ROOT / SCOPE).rglob("_scope_memory"), ROOT / PERSON / "_cited",
+                     ROOT / "_cited"]):
         if not d.is_dir():
             continue
         for p in sorted(d.rglob("*")):

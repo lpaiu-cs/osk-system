@@ -34,6 +34,7 @@ if ROOT != Path(os.environ["OSK_VAULT_ROOT"]).resolve():
 validate.make_mini_vault(ROOT)
 (ROOT / "00_Scope/Capture").mkdir()
 scope_memory.replace("capture-tests", "", space="00_Scope/Capture")
+write.set_primary("capture-tests", "Capture", "fixture")      # 쓰기는 결속만 더한다 — 주된 scope는 지정으로(Mechanism §6-2 6항)
 
 
 def claude_round(sid, n, *, finished=True):
@@ -536,7 +537,14 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["space"], "00_Scope/Capture")
 
     def test_rejected_first_landing_does_not_pin_the_conversation(self):
-        for n, space in enumerate(("00_Scope/W1", "00_Scope/Absent", "Capture")):
+        # A scope other than the key's primary is a legitimate landing now (Bylaws §3 10): it pins
+        # the conversation's review context without touching the binding.
+        self.transcript(claude_round(self.sid + "w", 1))
+        other = it.capture("claude", self.sid + "w", str(self.path), "capture-tests", "00_Scope/W1")
+        self.assertTrue(other["ok"], other)
+        self.assertEqual(other["space"], "00_Scope/W1")
+        self.assertEqual(write.resolve_session("capture-tests"), "Capture")
+        for n, space in enumerate(("00_Scope/Absent", "Capture")):
             sid = self.sid + str(n)
             self.transcript(claude_round(sid, 1))
             rejected = it.capture("claude", sid, str(self.path), "capture-tests", space)
@@ -1173,11 +1181,13 @@ class IntegrationTests(unittest.TestCase):
         done = it.catchup(100)
         capture = next(c for c in done["captures"] if c["conversation_id"] == self.sid)
         self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
-        # Tracking writes nothing, so it binds nothing; the first citation lands the key.
+        # Tracking writes nothing, so it binds nothing; citing writes the one root record and binds nothing
+        # either — only a node written with a space adds that scope to the project's binding.
         self.assertIsNone(write.resolve_session(self.sid))
         cited = it.cite(f"claude/{self.sid}", quote="question 1")
-        self.assertTrue(cited["round_ref"].startswith("00_Scope/Capture/_cited/"), cited)
-        self.assertEqual(write.resolve_session(self.sid), "Capture")
+        self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
+        self.assertIsNone(write.resolve_session(self.sid))
+        self.assertEqual(it.status("claude", self.sid)["space"], "00_Scope/Capture")   # the explicit landing stays
 
 
     def test_claude_hook_detects_identity_after_leading_metadata(self):
@@ -2049,7 +2059,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertFalse(raw.record_path("Capture", st["record"]).exists())
         conversation = f"claude/{self.sid}"
         cited = it.cite(conversation, quote="  question\n1 ")
-        self.assertTrue(cited["round_ref"].startswith("00_Scope/Capture/_cited/.records/"), cited)
+        self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
         self.assertEqual((cited["turn"], cited["user_by"], cited["reused"]), ("user-1", "engine", False))
         text = raw.read_round(cited["round_ref"])["text"]
         self.assertIn("question 1", text)
@@ -2247,17 +2257,29 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual((st["captured_rounds"], st["space"]), (2, None))
         self.assertIsNone(write.resolve_session(key))       # tracking writes nothing and binds nothing
         self.assertIn("시행령 §3 9항", it.prompt("claude", self.sid, include_organization=False)["text"])
-        with self.assertRaisesRegex(write.WriteError, "착지 미정"):
-            it.cite(f"claude/{self.sid}", quote="question 1")
-        cited = it.cite(f"claude/{self.sid}", quote="question 1", space="00_Scope/Capture")
-        self.assertTrue(cited["round_ref"].startswith("00_Scope/Capture/_cited/"), cited)
-        self.assertEqual(it.status("claude", self.sid)["space"], "00_Scope/Capture")
-        self.assertEqual(write.resolve_session(key), "Capture")   # an ordinary key binds on its first write
-        self.assertNotIn("시행령 §3 9항", it.prompt("claude", self.sid, include_organization=False)["text"])
-        with self.assertRaisesRegex(ValueError, "already landed"):
-            it.cite(f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")
-        with self.assertRaisesRegex(ValueError, "cite into that scope"):
-            it.cite(f"claude/{self.sid}", quote="question 2", space="00_Person")
+        # Citing needs no landing: the record is the one root `_cited/` (Constitution art. 4 §3).
+        cited = it.cite(f"claude/{self.sid}", quote="question 1")
+        self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
+        self.assertIsNone(it.status("claude", self.sid)["space"])
+        self.assertIsNone(write.resolve_session(key))
+        self.assertEqual(it.cite(f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")["path"],
+                         cited["path"])                   # any named space: the same record
+        # A node written with a space adds that scope to the project's binding without making it
+        # primary (Mechanism §6-2 6); the primary scope is designated.
+        if not (ROOT / "00_Scope/Capture/Capture.md").exists():        # a cluster's first node is its hub
+            write.create_node("Capture", "Capture 허브", "시험 scope", "gpt-6-astra", space="00_Scope/Capture")
+        made = write.create_node(self.sid + " node", "summary", "body", "gpt-6-astra",
+                                 session=key, space="00_Scope/Capture")
+        self.assertTrue(made["ok"], made)
+        self.assertEqual((made["bound_scope"], write.bindings(key)["scopes"], write.resolve_session(key)),
+                         ("Capture", ["Capture"], None))
+        with self.assertRaisesRegex(write.WriteError, "주된 scope가 없다"):
+            write.create_node(self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)
+        review = it.prompt("claude", self.sid, include_organization=False)
+        self.assertIn("주된 scope 없음", review["text"])
+        it.acknowledge("claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
+        self.assertEqual(write.resolve_session(key), "Capture")
+        self.assertTrue(write.create_node(self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)["ok"])
 
     def test_no_value_closes_only_the_judged_turns_and_a_new_turn_reopens(self):
         key = self.sid + "-key"
@@ -2327,11 +2349,13 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertNotIn("warning", st["workspace"])
         rows = len(core.ledger_read(core.ROUTING))
         cited = it.cite(f"claude/{self.sid}", quote="question 1", space="00_Scope/W1")
-        self.assertTrue(cited["round_ref"].startswith("00_Scope/W1/_cited/"), cited)
+        self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)   # the one root record
         self.assertNotIn("binding", cited)
         self.assertEqual(len(core.ledger_read(core.ROUTING)), rows)          # nothing bound
-        self.assertEqual(it.status("claude", self.sid)["space"], "00_Scope/W1")
-        self.assertEqual(it.capture("claude", self.sid, None, key)["space"], "00_Scope/W1")
+        self.assertIsNone(it.status("claude", self.sid)["space"])            # citing pins no landing
+        # An explicit landing at capture is this conversation's review context only.
+        self.assertEqual(it.capture("claude", self.sid, None, key, "00_Scope/W1")["space"], "00_Scope/W1")
+        self.assertEqual(len(core.ledger_read(core.ROUTING)), rows)          # still nothing bound
         # The judgment belongs to the conversation, not to the key: elsewhere the key keeps its scope.
         self.assertEqual(write.resolve_session(key), "Capture")
         self.assertIsNone(talk(self.sid + "-other", f"2026-10-12/{key}")["space"])
@@ -2339,7 +2363,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.addCleanup(setattr, workspaces, "_here", None)
         workspaces.enter(str(root / f"2026-10-11/{key}"))
         self.assertIsNone(write.resolve_session(key))
-        with self.assertRaisesRegex(write.WriteError, "일회성 작업 공간"):
+        with self.assertRaisesRegex(write.WriteError, "일회성 작업 폴더"):
             write.create_node(self.sid + " node", "summary", "body", "gpt-6-astra", session=key)
         workspaces.enter(str(TMP.name))
         self.assertEqual(write.resolve_session(key), "Capture")
@@ -2369,7 +2393,10 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         rows[0]["uuid"] = str(uuid.uuid4())
         self.transcript(rows)
         self.assertTrue(it.capture("claude", parent, str(self.path), "silver-gravity")["workspace"]["one_off"])
-        it.cite(f"claude/{parent}", quote="question 1", space="00_Scope/W1")
+        # the parent lands by an explicit capture landing; its citation goes to the one root record
+        self.assertEqual(it.capture("claude", parent, str(self.path), "silver-gravity", "00_Scope/W1")["space"],
+                         "00_Scope/W1")
+        it.cite(f"claude/{parent}", quote="question 1")
         self.transcript([dict(r, sessionId=self.sid) for r in rows]
                         + [{**r, "cwd": str(cwd)} for r in claude_round(self.sid, 2)])
         copied = it.capture("claude", self.sid, str(self.path), "silver-gravity")
@@ -2401,17 +2428,20 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual((copied["inherited_rounds"], copied["captured_rounds"], copied["space"]),
                          (1, 1, None), copied)
 
-    def test_a_citation_cut_before_its_pin_lands_where_its_record_is(self):
+    def test_a_citation_appends_to_the_one_root_record_whatever_space_is_named(self):
+        # 기록은 루트 `_cited/` 한 자리다(헌법 4조 3항) — 인용은 착지를 고정하지도, 다른 space를
+        # 거부하지도 않는다. `space`는 호환 인자다.
         key = self.sid + "-key"
         self.forget(self.sid)
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
         st = it.capture("claude", self.sid, str(self.path), key)
-        # the record was written, then the process stopped before the landing was pinned
         raw.append_rounds(key, st["record"], [{"user": "question 1", "agent": ""}], "00_Scope/Capture",
                           cited={"harness": "claude", "conversation": self.sid, "turn": "user-1"}, bind=False)
-        with self.assertRaisesRegex(ValueError, "already landed"):
-            it.cite(f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")
-        self.assertEqual(it.status("claude", self.sid)["space"], "00_Scope/Capture")
+        second = it.cite(f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")
+        self.assertTrue(second["round_ref"].startswith("_cited/.records/"), second)
+        self.assertEqual(second["index"], 2)
+        self.assertIsNone(it.status("claude", self.sid)["space"])
+        self.assertIsNone(write.resolve_session(key))                 # citing binds nothing
 
     def test_concurrent_first_citations_land_the_conversation_once(self):
         # The landing check, the write and the pin are one step under the conversation's lock:
@@ -2450,10 +2480,13 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             second.start()
             first.join(30)
             second.join(30)
-        self.assertTrue(outcomes["first"]["round_ref"].startswith("00_Scope/Capture/_cited/"), outcomes)
-        self.assertIsInstance(outcomes["second"], ValueError, outcomes)
-        self.assertIn("already landed", str(outcomes["second"]))
+        # Both citations append to the one root record under the conversation's lock: no second
+        # record anywhere, and the named spaces decide nothing (Constitution art. 4 §3).
+        self.assertTrue(outcomes["first"]["round_ref"].startswith("_cited/.records/"), outcomes)
+        self.assertEqual(outcomes["second"]["path"], outcomes["first"]["path"], outcomes)
+        self.assertEqual({outcomes["first"]["index"], outcomes["second"]["index"]}, {1, 2}, outcomes)
         self.assertFalse(any((ROOT / "00_Scope/W1/_cited").glob(f".records/{it.status('claude', self.sid)['record']}*")))
+        self.assertIsNone(it.status("claude", self.sid)["space"])
 
     def test_a_person_only_conversation_cites_and_distills_into_person_space(self):
         from osk import distillation
@@ -2461,8 +2494,8 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.forget(self.sid)
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
         it.capture("claude", self.sid, str(self.path), key)
-        cited = it.cite(f"claude/{self.sid}", quote="question 1", space="00_Person")
-        self.assertTrue(cited["round_ref"].startswith("00_Person/_cited/.records/"), cited)
+        cited = it.cite(f"claude/{self.sid}", quote="question 1")
+        self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)   # the one root record
         self.assertIsNone(it.status("claude", self.sid)["space"])
         self.assertIsNone(write.resolve_session(key))
         self.assertIn("question 1", raw.read_round(cited["round_ref"])["text"])
@@ -2482,24 +2515,24 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         done = it.acknowledge("claude", self.sid, job["through"], "preserved", "a Person fact",
                               [{"key": job["key"] + ":habit"}])
         self.assertEqual((done["reviewed_rounds"], done["space"]), (2, None))
-        # The same conversation later lands in a scope: its new rounds go there, the Person record stays.
+        # The same conversation later lands in a scope: its new rounds join the same root record.
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
-        it.capture("claude", self.sid, str(self.path), key)
-        later = it.cite(f"claude/{self.sid}", quote="question 3", space="00_Scope/Capture")
-        self.assertTrue(later["round_ref"].startswith("00_Scope/Capture/_cited/"), later)
+        it.capture("claude", self.sid, str(self.path), key, "00_Scope/Capture")
+        later = it.cite(f"claude/{self.sid}", quote="question 3")
+        self.assertEqual(later["path"], cited["path"], later)
         self.assertTrue(raw.read_round(cited["round_ref"])["ok"])
-        with self.assertRaisesRegex(ValueError, "cite into that scope"):
-            it.cite(f"claude/{self.sid}", quote="question 2", space="00_Person")
-        # A Person node is distilled only from rounds kept in Person Space (Bylaws §2 8).
-        with self.assertRaisesRegex(write.WriteError, "rounds kept in Person Space"):
-            distillation.create_node({"key": job["key"] + ":scope-habit", "sources": [later["round_ref"]],
-                                      "hub": "Habits"},
-                                     title=self.sid + " scope habit", summary="from a scope round",
-                                     body="Not a Person-only round.", drafter="gpt-6-astra",
-                                     space="00_Person/Habits")
+        # A record belongs to no scope: a Person node may be distilled from any cited round
+        # (Constitution art. 8 §3).
+        job2 = it.prompt("claude", self.sid, include_organization=False)
+        made2 = distillation.create_node({"key": job2["key"] + ":scope-habit", "sources": [later["round_ref"]],
+                                          "hub": "Habits"},
+                                         title=self.sid + " scope habit", summary="from a later round",
+                                         body="A habit the user stated later.", drafter="gpt-6-astra",
+                                         space="00_Person/Habits")
+        self.assertEqual(made2["distillation"]["status"], "complete", made2)
         self.assertTrue(raw.is_person("00_Person") and raw.is_person("Person") and raw.is_person("= Person"))
         self.assertFalse(raw.is_person("00_Person/Habits"))
-        listed = [r["path"] for r in raw.list_records("00_Person")["records"]]
+        listed = [r["path"] for r in raw.list_records()["records"]]        # the root `_cited/` listing
         self.assertIn(cited["path"], listed)
 
 

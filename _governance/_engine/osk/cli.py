@@ -125,7 +125,8 @@ def _integration_cmd(a) -> None:
                 raise ValueError("review stdin must be a JSON object")
             result = integration.acknowledge(
                 a.harness, a.conversation, data["through"], data["outcome"],
-                data["reason"], targets=data.get("targets"))
+                data["reason"], targets=data.get("targets"),
+                primary_scope=data.get("primary_scope"))
         else:
             result = integration.status(a.harness, a.conversation)
         _emit(result)
@@ -255,6 +256,40 @@ def _sm_cmd(a) -> None:
         sys.exit(1)
 
 
+def _routing_cmd(a) -> None:
+    """`osk routing` — 프로젝트 결속(Mechanism §6-2 6항). `show`는 집합·주된 scope(프로젝트를
+    생략하면 검토 대상 전부), `bind`·`unbind`는 집합의 증감, `primary`는 주된 scope의 지정이다 —
+    지정은 사용자나, 검토의 결정 묶음을 적용하는 실행기만 한다."""
+    from . import organization
+    from .core import mutation_lock
+    try:
+        if a.routing_cmd == "show":
+            _emit({"project": a.project, **write.bindings(a.project)} if a.project
+                  else {"audit": organization.bindings_audit()})
+            return
+        with mutation_lock():
+            current = write.bindings(a.project)
+            if a.routing_cmd == "bind":
+                if a.scope in current["scopes"]:
+                    _emit({"ok": True, "project": a.project, **current, "note": "이미 결속에 있다"})
+                    return
+                if a.scope not in graph.scope_names():
+                    raise write.WriteError("없는 scope — 결속하지 않았다",
+                                           [f"`{a.scope}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
+                row = write.bind_session(a.project, a.scope, a.reason or "CLI 결속 추가", primary=False)
+            elif a.routing_cmd == "unbind":
+                if a.scope not in current["scopes"]:
+                    raise write.WriteError("결속에 없는 scope — 해제하지 않았다",
+                                           [f"`{a.project}`의 결속: {current['scopes']}"])
+                row = write.unbind_session(a.project, a.scope, a.reason or "CLI 결속 해제")
+            else:
+                row = write.set_primary(a.project, a.scope, a.reason or "사용자 지정")
+        _emit({"ok": True, "rid": row.get("rid"), "project": a.project, **write.bindings(a.project)})
+    except (write.WriteError, StaleEngineError, ValueError, OSError) as e:
+        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
+        sys.exit(1)
+
+
 def _tidy_cmd(a) -> None:
     """`osk tidy` — 정돈 (Mechanism §9-3). `list`는 미처분, `prompt`는 전용
     세션의 프롬프트(전문 그대로 — 붙여 넣는 값이다), `settle`은 처분 기록,
@@ -335,7 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
         q.add_argument("--conversation", required=True, help="실제 하네스 대화 ID")
         if name == "capture":
             q.add_argument("--transcript", required=True)
-            q.add_argument("--session", required=True, help="고정 scope 라우팅 키")
+            q.add_argument("--session", required=True, help="프로젝트 키 — 훅이 작업 폴더에서 정한다(대화 ID가 아니다)")
             q.add_argument("--space", default=None)
         if name == "reopen":
             q.add_argument("--ref", action="append", required=True, help="정정한 저장·인용 라운드 좌표(반복 가능)")
@@ -389,13 +424,25 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
     ws = p.add_subparsers(dest="sm_cmd", required=True)
     q = ws.add_parser("show", help="전문 출력 — 훅이 그대로 문맥에 주입한다")
-    q.add_argument("--session", required=True)
+    q.add_argument("--session", required=True, help="프로젝트 키(훅이 작업 폴더에서 정한다)")
     q.add_argument("--space", default=None)
     q.add_argument("--json", action="store_true", help="상태 전체를 JSON으로")
     q = ws.add_parser("write", help="전체 치환 — 본문은 stdin")
-    q.add_argument("--session", required=True)
+    q.add_argument("--session", required=True, help="프로젝트 키(훅이 작업 폴더에서 정한다)")
     q.add_argument("--expect-hash", dest="expect_hash", default=None)
     q.add_argument("--space", default=None)
+
+    p = sub.add_parser("routing", help="프로젝트 결속 — 결속 집합과 주된 scope (Mechanism §6-2 6항)")
+    rt = p.add_subparsers(dest="routing_cmd", required=True)
+    q = rt.add_parser("show", help="프로젝트의 결속 집합·주된 scope — 생략하면 검토 대상 전부")
+    q.add_argument("--project", default=None, help="프로젝트 키(훅이 작업 폴더에서 정한 값)")
+    for name, helptext in (("bind", "결속에 scope를 더한다 — 주된 scope는 정하지 않는다"),
+                           ("unbind", "결속에서 scope를 뺀다"),
+                           ("primary", "[사용자 전속] 주된 scope 지정 — 그 프로젝트 자체의 활동이 속한 scope")):
+        q = rt.add_parser(name, help=helptext)
+        q.add_argument("--project", required=True, help="프로젝트 키")
+        q.add_argument("--scope", required=True, help="scope 이름")
+        q.add_argument("--reason", default="")
 
     # `tidy`도 기계 경로다 — 훅이 지시한 처분을 에이전트가 `settle`로 적는다.
     p = sub.add_parser("tidy", help="정돈 — 미처분 퇴출 항목 (Mechanism §9-3)")
@@ -547,6 +594,8 @@ def main(argv=None):
         return _doctor_cmd(a)
     elif a.cmd == "sm":
         return _sm_cmd(a)
+    elif a.cmd == "routing":
+        return _routing_cmd(a)
     elif a.cmd == "tidy":
         return _tidy_cmd(a)
     elif a.cmd == "protect":

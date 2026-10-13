@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 SEP = "\n\n"
-KEEP = 100          # 접지 않는 블록 — 세션 키·밀림 경고·케이던스처럼 짧고 늘 필요한 것
+KEEP = 100          # 접지 않는 블록 — 프로젝트 키·밀림 경고·케이던스처럼 짧고 늘 필요한 것
 
 
 @dataclass(eq=False)

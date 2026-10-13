@@ -5,9 +5,9 @@
 훅이 불릴 때마다 호스트·사건별 마지막 시각을 남기고 `doctor`가 등록과 대조한다.
 
 문맥이 모델까지 닿았는지는 직접 알 수 없다. 세션 시작 훅은 `overview(session=…)`를
-부르라고 싣으므로, 그 세션 키의 overview가 그 뒤에 불렸으면 닿았다고 짐작한다.
+부르라고 싣으므로, 그 프로젝트 키의 overview가 그 뒤에 불렸으면 닿았다고 짐작한다.
 
-기록은 기기 로컬(`core.local_lock_path`)이며 동기화되지 않는다. 호스트 이름·세션 키·
+기록은 기기 로컬(`core.local_lock_path`)이며 동기화되지 않는다. 호스트 이름·프로젝트 키·
 그 훅을 돌린 Python 경로와 시각만 적고 대화 내용은 적지 않는다. 기록은 잠금을 잠깐만
 기다리고, 못 적으면 거짓을 돌려준다 — 훅과 표면을 막지 않는다.
 
@@ -131,7 +131,7 @@ def record_run(host: str | None, event: str, session: str | None) -> bool:
 
 
 def record_overview(session: str) -> bool:
-    """그 세션 키로 overview가 불렸다. 오래된 세션부터 잊는다."""
+    """그 프로젝트 키로 overview가 불렸다. 오래된 세션부터 잊는다."""
     at = time.time()
 
     def change(data):

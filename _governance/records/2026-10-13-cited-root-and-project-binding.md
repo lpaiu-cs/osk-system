@@ -1,7 +1,7 @@
 ---
 id: 261013-18ut-oe2mjckh
 created: 2026-10-13 16:08 (KST)
-updated: 2026-10-13 16:08 (KST)
+updated: 2026-10-13 20:11 (KST)
 author: user
 drafter: fable-5.1
 summary: "`_cited/`를 Space 밖 루트 구획 하나로 합치고, 결속을 세션이 아닌 프로젝트의 것으로 가른다 — 10-13 결정과 근인"
@@ -72,9 +72,10 @@ Workbench는 "잠시 들르는 경유지이자 시간이 지나면 만료되는 
 담고, 방어적 서술이다. 처분표 6조의 "Workbench(진행 중 임시 상태)와 `_raw`(마감된
 세션 로그)의 구별"에도 루트 배치가 맞는다.
 
-확인된 결함 하나: 발행 manifest의 DENY에 `_raw/`만 있고 `_cited/`가 없다 —
-10-04 개명 때 빠졌다. Space 트리는 MAP 대상이 아니라 지금 새지는 않지만, 루트
-구획을 만들면서 `DENY _cited/`를 더한다.
+처음에는 "발행 manifest의 DENY에 `_cited/`가 없다"고 적었으나, 옛 승인본
+사본(`_ledger/approved/objects`의 manifest)을 본 오진이었다 — 현 manifest는
+`DENY _cited/`·`_raw/`·`_sources/`를 이미 갖고, 루트 `_cited/`도 같은 조각으로
+제외된다(10-13 엔진 PR에서 확인).
 
 ## 헌법 개정 (이 변경집합)
 
@@ -155,8 +156,7 @@ scope"가 되고, 그것이 lbot을 막은 해석이다. Mechanism §9-3 1항·�
 - 엔진: 루트 `_cited/`를 `sources`와 섞지 않는 `raw` 종류로 판정, 참조 검사는
   Domain 거부만 남기고 scope 일치를 푼다, 옛 좌표 접기, `session` 매개변수를
   프로젝트 키로 개명(도구 목록은 그대로다), 착지 거부 삭제, 세션 시작 주입과
-  검토가 결속 집합을 본다, 발행 manifest `DENY _cited/`, 훅 문구. 기록 파일
-  이동은 별도 변경집합.
+  검토가 결속 집합을 본다, 훅 문구. 기록 파일 이동은 별도 변경집합.
 
 ## 근거
 

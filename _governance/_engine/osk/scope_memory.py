@@ -35,7 +35,7 @@ from . import evictions, graph, secrets, write
 LIMIT = 1500
 
 # 연속 상한 초과 거부의 상한 (§9-2 4항). 넘으면 재시도 지시를 거두고 "접고
-# 가라"를 싣는다 — 실패한 기억 갱신이 본 작업을 막아서는 안 된다. 세션 키
+# 가라"를 싣는다 — 실패한 기억 갱신이 본 작업을 막아서는 안 된다. 프로젝트 키
 # 단위로, 이 프로세스 안에서만 센다(엔진은 하네스 턴을 보지 못한다). 성공이
 # 지운다. Hermes의 _MAX_CONSOLIDATION_FAILURES_PER_TURN과 같은 자리다.
 OVERFLOW_STOP = 3
@@ -51,12 +51,12 @@ _OVERFLOW_RUNS: dict[str, int] = {}
 # 온다. 표식이 메모리에만 있으면 그 첫 성공한 쓰기가 줄을 덜어 내도 적히지
 # 않아, 이 조문이 막으려는 손실이 정확히 그 자리에서 난다. 자리는 잠금과 같은
 # 기기 로컬 디렉터리(추적 트리 밖)다 — 거부는 이 기기의 사본 위에서 났고,
-# 세션 키는 기기를 넘지 않는다.
+# 프로젝트 키는 기기를 넘지 않는다.
 
 
 def _pending_path(key: str) -> Path:
     # 키에 **이 작업 트리**를 넣는다(리뷰 2차 P1). 잠금 자리는 linked worktree
-    # 사이에 공유되는데(`commondir`), 세션 키도 worktree를 본 저장소 이름으로
+    # 사이에 공유되는데(`commondir`), 프로젝트 키도 worktree를 본 저장소 이름으로
     # 접으므로, 트리를 빼면 A 트리의 거부를 B 트리의 평범한 성공이 소비한다 —
     # 거부는 그 트리의 사본 위에서 났고, 덜어 내는 쓰기도 그 사본에 온다.
     h = hashlib.sha256(f"{ROOT.resolve()}\n{key}".encode("utf-8")).hexdigest()[:16]
@@ -171,7 +171,7 @@ EVICTION_NOTE = ("엔트리는 자리를 다툰다. 자리값 못하는 것은 �
 
 
 def _runs_key(session: str) -> str:
-    """연속 거부 계수의 키 — **정본 세션 키**로 접는다.
+    """연속 거부 계수의 키 — **정본 프로젝트 키**로 접는다.
 
     구판은 호출자가 보낸 원문으로 키잡았다. 별칭(구 저장소 이름)으로 들어온
     같은 세션이 다른 계수를 갖게 되어, `OVERFLOW_STOP`이 세 번째에 서지 않거나
@@ -356,7 +356,7 @@ def replace(session: str, text: str | None = None,
                     ["`old_text`와 `new_text`가 같다."])
     errs = write.ephemeral_session_errors(session)
     if errs:
-        raise write.WriteError("세션 키 부적격 — 쓰지 않았다", errs)
+        raise write.WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
     with mutation_lock():
         scope, bound = _landing(session, space)
         p = sm_path(scope)
@@ -492,8 +492,9 @@ def replace(session: str, text: str | None = None,
         # 결속을 **쓰기 전에** 세운다. 뒤에 두면 대장이 손상됐을 때 파일은
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
-        if not bound and not write.workspaces.is_one_off(session):   # 일회성 작업 공간은 결속하지 않는다
-            write.bind_session(session, scope, "첫 scope 기억 쓰기에서 확정")
+        # 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다(Mechanism §6-2 6항). 일회성 작업 폴더는 결속하지 않는다.
+        if not write.workspaces.is_one_off(session) and scope not in write.bindings(session)["scopes"]:
+            write.bind_session(session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
         _OVERFLOW_RUNS.pop(key, None)       # 성공이 연속 계수를 지운다

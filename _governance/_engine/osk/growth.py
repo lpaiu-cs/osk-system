@@ -1182,11 +1182,13 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 planned["engine_rev"] = core.epoch.loaded()
                 if scope_job is not None and scope_job.get("session"):
                     from . import write
-                    # 일회성 작업 공간의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
-                    scope = (None if (scope_job.get("workspace") or {}).get("one_off")
-                             else write.resolve_session(scope_job["session"]))
+                    # 일회성 작업 폴더의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
+                    # 결속 scope는 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
+                    scopes = ([] if (scope_job.get("workspace") or {}).get("one_off")
+                              else write.bound_scopes(scope_job["session"]))
+                    scope = scopes[0] if scopes else None
                     planned["work_context"] = "stop:" + (scope or scope_job["session"])
-                    planned["organization_jobs"] = organization.pending([scope], limit=1) if scope else []
+                    planned["organization_jobs"] = organization.pending(scopes, limit=1) if scopes else []
                     # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
                     idx = _index()
                     planned["recheck_jobs"] = (_pick_rechecks(idx, limit, scope)

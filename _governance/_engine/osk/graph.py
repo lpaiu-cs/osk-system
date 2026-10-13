@@ -37,15 +37,19 @@ def _load_cases() -> dict[str, dict]:
 NODE_SPACES = (DOMAIN, PERSON, SCOPE)
 W_LINK, W_DERIVED = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값 (Link·derived-from)
 
-# 인용 기록 구획(헌법 4조 3항). 새 기록은 `_cited/`에 쓰고, `_raw/`의 기록도 같은
-# 이름의 인용 기록으로 읽는다(Mechanism §9 5항). 둘은 같은 소속 `('raw', scope)`다.
+# 인용 기록 구획(헌법 4조 3항). 새 기록은 루트 `_cited/`에 쓰고(`('raw', None)`), scope
+# 아래의 옛 `_cited/`·`_raw/`와 Person의 `_cited/`도 같은 이름의 인용 기록으로
+# 읽는다(Mechanism §9 5항).
 RECORD_DIRS = ("_cited", "_raw")
 
 
 def is_record_ref(ref: str) -> bool:
-    """`…/_cited/…`·`…/_raw/…` 꼴 — 인용 기록 구획을 가리키는 표기인가."""
-    s = (ref or "").replace("\\", "/")
-    return any(f"/{d}/" in s for d in RECORD_DIRS)
+    """`_cited/…`·`…/_cited/…`·`…/_raw/…` 꼴 — 인용 기록 구획을 가리키는 표기인가. 위키링크로
+    감싼 표기도 같은 좌표다(루트 좌표는 `[[` 바로 뒤에 `_cited/`가 온다)."""
+    s = (ref or "").replace("\\", "/").strip()
+    if s.startswith("[["):
+        s = s[2:].lstrip()
+    return any(f"/{d}/" in "/" + s for d in RECORD_DIRS)
 
 # `.md` 확장자는 **어느 기기에서나** 대소문자를 무시한다. 구판은 pathlib을 따라
 # `os.name == "nt"`일 때만 무시했고, 그래서 같은 트리의 `Note.MD`가 Windows에서는
@@ -207,6 +211,9 @@ def _place_of_parts(parts: tuple) -> tuple:
     if not parts:
         return ("support",)
     head = parts[0]
+    if head == RECORD_DIRS[0]:
+        # 루트 `_cited/` — Space 밖의 상설 비노드 구획(헌법 4조 3항). 소속 scope가 없다.
+        return ("raw", None)
     if head == DOMAIN:
         return ("domain", parts[1] if len(parts) > 2 else None)
     if head == PERSON:
@@ -910,10 +917,10 @@ def topology_check(idx: Index) -> list[str]:
                 errs.append(f"Domain의 인용 기록 직접 참조: {stem} → {name}")
                 continue
             if kind[0] == "scope":
+                # 비노드(인용 기록·원자료)에는 소속 제약이 없다(헌법 8조 3항, 2026-10-13 개정)
                 ok = (
                     (tkind[0] == "scope" and tkind[1] == kind[1])
-                    or (tkind[0] == "raw" and tkind[1] == kind[1])
-                    or tkind[0] in ("domain", "person", "workbench-transit",
+                    or tkind[0] in ("raw", "domain", "person", "workbench-transit",
                                     "sources", "governance")
                 )
                 if not ok:
