@@ -669,7 +669,8 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 receipts.append(receipt)
         elif outcome == "summary":
             # 일회성 작업 폴더의 대화는 그 키의 결속이 아니라 대화에 고정한 착지의 기억을 본다
-            memory = scope_memory.read(None, s["space"]) if _one_off(s) else scope_memory.read(s["session"])
+            # 대화에 고정한 착지가 있으면 그 scope의 기억이다 — 프로젝트의 주된 scope와 다를 수 있다
+            memory = scope_memory.read(None if _one_off(s) else s["session"], s.get("space"))
             if not isinstance(targets, list) or not targets or not all(
                     isinstance(t, dict) and isinstance(t.get("text"), str) and t["text"].strip()
                     and t["text"] in memory["text"] for t in targets):
@@ -1144,11 +1145,16 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                      + ", ".join(t.get("name") or t["id"] for t in st["repair"]["targets"]) + "\n")
     from . import organization
     jobs = []
-    try:    # 결속 scope는 주된 scope부터, 없으면 결속 순서대로(Mechanism §9-3 1항)
+    # 대화에 고정한 착지(capture의 space)가 검토 문맥의 scope다 — 프로젝트의 주된 scope와 다를 수
+    # 있다(시행령 §3 9항). 고정이 없을 때만 결속 scope를 주된 scope부터, 없으면 결속 순서대로 본다(§9-3 1항).
+    pinned = raw._scope_of_space(s["space"]) if s.get("space") else None
+    try:
         scopes = write.bound_scopes(st["session"]) if st.get("session") and not _one_off(s) else []
     except (OSError, ValueError, write.WriteError):
         scopes = []
-    scope = scopes[0] if scopes else None       # 허브 트리의 scope — 주된 scope, 없으면 첫 결속
+    if pinned and scopes:
+        scopes = [pinned, *[x for x in scopes if x != pinned]]
+    scope = scopes[0] if scopes else None       # 허브 트리의 scope — 고정한 착지, 없으면 주된 scope
     try:
         with core.mutation_lock():
             jobs = (organization.pending(scopes, limit=1, record=True)

@@ -544,6 +544,15 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(other["ok"], other)
         self.assertEqual(other["space"], "00_Scope/W1")
         self.assertEqual(write.resolve_session("capture-tests"), "Capture")
+        # 고정한 착지가 검토 문맥이다 — 허브 트리와 summary 확인은 W1이지 주된 scope Capture가 아니다(#191 리뷰 2차)
+        review = it.prompt("claude", self.sid + "w", include_organization=False)
+        self.assertTrue(review["hub_tree"].startswith("- 00_Scope/W1 "), review["hub_tree"])
+        pinned = scope_memory.replace("capture-tests", "- pinned summary", space="00_Scope/W1")
+        it.acknowledge("claude", self.sid + "w", review["through"], "summary", "fixture",
+                       targets=[{"text": "pinned summary"}])
+        self.assertEqual(it.status("claude", self.sid + "w")["reviewed_rounds"], 1)
+        scope_memory.replace("capture-tests", "", pinned["hash"], "00_Scope/W1")      # 다른 시험에 남기지 않는다
+        write.unbind_session("capture-tests", "W1", "fixture")
         for n, space in enumerate(("00_Scope/Absent", "Capture")):
             sid = self.sid + str(n)
             self.transcript(claude_round(sid, 1))
