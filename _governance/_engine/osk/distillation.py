@@ -481,9 +481,6 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("distillation requires a changed retained body")
             if graph.space_of(path)[0] not in _TARGETS:
                 raise write.WriteError("distillation target must be a Scope/Domain/Person node")
-            if graph.space_of(path)[0] == "person" and not any(raw.is_person_record(s["path"]) for s in sources):
-                # Person 증류는 소속 scope 없는 세션이 Person에 둔 것뿐이다 — 그 라운드는 Person Space에 있다
-                raise write.WriteError("a Person node is distilled from rounds kept in Person Space (Bylaws §2 8)")
             if path.parent != resolve_in_root(hub["path"]).parent or path.stem == hub["name"]:
                 raise write.WriteError("target must be a knowledge node under the selected hub")
             if any(s["path"] in (posix_rel(path, ROOT), hub["path"]) for s in sources):

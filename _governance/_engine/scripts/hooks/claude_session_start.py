@@ -9,12 +9,14 @@ hookSpecificOutput.additionalContext가 세션 문맥에 주입된다. 지시("C
 훅이 맡는다 — 보이지 않는 것은
 통합되지 않는다.
 
-세션 키는 cwd가 속한 git 저장소의 **본 저장소 디렉터리 이름**이다. 워크트리
+프로젝트 키는 cwd가 속한 git 저장소의 **본 저장소 디렉터리 이름**이다. 워크트리
 안에서도 본 저장소 이름으로 접힌다(`git-common-dir`의 부모) — 워크트리 이름은
 세션마다 달라 키가 되지 못한다. 서브모듈·bare 저장소는 자기 이름을 받는다.
 이름이 같은 **무관한** 저장소는 뿌리 커밋이 달라 파생 키(`<이름>-<뿌리 앞 8자>`)로
-갈린다(`session_key`). 결속이 없어도 `overview`로 착지를 확인하도록
-안내한다. 아직 없는 착지를 훅이 대신 정하지 않는다.
+갈린다(`session_key`). 한 프로젝트는 여러 scope에 결속될 수 있고 그중 하나가 주된
+scope다(시행령 §3 10항) — 훅은 결속된 scope 전부의 기억을 싣는다(주된 scope 먼저).
+결속이 없거나 주된 scope가 없어도 `overview`로 착지를 확인하도록 안내한다. 아직 없는
+착지를 훅이 대신 정하지 않는다.
 
 **정돈도 같은 길로 싣는다**(Mechanism §9-3 1항). 세션이 곧 주기다 — 별도
 스케줄러 없이, 결속이 선 세션이 시작되면 그 scope의 미처분 퇴출 항목 중 오래된
@@ -182,7 +184,7 @@ def _checkout(cwd: str) -> tuple[str, list[str] | None]:
 
 
 def session_key(cwd: str) -> str:
-    """세션 키를 정하는 **유일한** 자리 — 세 훅이 모두 이것을 부른다.
+    """프로젝트 키를 정하는 **유일한** 자리 — 세 훅이 모두 이것을 부른다.
 
     이름만으로는 무관한 두 저장소가 한 키를 나눠 가지므로, Git 저장소는 결속의
     소유자와 뿌리가 다르면 파생 키를 받는다(`write.repo_session`)."""
@@ -201,11 +203,12 @@ def session_key(cwd: str) -> str:
         return name
 
 
-def _memory_line(st: dict, key: str) -> str:
+def _memory_line(st: dict, key: str, space: str | None = None) -> str:
     """전문 대신 싣는 한 줄 — 이 대화가 같은 해시의 전문을 이미 받았을 때(§9-2 5항의 뜻:
-    전문은 호출자가 저장본을 모를 때 싣는다). 해시가 바뀌면 다시 전문이다."""
+    전문은 호출자가 저장본을 모를 때 싣는다). 해시가 바뀌면 다시 전문이다. `space`는 주된
+    scope 밖의 결속 scope일 때 준다 — 읽는 호출도 그 space를 함께 준다."""
     from osk.core import SCOPE
-    arg = json.dumps(key, ensure_ascii=False)
+    arg = json.dumps(key, ensure_ascii=False) + (f", space={json.dumps(space, ensure_ascii=False)}" if space else "")
     return (f"[osk scope 기억 — {SCOPE}/{st['scope']} · {st['chars']}/{st['limit']}자 · "
             f"여유 {st['limit'] - st['chars']}자 · hash {st['hash'][:19]}…] 이 대화에 앞서 실은 전문과 "
             f"같다. 요약을 고치기 전에 `scope_memory(session={arg})`로 현재 저장본을 읽는다. 대화 검토 시에는 "
@@ -223,7 +226,7 @@ def _memory_block(scope_memory, key: str, st: dict | None = None) -> str:
     # 케이던스는 실행 방식별 안내가 맡는다. 이 공유 블록은 저장 경계와
     # `edits` 계약만 가르쳐 Stop 실행기에 user 턴 재촉을 겹쳐 싣지 않는다.
     #
-    # 세션 키도 싣는다. 도구의 `session`은 이 값이어야 하는데 훅만 알고
+    # 프로젝트 키도 싣는다. 도구의 `session`은 이 값이어야 하는데 훅만 알고
     # 호출자는 몰라서 매번 지어냈고, 그 결속은 append-only로 영구히 쌓였다.
     return (
         f"[osk scope 기억 — {SCOPE}/{st['scope']} · "
@@ -242,25 +245,38 @@ def _memory_block(scope_memory, key: str, st: dict | None = None) -> str:
 
 
 def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: dict | None = None,
-               landing: str | None = None) -> str:
+               landing: str | None = None, bindings: dict | None = None) -> str:
     arg = json.dumps(key, ensure_ascii=False)
     workspace = workspace or {}
+    bindings = bindings or {}
+    others = [s for s in bindings.get("scopes", []) if s != bindings.get("primary")]
     # `cite_round(conversation=…)` names this conversation by the pair below.
     conversation = (f" · conversation={json.dumps(ident[0] + '/' + ident[1], ensure_ascii=False)}"
                     if ident else "")
+    if bound:
+        landing_note = "아래 scope 기억을 통합의 출발점으로 삼는다."
+        if others:
+            # 한 프로젝트가 여러 scope의 활동을 품는다(시행령 §3 10항) — 기본 착지는 주된 scope다
+            landing_note += (f" 이 프로젝트의 결속은 주된 scope {bindings['primary']}와 {', '.join(others)}다 — "
+                             "다른 scope의 활동은 create_node의 space에 그 scope를 준다.")
+    elif others:
+        landing_note = (f"이 프로젝트의 결속은 {', '.join(others)}이지만 주된 scope가 없다"
+                        + ("(결속이 갈려 미확정)" if bindings.get("undetermined") else "")
+                        + " — 노드를 쓸 때마다 space를 준다. 이 프로젝트 자체의 활동이 속한 scope는 대화 "
+                          "검토의 소속 판정(review의 primary_scope)이나 사용자(`routing primary`)가 지정한다.")
+    else:
+        landing_note = ("아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 군집에서 해당 프로젝트를 "
+                        "확인한 뒤 scope_memory를 읽어라.")
     return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
             f"이 세션에서 `overview(session={arg})`를 한 번 불러 군집·허브 트리(`hub_tree`)·열린 사건·근거 "
             "재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다(시행령 §3 8항). "
-            "기억을 묻는 질문에는 `search`를 먼저 쓴다. "
-            + ("아래 scope 기억을 통합의 출발점으로 삼는다."
-               if bound else "아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 "
-               "군집에서 해당 프로젝트를 확인한 뒤 scope_memory를 읽어라.")
-            + (" 이 작업 폴더는 일회성 작업 공간이라 세션 키를 결속하지 않고 그 키에 선 결속도 따르지 "
-               "않는다(Mechanism §6-2 6항) — 쓰기 도구에 session을 주지 말고, 노드나 인용을 쓸 때 space를 "
+            "기억을 묻는 질문에는 `search`를 먼저 쓴다. " + landing_note
+            + (" 이 작업 폴더는 일회성 작업 폴더라 프로젝트 키를 결속하지 않고 그 키에 선 결속도 따르지 "
+               "않는다(Mechanism §6-2 6항) — 쓰기 도구에 session을 주지 말고, 노드를 쓸 때 space를 "
                "명시한다. 그 착지는 이 대화에만 적용된다." if workspace.get("one_off") else "")
             + (f" 이 대화는 `{landing}`에 착지해 있다 — 쓸 때 space에 그 경로를 준다."
                if landing and not bound else "")
-            + (f" 작업 공간 판별: {workspace['warning']}" if workspace.get("warning") else ""))
+            + (f" 작업 폴더 판별: {workspace['warning']}" if workspace.get("warning") else ""))
 
 
 def _budget(env: dict, host=None) -> int | None:
@@ -295,11 +311,22 @@ def _organization(jobs: list, keep: int):
 def _organization_jobs(key: str) -> list:
     """세션 시작의 조직 검토 — 포착 대기와 따로 고른다(짧은 대화도 시작에서 착수할 수 있다)."""
     from osk import core, organization, write
-    scope = write.resolve_session(key)
-    if not scope:
+    scopes = write.bound_scopes(key)     # 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
+    if not scopes:
         return []
     with core.mutation_lock():
-        return organization.pending([scope], limit=1, record=True)
+        return organization.pending(scopes, limit=1, record=True)
+
+
+def _bindings_block(key: str):
+    """이 프로젝트의 결속 검토(시행령 §3 10항) — 검토 대상이 아니면 빈 블록이다."""
+    from osk import organization
+    from osk.hook_text import Block
+    try:
+        return Block("bindings", organization.bindings_prompt(key), 65,
+                     label="프로젝트 결속 검토", pull="overview:organization")
+    except Exception as exc:
+        return Block("bindings", f"[osk 결속 검토 판독 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다.]")
 
 
 def _start_organization(key: str):
@@ -317,21 +344,40 @@ def _recovery(scope_memory, key: str):
                  label="scope 복구 대기", pull="overview:recovery")
 
 
-def _memory(scope_memory, key: str, ident, *, gate: bool, keep: int):
+def _memory(scope_memory, key: str, ident, *, gate: bool, keep: int, space: str | None = None):
     """scope 기억 블록. `gate`면 이 대화가 같은 해시의 전문을 이미 받았을 때 한 줄로 싣고,
-    전문이 실제로 실렸을 때만 그 해시를 적는다(`integration.note_memory`)."""
+    전문이 실제로 실렸을 때만 그 해시를 적는다(`integration.note_memory`). `space`는 주된 scope가
+    아닌 결속 scope의 기억을 실을 때 준다(Mechanism §9-3 1항)."""
     from osk import integration
     from osk.hook_text import Block
-    st = scope_memory.read(key)
+    st = scope_memory.read(key, space)
     full = _memory_block(scope_memory, key, st)
+    name = "memory" if space is None else f"memory:{st['scope']}"
     if not full:
-        return Block("memory", "")
+        return Block(name, "")
     # 한 줄로 실어도 접힐 수 있다 — 그때도 접은 줄이 무엇을 어디서 읽을지 말해야 한다(Kiro 실측).
-    pull = f"`scope_memory(session={json.dumps(key, ensure_ascii=False)})`"
-    if gate and ident and integration.memory_seen(*ident, st["hash"]):
-        return Block("memory", _memory_line(st, key), keep, label="scope 기억(이 대화에 실은 전문과 같다)", pull=pull)
-    return Block("memory", full, keep, label=f"scope 기억 전문(여유 {st['limit'] - st['chars']}자)", pull=pull,
-                 on_shown=(lambda: integration.note_memory(*ident, st["hash"])) if ident else None)
+    arg = f"session={json.dumps(key, ensure_ascii=False)}" + (f", space={json.dumps(space, ensure_ascii=False)}" if space else "")
+    pull = f"`scope_memory({arg})`"
+    seen_as = st["scope"] if space else None     # 주된 scope 밖의 결속 scope는 제 해시를 따로 기억한다
+    if gate and ident and integration.memory_seen(*ident, st["hash"], seen_as):
+        return Block(name, _memory_line(st, key, space), keep, label="scope 기억(이 대화에 실은 전문과 같다)", pull=pull)
+    return Block(name, full, keep, label=f"scope 기억 전문 {st['scope']}(여유 {st['limit'] - st['chars']}자)", pull=pull,
+                 on_shown=(lambda: integration.note_memory(*ident, st["hash"], seen_as)) if ident else None)
+
+
+def _bound_memories(scope_memory, key: str, ident, bindings: dict, *, keep: int, gate: bool = False):
+    """주된 scope가 아닌 결속 scope들의 기억 — 주된 scope 다음에, 한도 안에서 싣는다(§9-3 1항)."""
+    from osk.core import SCOPE
+    from osk.hook_text import Block
+    out = []
+    for sc in bindings.get("scopes", []):
+        if sc == bindings.get("primary"):
+            continue
+        try:
+            out.append(_memory(scope_memory, key, ident, gate=gate, keep=keep, space=f"{SCOPE}/{sc}"))
+        except Exception as exc:
+            out.append(Block(f"memory:{sc}", f"[osk 공유 기억 판독 진단 — {sc}: {type(exc).__name__}: {exc}]"))
+    return out
 
 
 def capture_blocks(env: dict, key: str, *, startup: bool = False):
@@ -389,11 +435,14 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
     if not startup:
         try:
             from osk import scope_memory, write
-            if write.resolve_session(key):
+            bindings = write.bindings(key)
+            if bindings["primary"]:
                 recovery = _recovery(scope_memory, key)
                 # 복구는 현재 엔트리를 정리하는 일이라 앵커를 베낄 전문이 그 자리에 있어야 한다
                 # — 복구 대기 중에는 해시가 같아도 전문을 싣는다.
                 blocks += [recovery, _memory(scope_memory, key, ident, gate=not recovery.text, keep=85)]
+            # 주된 scope가 아닌 결속 scope의 기억도 — 주된 scope 다음에, 한도 안에서(§9-3 1항)
+            blocks += _bound_memories(scope_memory, key, ident, bindings, gate=True, keep=75)
         except Exception as exc:
             blocks.append(Block("memory", f"[osk 공유 기억 판독 진단 — {type(exc).__name__}: {exc}]"))
     return blocks, ident
@@ -499,20 +548,26 @@ def main() -> None:
         notice, shown, notified = _release_notice(host)
         notice = Block("notice", notice, 40, label="새 릴리스 알림(overview의 update)",
                        on_shown=notified)
-        scope = write.resolve_session(key)
+        try:
+            bindings = write.bindings(key)
+        except Exception:
+            bindings = {"scopes": [], "primary": None, "undetermined": False}
+        scope = bindings["primary"]
         try:
             from osk import integration
             seen = integration.status(*ident) if ident else {}
         except Exception:
             seen = {}           # 판별을 못 읽어도 시작 안내는 싣는다
         bootstrap = Block("bootstrap", _bootstrap(key, bound=bool(scope), ident=ident, workspace=seen.get("workspace"),
-                                                  landing=seen.get("space")))
+                                                  landing=seen.get("space"), bindings=bindings))
         try:
             recovery = _recovery(scope_memory, key)
         except Exception:
             recovery = Block("recovery", "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]")
+        # 주된 scope가 아닌 결속 scope의 기억도 싣는다 — 주된 scope 다음, 한도 안에서(§9-3 1항)
+        others = _bound_memories(scope_memory, key, ident, bindings, keep=75)
         if not scope:
-            blocks = [bootstrap, notice, recheck, recovery, *captured]
+            blocks = [bootstrap, notice, recheck, recovery, *others, *captured, _bindings_block(key)]
         else:
             try:
                 mem = _memory(scope_memory, key, ident, gate=False, keep=95)
@@ -526,7 +581,8 @@ def main() -> None:
             except Exception as exc:
                 tidy = Block("tidy", f"[osk 정돈 판독 진단 — {type(exc).__name__}: {exc}]")
             # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록. 넘치면 블록째 접는다(1항).
-            blocks = [banner, bootstrap, notice, recheck, recovery, mem, *captured, tidy]
+            blocks = [banner, bootstrap, notice, recheck, recovery, mem, *others, *captured, tidy,
+                      _bindings_block(key)]
         out, _ = assemble(blocks, _budget(env, host), session=key)
         if not out:
             return

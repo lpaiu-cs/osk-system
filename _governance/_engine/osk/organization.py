@@ -355,8 +355,10 @@ def plan(scope: str, *, record: bool = True) -> dict:
 
 
 def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
-           intentional: list | None = None, checked: list | None = None) -> dict:
-    """Check saved state, not a claim that a plan was executed."""
+           intentional: list | None = None, checked: list | None = None,
+           bindings: list | None = None) -> dict:
+    """Check saved state, not a claim that a plan was executed. `bindings`는 결속 검토의 판정
+    목록이다(`apply_binding_decisions`) — 군집 검토와 함께 한 묶음으로 낸다."""
     if outcome not in {"complete", "deferred"} or not isinstance(reason, str) or not reason.strip():
         raise ValueError("organization outcome and concrete reason required")
     intentional = [] if intentional is None else intentional
@@ -427,6 +429,9 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
             if u["id"] in edited and u["unit"] not in covered:
                 handoff.setdefault(u["unit"], now)
         state.setdefault("handoff", {})[scope] = handoff
+        if bindings:
+            # 결속 기록은 검토 저장 **앞에** — 대장 쓰기가 실패하면 검토도 남지 않는다(#191 리뷰)
+            row["bindings"] = apply_binding_decisions(bindings, state)
         _save(state)
         return row
 
@@ -537,6 +542,95 @@ def hook_readout(job: dict) -> dict:
             if len(items) > _LIST_CAP:
                 out[name + "_total"] = len(items)
     return out
+
+
+BINDING_LIMIT = 3       # 결속 검토 임계 — 시행령 §3 10항(기계 상한이 아니라 검토 임계)
+
+
+def bindings_audit(project: str | None = None) -> list[dict]:
+    """프로젝트 결속의 검토 대상(시행령 §3 10항 · Mechanism §9-4 3항) — 결속이 셋을 넘거나, 지난
+    검토 뒤 늘어났거나, 주된 scope가 없는 프로젝트. `project`를 주면 그 프로젝트만 본다. 판정은
+    라우팅 대장에서 다시 계산하고, '지난 검토'는 이 기기의 조직 검토 상태가 기억한다."""
+    try:
+        recs = core.ledger_read(core.ROUTING)
+    except Exception:
+        return []
+    keys = sorted({str(r.get("session")) for r in recs
+                   if r.get("kind") in ("bind", "unbind") and r.get("session")})
+    keys = [k for k in keys if write.canonical_session(k, recs) == k]       # 별칭은 정본 키로 접힌다
+    if project is not None:
+        keys = [k for k in keys if k == (write.canonical_session(project, recs) or project)]
+    try:
+        seen = _load().get("bindings_seen", {})
+    except ValueError:
+        seen = {}
+    out = []
+    for key in keys:
+        b = write.bindings(key, recs)
+        if not b["scopes"]:
+            continue
+        flags = []
+        if len(b["scopes"]) > BINDING_LIMIT:
+            flags.append("over_limit")
+        if key in seen and len(b["scopes"]) > seen[key]:
+            flags.append("grew")
+        if b["primary"] is None:
+            flags.append("undetermined" if b["undetermined"] else "no_primary")
+        if flags:
+            out.append({"project": key, "scopes": b["scopes"], "primary": b["primary"], "flags": flags})
+    return out
+
+
+def bindings_prompt(project: str | None = None) -> str:
+    """결속 검토의 훅 블록 — 검토 대상이 없으면 빈 문자열이다. 판정 넷 중 하나를 보고한다:
+    유지·노드 이동 뒤 해제·scope 분리 제안·주된 scope 지정(시행령 §3 10항)."""
+    items = bindings_audit(project)
+    if not items:
+        return ""
+    head = " · ".join(f"{i['project']} {len(i['scopes'])}개 결속({', '.join(i['flags'])})" for i in items)
+    return (f"[osk 프로젝트 결속 검토 — {head}]\n"
+            "결속이 셋을 넘거나 늘어났거나 주된 scope가 없는 프로젝트다(시행령 §3 10항). 각 프로젝트에 대해 "
+            "유지·노드 이동 뒤 해제·scope 분리 제안(사용자 허락)·주된 scope 지정 중 하나로 판정한다. 주된 "
+            "scope는 그 프로젝트 자체의 활동이 속한 scope로 확인됐을 때만 지정한다. 판정은 접두부 + `review`의 "
+            "bindings([{project, scope, action: keep|unbind|primary, reason}])에 싣거나 `routing` 명령으로 적는다.\n"
+            + json.dumps(items, ensure_ascii=False))
+
+
+def apply_binding_decisions(decisions: list | None, state: dict | None = None) -> list[dict]:
+    """조직 검토가 낸 결속 판정을 적용한다 — `keep`은 지금 결속 수를 '지난 검토'로 기억하고, `unbind`는
+    집합에서 빼며, `primary`는 주된 scope를 지정한다. 호출자가 변경 잠금을 쥔다. 묶음을 먼저 검증해
+    하나라도 틀리면(없는 scope) 아무것도 적지 않는다. 적용은 **멱등**이다 — 이미 뺀 scope와 이미 주된
+    scope는 다시 적지 않으므로, 중간에 실패한 묶음은 같은 묶음의 재시도가 남은 판정부터 잇는다(기록은
+    append-only라 되돌릴 수 없고, 되돌릴 필요도 없다). `state`를 받으면 그 상태에 적고 저장은 호출자가 한다."""
+    if not decisions:
+        return []
+    if not isinstance(decisions, list) or any(
+            not isinstance(d, dict) or not {"project", "action", "reason"} <= set(d)
+            or d["action"] not in ("keep", "unbind", "primary")
+            or not all(isinstance(d.get(k), str) and d[k].strip() for k in ("project", "reason"))
+            or (d["action"] != "keep" and not (isinstance(d.get("scope"), str) and d["scope"].strip()))
+            for d in decisions):
+        raise ValueError("bindings decisions are [{project, action: keep|unbind|primary, scope?, reason}]")
+    scopes = write.graph.scope_names()
+    for d in decisions:
+        if d["action"] != "keep" and d["scope"].strip() not in scopes:
+            raise ValueError(f"{d['action']} names a scope that does not exist: {d['scope'].strip()}")
+    own = state is None
+    state = _load() if own else state
+    seen = state.setdefault("bindings_seen", {})
+    applied = []
+    for d in decisions:
+        project, action = d["project"].strip(), d["action"]
+        current = write.bindings(project)
+        if action == "unbind" and d["scope"].strip() in current["scopes"]:
+            write.unbind_session(project, d["scope"].strip(), d["reason"].strip())
+        elif action == "primary" and current["primary"] != d["scope"].strip():
+            write.set_primary(project, d["scope"].strip(), d["reason"].strip())
+        seen[project] = len(write.bindings(project)["scopes"])
+        applied.append({"project": project, "action": action, "scope": d.get("scope")})
+    if own:
+        _save(state)
+    return applied
 
 
 def hook_prompt(jobs: list[dict]) -> str:

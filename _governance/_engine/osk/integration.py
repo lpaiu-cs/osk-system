@@ -24,14 +24,15 @@ UNLANDED = (
     "이 대화는 아직 소속 scope가 없다(시행령 §3 9항). 먼저 남길 것이 있는지 판정한다. 남길 것이 없으면 "
     "소속을 정하지 않고 no_value로 닫는다 — 닫음은 이번 범위에만 미치고, 대화가 이어지면 이어진 턴을 "
     "다시 판정한다. 남길 것이 있으면 다음 순서로 소속을 정한다. ① 그 활동의 scope가 있으면 그 scope다 — "
-    "같은 활동의 다른 이름, 같은 저장소와 그 포크·하위 모듈, 기존 scope의 활동 범위 안의 작업이 든다. "
-    "② 없고 고유한 작업 대상(저장소·프로젝트·연구 과제)을 가진, 이어지는 활동이면 그 정본 이름으로 scope를 "
+    "같은 활동의 다른 이름, 같은 저장소와 그 포크, 기존 scope의 활동 범위 안의 작업이 든다 — 다른 활동의 "
+    "저장소를 모듈로 품은 프로젝트에서 그 모듈을 고친 작업은 그 모듈의 활동의 scope다. "
+    "② 없고 고유한 작업 대상(저장소·연구 과제 등)을 가진, 이어지는 활동이면 그 정본 이름으로 scope를 "
     "새로 연다. ③ 둘 다 아니면 scope를 열지 않는다 — Person에 둘 것만 Person Space에 두고, 그 근거 "
-    f"라운드는 cite_round(space=\"{core.PERSON}\")로 인용한다. Person에 쓰기 전에 그 facet의 율령 노드"
+    "라운드는 cite_round로 인용한다(인용 기록은 루트 `_cited/` 한 자리라 착지가 필요 없다). Person에 쓰기 전에 그 facet의 율령 노드"
     "(`<facet>-law`)를 먼저 읽고, 활성인 율령이 없으면 쓰지 않는다 — 대화 안에서는 율령 작성을 사용자에게 "
     "제안하고, 정기 실행은 deferred로 남긴다(시행령 §4 8항). "
-    f"①·②는 cite_round(space=\"{SCOPE}/<이름>\")의 "
-    "첫 인용이 이 대화의 착지로 고정한다. 그 scope를 overview로 보고 허브 트리에서 노드의 자리를 정한다.\n")
+    f"①·②의 노드는 create_node(space=\"{SCOPE}/<이름>\")로 그 scope에 쓴다 — 성공한 쓰기가 그 scope를 "
+    "이 프로젝트의 결속에 더한다. 그 scope를 overview로 보고 허브 트리에서 노드의 자리를 정한다.\n")
 
 
 def _identity(harness: str, conversation_id: str) -> str:
@@ -112,7 +113,7 @@ def _capture_recovery(s: dict) -> dict:
         basis = "recorded_phase" if phase != "unknown" else "legacy_diagnostic"
         if phase == "unknown":
             error = s["capture_error"]
-            if any(t in error for t in ("착지", "세션 키", "scope changed", "scope is invalid")):
+            if any(t in error for t in ("착지", "프로젝트 키", "프로젝트 키", "scope changed", "project changed", "scope is invalid")):
                 phase = "landing"
             elif any(t in error for t in ("prefix", "접두부", "저장된 기록보다 짧다")):
                 phase = "replay"
@@ -136,7 +137,7 @@ def _capture_recovery(s: dict) -> dict:
                         phase = "awaiting_native"
         actions = {
             "awaiting_native": "같은 대화의 원본이 생성된 뒤 다시 capture한다.",
-            "landing": "기존 대화의 scope를 유지하며 명시적인 세션 키와 착지를 확인한다.",
+            "landing": "기존 대화의 scope를 유지하며 명시적인 프로젝트 키와 착지를 확인한다.",
             "source": "같은 대화 ID의 원본을 복구하거나 올바른 전사 경로를 명시한다.",
             "read": "원본의 대화 ID·형식·연결된 과거 전사를 확인하고 같은 대화로 재시도한다.",
             "replay": "추적 중인 턴 순서와 원본 접두부(이어받은 부모 턴 포함)를 확인한다. 기존 좌표나 검토 커서를 초기화하지 않는다.",
@@ -206,20 +207,30 @@ def blocked(limit: int = 10) -> dict:
     return {"count": len(rows), "conversations": rows[:limit]}
 
 
-def memory_seen(harness: str, conversation_id: str, digest: str) -> bool:
+def memory_seen(harness: str, conversation_id: str, digest: str, scope: str | None = None) -> bool:
     """Was this conversation last given the shared memory at exactly `digest`? A hook then
-    carries one line instead of the whole text; a changed hash carries the whole again."""
+    carries one line instead of the whole text; a changed hash carries the whole again.
+    `scope` names a bound scope other than the primary — each keeps its own last digest."""
     with _locked(harness, conversation_id) as p:
-        return _load(p, harness, conversation_id).get("memory_shown") == digest
+        s = _load(p, harness, conversation_id)
+        shown = (s.get("memory_shown_bound") or {}).get(scope) if scope else s.get("memory_shown")
+        return shown == digest
 
 
-def note_memory(harness: str, conversation_id: str, digest: str) -> None:
+def note_memory(harness: str, conversation_id: str, digest: str, scope: str | None = None) -> None:
     """The hook's output really carried the whole shared memory at `digest`."""
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
-        if s.get("memory_shown") != digest:
+        if scope:
+            shown = dict(s.get("memory_shown_bound") or {})
+            if shown.get(scope) == digest:
+                return
+            s["memory_shown_bound"] = {**shown, scope: digest}
+        elif s.get("memory_shown") == digest:
+            return
+        else:
             s["memory_shown"] = digest
-            _save(p, s)
+        _save(p, s)
 
 
 def turn_key(harness: str, round_id: str) -> str:
@@ -297,7 +308,7 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         return _fork_parent_turns(s, rounds, dialogue_v1)
     if s["harness"] != "claude":
         return rounds
-    path = raw.record_path(raw._scope_of_space(s["space"]), s["record"]) if s["space"] else None
+    path = raw.locate_record(s["record"])        # 루트 `_cited/` 또는 옛 자리 — 착지와 무관하다
     inherited = (raw.inherited_prefix(path) if path else None) or s.get("inherited")
     if not inherited and (path and path.exists() or s["rounds"]):
         return rounds  # A conversation already tracking its own turns keeps them.
@@ -392,7 +403,7 @@ def _locate_transcript(harness: str, sid: str, saved: str | None = None) -> str 
 
 
 def _workspace(s: dict, path: str | None, cwd: str | None) -> bool:
-    """이 대화의 작업 폴더가 일회성 작업 공간인가(Mechanism §6-2 6항) — 처음 알 수 있을 때 한 번
+    """이 대화의 작업 폴더가 일회성 작업 폴더인가(Mechanism §6-2 6항) — 처음 알 수 있을 때 한 번
     판별해 대화에 고정한다. 원본 전사가 적은 작업 폴더를 먼저 쓰고, 없으면 훅의 작업 폴더를 쓴다.
     판별은 그 대화의 것이다 — 같은 이름의 키를 쓰는 다른 세션에 번지지 않는다."""
     if "workspace" not in s:
@@ -422,33 +433,33 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
         _save(p, s)  # Persist intent before reading; failures remain pending.
         phase = "landing"
         try:
-            # 일회성 작업 공간의 대화는 그 키에 선 결속을 따르지 않는다 — 착지는 대화에 고정한 것뿐이다
+            # 일회성 작업 폴더의 대화는 그 키에 선 결속을 따르지 않는다 — 착지는 대화에 고정한 것뿐이다
             follow = not _workspace(s, (str(Path(transcript_path).resolve()) if transcript_path else None)
                                     or s.get("capture_path") or s["transcript_path"], cwd)
             pinned = s["space"]
-            stored = next((r["ref"] for r in s["rounds"] if not raw.is_native(r["ref"])), None)
-            if not pinned and stored:
-                name, _ = raw.parse_ref(stored)
-                pinned = "/".join(raw._raw_file(name).relative_to(core.ROOT).parts[:2])
             if pinned:
                 scope = raw._scope_of_space(pinned)
                 if not scope:
                     raise ValueError("saved conversation scope is invalid; capture remains pending")
                 pinned = (SCOPE + '/') + scope
-            destination, bound = write.resolve_landing(session if follow else None, space, raw._CONFINE)
+            # 착지는 검토의 문맥(허브 트리·조직 검토)이지 인용 기록의 자리가 아니다 — 기록은 루트
+            # `_cited/` 한 자리다(헌법 4조 3항). 명시한 space가 먼저, 다음이 고정된 착지, 그 다음이
+            # 프로젝트의 주된 scope다. 한 대화가 여러 scope의 활동을 품을 수 있으니 바뀌어도 거부하지 않는다.
+            destination, primary = write.resolve_landing(session if follow else None, space, "")
             requested = (SCOPE + '/') + destination if destination else None
             if pinned and not requested and s["session"]:
-                # A generic cwd key must not bind unrelated conversations.
-                # Resume this native ID using its explicitly chosen session.
+                # 흔한 작업 폴더 키가 무관한 대화를 제 결속으로 끌지 않게 — 착지가 고정된 대화는
+                # 제가 고른 키로 이어진다
                 session = s["session"]
-                destination, bound = write.resolve_landing(session if follow else None, pinned, raw._CONFINE)
+                destination, primary = write.resolve_landing(session if follow else None, pinned, "")
                 requested = (SCOPE + '/') + destination
-            if (pinned and requested and pinned != requested
-                    or s["session"] and s["session"] != session
-                    and not (bound and requested == pinned or not pinned and requested)):
+            if (s["session"] and s["session"] != session
+                    and not (primary and requested == pinned or not pinned and requested)):
+                # 키가 바뀐 재포착은 같은 scope로 이어질 때만 받는다 — 흔한 폴더 이름의 키가
+                # 무관한 대화를 제 결속으로 끌어가지 않게 한다
                 raise ValueError("conversation scope changed; existing capture was not moved")
             s["session"] = session
-            s["space"] = pinned or requested
+            s["space"] = requested if space else (pinned or requested)
             requested_path = (str(Path(transcript_path).resolve()) if transcript_path else
                               s.get("capture_path") or s["transcript_path"])
             if not s["transcript_path"]:
@@ -606,11 +617,23 @@ def _verify_native(s: dict, rounds: list) -> dict:
 
 
 def acknowledge(harness: str, conversation_id: str, through: str,
-                outcome: str, reason: str, targets: list | None = None) -> dict:
+                outcome: str, reason: str, targets: list | None = None,
+                primary_scope: str | None = None) -> dict:
+    """`primary_scope`는 이 검토의 소속 판정이 **그 프로젝트 자체의 활동**이 속한 scope로 확인한
+    것이다 — 결정 묶음의 한 항목이며 실행기(이 함수)가 주된 scope 지정 기록으로 적는다(Mechanism
+    §6-2 6항 · §9-4 3항). 일회성 작업 폴더의 대화에는 프로젝트가 없어 받지 않는다."""
     if outcome not in ("preserved", "summary", "no_value", "deferred") or not isinstance(reason, str) or not reason.strip():
         raise ValueError("outcome preserved|summary|no_value|deferred and nonempty reason required")
+    if primary_scope is not None and (not isinstance(primary_scope, str) or not primary_scope.strip()):
+        raise ValueError("primary_scope must be a scope name")
     with _locked(harness, conversation_id) as p, core.mutation_lock():
         s = _load(p, harness, conversation_id)
+        if primary_scope is not None:
+            if _one_off(s) or not s["session"]:
+                raise ValueError("a one-off workspace conversation has no project to designate a primary scope for")
+            primary_scope = raw._scope_of_space(primary_scope) or primary_scope.strip()
+            if primary_scope not in raw._scope_names():
+                raise ValueError(f"primary_scope is not a scope: {primary_scope}")
         snap = s["snapshots"].get(through)
         repair = s.get("repair_pending", {}).get(through)
         if not snap or snap["count"] <= s["reviewed_count"] and not repair:
@@ -640,17 +663,14 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 if receipt.get("status") != "complete" or not {raw.canonical_ref(ref) for ref in refs} & bound:
                     raise ValueError("target has no complete body/source/hub receipt for this snapshot")
                 target_path = core.resolve_in_root(receipt.get("target", {}).get("path", ""))
-                # Person 대상은 소속 scope 없는 세션이 Person에 둔 것뿐이다(시행령 §3 9항) — 그 근거 라운드는
-                # Person Space의 인용 기록에 있다(§2 8항)
                 kind = raw.graph.space_of(target_path)[0] if target_path is not None else None
-                if kind == "person" and not any(raw.is_person_record(src.get("path")) for src in sources):
-                    raise ValueError("a Person target cites rounds kept in Person Space (Bylaws §2 8)")
                 if kind not in ("scope", "person"):
                     raise ValueError("preserved integration target must be a durable Scope or Person node")
                 receipts.append(receipt)
         elif outcome == "summary":
-            # 일회성 작업 공간의 대화는 그 키의 결속이 아니라 대화에 고정한 착지의 기억을 본다
-            memory = scope_memory.read(None, s["space"]) if _one_off(s) else scope_memory.read(s["session"])
+            # 일회성 작업 폴더의 대화는 그 키의 결속이 아니라 대화에 고정한 착지의 기억을 본다
+            # 대화에 고정한 착지가 있으면 그 scope의 기억이다 — 프로젝트의 주된 scope와 다를 수 있다
+            memory = scope_memory.read(None if _one_off(s) else s["session"], s.get("space"))
             if not isinstance(targets, list) or not targets or not all(
                     isinstance(t, dict) and isinstance(t.get("text"), str) and t["text"].strip()
                     and t["text"] in memory["text"] for t in targets):
@@ -670,6 +690,10 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 s["reviewed_prompt_count"] = s["prompt_count"]
                 if s.get("response_growth"):
                     s["response_growth"]["attempted_count"] = s["response_growth"]["count"]
+        if primary_scope is not None and write.bindings(s["session"])["primary"] != primary_scope:
+            # 검토 저장 **앞에** 적는다 — 대장 쓰기가 실패하면 검토도 남지 않아 같은 through로
+            # 재시도할 수 있다. 지정이 먼저 서고 저장이 실패해도 재시도는 같은 판정이라 건너뛴다.
+            write.set_primary(s["session"], primary_scope, "대화 검토의 소속 판정")
         _save(p, s)
         return _view(s)
 
@@ -1121,14 +1145,20 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                      + ", ".join(t.get("name") or t["id"] for t in st["repair"]["targets"]) + "\n")
     from . import organization
     jobs = []
+    # 대화에 고정한 착지(capture의 space)가 검토 문맥의 scope다 — 프로젝트의 주된 scope와 다를 수
+    # 있다(시행령 §3 9항). 고정이 없을 때만 결속 scope를 주된 scope부터, 없으면 결속 순서대로 본다(§9-3 1항).
+    pinned = raw._scope_of_space(s["space"]) if s.get("space") else None
     try:
-        scope = write.resolve_session(st["session"]) if st.get("session") and not _one_off(s) else None
+        scopes = write.bound_scopes(st["session"]) if st.get("session") and not _one_off(s) else []
     except (OSError, ValueError, write.WriteError):
-        scope = None
+        scopes = []
+    if pinned and scopes:
+        scopes = [pinned, *[x for x in scopes if x != pinned]]
+    scope = scopes[0] if scopes else None       # 허브 트리의 scope — 고정한 착지, 없으면 주된 scope
     try:
         with core.mutation_lock():
-            jobs = (organization.pending([scope], limit=1, record=True)
-                    if scope and include_organization else [])
+            jobs = (organization.pending(scopes, limit=1, record=True)
+                    if scopes and include_organization else [])
     except (OSError, ValueError, write.WriteError) as exc:
         text += f"참조·조직 검토는 대기 중이다: {exc}. 아래 대화 통합은 계속한다.\n"
     st["organization_jobs"] = jobs
@@ -1167,10 +1197,19 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     stored = [ref for ref in st["pending_refs"] if not raw.is_native(ref)]
     workspace = s.get("workspace") or {}
     if workspace.get("warning"):
-        text += f"작업 공간 판별: {workspace['warning']}\n"
+        text += f"작업 폴더 판별: {workspace['warning']}\n"
     if workspace.get("one_off"):
-        text += ("이 대화의 작업 폴더는 일회성 작업 공간이라 세션 키를 결속하지 않는다(Mechanism §6-2 6항) — "
+        text += ("이 대화의 작업 폴더는 일회성 작업 폴더라 프로젝트 키를 결속하지 않는다(Mechanism §6-2 6항) — "
                  "쓰기 도구에 session을 주지 말고, 노드를 쓸 때마다 space를 준다.\n")
+    elif st.get("session"):
+        # 한 프로젝트가 여러 scope의 활동을 품는다(시행령 §3 10항) — 결속과 주된 scope를 알려 착지를 고르게 한다
+        b = write.bindings(st["session"])
+        if b["scopes"]:
+            text += (f"이 프로젝트의 결속: {', '.join(b['scopes'])}"
+                     + (f" · 주된 scope {b['primary']}" if b["primary"] else
+                        " · 주된 scope 없음 — 노드를 쓸 때마다 space를 준다")
+                     + ". 다른 scope의 활동이면 create_node의 space에 그 scope를 준다(결속에 더해진다). "
+                       "이 프로젝트 자체의 활동이 속한 scope를 확인했으면 review의 primary_scope로 지정한다.\n")
     text += "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. "
     # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
     tree_scope = scope or (raw._scope_of_space(s["space"]) if s.get("space") else None)
@@ -1263,23 +1302,8 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
     session = session or s["session"]
     if not session:
         raise ValueError("this conversation is not tracked yet; its hooks or `integration capture` set its session")
-    # 소속 없는 대화의 착지는 첫 인용이 그 대화에 고정한다(Mechanism §6-2 6항 · §9-4 3항). Person은
-    # 소속 scope가 없을 때만이고(시행령 §2 8항), 고정된 착지와 다른 scope로는 나누지 않는다.
-    # 일회성 작업 공간의 대화는 그 키에 선 결속을 따르지도, 새로 세우지도 않는다.
-    one_off = _one_off(s)
-    bound = None if one_off else write.resolve_session(session)
-    landed = s["space"] or (f"{SCOPE}/{bound}" if bound else None)
-    if not landed:
-        # 기록을 쓰고 착지를 고정하기 전에 끊긴 인용 — 그 대화의 기록이 있는 scope가 착지다
-        found = next((sc for sc in raw._scope_names() if raw.record_path(sc, s["record"]).exists()), None)
-        if found:
-            landed = s["space"] = f"{SCOPE}/{found}"
-            _save(p, s)
-    if raw.is_person(space) and landed:
-        raise ValueError(f"this conversation belongs to {landed}; cite into that scope, not Person Space")
-    if (space and not raw.is_person(space) and landed
-            and raw._scope_of_space(space) != raw._scope_of_space(landed)):
-        raise ValueError(f"this conversation already landed in {landed}; omit space")
+    # 인용 기록은 루트 `_cited/` 한 자리다(헌법 4조 3항) — 인용에 착지도 결속도 필요 없다. 대화의
+    # 착지(`s["space"]`)는 검토의 문맥일 뿐이고, `space`는 호환 인자다.
     source = _locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
     if not (source and Path(source).is_file()):
         source = None
@@ -1335,14 +1359,8 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         with _locked(harness, owner) as pp:
             parent = _load(pp, harness, owner)
         record = parent["record"]
-        if raw.is_person(space) and (parent["space"] or not _one_off(parent) and parent["session"]
-                                     and write.resolve_session(parent["session"])):
-            raise ValueError("the fork parent belongs to a scope; cite its turn there, not in Person Space")
     result = raw.append_rounds(session, record, [{"user": words, "agent": (note or "").strip()}],
-                               space or s["space"], cited=meta, bind=not one_off)
-    if not landed and not raw.is_person(space):
-        s["space"] = f"{SCOPE}/{raw.graph.space_of(core.ROOT / result['path'])[1]}"
-        _save(p, s)
+                               cited=meta)
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
            "index": result["indices"][0], "turn": rid, "reused": result.get("reused", False),
            "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],

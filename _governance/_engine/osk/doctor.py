@@ -217,7 +217,7 @@ def _delivery(start: dict | None, overview: dict) -> dict | None:
                      "훅 문맥이 모델에 닿았다고 본다")
     return _item("info", "전달", f"마지막 세션 시작({_kst(at)}, session={session}) 뒤 overview 기록이 없다 "
                  "— 훅 문맥이 모델에 닿았는지 알 수 없다",
-                 '새 세션에서 에이전트에게 "osk 훅이 알려 준 세션 키가 뭐야?"라고 묻는다 — '
+                 '새 세션에서 에이전트에게 "osk 훅이 알려 준 프로젝트 키가 뭐야?"라고 묻는다 — '
                  "저장소 이름으로 답해야 한다")
 
 

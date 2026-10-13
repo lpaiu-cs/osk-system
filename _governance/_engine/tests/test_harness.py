@@ -283,7 +283,8 @@ assert runs.read()['overview'] == {}, 'overview without a session was recorded'
 out = M.overview(session='proj')
 assert 'session_scope' in out and not set(out) - {'clusters', 'open_cases', 'broken', 'nodes', 'engine_rev',
                                                   'engine_stale', 'engine_disk_rev', 'engine_observed_at',
-                                                  'rechecks', 'update', 'session_scope'}, out
+                                                  'rechecks', 'update', 'session_scope', 'bindings'}, out
+assert out['bindings'] == {'scopes': [], 'primary': None, 'undetermined': False}, out   # 결속 집합(Mechanism §6-2 6항)
 assert runs.read()['overview']['proj'] >= runs.read()['runs']['claude/start']['at']
 # Blocks a hook folded for its host's limit come back by name (osk.hook_text).
 out = M.overview(session='proj', include=['tidy', 'organization', 'recovery'])

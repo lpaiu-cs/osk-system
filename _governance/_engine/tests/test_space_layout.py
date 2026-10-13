@@ -39,7 +39,7 @@ assert idx.nodes and not idx.broken
 assert idx.resolve('00_Scope/W1/W1')[0] == 'node'
 assert graph.scope_of_space('00_Scope/W1') == 'W1'
 assert graph.scope_of_space('= Scope/W1') == 'W1'
-assert raw.record_path('W1', 'fixture').is_relative_to(core.ROOT / core.SCOPE)
+assert raw.record_path('W1', 'fixture').is_relative_to(core.ROOT / '_cited')   # 루트 `_cited/` (헌법 4조 3항)
 assert update._allowed_skel('00_Scope') == core.ROOT / core.SCOPE
 assert approvals.state(region) == 'clean'
 assert approvals.working_tree_hash(region) == snapshot

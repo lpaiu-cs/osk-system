@@ -41,11 +41,12 @@ A vault is one self-contained directory tree, normally a Git repository
 
 | Path | Contents | Nodes |
 |---|---|---|
-| `00_Scope/<scope>/` | a scope: nodes, sub-clusters, and `_cited/` (section 6.1) | yes |
+| `00_Scope/<scope>/` | a scope: nodes and sub-clusters (engines before v5.2 also kept `_cited/` here; section 6.1) | yes |
 | `00_Scope/Workbench/` | the operational scope (table below) | in `transit/` only |
 | `00_Domain/<domain>/` | a domain | yes |
 | `00_Person/<facet>/` | a facet | yes |
-| `00_Person/_cited/` | cited records of sessions that kept only Person knowledge, without a scope (section 6.1) | no |
+| `00_Person/_cited/` | cited records that v5.1 kept here; read as a legacy location (section 6.1) | no |
+| `_cited/` | the cited records, outside every Space (Constitution art. 4 §3; section 6.1) | no |
 | `_governance/` | the governing documents and `records/` | yes, special |
 | `_governance/_engine/` | the engine, sync tools and test suite | no |
 | `_sources/` | shared source material such as images and PDFs | no |
@@ -84,7 +85,6 @@ only inside a cluster that has a hub (Mechanism §6-2 3).
 | files directly in `Workbench/` | work state, not nodes |
 | `transit/` | transit nodes, the only nodes in Workbench |
 | `_ledger/` | the ledgers (section 4) and the approval store (section 5) |
-| `_cited/` | cited records of Workbench sessions (section 6.1) |
 | `_scope_memory/` | one scope-memory file per scope (section 6.2) |
 
 **Where nodes live.** Nodes live in the node compartments: the clusters of the
@@ -130,7 +130,7 @@ updated: "2026-08-02 15:30 (KST)"
 author: "agent"
 drafter: "opus-5.5"
 summary: "One line, at most 80 characters, without links"
-derived-from: ["[[Source node]]", "00_Scope/my-app/_cited/.records/claude-3f9c2a7e5b1d4c8e9a0b6d2f7e1c5a39.txt#2"]
+derived-from: ["[[Source node]]", "_cited/.records/claude-3f9c2a7e5b1d4c8e9a0b6d2f7e1c5a39.txt#2"]
 ---
 
 Body in Markdown, with links such as [[Another node]].
@@ -237,7 +237,7 @@ The body is Markdown, as Obsidian reads it.
 | Target | Stored form |
 |---|---|
 | a node | its title as a quoted wikilink: `"[[Title]]"` |
-| a cited round | the plain coordinate, quoted: `"00_Scope/<scope>/_cited/.records/<record>.txt#N"` |
+| a cited round | the plain coordinate, quoted: `"_cited/.records/<record>.txt#N"`. Older coordinates under a scope's `_cited/` or `_raw/`, or under `00_Person/_cited/`, resolve to the record of the same name |
 | another non-node file | a quoted path wikilink: `"[[_sources/plan.pdf]]"` or `"[[path#Heading]]"` |
 
 - A node target never uses a path: paths break when nodes move, and titles are
@@ -262,7 +262,8 @@ form.
 **Resolving a name.** For Links and Predicate Edges alike:
 
 1. An `http://` or `https://` URL is external.
-2. A name containing `/_cited/` or `/_raw/` is a cited record.
+2. A name under `_cited/` (the root compartment, or a legacy scope or Person
+   location) or under `_raw/` is a cited record.
 3. A name matching the id pattern is a node id.
 4. A name containing `/` is a vault-relative path, tried as given and with
    `.md` appended, confined to the vault.
@@ -744,19 +745,18 @@ as `native:<harness>:<conversation ID>:<turn ID>` with a hash, and a round
 enters a record only when the MCP tool `cite_round` cites that turn
 (Mechanism §9 9).
 
-- **Path.** `00_Scope/<scope>/_cited/.records/<record>.txt`. When
-  `<record>.txt` would be longer than 255 bytes, the record is
-  `00_Scope/<scope>/_cited/.records/<record>/record.txt` (Mechanism §9 5). A
-  session that kept only Person knowledge, without a scope, keeps its record in
-  `00_Person/_cited/.records/` (Bylaws §3 9, §2 8). If that session later
-  belongs to a scope, its new rounds go to that scope's record, and the Person
-  record stays.
-- **Records in `_raw/`.** Records that older engines wrote under
-  `00_Scope/<scope>/_raw/`, in the same two layouts or as
-  `00_Scope/<scope>/_raw/<record>.md`, read as cited records of the same name.
-  A record with the same name in `_raw/` stays the canonical record and takes
-  new citations; a new record is created in `_cited/`. Nothing is moved from
-  `_raw/` to `_cited/`. The engine renames a `.md` record, bytes unchanged, to
+- **Path.** `_cited/.records/<record>.txt`, at the vault root, outside every
+  Space (Constitution art. 4 §3). When `<record>.txt` would be longer than 255
+  bytes, the record is `_cited/.records/<record>/record.txt` (Mechanism §9 5).
+  A record belongs to no scope: which scopes a conversation's knowledge belongs
+  to is a judgement about its nodes, not about the record.
+- **Legacy locations.** Records that engines before v5.2 wrote under
+  `00_Scope/<scope>/_cited/`, `00_Scope/<scope>/_raw/` (in the same two layouts
+  or as `00_Scope/<scope>/_raw/<record>.md`) and `00_Person/_cited/` read as
+  cited records of the same name. A record with the same name in a legacy
+  location stays the canonical record and takes new citations; a new record is
+  created at the root. Nothing is moved automatically; moving legacy records to
+  the root is a separate change set. The engine renames a `.md` record, bytes unchanged, to
   its `.txt` path when a citation next appends to it, and
   `osk raw migrate --apply` renames all of them. When both forms exist, the
   engine refuses to choose. The validator reports `.md` records.

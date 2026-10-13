@@ -1106,6 +1106,8 @@ class ResponseGrowthTests(unittest.TestCase):
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
             scope_memory.replace('own', 'shared memory sentinel', space='00_Scope/W1')
+            from osk import write
+            write.set_primary('own', 'W1', 'test')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
@@ -1411,6 +1413,8 @@ class HookBudgetTests(unittest.TestCase):
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
             scope_memory.replace('own', 'first memory sentinel', space='00_Scope/W1')
+            from osk import write
+            write.set_primary('own', 'W1', 'test')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
@@ -1440,6 +1444,30 @@ class HookBudgetTests(unittest.TestCase):
             assert '이 대화에 앞서 실은 전문과' in line.text and line.label.startswith('scope 기억'), line
             folded, gone = assemble([line], 200, session='own')
             assert gone == {'memory'} and 'scope_memory(session="own")' in folded, folded
+        ''')
+
+    def test_review_turn_carries_bound_scope_memory_without_a_primary(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory, write
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', 'bound memory sentinel', space='00_Scope/W1')
+            assert write.bindings('own') == {'scopes': ['W1'], 'primary': None, 'undetermined': False}
+            native = core.ROOT/'native.jsonl'
+            native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
+                json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
+                hook.capture_block(env,'own',startup=True)
+                seen = {n: hook.capture_block(env,'own') for n in range(1,16)}
+            assert 'bound memory sentinel' in seen[9], seen[9]
+            assert 'space="00_Scope/W1"' in seen[9], seen[9]          # 전문 블록의 수정 안내도 space를 명시한다
+            assert 'bound memory sentinel' not in seen[15], seen[15]
+            assert 'scope_memory(session="own", space="00_Scope/W1")' in seen[15], seen[15]
+            assert '주된 scope 없음' in seen[9], seen[9]
         ''')
 
 

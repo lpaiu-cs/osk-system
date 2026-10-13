@@ -186,7 +186,7 @@ class CodexForkTests(unittest.TestCase):
         cited = it.cite("codex/" + self.child, quote="question p1")
         _, header = raw.find_cited(core.ROOT / cited["path"], raw.native_ref("codex", self.parent, "p1"))
         self.assertEqual(header["conversation"], self.parent)
-        self.assertTrue(cited["path"].startswith("00_Scope/Forks/"), cited)
+        self.assertTrue(cited["path"].startswith("_cited/.records/"), cited)     # the one root record
 
     def test_parent_cursor_with_stored_and_native_turns_is_left_alone(self):
         parent = self.page(self.parent, self.parent, turn(self.parent, "p1") + turn(self.parent, "p2"))

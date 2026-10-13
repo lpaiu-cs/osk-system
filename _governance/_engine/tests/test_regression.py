@@ -2953,15 +2953,14 @@ def test_bind_after_write_receipt():
           (r.get("binding") or {}).get("state") == "unconfirmed"
           and r.get("bound_scope") is None and "PermissionError" in r["binding"]["error"], r)
     check("노드는 실제로 섰다", (ROOT / "00_Scope/W1/regr-bindfail.md").exists())
-    check("인용 기록도 ok와 영수증",
-          rr.get("ok") and rr.get("index") == 1
-          and (rr.get("binding") or {}).get("state") == "unconfirmed", rr)
+    check("인용 기록은 결속하지 않으므로 영수증도 없다 (v5.2)",
+          rr.get("ok") and rr.get("index") == 1 and "binding" not in rr, rr)
     # 영수증이 안내한 대로 — 같은 session과 space로 다음 쓰기를 하면 결속이 선다
     r2 = _w(write.create_node, "regr-bindfail-2", "s", "본문", "fable-5",
             session="regr-bindfail-a", space="00_Scope/W1")
     check("안내대로 다음 쓰기에서 결속이 선다",
           r2.get("ok") and r2.get("bound_scope") == "W1" and "binding" not in r2
-          and write.resolve_session("regr-bindfail-a") == "W1", r2)
+          and write.bindings("regr-bindfail-a")["scopes"] == ["W1"], r2)
 
 
 def test_mcp_hardening_fail_closed():
@@ -3190,9 +3189,11 @@ def test_write_routing():
     check("최초 세션은 space를 요구한다", not r["ok"], r)
     r = _w(write.create_node, "regr-r1", "라우팅", "본문", "fable-5",
            session="repo/alpha", space="00_Scope/W1")
-    check("space를 주면 생성되고 세션이 확정된다",
+    check("space를 주면 생성되고 결속에 더한다",
           r["ok"] and r["bound_scope"] == "W1", r)
-    check("확정 후 자동 라우팅", write.resolve_session("repo/alpha") == "W1")
+    check("쓰기는 주된 scope를 정하지 않는다 (v5.2)", write.resolve_session("repo/alpha") is None)
+    write.set_primary("repo/alpha", "W1", "시험 지정")
+    check("지정 후 자동 라우팅", write.resolve_session("repo/alpha") == "W1")
     r = _w(write.create_node, "regr-r2", "자동", "본문", "fable-5",
            session="repo/alpha")
     check("두 번째부터는 space 없이 착지", r["ok"] and "W1" in r["path"], r)
@@ -3224,6 +3225,7 @@ def test_write_session_alias():
     r = _w(write.create_node, "regr-a1", "별칭", "본문", "fable-5",
            session="older-name", space="00_Scope/W1")
     check("구 이름으로 최초 확정", r["ok"], r)
+    write.set_primary("older-name", "W1", "구 이름으로 지정")
     for name in ("older-name", "old-name", "new-name"):
         check(f"{name}으로 들어와도 같은 scope",
               write.resolve_session(name) == "W1", write.resolve_session(name))
@@ -3564,12 +3566,118 @@ def test_bound_scope_honest():
             session="repo/gamma", space="00_Scope/W1")
     check("scope 착지에서 결속하고 그때만 보고",
           r2["ok"] and r2.get("bound_scope") == "W1", r2)
-    r3 = _w(write.create_node, "regr-bs-3", "이미 결속", "본문", "fable-5",
-            session="repo/gamma")
-    check("이미 결속된 세션은 다시 보고하지 않는다",
-          r3["ok"] and r3.get("bound_scope") is None, r3)
-    for nm, sp in (("regr-bs-dom", "00_Domain/D1"), ("regr-bs-sc", "00_Scope/W1"),
-                   ("regr-bs-3", "00_Scope/W1")):
+
+
+# ── 14r. 프로젝트 결속은 집합, 주된 scope는 지정 (Mechanism §6-2 6항 · 시행령 §3 10항) ──
+def test_project_bindings():
+    """쓰기는 결속에 더할 뿐 주된 scope를 정하지 않는다. 주된 scope는 표시 기록이 정하고,
+    v5.2 전의 결속 기록(`primary` 없음)은 주된 scope로 읽는다. 결속 밖 scope를 명시한
+    쓰기는 거부되지 않는다 — 한 프로젝트가 여러 scope의 활동을 품는다. 인용 기록은
+    루트 `_cited/` 한 자리라 어느 scope를 말해도 같은 기록이다."""
+    from osk import raw, organization
+    core.ROUTING.unlink(missing_ok=True)
+    for n in ("WBindA", "WBindB", "WBindC", "WBindD", "WBindE"):
+        d = ROOT / f"00_Scope/{n}"
+        d.mkdir(exist_ok=True)
+        hub = d / f"{n}.md"
+        if not hub.exists():
+            hub.write_text(node_text(f"260802-zzzz-{n[-1].lower()}bnd", f"{n} 허브"), encoding="utf-8")
+    P = "repo/regr-project"
+    # ① 첫 쓰기는 결속에 더할 뿐 주된 scope가 없다
+    r = _w(write.create_node, "regr-pb-1", "결속", "본문", "fable-5", session=P, space="00_Scope/WBindA")
+    check("첫 쓰기가 결속에 더한다", r.get("ok") and r.get("bound_scope") == "WBindA", r)
+    b = write.bindings(P)
+    check("결속 집합에 들었다", b["scopes"] == ["WBindA"], b)
+    check("주된 scope는 아직 없다", b["primary"] is None and write.resolve_session(P) is None, b)
+    r = _w(write.create_node, "regr-pb-2", "기본 착지", "본문", "fable-5", session=P)
+    check("주된 scope 없이는 space를 요구한다",
+          not r.get("ok") and "주된 scope가 없다" in " ".join(r.get("violations", [])), r)
+    # ② 결속 밖 scope도 거부하지 않고 집합에 더한다
+    r = _w(write.create_node, "regr-pb-3", "다른 scope", "본문", "fable-5", session=P, space="00_Scope/WBindB")
+    check("결속 밖 scope 쓰기는 통과하고 결속에 더한다", r.get("ok") and r.get("bound_scope") == "WBindB", r)
+    check("집합은 순서대로", write.bindings(P)["scopes"] == ["WBindA", "WBindB"], write.bindings(P))
+    r = _w(write.create_node, "regr-pb-4", "같은 scope", "본문", "fable-5", session=P, space="00_Scope/WBindB")
+    check("이미 결속된 scope는 새 결속으로 보고하지 않는다", r.get("ok") and r.get("bound_scope") is None, r)
+    # ③ 주된 scope의 지정 — 그 뒤 space 없는 쓰기가 거기 간다
+    write.set_primary(P, "WBindA", "시험 지정")
+    check("지정이 주된 scope를 세운다", write.resolve_session(P) == "WBindA")
+    r = _w(write.create_node, "regr-pb-5", "기본 착지", "본문", "fable-5", session=P)
+    check("space 없는 쓰기는 주된 scope로", r.get("ok") and "WBindA" in r["path"], r)
+    # ④ v5.2 전의 결속 기록(`primary` 없음)은 주된 scope로 읽는다
+    core.ledger_append(core.ROUTING, {"kind": "bind", "session": "repo/regr-legacy",
+                                      "scope": "WBindC", "reason": "구판"})
+    check("옛 결속은 주된 scope다", write.resolve_session("repo/regr-legacy") == "WBindC")
+    # ⑤ 해제는 집합에서 빼고, 주된 scope였으면 비운다
+    write.unbind_session(P, "WBindA", "시험 해제")
+    b = write.bindings(P)
+    check("해제가 집합과 주된 scope를 비운다", b["scopes"] == ["WBindB"] and b["primary"] is None, b)
+    # ⑥ 결속 검토 — 셋 초과·주된 scope 없음, 판정의 적용
+    for n in ("WBindC", "WBindD", "WBindE"):
+        _w(write.create_node, f"regr-pb-{n}", "결속", "본문", "fable-5", session=P, space=f"00_Scope/{n}")
+    audit = {a["project"]: a for a in organization.bindings_audit()}
+    check("결속 검토가 셋 초과와 주된 scope 없음을 싣는다",
+          P in audit and {"over_limit", "no_primary"} <= set(audit[P]["flags"]), audit.get(P))
+    check("옛 결속만 있는 프로젝트는 검토 대상이 아니다", "repo/regr-legacy" not in audit, sorted(audit))
+    applied = organization.apply_binding_decisions(
+        [{"project": P, "action": "primary", "scope": "WBindB", "reason": "자체 활동"}])
+    check("검토 판정이 주된 scope를 지정한다", bool(applied) and write.resolve_session(P) == "WBindB", applied)
+    check("지정 뒤에는 주된 scope 없음 표지가 사라진다",
+          "no_primary" not in {f for a in organization.bindings_audit(P) for f in a["flags"]})
+    check("결속 검토 문구는 판정 넷을 말한다", "주된 scope 지정" in organization.bindings_prompt(P))
+    # ⑦ 인용 기록은 루트 한 자리 — 어느 scope를 말해도 같은 기록, 결속도 바뀌지 않는다
+    rr = _w(raw.append_rounds, P, "pb-rec", [{"user": "q", "agent": "a"}], "00_Scope/WBindA")
+    check("인용 기록은 루트 `_cited/`에 선다", (rr.get("round_refs") or [""])[0].startswith("_cited/.records/"), rr)
+    rr2 = _w(raw.append_rounds, P, "pb-rec", [{"user": "q2", "agent": "a2"}], "00_Scope/WBindB")
+    check("다른 scope를 말해도 같은 기록에 잇는다", rr2.get("indices") == [2], rr2)
+    check("인용은 결속을 바꾸지 않는다",
+          write.bindings(P)["scopes"] == ["WBindB", "WBindC", "WBindD", "WBindE"], write.bindings(P))
+    # ⑧ 잘못된 판정 묶음은 통째로 거부된다 — 앞의 판정도 적용되지 않는다(#191 리뷰 P2)
+    before = write.bindings(P)
+    try:
+        organization.apply_binding_decisions(
+            [{"project": P, "action": "unbind", "scope": "WBindC", "reason": "x"},
+             {"project": P, "action": "primary", "scope": "NoSuchScope", "reason": "x"}])
+        check("잘못된 판정 묶음은 통째로 거부된다", False, "거부하지 않았다")
+    except ValueError:
+        check("잘못된 판정 묶음은 통째로 거부된다", write.bindings(P) == before, write.bindings(P))
+    # ⑧-2 중간에 실패한 묶음은 같은 묶음의 재시도가 남은 판정부터 잇는다(#191 리뷰 3차)
+    real_unbind, calls = write.unbind_session, []
+
+    def flaky(*a, **kw):
+        calls.append(a)
+        if len(calls) == 2:
+            raise OSError("disk")
+        return real_unbind(*a, **kw)
+    batch = [{"project": P, "action": "unbind", "scope": s, "reason": "x"} for s in ("WBindD", "WBindE")]
+    with mock.patch.object(write, "unbind_session", flaky):
+        try:
+            organization.apply_binding_decisions(batch)
+            check("중간 실패는 예외로 드러난다", False, "예외가 없었다")
+        except OSError:
+            check("중간 실패는 예외로 드러난다 — 앞의 판정은 적용됐다",
+                  write.bindings(P)["scopes"] == ["WBindB", "WBindC", "WBindE"], write.bindings(P))
+    organization.apply_binding_decisions(batch)
+    check("같은 묶음의 재시도가 남은 판정만 적용한다",
+          write.bindings(P)["scopes"] == ["WBindB", "WBindC"], write.bindings(P))
+    # ⑨ 주된 scope 지정의 분기는 일반 결속이 해소하지 못한다(#191 리뷰 P1)
+    F = "repo/regr-fork"
+    a = write.set_primary(F, "WBindA", "기기 A의 지정")
+    ms = core._rid_parts(a["rid"])[0]
+
+    def forged(rid_ms, parents, scope, primary):
+        with open(core.ROUTING, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"rid": core._make_rid(rid_ms, 0), "parents": parents, "kind": "bind",
+                                "session": F, "scope": scope, "primary": primary,
+                                "at": core.now_iso()}) + "\n")
+    forged(ms + 5, [], "WBindB", True)                 # 다른 기기의 지정 — 비교 불능 분기
+    check("지정이 갈리면 미확정", write.bindings(F)["undetermined"] and write.resolve_session(F) is None)
+    forged(ms + 10, [a["rid"], core._make_rid(ms + 5, 0)], "WBindC", False)   # 양쪽을 조상으로 둔 일반 결속
+    b = write.bindings(F)
+    check("일반 결속은 지정의 분기를 해소하지 못한다",
+          b["undetermined"] and b["primary"] is None and b["scopes"] == ["WBindA", "WBindB", "WBindC"], b)
+    write.set_primary(F, "WBindA", "사용자 지정")
+    check("새 지정이 분기를 해소한다", write.resolve_session(F) == "WBindA", write.bindings(F))
+    for nm, sp in (("regr-bs-dom", "00_Domain/D1"), ("regr-bs-sc", "00_Scope/W1")):
         (ROOT / sp / f"{nm}.md").unlink(missing_ok=True)
 
 
@@ -3767,6 +3875,11 @@ def test_overview():
     check("결속이 없으면 허브 트리를 싣지 않는다", "hub_tree" not in o2, o2)
     r = _w(write.create_node, "regr-ov-b", "조망", "본문", "fable-5",
            session="regr-ov", space="00_Scope/W1")
+    o3 = M.overview("regr-ov")
+    check("결속은 있고 주된 scope가 없으면 결속만 싣는다 (v5.2)",
+          r.get("ok") and o3.get("bindings", {}).get("scopes") == ["W1"]
+          and o3.get("session_scope") is None and "hub_tree" not in o3, (r, o3.get("bindings")))
+    write.set_primary("regr-ov", "W1", "시험 지정")
     o3 = M.overview("regr-ov")
     check("결속된 session이면 그 scope의 허브 트리를 준다(시행령 §3 8항)",
           r.get("ok") and o3.get("session_scope") == "W1"
@@ -5523,15 +5636,15 @@ def test_raw_append():
     from osk import raw, secrets
     (ROOT / "00_Scope/WRaw").mkdir(exist_ok=True)
     S, REC = "repo/regr-raw", "2026-08-21-regr"
-    p = ROOT / "00_Scope/WRaw/_cited/.records" / f"{REC}.txt"
+    p = ROOT / "_cited/.records" / f"{REC}.txt"          # 루트 `_cited/` — 한 자리다(헌법 4조 3항)
 
     r1 = _w(_append_round, S, REC, "첫 질문", "첫 응답", space="00_Scope/WRaw")
     check("최초 라운드는 1", r1.get("index") == 1, r1)
     check("round_ref가 근거 표기 그대로다",
-          r1.get("round_ref") == f"00_Scope/WRaw/_cited/.records/{REC}.txt#1", r1)
-    check("첫 기록이 세션을 결속한다", write.resolve_session(S) == "WRaw")
+          r1.get("round_ref") == f"_cited/.records/{REC}.txt#1", r1)
+    check("인용은 결속을 세우지 않는다", write.resolve_session(S) is None)
 
-    r2 = _w(_append_round, S, REC, "둘째 질문", "둘째 응답")   # 라우팅으로 착지
+    r2 = _w(_append_round, S, REC, "둘째 질문", "둘째 응답")   # space 없이도 같은 기록
     check("index 단조 증가", r2.get("index") == 2, r2)
     body = p.read_text(encoding="utf-8")
     check("먼저 쓴 라운드가 그대로 남는다", "첫 질문" in body and "첫 응답" in body)
@@ -5582,10 +5695,9 @@ def test_raw_append():
     # 라운드는 쌍이다 / 착지·이름은 fail-closed
     check("빈 응답을 거부한다",
           _w(_append_round, S, REC, "질문만", "  ").get("ok") is False)
-    check("결속 없는 세션은 착지를 요구한다",
-          _w(_append_round, "repo/unbound-raw", "r", "q", "a").get("ok") is False)
-    check("맨 scope 이름을 거부한다",
-          _w(_append_round, "repo/x", "r", "q", "a", space="WRaw").get("ok") is False)
+    check("결속 없는 프로젝트의 인용도 루트 한 자리에 선다 (v5.2)",
+          _w(_append_round, "repo/unbound-raw", "regr-unbound-r", "q", "a")
+          .get("round_ref") == "_cited/.records/regr-unbound-r.txt#1")
     check("Windows 예약 장치명을 기록 이름으로 거부한다",
           _w(_append_round, S, "COM1", "q", "a").get("ok") is False)
 
@@ -5618,7 +5730,7 @@ def test_raw_read():
     그 값이 그대로 읽기의 입력이어야 근거에서 증거로 가는 데 번역이 끼지 않는다."""
     from osk import raw
     (ROOT / "00_Scope/WRawRd").mkdir(exist_ok=True)
-    SP, S, REC = "00_Scope/WRawRd", "repo/regr-read", "rec"
+    SP, S, REC = "00_Scope/WRawRd", "repo/regr-read", "read-rec"
 
     w = _w(raw.append_rounds, S, REC, [
         {"user": "첫 질문", "agent": "첫 응답"},
@@ -5657,10 +5769,12 @@ def test_raw_read():
                        ("맨 표기", f"{SP}/_cited/{REC}.md#1")):
         check(f"좌표 표기: {label}", _w(raw.read_round, ref).get("index") == 1)
 
-    # scope의 기록 목록 — 좌표를 모를 때의 출발점
-    ls = _w(raw.list_records, SP)
-    check("기록 목록", [x["record"] for x in ls.get("records", [])] == [REC], ls)
-    check("목록은 라운드 수를 센다", ls["records"][0]["rounds"] == 3, ls)
+    # 기록 목록 — 좌표를 모를 때의 출발점. 루트 `_cited/` 한 자리다(v5.2)
+    ls = _w(raw.list_records)
+    mine = [x for x in ls.get("records", []) if x["record"] == REC]
+    check("기록 목록", len(mine) == 1 and ls.get("scope") == "_cited", ls.get("scope"))
+    check("목록은 라운드 수를 센다", bool(mine) and mine[0]["rounds"] == 3, mine)
+    check("옛 자리의 목록은 비어 있다", _w(raw.list_records, SP).get("records") == [])
 
     # 봉쇄는 쓰기와 같은 규율이다 — 읽기라고 느슨하면 vault 밖을 읽는 창이 된다
     for label, ref in (
@@ -5685,65 +5799,57 @@ def test_raw_read():
 def test_raw_space_misdiagnosis():
     """결속이 **있는데도** 형식이 틀린 `space` 하나 때문에 "결속이 없다"고
     답하던 오진의 고정. 틀린 원인을 지목하는 거부는 거부하지 않느니만 못하다 —
-    받는 쪽은 멀쩡한 세션 키를 바꿔가며 헤맨다(코드를 보지 않은 감사에서 실측)."""
-    from osk import raw
+    받는 쪽은 멀쩡한 프로젝트 키를 바꿔가며 헤맨다(코드를 보지 않은 감사에서 실측).
+    자리는 scope 기억이다 — 인용 기록은 루트 한 자리라 착지 판정이 없다(v5.2)."""
+    from osk import scope_memory as sm
     (ROOT / "00_Scope/WRawSp").mkdir(exist_ok=True)
     S = "repo/regr-space"
-    ok = _w(_append_round, S, "rec", "q", "a", space="00_Scope/WRawSp")
-    check("결속을 만든다", ok.get("index") == 1, ok)
-    check("결속이 섰다", write.resolve_session(S) == "WRawSp")
+    ok = _w(sm.replace, S, "- 엔트리", None, "00_Scope/WRawSp")
+    check("결속을 만든다", ok.get("ok"), ok)
+    check("결속에 들었다", "WRawSp" in write.bindings(S)["scopes"], write.bindings(S))
+    write.set_primary(S, "WRawSp", "시험 지정")
+    check("주된 scope가 섰다", write.resolve_session(S) == "WRawSp")
 
-    r = _w(_append_round, S, "rec", "q2", "a2", space="WRawSp")   # 맨 이름
+    r = _w(sm.replace, S, "- 엔트리2", ok.get("hash"), "WRawSp")   # 맨 이름
     v = " ".join(r.get("violations", []))
     check("형식 오류를 space 자신의 문제로 지목한다",
           r.get("ok") is False and "space 표기가 아니다" in v, r)
     check("결속이 있는데 '결속이 없다'고 하지 않는다", "결속이 없다" not in v, r)
 
     # 진짜 미결속·없는 scope의 진단은 그대로여야 한다 (오진을 반대로 만들지 않기)
-    r2 = _w(_append_round, "repo/regr-unbound-2", "rec", "q", "a")
+    r2 = _w(sm.replace, "repo/regr-unbound-2", "- x", None)
     check("진짜 미결속은 결속을 지목한다",
           "결속이 없다" in " ".join(r2.get("violations", [])), r2)
-    r3 = _w(_append_round, S, "rec", "q", "a", space="00_Scope/없는스코프")
+    r3 = _w(sm.replace, S, "- x", ok.get("hash"), "00_Scope/없는스코프")
     check("없는 scope는 scope를 지목한다",
           "scope가 아니다" in " ".join(r3.get("violations", [])), r3)
     check("결속만으로도 계속 이어진다",
-          _w(_append_round, S, "rec", "q3", "a3").get("index") == 2)
+          _w(sm.replace, S, "- 엔트리3", ok.get("hash")).get("ok"))
 
 
-# ── 18d-2. 한 세션의 기록이 여러 scope로 번지지 않는다 (Mechanism §6-2 6항) ──
+# ── 18d-2. 인용 기록은 루트 한 자리 — scope를 말해도 번지지 않는다 (헌법 4조 3항) ──
 def test_raw_binding_confines_scope():
-    """결속이 선 세션에 다른 `space`를 주면 **쓰기 전에** 거부한다.
-
-    한 세션은 한 scope에 속하고 세션당 `_raw/` 정본은 하나다(시행령 §2 1항).
-    `_raw/`는 append-only이고 표면에 삭제가 없으므로 쓰기 전에 막는다."""
+    """인용 기록은 루트 `_cited/` 한 자리다(헌법 4조 3항 · Mechanism §9 5항). 어느 scope를
+    말해도 같은 기록에 잇고, scope 아래에 기록이 생기지 않으며, 인용은 결속을 세우지 않는다."""
     from osk import raw
     for n in ("WBindA", "WBindB"):
         (ROOT / f"00_Scope/{n}").mkdir(exist_ok=True)
     S = "repo/regr-bind"
-    check("첫 쓰기가 결속을 세운다",
+    check("첫 쓰기",
           _w(raw.append_rounds, S, "rec", [{"user": "q", "agent": "a"}],
              "00_Scope/WBindA").get("indices") == [1])
-
     r = _w(raw.append_rounds, S, "rec", [{"user": "딴데", "agent": "씀"}],
            "00_Scope/WBindB")
-    v = " ".join(r.get("violations", []))
-    check("교차 scope는 거부", r.get("ok") is False, r)
-    check("거부가 현재 결속을 알려준다", "00_Scope/WBindA" in v, v)
-    check("건너간 자리에 파일이 생기지 않았다",
-          not (ROOT / "00_Scope/WBindB/_cited/.records/rec.txt").exists())
-    check("정본은 하나뿐", _rounds_of(S, "rec") == 1)
-
-    # 결속과 같은 space를 중복 명시하는 것은 무해하므로 통과해야 한다
-    check("결속과 같은 space는 통과",
-          _w(raw.append_rounds, S, "rec", [{"user": "q2", "agent": "a2"}],
-             "00_Scope/WBindA").get("indices") == [2])
+    check("다른 scope를 말해도 같은 기록에 잇는다", r.get("indices") == [2], r)
+    check("scope 아래에 기록이 생기지 않았다",
+          not (ROOT / "00_Scope/WBindA/_cited").exists()
+          and not (ROOT / "00_Scope/WBindB/_cited").exists())
+    check("정본은 하나뿐", _rounds_of(S, "rec") == 2)
+    check("인용은 결속하지 않는다",
+          write.resolve_session(S) is None and write.bindings(S)["scopes"] == [], write.bindings(S))
     check("space 생략도 통과",
           _w(raw.append_rounds, S, "rec2",
              [{"user": "q", "agent": "a"}]).get("indices") == [1])
-    # 미결속 세션은 여전히 어디로든 첫 착지를 정할 수 있다
-    check("미결속 세션의 첫 착지는 자유",
-          _w(raw.append_rounds, "repo/regr-bind-2", "rec",
-             [{"user": "q", "agent": "a"}], "00_Scope/WBindB").get("indices") == [1])
 
 
 # ── 18e. 재시도 중복 거부 (Mechanism §9 7항 · 시행령 §2 1항) ────────────────
@@ -5756,31 +5862,31 @@ def test_raw_replay_rejected():
     SP, S = "00_Scope/WRawRp", "repo/regr-replay"
     B = [{"user": "q1", "agent": "a1"}, {"user": "q2", "agent": "a2"}]
 
-    check("최초 배치", _w(raw.append_rounds, S, "rec", B, SP).get("indices") == [1, 2])
-    r = _w(raw.append_rounds, S, "rec", B)
+    check("최초 배치", _w(raw.append_rounds, S, "replay-rec", B, SP).get("indices") == [1, 2])
+    r = _w(raw.append_rounds, S, "replay-rec", B)
     check("같은 배치 재시도는 거부", r.get("ok") is False, r)
     check("거부가 어디를 보라고 알려준다",
           "read_cited" in " ".join(r.get("violations", [])), r)
-    check("거부는 아무것도 쓰지 않았다", _rounds_of(S, "rec") == 2)
+    check("거부는 아무것도 쓰지 않았다", _rounds_of(S, "replay-rec") == 2)
 
     check("꼬리 일부만 재시도해도 거부",
-          _w(raw.append_rounds, S, "rec", [B[1]]).get("ok") is False)
+          _w(raw.append_rounds, S, "replay-rec", [B[1]]).get("ok") is False)
     check("다른 내용은 통과",
-          _w(raw.append_rounds, S, "rec",
+          _w(raw.append_rounds, S, "replay-rec",
              [{"user": "q3", "agent": "a3"}]).get("indices") == [3])
     # 꼬리가 아닌 옛 라운드의 반복은 재시도가 아니다 — 정말 같은 말이 다시 오갔을
     # 수 있고, 그것을 막으면 대화를 기록하지 못한다.
     check("꼬리가 아니면 같은 내용도 통과",
-          _w(raw.append_rounds, S, "rec", [B[0]]).get("indices") == [4])
+          _w(raw.append_rounds, S, "replay-rec", [B[0]]).get("indices") == [4])
 
     # 비밀값이 든 라운드의 재시도 — 저장본은 치환됐으므로 치환 전으로 견주면
     # 다른 것이 되어 빠져나간다. 판정은 치환 뒤로 한다.
     SEC = [{"user": "키 " + "AKIA" + "IOSFODNN7EXAMPLE" + " 준다",
             "agent": "받았다"}]
     check("비밀값 라운드 최초",
-          _w(raw.append_rounds, S, "sec", SEC, SP).get("indices") == [1])
+          _w(raw.append_rounds, S, "replay-sec", SEC, SP).get("indices") == [1])
     check("비밀값 라운드의 재시도도 거부",
-          _w(raw.append_rounds, S, "sec", SEC).get("ok") is False)
+          _w(raw.append_rounds, S, "replay-sec", SEC).get("ok") is False)
 
 
 
@@ -5836,7 +5942,7 @@ def test_obsidian_tag_defense():
     check("scope 기억 쓰기 통과", r2.get("ok"), r2)
     # 성공은 전문을 싣지 않으므로(§9-2 5항) 저장물을 되읽어 확인한다
     check("scope 기억 방어 반영",
-          "#1227 ·1228" in _w(sm.read, "WTag").get("text", ""), r2)
+          "#1227 ·1228" in _w(sm.read, "WTag", "00_Scope/W1").get("text", ""), r2)
 
     # 제목 거부문 — 원인은 지목하되 대체 표기는 처방하지 않는다(사용자 결정)
     r3 = _w(write.create_node, "PR#1 판정", "s", "본문", "fable-5",
@@ -6165,13 +6271,13 @@ def test_cluster_overview():
     check("해제 원복", validate.validator_active("cluster-overview") is False)
 
 
-# ── 21. 1회용 대화 id는 세션 키가 될 수 없다 (Mechanism §6-2 6항) ──────────
+# ── 21. 1회용 대화 id는 프로젝트 키가 아니다 (Mechanism §6-2 6항) ──────────
 def test_ephemeral_session_key():
-    """세션 키는 첫 성공이 **영구 결속**한다. 그래서 대화마다 새로 나는 값을
-    넣으면 그 대화가 끝나는 순간 그 scope의 기억으로 돌아올 길이 사라진다.
-    도구 설명이 금지하고 있었으나 설명은 강제가 아니었고, 실측으로 두 건이
-    굳었다(2026-08-24). 세 쓰기 표면 모두에서 막고, **막는 자리는 파일 쓰기
-    앞**이어야 한다 — 결속은 뒤에 오는 경로가 있어 뒤에서 막으면 파일만 남는다."""
+    """프로젝트 키는 훅이 작업 폴더에서 정한다. 대화마다 새로 나는 값을 키 자리에
+    넣으면 아무도 그 키로 다시 오지 않아 대장에 죽은 행만 남는다. 도구 설명이
+    금지하고 있었으나 설명은 강제가 아니었고, 실측으로 두 건이 굳었다(2026-08-24).
+    세 쓰기 표면 모두에서 막고, **막는 자리는 파일 쓰기 앞**이어야 한다 — 결속은
+    뒤에 오는 경로가 있어 뒤에서 막으면 파일만 남는다."""
     from osk import raw, scope_memory as sm
     U = "2df63e9c-b6fd-4499-8d2a-f53c4921e243"          # 실측된 그 형태
     U32 = "2df63e9cb6fd44998d2af53c4921e243"            # 하이픈 없는 UUID
@@ -6182,7 +6288,7 @@ def test_ephemeral_session_key():
     check("create_node가 UUID 세션을 거부", r.get("ok") is False, r)
     v = " ".join(r.get("violations", []))
     check("거부가 1회용 id임을 지목", "1회용 대화 id" in v, v)
-    check("거부가 대안을 알려준다", "저장소 이름처럼" in v, v)
+    check("거부가 대안을 알려준다", "작업 폴더에서 정한" in v, v)
     check("거부는 노드를 남기지 않는다",
           not (ROOT / "00_Scope/W1/1회용 키 시험.md").exists())
 
@@ -6193,7 +6299,7 @@ def test_ephemeral_session_key():
     rr = _w(raw.append_rounds, U, "rec", [{"user": "q", "agent": "a"}],
             space="00_Scope/W1")
     check("인용 기록 쓰기도 거부", rr.get("ok") is False, rr)
-    check("raw 거부는 원인을 세션 키로 지목",
+    check("raw 거부는 원인을 프로젝트 키로 지목",
           "1회용 대화 id" in " ".join(rr.get("violations", [])), rr)
 
     rs = _w(sm.replace, U, "- 엔트리", None, "00_Scope/W1")
@@ -6353,7 +6459,7 @@ def test_session_key_repo_identity():
                                 "repo": [who], "at": core.now_iso()}) + "\n")
     claim(ms + 20, rb)          # 파일 순서가 아닌 rid가 소유를 가린다
     claim(ms + 10, ra)
-    check("분기는 미확정(현행 규칙)", write.resolve_session("api") is None)
+    check("같은 scope의 분기는 미확정이 아니다 (v5.2)", write.resolve_session("api") == "W1")
     order = [hook.session_key(str(b)), hook.session_key(str(a)), hook.session_key(str(b))]
     check("rid가 작은 소유가 이기고 순서와 무관하다", order == [kb, "api", kb], order)
     check("소유자가 한 행으로 봉합한다",
@@ -6493,6 +6599,7 @@ def test_scope_memory():
     S = "repo/regr-wm"
 
     r = _w(wm.replace, S, "- 첫 엔트리", None, "00_Scope/WWm")
+    write.set_primary(S, "WWm", "시험 지정")       # 쓰기는 결속에 더할 뿐이다(v5.2)
     # 저장본은 개행으로 끝난다 — 길이는 저장된 전문 기준이어야 잔여 계산이 맞다
     check("최초 쓰기", r.get("ok") and r["chars"] == len("- 첫 엔트리"), r)
     check("성공이 저장한 것은 되읽어 확인된다",
@@ -6510,8 +6617,8 @@ def test_scope_memory():
           r["hash"] == _w(wm.read, S)["hash"], r)
     check("읽기는 전문을 낸다", "text" in _w(wm.read, S))
     check("퇴출 원칙이 성공 응답에도 실린다", "지우는 것이 정상" in r["eviction"])
-    # 첫 쓰기가 결속을 세운다 — 빠뜨렸더니 이후 호출이 전부 막혔다(실측)
-    check("첫 쓰기가 결속을 세운다", write.resolve_session(S) == "WWm")
+    # 첫 쓰기는 결속에 더한다 — 주된 scope는 지정이 세운다(v5.2)
+    check("첫 쓰기가 결속에 더한다", "WWm" in write.bindings(S)["scopes"])
     check("이후에는 space 없이 읽힌다", _w(wm.read, S).get("ok") is True)
 
     h = r["hash"]
@@ -6563,10 +6670,10 @@ def test_scope_memory():
     # 여기서 새로 쓰지 않는다: 쓰기를 끼우면 아래가 쥔 `r4["hash"]`가 낡는다.
     check("치환이 없으면 안 붙는다", "filtered_note" not in r2, sorted(r2))
 
-    # 한 세션의 작업 기억이 여러 scope로 번지지 않는다
-    check("교차 scope 거부",
+    # 다른 scope의 기억은 그 scope의 해시로 잇는다 — 남의 해시는 거부다
+    check("다른 scope의 해시로는 거부",
           _w(wm.replace, S, "- x", r4["hash"], "00_Scope/WWmB").get("ok") is False)
-    check("건너간 자리에 파일이 없다",
+    check("거부는 파일을 만들지 않는다",
           not (ROOT / "00_Scope/Workbench/_scope_memory/WWmB.md").exists())
 
     # 전부 비우는 것은 정상 동작이다 — 퇴출이 유실이 아니라는 계약의 실행형.
@@ -6624,10 +6731,16 @@ def test_scope_memory():
     check("작업 기억을 근거로 오인하지 않게 한다",
           "경유지" in ov and "가리킬 수 없다" not in ov, ov)
 
-    # 착지 거부에도 전문·잔여가 실린다 (§9-2 5항)
-    xs = _w(wm.replace, S, "- x", _w(wm.read, S)["hash"], "00_Scope/WWmB")
-    check("교차 scope 거부에도 전문이 온다",
-          "text" in xs and "remaining" in xs and "eviction" in xs, sorted(xs))
+    # 결속 밖 scope의 기억 쓰기는 통과하고 결속에 더한다 (v5.2 — 시행령 §3 10항)
+    xs = _w(wm.replace, S, "- x", None, "00_Scope/WWmB")
+    check("결속 밖 scope의 기억 쓰기는 통과한다",
+          xs.get("ok") and (ROOT / "00_Scope/Workbench/_scope_memory/WWmB.md").exists(), xs)
+    check("주된 scope 밖의 기억은 안내에 space를 명시한다 (#191 리뷰)",
+          'space="00_Scope/WWmB"' in xs.get("session_note", "")
+          and 'space="00_Scope/WWmB"' in _w(wm.read, S, "00_Scope/WWmB").get("session_note", ""), xs)
+    check("그 쓰기가 결속에 더한다 — 주된 scope는 그대로",
+          write.bindings(S)["scopes"] == ["WWm", "WWmB"] and write.resolve_session(S) == "WWm",
+          write.bindings(S))
 
     # 이 계층은 git을 부르지 않는다 — 동기화 계약은 데몬이 소유한다
     src = (Path(wm.__file__).read_text(encoding="utf-8"))
@@ -6678,6 +6791,7 @@ def test_scope_memory_edits():
     check("빈 기억에 edits는 거부", not r.get("ok") and "첫 쓰기" in " ".join(r["violations"]), r)
     r = _w(wm.replace, S, "# 머리\n- 첫째 줄\n- 둘째 줄\n- 셋째 줄\n", None, "00_Scope/WWmE")
     check("text로 첫 쓰기", r.get("ok"), r)
+    write.set_primary(S, "WWmE", "시험 지정")
     h0 = r["hash"]
 
     # 계약의 핵심 — 해시 없이, 앵커로
@@ -6819,6 +6933,7 @@ def test_scope_recovery_handoff():
     wm._pending_clear(S)
     cur = "- 남길 지식 " + "가" * 700 + "\n- 끝난 상태 " + "나" * 700
     r = _w(wm.replace, S, cur, None, f"00_Scope/{scope}")
+    write.set_primary(S, scope, "시험 지정")
     check("복구 기준선", r.get("ok"), r)
     check("쓰기 응답은 세션 키와 실제 변경을 싣는다",
           r.get("session") == S and r.get("canonical_session") == S and r.get("changed") is True, r)
@@ -6987,6 +7102,15 @@ def test_scope_memory_cli():
     out, _ = run(["sm", "write", "--session", S, "--space", "00_Scope/WWmCli"],
                  "- 훅으로 쓴 엔트리")
     check("CLI 쓰기", out.get("ok") is True, out)
+    # 주된 scope 지정은 사용자 전속이다 — 단말 확인 없이는 중단한다(헌법 10조 1~2항 · #191 리뷰 3차)
+    out, _ = run(["routing", "primary", "--project", S, "--scope", "WWmCli"], stdin="")   # 비단말 stdin
+    check("routing primary는 단말 확인 없이 중단한다",
+          str(out.get("exit", "")).startswith("중단") and write.resolve_session(S) is None, out)
+    with mock.patch.object(cli, "_confirm", lambda prompt: None):
+        out, _ = run(["routing", "primary", "--project", S, "--scope", "WWmCli"])
+    check("CLI로 주된 scope를 지정한다",
+          out.get("ok") is True and out.get("primary") == "WWmCli"
+          and write.resolve_session(S) == "WWmCli", out)
 
     _, plain = run(["sm", "show", "--session", S])
     check("show는 JSON이 아니라 전문 그대로",
@@ -7022,6 +7146,7 @@ def test_eviction_preservation_mcp():
     fact = "분모를 고정해야 전후 비교가 가능하다."
     initial = wm.read(session, "00_Scope/W1")
     mem = _w(wm.replace, session, fact + "\n- 남길 요약", initial["hash"], "00_Scope/W1")
+    write.set_primary(session, "W1", "시험 지정")
     assert mem.get("ok"), mem
     rejected = _w(wm.replace, session, "가" * 1600, mem["hash"])
     check("보존 실험은 실제 scope 초과에서 시작한다",
@@ -7173,6 +7298,7 @@ def test_evictions():
     # 거부 없는 정리는 기록하지 않는다 (Mechanism §9-2 12항)
     r = _w(wm.replace, S, "# 머리\n- 갑 첫 줄\n- 을 둘째 줄\n- 병 셋째 줄", None, "00_Scope/WEvi")
     check("첫 쓰기", r.get("ok"), r)
+    write.set_primary(S, "WEvi", "시험 지정")
     r = _w(wm.replace, S, edits=[{"old_text": "\n- 병 셋째 줄", "new_text": ""}])
     check("거부 없는 정리는 기록하지 않는다",
           r.get("ok") and "evicted" not in r and len(ev.records()) == 4, r)
@@ -7482,8 +7608,10 @@ def test_evictions():
     check("tidy list: 미처분 8건·현황", len(o.get("items", [])) == 8
           and o["status"]["WEvi"]["unsettled"] == 8, o.get("status"))
     _, p = run(["tidy", "prompt"])
-    check("tidy prompt: 전용 세션·정본 키·전 항목", "전용 정돈 세션" in p
-          and f'session="{S}"' in p and p.count("\n- `") == 8, p[:200])
+    # 전용 세션은 키를 흉내 내지 않고 착지를 명시한다(Mechanism §9-3 3항)
+    check("tidy prompt: 전용 세션·착지 명시·전 항목", "전용 정돈 세션" in p
+          and 'space="00_Scope/WEvi"' in p and f'session="{S}"' not in p
+          and p.count("\n- `") == 8, p[:200])
     _, p2 = run(["tidy", "prompt", "--scope", "NoSuch"])
     check("tidy prompt: 없는 scope는 있는 scope를 알린다", "WEvi" in p2 and "없다" in p2, p2)
     o, _ = run(["tidy", "settle", "no-such-rid", "discarded"])
@@ -7964,6 +8092,7 @@ def test_plain_write_placement():
                session="regr-pl", space="00_Scope/W1")
         made.append(ROOT / "00_Scope/W1/regr-pl-bind.md")
         check("전제: 결속 쓰기", r.get("ok"), r)
+        write.set_primary("regr-pl", "W1", "시험 지정")
         r = _w(write.create_node, "regr-pl-root", "자리", "본문", "fable-5",
                session="regr-pl")
         made.append(ROOT / "00_Scope/W1/regr-pl-root.md")
@@ -9878,15 +10007,26 @@ def test_audit_fixes_2026_09_02():
         mine.append(ROOT / "00_Scope/W1/AudX/audit-bind.md")
         check("하위 군집에서 결속해도 scope 이름에 묶인다 (#28)",
               r.get("bound_scope") == "W1"
-              and write.resolve_session("audit-sub-sess") == "W1", r)
+              and write.bindings("audit-sub-sess")["scopes"] == ["W1"], r)
+        write.set_primary("audit-sub-sess", "W1", "시험 지정")
 
-        # ⑥ 결속과 어긋나는 착지는 노드 생성도 거부한다 (#36)
-        #    되돌리면 — create_node의 착지 대조를 지우면 실패한다.
+        # ⑥ 결속 밖 scope 착지는 받아 결속에 더한다 (v5.2 — 시행령 §3 10항 · Mechanism §6-2 6항)
+        #    되돌리면 — create_node가 결속과 다른 scope를 거부하면 실패한다.
+        other = ROOT / "00_Scope/AudOther"
+        other.mkdir(exist_ok=True)
+        (other / "AudOther.md").write_text(node_text("260802-audt-0oth", "AudOther 허브"), encoding="utf-8")
         r = _w(write.create_node, "audit-cross", "교차 착지", "본문", "fable-5",
                session="audit-sub-sess", space="00_Scope/AudOther")
-        check("결속과 다른 scope 착지는 거부된다 (#36)",
-              not r.get("ok")
-              and any("결속" in v for v in r.get("violations", [])), r)
+        check("결속 밖 scope 착지는 통과하고 결속에 더한다 (v5.2)",
+              r.get("ok") and r.get("bound_scope") == "AudOther"
+              and write.bindings("audit-sub-sess")["scopes"] == ["W1", "AudOther"]
+              and write.resolve_session("audit-sub-sess") == "W1", r)
+        for p in (other / "audit-cross.md", other / "AudOther.md"):
+            p.unlink(missing_ok=True)
+        try:
+            other.rmdir()
+        except OSError:
+            pass
 
         # ⑦ 작업 상태 참조 금지는 소속을 가리지 않는다 (#36)
         #    되돌리면 — `_topology_of`의 workbench 갈래를 scope 안으로 되돌리면
@@ -11230,6 +11370,7 @@ def test_review_empty_memory_and_incomplete_region():
     try:
         scope_dir.mkdir()
         old = sm.replace("review-empty-cas", "old decision", space=f"00_Scope/{scope}")
+        write.set_primary("review-empty-cas", scope, "시험 지정")
         empty = sm.replace("review-empty-cas", "", expect_hash=old["hash"])
         refused = _w(sm.replace, "review-empty-cas", "stale decision", old["hash"])
         check("빈 기억에도 stale hash를 거부한다", refused.get("ok") is False, refused)
@@ -12252,7 +12393,7 @@ if __name__ == "__main__":
                test_routing_not_bricked, test_extra_field_preserved,
                test_alias_cycle_returns_input, test_candidate_needs_distinct,
                test_edge_target_normalization, test_update_no_change,
-               test_bound_scope_honest, test_mcp_transport,
+               test_bound_scope_honest, test_project_bindings, test_mcp_transport,
                test_surface_lint, test_overview, test_edge_value_type_refused,
                test_refusal_teaches_address, test_id_as_handle,
                test_surface_name_roundtrip, test_validate_uses_destination_path,

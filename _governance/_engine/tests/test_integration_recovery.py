@@ -33,6 +33,8 @@ def capture(n):
     native.write_text(rounds(n), encoding='utf-8')
     result = it.capture('claude', sid, str(native), sid, '00_Scope/W1')
     assert result['ok'], result
+    if write.resolve_session(sid) != 'W1':
+        write.set_primary(sid, 'W1', 'fixture')   # 인용·추적은 결속하지 않는다 — 주된 scope는 지정으로(v5.2)
     return result
 def preserved(through, key=None):
     return it.acknowledge('claude', sid, through, 'preserved',

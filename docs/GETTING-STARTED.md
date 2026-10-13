@@ -96,7 +96,7 @@ Files you edit by hand are not checked until you run `validate`.
 **Cited records.** The hooks track each finished turn of a conversation on this
 device; the conversation itself stays in the harness's transcript. When a node
 needs a turn as evidence, the agent cites it with `cite_round`: the engine copies
-your message from the transcript into the scope's `_cited/` folder and keeps the
+your message from the transcript into the root `_cited/` folder and keeps the
 agent's answer only as its location and hash. Cited records are append-only, and
 search never returns them. Nodes cite a round by its coordinate, such as
 `<record path>#12`. Records that older releases wrote to `_raw/` stay readable.
