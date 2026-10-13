@@ -3640,6 +3640,25 @@ def test_project_bindings():
         check("잘못된 판정 묶음은 통째로 거부된다", False, "거부하지 않았다")
     except ValueError:
         check("잘못된 판정 묶음은 통째로 거부된다", write.bindings(P) == before, write.bindings(P))
+    # ⑧-2 중간에 실패한 묶음은 같은 묶음의 재시도가 남은 판정부터 잇는다(#191 리뷰 3차)
+    real_unbind, calls = write.unbind_session, []
+
+    def flaky(*a, **kw):
+        calls.append(a)
+        if len(calls) == 2:
+            raise OSError("disk")
+        return real_unbind(*a, **kw)
+    batch = [{"project": P, "action": "unbind", "scope": s, "reason": "x"} for s in ("WBindD", "WBindE")]
+    with mock.patch.object(write, "unbind_session", flaky):
+        try:
+            organization.apply_binding_decisions(batch)
+            check("중간 실패는 예외로 드러난다", False, "예외가 없었다")
+        except OSError:
+            check("중간 실패는 예외로 드러난다 — 앞의 판정은 적용됐다",
+                  write.bindings(P)["scopes"] == ["WBindB", "WBindC", "WBindE"], write.bindings(P))
+    organization.apply_binding_decisions(batch)
+    check("같은 묶음의 재시도가 남은 판정만 적용한다",
+          write.bindings(P)["scopes"] == ["WBindB", "WBindC"], write.bindings(P))
     # ⑨ 주된 scope 지정의 분기는 일반 결속이 해소하지 못한다(#191 리뷰 P1)
     F = "repo/regr-fork"
     a = write.set_primary(F, "WBindA", "기기 A의 지정")
@@ -7083,7 +7102,12 @@ def test_scope_memory_cli():
     out, _ = run(["sm", "write", "--session", S, "--space", "00_Scope/WWmCli"],
                  "- 훅으로 쓴 엔트리")
     check("CLI 쓰기", out.get("ok") is True, out)
-    out, _ = run(["routing", "primary", "--project", S, "--scope", "WWmCli"])
+    # 주된 scope 지정은 사용자 전속이다 — 단말 확인 없이는 중단한다(헌법 10조 1~2항 · #191 리뷰 3차)
+    out, _ = run(["routing", "primary", "--project", S, "--scope", "WWmCli"], stdin="")   # 비단말 stdin
+    check("routing primary는 단말 확인 없이 중단한다",
+          str(out.get("exit", "")).startswith("중단") and write.resolve_session(S) is None, out)
+    with mock.patch.object(cli, "_confirm", lambda prompt: None):
+        out, _ = run(["routing", "primary", "--project", S, "--scope", "WWmCli"])
     check("CLI로 주된 scope를 지정한다",
           out.get("ok") is True and out.get("primary") == "WWmCli"
           and write.resolve_session(S) == "WWmCli", out)

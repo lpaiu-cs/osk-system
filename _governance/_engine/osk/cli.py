@@ -267,6 +267,10 @@ def _routing_cmd(a) -> None:
             _emit({"project": a.project, **write.bindings(a.project)} if a.project
                   else {"audit": organization.bindings_audit()})
             return
+        if a.routing_cmd == "primary":
+            # 사용자 전속 — 대화형 단말의 확인을 거친다(헌법 10조 1~2항). 검토의 결정 묶음은 이 길이
+            # 아니라 `integration review`·`organization review`의 실행기가 적용한다.
+            _confirm(f"`{a.project}`의 주된 scope를 `{a.scope}`로 지정합니까? [y/N] ")
         with mutation_lock():
             current = write.bindings(a.project)
             if a.routing_cmd == "bind":

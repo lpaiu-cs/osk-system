@@ -599,7 +599,9 @@ def bindings_prompt(project: str | None = None) -> str:
 def apply_binding_decisions(decisions: list | None, state: dict | None = None) -> list[dict]:
     """조직 검토가 낸 결속 판정을 적용한다 — `keep`은 지금 결속 수를 '지난 검토'로 기억하고, `unbind`는
     집합에서 빼며, `primary`는 주된 scope를 지정한다. 호출자가 변경 잠금을 쥔다. 묶음을 먼저 검증해
-    하나라도 틀리면 아무것도 적지 않는다. `state`를 받으면 그 상태에 적고 저장은 호출자가 한다."""
+    하나라도 틀리면(없는 scope) 아무것도 적지 않는다. 적용은 **멱등**이다 — 이미 뺀 scope와 이미 주된
+    scope는 다시 적지 않으므로, 중간에 실패한 묶음은 같은 묶음의 재시도가 남은 판정부터 잇는다(기록은
+    append-only라 되돌릴 수 없고, 되돌릴 필요도 없다). `state`를 받으면 그 상태에 적고 저장은 호출자가 한다."""
     if not decisions:
         return []
     if not isinstance(decisions, list) or any(
@@ -609,21 +611,20 @@ def apply_binding_decisions(decisions: list | None, state: dict | None = None) -
             or (d["action"] != "keep" and not (isinstance(d.get("scope"), str) and d["scope"].strip()))
             for d in decisions):
         raise ValueError("bindings decisions are [{project, action: keep|unbind|primary, scope?, reason}]")
+    scopes = write.graph.scope_names()
     for d in decisions:
-        project, scope = d["project"].strip(), (d.get("scope") or "").strip()
-        if d["action"] == "primary" and scope not in write.graph.scope_names():
-            raise ValueError(f"primary scope is not a scope: {scope}")
-        if d["action"] == "unbind" and scope not in write.bindings(project)["scopes"]:
-            raise ValueError(f"unbind names a scope outside the project's bindings: {project} / {scope}")
+        if d["action"] != "keep" and d["scope"].strip() not in scopes:
+            raise ValueError(f"{d['action']} names a scope that does not exist: {d['scope'].strip()}")
     own = state is None
     state = _load() if own else state
     seen = state.setdefault("bindings_seen", {})
     applied = []
     for d in decisions:
         project, action = d["project"].strip(), d["action"]
-        if action == "unbind":
+        current = write.bindings(project)
+        if action == "unbind" and d["scope"].strip() in current["scopes"]:
             write.unbind_session(project, d["scope"].strip(), d["reason"].strip())
-        elif action == "primary":
+        elif action == "primary" and current["primary"] != d["scope"].strip():
             write.set_primary(project, d["scope"].strip(), d["reason"].strip())
         seen[project] = len(write.bindings(project)["scopes"])
         applied.append({"project": project, "action": action, "scope": d.get("scope")})
