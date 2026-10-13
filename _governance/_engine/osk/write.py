@@ -853,9 +853,12 @@ def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
                 scopes.remove(sc)
             if primary == sc:
                 primary = None
-    maxima = causal_maxima(recs, key, field="session",
-                           candidate=lambda r: r.get("kind") in ("bind", "unbind"))
-    heads = {str(r.get("scope")) for r in maxima if r.get("kind") == "bind" and r.get("primary", True)}
+    # 미확정은 **지정 기록만으로** 판정한다 — 집합에만 더하는 결속은 지정 사이의 분기를 해소할
+    # 권한이 없다. 극대를 모든 결속 기록에서 구하면 분기 뒤의 일반 결속이 유일 극대가 되어
+    # 어느 쪽도 고르지 않은 채 rid 순서가 주된 scope를 정해 버린다(#191 리뷰).
+    heads = {str(r.get("scope")) for r in causal_maxima(
+        recs, key, field="session",
+        candidate=lambda r: r.get("kind") == "bind" and r.get("scope") and r.get("primary", True))}
     if len(heads) > 1:
         out["undetermined"], primary = True, None
     out.update(scopes=scopes, primary=primary)

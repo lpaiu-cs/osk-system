@@ -2277,6 +2277,13 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             write.create_node(self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)
         review = it.prompt("claude", self.sid, include_organization=False)
         self.assertIn("주된 scope 없음", review["text"])
+        # 결속 지정이 실패하면 검토도 남지 않는다 — 같은 through로 재시도한다(#191 리뷰 P2)
+        from unittest import mock as _mock
+        with _mock.patch.object(write, "set_primary", side_effect=OSError("ledger refused")):
+            with self.assertRaises(OSError):
+                it.acknowledge("claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
+        self.assertEqual(it.status("claude", self.sid)["reviewed_rounds"], 0)
+        self.assertIsNone(write.resolve_session(key))
         it.acknowledge("claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
         self.assertEqual(write.resolve_session(key), "Capture")
         self.assertTrue(write.create_node(self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)["ok"])

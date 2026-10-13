@@ -1464,6 +1464,7 @@ class HookBudgetTests(unittest.TestCase):
                 hook.capture_block(env,'own',startup=True)
                 seen = {n: hook.capture_block(env,'own') for n in range(1,16)}
             assert 'bound memory sentinel' in seen[9], seen[9]
+            assert 'space="00_Scope/W1"' in seen[9], seen[9]          # 전문 블록의 수정 안내도 space를 명시한다
             assert 'bound memory sentinel' not in seen[15], seen[15]
             assert 'scope_memory(session="own", space="00_Scope/W1")' in seen[15], seen[15]
             assert '주된 scope 없음' in seen[9], seen[9]

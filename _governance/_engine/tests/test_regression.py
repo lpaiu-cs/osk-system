@@ -3631,6 +3631,33 @@ def test_project_bindings():
     check("다른 scope를 말해도 같은 기록에 잇는다", rr2.get("indices") == [2], rr2)
     check("인용은 결속을 바꾸지 않는다",
           write.bindings(P)["scopes"] == ["WBindB", "WBindC", "WBindD", "WBindE"], write.bindings(P))
+    # ⑧ 잘못된 판정 묶음은 통째로 거부된다 — 앞의 판정도 적용되지 않는다(#191 리뷰 P2)
+    before = write.bindings(P)
+    try:
+        organization.apply_binding_decisions(
+            [{"project": P, "action": "unbind", "scope": "WBindC", "reason": "x"},
+             {"project": P, "action": "primary", "scope": "NoSuchScope", "reason": "x"}])
+        check("잘못된 판정 묶음은 통째로 거부된다", False, "거부하지 않았다")
+    except ValueError:
+        check("잘못된 판정 묶음은 통째로 거부된다", write.bindings(P) == before, write.bindings(P))
+    # ⑨ 주된 scope 지정의 분기는 일반 결속이 해소하지 못한다(#191 리뷰 P1)
+    F = "repo/regr-fork"
+    a = write.set_primary(F, "WBindA", "기기 A의 지정")
+    ms = core._rid_parts(a["rid"])[0]
+
+    def forged(rid_ms, parents, scope, primary):
+        with open(core.ROUTING, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"rid": core._make_rid(rid_ms, 0), "parents": parents, "kind": "bind",
+                                "session": F, "scope": scope, "primary": primary,
+                                "at": core.now_iso()}) + "\n")
+    forged(ms + 5, [], "WBindB", True)                 # 다른 기기의 지정 — 비교 불능 분기
+    check("지정이 갈리면 미확정", write.bindings(F)["undetermined"] and write.resolve_session(F) is None)
+    forged(ms + 10, [a["rid"], core._make_rid(ms + 5, 0)], "WBindC", False)   # 양쪽을 조상으로 둔 일반 결속
+    b = write.bindings(F)
+    check("일반 결속은 지정의 분기를 해소하지 못한다",
+          b["undetermined"] and b["primary"] is None and b["scopes"] == ["WBindA", "WBindB", "WBindC"], b)
+    write.set_primary(F, "WBindA", "사용자 지정")
+    check("새 지정이 분기를 해소한다", write.resolve_session(F) == "WBindA", write.bindings(F))
     for nm, sp in (("regr-bs-dom", "00_Domain/D1"), ("regr-bs-sc", "00_Scope/W1")):
         (ROOT / sp / f"{nm}.md").unlink(missing_ok=True)
 
@@ -6689,6 +6716,9 @@ def test_scope_memory():
     xs = _w(wm.replace, S, "- x", None, "00_Scope/WWmB")
     check("결속 밖 scope의 기억 쓰기는 통과한다",
           xs.get("ok") and (ROOT / "00_Scope/Workbench/_scope_memory/WWmB.md").exists(), xs)
+    check("주된 scope 밖의 기억은 안내에 space를 명시한다 (#191 리뷰)",
+          'space="00_Scope/WWmB"' in xs.get("session_note", "")
+          and 'space="00_Scope/WWmB"' in _w(wm.read, S, "00_Scope/WWmB").get("session_note", ""), xs)
     check("그 쓰기가 결속에 더한다 — 주된 scope는 그대로",
           write.bindings(S)["scopes"] == ["WWm", "WWmB"] and write.resolve_session(S) == "WWm",
           write.bindings(S))

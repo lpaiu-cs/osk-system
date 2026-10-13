@@ -217,8 +217,13 @@ def _read(p: Path) -> str:
 
 
 def session_note(session: str, scope: str | None) -> str:
-    """훅과 도구 응답이 같은 호출 키를 이어 준다. scope 이름은 키가 아니다."""
-    return (f"`scope_memory`의 `session={json.dumps(session, ensure_ascii=False)}`를 그대로 쓴다. "
+    """훅과 도구 응답이 같은 호출 키를 이어 준다. scope 이름은 키가 아니다. 주된 scope 밖의 기억은
+    수정 안내에도 `space`를 명시한다 — 빠지면 `edits`가 주된 scope의 기억을 고친다(#191 리뷰)."""
+    arg = f"`session={json.dumps(session, ensure_ascii=False)}`"
+    if session and scope and write.resolve_session(session) != scope:
+        return (f"`scope_memory`의 {arg}에 `space=\"{SCOPE}/{scope}\"`를 함께 준다 — 이 scope는 그 "
+                f"프로젝트의 주된 scope가 아니라 space 없는 읽기·`edits`는 다른 기억에 간다.")
+    return (f"`scope_memory`의 {arg}를 그대로 쓴다. "
             f"`{SCOPE}/{scope}`는 저장 위치이며 session 키를 대신하지 않는다.")
 
 

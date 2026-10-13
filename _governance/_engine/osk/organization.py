@@ -429,9 +429,10 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
             if u["id"] in edited and u["unit"] not in covered:
                 handoff.setdefault(u["unit"], now)
         state.setdefault("handoff", {})[scope] = handoff
-        _save(state)
         if bindings:
-            row["bindings"] = apply_binding_decisions(bindings)
+            # 결속 기록은 검토 저장 **앞에** — 대장 쓰기가 실패하면 검토도 남지 않는다(#191 리뷰)
+            row["bindings"] = apply_binding_decisions(bindings, state)
+        _save(state)
         return row
 
 
@@ -595,9 +596,10 @@ def bindings_prompt(project: str | None = None) -> str:
             + json.dumps(items, ensure_ascii=False))
 
 
-def apply_binding_decisions(decisions: list | None) -> list[dict]:
+def apply_binding_decisions(decisions: list | None, state: dict | None = None) -> list[dict]:
     """조직 검토가 낸 결속 판정을 적용한다 — `keep`은 지금 결속 수를 '지난 검토'로 기억하고, `unbind`는
-    집합에서 빼며, `primary`는 주된 scope를 지정한다. 호출자가 변경 잠금을 쥔다."""
+    집합에서 빼며, `primary`는 주된 scope를 지정한다. 호출자가 변경 잠금을 쥔다. 묶음을 먼저 검증해
+    하나라도 틀리면 아무것도 적지 않는다. `state`를 받으면 그 상태에 적고 저장은 호출자가 한다."""
     if not decisions:
         return []
     if not isinstance(decisions, list) or any(
@@ -607,7 +609,14 @@ def apply_binding_decisions(decisions: list | None) -> list[dict]:
             or (d["action"] != "keep" and not (isinstance(d.get("scope"), str) and d["scope"].strip()))
             for d in decisions):
         raise ValueError("bindings decisions are [{project, action: keep|unbind|primary, scope?, reason}]")
-    state = _load()
+    for d in decisions:
+        project, scope = d["project"].strip(), (d.get("scope") or "").strip()
+        if d["action"] == "primary" and scope not in write.graph.scope_names():
+            raise ValueError(f"primary scope is not a scope: {scope}")
+        if d["action"] == "unbind" and scope not in write.bindings(project)["scopes"]:
+            raise ValueError(f"unbind names a scope outside the project's bindings: {project} / {scope}")
+    own = state is None
+    state = _load() if own else state
     seen = state.setdefault("bindings_seen", {})
     applied = []
     for d in decisions:
@@ -618,7 +627,8 @@ def apply_binding_decisions(decisions: list | None) -> list[dict]:
             write.set_primary(project, d["scope"].strip(), d["reason"].strip())
         seen[project] = len(write.bindings(project)["scopes"])
         applied.append({"project": project, "action": action, "scope": d.get("scope")})
-    _save(state)
+    if own:
+        _save(state)
     return applied
 
 

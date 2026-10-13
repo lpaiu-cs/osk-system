@@ -689,9 +689,11 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 s["reviewed_prompt_count"] = s["prompt_count"]
                 if s.get("response_growth"):
                     s["response_growth"]["attempted_count"] = s["response_growth"]["count"]
-        _save(p, s)
         if primary_scope is not None and write.bindings(s["session"])["primary"] != primary_scope:
+            # 검토 저장 **앞에** 적는다 — 대장 쓰기가 실패하면 검토도 남지 않아 같은 through로
+            # 재시도할 수 있다. 지정이 먼저 서고 저장이 실패해도 재시도는 같은 판정이라 건너뛴다.
             write.set_primary(s["session"], primary_scope, "대화 검토의 소속 판정")
+        _save(p, s)
         return _view(s)
 
 
