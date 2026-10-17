@@ -1,10 +1,10 @@
 """osk.doctor — 이 기기에서 하네스가 osk에 이어졌는지 읽기만 하며 점검한다.
 
 호스트마다 따로 본다: MCP·훅이 등록됐는가(설정 파일), 훅이 실제로 불렸는가(이
-기기의 실행 기록, `osk.harness.runs`), 훅 문맥이 모델에 닿았는가(세션 시작 뒤
-overview), 판본이 확인한 범위인가, 구독 fork가 준비됐는가. 등록 파일만으로 실행을
-판정하지 않는다 — 신뢰하지 않은 Codex 훅이나 새로 열지 않은 Claude Code 세션은 설정
-파일에 있어도 돌지 않는다.
+기기의 실행 기록, `osk.harness.runs`), 훅 문맥이 모델에 닿았는가(세션 시작 뒤 그
+프로젝트 키를 실은 MCP 호출), 판본이 확인한 범위인가, 구독 fork가 준비됐는가.
+등록 파일만으로 실행을 판정하지 않는다 — 신뢰하지 않은 Codex 훅이나 새로 열지 않은
+Claude Code 세션은 설정 파일에 있어도 돌지 않는다.
 
 상태와 설정을 쓰지 않는다. 호스트 CLI에는 `--version`만 묻고, fork 판정은
 `fork doctor`와 같은 `response_growth.check`다(인증 상태 조회는 하되 추론은 없다).
@@ -213,10 +213,10 @@ def _delivery(start: dict | None, overview: dict) -> dict | None:
         return None
     at, seen = start.get("at"), overview.get(session)
     if isinstance(at, (int, float)) and isinstance(seen, (int, float)) and seen >= at:
-        return _item("ok", "전달", f"세션 시작({_kst(at)}) 뒤 overview(session={session})가 불렸다 — "
+        return _item("ok", "전달", f"세션 시작({_kst(at)}) 뒤 그 키(session={session})를 실은 MCP 호출이 있었다 — "
                      "훅 문맥이 모델에 닿았다고 본다")
-    return _item("info", "전달", f"마지막 세션 시작({_kst(at)}, session={session}) 뒤 overview 기록이 없다 "
-                 "— 훅 문맥이 모델에 닿았는지 알 수 없다",
+    return _item("info", "전달", f"마지막 세션 시작({_kst(at)}, session={session}) 뒤 그 키를 실은 MCP 호출"
+                 "(overview·scope_memory·create_node) 기록이 없다 — 훅 문맥이 모델에 닿았는지 알 수 없다",
                  '새 세션에서 에이전트에게 "osk 훅이 알려 준 프로젝트 키가 뭐야?"라고 묻는다 — '
                  "저장소 이름으로 답해야 한다")
 

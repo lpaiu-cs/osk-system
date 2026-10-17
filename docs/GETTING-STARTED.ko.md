@@ -416,8 +416,9 @@ Codex는 새로 추가되거나 바뀐 훅 정의를 사용자가 신뢰하기 �
 설정한 채(2단계) vault 루트에서 `doctor`를 실행한다: `.venv/bin/python -m osk.cli doctor`,
 Windows는 `.venv\Scripts\python.exe -m osk.cli doctor`. Claude Code와 Codex마다 MCP와
 세 훅이 이 vault를 가리키는지, 훅마다 이 기기에서 마지막으로 불린 시각, 세션 시작 뒤
-에이전트가 `overview`를 불렀는지를 보인다. 등록됐는데 한 번도 불리지 않은 훅은 Claude
-Code에서는 새 세션을, Codex에서는 `/hooks`의 신뢰를 요구한다. `doctor`는 읽기만 한다.
+에이전트가 그 프로젝트 키를 실은 osk 호출(`overview`·`scope_memory`·`create_node`)을 했는지를
+보인다. 등록됐는데 한 번도 불리지 않은 훅은 Claude Code에서는 새 세션을, Codex에서는
+`/hooks`의 신뢰를 요구한다. `doctor`는 읽기만 한다.
 
 ## 5단계: 첫 세션
 
@@ -435,12 +436,12 @@ Claude Code나 Codex를 vault가 아니라 `~/code/my-app` 같은 **프로젝트
 
 ```text
 [osk 세션 시작 — session="my-app" · conversation="claude/<대화 ID>"]
-이 세션에서 `overview(session="my-app")`를 한 번 불러 … 아직 scope 결속이 없다. 착지를 추측하지 말고 …
+새 노드를 쓰기 전에 한 번 `overview(session="my-app")`로 허브 트리(`hub_tree`)를 확인하라. … 아직 scope 결속이 없다. 착지를 추측하지 말고 …
 ```
 
-프로젝트 키가 `my-app`이니 `overview`를 한 번 부르고, 아직 scope 결속이 없으니 쓸 곳을
-짐작하지 말고 프로젝트부터 확인하라는 지시다. `conversation`은 이 대화의 이름이다
-(Codex에서는 `codex/…`). 에이전트가 턴을 인용할 때 `cite_round`에 이 값을 넘긴다.
+프로젝트 키가 `my-app`이니 새 노드를 쓰기 전에 `overview`를 한 번 불러 허브 트리를 보고, 아직
+scope 결속이 없으니 쓸 곳을 짐작하지 말고 프로젝트부터 확인하라는 지시다. `conversation`은 이
+대화의 이름이다(Codex에서는 `codex/…`). 에이전트가 턴을 인용할 때 `cite_round`에 이 값을 넘긴다.
 
 fork 검토를 켜지 않았다면
 `[osk 검토 경고 — subscription fork CLI is not configured. …]`도 함께 나온다.
@@ -565,7 +566,7 @@ scope가 결속되기 전에도 이 대화의 턴은 추적된다 — 추적은 
 
 | 시작 문구 | 뜻 |
 |---|---|
-| `[osk 세션 시작 — session="…" · conversation="…"]` | 세션 시작. 프로젝트 키와 이 대화의 `<하네스>/<ID>`(`cite_round`에 넘기는 값)를 보여 주고 에이전트에게 `overview`를 부르라고 한다. `아직 scope 결속이 없다`가 붙으면 아직 결속 전이다. |
+| `[osk 세션 시작 — session="…" · conversation="…"]` | 세션 시작. 프로젝트 키와 이 대화의 `<하네스>/<ID>`(`cite_round`에 넘기는 값)를 보여 주고 에이전트에게 새 노드를 쓰기 전에 `overview`를 한 번 부르라고 한다. `아직 scope 결속이 없다`가 붙으면 아직 결속 전이다. |
 | `[osk scope 기억 — 00_Scope/… · N/1500자 · 여유 M자]` | scope 기억. 1,500자 중 쓴 글자 수와 남은 글자 수, 이어서 hash와 전문이 나온다. |
 | `[osk 검토 경고 — <이유>. …]` | 적힌 이유로 백그라운드 fork 검토가 돌지 않는다. 검토는 이 세션 안에서 user 턴 9와 15에 이뤄진다. fork 검토를 설정하지 않았다면 정상이다. |
 | `[osk 대화 검토 — …]` | fork 검토가 켜져 있다. 성공한 최종 답변 9회마다 한 번씩 돈다. |

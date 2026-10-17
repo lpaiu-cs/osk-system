@@ -175,6 +175,16 @@ def _guard(fn, *a, **kw) -> dict:
         return {"ok": False, "violations": [f"{type(e).__name__}: {e}"]}
 
 
+def _note_key(session: str | None) -> None:
+    """훅이 알려 준 프로젝트 키를 실은 호출 — 세션 시작 뒤에 왔으면 훅 문맥이 모델에
+    닿았다고 `doctor`가 짐작한다(기기 로컬 기록, osk.harness.runs). 호출을 막지 않는다."""
+    if session:
+        try:
+            hook_runs.record_overview(session)
+        except Exception:
+            pass
+
+
 # ── 읽기 ─────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -379,12 +389,7 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     if up:
         out["update"] = up
     if session:
-        try:
-            # 세션 시작 훅이 이 호출을 안내한다 — 그 뒤에 불렸으면 훅 문맥이 모델에
-            # 닿았다고 `doctor`가 짐작한다(기기 로컬 기록, osk.harness.runs).
-            hook_runs.record_overview(session)
-        except Exception:
-            pass
+        _note_key(session)
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
         # 노출하지 않는다"고 못박는다. 착지 판단에는 `session_scope`로 족하다.
@@ -425,6 +430,7 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `settle`=보존한 evict rid. 처분 결과: `settlement`.
     증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록·기존 허브.
     `distillation.status=complete`까지 같은 요청으로 재시도한다."""
+    _note_key(session)
     if distill is not None:
         from osk import distillation
         return _guard(distillation.create_node, distill, title=title,
@@ -512,6 +518,7 @@ def scope_memory(session: str, text: str | None = None,
     상한은 순결과에만, 해시 불요. `text`는 전체 치환이라 `expect_hash` 필수.
     `session`은 `create_node`와 같은 값, `space`는 `00_Scope/<이름>` **두 마디**만.
     상한 1500자."""
+    _note_key(session)
     if text is None and edits is None:
         return _guard(scope_memory_mod.read, session, space)
     return _guard(scope_memory_mod.replace, session, text, expect_hash, space,
