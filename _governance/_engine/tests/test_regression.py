@@ -6997,7 +6997,8 @@ def test_scope_recovery_handoff():
         out = run_hook("claude_session_start.py")
         check("새 세션은 evict 없이도 복구를 싣는다", "[osk scope 복구 대기" in out, out[:300])
         check("복구는 현재 저장본과 기존 노드 우선 행동을 싣는다", cur in out and "update_node" in out and "엔트리 단위" in out)
-        check("세션 시작은 overview를 안내한다", "overview(session=" in out)
+        check("세션 시작은 노드를 쓰기 전의 overview를 안내한다",
+              "새 노드를 쓰기 전에 한 번 `overview(session=" in out, out[:600])
         check("세션 시작은 허브 트리와 자리 규칙을 안내한다",
               "hub_tree" in out and "시행령 §3 8항" in out, out[:600])
         check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",
