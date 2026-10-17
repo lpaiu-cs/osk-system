@@ -328,7 +328,12 @@ def atomic_write(path: Path, data: bytes) -> None:
     fsync**. 호출부가 이 뒤에 그 파일을 가리키는 대장 기록을 남기므로, 엔트리가
     기록보다 먼저 내구화돼야 전원 차단 뒤 '기록은 있는데 파일은 없는' 상태가
     생기지 않는다. 권한은 mkstemp 기본이다 — 기존 권한을 보존해야 하는 갱신은
-    `update._write_atomic`을 쓴다."""
+    `update._write_atomic`을 쓴다.
+
+    Windows에서는 대상이나 임시 파일을 FILE_SHARE_DELETE 없이 연 읽기(Python의
+    `open()`이 그렇다)가 있으면 교체가 WinError 5·32로 실패한다. 그런 읽기는 곧
+    닫히므로 잠깐씩 다시 건다 — 대화 커서를 잠금 없이 읽는 엔진 안팎의 읽기가
+    분리 작업자의 저장과 겹친다(#192 실측)."""
     mkdirs_durable(path.parent)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent))
     try:
@@ -336,7 +341,16 @@ def atomic_write(path: Path, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        # ponytail: 약 1초의 고정 재시도 — 그보다 오래 쥔 읽기에는 전처럼 실패한다. 실측되면
+        # 엔진의 잠금 없는 커서 읽기(integration의 넷)를 상태 잠금 아래로 옮긴다.
+        for wait in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, None):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if os.name != "nt" or wait is None:
+                    raise
+                time.sleep(wait)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
