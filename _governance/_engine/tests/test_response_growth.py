@@ -1265,7 +1265,7 @@ class ResponseGrowthTests(unittest.TestCase):
             # No fork CLI is configured: Stop's route is the foreground one, where it captured in place.
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT)}
             os.environ.pop('OSK_HOOK_WORKER')
-            os.environ['OSK_UPDATE_CHECK'] = '0'
+            os.environ.update(OSK_UPDATE_CHECK='0', CLAUDE_CONFIG_DIR=str(core.ROOT / 'claude-home'))
             def run(hook, event, n):
                 out = types.SimpleNamespace(buffer=io.BytesIO())
                 with patch.object(sys,'stdin',io.StringIO(json.dumps(dict(env, hook_event_name=event, source='resume', turn_id=n)))), \\
@@ -1301,10 +1301,21 @@ class ResponseGrowthTests(unittest.TestCase):
                 unlock(busy)
             waiting.join(60)
             assert integration.status('claude','own')['captured_rounds'] == 3
+            # A tracked conversation whose file left the hook's path is no new one: its worker
+            # finds the file by ID, as the in-place capture did (#199 review).
+            moved = core.ROOT / 'claude-home/projects/elsewhere/own.jsonl'
+            moved.parent.mkdir(parents=True)
+            turn(4)
+            native.replace(moved)
+            _, jobs = run(stop, 'Stop', 4)
+            assert jobs, 'a moved transcript was skipped as a new conversation'
+            rg.after_hook(jobs[0])
+            assert integration.status('claude','own')['captured_rounds'] == 4
+            native = moved
             # The worker's failure lands after its Stop: the next Stop says it once, as the input hook does.
             native.write_text(native.read_text(encoding='utf-8').replace('"u1"', '"u0"'), encoding='utf-8')
             rg.after_hook(more[0])
-            said = [run(stop, 'Stop', n)[0] for n in (4, 5)]
+            said = [run(stop, 'Stop', n)[0] for n in (5, 6)]
             assert 'capture diagnostic' in said[0] and 'prefix changed' in said[0] and not said[1], said
         ''')
 

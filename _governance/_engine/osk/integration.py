@@ -1554,13 +1554,15 @@ def hook_land(env: dict, session: str) -> dict:
 
 def capture_due(harness: str, conversation_id: str, transcript_path: str | None) -> bool:
     """Is there anything new for `capture`? A stat, never a read — the hooks hand a capture
-    to their worker only then (#192). A named transcript that does not exist yet (a new
-    conversation before its first turn is written) has nothing to capture: the worker would
-    count it missing after this prompt's tick. A later hook's worker captures it."""
-    if transcript_path and not os.path.exists(transcript_path):
-        return False
+    to their worker only then (#192). A new conversation's named transcript that does not exist
+    yet (before its first turn is written) has nothing to capture: the worker would count it
+    missing after this prompt's tick, and a later hook's worker captures it. A tracked
+    conversation's file that left the named path is the worker's to find by ID
+    (`_locate_transcript`) or to record missing."""
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
+    if transcript_path and not os.path.exists(transcript_path):
+        return bool(s["rounds"] or s.get("native_fingerprint"))
     if s["capture_pending"] or s["capture_error"] or not s.get("native_fingerprint") or not transcript_path:
         return True
     try:
