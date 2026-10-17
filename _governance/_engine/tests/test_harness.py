@@ -649,9 +649,11 @@ assert out.startswith(f'[osk 세션 시작 — session="proj" · conversation="k
 assert 'Kiro has no subscription fork' in out, out
 out = hook('claude_prompt_submit.py', {**given, 'hook_event_name': 'UserPromptSubmit', 'prompt': '두 번째'})
 assert not out.lstrip().startswith('{'), out
-# Kiro shows the stop hook's output nowhere: it prints nothing, and it captures the transcript
-# found by the conversation ID, since Kiro gives no transcript path.
+# Kiro shows the stop hook's output nowhere: it prints nothing. Its worker (#192 — the suite runs
+# that step here) captures the transcript found by the conversation ID, since Kiro gives no path.
 assert hook('capture_stop.py', {**given, 'hook_event_name': 'Stop'}) == ''
+from osk import response_growth as rg
+rg.after_hook({**given, 'harness': 'kiro', 'session': 'proj'})
 st = integration.status('kiro', sid)
 assert (st['captured_rounds'], st['aborted_rounds'], st['interrupted_rounds']) == (5, 1, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
@@ -667,10 +669,10 @@ assert '"native_trigger": "inputless"' in text and '다섯 번째' not in text, 
 # A transcript in another conversation's folder is not read.
 other = integration.capture('kiro', 'sess_other', str(transcript), 'proj')
 assert 'does not match' in (other['capture_error'] or ''), other
-# When capture fails, Kiro's stop hook still prints nothing: it has no place to show a notice.
-assert hook('capture_stop.py', {'session_id': 'sess_missing', 'cwd': str(proj), 'hook_event_name': 'Stop'},
-            KIRO_SESSION_ID='sess_missing') == ''
-assert integration.status('kiro', 'sess_missing')['capture_error'], 'the failure is kept in the state'
+# When capture has failed, Kiro's stop hook still prints nothing: it has no place to show a notice.
+assert hook('capture_stop.py', {'session_id': 'sess_other', 'cwd': str(proj), 'hook_event_name': 'Stop'},
+            KIRO_SESSION_ID='sess_other') == ''
+assert integration.status('kiro', 'sess_other')['capture_error'], 'the failure is kept in the state'
 # Reasoning is outside the capture scope; tool payloads are references (Bylaws §2 2).
 assert 'internal thought' not in text and 'FILE BODY' not in text, text
 assert '"tool_evidence_ref"' in text and '"read_file"' in text, text
@@ -757,9 +759,13 @@ assert integration.status('antigravity', sid)['prompt_count'] == before, 'a late
 out = hook('claude_prompt_submit.py', {**given, 'invocationNum': 0, 'initialNumSteps': 11})
 assert out == '{}' or 'injectSteps' in json.loads(out), out
 assert integration.status('antigravity', sid)['prompt_count'] == before + 1
-# Stop answers `{}` (no decision) and captures the transcript it was given.
+# Stop answers `{}` (no decision); its worker (#192 — the suite runs that step here) captures the
+# transcript it was given.
 assert hook('capture_stop.py', {**given, 'executionNum': 0,
             'terminationReason': 'NO_TOOL_CALL', 'fullyIdle': True, 'error': ''}) == '{}'
+from osk import response_growth as rg
+rg.after_hook({'harness': 'antigravity', 'session_id': sid, 'transcript_path': str(transcript),
+               'cwd': str(proj), 'session': 'proj'})
 st = integration.status('antigravity', sid)
 assert (st['captured_rounds'], st['failed_rounds']) == (3, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
@@ -782,10 +788,9 @@ assert '"tool_evidence_ref"' in raw_text and '"view_file"' in raw_text, raw_text
 # A transcript in another conversation's folder is not read.
 other = integration.capture('antigravity', 'b8d2e3f4-0000-4000-8000-000000000000', str(transcript), 'proj')
 assert 'does not match' in (other['capture_error'] or ''), other
-# When capture fails, Stop still answers JSON and lets the agent stop.
-assert hook('capture_stop.py', {**given, 'conversationId': 'c9e3f4a5-0000-4000-8000-000000000000',
-                                'transcriptPath': str(root.parent / 'missing.jsonl')},
-            ANTIGRAVITY_CONVERSATION_ID='c9e3f4a5-0000-4000-8000-000000000000') == '{}'
+# When capture has failed, Stop still answers JSON and lets the agent stop.
+assert hook('capture_stop.py', {**given, 'conversationId': 'b8d2e3f4-0000-4000-8000-000000000000'},
+            ANTIGRAVITY_CONVERSATION_ID='b8d2e3f4-0000-4000-8000-000000000000') == '{}'
 assert {'antigravity/start', 'antigravity/input', 'antigravity/stop'} <= set(runs.read()['runs']), runs.read()['runs']
 # doctor reads the named hook in ~/.gemini/config/hooks.json and the global MCP file.
 ag = harness.get('antigravity')

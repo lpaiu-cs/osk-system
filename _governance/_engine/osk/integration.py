@@ -466,6 +466,45 @@ def _capture_failed(p: Path, s: dict, exc: Exception, phase: str) -> dict:
     return _current_view(s, p)
 
 
+def _land(s: dict, transcript_path: str | None, session: str, space: str | None,
+          cwd: str | None) -> str | None:
+    """The landing step of `capture`: pin the conversation's work folder judgment, project
+    key, landing and first transcript path in `s`, reading at most the transcript's head.
+    Returns the path to look for; a refused landing raises ValueError."""
+    # 일회성 작업 폴더의 대화는 그 키에 선 결속을 따르지 않는다 — 착지는 대화에 고정한 것뿐이다
+    follow = not _workspace(s, (str(Path(transcript_path).resolve()) if transcript_path else None)
+                            or s.get("capture_path") or s["transcript_path"], cwd)
+    pinned = s["space"]
+    if pinned:
+        scope = raw._scope_of_space(pinned)
+        if not scope:
+            raise ValueError("saved conversation scope is invalid; capture remains pending")
+        pinned = (SCOPE + '/') + scope
+    # 착지는 검토의 문맥(허브 트리·조직 검토)이지 인용 기록의 자리가 아니다 — 기록은 루트
+    # `_cited/` 한 자리다(헌법 4조 3항). 명시한 space가 먼저, 다음이 고정된 착지, 그 다음이
+    # 프로젝트의 주된 scope다. 한 대화가 여러 scope의 활동을 품을 수 있으니 바뀌어도 거부하지 않는다.
+    destination, primary = write.resolve_landing(session if follow else None, space, "")
+    requested = (SCOPE + '/') + destination if destination else None
+    if pinned and not requested and s["session"]:
+        # 흔한 작업 폴더 키가 무관한 대화를 제 결속으로 끌지 않게 — 착지가 고정된 대화는
+        # 제가 고른 키로 이어진다
+        session = s["session"]
+        destination, primary = write.resolve_landing(session if follow else None, pinned, "")
+        requested = (SCOPE + '/') + destination
+    if (s["session"] and s["session"] != session
+            and not (primary and requested == pinned or not pinned and requested)):
+        # 키가 바뀐 재포착은 같은 scope로 이어질 때만 받는다 — 흔한 폴더 이름의 키가
+        # 무관한 대화를 제 결속으로 끌어가지 않게 한다
+        raise ValueError("conversation scope changed; existing capture was not moved")
+    s["session"] = session
+    s["space"] = requested if space else (pinned or requested)
+    requested_path = (str(Path(transcript_path).resolve()) if transcript_path else
+                      s.get("capture_path") or s["transcript_path"])
+    if not s["transcript_path"]:
+        s["transcript_path"] = requested_path  # First-capture intent survives an absent/unflushed file.
+    return requested_path
+
+
 def _capture_source(harness: str, conversation_id: str, transcript_path: str | None,
                     session: str, space: str | None, cwd: str | None):
     """The landing and source steps of `capture`, under the state lock — `(native_path,
@@ -477,37 +516,7 @@ def _capture_source(harness: str, conversation_id: str, transcript_path: str | N
         _save(p, s)  # Persist intent before reading; failures remain pending.
         phase = "landing"
         try:
-            # 일회성 작업 폴더의 대화는 그 키에 선 결속을 따르지 않는다 — 착지는 대화에 고정한 것뿐이다
-            follow = not _workspace(s, (str(Path(transcript_path).resolve()) if transcript_path else None)
-                                    or s.get("capture_path") or s["transcript_path"], cwd)
-            pinned = s["space"]
-            if pinned:
-                scope = raw._scope_of_space(pinned)
-                if not scope:
-                    raise ValueError("saved conversation scope is invalid; capture remains pending")
-                pinned = (SCOPE + '/') + scope
-            # 착지는 검토의 문맥(허브 트리·조직 검토)이지 인용 기록의 자리가 아니다 — 기록은 루트
-            # `_cited/` 한 자리다(헌법 4조 3항). 명시한 space가 먼저, 다음이 고정된 착지, 그 다음이
-            # 프로젝트의 주된 scope다. 한 대화가 여러 scope의 활동을 품을 수 있으니 바뀌어도 거부하지 않는다.
-            destination, primary = write.resolve_landing(session if follow else None, space, "")
-            requested = (SCOPE + '/') + destination if destination else None
-            if pinned and not requested and s["session"]:
-                # 흔한 작업 폴더 키가 무관한 대화를 제 결속으로 끌지 않게 — 착지가 고정된 대화는
-                # 제가 고른 키로 이어진다
-                session = s["session"]
-                destination, primary = write.resolve_landing(session if follow else None, pinned, "")
-                requested = (SCOPE + '/') + destination
-            if (s["session"] and s["session"] != session
-                    and not (primary and requested == pinned or not pinned and requested)):
-                # 키가 바뀐 재포착은 같은 scope로 이어질 때만 받는다 — 흔한 폴더 이름의 키가
-                # 무관한 대화를 제 결속으로 끌어가지 않게 한다
-                raise ValueError("conversation scope changed; existing capture was not moved")
-            s["session"] = session
-            s["space"] = requested if space else (pinned or requested)
-            requested_path = (str(Path(transcript_path).resolve()) if transcript_path else
-                              s.get("capture_path") or s["transcript_path"])
-            if not s["transcript_path"]:
-                s["transcript_path"] = requested_path  # First-capture intent survives an absent/unflushed file.
+            requested_path = _land(s, transcript_path, session, space, cwd)
             _save(p, s)
             phase = "source"
             native_path = _locate_transcript(harness, conversation_id, requested_path)
@@ -1527,15 +1536,33 @@ def hook_capture(env: dict, session: str) -> dict:
     return capture(harness, sid, path, session, env.get("space"), cwd=env.get("cwd"))
 
 
+def hook_land(env: dict, session: str) -> dict:
+    """SessionStart's part of `capture`: pin the conversation's landing (`_land`) so its first
+    turn cites and reviews under it, without parsing the transcript — a resumed or compacted
+    one takes seconds (#192); the hooks' worker captures. A refused landing is kept as capture
+    keeps it. Returns the saved view: the turns as of the last capture."""
+    harness, sid, path = hook_source(env)
+    with _locked(harness, sid) as p:
+        s = _load(p, harness, sid)
+        try:
+            _land(s, path, session, env.get("space"), env.get("cwd"))
+        except Exception as exc:
+            return _capture_failed(p, s, exc, "landing")
+        _save(p, s)
+        return _current_view(s, p)
+
+
 def capture_due(harness: str, conversation_id: str, transcript_path: str | None) -> bool:
-    """Is there anything new for `capture`? A stat, never a read — the input hook hands a
-    capture to its worker only then (#192). A named transcript that does not exist yet (a new
-    conversation before its first turn is written) has nothing to capture: the worker would
-    count it missing after this prompt's tick. Stop captures it."""
-    if transcript_path and not os.path.exists(transcript_path):
-        return False
+    """Is there anything new for `capture`? A stat, never a read — the hooks hand a capture
+    to their worker only then (#192). A new conversation's named transcript that does not exist
+    yet (before its first turn is written) has nothing to capture: the worker would count it
+    missing after this prompt's tick, and a later hook's worker captures it. A tracked
+    conversation's file that left the named path is the worker's to find by ID
+    (`_locate_transcript`) or to record missing."""
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
+    if transcript_path and not os.path.exists(transcript_path):
+        return bool(s["rounds"] or s.get("native_fingerprint"))
     if s["capture_pending"] or s["capture_error"] or not s.get("native_fingerprint") or not transcript_path:
         return True
     try:

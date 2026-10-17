@@ -147,14 +147,13 @@ def defer(env: dict, session: str, *, probe_due: bool) -> bool:
 
 def after_hook(env: dict) -> None:
     """The hooks' detached part: capture this conversation's new turns, then ask the fork CLI
-    again when its verdict is due. One worker per conversation; a busy one already runs."""
+    again when its verdict is due. Workers of one conversation take turns, and one that waited
+    redoes only what is still due: a turn that Stop handed over while another worker was
+    parsing is not dropped."""
     harness, sid, path = integration.hook_source(env)
     lock_path = integration.state_path(harness, sid).with_suffix('.defer.lock')
     with lock_path.open('a+b') as lock:
-        try:
-            lock_exclusive(lock, blocking=False)
-        except OSError:
-            return
+        lock_exclusive(lock)
         try:
             if integration.capture_due(harness, sid, path):
                 integration.hook_capture(env, env['session'])
@@ -289,7 +288,7 @@ def launch(env: dict, session: str) -> bool:
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as stderr:
         core.spawn_worker('osk.response_growth', stderr=stderr,
-                          env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid)},
+                          env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid, ask=False)},
                           stdin=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
     return True
 
@@ -826,7 +825,8 @@ def run(source: dict, job: dict, executable: str) -> dict:
     """Use the existing supervisor, manifest, deadline and receipt validation."""
     if any(job.get(k) != source.get(k) for k in ('harness', 'conversation_id')):
         raise ValueError('a fork may review only its own source conversation')
-    env = subscription_env()
+    # Stop named its Codex Desktop binary (`launch`); its version is asked here, off the hook's clock.
+    env = {**subscription_env(), **runtime_env(source['harness'], source['conversation_id'])}
     for retry in (False, True):
         try:
             argv = command(source, executable, env)
