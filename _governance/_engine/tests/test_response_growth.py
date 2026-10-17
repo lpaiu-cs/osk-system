@@ -1319,6 +1319,21 @@ class ResponseGrowthTests(unittest.TestCase):
             assert 'capture diagnostic' in said[0] and 'prefix changed' in said[0] and not said[1], said
         ''')
 
+    def test_input_hook_imports_no_yaml_or_tz_data(self):
+        # #192 D: yaml and the tz data were a quarter of the input hook's imports, yet the hook
+        # parses no node and writes no time. They load where they are used.
+        base_tests.GrowthTests().check_case('''
+            import re, subprocess
+            hook = Path(core.__file__).resolve().parents[1] / 'scripts/hooks/claude_prompt_submit.py'
+            prompt = {'session_id':'own','transcript_path':str(core.ROOT / 'native.jsonl'),'cwd':str(core.ROOT),
+                      'hook_event_name':'UserPromptSubmit','prompt':'q'}
+            r = subprocess.run([sys.executable, '-X', 'importtime', str(hook)], input=json.dumps(prompt),
+                               capture_output=True, text=True, encoding='utf-8', timeout=60)
+            loaded = set(re.findall(r'^import time:.*\\|\\s*(\\S+)$', r.stderr, re.M))
+            assert r.returncode == 0 and 'osk.integration' in loaded, (r.returncode, r.stdout, r.stderr[-2000:])
+            assert not {'yaml', 'zoneinfo'} & loaded, sorted(loaded)
+        ''')
+
     def test_login_loss_after_input_does_not_consume_stop_attempt(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration

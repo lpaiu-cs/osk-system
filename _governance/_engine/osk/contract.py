@@ -4,11 +4,11 @@
 Mechanism §2(id·시각 형식·drafter 단수·모델명·필드 순서).
 """
 from __future__ import annotations
+import functools
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-import yaml
 
 from .core import AUTHORS, DRAFTER_RE, ID_RE, TS_FMT, TS_RE
 
@@ -269,20 +269,29 @@ class Node:
 # 오독**이었다 — venv의 `python.exe`는 베이스 인터프리터를 자식으로 띄우는 런처
 # 스텁이라 서버 하나가 두 프로세스로 보인다. 정확히 절반이었던 것이 짝을
 # 이룬다는 신호였다. 폴백의 필요는 그대로지만 근거는 위의 것이다.)
-_LoaderBase = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+#
+# 로더는 처음 판독할 때 만든다 — yaml의 import는 20 ms 남짓이라, 노드를 읽지 않는
+# 프로세스(입력 훅)가 그 값을 치르지 않게 한다(#192).
+@functools.cache
+def _loaders() -> tuple[type, type]:
+    """(`_StrictLoader`, `_PureStrictLoader`)."""
+    import yaml
 
+    class _StrictLoader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):
+        """중복 키를 last-wins로 삼키지 않는 로더 — `conflicts`를 두 번 쓰면
+        앞 엣지가 조용히 사라진다. frontmatter의 중복 키는 오류다."""
 
-class _StrictLoader(_LoaderBase):
-    """중복 키를 last-wins로 삼키지 않는 로더 — `conflicts`를 두 번 쓰면
-    앞 엣지가 조용히 사라진다. frontmatter의 중복 키는 오류다."""
+    class _PureStrictLoader(yaml.SafeLoader):
+        """같은 규율의 **순수 파이썬** 로더. C 로더와 판정이 갈리는 입력을 구판과
+        같게 다루기 위해서만 쓴다(`parse`의 탭 처리)."""
 
-
-class _PureStrictLoader(yaml.SafeLoader):
-    """같은 규율의 **순수 파이썬** 로더. C 로더와 판정이 갈리는 입력을 구판과
-    같게 다루기 위해서만 쓴다(`parse`의 탭 처리)."""
+    for L in (_StrictLoader, _PureStrictLoader):
+        L.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_keys)
+    return _StrictLoader, _PureStrictLoader
 
 
 def _no_dup_keys(loader, node, deep=False):
+    import yaml
     out = {}
     for k, v in node.value:
         key = loader.construct_object(k, deep=deep)
@@ -291,11 +300,6 @@ def _no_dup_keys(loader, node, deep=False):
                 None, None, f"frontmatter 중복 키: {key}", k.start_mark)
         out[key] = loader.construct_object(v, deep=deep)
     return out
-
-
-for _L in (_StrictLoader, _PureStrictLoader):
-    _L.add_constructor(
-        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_keys)
 
 
 # frontmatter 흐름 컬렉션의 중첩 상한. C 로더는 깊은 중첩에서 **네이티브 스택
@@ -380,7 +384,9 @@ def parse_bytes(path: Path | str, data: bytes) -> Node:
     # 주석 안의 탭은 두 로더가 **똑같이 통과**시키므로, 그것까지 막으면 구판이
     # 받아들이던 노드가 새로 broken이 된다. 실 vault 1,811건 중 탭이 든
     # frontmatter는 0건이라 이 갈래를 타는 비용도 사실상 0이다.
-    loader = _PureStrictLoader if "\t" in fm_text else _StrictLoader
+    import yaml
+    strict, pure = _loaders()
+    loader = pure if "\t" in fm_text else strict
     try:
         meta = yaml.load(fm_text, Loader=loader) or {}
     except yaml.YAMLError as e:

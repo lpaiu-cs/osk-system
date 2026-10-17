@@ -16,7 +16,6 @@ import re
 import signal
 import subprocess
 import shutil
-import uuid
 
 from . import core, graph
 from ._portalock import lock_exclusive, unlock
@@ -1210,6 +1209,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 if not checked["ok"]:
                     return checked
                 command = [checked["executable"], *command[1:]]
+                import uuid     # 입력 훅이 이 모듈을 들일 때 치르지 않게(#192)
                 attempt = uuid.uuid4().hex
                 for candidate in planned["candidates"]:
                     candidate["distill_key"] = f"growth:{attempt}:{candidate['key']}"
