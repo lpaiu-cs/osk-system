@@ -1215,6 +1215,28 @@ class ResponseGrowthTests(unittest.TestCase):
             assert integration.status('claude','own')['prompt_count'] == 4
         ''')
 
+    def test_worker_that_cannot_start_hands_review_to_the_session(self):
+        # #192 review (#198): the route's verdict comes from the hooks' worker. A host that cannot
+        # start one never learned a verdict and stayed on the fork's route, so the in-session
+        # 9·15-turn review never took over.
+        base_tests.GrowthTests().check_case('''
+            import os
+            from osk import response_growth as rg
+            from unittest.mock import patch
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(core.ROOT / 'native.jsonl'),
+                   'cwd':str(core.ROOT),'hook_event_name':'UserPromptSubmit'}
+            os.environ.pop('OSK_HOOK_WORKER')
+            unchecked = rg.route(env)
+            assert unchecked['mode'] == 'background' and unchecked['probe_due'], unchecked
+            with patch.object(rg.core,'spawn_worker',side_effect=OSError('no processes left')):
+                assert rg.defer(env,'key',probe_due=True) is False
+            fallback = rg.route(env)
+            assert fallback['mode'] == 'foreground' and fallback['changed'], fallback
+            assert 'no processes left' in fallback['reason'] and not fallback['probe_due'], fallback
+        ''')
+
     def test_login_loss_after_input_does_not_consume_stop_attempt(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration

@@ -110,6 +110,10 @@ def probe(env: dict) -> dict:
         verdict = check(harness, sid, path, env.get('cwd') or os.getcwd(), timeout=PROBE_TIMEOUT)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         verdict = {'mode': 'foreground', 'reason': str(exc)}
+    return _remember(harness, sid, verdict)
+
+
+def _remember(harness: str, sid: str, verdict: dict) -> dict:
     with integration._locked(harness, sid) as p:
         state = integration._load(p, harness, sid)
         state['response_growth_probe'] = {**verdict, 'at': time.time()}
@@ -128,10 +132,16 @@ def defer(env: dict, session: str, *, probe_due: bool) -> bool:
                'cwd': env.get('cwd'), 'session': session, 'space': env.get('space')}
     log = integration.state_path(harness, sid).with_suffix('.growth.log')
     log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open('ab') as stderr:
-        core.spawn_worker('osk.response_growth', stderr=stderr,
-                          env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid, ask=False)},
-                          stdin=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+    try:
+        with log.open('ab') as stderr:
+            core.spawn_worker('osk.response_growth', stderr=stderr,
+                              env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid, ask=False)},
+                              stdin=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+    except OSError as exc:
+        # No worker means no verdict and no background review either (Stop's `launch` starts the
+        # same way): review in-session until the verdict is stale, then try again. Counts stay.
+        _remember(harness, sid, {'mode': 'foreground', 'reason': f'the hooks could not start their worker ({exc})'})
+        return False
     return True
 
 

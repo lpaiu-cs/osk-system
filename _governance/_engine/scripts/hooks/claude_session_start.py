@@ -203,10 +203,30 @@ def _stamp(gd: Path | None) -> list | None:
         return None
 
 
+def _dotgit(cwd: str) -> list | None:
+    """작업 폴더에서 위로 가장 가까운 `.git` — 폴더면 경로만, 파일(워크트리·서브모듈)이면 그
+    크기·시각까지. git을 띄우지 않고 저장소가 새로 생기거나 다른 것으로 바뀐 것을 알아챈다."""
+    d = os.path.realpath(cwd)
+    while True:
+        p = os.path.join(d, ".git")
+        if os.path.isdir(p):
+            return [p]
+        try:
+            st = os.stat(p)
+            return [p, st.st_size, st.st_mtime_ns]
+        except OSError:
+            pass
+        if os.path.dirname(d) == d:
+            return None
+        d = os.path.dirname(d)
+
+
 def _checkout_cached(cwd: str) -> tuple[str, list[str] | None]:
     """`_checkout`을 작업 폴더별로 CHECKOUT_TTL 동안 다시 쓴다(기기 로컬 `osk-checkouts.json`).
-    저장소의 동일성 캐시가 바뀌면 다시 잰다. git이 시간을 넘기면 지난 판정이 있으면 그것을
-    쓰고, 그 판정은 캐시하지 않는다."""
+    다시 쓰는 판정은 둘이다 — 위로 `.git`이 없는 폴더(`.git`이 생기면 바뀐다)와, 가장 가까운
+    `.git`과 저장소의 동일성 캐시가 그대로인 저장소. 미확정(커밋 없음·얕은 사본)은 다시 잰다
+    — 첫 커밋 뒤에도 이름만 쓰면 같은 이름의 남의 결속을 받는다(#196 리뷰). git이 시간을
+    넘기면 지난 판정이 있으면 그것을 쓰고, 그 판정은 캐시하지 않는다."""
     from osk import core
     path, folder, now = core.local_lock_path("osk-checkouts.json"), os.path.normcase(os.path.abspath(cwd)), time.time()
     try:
@@ -219,14 +239,18 @@ def _checkout_cached(cwd: str) -> tuple[str, list[str] | None]:
             and isinstance(hit.get("repo"), (list, type(None)))):
         hit = None
     gd = Path(hit["gd"]) if hit and isinstance(hit.get("gd"), str) else None
-    if hit and 0 <= now - hit.get("at", 0) < CHECKOUT_TTL and _stamp(gd) == hit.get("stamp"):
+    dotgit = _dotgit(cwd)
+    if (hit and 0 <= now - hit.get("at", 0) < CHECKOUT_TTL and hit.get("dotgit") == dotgit
+            and (dotgit is None or hit["repo"] and hit.get("stamp") is not None
+                 and _stamp(gd) == hit["stamp"])):
         return hit["name"], hit["repo"]
     slow = len(_SLOW)
     name, repo, gd = _checkout(cwd)
     if len(_SLOW) > slow:
         return (hit["name"], hit["repo"]) if hit else (name, repo)
     table = {k: v for k, v in table.items() if isinstance(v, dict) and 0 <= now - v.get("at", 0) < CHECKOUT_TTL}
-    table[folder] = {"name": name, "repo": repo, "gd": str(gd) if gd else None, "stamp": _stamp(gd), "at": now}
+    table[folder] = {"name": name, "repo": repo, "gd": str(gd) if gd else None, "stamp": _stamp(gd),
+                     "dotgit": dotgit, "at": now}
     try:
         core.atomic_write(path, json.dumps(table, ensure_ascii=False).encode("utf-8"))
     except OSError:

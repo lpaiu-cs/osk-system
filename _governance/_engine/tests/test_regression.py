@@ -6434,6 +6434,33 @@ def test_session_key_repo_identity():
     check("파생 키는 제 결속으로 간다",
           hook.session_key(str(b)) == kb and write.resolve_session(kb) == "W2")
 
+    # 폴더별 캐시(#192)는 미확정 판정을 다시 쓰지 않는다 — Git 밖이던 폴더가 저장소가 되거나
+    # 저장소 안에 저장소가 새로 생기면 다음 훅이 제 키를 받는다(#196 리뷰).
+    head = lambda p: g("rev-parse", "HEAD", cwd=p).stdout.decode().strip()
+    late = base / "late/api"
+    late.mkdir(parents=True)
+    hook.session_key(str(late))                     # Git 밖 판정이 캐시된다
+    g("init", "-q", str(late))
+    hook.session_key(str(late))                     # 커밋 없는 저장소 — 동일성 미확정
+    g("commit", "-q", "--allow-empty", "-m", "늦은 뿌리", cwd=late)
+    got = hook.session_key(str(late))
+    check("Git 밖이던 폴더는 첫 커밋 뒤 바로 제 키 — 남이 소유한 이름의 결속을 받지 않는다",
+          got == f"api-{head(late)[:8]}", got)
+    (late / ".git").rename(late / ".git-old")
+    g("init", "-q", str(late))
+    g("commit", "-q", "--allow-empty", "-m", "바뀐 뿌리", cwd=late)
+    got = hook.session_key(str(late))
+    check("같은 자리의 저장소를 바꾸면 새 동일성", got == f"api-{head(late)[:8]}", got)
+    mono = base / "mono/app"
+    repo(mono, "모노 뿌리")
+    inner = mono / "pkg"
+    inner.mkdir()
+    check("저장소 안 하위 폴더는 바깥 저장소의 키", hook.session_key(str(inner)) == "app")
+    g("init", "-q", str(inner))
+    g("commit", "-q", "--allow-empty", "-m", "안쪽 뿌리", cwd=inner)
+    got = hook.session_key(str(inner))
+    check("그 안에 새로 생긴 저장소는 자기 키", got == "pkg", got)
+
     # 서브모듈과 bare 저장소의 워크트리는 자기 이름을 받는다(`modules`·부모 아님).
     lib = base / "seed/lib"
     repo(lib, "lib 뿌리")
