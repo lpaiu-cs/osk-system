@@ -289,15 +289,9 @@ assert runs.read()['overview']['proj'] >= runs.read()['runs']['claude/start']['a
 # Blocks a hook folded for its host's limit come back by name (osk.hook_text).
 out = M.overview(session='proj', include=['tidy', 'organization', 'recovery'])
 assert set(out['included']) == {'tidy', 'organization', 'recovery'}, out
-# Any call that carries the key is the same evidence: a scope memory read, or a write
-# even when it is refused for want of a landing.
-M.scope_memory(session='mem-key')
-assert not M.create_node('t', 's', 'b', 'sonnet-5', session='write-key')['ok']
-assert {'mem-key', 'write-key'} <= set(runs.read()['overview']), runs.read()['overview']
-# A fork's own calls are not evidence that the user's session received the text.
+# A fork's own overview is not evidence that the user's session received the text.
 with mock.patch.dict(os.environ, {'OSK_GROWTH_WORKER': '1'}):
     M.overview(session='fork-own')
-    M.scope_memory(session='fork-own')
     assert runs.record_run('claude', 'start', 'fork-own') is False
 assert 'fork-own' not in runs.read()['overview'], runs.read()['overview']
 ''')

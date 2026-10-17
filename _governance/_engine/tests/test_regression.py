@@ -1384,6 +1384,37 @@ def test_dir_entries_durable_before_ledger():
         shutil.rmtree(regdir, ignore_errors=True)
 
 
+def test_atomic_write_waits_out_open_reader():
+    """Windows에서는 대상 파일을 연 읽기가 있으면 `os.replace`가 WinError 5로 실패한다
+    (Python의 `open()`은 FILE_SHARE_DELETE를 주지 않는다). 대화 커서를 상태 잠금 없이
+    읽는 곳(integration status·catchup·doctor·포착 중 다른 커서)이나 엔진 밖의 읽기가
+    분리 작업자의 저장과 겹쳐 포착이 실패했다(#192 측정). 읽기는 곧 닫히므로 다시 건다."""
+    if os.name != "nt":
+        skip("열린 읽기가 원자 교체를 막는다", "Windows 공유 모드 전용")
+        return
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "cursor.json"
+        p.write_bytes(b"old")
+        reader, real, failed = open(p, "rb"), os.replace, []
+
+        def replace(src, dst):
+            try:
+                return real(src, dst)
+            except PermissionError as e:
+                failed.append(e.winerror)
+                raise
+            finally:
+                reader.close()                # 열린 읽기는 첫 교체 시도 뒤 닫힌다
+
+        try:
+            with mock.patch.object(os, "replace", replace):
+                core.atomic_write(p, b"new")
+        finally:
+            reader.close()
+        check("전제: 첫 교체는 열린 읽기 때문에 WinError 5로 실패한다", failed == [5], failed)
+        check("읽기가 닫히면 교체를 다시 걸어 새 내용을 쓴다", p.read_bytes() == b"new", p.read_bytes())
+
+
 # ── 대장 잠금 안 전제 재확인 — 스냅샷 중 유입 기록을 덮지 않는다 ────────
 def test_approve_precondition_under_lock():
     """승인본 측 CAS는 대장 **잠금 안에서** 다시 본다 — 작업본 스냅샷이 걸리는
@@ -7027,8 +7058,10 @@ def test_scope_recovery_handoff():
         out = run_hook("claude_session_start.py")
         check("새 세션은 evict 없이도 복구를 싣는다", "[osk scope 복구 대기" in out, out[:300])
         check("복구는 현재 저장본과 기존 노드 우선 행동을 싣는다", cur in out and "update_node" in out and "엔트리 단위" in out)
-        check("세션 시작은 노드를 쓰기 전의 overview를 안내한다",
-              "새 노드를 쓰기 전에 한 번 `overview(session=" in out, out[:600])
+        check("세션 시작은 노드를 처음 쓰기 전의 overview를 안내한다",
+              f'이 세션에서 노드를 처음 쓰기 전에 `overview(session="{S}")`를 한 번 불러 군집·허브 트리(`hub_tree`)·'
+              '열린 사건·근거 재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다'
+              '(시행령 §3 8항). 기억을 묻는 질문에는 `search`를 먼저 쓴다.' in out, out[:600])
         check("세션 시작은 허브 트리와 자리 규칙을 안내한다",
               "hub_tree" in out and "시행령 §3 8항" in out, out[:600])
         check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",
@@ -12515,6 +12548,7 @@ if __name__ == "__main__":
                test_approval_baseline_blobs_present,
                test_store_content_verified,
                test_dir_entries_durable_before_ledger,
+               test_atomic_write_waits_out_open_reader,
                test_revert_incomplete_no_record,
                test_revert_path_identity,
                test_approve_precondition_under_lock,
