@@ -1,20 +1,18 @@
-"""osk.harness.runs — 이 기기에서 훅이 실제로 불렸는지, 세션 시작 뒤 그 키를 실은 호출이 따라왔는지.
+"""osk.harness.runs — 이 기기에서 훅이 실제로 불렸는지, 세션 시작 뒤 overview가 따라왔는지.
 
 등록 파일은 훅이 불린다는 것을 증명하지 못한다. 호스트가 신뢰하지 않았거나(Codex),
 세션을 새로 열지 않았거나(Claude Code), 등록이 문서 밖의 자리에 있을 수 있다. 그래서
 훅이 불릴 때마다 호스트·사건별 마지막 시각을 남기고 `doctor`가 등록과 대조한다.
 
-문맥이 모델까지 닿았는지는 직접 알 수 없다. 프로젝트 키는 훅이 알려 주므로, 그 키를 실은
-MCP 호출(`overview`·`scope_memory`·`create_node`의 `session`)이 세션 시작 뒤에 왔으면 닿았다고
-짐작한다. 기록의 이름(`overview`)과 형식(`{키: 시각}`)은 overview만 적던 판의 것 그대로다 —
-옛 판과 새 판이 서로의 기록을 읽는다.
+문맥이 모델까지 닿았는지는 직접 알 수 없다. 세션 시작 훅은 `overview(session=…)`를
+부르라고 싣으므로, 그 프로젝트 키의 overview가 그 뒤에 불렸으면 닿았다고 짐작한다.
 
 기록은 기기 로컬(`core.local_lock_path`)이며 동기화되지 않는다. 호스트 이름·프로젝트 키·
 그 훅을 돌린 Python 경로와 시각만 적고 대화 내용은 적지 않는다. 기록은 잠금을 잠깐만
 기다리고, 못 적으면 거짓을 돌려준다 — 훅과 표면을 막지 않는다.
 
 구독 fork·정기 실행(`OSK_GROWTH_WORKER=1`)이 부른 훅과 표면은 적지 않는다. 그 실행의
-증거는 그 실행의 것이고, 적으면 사용자 세션의 전달을 fork의 호출이 대신 증언한다.
+증거는 그 실행의 것이고, 적으면 사용자 세션의 전달을 fork의 `overview`가 대신 증언한다.
 
 같은 사건이 두 자리에 등록되면 훅이 같은 입력으로 두 번 불린다. `first_call`이 두 번째
 호출을 가려 한 번만 처리하게 하고, 그 사실을 남겨 `doctor`가 겹친 등록을 알린다.
@@ -33,7 +31,7 @@ STATE = "osk-hook-runs.json"
 # 비Git vault의 대체 자리는 이름의 stem으로 갈리므로(core.local_lock_path) 세 이름의 stem이 달라야 한다.
 LOCK = "osk-hook-recording.lock"
 CLAIMS = "osk-hook-claims.json"   # {"claims": {지문: at}, "duplicates": {"<호스트>/<사건>": at}}
-KEEP = 64        # 키를 실은 호출을 기억하는 세션 수
+KEEP = 64        # overview를 기억하는 세션 수
 WAIT = 0.5       # 잠금을 기다리는 최대 시간(초)
 # 두 등록의 호출은 함께 오거나(병렬) 앞 호출이 끝나자마자 온다(순차). 다음 턴은 전사가 자라
 # 입력이 달라지므로 긴 창도 다음 턴을 가리지 않는다. 전사 크기를 잴 수 없는 입력은 같은
@@ -133,8 +131,7 @@ def record_run(host: str | None, event: str, session: str | None) -> bool:
 
 
 def record_overview(session: str) -> bool:
-    """그 프로젝트 키를 실은 MCP 호출이 왔다(이름은 overview만 적던 판의 것). 오래된
-    세션부터 잊는다."""
+    """그 프로젝트 키로 overview가 불렸다. 오래된 세션부터 잊는다."""
     at = time.time()
 
     def change(data):

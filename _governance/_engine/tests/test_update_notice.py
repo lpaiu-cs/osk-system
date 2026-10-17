@@ -316,22 +316,15 @@ cached()
 project = root.parent / 'my-app'
 project.mkdir()
 hook = Path(update.__file__).resolve().parents[1] / 'scripts/hooks/claude_session_start.py'
-def start(sid, budget=None):
+def start(sid):
     # Antigravity: camelCase input; the context comes back only as an injected step.
     payload = {'conversationId': sid, 'workspacePaths': [str(project)],
                'transcriptPath': str(root.parent / sid / 'transcript_full.jsonl')}
-    run = [sys.executable, str(hook)] if budget is None else [sys.executable, '-c', (
-        f'import sys; sys.path.insert(0, {str(hook.parent)!r}); import claude_session_start as H; '
-        f'H._budget = lambda env, host=None: {budget}; H.main(); H.finish()')]
-    r = subprocess.run(run, input=json.dumps(payload).encode(),
+    r = subprocess.run([sys.executable, str(hook)], input=json.dumps(payload).encode(),
                        capture_output=True, timeout=90,
                        env={**os.environ, 'ANTIGRAVITY_CONVERSATION_ID': sid})
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout.decode('utf-8'))
-# Folded for the host's limit, the notice is not spent, and the fold line sends the agent to
-# `overview` for it: the start no longer asks every session to call overview (#192).
-folded = start('a0', budget=1200)['injectSteps'][0]['ephemeralMessage']
-assert '[osk 새 릴리스' not in folded and '이 세션에 overview의 update를 읽어' in folded, folded
 first = start('a1')
 assert 'systemMessage' not in first, first
 text = first['injectSteps'][0]['ephemeralMessage']

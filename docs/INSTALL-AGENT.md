@@ -147,11 +147,10 @@ python _governance/_engine/scripts/setup.py doctor
 ```
 
 For each host it shows whether the MCP server and the three hooks point at this
-vault, when each hook last ran on this device, and whether the agent made an osk
-call carrying the session key (`overview`, `scope_memory` or `create_node`) after
-the session started. Report failures to the user. A hook that has not run yet
-needs a new session (Claude Code), trust (Codex), a trusted workspace folder and a
-new chat (Kiro) or a new conversation (Antigravity).
+vault, when each hook last ran on this device, and whether the agent called
+`overview` after the session started. Report failures to the user. A hook that
+has not run yet needs a new session (Claude Code), trust (Codex), a trusted
+workspace folder and a new chat (Kiro) or a new conversation (Antigravity).
 
 ## Optional features later
 
