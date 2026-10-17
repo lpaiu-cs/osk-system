@@ -28,17 +28,30 @@
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
 from __future__ import annotations
-import errno, hashlib, json, os, random, re, shlex, string, subprocess, sys, tempfile, time
+import errno, functools, hashlib, json, os, random, re, shlex, string, subprocess, sys, tempfile, time
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from . import epoch
 from .layout import space_roots, adapt_path
 from ._portalock import lock_exclusive, unlock
 
 B36 = string.digits + string.ascii_lowercase
-KST = ZoneInfo("Asia/Seoul")          # Mechanism §2 2항 — 표기 시간대는 KST 고정
+
+
+@functools.cache
+def _kst():
+    """Mechanism §2 2항 — 표기 시간대는 KST 고정. tz 데이터는 처음 쓸 때 읽는다 — Windows에서는
+    tzdata 패키지를 `importlib.resources`로 읽어 import에 20 ms 남짓 들고, 입력 훅은 대개 시각을
+    적지 않는다(#192). 다른 모듈은 `core.KST`로 읽는다(`__getattr__`)."""
+    from zoneinfo import ZoneInfo
+    return ZoneInfo("Asia/Seoul")
+
+
+def __getattr__(name: str):
+    if name == "KST":
+        return _kst()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def vault_root() -> Path:
@@ -222,12 +235,12 @@ AUTHORS = ("user", "agent")              # Mechanism §2 4항
 
 def now_kst() -> str:
     """frontmatter 시각 — 기기 시간대와 무관하게 KST로 적는다."""
-    return datetime.now(KST).strftime(TS_FMT)
+    return datetime.now(_kst()).strftime(TS_FMT)
 
 
 def now_iso() -> str:
     """대장 기록의 `at` — ISO 8601 유지 (Mechanism §2 2항 단서)."""
-    return datetime.now(KST).replace(microsecond=0).isoformat()
+    return datetime.now(_kst()).replace(microsecond=0).isoformat()
 
 
 def b36(n: int, width: int) -> str:
@@ -256,7 +269,7 @@ def new_node_id(when: datetime | None = None) -> str:
     대조를 되살리고 싶어지면 먼저 이것을 보라: 중복 id의 실제 발생원은 이
     함수가 아니라 **파일 복제**(사본 만들기·복원·병합의 수동 해결)이며, 그
     경로는 여기를 거치지 않는다. 대조는 그것을 막지 못했다."""
-    d = when or datetime.now(KST)
+    d = when or datetime.now(_kst())
     secs = d.hour * 3600 + d.minute * 60 + d.second
     return f"{d:%y%m%d}-{b36(secs, 4)}-{''.join(random.choices(B36, k=8))}"
 
