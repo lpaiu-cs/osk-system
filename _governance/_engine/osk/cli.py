@@ -553,7 +553,7 @@ def main(argv=None):
         except Exception as e:
             recovery = {"error": str(e)}
         try:
-            # 포착이 막힌 대화 — 훅은 막힌 동안 한 줄만 싣는다(§9-3 3항)
+            # 포착이 막힌 대화 — 훅은 막힌 사실을 한 번만 싣는다(§9-3 3항, #192)
             from . import integration
             capture = integration.blocked()
         except Exception as e:

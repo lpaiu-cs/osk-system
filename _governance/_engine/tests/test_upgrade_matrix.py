@@ -656,9 +656,10 @@ def _mapped(up: "Upstream", tag: str) -> dict[str, str]:
 def _hook(vault: Path, cell: Path, script: str, **payload) -> str:
     """One hook invocation the way the harness makes it: the vault's hook script,
     the project directory as cwd, the event JSON on stdin."""
+    # A hook's detached worker (#192) would outlive the cell; Stop captures the turn instead.
     r = _run([sys.executable, str(vault / "_governance/_engine/scripts/hooks" / script)],
              cwd=cell / "work" / KEY, input=json.dumps(payload),
-             env=_env({"CLAUDE_CONFIG_DIR": str(cell / "claude")}))
+             env=_env({"CLAUDE_CONFIG_DIR": str(cell / "claude"), "OSK_HOOK_WORKER": "0"}))
     if r.returncode != 0:
         raise CellFailure(f"{script} exit {r.returncode}: {r.stderr.strip()[-1500:]}")
     return r.stdout

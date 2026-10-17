@@ -25,6 +25,13 @@ RETRY_AFTER = 24 * 3600
 _NOT_FORK_FAILURES = {'busy', 'unavailable', 'capture_pending', 'running'}
 AUTH_RACE = 'Failed to refresh OAuth token'
 AUTH_RACE_WAIT = 60
+# The fork CLI's version and login answers take seconds under load: `claude auth status` alone
+# outran its 5 s limit on every prompt in 2026-10 and flipped the route each time (#192). The
+# hooks read the verdict their worker last asked (`probe`) and have it asked again after
+# PROBE_EVERY; the worker waits PROBE_TIMEOUT per query. The fork itself still asks right
+# before inference (`command`).
+PROBE_EVERY = 600
+PROBE_TIMEOUT = 30
 NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 OPENAI_ENDPOINT = 'https://chatgpt.com/backend-api/codex'  # ChatGPT-login Codex backend; forks pin it.
 # Keys the fork pins with -c. A native profile's own value wins over -c, so an active profile may not set them.
@@ -64,30 +71,105 @@ def initialize(env: dict) -> dict | None:
 
 
 def route(env: dict) -> dict:
-    """Check local CLI readiness without inference; unavailable forks use in-session review."""
+    """The review route without waiting on the fork CLI: a host without a fork or a configured
+    CLI reviews in-session, otherwise the verdict is the one the hooks' worker last asked
+    (`probe`) — the fork until it has answered. `probe_due` asks the hook to start the worker
+    (`defer`)."""
     harness, sid, path = integration.hook_source(env)
-    try:
-        if configured(harness):
-            initialize(env)
-        selected = check(harness, sid, path, env.get('cwd') or os.getcwd())
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        selected = {'mode': 'foreground', 'reason': str(exc)}
+    verdict = check(harness, sid, path, env.get('cwd') or os.getcwd(), ask=False)
     with integration._locked(harness, sid) as p:
         state = integration._load(p, harness, sid)
+        asked = state.get('response_growth_probe')
+        due = verdict is None and _probe_due(state)
+        selected = verdict or ({'mode': asked['mode'], 'reason': asked.get('reason')} if asked else
+                               state.get('response_growth_route') or {'mode': 'background', 'reason': None})
         failed = (state.get('response_growth') or {}).get('failed') or {}
         if (selected['mode'] == 'background' and failed.get('count', 0) >= FALLBACK_AFTER
                 and 0 <= time.time() - failed.get('at', 0) < RETRY_AFTER):
             selected = {'mode': 'foreground', 'reason': f"the last {failed['count']} subscription fork "
                         f"reviews did not finish ({failed.get('reason')}); the fork is tried again a day "
                         "after the last failure"}
-        changed = state.get('response_growth_route') != selected
+        # A default nobody has checked yet is no news ("구독 CLI를 확인했다" would be false).
+        changed = state.get('response_growth_route') != selected and bool(verdict or asked)
         state['response_growth_route'] = selected
         integration._save(p, state)
-    return {**selected, 'changed': changed}
+    return {**selected, 'changed': changed, 'probe_due': due}
 
 
-def check(harness: str, sid: str | None, path: str | None, cwd: str) -> dict:
-    """route()'s decision without its state writes; shared with `fork doctor`."""
+def _probe_due(state: dict) -> bool:
+    asked = state.get('response_growth_probe') or {}
+    return not 0 <= time.time() - asked.get('at', 0) < PROBE_EVERY
+
+
+def probe(env: dict) -> dict:
+    """Ask the fork CLI for route()'s verdict, off the hooks' time limit (their worker)."""
+    harness, sid, path = integration.hook_source(env)
+    try:
+        if configured(harness):
+            initialize(env)
+        verdict = check(harness, sid, path, env.get('cwd') or os.getcwd(), timeout=PROBE_TIMEOUT)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        verdict = {'mode': 'foreground', 'reason': str(exc)}
+    return _remember(harness, sid, verdict)
+
+
+def _remember(harness: str, sid: str, verdict: dict) -> dict:
+    with integration._locked(harness, sid) as p:
+        state = integration._load(p, harness, sid)
+        state['response_growth_probe'] = {**verdict, 'at': time.time()}
+        integration._save(p, state)
+    return verdict
+
+
+def defer(env: dict, session: str, *, probe_due: bool) -> bool:
+    """Hand the hook's slow part to a detached worker (`after_hook`) when there is any: new
+    transcript rows to capture, or a fork CLI verdict to ask again. Never waits on it.
+    `OSK_HOOK_WORKER=0` keeps it from starting (the test suites drive its steps themselves)."""
+    harness, sid, path = integration.hook_source(env)
+    if os.environ.get('OSK_HOOK_WORKER') == '0' or not probe_due and not integration.capture_due(harness, sid, path):
+        return False
+    payload = {'defer': True, 'harness': harness, 'session_id': sid, 'transcript_path': path,
+               'cwd': env.get('cwd'), 'session': session, 'space': env.get('space')}
+    log = integration.state_path(harness, sid).with_suffix('.growth.log')
+    log.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with log.open('ab') as stderr:
+            core.spawn_worker('osk.response_growth', stderr=stderr,
+                              env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid, ask=False)},
+                              stdin=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+    except OSError as exc:
+        # No worker means no verdict and no background review either (Stop's `launch` starts the
+        # same way): review in-session until the verdict is stale, then try again. Counts stay.
+        _remember(harness, sid, {'mode': 'foreground', 'reason': f'the hooks could not start their worker ({exc})'})
+        return False
+    return True
+
+
+def after_hook(env: dict) -> None:
+    """The hooks' detached part: capture this conversation's new turns, then ask the fork CLI
+    again when its verdict is due. One worker per conversation; a busy one already runs."""
+    harness, sid, path = integration.hook_source(env)
+    lock_path = integration.state_path(harness, sid).with_suffix('.defer.lock')
+    with lock_path.open('a+b') as lock:
+        try:
+            lock_exclusive(lock, blocking=False)
+        except OSError:
+            return
+        try:
+            if integration.capture_due(harness, sid, path):
+                integration.hook_capture(env, env['session'])
+            with integration._locked(harness, sid) as p:
+                due = _probe_due(integration._load(p, harness, sid))
+            if due:
+                probe(env)
+        finally:
+            unlock(lock)
+
+
+def check(harness: str, sid: str | None, path: str | None, cwd: str, *, ask: bool = True,
+          timeout: float = 5) -> dict | None:
+    """route()'s decision without its state writes; shared with `fork doctor`. With `ask=False`
+    it is None where only the fork CLI can decide (`preflight`)."""
     try:
         if not adapters.get(harness).fork:
             # B-grade host: in-session review is its design, not a missing setting.
@@ -95,9 +177,12 @@ def check(harness: str, sid: str | None, path: str | None, cwd: str) -> dict:
         executable = configured(harness)
         if not executable:
             return {'mode': 'foreground', 'reason': 'subscription fork CLI is not configured'}
+        if not ask:
+            return None
         source = (profile(path, harness, sid) if path and Path(path).exists() else
                   {'harness': harness, 'conversation_id': sid, 'cwd': cwd})
-        preflight(source, executable, {**subscription_env(), **runtime_env(harness, sid)}, require_version=False)
+        preflight(source, executable, {**subscription_env(), **runtime_env(harness, sid)}, require_version=False,
+                  timeout=timeout)
         return {'mode': 'background', 'reason': None}
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         return {'mode': 'foreground', 'reason': str(exc)}
@@ -209,11 +294,15 @@ def launch(env: dict, session: str) -> bool:
     return True
 
 
-def runtime_env(harness: str, sid: str) -> dict:
-    """Codex hooks lack CODEX_THREAD_ID/CODEX_VERSION; bind the emitting Desktop process's version."""
+def runtime_env(harness: str, sid: str, *, ask: bool = True) -> dict:
+    """Codex hooks lack CODEX_THREAD_ID/CODEX_VERSION; bind the emitting Desktop process's version.
+    With `ask=False` a hook only names that Desktop binary for its detached worker, whose own
+    ancestry no longer reaches Codex; the worker asks its version (`native_cli.runtime_codex`)."""
     if harness != 'codex' or not sid or os.environ.get('CODEX_THREAD_ID', sid) != sid:
         return {}  # Another thread's environment proves this process is not that hook.
     from . import native_cli
+    if not ask:
+        return {'CODEX_THREAD_ID': sid, native_cli.DESKTOP_ENV: native_cli.codex_ancestor() or ''}
     version = native_cli.runtime_codex()
     return {'CODEX_THREAD_ID': sid, 'CODEX_VERSION': version} if version else {}
 
@@ -574,16 +663,16 @@ def _codex_unpinned(layers: dict) -> dict:
     return found
 
 
-def _query(executable: str, args: list, cwd, env: dict):
+def _query(executable: str, args: list, cwd, env: dict, timeout: float = 5):
     """A local CLI status/version query; never a prompt."""
     return subprocess.run([executable, *args], cwd=cwd, env=env, shell=False, capture_output=True,
-                          text=True, encoding='utf-8', timeout=5, creationflags=NO_WINDOW)
+                          text=True, encoding='utf-8', timeout=timeout, creationflags=NO_WINDOW)
 
 
-def _git_worktree(cwd: str, env: dict) -> bool:
+def _git_worktree(cwd: str, env: dict, timeout: float = 5) -> bool:
     git = subprocess.run(['git', '-C', cwd, 'rev-parse', '--is-inside-work-tree'],
                          env={k: v for k, v in env.items() if not k.startswith('GIT_')}, shell=False,
-                         capture_output=True, text=True, encoding='utf-8', timeout=5, creationflags=NO_WINDOW)
+                         capture_output=True, text=True, encoding='utf-8', timeout=timeout, creationflags=NO_WINDOW)
     return not git.returncode and git.stdout.strip() == 'true'
 
 
@@ -598,7 +687,8 @@ def _codex_trusted(cwd: str, config: dict) -> bool:
         for k, v in projects.items() if os.path.normcase(os.path.normpath(k)) == key} == {'trusted'}
 
 
-def preflight(source: dict, executable: str, env: dict, *, require_version: bool = True) -> str:
+def preflight(source: dict, executable: str, env: dict, *, require_version: bool = True,
+              timeout: float = 5) -> str:
     """Local authentication/version queries only; used by routing and rechecked before inference."""
     harness = source['harness']
     integration._identity(harness, 'preflight')
@@ -625,7 +715,7 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
     if not cwd or not Path(cwd).is_dir():
         raise ValueError('source working directory is unavailable')
 
-    version = _query(executable, ['--version'], cwd, env)
+    version = _query(executable, ['--version'], cwd, env, timeout)
     if (version.returncode or require_version and not expected or
             expected and not re.search(r'(?<![\w.])' + re.escape(expected) + r'(?![\w.])', version.stdout)):
         raise ValueError('configured CLI version differs from the source harness; fork was not started')
@@ -642,10 +732,10 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
         if unpinned:
             raise ValueError('Codex selects a non-first-party endpoint or policy the fork cannot pin ('
                              + ', '.join(unpinned) + '); no inference started')
-        auth = _query(executable, ['login', 'status'], cwd, env)
+        auth = _query(executable, ['login', 'status'], cwd, env, timeout)
         if auth.returncode or 'Logged in using ChatGPT' not in auth.stdout + auth.stderr:
             raise ValueError('ChatGPT subscription login is required; no API fallback')
-        if not _git_worktree(cwd, env) and not _codex_trusted(cwd, config):
+        if not _git_worktree(cwd, env, timeout) and not _codex_trusted(cwd, config):
             raise ValueError('source directory is not a Git worktree or trusted Codex project; use in-session review')
         return executable
     # The fork runs with the source's own mode, verbatim; never a guessed or wider one.
@@ -663,7 +753,7 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
     if any(env.get(k) for k in ('ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK',
                                'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY')):
         raise ValueError('Claude environment selects an unverified provider')
-    auth = _query(executable, ['auth', 'status'], cwd, env)
+    auth = _query(executable, ['auth', 'status'], cwd, env, timeout)
     status = json.loads(auth.stdout) if auth.returncode == 0 else {}
     if (status.get('authMethod') != 'claude.ai' or not status.get('loggedIn')
             or str(status.get('subscriptionType')).lower() not in {'pro', 'max', 'team', 'enterprise'}):
@@ -766,4 +856,5 @@ def run(source: dict, job: dict, executable: str) -> dict:
 
 if __name__ == '__main__':
     # No conversation text is passed to this process; failures remain in local status.
-    process_stop(json.load(sys.stdin))
+    payload = json.load(sys.stdin)
+    after_hook(payload) if payload.get('defer') else process_stop(payload)

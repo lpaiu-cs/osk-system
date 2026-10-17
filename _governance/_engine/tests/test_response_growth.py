@@ -214,11 +214,12 @@ class ResponseGrowthTests(unittest.TestCase):
                 output = ('true' if argv[0]=='git' else 'codex-cli 0.155.0-alpha.16'
                           if '--version' in argv else 'Logged in using ChatGPT')
                 return subprocess.CompletedProcess(argv,0,output,'')
+            # The hooks' worker asks the CLI (probe); route() reads its verdict.
             with patch.object(rg.subprocess,'run',side_effect=inspect), patch.dict(os.environ,
                     {'CODEX_THREAD_ID':'other','CODEX_VERSION':'0.155.0-alpha.16'}):
-                assert rg.route(env)['mode']=='foreground'
+                assert rg.probe(env)['mode']=='foreground' and rg.route(env)['mode']=='foreground'
                 with patch.dict(os.environ,{'CODEX_THREAD_ID':'own'}):
-                    assert rg.route(env)['mode']=='background'
+                    assert rg.probe(env)['mode']=='background' and rg.route(env)['mode']=='background'
                     with patch.object(rg.subprocess,'Popen',return_value=Mock()) as launch:
                         assert rg.launch(env,'own')
                         inherited = launch.call_args.kwargs['env']
@@ -286,11 +287,17 @@ class ResponseGrowthTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv,0,output,'')
             with patch.object(rg.subprocess,'run',side_effect=inspect):
                 with patch.object(native_cli,'_ancestors',return_value=[]):
-                    route = rg.route(env)  # No managed ancestor: strict transcript version.
+                    route = rg.probe(env)  # No managed ancestor: strict transcript version.
                     assert route['mode']=='foreground' and 'version differs' in route['reason'], route
                 chain = [('cmd.exe', 'cmd.exe'), ('codex.exe', str(managed))]
+                # The hook names its Desktop binary to its detached worker, whose ancestry
+                # no longer reaches Codex; the worker asks that binary's version.
                 with patch.object(native_cli,'_ancestors',return_value=chain):
-                    assert rg.route(env)['mode']=='background'
+                    named = rg.runtime_env('codex','own',ask=False)
+                assert named == {'CODEX_THREAD_ID':'own', native_cli.DESKTOP_ENV:str(managed)}, named
+                with patch.dict(os.environ, named), patch.object(native_cli,'_ancestors',return_value=[]):
+                    assert rg.probe(env)['mode']=='background' and rg.route(env)['mode']=='background'
+                with patch.object(native_cli,'_ancestors',return_value=chain):
                     with patch.object(rg.subprocess,'Popen',return_value=Mock()) as launch:
                         assert rg.launch(env,'own')
                 inherited = launch.call_args.kwargs['env']
@@ -313,7 +320,7 @@ class ResponseGrowthTests(unittest.TestCase):
                                                    if '--version' in argv else 'Logged in using ChatGPT','')
             with patch.object(rg.subprocess,'run',side_effect=installed), \\
                     patch.object(native_cli,'_ancestors',return_value=chain):
-                assert rg.route({'harness':'codex','session_id':'fresh','cwd':str(core.ROOT)})['mode']=='background'
+                assert rg.probe({'harness':'codex','session_id':'fresh','cwd':str(core.ROOT)})['mode']=='background'
             assert logins == [str(managed)], logins
         ''')
 
@@ -481,8 +488,9 @@ class ResponseGrowthTests(unittest.TestCase):
             for sid in ('own', 'child'):
                 assert not integration.state_path('codex', sid).exists(), sid
             # A foreign transcript is still an identity error, not a silent subagent.
-            foreign = rollout('rollout-foreign.jsonl', {'id':'child','session_id':'another'})
-            route = rg.route(dict(env, transcript_path=foreign))
+            foreign = dict(env, transcript_path=rollout('rollout-foreign.jsonl', {'id':'child','session_id':'another'}))
+            rg.probe(foreign)
+            route = rg.route(foreign)
             assert route['mode']=='foreground' and 'identity' in route['reason'], route
         ''')
 
@@ -841,8 +849,9 @@ class ResponseGrowthTests(unittest.TestCase):
                     return real_run(argv, **kwargs)
                 return subprocess.CompletedProcess(argv, 0,
                     'codex-cli 0.155.0' if '--version' in argv else 'Logged in using ChatGPT', '')
-            # Exercise the real Git boundary without spawning a model.
+            # Exercise the real Git boundary without spawning a model. The hooks' worker asks (probe).
             with patch.object(rg.subprocess,'run',side_effect=inspect):
+                rg.probe(env)
                 start = hook.capture_block(env,'own',startup=True)
                 assert 'Git worktree' in start and '검토 경고' in start, start
                 pending = integration.status('codex','own')['pending_refs']
@@ -854,18 +863,18 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert state['pending_refs'] == pending and state['reviewed_rounds'] == 0
                 assert state['response_growth']['attempted_count'] == 0
                 real_run(['git','init','-q','-b','main',str(core.ROOT)],check=True,capture_output=True)
-                assert rg.route(env)['mode'] == 'background'
+                assert rg.probe(env)['mode'] == 'background'
                 # A future restriction must refuse even when Git/auth/version pass.
                 rows[1]['payload']['sandbox_policy']['future_restriction'] = True
                 native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
-                route = rg.route(env)
+                route = rg.probe(env)
                 assert route['mode'] == 'foreground' and 'cannot be represented' in route['reason'], route
                 # The ChatGPT Web bridge route is refused by name before any native query.
                 del rows[1]['payload']['sandbox_policy']['future_restriction']
                 rows[1]['payload']['model'] = 'chatgpt-web/pro'
                 native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
                 with patch.object(rg.subprocess,'run',side_effect=AssertionError('native query')):
-                    route = rg.route(env)
+                    route = rg.probe(env)
                     assert route['mode'] == 'foreground' and 'ChatGPT Web bridge' in route['reason'], route
                     try:
                         rg.command(rg.profile(str(native),'codex','own'), sys.executable, {})
@@ -979,8 +988,10 @@ class ResponseGrowthTests(unittest.TestCase):
             rg.CONFIG.parent.mkdir(exist_ok=True)
             rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            # The hooks' worker asks the CLI (probe); the hooks read its verdict.
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \
                     patch.object(rg.subprocess,'Popen',side_effect=AssertionError('unavailable fork launched')):
+                rg.probe(env)
                 start = hook.capture_block(env,'own',startup=True)
                 assert '검토 경고' in start and 'subscription login required' in start, start
                 assert integration.status('claude','own')['prompt_count'] == 0
@@ -995,6 +1006,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 before = integration.status('claude','own')
                 assert before['prompt_count'] == 15 and before['reviewed_rounds'] == 0, before
             with patch.object(rg,'preflight'):
+                rg.probe(env)
                 hook.capture_block(env,'own',startup=True)
                 restored = integration.status('claude','own')
                 assert restored['response_growth_route']['mode'] == 'background'
@@ -1003,6 +1015,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 hook.capture_block(env,'own')
             # Losing auth between cadence boundaries must surface the overdue review immediately.
             with patch.object(rg,'preflight',side_effect=ValueError('login expired')):
+                rg.probe(env)
                 text = hook.capture_block(env,'own')
                 assert 'user 턴 17' in text and cue in text and '단독 턴' in text, text
                 assert integration.status('claude','own')['reviewed_rounds'] == 0
@@ -1033,6 +1046,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     return rg.attempt(source, job, 'unused')
             with patch.object(rg, 'preflight'):
                 rg.observe(source)
+                assert rg.probe(env)['mode'] == 'background'  # the CLI is ready (the hooks' worker asked)
                 # One unfinished fork review keeps the fork; a busy worker says nothing about it.
                 assert stop(1, {'ok': False, 'state': 'incomplete'})['state'] == 'incomplete'
                 assert stop(2, {'ok': False, 'state': 'busy'})['state'] == 'busy'
@@ -1099,7 +1113,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert route['mode'] == 'foreground' and 'did not finish' in route['reason'], route
         ''')
 
-    def test_stuck_capture_keeps_one_line_between_review_turns(self):
+    def test_stuck_capture_says_one_line_once_between_review_turns(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration, scope_memory
             from unittest.mock import patch
@@ -1117,6 +1131,7 @@ class ResponseGrowthTests(unittest.TestCase):
             stuck = ValueError('copied native round ID has different content; capture remains pending')
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
                     patch.object(integration,'_inherited_rounds',side_effect=stuck):
+                rg.probe(env)
                 assert '검토 경고' in hook.capture_block(env,'own',startup=True)
                 for n in range(1,16):
                     text = hook.capture_block(env,'own')
@@ -1125,15 +1140,101 @@ class ResponseGrowthTests(unittest.TestCase):
                         # The review turn still carries memory: the text once, then its hash line.
                         assert ('shared memory sentinel' in text) == (n == 9), (n,text)
                         assert n == 9 or 'scope_memory(session="own")' in text, text
-                    else:
+                    elif n == 1:
                         assert text.startswith('[osk 포착 대기 — ValueError: copied native round ID'), (n,text)
                         assert '\\n' not in text and 'shared memory sentinel' not in text, (n,text)
+                    else:
+                        # The same wait is said once; `integration status` keeps it (#192).
+                        assert text == '', (n,text)
                 state = integration.status('claude','own')
                 assert state['prompt_count'] == 15 and state['capture_pending'], state
                 assert state['reviewed_rounds'] == 0, 'a stuck capture is not a review'
                 blocked = integration.blocked()
                 assert blocked['count'] == 1 and blocked['conversations'][0]['conversation_id'] == 'own', blocked
                 assert blocked['conversations'][0]['observed'].endswith('(KST)'), blocked
+        ''')
+
+    def test_input_hook_starts_no_process_and_reads_no_transcript(self):
+        # #192: every prompt asked the fork CLI (`auth status` 8 s under load), parsed the whole
+        # transcript under the conversation lock and ran git for the session key; 31 % of October
+        # prompts hit the host's 10 s limit. The hook now counts the turn and hands the rest to
+        # one detached worker.
+        base_tests.GrowthTests().check_case('''
+            import io, os, subprocess, types
+            from osk import response_growth as rg, integration, transcripts
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_prompt_submit as hook
+            native = core.ROOT / 'native.jsonl'
+            def turn(n):
+                with native.open('a', encoding='utf-8') as f:
+                    f.write(json.dumps({'type':'user','sessionId':'own','uuid':f'u{n}','message':{'role':'user','content':'q'}})+'\\n'+
+                        json.dumps({'type':'assistant','sessionId':'own','uuid':f'a{n}','message':{'role':'assistant','id':f'm{n}',
+                                    'model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'a'}]}})+'\\n')
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),
+                   'hook_event_name':'UserPromptSubmit'}
+            os.environ.pop('OSK_HOOK_WORKER')
+            def submit(n):
+                out = types.SimpleNamespace(buffer=io.BytesIO())
+                with patch.object(sys,'stdin',io.StringIO(json.dumps(dict(env, prompt=f'prompt {n}')))), \\
+                        patch.object(sys,'stdout',out):
+                    hook.main()
+                return out.buffer.getvalue().decode('utf-8')
+            def work(n):
+                with patch.object(rg.core,'spawn_worker') as worker:
+                    submit(n)
+                job = json.loads(worker.call_args.kwargs['stdin'])
+                assert worker.call_count == 1 and job['defer'], worker.call_args
+                with patch.object(rg,'preflight'):
+                    rg.after_hook(job)   # the worker: capture what is new, ask the fork CLI when due
+                return integration.status('claude','own')
+            # A new conversation's transcript is written after its first prompt: the worker
+            # asks the CLI, and nothing is missing yet. (The first hook learns the folder's
+            # session key with git.)
+            assert work(1)['capture_recovery']['state'] == 'awaiting_input'
+            turn(1)
+            assert work(2)['captured_rounds'] == 1
+            started, read = [], []
+            def process(*a, **k):
+                started.append(a)
+                raise AssertionError('the input hook started a process')
+            def parse(*a, **k):
+                read.append(a)
+                raise AssertionError('the input hook read the transcript')
+            with patch.object(subprocess,'run',side_effect=process), patch.object(subprocess,'Popen',side_effect=process), \\
+                    patch.object(transcripts,'read',side_effect=parse), patch.object(rg,'profile',side_effect=parse), \\
+                    patch.object(rg.core,'spawn_worker') as worker:
+                quiet = submit(3)
+                assert not worker.called, 'nothing new, yet a worker was started'
+                turn(2)
+                submit(4)
+            assert not started and not read and '진단' not in quiet, (started, read, quiet)
+            assert worker.call_count == 1 and json.loads(worker.call_args.kwargs['stdin'])['defer']
+            assert integration.status('claude','own')['prompt_count'] == 4
+        ''')
+
+    def test_worker_that_cannot_start_hands_review_to_the_session(self):
+        # #192 review (#198): the route's verdict comes from the hooks' worker. A host that cannot
+        # start one never learned a verdict and stayed on the fork's route, so the in-session
+        # 9·15-turn review never took over.
+        base_tests.GrowthTests().check_case('''
+            import os
+            from osk import response_growth as rg
+            from unittest.mock import patch
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(core.ROOT / 'native.jsonl'),
+                   'cwd':str(core.ROOT),'hook_event_name':'UserPromptSubmit'}
+            os.environ.pop('OSK_HOOK_WORKER')
+            unchecked = rg.route(env)
+            assert unchecked['mode'] == 'background' and unchecked['probe_due'], unchecked
+            with patch.object(rg.core,'spawn_worker',side_effect=OSError('no processes left')):
+                assert rg.defer(env,'key',probe_due=True) is False
+            fallback = rg.route(env)
+            assert fallback['mode'] == 'foreground' and fallback['changed'], fallback
+            assert 'no processes left' in fallback['reason'] and not fallback['probe_due'], fallback
         ''')
 
     def test_login_loss_after_input_does_not_consume_stop_attempt(self):
@@ -1344,8 +1445,10 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert ready['endpoint']['fork'] == 'first-party default; dropped for forks', ready
             assert all(c[0] == 'git' or c[1:] in (['--version'], ['auth', 'status']) for c in calls), calls
             assert snapshot() == before, 'doctor wrote state'
-            # The doctor's verdict is route()'s: route() itself writes the state the doctor skipped.
+            # The doctor's verdict is the hooks' worker's (probe), which route() reads; both write
+            # the state the doctor skipped.
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
+                rg.probe({'harness': 'claude', 'session_id': 'own', 'transcript_path': str(native)})
                 route = rg.route({'harness': 'claude', 'session_id': 'own', 'transcript_path': str(native)})
             assert {k: route[k] for k in ('mode', 'reason')} == ready['verdict'], route
             assert snapshot() != before
@@ -1392,7 +1495,8 @@ class HookBudgetTests(unittest.TestCase):
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
             env = {'harness':'claude','session_id':'own','cwd':str(core.ROOT),'session':'own'}
-            idle = {'harness':'claude','conversation_id':'own','pending':False,'capture_error':None}
+            idle = {'harness':'claude','conversation_id':'own','pending':False,'capture_error':None,
+                    'capture_recovery':{'state':'ready'}}
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
                     patch.object(integration,'hook_capture',return_value=idle), \\
                     patch.object(hook,'_organization_jobs',side_effect=ValueError('damaged organization state')):
@@ -1422,6 +1526,7 @@ class HookBudgetTests(unittest.TestCase):
             rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
+                rg.probe(env)
                 hook.capture_block(env,'own',startup=True)
                 seen = {}
                 for n in range(1,25):
@@ -1461,6 +1566,7 @@ class HookBudgetTests(unittest.TestCase):
             rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
+                rg.probe(env)
                 hook.capture_block(env,'own',startup=True)
                 seen = {n: hook.capture_block(env,'own') for n in range(1,16)}
             assert 'bound memory sentinel' in seen[9], seen[9]

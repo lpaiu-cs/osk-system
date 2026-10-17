@@ -81,13 +81,24 @@ def _ancestors():
         yield table[pid][1], path
 
 
+def codex_ancestor() -> str | None:
+    """The nearest Codex ancestor — the one that emitted this hook — when Desktop manages it."""
+    for name, path in _ancestors():
+        if name.lower() == 'codex.exe':
+            return path if path and _managed_codex(Path(path)) else None
+    return None
+
+
+# A hook's detached worker no longer descends from Codex: the hook names the binary here.
+DESKTOP_ENV = 'OSK_CODEX_DESKTOP'
+
+
 def runtime_codex() -> str | None:
     """Codex hooks lack CODEX_VERSION. Only the nearest Codex ancestor emitted this hook;
     use it when it is Desktop-managed, otherwise stay with the transcript's version."""
-    for name, path in _ancestors():
-        if name.lower() == 'codex.exe':
-            return _codex_version(path) if path and _managed_codex(Path(path)) else None
-    return None
+    named = os.environ.get(DESKTOP_ENV)
+    path = codex_ancestor() if named is None else named if _managed_codex(Path(named)) else None
+    return _codex_version(path) if path else None
 
 
 def resolve(executable: str, *, version: str | None = None, env=None) -> str:
