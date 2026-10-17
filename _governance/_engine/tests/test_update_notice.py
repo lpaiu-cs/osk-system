@@ -329,8 +329,10 @@ def start(sid, budget=None):
     assert r.returncode == 0, r.stderr
     return json.loads(r.stdout.decode('utf-8'))
 # Folded for the host's limit, the notice is not spent, and the fold line sends the agent to
-# `overview` for it: the start no longer asks every session to call overview (#192).
-folded = start('a0', budget=1200)['injectSteps'][0]['ephemeralMessage']
+# `overview` for it: the start no longer asks every session to call overview (#192). A new
+# conversation's start carries no capture diagnostic since its transcript is the worker's to
+# read (#192): about 1,000 characters with the notice, 500 folded.
+folded = start('a0', budget=800)['injectSteps'][0]['ephemeralMessage']
 assert '[osk 새 릴리스' not in folded and '이 세션에 overview의 update를 읽어' in folded, folded
 first = start('a1')
 assert 'systemMessage' not in first, first
