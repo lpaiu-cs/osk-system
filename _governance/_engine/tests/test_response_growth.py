@@ -301,11 +301,17 @@ class ResponseGrowthTests(unittest.TestCase):
                     with patch.object(rg.subprocess,'Popen',return_value=Mock()) as launch:
                         assert rg.launch(env,'own')
                 inherited = launch.call_args.kwargs['env']
-                assert inherited['CODEX_THREAD_ID']=='own' and inherited['CODEX_VERSION']=='0.155.0-alpha.16'
-                # The supervisor has no ancestor; its command() re-runs full preflight on the binding.
-                with patch.dict(os.environ, inherited), patch.object(native_cli,'_ancestors',return_value=[]):
-                    argv = rg.command(rg.profile(str(native),'codex','own'), sys.executable, rg.subscription_env())
+                # Stop names its Desktop binary too (#192); the supervisor asks its version (run()).
+                assert inherited['CODEX_THREAD_ID']=='own' and inherited[native_cli.DESKTOP_ENV]==str(managed)
+                assert 'CODEX_VERSION' not in inherited, inherited
+                # The supervisor has no ancestor: run() asks the named binary's version, and its
+                # command() re-runs full preflight on that binding.
+                with patch.dict(os.environ, inherited), patch.object(native_cli,'_ancestors',return_value=[]), \\
+                        patch.object(rg.growth,'run',return_value={'ok':True}) as fork:
+                    rg.run(rg.profile(str(native),'codex','own'), {'harness':'codex','conversation_id':'own'}, sys.executable)
+                argv, forked = fork.call_args.args[0], fork.call_args.kwargs['worker_env']
                 assert argv[0]==sys.executable and argv[argv.index('--model')+1]=='parent-model', argv
+                assert forked['CODEX_VERSION']=='0.155.0-alpha.16', forked.get('CODEX_VERSION')
             # Before a rollout exists the runtime binding, not the newest install, picks the binary.
             newer = core.ROOT / 'OpenAI/Codex/bin' / ('b'*16) / 'codex.exe'
             newer.parent.mkdir(parents=True)
@@ -994,6 +1000,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 rg.probe(env)
                 start = hook.capture_block(env,'own',startup=True)
                 assert '검토 경고' in start and 'subscription login required' in start, start
+                rg.after_hook(env)   # the hooks' worker captures (#192)
                 assert integration.status('claude','own')['prompt_count'] == 0
                 original = integration.status('claude','own')['pending_refs']
                 cue = 'cite_round(conversation="claude/own"'
@@ -1133,6 +1140,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     patch.object(integration,'_inherited_rounds',side_effect=stuck):
                 rg.probe(env)
                 assert '검토 경고' in hook.capture_block(env,'own',startup=True)
+                rg.after_hook(env)   # the hooks' worker captures (#192)
                 for n in range(1,16):
                     text = hook.capture_block(env,'own')
                     if n in {9,15}:
@@ -1235,6 +1243,69 @@ class ResponseGrowthTests(unittest.TestCase):
             fallback = rg.route(env)
             assert fallback['mode'] == 'foreground' and fallback['changed'], fallback
             assert 'no processes left' in fallback['reason'] and not fallback['probe_due'], fallback
+        ''')
+
+    def test_start_and_stop_hooks_start_no_process_and_read_no_transcript(self):
+        # #192: SessionStart parsed the whole transcript (49.7 MB: 2.2 s, 6.2 s at full CPU; the
+        # slowest tenth of October's compactions 28 s) and a foreground Stop parsed it every turn.
+        # Both hand the capture to the input hook's worker now.
+        base_tests.GrowthTests().check_case('''
+            import io, os, subprocess, threading, types
+            from osk import response_growth as rg, integration, transcripts
+            from osk._portalock import lock_exclusive, unlock
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as start, capture_stop as stop
+            native = core.ROOT / 'native.jsonl'
+            def turn(n):
+                with native.open('a', encoding='utf-8') as f:
+                    f.write(json.dumps({'type':'user','sessionId':'own','uuid':f'u{n}','message':{'role':'user','content':'q'}})+'\\n'+
+                        json.dumps({'type':'assistant','sessionId':'own','uuid':f'a{n}','message':{'role':'assistant','id':f'm{n}',
+                                    'model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'a'}]}})+'\\n')
+            # No fork CLI is configured: Stop's route is the foreground one, where it captured in place.
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT)}
+            os.environ.pop('OSK_HOOK_WORKER')
+            os.environ['OSK_UPDATE_CHECK'] = '0'
+            def run(hook, event, n):
+                out = types.SimpleNamespace(buffer=io.BytesIO())
+                with patch.object(sys,'stdin',io.StringIO(json.dumps(dict(env, hook_event_name=event, source='resume', turn_id=n)))), \\
+                        patch.object(sys,'stdout',out), patch.object(rg.core,'spawn_worker') as worker:
+                    hook.main()
+                return out.buffer.getvalue().decode('utf-8'), [json.loads(c.kwargs['stdin']) for c in worker.call_args_list]
+            turn(1)
+            _, jobs = run(start, 'SessionStart', 1)    # (the first hook learns the folder's session key with git)
+            rg.after_hook(jobs[0])
+            assert integration.status('claude','own')['captured_rounds'] == 1
+            started, read = [], []
+            def process(*a, **k):
+                started.append(a)
+                raise AssertionError('a hook started a process')
+            def parse(*a, **k):
+                read.append(a)
+                raise AssertionError('a hook read the transcript')
+            with patch.object(subprocess,'run',side_effect=process), patch.object(subprocess,'Popen',side_effect=process), \\
+                    patch.object(transcripts,'read',side_effect=parse), patch.object(rg,'profile',side_effect=parse):
+                turn(2)
+                begun, jobs = run(start, 'SessionStart', 2)    # resumed with a turn not yet captured
+                turn(3)
+                ended, more = run(stop, 'Stop', 3)
+            assert not started and not read and '진단' not in begun and not ended, (started, read, begun, ended)
+            assert [j['defer'] for j in jobs + more] == [True, True], (jobs, more)
+            # A worker that finds another one running waits its turn: Stop's turn is not dropped.
+            with integration.state_path('claude','own').with_suffix('.defer.lock').open('a+b') as busy:
+                lock_exclusive(busy)
+                waiting = threading.Thread(target=rg.after_hook, args=(more[0],))
+                waiting.start()
+                waiting.join(2)
+                assert waiting.is_alive(), 'a busy worker dropped the turn Stop handed over'
+                unlock(busy)
+            waiting.join(60)
+            assert integration.status('claude','own')['captured_rounds'] == 3
+            # The worker's failure lands after its Stop: the next Stop says it once, as the input hook does.
+            native.write_text(native.read_text(encoding='utf-8').replace('"u1"', '"u0"'), encoding='utf-8')
+            rg.after_hook(more[0])
+            said = [run(stop, 'Stop', n)[0] for n in (4, 5)]
+            assert 'capture diagnostic' in said[0] and 'prefix changed' in said[0] and not said[1], said
         ''')
 
     def test_login_loss_after_input_does_not_consume_stop_attempt(self):
@@ -1568,6 +1639,7 @@ class HookBudgetTests(unittest.TestCase):
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
                 rg.probe(env)
                 hook.capture_block(env,'own',startup=True)
+                rg.after_hook(env)   # the hooks' worker captures (#192)
                 seen = {n: hook.capture_block(env,'own') for n in range(1,16)}
             assert 'bound memory sentinel' in seen[9], seen[9]
             assert 'space="00_Scope/W1"' in seen[9], seen[9]          # 전문 블록의 수정 안내도 space를 명시한다

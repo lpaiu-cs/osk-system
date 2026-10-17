@@ -36,8 +36,9 @@ Start/input hooks never wait on the CLI: a detached worker they start runs the l
 authentication/version queries (at most every 10 minutes, 30 s per query), with no
 inference, and the hooks read its last verdict — the fork route until it first answers.
 Under load `auth status` alone took over 8 s and the input hook hit its 10 s limit (#192).
-The input hook also never reads the transcript; the same worker captures it when its size
-or time changed. Missing
+No hook reads the transcript: the start, input and in-session Stop hooks hand its capture
+to the same worker when its size or time changed (a forking Stop's supervisor captures it).
+SessionStart only pins the conversation's landing and shows the waits as of the last capture. Missing
 configuration, a missing CLI, logout, uncertain subscription auth, version mismatch or
 invalid settings route to in-session UserPromptSubmit 9/15 review with a warning. Codex
 also requires a Git worktree or a project trusted in Codex `config.toml` under Codex's

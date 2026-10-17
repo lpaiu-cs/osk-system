@@ -1,7 +1,9 @@
-"""Stop captures completion and, when configured, starts a background review.
+"""Stop hands completion's capture to a detached worker and, when configured, starts a
+background review.
 
-The detached helper waits briefly for the native final marker. Daily catchup retries
-missed tails. No blocking decision or forced continuation of the parent turn.
+Neither reads the transcript in the hook (#192): the review supervisor waits briefly for the
+native final marker, the hooks' worker captures what changed. Daily catchup retries missed
+tails. No blocking decision or forced continuation of the parent turn.
 """
 import json
 import os
@@ -51,11 +53,16 @@ def main() -> None:
         try:
             if response_growth.launch(env, key):
                 return
-            result = integration.hook_capture(env, key)
+            response_growth.defer(env, key, probe_due=False)
+            harness, sid, _ = integration.hook_source(env)
+            seen = integration.status(harness, sid)
         except integration.SubagentEvent:
             return  # The root conversation's own Stop owns its state.
-        if result["capture_error"]:
-            raise ValueError(result["capture_error"])
+        # The worker's result lands after this hook: say the last capture's standing failure,
+        # once as the input hook does — a new conversation's missing file is no failure.
+        standing = seen["capture_error"] if seen["capture_recovery"]["state"] != "awaiting_input" else None
+        if standing and integration.notice_once(harness, sid, standing):
+            raise ValueError(standing)
     except Exception as exc:
         _notice(host, f"[osk capture diagnostic - {type(exc).__name__}: {exc}; "
                       "user work may continue, capture remains pending.]")

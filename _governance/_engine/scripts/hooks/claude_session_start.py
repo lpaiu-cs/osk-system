@@ -25,8 +25,8 @@ scope다(시행령 §3 10항) — 훅은 결속된 scope 전부의 기억을 싣
 **맨 앞**에 세운다(3항). 문안은 `osk.evictions`가 만든다 — 전용 세션의
 프롬프트(`osk tidy prompt`)와 같은 말을 쓰기 위해서다.
 
-자기 대화의 완료 전사를 포착하고 durable 검토 대기를 이어받는다. 재개는
-카운터·대기를 지우지 않는다. 어떤 실패도 세션 시작을 막지 않지만 진단은 싣는다.
+자기 대화의 착지를 고정하고 완료 전사의 포착은 분리 작업자에게 넘기며, durable 검토
+대기를 이어받는다. 재개는 카운터·대기를 지우지 않는다. 어떤 실패도 세션 시작을 막지 않지만 진단은 싣는다.
 
 **보이는 만큼만 싣는다.** 호스트는 훅 문맥을 자른다(Claude Code는 1만 자를 넘으면 앞
 2KB만, Kiro는 3천 자). 잘리면 뒤쪽 블록의 지시가 통째로 사라지므로, 호스트 예산 안에
@@ -467,15 +467,16 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
     """이 대화의 포착·검토 조각 — `([Block], (harness, 대화 ID) | None)`. 조립과 예산은
     호출자가 한다(`osk.hook_text`). None이면 이 대화의 사건이 아니다.
 
-    입력 훅은 전사를 읽지 않고 구독 CLI도 묻지 않는다 — 둘 다 부하에서 턴마다 수 초라 10초
-    제한을 넘겼다(#192). 저장된 커서로 세고, 새 턴의 포착과 CLI 판정은 분리 작업자가 한다
-    (`response_growth.defer`). 세션 시작은 포착까지 하고 CLI 판정만 넘긴다."""
+    훅은 전사를 읽지 않고 구독 CLI도 묻지 않는다 — 둘 다 부하에서 수 초라 훅 제한을
+    넘겼다(#192). 저장된 커서로 세고, 새 턴의 포착과 CLI 판정은 분리 작업자가 한다
+    (`response_growth.defer`). 세션 시작은 대화의 착지만 고정하고(`integration.hook_land`)
+    마지막 포착 때의 대기를 싣는다 — 그 뒤의 턴은 작업자가 포착해 다음 입력부터 보인다."""
     from osk import integration, response_growth
     from osk.hook_text import Block
     ident = None
     try:
         if startup:
-            captured = integration.hook_capture(env, key)
+            captured = integration.hook_land(env, key)
             harness, sid, cadence = captured["harness"], captured["conversation_id"], None
         else:
             harness, sid, _ = integration.hook_source(env)
