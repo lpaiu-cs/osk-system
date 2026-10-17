@@ -9115,7 +9115,7 @@ def test_parse_guards():
               parse(fm, f"tab-{abs(hash(label))}") is None)
 
     # 두 로더가 같은 규율을 갖는지 — 폴백 경로가 살아 있는지도 여기서 본다
-    for L in (contract._StrictLoader, contract._PureStrictLoader):
+    for L in contract._loaders():
         try:
             yaml.load("id: a\nid: b\n", Loader=L)
             check(f"{L.__name__}: 중복 키 거부", False, "통과해 버렸다")

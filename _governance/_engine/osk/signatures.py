@@ -13,9 +13,8 @@
 파일을 읽기 전에 core.resolve_in_root로 vault 안에 봉쇄한다.
 """
 from __future__ import annotations
+import functools
 from pathlib import Path
-
-import yaml
 
 from .core import SIGNATURES, ledger_read
 from . import contract
@@ -40,6 +39,7 @@ def latest_by_node() -> dict[str, dict]:
 def _id_of(p: Path) -> str | None:
     """파일의 id — 계약 파서 한 갈래로만 읽는다. 정규식 파서를 따로 두면
     따옴표 표기처럼 계약은 통과하는 노드가 판정에서만 미아가 된다."""
+    import yaml
     try:
         i = contract.parse(p).id
     except (OSError, ValueError, AttributeError, yaml.YAMLError):
@@ -66,12 +66,22 @@ def locate_by_id(node_id: str) -> Path | None:
     return hit
 
 
-class _StrictLoader(yaml.SafeLoader):
-    """중복 키를 오류로 만드는 로더 — 뒤에 오는 줄이 판정 필드를 조용히
-    덮어쓰는 것(마지막 값 승리)을 막는다."""
+# 로더는 처음 판독할 때 만든다 — yaml의 import는 20 ms 남짓이라 사건을 읽지 않는
+# 프로세스(입력 훅)가 치르지 않게 한다(#192).
+@functools.cache
+def _strict_loader() -> type:
+    import yaml
+
+    class _StrictLoader(yaml.SafeLoader):
+        """중복 키를 오류로 만드는 로더 — 뒤에 오는 줄이 판정 필드를 조용히
+        덮어쓰는 것(마지막 값 승리)을 막는다."""
+
+    _StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_mapping)
+    return _StrictLoader
 
 
-def _no_dup_mapping(loader: _StrictLoader, node):
+def _no_dup_mapping(loader, node):
+    import yaml
     keys = set()
     for k, _v in node.value:
         key = loader.construct_object(k)
@@ -79,10 +89,6 @@ def _no_dup_mapping(loader: _StrictLoader, node):
             raise yaml.YAMLError(f"중복 키: {key}")
         keys.add(key)
     return loader.construct_mapping(node)
-
-
-_StrictLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_mapping)
 
 
 def parse_case(case_path: Path) -> dict | None:
@@ -96,8 +102,9 @@ def parse_case(case_path: Path) -> dict | None:
     if text.startswith("---\n"):
         return None
     head = text.split("\n\n", 1)[0]
+    import yaml
     try:
-        data = yaml.load(head, Loader=_StrictLoader)
+        data = yaml.load(head, Loader=_strict_loader())
     except (yaml.YAMLError, TypeError):
         return None
     return data if isinstance(data, dict) else None

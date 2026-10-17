@@ -14,7 +14,6 @@
 줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다."""
 from __future__ import annotations
 
-import difflib
 import os
 import re
 import subprocess
@@ -378,6 +377,7 @@ def _versions(rel: str, at: str) -> list[bytes]:
 
 
 def _diff(old: bytes, new: bytes, limit: int = 3000) -> str | None:
+    import difflib      # 입력 훅이 이 모듈을 들일 때 치르지 않게(#192)
     try:
         a, b = old.decode("utf-8").splitlines(), new.decode("utf-8").splitlines()
     except UnicodeDecodeError:

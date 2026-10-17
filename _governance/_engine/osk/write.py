@@ -31,8 +31,6 @@ from .core import DOMAIN, PERSON, SCOPE
 import json, os, re, tempfile, time, unicodedata
 from pathlib import Path
 
-import yaml
-
 from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
                    _rid_key, causal_maxima, ledger_append, ledger_damage,
                    ledger_read, mutation_lock,
