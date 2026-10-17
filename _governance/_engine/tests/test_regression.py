@@ -8977,10 +8977,12 @@ def test_rechecks():
 
 def test_overview_rechecks_cache():
     """overview의 재검토 요약은 색인 지문에 묶여 접힌다(#194) — 그대로인 vault에서는
-    노드 전수를 다시 읽지 않고, 대장만 바뀌거나 노드 본문만 바뀌어도 다시 잰다.
+    노드 전수를 다시 읽지 않고, 대장만 바뀌거나 노드 본문만 바뀌어도 다시 잰다. 판독이
+    잠깐 실패한 요약은 접지 않는다 — 잠금이 풀려도 지문은 그대로다.
 
     무엇을 망가뜨리면 실패하는가:
       · 접지 않으면 → 그대로인 vault 단언
+      · 삼킨 판독 실패(`rechecks.misses`)를 보지 않으면 → 잠금이 풀린 단언
       · 키를 노드 지문(`fp[1]`)으로 좁히거나 보지 않으면 → 대장만 바뀐 단언
         (노드가 그대로면 색인이 살아남아 그 색인에 접은 요약도 남는다)"""
     import mcp_server as M
@@ -9008,8 +9010,24 @@ def test_overview_rechecks_cache():
         _w(write.update_node, "regr-ovc-T", old_text="1판", new_text="고친 판")
         _age_all()           # 크기가 바뀌는 수정만 쓴다 — mtime을 고정하므로 지문은 크기로 가른다
         rechecks.report = report
-        check("전제: 근거가 바뀐 쌍이 overview에 실린다",
-              mine() == {("regr-ovc-N", "근거가 바뀌었다")}, mine())
+        M._idx().nodes       # 색인은 먼저 짓는다 — 잠금은 재검토 자신의 판독에만 건다
+
+        read_bytes = Path.read_bytes
+
+        def locked(self):
+            if self.name == "regr-ovc-T.md":
+                raise PermissionError(13, "다른 프로세스가 잠갔다", str(self))
+            return read_bytes(self)
+
+        Path.read_bytes = locked
+        try:
+            got = mine()
+        finally:
+            Path.read_bytes = read_bytes         # 내용도 메타데이터도 그대로 풀린다
+        check("전제: 잠긴 근거의 쌍은 요약에서 빠진다", not got, got)
+        got = mine()
+        check("잠금이 풀리면 지문이 같아도 다시 잰다",
+              got == {("regr-ovc-N", "근거가 바뀌었다")}, got)
         n = len(calls)
         mine()
         check("그대로인 vault에서는 재검토 요약을 다시 재지 않는다", len(calls) == n, len(calls) - n)

@@ -357,10 +357,13 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     }
     try:
         # 재검토 요약은 노드 전수를 다시 읽는다 — 색인과 같은 지문에 묶어 그 색인에 접는다(#194).
-        # 지문은 대장(`_ledger`)도 세므로 노드 본문이나 대장만 바뀌어도 다시 잰다.
+        # 지문은 대장(`_ledger`)도 세므로 노드 본문이나 대장만 바뀌어도 다시 잰다. 판독 실패를
+        # 삼킨 요약은 접지 않는다 — 잠금이 풀려도 지문은 그대로다.
         hit = getattr(idx, "recheck_report", None)
         if _fingerprint is None or not hit or hit[0] != _fingerprint:
-            hit = idx.recheck_report = (_fingerprint, rechecks.report(idx))
+            missed = rechecks.misses
+            rc = rechecks.report(idx)
+            hit = idx.recheck_report = (_fingerprint if rechecks.misses == missed else None, rc)
         rc = hit[1]
     except Exception as e:                      # 조망은 죽지 않는다(시행령 §11)
         rc = {"error": f"{type(e).__name__}: {e}"}
