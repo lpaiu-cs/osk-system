@@ -193,6 +193,11 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
             return _item("warn", f"훅 {name}", detail, adapter.reload)
         if shared:
             return _item("warn", f"훅 {name}", f"{where} · {ran}" if run else where, _ONE)
+        limit = h.get("timeout")
+        if isinstance(limit, (int, float)) and limit < base.HOOK_TIMEOUT:
+            setup = core.shell_join([str(_python()), str(_engine_dir() / "scripts" / "setup.py"), "--interactive"])
+            return _item("warn", f"훅 {name}", f"{where} · 제한이 {limit}초다 — 설치는 {base.HOOK_TIMEOUT}초를 쓴다. "
+                         "부하가 높으면 훅이 끝나기 전에 끊긴다", f"`{setup}`가 이 등록을 설치의 한 줄로 바꾼다")
         if run:
             return _item("ok", f"훅 {name}", f"{where} · {ran}")
         # 실행 기록은 기록을 남기는 판의 훅이 처음 불린 때부터 쌓인다.

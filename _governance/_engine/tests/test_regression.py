@@ -46,6 +46,9 @@ tempfile.tempdir = str(RUN_TMP)
 # 수트는 네트워크에 기대지 않고 자식 프로세스를 남기지 않는다 — 격리 수트도 이
 # 값을 물려받으며, 확인 자체를 시험하는 test_update_notice.py만 걷어 낸다.
 os.environ["OSK_UPDATE_CHECK"] = "0"
+# 입력·시작 훅은 포착과 구독 CLI 판정을 분리 작업자에게 넘긴다(#192). 수트의 훅은 작업자를
+# 띄우지 않는다 — 실행 자리가 지워진 뒤에도 남는 자식이 없고, 작업자의 몫은 시험이 직접 부른다.
+os.environ["OSK_HOOK_WORKER"] = "0"
 
 from osk import (core, graph, validate, authority, contract, write,  # noqa: E402
                  publish)  # noqa: E402

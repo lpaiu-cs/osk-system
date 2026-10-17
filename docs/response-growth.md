@@ -32,7 +32,12 @@ Stop counter. Its separate input counter always advances, including in backgroun
 so losing CLI access cannot restart the fallback's overdue work at zero. Resume retains
 both counters. Enabling the feature does not replay all old answers.
 
-Start/input hooks use local authentication/version queries, with no inference. Missing
+Start/input hooks never wait on the CLI: a detached worker they start runs the local
+authentication/version queries (at most every 10 minutes, 30 s per query), with no
+inference, and the hooks read its last verdict — the fork route until it first answers.
+Under load `auth status` alone took over 8 s and the input hook hit its 10 s limit (#192).
+The input hook also never reads the transcript; the same worker captures it when its size
+or time changed. Missing
 configuration, a missing CLI, logout, uncertain subscription auth, version mismatch or
 invalid settings route to in-session UserPromptSubmit 9/15 review with a warning. Codex
 also requires a Git worktree or a project trusted in Codex `config.toml` under Codex's

@@ -677,7 +677,7 @@ class GrowthTests(unittest.TestCase):
     def check_case(self, source):
         with tempfile.TemporaryDirectory(prefix="osk-growth-test-") as directory:
             env = dict(os.environ, OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),
-                       PYTHONDONTWRITEBYTECODE="1", TEMP=directory, TMP=directory)
+                       PYTHONDONTWRITEBYTECODE="1", TEMP=directory, TMP=directory, OSK_HOOK_WORKER="0")
             result = subprocess.run([sys.executable, "-B", "-c", BOOT + textwrap.dedent(source)],
                                     env=env, cwd=directory, capture_output=True,
                                     text=True, encoding="utf-8", timeout=90,

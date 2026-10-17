@@ -17,6 +17,9 @@ MCP_NAME = "osk-system"
 # `claude_`는 이미 등록된 명령 경로를 지키려는 이름이다.
 SCRIPTS = {"start": "claude_session_start.py", "input": "claude_prompt_submit.py",
            "stop": "capture_stop.py"}
+# 설치가 쓰는 osk 훅의 제한(초). 이보다 짧게 등록된 훅은 부하에서 끝나기 전에 끊긴다 — 손으로
+# 등록한 기기의 입력 훅이 10초였다(#192). `doctor`가 알린다.
+HOOK_TIMEOUT = 30
 
 
 def fold(text: str) -> str:
@@ -324,7 +327,7 @@ class Adapter:
 
     def hook_group(self, event: str, command: str) -> dict:
         """설치가 `hooks.<사건>`에 넣는 묶음 하나 — 훅 하나를 담는다."""
-        entry = {"type": "command", "command": command, "timeout": 30}
+        entry = {"type": "command", "command": command, "timeout": HOOK_TIMEOUT}
         if event in self.status:
             entry["statusMessage"] = self.status[event]
         group = {"hooks": [entry]}
@@ -355,5 +358,6 @@ class Adapter:
                 continue
             for event, g, i, entry, matcher in _groups(self.hook_table(data or {})):
                 hooks.append({"file": file, "event": event, "group": g, "index": i,
-                              "matcher": matcher, "tokens": command_tokens(entry)})
+                              "matcher": matcher, "tokens": command_tokens(entry),
+                              "timeout": entry.get("timeout")})
         return servers, hooks, errors

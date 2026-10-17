@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[2]        # …/_governance/_engine
@@ -116,13 +117,23 @@ def first_call(event: str, env: dict, host) -> bool:
         return True
 
 
+# git 한 번의 제한 — 훅 제한(설치 30초, 손으로 등록한 기기 10초)보다 짧아야 git이 멈췄을 때
+# 훅이 먼저 끊기지 않는다(#192).
+GIT_TIMEOUT = 4
+# 작업 폴더의 저장소 판정(`_checkout`)은 git을 두세 번 띄워 부하에서 턴마다 2초 안팎이었다(#192).
+# 판정은 거의 바뀌지 않으므로 폴더별로 이만큼 다시 쓴다(`_checkout_cached`).
+CHECKOUT_TTL = 3600
+_SLOW = []    # 시간을 넘긴 git 호출 — 그 판정은 캐시하지 않는다
+
+
 def _git(cwd: str, *args: str, input: str | None = None) -> str | None:
     """git의 표준 출력. 실패(비영 종료·시간 초과)는 None — 빈 출력과 구별한다."""
     io = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
     try:
         r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True,
-                           timeout=10, creationflags=_NO_WINDOW, **io)
+                           timeout=GIT_TIMEOUT, creationflags=_NO_WINDOW, **io)
     except subprocess.TimeoutExpired:
+        _SLOW.append(args[0])
         return None
     return r.stdout.strip() if r.returncode == 0 else None
 
@@ -137,8 +148,8 @@ def _shas(path: Path) -> list[str]:
     return got if all(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", x) for x in got) else []
 
 
-def _checkout(cwd: str) -> tuple[str, list[str] | None]:
-    """(저장소 이름, 저장소 동일성). 동일성은 저장소가 공유하는 이력 — 브랜치와
+def _checkout(cwd: str) -> tuple[str, list[str] | None, Path | None]:
+    """(저장소 이름, 저장소 동일성, 공통 디렉터리). 동일성은 저장소가 공유하는 이력 — 브랜치와
     원격 추적 브랜치 — 의 뿌리 커밋 합집합이다. 어느 브랜치를 체크아웃했는지와
     무관하고, 같은 저장소의 사본끼리는 기기가 달라도 겹치며, 네트워크가 필요 없다.
     기기에만 있는 stash·notes는 넣지 않는다. Git 밖·커밋 없는 저장소·얕은 사본은
@@ -151,14 +162,14 @@ def _checkout(cwd: str) -> tuple[str, list[str] | None]:
         out = (_git(cwd, "rev-parse", "--git-common-dir", "--is-shallow-repository")
                or "").splitlines()
         if len(out) != 2:
-            return Path(cwd).name, None
+            return Path(cwd).name, None, None
         gd = Path(out[0])
         gd = (gd if gd.is_absolute() else Path(cwd) / gd).resolve()
         # `.git`(워크트리 포함)은 본 저장소 폴더, 서브모듈(`.git/modules/<이름>`)과
         # bare(`shop.git`)는 자기 이름이다 — `modules`·bare의 부모로 접히지 않게.
         name = gd.parent.name if gd.name.startswith(".") else gd.name.removesuffix(".git")
         if out[1] != "false":
-            return name, None
+            return name, None, gd
         cache, walked = gd / "osk-repo-identity", gd / "osk-repo-identity.tips"
         roots = _shas(cache)
         seen = _shas(walked) if roots else []      # 뿌리가 없으면 처음부터 다시 걷는다
@@ -178,9 +189,49 @@ def _checkout(cwd: str) -> tuple[str, list[str] | None]:
                 except OSError:
                     pass
                 roots = grown
-        return name, roots or None
+        return name, roots or None, gd
     except Exception:
-        return Path(cwd).name, None
+        return Path(cwd).name, None, None
+
+
+def _stamp(gd: Path | None) -> list | None:
+    """저장소 동일성 캐시 파일의 (크기, 수정 시각) — 바뀌면 폴더별 판정도 다시 잰다."""
+    try:
+        st = (gd / "osk-repo-identity").stat()
+        return [st.st_size, st.st_mtime_ns]
+    except (OSError, TypeError):
+        return None
+
+
+def _checkout_cached(cwd: str) -> tuple[str, list[str] | None]:
+    """`_checkout`을 작업 폴더별로 CHECKOUT_TTL 동안 다시 쓴다(기기 로컬 `osk-checkouts.json`).
+    저장소의 동일성 캐시가 바뀌면 다시 잰다. git이 시간을 넘기면 지난 판정이 있으면 그것을
+    쓰고, 그 판정은 캐시하지 않는다."""
+    from osk import core
+    path, folder, now = core.local_lock_path("osk-checkouts.json"), os.path.normcase(os.path.abspath(cwd)), time.time()
+    try:
+        table = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        table = {}
+    table = table if isinstance(table, dict) else {}
+    hit = table.get(folder)
+    if not (isinstance(hit, dict) and isinstance(hit.get("name"), str)
+            and isinstance(hit.get("repo"), (list, type(None)))):
+        hit = None
+    gd = Path(hit["gd"]) if hit and isinstance(hit.get("gd"), str) else None
+    if hit and 0 <= now - hit.get("at", 0) < CHECKOUT_TTL and _stamp(gd) == hit.get("stamp"):
+        return hit["name"], hit["repo"]
+    slow = len(_SLOW)
+    name, repo, gd = _checkout(cwd)
+    if len(_SLOW) > slow:
+        return (hit["name"], hit["repo"]) if hit else (name, repo)
+    table = {k: v for k, v in table.items() if isinstance(v, dict) and 0 <= now - v.get("at", 0) < CHECKOUT_TTL}
+    table[folder] = {"name": name, "repo": repo, "gd": str(gd) if gd else None, "stamp": _stamp(gd), "at": now}
+    try:
+        core.atomic_write(path, json.dumps(table, ensure_ascii=False).encode("utf-8"))
+    except OSError:
+        pass        # 캐시를 못 적으면 다음 훅이 다시 잰다
+    return name, repo
 
 
 def session_key(cwd: str) -> str:
@@ -188,7 +239,7 @@ def session_key(cwd: str) -> str:
 
     이름만으로는 무관한 두 저장소가 한 키를 나눠 가지므로, Git 저장소는 결속의
     소유자와 뿌리가 다르면 파생 키를 받는다(`write.repo_session`)."""
-    name, repo = _checkout(cwd)
+    name, repo = _checkout_cached(cwd)
     try:
         from osk import workspaces
         workspaces.enter(cwd)        # 이 프로세스의 결속 판정이 그 작업 폴더를 알게 한다(Mechanism §6-2 6항)
@@ -380,25 +431,46 @@ def _bound_memories(scope_memory, key: str, ident, bindings: dict, *, keep: int,
     return out
 
 
+def _once(ident, text: str, view: dict, startup: bool) -> bool:
+    """이어지는 대기·진단을 실을지 — 같은 글은 처음 한 번만이고 나머지는 `integration status`가
+    보인다(#192). 시작은 새 문맥이라 다시 싣는다. 포착 중이 아니고 대기가 풀렸으면 잊는다."""
+    from osk import integration
+    shown = integration.notice_once(*ident, text, settled=not view.get("capture_pending"))
+    return bool(text) and (shown or startup)
+
+
 def capture_blocks(env: dict, key: str, *, startup: bool = False):
     """이 대화의 포착·검토 조각 — `([Block], (harness, 대화 ID) | None)`. 조립과 예산은
-    호출자가 한다(`osk.hook_text`). None이면 이 대화의 사건이 아니다."""
+    호출자가 한다(`osk.hook_text`). None이면 이 대화의 사건이 아니다.
+
+    입력 훅은 전사를 읽지 않고 구독 CLI도 묻지 않는다 — 둘 다 부하에서 턴마다 수 초라 10초
+    제한을 넘겼다(#192). 저장된 커서로 세고, 새 턴의 포착과 CLI 판정은 분리 작업자가 한다
+    (`response_growth.defer`). 세션 시작은 포착까지 하고 CLI 판정만 넘긴다."""
     from osk import integration, response_growth
     from osk.hook_text import Block
     ident = None
     try:
-        captured = integration.hook_capture(env, key)
-        harness, sid = captured["harness"], captured["conversation_id"]
+        if startup:
+            captured = integration.hook_capture(env, key)
+            harness, sid, cadence = captured["harness"], captured["conversation_id"], None
+        else:
+            harness, sid, _ = integration.hook_source(env)
+            # Always retain the input clock, even while Stop owns background scheduling.
+            # Losing CLI auth must not start the fallback's overdue work at zero again.
+            captured = cadence = integration.tick(harness, sid)
         ident = (harness, sid)
-        # Always retain the input clock, even while Stop owns background scheduling.
-        # Losing CLI auth must not start the fallback's overdue work at zero again.
-        cadence = None if startup else integration.tick(harness, sid)
         selected = response_growth.route(env)
+        try:
+            response_growth.defer(env, key, probe_due=selected['probe_due'])
+        except (OSError, ValueError):
+            pass        # 다음 훅이나 Stop의 포착이 다시 넘긴다
+        # 새 대화의 전사는 첫 턴 뒤에야 생긴다 — 그 사이의 '없다'는 진단이 아니다
+        standing = captured['capture_error'] if captured['capture_recovery']['state'] != 'awaiting_input' else None
         if selected['mode'] == 'background':
             failures = [r for r in (captured.get('response_growth_stop'), captured.get('response_growth', {}).get('last_result'))
                         if r and not r.get('ok', True) and r.get('state') not in {'running', 'unavailable'}]
-            error = captured['capture_error'] or '; '.join(r.get('error') or r['state'] for r in failures)
-            if error:
+            error = standing or '; '.join(r.get('error') or r['state'] for r in failures)
+            if _once(ident, error, captured, startup):
                 return [Block("route", f"[osk 백그라운드 검토 대기 — {error}; 본 작업은 계속한다. 완료로 처리하지 않았다.]")], ident
             if selected['changed'] and not startup:
                 return [Block("route", "[osk 검토 경로 복구 — 구독 CLI를 확인했다. 기존 계수·검토 대기를 유지하고 최종 답변 Stop 기준 실행으로 돌아간다.]")], ident
@@ -414,11 +486,12 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
             return [warning, _conversation(st, 70), _organization(st["organization_jobs"], 60)], ident
         overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= integration.SOFT
         if not cadence["due"] and not overdue_switch:
-            # A stuck capture has no raw to review: one line between the 9·15 turns,
-            # not the whole review every turn. The wait and the count stay (§9-3 1항).
-            blocked = (f"[osk 포착 대기 — {captured['capture_error']}. 이 대화의 검토 대기와 계수는 "
+            # A stuck capture has no raw to review: one line once, not the whole review
+            # every turn. The wait and the count stay (§9-3 1항).
+            blocked = (f"[osk 포착 대기 — {standing}. 이 대화의 검토 대기와 계수는 "
                        "유지하고 9·15턴에는 상태와 함께 싣는다. 본 작업은 계속한다; 완료로 처리하지 "
-                       "않았다. 처음 보면 사용자에게 한 번 알린다.]" if captured["capture_error"] else "")
+                       "않았다. 처음 보면 사용자에게 한 번 알린다.]"
+                       if _once(ident, standing or "", captured, startup) else "")
             return [warning if selected['changed'] else Block("warning", ""), Block("blocked", blocked)], ident
         lead = Block("lead", f"[osk 케이던스 — user 턴 {cadence['unreviewed_prompts']}] "
                      + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] or

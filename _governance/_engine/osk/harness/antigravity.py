@@ -22,7 +22,7 @@ import json
 import os
 from pathlib import Path
 
-from .base import MCP_NAME, Adapter, command_tokens, hook_line, mentions
+from .base import HOOK_TIMEOUT, MCP_NAME, Adapter, command_tokens, hook_line, mentions
 
 HOOK_NAME = MCP_NAME        # hooks.json에서 osk가 소유하는 훅 이름
 # 목록이 핸들러 그대로인 사건 — PreToolUse·PostToolUse만 `matcher`·`hooks` 묶음을 쓴다.
@@ -151,7 +151,7 @@ class Antigravity(Adapter):
         return out or None
 
     def hook_group(self, event, command):
-        return {"hooks": [{"type": "command", "command": command, "timeout": 30}], "_name": HOOK_NAME}
+        return {"hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}], "_name": HOOK_NAME}
 
 
 ADAPTER = Antigravity()

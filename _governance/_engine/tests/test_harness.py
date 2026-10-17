@@ -68,7 +68,7 @@ def _run(script: str) -> subprocess.CompletedProcess:
                if k not in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS', 'OSK_GROWTH_WORKER',
                             'KIRO_SESSION_ID', 'ANTIGRAVITY_CONVERSATION_ID')}
         env.update(OSK_VAULT_ROOT=str(td / 'vault'), PYTHONPATH=str(ENGINE), PYTHONUTF8='1',
-                   OSK_UPDATE_CHECK='0', HOME=str(home), USERPROFILE=str(home),
+                   OSK_UPDATE_CHECK='0', OSK_HOOK_WORKER='0', HOME=str(home), USERPROFILE=str(home),
                    CLAUDE_CONFIG_DIR=str(home / '.claude'), CODEX_HOME=str(home / '.codex'),
                    OSK_TEST_BIN=str(bin_dir), PATH=_case_path(bin_dir))
         return subprocess.run([sys.executable, '-c', script], env=env, capture_output=True,
@@ -422,6 +422,11 @@ key = json.dumps(str(codex_home / 'hooks.json') + ':user_prompt_submit:0:0')
 (codex_home / 'config.toml').write_text(f'[hooks.state.{key}]\ntrusted_hash = "sha256:{"0" * 64}"\n',
                                          encoding='utf-8')
 assert hook_item()['level'] == 'ok', hook_item()
+# A registration shorter than the installer's limit is cut off under load (#192: a hand-written 10 s).
+rows(codex_home / 'hooks.json', {'hooks': {'UserPromptSubmit': [{'hooks': [
+    {'type': 'command', 'command': base.hook_line([py, hooks_dir / 'claude_prompt_submit.py']), 'timeout': 10}]}]}})
+item = hook_item()
+assert item['level'] == 'warn' and '10초' in item['detail'] and 'setup.py' in item['fix'], item
 # Paths with spaces survive the shell that will read the command.
 spaced = ['C:/My Vault/.venv/python.exe' if os.name == 'nt' else '/My Vault/.venv/bin/python',
           'C:/My Vault/_governance/_engine/mcp_server.py' if os.name == 'nt' else '/My Vault/_engine/mcp_server.py']

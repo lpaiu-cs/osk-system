@@ -425,7 +425,51 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
     harness transcript: the cursor keeps original-turn refs and hashes, never vault text
     (헌법 4조 3항 · 시행령 §2 2항). Evidence enters `_cited/` only through `cite`.
     Tracking does not wait for a landing: citing a turn and writing a node need one, and
-    the review of an unlanded conversation decides it (Mechanism §9-4 3항)."""
+    the review of an unlanded conversation decides it (Mechanism §9-4 3항).
+
+    The transcript is parsed outside the conversation's state lock — a large one takes
+    seconds, and the hooks' own short reads of the state (tick, route) must not wait on
+    it (#192). Captures of one conversation still take turns (`.capture.lock`), and only
+    capture writes the fields it reads back after the parse."""
+    p = state_path(harness, conversation_id)
+    with _locked_path(p.with_name(p.stem + ".capture.json")):
+        found = _capture_source(harness, conversation_id, transcript_path, session, space, cwd)
+        if isinstance(found, dict):
+            return found
+        native_path, rules, s = found
+        try:
+            if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
+                rules["since"] = _copied_since(s, native_path)
+            parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
+        except Exception as exc:
+            with _locked(harness, conversation_id) as p:
+                return _capture_failed(p, _load(p, harness, conversation_id), exc, "read")
+        with _locked(harness, conversation_id) as p:
+            s = _load(p, harness, conversation_id)
+            try:
+                return _capture_apply(p, s, parsed, native_path, rules)
+            except Exception as exc:
+                return _capture_failed(p, s, exc, "replay")
+
+
+def _capture_failed(p: Path, s: dict, exc: Exception, phase: str) -> dict:
+    if isinstance(exc, FileNotFoundError) and phase in {"source", "read"}:
+        phase = ("source" if s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")
+                 else "awaiting_native")
+    s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
+    s["capture_failure_phase"] = phase
+    # Only a validation refusal discards the candidate source; an I/O failure
+    # keeps it for the next pathless retry.
+    if phase != "landing" and isinstance(exc, ValueError):
+        s.pop("capture_path", None)
+    _save(p, s)
+    return _current_view(s, p)
+
+
+def _capture_source(harness: str, conversation_id: str, transcript_path: str | None,
+                    session: str, space: str | None, cwd: str | None):
+    """The landing and source steps of `capture`, under the state lock — `(native_path,
+    rules, state)` to read, or the view of a refusal."""
     with _locked(harness, conversation_id) as p:
         s = _load(p, harness, conversation_id)
         s["capture_pending"], s["capture_error"] = True, None
@@ -476,90 +520,81 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
             s["capture_path"] = native_path
             _save(p, s)
             phase = "read"
-            rules = _turn_rules(s)
-            if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
-                rules["since"] = _copied_since(s, native_path)
-            parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
-            if parsed.get("originator") == "codex_exec":
-                # A scripted `codex exec` run — osk's own scheduled runs included — is not a
-                # conversation to learn from: its turns are neither tracked nor reviewed
-                # (Mechanism §9-4 3항). Rounds an earlier engine stored keep their review.
-                s.update(excluded="codex_exec", capture_pending=False, capture_error=None,
-                         transcript_path=native_path, native_fingerprint=parsed["native_fingerprint"])
-                s.pop("capture_path", None)
-                _save(p, s)
-                return {**_current_view(s, p), "appended": 0, "changed": 0}
-            coverage = parsed["coverage"]
-            if not s["rounds"]:
-                s["coverage"] = coverage
-            _save(p, s)
-            # ponytail: serialize tracking until its cursor is saved; use per-scope
-            # locks if capture throughput matters.
-            with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
-                phase = "replay"
-                rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
-                if harness == "codex":
-                    # A recovered past turn follows the turns already tracked: keep the saved order.
-                    order = [r["id"] for r in s["rounds"]]
-                    by_id = {r["id"]: r for r in rounds}
-                    if len(by_id) != len(rounds) or any(rid not in by_id for rid in order):
-                        raise ValueError("native round identity prefix changed; the review cursor was not moved")
-                    known = set(order)
-                    rounds = [by_id[rid] for rid in order] + [r for r in rounds if r["id"] not in known]
-                ids = [r["id"] for r in rounds]
-                if len(ids) != len(set(ids)) or ids[:len(s["rounds"])] != [r["id"] for r in s["rounds"]]:
-                    raise ValueError("native round identity prefix changed; the review cursor was not moved")
-                # Existing snapshots bind the saved entries: keep them, add the new turns.
-                # An unreviewed original turn whose words changed under its ID is tracked
-                # as it reads now, and snapshots taken before the change are dropped: no
-                # review closes words the reviewer did not see. A reviewed turn keeps the
-                # version its review judged.
-                prior = {r["id"]: r for r in s["rounds"]}
-                tracked, changed = [], []
-                for i, r in enumerate(rounds):
-                    hashes = _turn_hashes(r, parsed.get("dialogue_v1"))
-                    entry = prior.get(r["id"])
-                    if (entry and raw.is_native(entry["ref"]) and entry["hash"] not in hashes
-                            and i >= s["reviewed_count"]):
-                        entry = {**entry, "hash": hashes[0]}
-                        changed.append(i)
-                    tracked.append(entry or {
-                        "id": r["id"], "ref": raw.native_ref(harness, conversation_id, turn_key(harness, r["id"])),
-                        "completion": r["completion"], "hash": hashes[0], **({"cut": r["cut"]} if r.get("cut") else {})})
-                s["rounds"] = tracked
-                if rules:
-                    s.setdefault("turns_since", rules["since"])
-                if changed:
-                    s["snapshots"] = {t: v for t, v in s["snapshots"].items()
-                                      if v.get("repair_refs") or v["count"] <= changed[0]}
-                appended = len(s["rounds"]) - len(prior)
-                if appended or changed:
-                    token = _snapshot(s)
-                    s["snapshots"].setdefault(token, {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
-                s["capture_pending"] = parsed["pending_tail"]
-                s["capture_error"] = "; ".join(parsed["diagnostics"]) or None
-                # Replace an established source only after identity and raw-prefix replay
-                # succeed. A rejected explicit path must not poison later pathless retries.
-                s["transcript_path"] = native_path
-                s.pop("capture_path", None)
-                s["coverage"] = coverage
-                if s["capture_error"]:
-                    s["capture_failure_phase"] = "read"
-                s["native_fingerprint"] = parsed["native_fingerprint"]
-                _save(p, s)
-                return {**_current_view(s, p), "appended": appended, "changed": len(changed)}
+            return native_path, _turn_rules(s), s
         except Exception as exc:
-            if isinstance(exc, FileNotFoundError) and phase in {"source", "read"}:
-                phase = ("source" if s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")
-                         else "awaiting_native")
-            s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
-            s["capture_failure_phase"] = phase
-            # Only a validation refusal discards the candidate source; an I/O failure
-            # keeps it for the next pathless retry.
-            if phase != "landing" and isinstance(exc, ValueError):
-                s.pop("capture_path", None)
-            _save(p, s)
-            return _current_view(s, p)
+            return _capture_failed(p, s, exc, phase)
+
+
+def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict | None) -> dict:
+    """The read transcript into the cursor, under the state lock (`capture`)."""
+    harness, conversation_id = s["harness"], s["conversation_id"]
+    if parsed.get("originator") == "codex_exec":
+        # A scripted `codex exec` run — osk's own scheduled runs included — is not a
+        # conversation to learn from: its turns are neither tracked nor reviewed
+        # (Mechanism §9-4 3항). Rounds an earlier engine stored keep their review.
+        s.update(excluded="codex_exec", capture_pending=False, capture_error=None,
+                 transcript_path=native_path, native_fingerprint=parsed["native_fingerprint"])
+        s.pop("capture_path", None)
+        _save(p, s)
+        return {**_current_view(s, p), "appended": 0, "changed": 0}
+    coverage = parsed["coverage"]
+    if not s["rounds"]:
+        s["coverage"] = coverage
+    _save(p, s)
+    # ponytail: serialize tracking until its cursor is saved; use per-scope
+    # locks if capture throughput matters.
+    with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
+        rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
+        if harness == "codex":
+            # A recovered past turn follows the turns already tracked: keep the saved order.
+            order = [r["id"] for r in s["rounds"]]
+            by_id = {r["id"]: r for r in rounds}
+            if len(by_id) != len(rounds) or any(rid not in by_id for rid in order):
+                raise ValueError("native round identity prefix changed; the review cursor was not moved")
+            known = set(order)
+            rounds = [by_id[rid] for rid in order] + [r for r in rounds if r["id"] not in known]
+        ids = [r["id"] for r in rounds]
+        if len(ids) != len(set(ids)) or ids[:len(s["rounds"])] != [r["id"] for r in s["rounds"]]:
+            raise ValueError("native round identity prefix changed; the review cursor was not moved")
+        # Existing snapshots bind the saved entries: keep them, add the new turns.
+        # An unreviewed original turn whose words changed under its ID is tracked
+        # as it reads now, and snapshots taken before the change are dropped: no
+        # review closes words the reviewer did not see. A reviewed turn keeps the
+        # version its review judged.
+        prior = {r["id"]: r for r in s["rounds"]}
+        tracked, changed = [], []
+        for i, r in enumerate(rounds):
+            hashes = _turn_hashes(r, parsed.get("dialogue_v1"))
+            entry = prior.get(r["id"])
+            if (entry and raw.is_native(entry["ref"]) and entry["hash"] not in hashes
+                    and i >= s["reviewed_count"]):
+                entry = {**entry, "hash": hashes[0]}
+                changed.append(i)
+            tracked.append(entry or {
+                "id": r["id"], "ref": raw.native_ref(harness, conversation_id, turn_key(harness, r["id"])),
+                "completion": r["completion"], "hash": hashes[0], **({"cut": r["cut"]} if r.get("cut") else {})})
+        s["rounds"] = tracked
+        if rules:
+            s.setdefault("turns_since", rules["since"])
+        if changed:
+            s["snapshots"] = {t: v for t, v in s["snapshots"].items()
+                              if v.get("repair_refs") or v["count"] <= changed[0]}
+        appended = len(s["rounds"]) - len(prior)
+        if appended or changed:
+            token = _snapshot(s)
+            s["snapshots"].setdefault(token, {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
+        s["capture_pending"] = parsed["pending_tail"]
+        s["capture_error"] = "; ".join(parsed["diagnostics"]) or None
+        # Replace an established source only after identity and raw-prefix replay
+        # succeed. A rejected explicit path must not poison later pathless retries.
+        s["transcript_path"] = native_path
+        s.pop("capture_path", None)
+        s["coverage"] = coverage
+        if s["capture_error"]:
+            s["capture_failure_phase"] = "read"
+        s["native_fingerprint"] = parsed["native_fingerprint"]
+        _save(p, s)
+        return {**_current_view(s, p), "appended": appended, "changed": len(changed)}
 
 
 def tick(harness: str, conversation_id: str) -> dict:
@@ -1490,3 +1525,37 @@ def recent_transcript(harness: str) -> str | None:
 def hook_capture(env: dict, session: str) -> dict:
     harness, sid, path = hook_source(env)
     return capture(harness, sid, path, session, env.get("space"), cwd=env.get("cwd"))
+
+
+def capture_due(harness: str, conversation_id: str, transcript_path: str | None) -> bool:
+    """Is there anything new for `capture`? A stat, never a read — the input hook hands a
+    capture to its worker only then (#192). A named transcript that does not exist yet (a new
+    conversation before its first turn is written) has nothing to capture: the worker would
+    count it missing after this prompt's tick. Stop captures it."""
+    if transcript_path and not os.path.exists(transcript_path):
+        return False
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+    if s["capture_pending"] or s["capture_error"] or not s.get("native_fingerprint") or not transcript_path:
+        return True
+    try:
+        return transcripts.native_fingerprint(transcript_path, harness, conversation_id) != s["native_fingerprint"]
+    except (OSError, ValueError):
+        return True
+
+
+def notice_once(harness: str, conversation_id: str, text: str, *, settled: bool = False) -> bool:
+    """Should a hook carry this standing diagnostic? Once per text: the same wait read again
+    every prompt only fills the context, and `integration status` keeps it (#192). `settled`
+    (nothing stands now) forgets it, so a later recurrence is news again."""
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        if not text:
+            if settled and s.pop("notice", None) is not None:
+                _save(p, s)
+            return False
+        if s.get("notice") == text:
+            return False
+        s["notice"] = text
+        _save(p, s)
+        return True
