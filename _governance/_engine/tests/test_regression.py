@@ -7027,7 +7027,8 @@ def test_scope_recovery_handoff():
         out = run_hook("claude_session_start.py")
         check("새 세션은 evict 없이도 복구를 싣는다", "[osk scope 복구 대기" in out, out[:300])
         check("복구는 현재 저장본과 기존 노드 우선 행동을 싣는다", cur in out and "update_node" in out and "엔트리 단위" in out)
-        check("세션 시작은 overview를 안내한다", "overview(session=" in out)
+        check("세션 시작은 노드를 쓰기 전의 overview를 안내한다",
+              "새 노드를 쓰기 전에 한 번 `overview(session=" in out, out[:600])
         check("세션 시작은 허브 트리와 자리 규칙을 안내한다",
               "hub_tree" in out and "시행령 §3 8항" in out, out[:600])
         check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",
@@ -8998,6 +8999,82 @@ def test_rechecks():
         for p in made + [src, W / "regr-rc-sub" / "regr-rc-T.md"]:
             p.unlink(missing_ok=True)
         rmtree_force(W / "regr-rc-sub")
+        if lbefore is None:
+            led.unlink(missing_ok=True)
+        else:
+            led.write_bytes(lbefore)
+        _age_all()
+
+
+def test_overview_rechecks_cache():
+    """overview의 재검토 요약은 색인 지문에 묶여 접힌다(#194) — 그대로인 vault에서는
+    노드 전수를 다시 읽지 않고, 대장만 바뀌거나 노드 본문만 바뀌어도 다시 잰다. 판독이
+    잠깐 실패한 요약은 접지 않는다 — 잠금이 풀려도 지문은 그대로다.
+
+    무엇을 망가뜨리면 실패하는가:
+      · 접지 않으면 → 그대로인 vault 단언
+      · 삼킨 판독 실패(`rechecks.misses`)를 보지 않으면 → 잠금이 풀린 단언
+      · 키를 노드 지문(`fp[1]`)으로 좁히거나 보지 않으면 → 대장만 바뀐 단언
+        (노드가 그대로면 색인이 살아남아 그 색인에 접은 요약도 남는다)"""
+    import mcp_server as M
+    from osk import rechecks
+    W = ROOT / "00_Scope/W1"
+    made = [W / f"regr-ovc-{x}.md" for x in ("T", "N")]
+    led = rechecks.RECHECKS
+    lbefore = led.read_bytes() if led.exists() else None
+    hub = W / "W1.md"
+    hub_before = hub.read_bytes()
+    real, calls = rechecks.report, []
+
+    def report(idx=None, limit=5):
+        calls.append(1)
+        return real(idx, 10_000)                # 다른 시험이 남긴 후보에 밀리지 않게 전부 싣는다
+
+    def mine():
+        items = (M.overview().get("rechecks") or {}).get("items", [])
+        return {(i["node"], i["why"]) for i in items if i["node"].startswith("regr-ovc-")}
+
+    try:
+        _w(write.create_node, "regr-ovc-T", "s", "근거 1판.", "fable-5", space="00_Scope/W1")
+        _w(write.create_node, "regr-ovc-N", "s", "주장.", "fable-5", space="00_Scope/W1",
+           edges={"derived-from": "regr-ovc-T"})
+        _w(write.update_node, "regr-ovc-T", old_text="1판", new_text="고친 판")
+        _age_all()           # 크기가 바뀌는 수정만 쓴다 — mtime을 고정하므로 지문은 크기로 가른다
+        rechecks.report = report
+        M._idx().nodes       # 색인은 먼저 짓는다 — 잠금은 재검토 자신의 판독에만 건다
+
+        read_bytes = Path.read_bytes
+
+        def locked(self):
+            if self.name == "regr-ovc-T.md":
+                raise PermissionError(13, "다른 프로세스가 잠갔다", str(self))
+            return read_bytes(self)
+
+        Path.read_bytes = locked
+        try:
+            got = mine()
+        finally:
+            Path.read_bytes = read_bytes         # 내용도 메타데이터도 그대로 풀린다
+        check("전제: 잠긴 근거의 쌍은 요약에서 빠진다", not got, got)
+        got = mine()
+        check("잠금이 풀리면 지문이 같아도 다시 잰다",
+              got == {("regr-ovc-N", "근거가 바뀌었다")}, got)
+        n = len(calls)
+        mine()
+        check("그대로인 vault에서는 재검토 요약을 다시 재지 않는다", len(calls) == n, len(calls) - n)
+        r = _w(write.update_node, "regr-ovc-N", rechecked=["regr-ovc-T"])
+        _age_all()
+        check("전제: 노드는 그대로이고 대장만 바뀐다", r.get("no_change") and r.get("rechecked"), r)
+        check("대장만 바뀌어도 다시 잰다", not mine(), mine())
+        p = W / "regr-ovc-N.md"
+        p.write_bytes(p.read_bytes() + "밖에서 더한 줄.\n".encode())
+        _age_all()
+        check("노드 본문이 바뀌면 다시 잰다", mine() == {("regr-ovc-N", "노드가 바뀌었다")}, mine())
+    finally:
+        rechecks.report = real
+        hub.write_bytes(hub_before)
+        for p in made:
+            p.unlink(missing_ok=True)
         if lbefore is None:
             led.unlink(missing_ok=True)
         else:
@@ -12489,7 +12566,7 @@ if __name__ == "__main__":
                test_move_nodes_and_cluster,
                test_duplicate_id_refused,
                test_duplicate_id_by_name_refused, test_same_file_link_is_duplicate,
-               test_format_alignment, test_rechecks,
+               test_format_alignment, test_rechecks, test_overview_rechecks_cache,
                test_move_topology_refused,
                test_parse_guards, test_scan_confinement_and_case,
                test_node_place_rule, test_upgrading_underscore_scope,

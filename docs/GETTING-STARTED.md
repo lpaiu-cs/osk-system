@@ -439,7 +439,8 @@ run `doctor` from the vault root with `PYTHONPATH` set (Step 2):
 `.venv/bin/python -m osk.cli doctor`, or on Windows
 `.venv\Scripts\python.exe -m osk.cli doctor`. For Claude Code and Codex it shows
 whether MCP and the three hooks point at this vault, when each hook last ran on
-this device, and whether the agent called `overview` after the session started.
+this device, and whether the agent made an osk call carrying the session key
+(`overview`, `scope_memory` or `create_node`) after the session started.
 A hook that is registered but never ran needs a new session (Claude Code) or
 trust in `/hooks` (Codex). `doctor` only reads.
 
@@ -455,11 +456,12 @@ session-start text begins like this:
 
 ```text
 [osk 세션 시작 — session="my-app" · conversation="claude/<conversation ID>"]
-이 세션에서 `overview(session="my-app")`를 한 번 불러 … 아직 scope 결속이 없다. 착지를 추측하지 말고 …
+새 노드를 쓰기 전에 한 번 `overview(session="my-app")`로 허브 트리(`hub_tree`)를 확인하라. … 아직 scope 결속이 없다. 착지를 추측하지 말고 …
 ```
 
-In English: *"Session start, key `my-app`. Call `overview` once. There is no
-scope binding yet, so don't guess where to write; confirm the project first."*
+In English: *"Session start, key `my-app`. Before writing a new node, call
+`overview` once to see the hub tree. There is no scope binding yet, so don't
+guess where to write; confirm the project first."*
 `conversation` names this conversation (`codex/…` in Codex); the agent passes it
 to `cite_round` when it cites a turn.
 
@@ -590,7 +592,7 @@ out of 1,500, and M characters still free (`여유`).
 
 | Starts with | Meaning |
 |---|---|
-| `[osk 세션 시작 — session="…" · conversation="…"]` | Session start. Shows the session key and this conversation's `<harness>/<ID>`, the value `cite_round` takes, and asks the agent to call `overview`. `아직 scope 결속이 없다` means "not bound yet". |
+| `[osk 세션 시작 — session="…" · conversation="…"]` | Session start. Shows the session key and this conversation's `<harness>/<ID>`, the value `cite_round` takes, and asks the agent to call `overview` once before writing a new node. `아직 scope 결속이 없다` means "not bound yet". |
 | `[osk scope 기억 — 00_Scope/… · N/1500자 · 여유 M자]` | The scope memory: characters used out of 1,500, characters free, then its hash and full text. |
 | `[osk 검토 경고 — <reason>. …]` | Background fork reviews are not running, for the reason given. Reviews happen in this session at user turns 9 and 15. Normal if you have not set up fork reviews. |
 | `[osk 대화 검토 — …]` | Fork reviews are on: one runs after every 9 successful final answers. |
