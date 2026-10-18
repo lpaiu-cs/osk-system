@@ -305,37 +305,36 @@ def read_cited(ref: str | None = None, space: str | None = None,
                max_chars: Annotated[int, Field(ge=200, le=100000)] = 6000,
                view: Literal["review", "full"] = "review", query: str | None = None) -> dict:
     """인용 기록 회상: ref=경로#N(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의
-    그 턴만, previous=앞 턴), space=기록 목록. 기본 review: 발화·답변 선별 ≤6000자,
-    query=원본 AND 검색, full=포렌식. 생략≠무가치. 전량 이어읽기 금지. hash=원본 출처."""
+    그 턴만, previous=앞 턴). 인자 없으면 기록 목록(space=옛 scope 자리). 기본 review:
+    발화·답변 선별 ≤6000자, query=원본 AND 검색, full=포렌식. 생략≠무가치. 전량 이어읽기
+    금지. hash=원본 출처."""
     if ref and raw.is_native(ref):
         return _guard(lambda: {"ok": True, **integration.read_turns([ref], max_chars, view, query)["turns"][0]})
     if ref:
         return _guard(raw.read_round, ref, max_chars, view, query)
-    if space:
-        return _guard(raw.list_records, space)
-    return {"ok": False, "violations": [
-        "`ref`(라운드 좌표 `경로#N`) 또는 `space`(`00_Scope/이름`) 중 "
-        "하나를 준다 — 좌표를 모르면 `space`로 기록 목록부터 본다"]}
+    return _guard(raw.list_records, space)
 
 
 def _hook_sections(session: str, include) -> dict:
     """훅이 한도 때문에 접은 블록 — 훅이 실었을 글 그대로 돌려준다(`osk.hook_text`)."""
     from osk import core, evictions, organization
-    scope = write.resolve_session(session)
+    scope, scopes = write.resolve_session(session), write.bound_scopes(session)
     out = {}
     for name in dict.fromkeys(include):
         try:
             if name == "recovery":
                 out[name] = scope_memory_mod.recovery_block(session)
-            elif not scope:
-                out[name] = ""
             elif name == "tidy":
-                parts = evictions.hook_parts(scope, sys.executable, str(Path(__file__).resolve().parent))
+                parts = (evictions.hook_parts(scope, sys.executable, str(Path(__file__).resolve().parent))
+                         if scope else {"banner": "", "block": ""})
                 out[name] = "\n\n".join(p for p in (parts["banner"], parts["block"]) if p)
+            elif not scopes:
+                out[name] = ""
             else:
                 with core.mutation_lock():
-                    jobs = organization.pending([scope], limit=1, record=False)
-                out[name] = organization.hook_prompt(jobs)
+                    jobs = organization.pending(scopes, limit=1, record=False)
+                out[name] = "\n\n".join(t for t in (organization.hook_prompt(jobs),
+                                                   organization.bindings_prompt(session)) if t)
         except Exception as e:                  # 조망은 죽지 않는다(시행령 §11)
             out[name] = f"{type(e).__name__}: {e}"
     return out
@@ -345,7 +344,8 @@ def _hook_sections(session: str, include) -> dict:
 def overview(session: str | None = None, include: list[HookSection] | None = None) -> dict:
     """구조 조망. **첫 쓰기 전에 한 번** 부른다. `clusters`=허브 있는 군집 경로
     (`create_node.space`), `open_cases`=`conflicts` 사건 번호,
-    `broken`=검색에서 빠진 파손 파일. `session`을 주면 현재 결속 `session_scope`도 반환한다.
+    `broken`=검색에서 빠진 파손 파일. `session`을 주면 결속 `bindings`(scopes·primary)와
+    주된 scope `session_scope`도 반환한다.
     `include`=훅 `[osk 접음]` 줄이 알려 준 블록 → `included`."""
     idx = _idx()
     out = {
@@ -356,7 +356,15 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         **_engine_state(),
     }
     try:
-        rc = rechecks.report(idx)
+        # 재검토 요약은 노드 전수를 다시 읽는다 — 색인과 같은 지문에 묶어 그 색인에 접는다(#194).
+        # 지문은 대장(`_ledger`)도 세므로 노드 본문이나 대장만 바뀌어도 다시 잰다. 판독 실패를
+        # 삼킨 요약은 접지 않는다 — 잠금이 풀려도 지문은 그대로다.
+        hit = getattr(idx, "recheck_report", None)
+        if _fingerprint is None or not hit or hit[0] != _fingerprint:
+            missed = rechecks.misses
+            rc = rechecks.report(idx)
+            hit = idx.recheck_report = (_fingerprint if rechecks.misses == missed else None, rc)
+        rc = hit[1]
     except Exception as e:                      # 조망은 죽지 않는다(시행령 §11)
         rc = {"error": f"{type(e).__name__}: {e}"}
     if rc:
@@ -380,7 +388,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
         # 노출하지 않는다"고 못박는다. 착지 판단에는 `session_scope`로 족하다.
-        out["session_scope"] = write.resolve_session(session)
+        out["bindings"] = write.bindings(session)
+        out["session_scope"] = out["bindings"]["primary"]
         if out["session_scope"]:
             # 새 노드의 자리는 이 트리에서 주제를 덮는 가장 깊은 군집이다(시행령 §3 8항)
             from osk import organization
@@ -409,8 +418,8 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
                 distill: dict | None = None) -> dict:
     """생성. 전역 유일 `title`=파일명=`name`, `body`=본문 전문.
     `space`는 전체 군집 경로(`00_Scope/W1`); 모르면 `overview`.
-    `session`은 저장소명 같은 고정 키(대화 id 금지). 첫 성공에 영구 결속;
-    이후 `space` 생략. `bound_scope`는 새 결속만 보고한다.
+    `session`=훅이 준 프로젝트 키(대화 id 금지). `space` 생략 시 주된 scope;
+    다른 scope도 되며 결속에 더한다. `bound_scope`는 새 결속만 보고한다.
     `edges`: `derived-from` 근거는 노드 제목, raw `경로#N`, 그 밖 비노드 `[[경로#제목]]`,
     `conflicts`는 열린 사건 번호(`CASE-2026-1`).
     `settle`=보존한 evict rid. 처분 결과: `settlement`.
@@ -484,11 +493,11 @@ def record_candidate(type: CandidateType,
 
 @mcp.tool()
 def cite_round(conversation: str, quote: str | None = None, turn: str | None = None,
-               note: str | None = None, user: str | None = None, space: str | None = None) -> dict:
+               note: str | None = None, user: str | None = None) -> dict:
     """근거로 쓸 원본 턴 하나를 남긴다. conversation=훅이 준 <하네스>/<대화 ID>.
     quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
     전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref."""
-    return _guard(integration.cite, conversation, quote, turn, note, space=space, user=user)
+    return _guard(integration.cite, conversation, quote, turn, note, user=user)
 
 
 @mcp.tool()

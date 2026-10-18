@@ -109,7 +109,7 @@ Antigravity)에서는 세션의 흐름 안에서 돈다 — 포착은 기계가 
 
 | Space | 담는 것 |
 |---|---|
-| **Scope** | 프로젝트·활동 단위로 형성되는 기억. 노드가 인용한 대화 라운드(`_cited/`)도 여기 보관한다 |
+| **Scope** | 프로젝트·활동 단위로 형성되는 기억. 노드가 인용한 대화 라운드는 Space 밖의 루트 `_cited/`에 둔다 |
 | **Domain** | 특정 프로젝트에 묶이지 않고 여러 맥락에서 재사용되는 지식 |
 | **Person** | 사용자상 — 사용자가 남긴 기록, 사용자에 관한 이해, 위임. 에이전트의 추론은 사용자의 확인 없이 사용자의 사실로 확정하지 않는다 |
 
@@ -163,7 +163,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 시작한다(새 태그는 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다):
 
 ```bash
-git clone --branch v5.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.2.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -246,7 +246,7 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli search "프로젝트 
 
 ## 알려진 한계
 
-- **Git 밖의 폴더는 이름으로 공유한다.** 세션 키는 저장소 폴더의 이름이다
+- **Git 밖의 폴더는 이름으로 공유한다.** 프로젝트 키는 저장소 폴더의 이름이다
   (워크트리는 본 저장소로 접히고, 서브모듈·bare 저장소는 자기 이름). v4부터
   이름이 같아도 뿌리 커밋이 그 키의 소유자와 다른 무관한 Git 저장소는
   `<이름>-<뿌리 앞 8자>` 키를 받아 남의 Scope 기억을 받지도 쓰지도 않는다.
@@ -307,9 +307,11 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli search "프로젝트 
 설치·운용 방법은 [docs/SETUP.md](docs/SETUP.md)를 본다.
 
 v5.0.0 개발 순서와 완료 기준은 [성장 경로 개선 마일스톤](docs/v5.0-milestones.md)에 정리한다.
-v5.1.0은 소속 scope가 없는 대화를 추적하고 그 검토가 소속을 정하게 했다. 다음 판의 계획은
-[v5.2.0](docs/v5.2-milestones.md)과 그리로 옮긴 [v5.1.0 계획](docs/v5.1-milestones.md)의 의미 품질
-평가·미룬 설계(견고함), [v6.0.0](docs/v6.0-milestones.md)(확장)에 있다.
+v5.1.0은 소속 scope가 없는 대화를 추적하고 그 검토가 소속을 정하게 했다. v5.2.0은 인용 기록을
+루트 `_cited/` 한 자리에 두고, scope를 프로젝트에 결속하며, 정기 성장 실행을 주마다 크기를 정하는
+하루 묶음으로 돌린다([계획](docs/v5.2-milestones.md)). [v5.3.0](docs/v5.3-milestones.md)은 그 변경을
+운영 인스턴스에서 재고, v5.1·v5.2 계획에서 옮긴 재사용·의미 품질 평가를 맡는다(견고함).
+[v6.0.0](docs/v6.0-milestones.md)은 기억 모델을 넓힌다(확장).
 
 ## License
 

@@ -16,6 +16,9 @@
 # 그 수트는 SKIP이다. 후보는 checkout한 HEAD다: PR은 임시 clone 안에서 만든 버림
 # 릴리스로, release.yml은 아직 공개하지 않은 버전과 SHA를 지정한다.
 # PR은 PR_CELLS만, release.yml은 전 셀을 돈다. full의 SKIP은 실패다.
+#
+# 판 개발 브랜치(`vX.Y-devel`)로 가는 PR에서는 돌지 않는다. 검증은 릴리스 PR
+# (`vX.Y-devel` → `main`)에서 한 번 한다(docs/SETUP.md "판 개발 브랜치와 검증 시점").
 
 name: ci
 
@@ -23,6 +26,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_call:
     inputs:
       upgrade-matrix:

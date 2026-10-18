@@ -14,7 +14,6 @@
 줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다."""
 from __future__ import annotations
 
-import difflib
 import os
 import re
 import subprocess
@@ -35,6 +34,18 @@ CLOSE = ("근거와 노드를 read_node로 읽는다(전문이나 필요한 범�
 _ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _ALREADY = "재검토 대장에 이미 기록이 있다"
 EVIDENCE = "근거"
+# 후보 계산이 삼킨 판독 실패(OSError)의 누계. 표면은 이 수가 그대로인 동안 낸 요약만 지문에
+# 접는다 — 잠금이 풀려도 지문(경로·mtime·크기)은 그대로라, 빠진 근거가 계속 빠진다(#194).
+misses = 0
+
+
+def _read_bytes(path: Path) -> bytes:
+    global misses
+    try:
+        return path.read_bytes()
+    except OSError:
+        misses += 1
+        raise
 
 
 def evidence_span(text: str) -> tuple[int, int] | None:
@@ -69,7 +80,7 @@ def _legacy(idx, nid: str, cache: dict) -> str | None:
     if nid not in cache:
         hit = idx.by_id.get(nid) if re.match(ID_RE, nid) else None
         try:
-            data = hit[0].read_bytes() if hit else None
+            data = _read_bytes(hit[0]) if hit else None
         except OSError:
             data = None
         cache[nid] = None if data is None else sha256_bytes(data[contract.body_offset(data):])
@@ -142,7 +153,7 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] |
     if hit:
         path, kind = hit
         try:
-            data = path.read_bytes()
+            data = _read_bytes(path)
             key = idx.node(path).id if graph.is_node_home(kind) else posix_rel(path, ROOT)
         except Exception:
             data = key = None
@@ -175,7 +186,7 @@ def _citing(idx, cache: dict):
             continue
         try:
             n = idx.node(path)
-            data = path.read_bytes()
+            data = _read_bytes(path)
         except Exception:
             continue
         if n.id in idx.dup_ids:
@@ -237,9 +248,13 @@ def _read() -> tuple[list[dict], bool]:
     """재검토 대장과, 그 판독을 믿을 수 있는가. 판독 실패(불완전한 행)나 구조 손상이면
     완료 상태를 믿을 수 없다 — 쌍은 후보로 남고 완료는 적히지 않지만, 노드 쓰기는
     막지 않는다."""
+    global misses
     try:
         recs = ledger_read(RECHECKS)
-    except (OSError, ValueError):
+    except OSError:
+        misses += 1
+        return [], False
+    except ValueError:
         return [], False
     return recs, not ledger_damage(recs, RECHECKS)
 
@@ -268,7 +283,7 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
         if tid not in fh:
             hit = idx.by_id.get(tid) if re.match(ID_RE, tid) else None
             try:
-                fh[tid] = state(hit[0].read_bytes()) if hit else None
+                fh[tid] = state(_read_bytes(hit[0])) if hit else None
             except OSError:
                 fh[tid] = None
         # 재검토로 고친 판이 옛 정의로 적혔어도 내용이 그대로면 그 판이다
@@ -295,9 +310,13 @@ def _mark_reports(items: list[dict], idx, cache: dict) -> None:
     """후보에 지금 보고를 붙인다. 사람에게 올린 것은 `escalated` — 그때의 두 상태가 지금과
     같은 동안만. 판단하지 못한 것은 `deferred` — 쌍을 닫지 않고 그 이유를 다음 작업에
     넘긴다(시행령 §7 2항). 그 사이 두 상태가 바뀌었으면 `state_changed`가 알린다."""
+    global misses
     try:
         from . import growth
         rows = growth._records()
+    except OSError:
+        misses += 1
+        return
     except Exception:
         return
     if not items or not any(r.get("kind") == "recheck_review" for r in rows):
@@ -378,6 +397,7 @@ def _versions(rel: str, at: str) -> list[bytes]:
 
 
 def _diff(old: bytes, new: bytes, limit: int = 3000) -> str | None:
+    import difflib      # 입력 훅이 이 모듈을 들일 때 치르지 않게(#192)
     try:
         a, b = old.decode("utf-8").splitlines(), new.decode("utf-8").splitlines()
     except UnicodeDecodeError:

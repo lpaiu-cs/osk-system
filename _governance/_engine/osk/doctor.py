@@ -193,6 +193,11 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
             return _item("warn", f"훅 {name}", detail, adapter.reload)
         if shared:
             return _item("warn", f"훅 {name}", f"{where} · {ran}" if run else where, _ONE)
+        limit = h.get("timeout")
+        if isinstance(limit, (int, float)) and limit < base.HOOK_TIMEOUT:
+            setup = core.shell_join([str(_python()), str(_engine_dir() / "scripts" / "setup.py"), "--interactive"])
+            return _item("warn", f"훅 {name}", f"{where} · 제한이 {limit}초다 — 설치는 {base.HOOK_TIMEOUT}초를 쓴다. "
+                         "부하가 높으면 훅이 끝나기 전에 끊긴다", f"`{setup}`가 이 등록을 설치의 한 줄로 바꾼다")
         if run:
             return _item("ok", f"훅 {name}", f"{where} · {ran}")
         # 실행 기록은 기록을 남기는 판의 훅이 처음 불린 때부터 쌓인다.
@@ -217,7 +222,7 @@ def _delivery(start: dict | None, overview: dict) -> dict | None:
                      "훅 문맥이 모델에 닿았다고 본다")
     return _item("info", "전달", f"마지막 세션 시작({_kst(at)}, session={session}) 뒤 overview 기록이 없다 "
                  "— 훅 문맥이 모델에 닿았는지 알 수 없다",
-                 '새 세션에서 에이전트에게 "osk 훅이 알려 준 세션 키가 뭐야?"라고 묻는다 — '
+                 '새 세션에서 에이전트에게 "osk 훅이 알려 준 프로젝트 키가 뭐야?"라고 묻는다 — '
                  "저장소 이름으로 답해야 한다")
 
 
@@ -251,7 +256,11 @@ def _version(adapter, cli: str | None) -> dict:
 def _fork(adapter) -> dict:
     from . import response_growth
     try:
-        if not response_growth.configured(adapter.name):
+        executable = response_growth.configured(adapter.name)
+        if executable is False:
+            return _item("info", "fork", "대화별 검토를 껐다 — fork도 세션 안 9·15턴 검토도 없고, "
+                         "끝난 대화는 정기 실행이 통합한다")
+        if not executable:
             return _item("info", "fork", "구독 fork를 설정하지 않았다 — 세션 안에서 9·15턴 검토로 동작한다",
                          "켜려면 SETUP의 '대화별 검토 훅'대로 .osk/response-growth.json에 CLI 경로를 둔다")
         verdict = response_growth.check(adapter.name, None, None, os.getcwd())

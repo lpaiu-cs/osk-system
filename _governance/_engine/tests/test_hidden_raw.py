@@ -33,11 +33,13 @@ def main():
         first = append_round("hidden-test", "new", "observation", "answer", "00_Scope/W1")
         new = root / first["path"]
         assert new.suffix == ".txt" and new.parent.name == ".records"
-        assert new.parent.parent == root / "00_Scope/W1/_cited"
+        assert new.parent.parent == root / "_cited"          # 루트 `_cited/` (헌법 4조 3항)
         assert "[[" not in first["round_ref"]
         assert not (base / "new.md").exists() and not (base / ".records/new.txt").exists()
+        # 옛 scope 자리의 좌표는 같은 이름의 루트 기록으로 접힌다(Mechanism §8 2항 · §9 5항)
         assert raw.read_round("[[00_Scope/W1/_cited/new.md#1]]")["text"] == raw.read_round(first["round_ref"])["text"]
-        assert graph.Index().resolve("00_Scope/W1/_cited/new.md") == ("nonnode", ("raw", "W1"))
+        assert graph.Index().resolve("00_Scope/W1/_cited/new.md") == ("nonnode", ("raw", None))
+        assert graph.Index().resolve(first["path"]) == ("nonnode", ("raw", None))
         reject(secrets.write_raw, base / "bypass.md", "not allowed")
         assert not (base / "bypass.md").exists()
         url = "https://example.invalid/_raw/evidence.md#1"
@@ -67,7 +69,8 @@ def main():
         assert not old.exists() and dest.read_bytes() == original
         assert raw.read_round(legacy)["text"] == before
         assert raw.migrate(apply=True)["count"] == 0
-        assert {r["record"] for r in raw.list_records("00_Scope/W1")["records"]} == {"new", "Legacy"}
+        assert {r["record"] for r in raw.list_records("00_Scope/W1")["records"]} == {"Legacy"}   # 옛 자리
+        assert {r["record"] for r in raw.list_records()["records"]} == {"new"}                 # 루트
         assert raw.record_path("W1", "LEGACY") == dest
 
         # Duplicate destinations fail closed, including a same-byte duplicate.

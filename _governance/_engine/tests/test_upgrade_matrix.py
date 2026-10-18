@@ -94,6 +94,7 @@ RELEASES = {
     "v4.1.3": "edf9523fe32c5d9a08ab41b95dd464b3d0fe433f",
     "v4.1.8": "4ec2809f0c5eb6e52c92525035820867381c91d6",
     "v5.0.1": "caa8ec52a282002eea414a37b1d0a8fe40c5410e",
+    "v5.1.0": "54955cc87b642897aa9aa54d12b15dedd0843bc4",
 }
 LAYOUTS = {"=": "= ", "bare": "", "00_": "00_"}
 # (start, layout) -> the release whose fresh install gave the vault that layout
@@ -125,11 +126,14 @@ CELLS = {
     ("v5.0.1", "00_"): None,
     ("v5.0.1", "="): "v3.20.0",
     ("v5.0.1", "bare"): "v3.20.1",
+    ("v5.1.0", "00_"): None,
+    ("v5.1.0", "="): "v3.20.0",
+    ("v5.1.0", "bare"): "v3.20.1",
 }
 # Per PR: the oldest updater (no gate, no baseline, legacy roots), the newest
 # release on its shipped layout, and the newest release on the legacy layout
 # (most early vaults). The release workflow runs every cell (OSK_MATRIX=full).
-PR_CELLS = [("v3.20.0", "="), ("v5.0.1", "00_"), ("v5.0.1", "=")]
+PR_CELLS = [("v3.20.0", "="), ("v5.1.0", "00_"), ("v5.1.0", "=")]
 # How each release's own docs make a vault. Until v3.22 the README said "clone
 # and switch to your own remote" and nothing recorded a release baseline, so the
 # first update stops on "engine drift" and tells the user to rerun with --adopt.
@@ -656,9 +660,10 @@ def _mapped(up: "Upstream", tag: str) -> dict[str, str]:
 def _hook(vault: Path, cell: Path, script: str, **payload) -> str:
     """One hook invocation the way the harness makes it: the vault's hook script,
     the project directory as cwd, the event JSON on stdin."""
+    # A hook's detached worker (#192) would outlive the cell: the cell runs its step itself.
     r = _run([sys.executable, str(vault / "_governance/_engine/scripts/hooks" / script)],
              cwd=cell / "work" / KEY, input=json.dumps(payload),
-             env=_env({"CLAUDE_CONFIG_DIR": str(cell / "claude")}))
+             env=_env({"CLAUDE_CONFIG_DIR": str(cell / "claude"), "OSK_HOOK_WORKER": "0"}))
     if r.returncode != 0:
         raise CellFailure(f"{script} exit {r.returncode}: {r.stderr.strip()[-1500:]}")
     return r.stdout
@@ -697,6 +702,18 @@ class Conversation:
         with self.path.open("a", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in _claude_round(self.rounds)))
         self._event("capture_stop.py", hook_event_name="Stop", stop_hook_active=False)
+
+    def capture(self) -> dict:
+        """The candidate hooks' worker (#192) run to its end, then the cursor it left."""
+        env = {"CLAUDE_CONFIG_DIR": str(self.cell / "claude")}
+        job = {"defer": True, "harness": "claude", "session_id": SID, "transcript_path": str(self.path),
+               "cwd": str(self.cell / "work" / KEY), "session": KEY, "space": None}
+        r = _py(self.vault, "-m", "osk.response_growth", input=json.dumps(job), env=env)
+        if r.returncode != 0:
+            raise CellFailure(f"hook worker exit {r.returncode}: {r.stderr.strip()[-1500:]}")
+        r = _py(self.vault, "-m", "osk.cli", "integration", "status", "--harness", "claude",
+                "--conversation", SID, env=env)
+        return _json_tail(r.stdout) or {}
 
 
 # ── one cell ─────────────────────────────────────────────────────────────────
@@ -812,12 +829,16 @@ def run_cell(up: Upstream, cand: str, work: Path, start: str, layout: str) -> di
 
         ctx = conv.start("resume")
         conv.turn()
+        cursor = conv.capture()
         facts["hook"] = ctx[:200]
         check("hooks: SessionStart keeps the session key", f'session="{KEY}"' in ctx, ctx[:500])
         check("hooks: SessionStart injects the bound scope memory",
               "keep vaults working after updates." in ctx and "아직 scope 결속이 없다" not in ctx,
               ctx[:800])
         check("hooks: capture continues without diagnostics", not conv.said, conv.said)
+        check("hooks: the candidate's worker captures S's conversation on",
+              cursor.get("ok") is True and cursor.get("captured_rounds") == conv.rounds,
+              {k: cursor.get(k) for k in ("ok", "captured_rounds", "capture_error", "capture_recovery")})
         check("hooks: SessionStart carries S's unsettled eviction to tidy",
               "Scratch note to evict" in ctx, ctx[-800:])
 

@@ -1,9 +1,9 @@
 ---
 id: 260802-114u-w9vj
 created: 2026-08-02 13:22 (KST)
-updated: 2026-10-12 01:04 (KST)
+updated: 2026-10-13 16:05 (KST)
 author: user
-drafter: opus-5.5
+drafter: fable-5.1
 summary: "osk-system 최상위 규범 — 노드·비노드와 Space, 참조 위상, 위임, 보호영역, 사건, 개정·이행"
 derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 ---
@@ -54,7 +54,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    통치 문서와 통치 사료는 예외로 어느 Space에도 속하지 않는다 — system을
    규정하는 규범은 system이 조직하는 지식이 아니므로, 노드 계약을 따르는
    특수한 노드로서 Space 밖의 상설 통치 구획에 두되 검색·중심성에 산입하지
-   않는다. 그 개정과 효력은 제14조가, 물리 배치는 mechanism이 정한다.
+   않는다. 그 개정과 효력은 제14조가 정한다.
 7. **중복 금지 원칙**: 같은 주장과 적용 범위를 가진 노드를 둘 이상 독립적으로
    유지하지 않는다.
 8. **허브 노드**: 모든 노드 군집은 허브 노드를 갖는다. 최상위 허브 노드는
@@ -69,9 +69,8 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    노드 사이의 locality(주제·활동·시간·출처의 가까움) 신호를 보존한다.
 2. **Scope Space** — 각 scope에서 관측된 비노드 기록을 바탕으로 형성되거나,
    해당 scope의 맥락에 주로 결속되는 기억·지식을 보존한다.
-3. system이 참여한 세션을 가진 scope에는 비노드 보관 구획인 `_cited/`를 둔다.
-   `_cited/`는 노드를 갖지 않으며, 해당 세션의 대화 기록을 인용·검증에 필요한
-   범위에서 보존한다.
+3. system이 참여한 세션의 대화 기록은 인용·검증에 필요한 범위에서 `_cited/`에
+   보존한다. `_cited/`는 Space 밖의 상설 비노드 구획이다.
 4. `_cited/`의 기록은 append-only로만 갱신한다.
 5. **Workbench** — system의 운영 활동(진행 중 작업·공유 지식의 과도기·절차
    대장의 보관)을 경계로 하는 특별한 지위의 scope다. 이 scope는 작업 검색과
@@ -83,7 +82,7 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 
 1. **Domain** — 특정 scope에 국한되지 않는 개념과 지식이 주제나 의미 단위로
    응집되는 노드 군집이다.
-2. **Domain Space** — Scope Space의 기록·지식과 기존 domain 노드를
+2. **Domain Space** — Scope Space의 지식과 기존 domain 노드를
    해석·종합하여, 여러 맥락에서 재사용되는 지식 노드를 증류하고 domain 단위로
    구성한다.
 3. locality(주제·활동·시간·출처의 가까움)를 단서로 삼되, 최종적으로는 의미와 적용
@@ -174,16 +173,16 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    관련 상태가 변경되면 그 영향은 의존의 반대 방향인 B→A로 전파된다.
 3. 참조가 향할 수 있는 대상은 참조하는 노드의 소속에 따른다. 단, `conflicts`는
    예외이다.
-   - Scope Space의 노드 — 같은 scope의 노드와 비노드, 전역 공간(Domain
-     Space·Person Space)의 노드를 참조할 수 있다. 다른 scope의 노드와
-     비노드는 직접 참조하지 않는다. scope 사이에 공유되는 지식은 domain 노드로
-     증류하여 경유한다.
+   - Scope Space의 노드 — 소속된 scope의 노드와 전역 공간(Domain
+     Space·Person Space)의 노드, 그 밖의 비노드를 참조할 수 있다. 다른
+     scope의 노드는 직접 참조하지 않는다. scope 사이에 공유되는 지식은 domain
+     노드로 증류하여 참조한다.
    - Domain Space와 Person Space의 노드 — 모든 공간의 노드와 비노드를
-     참조할 수 있다. 다만 Domain Space의 노드는 `_cited/`의 세션 기록을 직접
-     참조하지 않는다 — 세션 기록에서 나온 근거는 노드로 증류하여 참조한다.
-   - 통치 구획(제3조 6항)의 통치 문서·사료, system 밖의 외부 참조, 공용
-     원자료 구획(`_sources/`)의 비노드는 소속의 제한 없이 참조할 수 있다 —
-     규범은 어느 소속에서나 인용된다.
+     참조할 수 있다. 단, Domain Space의 노드는 `_cited/`의 세션 기록을 직접
+     참조하지 않는다 — 세션 기록에서 나온 근거는 Scope 노드로 증류하여
+     참조한다.
+   - 통치 구획(제3조 6항)의 통치 문서·사료는 소속의 제한 없이 참조할 수
+     있다 — 규범은 어느 소속에서나 인용된다.
 4. **Link** — A가 B를 Link하면 B는 A의 Link 노드, A는 B의 Backlink
    노드라 한다(A→B). Link의 방향은 의존의 중심으로 흐르며, 중심성(제11조)의
    가중으로 작용한다.
@@ -258,8 +257,8 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
    부분그래프의 규모를 나타낸다. 모든 노드는 실제 의존에 따라 중심성 계산에
    참여하며, Link와 Predicate Edge는 각 관계에 정해진 가중으로 산입한다.
 3. 검색은 다음 세 계약을 구별한다.
-   - **작업 검색** — 모든 Space를 대상으로 하는 연합 검색이다. `_cited/`와
-     Workbench scope는 대상에서 제외한다. locality는 순위 자질이며 검색
+   - **작업 검색** — 모든 Space를 대상으로 하는 연합 검색이다. Workbench
+     scope는 대상에서 제외한다. locality는 순위 자질이며 검색
      관문이 아니다. 검색은 파일의 현재 상태 — 보호영역에서는 작업본 — 를
      대상으로 하며, 검색 결과로 행동 권한을 추정하지 않는다.
    - **열람 검색** — 사용자에게 결과를 노출하는 검색이다.

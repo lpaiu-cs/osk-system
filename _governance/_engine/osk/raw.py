@@ -87,14 +87,33 @@ def _next_index(text: str) -> int:
 CITED = graph.RECORD_DIRS[0]
 
 
-def record_path(scope: str, record: str) -> Path:
-    """The record's canonical file. A same-name record in `_raw/` stays canonical and
-    takes new rounds; otherwise the record lives in hidden `_cited/.records` storage
-    (Mechanism §9 5항 — one record per session, no copy across the two)."""
-    legacy = _record_file(ROOT / SCOPE / scope / "_raw" / f"{record}.md")
-    if legacy.exists():
-        return legacy
-    return _record_file(ROOT / SCOPE / scope / CITED / f"{record}.md")
+def _legacy_dirs():
+    """옛 자리 — scope 아래의 `_cited/`·`_raw/`와 Person의 `_cited/`(Mechanism §9 5항)."""
+    for scope in _scope_names():
+        for name in graph.RECORD_DIRS:
+            yield ROOT / SCOPE / scope / name
+    yield ROOT / PERSON / CITED
+
+
+def locate_record(record: str) -> Path | None:
+    """같은 이름의 기록이 실재하는 자리 — 루트 `_cited/`가 먼저, 그 다음 옛 자리. 없으면 None.
+    이식성 기준으로 같은 이름은 같은 정본이다."""
+    root = _record_file(ROOT / CITED / f"{record}.md")
+    if root.exists():
+        return root
+    for d in _legacy_dirs():
+        if not d.is_dir():
+            continue
+        p = _record_file(d / f"{record}.md")     # 구·신 저장본이 함께 있으면 여기서 거부된다
+        if p.exists():
+            return p
+    return None
+
+
+def record_path(scope: str | None, record: str) -> Path:
+    """기록의 정본 파일. 옛 자리에 같은 이름이 있으면 그 기록에 잇고(Mechanism §9 5항), 없으면
+    루트 `_cited/.records`다(헌법 4조 3항). `scope`는 호환 인자이며 자리를 정하지 않는다."""
+    return locate_record(record) or _record_file(ROOT / CITED / f"{record}.md")
 
 
 def is_person(space: str | None) -> bool:
@@ -104,17 +123,6 @@ def is_person(space: str | None) -> bool:
     from .layout import adapt_path
     name = (space or "").strip().strip("/")
     return bool(name) and "/" not in name and adapt_path(name, SPACE_ROOTS) == PERSON
-
-
-def is_person_record(path: str | None) -> bool:
-    """Person Space의 인용 기록 구획(`00_Person/_cited/`) 안의 기록인가."""
-    return bool(path) and graph.space_of(ROOT / str(path)) == ("raw", PERSON)
-
-
-def person_record_path(record: str) -> Path:
-    """소속 scope 없이 Person 노드를 남긴 세션의 기록(Mechanism §9 5항). 그 세션이 뒤에 scope에
-    속하면 새 라운드는 그 scope의 `_cited/`에 쓰고 이 기록은 그대로 둔다(시행령 §2 8항)."""
-    return _record_file(ROOT / PERSON / CITED / f"{record}.md")
 
 
 def _record_pair(path: Path | str) -> tuple[Path, Path]:
@@ -201,7 +209,12 @@ def canonical_ref(ref: str) -> str:
     path = path.strip()
     if re.match(r"^https?://", path) or not graph.is_record_ref(path):
         return ref  # Node IDs and node links keep their existing identity.
-    _, physical = _record_pair(path)
+    old, physical = _record_pair(path)
+    if not physical.exists() and not old.exists():
+        # 옛 자리의 좌표가 루트의 기록을(또는 그 반대를) 가리킨다 — 같은 이름은 같은 기록이다
+        found = locate_record(old.stem)
+        if found is not None:
+            physical = found
     return posix_rel(physical, ROOT) + (sep + anchor if sep else "")
 
 
@@ -281,7 +294,7 @@ def storage_error(path: str, text: str) -> str | None:
     """Check a changed raw record, without exposing its payload in diagnostics."""
     p = Path(path)
     if (not any(d in p.parts for d in graph.RECORD_DIRS) or not p.parts
-            or p.parts[0] not in {"00_Scope", "= Scope", "Scope", "00_Person", "= Person", "Person"}):
+            or p.parts[0] not in {"00_Scope", "= Scope", "Scope", "00_Person", "= Person", "Person", CITED}):
         return None
     if p.suffix.lower() == ".md":
         return "visible Markdown raw; migrate to hidden .txt storage"
@@ -294,7 +307,7 @@ def storage_error(path: str, text: str) -> str | None:
 def storage_violations() -> list[str]:
     errors = []
     dirs = [d for name in graph.RECORD_DIRS for d in (ROOT / SCOPE).glob(f"*/{name}")]
-    for directory in sorted(d for d in (*dirs, ROOT / PERSON / CITED) if d.is_dir()):
+    for directory in sorted(d for d in (*dirs, ROOT / PERSON / CITED, ROOT / CITED) if d.is_dir()):
         for p in directory.rglob("*"):
             if p.is_file() and p.suffix.lower() in {".md", ".txt"}:
                 rel = posix_rel(p, ROOT)
@@ -335,11 +348,6 @@ def _block(index: int, user: str, agent: str, *, dialogue_id: str | None = None,
 _scope_names, _space_list, _scope_of_space = (
     graph.scope_names, graph.space_list, graph.scope_of_space)
 
-# 착지 판정(형식 → 실재 → 결속)은 `write.resolve_landing`이 한 벌로 소유한다.
-_CONFINE = ("인용 기록은 세션당 정본 하나이므로(시행령 §2 1항) 한 세션의 기록을 "
-            "다른 scope로 번지게 하지 않는다 —")
-
-
 def append_rounds(session: str, record: str, pairs: list,
                   space: str | None = None, *, cited: dict | None = None, bind: bool = True) -> dict:
     """라운드 여럿을 **한 번의 쓰기로** 잇는다. `cited`는 인용 라운드 하나의 원본 턴
@@ -351,10 +359,10 @@ def append_rounds(session: str, record: str, pairs: list,
     된다 — 표면이 부분 성공을 만들지 않는 것과 같은 규율을 이 경로에도
     건다(Mechanism §6-2 3항). index는 배치 안에서도 엔진이 이어 매긴다.
 
-    착지는 세션 라우팅이 정한다 — 결속이 없으면 `space`를 요구하고, 성공하면
-    그 scope로 세션을 확정한다. `space`의 표기는 `create_node`와 같은 군집
-    전체 경로(`"00_Scope/W1"`)다 — 같은 값이 같은 뜻이어야 호출자가
-    `overview`의 `clusters`를 그대로 옮겨 쓴다."""
+    기록의 자리는 루트 `_cited/`다(헌법 4조 3항) — 착지도 결속도 필요 없다. 같은
+    이름의 기록이 옛 자리(scope 아래 `_cited/`·`_raw/`, Person `_cited/`)에 있으면
+    그 기록에 잇는다(Mechanism §9 5항). `space`·`bind`는 호환 인자이며 자리를
+    정하지 않는다."""
     if cited is not None and len(pairs) != 1:
         raise ValueError("a citation appends exactly one round")
     if not pairs:
@@ -372,32 +380,13 @@ def append_rounds(session: str, record: str, pairs: list,
     errs = write._title_errors(record)      # 기록 이름이 곧 파일명이다
     if errs:
         raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
-    # 세션 키는 착지 판정보다 먼저 본다 — 결속은 파일 쓰기 뒤에 오므로
-    # 여기서 막지 않으면 부분 성공이 된다.
-    errs = write.ephemeral_session_errors(session) + write.routing_errors(session)
+    # 프로젝트 키의 형식은 쓰기 전에 본다 — 대화 id를 키 자리에 넣은 호출을 돌려보낸다.
+    errs = write.ephemeral_session_errors(session)
     if errs:
-        raise write.WriteError("세션 키 부적격 — 쓰지 않았다", errs)
+        raise write.WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
 
     with mutation_lock():
-        if is_person(space):
-            # Person에는 결속이 없다 — 소속 scope 없는 세션의 기록은 그 대화가 고른다(integration.cite)
-            p, bound = person_record_path(record), True
-        else:
-            # `bind=False`는 일회성 작업 공간의 대화다 — 그 키의 결속을 따르지도 세우지도 않는다
-            dest, bound = write.resolve_landing(session if bind else None, space, _CONFINE)
-            if not dest:
-                raise write.WriteError(
-                    "착지 미정 — 쓰지 않았다",
-                    [f"세션 `{session}`의 scope 결속이 없다. `space`를 주면 그 자리에 "
-                     f"기록하고 결속을 확정한다. 가능한 space: {_space_list()}"])
-            if dest not in _scope_names():
-                # 결속이 가리키는 scope가 사라진 경우 — `space`는 이미
-                # `resolve_landing`이 검사했으므로 여기 남는 것은 낡은 결속뿐이다.
-                raise write.WriteError(
-                    "결속이 가리키는 scope가 없다 — 쓰지 않았다",
-                    [f"세션 `{session}`은 `{SCOPE}/{dest}`에 결속돼 있으나 그 scope가 "
-                     f"없다. 가능한 space: {_space_list()}"])
-            p = record_path(dest, record)
+        p = record_path(None, record)
         supersedes = None
         if cited is not None:
             existing = find_cited(p, native_ref(cited["harness"], cited["conversation"], cited["turn"]))
@@ -434,8 +423,6 @@ def append_rounds(session: str, record: str, pairs: list,
                   "filtered": sorted(set(hits))}
         if supersedes:
             result["supersedes"] = supersedes
-        if not bound and bind:
-            write.bind_after_write(result, session, dest, "첫 세션 기록에서 확정")
         return result
 
 
@@ -488,7 +475,11 @@ def _raw_file(path: str) -> Path:
             [f"`{path}`는 세션 기록이 아니다. 노드는 `read_node`로 읽는다"])
     p = _record_file(p)
     if not p.is_file():
-        raise write.WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
+        # 옛 자리의 좌표로 루트의 기록을, 또는 그 반대를 가리킨 경우 — 같은 이름은 같은 기록이다
+        found = locate_record(_record_pair(p)[0].stem)
+        if found is None:
+            raise write.WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
+        return found
     return p
 
 
@@ -569,9 +560,12 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
             "text": chunk[:max_chars] if cut else chunk}
 
 
-def list_records(space: str) -> dict:
-    """한 scope(또는 Person Space)의 세션 기록 목록 — 좌표를 모를 때 여기서 시작한다."""
-    if is_person(space):
+def list_records(space: str | None = None) -> dict:
+    """세션 기록 목록 — 좌표를 모를 때 여기서 시작한다. `space`가 없으면 루트 `_cited/`(새
+    기록의 자리)이고, scope나 Person을 주면 그 옛 자리의 기록이다."""
+    if not space:
+        scope, dirs = CITED, [ROOT / CITED]
+    elif is_person(space):
         scope, dirs = PERSON, [ROOT / PERSON / CITED]
     else:
         scope = _scope_of_space(space)

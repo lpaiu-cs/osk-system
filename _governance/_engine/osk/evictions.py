@@ -449,8 +449,8 @@ def _transit_prompt(titles: list[str]) -> str:
 def tidy_prompt(scope: str | None, python: str, engine: str,
                 now_ms: int | None = None) -> str:
     """전용 정돈 세션의 프롬프트 (§9-3 3항) — 사용자가 새 세션에 붙여 넣거나
-    스케줄러가 `claude -p`로 띄운다. 한 세션은 한 scope다: scope를 안 주면
-    가장 오래 밀린 scope를 고른다. 세션 키는 그 scope의 정본 키다."""
+    스케줄러가 `claude -p`로 띄운다. scope를 안 주면 가장 오래 밀린 scope를 고른다.
+    전용 세션은 그 scope를 착지로 명시한다 — 열린 프로젝트의 결속과 무관하다."""
     st = status(now_ms)
     if not st:
         return (_transit_prompt(transit_titles())
@@ -461,12 +461,11 @@ def tidy_prompt(scope: str | None, python: str, engine: str,
         return (f"{SCOPE}/{scope}에는 미처분 항목이 없다. 있는 scope: "
                 + ", ".join(sorted(st)))
     rows = unsettled(scope)
-    session = rows[-1].get("session")
     lines = [
         f"이 세션은 `{SCOPE}/{scope}`의 **전용 정돈 세션**이다(Mechanism §9-3 3항). "
         f"본 작업은 없다 — 아래 미처분 퇴출 {len(rows)}건을 전부 처분하고 끝낸다.",
-        f"osk 도구를 부를 때 `session=\"{session}\"`을 쓴다 — 이 scope의 정본 키다. "
-        f"승인은 우회하지 않는다.",
+        f"osk 도구를 부를 때 `space=\"{SCOPE}/{scope}\"`를 명시한다 — 이 세션이 열린 프로젝트의 "
+        f"결속과 무관하게 그 scope를 착지로 쓴다. 승인은 우회하지 않는다.",
         "",
     ]
     lines += [_item(r, now_ms) for r in rows]

@@ -28,17 +28,30 @@
   새 기록의 append도 거부한다(손상 위에 이력을 더 쌓지 않는다).
 """
 from __future__ import annotations
-import errno, hashlib, json, os, random, re, shlex, string, subprocess, sys, tempfile, time
+import errno, functools, hashlib, json, os, random, re, shlex, string, subprocess, sys, tempfile, time
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from . import epoch
 from .layout import space_roots, adapt_path
 from ._portalock import lock_exclusive, unlock
 
 B36 = string.digits + string.ascii_lowercase
-KST = ZoneInfo("Asia/Seoul")          # Mechanism §2 2항 — 표기 시간대는 KST 고정
+
+
+@functools.cache
+def _kst():
+    """Mechanism §2 2항 — 표기 시간대는 KST 고정. tz 데이터는 처음 쓸 때 읽는다 — Windows에서는
+    tzdata 패키지를 `importlib.resources`로 읽어 import에 20 ms 남짓 들고, 입력 훅은 대개 시각을
+    적지 않는다(#192). 다른 모듈은 `core.KST`로 읽는다(`__getattr__`)."""
+    from zoneinfo import ZoneInfo
+    return ZoneInfo("Asia/Seoul")
+
+
+def __getattr__(name: str):
+    if name == "KST":
+        return _kst()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def vault_root() -> Path:
@@ -222,12 +235,12 @@ AUTHORS = ("user", "agent")              # Mechanism §2 4항
 
 def now_kst() -> str:
     """frontmatter 시각 — 기기 시간대와 무관하게 KST로 적는다."""
-    return datetime.now(KST).strftime(TS_FMT)
+    return datetime.now(_kst()).strftime(TS_FMT)
 
 
 def now_iso() -> str:
     """대장 기록의 `at` — ISO 8601 유지 (Mechanism §2 2항 단서)."""
-    return datetime.now(KST).replace(microsecond=0).isoformat()
+    return datetime.now(_kst()).replace(microsecond=0).isoformat()
 
 
 def b36(n: int, width: int) -> str:
@@ -256,7 +269,7 @@ def new_node_id(when: datetime | None = None) -> str:
     대조를 되살리고 싶어지면 먼저 이것을 보라: 중복 id의 실제 발생원은 이
     함수가 아니라 **파일 복제**(사본 만들기·복원·병합의 수동 해결)이며, 그
     경로는 여기를 거치지 않는다. 대조는 그것을 막지 못했다."""
-    d = when or datetime.now(KST)
+    d = when or datetime.now(_kst())
     secs = d.hour * 3600 + d.minute * 60 + d.second
     return f"{d:%y%m%d}-{b36(secs, 4)}-{''.join(random.choices(B36, k=8))}"
 
@@ -328,7 +341,12 @@ def atomic_write(path: Path, data: bytes) -> None:
     fsync**. 호출부가 이 뒤에 그 파일을 가리키는 대장 기록을 남기므로, 엔트리가
     기록보다 먼저 내구화돼야 전원 차단 뒤 '기록은 있는데 파일은 없는' 상태가
     생기지 않는다. 권한은 mkstemp 기본이다 — 기존 권한을 보존해야 하는 갱신은
-    `update._write_atomic`을 쓴다."""
+    `update._write_atomic`을 쓴다.
+
+    Windows에서는 대상이나 임시 파일을 FILE_SHARE_DELETE 없이 연 읽기(Python의
+    `open()`이 그렇다)가 있으면 교체가 WinError 5·32로 실패한다. 그런 읽기는 곧
+    닫히므로 잠깐씩 다시 건다 — 대화 커서를 잠금 없이 읽는 엔진 안팎의 읽기가
+    분리 작업자의 저장과 겹친다(#192 실측)."""
     mkdirs_durable(path.parent)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent))
     try:
@@ -336,7 +354,16 @@ def atomic_write(path: Path, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        # ponytail: 약 1초의 고정 재시도 — 그보다 오래 쥔 읽기에는 전처럼 실패한다. 실측되면
+        # 엔진의 잠금 없는 커서 읽기(integration의 넷)를 상태 잠금 아래로 옮긴다.
+        for wait in (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, None):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if os.name != "nt" or wait is None:
+                    raise
+                time.sleep(wait)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)

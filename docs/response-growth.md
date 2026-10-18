@@ -4,15 +4,16 @@ The runner and approved Mechanism §9-3 amendment shipped in v3.17.0.
 Automatic fork configuration remains an explicit per-instance choice.
 
 The current change adds a same-harness fork runner to the existing growth supervisor.
-It preserves the source model, Codex reasoning effort, source working directory and
-permission policy. It requires a matching native CLI version and confirmed subscription
-authentication before inference. Codex uses `exec fork --ephemeral`; Claude uses
+It preserves the source model, Codex reasoning effort, source working directory, tool
+definitions and approval policy or permission mode, and narrows what the tools may do
+(see [Fork tool restriction](#fork-tool-restriction-85)). It requires a matching native
+CLI version and confirmed subscription authentication before inference. Codex uses `exec fork --ephemeral`; Claude uses
 `--resume --fork-session --no-session-persistence`. Maintenance processes retain the
 existing `OSK_GROWTH_WORKER=1` exclusion from conversation tracking.
 
-Codex Desktop sources also retain the app's code-mode host and bundled app-tool
-definitions. Native `source=vscode` plus `originator=Codex Desktop` selects this path;
-CLI sources retain their existing configuration. The source model is never replaced.
+Codex Desktop sources (native `source=vscode` plus `originator=Codex Desktop`) do not fork:
+see [Codex Desktop sources no longer fork](#codex-desktop-sources-no-longer-fork-2026-10).
+The source model is never replaced.
 
 Each fork is limited to its original conversation's frozen review snapshot. The daily
 Domain queue remains separate. The existing 600-second process-tree deadline, final
@@ -32,20 +33,28 @@ Stop counter. Its separate input counter always advances, including in backgroun
 so losing CLI access cannot restart the fallback's overdue work at zero. Resume retains
 both counters. Enabling the feature does not replay all old answers.
 
-Start/input hooks use local authentication/version queries, with no inference. Missing
+Start/input hooks never wait on the CLI: a detached worker they start runs the local
+authentication/version queries (at most every 10 minutes, 30 s per query), with no
+inference, and the hooks read its last verdict — the fork route until it first answers.
+Under load `auth status` alone took over 8 s and the input hook hit its 10 s limit (#192).
+No hook reads the transcript: the start, input and in-session Stop hooks hand its capture
+to the same worker when its size or time changed (a forking Stop's supervisor captures it).
+SessionStart only pins the conversation's landing and shows the waits as of the last capture. Missing
 configuration, a missing CLI, logout, uncertain subscription auth, version mismatch or
-invalid settings route to in-session UserPromptSubmit 9/15 review with a warning. Codex
+invalid settings route to in-session UserPromptSubmit 9/15 review with a warning. A host
+turned off (`false` in `.osk/response-growth.json`) and a Codex Desktop source take the
+`off` route instead: no fork and no in-session review. Codex
 also requires a Git worktree or a project trusted in Codex `config.toml` under Codex's
 normalized key, no active profile that sets a key the fork pins (provider, base URL,
 effort, approval or sandbox), no `model_providers.openai` or `chatgpt_base_url` other than
 the first-party one in any config layer (system, user, or project `.codex/` from the
 project root down to cwd), a source model outside the `chatgpt-web/` bridge route, and a
-representable native permission policy once a final answer recorded it. The fork pins
-`openai_base_url` to `https://chatgpt.com/backend-api/codex` and drops `OPENAI_BASE_URL`,
-so a top-level local bridge or proxy is bypassed; each run folder keeps its `argv.json`. Workspace
-write roots, network access and both temporary-directory exclusion flags are explicitly
-preserved. Granular approval policies use TOML inline tables, not JSON objects. Unknown
-restrictions refuse the fork at routing and again before inference. A Claude fork runs
+native permission policy the fork can preserve or narrow once a final answer recorded it.
+The fork pins `openai_base_url` to `https://chatgpt.com/backend-api/codex` and drops
+`OPENAI_BASE_URL`, so a top-level local bridge or proxy is bypassed; each run folder keeps
+its `argv.json`. Granular approval policies use TOML inline tables, not JSON objects. An
+unknown approval policy, an external sandbox or an unknown sandbox field refuses the fork at
+routing and again before inference (see below). A Claude fork runs
 with the source conversation's permission mode (`permissionMode` in force at its last
 final answer) passed verbatim as `--permission-mode`, with no extra bypass flag; a missing
 or unknown mode, or one that changes before launch, refuses the fork. A switch after the
@@ -62,6 +71,51 @@ or changed source metadata before launch refuses the fork without spending the S
 attempt, preserving the pending review; native trailer rows written after Stop do not. Source movement
 during execution also makes cumulative cache accounting unconfirmed. A harness upgrade
 can require updating the configured native CLI path.
+
+### Fork tool restriction (#85)
+
+A fork reads the source conversation's untrusted text with the source's credentials. In
+2026-10 measurements (63 forks) no fork used a tool outside the osk MCP, so the restriction
+costs no function. It never changes the tool definitions or the Claude permission mode the
+source used: either would turn the cached parent prefix (median about 450k tokens) into a
+cache write on every fork.
+
+- **Claude.** The `--settings` the fork already passes adds a PreToolUse hook that denies
+  every tool call except `mcp__osk-system__*` and `ToolSearch` (which loads the deferred
+  osk tools). The deny holds in every permission mode, `bypassPermissions` included; the
+  model reads its reason and continues with the osk tools. `--tools`/`--strict-mcp-config`
+  and a switch to `--permission-mode default` with `--allowedTools` were rejected: the first
+  changes the tool definitions, the second may change the system prompt.
+- **Codex.** The same deny rides in as a `-c hooks=…` PreToolUse hook. Codex runs it before
+  every shell command, `apply_patch`, MCP tool and app connector (`mcp__codex_apps__*`), and
+  spares only `mcp__osk_system__*` (Codex turns every character outside `[A-Za-z0-9_]` in a
+  server name into `_`). Its `tool_search` never reaches the hook, so it needs no exception.
+  Three details keep the hook from being skipped silently:
+  - The matcher is a Rust regex, which has no lookahead, so it spells out every name that
+    leaves the osk prefix.
+  - The override carries the hook's own trust, `hooks.state.<session-flags key>.trusted_hash`.
+    Codex hashes the normalized hook. `--dangerously-bypass-hook-trust` would also run untrusted
+    project hooks in the source's folder.
+  - `features.hooks=true` overrides a user who turned hooks off.
+  - Preflight (routing and again before inference) asks native `app-server` `hooks/list` with
+    the same hook overrides, in the source folder, without inference. The fork runs only if
+    the hook is listed enabled and trusted under its own hash; otherwise the conversation takes
+    in-session review. That covers what `-c` cannot win: a managed `allow_managed_hooks_only`
+    (the hook is not listed), a user's disabled state for that key, a Codex change to the trust
+    hash and a config Codex refuses to load. Profiles come only from `--profile`, which the
+    fork never passes; a legacy `profile =` key fails the config load.
+  The fork also runs with `sandbox_mode="read-only"`: if the hook were ever skipped, shell
+  commands still could not write or reach the network, and under an approval policy of `never`
+  a blocked command fails without asking. Tool definitions and the approval policy stay the
+  source's. Read-only still reads the whole disk, so it narrows only the known source policies
+  (`read-only`, `workspace-write`, `danger-full-access` and their write/network fields). An
+  external sandbox or an unknown field, such as a read limit, refuses the fork as before.
+  Per-server `approval_mode` was rejected: it denies only the servers it names. Any plugin
+  server or app connector it misses stays open.
+
+The daily growth workers start fresh, with no parent prefix to keep, and restrict their own
+tools (Claude `--tools ""` with `--strict-mcp-config`; Codex `--sandbox read-only` in the
+command [SETUP.md](SETUP.md) gives).
 
 ### 로컬 브리지·프록시
 
@@ -121,6 +175,9 @@ Codex used 0.155.0-alpha.9.2; Claude used 2.1.251.
 
 ### Actual Desktop post-Stop control
 
+Superseded for Codex 0.162 and later: see
+[Codex Desktop sources no longer fork](#codex-desktop-sources-no-longer-fork-2026-10).
+
 One temporary task was forked through the Codex app and asked to return a fixed marker
 without tools or writes. Its actual model was `gpt-5.6-sol`. After its native final Stop,
 three ephemeral CLI workers used that same unchanged source and actual model:
@@ -165,6 +222,53 @@ cache tokens, plus two uncached input tokens. CLI `costUSD`/`costBasis=list` is 
 estimate, not evidence of API charges. Desktop browser login alone does not verify a
 separate CLI's subscription. Never extract Desktop credentials or fall back to API billing.
 
+## Codex Desktop sources no longer fork (2026-10)
+
+From 2026-10-07 to 10-17 all 12 Codex Desktop forks recomputed the parent context on their first
+request. Across them, uncached input ≈ 1414·requests + 1.20·parent context − 7986 (least
+squares, n=12). A fork that continued the parent's cache would have a parent coefficient near 0.
+Misses were 2.52M of the 2.93M uncached input tokens.
+
+Codex 0.162 sends each request's tool definitions as the first input item (`additional_tools`),
+before the base instructions and the history. A fork's first request was captured at a local
+endpoint and rejected before inference. Both `exec fork` and an `app-server` fork with the
+Desktop's flags were captured with Codex 0.163.0-alpha.10.2:
+
+- The Desktop serves its `codex_app` tools to its app-server over a pipe
+  (`CODEX_APP_TOOLS_PIPE_PATH`). They are never deferred, so they sit in that first item. Outside
+  the Desktop the server fails to start: "Codex did not provide CODEX_APP_TOOLS_PIPE_PATH". The
+  parent's code-mode calls use `mcp__codex_app__*`; no fork request defines them.
+- The Desktop also sets features at runtime. Codex's local log recorded 173 feature values for the
+  parent's last turn; 18 differ from the CLI's. `tool_suggest` is on in the CLI and off in the
+  Desktop. It alone adds `request_plugin_install` to the fork's first item.
+- Neither the model catalog (`multi_agent_version` v1 through the local bridge, v2 direct) nor
+  `features.prefer_mxc` changed the fork's first item. `prompt_cache_key` is the parent's thread ID.
+
+Deferred tools (`multi_agent_v1`, MCP servers) are listed in the history's world state and replay
+unchanged. Copying all 173 features removed `request_plugin_install`, but the app tools stay with
+the running Desktop. The September control above predates this request layout.
+
+A Desktop source therefore takes the `off` route: no fork and no in-session review. The scheduled
+run integrates the conversation after it ends (Mechanism §9-4 3항). This holds without a
+configured CLI too. Only the hooks' worker reads the transcript, which appears after the first turn.
+It asks again as soon as the transcript exists, and its Desktop verdict outranks the missing CLI. An
+instance can also turn a host off with `false` in `.osk/response-growth.json`. Codex CLI sources
+keep forking.
+
+A Codex CLI source was measured on 2026-10-18 with `gpt-6-astra` and Codex 0.163.0-alpha.10.2.
+Its ephemeral fork read 23,424 of 23,602 input tokens from cache on its only request (0.99).
+Codex gives only an ephemeral root fork the parent's cache key: `prompt_cache_key` and the
+`session-id` header (openai/codex#44862). A persistent fork sends its own thread ID. Two persistent
+forks of the same parent read 0 and 12,416 of about 23,600 tokens (0.00 and 0.53). Resuming the
+parent read 0.99. The fork's first two items carry IDs derived from its own thread ID
+(openai/codex#40962), yet the ephemeral fork hit, so those IDs do not split the cache. Forks
+therefore stay ephemeral and leave no rollout.
+
+An ephemeral fork reports only whole-turn usage. Its first request holds at least the parent's last
+request input (`context`). It misses at most the whole turn's uncached input. Each run's
+`cache.first_request_floor` (1 − uncached ÷ context) is therefore a lower bound on the first
+request's hit rate. Below 0.9 it cannot confirm a hit.
+
 ## Cache lifetime and limits
 
 Current [OpenAI prompt caching documentation](https://developers.openai.com/api/docs/guides/prompt-caching)
@@ -186,6 +290,10 @@ it alone does not prove first-request reuse of the parent.
 
 ## Validation
 
+- 2026-10-18 (Desktop `off` route, `false` switch, first-request floor): formal runner 2,254 passed,
+  0 failed, 7 Windows permission/fsync skips. `test_response_growth` passed 45. The Desktop checks
+  now cover the `off` route instead of tool-prefix selection. The real CLI fork measurement is in
+  [Codex Desktop sources no longer fork](#codex-desktop-sources-no-longer-fork-2026-10).
 - Final fixed-revision formal runner: 1,570 passed, 0 failed, 4 Windows permission-mode skips.
 - New focused checks: twelve passed (native completion identity, subscription/version
   refusal, cumulative usage accounting, durable failure state, one-conversation

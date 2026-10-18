@@ -16,7 +16,6 @@ import re
 import signal
 import subprocess
 import shutil
-import uuid
 
 from . import core, graph
 from ._portalock import lock_exclusive, unlock
@@ -25,8 +24,11 @@ LEDGER = core.LEDGER / "growth.jsonl"
 BATCH_SIZE = 4                 # two batches fit in one eight-source comparison
 MAX_DOMAINS = 8
 MAX_LIMIT = 20
-SCOPE_ROUNDS_PER_JOB = 3      # ordinary session cadence still uses its own 15-round cap
+# 대화별 검토(Stop fork)와 같은 9라운드다(#175 2026-10-18). 일반 세션은 따로 15라운드 상한을 쓴다.
+SCOPE_ROUNDS_PER_JOB = 9
 _QUEUES = ("candidates", "scope_jobs", "organization_jobs", "eviction_jobs", "recheck_jobs")
+# 실패가 아니라 대기다(#173): 다른 실행이 잠금을 쥐었거나(`busy`) 한도에 막혔다(`limited`).
+WAITS = {"busy", "limited"}
 
 
 def _records() -> list[dict]:
@@ -200,7 +202,9 @@ def run_failed(result: dict) -> bool:
     """실행이 실패했는가 — 작업이 남은 것(`incomplete`)과 가른다. `ok`는 고른 작업을 모두
     끝냈다는 뜻이라, 여러 번에 나눠 끝나는 정돈이 남아도 거짓이다(Mechanism §9-4 4항).
     실패는 돌지 못했거나(잠김·준비 실패), 작업자가 정상 종료하지 않았거나, 결과 묶음을
-    적용하지 못한 것이다."""
+    적용하지 못한 것이다. 잠금 대기(`busy`)와 한도 거절(`limited`)은 실패가 아니라 대기다(#173)."""
+    if result.get("state") in WAITS:
+        return False
     if result.get("kind") != "run":
         return not result.get("ok", False)
     final = result.get("final_reviews") or {}
@@ -463,7 +467,8 @@ def _reading_plan(planned: dict) -> dict:
             item["previous_deferral"] = _deferral(job["last_review"])
         jobs.append(item)
     from . import organization
-    return {**planned, "scope_jobs": jobs,
+    # 하루 묶음의 판단 근거(한도·예산·주간 조정)는 실행기의 기록이지 작업자의 일이 아니다.
+    return {**{k: v for k, v in planned.items() if k != "daily"}, "scope_jobs": jobs,
             "organization_jobs": organization.readout(planned.get("organization_jobs", []))}
 
 
@@ -1123,10 +1128,29 @@ def _cmd_acts_on(line: str) -> str | None:
     return None
 
 
+def _progress(planned: dict, outcomes: dict, scope: dict, organization: dict, eviction: dict,
+              recheck: dict) -> dict:
+    """작업마다 진척했는가 — 닫았거나(보존·무가치·완료·올림) 정돈이 남은 단위를 줄였다. 보류는
+    진척이 아니다. 하루 묶음은 진척 없는 묶음에서 멈추고, 진척 없던 작업을 그날 다시 고르지
+    않는다(#175)."""
+    made = ([c["key"] for c in planned["candidates"] if outcomes[c["key"]] in ("preserved", "no_value")]
+            + [j["key"] for j in planned["scope_jobs"] if scope[j["key"]]["status"] == "complete"]
+            + [j["key"] for j in planned["organization_jobs"] if organization[j["key"]]["status"] == "complete"
+               or organization[j["key"]]["remaining_units"] < (j.get("coverage") or {}).get("remaining", 0)]
+            + [j["key"] for j in planned["eviction_jobs"] if eviction[j["key"]]["status"] == "complete"]
+            + [j["key"] for j in planned["recheck_jobs"] if recheck[j["key"]]["status"] == "complete"])
+    keys = [j["key"] for key in _QUEUES for j in planned.get(key, [])]
+    return {"made": made, "none": [k for k in keys if k not in made]}
+
+
 def run(command: list[str], limit: int = 3, timeout: int = 600, *,
          scope_job: dict | None = None, cwd: Path | None = None,
-         worker_env: dict | None = None, invocation: str = "unknown") -> dict:
-    """Scheduler entry: manifest → bounded external process → observed receipts."""
+         worker_env: dict | None = None, invocation: str = "unknown",
+         queues=None, scope_rounds: int = SCOPE_ROUNDS_PER_JOB, capture: bool = True,
+         exclude=(), daily: dict | None = None) -> dict:
+    """Scheduler entry: manifest → bounded external process → observed receipts.
+    하루 묶음(`growth_daily`)은 채울 큐(`queues`), 작업당 라운드, 포착 여부, 그날 고르지 않을
+    작업 key(`exclude`), 계획에 남길 판단 근거(`daily`)를 준다."""
     # Fork preflight already selected the exact source version. Resolving it as
     # a daily worker here would silently substitute a newer sibling.
     if invocation not in {"unknown", "manual", "user_request", "scheduled", "stop_hook"}:
@@ -1160,20 +1184,34 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
             return {"ok": False, "state": "busy"}
         try:
             from . import integration
+            wanted, exclude = set(_QUEUES if queues is None else queues), set(exclude)
             # A response-triggered fork owns one frozen conversation snapshot.
             # Daily runs retain their existing cross-conversation/Domain queue.
-            catchup = (integration.catchup(limit=limit, max_rounds=SCOPE_ROUNDS_PER_JOB,
-                                           tried=_scope_tried(_records()))
-                       if scope_job is None else
-                       {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0})
+            if scope_job is not None:
+                catchup = {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0}
+            elif "scope_jobs" in wanted:
+                catchup = integration.catchup(limit=min(100, limit + len(exclude)), max_rounds=scope_rounds,
+                                              tried=_scope_tried(_records()), capture_new=capture)
+                catchup["jobs"] = [j for j in catchup["jobs"] if j["key"] not in exclude]
+            else:
+                catchup = {"ok": True, "jobs": [], "remaining": 0}
             with core.mutation_lock():
                 try:
                     from . import rechecks
                     rechecks.ensure_baseline(carry=True)
                 except Exception:
                     pass        # 못 적으면 그 근거들이 후보로 남을 뿐이다
-                planned = (_plan(limit) if scope_job is None else
+                planned = (_plan(min(MAX_LIMIT, limit + len(exclude)))
+                           if scope_job is None and wanted - {"scope_jobs"} else
                            {"candidates": [], "scope_jobs": [], "organization_jobs": []})
+                if scope_job is None:
+                    planned["limit"] = limit
+                    for key in _QUEUES:
+                        if key != "scope_jobs":
+                            planned[key] = [j for j in planned.get(key, [])
+                                            if key in wanted and j["key"] not in exclude]
+                if daily:
+                    planned["daily"] = daily
                 from . import organization
                 planned["work_context"] = "daily" if scope_job is None else "stop:unbound"
                 # Queue ownership is not the trigger. Keep older `daily` semantics for
@@ -1182,11 +1220,13 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 planned["engine_rev"] = core.epoch.loaded()
                 if scope_job is not None and scope_job.get("session"):
                     from . import write
-                    # 일회성 작업 공간의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
-                    scope = (None if (scope_job.get("workspace") or {}).get("one_off")
-                             else write.resolve_session(scope_job["session"]))
+                    # 일회성 작업 폴더의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
+                    # 결속 scope는 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
+                    scopes = ([] if (scope_job.get("workspace") or {}).get("one_off")
+                              else write.bound_scopes(scope_job["session"]))
+                    scope = scopes[0] if scopes else None
                     planned["work_context"] = "stop:" + (scope or scope_job["session"])
-                    planned["organization_jobs"] = organization.pending([scope], limit=1) if scope else []
+                    planned["organization_jobs"] = organization.pending(scopes, limit=1) if scopes else []
                     # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
                     idx = _index()
                     planned["recheck_jobs"] = (_pick_rechecks(idx, limit, scope)
@@ -1208,6 +1248,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 if not checked["ok"]:
                     return checked
                 command = [checked["executable"], *command[1:]]
+                import uuid     # 입력 훅이 이 모듈을 들일 때 치르지 않게(#192)
                 attempt = uuid.uuid4().hex
                 for candidate in planned["candidates"]:
                     candidate["distill_key"] = f"growth:{attempt}:{candidate['key']}"
@@ -1251,6 +1292,13 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 final_reviews = (_apply_final_reviews(directory / "stdout.txt", planned)
                                  if returncode == 0 and error is None else
                                  {"state": "not_applied", "errors": ["worker did not exit successfully"]})
+            from . import growth_daily
+            stdout_path = directory / "stdout.txt"
+            # 작업자가 끝내지 못했고 그 까닭이 한도 거절이면 실패가 아니라 대기다(#173). Codex는 다시
+            # 조회하므로 변경 잠금 밖에서 잰다.
+            limited = (returncode != 0 or error is not None or final_reviews["state"] in {
+                "rejected", "not_applied"}) and growth_daily.limited(stdout_path, command)
+            usage = growth_daily.usage(stdout_path, command, cold_first=scope_job is None)
             with core.mutation_lock():
                 rows, idx = _records(), _index()
                 par = core.effective_parents(rows)
@@ -1283,7 +1331,10 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                             and all(s["status"] == "complete" for s in eviction_outcomes.values())
                             and all(s["status"] == "complete" for s in recheck_outcomes.values()))
                 result = {"kind": "run", "manifest": manifest["rid"],
-                          "ok": complete, "state": "complete" if complete else "incomplete",
+                          "ok": complete, "state": "complete" if complete else "limited" if limited else "incomplete",
+                          "provider": growth_daily.provider(command), "usage": usage,
+                          "progress": _progress(planned, outcomes, scope_outcomes, organization_outcomes,
+                                                eviction_outcomes, recheck_outcomes),
                           "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes)
                           + len(eviction_outcomes) + len(recheck_outcomes), "returncode": returncode,
                           "domain_selected": len(receipts), "scope_selected": len(scope_outcomes),

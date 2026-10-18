@@ -31,8 +31,6 @@ from .core import DOMAIN, PERSON, SCOPE
 import json, os, re, tempfile, time, unicodedata
 from pathlib import Path
 
-import yaml
-
 from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
                    _rid_key, causal_maxima, ledger_append, ledger_damage,
                    ledger_read, mutation_lock,
@@ -628,9 +626,9 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
     if kind[0] == "domain" and tkind[0] == "raw":
         return [f"Domain의 인용 기록 직접 참조: {stem} → {name}"]
     if kind[0] == "scope":
+        # 비노드(인용 기록·원자료)에는 소속 제약이 없다(헌법 8조 3항, 2026-10-13 개정)
         ok = ((tkind[0] == "scope" and tkind[1] == kind[1])
-              or (tkind[0] == "raw" and tkind[1] == kind[1])
-              or tkind[0] in ("domain", "person", "workbench-transit",
+              or tkind[0] in ("raw", "domain", "person", "workbench-transit",
                               "sources", "governance"))
         if not ok:
             # (작업 상태 갈래는 소속과 무관하므로 위로 올라갔다.)
@@ -736,7 +734,7 @@ def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
 
 ALIAS_DEPTH = 8          # 별칭 사슬 추적 한계 — 순환·장난에 대한 보수적 상한
 
-# 1회용 대화 id의 형태 — UUID(하이픈 유무 무관). 실제 세션 키(`open-hwp`,
+# 1회용 대화 id의 형태 — UUID(하이픈 유무 무관). 실제 프로젝트 키(`open-hwp`,
 # `rhwp`, `lpaiu-cs/ltm-vault` 꼴)와는 겹치지 않는다.
 EPHEMERAL_SESSION_RE = re.compile(
     r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -744,28 +742,21 @@ EPHEMERAL_SESSION_RE = re.compile(
 
 
 def ephemeral_session_errors(session: str | None) -> list[str]:
-    """1회용 대화 id는 세션 키가 될 수 없다 (Mechanism §6-2 6항).
+    """1회용 대화 id는 프로젝트 키가 아니다 (Mechanism §6-2 6항) — 형식 검사다.
 
-    세션 키는 **첫 성공이 영구 결속**한다. 그래서 대화마다 새로 나는 값을
-    넣으면 그 대화가 끝나는 순간 그 scope의 기억으로 돌아올 길이 사라진다 —
-    다음 세션은 다른 id로 오기 때문이다. 결속은 남지만 아무도 그 키로 다시
-    오지 않으므로, 대장에는 죽은 행만 쌓인다.
+    프로젝트 키는 훅이 작업 폴더에서 정한다. 대화마다 새로 나는 값을 키 자리에
+    넣으면 그 대화가 끝나는 순간 아무도 그 키로 다시 오지 않아 대장에 죽은 행만
+    쌓인다. 도구 설명만으로는 막히지 않는 것이 실측됐다(2026-08-24 관측:
+    `= Scope/Arel-Wars-2`·`= Scope/gh-hint`). 형식이 어긋난 `space`를 조용히 버리지
+    않는 `resolve_landing`의 규율과 같은 이유로 여기서도 거부한다.
 
-    도구 설명이 이미 금지하고 있었으나 **설명은 강제가 아니었고**, 실측으로
-    두 건이 굳었다(2026-08-24 관측: `= Scope/Arel-Wars-2`·`= Scope/gh-hint`).
-    형식이 어긋난 `space`를 조용히 버리지 않는 `resolve_landing`의 규율과
-    같은 이유로 여기서도 거부한다 — 버리면 호출자는 왜 다음 세션이 기억을
-    잃는지 영영 모른다.
-
-    쓰기 경로의 **가장 앞**에서 부른다. `bind_session`은 파일 쓰기 뒤에
-    오는 경로가 있어(raw·create_node) 거기서 막으면 부분 성공이 된다."""
+    쓰기 경로의 **가장 앞**에서 부른다. 결속은 파일 쓰기 뒤에 오는 경로가
+    있어(create_node) 거기서 막으면 부분 성공이 된다."""
     if not session or not EPHEMERAL_SESSION_RE.match(session.strip()):
         return []
-    return [f"`{session}`은 1회용 대화 id다 — 세션 키로 쓸 수 없다. 키는 "
-            f"**저장소 이름처럼 세션이 바뀌어도 같은 값**이어야 한다"
-            f"(`open-hwp`·`rhwp` 꼴). 첫 성공이 그 키를 영구 결속하므로, "
-            f"대화마다 새로 나는 값을 주면 다음 세션이 이 scope의 기억에 "
-            f"닿지 못한다."]
+    return [f"`{session}`은 1회용 대화 id다 — 프로젝트 키가 아니다. 키는 훅이 작업 "
+            f"폴더에서 정한 값(`open-hwp`·`rhwp` 꼴)이며, 대화 id를 결속하면 아무도 그 "
+            f"키로 다시 오지 않아 대장에 죽은 행만 남는다."]
 
 
 def routing_errors(session: str | None) -> list[str]:
@@ -796,7 +787,7 @@ def routing_errors(session: str | None) -> list[str]:
 
 def canonical_session(session: str | None,
                       recs: list[dict] | None = None) -> str | None:
-    """세션 키를 **정본 키**로 접는다 (Mechanism §6-2 6항).
+    """프로젝트 키를 **정본 키**로 접는다 (Mechanism §6-2 6항).
 
     저장소·서버의 개명은 흔한 일이고(이 체계도 llm-vault → ltm-vault →
     osk-system을 거쳤다), 그때마다 세션이 다른 scope로 흩어지면 라우팅이
@@ -825,58 +816,124 @@ def canonical_session(session: str | None,
     return cur
 
 
-def resolve_session(session: str | None) -> str | None:
-    """세션 키 → scope 이름. 별칭을 접은 뒤 판정하며, 인과 극대가 유일할 때만
-    확정이고 분기(다기기 동시 최초-확정)면 미확정으로 두어 `space`를 요구한다
-    — fail-closed. 일회성 작업 공간의 키는 그 키에 선 결속도 따르지 않는다(Mechanism
-    §6-2 6항)."""
+def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
+    """프로젝트 키의 결속 집합 — `{"scopes": [...], "primary": str | None, "undetermined": bool}`
+    (Mechanism §6-2 6항 · 시행령 §3 10항).
+
+    결속은 집합이다. 그 키의 `bind`·`unbind` 기록을 rid 순으로 접는다 — `bind`는
+    더하고 `unbind`는 뺀다. 주된 scope는 `primary`를 표시한 `bind`가 정한다. **v5.2
+    이전의 기록에는 `primary`가 없다** — 그 시절 키는 scope 하나에만 결속됐고 그것이
+    곧 저장소 자체의 활동이었으므로 주된 scope로 읽는다. 새 기록은 `primary`를 늘
+    적는다(집합에만 더하는 쓰기는 False). 인과 극대가 갈리고 그 주된 scope가 다르면
+    미확정이다 — 착지를 명시하게 한다. 일회성 작업 폴더의 키는 결속하지 않는다."""
+    out = {"scopes": [], "primary": None, "undetermined": False}
     if not session or workspaces.is_one_off(session):
-        return None
-    try:
-        recs = ledger_read(ROUTING)
-    except Exception:
-        return None
+        return out
+    if recs is None:
+        try:
+            recs = ledger_read(ROUTING)
+        except Exception:
+            return out
     key = canonical_session(session, recs)
-    r = resolve_one(recs, key, "session")
-    return r.get("scope") if r and r.get("kind") == "bind" else None
+    rows = [r for r in recs if r.get("session") == key and r.get("kind") in ("bind", "unbind")
+            and r.get("scope")]
+    rows.sort(key=lambda r: _rid_key(r["rid"]) if re.match(RID_RE, str(r.get("rid"))) else (0, 0, ""))
+    scopes, primary = [], None
+    for r in rows:
+        sc = str(r["scope"])
+        if r["kind"] == "bind":
+            if sc not in scopes:
+                scopes.append(sc)
+            if r.get("primary", True):
+                primary = sc
+        else:
+            if sc in scopes:
+                scopes.remove(sc)
+            if primary == sc:
+                primary = None
+    # 미확정은 **지정 기록만으로** 판정한다 — 집합에만 더하는 결속은 지정 사이의 분기를 해소할
+    # 권한이 없다. 극대를 모든 결속 기록에서 구하면 분기 뒤의 일반 결속이 유일 극대가 되어
+    # 어느 쪽도 고르지 않은 채 rid 순서가 주된 scope를 정해 버린다(#191 리뷰).
+    heads = {str(r.get("scope")) for r in causal_maxima(
+        recs, key, field="session",
+        candidate=lambda r: r.get("kind") == "bind" and r.get("scope") and r.get("primary", True))}
+    if len(heads) > 1:
+        out["undetermined"], primary = True, None
+    out.update(scopes=scopes, primary=primary)
+    return out
 
 
-def bind_session(session: str, scope: str, reason: str = "") -> dict:
-    """세션→scope 확정. 별칭은 정본 키로 접어 기록하므로 구 이름으로 들어와도
-    한 자리에 모인다. 재바인딩도 **새 행 append**다(append-only 유지 — 새
-    인과 극대가 새 바인딩)."""
+def resolve_session(session: str | None) -> str | None:
+    """프로젝트 키 → 주된 scope(기본 착지). 없거나 미확정이면 None — fail-closed."""
+    return bindings(session)["primary"]
+
+
+def bound_scopes(session: str | None) -> list[str]:
+    """결속 scope를 주된 scope부터, 없으면 결속 순서대로(Mechanism §9-3 1항) — 조직 검토와
+    기억 주입이 scope를 고르는 순서다."""
+    b = bindings(session)
+    return [s for s in b["scopes"] if s == b["primary"]] + [s for s in b["scopes"] if s != b["primary"]]
+
+
+def bind_session(session: str, scope: str, reason: str = "", *,
+                 primary: bool = True) -> dict:
+    """프로젝트→scope 결속 기록. `primary=True`(기본)는 주된 scope의 지정(표시 기록)이고,
+    `primary=False`는 집합에만 더하는 결속이다 — 쓰기 경로는 언제나 후자다. 쓰기는 주된
+    scope를 정하지 않는다(Mechanism §6-2 6항). 별칭은 정본 키로 접어 기록하므로 구 이름으로
+    들어와도 한 자리에 모인다. 재결속도 **새 행 append**다(append-only)."""
     # 키는 `strip()`한 값으로 적는다 — `ephemeral_session_errors`가 이미
     # 다듬은 값으로 검사하므로, 여기서 원문을 쓰면 `" open-hwp"`가 `open-hwp`와
     # 다른 결속으로 앉아 다음 세션이 그 기억에 닿지 못한다.
     session = (session or "").strip()
     return ledger_append(ROUTING, {
         "kind": "bind", "session": canonical_session(session) or session,
-        "scope": scope, "reason": reason or "최초 작업에서 확정"})
+        "scope": scope, "primary": bool(primary), "reason": reason or "최초 작업에서 확정"})
+
+
+def unbind_session(session: str, scope: str, reason: str = "") -> dict:
+    """결속 해제 기록 — 집합에서 뺀다. 주된 scope였으면 주된 scope도 비운다."""
+    session = (session or "").strip()
+    return ledger_append(ROUTING, {
+        "kind": "unbind", "session": canonical_session(session) or session,
+        "scope": scope, "reason": reason or "결속 해제"})
+
+
+def set_primary(session: str, scope: str, reason: str = "") -> dict:
+    """주된 scope의 지정 — 그 프로젝트 자체의 활동이 속한 scope로 확인됐을 때만 부른다
+    (대화 검토의 소속 판정이 결정 묶음으로 내어 실행기가 적용하거나 사용자가 한다 —
+    Mechanism §6-2 6항). 지정은 결속도 겸한다."""
+    if scope not in graph.scope_names():
+        raise WriteError("없는 scope — 지정하지 않았다",
+                         [f"`{scope}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
+    return bind_session(session, scope, reason or "주된 scope 지정", primary=True)
 
 
 def bind_after_write(result: dict, session: str, scope: str, reason: str = "") -> bool:
-    """파일을 **쓴 뒤**의 결속. 실패를 쓰기 실패로 올리지 않고 영수증으로 남긴다.
+    """파일을 **쓴 뒤**의 결속 — 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다
+    (Mechanism §6-2 6항). 실패를 쓰기 실패로 올리지 않고 영수증으로 남긴다.
 
     올리면 표면은 `ok:false`를 내는데 파일은 서 있다 — 호출자는 잃은 줄 알고
     재시도하고, 그 재시도는 이름 충돌·중복 라운드로 거부된다(v4 감사 실측:
     공유 위반으로 라우팅 대장 append가 실패한 경우). 대장 append는 기록된 뒤에도
     (fsync) 실패할 수 있으므로 "미기록"이 아니라 "확인 불가"다 —
-    `evictions._after_node_write`의 처분 영수증과 같은 규율. 일회성 작업 공간의 키는
+    `evictions._after_node_write`의 처분 영수증과 같은 규율. 일회성 작업 폴더의 키는
     결속하지 않는다 — 그 착지는 그 대화에만 적용된다(Mechanism §6-2 6항)."""
     if workspaces.is_one_off(session):
         result["binding"] = {
             "state": "not_bound", "scope": scope,
-            "note": "일회성 작업 공간의 세션 키라 결속하지 않았다 — 다음 쓰기에도 space를 준다"}
+            "note": "일회성 작업 폴더의 키라 결속하지 않았다 — 다음 쓰기에도 space를 준다"}
         return False
+    if scope in bindings(session)["scopes"]:
+        return False                            # 이미 결속에 있다 — 새 결속이 아니다
     try:
-        bind_session(session, scope, reason)
+        bind_session(session, scope, reason or "착지를 명시한 쓰기가 결속에 더함", primary=False)
         return True
     except Exception as e:
         result["binding"] = {
             "state": "unconfirmed", "scope": scope, "error": f"{type(e).__name__}: {e}",
-            "note": (f"쓴 것은 저장됐다 — 다시 보내지 마라. 세션 결속은 확인하지 "
+            "note": (f"쓴 것은 저장됐다 — 다시 보내지 마라. 프로젝트 결속은 확인하지 "
                      f"못했다: 다음 쓰기에 같은 session과 space `{SCOPE}/{scope}`를 "
-                     f"함께 주면 결속이 선다.")}
+                     f"함께 주면 결속에 더해진다.")}
         return False
 
 
@@ -920,7 +977,7 @@ def _derived_key(recs: list[dict], name: str, repo: list[str]) -> str:
 
 
 def _repo_claim(recs: list[dict], name: str, repo: list[str]) -> tuple[str, dict | None]:
-    """(이 저장소의 세션 키, 새로 적을 결속 행 또는 None)."""
+    """(이 저장소의 프로젝트 키, 새로 적을 결속 행 또는 None)."""
     key = canonical_session(name, recs) or name
     owner, out = _repo_owner(recs, key), name
     if owner and not set(owner["repo"]) & set(repo):
@@ -934,13 +991,15 @@ def _repo_claim(recs: list[dict], name: str, repo: list[str]) -> tuple[str, dict
     # (두 기기의 동시 소유) 봉합한다. scope가 갈린 분기는 지금처럼 미확정으로 둔다.
     if (len(scopes) == 1 and all(r.get("kind") == "bind" for r in maxima)
             and (owner is None or len(maxima) > 1)):
+        # 소유 행은 결속을 되풀이할 뿐 주된 scope를 바꾸지 않는다 — 극대의 표시를 그대로 잇는다
         return out, {"kind": "bind", "session": key, "scope": scopes.pop(),
+                     "primary": all(r.get("primary", True) for r in maxima),
                      "repo": repo, "reason": "저장소 동일성 기록"}
     return out, None
 
 
 def repo_session(name: str, repo: list[str]) -> str:
-    """저장소 폴더 이름 + 저장소 동일성(정렬된 뿌리 커밋) → 그 저장소의 세션 키.
+    """저장소 폴더 이름 + 저장소 동일성(정렬된 뿌리 커밋) → 그 저장소의 프로젝트 키.
 
     폴더 이름만 키로 쓰면 무관한 두 저장소(`C:/a/api`·`D:/b/api`)가 한 결속을
     나눠 가져 서로의 기억을 주입받고 서로의 대화를 포착했다. 결속 행에 `repo`를
@@ -974,21 +1033,19 @@ def repo_session(name: str, repo: list[str]) -> str:
 
 def resolve_landing(session: str, space: str | None,
                     confine_note: str) -> tuple[str | None, str | None]:
-    """세션·space → 착지 scope. `(scope, bound)`를 돌려준다.
+    """프로젝트 키·space → 착지 scope. `(scope, primary)`를 돌려준다.
 
-    scope별 구획을 갖는 모든 표면(`_raw/`·작업 기억)이 같은 판정을 쓴다. 규율은
-    셋이고 **순서가 있다** — 형식 → 실재 → 결속. 셋 다 어긋난 경우 가장 먼저
-    고칠 수 있는 것을 지목한다.
+    scope별 구획을 갖는 표면(scope 기억)이 같은 판정을 쓴다. 규율은 둘이고 **순서가
+    있다** — 형식 → 실재.
 
     1. 형식이 어긋난 `space`를 **조용히 버리지 않는다.** 버리면 안 준 것과 같아져
        호출부가 "결속이 없다"고 엉뚱한 원인을 지목하고, 받는 쪽은 결속이 멀쩡한데도
-       세션 키를 바꿔가며 헤맨다(감사에서 실측된 오진).
+       키를 바꿔가며 헤맨다(감사에서 실측된 오진).
     2. 없는 scope는 유효 목록과 함께 거부한다.
-    3. 결속이 선 세션에 **그와 다른 scope**를 주는 것도 오류다 — 한 세션은 한
-       scope에 속한다(헌법 4조 3항 · Workbench 계약 2.4). 무엇이 번지는지는
-       표면마다 다르므로 `confine_note`가 그 이유를 싣는다.
 
-    결속이 없고 `space`도 없으면 `(None, None)` — 호출부가 fail-closed로 다룬다."""
+    결속에 없는 scope를 명시한 쓰기는 거부하지 않는다 — 한 프로젝트가 여러 scope의
+    활동을 품는다(Mechanism §6-2 6항 · 시행령 §3 10항). `confine_note`는 호환 인자다.
+    주된 scope가 없고 `space`도 없으면 `(None, None)` — 호출부가 fail-closed로 다룬다."""
     bound = resolve_session(session)
     if not space:
         return bound, bound
@@ -1003,11 +1060,6 @@ def resolve_landing(session: str, space: str | None,
         raise WriteError(
             "없는 scope — 쓰지 않았다",
             [f"`{space}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
-    if bound and scope != bound:
-        raise WriteError(
-            "결속과 어긋나는 착지 — 쓰지 않았다",
-            [f"세션 `{session}`은 `{SCOPE}/{bound}`에 결속돼 있다. {confine_note} "
-             f"결속대로 쓰려면 `space`를 빼라."])
     return scope, bound
 
 
@@ -1082,30 +1134,23 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     if errs:
         raise WriteError("계약 위반 — 쓰지 않았다", errs)
 
+    # 기본 착지는 프로젝트의 주된 scope다. 결속에 없는 scope를 명시해도 거부하지 않는다 —
+    # 한 프로젝트가 여러 scope의 활동을 품고, 성공한 쓰기가 그 scope를 결속에 더한다
+    # (Mechanism §6-2 6항 · 시행령 §3 10항). Domain·Person 착지는 결속과 무관하다.
     bound = resolve_session(session)
     dest = space or (f"{SCOPE}/{bound}" if bound else None)
-    if dest and bound:
-        # 결속이 선 세션에 **다른 scope**를 착지로 주는 요청은 거부한다
-        # (Mechanism §6-2 6항 — 한 세션은 한 scope에 속한다, 헌법 4조 3항).
-        # `_raw`·scope 기억은 `resolve_landing`이 이미 이 규율을 지키는데
-        # 노드 생성만 판정하고 거부하지 않았다. Domain·Person 착지는
-        # 결속과 무관하므로 건드리지 않는다.
-        dkind = graph.space_of(ROOT / dest / "x.md")
-        if dkind[0] == "scope" and dkind[1] != bound:
-            raise WriteError(
-                "결속과 어긋나는 착지 — 쓰지 않았다",
-                [f"세션 `{session}`은 `{SCOPE}/{bound}`에 결속돼 있다. 한 "
-                 f"세션은 한 scope에 속하므로 다른 scope로 착지하지 않는다 "
-                 f"— 결속대로 쓰려면 `space`를 빼라. 전역 지식이면 "
-                 f"`{DOMAIN}/…`·`{PERSON}/…`이 열려 있다."])
     if not dest:
+        bound_set = bindings(session)["scopes"]
         raise WriteError(
             "착지가 정해지지 않았다 — space를 지정하라. "
             f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}. "
-            + ("이 세션은 일회성 작업 공간이라 결속하지 않는다 — 쓸 때마다 space를 준다"
+            + ("이 세션은 일회성 작업 폴더라 결속하지 않는다 — 쓸 때마다 space를 준다"
                if workspaces.is_one_off(session) else
-               "session도 함께 주면(저장소 이름처럼 세션이 바뀌어도 같은 값) "
-               "그 scope로 결속되어 다음부터 space 없이 착지한다"))
+               (f"이 프로젝트의 결속은 {', '.join(bound_set)}이지만 주된 scope가 없다 — "
+                f"쓸 때마다 space를 준다. 주된 scope의 지정은 대화 검토나 사용자가 한다"
+                if bound_set else
+                "session(훅이 준 프로젝트 키)도 함께 주면 그 scope가 결속에 더해진다. "
+                "주된 scope는 대화 검토의 소속 판정이나 사용자가 지정한다")))
     dest_dir = resolve_in_root(dest)
     if dest_dir is None or not dest_dir.is_dir():
         # 신설 후보 — 막는 대신 한 번 묻는다. 통과하면 디렉토리가 생긴다.
@@ -1177,9 +1222,11 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     # 알리게 된다. 판독은 `resolve`가 그때 한 번 한다(파일은 이미 있다).
     idx.register_new(path, kind)
     # 결속은 **scope일 때만** — Domain/Person에 결속하면 자동 라우팅이
-    # 존재하지 않는 `Scope/<이름>`을 가리켜 그 키가 벽돌이 된다(7차 중대 C)
+    # 존재하지 않는 `Scope/<이름>`을 가리켜 그 키가 벽돌이 된다(7차 중대 C).
+    # 주된 scope가 있어도 다른 scope의 쓰기는 집합에 더한다(시행령 §3 10항) —
+    # 이미 결속에 있는 scope는 `bind_after_write`가 거른다.
     bound_now, receipt = None, {}
-    if session and not bound and kind[0] == "scope":
+    if session and kind[0] == "scope":
         # 결속 값은 **scope 이름**이지 말단 디렉토리명이 아니다. 구판은
         # `dest_dir.name`을 썼고, 그래서 하위 군집(`Scope/W1/Sub`)에서
         # 처음 쓴 세션이 존재하지 않는 `Sub`에 묶였다 — 그 뒤 `append_raw`는
@@ -1234,7 +1281,7 @@ def _require_complete(idx) -> None:
 # 강제한다. §4-1이 없앤 6.4초를 관문 하나에 도로 내는 셈이다.
 #
 # 대신 알림에 기댄다. `overview`가 이미 `broken`을 싣고, 그 자리에서는 색인이
-# 이미 파싱돼 있어 **무료**다. 세션 시작마다 돌므로 오래 숨지 않는다.
+# 이미 파싱돼 있어 **무료**다. 노드를 쓰기 전에 불리므로 쓰는 세션은 본다. 검색만 하는 세션은 모른다(#200).
 #
 # 관문을 되살리고 싶어지면 조건은 하나다: **전수 판독이 이미 일어난 자리**에
 # 두어야 한다. 쓰기 통로는 그런 자리가 아니다.

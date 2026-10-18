@@ -4,7 +4,7 @@
 
 Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사람을 위한 따라하기
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
-첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v5.1.0 릴리스 기준이다.
+첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v5.2.0 릴리스 기준이다.
 
 단계마다 더 자세한 내용은 운용 참고서인 [SETUP.md](SETUP.md)로 이어지는 링크를
 따라가면 된다.
@@ -61,10 +61,10 @@ Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사�
 v3.21 이전에 만든 vault는 옛 이름(`= Scope` 등)을 그대로 쓰고 있을 수 있다. 그래도
 지원된다. [space-layout-migration.md](space-layout-migration.md)(영문)를 본다.
 
-**scope와 세션 키.** 프로젝트마다 `00_Scope/my-app/` 같은 scope가 하나씩 생긴다.
+**scope와 프로젝트 키.** 프로젝트마다 `00_Scope/my-app/` 같은 scope가 하나씩 생긴다.
 
 - 훅은 모든 세션에 그 세션이 도는 저장소의 이름을 붙인다. `~/code/my-app`에서라면
-  *세션 키*는 `my-app`이다.
+  *프로젝트 키*는 `my-app`이다.
 - Git 워크트리는 본 저장소의 이름을 받는다. Git 밖의 폴더는 자기 폴더 이름을 쓴다.
 - 무관한 다른 저장소가 이미 그 이름을 소유했으면 훅은 `my-app-<뿌리 커밋 앞 8자>`를
   준다. 소유자는 그 결속을 처음 쓴 저장소이며, 그 뿌리 커밋이 결속과 함께 기록된다.
@@ -88,7 +88,7 @@ Markdown 파일 하나다. 머리말에는 다음이 들어간다.
 
 **인용 기록.** 훅은 끝난 대화 턴을 이 기기에서 추적만 하고, 대화는 하네스의 전사에
 남는다. 노드가 어떤 턴을 근거로 삼아야 하면 에이전트가 `cite_round`로 그 턴을
-인용한다. 그러면 엔진이 전사에서 사용자의 메시지를 scope의 `_cited/` 폴더로 옮기고,
+인용한다. 그러면 엔진이 전사에서 사용자의 메시지를 루트 `_cited/` 폴더로 옮기고,
 에이전트의 답변은 위치와 해시로만 남긴다. 인용 기록은 덧붙이기만 할 수
 있고(append-only) 검색에는 나오지 않는다. 노드는 `<기록 경로>#12` 같은 좌표로
 라운드를 근거로 인용한다. 이전 릴리스가 `_raw/`에 남긴 기록도 계속 읽힌다.
@@ -131,7 +131,7 @@ scope 기억으로 남기고, 그 노드에 필요한 턴만 인용한다.
 
 `main` 브랜치가 아니라 릴리스 태그를 clone한다. `main`은 릴리스 사이에도 움직인다.
 갱신기는 파일을 릴리스와 대조하므로, 정확히 한 릴리스에서 출발해야 2단계에서 깨끗한
-기준선을 기록할 수 있다. `v5.1.0`은 적힌 그대로 쓰면 된다.
+기준선을 기록할 수 있다. `v5.2.0`은 적힌 그대로 쓰면 된다.
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)의 최신 태그를 써도
 되지만, 그때는 2단계에서도 같은 태그를 쓴다.
 
@@ -139,7 +139,7 @@ vault를 담을 폴더(Windows라면 `C:/osk` 등, 먼저 만들어 둔다)에�
 OS에서나 같은 명령이다.
 
 ```bash
-git clone --branch v5.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.2.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -205,13 +205,13 @@ $env:PYTHONPATH = "_governance\_engine"
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v5.1.0 --apply
+.venv/bin/python -m osk.update --to v5.2.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v5.1.0 --apply
+.venv\Scripts\python.exe -m osk.update --to v5.2.0 --apply
 ```
 
 첫 실행은 어떤 파일도 바꾸지 않는다. 계획을 출력한 뒤 종료코드 2와
@@ -252,7 +252,7 @@ git push
 ```
 
 **확인:** `.venv/bin/python -m osk.update`의 `current`가 선택한 버전을 가리킨다
-(위 예제에서는 `v5.1.0`).
+(위 예제에서는 `v5.2.0`).
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다. `osk.cli status`가 `"protected_regions": {"_governance": "clean"}`을
 보여 준다.
@@ -407,9 +407,9 @@ codex mcp add osk-system -- <vault>/.venv/Scripts/python.exe <vault>/_governance
 Codex는 새로 추가되거나 바뀐 훅 정의를 사용자가 신뢰하기 전까지 건너뛴다. Codex를
 시작해 `/hooks`를 열고, osk 항목을 하나씩 확인해 신뢰한 뒤 새 세션을 시작한다.
 
-**확인:** 3b의 손 실행 시험이 저장소의 세션 키를 출력한다. Codex도 시험 방법은
+**확인:** 3b의 손 실행 시험이 저장소의 프로젝트 키를 출력한다. Codex도 시험 방법은
 같다. `codex features list`에서 `hooks`가 `true`로 보인다(Codex 0.154의
-기본값이다). 새 세션에서 에이전트에게 *"osk 훅이 알려 준 세션 키가 뭐야?"* 하고
+기본값이다). 새 세션에서 에이전트에게 *"osk 훅이 알려 준 프로젝트 키가 뭐야?"* 하고
 물으면 저장소 이름으로 답해야 한다.
 
 **두 호스트를 한 번에 확인:** 각 호스트에서 새 세션을 한 번 연 뒤, `PYTHONPATH`를
@@ -422,7 +422,7 @@ Code에서는 새 세션을, Codex에서는 `/hooks`의 신뢰를 요구한다. 
 ## 5단계: 첫 세션
 
 Claude Code나 Codex를 vault가 아니라 `~/code/my-app` 같은 **프로젝트 저장소
-안에서** 연다. 폴더 이름이 세션 키가 되므로 예시는 `my-app`을 쓴다. 자기 저장소
+안에서** 연다. 폴더 이름이 프로젝트 키가 되므로 예시는 `my-app`을 쓴다. 자기 저장소
 이름으로 바꿔 읽는다. 처음에는 하네스가 osk 도구마다 허용할지 물을 수 있는데,
 허용한다.
 
@@ -435,11 +435,11 @@ Claude Code나 Codex를 vault가 아니라 `~/code/my-app` 같은 **프로젝트
 
 ```text
 [osk 세션 시작 — session="my-app" · conversation="claude/<대화 ID>"]
-이 세션에서 `overview(session="my-app")`를 한 번 불러 … 아직 scope 결속이 없다. 착지를 추측하지 말고 …
+이 세션에서 노드를 처음 쓰기 전에 `overview(session="my-app")`를 한 번 불러 … 아직 scope 결속이 없다. 착지를 추측하지 말고 …
 ```
 
-세션 키가 `my-app`이니 `overview`를 한 번 부르고, 아직 scope 결속이 없으니 쓸 곳을
-짐작하지 말고 프로젝트부터 확인하라는 지시다. `conversation`은 이 대화의 이름이다
+프로젝트 키가 `my-app`이니 노드를 처음 쓰기 전에 `overview`를 한 번 부르고, 아직 scope 결속이
+없으니 쓸 곳을 짐작하지 말고 프로젝트부터 확인하라는 지시다. `conversation`은 이 대화의 이름이다
 (Codex에서는 `codex/…`). 에이전트가 턴을 인용할 때 `cite_round`에 이 값을 넘긴다.
 
 fork 검토를 켜지 않았다면
@@ -544,8 +544,10 @@ scope가 결속되기 전에도 이 대화의 턴은 추적된다 — 추적은 
 
 ### 결속된 scope란
 
-- 결속은 `00_Scope/Workbench/_ledger/routing.jsonl`의 한 행으로, 세션 키 `my-app`을
-  scope `my-app`에 잇는다.
+- 결속은 `00_Scope/Workbench/_ledger/routing.jsonl`의 행으로, 프로젝트 키 `my-app`을
+  scope `my-app`에 잇는다. 한 프로젝트는 여러 scope에 결속될 수 있고 그중 하나가 주된
+  scope다 — `space`를 뺀 쓰기가 가는 곳. 주된 scope는 대화 검토의 소속 판정이나
+  `routing primary`가 지정한다(v5.2 전의 결속은 주된 scope로 읽는다).
 - 그 키로 하는 이후의 쓰기는 `space` 인자 없이도 그 scope에 착지한다. 노드, scope
   기억, 인용한 대화 턴이 모두 그렇다. 그 저장소의 어느 대화·기기·워크트리에서 왔든
   같다.
@@ -563,7 +565,7 @@ scope가 결속되기 전에도 이 대화의 턴은 추적된다 — 추적은 
 
 | 시작 문구 | 뜻 |
 |---|---|
-| `[osk 세션 시작 — session="…" · conversation="…"]` | 세션 시작. 세션 키와 이 대화의 `<하네스>/<ID>`(`cite_round`에 넘기는 값)를 보여 주고 에이전트에게 `overview`를 부르라고 한다. `아직 scope 결속이 없다`가 붙으면 아직 결속 전이다. |
+| `[osk 세션 시작 — session="…" · conversation="…"]` | 세션 시작. 프로젝트 키와 이 대화의 `<하네스>/<ID>`(`cite_round`에 넘기는 값)를 보여 주고 에이전트에게 `overview`를 부르라고 한다. `아직 scope 결속이 없다`가 붙으면 아직 결속 전이다. |
 | `[osk scope 기억 — 00_Scope/… · N/1500자 · 여유 M자]` | scope 기억. 1,500자 중 쓴 글자 수와 남은 글자 수, 이어서 hash와 전문이 나온다. |
 | `[osk 검토 경고 — <이유>. …]` | 적힌 이유로 백그라운드 fork 검토가 돌지 않는다. 검토는 이 세션 안에서 user 턴 9와 15에 이뤄진다. fork 검토를 설정하지 않았다면 정상이다. |
 | `[osk 대화 검토 — …]` | fork 검토가 켜져 있다. 성공한 최종 답변 9회마다 한 번씩 돈다. |
@@ -608,7 +610,7 @@ Kiro도 세 훅과 대화 전사를 쓴다. 구독 fork는 없어서, 대화 검
 UserPromptSubmit·Stop 훅 세 개를 둔다. 명령은 3b와 같은 스크립트를 부른다.
 
 **확인:** Kiro는 **신뢰한 작업 폴더에서만** 훅을 돌린다. 폴더를 열 때 신뢰할지 물으면
-허락한다. 그다음 새 채팅에서 에이전트에게 osk 훅이 알려 준 세션 키를 묻는다. 저장소
+허락한다. 그다음 새 채팅에서 에이전트에게 osk 훅이 알려 준 프로젝트 키를 묻는다. 저장소
 이름으로 답해야 한다. `doctor --harness kiro`로도 확인한다.
 
 ## 선택: Antigravity 연결
@@ -626,7 +628,7 @@ SessionStart·PreInvocation·Stop 훅 세 개를 둔다. 명령은 3b와 같은 
 Windows에서는 명령을 따옴표 없이 쓰므로 Python과 vault 경로에 공백과 `&` 같은 cmd
 특수문자가 없어야 한다.
 
-**확인:** 새 대화에서 에이전트에게 osk 훅이 알려 준 세션 키를 묻는다. 저장소 이름으로
+**확인:** 새 대화에서 에이전트에게 osk 훅이 알려 준 프로젝트 키를 묻는다. 저장소 이름으로
 답해야 한다. `doctor --harness antigravity`로도 확인한다.
 
 ## 선택: Obsidian으로 vault 둘러보기
@@ -894,7 +896,7 @@ v4.1.0 이상에서는 `python _governance/_engine/scripts/setup.py --apply --fo
 릴리스 페이지를 지켜볼 필요는 없다. 세션 시작 훅과 MCP `overview`가 하루에 한 번
 정본 저장소에 릴리스 태그를 묻는다(`git ls-remote` — vault의 내용은 보내지 않는다).
 새 릴리스가 있으면 Claude Code·Codex 화면에
-`osk-system 새 릴리스 v5.2.0 (이 vault는 v5.1.0) — …` 같은 경고가 기기마다 하루 한 번
+`osk-system 새 릴리스 v5.3.0 (이 vault는 v5.2.0) — …` 같은 경고가 기기마다 하루 한 번
 뜬다. 경고 끝에 그 판의 릴리스 노트 주소가 붙는다. 에이전트에게 **"osk 업데이트해 줘"**라고 요청하면 에이전트가 아래 절차를 함께
 밟는다 — 변경집합을 보여 주고 사용자의 승인을 기다린다. 확인은 백그라운드에서 돌므로
 알림은 확인한 다음 세션부터 보인다. 지금 확인하려면 `osk.update --check`를 실행한다
@@ -983,7 +985,7 @@ Windows (PowerShell):
 | `아직 없는 군집이라 … 새 군집을 만든다` | 새 최상위 군집에는 한 번의 확인이 필요하다. 세션의 소속 scope를 열거나 정기 실행이 domain을 만들 때는 에이전트가 한 시간 안에 같은 요청을 다시 보낸다. 노드를 옮겨 scope를 여는 것 등 그 밖의 최상위 군집은 먼저 사용자의 허락을 받는다. |
 | `착지가 정해지지 않았다 — space를 지정하라` | 세션이 결속되지 않았는데 쓰기에 `space`가 없다. 한 번은 `session`과 함께 `space="00_Scope/<이름>"`을 넘긴다. |
 | `에 결속돼 있다` | 세션이 다른 scope에 결속돼 있다. `space`를 빼거나, 여러 프로젝트에 걸친 지식이라면 `00_Domain/`에 쓴다. |
-| `1회용 대화 id` | 대화 UUID를 세션 키로 썼다. 훅이 출력한 키를 쓴다. |
+| `1회용 대화 id` | 대화 UUID를 프로젝트 키로 썼다. 훅이 출력한 키를 쓴다. |
 | `군집이 비어 있다` | 새 군집은 폴더 이름과 같은 허브로 시작해야 한다. 허브부터 만든다. |
 | `drafter는 하네스명이 아니라 모델명` | `drafter`에는 `claude`나 `codex`가 아니라 모델 자신의 이름을 소문자로, `provider:` 접두사 없이 쓴다. |
 | `summary`와 함께 `한도 80`이나 `한 줄`, 또는 *at most 80 characters* | 요약은 80자 이내의 한 줄이며 `[[`를 넣을 수 없다. |

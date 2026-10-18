@@ -7,10 +7,14 @@ dialogue-v1: human dialogue verbatim, operational payloads by reference (Bylaws 
 Claude has no native record that ends an abandoned turn: after the turns an earlier
 engine tracked, a turn left without a final answer for IDLE_CLOSE closes as interrupted
 at its last row, and the cursor keeps that cut so every later read keeps the boundary.
+Codex compresses a rollout left untouched for 7 days to `<name>.zst` in place, keeping its
+mtime and declaring the plain size, and restores the plain file on resume (#203). Every
+byte boundary, cursor and fingerprint names the plain bytes, whichever form is on disk.
 """
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -18,6 +22,58 @@ from datetime import datetime
 from pathlib import Path
 
 IDLE_CLOSE = 12 * 3600  # seconds of silence after which an unfinished Claude turn closes
+
+
+class ZstdMissing(OSError):
+    """This device's environment cannot decompress a Codex rollout that is there (#203)."""
+
+
+def _zstd():
+    try:
+        import zstandard
+    except ImportError as exc:
+        raise ZstdMissing("Codex compressed rollout (.jsonl.zst) needs the zstandard package; "
+                          "reinstall _governance/_engine/requirements.txt into this vault's .venv") from exc
+    return zstandard
+
+
+def on_disk(path) -> Path | None:
+    """The rollout at `path` in the form on disk now, the plain file while both exist."""
+    p = Path(path)
+    plain = p.with_suffix("") if p.suffix == ".zst" else p
+    return next((f for f in (plain, plain.with_name(plain.name + ".zst")) if f.exists()), None)
+
+
+def rollouts(folder: Path, pattern: str) -> list[Path]:
+    """Files matching the `.jsonl` glob `pattern`, plain or compressed, one per rollout."""
+    return list(folder.glob(pattern)) + [
+        p for p in folder.glob(pattern + ".zst") if not p.with_suffix("").exists()]
+
+
+def open_native(path):
+    """A native transcript's plain bytes as a binary stream."""
+    p = on_disk(path) or Path(path)
+    if p.suffix != ".zst":
+        return p.open("rb")
+    zstandard = _zstd()
+    return io.BufferedReader(zstandard.ZstdDecompressor().stream_reader(p.open("rb"), read_across_frames=True))
+
+
+def _stat(p: Path) -> dict:
+    """Size in plain bytes and mtime: a compressed rollout keeps both, so it is no new turn."""
+    if p.suffix != ".zst":
+        stat = p.stat()
+        return {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    zstandard = _zstd()
+    with p.open("rb") as f:
+        try:
+            size = zstandard.frame_content_size(f.read(18))
+        except zstandard.ZstdError as exc:
+            raise ValueError(f"unreadable Codex compressed rollout: {exc}") from exc
+    if size < 0:  # Codex always declares it; count the bytes of a file that does not.
+        with open_native(p) as stream:
+            size = sum(map(len, iter(lambda: stream.read(1 << 20), b"")))
+    return {"size": size, "mtime_ns": p.stat().st_mtime_ns}
 
 
 def _structured(value) -> str:
@@ -149,7 +205,7 @@ def _tool_evidence(items: list, locator: str) -> list[str]:
 
 def _native_files(path: str, harness: str, sid: str) -> list[tuple[Path, int | None]]:
     """Follow declared Codex pages, never neighbouring tasks or filename order."""
-    current, limit, pages = Path(path).resolve(), None, []
+    current, limit, pages = (on_disk(path) or Path(path)).resolve(), None, []
     allowed = {sid}
     while True:
         if any(current.samefile(p) for p, _ in pages):
@@ -157,7 +213,7 @@ def _native_files(path: str, harness: str, sid: str) -> list[tuple[Path, int | N
         pages.append((current, limit))
         if harness != "codex":
             return pages
-        with current.open("rb") as stream:
+        with open_native(current) as stream:
             first = next((line for line in stream if line.strip()), b"")
             row = json.loads(first)
             meta = row.get("payload") if isinstance(row, dict) else None
@@ -188,7 +244,7 @@ def _native_files(path: str, harness: str, sid: str) -> list[tuple[Path, int | N
         for folder, glob in (
             (current.parent, pattern), (home / "sessions", "*/*/*/" + pattern),
             (home / "archived_sessions", pattern)):
-            for p in folder.glob(glob):
+            for p in rollouts(folder, glob):
                 # Windows extended paths and ordinary paths can name one file.
                 if p.is_file() and not any(p.samefile(other) for other in matches):
                     matches.append(p.resolve())
@@ -198,10 +254,10 @@ def _native_files(path: str, harness: str, sid: str) -> list[tuple[Path, int | N
 
 
 def workspace(path: str, harness: str) -> dict | None:
-    """이 대화의 작업 폴더와 하네스 판본 — 일회성 작업 공간의 판별에만 쓴다(Mechanism §6-2 6항).
+    """이 대화의 작업 폴더와 하네스 판본 — 일회성 작업 폴더의 판별에만 쓴다(Mechanism §6-2 6항).
     앞쪽 행만 읽는다. Claude는 행마다, Codex는 첫 `session_meta`가 담는다. 모르면 None이다."""
     try:
-        with open(path, "rb") as f:
+        with open_native(path) as f:
             for n, line in enumerate(f):
                 if n >= 50:
                     break
@@ -218,17 +274,16 @@ def workspace(path: str, harness: str) -> dict | None:
 
 def native_fingerprint(path: str, harness: str, sid: str) -> dict:
     pages = _native_files(path, harness, sid)
-    stat = pages[-1][0].stat()
-    result = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    result = _stat(pages[-1][0])
     if len(pages) > 1:
-        result["history"] = [{"path": str(p), "through": limit,
-                              "size": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns}
-                             for p, limit in pages[:-1]]
+        # A page is named in its plain form: compressing it is no change.
+        result["history"] = [{"path": str(p.with_suffix("") if p.suffix == ".zst" else p),
+                              "through": limit, **_stat(p)} for p, limit in pages[:-1]]
     return result
 
 
 def _page_lines(native: Path, remaining: int | None):
-    with native.open("rb") as stream:
+    with open_native(native) as stream:
         while remaining is None or remaining > 0:
             line = stream.readline(-1 if remaining is None else remaining)
             if not line:
@@ -240,6 +295,32 @@ def _page_lines(native: Path, remaining: int | None):
                     raise ValueError("Codex history byte boundary splits a record")
                 remaining -= len(line)
             yield line
+
+
+def reverted(path: str, harness: str, sid: str) -> list[str]:
+    """Turns Codex `thread/revert` took out of this conversation (#208). The revert leaves
+    the old page as it was and starts a new one that keeps it only up to a byte bound: a
+    turn the conversation's own earlier page started past that bound is reverted. A fork
+    parent's later turns are the parent's, not reverted."""
+    turns = []
+    for page, limit in _native_files(path, harness, sid)[:-1]:
+        offset, owner = 0, None
+        for line in _page_lines(page, None):
+            start, offset = offset, offset + len(line)
+            if owner is None and line.strip():
+                owner = json.loads(line).get("payload", {}).get("id")
+                if owner != sid:
+                    break
+            elif start >= limit:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue  # An unreadable tail row can only refuse more, never accept.
+                p = row.get("payload") if isinstance(row, dict) else None
+                if (row.get("type") == "event_msg" and isinstance(p, dict)
+                        and p.get("type") == "task_started" and p.get("turn_id")):
+                    turns.append(p["turn_id"])
+    return turns
 
 
 def native_lines(path: str, harness: str, sid: str):
@@ -280,6 +361,7 @@ def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = 
         readable = _codex_history(pages, conversation_id, dialogue=True)
         # The conversation's own page names how it was started (`codex_exec` for a script).
         result["originator"] = pages[-1][0][1].get("payload", {}).get("originator")
+        result["reverted"] = reverted(path, harness, conversation_id)
     elif harness == "kiro":
         # Kiro rows carry no conversation ID; the folder is the conversation's own.
         if Path(path).parent.name != conversation_id:

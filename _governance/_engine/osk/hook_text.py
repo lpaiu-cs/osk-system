@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Callable
+from collections.abc import Callable     # `typing`의 import를 입력 훅이 치르지 않게(#192)
 
 SEP = "\n\n"
-KEEP = 100          # 접지 않는 블록 — 세션 키·밀림 경고·케이던스처럼 짧고 늘 필요한 것
+KEEP = 100          # 접지 않는 블록 — 프로젝트 키·밀림 경고·케이던스처럼 짧고 늘 필요한 것
 
 
 @dataclass(eq=False)

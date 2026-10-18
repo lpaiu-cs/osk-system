@@ -125,7 +125,8 @@ def _integration_cmd(a) -> None:
                 raise ValueError("review stdin must be a JSON object")
             result = integration.acknowledge(
                 a.harness, a.conversation, data["through"], data["outcome"],
-                data["reason"], targets=data.get("targets"))
+                data["reason"], targets=data.get("targets"),
+                primary_scope=data.get("primary_scope"))
         else:
             result = integration.status(a.harness, a.conversation)
         _emit(result)
@@ -155,15 +156,24 @@ def _growth_cmd(a) -> None:
             result = growth.checkpoint(growth._strict_json(
                 Path(a.file).read_text(encoding="utf-8-sig")))
         else:
-            command = json.loads(Path(a.command_file).read_text(encoding="utf-8-sig"))
+            commands = [json.loads(Path(f).read_text(encoding="utf-8-sig")) for f in a.command_file]
+            if len(commands) > 1 and not (a.daily or a.check):
+                raise ValueError("several --command-file go only with --daily (one per provider)")
             # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
             # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
-            result = (growth.check_command(command) if a.check else
-                      growth.run(command, limit=a.limit, timeout=a.timeout, invocation=a.invocation))
+            if a.check:
+                checks = [growth.check_command(c) for c in commands]
+                result = checks[0] if len(checks) == 1 else {"ok": all(c["ok"] for c in checks), "commands": checks}
+            elif a.daily:
+                from . import growth_daily
+                result = growth_daily.daily(commands, invocation=a.invocation)
+            else:
+                result = growth.run(commands[0], limit=a.limit, timeout=a.timeout, invocation=a.invocation)
         _emit(result)
         # 실행은 작업이 남아도(`incomplete`) 실패가 아니다 — 남은 것을 실패 코드로 내면
-        # 운영체제 스케줄러에 매일 도는 실행이 매일 실패로 남는다.
-        if (growth.run_failed(result) if a.growth_cmd == "run" and not a.check
+        # 운영체제 스케줄러에 매일 도는 실행이 매일 실패로 남는다. 하루 묶음은 대기(한도·잠금)를
+        # 오류로 세지 않으므로 `ok`가 곧 판정이다 — 대기로 끝난 날의 포착 실패도 실패다.
+        if (growth.run_failed(result) if a.growth_cmd == "run" and not (a.check or a.daily)
                 else not result.get("ok", True)):
             sys.exit(1)
     except (write.WriteError, StaleEngineError, ValueError, OSError) as e:
@@ -255,6 +265,44 @@ def _sm_cmd(a) -> None:
         sys.exit(1)
 
 
+def _routing_cmd(a) -> None:
+    """`osk routing` — 프로젝트 결속(Mechanism §6-2 6항). `show`는 집합·주된 scope(프로젝트를
+    생략하면 검토 대상 전부), `bind`·`unbind`는 집합의 증감, `primary`는 주된 scope의 지정이다 —
+    지정은 사용자나, 검토의 결정 묶음을 적용하는 실행기만 한다."""
+    from . import organization
+    from .core import mutation_lock
+    try:
+        if a.routing_cmd == "show":
+            _emit({"project": a.project, **write.bindings(a.project)} if a.project
+                  else {"audit": organization.bindings_audit()})
+            return
+        if a.routing_cmd == "primary":
+            # 사용자 전속 — 대화형 단말의 확인을 거친다(헌법 10조 1~2항). 검토의 결정 묶음은 이 길이
+            # 아니라 `integration review`·`organization review`의 실행기가 적용한다.
+            _confirm(f"`{a.project}`의 주된 scope를 `{a.scope}`로 지정합니까? [y/N] ")
+        with mutation_lock():
+            current = write.bindings(a.project)
+            if a.routing_cmd == "bind":
+                if a.scope in current["scopes"]:
+                    _emit({"ok": True, "project": a.project, **current, "note": "이미 결속에 있다"})
+                    return
+                if a.scope not in graph.scope_names():
+                    raise write.WriteError("없는 scope — 결속하지 않았다",
+                                           [f"`{a.scope}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
+                row = write.bind_session(a.project, a.scope, a.reason or "CLI 결속 추가", primary=False)
+            elif a.routing_cmd == "unbind":
+                if a.scope not in current["scopes"]:
+                    raise write.WriteError("결속에 없는 scope — 해제하지 않았다",
+                                           [f"`{a.project}`의 결속: {current['scopes']}"])
+                row = write.unbind_session(a.project, a.scope, a.reason or "CLI 결속 해제")
+            else:
+                row = write.set_primary(a.project, a.scope, a.reason or "사용자 지정")
+        _emit({"ok": True, "rid": row.get("rid"), "project": a.project, **write.bindings(a.project)})
+    except (write.WriteError, StaleEngineError, ValueError, OSError) as e:
+        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
+        sys.exit(1)
+
+
 def _tidy_cmd(a) -> None:
     """`osk tidy` — 정돈 (Mechanism §9-3). `list`는 미처분, `prompt`는 전용
     세션의 프롬프트(전문 그대로 — 붙여 넣는 값이다), `settle`은 처분 기록,
@@ -335,7 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
         q.add_argument("--conversation", required=True, help="실제 하네스 대화 ID")
         if name == "capture":
             q.add_argument("--transcript", required=True)
-            q.add_argument("--session", required=True, help="고정 scope 라우팅 키")
+            q.add_argument("--session", required=True, help="프로젝트 키 — 훅이 작업 폴더에서 정한다(대화 ID가 아니다)")
             q.add_argument("--space", default=None)
         if name == "reopen":
             q.add_argument("--ref", action="append", required=True, help="정정한 저장·인용 라운드 좌표(반복 가능)")
@@ -358,8 +406,11 @@ def build_parser() -> argparse.ArgumentParser:
         q = gs.add_parser(name)
         q.add_argument("--limit", type=int, default=3)
         if name == "run":
-            q.add_argument("--command-file", required=True, help="에이전트 argv 배열 JSON 파일")
+            q.add_argument("--command-file", required=True, action="append",
+                           help="에이전트 argv 배열 JSON 파일 — --daily는 공급자마다 하나(Codex, 대신 돌 Claude)")
             q.add_argument("--timeout", type=int, default=600)
+            q.add_argument("--daily", action="store_true",
+                           help="하루 정기 실행: 주간 한도 조정, 묶음 실행, 묶음마다 한도 조회(--limit·--timeout 무시)")
             q.add_argument("--check", action="store_true", help="실행 파일만 확인; 모델·포착·대장 쓰기 없음")
             q.add_argument("--invocation", choices=("manual", "user_request", "scheduled", "unknown"),
                            default="unknown", help="명시한 기동 원인; 생략하면 추정하지 않는다")
@@ -389,13 +440,25 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
     ws = p.add_subparsers(dest="sm_cmd", required=True)
     q = ws.add_parser("show", help="전문 출력 — 훅이 그대로 문맥에 주입한다")
-    q.add_argument("--session", required=True)
+    q.add_argument("--session", required=True, help="프로젝트 키(훅이 작업 폴더에서 정한다)")
     q.add_argument("--space", default=None)
     q.add_argument("--json", action="store_true", help="상태 전체를 JSON으로")
     q = ws.add_parser("write", help="전체 치환 — 본문은 stdin")
-    q.add_argument("--session", required=True)
+    q.add_argument("--session", required=True, help="프로젝트 키(훅이 작업 폴더에서 정한다)")
     q.add_argument("--expect-hash", dest="expect_hash", default=None)
     q.add_argument("--space", default=None)
+
+    p = sub.add_parser("routing", help="프로젝트 결속 — 결속 집합과 주된 scope (Mechanism §6-2 6항)")
+    rt = p.add_subparsers(dest="routing_cmd", required=True)
+    q = rt.add_parser("show", help="프로젝트의 결속 집합·주된 scope — 생략하면 검토 대상 전부")
+    q.add_argument("--project", default=None, help="프로젝트 키(훅이 작업 폴더에서 정한 값)")
+    for name, helptext in (("bind", "결속에 scope를 더한다 — 주된 scope는 정하지 않는다"),
+                           ("unbind", "결속에서 scope를 뺀다"),
+                           ("primary", "[사용자 전속] 주된 scope 지정 — 그 프로젝트 자체의 활동이 속한 scope")):
+        q = rt.add_parser(name, help=helptext)
+        q.add_argument("--project", required=True, help="프로젝트 키")
+        q.add_argument("--scope", required=True, help="scope 이름")
+        q.add_argument("--reason", default="")
 
     # `tidy`도 기계 경로다 — 훅이 지시한 처분을 에이전트가 `settle`로 적는다.
     p = sub.add_parser("tidy", help="정돈 — 미처분 퇴출 항목 (Mechanism §9-3)")
@@ -502,7 +565,7 @@ def main(argv=None):
         except Exception as e:
             recovery = {"error": str(e)}
         try:
-            # 포착이 막힌 대화 — 훅은 막힌 동안 한 줄만 싣는다(§9-3 3항)
+            # 포착이 막힌 대화 — 훅은 막힌 사실을 한 번만 싣는다(§9-3 3항, #192)
             from . import integration
             capture = integration.blocked()
         except Exception as e:
@@ -547,6 +610,8 @@ def main(argv=None):
         return _doctor_cmd(a)
     elif a.cmd == "sm":
         return _sm_cmd(a)
+    elif a.cmd == "routing":
+        return _routing_cmd(a)
     elif a.cmd == "tidy":
         return _tidy_cmd(a)
     elif a.cmd == "protect":

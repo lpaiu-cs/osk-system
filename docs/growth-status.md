@@ -37,7 +37,8 @@ POSIX에서는 `PYTHONPATH=_governance/_engine .venv/bin/python -B -m osk.cli gr
 `integration.capture_recovery_states`는 포착 대기·오류 대화의 안내 상태를,
 `capture_failure_phases`는 오류 대화의 실패 단계를 집계한다. 각 `items[].capture_recovery`에
 같은 분류·판정 근거(`basis`)·다음 행동을 싣는다. 단계가 없는 구 오류는 저장된 오류 문구로
-추정하며, 원본 부재 오류만 같은 ID의 파일을 재탐색한다. 내용 파싱·포착·상태 쓰기는 하지 않는다.
+추정한다. 원본 부재(`source`) 오류는 기록된 단계든 추정한 단계든 같은 ID의 파일(평문과 Codex
+압축본)을 재탐색한다. 내용 파싱·포착·상태 쓰기는 하지 않는다.
 원본 후보가 있는 `retryable`은 신원·접두부를 검증할 다음 capture가 필요하다. 입력·라운드·지문이
 모두 비어 있고 재탐색에서도 파일이 없을 때만 입력 미관측으로 분류한다. `pending`은 저장된 꼬리
 상태이며 새 엔진으로 재판독해도 열린 꼬리라는 증거가 아니다. 알 수 없는 오류는 `unknown`으로 남긴다.
@@ -55,6 +56,40 @@ POSIX에서는 `PYTHONPATH=_governance/_engine .venv/bin/python -B -m osk.cli gr
 완료 상태는 `pending`일 수 있다. 세 집계는 같은 작업의 서로 다른 분류이므로 합산하지 않는다.
 노드 수, 영수증 수, `no_value` 결정을 의미적 성장이나 후속 재사용 횟수로 바꾸지 않는다.
 이 보고서에서 `semantic_growth`·`downstream_reuse`는 `not_measured`다.
+
+## Codex 압축본 (#203)
+
+Codex는 시작할 때 7일 동안 바뀌지 않은 대화 기록(`rollout-….jsonl`)을 제자리에서 `.jsonl.zst`로
+압축하고 평문을 지운다. 수정 시각과 평문 크기는 그대로 두고, 대화를 재개하면 평문으로 되돌린다.
+엔진은 두 형태를 한 기록으로 읽는다. 포착 커서, history_base의 `end_byte_offset`, 지문은 모두 푼
+바이트로 센다. 그래서 압축이나 복원만으로는 새 턴이 생기지 않는다. 압축본을 풀려면 `zstandard`가
+필요하다. 없는 기기에서는 그 대화만 `phase: dependency`(`action_required`)로 막힌다.
+
+v5.1 이하 엔진은 압축본을 원본 유실로 기록했다(`capture_error`가 `FileNotFoundError`, `phase:
+source`). 새 엔진으로 이 대화들을 검토 대기로 되돌리는 순서는 다음과 같다.
+
+1. 기기마다 의존성을 다시 설치한다.
+   `.venv\Scripts\python.exe -m pip install -r _governance\_engine\requirements.txt -c _governance\_engine\constraints.txt`
+2. 포착 전에 `growth status`를 읽는다. `integration.capture_recovery_states`의 `retryable`이 같은
+   ID의 원본을 다시 찾은 대화다(`items[].capture_recovery.basis: source_lookup`). 원본이 정말 없는
+   대화는 `action_required`로 남는다.
+3. 다시 포착한다. 다음 정기 실행을 기다려도 되고, 바로 `osk.cli integration catchup --limit 1`을
+   불러도 된다. 모델은 돌지 않는다. 포착 오류가 남은 대화는 지문이 그대로여도 다시 포착한다.
+4. 포착 뒤에 `growth status`를 다시 읽는다. `retryable`은 0이 되고, `capture_error_conversations`가
+   그만큼 준다. 되돌아온 라운드는 `review_pending_rounds`에 든다. 포착한 뒤 원본 접두부가 달라진
+   대화는 `phase: replay`로 남는다. 이것은 압축과 별개의 문제다.
+
+## Codex 되돌리기 (#208)
+
+Codex의 되돌리기(`thread/revert`)는 옛 기록 파일을 그대로 두고 새 페이지를 만든다. 새 페이지의
+`history_base`는 옛 페이지를 어느 턴 앞까지 이어받는지 바이트로 적는다. 엔진은 그 경계까지만
+읽는다. 경계 뒤에서 시작한 같은 대화의 턴은 되돌린 턴이다. fork 부모의 뒷 턴은 부모의 것이라
+여기에 들지 않는다.
+
+- 되돌린 턴이 미검토면 포착 커서에서 빠진다. 그 턴을 담은 스냅숏도 함께 버린다. 결과는 그 턴을
+  처음부터 추적하지 않은 것과 같다. 응답 성장 계수는 그 Stop을 그대로 센다.
+- 검토한 턴이 되돌려지면 지금처럼 거부한다(`phase: replay`). 오류 문구는 `Codex reverted a
+  reviewed turn`이다. 그 밖에 저장된 턴이 사라진 대화는 `identity prefix changed`로 남는다.
 
 ## 기동 원인과 버전
 
