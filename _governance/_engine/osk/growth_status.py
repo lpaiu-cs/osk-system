@@ -80,7 +80,7 @@ def _integration(states: list[dict]) -> dict:
             'capture_failure_phases': dict(Counter(i['capture_recovery']['phase'] for i in items
                                                    if i['capture_error'])),
             'uncaptured_rounds': None,
-            'basis': 'stored cursors; legacy missing-source advice may locate a file, but native tails are not parsed or counted as reviewed',
+            'basis': 'stored cursors; missing-source advice may locate a file (plain or Codex .jsonl.zst), but native tails are not parsed or counted as reviewed',
             'items': items}
 
 

@@ -65,6 +65,15 @@ there is nothing to migrate.
 - **A Scope node may cite any cited record** (Constitution art. 8 §3). Moving a
   node born in another scope no longer requires rewiring its evidence. Domain's
   ban on citing records directly stands.
+- **Codex compressed rollouts are read (#203).** Codex compresses a
+  conversation log left untouched for 7 days to `.jsonl.zst` in place. Engines
+  up to v5.1 took that for a lost source and blocked its capture and review.
+  This release finds and decompresses them; byte bounds and fingerprints count
+  the plain bytes, so compression alone is no new turn. Decompressing needs
+  `zstandard`: **reinstall `requirements.txt` on every device.** The next
+  scheduled run or `integration catchup` captures the blocked conversations
+  again (procedure in [growth-status.md](growth-status.md#codex-압축본-203),
+  Korean).
 - **Update every device together.** A v5.1 engine does not read the root
   `_cited/` as cited records, so nodes citing them show unresolved references
   there, and it refuses writes outside the binding.

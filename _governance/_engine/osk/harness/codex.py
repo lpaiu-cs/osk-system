@@ -6,6 +6,7 @@ import os
 import re
 from pathlib import Path
 
+from ..transcripts import open_native, rollouts
 from .base import MCP_NAME, Adapter, fold, read_config
 
 _SEMVER = r"\d+\.\d+\.\d+(?:-[\w.]+)?"
@@ -47,11 +48,12 @@ class Codex(Adapter):
         base, matches = self.home(), []
         for folder, prefix in ((base / "sessions", "*/*/*/"), (base / "archived_sessions", "")):
             for suffix in (f"*-{sid}.jsonl", f"*-{sid}_*.jsonl"):
-                matches.extend(folder.glob(prefix + suffix))
+                # A rollout untouched for 7 days is compressed in place (`.jsonl.zst`, #203).
+                matches.extend(rollouts(folder, prefix + suffix))
         return matches
 
     def subagent(self, path, sid):
-        with Path(path).open("rb") as f:
+        with open_native(path) as f:
             first = next((line for line in f if line.strip()), b"")
         row = json.loads(first) if first.endswith(b"\n") else None
         meta = row.get("payload") if isinstance(row, dict) and row.get("type") == "session_meta" else None
@@ -65,7 +67,7 @@ class Codex(Adapter):
 
     def transcript_version(self, path):
         # `session_meta`는 대화를 만든 판이다 — 앱을 갱신한 뒤 이어 쓴 옛 대화는 옛 판으로 보인다.
-        with Path(path).open("rb") as f:
+        with open_native(path) as f:
             first = next((line for line in f if line.strip()), b"")
         try:
             row = json.loads(first)

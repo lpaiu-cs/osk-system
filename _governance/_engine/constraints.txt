@@ -44,3 +44,4 @@ typing-extensions==4.16.0
 typing-inspection==0.4.4
 tzdata==2026.4; sys_platform == "win32"
 uvicorn==0.53.0
+zstandard==0.25.0

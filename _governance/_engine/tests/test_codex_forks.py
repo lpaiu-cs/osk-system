@@ -295,10 +295,177 @@ class CodexForkTests(unittest.TestCase):
                 s["capture_error"] = error
                 advice = it._capture_recovery(s)
                 self.assertEqual((advice["state"], advice["phase"]), ("action_required", phase))
-        s["capture_failure_phase"] = "source"
-        s["capture_error"] = "FileNotFoundError: fixture"
+        s["capture_failure_phase"] = "read"
         with mock.patch.object(it, "_locate_transcript", side_effect=AssertionError("recorded phase is sufficient")):
             self.assertEqual(it._capture_recovery(s)["basis"], "recorded_phase")
+        # A recorded miss is checked against the disk: the source may be there now (#203).
+        s["capture_failure_phase"] = "source"
+        s["capture_error"] = "FileNotFoundError: fixture"
+        existing = self.page(self.child, self.child, turn(self.child, "c1"))
+        with mock.patch.object(it, "_locate_transcript", return_value=str(existing)):
+            self.assertEqual(it._capture_recovery(s)["state"], "retryable")
+
+
+def compress(path, *, keep=False):
+    """Codex's cold-rollout compression: `<name>.zst` with the plain size and mtime, then the
+    plain file removed (`keep` is the moment between the two)."""
+    import zstandard
+    zst = path.with_name(path.name + ".zst")
+    zst.write_bytes(zstandard.ZstdCompressor(level=3).compress(path.read_bytes()))
+    st = path.stat()
+    os.utime(zst, ns=(st.st_atime_ns, st.st_mtime_ns))
+    if not keep:
+        path.unlink()
+    return zst
+
+
+def restore(zst):
+    """Codex's resume: the plain file back with the mtime, the `.zst` removed."""
+    import zstandard
+    plain = zst.with_suffix("")
+    plain.write_bytes(zstandard.ZstdDecompressor().decompress(zst.read_bytes()))
+    st = zst.stat()
+    os.utime(plain, ns=(st.st_atime_ns, st.st_mtime_ns))
+    zst.unlink()
+    return plain
+
+
+class CompressedRolloutTests(unittest.TestCase):
+    """Codex compresses a rollout left 7 days to `.jsonl.zst` in place (#203)."""
+    setUp, page, fork = CodexForkTests.setUp, CodexForkTests.page, CodexForkTests.fork
+
+    def stored(self, sid):
+        return json.loads(it.state_path("codex", sid).read_text(encoding="utf-8"))
+
+    def test_compressed_rollout_is_the_same_conversation_not_a_new_one(self):
+        from osk import response_growth
+        usage = {"input_tokens": 7, "cached_input_tokens": 5}
+        rows = (turn(self.parent, "p1") + [event("event_msg", type="token_count", info={"total_token_usage": usage})]
+                + turn(self.parent, "p2"))
+        plain = self.page(self.parent, self.parent, rows)
+        first = it.capture("codex", self.parent, str(plain), "forks")
+        it.acknowledge("codex", self.parent, first["through"], "no_value", "synthetic fixture")
+        fingerprint = self.stored(self.parent)["native_fingerprint"]
+        zst = compress(plain)
+        self.assertEqual(it._locate_transcript("codex", self.parent, str(plain)), str(zst.resolve()))
+        self.assertEqual(it.adapters.get("codex").transcripts(self.parent), [zst])
+        # Plain bytes and the kept mtime: the stored fingerprint holds, so nothing is due.
+        self.assertEqual(transcripts.native_fingerprint(str(zst), "codex", self.parent), fingerprint)
+        self.assertEqual(it._known_pending(None)[0], [])
+        again = it.capture("codex", self.parent, None, "forks")
+        self.assertTrue(again["ok"], again)
+        self.assertEqual((again["appended"], again["changed"], again["through"]), (0, 0, first["through"]))
+        self.assertEqual(again["transcript_path"], str(zst.resolve()))
+        # The other native readers see the plain bytes too.
+        self.assertEqual(response_growth.profile(str(zst), "codex", self.parent)["usage"], usage)
+        self.assertIsNone(it.adapters.get("codex").subagent(str(zst), self.parent))
+        # Resumed, Codex restores the plain file first; only a new turn is new.
+        plain = restore(zst)
+        with plain.open("a", encoding="utf-8") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in turn(self.parent, "p3")))
+        resumed = it.capture("codex", self.parent, None, "forks")
+        self.assertEqual((resumed["ok"], resumed["appended"], resumed["transcript_path"]),
+                         (True, 1, str(plain.resolve())))
+
+    def test_both_forms_during_the_switch_read_as_one_rollout(self):
+        parent, child = self.fork()
+        before = it.capture("codex", self.child, str(child), "forks")
+        fingerprint = self.stored(self.child)["native_fingerprint"]
+        for path in (parent, child):
+            compress(path, keep=True)
+        self.assertEqual(it.adapters.get("codex").transcripts(self.child), [child])
+        self.assertEqual(transcripts.native_fingerprint(str(child), "codex", self.child), fingerprint)
+        during = it.capture("codex", self.child, None, "forks")
+        self.assertEqual((during["ok"], during["appended"]), (True, 0))
+        # The plain file goes between the lookup and the read: the read takes the `.zst`.
+        for path in (parent, child):
+            path.unlink()
+        self.assertEqual([r["id"] for r in transcripts.read(str(child), "codex", self.child)["rounds"]], ["p1", "c1"])
+        after = it.capture("codex", self.child, str(child), "forks")
+        self.assertEqual((after["ok"], after["appended"], after["through"]), (True, 0, before["through"]))
+        self.assertEqual(self.stored(self.child)["native_fingerprint"], fingerprint)
+
+    def test_compressed_history_base_keeps_its_plain_byte_bound(self):
+        first = self.page(self.parent, self.parent + "-old", turn(self.parent, "p1"))
+        second = self.page(self.parent, self.parent, turn(self.parent, "p2"),
+                           base=(self.parent + "-old", first.stat().st_size))
+        bound = second.stat().st_size
+        child = self.page(self.child, self.child, turn(self.child, "c1"), base=(self.parent, bound), fork=self.parent)
+        with second.open("a", encoding="utf-8") as f:   # past the declared bound
+            f.write("".join(json.dumps(r) + "\n" for r in turn(self.parent, "excluded")))
+        before = it.capture("codex", self.child, str(child), "forks")
+        self.assertEqual((before["captured_rounds"], before["inherited_rounds"]), (1, 2))
+        fingerprint = self.stored(self.child)["native_fingerprint"]
+        compress(first), compress(second)
+        self.assertEqual(transcripts.native_fingerprint(str(child), "codex", self.child), fingerprint)
+        self.assertTrue(all(page["path"].endswith(".jsonl") for page in fingerprint["history"]), fingerprint)
+        parsed = transcripts.read(str(child), "codex", self.child)
+        self.assertEqual([r["id"] for r in parsed["rounds"]], ["p1", "p2", "c1"])
+        # The conversation's own page compressed as well.
+        compress(child)
+        again = it.capture("codex", self.child, None, "forks")
+        self.assertEqual((again["ok"], again["appended"], again["through"]), (True, 0, before["through"]))
+        # A bound past the plain bytes is refused as before, not read short.
+        sid = self.child + "-far"
+        far = self.page(sid, sid, turn(sid, "f1"), base=(self.parent, bound + 10 ** 6), fork=self.parent)
+        with self.assertRaisesRegex(ValueError, "exceeds source"):
+            transcripts.read(str(far), "codex", sid)
+
+    def test_missing_source_error_with_a_compressed_rollout_is_retried(self):
+        plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
+        first = it.capture("codex", self.parent, str(plain), "forks")
+        it.acknowledge("codex", self.parent, first["through"], "no_value", "synthetic fixture")
+        compress(plain)
+        # What an engine without `.zst` support left: a miss of the source that is there.
+        path = it.state_path("codex", self.parent)
+        s = self.stored(self.parent)
+        s.update(capture_pending=True, capture_failure_phase="source", capture_path=str(plain),
+                 capture_error=f"FileNotFoundError: [Errno 2] No such file or directory: '{plain}'")
+        path.write_text(json.dumps(s, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        advice = it.status("codex", self.parent)["capture_recovery"]
+        self.assertEqual((advice["state"], advice["phase"], advice["basis"]), ("retryable", "source", "source_lookup"))
+        self.assertIn("Codex 압축본 포함", advice["next_action"])
+        # The fingerprint did not change, yet the error is retried and cleared.
+        [due] = it._known_pending(None)[0]
+        self.assertEqual(due["conversation_id"], self.parent)
+        self.assertEqual(it.catchup(1)["jobs"], [])
+        cleared = it.status("codex", self.parent)
+        self.assertEqual((cleared["ok"], cleared["capture_error"], cleared["capture_recovery"]["state"]),
+                         (True, None, "ready"))
+        # With neither form on this device the advice says so.
+        transcripts.on_disk(plain).unlink()
+        s = self.stored(self.parent)
+        s.update(capture_pending=True, capture_failure_phase="source", capture_error="FileNotFoundError: gone")
+        path.write_text(json.dumps(s, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        advice = it.status("codex", self.parent)["capture_recovery"]
+        self.assertEqual(advice["state"], "action_required")
+        self.assertIn("Codex 압축본(`.jsonl.zst`)으로도 없다", advice["next_action"])
+
+    def test_an_unchanged_source_with_another_error_is_not_read_again(self):
+        plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
+        with plain.open("a", encoding="utf-8") as f:
+            f.write('{"type": "event_msg", "payl')      # a tail the writer never finished
+        first = it.capture("codex", self.parent, str(plain), "forks")
+        self.assertIn("incomplete JSONL tail", first["capture_error"])
+        it.acknowledge("codex", self.parent, first["through"], "no_value", "synthetic fixture")
+        compress(plain)
+        # The error stands, but nothing changed: the next catch-up does not decompress it again.
+        self.assertEqual(it.status("codex", self.parent)["capture_recovery"]["state"], "action_required")
+        self.assertEqual(it._known_pending(None)[0], [])
+
+    def test_a_missing_decompressor_is_named_not_taken_for_a_lost_source(self):
+        plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
+        it.capture("codex", self.parent, str(plain), "forks")
+        zst = compress(plain)
+        with mock.patch.object(transcripts, "_zstd", side_effect=transcripts.ZstdMissing("no zstandard")):
+            failed = it.capture("codex", self.parent, None, "forks")
+            self.assertEqual(it._known_pending(None)[2][0]["phase"], "native_lookup")
+        self.assertFalse(failed["ok"])
+        self.assertEqual((failed["capture_recovery"]["state"], failed["capture_recovery"]["phase"]),
+                         ("action_required", "dependency"))
+        self.assertIn("zstandard", failed["capture_recovery"]["next_action"])
+        self.assertEqual(self.stored(self.parent)["capture_path"], str(zst.resolve()))   # kept for the retry
+        self.assertTrue(it.capture("codex", self.parent, None, "forks")["ok"])
 
 
 if __name__ == "__main__":
