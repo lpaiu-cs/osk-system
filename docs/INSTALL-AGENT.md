@@ -35,7 +35,8 @@ If something is missing, tell the user what to install and stop.
     on the user's Claude subscription, the run reviews what the sessions left and
     compares the Scope notes for Domain knowledge. Register it on one device only.
     `setup.py` writes the command for Claude only; a Codex user who already has
-    `.osk/growth-command.json` can use `--schedule` with it.
+    `.osk/growth-command.json` can use `--schedule` with it, and then gets the Claude
+    worker that runs the day Codex is out of usage and credits.
   - Git sync (`--sync`): a background daemon commits the vault every 15 minutes
     and pushes it. It needs the private repository and a push that does not ask
     for a password.
