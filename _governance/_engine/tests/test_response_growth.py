@@ -841,6 +841,50 @@ class ResponseGrowthTests(unittest.TestCase):
                 self.assertEqual(argv[argv.index('--model')+1], source['model'])
                 self.assertFalse([a for a in argv if 'code_mode_host' in a or 'codex_app' in a])
 
+    def test_desktop_source_routes_off_without_a_configured_cli(self):
+        # No fork CLI is no reason to review a Desktop conversation in-session: the hooks never
+        # read the transcript, so the worker's verdict must outrank the missing-CLI one (PR #204).
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', '', space='00_Scope/W1')
+            assert not rg.CONFIG.exists()
+            def transcript(sid, kind, originator):
+                native = core.ROOT / f'{sid}.jsonl'
+                rows = [{'type':'session_meta','payload':{'id':sid,'cwd':str(core.ROOT),'cli_version':'0.155.0',
+                            'model_provider':'openai','source':kind,'originator':originator}},
+                        {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(core.ROOT),'model':'same-model',
+                            'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
+                        {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'answer'}}]
+                native.write_text(''.join(json.dumps(r)+chr(10) for r in rows))
+            env = {'harness':'codex','session_id':'own','transcript_path':str(core.ROOT / 'own.jsonl'),
+                   'cwd':str(core.ROOT),'session':'own'}
+            with patch.object(rg.subprocess, 'run', side_effect=AssertionError('CLI asked')):
+                # Before the first turn there is no transcript: in-session, asked again once it exists.
+                assert rg.probe(env) == {'mode':'foreground','reason':rg.NOT_CONFIGURED}
+                route = rg.route(env)
+                assert route['mode'] == 'foreground' and not route['probe_due'], route
+                transcript('own', 'vscode', 'Codex Desktop')
+                assert rg.route(env)['probe_due']
+                assert rg.probe(env) == {'mode':'off','reason':rg.DESKTOP_OFF}
+                route = rg.route(env)
+                assert route['mode'] == 'off' and route['changed'] and not route['probe_due'], route
+                start = hook.capture_block(env, 'own', startup=True)
+                assert '대화 검토 꺼짐' in start and '검토 경고' not in start, start
+                for n in range(1, 16):
+                    text = hook.capture_block(env, 'own') or ''
+                    assert '케이던스' not in text and '검토 경고' not in text, (n, text)
+                    assert not rg.launch(env, 'own')
+                assert integration.status('codex','own')['response_growth_route']['mode'] == 'off'
+                # A CLI conversation of the same host keeps its in-session review.
+                transcript('cli', 'cli', 'codex_cli_rs')
+                cli = {**env, 'session_id':'cli', 'transcript_path':str(core.ROOT / 'cli.jsonl')}
+                assert rg.probe(cli) == {'mode':'foreground','reason':rg.NOT_CONFIGURED}
+                assert rg.route(cli)['mode'] == 'foreground'
+        ''')
+
     def test_turned_off_harness_neither_forks_nor_reviews_in_session(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration, scope_memory, doctor, setup

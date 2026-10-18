@@ -203,8 +203,11 @@ unchanged. Copying all 173 features removed `request_plugin_install`, but the ap
 the running Desktop. The September control above predates this request layout.
 
 A Desktop source therefore takes the `off` route: no fork and no in-session review. The scheduled
-run integrates the conversation after it ends (Mechanism §9-4 3항). An instance can also turn a
-host off with `false` in `.osk/response-growth.json`. Codex CLI sources keep forking.
+run integrates the conversation after it ends (Mechanism §9-4 3항). This holds without a
+configured CLI too. Only the hooks' worker reads the transcript, which appears after the first turn.
+It asks again as soon as the transcript exists, and its Desktop verdict outranks the missing CLI. An
+instance can also turn a host off with `false` in `.osk/response-growth.json`. Codex CLI sources
+keep forking.
 
 A Codex CLI source was measured on 2026-10-18 with `gpt-6-astra` and Codex 0.163.0-alpha.10.2.
 Its ephemeral fork read 23,424 of 23,602 input tokens from cache on its only request (0.99).

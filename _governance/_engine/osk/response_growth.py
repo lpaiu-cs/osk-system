@@ -32,6 +32,7 @@ OFF = 'per-conversation review is turned off in .osk/response-growth.json'
 # definitions and recomputes the parent's whole context (12 of 12 forks, 2026-10).
 DESKTOP_OFF = ('a CLI fork cannot reproduce the tool definitions Codex Desktop sends first, '
                'so it would recompute the whole parent context')
+NOT_CONFIGURED = 'subscription fork CLI is not configured'
 AUTH_RACE = 'Failed to refresh OAuth token'
 AUTH_RACE_WAIT = 60
 # The fork CLI's version and login answers take seconds under load: `claude auth status` alone
@@ -87,7 +88,8 @@ def initialize(env: dict) -> dict | None:
 
 def route(env: dict) -> dict:
     """The review route without waiting on the fork CLI: a host without a fork or a configured
-    CLI reviews in-session, a host turned off does neither (`OFF`), otherwise the verdict is the
+    CLI reviews in-session, a host turned off or a Desktop source (whatever the CLI setting)
+    does neither (`OFF`, `DESKTOP_OFF`), otherwise the verdict is the
     one the hooks' worker last asked (`probe`) — the fork until it has answered. `probe_due`
     asks the hook to start the worker (`defer`)."""
     harness, sid, path = integration.hook_source(env)
@@ -95,7 +97,10 @@ def route(env: dict) -> dict:
     with integration._locked(harness, sid) as p:
         state = integration._load(p, harness, sid)
         asked = state.get('response_growth_probe')
-        due = verdict is None and _probe_due(state)
+        provisional = bool(verdict and verdict.pop('probe', False))
+        due = (verdict is None or provisional) and _probe_due(state, path)
+        if provisional and asked and asked.get('reason') == DESKTOP_OFF:
+            verdict = None  # The worker read a Desktop transcript; no CLI setting brings the review back.
         selected = verdict or ({'mode': asked['mode'], 'reason': asked.get('reason')} if asked else
                                state.get('response_growth_route') or {'mode': 'background', 'reason': None})
         failed = (state.get('response_growth') or {}).get('failed') or {}
@@ -111,8 +116,10 @@ def route(env: dict) -> dict:
     return {**selected, 'changed': changed, 'probe_due': due}
 
 
-def _probe_due(state: dict) -> bool:
+def _probe_due(state: dict, path: str | None = None) -> bool:
     asked = state.get('response_growth_probe') or {}
+    if asked.get('unread') and path and Path(path).exists():
+        return True  # The transcript appeared after the first turn: only it names a Desktop source.
     return not 0 <= time.time() - asked.get('at', 0) < PROBE_EVERY
 
 
@@ -125,13 +132,13 @@ def probe(env: dict) -> dict:
         verdict = check(harness, sid, path, env.get('cwd') or os.getcwd(), timeout=PROBE_TIMEOUT)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         verdict = {'mode': 'foreground', 'reason': str(exc)}
-    return _remember(harness, sid, verdict)
+    return _remember(harness, sid, verdict, unread=not (path and Path(path).exists()))
 
 
-def _remember(harness: str, sid: str, verdict: dict) -> dict:
+def _remember(harness: str, sid: str, verdict: dict, *, unread: bool = False) -> dict:
     with integration._locked(harness, sid) as p:
         state = integration._load(p, harness, sid)
-        state['response_growth_probe'] = {**verdict, 'at': time.time()}
+        state['response_growth_probe'] = {**verdict, 'at': time.time(), **({'unread': True} if unread else {})}
         integration._save(p, state)
     return verdict
 
@@ -173,7 +180,7 @@ def after_hook(env: dict) -> None:
             if integration.capture_due(harness, sid, path):
                 integration.hook_capture(env, env['session'])
             with integration._locked(harness, sid) as p:
-                due = _probe_due(integration._load(p, harness, sid))
+                due = _probe_due(integration._load(p, harness, sid), path)
             if due:
                 probe(env)
         finally:
@@ -183,7 +190,8 @@ def after_hook(env: dict) -> None:
 def check(harness: str, sid: str | None, path: str | None, cwd: str, *, ask: bool = True,
           timeout: float = 5) -> dict | None:
     """route()'s decision without its state writes; shared with `fork doctor`. With `ask=False`
-    it is None where only the fork CLI or the transcript can decide (`preflight`, `_desktop`)."""
+    it is None where only the fork CLI or the transcript can decide (`preflight`, `_desktop`), and
+    a Codex host without its CLI gets a `probe`-marked verdict a Desktop transcript overrides."""
     try:
         if not adapters.get(harness).fork:
             # B-grade host: in-session review is its design, not a missing setting.
@@ -191,14 +199,18 @@ def check(harness: str, sid: str | None, path: str | None, cwd: str, *, ask: boo
         executable = configured(harness)
         if executable is False:
             return {'mode': 'off', 'reason': OFF}
-        if not executable:
-            return {'mode': 'foreground', 'reason': 'subscription fork CLI is not configured'}
+        if not executable and (not ask or harness != 'codex'):
+            # Only a Codex transcript, which only the hooks' worker reads, names a Desktop source
+            # (`probe`): until then a Codex host without its CLI reviews in-session.
+            return {'mode': 'foreground', 'reason': NOT_CONFIGURED, **({'probe': True} if harness == 'codex' else {})}
         if not ask:
             return None
         source = (profile(path, harness, sid) if path and Path(path).exists() else
                   {'harness': harness, 'conversation_id': sid, 'cwd': cwd})
         if _desktop(source):
             return {'mode': 'off', 'reason': DESKTOP_OFF}
+        if not executable:
+            return {'mode': 'foreground', 'reason': NOT_CONFIGURED}
         preflight(source, executable, {**subscription_env(), **runtime_env(harness, sid)}, require_version=False,
                   timeout=timeout)
         return {'mode': 'background', 'reason': None}
