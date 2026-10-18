@@ -1,12 +1,14 @@
 """Same-harness subscription forks; native completion and review receipts stay separate."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 from contextlib import closing
 
@@ -59,8 +61,25 @@ FORK_DENY = json.dumps({'hookSpecificOutput': {
     'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
     'permissionDecisionReason': f'osk fork review: only mcp__{adapters.MCP_NAME}__* tools are available here. '
                                 'Continue the review with them.'}})
+FORK_HOOK = {'type': 'command', 'command': f"echo '{FORK_DENY}'"}
 CLAUDE_FORK_SETTINGS = json.dumps({'forceLoginMethod': 'claudeai', 'hooks': {'PreToolUse': [
-    {'matcher': FORK_TOOLS, 'hooks': [{'type': 'command', 'command': f"echo '{FORK_DENY}'"}]}]}})
+    {'matcher': FORK_TOOLS, 'hooks': [FORK_HOOK]}]}})
+# Codex takes the same deny as a -c (session-flag) hook. Its PreToolUse also sees every MCP server
+# and app connector (`mcp__<server>__<tool>`, every character outside [A-Za-z0-9_] made `_`), and
+# its tool_search never reaches the hook, so only this vault's MCP is spared. The matcher is a Rust
+# regex, which has no lookahead: it spells out every name that leaves the vault's prefix. An invalid
+# or untrusted hook is skipped silently, so the hook carries its own trust — the sha256 of Codex's
+# normalized form (defaults filled, keys sorted, compact JSON) under the synthetic session-flags key
+# (hooks/list, 0.154.0 and 0.163.0-alpha.10.2).
+_OSK_TOOL = re.sub(r'[^A-Za-z0-9_]', '_', f'mcp__{adapters.MCP_NAME}__')
+CODEX_FORK_TOOLS = '^(?s:' + '|'.join(f'{_OSK_TOOL[:i]}(?:[^{c}].*)?' for i, c in enumerate(_OSK_TOOL)) + ')$'
+_CODEX_TRUST = 'sha256:' + hashlib.sha256(json.dumps(
+    {'event_name': 'pre_tool_use', 'matcher': CODEX_FORK_TOOLS,
+     'hooks': [{**FORK_HOOK, 'timeout': 600, 'async': False}]},
+    sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+CODEX_FORK_HOOKS = {'PreToolUse': [{'matcher': CODEX_FORK_TOOLS, 'hooks': [FORK_HOOK]}], 'state': {
+    ('C:\\' if os.name == 'nt' else '/') + f'<session-flags>{os.sep}config.toml:pre_tool_use:0:0':
+        {'trusted_hash': _CODEX_TRUST}}}
 
 
 def configured(harness: str) -> str | bool | None:
@@ -615,7 +634,8 @@ def _codex_overrides(source: dict) -> list[str]:
     """Shared routing/launch gate: never silently discard a native restriction. The sandbox is
     read-only (#85), which bars writes and network but reads the whole disk: it covers the known
     policies below at any field value. An external sandbox or an unknown field (a read limit)
-    refuses, since read-only does not reproduce it."""
+    refuses, since read-only does not reproduce it. The deny hook runs even where the user turned
+    hooks off."""
     policy = source.get('sandbox_policy')
     if not isinstance(policy, dict):
         raise ValueError('source sandbox policy is unavailable')
@@ -645,7 +665,38 @@ def _codex_overrides(source: dict) -> list[str]:
     settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
                 'openai_base_url': OPENAI_ENDPOINT, 'model_reasoning_effort': source['effort'], 'approval_policy': approval,
                 'approvals_reviewer': reviewer, 'sandbox_mode': 'read-only'}
-    return [part for key, value in settings.items() for part in ('-c', key + '=' + _toml_value(value))]
+    return [part for key, value in settings.items() for part in ('-c', key + '=' + _toml_value(value))] + _codex_hook_args()
+
+
+def _codex_hook_args() -> list[str]:
+    return ['-c', 'features.hooks=true', '-c', 'hooks=' + _toml_value(CODEX_FORK_HOOKS)]
+
+
+def _codex_hook_ready(argv: list, cwd: str, env: dict, timeout: float = 5) -> bool:
+    """Whether native `app-server` hooks/list (`argv`) finds the fork's deny hook enabled and trusted.
+    An active profile's features, a managed hooks-only policy or a changed Codex hash drops it
+    silently, and read-only does not bound other MCP servers or app connectors (#85). No inference;
+    app-server leaves at stdin EOF before answering, so the reply is read first."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, encoding='utf-8', creationflags=NO_WINDOW)
+    timer = threading.Timer(timeout, proc.kill)
+    timer.start()
+    try:
+        proc.stdin.write(''.join(json.dumps(m) + '\n' for m in (
+            {'method': 'initialize', 'id': 0, 'params': {'clientInfo': {'name': 'osk', 'version': '0'}}},
+            {'method': 'initialized'}, {'method': 'hooks/list', 'id': 1, 'params': {'cwds': [cwd]}})))
+        proc.stdin.flush()
+        reply = next((m for m in map(json.loads, proc.stdout) if m.get('id') == 1), {})
+    except (OSError, ValueError):
+        reply = {}
+    finally:
+        timer.cancel()
+        proc.kill()
+        proc.wait()
+    (key, state), = CODEX_FORK_HOOKS['state'].items()
+    return any(h.get('key') == key and h.get('enabled') is True and h.get('trustStatus') == 'trusted'
+               and h.get('currentHash') == state['trusted_hash']
+               for e in (reply.get('result') or {}).get('data') or [] for h in e.get('hooks') or [])
 
 
 def _codex_config(env: dict) -> dict:
@@ -772,6 +823,9 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
             raise ValueError('ChatGPT subscription login is required; no API fallback')
         if not _git_worktree(cwd, env, timeout) and not _codex_trusted(cwd, config):
             raise ValueError('source directory is not a Git worktree or trusted Codex project; use in-session review')
+        if not _codex_hook_ready([executable, *_codex_hook_args(), 'app-server'], cwd, env, timeout):
+            raise ValueError('Codex would not run the fork deny hook (hooks off, managed-only or untrusted); '
+                             'use in-session review')
         return executable
     # The fork runs with the source's own mode, verbatim; never a guessed or wider one.
     if (require_version or source.get('finals')) and source.get('permission_mode') not in CLAUDE_PERMISSION_MODES:

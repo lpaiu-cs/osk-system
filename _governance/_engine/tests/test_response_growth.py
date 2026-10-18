@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from osk import response_growth as rg
 import test_growth as base_tests
 
+REAL_HOOK_READY = rg._codex_hook_ready  # setUp stands it in; one test drives the real query.
+
 
 class ResponseGrowthTests(unittest.TestCase):
     def setUp(self):
@@ -21,6 +23,10 @@ class ResponseGrowthTests(unittest.TestCase):
                                              'CODEX_HOME': str(Path(home.name) / '.codex')})
         environ.start()
         self.addCleanup(environ.stop)
+        # The native hooks/list query runs the real CLI; test_codex_preflight_requires_* drives it.
+        hooks = patch.object(rg, '_codex_hook_ready', return_value=True)
+        self.hook_ready = hooks.start()
+        self.addCleanup(hooks.stop)
 
     def test_resumed_codex_uses_only_its_own_runtime_version(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -193,6 +199,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from osk import response_growth as rg, integration
             from unittest.mock import patch, Mock
             import os, subprocess
+            patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             native = core.ROOT / 'native.jsonl'
             rows = [
                 {'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),
@@ -264,6 +271,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from osk import response_growth as rg, native_cli
             from unittest.mock import patch, Mock
             import os, subprocess
+            patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             for key in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS'):
                 os.environ.pop(key, None)  # Codex hook processes carry none of these.
             native = core.ROOT / 'native.jsonl'
@@ -810,6 +818,10 @@ class ResponseGrowthTests(unittest.TestCase):
                 self.assertEqual(config['sandbox_mode'], 'read-only')
                 self.assertNotIn('sandbox_workspace_write', config)
                 self.assertNotIn('--skip-git-repo-check', argv)
+                # The deny hook rides along as a trusted session-flag hook, on even if the user turned hooks off.
+                self.assertIs(config['features']['hooks'], True)
+                self.assertEqual(config['hooks'], rg.CODEX_FORK_HOOKS)
+                self.assertNotIn('--dangerously-bypass-hook-trust', argv)
         # Read-only reads the whole disk, so it cannot stand in for an external sandbox or an
         # unknown field such as a read limit: those still refuse.
         for policy in (None, {}, {'type': 'external-sandbox'}, {'type': 'workspace-write', 'future_restriction': True},
@@ -845,6 +857,69 @@ class ResponseGrowthTests(unittest.TestCase):
                 decision = json.loads(out.stdout)['hookSpecificOutput']
                 self.assertEqual({k: decision[k] for k in expected}, expected)
                 self.assertIn('mcp__osk-system__', decision['permissionDecisionReason'])
+
+    def test_codex_fork_hook_denies_every_tool_but_osk_mcp(self):
+        import re
+        (group,) = rg.CODEX_FORK_HOOKS['PreToolUse']
+        matcher = group['matcher']
+        # Codex compiles the matcher with Rust `regex`; lookaround fails to compile and drops the hook.
+        self.assertFalse(re.search(r'\(\?<?[=!]', matcher))
+        for name, denied in (('exec_command', True), ('shell', True), ('apply_patch', True), ('Write', True),
+                             ('Agent', True), ('update_plan', True), ('mcp__node_repl__js', True),
+                             ('mcp__codex_apps__github_search_repositories', True), ('mcp__osk_system_x__search', True),
+                             ('mcp__osk_systemx__search', True), ('mcp__osk-system__search', True), ('', True),
+                             ('mcp__osk_system__', False), ('mcp__osk_system__search', False),
+                             ('mcp__osk_system__create_node', False)):
+            with self.subTest(tool=name):
+                # Codex tests the regex unanchored; the pattern anchors both ends itself.
+                self.assertEqual(bool(re.search(matcher, name)), denied)
+        # The same deny line as Claude's, so the shell test above covers both.
+        (claude,) = json.loads(rg.CLAUDE_FORK_SETTINGS)['hooks']['PreToolUse']
+        self.assertEqual(group['hooks'], claude['hooks'])
+        # The trust Codex itself computed for this hook (app-server hooks/list `currentHash`, 0.154.0 and
+        # 0.163.0-alpha.10.2): a hook the engine changes must be measured again, or it never runs.
+        (key, state), = rg.CODEX_FORK_HOOKS['state'].items()
+        self.assertEqual(state, {'trusted_hash': 'sha256:1a48d3f94a018f06ae75f2f4af98283fd738c113841802c4186d2096501ed2dc'})
+        self.assertEqual(key, ('C:\\<session-flags>\\config.toml' if rg.os.name == 'nt' else '/<session-flags>/config.toml')
+                         + ':pre_tool_use:0:0')
+
+    def test_codex_preflight_requires_native_hooks_list_to_run_the_deny_hook(self):
+        import time
+        (key, state), = rg.CODEX_FORK_HOOKS['state'].items()
+        ok = {'key': key, 'source': 'sessionFlags', 'enabled': True, 'trustStatus': 'trusted',
+              'currentHash': state['trusted_hash']}
+        # Stands in for `codex … app-server`: answers hooks/list, or leaves at EOF/hangs as told.
+        server = ('import json, sys, time\nhooks = json.loads(sys.argv[1])\nfor line in sys.stdin:\n'
+                  '    if json.loads(line).get("id") == 1:\n        if hooks == "eof": sys.exit()\n'
+                  '        if hooks == "hang": time.sleep(60)\n'
+                  '        print(json.dumps({"id": 1, "result": {"data": [{"hooks": hooks}]}}), flush=True)\n')
+        with tempfile.TemporaryDirectory() as folder:
+            for hooks, expected in (([ok], True), ([{**ok, 'trustStatus': 'untrusted'}], False),
+                                    ([{**ok, 'enabled': False}], False), ([{**ok, 'currentHash': 'sha256:x'}], False),
+                                    ([{**ok, 'key': 'other'}], False),
+                                    # hooks off, a managed hooks-only policy or a config error: no entry at all
+                                    ([], False), ('eof', False), ('hang', False)):
+                with self.subTest(hooks=hooks):
+                    started = time.monotonic()
+                    argv = [sys.executable, '-c', server, json.dumps(hooks)]
+                    self.assertIs(REAL_HOOK_READY(argv, folder, dict(rg.os.environ), timeout=3), expected)
+                    self.assertLess(time.monotonic() - started, 30)
+            # Preflight asks with the fork's own hook overrides in the source folder, and refuses otherwise.
+            source = {'harness': 'codex', 'conversation_id': 'own', 'cwd': folder, 'cli_version': '0.155.0',
+                      'model': 'parent-model', 'model_provider': 'openai', 'effort': 'high',
+                      'approval_policy': 'never', 'sandbox_policy': {'type': 'read-only'}}
+            def inspect(argv, **kwargs):
+                return subprocess.CompletedProcess(argv, 0, 'true' if argv[0] == 'git' else 'codex-cli 0.155.0'
+                                                   if '--version' in argv else 'Logged in using ChatGPT', '')
+            executable = str(Path(sys.executable).resolve())
+            with patch.object(rg.subprocess, 'run', side_effect=inspect):
+                argv = rg.command(source, executable, {})
+                (asked, cwd, *_), _ = self.hook_ready.call_args
+                self.assertEqual((asked, cwd), ([executable, *rg._codex_hook_args(), 'app-server'], folder))
+                self.assertEqual(argv[-6:-2], rg._codex_hook_args())
+                self.hook_ready.return_value = False
+                with self.assertRaisesRegex(ValueError, 'deny hook'):
+                    rg.command(source, executable, {})
 
     def test_desktop_source_routes_off_and_never_forks(self):
         # Desktop's first request leads with tool definitions only the running app serves
@@ -969,6 +1044,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from osk import response_growth as rg, integration, scope_memory
             from unittest.mock import patch
             import subprocess
+            patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
             scope_memory.replace('own', '', space='00_Scope/W1')

@@ -86,12 +86,32 @@ cache write on every fork.
   model reads its reason and continues with the osk tools. `--tools`/`--strict-mcp-config`
   and a switch to `--permission-mode default` with `--allowedTools` were rejected: the first
   changes the tool definitions, the second may change the system prompt.
-- **Codex.** The fork runs with `sandbox_mode="read-only"`: shell commands cannot write or
-  reach the network. Shell and other MCP tools stay defined, and the approval policy stays
-  the source's, so under `never` a blocked command fails without asking. Read-only still
-  reads the whole disk, so it narrows only the known source policies (`read-only`,
-  `workspace-write`, `danger-full-access` and their write/network fields). An external
-  sandbox or an unknown field, such as a read limit, refuses the fork as before.
+- **Codex.** The same deny rides in as a `-c hooks=…` PreToolUse hook. Codex runs it before
+  every shell command, `apply_patch`, MCP tool and app connector (`mcp__codex_apps__*`), and
+  spares only `mcp__osk_system__*` (Codex turns every character outside `[A-Za-z0-9_]` in a
+  server name into `_`). Its `tool_search` never reaches the hook, so it needs no exception.
+  Three details keep the hook from being skipped silently:
+  - The matcher is a Rust regex, which has no lookahead, so it spells out every name that
+    leaves the osk prefix.
+  - The override carries the hook's own trust, `hooks.state.<session-flags key>.trusted_hash`.
+    Codex hashes the normalized hook. `--dangerously-bypass-hook-trust` would also run untrusted
+    project hooks in the source's folder.
+  - `features.hooks=true` overrides a user who turned hooks off.
+  - Preflight (routing and again before inference) asks native `app-server` `hooks/list` with
+    the same hook overrides, in the source folder, without inference. The fork runs only if
+    the hook is listed enabled and trusted under its own hash; otherwise the conversation takes
+    in-session review. That covers what `-c` cannot win: a managed `allow_managed_hooks_only`
+    (the hook is not listed), a user's disabled state for that key, a Codex change to the trust
+    hash and a config Codex refuses to load. Profiles come only from `--profile`, which the
+    fork never passes; a legacy `profile =` key fails the config load.
+  The fork also runs with `sandbox_mode="read-only"`: if the hook were ever skipped, shell
+  commands still could not write or reach the network, and under an approval policy of `never`
+  a blocked command fails without asking. Tool definitions and the approval policy stay the
+  source's. Read-only still reads the whole disk, so it narrows only the known source policies
+  (`read-only`, `workspace-write`, `danger-full-access` and their write/network fields). An
+  external sandbox or an unknown field, such as a read limit, refuses the fork as before.
+  Per-server `approval_mode` was rejected: it denies only the servers it names. Any plugin
+  server or app connector it misses stays open.
 
 The daily growth workers start fresh, with no parent prefix to keep, and restrict their own
 tools (Claude `--tools ""` with `--strict-mcp-config`; Codex `--sandbox read-only` in the
