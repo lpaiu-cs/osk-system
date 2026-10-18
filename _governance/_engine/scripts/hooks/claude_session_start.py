@@ -491,12 +491,17 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
             pass        # 다음 훅이나 Stop의 포착이 다시 넘긴다
         # 새 대화의 전사는 첫 턴 뒤에야 생긴다 — 그 사이의 '없다'는 진단이 아니다
         standing = captured['capture_error'] if captured['capture_recovery']['state'] != 'awaiting_input' else None
-        if selected['mode'] == 'background':
+        if selected['mode'] in ('background', 'off'):
             failures = [r for r in (captured.get('response_growth_stop'), captured.get('response_growth', {}).get('last_result'))
-                        if r and not r.get('ok', True) and r.get('state') not in {'running', 'unavailable'}]
+                        if selected['mode'] == 'background' and r and not r.get('ok', True)
+                        and r.get('state') not in {'running', 'unavailable'}]
             error = standing or '; '.join(r.get('error') or r['state'] for r in failures)
             if _once(ident, error, captured, startup):
                 return [Block("route", f"[osk 백그라운드 검토 대기 — {error}; 본 작업은 계속한다. 완료로 처리하지 않았다.]")], ident
+            if selected['mode'] == 'off':
+                # 끈 하네스: fork도 세션 안 9·15턴 검토도 없다. 포착과 대기는 그대로다.
+                return [Block("route", f"[osk 대화 검토 꺼짐 — {selected['reason']}. 이 대화는 끝난 뒤 "
+                                       "정기 성장 실행이 통합한다.]" if startup or selected['changed'] else "")], ident
             if selected['changed'] and not startup:
                 return [Block("route", "[osk 검토 경로 복구 — 구독 CLI를 확인했다. 기존 계수·검토 대기를 유지하고 최종 답변 Stop 기준 실행으로 돌아간다.]")], ident
             return [Block("route", "[osk 대화 검토 — 최종 답변 Stop 9회마다 원대화와 같은 하네스·모델의 "

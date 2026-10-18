@@ -233,6 +233,25 @@ assert harness.newer('2.2.0', claude.verified) and not harness.newer(claude.veri
 assert not harness.newer('unknown', claude.verified) and not harness.newer(None, claude.verified)
 ''')
 
+    def test_claude_finds_the_desktop_cli_in_either_layout(self):
+        # Desktop puts the CLI at claude-code/<version>/claude.exe or one level deeper under a
+        # build hash; a store (MSIX) install moves that folder under its package's LocalCache.
+        result = _run(r'''
+import os
+from pathlib import Path
+from osk import harness
+home = Path.home()
+os.environ.update(APPDATA=str(home / 'Roaming'), LOCALAPPDATA=str(home / 'Local'))
+store = home / 'Local/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude-code'
+expected = [home / 'Roaming/Claude/claude-code/2.1.280/claude.exe', store / '2.1.299/f0584be0fbaf/claude.exe']
+for p in [*expected, store / '2.1.299/staging/claude.exe']:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.touch()
+found = harness.get('claude').cli_candidates()
+assert sorted(found) == (sorted(expected) if os.name == 'nt' else []), found
+''')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
     def test_hooks_record_runs_and_keep_their_output(self):
         self.check_case(r'''
 proj = root.parent / 'proj'           # not a Git work tree: the folder name is the session key

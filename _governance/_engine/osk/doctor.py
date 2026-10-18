@@ -256,7 +256,11 @@ def _version(adapter, cli: str | None) -> dict:
 def _fork(adapter) -> dict:
     from . import response_growth
     try:
-        if not response_growth.configured(adapter.name):
+        executable = response_growth.configured(adapter.name)
+        if executable is False:
+            return _item("info", "fork", "대화별 검토를 껐다 — fork도 세션 안 9·15턴 검토도 없고, "
+                         "끝난 대화는 정기 실행이 통합한다")
+        if not executable:
             return _item("info", "fork", "구독 fork를 설정하지 않았다 — 세션 안에서 9·15턴 검토로 동작한다",
                          "켜려면 SETUP의 '대화별 검토 훅'대로 .osk/response-growth.json에 CLI 경로를 둔다")
         verdict = response_growth.check(adapter.name, None, None, os.getcwd())

@@ -99,7 +99,8 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
     있어도 파일·셸 도구로 MCP의 보호를 비껴가지 못한다. 그 서버의 도구는 묻지 않고 허용하고
     나머지는 거절한다(`--permission-mode dontAsk`). 로그인은 claude.ai 구독만 쓴다 — 실행
     때의 자격 확인은 아래 '정기 재검토'. Codex는 명령 파일을 직접 만든다. 있는 명령 파일은
-    덮지 않는다. Windows에서 CLI가 배치 파일(npm 설치의 `claude.cmd`)이면 cmd가 인자를 다시
+    덮지 않는다. 명령이 Codex이고 Claude CLI가 있으면, Codex가 소진인 날 대신 돌 Claude
+    워커 명령(`.osk/growth-command-claude.json`, 위와 같은 Claude 명령)도 만들어 함께 등록한다. Windows에서 CLI가 배치 파일(npm 설치의 `claude.cmd`)이면 cmd가 인자를 다시
     읽는다 — vault 경로에 `&`·`^`·`%`·`!`가 있으면 인자가 바뀌므로 계획에서 멈춘다. 그때는
     네이티브 CLI(`claude.exe`)를 쓴다. 정기 실행은 한 기기에만 둔다 — 결과는 대장으로 모든
     기기가 나눈다.
@@ -417,6 +418,12 @@ Windows Codex 앱은 `OpenAI/Codex/bin/<16자리 해시>/codex.exe`가 실제 �
 }
 ```
 
+하네스의 대화별 검토를 끄려면 경로 대신 `false`를 둔다(`"codex": false`). 그 하네스는 fork도
+세션 안 9·15턴 검토도 하지 않고, 끝난 대화를 정기 실행이 통합한다. `setup --fork`는 `false`를
+그대로 둔다. Codex 앱에서 시작한 대화는 설정과 무관하게 이렇게 동작한다. 앱이 요청 맨 앞에
+싣는 도구 정의를 CLI fork가 재현하지 못해, fork가 원 대화 문맥 전체를 다시 계산하기 때문이다
+([근거](response-growth.md#codex-desktop-sources-no-longer-fork-2026-10)).
+
 **Claude fork 준비.** fork는 Claude 앱의 호스트 인증을 넘겨받지 않고 CLI 자체의 claude.ai
 로그인만 쓴다. 앱 안의 세션이 로그인돼 있어도 CLI 로그인은 따로 필요하다.
 
@@ -482,7 +489,10 @@ Codex가 업데이트 뒤 오래된 대화를 재개하면 전사의 생성 시�
 그 `--version`을 이 대화에 묶어 확인과 분리 작업자에 넘긴다. 부모 `session_id`와 자식
 전사를 함께 보내는 Codex 하위 에이전트 훅은 어떤 대화 상태도 바꾸지 않는다.
 Codex의 `--ephemeral`, Claude의 `--no-session-persistence`로 정리 대화를 하네스의
-저장 세션 목록에 추가하지 않고, OSK 훅도 유지보수 대화를 추적하지 않는다.
+저장 세션 목록에 추가하지 않고, OSK 훅도 유지보수 대화를 추적하지 않는다. Codex는 ephemeral
+fork에만 원 대화의 캐시 키를 물려주므로 `--ephemeral`은 뺄 수 없다. 요청별 사용량이 남지 않는
+대신 실행 결과의 `cache.first_request_floor`가 첫 요청 적중률의 하한을 적는다
+([근거](response-growth.md#codex-desktop-sources-no-longer-fork-2026-10)).
 
 Stop의 한 작업자는 원 대화 검토와 **같은 Scope의 조직 작업 1건**을 기존 600초 안에
 처리한다. 다른 대화나 Domain을 붙이지 않는다. 정기 실행은 `work_order` 순서로
@@ -954,17 +964,56 @@ $env:PYTHONPATH='_governance/_engine'
 미검토 턴(원본 전사에서 그 턴만 읽는다), 구판이 저장한 라운드, 정정으로 다시 연 검토를 맡는다.
 짧게 끝난 대화도 여기서 증류 기회를 갖는다. 아직 이어지는 대화의 턴은 그 대화와 Stop
 fork에 남긴다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 Domain 후보가 된다.
-기본 `--limit 3`은 Scope 통합·Domain 비교·참조 정돈·14일 초과 퇴출을 **합쳐 최대 3건**이다.
-각 작업군은 기록된 시도 순서에 따라 돌아가며 기회를 받는다. Scope 통합은 새 원문
-최대 3라운드씩, Domain 비교는 후보당 최대 8개 노드다. 선택하지 않은 대기와 뒤의
-라운드는 완료하지 않는다. 복구도 최대 3라운드씩 별도 확인하며 모든 묶음의 증거가
-유효해야 원래 snapshot이 완료된다. 원대화의 새 완료 커서는 되감지 않는다.
+한 번의 실행(`--limit`, 기본 3)은 Scope 통합·Domain 비교·참조 정돈·14일 초과 퇴출·근거
+재검토를 **합쳐 최대 `--limit`건**이다. 각 작업군은 기록된 시도 순서에 따라 돌아가며 기회를
+받는다. Scope 통합은 새 원문 최대 9라운드씩(Stop 검토와 같다), Domain 비교는 후보당 최대 8개
+노드다. 선택하지 않은 대기와 뒤의 라운드는 완료하지 않는다. 복구도 최대 9라운드씩 별도
+확인하며 모든 묶음의 증거가 유효해야 원래 snapshot이 완료된다. 원대화의 새 완료 커서는
+되감지 않는다.
 기존 Scope와 새 Scope의 조합도 비교하며,
 같은 입력 집합의 완료된 검토는 반복하지 않는다. 프로세스 종료코드 0만으로 완료하지 않고
 실제 Domain 본문·근거·허브와 입력 해시를 확인해야 한다.
 결과의 `ok`는 고른 작업을 모두 끝냈는가이며, 여러 번에 나눠 끝나는 정돈이 남으면
 `incomplete`다. `growth run`의 종료 코드는 실행 자체가 실패했을 때(돌지 못함·작업자 비정상
 종료·결과 묶음 미적용)만 0이 아니다 — 작업이 남은 실행을 운영체제 스케줄러가 실패로 남기지 않는다.
+다른 실행이 잠금을 쥔 것(`busy`)과 한도 거절(`limited`)도 실패가 아니라 대기다(#173). 한도
+거절은 Claude가 `rate_limit_event`로 `rejected`를 낸 것, 또는 끝나지 못한 Codex 작업자 뒤에 다시
+조회한 Codex가 소진인 것이다.
+
+정기 실행은 `growth run --daily`다(#175, 2026-10-18 결정). 하루 한도 L을 묶음으로 나눠 돈다.
+
+- **묶음.** Scope 통합 작업은 묶음 하나에 혼자 두고 900초를 준다. 나머지 큐는 3개씩 600초다.
+  Scope 통합이 첫 차례를 갖고, 이어 나머지 큐 묶음 하나, 그다음 Scope 통합이 L−3건까지,
+  남은 자리는 나머지 큐가 쓴다. 포착은 하루 시작에 한 번, 공급자를 고르기 전에 한다 — 모델을
+  부르지 않으므로 모든 공급자가 소진인 날에도 새 턴을 vault에 옮긴다.
+- **한도 조회.** 묶음마다 `codex app-server`의 `account/rateLimits/read`로 Codex 한도를 읽는다.
+  모델을 부르지 않는다. 실행기가 띄울 바이너리로 묻는다 — Desktop이 갱신돼 명령 파일의 경로가
+  사라졌으면 실행기처럼 새 판을 따른다. 소진은 크레딧까지 바닥난 상태다 — 주간 창이 100%여도
+  크레딧이 있으면 돈다. 조회에 실패하면 소진과 같이 다룬다. Codex가 소진이거나, 그날 한도에
+  거절됐거나, 주간 예산을 다 썼으면 Claude 워커(두 번째 `--command-file`, 주 명령이 Codex일 때
+  `setup --schedule`이 만드는 `.osk/growth-command-claude.json`)가 같은 묶음을 대신 돈다.
+- **멈춤.** 고를 작업이 없거나 묶음이 진척 없이 끝나면 그날 멈춘다. 진척 없던 작업은 그날
+  다시 고르지 않는다. 진척은 작업을 닫았거나(보존·무가치·완료·올림) 정돈의 남은 단위를 줄인
+  것이다 — 보류는 진척이 아니다. 하루 벽시계 예산은 1.5시간이며, 넘기면 새 묶음을 띄우지
+  않는다. 같은 날 다시 실행하면(수동 실행·재시작) 그날 앞선 묶음의 작업 수와 시간까지 더해 L과
+  예산을 지킨다. `busy`면 10분 기다렸다가 한 번 다시 시도한다.
+- **포착 실패.** 묶음은 막지 않지만 그날 실행의 실패다(종료 코드 1). 이미 적힌 같은 오류(원본
+  전사가 지워진 대화 등)는 날마다 다시 세지 않는다 — 대화 상태와 `integration status`에 남아
+  있고, 하루 결과의 `capture.known_errors`가 그 수다.
+- **주간 한도 조정.** L은 7일마다 다시 정한다. N = 지난 7일 유입 가운데 정기 실행 몫(대화마다
+  9라운드 작업 수) + ⌈7일보다 오래된 대기 작업 ÷ 4⌉, S = ⌈N ÷ 7⌉, L = max(6, S + 3)이다.
+  예산은 공급자마다 "지난주 작업 ÷ 20 − 지난주 대화별 검토"이고, 7일보다 오래된 대기가
+  있으면 ÷10까지 쓴다. S는 이 예산을 Scope 작업 단가(지난주 Scope 묶음 실측의 평균, 없으면
+  15만)로 나눈 만큼으로 자른다. 늘릴 때는 바로 늘리고, 줄일 때는 절반까지만 줄이며, 차가 3보다
+  작으면 그대로 둔다. 작업 토큰은 이 vault가 추적하는 대화의 원본 전사에서 잰다. 판단
+  근거(N·유입·공급자별 작업·검토·예산·단가·이전과 새 L)는 그 주 첫 묶음 계획의
+  `daily.adjustment`에, 묶음마다의 공급자·한도 조회·남은 예산은 `daily`에 남는다.
+- **토큰과 캐시.** 실행 기록(`run`)마다 `usage`를 남긴다. 토큰은 캐시 읽기를 뺀 값(캐시 아닌
+  입력 + 캐시 쓰기 + 출력)이다. 적중률(캐시 읽기 ÷ 입력)이 0.9보다 낮은 요청은 `misses`에
+  남는다. 정기 묶음의 첫 요청은 구조적으로 식은 냉시작이라 `cold_start`에 따로 적고 판정에서
+  뺀다. 대화별 검토의 첫 요청은 원 대화의 캐시를 이어받아야 하므로 판정에 넣는다. Claude는
+  `result.usage`를 쓴다(`modelUsage`는 이어받은 원 대화의 누계다). Codex는 작업자 자신의 세션
+  기록에서 요청별로 읽는다.
 
 전용 에이전트는 osk MCP 도구만 쓰고 osk CLI나 셸을 실행하지 않는다. 샌드박스 안의
 에이전트는 CLI를 실행할 수 없고, 시도할 때마다 시간 예산을 쓴다. 판단한 결정은 prompt가
@@ -999,15 +1048,19 @@ Codex의 ChatGPT 구독 로그인으로 실행할 때는 `codex login status`가
   "codex", "exec", "--json", "--sandbox", "read-only",
   "-c", "forced_login_method=\"chatgpt\"",
   "-c", "approval_policy=\"on-request\"",
-  "-c", "approvals_reviewer=\"auto_review\"",
+  "-c", "mcp_servers.osk-system.default_tools_approval_mode=\"approve\"",
   "-"
 ]
 ```
 
 `exec`의 승인 정책은 `-c approval_policy=...`로 전달한다. 상위 명령의
 `-a on-request`만 붙이면 실제 실행은 `never`로 남아 `cite_round`·`read_cited`를 거절할 수 있다.
-이 설정은 해당 실행에만 적용되며 전역 승인 설정을 바꾸지 않는다. 자동 검토도 개별
-호출을 거절할 수 있으므로, 실제 원문 읽기와 노드 저장 결과까지 확인한다.
+이 설정은 해당 실행에만 적용되며 전역 승인 설정을 바꾸지 않는다. osk MCP 도구만
+`default_tools_approval_mode="approve"`로 승인한다. 명령이 MCP 서버를 `-c mcp_servers={...}`로
+직접 싣는다면 그 표 안에 `default_tools_approval_mode="approve"`를 둔다. 자동 검토
+(`approvals_reviewer="auto_review"`)는 쓰지 않는다 — 10월에 osk 호출 4,044번을 심사해 모두
+허용하면서 정기 실행 토큰의 27~29%를 썼다(#175). 셸 쓰기는 읽기 전용 샌드박스가 계속 막고,
+보호영역 변경이 변경집합으로 승인받는 장치도 그대로다. 실제 원문 읽기와 노드 저장 결과까지 확인한다.
 `forced_login_method`는 ChatGPT 인증으로 제한하며, 사용량은 구독의 Codex 한도에 포함된다.
 Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 등록한다. 정기 실행은
 그 설치 폴더의 가장 새 CLI를, Stop fork는 원 세션과 정확히 같은 판본을 선택한다.
@@ -1025,6 +1078,12 @@ Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 �
 .venv/Scripts/python.exe _governance/_engine/scripts/growth_run.py --command-file .osk/growth-command.json --limit 3 --timeout 600
 ```
 
+하루 정기 실행을 손으로 돌릴 때는 공급자마다 명령 파일을 준다(최대 1.5시간):
+
+```powershell
+.venv/Scripts/python.exe _governance/_engine/scripts/growth_run.py --command-file .osk/growth-command.json --command-file .osk/growth-command-claude.json --daily
+```
+
 후보가 없으면 모델을 띄우지 않는다. 실패·보류는 완료로 접지 않으며 후속 실행에서
 다시 검토할 수 있다. 입력 집합을 읽었다는 사실과 모든 입력을 같은 결론의 근거로
 인용하는 것은 다르다. 의미 판정·적용 범위·반례는 에이전트가 설명해야 한다.
@@ -1036,7 +1095,7 @@ Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 �
 현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 이미 노드에 있는 주장을 받치기만 하는 턴은
 본문을 고쳐 쓰지 않고 그 노드 끝 `## 근거` 절에 한 줄을 단다([형식](FORMAT.md#22-body)). 대화 안의
 검토 안내도 같은 규칙을 싣는다.
-600초 기본 상한은 유지한다. 저장 기록 조회는 전체를 출력하지 않고 `read_cited`의 기본
+한 번의 실행은 600초 기본 상한을 유지한다. 저장 기록 조회는 전체를 출력하지 않고 `read_cited`의 기본
 `view="review"`로 사용자 발화와 답변 선별본(최대 6000자)을 읽는다. 필요한 주장·반례만
 `query`로 전체 라운드에서 검색한다. 공백으로 나눈 검색어는 모두 포함해야 하며,
 최근 일치부터 발췌한다. 암호화 reasoning·실행 메타데이터는 기본 선별본에서 제외한다.
@@ -1044,7 +1103,7 @@ Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 �
 `view="full"`은 원문 포렌식용 명시 선택이다. 잘렸다고 `max_chars`를 계속 늘리거나
 셸로 전사 전체를 출력하지 않는다. 선별본에서 빠진 것이 무가치하다는 뜻은 아니다.
 근거를 좁혀도 판정할 수 없으면 검토 범위·미확인 주장·다음 확인을 `deferred`로 남긴다.
-정기 실행의 3라운드 제한은 Stop 검토의 최대 9라운드, 별도 실행기 없는 일반 세션의
+정기 실행의 Scope 작업은 Stop 검토와 같은 최대 9라운드이며, 별도 실행기 없는 일반 세션의
 9·15 user 턴 주입/최대 15라운드와 별개다. fork 자체는 원대화의 문맥을 상속하므로
 기록 조회 상한이 fork 입력 전체를 제한하지 않는다. 캐시 미적중이면 그 상속 문맥이
 그대로 비용이 된다. 설치·실행 성공과 캐시 적중을 따로 확인한다.
@@ -1061,11 +1120,15 @@ Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 �
 
 운영체제의 매일 작업은 `setup --schedule`이 등록한다(위 '설치 도구' — Windows·macOS·
 Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 실행할 때** 활성화된다.
-기존 동일 이름 작업을 덮어쓰지 않으며 로그인된 사용자 권한으로 하루 한 번 실행한다.
+기존 동일 이름 작업을 덮어쓰지 않으며 로그인된 사용자 권한으로 하루 한 번 `--daily`로 실행한다.
+작업 시간 제한은 엔진의 벽시계 예산(1.5시간)에 30분을 더한 2시간이다. 작업은 python을 직접
+띄운다 — PowerShell 래퍼가 `Start-Process`로 python을 따로 띄우면 제한이 python에 닿지 않는다
+(2026-10-18 실행이 15분 제한에서 22.1분 돌았다). `setup --schedule`은 이 vault를 부르는 옛 이름의
+래퍼 작업(`osk-domain-growth`)을 걷어 내고 이 형태로 다시 등록한다.
 실제 릴리스·인스턴스 갱신·새 MCP 재시작과 이 등록은 구현/시험과 구별한다.
 
 ```powershell
-./_governance/_engine/scripts/register_growth_task.ps1 -Python "$PWD/.venv/Scripts/python.exe" -CommandFile "$PWD/.osk/growth-command.json" -At '09:00'
+./_governance/_engine/scripts/register_growth_task.ps1 -Python "$PWD/.venv/Scripts/python.exe" -CommandFile "$PWD/.osk/growth-command.json" -ClaudeCommandFile "$PWD/.osk/growth-command-claude.json" -At '09:00'
 ```
 
 기본은 공유 지식의 연속성이다. 다른 작업의 대화·미완료 요청을 현재 대화에 합치지는

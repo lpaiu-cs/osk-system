@@ -267,7 +267,7 @@ def _fork(targets: list, uninstall: bool) -> dict:
             continue
         if uninstall:
             out["entries"][adapter.name] = {"action": "remove", "path": have}
-        elif isinstance(have, str) and Path(have).is_file():
+        elif have is False or isinstance(have, str) and Path(have).is_file():  # false: 사용자가 껐다
             out["entries"][adapter.name] = {"action": "keep", "path": have}
         else:
             cli = _native_cli(adapter)
@@ -310,14 +310,39 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
                                     "파일을 직접 만든 뒤 다시 실행한다(SETUP 'Scope에서 Domain으로 "
                                     "정기 재검토')"}
         out["command"] = {"action": "add", "argv": argv, "harness": harness}
-    try:
-        checked = growth.check_command(argv)
-    except ValueError as e:
-        checked = {"ok": False, "violations": [str(e)]}
-    if not checked["ok"]:
-        return {**out, "error": "명령을 쓸 수 없다 — " + "; ".join(checked["violations"])}
-    out["task"] = services.plan(manager, "growth", services.job("growth", command_file=file, at=at), False)
+    files = [file]
+    # Codex가 소진인 날은 Claude 워커가 대신 돈다(#175) — 그 명령도 공급자별 파일로 둔다. 주 명령이
+    # Codex일 때만이다: 사용자가 바꿔 둔 다른 실행기보다 Claude가 먼저 돌면 안 된다.
+    from . import growth_daily
+    spare = core.ROOT / ".osk" / "growth-command-claude.json"
+    if growth_daily.provider(argv) == "codex" and spare.is_file():
+        files.append(spare)
+        out["claude_command"] = {"action": "keep", "file": str(spare)}
+    elif growth_daily.provider(argv) == "codex":
+        claude = adapters.get("claude")
+        cli = _native_cli(claude)
+        if cli:
+            files.append(spare)
+            out["claude_command"] = {"action": "add", "file": str(spare), "argv": claude.growth_argv(
+                cli, _python().as_posix(), _server().as_posix(), core.ROOT.as_posix())}
     notes = []
+    for path in list(files):
+        try:
+            each = (argv if path == file else out["claude_command"].get("argv")
+                    or json.loads(path.read_text(encoding="utf-8-sig")))
+            checked = growth.check_command(each)
+        except (OSError, ValueError) as e:
+            checked = {"ok": False, "violations": [str(e)]}
+        if checked["ok"]:
+            continue
+        if path == file:
+            return {**out, "error": "명령을 쓸 수 없다 — " + "; ".join(checked["violations"])}
+        # 대신 돌 워커가 없으면 소진일에 쉴 뿐이다 — 정기 실행 자체는 막지 않는다.
+        files.remove(path)
+        out.pop("claude_command")
+        notes.append(f"Codex 소진일의 Claude 워커를 쓸 수 없어 빼고 등록한다 — " + "; ".join(checked["violations"]))
+    out["command_files"] = [str(f) for f in files]
+    out["task"] = services.plan(manager, "growth", services.job("growth", command_files=files, at=at), False)
     if out["task"].get("action") == "add" and growth.daily_status()["ran"]:
         notes.append("최근 3일 안에 정기 실행이 돌았다 — 다른 기기에 등록돼 있으면 한 곳에만 둔다"
                      "(결과는 대장으로 모든 기기가 나눈다)")
@@ -471,7 +496,8 @@ def _extras_changes(extras: dict) -> bool:
     return (any(e["action"] in CHANGES for e in fork.get("entries", {}).values())
             or any((extras.get(k) or {}).get("task", {}).get("action") in CHANGES
                    for k in ("schedule", "sync"))
-            or (extras.get("schedule") or {}).get("command", {}).get("action") == "add")
+            or any((extras.get("schedule") or {}).get(k, {}).get("action") == "add"
+                   for k in ("command", "claude_command")))
 
 
 def _extras_errors(extras: dict) -> list[str]:
@@ -688,16 +714,15 @@ def _write_fork(approved: dict, uninstall: bool, stamp: str) -> dict:
     return {**step, "ok": True, **({"backups": [backup]} if backup else {})}
 
 
-def _write_command(approved: dict) -> dict:
+def _write_command(file: str, argv: list[str]) -> dict:
     """정기 실행의 명령 파일을 만든다 — 그 사이 생겼으면 덮지 않는다."""
-    path = Path(approved["command_file"])
+    path = Path(file)
     step = {"step": "growth command", "file": str(path)}
     if path.exists():
         return {**step, "ok": False, "error": "확인 뒤 명령 파일이 생겼다 — 덮지 않았다. "
                                               "setup을 다시 계획해 확인받는다"}
     path.parent.mkdir(parents=True, exist_ok=True)
-    core.atomic_write(path, (json.dumps(approved["command"]["argv"], ensure_ascii=False, indent=2)
-                             + "\n").encode("utf-8"))
+    core.atomic_write(path, (json.dumps(argv, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return {**step, "ok": True}
 
 
@@ -731,13 +756,17 @@ def _apply_extras(p: dict, stamp: str) -> list[dict]:
         part = p.get(key)
         if not part:
             continue
-        if kind == "growth" and part.get("command", {}).get("action") == "add":
-            out.append(_write_command(part))
-            if not out[-1]["ok"]:
+        if kind == "growth":
+            writes = [(part["command_file"], part["command"]["argv"])
+                      for c in [part.get("command", {})] if c.get("action") == "add"]
+            writes += [(c["file"], c["argv"]) for c in [part.get("claude_command", {})] if c.get("action") == "add"]
+            written = [_write_command(*w) for w in writes]
+            out += written
+            if not all(w["ok"] for w in written):
                 continue
         if part.get("task", {}).get("action") not in CHANGES:
             continue
-        job = None if uninstall else (services.job(kind, command_file=Path(part["command_file"]),
+        job = None if uninstall else (services.job(kind, command_files=[Path(f) for f in part["command_files"]],
                                                    at=part["at"]) if kind == "growth" else services.job(kind))
         try:
             result = services.apply(manager, kind, job, part["task"], uninstall, stamp)
@@ -808,6 +837,10 @@ def text(rep: dict) -> str:
         if part.get("command"):
             lines.append(f"  명령 파일 {part['command_file']}: {part['command']['action']} — "
                          + core.shell_join(part["command"]["argv"]))
+        if part.get("claude_command"):
+            spare = part["claude_command"]
+            lines.append(f"  Codex 소진일의 Claude 워커 {spare['file']}: {spare['action']}"
+                         + (" — " + core.shell_join(spare["argv"]) if spare.get("argv") else ""))
         if part.get("origin"):
             lines.append(f"  origin: {part['origin']} — push: {', '.join(part.get('push') or [])}")
         lines += [f"  걷는다: {i}" for i in task.get("remove", [])]

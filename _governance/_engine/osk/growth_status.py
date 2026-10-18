@@ -131,7 +131,11 @@ def _runs(rows: list[dict], since: datetime | None, until: datetime) -> dict:
                       'engine_rev': plan.get('engine_rev'), 'selected': selected,
                       'recorded_ok': row.get('ok'), 'state': row.get('state'),
                       'returncode': row.get('returncode'), 'error': row.get('error'),
-                      'final_state': row.get('final_reviews', {}).get('state'), 'queues': queues})
+                      'final_state': row.get('final_reviews', {}).get('state'), 'queues': queues,
+                      # 묶음별 토큰(캐시 읽기 제외)과 0.9 미만 적중 요청 — 사용자가 적중을 검토한다(#175)
+                      'provider': row.get('provider'), 'usage': row.get('usage'),
+                      'batch': {k: (plan.get('daily') or {}).get(k) for k in ('day', 'batch', 'kind')}
+                      if plan.get('daily') else None})
     results = {r.get('manifest') for r in rows if r.get('kind') == 'run'}
     unfinished = _window([p for key, p in plans.items() if key not in results], since, until)
     return {**window, 'runs': len(items),

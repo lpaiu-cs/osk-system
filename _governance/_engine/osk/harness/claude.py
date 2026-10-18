@@ -81,8 +81,9 @@ class Claude(Adapter):
         return [self.home() / "settings.json"]
 
     def cli_candidates(self):
-        # Windows 데스크톱 앱은 판마다 CLI를 `Claude/claude-code/<판>/`에 둔다. 스토어(MSIX)
-        # 설치는 그 폴더가 패키지의 LocalCache 아래로 옮겨진다.
+        # Windows 데스크톱 앱은 판마다 CLI를 `Claude/claude-code/<판>/`이나 그 아래 `<빌드 해시>/`에
+        # 둔다(`native_cli.resolve`가 따라가는 두 배치). 스토어(MSIX) 설치는 그 폴더가 패키지의
+        # LocalCache 아래로 옮겨진다.
         if os.name != "nt":
             return []
         roots = []
@@ -91,7 +92,9 @@ class Claude(Adapter):
         if os.environ.get("LOCALAPPDATA"):
             roots += Path(os.environ["LOCALAPPDATA"]).glob(
                 "Packages/Claude_*/LocalCache/Roaming/Claude/claude-code")
-        return [p for root in roots for p in root.glob("*/claude.exe")]
+        build = "[0-9a-f]" * 12
+        return [p for root in roots
+                for p in [*root.glob("*/claude.exe"), *root.glob(f"*/{build}/claude.exe")]]
 
     def growth_argv(self, cli, python, server, root):
         # 사람이 없는 실행이다. 내장 도구는 모두 끈다(`--tools ""`) — 설정의 허용 규칙이 있어도

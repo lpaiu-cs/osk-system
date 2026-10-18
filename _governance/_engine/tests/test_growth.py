@@ -401,8 +401,10 @@ class GrowthTests(unittest.TestCase):
             # A run that could not run, or whose worker or packet failed, still fails.
             assert growth.run_failed({**result, 'returncode': 1})
             assert growth.run_failed({**result, 'final_reviews': {'state': 'rejected', 'errors': ['no packet']}})
-            assert growth.run_failed({'ok': False, 'state': 'busy'})
+            assert growth.run_failed({'ok': False, 'state': 'unavailable'})
             assert not growth.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
+            # Another run holding the lock is a wait, not a failure (#175: 10-05 and 10-06 ended busy).
+            assert not growth.run_failed({'ok': False, 'state': 'busy'})
         """)
 
     def test_daily_status_keeps_a_plan_without_result_as_ran_not_completed(self):
@@ -1492,7 +1494,7 @@ class GrowthTests(unittest.TestCase):
             node('A')
             path = core.ROOT / 'native.jsonl'
             rows = []
-            for i in range(7):
+            for i in range(12):
                 rows += [{'type':'user','sessionId':'bounded','uuid':'u'+str(i),'message':{'role':'user','content':'question '+str(i)}},
                          {'type':'assistant','sessionId':'bounded','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(row)+'\\n' for row in rows),encoding='utf-8')
@@ -1509,7 +1511,7 @@ class GrowthTests(unittest.TestCase):
                 seen.append(queue)
                 if plan['scope_jobs']:
                     job = plan['scope_jobs'][0]
-                    assert len(job['pending_refs']) == 3 and job['remaining_rounds'] == 4, job
+                    assert len(job['pending_refs']) == 9 and job['remaining_rounds'] == 3, job  # 9 rounds a job (#175)
                     assert job['through'] != original['through']
                     visible = growth._reading_plan(plan)['scope_jobs'][0]
                     assert 'prompt' not in visible and 'last_review' not in visible
@@ -1522,7 +1524,7 @@ class GrowthTests(unittest.TestCase):
             result = growth.run([sys.executable,'-c',packet_worker()],limit=3)
             assert result['ok'] and result['selected'] == 3, result
             state = integration.status('claude','bounded')
-            assert len(state['pending_refs']) == 4, state  # selected three only, not the whole conversation
+            assert len(state['pending_refs']) == 3, state  # selected nine only, not the whole conversation
         """)
 
     def test_scope_queue_goes_by_turn_time_and_passes_a_stalled_conversation(self):
