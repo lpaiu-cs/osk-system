@@ -140,7 +140,8 @@ class Tasks(services.TaskScheduler):
             'path': '\\', 'name': spec['name'],
             'actions': [{'execute': spec['execute'], 'arguments': spec['arguments'], 'workdir': spec['workdir']}],
             'triggers': [{'kind': 'MSFT_TaskDailyTrigger' if spec['at'] else 'MSFT_TaskLogonTrigger', 'start': start}],
-            'battery': False, 'limit': f"PT{spec['minutes']}M" if spec['minutes'] else 'PT0S',
+            # Get-ScheduledTask reads the limit back normalized: 120 minutes is PT2H, not PT120M.
+            'battery': False, 'limit': {120: 'PT2H', 0: 'PT0S'}[spec['minutes']],
             'priority': spec['priority']}
     def _export(self, path, name):
         return '<Task/>'
@@ -171,7 +172,7 @@ assert task['actions'][0]['execute'] == growth['python'], task
 assert subprocess.list2cmdline(growth['args']) == task['actions'][0]['arguments'], task
 # The task starts python itself with the day's batches, so its time limit — the engine's 1.5-hour
 # budget plus 30 minutes — stops the runner. The wrapper's Start-Process python outlived its 15 minutes.
-assert growth['args'][-1] == '--daily' and task['limit'] == 'PT120M', task
+assert growth['args'][-1] == '--daily' and task['limit'] == 'PT2H', task
 assert services.plan(m, 'growth', growth, False)['action'] == 'keep'
 # The Claude worker that runs on a day Codex is exhausted is a second command file: a new registration.
 both = services.job('growth', command_files=[command_file, root / '.osk' / 'growth-command-claude.json'], at='07:30')

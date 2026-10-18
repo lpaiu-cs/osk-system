@@ -250,10 +250,14 @@ class TaskScheduler(Backend):
 
     def definition(self, kind: str, job: dict) -> dict:
         s = self._spec(kind, job)
+        # 작업 스케줄러가 돌려주는 표기로 적는다 — 120분은 `PT2H`, 90분은 `PT1H30M`이다.
+        # `PT120M`으로 적으면 등록한 작업이 늘 달라 보여 매번 다시 등록한다.
+        hours, minutes = divmod(s["minutes"], 60)
+        limit = "PT" + (f"{hours}H" if hours else "") + (f"{minutes}M" if minutes else "")
         return {"actions": [{"execute": s["execute"], "arguments": s["arguments"], "workdir": s["workdir"]}],
                 "trigger": (["MSFT_TaskDailyTrigger", s["at"]] if kind == "growth"
                             else ["MSFT_TaskLogonTrigger", None]),
-                "battery": False, "limit": f"PT{s['minutes']}M" if s["minutes"] else "PT0S",
+                "battery": False, "limit": limit if s["minutes"] else "PT0S",
                 "enabled": True,          # 꺼 둔 작업은 다시 등록해 켠다 — 사용자가 고른 기능이다
                 "priority": s["priority"]}    # 기본 7로 등록된 옛 작업도 다시 등록해 올린다
 
