@@ -96,8 +96,14 @@ cache write on every fork.
   - The override carries the hook's own trust, `hooks.state.<session-flags key>.trusted_hash`.
     Codex hashes the normalized hook. `--dangerously-bypass-hook-trust` would also run untrusted
     project hooks in the source's folder.
-  - `features.hooks=true` overrides a user who turned hooks off. An active profile that sets
-    `features` still wins, and so does a managed `allow_managed_hooks_only`.
+  - `features.hooks=true` overrides a user who turned hooks off.
+  - Preflight (routing and again before inference) asks native `app-server` `hooks/list` with
+    the same hook overrides, in the source folder, without inference. The fork runs only if
+    the hook is listed enabled and trusted under its own hash; otherwise the conversation takes
+    in-session review. That covers what `-c` cannot win: a managed `allow_managed_hooks_only`
+    (the hook is not listed), a user's disabled state for that key, a Codex change to the trust
+    hash and a config Codex refuses to load. Profiles come only from `--profile`, which the
+    fork never passes; a legacy `profile =` key fails the config load.
   The fork also runs with `sandbox_mode="read-only"`: if the hook were ever skipped, shell
   commands still could not write or reach the network, and under an approval policy of `never`
   a blocked command fails without asking. Tool definitions and the approval policy stay the

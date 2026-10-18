@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 from contextlib import closing
 
@@ -663,9 +664,39 @@ def _codex_overrides(source: dict) -> list[str]:
     # profile/provider base_url, which native config resolution would prefer.
     settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
                 'openai_base_url': OPENAI_ENDPOINT, 'model_reasoning_effort': source['effort'], 'approval_policy': approval,
-                'approvals_reviewer': reviewer, 'sandbox_mode': 'read-only',
-                'features.hooks': True, 'hooks': CODEX_FORK_HOOKS}
-    return [part for key, value in settings.items() for part in ('-c', key + '=' + _toml_value(value))]
+                'approvals_reviewer': reviewer, 'sandbox_mode': 'read-only'}
+    return [part for key, value in settings.items() for part in ('-c', key + '=' + _toml_value(value))] + _codex_hook_args()
+
+
+def _codex_hook_args() -> list[str]:
+    return ['-c', 'features.hooks=true', '-c', 'hooks=' + _toml_value(CODEX_FORK_HOOKS)]
+
+
+def _codex_hook_ready(argv: list, cwd: str, env: dict, timeout: float = 5) -> bool:
+    """Whether native `app-server` hooks/list (`argv`) finds the fork's deny hook enabled and trusted.
+    An active profile's features, a managed hooks-only policy or a changed Codex hash drops it
+    silently, and read-only does not bound other MCP servers or app connectors (#85). No inference;
+    app-server leaves at stdin EOF before answering, so the reply is read first."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, shell=False, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, encoding='utf-8', creationflags=NO_WINDOW)
+    timer = threading.Timer(timeout, proc.kill)
+    timer.start()
+    try:
+        proc.stdin.write(''.join(json.dumps(m) + '\n' for m in (
+            {'method': 'initialize', 'id': 0, 'params': {'clientInfo': {'name': 'osk', 'version': '0'}}},
+            {'method': 'initialized'}, {'method': 'hooks/list', 'id': 1, 'params': {'cwds': [cwd]}})))
+        proc.stdin.flush()
+        reply = next((m for m in map(json.loads, proc.stdout) if m.get('id') == 1), {})
+    except (OSError, ValueError):
+        reply = {}
+    finally:
+        timer.cancel()
+        proc.kill()
+        proc.wait()
+    (key, state), = CODEX_FORK_HOOKS['state'].items()
+    return any(h.get('key') == key and h.get('enabled') is True and h.get('trustStatus') == 'trusted'
+               and h.get('currentHash') == state['trusted_hash']
+               for e in (reply.get('result') or {}).get('data') or [] for h in e.get('hooks') or [])
 
 
 def _codex_config(env: dict) -> dict:
@@ -792,6 +823,9 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
             raise ValueError('ChatGPT subscription login is required; no API fallback')
         if not _git_worktree(cwd, env, timeout) and not _codex_trusted(cwd, config):
             raise ValueError('source directory is not a Git worktree or trusted Codex project; use in-session review')
+        if not _codex_hook_ready([executable, *_codex_hook_args(), 'app-server'], cwd, env, timeout):
+            raise ValueError('Codex would not run the fork deny hook (hooks off, managed-only or untrusted); '
+                             'use in-session review')
         return executable
     # The fork runs with the source's own mode, verbatim; never a guessed or wider one.
     if (require_version or source.get('finals')) and source.get('permission_mode') not in CLAUDE_PERMISSION_MODES:
