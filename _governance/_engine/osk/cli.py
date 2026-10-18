@@ -171,8 +171,9 @@ def _growth_cmd(a) -> None:
                 result = growth.run(commands[0], limit=a.limit, timeout=a.timeout, invocation=a.invocation)
         _emit(result)
         # 실행은 작업이 남아도(`incomplete`) 실패가 아니다 — 남은 것을 실패 코드로 내면
-        # 운영체제 스케줄러에 매일 도는 실행이 매일 실패로 남는다.
-        if (growth.run_failed(result) if a.growth_cmd == "run" and not a.check
+        # 운영체제 스케줄러에 매일 도는 실행이 매일 실패로 남는다. 하루 묶음은 대기(한도·잠금)를
+        # 오류로 세지 않으므로 `ok`가 곧 판정이다 — 대기로 끝난 날의 포착 실패도 실패다.
+        if (growth.run_failed(result) if a.growth_cmd == "run" and not (a.check or a.daily)
                 else not result.get("ok", True)):
             sys.exit(1)
     except (write.WriteError, StaleEngineError, ValueError, OSError) as e:

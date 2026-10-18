@@ -5,7 +5,8 @@
   · 포착은 하루 시작에 한 번, 공급자를 고르기 전에 한다 — 모두 소진인 날에도 한다. Codex 한도는
     묶음마다 조회한다(모델을 부르지 않는다). Codex가 소진이면 Claude 워커가 대신 돈다.
   · 고를 작업이 없거나 묶음이 진척 없이 끝나면 그날 멈춘다. 진척 없던 작업은 그날 다시 고르지
-    않는다. 벽시계 예산(1.5시간)을 넘기면 새 묶음을 띄우지 않는다.
+    않는다. 벽시계 예산(1.5시간)을 넘기면 새 묶음을 띄우지 않는다. 같은 날 다시 불려도 L과
+    벽시계 예산은 그날 앞선 실행까지 더해 지킨다.
   · L과 공급자별 예산은 주마다 다시 정한다(`adjust`). 그 판단 근거는 그 주 첫 묶음의 계획
     (`daily.adjustment`)에 남는다. 묶음마다 토큰과 캐시 적중은 실행 기록(`usage`)에 남는다.
 """
@@ -389,11 +390,15 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
         by[who] = command
     errors = []
     # 포착은 모델을 부르지 않는다 — 공급자가 모두 소진인 날에도, 주간 측정보다 먼저 한 번 한다.
+    # 실패는 묶음을 막지 않지만 그날의 실패다. 이미 적힌 같은 오류(원본이 지워진 대화 등)는 대화
+    # 상태와 `integration status`에 남아 있다 — 날마다 실패로 세면 새 실패가 묻힌다.
     try:
         captured = integration.capture_known()
     except Exception as exc:
-        captured = {"ok": False, "captures": [], "errors": []}
-        errors.append({"capture": f"{type(exc).__name__}: {exc}"})
+        captured = {"captures": [], "errors": [{"error": f"{type(exc).__name__}: {exc}"}]}
+    failed = captured["errors"] + [c for c in captured["captures"] if c.get("new_error")]
+    if failed:
+        errors.append({"capture": failed})
     rows = growth._records()
     now = datetime.now(timezone.utc).astimezone()
     day = now.date().isoformat()
@@ -413,14 +418,22 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
     spent = _spent(rows, datetime.fromisoformat(adjustment["at"]))[0]
     budgets = {p: b["budget"] - spent[p]["daily"] for p, b in adjustment.get("providers", {}).items()}
     plans = {r["rid"]: r for r in rows if r.get("kind") == "plan"}
-    exclude = {k for r in rows if r.get("kind") == "run"
-               and ((plans.get(r.get("manifest")) or {}).get("daily") or {}).get("day") == day
-               for k in (r.get("progress") or {}).get("none", [])}
-    done, left, off = {"scope": 0, "light": 0}, {"scope", "light"}, {}
+    today = [(plans[r["manifest"]], r) for r in rows if r.get("kind") == "run" and r.get("manifest") in plans
+             and (plans[r["manifest"]].get("daily") or {}).get("day") == day]
+    exclude = {k for _, r in today for k in (r.get("progress") or {}).get("none", [])}
+    # 같은 날 다시 불려도(수동 실행·재시작) L과 벽시계 예산은 그날 전체의 것이다. 한도에 거절된
+    # 묶음은 다른 공급자가 다시 돌았으니 작업 수에 넣지 않는다 — 쓴 시간은 넣는다.
+    done, earlier = {"scope": 0, "light": 0}, 0.0
+    for plan, run in today:
+        if plan["daily"].get("kind") in done and run.get("state") not in growth.WAITS:
+            done[plan["daily"]["kind"]] += run.get("selected", 0)
+        if (begun := _at(plan)) and (ended := _at(run)):
+            earlier += max(0.0, (ended - begun).total_seconds())
+    left, off = {"scope", "light"}, {}
     batches, stop, skipped = [], None, {}
     while stop is None:
         kind = _next_kind(done, left, limit)
-        if time.monotonic() - started >= DAY_SECONDS:
+        if time.monotonic() - started + earlier >= DAY_SECONDS:
             stop = "time_budget"
         elif done["scope"] + done["light"] >= limit:
             stop = "daily_limit"
@@ -463,9 +476,12 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
                 errors.append({"manifest": result["manifest"], "state": state, "error": result.get("error")})
             if not result["progress"]["made"]:
                 stop = "no_progress"
+    # `done`과 `day_seconds`는 그날 앞선 실행까지 더한 값이다.
     return {"ok": not errors, "state": stop, "day": day, "limit": limit, "done": done,
-            "elapsed_seconds": round(time.monotonic() - started), "budget_left": budgets, "skipped": skipped,
-            "adjustment": adjustment if fresh else {"at": adjustment["at"], "limit": limit},
-            "capture": {"ok": captured["ok"], "changed": len(captured["captures"]),
-                        "errors": len(captured["errors"])},
+            "elapsed_seconds": round(time.monotonic() - started),
+            "day_seconds": round(time.monotonic() - started + earlier), "budget_left": budgets,
+            "skipped": skipped, "adjustment": adjustment if fresh else {"at": adjustment["at"], "limit": limit},
+            "capture": {"ok": not failed, "appended": sum(1 for c in captured["captures"] if c.get("appended")),
+                        "failed": len(failed),
+                        "known_errors": sum(1 for c in captured["captures"] if not c["ok"] and not c["new_error"])},
             "batches": batches, "errors": errors}

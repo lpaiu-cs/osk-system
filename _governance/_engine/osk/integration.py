@@ -1031,7 +1031,8 @@ def list_pending(limit: int = 20) -> dict:
 
 def capture_known(tried=None) -> dict:
     """이 vault가 추적하는 대기 대화를 모두 포착한다. 모델을 부르지 않는다 — 하루 묶음은 공급자의
-    한도와 무관하게 하루 시작에 한 번 부른다(#175)."""
+    한도와 무관하게 하루 시작에 한 번 부른다(#175). 실패마다 이번에 새로 생긴 것인지(`new_error`)를
+    적는다 — 원본이 지워진 대화는 날마다 같은 오류로 다시 실패한다."""
     states, _, errors, awaiting_native = _known_pending(None, tried)
     captures = []
     for s in states:
@@ -1039,8 +1040,9 @@ def capture_known(tried=None) -> dict:
             result = capture(s["harness"], s["conversation_id"],
                              s.get("capture_path") or s["transcript_path"], s["session"], s.get("space"))
             if result.get("appended") or not result.get("ok"):   # 실행 기록에는 바뀐 것만 남긴다
-                captures.append({k: result.get(k) for k in (
-                    "harness", "conversation_id", "ok", "appended", "capture_error", "capture_recovery")})
+                captures.append({**{k: result.get(k) for k in (
+                    "harness", "conversation_id", "ok", "appended", "capture_error", "capture_recovery")},
+                    "new_error": not result.get("ok") and result.get("capture_error") != s.get("capture_error")})
         except Exception as exc:
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "captures": captures, "errors": errors,

@@ -314,7 +314,7 @@ class DailyTests(unittest.TestCase):
             assert (calls[1]['limit'], calls[1]['timeout']) == (3, 600)
             # Capture runs once, before any batch; a job without progress is not picked again today.
             assert capture.call_count == 1 and [c['capture'] for c in calls] == [False] * 4, calls
-            assert day['capture'] == {'ok': True, 'changed': 0, 'errors': 0}, day
+            assert day['capture'] == {'ok': True, 'appended': 0, 'failed': 0, 'known_errors': 0}, day
             assert 'o1' not in calls[1]['exclude'] and 'o1' in calls[2]['exclude'], calls
             # Each plan records its batch, the provider and the limit read; the week's evidence goes once.
             assert [c['daily']['batch'] for c in calls] == [1, 2, 3, 4]
@@ -387,7 +387,20 @@ class DailyTests(unittest.TestCase):
                 seen.clear()
                 day = growth_daily.daily(commands[:1])
             assert day['state'] == 'limited' and day['ok'] and not seen and day['skipped'] == {'codex': 'no_signal'}, day
-            assert rounds() == 5 and day['capture'] == {'ok': True, 'changed': 1, 'errors': 0}, (rounds(), day)
+            assert rounds() == 5 and day['capture'] == {'ok': True, 'appended': 1, 'failed': 0, 'known_errors': 0}, (rounds(), day)
+            # A capture that fails is the day's failure even when the batches succeed; the same error
+            # again the next time is the conversation's known state, not a new failure every day.
+            path.unlink()
+            ran = lambda command, **args: {'kind': 'run', 'manifest': 'r', 'state': 'complete', 'returncode': 0,
+                                           'selected': args['limit'], 'provider': None,
+                                           'progress': {'made': ['k'], 'none': []}, 'usage': {'measured': False}}
+            with patch.object(growth, 'run', side_effect=ran), \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
+                day = growth_daily.daily([['worker']])
+                again = growth_daily.daily([['worker']])
+            assert day['batches'] and not day['ok'] and day['capture']['failed'] == 1, day
+            assert [c['conversation_id'] for e in day['errors'] for c in e.get('capture', [])] == ['c1'], day['errors']
+            assert again['ok'] and again['capture'] == {'ok': True, 'appended': 0, 'failed': 0, 'known_errors': 1}, again
             # Spent weekly budgets stop the day too: not a failure.
             with patch.object(growth, 'run', side_effect=fake), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6, codex=0, claude=-5)):
@@ -445,6 +458,44 @@ class DailyTests(unittest.TestCase):
             assert not day['ok'] and day['limit'] == 7 and 'adjustment' not in calls[-1]['daily'], day
         """)
 
+    def test_a_second_run_the_same_day_keeps_the_days_limit_and_time(self):
+        self.check_case("""
+            now = datetime.now(timezone.utc).astimezone()
+            today = now.date().isoformat()
+            def batch(kind, selected, minutes_ago, state='incomplete'):
+                begun = now - timedelta(minutes=minutes_ago)
+                plan = core.ledger_append(growth.LEDGER, {'kind': 'plan', 'at': begun.isoformat(timespec='seconds'),
+                                                          'work_context': 'daily', 'daily': {'day': today, 'kind': kind}})
+                core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': plan['rid'], 'state': state,
+                                                   'at': (begun + timedelta(minutes=10)).isoformat(timespec='seconds'),
+                                                   'selected': selected, 'progress': {'made': ['k'], 'none': []}})
+            # The 09:00 run did three Scope jobs and three light ones; a light batch Codex refused
+            # was run again on Claude, so its jobs are not counted twice. Five batches, 50 minutes.
+            for minutes_ago in (90, 80, 70):
+                batch('scope', 1, minutes_ago)
+            batch('light', 3, 60)
+            batch('light', 3, 50, state='limited')
+            calls = []
+            def fake(command, **args):
+                calls.append(args)
+                return {'kind': 'run', 'manifest': 'm', 'state': 'complete', 'returncode': 0, 'selected': args['limit'],
+                        'provider': None, 'progress': {'made': ['k'], 'none': []}, 'usage': {'measured': False}}
+            with patch.object(growth, 'run', side_effect=fake), \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
+                day = growth_daily.daily([['worker']])
+            assert day['state'] == 'daily_limit' and not calls and day['done'] == {'scope': 3, 'light': 3}, day
+            with patch.object(growth, 'run', side_effect=fake), \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(9)):
+                day = growth_daily.daily([['worker']])
+            # L = 9 leaves three places: Scope takes them up to L − 3.
+            assert day['state'] == 'daily_limit' and [c['queues'] for c in calls] == [('scope_jobs',)] * 3, (day, calls)
+            calls.clear()
+            with patch.object(growth, 'run', side_effect=fake), patch.object(growth_daily, 'DAY_SECONDS', 50 * 60), \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(9)):
+                day = growth_daily.daily([['worker']])
+            assert day['state'] == 'time_budget' and not calls and day['day_seconds'] >= 50 * 60, day
+        """)
+
     def test_cli_day_records_batches_progress_and_usage(self):
         self.check_case("""
             node('A')
@@ -478,6 +529,18 @@ class DailyTests(unittest.TestCase):
                                    str(command), '--command-file', str(command)], capture_output=True, text=True,
                                   encoding='utf-8', timeout=60)
             assert proc.returncode == 1 and '--daily' in proc.stdout, proc.stdout
+            # The day's exit code is its `ok`. A day that ended waiting (every provider limited) with a
+            # failed capture still fails; a day that only waited does not.
+            from osk import cli
+            for result, code in (({'ok': False, 'state': 'limited', 'errors': [{'capture': [{'conversation_id': 'c'}]}]}, 1),
+                                 ({'ok': True, 'state': 'limited', 'errors': []}, 0)):
+                with patch.object(growth_daily, 'daily', return_value=result):
+                    try:
+                        cli.main(['growth', 'run', '--daily', '--command-file', str(command)])
+                        got = 0
+                    except SystemExit as exc:
+                        got = exc.code or 0
+                assert got == code, (result, got)
         """)
 
     def test_scope_batch_takes_nine_rounds_and_light_batch_skips_capture(self):
