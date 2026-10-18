@@ -524,7 +524,9 @@ def observe(source: dict) -> dict:
             start = (ids.index(seen[0]) if harness == 'codex' and seen
                      and source.get('fingerprint', {}).get('history')
                      and seen[0] in ids else 0)
-            if harness == 'codex' and not saved['seen'] and not saved.get('history_baselined'):
+            # A cursor with nothing left to anchor on — never baselined, or every turn it saw
+            # reverted — takes the earlier pages' finals as seen.
+            if harness == 'codex' and not seen and (saved['seen'] or not saved.get('history_baselined')):
                 start = source.get('history_final_count', 0)
             if saved['counter'] != 'finals' or ids[start:start + len(seen)] != seen:
                 raise ValueError('native completion prefix/counter changed; existing cursor was not reset')

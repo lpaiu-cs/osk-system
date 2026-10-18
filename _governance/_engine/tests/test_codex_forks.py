@@ -526,6 +526,17 @@ class RevertedTurnTests(unittest.TestCase):
         saved = json.loads(it.state_path("codex", self.parent).read_text(encoding="utf-8"))["response_growth"]
         self.assertEqual(saved["seen"], ["t1", "t2b"])
 
+    def test_a_legacy_cursor_whose_every_seen_turn_was_reverted_keeps_its_baseline(self):
+        from osk import response_growth
+        _, _, _, new = self.revert(self.parent)
+        # An older engine saw only its current page: its cursor starts at t2, after t1.
+        path = it.state_path("codex", self.parent)
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state["response_growth"] = {"counter": "finals", "seen": ["t2"], "count": 3, "attempted_count": 0}
+        path.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        # Only t2b is new; t1 came before the cursor and is no new Stop.
+        self.assertEqual(response_growth.observe(response_growth.profile(str(new), "codex", self.parent))["count"], 4)
+
     def test_a_fork_parents_later_turns_are_not_reverted(self):
         parent = self.page(self.parent, self.parent, turn(self.parent, "p1"))
         bound = parent.stat().st_size
