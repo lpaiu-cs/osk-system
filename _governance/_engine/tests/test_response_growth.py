@@ -448,7 +448,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     self.assertEqual(layers('')[0], str(system))
                     self.assertIn(str(system) + ': chatgpt_base_url', rg._codex_unpinned(rg._codex_layers(env, str(cwd))))
 
-    def test_codex_route_before_first_final_needs_no_approval_policy(self):
+    def test_codex_route_before_first_final_needs_no_sandbox_policy(self):
         with tempfile.TemporaryDirectory() as folder:
             exe = Path(folder) / 'cli.exe'
             exe.touch()
@@ -460,9 +460,9 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
                 self.assertEqual(rg.preflight(fresh, str(exe), {}, require_version=False), str(exe))
                 for source, require in ((dict(fresh, finals=['t1']), False), (fresh, True)):
-                    with self.subTest(require=require), self.assertRaisesRegex(ValueError, 'approval policy'):
+                    with self.subTest(require=require), self.assertRaisesRegex(ValueError, 'sandbox policy'):
                         rg.preflight(source, str(exe), {}, require_version=require)
-                with self.assertRaisesRegex(ValueError, 'approval policy'):
+                with self.assertRaisesRegex(ValueError, 'sandbox policy'):
                     rg.command(dict(fresh, model='parent-model'), str(exe), {})
 
     def test_codex_subagent_hook_changes_no_conversation_state(self):
@@ -797,11 +797,11 @@ class ResponseGrowthTests(unittest.TestCase):
                       'sandbox_approval': False, 'rules': True, 'mcp_elicitations': False,
                       'request_permissions': True, 'skill_approval': False}},
                   'approvals_reviewer': 'auto_review'}
-        # The sandbox is read-only whatever the source's (#85), even one the CLI cannot represent;
-        # the approval policy stays the source's.
-        for policy in (None, {'type': 'danger-full-access'}, {'type': 'read-only', 'network_access': True},
-                       {'type': 'workspace-write', 'writable_roots': ['relative'], 'network_access': True},
-                       {'type': 'workspace-write', 'future_restriction': True}, {'type': 'external-sandbox'}):
+        # Every known source policy narrows to read-only (#85), at any field value: read-only bars
+        # the writes and network those fields grant. The approval policy stays the source's.
+        for policy in ({'type': 'danger-full-access'}, {'type': 'read-only'}, {'type': 'read-only', 'network_access': True},
+                       {'type': 'workspace-write', 'writable_roots': ['relative'], 'network_access': True,
+                        'exclude_slash_tmp': 'true', 'exclude_tmpdir_env_var': False}):
             with self.subTest(policy=policy), patch.object(rg, 'preflight'):
                 argv = rg.command({**source, 'sandbox_policy': policy}, 'unused', {})
                 config = tomllib.loads('\n'.join(argv[i+1] for i, v in enumerate(argv) if v == '-c'))
@@ -814,10 +814,16 @@ class ResponseGrowthTests(unittest.TestCase):
                 self.assertIs(config['features']['hooks'], True)
                 self.assertEqual(config['hooks'], rg.CODEX_FORK_HOOKS)
                 self.assertNotIn('--dangerously-bypass-hook-trust', argv)
+        # Read-only reads the whole disk, so it cannot stand in for an external sandbox or an
+        # unknown field such as a read limit: those still refuse.
+        for policy in (None, {}, {'type': 'external-sandbox'}, {'type': 'workspace-write', 'future_restriction': True},
+                       {'type': 'read-only', 'access': {'type': 'restricted', 'readable_roots': []}}):
+            with self.subTest(policy=policy), self.assertRaisesRegex(ValueError, 'sandbox'):
+                rg._codex_overrides({**source, 'sandbox_policy': policy})
         for approval in ('bogus', {'granular': {'rules': True}}, {'granular': {
                 'sandbox_approval': False, 'rules': True, 'mcp_elicitations': 'no'}}):
             with self.subTest(approval=approval), self.assertRaisesRegex(ValueError, 'approval policy'):
-                rg._codex_overrides({**source, 'approval_policy': approval})
+                rg._codex_overrides({**source, 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': approval})
 
     def test_claude_fork_hook_denies_every_tool_but_osk_mcp(self):
         import re, shutil
@@ -1031,17 +1037,13 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert state['response_growth']['attempted_count'] == 0
                 real_run(['git','init','-q','-b','main',str(core.ROOT)],check=True,capture_output=True)
                 assert rg.probe(env)['mode'] == 'background'
-                # An approval policy the fork cannot preserve refuses even when Git/auth/version pass.
-                # The sandbox never does: the fork runs read-only whatever the source's (#85).
+                # A future restriction must refuse even when Git/auth/version pass.
                 rows[1]['payload']['sandbox_policy']['future_restriction'] = True
                 native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
-                assert rg.probe(env)['mode'] == 'background'
-                rows[1]['payload']['approval_policy'] = 'future-policy'
-                native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
                 route = rg.probe(env)
-                assert route['mode'] == 'foreground' and 'approval policy' in route['reason'], route
+                assert route['mode'] == 'foreground' and 'cannot be represented' in route['reason'], route
                 # The ChatGPT Web bridge route is refused by name before any native query.
-                rows[1]['payload']['approval_policy'] = 'never'
+                del rows[1]['payload']['sandbox_policy']['future_restriction']
                 rows[1]['payload']['model'] = 'chatgpt-web/pro'
                 native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
                 with patch.object(rg.subprocess,'run',side_effect=AssertionError('native query')):

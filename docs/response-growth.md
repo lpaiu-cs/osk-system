@@ -49,12 +49,12 @@ normalized key, no active profile that sets a key the fork pins (provider, base 
 effort, approval or sandbox), no `model_providers.openai` or `chatgpt_base_url` other than
 the first-party one in any config layer (system, user, or project `.codex/` from the
 project root down to cwd), a source model outside the `chatgpt-web/` bridge route, and a
-preservable native approval policy once a final answer recorded it. The fork pins
-`openai_base_url` to `https://chatgpt.com/backend-api/codex` and drops `OPENAI_BASE_URL`,
-so a top-level local bridge or proxy is bypassed; each run folder keeps its `argv.json`.
-Granular approval policies use TOML inline tables, not JSON objects. An unknown approval
-policy refuses the fork at routing and again before inference; the source's sandbox policy
-never does (the fork is read-only, see below). A Claude fork runs
+native permission policy the fork can preserve or narrow once a final answer recorded it.
+The fork pins `openai_base_url` to `https://chatgpt.com/backend-api/codex` and drops
+`OPENAI_BASE_URL`, so a top-level local bridge or proxy is bypassed; each run folder keeps
+its `argv.json`. Granular approval policies use TOML inline tables, not JSON objects. An
+unknown approval policy, an external sandbox or an unknown sandbox field refuses the fork at
+routing and again before inference (see below). A Claude fork runs
 with the source conversation's permission mode (`permissionMode` in force at its last
 final answer) passed verbatim as `--permission-mode`, with no extra bypass flag; a missing
 or unknown mode, or one that changes before launch, refuses the fork. A switch after the
@@ -98,10 +98,12 @@ cache write on every fork.
     project hooks in the source's folder.
   - `features.hooks=true` overrides a user who turned hooks off. An active profile that sets
     `features` still wins, and so does a managed `allow_managed_hooks_only`.
-  The fork also runs with `sandbox_mode="read-only"` whatever the source's sandbox: if the hook
-  were ever skipped, shell commands still could not write or reach the network. Tool
-  definitions and the approval policy stay the source's. No source sandbox refuses the fork,
-  since none is narrower.
+  The fork also runs with `sandbox_mode="read-only"`: if the hook were ever skipped, shell
+  commands still could not write or reach the network, and under an approval policy of `never`
+  a blocked command fails without asking. Tool definitions and the approval policy stay the
+  source's. Read-only still reads the whole disk, so it narrows only the known source policies
+  (`read-only`, `workspace-write`, `danger-full-access` and their write/network fields). An
+  external sandbox or an unknown field, such as a read limit, refuses the fork as before.
   Per-server `approval_mode` was rejected: it denies only the servers it names. Any plugin
   server or app connector it misses stays open.
 
