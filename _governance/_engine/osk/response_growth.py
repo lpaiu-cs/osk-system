@@ -409,7 +409,8 @@ def profile(path: str, harness: str, sid: str) -> dict:
     before = transcripts.native_fingerprint(str(native), harness, sid)
     result = {'harness': harness, 'conversation_id': sid, 'finals': [], 'active': False,
               'last_successful': False,
-              'transcript_path': str(native), 'fingerprint': before}
+              'transcript_path': str(native), 'fingerprint': before,
+              'reverted': transcripts.reverted(str(native), harness, sid)}
     finals, identified, context, turn, permission = set(), False, {}, None, None
     with closing(transcripts.native_lines(str(native), harness, sid)) as stream:
         for line in stream:
@@ -515,17 +516,22 @@ def observe(source: dict) -> dict:
                      'history_baselined': True}
             state['response_growth'] = saved
         else:
+            # A turn Codex reverted is out of the conversation now (#208); its Stop was
+            # real, so the count keeps it.
+            seen = [i for i in saved['seen'] if i not in source.get('reverted', ())]
             # Older versions saw only the current page. Restoring an explicit
             # history prefix must not count pre-installation finals as new Stops.
-            start = (ids.index(saved['seen'][0]) if harness == 'codex' and saved['seen']
+            start = (ids.index(seen[0]) if harness == 'codex' and seen
                      and source.get('fingerprint', {}).get('history')
-                     and saved['seen'][0] in ids else 0)
-            if harness == 'codex' and not saved['seen'] and not saved.get('history_baselined'):
+                     and seen[0] in ids else 0)
+            # A cursor with nothing left to anchor on — never baselined, or every turn it saw
+            # reverted — takes the earlier pages' finals as seen.
+            if harness == 'codex' and not seen and (saved['seen'] or not saved.get('history_baselined')):
                 start = source.get('history_final_count', 0)
-            if saved['counter'] != 'finals' or ids[start:start + len(saved['seen'])] != saved['seen']:
+            if saved['counter'] != 'finals' or ids[start:start + len(seen)] != seen:
                 raise ValueError('native completion prefix/counter changed; existing cursor was not reset')
             # Startup/resume is not a reset: unobserved completions still count.
-            saved['count'] += len(ids) - start - len(saved['seen'])
+            saved['count'] += len(ids) - start - len(seen)
             saved['seen'] = ids
             saved['history_baselined'] = True
         integration._save(path, state)

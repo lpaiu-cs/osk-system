@@ -297,6 +297,32 @@ def _page_lines(native: Path, remaining: int | None):
             yield line
 
 
+def reverted(path: str, harness: str, sid: str) -> list[str]:
+    """Turns Codex `thread/revert` took out of this conversation (#208). The revert leaves
+    the old page as it was and starts a new one that keeps it only up to a byte bound: a
+    turn the conversation's own earlier page started past that bound is reverted. A fork
+    parent's later turns are the parent's, not reverted."""
+    turns = []
+    for page, limit in _native_files(path, harness, sid)[:-1]:
+        offset, owner = 0, None
+        for line in _page_lines(page, None):
+            start, offset = offset, offset + len(line)
+            if owner is None and line.strip():
+                owner = json.loads(line).get("payload", {}).get("id")
+                if owner != sid:
+                    break
+            elif start >= limit:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue  # An unreadable tail row can only refuse more, never accept.
+                p = row.get("payload") if isinstance(row, dict) else None
+                if (row.get("type") == "event_msg" and isinstance(p, dict)
+                        and p.get("type") == "task_started" and p.get("turn_id")):
+                    turns.append(p["turn_id"])
+    return turns
+
+
 def native_lines(path: str, harness: str, sid: str):
     for native, remaining in _native_files(path, harness, sid):
         yield from _page_lines(native, remaining)
@@ -335,6 +361,7 @@ def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = 
         readable = _codex_history(pages, conversation_id, dialogue=True)
         # The conversation's own page names how it was started (`codex_exec` for a script).
         result["originator"] = pages[-1][0][1].get("payload", {}).get("originator")
+        result["reverted"] = reverted(path, harness, conversation_id)
     elif harness == "kiro":
         # Kiro rows carry no conversation ID; the folder is the conversation's own.
         if Path(path).parent.name != conversation_id:

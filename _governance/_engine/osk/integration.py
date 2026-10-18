@@ -559,23 +559,32 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
     # locks if capture throughput matters.
     with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
         rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
+        kept, gone = s["rounds"], []
         if harness == "codex":
-            # A recovered past turn follows the turns already tracked: keep the saved order.
-            order = [r["id"] for r in s["rounds"]]
             by_id = {r["id"]: r for r in rounds}
-            if len(by_id) != len(rounds) or any(rid not in by_id for rid in order):
+            if len(by_id) != len(rounds):
                 raise ValueError("native round identity prefix changed; the review cursor was not moved")
-            known = set(order)
-            rounds = [by_id[rid] for rid in order] + [r for r in rounds if r["id"] not in known]
+            # Codex `thread/revert` keeps an earlier page only up to a turn (#208): an
+            # unreviewed turn it took out leaves the cursor as if it had never been tracked.
+            # Any other missing turn is a changed prefix.
+            gone = [i for i, r in enumerate(kept) if r["id"] not in by_id]
+            if any(kept[i]["id"] not in parsed.get("reverted", ()) for i in gone):
+                raise ValueError("native round identity prefix changed; the review cursor was not moved")
+            if gone and gone[0] < s["reviewed_count"]:
+                raise ValueError("Codex reverted a reviewed turn (thread/revert); the review cursor was not moved")
+            kept = [r for r in kept if r["id"] in by_id]
+            # A recovered past turn follows the turns already tracked: keep the saved order.
+            known = {r["id"] for r in kept}
+            rounds = [by_id[r["id"]] for r in kept] + [r for r in rounds if r["id"] not in known]
         ids = [r["id"] for r in rounds]
-        if len(ids) != len(set(ids)) or ids[:len(s["rounds"])] != [r["id"] for r in s["rounds"]]:
+        if len(ids) != len(set(ids)) or ids[:len(kept)] != [r["id"] for r in kept]:
             raise ValueError("native round identity prefix changed; the review cursor was not moved")
         # Existing snapshots bind the saved entries: keep them, add the new turns.
         # An unreviewed original turn whose words changed under its ID is tracked
         # as it reads now, and snapshots taken before the change are dropped: no
         # review closes words the reviewer did not see. A reviewed turn keeps the
-        # version its review judged.
-        prior = {r["id"]: r for r in s["rounds"]}
+        # version its review judged. A reverted turn drops its snapshots the same way.
+        prior = {r["id"]: r for r in kept}
         tracked, changed = [], []
         for i, r in enumerate(rounds):
             hashes = _turn_hashes(r, parsed.get("dialogue_v1"))
@@ -590,11 +599,12 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
         s["rounds"] = tracked
         if rules:
             s.setdefault("turns_since", rules["since"])
-        if changed:
+        if changed or gone:
+            first = min(changed[:1] + gone[:1])
             s["snapshots"] = {t: v for t, v in s["snapshots"].items()
-                              if v.get("repair_refs") or v["count"] <= changed[0]}
+                              if v.get("repair_refs") or v["count"] <= first}
         appended = len(s["rounds"]) - len(prior)
-        if appended or changed:
+        if (appended or changed or gone) and s["rounds"]:
             token = _snapshot(s)
             s["snapshots"].setdefault(token, {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
         s["capture_pending"] = parsed["pending_tail"]
@@ -608,7 +618,7 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
             s["capture_failure_phase"] = "read"
         s["native_fingerprint"] = parsed["native_fingerprint"]
         _save(p, s)
-        return {**_current_view(s, p), "appended": appended, "changed": len(changed)}
+        return {**_current_view(s, p), "appended": appended, "changed": len(changed), "reverted": len(gone)}
 
 
 def tick(harness: str, conversation_id: str) -> dict:
