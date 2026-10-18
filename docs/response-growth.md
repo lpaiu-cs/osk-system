@@ -4,9 +4,10 @@ The runner and approved Mechanism §9-3 amendment shipped in v3.17.0.
 Automatic fork configuration remains an explicit per-instance choice.
 
 The current change adds a same-harness fork runner to the existing growth supervisor.
-It preserves the source model, Codex reasoning effort, source working directory and
-permission policy. It requires a matching native CLI version and confirmed subscription
-authentication before inference. Codex uses `exec fork --ephemeral`; Claude uses
+It preserves the source model, Codex reasoning effort, source working directory, tool
+definitions and approval policy or permission mode, and narrows what the tools may do
+(see [Fork tool restriction](#fork-tool-restriction-85)). It requires a matching native
+CLI version and confirmed subscription authentication before inference. Codex uses `exec fork --ephemeral`; Claude uses
 `--resume --fork-session --no-session-persistence`. Maintenance processes retain the
 existing `OSK_GROWTH_WORKER=1` exclusion from conversation tracking.
 
@@ -48,12 +49,12 @@ normalized key, no active profile that sets a key the fork pins (provider, base 
 effort, approval or sandbox), no `model_providers.openai` or `chatgpt_base_url` other than
 the first-party one in any config layer (system, user, or project `.codex/` from the
 project root down to cwd), a source model outside the `chatgpt-web/` bridge route, and a
-representable native permission policy once a final answer recorded it. The fork pins
-`openai_base_url` to `https://chatgpt.com/backend-api/codex` and drops `OPENAI_BASE_URL`,
-so a top-level local bridge or proxy is bypassed; each run folder keeps its `argv.json`. Workspace
-write roots, network access and both temporary-directory exclusion flags are explicitly
-preserved. Granular approval policies use TOML inline tables, not JSON objects. Unknown
-restrictions refuse the fork at routing and again before inference. A Claude fork runs
+native permission policy the fork can preserve or narrow once a final answer recorded it.
+The fork pins `openai_base_url` to `https://chatgpt.com/backend-api/codex` and drops
+`OPENAI_BASE_URL`, so a top-level local bridge or proxy is bypassed; each run folder keeps
+its `argv.json`. Granular approval policies use TOML inline tables, not JSON objects. An
+unknown approval policy, an external sandbox or an unknown sandbox field refuses the fork at
+routing and again before inference (see below). A Claude fork runs
 with the source conversation's permission mode (`permissionMode` in force at its last
 final answer) passed verbatim as `--permission-mode`, with no extra bypass flag; a missing
 or unknown mode, or one that changes before launch, refuses the fork. A switch after the
@@ -70,6 +71,31 @@ or changed source metadata before launch refuses the fork without spending the S
 attempt, preserving the pending review; native trailer rows written after Stop do not. Source movement
 during execution also makes cumulative cache accounting unconfirmed. A harness upgrade
 can require updating the configured native CLI path.
+
+### Fork tool restriction (#85)
+
+A fork reads the source conversation's untrusted text with the source's credentials. In
+2026-10 measurements (63 forks) no fork used a tool outside the osk MCP, so the restriction
+costs no function. It never changes the tool definitions or the Claude permission mode the
+source used: either would turn the cached parent prefix (median about 450k tokens) into a
+cache write on every fork.
+
+- **Claude.** The `--settings` the fork already passes adds a PreToolUse hook that denies
+  every tool call except `mcp__osk-system__*` and `ToolSearch` (which loads the deferred
+  osk tools). The deny holds in every permission mode, `bypassPermissions` included; the
+  model reads its reason and continues with the osk tools. `--tools`/`--strict-mcp-config`
+  and a switch to `--permission-mode default` with `--allowedTools` were rejected: the first
+  changes the tool definitions, the second may change the system prompt.
+- **Codex.** The fork runs with `sandbox_mode="read-only"`: shell commands cannot write or
+  reach the network. Shell and other MCP tools stay defined, and the approval policy stays
+  the source's, so under `never` a blocked command fails without asking. Read-only still
+  reads the whole disk, so it narrows only the known source policies (`read-only`,
+  `workspace-write`, `danger-full-access` and their write/network fields). An external
+  sandbox or an unknown field, such as a read limit, refuses the fork as before.
+
+The daily growth workers start fresh, with no parent prefix to keep, and restrict their own
+tools (Claude `--tools ""` with `--strict-mcp-config`; Codex `--sandbox read-only` in the
+command [SETUP.md](SETUP.md) gives).
 
 ### 로컬 브리지·프록시
 
