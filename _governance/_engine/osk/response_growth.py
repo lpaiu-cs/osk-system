@@ -1,6 +1,7 @@
 """Same-harness subscription forks; native completion and review receipts stay separate."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -59,8 +60,25 @@ FORK_DENY = json.dumps({'hookSpecificOutput': {
     'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
     'permissionDecisionReason': f'osk fork review: only mcp__{adapters.MCP_NAME}__* tools are available here. '
                                 'Continue the review with them.'}})
+FORK_HOOK = {'type': 'command', 'command': f"echo '{FORK_DENY}'"}
 CLAUDE_FORK_SETTINGS = json.dumps({'forceLoginMethod': 'claudeai', 'hooks': {'PreToolUse': [
-    {'matcher': FORK_TOOLS, 'hooks': [{'type': 'command', 'command': f"echo '{FORK_DENY}'"}]}]}})
+    {'matcher': FORK_TOOLS, 'hooks': [FORK_HOOK]}]}})
+# Codex takes the same deny as a -c (session-flag) hook. Its PreToolUse also sees every MCP server
+# and app connector (`mcp__<server>__<tool>`, every character outside [A-Za-z0-9_] made `_`), and
+# its tool_search never reaches the hook, so only this vault's MCP is spared. The matcher is a Rust
+# regex, which has no lookahead: it spells out every name that leaves the vault's prefix. An invalid
+# or untrusted hook is skipped silently, so the hook carries its own trust — the sha256 of Codex's
+# normalized form (defaults filled, keys sorted, compact JSON) under the synthetic session-flags key
+# (hooks/list, 0.154.0 and 0.163.0-alpha.10.2).
+_OSK_TOOL = re.sub(r'[^A-Za-z0-9_]', '_', f'mcp__{adapters.MCP_NAME}__')
+CODEX_FORK_TOOLS = '^(?s:' + '|'.join(f'{_OSK_TOOL[:i]}(?:[^{c}].*)?' for i, c in enumerate(_OSK_TOOL)) + ')$'
+_CODEX_TRUST = 'sha256:' + hashlib.sha256(json.dumps(
+    {'event_name': 'pre_tool_use', 'matcher': CODEX_FORK_TOOLS,
+     'hooks': [{**FORK_HOOK, 'timeout': 600, 'async': False}]},
+    sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+CODEX_FORK_HOOKS = {'PreToolUse': [{'matcher': CODEX_FORK_TOOLS, 'hooks': [FORK_HOOK]}], 'state': {
+    ('C:\\' if os.name == 'nt' else '/') + f'<session-flags>{os.sep}config.toml:pre_tool_use:0:0':
+        {'trusted_hash': _CODEX_TRUST}}}
 
 
 def configured(harness: str) -> str | bool | None:
@@ -613,7 +631,8 @@ def _toml_value(value) -> str:
 
 def _codex_overrides(source: dict) -> list[str]:
     """Shared routing/launch gate: never silently discard a native restriction. The sandbox is
-    read-only whatever the source's (#85) — no source policy is narrower, so none refuses."""
+    read-only whatever the source's (#85) — no source policy is narrower, so none refuses — and the
+    deny hook runs even where the user turned hooks off."""
     approval = source.get('approval_policy')
     if isinstance(approval, dict):
         granular = approval.get('granular')
@@ -635,7 +654,8 @@ def _codex_overrides(source: dict) -> list[str]:
     # profile/provider base_url, which native config resolution would prefer.
     settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
                 'openai_base_url': OPENAI_ENDPOINT, 'model_reasoning_effort': source['effort'], 'approval_policy': approval,
-                'approvals_reviewer': reviewer, 'sandbox_mode': 'read-only'}
+                'approvals_reviewer': reviewer, 'sandbox_mode': 'read-only',
+                'features.hooks': True, 'hooks': CODEX_FORK_HOOKS}
     return [part for key, value in settings.items() for part in ('-c', key + '=' + _toml_value(value))]
 
 

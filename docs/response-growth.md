@@ -86,10 +86,24 @@ cache write on every fork.
   model reads its reason and continues with the osk tools. `--tools`/`--strict-mcp-config`
   and a switch to `--permission-mode default` with `--allowedTools` were rejected: the first
   changes the tool definitions, the second may change the system prompt.
-- **Codex.** The fork runs with `sandbox_mode="read-only"` whatever the source's sandbox: shell
-  commands cannot write or reach the network. Shell and other MCP tools stay defined, and the
-  approval policy stays the source's, so under `never` a blocked command fails without asking.
-  No source sandbox refuses the fork, since none is narrower.
+- **Codex.** The same deny rides in as a `-c hooks=…` PreToolUse hook. Codex runs it before
+  every shell command, `apply_patch`, MCP tool and app connector (`mcp__codex_apps__*`), and
+  spares only `mcp__osk_system__*` (Codex turns every character outside `[A-Za-z0-9_]` in a
+  server name into `_`). Its `tool_search` never reaches the hook, so it needs no exception.
+  Three details keep the hook from being skipped silently:
+  - The matcher is a Rust regex, which has no lookahead, so it spells out every name that
+    leaves the osk prefix.
+  - The override carries the hook's own trust, `hooks.state.<session-flags key>.trusted_hash`.
+    Codex hashes the normalized hook. `--dangerously-bypass-hook-trust` would also run untrusted
+    project hooks in the source's folder.
+  - `features.hooks=true` overrides a user who turned hooks off. An active profile that sets
+    `features` still wins, and so does a managed `allow_managed_hooks_only`.
+  The fork also runs with `sandbox_mode="read-only"` whatever the source's sandbox: if the hook
+  were ever skipped, shell commands still could not write or reach the network. Tool
+  definitions and the approval policy stay the source's. No source sandbox refuses the fork,
+  since none is narrower.
+  Per-server `approval_mode` was rejected: it denies only the servers it names. Any plugin
+  server or app connector it misses stays open.
 
 The daily growth workers start fresh, with no parent prefix to keep, and restrict their own
 tools (Claude `--tools ""` with `--strict-mcp-config`; Codex `--sandbox read-only` in the

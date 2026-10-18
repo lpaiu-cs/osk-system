@@ -810,6 +810,10 @@ class ResponseGrowthTests(unittest.TestCase):
                 self.assertEqual(config['sandbox_mode'], 'read-only')
                 self.assertNotIn('sandbox_workspace_write', config)
                 self.assertNotIn('--skip-git-repo-check', argv)
+                # The deny hook rides along as a trusted session-flag hook, on even if the user turned hooks off.
+                self.assertIs(config['features']['hooks'], True)
+                self.assertEqual(config['hooks'], rg.CODEX_FORK_HOOKS)
+                self.assertNotIn('--dangerously-bypass-hook-trust', argv)
         for approval in ('bogus', {'granular': {'rules': True}}, {'granular': {
                 'sandbox_approval': False, 'rules': True, 'mcp_elicitations': 'no'}}):
             with self.subTest(approval=approval), self.assertRaisesRegex(ValueError, 'approval policy'):
@@ -839,6 +843,31 @@ class ResponseGrowthTests(unittest.TestCase):
                 decision = json.loads(out.stdout)['hookSpecificOutput']
                 self.assertEqual({k: decision[k] for k in expected}, expected)
                 self.assertIn('mcp__osk-system__', decision['permissionDecisionReason'])
+
+    def test_codex_fork_hook_denies_every_tool_but_osk_mcp(self):
+        import re
+        (group,) = rg.CODEX_FORK_HOOKS['PreToolUse']
+        matcher = group['matcher']
+        # Codex compiles the matcher with Rust `regex`; lookaround fails to compile and drops the hook.
+        self.assertFalse(re.search(r'\(\?<?[=!]', matcher))
+        for name, denied in (('exec_command', True), ('shell', True), ('apply_patch', True), ('Write', True),
+                             ('Agent', True), ('update_plan', True), ('mcp__node_repl__js', True),
+                             ('mcp__codex_apps__github_search_repositories', True), ('mcp__osk_system_x__search', True),
+                             ('mcp__osk_systemx__search', True), ('mcp__osk-system__search', True), ('', True),
+                             ('mcp__osk_system__', False), ('mcp__osk_system__search', False),
+                             ('mcp__osk_system__create_node', False)):
+            with self.subTest(tool=name):
+                # Codex tests the regex unanchored; the pattern anchors both ends itself.
+                self.assertEqual(bool(re.search(matcher, name)), denied)
+        # The same deny line as Claude's, so the shell test above covers both.
+        (claude,) = json.loads(rg.CLAUDE_FORK_SETTINGS)['hooks']['PreToolUse']
+        self.assertEqual(group['hooks'], claude['hooks'])
+        # The trust Codex itself computed for this hook (app-server hooks/list `currentHash`, 0.154.0 and
+        # 0.163.0-alpha.10.2): a hook the engine changes must be measured again, or it never runs.
+        (key, state), = rg.CODEX_FORK_HOOKS['state'].items()
+        self.assertEqual(state, {'trusted_hash': 'sha256:1a48d3f94a018f06ae75f2f4af98283fd738c113841802c4186d2096501ed2dc'})
+        self.assertEqual(key, ('C:\\<session-flags>\\config.toml' if rg.os.name == 'nt' else '/<session-flags>/config.toml')
+                         + ':pre_tool_use:0:0')
 
     def test_desktop_source_routes_off_and_never_forks(self):
         # Desktop's first request leads with tool definitions only the running app serves
