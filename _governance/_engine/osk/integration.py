@@ -1007,9 +1007,11 @@ def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list
             # An ended Claude conversation whose last turn never finished is read once more:
             # the idle close turns that tail into an interrupted round to review.
             idle_tail = s["harness"] == "claude" and s["capture_pending"] and not s["capture_error"]
-            # A capture error is retried even when the file reads as before: compressing a
-            # rollout keeps its fingerprint, and the error only said it was not found (#203).
-            if (changed or s["capture_error"] or current["repair_pending"]
+            # A missing-source error whose file is found again is retried even when it reads
+            # as before: compressing a rollout keeps its fingerprint (#203). Other errors wait
+            # for a change — retrying an unchanged source only repeats them.
+            retry = current["capture_recovery"]["state"] == "retryable"
+            if (changed or retry or current["repair_pending"]
                     or any(not raw.is_native(ref) for ref in pending)
                     or (pending or idle_tail) and _ended_source(s)):
                 at = _turn_at(s, native_path)

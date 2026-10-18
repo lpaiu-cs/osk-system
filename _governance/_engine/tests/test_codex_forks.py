@@ -441,6 +441,18 @@ class CompressedRolloutTests(unittest.TestCase):
         self.assertEqual(advice["state"], "action_required")
         self.assertIn("Codex 압축본(`.jsonl.zst`)으로도 없다", advice["next_action"])
 
+    def test_an_unchanged_source_with_another_error_is_not_read_again(self):
+        plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
+        with plain.open("a", encoding="utf-8") as f:
+            f.write('{"type": "event_msg", "payl')      # a tail the writer never finished
+        first = it.capture("codex", self.parent, str(plain), "forks")
+        self.assertIn("incomplete JSONL tail", first["capture_error"])
+        it.acknowledge("codex", self.parent, first["through"], "no_value", "synthetic fixture")
+        compress(plain)
+        # The error stands, but nothing changed: the next catch-up does not decompress it again.
+        self.assertEqual(it.status("codex", self.parent)["capture_recovery"]["state"], "action_required")
+        self.assertEqual(it._known_pending(None)[0], [])
+
     def test_a_missing_decompressor_is_named_not_taken_for_a_lost_source(self):
         plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
         it.capture("codex", self.parent, str(plain), "forks")
