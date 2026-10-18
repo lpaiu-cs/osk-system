@@ -520,6 +520,14 @@ assert Fake.rows[f'osk-growth-{services.tag()}']['definition']['argv'][-5:] == [
     '--command-file', str(command_file), '--command-file', str(spare_file), '--daily'], Fake.rows
 rep, _ = S.run(schedule='codex')
 assert rep['schedule']['claude_command'] == {'action': 'keep', 'file': str(spare_file)}, rep['schedule']
+# The user later points the daily command at their own worker: the Claude file left behind is not
+# registered, or Claude would run before that worker.
+codex_argv = read(command_file)
+command_file.write_text(json.dumps([sys.executable, '-c', 'pass']), encoding='utf-8')
+rep, _ = S.run(schedule='codex')
+assert rep['ok'] and 'claude_command' not in rep['schedule'], rep['schedule']
+assert rep['schedule']['command_files'] == [str(command_file)], rep['schedule']
+command_file.write_text(json.dumps(codex_argv), encoding='utf-8')
 # Sync: a local main, a private origin, and a push that does not ask.
 rep, _ = S.run(sync=True)
 assert not rep['ok'] and 'main' in rep['errors'][0] and 'origin' in rep['errors'][0], rep

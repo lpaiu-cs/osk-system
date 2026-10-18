@@ -2,8 +2,8 @@
 
   · 하루 한도 L을 묶음으로 나눠 돈다. Scope 통합 작업은 묶음 하나에 혼자(9라운드, 900초) 두고,
     나머지 큐는 3개씩(600초) 묶는다. Scope 통합이 첫 차례를 갖는다.
-  · 포착은 하루 첫 묶음에서 한 번만 한다. Codex 한도는 묶음마다 조회한다(모델을 부르지 않는다).
-    Codex가 소진이면 Claude 워커가 대신 돈다.
+  · 포착은 하루 시작에 한 번, 공급자를 고르기 전에 한다 — 모두 소진인 날에도 한다. Codex 한도는
+    묶음마다 조회한다(모델을 부르지 않는다). Codex가 소진이면 Claude 워커가 대신 돈다.
   · 고를 작업이 없거나 묶음이 진척 없이 끝나면 그날 멈춘다. 진척 없던 작업은 그날 다시 고르지
     않는다. 벽시계 예산(1.5시간)을 넘기면 새 묶음을 띄우지 않는다.
   · L과 공급자별 예산은 주마다 다시 정한다(`adjust`). 그 판단 근거는 그 주 첫 묶음의 계획
@@ -351,12 +351,18 @@ def _choose(commands: dict, budgets: dict, off: dict) -> tuple[str | None, dict 
     for who in [p for p in PROVIDERS if p in commands] + [p for p in commands if p not in PROVIDERS]:
         if who in off:
             skipped[who] = off[who]
-        elif budgets.get(who, 1) <= 0:
+            continue
+        if budgets.get(who, 1) <= 0:
             skipped[who] = "budget"
-        elif who == "codex" and (limits := codex_limits(commands[who][0]))["exhausted"]:
-            skipped[who] = "exhausted" if limits["signal"] else "no_signal"
-        else:
-            return who, limits, skipped
+            continue
+        if who == "codex":
+            # 실행기가 띄울 바이너리로 묻는다 — Desktop이 갱신되면 명령 파일의 옛 경로는 지워진다.
+            # 쓸 수 없는 명령은 묻지 않는다: 그 묶음이 `invalid_command`로 알린다.
+            checked = growth.check_command(commands[who])
+            if checked["ok"] and (limits := codex_limits(checked["executable"]))["exhausted"]:
+                skipped[who] = "exhausted" if limits["signal"] else "no_signal"
+                continue
+        return who, limits, skipped
     return None, limits, skipped
 
 
@@ -381,10 +387,16 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
         if who in by:
             raise ValueError(f"two growth commands for one provider ({who})")
         by[who] = command
+    errors = []
+    # 포착은 모델을 부르지 않는다 — 공급자가 모두 소진인 날에도, 주간 측정보다 먼저 한 번 한다.
+    try:
+        captured = integration.capture_known()
+    except Exception as exc:
+        captured = {"ok": False, "captures": [], "errors": []}
+        errors.append({"capture": f"{type(exc).__name__}: {exc}"})
     rows = growth._records()
     now = datetime.now(timezone.utc).astimezone()
     day = now.date().isoformat()
-    errors = []
     last = (_adjustments(rows) or [None])[-1]
     fresh = last is None or now - datetime.fromisoformat(last["at"]) >= timedelta(days=WEEK)
     adjustment = last
@@ -405,7 +417,7 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
                and ((plans.get(r.get("manifest")) or {}).get("daily") or {}).get("day") == day
                for k in (r.get("progress") or {}).get("none", [])}
     done, left, off = {"scope": 0, "light": 0}, {"scope", "light"}, {}
-    batches, captured, stop, skipped = [], False, None, {}
+    batches, stop, skipped = [], None, {}
     while stop is None:
         kind = _next_kind(done, left, limit)
         if time.monotonic() - started >= DAY_SECONDS:
@@ -427,11 +439,8 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
         if recorded:
             info["adjustment"] = adjustment
         result = _batch(by[who], kind, 1 if kind == "scope" else min(LIGHT_SIZE, limit - sum(done.values())),
-                        capture=kind == "scope" and not captured, exclude=frozenset(exclude), daily=info,
-                        invocation=invocation)
+                        capture=False, exclude=frozenset(exclude), daily=info, invocation=invocation)
         state = result.get("state")
-        # 포착은 선택 앞에서 돈다 — 잠금·구독 확인에서 멈춘 실행만 포착하지 못했다.
-        captured = captured or kind == "scope" and state not in {"busy", "unavailable"}
         if result.get("manifest"):
             recorded = False         # 판단 근거는 이 계획에 남았다
             batches.append({k: result.get(k) for k in ("manifest", "state", "provider", "selected", "progress",
@@ -457,4 +466,6 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
     return {"ok": not errors, "state": stop, "day": day, "limit": limit, "done": done,
             "elapsed_seconds": round(time.monotonic() - started), "budget_left": budgets, "skipped": skipped,
             "adjustment": adjustment if fresh else {"at": adjustment["at"], "limit": limit},
+            "capture": {"ok": captured["ok"], "changed": len(captured["captures"]),
+                        "errors": len(captured["errors"])},
             "batches": batches, "errors": errors}

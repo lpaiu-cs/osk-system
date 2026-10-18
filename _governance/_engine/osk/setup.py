@@ -311,10 +311,11 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
                                     "정기 재검토')"}
         out["command"] = {"action": "add", "argv": argv, "harness": harness}
     files = [file]
-    # Codex가 소진인 날은 Claude 워커가 대신 돈다(#175) — 그 명령도 공급자별 파일로 둔다.
+    # Codex가 소진인 날은 Claude 워커가 대신 돈다(#175) — 그 명령도 공급자별 파일로 둔다. 주 명령이
+    # Codex일 때만이다: 사용자가 바꿔 둔 다른 실행기보다 Claude가 먼저 돌면 안 된다.
     from . import growth_daily
     spare = core.ROOT / ".osk" / "growth-command-claude.json"
-    if growth_daily.provider(argv) != "claude" and spare.is_file():
+    if growth_daily.provider(argv) == "codex" and spare.is_file():
         files.append(spare)
         out["claude_command"] = {"action": "keep", "file": str(spare)}
     elif growth_daily.provider(argv) == "codex":

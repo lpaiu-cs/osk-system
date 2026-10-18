@@ -38,6 +38,8 @@ def lines(path, rows):
 def adjustment(limit, at=None, **budgets):
     return {'at': (at or datetime.now(timezone.utc).astimezone()).isoformat(timespec='seconds'), 'limit': limit,
             'providers': {p: {'budget': b} for p, b in budgets.items()}}
+# The day resolves argv[0] as the runner does; these cases name executables that do not exist.
+resolved = patch.object(growth, 'check_command', lambda command, **k: {'ok': True, 'executable': command[0]})
 """
 
 
@@ -96,6 +98,15 @@ class DailyTests(unittest.TestCase):
                 assert time.monotonic() - started < 25, 'an exited app-server must not wait out the timeout'
             got = growth_daily.codex_limits(str(core.ROOT / 'no-such-codex.exe'))
             assert not got['signal'] and got['exhausted'], got
+            # The day asks the binary the runner will start. After a Desktop update the command file's
+            # path is gone and the runner follows to the new one; the limit read must not stay behind.
+            from osk import native_cli
+            os.environ['OSK_TEST_LIMITS'] = json.dumps({'result': {'ordinaryUsageAllowed': True,
+                                                                   'rateLimits': snap(credits=None)}})
+            old = str(core.ROOT / 'Codex' / 'bin' / 'old' / 'codex.exe')
+            with patch.object(native_cli, 'resolve', side_effect=lambda p: codex if p == old else p):
+                who, limits, skipped = growth_daily._choose({'codex': [old, 'exec']}, {}, {})
+            assert who == 'codex' and limits['signal'] and not limits['exhausted'] and not skipped, (who, limits, skipped)
         """)
 
     def test_usage_counts_tokens_without_cache_reads_and_flags_misses(self):
@@ -291,8 +302,9 @@ class DailyTests(unittest.TestCase):
                         'selected': len(made + none), 'provider': 'codex', 'progress': {'made': made, 'none': none},
                         'usage': {'measured': True, 'tokens': 1000}}
             fixed = {**adjustment(8, codex=10**6), 'N': 1}
-            with patch.object(growth, 'run', side_effect=fake), \\
+            with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=fixed), \\
+                    patch.object(integration, 'capture_known', wraps=integration.capture_known) as capture, \\
                     patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 2}):
                 day = growth_daily.daily([['C:/x/codex.exe', 'exec']])
             assert day['state'] == 'no_progress' and day['ok'], day
@@ -300,8 +312,9 @@ class DailyTests(unittest.TestCase):
             # One Scope job a batch, 9 rounds, 900 s; the other queues three at a time, 600 s.
             assert {(c['limit'], c['timeout'], c['scope_rounds']) for c in calls if c['queues'] == ('scope_jobs',)} == {(1, 900, 9)}
             assert (calls[1]['limit'], calls[1]['timeout']) == (3, 600)
-            # Capture runs once, before the first batch; a job without progress is not picked again today.
-            assert [c['capture'] for c in calls] == [True, False, False, False]
+            # Capture runs once, before any batch; a job without progress is not picked again today.
+            assert capture.call_count == 1 and [c['capture'] for c in calls] == [False] * 4, calls
+            assert day['capture'] == {'ok': True, 'changed': 0, 'errors': 0}, day
             assert 'o1' not in calls[1]['exclude'] and 'o1' in calls[2]['exclude'], calls
             # Each plan records its batch, the provider and the limit read; the week's evidence goes once.
             assert [c['daily']['batch'] for c in calls] == [1, 2, 3, 4]
@@ -346,7 +359,7 @@ class DailyTests(unittest.TestCase):
                         'usage': {'measured': False}}
             reads = iter([{'signal': True, 'exhausted': True}, {'signal': True, 'exhausted': False},
                           {'signal': True, 'exhausted': False}])
-            with patch.object(growth, 'run', side_effect=fake), \\
+            with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(8)), \\
                     patch.object(growth_daily, 'codex_limits', side_effect=lambda exe: next(reads)):
                 day = growth_daily.daily(commands)
@@ -355,12 +368,26 @@ class DailyTests(unittest.TestCase):
             assert seen == [('claude', 'scope'), ('codex', 'light'), ('claude', 'light'), ('claude', 'scope')], seen
             assert day['state'] == 'no_progress' and day['ok'], day
             # A failed read is no signal: the day runs on Claude; without a Claude worker it waits.
-            with patch.object(growth, 'run', side_effect=fake), \\
+            # Capture costs no model call, so the new turns still reach the vault that day.
+            path = lines(core.ROOT / 'native.jsonl', [])
+            def turns(n):
+                return [row for i in range(n) for row in (
+                    {'type': 'user', 'sessionId': 'c1', 'uuid': 'u' + str(i), 'message': {'role': 'user', 'content': 'q' + str(i)}},
+                    {'type': 'assistant', 'sessionId': 'c1', 'uuid': 'a' + str(i), 'message': {
+                        'role': 'assistant', 'id': 'm' + str(i), 'content': [{'type': 'text', 'text': 'a' + str(i)}],
+                        'stop_reason': 'end_turn'}})]
+            lines(path, turns(2))
+            integration.capture('claude', 'c1', str(path), 'c1-project', space='00_Scope/W1')
+            rounds = lambda: len(integration._load(integration.state_path('claude', 'c1'), 'claude', 'c1')['rounds'])
+            assert rounds() == 2
+            lines(path, turns(5))
+            with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)), \\
                     patch.object(growth_daily, 'codex_limits', return_value={'signal': False, 'exhausted': True}):
                 seen.clear()
                 day = growth_daily.daily(commands[:1])
             assert day['state'] == 'limited' and day['ok'] and not seen and day['skipped'] == {'codex': 'no_signal'}, day
+            assert rounds() == 5 and day['capture'] == {'ok': True, 'changed': 1, 'errors': 0}, (rounds(), day)
             # Spent weekly budgets stop the day too: not a failure.
             with patch.object(growth, 'run', side_effect=fake), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6, codex=0, claude=-5)):
