@@ -165,6 +165,9 @@ class DailyTests(unittest.TestCase):
                 assert growth_daily.limited(allowed, ['codex.exe'])
             with patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False}):
                 assert not growth_daily.limited(allowed, ['codex.exe'])
+            # An unanswered query after a failed worker is no rejection: the failure stays a failure.
+            with patch.object(growth_daily, 'codex_limits', return_value={'signal': False, 'exhausted': True}):
+                assert not growth_daily.limited(allowed, ['codex.exe'])
             # A worker rejected by its limit leaves a waiting run, not a failed one, and the CLI exits 0.
             cli = shell('claude', chr(10).join([
                 'import json, sys', 'sys.stdin.read()',

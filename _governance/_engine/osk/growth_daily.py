@@ -115,7 +115,9 @@ def _events(output: Path) -> list[dict]:
 def limited(output: Path, command: list[str]) -> bool:
     """끝내지 못한 작업자가 한도에 막혔는가 — 실패가 아니라 대기다(#173). Claude는 조직 설정으로
     초과 사용이 꺼져 있어 100%에서 거절하고, 그 거절을 `rate_limit_event`(status `rejected`)로 낸다.
-    Codex는 크레딧까지 바닥나야 거절하므로, 끝난 뒤 다시 조회해 소진이면 거절로 본다."""
+    Codex는 크레딧까지 바닥나야 거절하므로, 끝난 뒤 다시 조회해 소진이면 거절로 본다. 조회가 답하지
+    못하면 거절이 아니다 — 실행 전 선택은 신호 없음을 소진과 같이 다루지만, 이미 실패한 작업의 까닭으로
+    확정하면 작업자 오류가 대기로 묻힌다."""
     who = provider(command)
     try:
         if who == "claude":
@@ -123,7 +125,10 @@ def limited(output: Path, command: list[str]) -> bool:
                        and (e.get("rate_limit_info") or {}).get("status") == "rejected" for e in _events(output))
     except OSError:
         return False
-    return who == "codex" and codex_limits(command[0])["exhausted"]
+    if who != "codex":
+        return False
+    limits = codex_limits(command[0])
+    return limits["signal"] and limits["exhausted"]
 
 
 def _claude_requests(output: Path) -> tuple[list, dict | None]:
