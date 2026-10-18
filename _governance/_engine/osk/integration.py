@@ -1029,15 +1029,16 @@ def list_pending(limit: int = 20) -> dict:
             "awaiting_native": awaiting_native}
 
 
-def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None) -> dict:
+def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
     포착(모델 비용이 없다)과 작업 선택을 나눈다. 대기 전체를 먼저 포착하고, 따라잡은 커서로
     다시 세운 순서에서 `limit`개를 고른다 — 작업이 차면 포착도 멈추던 때에는 뒤에 선 대화의 새
     턴이 추적되지 않아, 새 턴으로 다시 열린 대화가 순서에 오르지 못했다(#179). 작업을 만들지
-    못한 대화(원본 유실·포착 실패 등)는 건너뛰고 다음 대화로 `limit`을 채운다."""
+    못한 대화(원본 유실·포착 실패 등)는 건너뛰고 다음 대화로 `limit`을 채운다. `capture_new=False`는
+    선택만 한다 — 하루 묶음은 첫 묶음 전에 한 번만 포착한다(#175)."""
     if not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
-    states, _, errors, awaiting_native = _known_pending(None, tried)
+    states, _, errors, awaiting_native = _known_pending(None, tried) if capture_new else ([], 0, [], [])
     captures, jobs = [], []
     for s in states:
         try:

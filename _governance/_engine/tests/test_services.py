@@ -27,7 +27,7 @@ def run(argv):
     calls.append(argv)
     return subprocess.CompletedProcess(argv, 0, b'', b'')
 command_file = root / '.osk' / 'growth-command.json'
-growth = services.job('growth', command_file=command_file, at='07:30')
+growth = services.job('growth', command_files=[command_file], at='07:30')
 sync = services.job('sync')
 home = Path.home()
 '''
@@ -84,7 +84,7 @@ data = plistlib.loads((agents / f"{m.ident('growth')}.plist").read_bytes())
 assert data['StartCalendarInterval'] == {'Hour': 7, 'Minute': 30} and 'KeepAlive' not in data, data
 assert data['ProgramArguments'][1:4] == [str(growth_py), '--command-file', str(command_file)], data
 # A changed minute is a replacement; uninstalling removes both and backs them up.
-later = services.job('growth', command_file=command_file, at='08:00')
+later = services.job('growth', command_files=[command_file], at='08:00')
 assert services.plan(m, 'growth', later, False)['action'] == 'replace'
 for kind in ('growth', 'sync'):
     p = services.plan(m, kind, None, True)
@@ -169,7 +169,15 @@ assert Path(result['backups'][0]).read_text(encoding='utf-8') == '<Task/>'
 task = m.store['\\' + m.ident('growth')]
 assert task['actions'][0]['execute'] == growth['python'], task
 assert subprocess.list2cmdline(growth['args']) == task['actions'][0]['arguments'], task
+# The task starts python itself with the day's batches, so its time limit — the engine's 1.5-hour
+# budget plus 30 minutes — stops the runner. The wrapper's Start-Process python outlived its 15 minutes.
+assert growth['args'][-1] == '--daily' and task['limit'] == 'PT120M', task
 assert services.plan(m, 'growth', growth, False)['action'] == 'keep'
+# The Claude worker that runs on a day Codex is exhausted is a second command file: a new registration.
+both = services.job('growth', command_files=[command_file, root / '.osk' / 'growth-command-claude.json'], at='07:30')
+assert both['args'][1:6] == ['--command-file', str(command_file), '--command-file',
+                             str(root / '.osk' / 'growth-command-claude.json'), '--daily'], both
+assert services.plan(m, 'growth', both, False)['action'] == 'replace'
 p = services.plan(m, 'sync', sync, False)
 assert (p['action'], p['remove']) == ('replace', ['\\osk-sync-daemon']), p
 services.apply(m, 'sync', sync, p, False, '20260927-090001')

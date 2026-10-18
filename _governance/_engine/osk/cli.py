@@ -156,11 +156,19 @@ def _growth_cmd(a) -> None:
             result = growth.checkpoint(growth._strict_json(
                 Path(a.file).read_text(encoding="utf-8-sig")))
         else:
-            command = json.loads(Path(a.command_file).read_text(encoding="utf-8-sig"))
+            commands = [json.loads(Path(f).read_text(encoding="utf-8-sig")) for f in a.command_file]
+            if len(commands) > 1 and not (a.daily or a.check):
+                raise ValueError("several --command-file go only with --daily (one per provider)")
             # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
             # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
-            result = (growth.check_command(command) if a.check else
-                      growth.run(command, limit=a.limit, timeout=a.timeout, invocation=a.invocation))
+            if a.check:
+                checks = [growth.check_command(c) for c in commands]
+                result = checks[0] if len(checks) == 1 else {"ok": all(c["ok"] for c in checks), "commands": checks}
+            elif a.daily:
+                from . import growth_daily
+                result = growth_daily.daily(commands, invocation=a.invocation)
+            else:
+                result = growth.run(commands[0], limit=a.limit, timeout=a.timeout, invocation=a.invocation)
         _emit(result)
         # 실행은 작업이 남아도(`incomplete`) 실패가 아니다 — 남은 것을 실패 코드로 내면
         # 운영체제 스케줄러에 매일 도는 실행이 매일 실패로 남는다.
@@ -397,8 +405,11 @@ def build_parser() -> argparse.ArgumentParser:
         q = gs.add_parser(name)
         q.add_argument("--limit", type=int, default=3)
         if name == "run":
-            q.add_argument("--command-file", required=True, help="에이전트 argv 배열 JSON 파일")
+            q.add_argument("--command-file", required=True, action="append",
+                           help="에이전트 argv 배열 JSON 파일 — --daily는 공급자마다 하나(Codex, 대신 돌 Claude)")
             q.add_argument("--timeout", type=int, default=600)
+            q.add_argument("--daily", action="store_true",
+                           help="하루 정기 실행: 주간 한도 조정, 묶음 실행, 묶음마다 한도 조회(--limit·--timeout 무시)")
             q.add_argument("--check", action="store_true", help="실행 파일만 확인; 모델·포착·대장 쓰기 없음")
             q.add_argument("--invocation", choices=("manual", "user_request", "scheduled", "unknown"),
                            default="unknown", help="명시한 기동 원인; 생략하면 추정하지 않는다")

@@ -32,9 +32,10 @@ from .harness import base
 KINDS = ("growth", "sync")
 LEGACY = {"growth": {"osk-domain-growth"},
           "sync": {"osk-sync-daemon", "com.example.ltm-vault-daemon", "ltm-vault-daemon"}}
-GROWTH_ARGS = ("--limit", "3", "--timeout", "600")
-# 정기 실행 한 번의 상한 — 에이전트 시한(600초)에 포착·계획의 여유를 더한다.
-GROWTH_MINUTES = 30
+GROWTH_ARGS = ("--daily",)
+# 정기 실행 하루의 상한 — 엔진이 지키는 벽시계 예산(1.5시간)에, 마지막 묶음(최대 900초)과 그
+# 앞뒤 포착·계획의 여유 30분을 더한다(#175). 예산을 넘기면 엔진이 새 묶음을 띄우지 않는다.
+GROWTH_MINUTES = 90 + 30
 # 작업 스케줄러 우선순위 — 기본 7은 BELOW_NORMAL이라, 보통 등급의 일이 CPU를 채우면 등록한
 # 일과 그 git이 굶은 채 mutation 잠금을 쥔다(2026-10-12 실측: `rev-parse` 83초). 5는 보통 등급.
 TASK_PRIORITY = 5
@@ -61,11 +62,11 @@ def interpreter() -> Path:
     return quiet if os.name == "nt" and quiet.is_file() else python
 
 
-def job(kind: str, *, command_file: Path | None = None, at: str | None = None) -> dict:
-    """등록할 일 — 해석기·인자·시각(정기 실행)."""
+def job(kind: str, *, command_files: list[Path] = (), at: str | None = None) -> dict:
+    """등록할 일 — 해석기·인자·시각(정기 실행). 명령 파일은 공급자마다 하나다(Codex, 대신 돌 Claude)."""
     args = [str(script(kind))]
     if kind == "growth":
-        args += ["--command-file", str(command_file), *GROWTH_ARGS]
+        args += [part for f in command_files for part in ("--command-file", str(f))] + list(GROWTH_ARGS)
     return {"python": str(interpreter()), "args": args, "at": at}
 
 
