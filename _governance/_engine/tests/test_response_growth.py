@@ -814,17 +814,123 @@ class ResponseGrowthTests(unittest.TestCase):
             with self.subTest(policy=policy), self.assertRaises(ValueError):
                 rg._codex_overrides({**source, 'sandbox_policy': policy})
 
-    def test_desktop_fork_preserves_app_tool_prefix_without_changing_cli_sources(self):
+    def test_desktop_source_routes_off_and_never_forks(self):
+        # Desktop's first request leads with tool definitions only the running app serves
+        # (codex_app over its pipe) — a CLI fork would recompute the whole parent context.
         source = {'harness': 'codex', 'conversation_id': 'own', 'model': 'parent-model',
                   'effort': 'high', 'approval_policy': 'never', 'sandbox_policy': {'type': 'read-only'}}
-        flags = ('features.code_mode_host=true',
-                 'plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true')
-        for kind, originator in (('vscode', 'Codex Desktop'), ('exec', 'Codex Desktop'), ('cli', 'codex_cli_rs')):
+        desktop = {**source, 'source': 'vscode', 'originator': 'Codex Desktop'}
+        with tempfile.TemporaryDirectory() as folder:
+            native = Path(folder) / 'native.jsonl'
+            native.write_text(json.dumps({'type': 'session_meta', 'payload': {
+                'id': 'own', 'cwd': folder, 'source': 'vscode', 'originator': 'Codex Desktop'}}) + '\n',
+                encoding='utf-8')
+            with patch.object(rg, 'configured', return_value='cli'), \
+                    patch.object(rg, 'preflight', side_effect=AssertionError('CLI asked')):
+                self.assertEqual(rg.check('codex', 'own', str(native), folder),
+                                 {'mode': 'off', 'reason': rg.DESKTOP_OFF})
+        with patch.object(rg, '_remember') as remember, \
+                patch.object(rg, 'preflight', side_effect=AssertionError('CLI asked')), \
+                patch.object(rg.growth, 'run', side_effect=AssertionError('fork started')):
+            result = rg.run(desktop, {'harness': 'codex', 'conversation_id': 'own'}, 'unused')
+        self.assertEqual(result['state'], 'unavailable')   # not a fork failure: never falls back in-session
+        remember.assert_called_once_with('codex', 'own', {'mode': 'off', 'reason': rg.DESKTOP_OFF})
+        for kind, originator in (('exec', 'Codex Desktop'), ('cli', 'codex_cli_rs')):
             with self.subTest(source=kind), patch.object(rg, 'preflight'):
                 argv = rg.command({**source, 'source': kind, 'originator': originator}, 'unused', {})
                 self.assertEqual(argv[argv.index('--model')+1], source['model'])
-                for flag in flags:
-                    self.assertEqual(flag in argv, kind == 'vscode')
+                self.assertFalse([a for a in argv if 'code_mode_host' in a or 'codex_app' in a])
+
+    def test_desktop_source_routes_off_without_a_configured_cli(self):
+        # No fork CLI is no reason to review a Desktop conversation in-session: the hooks never
+        # read the transcript, so the worker's verdict must outrank the missing-CLI one (PR #204).
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', '', space='00_Scope/W1')
+            assert not rg.CONFIG.exists()
+            def transcript(sid, kind, originator):
+                native = core.ROOT / f'{sid}.jsonl'
+                rows = [{'type':'session_meta','payload':{'id':sid,'cwd':str(core.ROOT),'cli_version':'0.155.0',
+                            'model_provider':'openai','source':kind,'originator':originator}},
+                        {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(core.ROOT),'model':'same-model',
+                            'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
+                        {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'answer'}}]
+                native.write_text(''.join(json.dumps(r)+chr(10) for r in rows))
+            env = {'harness':'codex','session_id':'own','transcript_path':str(core.ROOT / 'own.jsonl'),
+                   'cwd':str(core.ROOT),'session':'own'}
+            with patch.object(rg.subprocess, 'run', side_effect=AssertionError('CLI asked')):
+                # Before the first turn there is no transcript: in-session, asked again once it exists.
+                assert rg.probe(env) == {'mode':'foreground','reason':rg.NOT_CONFIGURED}
+                route = rg.route(env)
+                assert route['mode'] == 'foreground' and not route['probe_due'], route
+                transcript('own', 'vscode', 'Codex Desktop')
+                assert rg.route(env)['probe_due']
+                assert rg.probe(env) == {'mode':'off','reason':rg.DESKTOP_OFF}
+                route = rg.route(env)
+                assert route['mode'] == 'off' and route['changed'] and not route['probe_due'], route
+                start = hook.capture_block(env, 'own', startup=True)
+                assert '대화 검토 꺼짐' in start and '검토 경고' not in start, start
+                for n in range(1, 16):
+                    text = hook.capture_block(env, 'own') or ''
+                    assert '케이던스' not in text and '검토 경고' not in text, (n, text)
+                    assert not rg.launch(env, 'own')
+                assert integration.status('codex','own')['response_growth_route']['mode'] == 'off'
+                # A CLI conversation of the same host keeps its in-session review.
+                transcript('cli', 'cli', 'codex_cli_rs')
+                cli = {**env, 'session_id':'cli', 'transcript_path':str(core.ROOT / 'cli.jsonl')}
+                assert rg.probe(cli) == {'mode':'foreground','reason':rg.NOT_CONFIGURED}
+                assert rg.route(cli)['mode'] == 'foreground'
+        ''')
+
+    def test_turned_off_harness_neither_forks_nor_reviews_in_session(self):
+        base_tests.GrowthTests().check_case('''
+            from osk import response_growth as rg, integration, scope_memory, doctor, setup
+            from osk import harness as adapters
+            from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            scope_memory.replace('own', '', space='00_Scope/W1')
+            native = core.ROOT / 'native.jsonl'
+            rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),'cli_version':'0.155.0',
+                        'model_provider':'openai','source':'cli','originator':'codex_cli_rs'}},
+                    {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(core.ROOT),'model':'same-model',
+                        'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
+                    {'type':'response_item','payload':{'type':'message','role':'user',
+                        'content':[{'type':'input_text','text':'question'}]}},
+                    {'type':'response_item','payload':{'type':'message','role':'assistant',
+                        'content':[{'type':'output_text','text':'answer'}]}},
+                    {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'answer'}}]
+            native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
+            rg.CONFIG.parent.mkdir(exist_ok=True)
+            rg.CONFIG.write_text(json.dumps({'codex': False}))
+            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            with patch.object(rg.subprocess, 'run', side_effect=AssertionError('CLI asked')):
+                assert rg.probe(env) == {'mode':'off','reason':rg.OFF}
+                start = hook.capture_block(env, 'own', startup=True)
+                assert '대화 검토 꺼짐' in start and '검토 경고' not in start, start
+                pending = integration.status('codex','own')['pending_refs']
+                for n in range(1, 16):
+                    text = hook.capture_block(env, 'own') or ''
+                    assert '케이던스' not in text and '검토 경고' not in text, (n, text)
+                    assert not rg.launch(env, 'own')
+                state = integration.status('codex','own')
+                assert state['pending_refs'] == pending and state['reviewed_rounds'] == 0, state
+                assert state['response_growth_route']['mode'] == 'off', state
+                assert rg.process_stop(env)['state'] == 'disabled'
+            item = doctor._fork(adapters.get('codex'))
+            assert item['level'] == 'info' and '껐다' in item['detail'], item
+            assert setup._fork([adapters.get('codex')], False)['entries']['codex'] == {'action':'keep','path':False}
+            for bad in (True, 0, '', ' '):
+                rg.CONFIG.write_text(json.dumps({'codex': bad}))
+                try:
+                    rg.configured('codex')
+                    raise AssertionError(bad)
+                except ValueError:
+                    pass
+        ''')
 
     def test_codex_ineligible_source_routes_to_foreground_without_consuming_review(self):
         base_tests.GrowthTests().check_case('''
@@ -902,7 +1008,17 @@ class ResponseGrowthTests(unittest.TestCase):
                 'input_tokens': 9000, 'cached_input_tokens': 7000, 'output_tokens': 90}})
             self.assertEqual(measured['input_tokens'], 1000)
             self.assertEqual(measured['cached_fraction'], 0)
+            self.assertNotIn('first_request_floor', measured)
             self.assertFalse(rg.cache_usage(path, {'harness': 'codex'})['measured'])
+            # The parent's last request bounds the first fork request: a whole-turn miss shows.
+            self.assertEqual(rg.cache_usage(path, {'harness': 'codex', 'context': 900, 'usage': {
+                'input_tokens': 9000, 'cached_input_tokens': 7000, 'output_tokens': 90}})['first_request_floor'], 0)
+            # 2026-10-18 ephemeral CLI fork: parent and resume cumulative, then 23,602 in, 23,424 cached.
+            path.write_text(json.dumps({'type': 'turn.completed', 'usage': {
+                'input_tokens': 70704, 'cached_input_tokens': 46720, 'output_tokens': 25}}), encoding='utf-8')
+            floor = rg.cache_usage(path, {'harness': 'codex', 'context': 23567, 'usage': {
+                'input_tokens': 47102, 'cached_input_tokens': 23296, 'output_tokens': 17}})['first_request_floor']
+            self.assertGreater(floor, 0.99)
 
     def test_counter_survives_resume_and_worker_failure_does_not_ack(self):
         base_tests.GrowthTests().check_case('''

@@ -267,7 +267,7 @@ def _fork(targets: list, uninstall: bool) -> dict:
             continue
         if uninstall:
             out["entries"][adapter.name] = {"action": "remove", "path": have}
-        elif isinstance(have, str) and Path(have).is_file():
+        elif have is False or isinstance(have, str) and Path(have).is_file():  # false: 사용자가 껐다
             out["entries"][adapter.name] = {"action": "keep", "path": have}
         else:
             cli = _native_cli(adapter)
