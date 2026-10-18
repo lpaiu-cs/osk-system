@@ -14,3 +14,8 @@ rank-bm25
 # Windows에는 IANA tz 데이터베이스가 없어 `zoneinfo`가 KST(Mechanism §2 2항)를
 # 찾지 못하고 엔진이 import에서 죽는다. 데이터 전용 패키지로 보충한다.
 tzdata; sys_platform == "win32"
+
+# Codex는 7일 동안 바뀌지 않은 대화 기록을 제자리에서 `.jsonl.zst`로 압축한다(#203).
+# 표준 zstd는 Python 3.14부터라 이 판(3.11 이상)에서는 패키지로 푼다. 압축본을 읽을
+# 때만 불러온다 — 갱신 뒤 pip을 다시 돌리지 않은 기기는 그 대화만 `dependency`로 막힌다.
+zstandard

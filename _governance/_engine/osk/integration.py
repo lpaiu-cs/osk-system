@@ -121,24 +121,27 @@ def _capture_recovery(s: dict) -> dict:
                 phase = "read"
             elif "FileNotFoundError" in error or "native transcript path unavailable" in error:
                 phase = "source"
-                try:
-                    found = _locate_transcript(s["harness"], s["conversation_id"],
-                                               s.get("capture_path") or s.get("transcript_path"))
-                    available = bool(found and Path(found).is_file())
-                    missing = not found or not Path(found).exists()
-                except (OSError, ValueError):
-                    basis = "source_lookup_failed"
-                else:
-                    basis = "source_lookup"
-                    if available:
-                        return {"state": "retryable", "phase": phase, "basis": basis,
-                                "next_action": "같은 ID의 원본 후보를 찾았다. 현재 엔진으로 capture하여 신원·접두부를 다시 검증한다."}
-                    if missing and not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
-                        phase = "awaiting_native"
+        if phase == "source":
+            # A recorded miss is checked too: Codex compresses a cold rollout in place (#203).
+            try:
+                found = _locate_transcript(s["harness"], s["conversation_id"],
+                                           s.get("capture_path") or s.get("transcript_path"))
+                available = bool(found and Path(found).is_file())
+                missing = not found or not Path(found).exists()
+            except (OSError, ValueError):
+                basis = "source_lookup_failed"
+            else:
+                basis = "source_lookup"
+                if available:
+                    return {"state": "retryable", "phase": phase, "basis": basis,
+                            "next_action": "같은 ID의 원본 후보(Codex 압축본 포함)를 찾았다. 현재 엔진으로 capture하여 신원·접두부를 다시 검증한다."}
+                if missing and not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
+                    phase = "awaiting_native"
         actions = {
             "awaiting_native": "같은 대화의 원본이 생성된 뒤 다시 capture한다.",
             "landing": "기존 대화의 scope를 유지하며 명시적인 프로젝트 키와 착지를 확인한다.",
-            "source": "같은 대화 ID의 원본을 복구하거나 올바른 전사 경로를 명시한다.",
+            "source": "이 기기에 같은 대화 ID의 원본이 평문으로도 Codex 압축본(`.jsonl.zst`)으로도 없다. 원본을 복구하거나 올바른 전사 경로를 명시한다.",
+            "dependency": "원본은 있으나 Codex 압축본(`.jsonl.zst`)을 풀 `zstandard`가 이 vault의 .venv에 없다. `_governance/_engine/requirements.txt`를 다시 설치한 뒤 같은 대화를 capture한다.",
             "read": "원본의 대화 ID·형식·연결된 과거 전사를 확인하고 같은 대화로 재시도한다.",
             "replay": "추적 중인 턴 순서와 원본 접두부(이어받은 부모 턴 포함)를 확인한다. 기존 좌표나 검토 커서를 초기화하지 않는다.",
         }
@@ -393,8 +396,8 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
 def _locate_transcript(harness: str, sid: str, saved: str | None = None) -> str | None:
     """Recover a moved native file by exact ID; ambiguity requires an explicit path."""
     _identity(harness, sid)
-    if saved and Path(saved).exists():
-        return str(Path(saved).resolve())
+    if saved and (found := transcripts.on_disk(saved)):
+        return str(found.resolve())
     matches = sorted({p.resolve() for p in adapters.get(harness).transcripts(sid) if p.is_file()})
     if len(matches) > 1:
         raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
@@ -456,6 +459,8 @@ def _capture_failed(p: Path, s: dict, exc: Exception, phase: str) -> dict:
     if isinstance(exc, FileNotFoundError) and phase in {"source", "read"}:
         phase = ("source" if s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")
                  else "awaiting_native")
+    if isinstance(exc, transcripts.ZstdMissing):
+        phase = "dependency"
     s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
     s["capture_failure_phase"] = phase
     # Only a validation refusal discards the candidate source; an I/O failure
@@ -1002,7 +1007,10 @@ def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list
             # An ended Claude conversation whose last turn never finished is read once more:
             # the idle close turns that tail into an interrupted round to review.
             idle_tail = s["harness"] == "claude" and s["capture_pending"] and not s["capture_error"]
-            if (changed or current["repair_pending"] or any(not raw.is_native(ref) for ref in pending)
+            # A capture error is retried even when the file reads as before: compressing a
+            # rollout keeps its fingerprint, and the error only said it was not found (#203).
+            if (changed or s["capture_error"] or current["repair_pending"]
+                    or any(not raw.is_native(ref) for ref in pending)
                     or (pending or idle_tail) and _ended_source(s)):
                 at = _turn_at(s, native_path)
                 states.append((tried(s) if tried else 0, p.stat().st_mtime if at is None else at, s))
