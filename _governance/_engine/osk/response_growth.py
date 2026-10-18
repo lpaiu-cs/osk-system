@@ -613,7 +613,16 @@ def _toml_value(value) -> str:
 
 def _codex_overrides(source: dict) -> list[str]:
     """Shared routing/launch gate: never silently discard a native restriction. The sandbox is
-    read-only whatever the source's (#85) — no source policy is narrower, so none refuses."""
+    read-only (#85), which bars writes and network but reads the whole disk: it covers the known
+    policies below at any field value. An external sandbox or an unknown field (a read limit)
+    refuses, since read-only does not reproduce it."""
+    policy = source.get('sandbox_policy')
+    if not isinstance(policy, dict):
+        raise ValueError('source sandbox policy is unavailable')
+    fields = {'workspace-write': {'writable_roots', 'network_access', 'exclude_slash_tmp', 'exclude_tmpdir_env_var'},
+              'read-only': {'network_access'}, 'danger-full-access': set()}
+    if policy.get('type') not in fields or set(policy) - fields[policy['type']] - {'type'}:
+        raise ValueError('source sandbox restrictions cannot be represented by the fork CLI')
     approval = source.get('approval_policy')
     if isinstance(approval, dict):
         granular = approval.get('granular')
