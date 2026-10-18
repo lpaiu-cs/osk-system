@@ -46,9 +46,21 @@ NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 OPENAI_ENDPOINT = 'https://chatgpt.com/backend-api/codex'  # ChatGPT-login Codex backend; forks pin it.
 # Keys the fork pins with -c. A native profile's own value wins over -c, so an active profile may not set them.
 CODEX_PINNED = ('forced_login_method', 'model_provider', 'openai_base_url', 'model_reasoning_effort',
-                'approval_policy', 'approvals_reviewer', 'sandbox_mode', 'sandbox_workspace_write')
+                'approval_policy', 'approvals_reviewer', 'sandbox_mode')
 # `claude --help` 2.1.280 choices; transcripts still write the accepted legacy name 'default'.
 CLAUDE_PERMISSION_MODES = ('acceptEdits', 'auto', 'bypassPermissions', 'default', 'manual', 'dontAsk', 'plan')
+# A fork reads the source's untrusted dialogue with its permissions (#85). Restricting its tool
+# definitions or mode would turn the cached parent prefix (~450k tokens) into a cache write, so a
+# PreToolUse hook denies every tool but this vault's MCP and the ToolSearch that loads it, in any
+# mode. The matcher reads the same as an unanchored RegExp test or a full match; the deny is a JSON
+# literal that Git Bash and the PowerShell fallback both echo verbatim.
+FORK_TOOLS = rf'^(?!(mcp__{adapters.MCP_NAME}__.*|ToolSearch)$).*$'
+FORK_DENY = json.dumps({'hookSpecificOutput': {
+    'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+    'permissionDecisionReason': f'osk fork review: only mcp__{adapters.MCP_NAME}__* tools are available here. '
+                                'Continue the review with them.'}})
+CLAUDE_FORK_SETTINGS = json.dumps({'forceLoginMethod': 'claudeai', 'hooks': {'PreToolUse': [
+    {'matcher': FORK_TOOLS, 'hooks': [{'type': 'command', 'command': f"echo '{FORK_DENY}'"}]}]}})
 
 
 def configured(harness: str) -> str | bool | None:
@@ -600,20 +612,8 @@ def _toml_value(value) -> str:
 
 
 def _codex_overrides(source: dict) -> list[str]:
-    """Shared routing/launch gate: never silently discard a native restriction."""
-    policy = source.get('sandbox_policy')
-    if not isinstance(policy, dict):
-        raise ValueError('source sandbox policy is unavailable')
-    mode = policy.get('type')
-    fields = {'workspace-write': {'writable_roots', 'network_access', 'exclude_slash_tmp', 'exclude_tmpdir_env_var'},
-              'read-only': {'network_access'}, 'danger-full-access': set()}
-    if mode not in fields or set(policy) - fields[mode] - {'type'}:
-        raise ValueError('source sandbox restrictions cannot be represented by the fork CLI')
-    for key in fields[mode] - {'writable_roots'}:
-        if key in policy and not isinstance(policy[key], bool):
-            raise ValueError('source sandbox flags must be boolean')
-    if mode == 'read-only' and policy.get('network_access', False):
-        raise ValueError('read-only network policy cannot be represented by the fork CLI')
+    """Shared routing/launch gate: never silently discard a native restriction. The sandbox is
+    read-only whatever the source's (#85) — no source policy is narrower, so none refuses."""
     approval = source.get('approval_policy')
     if isinstance(approval, dict):
         granular = approval.get('granular')
@@ -635,14 +635,7 @@ def _codex_overrides(source: dict) -> list[str]:
     # profile/provider base_url, which native config resolution would prefer.
     settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
                 'openai_base_url': OPENAI_ENDPOINT, 'model_reasoning_effort': source['effort'], 'approval_policy': approval,
-                'approvals_reviewer': reviewer, 'sandbox_mode': mode}
-    if mode == 'workspace-write':
-        roots = policy.get('writable_roots', [])
-        if not isinstance(roots, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in roots):
-            raise ValueError('source writable roots must be absolute paths')
-        settings['sandbox_workspace_write.writable_roots'] = roots
-        for key in sorted(fields[mode] - {'writable_roots'}):
-            settings['sandbox_workspace_write.' + key] = policy.get(key, False)
+                'approvals_reviewer': reviewer, 'sandbox_mode': 'read-only'}
     return [part for key, value in settings.items() for part in ('-c', key + '=' + _toml_value(value))]
 
 
@@ -810,8 +803,7 @@ def command(source: dict, executable: str, env: dict) -> list[str]:
                 *_codex_overrides(source), sid, '-']
     return [executable, '-p', '--resume', sid, '--fork-session', '--no-session-persistence',
             '--model', model, '--permission-mode', source['permission_mode'],
-            '--output-format', 'stream-json', '--verbose',
-            '--settings', '{"forceLoginMethod":"claudeai"}']
+            '--output-format', 'stream-json', '--verbose', '--settings', CLAUDE_FORK_SETTINGS]
 
 
 def cache_usage(output: Path, source: dict) -> dict:

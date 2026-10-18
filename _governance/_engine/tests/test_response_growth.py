@@ -448,7 +448,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     self.assertEqual(layers('')[0], str(system))
                     self.assertIn(str(system) + ': chatgpt_base_url', rg._codex_unpinned(rg._codex_layers(env, str(cwd))))
 
-    def test_codex_route_before_first_final_needs_no_sandbox_policy(self):
+    def test_codex_route_before_first_final_needs_no_approval_policy(self):
         with tempfile.TemporaryDirectory() as folder:
             exe = Path(folder) / 'cli.exe'
             exe.touch()
@@ -460,9 +460,9 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
                 self.assertEqual(rg.preflight(fresh, str(exe), {}, require_version=False), str(exe))
                 for source, require in ((dict(fresh, finals=['t1']), False), (fresh, True)):
-                    with self.subTest(require=require), self.assertRaisesRegex(ValueError, 'sandbox policy'):
+                    with self.subTest(require=require), self.assertRaisesRegex(ValueError, 'approval policy'):
                         rg.preflight(source, str(exe), {}, require_version=require)
-                with self.assertRaisesRegex(ValueError, 'sandbox policy'):
+                with self.assertRaisesRegex(ValueError, 'approval policy'):
                     rg.command(dict(fresh, model='parent-model'), str(exe), {})
 
     def test_codex_subagent_hook_changes_no_conversation_state(self):
@@ -727,6 +727,10 @@ class ResponseGrowthTests(unittest.TestCase):
                         argv = rg.command({**source, 'permission_mode': mode}, str(exe), env)
                         self.assertEqual(argv.count('--permission-mode'), 1)
                         self.assertEqual(argv[argv.index('--permission-mode') + 1], mode)
+                        # Only the deny hook is added (#85): tool definitions and MCP stay the source's.
+                        self.assertEqual(argv[argv.index('--settings') + 1], rg.CLAUDE_FORK_SETTINGS)
+                        self.assertFalse({'--tools', '--allowedTools', '--disallowedTools', '--strict-mcp-config',
+                                          '--mcp-config'} & set(argv))
                         # --permission-mode bypassPermissions alone enables bypass; nothing wider is added.
                         self.assertFalse({'--dangerously-skip-permissions',
                                           '--allow-dangerously-skip-permissions'} & set(argv))
@@ -793,26 +797,48 @@ class ResponseGrowthTests(unittest.TestCase):
                       'sandbox_approval': False, 'rules': True, 'mcp_elicitations': False,
                       'request_permissions': True, 'skill_approval': False}},
                   'approvals_reviewer': 'auto_review'}
-        roots = [str(Path(tempfile.gettempdir()) / '한글 workspace')]
-        for slash in (False, True):
-            for env_tmp in (False, True):
-                source['sandbox_policy'] = {'type': 'workspace-write', 'writable_roots': roots,
-                    'network_access': False, 'exclude_slash_tmp': slash, 'exclude_tmpdir_env_var': env_tmp}
-                with self.subTest(slash=slash, env_tmp=env_tmp), patch.object(rg, 'preflight'):
-                    argv = rg.command(source, 'unused', {})
-                    config = tomllib.loads('\n'.join(argv[i+1] for i, v in enumerate(argv) if v == '-c'))
-                    self.assertEqual(config['approval_policy'], source['approval_policy'])
-                    self.assertEqual(config['approvals_reviewer'], source['approvals_reviewer'])
-                    self.assertEqual(config['sandbox_workspace_write'],
-                                     {k: v for k, v in source['sandbox_policy'].items() if k != 'type'})
-                    self.assertNotIn('--skip-git-repo-check', argv)
-        for policy in ({'type': 'workspace-write', 'future_restriction': True},
-                       {'type': 'read-only', 'network_access': True},
-                       {'type': 'external-sandbox'},
-                       {'type': 'workspace-write', 'writable_roots': ['relative']},
-                       {'type': 'workspace-write', 'exclude_slash_tmp': 'true'}):
-            with self.subTest(policy=policy), self.assertRaises(ValueError):
-                rg._codex_overrides({**source, 'sandbox_policy': policy})
+        # The sandbox is read-only whatever the source's (#85), even one the CLI cannot represent;
+        # the approval policy stays the source's.
+        for policy in (None, {'type': 'danger-full-access'}, {'type': 'read-only', 'network_access': True},
+                       {'type': 'workspace-write', 'writable_roots': ['relative'], 'network_access': True},
+                       {'type': 'workspace-write', 'future_restriction': True}, {'type': 'external-sandbox'}):
+            with self.subTest(policy=policy), patch.object(rg, 'preflight'):
+                argv = rg.command({**source, 'sandbox_policy': policy}, 'unused', {})
+                config = tomllib.loads('\n'.join(argv[i+1] for i, v in enumerate(argv) if v == '-c'))
+                self.assertEqual(config['approval_policy'], source['approval_policy'])
+                self.assertEqual(config['approvals_reviewer'], source['approvals_reviewer'])
+                self.assertEqual(config['sandbox_mode'], 'read-only')
+                self.assertNotIn('sandbox_workspace_write', config)
+                self.assertNotIn('--skip-git-repo-check', argv)
+        for approval in ('bogus', {'granular': {'rules': True}}, {'granular': {
+                'sandbox_approval': False, 'rules': True, 'mcp_elicitations': 'no'}}):
+            with self.subTest(approval=approval), self.assertRaisesRegex(ValueError, 'approval policy'):
+                rg._codex_overrides({**source, 'approval_policy': approval})
+
+    def test_claude_fork_hook_denies_every_tool_but_osk_mcp(self):
+        import re, shutil
+        (entry,) = json.loads(rg.CLAUDE_FORK_SETTINGS)['hooks']['PreToolUse']
+        for name, denied in (('Bash', True), ('Read', True), ('Edit', True), ('Agent', True), ('Skill', True),
+                             ('WebFetch', True), ('mcp__notion__search', True), ('mcp__osk-system-x__search', True),
+                             ('mcp__osk-systemx__search', True), ('ToolSearchX', True), ('xToolSearch', True),
+                             ('ToolSearch', False), ('mcp__osk-system__search', False),
+                             ('mcp__osk-system__create_node', False)):
+            with self.subTest(tool=name):
+                # Claude Code tests a regex matcher unanchored; the pattern anchors both ends itself.
+                self.assertEqual(bool(re.search(entry['matcher'], name)), denied)
+                self.assertEqual(bool(re.fullmatch(entry['matcher'], name)), denied)
+        (hook,) = entry['hooks']
+        expected = {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny'}
+        # `sh`, not `bash`: Windows may resolve bash to the WSL launcher.
+        shells = [['sh', '-c']] * bool(shutil.which('sh')) + [
+            [s, '-NoProfile', '-Command'] for s in ('powershell', 'pwsh') if shutil.which(s)]
+        for shell in shells:
+            with self.subTest(shell=shell[0]):
+                out = subprocess.run([*shell, hook['command']], capture_output=True, text=True, timeout=60)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                decision = json.loads(out.stdout)['hookSpecificOutput']
+                self.assertEqual({k: decision[k] for k in expected}, expected)
+                self.assertIn('mcp__osk-system__', decision['permissionDecisionReason'])
 
     def test_desktop_source_routes_off_and_never_forks(self):
         # Desktop's first request leads with tool definitions only the running app serves
@@ -976,13 +1002,17 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert state['response_growth']['attempted_count'] == 0
                 real_run(['git','init','-q','-b','main',str(core.ROOT)],check=True,capture_output=True)
                 assert rg.probe(env)['mode'] == 'background'
-                # A future restriction must refuse even when Git/auth/version pass.
+                # An approval policy the fork cannot preserve refuses even when Git/auth/version pass.
+                # The sandbox never does: the fork runs read-only whatever the source's (#85).
                 rows[1]['payload']['sandbox_policy']['future_restriction'] = True
                 native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
+                assert rg.probe(env)['mode'] == 'background'
+                rows[1]['payload']['approval_policy'] = 'future-policy'
+                native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
                 route = rg.probe(env)
-                assert route['mode'] == 'foreground' and 'cannot be represented' in route['reason'], route
+                assert route['mode'] == 'foreground' and 'approval policy' in route['reason'], route
                 # The ChatGPT Web bridge route is refused by name before any native query.
-                del rows[1]['payload']['sandbox_policy']['future_restriction']
+                rows[1]['payload']['approval_policy'] = 'never'
                 rows[1]['payload']['model'] = 'chatgpt-web/pro'
                 native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
                 with patch.object(rg.subprocess,'run',side_effect=AssertionError('native query')):
