@@ -184,7 +184,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v5.1.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.2.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -357,10 +357,11 @@ repository.
 
 The [v5.0.0 growth milestones](docs/v5.0-milestones.md) (Korean) describe the development
 sequence and acceptance criteria. v5.1.0 tracks conversations that have no scope yet and lets their review decide where
-they belong. The next plans harden what v5.0.0 builds: [v5.2.0](docs/v5.2-milestones.md), which
-now also takes the meaning-quality evaluation and the deferred designs of
-[the v5.1.0 plan](docs/v5.1-milestones.md). [v6.0.0](docs/v6.0-milestones.md) extends the memory
-model.
+they belong. v5.2.0 keeps cited records in one root `_cited/`, binds scopes to the project, and
+runs the scheduled growth run in daily batches sized each week ([plan](docs/v5.2-milestones.md)).
+[v5.3.0](docs/v5.3-milestones.md) measures those changes on a live instance and takes the
+reuse and meaning-quality evaluations moved from the v5.1 and v5.2 plans.
+[v6.0.0](docs/v6.0-milestones.md) extends the memory model.
 
 ## License
 

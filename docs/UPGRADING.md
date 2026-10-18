@@ -31,8 +31,11 @@ device.
 
 v5.2 keeps cited records in one place and makes bindings belong to the project
 rather than to the session (Constitution art. 4 §3 and art. 8 §3, Bylaws §2 and
-§3 9–10, Mechanism §6-2 6 and §9 5). It moves or rewrites no notes or records;
-there is nothing to migrate.
+§3 9–10, Mechanism §6-2 6 and §9 5). It also runs the scheduled growth run as
+daily batches sized each week, and narrows conversation review: no fork for
+conversations started in the Codex app, and only the osk tools inside a fork.
+It moves or rewrites no notes or records; there is nothing to migrate. On the device that hosts the scheduled run, register it again
+(below).
 
 - **Cited records are written to the root `_cited/`.** New records are created
   as `_cited/.records/<record>.txt`, not under a scope or under Person. Records
@@ -80,6 +83,41 @@ there is nothing to migrate.
   good if the turn was already tracked. This release drops an unreviewed
   reverted turn from the cursor; nothing to do, the next capture continues
   ([growth-status.md](growth-status.md#codex-되돌리기-208), Korean).
+- **The scheduled run works in daily batches (#175).** It is now
+  `growth run --daily`: capture once, then batches (a Scope job alone for 900
+  s, other queues three at a time for 600 s) until the day's limit or a
+  1.5-hour budget. The limit is set again every 7 days from the week's inflow,
+  backlog and usage. Before each batch the run reads the Codex limits without
+  inference; on a day Codex is exhausted, credits included, a Claude worker
+  runs the batch instead. Limit rejections are waits, not failures. **On the
+  device that hosts the scheduled run, run
+  `python _governance/_engine/scripts/setup.py --interactive --schedule` once,**
+  with `--at HH:MM` if the run was not at 09:00 (re-registering sets the time
+  again). It replaces the older task that calls this vault (an
+  `osk-domain-growth` task included) with one that runs Python directly with
+  `--daily`, limited to two hours under Task Scheduler and systemd. When the
+  command is Codex and a Claude CLI is found, it also creates
+  `.osk/growth-command-claude.json` for that worker; the Claude adapter now
+  also finds the desktop app's CLI under its build-hash folder (#206). Existing command files are kept: in a Codex
+  command, replace `approvals_reviewer="auto_review"` with
+  `mcp_servers.osk-system.default_tools_approval_mode="approve"`. Automatic
+  review approved every osk call and spent 27–29% of the scheduled run's tokens
+  ([SETUP](SETUP.md), Korean, "Scope에서 Domain으로 정기 재검토").
+- **Conversations started in the Codex app are not reviewed during the
+  conversation (#204, Mechanism §9-3 1).** A fork could not reuse their cache, so they get neither
+  a fork nor the in-session 9/15 review; the scheduled run integrates them after
+  they end. `false` in place of a path in `.osk/response-growth.json` turns a
+  harness off the same way.
+- **Forks use only the osk tools (#85).** A Claude fork denies every call except
+  the osk MCP tools and `ToolSearch`. A Codex fork runs read-only and denies
+  calls outside the osk MCP with a hook, and starts only when Codex reports that
+  hook enabled and trusted; otherwise the conversation falls back to the
+  in-session review. Tool definitions stay as the source had them, so the cache
+  holds ([response-growth.md](response-growth.md#fork-tool-restriction-85)).
+- **Hooks no longer read transcripts (#192).** The start, input and Stop hooks
+  hand capture and the CLI checks to a detached worker and return. `doctor`
+  warns about a hook registered with a limit under 30 seconds; the
+  `setup.py --interactive` run above replaces it.
 - **Update every device together.** A v5.1 engine does not read the root
   `_cited/` as cited records, so nodes citing them show unresolved references
   there, and it refuses writes outside the binding.
@@ -87,7 +125,8 @@ there is nothing to migrate.
   §6, 4 §3, 5 §2, 8 §3 and 11 §3, Bylaws §1, §2, §3 9–10 and §7 2, Mechanism
   §1, §4-1, §6-1 4, §6-2 6, §8 2, §9 5, §9-2, §9-3 and §9-4 3, and Workbench
   Contract 2–3. The reasons are in the record
-  `2026-10-13-cited-root-and-project-binding` and in #189 and #190.
+  `2026-10-13-cited-root-and-project-binding`, in #189 and #190, and for
+  Mechanism §9-3 1 in #175 and #211.
 
 ## From v5.0 to v5.1
 
