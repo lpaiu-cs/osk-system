@@ -416,6 +416,12 @@ Windows Codex 앱은 `OpenAI/Codex/bin/<16자리 해시>/codex.exe`가 실제 �
 }
 ```
 
+하네스의 대화별 검토를 끄려면 경로 대신 `false`를 둔다(`"codex": false`). 그 하네스는 fork도
+세션 안 9·15턴 검토도 하지 않고, 끝난 대화를 정기 실행이 통합한다. `setup --fork`는 `false`를
+그대로 둔다. Codex 앱에서 시작한 대화는 설정과 무관하게 이렇게 동작한다. 앱이 요청 맨 앞에
+싣는 도구 정의를 CLI fork가 재현하지 못해, fork가 원 대화 문맥 전체를 다시 계산하기 때문이다
+([근거](response-growth.md#codex-desktop-sources-no-longer-fork-2026-10)).
+
 **Claude fork 준비.** fork는 Claude 앱의 호스트 인증을 넘겨받지 않고 CLI 자체의 claude.ai
 로그인만 쓴다. 앱 안의 세션이 로그인돼 있어도 CLI 로그인은 따로 필요하다.
 
@@ -481,7 +487,10 @@ Codex가 업데이트 뒤 오래된 대화를 재개하면 전사의 생성 시�
 그 `--version`을 이 대화에 묶어 확인과 분리 작업자에 넘긴다. 부모 `session_id`와 자식
 전사를 함께 보내는 Codex 하위 에이전트 훅은 어떤 대화 상태도 바꾸지 않는다.
 Codex의 `--ephemeral`, Claude의 `--no-session-persistence`로 정리 대화를 하네스의
-저장 세션 목록에 추가하지 않고, OSK 훅도 유지보수 대화를 추적하지 않는다.
+저장 세션 목록에 추가하지 않고, OSK 훅도 유지보수 대화를 추적하지 않는다. Codex는 ephemeral
+fork에만 원 대화의 캐시 키를 물려주므로 `--ephemeral`은 뺄 수 없다. 요청별 사용량이 남지 않는
+대신 실행 결과의 `cache.first_request_floor`가 첫 요청 적중률의 하한을 적는다
+([근거](response-growth.md#codex-desktop-sources-no-longer-fork-2026-10)).
 
 Stop의 한 작업자는 원 대화 검토와 **같은 Scope의 조직 작업 1건**을 기존 600초 안에
 처리한다. 다른 대화나 Domain을 붙이지 않는다. 정기 실행은 `work_order` 순서로

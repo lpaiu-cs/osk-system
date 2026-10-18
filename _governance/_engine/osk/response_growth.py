@@ -23,6 +23,15 @@ FALLBACK_AFTER = 2
 RETRY_AFTER = 24 * 3600
 # Results that say nothing about the fork itself (another worker, a missing CLI, raw not captured).
 _NOT_FORK_FAILURES = {'busy', 'unavailable', 'capture_pending', 'running'}
+# The 'off' route: no fork and no in-session review — the scheduled run integrates the
+# conversation once it has ended (Mechanism §9-4 3항). Either the instance turned the host's
+# review off (`"codex": false`) or the source is one a fork cannot continue from its cache.
+OFF = 'per-conversation review is turned off in .osk/response-growth.json'
+# Codex Desktop hands its app tools (`codex_app`) to its own app-server over a pipe, and its
+# features are set at runtime. Both lead every request, so a CLI fork renders other tool
+# definitions and recomputes the parent's whole context (12 of 12 forks, 2026-10).
+DESKTOP_OFF = ('a CLI fork cannot reproduce the tool definitions Codex Desktop sends first, '
+               'so it would recompute the whole parent context')
 AUTH_RACE = 'Failed to refresh OAuth token'
 AUTH_RACE_WAIT = 60
 # The fork CLI's version and login answers take seconds under load: `claude auth status` alone
@@ -41,16 +50,22 @@ CODEX_PINNED = ('forced_login_method', 'model_provider', 'openai_base_url', 'mod
 CLAUDE_PERMISSION_MODES = ('acceptEdits', 'auto', 'bypassPermissions', 'default', 'manual', 'dontAsk', 'plan')
 
 
-def configured(harness: str) -> str | None:
+def configured(harness: str) -> str | bool | None:
+    """The harness's fork CLI path; False when its review is turned off (`OFF`), None when unset."""
     if not CONFIG.exists():
         return None
     settings = json.loads(CONFIG.read_text(encoding='utf-8-sig'))
     if not isinstance(settings, dict) or set(settings) - set(adapters.fork_names()):
         raise ValueError('response-growth.json must map harness names to native CLI paths')
     executable = settings.get(harness)
-    if executable is not None and (not isinstance(executable, str) or not executable.strip()):
-        raise ValueError('response growth CLI path must be a nonempty string')
+    if executable is not None and executable is not False and (
+            not isinstance(executable, str) or not executable.strip()):
+        raise ValueError('response growth CLI path must be a nonempty string, or false to turn the review off')
     return executable
+
+
+def _desktop(source: dict) -> bool:
+    return source.get('source') == 'vscode' and source.get('originator') == 'Codex Desktop'
 
 
 def initialize(env: dict) -> dict | None:
@@ -72,9 +87,9 @@ def initialize(env: dict) -> dict | None:
 
 def route(env: dict) -> dict:
     """The review route without waiting on the fork CLI: a host without a fork or a configured
-    CLI reviews in-session, otherwise the verdict is the one the hooks' worker last asked
-    (`probe`) — the fork until it has answered. `probe_due` asks the hook to start the worker
-    (`defer`)."""
+    CLI reviews in-session, a host turned off does neither (`OFF`), otherwise the verdict is the
+    one the hooks' worker last asked (`probe`) — the fork until it has answered. `probe_due`
+    asks the hook to start the worker (`defer`)."""
     harness, sid, path = integration.hook_source(env)
     verdict = check(harness, sid, path, env.get('cwd') or os.getcwd(), ask=False)
     with integration._locked(harness, sid) as p:
@@ -168,18 +183,22 @@ def after_hook(env: dict) -> None:
 def check(harness: str, sid: str | None, path: str | None, cwd: str, *, ask: bool = True,
           timeout: float = 5) -> dict | None:
     """route()'s decision without its state writes; shared with `fork doctor`. With `ask=False`
-    it is None where only the fork CLI can decide (`preflight`)."""
+    it is None where only the fork CLI or the transcript can decide (`preflight`, `_desktop`)."""
     try:
         if not adapters.get(harness).fork:
             # B-grade host: in-session review is its design, not a missing setting.
             return {'mode': 'foreground', 'reason': f'{adapters.get(harness).title} has no subscription fork'}
         executable = configured(harness)
+        if executable is False:
+            return {'mode': 'off', 'reason': OFF}
         if not executable:
             return {'mode': 'foreground', 'reason': 'subscription fork CLI is not configured'}
         if not ask:
             return None
         source = (profile(path, harness, sid) if path and Path(path).exists() else
                   {'harness': harness, 'conversation_id': sid, 'cwd': cwd})
+        if _desktop(source):
+            return {'mode': 'off', 'reason': DESKTOP_OFF}
         preflight(source, executable, {**subscription_env(), **runtime_env(harness, sid)}, require_version=False,
                   timeout=timeout)
         return {'mode': 'background', 'reason': None}
@@ -275,7 +294,7 @@ def launch(env: dict, session: str) -> bool:
     harness, sid, path = integration.hook_source(env)
     with integration._locked(harness, sid) as p:
         state = integration._load(p, harness, sid)
-        if state.get('response_growth_route', {}).get('mode') == 'foreground':
+        if state.get('response_growth_route', {}).get('mode') in ('foreground', 'off'):
             return False
     try:
         if not configured(harness):
@@ -405,9 +424,11 @@ def profile(path: str, harness: str, sid: str) -> dict:
                     result['active'] = True
                 elif row.get('type') == 'event_msg' and p.get('type') == 'token_count':
                     info = p.get('info') or {}
-                    total = info.get('total_token_usage')
+                    total, last = info.get('total_token_usage'), info.get('last_token_usage')
                     if isinstance(total, dict):
                         result['usage'] = total
+                    if isinstance(last, dict):
+                        result['context'] = last.get('input_tokens', 0)  # The fork's first request holds at least this.
                 elif row.get('type') == 'event_msg' and p.get('type') == 'task_complete':
                     identity = p.get('turn_id')
                     if turn and identity != turn:
@@ -597,11 +618,6 @@ def _codex_overrides(source: dict) -> list[str]:
     settings = {'forced_login_method': 'chatgpt', 'model_provider': 'openai',
                 'openai_base_url': OPENAI_ENDPOINT, 'model_reasoning_effort': source['effort'], 'approval_policy': approval,
                 'approvals_reviewer': reviewer, 'sandbox_mode': mode}
-    if source.get('source') == 'vscode' and source.get('originator') == 'Codex Desktop':
-        # The app includes these tool definitions at the start of each request.
-        # A CLI fork without them loses the parent's cached prefix even after Stop.
-        settings['features.code_mode_host'] = True
-        settings['plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled'] = True
     if mode == 'workspace-write':
         roots = policy.get('writable_roots', [])
         if not isinstance(roots, list) or not all(isinstance(p, str) and Path(p).is_absolute() for p in roots):
@@ -770,6 +786,8 @@ def command(source: dict, executable: str, env: dict) -> list[str]:
     if not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', model):
         raise ValueError('actual source model is unavailable')
     if harness == 'codex':
+        # Only an ephemeral root fork inherits the parent's cache key (`session-id`); a persistent
+        # fork routes to its own and recomputes the parent context (2026-10: 0.99 vs 0.00).
         return [executable, 'exec', 'fork', '--ephemeral', '--json', '--model', model,
                 *_codex_overrides(source), sid, '-']
     return [executable, '-p', '--resume', sid, '--fork-session', '--no-session-persistence',
@@ -797,8 +815,14 @@ def cache_usage(output: Path, source: dict) -> dict:
                   'cached_input_tokens': cached, 'output_tokens': u.get('output_tokens', 0)}
     if any(v < 0 for v in values.values()) or values['cached_input_tokens'] > values['input_tokens']:
         return {'measured': False, 'reason': 'fork baseline did not match; cumulative usage is not a cache result'}
-    return {'measured': True, **values, 'cached_fraction': values['cached_input_tokens'] / values['input_tokens']
-            if values['input_tokens'] else None, 'scope': 'whole worker turn, not proof of first-request reuse'}
+    result = {'measured': True, **values, 'cached_fraction': values['cached_input_tokens'] / values['input_tokens']
+              if values['input_tokens'] else None, 'scope': 'whole worker turn, not proof of first-request reuse'}
+    if source['harness'] == 'codex' and source.get('context'):
+        # An ephemeral fork leaves no per-request usage. Its first request misses at most the whole
+        # turn's uncached input and holds at least the parent's last request, so its hit rate is no lower.
+        uncached = values['input_tokens'] - values['cached_input_tokens']
+        result['first_request_floor'] = max(0.0, 1 - uncached / source['context'])
+    return result
 
 
 def _auth_race(result: dict) -> bool:
@@ -825,6 +849,10 @@ def run(source: dict, job: dict, executable: str) -> dict:
     """Use the existing supervisor, manifest, deadline and receipt validation."""
     if any(job.get(k) != source.get(k) for k in ('harness', 'conversation_id')):
         raise ValueError('a fork may review only its own source conversation')
+    if _desktop(source):
+        # Before the hooks' worker has read the transcript the route still says fork.
+        _remember(source['harness'], source['conversation_id'], {'mode': 'off', 'reason': DESKTOP_OFF})
+        return {'ok': False, 'state': 'unavailable', 'error': DESKTOP_OFF}
     # Stop named its Codex Desktop binary (`launch`); its version is asked here, off the hook's clock.
     env = {**subscription_env(), **runtime_env(source['harness'], source['conversation_id'])}
     for retry in (False, True):
@@ -835,7 +863,7 @@ def run(source: dict, job: dict, executable: str) -> dict:
         except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             return {'ok': False, 'state': 'unavailable', 'error': str(exc)}
         if fresh['active'] or any(fresh.get(k) != source.get(k)
-                                  for k in (fresh.keys() | source.keys()) - {'fingerprint', 'usage'}):
+                                  for k in (fresh.keys() | source.keys()) - {'fingerprint', 'usage', 'context'}):
             # A new turn or changed model/policy never forks; retry, never spend the attempt.
             return {'ok': False, 'state': 'unavailable', 'error': 'source advanced before fork; review remains pending'}
         source = fresh  # Fork, and measure cache, from the snapshot just checked.
