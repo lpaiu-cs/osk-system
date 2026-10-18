@@ -468,5 +468,80 @@ class CompressedRolloutTests(unittest.TestCase):
         self.assertTrue(it.capture("codex", self.parent, None, "forks")["ok"])
 
 
+class RevertedTurnTests(unittest.TestCase):
+    """Codex `thread/revert` continues on a new page that keeps the old one only up to a turn (#208)."""
+    setUp, page = CodexForkTests.setUp, CodexForkTests.page
+
+    def revert(self, sid, *, reviewed=False):
+        """Page A holds t1·t2 and the cursor tracks both; page B keeps A up to t2 and adds t2b."""
+        old = self.page(sid, sid + "-a", turn(sid, "t1"))
+        bound = old.stat().st_size
+        first = it.capture("codex", sid, str(old), "forks")
+        with old.open("a", encoding="utf-8") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in turn(sid, "t2")))
+        second = it.capture("codex", sid, str(old), "forks")
+        if reviewed:
+            it.acknowledge("codex", sid, second["through"], "no_value", "synthetic fixture")
+        new = self.page(sid, sid + "-b", turn(sid, "t2b"), base=(sid + "-a", bound))
+        return first, second, old, new
+
+    def test_an_unreviewed_reverted_turn_leaves_the_cursor(self):
+        first, second, _, new = self.revert(self.parent)
+        found = it.capture("codex", self.parent, str(new), "forks")
+        self.assertTrue(found["ok"], found)
+        self.assertEqual(transcripts.read(str(new), "codex", self.parent)["reverted"], ["t2"])
+        self.assertEqual((found["captured_rounds"], found["appended"], found["reverted"]), (2, 1, 1))
+        self.assertEqual(found["pending_refs"], [raw.native_ref("codex", self.parent, t) for t in ("t1", "t2b")])
+        # The snapshot that held t2 is gone; the one before it still closes t1.
+        snapshots = json.loads(it.state_path("codex", self.parent).read_text(encoding="utf-8"))["snapshots"]
+        self.assertEqual(set(snapshots), {first["through"], found["through"]})
+        with self.assertRaisesRegex(ValueError, "not an unreviewed snapshot"):
+            it.acknowledge("codex", self.parent, second["through"], "no_value", "synthetic fixture")
+        self.assertEqual(it.capture("codex", self.parent, None, "forks")["appended"], 0)
+
+    def test_a_reviewed_reverted_turn_is_refused_by_name(self):
+        _, second, _, new = self.revert(self.parent, reviewed=True)
+        before = json.loads(it.state_path("codex", self.parent).read_text(encoding="utf-8"))["rounds"]
+        found = it.capture("codex", self.parent, str(new), "forks")
+        self.assertFalse(found["ok"])
+        self.assertIn("Codex reverted a reviewed turn", found["capture_error"])
+        after = json.loads(it.state_path("codex", self.parent).read_text(encoding="utf-8"))["rounds"]
+        self.assertEqual(after, before)
+
+    def test_a_missing_turn_that_was_not_reverted_is_still_refused(self):
+        _, _, old, _ = self.revert(self.parent)
+        # The old page itself loses t2: no later page declares a bound, so nothing reverted it.
+        old.write_text("".join(json.dumps(r) + "\n" for r in [event("session_meta", id=self.parent)]
+                               + turn(self.parent, "t1")), encoding="utf-8")
+        found = it.capture("codex", self.parent, str(old), "forks")
+        self.assertIn("identity prefix changed", found["capture_error"])
+
+    def test_response_growth_drops_the_reverted_turn_and_keeps_its_stop(self):
+        from osk import response_growth
+        _, _, old, new = self.revert(self.parent)
+        self.assertEqual(response_growth.observe(response_growth.profile(str(old), "codex", self.parent))["count"], 0)
+        source = response_growth.profile(str(new), "codex", self.parent)
+        self.assertEqual(response_growth.observe(source)["count"], 1)
+        self.assertEqual((source["finals"], source["reverted"]), (["t1", "t2b"], ["t2"]))
+        saved = json.loads(it.state_path("codex", self.parent).read_text(encoding="utf-8"))["response_growth"]
+        self.assertEqual(saved["seen"], ["t1", "t2b"])
+
+    def test_a_fork_parents_later_turns_are_not_reverted(self):
+        parent = self.page(self.parent, self.parent, turn(self.parent, "p1"))
+        bound = parent.stat().st_size
+        with parent.open("a", encoding="utf-8") as f:   # the parent goes on past the fork
+            f.write("".join(json.dumps(r) + "\n" for r in turn(self.parent, "p2")))
+        child = self.page(self.child, self.child + "-a", turn(self.child, "c1"),
+                          base=(self.parent, bound), fork=self.parent)
+        own = child.stat().st_size
+        with child.open("a", encoding="utf-8") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in turn(self.child, "c2")))
+        self.assertEqual(transcripts.read(str(child), "codex", self.child)["reverted"], [])
+        # The child's own revert counts; the parent's later turn still does not.
+        new = self.page(self.child, self.child + "-b", turn(self.child, "c2b"),
+                        base=(self.child + "-a", own), fork=self.parent)
+        self.assertEqual(transcripts.read(str(new), "codex", self.child)["reverted"], ["c2"])
+
+
 if __name__ == "__main__":
     unittest.main()

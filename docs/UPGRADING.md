@@ -74,6 +74,12 @@ there is nothing to migrate.
   scheduled run or `integration catchup` captures the blocked conversations
   again (procedure in [growth-status.md](growth-status.md#codex-압축본-203),
   Korean).
+- **Codex reverted turns are accepted (#208).** Editing and resending a sent
+  turn in Codex (`thread/revert`) takes that turn out of the conversation.
+  Engines up to v5.1 then refused capture and the response growth count for
+  good if the turn was already tracked. This release drops an unreviewed
+  reverted turn from the cursor; nothing to do, the next capture continues
+  ([growth-status.md](growth-status.md#codex-되돌리기-208), Korean).
 - **Update every device together.** A v5.1 engine does not read the root
   `_cited/` as cited records, so nodes citing them show unresolved references
   there, and it refuses writes outside the binding.
