@@ -549,8 +549,9 @@ BINDING_LIMIT = 3       # 결속 검토 임계 — 시행령 §3 10항(기계 �
 
 def bindings_audit(project: str | None = None) -> list[dict]:
     """프로젝트 결속의 검토 대상(시행령 §3 10항 · Mechanism §9-4 3항) — 결속이 셋을 넘거나, 지난
-    검토 뒤 늘어났거나, 주된 scope가 없는 프로젝트. `project`를 주면 그 프로젝트만 본다. 판정은
-    라우팅 대장에서 다시 계산하고, '지난 검토'는 이 기기의 조직 검토 상태가 기억한다."""
+    검토 뒤 늘어났거나, 주된 scope가 없거나, 없는 scope(개명·삭제)에 결속된 프로젝트. `project`를
+    주면 그 프로젝트만 본다. 판정은 라우팅 대장에서 다시 계산하고, '지난 검토'는 이 기기의 조직 검토
+    상태가 기억한다."""
     try:
         recs = core.ledger_read(core.ROUTING)
     except Exception:
@@ -564,7 +565,7 @@ def bindings_audit(project: str | None = None) -> list[dict]:
         seen = _load().get("bindings_seen", {})
     except ValueError:
         seen = {}
-    out = []
+    names, out = set(write.graph.scope_names()), []
     for key in keys:
         b = write.bindings(key, recs)
         if not b["scopes"]:
@@ -576,6 +577,8 @@ def bindings_audit(project: str | None = None) -> list[dict]:
             flags.append("grew")
         if b["primary"] is None:
             flags.append("undetermined" if b["undetermined"] else "no_primary")
+        if any(s not in names for s in b["scopes"]):
+            flags.append("missing_scope")
         if flags:
             out.append({"project": key, "scopes": b["scopes"], "primary": b["primary"], "flags": flags})
     return out
@@ -589,7 +592,8 @@ def bindings_prompt(project: str | None = None) -> str:
         return ""
     head = " · ".join(f"{i['project']} {len(i['scopes'])}개 결속({', '.join(i['flags'])})" for i in items)
     return (f"[osk 프로젝트 결속 검토 — {head}]\n"
-            "결속이 셋을 넘거나 늘어났거나 주된 scope가 없는 프로젝트다(시행령 §3 10항). 각 프로젝트에 대해 "
+            "결속이 셋을 넘거나 늘어났거나 주된 scope가 없거나 없는 scope에 결속된 프로젝트다(시행령 §3 10항). "
+            "없는 scope(`missing_scope`)는 해제한다. 각 프로젝트에 대해 "
             "유지·노드 이동 뒤 해제·scope 분리 제안(사용자 허락)·주된 scope 지정 중 하나로 판정한다. 주된 "
             "scope는 그 프로젝트 자체의 활동이 속한 scope로 확인됐을 때만 지정한다. 판정은 접두부 + `review`의 "
             "bindings([{project, scope, action: keep|unbind|primary, reason}])에 싣거나 `routing` 명령으로 적는다.\n"
@@ -599,9 +603,11 @@ def bindings_prompt(project: str | None = None) -> str:
 def apply_binding_decisions(decisions: list | None, state: dict | None = None) -> list[dict]:
     """조직 검토가 낸 결속 판정을 적용한다 — `keep`은 지금 결속 수를 '지난 검토'로 기억하고, `unbind`는
     집합에서 빼며, `primary`는 주된 scope를 지정한다. 호출자가 변경 잠금을 쥔다. 묶음을 먼저 검증해
-    하나라도 틀리면(없는 scope) 아무것도 적지 않는다. 적용은 **멱등**이다 — 이미 뺀 scope와 이미 주된
+    하나라도 틀리면(없는 scope의 지정) 아무것도 적지 않는다. 적용은 **멱등**이다 — 이미 뺀 scope와 이미 주된
     scope는 다시 적지 않으므로, 중간에 실패한 묶음은 같은 묶음의 재시도가 남은 판정부터 잇는다(기록은
-    append-only라 되돌릴 수 없고, 되돌릴 필요도 없다). `state`를 받으면 그 상태에 적고 저장은 호출자가 한다."""
+    append-only라 되돌릴 수 없고, 되돌릴 필요도 없다). 없는 scope의 해제는 받는다 — 개명·삭제된 scope를
+    결속에서 빼는 길이고, 결속에 없으면 적지 않으므로 재시도도 멱등이다. `state`를 받으면 그 상태에
+    적고 저장은 호출자가 한다."""
     if not decisions:
         return []
     if not isinstance(decisions, list) or any(
@@ -613,7 +619,7 @@ def apply_binding_decisions(decisions: list | None, state: dict | None = None) -
         raise ValueError("bindings decisions are [{project, action: keep|unbind|primary, scope?, reason}]")
     scopes = write.graph.scope_names()
     for d in decisions:
-        if d["action"] != "keep" and d["scope"].strip() not in scopes:
+        if d["action"] == "primary" and d["scope"].strip() not in scopes:
             raise ValueError(f"{d['action']} names a scope that does not exist: {d['scope'].strip()}")
     own = state is None
     state = _load() if own else state
