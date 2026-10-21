@@ -244,6 +244,41 @@ def turn_key(harness: str, round_id: str) -> str:
     return round_id.split(":", 1)[0] if harness in ("claude", "antigravity") else round_id
 
 
+SHORT_ID = 8  # the least prefix a citation may name a turn by (#219)
+
+
+def _short_ids(s: dict):
+    """A turn ref → the shortest prefix of its turn ID, at least SHORT_ID, that tells this
+    conversation's tracked turns apart. Codex IDs share time-ordered prefixes, so the length
+    grows until every tracked turn differs; an untracked ref keeps SHORT_ID."""
+    keys = {r["ref"]: turn_key(s["harness"], r["id"]) for r in s["rounds"]}
+    n = SHORT_ID
+    while len({k[:n] for k in keys.values()}) < len(set(keys.values())):
+        n += 1
+    return lambda ref: keys[ref][:n] if ref in keys else ref.rsplit(":", 1)[-1][:n]
+
+
+def _range_text(s: dict, refs) -> str:
+    """Where a review's turns sit in the conversation, by position and short ID."""
+    at = {r["ref"]: i + 1 for i, r in enumerate(s["rounds"])}
+    refs = sorted(refs, key=lambda ref: at.get(ref, 0))
+    pos, short, total = [at.get(ref, 0) for ref in refs], _short_ids(s), f"전체 {len(s['rounds'])}턴"
+    if len(refs) == 1:
+        return f"{pos[0]}번째 턴 1개(`{short(refs[0])}`, {total})"
+    if pos == list(range(pos[0], pos[0] + len(pos))):
+        return f"{pos[0]}–{pos[-1]}번째 턴 {len(refs)}개(`{short(refs[0])}` … `{short(refs[-1])}`, {total})"
+    return f"{'·'.join(map(str, pos))}번째 턴 {len(refs)}개({total})"
+
+
+def _review_refs(s: dict, through: str) -> list:
+    """The turns a review of `through` covers — what its ACK closes and its batch read shows."""
+    snap = s["snapshots"].get(through)
+    repair = s.get("repair_pending", {}).get(through)
+    if not snap or snap["count"] <= s["reviewed_count"] and not repair:
+        raise ValueError("through is not an unreviewed snapshot of this conversation")
+    return list(repair["refs"]) if repair else [r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]]
+
+
 # Only the locators the parser writes into `native_result` fields; words that merely mention
 # a locator are hashed as written.
 _SESSION_LOCATOR = re.compile(r'("native_result":\s*")claude:[A-Za-z0-9_.-]+:')
@@ -695,10 +730,7 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 raise ValueError(f"primary_scope is not a scope: {primary_scope}")
         snap = s["snapshots"].get(through)
         repair = s.get("repair_pending", {}).get(through)
-        if not snap or snap["count"] <= s["reviewed_count"] and not repair:
-            raise ValueError("through is not an unreviewed snapshot of this conversation")
-        refs = set(repair["refs"]) if repair else {
-            r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]}
+        refs = set(_review_refs(s, through))
         _verify_raw([r for r in s["rounds"] if r["ref"] in refs])
         words = {}
         if not repair and outcome != "deferred":
@@ -719,8 +751,22 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 bound = ({raw.canonical_ref(r["ref"]) for r in sources}
                          | {r["native"] for r in sources if r.get("native") and r.get("native_user")
                             in (None, words.get(r["native"], r.get("native_user")))})
-                if receipt.get("status") != "complete" or not {raw.canonical_ref(ref) for ref in refs} & bound:
-                    raise ValueError("target has no complete body/source/hub receipt for this snapshot")
+                # Each refusal says which condition failed and what the target cites (#219).
+                if receipt.get("status") != "complete":
+                    raise ValueError(f"target {target['key']} has no complete body/source/hub receipt: "
+                                     f"{receipt.get('reason') or receipt.get('status')}")
+                covered = {raw.canonical_ref(ref) for ref in refs}
+                if not covered & bound:
+                    short = _short_ids(s)
+                    changed = [short(r["native"]) for r in sources if r.get("native") in covered]
+                    if changed:
+                        raise ValueError(f"target {target['key']} cites {', '.join(changed)} of this review, but the "
+                                         "turn's words changed after it was cited; cite the turn again and "
+                                         "distill from the new citation")
+                    cited = [short(r["native"]) if r.get("native") else r["ref"] for r in sources]
+                    raise ValueError(f"target {target['key']} cites no turn of this review ({_range_text(s, refs)}); "
+                                     f"it cites {', '.join(cited) or 'nothing'}. A later turn's distillation "
+                                     "belongs to that turn's review: judge this range on its own")
                 target_path = core.resolve_in_root(receipt.get("target", {}).get("path", ""))
                 kind = raw.graph.space_of(target_path)[0] if target_path is not None else None
                 if kind not in ("scope", "person"):
@@ -1182,8 +1228,10 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     if st["capture_recovery"]["next_action"]:
         text += f"포착 재개: {st['capture_recovery']['next_action']}\n"
     if st["raw_review"]["state"] == "native" and not offline:
-        text += (f"이번 검토 범위는 이 대화의 원본 턴 {st['raw_review']['rounds']}개다. 원문은 vault에 "
-                 "옮기지 않았다(시행령 §2 2항) — 대화 문맥에서 판단한다.\n")
+        # The range by position and short ID: the reviewer's latest turn is usually past it (#219).
+        text += (f"이번 검토 범위는 이 대화의 {_range_text(s, st['pending_refs'])}다. 원문은 vault에 "
+                 "옮기지 않았다(시행령 §2 2항). 범위 밖의 턴은 이 검토의 근거가 되지 못한다 — 그 턴은 "
+                 "자기 차례의 검토에서 다룬다.\n")
     elif st["raw_review"]["state"] == "verified":
         text += ("이번 검토 범위의 저장된 raw 좌표·해시는 일치한다. 원본 포착의 미완료와 구분해 "
                  "이 범위만 검토할 수 있다. 원본 소실을 no_value의 사유로 쓰거나 미포착 꼬리를 ACK하지 않는다.\n")
@@ -1328,12 +1376,16 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  f"cite_round(conversation=\"{harness}/{conversation_id}\", turn=<턴 ID>)로 인용하고, 받은 "
                  "round_ref를 distill.sources로 써 출처와 허브 Link를 완성한다.\n")
     elif turns:
-        # The reviewer holds these turns in context. Citing is the only vault write of
-        # dialogue, and only for evidence a node needs (Mechanism §9 9항).
-        text += (f"원본 턴 {turns}개는 이 대화 문맥에 있다 — 다시 읽지 않고 "
-                 "현재 scope_memory와 함께 후보를 찾는다. 노드로 옮길 지식이 나온 턴만 "
-                 f"cite_round(conversation=\"{harness}/{conversation_id}\", quote=그 턴 사용자 발화의 짧은 일부)로 "
-                 "인용하고, 받은 round_ref를 distill.sources로 써 출처와 허브 Link를 완성한다.\n")
+        # The reviewer usually holds these turns, but not after a compaction: one call reads
+        # the range (#219). Citing is the only vault write of dialogue, and only for evidence a
+        # node needs (Mechanism §9 9항).
+        text += (f"원본 턴 {turns}개 중 이 대화 문맥에 남은 턴은 다시 읽지 않고 현재 scope_memory와 함께 "
+                 "후보를 찾는다. 압축 등으로 문맥에 없는 턴이 있으면 "
+                 f"read_cited(conversation=\"{harness}/{conversation_id}\", through=아래 through)로 "
+                 "이 범위만 한 번에 읽는다(턴마다 발화·응답 각 ≤1500자). 노드로 옮길 지식이 나온 범위 안 "
+                 f"턴만 cite_round(conversation=\"{harness}/{conversation_id}\", quote=그 턴 사용자 발화의 "
+                 "짧은 일부 또는 turn=read_cited가 준 short)로 인용하고, 받은 round_ref를 distill.sources로 "
+                 "써 출처와 허브 Link를 완성한다. 범위 안에 남길 지식이 없으면 no_value로 닫는다.\n")
     if stored:
         text += ("저장된 기록은 현재 scope_memory와 함께 read_cited(view=review) 선별본으로 본다. "
                  "보존할 주장이나 모순을 확인할 때만 query로 필요한 원료 근거를 좁혀 읽고, 원본 hash를 "
@@ -1406,7 +1458,14 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
                 raise ValueError("a relative turn counts back from the latest: -1, -2, ...")
             matched = turns[n:n + 1 or None] if -n <= len(turns) else []
         elif isinstance(turn, str) and turn.strip():
-            matched = [t for t in turns if t["id"] == turn_key(harness, turn.strip())]
+            key = turn_key(harness, turn.strip())
+            matched = [t for t in turns if t["id"] == key]
+            if not matched and len(key) >= SHORT_ID:
+                # A review range names its turns by a prefix unique among the tracked turns
+                # (`_short_ids`, #219), so it resolves among those alone — not a fork parent's turn
+                # or the open tail. An exact ID wins, so a short step number ("2") never matches "20".
+                tracked = {turn_key(harness, r["id"]) for r in s["rounds"]}
+                matched = [t for t in turns if t["id"] in tracked and t["id"].startswith(key)]
         elif quote and quote.strip():
             needle = " ".join(quote.split())
             matched = [t for t in turns if needle in " ".join(t["user"].split())]
@@ -1456,8 +1515,31 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
     return out
 
 
+REVIEW_SIDES = (1500, 1500)  # 묶음 읽기의 턴당 발화·응답 상한 — 15턴이면 45k자 안팎(10-22 사용자 결정, #219)
+
+
+def read_review(conversation: str, through: str, query: str | None = None) -> dict:
+    """The turns one review covers, in one call: each turn's words and response within
+    REVIEW_SIDES, so a reviewer whose context lost them (compaction) reads only that range.
+    Nothing is written."""
+    harness, sid = _conversation(conversation)
+    with _locked(harness, sid) as p:
+        s = _load(p, harness, sid)
+    refs = _review_refs(s, through)
+    if len(refs) > MAX_REVIEW_ROUNDS:
+        # A capture snapshot spans every unreviewed turn; a review reads the bounded one it was given.
+        raise ValueError(f"this snapshot covers {len(refs)} turns; read the through the review prompt gave "
+                         f"(at most {MAX_REVIEW_ROUNDS})")
+    native = [ref for ref in refs if raw.is_native(ref)]
+    seen = {t["ref"]: t for t in read_turns(native, view="review", query=query, sides=REVIEW_SIDES)["turns"]} if native else {}
+    short = _short_ids(s)
+    turns = [{"short": short(ref), **(seen.get(ref) or raw.read_round(ref, view="review", query=query,
+                                                                      sides=REVIEW_SIDES))} for ref in refs]
+    return {"ok": True, "through": through, "range": _range_text(s, refs), "turns": turns}
+
+
 def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
-               query: str | None = None) -> dict:
+               query: str | None = None, *, sides: tuple[int, int] | None = None) -> dict:
     """Original turns from this device's transcript, for a reviewer without the conversation.
     Only the named turns are read, never the whole conversation; each names the turn
     before it as `previous`, for earlier context only when a judgment needs it
@@ -1465,6 +1547,8 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
     from . import raw_view, secrets
     if view not in {"review", "full"} or not isinstance(refs, list) or not 1 <= len(refs) <= MAX_REVIEW_ROUNDS:
         raise ValueError(f"1..{MAX_REVIEW_ROUNDS} original-turn refs and view review|full are required")
+    if sides is not None and view != "review":
+        raise ValueError("sides apply only to view=review")
     out, conversations = [], {}
     for ref in refs:
         parts = ref.split(":", 3) if raw.is_native(ref) else []
@@ -1501,7 +1585,7 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
             # Changed since tracking: its review waits for the next capture's snapshot.
             item["changed"] = True
         if view == "review":
-            item.update(raw_view.project(chunk, max_chars, query))
+            item.update(raw_view.project(chunk, max_chars, query, sides=sides))
         else:
             cut = len(chunk) > max_chars
             item.update(view="full", chars=len(chunk), truncated=cut,

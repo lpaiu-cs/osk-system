@@ -518,7 +518,7 @@ def round_hash(stored: str) -> str:
 
 
 def read_round(ref: str, max_chars: int = 20000, view: str = "full",
-               query: str | None = None) -> dict:
+               query: str | None = None, *, sides: tuple[int, int] | None = None) -> dict:
     """좌표 하나를 연다. `index`가 없으면 그 기록의 **목차**를 낸다 — 전문을
     쏟지 않는 것이 기본값이어야 세션 기록 하나가 맥락을 삼키지 않는다.
 
@@ -553,7 +553,7 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
                 "round_ref": canonical_ref(f"{rel}#{index}"), "hash": round_hash(stored)}
     if view == "review":
         from . import raw_view
-        return {**identity, **raw_view.project(chunk, max_chars, query)}
+        return {**identity, **raw_view.project(chunk, max_chars, query, sides=sides)}
     cut = len(chunk) > max_chars
     return {**identity, "view": "full",
             "chars": len(chunk), "truncated": cut,
