@@ -96,6 +96,26 @@ def main():
         shown = raw_view.project(claude_ref)
         assert "native_evidence_reference" in shown["text"] and "claude:user1:answer1" in shown["text"], shown
         assert "Read result needs verification." in shown["text"]
+
+        # A review range read splits each turn: the user's words and the response have their own
+        # budgets, one item may fill its side, and neither lends to the other (#219).
+        long_user, long_answer = "ASK " + "u" * 4000 + " END", "SAY " + "a" * 4000 + " FIN"
+        pair = "### user\n\n" + long_user + "\n\n### agent\n\n### assistant\n\n" + long_answer
+        split = raw_view.project(pair, sides=(1500, 1500))
+        user_part, agent_part = split["text"].split("\n\n")
+        assert user_part.startswith("[event 1 · user]") and 1200 < len(user_part) <= 1500, len(user_part)
+        assert "ASK" in user_part and "END" in user_part, "a clipped side keeps both boundaries"
+        assert 1200 < len(agent_part) <= 1500 and "FIN" in agent_part, len(agent_part)
+        assert split["budget_sides"] == {"user": 1500, "agent": 1500} and split["budget_chars"] == 3000
+        short = raw_view.project("### user\n\nbrief\n\n### agent\n\n### assistant\n\n" + long_answer,
+                                 sides=(1500, 1500))
+        assert len(short["text"]) <= 1500 + len("[event 1 · user]\nbrief") + 2, "an unused user side lends nothing"
+        for bad in ((100, 1500), (1500,), (1500, 7000)):
+            try:
+                raw_view.project(pair, sides=bad)
+            except ValueError:
+                continue
+            raise AssertionError(f"sides {bad} accepted")
         print("raw reading checks passed: bounded view/search, correction, opaque omission, unchanged provenance")
 
 
