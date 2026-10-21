@@ -1461,9 +1461,11 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
             key = turn_key(harness, turn.strip())
             matched = [t for t in turns if t["id"] == key]
             if not matched and len(key) >= SHORT_ID:
-                # A review range names its turns by a unique prefix (#219); an exact ID wins, so a
-                # short step number ("2") never matches "20".
-                matched = [t for t in turns if t["id"].startswith(key)]
+                # A review range names its turns by a prefix unique among the tracked turns
+                # (`_short_ids`, #219), so it resolves among those alone — not a fork parent's turn
+                # or the open tail. An exact ID wins, so a short step number ("2") never matches "20".
+                tracked = {turn_key(harness, r["id"]) for r in s["rounds"]}
+                matched = [t for t in turns if t["id"] in tracked and t["id"].startswith(key)]
         elif quote and quote.strip():
             needle = " ".join(quote.split())
             matched = [t for t in turns if needle in " ".join(t["user"].split())]
