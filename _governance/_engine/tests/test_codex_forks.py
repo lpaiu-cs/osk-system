@@ -117,6 +117,20 @@ class CodexForkTests(unittest.TestCase):
         [back] = it.read_turns([own["previous"]])["turns"]  # the parent's own transcript, untracked here
         self.assertEqual((back["ref"], back["turn"]), (raw.native_ref("codex", self.parent, "p1"), "p1"))
 
+    def test_review_short_id_cites_the_childs_turn_past_a_parent_and_tail_with_its_prefix(self):
+        # #220 review: Codex turn IDs are time-ordered (UUIDv7), so a parent's turn and the open
+        # tail can share the 8-character prefix of the child's one tracked turn. The short ID the
+        # review read gives must cite that turn, as the prefix is unique only among tracked turns.
+        _, child = self.fork(parent_rows=turn(self.parent, "019a0000-p"),
+                             child_rows=turn(self.child, "019a0000-c") + turn(self.child, "019a0000-t", finished=False))
+        self.assertTrue(it.capture("codex", self.child, str(child), "forks")["ok"])
+        through = it.prompt("codex", self.child, include_organization=False)["through"]
+        [read] = it.read_review("codex/" + self.child, through)["turns"]
+        self.assertEqual((read["short"], read["turn"]), ("019a0000", "019a0000-c"))
+        self.assertEqual(it.cite("codex/" + self.child, turn=read["short"])["turn"], "019a0000-c")
+        # Exact IDs still reach the parent's turn and the open tail.
+        self.assertEqual(it.cite("codex/" + self.child, turn="019a0000-t")["turn"], "019a0000-t")
+
     def test_parent_turns_keep_their_owner_when_cited_or_read_from_the_child(self):
         parent, child = self.fork()
         it.capture("codex", self.parent, str(parent), "forks")
