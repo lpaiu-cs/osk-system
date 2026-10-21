@@ -99,15 +99,25 @@ def _events(chunk):
             cursor = end
 
 
-def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None) -> dict:
+def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None,
+            *, sides: tuple[int, int] | None = None) -> dict:
     """Prioritize user input and final answer; search omitted evidence on demand.
 
     This is a selection view, never a claim of exhaustive review. A query searches
     the whole round locally; it does not page through the archive in model tokens.
+    `sides=(user, agent)` gives the user's words and the response their own budgets
+    (one item may fill its side) in place of `max_chars`; neither lends to the other.
     """
-    budget = min(max_chars, MAX_CHARS)
-    if budget < 200:
-        raise ValueError("review max_chars must be at least 200")
+    if sides is not None:
+        if len(sides) != 2 or not all(isinstance(n, int) and 200 <= n <= MAX_CHARS for n in sides):
+            raise ValueError(f"review sides must be two budgets of 200..{MAX_CHARS} characters")
+        budgets = {"user": sides[0], "agent": sides[1]}
+        budget = sum(sides)
+    else:
+        budget = min(max_chars, MAX_CHARS)
+        if budget < 200:
+            raise ValueError("review max_chars must be at least 200")
+        budgets = {"user": budget, "agent": budget}
     if query is not None and (not isinstance(query, str) or not query.strip() or len(query) > 200):
         raise ValueError("query must contain 1..200 characters")
     terms = query.split() if query else []
@@ -166,11 +176,13 @@ def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None) ->
         assistants[-1]["priority"] = 1
     # Prefer later observations/corrections over the start of a long execution.
     ordered = sorted(entries, key=lambda x: (0 if terms else x["priority"], -x["event"]))
-    selected, used, clipped = [], 0, 0
+    selected, used, clipped = [], {"user": 0, "agent": 0}, 0
     for entry in ordered:
         context = " · call " + ", ".join(entry["calls"]) if terms and entry["calls"] else ""
         label = f"[event {entry['event']} · {entry['kind']}{context}]\n"
-        room = min(_ITEM_CHARS, budget - used - len(label) - 2)
+        # One shared pool unless split: then the user's words and the response each have their own.
+        side = ("user" if entry["kind"] in {"user", "native_trigger_context"} else "agent") if sides else "user"
+        room = min(budgets[side] if sides else _ITEM_CHARS, budgets[side] - used[side] - len(label) - 2)
         if room < 80:
             omitted["budget"] += 1
             continue
@@ -182,11 +194,12 @@ def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None) ->
                     text[:room // 2 - 1] + "…\n" + text[-(room - room // 2 - 1):])
             clipped += 1
         selected.append(label + text)
-        used += len(label) + len(text) + 2
+        used[side] += len(label) + len(text) + 2
     rendered = "\n\n".join(selected)
     assert len(rendered) <= budget
     return {"view": "review", "text": rendered, "chars": len(chunk),
             "returned_chars": len(rendered), "budget_chars": budget,
+            **({"budget_sides": budgets} if sides else {}),
             "selection_only": True, "truncated": bool(clipped or omitted.get("budget")),
             "visible_events": len(entries), "selected_events": len(selected),
             "clipped_events": clipped, "omitted_events": dict(omitted),
