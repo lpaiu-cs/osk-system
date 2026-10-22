@@ -303,11 +303,17 @@ def _node_view(body: str, view: str) -> dict:
 @mcp.tool()
 def read_cited(ref: str | None = None, space: str | None = None,
                max_chars: Annotated[int, Field(ge=200, le=100000)] = 6000,
-               view: Literal["review", "full"] = "review", query: str | None = None) -> dict:
+               view: Literal["review", "full"] = "review", query: str | None = None,
+               conversation: str | None = None, through: str | None = None) -> dict:
     """인용 기록 회상: ref=경로#N(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의
     그 턴만, previous=앞 턴). 인자 없으면 기록 목록(space=옛 scope 자리). 기본 review:
     발화·답변 선별 ≤6000자, query=원본 AND 검색, full=포렌식. 생략≠무가치. 전량 이어읽기
     금지. hash=원본 출처."""
+    # conversation+through(검토 범위 한 번에 읽기)는 대화 검토 안내가 가르친다 — 설명에 싣지 않는다(상주 예산).
+    if through is not None or conversation is not None:
+        if not (through and conversation) or ref or space or view != "review":
+            return {"ok": False, "violations": ["a review range read takes conversation and through only (view=review)"]}
+        return _guard(integration.read_review, conversation, through, query)
     if ref and raw.is_native(ref):
         return _guard(lambda: {"ok": True, **integration.read_turns([ref], max_chars, view, query)["turns"][0]})
     if ref:
