@@ -1970,13 +1970,56 @@ class IntegrationTests(unittest.TestCase):
         rows[0]["message"]["content"] = "apply the rule to every project"
         self.transcript(rows)
         changed = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        with self.assertRaises(ValueError):  # the receipt cited the earlier words
+        with self.assertRaisesRegex(ValueError, "words changed after it was cited"):  # the receipt cited the earlier words
             it.acknowledge("claude", self.sid, changed["through"], "preserved", "Kept.", [{"key": self.sid}])
         second = it.cite(f"claude/{self.sid}", turn="-1")
         self.assertFalse(second["reused"])
         self.assertEqual(second["supersedes"], first["round_ref"])
         self.assertNotEqual(second["round_ref"], first["round_ref"])
         self.assertIn("every project", (ROOT / second["path"]).read_text(encoding="utf-8"))
+
+    def test_a_review_behind_names_its_range_reads_it_once_and_refuses_a_later_turn_by_name(self):
+        # #219: the reviewer's latest turn is past a review that fell behind. The prompt names the
+        # range, one call reads it, a short ID cites, and the refusal says the cited turn is later.
+        from osk import distillation as D
+        import mcp_server
+        rows = []
+        for n in range(1, 5):
+            r = claude_round(self.sid, n)
+            r[0]["uuid"] = f"aaaaaaaa-{n}-turn"
+            r[0]["message"]["content"] = f"question {n} " + "w" * 2000
+            rows += r
+        self.transcript(rows)
+        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        conversation = f"claude/{self.sid}"
+        st = it.prompt("claude", self.sid, include_organization=False, max_rounds=2)
+        self.assertIn("1–2번째 턴 2개(`aaaaaaaa-1` … `aaaaaaaa-2`, 전체 4턴)", st["text"])
+        self.assertIn(f'read_cited(conversation="{conversation}", through=', st["text"])
+        read = mcp_server.read_cited(conversation=conversation, through=st["through"])
+        self.assertTrue(read["ok"], read)
+        self.assertEqual([(t["short"], t["position"]) for t in read["turns"]], [("aaaaaaaa-1", 1), ("aaaaaaaa-2", 2)])
+        self.assertTrue(all(t["budget_sides"] == {"user": 1500, "agent": 1500} and len(t["text"]) <= 3000
+                            and "question" in t["text"] for t in read["turns"]), read)
+        self.assertFalse(mcp_server.read_cited(ref="x", conversation=conversation, through=st["through"])["ok"])
+        with self.assertRaisesRegex(ValueError, "4 turns match"):
+            it.cite(conversation, turn="aaaaaaaa")
+        late = it.cite(conversation, turn="aaaaaaaa-4")
+        self.assertEqual(late["turn"], "aaaaaaaa-4-turn")
+        key = self.sid + "-late"
+        self.addCleanup(D._job_path(key).unlink, missing_ok=True)
+        D.create_node({"key": key, "sources": [late["round_ref"]], "hub": "W1"}, title=self.sid,
+                      summary="a later turn", body="Knowledge from the latest turn.", drafter="test-model",
+                      space="00_Scope/W1")
+        with self.assertRaisesRegex(ValueError, r"cites no turn of this review \(1–2번째 턴 2개.*it cites aaaaaaaa-4"):
+            it.acknowledge("claude", self.sid, st["through"], "preserved", "Late.", [{"key": key}])
+        with self.assertRaisesRegex(ValueError, "no complete body/source/hub receipt: unknown job"):
+            it.acknowledge("claude", self.sid, st["through"], "preserved", "Lost.", [{"key": self.sid + "-missing"}])
+        # The range closes on its own; the later distillation waits for its own turn's review.
+        it.acknowledge("claude", self.sid, st["through"], "no_value", "fixture questions only")
+        rest = it.prompt("claude", self.sid, include_organization=False)
+        self.assertIn("3–4번째 턴 2개", rest["text"])
+        ack = it.acknowledge("claude", self.sid, rest["through"], "preserved", "Later turn kept.", [{"key": key}])
+        self.assertFalse(ack["pending"])
 
     def test_open_kiro_and_antigravity_turns_are_cited_under_their_final_ids(self):
         step = lambda i, typ, text: {"step_index": i, "source": "x", "type": typ, "status": "DONE", "content": text}
