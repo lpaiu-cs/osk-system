@@ -449,9 +449,11 @@ class GrowthTests(unittest.TestCase):
             daily = growth.prompt({**base,'work_context':'daily'})
             stop = growth.prompt({**base,'work_context':'stop:W1'})
             assert 'not in your context' in daily and 'read_cited(ref=<that ref>)' in daily, daily
-            assert 'Stop fork' not in daily and 'never re-read' not in daily, daily
-            assert 'They are in your context' in stop and 'never re-read' in stop, stop
-            assert 'read_cited(ref=<that ref>)' not in stop, stop
+            assert 'Stop fork' not in daily and 'still in your context' not in daily, daily
+            assert 'still in your context' in stop and 'read_cited(ref=<that ref>)' not in stop, stop
+            # Compaction drops a backlog from the fork's context too: it reads the range once (#226).
+            assert 'read_cited(conversation=' in stop and 'through=<its through>' in stop, stop
+            assert 'through=<its through>' not in daily, daily
             assert 'not in your context' in growth.prompt(base), 'a preview is the daily inventory'
         """)
 
@@ -1611,6 +1613,9 @@ class GrowthTests(unittest.TestCase):
             assert '하위 군집을 열지 않는다' in job['text']
             reading = growth._reading_plan({'scope_jobs': [job], 'organization_jobs': []})
             assert reading['scope_jobs'][0]['hub_tree'] == tree
+            # The packet drops the hook text, so the range reaches a Stop fork as a field (#226).
+            assert job['range'] == '1번째 턴 1개(`u1`, 전체 1턴)', job.get('range')
+            assert reading['scope_jobs'][0]['range'] == job['range']
             assert 'hub_tree' in growth.prompt()
         """)
 

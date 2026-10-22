@@ -1229,7 +1229,9 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         text += f"포착 재개: {st['capture_recovery']['next_action']}\n"
     if st["raw_review"]["state"] == "native" and not offline:
         # The range by position and short ID: the reviewer's latest turn is usually past it (#219).
-        text += (f"이번 검토 범위는 이 대화의 {_range_text(s, st['pending_refs'])}다. 원문은 vault에 "
+        # A Stop fork gets it as a field; its packet drops this text (#226).
+        st["range"] = _range_text(s, st["pending_refs"])
+        text += (f"이번 검토 범위는 이 대화의 {st['range']}다. 원문은 vault에 "
                  "옮기지 않았다(시행령 §2 2항). 범위 밖의 턴은 이 검토의 근거가 되지 못한다 — 그 턴은 "
                  "자기 차례의 검토에서 다룬다.\n")
     elif st["raw_review"]["state"] == "verified":
