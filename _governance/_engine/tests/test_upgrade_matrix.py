@@ -285,6 +285,10 @@ def _drive_content(cfg: dict) -> dict:
         new_cluster(title="W1", summary="Matrix work scope hub",
                     body="Work scope of the upgrade matrix. [[Alpha]] [[Beta]]",
                     drafter=DRAFTER, session=key, space=f"{S}/W1")
+        # From v5.2 a write only binds W1; the user names it the primary scope (`routing primary`).
+        from osk import write
+        if hasattr(write, "set_primary"):
+            write.set_primary(key, "W1", "matrix")
         # From v5.0 an engine stores no dialogue on its own: it cites a turn once one exists (phase B).
         raw1 = (ok("append_raw", key, "matrix-log", "How do we keep vaults alive?",
                    "Update them with their own updater and check everything.")

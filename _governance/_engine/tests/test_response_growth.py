@@ -211,6 +211,7 @@ class ResponseGrowthTests(unittest.TestCase):
             for p in (older, same):
                 p.parent.mkdir(parents=True)
                 p.touch()
+                p.chmod(0o700)
             with patch.dict(os.environ, {'LOCALAPPDATA': str(local)}):
                 self.assertEqual(native_cli.resolve(str(pinned), version='2.1.304'), str(same))
                 self.assertEqual(native_cli.resolve(str(pinned)), str(same))

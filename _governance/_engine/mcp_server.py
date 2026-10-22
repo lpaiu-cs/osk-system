@@ -308,8 +308,8 @@ def read_cited(ref: str | None = None, space: str | None = None,
     """인용 기록 회상: ref=경로#N(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의
     그 턴만, previous=앞 턴). 인자 없으면 기록 목록(space=옛 scope 자리). 기본 review:
     발화·답변 선별 ≤6000자, query=원본 AND 검색, full=포렌식. 생략≠무가치. 전량 이어읽기
-    금지. hash=원본 출처. conversation=<하네스>/<대화 ID>+through=검토 snapshot은 그 검토
-    범위의 턴을 한 번에(턴마다 발화·응답 각 ≤1500자)."""
+    금지. hash=원본 출처."""
+    # conversation+through(검토 범위 한 번에 읽기)는 대화 검토 안내가 가르친다 — 설명에 싣지 않는다(상주 예산).
     if through is not None or conversation is not None:
         if not (through and conversation) or ref or space or view != "review":
             return {"ok": False, "violations": ["a review range read takes conversation and through only (view=review)"]}
@@ -501,7 +501,7 @@ def record_candidate(type: CandidateType,
 def cite_round(conversation: str, quote: str | None = None, turn: str | None = None,
                note: str | None = None, user: str | None = None) -> dict:
     """근거로 쓸 원본 턴 하나를 남긴다. conversation=훅이 준 <하네스>/<대화 ID>.
-    quote(사용자 발화 일부)·turn(ID 또는 그 앞 8자 이상, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
+    quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
     전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref."""
     return _guard(integration.cite, conversation, quote, turn, note, user=user)
 
