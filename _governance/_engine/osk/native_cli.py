@@ -101,6 +101,28 @@ def runtime_codex() -> str | None:
     return _codex_version(path) if path else None
 
 
+def _claude_desktop(base: Path) -> bool:
+    """Desktop's `claude-code` folder: under `Claude` (an installer's or the MSIX LocalCache's
+    Roaming folder) or under `Claude-Data/claude_<package>` (app 3.16 and later)."""
+    owner = base.parent.name.lower()
+    return base.name.lower() == 'claude-code' and (
+        owner == 'claude' or bool(re.fullmatch(r'claude_[a-z0-9]+', owner))
+        and base.parent.parent.name.lower() == 'claude-data')
+
+
+def _moved(base: Path) -> Path:
+    """The same installation after Desktop moved it. App 3.16 moved a store install's data from
+    `Packages/Claude_<package>/LocalCache/Roaming/Claude` to `%LOCALAPPDATA%/Claude-Data/claude_<package>`
+    and left the old folder empty, so a pin into it follows that package's new folder (10-21)."""
+    package = next((p.name for p in base.parents if p.parent.name.lower() == 'packages'
+                    and p.name.lower().startswith('claude_')), None)
+    local = os.environ.get('LOCALAPPDATA')
+    if base.is_dir() or not package or not local:
+        return base  # ponytail: only the store install's move is known; follow others once one is seen.
+    moved = Path(local) / 'Claude-Data' / package.lower() / 'claude-code'
+    return moved if moved.is_dir() else base
+
+
 def resolve(executable: str, *, version: str | None = None, env=None) -> str:
     path = Path(executable)
     # Desktop uses <version>/claude.exe or <version>/<build hash>/claude.exe.
@@ -110,13 +132,15 @@ def resolve(executable: str, *, version: str | None = None, env=None) -> str:
         release = release.parent
     base = release.parent
     if (path.is_absolute() and path.name.lower() in ('claude', 'claude.exe')
-            and re.fullmatch(SEMVER, release.name)
-            and [base.name.lower(), base.parent.name.lower()] == ['claude-code', 'claude']):
+            and re.fullmatch(SEMVER, release.name) and _claude_desktop(base)):
         if version is not None and not re.fullmatch(SEMVER, version):
             raise ValueError('matching Claude Desktop CLI is unavailable; review remains pending')
         if (version is None or version == release.name) and path.is_file() and (
                 path.resolve() == base.resolve() / path.relative_to(base)):
             return executable
+        base = _moved(base)
+        if not base.is_dir():
+            raise ValueError('matching Claude Desktop CLI is unavailable; review remains pending')
         installed = []
         for directory in ([base / version] if version else base.iterdir()):
             if not re.fullmatch(SEMVER, directory.name):
