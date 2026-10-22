@@ -525,7 +525,10 @@ def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
 #   7800 → 7900: `cite_round`의 `space`(시행령 §3 9항·Mechanism §9-4 3항, 2026-10-12). 소속
 #     scope 없는 대화의 첫 인용이 그 대화의 착지를 정한다. 스키마만 자란다(+60). 쓰는 법은
 #     소속 없는 대화의 검토 지시(`integration.UNLANDED`)가 가르치므로 설명에는 싣지 않는다.
-SCHEMA_BUDGET = 7900
+#   7900 → 8000: `read_cited`의 `conversation`·`through`(#219·#220, 2026-10-22). 밀린 검토의 범위를
+#     한 번에 읽는다. 스키마만 자란다(+129). 쓰는 법과 `cite_round`의 짧은 턴 ID는 대화 검토
+#     안내(`integration.prompt`)가 가르치므로 설명에는 싣지 않는다.
+SCHEMA_BUDGET = 8000
 
 # 마지막 표면 린트의 상주 비용 분해 — surface_lint가 채우고 run이 보고에 싣는다.
 _last_surface_cost: dict | None = None
