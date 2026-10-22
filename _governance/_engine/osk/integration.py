@@ -1311,8 +1311,9 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  "아래 증거의 실제 내용이 이번 검토 범위에 맞는지 먼저 확인하라.\n"
                  + json.dumps(discovered["proofs"], ensure_ascii=False) + "\n")
     if discovered["errors"] or discovered["truncated"]:
-        text += ("기존 증류 증거 조회가 불완전하다. 기존 저장 여부를 확인하기 전 "
-                 "중복 노드를 새로 만들지 말고 필요하면 deferred로 남겨라. 진단: "
+        text += ("기존 증류 증거 조회가 불완전하다 — 이미 인용된 턴의 영수증을 다 보지 못했다. "
+                 "그 턴의 노드를 새로 만들기 전에 search로 기존 노드를 확인하고, 확인할 수 없을 때만 "
+                 "deferred로 남겨라. 진단: "
                  + json.dumps(st["proof_discovery"], ensure_ascii=False) + "\n")
     text += (f"이번 검토 snapshot의 작업 키: {st['key']}\n"
              f"새 증류의 distill.key는 `{st['key']}:<대상별 고정 접미사>`로 정하라. "

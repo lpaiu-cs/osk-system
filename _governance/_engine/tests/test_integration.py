@@ -1472,6 +1472,28 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn(foreign_key, json.dumps(it.prompt("claude", self.sid)))
 
 
+    def test_uncited_pending_turns_need_no_receipt_scan(self):
+        # A proof binds an original turn only through its cited round. With 891 receipts the
+        # scan of the newest 256 made every review prompt say the lookup was incomplete (#227).
+        from osk import distillation as D
+        other_sid = self.sid + "-other"
+        other_path = Path(TMP.name) / (other_sid + ".jsonl")
+        other_path.write_text("".join(json.dumps(row) + "\n" for row in claude_round(other_sid, 1)), encoding="utf-8")
+        other = it.capture("claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
+        other["cited"] = it.cite(f"claude/{other_sid}", turn="-1")["round_ref"]
+        for n in range(2):
+            self._discovery_save(other, f"{self.sid}-other-{n}", f"{self.sid}-other-node-{n}")
+        self.transcript(claude_round(self.sid, 1))
+        own = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        self.assertEqual(D.discover(own["pending_refs"], scan_limit=1),
+                         {"proofs": [], "errors": [], "scanned": 0, "truncated": False})
+        self.assertNotIn("조회가 불완전", it.prompt("claude", self.sid)["text"])
+        # A cited turn may have a proof among the older receipts: the bounded scan says so.
+        it.cite(f"claude/{self.sid}", turn="-1")
+        found = D.discover(own["pending_refs"], scan_limit=1)
+        self.assertEqual((found["scanned"], found["truncated"]), (1, True), found)
+
+
     def test_discovered_pending_hub_resumes_without_body_rewrite(self):
         from osk import distillation as D
         st = self._discovery_source()
