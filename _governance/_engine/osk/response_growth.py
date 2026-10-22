@@ -428,7 +428,8 @@ def process_stop(env: dict, *, flush_timeout: float = 5) -> dict:
             unlock(lock)
     with integration._locked(harness, sid) as p:
         state = integration._load(p, harness, sid)
-        state['response_growth_stop'] = {k: result[k] for k in ('ok', 'state', 'error') if k in result}
+        state['response_growth_stop'] = {**{k: result[k] for k in ('ok', 'state', 'error') if k in result},
+                                         'reviewed': _review_done(result)}
         integration._save(p, state)
     return result
 
@@ -606,8 +607,12 @@ def attempt(source: dict, job: dict, executable: str) -> dict:
     with integration._locked(harness, sid) as path:
         state = integration._load(path, harness, sid)
         saved = state['response_growth']
-        saved['last_result'] = {k: result[k] for k in ('ok', 'state', 'error', 'output', 'cache') if k in result}
-        if _review_done(result):
+        # `reviewed` keeps the fork's own verdict for the hook: an unfinished side job is not a
+        # wait for this conversation (#228).
+        done = _review_done(result)
+        saved['last_result'] = {**{k: result[k] for k in ('ok', 'state', 'error', 'output', 'cache') if k in result},
+                                'reviewed': done}
+        if done:
             saved.pop('failed', None)
         elif result.get('state') not in _NOT_FORK_FAILURES:
             count = (saved.get('failed') or {}).get('count', 0) + 1
