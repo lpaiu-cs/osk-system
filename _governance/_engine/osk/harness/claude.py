@@ -83,15 +83,16 @@ class Claude(Adapter):
     def cli_candidates(self):
         # Windows 데스크톱 앱은 판마다 CLI를 `Claude/claude-code/<판>/`이나 그 아래 `<빌드 해시>/`에
         # 둔다(`native_cli.resolve`가 따라가는 두 배치). 스토어(MSIX) 설치는 그 폴더가 패키지의
-        # LocalCache 아래로 옮겨진다.
+        # LocalCache 아래로 옮겨지고, 앱 3.16부터는 `Claude-Data/claude_<패키지>/`로 다시 옮겨진다.
         if os.name != "nt":
             return []
         roots = []
         if os.environ.get("APPDATA"):
             roots.append(Path(os.environ["APPDATA"]) / "Claude" / "claude-code")
         if os.environ.get("LOCALAPPDATA"):
-            roots += Path(os.environ["LOCALAPPDATA"]).glob(
-                "Packages/Claude_*/LocalCache/Roaming/Claude/claude-code")
+            local = Path(os.environ["LOCALAPPDATA"])
+            roots += [*local.glob("Packages/Claude_*/LocalCache/Roaming/Claude/claude-code"),
+                      *local.glob("Claude-Data/claude_*/claude-code")]
         build = "[0-9a-f]" * 12
         return [p for root in roots
                 for p in [*root.glob("*/claude.exe"), *root.glob(f"*/{build}/claude.exe")]]

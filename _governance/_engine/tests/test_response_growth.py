@@ -1,5 +1,6 @@
 """Metadata, billing boundary and receipt tests; no provider requests."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -193,6 +194,42 @@ class ResponseGrowthTests(unittest.TestCase):
             junk.parent.mkdir(parents=True); junk.touch()
             with self.assertRaisesRegex(ValueError, 'matching Claude'):
                 native_cli.resolve(str(old), version='2.1.288')
+
+    def test_claude_desktop_pin_follows_the_store_install_to_claude_data(self):
+        # 10-21: app 3.16 moved a store install's data from Packages/Claude_<package>/LocalCache/
+        # Roaming/Claude to %LOCALAPPDATA%/Claude-Data/claude_<package> and left the old folder empty.
+        # The pinned CLI follows the same package's new folder, and that folder is a Desktop layout.
+        from osk import native_cli, growth
+        with tempfile.TemporaryDirectory() as folder:
+            local = Path(folder) / 'Local'
+            store = local / 'Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude'
+            pinned = store / 'claude-code/2.1.286/635c1867224a/claude.exe'
+            moved = local / 'Claude-Data/claude_pzs8sxrjxfjjc/claude-code'
+            older, same = moved / '2.1.299/fbd8e0c0a9e1/claude.exe', moved / '2.1.304/aed62990b91e/claude.exe'
+            store.mkdir(parents=True)
+            (store / '.user-data-left.claude_pzs8sxrjxfjjc').touch()
+            for p in (older, same):
+                p.parent.mkdir(parents=True)
+                p.touch()
+            with patch.dict(os.environ, {'LOCALAPPDATA': str(local)}):
+                self.assertEqual(native_cli.resolve(str(pinned), version='2.1.304'), str(same))
+                self.assertEqual(native_cli.resolve(str(pinned)), str(same))
+                self.assertEqual(growth.check_command([str(pinned)])['executable'], str(same))
+                # A pin into the new folder follows the source's version like any Desktop install.
+                self.assertEqual(native_cli.resolve(str(older), version='2.1.304'), str(same))
+                with self.assertRaisesRegex(ValueError, 'matching Claude'):
+                    native_cli.resolve(str(older), version='2.1.305')
+                # Another package's folder is another installation: it is not followed here.
+                other = local / 'Packages/Claude_otherpackage1/LocalCache/Roaming/Claude/claude-code/2.1.286/claude.exe'
+                with self.assertRaisesRegex(ValueError, 'matching Claude'):
+                    native_cli.resolve(str(other))
+            # With nowhere to follow, a dead pin is "unavailable", not a path error (was WinError 3).
+            with patch.dict(os.environ, {'LOCALAPPDATA': str(Path(folder) / 'none')}):
+                with self.assertRaisesRegex(ValueError, 'matching Claude'):
+                    native_cli.resolve(str(pinned))
+            # `claude_<x>` outside Claude-Data is not a Desktop layout: the pin stays as written.
+            elsewhere = Path(folder) / 'tools/claude_x/claude-code/2.1.304/claude.exe'
+            self.assertEqual(native_cli.resolve(str(elsewhere), version='2.1.305'), str(elsewhere))
 
     def test_runtime_version_recovery_preserves_counters_and_reaches_supervisor(self):
         base_tests.GrowthTests().check_case('''
