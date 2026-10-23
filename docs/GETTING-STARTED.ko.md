@@ -898,7 +898,8 @@ v4.1.0 이상에서는 `python _governance/_engine/scripts/setup.py --apply --fo
 새 릴리스가 있으면 Claude Code·Codex 화면에
 `osk-system 새 릴리스 v5.4.0 (이 vault는 v5.3.0) — …` 같은 경고가 기기마다 하루 한 번
 뜬다. 경고 끝에 그 판의 릴리스 노트 주소가 붙는다. 에이전트에게 **"osk 업데이트해 줘"**라고 요청하면 에이전트가 아래 절차를 함께
-밟는다 — 변경집합을 보여 주고 사용자의 승인을 기다린다. 확인은 백그라운드에서 돌므로
+밟는다 — 변경집합을 보여 주고 사용자의 승인을 기다린다. 에이전트용 안내는
+[OPERATE-AGENT](OPERATE-AGENT.md)이고, 점검·기능·제거도 같은 문서다. 확인은 백그라운드에서 돌므로
 알림은 확인한 다음 세션부터 보인다. 지금 확인하려면 `osk.update --check`를 실행한다
 (태그만 묻는다). 확인을 끄려면 `.osk/config.json`에 `"update_check": false`를 둔다.
 
