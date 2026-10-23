@@ -986,13 +986,21 @@ def _ended_source(s: dict) -> str | None:
     return None
 
 
-def _turn_at(s: dict, native_path: str | None) -> float | None:
+def _turn_at(s: dict, native_path: str | None, refs: list[str] | None = None) -> float | None:
     """다음에 검토할 턴의 원래 시각(epoch 초). 복구 대기면 그 대상 가운데 가장 이른 턴이다.
+    `refs`를 주면 그 턴들 가운데 가장 이른 시각이고, 한 턴이라도 모르면 None이다 — 증거 조회가
+    그보다 늦은 시각에서 멈추면 그 턴의 영수증을 놓친다(#227).
     Codex 턴 id는 UUIDv7이라 id에서 읽고, Claude는 원본 전사에서 그 사용자 발화 행의 시각을
     읽는다. 알 수 없으면 None."""
-    repair = {ref for r in (s.get("repair_pending") or {}).values() for ref in r.get("refs", [])}
-    ids = ([r["id"] for r in s["rounds"] if r["ref"] in repair] if repair else
-           [s["rounds"][s["reviewed_count"]]["id"]] if s["reviewed_count"] < len(s["rounds"]) else [])
+    if refs is not None:
+        wanted = set(refs)
+        ids = [r["id"] for r in s["rounds"] if r["ref"] in wanted]
+        if len(ids) != len(wanted):
+            return None
+    else:
+        repair = {ref for r in (s.get("repair_pending") or {}).values() for ref in r.get("refs", [])}
+        ids = ([r["id"] for r in s["rounds"] if r["ref"] in repair] if repair else
+               [s["rounds"][s["reviewed_count"]]["id"]] if s["reviewed_count"] < len(s["rounds"]) else [])
     if not ids:
         return None
     if s["harness"] == "codex":
@@ -1013,6 +1021,8 @@ def _turn_at(s: dict, native_path: str | None) -> float | None:
             if not want:
                 break
     except (OSError, ValueError):
+        return None
+    if refs is not None and want:
         return None
     return min(found) if found else None
 
@@ -1297,8 +1307,17 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     command = core.cli_command("integration", "review", "--harness", harness,
                                "--conversation", conversation_id)
     from . import distillation
+
+    def since():
+        # The earliest pending turn's time bounds the receipt scan (#227); read only if needed.
+        try:
+            path = _locate_transcript(harness, conversation_id,
+                                      s.get("capture_path") or s.get("transcript_path"))
+        except (OSError, ValueError):
+            return None
+        return _turn_at(s, path, st["pending_refs"])
     try:
-        discovered = distillation.discover(st["pending_refs"])
+        discovered = distillation.discover(st["pending_refs"], since=since)
     except (ValueError, OSError, write.WriteError) as exc:
         discovered = {"proofs": [], "errors": [{"reason": str(exc)}], "truncated": False, "scanned": 0}
     st["previous_distillations"] = discovered["proofs"]
