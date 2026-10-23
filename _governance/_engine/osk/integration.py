@@ -286,14 +286,14 @@ _SESSION_LOCATOR = re.compile(r'("native_result":\s*")claude:[A-Za-z0-9_.-]+:')
 
 def _turn_hashes(pair: dict, dialogue_v1: dict | None = None) -> list[str]:
     """Local evidence of what was reviewed — the dialogue text never enters the vault.
-    The first hash is the turn's own; a resumed copy also offers its original row order.
+    The first hash is the turn's own; a resumed copy also offers its original's row orders.
     A copy may rewrite result locators with its own conversation ID, so that part is
     left out: a copied turn hashes the same in parent and child. The user's words and any
     locator they mention are hashed as they are."""
     shown = (dialogue_v1 or {}).get(pair["id"], pair)
     digest = lambda agent: core.sha256_bytes(json.dumps(
         [shown["user"], _SESSION_LOCATOR.sub(r"\1claude:*:", agent)], ensure_ascii=False).encode("utf-8"))
-    return [digest(a) for a in filter(None, (shown["agent"], shown.get("agent_time_order")))] or [digest("")]
+    return [digest(a) for a in filter(None, (shown["agent"], *shown.get("agent_time_orders", ())))] or [digest("")]
 
 
 def _fork_parent_turns(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
@@ -384,7 +384,7 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         from . import secrets
         # The copy may hold the tool evidence in message order; the original
         # captured append order, which the rows' timestamps still give.
-        for text in filter(None, (pair["agent"], pair.get("agent_time_order"))):
+        for text in filter(None, (pair["agent"], *pair.get("agent_time_orders", ()))):
             agent = locator.sub(
                 lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
                 if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
