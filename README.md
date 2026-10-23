@@ -184,7 +184,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v5.3.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.3.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -361,9 +361,10 @@ they belong. v5.2.0 keeps cited records in one root `_cited/`, binds scopes to t
 runs the scheduled growth run in daily batches sized each week ([plan](docs/v5.2-milestones.md)).
 [v5.3.0](docs/v5.3-milestones.md) ranks search by recency, centrality and locality as well as
 relevance. It also fixes conversation review where the live instance showed it falling short.
-The reuse and meaning-quality evaluations move to v5.3.1, which measures over a longer
-operating window. [v5.4.0](docs/v5.4-milestones.md) closes the designs deferred from v5.1 and how rewound
-Claude turns are tracked. [v6.0.0](docs/v6.0-milestones.md) extends the memory model on that base.
+v5.3.1 fixes the capture defects and the copy-test gap found while testing the v5.3.0 release.
+[v5.4.0](docs/v5.4-milestones.md) closes the designs deferred from v5.1 and how rewound
+Claude turns are tracked. It also takes the reuse and meaning-quality evaluations, which need
+a longer operating window. [v6.0.0](docs/v6.0-milestones.md) extends the memory model on that base.
 
 ## License
 

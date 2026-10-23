@@ -36,6 +36,14 @@ also fixes conversation review where the live instance showed it falling short.
   After the update, restart the harness so that its MCP server loads the new engine.
 - Updating from v5.2.0 also brings the v5.2.1 fixes: subscription fork review is restored (#221),
   and a backlogged review's range can be read at once (#219·#220).
+- v5.3.1 adds two capture fixes, with nothing to migrate either:
+  - A Claude record whose string newlines were written unescaped, splitting it over several lines,
+    no longer stops the whole conversation's capture (#243). The rejoined lines are listed in
+    `coverage.rejoined_lines`.
+  - A cursor whose native transcript stays missing for seven days closes as lost (#244). The daily
+    batch stops retrying and listing it, and its unreviewed native turns move from the review queue
+    to `source_lost.refs`. The clock starts when the daily batch first sees the cursor after the
+    update. If the transcript comes back, the cursor reopens.
 
 - **Search ranking changes (#170).** Relevance (character-bigram BM25) is multiplied by
   `1 + recency + centrality + locality`.
