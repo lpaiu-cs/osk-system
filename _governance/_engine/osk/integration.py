@@ -960,7 +960,9 @@ def _copied_since(s: dict, native_path: str) -> dict:
     """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계 — 턴 규칙(`since`)과 프롬프트
     규칙(`prompts_since`) 각각. 복제된 앞부분은 그 턴을 추적한 같은 scope 커서가 쓴 경계를
     따른다 — 새 규칙으로 읽으면 부모가 옛 규칙으로 추적한 턴과 경계·표현이 갈라진다. 그
-    커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다.
+    커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다. 부모가 갈래 지점 뒤로 이어
+    추적했으면 그 경계는 사본에 없다 — 복제된 앞부분은 모두 그 앞이니, 경계까지 추적한
+    라운드 가운데 사본에 있는 마지막 것이 경계다. 처음부터 새 규칙을 쓴 커서(경계 None)는 그대로다.
     부모가 저장한 절단 지점은 넘기지 않는다 — 사본에서도 행 시각의 12시간 공백이 같은
     자리를 나눈다. 프롬프트 경계는 부모가 턴 규칙으로 읽은 라운드다 — 유휴 닫기가 나눈
     라운드는 규칙 없는 판독에 없으므로, 찾은 턴 규칙으로 다시 읽어 찾는다(#233 리뷰)."""
@@ -968,13 +970,15 @@ def _copied_since(s: dict, native_path: str) -> dict:
     rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"]
     if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
         return best   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
-    cursors = [((owner.get("inherited") or {}).get("rounds", []) + owner["rounds"], owner)
+    cursors = [([r["id"] for r in (owner.get("inherited") or {}).get("rounds", []) + owner["rounds"]], owner)
                for owner, _landing in _scope_cursors(s)]
 
     def latest(rounds: list, key: str) -> str | None:
         order, found = {r["id"]: i for i, r in enumerate(rounds)}, None
-        for tracked, owner in cursors:
-            bound = owner.get(key, tracked[-1]["id"] if tracked else None)
+        for ids, owner in cursors:
+            bound = owner.get(key, ids[-1] if ids else None)
+            if bound in ids:
+                bound = next((i for i in reversed(ids[:ids.index(bound) + 1]) if i in order), None)
             if bound in order and (found is None or order[bound] > order[found]):
                 found = bound
         return found
