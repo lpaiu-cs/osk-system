@@ -429,6 +429,40 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(s["prompts_since"], tracked[0]["id"])
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted", "completed"])
 
+    def test_claude_copy_finds_its_parents_prompt_boundary_past_an_idle_close(self):
+        # #233 review: the parent tracked its turns with the turn rules but before the prompt
+        # rule, and its last round follows an idle close. A read without rules joins that round
+        # to the idle turn: the copy looks for the boundary with the turn rules.
+        prompted = lambda rows, pid: [{**r, "promptId": pid} for r in rows]
+        parent, child = self.sid + "-pp", self.sid + "-pc"
+        old = time.time() - 60 * 3600
+        rows = (stamped(prompted(claude_round(parent, 1, finished=False), "p1")
+                        + prompted(claude_round(parent, 2), "p2")
+                        + prompted(claude_round(parent, 3, finished=False), "p3"), old)
+                + stamped(prompted(claude_round(parent, 4), "p4"), old + 13 * 3600))
+        own = stamped(prompted(claude_round(child, 5), "p5"), old + 30 * 3600)
+        for owner, part in ((parent, rows), (child, own)):
+            for row in part:
+                if "uuid" in row:   # native rows carry UUIDs; a copy keeps them
+                    row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
+        self.transcript(rows)
+        legacy = {"since": None, "prompts_since": "never"}   # turn rules, no prompt rule
+        with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
+                mock.patch.object(it, "_copied_since", return_value=legacy):
+            self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
+        with it._locked("claude", parent) as p:     # that engine wrote no prompts_since
+            s = it._load(p, "claude", parent)
+            del s["prompts_since"]
+            it._save(p, s)
+        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+        self.assertEqual([r["completion"] for r in tracked], ["completed", "interrupted", "completed"])
+        self.transcript([dict(r, sessionId=child) for r in rows] + own)
+        st = it.capture("claude", child, str(self.path), "capture-tests")
+        self.assertTrue(st["ok"], st)
+        self.assertEqual(st["inherited_rounds"], 3, st)
+        s = it._load(it.state_path("claude", child), "claude", child)
+        self.assertEqual(s["prompts_since"], tracked[-1]["id"])
+
     def test_claude_copy_ignores_a_cut_its_sibling_stored(self):
         # Copies share their ancestor's rows (#164 review). A sibling that stopped at a shared
         # row and closed there does not cut the branch that went on from it, nor its copy.
