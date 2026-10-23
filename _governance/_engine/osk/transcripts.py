@@ -446,6 +446,22 @@ def _queued(row: dict, delivered: set) -> str | None:
     return words if isinstance(words, str) and words.strip() else None
 
 
+def _interleaved(evidence: list) -> list:
+    """A copy's tool events in its original's append order where a time sort cannot give
+    it: the original may write parallel results out of their time order, and a copy in
+    message order keeps that order. Such a copy keeps the calls' order and the results'
+    order and only moves results behind the calls they streamed between, so merging the
+    two back by row time undoes just that move; a tie keeps the copy's order. Copies that
+    reorder the calls as well are left to the time sort."""
+    rows = [(t, n, e) for n, (t, e) in enumerate(evidence)]
+    calls = [r for r in rows if r[2]["type"] == "tool_call_ref"]
+    results = [r for r in rows if r[2]["type"] != "tool_call_ref"]
+    merged = []
+    while calls and results:
+        merged.append((calls if calls[0][:2] < results[0][:2] else results).pop(0))
+    return [e for *_, e in merged + calls + results]
+
+
 def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None = None) -> dict:
     rows = [(line, r) for line, r in rows if not r.get("isSidechain") and not r.get("agentId")]
     identities = {r["sessionId"] for _, r in rows if r.get("sessionId")}
@@ -503,9 +519,12 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
         # that streamed between parallel calls move after them. Row timestamps
         # survive the copy: the original append order is offered only to match
         # a copied prefix, never to capture.
-        timed = [e for _, e in sorted(evidence, key=lambda x: x[0])]
-        if timed != events and all(t for t, _ in evidence):
-            found["agent_time_order"] = "\n\n".join(trace + _tool_evidence(timed, locator))
+        if all(t for t, _ in evidence):
+            timed = [e for _, e in sorted(evidence, key=lambda x: x[0])]
+            orders = [o for o in (timed, _interleaved(evidence)) if o != events]
+            if orders:
+                found["agent_time_orders"] = list(dict.fromkeys(
+                    "\n\n".join(trace + _tool_evidence(o, locator)) for o in orders))
         rounds.append(found)
         users, trace, start, native_results, evidence, continued, last = [], [], None, [], [], None, None
         new = new or (rules is not None and rid == since)
