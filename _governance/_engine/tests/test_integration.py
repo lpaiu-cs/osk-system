@@ -855,6 +855,31 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(done["last_review"]["mechanical_preservation"])
         self.assertFalse(done["last_review"]["semantic_verified"])
 
+    def test_a_source_missing_for_a_week_closes_as_lost_and_reopens_when_back(self):
+        # 원본이 7일 계속 없으면 커서를 원본 소실로 닫고, 원본이 돌아오면 이어 간다(#244)
+        self.transcript(claude_round(self.sid, 1))
+        first = self.capture()
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
+        self.capture()
+        unreviewed = it.acknowledge("claude", self.sid, first["through"], "no_value", "fixture")["pending_refs"]
+        away = self.path.with_name(self.path.name + ".away")
+        self.path.rename(away)
+        mine = lambda: [s for s in it._known_pending(None)[0] if s["conversation_id"] == self.sid]
+        self.assertTrue(mine(), "the first day without the source still retries it")
+        with mock.patch.object(it.time, "time", return_value=time.time() + it.SOURCE_LOST_AFTER + 1):
+            self.assertEqual(mine(), [], "a week later the closed cursor is neither captured nor listed")
+        st = it.status("claude", self.sid)
+        self.assertEqual(st["capture_recovery"]["state"], "closed")
+        self.assertEqual(st["source_lost"]["refs"], unreviewed)   # 처분에 남고 지워지지 않는다
+        self.assertEqual((st["pending_refs"], st["pending"], st["capture_error"]), ([], False, None))
+        self.assertEqual(st["captured_rounds"], 2)
+        again = it.capture("claude", self.sid, None, "capture-tests")
+        self.assertEqual((again["capture_recovery"]["state"], again["capture_error"]), ("closed", None))
+        away.rename(self.path)
+        back = self.capture()
+        self.assertIsNone(back["source_lost"])
+        self.assertEqual(back["pending_refs"], unreviewed)
+
     def test_capture_failure_is_pending_and_partial_tail_not_consumed(self):
         st = self.capture()
         self.assertFalse(st["ok"])
@@ -880,7 +905,9 @@ class IntegrationTests(unittest.TestCase):
         states, _, _, waiting = it._known_pending(100)
         self.assertNotIn(self.sid, [s['conversation_id'] for s in states])
         self.assertIn(self.sid, [s['conversation_id'] for s in waiting])
-        self.assertEqual(state_path.read_bytes(), before)
+        after = json.loads(state_path.read_bytes())
+        self.assertIsInstance(after.pop('source_missing_since'), float)   # 원본 시계만 더한다(#244)
+        self.assertEqual(after, json.loads(before))
         it.tick('claude', self.sid)
         states, _, _, waiting = it._known_pending(100)
         self.assertIn(self.sid, [s['conversation_id'] for s in states])
