@@ -528,6 +528,10 @@ def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
 #   7900 → 8000: `read_cited`의 `conversation`·`through`(#219·#220, 2026-10-22). 밀린 검토의 범위를
 #     한 번에 읽는다. 스키마만 자란다(+129). 쓰는 법과 `cite_round`의 짧은 턴 ID는 대화 검토
 #     안내(`integration.prompt`)가 가르치므로 설명에는 싣지 않는다.
+#   8000 유지(2026-10-23): `search`의 `session`(#170, 시행령 §8 3항 locality). 스키마만 자란다(+62).
+#     올리기 전에 군더더기를 심의했다 — 도구 설명이 docstring의 들여쓰기 공백(38줄 × 4칸)까지
+#     싣고 있었다. 그것을 걷어(-152, `mcp_server._apply_prune`) 맞췄고, 설명의 내용은 그대로다.
+#     쓰는 법은 세션 시작 문구가 가르친다.
 SCHEMA_BUDGET = 8000
 
 # 마지막 표면 린트의 상주 비용 분해 — surface_lint가 채우고 run이 보고에 싣는다.

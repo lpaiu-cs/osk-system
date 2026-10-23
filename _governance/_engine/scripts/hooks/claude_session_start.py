@@ -345,7 +345,7 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: 
     return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
             f"이 세션에서 노드를 처음 쓰기 전에 `overview(session={arg})`를 한 번 불러 군집·허브 트리(`hub_tree`)·열린 사건·근거 "
             "재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다(시행령 §3 8항). "
-            "기억을 묻는 질문에는 `search`를 먼저 쓴다. " + landing_note
+            f"기억을 묻는 질문에는 `search(session={arg})`를 먼저 쓴다. " + landing_note
             + (" 이 작업 폴더는 일회성 작업 폴더라 프로젝트 키를 결속하지 않고 그 키에 선 결속도 따르지 "
                "않는다(Mechanism §6-2 6항) — 쓰기 도구에 session을 주지 말고, 노드를 쓸 때 space를 "
                "명시한다. 그 착지는 이 대화에만 적용된다." if workspace.get("one_off") else "")
