@@ -459,7 +459,7 @@ def _reading_plan(planned: dict) -> dict:
               "pending_refs", "remaining_rounds", "capture_error", "failed_rounds",
               "interrupted_rounds", "inherited_rounds", "coverage", "repair",
               "previous_distillations", "proof_discovery", "scope_recovery",
-              "capture_recovery", "raw_review", "hub_tree"}
+              "capture_recovery", "raw_review", "hub_tree", "range"}
     jobs = []
     for job in planned.get("scope_jobs", []):
         item = {k: v for k, v in job.items() if k in fields}
@@ -534,8 +534,15 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "read its `<facet>-law` node first, and defer if none is active (Bylaws §4 8).\n"
         # 두 경우를 한 문장에 담았더니 정기 실행 작업자가 자신을 Stop fork로 여겨 읽지 않고
         # 판정했다(v5.0.0 운영 관측). 엔진은 어느 쪽인지 알므로 그 경우의 문장만 싣는다.
+        # 압축은 밀린 턴을 fork의 문맥에서도 지운다 — "다시 읽지 말라"만 받은 fork가 판정 없이
+        # 보류했다(#226). 대화 안 검토(#219)와 같이 범위를 한 번에 읽는다.
         + ("Scope jobs: pending_refs starting with native: are original turns of the conversation "
-           "you were forked from. They are in your context: judge them there and never re-read them. "
+           "you were forked from, and the job's range gives their position. Judge the ones still in "
+           "your context there without re-reading them. Compaction drops older turns of a long "
+           "conversation: if any of them is not in your context, read that job's turns once with "
+           "read_cited(conversation=\"<harness>/<conversation_id>\", through=<its through>) (each "
+           "turn's words and response, up to 1500 characters each); cite_round takes a turn's "
+           "short as turn. "
            if str(planned.get("work_context", "")).startswith("stop:") else
            "Scope jobs: pending_refs starting with native: are original turns that are not in your "
            "context: their conversation ended before its own review. Read each one with "
@@ -1042,15 +1049,52 @@ def _needs_review(planned: dict, rows: list[dict], idx: graph.Index) -> bool:
                    for j in planned.get("recheck_jobs", [])))
 
 
+def _tree(table: dict[int, tuple[int, str]], born: dict[int, int]) -> dict[int, int]:
+    """born ({pid: start}) with every process of the snapshot that descends from it. A process
+    older than its parent only names a dead parent's reused pid (10-23: Taskmgr.exe)."""
+    from .native_cli import process_created
+    born, frontier = dict(born), list(born)
+    while frontier:
+        parent = frontier.pop()
+        for pid, (ppid, _) in table.items():
+            if ppid == parent and pid not in born and (created := process_created(pid) or 0) >= born[parent]:
+                born[pid] = created
+                frontier.append(pid)
+    return born
+
+
+def _running(tree: dict[int, int]) -> bool:
+    """Whether the tree, or a descendant it started after its snapshot, still runs. Termination is
+    asynchronous, so allow it about five seconds; a pid counts only with its own start time."""
+    import time
+    from .native_cli import process_created, process_table
+    for _ in range(50):
+        now = process_table()
+        if now and not any(pid in now and process_created(pid) == start
+                           for pid, start in _tree(now, tree).items()):
+            return False
+        time.sleep(0.1)
+    return True
+
+
 def _stop_tree(proc: subprocess.Popen) -> str | None:
     """Kill only the process tree/group created by this runner; report uncertain cleanup."""
     error = None
     try:
         if os.name == "nt":
+            from .native_cli import process_created, process_table
+            table = process_table()
+            start = process_created(proc.pid) if proc.pid in table else None
+            tree = _tree(table, {proc.pid: start}) if start else {}
             killed = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                                     capture_output=True, timeout=30, shell=False,
                                     creationflags=0x08000000)
-            if killed.returncode:
+            # /T는 잎부터 죽인다. 자식과 함께 끝나는 부모(venv 런처)는 제 차례 전에 이미 없어
+            # taskkill이 실패를 낸다 — 죽이기 전 트리나 그 뒤 트리가 낳은 자손이 아직 돌 때만
+            # 정리 실패다(#231 리뷰: 루트가 자식을 낳고 먼저 끝나면 taskkill은 아무것도 못 죽인다).
+            # ponytail: 부모가 보이기 전에 죽은 손주는 걸음에서 빠진다(taskkill /T도 같다) —
+            # 작업자가 이중 fork를 하면 Popen 때부터 Job Object로 묶는다.
+            if killed.returncode and (not tree or _running(tree)):
                 error = "process-tree cleanup was not confirmed: " + killed.stderr.decode(errors="replace")
         else:
             try:

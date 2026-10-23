@@ -3641,6 +3641,14 @@ def test_project_bindings():
     core.ledger_append(core.ROUTING, {"kind": "bind", "session": "repo/regr-legacy",
                                       "scope": "WBindC", "reason": "구판"})
     check("옛 결속은 주된 scope다", write.resolve_session("repo/regr-legacy") == "WBindC")
+    # ④-2 옛 재결속은 교체였다 — 개명 전 scope가 집합에 되살아나지 않는다(`LLM-Second-Brain` 실측)
+    L = "repo/regr-legacy-rebind"
+    core.ledger_append(core.ROUTING, {"kind": "bind", "session": L, "scope": "WBindOld", "reason": "구판"})
+    core.ledger_append(core.ROUTING, {"kind": "bind", "session": L, "scope": "WBindC", "reason": "구판 개명"})
+    b = write.bindings(L)
+    check("옛 재결속은 집합을 바꾼다", b["scopes"] == ["WBindC"] and b["primary"] == "WBindC", b)
+    write.bind_session(L, "WBindD", "시험", primary=False)
+    check("새 결속은 옛 결속 위에 더한다", write.bindings(L)["scopes"] == ["WBindC", "WBindD"], write.bindings(L))
     # ⑤ 해제는 집합에서 빼고, 주된 scope였으면 비운다
     write.unbind_session(P, "WBindA", "시험 해제")
     b = write.bindings(P)
@@ -3658,6 +3666,19 @@ def test_project_bindings():
     check("지정 뒤에는 주된 scope 없음 표지가 사라진다",
           "no_primary" not in {f for a in organization.bindings_audit(P) for f in a["flags"]})
     check("결속 검토 문구는 판정 넷을 말한다", "주된 scope 지정" in organization.bindings_prompt(P))
+    # ⑥-2 없는 scope(개명·삭제)에 결속된 프로젝트는 검토에 오르고, 그 해제는 받는다
+    M = "repo/regr-missing"
+    write.set_primary(M, "WBindC", "시험 지정")
+    write.bind_session(M, "WBindGone", "개명 전 결속", primary=False)
+    check("없는 scope 결속은 검토에 오른다",
+          "missing_scope" in {f for a in organization.bindings_audit(M) for f in a["flags"]},
+          organization.bindings_audit(M))
+    gone = [{"project": M, "action": "unbind", "scope": "WBindGone", "reason": "개명된 scope"}]
+    organization.apply_binding_decisions(gone)
+    check("없는 scope도 해제한다", write.bindings(M)["scopes"] == ["WBindC"]
+          and not organization.bindings_audit(M), write.bindings(M))
+    organization.apply_binding_decisions(gone)
+    check("없는 scope 해제의 재시도는 멱등이다", write.bindings(M)["scopes"] == ["WBindC"], write.bindings(M))
     # ⑦ 인용 기록은 루트 한 자리 — 어느 scope를 말해도 같은 기록, 결속도 바뀌지 않는다
     rr = _w(raw.append_rounds, P, "pb-rec", [{"user": "q", "agent": "a"}], "00_Scope/WBindA")
     check("인용 기록은 루트 `_cited/`에 선다", (rr.get("round_refs") or [""])[0].startswith("_cited/.records/"), rr)
@@ -7061,7 +7082,7 @@ def test_scope_recovery_handoff():
         check("세션 시작은 노드를 처음 쓰기 전의 overview를 안내한다",
               f'이 세션에서 노드를 처음 쓰기 전에 `overview(session="{S}")`를 한 번 불러 군집·허브 트리(`hub_tree`)·'
               '열린 사건·근거 재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다'
-              '(시행령 §3 8항). 기억을 묻는 질문에는 `search`를 먼저 쓴다.' in out, out[:600])
+              f'(시행령 §3 8항). 기억을 묻는 질문에는 `search(session="{S}")`를 먼저 쓴다.' in out, out[:600])
         check("세션 시작은 허브 트리와 자리 규칙을 안내한다",
               "hub_tree" in out and "시행령 §3 8항" in out, out[:600])
         check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",

@@ -28,7 +28,8 @@ def search_checks():
             ]):
                 path = core.ROOT / f'{i}.md'
                 self.nodes[title] = (path, (kind, 'W1'))
-                self.parsed[path] = SimpleNamespace(id=str(i), meta={}, body=body)
+                self.parsed[path] = SimpleNamespace(id=str(i), meta={}, body=body,
+                                                    edges=lambda _predicate: [], wikilinks=lambda: [])
 
         def node(self, path):
             return self.parsed[path]
@@ -51,6 +52,55 @@ def search_checks():
         actual = s.view_search(query, 50)
         assert [(h['score'], h['title']) for h in actual] == [
             (round(score, 3), title) for score, title in expected]
+
+
+def ranking_checks():
+    """Exposure ranking (Bylaws §8 3, Mechanism §8 8): recency, centrality and locality multiply
+    relevance; a hub gets neither recency nor centrality; locality pulls, never filters."""
+    from datetime import datetime, timedelta
+    from osk import core, search
+    now = datetime.now(core.KST)
+
+    class Index:
+        def __init__(self, specs):
+            self.nodes, self.parsed = {}, {}
+            for title, space, days, links in specs:
+                path = core.ROOT / space[1] / f'{title}.md'
+                self.nodes[title] = (path, space)
+                self.parsed[path] = SimpleNamespace(
+                    id=title, body='shared ranking words', edges=lambda _predicate: [],
+                    meta={'updated': (now - timedelta(days=days)).strftime(core.TS_FMT)},
+                    wikilinks=lambda links=links: links)
+
+        def node(self, path):
+            return self.parsed[path]
+
+        def resolve(self, name):
+            return ('node', self.nodes[name][1]) if name in self.nodes else ('dangling',)
+
+    w1, w2 = ('scope', 'W1'), ('scope', 'W2')
+    s = search.Searcher(Index([
+        ('Fresh', w1, 0, []), ('Stale', w1, 365, []), ('Core', w1, 365, []),
+        *[(f'Link {i}', w1, 365, ['Core', 'W1']) for i in range(3)],
+        ('W1', w1, 0, []),                      # the W1 hub: fresh and linked, boosted by neither
+        ('Other', w2, 365, []), ('Domain', ('domain', 'D'), 365, [])]))
+    base = s.bm25.get_scores(search._tokens('ranking'))[0]
+    score = lambda local=None: {h['title']: h['score'] for h in s.view_search('ranking', 50, local)}
+    plain = score()
+    assert abs(plain['Fresh'] - base * (1 + search.W_RECENT)) < 0.002, plain
+    assert abs(plain['Core'] - base * (1 + search.W_CENTRAL)) < 0.002, plain
+    assert plain['W1'] == round(base, 3) and plain['Stale'] < plain['Fresh'], plain
+    assert [h['title'] for h in s.view_search('ranking', 2)] in (['Fresh', 'Core'], ['Core', 'Fresh'])
+    # The same searcher ninety days on, files untouched: recency decays at search time (#234 review).
+    from unittest import mock
+    with mock.patch.object(search.time, 'time', return_value=now.timestamp() + 90 * 86400):
+        later = score()
+    assert abs(later['Fresh'] - base * (1 + search.W_RECENT / 8)) < 0.002, later
+    assert abs(later['Core'] - plain['Core']) < 0.002 and later['Core'] > later['Fresh'], later
+    near = score({'scopes': ['W1', 'W2'], 'primary': 'W2'})
+    assert abs(near['Other'] - base * (1 + search.W_PRIMARY)) < 0.002, near
+    assert abs(near['Stale'] - base * (1 + search.W_SCOPE)) < 0.002 and near['Domain'] == plain['Domain'], near
+    assert len(near) == len(plain), 'locality filtered a result'
 
 
 def read_checks():
@@ -91,6 +141,13 @@ def read_checks():
     assert m.read_node(full['name']) == full
     assert m.update_node(full['name'], old_text='First instance', new_text='Revised instance')['ok']
     assert m.read_node(full['name'], view='outline')['view_hash'] != outline['view_hash']
+    # `search(session=…)` reads the session's bindings: its primary scope's nodes rank up (#170).
+    # Scores in this two-node vault are negative (common terms' idf): the boost still pulls up.
+    write.set_primary('retrieval-key', 'W1', 'fixture')
+    assert write.bindings('retrieval-key')['primary'] == 'W1'
+    plain = {h['title']: h['score'] for h in m.search('Selective read', 5)}
+    near = {h['title']: h['score'] for h in m.search('Selective read', 5, session='retrieval-key')}
+    assert near['Selective read'] > plain['Selective read'] and near.keys() == plain.keys(), (plain, near)
     # A heading-free body is still pageable; huge outlines have a visible ceiling.
     assert write.create_node('No headings', 'Plain', 'plain ' * 900,
                              'gpt-6-astra', space='00_Scope/W1')['ok']
@@ -176,6 +233,7 @@ if __name__ == '__main__':
         os.environ.update(OSK_VAULT_ROOT=directory, PYTHONPATH=str(ENGINE),
                           PYTHONDONTWRITEBYTECODE='1')
         search_checks()
+        ranking_checks()
         read_checks()
         asyncio.run(asyncio.wait_for(transport_checks(), 60))
         print('PASS: exact title / unchanged BM25 / bounded reads / MCP CAS boundary')

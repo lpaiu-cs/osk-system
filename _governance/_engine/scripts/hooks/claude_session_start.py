@@ -345,7 +345,7 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: 
     return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
             f"이 세션에서 노드를 처음 쓰기 전에 `overview(session={arg})`를 한 번 불러 군집·허브 트리(`hub_tree`)·열린 사건·근거 "
             "재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다(시행령 §3 8항). "
-            "기억을 묻는 질문에는 `search`를 먼저 쓴다. " + landing_note
+            f"기억을 묻는 질문에는 `search(session={arg})`를 먼저 쓴다. " + landing_note
             + (" 이 작업 폴더는 일회성 작업 폴더라 프로젝트 키를 결속하지 않고 그 키에 선 결속도 따르지 "
                "않는다(Mechanism §6-2 6항) — 쓰기 도구에 session을 주지 말고, 노드를 쓸 때 space를 "
                "명시한다. 그 착지는 이 대화에만 적용된다." if workspace.get("one_off") else "")
@@ -492,9 +492,11 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
         # 새 대화의 전사는 첫 턴 뒤에야 생긴다 — 그 사이의 '없다'는 진단이 아니다
         standing = captured['capture_error'] if captured['capture_recovery']['state'] != 'awaiting_input' else None
         if selected['mode'] in ('background', 'off'):
+            # The fork's failure count's test (`_review_done`, kept as `reviewed`): a run that
+            # finished this conversation's review but deferred its organization job is no wait (#228).
             failures = [r for r in (captured.get('response_growth_stop'), captured.get('response_growth', {}).get('last_result'))
                         if selected['mode'] == 'background' and r and not r.get('ok', True)
-                        and r.get('state') not in {'running', 'unavailable'}]
+                        and not r.get('reviewed') and r.get('state') not in {'running', 'unavailable'}]
             error = standing or '; '.join(r.get('error') or r['state'] for r in failures)
             if _once(ident, error, captured, startup):
                 return [Block("route", f"[osk 백그라운드 검토 대기 — {error}; 본 작업은 계속한다. 완료로 처리하지 않았다.]")], ident

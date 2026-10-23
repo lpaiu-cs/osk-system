@@ -823,7 +823,9 @@ def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
     결속은 집합이다. 그 키의 `bind`·`unbind` 기록을 rid 순으로 접는다 — `bind`는
     더하고 `unbind`는 뺀다. 주된 scope는 `primary`를 표시한 `bind`가 정한다. **v5.2
     이전의 기록에는 `primary`가 없다** — 그 시절 키는 scope 하나에만 결속됐고 그것이
-    곧 저장소 자체의 활동이었으므로 주된 scope로 읽는다. 새 기록은 `primary`를 늘
+    곧 저장소 자체의 활동이었으므로 주된 scope로 읽는다. 그 시절의 재결속은 **교체**였으므로
+    (새 인과 극대가 새 결속) 옛 기록은 집합을 그 scope 하나로 바꾼다 — 더하면 개명 전 scope가
+    결속에 되살아난다(`LLM-Second-Brain` → `osk-system` 실측). 새 기록은 `primary`를 늘
     적는다(집합에만 더하는 쓰기는 False). 인과 극대가 갈리고 그 주된 scope가 다르면
     미확정이다 — 착지를 명시하게 한다. 일회성 작업 폴더의 키는 결속하지 않는다."""
     out = {"scopes": [], "primary": None, "undetermined": False}
@@ -842,6 +844,8 @@ def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
     for r in rows:
         sc = str(r["scope"])
         if r["kind"] == "bind":
+            if "primary" not in r:              # v5.2 이전 기록 — 재결속은 교체였다
+                scopes = []
             if sc not in scopes:
                 scopes.append(sc)
             if r.get("primary", True):

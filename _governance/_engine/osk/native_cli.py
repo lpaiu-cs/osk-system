@@ -34,10 +34,8 @@ def _codex_version(candidate, env=None) -> str | None:
         return None
 
 
-def _ancestors():
-    """(image name, full path or '') of this process's ancestors, nearest first."""
-    if os.name != 'nt':
-        return  # ponytail: managed Desktop binaries exist only in the Windows layout; add ps/proc with one.
+def process_table() -> dict[int, tuple[int, str]]:
+    """Windows only: {pid: (parent pid, image name)} of the running processes; {} if no snapshot."""
     import ctypes
     from ctypes import wintypes
 
@@ -48,14 +46,12 @@ def _ancestors():
                     ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', ctypes.c_long),
                     ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_wchar * 260)]
     k32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    k32.CreateToolhelp32Snapshot.restype = k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
     k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(Entry))
     k32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    k32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
-                                               ctypes.POINTER(wintypes.DWORD))
     snapshot = k32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
     if not snapshot or snapshot == wintypes.HANDLE(-1).value:
-        return
+        return {}
     table, entry = {}, Entry(dwSize=ctypes.sizeof(Entry))
     try:
         ok = k32.Process32FirstW(snapshot, entry)
@@ -64,6 +60,41 @@ def _ancestors():
             ok = k32.Process32NextW(snapshot, entry)
     finally:
         k32.CloseHandle(snapshot)
+    return table
+
+
+def process_created(pid: int) -> int | None:
+    """Windows only: when the process started (FILETIME ticks); None if it cannot be opened."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+    handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(handle, *map(ctypes.byref, times)):
+            return None
+        return times[0].dwHighDateTime << 32 | times[0].dwLowDateTime
+    finally:
+        k32.CloseHandle(handle)
+
+
+def _ancestors():
+    """(image name, full path or '') of this process's ancestors, nearest first."""
+    if os.name != 'nt':
+        return  # ponytail: managed Desktop binaries exist only in the Windows layout; add ps/proc with one.
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    k32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                               ctypes.POINTER(wintypes.DWORD))
+    table = process_table()
     pid, seen = os.getpid(), set()
     while pid in table and pid not in seen:
         seen.add(pid)

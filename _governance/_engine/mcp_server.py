@@ -14,6 +14,7 @@ pin 기록은 노출하지 않는다. 지정·해제·승인·반려의 발의�
 승인뿐이다(§6-2 8항).
 """
 from __future__ import annotations
+import inspect
 import re
 import sys
 from pathlib import Path
@@ -178,10 +179,13 @@ def _guard(fn, *a, **kw) -> dict:
 # ── 읽기 ─────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8) -> list[dict]:
+def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
+           session: str | None = None) -> list[dict]:
     """query로 전 Space 어휘 검색(인용 기록·Workbench 제외). 결과 title이 다른 도구의
     name. summary는 미리보기이며 인용·판단 전에 read_node로 확인한다."""
-    return _s().view_search(query, k)
+    # `session`의 결속 scope가 순위 자질이 된다(시행령 §8 3항 locality). 쓰는 법은 세션 시작
+    # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, validate.SCHEMA_BUDGET).
+    return _s().view_search(query, k, write.bindings(session) if session else None)
 
 
 @mcp.tool()
@@ -547,6 +551,9 @@ def _apply_prune() -> None:
         if tool.parameters.get("additionalProperties") is not False:
             raise RuntimeError(f"도구 `{name}`에 미지 인자 거부가 걸리지 않았다 — "
                                f"기동하지 않는다")
+        # 설명은 docstring이다 — 이어지는 줄의 들여쓰기 공백도 상주 예산을 쓴다(#170: 38줄 × 4칸).
+        # 3.13부터는 컴파일러가 같은 일을 하므로, 걷어 두면 예산을 판마다 같게 잰다.
+        tool.description = inspect.cleandoc(tool.description or "")
 
 
 _apply_prune()

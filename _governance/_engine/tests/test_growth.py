@@ -449,9 +449,11 @@ class GrowthTests(unittest.TestCase):
             daily = growth.prompt({**base,'work_context':'daily'})
             stop = growth.prompt({**base,'work_context':'stop:W1'})
             assert 'not in your context' in daily and 'read_cited(ref=<that ref>)' in daily, daily
-            assert 'Stop fork' not in daily and 'never re-read' not in daily, daily
-            assert 'They are in your context' in stop and 'never re-read' in stop, stop
-            assert 'read_cited(ref=<that ref>)' not in stop, stop
+            assert 'Stop fork' not in daily and 'still in your context' not in daily, daily
+            assert 'still in your context' in stop and 'read_cited(ref=<that ref>)' not in stop, stop
+            # Compaction drops a backlog from the fork's context too: it reads the range once (#226).
+            assert 'read_cited(conversation=' in stop and 'through=<its through>' in stop, stop
+            assert 'through=<its through>' not in daily, daily
             assert 'not in your context' in growth.prompt(base), 'a preview is the daily inventory'
         """)
 
@@ -1116,6 +1118,50 @@ class GrowthTests(unittest.TestCase):
             assert growth.plan()['candidates']
         """)
 
+    @unittest.skipUnless(os.name == 'nt', 'only Windows cleans the tree with taskkill /T')
+    def test_tree_cleanup_fails_only_while_a_tree_process_runs(self):
+        # taskkill /T kills leaves first. A venv launcher ends with its child before its own
+        # turn, so the call fails although nothing of the tree is left running.
+        self.check_case("""
+            import subprocess
+            from unittest.mock import patch
+            from osk import native_cli
+            # An older process naming the root as parent outlived an earlier owner of that pid.
+            table = {10: (1, 'python.exe'), 11: (10, 'python.exe'), 12: (10, 'Taskmgr.exe'), 13: (11, 'conhost.exe')}
+            with patch.object(native_cli, 'process_created', {10: 100, 11: 150, 12: 50, 13: 160}.get):
+                assert set(growth._tree(table, {10: 100})) == {10, 11, 13}
+            run = subprocess.run
+            lost = subprocess.CompletedProcess([], 128, b'', b'ERROR: There is no running instance of the task.')
+            def worker():
+                return subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, creationflags=0x08000200)
+            with patch.object(growth.subprocess, 'run', lambda argv, **kw: (run(argv, **kw), lost)[1]):
+                assert growth._stop_tree(worker()) is None
+            with patch.object(growth.subprocess, 'run', lambda argv, **kw: lost):  # kills nothing
+                error = growth._stop_tree(worker())
+            assert error and error.startswith('process-tree cleanup was not confirmed'), error
+            # #231 review: after the snapshot the root starts a child and exits first, so taskkill
+            # finds no root. The base interpreter keeps a venv launcher from between them, and the
+            # child's own console keeps the root's conhost from outliving the root.
+            late = ("import os,subprocess,sys; print(flush=True); sys.stdin.read(); print(subprocess.Popen("
+                    "[sys.executable,'-c','import time; time.sleep(60)'],cwd=os.path.dirname(sys.executable),"
+                    "creationflags=0x08000000).pid, flush=True)")
+            root = subprocess.Popen([sys._base_executable, '-c', late], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=0x08000200)
+            root.stdout.readline()
+            child = []
+            def vanish(argv, **kw):
+                root.stdin.close()
+                child.append(int(root.stdout.readline()))
+                root.wait(10)
+                return lost
+            with patch.object(growth.subprocess, 'run', vanish):
+                error = growth._stop_tree(root)
+            run(['taskkill', '/PID', str(child[0]), '/F'], capture_output=True)
+            assert error and error.startswith('process-tree cleanup was not confirmed'), error
+        """)
+
     def test_previous_saved_output_is_available_without_duplicate_node(self):
         self.check_case("""
             from osk import distillation
@@ -1611,6 +1657,9 @@ class GrowthTests(unittest.TestCase):
             assert '하위 군집을 열지 않는다' in job['text']
             reading = growth._reading_plan({'scope_jobs': [job], 'organization_jobs': []})
             assert reading['scope_jobs'][0]['hub_tree'] == tree
+            # The packet drops the hook text, so the range reaches a Stop fork as a field (#226).
+            assert job['range'] == '1번째 턴 1개(`u1`, 전체 1턴)', job.get('range')
+            assert reading['scope_jobs'][0]['range'] == job['range']
             assert 'hub_tree' in growth.prompt()
         """)
 

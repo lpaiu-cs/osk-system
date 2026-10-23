@@ -313,19 +313,32 @@ def status(key: str) -> dict:
 
 
 
-def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict:
-    """Find reusable local proofs for this bounded raw snapshot, never another root."""
+def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256, since=None) -> dict:
+    """Find reusable local proofs for this bounded raw snapshot, never another root.
+    `since()`, when given, returns the earliest of these turns' times (epoch seconds) or None."""
     if (not isinstance(raw_refs, list) or not raw_refs or len(raw_refs) > 64
             or not 1 <= limit <= 32 or not 1 <= scan_limit <= 1024):
         raise write.WriteError("bounded raw references and discovery limits required")
     with write._Lock():
         idx = graph.Index()
         write._require_complete(idx)
-        # Original-turn refs are not vault paths; a proof cites them through a cited round.
-        wanted = {ref for ref in raw_refs if raw.is_native(ref)}
+        # Original-turn refs are not vault paths; a proof binds one only through a cited round
+        # (`_source` keeps its `native`). A turn never cited has no proof to find, so it needs no
+        # receipt scan — scanning the newest receipts made every review read "incomplete" once
+        # there were more than scan_limit (#227).
+        from .integration import _record
+        native = [ref for ref in raw_refs if raw.is_native(ref)]
+        cited = set()
+        for record in {_record(*ref.split(":", 3)[1:3]) for ref in native}:
+            path = raw.locate_record(record)
+            text = raw.read_exact(path) if path else ""
+            cited |= {raw.cited_native(text[a:b]) for a, b in raw._round_spans(text).values()}
+        wanted = {ref for ref in native if ref in cited}
         wanted |= {_source(ref, idx)["ref"] for ref in raw_refs if not raw.is_native(ref)}
         if any("#" not in ref for ref in wanted if not raw.is_native(ref)):
             raise write.WriteError("proof discovery accepts exact raw round references only")
+        if not wanted:
+            return {"proofs": [], "errors": [], "scanned": 0, "truncated": False}
         # Preserve local_lock_path's vault-specific fallback suffix; in a shared
         # git directory, canonical _job_path(key) below still excludes other ROOTs.
         probe = _job_path("inventory")
@@ -333,6 +346,13 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
         pattern = probe.name.replace(digest, "*")
         paths = sorted(probe.parent.glob(pattern),
                        key=lambda path: (-path.stat().st_mtime_ns, path.name))
+        # A receipt cannot predate the turn it cites, so older receipts hold no proof for these
+        # turns: a long receipt history alone no longer reads "incomplete" (#227). A day absorbs
+        # clock skew between the transcript and the file system. With no known time the newest
+        # scan_limit receipts are all it reads, and it says so.
+        at = since() if since else None
+        if at is not None:
+            paths = [path for path in paths if path.stat().st_mtime >= at - 86400]
         proofs, errors, scanned = [], [], 0
         for path in paths[:scan_limit]:
             scanned += 1
