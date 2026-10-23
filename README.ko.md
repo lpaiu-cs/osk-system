@@ -153,6 +153,13 @@ https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/INSTALL-AGENT.md
 [설치 도구](docs/SETUP.md#설치-도구-setup)를 돌린다. 설치 도구는 계획을 보여 주고,
 확인을 받아야 적용한다.
 
+**운용도 에이전트에게 맡긴다.** 갱신·연결 점검·선택 기능·제거도 같은 방식이다. 원하는
+일을 적는다:
+
+```text
+https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/OPERATE-AGENT.md 를 읽고 이 기기의 osk-system을 점검해 줘.
+```
+
 **처음이라면** [시작 안내서](docs/GETTING-STARTED.ko.md)를 따라간다. 빈 폴더에서
 에이전트의 첫 기억까지, macOS·Linux·Windows 명령과 단계별 확인 방법을 함께 담았다.
 
