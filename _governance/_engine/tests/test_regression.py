@@ -7082,7 +7082,7 @@ def test_scope_recovery_handoff():
         check("세션 시작은 노드를 처음 쓰기 전의 overview를 안내한다",
               f'이 세션에서 노드를 처음 쓰기 전에 `overview(session="{S}")`를 한 번 불러 군집·허브 트리(`hub_tree`)·'
               '열린 사건·근거 재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다'
-              '(시행령 §3 8항). 기억을 묻는 질문에는 `search`를 먼저 쓴다.' in out, out[:600])
+              f'(시행령 §3 8항). 기억을 묻는 질문에는 `search(session="{S}")`를 먼저 쓴다.' in out, out[:600])
         check("세션 시작은 허브 트리와 자리 규칙을 안내한다",
               "hub_tree" in out and "시행령 §3 8항" in out, out[:600])
         check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",
