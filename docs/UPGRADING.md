@@ -27,6 +27,40 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
+## From v5.2 to v5.3
+
+v5.3 adds recency, centrality and locality to search ranking (Bylaws §8 3, Mechanism §8 8). It
+also fixes conversation review where the live instance showed it falling short.
+
+- It moves or rewrites no notes or records, so there is nothing to migrate and nothing to do.
+  After the update, restart the harness so that its MCP server loads the new engine.
+- Updating from v5.2.0 also brings the v5.2.1 fixes: subscription fork review is restored (#221),
+  and a backlogged review's range can be read at once (#219·#220).
+
+- **Search ranking changes (#170).** Relevance (character-bigram BM25) is multiplied by
+  `1 + recency + centrality + locality`.
+  - A node whose name equals the query still comes first.
+  - `search` takes `session` (the project key). Nodes in its bound scopes are pulled forward and
+    never filtered out. The session-start text points to `search(session=…)`.
+  - The `score` in results is now this exposure score.
+- **A Claude turn that ends in a tool call closes at the next prompt (#218).**
+  - A turn ended by the desktop app's next-step box or by `ScheduleWakeup` has no `end_turn`, so the
+    next human prompt joined it.
+  - Now a prompt with another `promptId` closes the open turn before it.
+  - The rule applies to turns tracked after this release first reads a conversation. Turns tracked
+    before that keep their boundaries.
+- **Conversation review is blocked less often (#226·#227·#228).**
+  - A Stop fork reads the pending turns that compaction dropped from its context with one range
+    read (`read_cited(conversation=…, through=…)`).
+  - Proof lookup scans receipts only when a pending turn was cited, and skips receipts older than
+    the earliest pending turn. A long receipt history alone no longer reads as "incomplete".
+  - The notice "[osk 백그라운드 검토 대기 — …]" (background review pending) appears only while that
+    conversation's own review is unfinished.
+- **Rebinding records from before v5.2 read as replacements (#216).**
+  - Back then a rebinding replaced the binding, so a scope's old name no longer returns to the
+    binding set.
+  - A binding to a scope that no longer exists goes to the organization review to be released.
+
 ## From v5.1 to v5.2
 
 v5.2 keeps cited records in one place and makes bindings belong to the project
