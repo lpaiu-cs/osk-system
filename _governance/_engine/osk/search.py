@@ -16,6 +16,7 @@ locality를 곱한다(시행령 §8 3항, 계수는 Mechanism §8 8항). 임베�
 from __future__ import annotations
 import math
 import re
+import time
 from datetime import datetime
 
 from rank_bm25 import BM25Okapi
@@ -30,10 +31,10 @@ W_CENTRAL = 0.2                          # 중심성의 log 비율 — 가장 �
 W_SCOPE, W_PRIMARY = 0.1, 0.2            # 결속 scope +10%, 주된 scope +20% — Domain·Person은 중립
 
 
-def _age(updated, now: datetime) -> float | None:
-    """frontmatter `updated`(KST)의 나이(초). 읽을 수 없으면 None — 최신성을 얹지 않는다."""
+def _stamp(updated) -> float | None:
+    """frontmatter `updated`(KST)의 epoch 초. 읽을 수 없으면 None — 최신성을 얹지 않는다."""
     try:
-        return max(0.0, (now - datetime.strptime(str(updated), TS_FMT).replace(tzinfo=core.KST)).total_seconds())
+        return datetime.strptime(str(updated), TS_FMT).replace(tzinfo=core.KST).timestamp()
     except ValueError:
         return None
 
@@ -75,22 +76,18 @@ class Searcher:
             self.tokens.append(set(toks))
             corpus.append(toks)
         self.bm25 = BM25Okapi(corpus) if corpus else None
-        # 최신성·중심성은 질의와 무관하다. 허브는 갈래의 입구라 얹지 않는다 — 본문이 배선마다
-        # 바뀌고(시행령 §7 2항이 그 변경을 상태 변경으로 보지 않는다) 구성 노드의 Link가 모인다.
+        # 중심성은 파일 내용에만 매이므로 검색기와 함께 둔다. 최신성은 시각에 매이므로 시각만 두고
+        # 검색할 때 잰다 — 파일이 그대로인 채 검색기를 오래 쓰는 서버에서도 시간이 흐른다(#234 리뷰).
+        # 허브는 갈래의 입구라 둘 다 얹지 않는다 — 본문이 배선마다 바뀌고(시행령 §7 2항이 그 변경을
+        # 상태 변경으로 보지 않는다) 구성 노드의 Link가 모인다.
         central = graph.centrality(self.idx)
         knowledge = [(stem, n) for stem, p, n in self.paths if not graph.is_hub(p)]
         top = math.log1p(max((central.get(stem, 0.0) for stem, _ in knowledge), default=0.0))
-        now = datetime.now(core.KST)
-        self.static = []
+        self.static, self.stamps = [], []
         for stem, p, n in self.paths:
-            boost = 0.0
-            if not graph.is_hub(p):
-                if top:
-                    boost += W_CENTRAL * math.log1p(central.get(stem, 0.0)) / top
-                age = _age(n.meta.get("updated"), now)
-                if age is not None:
-                    boost += W_RECENT * 0.5 ** (age / HALF_LIFE)
-            self.static.append(boost)
+            hub = graph.is_hub(p)
+            self.static.append(W_CENTRAL * math.log1p(central.get(stem, 0.0)) / top if top and not hub else 0.0)
+            self.stamps.append(None if hub else _stamp(n.meta.get("updated")))
 
     def work_search(self, query: str, k: int = 8, local: dict | None = None) -> list[dict]:
         """`local`은 `write.bindings`의 결속(`scopes`·`primary`)이다 — 그 scope의 노드를 앞으로
@@ -102,8 +99,10 @@ class Searcher:
         title_query = query.strip().casefold()
         scores = self.bm25.get_scores(q)
         scopes, primary = set((local or {}).get("scopes") or ()), (local or {}).get("primary")
-        factors = [1 + b + (W_PRIMARY if sc and sc == primary else W_SCOPE if sc in scopes else 0.0)
-                   for b, sc in zip(self.static, self.scope_of)]
+        now = time.time()
+        factors = [1 + c + (W_RECENT * 0.5 ** (max(0.0, now - t) / HALF_LIFE) if t is not None else 0.0)
+                   + (W_PRIMARY if sc and sc == primary else W_SCOPE if sc in scopes else 0.0)
+                   for c, t, sc in zip(self.static, self.stamps, self.scope_of)]
         # 탈락 기준은 점수 부호가 아니라 질의 토큰 겹침 — 정확히 문서 절반에
         # 나오는 항은 BM25 idf가 0이라 점수로 거르면 일치가 전멸한다. 문서가 적은 vault에서는
         # 흔한 항의 idf가 음수라 점수도 음수다 — 그때는 나눠서 같은 쪽(위)으로 당긴다.

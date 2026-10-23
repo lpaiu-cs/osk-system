@@ -91,6 +91,12 @@ def ranking_checks():
     assert abs(plain['Core'] - base * (1 + search.W_CENTRAL)) < 0.002, plain
     assert plain['W1'] == round(base, 3) and plain['Stale'] < plain['Fresh'], plain
     assert [h['title'] for h in s.view_search('ranking', 2)] in (['Fresh', 'Core'], ['Core', 'Fresh'])
+    # The same searcher ninety days on, files untouched: recency decays at search time (#234 review).
+    from unittest import mock
+    with mock.patch.object(search.time, 'time', return_value=now.timestamp() + 90 * 86400):
+        later = score()
+    assert abs(later['Fresh'] - base * (1 + search.W_RECENT / 8)) < 0.002, later
+    assert abs(later['Core'] - plain['Core']) < 0.002 and later['Core'] > later['Fresh'], later
     near = score({'scopes': ['W1', 'W2'], 'primary': 'W2'})
     assert abs(near['Other'] - base * (1 + search.W_PRIMARY)) < 0.002, near
     assert abs(near['Stale'] - base * (1 + search.W_SCOPE)) < 0.002 and near['Domain'] == plain['Domain'], near
