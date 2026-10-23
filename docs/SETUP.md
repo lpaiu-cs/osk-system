@@ -889,6 +889,10 @@ Claude 전사에는 버려진 턴을 끝내는 기록이 없다. 그래서 최�
 메시지(Claude Code가 `queued_command` 첨부로 남기고 그 턴에 흡수한 것)는 그 턴의 사용자
 발화로 읽고 라운드를 늘리지 않는다. 두 규칙은 이 판이 처음 추적한 뒤의 턴부터 적용하며,
 그 앞에 추적한 턴은 기존 경계와 표현 그대로 읽는다.
+도구 호출로 끝난 턴(데스크톱 앱의 다음 단계 상자, `ScheduleWakeup`)에는 `end_turn`이 없다.
+그래서 다른 `promptId`의 프롬프트가 오면, 그 앞 마지막 행에서 턴을 닫는다. 마지막 행이 도구
+결과나 끝난 응답(`end_turn`·`stop_sequence`)이면 completed, 아니면 interrupted다. 같은
+프롬프트의 중단 표식은 그 턴에 남는다. 이 규칙은 v5.3이 처음 추적한 뒤의 턴부터 적용한다.
 
 ```powershell
 $env:PYTHONPATH='_governance/_engine'

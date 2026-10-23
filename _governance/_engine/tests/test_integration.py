@@ -327,6 +327,51 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn("background task", turns[2]["user"])
         self.assertNotIn("its own prompt", turns[2]["user"])
 
+    def test_claude_prompt_after_a_tool_ended_turn_opens_its_own_round(self):
+        # #218: a turn that ends in a tool call (the app's next-step box, ScheduleWakeup) has
+        # no end_turn. The next prompt (another promptId) closes it at its last row, so the
+        # words seen while it was open stay its words; an interruption keeps its promptId.
+        prompted = lambda rows, pid: [{**r, "promptId": pid} for r in rows]
+        one = prompted(claude_round(self.sid, 1, finished=False), "p1")
+        self.transcript(one)
+        self.assertTrue(self.capture()["ok"])
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["rounds"], [])
+        tail = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))["tail"]
+        stop = claude_row(self.sid, "user", [{"type": "text", "text": "[Request interrupted by user for tool use]"}], "stop-2")
+        later = (prompted(claude_round(self.sid, 2, finished=False) + [stop], "p2")
+                 + prompted(claude_round(self.sid, 3), "p3"))
+        self.transcript(one + later)
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual([(r["id"], r["completion"]) for r in s["rounds"]],
+                         [("user-1:result-1", "completed"), ("user-2:stop-2", "interrupted"),
+                          ("user-3:final-3", "completed")])
+        rounds = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))["rounds"]
+        self.assertEqual(rounds[0]["user"], tail["user"], "the next prompt joined the closed turn")
+        self.assertIn("[Request interrupted", rounds[1]["user"])
+        self.assertIn("question 3", rounds[2]["user"])
+
+    def test_claude_prompt_rule_starts_after_the_turns_already_tracked(self):
+        # #218: a conversation tracked before the rule keeps its boundaries — there a turn
+        # that ended in a tool call and the prompt after it are one round.
+        prompted = lambda rows, pid: [{**r, "promptId": pid} for r in rows]
+        merged = prompted(claude_round(self.sid, 1, finished=False), "p1") + prompted(claude_round(self.sid, 2), "p2")
+        self.transcript(merged)
+        with mock.patch.object(it, "_turn_rules", return_value=None):
+            self.assertTrue(self.capture()["ok"])
+        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        self.assertEqual([r["id"] for r in before], ["user-1:final-2"])
+        self.transcript(merged + prompted(claude_round(self.sid, 3, finished=False), "p3")
+                        + prompted(claude_round(self.sid, 4), "p4"))
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["prompts_since"], "user-1:final-2")
+        self.assertEqual(s["rounds"][0], before[0], "the tracked round changed under the new rule")
+        self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-2", "user-3:result-3", "user-4:final-4"])
+
     def test_recent_claude_tail_stays_open_until_the_conversation_ends(self):
         self.transcript(stamped(claude_round(self.sid, 1, finished=False), time.time() - 3600))
         ago = time.time() - 13 * 3600
@@ -381,6 +426,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["inherited_rounds"], 1, st)
         s = it._load(it.state_path("claude", child), "claude", child)
         self.assertEqual(s["turns_since"], tracked[0]["id"])
+        self.assertEqual(s["prompts_since"], tracked[0]["id"])
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted", "completed"])
 
     def test_claude_copy_ignores_a_cut_its_sibling_stored(self):
