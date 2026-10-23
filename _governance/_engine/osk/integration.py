@@ -477,7 +477,7 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
         native_path, rules, s = found
         try:
             if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
-                rules["since"] = _copied_since(s, native_path)
+                rules.update(_copied_since(s, native_path))
             parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
         except Exception as exc:
             with _locked(harness, conversation_id) as p:
@@ -634,6 +634,7 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
         s["rounds"] = tracked
         if rules:
             s.setdefault("turns_since", rules["since"])
+            s.setdefault("prompts_since", rules["prompts_since"])
         if changed or gone:
             first = min(changed[:1] + gone[:1])
             s["snapshots"] = {t: v for t, v in s["snapshots"].items()
@@ -944,31 +945,44 @@ def review_status(harness: str, conversation_id: str, through: str) -> dict:
 
 def _turn_rules(s: dict) -> dict | None:
     """Claude의 새 턴 규칙(턴 도중 메시지, 멈춘 미완료 턴)은 이 엔진이 처음 추적한 뒤의
-    턴부터다. 그 앞에 저장된 라운드는 저장된 경계와 표현 그대로 다시 읽힌다. 모든 판독이
-    같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
+    턴부터다. 새 프롬프트가 도구 호출로 끝난 턴을 닫는 규칙(#218)도 그 규칙을 처음 쓴 엔진이
+    추적한 뒤부터다(`prompts_since`). 그 앞에 저장된 라운드는 저장된 경계와 표현 그대로 다시
+    읽힌다. 모든 판독이 같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
     if s["harness"] != "claude":
         return None
     tracked = (s.get("inherited") or {}).get("rounds", []) + s["rounds"]
-    since = s["turns_since"] if "turns_since" in s else (tracked[-1]["id"] if tracked else None)
-    return {"since": since, "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
+    last = tracked[-1]["id"] if tracked else None
+    return {"since": s.get("turns_since", last), "prompts_since": s.get("prompts_since", last),
+            "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
 
 
-def _copied_since(s: dict, native_path: str) -> str | None:
-    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계. 복제된 앞부분은 그 턴을 추적한
-    같은 scope 커서가 쓴 경계를 따른다 — 새 규칙으로 읽으면 부모가 옛 규칙으로 추적한 턴과
-    경계·표현이 갈라진다. 그 커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다.
+def _copied_since(s: dict, native_path: str) -> dict:
+    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계 — 턴 규칙(`since`)과 프롬프트
+    규칙(`prompts_since`) 각각. 복제된 앞부분은 그 턴을 추적한 같은 scope 커서가 쓴 경계를
+    따른다 — 새 규칙으로 읽으면 부모가 옛 규칙으로 추적한 턴과 경계·표현이 갈라진다. 그
+    커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다.
     부모가 저장한 절단 지점은 넘기지 않는다 — 사본에서도 행 시각의 12시간 공백이 같은
-    자리를 나눈다."""
+    자리를 나눈다. 프롬프트 경계는 부모가 턴 규칙으로 읽은 라운드다 — 유휴 닫기가 나눈
+    라운드는 규칙 없는 판독에 없으므로, 찾은 턴 규칙으로 다시 읽어 찾는다(#233 리뷰)."""
+    best = {"since": None, "prompts_since": None}
     rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"]
     if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
-        return None   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
-    order = {r["id"]: i for i, r in enumerate(rounds)}
-    best = None
-    for owner, _landing in _scope_cursors(s):
-        tracked = (owner.get("inherited") or {}).get("rounds", []) + owner["rounds"]
-        bound = owner["turns_since"] if "turns_since" in owner else (tracked[-1]["id"] if tracked else None)
-        if bound in order and (best is None or order[bound] > order[best]):
-            best = bound
+        return best   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
+    cursors = [((owner.get("inherited") or {}).get("rounds", []) + owner["rounds"], owner)
+               for owner, _landing in _scope_cursors(s)]
+
+    def latest(rounds: list, key: str) -> str | None:
+        order, found = {r["id"]: i for i, r in enumerate(rounds)}, None
+        for tracked, owner in cursors:
+            bound = owner.get(key, tracked[-1]["id"] if tracked else None)
+            if bound in order and (found is None or order[bound] > order[found]):
+                found = bound
+        return found
+
+    best["since"] = latest(rounds, "turns_since")
+    ruled = transcripts.read(native_path, "claude", s["conversation_id"],
+                             rules={"since": best["since"], "cuts": [], "now": time.time()})["rounds"]
+    best["prompts_since"] = latest(ruled, "prompts_since")
     return best
 
 

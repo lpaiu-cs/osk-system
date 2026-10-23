@@ -327,6 +327,51 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn("background task", turns[2]["user"])
         self.assertNotIn("its own prompt", turns[2]["user"])
 
+    def test_claude_prompt_after_a_tool_ended_turn_opens_its_own_round(self):
+        # #218: a turn that ends in a tool call (the app's next-step box, ScheduleWakeup) has
+        # no end_turn. The next prompt (another promptId) closes it at its last row, so the
+        # words seen while it was open stay its words; an interruption keeps its promptId.
+        prompted = lambda rows, pid: [{**r, "promptId": pid} for r in rows]
+        one = prompted(claude_round(self.sid, 1, finished=False), "p1")
+        self.transcript(one)
+        self.assertTrue(self.capture()["ok"])
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["rounds"], [])
+        tail = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))["tail"]
+        stop = claude_row(self.sid, "user", [{"type": "text", "text": "[Request interrupted by user for tool use]"}], "stop-2")
+        later = (prompted(claude_round(self.sid, 2, finished=False) + [stop], "p2")
+                 + prompted(claude_round(self.sid, 3), "p3"))
+        self.transcript(one + later)
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual([(r["id"], r["completion"]) for r in s["rounds"]],
+                         [("user-1:result-1", "completed"), ("user-2:stop-2", "interrupted"),
+                          ("user-3:final-3", "completed")])
+        rounds = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))["rounds"]
+        self.assertEqual(rounds[0]["user"], tail["user"], "the next prompt joined the closed turn")
+        self.assertIn("[Request interrupted", rounds[1]["user"])
+        self.assertIn("question 3", rounds[2]["user"])
+
+    def test_claude_prompt_rule_starts_after_the_turns_already_tracked(self):
+        # #218: a conversation tracked before the rule keeps its boundaries — there a turn
+        # that ended in a tool call and the prompt after it are one round.
+        prompted = lambda rows, pid: [{**r, "promptId": pid} for r in rows]
+        merged = prompted(claude_round(self.sid, 1, finished=False), "p1") + prompted(claude_round(self.sid, 2), "p2")
+        self.transcript(merged)
+        with mock.patch.object(it, "_turn_rules", return_value=None):
+            self.assertTrue(self.capture()["ok"])
+        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        self.assertEqual([r["id"] for r in before], ["user-1:final-2"])
+        self.transcript(merged + prompted(claude_round(self.sid, 3, finished=False), "p3")
+                        + prompted(claude_round(self.sid, 4), "p4"))
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["prompts_since"], "user-1:final-2")
+        self.assertEqual(s["rounds"][0], before[0], "the tracked round changed under the new rule")
+        self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-2", "user-3:result-3", "user-4:final-4"])
+
     def test_recent_claude_tail_stays_open_until_the_conversation_ends(self):
         self.transcript(stamped(claude_round(self.sid, 1, finished=False), time.time() - 3600))
         ago = time.time() - 13 * 3600
@@ -381,7 +426,42 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["inherited_rounds"], 1, st)
         s = it._load(it.state_path("claude", child), "claude", child)
         self.assertEqual(s["turns_since"], tracked[0]["id"])
+        self.assertEqual(s["prompts_since"], tracked[0]["id"])
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted", "completed"])
+
+    def test_claude_copy_finds_its_parents_prompt_boundary_past_an_idle_close(self):
+        # #233 review: the parent tracked its turns with the turn rules but before the prompt
+        # rule, and its last round follows an idle close. A read without rules joins that round
+        # to the idle turn: the copy looks for the boundary with the turn rules.
+        prompted = lambda rows, pid: [{**r, "promptId": pid} for r in rows]
+        parent, child = self.sid + "-pp", self.sid + "-pc"
+        old = time.time() - 60 * 3600
+        rows = (stamped(prompted(claude_round(parent, 1, finished=False), "p1")
+                        + prompted(claude_round(parent, 2), "p2")
+                        + prompted(claude_round(parent, 3, finished=False), "p3"), old)
+                + stamped(prompted(claude_round(parent, 4), "p4"), old + 13 * 3600))
+        own = stamped(prompted(claude_round(child, 5), "p5"), old + 30 * 3600)
+        for owner, part in ((parent, rows), (child, own)):
+            for row in part:
+                if "uuid" in row:   # native rows carry UUIDs; a copy keeps them
+                    row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
+        self.transcript(rows)
+        legacy = {"since": None, "prompts_since": "never"}   # turn rules, no prompt rule
+        with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
+                mock.patch.object(it, "_copied_since", return_value=legacy):
+            self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
+        with it._locked("claude", parent) as p:     # that engine wrote no prompts_since
+            s = it._load(p, "claude", parent)
+            del s["prompts_since"]
+            it._save(p, s)
+        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+        self.assertEqual([r["completion"] for r in tracked], ["completed", "interrupted", "completed"])
+        self.transcript([dict(r, sessionId=child) for r in rows] + own)
+        st = it.capture("claude", child, str(self.path), "capture-tests")
+        self.assertTrue(st["ok"], st)
+        self.assertEqual(st["inherited_rounds"], 3, st)
+        s = it._load(it.state_path("claude", child), "claude", child)
+        self.assertEqual(s["prompts_since"], tracked[-1]["id"])
 
     def test_claude_copy_ignores_a_cut_its_sibling_stored(self):
         # Copies share their ancestor's rows (#164 review). A sibling that stopped at a shared

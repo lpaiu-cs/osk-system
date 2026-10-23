@@ -331,7 +331,8 @@ def native_lines(path: str, harness: str, sid: str):
 def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = None) -> dict:
     """`rules` (Claude only) applies the newer turn rules after `rules["since"]`, the last
     round an earlier engine tracked: queued words join their turn, and an unfinished turn
-    closes at a stored `cuts` row or after IDLE_CLOSE of silence before `now`."""
+    closes at a stored `cuts` row or after IDLE_CLOSE of silence before `now`. After
+    `rules["prompts_since"]` a prompt with another `promptId` closes the open turn (#218)."""
     fingerprint = native_fingerprint(path, harness, conversation_id)
     rows, diagnostics, pages = [], [], []
     n = 0
@@ -476,6 +477,10 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
     # The newer rules apply after `since`; a stored cut closes its turn on every read.
     since = rules.get("since") if rules else None
     new = rules is not None and since is None
+    # A new prompt closes the open turn after `prompts_since`, the last round an engine without
+    # that rule tracked (#218): a turn that ends in a tool call has no end_turn to close it.
+    splits = rules is not None and "prompts_since" in rules
+    split = splits and rules["prompts_since"] is None
     cuts = set(rules.get("cuts") or ()) if rules else set()
     now = rules.get("now") if rules else None
     delivered = {r.get("commandUuid") for _, r in rows if r.get("type") == "queue-operation"
@@ -483,9 +488,10 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
     last = None       # (uuid, line, epoch) of the open turn's latest dialogue row
     resumed = None    # the round an idle close just ended; its later rows continue it
     continued = None
+    prompt, replied, done = None, False, False  # the open turn's promptId, a reply, its last row ended it
 
     def emit(rid, completion, end_line, **extra):
-        nonlocal users, trace, start, native_results, evidence, new, continued, last
+        nonlocal users, trace, start, native_results, evidence, new, split, continued, last
         locator = f"claude:{rid}"
         events = [e for _, e in evidence]
         found = {"id": rid, "user": "\n\n".join(users),
@@ -503,6 +509,7 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
         rounds.append(found)
         users, trace, start, native_results, evidence, continued, last = [], [], None, [], [], None, None
         new = new or (rules is not None and rid == since)
+        split = split or (splits and rid == rules["prompts_since"])
         return rid
 
     def finish():
@@ -591,10 +598,15 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
         if typ == "user" and not tool_result:
             if row.get("isCompactSummary") or row.get("isMeta"):
                 continue
+            # Another prompt is another turn. A turn that ended in a tool call (the app's
+            # next-step box, ScheduleWakeup) closes there; an interruption keeps its promptId.
+            if split and start and replied and row.get("promptId") not in (None, prompt):
+                emit(f"{start}:{last[0]}", "completed" if done else "interrupted", last[1])
             if not start:
-                start, resumed = uid, None
+                start, resumed, prompt, replied = uid, None, row.get("promptId"), False
             users.append(_dump(content))
         elif start:
+            replied = True
             if not dialogue or content:
                 trace.append(f"### {typ}\n\n{_dump(content)}")
             if typ == "assistant" and msg.get("stop_reason") == "end_turn":
@@ -606,6 +618,7 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
                     for b in content))
         if start:
             last = (uid, line, at)
+            done = tool_result or (typ == "assistant" and msg.get("stop_reason") in ("end_turn", "stop_sequence"))
             if uid in cuts and not final_message:
                 interrupt()
     finish()
