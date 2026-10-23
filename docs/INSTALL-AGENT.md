@@ -28,14 +28,21 @@ user says yes:
 
 | Missing | Windows | macOS | Debian or Ubuntu |
 |---|---|---|---|
-| Python | `winget install --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements` | `brew install python@3.12`; without Homebrew, the user runs the installer from python.org | `sudo apt install python3 python3-venv` (3.11 or newer) |
+| Python | `winget install --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements` | `brew install python@3.12`; without Homebrew, the user runs the installer from python.org | Debian 12, Ubuntu 24.04 or newer: `sudo apt install python3 python3-venv`. Ubuntu 22.04, whose `python3` is 3.10: `sudo add-apt-repository ppa:deadsnakes/ppa`, then `sudo apt install python3.12 python3.12-venv` |
 | Git | `winget install --id Git.Git --accept-source-agreements --accept-package-agreements` | `xcode-select --install`, or `brew install git` | `sudo apt install git` |
 
 A shell that was open before the install does not see the new program. Use the
-interpreter you installed in every command below, `py -3.12` on Windows or
-`python3.12` from Homebrew, or open a new shell. If the Git identity is missing,
-ask the user for the name and e-mail that will sign their vault's commits (the
-e-mail is only written into commits), then set them:
+interpreter you installed in every command below (`py -3.12` on Windows,
+`python3.12` from Homebrew or the PPA), or open a new shell.
+
+If the Git identity is missing, ask the user for the name and e-mail that will
+sign their vault's commits, and say what that means: the e-mail becomes part of
+every commit, and `--global` makes this the identity of every Git repository on
+this device, which is the normal setup for a user who has none yet. A GitHub
+user who would rather not show their address can give the noreply address from
+GitHub's e-mail settings. A user who wants the identity for osk only gets it
+with `--local` instead, run inside the vault after step 3 and inside each folder
+of step 9.
 
 ```bash
 git config --global user.name "<name>"
@@ -198,10 +205,26 @@ Ask what the user will use osk for first.
   with the user, with a first commit so that the folder has a Git identity of
   its own and no other folder of the same name shares its memory:
 
+  macOS/Linux:
+
   ```bash
-  mkdir -p ~/work/<topic> && cd ~/work/<topic>      # Windows: C:/work/<topic>
-  git init -b main && git commit --allow-empty -m "Start <topic>"
+  mkdir -p ~/work/<topic>
+  cd ~/work/<topic>
+  git init -b main
+  git commit --allow-empty -m "Start <topic>"
   ```
+
+  Windows (PowerShell; it has no `&&`, so one command per line):
+
+  ```powershell
+  mkdir C:/work/<topic>
+  cd C:/work/<topic>
+  git init -b main
+  git commit --allow-empty -m "Start <topic>"
+  ```
+
+  Check that each command succeeded before the next; `git log` must show the
+  one commit.
 
 Then ask the user to open a new session of the host inside that folder and to
 tell the agent there what the topic is. That agent creates the scope by writing
