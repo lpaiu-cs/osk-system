@@ -492,9 +492,11 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
         # 새 대화의 전사는 첫 턴 뒤에야 생긴다 — 그 사이의 '없다'는 진단이 아니다
         standing = captured['capture_error'] if captured['capture_recovery']['state'] != 'awaiting_input' else None
         if selected['mode'] in ('background', 'off'):
+            # The fork's failure count's test (`_review_done`, kept as `reviewed`): a run that
+            # finished this conversation's review but deferred its organization job is no wait (#228).
             failures = [r for r in (captured.get('response_growth_stop'), captured.get('response_growth', {}).get('last_result'))
                         if selected['mode'] == 'background' and r and not r.get('ok', True)
-                        and r.get('state') not in {'running', 'unavailable'}]
+                        and not r.get('reviewed') and r.get('state') not in {'running', 'unavailable'}]
             error = standing or '; '.join(r.get('error') or r['state'] for r in failures)
             if _once(ident, error, captured, startup):
                 return [Block("route", f"[osk 백그라운드 검토 대기 — {error}; 본 작업은 계속한다. 완료로 처리하지 않았다.]")], ident

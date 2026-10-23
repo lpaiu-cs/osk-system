@@ -321,11 +321,23 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
     with write._Lock():
         idx = graph.Index()
         write._require_complete(idx)
-        # Original-turn refs are not vault paths; a proof cites them through a cited round.
-        wanted = {ref for ref in raw_refs if raw.is_native(ref)}
+        # Original-turn refs are not vault paths; a proof binds one only through a cited round
+        # (`_source` keeps its `native`). A turn never cited has no proof to find, so it needs no
+        # receipt scan — scanning the newest receipts made every review read "incomplete" once
+        # there were more than scan_limit (#227).
+        from .integration import _record
+        native = [ref for ref in raw_refs if raw.is_native(ref)]
+        cited = set()
+        for record in {_record(*ref.split(":", 3)[1:3]) for ref in native}:
+            path = raw.locate_record(record)
+            text = raw.read_exact(path) if path else ""
+            cited |= {raw.cited_native(text[a:b]) for a, b in raw._round_spans(text).values()}
+        wanted = {ref for ref in native if ref in cited}
         wanted |= {_source(ref, idx)["ref"] for ref in raw_refs if not raw.is_native(ref)}
         if any("#" not in ref for ref in wanted if not raw.is_native(ref)):
             raise write.WriteError("proof discovery accepts exact raw round references only")
+        if not wanted:
+            return {"proofs": [], "errors": [], "scanned": 0, "truncated": False}
         # Preserve local_lock_path's vault-specific fallback suffix; in a shared
         # git directory, canonical _job_path(key) below still excludes other ROOTs.
         probe = _job_path("inventory")
@@ -334,6 +346,9 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
         paths = sorted(probe.parent.glob(pattern),
                        key=lambda path: (-path.stat().st_mtime_ns, path.name))
         proofs, errors, scanned = [], [], 0
+        # ponytail: with a cited pending turn this still reads only the newest scan_limit receipts
+        # (~0.2 ms each) and reports truncated whenever there are more. A receipt cannot predate
+        # the turn it cites: bound the scan by the earliest pending turn's time (`_turn_at`).
         for path in paths[:scan_limit]:
             scanned += 1
             try:

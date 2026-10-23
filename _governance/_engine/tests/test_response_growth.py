@@ -1342,6 +1342,8 @@ class ResponseGrowthTests(unittest.TestCase):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration, scope_memory
             from unittest.mock import patch
+            sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
             scope_memory.replace('own', '', space='00_Scope/W1')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
@@ -1374,8 +1376,12 @@ class ResponseGrowthTests(unittest.TestCase):
                                                        'errors': ['provider output has no successful final result']}))
                 assert 'failed' not in integration.status('claude', 'own')['response_growth']
                 assert rg.route(env)['mode'] == 'background'
+                # Nor does its conversation hear that a review waits (#228: org deferral alone made
+                # the hook say "백그라운드 검토 대기 — incomplete").
+                assert '검토 대기' not in hook.capture_block(env, 'own', startup=True)
                 # A fork that left its own conversation's review unfinished still counts.
                 stop(5, run('pending'))
+                assert '백그라운드 검토 대기 — incomplete' in hook.capture_block(env, 'own', startup=True)
                 stop(6, run('pending', returncode=1,
                             final_reviews={'state': 'not_applied', 'errors': ['worker did not exit successfully']}))
                 route = rg.route(env)

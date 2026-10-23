@@ -237,8 +237,8 @@ $env:PYTHONPATH="_governance\_engine"; .venv\Scripts\python.exe -m osk.cli valid
 에이전트 응답은 원본 위치와 해시(필요하면 요지)로 둔다. 호출자는 훅이 준
 `conversation="<하네스>/<대화 ID>"`와 그 턴 사용자 발화의 짧은 일부(`quote`) 또는 턴
 ID(`turn`, `-1`=최신)만 보낸다(아래 [대화 추적과 인용](#대화-추적과-인용-integration-capture--cite_round)).
-턴 ID는 그 대화에서 한 턴만 가리키는 앞 8자 이상이면 된다. 대화 안 검토는 범위를 위치와 짧은 ID로
-알린다. 압축 등으로 그 턴이 문맥에 없으면 `read_cited(conversation=…, through=<검토 snapshot>)`가
+턴 ID는 그 대화에서 한 턴만 가리키는 앞 8자 이상이면 된다. 대화 안 검토와 Stop fork 검토는 범위를
+위치와 짧은 ID로 알린다. 압축 등으로 그 턴이 문맥에 없으면 `read_cited(conversation=…, through=<검토 snapshot>)`가
 검토 범위의 턴을 한 번에 연다 — 턴마다 발화와 응답을 각 1500자까지 고른 선별본이다.
 
 인용 기록은 작업 검색에서 빠지므로(헌법 11조 3항) `read_cited`는 질의가 아니라

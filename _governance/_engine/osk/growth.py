@@ -459,7 +459,7 @@ def _reading_plan(planned: dict) -> dict:
               "pending_refs", "remaining_rounds", "capture_error", "failed_rounds",
               "interrupted_rounds", "inherited_rounds", "coverage", "repair",
               "previous_distillations", "proof_discovery", "scope_recovery",
-              "capture_recovery", "raw_review", "hub_tree"}
+              "capture_recovery", "raw_review", "hub_tree", "range"}
     jobs = []
     for job in planned.get("scope_jobs", []):
         item = {k: v for k, v in job.items() if k in fields}
@@ -534,8 +534,15 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "read its `<facet>-law` node first, and defer if none is active (Bylaws §4 8).\n"
         # 두 경우를 한 문장에 담았더니 정기 실행 작업자가 자신을 Stop fork로 여겨 읽지 않고
         # 판정했다(v5.0.0 운영 관측). 엔진은 어느 쪽인지 알므로 그 경우의 문장만 싣는다.
+        # 압축은 밀린 턴을 fork의 문맥에서도 지운다 — "다시 읽지 말라"만 받은 fork가 판정 없이
+        # 보류했다(#226). 대화 안 검토(#219)와 같이 범위를 한 번에 읽는다.
         + ("Scope jobs: pending_refs starting with native: are original turns of the conversation "
-           "you were forked from. They are in your context: judge them there and never re-read them. "
+           "you were forked from, and the job's range gives their position. Judge the ones still in "
+           "your context there without re-reading them. Compaction drops older turns of a long "
+           "conversation: if any of them is not in your context, read that job's turns once with "
+           "read_cited(conversation=\"<harness>/<conversation_id>\", through=<its through>) (each "
+           "turn's words and response, up to 1500 characters each); cite_round takes a turn's "
+           "short as turn. "
            if str(planned.get("work_context", "")).startswith("stop:") else
            "Scope jobs: pending_refs starting with native: are original turns that are not in your "
            "context: their conversation ended before its own review. Read each one with "
