@@ -253,6 +253,27 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn("question 2", text)
 
 
+    def test_a_record_split_by_raw_newlines_is_rejoined(self):
+        # Claude Code once wrote a string's newlines unescaped: one record over three lines (#243).
+        rows = claude_round(self.sid, 1) + claude_round(self.sid, 2)
+        rows[4]["message"]["content"][0]["text"] = "answer\n\none"
+        self.transcript(rows)
+        intact = transcripts.read(str(self.path), "claude", self.sid)
+        split = self.path.read_bytes().replace(b"answer\\n\\none", b"answer\n\none")
+        self.path.write_bytes(split)
+        parsed = transcripts.read(str(self.path), "claude", self.sid)
+        self.assertEqual([(r["id"], r["user"], r["agent"]) for r in parsed["rounds"]],
+                         [(r["id"], r["user"], r["agent"]) for r in intact["rounds"]])
+        self.assertIn(json.dumps("answer\n\none"), parsed["rounds"][0]["agent"])
+        self.assertEqual(parsed["diagnostics"], [])
+        self.assertFalse(parsed["pending_tail"])
+        self.assertEqual(parsed["coverage"]["rejoined_lines"], [[5, 7]])
+        # A complete line no following lines complete still stops the read.
+        lines = split.splitlines(keepends=True)
+        self.path.write_bytes(b"".join(lines[:7] + [b'{"type": "user", "sess\n'] + lines[7:]))
+        with self.assertRaisesRegex(ValueError, "unreadable transcript record at line 8"):
+            transcripts.read(str(self.path), "claude", self.sid)
+
     def test_end_turn_thinking_is_not_a_final_response(self):
         self.transcript(claude_round(self.sid, 1)[:-1])
         parsed = transcripts.read(str(self.path), "claude", self.sid)
