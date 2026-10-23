@@ -1049,15 +1049,52 @@ def _needs_review(planned: dict, rows: list[dict], idx: graph.Index) -> bool:
                    for j in planned.get("recheck_jobs", [])))
 
 
+def _tree(table: dict[int, tuple[int, str]], born: dict[int, int]) -> dict[int, int]:
+    """born ({pid: start}) with every process of the snapshot that descends from it. A process
+    older than its parent only names a dead parent's reused pid (10-23: Taskmgr.exe)."""
+    from .native_cli import process_created
+    born, frontier = dict(born), list(born)
+    while frontier:
+        parent = frontier.pop()
+        for pid, (ppid, _) in table.items():
+            if ppid == parent and pid not in born and (created := process_created(pid) or 0) >= born[parent]:
+                born[pid] = created
+                frontier.append(pid)
+    return born
+
+
+def _running(tree: dict[int, int]) -> bool:
+    """Whether the tree, or a descendant it started after its snapshot, still runs. Termination is
+    asynchronous, so allow it about five seconds; a pid counts only with its own start time."""
+    import time
+    from .native_cli import process_created, process_table
+    for _ in range(50):
+        now = process_table()
+        if now and not any(pid in now and process_created(pid) == start
+                           for pid, start in _tree(now, tree).items()):
+            return False
+        time.sleep(0.1)
+    return True
+
+
 def _stop_tree(proc: subprocess.Popen) -> str | None:
     """Kill only the process tree/group created by this runner; report uncertain cleanup."""
     error = None
     try:
         if os.name == "nt":
+            from .native_cli import process_created, process_table
+            table = process_table()
+            start = process_created(proc.pid) if proc.pid in table else None
+            tree = _tree(table, {proc.pid: start}) if start else {}
             killed = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                                     capture_output=True, timeout=30, shell=False,
                                     creationflags=0x08000000)
-            if killed.returncode:
+            # /T는 잎부터 죽인다. 자식과 함께 끝나는 부모(venv 런처)는 제 차례 전에 이미 없어
+            # taskkill이 실패를 낸다 — 죽이기 전 트리나 그 뒤 트리가 낳은 자손이 아직 돌 때만
+            # 정리 실패다(#231 리뷰: 루트가 자식을 낳고 먼저 끝나면 taskkill은 아무것도 못 죽인다).
+            # ponytail: 부모가 보이기 전에 죽은 손주는 걸음에서 빠진다(taskkill /T도 같다) —
+            # 작업자가 이중 fork를 하면 Popen 때부터 Job Object로 묶는다.
+            if killed.returncode and (not tree or _running(tree)):
                 error = "process-tree cleanup was not confirmed: " + killed.stderr.decode(errors="replace")
         else:
             try:

@@ -1118,6 +1118,50 @@ class GrowthTests(unittest.TestCase):
             assert growth.plan()['candidates']
         """)
 
+    @unittest.skipUnless(os.name == 'nt', 'only Windows cleans the tree with taskkill /T')
+    def test_tree_cleanup_fails_only_while_a_tree_process_runs(self):
+        # taskkill /T kills leaves first. A venv launcher ends with its child before its own
+        # turn, so the call fails although nothing of the tree is left running.
+        self.check_case("""
+            import subprocess
+            from unittest.mock import patch
+            from osk import native_cli
+            # An older process naming the root as parent outlived an earlier owner of that pid.
+            table = {10: (1, 'python.exe'), 11: (10, 'python.exe'), 12: (10, 'Taskmgr.exe'), 13: (11, 'conhost.exe')}
+            with patch.object(native_cli, 'process_created', {10: 100, 11: 150, 12: 50, 13: 160}.get):
+                assert set(growth._tree(table, {10: 100})) == {10, 11, 13}
+            run = subprocess.run
+            lost = subprocess.CompletedProcess([], 128, b'', b'ERROR: There is no running instance of the task.')
+            def worker():
+                return subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, creationflags=0x08000200)
+            with patch.object(growth.subprocess, 'run', lambda argv, **kw: (run(argv, **kw), lost)[1]):
+                assert growth._stop_tree(worker()) is None
+            with patch.object(growth.subprocess, 'run', lambda argv, **kw: lost):  # kills nothing
+                error = growth._stop_tree(worker())
+            assert error and error.startswith('process-tree cleanup was not confirmed'), error
+            # #231 review: after the snapshot the root starts a child and exits first, so taskkill
+            # finds no root. The base interpreter keeps a venv launcher from between them, and the
+            # child's own console keeps the root's conhost from outliving the root.
+            late = ("import os,subprocess,sys; print(flush=True); sys.stdin.read(); print(subprocess.Popen("
+                    "[sys.executable,'-c','import time; time.sleep(60)'],cwd=os.path.dirname(sys.executable),"
+                    "creationflags=0x08000000).pid, flush=True)")
+            root = subprocess.Popen([sys._base_executable, '-c', late], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=0x08000200)
+            root.stdout.readline()
+            child = []
+            def vanish(argv, **kw):
+                root.stdin.close()
+                child.append(int(root.stdout.readline()))
+                root.wait(10)
+                return lost
+            with patch.object(growth.subprocess, 'run', vanish):
+                error = growth._stop_tree(root)
+            run(['taskkill', '/PID', str(child[0]), '/F'], capture_output=True)
+            assert error and error.startswith('process-tree cleanup was not confirmed'), error
+        """)
+
     def test_previous_saved_output_is_available_without_duplicate_node(self):
         self.check_case("""
             from osk import distillation
