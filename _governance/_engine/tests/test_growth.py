@@ -1127,7 +1127,7 @@ class GrowthTests(unittest.TestCase):
             # An older process naming the root as parent outlived an earlier owner of that pid.
             table = {10: (1, 'python.exe'), 11: (10, 'python.exe'), 12: (10, 'Taskmgr.exe'), 13: (11, 'conhost.exe')}
             with patch.object(native_cli, 'process_created', {10: 100, 11: 150, 12: 50, 13: 160}.get):
-                assert set(growth._tree(table, 10)) == {10, 11, 13}
+                assert set(growth._tree(table, {10: 100})) == {10, 11, 13}
             run = subprocess.run
             lost = subprocess.CompletedProcess([], 128, b'', b'ERROR: There is no running instance of the task.')
             def worker():
@@ -1138,6 +1138,25 @@ class GrowthTests(unittest.TestCase):
                 assert growth._stop_tree(worker()) is None
             with patch.object(growth.subprocess, 'run', lambda argv, **kw: lost):  # kills nothing
                 error = growth._stop_tree(worker())
+            assert error and error.startswith('process-tree cleanup was not confirmed'), error
+            # #231 review: after the snapshot the root starts a child and exits first, so taskkill
+            # finds no root. The base interpreter keeps a venv launcher from between them, and the
+            # child's own console keeps the root's conhost from outliving the root.
+            late = ("import os,subprocess,sys; print(flush=True); sys.stdin.read(); print(subprocess.Popen("
+                    "[sys.executable,'-c','import time; time.sleep(60)'],cwd=os.path.dirname(sys.executable),"
+                    "creationflags=0x08000000).pid, flush=True)")
+            root = subprocess.Popen([sys._base_executable, '-c', late], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=0x08000200)
+            root.stdout.readline()
+            child = []
+            def vanish(argv, **kw):
+                root.stdin.close()
+                child.append(int(root.stdout.readline()))
+                root.wait(10)
+                return lost
+            with patch.object(growth.subprocess, 'run', vanish):
+                error = growth._stop_tree(root)
+            run(['taskkill', '/PID', str(child[0]), '/F'], capture_output=True)
             assert error and error.startswith('process-tree cleanup was not confirmed'), error
         """)
 
