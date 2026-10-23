@@ -1488,10 +1488,40 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(D.discover(own["pending_refs"], scan_limit=1),
                          {"proofs": [], "errors": [], "scanned": 0, "truncated": False})
         self.assertNotIn("조회가 불완전", it.prompt("claude", self.sid)["text"])
-        # A cited turn may have a proof among the older receipts: the bounded scan says so.
+        # A cited turn of unknown time (these rows carry no timestamp) may have a proof among
+        # the older receipts: the count-bounded scan says so.
         it.cite(f"claude/{self.sid}", turn="-1")
         found = D.discover(own["pending_refs"], scan_limit=1)
         self.assertEqual((found["scanned"], found["truncated"]), (1, True), found)
+
+
+    def test_receipts_older_than_the_pending_turns_are_not_scanned(self):
+        # A receipt cannot predate the turn it cites: the scan stops a day before the earliest
+        # pending turn, so a long receipt history alone no longer reads incomplete (#227).
+        from osk import distillation as D
+        other_sid = self.sid + "-older"
+        other_path = Path(TMP.name) / (other_sid + ".jsonl")
+        other_path.write_text("".join(json.dumps(row) + "\n" for row in claude_round(other_sid, 1)), encoding="utf-8")
+        other = it.capture("claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
+        other["cited"] = it.cite(f"claude/{other_sid}", turn="-1")["round_ref"]
+        self._discovery_save(other, f"{self.sid}-older", f"{self.sid}-older-node")
+        receipt = D._job_path(f"{self.sid}-older")
+        # The turn is stamped two days ahead, so every receipt on disk (this suite's too) is older.
+        at = time.time() + 2 * 86400
+        self.transcript(stamped(claude_round(self.sid, 1), at))
+        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        it.cite(f"claude/{self.sid}", turn="-1")
+        st = it.prompt("claude", self.sid)
+        self.assertEqual(st["proof_discovery"], {"errors": [], "truncated": False, "scanned": 0})
+        self.assertNotIn("조회가 불완전", st["text"])
+        # A receipt written after the turn is still read.
+        os.utime(receipt, (at + 60, at + 60))
+        self.assertEqual(it.prompt("claude", self.sid)["proof_discovery"]["scanned"], 1)
+        # A pending turn of unknown time leaves no bound: the older receipts are read again.
+        os.utime(receipt)
+        self.transcript(stamped(claude_round(self.sid, 1), at) + claude_round(self.sid, 2))
+        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        self.assertGreaterEqual(it.prompt("claude", self.sid)["proof_discovery"]["scanned"], 1)
 
 
     def test_discovered_pending_hub_resumes_without_body_rewrite(self):

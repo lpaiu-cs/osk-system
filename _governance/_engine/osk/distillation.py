@@ -313,8 +313,9 @@ def status(key: str) -> dict:
 
 
 
-def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict:
-    """Find reusable local proofs for this bounded raw snapshot, never another root."""
+def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256, since=None) -> dict:
+    """Find reusable local proofs for this bounded raw snapshot, never another root.
+    `since()`, when given, returns the earliest of these turns' times (epoch seconds) or None."""
     if (not isinstance(raw_refs, list) or not raw_refs or len(raw_refs) > 64
             or not 1 <= limit <= 32 or not 1 <= scan_limit <= 1024):
         raise write.WriteError("bounded raw references and discovery limits required")
@@ -345,10 +346,14 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256) -> dict
         pattern = probe.name.replace(digest, "*")
         paths = sorted(probe.parent.glob(pattern),
                        key=lambda path: (-path.stat().st_mtime_ns, path.name))
+        # A receipt cannot predate the turn it cites, so older receipts hold no proof for these
+        # turns: a long receipt history alone no longer reads "incomplete" (#227). A day absorbs
+        # clock skew between the transcript and the file system. With no known time the newest
+        # scan_limit receipts are all it reads, and it says so.
+        at = since() if since else None
+        if at is not None:
+            paths = [path for path in paths if path.stat().st_mtime >= at - 86400]
         proofs, errors, scanned = [], [], 0
-        # ponytail: with a cited pending turn this still reads only the newest scan_limit receipts
-        # (~0.2 ms each) and reports truncated whenever there are more. A receipt cannot predate
-        # the turn it cites: bound the scan by the earliest pending turn's time (`_turn_at`).
         for path in paths[:scan_limit]:
             scanned += 1
             try:
