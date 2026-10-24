@@ -93,8 +93,11 @@ reinstall the requirements if `requirements.txt` changed.
    registration exists but the daemon did not come back in time, start that
    registration again by hand (its name begins with `osk-sync-`, or
    `com.osk-system.sync.` on macOS), then check that the daemon process is up.
-   A daemon that will not stay up writes why to `osk-sync-daemon.log` in the
-   vault's Git directory. `setup.py --apply --sync` does not restart an existing
+   A daemon that will not stay up leaves its reason where the service writes
+   its output: Windows, `osk-sync-daemon.log` in the vault's Git directory;
+   macOS, `~/Library/Logs/osk-sync-<tag>.log`; Linux,
+   `journalctl --user -u osk-sync-<tag>.service`. `<tag>` is the suffix of the
+   registration's name. `setup.py --apply --sync` does not restart an existing
    registration: it reports `keep`.
 6. **Afterwards**, tell the user to restart every host session that uses osk:
    until then, writes are refused with `적재판 … ≠ 디스크판` (the running
