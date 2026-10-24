@@ -670,7 +670,8 @@ Windows (PowerShell):
 데몬은 `main`만 동기화하며, `SYNC_ENABLED=1`이 설정되지 않으면 아무 일도 하지
 않는다. 시작하기 전에 다음을 갖춘다.
 
-- `origin`이 개인 원격이어야 한다(1단계).
+- `origin`이 개인 원격이어야 한다(1단계). 없어도 된다 — 원격이 없으면 데몬은 커밋만
+  하므로, 이 기기에 이력은 남지만 다른 곳에 사본은 없다.
 - Git이 묻지 않고 push할 수 있어야 한다. credential helper, 토큰, ssh-agent 가운데
   하나를 쓴다.
 - 데몬은 `sync_daemon.py`의 **절대 경로**로 시작한다. `osk.update`는 그 경로로

@@ -253,7 +253,7 @@ def main():
     while not _stop:
         try:
             st = once()
-            if st != "ok":
+            if not st.startswith("ok"):      # "ok (로컬 커밋만 — 원격 없음)"은 정상이다
                 print(f"sync 상태: {st}", file=sys.stderr)
         except Exception as e:
             print(f"sync 실패(다음 주기 재시도): {e}", file=sys.stderr)

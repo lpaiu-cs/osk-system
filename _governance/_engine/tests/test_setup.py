@@ -528,12 +528,16 @@ rep, _ = S.run(schedule='codex')
 assert rep['ok'] and 'claude_command' not in rep['schedule'], rep['schedule']
 assert rep['schedule']['command_files'] == [str(command_file)], rep['schedule']
 command_file.write_text(json.dumps(codex_argv), encoding='utf-8')
-# Sync: a local main, a private origin, and a push that does not ask.
+# Sync: a local main; with an origin, a private one and a push that does not ask.
 rep, _ = S.run(sync=True)
-assert not rep['ok'] and 'main' in rep['errors'][0] and 'origin' in rep['errors'][0], rep
+assert not rep['ok'] and 'main' in rep['errors'][0], rep
 git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
 git('add', '-A')
 git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vault')
+# No origin: the daemon is registered to commit only, and the human steps say so.
+rep, _ = S.run(sync=True)
+assert rep['ok'] and rep['sync']['origin'] is None and rep['sync']['task']['action'] == 'add', rep
+assert any('커밋만' in s for s in rep['human']), rep['human']
 git('remote', 'add', 'origin', 'git@github.com:LPAIU-CS/osk-system.git')
 rep, _ = S.run(sync=True)
 assert not rep['ok'] and '정본' in rep['errors'][0], rep

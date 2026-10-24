@@ -108,7 +108,8 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
     vault가 저장소 루트인지, 로컬 `main`이 있는지, `origin`의 fetch 주소와 모든 push 대상
     (`pushurl`·`pushInsteadOf`를 푼 실제 전송 자리)이 공개 정본이 아닌지, 묻지 않고 push할
     수 있는지(`git push --dry-run`)를 확인한다. push 대상은 계획에 실려 확인받는다. 그것이
-    모두 비공개인지는 사람이 확인한다.
+    모두 비공개인지는 사람이 확인한다. `origin`이 없으면 push 검사 없이 등록하고 데몬은 커밋만
+    한다 — 계획의 `origin`이 `null`이고, 사람이 할 일에 이 기기 밖 사본이 없다고 적는다.
 - **해제.** `--uninstall`만 주면 이 vault의 osk 등록을 다 걷는다 — fork 설정의 항목, 정기
   실행 작업, 동기화 데몬(Windows는 떠 있는 데몬도 멈춘다)까지다. 명령 파일은 남긴다.
   기능 플래그를 함께 주면 그 기능만, `--harness`를 주면 그 호스트의 것만 걷는다.
@@ -1191,7 +1192,8 @@ Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 
 ## 동기화 데몬
 
 git 동기화만 한다. 검색·색인 서빙은 하지 않는다 — 그것은 엔진과 MCP 서버의 일이다.
-**명시적 opt-in**이라 `SYNC_ENABLED`가 없으면 즉시 종료한다.
+**명시적 opt-in**이라 `SYNC_ENABLED`가 없으면 즉시 종료한다. `origin`이 없으면 커밋만
+하고(`ok (로컬 커밋만 — 원격 없음)`), 원격이 생기면 다음 주기부터 push한다.
 
 ```bash
 SYNC_ENABLED=1 .venv/bin/python _governance/_engine/sync_daemon.py --interval 900

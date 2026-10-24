@@ -701,7 +701,9 @@ The sync daemon runs every 15 minutes by default. Each time, it:
 It only ever syncs `main`, and it does nothing unless `SYNC_ENABLED=1` is set.
 Before you start it:
 
-- `origin` must be your private remote (Step 1).
+- `origin` must be your private remote (Step 1), or absent. Without a remote the
+  daemon only commits: the vault keeps a history on this device and no copy
+  anywhere else.
 - Git must be able to push without prompting, through a credential helper,
   token or ssh-agent.
 - Start the daemon with the **absolute path** of `sync_daemon.py`. `osk.update`

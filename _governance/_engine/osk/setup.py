@@ -362,7 +362,8 @@ def _canonical(url: str) -> bool:
 
 
 def _sync_checks() -> tuple[str | None, list[str], list[str]]:
-    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 개인 원격 `origin`, 묻지 않는 push.
+    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 그리고 `origin`이 있으면 개인 원격과 묻지
+    않는 push. `origin`이 없으면 오류가 아니다 — 데몬은 커밋만 한다(`sync_daemon.once`).
     (fetch 주소, push 대상들, 오류). push 대상은 `pushurl`과 `pushInsteadOf`를 푼 실제 전송
     자리다 — fetch 주소만 보면 다른 곳으로 가는 push를 확인하지 못한다."""
     def git(*args: str) -> subprocess.CompletedProcess:
@@ -378,12 +379,10 @@ def _sync_checks() -> tuple[str | None, list[str], list[str]]:
         main = git("rev-parse", "--verify", "--quiet", "refs/heads/main").returncode == 0
         errors = [] if main else ["로컬 `main` 브랜치가 없다 — 데몬은 `main`만 동기화한다"]
         public = [u for u in dict.fromkeys([url, *pushes]) if u and _canonical(u)]
-        if not url:
-            errors.append("`origin`이 없다 — 개인 저장소를 origin으로 둔다(시작 안내서 1단계)")
-        elif public:
+        if public:
             errors.append("origin의 fetch·push 대상에 공개 정본 저장소가 있다(" + ", ".join(public)
                           + ") — 개인 저장소만 둔다")
-        elif main:
+        elif url and main:
             code, out, err = update.git_unattended(
                 ["-C", str(core.ROOT), "push", "--dry-run", "--porcelain", "origin", "main"], timeout=90)
             # 원격이 앞서 있으면 거절(`[rejected]`)되지만 인증은 통과했다 — 데몬은 먼저 rebase한다.
@@ -397,7 +396,7 @@ def _sync_checks() -> tuple[str | None, list[str], list[str]]:
 
 def _sync(manager, uninstall: bool) -> dict:
     """동기화 데몬 — 전제를 확인한 뒤 운영체제의 상시 서비스로 둔다. push 대상은 계획에 실려
-    확인 대상이 된다."""
+    확인 대상이 된다. `origin`이 없으면 계획의 `origin`은 None이고 데몬은 커밋만 한다."""
     if uninstall:
         return {"task": services.plan(manager, "sync", None, True)}
     url, pushes, errors = _sync_checks()
@@ -483,8 +482,12 @@ def _extras_human(extras: dict) -> list[str]:
              "--limit", "1"]) + "`")
     y = extras.get("sync") or {}
     if y.get("task", {}).get("action") in ("add", "replace"):
-        steps.append("origin의 push 대상(" + ", ".join(y.get("push") or [y["origin"]])
-                     + ")이 모두 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 커밋해 그곳에 올린다")
+        if y.get("origin"):
+            steps.append("origin의 push 대상(" + ", ".join(y.get("push") or [y["origin"]])
+                         + ")이 모두 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 커밋해 그곳에 올린다")
+        else:
+            steps.append("원격이 없어 데몬은 커밋만 한다 — 이 기기 밖에는 사본이 없다. 비공개 저장소를 "
+                         "origin으로 더하면 다음 주기부터 push한다(docs/OPERATE-AGENT.md)")
     if any((extras.get(k) or {}).get("task", {}).get("backend") == "systemd"
            and extras[k]["task"].get("action") in ("add", "replace") for k in ("schedule", "sync")):
         steps.append("로그아웃한 뒤에도 돌게 하려면 `loginctl enable-linger $USER`를 실행한다")

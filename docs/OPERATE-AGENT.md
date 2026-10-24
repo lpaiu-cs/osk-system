@@ -155,7 +155,8 @@ are already connected come out as `keep`.
 
 - On: `setup.py --apply --fork`, `--schedule claude [--at HH:MM]`, or `--sync`.
   Tell the user what each uses: forks and the daily run spend the user's
-  subscription; sync needs a private remote and a push that asks nothing.
+  subscription; sync pushes only with a private remote and a push that asks
+  nothing, and without a remote it only commits.
 - Off: `setup.py --uninstall --<flag> --apply`, for example
   `--uninstall --sync --apply`.
 
@@ -175,8 +176,10 @@ A vault without a remote has no copy anywhere else. To add one:
 3. The first push asks for the user's sign-in; the user enters it, not you. If
    Git asks on every push, a credential helper is missing; see
    [sync](GETTING-STARTED.md#optional-sync-the-vault-with-git).
-4. To keep it pushed every 15 minutes from now on, offer `setup.py --apply
-   --sync` (two steps, as above).
+4. A daemon that was already running without a remote starts pushing on its
+   next round. Run `setup.py --apply --sync` again anyway (two steps, as
+   above): it checks the push target and the credentials first, or registers
+   the daemon if there was none.
 
 ## Remove
 
