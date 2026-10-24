@@ -224,7 +224,8 @@ def _how(latest: str) -> str:
             f"한다. 요청을 받으면 "
             f"`{core.cli_command('update', '--to', latest, '--apply')}`를 실행한다. 첫 "
             f"실행은 변경집합만 내고 종료코드 2로 멈추니, 출력의 instruction대로 설명하고 "
-            f"재승인을 받는다.")
+            f"재승인을 받는다. 절차와 뒷정리(세션 재시작·requirements·커밋·다른 기기)는 이 vault의 "
+            f"`{core.ROOT / 'docs' / 'OPERATE-AGENT.md'}`의 Update 절을 따른다.")
 
 
 def session_notice(screen: bool = True) -> tuple[str, str]:

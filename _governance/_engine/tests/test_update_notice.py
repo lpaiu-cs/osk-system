@@ -128,6 +128,7 @@ done('v4.0.0', '0')
 cached()
 agent, user = update_check.session_notice()
 assert user and 'releases/tag' not in user + agent, (user, agent)
+assert 'OPERATE-AGENT.md' in agent, agent          # the agent's own guide, whatever the source
 assert 'notes' not in update_check.surface()
 notice = core.local_lock_path(update_check.NOTICE)
 link = 'https://github.com/o/r/releases/tag/v4.10.0'
@@ -137,7 +138,7 @@ for url in ('https://github.com/o/r.git', 'git@github.com:o/r.git', 'https://git
     notice.unlink()
     agent, user = update_check.session_notice()
     assert user.endswith(' 릴리스 노트: ' + link), (url, user)
-    assert link in agent and '이행 안내' in agent, (url, agent)
+    assert link in agent and '이행 안내' in agent and 'OPERATE-AGENT.md' in agent, (url, agent)
     assert update_check.surface()['notes'] == link, url
 ''')
 

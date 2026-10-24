@@ -351,7 +351,10 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: 
                "명시한다. 그 착지는 이 대화에만 적용된다." if workspace.get("one_off") else "")
             + (f" 이 대화는 `{landing}`에 착지해 있다 — 쓸 때 space에 그 경로를 준다."
                if landing and not bound else "")
-            + (f" 작업 폴더 판별: {workspace['warning']}" if workspace.get("warning") else ""))
+            + (f" 작업 폴더 판별: {workspace['warning']}" if workspace.get("warning") else "")
+            # 사용자는 개발자가 아닐 수 있다 — osk의 말은 풀어서, 운용 요청은 에이전트용 안내대로.
+            + " 사용자에게 말할 때 osk의 말(scope·결속·군집·허브·보호영역)은 풀어서 쓴다. "
+              "갱신·점검·기능·제거 요청은 이 vault의 docs/OPERATE-AGENT.md를 따른다.")
 
 
 def _budget(env: dict, host=None) -> int | None:
