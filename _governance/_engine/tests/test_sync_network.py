@@ -1,4 +1,5 @@
 """Real Git + second-process writer checks for the sync lock boundary."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -35,6 +36,13 @@ with open(lock, 'a') as f:
 '''
 
 
+def approve(root, bare):
+    """What `setup --sync` records on this device: the daemon transfers to these targets only."""
+    (root / '.osk').mkdir(exist_ok=True)
+    (root / '.osk' / 'sync-targets.json').write_text(json.dumps({'origin': str(bare), 'push': [str(bare)]}),
+                                                      encoding='utf-8')
+
+
 def run():
     with tempfile.TemporaryDirectory(prefix='osk-network-') as td:
         root = Path(td) / 'local'
@@ -65,6 +73,7 @@ def run():
         git('init', '-q', '--bare', '-b', 'main', str(bare))
         git('remote', 'add', 'origin', str(bare))
         git('push', '-qu', 'origin', 'main')
+        approve(root, bare)
         git('clone', '-q', str(bare), str(peer))
         configure(peer)
         (peer / 'remote.txt').write_text('remote')
@@ -344,6 +353,7 @@ def keep_local():
         git('init', '-q', '--bare', '-b', 'main', str(bare))
         git('remote', 'add', 'origin', str(bare))
         git('push', '-qu', 'origin', 'main')
+        approve(root, bare)
 
         assert sync.once(root) == 'ok'
         assert local_paths(git('ls-tree', '-r', '--name-only', 'HEAD')) == ['.osk/.gitignore']
@@ -401,6 +411,8 @@ def receiving_device():
                 git('add', '-A', at=b)
                 git('commit', '-qm', 'B config v2', at=b)
 
+            approve(a, bare)
+            approve(b, bare)
             assert sync.once(a) == 'ok'                                     # A가 추적을 풀어 올린다
             assert sync.once(b) == 'ok', 'B stopped on its own local state'
             expected = 'B paths v2' if unpushed else 'B paths'
@@ -411,7 +423,91 @@ def receiving_device():
     print('receiving device keeps its local state: PASS (pushed and unpushed local commits)')
 
 
+def local_only():
+    """No origin, or an origin that is the public canonical repository: the daemon commits and
+    never fetches or pushes. A remote under another name is no remote to it (#254 review)."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / 'solo'
+        root.mkdir()
+        os.environ.setdefault('OSK_VAULT_ROOT', str(root))
+        import sync_daemon as sync
+        import vault_sync as vs
+        original = vs._git
+
+        def git(*args):
+            r = original(root, list(args), 30)
+            assert r.returncode == 0, (args, r.stdout, r.stderr)
+            return r.stdout.strip()
+
+        git('init', '-q', '-b', 'main')
+        for key, value in [('user.name', 'fixture'), ('user.email', 'fixture@example.invalid'),
+                           ('core.autocrlf', 'false'), ('commit.gpgsign', 'false')]:
+            git('config', key, value)
+        (root / 'note.txt').write_text('base')
+        (root / '.gitignore').write_text('.osk/\n')
+        git('add', '-A')
+        git('commit', '-qm', 'base')
+        (root / 'note.txt').write_text('edited')
+        assert sync.once(root) == 'ok (로컬 커밋만 — 원격 없음)'
+        assert git('status', '--porcelain') == '' and git('rev-list', '--count', 'HEAD') == '2'
+        git('remote', 'add', 'upstream', 'https://example.invalid/not-origin.git')
+        (root / 'note.txt').write_text('again')
+        assert sync.once(root) == 'ok (로컬 커밋만 — 원격 없음)', 'a remote that is not origin counted as one'
+        touched = []
+
+        def instrument(at, args, timeout, **kwargs):
+            if args[0] in ('fetch', 'push', 'pull', 'ls-remote'):
+                touched.append(args[0])
+            return original(at, args, timeout, **kwargs)
+
+        def tick(expect_count):
+            touched.clear()
+            with patch.object(vs, '_git', instrument):
+                status = sync.once(root)
+            assert git('rev-list', '--count', 'HEAD') == str(expect_count), status
+            return status
+
+        git('remote', 'add', 'origin', 'git@github.com:LPAIU-CS/osk-system.git')   # the public canonical
+        (root / 'note.txt').write_text('never sent')
+        status = tick(4)
+        assert '공개 정본' in status and touched == [], (status, touched)
+        # setup recorded "no transfer" on this device: a remote added afterwards is not used until
+        # setup has checked it, however private it looks.
+        bare = Path(td) / 'private.git'
+        assert original(Path(td), ['init', '-q', '--bare', '-b', 'main', str(bare)], 30).returncode == 0
+        git('remote', 'set-url', 'origin', str(bare))
+        targets = root / '.osk' / 'sync-targets.json'
+        targets.parent.mkdir(exist_ok=True)
+        targets.write_text(json.dumps({'origin': None, 'push': []}), encoding='utf-8')
+        (root / 'note.txt').write_text('still local')
+        status = tick(5)
+        assert '전송 보류' in status and 'setup' in status and touched == [], (status, touched)
+        # Once setup has recorded these targets, the daemon transfers.
+        targets.write_text(json.dumps({'origin': str(bare), 'push': [str(bare)]}), encoding='utf-8')
+        git('push', '-q', 'origin', 'main')
+        (root / 'note.txt').write_text('sent')
+        assert tick(6) == 'ok'
+        assert original(bare, ['rev-parse', 'main'], 30).stdout.strip() == git('rev-parse', 'HEAD')
+        # No record at all is no approval either: a registration this version made never lacks one.
+        targets.unlink()
+        (root / 'note.txt').write_text('no record')
+        status = tick(7)
+        assert '전송 보류' in status and touched == [], (status, touched)
+        targets.write_text(json.dumps({'origin': str(bare), 'push': [str(bare)]}), encoding='utf-8')
+        # A push URL that differs from the recorded one is not used either, and the public canonical never.
+        git('config', 'remote.origin.pushurl', 'https://github.com/lpaiu-cs/osk-system.git')
+        (root / 'note.txt').write_text('never')
+        status = tick(8)
+        assert '공개 정본' in status and touched == [], (status, touched)
+        git('config', 'remote.origin.pushurl', str(Path(td) / 'elsewhere.git'))
+        (root / 'note.txt').write_text('nor this')
+        status = tick(9)
+        assert '전송 보류' in status and touched == [], (status, touched)
+    print('local-only vault: PASS (no origin, non-origin remote, public canonical, unconfirmed and changed targets)')
+
+
 if __name__ == '__main__':
     run()
     keep_local()
     receiving_device()
+    local_only()

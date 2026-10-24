@@ -155,7 +155,8 @@ are already connected come out as `keep`.
 
 - On: `setup.py --apply --fork`, `--schedule claude [--at HH:MM]`, or `--sync`.
   Tell the user what each uses: forks and the daily run spend the user's
-  subscription; sync needs a private remote and a push that asks nothing.
+  subscription; sync pushes only with a private remote and a push that asks
+  nothing, and without a remote it only commits.
 - Off: `setup.py --uninstall --<flag> --apply`, for example
   `--uninstall --sync --apply`.
 
@@ -175,8 +176,12 @@ A vault without a remote has no copy anywhere else. To add one:
 3. The first push asks for the user's sign-in; the user enters it, not you. If
    Git asks on every push, a credential helper is missing; see
    [sync](GETTING-STARTED.md#optional-sync-the-vault-with-git).
-4. To keep it pushed every 15 minutes from now on, offer `setup.py --apply
-   --sync` (two steps, as above).
+4. A daemon registered without a remote does not use a remote added later
+   until setup has checked it: it transfers only to the fetch and push targets
+   that `setup.py --apply --sync` recorded (`.osk/sync-targets.json`), and to
+   the public osk-system repository never. So run `setup.py --apply --sync`
+   again (two steps, as above): it checks the push target and the credentials,
+   records them, and registers the daemon if there was none.
 
 ## Remove
 
