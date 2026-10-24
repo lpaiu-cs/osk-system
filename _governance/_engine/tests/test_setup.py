@@ -612,6 +612,8 @@ git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vau
 private, second = root.parent / 'private.git', root.parent / 'second.git'
 for bare in (private, second):
     subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True, capture_output=True)
+git('config', 'user.name', 't')
+git('config', 'user.email', 't@example.com')
 git('remote', 'add', 'origin', str(private))
 # The fetch URL is private, but pushes go to the public canonical repository.
 git('config', 'remote.origin.pushurl', 'https://github.com/lpaiu-cs/osk-system.git')
@@ -627,6 +629,8 @@ assert code == 2 and rep['sync']['push'] == [str(private), str(second)] and not 
 assert any(str(second) in s for s in rep['human']), rep['human']
 rep, code = S.run(apply=True, sync=True)
 assert code == 0 and rep['ok'] and f'osk-sync-{services.tag()}' in Fake.rows, rep
+# The daemon will transfer to exactly the push targets that were shown and confirmed.
+assert json.loads((root / '.osk' / 'sync-targets.json').read_text(encoding='utf-8'))['push'] == [str(private), str(second)]
 ''')
 
     def test_uninstall_without_a_service_manager_still_removes_the_hosts(self):
