@@ -342,6 +342,8 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: 
     else:
         landing_note = ("아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 군집에서 해당 프로젝트를 "
                         "확인한 뒤 scope_memory를 읽어라.")
+    from osk import core
+    guide = core.ROOT / "docs" / "OPERATE-AGENT.md"     # 세션은 vault 밖 작업 폴더에서 돈다 — 절대 경로로
     return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
             f"이 세션에서 노드를 처음 쓰기 전에 `overview(session={arg})`를 한 번 불러 군집·허브 트리(`hub_tree`)·열린 사건·근거 "
             "재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다(시행령 §3 8항). "
@@ -351,7 +353,10 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: 
                "명시한다. 그 착지는 이 대화에만 적용된다." if workspace.get("one_off") else "")
             + (f" 이 대화는 `{landing}`에 착지해 있다 — 쓸 때 space에 그 경로를 준다."
                if landing and not bound else "")
-            + (f" 작업 폴더 판별: {workspace['warning']}" if workspace.get("warning") else ""))
+            + (f" 작업 폴더 판별: {workspace['warning']}" if workspace.get("warning") else "")
+            # 사용자는 개발자가 아닐 수 있다 — osk의 말은 풀어서, 운용 요청은 에이전트용 안내대로.
+            + " 사용자에게 말할 때 osk의 말(scope·결속·군집·허브·보호영역)은 풀어서 쓴다. "
+              f"갱신·점검·기능·제거 요청은 `{guide}`를 따른다.")
 
 
 def _budget(env: dict, host=None) -> int | None:
