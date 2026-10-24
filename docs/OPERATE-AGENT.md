@@ -87,8 +87,18 @@ reinstall the requirements if `requirements.txt` changed.
 5. **Apply.** Run the same command again within an hour. If it asks for
    approval again, the release or the files changed in between: show the new
    plan and ask again. The apply stops and restarts this vault's sync daemon by
-   itself (`daemon` in the report); if `daemon.note` says the restart failed,
-   `setup.py --apply --sync` registers and starts it again.
+   itself (`daemon` in the report). If `daemon.restarted` is false, read
+   `daemon.note`: when it says there is no scheduled task or service for this
+   vault, `setup.py --apply --sync` registers and starts one; when the
+   registration exists but the daemon did not come back in time, start that
+   registration again by hand (its name begins with `osk-sync-`, or
+   `com.osk-system.sync.` on macOS), then check that the daemon process is up.
+   A daemon that will not stay up leaves its reason where the service writes
+   its output: Windows, `osk-sync-daemon.log` in the vault's Git directory;
+   macOS, `~/Library/Logs/osk-sync-<tag>.log`; Linux,
+   `journalctl --user -u osk-sync-<tag>.service`. `<tag>` is the suffix of the
+   registration's name. `setup.py --apply --sync` does not restart an existing
+   registration: it reports `keep`.
 6. **Afterwards**, tell the user to restart every host session that uses osk:
    until then, writes are refused with `적재판 … ≠ 디스크판` (the running
    server still has the old engine). If `_governance/_engine/requirements.txt`
@@ -103,7 +113,7 @@ When the update refuses or breaks:
 
 | Message or situation | What it means and what to do |
 |---|---|
-| `[중단] 엔진 파일에 로컬 수정이 있다 …` | Engine files differ from the recorded baseline. If the vault never recorded one (cloned from `main`, or the install skipped it), run `osk.update --apply --adopt` with the same two steps; it keeps each replaced file as `<file>.local-<version>`. If someone edited engine files, undo the edits. Never force. |
+| `[중단] 엔진 파일에 로컬 수정이 있다 …` | Engine files differ from the recorded baseline, or there is no baseline. An install that was never applied (`setup.py --apply` run once or not at all) has none: finish the install with its two runs, which record the baseline. A vault cloned from `main` or adopted by hand: run `osk.update --apply --adopt` with the same two steps; it keeps each replaced file as `<file>.local-<version>`. If someone edited engine files, undo the edits. Never force. |
 | The update was interrupted | The next `--apply` recovers first. If `osk.update` itself no longer starts, run `python3 _governance/_engine/scripts/recover.py --apply` (`py -3` on Windows); it needs only the standard library. |
 | `동기화 데몬 잠금이 잡혀 있는데 … 프로세스를 찾지 못했다` | A daemon runs that was started with a relative path. Stop it, start it with the absolute path of `sync_daemon.py` (or `setup.py --apply --sync`), and run the update again. |
 | `<file>.upstream-<version>` files remain | The user had edited those documents. Merge by hand with the user, then delete the extra file. |
