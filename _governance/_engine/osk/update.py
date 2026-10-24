@@ -43,6 +43,15 @@ TXN_DIR = ROOT / ".osk" / "txn"              # 크래시-안전 트랜잭션 영
 TXN_MANIFEST = TXN_DIR / "manifest.json"     # 존재 = 미완료 트랜잭션(복구 대상)
 TXN_BACKUP = TXN_DIR / "backup"
 DEFAULT_UPSTREAM = "https://github.com/lpaiu-cs/osk-system.git"
+
+
+def is_canonical(url: str) -> bool:
+    """`url`이 공개 정본 저장소인가 — HTTPS·SSH 표기, `.git`, 대소문자를 가리지 않는다. setup의
+    `--sync` 사전 확인과 데몬의 전송 경계가 같은 판정을 쓴다: vault는 정본으로 가지 않는다."""
+    def norm(u: str) -> str:
+        u = re.sub(r"\.git$", "", u.strip().rstrip("/").lower())
+        return re.sub(r"^[a-z+]+://", "", u).split("@")[-1].replace(":", "/")
+    return norm(url) == norm(DEFAULT_UPSTREAM)
 ATTESTATION = "release.json"
 ENGINE_PREFIX = "_governance/_engine/"
 VERSION_RE = r"^v\d+\.\d+\.\d+$"             # 릴리스·태그·자동 탐색이 공유하는 계약

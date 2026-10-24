@@ -56,12 +56,15 @@ def is_git_repo(vault_root, timeout=10) -> bool:
     return bool(top) and os.path.realpath(top) == os.path.realpath(str(vault_root))
 
 
-def has_remote(vault_root, timeout=10) -> bool:
-    """원격 유무. is_git_repo와 같이 판독 실패는 "원격 없음"으로 접지 않는다."""
-    r = _git(vault_root, ["remote"], timeout)
+def origin_url(vault_root, timeout=10):
+    """`origin`의 fetch 주소, 없으면 None. 데몬에게 원격은 `origin`뿐이다 — 다른 이름의 원격만
+    있으면 원격이 없는 것이다. is_git_repo와 같이 판독 실패는 "원격 없음"으로 접지 않는다."""
+    r = _git(vault_root, ["remote", "get-url", "origin"], timeout)
     if r.returncode != 0:
+        if "no such remote" in r.stderr.lower():
+            return None
         raise RuntimeError(f"git remote 판독 실패: {r.stderr.strip()[-600:]}")
-    return bool(r.stdout.strip())
+    return r.stdout.strip() or None
 
 
 def _head(vault_root, timeout):

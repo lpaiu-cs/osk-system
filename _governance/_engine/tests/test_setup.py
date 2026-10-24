@@ -534,6 +534,12 @@ assert not rep['ok'] and 'main' in rep['errors'][0], rep
 git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
 git('add', '-A')
 git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vault')
+# The daemon commits on its own, so the repository must be able to name a committer.
+git('config', 'user.useConfigOnly', 'true')
+rep, _ = S.run(sync=True)
+assert not rep['ok'] and '작성자' in rep['errors'][0], rep
+git('config', 'user.name', 't')
+git('config', 'user.email', 't@example.com')
 # No origin: the daemon is registered to commit only, and the human steps say so.
 rep, _ = S.run(sync=True)
 assert rep['ok'] and rep['sync']['origin'] is None and rep['sync']['task']['action'] == 'add', rep

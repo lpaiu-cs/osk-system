@@ -177,7 +177,8 @@ A vault without a remote has no copy anywhere else. To add one:
    Git asks on every push, a credential helper is missing; see
    [sync](GETTING-STARTED.md#optional-sync-the-vault-with-git).
 4. A daemon that was already running without a remote starts pushing on its
-   next round. Run `setup.py --apply --sync` again anyway (two steps, as
+   next round, except to the public osk-system repository, which it never
+   fetches from or pushes to. Run `setup.py --apply --sync` again anyway (two steps, as
    above): it checks the push target and the credentials first, or registers
    the daemon if there was none.
 

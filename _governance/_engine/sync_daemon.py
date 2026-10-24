@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
-from osk import core, epoch, raw  # noqa: E402
+from osk import core, epoch, raw, update  # noqa: E402
 from osk._portalock import lock_exclusive, unlock  # noqa: E402
 
 ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
@@ -56,9 +56,15 @@ def once(root: Path = ROOT) -> str:
     """
     if not vault_sync.is_git_repo(root):
         return "git 저장소 아님"
-    if not vault_sync.has_remote(root):
+    url = vault_sync.origin_url(root)
+    if not url:
         status, _head = _apply(root)
         return "ok (로컬 커밋만 — 원격 없음)" if status == "ok" else status
+    if update.is_canonical(url):
+        # 전송 경계의 보호 — 등록 뒤에 origin이 공개 정본으로 바뀌어도 그곳과는 fetch·push하지 않는다.
+        status, _head = _apply(root)
+        return ("ok (로컬 커밋만 — origin이 공개 정본이라 fetch·push하지 않는다)"
+                if status == "ok" else status)
     for _attempt in range(2):
         with vault_sync.fetch_snapshot(root) as (fetched, st, detail):
             # Even when offline, retain the existing local-commit behavior.

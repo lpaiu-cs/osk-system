@@ -353,17 +353,10 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
     return out
 
 
-def _canonical(url: str) -> bool:
-    """origin이 공개 정본인가 — HTTPS·SSH 표기, `.git`, 대소문자를 가리지 않는다."""
-    def norm(u: str) -> str:
-        u = re.sub(r"\.git$", "", u.strip().rstrip("/").lower())
-        return re.sub(r"^[a-z+]+://", "", u).split("@")[-1].replace(":", "/")
-    return norm(url) == norm(update.DEFAULT_UPSTREAM)
-
-
 def _sync_checks() -> tuple[str | None, list[str], list[str]]:
-    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 그리고 `origin`이 있으면 개인 원격과 묻지
-    않는 push. `origin`이 없으면 오류가 아니다 — 데몬은 커밋만 한다(`sync_daemon.once`).
+    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 커밋할 작성자 정보, 그리고 `origin`이 있으면
+    개인 원격과 묻지 않는 push. `origin`이 없으면 오류가 아니다 — 데몬은 커밋만 한다
+    (`sync_daemon.once`).
     (fetch 주소, push 대상들, 오류). push 대상은 `pushurl`과 `pushInsteadOf`를 푼 실제 전송
     자리다 — fetch 주소만 보면 다른 곳으로 가는 push를 확인하지 못한다."""
     def git(*args: str) -> subprocess.CompletedProcess:
@@ -378,7 +371,10 @@ def _sync_checks() -> tuple[str | None, list[str], list[str]]:
                   if u.strip()] if url else []
         main = git("rev-parse", "--verify", "--quiet", "refs/heads/main").returncode == 0
         errors = [] if main else ["로컬 `main` 브랜치가 없다 — 데몬은 `main`만 동기화한다"]
-        public = [u for u in dict.fromkeys([url, *pushes]) if u and _canonical(u)]
+        if git("var", "GIT_COMMITTER_IDENT").returncode != 0:      # 데몬의 커밋이 쓰는 바로 그 판정
+            errors.append("커밋할 작성자 정보가 없다 — `git config --global user.name`·`user.email`을 "
+                          "둔다(INSTALL-AGENT 1단계). 데몬은 작성자 없이 커밋하지 못한다")
+        public = [u for u in dict.fromkeys([url, *pushes]) if u and update.is_canonical(u)]
         if public:
             errors.append("origin의 fetch·push 대상에 공개 정본 저장소가 있다(" + ", ".join(public)
                           + ") — 개인 저장소만 둔다")

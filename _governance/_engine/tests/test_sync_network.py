@@ -411,7 +411,55 @@ def receiving_device():
     print('receiving device keeps its local state: PASS (pushed and unpushed local commits)')
 
 
+def local_only():
+    """No origin, or an origin that is the public canonical repository: the daemon commits and
+    never fetches or pushes. A remote under another name is no remote to it (#254 review)."""
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / 'solo'
+        root.mkdir()
+        os.environ.setdefault('OSK_VAULT_ROOT', str(root))
+        import sync_daemon as sync
+        import vault_sync as vs
+        original = vs._git
+
+        def git(*args):
+            r = original(root, list(args), 30)
+            assert r.returncode == 0, (args, r.stdout, r.stderr)
+            return r.stdout.strip()
+
+        git('init', '-q', '-b', 'main')
+        for key, value in [('user.name', 'fixture'), ('user.email', 'fixture@example.invalid'),
+                           ('core.autocrlf', 'false'), ('commit.gpgsign', 'false')]:
+            git('config', key, value)
+        (root / 'note.txt').write_text('base')
+        (root / '.gitignore').write_text('.osk/\n')
+        git('add', '-A')
+        git('commit', '-qm', 'base')
+        (root / 'note.txt').write_text('edited')
+        assert sync.once(root) == 'ok (로컬 커밋만 — 원격 없음)'
+        assert git('status', '--porcelain') == '' and git('rev-list', '--count', 'HEAD') == '2'
+        git('remote', 'add', 'upstream', 'https://example.invalid/not-origin.git')
+        (root / 'note.txt').write_text('again')
+        assert sync.once(root) == 'ok (로컬 커밋만 — 원격 없음)', 'a remote that is not origin counted as one'
+        git('remote', 'add', 'origin', 'git@github.com:LPAIU-CS/osk-system.git')   # the public canonical
+        (root / 'note.txt').write_text('never sent')
+        touched = []
+
+        def instrument(at, args, timeout, **kwargs):
+            if args[0] in ('fetch', 'push', 'pull', 'ls-remote'):
+                touched.append(args[0])
+            return original(at, args, timeout, **kwargs)
+
+        with patch.object(vs, '_git', instrument):
+            status = sync.once(root)
+        assert status.startswith('ok (로컬 커밋만') and '공개 정본' in status, status
+        assert touched == [], touched
+        assert git('rev-list', '--count', 'HEAD') == '4'
+    print('local-only vault: PASS (no origin, non-origin remote, public canonical origin)')
+
+
 if __name__ == '__main__':
     run()
     keep_local()
     receiving_device()
+    local_only()
