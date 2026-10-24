@@ -5,6 +5,7 @@ home (`HOME`/`USERPROFILE`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) is a temporary fo
 fake `claude`/`codex` CLIs come first on `PATH`: they log their arguments and write the
 MCP entry the real CLI would write, so no case touches the developer's configuration.
 """
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import venv
 
 ENGINE = Path(__file__).resolve().parents[1]
 
@@ -148,6 +150,32 @@ class SetupTests(unittest.TestCase):
     def check_case(self, body: str) -> None:
         result = _run(SETUP + body)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_the_launcher_runs_osk_cli_with_the_vaults_python_from_anywhere(self):
+        """`osk-cli.cmd` / `osk-cli.sh` in the vault root: the vault's `.venv` Python, the engine on
+        PYTHONPATH, the arguments as given, whatever the working directory. A stand-in `osk.cli`
+        reports what it received, so the check needs no engine dependencies in the venv."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'vault'
+            pkg = root / '_governance' / '_engine' / 'osk'
+            pkg.mkdir(parents=True)
+            (pkg / '__init__.py').write_text('', encoding='utf-8')
+            (pkg / 'cli.py').write_text(
+                'import json, os, sys\n'
+                'print(json.dumps({"exe": sys.executable, "path": os.environ.get("PYTHONPATH"), "argv": sys.argv[1:]}))\n',
+                encoding='utf-8')
+            venv.EnvBuilder(with_pip=False).create(root / '.venv')
+            name = 'osk-cli.cmd' if os.name == 'nt' else 'osk-cli.sh'
+            shutil.copy(ENGINE.parents[1] / name, root / name)
+            launcher = [str(root / name)] if os.name == 'nt' else ['sh', str(root / name)]
+            r = subprocess.run([*launcher, 'search', 'two words', '--json'], capture_output=True, text=True,
+                               encoding='utf-8', errors='replace', cwd=td, timeout=120,
+                               env={k: v for k, v in os.environ.items() if k != 'PYTHONPATH'})
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            out = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertTrue(Path(out['exe']).resolve().is_relative_to((root / '.venv').resolve()), out)
+            self.assertEqual(Path(out['path']).resolve(), (root / '_governance' / '_engine').resolve(), out)
+            self.assertEqual(out['argv'], ['search', 'two words', '--json'], out)
 
     def test_confirmed_apply_touches_only_this_vaults_entries_and_is_idempotent(self):
         self.check_case(r'''
