@@ -392,13 +392,21 @@ def _sync_checks() -> tuple[str | None, list[str], list[str]]:
 
 def _sync(manager, uninstall: bool) -> dict:
     """동기화 데몬 — 전제를 확인한 뒤 운영체제의 상시 서비스로 둔다. push 대상은 계획에 실려
-    확인 대상이 된다. `origin`이 없으면 계획의 `origin`은 None이고 데몬은 커밋만 한다."""
+    확인 대상이 된다. `origin`이 없으면 계획의 `origin`은 None이고 데몬은 커밋만 한다.
+    확인한 fetch·push 대상은 적용 때 `.osk/sync-targets.json`에 적는다(`targets`) — 데몬은 그
+    대상으로만 보내므로, origin이 바뀌면 작업 등록이 `keep`이어도 다시 확인할 변경이다."""
+    import vault_sync
+    file = core.ROOT / vault_sync.TARGETS
     if uninstall:
-        return {"task": services.plan(manager, "sync", None, True)}
+        return {"task": services.plan(manager, "sync", None, True),
+                "targets": {"file": str(file), "action": "remove" if file.is_file() else "absent"}}
     url, pushes, errors = _sync_checks()
     if errors:
         return {"origin": url, "push": pushes, "error": "; ".join(errors)}
+    approved = vault_sync.approved_targets(core.ROOT)
+    same = approved is not None and vault_sync.targets_match(approved, url, pushes)
     return {"origin": url, "push": pushes,
+            "targets": {"file": str(file), "action": "keep" if same else "record"},
             "task": services.plan(manager, "sync", services.job("sync"), False)}
 
 
@@ -483,7 +491,11 @@ def _extras_human(extras: dict) -> list[str]:
                          + ")이 모두 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 커밋해 그곳에 올린다")
         else:
             steps.append("원격이 없어 데몬은 커밋만 한다 — 이 기기 밖에는 사본이 없다. 비공개 저장소를 "
-                         "origin으로 더하면 다음 주기부터 push한다(docs/OPERATE-AGENT.md)")
+                         "origin으로 더한 뒤 `setup.py --apply --sync`를 다시 돌려 확인하면 push한다"
+                         "(docs/OPERATE-AGENT.md)")
+    if (y.get("targets") or {}).get("action") == "record":
+        steps.append("데몬은 지금 확인한 fetch·push 대상으로만 보낸다(`.osk/sync-targets.json`) — origin이나 "
+                     "push 대상을 바꾸면 `setup.py --apply --sync`를 다시 돌려 확인한다")
     if any((extras.get(k) or {}).get("task", {}).get("backend") == "systemd"
            and extras[k]["task"].get("action") in ("add", "replace") for k in ("schedule", "sync")):
         steps.append("로그아웃한 뒤에도 돌게 하려면 `loginctl enable-linger $USER`를 실행한다")
@@ -496,7 +508,8 @@ def _extras_changes(extras: dict) -> bool:
             or any((extras.get(k) or {}).get("task", {}).get("action") in CHANGES
                    for k in ("schedule", "sync"))
             or any((extras.get("schedule") or {}).get(k, {}).get("action") == "add"
-                   for k in ("command", "claude_command")))
+                   for k in ("command", "claude_command"))
+            or ((extras.get("sync") or {}).get("targets") or {}).get("action") in ("record", "remove"))
 
 
 def _extras_errors(extras: dict) -> list[str]:
@@ -741,6 +754,24 @@ def _stop_daemon() -> list[int]:
     return pids
 
 
+def _write_targets(part: dict, uninstall: bool) -> dict:
+    """데몬이 보낼 대상을 적는다 — 확인한 계획의 origin·push 대상 그대로. 해제면 지운다."""
+    import vault_sync
+    path = core.ROOT / vault_sync.TARGETS
+    step = {"step": "sync 전송 대상", "file": str(path)}
+    try:
+        if uninstall:
+            path.unlink(missing_ok=True)
+            return {**step, "ok": True, "action": "remove"}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        core.atomic_write(path, json.dumps(
+            {"origin": part["origin"], "push": part["push"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+            ensure_ascii=False, indent=1).encode("utf-8"))
+        return {**step, "ok": True, "action": "record", "origin": part["origin"], "push": part["push"]}
+    except OSError as e:
+        return {**step, "ok": False, "error": str(e)}
+
+
 def _apply_extras(p: dict, stamp: str) -> list[dict]:
     """고른 기능을 적용한다 — fork 설정, 정기 실행(명령 파일 → 작업), 동기화 데몬."""
     out, uninstall = [], p["uninstall"]
@@ -763,6 +794,8 @@ def _apply_extras(p: dict, stamp: str) -> list[dict]:
             out += written
             if not all(w["ok"] for w in written):
                 continue
+        if kind == "sync" and (part.get("targets") or {}).get("action") in ("record", "remove"):
+            out.append(_write_targets(part, uninstall))
         if part.get("task", {}).get("action") not in CHANGES:
             continue
         job = None if uninstall else (services.job(kind, command_files=[Path(f) for f in part["command_files"]],

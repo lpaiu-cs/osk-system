@@ -110,6 +110,9 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
     수 있는지(`git push --dry-run`)를 확인한다. push 대상은 계획에 실려 확인받는다. 그것이
     모두 비공개인지는 사람이 확인한다. `origin`이 없으면 push 검사 없이 등록하고 데몬은 커밋만
     한다 — 계획의 `origin`이 `null`이고, 사람이 할 일에 이 기기 밖 사본이 없다고 적는다.
+    확인한 fetch·push 대상은 적용 때 `.osk/sync-targets.json`에 적는다(`targets`) — 데몬은 그
+    대상으로만 보내므로, origin이나 push 대상을 바꾸면 작업 등록이 `keep`이어도 다시 확인할
+    변경이다.
 - **해제.** `--uninstall`만 주면 이 vault의 osk 등록을 다 걷는다 — fork 설정의 항목, 정기
   실행 작업, 동기화 데몬(Windows는 떠 있는 데몬도 멈춘다)까지다. 명령 파일은 남긴다.
   기능 플래그를 함께 주면 그 기능만, `--harness`를 주면 그 호스트의 것만 걷는다.
@@ -1193,9 +1196,12 @@ Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 
 
 git 동기화만 한다. 검색·색인 서빙은 하지 않는다 — 그것은 엔진과 MCP 서버의 일이다.
 **명시적 opt-in**이라 `SYNC_ENABLED`가 없으면 즉시 종료한다. 데몬에게 원격은 `origin`뿐이다.
-`origin`이 없으면 커밋만 하고(`ok (로컬 커밋만 — 원격 없음)`), 원격이 생기면 다음 주기부터
-push한다. 다만 `origin`이 공개 정본이면 fetch도 push도 하지 않고 커밋만 한다 — 등록 뒤에
-origin을 바꿔도 전송 경계에서 막는다(`update.is_canonical`).
+`origin`이 없으면 커밋만 한다(`ok (로컬 커밋만 — 원격 없음)`). 전송은 `setup --sync`가 확인해
+`.osk/sync-targets.json`에 적은 fetch·push 대상으로만 한다 — origin이나 push 대상(`pushurl`·
+`pushInsteadOf`를 푼 값)이 그것과 다르면 커밋만 하고 `전송 보류`를 알린다. 그래서 원격 없이
+등록한 데몬은 나중에 더한 원격으로, setup이 확인하기 전에는 보내지 않는다. 그 파일이 없는
+등록(이 판 전의 것)은 전처럼 보내고, 다음 `setup --sync`가 적는다. fetch·push 대상 어디에든
+공개 정본이 있으면 어느 경우에도 보내지 않는다(`update.is_canonical`).
 
 ```bash
 SYNC_ENABLED=1 .venv/bin/python _governance/_engine/sync_daemon.py --interval 900

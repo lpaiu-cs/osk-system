@@ -56,15 +56,21 @@ def once(root: Path = ROOT) -> str:
     """
     if not vault_sync.is_git_repo(root):
         return "git 저장소 아님"
-    url = vault_sync.origin_url(root)
+    url, pushes = vault_sync.remote_targets(root)
     if not url:
         status, _head = _apply(root)
         return "ok (로컬 커밋만 — 원격 없음)" if status == "ok" else status
-    if update.is_canonical(url):
-        # 전송 경계의 보호 — 등록 뒤에 origin이 공개 정본으로 바뀌어도 그곳과는 fetch·push하지 않는다.
+    # 전송 경계의 보호 — 등록 뒤에 origin이나 push 대상이 바뀌어도 여기서 막는다. 공개 정본은 어디에
+    # 있든 안 되고, 그 밖의 대상은 setup이 확인해 적은 것(`vault_sync.TARGETS`)과 같아야 한다.
+    if any(update.is_canonical(u) for u in [url, *pushes]):
         status, _head = _apply(root)
-        return ("ok (로컬 커밋만 — origin이 공개 정본이라 fetch·push하지 않는다)"
+        return ("전송 보류 — origin의 fetch·push 대상에 공개 정본이 있다(로컬 커밋만)"
                 if status == "ok" else status)
+    approved = vault_sync.approved_targets(root)
+    if approved is not None and not vault_sync.targets_match(approved, url, pushes):
+        status, _head = _apply(root)
+        return ("전송 보류 — origin이 setup에서 확인한 전송 대상과 다르다(로컬 커밋만; "
+                "`setup.py --apply --sync`로 다시 확인한다)" if status == "ok" else status)
     for _attempt in range(2):
         with vault_sync.fetch_snapshot(root) as (fetched, st, detail):
             # Even when offline, retain the existing local-commit behavior.
