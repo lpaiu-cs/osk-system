@@ -57,7 +57,7 @@ def is_git_repo(vault_root, timeout=10) -> bool:
 
 
 # setup이 확인한 전송 대상 — 데몬은 origin의 fetch 주소와 모든 push 대상이 이것과 같을 때만 보낸다.
-# 파일이 없으면 이 판 전의 등록이다: 전처럼 보낸다(다음 `setup --sync`가 적는다).
+# 파일이 없으면 보내지 않는다. setup이 적고, 손으로 등록한 데몬은 사람이 둔다(SETUP '동기화 데몬').
 TARGETS = os.path.join(".osk", "sync-targets.json")
 
 
@@ -74,19 +74,20 @@ def remote_targets(vault_root, timeout=10):
 
 
 def approved_targets(vault_root):
-    """setup이 적은 전송 대상(dict), 파일이 없으면 None. 깨진 파일은 '승인된 대상 없음'이다."""
+    """setup이 적은 전송 대상(dict). 없거나 깨졌으면 {} — 승인된 대상이 없다."""
     try:
         with open(os.path.join(str(vault_root), TARGETS), encoding="utf-8") as f:
             data = json.load(f)
-    except FileNotFoundError:
-        return None
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def targets_match(approved, url, pushes) -> bool:
-    return approved.get("origin") == url and sorted(approved.get("push") or []) == sorted(pushes)
+    """적힌 대상이 지금의 fetch 주소·push 대상과 같은가. 기록이 없으면(빈 dict) 원격이 없어도 다르다 —
+    '보낼 곳 없음'도 setup이 적어야 하는 결정이다."""
+    return ("origin" in approved and approved.get("origin") == url
+            and sorted(approved.get("push") or []) == sorted(pushes))
 
 
 def origin_url(vault_root, timeout=10):

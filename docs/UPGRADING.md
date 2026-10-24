@@ -27,6 +27,19 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
+## From v5.3 to v5.4
+
+- **Sync daemon users: run the setup tool for sync once after the update.**
+  v5.4 lets `setup --sync` register the daemon on a vault without a remote (it
+  then only commits), and makes the daemon transfer only to the fetch and push
+  targets that setup checked and recorded in `.osk/sync-targets.json`. A daemon
+  registered before v5.4 has no such record, so after the update it commits but
+  does not fetch or push, and logs `전송 보류` each round, until you run
+  `python _governance/_engine/scripts/setup.py --apply --sync` (two steps, as at
+  install): it checks and records the current `origin` and push targets. A
+  daemon you registered by hand needs the file itself:
+  `{"origin": "<fetch URL>", "push": ["<push URL>"]}`.
+
 ## From v5.2 to v5.3
 
 v5.3 adds recency, centrality and locality to search ranking (Bylaws §8 3, Mechanism §8 8). It

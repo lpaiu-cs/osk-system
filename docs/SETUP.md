@@ -112,7 +112,7 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
     한다 — 계획의 `origin`이 `null`이고, 사람이 할 일에 이 기기 밖 사본이 없다고 적는다.
     확인한 fetch·push 대상은 적용 때 `.osk/sync-targets.json`에 적는다(`targets`) — 데몬은 그
     대상으로만 보내므로, origin이나 push 대상을 바꾸면 작업 등록이 `keep`이어도 다시 확인할
-    변경이다.
+    변경이다. 기록에 실패하면 데몬을 등록하지 않고, 해제는 데몬을 걷은 뒤에 기록을 지운다.
 - **해제.** `--uninstall`만 주면 이 vault의 osk 등록을 다 걷는다 — fork 설정의 항목, 정기
   실행 작업, 동기화 데몬(Windows는 떠 있는 데몬도 멈춘다)까지다. 명령 파일은 남긴다.
   기능 플래그를 함께 주면 그 기능만, `--harness`를 주면 그 호스트의 것만 걷는다.
@@ -1199,8 +1199,9 @@ git 동기화만 한다. 검색·색인 서빙은 하지 않는다 — 그것은
 `origin`이 없으면 커밋만 한다(`ok (로컬 커밋만 — 원격 없음)`). 전송은 `setup --sync`가 확인해
 `.osk/sync-targets.json`에 적은 fetch·push 대상으로만 한다 — origin이나 push 대상(`pushurl`·
 `pushInsteadOf`를 푼 값)이 그것과 다르면 커밋만 하고 `전송 보류`를 알린다. 그래서 원격 없이
-등록한 데몬은 나중에 더한 원격으로, setup이 확인하기 전에는 보내지 않는다. 그 파일이 없는
-등록(이 판 전의 것)은 전처럼 보내고, 다음 `setup --sync`가 적는다. fetch·push 대상 어디에든
+등록한 데몬은 나중에 더한 원격으로, setup이 확인하기 전에는 보내지 않는다. 그 파일이 없어도
+보내지 않는다 — v5.4 전에 등록한 데몬과 손으로 등록한 데몬은 `setup --sync`를 한 번 돌려 적거나,
+`{"origin": "<fetch 주소>", "push": ["<push 대상>"]}`를 직접 둔다. fetch·push 대상 어디에든
 공개 정본이 있으면 어느 경우에도 보내지 않는다(`update.is_canonical`).
 
 ```bash

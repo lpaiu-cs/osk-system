@@ -553,6 +553,11 @@ git('remote', 'set-url', 'origin', str(bare))
 rep, _ = S.run(sync=True)
 assert not rep['ok'] and 'push' in rep['errors'][0], rep      # the remote is not there yet
 subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True, capture_output=True)
+# The recorded targets are the precondition of the registration: if they cannot be written, no daemon.
+S.run(apply=True, sync=True)
+with mock.patch.object(S, '_write_targets', return_value={'step': 'sync 전송 대상', 'ok': False, 'error': 'disk'}):
+    rep, code = S.run(apply=True, sync=True)
+assert code == 1 and f'osk-sync-{services.tag()}' not in Fake.rows, rep
 rep, code = S.run(apply=True, sync=True)
 assert code == 2 and rep['sync']['task']['action'] == 'add' and rep['sync']['origin'] == str(bare), rep
 assert any('비공개' in s for s in rep['human']), rep['human']
@@ -567,7 +572,7 @@ subprocess.run(['git', 'init', '-q', '--bare', str(other)], check=True, capture_
 git('remote', 'set-url', 'origin', str(other))
 rep, code = S.run(apply=True, sync=True)
 assert code == 2 and rep['sync']['task']['action'] == 'keep' and rep['sync']['targets']['action'] == 'record', rep['sync']
-assert any('sync-targets' in s for s in rep['human']), rep['human']
+assert any('sync-targets' in s for s in rep['human']) and any('비공개' in s for s in rep['human']), rep['human']
 rep, code = S.run(apply=True, sync=True)
 assert code == 0 and json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(other), rep
 # Uninstalling one feature leaves the hosts and the other features.

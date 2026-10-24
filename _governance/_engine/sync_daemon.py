@@ -66,11 +66,10 @@ def once(root: Path = ROOT) -> str:
         status, _head = _apply(root)
         return ("전송 보류 — origin의 fetch·push 대상에 공개 정본이 있다(로컬 커밋만)"
                 if status == "ok" else status)
-    approved = vault_sync.approved_targets(root)
-    if approved is not None and not vault_sync.targets_match(approved, url, pushes):
+    if not vault_sync.targets_match(vault_sync.approved_targets(root), url, pushes):
         status, _head = _apply(root)
-        return ("전송 보류 — origin이 setup에서 확인한 전송 대상과 다르다(로컬 커밋만; "
-                "`setup.py --apply --sync`로 다시 확인한다)" if status == "ok" else status)
+        return ("전송 보류 — setup이 확인해 적은 전송 대상(.osk/sync-targets.json)이 없거나 지금의 origin과 "
+                "다르다(로컬 커밋만; `setup.py --apply --sync`로 확인한다)" if status == "ok" else status)
     for _attempt in range(2):
         with vault_sync.fetch_snapshot(root) as (fetched, st, detail):
             # Even when offline, retain the existing local-commit behavior.

@@ -403,8 +403,7 @@ def _sync(manager, uninstall: bool) -> dict:
     url, pushes, errors = _sync_checks()
     if errors:
         return {"origin": url, "push": pushes, "error": "; ".join(errors)}
-    approved = vault_sync.approved_targets(core.ROOT)
-    same = approved is not None and vault_sync.targets_match(approved, url, pushes)
+    same = vault_sync.targets_match(vault_sync.approved_targets(core.ROOT), url, pushes)
     return {"origin": url, "push": pushes,
             "targets": {"file": str(file), "action": "keep" if same else "record"},
             "task": services.plan(manager, "sync", services.job("sync"), False)}
@@ -485,15 +484,17 @@ def _extras_human(extras: dict) -> list[str]:
             [str(_python()), str(services.script("growth")), "--command-file", s["command_file"],
              "--limit", "1"]) + "`")
     y = extras.get("sync") or {}
-    if y.get("task", {}).get("action") in ("add", "replace"):
+    recording = (y.get("targets") or {}).get("action") == "record"
+    if y.get("task", {}).get("action") in ("add", "replace") or recording:
         if y.get("origin"):
             steps.append("origin의 push 대상(" + ", ".join(y.get("push") or [y["origin"]])
-                         + ")이 모두 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 커밋해 그곳에 올린다")
+                         + ")이 모두 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 커밋해 그곳에 올린다. "
+                         "주소만으로는 공개 여부를 알 수 없다: 저장소 설정에서 본다")
         else:
             steps.append("원격이 없어 데몬은 커밋만 한다 — 이 기기 밖에는 사본이 없다. 비공개 저장소를 "
                          "origin으로 더한 뒤 `setup.py --apply --sync`를 다시 돌려 확인하면 push한다"
                          "(docs/OPERATE-AGENT.md)")
-    if (y.get("targets") or {}).get("action") == "record":
+    if recording:
         steps.append("데몬은 지금 확인한 fetch·push 대상으로만 보낸다(`.osk/sync-targets.json`) — origin이나 "
                      "push 대상을 바꾸면 `setup.py --apply --sync`를 다시 돌려 확인한다")
     if any((extras.get(k) or {}).get("task", {}).get("backend") == "systemd"
@@ -794,9 +795,15 @@ def _apply_extras(p: dict, stamp: str) -> list[dict]:
             out += written
             if not all(w["ok"] for w in written):
                 continue
-        if kind == "sync" and (part.get("targets") or {}).get("action") in ("record", "remove"):
-            out.append(_write_targets(part, uninstall))
+        targets = (part.get("targets") or {}).get("action") if kind == "sync" else None
+        if targets == "record":
+            written = _write_targets(part, False)
+            out.append(written)
+            if not written["ok"]:
+                continue            # 기록이 등록의 전제다 — 적지 못했으면 데몬을 두지 않는다
         if part.get("task", {}).get("action") not in CHANGES:
+            if targets == "remove":
+                out.append(_write_targets(part, True))      # 걷을 작업은 없고 기록만 남았다
             continue
         job = None if uninstall else (services.job(kind, command_files=[Path(f) for f in part["command_files"]],
                                                    at=part["at"]) if kind == "growth" else services.job(kind))
@@ -807,6 +814,8 @@ def _apply_extras(p: dict, stamp: str) -> list[dict]:
         except (OSError, ValueError, subprocess.SubprocessError, update.UpdateError) as e:
             result = {"step": f"{kind} ({manager.name})", "ok": False, "error": f"{type(e).__name__}: {e}"}
         out.append(result)
+        if targets == "remove" and result.get("ok"):
+            out.append(_write_targets(part, True))          # 데몬을 걷은 뒤에야 기록을 지운다
     return out
 
 

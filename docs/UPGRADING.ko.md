@@ -20,6 +20,15 @@
   기기의 `.osk/` 파일을 다시 실을 수 있다. 데몬을 켜기 전에 `git pull`로 무시 규칙
   (`.osk/.gitignore`)부터 받거나, 엔진부터 올린다.
 
+## v5.3에서 v5.4로
+
+- **동기화 데몬을 쓰면 갱신 뒤 setup을 한 번 더 돈다.** v5.4는 원격 없는 vault에도 `setup --sync`로
+  데몬을 등록하고(커밋만 한다), 데몬이 setup이 확인해 `.osk/sync-targets.json`에 적은 fetch·push
+  대상으로만 보내게 한다. v5.4 전에 등록한 데몬은 그 기록이 없어, 갱신 뒤에는 커밋만 하고 fetch·push를
+  하지 않으며 주기마다 `전송 보류`를 남긴다. `python _governance/_engine/scripts/setup.py --apply --sync`를
+  설치 때처럼 두 번 돌리면 지금의 `origin`과 push 대상을 확인해 적는다. 손으로 등록한 데몬은 그 파일을
+  직접 둔다: `{"origin": "<fetch 주소>", "push": ["<push 대상>"]}`.
+
 ## v5.2에서 v5.3으로
 
 v5.3은 검색 순위에 최신성·중심성·locality를 넣는다(시행령 §8 3항, Mechanism §8 8항). 또 운영에서 드러난
