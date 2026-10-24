@@ -3,30 +3,66 @@
 The user asked you to install osk-system on this device. Follow the steps in
 order. Where a step says to ask, ask and wait; do not guess the user's answer.
 
-- Speak to the user in the user's language.
+- Speak to the user in the user's language, in plain words. The user may not
+  be a developer: say what each step does for them, and do not pass osk's own
+  words (scope, binding, cluster, hub, protected region) to the user without
+  their everyday meaning. The [glossary](OPERATE-AGENT.md#glossary) has them.
 - Never push the vault to the public repository.
 - Do not edit harness configuration by hand. `setup.py` does it, backs up each
   file first, and touches only this vault's osk entries.
 - `setup.py --apply` stops once with `"approval_required": true` and exit code 2.
   Explain the plan and wait for the user's explicit yes before you run the same
   command again. Never re-run it on your own.
+- Everything after the install — updates, connection checks, optional features,
+  a backup remote, removal — is in [OPERATE-AGENT](OPERATE-AGENT.md).
 
 ## 1. Check what the device has
 
 - Python 3.11 or newer: `python3 --version`, or `py -3.11 --version` on Windows.
-- Git, with `user.name` and `user.email` set.
+- Git, with `user.name` and `user.email` set (`git config --global --get user.name`).
 - At least one host: Claude Code, Codex, Kiro or Antigravity. Kiro and Antigravity have
   no subscription fork, so `--fork` and `--schedule` are for Claude Code and Codex only.
 
-If something is missing, tell the user what to install and stop.
+If Python or Git is missing, offer to install it, and install it only after the
+user says yes:
+
+| Missing | Windows | macOS | Debian or Ubuntu |
+|---|---|---|---|
+| Python | `winget install --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements` | `brew install python@3.12`; without Homebrew, the user runs the installer from python.org | Debian 12, Ubuntu 24.04 or newer: `sudo apt install python3 python3-venv`. Ubuntu 22.04, whose `python3` is 3.10: `sudo add-apt-repository ppa:deadsnakes/ppa`, then `sudo apt install python3.12 python3.12-venv` |
+| Git | `winget install --id Git.Git --accept-source-agreements --accept-package-agreements` | `xcode-select --install`, or `brew install git` | `sudo apt install git` |
+
+A shell that was open before the install does not see the new program. Use the
+interpreter you installed in every command below (`py -3.12` on Windows,
+`python3.12` from Homebrew or the PPA), or open a new shell.
+
+If the Git identity is missing, ask the user for the name and e-mail that will
+sign their vault's commits, and say what that means: the e-mail becomes part of
+every commit, and `--global` makes this the identity of every Git repository on
+this device, which is the normal setup for a user who has none yet. A GitHub
+user who would rather not show their address can give the noreply address from
+GitHub's e-mail settings. A user who wants the identity for osk only gets it
+with `--local` instead, run inside the vault after step 3 and inside each folder
+of step 9.
+
+```bash
+git config --global user.name "<name>"
+git config --global user.email "<email>"
+```
+
+A host is not something to install: the user is already talking to you in one.
 
 ## 2. Ask the user
 
-- **Where** to create the vault, for example `~/osk-vault`. The folder must not
-  exist yet.
+- **Where** to create the vault. Suggest a short path without spaces or shell
+  special characters (quotes, `& % ! $ ( ) ; ,`): `C:/osk/vault` on Windows,
+  `~/osk-vault` elsewhere. On Windows the home folder often carries a user name
+  with a space, and hook commands are plain command lines; Antigravity on
+  Windows cannot run a quoted path at all. The folder must not exist yet.
 - **Which private Git repository** will hold it. It should be empty and private,
   because the vault stores conversation records and personal notes. The user may
-  have none yet; the vault then stays local.
+  have none yet; the vault then stays local. Say in plain words what that means:
+  there is no copy anywhere else, so the user backs the folder up themselves
+  until a remote is added ([how](OPERATE-AGENT.md#add-a-private-remote-later)).
 - **Which optional features** to turn on. Each is off unless the user says yes,
   and each becomes one flag of `setup.py` in steps 4 and 6:
   - Background fork reviews (`--fork`): every ninth answer, the host reviews the
@@ -153,16 +189,51 @@ vault, when each hook last ran on this device, and whether the agent called
 has not run yet needs a new session (Claude Code), trust (Codex), a trusted
 workspace folder and a new chat (Kiro) or a new conversation (Antigravity).
 
-## Optional features later
+## 9. Help with the first session
 
-The user can turn a feature on later with the same two steps, for example
-`setup.py --apply --sync`. The hosts that are already connected come out as
-`keep`.
+osk keys memory by the folder the host is opened in: a Git repository's folder
+name becomes the session key, and the first write from that key binds it to a
+scope, one project's or topic's memory. The binding is permanent. So the first
+session should not run in a catch-all folder such as the home folder or
+`Documents`: folders outside Git share memory by name, and that binding would
+collect everything the user ever does.
 
-## Removing
+Ask what the user will use osk for first.
 
-`python _governance/_engine/scripts/setup.py --uninstall --apply`, confirmed the
-same way, removes only this vault's osk entries and keeps backups. That includes
-the fork settings, the daily task and the sync daemon. It does not delete the
-vault. To remove one feature only, add its flag, for example
-`--uninstall --sync --apply`.
+- A developer opens the host in a project repository, as usual.
+- A user without project repositories gets one folder per topic. Create it
+  with the user, with a first commit so that the folder has a Git identity of
+  its own and no other folder of the same name shares its memory:
+
+  macOS/Linux:
+
+  ```bash
+  mkdir -p ~/work/<topic>
+  cd ~/work/<topic>
+  git init -b main
+  git commit --allow-empty -m "Start <topic>"
+  ```
+
+  Windows (PowerShell; it has no `&&`, so one command per line):
+
+  ```powershell
+  mkdir C:/work/<topic>
+  cd C:/work/<topic>
+  git init -b main
+  git commit --allow-empty -m "Start <topic>"
+  ```
+
+  Check that each command succeeded before the next; `git log` must show the
+  one commit.
+
+Then ask the user to open a new session of the host inside that folder and to
+tell the agent there what the topic is. That agent creates the scope by writing
+its hub node; the first write is refused once (`아직 없는 군집이라 … 새 군집을
+만든다`) and succeeds when the same request is sent again within an hour.
+[Getting started, step 5](GETTING-STARTED.md#step-5-your-first-session) walks
+through it.
+
+## Later
+
+When the user asks to update, check, fix, change or remove osk-system, read
+[OPERATE-AGENT](OPERATE-AGENT.md).

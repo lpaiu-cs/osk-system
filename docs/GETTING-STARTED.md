@@ -940,7 +940,9 @@ and the MCP `overview` ask the canonical repository for its release tags
 Claude Code and Codex show a warning such as
 `osk-system 새 릴리스 v5.4.0 (이 vault는 v5.3.0) — …` once a day per device,
 ending with the link to that release's notes. Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
-steps below with you: it shows the changeset and waits for your approval. The
+steps below with you: it shows the changeset and waits for your approval.
+[OPERATE-AGENT](OPERATE-AGENT.md) is the agent's own guide for this, and for
+checks, features and removal. The
 check runs in the background, so the notice appears from the session after the
 check. To check right now, run `osk.update --check`, which only asks for the
 tags. To turn the checks off, add `"update_check": false` to `.osk/config.json`.
@@ -1082,6 +1084,8 @@ About the `엔진 파일에 로컬 수정이 있다` error ("engine files have l
   - [Daily Scope → Domain review](SETUP.md#scope에서-domain으로-정기-재검토)
   - [Sync daemon](SETUP.md#동기화-데몬)
   - [Releases and updates](SETUP.md#정본-릴리스와-갱신)
+- [OPERATE-AGENT.md](OPERATE-AGENT.md) is what your agent reads when you ask it
+  to update, check, change or remove osk-system.
 - [response-growth.md](response-growth.md) explains how fork reviews work, with
   cache measurements and limits.
 - [space-layout-migration.md](space-layout-migration.md) covers vaults with

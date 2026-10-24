@@ -172,6 +172,13 @@ The agent asks where to create the vault and which optional features you want,
 clones the newest release and runs the [setup tool](docs/SETUP.md#설치-도구-setup).
 The setup tool shows you its plan and applies it only after you confirm.
 
+**Operate it with your agent, too.** Updates, connection checks, optional
+features and removal go the same way; say what you want:
+
+```text
+Read https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/OPERATE-AGENT.md and check osk-system on this device.
+```
+
 **New to osk-system?** Follow the [Getting started](docs/GETTING-STARTED.md)
 tutorial. It goes from an empty folder to your agent's first saved memory, on
 macOS, Linux and Windows, with a check after every step.
