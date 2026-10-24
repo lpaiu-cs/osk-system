@@ -58,6 +58,10 @@ below from the vault root. There are two command shapes:
   .venv\Scripts\python.exe -m osk.cli …
   ```
 
+The vault root also has a launcher that does the second shape for you:
+`./osk-cli.sh <command>` on macOS and Linux, `.\osk-cli.cmd <command>` on
+Windows; `update` goes through it too (`./osk-cli.sh update --apply`).
+
 There is no `osk` command. On Windows, `osk` opens the On-Screen Keyboard. The
 session-start text and the new-release notice already carry a one-line form of
 these commands with the vault's paths filled in; that line works as it is.
