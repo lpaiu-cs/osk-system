@@ -44,6 +44,11 @@ also fixes conversation review where the live instance showed it falling short.
     batch stops retrying and listing it, and its unreviewed native turns move from the review queue
     to `source_lost.refs`. The clock starts when the daily batch first sees the cursor after the
     update. If the transcript comes back, the cursor reopens.
+- v5.3.2 fixes the scheduled growth run's Claude worker fallback (#257), with nothing to migrate either.
+  - Inside the Store package of Claude Desktop, setup wrote the Claude command's CLI as
+    `%APPDATA%/Claude/claude-code`. The scheduled run cannot see that folder, so on days Codex was
+    spent the Claude worker never ran.
+  - Such a pin now follows the one Claude-Data install. The command file needs no edit.
 
 - **Search ranking changes (#170).** Relevance (character-bigram BM25) is multiplied by
   `1 + recency + centrality + locality`.
