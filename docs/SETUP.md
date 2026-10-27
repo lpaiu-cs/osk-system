@@ -1196,6 +1196,12 @@ Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 
 ## 동기화 데몬
 
 git 동기화만 한다. 검색·색인 서빙은 하지 않는다 — 그것은 엔진과 MCP 서버의 일이다.
+**결과는 기기에 남는다.** 데몬은 주기마다 결과를 기기 로컬 `osk-sync-status.json`(git 디렉터리 안,
+`core.local_lock_path`)에 적는다. 세션 시작 훅과 `doctor`가 그것을 읽어 전송 보류는 곧바로, 그 밖의
+실패는 하루 넘게 이어졌을 때, 하루 넘게 갱신되지 않은 기록은 돌지 않는 데몬으로 알린다
+(`sync_daemon.trouble`). 동기화를 해제하면 기록도 지운다. 로그에만 남기면 사용자는 백업이 멈춘
+줄 모른다.
+
 **명시적 opt-in**이라 `SYNC_ENABLED`가 없으면 즉시 종료한다. 데몬에게 원격은 `origin`뿐이다.
 `origin`이 없으면 커밋만 한다(`ok (로컬 커밋만 — 원격 없음)`). 전송은 `setup --sync`가 확인해
 `.osk/sync-targets.json`에 적은 fetch·push 대상으로만 한다 — origin이나 push 대상(`pushurl`·

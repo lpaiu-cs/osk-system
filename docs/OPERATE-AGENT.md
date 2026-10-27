@@ -75,9 +75,14 @@ reinstall the requirements if `requirements.txt` changed.
 1. **Check.** `osk.update` without flags prints `version`, the newest release,
    and `current`. If they are equal, say so and stop.
 2. **Read the release notes** at
-   `https://github.com/lpaiu-cs/osk-system/releases/tag/<version>`. A new
-   major version (the first number changes) means reading
-   [UPGRADING](UPGRADING.md) first and telling the user what changes for them.
+   `https://github.com/lpaiu-cs/osk-system/releases/tag/<version>`, and the
+   section for that version in that release's own upgrade notes,
+   `https://github.com/lpaiu-cs/osk-system/blob/<version>/docs/UPGRADING.md`.
+   This vault's [UPGRADING](UPGRADING.md) is still the old version's until step
+   5 applies the update, so it has no section for the version you are going to.
+   Read it every time, not only for a new major version: a minor version can
+   ask for a step after the update too. Tell the user what changes for them,
+   and do that step after step 6.
 3. **Back up.** With a remote, commit and push, or let the sync daemon do it.
    Without one, say that there is no copy elsewhere and offer to copy the vault
    folder first.
@@ -140,6 +145,7 @@ what does not, and the `→` fix line of each failing or warning item.
 | A hook is registered but never ran | The host loads hooks at startup. Claude Code: open a new session. Codex: trust the three osk hooks with `/hooks`. Kiro: trust the workspace folder and open a new chat. Antigravity: open a new conversation. |
 | No osk text at session start | Same as above. Registering the MCP server alone does not install the hooks; `setup.py --apply` registers both. |
 | Fork items warn with a reason after `foreground —` | Background reviews fall back to in-session reviews at turns 9 and 15, which is normal without a fork setup. The reasons and fixes are in [Troubleshooting](GETTING-STARTED.md#troubleshooting). |
+| `동기화 데몬` warns, or a session starts with `[osk 동기화 멈춤 — …]` | The sync daemon has stopped sending this vault anywhere. `전송 보류`: run `setup.py --apply --sync` (two steps); it checks and records the current origin and push targets, and the daemon sends again on its next round. `데몬이 … 뒤로 돌지 않았다`: start the daemon's registration again (Update, step 5). Any other result that lasted a day: show it to the user; a pull conflict needs a person. |
 | `capture_blocked` in `osk.cli status` | Tracking this conversation's turns is stuck; nothing is lost and reviews still happen at turns 9 and 15. Show the error to the user. |
 
 When the user asks whether the vault itself is sound, `osk.cli validate` checks
@@ -158,6 +164,7 @@ people ask about most:
 | `[osk 검토 경고 — …]` | Background reviews are not set up, so the conversation is reviewed inside the session at the 9th and 15th message. Normal. |
 | `[osk 케이던스 — user 턴 N]` | A review is due now; the agent does it, the user does nothing. |
 | `[osk 새 릴리스 — …]` | A newer version exists. Nothing changes until the user asks for the update. |
+| `[osk 동기화 멈춤 — …]` | Backups have stopped leaving this device, for the reason given. Ask whether to fix it now ([Check the connection](#check-the-connection-osk-점검해-줘-is-osk-working)). |
 | Anything with `진단` or `diagnostic` | A hook step failed. The work continues and nothing was marked done; run `doctor`. |
 | `에 결속돼 있다` (in a refusal) | This folder's memory belongs to another project; the note goes there, or into `00_Domain/` if it is useful beyond one project. |
 | `아직 없는 군집이라 …` (in a refusal) | Creating a new top-level group needs one confirmation; sending the same request again within an hour creates it. |

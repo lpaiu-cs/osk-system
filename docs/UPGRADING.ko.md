@@ -27,7 +27,8 @@
   대상으로만 보내게 한다. v5.4 전에 등록한 데몬은 그 기록이 없어, 갱신 뒤에는 커밋만 하고 fetch·push를
   하지 않으며 주기마다 `전송 보류`를 남긴다. `python _governance/_engine/scripts/setup.py --apply --sync`를
   설치 때처럼 두 번 돌리면 지금의 `origin`과 push 대상을 확인해 적는다. 손으로 등록한 데몬은 그 파일을
-  직접 둔다: `{"origin": "<fetch 주소>", "push": ["<push 대상>"]}`.
+  직접 둔다: `{"origin": "<fetch 주소>", "push": ["<push 대상>"]}`. 그때까지 세션을 시작할 때마다 화면에
+  `osk-system 동기화가 멈췄다 — 전송 보류 …`가 뜨고, `doctor`가 `동기화 데몬`을 경고한다.
 
 ## v5.2에서 v5.3으로
 
