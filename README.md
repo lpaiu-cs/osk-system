@@ -172,6 +172,13 @@ The agent asks where to create the vault and which optional features you want,
 clones the newest release and runs the [setup tool](docs/SETUP.md#설치-도구-setup).
 The setup tool shows you its plan and applies it only after you confirm.
 
+**Operate it with your agent, too.** Updates, connection checks, optional
+features and removal go the same way; say what you want:
+
+```text
+Read https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/OPERATE-AGENT.md and check osk-system on this device.
+```
+
 **New to osk-system?** Follow the [Getting started](docs/GETTING-STARTED.md)
 tutorial. It goes from an empty folder to your agent's first saved memory, on
 macOS, Linux and Windows, with a check after every step.
@@ -184,7 +191,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v5.3.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.3.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -362,6 +369,7 @@ runs the scheduled growth run in daily batches sized each week ([plan](docs/v5.2
 [v5.3.0](docs/v5.3-milestones.md) ranks search by recency, centrality and locality as well as
 relevance. It also fixes conversation review where the live instance showed it falling short.
 v5.3.1 fixes the capture defects and the copy-test gap found while testing the v5.3.0 release.
+v5.3.2 fixes the scheduled growth run's Claude worker fallback, which never ran.
 [v5.4.0](docs/v5.4-milestones.md) closes the designs deferred from v5.1 and how rewound
 Claude turns are tracked. It also takes the reuse and meaning-quality evaluations, which need
 a longer operating window. [v6.0.0](docs/v6.0-milestones.md) extends the memory model on that base.

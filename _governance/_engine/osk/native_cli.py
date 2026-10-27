@@ -144,14 +144,22 @@ def _claude_desktop(base: Path) -> bool:
 def _moved(base: Path) -> Path:
     """The same installation after Desktop moved it. App 3.16 moved a store install's data from
     `Packages/Claude_<package>/LocalCache/Roaming/Claude` to `%LOCALAPPDATA%/Claude-Data/claude_<package>`
-    and left the old folder empty, so a pin into it follows that package's new folder (10-21)."""
+    and left the old folder empty, so a pin into it follows that package's new folder (10-21).
+    A pin written inside the package saw that folder as `%APPDATA%/Claude`, which does not exist
+    outside it (the scheduled task): it names no package, so it follows the one Claude-Data install
+    when there is exactly one (#257)."""
     package = next((p.name for p in base.parents if p.parent.name.lower() == 'packages'
                     and p.name.lower().startswith('claude_')), None)
     local = os.environ.get('LOCALAPPDATA')
-    if base.is_dir() or not package or not local:
-        return base  # ponytail: only the store install's move is known; follow others once one is seen.
-    moved = Path(local) / 'Claude-Data' / package.lower() / 'claude-code'
-    return moved if moved.is_dir() else base
+    if base.is_dir() or not local:
+        return base
+    if package:
+        moved = Path(local) / 'Claude-Data' / package.lower() / 'claude-code'
+        return moved if moved.is_dir() else base
+    if base.parent.parent.name.lower() == 'roaming':
+        found = [p for p in (Path(local) / 'Claude-Data').glob('claude_*/claude-code') if p.is_dir()]
+        return found[0] if len(found) == 1 else base
+    return base  # ponytail: only these two moves are known; follow others once one is seen.
 
 
 def resolve(executable: str, *, version: str | None = None, env=None) -> str:

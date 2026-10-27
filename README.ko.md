@@ -153,6 +153,13 @@ https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/INSTALL-AGENT.md
 [설치 도구](docs/SETUP.md#설치-도구-setup)를 돌린다. 설치 도구는 계획을 보여 주고,
 확인을 받아야 적용한다.
 
+**운용도 에이전트에게 맡긴다.** 갱신·연결 점검·선택 기능·제거도 같은 방식이다. 원하는
+일을 적는다:
+
+```text
+https://raw.githubusercontent.com/lpaiu-cs/osk-system/main/docs/OPERATE-AGENT.md 를 읽고 이 기기의 osk-system을 점검해 줘.
+```
+
 **처음이라면** [시작 안내서](docs/GETTING-STARTED.ko.md)를 따라간다. 빈 폴더에서
 에이전트의 첫 기억까지, macOS·Linux·Windows 명령과 단계별 확인 방법을 함께 담았다.
 
@@ -163,7 +170,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 시작한다(새 태그는 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다):
 
 ```bash
-git clone --branch v5.3.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.3.2 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -311,7 +318,8 @@ v5.1.0은 소속 scope가 없는 대화를 추적하고 그 검토가 소속을 
 루트 `_cited/` 한 자리에 두고, scope를 프로젝트에 결속하며, 정기 성장 실행을 주마다 크기를 정하는
 하루 묶음으로 돌린다([계획](docs/v5.2-milestones.md)). [v5.3.0](docs/v5.3-milestones.md)은 검색 순위에
 관련성과 함께 최신성·중심성·locality를 쓰고, 운영 인스턴스에서 모자람이 드러난 대화 검토를 고친다.
-v5.3.1은 v5.3.0 출시의 사본 시험에서 찾은 포착 결함과 시험 절차의 공백을 고친다.
+v5.3.1은 v5.3.0 출시의 사본 시험에서 찾은 포착 결함과 시험 절차의 공백을 고친다. v5.3.2는 정기 성장
+실행의 Claude 워커 대체가 돌지 못하던 것을 고친다.
 [v5.4.0](docs/v5.4-milestones.md)은 v5.1에서 미룬 설계와 Claude 되감기의 추적을 닫고, 더 긴 운영
 기간이 필요한 재사용·의미 품질 평가를 맡는다(견고함). [v6.0.0](docs/v6.0-milestones.md)은 기억 모델을
 넓힌다(확장).
