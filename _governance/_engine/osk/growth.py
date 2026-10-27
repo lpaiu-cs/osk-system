@@ -418,7 +418,8 @@ def _job_place(job: dict) -> tuple:
 
 def _stalled(rows: list[dict], now: datetime | None = None) -> set:
     """지난 7일 동안 진척 없이 두 번 이상 끝난 작업의 자리(`_job_place`) — 진척하면 다시 센다. 자리는
-    그 실행의 계획에 실린 작업에서 읽는다(#259)."""
+    그 실행의 계획에 실린 작업에서 읽는다(#259). 대기(한도 거절·잠금)와 실패한 실행(`run_failed`)은
+    작업자가 검토하지 못한 것이라 진척 없음으로 세지 않는다."""
     since = (now or datetime.now(timezone.utc)) - timedelta(days=STALLED_DAYS)
     plans = {r.get("rid"): r for r in rows if r.get("kind") == "plan"}
     misses = Counter()
@@ -434,7 +435,8 @@ def _stalled(rows: list[dict], now: datetime | None = None) -> set:
                 if isinstance(j, dict) and "key" in j}
         for key in r["progress"].get("made", []):
             misses.pop(_job_place(jobs.get(key) or {"key": key}), None)
-        misses.update(_job_place(jobs.get(key) or {"key": key}) for key in r["progress"].get("none", []))
+        if r.get("state") not in WAITS and not run_failed(r):
+            misses.update(_job_place(jobs.get(key) or {"key": key}) for key in r["progress"].get("none", []))
     return {place for place, n in misses.items() if n >= STALLED_PICKS}
 
 

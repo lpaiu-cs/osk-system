@@ -1748,20 +1748,26 @@ class GrowthTests(unittest.TestCase):
             from datetime import datetime, timedelta, timezone
             now = datetime.now(timezone.utc)
             rows = []
-            def run(days, job, made=False):
+            def run(days, job, made=False, **run_fields):
                 queue = 'organization_jobs' if job['key'].startswith('org') else 'recheck_jobs'
                 plan = {'kind':'plan','rid':'p%d' % len(rows),queue:[job]}
-                rows.extend([plan, {'kind':'run','manifest':plan['rid'],
+                rows.extend([plan, {'kind':'run','manifest':plan['rid'],'state':'incomplete','returncode':0,
                                     'at':(now - timedelta(days=days)).isoformat(timespec='seconds'),
-                                    'progress':{'made':[job['key']] if made else [],'none':[] if made else [job['key']]}}])
+                                    'progress':{'made':[job['key']] if made else [],'none':[] if made else [job['key']]},
+                                    **run_fields}])
             a, b = {'key':'org-a','snapshot':'s1'}, {'key':'org-b','snapshot':'t1'}
             rc1 = {'key':'rc-1','node_state':'n1','target_state':'t1'}
             run(9, a); run(8, a)                                  # last week: not counted
             run(3, a); run(2, a)                                  # twice this week
             run(3, b); run(2, b, made=True); run(1, b)            # progress resets the count
             run(1, rc1); run(0, rc1)
+            # The worker never reviewed these: refused by its limit, or the run failed (review of #268).
+            c, d = {'key':'org-c'}, {'key':'org-d'}
+            run(1, c, state='limited', returncode=1); run(0, c, state='limited', returncode=1)
+            run(1, d, returncode=1); run(0, d, final_reviews={'state':'rejected','errors':['bad packet']})
             stalled = growth._stalled(rows)
             assert stalled == {('org-a',None,None), ('rc-1','n1','t1')}, stalled
+            assert growth._skip_stalled([c, d], stalled, 2, {}) == [c, d]
             planned = {}
             # A stalled first candidate gives way to the next one (review of #268).
             assert growth._skip_stalled([a, b], stalled, 1, planned) == [b], planned
