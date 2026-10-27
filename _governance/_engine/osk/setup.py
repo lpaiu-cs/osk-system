@@ -395,11 +395,13 @@ def _sync(manager, uninstall: bool) -> dict:
     확인 대상이 된다. `origin`이 없으면 계획의 `origin`은 None이고 데몬은 커밋만 한다.
     확인한 fetch·push 대상은 적용 때 `.osk/sync-targets.json`에 적는다(`targets`) — 데몬은 그
     대상으로만 보내므로, origin이 바뀌면 작업 등록이 `keep`이어도 다시 확인할 변경이다."""
-    import vault_sync
+    import sync_daemon, vault_sync
     file = core.ROOT / vault_sync.TARGETS
     if uninstall:
+        # 데몬의 마지막 결과 기록도 걷는다 — 남으면 세션 시작이 "돌지 않는 데몬"을 알린다.
+        leftover = file.is_file() or sync_daemon.last() is not None
         return {"task": services.plan(manager, "sync", None, True),
-                "targets": {"file": str(file), "action": "remove" if file.is_file() else "absent"}}
+                "targets": {"file": str(file), "action": "remove" if leftover else "absent"}}
     url, pushes, errors = _sync_checks()
     if errors:
         return {"origin": url, "push": pushes, "error": "; ".join(errors)}
@@ -757,12 +759,13 @@ def _stop_daemon() -> list[int]:
 
 def _write_targets(part: dict, uninstall: bool) -> dict:
     """데몬이 보낼 대상을 적는다 — 확인한 계획의 origin·push 대상 그대로. 해제면 지운다."""
-    import vault_sync
+    import sync_daemon, vault_sync
     path = core.ROOT / vault_sync.TARGETS
     step = {"step": "sync 전송 대상", "file": str(path)}
     try:
         if uninstall:
             path.unlink(missing_ok=True)
+            sync_daemon._lock_path(core.ROOT, sync_daemon.STATUS).unlink(missing_ok=True)
             return {**step, "ok": True, "action": "remove"}
         path.parent.mkdir(parents=True, exist_ok=True)
         core.atomic_write(path, json.dumps(

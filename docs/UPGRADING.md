@@ -38,7 +38,9 @@ device.
   `python _governance/_engine/scripts/setup.py --apply --sync` (two steps, as at
   install): it checks and records the current `origin` and push targets. A
   daemon you registered by hand needs the file itself:
-  `{"origin": "<fetch URL>", "push": ["<push URL>"]}`.
+  `{"origin": "<fetch URL>", "push": ["<push URL>"]}`. Until then, every session
+  start says so on your screen (`osk-system 동기화가 멈췄다 — 전송 보류 …`) and
+  `doctor` warns about `동기화 데몬`.
 
 ## From v5.2 to v5.3
 

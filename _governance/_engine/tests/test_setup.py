@@ -604,11 +604,15 @@ assert any('sync-targets' in s for s in rep['human']) and any('비공개' in s f
 rep, code = S.run(apply=True, sync=True)
 assert code == 0 and json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(other), rep
 # Uninstalling one feature leaves the hosts and the other features.
+import sync_daemon
+status = core.local_lock_path(sync_daemon.STATUS)
+status.write_text(json.dumps({'at': time.time(), 'status': 'ok', 'since': None}), encoding='utf-8')
 rep, code = S.run(apply=True, uninstall=True, sync=True)
 assert code == 2 and rep['hosts'] == [] and 'fork' not in rep and rep['sync']['task']['action'] == 'remove', rep
 rep, code = S.run(apply=True, uninstall=True, sync=True)
 assert code == 0 and f'osk-sync-{services.tag()}' not in Fake.rows and f'osk-growth-{services.tag()}' in Fake.rows, rep
 assert not targets.exists(), 'uninstalling sync left the recorded transfer targets'
+assert not status.exists(), 'uninstalling sync left the daemon status, which would read as a stopped daemon'
 assert osk_entries(read(claude_home / 'settings.json'), 'start'), 'uninstalling sync removed a hook'
 # Uninstalling everything takes every osk registration of this vault, not the command file.
 S.run(apply=True, uninstall=True)

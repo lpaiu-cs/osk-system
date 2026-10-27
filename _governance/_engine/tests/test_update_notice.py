@@ -310,6 +310,35 @@ assert 'systemMessage' not in second, second
 assert '[osk 새 릴리스' not in second['hookSpecificOutput']['additionalContext'], second
 ''')
 
+    def test_session_start_and_doctor_tell_a_sync_daemon_that_stopped(self):
+        self.check_case(r'''
+import sync_daemon
+from osk import doctor
+project = root.parent / 'my-app'
+project.mkdir()
+hook = Path(update.__file__).resolve().parents[1] / 'scripts/hooks/claude_session_start.py'
+def start(session):
+    payload = {'session_id': session, 'cwd': str(project),
+               'hook_event_name': 'SessionStart', 'source': 'startup'}
+    r = subprocess.run([sys.executable, str(hook)], input=json.dumps(payload).encode(),
+                       capture_output=True, timeout=90)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.decode('utf-8'))
+quiet = start('sync-none')                # a device without the daemon hears nothing
+assert '[osk 동기화' not in quiet['hookSpecificOutput']['additionalContext'], quiet
+assert not any(i['check'] == '동기화 데몬' for i in doctor._engine({'runs': {}}))
+sync_daemon._record(root, '전송 보류 — setup이 확인해 적은 전송 대상이 없다(로컬 커밋만)')
+told = start('sync-held')
+text = told['hookSpecificOutput']['additionalContext']
+assert '[osk 동기화 멈춤 — 전송 보류' in text and str(root / 'docs' / 'OPERATE-AGENT.md') in text, text
+assert '동기화가 멈췄다' in told['systemMessage'] and 'osk 점검해 줘' in told['systemMessage'], told
+item = {i['check']: i for i in doctor._engine({'runs': {}})}['동기화 데몬']
+assert item['level'] == 'warn' and 'setup.py --apply --sync' in item['fix'], item
+sync_daemon._record(root, 'ok')
+assert '[osk 동기화' not in start('sync-ok')['hookSpecificOutput']['additionalContext']
+assert {i['check']: i for i in doctor._engine({'runs': {}})}['동기화 데몬']['level'] == 'ok'
+''')
+
     def test_a_host_without_a_user_screen_relays_the_notice_through_the_agent(self):
         self.check_case(r'''
 done('v4.0.0', '0')

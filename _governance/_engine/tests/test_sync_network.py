@@ -449,6 +449,7 @@ def local_only():
         git('commit', '-qm', 'base')
         (root / 'note.txt').write_text('edited')
         assert sync.once(root) == 'ok (로컬 커밋만 — 원격 없음)'
+        assert sync.last(root)['status'].startswith('ok') and sync.trouble(root) is None
         assert git('status', '--porcelain') == '' and git('rev-list', '--count', 'HEAD') == '2'
         git('remote', 'add', 'upstream', 'https://example.invalid/not-origin.git')
         (root / 'note.txt').write_text('again')
@@ -482,6 +483,16 @@ def local_only():
         (root / 'note.txt').write_text('still local')
         status = tick(5)
         assert '전송 보류' in status and 'setup' in status and touched == [], (status, touched)
+        # A hold is told at once: it lasts until someone runs setup, and the daemon only logs it.
+        assert sync.trouble(root) == status, sync.last(root)
+        rec = sync.last(root)
+        assert sync.trouble(root, now=rec['at'] + sync.STALE + 1).startswith('데몬이'), 'a daemon that stopped is told'
+        # Another failure is told only once it has lasted a day; a passing lock neither starts nor ends it.
+        sync._record(root, 'push 실패: offline')
+        first = sync.last(root)['since']
+        sync._record(root, 'locked')
+        assert sync.last(root)['since'] == first and sync.trouble(root) is None
+        assert '동기화하지 못했다' in sync.trouble(root, now=first + sync.STALE + 1)
         # Once setup has recorded these targets, the daemon transfers.
         targets.write_text(json.dumps({'origin': str(bare), 'push': [str(bare)]}), encoding='utf-8')
         git('push', '-q', 'origin', 'main')

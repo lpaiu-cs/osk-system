@@ -122,6 +122,18 @@ def _engine(records: dict) -> list[dict]:
             items.append(_item("ok" if rep.get("current") else "info", "릴리스", detail))
     except Exception as exc:
         items.append(_item("info", "릴리스", f"판독 실패 — {type(exc).__name__}: {exc}"))
+    try:
+        import sync_daemon
+        rec = sync_daemon.last()
+        if rec:
+            trouble = sync_daemon.trouble()
+            items.append(_item("warn" if trouble else "ok", "동기화 데몬",
+                               trouble or f"마지막 주기 {_kst(rec['at'])} — {rec.get('status')}",
+                               "에이전트용 안내 docs/OPERATE-AGENT.md의 Check the connection 절을 따른다 — 전송 "
+                               "보류는 `setup.py --apply --sync`를 두 단계로, 돌지 않는 데몬은 그 등록을 다시 "
+                               "시작한다" if trouble else None))
+    except Exception as exc:
+        items.append(_item("info", "동기화 데몬", f"판독 실패 — {type(exc).__name__}: {exc}"))
     for key, run in sorted(records["runs"].items()):
         if key.startswith("unknown/") and isinstance(run, dict):
             items.append(_item("info", "알 수 없는 호스트", f"훅 {key.split('/', 1)[1]}이 {_kst(run.get('at'))}에 "

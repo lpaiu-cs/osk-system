@@ -15,7 +15,7 @@ vault_sync(순수 git 헬퍼)는 「동기화 데몬 예외」로 재사용한�
        절대 폴백하지 않는다(데몬 자신의 `git add -A`가 잠금 파일을 커밋한다).
 """
 from __future__ import annotations
-import argparse, os, signal, sys, time
+import argparse, json, os, signal, sys, time
 from datetime import datetime
 from pathlib import Path
 
@@ -48,7 +48,72 @@ def _lock_path(root: Path = ROOT, name: str = "osk-sync.lock") -> Path:
     return core.local_lock_path(name, root)
 
 
+# 마지막 주기의 결과 — 기기 로컬(`core.local_lock_path`). 실패가 데몬 로그에만 묻히면 사용자는 백업이
+# 멈춘 줄 모른다(v5.4의 전송 보류가 그 예다). 세션 시작 훅과 doctor가 `trouble`로 읽는다.
+STATUS = "osk-sync-status.json"
+STALE = 24 * 3600                       # 이보다 오래 성공하지 못했거나 돌지 않았으면 멈춘 것이다
+_PASSING = ("locked", "pending-txn")    # 다음 주기에 풀린다 — 실패의 시작으로 세지 않는다
+
+
+def last(root: Path = ROOT) -> dict | None:
+    """마지막 주기의 기록 `{at, status, since}` — 없으면 이 기기는 데몬을 쓰지 않는다."""
+    try:
+        data = json.loads(_lock_path(root, STATUS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("at"), (int, float)) else None
+
+
+def _when(at: float) -> str:
+    return datetime.fromtimestamp(at).strftime("%m-%d %H:%M")
+
+
+def trouble(root: Path = ROOT, now: float | None = None) -> str | None:
+    """동기화가 멈췄으면 그 사유 한 줄, 아니면 None. 전송 보류는 사람이 setup으로 풀어야 하므로
+    곧바로, 그 밖의 실패는 하루 넘게 이어졌을 때, 기록이 하루 넘게 낡았으면 데몬이 돌지 않는 것이다."""
+    rec = last(root)
+    if not rec:
+        return None
+    now = time.time() if now is None else now
+    if now - rec["at"] > STALE:
+        return f"데몬이 {_when(rec['at'])} 뒤로 돌지 않았다"
+    status, since = str(rec.get("status", "")), rec.get("since")
+    if status.startswith("전송 보류"):
+        return status
+    if isinstance(since, (int, float)) and now - since > STALE:
+        return f"{_when(since)}부터 동기화하지 못했다 — 마지막 결과: {status}"
+    return None
+
+
+def _record(root: Path, status: str) -> None:
+    prev = last(root) or {}
+    now = time.time()
+    if status.startswith("ok"):
+        since = None
+    elif status in _PASSING:
+        since = prev.get("since")
+    else:
+        since = prev.get("since") or now
+    try:
+        core.atomic_write(_lock_path(root, STATUS),
+                          json.dumps({"at": now, "status": status, "since": since},
+                                     ensure_ascii=False).encode("utf-8"))
+    except OSError:
+        pass        # 기록을 못 남겨도 동기화는 돈다 — 보이지 않을 뿐이다
+
+
 def once(root: Path = ROOT) -> str:
+    """한 주기를 돌고 그 결과를 기기 로컬에 남긴다(`last`·`trouble`)."""
+    try:
+        status = _once(root)
+    except Exception as e:
+        _record(root, f"실패 — {type(e).__name__}: {e}")
+        raise
+    _record(root, status)
+    return status
+
+
+def _once(root: Path = ROOT) -> str:
     """Fetch → locked commit/rebase/snapshot → push the captured SHA.
 
     Network waits do not exclude writers. Recheck pending transactions and Git
