@@ -1742,6 +1742,26 @@ class GrowthTests(unittest.TestCase):
             assert integration.status('claude','waiting')['reviewed_rounds'] == 0
         """)
 
+    def test_stop_fork_skips_jobs_that_stalled_twice_this_week(self):
+        # #259: a Stop fork attached the same organization job 8 times without progress.
+        self.check_case("""
+            from datetime import datetime, timedelta, timezone
+            now = datetime.now(timezone.utc)
+            def run(days, made=(), none=()):
+                return {'kind':'run','at':(now - timedelta(days=days)).isoformat(timespec='seconds'),
+                        'progress':{'made':list(made),'none':list(none)}}
+            rows = [run(9, none=['old']), run(8, none=['old']),                       # last week
+                    run(3, none=['org-a']), run(2, none=['org-a']),                   # twice this week
+                    run(3, none=['org-b']), run(2, made=['org-b']), run(1, none=['org-b']),  # progress resets
+                    run(1, none=['rc-1']), run(0, none=['rc-1']), {'kind':'plan','progress':{'none':['org-c']}}]
+            assert growth._stalled(rows) == {'org-a', 'rc-1'}, growth._stalled(rows)
+            planned = {'organization_jobs':[{'key':'org-a'}], 'recheck_jobs':[{'key':'rc-1'},{'key':'rc-2'}],
+                       'scope_jobs':[{'key':'own'}]}
+            growth._skip_stalled(planned, rows)
+            assert planned['organization_jobs'] == [] and planned['recheck_jobs'] == [{'key':'rc-2'}], planned
+            assert planned['scope_jobs'] == [{'key':'own'}] and planned['stalled'] == ['org-a', 'rc-1'], planned
+        """)
+
     def test_aged_evictions_get_bounded_slots_and_explicit_decisions(self):
         self.check_case("""
             from unittest.mock import patch

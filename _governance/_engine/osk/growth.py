@@ -9,6 +9,7 @@ from __future__ import annotations
 import itertools
 import heapq
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -401,6 +402,39 @@ def _scope_tried(rows: list[dict]):
                    for r in rows if r.get("kind") == "plan" for j in r.get("scope_jobs", []))
     return lambda s: seen[(s["harness"], s["conversation_id"], s["reviewed_count"],
                            tuple(sorted(s.get("repair_pending") or {})))]
+
+
+STALLED_PICKS, STALLED_DAYS = 2, 7
+
+
+def _stalled(rows: list[dict], now: datetime | None = None) -> set:
+    """지난 7일 동안 진척 없이 두 번 이상 끝난 작업 — 진척하면 다시 센다. 작업 key에는 대상의 지금
+    자리(정돈은 남은 구간의 snapshot)가 들어 있어서, 대상이 바뀌면 새 작업이다(#259)."""
+    since = (now or datetime.now(timezone.utc)) - timedelta(days=STALLED_DAYS)
+    misses = Counter()
+    for r in rows:
+        if r.get("kind") != "run" or not isinstance(r.get("progress"), dict):
+            continue
+        try:
+            if datetime.fromisoformat(r["at"]) < since:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        for key in r["progress"].get("made", []):
+            misses.pop(key, None)
+        misses.update(r["progress"].get("none", []))
+    return {key for key, n in misses.items() if n >= STALLED_PICKS}
+
+
+def _skip_stalled(planned: dict, rows: list[dict]) -> None:
+    """대화별 검토는 자기 대화 밖의 작업 가운데 거듭 진척 없던 것을 고르지 않고, 뺀 key를 계획에
+    남긴다(#259, #175 결정 2). 하루 묶음은 그날 진척 없던 작업을 뺀다(`growth_daily`)."""
+    stalled = _stalled(rows)
+    for queue in ("organization_jobs", "recheck_jobs"):
+        skipped = [j["key"] for j in planned.get(queue, []) if j["key"] in stalled]
+        planned[queue] = [j for j in planned.get(queue, []) if j["key"] not in stalled]
+        if skipped:
+            planned.setdefault("stalled", []).extend(skipped)
 
 
 def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
@@ -1275,6 +1309,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     idx = _index()
                     planned["recheck_jobs"] = (_pick_rechecks(idx, limit, scope)
                                                if scope and not daily_active() else [])
+                    _skip_stalled(planned, _records())
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
                 # A Stop fork may organize only its own Scope. It reuses this one
