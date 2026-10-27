@@ -52,7 +52,6 @@ def _lock_path(root: Path = ROOT, name: str = "osk-sync.lock") -> Path:
 # 멈춘 줄 모른다(v5.4의 전송 보류가 그 예다). 세션 시작 훅과 doctor가 `trouble`로 읽는다.
 STATUS = "osk-sync-status.json"
 STALE = 24 * 3600                       # 이보다 오래 성공하지 못했거나 돌지 않았으면 멈춘 것이다
-_PASSING = ("locked", "pending-txn")    # 다음 주기에 풀린다 — 실패의 시작으로 세지 않는다
 
 
 def last(root: Path = ROOT) -> dict | None:
@@ -86,14 +85,11 @@ def trouble(root: Path = ROOT, now: float | None = None) -> str | None:
 
 
 def _record(root: Path, status: str) -> None:
+    # ok가 아니면 무엇이든(잠금 경합·미완료 트랜잭션 포함) 실패가 이어진 시작을 잰다. 일시적인 것은
+    # 다음 ok가 지우고, 하루를 넘겨야 알리므로(`trouble`) 경합이 경고가 되지는 않는다.
     prev = last(root) or {}
     now = time.time()
-    if status.startswith("ok"):
-        since = None
-    elif status in _PASSING:
-        since = prev.get("since")
-    else:
-        since = prev.get("since") or now
+    since = None if status.startswith("ok") else (prev.get("since") or now)
     try:
         core.atomic_write(_lock_path(root, STATUS),
                           json.dumps({"at": now, "status": status, "since": since},

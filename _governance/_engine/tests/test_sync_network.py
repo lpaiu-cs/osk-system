@@ -487,12 +487,30 @@ def local_only():
         assert sync.trouble(root) == status, sync.last(root)
         rec = sync.last(root)
         assert sync.trouble(root, now=rec['at'] + sync.STALE + 1).startswith('데몬이'), 'a daemon that stopped is told'
-        # Another failure is told only once it has lasted a day; a passing lock neither starts nor ends it.
+        # A live daemon rewrites its record every round, so a long failure shows as an old `since` with a
+        # fresh `at`. Move `since` back instead of jumping the clock, which would read as a stopped daemon.
+        def backdate(seconds):
+            path = sync._lock_path(root, sync.STATUS)
+            rec = json.loads(path.read_text(encoding='utf-8'))
+            rec['since'] -= seconds
+            path.write_text(json.dumps(rec), encoding='utf-8')
+
+        # Another failure is told only once it has lasted a day; a lock in between does not restart it.
         sync._record(root, 'push 실패: offline')
         first = sync.last(root)['since']
         sync._record(root, 'locked')
         assert sync.last(root)['since'] == first and sync.trouble(root) is None
-        assert '동기화하지 못했다' in sync.trouble(root, now=first + sync.STALE + 1)
+        backdate(sync.STALE + 1)
+        assert '동기화하지 못했다' in sync.trouble(root)
+        # A lock or an unfinished update that never clears is a stop too (#266 review): it starts the
+        # count right after a good round, and a good round clears it.
+        for held in ('locked', 'pending-txn'):
+            sync._record(root, 'ok')
+            assert sync.last(root)['since'] is None
+            sync._record(root, held)
+            assert sync.last(root)['since'] is not None and sync.trouble(root) is None, held
+            backdate(sync.STALE + 1)
+            assert held in sync.trouble(root), held
         # Once setup has recorded these targets, the daemon transfers.
         targets.write_text(json.dumps({'origin': str(bare), 'push': [str(bare)]}), encoding='utf-8')
         git('push', '-q', 'origin', 'main')
