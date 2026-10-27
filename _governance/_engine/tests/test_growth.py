@@ -1747,19 +1747,27 @@ class GrowthTests(unittest.TestCase):
         self.check_case("""
             from datetime import datetime, timedelta, timezone
             now = datetime.now(timezone.utc)
-            def run(days, made=(), none=()):
-                return {'kind':'run','at':(now - timedelta(days=days)).isoformat(timespec='seconds'),
-                        'progress':{'made':list(made),'none':list(none)}}
-            rows = [run(9, none=['old']), run(8, none=['old']),                       # last week
-                    run(3, none=['org-a']), run(2, none=['org-a']),                   # twice this week
-                    run(3, none=['org-b']), run(2, made=['org-b']), run(1, none=['org-b']),  # progress resets
-                    run(1, none=['rc-1']), run(0, none=['rc-1']), {'kind':'plan','progress':{'none':['org-c']}}]
-            assert growth._stalled(rows) == {'org-a', 'rc-1'}, growth._stalled(rows)
-            planned = {'organization_jobs':[{'key':'org-a'}], 'recheck_jobs':[{'key':'rc-1'},{'key':'rc-2'}],
-                       'scope_jobs':[{'key':'own'}]}
-            growth._skip_stalled(planned, rows)
-            assert planned['organization_jobs'] == [] and planned['recheck_jobs'] == [{'key':'rc-2'}], planned
-            assert planned['scope_jobs'] == [{'key':'own'}] and planned['stalled'] == ['org-a', 'rc-1'], planned
+            rows = []
+            def run(days, job, made=False):
+                queue = 'organization_jobs' if job['key'].startswith('org') else 'recheck_jobs'
+                plan = {'kind':'plan','rid':'p%d' % len(rows),queue:[job]}
+                rows.extend([plan, {'kind':'run','manifest':plan['rid'],
+                                    'at':(now - timedelta(days=days)).isoformat(timespec='seconds'),
+                                    'progress':{'made':[job['key']] if made else [],'none':[] if made else [job['key']]}}])
+            a, b, rc1 = {'key':'org-a','snapshot':'s1'}, {'key':'org-b','snapshot':'t1'}, {'key':'rc-1'}
+            run(9, a); run(8, a)                                  # last week: not counted
+            run(3, a); run(2, a)                                  # twice this week on snapshot s1
+            run(3, b); run(2, b, made=True); run(1, b)            # progress resets the count
+            run(1, rc1); run(0, rc1)
+            stalled = growth._stalled(rows)
+            assert stalled == {('org-a','s1'), ('rc-1', None)}, stalled
+            planned = {}
+            # A stalled first candidate gives way to the next one (review of #268).
+            assert growth._skip_stalled([a, b], stalled, 1, planned) == [b], planned
+            # Organization keeps an unfinished review's key when its snapshot changes: a new place.
+            assert growth._skip_stalled([dict(a, snapshot='s2'), b], stalled, 1, planned) == [dict(a, snapshot='s2')]
+            assert growth._skip_stalled([rc1, {'key':'rc-2'}, {'key':'rc-3'}], stalled, 1, planned) == [{'key':'rc-2'}]
+            assert planned['stalled'] == ['org-a', 'rc-1'], planned
         """)
 
     def test_aged_evictions_get_bounded_slots_and_explicit_decisions(self):
