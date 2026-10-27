@@ -49,6 +49,12 @@ also fixes conversation review where the live instance showed it falling short.
     `%APPDATA%/Claude/claude-code`. The scheduled run cannot see that folder, so on days Codex was
     spent the Claude worker never ran.
   - Such a pin now follows the one Claude-Data install. The command file needs no edit.
+- v5.3.3 fixes two defects of the scheduled growth run, with nothing to migrate either.
+  - The weekly limit adjustment counts dates (#258). Its time is written after capture, so it used to
+    fall a few minutes short on the seventh day and slip a day.
+  - A conversation review no longer picks an organization or recheck job that ended twice without
+    progress this week, and lists the skipped jobs in the plan's `stalled` (#259). Its own
+    conversation's review job is never skipped.
 
 - **Search ranking changes (#170).** Relevance (character-bigram BM25) is multiplied by
   `1 + recency + centrality + locality`.
