@@ -408,9 +408,10 @@ STALLED_PICKS, STALLED_DAYS = 2, 7
 
 
 def _job_place(job: dict) -> tuple:
-    """정체를 셀 작업의 자리 — key와, 있으면 그 대상의 snapshot. 정돈은 마치지 않은 검토의 key를
-    snapshot이 바뀌어도 이어 쓰므로(`organization.pending`), key만으로는 바뀐 지식도 정체로 센다."""
-    return job["key"], job.get("snapshot")
+    """정체를 셀 작업의 자리 — key와 대상의 지금 상태: 정돈은 snapshot, 재검토는 인용 노드와 근거의
+    상태. 정돈은 마치지 않은 검토의 key를 snapshot이 바뀌어도 이어 쓰고(`organization.pending`),
+    재검토 key는 참조 관계뿐이라, key만으로는 바뀐 대상도 정체로 센다."""
+    return job["key"], job.get("snapshot"), job.get("node_state"), job.get("target_state")
 
 
 def _stalled(rows: list[dict], now: datetime | None = None) -> set:

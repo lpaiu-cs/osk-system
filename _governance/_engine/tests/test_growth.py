@@ -1754,19 +1754,23 @@ class GrowthTests(unittest.TestCase):
                 rows.extend([plan, {'kind':'run','manifest':plan['rid'],
                                     'at':(now - timedelta(days=days)).isoformat(timespec='seconds'),
                                     'progress':{'made':[job['key']] if made else [],'none':[] if made else [job['key']]}}])
-            a, b, rc1 = {'key':'org-a','snapshot':'s1'}, {'key':'org-b','snapshot':'t1'}, {'key':'rc-1'}
+            a, b = {'key':'org-a','snapshot':'s1'}, {'key':'org-b','snapshot':'t1'}
+            rc1 = {'key':'rc-1','node_state':'n1','target_state':'t1'}
             run(9, a); run(8, a)                                  # last week: not counted
             run(3, a); run(2, a)                                  # twice this week on snapshot s1
             run(3, b); run(2, b, made=True); run(1, b)            # progress resets the count
             run(1, rc1); run(0, rc1)
             stalled = growth._stalled(rows)
-            assert stalled == {('org-a','s1'), ('rc-1', None)}, stalled
+            assert stalled == {('org-a','s1',None,None), ('rc-1',None,'n1','t1')}, stalled
             planned = {}
             # A stalled first candidate gives way to the next one (review of #268).
             assert growth._skip_stalled([a, b], stalled, 1, planned) == [b], planned
             # Organization keeps an unfinished review's key when its snapshot changes: a new place.
             assert growth._skip_stalled([dict(a, snapshot='s2'), b], stalled, 1, planned) == [dict(a, snapshot='s2')]
             assert growth._skip_stalled([rc1, {'key':'rc-2'}, {'key':'rc-3'}], stalled, 1, planned) == [{'key':'rc-2'}]
+            # A recheck keeps its key when the cited node or its basis changes: either state makes a new place.
+            assert growth._skip_stalled([dict(rc1, target_state='t2')], stalled, 1, planned) == [dict(rc1, target_state='t2')]
+            assert growth._skip_stalled([dict(rc1, node_state='n2')], stalled, 1, planned) == [dict(rc1, node_state='n2')]
             assert planned['stalled'] == ['org-a', 'rc-1'], planned
         """)
 
