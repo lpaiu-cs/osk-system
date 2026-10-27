@@ -408,15 +408,17 @@ STALLED_PICKS, STALLED_DAYS = 2, 7
 
 
 def _job_place(job: dict) -> tuple:
-    """정체를 셀 작업의 자리 — key와 대상의 지금 상태: 정돈은 snapshot, 재검토는 인용 노드와 근거의
-    상태. 정돈은 마치지 않은 검토의 key를 snapshot이 바뀌어도 이어 쓰고(`organization.pending`),
-    재검토 key는 참조 관계뿐이라, key만으로는 바뀐 대상도 정체로 센다."""
-    return job["key"], job.get("snapshot"), job.get("node_state"), job.get("target_state")
+    """정체를 셀 작업의 자리. 재검토는 key와 인용 노드·근거의 상태다 — key는 참조 관계뿐이고, 두 상태가
+    바뀌면 엔진이 그 쌍을 다시 고른다. 정돈은 key다 — 마치지 않은 검토의 key를 이어 쓰는데
+    (`organization.pending`), snapshot은 scope 노드의 해시를 모두 담아 그 scope의 어느 쓰기에도 바뀐다.
+    실제 원장에서는 고를 때마다 달라 정체를 하나도 세지 못했다(#268). 정체로 빠진 정돈도 하루 묶음은
+    그대로 고른다."""
+    return job["key"], job.get("node_state"), job.get("target_state")
 
 
 def _stalled(rows: list[dict], now: datetime | None = None) -> set:
-    """지난 7일 동안 진척 없이 두 번 이상 끝난 작업의 자리 — 진척하면 다시 센다. 자리는 그 실행의
-    계획에 실린 작업에서 읽는다. 대상이 바뀌면 새 자리다(#259)."""
+    """지난 7일 동안 진척 없이 두 번 이상 끝난 작업의 자리(`_job_place`) — 진척하면 다시 센다. 자리는
+    그 실행의 계획에 실린 작업에서 읽는다(#259)."""
     since = (now or datetime.now(timezone.utc)) - timedelta(days=STALLED_DAYS)
     plans = {r.get("rid"): r for r in rows if r.get("kind") == "plan"}
     misses = Counter()
