@@ -71,9 +71,14 @@ reinstall the requirements if `requirements.txt` changed.
 1. **Check.** `osk.update` without flags prints `version`, the newest release,
    and `current`. If they are equal, say so and stop.
 2. **Read the release notes** at
-   `https://github.com/lpaiu-cs/osk-system/releases/tag/<version>`. A new
-   major version (the first number changes) means reading
-   [UPGRADING](UPGRADING.md) first and telling the user what changes for them.
+   `https://github.com/lpaiu-cs/osk-system/releases/tag/<version>`, and the
+   section for that version in that release's own upgrade notes,
+   `https://github.com/lpaiu-cs/osk-system/blob/<version>/docs/UPGRADING.md`.
+   This vault's [UPGRADING](UPGRADING.md) is still the old version's until step
+   5 applies the update, so it has no section for the version you are going to.
+   Read it every time, not only for a new major version: a minor version can
+   ask for a step after the update too. Tell the user what changes for them,
+   and do that step after step 6.
 3. **Back up.** With a remote, commit and push, or let the sync daemon do it.
    Without one, say that there is no copy elsewhere and offer to copy the vault
    folder first.
