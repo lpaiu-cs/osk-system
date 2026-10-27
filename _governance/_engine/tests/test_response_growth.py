@@ -232,6 +232,28 @@ class ResponseGrowthTests(unittest.TestCase):
             elsewhere = Path(folder) / 'tools/claude_x/claude-code/2.1.304/claude.exe'
             self.assertEqual(native_cli.resolve(str(elsewhere), version='2.1.305'), str(elsewhere))
 
+    def test_claude_desktop_pin_seen_inside_the_package_follows_the_one_claude_data_install(self):
+        # #257: setup ran inside the store package and wrote the pin as %APPDATA%/Claude/claude-code,
+        # which the scheduled task does not see. The pin names no package, so it follows the one
+        # Claude-Data install; with two installs it stays a dead pin.
+        from osk import native_cli, growth
+        with tempfile.TemporaryDirectory() as folder:
+            local = Path(folder) / 'Local'
+            pinned = Path(folder) / 'Roaming/Claude/claude-code/2.1.299/f0584be0fbaf/claude.exe'
+            data = local / 'Claude-Data/claude_pzs8sxrjxfjjc/claude-code'
+            older, newest = data / '2.1.304/aed62990b91e/claude.exe', data / '2.1.308/c17a819afb40/claude.exe'
+            for p in (older, newest):
+                p.parent.mkdir(parents=True)
+                p.touch()
+                p.chmod(0o700)
+            with patch.dict(os.environ, {'LOCALAPPDATA': str(local)}):
+                self.assertEqual(native_cli.resolve(str(pinned)), str(newest))
+                self.assertEqual(growth.check_command([str(pinned)])['executable'], str(newest))
+                self.assertEqual(native_cli.resolve(str(pinned), version='2.1.304'), str(older))
+                (local / 'Claude-Data/claude_otherpackage1/claude-code').mkdir(parents=True)
+                with self.assertRaisesRegex(ValueError, 'matching Claude'):
+                    native_cli.resolve(str(pinned))
+
     def test_runtime_version_recovery_preserves_counters_and_reaches_supervisor(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration
