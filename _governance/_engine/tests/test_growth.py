@@ -1742,6 +1742,44 @@ class GrowthTests(unittest.TestCase):
             assert integration.status('claude','waiting')['reviewed_rounds'] == 0
         """)
 
+    def test_stop_fork_skips_jobs_that_stalled_twice_this_week(self):
+        # #259: a Stop fork attached the same organization job 8 times without progress.
+        self.check_case("""
+            from datetime import datetime, timedelta, timezone
+            now = datetime.now(timezone.utc)
+            rows = []
+            def run(days, job, made=False, **run_fields):
+                queue = 'organization_jobs' if job['key'].startswith('org') else 'recheck_jobs'
+                plan = {'kind':'plan','rid':'p%d' % len(rows),queue:[job]}
+                rows.extend([plan, {'kind':'run','manifest':plan['rid'],'state':'incomplete','returncode':0,
+                                    'at':(now - timedelta(days=days)).isoformat(timespec='seconds'),
+                                    'progress':{'made':[job['key']] if made else [],'none':[] if made else [job['key']]},
+                                    **run_fields}])
+            a, b = {'key':'org-a','snapshot':'s1'}, {'key':'org-b','snapshot':'t1'}
+            rc1 = {'key':'rc-1','node_state':'n1','target_state':'t1'}
+            run(9, a); run(8, a)                                  # last week: not counted
+            run(3, a); run(2, a)                                  # twice this week
+            run(3, b); run(2, b, made=True); run(1, b)            # progress resets the count
+            run(1, rc1); run(0, rc1)
+            # The worker never reviewed these: refused by its limit, or the run failed (review of #268).
+            c, d = {'key':'org-c'}, {'key':'org-d'}
+            run(1, c, state='limited', returncode=1); run(0, c, state='limited', returncode=1)
+            run(1, d, returncode=1); run(0, d, final_reviews={'state':'rejected','errors':['bad packet']})
+            stalled = growth._stalled(rows)
+            assert stalled == {('org-a',None,None), ('rc-1','n1','t1')}, stalled
+            assert growth._skip_stalled([c, d], stalled, 2, {}) == [c, d]
+            planned = {}
+            # A stalled first candidate gives way to the next one (review of #268).
+            assert growth._skip_stalled([a, b], stalled, 1, planned) == [b], planned
+            # Any write in the scope changes an organization snapshot, so the job stays stalled (#268).
+            assert growth._skip_stalled([dict(a, snapshot='s2'), b], stalled, 1, {}) == [b]
+            assert growth._skip_stalled([rc1, {'key':'rc-2'}, {'key':'rc-3'}], stalled, 1, planned) == [{'key':'rc-2'}]
+            # A recheck keeps its key when the cited node or its basis changes: either state makes a new place.
+            assert growth._skip_stalled([dict(rc1, target_state='t2')], stalled, 1, planned) == [dict(rc1, target_state='t2')]
+            assert growth._skip_stalled([dict(rc1, node_state='n2')], stalled, 1, planned) == [dict(rc1, node_state='n2')]
+            assert planned['stalled'] == ['org-a', 'rc-1'], planned
+        """)
+
     def test_aged_evictions_get_bounded_slots_and_explicit_decisions(self):
         self.check_case("""
             from unittest.mock import patch
