@@ -945,6 +945,7 @@ ACK 뒤에는 대상 노드·최상위 군집·출처 링크만 본다. 본문 �
 |---|---|---|
 | Codex 데스크톱 | `~\Documents\Codex\<YYYY-MM-DD>\<제목>`, `…\<YYYY-MM-DD>\task-N\<제목>` — 이 폴더에서 돈 Claude Code 세션도 같다 | 0.159.2 |
 | Claude 데스크톱 | `%APPDATA%\Claude\scratch-workspaces\<uuid>\<uuid>\scratch-<YYYY-MM-DD>-<hex6>` | 2.1.281 |
+| Claude 데스크톱 3.16 이후(Store 설치) | `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc\scratch-workspaces\<uuid>\<uuid>\scratch-<YYYY-MM-DD>-<hex6>` | 2.1.308 |
 | Antigravity | `~\.gemini\antigravity\playground\<단어-단어>` | 2.17.0 |
 
 Kiro, Claude Code CLI, Codex CLI는 사용자가 연 폴더를 쓰므로 규칙이 없다. 규칙이 없는 하네스나

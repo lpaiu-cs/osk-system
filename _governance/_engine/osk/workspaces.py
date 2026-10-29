@@ -20,8 +20,8 @@ from . import core
 
 LEDGER = core.LEDGER / "workspaces.jsonl"
 
-# 운영 기기(Windows)에서 확인한 규칙이다(2026-10-11, #179). 다른 OS의 경로와 규칙이 없는 하네스는
-# 설치하는 에이전트가 같은 형식으로 대장에 더한다(SETUP의 일회성 작업 폴더).
+# 운영 기기(Windows)에서 확인한 규칙이다(2026-10-11, #179; Claude-Data는 2026-10-29). 다른 OS의 경로와
+# 규칙이 없는 하네스는 설치하는 에이전트가 같은 형식으로 대장에 더한다(SETUP의 일회성 작업 폴더).
 RULES = (
     {"kind": "rule", "harness": "codex", "os": "nt", "version": "0.159.2",
      "root": "~/Documents/Codex", "shape": r"\d{4}-\d{2}-\d{2}/(?:task(?:-\d+)?/)?[^/]+",
@@ -30,6 +30,10 @@ RULES = (
      "root": "%APPDATA%/Claude/scratch-workspaces",
      "shape": r"[0-9a-f-]{36}/[0-9a-f-]{36}/scratch-\d{4}-\d{2}-\d{2}-[0-9a-f]{6}",
      "note": "Claude 데스크톱의 scratch 작업 공간"},
+    {"kind": "rule", "harness": "claude", "os": "nt", "version": "2.1.308",
+     "root": "%LOCALAPPDATA%/Claude-Data/claude_pzs8sxrjxfjjc/scratch-workspaces",
+     "shape": r"[0-9a-f-]{36}/[0-9a-f-]{36}/scratch-\d{4}-\d{2}-\d{2}-[0-9a-f]{6}",
+     "note": "Claude 데스크톱 3.16부터의 scratch 작업 공간 — Store 설치의 데이터가 Claude-Data로 옮겨졌다"},
     {"kind": "rule", "harness": "antigravity", "os": "nt", "version": "2.17.0",
      "root": "~/.gemini/antigravity/playground", "shape": r"[a-z]+(?:-[a-z]+)+",
      "note": "Antigravity의 playground"},
