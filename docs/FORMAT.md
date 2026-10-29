@@ -385,6 +385,7 @@ Every `*.jsonl` file under `00_Scope/Workbench/_ledger/` is a ledger
 | `growth.jsonl` | `plan`, `review`, `run`, `eviction_review`, `recheck_review` | `key` (reviews) | growth runner | none |
 | `rechecks.jsonl` | `complete` | (`node`, `target`) | node writes; session start | §4-1 |
 | `workspaces.jsonl` | `rule` | none | `workspaces.add` (an installing agent) | §6-2 6 |
+| `release.jsonl` | `ack` | none (section 4.12) | `osk.update --ack` (an agent) | none |
 | `migration/events.jsonl` | `archive`, `move`, `transform`, `hold`, `drop` | none | not appended by the engine | §5 |
 | `signatures.jsonl` | preserved records | none | never appended | §3 9 |
 
@@ -692,6 +693,21 @@ neither of them.
 - **`signatures.jsonl`** (Mechanism §3 9): a preserved record set. Nothing is
   appended to it and no decision reads it.
 
+### 4.12 Release acknowledgements
+
+`release.jsonl` records that an agent has taken in a new-release notice
+(section 7.2, release check):
+
+| `kind` | Fields |
+|---|---|
+| `ack` | `version` (the announced `vX.Y.Z`) |
+
+An acknowledgement is never withdrawn, so the ledger has no subject key. A
+release is acknowledged when any `ack` names it or a newer version. The device
+that acknowledges also keeps its own record in device-owned state
+(`osk-release-ack.json`), so the notice stops there even when the append
+fails. A ledger that cannot be read counts as no acknowledgement.
+
 ## 5. Approval store
 
 A protected region's approved snapshot is kept as content-addressed objects
@@ -924,10 +940,14 @@ The canonical repository declares a release with an attestation at its root
 - **Release check.** When the last check is a day old (an hour, if it failed),
   the session-start hook and `overview` start a background
   `git ls-remote --tags` on the upstream URL. The newest `vX.Y.Z` tag,
-  compared with the journal's current version, is announced once a day per
-  device and never applied. The result and the notice marker are device-owned
-  state (`osk-release-check.json`, `osk-release-notice.json`). There is no check
-  with a pin, a `bundle` source, or no known current version.
+  compared with the journal's current version, is announced at every session
+  start until an agent acknowledges it with `osk.update --ack <version>`, and is
+  never applied. The acknowledgement goes to this device's
+  `osk-release-ack.json` and to `release.jsonl` (section 4.12), so it reaches
+  the other devices by sync. The check result and this device's
+  acknowledgement are device-owned state (`osk-release-check.json`,
+  `osk-release-ack.json`). There is no check with a pin, a `bundle` source, or
+  no known current version.
 
 ## 8. Compatibility promise
 

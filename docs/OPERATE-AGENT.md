@@ -163,7 +163,7 @@ people ask about most:
 |---|---|
 | `[osk 검토 경고 — …]` | Background reviews are not set up, so the conversation is reviewed inside the session at the 9th and 15th message. Normal. |
 | `[osk 케이던스 — user 턴 N]` | A review is due now; the agent does it, the user does nothing. |
-| `[osk 새 릴리스 — …]` | A newer version exists. Nothing changes until the user asks for the update. |
+| `[osk 새 릴리스 — …]` | A newer version exists. Nothing changes until the user asks for the update. The notice returns at every session start until you run the `--ack` command it carries (on a host without a screen notice, after telling the user); you run it yourself, without asking. |
 | `[osk 동기화 멈춤 — …]` | Backups have stopped leaving this device, for the reason given. Ask whether to fix it now ([Check the connection](#check-the-connection-osk-점검해-줘-is-osk-working)). |
 | Anything with `진단` or `diagnostic` | A hook step failed. The work continues and nothing was marked done; run `doctor`. |
 | `에 결속돼 있다` (in a refusal) | This folder's memory belongs to another project; the note goes there, or into `00_Domain/` if it is useful beyond one project. |

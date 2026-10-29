@@ -1341,7 +1341,22 @@ def main(argv=None):
                     help="기존 인스턴스의 최초 편입 — 현재 릴리스를 기준선 삼는다")
     ap.add_argument("--check", action="store_true",
                     help="정본의 최신 릴리스 태그만 묻는다 — 받지도 적용하지도 않는다")
+    ap.add_argument("--ack", metavar="VERSION",
+                    help="알리는 새 릴리스를 에이전트가 받았다고 기록한다 — 기록 전까지 세션 시작마다 "
+                         "다시 알린다. 갱신하지 않는다")
     a = ap.parse_args(argv)
+    if a.ack:
+        if a.check or a.apply or a.adopt or a.to or a.bundle or a.source:
+            sys.exit("[중단] --ack는 다른 선택지와 함께 쓰지 않는다 — 받음만 기록한다")
+        from . import update_check
+        try:
+            rep = update_check.ack(a.ack)
+        except UpdateError as e:
+            sys.exit(f"[중단] {e}")
+        print(json.dumps(rep, ensure_ascii=False, indent=2))
+        if not rep["synced"]:
+            raise SystemExit(1)
+        return
     if a.check:
         if a.apply or a.adopt or a.to or a.bundle or a.source:
             sys.exit("[중단] --check는 다른 선택지와 함께 쓰지 않는다 — 태그만 묻는다")
