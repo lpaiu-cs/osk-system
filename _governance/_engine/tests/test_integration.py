@@ -2753,6 +2753,24 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         st = it.capture("claude", self.sid, str(self.path), key(sub))
         self.assertTrue(st["ok"], st)
         self.assertIsNone(st["capture_error"])
+        # Another repository below the starting folder is its own project: a repository under the
+        # Git-less start, and a submodule of the repository a conversation started in.
+        g = lambda *a, cwd: subprocess.run(
+            ["git", "-c", "user.name=x", "-c", "user.email=x@x.invalid", "-c", "protocol.file.allow=always", *a],
+            cwd=cwd, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        inner, parent, child = start / "tools/inner", Path(TMP.name) / f"{self.sid}-up", Path(TMP.name) / f"{self.sid}-lib"
+        for p in (inner, parent, child):
+            p.mkdir(parents=True)
+            g("init", "-q", cwd=p)
+            g("commit", "-q", "--allow-empty", "-m", p.name, cwd=p)
+        g("submodule", "add", "-q", str(child), "vendor/lib", cwd=parent)
+        self.assertEqual(key(inner), hook.session_key(str(inner)))
+        self.assertNotEqual(key(inner), start.name)
+        self.transcript([{**r, "cwd": str(parent)} for r in claude_round(self.sid, 1)])
+        lib = parent / "vendor/lib"
+        self.assertEqual(key(parent / "vendor"), key(parent))                 # a plain folder of the repository
+        self.assertEqual(key(lib), hook.session_key(str(lib)))
+        self.assertNotEqual(key(lib), key(parent))
 
     def test_a_resumed_copy_of_a_landed_one_off_conversation_keeps_its_landing(self):
         # A copy of a conversation landed only by its first citation starts unlanded. The parent's

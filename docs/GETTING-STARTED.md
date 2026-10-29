@@ -72,7 +72,8 @@ That is supported; see [space-layout-migration.md](space-layout-migration.md).
   `~/code/my-app`, the *session key* is `my-app`.
 - A Git worktree gets the name of its main repository. A folder outside Git gets
   its own folder name. Moving into a subfolder during a conversation keeps the
-  key of the folder the conversation started in.
+  key of the folder the conversation started in; entering another repository or
+  a submodule below it takes that repository's key.
 - If another, unrelated repository already owns that name, the hook gives you
   `my-app-<first 8 hex of your root commit>` instead. The owner is the
   repository that first used the binding; its root commits are recorded with it.

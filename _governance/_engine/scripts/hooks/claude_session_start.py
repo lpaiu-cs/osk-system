@@ -280,14 +280,17 @@ def session_key(cwd: str) -> str:
 
 def project_cwd(env: dict) -> str:
     """프로젝트 키를 정할 작업 폴더 — 훅의 작업 폴더가 대화를 시작한 폴더(전사의 첫 cwd)
-    아래면 그 시작 폴더다. 같은 대화에서 하위 폴더로 옮긴 것은 같은 프로젝트다(#271). 밖으로
-    나갔거나 시작 폴더를 모르면(전사가 아직 없거나 cwd를 적지 않는 하네스) 훅의 작업 폴더다."""
+    아래이고 가장 가까운 `.git`이 같으면 그 시작 폴더다. 같은 대화에서 같은 저장소(Git 밖이면
+    Git 밖)의 하위 폴더로 옮긴 것은 같은 프로젝트다(#271). 그 아래의 다른 저장소·서브모듈로
+    들어갔거나, 밖으로 나갔거나, 시작 폴더를 모르면(전사가 아직 없거나 cwd를 적지 않는 하네스)
+    훅의 작업 폴더다."""
     cwd = env.get("cwd") or os.getcwd()
     try:
         from osk import harness, transcripts
         host, path = harness.host_of(env), env.get("transcript_path")
         start = (transcripts.workspace(path, host.name) or {}).get("cwd") if host and path else None
-        if start and Path(cwd).resolve().is_relative_to(Path(start).resolve()):
+        if (start and Path(cwd).resolve().is_relative_to(Path(start).resolve())
+                and (_dotgit(cwd) or [None])[0] == (_dotgit(start) or [None])[0]):
             return start
     except Exception:
         pass        # 시작 폴더를 못 읽으면 전처럼 훅의 작업 폴더다
