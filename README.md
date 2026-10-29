@@ -349,8 +349,8 @@ restart, then stops for explicit user confirmation. A matching retry applies it
 and records acceptance of the protected governance region in the same transaction.
 On an install where the governance region was never protected, the same confirmed
 retry protects it, but only when its files match the release attestation exactly.
-A newer release is announced once a day per device, at session start or in
-`overview`; nothing is applied until you ask for the update.
+A newer release is announced at every session start, and in `overview`, until
+the agent acknowledges it; nothing is applied until you ask for the update.
 See [installation and operations](docs/SETUP.md).
 
 ## What's in this repository
