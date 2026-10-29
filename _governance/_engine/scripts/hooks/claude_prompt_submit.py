@@ -13,7 +13,7 @@ def main() -> None:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return
     from claude_session_start import (_budget, capture_block, emit_context, first_call, normalize,
-                                      note_run, session_key)
+                                      note_run, project_cwd, session_key)
     try:
         env = json.load(sys.stdin)
         if not isinstance(env, dict):
@@ -25,7 +25,7 @@ def main() -> None:
     env = normalize(env)
     host = None
     try:
-        key = session_key(env.get("cwd") or os.getcwd())
+        key = session_key(project_cwd(env))
         host = note_run("input", env, key)
         # A host may call its input event more than once per user turn (Antigravity's
         # PreInvocation fires before every model call); only the first is osk's input.

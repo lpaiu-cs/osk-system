@@ -278,6 +278,22 @@ def session_key(cwd: str) -> str:
         return name
 
 
+def project_cwd(env: dict) -> str:
+    """프로젝트 키를 정할 작업 폴더 — 훅의 작업 폴더가 대화를 시작한 폴더(전사의 첫 cwd)
+    아래면 그 시작 폴더다. 같은 대화에서 하위 폴더로 옮긴 것은 같은 프로젝트다(#271). 밖으로
+    나갔거나 시작 폴더를 모르면(전사가 아직 없거나 cwd를 적지 않는 하네스) 훅의 작업 폴더다."""
+    cwd = env.get("cwd") or os.getcwd()
+    try:
+        from osk import harness, transcripts
+        host, path = harness.host_of(env), env.get("transcript_path")
+        start = (transcripts.workspace(path, host.name) or {}).get("cwd") if host and path else None
+        if start and Path(cwd).resolve().is_relative_to(Path(start).resolve()):
+            return start
+    except Exception:
+        pass        # 시작 폴더를 못 읽으면 전처럼 훅의 작업 폴더다
+    return cwd
+
+
 def _memory_line(st: dict, key: str, space: str | None = None) -> str:
     """전문 대신 싣는 한 줄 — 이 대화가 같은 해시의 전문을 이미 받았을 때(§9-2 5항의 뜻:
     전문은 호출자가 저장본을 모를 때 싣는다). 해시가 바뀌면 다시 전문이다. `space`는 주된
@@ -627,12 +643,11 @@ def main() -> None:
         emit_context("start", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
         return
     env = normalize(env)
-    cwd = env.get("cwd") or os.getcwd()
 
     host = None
     try:
         from osk import scope_memory, write, evictions, rechecks
-        key = session_key(cwd)
+        key = session_key(project_cwd(env))
         host = note_run("start", env, key)
         if not first_call("start", env, host):
             return
