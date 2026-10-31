@@ -685,15 +685,17 @@ class GrowthTests(unittest.TestCase):
 
     def test_evidence_migration_moves_non_node_derived_from_into_support_lines(self):
         # Constitution 8(5·6)·14(8·9), Mechanism §5: each non-node derived-from entry becomes a `지지` line at
-        # the node end, dated by the commit that brought the round (or the entry) and showing the cite note,
-        # else the user's words. A covered entry only leaves the frontmatter and a node entry stays. The
-        # related state does not change, each node is logged before it is written, and a rerun has nothing.
+        # the node end, dated by the commit that brought the round (or put the entry in the frontmatter — not
+        # the earlier body mention) and showing the cite note, else the user's words. An uncommitted round has
+        # no date and stays. A covered entry only leaves the frontmatter and a node entry stays. The related
+        # state does not change, each node is logged before it is written, and a rerun has nothing.
         self.check_case("""
-            import subprocess
+            import os, subprocess
             from osk import evidence, evidence_migration as em, raw, rechecks
-            def git(*a):
+            def git(*a, when=None):
+                env = dict(os.environ, **({'GIT_AUTHOR_DATE': when, 'GIT_COMMITTER_DATE': when} if when else {}))
                 return subprocess.run(['git', '-C', str(core.ROOT), *a], check=True, capture_output=True,
-                                      text=True).stdout.strip()
+                                      text=True, env=env).stdout.strip()
             git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
             claude = 'claude-c38d8ef2' + '0' * 24
             rounds = raw.append_rounds('repo/ev', claude, [
@@ -706,48 +708,53 @@ class GrowthTests(unittest.TestCase):
             (core.ROOT / '_sources').mkdir(exist_ok=True)
             (core.ROOT / '_sources' / 'r.md').write_text('# 결과' + chr(10) + 'x' + chr(10), encoding='utf-8')
             section = chr(10).join(['', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#2` · 지지 — 이미 있다'])
+            url = 'https://example.com/docs/page.md'
             node('N')
-            node('A', body='주장 A.')
+            node('A', body='주장 A. 출처는 ' + url)
             node('B', body='주장 B.' + section)
             node('C', body='주장 C.' + section + chr(10) + chr(10) + '## 이력' + chr(10) + chr(10) + 'y')
+            git('add', '-A'); git('commit', '-qm', 'early', when='2026-01-01T12:00:00+09:00')
             def legacy(title, refs):
                 p = core.ROOT / '00_Scope/W1' / (title + '.md')
                 n = contract.parse(p)
                 p.write_bytes(write._render({**n.meta, 'derived-from': refs}, n.body))
                 return p
-            missing = rounds[0].replace('#1', '#9')
-            a = legacy('A', ['[[N]]', rounds[0], noted, '[[_sources/r.md]]', '[[https://example.com/docs/page.md]]', missing])
+            missing, late = rounds[0].replace('#1', '#9'), rounds[0].replace('#1', '#5')
+            a = legacy('A', ['[[N]]', rounds[0], noted, '[[_sources/r.md]]', '[[' + url + ']]', missing, late])
             b = legacy('B', [rounds[1], rounds[0], notice])
             c = legacy('C', [rounds[0]])
-            git('add', '-A'); git('commit', '-qm', 'seed')
-            day = git('log', '-1', '--format=%ad', '--date=short')
+            git('add', '-A'); git('commit', '-qm', 'seed', when='2026-02-01T12:00:00+09:00')
+            assert raw.append_rounds('repo/ev', claude, [{'user': '늦은 질문', 'agent': '답'}])['round_refs'] == [late]
             state = {p: rechecks.state(p.read_bytes()) for p in (a, b, c)}
             seen = em.preview()
-            assert (seen['nodes'], seen['line'], seen['covered'], seen['hold']) == (2, 6, 1, 2), seen
-            assert sorted(h['reason'].split(':')[0] for h in seen['holds']) == ['근거 절을 본문을 바꾸지 않고 노드 끝에 달 수 없다', '없는 라운드'], seen
+            assert (seen['nodes'], seen['line'], seen['covered'], seen['hold']) == (2, 6, 1, 3), seen
+            assert sorted(h['reason'].split(':')[0] for h in seen['holds']) == [
+                '근거 절을 본문을 바꾸지 않고 노드 끝에 달 수 없다', '날짜를 정할 수 없다 — git 기록에 없다', '없는 라운드'], seen
             assert (core.ROOT / seen['plan']).is_file() and not em.EVENTS.exists()
             done = em.apply()
-            assert (done['nodes'], done['line'], done['covered'], done['hold']) == (2, 6, 1, 2), done
+            assert (done['nodes'], done['line'], done['covered'], done['hold']) == (2, 6, 1, 3), done
             assert all(rechecks.state(p.read_bytes()) == state[p] for p in (a, b, c)), 'the related state changed'
             na, nb = contract.parse(a), contract.parse(b)
-            assert na.meta['derived-from'] == ['[[N]]', missing] and 'derived-from' not in nb.meta, (na.meta, nb.meta)
-            assert evidence.coordinates(na.body) == ['c38d8ef2#1', 'c38d8ef2#3', '_sources/r.md',
-                                                      'https://example.com/docs/page.md'], na.body
-            first = '- ' + day + ' · `c38d8ef2#1` · 지지 — ' + ('첫 질문입니다 ' * 9)[:50].rstrip() + '…'
+            assert na.meta['derived-from'] == ['[[N]]', missing, late] and 'derived-from' not in nb.meta, (na.meta, nb.meta)
+            assert evidence.coordinates(na.body) == ['c38d8ef2#1', 'c38d8ef2#3', '_sources/r.md', url], na.body
+            # rounds date from the commit that brought them; the file and the URL from the commit that put them
+            # in the frontmatter, not the earlier body mention
+            first = '- 2026-01-01 · `c38d8ef2#1` · 지지 — ' + ('첫 질문입니다 ' * 9)[:50].rstrip() + '…'
             lines = na.body.rstrip(chr(10)).split(chr(10))
-            assert lines[-7:-4] == ['주장 A.', '## 근거', ''] and lines[-4] == first, lines
-            assert lines[-3].endswith('지지 — 인용 요지 #272 의 결정') and lines[-2].endswith('지지 — r.md'), lines
-            assert lines[-1].endswith('지지 — page.md'), lines
+            assert lines[-7:-4] == ['주장 A. 출처는 ' + url, '## 근거', ''] and lines[-4] == first, lines
+            assert lines[-3] == '- 2026-01-01 · `c38d8ef2#3` · 지지 — 인용 요지 #272 의 결정', lines
+            assert lines[-2:] == ['- 2026-02-01 · `_sources/r.md` · 지지 — r.md',
+                                  '- 2026-02-01 · `' + url + '` · 지지 — page.md'], lines
             assert nb.body.rstrip(chr(10)).split(chr(10))[-3:] == [
                 '- 2026-10-05 · `c38d8ef2#2` · 지지 — 이미 있다', first,
-                '- ' + day + ' · `c38d8ef2#4` · 지지 — 작업이 끝나 결과를 정리했다'], nb.body
+                '- 2026-01-01 · `c38d8ef2#4` · 지지 — 작업이 끝나 결과를 정리했다'], nb.body
             assert validate.evidence_errors(nb.body, nb.meta.get('derived-from')) == []
             events = [r for r in core.ledger_read(em.EVENTS) if r.get('rule') == em.RULE]
             assert [(e['source'], e['after']) for e in events] == [
                 (p.relative_to(core.ROOT).as_posix(), core.sha256_file(p)) for p in (a, b)], events
             manifest = (core.ROOT / done['manifest']).read_text(encoding='utf-8')
             assert '## 결과' in manifest and '보류 — 없는 라운드' in manifest, manifest
-            assert em.plan()['counts'] == {'line': 0, 'covered': 0, 'hold': 2}, 'a rerun moved something again'
+            assert em.plan()['counts'] == {'line': 0, 'covered': 0, 'hold': 3}, 'a rerun moved something again'
         """)
 
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):

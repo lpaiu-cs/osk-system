@@ -92,8 +92,8 @@ def _rounds_seen(path: Path, indices: set[int]) -> dict[int, tuple[str | None, s
     out = _git("blame", "--line-porcelain", *(f"-L{n},{n}" for n in sorted(rows)), "--",
                posix_rel(path, ROOT)) if rows else None
     for line in (out or "").splitlines():
-        if m := re.match(r"[0-9a-f]{40} \d+ (\d+)", line):
-            row = int(m[1])
+        if m := re.match(r"([0-9a-f]{40}) \d+ (\d+)", line):
+            row = int(m[2]) if m[1].strip("0") else None    # 커밋 전의 줄(영 해시)에는 날짜가 없다
         elif line.startswith("author-time "):
             when = int(line.split()[1])
         elif line.startswith("author-tz ") and row in rows and when is not None:
@@ -104,10 +104,17 @@ def _rounds_seen(path: Path, indices: set[int]) -> dict[int, tuple[str | None, s
 
 
 def _entry_day(node: Path, entry: str) -> str | None:
-    """그 항목을 처음 단 커밋의 날 — 노드가 옮겨지고 이름이 바뀌어도 따라간다."""
-    out = _git("log", "--follow", "--format=%ad", "--date=short", "-S" + entry, "--", posix_rel(node, ROOT))
-    days = (out or "").split()
-    return days[-1] if days else None
+    """그 항목을 frontmatter에 처음 단 커밋의 날 — 노드가 옮겨지고 이름이 바뀌어도 따라간다. `-S`는 본문의
+    같은 글자도 잡으므로, 이른 후보부터 그 판의 frontmatter에 항목이 있는지 본다."""
+    out = _git("-c", "core.quotepath=off", "log", "--follow", "--name-only",
+               "--format=%x1e%H %ad", "--date=short", "-S" + entry, "--", posix_rel(node, ROOT)) or ""
+    for block in reversed(out.split("\x1e")[1:]):        # `--follow`는 `--reverse`와 함께면 아무것도 내지 않는다
+        head, _, names = block.partition("\n")
+        sha, day = head.split()
+        old = (_git("show", f"{sha}:{names.strip().split(chr(10))[0]}") or "").replace("\r\n", "\n")
+        if old.startswith("---\n") and entry in old.split("\n---\n", 1)[0]:
+            return day
+    return None
 
 
 def _name(coord: str, kind: str) -> str:
