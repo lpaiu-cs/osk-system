@@ -209,7 +209,8 @@ def _keep_local(root: Path) -> None:
     """`.osk/`는 기기 로컬 설정이다(Mechanism §1-2 5항). 루트 무시 규칙에 `.osk/`가 없는
     옛 vault에서도 `git add -A`가 실행 기록과 이 기기의 CLI 경로를 싣지 않게 한다 — 자기만
     싣는 규칙 파일이 동기화되어 다른 기기의 판본과 상관없이 같은 무시가 걸린다. 이미 실린
-    것은 추적만 푼다(파일은 그대로다)."""
+    것은 추적만 푼다(파일은 그대로다 — 이 해제가 `.osk/`를 아직 추적하는 원격 위에 재적용되며
+    git이 덮거나 지운 것은 `vault_sync.rebase_snapshot`이 되돌린다)."""
     local = root / ".osk"
     if not local.is_dir():
         return

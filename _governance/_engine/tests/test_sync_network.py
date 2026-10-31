@@ -423,6 +423,67 @@ def receiving_device():
     print('receiving device keeps its local state: PASS (pushed and unpushed local commits)')
 
 
+def untrack_ahead_remote():
+    """옛 vault의 첫 동기화에 원격이 앞서 있다 — 이 기기의 추적 해제 커밋이 아직 `.osk/`를 추적하는
+    원격 위에 재적용돼도 이 기기의 `.osk/`는 그대로다. 옛 엔진의 다른 기기가 실은 판본으로 덮이거나
+    그 기기의 파일이 들어오지 않고, 다른 충돌로 rebase를 되돌려도 남는다."""
+    import sync_daemon as sync
+    import vault_sync as vs
+    for case in ('ahead', 'other-device', 'conflict'):
+        with tempfile.TemporaryDirectory(prefix='osk-untrack-') as td:
+            root, bare, peer = Path(td) / 'a', Path(td) / 'remote.git', Path(td) / 'peer'
+            root.mkdir()
+
+            def git(*args, at=root):
+                r = vs._git(at, list(args), 30)
+                assert r.returncode == 0, (args, r.stdout, r.stderr)
+                return r.stdout.strip()
+
+            def configure(at):
+                for key, value in [('user.name', 'fixture'), ('user.email', 'fixture@example.invalid'),
+                                   ('core.autocrlf', 'false'), ('commit.gpgsign', 'false')]:
+                    git('config', key, value, at=at)
+
+            git('init', '-q', '-b', 'main')
+            configure(root)
+            config, foreign = root / '.osk/response-growth.json', root / '.osk/growth-command.json'
+            config.parent.mkdir()
+            config.write_text('{"claude": "C:/this-device/claude.exe"}')
+            (root / 'note.txt').write_text('base')
+            git('add', '-A')
+            git('commit', '-qm', 'legacy vault tracked its local state')
+            git('init', '-q', '--bare', '-b', 'main', str(bare))
+            git('remote', 'add', 'origin', str(bare))
+            git('push', '-qu', 'origin', 'main')
+            git('clone', '-q', str(bare), str(peer))
+            configure(peer)
+            (peer / 'remote.txt').write_text('remote')
+            if case == 'other-device':                  # 옛 엔진의 다른 기기가 자기 설정을 실었다
+                (peer / '.osk/response-growth.json').write_text('{"claude": "C:/other-device/claude.exe"}')
+                (peer / foreign.relative_to(root)).write_text('other device command')
+                config.write_text('{"claude": "D:/this-device/claude.exe"}')   # 마지막 커밋 뒤에 고쳤다
+            if case == 'conflict':
+                (peer / 'note.txt').write_text('remote note')
+                (root / 'note.txt').write_text('local note')
+            git('add', '-A', at=peer)
+            git('commit', '-qm', 'another device, old engine', at=peer)
+            git('push', '-q', at=peer)
+            approve(root, bare)
+            mine = config.read_text()
+
+            status = sync.once(root)
+            assert status.startswith('pull 충돌') if case == 'conflict' else status == 'ok', (case, status)
+            assert config.is_file() and config.read_text() == mine, (case, config.is_file() and config.read_text())
+            assert not foreign.exists(), "another device's local state came in"
+            assert (root / '.osk/sync-targets.json').is_file()
+            if case != 'conflict':
+                assert sync.once(root) == 'ok'
+                assert config.read_text() == mine
+                tree = git('ls-tree', '-r', '--name-only', 'main', at=bare)
+                assert [p for p in tree.split('\n') if p.startswith('.osk/')] == ['.osk/.gitignore'], (case, tree)
+    print('untracking over an ahead remote keeps local state: PASS (remote ahead, another device, conflict)')
+
+
 def local_only():
     """No origin, or an origin that is the public canonical repository: the daemon commits and
     never fetches or pushes. A remote under another name is no remote to it (#254 review)."""
@@ -539,4 +600,5 @@ if __name__ == '__main__':
     run()
     keep_local()
     receiving_device()
+    untrack_ahead_remote()
     local_only()
