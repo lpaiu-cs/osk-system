@@ -62,6 +62,15 @@ def stamped(rows, base, step=1):
              .strftime("%Y-%m-%dT%H:%M:%S.000Z")} for i, r in enumerate(rows)]
 
 
+def evidenced(body, *refs):
+    """A body ending with one 근거 line per cited round — a distillation checks its round
+    sources against these lines (Constitution art. 8 §6)."""
+    from osk import evidence
+    lines = [f"- 2026-10-31 · `{evidence.coordinate(raw._raw_file(raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
+             " · 지지 — the cited turn" for ref in refs]
+    return body + "\n\n## 근거\n\n" + "\n".join(lines)
+
+
 def queued(sid, uid, words, *, kind="human", mode="prompt", reason="absorbed_mid_turn"):
     """A message sent while the turn ran: Claude Code's attachment and its queue removal."""
     rows = [{"type": "attachment", "sessionId": sid, "uuid": uid, "isSidechain": False,
@@ -1449,19 +1458,20 @@ class IntegrationTests(unittest.TestCase):
 
 
     def test_actual_preserved_scope_node_ack_and_later_receipt_validation(self):
-        from osk import contract, distillation as D
+        from osk import contract, distillation as D, evidence
         self.transcript(claude_round(self.sid, 1))
         st = it.capture("claude", self.sid, str(self.path), self.sid, space="00_Scope/W1")
         ref = it.cite(f"claude/{self.sid}", quote="question 1")["round_ref"]
         spec = {"key": self.sid, "sources": [ref], "hub": "W1"}
         args = {"title": "A retained integration decision", "summary": "bounded retry",
-                "body": "A retry is identified by native identity rather than repeated wording.",
+                "body": evidenced("A retry is identified by native identity rather than repeated wording.", ref),
                 "drafter": "fable-5", "space": "00_Scope/W1"}
         created = D.create_node(spec, **args)
         self.assertEqual(created["distillation"]["status"], "complete")
         node = contract.parse(core.ROOT / created["path"])
         hub = contract.parse(core.ROOT / "00_Scope/W1/W1.md")
-        self.assertIn(ref, write._stored_edges(node.meta["derived-from"]))
+        self.assertEqual(evidence.cited_rounds(node.body), {raw.canonical_ref(ref)})
+        self.assertNotIn("derived-from", node.meta)   # a round is a 근거 line, not an edge
         self.assertIn(created["name"], hub.wikilinks())
         # The cited round binds the review of the original turn it cites.
         ack = it.acknowledge("claude", self.sid, st["through"], "preserved",
@@ -1473,16 +1483,18 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(ack["last_review"]["semantic_verified"])
         self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
         sibling = D.create_node(dict(spec, key=self.sid + "-sibling"),
-                                **dict(args, title="A sibling retained decision", body="Another reusable observation."))
+                                **dict(args, title="A sibling retained decision",
+                                       body=evidenced("Another reusable observation.", ref)))
         self.assertEqual(sibling["distillation"]["status"], "complete")
         self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
         # After ACK only structure is observed: a body edit keeps the review closed.
-        changed = write.update_node(created["id"], body="Changed after review.", expect_hash=created["new_hash"])
+        changed = write.update_node(created["id"], body=evidenced("Changed after review.", ref),
+                                    expect_hash=created["new_hash"])
         after = it.review_status("claude", self.sid, st["through"])
         self.assertEqual(after["status"], "complete")
         self.assertNotIn("structure", after)
         # Dropping the source is reported, still without reopening the conversation's review.
-        write.update_node(created["id"], remove_edges={"derived-from": ref}, expect_hash=changed["new_hash"])
+        write.update_node(created["id"], body="Changed after review.", expect_hash=changed["new_hash"])
         broken = it.review_status("claude", self.sid, st["through"])
         self.assertEqual(broken["status"], "complete")
         self.assertEqual(broken["structure"], [{"key": spec["key"], "reason": "target no longer cites its source"}])
@@ -1528,7 +1540,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(physical.read_bytes(), saved)
         out = D.create_node({"key": self.sid, "sources": [old_ref], "hub": "W1"},
                             title=self.sid, summary="retained observation",
-                            body="Observation retained with its original source.",
+                            body=evidenced("Observation retained with its original source.", old_ref),
                             drafter="test-model", space="00_Scope/W1")
         self.assertEqual(out["distillation"]["status"], "complete")
         ack = it.acknowledge("claude", self.sid, token, "preserved", "fixture retained",
@@ -1545,7 +1557,8 @@ class IntegrationTests(unittest.TestCase):
         cited = it.cite(f"claude/{self.sid}", turn="-1")["round_ref"]
         spec = {"key": first["key"] + ":stable-target", "sources": [cited], "hub": "W1"}
         saved = D.create_node(spec, title="Snapshot-specific retained observation", summary="native observation",
-                              body="The observation is preserved before its review acknowledgement arrives.",
+                              body=evidenced("The observation is preserved before its review acknowledgement arrives.",
+                                             cited),
                               drafter="fable-5", space="00_Scope/W1")
         self.assertEqual(saved["distillation"]["status"], "complete")
         retry = it.prompt("claude", self.sid)
@@ -1588,7 +1601,8 @@ class IntegrationTests(unittest.TestCase):
         self.addCleanup(D._job_path(key).unlink, missing_ok=True)
         return D.create_node({"key": key, "sources": [st["cited"]], "hub": "W1"},
                              title=title or self.sid + "-node", summary="lost ACK recovery",
-                             body="Keep the already retained decision and finish its missing acknowledgement.",
+                             body=evidenced("Keep the already retained decision and finish its missing "
+                                            "acknowledgement.", st["cited"]),
                              drafter="fable-5", space="00_Scope/W1")
 
 
@@ -2138,7 +2152,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(source["native"], st["pending_refs"][0])
         saved = D.create_node({"key": self.sid, "sources": [cited["round_ref"]], "hub": "W1"},
                               title=self.sid, summary="cited question",
-                              body="The question is kept with its cited turn.", drafter="test-model",
+                              body=evidenced("The question is kept with its cited turn.", cited["round_ref"]),
+                              drafter="test-model",
                               space="00_Scope/W1")
         self.assertEqual(saved["distillation"]["status"], "complete")
         it.acknowledge("claude", self.sid, st["through"], "preserved", "Cited and kept.", [{"key": self.sid}])
@@ -2189,7 +2204,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(again["reused"])
         self.assertEqual(again["round_ref"], first["round_ref"])
         saved = D.create_node({"key": self.sid, "sources": [first["round_ref"]], "hub": "W1"},
-                              title=self.sid, summary="scope of a rule", body="The rule applies to project A only.",
+                              title=self.sid, summary="scope of a rule",
+                              body=evidenced("The rule applies to project A only.", first["round_ref"]),
                               drafter="test-model", space="00_Scope/W1")
         self.assertEqual(saved["distillation"]["status"], "complete")
         rows[0]["message"]["content"] = "apply the rule to every project"
@@ -2233,7 +2249,8 @@ class IntegrationTests(unittest.TestCase):
         key = self.sid + "-late"
         self.addCleanup(D._job_path(key).unlink, missing_ok=True)
         D.create_node({"key": key, "sources": [late["round_ref"]], "hub": "W1"}, title=self.sid,
-                      summary="a later turn", body="Knowledge from the latest turn.", drafter="test-model",
+                      summary="a later turn", body=evidenced("Knowledge from the latest turn.", late["round_ref"]),
+                      drafter="test-model",
                       space="00_Scope/W1")
         with self.assertRaisesRegex(ValueError, r"cites no turn of this review \(1–2번째 턴 2개.*it cites aaaaaaaa-4"):
             it.acknowledge("claude", self.sid, st["through"], "preserved", "Late.", [{"key": key}])
@@ -2795,7 +2812,8 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         made = distillation.create_node({"key": job["key"] + ":habit", "sources": [cited["round_ref"]],
                                          "hub": "Habits"},
                                         title=self.sid + " habit", summary="a habit the user stated",
-                                        body="The user keeps a habit they stated.", drafter="gpt-6-astra",
+                                        body=evidenced("The user keeps a habit they stated.", cited["round_ref"]),
+                                        drafter="gpt-6-astra",
                                         space="00_Person/Habits")
         self.assertEqual(made["distillation"]["status"], "complete", made)
         self.assertFalse(made.get("dangling"), made)
@@ -2814,7 +2832,8 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         made2 = distillation.create_node({"key": job2["key"] + ":scope-habit", "sources": [later["round_ref"]],
                                           "hub": "Habits"},
                                          title=self.sid + " scope habit", summary="from a later round",
-                                         body="A habit the user stated later.", drafter="gpt-6-astra",
+                                         body=evidenced("A habit the user stated later.", later["round_ref"]),
+                                         drafter="gpt-6-astra",
                                          space="00_Person/Habits")
         self.assertEqual(made2["distillation"]["status"], "complete", made2)
         self.assertTrue(raw.is_person("00_Person") and raw.is_person("Person") and raw.is_person("= Person"))

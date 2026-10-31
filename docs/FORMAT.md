@@ -130,10 +130,14 @@ updated: "2026-08-02 15:30 (KST)"
 author: "agent"
 drafter: "opus-5.5"
 summary: "One line, at most 80 characters, without links"
-derived-from: ["[[Source node]]", "_cited/.records/claude-3f9c2a7e5b1d4c8e9a0b6d2f7e1c5a39.txt#2"]
+derived-from: ["[[Source node]]"]
 ---
 
 Body in Markdown, with links such as [[Another node]].
+
+## 근거
+
+- 2026-08-02 · `3f9c2a7e#2` · 지지 — what the cited round showed
 ```
 
 ### 2.1 Frontmatter
@@ -230,9 +234,13 @@ The body is Markdown, as Obsidian reads it.
   registered external root's file is `<alias>:<path>` (section 4.13); a web
   page is its URL.
   Only independent support, a condition or a
-  counterexample gets a line; actions and numbers stay in the body. A round
-  that only supports a held claim is bound this way instead of by rewriting the
-  claim. The section is not part of the node's state for rechecks (Bylaws §7 2):
+  counterexample gets a line; actions and numbers stay in the body. A
+  distillation's cited-round sources are checked against these lines, and a
+  round that only supports a held claim adds its line without rewriting the
+  claim. A Domain node cites no round here either (Constitution Article 8 3),
+  and a coordinate that does not resolve is reported with the write and in
+  reference reviews (Mechanism §9-4 1). The section is not part of the node's
+  state for rechecks (Bylaws §7 2):
   adding a line does not make the nodes that cite this one recheck candidates. The
   validator rule `evidence-section` checks each line's form and resolves its
   coordinate; it also reports a line that points at a node and a non-node still
@@ -240,25 +248,28 @@ The body is Markdown, as Obsidian reads it.
 
 ### 2.3 Predicate Edges
 
-`derived-from` names what the node comes from (Mechanism §8 2):
+`derived-from` names the nodes the node comes from (Constitution Article 8 5,
+Mechanism §8 2). Non-node evidence is a line in the evidence section instead
+(section 2.2):
 
 | Target | Stored form |
 |---|---|
 | a node | its title as a quoted wikilink: `"[[Title]]"` |
-| a cited round | the plain coordinate, quoted: `"_cited/.records/<record>.txt#N"`. Older coordinates under a scope's `_cited/` or `_raw/`, or under `00_Person/_cited/`, resolve to the record of the same name |
-| another non-node file | a quoted path wikilink: `"[[_sources/plan.pdf]]"` or `"[[path#Heading]]"` |
 
 - A node target never uses a path: paths break when nodes move, and titles are
   unique.
-- A cited-record target names its round (`#N`) (Bylaws §1 3); the engine
-  reports one that does not.
 - A node cannot cite itself.
 - The engine also reads a node target written as the bare id
   (`derived-from: 260802-1720-k7f2m9x3`). A target it receives as an id is
   stored as the title wikilink; an id that resolves to no node, or to several,
-  is stored as given. It also reads record coordinates written as wikilinks,
-  with a `.md` record path or under `_raw/` (section 6.1), and stores every
-  record target it receives as the plain `.txt` coordinate.
+  is stored as given.
+- **Older non-node targets.** Nodes written before v5.4 may still list a cited
+  round (`"_cited/.records/<record>.txt#N"`, or an older coordinate under a
+  scope's `_cited/` or `_raw/` or under `00_Person/_cited/`, also as a wikilink
+  or with a `.md` record path; section 6.1) or another non-node file
+  (`"[[_sources/plan.pdf]]"`). The engine still reads them and a write may
+  remove them, but no write adds one. The validator rule `evidence-section`
+  reports them until they move to the evidence section.
 
 `conflicts` is a case marker (Mechanism §8 2; Bylaws §9 4). Its target is
 either `"[[CASE-<year>-<n>]]"`, an open (`docketed`) case that lists the node as
@@ -628,17 +639,18 @@ maximum among `review` records with that key.
 | `kind` | `complete` |
 | `node` | the citing node's id |
 | `node_state` | `sha256:` of the citing node's body as written |
-| `target` | a node id or a vault-relative file path, with `#<heading>` appended for a heading range |
-| `target_state` | `sha256:` of a node target's body, a non-node target's file, or the heading range |
+| `target` | a node id, with `#<heading>` appended for a heading range |
+| `target_state` | `sha256:` of a node target's body or of the heading range |
 | `result` | `bound`, `updated` or `unchanged` |
 | `reason` | opt. text |
 
-- **Tracked targets.** Nodes, non-node files, and heading ranges in either. A
+- **Tracked targets.** Nodes and heading ranges in them. A
   heading range runs from the first byte of its heading line to the byte before
   the next heading of the same or a higher level, or to the end of the file.
   Lines in code regions are not headings, and a heading text that occurs twice
-  does not resolve (Mechanism §8 4). Cited records only grow and external URLs
-  have no state; neither is tracked. A hub node, the node named after its cluster
+  does not resolve (Mechanism §8 4). Non-node targets left in `derived-from`
+  from before v5.4 are not tracked; records an older engine wrote for them,
+  with a vault-relative file path as `target`, stay as ledger history. A hub node, the node named after its cluster
   folder, is the entrance to a branch, so a change to it is not a change of
   evidence: a hub target is not tracked, even through a heading range (Bylaws §7
   2). A target whose file does not resolve gets no
@@ -647,7 +659,7 @@ maximum among `review` records with that key.
   that no record can complete.
 - **Relevant state** (Mechanism §4-1 1, Bylaws §7). Both states hash raw bytes
   without normalization. A node's state is its body: the bytes after the line
-  that closes its frontmatter. A non-node file's state is the whole file, and a
+  that closes its frontmatter, without its final evidence section, and a
   heading range's is the range. A change to a node's summary or edges changes
   neither its state as a target nor as a citing node, since the body carries a
   claim's content and reasons (Constitution art. 8).
@@ -659,10 +671,9 @@ maximum among `review` records with that key.
   it wires. An `update_node` whose `rechecked` names an existing target appends
   `updated` when the same call changes the node's body and `unchanged` when it
   does not; this closes a candidate. Naming the target in `add_edges` again does
-  not. A recorded view must still hold: the node's and a node target's body as
-  read with `read_node` in that session, in full or in part, and a non-node
-  target as presented by a scheduled recheck job must equal its state just
-  before the write. A side with no recorded read or presentation closes as the
+  not. A recorded view must still hold: the node's and the target's body as
+  read with `read_node` in that session, in full or in part, must equal its
+  state just before the write. A side with no recorded read closes as the
   reviewer stated. A write through the surface carries the state it wrote
   forward when the caller had read the state it replaced. When a recorded view
   differs, the response reports `recheck_unread` and the pair stays a candidate.

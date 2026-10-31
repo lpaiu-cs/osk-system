@@ -27,7 +27,7 @@ def _child():
     with tempfile.TemporaryDirectory(prefix="osk-distillation-test-") as folder:
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(ENGINE))
-        from osk import core, contract, distillation as D, raw, validate, write
+        from osk import core, contract, distillation as D, evidence, raw, validate, write
         validate.make_mini_vault(folder)
         assert core.ROOT == Path(folder).resolve()
 
@@ -150,28 +150,30 @@ def _child():
 
             def test_legacy_unwritten_journal_replays_reserved_bytes(self):
                 # Frozen v1 serialization; the fixture never calls the new
-                # legacy flag to construct its expected bytes.
+                # legacy flag to construct its expected bytes. A v1 journal kept
+                # stored record edges as wikilinks. Raw rounds are no longer
+                # distillation edges (Constitution art. 8 §5), so the record edge
+                # here is one the target held before the switch.
                 def v1_links(pred, targets, **_):
                     values = [str(t).strip() for t in write._as_list(targets)]
                     values = [s if s.startswith("[[") or (pred == "derived-from" and re.match(core.ID_RE, s))
                               else f"[[{s}]]" for s in values]
                     return values[0] if len(values) == 1 else values
 
+                source = core.ROOT / self.source["path"]
                 for operation in ("create", "update"):
                     with self.subTest(operation=operation):
                         name = self.name + "-" + operation
-                        ref = f"[[00_Scope/W1/_raw/{name}-raw.md#1]]"
-                        raw_path = core.ROOT / "00_Scope/W1/_raw" / (name + "-raw.md")
-                        raw_path.parent.mkdir(exist_ok=True)
-                        raw_path.write_bytes(raw._block(1, "original source", "measured answer").encode())
-                        spec = dict(self.spec, sources=[ref])
                         request = dict(self.args, title=name)
                         target = core.ROOT / "00_Scope/W1" / (name + ".md")
                         if operation == "update":
                             old = write.create_node(name, "prior", "prior body", "test-model", space="00_Scope/W1")
-                            request = dict(name=old["id"], body=self.args["body"], expect_hash=old["new_hash"])
-                        source = D._source(ref, None)
-                        source.update(ref=ref, path=raw_path.relative_to(core.ROOT).as_posix())
+                            raw_path = core.ROOT / "00_Scope/W1/_raw" / (name + "-raw.md")
+                            raw_path.parent.mkdir(exist_ok=True)
+                            raw_path.write_bytes(raw._block(1, "original source", "measured answer").encode())
+                            legacy = f'derived-from: "[[00_Scope/W1/_raw/{name}-raw.md#1]]"\n'
+                            target.write_bytes(target.read_bytes().replace(b"summary:", legacy.encode() + b"summary:", 1))
+                            request = dict(name=old["id"], body=self.args["body"], expect_hash=core.sha256_file(target))
                         atomic, save = write._atomic_write, D._save
                         reserved = []
 
@@ -186,41 +188,40 @@ def _child():
                             return atomic(path, data)
 
                         with mock.patch.object(write, "_as_links", side_effect=v1_links),\
-                                mock.patch.object(D, "_sources", return_value=[source]),\
                                 mock.patch.object(D, "_save", side_effect=v1_save),\
                                 mock.patch.object(write, "_atomic_write", side_effect=crash):
                             with self.assertRaises(Crash):
-                                D._execute(operation, spec, request)
+                                D._execute(operation, self.spec, request)
                         journal = D._job_path(self.key).read_bytes()
                         job = D._load(self.key)
                         self.assertEqual(job["target"]["hash"], core.sha256_bytes(reserved[0]))
                         raw.migrate(apply=True)
-                        migrated = raw._raw_file(source["path"])
-                        evidence = migrated.read_bytes()
-                        migrated.write_bytes(evidence.replace(b"original source", b"changed source"))
-                        failed = D._execute(operation, spec, request)
+                        evidence = source.read_bytes()
+                        source.write_bytes(evidence.replace(b"observed evidence", b"changed evidence"))
+                        failed = D._execute(operation, self.spec, request)
                         self.assertEqual(failed["distillation"]["status"], "pending")
                         self.assertIn("source", failed["distillation"]["reason"])
-                        migrated.write_bytes(evidence)
+                        source.write_bytes(evidence)
                         with self.assertRaises(write.WriteError):
-                            D._execute(operation, spec, dict(request, body="different request"))
+                            D._execute(operation, self.spec, dict(request, body="different request"))
                         # A forged expected hash cannot be replaced by retry.
                         job["target"]["hash"] = "sha256:" + "0" * 64
                         D._save(job)
-                        failed = D._execute(operation, spec, request)
+                        failed = D._execute(operation, self.spec, request)
                         self.assertEqual(failed["distillation"]["status"], "pending")
                         self.assertIn("prepared target changed", failed["distillation"]["reason"])
                         D._job_path(self.key).write_bytes(journal)
-                        result = D._execute(operation, spec, request)
+                        result = D._execute(operation, self.spec, request)
                         self.assertEqual(result["distillation"]["status"], "complete")
                         self.assertEqual(target.read_bytes(), reserved[0])
                         self.assertEqual(D._job_path(self.key).read_bytes(), journal)
-                        self.assertEqual(D.discover([ref])["proofs"][0]["key"], self.key)
                         D._job_path(self.key).unlink()
 
-            def test_new_raw_journal_retries_in_plain_format(self):
+            def test_new_raw_journal_retries_with_its_evidence_line(self):
                 record = raw.append_rounds(self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
+                self.args["body"] += ("\n\n## 근거\n\n- 2026-10-31 · `"
+                                      + evidence.coordinate(record["path"], 1) + "` · 지지 — q")
                 atomic = write._atomic_write
                 target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
                 reserved = []
@@ -238,7 +239,7 @@ def _child():
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(target.read_bytes(), reserved[0])
-                self.assertNotIn("[[", contract.parse(target).meta["derived-from"])
+                self.assertNotIn("derived-from", contract.parse(target).meta)   # the line binds the round
                 self.assertEqual(D.discover([record["round_refs"][0]])["proofs"][0]["key"], self.key)
 
             def test_source_mutation_blocks_resume(self):
@@ -427,19 +428,21 @@ def _child():
                     [{"user": "first observation", "agent": "first result"},
                      {"user": "second observation", "agent": "second result"}], space="00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
+                line = "- 2026-10-31 · `{}` · 지지 — first observation"
+                first, second = (evidence.coordinate(record["path"], n) for n in (1, 2))
+                self.args["body"] += "\n\n## 근거\n\n" + line.format(first)
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
                 node = contract.parse(core.ROOT / out["path"])
-                self.assertIn(record["round_refs"][0],
-                              write._stored_edges(node.meta["derived-from"]))
+                self.assertEqual(evidence.cited_rounds(node.body), {raw.canonical_ref(record["round_refs"][0])})
                 raw.append_rounds(self.name, self.name,
                     [{"user": "third observation", "agent": "third result"}])
                 self.assertEqual(D.status(self.key)["status"], "complete")
                 # Isolate exact-anchor verification: even a matching target byte
                 # receipt cannot turn round #2 into evidence from round #1.
-                write.update_node(out["id"], remove_edges={"derived-from": record["round_refs"][0]},
-                                  add_edges={"derived-from": record["round_refs"][1]})
+                write.update_node(out["id"], old_text=line.format(first), new_text=line.format(second))
                 job = D._load(self.key)
+                job["target"].pop("paragraphs", None)
                 job["target"]["hash"] = core.sha256_file(core.ROOT / out["path"])
                 D._save(job)
                 checked = D.status(self.key)
@@ -608,11 +611,18 @@ def _child():
                 self.assertEqual(D.status(self.key)["status"], "pending")
 
             def test_unrelated_existing_citation_survives(self):
+                # A citation the target held before v5.4 — a record section, which is no
+                # longer a derived-from target — need not be a valid distillation input.
                 record = core.ROOT / "00_Scope/W1/_raw/legacy-reference.md"
                 record.parent.mkdir(exist_ok=True)
                 record.write_text("legacy section content", encoding="utf-8")
-                self.args["edges"] = {"derived-from": "[[00_Scope/W1/_raw/legacy-reference.md#section]]"}
-                out = self.create()
+                existing = write.create_node(self.args["title"], "old", "old retained knowledge",
+                                             "fable-5", space="00_Scope/W1")
+                path = core.ROOT / existing["path"]
+                legacy = b'derived-from: "[[00_Scope/W1/_raw/legacy-reference.md#section]]"\n'
+                path.write_bytes(path.read_bytes().replace(b"summary:", legacy + b"summary:", 1))
+                out = D.update_node(self.spec, name=existing["id"], body=self.args["body"],
+                                    expect_hash=core.sha256_file(path))
                 self.assertEqual(out["distillation"]["status"], "complete")
 
             def test_anchor_normalization_noop_is_rejected(self):

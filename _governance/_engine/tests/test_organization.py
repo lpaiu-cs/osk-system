@@ -316,14 +316,14 @@ class OrganizationTests(unittest.TestCase):
 
     def test_reference_roles_survive_restart_and_only_individual_links_can_be_retained(self):
         self.case("""
-            a=node("A", "A fact with [[future question]]", {"derived-from":"docs/missing.md"})
+            a=node("A", "A fact with [[future question]]", {"derived-from":"missing source"})
             assert a["reference_review"]["status"]=="pending"
             assert any("[derived-from]" in x for x in graph.dangling_refs(graph.Index()))
             job=organization.plan("W1")
             intent=[{"id":a["id"],"relation":"Link","ref":"future question","reason":"Explicit open question"}]
             current=organization.snapshot("W1")
             rejected(lambda: organization.review(job["key"],"W1","complete","Keep question",after=current["snapshot"],intentional=intent))
-            write.update_node("A",remove_edges={"derived-from":"docs/missing.md"})
+            write.update_node("A",remove_edges={"derived-from":"missing source"})
             current=organization.snapshot("W1")
             finish_review("W1", "Bad source removed, question remains", intentional=intent)
             assert organization.plan("W1")["status"]=="complete"
@@ -338,13 +338,16 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             rp=core.ROOT/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
             rp.write_text("## 1"+chr(10)+"User evidence",encoding="utf-8")
-            a=node("A","See [[00_Scope/W1/_raw/evidence.md#1]]",{"derived-from":"[[00_Scope/W1/_raw/evidence.md]]"})
+            from unittest import mock
+            with mock.patch.object(write, "_check_edges", return_value=[]):   # written before v5.4
+                a=node("A","See [[00_Scope/W1/_raw/evidence.md#1]]",{"derived-from":"[[00_Scope/W1/_raw/evidence.md]]"})
             items=a["reference_review"]["items"]
             assert {i["issue"] for i in items}=={"source_navigation","raw_round_required"},items
             assert any(i["ref"].endswith("#1") for i in items)
             assert not any(p==rp for p,k in graph.Index().nodes.values())
             old=core.sha256_file(rp)
-            write.update_node("A",add_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md#1]]"},remove_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md]]"})
+            rejected(lambda: write.update_node("A",add_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md#1]]"}))
+            write.update_node("A",remove_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md]]"})
             assert core.sha256_file(rp)==old
         """)
 
@@ -561,11 +564,11 @@ class OrganizationTests(unittest.TestCase):
             rp=core.ROOT/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
             rp.write_text("## 1"+chr(10)+"Observed",encoding="utf-8")
             for anchor in ("999","not-a-round"):
-                ref="[[00_Scope/W1/_raw/evidence.md#"+anchor+"]]"
-                result=write.update_node("A",add_edges={"derived-from":ref})
-                assert any(i["issue"]=="raw_round_unresolved" for i in result["reference_review"]["items"]),result
-                rejected(lambda: organization.review(job["key"],"W1","complete","Invalid raw anchor",after=organization.snapshot("W1")["snapshot"]))
-                write.update_node("A",remove_edges={"derived-from":ref})
+                section=chr(10)*2+"## 근거"+chr(10)*2+"- 2026-10-31 · `evidence#"+anchor+"` · 지지 — observed"
+                result=write.update_node("A",old_text="Restored knowledge",new_text="Restored knowledge"+section)
+                assert any(i["issue"]=="evidence_unresolved" for i in result["reference_review"]["items"]),result
+                rejected(lambda: organization.review(job["key"],"W1","complete","Invalid evidence coordinate",after=organization.snapshot("W1")["snapshot"]))
+                write.update_node("A",old_text=section,new_text="")
             p.unlink()
             write.update_node("W1",old_text="- [[A]]",new_text="")
             resumed=organization.plan("W1")

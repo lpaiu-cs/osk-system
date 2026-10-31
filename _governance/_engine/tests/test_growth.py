@@ -91,12 +91,11 @@ UPGRADE_CARRY = """
     record = core.ROOT / ('00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt')
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(raw._block(1, 'independent observation', 'observed'), encoding='utf-8')
-    reference = '[[' + record.relative_to(core.ROOT).as_posix() + '#1]]'
     evidence = chr(10).join(['', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1` · 지지 — an observation'])
     # B also cites D, listed first: every carried row of B says its version was made by a recheck
     for title, body, basis in (('B', 'B relies on A.', ['D', 'A']), ('C', 'C relies on B.', ['B'])):
         assert write.create_node(title, title, body + evidence, 'gpt-6-astra', space='00_Scope/W1',
-                                 edges={'derived-from': basis + [reference]})['ok']
+                                 edges={'derived-from': basis})['ok']
     write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
     write.update_node('B', old_text='B relies on A.', new_text='B relies on revised A.', rechecked=['A'])
     planned = growth.plan(3)
@@ -153,11 +152,10 @@ UPGRADE_NO_PAIR = """
     record = core.ROOT / ('00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt')
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(raw._block(1, 'independent observation', 'observed'), encoding='utf-8')
-    reference = '[[' + record.relative_to(core.ROOT).as_posix() + '#1]]'
     evidence = chr(10).join(['', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1` · 지지 — an observation'])
     for title, body, basis in (('B', 'B relies on A.', 'A'), ('C', 'C relies on B.', 'B')):
         assert write.create_node(title, title, body + evidence, 'gpt-6-astra', space='00_Scope/W1',
-                                 edges={'derived-from': [basis, reference]})['ok']
+                                 edges={'derived-from': basis})['ok']
     write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
     write.update_node('B', old_text='B relies on A.', new_text='B relies on revised A.', rechecked=['A'])
     write.update_node('A', old_text='A revised observation', new_text='A twice revised observation')
@@ -665,8 +663,12 @@ class GrowthTests(unittest.TestCase):
             assert validate.evidence_errors(quoted, []) == [], 'a quoted heading was read as the section'
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none',
                                          '- 2026-10-05 · `brain:wiki/x.md` · 지지 — held']))
-            assert write.create_node('B', 'B', 'B claim.', 'gpt-6-astra', space='00_Scope/W1',
-                                     edges={'derived-from': first['round_refs'][0]})['ok']
+            # B was written before v5.4 with a round in derived-from; writes no longer add one
+            from unittest import mock
+            assert 'derived-from은 노드만' in str(write._check_edges({'derived-from': first['round_refs'][0]}, idx))
+            with mock.patch.object(write, '_check_edges', return_value=[]):
+                assert write.create_node('B', 'B', 'B claim.', 'gpt-6-astra', space='00_Scope/W1',
+                                         edges={'derived-from': first['round_refs'][0]})['ok']
             from osk import roots
             roots.declare('brain', 'wiki')
             rep = validate.run()

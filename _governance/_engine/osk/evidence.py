@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .core import ROOT
+from .core import ROOT, posix_rel
 from . import graph, raw, roots, write
 
 # 줄 — `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`
@@ -24,6 +24,8 @@ ROUND = re.compile(r"^(?P<record>[^#\s][^#]*)#(?P<first>\d+)(?:[–-](?P<last>\d
 HASHED = re.compile(r"^(?P<harness>.+)-(?P<hex>[0-9a-f]{32})$")
 PREFIX = re.compile(r"^[0-9a-f]{8,32}$")
 URL = re.compile(r"^https?://\S+$")
+# 해석은 되지만 자리가 틀린 줄 — 미해석 참조가 아니라 검증기만 보고한다
+NODE_LINE = "노드를 가리키는 근거 줄"
 
 
 class Records:
@@ -91,6 +93,30 @@ class Records:
         return self._rounds[path]
 
 
+def coordinates(text: str) -> list[str]:
+    """노드 끝 근거 절에서 형식이 맞는 줄의 좌표(시행령 §1 5항). 형식이 다른 줄은 검증기가 보고한다."""
+    from .rechecks import evidence_span
+    span = evidence_span(text)
+    if span is None:
+        return []
+    return [m[2] for line in text[span[0]:].split("\n")[1:] if (m := LINE.match(line.rstrip("\r")))]
+
+
+def cited_rounds(text: str, records: Records | None = None) -> set[str]:
+    """근거 절의 줄이 가리키는 인용 라운드 — `raw.canonical_ref` 꼴. 해석되는 좌표만 담는다 —
+    범위는 기록에 다 있을 때만 펴므로 펴는 수가 기록의 라운드 수를 넘지 않는다."""
+    records = records or Records()
+    out = set()
+    for coord in coordinates(text):
+        m = ROUND.match(coord) if kind(coord) == "round" else None
+        if m is None or check(coord, records=records) is not None:
+            continue
+        rel = posix_rel(records.file(m["record"]), ROOT)
+        out |= {raw.canonical_ref(f"{rel}#{n}")
+                for n in range(int(m["first"]), int(m["last"] or m["first"]) + 1)}
+    return out
+
+
 def record_name(path: Path | str) -> str:
     """기록 파일 → 기록 이름(긴 이름은 디렉터리가 이름이다)."""
     p = Path(path)
@@ -149,7 +175,7 @@ def check(coord: str, idx: "graph.Index | None" = None, records: Records | None 
     target = coord.split("#", 1)[0].strip()
     found = (idx or graph.Index()).resolve(target)[0]
     if found == "node":
-        return f"노드를 가리키는 근거 줄: {coord} — 노드 근거는 derived-from으로 옮긴다"
+        return f"{NODE_LINE}: {coord} — 노드 근거는 derived-from으로 옮긴다"
     if k == "name":
         return f"알 수 없는 좌표: {coord}"
     from .core import resolve_in_root

@@ -45,10 +45,13 @@ def setup(ack=True):
     first['review_key'] = it.prompt('claude', sid)['key']
     proof_key = first['review_key'] + ':retained-observation'
     # A node's source is a cited round of the original turn, not the turn's ref itself.
-    first['cited'] = it.cite('claude/' + sid, turn='-1')['round_ref']
+    cite = it.cite('claude/' + sid, turn='-1')
+    first['cited'] = cite['round_ref']
+    # The round is bound by its 근거 line, not by derived-from (Constitution art. 8 §6).
+    first['line'] = chr(10).join(['', '', '## 근거', '', '- 2026-10-31 · `' + cite['coordinate'] + '` · 지지 — question 1'])
     created = D.create_node({'key':proof_key,'sources':[first['cited']],'hub':'W1'},
                             title='Retained observation', summary='Recovery evidence',
-                            body='A completed observation worth retaining.',
+                            body='A completed observation worth retaining.' + first['line'],
                             drafter='fable-5', space='00_Scope/W1')
     assert created['distillation']['status'] == 'complete', created
     if ack:
@@ -111,7 +114,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             from osk import scope_memory
             first, created = setup()
             remove_link(created)
-            changed = write.update_node(created['id'], body='A revised observation.',
+            changed = write.update_node(created['id'], body='A revised observation.' + first['line'],
                                         expect_hash=created['new_hash'])
             assert changed['ok'], changed
             second = capture(2)
@@ -130,8 +133,8 @@ class IntegrationRecoveryTests(unittest.TestCase):
     def test_structural_break_is_reported_not_reopened(self):
         self.check_case("""
             first, created = setup()
-            dropped = write.update_node(created['id'], remove_edges={'derived-from': first['cited']},
-                                        expect_hash=created['new_hash'])
+            dropped = write.update_node(created['id'], body='A completed observation worth retaining.',
+                                        expect_hash=created['new_hash'])   # drops the 근거 line
             assert dropped['ok'], dropped
             done = it.review_status('claude', sid, first['through'])
             assert done['status'] == 'complete', done
@@ -235,7 +238,8 @@ class IntegrationRecoveryTests(unittest.TestCase):
             assert 'repair.corrected' in growth.prompt(growth.plan(3))
             refused(lambda: preserved(first['through']))  # its receipt cited the earlier bytes
             again = D.update_node({'key': proof_key + '-2', 'sources': [first['cited']], 'hub': 'W1'},
-                                  name=created['id'], body='A completed observation, rechecked against its corrected words.',
+                                  name=created['id'],
+                                  body='A completed observation, rechecked against its corrected words.' + first['line'],
                                   expect_hash=created['new_hash'])
             assert again['distillation']['status'] == 'complete', again
             done = preserved(first['through'], proof_key + '-2')

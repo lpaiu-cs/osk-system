@@ -1,14 +1,13 @@
 """근거 재검토 — `derived-from` 대상의 본문이 바뀐 참조 노드를 후보로 표시하고
 점검 완료를 기록한다(시행령 §7 2·3항 · Mechanism §4-1 · §8 4항).
 
-추적하는 대상은 상태가 바뀔 수 있는 것이다 — 노드(id로 식별), 비노드 파일(vault
-상대 경로), 그 안의 제목 범위(`#제목`). raw 라운드는 추가만 되는 기록이라 상태가
-바뀌지 않고, 외부 URL은 상태를 잴 수 없다. 허브 노드는 갈래의 입구라 그 변경을
+추적하는 대상은 노드(id로 식별)와 그 안의 제목 범위(`#제목`)다. 비노드는 재지 않는다 —
+`derived-from`은 노드만 받고(헌법 제8조 5항), 이행 전에 남은 비노드 대상도 후보를 만들지
+않는다(Mechanism §4-1 1항). 허브 노드는 갈래의 입구라 그 변경을
 전파하지 않는다(시행령 §7 2항 단서) — 제목 범위로 가리켜도 같다. 해석되지 않는
 대상은 완료를 만들지 않는다 — dangling으로 따로 보고된다.
 
-상태는 관련 상태만 잰다(`state`) — 노드는 본문, 비노드는 파일 전체, 제목을 지정한
-근거는 그 제목 범위다. 관계 주장의 내용과 이유는 본문이 맡으므로(헌법 8조) 요약이나
+상태는 관련 상태만 잰다(`state`) — 노드는 본문, 제목을 지정한 근거는 그 제목 범위다. 관계 주장의 내용과 이유는 본문이 맡으므로(헌법 8조) 요약이나
 배선만 바뀐 노드는 근거로서도, 참조 노드로서도 바뀌지 않은 것이다. 노드 끝의
 `## 근거` 절도 관련 상태가 아니다(시행령 §7 2항) — 그 노드의 비노드 근거 목록이라,
 줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다."""
@@ -61,12 +60,9 @@ def evidence_span(text: str) -> tuple[int, int] | None:
     return (last[0], len(text)) if last and last[1] == 2 and last[2] == EVIDENCE else None
 
 
-def state(data: bytes, node: bool = True) -> str:
-    """관련 상태의 해시(Mechanism §4-1 1항) — 노드는 frontmatter를 닫는 행의 다음
-    바이트부터 끝까지에서 노드 끝 `## 근거` 절을 뺀 것, 비노드는 파일 전체.
-    정규화하지 않은 바이트로 잰다."""
-    if not node:
-        return sha256_bytes(data)
+def state(data: bytes) -> str:
+    """관련 상태의 해시(Mechanism §4-1 1항) — 노드의 frontmatter를 닫는 행의 다음
+    바이트부터 끝까지에서 노드 끝 `## 근거` 절을 뺀 것. 정규화하지 않은 바이트로 잰다."""
     body = data[contract.body_offset(data):]
     try:
         span = evidence_span(body.decode("utf-8"))
@@ -137,10 +133,10 @@ def _name(ref: str) -> tuple[str, str] | None:
 
 
 def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] | None:
-    """근거 하나의 (대상 키, 상태 해시). 추적하지 않거나 대상 파일이 해석되지 않으면
-    None. 키는 노드면 id, 비노드면 vault 상대 경로이고, 제목 범위면 `#제목`이 붙는다.
-    파일은 있는데 제목이 없거나 둘 이상이면 상태가 None이다 — 추적은 계속된다.
-    허브 노드는 추적하지 않는다 — 후보·기준선·완료 기록이 모두 이 판정을 지난다."""
+    """근거 하나의 (대상 키, 상태 해시). 추적하지 않거나 대상 노드가 해석되지 않으면
+    None. 키는 노드의 id이고, 제목 범위면 `#제목`이 붙는다.
+    노드는 있는데 제목이 없거나 둘 이상이면 상태가 None이다 — 추적은 계속된다.
+    비노드와 허브 노드는 추적하지 않는다 — 후보·기준선·완료 기록이 모두 이 판정을 지난다."""
     parsed = _name(ref)
     if parsed is None:
         return None
@@ -148,18 +144,18 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] |
     if cache is not None and (name, heading) in cache:
         return cache[(name, heading)]
     out, hit = None, idx.locate(name) if name else None
-    if hit and graph.is_node_home(hit[1]) and graph.is_hub(hit[0]):
+    if hit and (not graph.is_node_home(hit[1]) or graph.is_hub(hit[0])):
         hit = None
     if hit:
-        path, kind = hit
+        path = hit[0]
         try:
             data = _read_bytes(path)
-            key = idx.node(path).id if graph.is_node_home(kind) else posix_rel(path, ROOT)
+            key = idx.node(path).id
         except Exception:
             data = key = None
         if key:
             if not heading:
-                out = (key, state(data, graph.is_node_home(kind)))
+                out = (key, state(data))
             else:
                 rng = heading_range(data, heading)
                 out = (f"{key}#{heading}", None if rng is None else sha256_bytes(rng))
@@ -526,29 +522,13 @@ def _carry_reports(idx, held: dict, cache: dict) -> int:
     return len(out)
 
 
-def _presented(nid: str, key: str) -> str | None:
-    """정기 실행 작업이 그 쌍을 마지막으로 보여 줄 때의 근거 상태. 없으면 None."""
-    try:
-        from . import growth
-        rows = growth._records()
-    except Exception:
-        return None
-    want = f"recheck:{nid}:{key}"
-    for r in reversed(rows):
-        for job in r.get("recheck_jobs", []) if r.get("kind") == "plan" else []:
-            if job.get("key") == want:
-                return job.get("target_state")
-    return None
-
-
-def _reviewed(idx, meta: dict, pre: str, key: str, ts: str, ref: str,
-              seen: dict | None) -> bool:
+def _reviewed(idx, meta: dict, pre: str, key: str, ref: str, seen: dict | None) -> bool:
     """`rechecked`에 적은 근거를 검토자가 본 판이 쓰기 직전과 같은가(§4-1 3항). `seen`은
     표면이 `read_node`로 읽은 노드의 본문 상태(노드 id → `state`)다 — id에 묶으므로 읽은
     뒤 옮겨지거나 이름이 바뀐 노드도 그 기록과 대조한다. 읽은 뒤 요약·배선만 바뀌었으면
-    읽은 주장은 그대로다. 비노드 근거는 정기 실행 작업이 보여 준 상태와 대조한다. 읽거나
-    보여 준 기록이 없는 쪽은 검토자가 적은 대로 둔다 — 다른 길로 읽었거나 표면이 다시 떠
-    기록이 비었을 수 있다(헌법 1조 3항). 엔진 안의 호출(`seen`이 None)은 지금 상태로 본다."""
+    읽은 주장은 그대로다. 읽은 기록이 없는 쪽은 검토자가 적은 대로 둔다 — 다른 길로
+    읽었거나 표면이 다시 떠 기록이 비었을 수 있다(헌법 1조 3항). 엔진 안의 호출(`seen`이
+    None)은 지금 상태로 본다."""
     if seen is None:
         return True
     if seen.get(meta["id"], pre) != pre:
@@ -557,14 +537,11 @@ def _reviewed(idx, meta: dict, pre: str, key: str, ts: str, ref: str,
     hit = idx.locate(parsed[0]) if parsed and parsed[0] else None
     if hit is None:
         return False
-    if graph.is_node_home(hit[1]):
-        read = seen.get(key.split("#", 1)[0])       # 노드 근거의 키는 그 노드의 id다
-        try:
-            return read is None or read == state(hit[0].read_bytes())
-        except OSError:
-            return False
-    shown = _presented(meta["id"], key)
-    return shown is None or shown == ts
+    read = seen.get(key.split("#", 1)[0])       # 근거의 키는 그 노드의 id다
+    try:
+        return read is None or read == state(hit[0].read_bytes())
+    except OSError:
+        return False
 
 
 def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozenset(),
@@ -594,7 +571,7 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
         if key not in before:
             rows.append(_row(meta["id"], ns, key, ts, "bound"))
         elif key in rechecked:
-            if not _reviewed(idx, meta, pre or ns, key, ts, ref, seen):
+            if not _reviewed(idx, meta, pre or ns, key, ref, seen):
                 unread.append(ref)
                 continue
             closed.append(ref)
