@@ -2729,6 +2729,69 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         (root / "2026-10-14" / "repo" / ".git").mkdir(parents=True)
         self.assertFalse(talk(self.sid + "-repo", "2026-10-14/repo")["workspace"]["one_off"])
 
+    def test_the_engine_rules_know_both_claude_scratch_roots(self):
+        # Claude desktop 3.16 (CLI 2.1.308) moved the Store install's scratch workspaces from
+        # %APPDATA%/Claude into %LOCALAPPDATA%/Claude-Data/claude_<package>.
+        if os.name != "nt":
+            self.skipTest("the engine's Claude rules are Windows paths")
+        from osk import workspaces
+        tail = "/" + "/".join([str(uuid.uuid4()), str(uuid.uuid4()), "scratch-2026-10-27-269921"])
+        with tempfile.TemporaryDirectory() as roaming, tempfile.TemporaryDirectory() as local, \
+                mock.patch.dict(os.environ, {"APPDATA": roaming, "LOCALAPPDATA": local}):
+            new = Path(local + "/Claude-Data/claude_pzs8sxrjxfjjc/scratch-workspaces" + tail)
+            for cwd, version in ((roaming + "/Claude/scratch-workspaces" + tail, "2.1.281"),
+                                 (str(new), "2.1.308"), (str(new / "chiikawa-addon"), "2.1.309")):
+                got = workspaces.judge("claude", cwd, version) or {}
+                self.assertEqual((got.get("one_off"), got.get("warning")), (True, None), cwd)
+            self.assertIsNone(workspaces.judge("claude", local + "/Claude-Data/claude_pzs8sxrjxfjjc/claude-code"))
+            # A new scratch conversation starts unlanded even if its key was bound before the rule.
+            new.mkdir(parents=True)
+            write.bind_session(new.name, "Capture", "bound before the rule")
+            self.transcript([{**r, "cwd": str(new), "version": "2.1.308"} for r in claude_round(self.sid, 1)])
+            st = it.capture("claude", self.sid, str(self.path), new.name)
+            self.assertEqual((st["workspace"]["one_off"], st["space"]), (True, None), st)
+
+    def test_a_subfolder_of_the_starting_folder_keeps_the_conversation_key(self):
+        # #271: a conversation started outside Git moves into a subfolder; the hooks' key stays
+        # the starting folder's, so the next capture is not refused as a changed scope.
+        import importlib
+        from osk import workspaces
+        sys.path.insert(0, str(ENGINE / "scripts/hooks"))
+        hook = importlib.import_module("claude_session_start")
+        self.addCleanup(setattr, workspaces, "_here", None)
+        start = Path(TMP.name) / f"{self.sid}-brain"
+        sub, elsewhere = start / "wiki/courses/em2", Path(TMP.name) / f"{self.sid}-other"
+        sub.mkdir(parents=True)
+        elsewhere.mkdir()
+        self.transcript([{**r, "cwd": str(start)} for r in claude_round(self.sid, 1)]
+                        + [{**r, "cwd": str(sub)} for r in claude_round(self.sid, 2)])
+        key = lambda cwd: hook.session_key(hook.project_cwd(
+            {"harness": "claude", "session_id": self.sid, "transcript_path": str(self.path), "cwd": str(cwd)}))
+        self.assertEqual((key(start), key(sub), key(elsewhere)), (start.name, start.name, elsewhere.name))
+        self.assertEqual(hook.project_cwd({"cwd": str(sub)}), str(sub))       # no transcript: the hook's folder
+        self.assertTrue(it.capture("claude", self.sid, str(self.path), key(start))["ok"])
+        st = it.capture("claude", self.sid, str(self.path), key(sub))
+        self.assertTrue(st["ok"], st)
+        self.assertIsNone(st["capture_error"])
+        # Another repository below the starting folder is its own project: a repository under the
+        # Git-less start, and a submodule of the repository a conversation started in.
+        g = lambda *a, cwd: subprocess.run(
+            ["git", "-c", "user.name=x", "-c", "user.email=x@x.invalid", "-c", "protocol.file.allow=always", *a],
+            cwd=cwd, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        inner, parent, child = start / "tools/inner", Path(TMP.name) / f"{self.sid}-up", Path(TMP.name) / f"{self.sid}-lib"
+        for p in (inner, parent, child):
+            p.mkdir(parents=True)
+            g("init", "-q", cwd=p)
+            g("commit", "-q", "--allow-empty", "-m", p.name, cwd=p)
+        g("submodule", "add", "-q", str(child), "vendor/lib", cwd=parent)
+        self.assertEqual(key(inner), hook.session_key(str(inner)))
+        self.assertNotEqual(key(inner), start.name)
+        self.transcript([{**r, "cwd": str(parent)} for r in claude_round(self.sid, 1)])
+        lib = parent / "vendor/lib"
+        self.assertEqual(key(parent / "vendor"), key(parent))                 # a plain folder of the repository
+        self.assertEqual(key(lib), hook.session_key(str(lib)))
+        self.assertNotEqual(key(lib), key(parent))
+
     def test_a_resumed_copy_of_a_landed_one_off_conversation_keeps_its_landing(self):
         # A copy of a conversation landed only by its first citation starts unlanded. The parent's
         # turns stay the parent's, and the copy continues in the parent's landing (#184 review).
