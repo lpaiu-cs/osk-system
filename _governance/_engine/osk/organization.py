@@ -158,6 +158,8 @@ def snapshot(scope: str, idx=None) -> dict:
     """Read bytes once per node; do not combine cached bodies with current hashes."""
     base = _scope_path(scope)
     idx = _index() if idx is None else idx
+    from . import evidence
+    records = evidence.Records()     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
     nodes, parsed, references, units = [], {}, [], []
     for name, (path, kind) in sorted(idx.nodes.items()):
         if not path.is_relative_to(base):
@@ -173,7 +175,7 @@ def snapshot(scope: str, idx=None) -> dict:
                       "hash": digest, "summary": str(node.meta.get("summary", "")),
                       "hub": graph.is_hub(path), "has_body": bool(write._norm_body(node.body)),
                       "body_chars": len(node.body), **write.size_feedback(path, node.body)})
-        references.extend(graph.reference_review(node, idx))
+        references.extend(graph.reference_review(node, idx, records=records))
     links = {}
     for p, node in parsed.items():
         links[p] = {write._live_locate(ref, idx) for ref in node.wikilinks()}

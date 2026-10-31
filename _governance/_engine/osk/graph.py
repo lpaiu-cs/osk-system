@@ -851,7 +851,9 @@ DUP_ID_ADVICE = (
 
 
 def topology_check(idx: Index) -> list[str]:
-    """참조 위상 검증 (헌법 8조 3항 + 4조 5항 + conflicts 예외)."""
+    """참조 위상 검증 (헌법 8조 3항 + 4조 5항 + conflicts 예외). 근거 절의 좌표도 참조다
+    (8조 2항) — 인용 기록은 모양으로 가리고, vault의 비노드 파일은 Link와 같은 규칙을 지난다."""
+    from . import evidence
     errs = []
     cases = None
     for stem, (p, kind) in idx.nodes.items():
@@ -859,7 +861,15 @@ def topology_check(idx: Index) -> list[str]:
         targets = [(t, "pe", pred) for pred in contract.PREDICATES
                    for t in n.edges(pred)]
         targets += [(t, "link", None) for t in n.wikilinks()]
+        targets += [(t, "evidence", None) for t in evidence.coordinates(n.body)]
         for name, tclass, pred in targets:
+            if tclass == "evidence":
+                k = evidence.kind(name)
+                if k == "round" and kind[0] == "domain":
+                    errs.append(f"Domain의 인용 기록 직접 참조(근거 절): {stem} → {name}")
+                if k != "path":
+                    continue
+                name = name.split("#", 1)[0].strip()
             r = idx.resolve(name)
             if pred == "conflicts":
                 # 사건 표지의 예외 — 열린(docketed) 사건 또는 존치 판결 결속 노드뿐
@@ -943,12 +953,13 @@ def dangling_refs(idx: Index) -> list[str]:
     return reference_report(idx)["dangling_refs"]
 
 
-def reference_report(idx: Index) -> dict:
-    from . import write
+def reference_report(idx: Index, records=None) -> dict:
+    from . import evidence, write
+    records = records or evidence.Records()     # 노드마다 기록 색인을 다시 짓지 않는다
     out, items, dups = [], [], []
     for stem, (p, kind) in idx.nodes.items():
         n = idx.node(p)
-        for item in reference_review(n, idx):
+        for item in reference_review(n, idx, records=records):
             items.append(dict(item, name=stem))
             if item["resolution"] == "dangling":
                 relation, ref = item["relation"], item["ref"]
@@ -967,11 +978,13 @@ def reference_report(idx: Index) -> dict:
 
 
 def reference_review(node: contract.Node, idx: Index,
-                     previous: contract.Node | None = None) -> list[dict]:
+                     previous: contract.Node | None = None, records=None) -> list[dict]:
     """One readout for writes, global checks and durable organization work.
 
     Resolution proves a destination category, not truth or an external URL's
-    availability. Raw remains evidence in hidden non-Markdown storage.
+    availability. Raw remains evidence in hidden non-Markdown storage. Evidence-section
+    coordinates are references too (Mechanism §9-4 1): an unresolved one is reported here;
+    a held external root and a line pointing at a node are the validator's to report.
     """
     import difflib
     old = set(previous.references()) if previous else set()
@@ -1003,6 +1016,17 @@ def reference_review(node: contract.Node, idx: Index,
             if kind == "dangling":
                 item["candidates"] = difflib.get_close_matches(target, idx.names, n=3, cutoff=0.65)
             out.append(item)
+    from . import evidence
+    coords = evidence.coordinates(node.body)
+    if coords:
+        before = set(evidence.coordinates(previous.body)) if previous else set()
+        records = records or evidence.Records()
+        for coord in coords:
+            problem = evidence.check(coord, idx, records)
+            if problem and not problem.startswith(evidence.NODE_LINE):
+                out.append({"id": node.id, "relation": "근거", "ref": coord,
+                            "resolution": "unresolved", "issue": "evidence_unresolved",
+                            "problem": problem, "new": coord not in before})
     return out
 
 

@@ -15,7 +15,7 @@ import json
 import re
 from pathlib import Path
 
-from . import contract, graph, raw, secrets, write
+from . import contract, evidence, graph, raw, secrets, write
 from .core import ROOT, local_lock_path, posix_rel, resolve_in_root, sha256_bytes, sha256_file
 
 # 증류가 쓰는 자리 — Person은 소속 scope 없는 세션이 Person에 둘 것만 남길 때다(시행령 §3 9항 3호).
@@ -221,6 +221,23 @@ def _placement(p: Path, idx, *, repair: bool = False, selected: dict | None = No
     return {"status": "complete", "target_path": posix_rel(p, ROOT), "hubs": current_hubs}
 
 
+def _cites(node, idx, *, legacy: bool = True) -> set[str]:
+    """노드가 다는 출처 — `derived-from`의 노드와 근거 절 줄이 가리키는 인용 라운드(헌법 제8조
+    5·6항). `legacy`면 이행 전 `derived-from`에 남은 인용 라운드도 센다 — 그때 적힌 영수증이
+    그대로 확인된다. 새 증류는 줄만 받는다."""
+    out = evidence.cited_rounds(node.body)
+    for ref in write._stored_edges(node.meta.get("derived-from")):
+        try:
+            source = _source(ref, idx)
+        except (write.WriteError, OSError, ValueError, TypeError):
+            # An unrelated pre-existing citation need not be a valid new
+            # distillation input. Only the requested evidence is certified.
+            continue
+        if legacy or source.get("id"):
+            out.add(source["ref"])
+    return out
+
+
 def _receipt(job: dict, reason: str | None = None) -> dict:
     out = {"key": job["key"], "status": "pending" if reason else "complete",
            "sources": job["sources"], "target": job["target"], "hub": job["hub"]}
@@ -238,16 +255,7 @@ def _verify(job: dict, idx=None) -> dict:
         target, hub = job["target"], job["hub"]
         p = _retained_target(target, idx)
         node = contract.parse(p)
-        # Node.edges() intentionally drops raw anchors. Retain exact stored refs.
-        actual = set()
-        for ref in write._stored_edges(node.meta.get("derived-from")):
-            try:
-                actual.add(_source(ref, idx)["ref"])
-            except (write.WriteError, OSError, ValueError, TypeError):
-                # An unrelated pre-existing citation need not be a valid new
-                # distillation input. Only the requested evidence is certified.
-                continue
-        if not {raw.canonical_ref(s["ref"]) for s in job["sources"]}.issubset(actual):
+        if not {raw.canonical_ref(s["ref"]) for s in job["sources"]}.issubset(_cites(node, idx)):
             raise write.WriteError("target provenance is incomplete; pending")
         retained = True
         placement = _placement(p, idx, selected=job)
@@ -265,7 +273,8 @@ def _verify(job: dict, idx=None) -> dict:
 
 def structure(receipt: dict, idx=None) -> str | None:
     """ACK 뒤의 구조 신호 — 대상이 남았는가, 같은 최상위 군집에 있는가, 출처를 아직
-    `derived-from`으로 다는가. 문단·허브·출처 해시는 ACK 때 확인했고 다시 보지 않는다.
+    다는가(노드는 `derived-from`, 인용 라운드는 근거 절의 줄이나 이행 전의 `derived-from`).
+    문단·허브·출처 해시는 ACK 때 확인했고 다시 보지 않는다.
     걸리면 그 이유를 돌려줄 뿐 검토를 다시 열지 않는다."""
     try:
         idx = graph.Index() if idx is None else idx
@@ -275,8 +284,9 @@ def structure(receipt: dict, idx=None) -> str | None:
             return "target missing"
         if p.relative_to(ROOT).parts[:2] != Path(target["path"]).parts[:2]:
             return "target left its top-level cluster"
-        kept = {write._edge_key(ref, idx)
-                for ref in write._stored_edges(contract.parse(p).meta.get("derived-from"))}
+        node = contract.parse(p)
+        kept = {write._edge_key(ref, idx) for ref in (*write._stored_edges(node.meta.get("derived-from")),
+                                                      *evidence.cited_rounds(node.body))}
         if any(write._edge_key(s["ref"], idx) not in kept for s in receipt["sources"]):
             return "target no longer cites its source"
     except (write.WriteError, OSError, ValueError, KeyError, TypeError) as e:
@@ -462,10 +472,11 @@ def _execute(operation: str, distill: dict, request: dict, *,
             # 호출자가 필수 출처를 빼라고 하면 거부한다 — 증류가 그 출처를 다시 대어
             # 요청을 조용히 뒤집지 않는다(같은 근거를 빼고 대면 남는 것이 쓰기의 규칙이다).
             # 비교는 실제 제거와 같은 동일성(`write._edge_key`)으로 한다 — 별칭·경로·id
-            # 어느 표기로 빼든 쓰기가 빼는 것이면 여기서도 잡힌다.
+            # 어느 표기로 빼든 쓰기가 빼는 것이면 여기서도 잡힌다. 인용 라운드는 근거 절의 줄이 다므로
+            # 이행 전 derived-from의 같은 라운드를 빼는 것은 출처를 빼는 것이 아니다.
             removed = {write._edge_key(str(ref), idx) for ref in
                        write._as_list((request.get("remove_edges") or {}).get("derived-from", []))}
-            if removed & {write._edge_key(s["ref"], idx) for s in sources}:
+            if removed & {write._edge_key(s["ref"], idx) for s in sources if s.get("id")}:
                 raise write.WriteError("required provenance was removed; no node written")
             if operation == "create":
                 supplied_body = request.get("body")
@@ -507,14 +518,16 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("distillation cannot cite its target or wiring hub as input")
             if not write._norm_body(n.body):
                 raise write.WriteError("distillation has no retained body after validation")
-            stored = set()
-            for ref in write._stored_edges(n.meta.get("derived-from")):
-                try:
-                    stored.add(_source(ref, idx)["ref"])
-                except (write.WriteError, OSError, ValueError, TypeError):
-                    continue
-            if not {raw.canonical_ref(source["ref"]) for source in sources}.issubset(stored):
+            cites = _cites(n, idx, legacy=False)
+            if not {source["ref"] for source in sources if source.get("id")}.issubset(cites):
                 raise write.WriteError("required provenance was removed; no node written")
+            unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(s["ref"]) not in cites]
+            if unlined:
+                coords = [evidence.coordinate(s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
+                raise write.WriteError(
+                    "출처 라운드를 근거 절의 줄로 달지 않았다 — 쓰지 않았다",
+                    [f"노드 끝 `## 근거` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "
+                     f"한 줄을 단다(헌법 제8조 6항)" for c in coords])
             planned = {"name": path.stem, "id": n.id, "path": posix_rel(path, ROOT),
                        "before_hash": sha256_file(path) if path.exists() else None,
                        "hash": sha256_bytes(data)}
@@ -550,11 +563,14 @@ def _execute(operation: str, distill: dict, request: dict, *,
             else:
                 already_written = False
             if not already_written:
-                edge_arg = "edges" if operation == "create" else "add_edges"
-                edges = dict(request.get(edge_arg) or {})
-                edges["derived-from"] = (write._as_list(edges.get("derived-from", []))
-                                         + [s["ref"] for s in sources])
-                request[edge_arg] = edges
+                # 노드 출처는 엔진이 derived-from에 단다. 인용 라운드는 무엇을 보였는지 아는
+                # 호출자가 근거 절에 줄로 적고, `prepare`가 그 줄을 확인한다(헌법 제8조 5·6항).
+                nodes = [s["ref"] for s in sources if s.get("id")]
+                if nodes:
+                    edge_arg = "edges" if operation == "create" else "add_edges"
+                    edges = dict(request.get(edge_arg) or {})
+                    edges["derived-from"] = write._as_list(edges.get("derived-from", [])) + nodes
+                    request[edge_arg] = edges
                 # v1 reserved wiki-form raw edges. Replay those exact bytes;
                 # never replace the journal's expected hash to permit a retry.
                 legacy_raw = bool(job and job["version"] == 1)

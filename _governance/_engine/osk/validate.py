@@ -72,8 +72,11 @@ def run() -> dict:
     # 3. 참조 위상 (헌법 8조 3항)
     guard("참조 위상", lambda: graph.topology_check(idx))
     ok("동명 노드 중복", [f"{s}: {v}" for s, v in idx.dup_stems.items()])
+    records = None                        # 참조 경고와 근거 절 검사(17)가 함께 쓰는 기록 색인
     try:
-        rep["warnings"] = graph.reference_report(idx)
+        from . import evidence
+        records = evidence.Records()
+        rep["warnings"] = graph.reference_report(idx, records)
     except Exception as e:
         rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
         skip("미해석 참조 경고", f"산출 실패: {e}")
@@ -306,7 +309,7 @@ def run() -> dict:
     try:
         from . import roots
         external = roots.Roots()
-        ev = evidence_section_report(idx, external)
+        ev = evidence_section_report(idx, external, records)
         # `derived-from`에 남은 비노드는 이행 전 노드마다 걸리므로 노드 수로만 싣는다 — 줄의
         # 위반이 그 수백 줄에 묻히지 않게 한다. verdict 산입(활성화 뒤)은 둘 다 센다.
         left = [n for n, es in ev.items() if any(e.startswith(LEFTOVER) for e in es)]
@@ -367,11 +370,11 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
     return errs
 
 
-def evidence_section_report(idx: "graph.Index", external=None) -> dict:
+def evidence_section_report(idx: "graph.Index", external=None, records=None) -> dict:
     """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다. 보류된 외부
     루트는 위반이 아니므로 여기 없고 `external.held`에 모인다."""
     from . import evidence
-    records = evidence.Records()
+    records = records or evidence.Records()
     out = {}
     for name, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] == "governance":

@@ -162,17 +162,19 @@ def main():
         assert appended["index"] == 2 and not retry.exists()
         assert raw.read_round("00_Scope/W1/_raw/retry.md")["rounds"] == 2
 
-        # Old receipts still verify after migration; new PE values are plain.
+        # Old receipts still verify after migration; the round is bound by its evidence line.
         record = base / "proof.md"
         record.write_bytes(raw._block(1, "durable observation", "verified result").encode())
         ref = "[[00_Scope/W1/_raw/proof.md#1]]"
         out = D.create_node({"key": "legacy-proof", "sources": [ref], "hub": "W1"},
                             title="hidden-raw-proof", summary="preserved observation",
-                            body="The observed result is retained.", drafter="test-model", space="00_Scope/W1")
+                            body="The observed result is retained.\n\n## 근거\n\n"
+                                 "- 2026-10-31 · `proof#1` · 지지 — durable observation",
+                            drafter="test-model", space="00_Scope/W1")
         assert out["distillation"]["status"] == "complete", out
         target = root / out["path"]
         saved = target.read_bytes()
-        assert "[[" not in str(contract.parse(target).meta["derived-from"])
+        assert "derived-from" not in contract.parse(target).meta
         historic = copy.deepcopy(out["distillation"])
         historic["sources"][0].update(ref=ref, path="00_Scope/W1/_raw/proof.md")
         raw.migrate(apply=True)

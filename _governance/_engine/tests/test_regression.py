@@ -3549,7 +3549,8 @@ def test_edge_target_normalization():
     check("같은 id 추가는 중복 등재하지 않는다", r1.get("no_change") is True, r1)
     r2 = _w(write.update_node, "regr-norm",
             add_edges={"derived-from": "[[= Governance/없는문서]]"})
-    check("비노드 근거는 위키링크로 받는다", r2["ok"], r2)
+    check("비노드 근거는 derived-from이 받지 않고 근거 절로 보낸다(헌법 제8조 5·6항)",
+          not r2["ok"] and "## 근거" in " ".join(r2.get("violations", [])), r2)
     r3 = _w(write.update_node, "regr-norm", remove_edges={"derived-from": tid})
     check("id 제거가 유효하다",
           r3["ok"] and tid not in (r3["edges"]["derived-from"] or []), r3)
@@ -5867,6 +5868,77 @@ def test_external_roots():
     check("위치를 지운다", roots.locations() == {})
     refused("없는 위치는 지우지 않는다", roots.unmount, "docs", says="위치가 없는")
     roots.CONFIG.unlink()
+
+
+def test_non_node_evidence_is_an_evidence_line():
+    """`derived-from`은 노드만 받고 비노드 근거는 노드 끝 근거 절의 줄이다(헌법 제8조 5·6항).
+
+    무엇을 망가뜨리면 실패하는가:
+      · `_check_edges`의 비노드 거부를 지우면 → 첫 단언 묶음
+      · 빼는 갈래(`adding=False`)까지 거부하면 → 옛 대상 제거 단언
+      · 증류가 인용 라운드를 derived-from에 다시 달거나 줄을 보지 않으면 → 증류 단언 셋
+      · 미해석 근거 좌표를 참조 판독에서 빼면 → 쓰기 응답 단언
+      · Domain 근거 절의 라운드를 위상에서 빼면 → Domain 단언 둘
+      · 재검토가 비노드를 다시 재면 → 마지막 단언
+    """
+    from osk import distillation as D, evidence, raw, rechecks
+    sp, dom = "00_Scope/W1", ROOT / "00_Domain/regr-EvD"
+    rec = raw.append_rounds("repo/regr-evid", "regr-evid-rec", [{"user": "관측", "agent": "결과"}], sp)
+    ref, coord = rec["round_refs"][0], evidence.coordinate(rec["path"], 1)
+    src = ROOT / "_sources/regr-evid.md"
+    src.parent.mkdir(exist_ok=True)
+    src.write_text("# 결과\n\nx\n", encoding="utf-8")
+    line = f"- 2026-10-31 · `{coord}` · 지지 — 관측"
+    made = ROOT / sp / "regr-evid.md"
+    legacy = ROOT / sp / "regr-evid-old.md"
+    try:
+        for bad in (ref, coord, "https://example.com/a", "_sources/regr-evid.md", "docs:a.md"):
+            r = _w(write.create_node, "regr-evid-bad", "s", "본문", "fable-5", space=sp,
+                   edges={"derived-from": bad})
+            check(f"derived-from은 비노드를 받지 않는다: {bad}",
+                  not r.get("ok") and "derived-from은 노드만" in str(r), r)
+        spec = {"key": "regr-evid", "sources": [ref], "hub": "W1"}
+        r = _w(D.create_node, spec, title="regr-evid", summary="s", body="주장.",
+               drafter="fable-5", space=sp)
+        check("근거 줄 없는 인용 라운드는 증류하지 않는다", not r.get("ok") and coord in str(r), r)
+        r = _w(D.create_node, spec, title="regr-evid", summary="s",
+               body="주장.\n\n## 근거\n\n" + line, drafter="fable-5", space=sp)
+        check("근거 줄로 단 인용 라운드는 증류된다",
+              r.get("distillation", {}).get("status") == "complete", r)
+        check("인용 라운드는 derived-from에 달지 않는다", "derived-from" not in contract.parse(made).meta)
+        r = _w(write.update_node, "regr-evid", old_text=line,
+               new_text=line + "\n" + line.replace("#1`", "#9`"))
+        items = (r.get("reference_review") or {}).get("items", [])
+        check("해석되지 않는 근거 좌표는 쓰기 응답이 보고한다",
+              r.get("ok") and [(i["relation"], i["issue"]) for i in items]
+              == [("근거", "evidence_unresolved")] and "없는 라운드" in items[0]["problem"], r)
+        # 이행 전의 옛 비노드 대상은 읽히고, 뺄 수 있다
+        legacy.write_text(node_text("260802-zzzz-evd1", body="옛 주장",
+                                    extra=f'derived-from: "{ref}"\n'), encoding="utf-8")
+        r = _w(write.update_node, "regr-evid-old", remove_edges={"derived-from": ref})
+        check("옛 비노드 대상은 뺄 수 있다",
+              r.get("ok") and "derived-from" not in contract.parse(legacy).meta, r)
+        # Domain 노드의 근거 절은 인용 기록을 가리키지 않는다 — 쓰기와 전역 검사 모두
+        dom.mkdir(parents=True, exist_ok=True)
+        (dom / "regr-EvD.md").write_text(node_text("260802-zzzz-evd2", "허브"), encoding="utf-8")
+        r = _w(write.create_node, "regr-evd-claim", "s", "주장.\n\n## 근거\n\n" + line, "fable-5",
+               space="00_Domain/regr-EvD")
+        check("Domain 노드의 근거 줄은 인용 라운드를 가리키지 않는다",
+              not r.get("ok") and "Domain의 인용 기록 직접 참조(근거 절)" in str(r), r)
+        (dom / "regr-evd-hand.md").write_text(node_text("260802-zzzz-evd3",
+                                                        body="주장.\n\n## 근거\n\n" + line), encoding="utf-8")
+        check("손으로 쓴 Domain 근거 줄은 전역 위상 검사가 잡는다",
+              any("regr-evd-hand → " + coord in e for e in graph.topology_check(graph.Index())))
+        idx = graph.Index()
+        check("재검토는 비노드를 재지 않는다",
+              rechecks.target("[[_sources/regr-evid.md]]", idx) is None
+              and rechecks.target("regr-evid", idx) is not None)
+    finally:
+        _unhang("W1", "regr-evid")
+        for p in (made, legacy, src, ROOT / rec["path"]):
+            p.unlink(missing_ok=True)
+        rmtree_force(dom)
+        D._job_path("regr-evid").unlink(missing_ok=True)
 
 
 def test_raw_read():
@@ -8882,7 +8954,7 @@ def test_rechecks():
     from osk import rechecks
     W = ROOT / "00_Scope/W1"
     src = ROOT / "_sources" / "regr-rc.md"
-    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New", "W", "S", "R", "Hub")]
+    made = [W / f"regr-rc-{x}.md" for x in ("T", "N", "H", "Old", "New", "W", "S", "R", "Hub", "Src")]
     st = lambda f: rechecks.state(f.read_bytes())
     led = rechecks.RECHECKS
     lbefore = led.read_bytes() if led.exists() else None
@@ -8965,20 +9037,22 @@ def test_rechecks():
         _age_all()
         check("엔진 밖에서 노드가 바뀌면 후보다", why("regr-rc-N") == {"노드가 바뀌었다"})
 
-        src.parent.mkdir(exist_ok=True)
-        src.write_text("# 계획\n\n## A\n\n가.\n\n```\n## 코드 속\n```\n\n## B\n\n나.\n",
-                       encoding="utf-8")
-        ref = "[[_sources/regr-rc.md#A]]"
+        # 제목 범위 근거 — 노드의 절이다. 엔진 밖의 바이트 편집으로 절을 바꾼다.
+        hsrc = W / "regr-rc-Src.md"
+        _w(write.create_node, hsrc.stem, "s",
+           "# 계획\n\n## A\n\n가.\n\n```\n## 코드 속\n```\n\n## B\n\n나.", "fable-5",
+           space="00_Scope/W1")
+        ref = f"[[{hsrc.stem}#A]]"
         _w(write.create_node, "regr-rc-H", "s", "절 근거.", "fable-5",
            space="00_Scope/W1", edges={"derived-from": ref})
         check("제목 범위 근거도 완료로 시작한다", not why("regr-rc-H", ref))
-        src.write_text(src.read_text(encoding="utf-8").replace("나.", "다."), encoding="utf-8")
+        hsrc.write_bytes(hsrc.read_bytes().replace("나.".encode(), "다.".encode()))
         _age_all()
         check("다른 절이 바뀌어도 그 절의 근거는 완료다", not why("regr-rc-H", ref))
-        src.write_text(src.read_text(encoding="utf-8").replace("가.", "라."), encoding="utf-8")
+        hsrc.write_bytes(hsrc.read_bytes().replace("가.".encode(), "라.".encode()))
         _age_all()
         check("그 절이 바뀌면 후보다", why("regr-rc-H", ref) == {"근거가 바뀌었다"})
-        data = src.read_bytes()
+        data = hsrc.read_bytes()
         check("코드 속 `##`는 제목이 아니다",
               rechecks.heading_range(data, "코드 속") is None
               and b"## B" not in rechecks.heading_range(data, "A"))
@@ -8986,6 +9060,11 @@ def test_rechecks():
               rechecks.heading_range(b"## A\n1\n## A\n2\n", "A") is None)
         check("raw 라운드는 추적하지 않는다",
               rechecks.target("00_Scope/W1/_raw/.records/x.txt#1", graph.Index()) is None)
+        src.parent.mkdir(exist_ok=True)
+        src.write_text("# 계획\n\n## A\n\n가.\n", encoding="utf-8")
+        check("비노드 파일과 그 제목 범위는 추적하지 않는다(헌법 제8조 5항)",
+              rechecks.target("[[_sources/regr-rc.md]]", graph.Index()) is None
+              and rechecks.target("[[_sources/regr-rc.md#A]]", graph.Index()) is None)
         # 허브는 갈래의 입구다 — 허브 본문이 바뀌어도 그 허브를 인용한 노드는 후보가
         # 아니다(시행령 §7 2항 단서). 제목 범위로 가리켜도 같다.
         check("허브는 제목 범위로 가리켜도 추적하지 않는다",
@@ -8999,14 +9078,13 @@ def test_rechecks():
               not why("regr-rc-Hub"))
         hub.write_bytes(hub_before)
         # 제목이 사라져도 근거는 남는다 — 해석 불능 후보이지 뺀 근거가 아니다
-        src.write_text(src.read_text(encoding="utf-8").replace("## A", "## A2"),
-                       encoding="utf-8")
+        hsrc.write_bytes(hsrc.read_bytes().replace("## A\n".encode(), "## A2\n".encode()))
         _age_all()
         check("제목이 사라진 근거는 해석 불능 후보로 남는다",
               why("regr-rc-H", ref) == {"근거를 해석할 수 없다"})
         from osk import growth
         hid = graph.Index().node(W / "regr-rc-H.md").id
-        job = {"id": hid, "target_key": "_sources/regr-rc.md#A", "target": ref}
+        job = {"id": hid, "target_key": graph.Index().node(hsrc).id + "#A", "target": ref}
         check("그 작업은 근거를 뺀 것으로 닫히지 않는다",
               growth._recheck_status(job, graph.Index())["status"] == "pending")
 
@@ -9093,39 +9171,16 @@ def test_rechecks():
               r.get("recheck_unread") and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
         _w(write.move_nodes, ["regr-rc-T"], "00_Scope/W1")
 
-        # 비노드 근거는 정기 실행 작업이 보여 준 판과 대조하고, 보여 준 기록이 없으면 적은 대로 둔다
+        # 이행 전 derived-from에 남은 비노드 근거는 재지 않는다 — 바뀌어도 후보가 아니고,
+        # rechecked에 적어도 닫을 쌍이 없다(헌법 제8조 5항)
         fref = "[[_sources/regr-rc.md]]"
-        _w(write.create_node, "regr-rc-W", "s", "파일 근거.", "fable-5", space="00_Scope/W1",
-           edges={"derived-from": fref})
+        (W / "regr-rc-W.md").write_text(node_text("260802-zzzz-rcwf", body="파일 근거.",
+                                                  extra=f'derived-from: "{fref}"\n'), encoding="utf-8")
         src.write_text(src.read_text(encoding="utf-8") + "\n덧붙임.\n", encoding="utf-8")
         _age_all()
-        sw = {idof("regr-rc-W"): st(W / "regr-rc-W.md")}
-        r = _w(write.update_node, "regr-rc-W", rechecked=[fref], _seen=sw)
-        check("보여 준 기록이 없는 비노드 근거는 적은 대로 완료를 적는다",
-              r.get("rechecked") and not why("regr-rc-W"), r)
-        shown = rechecks.target(fref, graph.Index())[1]
-        src.write_text(src.read_text(encoding="utf-8") + "\n또 덧붙임.\n", encoding="utf-8")
-        _age_all()
-        gled = growth.LEDGER
-        gbefore = gled.read_bytes() if gled.exists() else None
-        try:
-            wid = graph.Index().node(W / "regr-rc-W.md").id
-            core.ledger_append(gled, {"kind": "plan", "recheck_jobs": [{
-                "key": f"recheck:{wid}:_sources/regr-rc.md", "target_state": shown}]})
-            r = _w(write.update_node, "regr-rc-W", rechecked=[fref], _seen=sw)
-            check("정기 작업이 보여 준 판이 지금과 다르면 완료를 적지 않는다",
-                  r.get("recheck_unread") and why("regr-rc-W") == {"근거가 바뀌었다"}, r)
-            core.ledger_append(gled, {"kind": "plan", "recheck_jobs": [{
-                "key": f"recheck:{wid}:_sources/regr-rc.md",
-                "target_state": rechecks.target(fref, graph.Index())[1]}]})
-            r = _w(write.update_node, "regr-rc-W", rechecked=[fref], _seen=sw)
-            check("정기 작업이 보여 준 판이면 완료를 적는다",
-                  r.get("rechecked") and not why("regr-rc-W"), r)
-        finally:
-            if gbefore is None:
-                gled.unlink(missing_ok=True)
-            else:
-                gled.write_bytes(gbefore)
+        r = _w(write.update_node, "regr-rc-W", rechecked=[fref])
+        check("이행 전의 비노드 근거는 후보도 완료도 아니다",
+              not why("regr-rc-W") and (r.get("recheck_unmatched") or {}).get("targets") == [fref], r)
 
         # 대장을 읽지 못해도 노드 쓰기는 된다 — 완료만 믿지 않는다
         good = led.read_bytes()
@@ -9266,6 +9321,8 @@ def test_move_topology_refused():
         "regr-mt4": node_text("260925-rgmt-0004", body="참조 없음"),
         "regr-mt6": node_text("260925-rgmt-0006", body="경로형 [[00_Scope/W1/regr-mt7]]"),
         "regr-mt7": node_text("260925-rgmt-0007", body="대상"),
+        "regr-mt8": node_text("260925-rgmt-0008",
+                              body="원료에서\n\n## 근거\n\n- 2026-09-25 · `c38d8ef2#1` · 지지 — 관측"),
     }
     try:
         for d in (mt, mx, md):
@@ -9285,6 +9342,10 @@ def test_move_topology_refused():
         check("인용 기록 근거를 단 노드는 Domain으로 못 간다",
               r2.get("ok") is False and "Domain의 인용 기록" in str(r2)
               and (w1 / "regr-mt3.md").is_file(), r2)
+        r8 = _w(write.move_nodes, ["regr-mt8"], "00_Domain/regr-MD")
+        check("근거 절에 인용 라운드를 단 노드도 Domain으로 못 간다",
+              r8.get("ok") is False and "(근거 절)" in str(r8)
+              and (w1 / "regr-mt8.md").is_file(), r8)
         r3 = _w(write.move_nodes, ["regr-mt1", "regr-mt2"], "00_Scope/regr-MT")
         check("서로 잇는 노드는 함께 옮기면 된다", r3.get("ok"), r3)
         r4 = _w(write.move_nodes, ["regr-mt4"], "00_Domain/regr-MD")
@@ -12149,7 +12210,8 @@ def test_publish_validator_uses_snapshot():
 
 
 def test_write_edge_coordinates():
-    """A round delta preserves every other round and same-named source file."""
+    """Non-node targets stored before v5.4 keep their exact coordinates: removing one
+    round or source preserves every other, and none can be added any more."""
     from osk import raw
     base = ROOT / "00_Scope/W1/regr-write-coordinates"
     sources = ROOT / "_sources/regr-write-coordinates"
@@ -12163,26 +12225,21 @@ def test_write_edge_coordinates():
                               [{"user": "u1", "agent": "a1"},
                                {"user": "u2", "agent": "a2"}], space="00_Scope/W1")
         first, second = r["round_refs"]
-        n = write.create_node("regr-coordinate-node", "test evidence", "claim",
-                              "fable-5", space=base.relative_to(ROOT).as_posix(),
-                              edges={"derived-from": first})
-        p = ROOT / n["path"]
-        write.update_node(p.stem, add_edges={"derived-from": second})
-        check("different rounds can both be added",
-              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [first, second])
-        write.update_node(p.stem, remove_edges={"derived-from": first})
-        check("removing one round preserves the other",
-              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second])
-        write.update_node(p.stem, add_edges={"derived-from": second.replace(".md#", "#")})
-        check("optional md suffix still identifies the same round",
-              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second])
         refs = []
         for folder in ("one", "two"):
             s = sources / folder / "evidence.md"
             s.parent.mkdir(parents=True)
             s.write_text("source material", encoding="utf-8")
             refs.append(f"[[{s.relative_to(ROOT).as_posix()}#section]]")
-        write.update_node(p.stem, add_edges={"derived-from": refs})
+        p = base / "regr-coordinate-node.md"
+        p.write_text(node_text("260802-zzzz-wcrd", body="claim",
+                               extra=f"derived-from: {json.dumps([first, second] + refs)}\n"),
+                     encoding="utf-8")
+        refused = _w(write.update_node, p.stem, add_edges={"derived-from": first})
+        check("a stored round is not added again either", not refused.get("ok"), refused)
+        write.update_node(p.stem, remove_edges={"derived-from": f"[[{first}]]"})
+        check("removing one round, in either notation, preserves the other",
+              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second] + refs)
         write.update_node(p.stem, remove_edges={"derived-from": refs[0]})
         check("same filename in different source paths remains distinct",
               write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second, refs[1]])
@@ -12265,7 +12322,7 @@ def test_node_heading_edge_coordinates():
 
 
 def test_derived_from_once_per_round():
-    """한 세션에서 같은 노드를 세 번 고쳐도 raw 근거는 라운드마다 한 번만 앉는다.
+    """한 세션에서 같은 노드를 세 번 고쳐도 근거는 범위마다 한 번만 앉는다.
 
     실측(2026-09-25, v3.22.2): 한 세션에서 `update_node`를 세 번 받은 노드의 응답이
     `derived-from`에 같은 기록 경로를 세 번 실었다. 저장본은 그 기록의 서로 다른
@@ -12276,14 +12333,16 @@ def test_derived_from_once_per_round():
 
     합치기의 키는 "이미 있는가"만 묻는다. 저장 목록을 키로 줄이면 키가 거친
     자리(URL의 `.md`, 노드의 절 앵커)마다 서로 다른 근거가 지워진다(PR #90 리뷰).
+    v5.4부터 `derived-from`은 노드만 받는다(헌법 제8조 5항) — 더하는 근거는 한 노드의
+    서로 다른 절이고, 라운드와 URL은 그 전에 저장된 근거로만 남는다.
 
     무엇을 망가뜨리면 실패하는가:
       · 응답 `edges`를 `Node.edges`로 되돌리면 → ①의 응답 단언
       · 갱신의 바이트 되풀이 접기를 지우면 → ②의 본문 쓰기·표기 변형 단언
       · 생성이 `_merge_edges`를 건너뛰면 → ③
       · `graph.reference_report`의 중복 보고를 지우면 → ②의 경고 단언
-      · `_edge_key`가 앵커를 버리면 → ①의 저장 단언(다른 라운드가 하나로 접힌다)
-      · `_edge_key`가 URL에서도 `.md`를 떼면 → ④의 URL 단언 셋
+      · `_edge_key`가 앵커를 버리면 → ①의 저장 단언(다른 절이 하나로 접힌다)
+      · `_edge_key`가 URL에서도 `.md`를 떼면 → ④의 URL 단언
       · `_merge_edges`가 저장 목록까지 키로 줄이면 → ④의 저장 근거 단언
     """
     from osk import raw
@@ -12305,67 +12364,69 @@ def test_derived_from_once_per_round():
                               [{"user": f"u{i}", "agent": f"a{i}"} for i in (1, 2, 3)],
                               space="00_Scope/W1")
         record = ROOT / r["path"]
-        r1, r2, r3 = r["round_refs"]
+        r1 = r["round_refs"][0]
+        t = "regr-edge-once-t"
+        write.create_node(t, "t", "## s1\n\n가\n\n## s2\n\n나\n\n## s3\n\n다", "fable-5", space=space)
+        h1, h2, h3 = (f"[[{t}#s{i}]]" for i in (1, 2, 3))
 
-        # ① 관측 경로 — 한 세션에서 세 번 고치며 매번 그 세션의 기록을 근거로 단다.
-        #    앞서 단 라운드를 다른 표기로 되풀어 달아도 같은 근거다.
+        # ① 관측 경로 — 한 세션에서 세 번 고치며 매번 한 노드의 다른 절을 근거로 단다.
+        #    앞서 단 절을 다른 표기로 되풀어 달아도 같은 근거다.
         a = base / "regr-edge-once-a.md"
         write.create_node(a.stem, "a", "claim", "fable-5", space=space)
-        for i, refs in enumerate(([r1], [r2, r1], [r3, f"[[{r2}]]"]), 1):
+        for i, refs in enumerate(([h1], [h2, h1], [h3, f"{t}#s2"]), 1):
             out = write.update_node(a.stem, summary=f"a{i}",
                                     add_edges={"derived-from": refs})
-        check("세 번 고쳐도 라운드마다 한 번만 저장된다", stored(a) == [r1, r2, r3], stored(a))
-        check("응답도 라운드 좌표째 한 번씩 보고한다",
-              sorted(out["edges"]["derived-from"]) == [r1, r2, r3], out.get("edges"))
+        check("세 번 고쳐도 절마다 한 번만 저장된다", stored(a) == [h1, h2, h3], stored(a))
+        check("응답도 절 앵커째 한 번씩 보고한다",
+              sorted(out["edges"]["derived-from"]) == [f"{t}#s{i}" for i in (1, 2, 3)],
+              out.get("edges"))
 
         # ② 이미 저장된 중복(구판의 생성·손 편집이 남긴 것)은 다음 쓰기에서 접힌다.
         b = base / "regr-edge-once-b.md"
         b.write_text(node_text("260802-zzzz-once", body="claim",
-                               extra=f'derived-from: ["{r1}", "{r1}", "{r2}"]\n'),
+                               extra=f'derived-from: ["{h1}", "{h1}", "{h2}"]\n'),
                      encoding="utf-8")
         check("검증기가 저장된 중복을 경고한다",
-              warned() == [f"regr-edge-once-b [derived-from] → {r1}"], warned())
+              warned() == [f"regr-edge-once-b [derived-from] → {h1}"], warned())
         write.update_node(b.stem, old_text="claim", new_text="claim v2")
-        check("본문만 고치는 쓰기에서도 중복이 접힌다", stored(b) == [r1, r2], stored(b))
-        write.update_node(b.stem, add_edges={"derived-from": [r3, r1]})
-        check("접힌 뒤의 추가도 한 번씩만 앉는다", stored(b) == [r1, r2, r3], stored(b))
+        check("본문만 고치는 쓰기에서도 중복이 접힌다", stored(b) == [h1, h2], stored(b))
+        write.update_node(b.stem, add_edges={"derived-from": [h3, h1]})
+        check("접힌 뒤의 추가도 한 번씩만 앉는다", stored(b) == [h1, h2, h3], stored(b))
         check("접힌 뒤에는 경고가 없다", warned() == [], warned())
         #    표기만 다른 중복은 추가가 정규 표기로 다시 적은 뒤 바이트 비교로 접힌다.
         v = base / "regr-edge-once-v.md"
         v.write_text(node_text("260802-zzzz-oncv", body="claim",
-                               extra=f'derived-from: ["{r1}", "[[{r1}]]"]\n'),
+                               extra=f'derived-from: ["{h1}", "{t}#s1"]\n'),
                      encoding="utf-8")
-        write.update_node(v.stem, add_edges={"derived-from": r2})
-        check("표기만 다른 중복이 접혀도 새 근거는 앉는다", stored(v) == [r1, r2], stored(v))
+        write.update_node(v.stem, add_edges={"derived-from": h2})
+        check("표기만 다른 중복이 접혀도 새 근거는 앉는다", stored(v) == [h1, h2], stored(v))
 
         # ③ 생성도 같은 합치기를 지난다.
         c = base / "regr-edge-once-c.md"
         write.create_node(c.stem, "c", "claim", "fable-5", space=space,
-                          edges={"derived-from": [r1, f"[[{r1}]]", r1]})
-        check("생성도 같은 근거를 한 번만 적는다", stored(c) == [r1], stored(c))
+                          edges={"derived-from": [h1, f"{t}#s1", h1]})
+        check("생성도 같은 근거를 한 번만 적는다", stored(c) == [h1], stored(c))
 
         # ④ 서로 다른 근거는 합치지 않는다. URL은 확장자까지 주소이고, 저장된 근거는
-        #    키로 지우지 않는다.
+        #    키로 지우지 않는다. URL과 라운드는 v5.4 전에 저장된 근거다.
         code = "https://github.com/o/r/blob/abc/Makefile"
         doc = code + ".md"
         u = base / "regr-edge-once-u.md"
-        write.create_node(u.stem, "u", "claim", "fable-5", space=space,
-                          edges={"derived-from": [code, doc]})
-        check("생성이 확장자만 다른 두 URL을 모두 적는다",
-              stored(u) == [f"[[{code}]]", f"[[{doc}]]"], stored(u))
+        u.write_text(node_text("260802-zzzz-oncu", body="claim",
+                               extra=f'derived-from: ["[[{code}]]", "[[{doc}]]"]\n'),
+                     encoding="utf-8")
         write.update_node(u.stem, remove_edges={"derived-from": code})
-        check("한 URL을 빼도 다른 URL은 남는다", stored(u) == [f"[[{doc}]]"], stored(u))
-        write.update_node(u.stem, add_edges={"derived-from": code})
-        check("있는 URL 곁에 확장자만 다른 URL을 더할 수 있다",
-              stored(u) == [f"[[{doc}]]", f"[[{code}]]"], stored(u))
+        check("한 URL을 빼도 확장자만 다른 URL은 남는다", stored(u) == [f"[[{doc}]]"], stored(u))
+        refused = _w(write.update_node, u.stem, add_edges={"derived-from": code})
+        check("URL은 다시 더하지 않는다 — 근거 절로 간다", not refused.get("ok"), refused)
         s = base / "regr-edge-once-s.md"
-        kept = [f"[[{code}]]", f"[[{doc}]]", f"[[{a.stem}#s1]]", f"[[{a.stem}#s2]]"]
+        kept = [r1, f"[[{code}]]", f"[[{doc}]]", f"[[{a.stem}#s1]]", f"[[{a.stem}#s2]]"]
         s.write_text(node_text("260802-zzzz-oncs", body="claim",
                                extra=f"derived-from: {json.dumps(kept)}\n"),
                      encoding="utf-8")
-        write.update_node(s.stem, add_edges={"derived-from": r1})
-        check("근거를 더해도 저장된 근거는 키로 지워지지 않는다(URL 둘·절 앵커 둘)",
-              stored(s) == kept + [r1], stored(s))
+        write.update_node(s.stem, add_edges={"derived-from": h3})
+        check("근거를 더해도 저장된 근거는 키로 지워지지 않는다(라운드·URL 둘·절 앵커 둘)",
+              stored(s) == kept + [h3], stored(s))
     finally:
         rmtree_force(base)
         if record is not None:
@@ -12701,7 +12762,8 @@ if __name__ == "__main__":
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
                test_baseline_pass, test_raw_append, test_cli_emit_utf8,
-               test_raw_read, test_external_roots, test_raw_space_misdiagnosis,
+               test_raw_read, test_external_roots, test_non_node_evidence_is_an_evidence_line,
+               test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_scope_memory, test_workbench_state_not_evidence,
                test_scope_memory_edits, test_cadence_hook, test_scope_recovery_handoff,
