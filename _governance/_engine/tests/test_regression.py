@@ -5916,6 +5916,10 @@ def test_non_node_evidence_is_an_evidence_line():
         check("근거 줄로 단 인용 라운드는 증류된다",
               r.get("distillation", {}).get("status") == "complete", r)
         check("인용 라운드는 derived-from에 달지 않는다", "derived-from" not in contract.parse(made).meta)
+        huge = line.replace("#1`", "#1–100000000`")
+        check("기록에 다 있지 않은 범위는 펴지 않는다",
+              evidence.cited_rounds("주장.\n\n## 근거\n\n" + huge) == set()
+              and evidence.cited_rounds("주장.\n\n## 근거\n\n" + line) == {raw.canonical_ref(ref)})
         r = _w(write.update_node, "regr-evid", old_text=line,
                new_text=line + "\n" + line.replace("#1`", "#9`"))
         items = (r.get("reference_review") or {}).get("items", [])

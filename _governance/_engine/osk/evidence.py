@@ -103,17 +103,15 @@ def coordinates(text: str) -> list[str]:
 
 
 def cited_rounds(text: str, records: Records | None = None) -> set[str]:
-    """근거 절의 줄이 가리키는 인용 라운드 — `raw.canonical_ref` 꼴. 해석되는 좌표만 담는다."""
+    """근거 절의 줄이 가리키는 인용 라운드 — `raw.canonical_ref` 꼴. 해석되는 좌표만 담는다 —
+    범위는 기록에 다 있을 때만 펴므로 펴는 수가 기록의 라운드 수를 넘지 않는다."""
     records = records or Records()
     out = set()
     for coord in coordinates(text):
         m = ROUND.match(coord) if kind(coord) == "round" else None
-        if m is None:
+        if m is None or check(coord, records=records) is not None:
             continue
-        try:
-            rel = posix_rel(records.file(m["record"]), ROOT)
-        except (OSError, ValueError):
-            continue
+        rel = posix_rel(records.file(m["record"]), ROOT)
         out |= {raw.canonical_ref(f"{rel}#{n}")
                 for n in range(int(m["first"]), int(m["last"] or m["first"]) + 1)}
     return out
