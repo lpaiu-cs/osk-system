@@ -282,7 +282,7 @@ JSON 안의 역슬래시는 `\\`로 이스케이프한다 —
 
 ```bash
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
-./osk-cli.sh --help        # vault 루트의 런처 — 같은 것(Windows: .\osk-cli.cmd)
+sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\osk-cli.cmd)
 ```
 
 | 명령 | 하는 일 |
