@@ -125,16 +125,18 @@ def mount(alias: str, where: str) -> str:
     problem = alias_problem(alias, declarations()) or location_problem(where)
     if problem:
         raise ValueError(f"{problem} — `{alias}`의 위치를 두지 않았다")
-    _save({**locations(), alias: where})
+    with core.device_lock():         # 데몬의 rebase·`.osk/` 되돌리기와 겹치지 않게 읽고 쓴다
+        _save({**locations(), alias: where})
     return where
 
 
 def unmount(alias: str) -> None:
     """이 기기에서 그 별칭의 위치를 지운다."""
-    places = locations()
-    if places.pop(alias, None) is None:
-        raise ValueError(f"이 기기에 위치가 없는 별칭: {alias}")
-    _save(places)
+    with core.device_lock():
+        places = locations()
+        if places.pop(alias, None) is None:
+            raise ValueError(f"이 기기에 위치가 없는 별칭: {alias}")
+        _save(places)
 
 
 def _save(places: dict[str, str]) -> None:

@@ -18,6 +18,7 @@ status ∈ {"ok","conflict","rejected","error"}.
 import json
 import math
 import os
+import stat
 import subprocess
 import uuid
 from contextlib import contextmanager
@@ -358,15 +359,23 @@ def rebase_snapshot(vault_root, snapshot, timeout=60):
     return changed, status, detail
 
 
+_OTHER = object()       # 링크·디렉터리 — 이 기기의 바이트로 다루지 않는다
+
+
 def _read(path):
-    if not os.path.isfile(path):
+    """일반 파일이면 바이트, 없으면 None, 그 밖이면 `_OTHER`. 링크를 따라가지 않는다 — 원격이 실은
+    링크가 vault 밖의 파일을 이 기기의 것으로 읽거나 덮게 하지 않는다."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return _OTHER
+    except (FileNotFoundError, NotADirectoryError):
         return None
     with open(path, "rb") as f:
         return f.read()
 
 
 def _snapshot_local_state(vault_root, onto, upstream, timeout):
-    """이 rebase가 작업 트리에서 바꿀 수 있는 `.osk/` 파일과 지금의 바이트(없으면 None).
+    """이 rebase가 작업 트리에서 바꿀 수 있는 `.osk/` 파일 → (지금의 바이트 또는 None, 상위 디렉터리의 실제 자리).
 
     git은 무시된 파일을 버려도 되는 것으로 본다 — `.osk/`를 아직 추적하는 원격 위에서는 추적을 푼
     이 기기의 파일을 그 판본으로 덮고, 추적 해제 커밋을 재적용하거나 충돌로 되돌리며 지운다. 바뀔 수
@@ -379,27 +388,37 @@ def _snapshot_local_state(vault_root, onto, upstream, timeout):
             raise RuntimeError(r.stderr.decode("utf-8", "replace").strip()[-600:])
         paths.update(os.fsdecode(p) for p in r.stdout.split(b"\0") if p)
     paths.discard(".osk/.gitignore")
-    # ponytail: 바이트를 메모리에 쥐고 rebase 뒤 되돌린다 — 그 사이 다른 쓰기가 같은 경로를 고치면 이
-    # 판본으로 돌아간다. 경로는 옛 vault가 추적하던 것뿐이라 이행이 끝나면 비고, 문제가 되면 쓰는 쪽이
-    # mutation 잠금을 쥔다.
-    return {p: _read(os.path.join(str(vault_root), p)) for p in paths}
+    # ponytail: 바이트를 메모리에 쥐고 rebase 뒤 되돌린다. 엔진의 `.osk/` 설정 쓰기는 같은 잠금
+    # (`core.device_lock`)으로 이 구간과 겹치지 않지만, 그 사이 손으로 고친 것은 rebase 전 판본으로
+    # 돌아간다. 경로는 옛 vault가 추적하던 것뿐이라 이행이 끝나면 빈다.
+    local = {}
+    for p in paths:
+        path = os.path.join(str(vault_root), p)
+        data = _read(path)
+        if data is not _OTHER:
+            local[p] = (data, os.path.realpath(os.path.dirname(path)))
+    return local
 
 
 def _restore_local_state(vault_root, files):
     """rebase가 바꾼 `.osk/` 파일을 이 기기의 바이트로 되돌린다 — 기기 로컬 상태라 사용자 데이터를
-    고르는 일이 아니다. 다른 기기에서 들어온 파일은 지운다(아직 추적하면 다음 주기의
-    `sync_daemon._keep_local`이 푼다). (되돌린 수, 실패) — 하나가 실패해도 나머지는 되돌린다."""
+    고르는 일이 아니다. 다른 기기에서 들어온 파일·링크는 지운다(아직 추적하면 다음 주기의
+    `sync_daemon._keep_local`이 푼다). 링크는 따라가지 않고, 상위 디렉터리가 rebase 전과 다른 곳을
+    가리키면 손대지 않는다. (되돌린 수, 실패) — 하나가 실패해도 나머지는 되돌린다."""
     kept, failed = 0, []
-    for p, data in files.items():
+    for p, (data, parent) in files.items():
         path = os.path.join(str(vault_root), p)
         try:
-            if _read(path) == data:
+            if os.path.realpath(os.path.dirname(path)) != parent:
+                raise OSError("상위 디렉터리가 rebase 전과 다른 곳을 가리킨다 — 따라가지 않았다")
+            now = _read(path)
+            if now == data:
                 continue
-            if data is None:
-                os.remove(path)
-            else:
+            if now is not None:
+                os.remove(path)          # 링크면 링크만 지운다; 디렉터리는 실패로 남는다
+            if data is not None:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "wb") as f:
+                with open(path, "xb") as f:      # 새 파일로만 — 그 자리에 다시 생긴 링크를 따라가지 않는다
                     f.write(data)
             kept += 1
         except OSError as e:
