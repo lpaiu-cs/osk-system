@@ -454,6 +454,19 @@ class DailyTests(unittest.TestCase):
                 ledger(7)
                 day = growth_daily.daily([['worker']])
                 assert adjust.called and day['limit'] == 9 and calls[-1]['daily']['adjustment']['limit'] == 9, day
+            # #258: the week counts dates. An adjustment written later in its day than today's run (capture
+            # took longer that day) is still seven days old on the seventh day, not a few minutes short.
+            late = (now - timedelta(days=7)).replace(hour=23, minute=59, second=0, microsecond=0)
+            if late > now - timedelta(days=7):
+                with patch.object(growth, 'run', side_effect=fake), \\
+                        patch.object(growth_daily, 'adjust', return_value=adjustment(9)) as adjust:
+                    growth.LEDGER.unlink(missing_ok=True)
+                    plan = core.ledger_append(growth.LEDGER, {'kind': 'plan', 'work_context': 'daily', 'daily': {
+                        'day': late.date().isoformat(), 'adjustment': adjustment(7, late)}})
+                    core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': plan['rid'], 'ok': False,
+                                                       'progress': {'made': [], 'none': []}})
+                    day = growth_daily.daily([['worker']])
+                    assert adjust.called and day['limit'] == 9, day
             # A week that cannot be measured is not recorded: the last L holds and the next run measures again.
             with patch.object(growth, 'run', side_effect=fake), \\
                     patch.object(growth_daily, '_measure', side_effect=ValueError('state damaged')):

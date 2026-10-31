@@ -19,6 +19,7 @@ from ._portalock import lock_exclusive, unlock
 SOFT, HARD = 9, 15
 MAX_REVIEW_ROUNDS = 15
 ENDED_AFTER = 12 * 3600  # seconds without a transcript change: the conversation ended (Mechanism §9-4 3항)
+SOURCE_LOST_AFTER = 7 * 86400  # seconds a native transcript stays missing before its cursor closes as lost (#244)
 # 소속 scope가 없는 대화의 검토가 소속을 정하는 순서(시행령 §3 9항 · Mechanism §9-4 3항).
 UNLANDED = (
     "이 대화는 아직 소속 scope가 없다(시행령 §3 9항). 먼저 남길 것이 있는지 판정한다. 남길 것이 없으면 "
@@ -108,6 +109,10 @@ def _snapshot(s: dict) -> str | None:
 
 def _capture_recovery(s: dict) -> dict:
     """Advice only; it never relaxes capture identity or acknowledges stored raw."""
+    if s.get("source_lost"):
+        return {"state": "closed", "phase": "source_lost", "basis": "source_lookup",
+                "next_action": "원본이 다시 나타나면 같은 대화를 capture해 이어 간다. 검토하지 못한 원본 턴은 "
+                               "`source_lost.refs`에 남아 있다."}
     phase = s.get("capture_failure_phase", "unknown")
     if s.get("capture_error"):
         basis = "recorded_phase" if phase != "unknown" else "legacy_diagnostic"
@@ -161,6 +166,7 @@ def _view(s: dict) -> dict:
     rs, n = s["rounds"], s["reviewed_count"]
     repairs = s.get("repair_pending", {})
     repair_refs = {ref for item in repairs.values() for ref in item["refs"]}
+    lost = set((s.get("source_lost") or {}).get("refs", []))   # 원본 없이 검토할 수 없는 턴(#244)
     return {"ok": not bool(s["capture_error"]), "harness": s["harness"],
             "conversation_id": s["conversation_id"], "session": s["session"],
             "record": s["record"], "transcript_path": s["transcript_path"],
@@ -170,14 +176,16 @@ def _view(s: dict) -> dict:
             "aborted_rounds": sum(r.get("completion") == "aborted" for r in rs),
             "failed_rounds": sum(r.get("completion") == "failed" for r in rs),
             "interrupted_rounds": sum(r.get("completion") == "interrupted" for r in rs),
-            "pending": bool(s["capture_pending"] or len(rs) > n or repairs),
+            "pending": bool(s["capture_pending"] or any(r["ref"] not in lost for r in rs[n:]) or repairs),
             "repair_pending": repairs,
             "capture_pending": s["capture_pending"], "capture_error": s["capture_error"],
             "capture_recovery": _capture_recovery(s),
             "coverage": s.get("coverage"), "excluded": s.get("excluded"),
+            "source_lost": s.get("source_lost"),
             "space": s["space"], "workspace": s.get("workspace"),
             "inherited_rounds": len((s.get("inherited") or {}).get("rounds", [])),
-            "pending_refs": [r["ref"] for i, r in enumerate(rs) if i >= n or r["ref"] in repair_refs],
+            "pending_refs": [r["ref"] for i, r in enumerate(rs)
+                             if i >= n and r["ref"] not in lost or r["ref"] in repair_refs],
             "through": _snapshot(s),
             "prompt_count": s["prompt_count"], "reviewed_prompt_count": s["reviewed_prompt_count"],
             "response_growth": {k: v for k, v in s.get("response_growth", {}).items() if k != "seen"},
@@ -560,10 +568,18 @@ def _capture_source(harness: str, conversation_id: str, transcript_path: str | N
             _save(p, s)
             phase = "source"
             native_path = _locate_transcript(harness, conversation_id, requested_path)
+            present = bool(native_path) and Path(native_path).exists()
+            if s.get("source_lost") and not present:
+                # 원본 소실로 닫은 커서는 다시 실패로 세지 않는다(#244)
+                s["capture_pending"] = False
+                _save(p, s)
+                return _current_view(s, p)
             if not native_path:
                 if not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
                     phase = "awaiting_native"
                 raise ValueError("native transcript path unavailable; use integration capture with --transcript")
+            if present:
+                _source_clock(s, missing=False)   # 원본이 돌아왔다 — 닫음을 풀고 이어 간다
             # Retain the attempted source across a crash, separately from the last
             # accepted source. Only a validation rejection clears this intent below.
             s["capture_path"] = native_path
@@ -990,6 +1006,32 @@ def _copied_since(s: dict, native_path: str) -> dict:
     return best
 
 
+def _source_clock(s: dict, missing: bool) -> bool:
+    """원본이 없는 동안의 시계(#244). 처음 못 찾은 때를 적고, SOURCE_LOST_AFTER 동안 계속 없으면
+    원본 소실로 닫는다 — 하루 묶음이 다시 포착하지 않고, 포착 오류·대기와 검토 대기에서 빠진다.
+    검토하지 못한 원본 턴은 지우지 않고 그 처분(`source_lost.refs`)에 남긴다. 인용 기록으로 남은
+    턴은 원본 없이도 검토할 수 있어 대기에 둔다. 원본을 찾으면 시계와 닫음을 푼다. 바꿨으면 True."""
+    if not missing:
+        changed = "source_missing_since" in s or "source_lost" in s
+        s.pop("source_missing_since", None)
+        s.pop("source_lost", None)
+        return changed
+    if s.get("source_lost"):
+        return False
+    now = time.time()
+    if "source_missing_since" not in s:
+        s["source_missing_since"] = now
+        return True
+    if now - s["source_missing_since"] < SOURCE_LOST_AFTER:
+        return False
+    s["source_lost"] = {"since": s["source_missing_since"], "closed": now,
+                        "refs": [r["ref"] for r in s["rounds"][s["reviewed_count"]:] if raw.is_native(r["ref"])]}
+    s.update(capture_pending=False, capture_error=None)
+    s.pop("capture_failure_phase", None)
+    s.pop("capture_path", None)
+    return True
+
+
 def _ended_source(s: dict) -> str | None:
     """This device's transcript of a conversation that has gone quiet. A worker without
     the conversation reads its unreviewed turns there; a conversation still running keeps
@@ -1079,6 +1121,14 @@ def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list
                 changed = True
                 errors.append({"state": str(p), "phase": "native_lookup", "error": str(exc)})
                 # Capture still fails closed, but stored raw remains reviewable.
+            if missing or native_path and ("source_missing_since" in s or "source_lost" in s):
+                with _locked(s["harness"], s["conversation_id"]) as locked_path:
+                    s = _load(locked_path, s["harness"], s["conversation_id"])
+                    if _source_clock(s, missing):
+                        _save(locked_path, s)
+                    current = _current_view(s, locked_path)
+            if missing and s.get("source_lost") and not current["pending_refs"]:
+                continue  # 닫힌 커서는 원본이 돌아올 때까지 다시 포착하지도, 나열하지도 않는다
             if missing and not (s["prompt_count"] or s["rounds"] or s.get("native_fingerprint")):
                 # SessionStart may precede file creation, or no user turn ever
                 # follows. Keep the cursor; do not spend the bounded work slots.
