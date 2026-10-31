@@ -2,8 +2,8 @@
 
 git은 서브프로세스 + 하드 타임아웃으로 격리하고, 요청 서빙 경로를 절대 블록하지 않게
 호출부(sync_daemon)에서 스케줄한다. Obsidian 그래프의 배율만 다른 충돌은 로컬 값을
-보존하고, 기기 로컬 설정(`.osk/`)만의 충돌은 추적만 풀어 이 기기의 파일을 남긴다. 그 밖의
-충돌은 원복(rebase --abort)·보고한다 — 사용자 데이터 임의 선택 금지.
+보존하고, 기기 로컬 설정(`.osk/`)만의 충돌은 추적만 풀며, rebase가 덮거나 지운 이 기기의
+`.osk/` 파일은 되돌린다. 그 밖의 충돌은 원복(rebase --abort)·보고한다 — 사용자 데이터 임의 선택 금지.
 
 동기화 대상은 `SYNC_BRANCH`(=main) **고정**이다. 원격 연산은 전부 `origin main`을
 명시하며, HEAD가 다른 곳에 있으면 `ensure_branch`가 안전할 때만 되돌린다.
@@ -18,6 +18,7 @@ status ∈ {"ok","conflict","rejected","error"}.
 import json
 import math
 import os
+import stat
 import subprocess
 import uuid
 from contextlib import contextmanager
@@ -262,8 +263,9 @@ def _resolve_local_state(vault_root, timeout):
     """충돌이 모두 `.osk/`(기기 로컬 설정, Mechanism §1-2 5항) 아래면 추적만 풀어 해결한다.
 
     다른 기기가 추적을 푼 커밋(sync_daemon._keep_local)과, 이 기기가 아직 올리지 못한 옛
-    커밋이 같은 파일을 두고 부딪힌 경우다. 삭제 쪽으로 풀되 작업 트리의 파일은 그대로
-    둔다 — 기기 로컬 상태라 사용자 데이터를 고르는 일이 아니다.
+    커밋이 같은 파일을 두고 부딪힌 경우다. 삭제 쪽으로 풀되 작업 트리의 파일은 지우지
+    않는다 — 기기 로컬 상태라 사용자 데이터를 고르는 일이 아니다. 그 바이트는 git이 고른
+    쪽이라, rebase 뒤 `_restore_local_state`가 이 기기의 것으로 되돌린다.
     """
     r = _git(vault_root, ["diff", "--name-only", "--diff-filter=U", "-z"], timeout)
     paths = [p for p in r.stdout.split("\0") if p] if r.returncode == 0 else []
@@ -343,7 +345,85 @@ def rebase_snapshot(vault_root, snapshot, timeout=60):
                 return False, "error", "분기점을 확인할 수 없어 이력 재적용을 보류한다(수동 개입 필요)"
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, "error", f"분기점 확인 실패: {e}"
-    return _rebase(vault_root, ["rebase", "--onto", commit, upstream], timeout)
+    try:
+        local = _snapshot_local_state(vault_root, commit, upstream, timeout)
+    except (OSError, UnicodeError, RuntimeError, subprocess.TimeoutExpired) as e:
+        return False, "error", f".osk/ 확인 실패 — 이력 재적용을 보류한다: {e}"
+    changed, status, detail = _rebase(vault_root, ["rebase", "--onto", commit, upstream], timeout)
+    kept, failed = _restore_local_state(vault_root, local)
+    if failed:
+        return changed, "error", ("rebase가 바꾼 이 기기의 .osk/ 파일을 되돌리지 못했다: "
+                                  + "; ".join(failed))[-600:]
+    if kept and status == "ok":
+        detail = "; ".join(filter(None, (detail, f"rebase가 바꾼 .osk/ 파일 {kept}개를 이 기기의 것으로 되돌림")))
+    return changed, status, detail
+
+
+_OTHER = object()       # 링크·디렉터리 — 이 기기의 바이트로 다루지 않는다
+
+
+def _read(path):
+    """일반 파일이면 바이트, 없으면 None, 그 밖이면 `_OTHER`. 링크를 따라가지 않는다 — 원격이 실은
+    링크가 vault 밖의 파일을 이 기기의 것으로 읽거나 덮게 하지 않는다."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return _OTHER
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _snapshot_local_state(vault_root, onto, upstream, timeout):
+    """이 rebase가 작업 트리에서 바꿀 수 있는 `.osk/` 파일 → (지금의 바이트 또는 None, 상위 디렉터리의 실제 자리).
+
+    git은 무시된 파일을 버려도 되는 것으로 본다 — `.osk/`를 아직 추적하는 원격 위에서는 추적을 푼
+    이 기기의 파일을 그 판본으로 덮고, 추적 해제 커밋을 재적용하거나 충돌로 되돌리며 지운다. 바뀔 수
+    있는 것은 대상과 다른 경로와 재적용할 커밋이 고치는 경로뿐이다. 동기화되는 규칙 파일은 뺀다."""
+    paths = set()
+    for args in (["diff", "--no-renames", "--name-only", "-z", "HEAD", onto],
+                 ["log", "--no-renames", "--format=", "--name-only", "-z", f"{upstream}..HEAD"]):
+        r = _git(vault_root, [*args, "--", ".osk"], timeout, text=False)
+        if r.returncode:
+            raise RuntimeError(r.stderr.decode("utf-8", "replace").strip()[-600:])
+        paths.update(os.fsdecode(p) for p in r.stdout.split(b"\0") if p)
+    paths.discard(".osk/.gitignore")
+    # ponytail: 바이트를 메모리에 쥐고 rebase 뒤 되돌린다. 엔진의 `.osk/` 설정 쓰기는 같은 잠금
+    # (`core.device_lock`)으로 이 구간과 겹치지 않지만, 그 사이 손으로 고친 것은 rebase 전 판본으로
+    # 돌아간다. 경로는 옛 vault가 추적하던 것뿐이라 이행이 끝나면 빈다.
+    local = {}
+    for p in paths:
+        path = os.path.join(str(vault_root), p)
+        data = _read(path)
+        if data is not _OTHER:
+            local[p] = (data, os.path.realpath(os.path.dirname(path)))
+    return local
+
+
+def _restore_local_state(vault_root, files):
+    """rebase가 바꾼 `.osk/` 파일을 이 기기의 바이트로 되돌린다 — 기기 로컬 상태라 사용자 데이터를
+    고르는 일이 아니다. 다른 기기에서 들어온 파일·링크는 지운다(아직 추적하면 다음 주기의
+    `sync_daemon._keep_local`이 푼다). 링크는 따라가지 않고, 상위 디렉터리가 rebase 전과 다른 곳을
+    가리키면 손대지 않는다. (되돌린 수, 실패) — 하나가 실패해도 나머지는 되돌린다."""
+    kept, failed = 0, []
+    for p, (data, parent) in files.items():
+        path = os.path.join(str(vault_root), p)
+        try:
+            if os.path.realpath(os.path.dirname(path)) != parent:
+                raise OSError("상위 디렉터리가 rebase 전과 다른 곳을 가리킨다 — 따라가지 않았다")
+            now = _read(path)
+            if now == data:
+                continue
+            if now is not None:
+                os.remove(path)          # 링크면 링크만 지운다; 디렉터리는 실패로 남는다
+            if data is not None:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "xb") as f:      # 새 파일로만 — 그 자리에 다시 생긴 링크를 따라가지 않는다
+                    f.write(data)
+            kept += 1
+        except OSError as e:
+            failed.append(f"{p}: {e}")
+    return kept, failed
 
 
 def _rebase(vault_root, command, timeout):

@@ -423,6 +423,128 @@ def receiving_device():
     print('receiving device keeps its local state: PASS (pushed and unpushed local commits)')
 
 
+def can_link():
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            os.symlink(Path(td) / 'target', Path(td) / 'link')
+            return True
+        except OSError:                                 # Windows without Developer Mode
+            return False
+
+
+# setup이 이 기기의 전송 대상을 적는다 — 데몬이 rebase와 되돌리기 동안 쥔 잠금이 풀린 뒤에야 쓴다.
+WRITER = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+from osk import setup
+print('ready', flush=True)
+result = setup._write_targets({'origin': sys.argv[2], 'push': [sys.argv[2]]}, False)
+assert result['ok'], result
+'''
+
+
+def untrack_ahead_remote():
+    """옛 vault의 첫 동기화에 원격이 앞서 있다 — 이 기기의 추적 해제 커밋이 아직 `.osk/`를 추적하는
+    원격 위에 재적용돼도 이 기기의 `.osk/`는 그대로다. 옛 엔진의 다른 기기가 실은 판본으로 덮이거나
+    그 기기의 파일이 들어오지 않고, 원격이 실은 링크를 따라 vault 밖을 쓰지 않으며, 그 사이 setup이 쓴
+    설정을 되돌리지 않고, 다른 충돌로 rebase를 되돌려도 남는다(#283 리뷰)."""
+    import sync_daemon as sync
+    import vault_sync as vs
+    original, linkable = vs._git, can_link()
+    for case in ('ahead', 'other-device', 'symlink', 'writer', 'conflict'):
+        if case == 'symlink' and not linkable:
+            print('untracking over an ahead remote: SKIP symlink case (this OS cannot create symlinks)')
+            continue
+        with tempfile.TemporaryDirectory(prefix='osk-untrack-') as td:
+            root, bare, peer = Path(td) / 'a', Path(td) / 'remote.git', Path(td) / 'peer'
+            outside, stray = Path(td) / 'outside.txt', root / '.osk/stray.json'
+            outside.write_text('outside the vault')
+            root.mkdir()
+
+            def git(*args, at=root):
+                r = vs._git(at, list(args), 30)
+                assert r.returncode == 0, (args, r.stdout, r.stderr)
+                return r.stdout.strip()
+
+            def configure(at):
+                for key, value in [('user.name', 'fixture'), ('user.email', 'fixture@example.invalid'),
+                                   ('core.autocrlf', 'false'), ('commit.gpgsign', 'false'),
+                                   ('core.symlinks', 'true')]:
+                    git('config', key, value, at=at)
+
+            git('init', '-q', '-b', 'main')
+            configure(root)
+            config, foreign = root / '.osk/response-growth.json', root / '.osk/growth-command.json'
+            config.parent.mkdir()
+            config.write_text('{"claude": "C:/this-device/claude.exe"}')
+            (root / 'note.txt').write_text('base')
+            if case == 'writer':                        # 옛 vault가 전송 대상까지 실었다
+                approve(root, bare)
+            git('add', '-A')
+            git('commit', '-qm', 'legacy vault tracked its local state')
+            git('init', '-q', '--bare', '-b', 'main', str(bare))
+            git('remote', 'add', 'origin', str(bare))
+            git('push', '-qu', 'origin', 'main')
+            git('clone', '-q', str(bare), str(peer))
+            configure(peer)
+            (peer / 'remote.txt').write_text('remote')
+            if case == 'other-device':                  # 옛 엔진의 다른 기기가 자기 설정을 실었다
+                (peer / '.osk/response-growth.json').write_text('{"claude": "C:/other-device/claude.exe"}')
+                (peer / foreign.relative_to(root)).write_text('other device command')
+                config.write_text('{"claude": "D:/this-device/claude.exe"}')   # 마지막 커밋 뒤에 고쳤다
+            if case == 'symlink':                       # 같은 경로를 vault 밖을 가리키는 링크로 바꾸고 끊긴 링크를 실었다
+                (peer / '.osk/response-growth.json').unlink()
+                os.symlink(outside, peer / '.osk/response-growth.json')
+                os.symlink(Path(td) / 'nowhere', peer / stray.relative_to(root))
+            if case == 'conflict':
+                (peer / 'note.txt').write_text('remote note')
+                (root / 'note.txt').write_text('local note')
+            git('add', '-A', at=peer)
+            git('commit', '-qm', 'another device, old engine', at=peer)
+            git('push', '-q', at=peer)
+            approve(root, bare)
+            mine = config.read_text()
+
+            if case == 'writer':                        # setup이 데몬의 rebase 사이에 전송 대상을 다시 적는다
+                racers = []
+
+                def racing(at, args, timeout, **kwargs):
+                    result = original(at, args, timeout, **kwargs)
+                    if args[0] == 'rebase':
+                        p = subprocess.Popen([sys.executable, '-c', WRITER, str(ENGINE), str(bare)],
+                                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                             env={**os.environ, 'OSK_VAULT_ROOT': str(root)},
+                                             creationflags=0x08000000 if os.name == 'nt' else 0)
+                        racers.append(p)
+                        assert p.stdout.readline().strip() == 'ready', p.communicate()
+                        try:
+                            p.wait(timeout=2)           # 잠금을 쥐지 않는 쓰기는 되돌리기 앞에 끝난다
+                        except subprocess.TimeoutExpired:
+                            pass
+                    return result
+
+                with patch.object(vs, '_git', racing):
+                    status = sync.once(root)
+                assert len(racers) == 1 and racers[0].wait(timeout=60) == 0, racers and racers[0].communicate()
+                assert 'at' in json.loads((root / '.osk/sync-targets.json').read_text(encoding='utf-8')), \
+                    "setup's write during the rebase was undone"
+            else:
+                status = sync.once(root)
+            assert status.startswith('pull 충돌') if case == 'conflict' else status == 'ok', (case, status)
+            assert config.is_file() and not config.is_symlink() and config.read_text() == mine, \
+                (case, config.is_file() and config.read_text())
+            assert outside.read_text() == 'outside the vault', 'a link from the remote was followed out of the vault'
+            assert not foreign.exists() and not os.path.lexists(stray), "another device's local state came in"
+            assert (root / '.osk/sync-targets.json').is_file()
+            if case != 'conflict':
+                assert sync.once(root) == 'ok'
+                assert config.read_text() == mine
+                tree = git('ls-tree', '-r', '--name-only', 'main', at=bare)
+                assert [p for p in tree.split('\n') if p.startswith('.osk/')] == ['.osk/.gitignore'], (case, tree)
+    print('untracking over an ahead remote keeps local state: PASS '
+          '(remote ahead, another device, remote symlink, setup during rebase, conflict)')
+
+
 def local_only():
     """No origin, or an origin that is the public canonical repository: the daemon commits and
     never fetches or pushes. A remote under another name is no remote to it (#254 review)."""
@@ -539,4 +661,5 @@ if __name__ == '__main__':
     run()
     keep_local()
     receiving_device()
+    untrack_ahead_remote()
     local_only()

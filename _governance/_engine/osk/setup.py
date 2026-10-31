@@ -706,26 +706,28 @@ def _apply(p: dict) -> dict:
 
 
 def _write_fork(approved: dict, uninstall: bool, stamp: str) -> dict:
-    """fork 설정을 쓴다 — 확인한 호스트의 항목만 더하거나 걷고, 다른 키는 그대로 둔다."""
+    """fork 설정을 쓴다 — 확인한 호스트의 항목만 더하거나 걷고, 다른 키는 그대로 둔다. `.osk/` 설정은
+    데몬의 rebase·되돌리기와 겹치지 않게 `core.device_lock` 안에서 읽고 쓴다(이 파일의 다른 쓰기도 같다)."""
     path = Path(approved["file"])
     step = {"step": "fork CLI", "file": str(path)}
-    now = _fork([adapters.get(n) for n in approved["entries"]], uninstall)
-    if ({n: e["action"] for n, e in now.get("entries", {}).items()}
-            != {n: e["action"] for n, e in approved["entries"].items()}):
-        return {**step, "ok": False, "error": "확인 뒤 fork 설정이 바뀌었다 — 쓰지 않았다. "
-                                              "setup을 다시 계획해 확인받는다"}
-    data = _read_json(path)
-    for name, e in approved["entries"].items():
-        if e["action"] in ("add", "replace"):
-            data[name] = e["path"]
-        elif e["action"] == "remove":
-            data.pop(name, None)
-    backup = _backup(path, stamp)
-    if data:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        core.atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    else:
-        path.unlink(missing_ok=True)
+    with core.device_lock():
+        now = _fork([adapters.get(n) for n in approved["entries"]], uninstall)
+        if ({n: e["action"] for n, e in now.get("entries", {}).items()}
+                != {n: e["action"] for n, e in approved["entries"].items()}):
+            return {**step, "ok": False, "error": "확인 뒤 fork 설정이 바뀌었다 — 쓰지 않았다. "
+                                                  "setup을 다시 계획해 확인받는다"}
+        data = _read_json(path)
+        for name, e in approved["entries"].items():
+            if e["action"] in ("add", "replace"):
+                data[name] = e["path"]
+            elif e["action"] == "remove":
+                data.pop(name, None)
+        backup = _backup(path, stamp)
+        if data:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            core.atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        else:
+            path.unlink(missing_ok=True)
     return {**step, "ok": True, **({"backups": [backup]} if backup else {})}
 
 
@@ -733,11 +735,12 @@ def _write_command(file: str, argv: list[str]) -> dict:
     """정기 실행의 명령 파일을 만든다 — 그 사이 생겼으면 덮지 않는다."""
     path = Path(file)
     step = {"step": "growth command", "file": str(path)}
-    if path.exists():
-        return {**step, "ok": False, "error": "확인 뒤 명령 파일이 생겼다 — 덮지 않았다. "
-                                              "setup을 다시 계획해 확인받는다"}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    core.atomic_write(path, (json.dumps(argv, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    with core.device_lock():
+        if path.exists():
+            return {**step, "ok": False, "error": "확인 뒤 명령 파일이 생겼다 — 덮지 않았다. "
+                                                  "setup을 다시 계획해 확인받는다"}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        core.atomic_write(path, (json.dumps(argv, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return {**step, "ok": True}
 
 
@@ -763,14 +766,15 @@ def _write_targets(part: dict, uninstall: bool) -> dict:
     path = core.ROOT / vault_sync.TARGETS
     step = {"step": "sync 전송 대상", "file": str(path)}
     try:
-        if uninstall:
-            path.unlink(missing_ok=True)
-            sync_daemon._lock_path(core.ROOT, sync_daemon.STATUS).unlink(missing_ok=True)
-            return {**step, "ok": True, "action": "remove"}
-        path.parent.mkdir(parents=True, exist_ok=True)
-        core.atomic_write(path, json.dumps(
-            {"origin": part["origin"], "push": part["push"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
-            ensure_ascii=False, indent=1).encode("utf-8"))
+        with core.device_lock():
+            if uninstall:
+                path.unlink(missing_ok=True)
+                sync_daemon._lock_path(core.ROOT, sync_daemon.STATUS).unlink(missing_ok=True)
+                return {**step, "ok": True, "action": "remove"}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            core.atomic_write(path, json.dumps(
+                {"origin": part["origin"], "push": part["push"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                ensure_ascii=False, indent=1).encode("utf-8"))
         return {**step, "ok": True, "action": "record", "origin": part["origin"], "push": part["push"]}
     except OSError as e:
         return {**step, "ok": False, "error": str(e)}
