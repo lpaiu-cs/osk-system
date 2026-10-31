@@ -1,10 +1,14 @@
 """osk.update_check — 새 정식 릴리스를 알린다. 받지도 적용하지도 않는다.
 
 정본에는 태그 목록만 묻는다(`git ls-remote`) — vault의 내용은 보내지 않는다.
-확인 결과와 알림 표식은 기기 로컬이다(`core.local_lock_path`): 동기화되지 않고
-추적 트리에 들어가지 않는다. 비교할 판본은 동기화되는 갱신 저널에서 매번 다시
-읽는다 — 다른 기기가 갱신해 그 저널이 들어오면, 확인을 다시 하지 않아도 알림이
-사라진다.
+확인 결과는 기기 로컬이다(`core.local_lock_path`): 동기화되지 않고 추적 트리에
+들어가지 않는다. 비교할 판본은 동기화되는 갱신 저널에서 매번 다시 읽는다 — 다른
+기기가 갱신해 그 저널이 들어오면, 확인을 다시 하지 않아도 알림이 사라진다.
+
+세션 시작 훅은 에이전트가 그 릴리스를 받았다고 기록할 때까지(`osk.update --ack`)
+세션마다 알린다. 받음 기록은 기기 로컬과 동기화 대장(`release.jsonl`) 두 곳에
+남는다 — 한 기기에서 받으면 동기화로 다른 기기의 알림도 멈춘다. 기록하는 쪽은
+사용자가 아니라 에이전트다.
 
 훅과 표면은 확인을 기다리지 않는다. 지난 확인이 낡았으면 분리 프로세스
 (`python -m osk.update_check`)를 띄우고, 이번 세션에는 지난 결과만 싣는다. 적용은
@@ -28,13 +32,12 @@ from ._portalock import lock_exclusive, unlock
 # 기기 로컬 자리. 비Git vault의 대체 자리는 이름의 stem으로 갈리므로
 # (core.local_lock_path) 세 이름의 stem이 서로 달라야 한다.
 STATE = "osk-release-check.json"     # 마지막 확인 {at, url, latest, error}
-NOTICE = "osk-release-notice.json"   # 마지막 알림 {version, at}
+ACK = "osk-release-ack.json"         # 이 기기의 받음 기록 {version, at}
 LOCK = "osk-release-checking.lock"   # 한 번에 한 확인
+# 받음 기록의 동기화 자리 — `ack` 행만 쌓는다. 받음은 되돌리지 않으므로 주제 키가 없다.
+ACKS = core.LEDGER / "release.jsonl"
 CHECK_EVERY = 24 * 3600              # 성공한 확인이 유효한 시간(초)
 RETRY_AFTER = 3600                   # 실패한 확인을 다시 하기까지(초)
-# 같은 릴리스를 다시 알리기까지(초) — 매일 같은 시각에 여는 세션이 하루를
-# 건너뛰지 않도록 하루보다 짧다.
-NOTICE_EVERY = 20 * 3600
 TIMEOUT = 20                         # 분리 프로세스의 태그 조회 한도(초)
 # 릴리스 노트의 주소 규칙을 아는 출처 — GitHub 저장소(https·ssh). 그 밖의 출처는 링크를 싣지 않는다.
 _GITHUB = re.compile(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
@@ -153,6 +156,8 @@ def report(state: dict | None = None) -> dict:
     cur, latest = current(), state.get("latest")
     out = {"current": cur, "latest": latest, "available": newer(latest, cur),
            "checked_at": _kst(state.get("at")), "error": state.get("error")}
+    if out["available"]:
+        out["acked"] = acked(latest)
     reason = off_reason()
     if reason:
         out["auto_off"] = reason
@@ -178,30 +183,39 @@ def ensure_fresh():
     return core.spawn_worker("osk.update_check")
 
 
-def _seen(version: str) -> bool:
-    """이 기기가 이 릴리스를 `NOTICE_EVERY` 안에 이미 알렸는가."""
-    seen = _read(NOTICE)
-    at = seen.get("at")
-    return (seen.get("version") == version and isinstance(at, (int, float))
-            and 0 <= time.time() - at < NOTICE_EVERY)
+def acked(version: str) -> bool:
+    """에이전트가 이 릴리스나 그보다 새 판을 받았다고 기록했는가 — 이 기기의 기록이나
+    동기화로 들어온 다른 기기의 기록. 대장을 읽지 못하면 받지 않은 것으로 본다(알림이 남는다)."""
+    got = [_read(ACK).get("version")]
+    try:
+        got += [r.get("version") for r in core.ledger_read(ACKS) if r.get("kind") == "ack"]
+    except (OSError, ValueError):
+        pass
+    return any(update._semver(v) and not newer(version, v) for v in got)
 
 
-def _claim(version: str) -> bool:
-    """이 기기가 이 릴리스를 `NOTICE_EVERY` 안에 알리지 않았으면 표식을 남기고
-    참이다. 훅(사용자 화면)과 표면(`overview`)이 이 표식 하나를 나눠 쓴다 — 표식은
-    사용자에게 닿는 길에서만 남긴다."""
-    if _seen(version):
-        return False
-    _write(NOTICE, {"version": version, "at": time.time()})
-    return True
-
-
-def mark_notified() -> None:
-    """사용자 화면이 없는 호스트에서 알림 블록이 문맥에 실렸을 때 표식을 남긴다 — 접혔으면
-    남기지 않아 `overview`의 `notify`가 전달을 이어받는다."""
+def ack(version: str) -> dict:
+    """지금 알리는 새 릴리스를 에이전트가 받았다고 기록한다 — 이 기기에 먼저, 그다음 동기화
+    대장에. 대장에 못 적으면 이 기기의 알림만 멈추고 `synced`가 거짓이다."""
     avail = available()
-    if avail:
-        _claim(avail["latest"])
+    if not avail:
+        raise update.UpdateError("알리는 새 릴리스가 없다 — 받았다고 기록할 것이 없다")
+    if version != avail["latest"]:
+        raise update.UpdateError(f"지금 알리는 새 릴리스는 {avail['latest']}다 — {version}이 아니다")
+    _write(ACK, {"version": version, "at": time.time()})
+    out = {"acked": version, "synced": True}
+    try:
+        with core.mutation_lock():
+            core.ledger_append(ACKS, {"kind": "ack", "version": version})
+    except Exception as e:
+        out.update(synced=False, error=f"{type(e).__name__}: {e}"[:300])
+    return out
+
+
+def _ack_how(latest: str, when: str) -> str:
+    return (f"이 알림은 받았다는 기록이 남을 때까지 세션 시작마다 다시 실린다 — {when} "
+            f"`{core.cli_command('update', '--ack', latest)}`로 기록한다. 기록은 동기화로 다른 "
+            f"기기의 알림도 멈추며, 갱신이 아니다.")
 
 
 def notes_url(version: str) -> str | None:
@@ -224,45 +238,49 @@ def _how(latest: str) -> str:
             f"한다. 요청을 받으면 "
             f"`{core.cli_command('update', '--to', latest, '--apply')}`를 실행한다. 첫 "
             f"실행은 변경집합만 내고 종료코드 2로 멈추니, 출력의 instruction대로 설명하고 "
-            f"재승인을 받는다.")
+            f"재승인을 받는다. 절차와 뒷정리(세션 재시작·requirements·커밋·다른 기기)는 이 vault의 "
+            f"`{core.ROOT / 'docs' / 'OPERATE-AGENT.md'}`의 Update 절을 따른다.")
 
 
 def session_notice(screen: bool = True) -> tuple[str, str]:
-    """(에이전트 문맥, 사용자 화면) — 알릴 새 릴리스가 있고 이 기기에서 아직 알리지
-    않았을 때만. 사용자 화면의 문구는 모델 문맥이 아니다(훅의 `systemMessage`).
+    """(에이전트 문맥, 사용자 화면) — 알릴 새 릴리스가 있고 받았다는 기록이 아직 없으면
+    세션마다. 사용자 화면의 문구는 모델 문맥이 아니다(훅의 `systemMessage`).
 
     사용자 화면이 없는 호스트(`screen=False`, Kiro·Antigravity)에서는 모델이 전달하는
-    유일한 길이라 사용자에게 한 줄로 전하게 하고, 표식은 남기지 않는다 — 그 블록이 실제로
-    실렸을 때 훅이 `mark_notified`로 남긴다."""
+    유일한 길이라 사용자에게 한 줄로 전하게 한다. 어느 호스트든 에이전트가 `--ack`로 받음을
+    기록해야 멈춘다 — 블록이 접혀 에이전트가 못 봤으면 다음 세션에 다시 실린다."""
     avail = available()
-    if not avail or _seen(avail["latest"]):
+    if not avail or acked(avail["latest"]):
         return "", ""
     latest, cur = avail["latest"], avail["current"]
-    if screen:
-        _claim(latest)
     notes = notes_url(latest)
     user = (f"osk-system 새 릴리스 {latest} (이 vault는 {cur}) — 적용하려면 에이전트에게 "
             f"\"osk 업데이트해 줘\"라고 요청한다." + (f" 릴리스 노트: {notes}" if notes else ""))
     if not screen:
         return (f"[osk 새 릴리스 — {latest} · 이 vault {cur}] 이 호스트에는 사용자 화면 알림이 "
-                f"없다 — 사용자에게 한 줄로 전한다: {user} 먼저 권하거나 실행하지 않는다. "
-                + _how(latest)), ""
+                f"없다 — 사용자에게 한 줄로 전한다: {user} 갱신은 먼저 권하거나 실행하지 않는다. "
+                + _how(latest) + " " + _ack_how(latest, "사용자에게 전했으면")), ""
     agent = (f"[osk 새 릴리스 — {latest} · 이 vault {cur}] 사용자 화면에 같은 알림을 "
-             f"띄웠다. 먼저 권하거나 실행하지 않는다. " + _how(latest))
+             f"띄웠다. 갱신은 먼저 권하거나 실행하지 않는다. " + _how(latest) + " "
+             + _ack_how(latest, "받았으면"))
     return agent, user
 
 
 def surface() -> dict | None:
     """`overview`의 `update` 필드 — 알릴 새 릴리스가 있을 때만. 훅이 없는 하네스도
-    이 길로 알게 된다: 이 기기에서 아직 알리지 않았으면 `notify`를 싣는다."""
+    이 길로 알게 된다: 받았다는 기록이 없으면 `notify`를 싣는다."""
     avail = available()
     if not avail:
         return None
-    notes = notes_url(avail["latest"])
-    out = {**avail, **({"notes": notes} if notes else {}), "how": _how(avail["latest"])}
-    # 성장 워커(정기 실행·fork)의 조회는 사용자에게 닿지 않는다 — 표식을 쓰지 않는다.
-    if os.environ.get("OSK_GROWTH_WORKER") != "1" and _claim(avail["latest"]):
-        out["notify"] = "이 기기에서 아직 알리지 않았다 — 사용자에게 한 줄로 알린다"
+    latest = avail["latest"]
+    notes = notes_url(latest)
+    out = {**avail, **({"notes": notes} if notes else {}), "how": _how(latest)}
+    if acked(latest):
+        out["acked"] = True
+    # 성장 워커(정기 실행·fork)의 조회는 사용자에게 닿지 않는다 — 전하라고 하지 않는다.
+    elif os.environ.get("OSK_GROWTH_WORKER") != "1":
+        out["notify"] = ("받았다는 기록이 없다 — 사용자에게 한 줄로 알리고 "
+                         f"`{core.cli_command('update', '--ack', latest)}`로 기록한다")
     return out
 
 

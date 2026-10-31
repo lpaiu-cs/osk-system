@@ -130,10 +130,14 @@ updated: "2026-08-02 15:30 (KST)"
 author: "agent"
 drafter: "opus-5.5"
 summary: "One line, at most 80 characters, without links"
-derived-from: ["[[Source node]]", "_cited/.records/claude-3f9c2a7e5b1d4c8e9a0b6d2f7e1c5a39.txt#2"]
+derived-from: ["[[Source node]]"]
 ---
 
 Body in Markdown, with links such as [[Another node]].
+
+## 근거
+
+- 2026-08-02 · `3f9c2a7e#2` · 지지 — what the cited round showed
 ```
 
 ### 2.1 Frontmatter
@@ -217,40 +221,56 @@ The body is Markdown, as Obsidian reads it.
   and `- 종료:` (end condition). `조건` and `종료` read `없음` when there are
   none, and a full-width colon also reads. A clause with a missing section or
   item grants nothing.
-- **Evidence section**: a claim node may end with a `## 근거` section, one list
-  item per cited round that its `derived-from` names:
-  `- <date> · <coordinate> · 지지|조건|반례 — <what the round showed>`. The
-  coordinate, written as code rather than a link, is the first 8 hex
-  characters of the record name and the round number, such as `42cf0fc0#1`;
-  consecutive rounds that make one point share a line (`42cf0fc0#41–42`). Only independent support, a condition or a
-  counterexample gets a line; actions and numbers stay in the body. A round
-  that only supports a held claim is bound this way instead of by rewriting the
-  claim. The section is not part of the node's state for rechecks (Bylaws §7 2):
+- **Evidence section**: a claim node may end with a `## 근거` section that lists
+  its non-node evidence, one list item per piece:
+  `- <date> · <coordinate> · 지지|조건|반례 — <what it showed>` (Bylaws §1 5,
+  Mechanism §8 9). The coordinate is written as code rather than a link and has
+  one of four forms. A cited round is the record hash shortened to its first 8
+  hex characters (longer when two records share them) and the round number,
+  such as `42cf0fc0#1`; consecutive rounds that make one point share a line
+  (`42cf0fc0#41–42`), and `cite_round` and `read_cited` return the coordinate as
+  `coordinate`. A record without a hash name keeps its whole name. A vault
+  non-node file is its root-relative path, with `#<heading>` when needed; a
+  registered external root's file is `<alias>:<path>` (section 4.13); a web
+  page is its URL.
+  Only independent support, a condition or a
+  counterexample gets a line; actions and numbers stay in the body. A
+  distillation's cited-round sources are checked against these lines, and a
+  round that only supports a held claim adds its line without rewriting the
+  claim. A Domain node cites no round here either (Constitution Article 8 3),
+  and a coordinate that does not resolve is reported with the write and in
+  reference reviews (Mechanism §9-4 1). The section is not part of the node's
+  state for rechecks (Bylaws §7 2):
   adding a line does not make the nodes that cite this one recheck candidates. The
-  validator rule `evidence-section` checks each line's form and that its
-  coordinate is in `derived-from` (Mechanism §6-1 4); it reports until activated.
+  validator rule `evidence-section` checks each line's form and resolves its
+  coordinate; it also reports a line that points at a node and a non-node still
+  left in `derived-from` (Mechanism §6-1 4). It reports until activated.
 
 ### 2.3 Predicate Edges
 
-`derived-from` names what the node comes from (Mechanism §8 2):
+`derived-from` names the nodes the node comes from (Constitution Article 8 5,
+Mechanism §8 2). Non-node evidence is a line in the evidence section instead
+(section 2.2):
 
 | Target | Stored form |
 |---|---|
 | a node | its title as a quoted wikilink: `"[[Title]]"` |
-| a cited round | the plain coordinate, quoted: `"_cited/.records/<record>.txt#N"`. Older coordinates under a scope's `_cited/` or `_raw/`, or under `00_Person/_cited/`, resolve to the record of the same name |
-| another non-node file | a quoted path wikilink: `"[[_sources/plan.pdf]]"` or `"[[path#Heading]]"` |
 
 - A node target never uses a path: paths break when nodes move, and titles are
   unique.
-- A cited-record target names its round (`#N`) (Bylaws §1 3); the engine
-  reports one that does not.
 - A node cannot cite itself.
 - The engine also reads a node target written as the bare id
   (`derived-from: 260802-1720-k7f2m9x3`). A target it receives as an id is
   stored as the title wikilink; an id that resolves to no node, or to several,
-  is stored as given. It also reads record coordinates written as wikilinks,
-  with a `.md` record path or under `_raw/` (section 6.1), and stores every
-  record target it receives as the plain `.txt` coordinate.
+  is stored as given.
+- **Older non-node targets.** Nodes written before v5.4 may still list a cited
+  round (`"_cited/.records/<record>.txt#N"`, or an older coordinate under a
+  scope's `_cited/` or `_raw/` or under `00_Person/_cited/`, also as a wikilink
+  or with a `.md` record path; section 6.1) or another non-node file
+  (`"[[_sources/plan.pdf]]"`). The engine still reads them and a write may
+  remove them, but no write adds one. The validator rule `evidence-section`
+  reports them until they move to the evidence section;
+  `osk evidence migrate` moves them as `지지` lines.
 
 `conflicts` is a case marker (Mechanism §8 2; Bylaws §9 4). Its target is
 either `"[[CASE-<year>-<n>]]"`, an open (`docketed`) case that lists the node as
@@ -385,6 +405,8 @@ Every `*.jsonl` file under `00_Scope/Workbench/_ledger/` is a ledger
 | `growth.jsonl` | `plan`, `review`, `run`, `eviction_review`, `recheck_review` | `key` (reviews) | growth runner | none |
 | `rechecks.jsonl` | `complete` | (`node`, `target`) | node writes; session start | §4-1 |
 | `workspaces.jsonl` | `rule` | none | `workspaces.add` (an installing agent) | §6-2 6 |
+| `release.jsonl` | `ack` | none (section 4.12) | `osk.update --ack` (an agent) | none |
+| `roots.jsonl` | `declare`, `retire` | `alias` | `osk roots` (user) | §1 6 |
 | `migration/events.jsonl` | `archive`, `move`, `transform`, `hold`, `drop` | none | not appended by the engine | §5 |
 | `signatures.jsonl` | preserved records | none | never appended | §3 9 |
 
@@ -618,17 +640,18 @@ maximum among `review` records with that key.
 | `kind` | `complete` |
 | `node` | the citing node's id |
 | `node_state` | `sha256:` of the citing node's body as written |
-| `target` | a node id or a vault-relative file path, with `#<heading>` appended for a heading range |
-| `target_state` | `sha256:` of a node target's body, a non-node target's file, or the heading range |
+| `target` | a node id, with `#<heading>` appended for a heading range |
+| `target_state` | `sha256:` of a node target's body or of the heading range |
 | `result` | `bound`, `updated` or `unchanged` |
 | `reason` | opt. text |
 
-- **Tracked targets.** Nodes, non-node files, and heading ranges in either. A
+- **Tracked targets.** Nodes and heading ranges in them. A
   heading range runs from the first byte of its heading line to the byte before
   the next heading of the same or a higher level, or to the end of the file.
   Lines in code regions are not headings, and a heading text that occurs twice
-  does not resolve (Mechanism §8 4). Cited records only grow and external URLs
-  have no state; neither is tracked. A hub node, the node named after its cluster
+  does not resolve (Mechanism §8 4). Non-node targets left in `derived-from`
+  from before v5.4 are not tracked; records an older engine wrote for them,
+  with a vault-relative file path as `target`, stay as ledger history. A hub node, the node named after its cluster
   folder, is the entrance to a branch, so a change to it is not a change of
   evidence: a hub target is not tracked, even through a heading range (Bylaws §7
   2). A target whose file does not resolve gets no
@@ -637,7 +660,7 @@ maximum among `review` records with that key.
   that no record can complete.
 - **Relevant state** (Mechanism §4-1 1, Bylaws §7). Both states hash raw bytes
   without normalization. A node's state is its body: the bytes after the line
-  that closes its frontmatter. A non-node file's state is the whole file, and a
+  that closes its frontmatter, without its final evidence section, and a
   heading range's is the range. A change to a node's summary or edges changes
   neither its state as a target nor as a citing node, since the body carries a
   claim's content and reasons (Constitution art. 8).
@@ -649,10 +672,9 @@ maximum among `review` records with that key.
   it wires. An `update_node` whose `rechecked` names an existing target appends
   `updated` when the same call changes the node's body and `unchanged` when it
   does not; this closes a candidate. Naming the target in `add_edges` again does
-  not. A recorded view must still hold: the node's and a node target's body as
-  read with `read_node` in that session, in full or in part, and a non-node
-  target as presented by a scheduled recheck job must equal its state just
-  before the write. A side with no recorded read or presentation closes as the
+  not. A recorded view must still hold: the node's and the target's body as
+  read with `read_node` in that session, in full or in part, must equal its
+  state just before the write. A side with no recorded read closes as the
   reviewer stated. A write through the surface carries the state it wrote
   forward when the caller had read the state it replaced. When a recorded view
   differs, the response reports `recheck_unread` and the pair stays a candidate.
@@ -691,6 +713,47 @@ neither of them.
   ends (Mechanism §5 3).
 - **`signatures.jsonl`** (Mechanism §3 9): a preserved record set. Nothing is
   appended to it and no decision reads it.
+
+### 4.12 Release acknowledgements
+
+`release.jsonl` records that an agent has taken in a new-release notice
+(section 7.2, release check):
+
+| `kind` | Fields |
+|---|---|
+| `ack` | `version` (the announced `vX.Y.Z`) |
+
+An acknowledgement is never withdrawn, so the ledger has no subject key. A
+release is acknowledged when any `ack` names it or a newer version. The device
+that acknowledges also keeps its own record in device-owned state
+(`osk-release-ack.json`), so the notice stops there even when the append
+fails. A ledger that cannot be read counts as no acknowledgement.
+
+### 4.13 External roots
+
+A file outside the vault is evidence only inside an external root the user
+registered (Bylaws §2 8, Mechanism §1 6). The declaration goes to every device;
+the location stays on one:
+
+- **`roots.jsonl`**: `kind` (`declare` or `retire`), `alias`, `note`, opt.
+  `origin` (where the shared original lives). The alias's single causal maximum
+  decides; with several maxima the alias is unresolved until the next record. A
+  root that exists on one device only is still declared.
+- **`.osk/roots.json`**: `{"<alias>": "<absolute path>"}` for this device.
+- **Aliases** match `[a-z][a-z0-9-]+` and are never `http`, `https` or
+  `native`, so `C:` and URLs stay apart from `<alias>:<path>`.
+- **Locations** inside the vault, or containing it, are refused. A coordinate
+  resolves inside its location only; a symlink in a path component below the
+  location is refused, as are `..` and absolute paths.
+- **Commands.** `osk roots show` lists each alias's declaration and this
+  device's location. `declare`, `retire`, `mount` and `unmount` are the user's
+  and ask for confirmation at a terminal; no MCP tool writes either file.
+
+An `<alias>:<path>` coordinate is broken when the alias is not declared (or is
+retired, or its declaration is split) or when the file or heading is missing
+from a root that is here. A declared root that is not on this device is held
+instead: the validator reports it once per root in `evidence_section_held`,
+and not as a violation.
 
 ## 5. Approval store
 
@@ -924,10 +987,14 @@ The canonical repository declares a release with an attestation at its root
 - **Release check.** When the last check is a day old (an hour, if it failed),
   the session-start hook and `overview` start a background
   `git ls-remote --tags` on the upstream URL. The newest `vX.Y.Z` tag,
-  compared with the journal's current version, is announced once a day per
-  device and never applied. The result and the notice marker are device-owned
-  state (`osk-release-check.json`, `osk-release-notice.json`). There is no check
-  with a pin, a `bundle` source, or no known current version.
+  compared with the journal's current version, is announced at every session
+  start until an agent acknowledges it with `osk.update --ack <version>`, and is
+  never applied. The acknowledgement goes to this device's
+  `osk-release-ack.json` and to `release.jsonl` (section 4.12), so it reaches
+  the other devices by sync. The check result and this device's
+  acknowledgement are device-owned state (`osk-release-check.json`,
+  `osk-release-ack.json`). There is no check with a pin, a `bundle` source, or
+  no known current version.
 
 ## 8. Compatibility promise
 

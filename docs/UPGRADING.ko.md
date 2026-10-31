@@ -20,6 +20,27 @@
   기기의 `.osk/` 파일을 다시 실을 수 있다. 데몬을 켜기 전에 `git pull`로 무시 규칙
   (`.osk/.gitignore`)부터 받거나, 엔진부터 올린다.
 
+## v5.3에서 v5.4로
+
+- **동기화 데몬을 쓰면 갱신 뒤 setup을 한 번 더 돈다.** v5.4는 원격 없는 vault에도 `setup --sync`로
+  데몬을 등록하고(커밋만 한다), 데몬이 setup이 확인해 `.osk/sync-targets.json`에 적은 fetch·push
+  대상으로만 보내게 한다. v5.4 전에 등록한 데몬은 그 기록이 없어, 갱신 뒤에는 커밋만 하고 fetch·push를
+  하지 않으며 주기마다 `전송 보류`를 남긴다. `python _governance/_engine/scripts/setup.py --apply --sync`를
+  설치 때처럼 두 번 돌리면 지금의 `origin`과 push 대상을 확인해 적는다. 손으로 등록한 데몬은 그 파일을
+  직접 둔다: `{"origin": "<fetch 주소>", "push": ["<push 대상>"]}`. 그때까지 세션을 시작할 때마다 화면에
+  `osk-system 동기화가 멈췄다 — 전송 보류 …`가 뜨고, `doctor`가 `동기화 데몬`을 경고한다.
+- **옛 비노드 `derived-from`은 이행 명령으로 근거 절에 옮긴다.** v5.4의 `derived-from`은 노드만 받는다
+  (헌법 제8조 5·6항). 옛 항목은 그대로 읽히지만 검증기 `evidence-section`이 남은 것으로 보고한다.
+  - `osk evidence migrate`는 계획만 낸다. 노드마다의 처리 전수는 `.osk/evidence-section-plan.md`에
+    적힌다.
+  - `--apply`가 단말 확인 뒤 옮긴다. 항목마다 노드 끝에 `지지` 줄을 달고 frontmatter에서 지운다. 날짜는
+    라운드가 기록에 들어온 커밋(파일·URL은 그 항목을 처음 단 커밋)의 날이라 Git 이력이 있어야 한다.
+  - 이행 기록은 `_ledger/migration/`에 남는다. 줄을 만들 수 없는 항목은 보류로 frontmatter에 남고,
+    결과에 사유와 함께 적힌다.
+  - 옮긴 노드는 `updated`가 바뀌어 한 달쯤 검색 최신성 가산을 받는다. 근거 절 앞의 본문은 그대로라
+    재검토 후보는 생기지 않는다.
+  - 검증기 활성화는 이행 뒤 사용자가 정한다.
+
 ## v5.2에서 v5.3으로
 
 v5.3은 검색 순위에 최신성·중심성·locality를 넣는다(시행령 §8 3항, Mechanism §8 8항). 또 운영에서 드러난

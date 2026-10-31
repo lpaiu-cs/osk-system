@@ -4,7 +4,7 @@
 
 Claude Code나 Codex는 쓰고 있지만 osk-system은 처음 설정하는 사람을 위한 따라하기
 안내서다. 빈 폴더에서 출발해 검증까지 마친 설정으로 끝난다. 마지막에는 에이전트가
-첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v5.3.3 릴리스 기준이다.
+첫 기억을 쓰고, 그것을 다시 찾아 읽어 낸다. v5.4.0 릴리스 기준이다.
 
 단계마다 더 자세한 내용은 운용 참고서인 [SETUP.md](SETUP.md)로 이어지는 링크를
 따라가면 된다.
@@ -66,6 +66,8 @@ v3.21 이전에 만든 vault는 옛 이름(`= Scope` 등)을 그대로 쓰고 �
 - 훅은 모든 세션에 그 세션이 도는 저장소의 이름을 붙인다. `~/code/my-app`에서라면
   *프로젝트 키*는 `my-app`이다.
 - Git 워크트리는 본 저장소의 이름을 받는다. Git 밖의 폴더는 자기 폴더 이름을 쓴다.
+  대화 중에 하위 폴더로 옮겨도 대화를 시작한 폴더의 키를 그대로 쓴다. 그 아래의 다른
+  저장소나 서브모듈로 들어가면 그 저장소의 키를 쓴다.
 - 무관한 다른 저장소가 이미 그 이름을 소유했으면 훅은 `my-app-<뿌리 커밋 앞 8자>`를
   준다. 소유자는 그 결속을 처음 쓴 저장소이며, 그 뿌리 커밋이 결속과 함께 기록된다.
 - 처음 성공한 쓰기가 그 키를 scope 하나에 영구히 결속한다. 그 뒤로 그 저장소의
@@ -131,7 +133,7 @@ scope 기억으로 남기고, 그 노드에 필요한 턴만 인용한다.
 
 `main` 브랜치가 아니라 릴리스 태그를 clone한다. `main`은 릴리스 사이에도 움직인다.
 갱신기는 파일을 릴리스와 대조하므로, 정확히 한 릴리스에서 출발해야 2단계에서 깨끗한
-기준선을 기록할 수 있다. `v5.3.3`은 적힌 그대로 쓰면 된다.
+기준선을 기록할 수 있다. `v5.4.0`은 적힌 그대로 쓰면 된다.
 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)의 최신 태그를 써도
 되지만, 그때는 2단계에서도 같은 태그를 쓴다.
 
@@ -139,7 +141,7 @@ vault를 담을 폴더(Windows라면 `C:/osk` 등, 먼저 만들어 둔다)에�
 OS에서나 같은 명령이다.
 
 ```bash
-git clone --branch v5.3.3 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.4.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -205,13 +207,13 @@ $env:PYTHONPATH = "_governance\_engine"
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v5.3.3 --apply
+.venv/bin/python -m osk.update --to v5.4.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v5.3.3 --apply
+.venv\Scripts\python.exe -m osk.update --to v5.4.0 --apply
 ```
 
 첫 실행은 어떤 파일도 바꾸지 않는다. 계획을 출력한 뒤 종료코드 2와
@@ -252,7 +254,7 @@ git push
 ```
 
 **확인:** `.venv/bin/python -m osk.update`의 `current`가 선택한 버전을 가리킨다
-(위 예제에서는 `v5.3.3`).
+(위 예제에서는 `v5.4.0`).
 Windows에서는 `.venv\Scripts\python.exe -m osk.update`를 쓴다. `git status`는
 깨끗하다. `osk.cli status`가 `"protected_regions": {"_governance": "clean"}`을
 보여 준다.
@@ -575,14 +577,15 @@ scope가 결속되기 전에도 이 대화의 턴은 추적된다 — 추적은 
 | `[osk 참조·조직 검토]` | 이 scope 노드들의 링크와 허브를 정돈하는 작업. |
 | `[osk 정돈 — …]`, `[osk 정돈이 밀렸다 — …]` | 처분을 기다리는 퇴출된 scope 기억 줄. `밀렸다`는 가장 오래된 항목이 14일을 넘겼다는 뜻이다. |
 | `[osk scope 복구 대기 — …]` | scope 기억이 상한에 닿았다. 에이전트가 항목을 정리하거나 노드로 옮겨야 한다. |
-| `[osk 새 릴리스 — vX.Y.Z · 이 vault vA.B.C]` | 새 릴리스가 나왔다. 같은 알림이 사용자 화면에도 경고로 뜨며, 기기마다 하루 한 번이다. 에이전트에게 갱신을 요청한다([최신 릴리스로 갱신하기](#최신-릴리스로-갱신하기)). 변경집합을 승인하기 전에는 아무것도 적용되지 않는다. |
+| `[osk 새 릴리스 — vX.Y.Z · 이 vault vA.B.C]` | 새 릴리스가 나왔다. 같은 알림이 사용자 화면에도 경고로 뜨며, 에이전트가 받았다고 기록할 때까지 세션 시작마다 뜬다. 기록은 에이전트가 스스로 하고, 동기화로 다른 기기에도 닿는다. 에이전트에게 갱신을 요청한다([최신 릴리스로 갱신하기](#최신-릴리스로-갱신하기)). 변경집합을 승인하기 전에는 아무것도 적용되지 않는다. |
 | `진단`이나 `diagnostic`이 든 문구 | 훅의 한 단계가 실패했다. 작업은 계속되며, 무엇도 완료로 처리되지 않았다. [문제 해결](#문제-해결)을 본다. |
 
 ## 자주 쓰는 명령
 
 `PYTHONPATH`를 설정한 채 vault 루트에서 실행한다. 각 명령 앞에
 `.venv/bin/python -m osk.cli`를, Windows에서는 `.venv\Scripts\python.exe -m osk.cli`를
-붙인다.
+붙인다. vault 루트의 런처를 써도 된다 — 둘 다 대신 설정한다: `sh osk-cli.sh validate`
+(Windows: `.\osk-cli.cmd validate`). `update`도 받는다.
 
 | 명령 | 쓰임 |
 |---|---|
@@ -670,7 +673,8 @@ Windows (PowerShell):
 데몬은 `main`만 동기화하며, `SYNC_ENABLED=1`이 설정되지 않으면 아무 일도 하지
 않는다. 시작하기 전에 다음을 갖춘다.
 
-- `origin`이 개인 원격이어야 한다(1단계).
+- `origin`이 개인 원격이어야 한다(1단계). 없어도 된다 — 원격이 없으면 데몬은 커밋만
+  하므로, 이 기기에 이력은 남지만 다른 곳에 사본은 없다.
 - Git이 묻지 않고 push할 수 있어야 한다. credential helper, 토큰, ssh-agent 가운데
   하나를 쓴다.
 - 데몬은 `sync_daemon.py`의 **절대 경로**로 시작한다. `osk.update`는 그 경로로
@@ -896,8 +900,9 @@ v4.1.0 이상에서는 `python _governance/_engine/scripts/setup.py --apply --fo
 릴리스 페이지를 지켜볼 필요는 없다. 세션 시작 훅과 MCP `overview`가 하루에 한 번
 정본 저장소에 릴리스 태그를 묻는다(`git ls-remote` — vault의 내용은 보내지 않는다).
 새 릴리스가 있으면 Claude Code·Codex 화면에
-`osk-system 새 릴리스 v5.4.0 (이 vault는 v5.3.0) — …` 같은 경고가 기기마다 하루 한 번
-뜬다. 경고 끝에 그 판의 릴리스 노트 주소가 붙는다. 에이전트에게 **"osk 업데이트해 줘"**라고 요청하면 에이전트가 아래 절차를 함께
+`osk-system 새 릴리스 v5.4.0 (이 vault는 v5.3.0) — …` 같은 경고가 에이전트가 받았다고
+기록할 때까지 세션 시작마다 뜬다. 경고 끝에 그 판의 릴리스 노트 주소가 붙는다. 기록은
+에이전트가 스스로 하고(`osk.update --ack`), 동기화로 다른 기기에도 닿는다. 에이전트에게 **"osk 업데이트해 줘"**라고 요청하면 에이전트가 아래 절차를 함께
 밟는다 — 변경집합을 보여 주고 사용자의 승인을 기다린다. 에이전트용 안내는
 [OPERATE-AGENT](OPERATE-AGENT.md)이고, 점검·기능·제거도 같은 문서다. 확인은 백그라운드에서 돌므로
 알림은 확인한 다음 세션부터 보인다. 지금 확인하려면 `osk.update --check`를 실행한다

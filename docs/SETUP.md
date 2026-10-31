@@ -105,10 +105,14 @@ python _governance/_engine/scripts/setup.py doctor          # 연결을 점검�
     네이티브 CLI(`claude.exe`)를 쓴다. 정기 실행은 한 기기에만 둔다 — 결과는 대장으로 모든
     기기가 나눈다.
   - `--sync` — 동기화 데몬(아래 '동기화 데몬')을 상시 서비스로 등록하고 띄운다. 먼저
-    vault가 저장소 루트인지, 로컬 `main`이 있는지, `origin`의 fetch 주소와 모든 push 대상
+    vault가 저장소 루트인지, 로컬 `main`이 있는지, 커밋할 작성자 정보가 있는지, `origin`의 fetch 주소와 모든 push 대상
     (`pushurl`·`pushInsteadOf`를 푼 실제 전송 자리)이 공개 정본이 아닌지, 묻지 않고 push할
     수 있는지(`git push --dry-run`)를 확인한다. push 대상은 계획에 실려 확인받는다. 그것이
-    모두 비공개인지는 사람이 확인한다.
+    모두 비공개인지는 사람이 확인한다. `origin`이 없으면 push 검사 없이 등록하고 데몬은 커밋만
+    한다 — 계획의 `origin`이 `null`이고, 사람이 할 일에 이 기기 밖 사본이 없다고 적는다.
+    확인한 fetch·push 대상은 적용 때 `.osk/sync-targets.json`에 적는다(`targets`) — 데몬은 그
+    대상으로만 보내므로, origin이나 push 대상을 바꾸면 작업 등록이 `keep`이어도 다시 확인할
+    변경이다. 기록에 실패하면 데몬을 등록하지 않고, 해제는 데몬을 걷은 뒤에 기록을 지운다.
 - **해제.** `--uninstall`만 주면 이 vault의 osk 등록을 다 걷는다 — fork 설정의 항목, 정기
   실행 작업, 동기화 데몬(Windows는 떠 있는 데몬도 멈춘다)까지다. 명령 파일은 남긴다.
   기능 플래그를 함께 주면 그 기능만, `--harness`를 주면 그 호스트의 것만 걷는다.
@@ -242,8 +246,8 @@ ID(`turn`, `-1`=최신)만 보낸다(아래 [대화 추적과 인용](#대화-�
 검토 범위의 턴을 한 번에 연다 — 턴마다 발화와 응답을 각 1500자까지 고른 선별본이다.
 
 인용 기록은 작업 검색에서 빠지므로(헌법 11조 3항) `read_cited`는 질의가 아니라
-**좌표**를 받는다. 노드의 `derived-from`에 든 `경로#N`을 그대로 넣으면 그 라운드가
-열린다 — 근거에서 증거로 가는 데 번역이 끼지 않는다. 좌표를 모르면 인자 없는 `read_cited`로
+**좌표**를 받는다. 노드 근거 절의 좌표(`c38d8ef2#46`)나 옛 `derived-from`의 `경로#N`을
+그대로 넣으면 그 라운드가 열린다 — 근거에서 증거로 가는 데 번역이 끼지 않는다. 좌표를 모르면 인자 없는 `read_cited`로
 루트 기록 목록부터(옛 scope 자리는 `space`), 경로만으로 라운드 목차부터 본다.
 
 새 기록의 물리 저장소는 **루트** `_cited/.records/*.txt`다 — Space 밖의 상설 비노드 구획이며
@@ -278,6 +282,7 @@ JSON 안의 역슬래시는 `\\`로 이스케이프한다 —
 
 ```bash
 PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
+sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\osk-cli.cmd)
 ```
 
 | 명령 | 하는 일 |
@@ -298,6 +303,8 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli --help
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `routing show` / `routing bind` / `routing unbind` / `routing primary` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용) (Mechanism §6-2 6항) |
+| `evidence migrate` | 비노드 `derived-from`을 노드 끝 근거 절의 `지지` 줄로 옮기는 이행 계획(v5.4 — 전수는 `.osk/evidence-section-plan.md`); `--apply`는 단말 확인 뒤 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 (헌법 제8조 5·6항·제14조 8·9항 · Mechanism §5) |
+| `roots show` / `roots declare` / `roots retire` / `roots mount` / `roots unmount` | 외부 루트 — 별칭마다 선언·이 기기의 위치 조회, 별칭의 선언·해제(대장, 모든 기기), 이 기기의 위치 지정·삭제(`.osk/roots.json`). 조회 밖은 **사용자 전속** — 단말 확인을 거친다 (시행령 §2 8항 · Mechanism §1 6항) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` / `tidy discard` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록, 경유 노드 폐기 (Mechanism §9-3 · Workbench 계약 §3, 아래) |
 | `protect` / `unprotect` | **사용자 전속** — 보호영역 지정·해제 |
@@ -840,7 +847,8 @@ cite_round(conversation="claude/<대화 ID>", quote="그 턴 사용자 발화의
 
 엔진이 전사에서 그 턴을 찾아 사용자 발화를 `_cited/`에 옮기고, 에이전트 응답은 원본
 위치와 해시로 남긴다(`note`로 요지를 덧붙일 수 있다). 응답의 `round_ref`를 증류의
-`sources`로 쓴다. 같은 턴의 같은 발화를 다시 인용하면 쓰지 않고 같은 `round_ref`를 돌려준다.
+`sources`로 쓰고, `coordinate`로 노드 끝 `## 근거` 절에 줄을 단다 — `derived-from`은 노드만
+받고, 증류는 출처를 이 줄로 확인한다. 같은 턴의 같은 발화를 다시 인용하면 쓰지 않고 같은 `round_ref`를 돌려준다.
 같은 턴 ID에서 발화가 바뀌었으면 새 라운드로 인용하고 응답의 `supersedes`에 앞선 좌표를 적는다. 진행
 중인 턴도 인용할 수 있으며 끝난 뒤의 같은 턴과 좌표가 같다. 원본 전사를 읽을 수 없을
 때만 `user`로 발화를 직접 주고, 그 라운드는 `user_by: caller`로 표시된다. 인용 기록은
@@ -904,7 +912,8 @@ $env:PYTHONPATH='_governance/_engine'
 MCP `create_node`·`update_node`의 `distill`에 `{key,sources,hub}`를 주면 근거와
 허브 연결까지 확인한다. `key`는 검토 작업의 고정 키, `sources`는 노드 또는 정확한
 인용 라운드 참조(`cite_round`의 `round_ref`, 구 `_raw/` 라운드도 된다. 선정 시 해시가
-있으면 `{ref,hash}`), `hub`는 기존 착지 허브다. 인용 라운드는 그것이 가리키는 원본
+있으면 `{ref,hash}`), `hub`는 기존 착지 허브다. 노드 출처는 증류가 `derived-from`에 달고,
+인용 라운드는 본문 끝 근거 절의 줄이 있어야 쓴다. 인용 라운드는 그것이 가리키는 원본
 턴의 검토를 `preserved`로 닫는다.
 본문 저장 뒤 연결 실패는 `distillation.status="pending"`이다. 같은 요청을 재시도하면
 같은 노드에서 이어간다. 다음 worker는 `update_node(name=<기존 id>,distill={resume:<키>})`로
@@ -945,6 +954,7 @@ ACK 뒤에는 대상 노드·최상위 군집·출처 링크만 본다. 본문 �
 |---|---|---|
 | Codex 데스크톱 | `~\Documents\Codex\<YYYY-MM-DD>\<제목>`, `…\<YYYY-MM-DD>\task-N\<제목>` — 이 폴더에서 돈 Claude Code 세션도 같다 | 0.159.2 |
 | Claude 데스크톱 | `%APPDATA%\Claude\scratch-workspaces\<uuid>\<uuid>\scratch-<YYYY-MM-DD>-<hex6>` | 2.1.281 |
+| Claude 데스크톱 3.16 이후(Store 설치) | `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc\scratch-workspaces\<uuid>\<uuid>\scratch-<YYYY-MM-DD>-<hex6>` | 2.1.308 |
 | Antigravity | `~\.gemini\antigravity\playground\<단어-단어>` | 2.17.0 |
 
 Kiro, Claude Code CLI, Codex CLI는 사용자가 연 폴더를 쓰므로 규칙이 없다. 규칙이 없는 하네스나
@@ -1147,10 +1157,10 @@ Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 
 ### 근거 재검토 (`rechecks`)
 
 `derived-from` 대상의 본문이 바뀌면 그 대상을 인용한 노드가 재검토 후보가 된다(시행령
-§7 2·3항 · Mechanism §4-1). 대상은 노드, 비노드 파일, 그 안의 `#제목` 범위다. 노드는
+§7 2·3항 · Mechanism §4-1). 대상은 노드와 그 안의 `#제목` 범위다. 노드는
 본문만 보므로 요약·배선만 바뀐 노드는 후보를 만들지 않는다. 본문 끝의 `## 근거` 절도 보지
-않으므로, 근거 줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다. 인용 라운드는 추가만 되는
-기록이라 후보를 만들지 않는다.
+않으므로, 근거 줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다. 비노드 근거(인용
+라운드·파일·URL)는 재지 않는다.
 
 - **보는 곳:** `overview`의 `rechecks`(후보 수·앞 5건·닫는 법), 검증기 경고 `rechecks`,
   `osk rechecks`(전체).
@@ -1170,9 +1180,8 @@ Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 
 - **닫는 법:** 근거를 읽고 노드를 확인한 뒤 `update_node(name, rechecked=[target])`로 점검을
   적는다. 같은 호출에서 본문을 고치면 `updated`, 그대로 두면 `unchanged`가 `rechecks.jsonl`에
   남는다. `add_edges`로 근거를 다시 넣는 것만으로는 닫히지 않는다. 그 세션이 `read_node`로
-  읽은 판(전문이나 필요한 범위)과 정기 실행 작업이 보여 준 비노드 근거(`_sources/…`)의 판은
-  쓰기 직전과 같아야 한다 — 읽은 뒤 어느 쪽 본문이 바뀌었으면 응답의 `recheck_unread`가
-  알리고 후보로 남는다. 읽거나 보여 준 기록이 없으면 적은 대로 닫힌다. 이 노드의 근거가
+  읽은 판(전문이나 필요한 범위)은 쓰기 직전과 같아야 한다 — 읽은 뒤 어느 쪽 본문이 바뀌었으면
+  응답의 `recheck_unread`가 알리고 후보로 남는다. 읽은 기록이 없으면 적은 대로 닫힌다. 이 노드의 근거가
   아닌 항목은 `recheck_unmatched`가 알린다. 근거가 더는 맞지 않으면 `remove_edges`로 뺀다.
 - **기록:** 새 배선은 `bound`다. 엔진으로 노드의 본문을 고치면 완료였던 근거는 완료로
   이어진다. 엔진 밖에서 본문을 고치거나 반려로 옛 본문이 돌아오면 다시 후보다.
@@ -1192,7 +1201,20 @@ Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 
 ## 동기화 데몬
 
 git 동기화만 한다. 검색·색인 서빙은 하지 않는다 — 그것은 엔진과 MCP 서버의 일이다.
-**명시적 opt-in**이라 `SYNC_ENABLED`가 없으면 즉시 종료한다.
+**결과는 기기에 남는다.** 데몬은 주기마다 결과를 기기 로컬 `osk-sync-status.json`(git 디렉터리 안,
+`core.local_lock_path`)에 적는다. 세션 시작 훅과 `doctor`가 그것을 읽어 전송 보류는 곧바로, 그 밖의
+실패는 하루 넘게 이어졌을 때, 하루 넘게 갱신되지 않은 기록은 돌지 않는 데몬으로 알린다
+(`sync_daemon.trouble`). 동기화를 해제하면 기록도 지운다. 로그에만 남기면 사용자는 백업이 멈춘
+줄 모른다.
+
+**명시적 opt-in**이라 `SYNC_ENABLED`가 없으면 즉시 종료한다. 데몬에게 원격은 `origin`뿐이다.
+`origin`이 없으면 커밋만 한다(`ok (로컬 커밋만 — 원격 없음)`). 전송은 `setup --sync`가 확인해
+`.osk/sync-targets.json`에 적은 fetch·push 대상으로만 한다 — origin이나 push 대상(`pushurl`·
+`pushInsteadOf`를 푼 값)이 그것과 다르면 커밋만 하고 `전송 보류`를 알린다. 그래서 원격 없이
+등록한 데몬은 나중에 더한 원격으로, setup이 확인하기 전에는 보내지 않는다. 그 파일이 없어도
+보내지 않는다 — v5.4 전에 등록한 데몬과 손으로 등록한 데몬은 `setup --sync`를 한 번 돌려 적거나,
+`{"origin": "<fetch 주소>", "push": ["<push 대상>"]}`를 직접 둔다. fetch·push 대상 어디에든
+공개 정본이 있으면 어느 경우에도 보내지 않는다(`update.is_canonical`).
 
 ```bash
 SYNC_ENABLED=1 .venv/bin/python _governance/_engine/sync_daemon.py --interval 900
@@ -1584,17 +1606,23 @@ python3 _governance/_engine/scripts/recover.py --apply
 - **비교.** 판본은 갱신 저널(`current`)에서 매번 다시 읽는다. 다른 기기가 갱신하고 그
   저널이 동기화로 들어오면 확인을 다시 하지 않아도 알림이 사라진다 — 그 기기에서 할
   일은 위의 재시작과 pip 재실행뿐이다.
-- **알림.** 새 릴리스가 있으면 기기마다 하루 한 번 알린다. Claude Code·Codex에서는
-  세션 시작 훅이 사용자 화면에 경고(`systemMessage`)를 띄우고, 에이전트 문맥에
-  `[osk 새 릴리스 — …]`와 갱신 명령을 싣는다. 출처가 GitHub 저장소이면 두 자리 모두
-  그 판의 릴리스 노트 주소를 싣는다 — 메이저 판이면 노트 머리가 이행 안내를 가리킨다.
-  사용자 화면만의 자리가 없는 Kiro·Antigravity에서는 에이전트가 사용자에게 한 줄로 전하게
-  하고, 그 블록이 실제로 문맥에 실렸을 때만 알린 것으로 적는다 — 한도에 밀려 접혔으면
-  `overview`가 이어받는다. `overview`는 새 릴리스가 있는 동안 `update` 필드(`latest`·
-  `current`·`how`, GitHub 출처면 `notes`)를 싣고, 그 기기에서 아직 알리지 않았으면
-  `notify`를 더한다 — 훅이 없는 MCP 클라이언트도 이 길로 안다. 정기 실행과 fork의
-  `overview`는 사용자에게 닿지 않으므로 `notify`를 싣지 않고 알림도 쓰지 않는다. `status`는
-  언제나 `update`에 판본과 마지막 확인을 싣는다.
+- **알림.** 새 릴리스가 있으면 에이전트가 받았다고 기록할 때까지 세션 시작마다 알린다.
+  Claude Code·Codex에서는 세션 시작 훅이 사용자 화면에 경고(`systemMessage`)를 띄우고,
+  에이전트 문맥에 `[osk 새 릴리스 — …]`와 갱신 명령·받음 기록 명령을 싣는다. 출처가 GitHub
+  저장소이면 두 자리 모두 그 판의 릴리스 노트 주소를 싣는다 — 메이저 판이면 노트 머리가
+  이행 안내를 가리킨다. 사용자 화면만의 자리가 없는 Kiro·Antigravity에서는 에이전트가
+  사용자에게 한 줄로 전하게 한다. 입력 훅은 싣지 않는다. `overview`는 새 릴리스가 있는 동안
+  `update` 필드(`latest`·`current`·`how`, GitHub 출처면 `notes`)를 싣고, 받음 기록이 없으면
+  `notify`를, 있으면 `acked`를 더한다 — 훅이 없는 MCP 클라이언트도 이 길로 안다. 정기
+  실행과 fork의 `overview`는 사용자에게 닿지 않으므로 `notify`를 싣지 않는다. `status`는
+  언제나 `update`에 판본과 마지막 확인을, 새 릴리스가 있으면 `acked`를 싣는다.
+- **받음 기록.** 에이전트는 알림을 받으면(사용자 화면이 없는 호스트에서는 사용자에게 전한
+  뒤) 스스로 `osk.update --ack <새 판>`을 실행한다 — 사용자의 확인을 묻지 않는다. 지금 알리는
+  판이 아니면 거부하고, 다른 선택지와 함께 쓰지 않는다. 기록은 이 기기(Git 디렉터리의
+  `osk-release-ack.json`)와 동기화 대장 `_ledger/release.jsonl` 두 곳에 남아, 한 기기에서
+  받으면 동기화로 다른 기기의 알림도 멈춘다. 대장에 못 적으면 이 기기의 알림만 멈추고
+  종료코드 1과 `synced: false`로 알린다. 받음은 그 판까지만 덮는다 — 더 새 판이 나오면 다시
+  알린다. 기록은 갱신이 아니다.
 - **적용.** 사용자가 갱신을 요청하면 에이전트는 `--to <새 판> --apply`로 위의 두
   단계를 밟는다. 알림은 적용 승인을 대신하지 않는다.
 - **끄기.** `.osk/config.json`에 `"update_check": false`를 두거나 환경에

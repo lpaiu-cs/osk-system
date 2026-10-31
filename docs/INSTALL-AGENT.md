@@ -74,8 +74,10 @@ A host is not something to install: the user is already talking to you in one.
     `.osk/growth-command.json` can use `--schedule` with it, and then gets the Claude
     worker that runs the day Codex is out of usage and credits.
   - Git sync (`--sync`): a background daemon commits the vault every 15 minutes
-    and pushes it. It needs the private repository and a push that does not ask
-    for a password.
+    and, with the private repository, pushes it. Without a remote it only
+    commits, which gives the user a history to go back to on this device;
+    pushing needs the private repository and a push that does not ask for a
+    password.
 
 ## 3. Clone the newest release
 
@@ -126,7 +128,8 @@ Summarize the report for the user:
   - `schedule`: the daily command (`command.argv`), the time (`at`), and what
     happens to the OS task (`task`).
   - `sync`: the `origin`, every `push` target the daemon will push to (all must
-    be private), and the OS service (`task`).
+    be private), and the OS service (`task`). An `origin` of `null` means the
+    daemon will only commit.
   - An OS registration that `task.remove` lists is this vault's older one; it is
     replaced. Its definition is kept first in `~/.osk-system/backups/`.
 - The `human` steps the user will have to do.

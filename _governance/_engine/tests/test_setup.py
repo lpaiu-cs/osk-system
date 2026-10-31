@@ -5,6 +5,7 @@ home (`HOME`/`USERPROFILE`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) is a temporary fo
 fake `claude`/`codex` CLIs come first on `PATH`: they log their arguments and write the
 MCP entry the real CLI would write, so no case touches the developer's configuration.
 """
+import json
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import venv
 
 ENGINE = Path(__file__).resolve().parents[1]
 
@@ -148,6 +150,32 @@ class SetupTests(unittest.TestCase):
     def check_case(self, body: str) -> None:
         result = _run(SETUP + body)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_the_launcher_runs_osk_cli_with_the_vaults_python_from_anywhere(self):
+        """`osk-cli.cmd` / `osk-cli.sh` in the vault root: the vault's `.venv` Python, the engine on
+        PYTHONPATH, the arguments as given, whatever the working directory. A stand-in `osk.cli`
+        reports what it received, so the check needs no engine dependencies in the venv."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / 'vault'
+            pkg = root / '_governance' / '_engine' / 'osk'
+            pkg.mkdir(parents=True)
+            (pkg / '__init__.py').write_text('', encoding='utf-8')
+            (pkg / 'cli.py').write_text(
+                'import json, os, sys\n'
+                'print(json.dumps({"exe": sys.executable, "path": os.environ.get("PYTHONPATH"), "argv": sys.argv[1:]}))\n',
+                encoding='utf-8')
+            venv.EnvBuilder(with_pip=False).create(root / '.venv')
+            name = 'osk-cli.cmd' if os.name == 'nt' else 'osk-cli.sh'
+            shutil.copy(ENGINE.parents[1] / name, root / name)
+            launcher = [str(root / name)] if os.name == 'nt' else ['sh', str(root / name)]
+            r = subprocess.run([*launcher, 'search', 'two words', '--json'], capture_output=True, text=True,
+                               encoding='utf-8', errors='replace', cwd=td, timeout=120,
+                               env={k: v for k, v in os.environ.items() if k != 'PYTHONPATH'})
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            out = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertTrue(Path(out['exe']).resolve().is_relative_to((root / '.venv').resolve()), out)
+            self.assertEqual(Path(out['path']).resolve(), (root / '_governance' / '_engine').resolve(), out)
+            self.assertEqual(out['argv'], ['search', 'two words', '--json'], out)
 
     def test_confirmed_apply_touches_only_this_vaults_entries_and_is_idempotent(self):
         self.check_case(r'''
@@ -528,12 +556,23 @@ rep, _ = S.run(schedule='codex')
 assert rep['ok'] and 'claude_command' not in rep['schedule'], rep['schedule']
 assert rep['schedule']['command_files'] == [str(command_file)], rep['schedule']
 command_file.write_text(json.dumps(codex_argv), encoding='utf-8')
-# Sync: a local main, a private origin, and a push that does not ask.
+# Sync: a local main; with an origin, a private one and a push that does not ask.
 rep, _ = S.run(sync=True)
-assert not rep['ok'] and 'main' in rep['errors'][0] and 'origin' in rep['errors'][0], rep
+assert not rep['ok'] and 'main' in rep['errors'][0], rep
 git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
 git('add', '-A')
 git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vault')
+# The daemon commits on its own, so the repository must be able to name a committer.
+git('config', 'user.useConfigOnly', 'true')
+rep, _ = S.run(sync=True)
+assert not rep['ok'] and '작성자' in rep['errors'][0], rep
+git('config', 'user.name', 't')
+git('config', 'user.email', 't@example.com')
+# No origin: the daemon is registered to commit only, and the human steps say so.
+rep, _ = S.run(sync=True)
+assert rep['ok'] and rep['sync']['origin'] is None and rep['sync']['task']['action'] == 'add', rep
+assert rep['sync']['targets']['action'] == 'record', rep['sync']
+assert any('커밋만' in s for s in rep['human']), rep['human']
 git('remote', 'add', 'origin', 'git@github.com:LPAIU-CS/osk-system.git')
 rep, _ = S.run(sync=True)
 assert not rep['ok'] and '정본' in rep['errors'][0], rep
@@ -542,16 +581,38 @@ git('remote', 'set-url', 'origin', str(bare))
 rep, _ = S.run(sync=True)
 assert not rep['ok'] and 'push' in rep['errors'][0], rep      # the remote is not there yet
 subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True, capture_output=True)
+# The recorded targets are the precondition of the registration: if they cannot be written, no daemon.
+S.run(apply=True, sync=True)
+with mock.patch.object(S, '_write_targets', return_value={'step': 'sync 전송 대상', 'ok': False, 'error': 'disk'}):
+    rep, code = S.run(apply=True, sync=True)
+assert code == 1 and f'osk-sync-{services.tag()}' not in Fake.rows, rep
 rep, code = S.run(apply=True, sync=True)
 assert code == 2 and rep['sync']['task']['action'] == 'add' and rep['sync']['origin'] == str(bare), rep
 assert any('비공개' in s for s in rep['human']), rep['human']
 rep, code = S.run(apply=True, sync=True)
 assert code == 0 and rep['ok'] and f'osk-sync-{services.tag()}' in Fake.rows, rep
+targets = root / '.osk' / 'sync-targets.json'
+assert json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(bare), rep
+# The transfer targets are part of what was confirmed: a changed origin is a change to confirm
+# again, even though the task registration is kept, and the recorded file follows.
+other = root.parent / 'other.git'
+subprocess.run(['git', 'init', '-q', '--bare', str(other)], check=True, capture_output=True)
+git('remote', 'set-url', 'origin', str(other))
+rep, code = S.run(apply=True, sync=True)
+assert code == 2 and rep['sync']['task']['action'] == 'keep' and rep['sync']['targets']['action'] == 'record', rep['sync']
+assert any('sync-targets' in s for s in rep['human']) and any('비공개' in s for s in rep['human']), rep['human']
+rep, code = S.run(apply=True, sync=True)
+assert code == 0 and json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(other), rep
 # Uninstalling one feature leaves the hosts and the other features.
+import sync_daemon
+status = core.local_lock_path(sync_daemon.STATUS)
+status.write_text(json.dumps({'at': time.time(), 'status': 'ok', 'since': None}), encoding='utf-8')
 rep, code = S.run(apply=True, uninstall=True, sync=True)
 assert code == 2 and rep['hosts'] == [] and 'fork' not in rep and rep['sync']['task']['action'] == 'remove', rep
 rep, code = S.run(apply=True, uninstall=True, sync=True)
 assert code == 0 and f'osk-sync-{services.tag()}' not in Fake.rows and f'osk-growth-{services.tag()}' in Fake.rows, rep
+assert not targets.exists(), 'uninstalling sync left the recorded transfer targets'
+assert not status.exists(), 'uninstalling sync left the daemon status, which would read as a stopped daemon'
 assert osk_entries(read(claude_home / 'settings.json'), 'start'), 'uninstalling sync removed a hook'
 # Uninstalling everything takes every osk registration of this vault, not the command file.
 S.run(apply=True, uninstall=True)
@@ -588,6 +649,8 @@ git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vau
 private, second = root.parent / 'private.git', root.parent / 'second.git'
 for bare in (private, second):
     subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True, capture_output=True)
+git('config', 'user.name', 't')
+git('config', 'user.email', 't@example.com')
 git('remote', 'add', 'origin', str(private))
 # The fetch URL is private, but pushes go to the public canonical repository.
 git('config', 'remote.origin.pushurl', 'https://github.com/lpaiu-cs/osk-system.git')
@@ -603,6 +666,8 @@ assert code == 2 and rep['sync']['push'] == [str(private), str(second)] and not 
 assert any(str(second) in s for s in rep['human']), rep['human']
 rep, code = S.run(apply=True, sync=True)
 assert code == 0 and rep['ok'] and f'osk-sync-{services.tag()}' in Fake.rows, rep
+# The daemon will transfer to exactly the push targets that were shown and confirmed.
+assert json.loads((root / '.osk' / 'sync-targets.json').read_text(encoding='utf-8'))['push'] == [str(private), str(second)]
 ''')
 
     def test_uninstall_without_a_service_manager_still_removes_the_hosts(self):

@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 import errno, functools, hashlib, json, os, random, re, shlex, string, subprocess, sys, tempfile, time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -72,6 +73,7 @@ PINS = LEDGER / "pins.jsonl"
 VALIDATORS = LEDGER / "validators.jsonl"   # 검증기 활성화 기록 (Mechanism §6-1)
 ROUTING = LEDGER / "routing.jsonl"       # 세션→scope 라우팅 (Mechanism §6-2 3항)
 EVICTIONS = LEDGER / "evictions.jsonl"   # 퇴출 기록부 (Mechanism §9-2 12항)
+ROOTS = LEDGER / "roots.jsonl"           # 외부 루트 선언 (Mechanism §1 6항)
 _MUTATION_LOCK_PATH: Path | None = None
 
 
@@ -213,6 +215,22 @@ class mutation_lock:
         finally:
             self._f.close()
         return False
+
+
+@contextmanager
+def device_lock():
+    """기기 로컬 설정(`.osk/`)을 읽고 고치는 동안 mutation 잠금을 쥔다. 동기화 데몬은 이 잠금 안에서
+    rebase하고 그 rebase가 바꾼 `.osk/` 파일을 rebase 전 바이트로 되돌린다(`vault_sync.rebase_snapshot`)
+    — 그 사이에 읽은 설정은 다른 기기의 판본일 수 있고, 쓴 설정은 되돌리기에 덮인다. 노드 쓰기가
+    아니므로 판본 관문(`_fence`)은 세우지 않는다."""
+    path = mutation_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        lock_exclusive(f)
+        try:
+            yield
+        finally:
+            unlock(f)
 
 TS_FMT = "%Y-%m-%d %H:%M (KST)"          # Mechanism §2 2항 — frontmatter 시각
 TS_RE = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \(KST\)$"

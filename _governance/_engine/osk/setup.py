@@ -353,16 +353,10 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
     return out
 
 
-def _canonical(url: str) -> bool:
-    """origin이 공개 정본인가 — HTTPS·SSH 표기, `.git`, 대소문자를 가리지 않는다."""
-    def norm(u: str) -> str:
-        u = re.sub(r"\.git$", "", u.strip().rstrip("/").lower())
-        return re.sub(r"^[a-z+]+://", "", u).split("@")[-1].replace(":", "/")
-    return norm(url) == norm(update.DEFAULT_UPSTREAM)
-
-
 def _sync_checks() -> tuple[str | None, list[str], list[str]]:
-    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 개인 원격 `origin`, 묻지 않는 push.
+    """동기화 데몬의 전제 — 저장소 루트, 로컬 `main`, 커밋할 작성자 정보, 그리고 `origin`이 있으면
+    개인 원격과 묻지 않는 push. `origin`이 없으면 오류가 아니다 — 데몬은 커밋만 한다
+    (`sync_daemon.once`).
     (fetch 주소, push 대상들, 오류). push 대상은 `pushurl`과 `pushInsteadOf`를 푼 실제 전송
     자리다 — fetch 주소만 보면 다른 곳으로 가는 push를 확인하지 못한다."""
     def git(*args: str) -> subprocess.CompletedProcess:
@@ -377,13 +371,14 @@ def _sync_checks() -> tuple[str | None, list[str], list[str]]:
                   if u.strip()] if url else []
         main = git("rev-parse", "--verify", "--quiet", "refs/heads/main").returncode == 0
         errors = [] if main else ["로컬 `main` 브랜치가 없다 — 데몬은 `main`만 동기화한다"]
-        public = [u for u in dict.fromkeys([url, *pushes]) if u and _canonical(u)]
-        if not url:
-            errors.append("`origin`이 없다 — 개인 저장소를 origin으로 둔다(시작 안내서 1단계)")
-        elif public:
+        if git("var", "GIT_COMMITTER_IDENT").returncode != 0:      # 데몬의 커밋이 쓰는 바로 그 판정
+            errors.append("커밋할 작성자 정보가 없다 — `git config --global user.name`·`user.email`을 "
+                          "둔다(INSTALL-AGENT 1단계). 데몬은 작성자 없이 커밋하지 못한다")
+        public = [u for u in dict.fromkeys([url, *pushes]) if u and update.is_canonical(u)]
+        if public:
             errors.append("origin의 fetch·push 대상에 공개 정본 저장소가 있다(" + ", ".join(public)
                           + ") — 개인 저장소만 둔다")
-        elif main:
+        elif url and main:
             code, out, err = update.git_unattended(
                 ["-C", str(core.ROOT), "push", "--dry-run", "--porcelain", "origin", "main"], timeout=90)
             # 원격이 앞서 있으면 거절(`[rejected]`)되지만 인증은 통과했다 — 데몬은 먼저 rebase한다.
@@ -397,13 +392,22 @@ def _sync_checks() -> tuple[str | None, list[str], list[str]]:
 
 def _sync(manager, uninstall: bool) -> dict:
     """동기화 데몬 — 전제를 확인한 뒤 운영체제의 상시 서비스로 둔다. push 대상은 계획에 실려
-    확인 대상이 된다."""
+    확인 대상이 된다. `origin`이 없으면 계획의 `origin`은 None이고 데몬은 커밋만 한다.
+    확인한 fetch·push 대상은 적용 때 `.osk/sync-targets.json`에 적는다(`targets`) — 데몬은 그
+    대상으로만 보내므로, origin이 바뀌면 작업 등록이 `keep`이어도 다시 확인할 변경이다."""
+    import sync_daemon, vault_sync
+    file = core.ROOT / vault_sync.TARGETS
     if uninstall:
-        return {"task": services.plan(manager, "sync", None, True)}
+        # 데몬의 마지막 결과 기록도 걷는다 — 남으면 세션 시작이 "돌지 않는 데몬"을 알린다.
+        leftover = file.is_file() or sync_daemon.last() is not None
+        return {"task": services.plan(manager, "sync", None, True),
+                "targets": {"file": str(file), "action": "remove" if leftover else "absent"}}
     url, pushes, errors = _sync_checks()
     if errors:
         return {"origin": url, "push": pushes, "error": "; ".join(errors)}
+    same = vault_sync.targets_match(vault_sync.approved_targets(core.ROOT), url, pushes)
     return {"origin": url, "push": pushes,
+            "targets": {"file": str(file), "action": "keep" if same else "record"},
             "task": services.plan(manager, "sync", services.job("sync"), False)}
 
 
@@ -482,9 +486,19 @@ def _extras_human(extras: dict) -> list[str]:
             [str(_python()), str(services.script("growth")), "--command-file", s["command_file"],
              "--limit", "1"]) + "`")
     y = extras.get("sync") or {}
-    if y.get("task", {}).get("action") in ("add", "replace"):
-        steps.append("origin의 push 대상(" + ", ".join(y.get("push") or [y["origin"]])
-                     + ")이 모두 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 커밋해 그곳에 올린다")
+    recording = (y.get("targets") or {}).get("action") == "record"
+    if y.get("task", {}).get("action") in ("add", "replace") or recording:
+        if y.get("origin"):
+            steps.append("origin의 push 대상(" + ", ".join(y.get("push") or [y["origin"]])
+                         + ")이 모두 비공개 저장소인지 확인한다 — 데몬은 vault 전체를 커밋해 그곳에 올린다. "
+                         "주소만으로는 공개 여부를 알 수 없다: 저장소 설정에서 본다")
+        else:
+            steps.append("원격이 없어 데몬은 커밋만 한다 — 이 기기 밖에는 사본이 없다. 비공개 저장소를 "
+                         "origin으로 더한 뒤 `setup.py --apply --sync`를 다시 돌려 확인하면 push한다"
+                         "(docs/OPERATE-AGENT.md)")
+    if recording:
+        steps.append("데몬은 지금 확인한 fetch·push 대상으로만 보낸다(`.osk/sync-targets.json`) — origin이나 "
+                     "push 대상을 바꾸면 `setup.py --apply --sync`를 다시 돌려 확인한다")
     if any((extras.get(k) or {}).get("task", {}).get("backend") == "systemd"
            and extras[k]["task"].get("action") in ("add", "replace") for k in ("schedule", "sync")):
         steps.append("로그아웃한 뒤에도 돌게 하려면 `loginctl enable-linger $USER`를 실행한다")
@@ -497,7 +511,8 @@ def _extras_changes(extras: dict) -> bool:
             or any((extras.get(k) or {}).get("task", {}).get("action") in CHANGES
                    for k in ("schedule", "sync"))
             or any((extras.get("schedule") or {}).get(k, {}).get("action") == "add"
-                   for k in ("command", "claude_command")))
+                   for k in ("command", "claude_command"))
+            or ((extras.get("sync") or {}).get("targets") or {}).get("action") in ("record", "remove"))
 
 
 def _extras_errors(extras: dict) -> list[str]:
@@ -691,26 +706,28 @@ def _apply(p: dict) -> dict:
 
 
 def _write_fork(approved: dict, uninstall: bool, stamp: str) -> dict:
-    """fork 설정을 쓴다 — 확인한 호스트의 항목만 더하거나 걷고, 다른 키는 그대로 둔다."""
+    """fork 설정을 쓴다 — 확인한 호스트의 항목만 더하거나 걷고, 다른 키는 그대로 둔다. `.osk/` 설정은
+    데몬의 rebase·되돌리기와 겹치지 않게 `core.device_lock` 안에서 읽고 쓴다(이 파일의 다른 쓰기도 같다)."""
     path = Path(approved["file"])
     step = {"step": "fork CLI", "file": str(path)}
-    now = _fork([adapters.get(n) for n in approved["entries"]], uninstall)
-    if ({n: e["action"] for n, e in now.get("entries", {}).items()}
-            != {n: e["action"] for n, e in approved["entries"].items()}):
-        return {**step, "ok": False, "error": "확인 뒤 fork 설정이 바뀌었다 — 쓰지 않았다. "
-                                              "setup을 다시 계획해 확인받는다"}
-    data = _read_json(path)
-    for name, e in approved["entries"].items():
-        if e["action"] in ("add", "replace"):
-            data[name] = e["path"]
-        elif e["action"] == "remove":
-            data.pop(name, None)
-    backup = _backup(path, stamp)
-    if data:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        core.atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
-    else:
-        path.unlink(missing_ok=True)
+    with core.device_lock():
+        now = _fork([adapters.get(n) for n in approved["entries"]], uninstall)
+        if ({n: e["action"] for n, e in now.get("entries", {}).items()}
+                != {n: e["action"] for n, e in approved["entries"].items()}):
+            return {**step, "ok": False, "error": "확인 뒤 fork 설정이 바뀌었다 — 쓰지 않았다. "
+                                                  "setup을 다시 계획해 확인받는다"}
+        data = _read_json(path)
+        for name, e in approved["entries"].items():
+            if e["action"] in ("add", "replace"):
+                data[name] = e["path"]
+            elif e["action"] == "remove":
+                data.pop(name, None)
+        backup = _backup(path, stamp)
+        if data:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            core.atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        else:
+            path.unlink(missing_ok=True)
     return {**step, "ok": True, **({"backups": [backup]} if backup else {})}
 
 
@@ -718,11 +735,12 @@ def _write_command(file: str, argv: list[str]) -> dict:
     """정기 실행의 명령 파일을 만든다 — 그 사이 생겼으면 덮지 않는다."""
     path = Path(file)
     step = {"step": "growth command", "file": str(path)}
-    if path.exists():
-        return {**step, "ok": False, "error": "확인 뒤 명령 파일이 생겼다 — 덮지 않았다. "
-                                              "setup을 다시 계획해 확인받는다"}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    core.atomic_write(path, (json.dumps(argv, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    with core.device_lock():
+        if path.exists():
+            return {**step, "ok": False, "error": "확인 뒤 명령 파일이 생겼다 — 덮지 않았다. "
+                                                  "setup을 다시 계획해 확인받는다"}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        core.atomic_write(path, (json.dumps(argv, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return {**step, "ok": True}
 
 
@@ -740,6 +758,26 @@ def _stop_daemon() -> list[int]:
             finally:
                 unlock(lock)
     return pids
+
+
+def _write_targets(part: dict, uninstall: bool) -> dict:
+    """데몬이 보낼 대상을 적는다 — 확인한 계획의 origin·push 대상 그대로. 해제면 지운다."""
+    import sync_daemon, vault_sync
+    path = core.ROOT / vault_sync.TARGETS
+    step = {"step": "sync 전송 대상", "file": str(path)}
+    try:
+        with core.device_lock():
+            if uninstall:
+                path.unlink(missing_ok=True)
+                sync_daemon._lock_path(core.ROOT, sync_daemon.STATUS).unlink(missing_ok=True)
+                return {**step, "ok": True, "action": "remove"}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            core.atomic_write(path, json.dumps(
+                {"origin": part["origin"], "push": part["push"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+                ensure_ascii=False, indent=1).encode("utf-8"))
+        return {**step, "ok": True, "action": "record", "origin": part["origin"], "push": part["push"]}
+    except OSError as e:
+        return {**step, "ok": False, "error": str(e)}
 
 
 def _apply_extras(p: dict, stamp: str) -> list[dict]:
@@ -764,7 +802,15 @@ def _apply_extras(p: dict, stamp: str) -> list[dict]:
             out += written
             if not all(w["ok"] for w in written):
                 continue
+        targets = (part.get("targets") or {}).get("action") if kind == "sync" else None
+        if targets == "record":
+            written = _write_targets(part, False)
+            out.append(written)
+            if not written["ok"]:
+                continue            # 기록이 등록의 전제다 — 적지 못했으면 데몬을 두지 않는다
         if part.get("task", {}).get("action") not in CHANGES:
+            if targets == "remove":
+                out.append(_write_targets(part, True))      # 걷을 작업은 없고 기록만 남았다
             continue
         job = None if uninstall else (services.job(kind, command_files=[Path(f) for f in part["command_files"]],
                                                    at=part["at"]) if kind == "growth" else services.job(kind))
@@ -775,6 +821,8 @@ def _apply_extras(p: dict, stamp: str) -> list[dict]:
         except (OSError, ValueError, subprocess.SubprocessError, update.UpdateError) as e:
             result = {"step": f"{kind} ({manager.name})", "ok": False, "error": f"{type(e).__name__}: {e}"}
         out.append(result)
+        if targets == "remove" and result.get("ok"):
+            out.append(_write_targets(part, True))          # 데몬을 걷은 뒤에야 기록을 지운다
     return out
 
 

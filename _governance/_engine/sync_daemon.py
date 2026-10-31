@@ -15,13 +15,13 @@ vault_sync(순수 git 헬퍼)는 「동기화 데몬 예외」로 재사용한�
        절대 폴백하지 않는다(데몬 자신의 `git add -A`가 잠금 파일을 커밋한다).
 """
 from __future__ import annotations
-import argparse, os, signal, sys, time
+import argparse, json, os, signal, sys, time
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
-from osk import core, epoch, raw  # noqa: E402
+from osk import core, epoch, raw, update  # noqa: E402
 from osk._portalock import lock_exclusive, unlock  # noqa: E402
 
 ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
@@ -48,7 +48,68 @@ def _lock_path(root: Path = ROOT, name: str = "osk-sync.lock") -> Path:
     return core.local_lock_path(name, root)
 
 
+# 마지막 주기의 결과 — 기기 로컬(`core.local_lock_path`). 실패가 데몬 로그에만 묻히면 사용자는 백업이
+# 멈춘 줄 모른다(v5.4의 전송 보류가 그 예다). 세션 시작 훅과 doctor가 `trouble`로 읽는다.
+STATUS = "osk-sync-status.json"
+STALE = 24 * 3600                       # 이보다 오래 성공하지 못했거나 돌지 않았으면 멈춘 것이다
+
+
+def last(root: Path = ROOT) -> dict | None:
+    """마지막 주기의 기록 `{at, status, since}` — 없으면 이 기기는 데몬을 쓰지 않는다."""
+    try:
+        data = json.loads(_lock_path(root, STATUS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("at"), (int, float)) else None
+
+
+def _when(at: float) -> str:
+    return datetime.fromtimestamp(at).strftime("%m-%d %H:%M")
+
+
+def trouble(root: Path = ROOT, now: float | None = None) -> str | None:
+    """동기화가 멈췄으면 그 사유 한 줄, 아니면 None. 전송 보류는 사람이 setup으로 풀어야 하므로
+    곧바로, 그 밖의 실패는 하루 넘게 이어졌을 때, 기록이 하루 넘게 낡았으면 데몬이 돌지 않는 것이다."""
+    rec = last(root)
+    if not rec:
+        return None
+    now = time.time() if now is None else now
+    if now - rec["at"] > STALE:
+        return f"데몬이 {_when(rec['at'])} 뒤로 돌지 않았다"
+    status, since = str(rec.get("status", "")), rec.get("since")
+    if status.startswith("전송 보류"):
+        return status
+    if isinstance(since, (int, float)) and now - since > STALE:
+        return f"{_when(since)}부터 동기화하지 못했다 — 마지막 결과: {status}"
+    return None
+
+
+def _record(root: Path, status: str) -> None:
+    # ok가 아니면 무엇이든(잠금 경합·미완료 트랜잭션 포함) 실패가 이어진 시작을 잰다. 일시적인 것은
+    # 다음 ok가 지우고, 하루를 넘겨야 알리므로(`trouble`) 경합이 경고가 되지는 않는다.
+    prev = last(root) or {}
+    now = time.time()
+    since = None if status.startswith("ok") else (prev.get("since") or now)
+    try:
+        core.atomic_write(_lock_path(root, STATUS),
+                          json.dumps({"at": now, "status": status, "since": since},
+                                     ensure_ascii=False).encode("utf-8"))
+    except OSError:
+        pass        # 기록을 못 남겨도 동기화는 돈다 — 보이지 않을 뿐이다
+
+
 def once(root: Path = ROOT) -> str:
+    """한 주기를 돌고 그 결과를 기기 로컬에 남긴다(`last`·`trouble`)."""
+    try:
+        status = _once(root)
+    except Exception as e:
+        _record(root, f"실패 — {type(e).__name__}: {e}")
+        raise
+    _record(root, status)
+    return status
+
+
+def _once(root: Path = ROOT) -> str:
     """Fetch → locked commit/rebase/snapshot → push the captured SHA.
 
     Network waits do not exclude writers. Recheck pending transactions and Git
@@ -56,9 +117,20 @@ def once(root: Path = ROOT) -> str:
     """
     if not vault_sync.is_git_repo(root):
         return "git 저장소 아님"
-    if not vault_sync.has_remote(root):
+    url, pushes = vault_sync.remote_targets(root)
+    if not url:
         status, _head = _apply(root)
         return "ok (로컬 커밋만 — 원격 없음)" if status == "ok" else status
+    # 전송 경계의 보호 — 등록 뒤에 origin이나 push 대상이 바뀌어도 여기서 막는다. 공개 정본은 어디에
+    # 있든 안 되고, 그 밖의 대상은 setup이 확인해 적은 것(`vault_sync.TARGETS`)과 같아야 한다.
+    if any(update.is_canonical(u) for u in [url, *pushes]):
+        status, _head = _apply(root)
+        return ("전송 보류 — origin의 fetch·push 대상에 공개 정본이 있다(로컬 커밋만)"
+                if status == "ok" else status)
+    if not vault_sync.targets_match(vault_sync.approved_targets(root), url, pushes):
+        status, _head = _apply(root)
+        return ("전송 보류 — setup이 확인해 적은 전송 대상(.osk/sync-targets.json)이 없거나 지금의 origin과 "
+                "다르다(로컬 커밋만; `setup.py --apply --sync`로 확인한다)" if status == "ok" else status)
     for _attempt in range(2):
         with vault_sync.fetch_snapshot(root) as (fetched, st, detail):
             # Even when offline, retain the existing local-commit behavior.
@@ -137,7 +209,8 @@ def _keep_local(root: Path) -> None:
     """`.osk/`는 기기 로컬 설정이다(Mechanism §1-2 5항). 루트 무시 규칙에 `.osk/`가 없는
     옛 vault에서도 `git add -A`가 실행 기록과 이 기기의 CLI 경로를 싣지 않게 한다 — 자기만
     싣는 규칙 파일이 동기화되어 다른 기기의 판본과 상관없이 같은 무시가 걸린다. 이미 실린
-    것은 추적만 푼다(파일은 그대로다)."""
+    것은 추적만 푼다(파일은 그대로다 — 이 해제가 `.osk/`를 아직 추적하는 원격 위에 재적용되며
+    git이 덮거나 지운 것은 `vault_sync.rebase_snapshot`이 되돌린다)."""
     local = root / ".osk"
     if not local.is_dir():
         return
@@ -253,7 +326,7 @@ def main():
     while not _stop:
         try:
             st = once()
-            if st != "ok":
+            if not st.startswith("ok"):      # "ok (로컬 커밋만 — 원격 없음)"은 정상이다
                 print(f"sync 상태: {st}", file=sys.stderr)
         except Exception as e:
             print(f"sync 실패(다음 주기 재시도): {e}", file=sys.stderr)

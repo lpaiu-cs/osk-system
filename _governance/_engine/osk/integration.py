@@ -1446,9 +1446,10 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     # 2026-10-05 사용자 결정(#136 M5 정보 회귀 금지, M3 `## 근거` 절). 작업자 지시(growth.prompt)와 같은 규칙.
     text += ("검토하는 턴이 현행 노드보다 오래됐을 수 있다. 옛 사실은 날짜를 붙인 이력으로만 더하고, "
              "현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 선후가 불분명하면 보류한다. "
-             "이미 노드에 있는 주장을 받치거나 조건·반례만 더하는 턴은 본문을 고쳐 쓰지 않고, distill로 그 노드 "
-             "끝의 `## 근거` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 보인 것(50자 안팎)` 한 줄을 단다. "
-             "좌표는 링크가 아니라 코드 글자로, round_ref의 기록 이름 해시 앞 8자와 라운드를 쓴다(`42cf0fc0#1`, "
+             "distill.sources에 준 라운드는 노드 끝 `## 근거` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 "
+             "보인 것(50자 안팎)` 한 줄씩 단다 — derived-from은 노드만 받고, 엔진은 출처를 이 줄로 확인한다. "
+             "이미 노드에 있는 주장을 받치거나 조건·반례만 더하는 턴은 본문을 고쳐 쓰지 않고 그 줄만 단다. "
+             "좌표는 링크가 아니라 코드 글자로, 회상·인용 결과의 coordinate를 쓴다(`42cf0fc0#1`, "
              "이어진 라운드는 `42cf0fc0#41–42`). ")
     turns = len(st["pending_refs"]) - len(stored)
     if turns and offline and st.get("repair"):
@@ -1464,7 +1465,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  "턴마다 선별본(≤6000자)과 바로 앞 턴의 `previous`가 온다. 앞선 맥락은 판단에 꼭 필요할 때만 "
                  "`previous`로 한 턴씩 거슬러 읽고, 대화 전체를 읽지 않는다. 노드로 옮길 지식이 나온 턴만 "
                  f"cite_round(conversation=\"{harness}/{conversation_id}\", turn=<턴 ID>)로 인용하고, 받은 "
-                 "round_ref를 distill.sources로 써 출처와 허브 Link를 완성한다.\n")
+                 "round_ref를 distill.sources로, coordinate를 근거 줄로 써 출처와 허브 Link를 완성한다.\n")
     elif turns:
         # The reviewer usually holds these turns, but not after a compaction: one call reads
         # the range (#219). Citing is the only vault write of dialogue, and only for evidence a
@@ -1474,8 +1475,8 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  f"read_cited(conversation=\"{harness}/{conversation_id}\", through=아래 through)로 "
                  "이 범위만 한 번에 읽는다(턴마다 발화·응답 각 ≤1500자). 노드로 옮길 지식이 나온 범위 안 "
                  f"턴만 cite_round(conversation=\"{harness}/{conversation_id}\", quote=그 턴 사용자 발화의 "
-                 "짧은 일부 또는 turn=read_cited가 준 short)로 인용하고, 받은 round_ref를 distill.sources로 "
-                 "써 출처와 허브 Link를 완성한다. 범위 안에 남길 지식이 없으면 no_value로 닫는다.\n")
+                 "짧은 일부 또는 turn=read_cited가 준 short)로 인용하고, 받은 round_ref를 distill.sources로, "
+                 "coordinate를 근거 줄로 써 출처와 허브 Link를 완성한다. 범위 안에 남길 지식이 없으면 no_value로 닫는다.\n")
     if stored:
         text += ("저장된 기록은 현재 scope_memory와 함께 read_cited(view=review) 선별본으로 본다. "
                  "보존할 주장이나 모순을 확인할 때만 query로 필요한 원료 근거를 좁혀 읽고, 원본 hash를 "
@@ -1587,8 +1588,12 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         record = parent["record"]
     result = raw.append_rounds(session, record, [{"user": words, "agent": (note or "").strip()}],
                                cited=meta)
+    from . import evidence
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
-           "index": result["indices"][0], "turn": rid, "reused": result.get("reused", False),
+           "index": result["indices"][0],
+           # 근거 줄에 쓸 좌표 — 기록 이름 해시의 앞자리와 라운드(Mechanism §8 9항)
+           "coordinate": evidence.coordinate(result["path"], result["indices"][0]),
+           "turn": rid, "reused": result.get("reused", False),
            "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
            **({"binding": result["binding"]} if "binding" in result else {})}
     if result.get("supersedes"):

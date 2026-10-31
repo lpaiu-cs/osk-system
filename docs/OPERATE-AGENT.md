@@ -58,6 +58,10 @@ below from the vault root. There are two command shapes:
   .venv\Scripts\python.exe -m osk.cli …
   ```
 
+The vault root also has a launcher that does the second shape for you:
+`sh osk-cli.sh <command>` on macOS and Linux, `.\osk-cli.cmd <command>` on
+Windows; `update` goes through it too (`sh osk-cli.sh update --apply`).
+
 There is no `osk` command. On Windows, `osk` opens the On-Screen Keyboard. The
 session-start text and the new-release notice already carry a one-line form of
 these commands with the vault's paths filled in; that line works as it is.
@@ -141,6 +145,7 @@ what does not, and the `→` fix line of each failing or warning item.
 | A hook is registered but never ran | The host loads hooks at startup. Claude Code: open a new session. Codex: trust the three osk hooks with `/hooks`. Kiro: trust the workspace folder and open a new chat. Antigravity: open a new conversation. |
 | No osk text at session start | Same as above. Registering the MCP server alone does not install the hooks; `setup.py --apply` registers both. |
 | Fork items warn with a reason after `foreground —` | Background reviews fall back to in-session reviews at turns 9 and 15, which is normal without a fork setup. The reasons and fixes are in [Troubleshooting](GETTING-STARTED.md#troubleshooting). |
+| `동기화 데몬` warns, or a session starts with `[osk 동기화 멈춤 — …]` | The sync daemon has stopped sending this vault anywhere. `전송 보류`: run `setup.py --apply --sync` (two steps); it checks and records the current origin and push targets, and the daemon sends again on its next round. `데몬이 … 뒤로 돌지 않았다`: start the daemon's registration again (Update, step 5). Any other result that lasted a day: show it to the user; a pull conflict needs a person. |
 | `capture_blocked` in `osk.cli status` | Tracking this conversation's turns is stuck; nothing is lost and reviews still happen at turns 9 and 15. Show the error to the user. |
 
 When the user asks whether the vault itself is sound, `osk.cli validate` checks
@@ -158,7 +163,8 @@ people ask about most:
 |---|---|
 | `[osk 검토 경고 — …]` | Background reviews are not set up, so the conversation is reviewed inside the session at the 9th and 15th message. Normal. |
 | `[osk 케이던스 — user 턴 N]` | A review is due now; the agent does it, the user does nothing. |
-| `[osk 새 릴리스 — …]` | A newer version exists. Nothing changes until the user asks for the update. |
+| `[osk 새 릴리스 — …]` | A newer version exists. Nothing changes until the user asks for the update. The notice returns at every session start until you run the `--ack` command it carries (on a host without a screen notice, after telling the user); you run it yourself, without asking. |
+| `[osk 동기화 멈춤 — …]` | Backups have stopped leaving this device, for the reason given. Ask whether to fix it now ([Check the connection](#check-the-connection-osk-점검해-줘-is-osk-working)). |
 | Anything with `진단` or `diagnostic` | A hook step failed. The work continues and nothing was marked done; run `doctor`. |
 | `에 결속돼 있다` (in a refusal) | This folder's memory belongs to another project; the note goes there, or into `00_Domain/` if it is useful beyond one project. |
 | `아직 없는 군집이라 …` (in a refusal) | Creating a new top-level group needs one confirmation; sending the same request again within an hour creates it. |
@@ -170,7 +176,8 @@ are already connected come out as `keep`.
 
 - On: `setup.py --apply --fork`, `--schedule claude [--at HH:MM]`, or `--sync`.
   Tell the user what each uses: forks and the daily run spend the user's
-  subscription; sync needs a private remote and a push that asks nothing.
+  subscription; sync pushes only with a private remote and a push that asks
+  nothing, and without a remote it only commits.
 - Off: `setup.py --uninstall --<flag> --apply`, for example
   `--uninstall --sync --apply`.
 
@@ -190,8 +197,12 @@ A vault without a remote has no copy anywhere else. To add one:
 3. The first push asks for the user's sign-in; the user enters it, not you. If
    Git asks on every push, a credential helper is missing; see
    [sync](GETTING-STARTED.md#optional-sync-the-vault-with-git).
-4. To keep it pushed every 15 minutes from now on, offer `setup.py --apply
-   --sync` (two steps, as above).
+4. A daemon registered without a remote does not use a remote added later
+   until setup has checked it: it transfers only to the fetch and push targets
+   that `setup.py --apply --sync` recorded (`.osk/sync-targets.json`), and to
+   the public osk-system repository never. So run `setup.py --apply --sync`
+   again (two steps, as above): it checks the push target and the credentials,
+   records them, and registers the daemon if there was none.
 
 ## Remove
 

@@ -91,12 +91,11 @@ UPGRADE_CARRY = """
     record = core.ROOT / ('00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt')
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(raw._block(1, 'independent observation', 'observed'), encoding='utf-8')
-    reference = '[[' + record.relative_to(core.ROOT).as_posix() + '#1]]'
     evidence = chr(10).join(['', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1` · 지지 — an observation'])
     # B also cites D, listed first: every carried row of B says its version was made by a recheck
     for title, body, basis in (('B', 'B relies on A.', ['D', 'A']), ('C', 'C relies on B.', ['B'])):
         assert write.create_node(title, title, body + evidence, 'gpt-6-astra', space='00_Scope/W1',
-                                 edges={'derived-from': basis + [reference]})['ok']
+                                 edges={'derived-from': basis})['ok']
     write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
     write.update_node('B', old_text='B relies on A.', new_text='B relies on revised A.', rechecked=['A'])
     planned = growth.plan(3)
@@ -153,11 +152,10 @@ UPGRADE_NO_PAIR = """
     record = core.ROOT / ('00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt')
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text(raw._block(1, 'independent observation', 'observed'), encoding='utf-8')
-    reference = '[[' + record.relative_to(core.ROOT).as_posix() + '#1]]'
     evidence = chr(10).join(['', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1` · 지지 — an observation'])
     for title, body, basis in (('B', 'B relies on A.', 'A'), ('C', 'C relies on B.', 'B')):
         assert write.create_node(title, title, body + evidence, 'gpt-6-astra', space='00_Scope/W1',
-                                 edges={'derived-from': [basis, reference]})['ok']
+                                 edges={'derived-from': basis})['ok']
     write.update_node('A', old_text='A reusable observation', new_text='A revised observation')
     write.update_node('B', old_text='B relies on A.', new_text='B relies on revised A.', rechecked=['A'])
     write.update_node('A', old_text='A revised observation', new_text='A twice revised observation')
@@ -614,38 +612,149 @@ class GrowthTests(unittest.TestCase):
         # the content holds, the next carry still marks the version a recheck made (#177).
         self.check_case(UPGRADE_CARRY.replace('V50_CARRY', 'True'))
 
-    def test_evidence_section_rule_pairs_coordinates_and_reports_until_activated(self):
-        # Mechanism §6-1 4: each 근거 line has the form and a coordinate its derived-from holds.
+    def test_evidence_section_rule_resolves_coordinates_and_reports_until_activated(self):
+        # Mechanism §6-1 4: each 근거 line has the §8 9 form and a coordinate that resolves — a
+        # record and its rounds, a vault non-node file and its heading, a URL. A node is not a
+        # 근거 line, and a non-node left in derived-from is reported until it moves to the section.
         self.check_case("""
-            raw = '00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt#'
-            text = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1–2` · 지지 — pair',
-                                 '- 2026-10-05 · `c38d8ef2#3` · 반례 — no round', '- 10-05 · c38d8ef2#1 · 지지 — form'])
-            errs = validate.evidence_errors(text, [raw + '1', raw + '2'])
-            assert errs == ['짝 없는 근거 줄: c38d8ef2#3 — derived-from에 그 기록·라운드가 없다',
+            from osk import evidence, raw
+            claude = 'claude-c38d8ef2' + '0' * 24
+            first = raw.append_rounds('repo/ev', claude, [{'user': 'q1', 'agent': 'a1'},
+                                                          {'user': 'q2', 'agent': 'a2'}], '00_Scope/W1')
+            (core.ROOT / '_sources' / 'r.md').write_text('# 결과' + chr(10) + 'x' + chr(10), encoding='utf-8')
+            (core.ROOT / '_sources' / 'd').mkdir()
+            node('N')
+            lines = ['- 2026-10-05 · `c38d8ef2#1–2` · 지지 — rounds',
+                     '- 2026-10-05 · `c38d8ef2#3` · 반례 — no round',
+                     '- 2026-10-05 · `_sources/r.md#결과` · 조건 — file',
+                     '- 2026-10-05 · `_sources/r.md#없다` · 조건 — heading',
+                     '- 2026-10-05 · `_sources/d` · 조건 — directory',
+                     '- 2026-10-05 · `https://example.com/a` · 지지 — url',
+                     '- 2026-10-05 · `N` · 지지 — node',
+                     '- 2026-10-05 · `brain:wiki/x.md` · 지지 — alias',
+                     '- 10-05 · c38d8ef2#1 · 지지 — form']
+            text = chr(10).join(['x', '', '## 근거', ''] + lines)
+            idx = graph.Index()
+            errs = validate.evidence_errors(text, [], idx)
+            assert errs == ['없는 라운드: c38d8ef2#3', '없는 제목: _sources/r.md#없다', '없는 파일: _sources/d',
+                            '노드를 가리키는 근거 줄: N — 노드 근거는 derived-from으로 옮긴다',
+                            '선언되지 않은 별칭: brain:wiki/x.md',
                             '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
-            other = '00_Scope/W1/_cited/.records/codex-c38d8ef2' + '1' * 24 + '.txt#1'
-            assert validate.evidence_errors(text, [raw + '1', raw + '2', other])[0].startswith('모호한 좌표')
+            # a shortened hash two records share is ambiguous; a longer prefix tells them apart
+            raw.append_rounds('repo/ev', 'codex-c38d8ef2' + '1' * 24, [{'user': 'q', 'agent': 'a'}], '00_Scope/W1')
+            records = evidence.Records()
+            assert validate.evidence_errors(text, [], idx, records)[0].startswith('모호한 좌표: c38d8ef2#1–2')
+            assert records.short(claude) == 'c38d8ef20', records.short(claude)
+            longer = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1–2` · 지지 — longer'])
+            assert validate.evidence_errors(longer, [], idx, records) == []
+            # a non-node left in derived-from is reported once; a node there is not
+            assert validate.evidence_errors('x', ['N', first['round_refs'][0]], idx) == [
+                'derived-from에 비노드 대상 1개가 남아 있다 — 근거 절로 옮긴다']
             moved = chr(10).join(['x', '', '## 근거', '', '- a', '', '## 이력', '', 'y'])
             assert validate.evidence_errors(moved, []) == ['`## 근거` 절이 노드 끝에 있지 않다']
-            assert validate.evidence_errors('x', [raw + '1']) == []
-            # an old `.md` coordinate names the same record; any list marker is a list item
-            legacy = '[[00_Scope/W1/_raw/claude-c38d8ef2' + '0' * 24 + '.md#3]]'
-            assert validate.evidence_errors(text, [raw + '1', raw + '2', legacy])[:1] == [
-                '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], 'the old coordinate did not pair'
-            starred = chr(10).join(['x', '', '## 근거', '', '* 2026-10-05 · `deadbeef#9` · 지지 — star'])
+            # any list marker is a list item
+            starred = chr(10).join(['x', '', '## 근거', '', '* 2026-10-05 · `c38d8ef20#1` · 지지 — star'])
             assert validate.evidence_errors(starred, [])[0].startswith('형식이 다른 근거 줄: * 2026'), 'a * item was skipped'
-            nested = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1` · 지지 — fine',
-                                   '    * 2026-10-05 · `deadbeef#9` · 지지 — nested', 'a paragraph'])
-            errs = validate.evidence_errors(nested, [raw + '1'])
+            nested = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1` · 지지 — fine',
+                                   '    * 2026-10-05 · `c38d8ef20#1` · 지지 — nested', 'a paragraph'])
+            errs = validate.evidence_errors(nested, [])
             assert [e.split(':')[0] for e in errs] == ['형식이 다른 근거 줄'] * 2, errs
             quoted = chr(10).join(['x', '', '> ## 근거', '>', '> - a'])
             assert validate.evidence_errors(quoted, []) == [], 'a quoted heading was read as the section'
-            node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none']))
+            node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none',
+                                         '- 2026-10-05 · `brain:wiki/x.md` · 지지 — held']))
+            # B was written before v5.4 with a round in derived-from; writes no longer add one
+            from unittest import mock
+            assert 'derived-from은 노드만' in str(write._check_edges({'derived-from': first['round_refs'][0]}, idx))
+            with mock.patch.object(write, '_check_edges', return_value=[]):
+                assert write.create_node('B', 'B', 'B claim.', 'gpt-6-astra', space='00_Scope/W1',
+                                         edges={'derived-from': first['round_refs'][0]})['ok']
+            from osk import roots
+            roots.declare('brain', 'wiki')
             rep = validate.run()
-            assert list(rep['evidence_section']) == ['A'] and not rep['evidence_section_active'], rep['evidence_section']
+            # a non-node left in derived-from is counted by node, not listed line by line
+            assert list(rep['evidence_section']) == ['A'] and rep['evidence_section_leftovers'] == 1, rep['evidence_section']
+            # a declared root that is not on this device is held, not a violation (Mechanism §6-1 4)
+            assert rep['evidence_section']['A'] == ['없는 기록: deadbeef#2'], rep['evidence_section']
+            assert rep['evidence_section_held'] == {'brain': '이 기기에 위치가 없다'}, rep['evidence_section_held']
+            assert not rep['evidence_section_active']
             assert not any('근거 절' in f for d in rep['fail'] for f in d), rep['fail']
             core.ledger_append(core.VALIDATORS, {'kind': 'activate', 'rule': 'evidence-section'})
             assert any('근거 절' in f for d in validate.run()['fail'] for f in d), 'an active rule did not count'
+        """)
+
+    def test_evidence_migration_moves_non_node_derived_from_into_support_lines(self):
+        # Constitution 8(5·6)·14(8·9), Mechanism §5: each non-node derived-from entry becomes a `지지` line at
+        # the node end, dated by the commit that brought the round (or put the entry in the frontmatter — not
+        # the earlier body mention) and showing the cite note, else the user's words. An uncommitted round has
+        # no date and stays. A covered entry only leaves the frontmatter and a node entry stays. The related
+        # state does not change, each node is logged before it is written, and a rerun has nothing.
+        self.check_case("""
+            import os, subprocess
+            from osk import evidence, evidence_migration as em, raw, rechecks
+            def git(*a, when=None):
+                env = dict(os.environ, **({'GIT_AUTHOR_DATE': when, 'GIT_COMMITTER_DATE': when} if when else {}))
+                return subprocess.run(['git', '-C', str(core.ROOT), *a], check=True, capture_output=True,
+                                      text=True, env=env).stdout.strip()
+            git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+            claude = 'claude-c38d8ef2' + '0' * 24
+            rounds = raw.append_rounds('repo/ev', claude, [
+                {'user': '<system-reminder>알림</system-reminder>' + '첫 질문입니다 ' * 9, 'agent': '긴 답'},
+                {'user': '둘째 질문', 'agent': '답'}], '00_Scope/W1')['round_refs']
+            noted = raw.append_rounds('repo/ev', claude, [{'user': '셋째 질문', 'agent': '인용 요지 #272의 결정'}],
+                                      cited={'harness': 'claude', 'conversation': 'c1', 'turn': 't1'})['round_refs'][0]
+            notice = raw.append_rounds('repo/ev', claude, [{'user': '<task-notification><task-id>b1</task-id>'
+                                       '</task-notification>', 'agent': '작업이 끝나 결과를 정리했다'}])['round_refs'][0]
+            (core.ROOT / '_sources').mkdir(exist_ok=True)
+            (core.ROOT / '_sources' / 'r.md').write_text('# 결과' + chr(10) + 'x' + chr(10), encoding='utf-8')
+            section = chr(10).join(['', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#2` · 지지 — 이미 있다'])
+            url = 'https://example.com/docs/page.md'
+            node('N')
+            node('A', body='주장 A. 출처는 ' + url)
+            node('B', body='주장 B.' + section)
+            node('C', body='주장 C.' + section + chr(10) + chr(10) + '## 이력' + chr(10) + chr(10) + 'y')
+            git('add', '-A'); git('commit', '-qm', 'early', when='2026-01-01T12:00:00+09:00')
+            def legacy(title, refs):
+                p = core.ROOT / '00_Scope/W1' / (title + '.md')
+                n = contract.parse(p)
+                p.write_bytes(write._render({**n.meta, 'derived-from': refs}, n.body))
+                return p
+            missing, late = rounds[0].replace('#1', '#9'), rounds[0].replace('#1', '#5')
+            a = legacy('A', ['[[N]]', rounds[0], noted, '[[_sources/r.md]]', '[[' + url + ']]', missing, late])
+            b = legacy('B', [rounds[1], rounds[0], notice])
+            c = legacy('C', [rounds[0]])
+            git('add', '-A'); git('commit', '-qm', 'seed', when='2026-02-01T12:00:00+09:00')
+            assert raw.append_rounds('repo/ev', claude, [{'user': '늦은 질문', 'agent': '답'}])['round_refs'] == [late]
+            state = {p: rechecks.state(p.read_bytes()) for p in (a, b, c)}
+            seen = em.preview()
+            assert (seen['nodes'], seen['line'], seen['covered'], seen['hold']) == (2, 6, 1, 3), seen
+            assert sorted(h['reason'].split(':')[0] for h in seen['holds']) == [
+                '근거 절을 본문을 바꾸지 않고 노드 끝에 달 수 없다', '날짜를 정할 수 없다 — git 기록에 없다', '없는 라운드'], seen
+            assert (core.ROOT / seen['plan']).is_file() and not em.EVENTS.exists()
+            done = em.apply()
+            assert (done['nodes'], done['line'], done['covered'], done['hold']) == (2, 6, 1, 3), done
+            assert all(rechecks.state(p.read_bytes()) == state[p] for p in (a, b, c)), 'the related state changed'
+            na, nb = contract.parse(a), contract.parse(b)
+            assert na.meta['derived-from'] == ['[[N]]', missing, late] and 'derived-from' not in nb.meta, (na.meta, nb.meta)
+            assert evidence.coordinates(na.body) == ['c38d8ef2#1', 'c38d8ef2#3', '_sources/r.md', url], na.body
+            # rounds date from the commit that brought them; the file and the URL from the commit that put them
+            # in the frontmatter, not the earlier body mention
+            first = '- 2026-01-01 · `c38d8ef2#1` · 지지 — ' + ('첫 질문입니다 ' * 9)[:50].rstrip() + '…'
+            lines = na.body.rstrip(chr(10)).split(chr(10))
+            assert lines[-7:-4] == ['주장 A. 출처는 ' + url, '## 근거', ''] and lines[-4] == first, lines
+            assert lines[-3] == '- 2026-01-01 · `c38d8ef2#3` · 지지 — 인용 요지 #272 의 결정', lines
+            assert lines[-2:] == ['- 2026-02-01 · `_sources/r.md` · 지지 — r.md',
+                                  '- 2026-02-01 · `' + url + '` · 지지 — page.md'], lines
+            assert nb.body.rstrip(chr(10)).split(chr(10))[-3:] == [
+                '- 2026-10-05 · `c38d8ef2#2` · 지지 — 이미 있다', first,
+                '- 2026-01-01 · `c38d8ef2#4` · 지지 — 작업이 끝나 결과를 정리했다'], nb.body
+            assert validate.evidence_errors(nb.body, nb.meta.get('derived-from')) == []
+            events = [r for r in core.ledger_read(em.EVENTS) if r.get('rule') == em.RULE]
+            assert [(e['source'], e['after']) for e in events] == [
+                (p.relative_to(core.ROOT).as_posix(), core.sha256_file(p)) for p in (a, b)], events
+            manifest = (core.ROOT / done['manifest']).read_text(encoding='utf-8')
+            assert '## 결과' in manifest and '보류 — 없는 라운드' in manifest, manifest
+            assert em.plan()['counts'] == {'line': 0, 'covered': 0, 'hold': 3}, 'a rerun moved something again'
         """)
 
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):

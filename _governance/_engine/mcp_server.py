@@ -309,7 +309,7 @@ def read_cited(ref: str | None = None, space: str | None = None,
                max_chars: Annotated[int, Field(ge=200, le=100000)] = 6000,
                view: Literal["review", "full"] = "review", query: str | None = None,
                conversation: str | None = None, through: str | None = None) -> dict:
-    """인용 기록 회상: ref=경로#N(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의
+    """인용 기록 회상: ref=경로#N·근거 줄 좌표(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의
     그 턴만, previous=앞 턴). 인자 없으면 기록 목록(space=옛 scope 자리). 기본 review:
     발화·답변 선별 ≤6000자, query=원본 AND 검색, full=포렌식. 생략≠무가치. 전량 이어읽기
     금지. hash=원본 출처."""
@@ -430,10 +430,10 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `space`는 전체 군집 경로(`00_Scope/W1`); 모르면 `overview`.
     `session`=훅이 준 프로젝트 키(대화 id 금지). `space` 생략 시 주된 scope;
     다른 scope도 되며 결속에 더한다. `bound_scope`는 새 결속만 보고한다.
-    `edges`: `derived-from` 근거는 노드 제목, raw `경로#N`, 그 밖 비노드 `[[경로#제목]]`,
+    `edges`: `derived-from`은 근거 노드 제목만(비노드는 본문 끝 `## 근거` 줄),
     `conflicts`는 열린 사건 번호(`CASE-2026-1`).
     `settle`=보존한 evict rid. 처분 결과: `settlement`.
-    증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록·기존 허브.
+    증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록(라운드는 근거 줄 필수)·기존 허브.
     `distillation.status=complete`까지 같은 요청으로 재시도한다."""
     if distill is not None:
         from osk import distillation
@@ -506,7 +506,8 @@ def cite_round(conversation: str, quote: str | None = None, turn: str | None = N
                note: str | None = None, user: str | None = None) -> dict:
     """근거로 쓸 원본 턴 하나를 남긴다. conversation=훅이 준 <하네스>/<대화 ID>.
     quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
-    전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref."""
+    전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref.
+    coordinate=근거 줄 좌표."""
     return _guard(integration.cite, conversation, quote, turn, note, user=user)
 
 

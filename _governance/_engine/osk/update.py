@@ -43,6 +43,15 @@ TXN_DIR = ROOT / ".osk" / "txn"              # 크래시-안전 트랜잭션 영
 TXN_MANIFEST = TXN_DIR / "manifest.json"     # 존재 = 미완료 트랜잭션(복구 대상)
 TXN_BACKUP = TXN_DIR / "backup"
 DEFAULT_UPSTREAM = "https://github.com/lpaiu-cs/osk-system.git"
+
+
+def is_canonical(url: str) -> bool:
+    """`url`이 공개 정본 저장소인가 — HTTPS·SSH 표기, `.git`, 대소문자를 가리지 않는다. setup의
+    `--sync` 사전 확인과 데몬의 전송 경계가 같은 판정을 쓴다: vault는 정본으로 가지 않는다."""
+    def norm(u: str) -> str:
+        u = re.sub(r"\.git$", "", u.strip().rstrip("/").lower())
+        return re.sub(r"^[a-z+]+://", "", u).split("@")[-1].replace(":", "/")
+    return norm(url) == norm(DEFAULT_UPSTREAM)
 ATTESTATION = "release.json"
 ENGINE_PREFIX = "_governance/_engine/"
 VERSION_RE = r"^v\d+\.\d+\.\d+$"             # 릴리스·태그·자동 탐색이 공유하는 계약
@@ -1332,7 +1341,22 @@ def main(argv=None):
                     help="기존 인스턴스의 최초 편입 — 현재 릴리스를 기준선 삼는다")
     ap.add_argument("--check", action="store_true",
                     help="정본의 최신 릴리스 태그만 묻는다 — 받지도 적용하지도 않는다")
+    ap.add_argument("--ack", metavar="VERSION",
+                    help="알리는 새 릴리스를 에이전트가 받았다고 기록한다 — 기록 전까지 세션 시작마다 "
+                         "다시 알린다. 갱신하지 않는다")
     a = ap.parse_args(argv)
+    if a.ack:
+        if a.check or a.apply or a.adopt or a.to or a.bundle or a.source:
+            sys.exit("[중단] --ack는 다른 선택지와 함께 쓰지 않는다 — 받음만 기록한다")
+        from . import update_check
+        try:
+            rep = update_check.ack(a.ack)
+        except UpdateError as e:
+            sys.exit(f"[중단] {e}")
+        print(json.dumps(rep, ensure_ascii=False, indent=2))
+        if not rep["synced"]:
+            raise SystemExit(1)
+        return
     if a.check:
         if a.apply or a.adopt or a.to or a.bundle or a.source:
             sys.exit("[중단] --check는 다른 선택지와 함께 쓰지 않는다 — 태그만 묻는다")

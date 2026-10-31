@@ -257,7 +257,7 @@ def _norm_body(body: str) -> str:
     return _space_numeric_tags(_norm_newlines(body).lstrip("\n").rstrip())
 
 
-def _render(meta: dict, body: str) -> bytes:
+def _frontmatter(meta: dict) -> str:
     """계약 순서대로 frontmatter를 직렬화한다 (Mechanism §2 5항)."""
     lines = ["---"]
     for k in contract.ORDER:
@@ -266,7 +266,11 @@ def _render(meta: dict, body: str) -> bytes:
         if k in meta and meta[k] not in (None, [], ""):
             lines.append(f"{k}: {_edge_value(k, meta[k])}")
     lines.append("---")
-    return ("\n".join(lines) + "\n\n" + _norm_body(body) + "\n").encode()
+    return "\n".join(lines) + "\n"
+
+
+def _render(meta: dict, body: str) -> bytes:
+    return (_frontmatter(meta) + "\n" + _norm_body(body) + "\n").encode()
 
 
 def _scalar(v):
@@ -490,14 +494,22 @@ def _open_cases() -> list[str]:
                   if str(c.get("status")) == "docketed")
 
 
-def _check_edges(edges: dict | None, idx) -> list[str]:
+WORKBENCH_STATE = ("Workbench의 작업 상태(scope 기억 포함)는 근거 또는 권위의 출처로 참조하지 "
+                   "않는다(Workbench 계약 4.2). 근거는 그 지식이 나온 곳이다.")
+
+
+def _check_edges(edges: dict | None, idx, *, adding: bool = True) -> list[str]:
     """술어와 **대상 값의 형**을 함께 본다. 스키마(표면)와 통로(여기) 이중으로
     거는 이유는 CLI·Bash 경유가 스키마를 통과하지 않기 때문이다 — 검증은
     통로에, 교육은 스키마에(10차 정정 ①).
 
+    `derived-from`은 노드만 받는다(헌법 제8조 5항). 더하는 비노드 대상은 거부하고 근거 절로
+    보낸다 — 빼는 것(`adding=False`)은 받는다. 이행 전의 옛 비노드 대상을 지울 수 있어야 한다.
+
     `idx`는 호출부가 잠금 안에서 **한 번 지어** 내려보낸다 (v3.7.0). 기본값을
     두지 않는 것은 규율이다 — 기본값이 있으면 새 호출부가 색인을 또 짓는 것이
     언제나 가능해지고, 증폭은 조용히 돌아온다."""
+    from . import evidence
     errs = []
     for pred, targets in (edges or {}).items():
         if pred not in contract.PREDICATES:
@@ -521,11 +533,22 @@ def _check_edges(edges: dict | None, idx) -> list[str]:
                 # 구별되지도 않는다. 제목은 전역에서 유일하니 경로가 필요 없다.
                 s = t.strip()
                 inner = s[2:-2].strip() if s.startswith("[[") and s.endswith("]]") else s
+                target = inner.split("|", 1)[0].strip()
+                found = idx.resolve(target.split("#", 1)[0].strip())
                 if "/" in inner and idx.resolve(inner)[0] == "node":
                     errs.append(
                         f"derived-from의 노드 근거에 경로 표기는 쓰지 않는다: {t} — "
-                        f"경로는 이동에 끊어진다. 그 노드의 **제목**을 쓰라 "
-                        f"(비노드 근거만 [[경로#앵커]])")
+                        f"경로는 이동에 끊어진다. 그 노드의 **제목**을 쓰라")
+                elif adding and found[0] == "nonnode" and found[1][0] == "workbench":
+                    # 근거 절로 옮겨도 안 된다 — 진단은 계약 4.2가 맡는다
+                    errs.append(f"작업 상태는 근거로 쓰지 않는다: {t} — {WORKBENCH_STATE}")
+                elif adding and found[0] != "node" and (
+                        found[0] in ("nonnode", "external") or evidence.kind(target) != "name"):
+                    # 인용 기록·라운드 좌표·URL·별칭 좌표·경로는 모양으로, 이름은 해석으로 가른다
+                    errs.append(
+                        f"derived-from은 노드만 받는다: {t} — 비노드 근거는 노드 끝 `## 근거` 절에 "
+                        f"`- 날짜 · `좌표` · 지지|조건|반례 — 보인 것` 한 줄로 적는다(헌법 제8조 5·6항). "
+                        f"인용 라운드의 좌표는 cite_round·read_cited가 주는 coordinate다")
                 continue
             if pred == "conflicts" and not re.match(CASE_RE, t.strip()):
                 # 존치 상호 치환은 표면으로 만들 수 없다(닭-달걀) — 에이전트가 달 수
@@ -578,6 +601,7 @@ def _validate_render(path: Path, meta: dict, body: str,
 def _validate_node(path: Path, node, body: str, idx) -> list[str]:
     """계약 + 그 노드에서 **나가는 참조**의 위상. 전역 검사는 하지 않는다 —
     남이 만든 위반 때문에 내 쓰기가 막히면 안 된다 (설계 D10)."""
+    from . import evidence
     errs = list(contract.validate(node))
     kind = graph.space_of(path)
     for pred in contract.PREDICATES:
@@ -585,10 +609,24 @@ def _validate_node(path: Path, node, body: str, idx) -> list[str]:
             errs += _topology_of(idx, kind, path.stem, t, pred, node.id)
     for t in node.wikilinks():
         errs += _topology_of(idx, kind, path.stem, t, None, node.id)
+    for t in evidence.coordinates(body):
+        errs += _topology_of(idx, kind, path.stem, t, rechecks.EVIDENCE, node.id)
     return errs
 
 
 def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
+    if pred == rechecks.EVIDENCE:
+        # 근거 절의 좌표도 참조다(헌법 제8조 2·3항). 인용 기록은 모양으로 가린다 — 줄인 좌표는
+        # 경로가 아니라 색인이 해석하지 못한다. vault의 비노드 파일은 Link와 같은 규칙을 지나고,
+        # URL·외부 루트는 vault 밖이다.
+        from . import evidence
+        k = evidence.kind(name)
+        if k == "round":
+            return ([f"Domain의 인용 기록 직접 참조(근거 절): {stem} → {name} — 근거는 노드로 "
+                     f"증류해 derived-from으로 참조한다(헌법 8조 3항)"] if kind[0] == "domain" else [])
+        if k != "path":
+            return []
+        name = name.split("#", 1)[0].strip()
     if pred == "conflicts":
         # 사건 표지는 참조 위상의 예외다(헌법 8조). 표면에서는 열린 사건에
         # 당사자로서 다는 것만 허용한다 — 전역 topology_check와 같은 의미론.
@@ -619,10 +657,7 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
     # 권위의 출처로 참조하지 않는다"). 구판은 이 검사가 아래 `scope` 갈래 **안**에
     # 있어 Domain·Person 노드가 작업 상태·scope 기억을 근거로 걸 수 있었다.
     if tkind[0] == "workbench":
-        return [f"작업 상태는 근거로 쓰지 않는다: {stem} → {name} — "
-                f"Workbench의 작업 상태(scope 기억 포함)는 근거 또는 "
-                f"권위의 출처로 참조하지 않는다(Workbench 계약 4.2). "
-                f"근거는 그 지식이 나온 곳이다."]
+        return [f"작업 상태는 근거로 쓰지 않는다: {stem} → {name} — {WORKBENCH_STATE}"]
     if kind[0] == "domain" and tkind[0] == "raw":
         return [f"Domain의 인용 기록 직접 참조: {stem} → {name}"]
     if kind[0] == "scope":
@@ -690,8 +725,9 @@ def _reference_feedback(path, meta, body, idx, previous=None) -> dict:
     if refs:
         out["reference_review"] = {
             "status": "pending", "items": refs,
-            "instruction": "내용은 저장됐다. 참조 검토는 미결이다. 기존 노드는 search/read_node의 정확한 제목, "
-                           "vault 원료는 루트 기준 경로와 raw 라운드, 외부 레포 문서는 확인한 URL을 쓴다. "
+            "instruction": "내용은 저장됐다. 참조 검토는 미결이다. 노드 근거는 search/read_node의 정확한 제목으로 "
+                           "derived-from에, 비노드 근거는 근거 절의 좌표로 적는다 — 인용 라운드는 coordinate, "
+                           "vault 원료는 루트 기준 경로, 외부 루트는 별칭 좌표, 그 밖은 확인한 URL이다. "
                            "원료는 지식 노드나 허브가 아니다. 빈 가짜 노드를 만들지 말라. "
                            "organization plan --scope <scope>가 다음 검토로 이어받는다."}
     return {**out, **size_feedback(path, body)}
@@ -1465,7 +1501,7 @@ def _update_node_locked(name: str, body: str | None = None,
     _require_complete(idx)
     if settle is not None:
         evictions.require_evict(settle)
-    errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx)
+    errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx, adding=False)
     if errs:
         raise WriteError("계약 위반 — 쓰지 않았다", errs)
     path = _live_locate(name, idx)
@@ -1758,6 +1794,7 @@ def _move_topology(plans, stale, idx) -> list[str]:
     위반 때문에 내 쓰기가 막히면 안 된다). 출발지 허브의 Link는 `hub_links`의
     `remove`가 닫으므로 뺀다. 들어오는 참조의 후보는 바이트에서 고르고
     (`mentioning`), 판정은 판독한 노드로 한다 — 전수 판독을 부르지 않는다."""
+    from . import evidence
     after = {src: graph.space_of(dst) for src, dst, _n in plans}
     moved = {src: n for src, _dst, n in plans if after[src] != graph.space_of(src)}
     if not moved:
@@ -1794,6 +1831,7 @@ def _move_topology(plans, stale, idx) -> list[str]:
         k1 = after.get(p, k0)
         refs = [(t, pred) for pred in contract.PREDICATES for t in n.edges(pred)]
         refs += [(t, None) for t in n.wikilinks()]
+        refs += [(t, rechecks.EVIDENCE) for t in evidence.coordinates(n.body)]
         for t, pred in refs:
             if pred is None and contract.target_stem(t) in hub_keep.get(p.stem, ()):
                 continue

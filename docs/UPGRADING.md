@@ -27,6 +27,38 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
+## From v5.3 to v5.4
+
+- **Sync daemon users: run the setup tool for sync once after the update.**
+  v5.4 lets `setup --sync` register the daemon on a vault without a remote (it
+  then only commits), and makes the daemon transfer only to the fetch and push
+  targets that setup checked and recorded in `.osk/sync-targets.json`. A daemon
+  registered before v5.4 has no such record, so after the update it commits but
+  does not fetch or push, and logs `전송 보류` each round, until you run
+  `python _governance/_engine/scripts/setup.py --apply --sync` (two steps, as at
+  install): it checks and records the current `origin` and push targets. A
+  daemon you registered by hand needs the file itself:
+  `{"origin": "<fetch URL>", "push": ["<push URL>"]}`. Until then, every session
+  start says so on your screen (`osk-system 동기화가 멈췄다 — 전송 보류 …`) and
+  `doctor` warns about `동기화 데몬`.
+- **Move older non-node `derived-from` entries with the migration command.** In
+  v5.4 `derived-from` takes nodes only (Constitution Art. 8(5)–(6)). Older
+  entries are still read, but the `evidence-section` validator reports them as
+  left over.
+  - `osk evidence migrate` only plans. It writes what happens to each
+    node to `.osk/evidence-section-plan.md`.
+  - `--apply` moves them after a terminal confirmation: each entry becomes a
+    `지지` line at the node end and leaves the frontmatter. The date is that of
+    the commit that brought the round (for a file or URL, the commit that first
+    added the entry), so the vault needs its Git history.
+  - The migration record goes to `_ledger/migration/`. An entry that cannot
+    become a line stays in the frontmatter as held, with its reason in the
+    result.
+  - A moved node gets a new `updated`, so search ranks it as recent for about a
+    month. The body before the evidence section is unchanged, so no recheck
+    candidate appears.
+  - Activating the validator after the migration is your decision.
+
 ## From v5.2 to v5.3
 
 v5.3 adds recency, centrality and locality to search ranking (Bylaws §8 3, Mechanism §8 8). It

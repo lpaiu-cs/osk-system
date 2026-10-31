@@ -1,4 +1,4 @@
-"""A new release is announced, never applied: tag-only checks, device-local notices.
+"""A new release is announced, never applied: tag-only checks, notices until the agent acks.
 
 Each case runs in its own process because `core.ROOT` is fixed at import. The
 canonical repository is a local Git repository with tags, so no case touches the
@@ -64,7 +64,7 @@ class UpdateNoticeTests(unittest.TestCase):
         result = _run(SETUP + body)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
-    def test_check_notices_once_a_day_and_clears_when_the_journal_catches_up(self):
+    def test_check_notices_every_session_until_acked_and_clears_when_the_journal_catches_up(self):
         self.check_case(r'''
 done('v4.0.0', '0')
 assert update.current_version() == 'v4.0.0'
@@ -76,20 +76,18 @@ assert proc.wait(timeout=90) == 0
 state = json.loads(state_path.read_text(encoding='utf-8'))
 assert state['latest'] == 'v4.10.0' and state['error'] is None and state['url'] == str(up), state
 assert update_check.ensure_fresh() is None, 'a fresh check was started again'
-# Once a day: the hook (user screen) and the surface share one marker.
+# Every session until the agent records that it got the notice.
 command = core.cli_command('update', '--to', 'v4.10.0', '--apply')
+ack = core.cli_command('update', '--ack', 'v4.10.0')
 agent, user = update_check.session_notice()
 assert 'v4.10.0' in user and 'v4.0.0' in user and 'osk 업데이트해 줘' in user, user
 assert agent.startswith('[osk 새 릴리스 — v4.10.0 · 이 vault v4.0.0]'), agent
-assert command in agent, agent
-assert update_check.session_notice() == ('', '')
+assert command in agent and ack in agent, agent
+assert update_check.session_notice() == (agent, user), 'the next session hears it again'
 seen = update_check.surface()
 assert seen['latest'] == 'v4.10.0' and seen['current'] == 'v4.0.0', seen
-assert 'notify' not in seen and command in seen['how'], seen
-later = time.time() + update_check.NOTICE_EVERY + 1
-with mock.patch.object(update_check.time, 'time', return_value=later):
-    assert 'notify' in update_check.surface()
-    assert update_check.session_notice() == ('', ''), 'announced twice'
+assert ack in seen['notify'] and command in seen['how'], seen
+assert 'notify' in update_check.surface(), 'the surface tells until the ack too'
 # The command the agent is given runs from any folder in the host's own shell,
 # without PYTHONPATH or OSK_VAULT_ROOT in its environment.
 bare = {k: v for k, v in os.environ.items() if k not in ('OSK_VAULT_ROOT', 'PYTHONPATH')}
@@ -114,6 +112,28 @@ assert (rep['latest'], rep['current'], rep['available']) == ('v4.10.0', 'v4.0.0'
 r = subprocess.run([sys.executable, '-m', 'osk.update', '--check', '--apply'],
                    capture_output=True, text=True, encoding='utf-8')
 assert r.returncode != 0 and '--check' in r.stderr, (r.returncode, r.stderr)
+# `--ack` takes only the release being announced, alone, and records it here and in the ledger.
+def ack_run(*args):
+    return subprocess.run([sys.executable, '-m', 'osk.update', *args], capture_output=True,
+                          text=True, encoding='utf-8')
+r = ack_run('--ack', 'v4.9.0')
+assert r.returncode != 0 and 'v4.10.0' in r.stderr, (r.returncode, r.stderr)
+r = ack_run('--ack', 'v4.10.0', '--check')
+assert r.returncode != 0 and '--ack' in r.stderr, (r.returncode, r.stderr)
+assert update_check.session_notice()[0], 'a refused ack recorded nothing'
+r = ack_run('--ack', 'v4.10.0')
+assert r.returncode == 0 and json.loads(r.stdout) == {'acked': 'v4.10.0', 'synced': True}, (r.stdout, r.stderr)
+assert json.loads(core.local_lock_path(update_check.ACK).read_text(encoding='utf-8'))['version'] == 'v4.10.0'
+assert [x['version'] for x in core.ledger_read(update_check.ACKS)] == ['v4.10.0']
+assert update_check.session_notice() == ('', '')
+seen = update_check.surface()
+assert seen['acked'] is True and 'notify' not in seen and command in seen['how'], seen
+assert update_check.report()['acked'] is True
+assert '대장 JSON 무결' in validate.run()['pass']
+# A newer release is not covered by the ack of an older one.
+cached(latest='v4.12.0')
+assert update_check.session_notice()[0].startswith('[osk 새 릴리스 — v4.12.0'), 'newer release'
+cached()
 # Another device updated and the synced journal arrived: nothing is left to announce.
 done('v4.10.0', '1')
 assert update.current_version() == 'v4.10.0'
@@ -128,16 +148,15 @@ done('v4.0.0', '0')
 cached()
 agent, user = update_check.session_notice()
 assert user and 'releases/tag' not in user + agent, (user, agent)
+assert 'OPERATE-AGENT.md' in agent, agent          # the agent's own guide, whatever the source
 assert 'notes' not in update_check.surface()
-notice = core.local_lock_path(update_check.NOTICE)
 link = 'https://github.com/o/r/releases/tag/v4.10.0'
 for url in ('https://github.com/o/r.git', 'git@github.com:o/r.git', 'https://github.com/o/r'):
     configure(url=url)
     cached(url=url)
-    notice.unlink()
     agent, user = update_check.session_notice()
     assert user.endswith(' 릴리스 노트: ' + link), (url, user)
-    assert link in agent and '이행 안내' in agent, (url, agent)
+    assert link in agent and '이행 안내' in agent and 'OPERATE-AGENT.md' in agent, (url, agent)
     assert update_check.surface()['notes'] == link, url
 ''')
 
@@ -284,7 +303,7 @@ for route in ('GIT_ASKPASS', 'core.askPass', 'SSH_ASKPASS'):
 server.shutdown()
 ''')
 
-    def test_session_start_shows_the_user_and_briefs_the_agent_once(self):
+    def test_session_start_shows_the_user_and_briefs_the_agent_until_acked(self):
         self.check_case(r'''
 done('v4.0.0', '0')
 cached()
@@ -304,9 +323,43 @@ assert text.startswith('[osk 세션 시작'), text[:200]
 assert text.index('[osk 새 릴리스 — v4.10.0 · 이 vault v4.0.0]') > 0, text
 assert 'v4.10.0' in first['systemMessage'], first
 assert 'osk 업데이트해 줘' in first['systemMessage'], first
-second = start('hook-release-later')      # the next session on this device the same day
-assert 'systemMessage' not in second, second
-assert '[osk 새 릴리스' not in second['hookSpecificOutput']['additionalContext'], second
+assert core.cli_command('update', '--ack', 'v4.10.0') in text, text
+second = start('hook-release-later')      # the next session: no ack yet, so it comes again
+assert 'v4.10.0' in second['systemMessage'], second
+assert '[osk 새 릴리스' in second['hookSpecificOutput']['additionalContext'], second
+update_check.ack('v4.10.0')
+third = start('hook-release-acked')
+assert 'systemMessage' not in third, third
+assert '[osk 새 릴리스' not in third['hookSpecificOutput']['additionalContext'], third
+''')
+
+    def test_session_start_and_doctor_tell_a_sync_daemon_that_stopped(self):
+        self.check_case(r'''
+import sync_daemon
+from osk import doctor
+project = root.parent / 'my-app'
+project.mkdir()
+hook = Path(update.__file__).resolve().parents[1] / 'scripts/hooks/claude_session_start.py'
+def start(session):
+    payload = {'session_id': session, 'cwd': str(project),
+               'hook_event_name': 'SessionStart', 'source': 'startup'}
+    r = subprocess.run([sys.executable, str(hook)], input=json.dumps(payload).encode(),
+                       capture_output=True, timeout=90)
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.decode('utf-8'))
+quiet = start('sync-none')                # a device without the daemon hears nothing
+assert '[osk 동기화' not in quiet['hookSpecificOutput']['additionalContext'], quiet
+assert not any(i['check'] == '동기화 데몬' for i in doctor._engine({'runs': {}}))
+sync_daemon._record(root, '전송 보류 — setup이 확인해 적은 전송 대상이 없다(로컬 커밋만)')
+told = start('sync-held')
+text = told['hookSpecificOutput']['additionalContext']
+assert '[osk 동기화 멈춤 — 전송 보류' in text and str(root / 'docs' / 'OPERATE-AGENT.md') in text, text
+assert '동기화가 멈췄다' in told['systemMessage'] and 'osk 점검해 줘' in told['systemMessage'], told
+item = {i['check']: i for i in doctor._engine({'runs': {}})}['동기화 데몬']
+assert item['level'] == 'warn' and 'setup.py --apply --sync' in item['fix'], item
+sync_daemon._record(root, 'ok')
+assert '[osk 동기화' not in start('sync-ok')['hookSpecificOutput']['additionalContext']
+assert {i['check']: i for i in doctor._engine({'runs': {}})}['동기화 데몬']['level'] == 'ok'
 ''')
 
     def test_a_host_without_a_user_screen_relays_the_notice_through_the_agent(self):
@@ -330,25 +383,41 @@ assert 'systemMessage' not in first, first
 text = first['injectSteps'][0]['ephemeralMessage']
 line = text[text.index('[osk 새 릴리스 — v4.10.0 · 이 vault v4.0.0]'):]
 assert '사용자에게 한 줄로 전한다' in line and 'osk 업데이트해 줘' in line, line
-second = start('a2')      # it was shown: the next conversation on this device the same day
-assert '[osk 새 릴리스' not in second['injectSteps'][0]['ephemeralMessage'], second
+assert '전했으면 ' + core.cli_command('update', '--ack', 'v4.10.0') in line.replace('`', ''), line
+second = start('a2')      # shown, but not acked: the next conversation hears it again
+assert '[osk 새 릴리스' in second['injectSteps'][0]['ephemeralMessage'], second
 ''')
 
-    def test_the_notice_is_spent_only_where_it_reaches_the_user(self):
+    def test_the_ack_is_kept_on_this_device_and_reaches_the_others_by_sync(self):
         self.check_case(r'''
 done('v4.0.0', '0')
 cached()
-# A growth worker's overview reaches no user: no `notify`, and the notice stays (PR #114 review).
+# A growth worker's overview reaches no user: it is not told to relay the notice (PR #114 review).
 with mock.patch.dict(os.environ, {'OSK_GROWTH_WORKER': '1'}):
     seen = update_check.surface()
-assert seen['latest'] == 'v4.10.0' and 'notify' not in seen, seen
-# Without a user screen the notice is spent when its block was shown, not when it was built.
-agent, user = update_check.session_notice(screen=False)
-assert user == '' and '사용자에게 한 줄로 전한다' in agent, agent
-assert update_check.session_notice(screen=False) == (agent, ''), 'spent before it was shown'
-update_check.mark_notified()
-assert update_check.session_notice(screen=False) == ('', '') == update_check.session_notice()
-assert 'notify' not in update_check.surface()
+assert seen['latest'] == 'v4.10.0' and 'notify' not in seen and 'acked' not in seen, seen
+assert update_check.session_notice()[0], 'the worker spent nothing'
+# Another device acked and its ledger row arrived by sync: this device has no record of its own.
+core.ledger_append(update_check.ACKS, {'kind': 'ack', 'version': 'v4.10.0'})
+assert not core.local_lock_path(update_check.ACK).exists()
+assert update_check.session_notice() == ('', '') == update_check.session_notice(screen=False)
+assert update_check.surface()['acked'] is True
+# The ledger cannot take the row: this device still stops on its own record, and the CLI says so.
+cached(latest='v4.12.0')
+with mock.patch.object(core, 'ledger_append', side_effect=OSError('read-only')):
+    rep = update_check.ack('v4.12.0')
+assert rep['acked'] == 'v4.12.0' and rep['synced'] is False and 'read-only' in rep['error'], rep
+assert update_check.session_notice() == ('', '')
+# A damaged ledger is read as no ack: without this device's record the notice stays.
+core.local_lock_path(update_check.ACK).unlink()
+with update_check.ACKS.open('a', encoding='utf-8') as f:
+    f.write('{"kind": "ack", "vers\n')
+assert update_check.session_notice()[0].startswith('[osk 새 릴리스 — v4.12.0'), 'damaged ledger'
+assert any('release.jsonl' in str(f) for f in validate.run()['fail']), 'the validator reads it'
+r = subprocess.run([sys.executable, '-m', 'osk.update', '--ack', 'v4.12.0'], capture_output=True,
+                   text=True, encoding='utf-8')
+assert r.returncode == 1 and json.loads(r.stdout)['synced'] is False, (r.returncode, r.stdout)
+assert update_check.session_notice() == ('', ''), 'recorded on this device'
 ''')
 
     def test_overview_carries_the_release_for_hosts_without_hooks(self):
@@ -360,7 +429,10 @@ import mcp_server as M
 o = M.overview()
 assert o['update']['latest'] == 'v4.10.0' and 'notify' in o['update'], o.get('update')
 assert core.cli_command('update', '--to', 'v4.10.0', '--apply') in o['update']['how'], o['update']
-assert 'notify' not in M.overview()['update'], 'notified twice'
+assert core.cli_command('update', '--ack', 'v4.10.0') in o['update']['notify'], o['update']
+update_check.ack('v4.10.0')
+o = M.overview()['update']
+assert o['acked'] is True and 'notify' not in o, o
 done('v4.10.0', '1')
 assert 'update' not in M.overview()
 ''')

@@ -5,7 +5,7 @@
 This tutorial is for people who use Claude Code or Codex but have never set up
 osk-system. It starts from an empty folder and ends with a verified setup. At the
 end, your agent writes its first memory, then finds it and reads it back. Written
-for release v5.3.3.
+for release v5.4.0.
 
 For more detail on any step, follow the links to [SETUP.md](SETUP.md), the
 operator reference (in Korean).
@@ -71,7 +71,9 @@ That is supported; see [space-layout-migration.md](space-layout-migration.md).
 - The hooks name every session after the repository it runs in. In
   `~/code/my-app`, the *session key* is `my-app`.
 - A Git worktree gets the name of its main repository. A folder outside Git gets
-  its own folder name.
+  its own folder name. Moving into a subfolder during a conversation keeps the
+  key of the folder the conversation started in; entering another repository or
+  a submodule below it takes that repository's key.
 - If another, unrelated repository already owns that name, the hook gives you
   `my-app-<first 8 hex of your root commit>` instead. The owner is the
   repository that first used the binding; its root commits are recorded with it.
@@ -145,7 +147,7 @@ Never edit these files by hand.
 
 Clone a release tag, not the `main` branch, which moves between releases. The
 updater compares your files with a release. Starting exactly on one lets Step 2
-record a clean baseline. `v5.3.3` works as written. You can use the newest tag
+record a clean baseline. `v5.4.0` works as written. You can use the newest tag
 from the [releases page](https://github.com/lpaiu-cs/osk-system/releases) instead,
 as long as you use the same tag again in Step 2.
 
@@ -153,7 +155,7 @@ Run these in the folder that will contain the vault, such as `C:/osk` on
 Windows (create it first). The commands are the same on every OS:
 
 ```bash
-git clone --branch v5.3.3 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.4.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -223,13 +225,13 @@ from local edits. The updater downloads the release from GitHub to compare.
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v5.3.3 --apply
+.venv/bin/python -m osk.update --to v5.4.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v5.3.3 --apply
+.venv\Scripts\python.exe -m osk.update --to v5.4.0 --apply
 ```
 
 The first run changes none of your files. It prints the plan, then exits with
@@ -273,7 +275,7 @@ git push
 ```
 
 **Check:** `.venv/bin/python -m osk.update` reports the selected version as
-`current` (`v5.3.3` in this example). On Windows, use
+`current` (`v5.4.0` in this example). On Windows, use
 `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
 `osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 
@@ -601,14 +603,16 @@ out of 1,500, and M characters still free (`여유`).
 | `[osk 참조·조직 검토]` | Work to tidy links and hubs among this scope's nodes. |
 | `[osk 정돈 — …]`, `[osk 정돈이 밀렸다 — …]` | Evicted scope-memory lines waiting to be settled. `밀렸다` means overdue: older than 14 days. |
 | `[osk scope 복구 대기 — …]` | The scope memory hit its limit. The agent should prune entries or move them into nodes. |
-| `[osk 새 릴리스 — vX.Y.Z · 이 vault vA.B.C]` | A newer release is out. The same notice appears on your screen as a warning, once a day per device. Ask the agent to update ([Keeping up to date](#keeping-up-to-date)); nothing is applied until you approve the changeset. |
+| `[osk 새 릴리스 — vX.Y.Z · 이 vault vA.B.C]` | A newer release is out. The same notice appears on your screen as a warning at every session start until the agent records that it has taken it in; the agent does that by itself, and the record reaches your other devices by sync. Ask the agent to update ([Keeping up to date](#keeping-up-to-date)); nothing is applied until you approve the changeset. |
 | Anything containing `진단` or `diagnostic` | A hook step failed. Your work continues, and nothing was marked done. See [Troubleshooting](#troubleshooting). |
 
 ## Everyday commands
 
 Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 `.venv/bin/python -m osk.cli`, or on Windows with
-`.venv\Scripts\python.exe -m osk.cli`.
+`.venv\Scripts\python.exe -m osk.cli`. Or use the launcher in the vault root,
+which sets both for you: `sh osk-cli.sh validate` (Windows:
+`.\osk-cli.cmd validate`). It also takes `update`.
 
 | Command | Use it to |
 |---|---|
@@ -701,7 +705,9 @@ The sync daemon runs every 15 minutes by default. Each time, it:
 It only ever syncs `main`, and it does nothing unless `SYNC_ENABLED=1` is set.
 Before you start it:
 
-- `origin` must be your private remote (Step 1).
+- `origin` must be your private remote (Step 1), or absent. Without a remote the
+  daemon only commits: the vault keeps a history on this device and no copy
+  anywhere else.
 - Git must be able to push without prompting, through a credential helper,
   token or ssh-agent.
 - Start the daemon with the **absolute path** of `sync_daemon.py`. `osk.update`
@@ -938,8 +944,10 @@ You do not need to watch the releases page. Once a day, the session-start hook
 and the MCP `overview` ask the canonical repository for its release tags
 (`git ls-remote`; nothing from your vault is sent). When a newer release exists,
 Claude Code and Codex show a warning such as
-`osk-system 새 릴리스 v5.4.0 (이 vault는 v5.3.0) — …` once a day per device,
-ending with the link to that release's notes. Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
+`osk-system 새 릴리스 v5.4.0 (이 vault는 v5.3.0) — …`, ending with the link to
+that release's notes, at every session start until the agent records that it
+has taken the notice in. The agent does that by itself (`osk.update --ack`),
+and the record reaches your other devices by sync. Tell your agent **"osk 업데이트해 줘"** ("update osk"), and it goes through the
 steps below with you: it shows the changeset and waits for your approval.
 [OPERATE-AGENT](OPERATE-AGENT.md) is the agent's own guide for this, and for
 checks, features and removal. The

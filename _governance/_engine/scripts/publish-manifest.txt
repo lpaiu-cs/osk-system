@@ -30,6 +30,9 @@ MAP  docs/ -> docs/
 MAP  .mcp.json.example -> .mcp.json.example
 # 대장 병합 규칙 — 다기기 인스턴스의 union merge (Mechanism §3 1항)
 MAP  .gitattributes -> .gitattributes
+# vault 루트의 CLI 런처 — PYTHONPATH와 .venv 경로를 대신 적는다.
+MAP  osk-cli.cmd -> osk-cli.cmd
+MAP  osk-cli.sh -> osk-cli.sh
 
 # ── 공개에만 사는 것 ────────────────────────────────────────
 # 사설에 원본이 없으므로 사상 대상이 아니다. 매니페스트가 "없는 것은 지운다"를

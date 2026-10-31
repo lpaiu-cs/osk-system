@@ -669,6 +669,8 @@ given = {'session_id': sid, 'cwd': str(proj)}
 out = hook('claude_session_start.py', {**given, 'hook_event_name': 'SessionStart'})
 assert out.startswith(f'[osk 세션 시작 — session="proj" · conversation="kiro/{sid}"]'), out
 assert 'Kiro has no subscription fork' in out, out
+# The guide by its vault path — this session runs in a project folder, not in the vault.
+assert str(root / 'docs' / 'OPERATE-AGENT.md') in out and '풀어서' in out, out
 out = hook('claude_prompt_submit.py', {**given, 'hook_event_name': 'UserPromptSubmit', 'prompt': '두 번째'})
 assert not out.lstrip().startswith('{'), out
 # Kiro shows the stop hook's output nowhere: it prints nothing. Its worker (#192 — the suite runs

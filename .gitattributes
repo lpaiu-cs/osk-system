@@ -21,6 +21,10 @@
 # pending이 된다. 거기서 승인하면 반대편이 pending이 되는 핑퐁이다. `git diff`는
 # 빈 출력이라 원인이 보이지 않는다.
 *                                   text=auto eol=lf
+# vault 루트의 cmd 런처 — cmd.exe는 CRLF 배치 파일이 안전하다. CRLF는 **blob에** 담고
+# 변환 밖에 둔다: 비준증빙은 git object의 바이트를 해시하는데(Mechanism §1-2 2항)
+# `eol=crlf`는 체크아웃만 CRLF로 바꿔, 모든 updater의 대조가 "해시 불일치"로 멈췄다.
+osk-cli.cmd                         -text
 
 # ─────────────────────────────────────────────────────────
 # 내용 주소 저장소 — **절대** 변환하지 않는다

@@ -278,6 +278,25 @@ def session_key(cwd: str) -> str:
         return name
 
 
+def project_cwd(env: dict) -> str:
+    """프로젝트 키를 정할 작업 폴더 — 훅의 작업 폴더가 대화를 시작한 폴더(전사의 첫 cwd)
+    아래이고 가장 가까운 `.git`이 같으면 그 시작 폴더다. 같은 대화에서 같은 저장소(Git 밖이면
+    Git 밖)의 하위 폴더로 옮긴 것은 같은 프로젝트다(#271). 그 아래의 다른 저장소·서브모듈로
+    들어갔거나, 밖으로 나갔거나, 시작 폴더를 모르면(전사가 아직 없거나 cwd를 적지 않는 하네스)
+    훅의 작업 폴더다."""
+    cwd = env.get("cwd") or os.getcwd()
+    try:
+        from osk import harness, transcripts
+        host, path = harness.host_of(env), env.get("transcript_path")
+        start = (transcripts.workspace(path, host.name) or {}).get("cwd") if host and path else None
+        if (start and Path(cwd).resolve().is_relative_to(Path(start).resolve())
+                and (_dotgit(cwd) or [None])[0] == (_dotgit(start) or [None])[0]):
+            return start
+    except Exception:
+        pass        # 시작 폴더를 못 읽으면 전처럼 훅의 작업 폴더다
+    return cwd
+
+
 def _memory_line(st: dict, key: str, space: str | None = None) -> str:
     """전문 대신 싣는 한 줄 — 이 대화가 같은 해시의 전문을 이미 받았을 때(§9-2 5항의 뜻:
     전문은 호출자가 저장본을 모를 때 싣는다). 해시가 바뀌면 다시 전문이다. `space`는 주된
@@ -342,6 +361,8 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: 
     else:
         landing_note = ("아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 군집에서 해당 프로젝트를 "
                         "확인한 뒤 scope_memory를 읽어라.")
+    from osk import core
+    guide = core.ROOT / "docs" / "OPERATE-AGENT.md"     # 세션은 vault 밖 작업 폴더에서 돈다 — 절대 경로로
     return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
             f"이 세션에서 노드를 처음 쓰기 전에 `overview(session={arg})`를 한 번 불러 군집·허브 트리(`hub_tree`)·열린 사건·근거 "
             "재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다(시행령 §3 8항). "
@@ -351,7 +372,10 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: 
                "명시한다. 그 착지는 이 대화에만 적용된다." if workspace.get("one_off") else "")
             + (f" 이 대화는 `{landing}`에 착지해 있다 — 쓸 때 space에 그 경로를 준다."
                if landing and not bound else "")
-            + (f" 작업 폴더 판별: {workspace['warning']}" if workspace.get("warning") else ""))
+            + (f" 작업 폴더 판별: {workspace['warning']}" if workspace.get("warning") else "")
+            # 사용자는 개발자가 아닐 수 있다 — osk의 말은 풀어서, 운용 요청은 에이전트용 안내대로.
+            + " 사용자에게 말할 때 osk의 말(scope·결속·군집·허브·보호영역)은 풀어서 쓴다. "
+              f"갱신·점검·기능·제거 요청은 `{guide}`를 따른다.")
 
 
 def _budget(env: dict, host=None) -> int | None:
@@ -600,19 +624,37 @@ def _recheck_note(rechecks) -> str:
     return "\n".join(notes)
 
 
-def _release_notice(host=None) -> tuple[str, str, object]:
-    """(에이전트 문맥, 사용자 화면, 블록이 실렸을 때 부를 것) — 새 릴리스를 이 기기에서
-    아직 알리지 않았을 때만. 확인은 기다리지 않는다: 지난 확인이 낡았으면 분리 프로세스로
-    띄우고, 이번 세션에는 지난 결과만 싣는다(`osk.update_check`). 사용자 화면이 없는
-    호스트는 블록이 실렸을 때만 알린 것으로 적는다."""
+def _release_notice(host=None) -> tuple[str, str]:
+    """(에이전트 문맥, 사용자 화면) — 새 릴리스를 에이전트가 받았다고 기록할 때까지 세션마다.
+    확인은 기다리지 않는다: 지난 확인이 낡았으면 분리 프로세스로 띄우고, 이번 세션에는 지난
+    결과만 싣는다(`osk.update_check`)."""
     try:
         from osk import update_check
         update_check.ensure_fresh()
-        screen = host is None or host.screen
-        agent, user = update_check.session_notice(screen=screen)
-        return agent, user, (None if screen or not agent else update_check.mark_notified)
+        return update_check.session_notice(screen=host is None or host.screen)
     except Exception as exc:
-        return f"[osk 릴리스 확인 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", "", None
+        return f"[osk 릴리스 확인 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", ""
+
+
+def _sync_notice(host=None) -> tuple[str, str]:
+    """(에이전트 문맥, 사용자 화면) — 이 기기의 동기화 데몬이 멈췄을 때만(`sync_daemon.trouble`).
+    데몬은 로그에만 남기므로, 여기서 알리지 않으면 사용자는 백업이 멈춘 줄 모른다."""
+    try:
+        import sync_daemon
+        from osk import core
+        trouble = sync_daemon.trouble()
+    except Exception as exc:
+        return f"[osk 동기화 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", ""
+    if not trouble:
+        return "", ""
+    user = (f"osk-system 동기화가 멈췄다 — {trouble}. 이 vault의 변경이 이 기기 밖으로 가지 않는다. "
+            "에이전트에게 \"osk 점검해 줘\"라고 요청한다.")
+    how = (f"고치는 법은 `{core.ROOT / 'docs' / 'OPERATE-AGENT.md'}`의 Check the connection 절이다. "
+           "사용자가 요청할 때만 고친다.")
+    if host is None or host.screen:
+        return f"[osk 동기화 멈춤 — {trouble}] 사용자 화면에 같은 알림을 띄웠다. {how}", user
+    return (f"[osk 동기화 멈춤 — {trouble}] 이 호스트에는 사용자 화면 알림이 없다 — 사용자에게 한 줄로 "
+            f"전한다: {user} {how}"), ""
 
 
 def main() -> None:
@@ -627,12 +669,11 @@ def main() -> None:
         emit_context("start", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
         return
     env = normalize(env)
-    cwd = env.get("cwd") or os.getcwd()
 
     host = None
     try:
         from osk import scope_memory, write, evictions, rechecks
-        key = session_key(cwd)
+        key = session_key(project_cwd(env))
         host = note_run("start", env, key)
         if not first_call("start", env, host):
             return
@@ -650,9 +691,11 @@ def main() -> None:
         if found is None:
             return
         captured, ident = found
-        notice, shown, notified = _release_notice(host)
-        notice = Block("notice", notice, 40, label="새 릴리스 알림(overview의 update)",
-                       on_shown=notified)
+        notice, shown = _release_notice(host)
+        notice = Block("notice", notice, 40, label="새 릴리스 알림(overview의 update)")
+        sync_text, sync_shown = _sync_notice(host)
+        sync = Block("sync", sync_text)      # 짧고 사람이 풀어야 하는 경고 — 접지 않는다
+        shown = "\n".join(s for s in (shown, sync_shown) if s)
         try:
             bindings = write.bindings(key)
         except Exception:
@@ -672,7 +715,7 @@ def main() -> None:
         # 주된 scope가 아닌 결속 scope의 기억도 싣는다 — 주된 scope 다음, 한도 안에서(§9-3 1항)
         others = _bound_memories(scope_memory, key, ident, bindings, keep=75)
         if not scope:
-            blocks = [bootstrap, notice, recheck, recovery, *others, *captured, _bindings_block(key)]
+            blocks = [bootstrap, sync, notice, recheck, recovery, *others, *captured, _bindings_block(key)]
         else:
             try:
                 mem = _memory(scope_memory, key, ident, gate=False, keep=95)
@@ -686,7 +729,7 @@ def main() -> None:
             except Exception as exc:
                 tidy = Block("tidy", f"[osk 정돈 판독 진단 — {type(exc).__name__}: {exc}]")
             # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록. 넘치면 블록째 접는다(1항).
-            blocks = [banner, bootstrap, notice, recheck, recovery, mem, *others, *captured, tidy,
+            blocks = [banner, bootstrap, sync, notice, recheck, recovery, mem, *others, *captured, tidy,
                       _bindings_block(key)]
         out, _ = assemble(blocks, _budget(env, host), session=key)
         if not out:
