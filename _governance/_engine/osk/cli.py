@@ -303,6 +303,34 @@ def _routing_cmd(a) -> None:
         sys.exit(1)
 
 
+def _roots_cmd(a) -> None:
+    """`osk roots` — 외부 루트(시행령 §2 8항 · Mechanism §1 6항). 등록과 해제는 사용자가 정하므로
+    `show` 밖은 대화형 단말의 확인을 거친다. 선언·해제는 대장에 적혀 모든 기기로 가고, 위치는
+    이 기기의 `.osk/roots.json`에만 적힌다."""
+    from . import roots
+    try:
+        if a.roots_cmd == "show":
+            _emit(roots.show())
+            return
+        if a.roots_cmd == "declare":
+            _confirm(f"외부 루트 `{a.alias}`를 선언합니까? 선언은 모든 기기로 갑니다 [y/N] ")
+            out = {"rid": roots.declare(a.alias, a.note, a.origin)["rid"]}
+        elif a.roots_cmd == "retire":
+            _confirm(f"외부 루트 `{a.alias}`를 해제합니까? 그 루트를 향한 근거 줄은 끊김이 됩니다 [y/N] ")
+            out = {"rid": roots.retire(a.alias, a.note)["rid"]}
+        elif a.roots_cmd == "mount":
+            _confirm(f"이 기기에서 `{a.alias}`의 위치를 {a.path}로 둡니까? [y/N] ")
+            out = {"location": roots.mount(a.alias, a.path)}
+        else:
+            _confirm(f"이 기기에서 `{a.alias}`의 위치를 지웁니까? [y/N] ")
+            roots.unmount(a.alias)
+            out = {}
+        _emit({"ok": True, **out, **roots.show()})
+    except (ValueError, OSError) as e:
+        _emit({"ok": False, "violations": [str(e)]})
+        sys.exit(1)
+
+
 def _tidy_cmd(a) -> None:
     """`osk tidy` — 정돈 (Mechanism §9-3). `list`는 미처분, `prompt`는 전용
     세션의 프롬프트(전문 그대로 — 붙여 넣는 값이다), `settle`은 처분 기록,
@@ -482,6 +510,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--activate", metavar="RULE")
     p.add_argument("--deactivate", metavar="RULE")
     p.add_argument("--reason", default="")
+    p = sub.add_parser("roots", help="외부 루트 — 선언은 모든 기기에, 위치는 이 기기에 (Mechanism §1 6항)")
+    ro = p.add_subparsers(dest="roots_cmd", required=True)
+    ro.add_parser("show", help="별칭마다 선언 상태와 이 기기의 위치")
+    q = ro.add_parser("declare", help="[사용자 전속] 별칭 선언 — 다시 선언하면 설명·원본을 고친다")
+    q.add_argument("alias")
+    q.add_argument("--note", required=True, help="설명")
+    q.add_argument("--origin", default=None, help="공유 원본의 주소")
+    q = ro.add_parser("retire", help="[사용자 전속] 별칭 해제")
+    q.add_argument("alias")
+    q.add_argument("--note", default="", help="해제 이유")
+    q = ro.add_parser("mount", help="[사용자 전속] 이 기기의 위치")
+    q.add_argument("alias")
+    q.add_argument("path")
+    q = ro.add_parser("unmount", help="[사용자 전속] 이 기기의 위치를 지운다")
+    q.add_argument("alias")
     p = sub.add_parser("protect", help="[사용자 전속] 보호영역 지정")
     p.add_argument("region"); p.add_argument("--reason", default="")
     p = sub.add_parser("unprotect", help="[사용자 전속] 보호영역 해제")
@@ -612,6 +655,8 @@ def main(argv=None):
         return _sm_cmd(a)
     elif a.cmd == "routing":
         return _routing_cmd(a)
+    elif a.cmd == "roots":
+        return _roots_cmd(a)
     elif a.cmd == "tidy":
         return _tidy_cmd(a)
     elif a.cmd == "protect":

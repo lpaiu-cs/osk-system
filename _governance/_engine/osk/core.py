@@ -72,6 +72,7 @@ PINS = LEDGER / "pins.jsonl"
 VALIDATORS = LEDGER / "validators.jsonl"   # 검증기 활성화 기록 (Mechanism §6-1)
 ROUTING = LEDGER / "routing.jsonl"       # 세션→scope 라우팅 (Mechanism §6-2 3항)
 EVICTIONS = LEDGER / "evictions.jsonl"   # 퇴출 기록부 (Mechanism §9-2 12항)
+ROOTS = LEDGER / "roots.jsonl"           # 외부 루트 선언 (Mechanism §1 6항)
 _MUTATION_LOCK_PATH: Path | None = None
 
 

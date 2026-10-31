@@ -14,7 +14,7 @@ import json, re
 from pathlib import Path
 
 from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER, EVICTIONS,
-                   VALIDATORS, CASE_RE, RID_RE, ID_RE, ledger_read,
+                   VALIDATORS, ROOTS, CASE_RE, RID_RE, ID_RE, ledger_read,
                    ledger_damage, ledger_anchor_index, resolve_one)
 from . import contract, graph, signatures, approvals, authority, secrets, evictions, raw
 
@@ -109,7 +109,7 @@ def run() -> dict:
     # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
     #    대장이다. signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상).
     errs, ledgers = [], ([(approvals.APPROVALS, arecs)] if appr_ok else [])
-    for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, VALIDATORS,
+    for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, VALIDATORS, ROOTS,
               approvals.MOVES, EVICTIONS,
               LEDGER / "migration" / "events.jsonl", LEDGER / "rechecks.jsonl",
               LEDGER / "update.jsonl", LEDGER / "growth.jsonl", LEDGER / "release.jsonl"]:
@@ -304,13 +304,17 @@ def run() -> dict:
     # 17. 노드 끝 근거 절 (헌법 9조 2항 · 시행령 §7 2항 · Mechanism §6-1 4항). 군집 허브
     #     노드처럼 언제나 검사해 보고하고, verdict 산입은 활성화 뒤에만 한다.
     try:
-        ev = evidence_section_report(idx)
+        from . import roots
+        external = roots.Roots()
+        ev = evidence_section_report(idx, external)
         # `derived-from`에 남은 비노드는 이행 전 노드마다 걸리므로 노드 수로만 싣는다 — 줄의
         # 위반이 그 수백 줄에 묻히지 않게 한다. verdict 산입(활성화 뒤)은 둘 다 센다.
         left = [n for n, es in ev.items() if any(e.startswith(LEFTOVER) for e in es)]
         rep["evidence_section"] = {n: shown for n, es in ev.items()
                                    if (shown := [e for e in es if not e.startswith(LEFTOVER)])}
         rep["evidence_section_leftovers"] = len(left)
+        # 이 기기에 없는 외부 루트 — 위반이 아니라 보류이며 루트마다 한 번 알린다
+        rep["evidence_section_held"] = external.held
         ev_active = validator_active("evidence-section")
         rep["evidence_section_active"] = ev_active
         ev_errs = [f"{n}: {e}" for n, es in sorted(ev.items()) for e in es]
@@ -330,7 +334,8 @@ def run() -> dict:
 LEFTOVER = "derived-from에 비노드 대상"
 
 
-def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, records=None) -> list[str]:
+def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, records=None,
+                    external=None) -> list[str]:
     """노드 끝 `## 근거` 절의 줄마다 형식과 좌표의 해석, 그리고 `derived-from`에 남은 비노드
     대상(Mechanism §6-1 4항). `text`는 본문, `derived`는 frontmatter의 `derived-from` 값이다."""
     from . import evidence
@@ -353,7 +358,7 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
             if not m:
                 errs.append(f"형식이 다른 근거 줄: {line[:60]}")
                 continue
-            problem = evidence.check(m.group(2), idx, records)
+            problem = evidence.check(m.group(2), idx, records, external)
             if problem:
                 errs.append(problem)
     left = evidence.leftovers(derived, idx)
@@ -362,8 +367,9 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
     return errs
 
 
-def evidence_section_report(idx: "graph.Index") -> dict:
-    """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다."""
+def evidence_section_report(idx: "graph.Index", external=None) -> dict:
+    """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다. 보류된 외부
+    루트는 위반이 아니므로 여기 없고 `external.held`에 모인다."""
     from . import evidence
     records = evidence.Records()
     out = {}
@@ -374,7 +380,7 @@ def evidence_section_report(idx: "graph.Index") -> dict:
             n = idx.node(path)
         except Exception:
             continue
-        errs = evidence_errors(n.body, n.meta.get("derived-from"), idx, records)
+        errs = evidence_errors(n.body, n.meta.get("derived-from"), idx, records, external)
         if errs:
             out[name] = errs
     return out
@@ -632,7 +638,7 @@ def surface_lint() -> list[str]:
 # Mechanism §6-2 2항 — 표면에서 금지된 권위 심벌 (보호영역 권위·구체제 서명)
 FORBIDDEN_CALLS = ("protect", "unprotect", "approve", "revert",
                    "sign", "unsign", "restore_for_dismissal")
-AUTHORITY_LEDGERS = ("APPROVALS", "SIGNATURES", "PINS")
+AUTHORITY_LEDGERS = ("APPROVALS", "SIGNATURES", "PINS", "ROOTS")   # ROOTS — Mechanism §1 6항
 
 
 def declared_secret_patterns() -> dict[str, str] | None:
