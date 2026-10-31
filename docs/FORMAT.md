@@ -227,7 +227,8 @@ The body is Markdown, as Obsidian reads it.
   (`42cf0fc0#41–42`), and `cite_round` and `read_cited` return the coordinate as
   `coordinate`. A record without a hash name keeps its whole name. A vault
   non-node file is its root-relative path, with `#<heading>` when needed; a
-  registered external root's file is `<alias>:<path>`; a web page is its URL.
+  registered external root's file is `<alias>:<path>` (section 4.13); a web
+  page is its URL.
   Only independent support, a condition or a
   counterexample gets a line; actions and numbers stay in the body. A round
   that only supports a held claim is bound this way instead of by rewriting the
@@ -393,6 +394,7 @@ Every `*.jsonl` file under `00_Scope/Workbench/_ledger/` is a ledger
 | `rechecks.jsonl` | `complete` | (`node`, `target`) | node writes; session start | §4-1 |
 | `workspaces.jsonl` | `rule` | none | `workspaces.add` (an installing agent) | §6-2 6 |
 | `release.jsonl` | `ack` | none (section 4.12) | `osk.update --ack` (an agent) | none |
+| `roots.jsonl` | `declare`, `retire` | `alias` | `osk roots` (user) | §1 6 |
 | `migration/events.jsonl` | `archive`, `move`, `transform`, `hold`, `drop` | none | not appended by the engine | §5 |
 | `signatures.jsonl` | preserved records | none | never appended | §3 9 |
 
@@ -714,6 +716,32 @@ release is acknowledged when any `ack` names it or a newer version. The device
 that acknowledges also keeps its own record in device-owned state
 (`osk-release-ack.json`), so the notice stops there even when the append
 fails. A ledger that cannot be read counts as no acknowledgement.
+
+### 4.13 External roots
+
+A file outside the vault is evidence only inside an external root the user
+registered (Bylaws §2 8, Mechanism §1 6). The declaration goes to every device;
+the location stays on one:
+
+- **`roots.jsonl`**: `kind` (`declare` or `retire`), `alias`, `note`, opt.
+  `origin` (where the shared original lives). The alias's single causal maximum
+  decides; with several maxima the alias is unresolved until the next record. A
+  root that exists on one device only is still declared.
+- **`.osk/roots.json`**: `{"<alias>": "<absolute path>"}` for this device.
+- **Aliases** match `[a-z][a-z0-9-]+` and are never `http`, `https` or
+  `native`, so `C:` and URLs stay apart from `<alias>:<path>`.
+- **Locations** inside the vault, or containing it, are refused. A coordinate
+  resolves inside its location only; a symlink in a path component below the
+  location is refused, as are `..` and absolute paths.
+- **Commands.** `osk roots show` lists each alias's declaration and this
+  device's location. `declare`, `retire`, `mount` and `unmount` are the user's
+  and ask for confirmation at a terminal; no MCP tool writes either file.
+
+An `<alias>:<path>` coordinate is broken when the alias is not declared (or is
+retired, or its declaration is split) or when the file or heading is missing
+from a root that is here. A declared root that is not on this device is held
+instead: the validator reports it once per root in `evidence_section_held`,
+and not as a violation.
 
 ## 5. Approval store
 

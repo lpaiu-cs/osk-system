@@ -5779,6 +5779,96 @@ def test_cli_emit_utf8():
 
 
 # ── 18c. 명시 회상 — 근거에서 증거로 번역 없이 간다 (시행령 §2 5항) ────────
+def test_external_roots():
+    """외부 루트(시행령 §2 8항 · Mechanism §1 6항). 별칭 좌표의 끊김은 셋으로 갈린다 — 선언되지
+    않은 별칭과 루트 안에 없는 파일은 끊김이고, 선언된 루트가 이 기기에 없으면 보류다. 위치는
+    vault 밖이어야 하고, 좌표는 그 위치 안으로 봉쇄된다."""
+    import io
+    from osk import cli, evidence, roots
+    ext = Path(_TMP.name) / "ext-root"
+    (ext / "notes").mkdir(parents=True)
+    (ext / "notes/a.md").write_text("# 결론\n\nx\n", encoding="utf-8")
+    (Path(_TMP.name) / "outside.md").write_text("x", encoding="utf-8")
+
+    def problem(coord, at=None):
+        return evidence.check(coord, None, None, at or roots.Roots())
+
+    def refused(label, fn, *a, says=""):
+        try:
+            fn(*a)
+            check(label, False, "거부되지 않았다")
+        except ValueError as e:
+            check(label, says in str(e), e)
+
+    check("별칭 좌표의 모양 — 드라이브 문자·URL·원본 턴·절대 경로는 아니다",
+          roots.split("docs:notes/a.md") == ("docs", "notes/a.md")
+          and not any(roots.split(c) for c in ("C:/x", "c:x", "https://e.com/a", "native:claude:a:b",
+                                               "docs:/x")))
+    for bad in ("d", "Docs", "http", "a_b"):
+        refused(f"쓸 수 없는 별칭: {bad}", roots.declare, bad, "n", says="쓸 수 없는 별칭")
+
+    check("선언 전 — 끊김", problem("docs:notes/a.md") == "선언되지 않은 별칭: docs:notes/a.md"
+          and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
+    roots.declare("docs", "외부 문서", "https://example.com/docs.git")
+    check("선언하면 `/`가 있어도 경로가 아니라 바깥이다",
+          graph.Index().resolve("docs:notes/a.md") == ("external",))
+    held = roots.Roots()
+    check("선언됐지만 이 기기에 없으면 보류 — 루트마다 한 번",
+          problem("docs:notes/a.md", held) is None and problem("docs:x.md", held) is None
+          and held.held == {"docs": "이 기기에 위치가 없다"}, held.held)
+
+    refused("vault 안의 위치", roots.mount, "docs", str(ROOT / "00_Scope"), says="vault 안에 있거나")
+    refused("vault를 품는 위치", roots.mount, "docs", str(ROOT.parent), says="vault 안에 있거나")
+    refused("선언되지 않은 별칭에는 위치를 두지 않는다", roots.mount, "other", str(ext),
+            says="선언되지 않은 별칭")
+    roots.mount("docs", str(ext))
+    check("위치는 이 기기의 설정에", roots.locations() == {"docs": os.path.abspath(ext)},
+          roots.locations())
+
+    here = roots.Roots()
+    check("있는 파일과 제목", problem("docs:notes/a.md#결론", here) is None,
+          problem("docs:notes/a.md#결론", here))
+    check("없는 제목", problem("docs:notes/a.md#없다", here) == "없는 제목: docs:notes/a.md#없다")
+    check("없는 파일", problem("docs:notes/b.md", here) == "없는 파일: docs:notes/b.md")
+    check("루트 밖으로 나가는 경로",
+          problem("docs:../outside.md", here) == "루트 안으로 해석되지 않는 경로: docs:../outside.md")
+    try:
+        os.symlink(ext / "notes", ext / "link", target_is_directory=True)
+    except (OSError, NotImplementedError) as e:
+        skip("위치 아래의 symlink 거부", f"symlink를 만들 수 없다: {e}")
+    else:
+        check("위치 아래의 symlink 거부",
+              problem("docs:link/a.md", here) == "루트 안으로 해석되지 않는 경로: docs:link/a.md")
+    check("있는 루트는 보류가 아니다", here.held == {}, here.held)
+
+    moved = ext.with_name("ext-moved")
+    ext.rename(moved)
+    gone = roots.Roots()
+    check("위치가 사라지면 보류", problem("docs:notes/a.md", gone) is None
+          and gone.held.get("docs", "").startswith("이 기기에 없는 위치"), gone.held)
+    moved.rename(ext)
+
+    with mock.patch("sys.stdin", io.StringIO()):
+        try:
+            cli.main(["roots", "retire", "docs"])
+            check("단말 없는 해제는 중단된다", False)
+        except SystemExit as e:
+            check("단말 없는 해제는 중단된다",
+                  "중단" in str(e.code) and roots.alias_problem("docs", roots.declarations()) is None,
+                  e.code)
+    roots.retire("docs", "옮김")
+    check("해제한 별칭은 끊김", problem("docs:notes/a.md") == "해제된 별칭: docs:notes/a.md"
+          and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
+    refused("해제한 별칭은 다시 해제하지 않는다", roots.retire, "docs", says="선언된 별칭이 아니다")
+    check("조회는 선언 상태와 이 기기의 위치를 함께 낸다",
+          [(r["alias"], r["declaration"], r["note"], r.get("here")) for r in roots.show()["roots"]]
+          == [("docs", "해제된 별칭", "옮김", "있음")], roots.show())
+    roots.unmount("docs")
+    check("위치를 지운다", roots.locations() == {})
+    refused("없는 위치는 지우지 않는다", roots.unmount, "docs", says="위치가 없는")
+    roots.CONFIG.unlink()
+
+
 def test_raw_read():
     """`_raw/`는 작업 검색에서 빠지므로(헌법 11조 3항) 좌표로 연다. 이 수트가
     지키는 것은 **왕복**이다 — 쓰기가 준 `round_ref`가 `derived-from`에 앉고,
@@ -12611,7 +12701,7 @@ if __name__ == "__main__":
                test_nested_regions_all_checked,
                test_baseline_bound_to_region,
                test_baseline_pass, test_raw_append, test_cli_emit_utf8,
-               test_raw_read, test_raw_space_misdiagnosis,
+               test_raw_read, test_external_roots, test_raw_space_misdiagnosis,
                test_raw_binding_confines_scope, test_raw_replay_rejected,
                test_scope_memory, test_workbench_state_not_evidence,
                test_scope_memory_edits, test_cadence_hook, test_scope_recovery_handoff,

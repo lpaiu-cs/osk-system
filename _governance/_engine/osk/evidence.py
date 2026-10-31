@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from .core import ROOT
-from . import graph, raw, write
+from . import graph, raw, roots, write
 
 # 줄 — `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`
 LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) · `([^`]+)` · (지지|조건|반례) — (\S.*)$")
@@ -23,10 +23,6 @@ ROUND = re.compile(r"^(?P<record>[^#\s][^#]*)#(?P<first>\d+)(?:[–-](?P<last>\d
 # 해시 이름의 기록 — `<하네스>-<16진 32자>`
 HASHED = re.compile(r"^(?P<harness>.+)-(?P<hex>[0-9a-f]{32})$")
 PREFIX = re.compile(r"^[0-9a-f]{8,32}$")
-# 외부 루트 — 두 글자 이상의 별칭 뒤 `:`. 드라이브 문자(`C:`)와는 글자 수로, URL·원본 턴과는
-# 이름으로 갈린다.
-ALIAS = re.compile(r"^(?P<alias>[a-z][a-z0-9-]+):(?P<path>[^/].*)$")
-NOT_ALIAS = {"http", "https", "native"}
 URL = re.compile(r"^https?://\S+$")
 
 
@@ -110,21 +106,31 @@ def kind(coord: str) -> str:
     """좌표의 종류 — `round`·`path`·`external`·`url`, 그 밖은 `name`."""
     if URL.match(coord):
         return "url"
-    m = ALIAS.match(coord)
-    if m and m["alias"] not in NOT_ALIAS:
+    if roots.split(coord):
         return "external"
     if graph.is_record_ref(coord) or "/" not in coord and ROUND.match(coord):
         return "round"
     return "path" if "/" in coord else "name"
 
 
-def check(coord: str, idx: "graph.Index | None" = None, records: Records | None = None) -> str | None:
-    """좌표 하나를 해석한다(Mechanism §6-1 4항 (b)). 문제가 없으면 None, 있으면 보고할 문구."""
+def check(coord: str, idx: "graph.Index | None" = None, records: Records | None = None,
+          external: "roots.Roots | None" = None) -> str | None:
+    """좌표 하나를 해석한다(Mechanism §6-1 4항 (b)). 문제가 없으면 None, 있으면 보고할 문구.
+    이 기기에 없는 외부 루트는 문제가 아니라 보류다 — `external.held`가 루트마다 모은다."""
+    from .rechecks import heading_range
     k = kind(coord)
     if k == "url":
         return None
     if k == "external":
-        return f"선언되지 않은 별칭: {coord}"
+        alias, rest = roots.split(coord)
+        rel, _, heading = rest.partition("#")
+        try:
+            p = (external or roots.Roots()).file(alias, rel.strip())
+            if p and heading.strip() and heading_range(p.read_bytes(), heading.strip()) is None:
+                return f"없는 제목: {coord}"
+        except (OSError, ValueError) as e:
+            return f"{e}: {coord}"
+        return None
     if k == "round":
         m = ROUND.match(coord)
         if m is None:
@@ -151,7 +157,6 @@ def check(coord: str, idx: "graph.Index | None" = None, records: Records | None 
     heading = coord.partition("#")[2].strip()
     if heading:
         from .core import resolve_in_root
-        from .rechecks import heading_range
         p = resolve_in_root(target)
         if p is None or not p.is_file() or heading_range(p.read_bytes(), heading) is None:
             return f"없는 제목: {coord}"
@@ -159,8 +164,8 @@ def check(coord: str, idx: "graph.Index | None" = None, records: Records | None 
 
 
 def leftovers(derived, idx: "graph.Index | None" = None) -> list[str]:
-    """`derived-from`에 남은 비노드 대상(Mechanism §8 2항) — 인용 기록·URL, 그리고 색인이
-    비노드로 해석하는 경로."""
+    """`derived-from`에 남은 비노드 대상(Mechanism §8 2항) — 인용 기록·URL·외부 루트의 파일,
+    그리고 색인이 비노드로 해석하는 경로."""
     refs = derived if isinstance(derived, list) else [] if derived in (None, "") else [derived]
     out = []
     for ref in refs:
@@ -169,7 +174,7 @@ def leftovers(derived, idx: "graph.Index | None" = None) -> list[str]:
             s = s[2:-2]
         s = s.split("|", 1)[0].strip()
         name = s.split("#", 1)[0].strip()
-        if graph.is_record_ref(s) or URL.match(s):
+        if graph.is_record_ref(s) or kind(s) in ("url", "external"):
             out.append(str(ref))
         # 노드 제목은 열어 보지 않는다 — 경로이거나 비노드 이름일 때만 해석한다
         elif idx is not None and ("/" in name or name in idx.nonnode) and idx.resolve(name)[0] == "nonnode":

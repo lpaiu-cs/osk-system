@@ -661,12 +661,18 @@ class GrowthTests(unittest.TestCase):
             assert [e.split(':')[0] for e in errs] == ['형식이 다른 근거 줄'] * 2, errs
             quoted = chr(10).join(['x', '', '> ## 근거', '>', '> - a'])
             assert validate.evidence_errors(quoted, []) == [], 'a quoted heading was read as the section'
-            node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none']))
+            node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none',
+                                         '- 2026-10-05 · `brain:wiki/x.md` · 지지 — held']))
             assert write.create_node('B', 'B', 'B claim.', 'gpt-6-astra', space='00_Scope/W1',
                                      edges={'derived-from': first['round_refs'][0]})['ok']
+            from osk import roots
+            roots.declare('brain', 'wiki')
             rep = validate.run()
             # a non-node left in derived-from is counted by node, not listed line by line
             assert list(rep['evidence_section']) == ['A'] and rep['evidence_section_leftovers'] == 1, rep['evidence_section']
+            # a declared root that is not on this device is held, not a violation (Mechanism §6-1 4)
+            assert rep['evidence_section']['A'] == ['없는 기록: deadbeef#2'], rep['evidence_section']
+            assert rep['evidence_section_held'] == {'brain': '이 기기에 위치가 없다'}, rep['evidence_section_held']
             assert not rep['evidence_section_active']
             assert not any('근거 절' in f for d in rep['fail'] for f in d), rep['fail']
             core.ledger_append(core.VALIDATORS, {'kind': 'activate', 'rule': 'evidence-section'})

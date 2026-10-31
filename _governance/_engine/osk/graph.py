@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from .core import ROOT, LEDGER, ID_RE, resolve_in_root, SPACE_ROOTS, adapt_path
-from . import contract
+from . import contract, roots
 
 # 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
 _ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?(?![0-9a-z])")
@@ -777,9 +777,18 @@ class Index:
         """대상명 → ('node',소속) | ('nonnode',소속) | ('ambiguous',) |
         ('dangling',) | ('external',). 경로형([[00_Scope/B/b]])은 경로로 우선
         해석한다 — 파일명 우회를 막는다. 다만 URL은 `/`가 있어도 경로가
-        아니며, 경로 해석은 vault 안으로 봉쇄한다([[/etc/passwd]])."""
+        아니며, 경로 해석은 vault 안으로 봉쇄한다([[/etc/passwd]]). 외부 루트의 별칭
+        좌표(`docs:a/b.md`)도 `/`가 있어도 경로가 아니다 — 선언된 별칭이면 URL처럼 바깥이고,
+        아니면 끊김이다. 파일이 있는지는 근거 절 검사가 본다(Mechanism §6-1 4항)."""
         if re.match(r"^https?://", name):
             return ("external",)
+        alias = roots.split(name)
+        if alias:
+            try:
+                declared = roots.alias_problem(alias[0], roots.declarations()) is None
+            except (OSError, ValueError):
+                declared = False        # 대장 손상 — 선언을 확인하지 못한 별칭은 끊김이다
+            return ("external",) if declared else ("dangling",)
         if is_record_ref(name):
             from . import raw
             try:
