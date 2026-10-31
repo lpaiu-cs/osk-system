@@ -41,6 +41,23 @@ device.
   `{"origin": "<fetch URL>", "push": ["<push URL>"]}`. Until then, every session
   start says so on your screen (`osk-system 동기화가 멈췄다 — 전송 보류 …`) and
   `doctor` warns about `동기화 데몬`.
+- **Move older non-node `derived-from` entries with the migration command.** In
+  v5.4 `derived-from` takes nodes only (Constitution Art. 8(5)–(6)). Older
+  entries are still read, but the `evidence-section` validator reports them as
+  left over.
+  - `osk evidence migrate` only plans. It writes what happens to each
+    node to `.osk/evidence-section-plan.md`.
+  - `--apply` moves them after a terminal confirmation: each entry becomes a
+    `지지` line at the node end and leaves the frontmatter. The date is that of
+    the commit that brought the round (for a file or URL, the commit that first
+    added the entry), so the vault needs its Git history.
+  - The migration record goes to `_ledger/migration/`. An entry that cannot
+    become a line stays in the frontmatter as held, with its reason in the
+    result.
+  - A moved node gets a new `updated`, so search ranks it as recent for about a
+    month. The body before the evidence section is unchanged, so no recheck
+    candidate appears.
+  - Activating the validator after the migration is your decision.
 
 ## From v5.2 to v5.3
 

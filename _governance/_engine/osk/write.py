@@ -257,7 +257,7 @@ def _norm_body(body: str) -> str:
     return _space_numeric_tags(_norm_newlines(body).lstrip("\n").rstrip())
 
 
-def _render(meta: dict, body: str) -> bytes:
+def _frontmatter(meta: dict) -> str:
     """계약 순서대로 frontmatter를 직렬화한다 (Mechanism §2 5항)."""
     lines = ["---"]
     for k in contract.ORDER:
@@ -266,7 +266,11 @@ def _render(meta: dict, body: str) -> bytes:
         if k in meta and meta[k] not in (None, [], ""):
             lines.append(f"{k}: {_edge_value(k, meta[k])}")
     lines.append("---")
-    return ("\n".join(lines) + "\n\n" + _norm_body(body) + "\n").encode()
+    return "\n".join(lines) + "\n"
+
+
+def _render(meta: dict, body: str) -> bytes:
+    return (_frontmatter(meta) + "\n" + _norm_body(body) + "\n").encode()
 
 
 def _scalar(v):
