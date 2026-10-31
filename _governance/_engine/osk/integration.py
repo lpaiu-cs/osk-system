@@ -1398,7 +1398,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
              "현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 선후가 불분명하면 보류한다. "
              "이미 노드에 있는 주장을 받치거나 조건·반례만 더하는 턴은 본문을 고쳐 쓰지 않고, distill로 그 노드 "
              "끝의 `## 근거` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 보인 것(50자 안팎)` 한 줄을 단다. "
-             "좌표는 링크가 아니라 코드 글자로, round_ref의 기록 이름 해시 앞 8자와 라운드를 쓴다(`42cf0fc0#1`, "
+             "좌표는 링크가 아니라 코드 글자로, 회상·인용 결과의 coordinate를 쓴다(`42cf0fc0#1`, "
              "이어진 라운드는 `42cf0fc0#41–42`). ")
     turns = len(st["pending_refs"]) - len(stored)
     if turns and offline and st.get("repair"):
@@ -1537,8 +1537,12 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         record = parent["record"]
     result = raw.append_rounds(session, record, [{"user": words, "agent": (note or "").strip()}],
                                cited=meta)
+    from . import evidence
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
-           "index": result["indices"][0], "turn": rid, "reused": result.get("reused", False),
+           "index": result["indices"][0],
+           # 근거 줄에 쓸 좌표 — 기록 이름 해시의 앞자리와 라운드(Mechanism §8 9항)
+           "coordinate": evidence.coordinate(result["path"], result["indices"][0]),
+           "turn": rid, "reused": result.get("reused", False),
            "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
            **({"binding": result["binding"]} if "binding" in result else {})}
     if result.get("supersedes"):

@@ -217,18 +217,25 @@ The body is Markdown, as Obsidian reads it.
   and `- 종료:` (end condition). `조건` and `종료` read `없음` when there are
   none, and a full-width colon also reads. A clause with a missing section or
   item grants nothing.
-- **Evidence section**: a claim node may end with a `## 근거` section, one list
-  item per cited round that its `derived-from` names:
-  `- <date> · <coordinate> · 지지|조건|반례 — <what the round showed>`. The
-  coordinate, written as code rather than a link, is the first 8 hex
-  characters of the record name and the round number, such as `42cf0fc0#1`;
-  consecutive rounds that make one point share a line (`42cf0fc0#41–42`). Only independent support, a condition or a
+- **Evidence section**: a claim node may end with a `## 근거` section that lists
+  its non-node evidence, one list item per piece:
+  `- <date> · <coordinate> · 지지|조건|반례 — <what it showed>` (Bylaws §1 5,
+  Mechanism §8 9). The coordinate is written as code rather than a link and has
+  one of four forms. A cited round is the record hash shortened to its first 8
+  hex characters (longer when two records share them) and the round number,
+  such as `42cf0fc0#1`; consecutive rounds that make one point share a line
+  (`42cf0fc0#41–42`), and `cite_round` and `read_cited` return the coordinate as
+  `coordinate`. A record without a hash name keeps its whole name. A vault
+  non-node file is its root-relative path, with `#<heading>` when needed; a
+  registered external root's file is `<alias>:<path>`; a web page is its URL.
+  Only independent support, a condition or a
   counterexample gets a line; actions and numbers stay in the body. A round
   that only supports a held claim is bound this way instead of by rewriting the
   claim. The section is not part of the node's state for rechecks (Bylaws §7 2):
   adding a line does not make the nodes that cite this one recheck candidates. The
-  validator rule `evidence-section` checks each line's form and that its
-  coordinate is in `derived-from` (Mechanism §6-1 4); it reports until activated.
+  validator rule `evidence-section` checks each line's form and resolves its
+  coordinate; it also reports a line that points at a node and a non-node still
+  left in `derived-from` (Mechanism §6-1 4). It reports until activated.
 
 ### 2.3 Predicate Edges
 

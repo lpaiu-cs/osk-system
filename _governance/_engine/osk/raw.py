@@ -526,10 +526,26 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
     되돌린다") — 기록에 남은 `\\## 3`은 원래 대화의 `## 3`이었다."""
     if view not in {"review", "full"}:
         raise ValueError("view must be review or full")
+    # 근거 줄의 좌표(Mechanism §8 9항·§9 8항) — 줄인 해시·옛 기록 이름, 이어진 라운드 `#N–M`
+    from . import evidence
+    bare = ref.strip()[2:-2].strip() if ref.strip().startswith("[[") and ref.strip().endswith("]]") else ref.strip()
+    m = evidence.ROUND.match(bare)
+    if m and m["last"] and m["last"] != m["first"]:
+        first, last = int(m["first"]), int(m["last"])
+        if last < first:
+            raise write.WriteError("거꾸로 된 라운드 범위", [f"`{ref}` — 이어진 라운드는 #N–M(N<M)으로 쓴다"])
+        if query is not None:
+            raise ValueError("query requires view=review and an exact #N round")
+        rel = posix_rel(evidence.Records().file(m["record"]), ROOT)
+        share = max(200, max_chars // (last - first + 1))
+        return {"ok": True, "path": rel, "range": [first, last],
+                "rounds": [read_round(f"{rel}#{n}", share, view, sides=sides)
+                           for n in range(first, last + 1)]}
     path, index = parse_ref(ref)
     if query is not None and (view != "review" or index is None):
         raise ValueError("query requires view=review and an exact #N round")
-    p = _raw_file(path)
+    records = evidence.Records()
+    p = _raw_file(path) if "/" in path or "\\" in path else records.file(path)
     text = read_exact(p)
     rel = posix_rel(p, ROOT)
     spans = _round_spans(text)
@@ -550,7 +566,8 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
     stored = text[spans[index][0]:spans[index][1]]
     chunk = _recalled(stored)
     identity = {"ok": True, "path": rel, "index": index,
-                "round_ref": canonical_ref(f"{rel}#{index}"), "hash": round_hash(stored)}
+                "round_ref": canonical_ref(f"{rel}#{index}"),
+                "coordinate": evidence.coordinate(p, index, records), "hash": round_hash(stored)}
     if view == "review":
         from . import raw_view
         return {**identity, **raw_view.project(chunk, max_chars, query, sides=sides)}

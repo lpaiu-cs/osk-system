@@ -2337,6 +2337,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         conversation = f"claude/{self.sid}"
         cited = it.cite(conversation, quote="  question\n1 ")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
+        # The 근거 line's coordinate: the record hash shortened, and the round (Mechanism §8 9항).
+        self.assertRegex(cited["coordinate"], r"^[0-9a-f]{8}#1$")
+        self.assertEqual(raw.read_round(cited["coordinate"])["round_ref"], cited["round_ref"])
         self.assertEqual((cited["turn"], cited["user_by"], cited["reused"]), ("user-1", "engine", False))
         text = raw.read_round(cited["round_ref"])["text"]
         self.assertIn("question 1", text)

@@ -614,35 +614,60 @@ class GrowthTests(unittest.TestCase):
         # the content holds, the next carry still marks the version a recheck made (#177).
         self.check_case(UPGRADE_CARRY.replace('V50_CARRY', 'True'))
 
-    def test_evidence_section_rule_pairs_coordinates_and_reports_until_activated(self):
-        # Mechanism §6-1 4: each 근거 line has the form and a coordinate its derived-from holds.
+    def test_evidence_section_rule_resolves_coordinates_and_reports_until_activated(self):
+        # Mechanism §6-1 4: each 근거 line has the §8 9 form and a coordinate that resolves — a
+        # record and its rounds, a vault non-node file and its heading, a URL. A node is not a
+        # 근거 line, and a non-node left in derived-from is reported until it moves to the section.
         self.check_case("""
-            raw = '00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt#'
-            text = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1–2` · 지지 — pair',
-                                 '- 2026-10-05 · `c38d8ef2#3` · 반례 — no round', '- 10-05 · c38d8ef2#1 · 지지 — form'])
-            errs = validate.evidence_errors(text, [raw + '1', raw + '2'])
-            assert errs == ['짝 없는 근거 줄: c38d8ef2#3 — derived-from에 그 기록·라운드가 없다',
+            from osk import evidence, raw
+            claude = 'claude-c38d8ef2' + '0' * 24
+            first = raw.append_rounds('repo/ev', claude, [{'user': 'q1', 'agent': 'a1'},
+                                                          {'user': 'q2', 'agent': 'a2'}], '00_Scope/W1')
+            (core.ROOT / '_sources' / 'r.md').write_text('# 결과' + chr(10) + 'x' + chr(10), encoding='utf-8')
+            node('N')
+            lines = ['- 2026-10-05 · `c38d8ef2#1–2` · 지지 — rounds',
+                     '- 2026-10-05 · `c38d8ef2#3` · 반례 — no round',
+                     '- 2026-10-05 · `_sources/r.md#결과` · 조건 — file',
+                     '- 2026-10-05 · `_sources/r.md#없다` · 조건 — heading',
+                     '- 2026-10-05 · `https://example.com/a` · 지지 — url',
+                     '- 2026-10-05 · `N` · 지지 — node',
+                     '- 2026-10-05 · `brain:wiki/x.md` · 지지 — alias',
+                     '- 10-05 · c38d8ef2#1 · 지지 — form']
+            text = chr(10).join(['x', '', '## 근거', ''] + lines)
+            idx = graph.Index()
+            errs = validate.evidence_errors(text, [], idx)
+            assert errs == ['없는 라운드: c38d8ef2#3', '없는 제목: _sources/r.md#없다',
+                            '노드를 가리키는 근거 줄: N — 노드 근거는 derived-from으로 옮긴다',
+                            '선언되지 않은 별칭: brain:wiki/x.md',
                             '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
-            other = '00_Scope/W1/_cited/.records/codex-c38d8ef2' + '1' * 24 + '.txt#1'
-            assert validate.evidence_errors(text, [raw + '1', raw + '2', other])[0].startswith('모호한 좌표')
+            # a shortened hash two records share is ambiguous; a longer prefix tells them apart
+            raw.append_rounds('repo/ev', 'codex-c38d8ef2' + '1' * 24, [{'user': 'q', 'agent': 'a'}], '00_Scope/W1')
+            records = evidence.Records()
+            assert validate.evidence_errors(text, [], idx, records)[0].startswith('모호한 좌표: c38d8ef2#1–2')
+            assert records.short(claude) == 'c38d8ef20', records.short(claude)
+            longer = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1–2` · 지지 — longer'])
+            assert validate.evidence_errors(longer, [], idx, records) == []
+            # a non-node left in derived-from is reported once; a node there is not
+            assert validate.evidence_errors('x', ['N', first['round_refs'][0]], idx) == [
+                'derived-from에 비노드 대상 1개가 남아 있다 — 근거 절로 옮긴다']
             moved = chr(10).join(['x', '', '## 근거', '', '- a', '', '## 이력', '', 'y'])
             assert validate.evidence_errors(moved, []) == ['`## 근거` 절이 노드 끝에 있지 않다']
-            assert validate.evidence_errors('x', [raw + '1']) == []
-            # an old `.md` coordinate names the same record; any list marker is a list item
-            legacy = '[[00_Scope/W1/_raw/claude-c38d8ef2' + '0' * 24 + '.md#3]]'
-            assert validate.evidence_errors(text, [raw + '1', raw + '2', legacy])[:1] == [
-                '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], 'the old coordinate did not pair'
-            starred = chr(10).join(['x', '', '## 근거', '', '* 2026-10-05 · `deadbeef#9` · 지지 — star'])
+            # any list marker is a list item
+            starred = chr(10).join(['x', '', '## 근거', '', '* 2026-10-05 · `c38d8ef20#1` · 지지 — star'])
             assert validate.evidence_errors(starred, [])[0].startswith('형식이 다른 근거 줄: * 2026'), 'a * item was skipped'
-            nested = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1` · 지지 — fine',
-                                   '    * 2026-10-05 · `deadbeef#9` · 지지 — nested', 'a paragraph'])
-            errs = validate.evidence_errors(nested, [raw + '1'])
+            nested = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1` · 지지 — fine',
+                                   '    * 2026-10-05 · `c38d8ef20#1` · 지지 — nested', 'a paragraph'])
+            errs = validate.evidence_errors(nested, [])
             assert [e.split(':')[0] for e in errs] == ['형식이 다른 근거 줄'] * 2, errs
             quoted = chr(10).join(['x', '', '> ## 근거', '>', '> - a'])
             assert validate.evidence_errors(quoted, []) == [], 'a quoted heading was read as the section'
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none']))
+            assert write.create_node('B', 'B', 'B claim.', 'gpt-6-astra', space='00_Scope/W1',
+                                     edges={'derived-from': first['round_refs'][0]})['ok']
             rep = validate.run()
-            assert list(rep['evidence_section']) == ['A'] and not rep['evidence_section_active'], rep['evidence_section']
+            # a non-node left in derived-from is counted by node, not listed line by line
+            assert list(rep['evidence_section']) == ['A'] and rep['evidence_section_leftovers'] == 1, rep['evidence_section']
+            assert not rep['evidence_section_active']
             assert not any('근거 절' in f for d in rep['fail'] for f in d), rep['fail']
             core.ledger_append(core.VALIDATORS, {'kind': 'activate', 'rule': 'evidence-section'})
             assert any('근거 절' in f for d in validate.run()['fail'] for f in d), 'an active rule did not count'
