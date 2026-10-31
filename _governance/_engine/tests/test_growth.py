@@ -624,11 +624,13 @@ class GrowthTests(unittest.TestCase):
             first = raw.append_rounds('repo/ev', claude, [{'user': 'q1', 'agent': 'a1'},
                                                           {'user': 'q2', 'agent': 'a2'}], '00_Scope/W1')
             (core.ROOT / '_sources' / 'r.md').write_text('# 결과' + chr(10) + 'x' + chr(10), encoding='utf-8')
+            (core.ROOT / '_sources' / 'd').mkdir()
             node('N')
             lines = ['- 2026-10-05 · `c38d8ef2#1–2` · 지지 — rounds',
                      '- 2026-10-05 · `c38d8ef2#3` · 반례 — no round',
                      '- 2026-10-05 · `_sources/r.md#결과` · 조건 — file',
                      '- 2026-10-05 · `_sources/r.md#없다` · 조건 — heading',
+                     '- 2026-10-05 · `_sources/d` · 조건 — directory',
                      '- 2026-10-05 · `https://example.com/a` · 지지 — url',
                      '- 2026-10-05 · `N` · 지지 — node',
                      '- 2026-10-05 · `brain:wiki/x.md` · 지지 — alias',
@@ -636,7 +638,7 @@ class GrowthTests(unittest.TestCase):
             text = chr(10).join(['x', '', '## 근거', ''] + lines)
             idx = graph.Index()
             errs = validate.evidence_errors(text, [], idx)
-            assert errs == ['없는 라운드: c38d8ef2#3', '없는 제목: _sources/r.md#없다',
+            assert errs == ['없는 라운드: c38d8ef2#3', '없는 제목: _sources/r.md#없다', '없는 파일: _sources/d',
                             '노드를 가리키는 근거 줄: N — 노드 근거는 derived-from으로 옮긴다',
                             '선언되지 않은 별칭: brain:wiki/x.md',
                             '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs

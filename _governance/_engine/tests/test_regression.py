@@ -5921,6 +5921,13 @@ def test_raw_read():
     span = _w(raw.read_round, f"{REC}#1–2")
     check("이어진 라운드를 한 번에 연다", [x.get("index") for x in span.get("rounds", [])] == [1, 2], span)
     check("거꾸로 된 범위는 거부한다", _w(raw.read_round, f"{REC}#2–1").get("ok") is False)
+    # 범위는 있는 라운드만 예산 안에서 편다 — 라운드마다 200자, 본문 합이 max_chars를 넘지 않는다
+    check("없는 라운드가 낀 범위는 거부한다", _w(raw.read_round, f"{REC}#2–100000000").get("ok") is False)
+    check("라운드마다 200자를 못 주는 범위는 거부한다", _w(raw.read_round, f"{REC}#1–3", 599).get("ok") is False)
+    tight = _w(raw.read_round, f"{REC}#1–3", 600)
+    check("범위는 예산을 라운드마다 나눈다",
+          [len(x.get("text", "")) <= 200 for x in tight.get("rounds", [])] == [True] * 3
+          and tight["rounds"][2].get("truncated") is True, tight)
     _w(raw.append_rounds, S, "claude-ab12cd34" + "0" * 24, [{"user": "해시 질문", "agent": "해시 응답"}], SP)
     short = _w(raw.read_round, "ab12cd34#1")
     check("줄인 해시 좌표로 연다",
