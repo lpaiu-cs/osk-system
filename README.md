@@ -191,7 +191,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v5.3.3 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.4.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -371,9 +371,13 @@ relevance. It also fixes conversation review where the live instance showed it f
 v5.3.1 fixes the capture defects and the copy-test gap found while testing the v5.3.0 release.
 v5.3.2 fixes the scheduled growth run's Claude worker fallback, which never ran. v5.3.3 fixes the weekly
 limit adjustment slipping a day and conversation reviews picking stalled jobs again and again.
-[v5.4.0](docs/v5.4-milestones.md) closes the designs deferred from v5.1 and how rewound
-Claude turns are tracked. It also takes the reuse and meaning-quality evaluations, which need
-a longer operating window. [v6.0.0](docs/v6.0-milestones.md) extends the memory model on that base.
+[v5.4.0](docs/v5.4-milestones.md) separates node and non-node evidence: `derived-from` takes
+nodes only, non-node evidence goes to each node's evidence section (with a command that moves
+older entries), and files outside the vault come only from registered external roots. It also
+has the sync daemon report when it stops sending and puts a CLI launcher at the vault root.
+[v5.5.0](docs/v5.5-milestones.md) takes the designs deferred from v5.1, the remaining capture
+fixes, and the evaluations that need a longer operating window. [v6.0.0](docs/v6.0-milestones.md)
+extends the memory model on that base.
 
 ## License
 

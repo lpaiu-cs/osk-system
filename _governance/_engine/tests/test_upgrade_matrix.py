@@ -100,6 +100,7 @@ RELEASES = {
     "v5.3.0": "75d960bc31f6821b15bbb046b753891051602b6f",
     "v5.3.1": "3e3c2e163575a2f46704c98efe0363dd314aae74",
     "v5.3.2": "9ed76b849dfb4355dd310c416274a8f0ccc3b606",
+    "v5.3.3": "6aa45643b5b4ddbc3e28888ae275e3e9c3e73af8",
 }
 LAYOUTS = {"=": "= ", "bare": "", "00_": "00_"}
 # (start, layout) -> the release whose fresh install gave the vault that layout
@@ -149,11 +150,14 @@ CELLS = {
     ("v5.3.2", "00_"): None,
     ("v5.3.2", "="): "v3.20.0",
     ("v5.3.2", "bare"): "v3.20.1",
+    ("v5.3.3", "00_"): None,
+    ("v5.3.3", "="): "v3.20.0",
+    ("v5.3.3", "bare"): "v3.20.1",
 }
 # Per PR: the oldest updater (no gate, no baseline, legacy roots), the newest
 # release on its shipped layout, and the newest release on the legacy layout
 # (most early vaults). The release workflow runs every cell (OSK_MATRIX=full).
-PR_CELLS = [("v3.20.0", "="), ("v5.3.2", "00_"), ("v5.3.2", "=")]
+PR_CELLS = [("v3.20.0", "="), ("v5.3.3", "00_"), ("v5.3.3", "=")]
 # How each release's own docs make a vault. Until v3.22 the README said "clone
 # and switch to your own remote" and nothing recorded a release baseline, so the
 # first update stops on "engine drift" and tells the user to rerun with --adopt.
