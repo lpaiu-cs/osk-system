@@ -609,7 +609,7 @@ out of 1,500, and M characters still free (`여유`).
 Run these from the vault root with `PYTHONPATH` set. Prefix each one with
 `.venv/bin/python -m osk.cli`, or on Windows with
 `.venv\Scripts\python.exe -m osk.cli`. Or use the launcher in the vault root,
-which sets both for you: `./osk-cli.sh validate` (Windows:
+which sets both for you: `sh osk-cli.sh validate` (Windows:
 `.\osk-cli.cmd validate`). It also takes `update`.
 
 | Command | Use it to |

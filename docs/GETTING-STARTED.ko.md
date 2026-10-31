@@ -582,7 +582,7 @@ scope가 결속되기 전에도 이 대화의 턴은 추적된다 — 추적은 
 
 `PYTHONPATH`를 설정한 채 vault 루트에서 실행한다. 각 명령 앞에
 `.venv/bin/python -m osk.cli`를, Windows에서는 `.venv\Scripts\python.exe -m osk.cli`를
-붙인다. vault 루트의 런처를 써도 된다 — 둘 다 대신 설정한다: `./osk-cli.sh validate`
+붙인다. vault 루트의 런처를 써도 된다 — 둘 다 대신 설정한다: `sh osk-cli.sh validate`
 (Windows: `.\osk-cli.cmd validate`). `update`도 받는다.
 
 | 명령 | 쓰임 |
