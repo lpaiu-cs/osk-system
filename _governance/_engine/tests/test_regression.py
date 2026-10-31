@@ -5825,7 +5825,9 @@ def test_external_roots():
 
     check("선언 전 — 끊김", problem("docs:notes/a.md") == "선언되지 않은 별칭: docs:notes/a.md"
           and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
-    roots.declare("docs", "외부 문서", "https://example.com/docs.git")
+    with mock.patch.object(core, "mutation_lock", wraps=core.mutation_lock) as lock:
+        roots.declare("docs", "외부 문서", "https://example.com/docs.git")
+    check("선언은 작업 트리 잠금 안에서 적는다(데몬의 rebase와 직렬화)", lock.call_count == 1, lock.call_count)
     check("선언하면 `/`가 있어도 경로가 아니라 바깥이다",
           graph.Index().resolve("docs:notes/a.md") == ("external",))
     seen = graph.Index()
@@ -5878,7 +5880,9 @@ def test_external_roots():
             check("단말 없는 해제는 중단된다",
                   "중단" in str(e.code) and roots.alias_problem("docs", roots.declarations()) is None,
                   e.code)
-    roots.retire("docs", "옮김")
+    with mock.patch.object(core, "mutation_lock", wraps=core.mutation_lock) as lock:
+        roots.retire("docs", "옮김")
+    check("해제는 확인과 기록을 한 작업 트리 잠금 안에서 한다", lock.call_count == 1, lock.call_count)
     check("해제한 별칭은 끊김", problem("docs:notes/a.md") == "해제된 별칭: docs:notes/a.md"
           and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
     # 공유 색인(MCP)은 대장이 바뀌면 지문이 달라져 비노드 갱신을 부른다 — 선언도 그때 다시 읽는다
