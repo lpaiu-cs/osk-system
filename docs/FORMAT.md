@@ -269,7 +269,8 @@ Mechanism §8 2). Non-node evidence is a line in the evidence section instead
   or with a `.md` record path; section 6.1) or another non-node file
   (`"[[_sources/plan.pdf]]"`). The engine still reads them and a write may
   remove them, but no write adds one. The validator rule `evidence-section`
-  reports them until they move to the evidence section.
+  reports them until they move to the evidence section;
+  `osk evidence migrate` moves them as `지지` lines.
 
 `conflicts` is a case marker (Mechanism §8 2; Bylaws §9 4). Its target is
 either `"[[CASE-<year>-<n>]]"`, an open (`docketed`) case that lists the node as

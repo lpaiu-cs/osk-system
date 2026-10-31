@@ -331,6 +331,22 @@ def _roots_cmd(a) -> None:
         sys.exit(1)
 
 
+def _evidence_cmd(a) -> None:
+    """`osk evidence migrate` — 비노드 `derived-from`을 근거 절의 `지지` 줄로 옮긴다(v5.4 이행,
+    Mechanism §5). 인자가 없으면 계획만 내고 노드와 대장은 건드리지 않는다. `--apply`는 노드 여럿을
+    고치므로 대화형 단말의 확인을 거친다."""
+    from . import evidence_migration
+    try:
+        if not a.apply:
+            _emit(evidence_migration.preview())
+            return
+        _confirm("비노드 derived-from을 근거 절의 지지 줄로 옮깁니까? 노드를 고치고 이행 기록을 남깁니다 [y/N] ")
+        _emit(evidence_migration.apply())
+    except (ValueError, OSError, RuntimeError) as e:
+        _emit({"ok": False, "violations": [str(e)]})
+        sys.exit(1)
+
+
 def _tidy_cmd(a) -> None:
     """`osk tidy` — 정돈 (Mechanism §9-3). `list`는 미처분, `prompt`는 전용
     세션의 프롬프트(전문 그대로 — 붙여 넣는 값이다), `settle`은 처분 기록,
@@ -525,6 +541,10 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("path")
     q = ro.add_parser("unmount", help="[사용자 전속] 이 기기의 위치를 지운다")
     q.add_argument("alias")
+    p = sub.add_parser("evidence", help="근거 절 (헌법 제8조 6항)")
+    ev = p.add_subparsers(dest="evidence_cmd", required=True)
+    q = ev.add_parser("migrate", help="비노드 derived-from을 근거 절의 지지 줄로 옮기는 이행 계획 (v5.4)")
+    q.add_argument("--apply", action="store_true", help="계획대로 옮긴다 — 단말 확인을 거친다")
     p = sub.add_parser("protect", help="[사용자 전속] 보호영역 지정")
     p.add_argument("region"); p.add_argument("--reason", default="")
     p = sub.add_parser("unprotect", help="[사용자 전속] 보호영역 해제")
@@ -657,6 +677,8 @@ def main(argv=None):
         return _routing_cmd(a)
     elif a.cmd == "roots":
         return _roots_cmd(a)
+    elif a.cmd == "evidence":
+        return _evidence_cmd(a)
     elif a.cmd == "tidy":
         return _tidy_cmd(a)
     elif a.cmd == "protect":
