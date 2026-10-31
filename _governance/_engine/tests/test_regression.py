@@ -5813,6 +5813,12 @@ def test_external_roots():
     roots.declare("docs", "외부 문서", "https://example.com/docs.git")
     check("선언하면 `/`가 있어도 경로가 아니라 바깥이다",
           graph.Index().resolve("docs:notes/a.md") == ("external",))
+    seen = graph.Index()
+    with mock.patch.object(roots, "declarations", wraps=roots.declarations) as read:
+        same = [seen.resolve(c) for c in ("docs:notes/a.md", "docs:x.md", "other:x.md")]
+    check("한 색인은 선언 대장을 한 번 읽는다",
+          same == [("external",), ("external",), ("dangling",)] and read.call_count == 1,
+          (same, read.call_count))
     held = roots.Roots()
     check("선언됐지만 이 기기에 없으면 보류 — 루트마다 한 번",
           problem("docs:notes/a.md", held) is None and problem("docs:x.md", held) is None
@@ -5860,6 +5866,10 @@ def test_external_roots():
     roots.retire("docs", "옮김")
     check("해제한 별칭은 끊김", problem("docs:notes/a.md") == "해제된 별칭: docs:notes/a.md"
           and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
+    # 공유 색인(MCP)은 대장이 바뀌면 지문이 달라져 비노드 갱신을 부른다 — 선언도 그때 다시 읽는다
+    check("색인은 갱신 전까지 선언을 다시 읽지 않는다", seen.resolve("docs:notes/a.md") == ("external",))
+    seen.refresh_nonnode()
+    check("비노드 갱신이 선언을 다시 읽는다", seen.resolve("docs:notes/a.md") == ("dangling",))
     refused("해제한 별칭은 다시 해제하지 않는다", roots.retire, "docs", says="선언된 별칭이 아니다")
     check("조회는 선언 상태와 이 기기의 위치를 함께 낸다",
           [(r["alias"], r["declaration"], r["note"], r.get("here")) for r in roots.show()["roots"]]
@@ -5993,6 +6003,13 @@ def test_raw_read():
     span = _w(raw.read_round, f"{REC}#1–2")
     check("이어진 라운드를 한 번에 연다", [x.get("index") for x in span.get("rounds", [])] == [1, 2], span)
     check("거꾸로 된 범위는 거부한다", _w(raw.read_round, f"{REC}#2–1").get("ok") is False)
+    # 범위는 있는 라운드만 예산 안에서 편다 — 라운드마다 200자, 본문 합이 max_chars를 넘지 않는다
+    check("없는 라운드가 낀 범위는 거부한다", _w(raw.read_round, f"{REC}#2–100000000").get("ok") is False)
+    check("라운드마다 200자를 못 주는 범위는 거부한다", _w(raw.read_round, f"{REC}#1–3", 599).get("ok") is False)
+    tight = _w(raw.read_round, f"{REC}#1–3", 600)
+    check("범위는 예산을 라운드마다 나눈다",
+          [len(x.get("text", "")) <= 200 for x in tight.get("rounds", [])] == [True] * 3
+          and tight["rounds"][2].get("truncated") is True, tight)
     _w(raw.append_rounds, S, "claude-ab12cd34" + "0" * 24, [{"user": "해시 질문", "agent": "해시 응답"}], SP)
     short = _w(raw.read_round, "ab12cd34#1")
     check("줄인 해시 좌표로 연다",

@@ -180,14 +180,13 @@ def check(coord: str, idx: "graph.Index | None" = None, records: Records | None 
         return f"{NODE_LINE}: {coord} — 노드 근거는 derived-from으로 옮긴다"
     if k == "name":
         return f"알 수 없는 좌표: {coord}"
-    if found != "nonnode":
+    from .core import resolve_in_root
+    p = resolve_in_root(target)
+    if found != "nonnode" or p is None or not p.is_file():     # 색인은 디렉터리도 비노드로 본다
         return f"없는 파일: {coord}"
     heading = coord.partition("#")[2].strip()
-    if heading:
-        from .core import resolve_in_root
-        p = resolve_in_root(target)
-        if p is None or not p.is_file() or heading_range(p.read_bytes(), heading) is None:
-            return f"없는 제목: {coord}"
+    if heading and heading_range(p.read_bytes(), heading) is None:
+        return f"없는 제목: {coord}"
     return None
 
 

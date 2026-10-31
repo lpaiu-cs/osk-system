@@ -504,6 +504,8 @@ class Index:
         Scan errors remain on the Index so a partial refresh is never cached.
         """
         self.nonnode: dict[str, tuple] = {}
+        # 외부 루트 선언(`roots.jsonl`)도 대장이라 같이 낡는다 — 처음 묻는 별칭이 다시 읽는다
+        self._roots: dict | None = None
         for base in ("_sources", SCOPE, PERSON):
             root = ROOT / base
             if not root.exists():
@@ -784,11 +786,12 @@ class Index:
             return ("external",)
         alias = roots.split(name)
         if alias:
-            try:
-                declared = roots.alias_problem(alias[0], roots.declarations()) is None
-            except (OSError, ValueError):
-                declared = False        # 대장 손상 — 선언을 확인하지 못한 별칭은 끊김이다
-            return ("external",) if declared else ("dangling",)
+            if self._roots is None:
+                try:
+                    self._roots = roots.declarations()
+                except (OSError, ValueError):
+                    return ("dangling",)    # 대장 손상 — 선언을 확인하지 못한 별칭은 끊김이다
+            return ("external",) if roots.alias_problem(alias[0], self._roots) is None else ("dangling",)
         if is_record_ref(name):
             from . import raw
             try:
