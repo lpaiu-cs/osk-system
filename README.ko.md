@@ -170,7 +170,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 시작한다(새 태그는 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다):
 
 ```bash
-git clone --branch v5.3.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.4.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -316,9 +316,16 @@ PYTHONPATH=_governance/_engine .venv/bin/python -m osk.cli search "프로젝트 
 v5.0.0 개발 순서와 완료 기준은 [성장 경로 개선 마일스톤](docs/v5.0-milestones.md)에 정리한다.
 v5.1.0은 소속 scope가 없는 대화를 추적하고 그 검토가 소속을 정하게 했다. v5.2.0은 인용 기록을
 루트 `_cited/` 한 자리에 두고, scope를 프로젝트에 결속하며, 정기 성장 실행을 주마다 크기를 정하는
-하루 묶음으로 돌린다([계획](docs/v5.2-milestones.md)). [v5.3.0](docs/v5.3-milestones.md)은 그 변경을
-운영 인스턴스에서 재고, v5.1·v5.2 계획에서 옮긴 재사용·의미 품질 평가를 맡는다(견고함).
-[v6.0.0](docs/v6.0-milestones.md)은 기억 모델을 넓힌다(확장).
+하루 묶음으로 돌린다([계획](docs/v5.2-milestones.md)). [v5.3.0](docs/v5.3-milestones.md)은 검색 순위에
+관련성과 함께 최신성·중심성·locality를 쓰고, 운영 인스턴스에서 모자람이 드러난 대화 검토를 고친다.
+v5.3.1은 v5.3.0 출시의 사본 시험에서 찾은 포착 결함과 시험 절차의 공백을 고친다. v5.3.2는 정기 성장
+실행의 Claude 워커 대체가 돌지 못하던 것을, v5.3.3은 주간 한도 조정이 하루씩 밀리던 것과 대화별 검토가
+진척 없는 작업을 거듭 고르던 것을 고친다.
+[v5.4.0](docs/v5.4-milestones.md)은 근거를 노드와 비노드로 나눈다 — `derived-from`은 노드만 받고,
+비노드 근거는 노드 끝 근거 절에 적으며(옛 항목을 옮기는 명령 포함), vault 밖 파일은 등록한 외부 루트에서만
+받는다. 동기화 데몬이 보내기를 멈추면 알리고, vault 루트에 CLI 런처를 둔다.
+[v5.5.0](docs/v5.5-milestones.md)은 v5.1에서 미룬 설계, 남은 포착 정합, 더 긴 운영 기간이 필요한 평가를
+맡는다(견고함). [v6.0.0](docs/v6.0-milestones.md)은 기억 모델을 넓힌다(확장).
 
 ## License
 

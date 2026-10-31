@@ -408,7 +408,9 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
     now = datetime.now(timezone.utc).astimezone()
     day = now.date().isoformat()
     last = (_adjustments(rows) or [None])[-1]
-    fresh = last is None or now - datetime.fromisoformat(last["at"]) >= timedelta(days=WEEK)
+    # 주는 날짜로 센다. 조정 시각은 포착을 마친 뒤에 적혀 날마다 몇 분씩 달라서, 시각으로 재면 같은
+    # 시각의 매일 실행이 7일째에 몇 분 모자라 하루씩 밀린다(#258).
+    fresh = last is None or (now.date() - datetime.fromisoformat(last["at"]).astimezone(now.tzinfo).date()).days >= WEEK
     adjustment = last
     if fresh:
         try:

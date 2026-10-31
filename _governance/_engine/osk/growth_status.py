@@ -62,6 +62,7 @@ def _integration(states: list[dict]) -> dict:
             'unreviewed_rounds': view['captured_rounds'] - view['reviewed_rounds'],
             'repair_jobs': len(state.get('repair_pending', {})), 'repair_rounds': len(repairs),
             'review_pending_rounds': len(set(view['pending_refs'])),
+            'source_lost_rounds': len((view['source_lost'] or {}).get('refs', [])),
             'capture_pending': view['capture_pending'], 'capture_error': view['capture_error'],
             'capture_recovery': view['capture_recovery'],
             'last_route': view['response_growth_route'],
@@ -69,8 +70,10 @@ def _integration(states: list[dict]) -> dict:
             'round_endings': dict(Counter(r.get('completion', 'unknown') for r in state['rounds'])),
         })
     totals = {key: sum(item[key] for item in items) for key in (
-        'captured_rounds', 'unreviewed_rounds', 'repair_jobs', 'repair_rounds', 'review_pending_rounds')}
+        'captured_rounds', 'unreviewed_rounds', 'repair_jobs', 'repair_rounds', 'review_pending_rounds',
+        'source_lost_rounds')}
     return {**totals, 'conversations': len(items),
+            'source_lost_conversations': sum(i['capture_recovery']['state'] == 'closed' for i in items),
             'conversations_with_unreviewed_rounds': sum(i['unreviewed_rounds'] > 0 for i in items),
             'conversations_with_review_pending': sum(i['review_pending_rounds'] > 0 for i in items),
             'capture_pending_conversations': sum(bool(i['capture_pending']) for i in items),

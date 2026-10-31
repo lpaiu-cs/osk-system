@@ -954,6 +954,7 @@ ACK 뒤에는 대상 노드·최상위 군집·출처 링크만 본다. 본문 �
 |---|---|---|
 | Codex 데스크톱 | `~\Documents\Codex\<YYYY-MM-DD>\<제목>`, `…\<YYYY-MM-DD>\task-N\<제목>` — 이 폴더에서 돈 Claude Code 세션도 같다 | 0.159.2 |
 | Claude 데스크톱 | `%APPDATA%\Claude\scratch-workspaces\<uuid>\<uuid>\scratch-<YYYY-MM-DD>-<hex6>` | 2.1.281 |
+| Claude 데스크톱 3.16 이후(Store 설치) | `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc\scratch-workspaces\<uuid>\<uuid>\scratch-<YYYY-MM-DD>-<hex6>` | 2.1.308 |
 | Antigravity | `~\.gemini\antigravity\playground\<단어-단어>` | 2.17.0 |
 
 Kiro, Claude Code CLI, Codex CLI는 사용자가 연 폴더를 쓰므로 규칙이 없다. 규칙이 없는 하네스나
@@ -1016,7 +1017,8 @@ fork에 남긴다. 이번 실행에서 생긴 Scope 노드는 다음 실행의 D
 - **포착 실패.** 묶음은 막지 않지만 그날 실행의 실패다(종료 코드 1). 이미 적힌 같은 오류(원본
   전사가 지워진 대화 등)는 날마다 다시 세지 않는다 — 대화 상태와 `integration status`에 남아
   있고, 하루 결과의 `capture.known_errors`가 그 수다.
-- **주간 한도 조정.** L은 7일마다 다시 정한다. N = 지난 7일 유입 가운데 정기 실행 몫(대화마다
+- **주간 한도 조정.** L은 마지막 조정 날로부터 7일째 날의 첫 실행이 다시 정한다. 주는 시각이 아니라
+  날짜로 센다 — 조정 시각은 포착을 마친 뒤에 적혀 날마다 달라진다. N = 지난 7일 유입 가운데 정기 실행 몫(대화마다
   9라운드 작업 수) + ⌈7일보다 오래된 대기 작업 ÷ 4⌉, S = ⌈N ÷ 7⌉, L = max(6, S + 3)이다.
   예산은 공급자마다 "지난주 작업 ÷ 20 − 지난주 대화별 검토"이고, 7일보다 오래된 대기가
   있으면 ÷10까지 쓴다. S는 이 예산을 Scope 작업 단가(지난주 Scope 묶음 실측의 평균, 없으면
@@ -1480,6 +1482,25 @@ SHA의 전체 회귀 수트와 **전체 업그레이드 행렬**(모든 출발 �
 workflow 실행 전에 최종 후보를 실제 인스턴스의 사본에 적용해 데이터 보존과
 재시작 후 재검토 기준선을 확인한다. 원본 인스턴스의 갱신 승인은 아래 절차로
 따로 받는다. 실패한 발행을 재시도할 때는 같은 비준증빙 커밋에서 실행한다.
+
+사본의 엔진은 복사해 온 대화 커서를 그대로는 보지 못한다(#242). 커서는 git 디렉터리에
+두는 기기 로컬 상태이고, vault의 절대 경로를 열쇠로 쓴다. 파일 이름(`integration.state_path`)과
+내용의 `root`가 모두 그 경로다. 갱신만 적용하면 사본의 `growth status`는
+`integration.conversations` 0을 보이고, 재검토 기준선은 확인되지 않는다. 다른 경로에서 연
+vault도 같은 이유로 기존 커서를 보지 못한다. 기준선은 다음 순서로 확인한다.
+
+1. 사본의 git 디렉터리에 복사된 커서(`osk-integration-<원본 경로 열쇠>-*.json`)와 성장
+   로그(`*.growth.log`)를 사본 경로의 열쇠로 옮긴다. 내용의 `root`를 사본 경로로 고치고,
+   이름을 사본의 `integration.state_path(harness, conversation_id)`로 바꾼다. 원본 인스턴스의
+   파일은 건드리지 않는다.
+2. 옛 엔진으로 모든 커서를 강제 포착한다(커서마다 `integration.capture`).
+3. 사본에 갱신을 적용한다.
+4. 새 엔진으로 다시 모든 커서를 강제 포착한다.
+5. 커서마다 오류, 포착·상속 라운드, 검토 대기를 견준다. 달라진 커서는 원인을 확인한 뒤에
+   발행한다.
+
+증류 작업 파일(`distillation._job_path`)은 기록된 `key`로 이름이 다시 나오지 않아 옮기지
+못한다. 포착은 이 파일을 읽지 않으므로 이 비교에는 영향이 없다.
 
 **인스턴스에서 — 갱신** (메이저 판을 올릴 때는 먼저 [판 올리기](UPGRADING.ko.md)를 읽는다):
 

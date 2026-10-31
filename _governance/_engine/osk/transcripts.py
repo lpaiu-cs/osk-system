@@ -328,17 +328,39 @@ def native_lines(path: str, harness: str, sid: str):
         yield from _page_lines(native, remaining)
 
 
+# How many following lines a complete line that does not parse may take in (#243).
+REJOIN_LINES = 16
+
+
+def _rejoin(line: bytes, rest) -> tuple[dict | None, int]:
+    """Claude Code once wrote a record with raw newlines inside a string, splitting it over
+    lines (#243). Join the lines after `line` until the whole reads as exactly one object,
+    control characters allowed in strings. `(None, _)` when none does."""
+    for extra in range(1, REJOIN_LINES + 1):
+        more = next(rest, None)
+        if more is None:
+            break
+        line += more
+        try:
+            row = json.loads(line, strict=False)
+        except (ValueError, UnicodeError):
+            continue
+        return (row if isinstance(row, dict) else None), extra
+    return None, 0
+
+
 def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = None) -> dict:
     """`rules` (Claude only) applies the newer turn rules after `rules["since"]`, the last
     round an earlier engine tracked: queued words join their turn, and an unfinished turn
     closes at a stored `cuts` row or after IDLE_CLOSE of silence before `now`. After
     `rules["prompts_since"]` a prompt with another `promptId` closes the open turn (#218)."""
     fingerprint = native_fingerprint(path, harness, conversation_id)
-    rows, diagnostics, pages = [], [], []
+    rows, diagnostics, pages, rejoined = [], [], [], []
     n = 0
     for native, limit in _native_files(path, harness, conversation_id):
         page = []
-        for line in _page_lines(native, limit):
+        lines = _page_lines(native, limit)
+        for line in lines:
             n += 1
             if not line.strip():
                 continue
@@ -350,7 +372,11 @@ def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = 
                 if not line.endswith(b"\n"):
                     diagnostics.append(f"incomplete JSONL tail at line {n}")
                     break
-                raise ValueError(f"unreadable transcript record at line {n}") from exc
+                row, extra = _rejoin(line, lines)
+                if row is None:
+                    raise ValueError(f"unreadable transcript record at line {n}") from exc
+                rejoined.append([n, n + extra])
+                n += extra
             page.append((n, row))
         rows.extend(page)
         pages.append(page)
@@ -388,6 +414,8 @@ def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = 
                           "limitation": "User/assistant dialogue is preserved; tool payloads and attachments are native references. Internal reasoning and transport metadata are outside capture scope. Referenced evidence requires its native transcript."}
     if result.get("ancestor_pending_tails"):
         result["coverage"]["ancestor_pending_tails"] = result["ancestor_pending_tails"]
+    if rejoined:
+        result["coverage"]["rejoined_lines"] = rejoined
     return result
 
 

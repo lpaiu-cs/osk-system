@@ -36,7 +36,7 @@ def main() -> None:
         return
     host = None
     try:
-        from claude_session_start import first_call, normalize, note_run, session_key
+        from claude_session_start import first_call, normalize, note_run, project_cwd, session_key
         try:
             env = json.load(sys.stdin)
             if not isinstance(env, dict):
@@ -46,7 +46,7 @@ def main() -> None:
             raise
         from osk import integration, response_growth
         env = normalize(env)
-        key = session_key(env.get("cwd") or os.getcwd())
+        key = session_key(project_cwd(env))
         host = note_run("stop", env, key)
         if not first_call("stop", env, host):
             return

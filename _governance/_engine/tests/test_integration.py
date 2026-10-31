@@ -262,6 +262,27 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn("question 2", text)
 
 
+    def test_a_record_split_by_raw_newlines_is_rejoined(self):
+        # Claude Code once wrote a string's newlines unescaped: one record over three lines (#243).
+        rows = claude_round(self.sid, 1) + claude_round(self.sid, 2)
+        rows[4]["message"]["content"][0]["text"] = "answer\n\none"
+        self.transcript(rows)
+        intact = transcripts.read(str(self.path), "claude", self.sid)
+        split = self.path.read_bytes().replace(b"answer\\n\\none", b"answer\n\none")
+        self.path.write_bytes(split)
+        parsed = transcripts.read(str(self.path), "claude", self.sid)
+        self.assertEqual([(r["id"], r["user"], r["agent"]) for r in parsed["rounds"]],
+                         [(r["id"], r["user"], r["agent"]) for r in intact["rounds"]])
+        self.assertIn(json.dumps("answer\n\none"), parsed["rounds"][0]["agent"])
+        self.assertEqual(parsed["diagnostics"], [])
+        self.assertFalse(parsed["pending_tail"])
+        self.assertEqual(parsed["coverage"]["rejoined_lines"], [[5, 7]])
+        # A complete line no following lines complete still stops the read.
+        lines = split.splitlines(keepends=True)
+        self.path.write_bytes(b"".join(lines[:7] + [b'{"type": "user", "sess\n'] + lines[7:]))
+        with self.assertRaisesRegex(ValueError, "unreadable transcript record at line 8"):
+            transcripts.read(str(self.path), "claude", self.sid)
+
     def test_end_turn_thinking_is_not_a_final_response(self):
         self.transcript(claude_round(self.sid, 1)[:-1])
         parsed = transcripts.read(str(self.path), "claude", self.sid)
@@ -864,6 +885,31 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(done["last_review"]["mechanical_preservation"])
         self.assertFalse(done["last_review"]["semantic_verified"])
 
+    def test_a_source_missing_for_a_week_closes_as_lost_and_reopens_when_back(self):
+        # 원본이 7일 계속 없으면 커서를 원본 소실로 닫고, 원본이 돌아오면 이어 간다(#244)
+        self.transcript(claude_round(self.sid, 1))
+        first = self.capture()
+        self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
+        self.capture()
+        unreviewed = it.acknowledge("claude", self.sid, first["through"], "no_value", "fixture")["pending_refs"]
+        away = self.path.with_name(self.path.name + ".away")
+        self.path.rename(away)
+        mine = lambda: [s for s in it._known_pending(None)[0] if s["conversation_id"] == self.sid]
+        self.assertTrue(mine(), "the first day without the source still retries it")
+        with mock.patch.object(it.time, "time", return_value=time.time() + it.SOURCE_LOST_AFTER + 1):
+            self.assertEqual(mine(), [], "a week later the closed cursor is neither captured nor listed")
+        st = it.status("claude", self.sid)
+        self.assertEqual(st["capture_recovery"]["state"], "closed")
+        self.assertEqual(st["source_lost"]["refs"], unreviewed)   # 처분에 남고 지워지지 않는다
+        self.assertEqual((st["pending_refs"], st["pending"], st["capture_error"]), ([], False, None))
+        self.assertEqual(st["captured_rounds"], 2)
+        again = it.capture("claude", self.sid, None, "capture-tests")
+        self.assertEqual((again["capture_recovery"]["state"], again["capture_error"]), ("closed", None))
+        away.rename(self.path)
+        back = self.capture()
+        self.assertIsNone(back["source_lost"])
+        self.assertEqual(back["pending_refs"], unreviewed)
+
     def test_capture_failure_is_pending_and_partial_tail_not_consumed(self):
         st = self.capture()
         self.assertFalse(st["ok"])
@@ -889,7 +935,9 @@ class IntegrationTests(unittest.TestCase):
         states, _, _, waiting = it._known_pending(100)
         self.assertNotIn(self.sid, [s['conversation_id'] for s in states])
         self.assertIn(self.sid, [s['conversation_id'] for s in waiting])
-        self.assertEqual(state_path.read_bytes(), before)
+        after = json.loads(state_path.read_bytes())
+        self.assertIsInstance(after.pop('source_missing_since'), float)   # 원본 시계만 더한다(#244)
+        self.assertEqual(after, json.loads(before))
         it.tick('claude', self.sid)
         states, _, _, waiting = it._known_pending(100)
         self.assertIn(self.sid, [s['conversation_id'] for s in states])
@@ -2680,6 +2728,69 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertNotIn("warning", talk(self.sid + "-rechecked", f"2026-10-13/{key}-r", "9.9.9")["workspace"])
         (root / "2026-10-14" / "repo" / ".git").mkdir(parents=True)
         self.assertFalse(talk(self.sid + "-repo", "2026-10-14/repo")["workspace"]["one_off"])
+
+    def test_the_engine_rules_know_both_claude_scratch_roots(self):
+        # Claude desktop 3.16 (CLI 2.1.308) moved the Store install's scratch workspaces from
+        # %APPDATA%/Claude into %LOCALAPPDATA%/Claude-Data/claude_<package>.
+        if os.name != "nt":
+            self.skipTest("the engine's Claude rules are Windows paths")
+        from osk import workspaces
+        tail = "/" + "/".join([str(uuid.uuid4()), str(uuid.uuid4()), "scratch-2026-10-27-269921"])
+        with tempfile.TemporaryDirectory() as roaming, tempfile.TemporaryDirectory() as local, \
+                mock.patch.dict(os.environ, {"APPDATA": roaming, "LOCALAPPDATA": local}):
+            new = Path(local + "/Claude-Data/claude_pzs8sxrjxfjjc/scratch-workspaces" + tail)
+            for cwd, version in ((roaming + "/Claude/scratch-workspaces" + tail, "2.1.281"),
+                                 (str(new), "2.1.308"), (str(new / "chiikawa-addon"), "2.1.309")):
+                got = workspaces.judge("claude", cwd, version) or {}
+                self.assertEqual((got.get("one_off"), got.get("warning")), (True, None), cwd)
+            self.assertIsNone(workspaces.judge("claude", local + "/Claude-Data/claude_pzs8sxrjxfjjc/claude-code"))
+            # A new scratch conversation starts unlanded even if its key was bound before the rule.
+            new.mkdir(parents=True)
+            write.bind_session(new.name, "Capture", "bound before the rule")
+            self.transcript([{**r, "cwd": str(new), "version": "2.1.308"} for r in claude_round(self.sid, 1)])
+            st = it.capture("claude", self.sid, str(self.path), new.name)
+            self.assertEqual((st["workspace"]["one_off"], st["space"]), (True, None), st)
+
+    def test_a_subfolder_of_the_starting_folder_keeps_the_conversation_key(self):
+        # #271: a conversation started outside Git moves into a subfolder; the hooks' key stays
+        # the starting folder's, so the next capture is not refused as a changed scope.
+        import importlib
+        from osk import workspaces
+        sys.path.insert(0, str(ENGINE / "scripts/hooks"))
+        hook = importlib.import_module("claude_session_start")
+        self.addCleanup(setattr, workspaces, "_here", None)
+        start = Path(TMP.name) / f"{self.sid}-brain"
+        sub, elsewhere = start / "wiki/courses/em2", Path(TMP.name) / f"{self.sid}-other"
+        sub.mkdir(parents=True)
+        elsewhere.mkdir()
+        self.transcript([{**r, "cwd": str(start)} for r in claude_round(self.sid, 1)]
+                        + [{**r, "cwd": str(sub)} for r in claude_round(self.sid, 2)])
+        key = lambda cwd: hook.session_key(hook.project_cwd(
+            {"harness": "claude", "session_id": self.sid, "transcript_path": str(self.path), "cwd": str(cwd)}))
+        self.assertEqual((key(start), key(sub), key(elsewhere)), (start.name, start.name, elsewhere.name))
+        self.assertEqual(hook.project_cwd({"cwd": str(sub)}), str(sub))       # no transcript: the hook's folder
+        self.assertTrue(it.capture("claude", self.sid, str(self.path), key(start))["ok"])
+        st = it.capture("claude", self.sid, str(self.path), key(sub))
+        self.assertTrue(st["ok"], st)
+        self.assertIsNone(st["capture_error"])
+        # Another repository below the starting folder is its own project: a repository under the
+        # Git-less start, and a submodule of the repository a conversation started in.
+        g = lambda *a, cwd: subprocess.run(
+            ["git", "-c", "user.name=x", "-c", "user.email=x@x.invalid", "-c", "protocol.file.allow=always", *a],
+            cwd=cwd, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        inner, parent, child = start / "tools/inner", Path(TMP.name) / f"{self.sid}-up", Path(TMP.name) / f"{self.sid}-lib"
+        for p in (inner, parent, child):
+            p.mkdir(parents=True)
+            g("init", "-q", cwd=p)
+            g("commit", "-q", "--allow-empty", "-m", p.name, cwd=p)
+        g("submodule", "add", "-q", str(child), "vendor/lib", cwd=parent)
+        self.assertEqual(key(inner), hook.session_key(str(inner)))
+        self.assertNotEqual(key(inner), start.name)
+        self.transcript([{**r, "cwd": str(parent)} for r in claude_round(self.sid, 1)])
+        lib = parent / "vendor/lib"
+        self.assertEqual(key(parent / "vendor"), key(parent))                 # a plain folder of the repository
+        self.assertEqual(key(lib), hook.session_key(str(lib)))
+        self.assertNotEqual(key(lib), key(parent))
 
     def test_a_resumed_copy_of_a_landed_one_off_conversation_keeps_its_landing(self):
         # A copy of a conversation landed only by its first citation starts unlanded. The parent's

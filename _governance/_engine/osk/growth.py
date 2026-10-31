@@ -9,6 +9,7 @@ from __future__ import annotations
 import itertools
 import heapq
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -401,6 +402,51 @@ def _scope_tried(rows: list[dict]):
                    for r in rows if r.get("kind") == "plan" for j in r.get("scope_jobs", []))
     return lambda s: seen[(s["harness"], s["conversation_id"], s["reviewed_count"],
                            tuple(sorted(s.get("repair_pending") or {})))]
+
+
+STALLED_PICKS, STALLED_DAYS = 2, 7
+
+
+def _job_place(job: dict) -> tuple:
+    """정체를 셀 작업의 자리. 재검토는 key와 인용 노드·근거의 상태다 — key는 참조 관계뿐이고, 두 상태가
+    바뀌면 엔진이 그 쌍을 다시 고른다. 정돈은 key다 — 마치지 않은 검토의 key를 이어 쓰는데
+    (`organization.pending`), snapshot은 scope 노드의 해시를 모두 담아 그 scope의 어느 쓰기에도 바뀐다.
+    실제 원장에서는 고를 때마다 달라 정체를 하나도 세지 못했다(#268). 정체로 빠진 정돈도 하루 묶음은
+    그대로 고른다."""
+    return job["key"], job.get("node_state"), job.get("target_state")
+
+
+def _stalled(rows: list[dict], now: datetime | None = None) -> set:
+    """지난 7일 동안 진척 없이 두 번 이상 끝난 작업의 자리(`_job_place`) — 진척하면 다시 센다. 자리는
+    그 실행의 계획에 실린 작업에서 읽는다(#259). 대기(한도 거절·잠금)와 실패한 실행(`run_failed`)은
+    작업자가 검토하지 못한 것이라 진척 없음으로 세지 않는다."""
+    since = (now or datetime.now(timezone.utc)) - timedelta(days=STALLED_DAYS)
+    plans = {r.get("rid"): r for r in rows if r.get("kind") == "plan"}
+    misses = Counter()
+    for r in rows:
+        if r.get("kind") != "run" or not isinstance(r.get("progress"), dict):
+            continue
+        try:
+            if datetime.fromisoformat(r["at"]) < since:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        jobs = {j["key"]: j for queue in _QUEUES for j in (plans.get(r.get("manifest")) or {}).get(queue, [])
+                if isinstance(j, dict) and "key" in j}
+        for key in r["progress"].get("made", []):
+            misses.pop(_job_place(jobs.get(key) or {"key": key}), None)
+        if r.get("state") not in WAITS and not run_failed(r):
+            misses.update(_job_place(jobs.get(key) or {"key": key}) for key in r["progress"].get("none", []))
+    return {place for place, n in misses.items() if n >= STALLED_PICKS}
+
+
+def _skip_stalled(jobs: list[dict], stalled: set, limit: int, planned: dict) -> list[dict]:
+    """대화별 검토가 고를 작업 — 거듭 진척 없던 자리를 빼고 그 뒤의 후보로 채워 `limit`개. 뺀 key는
+    계획에 남긴다(#259, #175 결정 2). 하루 묶음은 그날 진척 없던 작업을 뺀다(`growth_daily`)."""
+    skipped = [j["key"] for j in jobs if _job_place(j) in stalled]
+    if skipped:
+        planned.setdefault("stalled", []).extend(skipped)
+    return [j for j in jobs if _job_place(j) not in stalled][:limit]
 
 
 def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
@@ -1272,11 +1318,18 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                               else write.bound_scopes(scope_job["session"]))
                     scope = scopes[0] if scopes else None
                     planned["work_context"] = "stop:" + (scope or scope_job["session"])
-                    planned["organization_jobs"] = organization.pending(scopes, limit=1) if scopes else []
+                    # 거듭 진척 없던 작업은 빼고 그 뒤의 후보로 채운다(#259). 자른 뒤에 빼면 뺀 작업이
+                    # 시도 기록을 남기지 않아 계속 앞에 서고, 뒤의 작업이 영영 뽑히지 않는다.
+                    rows = _records()
+                    stalled = _stalled(rows)
+                    planned["organization_jobs"] = _skip_stalled(
+                        organization.pending(scopes, limit=min(len(scopes), 20)) if scopes else [],
+                        stalled, 1, planned)
                     # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
                     idx = _index()
-                    planned["recheck_jobs"] = (_pick_rechecks(idx, limit, scope)
-                                               if scope and not daily_active() else [])
+                    planned["recheck_jobs"] = _skip_stalled(
+                        _pick_rechecks(idx, limit + len(stalled), scope, rows) if scope and not daily_active() else [],
+                        stalled, limit, planned)
                 planned["scope_jobs"] = catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
                 # A Stop fork may organize only its own Scope. It reuses this one
