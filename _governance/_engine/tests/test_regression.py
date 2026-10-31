@@ -428,6 +428,18 @@ def test_fingerprint_move():
 
 
 # ── 8. sync: 순서·충돌 표면화 + lock 위치 + SYNC_ENABLED 게이트 ──────────
+def approve_sync(repo):
+    """`setup --apply --sync`가 이 기기에 적는 전송 대상 — 데몬은 적힌 fetch·push 대상으로만 보내고,
+    기록이 없으면 커밋만 하고 전송을 보류한다(#254). vault처럼 `.osk/`는 추적하지 않는다."""
+    import vault_sync
+    url, pushes = vault_sync.remote_targets(repo)
+    (repo / ".osk").mkdir(exist_ok=True)
+    (repo / vault_sync.TARGETS).write_text(json.dumps({"origin": url, "push": pushes}),
+                                           encoding="utf-8")
+    with open(repo / ".git" / "info" / "exclude", "a", encoding="utf-8") as f:
+        f.write(".osk/\n")
+
+
 def test_sync():
     import sync_daemon
     with tempfile.TemporaryDirectory() as td:
@@ -447,6 +459,7 @@ def test_sync():
         subprocess.run(["git", "-C", str(A), "commit", "-qm", "base"], check=True)
         subprocess.run(["git", "-C", str(A), "push", "-q", "origin", "HEAD:main"], check=True)
         B = clone("B")
+        approve_sync(B)
         # A가 원격을 전진시키고, B는 추적 파일이 dirty
         (A / "g.txt").write_text("remote\n")
         subprocess.run(["git", "-C", str(A), "add", "-A"], check=True)
@@ -586,6 +599,7 @@ def test_sync_graph_scale():
             git("config", "core.autocrlf", "false")
             git("config", "core.editor", "must-not-open-editor")
             git("remote", "add", "origin", str(bare))
+            approve_sync(repo)
             graph_file = repo / path
             graph_file.parent.mkdir()
             if name != "add-add":
@@ -690,6 +704,7 @@ def test_sync_pins_main():
         subprocess.run(["git", "clone", "-q", str(bare), str(R)], check=True)
         for k, v in (("user.email", "t@t"), ("user.name", "t")):
             subprocess.run(["git", "-C", str(R), "config", k, v], check=True)
+        approve_sync(R)
         (R / "f.txt").write_text("base\n")
         subprocess.run(["git", "-C", str(R), "add", "-A"], check=True)
         subprocess.run(["git", "-C", str(R), "commit", "-qm", "base"], check=True)
@@ -12005,6 +12020,7 @@ def test_sync_pending_git_operations():
         git("checkout", "-q", "main")
         commit("main\n", "main")
         git("remote", "add", "origin", str(bare))
+        approve_sync(repo)
         git("push", "-qu", "origin", "main")
         remote_head = git("rev-parse", "refs/heads/main", root=bare)
         for operation in ("merge", "cherry-pick", "revert", "rebase"):
