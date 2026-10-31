@@ -5824,6 +5824,25 @@ def test_raw_read():
                        ("맨 표기", f"{SP}/_cited/{REC}.md#1")):
         check(f"좌표 표기: {label}", _w(raw.read_round, ref).get("index") == 1)
 
+    # 근거 줄의 좌표 — 옛 이름은 이름 그대로, 해시 이름은 줄인 앞자리, 이어진 라운드는 `#N–M`
+    # (Mechanism §8 9항·§9 8항). 회상이 같은 좌표를 돌려주므로 근거 줄에 그대로 옮긴다.
+    by_name = _w(raw.read_round, f"{REC}#2")
+    check("옛 이름 좌표로 연다", by_name.get("index") == 2 and by_name.get("coordinate") == f"{REC}#2", by_name)
+    span = _w(raw.read_round, f"{REC}#1–2")
+    check("이어진 라운드를 한 번에 연다", [x.get("index") for x in span.get("rounds", [])] == [1, 2], span)
+    check("거꾸로 된 범위는 거부한다", _w(raw.read_round, f"{REC}#2–1").get("ok") is False)
+    # 범위는 있는 라운드만 예산 안에서 편다 — 라운드마다 200자, 본문 합이 max_chars를 넘지 않는다
+    check("없는 라운드가 낀 범위는 거부한다", _w(raw.read_round, f"{REC}#2–100000000").get("ok") is False)
+    check("라운드마다 200자를 못 주는 범위는 거부한다", _w(raw.read_round, f"{REC}#1–3", 599).get("ok") is False)
+    tight = _w(raw.read_round, f"{REC}#1–3", 600)
+    check("범위는 예산을 라운드마다 나눈다",
+          [len(x.get("text", "")) <= 200 for x in tight.get("rounds", [])] == [True] * 3
+          and tight["rounds"][2].get("truncated") is True, tight)
+    _w(raw.append_rounds, S, "claude-ab12cd34" + "0" * 24, [{"user": "해시 질문", "agent": "해시 응답"}], SP)
+    short = _w(raw.read_round, "ab12cd34#1")
+    check("줄인 해시 좌표로 연다",
+          short.get("coordinate") == "ab12cd34#1" and "해시 질문" in short.get("text", ""), short)
+
     # 기록 목록 — 좌표를 모를 때의 출발점. 루트 `_cited/` 한 자리다(v5.2)
     ls = _w(raw.list_records)
     mine = [x for x in ls.get("records", []) if x["record"] == REC]

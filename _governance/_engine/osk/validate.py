@@ -305,7 +305,12 @@ def run() -> dict:
     #     노드처럼 언제나 검사해 보고하고, verdict 산입은 활성화 뒤에만 한다.
     try:
         ev = evidence_section_report(idx)
-        rep["evidence_section"] = ev
+        # `derived-from`에 남은 비노드는 이행 전 노드마다 걸리므로 노드 수로만 싣는다 — 줄의
+        # 위반이 그 수백 줄에 묻히지 않게 한다. verdict 산입(활성화 뒤)은 둘 다 센다.
+        left = [n for n, es in ev.items() if any(e.startswith(LEFTOVER) for e in es)]
+        rep["evidence_section"] = {n: shown for n, es in ev.items()
+                                   if (shown := [e for e in es if not e.startswith(LEFTOVER)])}
+        rep["evidence_section_leftovers"] = len(left)
         ev_active = validator_active("evidence-section")
         rep["evidence_section_active"] = ev_active
         ev_errs = [f"{n}: {e}" for n, es in sorted(ev.items()) for e in es]
@@ -322,57 +327,45 @@ def run() -> dict:
     return rep
 
 
-_EVIDENCE_ITEM = re.compile(r"^- \d{4}-\d{2}-\d{2} · `([0-9a-f]{8})#(\d+)(?:[–-](\d+))?` · "
-                            r"(?:지지|조건|반례) — \S")
+LEFTOVER = "derived-from에 비노드 대상"
 
 
-def evidence_errors(text: str, derived) -> list[str]:
-    """노드 끝 `## 근거` 절의 줄마다 형식과 `derived-from` 짝(Mechanism §6-1 4항).
-    `text`는 본문, `derived`는 frontmatter의 `derived-from` 값이다."""
+def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, records=None) -> list[str]:
+    """노드 끝 `## 근거` 절의 줄마다 형식과 좌표의 해석, 그리고 `derived-from`에 남은 비노드
+    대상(Mechanism §6-1 4항). `text`는 본문, `derived`는 frontmatter의 `derived-from` 값이다."""
+    from . import evidence
     from .rechecks import EVIDENCE, evidence_span
     span = evidence_span(text)
+    errs = []
     if span is None:
         heads = [c for _o, line, c, code, _ in contract.md_lines(text)
                  if not code and c == line.rstrip("\r").expandtabs(4)
                  and re.match(r"^ {0,3}## +" + EVIDENCE + r"[ \t#]*$", c)]
-        return ["`## 근거` 절이 노드 끝에 있지 않다"] if heads else []
-    refs = derived if isinstance(derived, list) else [] if derived in (None, "") else [derived]
-    rounds: dict[str, set] = {}
-    for ref in refs:
-        # 옛 `[[…/_raw/<기록>.md#N]]`과 새 `…/.records/<기록>.txt#N`은 같은 기록이다(시행령 §1 3항)
-        try:
-            path, number = raw.parse_ref(raw.canonical_ref(str(ref)))
-        except Exception:
-            continue
-        if number is None or not graph.is_record_ref(path):
-            continue
-        p = Path(path)
-        m = re.search(r"([0-9a-f]{32})$", p.parent.name if p.name == "record.txt" else p.stem)
-        if m:
-            rounds.setdefault(m.group(1)[:8], set()).add((m.group(1), number))
-    errs = []
-    for line in text[span[0]:].split("\n")[1:]:
-        line = line.rstrip("\r")
-        if not line.strip():
-            continue   # 빈 줄 밖의 모든 줄이 근거 줄이다 — 하위 목록·문단·다른 표지도 형식 위반이다
-        m = _EVIDENCE_ITEM.match(line)
-        if not m:
-            errs.append(f"형식이 다른 근거 줄: {line[:60]}")
-            continue
-        prefix, first = m.group(1), int(m.group(2))
-        last = int(m.group(3) or first)
-        records = {r for r, _n in rounds.get(prefix, ())}
-        if len(records) > 1:
-            errs.append(f"모호한 좌표: {prefix} — derived-from의 기록 {len(records)}개에 걸린다")
-        elif last < first or not all((r, n) in rounds.get(prefix, ())
-                                     for r in records for n in range(first, last + 1)) or not records:
-            errs.append(f"짝 없는 근거 줄: {prefix}#{first}" + (f"–{last}" if last != first else "")
-                        + " — derived-from에 그 기록·라운드가 없다")
+        if heads:
+            errs.append("`## 근거` 절이 노드 끝에 있지 않다")
+    else:
+        records = records or evidence.Records()
+        for line in text[span[0]:].split("\n")[1:]:
+            line = line.rstrip("\r")
+            if not line.strip():
+                continue   # 빈 줄 밖의 모든 줄이 근거 줄이다 — 하위 목록·문단·다른 표지도 형식 위반이다
+            m = evidence.LINE.match(line)
+            if not m:
+                errs.append(f"형식이 다른 근거 줄: {line[:60]}")
+                continue
+            problem = evidence.check(m.group(2), idx, records)
+            if problem:
+                errs.append(problem)
+    left = evidence.leftovers(derived, idx)
+    if left:
+        errs.append(f"{LEFTOVER} {len(left)}개가 남아 있다 — 근거 절로 옮긴다")
     return errs
 
 
 def evidence_section_report(idx: "graph.Index") -> dict:
     """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다."""
+    from . import evidence
+    records = evidence.Records()
     out = {}
     for name, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] == "governance":
@@ -381,7 +374,7 @@ def evidence_section_report(idx: "graph.Index") -> dict:
             n = idx.node(path)
         except Exception:
             continue
-        errs = evidence_errors(n.body, n.meta.get("derived-from"))
+        errs = evidence_errors(n.body, n.meta.get("derived-from"), idx, records)
         if errs:
             out[name] = errs
     return out

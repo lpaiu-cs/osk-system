@@ -526,13 +526,53 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
     되돌린다") — 기록에 남은 `\\## 3`은 원래 대화의 `## 3`이었다."""
     if view not in {"review", "full"}:
         raise ValueError("view must be review or full")
-    path, index = parse_ref(ref)
+    # 근거 줄의 좌표(Mechanism §8 9항·§9 8항) — 줄인 해시·옛 기록 이름, 이어진 라운드 `#N–M`
+    from . import evidence
+    bare = ref.strip()[2:-2].strip() if ref.strip().startswith("[[") and ref.strip().endswith("]]") else ref.strip()
+    m = evidence.ROUND.match(bare)
+    span = None
+    if m and m["last"] and m["last"] != m["first"]:
+        span = int(m["first"]), int(m["last"])
+        if span[1] < span[0]:
+            raise write.WriteError("거꾸로 된 라운드 범위", [f"`{ref}` — 이어진 라운드는 #N–M(N<M)으로 쓴다"])
+        path, index = m["record"], None
+    else:
+        path, index = parse_ref(ref)
     if query is not None and (view != "review" or index is None):
         raise ValueError("query requires view=review and an exact #N round")
-    p = _raw_file(path)
+    records = evidence.Records()
+    p = _raw_file(path) if "/" in path or "\\" in path else records.file(path)
     text = read_exact(p)
     rel = posix_rel(p, ROOT)
     spans = _round_spans(text)
+
+    def one(index: int, budget: int) -> dict:
+        stored = text[spans[index][0]:spans[index][1]]
+        chunk = _recalled(stored)
+        identity = {"ok": True, "path": rel, "index": index,
+                    "round_ref": canonical_ref(f"{rel}#{index}"),
+                    "coordinate": evidence.coordinate(p, index, records), "hash": round_hash(stored)}
+        if view == "review":
+            from . import raw_view
+            return {**identity, **raw_view.project(chunk, budget, query, sides=sides)}
+        cut = len(chunk) > budget
+        return {**identity, "view": "full",
+                "chars": len(chunk), "truncated": cut,
+                "text": chunk[:budget] if cut else chunk}
+
+    if span:
+        # 범위는 기록을 한 번 읽어 있는 라운드만 펴고, 예산을 라운드마다 나눈다 — 라운드마다
+        # 200자를 못 주는 범위는 받지 않는다. 그래서 응답이 max_chars를 넘지 않는다.
+        got = [n for n in sorted(spans) if span[0] <= n <= span[1]]
+        if len(got) != span[1] - span[0] + 1:
+            raise write.WriteError("없는 라운드", [f"`{rel}`에 라운드 {span[0]}–{span[1]}이(가) 다 있지 않다. "
+                                                f"있는 라운드: {sorted(spans) if spans else '없음'}"])
+        if max_chars // len(got) < 200:
+            raise write.WriteError("회상 예산보다 넓은 범위",
+                                   [f"`{ref}` — 라운드 {len(got)}개에 max_chars {max_chars}: 라운드마다 "
+                                    "200자가 든다. 범위를 나누거나 max_chars를 키운다"])
+        return {"ok": True, "path": rel, "range": list(span),
+                "rounds": [one(n, max_chars // len(got)) for n in got]}
     if index is None:
         # 목차의 `chars`는 **회상했을 때 오는 길이**다. 파일 위 원시 span 길이를
         # 내면 escape와 꼬리 개행만큼 어긋나, 예산을 재려고 목차를 본 호출자가
@@ -547,17 +587,7 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
             "없는 라운드",
             [f"`{rel}`에 라운드 {index}이(가) 없다. 있는 라운드: "
              f"{sorted(spans) if spans else '없음'}"])
-    stored = text[spans[index][0]:spans[index][1]]
-    chunk = _recalled(stored)
-    identity = {"ok": True, "path": rel, "index": index,
-                "round_ref": canonical_ref(f"{rel}#{index}"), "hash": round_hash(stored)}
-    if view == "review":
-        from . import raw_view
-        return {**identity, **raw_view.project(chunk, max_chars, query, sides=sides)}
-    cut = len(chunk) > max_chars
-    return {**identity, "view": "full",
-            "chars": len(chunk), "truncated": cut,
-            "text": chunk[:max_chars] if cut else chunk}
+    return one(index, max_chars)
 
 
 def list_records(space: str | None = None) -> dict:
