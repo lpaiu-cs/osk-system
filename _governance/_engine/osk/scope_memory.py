@@ -399,6 +399,9 @@ def replace(session: str, text: str | None = None,
             work = cur
             for i, e in enumerate(edits, 1):
                 n = work.count(e["old_text"])
+                if n == 0 and (spaced := write._space_numeric_tags(e["old_text"])) != e["old_text"]:
+                    # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(아래) — 쓴 글 그대로의 앵커도 맞춘다(#292)
+                    e["old_text"], n = spaced, work.count(spaced)
                 if n != 1:
                     raise write.WriteError(
                         (f"`edits[{i}]` 앵커가 없다 — 쓰지 않았다" if n == 0 else
