@@ -939,11 +939,12 @@ def topology_check(idx: Index) -> list[str]:
                 errs.append(f"Domain의 인용 기록 직접 참조: {stem} → {name}")
                 continue
             if kind[0] == "scope":
-                # 비노드(인용 기록·원자료)에는 소속 제약이 없다(헌법 8조 3항, 2026-10-13 개정)
+                # 비노드(인용 기록·원자료·대장)에는 소속 제약이 없다(헌법 8조 3항, 2026-10-13 개정).
+                # 대장은 Workbench 아래에 있어도 비노드 제도 기록이다(Workbench 계약 2.3)
                 ok = (
                     (tkind[0] == "scope" and tkind[1] == kind[1])
                     or tkind[0] in ("raw", "domain", "person", "workbench-transit",
-                                    "sources", "governance")
+                                    "sources", "governance", "ledger")
                 )
                 if not ok:
                     errs.append(f"scope 간 직접 참조: [{kind[1]}] {stem} → "

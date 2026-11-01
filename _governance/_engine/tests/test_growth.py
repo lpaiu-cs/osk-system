@@ -732,6 +732,35 @@ class GrowthTests(unittest.TestCase):
             assert [r['kind'] for r in core.ledger_read(core.VALIDATORS) if r['rule'] == 'evidence-section'] == ['deactivate']
         """)
 
+    def test_an_anchor_written_before_tag_spacing_still_matches(self):
+        # #292: writes space `#123` off a following letter (Obsidian tag defence), so the text an agent
+        # just wrote is not what is stored. An anchor copied from what the agent wrote still matches.
+        self.check_case("""
+            from osk import contract, scope_memory as sm
+            node('A', body='이슈 #275와 #12-alpha를 고친다.')
+            path = next((core.ROOT / '00_Scope/W1').glob('A.md'))
+            assert '#275 와 #12 -alpha' in contract.parse(path).body, contract.parse(path).body
+            r = write.update_node('A', old_text='#275와 #12-alpha', new_text='#275와 #12-beta')
+            assert r['ok'] and '#275 와 #12 -beta' in contract.parse(path).body, r
+            h = sm.read('p', space='00_Scope/W1')['hash']
+            assert sm.replace('p', text='# W1' + chr(10) + '- 이슈 #275와 연결', expect_hash=h, space='00_Scope/W1')['ok']
+            r = sm.replace('p', edits=[{'old_text': '#275와 연결', 'new_text': '#275와 이음'}], space='00_Scope/W1')
+            assert r['ok'] and '#275 와 이음' in sm.read('p', space='00_Scope/W1')['text'], r
+        """)
+
+    def test_a_scope_node_may_cite_a_ledger_record(self):
+        # Constitution 8(3): a Scope node may reference any non-node. The ledger sits under Workbench but
+        # is an institutional record (Workbench contract 2.3), not work state, so it is no cross-scope reference.
+        self.check_case("""
+            core.ledger_append(core.VALIDATORS, {'kind': 'activate', 'rule': 'evidence-section'})
+            ledger = core.VALIDATORS.relative_to(core.ROOT).as_posix()
+            node('A', body=chr(10).join(['A claim.', '', '## 근거', '',
+                                         '- 2026-11-01 · `' + ledger + '` · 지지 — 활성화 기록']))
+            rep = validate.run()
+            assert not any('scope 간' in f for d in rep['fail'] for v in d.values() for f in v), rep['fail']
+            assert 'A' not in rep.get('evidence_section', {}), rep.get('evidence_section')
+        """)
+
     def test_evidence_migration_moves_non_node_derived_from_into_support_lines(self):
         # Constitution 8(5·6)·14(8·9), Mechanism §5: each non-node derived-from entry becomes a `지지` line at
         # the node end, dated by the commit that brought the round (or put the entry in the frontmatter — not
