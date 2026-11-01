@@ -400,7 +400,7 @@ Every `*.jsonl` file under `00_Scope/Workbench/_ledger/` is a ledger
 | `case/candidates.jsonl` | `candidate`, `dismiss` | `basis` | MCP `record_candidate` (`candidate` only) | §4 1–2 |
 | `evictions.jsonl` | `evict`, `settle` | `of` names the evict | scope-memory writes (`evict`); node writes, `osk tidy settle`, growth runner (`settle`) | §9-2 12 |
 | `update.jsonl` | `begin`, `apply`, `remove`, `skip`, `done`, `rollback` | `path` | updater | §1-2 7 |
-| `validators.jsonl` | `activate`, `deactivate` | `rule` | `osk validators` (user) | §6-1 |
+| `validators.jsonl` | `activate`, `deactivate` | `rule` | hook worker (`activate` of a rule without records); `osk validators` (user) | §6-1 |
 | `pins.jsonl` | `pin`, `unpin` | `target` | not appended by the engine | §6 |
 | `growth.jsonl` | `plan`, `review`, `run`, `eviction_review`, `recheck_review` | `key` (reviews) | growth runner | none |
 | `rechecks.jsonl` | `complete` | (`node`, `target`) | node writes; session start | §4-1 |
@@ -581,7 +581,10 @@ pressure of its size limit (Mechanism §9-2 12):
 - **`validators.jsonl`** (Mechanism §6-1): `kind` (`activate` or `deactivate`),
   `rule`, `reason`. The rule's single causal maximum decides; a rule without
   records, or with several maxima, is inactive. The rules are
-  `cluster-overview` and `evidence-section`.
+  `cluster-overview` and `evidence-section`. The hooks' background worker
+  checks a rule without records once a day and activates it when it has no
+  violations (reason `위반 0 — 자동 활성화`); after that only the user changes
+  it.
 - **`pins.jsonl`** (Mechanism §6): `kind` (`pin` or `unpin`), `target` (a
   vault-relative cluster path or a node id), opt. `reason`. Before moving nodes
   or clusters, the engine treats a target that has records as pinned unless its

@@ -333,14 +333,14 @@ def _roots_cmd(a) -> None:
 
 def _evidence_cmd(a) -> None:
     """`osk evidence migrate` — 비노드 `derived-from`을 근거 절의 `지지` 줄로 옮긴다(v5.4 이행,
-    Mechanism §5). 인자가 없으면 계획만 내고 노드와 대장은 건드리지 않는다. `--apply`는 노드 여럿을
-    고치므로 대화형 단말의 확인을 거친다."""
+    Mechanism §5). 인자가 없으면 계획만 내고 노드와 대장은 건드리지 않는다. `--apply`는 확인 없이
+    옮긴다 — 본문을 바꾸지 않고 노드마다 전후를 이행 기록에 남기는 기계적 변환이라 사용자 전속
+    행위가 아니며, 에이전트가 갱신 뒤 실행한다."""
     from . import evidence_migration
     try:
         if not a.apply:
             _emit(evidence_migration.preview())
             return
-        _confirm("비노드 derived-from을 근거 절의 지지 줄로 옮깁니까? 노드를 고치고 이행 기록을 남깁니다 [y/N] ")
         _emit(evidence_migration.apply())
     except (ValueError, OSError, RuntimeError) as e:
         _emit({"ok": False, "violations": [str(e)]})
@@ -522,7 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--confirm", default=None, help="확인받은 판의 해시 (없으면 계획만 낸다)")
 
     p = sub.add_parser("validators",
-                       help="[사용자 전속] 검증기 활성화 현황·전환 (Mechanism §6-1)")
+                       help="검증기 활성화 현황, 해제·재활성화는 [사용자 전속] (Mechanism §6-1)")
     p.add_argument("--activate", metavar="RULE")
     p.add_argument("--deactivate", metavar="RULE")
     p.add_argument("--reason", default="")
@@ -544,7 +544,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("evidence", help="근거 절 (헌법 제8조 6항)")
     ev = p.add_subparsers(dest="evidence_cmd", required=True)
     q = ev.add_parser("migrate", help="비노드 derived-from을 근거 절의 지지 줄로 옮기는 이행 계획 (v5.4)")
-    q.add_argument("--apply", action="store_true", help="계획대로 옮긴다 — 단말 확인을 거친다")
+    q.add_argument("--apply", action="store_true", help="계획대로 옮기고 이행 기록을 남긴다")
     p = sub.add_parser("protect", help="[사용자 전속] 보호영역 지정")
     p.add_argument("region"); p.add_argument("--reason", default="")
     p = sub.add_parser("unprotect", help="[사용자 전속] 보호영역 해제")
@@ -589,8 +589,9 @@ def main(argv=None):
         _emit({"baseline_pending": pending, "count": len(items), "items": items,
                "close": rechecks.CLOSE})
     elif a.cmd == "validators":
-        # 활성화·해제는 사용자 전속이다(시행령 §11 3항) — 표면(MCP)에는 없다.
-        known = ["cluster-overview", "evidence-section"]
+        # 기록이 없는 규칙은 위반이 0이면 엔진이 켠다. 그 뒤의 해제·재활성화는 사용자
+        # 전속이다(시행령 §11 3항) — 표면(MCP)에는 없다.
+        known = list(validate.RULES)
         rule = a.activate or a.deactivate
         if rule:
             if a.activate and a.deactivate:
@@ -604,8 +605,8 @@ def main(argv=None):
                 _confirm(f"{rule}을(를) 활성화하면 위반이 검증기 verdict에 "
                          f"산입됩니다(시행령 §11 2항). 활성화합니까? [y/N] ")
             else:
-                _confirm(f"{rule}을(를) 해제하면 같은 검사가 보고 전용으로 "
-                         f"돌아갑니다. 해제합니까? [y/N] ")
+                _confirm(f"{rule}을(를) 해제하면 같은 검사가 보고 전용으로 돌아가고, "
+                         f"다시 켤 때까지 자동으로 켜지지 않습니다. 해제합니까? [y/N] ")
             from .core import VALIDATORS, ledger_append
             rec = ledger_append(VALIDATORS, {
                 "kind": kind, "rule": rule, "reason": a.reason})

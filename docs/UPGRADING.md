@@ -27,6 +27,18 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
+## From v5.4 to v5.5
+
+- **Validator rules turn themselves on once they have no violations** (Bylaws
+  §11(3) as amended). Once a day the engine checks each rule that has no record
+  yet (`cluster-overview`, `evidence-section`) and activates it when it finds no
+  violations. A
+  rule you already turned on or off stays as it is; turn one back on with
+  `osk validators --activate <rule>`. Nothing to do.
+- **`osk evidence migrate --apply` no longer asks for confirmation.** If the
+  v5.4 migration is still pending, the agent plans and applies it right after
+  the update.
+
 ## From v5.3 to v5.4
 
 - **Sync daemon users: run the setup tool for sync once after the update.**
@@ -47,7 +59,7 @@ device.
   left over.
   - `osk evidence migrate` only plans. It writes what happens to each
     node to `.osk/evidence-section-plan.md`.
-  - `--apply` moves them after a terminal confirmation: each entry becomes a
+  - `--apply` moves them (v5.4.0 asks for a terminal confirmation first): each entry becomes a
     `지지` line at the node end and leaves the frontmatter. The date is that of
     the commit that brought the round (for a file or URL, the commit that first
     added the entry), so the vault needs its Git history.
@@ -57,7 +69,9 @@ device.
   - A moved node gets a new `updated`, so search ranks it as recent for about a
     month. The body before the evidence section is unchanged, so no recheck
     candidate appears.
-  - Activating the validator after the migration is your decision.
+  - From v5.5 the engine turns the validator on once it has no violations. On
+    v5.4.0 you turn it on with
+    `osk validators --activate evidence-section`.
 
 ## From v5.2 to v5.3
 
