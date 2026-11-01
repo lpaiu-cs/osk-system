@@ -72,6 +72,13 @@ device.
     background task's completion notice, as your input, and an organization
     review this conversation already got whole comes back as one line until it
     changes (#275). Restart the harness after the update.
+- v5.4.2 fixes two defects. Nothing to do.
+  - Anchor edits (`old_text` of `update_node`, the scope memory's `edits`) also
+    match text whose `#number` the tag defence spaced off when it was stored, so
+    an anchor copied from what you just wrote is no longer refused (#292).
+  - A Scope node may cite a ledger (`_ledger/`) record as evidence.
+    Constitution Art. 8(3) puts no scope limit on non-nodes; only the ledger was
+    missing from the allow list and was refused as a cross-scope reference.
 
 ## From v5.2 to v5.3
 

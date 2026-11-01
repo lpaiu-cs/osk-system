@@ -470,6 +470,12 @@ rep = json.loads(out)
 assert code == 0 and rep['state'] == 'missing' and not (root / '.venv').exists(), (out, err)
 # A venv that can import the server's packages is used as it is.
 venv.EnvBuilder(system_site_packages=True, with_pip=False).create(root / '.venv')
+if sys.prefix != sys.base_prefix:
+    # Run from a venv, the new venv's "system" packages are the base install's, not this venv's
+    # (where the server's packages are) — point it at ours, as CI's plain interpreter does.
+    import site
+    lib = next((root / '.venv').glob('Lib/site-packages' if os.name == 'nt' else 'lib/python*/site-packages'))
+    (lib / 'osk-test-parent.pth').write_text(chr(10).join(site.getsitepackages()) + chr(10), encoding='utf-8')
 code, out, err = run_boot()
 rep = json.loads(out)
 assert code == 0 and rep['python'] == str(vpy) and rep['root'] == str(root), (out, err)

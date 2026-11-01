@@ -661,10 +661,11 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
     if kind[0] == "domain" and tkind[0] == "raw":
         return [f"Domain의 인용 기록 직접 참조: {stem} → {name}"]
     if kind[0] == "scope":
-        # 비노드(인용 기록·원자료)에는 소속 제약이 없다(헌법 8조 3항, 2026-10-13 개정)
+        # 비노드(인용 기록·원자료·대장)에는 소속 제약이 없다(헌법 8조 3항, 2026-10-13 개정).
+        # 대장은 Workbench 아래에 있어도 작업 상태가 아니라 비노드 제도 기록이다(Workbench 계약 2.3)
         ok = ((tkind[0] == "scope" and tkind[1] == kind[1])
               or tkind[0] in ("raw", "domain", "person", "workbench-transit",
-                              "sources", "governance"))
+                              "sources", "governance", "ledger"))
         if not ok:
             # (작업 상태 갈래는 소속과 무관하므로 위로 올라갔다.)
             # 무엇을 하라는 말이 없으면 받는 쪽이 scope를 바꿔 보다 두 번
@@ -1538,6 +1539,11 @@ def _update_node_locked(name: str, body: str | None = None,
         # 자리를 고치는 길이다. 하네스 `Edit` 실측에서 유일성 위반은
         # 5,454건 중 5건(0.09%)이라 이 계약은 실무에서 거의 공짜다.
         hits = n.body.count(old_text)
+        if hits == 0 and (spaced := _space_numeric_tags(old_text)) != old_text:
+            # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(`_norm_body`). 호출자가 방금 쓴 글 그대로의
+            # 앵커도 같은 변환으로 맞춘다(#292). 원문부터 보는 것은 조각이 코드 구획 한가운데서
+            # 시작하면 변환의 구획 판정이 틀릴 수 있어서다.
+            old_text, hits = spaced, n.body.count(spaced)
         if hits != 1:
             raise WriteError(
                 ("앵커가 본문에 없다 — 쓰지 않았다" if hits == 0 else
