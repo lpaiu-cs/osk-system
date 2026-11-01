@@ -244,6 +244,23 @@ def note_memory(harness: str, conversation_id: str, digest: str, scope: str | No
         _save(p, s)
 
 
+def shown_before(harness: str, conversation_id: str, slot: str, mark: str) -> bool:
+    """Was this conversation last given the hook block `slot` at exactly `mark`? Then a hook
+    carries one line instead of the same whole block again (#275)."""
+    with _locked(harness, conversation_id) as p:
+        return (_load(p, harness, conversation_id).get("shown") or {}).get(slot) == mark
+
+
+def note_shown(harness: str, conversation_id: str, slot: str, mark: str) -> None:
+    """The hook's output really carried the whole block `slot` at `mark`."""
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        shown = dict(s.get("shown") or {})
+        if shown.get(slot) != mark:
+            s["shown"] = {**shown, slot: mark}
+            _save(p, s)
+
+
 def turn_key(harness: str, round_id: str) -> str:
     """The original turn's identity for citations and review refs. A Claude round is
     `<first user row>:<final message>` and an Antigravity round `<user input step>:<last

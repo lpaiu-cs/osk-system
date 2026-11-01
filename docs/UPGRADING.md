@@ -68,6 +68,10 @@ device.
   - `osk evidence migrate --apply` no longer asks for confirmation. If the
     migration is still pending, the agent plans and applies it right after the
     update.
+  - The input hook no longer counts a turn the harness inserted, such as a
+    background task's completion notice, as your input, and an organization
+    review this conversation already got whole comes back as one line until it
+    changes (#275). Restart the harness after the update.
 
 ## From v5.2 to v5.3
 

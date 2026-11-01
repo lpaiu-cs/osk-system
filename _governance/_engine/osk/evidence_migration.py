@@ -30,12 +30,7 @@ RULE = "비노드 derived-from을 근거 절의 지지 줄로 (v5.4 — 헌법 �
 PREVIEW = ROOT / ".osk" / "evidence-section-plan.md"
 WIDTH = 50                                  # 보인 것 — 50자 안팎
 NOT_AT_END = "`## 근거` 절이 노드 끝에 있지 않다"
-# 하네스가 사용자 차례에 끼워 넣는 알림 — 사용자의 글이 아니다
-_SYSTEM = re.compile(r"<(system-reminder|task-notification|local-command-stdout|local-command-stderr|"
-                     r"local-command-caveat|in-app-browser-context|ci-monitor-event|recent-project-folders|"
-                     r"environment_context|user_instructions|heartbeat|turn_aborted)\b[^>]*>.*?</\1>|<!--.*?-->", re.S)
-# Codex 목표 이어가기 알림 — 안의 목표(`objective`)만 사용자가 준 글이다
-_GOAL = re.compile(r"<codex_internal_context\b[^>]*>.*?</codex_internal_context>", re.S)
+from .harness.base import GOAL as _GOAL, INJECTED as _SYSTEM   # 하네스가 끼워 넣은 알림
 _OBJECTIVE = re.compile(r"<objective>(.*?)</objective>", re.S)
 _TAG = re.compile(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?>")
 
