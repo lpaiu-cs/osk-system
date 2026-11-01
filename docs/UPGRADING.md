@@ -27,18 +27,6 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
-## From v5.4 to v5.5
-
-- **Validator rules turn themselves on once they have no violations** (Bylaws
-  §11(3) as amended). Once a day the engine checks each rule that has no record
-  yet (`cluster-overview`, `evidence-section`) and activates it when it finds no
-  violations. A
-  rule you already turned on or off stays as it is; turn one back on with
-  `osk validators --activate <rule>`. Nothing to do.
-- **`osk evidence migrate --apply` no longer asks for confirmation.** If the
-  v5.4 migration is still pending, the agent plans and applies it right after
-  the update.
-
 ## From v5.3 to v5.4
 
 - **Sync daemon users: run the setup tool for sync once after the update.**
@@ -69,9 +57,17 @@ device.
   - A moved node gets a new `updated`, so search ranks it as recent for about a
     month. The body before the evidence section is unchanged, so no recheck
     candidate appears.
-  - From v5.5 the engine turns the validator on once it has no violations. On
-    v5.4.0 you turn it on with
+  - From v5.4.1 the engine turns the validator on once it has no violations.
+    On v5.4.0 you turn it on with
     `osk validators --activate evidence-section`.
+- v5.4.1 takes steps off your hands (Bylaws §11(3) as amended). Nothing to do.
+  - Once a day the engine checks each validator rule that has no record yet
+    (`cluster-overview`, `evidence-section`) and activates it when it finds no
+    violations. A rule you already turned on or off stays as it is; turn one
+    back on with `osk validators --activate <rule>`.
+  - `osk evidence migrate --apply` no longer asks for confirmation. If the
+    migration is still pending, the agent plans and applies it right after the
+    update.
 
 ## From v5.2 to v5.3
 
