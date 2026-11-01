@@ -191,7 +191,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v5.4.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.4.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -375,6 +375,8 @@ limit adjustment slipping a day and conversation reviews picking stalled jobs ag
 nodes only, non-node evidence goes to each node's evidence section (with a command that moves
 older entries), and files outside the vault come only from registered external roots. It also
 has the sync daemon report when it stops sending and puts a CLI launcher at the vault root.
+v5.4.1 turns a validator rule on by itself once it has no violations, applies the evidence
+migration without a terminal confirmation, and stops counting harness notices as your input.
 [v5.5.0](docs/v5.5-milestones.md) takes the designs deferred from v5.1, the remaining capture
 fixes, and the evaluations that need a longer operating window. [v6.0.0](docs/v6.0-milestones.md)
 extends the memory model on that base.
