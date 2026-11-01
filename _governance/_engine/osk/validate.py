@@ -416,12 +416,17 @@ def auto_activate(idx=None, *, now: float | None = None) -> list[str]:
     idx = idx or graph.Index()
     clean = {"cluster-overview": lambda: not _cluster_overview_errors(cluster_overview_report(idx)),
              "evidence-section": lambda: not evidence_section_report(idx, roots.Roots(), evidence.Records())}
-    on = [r for r in todo if clean[r]()]
-    with core.mutation_lock():
-        recorded = {x.get("rule") for x in ledger_read(VALIDATORS)}
-        on = [r for r in on if r not in recorded]
-        for r in on:
-            ledger_append(VALIDATORS, {"kind": "activate", "rule": r, "reason": AUTO_REASON})
+    on = []
+    for r in todo:
+        if not clean[r]():
+            continue
+        try:
+            # 재는 사이 생긴 기록 — 사용자의 해제도 — 은 대장 잠금 안에서 보고 물러선다
+            ledger_append(VALIDATORS, {"kind": "activate", "rule": r, "reason": AUTO_REASON},
+                          expect=lambda recs, r=r: any(x.get("rule") == r for x in recs) and "기록이 생겼다")
+            on.append(r)
+        except ValueError:
+            pass
     return on
 
 

@@ -715,6 +715,23 @@ class GrowthTests(unittest.TestCase):
             assert auto.called
         """)
 
+    def test_a_user_deactivation_that_lands_during_the_check_is_kept(self):
+        # Mechanism §6-1(2): the engine never overturns a user's record — the CLI does not take the
+        # mutation lock, so the ledger lock (`expect`) is where an activation backs off.
+        self.check_case("""
+            from unittest import mock
+            real = core.ledger_append
+            def user_first(path, record, expect=None):
+                # the user's `--deactivate` lands right before the activation takes the ledger lock
+                if record.get('rule') == 'evidence-section':
+                    real(core.VALIDATORS, {'kind': 'deactivate', 'rule': 'evidence-section'})
+                return real(path, record, expect)
+            with mock.patch.object(validate, 'ledger_append', user_first):
+                assert 'evidence-section' not in validate.auto_activate(now=24 * 3600)
+            assert not validate.validator_active('evidence-section')
+            assert [r['kind'] for r in core.ledger_read(core.VALIDATORS) if r['rule'] == 'evidence-section'] == ['deactivate']
+        """)
+
     def test_evidence_migration_moves_non_node_derived_from_into_support_lines(self):
         # Constitution 8(5·6)·14(8·9), Mechanism §5: each non-node derived-from entry becomes a `지지` line at
         # the node end, dated by the commit that brought the round (or put the entry in the frontmatter — not
