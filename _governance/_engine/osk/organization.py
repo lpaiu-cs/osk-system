@@ -641,13 +641,25 @@ def apply_binding_decisions(decisions: list | None, state: dict | None = None) -
     return applied
 
 
-def hook_prompt(jobs: list[dict]) -> str:
-    """조직 검토의 훅 블록. 빈 목록이면 빈 문자열이다."""
+def hook_prompt(jobs: list[dict], shown_tree: str = "") -> str:
+    """조직 검토의 훅 블록. 빈 목록이면 빈 문자열이다. `shown_tree`는 같은 주입의 대화 검토
+    블록이 이미 실은 허브 트리다 — 같은 트리는 한 번만 싣는다(#275)."""
     if not jobs:
         return ""
     head = " · ".join(f"scope {j['scope']} 남은 구간 {j['coverage']['remaining']}/{j['coverage']['total']}"
                       for j in jobs)
     flagged = any(j.get("references") or j.get("issues") for j in jobs)
+    readouts = [hook_readout(j) for j in jobs]
+    for r in readouts:
+        if shown_tree and r.get("hub_tree") == shown_tree:
+            r["hub_tree"] = "위 대화 검토의 허브 트리와 같다"
     return (f"[osk 참조·조직 검토 — {head}]\n" + HOOK_GUIDANCE + (_FLAGGED if flagged else "") + "\n"
             + "실행 명령 접두부: " + core.cli_command("organization") + "\n"
-            + json.dumps([hook_readout(j) for j in jobs], ensure_ascii=False))
+            + json.dumps(readouts, ensure_ascii=False))
+
+
+def hook_mark(jobs: list[dict]) -> str:
+    """훅 블록이 같은지 가리는 지문 — 싣는 내용(`hook_readout`) 그대로를 잰다(#275). 제출로 구간이
+    바뀌거나, scope 밖 대상이 바뀌어 참조 오류가 새로 생기면 다시 전문을 싣는다."""
+    return core.sha256_bytes(json.dumps([hook_readout(j) for j in jobs], ensure_ascii=False,
+                                        sort_keys=True).encode("utf-8"))

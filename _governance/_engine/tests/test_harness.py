@@ -275,6 +275,31 @@ start = runs.read()['runs']['claude/start']
 assert start['session'] == 'proj' and start['python'] == py and time.time() - start['at'] < 120, start
 out = hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit', 'prompt': 'q'})
 assert out is None or out['hookSpecificOutput']['hookEventName'] == 'UserPromptSubmit', out
+# A notice the harness put in the user's turn is not the user's input: no count, no answer (#275).
+counted = integration.status('claude', 'c1')['prompt_count']
+notice = '<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n</task-notification>'
+assert hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit', 'prompt': notice}) is None
+assert integration.status('claude', 'c1')['prompt_count'] == counted
+hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit',
+                                 'prompt': '<system-reminder>s</system-reminder>' + chr(10) + 'q2'})
+assert integration.status('claude', 'c1')['prompt_count'] == counted + 1, 'words beside a reminder are the user’s'
+# An organization job this conversation already got whole comes back as one line; the hub tree the
+# conversation block carries is not repeated (#275).
+sys.path.insert(0, str(tested_hooks))
+import claude_session_start as start
+job = {'scope': 'W1', 'key': 'k1', 'snapshot': 's1', 'coverage': {'remaining': 3, 'total': 5},
+       'hub_tree': '- = Scope/W1 · 직속 노드 1',
+       'review_units': [{'unit': 'u1', 'id': 'i1', 'name': 'n', 'view': '0:9', 'chars': 9, 'expect_view_hash': 'v'}]}
+whole = start._organization([job], 60, ('claude', 'c1'), shown_tree=job['hub_tree'])
+assert '[osk 참조·조직 검토 —' in whole.text and job['hub_tree'] not in whole.text, whole.text
+whole.on_shown()
+again = start._organization([job], 60, ('claude', 'c1'))
+assert '변화 없음' in again.text and 'review_units' not in again.text, again.text
+assert '변화 없음' not in start._organization([{**job, 'snapshot': 's2'}], 60, ('claude', 'c1')).text
+# the scope's snapshot stays, but a target outside it went away: the new reference error comes whole
+dangling = [{'id': 'i1', 'relation': 'Link', 'ref': 'gone', 'resolution': 'dangling'}]
+assert '변화 없음' not in start._organization([{**job, 'references': dangling}], 60, ('claude', 'c1')).text
+assert '변화 없음' not in start._organization([job], 60, ('claude', 'c1'), startup=True).text
 out = hook('capture_stop.py', {**payload, 'hook_event_name': 'Stop'})
 assert out is None or set(out) == {'systemMessage'}, out
 rollout = rows(root.parent / 'rollout-x1.jsonl', {'type': 'session_meta', 'payload': {'id': 'x1'}})

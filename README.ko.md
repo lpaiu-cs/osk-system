@@ -170,7 +170,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 시작한다(새 태그는 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다):
 
 ```bash
-git clone --branch v5.4.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.4.1 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -323,7 +323,8 @@ v5.3.1은 v5.3.0 출시의 사본 시험에서 찾은 포착 결함과 시험 �
 진척 없는 작업을 거듭 고르던 것을 고친다.
 [v5.4.0](docs/v5.4-milestones.md)은 근거를 노드와 비노드로 나눈다 — `derived-from`은 노드만 받고,
 비노드 근거는 노드 끝 근거 절에 적으며(옛 항목을 옮기는 명령 포함), vault 밖 파일은 등록한 외부 루트에서만
-받는다. 동기화 데몬이 보내기를 멈추면 알리고, vault 루트에 CLI 런처를 둔다.
+받는다. 동기화 데몬이 보내기를 멈추면 알리고, vault 루트에 CLI 런처를 둔다. v5.4.1은 위반이 0이 된 검증기
+규칙을 스스로 켜고, 근거 절 이행을 단말 확인 없이 옮기며, 하네스의 알림을 사용자 입력으로 세지 않는다.
 [v5.5.0](docs/v5.5-milestones.md)은 v5.1에서 미룬 설계, 남은 포착 정합, 더 긴 운영 기간이 필요한 평가를
 맡는다(견고함). [v6.0.0](docs/v6.0-milestones.md)은 기억 모델을 넓힌다(확장).
 

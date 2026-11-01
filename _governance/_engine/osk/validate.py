@@ -10,12 +10,12 @@
 """
 from __future__ import annotations
 from .core import DOMAIN, PERSON, SCOPE
-import json, re
+import hashlib, json, re
 from pathlib import Path
 
 from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER, EVICTIONS,
                    VALIDATORS, ROOTS, CASE_RE, RID_RE, ID_RE, ledger_read,
-                   ledger_damage, ledger_anchor_index, resolve_one)
+                   ledger_append, ledger_damage, ledger_anchor_index, resolve_one)
 from . import contract, graph, signatures, approvals, authority, secrets, evictions, raw
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
@@ -284,17 +284,7 @@ def run() -> dict:
         rep["cluster_overview"] = co
         co_active = validator_active("cluster-overview")
         rep["cluster_overview_active"] = co_active
-        co_errs = []
-        for c, st in sorted(co.items()):
-            if not st["overview"]:
-                co_errs.append(f"{c}: 동명 허브 노드 없음")
-            else:
-                if st.get("hubless"):
-                    co_errs.append(
-                        f"{c}: 허브 없는 하위 군집 {len(st['hubless'])}개 — "
-                        f"{', '.join(st['hubless'][:3])}")
-                if st["unreachable"]:
-                    co_errs.append(f"{c}: 허브 미도달 {st['unreachable']}개")
+        co_errs = _cluster_overview_errors(co)
         if co_active:
             ok("군집 허브 노드", co_errs)
         elif co_errs:
@@ -399,6 +389,59 @@ def validator_active(rule: str) -> bool:
         return False
     r = resolve_one(recs, rule, "rule")
     return bool(r and r.get("kind") == "activate")
+
+
+RULES = ("cluster-overview", "evidence-section")
+AUTO_REASON = "위반 0 — 자동 활성화"
+AUTO_EVERY = 24 * 3600      # 근거 절 검사는 노드 2천여 개에 8초 — 하루 한 번만 잰다
+
+
+def auto_activate(idx=None, *, now: float | None = None) -> list[str]:
+    """기록이 없는 규칙의 위반이 0이면 활성화를 적는다(시행령 §11 3항, Mechanism §6-1 2항).
+    기록이 있는 규칙 — 사용자가 해제한 것도 — 은 건드리지 않는다. 잰 시각은 기기 로컬에 두고
+    하루 한 번만 잰다. 켠 규칙을 낸다."""
+    import time
+    from . import core, evidence, roots
+    todo = [r for r in RULES if not any(x.get("rule") == r for x in ledger_read(VALIDATORS))]
+    # worktree들은 git 디렉터리를 나눠 쓰지만 노드와 대장은 저마다다 — 잰 시각도 작업 트리마다 둔다
+    key = hashlib.sha256(str(ROOT).encode("utf-8")).hexdigest()[:16]
+    mark = core.local_lock_path(f"osk-validators-auto-{key}.json")
+    now = time.time() if now is None else now
+    try:
+        if not todo or now - json.loads(mark.read_text(encoding="utf-8"))["at"] < AUTO_EVERY:
+            return []
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    mark.write_text(json.dumps({"at": now}), encoding="utf-8")   # 먼저 적어 겹친 작업이 다시 재지 않게 한다
+    idx = idx or graph.Index()
+    clean = {"cluster-overview": lambda: not _cluster_overview_errors(cluster_overview_report(idx)),
+             "evidence-section": lambda: not evidence_section_report(idx, roots.Roots(), evidence.Records())}
+    on = []
+    for r in todo:
+        if not clean[r]():
+            continue
+        try:
+            # 재는 사이 생긴 기록 — 사용자의 해제도 — 은 대장 잠금 안에서 보고 물러선다
+            ledger_append(VALIDATORS, {"kind": "activate", "rule": r, "reason": AUTO_REASON},
+                          expect=lambda recs, r=r: any(x.get("rule") == r for x in recs) and "기록이 생겼다")
+            on.append(r)
+        except ValueError:
+            pass
+    return on
+
+
+def _cluster_overview_errors(co: dict) -> list[str]:
+    """`cluster_overview_report`의 군집별 상태를 위반 문구로 — verdict와 자동 활성화가 같이 쓴다."""
+    errs = []
+    for c, st in sorted(co.items()):
+        if not st["overview"]:
+            errs.append(f"{c}: 동명 허브 노드 없음")
+            continue
+        if st.get("hubless"):
+            errs.append(f"{c}: 허브 없는 하위 군집 {len(st['hubless'])}개 — {', '.join(st['hubless'][:3])}")
+        if st["unreachable"]:
+            errs.append(f"{c}: 허브 미도달 {st['unreachable']}개")
+    return errs
 
 
 def cluster_overview_report(idx: "graph.Index") -> dict:

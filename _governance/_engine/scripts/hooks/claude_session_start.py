@@ -396,15 +396,23 @@ def _conversation(st: dict, keep: int):
                  pull=f"`{command}`의 text")
 
 
-def _organization(jobs: list, keep: int):
-    from osk import organization
+def _organization(jobs: list, keep: int, ident=None, *, startup: bool = False, shown_tree: str = ""):
+    """조직 검토 블록. 이 대화가 같은 작업(key·snapshot·구간)의 전문을 이미 받았으면 한 줄로
+    싣는다 — 같은 글이 9·15턴마다 쌓이지 않게(#275). 시작은 새 문맥이라 다시 전문을 싣는다."""
+    from osk import core, integration, organization
     from osk.hook_text import Block
     if not jobs:
         return Block("organization", "")
     j = jobs[0]
-    return Block("organization", organization.hook_prompt(jobs), keep,
-                 label=f"조직 검토 scope {j['scope']} 남은 구간 {j['coverage']['remaining']}/{j['coverage']['total']}",
-                 pull="overview:organization")
+    label = f"조직 검토 scope {j['scope']} 남은 구간 {j['coverage']['remaining']}/{j['coverage']['total']}"
+    mark = organization.hook_mark(jobs)
+    if ident and not startup and integration.shown_before(*ident, "organization", mark):
+        command = core.cli_command("organization", "plan", "--scope", j["scope"])
+        return Block("organization", f"[osk 참조·조직 검토 대기 — 변화 없음, {label}. 이 대화에 실은 전문과 같다 — "
+                                     f"`{command}`로 다시 읽는다]", keep, label=label, pull="overview:organization")
+    return Block("organization", organization.hook_prompt(jobs, shown_tree), keep, label=label,
+                 pull="overview:organization",
+                 on_shown=(lambda: integration.note_shown(*ident, "organization", mark)) if ident else None)
 
 
 def _organization_jobs(key: str) -> list:
@@ -428,10 +436,10 @@ def _bindings_block(key: str):
         return Block("bindings", f"[osk 결속 검토 판독 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다.]")
 
 
-def _start_organization(key: str):
+def _start_organization(key: str, ident=None):
     from osk.hook_text import Block
     try:
-        return _organization(_organization_jobs(key), 60)
+        return _organization(_organization_jobs(key), 60, ident, startup=True)
     except Exception as exc:    # 조직 검토를 못 골라도 시작의 경고·나머지는 싣는다
         return Block("organization", f"[osk 참조·조직 검토 판독 진단 — {type(exc).__name__}: {exc}. "
                                      "본 작업은 계속한다.]")
@@ -537,9 +545,10 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
                                    "UserPromptSubmit 기준 9·15턴 통합을 수행한다. 검토 대기와 계수는 유지한다.]")
         if startup:
             if not captured["pending"]:
-                return [warning, _start_organization(key)], ident
+                return [warning, _start_organization(key, ident)], ident
             st = integration.prompt(harness, sid, organization_in_text=False)
-            return [warning, _conversation(st, 70), _organization(st["organization_jobs"], 60)], ident
+            return [warning, _conversation(st, 70), _organization(st["organization_jobs"], 60, ident, startup=True,
+                                                                  shown_tree=st.get("hub_tree", ""))], ident
         overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= integration.SOFT
         if not cadence["due"] and not overdue_switch:
             # A stuck capture has no raw to review: one line once, not the whole review
@@ -554,7 +563,8 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
                         overdue_switch and cadence['unreviewed_prompts'] >= integration.HARD else
                         "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
         st = integration.prompt(harness, sid, organization_in_text=False)
-        blocks = [warning, lead, _conversation(st, 95), _organization(st["organization_jobs"], 60)]
+        blocks = [warning, lead, _conversation(st, 95),
+                  _organization(st["organization_jobs"], 60, ident, shown_tree=st.get("hub_tree", ""))]
     except integration.SubagentEvent:
         return None  # Not this subagent's conversation: no capture, route or root review text.
     except Exception as exc:
