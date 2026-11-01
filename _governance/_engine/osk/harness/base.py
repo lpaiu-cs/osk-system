@@ -20,6 +20,18 @@ SCRIPTS = {"start": "claude_session_start.py", "input": "claude_prompt_submit.py
 # 설치가 쓰는 osk 훅의 제한(초). 이보다 짧게 등록된 훅은 부하에서 끝나기 전에 끊긴다 — 손으로
 # 등록한 기기의 입력 훅이 10초였다(#192). `doctor`가 알린다.
 HOOK_TIMEOUT = 30
+# 하네스가 사용자 차례에 끼워 넣는 알림 — 사용자의 글이 아니다
+INJECTED = re.compile(r"<(system-reminder|task-notification|local-command-stdout|local-command-stderr|"
+                      r"local-command-caveat|in-app-browser-context|ci-monitor-event|recent-project-folders|"
+                      r"environment_context|user_instructions|heartbeat|turn_aborted)\b[^>]*>.*?</\1>|<!--.*?-->", re.S)
+# Codex 목표 이어가기 — 하네스가 다시 보내는 차례다. 안의 목표(`objective`)만 사용자가 처음 준 글이다
+GOAL = re.compile(r"<codex_internal_context\b[^>]*>.*?</codex_internal_context>", re.S)
+
+
+def injected_only(prompt) -> bool:
+    """입력이 하네스가 끼워 넣은 알림뿐인가(백그라운드 작업 완료·목표 이어가기 등). 빈 입력은
+    가릴 근거가 없으므로 아니다."""
+    return isinstance(prompt, str) and bool(prompt.strip()) and not GOAL.sub("", INJECTED.sub("", prompt)).strip()
 
 
 def fold(text: str) -> str:
@@ -229,8 +241,10 @@ class Adapter:
         return env
 
     def fires(self, event: str, env: dict) -> bool:
-        """이 호출이 osk의 그 사건인가 — 호스트가 같은 사건을 더 자주 부르면 거짓으로 거른다."""
-        return True
+        """이 호출이 osk의 그 사건인가 — 호스트가 같은 사건을 더 자주 부르면 거짓으로 거른다.
+        하네스가 끼워 넣은 알림뿐인 입력은 사용자의 입력이 아니다 — 9·15턴 계수가 사람의 입력을
+        세도록 세지도 싣지도 않는다(#275)."""
+        return event != "input" or not injected_only(env.get("prompt"))
 
     # ── 훅 출력 ───────────────────────────────────────────────────────────
     def hook_output(self, event: str, text: str, system_message: str = "") -> dict | str:
