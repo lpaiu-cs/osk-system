@@ -296,6 +296,9 @@ whole.on_shown()
 again = start._organization([job], 60, ('claude', 'c1'))
 assert '변화 없음' in again.text and 'review_units' not in again.text, again.text
 assert '변화 없음' not in start._organization([{**job, 'snapshot': 's2'}], 60, ('claude', 'c1')).text
+# the scope's snapshot stays, but a target outside it went away: the new reference error comes whole
+dangling = [{'id': 'i1', 'relation': 'Link', 'ref': 'gone', 'resolution': 'dangling'}]
+assert '변화 없음' not in start._organization([{**job, 'references': dangling}], 60, ('claude', 'c1')).text
 assert '변화 없음' not in start._organization([job], 60, ('claude', 'c1'), startup=True).text
 out = hook('capture_stop.py', {**payload, 'hook_event_name': 'Stop'})
 assert out is None or set(out) == {'systemMessage'}, out

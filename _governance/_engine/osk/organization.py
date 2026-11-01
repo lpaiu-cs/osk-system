@@ -659,8 +659,7 @@ def hook_prompt(jobs: list[dict], shown_tree: str = "") -> str:
 
 
 def hook_mark(jobs: list[dict]) -> str:
-    """훅 블록이 같은지 가리는 지문 — key·snapshot·구간이 같으면 이 대화가 이미 받은 전문이다(#275).
-    제출하면 snapshot이나 구간이 바뀌어 다시 전문을 싣는다."""
-    return core.sha256_bytes(json.dumps([[j.get("key"), j.get("snapshot"),
-                                          [u.get("unit") for u in j.get("review_units", [])]]
-                                         for j in jobs], ensure_ascii=False).encode("utf-8"))
+    """훅 블록이 같은지 가리는 지문 — 싣는 내용(`hook_readout`) 그대로를 잰다(#275). 제출로 구간이
+    바뀌거나, scope 밖 대상이 바뀌어 참조 오류가 새로 생기면 다시 전문을 싣는다."""
+    return core.sha256_bytes(json.dumps([hook_readout(j) for j in jobs], ensure_ascii=False,
+                                        sort_keys=True).encode("utf-8"))
