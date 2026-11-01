@@ -82,7 +82,9 @@ reinstall the requirements if `requirements.txt` changed.
    5 applies the update, so it has no section for the version you are going to.
    Read it every time, not only for a new major version: a minor version can
    ask for a step after the update too. Tell the user what changes for them,
-   and do that step after step 6.
+   and do that step yourself after step 6. Ask first only where these
+   instructions or the notes make the act the user's own (protecting a folder,
+   approving or reverting its changes, turning a validator off).
 3. **Back up.** With a remote, commit and push, or let the sync daemon do it.
    Without one, say that there is no copy elsewhere and offer to copy the vault
    folder first.

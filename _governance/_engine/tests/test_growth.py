@@ -683,6 +683,55 @@ class GrowthTests(unittest.TestCase):
             assert any('근거 절' in f for d in validate.run()['fail'] for f in d), 'an active rule did not count'
         """)
 
+    def test_a_clean_rule_without_records_turns_itself_on_once_a_day(self):
+        # Bylaws §11(3), Mechanism §6-1(2): a rule with violations stays report-only; once clean it is
+        # activated at the next daily check, and a rule the user turned off is never turned back on.
+        self.check_case("""
+            from osk import response_growth
+            day = 24 * 3600
+            node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- not a line']))
+            assert 'evidence-section' not in validate.auto_activate(now=day)
+            assert not validate.validator_active('evidence-section')
+            assert write.update_node('A', old_text='- not a line',
+                                     new_text='- 2026-11-01 · `https://example.com/a` · 지지 — a page')['ok']
+            assert validate.auto_activate(now=day + 60) == [], 'checked twice in a day'
+            assert 'evidence-section' in validate.auto_activate(now=2 * day + 60)
+            assert validate.validator_active('evidence-section')
+            assert core.ledger_read(core.VALIDATORS)[-1]['reason'] == validate.AUTO_REASON
+            core.ledger_append(core.VALIDATORS, {'kind': 'deactivate', 'rule': 'evidence-section'})
+            assert validate.auto_activate(now=9 * day) == [] and not validate.validator_active('evidence-section')
+            # the hooks' background worker is where it runs on every install
+            import contextlib
+            from unittest import mock
+            integration = response_growth.integration
+            integration.state_path('claude', 's').parent.mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(integration, 'hook_source', return_value=('claude', 's', None)), \\
+                 mock.patch.object(integration, 'capture_due', return_value=False), \\
+                 mock.patch.object(integration, '_locked', lambda *a: contextlib.nullcontext(None)), \\
+                 mock.patch.object(integration, '_load', lambda *a: {}), \\
+                 mock.patch.object(response_growth, '_probe_due', return_value=False), \\
+                 mock.patch.object(validate, 'auto_activate') as auto:
+                response_growth.after_hook({'session': 'k'})
+            assert auto.called
+        """)
+
+    def test_a_user_deactivation_that_lands_during_the_check_is_kept(self):
+        # Mechanism §6-1(2): the engine never overturns a user's record — the CLI does not take the
+        # mutation lock, so the ledger lock (`expect`) is where an activation backs off.
+        self.check_case("""
+            from unittest import mock
+            real = core.ledger_append
+            def user_first(path, record, expect=None):
+                # the user's `--deactivate` lands right before the activation takes the ledger lock
+                if record.get('rule') == 'evidence-section':
+                    real(core.VALIDATORS, {'kind': 'deactivate', 'rule': 'evidence-section'})
+                return real(path, record, expect)
+            with mock.patch.object(validate, 'ledger_append', user_first):
+                assert 'evidence-section' not in validate.auto_activate(now=24 * 3600)
+            assert not validate.validator_active('evidence-section')
+            assert [r['kind'] for r in core.ledger_read(core.VALIDATORS) if r['rule'] == 'evidence-section'] == ['deactivate']
+        """)
+
     def test_evidence_migration_moves_non_node_derived_from_into_support_lines(self):
         # Constitution 8(5·6)·14(8·9), Mechanism §5: each non-node derived-from entry becomes a `지지` line at
         # the node end, dated by the commit that brought the round (or put the entry in the frontmatter — not

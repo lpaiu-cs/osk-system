@@ -202,7 +202,9 @@ def after_hook(env: dict) -> None:
     """The hooks' detached part: capture this conversation's new turns, then ask the fork CLI
     again when its verdict is due. Workers of one conversation take turns, and one that waited
     redoes only what is still due: a turn that Stop handed over while another worker was
-    parsing is not dropped."""
+    parsing is not dropped. Last, once a day, it turns on a validator rule that has no record
+    and no violations (Bylaws §11(3)) — every install runs this worker, not every install the
+    daily growth run."""
     harness, sid, path = integration.hook_source(env)
     lock_path = integration.state_path(harness, sid).with_suffix('.defer.lock')
     with lock_path.open('a+b') as lock:
@@ -216,6 +218,11 @@ def after_hook(env: dict) -> None:
                 probe(env)
         finally:
             unlock(lock)
+    try:
+        from . import validate
+        validate.auto_activate()
+    except Exception:
+        pass        # a rule that is not turned on stays report-only
 
 
 def check(harness: str, sid: str | None, path: str | None, cwd: str, *, ask: bool = True,

@@ -47,7 +47,7 @@ device.
   left over.
   - `osk evidence migrate` only plans. It writes what happens to each
     node to `.osk/evidence-section-plan.md`.
-  - `--apply` moves them after a terminal confirmation: each entry becomes a
+  - `--apply` moves them (v5.4.0 asks for a terminal confirmation first): each entry becomes a
     `지지` line at the node end and leaves the frontmatter. The date is that of
     the commit that brought the round (for a file or URL, the commit that first
     added the entry), so the vault needs its Git history.
@@ -57,7 +57,17 @@ device.
   - A moved node gets a new `updated`, so search ranks it as recent for about a
     month. The body before the evidence section is unchanged, so no recheck
     candidate appears.
-  - Activating the validator after the migration is your decision.
+  - From v5.4.1 the engine turns the validator on once it has no violations.
+    On v5.4.0 you turn it on with
+    `osk validators --activate evidence-section`.
+- v5.4.1 takes steps off your hands (Bylaws §11(3) as amended). Nothing to do.
+  - Once a day the engine checks each validator rule that has no record yet
+    (`cluster-overview`, `evidence-section`) and activates it when it finds no
+    violations. A rule you already turned on or off stays as it is; turn one
+    back on with `osk validators --activate <rule>`.
+  - `osk evidence migrate --apply` no longer asks for confirmation. If the
+    migration is still pending, the agent plans and applies it right after the
+    update.
 
 ## From v5.2 to v5.3
 

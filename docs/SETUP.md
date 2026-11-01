@@ -291,7 +291,7 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `status` | 체계 현황 |
 | `search` / `view` | 작업 검색 / 열람 검색 |
 | `check` | 권한 사전 검사 |
-| `validators` | **사용자 전속** — 검증기 활성화 현황·전환 (Mechanism §6-1) |
+| `validators` | 검증기 활성화 현황. 기록이 없는 규칙은 위반이 0이면 엔진이 켜고(하루 한 번 잰다), 해제·재활성화는 **사용자 전속**이다 (시행령 §11 3항 · Mechanism §6-1) |
 | `raw migrate` | `_raw/` 구 Markdown 기록의 숨김 `.txt` 이관 계획; `--apply`로 적용 |
 | `integration capture` / `integration status` / `integration prompt` / `integration review` | 실제 대화별 포착·통합 대기·검토 결과 |
 | `integration list` / `integration catchup` | 알려진 대화의 통합 대기 목록·종료 꼬리 따라잡기 |
@@ -303,7 +303,7 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `routing show` / `routing bind` / `routing unbind` / `routing primary` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용) (Mechanism §6-2 6항) |
-| `evidence migrate` | 비노드 `derived-from`을 노드 끝 근거 절의 `지지` 줄로 옮기는 이행 계획(v5.4 — 전수는 `.osk/evidence-section-plan.md`); `--apply`는 단말 확인 뒤 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 (헌법 제8조 5·6항·제14조 8·9항 · Mechanism §5) |
+| `evidence migrate` | 비노드 `derived-from`을 노드 끝 근거 절의 `지지` 줄로 옮기는 이행 계획(v5.4 — 전수는 `.osk/evidence-section-plan.md`); `--apply`는 확인 없이 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 (헌법 제8조 5·6항·제14조 8·9항 · Mechanism §5) |
 | `roots show` / `roots declare` / `roots retire` / `roots mount` / `roots unmount` | 외부 루트 — 별칭마다 선언·이 기기의 위치 조회, 별칭의 선언·해제(대장, 모든 기기), 이 기기의 위치 지정·삭제(`.osk/roots.json`). 조회 밖은 **사용자 전속** — 단말 확인을 거친다 (시행령 §2 8항 · Mechanism §1 6항) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` / `tidy discard` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록, 경유 노드 폐기 (Mechanism §9-3 · Workbench 계약 §3, 아래) |
