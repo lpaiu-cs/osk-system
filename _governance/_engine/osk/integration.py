@@ -1552,11 +1552,13 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         parsed = transcripts.read(source, harness, sid, rules=_turn_rules(s))
         shown = parsed.get("dialogue_v1") or {}
         turns = [{"id": turn_key(harness, r["id"]), "user": shown.get(r["id"], r)["user"],
-                  "agent": shown.get(r["id"], r)["agent"], "owner": r.get("origin_conversation_id") or sid}
+                  "agent": shown.get(r["id"], r)["agent"], "owner": r.get("origin_conversation_id") or sid,
+                  "source_timestamp": r.get("source_timestamp")}
                  for r in parsed["rounds"]]
         tail = parsed.get("tail")
         if tail and tail.get("user") and turn_key(harness, tail["id"]) not in {t["id"] for t in turns}:
-            turns.append({"id": turn_key(harness, tail["id"]), "user": tail["user"], "agent": None, "owner": sid})
+            turns.append({"id": turn_key(harness, tail["id"]), "user": tail["user"], "agent": None, "owner": sid,
+                          "source_timestamp": tail.get("source_timestamp")})
         # Only "-N" counts back from the latest. Any other string is a turn ID — Antigravity's are
         # step numbers ("2"), and the ID read_cited returns must name the same turn here.
         n = (turn if isinstance(turn, int) and not isinstance(turn, bool) else
@@ -1593,6 +1595,8 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
     meta = {"harness": harness, "conversation": owner, "turn": rid, "source": source,
             "agent_sha256": core.sha256_bytes(agent.encode("utf-8")) if agent else None, "user_by": by}
     if by == "engine":
+        if matched[0].get("source_timestamp"):
+            meta["source_timestamp"] = matched[0]["source_timestamp"]
         # The words the engine copied: the same turn ID with other words is other evidence. A
         # caller's recollection is not the turn's words and does not decide that.
         meta["user_sha256"] = core.sha256_bytes(words.encode("utf-8"))
@@ -1691,6 +1695,8 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
         chunk, hits = secrets.filter_text(raw._block(at + 1, pair["user"], pair["agent"]).rstrip("\n"))
         item = {"ref": ref, "turn": turn, "hash": hashes[0], "position": at + 1, "turns": len(turns),
                 "previous": raw.native_ref(harness, turns[at - 1][3], turns[at - 1][0]) if at else None}
+        if pair.get("source_timestamp"):
+            item["source_timestamp"] = pair["source_timestamp"]
         if hits:
             item["filtered"] = sorted(set(hits))
         if turn in tracked and tracked[turn] not in hashes:

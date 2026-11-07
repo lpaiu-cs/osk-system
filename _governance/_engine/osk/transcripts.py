@@ -18,7 +18,7 @@ import io
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 IDLE_CLOSE = 12 * 3600  # seconds of silence after which an unfinished Claude turn closes
@@ -349,6 +349,36 @@ def _rejoin(line: bytes, rest) -> tuple[dict | None, int]:
     return None, 0
 
 
+def normalized_timestamp(value) -> str | None:
+    """Only explicit timezone-bearing ISO instants; never infer the machine's zone."""
+    if not isinstance(value, str) or not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:", value):
+        return None
+    try:
+        at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z") if at.tzinfo else None
+    except (ValueError, OverflowError):
+        return None
+
+
+def _source_times(rows, harness):
+    """Dates bind to exact native turn starts, not dates mentioned in dialogue."""
+    times = {}
+    for _, row in rows:
+        p = row.get("payload") or {}
+        key = None
+        if harness == "claude" and row.get("type") == "user" and not row.get("isSidechain") and not row.get("agentId"):
+            key = row.get("uuid")
+        elif harness == "codex" and row.get("type") == "event_msg" and p.get("type") == "task_started":
+            key = p.get("turn_id")
+        elif harness == "kiro" and p.get("type") == "turn_start":
+            key = p.get("executionId")
+        elif harness == "antigravity" and row.get("type") == "USER_INPUT":
+            key = str(row.get("step_index"))
+        if key is not None:
+            times.setdefault(key, set()).add(normalized_timestamp(row.get("timestamp")))
+    return {k: next(iter(v)) if len(v) == 1 else None for k, v in times.items()}
+
+
 def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = None) -> dict:
     """`rules` (Claude only) applies the newer turn rules after `rules["since"]`, the last
     round an earlier engine tracked: queued words join their turn, and an unfinished turn
@@ -405,6 +435,11 @@ def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = 
         raise ValueError("dialogue capture changed native completion boundaries")
     result["dialogue_v1"] = {r["id"]: r for r in readable["rounds"]}
     result["tail"] = readable.get("tail")
+    times = _source_times(rows, harness)
+    for turn in result["rounds"] + readable["rounds"] + ([result["tail"]] if result["tail"] else []):
+        key = turn["id"].split(":", 1)[0] if harness in {"claude", "antigravity"} else turn["id"]
+        if times.get(key):
+            turn["source_timestamp"] = times[key]
     result["diagnostics"] = diagnostics + result["diagnostics"]
     result["pending_tail"] = result["pending_tail"] or bool(diagnostics)
     result["native_fingerprint"] = fingerprint

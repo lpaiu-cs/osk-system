@@ -36,7 +36,7 @@ def _records() -> list[dict]:
     rows = core.ledger_read(LEDGER)
     errors = core.ledger_damage(rows, LEDGER)
     for row in rows:
-        if row.get("kind") not in {"plan", "review", "run", "eviction_review", "recheck_review"}:
+        if row.get("kind") not in {"plan", "review", "run", "eviction_review", "recheck_review", "abstraction_review"}:
             errors.append("unknown growth record kind")
         if row.get("kind") == "recheck_review" and row.get("outcome") not in {"escalated", "deferred"}:
             errors.append("unknown recheck review outcome")
@@ -249,6 +249,10 @@ def _pick_rechecks(idx: graph.Index, limit: int, scope: str | None = None,
 def _recheck_status(job: dict, idx: graph.Index) -> dict:
     """그 쌍이 더는 후보가 아니면 완료다 — `rechecked`로 닫았거나 근거를 뺐다."""
     from . import rechecks
+    if job.get("abstraction"):
+        from . import abstraction
+        if not abstraction.complete(job):
+            return {"status": "pending", "reason": "abstraction receipt missing or stale"}
     hit = idx.by_id.get(job["id"])
     if hit is None:
         return {"status": "complete", "reason": "node gone"}
@@ -526,6 +530,9 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
     if "work_order" not in planned:
         planned = {**planned, "work_order": [{"queue": key, "index": i}
                    for key in _QUEUES for i in range(len(planned.get(key, [])))]}
+    if planned.get("prompt_version") in {"v9", "v10", "v11"}:
+        from . import abstraction
+        return abstraction.prompt(planned)
     from . import organization
     drafter = planned.get("drafter")
     return organization.prompt(planned.get("organization_jobs", []), inventory=False) + (
@@ -812,13 +819,17 @@ def _validate_packet(packet: dict, planned: dict) -> dict:
     않는다(헌법 1조 3항). 같은 항목이 겹치면 어느 판정인지 정할 수 없어 모두 받지 않는다.
     판정의 뜻이 분명한데 붙은 군더더기(보류의 targets 등)는 떼고 받으며 `notes`로 알린다."""
     reviews = packet.get("osk_reviews")
-    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", *_QUEUE_IDS}:
+    extra = {"abstraction"} if planned.get("prompt_version") in {"v9", "v10", "v11"} else set()
+    if not isinstance(reviews, dict) or not {"manifest", "domain", "scope"} <= set(reviews) <= {"manifest", *_QUEUE_IDS, *extra}:
         raise ValueError("review packet needs exactly manifest, domain and scope")
     if reviews["manifest"] != planned["manifest"]:
         raise ValueError("review packet manifest does not match this run")
     if any(not isinstance(reviews.get(q, []), list) for q in _QUEUE_IDS):
         raise ValueError("each review queue must be a list")
     out = {"manifest": reviews["manifest"], "errors": [], "notes": []}
+    if extra:
+        from . import abstraction
+        out["abstraction"] = abstraction.validate_entries(reviews.get("abstraction", []), planned)
     for queue in _QUEUE_IDS:
         entries = reviews.get(queue, [])
         ids = [_entry_id(queue, e) for e in entries]
@@ -982,6 +993,11 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
     from . import integration
     result = {"state": "applied", "domain": {}, "scope": {}, "organization": {}, "eviction": {},
               "errors": list(reviews.get("errors", [])), "notes": list(reviews.get("notes", []))}
+    if planned.get("prompt_version") in {"v9", "v10", "v11"}:
+        from . import abstraction
+        checked = abstraction.apply(reviews.get("abstraction", []), planned)
+        result["abstraction"] = checked["jobs"]
+        result["errors"].extend(checked["errors"])
     for entry in reviews["domain"]:
         key = entry["key"]
         try:

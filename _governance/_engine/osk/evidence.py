@@ -17,7 +17,7 @@ from .core import ROOT, posix_rel
 from . import graph, raw, roots, write
 
 # 줄 — `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`
-LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) · `([^`]+)` · (지지|조건|반례) — (\S.*)$")
+LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2}|날짜 미상 \(관측: \d{4}-\d{2}-\d{2}\)) · `([^`]+)` · (지지|조건|반례) — (\S.*)$")
 # 라운드 좌표 — `<기록>#N`, 이어진 라운드는 `<기록>#N–M`
 ROUND = re.compile(r"^(?P<record>[^#\s][^#]*)#(?P<first>\d+)(?:[–-](?P<last>\d+))?$")
 # 해시 이름의 기록 — `<하네스>-<16진 32자>`
