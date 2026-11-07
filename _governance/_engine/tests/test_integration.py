@@ -263,25 +263,53 @@ class IntegrationTests(unittest.TestCase):
 
 
     def test_a_record_split_by_raw_newlines_is_rejoined(self):
-        # Claude Code once wrote a string's newlines unescaped: one record over three lines (#243).
+        # Copying a parent's history, Claude Code wrote each U+2028 in a string as a raw line
+        # end: one record over three lines (#243). The breaks read back as U+2028 (#252).
         rows = claude_round(self.sid, 1) + claude_round(self.sid, 2)
-        rows[4]["message"]["content"][0]["text"] = "answer\n\none"
+        rows[4]["message"]["content"][0]["text"] = "answer  one"
         self.transcript(rows)
         intact = transcripts.read(str(self.path), "claude", self.sid)
-        split = self.path.read_bytes().replace(b"answer\\n\\none", b"answer\n\none")
+        split = self.path.read_bytes().replace(b"answer\\u2028\\u2028one", b"answer\n\none")
+        self.assertNotEqual(split, self.path.read_bytes())
         self.path.write_bytes(split)
         parsed = transcripts.read(str(self.path), "claude", self.sid)
         self.assertEqual([(r["id"], r["user"], r["agent"]) for r in parsed["rounds"]],
                          [(r["id"], r["user"], r["agent"]) for r in intact["rounds"]])
-        self.assertIn(json.dumps("answer\n\none"), parsed["rounds"][0]["agent"])
         self.assertEqual(parsed["diagnostics"], [])
         self.assertFalse(parsed["pending_tail"])
         self.assertEqual(parsed["coverage"]["rejoined_lines"], [[5, 7]])
-        # A complete line no following lines complete still stops the read.
+        # A break between tokens was never a U+2028: it reads as the raw newline it is.
         lines = split.splitlines(keepends=True)
+        self.path.write_bytes(lines[0].replace(b'", ', b'",\n ', 1) + b"".join(lines[1:]))
+        parsed = transcripts.read(str(self.path), "claude", self.sid)
+        self.assertEqual([(r["id"], r["user"], r["agent"]) for r in parsed["rounds"]],
+                         [(r["id"], r["user"], r["agent"]) for r in intact["rounds"]])
+        self.assertEqual(parsed["coverage"]["rejoined_lines"], [[1, 2], [6, 8]])
+        # A complete line no following lines complete still stops the read.
         self.path.write_bytes(b"".join(lines[:7] + [b'{"type": "user", "sess\n'] + lines[7:]))
         with self.assertRaisesRegex(ValueError, "unreadable transcript record at line 8"):
             transcripts.read(str(self.path), "claude", self.sid)
+
+    def test_claude_copy_that_wrote_a_line_separator_as_a_line_end_matches_its_parent(self):
+        # #252: copying the parent's history, Claude Code wrote a U+2028 in a tool result as a
+        # raw line end. The copied round reads as the parent tracked it, so the copy goes on.
+        parent, child = self.sid + "-p", self.sid + "-c"
+        rows = claude_round(parent, 1) + claude_round(parent, 2)
+        rows[2]["message"]["content"][0]["content"] = "evidence result"
+        own = claude_round(child, 3)
+        for owner, part in ((parent, rows), (child, own)):
+            for row in part:
+                if "uuid" in row:   # native rows carry UUIDs; a copy keeps them
+                    row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
+        self.transcript(rows)
+        self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
+        self.transcript([dict(r, sessionId=child) for r in rows] + own)
+        copied = self.path.read_bytes().replace(b"evidence\\u2028result", b"evidence\nresult")
+        self.assertNotEqual(copied, self.path.read_bytes())
+        self.path.write_bytes(copied)
+        st = it.capture("claude", child, str(self.path), "capture-tests")
+        self.assertTrue(st["ok"], st)
+        self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (2, 1), st)
 
     def test_end_turn_thinking_is_not_a_final_response(self):
         self.transcript(claude_round(self.sid, 1)[:-1])
@@ -401,6 +429,186 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(s["prompts_since"], "user-1:final-2")
         self.assertEqual(s["rounds"][0], before[0], "the tracked round changed under the new rule")
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-2", "user-3:result-3", "user-4:final-4"])
+
+    def notice(self, uid, pid):
+        """A background task's completion notice, which Claude Code sends as a prompt."""
+        return {**claude_row(self.sid, "user", "<task-notification>\n<task-id>b1</task-id>\n"
+                             "<status>completed</status>\n</task-notification>", uid), "promptId": pid}
+
+    def test_claude_notice_sent_as_a_prompt_is_not_the_users_turn(self):
+        # #275: the notice neither closes the open turn nor joins its words. Work it starts with
+        # no turn open is a round without the user's words, and cite's count skips that round.
+        prompted = lambda rows, pid: [{**r, "promptId": pid} for r in rows]
+        rows = (prompted(claude_round(self.sid, 1, finished=False), "p1") + [self.notice("n-1", "pn1")]
+                + prompted(claude_round(self.sid, 1)[3:], "p1") + [self.notice("n-2", "pn2")]
+                + [claude_row(self.sid, "assistant", [{"type": "text", "text": "the task ended"}],
+                              "after-2", "end_turn", "final-n2")]
+                + prompted(claude_round(self.sid, 3), "p3"))
+        self.transcript(rows)
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertIsNone(s["harness_since"])
+        self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "n-2:final-n2", "user-3:final-3"])
+        turns = self.turns(rules=it._turn_rules(s))
+        self.assertNotIn("task-notification", turns[0]["user"])
+        self.assertIn("question 1", turns[0]["user"])
+        self.assertEqual(turns[1]["user"], "")
+        self.assertIn("the task ended", turns[1]["agent"])
+        self.assertEqual(it.cite(f"claude/{self.sid}", turn="-2")["turn"], "user-1")
+        self.assertEqual(it.cite(f"claude/{self.sid}")["turn"], "user-3")
+
+    def test_claude_notice_rule_starts_after_the_turns_already_tracked(self):
+        # #275: rounds an engine without the rule tracked keep their boundaries and words.
+        prompted = lambda rows, pid: [{**r, "promptId": pid} for r in rows]
+        old = (prompted(claude_round(self.sid, 1, finished=False), "p1") + [self.notice("n-1", "pn1")]
+               + prompted(claude_round(self.sid, 1)[3:], "p1"))
+        self.transcript(old)
+        legacy = {"since": None, "prompts_since": None}   # turn and prompt rules, no notice rule
+        with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
+                mock.patch.object(it, "_copied_since", return_value=legacy):
+            self.assertTrue(self.capture()["ok"])
+        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        self.assertEqual([r["id"] for r in before], ["user-1:result-1", "n-1:final-1"])
+        self.transcript(old + prompted(claude_round(self.sid, 2, finished=False), "p2")
+                        + [self.notice("n-2", "pn2")] + prompted(claude_round(self.sid, 2)[3:], "p2"))
+        st = self.capture()
+        self.assertTrue(st["ok"], st)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["harness_since"], "n-1:final-1")
+        self.assertEqual(s["rounds"][:2], before, "the tracked rounds changed under the new rule")
+        self.assertEqual([r["id"] for r in s["rounds"][2:]], ["user-2:final-2"])
+
+    def rewind(self, leaf):
+        return {"type": "last-prompt", "leafUuid": leaf, "explicit": True, "rewound": True, "sessionId": self.sid}
+
+    def test_claude_rewind_drops_an_unreviewed_turn_from_tracking(self):
+        # #235: a rewind appends `last-prompt` with `rewound` and the kept leaf; the next message
+        # hangs on that leaf. The dropped turn leaves the cursor as if it had never been tracked.
+        one, two = claude_round(self.sid, 1), claude_round(self.sid, 2)
+        self.transcript(one + two)
+        first = self.capture()
+        self.assertEqual(first["captured_rounds"], 2, first)
+        self.transcript(one + two + [self.rewind("answer-1")] + claude_round(self.sid, 3))
+        found = self.capture()
+        self.assertTrue(found["ok"], found)
+        self.assertEqual((found["captured_rounds"], found["appended"], found["reverted"]), (2, 1, 1), found)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "user-3:final-3"])
+        parsed = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))
+        self.assertEqual(parsed["reverted"], ["user-2:final-2"])
+        self.assertNotIn("question 2", " ".join(t["user"] for t in self.turns(rules=it._turn_rules(s))))
+        self.assertEqual(self.capture()["appended"], 0)
+
+    def test_claude_rewind_past_a_reviewed_turn_is_refused_by_name(self):
+        one, two = claude_round(self.sid, 1), claude_round(self.sid, 2)
+        self.transcript(one + two)
+        first = self.capture()
+        it.acknowledge("claude", self.sid, first["through"], "no_value", "synthetic fixture")
+        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        self.transcript(one + two + [self.rewind("answer-1")] + claude_round(self.sid, 3))
+        found = self.capture()
+        self.assertFalse(found["ok"])
+        self.assertIn("Claude rewound past a reviewed turn", found["capture_error"])
+        self.assertEqual(it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"], before)
+
+    def fork(self, at, own_at, went_on=False, cut=True):
+        """The app's rewind: a copy of the original up to round 1 that goes on at `own_at`. It carries
+        the file-history snapshot of round 2's prompt, the message it was cut before; `cut=False` is
+        a copy split at the turn boundary instead. The original holds rounds 1–3 from `at`;
+        `went_on` adds round 5 to it afterwards."""
+        parent, child = self.sid + "-o", self.sid + "-r"
+        ours = lambda owner, rows: [dict(r, uuid=str(uuid.uuid5(uuid.NAMESPACE_URL, owner + r["uuid"]))) for r in rows]
+        original = ours(parent, stamped(claude_round(parent, 1) + claude_round(parent, 2) + claude_round(parent, 3), at))
+        opath, cpath = Path(TMP.name) / f"{parent}.jsonl", Path(TMP.name) / f"{child}.jsonl"
+        write = lambda path, rows: path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        write(opath, original)
+        self.assertTrue(it.capture("claude", parent, str(opath), "capture-tests")["ok"])
+        prompt = original[5]["uuid"]
+        trace = [{"type": "file-history-snapshot", "messageId": prompt, "isSnapshotUpdate": False,
+                  "snapshot": {"messageId": prompt, "trackedFileBackups": {}}}] if cut else []
+        write(cpath, [dict(r, sessionId=child) for r in original[:5]] + trace
+              + ours(child, stamped(claude_round(child, 4), own_at)))
+        st = it.capture("claude", child, str(cpath), "capture-tests")
+        self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
+        if went_on:
+            write(opath, original + ours(parent, stamped(claude_round(parent, 5), own_at + 60)))
+            self.assertTrue(it.capture("claude", parent, str(opath), "capture-tests")["ok"])
+        quiet = time.time() - 13 * 3600   # the original has gone quiet
+        os.utime(opath, (quiet, quiet))
+        return parent, opath, original
+
+    def test_claude_rewind_into_a_copy_drops_the_turns_it_left_behind(self):
+        # #235: the app's rewind cuts a copy right before the message it rewinds to and goes on
+        # there. Once the original is quiet, its turns no copy took and that came before the
+        # copy's first turn leave tracking unreviewed — as Codex's reverted turns do (#208).
+        at = time.time() - 2 * 86400
+        parent, opath, original = self.fork(at, at + 100)
+        copies = it._copies_by_parent()[("claude", parent)]
+        self.assertEqual(it._drop_fork_rewound("claude", parent, copies), 2)
+        s = it._load(it.state_path("claude", parent), "claude", parent)
+        self.assertEqual(len(s["rounds"]), 1)
+        self.assertEqual(len(s["rewound"]["rounds"]), 2)
+        self.assertEqual(it._view(s)["pending_refs"], [s["rounds"][0]["ref"]])
+        self.assertEqual(it._drop_fork_rewound("claude", parent, copies), 0)
+        # A capture of the unchanged original keeps them out ...
+        self.assertEqual(it.capture("claude", parent, str(opath), "capture-tests")["captured_rounds"], 1)
+        # ... until the original goes on: then they come back to review with the new turn.
+        opath.write_text("".join(json.dumps(r) + "\n" for r in original + [
+            dict(r, uuid=str(uuid.uuid5(uuid.NAMESPACE_URL, parent + r["uuid"])))
+            for r in stamped(claude_round(parent, 5), time.time())]), encoding="utf-8")
+        st = it.capture("claude", parent, str(opath), "capture-tests")
+        self.assertEqual(st["captured_rounds"], 4, st)
+        self.assertNotIn("rewound", it._load(it.state_path("claude", parent), "claude", parent))
+
+    def test_claude_copy_the_original_went_on_from_is_not_a_rewind(self):
+        at = time.time() - 2 * 86400
+        # the copy's first turn came before the original's last turn: a parallel fork
+        parent, _, _ = self.fork(at, at + 6)
+        self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
+        # the original went on after the copy's first turn
+        parent, _, _ = self.fork(at - 86400, at - 86400 + 100, went_on=True)
+        self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
+
+    def test_claude_copy_split_at_a_turn_boundary_is_not_a_rewind(self):
+        # The copy's first turn came after the original's last and the original went quiet, but
+        # the copy holds no trace of a message it was cut before: a plain fork from an earlier
+        # turn. Time alone cannot tell it from a rewind, so the original keeps its turns.
+        at = time.time() - 2 * 86400
+        parent, _, _ = self.fork(at, at + 100, cut=False)
+        self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
+        self.assertEqual(len(it._load(it.state_path("claude", parent), "claude", parent)["rounds"]), 3)
+
+    def test_codex_fork_is_not_a_rewind(self):
+        # Codex leaves a rewind in the same thread (`thread/revert`, #208). A fork carries no trace
+        # of one, so even a fork whose first turn came after the original's last keeps them.
+        quiet = Path(TMP.name) / f"{self.sid}.jsonl"
+        quiet.write_text("{}\n", encoding="utf-8")
+        old = time.time() - 13 * 3600
+        os.utime(quiet, (old, old))
+        tid = lambda ms: f"{ms:012x}"[:8] + "-" + f"{ms:012x}"[8:] + "-7000-8000-000000000000"
+        base = int((time.time() - 86400) * 1000)
+        turns = [tid(base + i * 1000) for i in range(3)]
+        parent = {"harness": "codex", "conversation_id": "p", "reviewed_count": 0, "transcript_path": str(quiet),
+                  "rounds": [{"id": t, "ref": raw.native_ref("codex", "p", t)} for t in turns]}
+        copy = lambda first: ({"harness": "codex", "conversation_id": "c", "transcript_path": None,
+                               "rounds": [{"id": first, "ref": raw.native_ref("codex", "c", first)}]}, turns[0])
+        self.assertIsNone(it._fork_rewound(parent, [copy(tid(base + 5000))]))
+
+    def test_claude_rewind_rule_starts_after_the_turns_already_tracked(self):
+        # A turn an engine without the rule tracked stays tracked though a later rewind dropped it.
+        one, two = claude_round(self.sid, 1), claude_round(self.sid, 2)
+        self.transcript(one + two)
+        legacy = {"since": None, "prompts_since": None}
+        with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
+                mock.patch.object(it, "_copied_since", return_value=legacy):
+            self.assertTrue(self.capture()["ok"])
+        self.transcript(one + two + [self.rewind("answer-1")] + claude_round(self.sid, 3))
+        found = self.capture()
+        self.assertTrue(found["ok"], found)
+        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        self.assertEqual(s["harness_since"], "user-2:final-2")
+        self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "user-2:final-2", "user-3:final-3"])
 
     def test_recent_claude_tail_stays_open_until_the_conversation_ends(self):
         self.transcript(stamped(claude_round(self.sid, 1, finished=False), time.time() - 3600))

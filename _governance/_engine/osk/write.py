@@ -257,6 +257,53 @@ def _norm_body(body: str) -> str:
     return _space_numeric_tags(_norm_newlines(body).lstrip("\n").rstrip())
 
 
+# 문단은 제목·목록 항목·표 행, 또는 빈 줄 뒤의 줄에서 시작한다. 노드 본문은 대개 한 줄짜리
+# 항목이라 빈 줄만 세면 절 하나가 통째로 한 문단이 된다.
+_PARAGRAPH = re.compile(r"[ \t]*(?:#{1,6}[ \t]|[-*+][ \t]|\d+[.)][ \t]|\|)")
+WINDOW_CHARS = 4000     # `read_node` 범위 열람 한 번과 같은 상한
+
+
+def anchor_windows(body: str, quote: str, limit: int = 5) -> tuple[int, list[tuple[int, int]]]:
+    """`quote`가 본문에 나오는 횟수와, 앞 `limit`곳의 창 — 그 문단과 앞뒤 한 문단씩(#273).
+
+    창은 그 한 곳(앞뒤 공백·줄바꿈은 빼고)을 품으므로 유일한 앵커로 그대로 `old_text`가 된다 —
+    쓰기는 유일성을 다시 확인한다.
+    세부를 빼낸 자리의 연결어는 앞뒤 문단에 걸려 있으므로, 전문을 읽지 않는 큰 노드의
+    앵커 편집은 이 창을 싣는다. 이웃 문단은 창이 `WINDOW_CHARS` 안일 때만 붙인다."""
+    # ponytail: 4000자를 넘는 한 문단은 이웃 없이 그 문단만 준다(볼트 노드 줄 중 3개). 문장 단위
+    # 창은 그런 문단이 늘 때 넣는다.
+    quote = _norm_newlines(quote)
+    if not quote:
+        return 0, []
+    starts, pos, blank = [], 0, True
+    for line in body.splitlines(keepends=True):
+        if line.strip():
+            if blank or _PARAGRAPH.match(line):
+                starts.append(pos)
+            blank = False
+        else:
+            blank = True
+        pos += len(line)
+    ends = starts[1:] + [len(body)]
+    spans = [(s, s + len(body[s:e].rstrip())) for s, e in zip(starts, ends)]
+    hits = [m.start() for m in re.finditer(re.escape(quote), body)]
+    # 창은 인용 앞뒤의 공백·줄바꿈에서 끝나지 않는다 — 고친 판(new_text)이 그것을 흔히 빠뜨려 두 문단이
+    # 붙는다(#273 큰 노드 시험, 2만 자 문단).
+    lead, core = len(quote) - len(quote.lstrip()), len(quote.strip())
+    windows = []
+    for a in hits[:limit]:
+        a, b = (a + lead, a + lead + core) if core else (a, a + len(quote))
+        i = next((k for k, (_s, e) in enumerate(spans) if e > a), len(spans))
+        j = next((k for k in range(len(spans) - 1, -1, -1) if spans[k][0] < b), -1)
+        lo, hi = (min(a, spans[i][0]), max(b, spans[j][1])) if i <= j else (a, b)
+        if i > 0 and hi - spans[i - 1][0] <= WINDOW_CHARS:
+            lo = spans[i - 1][0]
+        if j + 1 < len(spans) and spans[j + 1][1] - lo <= WINDOW_CHARS:
+            hi = spans[j + 1][1]
+        windows.append((lo, hi))
+    return len(hits), windows
+
+
 def _frontmatter(meta: dict) -> str:
     """계약 순서대로 frontmatter를 직렬화한다 (Mechanism §2 5항)."""
     lines = ["---"]
@@ -704,6 +751,7 @@ def size_feedback(path, body: str) -> dict:
     return {"organization_advice": {
         "body_chars": len(body), "hub": hub, "read_view": "outline",
         "instruction": CLAIM_GUIDANCE + "길이는 삭제·강제 분할의 근거가 아니다. 목차와 필요한 절부터 읽고, "
+                       "고칠 자리는 read_node(view=고칠 문장)으로 앞뒤 문단째 받아 그 body를 old_text로 고친다. "
                        "현재 결론·적용 조건·근거를 한 곳에 유지하라. 단계별 실행 일지를 계속 덧붙이지 말고 "
                        "레포의 실행 상세는 레포 기록을 인용하라. 허브에는 탐색 경로를 남기고 "
                        "독립적으로 재사용되는 주장만 기존 또는 별도 노드로 증류하라. "
@@ -760,7 +808,8 @@ def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
             "본문 전체 치환에는 읽은 상태의 해시(expect_hash)가 필요하다 — "
             "쓰지 않았다",
             ["고칠 자리가 정해져 있으면 `old_text`/`new_text` 앵커 편집을 쓰라 "
-             "— 해시가 필요 없다. 전문을 통째로 갈아야 하면 `read_node`로 지금 "
+             "— 해시가 필요 없다. `read_node(view=고칠 문장)`이 그 자리를 앞뒤 문단째 "
+             "주고, 그 `body`가 곧 `old_text`다. 전문을 통째로 갈아야 하면 `read_node`로 지금 "
              "본문을 읽고 그 응답의 `hash`를 그대로 넣어라."])
     if expect_hash and sha256_file(path) != expect_hash:
         raise WriteError(
@@ -1538,22 +1587,26 @@ def _update_node_locked(name: str, body: str | None = None,
         # 호출자가 정한 바가 없고, 아무 곳이나 고르는 것은 조용히 틀린
         # 자리를 고치는 길이다. 하네스 `Edit` 실측에서 유일성 위반은
         # 5,454건 중 5건(0.09%)이라 이 계약은 실무에서 거의 공짜다.
-        hits = n.body.count(old_text)
+        hits, windows = anchor_windows(n.body, old_text)
         if hits == 0 and (spaced := _space_numeric_tags(old_text)) != old_text:
             # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(`_norm_body`). 호출자가 방금 쓴 글 그대로의
             # 앵커도 같은 변환으로 맞춘다(#292). 원문부터 보는 것은 조각이 코드 구획 한가운데서
             # 시작하면 변환의 구획 판정이 틀릴 수 있어서다.
-            old_text, hits = spaced, n.body.count(spaced)
+            old_text = spaced
+            hits, windows = anchor_windows(n.body, spaced)
         if hits != 1:
             raise WriteError(
                 ("앵커가 본문에 없다 — 쓰지 않았다" if hits == 0 else
                  f"앵커가 본문에 {hits}곳 맞는다 — 쓰지 않았다"),
                 ([f"`old_text`가 `{name}`의 본문에 나오지 않는다. 노드가 "
                   f"그 사이 바뀌었을 수 있다 — `read_node`로 지금 본문을 "
-                  f"보고 그대로 복사해 넣어라. 공백·줄바꿈까지 일치해야 한다."]
+                  f"보고 그대로 복사해 넣어라. 공백·줄바꿈까지 일치해야 한다. "
+                  f"큰 노드는 `read_node(view=고칠 문장)`이 그 자리를 앞뒤 문단째 준다."]
                  if hits == 0 else
                  [f"어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
-                  f"넣어 앵커를 **유일하게** 만들어라."]))
+                  f"넣어 앵커를 **유일하게** 만들어라. 맞는 자리의 앞뒤 문단은 "
+                  f"`views`를 `read_node(view=…)`로 읽는다."]),
+                **({"views": [f"{a}:{b}" for a, b in windows]} if hits else {}))
         body = n.body.replace(old_text, new_text, 1)
     meta = dict(n.meta)
     replaced_summary = None

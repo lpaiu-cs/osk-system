@@ -330,22 +330,28 @@ def native_lines(path: str, harness: str, sid: str):
 
 # How many following lines a complete line that does not parse may take in (#243).
 REJOIN_LINES = 16
+LINE_SEPARATOR = " ".encode()
 
 
 def _rejoin(line: bytes, rest) -> tuple[dict | None, int]:
     """Claude Code once wrote a record with raw newlines inside a string, splitting it over
-    lines (#243). Join the lines after `line` until the whole reads as exactly one object,
-    control characters allowed in strings. `(None, _)` when none does."""
+    lines (#243): copying a parent's history it wrote each U+2028 in a string as a line end
+    (#252). Join the lines after `line` until the whole reads as exactly one object — first
+    with U+2028 back at each break, so a copy reads as its parent does, then with the raw
+    newlines kept, control characters allowed in strings. `(None, _)` when none does."""
+    pieces = [line]
     for extra in range(1, REJOIN_LINES + 1):
         more = next(rest, None)
         if more is None:
             break
-        line += more
-        try:
-            row = json.loads(line, strict=False)
-        except (ValueError, UnicodeError):
-            continue
-        return (row if isinstance(row, dict) else None), extra
+        pieces.append(more)
+        separated = b"".join(p[:-1] + LINE_SEPARATOR for p in pieces[:-1]) + more
+        for joined in (separated, b"".join(pieces)):
+            try:
+                row = json.loads(joined, strict=False)
+            except (ValueError, UnicodeError):
+                continue
+            return (row if isinstance(row, dict) else None), extra
     return None, 0
 
 
@@ -353,7 +359,10 @@ def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = 
     """`rules` (Claude only) applies the newer turn rules after `rules["since"]`, the last
     round an earlier engine tracked: queued words join their turn, and an unfinished turn
     closes at a stored `cuts` row or after IDLE_CLOSE of silence before `now`. After
-    `rules["prompts_since"]` a prompt with another `promptId` closes the open turn (#218)."""
+    `rules["prompts_since"]` a prompt with another `promptId` closes the open turn (#218).
+    After `rules["harness_since"]` a notice the harness sent as a prompt is not the user's
+    turn (#275), and a branch a rewind dropped is not read (#235): `reverted` names the
+    rounds the dropped rows made."""
     fingerprint = native_fingerprint(path, harness, conversation_id)
     rows, diagnostics, pages, rejoined = [], [], [], []
     n = 0
@@ -383,6 +392,10 @@ def read(path: str, harness: str, conversation_id: str, *, rules: dict | None = 
     if harness == "claude":
         result = _claude(rows, conversation_id, rules=rules)
         readable = _claude(rows, conversation_id, dialogue=True, rules=rules)
+        if result.pop("rewound", False):
+            kept = {r["id"] for r in result["rounds"]}
+            result["reverted"] = [r["id"] for r in _claude(rows, conversation_id, rules=rules, rewinds=False)["rounds"]
+                                  if r["id"] not in kept]
     elif harness == "codex":
         result = _codex_history(pages, conversation_id)
         readable = _codex_history(pages, conversation_id, dialogue=True)
@@ -490,7 +503,30 @@ def _interleaved(evidence: list) -> list:
     return [e for *_, e in merged + calls + results]
 
 
-def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None = None) -> dict:
+def _words(content) -> str | None:
+    """A prompt's text when it is text alone — what `injected_only` judges."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and all(isinstance(b, dict) and b.get("type") == "text" for b in content):
+        return "\n".join(str(b.get("text") or "") for b in content)
+    return None
+
+
+def _rewound(rows: list) -> set:
+    """Rows a Claude rewind dropped (#235). The app appends `last-prompt` with `rewound` and
+    the kept leaf, and the next message hangs on that leaf: the rows written after the leaf
+    and before that mark are the dropped branch. They stay in the file."""
+    at = {r["uuid"]: i for i, (_, r) in enumerate(rows) if r.get("uuid")}
+    dropped = set()
+    for i, (_, r) in enumerate(rows):
+        if r.get("type") == "last-prompt" and r.get("rewound") is True and r.get("leafUuid") in at:
+            dropped.update(x["uuid"] for _, x in rows[at[r["leafUuid"]] + 1:i] if x.get("uuid"))
+    return dropped
+
+
+def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None = None,
+            rewinds: bool = True) -> dict:
+    from .harness.base import injected_only   # the harness package imports this module
     rows = [(line, r) for line, r in rows if not r.get("isSidechain") and not r.get("agentId")]
     identities = {r["sessionId"] for _, r in rows if r.get("sessionId")}
     if identities != {sid}:
@@ -525,6 +561,12 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
     # that rule tracked (#218): a turn that ends in a tool call has no end_turn to close it.
     splits = rules is not None and "prompts_since" in rules
     split = splits and rules["prompts_since"] is None
+    # Rows the harness wrote that are not the user's conversation — a notice it sent as a
+    # prompt (#275), a branch a rewind dropped (#235) — read as such after `harness_since`,
+    # the last round an engine without that rule tracked.
+    marks = rules is not None and "harness_since" in rules
+    mark = marks and rules["harness_since"] is None
+    dropped, rewound = (_rewound(rows) if marks and rewinds else set()), False
     cuts = set(rules.get("cuts") or ()) if rules else set()
     now = rules.get("now") if rules else None
     delivered = {r.get("commandUuid") for _, r in rows if r.get("type") == "queue-operation"
@@ -535,7 +577,7 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
     prompt, replied, done = None, False, False  # the open turn's promptId, a reply, its last row ended it
 
     def emit(rid, completion, end_line, **extra):
-        nonlocal users, trace, start, native_results, evidence, new, split, continued, last
+        nonlocal users, trace, start, native_results, evidence, new, split, mark, continued, last
         locator = f"claude:{rid}"
         events = [e for _, e in evidence]
         found = {"id": rid, "user": "\n\n".join(users),
@@ -557,6 +599,7 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
         users, trace, start, native_results, evidence, continued, last = [], [], None, [], [], None, None
         new = new or (rules is not None and rid == since)
         split = split or (splits and rid == rules["prompts_since"])
+        mark = mark or (marks and rid == rules["harness_since"])
         return rid
 
     def finish():
@@ -573,6 +616,9 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
 
     for line, row in rows:
         if row.get("isSidechain") or row.get("agentId"):
+            continue
+        if mark and row.get("uuid") in dropped:
+            rewound = True
             continue
         typ, msg = row.get("type"), row.get("message", {})
         if not isinstance(msg, dict):
@@ -607,6 +653,7 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
             raise ValueError(f"unsupported Claude content at line {line}")
         tool_result = isinstance(content, list) and any(
             isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+        notice = mark and typ == "user" and not tool_result and injected_only(_words(content))
         at = _epoch(row)
         if (new and start and not final_message and last and last[2] is not None and at is not None
                 and at - last[2] >= IDLE_CLOSE):
@@ -647,11 +694,14 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
                 continue
             # Another prompt is another turn. A turn that ended in a tool call (the app's
             # next-step box, ScheduleWakeup) closes there; an interruption keeps its promptId.
-            if split and start and replied and row.get("promptId") not in (None, prompt):
+            # A notice the harness sent as a prompt is neither (#275): an open turn goes on,
+            # and work it starts with no turn open is a round without the user's words.
+            if not notice and split and start and replied and row.get("promptId") not in (None, prompt):
                 emit(f"{start}:{last[0]}", "completed" if done else "interrupted", last[1])
             if not start:
                 start, resumed, prompt, replied = uid, None, row.get("promptId"), False
-            users.append(_dump(content))
+            if not notice:
+                users.append(_dump(content))
         elif start:
             replied = True
             if not dialogue or content:
@@ -672,7 +722,7 @@ def _claude(rows: list, sid: str, *, dialogue: bool = False, rules: dict | None 
     if new and start and now is not None and last and last[2] is not None and now - last[2] >= IDLE_CLOSE:
         interrupt()
     # The open turn is not a round, but its user words may be cited (Mechanism §9 9항).
-    return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics,
+    return {"rounds": rounds, "pending_tail": bool(start), "diagnostics": diagnostics, "rewound": rewound,
             "tail": {"id": start, "user": "\n\n".join(users)} if start and users else None}
 
 

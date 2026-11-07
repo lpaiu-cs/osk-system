@@ -141,6 +141,21 @@ def read_checks():
     assert m.read_node(full['name']) == full
     assert m.update_node(full['name'], old_text='First instance', new_text='Revised instance')['ok']
     assert m.read_node(full['name'], view='outline')['view_hash'] != outline['view_hash']
+    # A quote returns its paragraph plus one each side; that window is the edit's anchor (#273).
+    assert write.create_node('Window read', 'Anchor window',
+                             '# 결론\n\n- 첫째.\n- 둘째에 59덱이 있다.\n  - 하위.\n- 셋째.\n\n산문 첫 줄\n이어짐.',
+                             'gpt-6-astra', space='00_Scope/W1')['ok']
+    got = m.read_node('Window read', view='59덱')
+    assert got['partial'] and got['body'] == '- 첫째.\n- 둘째에 59덱이 있다.\n  - 하위.', got
+    assert m.read_node('Window read', view='이어짐')['body'] == '- 셋째.\n\n산문 첫 줄\n이어짐.'
+    assert m.update_node('Window read', old_text=got['body'], new_text='- 첫째.\n- 둘째가 있다.\n  - 하위.')['ok']
+    many = m.read_node('Window read', view='째')
+    refused = m.update_node('Window read', old_text='째', new_text='x')
+    assert 'error' in many and not refused['ok'] and refused['views'] == many['views'] and len(many['views']) == 3
+    assert 'error' in m.read_node('Window read', view='없는 문장')
+    assert m.update_node('Window read', old_text='- 셋째.', new_text='- 셋째 #9x.')['ok']
+    tag = m.read_node('Window read', view='셋째 #9x')  # 태그 방어(#292) 뒤의 저장본에도 맞는다
+    assert '#9 x' in tag.get('body', ''), tag
     # `search(session=…)` reads the session's bindings: its primary scope's nodes rank up (#170).
     # Scores in this two-node vault are negative (common terms' idf): the boost still pulls up.
     write.set_primary('retrieval-key', 'W1', 'fixture')

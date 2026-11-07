@@ -628,22 +628,33 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
     with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
         rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
         kept, gone = s["rounds"], []
-        if harness == "codex":
+        if harness == "codex" or parsed.get("reverted"):
             by_id = {r["id"]: r for r in rounds}
             if len(by_id) != len(rounds):
                 raise ValueError("native round identity prefix changed; the review cursor was not moved")
-            # Codex `thread/revert` keeps an earlier page only up to a turn (#208): an
-            # unreviewed turn it took out leaves the cursor as if it had never been tracked.
-            # Any other missing turn is a changed prefix.
+            # Codex `thread/revert` keeps an earlier page only up to a turn (#208), and a Claude
+            # rewind leaves its dropped branch behind (#235): an unreviewed turn either took out
+            # leaves the cursor as if it had never been tracked. Any other missing turn is a
+            # changed prefix.
             gone = [i for i, r in enumerate(kept) if r["id"] not in by_id]
             if any(kept[i]["id"] not in parsed.get("reverted", ()) for i in gone):
                 raise ValueError("native round identity prefix changed; the review cursor was not moved")
             if gone and gone[0] < s["reviewed_count"]:
-                raise ValueError("Codex reverted a reviewed turn (thread/revert); the review cursor was not moved")
+                raise ValueError("Codex reverted a reviewed turn (thread/revert); the review cursor was not moved"
+                                 if harness == "codex" else
+                                 "Claude rewound past a reviewed turn; the review cursor was not moved")
             kept = [r for r in kept if r["id"] in by_id]
             # A recovered past turn follows the turns already tracked: keep the saved order.
             known = {r["id"] for r in kept}
             rounds = [by_id[r["id"]] for r in kept] + [r for r in rounds if r["id"] not in known]
+        if s.get("rewound"):
+            # Turns a rewind into a copy left behind (`_fork_rewound`) stay out until the
+            # conversation goes on past them; then they come back to review with the new turns.
+            later = [r["id"] for r in rounds[len(kept):]]
+            if later == s["rewound"]["rounds"][:len(later)]:
+                rounds = rounds[:len(kept)]
+            else:
+                del s["rewound"]
         ids = [r["id"] for r in rounds]
         if len(ids) != len(set(ids)) or ids[:len(kept)] != [r["id"] for r in kept]:
             raise ValueError("native round identity prefix changed; the review cursor was not moved")
@@ -668,6 +679,8 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
         if rules:
             s.setdefault("turns_since", rules["since"])
             s.setdefault("prompts_since", rules["prompts_since"])
+            if "harness_since" in rules:
+                s.setdefault("harness_since", rules["harness_since"])
         if changed or gone:
             first = min(changed[:1] + gone[:1])
             s["snapshots"] = {t: v for t, v in s["snapshots"].items()
@@ -979,19 +992,21 @@ def review_status(harness: str, conversation_id: str, through: str) -> dict:
 def _turn_rules(s: dict) -> dict | None:
     """Claude의 새 턴 규칙(턴 도중 메시지, 멈춘 미완료 턴)은 이 엔진이 처음 추적한 뒤의
     턴부터다. 새 프롬프트가 도구 호출로 끝난 턴을 닫는 규칙(#218)도 그 규칙을 처음 쓴 엔진이
-    추적한 뒤부터다(`prompts_since`). 그 앞에 저장된 라운드는 저장된 경계와 표현 그대로 다시
-    읽힌다. 모든 판독이 같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
+    추적한 뒤부터다(`prompts_since`). 하네스가 프롬프트로 보낸 알림과 되감기로 버린 갈래를
+    가리는 규칙(#275·#235)도 그렇다(`harness_since`). 그 앞에 저장된 라운드는 저장된 경계와
+    표현 그대로 다시 읽힌다. 모든 판독이 같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
     if s["harness"] != "claude":
         return None
     tracked = (s.get("inherited") or {}).get("rounds", []) + s["rounds"]
     last = tracked[-1]["id"] if tracked else None
     return {"since": s.get("turns_since", last), "prompts_since": s.get("prompts_since", last),
+            "harness_since": s.get("harness_since", last),
             "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
 
 
 def _copied_since(s: dict, native_path: str) -> dict:
-    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계 — 턴 규칙(`since`)과 프롬프트
-    규칙(`prompts_since`) 각각. 복제된 앞부분은 그 턴을 추적한 같은 scope 커서가 쓴 경계를
+    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계 — 턴 규칙(`since`), 프롬프트
+    규칙(`prompts_since`), 하네스 행 규칙(`harness_since`) 각각. 복제된 앞부분은 그 턴을 추적한 같은 scope 커서가 쓴 경계를
     따른다 — 새 규칙으로 읽으면 부모가 옛 규칙으로 추적한 턴과 경계·표현이 갈라진다. 그
     커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다. 부모가 갈래 지점 뒤로 이어
     추적했으면 그 경계는 사본에 없다 — 복제된 앞부분은 모두 그 앞이니, 경계까지 추적한
@@ -999,7 +1014,7 @@ def _copied_since(s: dict, native_path: str) -> dict:
     부모가 저장한 절단 지점은 넘기지 않는다 — 사본에서도 행 시각의 12시간 공백이 같은
     자리를 나눈다. 프롬프트 경계는 부모가 턴 규칙으로 읽은 라운드다 — 유휴 닫기가 나눈
     라운드는 규칙 없는 판독에 없으므로, 찾은 턴 규칙으로 다시 읽어 찾는다(#233 리뷰)."""
-    best = {"since": None, "prompts_since": None}
+    best = {"since": None, "prompts_since": None, "harness_since": None}
     rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"]
     if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
         return best   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
@@ -1020,6 +1035,10 @@ def _copied_since(s: dict, native_path: str) -> dict:
     ruled = transcripts.read(native_path, "claude", s["conversation_id"],
                              rules={"since": best["since"], "cuts": [], "now": time.time()})["rounds"]
     best["prompts_since"] = latest(ruled, "prompts_since")
+    ruled = transcripts.read(native_path, "claude", s["conversation_id"],
+                             rules={"since": best["since"], "prompts_since": best["prompts_since"],
+                                    "cuts": [], "now": time.time()})["rounds"]
+    best["harness_since"] = latest(ruled, "harness_since")
     return best
 
 
@@ -1210,6 +1229,96 @@ def capture_known(tried=None) -> dict:
             "awaiting_native": awaiting_native}
 
 
+def _copies_by_parent() -> dict:
+    """대화마다 그 앞부분을 이어받은 사본(resume·fork)의 커서와 갈래 지점 — 이어받은 마지막 턴의
+    주인이 부모다. 커서 파일을 잠그지 않고 읽는다(검토 선택의 판단 재료일 뿐이다)."""
+    probe = state_path("claude", "inventory")
+    prefix = "-".join(probe.name.split("-")[:3]) + "-"
+    out = {}
+    for p in probe.parent.glob(prefix + "*.json"):
+        try:
+            c = json.loads(p.read_text(encoding="utf-8"))
+            last = ((c.get("inherited") or {}).get("rounds") or [None])[-1]
+            if not (last and c.get("rounds") and raw.is_native(last.get("ref"))):
+                continue
+            _, harness, parent, _ = last["ref"].split(":", 3)
+            if harness == c.get("harness") and parent != c.get("conversation_id"):
+                out.setdefault((harness, parent), []).append((c, last["id"]))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return out
+
+
+def _cut_before(c: dict, native_path: str | None, message: str) -> bool:
+    """사본이 원래 대화의 그 메시지 바로 앞에서 잘렸다는 흔적. Claude 앱은 메시지로 되감을 때 그 메시지
+    시점의 파일 이력 스냅숏(`file-history-snapshot`의 `messageId`)을 사본에 옮긴다 — 턴 경계에서 그냥
+    가른 사본에는 없다. Codex는 되감기를 같은 스레드에 남기므로(`thread/revert`, #208) fork에 흔적이 없다."""
+    if c["harness"] != "claude" or not native_path:
+        return False
+    try:
+        for line in transcripts.native_lines(native_path, c["harness"], c["conversation_id"]):
+            if message.encode() not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("type") == "file-history-snapshot" and row.get("messageId") == message:
+                return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _fork_rewound(s: dict, copies: list) -> dict | None:
+    """사본으로 되감은 턴(#235). Claude 앱은 메시지로 되감으면 그 메시지 바로 앞에서 사본을 만들어 거기서
+    잇는다 — 원래 대화에는 버린 턴이 남는다. 어느 사본도 이어받지 않은 원래 대화의 끝 턴들은, 갈래 다음
+    메시지 앞에서 잘린 흔적(`_cut_before`)을 지닌 사본이 그 마지막 턴보다 뒤에 첫 턴을 열었고 원래 대화가
+    조용해졌으면 버린 갈래다. 흔적 없이 턴 경계에서 가른 사본은 시각만으로 되감기와 가를 수 없어 판단에
+    쓰지 않는다. 검토하지 않은 것만 돌려준다. 원래 대화가 다시 이어지면 이 판단은 서지 않는다
+    (`_capture_apply`가 되살린다)."""
+    ids = [r["id"] for r in s["rounds"]]
+    kept = [ids.index(branch) for _, branch in copies if branch in ids]
+    if not kept or s.get("repair_pending"):
+        return None
+    start = max(max(kept) + 1, s["reviewed_count"])
+    native = _ended_source(s)
+    if start >= len(ids) or not native:
+        return None
+    last = _turn_at(s, native, refs=[s["rounds"][-1]["ref"]])
+    for c, branch in copies:
+        cut = ids.index(branch) + 1 if branch in ids else len(ids)
+        if cut >= len(ids):
+            continue
+        try:
+            own = _locate_transcript(c["harness"], c["conversation_id"], c.get("capture_path") or c.get("transcript_path"))
+        except (OSError, ValueError, KeyError):
+            continue
+        born = _turn_at(c, own, refs=[c["rounds"][0]["ref"]])
+        if (last is not None and born is not None and born > last
+                and _cut_before(c, own, ids[cut].split(":", 1)[0])):
+            return {"start": start, "copy": c["conversation_id"], "born": born}
+    return None
+
+
+def _drop_fork_rewound(harness: str, conversation_id: str, copies: list) -> int:
+    """`_fork_rewound`의 턴을 커서에서 뺀다 — Codex의 되돌린 턴처럼, 추적한 적 없던 것처럼 둔다."""
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        found = _fork_rewound(s, copies)
+        if not found:
+            return 0
+        start = found["start"]
+        dropped = [r["id"] for r in s["rounds"][start:]]
+        s["rounds"] = s["rounds"][:start]
+        s["snapshots"] = {t: v for t, v in s["snapshots"].items() if v.get("repair_refs") or v["count"] <= start}
+        if s["rounds"]:
+            s["snapshots"].setdefault(_snapshot(s), {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
+        s["rewound"] = {"rounds": dropped, "copy": found["copy"], "at": core.now_iso()}
+        _save(p, s)
+        return len(dropped)
+
+
 def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
     포착(모델 비용이 없다)과 작업 선택을 나눈다. 대기 전체를 먼저 포착하고, 따라잡은 커서로
@@ -1224,10 +1333,14 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None,
                                                captured["awaiting_native"], [])
     states, _, again, _ = _known_pending(None, tried)
     errors += [e for e in again if e not in errors]
+    copies = _copies_by_parent()
     for s in states:
         if len(jobs) >= limit:
             break
         try:
+            if (s["harness"], s["conversation_id"]) in copies and _view(s)["pending_refs"]:
+                # 사본으로 되감아 버린 턴은 검토에 넣지 않는다(#235)
+                _drop_fork_rewound(s["harness"], s["conversation_id"], copies[s["harness"], s["conversation_id"]])
             if _view(s)["pending_refs"]:
                 job = prompt(s["harness"], s["conversation_id"], include_organization=False,
                              max_rounds=max_rounds, offline=True)
@@ -1461,11 +1574,12 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  "허브의 분화는 조직 검토가 맡으므로 하위 군집을 열지 않는다. 분화가 필요해 보이면 그 제안을 reason에 "
                  "남긴다. 이 scope의 허브 트리:\n" + tree + "\n")
     # 2026-10-05 사용자 결정(#136 M5 정보 회귀 금지, M3 `## 근거` 절). 작업자 지시(growth.prompt)와 같은 규칙.
+    # 2026-11-07(#273): 본문을 고치지 않고 줄만 다는 것은 지지에 한한다 — 조건·반례는 본문도 고칠 수 있다.
     text += ("검토하는 턴이 현행 노드보다 오래됐을 수 있다. 옛 사실은 날짜를 붙인 이력으로만 더하고, "
              "현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 선후가 불분명하면 보류한다. "
              "distill.sources에 준 라운드는 노드 끝 `## 근거` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 "
              "보인 것(50자 안팎)` 한 줄씩 단다 — derived-from은 노드만 받고, 엔진은 출처를 이 줄로 확인한다. "
-             "이미 노드에 있는 주장을 받치거나 조건·반례만 더하는 턴은 본문을 고쳐 쓰지 않고 그 줄만 단다. "
+             "이미 노드에 있는 주장을 받치기만 하는 턴은 본문을 고쳐 쓰지 않고 그 줄만 단다. "
              "좌표는 링크가 아니라 코드 글자로, 회상·인용 결과의 coordinate를 쓴다(`42cf0fc0#1`, "
              "이어진 라운드는 `42cf0fc0#41–42`). ")
     turns = len(st["pending_refs"]) - len(stored)
@@ -1561,10 +1675,13 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         # step numbers ("2"), and the ID read_cited returns must name the same turn here.
         n = (turn if isinstance(turn, int) and not isinstance(turn, bool) else
              int(turn) if isinstance(turn, str) and re.fullmatch(r"-\d+", turn.strip()) else None)
+        # "-N" and the default latest count the user's turns: a round a harness notice started
+        # has no words of theirs to cite (#275).
+        spoken = [t for t in turns if t["user"].strip()]
         if n is not None:
             if n >= 0:
                 raise ValueError("a relative turn counts back from the latest: -1, -2, ...")
-            matched = turns[n:n + 1 or None] if -n <= len(turns) else []
+            matched = spoken[n:n + 1 or None] if -n <= len(spoken) else []
         elif isinstance(turn, str) and turn.strip():
             key = turn_key(harness, turn.strip())
             matched = [t for t in turns if t["id"] == key]
@@ -1578,7 +1695,7 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
             needle = " ".join(quote.split())
             matched = [t for t in turns if needle in " ".join(t["user"].split())]
         else:
-            matched = turns[-1:]
+            matched = spoken[-1:]
         if len(matched) != 1:
             seen = [f"{t['id']}: {' '.join(t['user'].split())[:40]}" for t in (matched or turns)[-5:]]
             raise ValueError(f"{len(matched)} turns match; narrow by quote or turn. Candidates: {seen}")
