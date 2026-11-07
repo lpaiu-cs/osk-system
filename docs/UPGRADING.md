@@ -41,8 +41,8 @@ device.
     (`조건`) or counterexample (`반례`) changes the body too.
   - Capturing a Claude copy that wrote its parent's U+2028 as a line end no
     longer stops (#252, #262). A background task's notice no longer counts as
-    your turn (#275), and turns a rewind dropped leave review (#235). Rounds
-    already tracked stay as they are.
+    your turn (#275), and turns a rewind left behind leave review, also when
+    the app rewinds into a copy (#235). Rounds already tracked stay as they are.
 
 ## From v5.3 to v5.4
 
