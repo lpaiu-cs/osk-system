@@ -27,6 +27,19 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
+## From v5.4 to v5.5
+
+- v5.5.0 changes anchor edits on large nodes and the evidence-line rule.
+  Nothing to do.
+  - Give `read_node` a quote from the body as `view`. When the quote matches
+    one place, you get that paragraph and one paragraph on each side, and that
+    text works as `old_text` for `update_node`. An `update_node` refused
+    because its anchor matches several places returns the range of each match
+    as `views`.
+  - The distillation and conversation-review instructions changed: an evidence
+    line without a body change is only for support (`지지`). A condition
+    (`조건`) or counterexample (`반례`) changes the body too.
+
 ## From v5.3 to v5.4
 
 - **Sync daemon users: run the setup tool for sync once after the update.**
