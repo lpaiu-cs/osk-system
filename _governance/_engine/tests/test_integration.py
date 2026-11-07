@@ -512,9 +512,11 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("Claude rewound past a reviewed turn", found["capture_error"])
         self.assertEqual(it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"], before)
 
-    def fork(self, at, own_at, went_on=False):
-        """The app's rewind: a copy of the original up to round 1 that goes on at `own_at`.
-        The original holds rounds 1–3 from `at`; `went_on` adds round 5 to it afterwards."""
+    def fork(self, at, own_at, went_on=False, cut=True):
+        """The app's rewind: a copy of the original up to round 1 that goes on at `own_at`. It carries
+        the file-history snapshot of round 2's prompt, the message it was cut before; `cut=False` is
+        a copy split at the turn boundary instead. The original holds rounds 1–3 from `at`;
+        `went_on` adds round 5 to it afterwards."""
         parent, child = self.sid + "-o", self.sid + "-r"
         ours = lambda owner, rows: [dict(r, uuid=str(uuid.uuid5(uuid.NAMESPACE_URL, owner + r["uuid"]))) for r in rows]
         original = ours(parent, stamped(claude_round(parent, 1) + claude_round(parent, 2) + claude_round(parent, 3), at))
@@ -522,7 +524,10 @@ class IntegrationTests(unittest.TestCase):
         write = lambda path, rows: path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         write(opath, original)
         self.assertTrue(it.capture("claude", parent, str(opath), "capture-tests")["ok"])
-        write(cpath, [dict(r, sessionId=child) for r in original[:5]]
+        prompt = original[5]["uuid"]
+        trace = [{"type": "file-history-snapshot", "messageId": prompt, "isSnapshotUpdate": False,
+                  "snapshot": {"messageId": prompt, "trackedFileBackups": {}}}] if cut else []
+        write(cpath, [dict(r, sessionId=child) for r in original[:5]] + trace
               + ours(child, stamped(claude_round(child, 4), own_at)))
         st = it.capture("claude", child, str(cpath), "capture-tests")
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
@@ -534,9 +539,9 @@ class IntegrationTests(unittest.TestCase):
         return parent, opath, original
 
     def test_claude_rewind_into_a_copy_drops_the_turns_it_left_behind(self):
-        # #235: the app's rewind makes a copy from an earlier point and goes on there. Once the
-        # original is quiet, its turns no copy took and that came before the copy's first turn
-        # leave tracking unreviewed — as Codex's reverted turns do (#208).
+        # #235: the app's rewind cuts a copy right before the message it rewinds to and goes on
+        # there. Once the original is quiet, its turns no copy took and that came before the
+        # copy's first turn leave tracking unreviewed — as Codex's reverted turns do (#208).
         at = time.time() - 2 * 86400
         parent, opath, original = self.fork(at, at + 100)
         copies = it._copies_by_parent()[("claude", parent)]
@@ -565,8 +570,18 @@ class IntegrationTests(unittest.TestCase):
         parent, _, _ = self.fork(at - 86400, at - 86400 + 100, went_on=True)
         self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
 
-    def test_codex_rewind_into_a_fork_follows_the_same_rule(self):
-        # Codex turn IDs are UUIDv7: their time is in the ID, so the rule needs no transcript.
+    def test_claude_copy_split_at_a_turn_boundary_is_not_a_rewind(self):
+        # The copy's first turn came after the original's last and the original went quiet, but
+        # the copy holds no trace of a message it was cut before: a plain fork from an earlier
+        # turn. Time alone cannot tell it from a rewind, so the original keeps its turns.
+        at = time.time() - 2 * 86400
+        parent, _, _ = self.fork(at, at + 100, cut=False)
+        self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
+        self.assertEqual(len(it._load(it.state_path("claude", parent), "claude", parent)["rounds"]), 3)
+
+    def test_codex_fork_is_not_a_rewind(self):
+        # Codex leaves a rewind in the same thread (`thread/revert`, #208). A fork carries no trace
+        # of one, so even a fork whose first turn came after the original's last keeps them.
         quiet = Path(TMP.name) / f"{self.sid}.jsonl"
         quiet.write_text("{}\n", encoding="utf-8")
         old = time.time() - 13 * 3600
@@ -578,8 +593,7 @@ class IntegrationTests(unittest.TestCase):
                   "rounds": [{"id": t, "ref": raw.native_ref("codex", "p", t)} for t in turns]}
         copy = lambda first: ({"harness": "codex", "conversation_id": "c", "transcript_path": None,
                                "rounds": [{"id": first, "ref": raw.native_ref("codex", "c", first)}]}, turns[0])
-        self.assertEqual(it._fork_rewound(parent, [copy(tid(base + 5000))])["start"], 1)
-        self.assertIsNone(it._fork_rewound(parent, [copy(tid(base + 1500))]))
+        self.assertIsNone(it._fork_rewound(parent, [copy(tid(base + 5000))]))
 
     def test_claude_rewind_rule_starts_after_the_turns_already_tracked(self):
         # A turn an engine without the rule tracked stays tracked though a later rewind dropped it.
