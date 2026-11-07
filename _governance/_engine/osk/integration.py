@@ -628,18 +628,21 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
     with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
         rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
         kept, gone = s["rounds"], []
-        if harness == "codex":
+        if harness == "codex" or parsed.get("reverted"):
             by_id = {r["id"]: r for r in rounds}
             if len(by_id) != len(rounds):
                 raise ValueError("native round identity prefix changed; the review cursor was not moved")
-            # Codex `thread/revert` keeps an earlier page only up to a turn (#208): an
-            # unreviewed turn it took out leaves the cursor as if it had never been tracked.
-            # Any other missing turn is a changed prefix.
+            # Codex `thread/revert` keeps an earlier page only up to a turn (#208), and a Claude
+            # rewind leaves its dropped branch behind (#235): an unreviewed turn either took out
+            # leaves the cursor as if it had never been tracked. Any other missing turn is a
+            # changed prefix.
             gone = [i for i, r in enumerate(kept) if r["id"] not in by_id]
             if any(kept[i]["id"] not in parsed.get("reverted", ()) for i in gone):
                 raise ValueError("native round identity prefix changed; the review cursor was not moved")
             if gone and gone[0] < s["reviewed_count"]:
-                raise ValueError("Codex reverted a reviewed turn (thread/revert); the review cursor was not moved")
+                raise ValueError("Codex reverted a reviewed turn (thread/revert); the review cursor was not moved"
+                                 if harness == "codex" else
+                                 "Claude rewound past a reviewed turn; the review cursor was not moved")
             kept = [r for r in kept if r["id"] in by_id]
             # A recovered past turn follows the turns already tracked: keep the saved order.
             known = {r["id"] for r in kept}
@@ -668,6 +671,8 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
         if rules:
             s.setdefault("turns_since", rules["since"])
             s.setdefault("prompts_since", rules["prompts_since"])
+            if "harness_since" in rules:
+                s.setdefault("harness_since", rules["harness_since"])
         if changed or gone:
             first = min(changed[:1] + gone[:1])
             s["snapshots"] = {t: v for t, v in s["snapshots"].items()
@@ -979,19 +984,21 @@ def review_status(harness: str, conversation_id: str, through: str) -> dict:
 def _turn_rules(s: dict) -> dict | None:
     """Claude의 새 턴 규칙(턴 도중 메시지, 멈춘 미완료 턴)은 이 엔진이 처음 추적한 뒤의
     턴부터다. 새 프롬프트가 도구 호출로 끝난 턴을 닫는 규칙(#218)도 그 규칙을 처음 쓴 엔진이
-    추적한 뒤부터다(`prompts_since`). 그 앞에 저장된 라운드는 저장된 경계와 표현 그대로 다시
-    읽힌다. 모든 판독이 같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
+    추적한 뒤부터다(`prompts_since`). 하네스가 프롬프트로 보낸 알림과 되감기로 버린 갈래를
+    가리는 규칙(#275·#235)도 그렇다(`harness_since`). 그 앞에 저장된 라운드는 저장된 경계와
+    표현 그대로 다시 읽힌다. 모든 판독이 같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
     if s["harness"] != "claude":
         return None
     tracked = (s.get("inherited") or {}).get("rounds", []) + s["rounds"]
     last = tracked[-1]["id"] if tracked else None
     return {"since": s.get("turns_since", last), "prompts_since": s.get("prompts_since", last),
+            "harness_since": s.get("harness_since", last),
             "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
 
 
 def _copied_since(s: dict, native_path: str) -> dict:
-    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계 — 턴 규칙(`since`)과 프롬프트
-    규칙(`prompts_since`) 각각. 복제된 앞부분은 그 턴을 추적한 같은 scope 커서가 쓴 경계를
+    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계 — 턴 규칙(`since`), 프롬프트
+    규칙(`prompts_since`), 하네스 행 규칙(`harness_since`) 각각. 복제된 앞부분은 그 턴을 추적한 같은 scope 커서가 쓴 경계를
     따른다 — 새 규칙으로 읽으면 부모가 옛 규칙으로 추적한 턴과 경계·표현이 갈라진다. 그
     커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다. 부모가 갈래 지점 뒤로 이어
     추적했으면 그 경계는 사본에 없다 — 복제된 앞부분은 모두 그 앞이니, 경계까지 추적한
@@ -999,7 +1006,7 @@ def _copied_since(s: dict, native_path: str) -> dict:
     부모가 저장한 절단 지점은 넘기지 않는다 — 사본에서도 행 시각의 12시간 공백이 같은
     자리를 나눈다. 프롬프트 경계는 부모가 턴 규칙으로 읽은 라운드다 — 유휴 닫기가 나눈
     라운드는 규칙 없는 판독에 없으므로, 찾은 턴 규칙으로 다시 읽어 찾는다(#233 리뷰)."""
-    best = {"since": None, "prompts_since": None}
+    best = {"since": None, "prompts_since": None, "harness_since": None}
     rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"]
     if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
         return best   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
@@ -1020,6 +1027,10 @@ def _copied_since(s: dict, native_path: str) -> dict:
     ruled = transcripts.read(native_path, "claude", s["conversation_id"],
                              rules={"since": best["since"], "cuts": [], "now": time.time()})["rounds"]
     best["prompts_since"] = latest(ruled, "prompts_since")
+    ruled = transcripts.read(native_path, "claude", s["conversation_id"],
+                             rules={"since": best["since"], "prompts_since": best["prompts_since"],
+                                    "cuts": [], "now": time.time()})["rounds"]
+    best["harness_since"] = latest(ruled, "harness_since")
     return best
 
 
@@ -1562,10 +1573,13 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         # step numbers ("2"), and the ID read_cited returns must name the same turn here.
         n = (turn if isinstance(turn, int) and not isinstance(turn, bool) else
              int(turn) if isinstance(turn, str) and re.fullmatch(r"-\d+", turn.strip()) else None)
+        # "-N" and the default latest count the user's turns: a round a harness notice started
+        # has no words of theirs to cite (#275).
+        spoken = [t for t in turns if t["user"].strip()]
         if n is not None:
             if n >= 0:
                 raise ValueError("a relative turn counts back from the latest: -1, -2, ...")
-            matched = turns[n:n + 1 or None] if -n <= len(turns) else []
+            matched = spoken[n:n + 1 or None] if -n <= len(spoken) else []
         elif isinstance(turn, str) and turn.strip():
             key = turn_key(harness, turn.strip())
             matched = [t for t in turns if t["id"] == key]
@@ -1579,7 +1593,7 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
             needle = " ".join(quote.split())
             matched = [t for t in turns if needle in " ".join(t["user"].split())]
         else:
-            matched = turns[-1:]
+            matched = spoken[-1:]
         if len(matched) != 1:
             seen = [f"{t['id']}: {' '.join(t['user'].split())[:40]}" for t in (matched or turns)[-5:]]
             raise ValueError(f"{len(matched)} turns match; narrow by quote or turn. Candidates: {seen}")

@@ -379,9 +379,10 @@ v5.4.1 turns a validator rule on by itself once it has no violations, applies th
 migration without a terminal confirmation, and stops counting harness notices as your input.
 v5.4.2 lets an anchor edit match text the tag defence spaced and lets a Scope node cite ledger records.
 [v5.5.0](docs/v5.5-milestones.md) lets an agent edit a large node by reading only the passage and the
-paragraphs around it, and allows an evidence line without a body change only for supporting evidence.
-[v5.6.0](docs/v5.6-milestones.md) takes the designs deferred from v5.1, the remaining capture
-fixes, and the evaluations that need a longer operating window. [v6.0.0](docs/v6.0-milestones.md)
+paragraphs around it, allows an evidence line without a body change only for supporting evidence,
+and reads Claude transcript copies, harness notices and rewinds correctly.
+[v5.6.0](docs/v5.6-milestones.md) takes the designs deferred from v5.1 and the evaluations that
+need a longer operating window. [v6.0.0](docs/v6.0-milestones.md)
 extends the memory model on that base.
 
 ## License
