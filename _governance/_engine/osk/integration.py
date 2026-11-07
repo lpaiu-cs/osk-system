@@ -1249,12 +1249,34 @@ def _copies_by_parent() -> dict:
     return out
 
 
+def _cut_before(c: dict, native_path: str | None, message: str) -> bool:
+    """사본이 원래 대화의 그 메시지 바로 앞에서 잘렸다는 흔적. Claude 앱은 메시지로 되감을 때 그 메시지
+    시점의 파일 이력 스냅숏(`file-history-snapshot`의 `messageId`)을 사본에 옮긴다 — 턴 경계에서 그냥
+    가른 사본에는 없다. Codex는 되감기를 같은 스레드에 남기므로(`thread/revert`, #208) fork에 흔적이 없다."""
+    if c["harness"] != "claude" or not native_path:
+        return False
+    try:
+        for line in transcripts.native_lines(native_path, c["harness"], c["conversation_id"]):
+            if message.encode() not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("type") == "file-history-snapshot" and row.get("messageId") == message:
+                return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
 def _fork_rewound(s: dict, copies: list) -> dict | None:
-    """사본으로 되감은 턴(#235). 앱의 되감기는 앞선 지점에서 사본을 만들어 거기서 잇는다 — 원래
-    대화에는 버린 턴이 남는다(Codex는 같은 스레드를 잘라 `thread/revert`로 남긴다, #208). 어느 사본도
-    이어받지 않은 원래 대화의 끝 턴들은, 그 마지막 턴보다 뒤에 첫 턴을 연 사본이 있고 원래 대화가
-    조용해졌으면 버린 갈래다. 검토하지 않은 것만 돌려준다. 원래 대화가 다시 이어지면 이 판단은
-    서지 않는다(`_capture_apply`가 되살린다)."""
+    """사본으로 되감은 턴(#235). Claude 앱은 메시지로 되감으면 그 메시지 바로 앞에서 사본을 만들어 거기서
+    잇는다 — 원래 대화에는 버린 턴이 남는다. 어느 사본도 이어받지 않은 원래 대화의 끝 턴들은, 갈래 다음
+    메시지 앞에서 잘린 흔적(`_cut_before`)을 지닌 사본이 그 마지막 턴보다 뒤에 첫 턴을 열었고 원래 대화가
+    조용해졌으면 버린 갈래다. 흔적 없이 턴 경계에서 가른 사본은 시각만으로 되감기와 가를 수 없어 판단에
+    쓰지 않는다. 검토하지 않은 것만 돌려준다. 원래 대화가 다시 이어지면 이 판단은 서지 않는다
+    (`_capture_apply`가 되살린다)."""
     ids = [r["id"] for r in s["rounds"]]
     kept = [ids.index(branch) for _, branch in copies if branch in ids]
     if not kept or s.get("repair_pending"):
@@ -1264,13 +1286,17 @@ def _fork_rewound(s: dict, copies: list) -> dict | None:
     if start >= len(ids) or not native:
         return None
     last = _turn_at(s, native, refs=[s["rounds"][-1]["ref"]])
-    for c, _ in copies:
+    for c, branch in copies:
+        cut = ids.index(branch) + 1 if branch in ids else len(ids)
+        if cut >= len(ids):
+            continue
         try:
             own = _locate_transcript(c["harness"], c["conversation_id"], c.get("capture_path") or c.get("transcript_path"))
         except (OSError, ValueError, KeyError):
             continue
         born = _turn_at(c, own, refs=[c["rounds"][0]["ref"]])
-        if last is not None and born is not None and born > last:
+        if (last is not None and born is not None and born > last
+                and _cut_before(c, own, ids[cut].split(":", 1)[0])):
             return {"start": start, "copy": c["conversation_id"], "born": born}
     return None
 
