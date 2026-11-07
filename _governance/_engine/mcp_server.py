@@ -190,11 +190,11 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
 
 @mcp.tool()
 def read_node(name: str, view: str | None = None) -> dict:
-    """`name`의 전문·`hash`(재작성 `expect_hash`). `view`는 `outline`(목차) 또는
-    `시작:끝`(본문 0기반 문자, 끝 제외). 부분 열람은 전문 쓰기용 해시를 주지 않는다."""
-    if view is not None and (not isinstance(view, str) or not re.fullmatch(
-            r"outline|[0-9]{1,10}:[0-9]{1,10}", view)):
-        return {"error": "view는 outline 또는 시작:끝(0기반 본문 문자, 끝 제외)이다"}
+    """`name`의 전문·`hash`(재작성 `expect_hash`). `view`는 `outline`(목차),
+    `시작:끝`(본문 0기반 문자, 끝 제외) 또는 본문 인용(앞뒤 문단째, 그대로 `old_text`).
+    부분 열람은 전문 쓰기용 해시를 주지 않는다."""
+    if view is not None and (not isinstance(view, str) or not view):
+        return {"error": "view는 outline, 시작:끝(0기반 본문 문자, 끝 제외) 또는 본문 인용이다"}
     idx = _idx()
     # 동명 노드는 **고르지 않는다** — id 갈래(아래)와 같은 규율이다. 구판은
     # 이름 갈래에만 이 방어가 없어, 쓰기 통로가 "어느 것인지 정해지지 않는다"고
@@ -279,6 +279,18 @@ def _dup_id_error(paths: list[str]) -> dict:
 
 
 def _node_view(body: str, view: str) -> dict:
+    if view != "outline" and not re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", view):
+        # 본문 인용 — 그 자리와 앞뒤 문단. 큰 노드의 앵커 편집이 연결어까지 고치게 한다(#273).
+        hits, windows = write.anchor_windows(body, view)
+        if hits == 0 and (spaced := write._space_numeric_tags(view)) != view:
+            hits, windows = write.anchor_windows(body, spaced)  # 저장본의 태그 방어(#292)와 같게
+        if hits != 1:
+            return {"error": "인용이 본문에 없다 — 공백·줄바꿈까지 그대로 옮겨라" if not hits else
+                    f"인용이 본문에 {hits}곳 맞는다 — 더 길게 인용하거나 views를 범위로 읽어라",
+                    "views": [f"{a}:{b}" for a, b in windows]}
+        start, end = windows[0]
+        return {"body": body[start:end], "start": start, "end": end,
+                "anchor": "body가 유일 앵커다 — 그대로 old_text로, 고친 판을 new_text로 보낸다"}
     if view != "outline":
         start, requested_end = map(int, view.split(":"))
         if not 0 <= start < requested_end or start >= len(body):

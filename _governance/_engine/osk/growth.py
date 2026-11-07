@@ -629,13 +629,16 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "Every round given as a distill source gets one line in the node's \"## 근거\" section, at "
         "the end of the body, as \"- <round date> · <coordinate> · 지지|조건|반례 — <what the round "
         "showed, about 50 characters>\": derived-from takes nodes only, and the engine checks the "
-        "sources against these lines. When a round only supports, conditions or contradicts a claim "
+        # 2026-11-07 사용자 결정(#273): 본문을 고치지 않는 것은 지지에 한한다 — 조건·반례는 주장의 범위나 참을
+        # 바꿀 수 있다. 수치를 본문에 묶던 말("numbers")은 뺐다 — 수치도 사본이면 옮겨 적지 않고, 자기 값이면
+        # 본문에 둔다. 자리는 수치인지가 아니라 첫 기록이 정한다(docs/abstraction-review.md §12).
+        "sources against these lines. When a round only supports a claim "
         "a node already holds, do not rewrite the body or add notes about this review; add only its "
         "line. The coordinate, written as code "
         "in backticks rather than a link, is the coordinate that cite_round or read_cited returns, "
         "such as 42cf0fc0#1; "
         "consecutive rounds that make one point share a line, such as 42cf0fc0#41–42. Add a line "
-        "only for independent support, a condition or a counterexample; keep actions, numbers and "
+        "only for independent support, a condition or a counterexample; keep actions and "
         "asides in the body. "
         "Use each Scope job's key plus a stable target suffix for distill.key. A key is bound to "
         "one exact request: reuse it only to retry or resume that request, and give a further, "
