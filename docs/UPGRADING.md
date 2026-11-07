@@ -29,8 +29,8 @@ device.
 
 ## From v5.4 to v5.5
 
-- v5.5.0 changes anchor edits on large nodes and the evidence-line rule.
-  Nothing to do.
+- v5.5.0 changes anchor edits on large nodes and the evidence-line rule, and
+  fixes four defects in reading Claude transcripts. Nothing to do.
   - Give `read_node` a quote from the body as `view`. When the quote matches
     one place, you get that paragraph and one paragraph on each side, and that
     text works as `old_text` for `update_node`. An `update_node` refused
@@ -39,6 +39,10 @@ device.
   - The distillation and conversation-review instructions changed: an evidence
     line without a body change is only for support (`지지`). A condition
     (`조건`) or counterexample (`반례`) changes the body too.
+  - Capturing a Claude copy that wrote its parent's U+2028 as a line end no
+    longer stops (#252, #262). A background task's notice no longer counts as
+    your turn (#275), and turns a rewind dropped leave review (#235). Rounds
+    already tracked stay as they are.
 
 ## From v5.3 to v5.4
 
