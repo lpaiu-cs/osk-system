@@ -3091,6 +3091,13 @@ def test_anchor_edit():
     check("앵커가 여러 곳이면 거부", not r.get("ok"), r)
     check("거부가 유일하게 만들라고 가리킨다",
           "유일" in " ".join(r.get("violations", [])), r)
+    check("맞는 자리마다 앞뒤 문단의 범위를 준다(#273)",
+          len(r.get("views", [])) == 2 and "같은 말이" in contract.parse(p).body[
+              int(r["views"][1].split(":")[0]):int(r["views"][1].split(":")[1])], r)
+    big = "가\n\n" + "나" * 4100 + "\n\n다"
+    check("창 끝에 인용의 줄바꿈을 넣지 않는다(#273)",
+          write.anchor_windows(big, "나" * 4100 + "\n")[1] == [(3, 4103)],
+          write.anchor_windows(big, "나" * 4100 + "\n"))
     check("여러 곳 거부는 파일을 건드리지 않는다",
           contract.parse(p).body.count("같은 말이 두 번 나온다.") == 2)
     r = _w(write.update_node, "regr-anchoredit",
@@ -3129,6 +3136,10 @@ def test_anchor_edit():
     check("태그 방어가 저장물에 반영된다",
           "#1227 은 심각했다" in contract.parse(p).body,
           contract.parse(p).body[-60:])
+    r = _w(write.update_node, "regr-anchoredit",
+           old_text="#1227은 심각했다", new_text="#1227은 심각했었다")
+    check("방금 쓴 글 그대로의 앵커도 태그 방어 뒤의 저장본에 맞는다(#292, 창 계산과 함께)",
+          r.get("ok") and "#1227 은 심각했었다" in contract.parse(p).body, r)
 
     # 부분 변경도 변경이다 — 각인이 빠지면 최신성이 거짓이 된다
     before = contract.parse(p).meta.get("updated")
