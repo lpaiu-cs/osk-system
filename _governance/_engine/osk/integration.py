@@ -647,6 +647,14 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
             # A recovered past turn follows the turns already tracked: keep the saved order.
             known = {r["id"] for r in kept}
             rounds = [by_id[r["id"]] for r in kept] + [r for r in rounds if r["id"] not in known]
+        if s.get("rewound"):
+            # Turns a rewind into a copy left behind (`_fork_rewound`) stay out until the
+            # conversation goes on past them; then they come back to review with the new turns.
+            later = [r["id"] for r in rounds[len(kept):]]
+            if later == s["rewound"]["rounds"][:len(later)]:
+                rounds = rounds[:len(kept)]
+            else:
+                del s["rewound"]
         ids = [r["id"] for r in rounds]
         if len(ids) != len(set(ids)) or ids[:len(kept)] != [r["id"] for r in kept]:
             raise ValueError("native round identity prefix changed; the review cursor was not moved")
@@ -1221,6 +1229,70 @@ def capture_known(tried=None) -> dict:
             "awaiting_native": awaiting_native}
 
 
+def _copies_by_parent() -> dict:
+    """대화마다 그 앞부분을 이어받은 사본(resume·fork)의 커서와 갈래 지점 — 이어받은 마지막 턴의
+    주인이 부모다. 커서 파일을 잠그지 않고 읽는다(검토 선택의 판단 재료일 뿐이다)."""
+    probe = state_path("claude", "inventory")
+    prefix = "-".join(probe.name.split("-")[:3]) + "-"
+    out = {}
+    for p in probe.parent.glob(prefix + "*.json"):
+        try:
+            c = json.loads(p.read_text(encoding="utf-8"))
+            last = ((c.get("inherited") or {}).get("rounds") or [None])[-1]
+            if not (last and c.get("rounds") and raw.is_native(last.get("ref"))):
+                continue
+            _, harness, parent, _ = last["ref"].split(":", 3)
+            if harness == c.get("harness") and parent != c.get("conversation_id"):
+                out.setdefault((harness, parent), []).append((c, last["id"]))
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return out
+
+
+def _fork_rewound(s: dict, copies: list) -> dict | None:
+    """사본으로 되감은 턴(#235). 앱의 되감기는 앞선 지점에서 사본을 만들어 거기서 잇는다 — 원래
+    대화에는 버린 턴이 남는다(Codex는 같은 스레드를 잘라 `thread/revert`로 남긴다, #208). 어느 사본도
+    이어받지 않은 원래 대화의 끝 턴들은, 그 마지막 턴보다 뒤에 첫 턴을 연 사본이 있고 원래 대화가
+    조용해졌으면 버린 갈래다. 검토하지 않은 것만 돌려준다. 원래 대화가 다시 이어지면 이 판단은
+    서지 않는다(`_capture_apply`가 되살린다)."""
+    ids = [r["id"] for r in s["rounds"]]
+    kept = [ids.index(branch) for _, branch in copies if branch in ids]
+    if not kept or s.get("repair_pending"):
+        return None
+    start = max(max(kept) + 1, s["reviewed_count"])
+    native = _ended_source(s)
+    if start >= len(ids) or not native:
+        return None
+    last = _turn_at(s, native, refs=[s["rounds"][-1]["ref"]])
+    for c, _ in copies:
+        try:
+            own = _locate_transcript(c["harness"], c["conversation_id"], c.get("capture_path") or c.get("transcript_path"))
+        except (OSError, ValueError, KeyError):
+            continue
+        born = _turn_at(c, own, refs=[c["rounds"][0]["ref"]])
+        if last is not None and born is not None and born > last:
+            return {"start": start, "copy": c["conversation_id"], "born": born}
+    return None
+
+
+def _drop_fork_rewound(harness: str, conversation_id: str, copies: list) -> int:
+    """`_fork_rewound`의 턴을 커서에서 뺀다 — Codex의 되돌린 턴처럼, 추적한 적 없던 것처럼 둔다."""
+    with _locked(harness, conversation_id) as p:
+        s = _load(p, harness, conversation_id)
+        found = _fork_rewound(s, copies)
+        if not found:
+            return 0
+        start = found["start"]
+        dropped = [r["id"] for r in s["rounds"][start:]]
+        s["rounds"] = s["rounds"][:start]
+        s["snapshots"] = {t: v for t, v in s["snapshots"].items() if v.get("repair_refs") or v["count"] <= start}
+        if s["rounds"]:
+            s["snapshots"].setdefault(_snapshot(s), {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
+        s["rewound"] = {"rounds": dropped, "copy": found["copy"], "at": core.now_iso()}
+        _save(p, s)
+        return len(dropped)
+
+
 def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
     포착(모델 비용이 없다)과 작업 선택을 나눈다. 대기 전체를 먼저 포착하고, 따라잡은 커서로
@@ -1235,10 +1307,14 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None,
                                                captured["awaiting_native"], [])
     states, _, again, _ = _known_pending(None, tried)
     errors += [e for e in again if e not in errors]
+    copies = _copies_by_parent()
     for s in states:
         if len(jobs) >= limit:
             break
         try:
+            if (s["harness"], s["conversation_id"]) in copies and _view(s)["pending_refs"]:
+                # 사본으로 되감아 버린 턴은 검토에 넣지 않는다(#235)
+                _drop_fork_rewound(s["harness"], s["conversation_id"], copies[s["harness"], s["conversation_id"]])
             if _view(s)["pending_refs"]:
                 job = prompt(s["harness"], s["conversation_id"], include_organization=False,
                              max_rounds=max_rounds, offline=True)
