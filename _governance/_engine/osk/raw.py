@@ -200,6 +200,51 @@ def migrate(*, apply: bool = False) -> dict:
         return {"ok": True, "applied": apply, "count": len(plans), "files": plans}
 
 
+def consolidate(*, apply: bool = False) -> dict:
+    """옛 자리의 기록을 루트 `_cited/.records/`로 옮긴다 — Mechanism §9 5항의 자료 이관. 바이트와
+    라운드 번호를 보존하고, 옛 좌표는 같은 이름으로 계속 해석된다. 노드는 고치지 않는다.
+
+    `.md`·`.txt` 저장본이 함께 있거나 같은 이름이 루트나 앞선 옛 자리에도 있으면 그 사본은 옮기지
+    않고 `conflicts`로 낸다 — 덮거나 합치지 않는다. 옮기는 사본은 `locate_record`가 지금 고르는
+    바로 그것이라(같은 순서로 훑는다) 이관 전후에 좌표가 가리키는 기록이 같다."""
+    with mutation_lock():
+        moves, conflicts, seen = [], [], {}
+        for d in _legacy_dirs():
+            for f in sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt"),
+                             *(d / ".records").glob("*/record.txt")}):
+                try:
+                    src = _record_file(f)
+                    name = _record_pair(src)[0].stem
+                    dst = _record_file(ROOT / CITED / f"{name}.md")
+                except write.WriteError as e:
+                    conflicts.append({"path": posix_rel(f, ROOT), "reason": e.args[0]})
+                    continue
+                key = write._portable_name_key(name)
+                if dst.exists() or key in seen:
+                    other = posix_rel(dst, ROOT) if dst.exists() else seen[key]
+                    conflicts.append({"path": posix_rel(src, ROOT), "reason": f"같은 이름의 기록이 {other}에 있다"})
+                    continue
+                seen[key] = posix_rel(src, ROOT)
+                moves.append({"from": seen[key], "to": posix_rel(dst, ROOT),
+                              "hash": sha256_file(src), "bytes": src.stat().st_size})
+        if apply:
+            for m in moves:
+                src, dst = ROOT / m["from"], ROOT / m["to"]
+                if dst.exists():
+                    raise write.WriteError(f"이관 대상이 이미 있다 — 덮지 않았다: {m['to']}")
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                src.rename(dst)
+                if sha256_file(dst) != m["hash"]:
+                    raise write.WriteError(f"이관 후 해시 불일치 — 성공으로 처리하지 않았다: {m['to']}")
+            for d in _legacy_dirs():     # 비운 옛 자리 — 다른 파일이 남은 디렉터리는 그대로 둔다
+                for sub in [*sorted((p for p in d.rglob("*") if p.is_dir()), reverse=True), d]:
+                    try:
+                        sub.rmdir()
+                    except OSError:
+                        pass
+        return {"ok": True, "applied": apply, "count": len(moves), "files": moves, "conflicts": conflicts}
+
+
 def canonical_ref(ref: str) -> str:
     """Compare old wiki coordinates and new plain coordinates by the same record."""
     value = ref.strip()
