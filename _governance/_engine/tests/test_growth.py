@@ -657,6 +657,12 @@ class GrowthTests(unittest.TestCase):
             assert rechecks.evidence_span('x' + chr(10) + '# 근거' + chr(10) + '- a') is None
             fm = '---' + chr(10) + 'id: x' + chr(10) + '---' + chr(10)
             assert rechecks.state((fm + longer).encode()) == rechecks.state((fm + observed).encode())
+            # a node named 관측 whose body opens with its own `# 관측` title: the claim is not a section,
+            # so editing it changes the state and still reaches the nodes that derive from it (#310 review)
+            titled = '# 관측' + chr(10) + chr(10) + '주장 A.' + chr(10)
+            assert rechecks.evidence_span(titled) is None
+            assert validate.evidence_errors(titled, []) == []
+            assert rechecks.state((fm + titled).encode()) != rechecks.state((fm + titled.replace('A', 'B')).encode())
             # a non-node left in derived-from is reported once; a node there is not
             assert validate.evidence_errors('x', ['N', first['round_refs'][0]], idx) == [
                 'derived-from에 비노드 대상 1개가 남아 있다 — 관측 절로 옮긴다']

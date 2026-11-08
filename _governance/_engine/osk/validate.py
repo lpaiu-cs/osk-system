@@ -336,9 +336,11 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
     span = evidence_span(text)
     errs = []
     if span is None:
-        heads = [c for _o, line, c, code, _ in contract.md_lines(text)
+        # 본문 맨 앞의 `# 관측`은 노드 제목이다(evidence_span) — 자리를 벗어난 절로 세지 않는다
+        heads = [c for o, line, c, code, _ in contract.md_lines(text)
                  if not code and c == line.rstrip("\r").expandtabs(4)
-                 and re.match(r"^ {0,3}(?:# +" + OBSERVATION + "|## +" + EVIDENCE + r")[ \t#]*$", c)]
+                 and (re.match(r"^ {0,3}# +" + OBSERVATION + r"[ \t#]*$", c) and text[:o].strip()
+                      or re.match(r"^ {0,3}## +" + EVIDENCE + r"[ \t#]*$", c))]
         if heads:
             errs.append("관측 절이 노드 끝에 있지 않다")
     else:

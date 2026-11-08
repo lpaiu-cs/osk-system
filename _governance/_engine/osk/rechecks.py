@@ -60,9 +60,13 @@ def evidence_span(text: str) -> tuple[int, int] | None:
         h = _ATX.match(content) if top else None
         if h and len(h.group(1)) <= 2:
             last = (off, len(h.group(1)), re.sub(r"(?:^|[ \t]+)#+$", "", h.group(2) or "").strip())
-    # ponytail: 제목만 본다 — 본문 첫 제목이 노드 이름 `# 관측`이고 그 뒤 제목이 없으면 본문 전체를
-    # 관측 절로 읽는다. 그런 노드가 생기면 첫 제목을 노드 이름과 견주어 뺀다.
-    return (last[0], len(text)) if last and last[1:] in SECTION_HEADS else None
+    if not last or last[1:] not in SECTION_HEADS:
+        return None
+    # 앞에 아무것도 없는 `# 관측`은 노드 `관측`의 제목 행이지 관측 절이 아니다 — 절로 읽으면 주장
+    # 전체가 관련 상태에서 빠져 재검토가 전파되지 않는다(#310 리뷰).
+    if last[1] == 1 and not text[:last[0]].strip():
+        return None
+    return (last[0], len(text))
 
 
 def state(data: bytes) -> str:
