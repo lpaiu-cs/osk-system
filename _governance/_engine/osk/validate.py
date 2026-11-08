@@ -329,18 +329,20 @@ LEFTOVER = "derived-from에 비노드 대상"
 
 def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, records=None,
                     external=None) -> list[str]:
-    """노드 끝 `## 근거` 절의 줄마다 형식과 좌표의 해석, 그리고 `derived-from`에 남은 비노드
+    """노드 끝 관측 절의 줄마다 형식과 좌표의 해석, 그리고 `derived-from`에 남은 비노드
     대상(Mechanism §6-1 4항). `text`는 본문, `derived`는 frontmatter의 `derived-from` 값이다."""
     from . import evidence
-    from .rechecks import EVIDENCE, evidence_span
+    from .rechecks import EVIDENCE, OBSERVATION, evidence_span
     span = evidence_span(text)
     errs = []
     if span is None:
-        heads = [c for _o, line, c, code, _ in contract.md_lines(text)
+        # 본문 맨 앞의 `# 관측`은 노드 제목이다(evidence_span) — 자리를 벗어난 절로 세지 않는다
+        heads = [c for o, line, c, code, _ in contract.md_lines(text)
                  if not code and c == line.rstrip("\r").expandtabs(4)
-                 and re.match(r"^ {0,3}## +" + EVIDENCE + r"[ \t#]*$", c)]
+                 and (re.match(r"^ {0,3}# +" + OBSERVATION + r"[ \t#]*$", c) and text[:o].strip()
+                      or re.match(r"^ {0,3}## +" + EVIDENCE + r"[ \t#]*$", c))]
         if heads:
-            errs.append("`## 근거` 절이 노드 끝에 있지 않다")
+            errs.append("관측 절이 노드 끝에 있지 않다")
     else:
         records = records or evidence.Records()
         for line in text[span[0]:].split("\n")[1:]:
@@ -349,14 +351,14 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
                 continue   # 빈 줄 밖의 모든 줄이 근거 줄이다 — 하위 목록·문단·다른 표지도 형식 위반이다
             m = evidence.LINE.match(line)
             if not m:
-                errs.append(f"형식이 다른 근거 줄: {line[:60]}")
+                errs.append(f"형식이 다른 관측 줄: {line[:60]}")
                 continue
             problem = evidence.check(m.group(2), idx, records, external)
             if problem:
                 errs.append(problem)
     left = evidence.leftovers(derived, idx)
     if left:
-        errs.append(f"{LEFTOVER} {len(left)}개가 남아 있다 — 근거 절로 옮긴다")
+        errs.append(f"{LEFTOVER} {len(left)}개가 남아 있다 — 관측 절로 옮긴다")
     return errs
 
 

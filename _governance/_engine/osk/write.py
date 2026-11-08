@@ -593,7 +593,7 @@ def _check_edges(edges: dict | None, idx, *, adding: bool = True) -> list[str]:
                         found[0] in ("nonnode", "external") or evidence.kind(target) != "name"):
                     # 인용 기록·라운드 좌표·URL·별칭 좌표·경로는 모양으로, 이름은 해석으로 가른다
                     errs.append(
-                        f"derived-from은 노드만 받는다: {t} — 비노드 근거는 노드 끝 `## 근거` 절에 "
+                        f"derived-from은 노드만 받는다: {t} — 비노드 근거는 노드 끝 `# 관측` 절에 "
                         f"`- 날짜 · `좌표` · 지지|조건|반례 — 보인 것` 한 줄로 적는다(헌법 제8조 5·6항). "
                         f"인용 라운드의 좌표는 cite_round·read_cited가 주는 coordinate다")
                 continue

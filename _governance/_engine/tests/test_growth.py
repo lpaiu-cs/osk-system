@@ -639,7 +639,7 @@ class GrowthTests(unittest.TestCase):
             assert errs == ['없는 라운드: c38d8ef2#3', '없는 제목: _sources/r.md#없다', '없는 파일: _sources/d',
                             '노드를 가리키는 근거 줄: N — 노드 근거는 derived-from으로 옮긴다',
                             '선언되지 않은 별칭: brain:wiki/x.md',
-                            '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
+                            '형식이 다른 관측 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
             # a shortened hash two records share is ambiguous; a longer prefix tells them apart
             raw.append_rounds('repo/ev', 'codex-c38d8ef2' + '1' * 24, [{'user': 'q', 'agent': 'a'}], '00_Scope/W1')
             records = evidence.Records()
@@ -647,18 +647,34 @@ class GrowthTests(unittest.TestCase):
             assert records.short(claude) == 'c38d8ef20', records.short(claude)
             longer = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1–2` · 지지 — longer'])
             assert validate.evidence_errors(longer, [], idx, records) == []
+            # `# 관측` opens the section as the pre-v5.6 `## 근거` does (Mechanism §4-1 1), and renaming
+            # the heading leaves the relevant state as it was — it is measured up to the heading line
+            from osk import rechecks
+            observed = longer.replace('## 근거', '# 관측')
+            assert validate.evidence_errors(observed, [], idx, records) == []
+            assert validate.evidence_errors(observed + chr(10) + '## 이력' + chr(10), []) == ['관측 절이 노드 끝에 있지 않다']
+            assert rechecks.evidence_span('x' + chr(10) + '## 관측' + chr(10) + '- a') is None
+            assert rechecks.evidence_span('x' + chr(10) + '# 근거' + chr(10) + '- a') is None
+            fm = '---' + chr(10) + 'id: x' + chr(10) + '---' + chr(10)
+            assert rechecks.state((fm + longer).encode()) == rechecks.state((fm + observed).encode())
+            # a node named 관측 whose body opens with its own `# 관측` title: the claim is not a section,
+            # so editing it changes the state and still reaches the nodes that derive from it (#310 review)
+            titled = '# 관측' + chr(10) + chr(10) + '주장 A.' + chr(10)
+            assert rechecks.evidence_span(titled) is None
+            assert validate.evidence_errors(titled, []) == []
+            assert rechecks.state((fm + titled).encode()) != rechecks.state((fm + titled.replace('A', 'B')).encode())
             # a non-node left in derived-from is reported once; a node there is not
             assert validate.evidence_errors('x', ['N', first['round_refs'][0]], idx) == [
-                'derived-from에 비노드 대상 1개가 남아 있다 — 근거 절로 옮긴다']
+                'derived-from에 비노드 대상 1개가 남아 있다 — 관측 절로 옮긴다']
             moved = chr(10).join(['x', '', '## 근거', '', '- a', '', '## 이력', '', 'y'])
-            assert validate.evidence_errors(moved, []) == ['`## 근거` 절이 노드 끝에 있지 않다']
+            assert validate.evidence_errors(moved, []) == ['관측 절이 노드 끝에 있지 않다']
             # any list marker is a list item
             starred = chr(10).join(['x', '', '## 근거', '', '* 2026-10-05 · `c38d8ef20#1` · 지지 — star'])
-            assert validate.evidence_errors(starred, [])[0].startswith('형식이 다른 근거 줄: * 2026'), 'a * item was skipped'
+            assert validate.evidence_errors(starred, [])[0].startswith('형식이 다른 관측 줄: * 2026'), 'a * item was skipped'
             nested = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1` · 지지 — fine',
                                    '    * 2026-10-05 · `c38d8ef20#1` · 지지 — nested', 'a paragraph'])
             errs = validate.evidence_errors(nested, [])
-            assert [e.split(':')[0] for e in errs] == ['형식이 다른 근거 줄'] * 2, errs
+            assert [e.split(':')[0] for e in errs] == ['형식이 다른 관측 줄'] * 2, errs
             quoted = chr(10).join(['x', '', '> ## 근거', '>', '> - a'])
             assert validate.evidence_errors(quoted, []) == [], 'a quoted heading was read as the section'
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none',
@@ -819,7 +835,7 @@ class GrowthTests(unittest.TestCase):
             # in the frontmatter, not the earlier body mention
             first = '- 2026-01-01 · `c38d8ef2#1` · 지지 — ' + ('첫 질문입니다 ' * 9)[:50].rstrip() + '…'
             lines = na.body.rstrip(chr(10)).split(chr(10))
-            assert lines[-7:-4] == ['주장 A. 출처는 ' + url, '## 근거', ''] and lines[-4] == first, lines
+            assert lines[-7:-4] == ['주장 A. 출처는 ' + url, '# 관측', ''] and lines[-4] == first, lines
             assert lines[-3] == '- 2026-01-01 · `c38d8ef2#3` · 지지 — 인용 요지 #272 의 결정', lines
             assert lines[-2:] == ['- 2026-02-01 · `_sources/r.md` · 지지 — r.md',
                                   '- 2026-02-01 · `' + url + '` · 지지 — page.md'], lines
@@ -1097,13 +1113,13 @@ class GrowthTests(unittest.TestCase):
 
     def test_reviews_keep_current_claims_and_bind_existing_ones_by_evidence_line(self):
         # 2026-10-05: an old round must not roll back a newer claim, and a round that only
-        # supports a held claim gets a `## 근거` line instead of a rewritten body.
+        # supports a held claim gets a `# 관측` line instead of a rewritten body.
         self.check_case("""
             from osk import integration
             node('A')
             worker = growth.prompt(growth.plan(3))
             assert 'never replace, weaken or reorder a current claim' in worker
-            assert '"## 근거" section' in worker and '42cf0fc0#1' in worker
+            assert '"# 관측" section' in worker and '42cf0fc0#1' in worker
             path = core.ROOT / 'held.jsonl'
             rows = [{'type':'user','sessionId':'held','uuid':'u1','message':{'role':'user','content':'question'}},
                     {'type':'assistant','sessionId':'held','uuid':'a1','message':{'role':'assistant','id':'m1',
@@ -1112,7 +1128,7 @@ class GrowthTests(unittest.TestCase):
             assert integration.capture('claude','held',str(path),'held-project',space='00_Scope/W1')['ok']
             own = integration.prompt('claude','held')['text']
             assert '현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다' in own
-            assert '`## 근거` 절' in own and '`42cf0fc0#1`' in own
+            assert '`# 관측` 절' in own and '`42cf0fc0#1`' in own
         """)
 
     def test_worker_hooks_do_not_feed_maintenance_into_new_conversations(self):

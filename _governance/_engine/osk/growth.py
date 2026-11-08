@@ -626,7 +626,7 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
         "a current claim with an older one. If a round contradicts the current node, keep the "
         "current claim and record the earlier state with its date, or defer when the order is unclear. "
         # 2026-10-05 사용자 결정(#136 M3 `## 근거` 절과 그 작성 규칙).
-        "Every round given as a distill source gets one line in the node's \"## 근거\" section, at "
+        "Every round given as a distill source gets one line in the node's \"# 관측\" section, at "
         "the end of the body, as \"- <round date> · <coordinate> · 지지|조건|반례 — <what the round "
         "showed, about 50 characters>\": derived-from takes nodes only, and the engine checks the "
         # 2026-11-07 사용자 결정(#273): 본문을 고치지 않는 것은 지지에 한한다 — 조건·반례는 주장의 범위나 참을
