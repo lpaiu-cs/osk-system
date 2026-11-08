@@ -711,8 +711,9 @@ maximum among `review` records with that key.
 
 ### 4.11 Migration and signatures
 
-The engine reads these for the integrity checks of section 4.1 and appends to
-neither of them.
+The engine reads these for the integrity checks of section 4.1. It appends to
+`migration/events.jsonl` only while a bulk migration runs (`osk doctor
+--migrate`, or `osk evidence migrate --apply`), and never to `signatures.jsonl`.
 
 - **`migration/events.jsonl`** (Mechanism §5 2): `kind`, `source`, `dest`
   (path or null), `before`, `after` (hash or null), `rule`, opt. `note`. A

@@ -341,7 +341,11 @@ def _vault() -> list[dict]:
 
 
 def migrate() -> dict:
-    """남은 이행을 순서대로 적용한다 — 이행마다 전수 목록과 이행 기록을 남긴다(Mechanism §5)."""
+    """남은 이행을 순서대로 적용한다 — 이행마다 전수 목록과 이행 기록을 남긴다(Mechanism §5). 먼저 옛
+    정의로 적은 재검토 기록을 지금 정의로 이어 적는다 — 그러지 않으면 바이트가 바뀐 노드의 기록이
+    옛 정의로 맞지 않아 그 쌍이 후보가 된다."""
+    from . import rechecks
+    rechecks.ensure_baseline(carry=True)
     done = []
     for name, pending, apply in _migrations():
         if pending():

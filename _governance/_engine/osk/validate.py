@@ -335,15 +335,15 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
     from .rechecks import EVIDENCE, OBSERVATION, evidence_span
     span = evidence_span(text)
     errs = []
-    if span is None:
-        # 본문 맨 앞의 `# 관측`은 노드 제목이다(evidence_span) — 자리를 벗어난 절로 세지 않는다
-        heads = [c for o, line, c, code, _ in contract.md_lines(text)
-                 if not code and c == line.rstrip("\r").expandtabs(4)
-                 and (re.match(r"^ {0,3}# +" + OBSERVATION + r"[ \t#]*$", c) and text[:o].strip()
-                      or re.match(r"^ {0,3}## +" + EVIDENCE + r"[ \t#]*$", c))]
-        if heads:
-            errs.append("관측 절이 노드 끝에 있지 않다")
-    else:
+    # 관측 절이 아닌 자리의 절 제목 — 노드 끝 절의 앞에 남은 옛 `## 근거`도 그렇다(그 줄들은 관측이
+    # 아니게 된다). 본문 맨 앞의 `# 관측`은 노드 제목이다(evidence_span) — 세지 않는다.
+    heads = [o for o, line, c, code, _ in contract.md_lines(text)
+             if not code and c == line.rstrip("\r").expandtabs(4) and (span is None or o != span[0])
+             and (re.match(r"^ {0,3}#[ \t]+" + OBSERVATION + r"[ \t#]*$", c) and text[:o].strip()
+                  or re.match(r"^ {0,3}##[ \t]+" + EVIDENCE + r"[ \t#]*$", c))]
+    if heads:
+        errs.append("관측 절이 노드 끝에 있지 않다")
+    if span is not None:
         records = records or evidence.Records()
         for line in text[span[0]:].split("\n")[1:]:
             line = line.rstrip("\r")

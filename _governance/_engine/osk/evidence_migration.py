@@ -311,24 +311,30 @@ def apply() -> dict:
 
 
 def pending() -> int:
-    """`derived-from`에 비노드 대상이 남은 노드 수 — `osk doctor`의 점검(읽기만). 날짜와 보인 것을 찾는
-    계획(`plan`)보다 가볍다."""
-    idx = graph.Index()
-    return sum(1 for _n, (path, kind) in idx.nodes.items()
-               if kind[0] != "governance" and evidence.leftovers(idx.node(path).meta.get("derived-from"), idx))
+    """옮길 노드 수 — `osk doctor`의 점검(읽기만). 보류만 남은 노드는 세지 않는다 — 세면 doctor가
+    영구히 경고하고 `--migrate`마다 빈 전수 목록이 생긴다. 계획은 남은 항목에만 비싸다."""
+    return sum(1 for n in plan()["nodes"] if n["new"])
 
 
 # ── v5.6: 관측 절 제목 `## 근거` → `# 관측` (헌법 제8조 6항, Mechanism §4-1 1항) ──
 HEADING_RULE = "관측 절 제목 `## 근거` → `# 관측` (v5.6 — 헌법 제8조 6항)"
-_OLD_HEAD = re.compile(r"^ {0,3}## +" + rechecks.EVIDENCE + r"[ \t#]*(\r?)$")
+_OLD_HEAD = re.compile(r"^ {0,3}##[ \t]+" + rechecks.EVIDENCE + r"[ \t#]*(\r?)$")
 
 
 def heading_plan() -> list[dict]:
     """관측 절이 이행 전 제목 `## 근거`로 열리는 노드와 바꾼 바이트 — 쓰지 않는다. 제목 행만 바꾸고
     frontmatter와 수정시간은 그대로 둔다. 주장과 관측 줄은 한 글자도 바뀌지 않는 표기 이행이고, 관련
     상태(제목 앞까지)도 그대로라 재검토 후보가 생기지 않는다. 바꾼 뒤 같은 자리에서 관측 절로 읽히지
-    않거나(본문 맨 앞의 `# 관측`은 노드 제목이다) 상태가 달라지면 보류로 둔다 — `## 근거`도 읽힌다."""
+    않거나(본문 맨 앞의 `# 관측`은 노드 제목이다) 상태가 달라지거나, 다른 노드가 `derived-from`으로
+    인용한 제목 범위가 달라지면(H1 `# 관측`이 앞 H1의 범위를 닫는다) 보류로 둔다 — `## 근거`도 읽힌다."""
     idx = graph.Index()
+    cited: dict[str, set[str]] = defaultdict(set)   # 노드 id → 제목 범위로 인용된 제목
+    for _n, (path, kind) in idx.nodes.items():
+        for ref in _refs(idx.node(path).meta.get("derived-from")):
+            t = rechecks.target(str(ref), idx)
+            if t and "#" in t[0]:
+                key, heading = t[0].split("#", 1)
+                cited[key].add(heading)
     out = []
     for _n, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] == "governance":
@@ -348,9 +354,14 @@ def heading_plan() -> list[dict]:
         new_body = body[:span[0]] + "# " + rechecks.OBSERVATION + m.group(1) + body[line_end:]
         new = data[:off] + new_body.encode("utf-8")
         item = {"path": posix_rel(path, ROOT), "before": sha256_bytes(data), "new": new}
+        moved = sorted(h for h in cited.get(idx.node(path).id, ())
+                       if rechecks.heading_range(data, h) != rechecks.heading_range(new, h))
         if ((rechecks.evidence_span(new_body) or (None,))[0] != span[0]
                 or rechecks.state(new) != rechecks.state(data)):
             item.update(new=None, reason="바꾸면 관측 절로 읽히지 않는다 — 본문 맨 앞의 `# 관측`은 노드 제목이다")
+        elif moved:
+            item.update(new=None, reason="제목 범위로 인용된다(" + ", ".join(f"`#{h}`" for h in moved)
+                        + ") — 바꾸면 그 범위가 달라져 인용한 노드가 재검토 후보가 된다")
         out.append(item)
     return out
 
@@ -370,7 +381,8 @@ def heading_apply() -> dict:
         head = [f"# 관측 절 제목 이행 — {day}", "",
                 f"노드 끝 관측 절의 제목 `## 근거`를 `# 관측`으로 바꾼다. 규칙 `{HEADING_RULE}`. 제목 행만 바꾸며",
                 "frontmatter·수정시간·관련 상태는 그대로다.", "",
-                f"## 대상 — 노드 {len(todo)}개 · 보류 {len(holds)}", "", *(f"- `{it['path']}`" for it in todo), ""]
+                f"## 대상 — 노드 {len(todo)}개 · 보류 {len(holds)}", "", *(f"- `{it['path']}` → 바꾼다" for it in todo),
+                *(h.replace("` — ", "` → 보류 — ", 1) for h in holds), ""]
         core.atomic_write(manifest, "\n".join(head).encode("utf-8"))
         regions = sorted({r for it in todo for r in approvals.containing_regions(it["path"])})
         for it in todo:

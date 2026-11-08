@@ -112,8 +112,9 @@ hooks prompt it.
 **A node is a function of its future reuse.** Keep as a node what will serve
 later searches, decisions and work more than once; leave out one-off work state
 and anything cheap to recompute. And **all knowledge starts at the periphery and
-grows toward the center through connection**: center and periphery are one
-continuous spectrum, not layers.
+grows toward the center through connection and consilience** — different
+observations explained together by one hypothesis: center and periphery are
+one continuous spectrum, not layers.
 
 ## Three Spaces
 
