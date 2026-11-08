@@ -200,13 +200,14 @@ def migrate(*, apply: bool = False) -> dict:
         return {"ok": True, "applied": apply, "count": len(plans), "files": plans}
 
 
-def consolidate(*, apply: bool = False) -> dict:
+def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
     """옛 자리의 기록을 루트 `_cited/.records/`로 옮긴다 — Mechanism §9 5항의 자료 이관. 바이트와
     라운드 번호를 보존하고, 옛 좌표는 같은 이름으로 계속 해석된다. 노드는 고치지 않는다.
 
     `.md`·`.txt` 저장본이 함께 있거나 같은 이름이 루트나 앞선 옛 자리에도 있으면 그 사본은 옮기지
     않고 `conflicts`로 낸다 — 덮거나 합치지 않는다. 옮기는 사본은 `locate_record`가 지금 고르는
-    바로 그것이라(같은 순서로 훑는다) 이관 전후에 좌표가 가리키는 기록이 같다."""
+    바로 그것이라(같은 순서로 훑는다) 이관 전후에 좌표가 가리키는 기록이 같다. `expect`는 확인받은
+    `[[from, hash], …]`이며, 잠금 안에서 다시 세운 계획이 그와 다르면 아무것도 옮기지 않는다."""
     with mutation_lock():
         moves, conflicts, seen = [], [], {}
         for d in _legacy_dirs():
@@ -227,6 +228,8 @@ def consolidate(*, apply: bool = False) -> dict:
                 seen[key] = posix_rel(src, ROOT)
                 moves.append({"from": seen[key], "to": posix_rel(dst, ROOT),
                               "hash": sha256_file(src), "bytes": src.stat().st_size})
+        if expect is not None and [[m["from"], m["hash"]] for m in moves] != expect:
+            raise write.WriteError("확인받은 이관 계획과 지금의 계획이 다르다 — 옮기지 않았다")
         if apply:
             for m in moves:
                 src, dst = ROOT / m["from"], ROOT / m["to"]

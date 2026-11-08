@@ -365,11 +365,15 @@ def _first(errs: list, n: int = 3) -> str:
 
 def _vault_items() -> tuple[list[dict], dict]:
     """(항목, `--fix`가 할 일). 읽기만 한다."""
-    from . import evictions, integration, raw, scope_memory, validate
+    from . import evictions, evidence_migration, integration, raw, scope_memory, validate
     rep = validate.run()
     moved = raw.consolidate()
     left = rep.get("evidence_section_leftovers") or 0
-    plan = {"records": [m["from"] for m in moved["files"]], "evidence": left}
+    # 계획은 이 vault 자리와 바꿀 대상의 정체(파일 해시·노드 해시)로 짓는다 — worktree는 확인표 자리를
+    # 함께 쓰고(공통 git 디렉터리), 개수만으로는 다른 노드로 바뀐 계획을 가르지 못한다.
+    plan = {"root": str(core.ROOT), "records": [[m["from"], m["hash"]] for m in moved["files"]],
+            "evidence": [[n["path"], n["before"]] for n in evidence_migration.plan()["nodes"]
+                         if n["new"] is not None] if left else []}
     items = []
     if moved["count"]:
         items.append(_item("warn", "옛 기록 자리", f"scope·Person 아래 옛 `_cited/`·`_raw/`에 인용 기록 "
@@ -379,7 +383,8 @@ def _vault_items() -> tuple[list[dict], dict]:
         items.append(_item("warn", "기록 충돌", f"{c['path']} — {c['reason']}",
                            "어느 사본이 정본인지 사용자와 정한다 — 엔진은 덮거나 합치지 않는다"))
     if left:
-        items.append(_item("warn", "근거 절 이행", f"`derived-from`에 비노드 대상이 남은 노드 {left}개",
+        items.append(_item("warn", "근거 절 이행", f"`derived-from`에 비노드 대상이 남은 노드 {left}개 — "
+                           f"옮길 수 있는 노드 {len(plan['evidence'])}개",
                            "`doctor --vault --fix`가 옮긴다 — 옮기지 못하는 줄은 `osk.cli evidence migrate`의 holds가 사유를 보인다"))
     if not (moved["count"] or moved["conflicts"] or left):
         items.append(_item("ok", "이전", "옛 형식이 남지 않았다"))
@@ -449,9 +454,10 @@ def vault(fix: bool = False) -> tuple[dict, int]:
                 "instruction": FIX_INSTRUCTION}, 2
     ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다
     from . import evidence_migration, raw
-    applied = {"records": raw.consolidate(apply=True)["count"]}
-    if plan["evidence"]:
+    applied = {}
+    if plan["evidence"]:   # 먼저 — 라운드 날짜를 기록의 지금 경로에 대한 git blame으로 정한다
         applied["evidence"] = evidence_migration.apply()
+    applied["records"] = raw.consolidate(apply=True, expect=plan["records"])["count"]
     after = _vault_report(*_vault_items())
     return {**after, "applied": applied}, 0 if after["ok"] else 1
 
@@ -464,7 +470,7 @@ def vault_text(rep: dict) -> str:
         lines.append(f"적용: 기록 {a['records']}건 이관"
                      + (f" · 근거 절 노드 {a['evidence']['nodes']}개 이행" if a.get("evidence") else ""))
     if rep.get("approval_required"):
-        lines += ["옮길 기록:", *(f"  {p}" for p in rep["plan"]["records"]),
-                  f"근거 절로 옮길 노드: {rep['plan']['evidence']}개", rep["instruction"]]
+        lines += ["옮길 기록:", *(f"  {p}" for p, _ in rep["plan"]["records"]),
+                  "근거 절로 옮길 노드:", *(f"  {p}" for p, _ in rep["plan"]["evidence"]), rep["instruction"]]
     lines.append(_verdict(rep["counts"]))
     return "\n".join(lines) + "\n"

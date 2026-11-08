@@ -207,7 +207,13 @@ def main():
         assert {i["check"] for i in rep["items"]} >= {"옛 기록 자리", "기록 충돌"}, rep["items"]
         rep, code = doctor.vault(fix=True)
         assert code == 2 and rep["approval_required"] and len(rep["plan"]["records"]) == len(before)
+        assert rep["plan"]["root"] == str(root)            # worktree끼리 확인표 자리를 함께 써도 계획이 갈린다
         assert {p: p.read_bytes() for p in base.rglob("*") if p.is_file()} == frozen   # 계획은 옮기지 않는다
+        changed = base / ".records" / "retry.txt"
+        changed.write_bytes(frozen[changed] + b"\n")       # 보인 뒤에 바뀐 기록은 다시 확인받는다
+        assert doctor.vault(fix=True)[1] == 2 and changed.exists()
+        changed.write_bytes(frozen[changed])
+        assert doctor.vault(fix=True)[1] == 2
         rep, code = doctor.vault(fix=True)
         assert rep["applied"]["records"] == len(before), rep.get("applied")
         assert "옛 기록 자리" not in {i["check"] for i in rep["items"]}
