@@ -299,7 +299,7 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
-| `doctor` | 이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정. 읽기만 한다 (아래) |
+| `doctor` | 이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정. 읽기만 한다 (아래). `--vault`는 vault 내용 점검 — 옛 형식(옛 자리의 인용 기록·비노드 `derived-from`), 검증기 위반, 정기 검토의 잔재(재검토 후보·포착 막힘·scope 복구·정돈·보호영역 대기). `--fix`는 옛 형식을 옮긴다 — 첫 호출은 계획과 종료코드 2, 1시간 안의 확인된 같은 호출이 적용한다 |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `routing show` / `routing bind` / `routing unbind` / `routing primary` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용) (Mechanism §6-2 6항) |

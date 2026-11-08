@@ -835,6 +835,32 @@ class GrowthTests(unittest.TestCase):
             assert em.plan()['counts'] == {'line': 0, 'covered': 0, 'hold': 3}, 'a rerun moved something again'
         """)
 
+    def test_doctor_fix_migrates_evidence_before_moving_old_place_records(self):
+        # The evidence migration dates a round by `git blame` on the record's current path, so a record
+        # moved first is untracked there and its entry is held. `doctor --vault --fix` migrates first.
+        self.check_case("""
+            import subprocess
+            from osk import doctor, evidence, raw
+            def git(*a):
+                subprocess.run(['git', '-C', str(core.ROOT), *a], check=True, capture_output=True)
+            git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+            name = 'claude-c38d8ef2' + '0' * 24
+            old = core.ROOT / '00_Scope/W1/_raw/.records'
+            old.mkdir(parents=True)
+            (old / (name + '.txt')).write_bytes(raw._block(1, '옛 자리의 질문', '답').encode())
+            node('A')
+            a = core.ROOT / '00_Scope/W1/A.md'
+            n = contract.parse(a)
+            a.write_bytes(write._render({**n.meta, 'derived-from': ['00_Scope/W1/_raw/.records/' + name + '.txt#1']}, n.body))
+            git('add', '-A'); git('commit', '-qm', 'seed')
+            assert doctor.vault(fix=True)[1] == 2
+            rep, code = doctor.vault(fix=True)
+            assert rep['applied']['records'] == 1 and rep['applied']['evidence']['nodes'] == 1, rep.get('applied')
+            na = contract.parse(a)
+            assert 'derived-from' not in na.meta and evidence.coordinates(na.body) == ['c38d8ef2#1'], na.body
+            assert raw.locate_record(name) == core.ROOT / '_cited/.records' / (name + '.txt')
+        """)
+
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):
         self.check_case("""
             from osk import rechecks

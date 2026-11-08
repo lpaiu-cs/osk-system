@@ -15,6 +15,7 @@ MCP 등록의 해석기는 한 번 띄워 판본과 서버가 import하는 패�
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -325,18 +326,151 @@ def report(only: str | None = None) -> dict:
             "engine": engine, "hosts": hosts}
 
 
+def _section(lines: list, title: str, items: list) -> None:
+    lines.append(title)
+    for i in items:
+        lines.append(f"  {i['level']:<4}  {i['check']} — {i['detail']}")
+        if i.get("fix"):
+            lines.append(f"        → {i['fix']}")
+
+
+def _verdict(c: dict) -> str:
+    return f"판정: 실패 {c['fail']} · 경고 {c['warn']} · 정보 {c['info']} · 정상 {c['ok']}"
+
+
 def text(rep: dict) -> str:
     lines = [f"osk doctor — {rep['root']}"]
-
-    def section(title, items):
-        lines.append(title)
-        for i in items:
-            lines.append(f"  {i['level']:<4}  {i['check']} — {i['detail']}")
-            if i.get("fix"):
-                lines.append(f"        → {i['fix']}")
-    section("엔진", rep["engine"])
+    _section(lines, "엔진", rep["engine"])
     for h in rep["hosts"]:
-        section(h["title"], h["items"])
-    c = rep["counts"]
-    lines.append(f"판정: 실패 {c['fail']} · 경고 {c['warn']} · 정보 {c['info']} · 정상 {c['ok']}")
+        _section(lines, h["title"], h["items"])
+    lines.append(_verdict(rep["counts"]))
+    return "\n".join(lines) + "\n"
+
+
+# ── 저장소 점검 (`doctor --vault`) ─────────────────────────────────────────────
+# 연결이 아니라 vault의 내용을 본다 — 판이 오르며 옛 형식이 된 것(이전), 검증기가 잡는 형식 문제,
+# 정기 검토가 닫지 못하고 남긴 일(잔재). `--fix`는 기계적 이전만 한다. 판단이 드는 나머지는 고칠
+# 자리를 알린다. 이전은 자료 이관이라 사용자가 계획을 본 뒤에 적용한다(Mechanism §1 4항·§9 5항).
+FIX_TICKET = "osk-doctor-confirmation.json"
+CONFIRM_WITHIN = 3600
+FIX_INSTRUCTION = ("여기서 멈추고 사용자에게 옮길 기록과 이행할 노드를 설명한 뒤 명시적 확인을 받는다. "
+                   "확인 뒤 같은 명령을 1시간 안에 한 번 다시 실행하면 적용한다. 계획이 그 사이 달라지면 "
+                   "새 확인을 요구한다.")
+_EDIT = "노드를 read_node로 읽고 update_node로 고친다"
+
+
+def _first(errs: list, n: int = 3) -> str:
+    return " / ".join(map(str, errs[:n])) + (f" 외 {len(errs) - n}건" if len(errs) > n else "")
+
+
+def _vault_items() -> tuple[list[dict], dict]:
+    """(항목, `--fix`가 할 일). 읽기만 한다."""
+    from . import evictions, evidence_migration, integration, raw, scope_memory, validate
+    rep = validate.run()
+    moved = raw.consolidate()
+    left = rep.get("evidence_section_leftovers") or 0
+    # 계획은 이 vault 자리와 바꿀 대상의 정체(파일 해시·노드 해시)로 짓는다 — worktree는 확인표 자리를
+    # 함께 쓰고(공통 git 디렉터리), 개수만으로는 다른 노드로 바뀐 계획을 가르지 못한다.
+    plan = {"root": str(core.ROOT), "records": [[m["from"], m["hash"]] for m in moved["files"]],
+            "evidence": [[n["path"], n["before"]] for n in evidence_migration.plan()["nodes"]
+                         if n["new"] is not None] if left else []}
+    items = []
+    if moved["count"]:
+        items.append(_item("warn", "옛 기록 자리", f"scope·Person 아래 옛 `_cited/`·`_raw/`에 인용 기록 "
+                           f"{moved['count']}건 — 읽히지만 지금 자리는 루트 `_cited/`다",
+                           "`doctor --vault --fix`가 바이트 그대로 옮긴다 — 옛 좌표는 계속 해석된다"))
+    for c in moved["conflicts"]:
+        items.append(_item("warn", "기록 충돌", f"{c['path']} — {c['reason']}",
+                           "어느 사본이 정본인지 사용자와 정한다 — 엔진은 덮거나 합치지 않는다"))
+    if left:
+        items.append(_item("warn", "근거 절 이행", f"`derived-from`에 비노드 대상이 남은 노드 {left}개 — "
+                           f"옮길 수 있는 노드 {len(plan['evidence'])}개",
+                           "`doctor --vault --fix`가 옮긴다 — 옮기지 못하는 줄은 `osk.cli evidence migrate`의 holds가 사유를 보인다"))
+    if not (moved["count"] or moved["conflicts"] or left):
+        items.append(_item("ok", "이전", "옛 형식이 남지 않았다"))
+
+    for f in rep["fail"]:
+        for name, errs in f.items():
+            items.append(_item("fail", f"검증 {name}", f"{len(errs)}건 — {_first(errs)}", _EDIT))
+    for s in rep["skipped"]:
+        for name, why in s.items():
+            items.append(_item("info", f"검증 {name}", str(why)))
+    warnings = rep.get("warnings") or {}
+    dangling = warnings.get("dangling_refs") or []
+    if dangling:
+        items.append(_item("warn", "끊긴 참조", f"{len(dangling)}건 — {_first(dangling, 2)}", _EDIT))
+    if not (rep["fail"] or dangling):
+        items.append(_item("ok", "형식", f"검증 {len(rep['pass'])}종 통과"))
+
+    rc = (warnings.get("rechecks") or {}).get("count") or 0
+    if rc:
+        items.append(_item("warn", "근거 재검토", f"후보 {rc}건이 닫히지 않았다",
+                           "`osk.cli rechecks`의 후보마다 노드와 근거를 읽고, 맞으면 update_node(rechecked=[대상])로 "
+                           "닫는다 — cascade거나 다음 노드까지 고치게 되는 수정은 사용자에게 올린다"))
+    blocked = integration.blocked(limit=1000)
+    if blocked["count"]:
+        gone = sum(c["error"].startswith("FileNotFoundError") for c in blocked["conversations"])
+        items.append(_item("warn", "포착 막힘", f"대화 {blocked['count']}건"
+                           + (f" — 그중 {gone}건은 원본 전사가 이 기기에서 지워졌다" if gone else "")
+                           + f" · 최근 오류: {blocked['conversations'][0]['error'][:160]}",
+                           "잃은 것은 없다 — 검토는 9·15턴에 계속된다. 오류를 사용자에게 보인다"))
+    for r in scope_memory.recovery_status():
+        items.append(_item("warn", "scope 복구 대기", f"{r['session']} → {r['scope'] or '착지 미정'} · {r['since']}부터",
+                           f"프로젝트 {r['session']}의 새 세션을 열면 시작 훅이 복구 절차를 싣는다"))
+    for scope, s in sorted(evictions.status().items()):
+        items.append(_item("warn" if s["overdue"] else "info", "정돈 대기",
+                           f"{scope} — 미처분 {s['unsettled']}건, 가장 오래된 것 {s['oldest_days']}일",
+                           f"`osk.cli tidy prompt --scope {scope}`의 프롬프트로 정돈 세션을 연다"))
+    for region, state in sorted((rep.get("protected_regions") or {}).items()):
+        if state != "clean":
+            items.append(_item("info", "보호영역", f"{region} — {state}",
+                               "사용자가 대화형 단말에서 `approve`나 `revert`로 처리한다"))
+    return items, plan
+
+
+def _vault_report(items: list, plan: dict) -> dict:
+    counts = {level: sum(i["level"] == level for i in items) for level in LEVELS}
+    return {"ok": not counts["fail"], "root": str(core.ROOT), "counts": counts, "items": items, "plan": plan}
+
+
+def vault(fix: bool = False) -> tuple[dict, int]:
+    """(보고, 종료 코드). 기본은 읽기만 하고 실패가 있으면 1이다. `fix`의 첫 호출은 계획과
+    `approval_required`를 내고 2로 끝난다 — 1시간 안의 같은 계획에 대한 다음 호출이 옮긴다."""
+    rep = _vault_report(*_vault_items())
+    plan = rep["plan"]
+    if not fix or not (plan["records"] or plan["evidence"]):
+        return rep, 0 if rep["ok"] else 1
+    review_id = core.sha256_bytes(json.dumps(plan, ensure_ascii=False, sort_keys=True).encode())
+    ticket = core.local_lock_path(FIX_TICKET)
+    try:
+        pending = json.loads(ticket.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pending = {}
+    if (not isinstance(pending, dict) or pending.get("review_id") != review_id
+            or not isinstance(pending.get("at"), (int, float))
+            or not 0 <= time.time() - pending["at"] < CONFIRM_WITHIN):
+        core.atomic_write(ticket, json.dumps({"review_id": review_id, "at": time.time()}).encode())
+        return {**rep, "ok": False, "approval_required": True, "review_id": review_id,
+                "instruction": FIX_INSTRUCTION}, 2
+    ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다
+    from . import evidence_migration, raw
+    applied = {}
+    if plan["evidence"]:   # 먼저 — 라운드 날짜를 기록의 지금 경로에 대한 git blame으로 정한다
+        applied["evidence"] = evidence_migration.apply()
+    applied["records"] = raw.consolidate(apply=True, expect=plan["records"])["count"]
+    after = _vault_report(*_vault_items())
+    return {**after, "applied": applied}, 0 if after["ok"] else 1
+
+
+def vault_text(rep: dict) -> str:
+    lines = [f"osk doctor --vault — {rep['root']}"]
+    _section(lines, "저장소", rep["items"])
+    if rep.get("applied"):
+        a = rep["applied"]
+        lines.append(f"적용: 기록 {a['records']}건 이관"
+                     + (f" · 근거 절 노드 {a['evidence']['nodes']}개 이행" if a.get("evidence") else ""))
+    if rep.get("approval_required"):
+        lines += ["옮길 기록:", *(f"  {p}" for p, _ in rep["plan"]["records"]),
+                  "근거 절로 옮길 노드:", *(f"  {p}" for p, _ in rep["plan"]["evidence"]), rep["instruction"]]
+    lines.append(_verdict(rep["counts"]))
     return "\n".join(lines) + "\n"

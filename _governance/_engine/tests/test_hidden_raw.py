@@ -188,7 +188,45 @@ def main():
         assert D.verify_receipt(historic)["status"] == "pending"
         reject(raw.read_round, "../../outside.md#1")
         assert not list(base.glob("*.md")) and not list(base.glob("*.MD"))
-        print("PASS hidden storage, aliases, byte identity, conflict/retry, provenance")
+
+        # `doctor --vault --fix` gathers old-place records into the root `_cited/` (Mechanism §9 5항):
+        # it plans first, moves only on the confirmed second call, and keeps bytes, old
+        # coordinates and receipts. A copy shadowed by a root record is reported, never moved.
+        from osk import doctor
+        proof_path.write_bytes(proof_path.read_bytes().replace(b"tampered result", b"verified result"))
+        assert D.verify_receipt(historic)["status"] == "complete"
+        before = {r["record"]: raw.read_round(r["path"] + "#1")["text"]
+                  for r in raw.list_records("00_Scope/W1")["records"]}
+        shadow = base / ".records" / "new.txt"
+        shadow.write_bytes(raw._block(1, "older copy", "a").encode())
+        frozen = {p: p.read_bytes() for p in base.rglob("*") if p.is_file()}
+        plan = raw.consolidate()
+        assert plan["count"] == len(before) and not plan["applied"], plan
+        assert [c["path"] for c in plan["conflicts"]] == ["00_Scope/W1/_raw/.records/new.txt"], plan
+        rep, code = doctor.vault()
+        assert {i["check"] for i in rep["items"]} >= {"옛 기록 자리", "기록 충돌"}, rep["items"]
+        rep, code = doctor.vault(fix=True)
+        assert code == 2 and rep["approval_required"] and len(rep["plan"]["records"]) == len(before)
+        assert rep["plan"]["root"] == str(root)            # worktree끼리 확인표 자리를 함께 써도 계획이 갈린다
+        assert {p: p.read_bytes() for p in base.rglob("*") if p.is_file()} == frozen   # 계획은 옮기지 않는다
+        changed = base / ".records" / "retry.txt"
+        changed.write_bytes(frozen[changed] + b"\n")       # 보인 뒤에 바뀐 기록은 다시 확인받는다
+        assert doctor.vault(fix=True)[1] == 2 and changed.exists()
+        changed.write_bytes(frozen[changed])
+        assert doctor.vault(fix=True)[1] == 2
+        rep, code = doctor.vault(fix=True)
+        assert rep["applied"]["records"] == len(before), rep.get("applied")
+        assert "옛 기록 자리" not in {i["check"] for i in rep["items"]}
+        assert [p for p in base.rglob("*") if p.is_file()] == [shadow]
+        for m in plan["files"]:
+            dest = root / m["to"]
+            assert dest.is_relative_to(root / "_cited/.records") and core.sha256_file(dest) == m["hash"]
+        for name, text in before.items():
+            assert raw.read_round(f"00_Scope/W1/_raw/{name}.md#1")["text"] == text   # 옛 좌표
+        assert target.read_bytes() == saved and D.verify_receipt(historic)["status"] == "complete"
+        assert raw.consolidate()["count"] == 0
+        shadow.unlink()
+        print("PASS hidden storage, aliases, byte identity, conflict/retry, provenance, consolidation")
 
 
 if __name__ == "__main__":

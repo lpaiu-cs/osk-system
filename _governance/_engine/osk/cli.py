@@ -204,8 +204,22 @@ def _fork_cmd(a) -> None:
 
 def _doctor_cmd(a) -> None:
     """`osk doctor` — 이 기기의 하네스 연결을 **읽기만** 하며 점검한다. 실패 항목이
-    있으면 종료코드 1이다(경고는 0)."""
+    있으면 종료코드 1이다(경고는 0). `--vault`는 vault의 내용(이전·형식·잔재)을 보고, `--fix`는
+    기계적 이전을 계획(2)한 뒤 확인된 다음 호출에서 적용한다."""
     from . import doctor
+    if a.vault or a.fix:
+        try:
+            rep, code = doctor.vault(a.fix)
+        except (write.WriteError, StaleEngineError, OSError, RuntimeError) as e:
+            rep, code = {"ok": False, "violations": getattr(e, "violations", None) or [str(e)]}, 1
+        if a.json or "items" not in rep:
+            _emit(rep)
+        else:
+            sys.stdout.buffer.write(doctor.vault_text(rep).encode("utf-8"))
+            sys.stdout.buffer.flush()
+        if code:
+            sys.exit(code)
+        return
     rep = doctor.report(a.harness)
     if a.json:
         _emit(rep)
@@ -479,6 +493,10 @@ def build_parser() -> argparse.ArgumentParser:
                                       "판본, fork (읽기 전용)")
     p.add_argument("--harness", choices=adapters.NAMES, default=None, help="기본: 모두")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--vault", action="store_true",
+                   help="연결 대신 vault 내용 점검 — 옛 형식의 이전, 검증기 위반, 정기 검토의 잔재")
+    p.add_argument("--fix", action="store_true",
+                   help="--vault의 기계적 이전(옛 기록 자리·근거 절)을 계획하고, 확인된 다음 호출에서 적용")
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
