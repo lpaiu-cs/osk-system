@@ -93,13 +93,18 @@ class Records:
         return self._rounds[path]
 
 
-def coordinates(text: str) -> list[str]:
-    """노드 끝 근거 절에서 형식이 맞는 줄의 좌표(시행령 §1 5항). 형식이 다른 줄은 검증기가 보고한다."""
+def lines(text: str) -> list[re.Match]:
+    """노드 끝 관측 절에서 형식이 맞는 줄(시행령 §1 5항). 형식이 다른 줄은 검증기가 보고한다."""
     from .rechecks import evidence_span
     span = evidence_span(text)
     if span is None:
         return []
-    return [m[2] for line in text[span[0]:].split("\n")[1:] if (m := LINE.match(line.rstrip("\r")))]
+    return [m for line in text[span[0]:].split("\n")[1:] if (m := LINE.match(line.rstrip("\r")))]
+
+
+def coordinates(text: str) -> list[str]:
+    """관측 절 줄의 좌표."""
+    return [m[2] for m in lines(text)]
 
 
 def cited_rounds(text: str, records: Records | None = None) -> set[str]:

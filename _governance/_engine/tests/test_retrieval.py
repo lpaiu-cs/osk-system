@@ -103,6 +103,48 @@ def ranking_checks():
     assert len(near) == len(plain), 'locality filtered a result'
 
 
+def centrality_checks():
+    """C(v) = (E(v), D(v)) (Constitution 11.2, Mechanism §8 6): a reference raises the referrer's E
+    and the referred's D by the same weight; observation lines add to E only — 지지 +1, 반례 −1,
+    조건 0; a hub counts no E; Workbench and governance count on neither side."""
+    from osk import core, graph
+
+    class Index:
+        def __init__(self, specs):
+            self.nodes, self.parsed = {}, {}
+            for title, kind, derived, links, body in specs:
+                path = core.ROOT / 'W1' / f'{title}.md'
+                self.nodes[title] = (path, (kind, 'W1'))
+                self.parsed[path] = SimpleNamespace(
+                    id=title, meta={}, body=body,
+                    edges=lambda pred, d=derived: d if pred == 'derived-from' else [],
+                    wikilinks=lambda links=links: links)
+
+        def node(self, path):
+            return self.parsed[path]
+
+        def resolve(self, name):
+            return ('node', self.nodes[name][1]) if name in self.nodes else ('dangling',)
+
+    obs = '\n'.join(['claim', '', '# 관측', '',
+                     '- 2026-11-09 · `a1b2c3d4#1` · 지지 — explained',
+                     '- 2026-11-09 · `a1b2c3d4#2` · 지지 — explained too',
+                     '- 2026-11-09 · `a1b2c3d4#3` · 조건 — under a condition',
+                     '- 2026-11-09 · `a1b2c3d4#4` · 반례 — not explained',
+                     'not a line'])
+    explain, depend = graph.centrality(Index([
+        ('B', 'scope', [], [], 'base'),
+        ('A', 'scope', ['B'], ['B', 'Gone'], obs),
+        ('W1', 'scope', [], ['A', 'B'], 'hub'),
+        ('Note', 'workbench-transit', ['B'], [], 'transit'),
+    ]))
+    assert explain['A'] == 3 + 1 + (2 - 1), explain     # derived-from 3, Link 1, 지지 2 − 반례 1
+    assert depend['B'] == 3 + 1 + 1 and depend['A'] == 1, depend   # A's two references and the hub's Link
+    assert explain['W1'] == 0 and explain['B'] == 0 and explain['Note'] == 0, explain
+    legacy = obs.replace('# 관측', '## 근거')
+    assert graph.centrality(Index([('A', 'scope', [], [], legacy)]))[0]['A'] == 1
+
+
 def read_checks():
     import mcp_server as m
     from osk import core, validate, write
@@ -249,6 +291,7 @@ if __name__ == '__main__':
                           PYTHONDONTWRITEBYTECODE='1')
         search_checks()
         ranking_checks()
+        centrality_checks()
         read_checks()
         asyncio.run(asyncio.wait_for(transport_checks(), 60))
         print('PASS: exact title / unchanged BM25 / bounded reads / MCP CAS boundary')

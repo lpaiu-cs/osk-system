@@ -80,7 +80,7 @@ class Searcher:
         # 검색할 때 잰다 — 파일이 그대로인 채 검색기를 오래 쓰는 서버에서도 시간이 흐른다(#234 리뷰).
         # 허브는 갈래의 입구라 둘 다 얹지 않는다 — 본문이 배선마다 바뀌고(시행령 §7 2항이 그 변경을
         # 상태 변경으로 보지 않는다) 구성 노드의 Link가 모인다.
-        central = graph.centrality(self.idx)
+        central = graph.centrality(self.idx)[1]   # 순위에는 의존적 중심성 D만 얹는다(Mechanism §8 8항)
         knowledge = [(stem, n) for stem, p, n in self.paths if not graph.is_hub(p)]
         top = math.log1p(max((central.get(stem, 0.0) for stem, _ in knowledge), default=0.0))
         self.static, self.stamps = [], []

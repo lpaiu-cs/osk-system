@@ -442,7 +442,7 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `space`는 전체 군집 경로(`00_Scope/W1`); 모르면 `overview`.
     `session`=훅이 준 프로젝트 키(대화 id 금지). `space` 생략 시 주된 scope;
     다른 scope도 되며 결속에 더한다. `bound_scope`는 새 결속만 보고한다.
-    `edges`: `derived-from`은 근거 노드 제목만(비노드는 본문 끝 `## 근거` 줄),
+    `edges`: `derived-from`은 근거 노드 제목만(비노드는 본문 끝 `# 관측` 줄),
     `conflicts`는 열린 사건 번호(`CASE-2026-1`).
     `settle`=보존한 evict rid. 처분 결과: `settlement`.
     증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록(라운드는 근거 줄 필수)·기존 허브.

@@ -29,7 +29,7 @@ EVENTS = LEDGER / "migration" / "events.jsonl"
 RULE = "비노드 derived-from을 근거 절의 지지 줄로 (v5.4 — 헌법 제8조 5·6항)"
 PREVIEW = ROOT / ".osk" / "evidence-section-plan.md"
 WIDTH = 50                                  # 보인 것 — 50자 안팎
-NOT_AT_END = "`## 근거` 절이 노드 끝에 있지 않다"
+NOT_AT_END = "관측 절이 노드 끝에 있지 않다"
 from .harness.base import GOAL as _GOAL, INJECTED as _SYSTEM   # 하네스가 끼워 넣은 알림
 _OBJECTIVE = re.compile(r"<objective>(.*?)</objective>", re.S)
 _TAG = re.compile(r"</?[A-Za-z][\w-]*(?:\s[^<>]*)?>")
@@ -175,7 +175,7 @@ def _change(path: Path, n, items: list[dict]) -> dict:
     if lines:
         span = rechecks.evidence_span(body)
         add = write._space_numeric_tags("\n".join(lines)) + "\n"
-        new_body = body.rstrip("\n") + "\n" + add if span else body + "## 근거\n\n" + add
+        new_body = body.rstrip("\n") + "\n" + add if span else body + "# 관측\n\n" + add
         start = span[0] if span else len(body)
         if (span is None and NOT_AT_END in validate.evidence_errors(body, [])
                 or not body.endswith("\n") or (rechecks.evidence_span(new_body) or (None,))[0] != start):

@@ -3575,8 +3575,8 @@ def test_edge_target_normalization():
     check("같은 id 추가는 중복 등재하지 않는다", r1.get("no_change") is True, r1)
     r2 = _w(write.update_node, "regr-norm",
             add_edges={"derived-from": "[[= Governance/없는문서]]"})
-    check("비노드 근거는 derived-from이 받지 않고 근거 절로 보낸다(헌법 제8조 5·6항)",
-          not r2["ok"] and "## 근거" in " ".join(r2.get("violations", [])), r2)
+    check("비노드 근거는 derived-from이 받지 않고 관측 절로 보낸다(헌법 제8조 5·6항)",
+          not r2["ok"] and "# 관측" in " ".join(r2.get("violations", [])), r2)
     r3 = _w(write.update_node, "regr-norm", remove_edges={"derived-from": tid})
     check("id 제거가 유효하다",
           r3["ok"] and tid not in (r3["edges"]["derived-from"] or []), r3)

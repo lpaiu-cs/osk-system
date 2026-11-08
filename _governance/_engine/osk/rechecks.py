@@ -9,7 +9,7 @@
 
 상태는 관련 상태만 잰다(`state`) — 노드는 본문, 제목을 지정한 근거는 그 제목 범위다. 관계 주장의 내용과 이유는 본문이 맡으므로(헌법 8조) 요약이나
 배선만 바뀐 노드는 근거로서도, 참조 노드로서도 바뀌지 않은 것이다. 노드 끝의
-`## 근거` 절도 관련 상태가 아니다(시행령 §7 2항) — 그 노드의 비노드 근거 목록이라,
+관측 절도 관련 상태가 아니다(시행령 §7 2항) — 그 노드의 비노드 근거 목록이라,
 줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다."""
 from __future__ import annotations
 
@@ -32,7 +32,10 @@ CLOSE = ("근거와 노드를 read_node로 읽는다(전문이나 필요한 범�
          "완료가 적히지 않는다(recheck_unread)")
 _ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$")
 _ALREADY = "재검토 대장에 이미 기록이 있다"
-EVIDENCE = "근거"
+EVIDENCE = "근거"   # 관측 절의 참조 표지이자 이행 전 제목 `## 근거`
+OBSERVATION = "관측"
+# 관측 절을 여는 제목(단계, 이름) — `# 관측`과 이행 전의 `## 근거`(Mechanism §4-1 1항)
+SECTION_HEADS = {(1, OBSERVATION), (2, EVIDENCE)}
 # 후보 계산이 삼킨 판독 실패(OSError)의 누계. 표면은 이 수가 그대로인 동안 낸 요약만 지문에
 # 접는다 — 잠금이 풀려도 지문(경로·mtime·크기)은 그대로라, 빠진 근거가 계속 빠진다(#194).
 misses = 0
@@ -48,8 +51,8 @@ def _read_bytes(path: Path) -> bytes:
 
 
 def evidence_span(text: str) -> tuple[int, int] | None:
-    """노드 끝의 `## 근거` 절(Mechanism §4-1 1항) — `## 근거` 제목 행부터 본문 끝까지의
-    문자 범위. 그 뒤에 `#`·`##` 제목이 있으면 근거 절이 아니다. 노드 자신의 제목만 센다 —
+    """노드 끝의 관측 절(Mechanism §4-1 1항) — `# 관측`(이행 전 `## 근거`) 제목 행부터 본문
+    끝까지의 문자 범위. 그 뒤에 `#`·`##` 제목이 있으면 관측 절이 아니다. 노드 자신의 제목만 센다 —
     코드 구획의 `#` 행과 인용·목록 안의 제목은 아니다."""
     last = None
     for off, line, content, code, _cont in contract.md_lines(text):
@@ -57,12 +60,14 @@ def evidence_span(text: str) -> tuple[int, int] | None:
         h = _ATX.match(content) if top else None
         if h and len(h.group(1)) <= 2:
             last = (off, len(h.group(1)), re.sub(r"(?:^|[ \t]+)#+$", "", h.group(2) or "").strip())
-    return (last[0], len(text)) if last and last[1] == 2 and last[2] == EVIDENCE else None
+    # ponytail: 제목만 본다 — 본문 첫 제목이 노드 이름 `# 관측`이고 그 뒤 제목이 없으면 본문 전체를
+    # 관측 절로 읽는다. 그런 노드가 생기면 첫 제목을 노드 이름과 견주어 뺀다.
+    return (last[0], len(text)) if last and last[1:] in SECTION_HEADS else None
 
 
 def state(data: bytes) -> str:
     """관련 상태의 해시(Mechanism §4-1 1항) — 노드의 frontmatter를 닫는 행의 다음
-    바이트부터 끝까지에서 노드 끝 `## 근거` 절을 뺀 것. 정규화하지 않은 바이트로 잰다."""
+    바이트부터 끝까지에서 노드 끝 관측 절을 뺀 것. 정규화하지 않은 바이트로 잰다."""
     body = data[contract.body_offset(data):]
     try:
         span = evidence_span(body.decode("utf-8"))

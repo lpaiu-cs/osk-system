@@ -36,6 +36,7 @@ def _load_cases() -> dict[str, dict]:
 
 NODE_SPACES = (DOMAIN, PERSON, SCOPE)
 W_LINK, W_DERIVED = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값 (Link·derived-from)
+W_OBSERVATION = 1.0           # 관측 줄 하나의 가중 w_O (Mechanism §8 6항)
 
 # 인용 기록 구획(헌법 4조 3항). 새 기록은 루트 `_cited/`에 쓰고(`('raw', None)`), scope
 # 아래의 옛 `_cited/`·`_raw/`와 Person의 `_cited/`도 같은 이름의 인용 기록으로
@@ -1034,16 +1035,23 @@ def reference_review(node: contract.Node, idx: Index,
     return out
 
 
-def centrality(idx: Index) -> dict[str, float]:
-    """중심성 = 개정 비용의 근사(들어오는 의존 가중합). 노드 간 참조만 산입.
-    Workbench(헌법 4조 5항)와 통치 구획(시행령 §10 1항)은 출발·도착 모두
-    불산입이다."""
+OBSERVATION_SIGN = {"지지": 1, "반례": -1, "조건": 0}   # 관측 줄의 설명적 중심성 산입(시행령 §7 1항)
+
+
+def centrality(idx: Index) -> tuple[dict[str, float], dict[str, float]]:
+    """중심성 C(v) = (E(v), D(v)) — (설명적, 의존적)을 stem으로 키잡은 두 사전으로 낸다(헌법 제11조
+    2항, Mechanism §8 6항). 노드 사이의 참조 하나가 참조하는 쪽의 E와 참조받는 쪽의 D에 같은 가중을
+    더하고, 관측 절의 줄은 E에만 지지 +1·반례 −1·조건 0으로 더한다(w_O = 1). 허브는 E를 세지
+    않는다. Workbench(헌법 4조 5항)와 통치 구획(시행령 §10 1항)은 출발·도착 모두 불산입이다."""
+    from . import evidence
     EXCL = ("workbench-transit", "governance")
     score: dict[str, float] = {s: 0.0 for s in idx.nodes}
+    explain: dict[str, float] = {s: 0.0 for s in idx.nodes}
     for stem, (p, kind) in idx.nodes.items():
         if kind[0] in EXCL:
             continue
         n = idx.node(p)
+        out = sum(OBSERVATION_SIGN[m[3]] for m in evidence.lines(n.body)) * W_OBSERVATION
         for t in n.edges("derived-from"):
             # 인용 기록 좌표는 비노드다(Mechanism §8 6항) — 기록 파일을 찾아 해석하지 않고
             # 건너뛴다. 그 해석이 중심성 계산 시간의 90%였다(#170, 노드 2,334개에서 6.4초).
@@ -1052,11 +1060,15 @@ def centrality(idx: Index) -> dict[str, float]:
             r = idx.resolve(t)
             if r[0] == "node" and r[1][0] not in EXCL:
                 score[_score_key(idx, t)] = score.get(_score_key(idx, t), 0.0) + W_DERIVED
+                out += W_DERIVED
         for t in n.wikilinks():
             r = idx.resolve(t)
             if r[0] == "node" and r[1][0] not in EXCL:
                 score[_score_key(idx, t)] = score.get(_score_key(idx, t), 0.0) + W_LINK
-    return score
+                out += W_LINK
+        if not is_hub(p):
+            explain[stem] = out
+    return explain, score
 
 
 def _score_key(idx: "Index", t: str) -> str:
