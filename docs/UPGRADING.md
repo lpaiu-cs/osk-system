@@ -27,6 +27,21 @@ device.
   files again. Before you start the daemon, run `git pull` to take the ignore
   rule (`.osk/.gitignore`) first, or update the engine first.
 
+## From v5.5 to v5.6
+
+- **The constitution redefines knowledge and centrality (#309, #310).**
+  Knowledge is a hypothesis that explains observations, and centrality has two
+  axes: explanatory centrality E and dependency centrality D. Search ranking
+  still uses D (incoming dependency) only.
+- **The evidence section is now the observation section `# 관측`.** New
+  sections use `# 관측`. The old `## 근거` still reads, so nothing is needed
+  right away. After the update, `osk doctor` reports how many nodes to move and
+  `osk doctor --migrate` renames the headings in one go. Only the heading line
+  changes, so no recheck candidates appear and `updated` stays. Nodes in a
+  protected region remain as a changeset (`osk approve`).
+- From now on, bulk migrations that come with an upgrade are checked by
+  `osk doctor` and applied with `--migrate`.
+
 ## From v5.4 to v5.5
 
 - v5.5.0 changes anchor edits on large nodes and the evidence-line rule, and

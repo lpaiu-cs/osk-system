@@ -308,3 +308,82 @@ def apply() -> dict:
         core.atomic_write(manifest, (_manifest(p, day) + "\n" + "\n".join(close)).encode("utf-8"))
     return {"ok": True, "nodes": written, **c, "protected_regions": p["regions"],
             "holds": len(holds), "manifest": posix_rel(manifest, ROOT)}
+
+
+def pending() -> int:
+    """`derived-from`에 비노드 대상이 남은 노드 수 — `osk doctor`의 점검(읽기만). 날짜와 보인 것을 찾는
+    계획(`plan`)보다 가볍다."""
+    idx = graph.Index()
+    return sum(1 for _n, (path, kind) in idx.nodes.items()
+               if kind[0] != "governance" and evidence.leftovers(idx.node(path).meta.get("derived-from"), idx))
+
+
+# ── v5.6: 관측 절 제목 `## 근거` → `# 관측` (헌법 제8조 6항, Mechanism §4-1 1항) ──
+HEADING_RULE = "관측 절 제목 `## 근거` → `# 관측` (v5.6 — 헌법 제8조 6항)"
+_OLD_HEAD = re.compile(r"^ {0,3}## +" + rechecks.EVIDENCE + r"[ \t#]*(\r?)$")
+
+
+def heading_plan() -> list[dict]:
+    """관측 절이 이행 전 제목 `## 근거`로 열리는 노드와 바꾼 바이트 — 쓰지 않는다. 제목 행만 바꾸고
+    frontmatter와 수정시간은 그대로 둔다. 주장과 관측 줄은 한 글자도 바뀌지 않는 표기 이행이고, 관련
+    상태(제목 앞까지)도 그대로라 재검토 후보가 생기지 않는다. 바꾼 뒤 같은 자리에서 관측 절로 읽히지
+    않거나(본문 맨 앞의 `# 관측`은 노드 제목이다) 상태가 달라지면 보류로 둔다 — `## 근거`도 읽힌다."""
+    idx = graph.Index()
+    out = []
+    for _n, (path, kind) in sorted(idx.nodes.items()):
+        if kind[0] == "governance":
+            continue
+        data = path.read_bytes()
+        off = contract.body_offset(data)
+        try:
+            body = data[off:].decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        span = rechecks.evidence_span(body)
+        end = body.find("\n", span[0]) if span else -1
+        m = _OLD_HEAD.match(body[span[0]:end if end >= 0 else len(body)]) if span else None
+        if m is None:
+            continue
+        line_end = span[0] + m.end()
+        new_body = body[:span[0]] + "# " + rechecks.OBSERVATION + m.group(1) + body[line_end:]
+        new = data[:off] + new_body.encode("utf-8")
+        item = {"path": posix_rel(path, ROOT), "before": sha256_bytes(data), "new": new}
+        if ((rechecks.evidence_span(new_body) or (None,))[0] != span[0]
+                or rechecks.state(new) != rechecks.state(data)):
+            item.update(new=None, reason="바꾸면 관측 절로 읽히지 않는다 — 본문 맨 앞의 `# 관측`은 노드 제목이다")
+        out.append(item)
+    return out
+
+
+def heading_apply() -> dict:
+    """제목을 바꾼다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항)."""
+    with core.mutation_lock():
+        items = heading_plan()
+        day = core.now_kst()[:10]
+        manifest = EVENTS.parent / f"observation-heading-{day}.md"
+        k = 1
+        while manifest.exists():
+            k += 1
+            manifest = EVENTS.parent / f"observation-heading-{day}-{k}.md"
+        holds = [f"- `{it['path']}` — {it['reason']}" for it in items if it["new"] is None]
+        todo = [it for it in items if it["new"] is not None]
+        head = [f"# 관측 절 제목 이행 — {day}", "",
+                f"노드 끝 관측 절의 제목 `## 근거`를 `# 관측`으로 바꾼다. 규칙 `{HEADING_RULE}`. 제목 행만 바꾸며",
+                "frontmatter·수정시간·관련 상태는 그대로다.", "",
+                f"## 대상 — 노드 {len(todo)}개 · 보류 {len(holds)}", "", *(f"- `{it['path']}`" for it in todo), ""]
+        core.atomic_write(manifest, "\n".join(head).encode("utf-8"))
+        regions = sorted({r for it in todo for r in approvals.containing_regions(it["path"])})
+        for it in todo:
+            path = ROOT / it["path"]
+            if sha256_bytes(path.read_bytes()) != it["before"]:
+                raise RuntimeError(f"계획 뒤에 바뀐 노드 — 멈췄다: {it['path']}")
+            core.ledger_append(EVENTS, {"kind": "transform", "source": it["path"], "dest": it["path"],
+                                        "before": it["before"], "after": sha256_bytes(it["new"]),
+                                        "rule": HEADING_RULE})
+            core.atomic_write(path, it["new"])
+        close = ["## 결과", "", f"- 쓴 노드 {len(todo)}개 · 보류 {len(holds)}",
+                 "- 보호영역: " + (", ".join(regions) + " — 사용자 승인(`osk approve`)이 필요하다"
+                                  if regions else "없음"), "", "### 보류", "", *(holds or ["없음"]), ""]
+        core.atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
+    return {"ok": True, "nodes": len(todo), "holds": len(holds), "protected_regions": regions,
+            "manifest": posix_rel(manifest, ROOT)}

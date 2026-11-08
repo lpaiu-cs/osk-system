@@ -6,7 +6,10 @@ overview), 판본이 확인한 범위인가, 구독 fork가 준비됐는가. 등
 판정하지 않는다 — 신뢰하지 않은 Codex 훅이나 새로 열지 않은 Claude Code 세션은 설정
 파일에 있어도 돌지 않는다.
 
-상태와 설정을 쓰지 않는다. 호스트 CLI에는 `--version`만 묻고, fork 판정은
+이 vault의 노드가 지금 체제의 표기를 따르는지도 본다(호환성·일괄 이행). 옮기는 것은
+`--migrate`(`migrate`)뿐이다.
+
+그 밖에는 상태와 설정을 쓰지 않는다. 호스트 CLI에는 `--version`만 묻고, fork 판정은
 `fork doctor`와 같은 `response_growth.check`다(인증 상태 조회는 하되 추론은 없다).
 MCP 등록의 해석기는 한 번 띄워 판본과 서버가 import하는 패키지만 본다 — 이 명령을
 돌리는 Python이 아니라 등록된 Python이 서버를 띄우기 때문이다.
@@ -314,15 +317,48 @@ def _host(adapter, records: dict) -> dict:
     return {**head, "in_use": True, "items": items}
 
 
+def _migrations() -> list[tuple[str, object, object]]:
+    """호환성·일괄 이행 — (이름, 남은 노드 수, 적용). 체제가 바뀌어 옛 표기의 노드를 옮겨야 하면 여기에
+    더한다(2026-11-09 사용자 결정): 점검은 `osk doctor`가 읽기만 하고, 적용은 `osk doctor --migrate`가
+    순서대로 한다. 앞 이행이 만든 표기를 뒤 이행이 받으므로 판의 순서로 둔다."""
+    from . import evidence_migration as em
+    return [("비노드 derived-from → 관측 줄 (v5.4)", em.pending, em.apply),
+            ("관측 절 제목 `## 근거` → `# 관측` (v5.6)",
+             lambda: sum(1 for it in em.heading_plan() if it["new"] is not None), em.heading_apply)]
+
+
+def _vault() -> list[dict]:
+    items = []
+    for name, pending, _apply in _migrations():
+        try:
+            n = pending()
+        except Exception as exc:
+            items.append(_item("info", name, f"판독 실패 — {type(exc).__name__}: {exc}"))
+            continue
+        items.append(_item("warn", name, f"옮길 노드 {n}개", "`osk doctor --migrate`로 옮긴다")
+                     if n else _item("ok", name, "옮길 노드가 없다"))
+    return items
+
+
+def migrate() -> dict:
+    """남은 이행을 순서대로 적용한다 — 이행마다 전수 목록과 이행 기록을 남긴다(Mechanism §5)."""
+    done = []
+    for name, pending, apply in _migrations():
+        if pending():
+            done.append({"migration": name, **apply()})
+    return {"ok": True, "applied": done}
+
+
 def report(only: str | None = None) -> dict:
     """호스트별 점검 결과. `only`는 하네스 이름 하나로 좁힌다."""
     records = {**runs.read(), "duplicates": runs.duplicates()}
     engine = _engine(records)
+    vault = _vault()
     hosts = [_host(a, records) for a in adapters.ADAPTERS if only in (None, a.name)]
-    items = engine + [i for h in hosts for i in h["items"]]
+    items = engine + vault + [i for h in hosts for i in h["items"]]
     counts = {level: sum(i["level"] == level for i in items) for level in LEVELS}
     return {"ok": not counts["fail"], "root": str(core.ROOT), "counts": counts,
-            "engine": engine, "hosts": hosts}
+            "engine": engine, "vault": vault, "hosts": hosts}
 
 
 def text(rep: dict) -> str:
@@ -335,6 +371,7 @@ def text(rep: dict) -> str:
             if i.get("fix"):
                 lines.append(f"        → {i['fix']}")
     section("엔진", rep["engine"])
+    section("vault 이행", rep["vault"])
     for h in rep["hosts"]:
         section(h["title"], h["items"])
     c = rep["counts"]

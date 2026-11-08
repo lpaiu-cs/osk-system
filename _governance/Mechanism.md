@@ -1,7 +1,7 @@
 ---
 id: 260802-114u-iter
 created: 2026-08-02 13:22 (KST)
-updated: 2026-11-09 01:30 (KST)
+updated: 2026-11-09 02:19 (KST)
 author: user
 drafter: fable-5.1
 summary: "물리 최소 사양 — 배치 선언표, id·rid 형식, 대장 규약, 위임 절, 링크 문법, 비밀값 필터"
@@ -446,6 +446,9 @@ derived-from: "[[2026-07-28-space-structure-deliberation-record]]"
 3. manifest는 이행 착수 시 전수 목록(대상·분류·계획)을 먼저 작성하고, 완료
    후 결과 요약과 보류 목록으로 닫는다. 이행 완료 후에는 새 기입이 없는
    닫힌 대장으로 보존한다.
+4. 통치문서 개정으로 옛 표기의 노드를 옮겨야 하는 일괄 이행은 `osk doctor`가
+   옮길 노드 수를 점검하고(읽기만), `osk doctor --migrate`가 판의 순서로
+   적용한다. 엔진은 이행이 끝나기 전까지 옛 표기도 읽는다.
 
 ## §6 pin 기록 (`_ledger/pins.jsonl`)
 

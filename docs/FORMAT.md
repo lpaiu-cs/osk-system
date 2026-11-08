@@ -135,7 +135,7 @@ derived-from: ["[[Source node]]"]
 
 Body in Markdown, with links such as [[Another node]].
 
-## 근거
+# 관측
 
 - 2026-08-02 · `3f9c2a7e#2` · 지지 — what the cited round showed
 ```
@@ -221,10 +221,14 @@ The body is Markdown, as Obsidian reads it.
   and `- 종료:` (end condition). `조건` and `종료` read `없음` when there are
   none, and a full-width colon also reads. A clause with a missing section or
   item grants nothing.
-- **Evidence section**: a claim node may end with a `## 근거` section that lists
-  its non-node evidence, one list item per piece:
-  `- <date> · <coordinate> · 지지|조건|반례 — <what it showed>` (Bylaws §1 5,
-  Mechanism §8 9). The coordinate is written as code rather than a link and has
+- **Observation section**: a claim node may end with a `# 관측` section that
+  lists its non-node evidence — observations — one list item per piece:
+  `- <date> · <coordinate> · 지지|조건|반례 — <what it showed>` (Constitution
+  Article 8 6, Bylaws §1 5, Mechanism §8 9). When the node reads the observation
+  in its own terms, the same line carries that reading (Constitution Article 9 3).
+  A section opened by the pre-v5.6 heading `## 근거` reads the same, and
+  `osk doctor --migrate` renames it. A `# 관측` with nothing before it is the
+  title of a node named 관측, not the section. The coordinate is written as code rather than a link and has
   one of four forms. A cited round is the record hash shortened to its first 8
   hex characters (longer when two records share them) and the round number,
   such as `42cf0fc0#1`; consecutive rounds that make one point share a line

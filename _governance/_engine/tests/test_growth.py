@@ -851,6 +851,35 @@ class GrowthTests(unittest.TestCase):
             assert em.plan()['counts'] == {'line': 0, 'covered': 0, 'hold': 3}, 'a rerun moved something again'
         """)
 
+    def test_doctor_reports_and_applies_the_remaining_migrations(self):
+        # 2026-11-09 user decision: compatibility and bulk migrations live in `osk doctor` — the report only
+        # reads, `--migrate` applies them in order. v5.6 renames the `## 근거` heading to `# 관측` without
+        # touching the claim, the lines, the frontmatter or the related state. A body that opens with
+        # `## 근거` would read `# 관측` as its own title, so it is held and keeps the legacy heading.
+        self.check_case("""
+            from osk import doctor, evidence_migration as em, rechecks
+            line = '- 2026-11-09 · `https://example.com/a` · 지지 — page'
+            node('L', body='주장 L.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
+            node('T', body='## 근거' + chr(10) + chr(10) + line)
+            node('O', body='주장 O.' + chr(10) + chr(10) + '# 관측' + chr(10) + chr(10) + line)
+            paths = {t: core.ROOT / '00_Scope/W1' / (t + '.md') for t in 'LTO'}
+            before = {t: p.read_bytes() for t, p in paths.items()}
+            vault = {i['check']: i for i in doctor._vault()}
+            heading = next(i for k, i in vault.items() if '# 관측' in k)
+            assert heading['level'] == 'warn' and '1개' in heading['detail'] and '--migrate' in heading['fix'], vault
+            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the report wrote'
+            done = doctor.migrate()
+            assert [d['migration'] for d in done['applied']] == [heading['check']], done
+            assert (done['applied'][0]['nodes'], done['applied'][0]['holds']) == (1, 1), done
+            new = paths['L'].read_bytes()
+            assert new == before['L'].replace('## 근거'.encode(), '# 관측'.encode()), new
+            assert rechecks.state(new) == rechecks.state(before['L'])
+            assert paths['T'].read_bytes() == before['T'] and paths['O'].read_bytes() == before['O']
+            assert [e['source'] for e in core.ledger_read(em.EVENTS)
+                    if e.get('rule') == em.HEADING_RULE] == ['00_Scope/W1/L.md']
+            assert all(i['level'] == 'ok' for i in doctor._vault()), doctor._vault()
+        """)
+
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):
         self.check_case("""
             from osk import rechecks
