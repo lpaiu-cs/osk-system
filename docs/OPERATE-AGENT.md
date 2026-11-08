@@ -172,11 +172,19 @@ line:
   are the user's to approve or revert.
 
 `--fix` is two steps, like the update. The first run prints every record it
-would move and exits with code 2. Explain it, wait for the yes, then run the
-same command again within an hour. Records move byte for byte into the root
-`_cited/`; old coordinates in notes keep working, and no note is edited. A
-record whose name also exists in another place is reported as `기록 충돌` and
-left where it is: decide with the user which copy is the real one.
+would move and every note it would migrate, and exits with code 2. Explain
+both, wait for the yes, then run the same command again within an hour. The
+two changes differ:
+
+- Records move byte for byte into the root `_cited/`. This edits no note:
+  old coordinates in notes keep working. A record whose name also exists in
+  another place is reported as `기록 충돌` and left where it is: decide with
+  the user which copy is the real one.
+- Notes with non-node `derived-from` entries are edited, as `evidence migrate
+  --apply` does: each entry leaves the frontmatter and becomes a `지지` line
+  in the note's `## 근거` section, `updated` changes, and the migration is
+  logged in `_ledger/migration/`. Entries that cannot become a line stay, with
+  the reason in the result.
 
 ## Messages the user asks about
 
