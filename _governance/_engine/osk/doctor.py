@@ -386,8 +386,13 @@ def migrate() -> tuple[dict, int]:
     from . import rechecks
     rechecks.ensure_baseline(carry=True)
     confirmed = dict(plan["migrations"])
-    done = [{"migration": name, **apply(confirmed[name])}
-            for name, _targets, apply in _migrations() if name in confirmed]
+    after: dict[str, str] = {}   # 이 실행의 앞선 이행이 쓴 노드 → 결과 해시. 뒤 이행은 그것을 예상값으로 받는다
+    done = []
+    for name, _targets, apply in _migrations():
+        if name in confirmed:
+            result = apply([[p, after.get(p, h)] for p, h in confirmed[name]])
+            after.update(result.pop("after", {}))
+            done.append({"migration": name, **result})
     return {"ok": True, "applied": done}, 0
 
 

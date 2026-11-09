@@ -274,14 +274,16 @@ def preview() -> dict:
             "protected_regions": p["regions"], "holds": holds, "plan": posix_rel(PREVIEW, ROOT)}
 
 
-def _confirmed(paths: list[str], expect) -> None:
-    """확인받은 대상(`osk doctor --migrate`의 `[[경로, 해시], …]`) 밖의 노드가 잠금 안의 계획에 들면 아무것도
-    쓰지 않는다. 해시는 대지 않는다 — 같은 실행의 앞선 이행이 확인받은 노드를 바꿨을 수 있고, 노드마다의
-    해시는 쓰기 직전에 다시 잰다. 대상이 줄어든 것(이미 옮겨졌거나 보류로 바뀐 것)은 받는다."""
-    extra = sorted(set(paths) - {p for p, _h in expect}) if expect is not None else []
+def _confirmed(planned: list[tuple[str, str]], expect) -> None:
+    """잠금 안에서 다시 세운 계획의 (경로, 원본 해시)가 모두 확인받은 대상(`osk doctor --migrate`의
+    `[[경로, 해시], …]`)에 있어야 쓴다 — 확인받지 않은 노드도, 확인 뒤 바뀐 노드도 아무것도 쓰기 전에 새
+    확인을 받는다. 같은 실행의 앞선 이행이 쓴 노드는 doctor가 그 결과 해시를 예상값으로 넘긴다. 대상이
+    줄어든 것(이미 옮겨졌거나 보류로 바뀐 것)은 받는다."""
+    ok = {tuple(e) for e in expect} if expect is not None else None
+    extra = sorted(p for p, h in planned if (p, h) not in ok) if ok is not None else []
     if extra:
-        raise RuntimeError("확인받지 않은 노드가 이행 계획에 들었다 — 쓰지 않았다. `osk doctor --migrate`로 "
-                           "새 확인을 받는다: " + ", ".join(extra))
+        raise RuntimeError("확인받지 않았거나 확인 뒤 바뀐 노드가 이행 계획에 들었다 — 쓰지 않았다. "
+                           "`osk doctor --migrate`로 새 확인을 받는다: " + ", ".join(extra))
 
 
 def apply(expect=None) -> dict:
@@ -290,7 +292,7 @@ def apply(expect=None) -> dict:
     대상이다(`_confirmed`)."""
     with core.mutation_lock():
         p = plan()
-        _confirmed([n["path"] for n in p["nodes"] if n["new"] is not None], expect)
+        _confirmed([(n["path"], n["before"]) for n in p["nodes"] if n["new"] is not None], expect)
         day = core.now_kst()[:10]
         manifest = EVENTS.parent / f"evidence-section-{day}.md"
         k = 1
@@ -319,7 +321,8 @@ def apply(expect=None) -> dict:
                                   if p["regions"] else "없음"), "", "### 보류", "", *(holds or ["없음"]), ""]
         core.atomic_write(manifest, (_manifest(p, day) + "\n" + "\n".join(close)).encode("utf-8"))
     return {"ok": True, "nodes": written, **c, "protected_regions": p["regions"],
-            "holds": len(holds), "manifest": posix_rel(manifest, ROOT)}
+            "holds": len(holds), "manifest": posix_rel(manifest, ROOT),
+            "after": {n["path"]: sha256_bytes(n["new"]) for n in p["nodes"] if n["new"] is not None}}
 
 
 def pending() -> int:
@@ -385,7 +388,7 @@ def heading_apply(expect=None) -> dict:
     `expect`는 확인받은 대상이다(`_confirmed`)."""
     with core.mutation_lock():
         items = heading_plan()
-        _confirmed([it["path"] for it in items if it["new"] is not None], expect)
+        _confirmed([(it["path"], it["before"]) for it in items if it["new"] is not None], expect)
         day = core.now_kst()[:10]
         manifest = EVENTS.parent / f"observation-heading-{day}.md"
         k = 1
@@ -414,4 +417,4 @@ def heading_apply(expect=None) -> dict:
                                   if regions else "없음"), "", "### 보류", "", *(holds or ["없음"]), ""]
         core.atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
     return {"ok": True, "nodes": len(todo), "holds": len(holds), "protected_regions": regions,
-            "manifest": posix_rel(manifest, ROOT)}
+            "manifest": posix_rel(manifest, ROOT), "after": {it["path"]: sha256_bytes(it["new"]) for it in todo}}

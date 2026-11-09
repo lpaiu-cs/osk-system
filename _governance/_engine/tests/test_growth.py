@@ -999,6 +999,14 @@ class GrowthTests(unittest.TestCase):
                 assert 'Tab.md' in str(e), e
             else:
                 raise AssertionError('migrated a node that was not confirmed')
+            # A confirmed node that changed after the user's yes stops it too (#313 review, round 2).
+            stale = [[p, 'sha256:0' if p.endswith('/L.md') else h] for p, h in plan['plan']['migrations'][0][1]]
+            try:
+                em.heading_apply(expect=stale)
+            except RuntimeError as e:
+                assert 'L.md' in str(e) and 'Tab.md' not in str(e), e
+            else:
+                raise AssertionError('migrated a node that changed after it was confirmed')
             assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the refused apply wrote'
             assert not list(em.EVENTS.parent.glob('observation-heading-*')), 'the refused apply opened a manifest'
             done, code = doctor.migrate()
@@ -1035,24 +1043,29 @@ class GrowthTests(unittest.TestCase):
             old = core.ROOT / '00_Scope/W1/_raw/.records'
             old.mkdir(parents=True)
             (old / (name + '.txt')).write_bytes(raw._block(1, '옛 자리의 질문', '답').encode())
-            node('A')
+            # A also keeps the legacy `## 근거` heading: the v5.4 lines land in it, then the v5.6 rename takes
+            # A at the hash v5.4 wrote — the confirmed hash carried forward, not a change after the yes.
+            node('A', body='주장 A.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10)
+                 + '- 2026-11-09 · `https://example.com/a` · 지지 — page')
             a = core.ROOT / '00_Scope/W1/A.md'
             n = contract.parse(a)
             a.write_bytes(write._render({**n.meta, 'derived-from': ['00_Scope/W1/_raw/.records/' + name + '.txt#1']}, n.body))
             git('add', '-A'); git('commit', '-qm', 'seed')
             v54, v52 = '비노드 derived-from → 관측 줄 (v5.4)', '옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)'
+            v56 = '관측 절 제목 `## 근거` → `# 관측` (v5.6)'
             plan, code = doctor.migrate()
-            assert code == 2 and [m[0] for m in plan['plan']['migrations']] == [v54, v52], plan
+            assert code == 2 and [m[0] for m in plan['plan']['migrations']] == [v54, v52, v56], plan
             # A plan that changed after it was shown asks again: a second old-place record turned up.
             other = 'claude-d48d8ef2' + '0' * 24
             (old / (other + '.txt')).write_bytes(raw._block(1, '또 다른 질문', '답').encode())
             assert doctor.migrate()[1] == 2
             rep, code = doctor.migrate()
             applied = {a['migration']: a for a in rep['applied']}
-            assert code == 0 and list(applied) == [v54, v52], rep
-            assert applied[v52]['count'] == 2 and applied[v54]['nodes'] == 1, applied
+            assert code == 0 and list(applied) == [v54, v52, v56], rep
+            assert applied[v52]['count'] == 2 and applied[v54]['nodes'] == 1 and applied[v56]['nodes'] == 1, applied
             na = contract.parse(a)
-            assert 'derived-from' not in na.meta and evidence.coordinates(na.body) == ['c38d8ef2#1'], na.body
+            assert 'derived-from' not in na.meta and 'c38d8ef2#1' in evidence.coordinates(na.body), na.body
+            assert '# 관측' in na.body and '## 근거' not in na.body, na.body
             assert raw.locate_record(name) == core.ROOT / '_cited/.records' / (name + '.txt')
             assert doctor.migrate() == ({'ok': True, 'applied': []}, 0)
         """)
