@@ -44,7 +44,10 @@ device.
   that hash the whole file may come up once more. Nodes in a protected region
   remain as a changeset (`osk approve`).
 - From now on, bulk migrations that come with an upgrade are checked by
-  `osk doctor` and applied with `--migrate`.
+  `osk doctor` and applied with `--migrate`. Its first run only lists what it
+  would move and exits with code 2; run the same command again within an hour,
+  after confirming, to apply. Moving cited records from their old places into
+  the root `_cited/` is part of the same command.
 
 ## From v5.4 to v5.5
 
