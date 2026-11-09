@@ -862,7 +862,8 @@ def _message_packet(text: str):
         return _strict_json(text)
     except ValueError as whole:
         for m in re.finditer(r"(?m)^\{", text):
-            if m.start() == 0:
+            # 앞에 연 펜스가 홀수면 펜스 안이다 — 닫는 표시가 빠진 펜스도 결과로 읽지 않는다(#313 리뷰)
+            if m.start() == 0 or len(re.findall(r"(?m)^ {0,3}(?:```|~~~)", text[:m.start()])) % 2:
                 continue
             try:
                 packet = _strict_json(text[m.start():])

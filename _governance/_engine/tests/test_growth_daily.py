@@ -513,17 +513,31 @@ class DailyTests(unittest.TestCase):
                 lines(log, [{'day': d, 'state': s, 'batches': b} for d, s, b in rows])
             days(('2026-11-01', 'limited', 0), ('2026-11-02', 'budget', 0), ('2026-11-02', 'unavailable', 0),
                  ('2026-11-03', 'limited', 0))
-            assert growth_daily.idle() == {'days': 3, 'first': '2026-11-01', 'last': '2026-11-03', 'state': 'limited'}
+            assert growth_daily.idle('2026-11-03') == {'days': 3, 'first': '2026-11-01', 'last': '2026-11-03',
+                                                       'state': 'limited'}
             days(('2026-11-01', 'limited', 0), ('2026-11-02', 'daily_limit', 4), ('2026-11-03', 'unavailable', 0))
-            assert growth_daily.idle() == {'days': 1, 'first': '2026-11-03', 'last': '2026-11-03', 'state': 'unavailable'}
+            assert growth_daily.idle('2026-11-03') == {'days': 1, 'first': '2026-11-03', 'last': '2026-11-03',
+                                                       'state': 'unavailable'}
             days(('2026-11-01', 'limited', 0), ('2026-11-02', 'empty', 0))
-            assert growth_daily.idle() is None, 'nothing to pick is not idleness'
+            assert growth_daily.idle('2026-11-02') is None, 'nothing to pick is not idleness'
+            # #313 review: days without a record (the scheduler stopped) count; today counts only once it ran.
+            days(('2026-11-01', 'daily_limit', 4))
+            assert growth_daily.idle('2026-11-05') == {'days': 3, 'first': '2026-11-02', 'last': '2026-11-04',
+                                                       'state': 'missing'}, growth_daily.idle('2026-11-05')
+            # A backlog run is not the daily run: its batches do not end the gap.
+            lines(log, [{'day': '2026-11-01', 'state': 'daily_limit', 'batches': 4},
+                        {'day': '2026-11-02', 'state': 'limited', 'batches': 0},
+                        {'day': '2026-11-02', 'state': 'empty', 'batches': 5, 'backlog': True}])
+            assert growth_daily.idle('2026-11-02') == {'days': 1, 'first': '2026-11-02', 'last': '2026-11-02',
+                                                       'state': 'limited'}, growth_daily.idle('2026-11-02')
             sys.path.insert(0, str(Path(growth.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            days(('2026-11-01', 'limited', 0), ('2026-11-02', 'unavailable', 0))
+            from datetime import date, timedelta
+            today = date.today()
+            days(((today - timedelta(days=1)).isoformat(), 'limited', 0), (today.isoformat(), 'unavailable', 0))
             text = hook._daily_note()
-            assert '11-01~11-02, 2일 동안' in text and '쓸 수 있는 워커가 없음' in text, text
-            days(('2026-11-02', 'complete', 3))
+            assert f'{today - timedelta(days=1):%m-%d}~{today:%m-%d}, 2일 동안' in text and '쓸 수 있는 워커가 없음' in text, text
+            days((today.isoformat(), 'complete', 3))
             assert hook._daily_note() == ''
         """)
 

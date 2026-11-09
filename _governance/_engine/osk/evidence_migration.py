@@ -274,11 +274,23 @@ def preview() -> dict:
             "protected_regions": p["regions"], "holds": holds, "plan": posix_rel(PREVIEW, ROOT)}
 
 
-def apply() -> dict:
+def _confirmed(paths: list[str], expect) -> None:
+    """확인받은 대상(`osk doctor --migrate`의 `[[경로, 해시], …]`) 밖의 노드가 잠금 안의 계획에 들면 아무것도
+    쓰지 않는다. 해시는 대지 않는다 — 같은 실행의 앞선 이행이 확인받은 노드를 바꿨을 수 있고, 노드마다의
+    해시는 쓰기 직전에 다시 잰다. 대상이 줄어든 것(이미 옮겨졌거나 보류로 바뀐 것)은 받는다."""
+    extra = sorted(set(paths) - {p for p, _h in expect}) if expect is not None else []
+    if extra:
+        raise RuntimeError("확인받지 않은 노드가 이행 계획에 들었다 — 쓰지 않았다. `osk doctor --migrate`로 "
+                           "새 확인을 받는다: " + ", ".join(extra))
+
+
+def apply(expect=None) -> dict:
     """계획대로 옮긴다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항).
-    끝나면 전수 목록을 결과와 보류로 닫는다. 동기화와 쓰기는 같은 잠금을 기다린다."""
+    끝나면 전수 목록을 결과와 보류로 닫는다. 동기화와 쓰기는 같은 잠금을 기다린다. `expect`는 확인받은
+    대상이다(`_confirmed`)."""
     with core.mutation_lock():
         p = plan()
+        _confirmed([n["path"] for n in p["nodes"] if n["new"] is not None], expect)
         day = core.now_kst()[:10]
         manifest = EVENTS.parent / f"evidence-section-{day}.md"
         k = 1
@@ -368,10 +380,12 @@ def heading_plan() -> list[dict]:
     return out
 
 
-def heading_apply() -> dict:
-    """제목을 바꾼다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항)."""
+def heading_apply(expect=None) -> dict:
+    """제목을 바꾼다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항).
+    `expect`는 확인받은 대상이다(`_confirmed`)."""
     with core.mutation_lock():
         items = heading_plan()
+        _confirmed([it["path"] for it in items if it["new"] is not None], expect)
         day = core.now_kst()[:10]
         manifest = EVENTS.parent / f"observation-heading-{day}.md"
         k = 1

@@ -327,13 +327,13 @@ def _migrations() -> list[tuple[str, object, object]]:
     from . import evidence_migration as em, raw
     return [("비노드 derived-from → 관측 줄 (v5.4)",
              lambda: [[n["path"], n["before"]] for n in em.plan()["nodes"] if n["new"]],
-             lambda _targets: em.apply()),
+             lambda targets: em.apply(expect=targets)),
             ("옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)",
              lambda: [[m["from"], m["hash"]] for m in raw.consolidate()["files"]],
              lambda targets: raw.consolidate(apply=True, expect=targets)),
             ("관측 절 제목 `## 근거` → `# 관측` (v5.6)",
              lambda: [[it["path"], it["before"]] for it in em.heading_plan() if it["new"] is not None],
-             lambda _targets: em.heading_apply())]
+             lambda targets: em.heading_apply(expect=targets))]
 
 
 MIGRATE_FIX = "`osk doctor --migrate`로 옮긴다 — 첫 실행은 계획만 보이고, 확인 뒤 1시간 안의 같은 실행이 적용한다"

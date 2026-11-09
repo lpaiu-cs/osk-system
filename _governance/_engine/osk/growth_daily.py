@@ -352,9 +352,11 @@ def adjust(rows: list[dict], providers: list[str], now: datetime | None = None) 
             "limit": limit, "inflow": inflow, "work": {p: measured["work"][p] for p in providers}}
 
 
-def idle() -> dict | None:
-    """묶음을 하나도 돌지 못한 날이 최근까지 이어지면 그 날들과 마지막 까닭(`DAYS`). 고를 작업이 없던
-    날(`empty`)은 쉰 것이 아니라 끊는다. 이어지지 않으면 None."""
+def idle(today: str | None = None) -> dict | None:
+    """정기 실행이 묶음을 하나도 돌지 못한 날이 오늘까지 이어지면 그 날들과 마지막 까닭(`DAYS`). 기록이
+    없는 날도 센다 — 정기 실행이 시작되지 않은 날이다(`missing`). 오늘은 기록이 있을 때만 센다(아직 돌 때가
+    아닐 수 있다). 고를 작업이 없던 날(`empty`)은 쉰 것이 아니라 끊는다. 적체 일괄 실행(`backlog`)은 정기
+    실행이 아니라 판정에 넣지 않는다. 이어지지 않으면 None."""
     try:
         rows = [json.loads(line) for line in (core.ROOT / DAYS).read_text(encoding="utf-8").splitlines()
                 if line.strip()]
@@ -362,18 +364,27 @@ def idle() -> dict | None:
         return None
     days: dict[str, dict] = {}
     for r in rows:
-        if isinstance(r, dict) and isinstance(r.get("day"), str):
+        if isinstance(r, dict) and isinstance(r.get("day"), str) and not r.get("backlog"):
             d = days.setdefault(r["day"], {"batches": 0, "states": []})
             d["batches"] += r.get("batches") or 0
             d["states"].append(r.get("state"))
+    if not days:
+        return None
+    day = datetime.fromisoformat(today or datetime.now(timezone.utc).astimezone().date().isoformat()).date()
+    if day.isoformat() not in days:
+        day -= timedelta(days=1)
     streak = []
-    for day in sorted(days, reverse=True):
-        if days[day]["batches"] or "empty" in days[day]["states"]:
+    while day.isoformat() >= min(days):
+        d = days.get(day.isoformat())
+        if d and (d["batches"] or "empty" in d["states"]):
             break
-        streak.append(day)
+        streak.append(day.isoformat())
+        day -= timedelta(days=1)
     if not streak:
         return None
-    return {"days": len(streak), "first": streak[-1], "last": streak[0], "state": days[streak[0]]["states"][-1]}
+    last = days.get(streak[0])
+    return {"days": len(streak), "first": streak[-1], "last": streak[0],
+            "state": last["states"][-1] if last else "missing"}
 
 
 def _counted(kind: str, run: dict) -> int:
@@ -558,7 +569,8 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: 
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"day": day, "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-                                "state": stop, "batches": len(batches)}, ensure_ascii=False) + "\n")
+                                "state": stop, "batches": len(batches), **({"backlog": True} if backlog else {})},
+                               ensure_ascii=False) + "\n")
     except OSError as exc:
         errors.append({"days": f"{type(exc).__name__}: {exc}"})
     # `done`과 `day_seconds`는 그날 앞선 실행까지 더한 값이다.
