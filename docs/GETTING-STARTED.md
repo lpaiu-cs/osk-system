@@ -5,7 +5,7 @@
 This tutorial is for people who use Claude Code or Codex but have never set up
 osk-system. It starts from an empty folder and ends with a verified setup. At the
 end, your agent writes its first memory, then finds it and reads it back. Written
-for release v5.5.0.
+for release v5.6.0.
 
 For more detail on any step, follow the links to [SETUP.md](SETUP.md), the
 operator reference (in Korean).
@@ -147,7 +147,7 @@ Never edit these files by hand.
 
 Clone a release tag, not the `main` branch, which moves between releases. The
 updater compares your files with a release. Starting exactly on one lets Step 2
-record a clean baseline. `v5.5.0` works as written. You can use the newest tag
+record a clean baseline. `v5.6.0` works as written. You can use the newest tag
 from the [releases page](https://github.com/lpaiu-cs/osk-system/releases) instead,
 as long as you use the same tag again in Step 2.
 
@@ -155,7 +155,7 @@ Run these in the folder that will contain the vault, such as `C:/osk` on
 Windows (create it first). The commands are the same on every OS:
 
 ```bash
-git clone --branch v5.5.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.6.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 ```
@@ -225,13 +225,13 @@ from local edits. The updater downloads the release from GitHub to compare.
 macOS/Linux:
 
 ```bash
-.venv/bin/python -m osk.update --to v5.5.0 --apply
+.venv/bin/python -m osk.update --to v5.6.0 --apply
 ```
 
 Windows (PowerShell):
 
 ```powershell
-.venv\Scripts\python.exe -m osk.update --to v5.5.0 --apply
+.venv\Scripts\python.exe -m osk.update --to v5.6.0 --apply
 ```
 
 The first run changes none of your files. It prints the plan, then exits with
@@ -275,7 +275,7 @@ git push
 ```
 
 **Check:** `.venv/bin/python -m osk.update` reports the selected version as
-`current` (`v5.5.0` in this example). On Windows, use
+`current` (`v5.6.0` in this example). On Windows, use
 `.venv\Scripts\python.exe -m osk.update`. `git status` is clean.
 `osk.cli status` shows `"protected_regions": {"_governance": "clean"}`.
 
@@ -489,11 +489,20 @@ fork reviews.
 2. **Create the project's scope.** Prompt:
 
    ```text
-   Create this project's scope in osk: a hub node titled "my-app" in space "00_Scope/my-app",
-   with a one-line summary and a short description of the project. Use this session's key.
+   Search osk for "my-app" first. Then create this project's scope in osk: a hub node titled
+   "my-app" in space "00_Scope/my-app", with a one-line summary and a short description of the
+   project. Use this session's key.
    ```
 
-   The first attempt is refused on purpose, with this message:
+   Since v5.6 an agent must call `search` at least once in a session before it
+   writes a new node, so that it finds similar notes in other scopes first. On
+   a new vault the search returns nothing; that is expected. If the agent skips
+   it, `create_node` is refused with a message that starts
+   `새 노드를 세우기 전에 그 주제로 search를 먼저 불러` ("call `search` on the topic
+   before you write a new node"); the agent searches and sends the request again.
+
+   After the search, the first attempt is still refused on purpose, with this
+   message:
 
    > `00_Scope/my-app`는 아직 없는 군집이라 … 새 군집을 만든다
 

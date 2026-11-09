@@ -29,10 +29,13 @@ device.
 
 ## From v5.5 to v5.6
 
+v5.5.1 was not released. Its changes ship in v5.6.0.
+
 - **The constitution redefines knowledge and centrality (#309, #310).**
   Knowledge is a hypothesis that explains observations, and centrality has two
   axes: explanatory centrality E and dependency centrality D. Search ranking
-  still uses D (incoming dependency) only.
+  still uses D (incoming dependency) only. References made by hubs no longer
+  count toward D, so nodes that hubs list may rank slightly lower.
 - **The evidence section is now the observation section `# 관측`.** New
   sections use `# 관측`. The old `## 근거` still reads, so nothing is needed
   right away. After the update, `osk doctor` reports how many nodes to move and
@@ -48,6 +51,30 @@ device.
   would move and exits with code 2; run the same command again within an hour,
   after confirming, to apply. Moving cited records from their old places into
   the root `_cited/` is part of the same command.
+- **An agent searches before it writes a new node (#273, #314).** `create_node`
+  is refused until `search` has been called once in that session (one osk MCP
+  server process). The instructions tell agents to search the topic first and
+  to link a found node only when they rely on its claim. A script that calls
+  the MCP surface directly calls `search` first.
+- **The scheduled growth run rests instead of keeping a budget (#301, #306).**
+  Nothing to do.
+  - The weekly budget per provider is gone. A provider rests once its weekly
+    use reaches 90%: Codex by its weekly window (even with credits left), Claude
+    by the weekly figure in the latest Claude run's rate-limit notice. When
+    every provider rests, the day ends as `rest`, not as a failure.
+  - A worker fault stops only that queue for the day. One batch without
+    progress no longer stops the day.
+  - A Scope batch takes small tails of the same scope's conversations along,
+    up to 9 turns.
+  - Each day's run is logged in `.osk/growth/days.jsonl`. When days pass without
+    a batch, including days the run never started, the session start says so.
+  - The conversation-review fork takes over rechecks only on a day the
+    scheduled run did not finish its recheck queue.
+- **`osk doctor --vault` checks the vault's content (#308).** It reads only:
+  migrations still due, record conflicts, validator findings, work the
+  scheduled review left, and the conversation-review backlog with estimated
+  tokens. `osk growth run --daily --backlog` works through that backlog with
+  Scope batches only, outside the daily limit.
 
 ## From v5.4 to v5.5
 
