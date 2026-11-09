@@ -302,7 +302,7 @@ class DailyTests(unittest.TestCase):
                 n = len(calls)
                 if n > 4:
                     return {'ok': True, 'state': 'skipped', 'selected': 0}
-                made, none = {1: (['s1'], []), 2: (['d1', 'd2'], ['o1']), 3: (['s2'], []), 4: ([], ['s3'])}[n]
+                made, none = {1: (['s1'], []), 2: (['d1', 'd2'], ['o1']), 3: (['s2', 's2-tail'], []), 4: ([], ['s3'])}[n]
                 return {'kind': 'run', 'manifest': 'm' + str(n), 'state': 'incomplete', 'returncode': 0,
                         'selected': len(made + none), 'provider': 'codex', 'progress': {'made': made, 'none': none},
                         'usage': {'measured': True, 'tokens': 1000}}
@@ -320,6 +320,10 @@ class DailyTests(unittest.TestCase):
             assert 's3' in calls[4]['exclude'], calls[4]
             # One Scope job a batch, 9 rounds, 900 s; the other queues three at a time, 600 s.
             assert {(c['limit'], c['timeout'], c['scope_rounds']) for c in calls if c['queues'] == ('scope_jobs',)} == {(1, 900, 9)}
+            # #306 D5: a Scope batch bundles its scope's small tails up to nine turns and counts once toward L
+            # (batch 3 took two conversations).
+            assert {c['scope_bundle'] for c in calls if c['queues'] == ('scope_jobs',)} == {9}
+            assert {c['scope_bundle'] for c in calls if c['queues'] != ('scope_jobs',)} == {0}
             assert (calls[1]['limit'], calls[1]['timeout']) == (3, 600)
             # Capture runs once, before any batch; a job without progress is not picked again today.
             assert capture.call_count == 1 and [c['capture'] for c in calls] == [False] * 6, calls
@@ -605,6 +609,54 @@ class DailyTests(unittest.TestCase):
                     except SystemExit as exc:
                         got = exc.code or 0
                 assert got == code, (result, got)
+        """)
+
+    def test_scope_batch_bundles_small_tails_of_its_scope(self):
+        self.check_case("""
+            import os, time
+            # #306 D5: thirty of thirty-two daily Scope batches were one-turn tails, each paying the batch's
+            # fixed cost. A Scope batch takes its head conversation and then that scope's small tails —
+            # conversations whose whole wait fits the turns left — up to nine turns in all.
+            node('A')
+            node('B', 'W2')
+            now = time.time()
+            for n, (sid, turns, scope) in enumerate((('a', 2, 'W1'), ('b', 1, 'W2'), ('c', 3, 'W1'),
+                                                     ('d', 6, 'W1'), ('e', 4, 'W1'))):
+                path = core.ROOT / (sid + '.jsonl')
+                rows = []
+                for i in range(turns):
+                    rows += [{'type': 'user', 'sessionId': sid, 'uuid': sid + '-u' + str(i),
+                              'message': {'role': 'user', 'content': 'question ' + str(i)}},
+                             {'type': 'assistant', 'sessionId': sid, 'uuid': sid + '-a' + str(i),
+                              'message': {'role': 'assistant', 'id': sid + '-m' + str(i),
+                                          'content': [{'type': 'text', 'text': 'answer ' + str(i)}], 'stop_reason': 'end_turn'}}]
+                path.write_text(''.join(json.dumps(row) + chr(10) for row in rows), encoding='utf-8')
+                integration.capture('claude', sid, str(path), sid + '-project', space='00_Scope/' + scope)
+                legacy(sid, path, scope)
+            def queue():
+                # These cursors have no turn times, so they queue by state mtime — and building a job saves
+                # its cursor. Put the order back before each pick.
+                for n, sid in enumerate('abcde'):
+                    os.utime(integration.state_path('claude', sid), (now - 1000 + n, now - 1000 + n))
+            def pick(**options):
+                queue()
+                return [j['conversation_id'] for j in integration.catchup(limit=1, max_rounds=9, capture_new=False,
+                                                                          **options)['jobs']]
+            assert pick() == ['a']
+            # a (2) + c (3) + e (4): b is another scope, d (6) no longer fits after c
+            got = pick(bundle=9)
+            assert got == ['a', 'c', 'e'], got
+            queue()
+            head = integration.catchup(limit=1, max_rounds=9, capture_new=False)['jobs'][0]
+            got = pick(bundle=9, exclude={head['key']})
+            assert got == ['b'], ('a stalled head gives way; its scope has no tails', got)
+            worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']
+            queue()
+            result = growth.run(worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'},
+                                scope_bundle=9)
+            plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind'] == 'plan'][-1]
+            assert [j['conversation_id'] for j in plan['scope_jobs']] == ['a', 'c', 'e'], plan['scope_jobs']
+            assert result['selected'] == 3 and growth_daily._counted('scope', result) == 1, result
         """)
 
     def test_scope_batch_takes_nine_rounds_and_light_batch_skips_capture(self):

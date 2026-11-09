@@ -1295,10 +1295,11 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
          scope_job: dict | None = None, cwd: Path | None = None,
          worker_env: dict | None = None, invocation: str = "unknown",
          queues=None, scope_rounds: int = SCOPE_ROUNDS_PER_JOB, capture: bool = True,
-         exclude=(), daily: dict | None = None) -> dict:
+         exclude=(), daily: dict | None = None, scope_bundle: int = 0) -> dict:
     """Scheduler entry: manifest → bounded external process → observed receipts.
     하루 묶음(`growth_daily`)은 채울 큐(`queues`), 작업당 라운드, 포착 여부, 그날 고르지 않을
-    작업 key(`exclude`), 계획에 남길 판단 근거(`daily`)를 준다."""
+    작업 key(`exclude`), 계획에 남길 판단 근거(`daily`), 같은 scope의 작은 꼬리를 묶을 턴 수
+    (`scope_bundle`, `integration.catchup`)를 준다."""
     # Fork preflight already selected the exact source version. Resolving it as
     # a daily worker here would silently substitute a newer sibling.
     if invocation not in {"unknown", "manual", "user_request", "scheduled", "stop_hook"}:
@@ -1338,9 +1339,9 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
             if scope_job is not None:
                 catchup = {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0}
             elif "scope_jobs" in wanted:
-                catchup = integration.catchup(limit=min(100, limit + len(exclude)), max_rounds=scope_rounds,
-                                              tried=_scope_tried(_records()), capture_new=capture)
-                catchup["jobs"] = [j for j in catchup["jobs"] if j["key"] not in exclude]
+                catchup = integration.catchup(limit=min(100, limit), max_rounds=scope_rounds,
+                                              tried=_scope_tried(_records()), capture_new=capture,
+                                              exclude=exclude, bundle=scope_bundle)
             else:
                 catchup = {"ok": True, "jobs": [], "remaining": 0}
             with core.mutation_lock():
@@ -1386,11 +1387,12 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     planned["recheck_jobs"] = _skip_stalled(
                         _pick_rechecks(idx, limit + len(stalled), scope, rows) if scope and not daily_active() else [],
                         stalled, limit, planned)
-                planned["scope_jobs"] = catchup["jobs"][:limit]
+                planned["scope_jobs"] = catchup["jobs"] if scope_bundle else catchup["jobs"][:limit]
                 planned["scope_remaining"] = catchup.get("remaining", 0)
                 # A Stop fork may organize only its own Scope. It reuses this one
                 # worker/deadline; no other conversation or Domain is selected.
-                _select_work(planned, limit + bool(scope_job and planned["organization_jobs"]), _records())
+                _select_work(planned, max(limit, len(planned["scope_jobs"]))
+                             + bool(scope_job and planned["organization_jobs"]), _records())
                 planned["scope_remaining"] += planned["queued_not_selected"]["scope_jobs"]
                 planned["timeout_seconds"] = timeout
                 if drafter := _drafter(command):

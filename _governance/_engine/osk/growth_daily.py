@@ -1,7 +1,8 @@
 """정기 성장 실행의 하루 — 묶음 실행, 한도 조회, 주간 한도 조정(#175 2026-10-18 결정).
 
-  · 하루 한도 L을 묶음으로 나눠 돈다. Scope 통합 작업은 묶음 하나에 혼자(9라운드, 900초) 두고,
-    나머지 큐는 3개씩(600초) 묶는다. Scope 통합이 첫 차례를 갖는다.
+  · 하루 한도 L을 묶음으로 나눠 돈다. Scope 통합 작업은 묶음 하나에 혼자(9라운드, 900초) 두되, 같은
+    scope의 작은 꼬리는 모두 9턴까지 함께 묶어 한 작업으로 센다(#306 D5). 나머지 큐는 3개씩(600초)
+    묶는다. Scope 통합이 첫 차례를 갖는다.
   · 포착은 하루 시작에 한 번, 공급자를 고르기 전에 한다 — 모두 소진인 날에도 한다. Codex 한도는
     묶음마다 조회한다(모델을 부르지 않는다). Codex가 소진이면 Claude 워커가 대신 돈다.
   · 진척 없던 작업(보류 포함)은 그날 다시 고르지 않고 다음 작업으로 잇는다. 작업자 이상(비정상 종료·
@@ -370,6 +371,11 @@ def idle() -> dict | None:
     return {"days": len(streak), "first": streak[-1], "last": streak[0], "state": days[streak[0]]["states"][-1]}
 
 
+def _counted(kind: str, run: dict) -> int:
+    """L에 세는 작업 수 — Scope 묶음은 작은 꼬리를 함께 묶어도 하나다(#306 D5)."""
+    return min(1, run.get("selected", 0)) if kind == "scope" else run.get("selected", 0)
+
+
 def _next_kind(done: dict, left: set, limit: int) -> str | None:
     """Scope 통합이 첫 차례, 이어 가벼운 큐 묶음 하나, 그다음 Scope가 L−3까지, 남은 자리는 가벼운 큐."""
     scope = "scope" in left and done["scope"] < limit - LIGHT_SIZE
@@ -405,7 +411,7 @@ def _batch(command: list[str], kind: str, size: int, **args) -> dict:
     for wait in (True, False):
         result = growth.run(command, limit=size, timeout=SCOPE_TIMEOUT if kind == "scope" else LIGHT_TIMEOUT,
                             queues=("scope_jobs",) if kind == "scope" else LIGHT, scope_rounds=SCOPE_ROUNDS,
-                            **args)
+                            scope_bundle=SCOPE_ROUNDS if kind == "scope" else 0, **args)
         if result.get("state") != "busy" or not wait:
             return result
         time.sleep(BUSY_WAIT)
@@ -461,7 +467,7 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
     done, earlier = {"scope": 0, "light": 0}, 0.0
     for plan, run in today:
         if plan["daily"].get("kind") in done and run.get("state") not in growth.WAITS:
-            done[plan["daily"]["kind"]] += run.get("selected", 0)
+            done[plan["daily"]["kind"]] += _counted(plan["daily"]["kind"], run)
         if (begun := _at(plan)) and (ended := _at(run)):
             earlier += max(0.0, (ended - begun).total_seconds())
     left, off, faults = {"scope", "light"}, {}, set()
@@ -505,7 +511,7 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
                 errors.append({"provider": who, "state": state,
                                "error": result.get("error") or result.get("violations")})
         else:
-            done[kind] += result.get("selected", 0)
+            done[kind] += _counted(kind, result)
             exclude |= set(result["progress"]["none"])
             if growth.run_failed(result):
                 errors.append({"manifest": result["manifest"], "state": state, "error": result.get("error")})
