@@ -293,13 +293,15 @@ class DailyTests(unittest.TestCase):
             assert got['inflow'] == {'new_rounds': 2, 'new_jobs': 2, 'old_rounds': 12, 'old_jobs': 4, 'unread': 0}, got
         """)
 
-    def test_day_runs_scope_first_then_light_and_stops_without_progress(self):
+    def test_day_runs_scope_first_then_light_and_goes_on_past_a_batch_without_progress(self):
         self.check_case("""
             calls = []
             def fake(command, **args):
                 calls.append(args)
                 kind = 'scope' if args['queues'] == ('scope_jobs',) else 'light'
                 n = len(calls)
+                if n > 4:
+                    return {'ok': True, 'state': 'skipped', 'selected': 0}
                 made, none = {1: (['s1'], []), 2: (['d1', 'd2'], ['o1']), 3: (['s2'], []), 4: ([], ['s3'])}[n]
                 return {'kind': 'run', 'manifest': 'm' + str(n), 'state': 'incomplete', 'returncode': 0,
                         'selected': len(made + none), 'provider': 'codex', 'progress': {'made': made, 'none': none},
@@ -310,17 +312,21 @@ class DailyTests(unittest.TestCase):
                     patch.object(integration, 'capture_known', wraps=integration.capture_known) as capture, \\
                     patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 2}):
                 day = growth_daily.daily([['C:/x/codex.exe', 'exec']])
-            assert day['state'] == 'no_progress' and day['ok'], day
-            assert [c['queues'] for c in calls] == [('scope_jobs',), growth_daily.LIGHT, ('scope_jobs',), ('scope_jobs',)]
+            # #306 D2: a batch without progress (a hold, too) does not end the day — the next batch runs
+            # without the jobs that made none, until the queues have nothing left to pick.
+            assert day['state'] == 'empty' and day['ok'], day
+            assert [c['queues'] for c in calls] == [('scope_jobs',), growth_daily.LIGHT, ('scope_jobs',), ('scope_jobs',),
+                                                    ('scope_jobs',), growth_daily.LIGHT], calls
+            assert 's3' in calls[4]['exclude'], calls[4]
             # One Scope job a batch, 9 rounds, 900 s; the other queues three at a time, 600 s.
             assert {(c['limit'], c['timeout'], c['scope_rounds']) for c in calls if c['queues'] == ('scope_jobs',)} == {(1, 900, 9)}
             assert (calls[1]['limit'], calls[1]['timeout']) == (3, 600)
             # Capture runs once, before any batch; a job without progress is not picked again today.
-            assert capture.call_count == 1 and [c['capture'] for c in calls] == [False] * 4, calls
+            assert capture.call_count == 1 and [c['capture'] for c in calls] == [False] * 6, calls
             assert day['capture'] == {'ok': True, 'appended': 0, 'failed': 0, 'known_errors': 0}, day
             assert 'o1' not in calls[1]['exclude'] and 'o1' in calls[2]['exclude'], calls
             # Each plan records its batch, the provider and the limit read; the week's evidence goes once.
-            assert [c['daily']['batch'] for c in calls] == [1, 2, 3, 4]
+            assert [c['daily']['batch'] for c in calls[:4]] == [1, 2, 3, 4]
             assert calls[0]['daily']['adjustment'] == fixed and all('adjustment' not in c['daily'] for c in calls[1:])
             assert calls[0]['daily']['limits']['weekly'] == 2 and calls[0]['daily']['provider'] == 'codex'
             assert day['budget_left'] == {'codex': 10**6 - 4000} and day['done'] == {'scope': 3, 'light': 3}, day
@@ -354,6 +360,8 @@ class DailyTests(unittest.TestCase):
             def fake(command, **args):
                 who = growth_daily.provider(command)
                 seen.append((who, args['daily']['kind']))
+                if len(seen) > 4:
+                    return {'ok': True, 'state': 'skipped', 'selected': 0}
                 if who == 'codex' and len(seen) == 2:
                     return {'kind': 'run', 'manifest': 'r', 'state': 'limited', 'returncode': 1, 'selected': 1,
                             'provider': who, 'progress': {'made': [], 'none': ['x']}, 'usage': {'measured': False}}
@@ -368,8 +376,8 @@ class DailyTests(unittest.TestCase):
                 day = growth_daily.daily(commands)
             # Exhausted Codex → Claude; next batch Codex again; Codex rejected mid-run → the same light
             # batch again on Claude, and Codex stays off for the day.
-            assert seen == [('claude', 'scope'), ('codex', 'light'), ('claude', 'light'), ('claude', 'scope')], seen
-            assert day['state'] == 'no_progress' and day['ok'], day
+            assert seen[:4] == [('claude', 'scope'), ('codex', 'light'), ('claude', 'light'), ('claude', 'scope')], seen
+            assert all(who == 'claude' for who, _ in seen[4:]) and day['state'] == 'empty' and day['ok'], (seen, day)
             # A failed read is no signal: the day runs on Claude; without a Claude worker it waits.
             # Capture costs no model call, so the new turns still reach the vault that day.
             path = lines(core.ROOT / 'native.jsonl', [])
@@ -411,6 +419,44 @@ class DailyTests(unittest.TestCase):
             assert day['state'] == 'budget' and day['ok'], day
         """)
 
+    def test_a_worker_fault_stops_its_queue_and_the_day_is_logged(self):
+        self.check_case("""
+            # #306 D2: 11-06 and 11-07 stopped at the first Scope batch, so no recheck batch ran. A worker
+            # fault (non-zero exit, timeout, rejected packet) stops that queue only; the light queues still run.
+            calls = []
+            def fake(command, **args):
+                calls.append(args['queues'])
+                failed = args['queues'] == ('scope_jobs',) or len(calls) > 2
+                return {'kind': 'run', 'manifest': 'm' + str(len(calls)), 'state': 'incomplete', 'selected': 1,
+                        'returncode': 1 if failed else 0, 'provider': None, 'usage': {'measured': False},
+                        'progress': {'made': [] if failed else ['r1'], 'none': ['k' + str(len(calls))] if failed else []}}
+            with patch.object(growth, 'run', side_effect=fake), \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(9)):
+                day = growth_daily.daily([['worker']])
+            assert calls == [('scope_jobs',), growth_daily.LIGHT, growth_daily.LIGHT], calls
+            assert day['state'] == 'worker_fault' and not day['ok'] and len(day['errors']) == 2, day
+            # #306 D6: each day leaves its stop and batch count; a run of days without a batch is reported.
+            log = core.ROOT / growth_daily.DAYS
+            assert [json.loads(l)['state'] for l in log.read_text(encoding='utf-8').splitlines()] == ['worker_fault']
+            assert growth_daily.idle() is None, 'a day with batches is not idle'
+            def days(*rows):
+                lines(log, [{'day': d, 'state': s, 'batches': b} for d, s, b in rows])
+            days(('2026-11-01', 'limited', 0), ('2026-11-02', 'budget', 0), ('2026-11-02', 'unavailable', 0),
+                 ('2026-11-03', 'limited', 0))
+            assert growth_daily.idle() == {'days': 3, 'first': '2026-11-01', 'last': '2026-11-03', 'state': 'limited'}
+            days(('2026-11-01', 'limited', 0), ('2026-11-02', 'daily_limit', 4), ('2026-11-03', 'unavailable', 0))
+            assert growth_daily.idle() == {'days': 1, 'first': '2026-11-03', 'last': '2026-11-03', 'state': 'unavailable'}
+            days(('2026-11-01', 'limited', 0), ('2026-11-02', 'empty', 0))
+            assert growth_daily.idle() is None, 'nothing to pick is not idleness'
+            sys.path.insert(0, str(Path(growth.__file__).resolve().parents[1] / 'scripts/hooks'))
+            import claude_session_start as hook
+            days(('2026-11-01', 'limited', 0), ('2026-11-02', 'unavailable', 0))
+            text = hook._daily_note()
+            assert '11-01~11-02, 2일 동안' in text and '쓸 수 있는 워커가 없음' in text, text
+            days(('2026-11-02', 'complete', 3))
+            assert hook._daily_note() == ''
+        """)
+
     def test_day_waits_once_on_a_busy_lock(self):
         self.check_case("""
             answers = []
@@ -419,11 +465,12 @@ class DailyTests(unittest.TestCase):
             ok = {'kind': 'run', 'manifest': 'm', 'state': 'complete', 'returncode': 0, 'selected': 1,
                   'provider': None, 'progress': {'made': [], 'none': ['k']}, 'usage': {'measured': False}}
             busy = {'ok': False, 'state': 'busy'}
+            skipped = {'ok': True, 'state': 'skipped', 'selected': 0}
             with patch.object(growth, 'run', side_effect=fake), patch.object(growth_daily, 'BUSY_WAIT', 0), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
-                answers[:] = [busy, ok]
+                answers[:] = [busy, ok, skipped, skipped]
                 day = growth_daily.daily([['worker']])
-                assert day['state'] == 'no_progress' and len(day['batches']) == 1 and not answers, day
+                assert day['state'] == 'empty' and len(day['batches']) == 1 and not answers, day
                 answers[:] = [busy, busy]
                 day = growth_daily.daily([['worker']])
                 assert day['state'] == 'busy' and day['ok'] and not day['batches'] and not answers, day
@@ -452,8 +499,9 @@ class DailyTests(unittest.TestCase):
                 assert not adjust.called and day['limit'] == 7 and 'adjustment' not in calls[-1]['daily'], day
                 assert calls[-1]['exclude'] == {'stalled-job'}, calls[-1]
                 ledger(7)
+                first = len(calls)
                 day = growth_daily.daily([['worker']])
-                assert adjust.called and day['limit'] == 9 and calls[-1]['daily']['adjustment']['limit'] == 9, day
+                assert adjust.called and day['limit'] == 9 and calls[first]['daily']['adjustment']['limit'] == 9, day
             # #258: the week counts dates. An adjustment written later in its day than today's run (capture
             # took longer that day) is still seven days old on the seventh day, not a few minutes short.
             late = (now - timedelta(days=7)).replace(hour=23, minute=59, second=0, microsecond=0)
@@ -523,7 +571,7 @@ class DailyTests(unittest.TestCase):
                                   capture_output=True, text=True, encoding='utf-8', timeout=120)
             assert proc.returncode == 0, proc.stdout + proc.stderr
             day = json.loads(proc.stdout)
-            assert day['ok'] and day['state'] in {'empty', 'no_progress'} and day['limit'] == 6, day
+            assert day['ok'] and day['state'] in {'empty', 'daily_limit'} and day['limit'] == 6, day
             rows = core.ledger_read(growth.LEDGER)
             plans = [r for r in rows if r['kind'] == 'plan']
             runs = [r for r in rows if r['kind'] == 'run']

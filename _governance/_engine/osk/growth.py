@@ -173,29 +173,48 @@ def _completed(key: str, rows: list[dict], idx: graph.Index, par=None) -> dict |
 
 
 def daily_status(days: int = 3) -> dict:
-    """최신 정기 실행 — `ran`은 최근 `days`일 안에 돌았는가, `active`는 그 실행이 선택 작업을
-    모두 완료했는가(Mechanism §4-1 4항), `last`는 그 실행의 시각과 상태(결과가 없으면 None)다.
-    정돈처럼 여러 번에 나눠 끝나는 작업이 남으면 돌았어도 완료가 아니다 — 둘을 섞으면 매일
-    도는 실행을 '돌지 않았다'고 알린다. 실패하거나 결과가 없는 새 계획은 과거 성공으로 덮지 않는다."""
-    from datetime import datetime, timedelta, timezone
+    """최신 정기 실행 — `ran`은 최근 `days`일 안에 돌았는가, `active`는 그날 재검토를 맡았는가(Mechanism
+    §4-1 4항), `last`는 최신 계획의 시각과 상태(결과가 없으면 None)다. 맡았다는 것은 그날 재검토 큐를 채운
+    묶음(Scope 통합 묶음이 아닌 것)이 있고, 대기(잠금·한도)가 아닌 그 묶음들이 모두 고른 재검토 작업을 닫거나
+    보류로 판정했다는 뜻이다(#301). 정돈처럼 여러 번에 나눠 끝나는 작업이 남은 것은 재검토를 대화 검토
+    fork에 넘길 까닭이 아니다. 실패하거나 결과가 없는 새 계획은 과거 성공으로 덮지 않는다."""
     now = datetime.now(timezone.utc)
     rows = _records()
-    for r in reversed(rows):
-        if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily":
-            try:
-                result = next((x for x in reversed(rows) if x.get("kind") == "run"
-                               and x.get("manifest") == r["rid"]), None)
-                at = (result or r)["at"]
-                ran = now - timedelta(days=days) <= datetime.fromisoformat(at) <= now
-                return {"ran": ran, "active": ran and bool(result) and result.get("ok") is True,
-                        "last": {"at": at, "state": result.get("state") if result else None}}
-            except (KeyError, TypeError, ValueError):
-                break
-    return {"ran": False, "active": False, "last": None}
+    plans = [r for r in rows if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily"]
+    runs = {r.get("manifest"): r for r in rows if r.get("kind") == "run"}
+    try:
+        latest = plans[-1]
+        result = runs.get(latest["rid"])
+        at = (result or latest)["at"]
+        ran = now - timedelta(days=days) <= datetime.fromisoformat(at) <= now
+        day = (latest.get("daily") or {}).get("day")
+        same = [p for p in plans if day and (p.get("daily") or {}).get("day") == day] or [latest]
+        judged = [p for p in same if (p.get("daily") or {}).get("kind") != "scope"
+                  and (runs.get(p["rid"]) or {}).get("state") not in WAITS]
+        return {"ran": ran, "active": ran and bool(judged) and all(_rechecks_done(p, runs.get(p["rid"]), rows)
+                                                                    for p in judged),
+                "last": {"at": at, "state": result.get("state") if result else None}}
+    except (IndexError, KeyError, TypeError, ValueError):
+        return {"ran": False, "active": False, "last": None}
+
+
+def _rechecks_done(plan: dict, result: dict | None, rows: list[dict]) -> bool:
+    """그 묶음이 고른 재검토 작업을 모두 닫거나 보류로 판정했는가. 실패한 실행은 판정하지 못한 것이다."""
+    if not result:
+        return False
+    if result.get("ok") is True:
+        return True
+    if run_failed(result):
+        return False
+    deferred = {r.get("key") for r in rows if r.get("kind") == "recheck_review"
+                and r.get("manifest") == plan["rid"] and r.get("outcome") == "deferred"}
+    outcomes = result.get("recheck_outcomes") or {}
+    return all((outcomes.get(j["key"]) or {}).get("status") == "complete" or j["key"] in deferred
+               for j in plan.get("recheck_jobs", []))
 
 
 def daily_active(days: int = 3) -> bool:
-    """최신 정기 실행이 최근 `days`일 안에 선택 작업을 완료했는가(`daily_status`)."""
+    """최신 정기 실행일이 최근 `days`일 안에 재검토를 맡았는가(`daily_status`)."""
     return daily_status(days)["active"]
 
 
@@ -394,12 +413,27 @@ def plan(limit: int = 3) -> dict:
         return _plan(limit)
 
 
-def _scope_tried(rows: list[dict]):
-    """Scope 대화를 지금 자리(검토한 라운드 수·복구 대기)에서 고른 횟수 — 계획에 남은 선택
-    시도로 센다. 진척하면 자리가 바뀌어 다시 0이다."""
+def _scope_tried(rows: list[dict], now: datetime | None = None):
+    """Scope 대화를 지금 자리(검토한 라운드 수·복구 대기)에서 고른 횟수 — 정기 실행의 시도만 센다(#306
+    D4). 대화 검토 fork의 시도, 결과가 없거나 대기(한도 거절·잠금)였던 실행은 작업자가 검토하지 못한 것이라
+    세지 않는다. 작업자가 실패한 실행(`run_failed`)은 최근 7일 것만 센다 — 그 대화가 실패를 부르면 다른
+    대화에 차례를 넘기되(#136 M4), 오래전 한 번의 실패로 대기열 맨 뒤에 묶이지 않는다. 진척하면 자리가
+    바뀌어 다시 0이다."""
+    since = (now or datetime.now(timezone.utc)) - timedelta(days=STALLED_DAYS)
+    runs = {r.get("manifest"): r for r in rows if r.get("kind") == "run"}
+
+    def counted(plan: dict) -> bool:
+        run = runs.get(plan.get("rid"))
+        if plan.get("work_context", "daily") != "daily" or not run or run.get("state") in WAITS:
+            return False
+        try:
+            return not run_failed(run) or datetime.fromisoformat(run["at"]) >= since
+        except (KeyError, TypeError, ValueError):
+            return False
+
     seen = Counter((j.get("harness"), j.get("conversation_id"), j.get("reviewed_rounds"),
                     tuple(sorted(j.get("repair_pending") or {})))
-                   for r in rows if r.get("kind") == "plan" for j in r.get("scope_jobs", []))
+                   for r in rows if r.get("kind") == "plan" and counted(r) for j in r.get("scope_jobs", []))
     return lambda s: seen[(s["harness"], s["conversation_id"], s["reviewed_count"],
                            tuple(sorted(s.get("repair_pending") or {})))]
 
@@ -799,10 +833,29 @@ def _final_packet(output: Path) -> dict:
         raise ValueError("provider output has no successful final result")
     if not isinstance(final_text, str):
         raise ValueError("provider final message is not text")
-    packet = _strict_json(final_text)
+    packet = _message_packet(final_text)
     if not isinstance(packet, dict) or set(packet) != {"osk_reviews"}:
         raise ValueError("final message must contain only osk_reviews")
     return packet
+
+
+def _message_packet(text: str):
+    """최종 메시지의 결과 묶음 — 메시지 전체이거나, 아니면 행 머리에서 시작해 메시지 끝까지 가는 끝
+    블록 하나가 통째로 결과 묶음이어야 한다(#306 D1). 설명 한 줄 뒤에 붙인 묶음은 읽고, 산문 가운데의
+    JSON과 코드 펜스 안의 JSON은 읽지 않는다. 엄격 판독(`_strict_json`)은 같다."""
+    try:
+        return _strict_json(text)
+    except ValueError as whole:
+        for m in re.finditer(r"(?m)^\{", text):
+            if m.start() == 0:
+                continue
+            try:
+                packet = _strict_json(text[m.start():])
+            except ValueError:
+                continue
+            if isinstance(packet, dict) and set(packet) == {"osk_reviews"}:
+                return packet
+        raise whole
 
 
 _QUEUE_IDS = {"domain": ("key",), "scope": ("harness", "conversation_id", "through"),

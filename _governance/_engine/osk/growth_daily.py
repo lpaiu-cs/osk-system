@@ -4,9 +4,12 @@
     나머지 큐는 3개씩(600초) 묶는다. Scope 통합이 첫 차례를 갖는다.
   · 포착은 하루 시작에 한 번, 공급자를 고르기 전에 한다 — 모두 소진인 날에도 한다. Codex 한도는
     묶음마다 조회한다(모델을 부르지 않는다). Codex가 소진이면 Claude 워커가 대신 돈다.
-  · 고를 작업이 없거나 묶음이 진척 없이 끝나면 그날 멈춘다. 진척 없던 작업은 그날 다시 고르지
-    않는다. 벽시계 예산(1.5시간)을 넘기면 새 묶음을 띄우지 않는다. 같은 날 다시 불려도 L과
-    벽시계 예산은 그날 앞선 실행까지 더해 지킨다.
+  · 진척 없던 작업(보류 포함)은 그날 다시 고르지 않고 다음 작업으로 잇는다. 작업자 이상(비정상 종료·
+    시한 초과·결과 묶음 거절)이면 그 큐만 그날 멈추고, 다른 큐는 차례를 받는다 — 대화 검토가 멈춰도
+    재검토 묶음은 돈다(#306 D2). 고를 작업이 없으면 그날 멈춘다. 벽시계 예산(1.5시간)을 넘기면 새
+    묶음을 띄우지 않는다. 같은 날 다시 불려도 L과 벽시계 예산은 그날 앞선 실행까지 더해 지킨다.
+  · 하루 실행마다 멈춘 까닭과 묶음 수를 기기 기록(`DAYS`)에 남긴다. 묶음을 하나도 돌지 못한 날이
+    이어지면 세션 시작이 알린다(`idle`, #306 D6).
   · L과 공급자별 예산은 주마다 다시 정한다(`adjust`). 그 판단 근거는 그 주 첫 묶음의 계획
     (`daily.adjustment`)에 남는다. 묶음마다 토큰과 캐시 적중은 실행 기록(`usage`)에 남는다.
 """
@@ -39,6 +42,7 @@ KEEP_WITHIN = 3                          # 새 L과 지금 L의 차가 이보다
 # Scope 작업 단가의 첫 추정(작업당 12만~15만)의 위쪽 — 지난주 Scope 묶음 실측이 있으면 그것을 쓴다.
 SCOPE_UNIT_COST = 150_000
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+DAYS = Path(".osk/growth/days.jsonl")    # 하루 실행의 멈춘 까닭과 묶음 수 — 기기 소유(Mechanism §9-4 5항)
 
 
 def provider(command: list[str]) -> str | None:
@@ -342,6 +346,30 @@ def adjust(rows: list[dict], providers: list[str], now: datetime | None = None) 
             "unit_cost": {"tokens": unit, "measured_batches": len(scope)}, "inflow": inflow, "providers": budgets}
 
 
+def idle() -> dict | None:
+    """묶음을 하나도 돌지 못한 날이 최근까지 이어지면 그 날들과 마지막 까닭(`DAYS`). 고를 작업이 없던
+    날(`empty`)은 쉰 것이 아니라 끊는다. 이어지지 않으면 None."""
+    try:
+        rows = [json.loads(line) for line in (core.ROOT / DAYS).read_text(encoding="utf-8").splitlines()
+                if line.strip()]
+    except (OSError, ValueError):
+        return None
+    days: dict[str, dict] = {}
+    for r in rows:
+        if isinstance(r, dict) and isinstance(r.get("day"), str):
+            d = days.setdefault(r["day"], {"batches": 0, "states": []})
+            d["batches"] += r.get("batches") or 0
+            d["states"].append(r.get("state"))
+    streak = []
+    for day in sorted(days, reverse=True):
+        if days[day]["batches"] or "empty" in days[day]["states"]:
+            break
+        streak.append(day)
+    if not streak:
+        return None
+    return {"days": len(streak), "first": streak[-1], "last": streak[0], "state": days[streak[0]]["states"][-1]}
+
+
 def _next_kind(done: dict, left: set, limit: int) -> str | None:
     """Scope 통합이 첫 차례, 이어 가벼운 큐 묶음 하나, 그다음 Scope가 L−3까지, 남은 자리는 가벼운 큐."""
     scope = "scope" in left and done["scope"] < limit - LIGHT_SIZE
@@ -436,7 +464,7 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
             done[plan["daily"]["kind"]] += run.get("selected", 0)
         if (begun := _at(plan)) and (ended := _at(run)):
             earlier += max(0.0, (ended - begun).total_seconds())
-    left, off = {"scope", "light"}, {}
+    left, off, faults = {"scope", "light"}, {}, set()
     batches, stop, skipped = [], None, {}
     while stop is None:
         kind = _next_kind(done, left, limit)
@@ -445,7 +473,7 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
         elif done["scope"] + done["light"] >= limit:
             stop = "daily_limit"
         elif kind is None:
-            stop = "empty"
+            stop = "worker_fault" if faults else "empty"
         if stop:
             break
         who, limits, skipped = _choose(by, budgets, off)
@@ -481,8 +509,16 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
             exclude |= set(result["progress"]["none"])
             if growth.run_failed(result):
                 errors.append({"manifest": result["manifest"], "state": state, "error": result.get("error")})
-            if not result["progress"]["made"]:
-                stop = "no_progress"
+                faults.add(kind)
+                left.discard(kind)   # 작업자 이상 — 이 큐만 그날 멈춘다
+    try:
+        path = core.ROOT / DAYS
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"day": day, "at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                                "state": stop, "batches": len(batches)}, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        errors.append({"days": f"{type(exc).__name__}: {exc}"})
     # `done`과 `day_seconds`는 그날 앞선 실행까지 더한 값이다.
     return {"ok": not errors, "state": stop, "day": day, "limit": limit, "done": done,
             "elapsed_seconds": round(time.monotonic() - started),
