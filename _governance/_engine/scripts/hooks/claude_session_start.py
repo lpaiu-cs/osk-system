@@ -597,7 +597,7 @@ def capture_block(env: dict, key: str, *, startup: bool = False, budget: int | N
     return text
 
 
-IDLE_STATES = {"limited": "공급자 한도 소진, 대신 돌 워커도 없음", "budget": "주간 예산 소진",
+IDLE_STATES = {"limited": "공급자 한도 소진, 대신 돌 워커도 없음", "rest": "공급자가 주간 사용률 0.9에 닿아 쉼",
                "unavailable": "쓸 수 있는 워커가 없음", "busy": "다른 실행이 잠금을 쥠",
                "worker_fault": "작업자 이상"}
 

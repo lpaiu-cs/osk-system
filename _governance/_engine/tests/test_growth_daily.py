@@ -102,11 +102,17 @@ class DailyTests(unittest.TestCase):
             # path is gone and the runner follows to the new one; the limit read must not stay behind.
             from osk import native_cli
             os.environ['OSK_TEST_LIMITS'] = json.dumps({'result': {'ordinaryUsageAllowed': True,
-                                                                   'rateLimits': snap(credits=None)}})
+                                                                   'rateLimits': snap(credits=None, secondary={**week, 'usedPercent': 40})}})
             old = str(core.ROOT / 'Codex' / 'bin' / 'old' / 'codex.exe')
             with patch.object(native_cli, 'resolve', side_effect=lambda p: codex if p == old else p):
-                who, limits, skipped = growth_daily._choose({'codex': [old, 'exec']}, {}, {})
+                who, limits, skipped = growth_daily._choose({'codex': [old, 'exec']}, {})
             assert who == 'codex' and limits['signal'] and not limits['exhausted'] and not skipped, (who, limits, skipped)
+            # #306 D3: at 0.9 of the week Codex rests, credits or not — what is left is its user's.
+            os.environ['OSK_TEST_LIMITS'] = json.dumps({'result': {'ordinaryUsageAllowed': False, 'rateLimits': snap(
+                credits={'hasCredits': True, 'unlimited': False, 'balance': '11594.3'})}})
+            with patch.object(native_cli, 'resolve', side_effect=lambda p: codex if p == old else p):
+                who, limits, skipped = growth_daily._choose({'codex': [old, 'exec']}, {})
+            assert who is None and skipped == {'codex': 'rest'} and limits['weekly'] == 100, (who, skipped)
         """)
 
     def test_usage_counts_tokens_without_cache_reads_and_flags_misses(self):
@@ -188,7 +194,7 @@ class DailyTests(unittest.TestCase):
             assert growth.run_failed({'ok': False, 'state': 'unavailable'})
         """)
 
-    def test_weekly_limit_follows_inflow_budget_and_change_rules(self):
+    def test_weekly_limit_follows_inflow_and_change_rules(self):
         self.check_case("""
             now = datetime(2026, 10, 19, 9, 0, tzinfo=timezone.utc)
             def measured(new_jobs, old_jobs, codex=0, claude=0):
@@ -198,54 +204,89 @@ class DailyTests(unittest.TestCase):
                 with patch.object(growth_daily, '_measure', return_value=m):
                     return growth_daily.adjust(rows, list(providers), now)
             # N = new jobs + ⌈old jobs ÷ 4⌉, S = ⌈N ÷ 7⌉, L = max(6, S + 3); before any adjustment L was 3.
-            # An old backlog spends work ÷ 10 instead of ÷ 20; the budget pays for S at the Scope unit cost.
             got = adjust([], measured(70, 20, codex=66_310_000, claude=145_000_000))
-            assert (got['N'], got['S'], got['ratio'], got['previous']) == (75, 11, 10, 3), got
-            assert got['providers']['codex']['budget'] == 6_631_000 and got['unit_cost']['tokens'] == 150_000, got
-            assert got['S_affordable'] == (6_631_000 + 14_500_000) // 150_000 // 7 and got['limit'] == 14, got
-            got = adjust([], measured(70, 0, codex=66_310_000, claude=145_000_000))
-            assert got['ratio'] == 20 and got['S_affordable'] == 10 and got['limit'] == 13, got
-            # The budget cuts S: with no review budget the floor of 6 still holds.
-            assert adjust([], measured(70, 0))['limit'] == 6
+            assert (got['N'], got['S'], got['target'], got['previous'], got['limit']) == (75, 11, 14, 3, 14), got
+            assert got['work'] == {'codex': 66_310_000, 'claude': 145_000_000} and 'providers' not in got, got
+            # #306 D3: no provider budget cuts S — a week with no work still follows the inflow (it was 6).
+            assert adjust([], measured(70, 0))['limit'] == 13
             # Larger is immediate; smaller halves at most; a difference under 3 keeps the current L.
             prior = lambda limit: [{'kind': 'plan', 'rid': 'p', 'daily': {'adjustment': {'limit': limit}}}]
             assert adjust(prior(20), measured(0, 0))['limit'] == 10
             assert adjust(prior(7), measured(0, 0))['limit'] == 7
-            assert adjust(prior(6), measured(30, 0, codex=10**9))['limit'] == 6      # target 8
-            assert adjust(prior(6), measured(70, 0, codex=10**9))['limit'] == 13
-            # Each provider's last-week conversation reviews come off its budget; the unit cost is the
-            # mean of last week's measured Scope batches.
-            at = lambda days: (now - timedelta(days=days)).isoformat()
-            rows = [{'kind': 'plan', 'rid': 'fork', 'work_context': 'stop:W1'},
-                    {'kind': 'run', 'manifest': 'fork', 'at': at(2), 'provider': 'claude',
-                     'usage': {'measured': True, 'tokens': 1_200_000}},
-                    {'kind': 'run', 'manifest': 'fork', 'at': at(9), 'provider': 'claude',
-                     'usage': {'measured': True, 'tokens': 9_999_999}},
-                    {'kind': 'run', 'manifest': 'fork', 'at': at(1), 'provider': 'codex', 'usage': {'measured': False}},
-                    {'kind': 'plan', 'rid': 's1', 'daily': {'kind': 'scope'}},
-                    {'kind': 'run', 'manifest': 's1', 'at': at(3), 'provider': 'codex',
-                     'usage': {'measured': True, 'tokens': 100_000}},
+            assert adjust(prior(6), measured(30, 0))['limit'] == 6      # target 8
+            assert adjust(prior(6), measured(70, 0))['limit'] == 13
+            assert list(adjust([], measured(1, 0), providers=['claude'])['work']) == ['claude']
+            # The Scope batch unit (for the backlog estimate) is the mean of measured daily Scope batches.
+            rows = [{'kind': 'plan', 'rid': 's1', 'daily': {'kind': 'scope'}},
+                    {'kind': 'run', 'manifest': 's1', 'usage': {'measured': True, 'tokens': 100_000}},
                     {'kind': 'plan', 'rid': 's2', 'daily': {'kind': 'scope'}},
-                    {'kind': 'run', 'manifest': 's2', 'at': at(4), 'provider': 'claude',
-                     'usage': {'measured': True, 'tokens': 140_000}},
+                    {'kind': 'run', 'manifest': 's2', 'usage': {'measured': True, 'tokens': 140_000}},
                     {'kind': 'plan', 'rid': 'l1', 'daily': {'kind': 'light'}},
-                    {'kind': 'run', 'manifest': 'l1', 'at': at(4), 'provider': 'codex',
-                     'usage': {'measured': True, 'tokens': 50_000}}]
-            got = adjust(rows, measured(1, 0, codex=2_000_000, claude=145_000_000))
-            assert got['providers']['claude']['budget'] == 145_000_000 // 20 - 1_200_000, got
-            assert got['providers']['codex'] == {'work': 2_000_000, 'reviews': 0, 'unmeasured_reviews': 1,
-                                                 'budget': 100_000}, got
-            assert got['unit_cost'] == {'tokens': 120_000, 'measured_batches': 2}, got
-            # A fork run recorded before this change is measured from its output on this device.
-            run = core.ROOT / '.osk/growth/runs/old'
-            run.mkdir(parents=True)
-            (run / 'argv.json').write_text(json.dumps(['C:/x/claude.exe', '-p']), encoding='utf-8')
-            lines(run / 'stdout.txt', [{'type': 'result', 'usage': {'input_tokens': 7, 'cache_creation_input_tokens': 3,
-                                                                    'cache_read_input_tokens': 500, 'output_tokens': 90}}])
-            old = rows[:1] + [{'kind': 'run', 'manifest': 'fork', 'at': at(1), 'output': '.osk/growth/runs/old'}]
-            assert adjust(old, measured(1, 0))['providers']['claude']['reviews'] == 100
-            # Only configured providers have a budget.
-            assert list(adjust([], measured(1, 0), providers=['claude'])['providers']) == ['claude']
+                    {'kind': 'run', 'manifest': 'l1', 'usage': {'measured': True, 'tokens': 50_000}},
+                    {'kind': 'plan', 'rid': 'fork', 'work_context': 'stop:W1'},
+                    {'kind': 'run', 'manifest': 'fork', 'usage': {'measured': True, 'tokens': 9_999_999}}]
+            assert growth_daily._scope_unit(rows) == (120_000, 2)
+            assert growth_daily._scope_unit([]) == (growth_daily.SCOPE_UNIT_COST, 0)
+        """)
+
+    def test_a_provider_rests_at_nine_tenths_and_the_backlog_runs_scope_only(self):
+        self.check_case("""
+            # #306 D3: provider budgets are gone; a provider whose week reaches 0.9 rests and leaves the
+            # rest to its user. Claude reports its week in each rate-limit event of a run.
+            future, past = int(time.time()) + 3600, int(time.time()) - 3600
+            def claude_run(rid, utilization, resets):
+                lines(core.ROOT / '.osk/growth/runs' / rid / 'stdout.txt', [
+                    {'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed', 'unifiedWindows': {
+                        'five_hour': {'utilization': 0.1, 'resetsAt': future}}}},
+                    {'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed_warning', 'unifiedWindows': {
+                        'seven_day': {'utilization': utilization, 'resetsAt': resets}}}}])
+                core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': rid, 'provider': 'claude',
+                                                   'output': '.osk/growth/runs/' + rid})
+            assert growth_daily.claude_week(growth._records()) is None
+            claude_run('r1', 0.95, future)
+            assert growth_daily.claude_week(growth._records()) == 0.95
+            claude_run('r2', 0.95, past)
+            assert growth_daily.claude_week(growth._records()) is None, 'the window has reset since'
+            claude_run('r3', 0.92, future)
+            commands = {'codex': ['C:/x/codex.exe', 'exec'], 'claude': ['C:/x/claude.exe', '-p']}
+            week = lambda used: patch.object(growth_daily, 'codex_limits',
+                                             return_value={'signal': True, 'exhausted': False, 'weekly': used})
+            with resolved, week(91):
+                who, _, skipped = growth_daily._choose(commands, {})
+            assert who is None and skipped == {'codex': 'rest', 'claude': 'rest'}, skipped
+            with resolved, week(40):
+                assert growth_daily._choose(commands, {})[0] == 'codex'
+            claude_run('r4', 0.5, future)
+            with resolved, week(91):
+                assert growth_daily._choose(commands, {})[:3:2] == ('claude', {'codex': 'rest'})
+            # With every provider resting the day waits: not a failure.
+            claude_run('r5', 0.9, future)
+            with resolved, week(95), patch.object(growth, 'run', side_effect=AssertionError('ran')), \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
+                day = growth_daily.daily([commands['codex'], commands['claude']])
+            assert day['state'] == 'rest' and day['ok'] and not day['batches'], day
+            # The backlog runs Scope batches only, past the daily limit and the wall clock, until nothing is left.
+            calls = []
+            def fake(command, **args):
+                calls.append(args)
+                if len(calls) > 8:
+                    return {'ok': True, 'state': 'skipped', 'selected': 0}
+                return {'kind': 'run', 'manifest': 'm' + str(len(calls)), 'state': 'complete', 'returncode': 0,
+                        'selected': 2, 'provider': None, 'progress': {'made': ['k' + str(len(calls))], 'none': []},
+                        'usage': {'measured': False}}
+            with patch.object(growth, 'run', side_effect=fake), patch.object(growth_daily, 'DAY_SECONDS', 0), \\
+                    patch.object(growth_daily, 'adjust', side_effect=AssertionError('the backlog measures no week')):
+                day = growth_daily.daily([['worker']], backlog=True)
+            assert day['state'] == 'empty' and day['backlog'] and len(day['batches']) == 8, day
+            assert {c['queues'] for c in calls} == {('scope_jobs',)} and all(c['daily']['backlog'] for c in calls)
+            assert all(c['scope_bundle'] == 9 for c in calls)
+            # The CLI keeps --backlog to the daily run.
+            command = core.ROOT / 'command.json'
+            command.write_text(json.dumps(['worker']), encoding='utf-8')
+            proc = subprocess.run([sys.executable, '-B', '-m', 'osk.cli', 'growth', 'run', '--backlog',
+                                   '--command-file', str(command)], capture_output=True, text=True, encoding='utf-8',
+                                  timeout=60)
+            assert proc.returncode == 1 and '--daily' in proc.stdout, proc.stdout
         """)
 
     def test_measure_reads_work_and_splits_pending_rounds_by_week(self):
@@ -333,7 +374,7 @@ class DailyTests(unittest.TestCase):
             assert [c['daily']['batch'] for c in calls[:4]] == [1, 2, 3, 4]
             assert calls[0]['daily']['adjustment'] == fixed and all('adjustment' not in c['daily'] for c in calls[1:])
             assert calls[0]['daily']['limits']['weekly'] == 2 and calls[0]['daily']['provider'] == 'codex'
-            assert day['budget_left'] == {'codex': 10**6 - 4000} and day['done'] == {'scope': 3, 'light': 3}, day
+            assert 'budget_left' not in day and day['done'] == {'scope': 3, 'light': 3}, day
             # The daily limit and the wall-clock budget stop the day; so does running out of work.
             calls.clear()
             done = lambda command, **args: (calls.append(args), {
@@ -416,11 +457,13 @@ class DailyTests(unittest.TestCase):
             assert day['batches'] and not day['ok'] and day['capture']['failed'] == 1, day
             assert [c['conversation_id'] for e in day['errors'] for c in e.get('capture', [])] == ['c1'], day['errors']
             assert again['ok'] and again['capture'] == {'ok': True, 'appended': 0, 'failed': 0, 'known_errors': 1}, again
-            # Spent weekly budgets stop the day too: not a failure.
-            with patch.object(growth, 'run', side_effect=fake), \\
-                    patch.object(growth_daily, 'adjust', return_value=adjustment(6, codex=0, claude=-5)):
+            # #306 D3: last week's work no longer sets a budget — a week of no Codex work still runs Codex.
+            seen.clear()
+            with patch.object(growth, 'run', side_effect=fake), resolved, \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(6, codex=0, claude=-5)), \\
+                    patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 21}):
                 day = growth_daily.daily(commands)
-            assert day['state'] == 'budget' and day['ok'], day
+            assert seen and seen[0][0] == 'codex' and day['state'] != 'budget', (seen, day)
         """)
 
     def test_a_worker_fault_stops_its_queue_and_the_day_is_logged(self):
@@ -657,6 +700,14 @@ class DailyTests(unittest.TestCase):
             plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind'] == 'plan'][-1]
             assert [j['conversation_id'] for j in plan['scope_jobs']] == ['a', 'c', 'e'], plan['scope_jobs']
             assert result['selected'] == 3 and growth_daily._counted('scope', result) == 1, result
+            # The backlog: 5 conversations, 16 turns; W1's tails 6, 4, 3, 2 fill two batches (6+3, 4+2), W2's one.
+            b = growth_daily.backlog()
+            assert (b['conversations'], b['turns'], b['batches']) == (5, 16, 3), b
+            assert b['unit_tokens'] == growth_daily.SCOPE_UNIT_COST and b['tokens'] == 3 * b['unit_tokens'], b
+            from osk import doctor
+            item = next(i for i in doctor._vault_items()[0] if i['check'] == '대화 검토 적체')
+            assert '묶음 약 3개' in item['detail'] and '450,000 토큰' in item['detail'], item
+            assert '--backlog' in item['fix'] and '0.9' in item['fix'], item
         """)
 
     def test_scope_batch_takes_nine_rounds_and_light_batch_skips_capture(self):

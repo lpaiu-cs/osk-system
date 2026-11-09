@@ -421,6 +421,19 @@ def _vault_items() -> tuple[list[dict], dict]:
         items.append(_item("warn" if s["overdue"] else "info", "정돈 대기",
                            f"{scope} — 미처분 {s['unsettled']}건, 가장 오래된 것 {s['oldest_days']}일",
                            f"`osk.cli tidy prompt --scope {scope}`의 프롬프트로 정돈 세션을 연다"))
+    from . import growth_daily
+    try:
+        b = growth_daily.backlog()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        items.append(_item("info", "대화 검토 적체", f"세지 못했다 — {type(exc).__name__}: {exc}"))
+    else:
+        if b["conversations"]:
+            unit = (f"최근 Scope 묶음 {b['measured_batches']}개 실측 평균" if b["measured_batches"]
+                    else "실측이 없어 첫 추정")
+            items.append(_item("info", "대화 검토 적체",
+                               f"끝난 대화 {b['conversations']}개·{b['turns']}턴 — Scope 묶음 약 {b['batches']}개, "
+                               f"예상 약 {b['tokens']:,} 토큰(묶음당 {b['unit_tokens']:,}, {unit})",
+                               growth_daily.BACKLOG_COMMAND))
     for region, state in sorted((rep.get("protected_regions") or {}).items()):
         if state != "clean":
             items.append(_item("info", "보호영역", f"{region} — {state}",

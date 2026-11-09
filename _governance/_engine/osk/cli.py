@@ -159,6 +159,8 @@ def _growth_cmd(a) -> None:
             commands = [json.loads(Path(f).read_text(encoding="utf-8-sig")) for f in a.command_file]
             if len(commands) > 1 and not (a.daily or a.check):
                 raise ValueError("several --command-file go only with --daily (one per provider)")
+            if a.backlog and not a.daily:
+                raise ValueError("--backlog goes with --daily")
             # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
             # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
             if a.check:
@@ -166,7 +168,7 @@ def _growth_cmd(a) -> None:
                 result = checks[0] if len(checks) == 1 else {"ok": all(c["ok"] for c in checks), "commands": checks}
             elif a.daily:
                 from . import growth_daily
-                result = growth_daily.daily(commands, invocation=a.invocation)
+                result = growth_daily.daily(commands, invocation=a.invocation, backlog=a.backlog)
             else:
                 result = growth.run(commands[0], limit=a.limit, timeout=a.timeout, invocation=a.invocation)
         _emit(result)
@@ -469,6 +471,9 @@ def build_parser() -> argparse.ArgumentParser:
             q.add_argument("--timeout", type=int, default=600)
             q.add_argument("--daily", action="store_true",
                            help="하루 정기 실행: 주간 한도 조정, 묶음 실행, 묶음마다 한도 조회(--limit·--timeout 무시)")
+            q.add_argument("--backlog", action="store_true",
+                           help="--daily와 함께: 대화 검토 적체를 일괄로 — 하루 한도·벽시계 예산 없이 Scope 묶음만, "
+                                "대기열이 빌 때까지(공급자는 주간 사용률 0.9에서 쉰다)")
             q.add_argument("--check", action="store_true", help="실행 파일만 확인; 모델·포착·대장 쓰기 없음")
             q.add_argument("--invocation", choices=("manual", "user_request", "scheduled", "unknown"),
                            default="unknown", help="명시한 기동 원인; 생략하면 추정하지 않는다")

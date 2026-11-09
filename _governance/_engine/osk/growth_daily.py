@@ -4,15 +4,18 @@
     scope의 작은 꼬리는 모두 9턴까지 함께 묶어 한 작업으로 센다(#306 D5). 나머지 큐는 3개씩(600초)
     묶는다. Scope 통합이 첫 차례를 갖는다.
   · 포착은 하루 시작에 한 번, 공급자를 고르기 전에 한다 — 모두 소진인 날에도 한다. Codex 한도는
-    묶음마다 조회한다(모델을 부르지 않는다). Codex가 소진이면 Claude 워커가 대신 돈다.
+    묶음마다 조회한다(모델을 부르지 않는다). Codex가 소진이면 Claude 워커가 대신 돈다. 공급자는 주간
+    사용률이 0.9에 닿으면 쉰다 — 사용자의 몫을 남긴다(#306 D3). 공급자별 예산은 두지 않는다.
   · 진척 없던 작업(보류 포함)은 그날 다시 고르지 않고 다음 작업으로 잇는다. 작업자 이상(비정상 종료·
     시한 초과·결과 묶음 거절)이면 그 큐만 그날 멈추고, 다른 큐는 차례를 받는다 — 대화 검토가 멈춰도
     재검토 묶음은 돈다(#306 D2). 고를 작업이 없으면 그날 멈춘다. 벽시계 예산(1.5시간)을 넘기면 새
     묶음을 띄우지 않는다. 같은 날 다시 불려도 L과 벽시계 예산은 그날 앞선 실행까지 더해 지킨다.
   · 하루 실행마다 멈춘 까닭과 묶음 수를 기기 기록(`DAYS`)에 남긴다. 묶음을 하나도 돌지 못한 날이
     이어지면 세션 시작이 알린다(`idle`, #306 D6).
-  · L과 공급자별 예산은 주마다 다시 정한다(`adjust`). 그 판단 근거는 그 주 첫 묶음의 계획
-    (`daily.adjustment`)에 남는다. 묶음마다 토큰과 캐시 적중은 실행 기록(`usage`)에 남는다.
+  · L은 주마다 다시 정한다(`adjust`). 그 판단 근거는 그 주 첫 묶음의 계획(`daily.adjustment`)에
+    남는다. 묶음마다 토큰과 캐시 적중은 실행 기록(`usage`)에 남는다.
+  · 대화 검토 적체는 `backlog`가 추정하고(`osk doctor --vault`가 보인다), `daily(backlog=True)`가
+    하루 한도·벽시계 예산 없이 Scope 묶음만 대기열이 빌 때까지 돈다.
 """
 from __future__ import annotations
 
@@ -36,12 +39,15 @@ LIGHT = tuple(q for q in growth._QUEUES if q != "scope_jobs")
 BUSY_WAIT = 600                          # 잠금을 쥔 대화별 검토는 작업자 시한(600초) 안에 끝난다
 MISS_BELOW = 0.9                         # 적중률(캐시 읽기 ÷ 입력)이 이보다 낮은 요청이 미스다
 WEEK = 7                                 # D — 소진일에도 Claude로 대신 돌므로 매일 돈다
-RATIO, RATIO_BACKLOG = 20, 10            # 작업:검토 — 7일보다 오래된 대기가 있으면 10:1까지
+REST_AT = 0.9                            # 공급자의 주간 사용률이 이 이상이면 쉰다(#306 D3)
 OLD_SHARE = 4                            # 오래된 대기는 4주에 나눠 갚는다
 LIMIT_FLOOR, LIMIT_BEFORE = 6, 3         # L의 하한, 첫 조정 전의 L(기존 --limit 3)
 KEEP_WITHIN = 3                          # 새 L과 지금 L의 차가 이보다 작으면 그대로 둔다
-# Scope 작업 단가의 첫 추정(작업당 12만~15만)의 위쪽 — 지난주 Scope 묶음 실측이 있으면 그것을 쓴다.
+# Scope 묶음 단가의 첫 추정(작업당 12만~15만)의 위쪽 — 적체 추정에 쓴다. 실측이 있으면 그것을 쓴다.
 SCOPE_UNIT_COST = 150_000
+BACKLOG_COMMAND = ("`osk growth run --daily --backlog --command-file .osk/growth-command.json`(Claude 워커가 "
+                   "있으면 `--command-file .osk/growth-command-claude.json`을 더한다)로 일괄로 돈다 — 하루 한도 "
+                   "없이 대기열이 빌 때까지 Scope 묶음만 돌고, 공급자는 주간 사용률 0.9에서 쉰다")
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 DAYS = Path(".osk/growth/days.jsonl")    # 하루 실행의 멈춘 까닭과 묶음 수 — 기기 소유(Mechanism §9-4 5항)
 
@@ -282,36 +288,43 @@ def _at(row: dict) -> datetime | None:
         return None
 
 
-def _spent(rows: list[dict], since: datetime) -> tuple[dict, list[int]]:
-    """`since` 뒤 실행의 공급자별 토큰 — 대화별 검토(`review`)와 정기 묶음(`daily`), 그리고 Scope
-    묶음 하나하나의 토큰(단가). 이 변경 전의 실행은 이 기기에 남은 출력에서 잰다."""
-    plans = {r["rid"]: r for r in rows if r.get("kind") == "plan"}
-    spent = {p: {"review": 0, "daily": 0, "unmeasured": 0} for p in PROVIDERS}
-    scope = []
-    for r in rows:
-        at = _at(r)
-        if r.get("kind") != "run" or at is None or at < since:
-            continue
-        plan = plans.get(r.get("manifest")) or {}
-        path = ("review" if str(plan.get("work_context", "")).startswith("stop:") else
-                "daily" if plan.get("daily") else None)
-        who, measured = r.get("provider"), r.get("usage")
-        if path and "provider" not in r and r.get("output"):
-            try:
-                command = json.loads((core.ROOT / r["output"] / "argv.json").read_text(encoding="utf-8"))
-                who = provider(command)
-                measured = usage(core.ROOT / r["output"] / "stdout.txt", command, cold_first=path == "daily")
-            except (OSError, ValueError, TypeError):
-                pass
-        if not path or who not in spent:
-            continue
-        if (measured or {}).get("measured"):
-            spent[who][path] += measured["tokens"]
-            if path == "daily" and plan["daily"].get("kind") == "scope":
-                scope.append(measured["tokens"])
-        else:
-            spent[who]["unmeasured"] += 1
-    return spent, scope
+def _scope_unit(rows: list[dict]) -> tuple[int, int]:
+    """Scope 묶음 하나의 토큰 — 최근 실측한 정기 Scope 묶음(많아야 20개)의 평균, 없으면 첫 추정.
+    (토큰, 실측한 묶음 수)."""
+    plans = {r.get("rid"): r for r in rows if r.get("kind") == "plan"}
+    got = [r["usage"]["tokens"] for r in rows if r.get("kind") == "run" and (r.get("usage") or {}).get("measured")
+           and ((plans.get(r.get("manifest")) or {}).get("daily") or {}).get("kind") == "scope"][-20:]
+    return (round(sum(got) / len(got)) if got else SCOPE_UNIT_COST), len(got)
+
+
+def backlog() -> dict:
+    """대화 검토 적체(#306) — 정기 실행이 지금 검토할 수 있는 대화와 턴(끝난 대화의 원본 턴과 저장
+    라운드), 같은 scope의 작은 꼬리를 9턴까지 묶는 Scope 묶음 수의 추정(남는 꼬리를 큰 것부터 채운다),
+    예상 토큰(Scope 묶음 단가 × 묶음 수). 대화 상태를 쓰지 않고 읽기만 한다."""
+    from . import growth_status, raw
+    unit, measured = _scope_unit(growth._records())
+    scopes: dict = {}
+    conversations = turns = 0
+    for s in growth_status._states():
+        refs = integration._view(s)["pending_refs"]
+        ended = bool(refs) and integration._ended_source(s)
+        n = sum(1 for ref in refs if ended or not raw.is_native(ref))
+        if n:
+            conversations, turns = conversations + 1, turns + n
+            scopes.setdefault(integration._review_scope(s), []).append(n)
+    batches = 0
+    for scope, sizes in scopes.items():
+        batches += sum(n // SCOPE_ROUNDS for n in sizes)
+        tails, bins = sorted((n % SCOPE_ROUNDS for n in sizes if n % SCOPE_ROUNDS), reverse=True), []
+        for tail in tails:
+            room = next((i for i, b in enumerate(bins) if scope and b + tail <= SCOPE_ROUNDS), None)
+            if room is None:
+                bins.append(tail)
+            else:
+                bins[room] += tail
+        batches += len(bins)
+    return {"conversations": conversations, "turns": turns, "batches": batches, "unit_tokens": unit,
+            "measured_batches": measured, "tokens": batches * unit}
 
 
 def _adjustments(rows: list[dict]) -> list[dict]:
@@ -321,30 +334,22 @@ def _adjustments(rows: list[dict]) -> list[dict]:
 
 def adjust(rows: list[dict], providers: list[str], now: datetime | None = None) -> dict:
     """주간 한도 조정. N은 지난 7일 유입 가운데 정기 실행 몫(9라운드 작업 수)과 7일보다 오래된 대기
-    작업의 4분의 1이다. 하루 Scope 작업 S = ⌈N÷7⌉을 공급자별 예산으로 자르고, 하루 한도는
-    L = max(6, S+3)이다(+3은 가벼운 큐 묶음 하나). 예산은 공급자마다 "지난주 작업 ÷ 20 − 지난주 대화별
-    검토"이며, 오래된 대기가 있으면 ÷10까지 쓴다. 늘릴 때는 바로 늘리고, 줄일 때는 절반까지만
-    줄이며, 차가 3보다 작으면 그대로 둔다."""
+    작업의 4분의 1이다. 하루 Scope 작업 S = ⌈N÷7⌉, 하루 한도는 L = max(6, S+3)이다(+3은 가벼운 큐
+    묶음 하나). 공급자별 예산으로 자르지 않는다 — 공급자는 주간 사용률 0.9에서 쉰다(`_choose`, #306 D3).
+    늘릴 때는 바로 늘리고, 줄일 때는 절반까지만 줄이며, 차가 3보다 작으면 그대로 둔다. 공급자별 작업
+    토큰(`work`)은 판단 근거로만 남는다."""
     now = now or datetime.now(timezone.utc).astimezone()
     since = now - timedelta(days=WEEK)
     measured = _measure(since.timestamp())
-    spent, scope = _spent(rows, since)
     inflow = measured["inflow"]
-    ratio = RATIO_BACKLOG if inflow["old_jobs"] else RATIO
-    unit = round(sum(scope) / len(scope)) if scope else SCOPE_UNIT_COST
-    budgets = {p: {"work": measured["work"][p], "reviews": spent[p]["review"],
-                   "unmeasured_reviews": spent[p]["unmeasured"],
-                   "budget": measured["work"][p] // ratio - spent[p]["review"]} for p in providers}
     n = inflow["new_jobs"] + -(-inflow["old_jobs"] // OLD_SHARE)
     s = -(-n // WEEK)
-    affordable = sum(max(0, b["budget"]) for b in budgets.values()) // unit // WEEK
-    target = max(LIMIT_FLOOR, min(s, affordable) + LIGHT_SIZE)
+    target = max(LIMIT_FLOOR, s + LIGHT_SIZE)
     previous = (_adjustments(rows) or [{"limit": LIMIT_BEFORE}])[-1]["limit"]
     limit = (previous if abs(target - previous) < KEEP_WITHIN else
              target if target > previous else max(target, -(-previous // 2)))
-    return {"at": now.isoformat(timespec="seconds"), "N": n, "S": s, "S_affordable": affordable,
-            "target": target, "previous": previous, "limit": limit, "ratio": ratio,
-            "unit_cost": {"tokens": unit, "measured_batches": len(scope)}, "inflow": inflow, "providers": budgets}
+    return {"at": now.isoformat(timespec="seconds"), "N": n, "S": s, "target": target, "previous": previous,
+            "limit": limit, "inflow": inflow, "work": {p: measured["work"][p] for p in providers}}
 
 
 def idle() -> dict | None:
@@ -384,16 +389,38 @@ def _next_kind(done: dict, left: set, limit: int) -> str | None:
     return "light" if "light" in left else "scope" if scope else None
 
 
-def _choose(commands: dict, budgets: dict, off: dict) -> tuple[str | None, dict | None, dict]:
-    """이 묶음의 공급자 — 선호 순서대로, 그날 막힌 공급자(`off`)·주간 예산을 다 쓴 공급자·소진(신호
-    없음 포함)을 건너뛴다. Codex는 묶음마다 다시 조회한다. (공급자, Codex 조회, 건너뛴 까닭)."""
+def claude_week(rows: list[dict], now: float | None = None) -> float | None:
+    """Claude의 7일 사용률(0~1) — 가장 최근 Claude 실행(정기 묶음·대화 검토 fork) 출력의 한도 알림
+    (`rate_limit_event`의 `unifiedWindows.seven_day`)에서 읽는다. Claude에는 모델을 부르지 않는 조회가
+    없다. 그 창이 이미 새로 열렸거나 읽은 값이 없으면 None이다. 최근 Claude 실행 20개까지만 본다."""
+    now = time.time() if now is None else now
+    seen = 0
+    for r in reversed(rows):
+        if r.get("kind") != "run" or r.get("provider") != "claude" or not r.get("output"):
+            continue
+        seen += 1
+        try:
+            events = _events(core.ROOT / r["output"] / "stdout.txt")
+        except OSError:
+            events = []
+        for e in reversed(events):
+            week = ((e.get("rate_limit_info") or {}).get("unifiedWindows") or {}).get("seven_day") \
+                if e.get("type") == "rate_limit_event" else None
+            if isinstance(week, dict) and isinstance(week.get("utilization"), (int, float)):
+                return float(week["utilization"]) if (week.get("resetsAt") or 0) > now else None
+        if seen >= 20:
+            break
+    return None
+
+
+def _choose(commands: dict, off: dict) -> tuple[str | None, dict | None, dict]:
+    """이 묶음의 공급자 — 선호 순서대로, 그날 막힌 공급자(`off`)·소진(신호 없음 포함)·주간 사용률이
+    0.9에 닿은 공급자(`rest`)를 건너뛴다. Codex는 묶음마다 다시 조회하고, Claude는 최근 실행의 한도
+    알림을 읽는다(`claude_week`). (공급자, Codex 조회, 건너뛴 까닭)."""
     limits, skipped = None, {}
     for who in [p for p in PROVIDERS if p in commands] + [p for p in commands if p not in PROVIDERS]:
         if who in off:
             skipped[who] = off[who]
-            continue
-        if budgets.get(who, 1) <= 0:
-            skipped[who] = "budget"
             continue
         if who == "codex":
             # 실행기가 띄울 바이너리로 묻는다 — Desktop이 갱신되면 명령 파일의 옛 경로는 지워진다.
@@ -402,6 +429,12 @@ def _choose(commands: dict, budgets: dict, off: dict) -> tuple[str | None, dict 
             if checked["ok"] and (limits := codex_limits(checked["executable"]))["exhausted"]:
                 skipped[who] = "exhausted" if limits["signal"] else "no_signal"
                 continue
+            if checked["ok"] and (limits.get("weekly") or 0) >= REST_AT * 100:
+                skipped[who] = "rest"
+                continue
+        elif who == "claude" and (claude_week(growth._records()) or 0) >= REST_AT:
+            skipped[who] = "rest"
+            continue
         return who, limits, skipped
     return None, limits, skipped
 
@@ -418,8 +451,10 @@ def _batch(command: list[str], kind: str, size: int, **args) -> dict:
     return result
 
 
-def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
-    """하루 정기 성장 실행. 명령은 공급자마다 하나다(Codex, 그리고 대신 돌 Claude 워커)."""
+def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: bool = False) -> dict:
+    """하루 정기 성장 실행. 명령은 공급자마다 하나다(Codex, 그리고 대신 돌 Claude 워커). `backlog`는 대화
+    검토 적체를 일괄로 돈다 — 주간 조정·하루 한도·벽시계 예산 없이 Scope 묶음만, 대기열이 비거나 작업자
+    이상이 나거나 모든 공급자가 쉴 때까지."""
     started = time.monotonic()
     by: dict = {}
     for command in commands:
@@ -444,7 +479,8 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
     last = (_adjustments(rows) or [None])[-1]
     # 주는 날짜로 센다. 조정 시각은 포착을 마친 뒤에 적혀 날마다 몇 분씩 달라서, 시각으로 재면 같은
     # 시각의 매일 실행이 7일째에 몇 분 모자라 하루씩 밀린다(#258).
-    fresh = last is None or (now.date() - datetime.fromisoformat(last["at"]).astimezone(now.tzinfo).date()).days >= WEEK
+    fresh = not backlog and (last is None or (now.date() - datetime.fromisoformat(last["at"]).astimezone(
+        now.tzinfo).date()).days >= WEEK)
     adjustment = last
     if fresh:
         try:
@@ -453,11 +489,9 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
             # 재지 못한 주는 남기지 않는다 — 다음 실행이 다시 잰다. 그동안은 지난 L(없으면 하한)로 돈다.
             errors.append({"adjustment": f"{type(exc).__name__}: {exc}"})
             fresh = False
-    adjustment = adjustment or {"at": now.isoformat(timespec="seconds"), "limit": LIMIT_FLOOR, "providers": {}}
+    adjustment = adjustment or {"at": now.isoformat(timespec="seconds"), "limit": LIMIT_FLOOR}
     recorded = fresh                 # 새로 정했으면 첫 묶음의 계획에 판단 근거를 싣는다
     limit = adjustment["limit"]
-    spent = _spent(rows, datetime.fromisoformat(adjustment["at"]))[0]
-    budgets = {p: b["budget"] - spent[p]["daily"] for p, b in adjustment.get("providers", {}).items()}
     plans = {r["rid"]: r for r in rows if r.get("kind") == "plan"}
     today = [(plans[r["manifest"]], r) for r in rows if r.get("kind") == "run" and r.get("manifest") in plans
              and (plans[r["manifest"]].get("daily") or {}).get("day") == day]
@@ -473,23 +507,23 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
     left, off, faults = {"scope", "light"}, {}, set()
     batches, stop, skipped = [], None, {}
     while stop is None:
-        kind = _next_kind(done, left, limit)
-        if time.monotonic() - started + earlier >= DAY_SECONDS:
+        kind = ("scope" if "scope" in left else None) if backlog else _next_kind(done, left, limit)
+        if not backlog and time.monotonic() - started + earlier >= DAY_SECONDS:
             stop = "time_budget"
-        elif done["scope"] + done["light"] >= limit:
+        elif not backlog and done["scope"] + done["light"] >= limit:
             stop = "daily_limit"
         elif kind is None:
             stop = "worker_fault" if faults else "empty"
         if stop:
             break
-        who, limits, skipped = _choose(by, budgets, off)
+        who, limits, skipped = _choose(by, off)
         if who is None:
-            # 소진·한도 거절은 대기다(#173). 예산만 다 쓴 것도 실패가 아니다.
+            # 소진·한도 거절은 대기다(#173). 사용률 0.9에서 쉬는 것도 실패가 아니다.
             stop = ("limited" if {"exhausted", "no_signal", "limited"} & set(skipped.values()) else
-                    "budget" if "budget" in skipped.values() else "unavailable")
+                    "rest" if "rest" in skipped.values() else "unavailable")
             break
         info = {"day": day, "batch": len(batches) + 1, "kind": kind, "provider": who, "limit": limit,
-                "limits": limits, "skipped": skipped, "budget_left": budgets.get(who)}
+                "limits": limits, "skipped": skipped, **({"backlog": True} if backlog else {})}
         if recorded:
             info["adjustment"] = adjustment
         result = _batch(by[who], kind, 1 if kind == "scope" else min(LIGHT_SIZE, limit - sum(done.values())),
@@ -499,8 +533,6 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
             recorded = False         # 판단 근거는 이 계획에 남았다
             batches.append({k: result.get(k) for k in ("manifest", "state", "provider", "selected", "progress",
                                                       "usage", "returncode", "error")} | {"kind": kind})
-            if who in budgets and (result.get("usage") or {}).get("measured"):
-                budgets[who] -= result["usage"]["tokens"]
         if state == "busy":
             stop = "busy"
         elif state in {"skipped", "capture_pending"}:
@@ -528,8 +560,8 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled") -> dict:
     # `done`과 `day_seconds`는 그날 앞선 실행까지 더한 값이다.
     return {"ok": not errors, "state": stop, "day": day, "limit": limit, "done": done,
             "elapsed_seconds": round(time.monotonic() - started),
-            "day_seconds": round(time.monotonic() - started + earlier), "budget_left": budgets,
-            "skipped": skipped, "adjustment": adjustment if fresh else {"at": adjustment["at"], "limit": limit},
+            "day_seconds": round(time.monotonic() - started + earlier), "skipped": skipped,
+            **({"backlog": True} if backlog else {}), "adjustment": adjustment if fresh else {"at": adjustment["at"], "limit": limit},
             "capture": {"ok": not failed, "appended": sum(1 for c in captured["captures"] if c.get("appended")),
                         "failed": len(failed),
                         "known_errors": sum(1 for c in captured["captures"] if not c["ok"] and not c["new_error"])},
