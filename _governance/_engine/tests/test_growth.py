@@ -393,8 +393,9 @@ class GrowthTests(unittest.TestCase):
             assert result['state'] == 'incomplete' and not result['final_reviews']['errors'], result
             assert {s['status'] for s in result['organization_outcomes'].values()} == {'pending'}, result
             assert proc.returncode == 0 and not growth.run_failed(result), (proc.returncode, result)
+            # #301: an organization left over is no reason to hand rechecks to the fork.
             status = growth.daily_status()
-            assert status['ran'] and not status['active'], status
+            assert status['ran'] and status['active'], status
             assert status['last']['state'] == 'incomplete', status
             # A run that could not run, or whose worker or packet failed, still fails.
             assert growth.run_failed({**result, 'returncode': 1})
@@ -403,6 +404,110 @@ class GrowthTests(unittest.TestCase):
             assert not growth.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
             # Another run holding the lock is a wait, not a failure (#175: 10-05 and 10-06 ended busy).
             assert not growth.run_failed({'ok': False, 'state': 'busy'})
+        """)
+
+    def test_daily_handoff_follows_the_days_recheck_queue(self):
+        self.check_case("""
+            # #301 / #306 D7: the fork takes rechecks over only when that day's recheck queue was not done —
+            # no light batch got its turn, or one left a selected recheck neither closed nor deferred.
+            from datetime import datetime, timezone
+            day = datetime.now(timezone.utc).astimezone().date().isoformat()
+            def batch(kind, run=None, rechecks=(), waiting=0, **daily):
+                plan = core.ledger_append(growth.LEDGER, {'kind': 'plan', 'work_context': 'daily',
+                                                          'daily': {'day': day, 'kind': kind, **daily},
+                                                          'recheck_jobs': [{'key': k} for k in rechecks],
+                                                          'queued_not_selected': {'recheck_jobs': waiting}})
+                if run is not None:
+                    core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': plan['rid'], 'returncode': 0, **run})
+                return plan
+            def fresh():
+                growth.LEDGER.unlink(missing_ok=True)
+            fresh()
+            batch('scope', {'state': 'incomplete', 'ok': False, 'returncode': 1})
+            assert not growth.daily_active(), 'the day stopped before any recheck batch'
+            batch('light', {'state': 'incomplete', 'ok': False,
+                            'recheck_outcomes': {'r1': {'status': 'complete'}}}, ['r1'])
+            assert growth.daily_active(), 'a failed Scope batch and leftover organization do not hand rechecks over'
+            batch('light', {'state': 'limited', 'ok': False}, ['r2'])
+            assert growth.daily_active(), 'a limited batch is a wait — another provider ran it again'
+            plan = batch('light', {'state': 'incomplete', 'ok': False,
+                                   'recheck_outcomes': {'r3': {'status': 'pending'}}}, ['r3'])
+            assert not growth.daily_active(), 'a selected recheck left open'
+            core.ledger_append(growth.LEDGER, {'kind': 'recheck_review', 'manifest': plan['rid'], 'key': 'r3',
+                                               'outcome': 'deferred', 'reason': 'cannot judge yet'})
+            assert growth.daily_active(), 'a deferral is a judgement'
+            batch('light', {'state': 'incomplete', 'ok': False, 'returncode': 1,
+                            'recheck_outcomes': {'r4': {'status': 'complete'}}}, ['r4'])
+            assert not growth.daily_active(), 'a failed worker judged nothing'
+            fresh()
+            batch('light')
+            assert growth.daily_status()['ran'] and not growth.daily_active(), 'a plan without a result'
+            # #312 review: other light work took the places, so no recheck was picked though some waited.
+            fresh()
+            batch('light', {'state': 'complete', 'ok': True}, waiting=2)
+            assert not growth.daily_active(), 'rechecks waited while other light work took the places'
+            batch('light', {'state': 'incomplete', 'ok': False,
+                            'recheck_outcomes': {'r5': {'status': 'complete'}}}, ['r5'], waiting=1)
+            assert growth.daily_active(), 'a later batch of the day gave the rechecks their turn'
+            # With no candidate waiting, a light batch without rechecks leaves nothing to hand over.
+            fresh()
+            batch('light', {'state': 'complete', 'ok': True})
+            assert growth.daily_active()
+            # A backlog run is not the daily run: its Scope batches neither replace nor date the day.
+            batch('scope', {'state': 'incomplete', 'ok': False}, backlog=True)
+            assert growth.daily_active() and growth.daily_status()['last']['state'] == 'complete'
+        """)
+
+    def test_scope_tries_count_only_what_the_daily_run_judged(self):
+        self.check_case("""
+            # #306 D4: picks counted waits, failures and fork attempts and never shrank before progress,
+            # so conversations tried once by a failing run or a fork stood at the back of the queue.
+            from datetime import datetime, timedelta, timezone
+            now = datetime.now(timezone.utc)
+            ago = lambda days: (now - timedelta(days=days)).isoformat(timespec='seconds')
+            job = {'harness': 'claude', 'conversation_id': 'c', 'reviewed_rounds': 0}
+            state = {'harness': 'claude', 'conversation_id': 'c', 'reviewed_count': 0}
+            rows = []
+            def attempt(run=None, context='daily'):
+                rid = 'p' + str(len(rows))
+                rows.append({'kind': 'plan', 'rid': rid, 'work_context': context, 'scope_jobs': [job]})
+                if run is not None:
+                    rows.append({'kind': 'run', 'manifest': rid, 'returncode': 0, 'at': ago(20), **run})
+            attempt({'state': 'incomplete'})                       # judged, however old
+            attempt({'state': 'limited', 'returncode': 1})         # waited on a limit
+            attempt({'state': 'busy'})                             # waited on the lock
+            attempt({'state': 'incomplete', 'returncode': 1})      # the worker failed, three weeks ago
+            attempt()                                              # no result
+            attempt({'state': 'incomplete'}, context='stop:W1')    # a fork's own attempt
+            assert growth._scope_tried(rows)(state) == 1
+            # A recent failure still counts: a conversation that keeps failing gives others their turn (#136 M4).
+            attempt({'state': 'incomplete', 'returncode': 1, 'at': ago(1)})
+            assert growth._scope_tried(rows)(state) == 2
+        """)
+
+    def test_final_packet_reads_a_trailing_block_not_prose_or_fences(self):
+        self.check_case("""
+            # #306 D1: four of seven rejected packets were valid JSON after one line of explanation.
+            packet = {'osk_reviews': {'manifest': 'm', 'domain': [], 'scope': []}}
+            body = json.dumps(packet, indent=2)
+            out = core.ROOT / 'stdout.txt'
+            def final(text):
+                out.write_text(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                                           'result': text}) + chr(10), encoding='utf-8')
+                return growth._final_packet(out)
+            nl = chr(10)
+            assert final(body) == packet
+            assert final('Reviewed both jobs.' + nl + body) == packet
+            assert final('Reviewed both jobs.' + nl + nl + body + nl) == packet
+            for text in ('Here: ' + body,                                   # not at a line start
+                         body + nl + 'Done.',                               # prose after it
+                         'See' + nl + body + nl + 'and more' + nl,          # in the middle of prose
+                         'Result:' + nl + '```json' + nl + body + nl + '```'):  # in a code fence
+                try:
+                    final(text)
+                except ValueError:
+                    continue
+                raise AssertionError(text)
         """)
 
     def test_daily_status_keeps_a_plan_without_result_as_ran_not_completed(self):

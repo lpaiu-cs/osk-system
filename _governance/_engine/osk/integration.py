@@ -1319,13 +1319,29 @@ def _drop_fork_rewound(harness: str, conversation_id: str, copies: list) -> int:
         return len(dropped)
 
 
-def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True) -> dict:
+def _review_scope(s: dict) -> str | None:
+    """대화 검토 문맥의 scope — 고정한 착지, 없으면 결속의 주된 scope부터(§9-3 1항). `prompt`의 허브
+    트리 scope와 같다."""
+    if s.get("space"):
+        return raw._scope_of_space(s["space"])
+    try:
+        scopes = write.bound_scopes(s["session"]) if s.get("session") and not _one_off(s) else []
+    except (OSError, ValueError, write.WriteError):
+        scopes = []
+    return scopes[0] if scopes else None
+
+
+def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True,
+            exclude=frozenset(), bundle: int = 0) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
     포착(모델 비용이 없다)과 작업 선택을 나눈다. 대기 전체를 먼저 포착하고, 따라잡은 커서로
     다시 세운 순서에서 `limit`개를 고른다 — 작업이 차면 포착도 멈추던 때에는 뒤에 선 대화의 새
     턴이 추적되지 않아, 새 턴으로 다시 열린 대화가 순서에 오르지 못했다(#179). 작업을 만들지
-    못한 대화(원본 유실·포착 실패 등)는 건너뛰고 다음 대화로 `limit`을 채운다. `capture_new=False`는
-    선택만 한다 — 하루 묶음은 하루 시작에 `capture_known`으로 한 번만 포착한다(#175)."""
+    못한 대화(원본 유실·포착 실패 등)와 `exclude`의 작업(하루 묶음에서 그날 진척 없던 것)은 건너뛰고
+    다음 대화로 `limit`을 채운다. `bundle`을 주면 그 뒤에 같은 scope의 작은 꼬리 — 대기 전체가 남은
+    턴에 드는 대화 — 를 더해 모두 `bundle` 턴까지 고른다: 묶음을 띄우는 고정비가 턴 수보다 크다(#306
+    D5). `capture_new=False`는 선택만 한다 — 하루 묶음은 하루 시작에 `capture_known`으로 한 번만
+    포착한다(#175)."""
     if not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
     captured = capture_known(tried) if capture_new else {"captures": [], "errors": [], "awaiting_native": []}
@@ -1334,19 +1350,28 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None,
     states, _, again, _ = _known_pending(None, tried)
     errors += [e for e in again if e not in errors]
     copies = _copies_by_parent()
+    scope, room = None, 0          # 묶음의 scope와 남은 턴
     for s in states:
-        if len(jobs) >= limit:
+        if len(jobs) >= limit and room <= 0:
             break
         try:
             if (s["harness"], s["conversation_id"]) in copies and _view(s)["pending_refs"]:
                 # 사본으로 되감아 버린 턴은 검토에 넣지 않는다(#235)
                 _drop_fork_rewound(s["harness"], s["conversation_id"], copies[s["harness"], s["conversation_id"]])
-            if _view(s)["pending_refs"]:
+            pending = _view(s)["pending_refs"]
+            if pending and len(jobs) >= limit and (len(pending) > room or _review_scope(s) != scope):
+                continue
+            if pending:
                 job = prompt(s["harness"], s["conversation_id"], include_organization=False,
                              max_rounds=max_rounds, offline=True)
-                if job["pending_refs"]:
+                if job["pending_refs"] and job["key"] not in exclude:
                     job["prompt"] = job.pop("text")
                     jobs.append(job)
+                    if bundle and len(jobs) == limit:
+                        scope = job.get("review_scope")
+                        room = bundle - len(job["pending_refs"]) if scope else 0
+                    elif len(jobs) > limit:
+                        room -= len(job["pending_refs"])
         except Exception as exc:
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "jobs": jobs,
@@ -1558,6 +1583,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     text += "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. "
     # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
     tree_scope = scope or (raw._scope_of_space(s["space"]) if s.get("space") else None)
+    st["review_scope"] = tree_scope
     if not tree_scope:
         text += UNLANDED
     try:
