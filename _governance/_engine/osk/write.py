@@ -593,7 +593,7 @@ def _check_edges(edges: dict | None, idx, *, adding: bool = True) -> list[str]:
                         found[0] in ("nonnode", "external") or evidence.kind(target) != "name"):
                     # 인용 기록·라운드 좌표·URL·별칭 좌표·경로는 모양으로, 이름은 해석으로 가른다
                     errs.append(
-                        f"derived-from은 노드만 받는다: {t} — 비노드 근거는 노드 끝 `## 근거` 절에 "
+                        f"derived-from은 노드만 받는다: {t} — 비노드 근거는 노드 끝 `# 관측` 절에 "
                         f"`- 날짜 · `좌표` · 지지|조건|반례 — 보인 것` 한 줄로 적는다(헌법 제8조 5·6항). "
                         f"인용 라운드의 좌표는 cite_round·read_cited가 주는 coordinate다")
                 continue
@@ -775,7 +775,7 @@ def _reference_feedback(path, meta, body, idx, previous=None) -> dict:
         out["reference_review"] = {
             "status": "pending", "items": refs,
             "instruction": "내용은 저장됐다. 참조 검토는 미결이다. 노드 근거는 search/read_node의 정확한 제목으로 "
-                           "derived-from에, 비노드 근거는 근거 절의 좌표로 적는다 — 인용 라운드는 coordinate, "
+                           "derived-from에, 비노드 근거는 관측 절의 좌표로 적는다 — 인용 라운드는 coordinate, "
                            "vault 원료는 루트 기준 경로, 외부 루트는 별칭 좌표, 그 밖은 확인한 URL이다. "
                            "원료는 지식 노드나 허브가 아니다. 빈 가짜 노드를 만들지 말라. "
                            "organization plan --scope <scope>가 다음 검토로 이어받는다."}

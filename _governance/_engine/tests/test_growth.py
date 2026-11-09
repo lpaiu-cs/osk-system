@@ -393,8 +393,9 @@ class GrowthTests(unittest.TestCase):
             assert result['state'] == 'incomplete' and not result['final_reviews']['errors'], result
             assert {s['status'] for s in result['organization_outcomes'].values()} == {'pending'}, result
             assert proc.returncode == 0 and not growth.run_failed(result), (proc.returncode, result)
+            # #301: an organization left over is no reason to hand rechecks to the fork.
             status = growth.daily_status()
-            assert status['ran'] and not status['active'], status
+            assert status['ran'] and status['active'], status
             assert status['last']['state'] == 'incomplete', status
             # A run that could not run, or whose worker or packet failed, still fails.
             assert growth.run_failed({**result, 'returncode': 1})
@@ -403,6 +404,111 @@ class GrowthTests(unittest.TestCase):
             assert not growth.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
             # Another run holding the lock is a wait, not a failure (#175: 10-05 and 10-06 ended busy).
             assert not growth.run_failed({'ok': False, 'state': 'busy'})
+        """)
+
+    def test_daily_handoff_follows_the_days_recheck_queue(self):
+        self.check_case("""
+            # #301 / #306 D7: the fork takes rechecks over only when that day's recheck queue was not done —
+            # no light batch got its turn, or one left a selected recheck neither closed nor deferred.
+            from datetime import datetime, timezone
+            day = datetime.now(timezone.utc).astimezone().date().isoformat()
+            def batch(kind, run=None, rechecks=(), waiting=0, **daily):
+                plan = core.ledger_append(growth.LEDGER, {'kind': 'plan', 'work_context': 'daily',
+                                                          'daily': {'day': day, 'kind': kind, **daily},
+                                                          'recheck_jobs': [{'key': k} for k in rechecks],
+                                                          'queued_not_selected': {'recheck_jobs': waiting}})
+                if run is not None:
+                    core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': plan['rid'], 'returncode': 0, **run})
+                return plan
+            def fresh():
+                growth.LEDGER.unlink(missing_ok=True)
+            fresh()
+            batch('scope', {'state': 'incomplete', 'ok': False, 'returncode': 1})
+            assert not growth.daily_active(), 'the day stopped before any recheck batch'
+            batch('light', {'state': 'incomplete', 'ok': False,
+                            'recheck_outcomes': {'r1': {'status': 'complete'}}}, ['r1'])
+            assert growth.daily_active(), 'a failed Scope batch and leftover organization do not hand rechecks over'
+            batch('light', {'state': 'limited', 'ok': False}, ['r2'])
+            assert growth.daily_active(), 'a limited batch is a wait — another provider ran it again'
+            plan = batch('light', {'state': 'incomplete', 'ok': False,
+                                   'recheck_outcomes': {'r3': {'status': 'pending'}}}, ['r3'])
+            assert not growth.daily_active(), 'a selected recheck left open'
+            core.ledger_append(growth.LEDGER, {'kind': 'recheck_review', 'manifest': plan['rid'], 'key': 'r3',
+                                               'outcome': 'deferred', 'reason': 'cannot judge yet'})
+            assert growth.daily_active(), 'a deferral is a judgement'
+            batch('light', {'state': 'incomplete', 'ok': False, 'returncode': 1,
+                            'recheck_outcomes': {'r4': {'status': 'complete'}}}, ['r4'])
+            assert not growth.daily_active(), 'a failed worker judged nothing'
+            fresh()
+            batch('light')
+            assert growth.daily_status()['ran'] and not growth.daily_active(), 'a plan without a result'
+            # #312 review: other light work took the places, so no recheck was picked though some waited.
+            fresh()
+            batch('light', {'state': 'complete', 'ok': True}, waiting=2)
+            assert not growth.daily_active(), 'rechecks waited while other light work took the places'
+            batch('light', {'state': 'incomplete', 'ok': False,
+                            'recheck_outcomes': {'r5': {'status': 'complete'}}}, ['r5'], waiting=1)
+            assert growth.daily_active(), 'a later batch of the day gave the rechecks their turn'
+            # With no candidate waiting, a light batch without rechecks leaves nothing to hand over.
+            fresh()
+            batch('light', {'state': 'complete', 'ok': True})
+            assert growth.daily_active()
+            # A backlog run is not the daily run: its Scope batches neither replace nor date the day.
+            batch('scope', {'state': 'incomplete', 'ok': False}, backlog=True)
+            assert growth.daily_active() and growth.daily_status()['last']['state'] == 'complete'
+        """)
+
+    def test_scope_tries_count_only_what_the_daily_run_judged(self):
+        self.check_case("""
+            # #306 D4: picks counted waits, failures and fork attempts and never shrank before progress,
+            # so conversations tried once by a failing run or a fork stood at the back of the queue.
+            from datetime import datetime, timedelta, timezone
+            now = datetime.now(timezone.utc)
+            ago = lambda days: (now - timedelta(days=days)).isoformat(timespec='seconds')
+            job = {'harness': 'claude', 'conversation_id': 'c', 'reviewed_rounds': 0}
+            state = {'harness': 'claude', 'conversation_id': 'c', 'reviewed_count': 0}
+            rows = []
+            def attempt(run=None, context='daily'):
+                rid = 'p' + str(len(rows))
+                rows.append({'kind': 'plan', 'rid': rid, 'work_context': context, 'scope_jobs': [job]})
+                if run is not None:
+                    rows.append({'kind': 'run', 'manifest': rid, 'returncode': 0, 'at': ago(20), **run})
+            attempt({'state': 'incomplete'})                       # judged, however old
+            attempt({'state': 'limited', 'returncode': 1})         # waited on a limit
+            attempt({'state': 'busy'})                             # waited on the lock
+            attempt({'state': 'incomplete', 'returncode': 1})      # the worker failed, three weeks ago
+            attempt()                                              # no result
+            attempt({'state': 'incomplete'}, context='stop:W1')    # a fork's own attempt
+            assert growth._scope_tried(rows)(state) == 1
+            # A recent failure still counts: a conversation that keeps failing gives others their turn (#136 M4).
+            attempt({'state': 'incomplete', 'returncode': 1, 'at': ago(1)})
+            assert growth._scope_tried(rows)(state) == 2
+        """)
+
+    def test_final_packet_reads_a_trailing_block_not_prose_or_fences(self):
+        self.check_case("""
+            # #306 D1: four of seven rejected packets were valid JSON after one line of explanation.
+            packet = {'osk_reviews': {'manifest': 'm', 'domain': [], 'scope': []}}
+            body = json.dumps(packet, indent=2)
+            out = core.ROOT / 'stdout.txt'
+            def final(text):
+                out.write_text(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                                           'result': text}) + chr(10), encoding='utf-8')
+                return growth._final_packet(out)
+            nl = chr(10)
+            assert final(body) == packet
+            assert final('Reviewed both jobs.' + nl + body) == packet
+            assert final('Reviewed both jobs.' + nl + nl + body + nl) == packet
+            for text in ('Here: ' + body,                                   # not at a line start
+                         body + nl + 'Done.',                               # prose after it
+                         'See' + nl + body + nl + 'and more' + nl,          # in the middle of prose
+                         'Result:' + nl + '```json' + nl + body + nl + '```',   # in a code fence
+                         'Example:' + nl + '```json' + nl + body):                # in a fence left open
+                try:
+                    final(text)
+                except ValueError:
+                    continue
+                raise AssertionError(text)
         """)
 
     def test_daily_status_keeps_a_plan_without_result_as_ran_not_completed(self):
@@ -639,7 +745,7 @@ class GrowthTests(unittest.TestCase):
             assert errs == ['없는 라운드: c38d8ef2#3', '없는 제목: _sources/r.md#없다', '없는 파일: _sources/d',
                             '노드를 가리키는 근거 줄: N — 노드 근거는 derived-from으로 옮긴다',
                             '선언되지 않은 별칭: brain:wiki/x.md',
-                            '형식이 다른 근거 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
+                            '형식이 다른 관측 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
             # a shortened hash two records share is ambiguous; a longer prefix tells them apart
             raw.append_rounds('repo/ev', 'codex-c38d8ef2' + '1' * 24, [{'user': 'q', 'agent': 'a'}], '00_Scope/W1')
             records = evidence.Records()
@@ -647,18 +753,38 @@ class GrowthTests(unittest.TestCase):
             assert records.short(claude) == 'c38d8ef20', records.short(claude)
             longer = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1–2` · 지지 — longer'])
             assert validate.evidence_errors(longer, [], idx, records) == []
+            # `# 관측` opens the section as the pre-v5.6 `## 근거` does (Mechanism §4-1 1), and renaming
+            # the heading leaves the relevant state as it was — it is measured up to the heading line
+            from osk import rechecks
+            observed = longer.replace('## 근거', '# 관측')
+            assert validate.evidence_errors(observed, [], idx, records) == []
+            assert validate.evidence_errors(observed + chr(10) + '## 이력' + chr(10), []) == ['관측 절이 노드 끝에 있지 않다']
+            assert rechecks.evidence_span('x' + chr(10) + '## 관측' + chr(10) + '- a') is None
+            assert rechecks.evidence_span('x' + chr(10) + '# 근거' + chr(10) + '- a') is None
+            fm = '---' + chr(10) + 'id: x' + chr(10) + '---' + chr(10)
+            assert rechecks.state((fm + longer).encode()) == rechecks.state((fm + observed).encode())
+            # a node named 관측 whose body opens with its own `# 관측` title: the claim is not a section,
+            # so editing it changes the state and still reaches the nodes that derive from it (#310 review)
+            titled = '# 관측' + chr(10) + chr(10) + '주장 A.' + chr(10)
+            assert rechecks.evidence_span(titled) is None
+            assert validate.evidence_errors(titled, []) == []
+            assert rechecks.state((fm + titled).encode()) != rechecks.state((fm + titled.replace('A', 'B')).encode())
+            # a `# 관측` section added after a legacy `## 근거` one turns the older lines into body text —
+            # the validator reports the stranded heading (review of #311)
+            stranded = longer + chr(10) + chr(10) + '# 관측' + chr(10) + chr(10) + '- 2026-11-09 · `c38d8ef20#1` · 지지 — new'
+            assert validate.evidence_errors(stranded, [], idx, records) == ['관측 절이 노드 끝에 있지 않다']
             # a non-node left in derived-from is reported once; a node there is not
             assert validate.evidence_errors('x', ['N', first['round_refs'][0]], idx) == [
-                'derived-from에 비노드 대상 1개가 남아 있다 — 근거 절로 옮긴다']
+                'derived-from에 비노드 대상 1개가 남아 있다 — 관측 절로 옮긴다']
             moved = chr(10).join(['x', '', '## 근거', '', '- a', '', '## 이력', '', 'y'])
-            assert validate.evidence_errors(moved, []) == ['`## 근거` 절이 노드 끝에 있지 않다']
+            assert validate.evidence_errors(moved, []) == ['관측 절이 노드 끝에 있지 않다']
             # any list marker is a list item
             starred = chr(10).join(['x', '', '## 근거', '', '* 2026-10-05 · `c38d8ef20#1` · 지지 — star'])
-            assert validate.evidence_errors(starred, [])[0].startswith('형식이 다른 근거 줄: * 2026'), 'a * item was skipped'
+            assert validate.evidence_errors(starred, [])[0].startswith('형식이 다른 관측 줄: * 2026'), 'a * item was skipped'
             nested = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1` · 지지 — fine',
                                    '    * 2026-10-05 · `c38d8ef20#1` · 지지 — nested', 'a paragraph'])
             errs = validate.evidence_errors(nested, [])
-            assert [e.split(':')[0] for e in errs] == ['형식이 다른 근거 줄'] * 2, errs
+            assert [e.split(':')[0] for e in errs] == ['형식이 다른 관측 줄'] * 2, errs
             quoted = chr(10).join(['x', '', '> ## 근거', '>', '> - a'])
             assert validate.evidence_errors(quoted, []) == [], 'a quoted heading was read as the section'
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none',
@@ -819,7 +945,7 @@ class GrowthTests(unittest.TestCase):
             # in the frontmatter, not the earlier body mention
             first = '- 2026-01-01 · `c38d8ef2#1` · 지지 — ' + ('첫 질문입니다 ' * 9)[:50].rstrip() + '…'
             lines = na.body.rstrip(chr(10)).split(chr(10))
-            assert lines[-7:-4] == ['주장 A. 출처는 ' + url, '## 근거', ''] and lines[-4] == first, lines
+            assert lines[-7:-4] == ['주장 A. 출처는 ' + url, '# 관측', ''] and lines[-4] == first, lines
             assert lines[-3] == '- 2026-01-01 · `c38d8ef2#3` · 지지 — 인용 요지 #272 의 결정', lines
             assert lines[-2:] == ['- 2026-02-01 · `_sources/r.md` · 지지 — r.md',
                                   '- 2026-02-01 · `' + url + '` · 지지 — page.md'], lines
@@ -833,6 +959,115 @@ class GrowthTests(unittest.TestCase):
             manifest = (core.ROOT / done['manifest']).read_text(encoding='utf-8')
             assert '## 결과' in manifest and '보류 — 없는 라운드' in manifest, manifest
             assert em.plan()['counts'] == {'line': 0, 'covered': 0, 'hold': 3}, 'a rerun moved something again'
+        """)
+
+    def test_doctor_reports_and_applies_the_remaining_migrations(self):
+        # 2026-11-09 user decision: compatibility and bulk migrations live in `osk doctor` — the report only
+        # reads, `--migrate` plans, then applies them in order once confirmed. v5.6 renames the `## 근거` heading to `# 관측` without
+        # touching the claim, the lines, the frontmatter or the related state. A body that opens with
+        # `## 근거` would read `# 관측` as its own title, so it is held and keeps the legacy heading.
+        self.check_case("""
+            from osk import doctor, evidence_migration as em, rechecks
+            line = '- 2026-11-09 · `https://example.com/a` · 지지 — page'
+            node('L', body='주장 L.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
+            node('T', body='## 근거' + chr(10) + chr(10) + line)
+            node('O', body='주장 O.' + chr(10) + chr(10) + '# 관측' + chr(10) + chr(10) + line)
+            node('Tab', body='주장 Tab.' + chr(10) + chr(10) + '##' + chr(9) + '근거' + chr(10) + chr(10) + line)
+            # X is cited by heading range: an H1 `# 관측` would close the range of `# X`, so it is held
+            node('X', body='# X' + chr(10) + chr(10) + '주장 X.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
+            assert write.create_node('C', 'C', 'C relies on X.', 'gpt-6-astra', space='00_Scope/W1',
+                                     edges={'derived-from': 'X#X'})['ok']
+            # Y's section is only linked from another body, not cited: the link would lose its anchor (#311 review)
+            node('Y', body='주장 Y.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
+            node('D', body='D reads [[Y#근거]].')
+            paths = {t: core.ROOT / '00_Scope/W1' / (t + '.md') for t in ('L', 'T', 'O', 'Tab', 'X', 'Y')}
+            before = {t: p.read_bytes() for t, p in paths.items()}
+            vault = {i['check']: i for i in doctor._vault()}
+            heading = next(i for k, i in vault.items() if '# 관측' in k)
+            assert heading['level'] == 'warn' and '2개' in heading['detail'] and '--migrate' in heading['fix'], vault
+            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the report wrote'
+            # The first run only plans and asks for the user's yes; nothing moves yet.
+            plan, code = doctor.migrate()
+            assert code == 2 and plan['approval_required'] and [m[0] for m in plan['plan']['migrations']] == [
+                heading['check']] and len(plan['plan']['migrations'][0][1]) == 2, plan
+            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the plan wrote'
+            # The apply re-plans under the lock; a node the user did not confirm stops it before any write (#313 review).
+            only_l = [t for t in plan['plan']['migrations'][0][1] if t[0].endswith('/L.md')]
+            try:
+                em.heading_apply(expect=only_l)
+            except RuntimeError as e:
+                assert 'Tab.md' in str(e), e
+            else:
+                raise AssertionError('migrated a node that was not confirmed')
+            # A confirmed node that changed after the user's yes stops it too (#313 review, round 2).
+            stale = [[p, 'sha256:0' if p.endswith('/L.md') else h] for p, h in plan['plan']['migrations'][0][1]]
+            try:
+                em.heading_apply(expect=stale)
+            except RuntimeError as e:
+                assert 'L.md' in str(e) and 'Tab.md' not in str(e), e
+            else:
+                raise AssertionError('migrated a node that changed after it was confirmed')
+            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the refused apply wrote'
+            assert not list(em.EVENTS.parent.glob('observation-heading-*')), 'the refused apply opened a manifest'
+            done, code = doctor.migrate()
+            assert code == 0 and [d['migration'] for d in done['applied']] == [heading['check']], done
+            assert (done['applied'][0]['nodes'], done['applied'][0]['holds']) == (2, 3), done
+            new = paths['L'].read_bytes()
+            assert new == before['L'].replace('## 근거'.encode(), '# 관측'.encode()), new
+            assert rechecks.state(new) == rechecks.state(before['L'])
+            assert paths['Tab'].read_bytes() == before['Tab'].replace(('##' + chr(9) + '근거').encode(), '# 관측'.encode())
+            assert all(paths[t].read_bytes() == before[t] for t in ('T', 'O', 'X', 'Y'))
+            assert not rechecks.candidates(graph.Index())[0], 'the migration made recheck candidates'
+            manifest = (core.ROOT / done['applied'][0]['manifest']).read_text(encoding='utf-8')
+            assert '`00_Scope/W1/X.md` → 보류 — 제목으로 참조된다(`#X`)' in manifest, manifest
+            assert '`00_Scope/W1/Y.md` → 보류 — 제목으로 참조된다(`#근거`)' in manifest, manifest
+            assert sorted(e['source'] for e in core.ledger_read(em.EVENTS)
+                          if e.get('rule') == em.HEADING_RULE) == ['00_Scope/W1/L.md', '00_Scope/W1/Tab.md']
+            assert all(i['level'] == 'ok' for i in doctor._vault()), doctor._vault()
+            # nothing left: a rerun applies nothing and opens no empty manifest
+            assert doctor.migrate() == ({'ok': True, 'applied': []}, 0)
+            assert len(list(em.EVENTS.parent.glob('observation-heading-*.md'))) == 1
+        """)
+
+    def test_doctor_migrates_evidence_before_moving_old_place_records(self):
+        # The evidence migration dates a round by `git blame` on the record's current path, so a record
+        # moved first is untracked there and its entry is held. `doctor --migrate` migrates first; the
+        # record move (#308) is one of its migrations since the two doctor commands became one.
+        self.check_case("""
+            import subprocess
+            from osk import doctor, evidence, raw
+            def git(*a):
+                subprocess.run(['git', '-C', str(core.ROOT), *a], check=True, capture_output=True)
+            git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+            name = 'claude-c38d8ef2' + '0' * 24
+            old = core.ROOT / '00_Scope/W1/_raw/.records'
+            old.mkdir(parents=True)
+            (old / (name + '.txt')).write_bytes(raw._block(1, '옛 자리의 질문', '답').encode())
+            # A also keeps the legacy `## 근거` heading: the v5.4 lines land in it, then the v5.6 rename takes
+            # A at the hash v5.4 wrote — the confirmed hash carried forward, not a change after the yes.
+            node('A', body='주장 A.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10)
+                 + '- 2026-11-09 · `https://example.com/a` · 지지 — page')
+            a = core.ROOT / '00_Scope/W1/A.md'
+            n = contract.parse(a)
+            a.write_bytes(write._render({**n.meta, 'derived-from': ['00_Scope/W1/_raw/.records/' + name + '.txt#1']}, n.body))
+            git('add', '-A'); git('commit', '-qm', 'seed')
+            v54, v52 = '비노드 derived-from → 관측 줄 (v5.4)', '옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)'
+            v56 = '관측 절 제목 `## 근거` → `# 관측` (v5.6)'
+            plan, code = doctor.migrate()
+            assert code == 2 and [m[0] for m in plan['plan']['migrations']] == [v54, v52, v56], plan
+            # A plan that changed after it was shown asks again: a second old-place record turned up.
+            other = 'claude-d48d8ef2' + '0' * 24
+            (old / (other + '.txt')).write_bytes(raw._block(1, '또 다른 질문', '답').encode())
+            assert doctor.migrate()[1] == 2
+            rep, code = doctor.migrate()
+            applied = {a['migration']: a for a in rep['applied']}
+            assert code == 0 and list(applied) == [v54, v52, v56], rep
+            assert applied[v52]['count'] == 2 and applied[v54]['nodes'] == 1 and applied[v56]['nodes'] == 1, applied
+            na = contract.parse(a)
+            assert 'derived-from' not in na.meta and 'c38d8ef2#1' in evidence.coordinates(na.body), na.body
+            assert '# 관측' in na.body and '## 근거' not in na.body, na.body
+            assert raw.locate_record(name) == core.ROOT / '_cited/.records' / (name + '.txt')
+            assert doctor.migrate() == ({'ok': True, 'applied': []}, 0)
         """)
 
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):
@@ -1097,13 +1332,13 @@ class GrowthTests(unittest.TestCase):
 
     def test_reviews_keep_current_claims_and_bind_existing_ones_by_evidence_line(self):
         # 2026-10-05: an old round must not roll back a newer claim, and a round that only
-        # supports a held claim gets a `## 근거` line instead of a rewritten body.
+        # supports a held claim gets a `# 관측` line instead of a rewritten body.
         self.check_case("""
             from osk import integration
             node('A')
             worker = growth.prompt(growth.plan(3))
             assert 'never replace, weaken or reorder a current claim' in worker
-            assert '"## 근거" section' in worker and '42cf0fc0#1' in worker
+            assert '"# 관측" section' in worker and '42cf0fc0#1' in worker
             path = core.ROOT / 'held.jsonl'
             rows = [{'type':'user','sessionId':'held','uuid':'u1','message':{'role':'user','content':'question'}},
                     {'type':'assistant','sessionId':'held','uuid':'a1','message':{'role':'assistant','id':'m1',
@@ -1112,7 +1347,7 @@ class GrowthTests(unittest.TestCase):
             assert integration.capture('claude','held',str(path),'held-project',space='00_Scope/W1')['ok']
             own = integration.prompt('claude','held')['text']
             assert '현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다' in own
-            assert '`## 근거` 절' in own and '`42cf0fc0#1`' in own
+            assert '`# 관측` 절' in own and '`42cf0fc0#1`' in own
         """)
 
     def test_worker_hooks_do_not_feed_maintenance_into_new_conversations(self):
@@ -1842,6 +2077,8 @@ class GrowthTests(unittest.TestCase):
             assert job['hub_tree'] == tree and tree.startswith('- 00_Scope/W1 · 직속 노드 '), job['hub_tree']
             assert '이 scope의 허브 트리:' in job['text'] and tree in job['text']
             assert '하위 군집을 열지 않는다' in job['text']
+            # Bylaws §3 8 (#273 question 3): other scopes' and Domain claims reach the review only by search.
+            assert '노드를 새로 쓰기 전에 반드시 그 주제로 search' in job['text']
             reading = growth._reading_plan({'scope_jobs': [job], 'organization_jobs': []})
             assert reading['scope_jobs'][0]['hub_tree'] == tree
             # The packet drops the hook text, so the range reaches a Stop fork as a field (#226).

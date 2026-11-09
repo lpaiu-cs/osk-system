@@ -25,7 +25,7 @@ CLAUSE_KEYS = ("대상", "범위", "조건", "종료")
 
 def parse_clause(body: str) -> dict | None:
     """`## 위임` 절의 4항목. 형식 미충족이면 None — 권한의 근거가 되지 않는다."""
-    m = re.search(r"^## 위임\s*$(.*?)(?=^## |\Z)", body, re.M | re.S)
+    m = re.search(r"^## 위임\s*$(.*?)(?=^#{1,2} |\Z)", body, re.M | re.S)
     if not m:
         return None
     out = {}

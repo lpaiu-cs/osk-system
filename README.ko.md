@@ -100,8 +100,8 @@ Antigravity)에서는 세션의 흐름 안에서 돈다 — 포착은 기계가 
 
 **노드는 미래 재사용성의 함수다.** 다음 검색·판단·작업에 반복해서 쓰일 것을 노드로 남기고,
 한 번 쓰고 끝날 작업 상태나 쉽게 다시 계산할 산출물은 남기지 않는다. 그리고 **모든 지식은
-주변부에서 시작해 연결을 통해 중심부로 자란다** — 중심과 주변은 층이 아니라 연속된
-스펙트럼이다.
+주변부에서 시작해 연결과 통섭(서로 다른 관측이 하나의 가설로 함께 설명되는 것)을 통해
+중심부로 자란다** — 중심과 주변은 층이 아니라 연속된 스펙트럼이다.
 
 ## 세 Space
 
@@ -170,7 +170,7 @@ v4가 더는 읽지 않는 배치와 옮기는 법이 있다.
 시작한다(새 태그는 [릴리스 페이지](https://github.com/lpaiu-cs/osk-system/releases)에 있다):
 
 ```bash
-git clone --branch v5.5.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.6.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -328,7 +328,11 @@ v5.3.1은 v5.3.0 출시의 사본 시험에서 찾은 포착 결함과 시험 �
 v5.4.2는 태그 방어로 띄어 저장된 글도 앵커가 맞추게 하고, scope 노드가 대장 기록을 근거로 걸게 한다.
 [v5.5.0](docs/v5.5-milestones.md)은 큰 노드를 고칠 때 전문 대신 고칠 자리와 앞뒤 문단만 읽게 하고, 본문을
 고치지 않고 근거 줄만 다는 것을 `지지`에 한하며, Claude 전사의 사본·알림·되감기를 바로 읽는다.
-[v5.6.0](docs/v5.6-milestones.md)은 v5.1에서 미룬 설계와 더 긴 운영 기간이 필요한 평가를 맡는다(견고함).
+[v5.6.0](docs/v5.6-milestones.md)은 지식을 관측을 설명하는 가설로, 중심성을 설명적·의존적 두 축으로 다시
+정하고, 근거 절을 관측 절 `# 관측`으로 바꾸며, 일괄 이행을 `osk doctor --migrate`로 모은다. 정기 성장 실행은
+예산 대신 주간 사용률 0.9에서 쉬고, 에이전트는 새 노드를 쓰기 전에 검색한다.
+[v5.7.0](docs/v5.7-milestones.md)은 v5.1에서 미룬 설계, 재검토 전파 앞의 논지 판정, 더 긴 운영 기간이 필요한
+평가를 맡는다(견고함).
 [v6.0.0](docs/v6.0-milestones.md)은 기억 모델을 넓힌다(확장).
 
 ## License

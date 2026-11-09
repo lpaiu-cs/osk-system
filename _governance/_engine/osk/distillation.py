@@ -525,8 +525,8 @@ def _execute(operation: str, distill: dict, request: dict, *,
             if unlined:
                 coords = [evidence.coordinate(s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
                 raise write.WriteError(
-                    "출처 라운드를 근거 절의 줄로 달지 않았다 — 쓰지 않았다",
-                    [f"노드 끝 `## 근거` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "
+                    "출처 라운드를 관측 절의 줄로 달지 않았다 — 쓰지 않았다",
+                    [f"노드 끝 `# 관측` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "
                      f"한 줄을 단다(헌법 제8조 6항)" for c in coords])
             planned = {"name": path.stem, "id": n.id, "path": posix_rel(path, ROOT),
                        "before_hash": sha256_file(path) if path.exists() else None,

@@ -104,6 +104,7 @@ RELEASES = {
     "v5.4.0": "f6d7ed47b0587b257bced0c4bcd548708ce53a37",
     "v5.4.1": "f3224fb1d20fbc6184ff9d7a2fd789394ab99f4a",
     "v5.4.2": "de5335774248873747a4628613a12b43559ab97a",
+    "v5.5.0": "ed6376023055947292b9a467d8442bc18f975f87",
 }
 LAYOUTS = {"=": "= ", "bare": "", "00_": "00_"}
 # (start, layout) -> the release whose fresh install gave the vault that layout
@@ -165,11 +166,14 @@ CELLS = {
     ("v5.4.2", "00_"): None,
     ("v5.4.2", "="): "v3.20.0",
     ("v5.4.2", "bare"): "v3.20.1",
+    ("v5.5.0", "00_"): None,
+    ("v5.5.0", "="): "v3.20.0",
+    ("v5.5.0", "bare"): "v3.20.1",
 }
 # Per PR: the oldest updater (no gate, no baseline, legacy roots), the newest
 # release on its shipped layout, and the newest release on the legacy layout
 # (most early vaults). The release workflow runs every cell (OSK_MATRIX=full).
-PR_CELLS = [("v3.20.0", "="), ("v5.4.2", "00_"), ("v5.4.2", "=")]
+PR_CELLS = [("v3.20.0", "="), ("v5.5.0", "00_"), ("v5.5.0", "=")]
 # How each release's own docs make a vault. Until v3.22 the README said "clone
 # and switch to your own remote" and nothing recorded a release baseline, so the
 # first update stops on "engine drift" and tells the user to rerun with --adopt.
@@ -296,6 +300,7 @@ def _drive_content(cfg: dict) -> dict:
     import mcp_server as m
     from osk import approvals
     S, D, P = cfg["roots"]
+    m.search("matrix")          # v5.6부터 표면은 search 없는 세션의 create_node를 거부한다(Mechanism §6-2 10항)
     key = cfg["key"]
     out: dict = {}
 

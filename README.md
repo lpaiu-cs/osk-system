@@ -112,8 +112,9 @@ hooks prompt it.
 **A node is a function of its future reuse.** Keep as a node what will serve
 later searches, decisions and work more than once; leave out one-off work state
 and anything cheap to recompute. And **all knowledge starts at the periphery and
-grows toward the center through connection**: center and periphery are one
-continuous spectrum, not layers.
+grows toward the center through connection and consilience** — different
+observations explained together by one hypothesis: center and periphery are
+one continuous spectrum, not layers.
 
 ## Three Spaces
 
@@ -191,7 +192,7 @@ release tag rather than `main` (newer tags are on the
 [releases page](https://github.com/lpaiu-cs/osk-system/releases)):
 
 ```bash
-git clone --branch v5.5.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
+git clone --branch v5.6.0 https://github.com/lpaiu-cs/osk-system.git my-osk-vault
 cd my-osk-vault
 git switch -c main
 python _governance/_engine/scripts/setup.py --interactive
@@ -381,8 +382,12 @@ v5.4.2 lets an anchor edit match text the tag defence spaced and lets a Scope no
 [v5.5.0](docs/v5.5-milestones.md) lets an agent edit a large node by reading only the passage and the
 paragraphs around it, allows an evidence line without a body change only for supporting evidence,
 and reads Claude transcript copies, harness notices and rewinds correctly.
-[v5.6.0](docs/v5.6-milestones.md) takes the designs deferred from v5.1 and the evaluations that
-need a longer operating window. [v6.0.0](docs/v6.0-milestones.md)
+[v5.6.0](docs/v5.6-milestones.md) redefines knowledge as a hypothesis that explains observations and
+centrality as two axes (explanatory and dependency), renames the evidence section to the observation
+section `# 관측`, gathers bulk migrations under `osk doctor --migrate`, lets the scheduled growth run
+rest at 90% weekly use instead of keeping a budget, and has an agent search before it writes a new node.
+[v5.7.0](docs/v5.7-milestones.md) takes the designs deferred from v5.1, the recheck thesis gate and the
+evaluations that need a longer operating window. [v6.0.0](docs/v6.0-milestones.md)
 extends the memory model on that base.
 
 ## License

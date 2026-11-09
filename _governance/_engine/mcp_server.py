@@ -176,6 +176,15 @@ def _guard(fn, *a, **kw) -> dict:
         return {"ok": False, "violations": [f"{type(e).__name__}: {e}"]}
 
 
+# 시행령 §3 8항·Mechanism §6-2 10항(2026-11-10 사용자 결정, #273 질문 3): 대화 검토가 싣는 허브 트리가 보이는
+# 전부라는 착각을 깬다 — 이 세션(서버 프로세스)에서 search를 한 번도 부르지 않았으면 새 노드를 세우지 않는다.
+# ponytail: 세션당 한 번이며 그 주제의 검색인지는 가리지 않는다. 노드마다 강제하려면 성공한 생성에서 소비한다.
+_searched = False
+SEARCH_FIRST = ("새 노드를 세우기 전에 그 주제로 search를 먼저 불러 다른 scope와 Domain까지 비슷한 기존 노드를 "
+                "찾는다(시행령 §3 8항) — 이 세션에서 아직 search를 부르지 않았다. 주장이 같은 노드가 있으면 "
+                "update_node로 갱신하고, 그 주장에 기대면 derived-from으로 건다.")
+
+
 # ── 읽기 ─────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -185,7 +194,10 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
     name. summary는 미리보기이며 인용·판단 전에 read_node로 확인한다."""
     # `session`의 결속 scope가 순위 자질이 된다(시행령 §8 3항 locality). 쓰는 법은 세션 시작
     # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, validate.SCHEMA_BUDGET).
-    return _s().view_search(query, k, write.bindings(session) if session else None)
+    global _searched
+    hits = _s().view_search(query, k, write.bindings(session) if session else None)
+    _searched = True
+    return hits
 
 
 @mcp.tool()
@@ -321,7 +333,7 @@ def read_cited(ref: str | None = None, space: str | None = None,
                max_chars: Annotated[int, Field(ge=200, le=100000)] = 6000,
                view: Literal["review", "full"] = "review", query: str | None = None,
                conversation: str | None = None, through: str | None = None) -> dict:
-    """인용 기록 회상: ref=경로#N·근거 줄 좌표(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의
+    """인용 기록 회상: ref=경로#N·관측 줄 좌표(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의
     그 턴만, previous=앞 턴). 인자 없으면 기록 목록(space=옛 scope 자리). 기본 review:
     발화·답변 선별 ≤6000자, query=원본 AND 검색, full=포렌식. 생략≠무가치. 전량 이어읽기
     금지. hash=원본 출처."""
@@ -442,11 +454,13 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `space`는 전체 군집 경로(`00_Scope/W1`); 모르면 `overview`.
     `session`=훅이 준 프로젝트 키(대화 id 금지). `space` 생략 시 주된 scope;
     다른 scope도 되며 결속에 더한다. `bound_scope`는 새 결속만 보고한다.
-    `edges`: `derived-from`은 근거 노드 제목만(비노드는 본문 끝 `## 근거` 줄),
+    `edges`: `derived-from`은 근거 노드 제목만(비노드는 본문 끝 `# 관측` 줄),
     `conflicts`는 열린 사건 번호(`CASE-2026-1`).
     `settle`=보존한 evict rid. 처분 결과: `settlement`.
-    증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록(라운드는 근거 줄 필수)·기존 허브.
+    증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록(라운드는 관측 줄 필수)·기존 허브.
     `distillation.status=complete`까지 같은 요청으로 재시도한다."""
+    if not _searched:
+        return {"ok": False, "violations": [SEARCH_FIRST]}
     if distill is not None:
         from osk import distillation
         return _guard(distillation.create_node, distill, title=title,
@@ -519,7 +533,7 @@ def cite_round(conversation: str, quote: str | None = None, turn: str | None = N
     """근거로 쓸 원본 턴 하나를 남긴다. conversation=훅이 준 <하네스>/<대화 ID>.
     quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
     전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref.
-    coordinate=근거 줄 좌표."""
+    coordinate=관측 줄 좌표."""
     return _guard(integration.cite, conversation, quote, turn, note, user=user)
 
 

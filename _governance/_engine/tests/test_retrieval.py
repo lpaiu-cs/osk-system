@@ -29,7 +29,7 @@ def search_checks():
                 path = core.ROOT / f'{i}.md'
                 self.nodes[title] = (path, (kind, 'W1'))
                 self.parsed[path] = SimpleNamespace(id=str(i), meta={}, body=body,
-                                                    edges=lambda _predicate: [], wikilinks=lambda: [])
+                                                    edges=lambda _predicate: [], wikilinks=lambda _end=None: [])
 
         def node(self, path):
             return self.parsed[path]
@@ -70,7 +70,7 @@ def ranking_checks():
                 self.parsed[path] = SimpleNamespace(
                     id=title, body='shared ranking words', edges=lambda _predicate: [],
                     meta={'updated': (now - timedelta(days=days)).strftime(core.TS_FMT)},
-                    wikilinks=lambda links=links: links)
+                    wikilinks=lambda _end=None, links=links: links)
 
         def node(self, path):
             return self.parsed[path]
@@ -101,6 +101,56 @@ def ranking_checks():
     assert abs(near['Other'] - base * (1 + search.W_PRIMARY)) < 0.002, near
     assert abs(near['Stale'] - base * (1 + search.W_SCOPE)) < 0.002 and near['Domain'] == plain['Domain'], near
     assert len(near) == len(plain), 'locality filtered a result'
+
+
+def centrality_checks():
+    """C(v) = (E(v), D(v)) (Constitution 11.2, Mechanism §8 6): a reference raises the referrer's E
+    and the referred's D by the same weight; observation lines add to E only — 지지 +1, 반례 −1,
+    조건 0. R counts presence: a repeated reference counts once, and self-references, a hub's
+    references and Links inside the observation section are not in R, so Σ D = Σ (E − observation
+    term). Workbench and governance count on neither side."""
+    import re
+    from osk import core, graph
+
+    class Index:
+        def __init__(self, specs):
+            self.nodes, self.parsed = {}, {}
+            for title, kind, derived, body in specs:
+                path = core.ROOT / 'W1' / f'{title}.md'
+                self.nodes[title] = (path, (kind, 'W1'))
+                self.parsed[path] = SimpleNamespace(
+                    id=title, meta={}, body=body,
+                    edges=lambda pred, d=derived: d if pred == 'derived-from' else [],
+                    wikilinks=lambda end=None, b=body: re.findall(r'\[\[([^\]|#]+)', b[:end]))
+
+        def node(self, path):
+            return self.parsed[path]
+
+        def resolve(self, name):
+            return ('node', self.nodes[name][1]) if name in self.nodes else ('dangling',)
+
+    obs = '\n'.join(['claim on [[B]], again [[B]], itself [[A]] and [[Gone]]', '', '# 관측', '',
+                     '- 2026-11-09 · `a1b2c3d4#1` · 지지 — explained',
+                     '- 2026-11-09 · `a1b2c3d4#2` · 지지 — explained too, read with [[C]]',
+                     '- 2026-11-09 · `a1b2c3d4#3` · 조건 — under a condition',
+                     '- 2026-11-09 · `a1b2c3d4#4` · 반례 — not explained, against [[B]]',
+                     'not a line'])
+    nodes = Index([
+        ('B', 'scope', [], 'base'),
+        ('C', 'scope', ['B', 'B'], 'c'),
+        ('A', 'scope', ['B', 'A'], obs),
+        ('W1', 'scope', ['C'], '[[A]] [[B]]'),
+        ('Note', 'workbench-transit', ['B'], 'transit'),
+    ])
+    explain, depend = graph.centrality(nodes)
+    assert explain['A'] == 3 + 1 + (2 - 1), explain     # derived-from 3, Link 1, 지지 2 − 반례 1
+    assert explain['C'] == 3, explain                   # the repeated derived-from counts once
+    assert depend['B'] == 3 + 1 + 3 and depend['A'] == 0 and depend['C'] == 0, depend
+    assert explain['W1'] == 0 and explain['B'] == 0 and explain['Note'] == 0, explain
+    # Σ D = Σ (E − w_O·(|O⁺| − |O⁻|)) — only A has observation lines, net 2 − 1
+    assert sum(depend.values()) == sum(explain.values()) - (2 - 1), (explain, depend)
+    legacy = obs.replace('# 관측', '## 근거')
+    assert graph.centrality(Index([('A', 'scope', [], legacy)]))[0]['A'] == 1
 
 
 def read_checks():
@@ -249,6 +299,7 @@ if __name__ == '__main__':
                           PYTHONDONTWRITEBYTECODE='1')
         search_checks()
         ranking_checks()
+        centrality_checks()
         read_checks()
         asyncio.run(asyncio.wait_for(transport_checks(), 60))
         print('PASS: exact title / unchanged BM25 / bounded reads / MCP CAS boundary')

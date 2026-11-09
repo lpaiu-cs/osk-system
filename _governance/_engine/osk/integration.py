@@ -1319,13 +1319,29 @@ def _drop_fork_rewound(harness: str, conversation_id: str, copies: list) -> int:
         return len(dropped)
 
 
-def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True) -> dict:
+def _review_scope(s: dict) -> str | None:
+    """대화 검토 문맥의 scope — 고정한 착지, 없으면 결속의 주된 scope부터(§9-3 1항). `prompt`의 허브
+    트리 scope와 같다."""
+    if s.get("space"):
+        return raw._scope_of_space(s["space"])
+    try:
+        scopes = write.bound_scopes(s["session"]) if s.get("session") and not _one_off(s) else []
+    except (OSError, ValueError, write.WriteError):
+        scopes = []
+    return scopes[0] if scopes else None
+
+
+def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True,
+            exclude=frozenset(), bundle: int = 0) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
     포착(모델 비용이 없다)과 작업 선택을 나눈다. 대기 전체를 먼저 포착하고, 따라잡은 커서로
     다시 세운 순서에서 `limit`개를 고른다 — 작업이 차면 포착도 멈추던 때에는 뒤에 선 대화의 새
     턴이 추적되지 않아, 새 턴으로 다시 열린 대화가 순서에 오르지 못했다(#179). 작업을 만들지
-    못한 대화(원본 유실·포착 실패 등)는 건너뛰고 다음 대화로 `limit`을 채운다. `capture_new=False`는
-    선택만 한다 — 하루 묶음은 하루 시작에 `capture_known`으로 한 번만 포착한다(#175)."""
+    못한 대화(원본 유실·포착 실패 등)와 `exclude`의 작업(하루 묶음에서 그날 진척 없던 것)은 건너뛰고
+    다음 대화로 `limit`을 채운다. `bundle`을 주면 그 뒤에 같은 scope의 작은 꼬리 — 대기 전체가 남은
+    턴에 드는 대화 — 를 더해 모두 `bundle` 턴까지 고른다: 묶음을 띄우는 고정비가 턴 수보다 크다(#306
+    D5). `capture_new=False`는 선택만 한다 — 하루 묶음은 하루 시작에 `capture_known`으로 한 번만
+    포착한다(#175)."""
     if not isinstance(limit, int) or not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
     captured = capture_known(tried) if capture_new else {"captures": [], "errors": [], "awaiting_native": []}
@@ -1334,19 +1350,28 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None,
     states, _, again, _ = _known_pending(None, tried)
     errors += [e for e in again if e not in errors]
     copies = _copies_by_parent()
+    scope, room = None, 0          # 묶음의 scope와 남은 턴
     for s in states:
-        if len(jobs) >= limit:
+        if len(jobs) >= limit and room <= 0:
             break
         try:
             if (s["harness"], s["conversation_id"]) in copies and _view(s)["pending_refs"]:
                 # 사본으로 되감아 버린 턴은 검토에 넣지 않는다(#235)
                 _drop_fork_rewound(s["harness"], s["conversation_id"], copies[s["harness"], s["conversation_id"]])
-            if _view(s)["pending_refs"]:
+            pending = _view(s)["pending_refs"]
+            if pending and len(jobs) >= limit and (len(pending) > room or _review_scope(s) != scope):
+                continue
+            if pending:
                 job = prompt(s["harness"], s["conversation_id"], include_organization=False,
                              max_rounds=max_rounds, offline=True)
-                if job["pending_refs"]:
+                if job["pending_refs"] and job["key"] not in exclude:
                     job["prompt"] = job.pop("text")
                     jobs.append(job)
+                    if bundle and len(jobs) == limit:
+                        scope = job.get("review_scope")
+                        room = bundle - len(job["pending_refs"]) if scope else 0
+                    elif len(jobs) > limit:
+                        room -= len(job["pending_refs"])
         except Exception as exc:
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "jobs": jobs,
@@ -1555,9 +1580,16 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                         " · 주된 scope 없음 — 노드를 쓸 때마다 space를 준다")
                      + ". 다른 scope의 활동이면 create_node의 space에 그 scope를 준다(결속에 더해진다). "
                        "이 프로젝트 자체의 활동이 속한 scope를 확인했으면 review의 primary_scope로 지정한다.\n")
-    text += "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. "
+    # 시행령 §3 8항(2026-11-10 사용자 결정, #273 질문 3): 대화 검토는 결속 scope의 허브 트리만 싣는다. 다른
+    # scope와 Domain의 주장은 주제 검색으로만 에이전트 앞에 놓이므로, 새 노드를 쓰기 전의 검색을 지시로 강제한다.
+    text += ("노드를 새로 쓰기 전에 반드시 그 주제로 search를 먼저 불러 비슷한 기존 노드를 찾는다 — 결과에는 이 "
+             "scope 밖의 다른 scope와 Domain 노드도 든다(시행령 §3 8항). 주장이 같으면 그 노드를 갱신하고, 새 노드가 "
+             "찾은 노드의 주장에 실제로 기대면 derived-from으로 건다. 주제만 겹치면 걸지 않는다. search를 한 번도 "
+             "부르지 않은 세션의 create_node는 거부된다(Mechanism §6-2 10항). "
+             + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. ")
     # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
     tree_scope = scope or (raw._scope_of_space(s["space"]) if s.get("space") else None)
+    st["review_scope"] = tree_scope
     if not tree_scope:
         text += UNLANDED
     try:
@@ -1577,8 +1609,10 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     # 2026-11-07(#273): 본문을 고치지 않고 줄만 다는 것은 지지에 한한다 — 조건·반례는 본문도 고칠 수 있다.
     text += ("검토하는 턴이 현행 노드보다 오래됐을 수 있다. 옛 사실은 날짜를 붙인 이력으로만 더하고, "
              "현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 선후가 불분명하면 보류한다. "
-             "distill.sources에 준 라운드는 노드 끝 `## 근거` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 "
+             "distill.sources에 준 라운드는 노드 끝 `# 관측` 절에 `- 날짜 · 좌표 · 지지|조건|반례 — 그 턴이 "
              "보인 것(50자 안팎)` 한 줄씩 단다 — derived-from은 노드만 받고, 엔진은 출처를 이 줄로 확인한다. "
+             "노드 끝에 관측 절(`# 관측`, v5.6 전의 `## 근거`)이 이미 있으면 새로 열지 않고 거기에 잇는다. "
+             "그 턴을 노드의 말로 해석했으면 해석을 같은 줄에 적는다. "
              "이미 노드에 있는 주장을 받치기만 하는 턴은 본문을 고쳐 쓰지 않고 그 줄만 단다. "
              "좌표는 링크가 아니라 코드 글자로, 회상·인용 결과의 coordinate를 쓴다(`42cf0fc0#1`, "
              "이어진 라운드는 `42cf0fc0#41–42`). ")
@@ -1596,7 +1630,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  "턴마다 선별본(≤6000자)과 바로 앞 턴의 `previous`가 온다. 앞선 맥락은 판단에 꼭 필요할 때만 "
                  "`previous`로 한 턴씩 거슬러 읽고, 대화 전체를 읽지 않는다. 노드로 옮길 지식이 나온 턴만 "
                  f"cite_round(conversation=\"{harness}/{conversation_id}\", turn=<턴 ID>)로 인용하고, 받은 "
-                 "round_ref를 distill.sources로, coordinate를 근거 줄로 써 출처와 허브 Link를 완성한다.\n")
+                 "round_ref를 distill.sources로, coordinate를 관측 줄로 써 출처와 허브 Link를 완성한다.\n")
     elif turns:
         # The reviewer usually holds these turns, but not after a compaction: one call reads
         # the range (#219). Citing is the only vault write of dialogue, and only for evidence a
@@ -1607,7 +1641,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  "이 범위만 한 번에 읽는다(턴마다 발화·응답 각 ≤1500자). 노드로 옮길 지식이 나온 범위 안 "
                  f"턴만 cite_round(conversation=\"{harness}/{conversation_id}\", quote=그 턴 사용자 발화의 "
                  "짧은 일부 또는 turn=read_cited가 준 short)로 인용하고, 받은 round_ref를 distill.sources로, "
-                 "coordinate를 근거 줄로 써 출처와 허브 Link를 완성한다. 범위 안에 남길 지식이 없으면 no_value로 닫는다.\n")
+                 "coordinate를 관측 줄로 써 출처와 허브 Link를 완성한다. 범위 안에 남길 지식이 없으면 no_value로 닫는다.\n")
     if stored:
         text += ("저장된 기록은 현재 scope_memory와 함께 read_cited(view=review) 선별본으로 본다. "
                  "보존할 주장이나 모순을 확인할 때만 query로 필요한 원료 근거를 좁혀 읽고, 원본 hash를 "

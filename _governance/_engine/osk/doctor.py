@@ -6,7 +6,10 @@ overview), 판본이 확인한 범위인가, 구독 fork가 준비됐는가. 등
 판정하지 않는다 — 신뢰하지 않은 Codex 훅이나 새로 열지 않은 Claude Code 세션은 설정
 파일에 있어도 돌지 않는다.
 
-상태와 설정을 쓰지 않는다. 호스트 CLI에는 `--version`만 묻고, fork 판정은
+이 vault의 노드가 지금 체제의 표기를 따르는지도 본다(호환성·일괄 이행). 옮기는 것은
+`--migrate`(`migrate`)뿐이다.
+
+그 밖에는 상태와 설정을 쓰지 않는다. 호스트 CLI에는 `--version`만 묻고, fork 판정은
 `fork doctor`와 같은 `response_growth.check`다(인증 상태 조회는 하되 추론은 없다).
 MCP 등록의 해석기는 한 번 띄워 판본과 서버가 import하는 패키지만 본다 — 이 명령을
 돌리는 Python이 아니라 등록된 Python이 서버를 띄우기 때문이다.
@@ -15,6 +18,7 @@ MCP 등록의 해석기는 한 번 띄워 판본과 서버가 import하는 패�
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -314,29 +318,200 @@ def _host(adapter, records: dict) -> dict:
     return {**head, "in_use": True, "items": items}
 
 
+def _migrations() -> list[tuple[str, object, object]]:
+    """호환성·일괄 이행 — (이름, 옮길 대상, 적용). 체제가 바뀌어 옛 표기·자리를 옮겨야 하면 여기에 더한다
+    (2026-11-09 사용자 결정): 점검은 `osk doctor`가 읽기만 하고, 적용은 `osk doctor --migrate` 하나가 확인을
+    받은 뒤 이 순서로 한다. 대상은 옮길 것의 정체(자리·해시) 목록이고 확인은 그 목록에 묶인다. 근거 절
+    이행이 기록 이관보다 먼저다 — 라운드 날짜를 기록의 지금 경로에 대한 git blame으로 정하므로, 먼저
+    옮긴 기록은 거기서 추적되지 않아 그 항목이 보류된다. 앞 이행이 만든 표기는 뒤 이행이 받는다."""
+    from . import evidence_migration as em, raw
+    return [("비노드 derived-from → 관측 줄 (v5.4)",
+             lambda: [[n["path"], n["before"]] for n in em.plan()["nodes"] if n["new"]],
+             lambda targets: em.apply(expect=targets)),
+            ("옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)",
+             lambda: [[m["from"], m["hash"]] for m in raw.consolidate()["files"]],
+             lambda targets: raw.consolidate(apply=True, expect=targets)),
+            ("관측 절 제목 `## 근거` → `# 관측` (v5.6)",
+             lambda: [[it["path"], it["before"]] for it in em.heading_plan() if it["new"] is not None],
+             lambda targets: em.heading_apply(expect=targets))]
+
+
+MIGRATE_FIX = "`osk doctor --migrate`로 옮긴다 — 첫 실행은 계획만 보이고, 확인 뒤 1시간 안의 같은 실행이 적용한다"
+
+
+def _vault() -> list[dict]:
+    items = []
+    for name, targets, _apply in _migrations():
+        try:
+            n = len(targets())
+        except Exception as exc:
+            items.append(_item("info", name, f"판독 실패 — {type(exc).__name__}: {exc}"))
+            continue
+        items.append(_item("warn", name, f"옮길 대상 {n}개", MIGRATE_FIX) if n
+                     else _item("ok", name, "옮길 것이 없다"))
+    return items
+
+
+CONFIRM_TICKET = "osk-doctor-confirmation.json"
+CONFIRM_WITHIN = 3600
+MIGRATE_INSTRUCTION = ("여기서 멈추고 사용자에게 옮길 기록과 이행할 노드를 설명한 뒤 명시적 확인을 받는다. "
+                       "확인 뒤 같은 명령을 1시간 안에 한 번 다시 실행하면 적용한다. 계획이 그 사이 달라지면 "
+                       "새 확인을 요구한다.")
+
+
+def migrate() -> tuple[dict, int]:
+    """남은 이행을 적용한다 — (결과, 종료 코드). 이행은 자료 이관이라 사용자가 계획을 본 뒤에 적용한다
+    (Mechanism §1 4항·§5 4항·§9 5항). 첫 실행은 이행마다 옮길 대상과 `approval_required`를 내고 2로 끝난다.
+    1시간 안에 같은 계획으로 다시 실행하면 순서대로 적용하고, 이행마다 전수 목록과 이행 기록을 남긴다.
+    계획은 이 vault 자리와 대상의 정체로 짓는다 — worktree는 확인표 자리를 함께 쓰고(공통 git 디렉터리),
+    개수만으로는 다른 대상으로 바뀐 계획을 가르지 못한다. 적용 전에 옛 정의로 적은 재검토 기록을 지금
+    정의로 이어 적는다 — 그러지 않으면 바이트가 바뀐 노드의 기록이 옛 정의로 맞지 않아 그 쌍이 후보가 된다."""
+    plan = {"root": str(core.ROOT),
+            "migrations": [[name, found] for name, targets, _ in _migrations() if (found := targets())]}
+    if not plan["migrations"]:
+        return {"ok": True, "applied": []}, 0
+    review_id = core.sha256_bytes(json.dumps(plan, ensure_ascii=False, sort_keys=True).encode())
+    ticket = core.local_lock_path(CONFIRM_TICKET)
+    try:
+        pending = json.loads(ticket.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pending = {}
+    if (not isinstance(pending, dict) or pending.get("review_id") != review_id
+            or not isinstance(pending.get("at"), (int, float))
+            or not 0 <= time.time() - pending["at"] < CONFIRM_WITHIN):
+        core.atomic_write(ticket, json.dumps({"review_id": review_id, "at": time.time()}).encode())
+        return {"ok": False, "approval_required": True, "review_id": review_id, "plan": plan,
+                "instruction": MIGRATE_INSTRUCTION}, 2
+    ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다
+    from . import rechecks
+    rechecks.ensure_baseline(carry=True)
+    confirmed = dict(plan["migrations"])
+    after: dict[str, str] = {}   # 이 실행의 앞선 이행이 쓴 노드 → 결과 해시. 뒤 이행은 그것을 예상값으로 받는다
+    done = []
+    for name, _targets, apply in _migrations():
+        if name in confirmed:
+            result = apply([[p, after.get(p, h)] for p, h in confirmed[name]])
+            after.update(result.pop("after", {}))
+            done.append({"migration": name, **result})
+    return {"ok": True, "applied": done}, 0
+
+
 def report(only: str | None = None) -> dict:
     """호스트별 점검 결과. `only`는 하네스 이름 하나로 좁힌다."""
     records = {**runs.read(), "duplicates": runs.duplicates()}
     engine = _engine(records)
+    vault = _vault()
     hosts = [_host(a, records) for a in adapters.ADAPTERS if only in (None, a.name)]
-    items = engine + [i for h in hosts for i in h["items"]]
+    items = engine + vault + [i for h in hosts for i in h["items"]]
     counts = {level: sum(i["level"] == level for i in items) for level in LEVELS}
     return {"ok": not counts["fail"], "root": str(core.ROOT), "counts": counts,
-            "engine": engine, "hosts": hosts}
+            "engine": engine, "vault": vault, "hosts": hosts}
+
+
+def _section(lines: list, title: str, items: list) -> None:
+    lines.append(title)
+    for i in items:
+        lines.append(f"  {i['level']:<4}  {i['check']} — {i['detail']}")
+        if i.get("fix"):
+            lines.append(f"        → {i['fix']}")
+
+
+def _verdict(c: dict) -> str:
+    return f"판정: 실패 {c['fail']} · 경고 {c['warn']} · 정보 {c['info']} · 정상 {c['ok']}"
 
 
 def text(rep: dict) -> str:
     lines = [f"osk doctor — {rep['root']}"]
-
-    def section(title, items):
-        lines.append(title)
-        for i in items:
-            lines.append(f"  {i['level']:<4}  {i['check']} — {i['detail']}")
-            if i.get("fix"):
-                lines.append(f"        → {i['fix']}")
-    section("엔진", rep["engine"])
+    _section(lines, "엔진", rep["engine"])
+    _section(lines, "vault 이행", rep["vault"])
     for h in rep["hosts"]:
-        section(h["title"], h["items"])
-    c = rep["counts"]
-    lines.append(f"판정: 실패 {c['fail']} · 경고 {c['warn']} · 정보 {c['info']} · 정상 {c['ok']}")
+        _section(lines, h["title"], h["items"])
+    lines.append(_verdict(rep["counts"]))
+    return "\n".join(lines) + "\n"
+
+
+# ── 저장소 점검 (`doctor --vault`) ─────────────────────────────────────────────
+# 연결이 아니라 vault의 내용을 본다 — 판이 오르며 옛 형식이 된 것(이전), 검증기가 잡는 형식 문제,
+# 정기 검토가 닫지 못하고 남긴 일(잔재), 대화 검토 적체. 읽기만 한다 — 이전은 `--migrate`(위)가 하고,
+# 판단이 드는 나머지는 고칠 자리를 알린다.
+_EDIT = "노드를 read_node로 읽고 update_node로 고친다"
+
+
+def _first(errs: list, n: int = 3) -> str:
+    return " / ".join(map(str, errs[:n])) + (f" 외 {len(errs) - n}건" if len(errs) > n else "")
+
+
+def _vault_items() -> list[dict]:
+    """vault 내용 점검의 항목 — 남은 이행(`_vault`), 기록 충돌, 검증기, 잔재, 적체. 읽기만 한다."""
+    from . import evictions, integration, raw, scope_memory, validate
+    rep = validate.run()
+    items = _vault()
+    for c in raw.consolidate()["conflicts"]:
+        items.append(_item("warn", "기록 충돌", f"{c['path']} — {c['reason']}",
+                           "어느 사본이 정본인지 사용자와 정한다 — 엔진은 덮거나 합치지 않는다"))
+
+    for f in rep["fail"]:
+        for name, errs in f.items():
+            items.append(_item("fail", f"검증 {name}", f"{len(errs)}건 — {_first(errs)}", _EDIT))
+    for s in rep["skipped"]:
+        for name, why in s.items():
+            items.append(_item("info", f"검증 {name}", str(why)))
+    warnings = rep.get("warnings") or {}
+    dangling = warnings.get("dangling_refs") or []
+    if dangling:
+        items.append(_item("warn", "끊긴 참조", f"{len(dangling)}건 — {_first(dangling, 2)}", _EDIT))
+    if not (rep["fail"] or dangling):
+        items.append(_item("ok", "형식", f"검증 {len(rep['pass'])}종 통과"))
+
+    rc = (warnings.get("rechecks") or {}).get("count") or 0
+    if rc:
+        items.append(_item("warn", "근거 재검토", f"후보 {rc}건이 닫히지 않았다",
+                           "`osk.cli rechecks`의 후보마다 노드와 근거를 읽고, 맞으면 update_node(rechecked=[대상])로 "
+                           "닫는다 — cascade거나 다음 노드까지 고치게 되는 수정은 사용자에게 올린다"))
+    blocked = integration.blocked(limit=1000)
+    if blocked["count"]:
+        gone = sum(c["error"].startswith("FileNotFoundError") for c in blocked["conversations"])
+        items.append(_item("warn", "포착 막힘", f"대화 {blocked['count']}건"
+                           + (f" — 그중 {gone}건은 원본 전사가 이 기기에서 지워졌다" if gone else "")
+                           + f" · 최근 오류: {blocked['conversations'][0]['error'][:160]}",
+                           "잃은 것은 없다 — 검토는 9·15턴에 계속된다. 오류를 사용자에게 보인다"))
+    for r in scope_memory.recovery_status():
+        items.append(_item("warn", "scope 복구 대기", f"{r['session']} → {r['scope'] or '착지 미정'} · {r['since']}부터",
+                           f"프로젝트 {r['session']}의 새 세션을 열면 시작 훅이 복구 절차를 싣는다"))
+    for scope, s in sorted(evictions.status().items()):
+        items.append(_item("warn" if s["overdue"] else "info", "정돈 대기",
+                           f"{scope} — 미처분 {s['unsettled']}건, 가장 오래된 것 {s['oldest_days']}일",
+                           f"`osk.cli tidy prompt --scope {scope}`의 프롬프트로 정돈 세션을 연다"))
+    from . import growth_daily
+    try:
+        b = growth_daily.backlog()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        items.append(_item("info", "대화 검토 적체", f"세지 못했다 — {type(exc).__name__}: {exc}"))
+    else:
+        if b["conversations"]:
+            unit = (f"최근 Scope 묶음 {b['measured_batches']}개 실측 평균" if b["measured_batches"]
+                    else "실측이 없어 첫 추정")
+            items.append(_item("info", "대화 검토 적체",
+                               f"끝난 대화 {b['conversations']}개·{b['turns']}턴 — Scope 묶음 약 {b['batches']}개, "
+                               f"예상 약 {b['tokens']:,} 토큰(묶음당 {b['unit_tokens']:,}, {unit})",
+                               growth_daily.BACKLOG_COMMAND))
+    for region, state in sorted((rep.get("protected_regions") or {}).items()):
+        if state != "clean":
+            items.append(_item("info", "보호영역", f"{region} — {state}",
+                               "사용자가 대화형 단말에서 `approve`나 `revert`로 처리한다"))
+    return items
+
+
+def vault() -> tuple[dict, int]:
+    """(보고, 종료 코드) — 읽기만 한다. 실패가 있으면 1이다. 남은 이행의 적용은 `migrate`가 한다."""
+    items = _vault_items()
+    counts = {level: sum(i["level"] == level for i in items) for level in LEVELS}
+    rep = {"ok": not counts["fail"], "root": str(core.ROOT), "counts": counts, "items": items}
+    return rep, 0 if rep["ok"] else 1
+
+
+def vault_text(rep: dict) -> str:
+    lines = [f"osk doctor --vault — {rep['root']}"]
+    _section(lines, "저장소", rep["items"])
+    lines.append(_verdict(rep["counts"]))
     return "\n".join(lines) + "\n"
