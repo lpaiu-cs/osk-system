@@ -663,6 +663,10 @@ class GrowthTests(unittest.TestCase):
             assert rechecks.evidence_span(titled) is None
             assert validate.evidence_errors(titled, []) == []
             assert rechecks.state((fm + titled).encode()) != rechecks.state((fm + titled.replace('A', 'B')).encode())
+            # a `# 관측` section added after a legacy `## 근거` one turns the older lines into body text —
+            # the validator reports the stranded heading (review of #311)
+            stranded = longer + chr(10) + chr(10) + '# 관측' + chr(10) + chr(10) + '- 2026-11-09 · `c38d8ef20#1` · 지지 — new'
+            assert validate.evidence_errors(stranded, [], idx, records) == ['관측 절이 노드 끝에 있지 않다']
             # a non-node left in derived-from is reported once; a node there is not
             assert validate.evidence_errors('x', ['N', first['round_refs'][0]], idx) == [
                 'derived-from에 비노드 대상 1개가 남아 있다 — 관측 절로 옮긴다']
@@ -849,6 +853,51 @@ class GrowthTests(unittest.TestCase):
             manifest = (core.ROOT / done['manifest']).read_text(encoding='utf-8')
             assert '## 결과' in manifest and '보류 — 없는 라운드' in manifest, manifest
             assert em.plan()['counts'] == {'line': 0, 'covered': 0, 'hold': 3}, 'a rerun moved something again'
+        """)
+
+    def test_doctor_reports_and_applies_the_remaining_migrations(self):
+        # 2026-11-09 user decision: compatibility and bulk migrations live in `osk doctor` — the report only
+        # reads, `--migrate` applies them in order. v5.6 renames the `## 근거` heading to `# 관측` without
+        # touching the claim, the lines, the frontmatter or the related state. A body that opens with
+        # `## 근거` would read `# 관측` as its own title, so it is held and keeps the legacy heading.
+        self.check_case("""
+            from osk import doctor, evidence_migration as em, rechecks
+            line = '- 2026-11-09 · `https://example.com/a` · 지지 — page'
+            node('L', body='주장 L.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
+            node('T', body='## 근거' + chr(10) + chr(10) + line)
+            node('O', body='주장 O.' + chr(10) + chr(10) + '# 관측' + chr(10) + chr(10) + line)
+            node('Tab', body='주장 Tab.' + chr(10) + chr(10) + '##' + chr(9) + '근거' + chr(10) + chr(10) + line)
+            # X is cited by heading range: an H1 `# 관측` would close the range of `# X`, so it is held
+            node('X', body='# X' + chr(10) + chr(10) + '주장 X.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
+            assert write.create_node('C', 'C', 'C relies on X.', 'gpt-6-astra', space='00_Scope/W1',
+                                     edges={'derived-from': 'X#X'})['ok']
+            # Y's section is only linked from another body, not cited: the link would lose its anchor (#311 review)
+            node('Y', body='주장 Y.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
+            node('D', body='D reads [[Y#근거]].')
+            paths = {t: core.ROOT / '00_Scope/W1' / (t + '.md') for t in ('L', 'T', 'O', 'Tab', 'X', 'Y')}
+            before = {t: p.read_bytes() for t, p in paths.items()}
+            vault = {i['check']: i for i in doctor._vault()}
+            heading = next(i for k, i in vault.items() if '# 관측' in k)
+            assert heading['level'] == 'warn' and '2개' in heading['detail'] and '--migrate' in heading['fix'], vault
+            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the report wrote'
+            done = doctor.migrate()
+            assert [d['migration'] for d in done['applied']] == [heading['check']], done
+            assert (done['applied'][0]['nodes'], done['applied'][0]['holds']) == (2, 3), done
+            new = paths['L'].read_bytes()
+            assert new == before['L'].replace('## 근거'.encode(), '# 관측'.encode()), new
+            assert rechecks.state(new) == rechecks.state(before['L'])
+            assert paths['Tab'].read_bytes() == before['Tab'].replace(('##' + chr(9) + '근거').encode(), '# 관측'.encode())
+            assert all(paths[t].read_bytes() == before[t] for t in ('T', 'O', 'X', 'Y'))
+            assert not rechecks.candidates(graph.Index())[0], 'the migration made recheck candidates'
+            manifest = (core.ROOT / done['applied'][0]['manifest']).read_text(encoding='utf-8')
+            assert '`00_Scope/W1/X.md` → 보류 — 제목으로 참조된다(`#X`)' in manifest, manifest
+            assert '`00_Scope/W1/Y.md` → 보류 — 제목으로 참조된다(`#근거`)' in manifest, manifest
+            assert sorted(e['source'] for e in core.ledger_read(em.EVENTS)
+                          if e.get('rule') == em.HEADING_RULE) == ['00_Scope/W1/L.md', '00_Scope/W1/Tab.md']
+            assert all(i['level'] == 'ok' for i in doctor._vault()), doctor._vault()
+            # nothing left: a rerun applies nothing and opens no empty manifest
+            assert doctor.migrate()['applied'] == []
+            assert len(list(em.EVENTS.parent.glob('observation-heading-*.md'))) == 1
         """)
 
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):

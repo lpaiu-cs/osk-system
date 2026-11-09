@@ -226,17 +226,17 @@ class Node:
         표기에서 같은 목록을 얻어야 하기 때문이다."""
         return edge_targets(self.meta.get(predicate))
 
-    def wikirefs(self) -> list[str]:
-        """본문 Link(임베드 포함). 코드 구획(`split_code` — 펜스·들여쓰기
+    def wikirefs(self, end: int | None = None) -> list[str]:
+        """본문 Link(임베드 포함) — `end`를 주면 본문의 그 자리 앞까지만. 코드 구획(`split_code` — 펜스·들여쓰기
         코드·인라인 코드) 안의 [[...]] 예시는 Link가 아니다 — 제외한다.
         목차·태그 방어와 같은 판정이어야 코드 예시가 scope 경계 거부를 부르지
         않는다. 닫히지 않은 펜스는 본문 끝(또는 담은 목록 항목 끝)까지 코드다."""
-        body = "".join(split_code(self.body)[::2])
+        body = "".join(split_code(self.body[:end])[::2])
         return [m.group(1).strip()
                 for m in re.finditer(r"!?\[\[([^\]|]+)", body)]
 
-    def wikilinks(self) -> list[str]:
-        return [ref.split("#", 1)[0].strip() for ref in self.wikirefs()]
+    def wikilinks(self, end: int | None = None) -> list[str]:
+        return [ref.split("#", 1)[0].strip() for ref in self.wikirefs(end)]
 
     def references(self) -> list[tuple[str, str]]:
         """Stored relation and complete reference; never erase a raw round anchor."""

@@ -246,7 +246,7 @@ ID(`turn`, `-1`=최신)만 보낸다(아래 [대화 추적과 인용](#대화-�
 검토 범위의 턴을 한 번에 연다 — 턴마다 발화와 응답을 각 1500자까지 고른 선별본이다.
 
 인용 기록은 작업 검색에서 빠지므로(헌법 11조 3항) `read_cited`는 질의가 아니라
-**좌표**를 받는다. 노드 근거 절의 좌표(`c38d8ef2#46`)나 옛 `derived-from`의 `경로#N`을
+**좌표**를 받는다. 노드 관측 절의 좌표(`c38d8ef2#46`)나 옛 `derived-from`의 `경로#N`을
 그대로 넣으면 그 라운드가 열린다 — 근거에서 증거로 가는 데 번역이 끼지 않는다. 좌표를 모르면 인자 없는 `read_cited`로
 루트 기록 목록부터(옛 scope 자리는 `space`), 경로만으로 라운드 목차부터 본다.
 
@@ -299,11 +299,11 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
-| `doctor` | 이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정. 읽기만 한다 (아래) |
+| `doctor` | 이 기기의 하네스 연결과 vault 이행 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정, 남은 일괄 이행. 읽기만 한다; `--migrate`는 남은 이행을 확인 없이 적용하고 이행 기록을 `_ledger/migration/`에 남긴다 (아래) |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `routing show` / `routing bind` / `routing unbind` / `routing primary` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용) (Mechanism §6-2 6항) |
-| `evidence migrate` | 비노드 `derived-from`을 노드 끝 근거 절의 `지지` 줄로 옮기는 이행 계획(v5.4 — 전수는 `.osk/evidence-section-plan.md`); `--apply`는 확인 없이 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 (헌법 제8조 5·6항·제14조 8·9항 · Mechanism §5) |
+| `evidence migrate` | 비노드 `derived-from`을 노드 끝 관측 절의 `지지` 줄로 옮기는 이행 계획(v5.4 — 전수는 `.osk/evidence-section-plan.md`); `--apply`는 확인 없이 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 (헌법 제8조 5·6항·제14조 8·9항 · Mechanism §5) |
 | `roots show` / `roots declare` / `roots retire` / `roots mount` / `roots unmount` | 외부 루트 — 별칭마다 선언·이 기기의 위치 조회, 별칭의 선언·해제(대장, 모든 기기), 이 기기의 위치 지정·삭제(`.osk/roots.json`). 조회 밖은 **사용자 전속** — 단말 확인을 거친다 (시행령 §2 8항 · Mechanism §1 6항) |
 | `rechecks` | 근거 재검토 후보 전체 — 근거가 바뀐 참조 노드 (시행령 §7 2항, 아래) |
 | `tidy list` / `tidy prompt` / `tidy settle` / `tidy discard` | 정돈 — 미처분 퇴출 항목의 목록·전용 세션 프롬프트·처분 기록, 경유 노드 폐기 (Mechanism §9-3 · Workbench 계약 §3, 아래) |
@@ -762,8 +762,8 @@ Antigravity(2.0 앱)도 B 등급이다 — 시작·입력·종료 훅과 대화 
 
 ### 연결 점검 (`doctor`)
 
-`osk doctor`는 이 기기에서 하네스가 osk에 이어졌는지 호스트(Claude Code·Codex·Kiro·Antigravity)마다
-읽기만 하며 점검한다. 상태와 설정을 쓰지 않는다. `--json`은 같은 결과를 JSON으로
+`osk doctor`는 이 기기에서 하네스가 osk에 이어졌는지 호스트(Claude Code·Codex·Kiro·Antigravity)마다,
+그리고 이 vault의 노드가 지금 체제의 표기를 따르는지 읽기만 하며 점검한다. 상태와 설정을 쓰지 않는다. `--json`은 같은 결과를 JSON으로
 내고, `--harness`는 호스트 하나로 좁힌다. 설정이 osk를 띄우지 못하는 경우(Python
 3.11 미만, `mcp` 패키지 없음, 등록 명령의 Python 없음, 등록한 MCP Python이 서버를
 띄우지 못함)만 실패이며 종료코드 1이다.
@@ -814,6 +814,18 @@ CLI가 모두 없다)는 건너뛴다.
 - **fork.** 구독 fork를 설정했으면 `fork doctor`와 같은 판정(`response_growth.check`)을
   한 줄로 싣는다. 인증 상태는 조회하되 추론은 띄우지 않는다. fork가 없는 Kiro·Antigravity에는 이
   항목이 없다.
+- **vault 이행.** 체제가 바뀌어 옛 표기의 노드를 옮겨야 하는 일괄 이행마다 옮길 노드 수를 싣는다.
+  남았으면 경고다. `osk doctor --migrate`가 남은 이행을 판의 순서로 적용한다 — 이행마다 착수 때
+  전수 목록과 노드별 전후를 `_ledger/migration/`에 남기고(Mechanism §5), 보호영역 안의 노드는
+  변경집합으로 남아 사용자 승인을 기다린다. 지금 이행은 둘이다.
+  - 비노드 `derived-from` → 관측 절의 `지지` 줄(v5.4, `evidence migrate`와 같다).
+  - 관측 절 제목 `## 근거` → `# 관측`(v5.6). 제목 행만 바꾸며 frontmatter·수정시간·관련 상태는
+    그대로다. 적용 전에 옛 정의로 적은 재검토 기록을 지금 정의로 이어 적으므로 재검토 후보가 생기지
+    않는다. 다음 노드는 보류하고 옛 제목으로 둔다 — 옛 제목도 관측 절로 읽힌다.
+    - 본문이 `## 근거`로 시작하는 노드: 바꾸면 `# 관측`이 노드 제목으로 읽힌다.
+    - 다른 노드가 `derived-from`이나 본문 링크로 제목(`[[노드#제목]]`)을 가리키고, 그 범위가 바뀌는
+      노드: `#근거`는 사라지고, H1 `# 관측`이 앞 H1의 범위를 닫는다.
+    파일 바이트는 바뀌므로, 파일 전체를 재는 성장 비교는 한 번 다시 후보가 될 수 있다.
 
 호스트마다 다른 것 — 판별, 전사 위치, 훅 출력 형식, MCP·훅 등록 자리, 신뢰 기록,
 확인한 판본 — 은 엔진의 `osk/harness/` 어댑터 한 곳에 있다. 포착과 훅 스크립트와
@@ -847,7 +859,7 @@ cite_round(conversation="claude/<대화 ID>", quote="그 턴 사용자 발화의
 
 엔진이 전사에서 그 턴을 찾아 사용자 발화를 `_cited/`에 옮기고, 에이전트 응답은 원본
 위치와 해시로 남긴다(`note`로 요지를 덧붙일 수 있다). 응답의 `round_ref`를 증류의
-`sources`로 쓰고, `coordinate`로 노드 끝 `## 근거` 절에 줄을 단다 — `derived-from`은 노드만
+`sources`로 쓰고, `coordinate`로 노드 끝 `# 관측` 절에 줄을 단다 — `derived-from`은 노드만
 받고, 증류는 출처를 이 줄로 확인한다. 같은 턴의 같은 발화를 다시 인용하면 쓰지 않고 같은 `round_ref`를 돌려준다.
 같은 턴 ID에서 발화가 바뀌었으면 새 라운드로 인용하고 응답의 `supersedes`에 앞선 좌표를 적는다. 진행
 중인 턴도 인용할 수 있으며 끝난 뒤의 같은 턴과 좌표가 같다. 원본 전사를 읽을 수 없을
@@ -913,7 +925,7 @@ MCP `create_node`·`update_node`의 `distill`에 `{key,sources,hub}`를 주면 �
 허브 연결까지 확인한다. `key`는 검토 작업의 고정 키, `sources`는 노드 또는 정확한
 인용 라운드 참조(`cite_round`의 `round_ref`, 구 `_raw/` 라운드도 된다. 선정 시 해시가
 있으면 `{ref,hash}`), `hub`는 기존 착지 허브다. 노드 출처는 증류가 `derived-from`에 달고,
-인용 라운드는 본문 끝 근거 절의 줄이 있어야 쓴다. 인용 라운드는 그것이 가리키는 원본
+인용 라운드는 본문 끝 관측 절의 줄이 있어야 쓴다. 인용 라운드는 그것이 가리키는 원본
 턴의 검토를 `preserved`로 닫는다.
 본문 저장 뒤 연결 실패는 `distillation.status="pending"`이다. 같은 요청을 재시도하면
 같은 노드에서 이어간다. 다음 worker는 `update_node(name=<기존 id>,distill={resume:<키>})`로
@@ -1111,7 +1123,7 @@ Windows에서 앱과 함께 갱신하려면 위의 실제 앱 실행 경로를 �
 (`claude-…`)은 vault 표기(`opus-5.5`)와 달라 넣지 않는다.
 검토하는 턴은 현행 노드보다 오래됐을 수 있다. 작업자는 옛 사실을 날짜를 붙인 이력으로만 더하고,
 현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다. 이미 노드에 있는 주장을 받치기만 하는 턴은
-본문을 고쳐 쓰지 않고 그 노드 끝 `## 근거` 절에 한 줄을 단다([형식](FORMAT.md#22-body)). 대화 안의
+본문을 고쳐 쓰지 않고 그 노드 끝 `# 관측` 절에 한 줄을 단다([형식](FORMAT.md#22-body)). 대화 안의
 검토 안내도 같은 규칙을 싣는다.
 한 번의 실행은 600초 기본 상한을 유지한다. 저장 기록 조회는 전체를 출력하지 않고 `read_cited`의 기본
 `view="review"`로 사용자 발화와 답변 선별본(최대 6000자)을 읽는다. 필요한 주장·반례만
@@ -1158,8 +1170,8 @@ Linux). 손으로 등록하려면 Windows는 아래 스크립트를 **별도로 
 
 `derived-from` 대상의 본문이 바뀌면 그 대상을 인용한 노드가 재검토 후보가 된다(시행령
 §7 2·3항 · Mechanism §4-1). 대상은 노드와 그 안의 `#제목` 범위다. 노드는
-본문만 보므로 요약·배선만 바뀐 노드는 후보를 만들지 않는다. 본문 끝의 `## 근거` 절도 보지
-않으므로, 근거 줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다. 비노드 근거(인용
+본문만 보므로 요약·배선만 바뀐 노드는 후보를 만들지 않는다. 본문 끝의 관측 절(`# 관측`, 옛
+`## 근거`)도 보지 않으므로, 관측 줄을 더해도 그 노드를 인용한 노드가 후보가 되지 않는다. 비노드 근거(인용
 라운드·파일·URL)는 재지 않는다.
 
 - **보는 곳:** `overview`의 `rechecks`(후보 수·앞 5건·닫는 법), 검증기 경고 `rechecks`,

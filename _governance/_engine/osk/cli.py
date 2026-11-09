@@ -203,9 +203,17 @@ def _fork_cmd(a) -> None:
 
 
 def _doctor_cmd(a) -> None:
-    """`osk doctor` — 이 기기의 하네스 연결을 **읽기만** 하며 점검한다. 실패 항목이
-    있으면 종료코드 1이다(경고는 0)."""
+    """`osk doctor` — 이 기기의 하네스 연결과 vault의 남은 이행을 **읽기만** 하며 점검한다. 실패
+    항목이 있으면 종료코드 1이다(경고는 0). `--migrate`는 남은 이행을 확인 없이 적용한다 — 본문을
+    새로 쓰지 않고 노드마다 전후를 이행 기록에 남기는 기계적 변환이다(Mechanism §5)."""
     from . import doctor
+    if a.migrate:
+        try:
+            _emit(doctor.migrate())
+        except (ValueError, OSError, RuntimeError) as e:
+            _emit({"ok": False, "violations": [str(e)]})
+            sys.exit(1)
+        return
     rep = doctor.report(a.harness)
     if a.json:
         _emit(rep)
@@ -475,10 +483,11 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--transcript", default=None, help="전사 경로 (기본: 훅과 같은 방식으로 찾는다)")
     q.add_argument("--json", action="store_true")
 
-    p = sub.add_parser("doctor", help="이 기기의 하네스 연결 점검 — MCP·훅 등록, 훅 실행, 전달, "
-                                      "판본, fork (읽기 전용)")
+    p = sub.add_parser("doctor", help="이 기기의 하네스 연결과 vault 이행 점검 — MCP·훅 등록, 훅 실행, "
+                                      "전달, 판본, fork, 남은 이행 (읽기 전용)")
     p.add_argument("--harness", choices=adapters.NAMES, default=None, help="기본: 모두")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--migrate", action="store_true", help="남은 이행을 순서대로 적용하고 이행 기록을 남긴다")
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")
