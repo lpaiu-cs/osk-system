@@ -1580,7 +1580,13 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                         " · 주된 scope 없음 — 노드를 쓸 때마다 space를 준다")
                      + ". 다른 scope의 활동이면 create_node의 space에 그 scope를 준다(결속에 더해진다). "
                        "이 프로젝트 자체의 활동이 속한 scope를 확인했으면 review의 primary_scope로 지정한다.\n")
-    text += "search로 기존 노드를 찾는다. " + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. "
+    # 시행령 §3 8항(2026-11-10 사용자 결정, #273 질문 3): 대화 검토는 결속 scope의 허브 트리만 싣는다. 다른
+    # scope와 Domain의 주장은 주제 검색으로만 에이전트 앞에 놓이므로, 새 노드를 쓰기 전의 검색을 지시로 강제한다.
+    text += ("노드를 새로 쓰기 전에 반드시 그 주제로 search를 먼저 불러 비슷한 기존 노드를 찾는다 — 결과에는 이 "
+             "scope 밖의 다른 scope와 Domain 노드도 든다(시행령 §3 8항). 주장이 같으면 그 노드를 갱신하고, 새 노드가 "
+             "찾은 노드의 주장에 실제로 기대면 derived-from으로 건다. 주제만 겹치면 걸지 않는다. search를 한 번도 "
+             "부르지 않은 세션의 create_node는 거부된다(Mechanism §6-2 10항). "
+             + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. ")
     # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
     tree_scope = scope or (raw._scope_of_space(s["space"]) if s.get("space") else None)
     st["review_scope"] = tree_scope

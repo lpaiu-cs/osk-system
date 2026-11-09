@@ -176,6 +176,15 @@ def _guard(fn, *a, **kw) -> dict:
         return {"ok": False, "violations": [f"{type(e).__name__}: {e}"]}
 
 
+# 시행령 §3 8항·Mechanism §6-2 10항(2026-11-10 사용자 결정, #273 질문 3): 대화 검토가 싣는 허브 트리가 보이는
+# 전부라는 착각을 깬다 — 이 세션(서버 프로세스)에서 search를 한 번도 부르지 않았으면 새 노드를 세우지 않는다.
+# ponytail: 세션당 한 번이며 그 주제의 검색인지는 가리지 않는다. 노드마다 강제하려면 성공한 생성에서 소비한다.
+_searched = False
+SEARCH_FIRST = ("새 노드를 세우기 전에 그 주제로 search를 먼저 불러 다른 scope와 Domain까지 비슷한 기존 노드를 "
+                "찾는다(시행령 §3 8항) — 이 세션에서 아직 search를 부르지 않았다. 주장이 같은 노드가 있으면 "
+                "update_node로 갱신하고, 그 주장에 기대면 derived-from으로 건다.")
+
+
 # ── 읽기 ─────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -185,7 +194,10 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
     name. summary는 미리보기이며 인용·판단 전에 read_node로 확인한다."""
     # `session`의 결속 scope가 순위 자질이 된다(시행령 §8 3항 locality). 쓰는 법은 세션 시작
     # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, validate.SCHEMA_BUDGET).
-    return _s().view_search(query, k, write.bindings(session) if session else None)
+    global _searched
+    hits = _s().view_search(query, k, write.bindings(session) if session else None)
+    _searched = True
+    return hits
 
 
 @mcp.tool()
@@ -447,6 +459,8 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     `settle`=보존한 evict rid. 처분 결과: `settlement`.
     증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록(라운드는 관측 줄 필수)·기존 허브.
     `distillation.status=complete`까지 같은 요청으로 재시도한다."""
+    if not _searched:
+        return {"ok": False, "violations": [SEARCH_FIRST]}
     if distill is not None:
         from osk import distillation
         return _guard(distillation.create_node, distill, title=title,

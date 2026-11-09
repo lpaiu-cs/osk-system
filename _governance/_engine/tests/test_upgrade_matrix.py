@@ -296,6 +296,7 @@ def _drive_content(cfg: dict) -> dict:
     import mcp_server as m
     from osk import approvals
     S, D, P = cfg["roots"]
+    m.search("matrix")          # v5.6부터 표면은 search 없는 세션의 create_node를 거부한다(Mechanism §6-2 10항)
     key = cfg["key"]
     out: dict = {}
 
