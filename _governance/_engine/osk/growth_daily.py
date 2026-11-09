@@ -497,9 +497,13 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: 
              and (plans[r["manifest"]].get("daily") or {}).get("day") == day]
     exclude = {k for _, r in today for k in (r.get("progress") or {}).get("none", [])}
     # 같은 날 다시 불려도(수동 실행·재시작) L과 벽시계 예산은 그날 전체의 것이다. 한도에 거절된
-    # 묶음은 다른 공급자가 다시 돌았으니 작업 수에 넣지 않는다 — 쓴 시간은 넣는다.
+    # 묶음은 다른 공급자가 다시 돌았으니 작업 수에 넣지 않는다 — 쓴 시간은 넣는다. 적체 일괄 실행의
+    # 묶음은 L과 예산에 넣지 않는다 — 넣으면 그날 정기 실행의 재검토·정돈 묶음이 차례를 잃는다(#312 리뷰).
+    # 그날 진척 없던 작업을 다시 고르지 않는 것(`exclude`)에는 넣는다.
     done, earlier = {"scope": 0, "light": 0}, 0.0
     for plan, run in today:
+        if plan["daily"].get("backlog"):
+            continue
         if plan["daily"].get("kind") in done and run.get("state") not in growth.WAITS:
             done[plan["daily"]["kind"]] += _counted(plan["daily"]["kind"], run)
         if (begun := _at(plan)) and (ended := _at(run)):

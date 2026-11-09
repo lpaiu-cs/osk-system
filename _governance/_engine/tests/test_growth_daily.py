@@ -280,6 +280,29 @@ class DailyTests(unittest.TestCase):
             assert day['state'] == 'empty' and day['backlog'] and len(day['batches']) == 8, day
             assert {c['queues'] for c in calls} == {('scope_jobs',)} and all(c['daily']['backlog'] for c in calls)
             assert all(c['scope_bundle'] == 9 for c in calls)
+            # #312 review: the backlog's batches do not spend the scheduled day's L or wall clock — the
+            # light queues still get their turn that day. Its no-progress jobs stay out, though.
+            day_of = datetime.now(timezone.utc).astimezone().date().isoformat()
+            begun = datetime.now(timezone.utc).astimezone() - timedelta(hours=3)
+            for n in range(10):
+                plan = core.ledger_append(growth.LEDGER, {'kind': 'plan', 'at': begun.isoformat(timespec='seconds'),
+                                                          'work_context': 'daily', 'daily': {
+                                                              'day': day_of, 'kind': 'scope', 'backlog': True}})
+                core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': plan['rid'], 'state': 'incomplete',
+                                                   'at': (begun + timedelta(minutes=15)).isoformat(timespec='seconds'),
+                                                   'selected': 1, 'progress': {'made': [], 'none': ['stuck' + str(n)]}})
+            calls.clear()
+            def light_only(command, **args):
+                calls.append(args)
+                if args['queues'] == ('scope_jobs',) or len(calls) > 3:
+                    return {'ok': True, 'state': 'skipped', 'selected': 0}
+                return {'kind': 'run', 'manifest': 'l' + str(len(calls)), 'state': 'complete', 'returncode': 0,
+                        'selected': 3, 'provider': None, 'progress': {'made': ['x'], 'none': []}, 'usage': {'measured': False}}
+            with patch.object(growth, 'run', side_effect=light_only), \\
+                    patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
+                day = growth_daily.daily([['worker']])
+            assert any(c['queues'] == growth_daily.LIGHT for c in calls) and day['done'] == {'scope': 0, 'light': 6}, (calls, day)
+            assert day['day_seconds'] < 60 * 60 and 'stuck3' in calls[0]['exclude'], (day, calls[0]['exclude'])
             # The CLI keeps --backlog to the daily run.
             command = core.ROOT / 'command.json'
             command.write_text(json.dumps(['worker']), encoding='utf-8')

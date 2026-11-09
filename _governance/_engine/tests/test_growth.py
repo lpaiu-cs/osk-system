@@ -412,10 +412,11 @@ class GrowthTests(unittest.TestCase):
             # no light batch got its turn, or one left a selected recheck neither closed nor deferred.
             from datetime import datetime, timezone
             day = datetime.now(timezone.utc).astimezone().date().isoformat()
-            def batch(kind, run=None, rechecks=()):
+            def batch(kind, run=None, rechecks=(), waiting=0, **daily):
                 plan = core.ledger_append(growth.LEDGER, {'kind': 'plan', 'work_context': 'daily',
-                                                          'daily': {'day': day, 'kind': kind},
-                                                          'recheck_jobs': [{'key': k} for k in rechecks]})
+                                                          'daily': {'day': day, 'kind': kind, **daily},
+                                                          'recheck_jobs': [{'key': k} for k in rechecks],
+                                                          'queued_not_selected': {'recheck_jobs': waiting}})
                 if run is not None:
                     core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': plan['rid'], 'returncode': 0, **run})
                 return plan
@@ -441,6 +442,20 @@ class GrowthTests(unittest.TestCase):
             fresh()
             batch('light')
             assert growth.daily_status()['ran'] and not growth.daily_active(), 'a plan without a result'
+            # #312 review: other light work took the places, so no recheck was picked though some waited.
+            fresh()
+            batch('light', {'state': 'complete', 'ok': True}, waiting=2)
+            assert not growth.daily_active(), 'rechecks waited while other light work took the places'
+            batch('light', {'state': 'incomplete', 'ok': False,
+                            'recheck_outcomes': {'r5': {'status': 'complete'}}}, ['r5'], waiting=1)
+            assert growth.daily_active(), 'a later batch of the day gave the rechecks their turn'
+            # With no candidate waiting, a light batch without rechecks leaves nothing to hand over.
+            fresh()
+            batch('light', {'state': 'complete', 'ok': True})
+            assert growth.daily_active()
+            # A backlog run is not the daily run: its Scope batches neither replace nor date the day.
+            batch('scope', {'state': 'incomplete', 'ok': False}, backlog=True)
+            assert growth.daily_active() and growth.daily_status()['last']['state'] == 'complete'
         """)
 
     def test_scope_tries_count_only_what_the_daily_run_judged(self):

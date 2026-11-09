@@ -175,12 +175,16 @@ def _completed(key: str, rows: list[dict], idx: graph.Index, par=None) -> dict |
 def daily_status(days: int = 3) -> dict:
     """최신 정기 실행 — `ran`은 최근 `days`일 안에 돌았는가, `active`는 그날 재검토를 맡았는가(Mechanism
     §4-1 4항), `last`는 최신 계획의 시각과 상태(결과가 없으면 None)다. 맡았다는 것은 그날 재검토 큐를 채운
-    묶음(Scope 통합 묶음이 아닌 것)이 있고, 대기(잠금·한도)가 아닌 그 묶음들이 모두 고른 재검토 작업을 닫거나
-    보류로 판정했다는 뜻이다(#301). 정돈처럼 여러 번에 나눠 끝나는 작업이 남은 것은 재검토를 대화 검토
-    fork에 넘길 까닭이 아니다. 실패하거나 결과가 없는 새 계획은 과거 성공으로 덮지 않는다."""
+    묶음(Scope 통합 묶음이 아닌 것)이 실패 없이 결과를 냈고, 재검토 후보가 있었다면 그중 재검토 작업을 고른 묶음이
+    있으며, 고른 재검토 작업을 모두 닫거나 보류로 판정했다는 뜻이다(#301). 다른 작업이 자리를 다 써서
+    재검토를 하나도 고르지 못한 날은 맡지 않은 것이다(#312 리뷰). 대기(잠금·한도) 묶음은 다른 공급자가
+    다시 돌았으므로 보지 않는다. 정돈처럼 여러 번에 나눠 끝나는 작업이 남은 것은 재검토를 대화 검토 fork에
+    넘길 까닭이 아니다. 적체 일괄 실행(`daily.backlog`)은 정기 실행이 아니다. 실패하거나 결과가 없는 새
+    계획은 과거 성공으로 덮지 않는다."""
     now = datetime.now(timezone.utc)
     rows = _records()
-    plans = [r for r in rows if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily"]
+    plans = [r for r in rows if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily"
+             and not (r.get("daily") or {}).get("backlog")]
     runs = {r.get("manifest"): r for r in rows if r.get("kind") == "run"}
     try:
         latest = plans[-1]
@@ -191,8 +195,13 @@ def daily_status(days: int = 3) -> dict:
         same = [p for p in plans if day and (p.get("daily") or {}).get("day") == day] or [latest]
         judged = [p for p in same if (p.get("daily") or {}).get("kind") != "scope"
                   and (runs.get(p["rid"]) or {}).get("state") not in WAITS]
-        return {"ran": ran, "active": ran and bool(judged) and all(_rechecks_done(p, runs.get(p["rid"]), rows)
-                                                                    for p in judged),
+        queued = any(len(p.get("recheck_jobs") or []) + ((p.get("queued_not_selected") or {}).get("recheck_jobs") or 0)
+                     for p in judged)
+        picked = [p for p in judged if p.get("recheck_jobs")]
+        healthy = lambda r: bool(r) and (r.get("ok") is True or not run_failed(r))
+        active = (ran and bool(judged) and all(healthy(runs.get(p["rid"])) for p in judged) and (picked or not queued)
+                  and all(_rechecks_done(p, runs.get(p["rid"]), rows) for p in picked))
+        return {"ran": ran, "active": bool(active),
                 "last": {"at": at, "state": result.get("state") if result else None}}
     except (IndexError, KeyError, TypeError, ValueError):
         return {"ran": False, "active": False, "last": None}
