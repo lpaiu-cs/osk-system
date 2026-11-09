@@ -201,6 +201,9 @@ def migrate(*, apply: bool = False) -> dict:
         return {"ok": True, "applied": apply, "count": len(plans), "files": plans}
 
 
+CONSOLIDATE_RULE = "옛 자리의 인용 기록 → 루트 `_cited/.records/` (v5.2 — Mechanism §9 5항)"
+
+
 def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
     """옛 자리의 기록을 루트 `_cited/.records/`로 옮긴다 — Mechanism §9 5항의 자료 이관. 바이트와
     라운드 번호를 보존하고, 옛 좌표는 같은 이름으로 계속 해석된다. 노드는 고치지 않는다.
@@ -209,7 +212,9 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
     않고 `conflicts`로 낸다 — 덮거나 합치지 않는다. 옮기는 사본은 `locate_record`가 지금 고르는
     바로 그것이라(같은 순서로 훑는다) 이관 전후에 좌표가 가리키는 기록이 같다. `expect`는 확인받은
     `[[from, hash], …]`이며, 잠금 안에서 다시 세운 계획이 그와 다르면 아무것도 옮기지 않는다. 계획만
-    세울 때는 잠그지 않는다 — `osk doctor`는 읽기만 하고 잠금 파일도 만들지 않는다."""
+    세울 때는 잠그지 않는다 — `osk doctor`는 읽기만 하고 잠금 파일도 만들지 않는다. 옮길 때는 이행
+    기록에 전수 목록을 먼저 적고, 기록마다 옮기기 전에 이행 판정을 남긴 뒤, 결과와 보류로 목록을 닫는다
+    (Mechanism §5 1~3항)."""
     with (mutation_lock() if apply else contextlib.nullcontext()):
         moves, conflicts, seen = [], [], {}
         for d in _legacy_dirs():
@@ -232,22 +237,47 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
                               "hash": sha256_file(src), "bytes": src.stat().st_size})
         if expect is not None and [[m["from"], m["hash"]] for m in moves] != expect:
             raise write.WriteError("확인받은 이관 계획과 지금의 계획이 다르다 — 옮기지 않았다")
+        manifest = None
+        if apply and moves:
+            from .core import LEDGER, atomic_write, ledger_append, now_kst
+            events = LEDGER / "migration" / "events.jsonl"
+            day = now_kst()[:10]
+            manifest = events.parent / f"cited-records-{day}.md"
+            k = 1
+            while manifest.exists():
+                k += 1
+                manifest = events.parent / f"cited-records-{day}-{k}.md"
+            holds = [f"- `{c['path']}` → 보류 — {c['reason']}" for c in conflicts]
+            head = [f"# 인용 기록 이관 — {day}", "",
+                    f"옛 자리의 인용 기록을 루트 `{CITED}/.records/`로 옮긴다. 규칙 `{CONSOLIDATE_RULE}`. 바이트와",
+                    "라운드 번호는 그대로이고, 노드는 고치지 않는다.", "",
+                    f"## 대상 — 기록 {len(moves)}개 · 보류 {len(conflicts)}", "",
+                    *(f"- `{m['from']}` → `{m['to']}` (`{m['hash']}`)" for m in moves), *holds, ""]
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(manifest, "\n".join(head).encode("utf-8"))
         if apply:
             for m in moves:
                 src, dst = ROOT / m["from"], ROOT / m["to"]
                 if dst.exists():
                     raise write.WriteError(f"이관 대상이 이미 있다 — 덮지 않았다: {m['to']}")
+                ledger_append(events, {"kind": "move", "source": m["from"], "dest": m["to"], "before": m["hash"],
+                                       "after": m["hash"], "rule": CONSOLIDATE_RULE})
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 src.rename(dst)
                 if sha256_file(dst) != m["hash"]:
                     raise write.WriteError(f"이관 후 해시 불일치 — 성공으로 처리하지 않았다: {m['to']}")
+            if manifest:
+                close = ["## 결과", "", f"- 옮긴 기록 {len(moves)}개 · 보류 {len(conflicts)}", "", "### 보류", "",
+                         *(holds or ["없음"]), ""]
+                atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
             for d in _legacy_dirs():     # 비운 옛 자리 — 다른 파일이 남은 디렉터리는 그대로 둔다
                 for sub in [*sorted((p for p in d.rglob("*") if p.is_dir()), reverse=True), d]:
                     try:
                         sub.rmdir()
                     except OSError:
                         pass
-        return {"ok": True, "applied": apply, "count": len(moves), "files": moves, "conflicts": conflicts}
+        return {"ok": True, "applied": apply, "count": len(moves), "files": moves, "conflicts": conflicts,
+                **({"manifest": posix_rel(manifest, ROOT)} if manifest else {})}
 
 
 def canonical_ref(ref: str) -> str:

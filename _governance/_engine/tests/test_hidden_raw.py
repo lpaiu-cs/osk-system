@@ -219,6 +219,15 @@ def main():
         assert doctor.migrate()[1] == 2
         rep, code = doctor.migrate()
         assert code == 0 and [(a["migration"], a["count"]) for a in rep["applied"]] == [(records, len(before))], rep
+        # Mechanism §5: each move is in the migration ledger before it runs, and the manifest opens with every
+        # record and closes with the result and the conflicts held (#317 review).
+        from osk import evidence_migration as em
+        moved = [e for e in core.ledger_read(em.EVENTS) if e.get("rule") == raw.CONSOLIDATE_RULE]
+        assert [(e["kind"], e["source"], e["before"]) for e in moved] == [
+            ("move", m["from"], m["hash"]) for m in plan["files"]], moved
+        listing = (root / rep["applied"][0]["manifest"]).read_text(encoding="utf-8")
+        assert all(f"`{m['from']}` → `{m['to']}`" in listing for m in plan["files"]), listing
+        assert "## 결과" in listing and "→ 보류 — " in listing, listing
         assert {i["check"]: i["level"] for i in doctor.vault()[0]["items"]}[records] == "ok"
         assert [p for p in base.rglob("*") if p.is_file()] == [shadow]
         for m in plan["files"]:
