@@ -465,11 +465,17 @@ scope가 결속되기 전에도 이 대화의 턴은 추적된다 — 추적은 
 2. **프로젝트의 scope 만들기.** 프롬프트:
 
    ```text
-   Create this project's scope in osk: a hub node titled "my-app" in space "00_Scope/my-app",
-   with a one-line summary and a short description of the project. Use this session's key.
+   Search osk for "my-app" first. Then create this project's scope in osk: a hub node titled
+   "my-app" in space "00_Scope/my-app", with a one-line summary and a short description of the
+   project. Use this session's key.
    ```
 
-   첫 시도는 일부러 거부되며, 이런 메시지가 나온다.
+   v5.6부터 에이전트는 한 세션에서 새 노드를 쓰기 전에 `search`를 한 번은 불러야 한다 — 다른
+   scope의 비슷한 노드부터 찾게 하려는 것이다. 새 vault라면 검색 결과가 비어 있으며, 그것이
+   정상이다. 에이전트가 검색을 건너뛰면 `create_node`가 `새 노드를 세우기 전에 그 주제로 search를
+   먼저 불러`로 시작하는 메시지로 거부되고, 에이전트는 검색한 뒤 같은 요청을 다시 보낸다.
+
+   검색한 뒤의 첫 시도도 일부러 거부되며, 이런 메시지가 나온다.
 
    > `00_Scope/my-app`는 아직 없는 군집이라 … 새 군집을 만든다
 

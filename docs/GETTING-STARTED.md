@@ -489,11 +489,20 @@ fork reviews.
 2. **Create the project's scope.** Prompt:
 
    ```text
-   Create this project's scope in osk: a hub node titled "my-app" in space "00_Scope/my-app",
-   with a one-line summary and a short description of the project. Use this session's key.
+   Search osk for "my-app" first. Then create this project's scope in osk: a hub node titled
+   "my-app" in space "00_Scope/my-app", with a one-line summary and a short description of the
+   project. Use this session's key.
    ```
 
-   The first attempt is refused on purpose, with this message:
+   Since v5.6 an agent must call `search` at least once in a session before it
+   writes a new node, so that it finds similar notes in other scopes first. On
+   a new vault the search returns nothing; that is expected. If the agent skips
+   it, `create_node` is refused with a message that starts
+   `새 노드를 세우기 전에 그 주제로 search를 먼저 불러` ("call `search` on the topic
+   before you write a new node"); the agent searches and sends the request again.
+
+   After the search, the first attempt is still refused on purpose, with this
+   message:
 
    > `00_Scope/my-app`는 아직 없는 군집이라 … 새 군집을 만든다
 
