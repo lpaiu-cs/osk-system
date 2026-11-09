@@ -2992,7 +2992,14 @@ def test_bind_after_write_receipt():
             raise PermissionError(13, "공유 위반 모사", str(path))
         return real(path, record, expect)
 
+    # Mechanism §6-2 10항(#273 질문 3): search를 한 번도 부르지 않은 세션은 새 노드를 세우지 못한다
+    M._searched = False
+    refused = M.create_node("regr-bindfail", "s", "본문", "fable-5", space="00_Scope/W1")
+    check("search 없는 세션의 create_node는 거부되고 아무것도 쓰지 않는다",
+          refused == {"ok": False, "violations": [M.SEARCH_FIRST]}
+          and not (ROOT / "00_Scope/W1/regr-bindfail.md").exists(), refused)
     with mock.patch.object(write, "ledger_append", failing):
+        M.search("bindfail")                       # 한 번 부르면 이 세션의 생성이 열린다
         r = M.create_node("regr-bindfail", "s", "본문", "fable-5",
                           session="regr-bindfail-a", space="00_Scope/W1")
         rr = _w(_append_round, "regr-bindfail-b", "regr-bindfail-rec", "질문", "응답",
@@ -3792,10 +3799,13 @@ def test_mcp_transport():
                     res = await s.call_tool(tool, args)
                     return json.loads(res.content[0].text)
 
-                out["create"] = await call("create_node", {
-                    "title": "regr-tx", "summary": "전송", "body": "본문",
-                    "drafter": "fable-5", "space": "00_Scope/W1",
-                    "edges": {"derived-from": "regr-tx-t"}, "settle": sources[0]})
+                created = {"title": "regr-tx", "summary": "전송", "body": "본문",
+                           "drafter": "fable-5", "space": "00_Scope/W1",
+                           "edges": {"derived-from": "regr-tx-t"}, "settle": sources[0]}
+                # 새 서버 프로세스는 search 전의 생성을 거부한다(Mechanism §6-2 10항)
+                out["unsearched"] = await call("create_node", created)
+                await s.call_tool("search", {"query": "regr-tx", "k": 3})
+                out["create"] = await call("create_node", created)
                 out["read"] = await call("read_node", {"name": "regr-tx"})
                 out["stale"] = await call("update_node", {
                     "name": "regr-tx", "body": "새 본문",
@@ -3821,6 +3831,9 @@ def test_mcp_transport():
         return
     check("전송: 선언 목록과 도구 목록이 동치",
           o["names"] == sorted(validate.declared_tools() or []), o["names"])
+    check("전송: search 전의 create_node는 새 서버 프로세스에서 거부된다",
+          o["unsearched"].get("ok") is False and "search" in str(o["unsearched"].get("violations")),
+          o["unsearched"])
     check("전송: dict 인자(edges)가 통과한다", o["create"].get("ok"), o["create"])
     check("전송: read_node가 hash를 준다",
           o["read"].get("hash", "").startswith("sha256:"), o["read"])
@@ -7307,7 +7320,9 @@ def test_scope_recovery_handoff():
         check("세션 시작은 노드를 처음 쓰기 전의 overview를 안내한다",
               f'이 세션에서 노드를 처음 쓰기 전에 `overview(session="{S}")`를 한 번 불러 군집·허브 트리(`hub_tree`)·'
               '열린 사건·근거 재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다'
-              f'(시행령 §3 8항). 기억을 묻는 질문에는 `search(session="{S}")`를 먼저 쓴다.' in out, out[:600])
+              f'(시행령 §3 8항). 기억을 묻는 질문에는 `search(session="{S}")`를 먼저 쓴다. 노드를 새로 쓰기 전에도 '
+              '그 주제로 먼저 search해 다른 scope와 Domain까지 비슷한 기존 노드를 찾고, 그 주장에 기대면 참조를 건다.'
+              in out, out[:600])
         check("세션 시작은 허브 트리와 자리 규칙을 안내한다",
               "hub_tree" in out and "시행령 §3 8항" in out, out[:600])
         check("세션 시작은 scope를 세션 키로 바꾸지 않게 안내한다",
@@ -7466,6 +7481,7 @@ def test_eviction_preservation_mcp():
     rid = trimmed["evicted"]
     check("잘린 지식이 evict에 있고 scope에는 없다",
           ev.records()[-1]["text"] == fact and fact not in wm.read(session)["text"])
+    M.search("비교의 전제")                      # 새 노드 앞의 검색(Mechanism §6-2 10항)
     created = M.create_node("regr-preserved-node", "비교의 전제", fact, "fable-5",
                             session=session, settle=rid)
     check("생성과 처분이 한 MCP 호출에서 이어진다",

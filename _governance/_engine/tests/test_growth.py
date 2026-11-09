@@ -2053,6 +2053,8 @@ class GrowthTests(unittest.TestCase):
             assert job['hub_tree'] == tree and tree.startswith('- 00_Scope/W1 · 직속 노드 '), job['hub_tree']
             assert '이 scope의 허브 트리:' in job['text'] and tree in job['text']
             assert '하위 군집을 열지 않는다' in job['text']
+            # Bylaws §3 8 (#273 question 3): other scopes' and Domain claims reach the review only by search.
+            assert '노드를 새로 쓰기 전에 반드시 그 주제로 search' in job['text']
             reading = growth._reading_plan({'scope_jobs': [job], 'organization_jobs': []})
             assert reading['scope_jobs'][0]['hub_tree'] == tree
             # The packet drops the hook text, so the range reaches a Stop fork as a field (#226).
