@@ -38,8 +38,9 @@ device.
   right away. After the update, `osk doctor` reports how many nodes to move and
   `osk doctor --migrate` renames the headings in one go. Only the heading line
   changes and `updated` stays. Recheck records are carried to the current
-  definition first, so no recheck candidates appear; a node cited by heading
-  range and a node whose body opens with `## 근거` are held. Growth comparisons
+  definition first, so no recheck candidates appear; a node referenced by
+  heading range (`derived-from` or a body link) and a node whose body opens
+  with `## 근거` are held. Growth comparisons
   that hash the whole file may come up once more. Nodes in a protected region
   remain as a changeset (`osk approve`).
 - From now on, bulk migrations that come with an upgrade are checked by

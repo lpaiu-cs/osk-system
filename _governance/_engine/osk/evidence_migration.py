@@ -325,13 +325,15 @@ def heading_plan() -> list[dict]:
     """관측 절이 이행 전 제목 `## 근거`로 열리는 노드와 바꾼 바이트 — 쓰지 않는다. 제목 행만 바꾸고
     frontmatter와 수정시간은 그대로 둔다. 주장과 관측 줄은 한 글자도 바뀌지 않는 표기 이행이고, 관련
     상태(제목 앞까지)도 그대로라 재검토 후보가 생기지 않는다. 바꾼 뒤 같은 자리에서 관측 절로 읽히지
-    않거나(본문 맨 앞의 `# 관측`은 노드 제목이다) 상태가 달라지거나, 다른 노드가 `derived-from`으로
-    인용한 제목 범위가 달라지면(H1 `# 관측`이 앞 H1의 범위를 닫는다) 보류로 둔다 — `## 근거`도 읽힌다."""
+    않거나(본문 맨 앞의 `# 관측`은 노드 제목이다) 상태가 달라지거나, 다른 노드가 `derived-from`이나
+    본문 링크로 가리킨 제목 범위가 달라지면(`#근거`가 사라지고, H1 `# 관측`이 앞 H1의 범위를 닫는다)
+    보류로 둔다 — `## 근거`도 읽힌다."""
     idx = graph.Index()
-    cited: dict[str, set[str]] = defaultdict(set)   # 노드 id → 제목 범위로 인용된 제목
+    cited: dict[str, set[str]] = defaultdict(set)   # 노드 id → 제목으로 참조된 제목
     for _n, (path, kind) in idx.nodes.items():
-        for ref in _refs(idx.node(path).meta.get("derived-from")):
-            t = rechecks.target(str(ref), idx)
+        n = idx.node(path)
+        for ref in [*_refs(n.meta.get("derived-from")), *n.wikirefs()]:
+            t = rechecks.target(str(ref), idx) if "#" in str(ref) else None
             if t and "#" in t[0]:
                 key, heading = t[0].split("#", 1)
                 cited[key].add(heading)
@@ -360,8 +362,8 @@ def heading_plan() -> list[dict]:
                 or rechecks.state(new) != rechecks.state(data)):
             item.update(new=None, reason="바꾸면 관측 절로 읽히지 않는다 — 본문 맨 앞의 `# 관측`은 노드 제목이다")
         elif moved:
-            item.update(new=None, reason="제목 범위로 인용된다(" + ", ".join(f"`#{h}`" for h in moved)
-                        + ") — 바꾸면 그 범위가 달라져 인용한 노드가 재검토 후보가 된다")
+            item.update(new=None, reason="제목으로 참조된다(" + ", ".join(f"`#{h}`" for h in moved)
+                        + ") — 바꾸면 그 범위가 달라진다(인용은 재검토 후보가 되고, 링크는 가리키던 곳을 잃는다)")
         out.append(item)
     return out
 

@@ -871,7 +871,10 @@ class GrowthTests(unittest.TestCase):
             node('X', body='# X' + chr(10) + chr(10) + '주장 X.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
             assert write.create_node('C', 'C', 'C relies on X.', 'gpt-6-astra', space='00_Scope/W1',
                                      edges={'derived-from': 'X#X'})['ok']
-            paths = {t: core.ROOT / '00_Scope/W1' / (t + '.md') for t in ('L', 'T', 'O', 'Tab', 'X')}
+            # Y's section is only linked from another body, not cited: the link would lose its anchor (#311 review)
+            node('Y', body='주장 Y.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10) + line)
+            node('D', body='D reads [[Y#근거]].')
+            paths = {t: core.ROOT / '00_Scope/W1' / (t + '.md') for t in ('L', 'T', 'O', 'Tab', 'X', 'Y')}
             before = {t: p.read_bytes() for t, p in paths.items()}
             vault = {i['check']: i for i in doctor._vault()}
             heading = next(i for k, i in vault.items() if '# 관측' in k)
@@ -879,15 +882,16 @@ class GrowthTests(unittest.TestCase):
             assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the report wrote'
             done = doctor.migrate()
             assert [d['migration'] for d in done['applied']] == [heading['check']], done
-            assert (done['applied'][0]['nodes'], done['applied'][0]['holds']) == (2, 2), done
+            assert (done['applied'][0]['nodes'], done['applied'][0]['holds']) == (2, 3), done
             new = paths['L'].read_bytes()
             assert new == before['L'].replace('## 근거'.encode(), '# 관측'.encode()), new
             assert rechecks.state(new) == rechecks.state(before['L'])
             assert paths['Tab'].read_bytes() == before['Tab'].replace(('##' + chr(9) + '근거').encode(), '# 관측'.encode())
-            assert all(paths[t].read_bytes() == before[t] for t in ('T', 'O', 'X'))
+            assert all(paths[t].read_bytes() == before[t] for t in ('T', 'O', 'X', 'Y'))
             assert not rechecks.candidates(graph.Index())[0], 'the migration made recheck candidates'
             manifest = (core.ROOT / done['applied'][0]['manifest']).read_text(encoding='utf-8')
-            assert '`00_Scope/W1/X.md` → 보류 — 제목 범위로 인용된다(`#X`)' in manifest, manifest
+            assert '`00_Scope/W1/X.md` → 보류 — 제목으로 참조된다(`#X`)' in manifest, manifest
+            assert '`00_Scope/W1/Y.md` → 보류 — 제목으로 참조된다(`#근거`)' in manifest, manifest
             assert sorted(e['source'] for e in core.ledger_read(em.EVENTS)
                           if e.get('rule') == em.HEADING_RULE) == ['00_Scope/W1/L.md', '00_Scope/W1/Tab.md']
             assert all(i['level'] == 'ok' for i in doctor._vault()), doctor._vault()
