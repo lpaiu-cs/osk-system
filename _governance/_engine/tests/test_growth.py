@@ -393,8 +393,9 @@ class GrowthTests(unittest.TestCase):
             assert result['state'] == 'incomplete' and not result['final_reviews']['errors'], result
             assert {s['status'] for s in result['organization_outcomes'].values()} == {'pending'}, result
             assert proc.returncode == 0 and not growth.run_failed(result), (proc.returncode, result)
+            # #301: an organization left over is no reason to hand rechecks to the fork.
             status = growth.daily_status()
-            assert status['ran'] and not status['active'], status
+            assert status['ran'] and status['active'], status
             assert status['last']['state'] == 'incomplete', status
             # A run that could not run, or whose worker or packet failed, still fails.
             assert growth.run_failed({**result, 'returncode': 1})
@@ -403,6 +404,111 @@ class GrowthTests(unittest.TestCase):
             assert not growth.run_failed({'ok': True, 'state': 'skipped', 'selected': 0})
             # Another run holding the lock is a wait, not a failure (#175: 10-05 and 10-06 ended busy).
             assert not growth.run_failed({'ok': False, 'state': 'busy'})
+        """)
+
+    def test_daily_handoff_follows_the_days_recheck_queue(self):
+        self.check_case("""
+            # #301 / #306 D7: the fork takes rechecks over only when that day's recheck queue was not done —
+            # no light batch got its turn, or one left a selected recheck neither closed nor deferred.
+            from datetime import datetime, timezone
+            day = datetime.now(timezone.utc).astimezone().date().isoformat()
+            def batch(kind, run=None, rechecks=(), waiting=0, **daily):
+                plan = core.ledger_append(growth.LEDGER, {'kind': 'plan', 'work_context': 'daily',
+                                                          'daily': {'day': day, 'kind': kind, **daily},
+                                                          'recheck_jobs': [{'key': k} for k in rechecks],
+                                                          'queued_not_selected': {'recheck_jobs': waiting}})
+                if run is not None:
+                    core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': plan['rid'], 'returncode': 0, **run})
+                return plan
+            def fresh():
+                growth.LEDGER.unlink(missing_ok=True)
+            fresh()
+            batch('scope', {'state': 'incomplete', 'ok': False, 'returncode': 1})
+            assert not growth.daily_active(), 'the day stopped before any recheck batch'
+            batch('light', {'state': 'incomplete', 'ok': False,
+                            'recheck_outcomes': {'r1': {'status': 'complete'}}}, ['r1'])
+            assert growth.daily_active(), 'a failed Scope batch and leftover organization do not hand rechecks over'
+            batch('light', {'state': 'limited', 'ok': False}, ['r2'])
+            assert growth.daily_active(), 'a limited batch is a wait — another provider ran it again'
+            plan = batch('light', {'state': 'incomplete', 'ok': False,
+                                   'recheck_outcomes': {'r3': {'status': 'pending'}}}, ['r3'])
+            assert not growth.daily_active(), 'a selected recheck left open'
+            core.ledger_append(growth.LEDGER, {'kind': 'recheck_review', 'manifest': plan['rid'], 'key': 'r3',
+                                               'outcome': 'deferred', 'reason': 'cannot judge yet'})
+            assert growth.daily_active(), 'a deferral is a judgement'
+            batch('light', {'state': 'incomplete', 'ok': False, 'returncode': 1,
+                            'recheck_outcomes': {'r4': {'status': 'complete'}}}, ['r4'])
+            assert not growth.daily_active(), 'a failed worker judged nothing'
+            fresh()
+            batch('light')
+            assert growth.daily_status()['ran'] and not growth.daily_active(), 'a plan without a result'
+            # #312 review: other light work took the places, so no recheck was picked though some waited.
+            fresh()
+            batch('light', {'state': 'complete', 'ok': True}, waiting=2)
+            assert not growth.daily_active(), 'rechecks waited while other light work took the places'
+            batch('light', {'state': 'incomplete', 'ok': False,
+                            'recheck_outcomes': {'r5': {'status': 'complete'}}}, ['r5'], waiting=1)
+            assert growth.daily_active(), 'a later batch of the day gave the rechecks their turn'
+            # With no candidate waiting, a light batch without rechecks leaves nothing to hand over.
+            fresh()
+            batch('light', {'state': 'complete', 'ok': True})
+            assert growth.daily_active()
+            # A backlog run is not the daily run: its Scope batches neither replace nor date the day.
+            batch('scope', {'state': 'incomplete', 'ok': False}, backlog=True)
+            assert growth.daily_active() and growth.daily_status()['last']['state'] == 'complete'
+        """)
+
+    def test_scope_tries_count_only_what_the_daily_run_judged(self):
+        self.check_case("""
+            # #306 D4: picks counted waits, failures and fork attempts and never shrank before progress,
+            # so conversations tried once by a failing run or a fork stood at the back of the queue.
+            from datetime import datetime, timedelta, timezone
+            now = datetime.now(timezone.utc)
+            ago = lambda days: (now - timedelta(days=days)).isoformat(timespec='seconds')
+            job = {'harness': 'claude', 'conversation_id': 'c', 'reviewed_rounds': 0}
+            state = {'harness': 'claude', 'conversation_id': 'c', 'reviewed_count': 0}
+            rows = []
+            def attempt(run=None, context='daily'):
+                rid = 'p' + str(len(rows))
+                rows.append({'kind': 'plan', 'rid': rid, 'work_context': context, 'scope_jobs': [job]})
+                if run is not None:
+                    rows.append({'kind': 'run', 'manifest': rid, 'returncode': 0, 'at': ago(20), **run})
+            attempt({'state': 'incomplete'})                       # judged, however old
+            attempt({'state': 'limited', 'returncode': 1})         # waited on a limit
+            attempt({'state': 'busy'})                             # waited on the lock
+            attempt({'state': 'incomplete', 'returncode': 1})      # the worker failed, three weeks ago
+            attempt()                                              # no result
+            attempt({'state': 'incomplete'}, context='stop:W1')    # a fork's own attempt
+            assert growth._scope_tried(rows)(state) == 1
+            # A recent failure still counts: a conversation that keeps failing gives others their turn (#136 M4).
+            attempt({'state': 'incomplete', 'returncode': 1, 'at': ago(1)})
+            assert growth._scope_tried(rows)(state) == 2
+        """)
+
+    def test_final_packet_reads_a_trailing_block_not_prose_or_fences(self):
+        self.check_case("""
+            # #306 D1: four of seven rejected packets were valid JSON after one line of explanation.
+            packet = {'osk_reviews': {'manifest': 'm', 'domain': [], 'scope': []}}
+            body = json.dumps(packet, indent=2)
+            out = core.ROOT / 'stdout.txt'
+            def final(text):
+                out.write_text(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                                           'result': text}) + chr(10), encoding='utf-8')
+                return growth._final_packet(out)
+            nl = chr(10)
+            assert final(body) == packet
+            assert final('Reviewed both jobs.' + nl + body) == packet
+            assert final('Reviewed both jobs.' + nl + nl + body + nl) == packet
+            for text in ('Here: ' + body,                                   # not at a line start
+                         body + nl + 'Done.',                               # prose after it
+                         'See' + nl + body + nl + 'and more' + nl,          # in the middle of prose
+                         'Result:' + nl + '```json' + nl + body + nl + '```',   # in a code fence
+                         'Example:' + nl + '```json' + nl + body):                # in a fence left open
+                try:
+                    final(text)
+                except ValueError:
+                    continue
+                raise AssertionError(text)
         """)
 
     def test_daily_status_keeps_a_plan_without_result_as_ran_not_completed(self):
@@ -857,7 +963,7 @@ class GrowthTests(unittest.TestCase):
 
     def test_doctor_reports_and_applies_the_remaining_migrations(self):
         # 2026-11-09 user decision: compatibility and bulk migrations live in `osk doctor` — the report only
-        # reads, `--migrate` applies them in order. v5.6 renames the `## 근거` heading to `# 관측` without
+        # reads, `--migrate` plans, then applies them in order once confirmed. v5.6 renames the `## 근거` heading to `# 관측` without
         # touching the claim, the lines, the frontmatter or the related state. A body that opens with
         # `## 근거` would read `# 관측` as its own title, so it is held and keeps the legacy heading.
         self.check_case("""
@@ -880,8 +986,31 @@ class GrowthTests(unittest.TestCase):
             heading = next(i for k, i in vault.items() if '# 관측' in k)
             assert heading['level'] == 'warn' and '2개' in heading['detail'] and '--migrate' in heading['fix'], vault
             assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the report wrote'
-            done = doctor.migrate()
-            assert [d['migration'] for d in done['applied']] == [heading['check']], done
+            # The first run only plans and asks for the user's yes; nothing moves yet.
+            plan, code = doctor.migrate()
+            assert code == 2 and plan['approval_required'] and [m[0] for m in plan['plan']['migrations']] == [
+                heading['check']] and len(plan['plan']['migrations'][0][1]) == 2, plan
+            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the plan wrote'
+            # The apply re-plans under the lock; a node the user did not confirm stops it before any write (#313 review).
+            only_l = [t for t in plan['plan']['migrations'][0][1] if t[0].endswith('/L.md')]
+            try:
+                em.heading_apply(expect=only_l)
+            except RuntimeError as e:
+                assert 'Tab.md' in str(e), e
+            else:
+                raise AssertionError('migrated a node that was not confirmed')
+            # A confirmed node that changed after the user's yes stops it too (#313 review, round 2).
+            stale = [[p, 'sha256:0' if p.endswith('/L.md') else h] for p, h in plan['plan']['migrations'][0][1]]
+            try:
+                em.heading_apply(expect=stale)
+            except RuntimeError as e:
+                assert 'L.md' in str(e) and 'Tab.md' not in str(e), e
+            else:
+                raise AssertionError('migrated a node that changed after it was confirmed')
+            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the refused apply wrote'
+            assert not list(em.EVENTS.parent.glob('observation-heading-*')), 'the refused apply opened a manifest'
+            done, code = doctor.migrate()
+            assert code == 0 and [d['migration'] for d in done['applied']] == [heading['check']], done
             assert (done['applied'][0]['nodes'], done['applied'][0]['holds']) == (2, 3), done
             new = paths['L'].read_bytes()
             assert new == before['L'].replace('## 근거'.encode(), '# 관측'.encode()), new
@@ -896,8 +1025,49 @@ class GrowthTests(unittest.TestCase):
                           if e.get('rule') == em.HEADING_RULE) == ['00_Scope/W1/L.md', '00_Scope/W1/Tab.md']
             assert all(i['level'] == 'ok' for i in doctor._vault()), doctor._vault()
             # nothing left: a rerun applies nothing and opens no empty manifest
-            assert doctor.migrate()['applied'] == []
+            assert doctor.migrate() == ({'ok': True, 'applied': []}, 0)
             assert len(list(em.EVENTS.parent.glob('observation-heading-*.md'))) == 1
+        """)
+
+    def test_doctor_migrates_evidence_before_moving_old_place_records(self):
+        # The evidence migration dates a round by `git blame` on the record's current path, so a record
+        # moved first is untracked there and its entry is held. `doctor --migrate` migrates first; the
+        # record move (#308) is one of its migrations since the two doctor commands became one.
+        self.check_case("""
+            import subprocess
+            from osk import doctor, evidence, raw
+            def git(*a):
+                subprocess.run(['git', '-C', str(core.ROOT), *a], check=True, capture_output=True)
+            git('init', '-q'); git('config', 'user.email', 't@t'); git('config', 'user.name', 't')
+            name = 'claude-c38d8ef2' + '0' * 24
+            old = core.ROOT / '00_Scope/W1/_raw/.records'
+            old.mkdir(parents=True)
+            (old / (name + '.txt')).write_bytes(raw._block(1, '옛 자리의 질문', '답').encode())
+            # A also keeps the legacy `## 근거` heading: the v5.4 lines land in it, then the v5.6 rename takes
+            # A at the hash v5.4 wrote — the confirmed hash carried forward, not a change after the yes.
+            node('A', body='주장 A.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10)
+                 + '- 2026-11-09 · `https://example.com/a` · 지지 — page')
+            a = core.ROOT / '00_Scope/W1/A.md'
+            n = contract.parse(a)
+            a.write_bytes(write._render({**n.meta, 'derived-from': ['00_Scope/W1/_raw/.records/' + name + '.txt#1']}, n.body))
+            git('add', '-A'); git('commit', '-qm', 'seed')
+            v54, v52 = '비노드 derived-from → 관측 줄 (v5.4)', '옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)'
+            v56 = '관측 절 제목 `## 근거` → `# 관측` (v5.6)'
+            plan, code = doctor.migrate()
+            assert code == 2 and [m[0] for m in plan['plan']['migrations']] == [v54, v52, v56], plan
+            # A plan that changed after it was shown asks again: a second old-place record turned up.
+            other = 'claude-d48d8ef2' + '0' * 24
+            (old / (other + '.txt')).write_bytes(raw._block(1, '또 다른 질문', '답').encode())
+            assert doctor.migrate()[1] == 2
+            rep, code = doctor.migrate()
+            applied = {a['migration']: a for a in rep['applied']}
+            assert code == 0 and list(applied) == [v54, v52, v56], rep
+            assert applied[v52]['count'] == 2 and applied[v54]['nodes'] == 1 and applied[v56]['nodes'] == 1, applied
+            na = contract.parse(a)
+            assert 'derived-from' not in na.meta and 'c38d8ef2#1' in evidence.coordinates(na.body), na.body
+            assert '# 관측' in na.body and '## 근거' not in na.body, na.body
+            assert raw.locate_record(name) == core.ROOT / '_cited/.records' / (name + '.txt')
+            assert doctor.migrate() == ({'ok': True, 'applied': []}, 0)
         """)
 
     def test_recheck_cascade_keeps_node_identity_when_bodies_match(self):

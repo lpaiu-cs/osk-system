@@ -150,9 +150,45 @@ what does not, and the `→` fix line of each failing or warning item.
 | `동기화 데몬` warns, or a session starts with `[osk 동기화 멈춤 — …]` | The sync daemon has stopped sending this vault anywhere. `전송 보류`: run `setup.py --apply --sync` (two steps); it checks and records the current origin and push targets, and the daemon sends again on its next round. `데몬이 … 뒤로 돌지 않았다`: start the daemon's registration again (Update, step 5). Any other result that lasted a day: show it to the user; a pull conflict needs a person. |
 | `capture_blocked` in `osk.cli status` | Tracking this conversation's turns is stuck; nothing is lost and reviews still happen at turns 9 and 15. Show the error to the user. |
 
-When the user asks whether the vault itself is sound, `osk.cli validate` checks
-every node, link and ledger and ends with `"verdict": "PASS"`; `osk.cli status`
-shows protected regions (`clean` or `pending`) and unsettled tidy work.
+## Check the vault ("osk 정리해 줘", "is my memory sound?")
+
+```bash
+python _governance/_engine/scripts/setup.py doctor --vault
+```
+
+It is read-only and takes a few seconds more than the connection check. It
+looks at the notes themselves, in three groups, and ends with the same verdict
+line:
+
+- **Migrations still due** for formats and places the engine still reads but
+  no longer writes: non-node `derived-from` entries, cited records in the old
+  places (`_cited/` or `_raw/` under a scope or `00_Person/`), and the old
+  `## 근거` heading. `doctor --migrate` moves them; nothing else needs it.
+- **Format problems** the validators find (`검증 …`), such as an evidence line
+  in the wrong shape. Read the node and fix it with `update_node`.
+- **Leftovers** the scheduled review did not finish: recheck candidates,
+  stuck captures, a scope memory waiting for recovery, tidy work, and protected
+  folders with pending changes. Each line says who does what; pending changes
+  are the user's to approve or revert.
+
+`doctor --migrate` is two steps, like the update. The first run prints, for
+each migration, every record or note it would move, and exits with code 2. Explain
+both, wait for the yes, then run the same command again within an hour. The
+changes differ:
+
+- Records move byte for byte into the root `_cited/`. This edits no note:
+  old coordinates in notes keep working. A record whose name also exists in
+  another place is reported as `기록 충돌` and left where it is: decide with
+  the user which copy is the real one.
+- Notes with non-node `derived-from` entries are edited, as `evidence migrate
+  --apply` does: each entry leaves the frontmatter and becomes a `지지` line
+  in the note's observation section (`# 관측`), `updated` changes, and the
+  migration is logged in `_ledger/migration/`. Entries that cannot become a
+  line stay, with the reason in the result.
+- The old `## 근거` heading becomes `# 관측`. Only the heading line changes;
+  `updated` and the related state stay, so no recheck candidates appear. A
+  note whose body opens with `## 근거`, or whose heading range another note
+  cites or links, is held and keeps the old heading, which still reads.
 
 ## Messages the user asks about
 
@@ -230,4 +266,4 @@ that deleting it is their own step.
 | cited record (`_cited/`) | the user's own words, copied from the transcript as evidence for a note |
 | tidy (정돈) | lines pushed out of a full summary, waiting to be kept as notes or dropped |
 | release, update (릴리스, 갱신) | a new version of the engine and its documents; the user's notes are not part of it |
-| doctor | the read-only connection check |
+| doctor | the read-only connection check; `doctor --vault` checks the notes themselves |

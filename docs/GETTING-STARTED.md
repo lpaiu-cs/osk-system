@@ -624,7 +624,7 @@ which sets both for you: `sh osk-cli.sh validate` (Windows:
 | `integration list` | List review work for a run outside the conversation: the unreviewed turns of conversations that ended before their own review (read from this device's transcript), rounds an older release stored in `_raw/`, and reviews reopened after a stored round was corrected. A conversation still going on reviews its own turns. |
 | `protect <folder>`, `approve <folder>`, `revert <folder>` | Protect a folder, or accept or undo its pending changeset. These ask `[y/N]` and refuse to run without an interactive terminal. |
 | `fork doctor` | Check whether fork reviews can run. Read-only. |
-| `doctor` | Check how Claude Code, Codex, Kiro and Antigravity are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. |
+| `doctor` | Check how Claude Code, Codex, Kiro and Antigravity are connected on this device: MCP and hook registrations, when each hook last ran, whether the session-start text reached the agent, host versions and forks. Read-only; exits with 1 only when something cannot work. `doctor --vault` checks the notes instead: migrations still due, validator findings, work the scheduled review left, and the conversation-review backlog. `doctor --migrate` applies the due migrations after a second, confirmed run. |
 
 ## Optional: connect Kiro
 

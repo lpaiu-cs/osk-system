@@ -159,6 +159,8 @@ def _growth_cmd(a) -> None:
             commands = [json.loads(Path(f).read_text(encoding="utf-8-sig")) for f in a.command_file]
             if len(commands) > 1 and not (a.daily or a.check):
                 raise ValueError("several --command-file go only with --daily (one per provider)")
+            if a.backlog and not a.daily:
+                raise ValueError("--backlog goes with --daily")
             # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
             # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
             if a.check:
@@ -166,7 +168,7 @@ def _growth_cmd(a) -> None:
                 result = checks[0] if len(checks) == 1 else {"ok": all(c["ok"] for c in checks), "commands": checks}
             elif a.daily:
                 from . import growth_daily
-                result = growth_daily.daily(commands, invocation=a.invocation)
+                result = growth_daily.daily(commands, invocation=a.invocation, backlog=a.backlog)
             else:
                 result = growth.run(commands[0], limit=a.limit, timeout=a.timeout, invocation=a.invocation)
         _emit(result)
@@ -204,15 +206,22 @@ def _fork_cmd(a) -> None:
 
 def _doctor_cmd(a) -> None:
     """`osk doctor` — 이 기기의 하네스 연결과 vault의 남은 이행을 **읽기만** 하며 점검한다. 실패
-    항목이 있으면 종료코드 1이다(경고는 0). `--migrate`는 남은 이행을 확인 없이 적용한다 — 본문을
-    새로 쓰지 않고 노드마다 전후를 이행 기록에 남기는 기계적 변환이다(Mechanism §5)."""
+    항목이 있으면 종료코드 1이다(경고는 0). `--vault`는 vault의 내용(남은 이행·형식·잔재·적체)을 본다.
+    `--migrate`는 남은 이행을 계획(종료코드 2)한 뒤, 확인된 다음 실행에서 적용한다 — 본문을 새로 쓰지
+    않는 기계적 변환이고 대상마다 전후를 이행 기록에 남긴다(Mechanism §5)."""
     from . import doctor
-    if a.migrate:
+    if a.migrate or a.vault:
         try:
-            _emit(doctor.migrate())
-        except (ValueError, OSError, RuntimeError) as e:
-            _emit({"ok": False, "violations": [str(e)]})
-            sys.exit(1)
+            rep, code = doctor.migrate() if a.migrate else doctor.vault()
+        except (write.WriteError, StaleEngineError, ValueError, OSError, RuntimeError) as e:
+            rep, code = {"ok": False, "violations": getattr(e, "violations", None) or [str(e)]}, 1
+        if a.json or "items" not in rep:
+            _emit(rep)
+        else:
+            sys.stdout.buffer.write(doctor.vault_text(rep).encode("utf-8"))
+            sys.stdout.buffer.flush()
+        if code:
+            sys.exit(code)
         return
     rep = doctor.report(a.harness)
     if a.json:
@@ -463,6 +472,9 @@ def build_parser() -> argparse.ArgumentParser:
             q.add_argument("--timeout", type=int, default=600)
             q.add_argument("--daily", action="store_true",
                            help="하루 정기 실행: 주간 한도 조정, 묶음 실행, 묶음마다 한도 조회(--limit·--timeout 무시)")
+            q.add_argument("--backlog", action="store_true",
+                           help="--daily와 함께: 대화 검토 적체를 일괄로 — 하루 한도·벽시계 예산 없이 Scope 묶음만, "
+                                "대기열이 빌 때까지(공급자는 주간 사용률 0.9에서 쉰다)")
             q.add_argument("--check", action="store_true", help="실행 파일만 확인; 모델·포착·대장 쓰기 없음")
             q.add_argument("--invocation", choices=("manual", "user_request", "scheduled", "unknown"),
                            default="unknown", help="명시한 기동 원인; 생략하면 추정하지 않는다")
@@ -487,7 +499,10 @@ def build_parser() -> argparse.ArgumentParser:
                                       "전달, 판본, fork, 남은 이행 (읽기 전용)")
     p.add_argument("--harness", choices=adapters.NAMES, default=None, help="기본: 모두")
     p.add_argument("--json", action="store_true")
-    p.add_argument("--migrate", action="store_true", help="남은 이행을 순서대로 적용하고 이행 기록을 남긴다")
+    p.add_argument("--vault", action="store_true",
+                   help="연결 대신 vault 내용 점검 — 남은 이행, 검증기 위반, 정기 검토의 잔재, 대화 검토 적체")
+    p.add_argument("--migrate", action="store_true",
+                   help="남은 이행을 계획하고(종료코드 2), 확인된 다음 실행에서 순서대로 적용해 이행 기록을 남긴다")
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")

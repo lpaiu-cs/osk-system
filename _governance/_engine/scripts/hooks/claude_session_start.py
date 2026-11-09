@@ -597,6 +597,27 @@ def capture_block(env: dict, key: str, *, startup: bool = False, budget: int | N
     return text
 
 
+IDLE_STATES = {"limited": "공급자 한도 소진, 대신 돌 워커도 없음", "rest": "공급자가 주간 사용률 0.9에 닿아 쉼",
+               "unavailable": "쓸 수 있는 워커가 없음", "busy": "다른 실행이 잠금을 쥠",
+               "worker_fault": "작업자 이상", "missing": "실행 기록이 없음 — 정기 실행이 시작되지 않았다"}
+
+
+def _daily_note() -> str:
+    """정기 실행이 묶음을 하나도 돌지 못한 날이 이어지면 그 날들과 까닭(#306 D6) — 공백이 안내 없이
+    지나가지 않게 한다. 이어지지 않으면 아무것도 싣지 않는다."""
+    try:
+        from osk import growth_daily
+        idle = growth_daily.idle()
+    except Exception as exc:
+        return f"[osk 정기 실행 판독 진단 — {type(exc).__name__}: {exc}]"
+    if not idle:
+        return ""
+    span = idle["last"][5:] if idle["days"] == 1 else f"{idle['first'][5:]}~{idle['last'][5:]}"
+    why = IDLE_STATES.get(idle["state"], idle["state"])
+    return (f"[osk 정기 실행 — {span}, {idle['days']}일 동안 묶음을 하나도 돌지 못했다(마지막 까닭: {why}). "
+            "대화 검토와 재검토가 쌓인다. `osk growth status`로 확인한다. 본 작업은 계속한다.]")
+
+
 def _recheck_note(rechecks) -> str:
     """근거 재검토에서 본 세션이 알아야 할 것 — 사용자 검토를 기다리는 수정, 그리고
     정기 실행이 없을 때 쌓이는 후보(그 처리는 대화 검토 fork가 이 scope 몫을 맡는다).
@@ -619,11 +640,11 @@ def _recheck_note(rechecks) -> str:
                      "노드를 인용한 노드들까지 고치게 만든다. overview의 rechecks.escalated에서 "
                      "수정안을 보고 정한다.]")
     if not daily and len(items) > held and status["ran"]:
-        # 돌았지만 선택 작업이 남았다 — 여러 번에 나눠 끝나는 정돈이 남는 것은 흔하다.
-        # '돌지 않았다'고 쓰면 매일 도는 실행을 다시 켜라는 안내가 된다.
+        # 돌았지만 그날 재검토를 맡지 못했다 — 재검토 묶음이 차례를 받지 못했거나, 고른 재검토를
+        # 판정하지 못했다(#301). '돌지 않았다'고 쓰면 매일 도는 실행을 다시 켜라는 안내가 된다.
         from datetime import datetime
         at = datetime.fromisoformat(status["last"]["at"]).astimezone().strftime("%m-%d %H:%M")
-        notes.append(f"[osk 근거 재검토 — 후보 {len(items) - held}건. 최신 정기 실행({at})이 선택 "
+        notes.append(f"[osk 근거 재검토 — 후보 {len(items) - held}건. 최신 정기 실행({at})이 그날 재검토 "
                      "작업을 다 끝내지 못해 대화 검토(fork)가 이 scope의 후보를 함께 맡는다. 본 "
                      "작업은 계속한다.]")
     elif not daily and len(items) > held:
@@ -697,6 +718,7 @@ def main() -> None:
             pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다
         from osk.hook_text import Block, assemble
         recheck = Block("recheck", _recheck_note(rechecks), 50, label="근거 재검토 안내(overview의 rechecks)")
+        idle = Block("idle", _daily_note(), 45, label="정기 실행 공백 안내(`osk growth status`)")
         found = capture_blocks(env, key, startup=True)
         if found is None:
             return
@@ -725,7 +747,7 @@ def main() -> None:
         # 주된 scope가 아닌 결속 scope의 기억도 싣는다 — 주된 scope 다음, 한도 안에서(§9-3 1항)
         others = _bound_memories(scope_memory, key, ident, bindings, keep=75)
         if not scope:
-            blocks = [bootstrap, sync, notice, recheck, recovery, *others, *captured, _bindings_block(key)]
+            blocks = [bootstrap, sync, notice, idle, recheck, recovery, *others, *captured, _bindings_block(key)]
         else:
             try:
                 mem = _memory(scope_memory, key, ident, gate=False, keep=95)
@@ -739,7 +761,7 @@ def main() -> None:
             except Exception as exc:
                 tidy = Block("tidy", f"[osk 정돈 판독 진단 — {type(exc).__name__}: {exc}]")
             # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록. 넘치면 블록째 접는다(1항).
-            blocks = [banner, bootstrap, sync, notice, recheck, recovery, mem, *others, *captured, tidy,
+            blocks = [banner, bootstrap, sync, notice, idle, recheck, recovery, mem, *others, *captured, tidy,
                       _bindings_block(key)]
         out, _ = assemble(blocks, _budget(env, host), session=key)
         if not out:

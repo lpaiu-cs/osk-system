@@ -75,6 +75,19 @@ off. Keep the existing node-only graph view during rollout; rewrite old node
 citations through MCP only as a separately verified graph change. Newly written
 raw citations use the plain form automatically.
 
+## Gathering old places into the root
+
+`doctor --vault` counts records still kept in an old place (`_cited/` or
+`_raw/` under a scope, and `00_Person/_cited/`), and `doctor --migrate`
+moves them into the root `_cited/.records/` — the data move Mechanism §9 5항
+leaves to a separately reviewed changeset. The first `--migrate` prints every
+source and exits 2; the same command within an hour applies. Each file is
+renamed under the mutation lock and its SHA-256 checked; emptied old
+directories are removed. A name already present at the root or in an earlier
+old place is reported as a conflict and left in place, so every coordinate
+keeps resolving to the copy it resolved to before. Nodes, receipts and ledgers
+are not edited; old coordinates resolve by record name.
+
 The section below records the governance text approved on 2026-09-17; the
 2026-10-04 amendment moves new records to `_cited/`.
 
