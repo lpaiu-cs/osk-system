@@ -34,7 +34,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import epoch
-from .layout import space_roots, adapt_path
+from .layout import adapt_path
+from .vault import Vault
 from ._portalock import lock_exclusive, unlock
 
 B36 = string.digits + string.ascii_lowercase
@@ -55,25 +56,21 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def vault_root() -> Path:
-    env = os.environ.get("OSK_VAULT_ROOT")
-    if env:
-        return Path(env).resolve()
-    # <vault>/_governance/_engine/osk/core.py — 4단계 위가 vault 루트다
-    return Path(__file__).resolve().parent.parent.parent.parent
-
-
-ROOT = vault_root()
-SPACE_ROOTS = space_roots(ROOT)
-SCOPE, DOMAIN, PERSON = (SPACE_ROOTS[k] for k in ("Scope", "Domain", "Person"))
-LEDGER = ROOT / SCOPE / "Workbench/_ledger"
-SIGNATURES = LEDGER / "signatures.jsonl"
-CANDIDATES = LEDGER / "case" / "candidates.jsonl"
-PINS = LEDGER / "pins.jsonl"
-VALIDATORS = LEDGER / "validators.jsonl"   # 검증기 활성화 기록 (Mechanism §6-1)
-ROUTING = LEDGER / "routing.jsonl"       # 세션→scope 라우팅 (Mechanism §6-2 3항)
-EVICTIONS = LEDGER / "evictions.jsonl"   # 퇴출 기록부 (Mechanism §9-2 12항)
-ROOTS = LEDGER / "roots.jsonl"           # 외부 루트 선언 (Mechanism §1 6항)
+# 구조 개편 2단계의 임시 자리 — import할 때 저장소를 한 번 열어 아래 상수로 푼다. 함수가 저장소를
+# 인자로 받게 되는 대로 이 상수를 읽는 곳이 줄고, 다 옮기면 `VAULT`와 함께 지운다
+# (docs/v6.0-refactoring.md 2단계).
+VAULT = Vault.open()
+ROOT = VAULT.root
+SPACE_ROOTS = VAULT.space_roots
+SCOPE, DOMAIN, PERSON = VAULT.scope, VAULT.domain, VAULT.person
+LEDGER = VAULT.ledger
+SIGNATURES = VAULT.signatures
+CANDIDATES = VAULT.candidates
+PINS = VAULT.pins
+VALIDATORS = VAULT.validators
+ROUTING = VAULT.routing
+EVICTIONS = VAULT.evictions
+ROOTS = VAULT.roots
 _MUTATION_LOCK_PATH: Path | None = None
 
 

@@ -7701,7 +7701,7 @@ def test_evictions():
     # git 없는 mini-vault는 루트 해시가 든 임시 경로로 떨어져 저절로 갈리므로,
     # 실제 모양 — 본 저장소 A와 그 `.git`을 `commondir`로 공유하는 linked
     # worktree B — 를 파일로 세운다(git 실행 없음). 둘의 잠금 자리는 같다.
-    # 운영의 ROOT는 vault_root()가 정규화한 경로다 — 시험 루트도 그렇게 세운다.
+    # 운영의 ROOT는 `Vault.open()`이 정규화한 경로다 — 시험 루트도 그렇게 세운다.
     # 날것(RUNNER~1·/var)이면 A는 그 철자, B는 commondir resolve로 실경로가 된다.
     wt = Path(tempfile.mkdtemp(prefix="osk-wt-")).resolve()
     A, B = wt / "A", wt / "B"
@@ -11697,7 +11697,7 @@ def test_governance_amend_secrets_and_region():
         #    fail-closed를 지우면 셋째 검사가 실패한다.
         def _reconcile_case(tag, name_body, work_body, idx_body, expect):
             """이름(digest)·작업 트리·색인을 각각 세워 판정을 본다."""
-            # 갈아 끼우는 ROOT도 vault_root()가 주는 것처럼 정규 경로여야 한다 —
+            # 갈아 끼우는 ROOT도 `Vault.open()`이 주는 것처럼 정규 경로여야 한다 —
             # 러너 임시 경로가 별칭(RUNNER~1·/var)이면 STORE만 날것으로 남는다.
             lab3 = Path(os.path.realpath(tempfile.mkdtemp(prefix="osk-obj-")))
             try:
@@ -12712,6 +12712,12 @@ def test_surface_snapshot_subprocess():
     _suite("표면 고정: MCP 도구와 CLI가 기록과 같다", "test_surface_snapshot.py")
 
 
+def test_vault_subprocess():
+    """저장소는 값이다(docs/CODE-STANDARD.md 4항) — 한 프로세스에서 임시 저장소 둘을 열어 폴더 이름과 대장
+    자리가 서로 섞이지 않음을 본다. `osk.core`를 거치지 않는다."""
+    _suite("저장소 값: 한 프로세스에서 연 임시 저장소 둘이 섞이지 않는다", "test_vault.py")
+
+
 GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_codex_forks.py", "test_integration_recovery.py", "test_growth.py", "test_growth_daily.py", "test_growth_status.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py", "test_setup.py", "test_services.py")
 
 
@@ -12889,7 +12895,7 @@ if __name__ == "__main__":
                test_reparse_cache_membership,
                test_eviction_preservation_mcp,
                test_suite_timeout_is_isolated, test_suite_skip_is_not_pass,
-               test_architecture_subprocess, test_surface_snapshot_subprocess,
+               test_architecture_subprocess, test_surface_snapshot_subprocess, test_vault_subprocess,
                 test_growth_loop_subprocesses, test_release_workflow_subprocess,
                 test_upgrade_matrix_subprocess]:
         try:
