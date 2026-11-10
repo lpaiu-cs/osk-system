@@ -30,7 +30,7 @@ from pathlib import Path
 
 from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_damage,
                    ledger_read, resolve_one, sha256_file, sha256_bytes, posix_rel,
-                   local_lock_path, SPACE_ROOTS, _within, _canon_rel)
+                   local_lock_path, SPACE_ROOTS, resolve_within, canon_rel)
 from .core import mutation_lock_path as core_mutation_lock_path
 from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from ._portalock import lock_exclusive, unlock
@@ -84,7 +84,7 @@ def _allowed_skel(s: str) -> Path | None:
     if s not in SKEL_ROOTS:
         return None
     s = adapt_path(s, SPACE_ROOTS)
-    p = _within(ROOT, s)                         # `..`·절대경로·심볼릭 탈출은 None
+    p = resolve_within(ROOT, s)                         # `..`·절대경로·심볼릭 탈출은 None
     if p is None:
         return None
     try:
@@ -107,7 +107,7 @@ def load_config() -> dict:
 
 # ── 출처 — 전송만 다르고 검증은 같다 (Mechanism §1-2 3항) ────────────────
 
-def _semver(tag) -> tuple[int, int, int] | None:
+def semver(tag) -> tuple[int, int, int] | None:
     """`vX.Y.Z`(VERSION_RE)의 정수 세 쌍 — 그 형식이 아니면 None. 판본의 순서는
     문자열이 아니라 이 값으로 잰다(`v4.10.0`이 `v4.9.0`보다 새롭다)."""
     m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag) if isinstance(tag, str) else None
@@ -144,7 +144,7 @@ def latest_release_tag(url: str, *, timeout: float = 60,
     best = None
     for line in stdout.splitlines():
         name = line.rsplit("refs/tags/", 1)[-1].strip()
-        key = _semver(name)
+        key = semver(name)
         if key and (best is None or key > best[0]):
             best = (key, name)
     return best[1] if best else None
@@ -252,7 +252,7 @@ def verify_attestation(tree: Path, rel: dict) -> list[str]:
     증빙 key는 신뢰 밖 입력이다 — I/O 전에 tree 안으로 봉쇄한다(경로 탈출 차단)."""
     errs = []
     for p, h in sorted(rel["files"].items()):
-        f = _within(tree, p)
+        f = resolve_within(tree, p)
         if f is None:
             errs.append(f"증빙 경로가 트리 밖으로 벗어난다(경로 봉쇄 실패): {p}")
         elif not f.is_file():
@@ -298,7 +298,7 @@ def apply_set(tree: Path, rel: dict):
         if ap in keep or ap == ATTESTATION:
             skipped.append(f"{ap} (정본 저장소 전용)")
             continue
-        if publish._denied(ap, man["deny"]):
+        if publish.denied_by(ap, man["deny"]):
             skipped.append(f"{ap} (DENY)")
             continue
         dest = _map_dest(ap, man)
@@ -307,7 +307,7 @@ def apply_set(tree: Path, rel: dict):
             continue
         # dest는 신뢰 밖 입력에서 파생된다 — canonical 경로로 봉쇄한 뒤 그
         # canonical에 floor를 건다(정규화 전 문자열 판정 우회 차단, P1).
-        cdest = _canon_rel(ROOT, dest)
+        cdest = canon_rel(ROOT, dest)
         if cdest is None or _floor(cdest):
             skipped.append(f"{dest} (바닥·경로 봉쇄 — 쓰지 않는다)")
             continue
@@ -588,7 +588,7 @@ def _txn_recover(recs: list[dict]) -> str | None:
         return "roll-forward"
     for e in man["entries"]:
         rel = e.get("rel")
-        cp = _canon_rel(ROOT, str(rel)) if rel else None
+        cp = canon_rel(ROOT, str(rel)) if rel else None
         if cp is None:
             raise UpdateError(
                 f"복구 경로가 봉쇄·정체성 검증에 실패했다 — 중단(보존: {TXN_DIR}): {rel}")
@@ -618,7 +618,7 @@ def _txn_recover(recs: list[dict]) -> str | None:
     # 순서로 제거한다 — SKEL은 디렉터리 존재 자체가 적용 결과라 잔재로 남으면
     # 'pre-image로 복구'가 성립하지 않는다. 비어 있지 않으면(사용자 파일 등) 둔다.
     for rel in sorted(man.get("dirs") or [], key=lambda s: -s.count("/")):
-        cp = _canon_rel(ROOT, str(rel))
+        cp = canon_rel(ROOT, str(rel))
         if cp is None:
             raise UpdateError(                   # 경로 정체성이 바뀌었다 — 중단
                 f"복구 대상 디렉터리가 봉쇄·정체성 검증에 실패했다 "
@@ -659,7 +659,7 @@ def _exclusive(path: Path, busy: str):
         f.close()
 
 
-def _sync_lock_path() -> Path:
+def sync_lock_path() -> Path:
     """엔진·데몬과 **공유하는 mutation 잠금** — 데몬 싱글턴 잠금이 아니다.
     노드 쓰기·보호영역 조작·데몬의 working-tree 구간이 모두 이 하나를 잡으므로,
     update가 이걸 잡으면 그 사이 누구도 혼합 상태를 만들거나 커밋·push하지
@@ -683,7 +683,7 @@ def _powershell(script: str) -> str:
     return r.stdout.decode("utf-8", "replace")
 
 
-def _daemon_pids() -> list[int]:
+def daemon_pids() -> list[int]:
     """이 vault의 `sync_daemon.py`를 **절대 경로로** 실행 중인 프로세스들.
     예약 작업·launchd·systemd 예시가 모두 절대 경로로 띄운다. Windows의 venv
     pythonw는 실제 인터프리터를 자식으로 띄우므로 둘 다 걸린다."""
@@ -702,7 +702,7 @@ def _daemon_pids() -> list[int]:
             if pid.strip().isdigit() and fold(target) in fold(cmd)]
 
 
-def _kill(pids: list[int]) -> None:
+def kill_processes(pids: list[int]) -> None:
     for pid in pids:
         if os.name == "nt":          # /T: venv 런처와 자식 인터프리터를 함께
             subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -714,7 +714,7 @@ def _kill(pids: list[int]) -> None:
                 pass
 
 
-def _lock_within(f, seconds: float, busy: str) -> None:
+def lock_within(f, seconds: float, busy: str) -> None:
     deadline = time.monotonic() + seconds
     while True:
         try:
@@ -745,7 +745,7 @@ def _start_daemon() -> dict:
         via = f"scheduled task {task}"
     deadline = time.monotonic() + DAEMON_RESTART_WAIT
     while time.monotonic() < deadline:
-        if _daemon_pids():
+        if daemon_pids():
             return {"restarted": True, "via": via}
         time.sleep(2)
     return {"restarted": False, "via": via,
@@ -767,19 +767,19 @@ def _daemon_stopped(info: dict):
             lock_exclusive(f, blocking=False)
             held = True
         except OSError:
-            pids = _daemon_pids()
+            pids = daemon_pids()
             if not pids:
                 raise UpdateError(
                     "동기화 데몬 잠금이 잡혀 있는데 이 vault의 sync_daemon.py 프로세스를 "
                     "찾지 못했다 — 데몬을 멈춘 뒤 다시 실행한다")
-            m = open(_sync_lock_path(), "w")
+            m = open(sync_lock_path(), "w")
             try:
-                _lock_within(m, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
+                lock_within(m, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
                                      "잠시 후 다시 실행한다")
                 try:
-                    _kill(pids)
+                    kill_processes(pids)
                     info["stopped"] = pids
-                    _lock_within(f, 30, "데몬을 멈췄는데 싱글턴 잠금이 풀리지 않는다 — "
+                    lock_within(f, 30, "데몬을 멈췄는데 싱글턴 잠금이 풀리지 않는다 — "
                                         "다시 실행한다")
                     held = True
                 finally:
@@ -840,7 +840,7 @@ def plan(tree: Path, targets: list, adopt: bool) -> dict:
     # 있는 삭제 대상은 지우지 않고 보존·보고한다. 바닥은 애초에 관리 대상이 아니다.
     remove, remove_conflict = [], []
     for p, h in sorted(managed_paths(recs).items()):
-        cp = _canon_rel(ROOT, p)                 # 병합된 저널 path도 봉쇄(P1)
+        cp = canon_rel(ROOT, p)                 # 병합된 저널 path도 봉쇄(P1)
         if cp is None or cp in dests or _floor(cp):
             continue
         rp = ROOT / cp
@@ -986,7 +986,7 @@ def run(source: str | None = None, ref: str | None = None,
     # 쥐고 있으면 `_daemon_stopped`가 멈추고 적용 뒤 다시 띄운다.
     daemon: dict = {}
     with _daemon_stopped(daemon),\
-            _exclusive(_sync_lock_path(),
+            _exclusive(sync_lock_path(),
                        "다른 갱신이 vault를 잠갔다 — 잠시 후 다시 실행한다"):
         # 복구는 어떤 상태 판정보다 먼저다(잠금 안에서). 저널은 **관대하게**
         # 읽는다 — 크래시가 append 도중이면 부분 행이 남는데, 엄격 판독으로
@@ -1059,20 +1059,20 @@ def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
     if state == "stale":
         raise UpdateError("통치 구획 승인본이 stale이다 — 사용자 검토로 먼저 해소한다")
     files = {rel: sha256_file(path) for rel, path in
-             approvals._region_files(ROOT / "_governance")}
-    before = sha256_bytes(approvals._manifest_blob(sorted(files.items())))
+             approvals.region_files(ROOT / "_governance")}
+    before = sha256_bytes(approvals.manifest_blob(sorted(files.items())))
     base = approvals.approved_hash("_governance")
     prior = approvals.changeset("_governance") if base else None
     for src, dest in p["add"] + p["update"] + side_write:
-        if dest.startswith("_governance/") and not approvals._excluded_rel(dest, "_governance"):
+        if dest.startswith("_governance/") and not approvals.excluded_rel(dest, "_governance"):
             files[dest] = sha256_file(tree / src)
     for data, dest in ad_write:
-        if dest.startswith("_governance/") and not approvals._excluded_rel(dest, "_governance"):
+        if dest.startswith("_governance/") and not approvals.excluded_rel(dest, "_governance"):
             files[dest] = sha256_bytes(data)
     for dest in p["remove"]:
         files.pop(dest, None)
     out = {"state": state, "base": base, "before": before,
-           "after": sha256_bytes(approvals._manifest_blob(sorted(files.items()))),
+           "after": sha256_bytes(approvals.manifest_blob(sorted(files.items()))),
            "existing_changes": prior if state == "pending" else None}
     if state != "unprotected":
         return out
@@ -1086,10 +1086,10 @@ def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
         return out
     attested = {dest: rel["files"][src] for src, dest in targets
                 if dest.startswith("_governance/")
-                and not approvals._excluded_rel(dest, "_governance")}
+                and not approvals.excluded_rel(dest, "_governance")}
     diff = sorted(k for k in files.keys() | attested.keys()
                   if files.get(k) != attested.get(k))
-    out["protect"] = "withheld" if diff or approvals._damaged(recs) else "establish"
+    out["protect"] = "withheld" if diff or approvals.ledger_is_damaged(recs) else "establish"
     if diff:
         out["unattested"] = diff[:20]
     return out
@@ -1272,7 +1272,7 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
                     _write_atomic(d / ".gitkeep", b"")
                     made_skel.append(posix_rel(d, ROOT))
             if accept_governance:
-                approvals._approve_locked("_governance", governance["base"],
+                approvals.approve_locked("_governance", governance["base"],
                                           governance["after"],
                                           f"osk.update {v}; user confirmation: {reviewed}")
             if establish:                     # 확인받은 증빙 tree 그대로만 지정

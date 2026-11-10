@@ -6,7 +6,7 @@
 
 이 모듈이 남기는 것은 두 가지다:
 - 구체제 서명 기록부의 **판독**(사료 열람·감사): records()·latest_by_node().
-- 서명과 무관한 **판독 헬퍼**: 파일의 id 해석(_id_of·locate_by_id), 사건 헤더
+- 서명과 무관한 **판독 헬퍼**: 파일의 id 해석(id_of·locate_by_id), 사건 헤더
   파싱(parse_case). 이들은 write·graph·validate가 공유한다.
 
 대장·사건부에 적힌 **경로와 사건 번호는 신뢰 밖 입력**이다(다기기 병합).
@@ -36,7 +36,7 @@ def latest_by_node() -> dict[str, dict]:
     return out
 
 
-def _id_of(p: Path) -> str | None:
+def id_of(p: Path) -> str | None:
     """파일의 id — 계약 파서 한 갈래로만 읽는다. 정규식 파서를 따로 두면
     따옴표 표기처럼 계약은 통과하는 노드가 판정에서만 미아가 된다."""
     import yaml
@@ -59,7 +59,7 @@ def locate_by_id(node_id: str) -> Path | None:
     from . import graph
     hit = None
     for p, _k in graph.iter_nodes():
-        if _id_of(p) == node_id:
+        if id_of(p) == node_id:
             if hit is not None:
                 return None       # 모호 — 표면이 임의로 한쪽을 택하지 않는다
             hit = p

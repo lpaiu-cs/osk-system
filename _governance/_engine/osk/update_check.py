@@ -86,7 +86,7 @@ def current() -> str | None:
 
 def newer(latest, cur) -> bool:
     """`latest`가 `cur`보다 새 정식 판본인가 — 둘 다 `vX.Y.Z`일 때만 참이다."""
-    a, b = update._semver(latest), update._semver(cur)
+    a, b = update.semver(latest), update.semver(cur)
     return bool(a and b and a > b)
 
 
@@ -191,7 +191,7 @@ def acked(version: str) -> bool:
         got += [r.get("version") for r in core.ledger_read(ACKS) if r.get("kind") == "ack"]
     except (OSError, ValueError):
         pass
-    return any(update._semver(v) and not newer(version, v) for v in got)
+    return any(update.semver(v) and not newer(version, v) for v in got)
 
 
 def ack(version: str) -> dict:

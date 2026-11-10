@@ -53,7 +53,7 @@ def session_id(env: dict) -> str | None:
 
 def detect(env: dict, sid: str, path: str | None) -> str | None:
     """하네스 이름 — 명시한 이름, 어댑터가 전사를 읽지 않고 아는 것, 전사의 첫 식별
-    행 순이다. 명시한 이름은 그대로 돌려주고 판정은 `integration._identity`가 한다.
+    행 순이다. 명시한 이름은 그대로 돌려주고 판정은 `integration.conversation_key`가 한다.
     어댑터의 표지(환경의 대화 ID, 전사의 자리·형식)는 서로 배타적이다.
 
     전사를 읽지 못하면 올린다 — 판별 실패를 추측으로 덮지 않는다."""
@@ -87,7 +87,7 @@ def host_of(env: dict) -> Adapter | None:
 
 def newer(version: str | None, verified: str) -> bool:
     """`version`이 확인한 판보다 새 판인가 — 판본 꼴이 아니면 거짓이다."""
-    from ..native_cli import SEMVER, _order
+    from ..native_cli import SEMVER, version_order
     if not (version and re.fullmatch(SEMVER, version) and re.fullmatch(SEMVER, verified)):
         return False
-    return _order(version) > _order(verified)
+    return version_order(version) > version_order(verified)

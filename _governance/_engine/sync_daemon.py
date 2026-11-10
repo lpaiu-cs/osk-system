@@ -113,12 +113,12 @@ _RECORD_ROOTS = ("00_Scope", "= Scope", "Scope", "00_Person", "= Person", "Perso
 def _raw_boundary(root: Path, remote: str | None = None, *, base: str | None = None) -> list[str]:
     """Inspect changed records before commit/rebase; never repair source bytes here."""
     def git(args):
-        result = vault_sync._git(root, args, 30, text=False)
+        result = vault_sync.run_git(root, args, 30, text=False)
         if result.returncode:
             raise RuntimeError("raw boundary Git inspection failed")
         return result.stdout
 
-    head = vault_sync._head(root, 10)
+    head = vault_sync.head_commit(root, 10)
     if remote:
         paths = git(["diff", "--name-only", "-z", "--diff-filter=ACMRT",
                      base or head or "4b825dc642cb6eb9a060e54bf8d69288fbee4904", remote, "--", *_RECORD_ROOTS])
@@ -157,9 +157,9 @@ def _keep_local(root: Path) -> None:
     rule = local / ".gitignore"
     if not rule.is_file():
         rule.write_text("*\n!.gitignore\n", encoding="utf-8")
-    tracked = vault_sync._git(root, ["ls-files", "-z", "--", ".osk"], 30, text=False)
+    tracked = vault_sync.run_git(root, ["ls-files", "-z", "--", ".osk"], 30, text=False)
     if tracked.returncode == 0 and set(tracked.stdout.split(b"\0")) - {b"", b".osk/.gitignore"}:
-        vault_sync._git(root, ["rm", "-r", "--cached", "--quiet", "--", ".osk"], 60)
+        vault_sync.run_git(root, ["rm", "-r", "--cached", "--quiet", "--", ".osk"], 60)
 
 
 def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[str, str | None]:
@@ -198,7 +198,7 @@ def _once_locked(root: Path, fetched: tuple[str, str | None] | None) -> tuple[st
         return f"pull 실패: {st} {detail}", None
     if detail:
         print(f"sync: {detail}", file=sys.stderr)
-    head = vault_sync._head(root, 10)
+    head = vault_sync.head_commit(root, 10)
     if not head:
         return "push 실패: 커밋 SHA를 확인할 수 없다", None
     try:

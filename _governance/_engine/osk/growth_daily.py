@@ -35,7 +35,7 @@ DAY_SECONDS = 90 * 60                    # 하루 벽시계 예산; 작업 스�
 SCOPE_ROUNDS = growth.SCOPE_ROUNDS_PER_JOB
 SCOPE_TIMEOUT = 900                      # 9라운드 작업은 대화별 검토 실측으로 최대 9.8분이다
 LIGHT_SIZE, LIGHT_TIMEOUT = 3, 600
-LIGHT = tuple(q for q in growth._QUEUES if q != "scope_jobs")
+LIGHT = tuple(q for q in growth.QUEUES if q != "scope_jobs")
 BUSY_WAIT = 600                          # 잠금을 쥔 대화별 검토는 작업자 시한(600초) 안에 끝난다
 MISS_BELOW = 0.9                         # 적중률(캐시 읽기 ÷ 입력)이 이보다 낮은 요청이 미스다
 WEEK = 7                                 # D — 소진일에도 Claude로 대신 돌므로 매일 돈다
@@ -93,7 +93,7 @@ def codex_limits(executable: str, timeout: float = 30) -> dict:
     except OSError:
         pass
     reader.join(timeout)
-    growth._stop_tree(proc)
+    growth.stop_tree(proc)
     result = answer.get("result")
     snap = result.get("rateLimits") if isinstance(result, dict) else None
     if not isinstance(snap, dict):
@@ -251,17 +251,17 @@ def _measure(since: float) -> dict:
     from . import growth_status, raw
     work = dict.fromkeys(PROVIDERS, 0)
     inflow = dict.fromkeys(("new_rounds", "new_jobs", "old_rounds", "old_jobs", "unread"), 0)
-    for s in growth_status._states():
+    for s in growth_status.conversation_states():
         harness, sid = s["harness"], s["conversation_id"]
         if harness not in work:
             continue
         try:
-            path = integration._locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
+            path = integration.locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
             recent = bool(path) and Path(path).stat().st_mtime >= since
         except (OSError, ValueError):
             path, recent = None, False
         by_ref = {r["ref"]: r for r in s["rounds"]}
-        pending = [by_ref[ref] for ref in dict.fromkeys(integration._view(s)["pending_refs"])
+        pending = [by_ref[ref] for ref in dict.fromkeys(integration.state_view(s)["pending_refs"])
                    if ref in by_ref and (path or not raw.is_native(ref))]
         times = {}
         if recent:
@@ -302,16 +302,16 @@ def backlog() -> dict:
     라운드), 같은 scope의 작은 꼬리를 9턴까지 묶는 Scope 묶음 수의 추정(남는 꼬리를 큰 것부터 채운다),
     예상 토큰(Scope 묶음 단가 × 묶음 수). 대화 상태를 쓰지 않고 읽기만 한다."""
     from . import growth_status, raw
-    unit, measured = _scope_unit(growth._records())
+    unit, measured = _scope_unit(growth.ledger_records())
     scopes: dict = {}
     conversations = turns = 0
-    for s in growth_status._states():
-        refs = integration._view(s)["pending_refs"]
-        ended = bool(refs) and integration._ended_source(s)
+    for s in growth_status.conversation_states():
+        refs = integration.state_view(s)["pending_refs"]
+        ended = bool(refs) and integration.ended_source(s)
         n = sum(1 for ref in refs if ended or not raw.is_native(ref))
         if n:
             conversations, turns = conversations + 1, turns + n
-            scopes.setdefault(integration._review_scope(s), []).append(n)
+            scopes.setdefault(integration.review_scope(s), []).append(n)
     batches = 0
     for scope, sizes in scopes.items():
         batches += sum(n // SCOPE_ROUNDS for n in sizes)
@@ -443,7 +443,7 @@ def _choose(commands: dict, off: dict) -> tuple[str | None, dict | None, dict]:
             if checked["ok"] and (limits.get("weekly") or 0) >= REST_AT * 100:
                 skipped[who] = "rest"
                 continue
-        elif who == "claude" and (claude_week(growth._records()) or 0) >= REST_AT:
+        elif who == "claude" and (claude_week(growth.ledger_records()) or 0) >= REST_AT:
             skipped[who] = "rest"
             continue
         return who, limits, skipped
@@ -484,7 +484,7 @@ def daily(commands: list[list[str]], *, invocation: str = "scheduled", backlog: 
     failed = captured["errors"] + [c for c in captured["captures"] if c.get("new_error")]
     if failed:
         errors.append({"capture": failed})
-    rows = growth._records()
+    rows = growth.ledger_records()
     now = datetime.now(timezone.utc).astimezone()
     day = now.date().isoformat()
     last = (_adjustments(rows) or [None])[-1]

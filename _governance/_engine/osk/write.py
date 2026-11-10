@@ -32,7 +32,7 @@ import json, os, re, tempfile, time, unicodedata
 from pathlib import Path
 
 from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
-                   _rid_key, causal_maxima, ledger_append, ledger_damage,
+                   rid_key, causal_maxima, ledger_append, ledger_damage,
                    ledger_read, mutation_lock,
                    new_node_id, now_kst, posix_rel, resolve_in_root,
                    resolve_one, sha256_bytes, sha256_file, atomic_write)
@@ -58,7 +58,7 @@ _Lock = mutation_lock
 
 # ── 파일 해석·직렬화 ─────────────────────────────────────────────────────
 
-def _live_locate(name: str, idx) -> Path | None:
+def live_locate(name: str, idx) -> Path | None:
     """이름 → 파일. **잠금 안에서 지은 색인**으로 해석한다.
 
     같은 이름이 둘 이상이면 **거부한다** — 읽기(색인)와 쓰기가 서로 다른 쪽을
@@ -75,7 +75,7 @@ def _live_locate(name: str, idx) -> Path | None:
     캐시 색인으로 해석하면 낡은 경로에 작용한다"*였는데, 쓰기 통로가 쓰는 것은
     그 캐시가 아니라 같은 잠금 안에서 방금 지은 색인이다. 규율의 뜻은 지키고
     중복만 없앤다 — 실측: 25,000 노드에서 순회 289 ms, 그리고 id 핸들로 부르면
-    `_id_of`가 전 노드를 **캐시 없이** 다시 파싱해 5k에서도 이름 경로의
+    `id_of`가 전 노드를 **캐시 없이** 다시 파싱해 5k에서도 이름 경로의
     5.8배였다(804 ms 대 139 ms). 색인의 `by_id`는 그 판독을 접어 두므로 뒤이은
     검증이 다시 파싱하지 않는다."""
     hits = idx.candidates(name)
@@ -156,7 +156,7 @@ def anchor_windows(body: str, quote: str, limit: int = 5) -> tuple[int, list[tup
     return len(hits), windows
 
 
-def _frontmatter(meta: dict) -> str:
+def frontmatter(meta: dict) -> str:
     """계약 순서대로 frontmatter를 직렬화한다 (Mechanism §2 5항)."""
     lines = ["---"]
     for k in contract.ORDER:
@@ -169,7 +169,7 @@ def _frontmatter(meta: dict) -> str:
 
 
 def _render(meta: dict, body: str) -> bytes:
-    return (_frontmatter(meta) + "\n" + norm_body(body) + "\n").encode()
+    return (frontmatter(meta) + "\n" + norm_body(body) + "\n").encode()
 
 
 def _scalar(v):
@@ -249,7 +249,7 @@ def _pinned(*targets: str, subtree: str | None = None) -> bool:
     return False
 
 
-def _cluster_names() -> list[str]:
+def cluster_names() -> list[str]:
     """노드를 둘 수 있는 군집 경로 — **거부 응답에만** 실어 보낸다(상주 비용 0).
     표면에 열거 도구가 없으므로 실패하는 순간에 주소를 가르치는 것이 이 목록의
     일이다(10차 ②의 완화분 — 해결은 `overview`).
@@ -350,7 +350,7 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
             f"선언되지 않은 군집이다: {dest}. 신설은 Space 루트 바로 아래이거나 "
             f"**허브가 있는 군집 안**이어야 한다(Mechanism §1 2항 · 시행령 §3 7항). "
             f"`{parent.name}`에 먼저 동명 허브 노드를 만들면 그 안에 분화할 수 "
-            f"있다. 지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}")
+            f"있다. 지금 쓸 수 있는 군집: {', '.join(cluster_names()) or '없음'}")
     # 확인 표식·디렉토리를 남기기 **전에** 자리를 본다 — 노드 자리가 아닌 곳
     # (`_misc`·`.notes`)은 물어볼 것도 없이 거부다.
     _require_node_cluster(graph.space_of(dest_dir / "x.md"), dest)
@@ -384,12 +384,12 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
          f"여는 것은 시행령 §3 9항, 주기 처리가 domain을 여는 것은 §3 1항을 따른다. "
          f"노드를 옮겨 scope를 여는 것과 그 밖의 최상위 군집 신설은 사용자의 허락을 "
          f"확인한 뒤 다시 보낸다(Mechanism §6-2 3항). 기존 군집을 쓰려던 것이면 "
-         f"여기서 골라라: {', '.join(_cluster_names()) or '없음'}"])
+         f"여기서 골라라: {', '.join(cluster_names()) or '없음'}"])
 
 
-def _open_cases() -> list[str]:
+def open_cases() -> list[str]:
     """열린(docketed) 사건 번호 — conflicts 거부에 실어 보낸다."""
-    return sorted(no for no, c in graph._load_cases().items()
+    return sorted(no for no, c in graph.load_cases().items()
                   if str(c.get("status")) == "docketed")
 
 
@@ -452,7 +452,7 @@ def _check_edges(edges: dict | None, idx, *, adding: bool = True) -> list[str]:
             if pred == "conflicts" and not re.match(CASE_RE, t.strip()):
                 # 존치 상호 치환은 표면으로 만들 수 없다(닭-달걀) — 에이전트가 달 수
                 # 있는 conflicts는 열린 사건 참조뿐이다 (설계 rev.3 §5)
-                opened = _open_cases()
+                opened = open_cases()
                 errs.append(
                     f"conflicts는 열린 사건 번호(CASE-<연도>-<일련>)만 표면에서 달 수 "
                     f"있다: {t} — 지금 열린 사건: "
@@ -529,7 +529,7 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
     if pred == "conflicts":
         # 사건 표지는 참조 위상의 예외다(헌법 8조). 표면에서는 열린 사건에
         # 당사자로서 다는 것만 허용한다 — 전역 topology_check와 같은 의미론.
-        case = graph._load_cases().get(name)
+        case = graph.load_cases().get(name)
         if not case:
             return [f"실재하지 않는 사건 참조: {stem} → {name}"]
         if str(case.get("status")) != "docketed":
@@ -676,7 +676,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
     """Create an ordinary node under the shared mutation lock, then hang it in its place."""
     with _Lock():
         idx = graph.Index()             # 생성과 자리 걸기가 이 한 벌을 쓴다
-        return _place(_create_node_locked(title, summary, body, drafter, session,
+        return _place(create_node_locked(title, summary, body, drafter, session,
                                           space, edges, settle, _idx=idx), idx)
 
 
@@ -686,7 +686,7 @@ def _place(out: dict, idx) -> dict:
     `- [[제목]]` 줄을 더한다. 갈래 안의 정리는 조직 검토가 맡는다. 노드를 먼저 세웠으므로 허브
     쓰기가 실패하면 노드는 그대로 두고, 아직 아래 고리를 가리키지 않는 허브를 `hub_links`로
     알린다. 최상위 허브는 이을 위가 없고, Workbench는 자체 계약이라 걸지 않는다. 증류 쓰기는
-    `_create_node_locked`를 직접 부르고 자기 배선을 한다."""
+    `create_node_locked`를 직접 부르고 자기 배선을 한다."""
     if not out.get("ok"):
         return out
     path = ROOT / out["path"]
@@ -695,7 +695,7 @@ def _place(out: dict, idx) -> dict:
         return out
     from . import distillation      # distillation이 write를 부르므로 쓸 때 읽는다
     try:
-        placed = distillation._placement(path, idx, repair=True)
+        placed = distillation.node_placement(path, idx, repair=True)
         out["placed"] = [Path(h["path"]).stem for h in placed["hubs"]]
     except (WriteError, OSError, ValueError) as e:
         out["hub_links"] = _unwired(path, idx)
@@ -710,7 +710,7 @@ def _unwired(path: Path, idx) -> list[dict]:
     d = path.parent.parent if graph.is_hub(path) else path.parent
     while len(d.relative_to(ROOT).parts) >= 2 and (hub := graph.hub_file(d)) is not None:
         try:
-            linked = child in {_live_locate(r, idx) for r in contract.parse(hub).wikilinks()}
+            linked = child in {live_locate(r, idx) for r in contract.parse(hub).wikilinks()}
         except (WriteError, OSError, ValueError):
             linked = False
         if not linked:
@@ -719,7 +719,7 @@ def _unwired(path: Path, idx) -> list[dict]:
     return out
 
 
-def _create_node_locked(title: str, summary: str, body: str, drafter: str,
+def create_node_locked(title: str, summary: str, body: str, drafter: str,
                 session: str | None = None, space: str | None = None,
                 edges: dict | None = None, settle: str | None = None, *, _before_write=None,
                 _identity=None, _legacy_raw=False, _idx=None) -> dict:
@@ -731,7 +731,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     # 그래서 체감 비용이 단가의 3배였다. 잠금 안이라 그 사이에 파일이
     # 바뀌지 않으므로 한 벌이면 족하다. 자리 걸기(`_place`)도 같은 벌을 받는다.
     idx = graph.Index() if _idx is None else _idx
-    _require_complete(idx)
+    require_complete(idx)
     if settle is not None:
         evictions.require_evict(settle)
     errs = (_check_edges(edges, idx) + title_errors(title)
@@ -748,7 +748,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
         bound_set = bindings(session)["scopes"]
         raise WriteError(
             "착지가 정해지지 않았다 — space를 지정하라. "
-            f"지금 쓸 수 있는 군집: {', '.join(_cluster_names()) or '없음'}. "
+            f"지금 쓸 수 있는 군집: {', '.join(cluster_names()) or '없음'}. "
             + ("이 세션은 일회성 작업 폴더라 결속하지 않는다 — 쓸 때마다 space를 준다"
                if workspaces.is_one_off(session) else
                (f"이 프로젝트의 결속은 {', '.join(bound_set)}이지만 주된 scope가 없다 — "
@@ -846,7 +846,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
             "bound_scope": bound_now, **receipt,
             **_reference_feedback(path, meta, body, idx)}
     result.update(rechecks.after_write(idx, path, meta))
-    return evictions._after_node_write(result, settle, "node", title)
+    return evictions.after_node_write(result, settle, "node", title)
 
 
 def _baseline(idx) -> None:
@@ -858,7 +858,7 @@ def _baseline(idx) -> None:
         pass
 
 
-def _require_complete(idx) -> None:
+def require_complete(idx) -> None:
     """관측이 불완전하면 쓰지 않는다.
 
     이름·id의 유일성은 **전체를 봐야만** 말할 수 있다. 디렉토리 하나가 안
@@ -892,7 +892,7 @@ def _require_complete(idx) -> None:
 # 두어야 한다. 쓰기 통로는 그런 자리가 아니다.
 
 
-def _edge_key(target: str, idx) -> tuple[str, str]:
+def edge_key(target: str, idx) -> tuple[str, str]:
     """노드는 해석된 제목과 절 앵커, 비노드 근거는 전체 경로와 앵커로 구별한다.
     id·제목·경로 어느 표기든 같은 노드의 같은 범위면 같은 키다. 해석되지 않는 이름만 표기
     규칙(`contract.target_stem`)으로 접는다 — 제목에 든 `.md`를 떼지 않기 위해서다."""
@@ -931,7 +931,7 @@ def _titled(t, idx):
 
 
 def _merge_edges(cur: list[str], add, idx) -> list[str]:
-    """저장 목록 `cur` 뒤에 `add` 가운데 아직 없는 근거(`_edge_key`)만 잇는다.
+    """저장 목록 `cur` 뒤에 `add` 가운데 아직 없는 근거(`edge_key`)만 잇는다.
 
     엣지를 더하는 자리는 모두 이 한 벌을 지난다 — 생성, 갱신의 추가, 그리고 그 둘을
     부르는 증류. 구판은 갱신의 추가만 새 대상을 걸렀다. 그래서 생성은 받은 만큼
@@ -940,12 +940,12 @@ def _merge_edges(cur: list[str], add, idx) -> list[str]:
 
     `cur`는 키로 줄이지 않는다. 키는 "이미 있는가"를 묻는 데만 쓴다. 저장 목록을
     키로 줄이면 해석 규칙이 달라진 자리마다 저장된 근거를 조용히
-    지우게 된다. 저장 목록의 되풀이는 바이트가 같을 때만 접는다(`_update_node_locked`)."""
-    seen = {_edge_key(t, idx) for t in cur}
+    지우게 된다. 저장 목록의 되풀이는 바이트가 같을 때만 접는다(`update_node_locked`)."""
+    seen = {edge_key(t, idx) for t in cur}
     out = list(cur)
     for t in as_list(add):
         t = _titled(t, idx)
-        k = _edge_key(t, idx)
+        k = edge_key(t, idx)
         if k not in seen:
             seen.add(k)
             out.append(t)
@@ -991,12 +991,12 @@ def update_node(name: str, body: str | None = None,
     `rechecks.state`); a recorded read must still match for a recheck to close
     (Mechanism §4-1)."""
     with _Lock():
-        return _update_node_locked(name, body, expect_hash, summary, add_edges,
+        return update_node_locked(name, body, expect_hash, summary, add_edges,
                                    remove_edges, old_text, new_text, settle, rechecked,
                                    _seen=_seen)
 
 
-def _update_node_locked(name: str, body: str | None = None,
+def update_node_locked(name: str, body: str | None = None,
                 expect_hash: str | None = None, summary: str | None = None,
                 add_edges: dict | None = None,
                 remove_edges: dict | None = None,
@@ -1044,13 +1044,13 @@ def _update_node_locked(name: str, body: str | None = None,
                 ["바뀌는 것이 없다. 고칠 내용을 `new_text`에 담아라."])
     # 이 쓰기가 쓰는 색인은 하나다. 같은 잠금 안의 허브 배선은 앞 쓰기의 색인을 넘긴다.
     idx = graph.Index() if _idx is None else _idx
-    _require_complete(idx)
+    require_complete(idx)
     if settle is not None:
         evictions.require_evict(settle)
     errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx, adding=False)
     if errs:
         raise WriteError("계약 위반 — 쓰지 않았다", errs)
-    path = _live_locate(name, idx)
+    path = live_locate(name, idx)
     if path is None or not path.is_file():
         raise WriteError(f"노드 없음: {name}")
     kind = graph.space_of(path)
@@ -1121,13 +1121,13 @@ def _update_node_locked(name: str, body: str | None = None,
     # 갱신의 자연스러운 표현이다. 실제로 v3.7.3 이관에서 두 번 걸렸고,
     # 두 번째는 이 결함을 재현해 기록한 직후였다 — 알고도 피해지지 않았다.
     #
-    # 제거가 먼저다. id와 제목은 같은 근거이므로(`_edge_key`), 저장된 id 표기를
+    # 제거가 먼저다. id와 제목은 같은 근거이므로(`edge_key`), 저장된 id 표기를
     # 빼고 제목으로 다시 대는 호출이 뒤의 제거에 지워지지 않는다. 같은 근거를
     # 함께 빼고 대면 남는다 — 근거를 조용히 잃지 않는다.
     for pred, tg in (remove_edges or {}).items():
-        drop = {_edge_key(t, idx) for t in as_list(tg)}
+        drop = {edge_key(t, idx) for t in as_list(tg)}
         cur = stored_edges(meta.get(pred))
-        keep = [t for t in cur if _edge_key(t, idx) not in drop]
+        keep = [t for t in cur if edge_key(t, idx) not in drop]
         if len(keep) != len(cur):
             changed = True
             if keep:
@@ -1215,7 +1215,7 @@ def _update_node_locked(name: str, body: str | None = None,
             out["dropped"] = dropped
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
-    return evictions._after_node_write(out, settle, "merged", path.stem)
+    return evictions.after_node_write(out, settle, "merged", path.stem)
 
 
 def _dropped(old_body: str, new_body: str) -> list[str]:
@@ -1223,7 +1223,7 @@ def _dropped(old_body: str, new_body: str) -> list[str]:
     고쳐 쓴 단위도 옛 판이 나온다 — 고친 것인지 흘린 것인지는 읽는 쪽이 가른다.
     많으면 앞의 10개를 300자까지만 싣고 나머지는 개수로 알린다."""
     from . import distillation      # distillation이 write를 부르므로 쓸 때 읽는다
-    gone = [t for t in distillation._segment_texts(old_body) if t not in new_body]
+    gone = [t for t in distillation.segment_texts(old_body) if t not in new_body]
     shown = [t if len(t) <= 300 else t[:299] + "…" for t in gone[:10]]
     return shown + ([f"… 외 {len(gone) - 10}개"] if len(gone) > 10 else [])
 
@@ -1235,7 +1235,7 @@ def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
     `move_nodes`가 전부-아니면-전무이려면 **검사를 전부 먼저** 돌려야 한다.
     검사와 실행이 한 덩이면 절반 옮긴 상태가 남고, 그 상태는 허브 배선이
     어중간해 사람이 무엇을 되돌릴지 알기 어렵다."""
-    path = _live_locate(name, idx)
+    path = live_locate(name, idx)
     if path is None or not path.is_file():
         # 결과를 함께 말한다 — "전부 아니면 전무"를 문안으로만 약속하면 받는
         # 쪽이 못 믿고 확인 질의를 한 번 더 한다(표면 감사 실측).
@@ -1425,7 +1425,7 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
         raise WriteError("옮길 노드가 없다")
     with _Lock():
         idx = graph.Index()                     # 이 이동이 쓰는 색인은 하나다
-        _require_complete(idx)
+        require_complete(idx)
         dest_dir = resolve_in_root(dest_space)
         if dest_dir is None or not dest_dir.is_dir():
             dest_dir = _new_cluster_gate(dest_space, dest_dir, "이 이동이")
@@ -1525,8 +1525,8 @@ def move_cluster(name: str, dest_parent: str) -> dict:
     오독하지 않게)."""
     with _Lock():
         idx = graph.Index()
-        _require_complete(idx)
-        src = _live_locate(name, idx)
+        require_complete(idx)
+        src = live_locate(name, idx)
         if src is None or not src.is_file():
             raise WriteError(f"노드 없음: {name}")
         if not graph.is_hub(src):
@@ -1595,14 +1595,14 @@ def record_candidate(type: str, nodes: list[str], reason: str = "") -> dict:
         if type not in CANDIDATE_TYPES:
             raise WriteError(f"미정의 충돌 유형: {type} (Mechanism §4 3항)")
         idx = graph.Index()
-        _require_complete(idx)
+        require_complete(idx)
         parties = []
         for nm in nodes:
-            # `_live_locate`를 쓴다 — 동명·동 id면 **고르지 않고 거부**한다
+            # `live_locate`를 쓴다 — 동명·동 id면 **고르지 않고 거부**한다
             # (Mechanism §2 1항). 구판은 `idx.nodes.get`으로 뒤에 오는 쪽을
             # 조용히 골라, 쓰기 통로가 거부하는 모호성을 이 통로가 사건부에
             # 박제했다. id 핸들도 여기서 함께 해석된다.
-            p = _live_locate(nm, idx)
+            p = live_locate(nm, idx)
             if p is None or not p.is_file():
                 raise WriteError(f"당사자 노드 없음: {nm} — 근거가 성립하지 않는다")
             try:

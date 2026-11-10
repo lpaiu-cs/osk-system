@@ -68,9 +68,9 @@ def _seen(chunk: str) -> str:
         cited = raw.cited_header(chunk) is not None
     except ValueError:
         cited = False
-    events = list(raw_view._events(chunk.partition("\n")[2]))
-    agent = " ".join(raw_view._text(v) for r, v in events if r in ("agent", "assistant"))
-    user = " ".join(raw_view._text(v) for r, v in events if r in ("user", "plain"))
+    events = list(raw_view.parse_events(chunk.partition("\n")[2]))
+    agent = " ".join(raw_view.visible_text(v) for r, v in events if r in ("agent", "assistant"))
+    user = " ".join(raw_view.visible_text(v) for r, v in events if r in ("user", "plain"))
     for text in ((agent, user) if cited else (user, agent)):    # 인용 라운드의 응답 자리는 요지다
         if text := _words(text):
             return text
@@ -81,7 +81,7 @@ def _rounds_seen(path: Path, indices: set[int]) -> dict[int, tuple[str | None, s
     """기록의 라운드 → (그 제목 행이 기록에 들어온 커밋의 날, 보인 것). 기록마다 한 번 읽고 git blame도
     한 번 부른다. 날짜는 커밋한 기기의 시간대로 읽는다."""
     text = raw.read_exact(path)
-    spans = raw._round_spans(text)
+    spans = raw.round_spans(text)
     rows = {text.count("\n", 0, spans[i][0]) + 1: i for i in indices if i in spans}
     days, row, when = {}, None, None
     out = _git("blame", "--line-porcelain", *(f"-L{n},{n}" for n in sorted(rows)), "--",
@@ -95,7 +95,7 @@ def _rounds_seen(path: Path, indices: set[int]) -> dict[int, tuple[str | None, s
             tz = line.split()[1]
             shift = timedelta(hours=int(tz[1:3]), minutes=int(tz[3:5])) * (-1 if tz[0] == "-" else 1)
             days[rows[row]] = datetime.fromtimestamp(when, timezone(shift)).strftime("%Y-%m-%d")
-    return {i: (days.get(i), _seen(raw._recalled(text[s:e]))) for i, (s, e) in spans.items() if i in indices}
+    return {i: (days.get(i), _seen(raw.recalled_text(text[s:e]))) for i, (s, e) in spans.items() if i in indices}
 
 
 def _entry_day(node: Path, entry: str) -> str | None:
@@ -135,7 +135,7 @@ def _items(n, idx, records) -> list[dict]:
         if graph.is_record_ref(s):
             rec, index = raw.parse_ref(s)
             try:
-                p = raw._raw_file(rec)
+                p = raw.raw_file(rec)
             except (OSError, ValueError):
                 out.append({**it, "kind": "round", "action": "hold", "reason": f"없는 기록: {rec}"})
                 continue
@@ -193,7 +193,7 @@ def _change(path: Path, n, items: list[dict]) -> dict:
         else:
             meta.pop("derived-from", None)
         meta["updated"] = core.now_kst()
-        out["new"] = (write._frontmatter(meta) + body).encode("utf-8")
+        out["new"] = (write.frontmatter(meta) + body).encode("utf-8")
     return out
 
 

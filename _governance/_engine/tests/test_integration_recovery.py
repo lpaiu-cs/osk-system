@@ -61,11 +61,11 @@ def stored(n):
     # The full-capture engine (<= v4.1) kept each round in `_raw/`, tracked by its hash.
     capture(n)
     path = it.state_path('claude', sid)
-    s = it._load(path, 'claude', sid)
+    s = it.load_state(path, 'claude', sid)
     parsed = transcripts.read(str(native), 'claude', sid)
     shown = parsed['dialogue_v1']
     record = core.ROOT / '00_Scope/W1/_raw/.records' / (s['record'] + '.txt')
-    blocks = [raw._block(i, raw.escape_numeric_h2(shown[r['id']]['user']),
+    blocks = [raw.round_block(i, raw.escape_numeric_h2(shown[r['id']]['user']),
                          raw.escape_numeric_h2(shown[r['id']]['agent']), dialogue_id=r['id'])
               for i, r in enumerate(parsed['rounds'], 1)]
     record.parent.mkdir(parents=True, exist_ok=True)
@@ -76,7 +76,7 @@ def stored(n):
                    for i, (r, block) in enumerate(zip(parsed['rounds'], blocks), 1)]
     through = it._snapshot(s)
     s['snapshots'] = {through: {'count': len(s['rounds']), 'prompt_count': s['prompt_count']}}
-    it._save(path, s)
+    it.save_state(path, s)
     return record, through, [r['ref'] for r in s['rounds']]
 def correct(record, old, new):
     data = record.read_bytes()  # bytes: a text write would also change every line ending
@@ -145,7 +145,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             path = it.state_path('claude', sid)
             before = path.read_bytes()
             with core.mutation_lock():
-                assert it._review_status_locked('claude', sid, first['through'])['status'] == 'complete'
+                assert it.review_status_locked('claude', sid, first['through'])['status'] == 'complete'
             assert path.read_bytes() == before  # A status read never writes the cursor.
             assert not it.status('claude', sid)['pending']
         """)
@@ -201,12 +201,12 @@ class IntegrationRecoveryTests(unittest.TestCase):
         self.check_case("""
             record, through, refs = stored(2)
             path = it.state_path('claude', sid)
-            s = it._load(path, 'claude', sid)
+            s = it.load_state(path, 'claude', sid)
             # Cursors from before the hidden record layout keep their visible wiki coordinates.
             old = ['[[' + r['ref'].replace('/.records/', '/').replace('.txt#', '.md#') + ']]' for r in s['rounds']]
             for r, ref in zip(s['rounds'], old):
                 r['ref'] = ref
-            it._save(path, s)
+            it.save_state(path, s)
             it.acknowledge('claude', sid, through, 'no_value', 'Both stored rounds were one-off checks.')
             correct(record, 'question 1', 'question one')
             for ref in (refs[0], old[0]):  # either spelling names the same round

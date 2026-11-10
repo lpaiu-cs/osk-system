@@ -16,7 +16,7 @@ def _managed_codex(path: Path) -> bool:
                 and [p.name.lower() for p in list(path.parents)[1:4]] == ['bin', 'codex', 'openai'])
 
 
-def _order(version: str) -> tuple:
+def version_order(version: str) -> tuple:
     """Prefer a release over its prereleases, then numeric alpha/beta order."""
     base, _, suffix = version.partition('-')
     return (*map(int, base.split('.')), not bool(suffix),
@@ -188,7 +188,7 @@ def resolve(executable: str, *, version: str | None = None, env=None) -> str:
                 if candidate.parent != directory and not re.fullmatch(r'[0-9a-f]{12}', candidate.parent.name):
                     continue
                 if candidate.is_file() and candidate.resolve() == base.resolve() / candidate.relative_to(base):
-                    installed.append((_order(directory.name), str(candidate)))
+                    installed.append((version_order(directory.name), str(candidate)))
         if not installed:
             raise ValueError('matching Claude Desktop CLI is unavailable; review remains pending')
         newest = max(v for v, _ in installed)
@@ -211,7 +211,7 @@ def resolve(executable: str, *, version: str | None = None, env=None) -> str:
             continue
         found = _codex_version(candidate, env)
         if found and (version is None or found == version):
-            matches.append((_order(found), str(candidate)))
+            matches.append((version_order(found), str(candidate)))
     if not matches:
         raise ValueError('matching Codex Desktop CLI is unavailable; review remains pending')
     return max(matches)[1]

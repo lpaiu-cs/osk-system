@@ -105,7 +105,7 @@ def run(a):
     assert json.loads(proc.stdout.readline())["ready"]
     seq = 0
     state = {}
-    original_lock, original_unlock, original_git = sync.lock_exclusive, sync.unlock, vault_sync._git
+    original_lock, original_unlock, original_git = sync.lock_exclusive, sync.unlock, vault_sync.run_git
 
     def lock(f, *args, **kwargs):
         start = time.perf_counter()
@@ -160,7 +160,7 @@ def run(a):
             "returncode": result.returncode})
         return result
 
-    sync.lock_exclusive, sync.unlock, vault_sync._git = lock, unlock, timed_git
+    sync.lock_exclusive, sync.unlock, vault_sync.run_git = lock, unlock, timed_git
     with a.output.open("w", encoding="utf-8") as out:
         def record(value):
             out.write(json.dumps(value)+"\n")

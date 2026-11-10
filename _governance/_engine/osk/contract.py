@@ -479,7 +479,7 @@ def stored_edges(v) -> list[str]:
     `[[…/_raw/rec#3]]` → `[[…/_raw/rec]]`. 근거에서 증거로 가는 길이 그렇게
     끊긴다(시행령 §1 3항이 `_raw/` 참조에 라운드 제목을 요구한다).
 
-    그래서 델타는 **여기서 읽고** 동일성 비교는 `write._edge_key`로 한다."""
+    그래서 델타는 **여기서 읽고** 동일성 비교는 `write.edge_key`로 한다."""
     if v is None or v == "" or v == []:
         return []
     return [str(x) for x in as_list(v)]

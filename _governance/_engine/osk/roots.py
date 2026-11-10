@@ -83,7 +83,7 @@ class Roots:
     def file(self, alias: str, rel: str) -> Path | None:
         """별칭과 루트 기준 경로 → 루트 안의 파일. 보류면 None이고, 끊김이면 ValueError(보고할
         문구)다. 경로는 위치 안으로 봉쇄하고, 위치 아래 경로 구성요소의 symlink는 받지 않는다
-        (§1-2 5항의 경로 정체성 — `core._canon_rel`)."""
+        (§1-2 5항의 경로 정체성 — `core.canon_rel`)."""
         problem = alias_problem(alias, self.decl)
         if problem:
             raise ValueError(problem)
@@ -92,7 +92,7 @@ class Roots:
         if why:
             self.held.setdefault(alias, why)
             return None
-        canon = core._canon_rel(Path(where), rel)
+        canon = core.canon_rel(Path(where), rel)
         if canon is None:
             raise ValueError("루트 안으로 해석되지 않는 경로")
         p = Path(os.path.realpath(where)) / canon

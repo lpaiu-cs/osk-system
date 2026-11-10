@@ -105,15 +105,15 @@ def initialize(env: dict) -> dict | None:
     harness, sid, path = integration.hook_source(env)
     if not configured(harness):
         return None
-    with integration._locked(harness, sid) as p:
-        state = integration._load(p, harness, sid)
+    with integration.state_lock(harness, sid) as p:
+        state = integration.load_state(p, harness, sid)
         saved = state.get('response_growth')
         if saved is None:
             source = profile(path, harness, sid) if path and Path(path).exists() else None
             saved = {'counter': 'finals', 'seen': source['finals'] if source else [],
                      'count': 0, 'attempted_count': 0, 'history_baselined': source is not None}
             state['response_growth'] = saved
-            integration._save(p, state)
+            integration.save_state(p, state)
         return {k: v for k, v in saved.items() if k != 'seen'}
 
 
@@ -125,8 +125,8 @@ def route(env: dict) -> dict:
     asks the hook to start the worker (`defer`)."""
     harness, sid, path = integration.hook_source(env)
     verdict = check(harness, sid, path, env.get('cwd') or os.getcwd(), ask=False)
-    with integration._locked(harness, sid) as p:
-        state = integration._load(p, harness, sid)
+    with integration.state_lock(harness, sid) as p:
+        state = integration.load_state(p, harness, sid)
         asked = state.get('response_growth_probe')
         provisional = bool(verdict and verdict.pop('probe', False))
         due = (verdict is None or provisional) and _probe_due(state, path)
@@ -143,7 +143,7 @@ def route(env: dict) -> dict:
         # A default nobody has checked yet is no news ("구독 CLI를 확인했다" would be false).
         changed = state.get('response_growth_route') != selected and bool(verdict or asked)
         state['response_growth_route'] = selected
-        integration._save(p, state)
+        integration.save_state(p, state)
     return {**selected, 'changed': changed, 'probe_due': due}
 
 
@@ -167,10 +167,10 @@ def probe(env: dict) -> dict:
 
 
 def _remember(harness: str, sid: str, verdict: dict, *, unread: bool = False) -> dict:
-    with integration._locked(harness, sid) as p:
-        state = integration._load(p, harness, sid)
+    with integration.state_lock(harness, sid) as p:
+        state = integration.load_state(p, harness, sid)
         state['response_growth_probe'] = {**verdict, 'at': time.time(), **({'unread': True} if unread else {})}
-        integration._save(p, state)
+        integration.save_state(p, state)
     return verdict
 
 
@@ -212,8 +212,8 @@ def after_hook(env: dict) -> None:
         try:
             if integration.capture_due(harness, sid, path):
                 integration.hook_capture(env, env['session'])
-            with integration._locked(harness, sid) as p:
-                due = _probe_due(integration._load(p, harness, sid), path)
+            with integration.state_lock(harness, sid) as p:
+                due = _probe_due(integration.load_state(p, harness, sid), path)
             if due:
                 probe(env)
         finally:
@@ -267,8 +267,8 @@ def doctor(harness: str, sid: str | None = None, transcript: str | None = None) 
     if transcript and not sid:
         raise ValueError('--transcript needs the conversation ID (--session)')
     if sid:
-        integration._identity(harness, sid)
-        transcript = transcript or integration._locate_transcript(harness, sid)
+        integration.conversation_key(harness, sid)
+        transcript = transcript or integration.locate_transcript(harness, sid)
     cwd = os.getcwd()
     report = {'harness': harness, 'verdict': check(harness, sid, transcript, cwd),
               'conversation_id': sid, 'transcript': transcript}
@@ -342,8 +342,8 @@ def doctor(harness: str, sid: str | None = None, transcript: str | None = None) 
 def launch(env: dict, session: str) -> bool:
     """Detach only a small supervisor; Stop returns before native final markers flush."""
     harness, sid, path = integration.hook_source(env)
-    with integration._locked(harness, sid) as p:
-        state = integration._load(p, harness, sid)
+    with integration.state_lock(harness, sid) as p:
+        state = integration.load_state(p, harness, sid)
         if state.get('response_growth_route', {}).get('mode') in ('foreground', 'off'):
             return False
     try:
@@ -409,13 +409,13 @@ def process_stop(env: dict, *, flush_timeout: float = 5) -> dict:
             if not source['last_successful']:
                 result = {'ok': True, 'state': 'not_final'}
             else:
-                with integration._locked(harness, sid) as p:
-                    state = integration._load(p, harness, sid)
+                with integration.state_lock(harness, sid) as p:
+                    state = integration.load_state(p, harness, sid)
                     if 'response_growth' not in state:
                         # First notification after installation counts once, never replays history.
                         state['response_growth'] = {'counter': 'finals', 'seen': source['finals'][:-1],
                                                     'count': 0, 'attempted_count': 0, 'history_baselined': True}
-                        integration._save(p, state)
+                        integration.save_state(p, state)
                 clock = observe(source)
                 if not clock['due']:
                     result = {'ok': not bool(captured['capture_error']), 'state': 'not_due', **clock}
@@ -433,17 +433,17 @@ def process_stop(env: dict, *, flush_timeout: float = 5) -> dict:
             result = {'ok': False, 'state': 'pending', 'error': f'{type(exc).__name__}: {exc}'}
         finally:
             unlock(lock)
-    with integration._locked(harness, sid) as p:
-        state = integration._load(p, harness, sid)
+    with integration.state_lock(harness, sid) as p:
+        state = integration.load_state(p, harness, sid)
         state['response_growth_stop'] = {**{k: result[k] for k in ('ok', 'state', 'error') if k in result},
                                          'reviewed': _review_done(result)}
-        integration._save(p, state)
+        integration.save_state(p, state)
     return result
 
 
 def profile(path: str, harness: str, sid: str) -> dict:
     """Read native metadata locally, without copying history into a prompt or raw."""
-    integration._identity(harness, sid)
+    integration.conversation_key(harness, sid)
     native = Path(path).resolve()
     before = transcripts.native_fingerprint(str(native), harness, sid)
     result = {'harness': harness, 'conversation_id': sid, 'finals': [], 'active': False,
@@ -547,8 +547,8 @@ def observe(source: dict) -> dict:
     ids = source['finals']
     if not isinstance(ids, list) or len(ids) != len(set(ids)):
         raise ValueError('completion identities must be unique')
-    with integration._locked(harness, sid) as path:
-        state = integration._load(path, harness, sid)
+    with integration.state_lock(harness, sid) as path:
+        state = integration.load_state(path, harness, sid)
         saved = state.get('response_growth')
         if saved is None:
             saved = {'counter': 'finals', 'seen': ids, 'count': 0, 'attempted_count': 0,
@@ -573,7 +573,7 @@ def observe(source: dict) -> dict:
             saved['count'] += len(ids) - start - len(seen)
             saved['seen'] = ids
             saved['history_baselined'] = True
-        integration._save(path, state)
+        integration.save_state(path, state)
         return {'count': saved['count'], 'attempted_count': saved['attempted_count'],
                 'due': saved['count'] - saved['attempted_count'] >= EVERY,
                 'counter': 'finals'}
@@ -598,21 +598,21 @@ def attempt(source: dict, job: dict, executable: str) -> dict:
         return {'ok': True, 'state': 'not_due', **clock}
     if job.get('capture_error') or job.get('capture_pending'):
         return {'ok': False, 'state': 'capture_pending', **clock}
-    with integration._locked(harness, sid) as path:
-        state = integration._load(path, harness, sid)
+    with integration.state_lock(harness, sid) as path:
+        state = integration.load_state(path, harness, sid)
         saved = state['response_growth']
         if saved['count'] - saved['attempted_count'] < EVERY:
             return {'ok': True, 'state': 'already_claimed'}
         saved['attempted_count'] = clock['count']
         saved['last_result'] = {'ok': False, 'state': 'running'}
-        integration._save(path, state)  # A crashed worker is not relaunched in a tight loop.
+        integration.save_state(path, state)  # A crashed worker is not relaunched in a tight loop.
     try:
         result = (run(source, job, executable) if job.get('pending_refs') else
                   {'ok': True, 'state': 'already_reviewed'})
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         result = {'ok': False, 'state': 'blocked', 'error': str(exc)}
-    with integration._locked(harness, sid) as path:
-        state = integration._load(path, harness, sid)
+    with integration.state_lock(harness, sid) as path:
+        state = integration.load_state(path, harness, sid)
         saved = state['response_growth']
         # `reviewed` keeps the fork's own verdict for the hook: an unfinished side job is not a
         # wait for this conversation (#228).
@@ -627,7 +627,7 @@ def attempt(source: dict, job: dict, executable: str) -> dict:
                                'reason': result.get('error') or result.get('state')}
         if result.get('state') in {'busy', 'unavailable'}:
             saved['attempted_count'] = clock['attempted_count']
-        integration._save(path, state)
+        integration.save_state(path, state)
     return result
 
 
@@ -789,7 +789,7 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
               timeout: float = 5) -> str:
     """Local authentication/version queries only; used by routing and rechecked before inference."""
     harness = source['harness']
-    integration._identity(harness, 'preflight')
+    integration.conversation_key(harness, 'preflight')
     expected = source.get('cli_version') if harness == 'codex' else source.get('version')
     from . import native_cli
     if harness == 'codex':
@@ -865,7 +865,7 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
 def command(source: dict, executable: str, env: dict) -> list[str]:
     """Fail closed before inference. Never fall back to API credentials or a cheaper model."""
     harness, sid = source['harness'], source['conversation_id']
-    integration._identity(harness, sid)
+    integration.conversation_key(harness, sid)
     # Preflight first: it names the ChatGPT Web route the model check would only reject generically.
     executable = preflight(source, executable, env)
     model = source.get('model')

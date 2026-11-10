@@ -35,7 +35,7 @@ class Records:
 
     def __init__(self):
         self.names: set[str] = set()
-        for d in (ROOT / raw.CITED, *raw._legacy_dirs()):
+        for d in (ROOT / raw.CITED, *raw.legacy_dirs()):
             if d.is_dir():
                 for f in (*d.glob("*.md"), *(d / ".records").glob("*.txt"),
                           *(d / ".records").glob("*/record.txt")):
@@ -74,7 +74,7 @@ class Records:
         """좌표의 기록 부분 → 기록 파일. 줄인 해시·옛 이름·전체 경로를 받는다."""
         if record not in self._files:
             if "/" in record:
-                self._files[record] = raw._raw_file(record)
+                self._files[record] = raw.raw_file(record)
             else:
                 names = self.find(record)
                 if len(names) != 1:

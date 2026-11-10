@@ -91,11 +91,11 @@ assert run(apply=True)['approval_required']
 # A failure after acceptance restores both approval and framework bytes.
 old_ledger = approvals.APPROVALS.read_bytes()
 old_policy = (root / '_governance/Policy.md').read_bytes()
-real_accept = approvals._approve_locked
+real_accept = approvals.approve_locked
 def fail_after_accept(*args, **kw):
     real_accept(*args, **kw)
     raise OSError('injected failure after approval')
-with mock.patch.object(approvals, '_approve_locked', side_effect=fail_after_accept):
+with mock.patch.object(approvals, 'approve_locked', side_effect=fail_after_accept):
     try: run(apply=True)
     except update.UpdateError as e: assert '원상복구' in str(e)
     else: raise AssertionError('expected rollback')
@@ -125,7 +125,7 @@ fake.write_text("import time\nfrom osk import core\nfrom osk._portalock import l
 daemon = subprocess.Popen([sys.executable, str(fake)], stdout=subprocess.PIPE, text=True)
 try:
     assert daemon.stdout.readline().strip() == 'ready'
-    assert daemon.pid in update._daemon_pids()
+    assert daemon.pid in update.daemon_pids()
     info = {}
     with mock.patch.object(update, 'DAEMON_RESTART_WAIT', 1):
         with update._daemon_stopped(info):

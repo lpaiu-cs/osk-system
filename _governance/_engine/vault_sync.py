@@ -32,7 +32,7 @@ _GIT_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C", "GIT_TERMINAL_PROMPT": "0"
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
-def _git(vault_root, args, timeout, *, text=True):
+def run_git(vault_root, args, timeout, *, text=True):
     return subprocess.run(
         ["git", "-C", str(vault_root), *args],
         capture_output=True, text=text, timeout=timeout, env=_GIT_ENV,
@@ -48,7 +48,7 @@ def is_git_repo(vault_root, timeout=10) -> bool:
     거짓은 git이 "저장소가 아니다"라고 답했거나, 답한 최상위가 vault_root가 아닐
     때뿐이다. timeout·git 실패는 답이 아니므로 그대로 올린다 — 거짓으로 접으면 굶은
     데몬의 timeout이 매 주기 "git 저장소 아님"으로 둔갑해 원인이 가려진다(2026-10-12 실측)."""
-    r = _git(vault_root, ["rev-parse", "--show-toplevel"], timeout)
+    r = run_git(vault_root, ["rev-parse", "--show-toplevel"], timeout)
     if r.returncode != 0:
         if "not a git repository" in r.stderr:
             return False
@@ -68,7 +68,7 @@ def remote_targets(vault_root, timeout=10):
     url = origin_url(vault_root, timeout)
     if not url:
         return None, []
-    r = _git(vault_root, ["remote", "get-url", "--push", "--all", "origin"], timeout)
+    r = run_git(vault_root, ["remote", "get-url", "--push", "--all", "origin"], timeout)
     if r.returncode != 0:
         raise RuntimeError(f"git remote 판독 실패: {r.stderr.strip()[-600:]}")
     return url, [u.strip() for u in r.stdout.splitlines() if u.strip()]
@@ -94,7 +94,7 @@ def targets_match(approved, url, pushes) -> bool:
 def origin_url(vault_root, timeout=10):
     """`origin`의 fetch 주소, 없으면 None. 데몬에게 원격은 `origin`뿐이다 — 다른 이름의 원격만
     있으면 원격이 없는 것이다. is_git_repo와 같이 판독 실패는 "원격 없음"으로 접지 않는다."""
-    r = _git(vault_root, ["remote", "get-url", "origin"], timeout)
+    r = run_git(vault_root, ["remote", "get-url", "origin"], timeout)
     if r.returncode != 0:
         if "no such remote" in r.stderr.lower():
             return None
@@ -102,8 +102,8 @@ def origin_url(vault_root, timeout=10):
     return r.stdout.strip() or None
 
 
-def _head(vault_root, timeout):
-    r = _git(vault_root, ["rev-parse", "HEAD"], timeout)
+def head_commit(vault_root, timeout):
+    r = run_git(vault_root, ["rev-parse", "HEAD"], timeout)
     return r.stdout.strip() if r.returncode == 0 else None
 
 
@@ -115,7 +115,7 @@ SYNC_BRANCH = "main"
 
 def current_branch(vault_root, timeout=10):
     """현재 브랜치명. detached HEAD면 None."""
-    r = _git(vault_root, ["symbolic-ref", "--quiet", "--short", "HEAD"], timeout)
+    r = run_git(vault_root, ["symbolic-ref", "--quiet", "--short", "HEAD"], timeout)
     if r.returncode not in (0, 1):       # 1만 정상 detached HEAD다
         raise RuntimeError(f"git branch 판독 실패: {r.stderr.strip()[-600:]}")
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
@@ -126,7 +126,7 @@ def _tracked_dirty(vault_root, timeout):
     vault에서 미추적 파일은 대개 새로 생긴 노드이고, checkout은 그것을 그대로
     데리고 넘어가므로 main에서 커밋되는 것이 옳다. 반대로 추적 파일의 수정은
     누군가 그 브랜치에서 진행 중인 작업일 수 있어 옮기면 안 된다."""
-    r = _git(vault_root, ["status", "--porcelain", "-z"], timeout)
+    r = run_git(vault_root, ["status", "--porcelain", "-z"], timeout)
     if r.returncode != 0:
         raise RuntimeError(f"git status 실패: {r.stderr.strip()[-600:]}")
     return any(e[:2] != "??" for e in r.stdout.split("\0") if e.strip())
@@ -153,10 +153,10 @@ def ensure_branch(vault_root, branch=SYNC_BRANCH, timeout=30):
                     f"{where}에 있고 추적 파일이 수정돼 있다 — {branch}로 전환하지 "
                     f"않았다. 진행 중인 작업일 수 있어 옮기지 않으며, 동기화 대상은 "
                     f"{branch} 고정이므로 이 상태로는 동기화하지 않는다")
-        v = _git(vault_root, ["rev-parse", "--verify", "--quiet", branch], timeout)
+        v = run_git(vault_root, ["rev-parse", "--verify", "--quiet", branch], timeout)
         if v.returncode != 0:
             return (False, "error", f"로컬에 {branch} 브랜치가 없다 — 동기화하지 않았다")
-        c = _git(vault_root, ["checkout", branch], timeout)
+        c = run_git(vault_root, ["checkout", branch], timeout)
         if c.returncode != 0:
             return (False, "error",
                     f"{branch} 전환 실패: " + (c.stdout + c.stderr).strip()[-600:])
@@ -170,14 +170,14 @@ def ensure_branch(vault_root, branch=SYNC_BRANCH, timeout=30):
 def _in_progress(vault_root, timeout):
     """사용자가 끝내야 할 git 작업. worktree별 git 디렉터리와 미병합 index를 본다.
     충돌을 이미 stage했어도 작업 표식이 남아 있으면 데몬이 대신 완료하지 않는다."""
-    r = _git(vault_root, ["rev-parse", "--absolute-git-dir"], timeout)
+    r = run_git(vault_root, ["rev-parse", "--absolute-git-dir"], timeout)
     if r.returncode != 0 or not r.stdout.strip():
         raise RuntimeError(f"git 작업 상태 판독 실패: {r.stderr.strip()[-600:]}")
     for name in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD",
                  "REVERT_HEAD", "sequencer", "BISECT_START"):
         if os.path.exists(os.path.join(r.stdout.strip(), name)):
             return name
-    r = _git(vault_root, ["ls-files", "--unmerged", "-z"], timeout)
+    r = run_git(vault_root, ["ls-files", "--unmerged", "-z"], timeout)
     if r.returncode != 0:
         raise RuntimeError(f"git 미병합 index 판독 실패: {r.stderr.strip()[-600:]}")
     return "미병합 index" if r.stdout else None
@@ -196,10 +196,10 @@ def commit_local(vault_root, message, timeout=60):
         if pending:
             return (False, "error",
                     f"{pending} 진행 중 — 커밋하지 않는다(수동 개입 필요)")
-        added = _git(vault_root, ["add", "-A"], timeout)
+        added = run_git(vault_root, ["add", "-A"], timeout)
         if added.returncode != 0:
             return (False, "error", (added.stdout + added.stderr).strip()[-600:])
-        c = _git(vault_root, ["commit", "-m", message], timeout)
+        c = run_git(vault_root, ["commit", "-m", message], timeout)
         if c.returncode != 0 and "nothing to commit" not in (c.stdout + c.stderr).lower():
             return (False, "error", (c.stdout + c.stderr).strip()[-600:])
         return (True, "ok", "")
@@ -217,7 +217,7 @@ def _resolve_graph_scale(vault_root, timeout):
     노트와의 혼합 충돌은 여기서 결정하지 않는다.
     """
     path = ".obsidian/graph.json"
-    r = _git(vault_root, ["ls-files", "--unmerged", "-z"], timeout)
+    r = run_git(vault_root, ["ls-files", "--unmerged", "-z"], timeout)
     if r.returncode != 0:
         return False
     entries = [entry.split("\t", 1) for entry in r.stdout.split("\0") if entry]
@@ -236,7 +236,7 @@ def _resolve_graph_scale(vault_root, timeout):
 
     settings = []
     for stage in (2, 3):
-        blob = _git(vault_root, ["show", f":{stage}:{path}"], timeout, text=False)
+        blob = run_git(vault_root, ["show", f":{stage}:{path}"], timeout, text=False)
         if blob.returncode != 0:
             return False
         try:
@@ -254,7 +254,7 @@ def _resolve_graph_scale(vault_root, timeout):
     if settings[0] != settings[1]:
         return False
     for args in (["checkout", "--theirs", "--", path], ["add", "--", path]):
-        if _git(vault_root, args, timeout).returncode != 0:
+        if run_git(vault_root, args, timeout).returncode != 0:
             return False
     return True
 
@@ -267,11 +267,11 @@ def _resolve_local_state(vault_root, timeout):
     않는다 — 기기 로컬 상태라 사용자 데이터를 고르는 일이 아니다. 그 바이트는 git이 고른
     쪽이라, rebase 뒤 `_restore_local_state`가 이 기기의 것으로 되돌린다.
     """
-    r = _git(vault_root, ["diff", "--name-only", "--diff-filter=U", "-z"], timeout)
+    r = run_git(vault_root, ["diff", "--name-only", "--diff-filter=U", "-z"], timeout)
     paths = [p for p in r.stdout.split("\0") if p] if r.returncode == 0 else []
     if not paths or any(not p.startswith(".osk/") for p in paths):
         return False
-    return _git(vault_root, ["rm", "--cached", "-q", "--", *paths], timeout).returncode == 0
+    return run_git(vault_root, ["rm", "--cached", "-q", "--", *paths], timeout).returncode == 0
 
 
 @contextmanager
@@ -288,21 +288,21 @@ def fetch_snapshot(vault_root, timeout=60):
             # pull --rebase computes this BEFORE fetch changes origin/main's
             # reflog. Keep the replay boundary as well as the destination SHA.
             tracking = f"refs/remotes/origin/{SYNC_BRANCH}"
-            r = _git(vault_root, ["merge-base", "--fork-point", tracking,
+            r = run_git(vault_root, ["merge-base", "--fork-point", tracking,
                                   SYNC_BRANCH], timeout)
             fork_point = r.stdout.strip() if r.returncode == 0 else None
             if r.returncode not in (0, 1):
                 # A first sync may have no tracking ref or even no local commit.
-                refs = [_git(vault_root, ["show-ref", "--verify", "--quiet", name], timeout)
+                refs = [run_git(vault_root, ["show-ref", "--verify", "--quiet", name], timeout)
                         for name in (tracking, f"refs/heads/{SYNC_BRANCH}")]
                 if any(x.returncode not in (0, 1) for x in refs) or all(x.returncode == 0 for x in refs):
                     raise RuntimeError(f"fork point 확인 실패: {r.stderr.strip()[-600:]}")
-            r = _git(vault_root, ["fetch", "--no-write-fetch-head", "origin",
+            r = run_git(vault_root, ["fetch", "--no-write-fetch-head", "origin",
                                   f"refs/heads/{SYNC_BRANCH}:{ref}"], timeout)
             if r.returncode:
                 detail = (r.stdout + r.stderr).strip()[-600:]
             else:
-                r = _git(vault_root, ["rev-parse", "--verify", f"{ref}^{{commit}}"], timeout)
+                r = run_git(vault_root, ["rev-parse", "--verify", f"{ref}^{{commit}}"], timeout)
                 if r.returncode:
                     detail = (r.stdout + r.stderr).strip()[-600:]
                 else:
@@ -313,7 +313,7 @@ def fetch_snapshot(vault_root, timeout=60):
             detail = repr(e)
         yield snapshot, status, detail
     finally:
-        r = _git(vault_root, ["update-ref", "-d", ref], timeout)
+        r = run_git(vault_root, ["update-ref", "-d", ref], timeout)
         if r.returncode:
             raise RuntimeError(f"fetch 임시 ref 정리 실패: {r.stderr.strip()[-600:]}")
 
@@ -328,10 +328,10 @@ def rebase_snapshot(vault_root, snapshot, timeout=60):
     upstream = commit
     try:
         if fork_point:
-            r = _git(vault_root, ["merge-base", "--is-ancestor", fork_point, "HEAD"], timeout)
+            r = run_git(vault_root, ["merge-base", "--is-ancestor", fork_point, "HEAD"], timeout)
             if r.returncode:
                 return False, "error", "fetch 중 로컬 이력이 바뀌어 분기점을 적용할 수 없다"
-            r = _git(vault_root, ["merge-base", "--is-ancestor", fork_point, commit], timeout)
+            r = run_git(vault_root, ["merge-base", "--is-ancestor", fork_point, commit], timeout)
             if r.returncode == 1:
                 # The remote discarded old upstream commits: replay only ours.
                 upstream = fork_point
@@ -340,7 +340,7 @@ def rebase_snapshot(vault_root, snapshot, timeout=60):
         else:
             # An expired/missing reflog cannot distinguish local work from
             # discarded upstream commits. Only an unambiguous fast-forward is safe.
-            r = _git(vault_root, ["merge-base", "--is-ancestor", "HEAD", commit], timeout)
+            r = run_git(vault_root, ["merge-base", "--is-ancestor", "HEAD", commit], timeout)
             if r.returncode:
                 return False, "error", "분기점을 확인할 수 없어 이력 재적용을 보류한다(수동 개입 필요)"
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -383,7 +383,7 @@ def _snapshot_local_state(vault_root, onto, upstream, timeout):
     paths = set()
     for args in (["diff", "--no-renames", "--name-only", "-z", "HEAD", onto],
                  ["log", "--no-renames", "--format=", "--name-only", "-z", f"{upstream}..HEAD"]):
-        r = _git(vault_root, [*args, "--", ".osk"], timeout, text=False)
+        r = run_git(vault_root, [*args, "--", ".osk"], timeout, text=False)
         if r.returncode:
             raise RuntimeError(r.stderr.decode("utf-8", "replace").strip()[-600:])
         paths.update(os.fsdecode(p) for p in r.stdout.split(b"\0") if p)
@@ -436,11 +436,11 @@ def _rebase(vault_root, command, timeout):
         pending = _in_progress(vault_root, timeout)
         if pending:
             return (False, "error", f"{pending} 진행 중 — pull하지 않는다(수동 개입 필요)")
-        before = _head(vault_root, timeout)
-        r = _git(vault_root, command, timeout)
+        before = head_commit(vault_root, timeout)
+        r = run_git(vault_root, command, timeout)
         resolved = {}               # 같은 커밋에서 멈추면 다시 고르지 않는다.
         while r.returncode != 0 and _in_rebase(vault_root, timeout):
-            pick = _git(vault_root, ["rev-parse", "--verify", "REBASE_HEAD"], timeout)
+            pick = run_git(vault_root, ["rev-parse", "--verify", "REBASE_HEAD"], timeout)
             if pick.returncode != 0 or pick.stdout in resolved:
                 break
             if _resolve_graph_scale(vault_root, timeout):
@@ -450,14 +450,14 @@ def _rebase(vault_root, command, timeout):
             else:
                 break
             # `.osk/`만 바꾼 커밋은 추적을 풀면 비므로 건너뛴다(작업 트리의 파일은 남는다).
-            empty = _git(vault_root, ["diff", "--cached", "--quiet"], timeout).returncode == 0
-            r = _git(vault_root, ["rebase", "--skip" if empty else "--continue"], timeout)
+            empty = run_git(vault_root, ["diff", "--cached", "--quiet"], timeout).returncode == 0
+            r = run_git(vault_root, ["rebase", "--skip" if empty else "--continue"], timeout)
         if r.returncode != 0:
             out = (r.stdout + r.stderr)
             low = out.lower()
             if (_in_rebase(vault_root, timeout)
                     or any(s in low for s in ("conflict", "could not apply"))):
-                ab = _git(vault_root, ["rebase", "--abort"], timeout)
+                ab = run_git(vault_root, ["rebase", "--abort"], timeout)
                 if ab.returncode != 0 or _in_rebase(vault_root, timeout):
                     return (False, "error",
                             ("rebase --abort 실패 — 저장소가 충돌 상태다(수동 개입 필요): "
@@ -467,7 +467,7 @@ def _rebase(vault_root, command, timeout):
                                       if line.startswith("CONFLICT "))
                 return (False, "conflict", (conflicts + "\n" + out.strip()[-600:]).strip())
             return (False, "error", out.strip()[-600:])
-        after = _head(vault_root, timeout)
+        after = head_commit(vault_root, timeout)
         kinds = list(resolved.values())
         detail = "; ".join(text for kind, text in (
             ("graph", f".obsidian/graph.json 배율 충돌 {kinds.count('graph')}개 자동 해결 — 로컬 값 보존"),
@@ -493,7 +493,7 @@ def push_snapshot(vault_root, commit, timeout=60):
     """Push the given ref; the daemon passes a captured SHA, not moving HEAD."""
     try:
         # refspec 명시 — 밀어 넣는 곳이 언제나 origin의 SYNC_BRANCH다.
-        p = _git(vault_root, ["push", "origin", f"{commit}:refs/heads/{SYNC_BRANCH}"], timeout)
+        p = run_git(vault_root, ["push", "origin", f"{commit}:refs/heads/{SYNC_BRANCH}"], timeout)
         if p.returncode != 0:
             out = (p.stdout + p.stderr)
             low = out.lower()

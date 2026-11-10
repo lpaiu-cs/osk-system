@@ -121,7 +121,7 @@ def sig_status(node_id, path=None):
     hit = None
     for c in (path, r.get("path")):
         c = core.resolve_in_root(c) if c else None
-        if c is not None and c.exists() and S._id_of(c) == node_id:
+        if c is not None and c.exists() and S.id_of(c) == node_id:
             hit = c
             break
     if hit is None:
@@ -186,7 +186,7 @@ def test_rid_monotone():
             r = core.ledger_append(led2, {"kind": "sign", "node": "m",
                                           "path": "p", "hash": "h"})
         check("병합 후 rid 바닥=정본 최대값(마지막 행 아님)",
-              core._rid_key(r["rid"]) > core._rid_key(hi) > core._rid_key(lo))
+              core.rid_key(r["rid"]) > core.rid_key(hi) > core.rid_key(lo))
 
 
 # ── 2. 같은 ms라도 인과 사슬이면 comparable → signed ─────────────────────
@@ -202,7 +202,7 @@ def test_same_ms_chain_signed():
             "kind": "sign", "node": "260802-zzzz-rg01",
             "path": str(node.relative_to(ROOT)), "hash": core.sha256_file(node)})
     recs = core.ledger_read(core.SIGNATURES)
-    same = core._rid_parts(recs[0]["rid"])[0] == core._rid_parts(recs[1]["rid"])[0]
+    same = core.rid_parts(recs[0]["rid"])[0] == core.rid_parts(recs[1]["rid"])[0]
     check("같은 ms 사슬 성립(전제)", same)
     check("같은 ms라도 인과 사슬이면 signed(비교 가능)",
           sig_status("260802-zzzz-rg01", node) == "signed")
@@ -581,7 +581,7 @@ def test_sync_graph_scale():
             right_bytes = right_bytes.replace(b"all", b"\xff")
 
         def git(*args, root=repo):
-            r = vault_sync._git(root, list(args), 30)
+            r = vault_sync.run_git(root, list(args), 30)
             assert r.returncode == 0, (args, r.stdout, r.stderr)
             return r.stdout.strip()
 
@@ -639,7 +639,7 @@ def test_sync_graph_scale():
             remote_head = git("rev-parse", "refs/heads/main", root=bare)
             git("checkout", "-q", "main")
 
-            original_git = vault_sync._git
+            original_git = vault_sync.run_git
             blob_modes = []
 
             def git_faults(root, args, timeout, **kwargs):
@@ -653,7 +653,7 @@ def test_sync_graph_scale():
                 return original_git(root, args, timeout, **kwargs)
 
             log = io.StringIO()
-            with mock.patch.object(vault_sync, "_git", side_effect=git_faults),\
+            with mock.patch.object(vault_sync, "run_git", side_effect=git_faults),\
                     contextlib.redirect_stderr(log):
                 status = sync_daemon.once(repo)
             check(f"graph {name}: 진행 작업·미병합 index가 남지 않는다",
@@ -762,7 +762,7 @@ def test_daemon_no_bare_git_spawn():
     직접 subprocess로 git.exe를 spawn하면 Windows가 tick마다 새 콘솔 창을
     할당한다. `_lock_path`가 이 실수를 저질렀고, v2.2.0이 그 함수를 매 tick
     호출로 승격하며 15분 주기 증상으로 표면화됐다. 데몬의 git은 전부
-    vault_sync._git(=CREATE_NO_WINDOW 하드닝의 단일 소유자)를 거쳐야 한다 —
+    vault_sync.run_git(=CREATE_NO_WINDOW 하드닝의 단일 소유자)를 거쳐야 한다 —
     이 계약을 AST로 고정해 새 호출부가 조용히 bare-spawn을 되살리지 못하게 한다."""
     import ast
     src = (ENGINE / "sync_daemon.py").read_text(encoding="utf-8")
@@ -772,7 +772,7 @@ def test_daemon_no_bare_git_spawn():
             and isinstance(n.func.value, ast.Name)
             and n.func.value.id == "subprocess"]
     check("sync_daemon은 subprocess로 직접 git을 spawn하지 않는다 "
-          "(전부 vault_sync._git 게이트웨이 경유)", not bare, "; ".join(bare))
+          "(전부 vault_sync.run_git 게이트웨이 경유)", not bare, "; ".join(bare))
 
 
 # ── 9. conflicts 적격 — 열린 사건 또는 존치 상호+실재 존치 사건 결속 ─────
@@ -1757,10 +1757,10 @@ def test_move_cutoff_causal_not_clock():
         check("생애 기록이 이동 경계를 박제한다", "moves_seen" in prot, prot)
         base = A.approved_hash(reg)
         # 뒤처진 시계의 기기에서 승인 **이후** 실행된 이동 — rid는 승인보다 작다
-        ms = core._rid_parts(prot["rid"])[0] - 60_000
+        ms = core.rid_parts(prot["rid"])[0] - 60_000
         rid = core._make_rid(ms, 0)
         check("편차 전제: 이동 rid < 승인 rid",
-              core._rid_key(rid) < core._rid_key(prot["rid"]))
+              core.rid_key(rid) < core.rid_key(prot["rid"]))
         with open(A.MOVES, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({
                 "rid": rid, "parents": core.heads(core.ledger_read(A.MOVES)),
@@ -1913,7 +1913,7 @@ def test_stale_sealed_by_approve():
         # 검토 사이 새 갈래 유입 — 검토한 집합과 어긋나면 봉합 거부(본 적 없는
         # 갈래를 함께 봉합하지 않는다)
         rid3 = core._next_rid(max((r["rid"] for r in A.records()),
-                                  key=core._rid_key))
+                                  key=core.rid_key))
         with open(A.APPROVALS, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({
                 "rid": rid3, "parents": [head], "at": core.now_iso(),
@@ -2016,8 +2016,8 @@ def test_stale_changeset_before_confirmation():
               and f"{reg}/before.md → {reg}/after.md" in text)
         check("검토 거절은 승인 기록을 만들지 않는다", A.APPROVALS.read_bytes() == ledger)
 
-        read_table = A._tree_table_for_region
-        with mock.patch.object(A, "_tree_table_for_region", side_effect=lambda r, h:
+        read_table = A.tree_table_for_region
+        with mock.patch.object(A, "tree_table_for_region", side_effect=lambda r, h:
                                None if h == tree_b else read_table(r, h)):
             _, error, prompted, called = preview()
         check("어느 갈래든 승인본 미해석이면 확인 전에 중단한다",
@@ -2026,7 +2026,7 @@ def test_stale_changeset_before_confirmation():
             _, error, prompted, called = preview()
         check("표시한 차이는 검토 대상으로 고정한 작업본에 결속된다",
               error and "작업본이 바뀌었다" in error and prompted == called == 0)
-        with mock.patch.object(A, "_region_files", side_effect=PermissionError("unreadable")):
+        with mock.patch.object(A, "region_files", side_effect=PermissionError("unreadable")):
             _, error, prompted, called = preview()
         check("작업본 판독 실패를 빈 변경집합으로 승인하지 않는다",
               error and prompted == called == 0)
@@ -2697,10 +2697,10 @@ def test_baseline_bound_to_region():
         entries.append(["00_Domain/regr-outside.md",
                         A._store_put(outsider.read_bytes())])
         entries.sort(key=lambda e: e[0])
-        evil = A._store_put(A._manifest_blob(entries))
+        evil = A._store_put(A.manifest_blob(entries))
         check("혼합 tree 자체는 형상 검증을 통과", A._tree_table(evil) is not None)
         check("그러나 그 영역의 tree로는 해석되지 않는다",
-              A._tree_table_for_region(reg, evil) is None)
+              A.tree_table_for_region(reg, evil) is None)
         core.ledger_append(A.APPROVALS, {
             "kind": "approve", "region": reg, "base": good,
             "accepted": evil, "reason": "영역 밖 항목 혼입(시험)"})
@@ -2857,7 +2857,7 @@ def test_ledger_row_shape():
     r1 = core.ledger_append(core.SIGNATURES, {
         "kind": "sign", "node": "260802-zzzz-rg41", "path": rel,
         "hash": core.sha256_file(node)})
-    raw_append({"rid": core._make_rid(core._rid_parts(r1["rid"])[0] + 1, 0),
+    raw_append({"rid": core._make_rid(core.rid_parts(r1["rid"])[0] + 1, 0),
                 "parents": [{"x": 1}, 42, r1["rid"]], "kind": "unsign",
                 "node": "260802-zzzz-rg41", "path": rel,
                 "hash": r1["hash"], "at": core.now_iso()})
@@ -3267,7 +3267,7 @@ def test_write_routing():
     # 다기기 동시 최초-확정 = 분기 → 미확정으로 fail-closed
     recs = core.ledger_read(core.ROUTING)
     fork = dict(recs[-1])
-    raw = {"rid": core._make_rid(core._rid_parts(fork["rid"])[0] + 5, 0),
+    raw = {"rid": core._make_rid(core.rid_parts(fork["rid"])[0] + 5, 0),
            "parents": [], "kind": "bind", "session": "repo/alpha",
            "scope": "W2", "at": core.now_iso()}
     with open(core.ROUTING, "a", encoding="utf-8") as f:
@@ -3751,7 +3751,7 @@ def test_project_bindings():
     # ⑨ 주된 scope 지정의 분기는 일반 결속이 해소하지 못한다(#191 리뷰 P1)
     F = "repo/regr-fork"
     a = write.set_primary(F, "WBindA", "기기 A의 지정")
-    ms = core._rid_parts(a["rid"])[0]
+    ms = core.rid_parts(a["rid"])[0]
 
     def forged(rid_ms, parents, scope, primary):
         with open(core.ROUTING, "a", encoding="utf-8") as f:
@@ -4888,12 +4888,12 @@ def test_release_and_update():
                   and update._allowed_skel("_ledger") is None)
 
             # 경로 봉쇄 — 증빙 key·저널 path의 vault 탈출 차단 (P1)
-            check("_within: 정상 상대경로는 통과",
-                  update._within(ROOT, "_governance/Constitution.md") is not None)
-            check("_within: 상위 탈출·절대경로는 봉쇄",
-                  update._within(ROOT, "_governance/../../payload") is None
-                  and update._within(ROOT, "../escape") is None
-                  and update._within(ROOT, "/etc/passwd") is None)
+            check("resolve_within: 정상 상대경로는 통과",
+                  update.resolve_within(ROOT, "_governance/Constitution.md") is not None)
+            check("resolve_within: 상위 탈출·절대경로는 봉쇄",
+                  update.resolve_within(ROOT, "_governance/../../payload") is None
+                  and update.resolve_within(ROOT, "../escape") is None
+                  and update.resolve_within(ROOT, "/etc/passwd") is None)
             esc = {"version": "v1.0.0",
                    "files": {"_governance/../../payload": "sha256:00"}}
             check("증빙 경로 탈출은 대조 단계에서 중단",
@@ -4913,8 +4913,8 @@ def test_release_and_update():
                 sy_ok = True                     # symlink 불가 환경이면 통과 처리
             if (syroot / "docs").is_symlink():
                 check("ROOT 내부 symlink alias(docs->_governance)는 거부",
-                      update._canon_rel(syroot, "docs/target.md") is None
-                      and update._canon_rel(syroot, "_governance/target.md")
+                      update.canon_rel(syroot, "docs/target.md") is None
+                      and update.canon_rel(syroot, "_governance/target.md")
                       == "_governance/target.md")
 
             # 적용 트랜잭션 — 도중 실패 시 파일 원상복구, 저널에 apply 안 남김 (P1)
@@ -5536,10 +5536,10 @@ def test_release_and_update():
                       lambda: update.load_release(badrel)) or ""))
 
             # ROOT 내부 `..` 재진입도 거부 — floor 판정 우회 차단 (P1)
-            check("_within/_canon_rel: ROOT 내부 재진입(../)은 거부, 정상은 통과",
-                  update._within(ROOT, "docs/../00_Scope/x") is None
-                  and update._canon_rel(ROOT, "00_Scope/../_governance/x") is None
-                  and update._canon_rel(ROOT, "_governance/x") == "_governance/x")
+            check("resolve_within/canon_rel: ROOT 내부 재진입(../)은 거부, 정상은 통과",
+                  update.resolve_within(ROOT, "docs/../00_Scope/x") is None
+                  and update.canon_rel(ROOT, "00_Scope/../_governance/x") is None
+                  and update.canon_rel(ROOT, "_governance/x") == "_governance/x")
 
             # skip은 적용 baseline을 가리지 않는다 — conflict 사건과 상태 분리 (P2)
             j = [{"rid": "00000000-0000-7000-8000-00000000ba01",
@@ -6770,7 +6770,7 @@ def test_session_key_repo_identity():
     # 두 기기의 동시 소유 — 병합(union)이 무소유 결속 아래 두 소유 행을 남긴다.
     core.ROUTING.unlink(missing_ok=True)
     legacy = write.bind_session("api", "W1")
-    ms = core._rid_parts(legacy["rid"])[0]
+    ms = core.rid_parts(legacy["rid"])[0]
 
     def claim(rid_ms, who):
         with open(core.ROUTING, "a", encoding="utf-8") as f:
@@ -6787,7 +6787,7 @@ def test_session_key_repo_identity():
     # 같은 저장소를 두 기기가 동시에 소유한 분기도 봉합된다.
     core.ROUTING.unlink(missing_ok=True)
     legacy = write.bind_session("api", "W1")
-    ms = core._rid_parts(legacy["rid"])[0]
+    ms = core.rid_parts(legacy["rid"])[0]
     claim(ms + 10, ra)
     claim(ms + 20, ra)
     check("같은 저장소의 동시 소유도 풀린다",
@@ -7815,7 +7815,7 @@ def test_evictions():
     check("settle 행", s1["kind"] == "settle" and s1["of"] == live
           and s1["target"] == "regr-evi-distilled", s1)
     par = core.effective_parents(ev.records())
-    check("settle은 그 evict를 조상으로 갖는다 (§9-3 4항)", live in core._ancestors(s1["rid"], par))
+    check("settle은 그 evict를 조상으로 갖는다 (§9-3 4항)", live in core.ancestors(s1["rid"], par))
     check("처분된 것은 미처분에서 빠진다", live not in {r["rid"] for r in ev.unsettled("WEvi")})
     s2 = ev.settle(live, "discarded")
     check("두 번째 settle도 산다 — 다기기 동시 처분은 손상이 아니다",
@@ -8405,7 +8405,7 @@ def test_plain_write_placement():
     top_body = contract.parse(top).body
     sub = ROOT / "00_Scope/W1/regr-pl"
     made = []
-    real = write._update_node_locked
+    real = write.update_node_locked
 
     def refuse(name, *a, **kw):
         if name == "W1":
@@ -8429,7 +8429,7 @@ def test_plain_write_placement():
               contract.parse(top).body.rstrip().endswith("- [[regr-pl-root]]"))
 
         # 허브 쓰기가 실패하면 노드는 남고, 그 허브를 hub_links로 알린다
-        with mock.patch.object(write, "_update_node_locked", side_effect=refuse):
+        with mock.patch.object(write, "update_node_locked", side_effect=refuse):
             r = _w(write.create_node, "regr-pl-fail", "자리", "본문", "fable-5",
                    space="00_Scope/W1")
         made.append(ROOT / "00_Scope/W1/regr-pl-fail.md")
@@ -8447,7 +8447,7 @@ def test_plain_write_placement():
         made.append(sub)
         check("새 하위 허브는 위 허브에 걸린다", r.get("placed") == ["W1"], r)
         check("전제: 최상위에서 하위 허브 줄을 뺀다", _unhang("W1", "regr-pl").get("ok"))
-        with mock.patch.object(write, "_update_node_locked", side_effect=refuse):
+        with mock.patch.object(write, "update_node_locked", side_effect=refuse):
             r = _w(write.create_node, "regr-pl-a", "자리", "본문", "fable-5",
                    space="00_Scope/W1/regr-pl")
         check("하위 허브는 이었다",
@@ -8712,7 +8712,7 @@ def test_id_width_and_discriminator():
 def test_duplicate_id_refused():
     """같은 id의 노드가 둘이면 **읽기도 쓰기도 고르지 않는다.**
 
-    구판은 갈렸다 — `read_node`는 자체 순회로 **첫** 일치를, `_live_locate`는
+    구판은 갈렸다 — `read_node`는 자체 순회로 **첫** 일치를, `live_locate`는
     `by_id`로 **마지막**을 골랐다. 사본은 바이트가 같아 `expect_hash`까지
     통과해, 에이전트가 **읽지 않은 파일이 갱신**됐다. 이름 중복에는 있던
     방어가 id에는 없었다. 3자 독립 검토가 각각 재현했고 여기서도 재현했다.
@@ -8723,7 +8723,7 @@ def test_duplicate_id_refused():
 
     무엇을 망가뜨리면 이 시험이 실패하는가:
       · `parse_all`의 `dup_ids` 집계를 지우면 → 전제부터 실패
-      · `_live_locate`의 중복 거부를 지우면 → 쓰기가 통과해 바이트가 바뀐다
+      · `live_locate`의 중복 거부를 지우면 → 쓰기가 통과해 바이트가 바뀐다
       · `read_node`를 자체 순회(첫 일치)로 되돌리면 → 읽기가 노드를 내준다
       · `resolve`의 ambiguous를 지우면 → 위상 판정이 한쪽을 조용히 고른다
     """
@@ -8772,7 +8772,7 @@ def test_duplicate_id_refused():
         _age_all()
         rr2 = M.read_node(nid)
         check("중복 해소 후 읽기 복구", rr2.get("path"), rr2)
-        live = write._live_locate(nid, graph.Index())
+        live = write.live_locate(nid, graph.Index())
         check("읽기와 쓰기가 같은 파일을 가리킨다",
               rr2.get("path") == core.posix_rel(live, ROOT),
               (rr2.get("path"), live))
@@ -8794,7 +8794,7 @@ def test_duplicate_id_by_name_refused():
     않았다(2026-09-24 재현). Mechanism §2 1항은 동 id면 읽기도 쓰기도 거부한다.
 
     무엇을 망가뜨리면 실패하는가:
-      · `_live_locate`의 이름 갈래 `id_twins` 검사를 지우면 → 쓰기·이동·상정 단언
+      · `live_locate`의 이름 갈래 `id_twins` 검사를 지우면 → 쓰기·이동·상정 단언
       · `read_node`의 이름 갈래 검사를 지우면 → 읽기 단언
       · 후보표를 계약 파서 대신 `id: ` 줄 정규식으로 판정하면 → 따옴표 사본 단언
       · 검사가 전수 판독(`parse_all`)을 부르면 → 성능 계약 단언
@@ -9571,7 +9571,7 @@ def test_node_place_rule():
         check("밑줄 구획은 scope가 아니다",
               "_regr-priv" not in graph.scope_names(), graph.scope_names())
         check("밑줄 구획은 조망의 군집이 아니다",
-              not any("_regr-" in c for c in write._cluster_names()))
+              not any("_regr-" in c for c in write.cluster_names()))
         lv = graph.layout_violations()
         check("배치 검증기가 밑줄 구획의 노드형 파일을 보고한다",
               sum("_regr-priv.md" in v or "_regr-sub2.md" in v
@@ -9788,14 +9788,14 @@ def test_scan_confinement_and_case():
         probe.write_text(node_text("260806-eeee-3333", "리파스 배선", "본문"),
                          encoding="utf-8")
         seen_paths = []
-        real_space_of, real_isr = graph.space_of, graph._is_reparse
+        real_space_of, real_isr = graph.space_of, graph.is_reparse
         graph.space_of = lambda p: (seen_paths.append(Path(p)),
                                     real_space_of(p))[1]
-        graph._is_reparse = lambda e: Path(getattr(e, "path", e)).name == "regr-reparse.md"
+        graph.is_reparse = lambda e: Path(getattr(e, "path", e)).name == "regr-reparse.md"
         try:
             list(graph.iter_nodes())
         finally:
-            graph.space_of, graph._is_reparse = real_space_of, real_isr
+            graph.space_of, graph.is_reparse = real_space_of, real_isr
             probe.unlink(missing_ok=True)
         check("리파스로 판정된 **파일**은 봉쇄 경로(`space_of`)로 간다",
               any(p.name == "regr-reparse.md" for p in seen_paths),
@@ -10444,7 +10444,7 @@ def test_audit_fixes_2026_09_02():
 
         # ⑧ 동명 노드는 읽기·후보 상정도 고르지 않는다 (#35)
         #    되돌리면 — read_node의 `dup_stems` 갈래나 record_candidate의
-        #    `_live_locate`를 되돌리면 실패한다.
+        #    `live_locate`를 되돌리면 실패한다.
         for sub in ("AudX", "AudY"):
             (ROOT / f"00_Scope/W1/{sub}/audit-dup.md").write_text(
                 node_text(f"260802-audt-0{'a' if sub == 'AudX' else 'b'}11",
@@ -10529,7 +10529,7 @@ def test_audit_fixes_2026_09_02():
 
         # ⑭ 손상된 대장 위에서는 쓰지 않는다 (#30·#31)
         #    되돌리면 — `routing_errors`를 지우면 파일이 남아 둘째가 실패하고,
-        #    `approvals._damaged`를 지우면 셋째가 `unprotected`가 되어 실패한다.
+        #    `approvals.ledger_is_damaged`를 지우면 셋째가 `unprotected`가 되어 실패한다.
         rj = core.ROUTING
         rprior = rj.read_bytes() if rj.is_file() else b""
         restore.append((rj, rprior))
@@ -11301,7 +11301,7 @@ def test_turn_ledger():
 def test_region_root_is_not_an_excluded_compartment():
     """영역 **루트**가 제외 이름을 담아도 반려가 그 영역을 지우지 않는다 (4차 리뷰).
 
-    `_region_files(region_dir)`는 루트 자신에는 걸러내기를 걸지 않고 그 **아래**
+    `region_files(region_dir)`는 루트 자신에는 걸러내기를 걸지 않고 그 **아래**
     자식 디렉터리와 파일 이름만 거른다. 제외 판정이 vault 상대 **전체** 경로를
     보면 두 해석이 갈린다 — 루트에 제외 이름(구판이 지정한 `…/_scope_memory`)이나
     점 접두(`protect`가 지금도 허용하는 `.foo`)가 든 영역에서 승인본 table의 모든
@@ -11310,7 +11310,7 @@ def test_region_root_is_not_an_excluded_compartment():
     clean한 반려로 확정한다(실측 재현).
 
     무엇을 망가뜨리면 실패하는가:
-      · `_excluded_rel`이 다시 전체 경로를 보면 → 사전 대조가 반려를 거부해
+      · `excluded_rel`이 다시 전체 경로를 보면 → 사전 대조가 반려를 거부해
         "반려가 성립한다"가 실패한다(그 대조까지 함께 지우면 파일이 사라진다)
       · `revert`의 사전 대조를 지우면 → 세 번째 묶음(해석이 갈린 상황)에서
         영역이 지워지고 삭제가 기록으로 확정된다
@@ -11345,7 +11345,7 @@ def test_region_root_is_not_an_excluded_compartment():
             check(f"[{leaf}] 루트 이름은 제외 판정에 들지 않는다 (4차)",
                   A.legacy_excluded(base, reg) == [],
                   A.legacy_excluded(base, reg))
-            tbl = A._tree_table_for_region(reg, base)
+            tbl = A.tree_table_for_region(reg, base)
             check(f"[{leaf}] 복원 table이 영역 파일을 그대로 담는다 (4차)",
                   tbl is not None and len(tbl) == 2, tbl)
 
@@ -11371,7 +11371,7 @@ def test_region_root_is_not_an_excluded_compartment():
         reg = protected[0]
         d = ROOT / reg
         before = sorted(x.name for x in d.iterdir())
-        with mock.patch.object(A, "_excluded_rel", lambda rel, region: True):
+        with mock.patch.object(A, "excluded_rel", lambda rel, region: True):
             check("해석이 갈리면 반려가 파괴 전에 멈춘다 (4차)",
                   _raises(lambda: A.revert(reg, A.approved_hash(reg),
                                            A.working_tree_hash(reg), "시험"))())
@@ -11491,7 +11491,7 @@ def test_governance_amend_secrets_and_region():
         #      · 복원 계획이 그 자리를 건드리지 않아야 하고(공유 기억 보호),
         #      · 반려는 **파괴 전에** 멈춰야 하며,
         #      · 한 번의 승인으로 해소돼야 한다.
-        #    되돌리면 — `_tree_table_for_region`의 걸러내기를 지우면 첫 단언이,
+        #    되돌리면 — `tree_table_for_region`의 걸러내기를 지우면 첫 단언이,
         #    `revert`의 사전 거부를 지우면 둘째가 실패한다.
         #    개정 전 승인본을 **실제로 그 영역의 현행 승인본으로** 세운다 —
         #    저장소에 manifest만 넣어 두면 반려가 기존 base-CAS에 먼저 걸려
@@ -11504,19 +11504,19 @@ def test_governance_amend_secrets_and_region():
         keep_rel = reg + "/audit-keep.md"
         keep_body = "승인본에만 있던 파일\n".encode("utf-8")
         legacy_entries = [[rel, A._store_put(p.read_bytes())]
-                          for rel, p in A._region_files(ROOT / reg)]
+                          for rel, p in A.region_files(ROOT / reg)]
         legacy_entries.append([keep_rel, A._store_put(keep_body)])
         legacy_entries.append([reg + "/_scope_memory/W1.md",
                                A._store_put(old_mem)])
         legacy_entries.sort(key=lambda e: e[0])
-        legacy_hash = A._store_put(A._manifest_blob(legacy_entries))
+        legacy_hash = A._store_put(A.manifest_blob(legacy_entries))
         core.ledger_append(A.APPROVALS, {
             "kind": "approve", "region": reg, "base": A.approved_hash(reg),
             "accepted": legacy_hash, "reason": "개정 전 형상 모사"})
         check("개정 전 승인본의 제외 구획 항목이 드러난다 (#37)",
               A.legacy_excluded(legacy_hash, reg)
               == [reg + "/_scope_memory/W1.md"], A.legacy_excluded(legacy_hash, reg))
-        tbl = A._tree_table_for_region(reg, legacy_hash)
+        tbl = A.tree_table_for_region(reg, legacy_hash)
         check("복원 table에서 그 자리가 빠진다 — 공유 기억을 덮지 않는다 (#37)",
               tbl is not None and reg + "/_scope_memory/W1.md" not in tbl, tbl)
         cs = A.changeset(reg)
@@ -11547,7 +11547,7 @@ def test_governance_amend_secrets_and_region():
               and not A.legacy_excluded(A.approved_hash(reg), reg),
               (A.state(reg), A.legacy_excluded(A.approved_hash(reg), reg)))
         check("이행된 승인본은 저장소에서 해석된다 (#37)",
-              A._tree_table_for_region(reg, A.approved_hash(reg)) is not None,
+              A.tree_table_for_region(reg, A.approved_hash(reg)) is not None,
               A.approved_hash(reg))
 
         # ⑥ 줄바꿈만 다른 것은 변경집합이 그렇게 말한다 (#39)
@@ -11958,7 +11958,7 @@ def test_reparse_cache_membership():
     # All fixture bytes stay inside the mini-vault; outside resolution is simulated.
     alias.write_text(node_text("260922-benc-00000009", body="fixture"), encoding="utf-8")
     destination = ROOT / "00_Scope/W1/cache-target.md"
-    resolve, reparse = Path.resolve, graph._is_reparse
+    resolve, reparse = Path.resolve, graph.is_reparse
 
     def resolved(path, *args, **kwargs):
         return destination if path == alias else resolve(path, *args, **kwargs)
@@ -11969,7 +11969,7 @@ def test_reparse_cache_membership():
     try:
         _age_all()
         M._index, M._searcher, M._fingerprint = None, None, None
-        with mock.patch.object(Path, "resolve", resolved), mock.patch.object(graph, "_is_reparse", is_reparse):
+        with mock.patch.object(Path, "resolve", resolved), mock.patch.object(graph, "is_reparse", is_reparse):
             check("raw 안의 노드 별칭은 실제 소속으로 조회한다", "error" not in M.read_node(alias.stem))
             first, fp = M._index, M._fingerprint
             destination = ROOT / "00_Scope/W2/cache-target.md"
@@ -12091,7 +12091,7 @@ def test_sync_pending_git_operations():
                       and vault_sync.commit_local(repo, "must refuse pending")[1] == "error")
             finally:
                 marker.rmdir() if marker.is_dir() else marker.unlink()
-        original_git = vault_sync._git
+        original_git = vault_sync.run_git
         for bad in (["rev-parse", "--absolute-git-dir"],
                     ["ls-files", "--unmerged", "-z"], ["add", "-A"]):
             calls = []
@@ -12099,14 +12099,14 @@ def test_sync_pending_git_operations():
                 calls.append(args)
                 return (subprocess.CompletedProcess(args, 128, "", "injected git error")
                         if args == bad else original_git(root, args, timeout))
-            with mock.patch.object(vault_sync, "_git", side_effect=fail_query):
+            with mock.patch.object(vault_sync, "run_git", side_effect=fail_query):
                 result = vault_sync.commit_local(repo, "must refuse git error")
             check(f"git 실패 {bad[0]}: 후속 commit 금지",
                   result[1] == "error" and not any(a[0] == "commit" for a in calls))
         git("checkout", "-q", "side")
         for bad in (["symbolic-ref", "--quiet", "--short", "HEAD"],
                     ["status", "--porcelain", "-z"]):
-            with mock.patch.object(vault_sync, "_git", side_effect=fail_query):
+            with mock.patch.object(vault_sync, "run_git", side_effect=fail_query):
                 result = vault_sync.ensure_branch(repo)
             check(f"git 실패 {bad[0]}: 브랜치 전환 금지",
                   result[1] == "error" and git("branch", "--show-current").strip() == "side")
@@ -12127,11 +12127,11 @@ def test_sync_git_unknown_is_not_absent():
     try:
         repo.mkdir()
         plain.mkdir()
-        vault_sync._git(repo, ["init", "-q", "-b", "main"], 30)
-        vault_sync._git(repo, ["remote", "add", "origin", str(temp / "origin.git")], 30)
+        vault_sync.run_git(repo, ["init", "-q", "-b", "main"], 30)
+        vault_sync.run_git(repo, ["remote", "add", "origin", str(temp / "origin.git")], 30)
         check("저장소가 아닌 자리는 그대로 '저장소 아님'",
               sync_daemon.once(plain) == "git 저장소 아님")
-        real = vault_sync._git
+        real = vault_sync.run_git
         for verb, fault in (("rev-parse", "timeout"), ("rev-parse", "error"),
                             ("remote", "timeout"), ("remote", "error")):
             def faulty(root, args, timeout, **kw):
@@ -12140,7 +12140,7 @@ def test_sync_git_unknown_is_not_absent():
                 if fault == "timeout":
                     raise subprocess.TimeoutExpired(["git", *args], timeout)
                 return subprocess.CompletedProcess(args, 128, "", "fatal: detected dubious ownership")
-            with mock.patch.object(vault_sync, "_git", side_effect=faulty):
+            with mock.patch.object(vault_sync, "run_git", side_effect=faulty):
                 try:
                     status = sync_daemon.once(repo)
                 except (subprocess.TimeoutExpired, RuntimeError) as e:
@@ -12330,7 +12330,7 @@ def test_write_edge_coordinates():
 def test_node_heading_edge_coordinates():
     """Node heading edges survive create/add/remove and independently trigger rechecks.
 
-    Dropping the anchor in _edge_key must fail both storage and propagation checks.
+    Dropping the anchor in edge_key must fail both storage and propagation checks.
     """
     from osk import rechecks
     base = ROOT / "00_Scope/W1/regr-heading-edges"
@@ -12409,8 +12409,8 @@ def test_derived_from_once_per_round():
       · 갱신의 바이트 되풀이 접기를 지우면 → ②의 본문 쓰기·표기 변형 단언
       · 생성이 `_merge_edges`를 건너뛰면 → ③
       · `graph.reference_report`의 중복 보고를 지우면 → ②의 경고 단언
-      · `_edge_key`가 앵커를 버리면 → ①의 저장 단언(다른 절이 하나로 접힌다)
-      · `_edge_key`가 URL에서도 `.md`를 떼면 → ④의 URL 단언
+      · `edge_key`가 앵커를 버리면 → ①의 저장 단언(다른 절이 하나로 접힌다)
+      · `edge_key`가 URL에서도 `.md`를 떼면 → ④의 URL 단언
       · `_merge_edges`가 저장 목록까지 키로 줄이면 → ④의 저장 근거 단언
     """
     from osk import raw
@@ -12655,7 +12655,7 @@ def test_validate_at_uses_snapshot_engine():
         previous = Path.cwd()
         try:
             os.chdir(caller)
-            errors = release._validate_at(snapshot)
+            errors = release.validate_at(snapshot)
         finally:
             os.chdir(previous)
         check("원본 엔진 cwd에서도 snapshot 검증기를 실행",

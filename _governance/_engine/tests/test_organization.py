@@ -19,7 +19,7 @@ def node(name, body="Reusable evidence", edges=None):
     wire("W1", name)
     return out
 def wire(hub, name):
-    idx=graph.Index(); p=write._live_locate(hub,idx); n=contract.parse(p)
+    idx=graph.Index(); p=write.live_locate(hub,idx); n=contract.parse(p)
     if name not in n.wikilinks():
         write.update_node(hub, body=n.body.rstrip()+chr(10)+"- [["+name+"]]",expect_hash=core.sha256_file(p))
 def rejected(fn):
@@ -47,7 +47,7 @@ class OrganizationTests(unittest.TestCase):
             added = node('Later destination')
             later = organization.plan('W1')
             assert later['key'] == original['key']
-            path = write._live_locate(added['id'], graph.Index()); path.unlink()
+            path = write.live_locate(added['id'], graph.Index()); path.unlink()
             write.update_node('W1',old_text='- [[Later destination]]',new_text='')
             missing = organization.plan('W1')
             assert added['id'] in missing['missing_ids']
@@ -90,7 +90,7 @@ class OrganizationTests(unittest.TestCase):
                                                  checked=[{'unit':u['unit']} for u in job['review_units']]))
             rejected(lambda: organization.review(job['key'],'W1','deferred','Blank unit reason',after=job['snapshot'],
                                                  checked=[{'unit':u['unit'],'reason':' '} for u in job['review_units']]))
-            assert not organization._load().get('coverage'), 'failed completion must not mutate receipts'
+            assert not organization.load_state().get('coverage'), 'failed completion must not mutate receipts'
             saved = organization.review(job['key'],'W1','deferred','Continue at the next selected range',after=job['snapshot'],checked=checked)
             before = organization.plan('W1')
             from osk import growth
@@ -122,12 +122,12 @@ class OrganizationTests(unittest.TestCase):
             stale = organization.review(after['key'],'W1','deferred','old bytes',after=after['snapshot'],
                                         checked=[{'unit':changed['unit'],'reason':'old claim'}])
             assert stale['skipped'] == [changed['unit']], stale
-            assert changed['unit'] not in organization._load()['coverage']['W1']
+            assert changed['unit'] not in organization.load_state()['coverage']['W1']
             rejected(lambda: organization.review(after['key'],'W1','complete','old bytes',after=after['snapshot'],
                                                  checked=[{'unit':changed['unit'],'reason':'old claim'}]))
             # The accepted deferred reviews handed 'Large' (edited after the plan) to another
             # reviewer; let that cooling pass before finishing.
-            state = organization._load()
+            state = organization.load_state()
             state['handoff']['W1'] = {u: at - organization.HANDOFF_SECONDS - 1
                                       for u, at in state['handoff']['W1'].items()}
             organization._save(state)
@@ -137,7 +137,7 @@ class OrganizationTests(unittest.TestCase):
             reopened = organization.plan('W1')
             assert 0 < reopened['coverage']['remaining'] < 4, reopened['coverage']
             # A pre-upgrade blanket completion cannot suppress semantic review.
-            state = organization._load(); state.pop('coverage')
+            state = organization.load_state(); state.pop('coverage')
             state['reviews']['W1']['after'] = organization.snapshot('W1')['snapshot']
             organization._save(state)
             assert organization.plan('W1')['coverage']['remaining'] > 3
@@ -261,7 +261,7 @@ class OrganizationTests(unittest.TestCase):
             body = ''.join('Measured value stays within the bounded range for case ' + str(i) + '. '
                            for i in range(160))
             node('Ledger', body)
-            n = contract.parse(write._live_locate('Ledger', graph.Index()))
+            n = contract.parse(write.live_locate('Ledger', graph.Index()))
             units = organization._units(n)
             assert len(units) > 2, units
             for u in units[:-1]:
@@ -297,7 +297,7 @@ class OrganizationTests(unittest.TestCase):
             assert not organization.pending(['W1']), 'a cooling range is not offered to anyone yet'
             assert organization.status(job)['status'] == 'pending'
             # 냉각이 지나면 다른 검토자에게 다시 온다
-            state = organization._load()
+            state = organization.load_state()
             state['handoff']['W1'] = {u: at - organization.HANDOFF_SECONDS - 1
                                       for u, at in state['handoff']['W1'].items()}
             organization._save(state)
@@ -366,7 +366,7 @@ class OrganizationTests(unittest.TestCase):
             assert not now["issues"],now["issues"]
             finish_review("W1", "One meaningful branch; original IDs retained")
             assert organization.status(job)["status"]=="complete"
-            path=write._live_locate(a["id"],graph.Index()); path.unlink()
+            path=write.live_locate(a["id"],graph.Index()); path.unlink()
             assert organization.status(job)["status"]=="pending"
         """)
 
@@ -376,7 +376,7 @@ class OrganizationTests(unittest.TestCase):
             write.create_node("Child","Child","Nested entrance","gpt-6-astra",space="00_Scope/W1/Gap/Child")
             write.create_node("A","A","Retained nested knowledge","gpt-6-astra",space="00_Scope/W1/Gap/Child")
             wire("Child","A")
-            gap=write._live_locate("Gap",graph.Index()); original=gap.read_bytes(); gap.unlink()
+            gap=write.live_locate("Gap",graph.Index()); original=gap.read_bytes(); gap.unlink()
             assert not organization._state_path().exists()
             job=organization.plan("W1")
             assert any(i["path"]=="00_Scope/W1/Gap" and i["hub"] is None for i in job["issues"]),job
@@ -398,7 +398,7 @@ class OrganizationTests(unittest.TestCase):
             wire("W1","Branch")
             write.create_node("C","C","A branch fact","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("Branch","C")
-            tree = organization.hub_tree(organization._scope_path("W1"))
+            tree = organization.hub_tree(organization.scope_path("W1"))
             lines = tree.splitlines()
             assert lines[0].startswith("- 00_Scope/W1 · 직속 노드 "), lines
             assert lines[1] == "  - 00_Scope/W1/Branch · 직속 노드 1 — Branch entry", lines
@@ -420,7 +420,7 @@ class OrganizationTests(unittest.TestCase):
             branch = core.ROOT / "00_Scope/W1/Branch"
             (branch / "Branch.md").rename(branch / "Branch.MD")
             assert "Branch.MD" in [p.name for p in branch.iterdir()]
-            tree = organization.hub_tree(organization._scope_path("W1"), graph.Index())
+            tree = organization.hub_tree(organization.scope_path("W1"), graph.Index())
             assert "  - 00_Scope/W1/Branch · 직속 노드 1 — Branch entry" in tree.splitlines(), tree
         """)
 
@@ -494,7 +494,7 @@ class OrganizationTests(unittest.TestCase):
             out=write.move_nodes(out["remaining"],"00_Scope/W1/Branch"); assert out["ok"],out
             assert not organization.snapshot("W1")["pending_moves"]
             for n in [a,b]:
-                p=write._live_locate(n["id"],graph.Index()); assert core.sha256_file(p)==n["new_hash"]
+                p=write.live_locate(n["id"],graph.Index()); assert core.sha256_file(p)==n["new_hash"]
             write.create_node("Other","Other","Another meaningful branch","gpt-6-astra",space="00_Scope/W1/Other")
             assert write.move_nodes(["A"],"00_Scope/W1/Other")["ok"]
             wire("W1","Branch"); wire("W1","Other"); wire("Branch","B"); wire("Other","A")
@@ -532,7 +532,7 @@ class OrganizationTests(unittest.TestCase):
             with patch("osk.write._apply_move",side_effect=OSError("injected I/O failure")):
                 failed=write.move_node("A","00_Scope/W1/Branch")
             assert not failed["ok"] and failed["moved"]==[] and failed["remaining"]==["A"],failed
-            assert core.sha256_file(write._live_locate(a["id"],graph.Index()))==a["new_hash"]
+            assert core.sha256_file(write.live_locate(a["id"],graph.Index()))==a["new_hash"]
             assert write.move_node("A","00_Scope/W1/Branch")["ok"]
             assert not organization.snapshot("W1")["pending_moves"]
         """)
@@ -559,7 +559,7 @@ class OrganizationTests(unittest.TestCase):
             a=node("A"); job=organization.plan("W1")
             write.update_node("A",body="",expect_hash=a["new_hash"])
             rejected(lambda: organization.review(job["key"],"W1","complete","No content retained",after=organization.snapshot("W1")["snapshot"]))
-            p=write._live_locate(a["id"],graph.Index())
+            p=write.live_locate(a["id"],graph.Index())
             write.update_node("A",body="Restored knowledge",expect_hash=core.sha256_file(p))
             rp=core.ROOT/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
             rp.write_text("## 1"+chr(10)+"Observed",encoding="utf-8")

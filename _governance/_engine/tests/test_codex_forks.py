@@ -282,24 +282,24 @@ class CodexForkTests(unittest.TestCase):
         self.assertEqual((refused["captured_rounds"], refused["inherited_rounds"]), (1, 1))
 
     def test_legacy_empty_fields_require_failed_source_discovery(self):
-        s = it._load(it.state_path("codex", self.child), "codex", self.child)
+        s = it.load_state(it.state_path("codex", self.child), "codex", self.child)
         s.update(capture_pending=True, capture_error="ValueError: native transcript path unavailable")
         before = json.dumps(s, sort_keys=True)
         existing = self.page(self.child, self.child, turn(self.child, "c1"))
         for found, expected in ((None, "awaiting_input"), (str(self.home / "missing.jsonl"), "awaiting_input"),
                                 (str(existing), "retryable"), (str(self.home), "action_required")):
-            with self.subTest(found=found), mock.patch.object(it, "_locate_transcript", return_value=found):
+            with self.subTest(found=found), mock.patch.object(it, "locate_transcript", return_value=found):
                 self.assertEqual(it._capture_recovery(s)["state"], expected)
                 self.assertEqual(json.dumps(s, sort_keys=True), before)
-        with mock.patch.object(it, "_locate_transcript", side_effect=PermissionError("fixture")):
+        with mock.patch.object(it, "locate_transcript", side_effect=PermissionError("fixture")):
             advice = it._capture_recovery(s)
             self.assertEqual((advice["state"], advice["basis"]), ("action_required", "source_lookup_failed"))
         s["prompt_count"] = 1
-        with mock.patch.object(it, "_locate_transcript", return_value=None):
+        with mock.patch.object(it, "locate_transcript", return_value=None):
             self.assertEqual(it._capture_recovery(s)["state"], "action_required")
 
     def test_legacy_failure_phase_does_not_infer_no_input_from_empty_fields(self):
-        s = it._load(it.state_path("codex", self.child), "codex", self.child)
+        s = it.load_state(it.state_path("codex", self.child), "codex", self.child)
         for error, phase in (("WriteError: 착지 미정", "landing"),
                              ("ValueError: conversation scope changed", "landing"),
                              ("ValueError: native round identity prefix changed", "replay"),
@@ -310,13 +310,13 @@ class CodexForkTests(unittest.TestCase):
                 advice = it._capture_recovery(s)
                 self.assertEqual((advice["state"], advice["phase"]), ("action_required", phase))
         s["capture_failure_phase"] = "read"
-        with mock.patch.object(it, "_locate_transcript", side_effect=AssertionError("recorded phase is sufficient")):
+        with mock.patch.object(it, "locate_transcript", side_effect=AssertionError("recorded phase is sufficient")):
             self.assertEqual(it._capture_recovery(s)["basis"], "recorded_phase")
         # A recorded miss is checked against the disk: the source may be there now (#203).
         s["capture_failure_phase"] = "source"
         s["capture_error"] = "FileNotFoundError: fixture"
         existing = self.page(self.child, self.child, turn(self.child, "c1"))
-        with mock.patch.object(it, "_locate_transcript", return_value=str(existing)):
+        with mock.patch.object(it, "locate_transcript", return_value=str(existing)):
             self.assertEqual(it._capture_recovery(s)["state"], "retryable")
 
 
@@ -361,7 +361,7 @@ class CompressedRolloutTests(unittest.TestCase):
         it.acknowledge("codex", self.parent, first["through"], "no_value", "synthetic fixture")
         fingerprint = self.stored(self.parent)["native_fingerprint"]
         zst = compress(plain)
-        self.assertEqual(it._locate_transcript("codex", self.parent, str(plain)), str(zst.resolve()))
+        self.assertEqual(it.locate_transcript("codex", self.parent, str(plain)), str(zst.resolve()))
         self.assertEqual(it.adapters.get("codex").transcripts(self.parent), [zst])
         # Plain bytes and the kept mtime: the stored fingerprint holds, so nothing is due.
         self.assertEqual(transcripts.native_fingerprint(str(zst), "codex", self.parent), fingerprint)

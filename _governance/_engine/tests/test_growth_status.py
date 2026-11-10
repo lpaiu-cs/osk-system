@@ -20,10 +20,10 @@ AT = '2026-10-01T12:00:00+09:00'
 END = '2026-10-02T00:00:00+09:00'
 def cursor(sid, rounds=0, reviewed=0, **extra):
     p = integration.state_path('claude', sid)
-    state = integration._load(p, 'claude', sid)
+    state = integration.load_state(p, 'claude', sid)
     state.update(rounds=[{'id':str(n),'ref':'anonymous#'+str(n),'completion':'complete'} for n in range(rounds)],
                  reviewed_count=reviewed, **extra)
-    integration._save(p,state)
+    integration.save_state(p,state)
     return p,state
 def report():
     return S.report(since=START,until=END)
@@ -70,8 +70,8 @@ class GrowthStatusTests(unittest.TestCase):
             cursor('prefix',capture_pending=True,capture_error='ValueError: native round identity prefix changed')
             cursor('tail',capture_pending=True)
             before=files()
-            with patch.object(integration,'_locate_transcript',return_value=None), \\
-                 patch.object(integration,'_save',side_effect=AssertionError('report must not save')):
+            with patch.object(integration,'locate_transcript',return_value=None), \\
+                 patch.object(integration,'save_state',side_effect=AssertionError('report must not save')):
                 result=report()
             assert result['ok'],result
             counts=result['integration']
@@ -227,7 +227,7 @@ class GrowthStatusTests(unittest.TestCase):
             cursor('a',1,reviews=[{'through':'frozen','at':AT,'outcome':'no_value','receipts':[]}])
             before=files()
             with patch.object(integration,'status',side_effect=AssertionError('status writes repairs')), \
-                 patch.object(integration,'_save',side_effect=AssertionError('unexpected write')), \
+                 patch.object(integration,'save_state',side_effect=AssertionError('unexpected write')), \
                  patch.object(growth,'plan',side_effect=AssertionError('report selected work')), \
                  patch.object(core,'ledger_append',side_effect=AssertionError('unexpected ledger write')):
                 first,second=report(),report()
@@ -334,7 +334,7 @@ class GrowthStatusTests(unittest.TestCase):
                                 capture_output=True,text=True,encoding='utf-8',timeout=30)
             assert proc.returncode==1,(proc.stdout,proc.stderr)
             assert json.loads(proc.stdout)['state']=='incomplete',proc.stdout
-            plan=[r for r in growth._records() if r['kind']=='plan'][-1]
+            plan=[r for r in growth.ledger_records() if r['kind']=='plan'][-1]
             assert plan['invocation']=='user_request' and plan['work_context']=='daily',plan
             assert plan['engine_rev']==epoch.loaded(),plan
             with patch.object(growth,'check_command',side_effect=AssertionError('launched invalid invocation')):
