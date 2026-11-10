@@ -19,8 +19,9 @@
 #
 # 판 개발 브랜치(`vX.Y-devel`)로 가는 PR에서는 돌지 않는다. 검증은 릴리스 PR
 # (`vX.Y-devel` → `main`)에서 한 번 한다(docs/SETUP.md "판 개발 브랜치와 검증 시점").
-# `v6.0-devel`은 예외다 — 구조 개편은 바꾼 시험이 없어도 어디서든 깨질 수 있어 PR마다 돈다
-# (docs/v6.0-refactoring.md "안전망").
+# `v6.0-devel`은 예외다 — 구조 개편은 바꾼 시험이 없어도 어디서든 깨질 수 있어 PR마다 돈다.
+# 다만 Ubuntu 잡만 돈다. 올리기 전에 개발 기기(Windows)에서 정식 회귀를 돌리므로, CI는 그 기기가
+# 못 보는 Linux를 본다. 전체 행렬은 릴리스 PR에서 돈다(docs/v6.0-refactoring.md "안전망").
 
 name: ci
 
@@ -48,17 +49,16 @@ jobs:
     name: ${{ matrix.os }} · py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
-    continue-on-error: ${{ matrix.advisory }}
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        # `github.base_ref`는 PR의 대상 브랜치다. push와 release.yml의 호출에서는 비어 있어 전체를 돈다.
+        os: ${{ fromJSON(github.base_ref == 'v6.0-devel' && '["ubuntu-latest"]' || '["windows-latest", "ubuntu-latest", "macos-latest"]') }}
         python: ["3.11", "3.12"]
-        advisory: [false]
-        include:
-          - os: macos-latest
-            python: "3.12"
-            advisory: true
+        exclude:
+          - os: macos-latest      # 참고용이라 3.12만 돈다
+            python: "3.11"
     env:
       # Windows 러너의 기본 코드페이지(cp1252)로는 한국어 출력이 인코딩되지 않는다.
       PYTHONUTF8: "1"
