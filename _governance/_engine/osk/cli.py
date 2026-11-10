@@ -207,8 +207,8 @@ def _fork_cmd(a) -> None:
 def _doctor_cmd(a) -> None:
     """`osk doctor` — 이 기기의 하네스 연결과 vault의 남은 이행을 **읽기만** 하며 점검한다. 실패
     항목이 있으면 종료코드 1이다(경고는 0). `--vault`는 vault의 내용(남은 이행·형식·잔재·적체)을 본다.
-    `--migrate`는 남은 이행을 계획(종료코드 2)한 뒤, 확인된 다음 실행에서 적용한다 — 본문을 새로 쓰지
-    않는 기계적 변환이고 대상마다 전후를 이행 기록에 남긴다(Mechanism §5)."""
+    `--migrate`는 남은 이행을 정한 순서로 적용한다 — 본문을 새로 쓰지 않는 기계적 변환이고 대상마다
+    전후를 이행 기록에 남긴다(Mechanism §5)."""
     from . import doctor
     if a.migrate or a.vault:
         try:
@@ -502,7 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--vault", action="store_true",
                    help="연결 대신 vault 내용 점검 — 남은 이행, 검증기 위반, 정기 검토의 잔재, 대화 검토 적체")
     p.add_argument("--migrate", action="store_true",
-                   help="남은 이행을 계획하고(종료코드 2), 확인된 다음 실행에서 순서대로 적용해 이행 기록을 남긴다")
+                   help="남은 이행을 정한 순서로 적용해 이행 기록을 남긴다")
 
     # `wm`도 기계 경로다 — SessionStart 훅이 `show`를 불러 전문을 주입한다.
     p = sub.add_parser("sm", help="scope 기억 (훅 경로)")

@@ -299,7 +299,7 @@ sh osk-cli.sh --help       # vault 루트의 런처 — 같은 것(Windows: .\os
 | `growth plan` / `growth prompt` / `growth run` / `growth review` / `growth checkpoint` | Scope 비교 후보·미리보기·한정 실행·Domain 검토 결과·개별 작업 즉시 기록 |
 | `growth status` | 현재 대기량과 기간별 성장 근거를 구분하는 읽기 전용 보고서 — [분모·판독 한계](growth-status.md) |
 | `fork doctor` | 구독 fork 준비 점검 — 시작/입력 훅과 같은 판정과 근거, 상태·설정을 쓰지 않는다 (아래) |
-| `doctor` | 이 기기의 하네스 연결과 vault 이행 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정, 남은 일괄 이행. 읽기만 한다 (아래). `--vault`는 vault 내용 점검 — 남은 이행, 기록 충돌, 검증기 위반, 정기 검토의 잔재(재검토 후보·포착 막힘·scope 복구·정돈·보호영역 대기), 대화 검토 적체(예상 토큰과 `growth run --daily --backlog`). `--migrate`는 남은 이행을 옮긴다 — 첫 실행은 계획과 종료코드 2, 1시간 안의 확인된 같은 실행이 적용하고 이행 기록을 `_ledger/migration/`에 남긴다 |
+| `doctor` | 이 기기의 하네스 연결과 vault 이행 점검 — MCP·훅 등록, 훅 실행 기록, 문맥 전달, 판본, fork 판정, 남은 일괄 이행. 읽기만 한다 (아래). `--vault`는 vault 내용 점검 — 남은 이행, 기록 충돌, 검증기 위반, 정기 검토의 잔재(재검토 후보·포착 막힘·scope 복구·정돈·보호영역 대기), 대화 검토 적체(예상 토큰과 `growth run --daily --backlog`). `--migrate`는 남은 이행을 정한 순서로 옮기고 이행 기록을 `_ledger/migration/`에 남긴다 |
 | `organization plan` / `organization review` | 선택한 Scope·기존 Domain의 구간별 본문 검토와 참조·허브·분화 완료 확인 |
 | `sm show` / `sm write` | scope 기억 — SessionStart 훅 경로(아래) |
 | `routing show` / `routing bind` / `routing unbind` / `routing primary` | 프로젝트 결속 — 결속 집합·주된 scope 조회(생략하면 검토 대상), 집합 증감, 주된 scope 지정(**사용자 전속** — 단말 확인을 거치며, 검토의 결정 묶음은 실행기가 적용) (Mechanism §6-2 6항) |
@@ -817,9 +817,8 @@ CLI가 모두 없다)는 건너뛴다.
   한 줄로 싣는다. 인증 상태는 조회하되 추론은 띄우지 않는다. fork가 없는 Kiro·Antigravity에는 이
   항목이 없다.
 - **vault 이행.** 판이 바뀌어 옛 표기·자리의 자료를 옮겨야 하는 일괄 이행마다 옮길 대상의 수를 싣는다.
-  남았으면 경고다. `osk doctor --migrate`가 남은 이행을 옮긴다 — 첫 실행은 이행마다 옮길 대상을 보이고
-  종료코드 2로 끝난다. 사용자에게 설명하고 확인을 받은 뒤 1시간 안에 같은 명령을 다시 실행하면 정한
-  순서로 적용한다. 계획이 그 사이 달라지면 새 확인을 요구한다. 이행마다 착수 때 전수 목록과 대상별
+  남았으면 경고다. `osk doctor --migrate`가 남은 이행을 정한 순서로 한 번에 적용한다 — 따로 확인을 받지
+  않는다(재확인은 갱신만 받는다). 이행마다 착수 때 전수 목록과 대상별
   전후를 `_ledger/migration/`에 남기고(Mechanism §5), 보호영역 안의 노드는 변경집합으로 남아 사용자
   승인을 기다린다. 지금 이행은 셋이고, 이 순서로 한다.
   - 비노드 `derived-from` → 관측 절의 `지지` 줄(v5.4, `evidence migrate`와 같다). 라운드 날짜를 기록의

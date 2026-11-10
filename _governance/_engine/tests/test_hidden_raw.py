@@ -199,45 +199,45 @@ def main():
                   for r in raw.list_records("00_Scope/W1")["records"]}
         shadow = base / ".records" / "new.txt"
         shadow.write_bytes(raw._block(1, "older copy", "a").encode())
+        fix = base / ".records" / ".corrections" / "2026-09-20-boundary.json"   # v4 보정 기록 — 이행 기록 곁으로
+        fix.parent.mkdir()
+        fix.write_bytes(b'{"applied": true}')
+        (base / ".gitkeep").write_bytes(b"")
         frozen = {p: p.read_bytes() for p in base.rglob("*") if p.is_file()}
         plan = raw.consolidate()
-        assert plan["count"] == len(before) and not plan["applied"], plan
+        assert plan["count"] == len(before) + 1 and not plan["applied"], plan
         assert [c["path"] for c in plan["conflicts"]] == ["00_Scope/W1/_raw/.records/new.txt"], plan
         records = "옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)"
         rep, code = doctor.vault()
         checks = {i["check"]: i for i in rep["items"]}
         assert checks[records]["level"] == "warn" and "기록 충돌" in checks, rep["items"]
+        assert {p: p.read_bytes() for p in base.rglob("*") if p.is_file()} == frozen   # 점검은 옮기지 않는다
         rep, code = doctor.migrate()
-        assert code == 2 and rep["approval_required"], rep
-        assert dict(rep["plan"]["migrations"]) == {records: [[m["from"], m["hash"]] for m in plan["files"]]}, rep
-        assert rep["plan"]["root"] == str(root)            # worktree끼리 확인표 자리를 함께 써도 계획이 갈린다
-        assert {p: p.read_bytes() for p in base.rglob("*") if p.is_file()} == frozen   # 계획은 옮기지 않는다
-        changed = base / ".records" / "retry.txt"
-        changed.write_bytes(frozen[changed] + b"\n")       # 보인 뒤에 바뀐 기록은 다시 확인받는다
-        assert doctor.migrate()[1] == 2 and changed.exists()
-        changed.write_bytes(frozen[changed])
-        assert doctor.migrate()[1] == 2
-        rep, code = doctor.migrate()
-        assert code == 0 and [(a["migration"], a["count"]) for a in rep["applied"]] == [(records, len(before))], rep
+        assert code == 0 and [(a["migration"], a["count"]) for a in rep["applied"]] == [(records, len(before) + 1)], rep
         # Mechanism §5: each move is in the migration ledger before it runs, and the manifest opens with every
         # record and closes with the result and the conflicts held (#317 review).
         from osk import evidence_migration as em
-        moved = [e for e in core.ledger_read(em.EVENTS) if e.get("rule") == raw.CONSOLIDATE_RULE]
+        moved = [e for e in core.ledger_read(em.EVENTS) if e.get("rule") in (raw.CONSOLIDATE_RULE, raw.CORRECTIONS_RULE)]
         assert [(e["kind"], e["source"], e["before"]) for e in moved] == [
             ("move", m["from"], m["hash"]) for m in plan["files"]], moved
         listing = (root / rep["applied"][0]["manifest"]).read_text(encoding="utf-8")
         assert all(f"`{m['from']}` → `{m['to']}`" in listing for m in plan["files"]), listing
         assert "## 결과" in listing and "→ 보류 — " in listing, listing
         assert {i["check"]: i["level"] for i in doctor.vault()[0]["items"]}[records] == "ok"
-        assert [p for p in base.rglob("*") if p.is_file()] == [shadow]
+        assert {p for p in base.rglob("*") if p.is_file()} == {shadow, base / ".gitkeep"}   # 보류가 남은 자리는 그대로
+        assert (root / plan["files"][-1]["to"]).read_bytes() == b'{"applied": true}'
+        assert not fix.parent.exists()
         for m in plan["files"]:
             dest = root / m["to"]
-            assert dest.is_relative_to(root / "_cited/.records") and core.sha256_file(dest) == m["hash"]
+            home = "_cited/.records" if m["rule"] == raw.CONSOLIDATE_RULE else "_ledger/migration/corrections"
+            assert home in m["to"] and core.sha256_file(dest) == m["hash"], m
         for name, text in before.items():
             assert raw.read_round(f"00_Scope/W1/_raw/{name}.md#1")["text"] == text   # 옛 좌표
         assert target.read_bytes() == saved and D.verify_receipt(historic)["status"] == "complete"
         assert raw.consolidate()["count"] == 0
         shadow.unlink()
+        raw.consolidate(apply=True)
+        assert not base.exists()   # `.gitkeep`만 남은 옛 자리도 비운다
         print("PASS hidden storage, aliases, byte identity, conflict/retry, provenance, consolidation")
 
 

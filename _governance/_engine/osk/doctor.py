@@ -18,7 +18,6 @@ MCP 등록의 해석기는 한 번 띄워 판본과 서버가 import하는 패�
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
 import shutil
 import subprocess
@@ -320,23 +319,19 @@ def _host(adapter, records: dict) -> dict:
 
 def _migrations() -> list[tuple[str, object, object]]:
     """호환성·일괄 이행 — (이름, 옮길 대상, 적용). 체제가 바뀌어 옛 표기·자리를 옮겨야 하면 여기에 더한다
-    (2026-11-09 사용자 결정): 점검은 `osk doctor`가 읽기만 하고, 적용은 `osk doctor --migrate` 하나가 확인을
-    받은 뒤 이 순서로 한다. 대상은 옮길 것의 정체(자리·해시) 목록이고 확인은 그 목록에 묶인다. 근거 절
-    이행이 기록 이관보다 먼저다 — 라운드 날짜를 기록의 지금 경로에 대한 git blame으로 정하므로, 먼저
-    옮긴 기록은 거기서 추적되지 않아 그 항목이 보류된다. 앞 이행이 만든 표기는 뒤 이행이 받는다."""
+    (2026-11-09 사용자 결정): 점검은 `osk doctor`가 읽기만 하고, 적용은 `osk doctor --migrate` 하나가 이
+    순서로 한다. 근거 절 이행이 기록 이관보다 먼저다 — 라운드 날짜를 기록의 지금 경로에 대한 git blame으로
+    정하므로, 먼저 옮긴 기록은 거기서 추적되지 않아 그 항목이 보류된다. 앞 이행이 만든 표기는 뒤 이행이 받는다."""
     from . import evidence_migration as em, raw
     return [("비노드 derived-from → 관측 줄 (v5.4)",
-             lambda: [[n["path"], n["before"]] for n in em.plan()["nodes"] if n["new"]],
-             lambda targets: em.apply(expect=targets)),
+             lambda: [n["path"] for n in em.plan()["nodes"] if n["new"]], em.apply),
             ("옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)",
-             lambda: [[m["from"], m["hash"]] for m in raw.consolidate()["files"]],
-             lambda targets: raw.consolidate(apply=True, expect=targets)),
+             lambda: [m["from"] for m in raw.consolidate()["files"]], lambda: raw.consolidate(apply=True)),
             ("관측 절 제목 `## 근거` → `# 관측` (v5.6)",
-             lambda: [[it["path"], it["before"]] for it in em.heading_plan() if it["new"] is not None],
-             lambda targets: em.heading_apply(expect=targets))]
+             lambda: [it["path"] for it in em.heading_plan() if it["new"] is not None], em.heading_apply)]
 
 
-MIGRATE_FIX = "`osk doctor --migrate`로 옮긴다 — 첫 실행은 계획만 보이고, 확인 뒤 1시간 안의 같은 실행이 적용한다"
+MIGRATE_FIX = "`osk doctor --migrate`로 옮긴다"
 
 
 def _vault() -> list[dict]:
@@ -352,47 +347,21 @@ def _vault() -> list[dict]:
     return items
 
 
-CONFIRM_TICKET = "osk-doctor-confirmation.json"
-CONFIRM_WITHIN = 3600
-MIGRATE_INSTRUCTION = ("여기서 멈추고 사용자에게 옮길 기록과 이행할 노드를 설명한 뒤 명시적 확인을 받는다. "
-                       "확인 뒤 같은 명령을 1시간 안에 한 번 다시 실행하면 적용한다. 계획이 그 사이 달라지면 "
-                       "새 확인을 요구한다.")
-
-
 def migrate() -> tuple[dict, int]:
-    """남은 이행을 적용한다 — (결과, 종료 코드). 이행은 자료 이관이라 사용자가 계획을 본 뒤에 적용한다
-    (Mechanism §1 4항·§5 4항·§9 5항). 첫 실행은 이행마다 옮길 대상과 `approval_required`를 내고 2로 끝난다.
-    1시간 안에 같은 계획으로 다시 실행하면 순서대로 적용하고, 이행마다 전수 목록과 이행 기록을 남긴다.
-    계획은 이 vault 자리와 대상의 정체로 짓는다 — worktree는 확인표 자리를 함께 쓰고(공통 git 디렉터리),
-    개수만으로는 다른 대상으로 바뀐 계획을 가르지 못한다. 적용 전에 옛 정의로 적은 재검토 기록을 지금
-    정의로 이어 적는다 — 그러지 않으면 바이트가 바뀐 노드의 기록이 옛 정의로 맞지 않아 그 쌍이 후보가 된다."""
-    plan = {"root": str(core.ROOT),
-            "migrations": [[name, found] for name, targets, _ in _migrations() if (found := targets())]}
-    if not plan["migrations"]:
-        return {"ok": True, "applied": []}, 0
-    review_id = core.sha256_bytes(json.dumps(plan, ensure_ascii=False, sort_keys=True).encode())
-    ticket = core.local_lock_path(CONFIRM_TICKET)
-    try:
-        pending = json.loads(ticket.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        pending = {}
-    if (not isinstance(pending, dict) or pending.get("review_id") != review_id
-            or not isinstance(pending.get("at"), (int, float))
-            or not 0 <= time.time() - pending["at"] < CONFIRM_WITHIN):
-        core.atomic_write(ticket, json.dumps({"review_id": review_id, "at": time.time()}).encode())
-        return {"ok": False, "approval_required": True, "review_id": review_id, "plan": plan,
-                "instruction": MIGRATE_INSTRUCTION}, 2
-    ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다
+    """남은 이행을 정한 순서로 적용한다 — (결과, 종료 코드). 확인을 따로 받지 않는다 — 재확인은 갱신
+    (`osk.update`)뿐이다(2026-11-10 사용자 결정). 이행마다 잠금 안에서 계획을 세워 옮기고, 전수 목록과 이행
+    기록을 남긴다(Mechanism §5). 보호영역 안의 노드는 변경집합으로 남아 사용자 승인을 기다린다. 앞 이행이
+    끝난 뒤에 다음 이행의 대상을 잰다. 적용 전에 옛 정의로 적은 재검토 기록을 지금 정의로 이어 적는다 —
+    그러지 않으면 바이트가 바뀐 노드의 기록이 옛 정의로 맞지 않아 그 쌍이 후보가 된다."""
     from . import rechecks
-    rechecks.ensure_baseline(carry=True)
-    confirmed = dict(plan["migrations"])
-    after: dict[str, str] = {}   # 이 실행의 앞선 이행이 쓴 노드 → 결과 해시. 뒤 이행은 그것을 예상값으로 받는다
-    done = []
-    for name, _targets, apply in _migrations():
-        if name in confirmed:
-            result = apply([[p, after.get(p, h)] for p, h in confirmed[name]])
-            after.update(result.pop("after", {}))
-            done.append({"migration": name, **result})
+    done, ready = [], False
+    for name, targets, apply in _migrations():
+        if not targets():
+            continue
+        if not ready:
+            rechecks.ensure_baseline(carry=True)
+            ready = True
+        done.append({"migration": name, **apply()})
     return {"ok": True, "applied": done}, 0
 
 

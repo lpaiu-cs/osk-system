@@ -47,9 +47,8 @@ v5.5.1 was not released. Its changes ship in v5.6.0.
   that hash the whole file may come up once more. Nodes in a protected region
   remain as a changeset (`osk approve`).
 - From now on, bulk migrations that come with an upgrade are checked by
-  `osk doctor` and applied with `--migrate`. Its first run only lists what it
-  would move and exits with code 2; run the same command again within an hour,
-  after confirming, to apply. Moving cited records from their old places into
+  `osk doctor` and applied with `--migrate` in one run, with no separate
+  confirmation (from v5.6.1; v5.6.0 needed a second run). Moving cited records from their old places into
   the root `_cited/` is part of the same command.
 - **An agent searches before it writes a new node (#273, #314).** `create_node`
   is refused until `search` has been called once in that session (one osk MCP
