@@ -127,10 +127,10 @@ def _engine(records: dict) -> list[dict]:
     except Exception as exc:
         items.append(_item("info", "릴리스", f"판독 실패 — {type(exc).__name__}: {exc}"))
     try:
-        import sync_daemon
-        rec = sync_daemon.last()
+        from . import sync_status
+        rec = sync_status.last()
         if rec:
-            trouble = sync_daemon.trouble()
+            trouble = sync_status.trouble()
             items.append(_item("warn" if trouble else "ok", "동기화 데몬",
                                trouble or f"마지막 주기 {_kst(rec['at'])} — {rec.get('status')}",
                                "에이전트용 안내 docs/OPERATE-AGENT.md의 Check the connection 절을 따른다 — 전송 "

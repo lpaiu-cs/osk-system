@@ -39,7 +39,7 @@ LAYERS = {
     SERVICE: ["osk.write", "osk.search", "osk.authority", "osk.organization", "osk.distillation",
               "osk.validate", "osk.integration", "osk.growth", "osk.growth_daily", "osk.growth_status",
               "osk.response_growth", "osk.update", "osk.release", "osk.publish", "osk.update_check",
-              "osk.setup", "osk.services", "osk.doctor", "osk.evidence_migration", "osk.hook_text",
+              "osk.setup", "osk.services", "osk.doctor", "osk.evidence_migration", "osk.hook_text", "osk.sync_status",
               "osk._fixture_approvals", "vault_sync"],
     SURFACE: ["osk.cli", "mcp_server", "sync_daemon", "scripts.growth_run", "scripts.setup",
               "scripts.recover", "scripts.osk_turn_ledger", "scripts.configure_obsidian_graph",

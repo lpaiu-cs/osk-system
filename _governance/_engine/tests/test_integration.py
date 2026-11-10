@@ -2708,7 +2708,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                 st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertEqual(st["captured_rounds"], 1)
-                with mock.patch.object(raw.secrets, "write_raw", wraps=raw.secrets.write_raw) as sink:
+                with mock.patch.object(raw, "write_raw", wraps=raw.write_raw) as sink:
                     cited = it.cite(f"{harness}/{sid}", turn="-1", note="the reply is kept as its hash")
                 self.assertEqual(sink.call_count, 1)  # mandatory final filter still runs
                 saved = (ROOT / cited["path"]).read_bytes()

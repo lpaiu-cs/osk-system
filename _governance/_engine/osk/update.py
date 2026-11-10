@@ -36,6 +36,7 @@ from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from ._portalock import lock_exclusive, unlock
 from .layout import KINDS, PREFIXES, adapt_path
 from . import publish
+from . import sync_status
 
 UPDATE_JOURNAL = LEDGER / "update.jsonl"     # 운영 저널 — 권위 대장이 아니다
 CONFIG = ROOT / ".osk" / "config.json"       # 인스턴스 소유 로컬 설정
@@ -759,8 +760,7 @@ def _daemon_stopped(info: dict):
     견딘다(SETUP 동기화 데몬). 풀리는 즉시 싱글턴을 넘겨받아, 서비스 관리자가
     먼저 띄운 구판 데몬이 적용 도중 끼어들지 못하게 한다. 끝나면(실패해도)
     멈춘 데몬을 다시 띄우고 결과를 `info`에 남긴다."""
-    from sync_daemon import _lock_path as _dlp
-    f = open(_dlp(ROOT, "osk-sync.lock"), "w")
+    f = open(sync_status.lock_path(ROOT, "osk-sync.lock"), "w")
     held = False
     try:
         try:
