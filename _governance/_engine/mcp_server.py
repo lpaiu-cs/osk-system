@@ -383,8 +383,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     `include`=훅 `[osk 접음]` 줄이 알려 준 블록 → `included`."""
     idx = _idx()
     out = {
-        "clusters": write._cluster_names(),
-        "open_cases": write._open_cases(),
+        "clusters": write.cluster_names(),
+        "open_cases": write.open_cases(),
         "broken": sorted(getattr(idx, "broken", None) or {}),
         "nodes": len(idx.nodes),
         **_engine_state(),
@@ -429,7 +429,7 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
             from osk import organization
             try:
                 out["hub_tree"] = organization.hub_tree(
-                    organization._scope_path(out["session_scope"]), idx)
+                    organization.scope_path(out["session_scope"]), idx)
             except (OSError, ValueError):
                 pass
         if include:

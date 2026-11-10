@@ -84,7 +84,7 @@ def main():
         for directory, suffix in ((base, ".md"), (base / ".records", ".txt")):
             duplicates = [directory / (stem + suffix) for stem in ("caf\u00e9", "cafe\u0301")]
             for i, path in enumerate(duplicates):
-                path.write_bytes(raw._block(1, f"different source {i}", "a").encode())
+                path.write_bytes(raw.round_block(1, f"different source {i}", "a").encode())
             frozen = {path: path.read_bytes() for path in duplicates}
             if os.path.samefile(*duplicates):
                 # APFS/HFS+ fold normalization: the second write reopened the first
@@ -103,7 +103,7 @@ def main():
         # This also runs on ext4: .txt on the old stem would raise ENAMETOOLONG.
         for name in ("x" * 252, "가" * 84, "e\u0301" * 84):
             old = base / (name + ".md")
-            original = raw._block(1, "q", "a").encode()
+            original = raw.round_block(1, "q", "a").encode()
             old.write_bytes(original)
             ref = f"00_Scope/W1/_raw/{name}.md#1"
             assert raw.read_round(ref)["index"] == 1
@@ -148,7 +148,7 @@ def main():
 
         # A failed rename keeps old bytes; retry converges without changing rounds.
         crash = base / "crash.md"
-        crash.write_bytes(raw._block(1, "q", "a").encode())
+        crash.write_bytes(raw.round_block(1, "q", "a").encode())
         with mock.patch.object(Path, "rename", side_effect=OSError("injected rename failure")):
             reject(raw.migrate, apply=True)
         assert crash.is_file()
@@ -157,14 +157,14 @@ def main():
 
         # The next append to a visible legacy record migrates it and keeps its rounds.
         retry = base / "retry.md"
-        retry.write_bytes(raw._block(1, "q", "a").encode())
+        retry.write_bytes(raw.round_block(1, "q", "a").encode())
         appended = append_round("hidden-test", "retry", "q2", "a2")
         assert appended["index"] == 2 and not retry.exists()
         assert raw.read_round("00_Scope/W1/_raw/retry.md")["rounds"] == 2
 
         # Old receipts still verify after migration; the round is bound by its evidence line.
         record = base / "proof.md"
-        record.write_bytes(raw._block(1, "durable observation", "verified result").encode())
+        record.write_bytes(raw.round_block(1, "durable observation", "verified result").encode())
         ref = "[[00_Scope/W1/_raw/proof.md#1]]"
         out = D.create_node({"key": "legacy-proof", "sources": [ref], "hub": "W1"},
                             title="hidden-raw-proof", summary="preserved observation",
@@ -183,7 +183,7 @@ def main():
         assert D.status("legacy-proof")["status"] == "complete"
         append_round("hidden-test", "proof", "later", "reply")
         assert D.verify_receipt(historic)["status"] == "complete"
-        proof_path = raw._raw_file("00_Scope/W1/_raw/proof.md")
+        proof_path = raw.raw_file("00_Scope/W1/_raw/proof.md")
         proof_path.write_bytes(proof_path.read_bytes().replace(b"verified result", b"tampered result"))
         assert D.verify_receipt(historic)["status"] == "pending"
         reject(raw.read_round, "../../outside.md#1")
@@ -198,7 +198,7 @@ def main():
         before = {r["record"]: raw.read_round(r["path"] + "#1")["text"]
                   for r in raw.list_records("00_Scope/W1")["records"]}
         shadow = base / ".records" / "new.txt"
-        shadow.write_bytes(raw._block(1, "older copy", "a").encode())
+        shadow.write_bytes(raw.round_block(1, "older copy", "a").encode())
         frozen = {p: p.read_bytes() for p in base.rglob("*") if p.is_file()}
         plan = raw.consolidate()
         assert plan["count"] == len(before) and not plan["applied"], plan

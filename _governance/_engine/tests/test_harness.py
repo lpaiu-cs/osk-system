@@ -158,18 +158,18 @@ except integration.SubagentEvent as exc:
 
 assert harness.NAMES == ('claude', 'codex', 'kiro', 'antigravity') and harness.fork_names() == ('claude', 'codex')
 try:
-    integration._identity('gemini', 'x')
+    integration.conversation_key('gemini', 'x')
     raise AssertionError('unknown harness accepted')
 except ValueError as exc:
     assert str(exc) == 'explicit claude/codex/kiro/antigravity harness and actual conversation_id required', exc
 # Transcripts are found where each host keeps them; two candidates need an explicit path.
 mine = rows(claude_home / 'projects' / 'p2' / 'c1.jsonl', {'sessionId': 'c1'})
-assert integration._locate_transcript('claude', 'c1') == str(mine.resolve())
+assert integration.locate_transcript('claude', 'c1') == str(mine.resolve())
 live = rows(codex_home / 'sessions' / '2026' / '09' / '26' / 'rollout-2026-09-26T00-00-00-x1.jsonl', {})
-assert integration._locate_transcript('codex', 'x1') == str(live.resolve())
+assert integration.locate_transcript('codex', 'x1') == str(live.resolve())
 rows(codex_home / 'archived_sessions' / 'rollout-old-x1.jsonl', {})
 try:
-    integration._locate_transcript('codex', 'x1')
+    integration.locate_transcript('codex', 'x1')
     raise AssertionError('ambiguous transcripts accepted')
 except ValueError as exc:
     assert 'multiple transcripts' in str(exc), exc
@@ -454,7 +454,7 @@ old = root.parent / 'old_python.py'
 old.write_text("import sys\nprint('Python 3.10.9')\nsys.exit(3)\n", encoding='utf-8')
 item = mcp_item({'command': py, 'args': [str(old), str(server)]})
 assert item['level'] == 'fail' and 'Python 3.10.9' in item['detail'], item
-assert item['fix'] == claude.mcp_command(doctor._python(), server), item
+assert item['fix'] == claude.mcp_command(doctor.venv_python(), server), item
 assert mcp_item({'command': py, 'args': [str(server)]})['level'] == 'ok'
 # A run left by an earlier registration does not stand in for trust in the current one.
 rows(codex_home / 'hooks.json', {'hooks': {'UserPromptSubmit': [{'hooks': [
@@ -547,7 +547,7 @@ if os.name == 'nt':
             raise AssertionError((a.name, path))
         except ValueError as e:
             assert path in str(e) and '--harness' in str(e), e
-        with mock.patch.object(doctor, '_python', lambda: Path(path)):
+        with mock.patch.object(doctor, 'venv_python', lambda: Path(path)):
             item = doctor._hook(a, 'start', [], None)
         assert path in item['fix'], item
 ''')

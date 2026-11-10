@@ -23,7 +23,7 @@ _ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{
 _ID_TOKEN_CACHE: dict[Path, tuple[tuple[int, int], frozenset]] = {}
 
 
-def _load_cases() -> dict[str, dict]:
+def load_cases() -> dict[str, dict]:
     """사건부 헤더 일괄 로드 — conflicts 적격 판정용."""
     from . import signatures as _sig
     out = {}
@@ -68,14 +68,14 @@ def _off_node(parts: tuple) -> bool:
     """노드 자리 **안의** 살림 구획인가 — 점 접두 조각(파일 포함)과 밑줄 접두
     디렉토리. 점 접두는 도구의 살림살이이고(`.obsidian`·`.trash`·AppleDouble
     `._x`), 밑줄 접두 구획에는 노드를 두지 않는다(Mechanism §1 4항). 구판은
-    이것을 소비자마다 따로 보았다 — 보호영역(`approvals._region_files`)은 점
+    이것을 소비자마다 따로 보았다 — 보호영역(`approvals.region_files`)은 점
     접두를 빼는데 색인은 넣어서, 승인되지 않은 `.hidden.md`가 기억으로 읽히고
     고쳐지는 동안 영역은 clean이었다. 판정은 여기 한 벌이다."""
     return bool(parts) and (parts[-1].startswith(".") or any(
         p.startswith((".", "_")) for p in parts[:-1]))
 
 
-def _is_reparse(entry) -> bool:
+def is_reparse(entry) -> bool:
     """이 항목이 **다른 곳을 가리킬 수 있는가** — 심볼릭 링크·정션·마운트 지점.
 
     `is_symlink()`만으로는 부족하다. CPython은 리파스 태그가
@@ -296,11 +296,11 @@ def _scan(root: Path, prefix: tuple, errors: list | None = None):
     둘이 0회다. 조각을 내려가며 이어 붙이는 것이 요점이다 — 그래야 소비자가
     소속을 알기 위해 `resolve()`를 다시 부르지 않는다.
 
-    **리파스 포인트 디렉토리는 내려가지 않는다**(`_is_reparse` 참조). 따라
+    **리파스 포인트 디렉토리는 내려가지 않는다**(`is_reparse` 참조). 따라
     내려가면 vault 밖의 트리가 안쪽 경로 조각을 뒤집어쓴 채 색인에 들어와
     봉쇄가 무의미해지고, 순환 링크에서는 순회가 끝나지 않는다."""
     # 시작 Space도 자식 디렉터리와 같은 봉쇄를 거친다.
-    if _is_reparse(root):
+    if is_reparse(root):
         if errors is not None:
             errors.append(f"열거 불가: 리파스 포인트인 시작 구획 — {root}")
         return
@@ -321,7 +321,7 @@ def _scan(root: Path, prefix: tuple, errors: list | None = None):
         for e in entries:
             try:
                 if e.is_dir(follow_symlinks=False):
-                    if not _is_reparse(e):
+                    if not is_reparse(e):
                         stack.append((Path(e.path), pref + (e.name,)))
                 else:
                     yield e, pref + (e.name,)
@@ -350,7 +350,7 @@ def iter_nodes(errors: list | None = None, dirents: dict | None = None):
             # 리파스 파일만 옛 경로로 보낸다 — 그것이 vault 밖을 가리키면
             # `resolve()`가 걸러야 하고, 조각만 보는 판정은 못 본다.
             p = Path(e.path)
-            found.append((p, space_of(p) if _is_reparse(e)
+            found.append((p, space_of(p) if is_reparse(e)
                           else _space_of_parts(parts)))
             if dirents is not None:
                 dirents[p] = e        # 디렉토리 판독의 stat — 동 id 후보표가 쓴다
@@ -383,7 +383,7 @@ def index_signature(errors: list | None = None):
         if not root.exists():
             continue
         for e, parts in _scan(root, (base,), errors):
-            reparse = _is_reparse(e)
+            reparse = is_reparse(e)
             p = Path(e.path) if reparse else None
             k = space_of(p) if reparse else _space_of_parts(parts)
             if is_node_home(k):
@@ -515,7 +515,7 @@ class Index:
             found = []
             for e, parts in _scan(root, (base,), self.scan_errors):
                 p = Path(e.path)
-                k = space_of(p) if _is_reparse(e) else _space_of_parts(parts)
+                k = space_of(p) if is_reparse(e) else _space_of_parts(parts)
                 if k[0] in ("raw", "sources", "ledger"):
                     found.append((p, k))
             for p, k in sorted(found, key=lambda x: x[0]):
@@ -797,7 +797,7 @@ class Index:
         if is_record_ref(name):
             from . import raw
             try:
-                return ("nonnode", space_of(raw._raw_file(name.split("#", 1)[0])))
+                return ("nonnode", space_of(raw.raw_file(name.split("#", 1)[0])))
             except (OSError, ValueError):
                 return ("dangling",)
         if re.match(ID_RE, name):
@@ -838,7 +838,7 @@ class Index:
         return ("dangling",)
 
 
-def _same_file(a: Path, b: Path) -> bool:
+def same_file(a: Path, b: Path) -> bool:
     try:
         return os.path.samefile(a, b)
     except OSError:
@@ -879,7 +879,7 @@ def topology_check(idx: Index) -> list[str]:
             if pred == "conflicts":
                 # 사건 표지의 예외 — 열린(docketed) 사건 또는 존치 판결 결속 노드뿐
                 if cases is None:
-                    cases = _load_cases()
+                    cases = load_cases()
                 if r[0] == "nonnode" and r[1][0] == "ledger":
                     # 헌법 12조 5항 — 사건을 참조하는 것은 **당사자 노드**뿐이다
                     case = cases.get(name) or {}
@@ -972,7 +972,7 @@ def reference_report(idx: Index, records=None) -> dict:
                 out.append(f"{stem} → {ref}" if relation == "Link" else
                            f"{stem} [{relation}] → {ref}")
         # 한 노드 안에서 바이트까지 같은 근거가 되풀린 엣지. 위반이 아니라 경고다 —
-        # 엣지 집합은 같고, 그 노드의 다음 쓰기가 접는다(`write._update_node_locked`).
+        # 엣지 집합은 같고, 그 노드의 다음 쓰기가 접는다(`write.update_node_locked`).
         for relation in contract.PREDICATES:
             seen = set()
             for ref in contract.stored_edges(n.meta.get(relation)):

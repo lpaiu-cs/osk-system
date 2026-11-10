@@ -66,7 +66,7 @@ def evidenced(body, *refs):
     """A body ending with one 근거 line per cited round — a distillation checks its round
     sources against these lines (Constitution art. 8 §6)."""
     from osk import evidence
-    lines = [f"- 2026-10-31 · `{evidence.coordinate(raw._raw_file(raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
+    lines = [f"- 2026-10-31 · `{evidence.coordinate(raw.raw_file(raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
              " · 지지 — the cited turn" for ref in refs]
     return body + "\n\n## 근거\n\n" + "\n".join(lines)
 
@@ -109,11 +109,11 @@ def legacy_cursor(harness, sid, transcript, scope="Capture"):
     """Rewrite a fresh cursor as the full-capture engine (<= v4.1) left it: each completed
     round stored in `_raw/` and tracked by its block hash. Upgraded instances keep these."""
     path = it.state_path(harness, sid)
-    s = it._load(path, harness, sid)
+    s = it.load_state(path, harness, sid)
     parsed = transcripts.read(str(transcript), harness, sid)
     shown = parsed["dialogue_v1"]
     record = ROOT / "00_Scope" / scope / "_raw/.records" / (s["record"] + ".txt")
-    blocks = [raw._block(i, raw.escape_numeric_h2(shown[r["id"]]["user"]),
+    blocks = [raw.round_block(i, raw.escape_numeric_h2(shown[r["id"]]["user"]),
                          raw.escape_numeric_h2(shown[r["id"]]["agent"]), dialogue_id=r["id"])
               for i, r in enumerate(parsed["rounds"], 1)]
     record.parent.mkdir(parents=True, exist_ok=True)
@@ -123,7 +123,7 @@ def legacy_cursor(harness, sid, transcript, scope="Capture"):
                     "hash": core.sha256_bytes(block.rstrip("\n").encode("utf-8"))}
                    for i, (r, block) in enumerate(zip(parsed["rounds"], blocks), 1)]
     s["snapshots"] = {it._snapshot(s): {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]}}
-    it._save(path, s)
+    it.save_state(path, s)
     return s, record
 
 
@@ -327,7 +327,7 @@ class IntegrationTests(unittest.TestCase):
         st = self.capture()
         self.assertTrue(st["ok"], st)
         self.assertFalse(st["capture_pending"], st)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual([r["completion"] for r in s["rounds"]], ["completed", "interrupted"])
         self.assertEqual(s["rounds"][1]["cut"], "result-2")
         closed = s["rounds"][1]
@@ -341,7 +341,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(first + more)
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual(s["rounds"][1], closed, "a later row moved the closed boundary")
         self.assertEqual([r["completion"] for r in s["rounds"]],
                          ["completed", "interrupted", "completed", "completed"])
@@ -362,7 +362,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(merged)
         with mock.patch.object(it, "_turn_rules", return_value=None):
             self.assertTrue(self.capture()["ok"])
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         before = list(s["rounds"])
         self.assertEqual([r["id"] for r in before], ["user-1:final-2"])
         self.assertNotIn("turns_since", s)
@@ -375,7 +375,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(merged + later)
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual(s["turns_since"], "user-1:final-2")
         self.assertEqual(s["rounds"][0], before[0], "the tracked round changed under the new rules")
         self.assertEqual([r["completion"] for r in s["rounds"]], ["completed", "interrupted", "completed"])
@@ -393,7 +393,7 @@ class IntegrationTests(unittest.TestCase):
         one = prompted(claude_round(self.sid, 1, finished=False), "p1")
         self.transcript(one)
         self.assertTrue(self.capture()["ok"])
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual(s["rounds"], [])
         tail = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))["tail"]
         stop = claude_row(self.sid, "user", [{"type": "text", "text": "[Request interrupted by user for tool use]"}], "stop-2")
@@ -402,7 +402,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(one + later)
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual([(r["id"], r["completion"]) for r in s["rounds"]],
                          [("user-1:result-1", "completed"), ("user-2:stop-2", "interrupted"),
                           ("user-3:final-3", "completed")])
@@ -419,13 +419,13 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(merged)
         with mock.patch.object(it, "_turn_rules", return_value=None):
             self.assertTrue(self.capture()["ok"])
-        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        before = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
         self.assertEqual([r["id"] for r in before], ["user-1:final-2"])
         self.transcript(merged + prompted(claude_round(self.sid, 3, finished=False), "p3")
                         + prompted(claude_round(self.sid, 4), "p4"))
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual(s["prompts_since"], "user-1:final-2")
         self.assertEqual(s["rounds"][0], before[0], "the tracked round changed under the new rule")
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-2", "user-3:result-3", "user-4:final-4"])
@@ -447,7 +447,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(rows)
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertIsNone(s["harness_since"])
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "n-2:final-n2", "user-3:final-3"])
         turns = self.turns(rules=it._turn_rules(s))
@@ -468,13 +468,13 @@ class IntegrationTests(unittest.TestCase):
         with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
                 mock.patch.object(it, "_copied_since", return_value=legacy):
             self.assertTrue(self.capture()["ok"])
-        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        before = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
         self.assertEqual([r["id"] for r in before], ["user-1:result-1", "n-1:final-1"])
         self.transcript(old + prompted(claude_round(self.sid, 2, finished=False), "p2")
                         + [self.notice("n-2", "pn2")] + prompted(claude_round(self.sid, 2)[3:], "p2"))
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual(s["harness_since"], "n-1:final-1")
         self.assertEqual(s["rounds"][:2], before, "the tracked rounds changed under the new rule")
         self.assertEqual([r["id"] for r in s["rounds"][2:]], ["user-2:final-2"])
@@ -493,7 +493,7 @@ class IntegrationTests(unittest.TestCase):
         found = self.capture()
         self.assertTrue(found["ok"], found)
         self.assertEqual((found["captured_rounds"], found["appended"], found["reverted"]), (2, 1, 1), found)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "user-3:final-3"])
         parsed = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))
         self.assertEqual(parsed["reverted"], ["user-2:final-2"])
@@ -505,12 +505,12 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(one + two)
         first = self.capture()
         it.acknowledge("claude", self.sid, first["through"], "no_value", "synthetic fixture")
-        before = it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        before = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
         self.transcript(one + two + [self.rewind("answer-1")] + claude_round(self.sid, 3))
         found = self.capture()
         self.assertFalse(found["ok"])
         self.assertIn("Claude rewound past a reviewed turn", found["capture_error"])
-        self.assertEqual(it._load(it.state_path("claude", self.sid), "claude", self.sid)["rounds"], before)
+        self.assertEqual(it.load_state(it.state_path("claude", self.sid), "claude", self.sid)["rounds"], before)
 
     def fork(self, at, own_at, went_on=False, cut=True):
         """The app's rewind: a copy of the original up to round 1 that goes on at `own_at`. It carries
@@ -546,10 +546,10 @@ class IntegrationTests(unittest.TestCase):
         parent, opath, original = self.fork(at, at + 100)
         copies = it._copies_by_parent()[("claude", parent)]
         self.assertEqual(it._drop_fork_rewound("claude", parent, copies), 2)
-        s = it._load(it.state_path("claude", parent), "claude", parent)
+        s = it.load_state(it.state_path("claude", parent), "claude", parent)
         self.assertEqual(len(s["rounds"]), 1)
         self.assertEqual(len(s["rewound"]["rounds"]), 2)
-        self.assertEqual(it._view(s)["pending_refs"], [s["rounds"][0]["ref"]])
+        self.assertEqual(it.state_view(s)["pending_refs"], [s["rounds"][0]["ref"]])
         self.assertEqual(it._drop_fork_rewound("claude", parent, copies), 0)
         # A capture of the unchanged original keeps them out ...
         self.assertEqual(it.capture("claude", parent, str(opath), "capture-tests")["captured_rounds"], 1)
@@ -559,7 +559,7 @@ class IntegrationTests(unittest.TestCase):
             for r in stamped(claude_round(parent, 5), time.time())]), encoding="utf-8")
         st = it.capture("claude", parent, str(opath), "capture-tests")
         self.assertEqual(st["captured_rounds"], 4, st)
-        self.assertNotIn("rewound", it._load(it.state_path("claude", parent), "claude", parent))
+        self.assertNotIn("rewound", it.load_state(it.state_path("claude", parent), "claude", parent))
 
     def test_claude_copy_the_original_went_on_from_is_not_a_rewind(self):
         at = time.time() - 2 * 86400
@@ -577,7 +577,7 @@ class IntegrationTests(unittest.TestCase):
         at = time.time() - 2 * 86400
         parent, _, _ = self.fork(at, at + 100, cut=False)
         self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
-        self.assertEqual(len(it._load(it.state_path("claude", parent), "claude", parent)["rounds"]), 3)
+        self.assertEqual(len(it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]), 3)
 
     def test_codex_fork_is_not_a_rewind(self):
         # Codex leaves a rewind in the same thread (`thread/revert`, #208). A fork carries no trace
@@ -606,7 +606,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(one + two + [self.rewind("answer-1")] + claude_round(self.sid, 3))
         found = self.capture()
         self.assertTrue(found["ok"], found)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual(s["harness_since"], "user-2:final-2")
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "user-2:final-2", "user-3:final-3"])
 
@@ -621,7 +621,7 @@ class IntegrationTests(unittest.TestCase):
         with mock.patch.object(it.time, "time", return_value=time.time() + 12 * 3600):
             out = it.catchup(limit=100)
         self.assertIn(self.sid, [j["conversation_id"] for j in out["jobs"]], out)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted"])
         self.assertFalse(s["capture_pending"])
 
@@ -636,7 +636,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(st["capture_pending"], "the idle clock ignored the message")
         st = self.capture()
         self.assertFalse(st["capture_pending"], st)
-        s = it._load(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
         self.assertEqual(s["rounds"][0]["cut"], "q-1")
         self.assertIn("one more thing", self.turns(rules=it._turn_rules(s))[0]["user"])
         self.assertEqual(len(it._verify_native(s, s["rounds"])), 1)
@@ -656,13 +656,13 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(rows)
         with mock.patch.object(it, "_turn_rules", return_value=None):
             self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
         self.assertEqual(len(tracked), 1, "the parent's legacy round joins the turn and the next prompt")
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
         st = it.capture("claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["inherited_rounds"], 1, st)
-        s = it._load(it.state_path("claude", child), "claude", child)
+        s = it.load_state(it.state_path("claude", child), "claude", child)
         self.assertEqual(s["turns_since"], tracked[0]["id"])
         self.assertEqual(s["prompts_since"], tracked[0]["id"])
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted", "completed"])
@@ -688,17 +688,17 @@ class IntegrationTests(unittest.TestCase):
         with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
                 mock.patch.object(it, "_copied_since", return_value=legacy):
             self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        with it._locked("claude", parent) as p:     # that engine wrote no prompts_since
-            s = it._load(p, "claude", parent)
+        with it.state_lock("claude", parent) as p:     # that engine wrote no prompts_since
+            s = it.load_state(p, "claude", parent)
             del s["prompts_since"]
-            it._save(p, s)
-        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+            it.save_state(p, s)
+        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
         self.assertEqual([r["completion"] for r in tracked], ["completed", "interrupted", "completed"])
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
         st = it.capture("claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["inherited_rounds"], 3, st)
-        s = it._load(it.state_path("claude", child), "claude", child)
+        s = it.load_state(it.state_path("claude", child), "claude", child)
         self.assertEqual(s["prompts_since"], tracked[-1]["id"])
 
     def test_claude_copy_keeps_its_parents_prompt_boundary_when_the_parent_went_on(self):
@@ -720,17 +720,17 @@ class IntegrationTests(unittest.TestCase):
         with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
                 mock.patch.object(it, "_copied_since", return_value=legacy):
             self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        with it._locked("claude", parent) as p:     # that engine wrote no prompts_since
-            s = it._load(p, "claude", parent)
+        with it.state_lock("claude", parent) as p:     # that engine wrote no prompts_since
+            s = it.load_state(p, "claude", parent)
             del s["prompts_since"]
-            it._save(p, s)
-        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+            it.save_state(p, s)
+        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
         self.assertEqual(len(tracked), 2, "the parent's tool-ended turn joins the next prompt")
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
         st = it.capture("claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
-        s = it._load(it.state_path("claude", child), "claude", child)
+        s = it.load_state(it.state_path("claude", child), "claude", child)
         self.assertEqual((s["turns_since"], s["prompts_since"]), (None, tracked[0]["id"]))
 
     def test_claude_copy_keeps_its_parents_turn_boundary_when_the_parent_went_on(self):
@@ -748,12 +748,12 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(rows + went_on)
         with mock.patch.object(it, "_turn_rules", return_value=None):
             self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
         st = it.capture("claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
-        s = it._load(it.state_path("claude", child), "claude", child)
+        s = it.load_state(it.state_path("claude", child), "claude", child)
         self.assertEqual((s["turns_since"], s["prompts_since"]), (tracked[0]["id"], tracked[0]["id"]))
 
     def test_claude_copy_ignores_a_cut_its_sibling_stored(self):
@@ -770,17 +770,17 @@ class IntegrationTests(unittest.TestCase):
                 row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
         self.transcript([dict(r, sessionId=sibling) for r in shared])
         self.assertTrue(it.capture("claude", sibling, str(self.path), "capture-tests")["ok"])
-        stopped = it._load(it.state_path("claude", sibling), "claude", sibling)["rounds"]
+        stopped = it.load_state(it.state_path("claude", sibling), "claude", sibling)["rounds"]
         self.assertEqual([r["completion"] for r in stopped], ["interrupted"])
         self.transcript([dict(r, sessionId=parent) for r in shared + went_on])
         self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        tracked = it._load(it.state_path("claude", parent), "claude", parent)["rounds"]
+        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
         self.assertEqual([r["completion"] for r in tracked], ["completed"], "the sibling's cut split the parent")
         self.transcript([dict(r, sessionId=child) for r in shared + went_on] + own)
         st = it.capture("claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
-        s = it._load(it.state_path("claude", child), "claude", child)
+        s = it.load_state(it.state_path("claude", child), "claude", child)
         self.assertEqual(s["inherited"]["rounds"][0]["id"], tracked[0]["id"])
 
     def test_codex_requires_matching_task_complete(self):
@@ -1172,7 +1172,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript([{'type': 'session_meta', 'payload': {'id': self.sid}}] + codex_round(1))
         first = self.capture('codex')
         it.acknowledge('codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
-        old = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+        old = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):
             archived = Path(home) / 'archived_sessions' / f'rollout-date-{self.sid}.jsonl'
             archived.parent.mkdir()
@@ -1183,7 +1183,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertTrue(recovered['ok'], recovered)
             self.assertEqual(recovered['appended'], 1)
             self.assertEqual(recovered['transcript_path'], str(archived.resolve()))
-            new = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+            new = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
             self.assertEqual(new['rounds'][:1], old['rounds'])
             self.assertEqual(new['reviews'], old['reviews'])
             self.assertEqual(new['reviewed_count'], 1)
@@ -1248,18 +1248,18 @@ class IntegrationTests(unittest.TestCase):
                 first = it.capture(harness, sid, str(self.path), "capture-tests")
                 it.acknowledge(harness, sid, first["through"], "no_value", "Completed fixture only.")
                 state_path = it.state_path(harness, sid)
-                before = it._load(state_path, harness, sid)
+                before = it.load_state(state_path, harness, sid)
                 other = self.path.with_suffix(".foreign.jsonl")
                 other.write_text("".join(json.dumps(r) + "\n" for r in rows("foreign", 1)), encoding="utf-8")
                 refused = it.capture(harness, sid, str(other), "capture-tests")
                 self.assertFalse(refused["ok"], refused)
                 self.assertEqual(refused["capture_recovery"]["phase"], "read")
-                self.assertEqual(it._load(state_path, harness, sid)["transcript_path"], before["transcript_path"])
+                self.assertEqual(it.load_state(state_path, harness, sid)["transcript_path"], before["transcript_path"])
                 self.transcript(rows(sid, 2))
                 recovered = it.capture(harness, sid, None, "capture-tests")
                 self.assertTrue(recovered["ok"], recovered)
                 self.assertEqual(recovered["appended"], 1)
-                after = it._load(state_path, harness, sid)
+                after = it.load_state(state_path, harness, sid)
                 self.assertEqual(after["rounds"][:1], before["rounds"])
                 self.assertEqual(after["reviews"], before["reviews"])
                 self.assertEqual(after["reviewed_count"], 1)
@@ -1272,7 +1272,7 @@ class IntegrationTests(unittest.TestCase):
         first = self.capture()
         it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
         state_path = it.state_path("claude", self.sid)
-        before = it._load(state_path, "claude", self.sid)
+        before = it.load_state(state_path, "claude", self.sid)
         changed = claude_round(self.sid, 1) + claude_round(self.sid, 2)
         changed[0]["uuid"] = "user-1-rewritten"
         candidate = self.path.with_suffix(".changed.jsonl")
@@ -1280,7 +1280,7 @@ class IntegrationTests(unittest.TestCase):
         refused = it.capture("claude", self.sid, str(candidate), "capture-tests")
         self.assertFalse(refused["ok"], refused)
         self.assertEqual(refused["capture_recovery"]["phase"], "replay")
-        after = it._load(state_path, "claude", self.sid)
+        after = it.load_state(state_path, "claude", self.sid)
         self.assertEqual(after["transcript_path"], before["transcript_path"])
         for key in ("rounds", "reviews", "reviewed_count", "snapshots", "native_fingerprint", "coverage"):
             self.assertEqual(after[key], before[key], key)
@@ -1335,7 +1335,7 @@ class IntegrationTests(unittest.TestCase):
                 first = it.capture("claude", sid, str(self.path), "capture-tests")
                 it.acknowledge("claude", sid, first["through"], "no_value", "Completed fixture only.")
                 state_path = it.state_path("claude", sid)
-                before = it._load(state_path, "claude", sid)
+                before = it.load_state(state_path, "claude", sid)
                 candidate = self.path.with_name(sid + ".relocated.jsonl")
                 candidate.write_text("".join(json.dumps(r) + "\n" for r in
                                             claude_round(sid, 1) + claude_round(sid, 2)), encoding="utf-8")
@@ -1346,7 +1346,7 @@ class IntegrationTests(unittest.TestCase):
                     self.assertFalse(failed["ok"], failed)
                     self.assertTrue(failed["capture_pending"])
                     self.assertEqual((failed["captured_rounds"], failed["reviewed_rounds"]), (1, 1))
-                    failed_state = it._load(state_path, "claude", sid)
+                    failed_state = it.load_state(state_path, "claude", sid)
                     self.assertEqual(failed_state["transcript_path"], before["transcript_path"])
                     self.assertEqual(failed_state.get("capture_path"), str(candidate.resolve()))
                 if retry == "pathless":
@@ -1356,7 +1356,7 @@ class IntegrationTests(unittest.TestCase):
                     recovered = next(c for c in caught["captures"] if c["conversation_id"] == sid)
                 self.assertTrue(recovered["ok"], recovered)
                 self.assertEqual(recovered["appended"], 1)
-                after = it._load(state_path, "claude", sid)
+                after = it.load_state(state_path, "claude", sid)
                 self.assertEqual(after["transcript_path"], str(candidate.resolve()))
                 self.assertNotIn("capture_path", after)
                 self.assertEqual(after["rounds"][:1], before["rounds"])
@@ -1385,7 +1385,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(write.resolve_session(generic))
         other = it.capture('claude', self.sid + '-other', str(self.path), generic)
         self.assertFalse(other['ok'])
-        self.assertIsNone(it._load(it.state_path('claude', self.sid + '-other'),
+        self.assertIsNone(it.load_state(it.state_path('claude', self.sid + '-other'),
                                   'claude', self.sid + '-other')['space'])
         self.assertFalse(it.capture('claude', self.sid, str(self.path), generic, '00_Scope/W1')['ok'])
 
@@ -1542,10 +1542,10 @@ class IntegrationTests(unittest.TestCase):
 
     def test_scripted_codex_exec_run_is_not_tracked_or_reviewed(self):
         path = it.state_path("codex", self.sid)
-        old = it._load(path, "codex", self.sid)
+        old = it.load_state(path, "codex", self.sid)
         # An earlier engine left an open-tail error on this run.
         old.update(session="capture-tests", capture_pending=True, capture_error="ValueError: old open tail")
-        it._save(path, old)
+        it.save_state(path, old)
         meta = {"type": "session_meta", "payload": {"id": self.sid, "originator": "codex_exec", "source": "exec"}}
         self.transcript([meta] + codex_round(1) + codex_round(2))
         found = self.capture("codex")
@@ -1760,9 +1760,9 @@ class IntegrationTests(unittest.TestCase):
     def test_existing_saved_record_name_is_preserved(self):
         self.transcript(claude_round(self.sid, 1))
         path = it.state_path("claude", self.sid)
-        state = it._load(path, "claude", self.sid)
+        state = it.load_state(path, "claude", self.sid)
         state["record"] = "legacy-record-name"
-        it._save(path, state)
+        it.save_state(path, state)
         st = self.capture()
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["record"], "legacy-record-name")
@@ -1783,7 +1783,7 @@ class IntegrationTests(unittest.TestCase):
         state["rounds"][0]["ref"] = old_ref
         token = it._snapshot(state)
         state["snapshots"] = {token: {"count": 1, "prompt_count": state["prompt_count"]}}
-        it._save(state_path, state)
+        it.save_state(state_path, state)
         replayed = it.capture("claude", self.sid, str(self.path), self.sid)
         self.assertTrue(replayed["ok"], replayed)
         self.assertEqual(replayed["through"], token)
@@ -2099,7 +2099,7 @@ class IntegrationTests(unittest.TestCase):
                 cited = it.cite(f"{harness}/{sid}", turn="-1")
                 saved_first = (ROOT / cited["path"]).read_bytes()
                 self.assertEqual(transcripts._dump(dialogue), dialogue)
-                # raw._block already strips trailing whitespace from whole sections.
+                # raw.round_block already strips trailing whitespace from whole sections.
                 expected = dialogue.rstrip() if harness == "claude" else json.dumps(dialogue)
                 self.assertIn(expected.encode(), saved_first)
                 self.assertEqual(path.read_bytes(), native)
@@ -2161,7 +2161,7 @@ class IntegrationTests(unittest.TestCase):
             parent.write_text(''.join(json.dumps(r) + '\n' for r in [header] + codex_round(1)), encoding='utf-8')
             first = it.capture('codex', self.sid, str(parent), 'capture-tests')
             it.acknowledge('codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
-            before = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+            before = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
             offset = parent.stat().st_size
             # The declared history excludes later events in the ancestor file.
             with parent.open('a', encoding='utf-8') as f:
@@ -2173,7 +2173,7 @@ class IntegrationTests(unittest.TestCase):
             captured = it.capture('codex', self.sid, child_name, 'capture-tests')
             self.assertTrue(captured['ok'], captured)
             self.assertEqual((captured['appended'], captured['captured_rounds'], captured['reviewed_rounds']), (1, 2, 1))
-            after = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+            after = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
             self.assertEqual(after['rounds'][:1], before['rounds'])
             self.assertEqual(after['reviews'], before['reviews'])
             self.assertEqual(after['snapshots'][first['through']], before['snapshots'][first['through']])
@@ -2223,11 +2223,11 @@ class IntegrationTests(unittest.TestCase):
             first = self.capture('codex')
         self.assertEqual(first['captured_rounds'], 2)
         it.acknowledge('codex', self.sid, first['through'], 'no_value', 'fixture turns only')
-        old = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+        old = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
         captured = self.capture('codex')
         self.assertTrue(captured['ok'], captured)
         self.assertEqual((captured['appended'], captured['reviewed_rounds']), (1, 2))
-        state = it._load(it.state_path('codex', self.sid), 'codex', self.sid)
+        state = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
         self.assertEqual(state['rounds'][:2], old['rounds'])
         self.assertEqual(state['reviews'], old['reviews'])
         self.assertEqual([r['id'] for r in state['rounds']], ['turn-1', 'turn-3', 'turn-2'])
@@ -2247,7 +2247,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(self.capture("codex")["ok"])
         refs = [it.cite(f"codex/{self.sid}", quote=f"question {n}")["round_ref"] for n in (1, 2)]
         name = raw.parse_ref(refs[0])[0]
-        path = raw._raw_file(name)
+        path = raw.raw_file(name)
         before = path.read_bytes()
         toc = raw.read_round(name)["index"]
         self.assertEqual(len(toc), 2)
@@ -2260,7 +2260,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
         # A user can quote a recorder header. Skip only the header, not matching user
         # content or all HTML comments, in the cited and the older stored formats.
-        for stamp in ("", raw._CODEX_V2 + "\n\n", raw._DIALOGUE_V1 + '"turn-1" -->\n\n',
+        for stamp in ("", raw._CODEX_V2 + "\n\n", raw.DIALOGUE_V1 + '"turn-1" -->\n\n',
                       raw._CITED + '{"conversation": "c", "harness": "codex", "turn": "t"} -->\n\n'):
             block = f"## 1\n\n{stamp}### user\n\n{raw._CODEX_V2}\n\n### agent\n\nreply\n"
             self.assertEqual(raw._preview(block), raw._CODEX_V2)
@@ -2368,14 +2368,14 @@ class IntegrationTests(unittest.TestCase):
         first = self.capture()
         it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
         state_path = it.state_path("claude", self.sid)
-        before = it._load(state_path, "claude", self.sid)
+        before = it.load_state(state_path, "claude", self.sid)
         candidate = self.path.with_suffix(".relocated.jsonl")
         candidate.write_text("".join(json.dumps(r) + "\n" for r in
                                     claude_round(self.sid, 1) + claude_round(self.sid, 2)), encoding="utf-8")
         with mock.patch.object(transcripts, "read", side_effect=SystemExit("Power loss while reading the relocated source.")):
             with self.assertRaises(SystemExit):
                 it.capture("claude", self.sid, str(candidate), "capture-tests")
-        crashed = it._load(state_path, "claude", self.sid)
+        crashed = it.load_state(state_path, "claude", self.sid)
         self.assertEqual(crashed["transcript_path"], before["transcript_path"])
         self.assertEqual(crashed.get("capture_path"), str(candidate.resolve()))
         caught = it.catchup(100)
@@ -2383,7 +2383,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
         # The new turn waits for its own conversation; no offline worker reviews it.
         self.assertNotIn(self.sid, [j["conversation_id"] for j in caught["jobs"]])
-        recovered = it._load(state_path, "claude", self.sid)
+        recovered = it.load_state(state_path, "claude", self.sid)
         self.assertEqual(recovered["transcript_path"], str(candidate.resolve()))
         self.assertNotIn("capture_path", recovered)
         self.assertEqual(recovered["rounds"][:1], before["rounds"])
@@ -2780,18 +2780,18 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         for _ in range(6):
             it.tick("claude", self.sid)
         path = it.state_path("claude", self.sid)
-        state = it._load(path, "claude", self.sid)
+        state = it.load_state(path, "claude", self.sid)
         state["response_growth"] = {"counter": "finals", "seen": ["final"], "count": 6,
                                     "attempted_count": 0, "history_baselined": True}
-        it._save(path, state)
+        it.save_state(path, state)
         part = it.prompt("claude", self.sid, include_organization=False, max_rounds=2)
         it.acknowledge("claude", self.sid, part["through"], "no_value", "first two fixture turns")
-        state = it._load(path, "claude", self.sid)
+        state = it.load_state(path, "claude", self.sid)
         # A partial review leaves both counts running.
         self.assertEqual((state["reviewed_prompt_count"], state["response_growth"]["attempted_count"]), (2, 0))
         rest = it.prompt("claude", self.sid, include_organization=False)
         it.acknowledge("claude", self.sid, rest["through"], "no_value", "last fixture turn")
-        state = it._load(path, "claude", self.sid)
+        state = it.load_state(path, "claude", self.sid)
         self.assertEqual((state["reviewed_prompt_count"], state["response_growth"]["attempted_count"]), (6, 6))
         self.assertEqual(it.tick("claude", self.sid)["unreviewed_prompts"], 1)
 

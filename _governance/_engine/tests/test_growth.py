@@ -35,10 +35,10 @@ def legacy(sid, transcript, scope='W1'):
     # in _raw/. The daily worker reviews only these; original turns stay with their conversation.
     from osk import integration, raw, transcripts
     path = integration.state_path('claude', sid)
-    s = integration._load(path, 'claude', sid)
+    s = integration.load_state(path, 'claude', sid)
     shown = list(transcripts.read(str(transcript), 'claude', sid)['dialogue_v1'].values())
     record = core.ROOT / '00_Scope' / scope / '_raw' / '.records' / (s['record'] + '.txt')
-    blocks = [raw._block(i, raw.escape_numeric_h2(r['user']), raw.escape_numeric_h2(r['agent']),
+    blocks = [raw.round_block(i, raw.escape_numeric_h2(r['user']), raw.escape_numeric_h2(r['agent']),
                          dialogue_id=r['id']) for i, r in enumerate(shown, 1)]
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_bytes(chr(10).join(blocks).encode('utf-8'))
@@ -47,7 +47,7 @@ def legacy(sid, transcript, scope='W1'):
                     'hash': core.sha256_bytes(b.rstrip(chr(10)).encode('utf-8'))}
                    for i, (r, b) in enumerate(zip(shown, blocks), 1)]
     s['snapshots'] = {integration._snapshot(s): {'count': len(s['rounds']), 'prompt_count': s['prompt_count']}}
-    integration._save(path, s)
+    integration.save_state(path, s)
 def register(planned=None):
     planned = growth.plan(20) if planned is None else planned
     with core.mutation_lock():
@@ -90,7 +90,7 @@ UPGRADE_CARRY = """
     node('D')
     record = core.ROOT / ('00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt')
     record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(raw._block(1, 'independent observation', 'observed'), encoding='utf-8')
+    record.write_text(raw.round_block(1, 'independent observation', 'observed'), encoding='utf-8')
     evidence = chr(10).join(['', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1` · 지지 — an observation'])
     # B also cites D, listed first: every carried row of B says its version was made by a recheck
     for title, body, basis in (('B', 'B relies on A.', ['D', 'A']), ('C', 'C relies on B.', ['B'])):
@@ -151,7 +151,7 @@ UPGRADE_NO_PAIR = """
     node('A')
     record = core.ROOT / ('00_Scope/W1/_raw/.records/claude-c38d8ef2' + '0' * 24 + '.txt')
     record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(raw._block(1, 'independent observation', 'observed'), encoding='utf-8')
+    record.write_text(raw.round_block(1, 'independent observation', 'observed'), encoding='utf-8')
     evidence = chr(10).join(['', '', '## 근거', '', '- 2026-10-05 · `c38d8ef2#1` · 지지 — an observation'])
     for title, body, basis in (('B', 'B relies on A.', 'A'), ('C', 'C relies on B.', 'B')):
         assert write.create_node(title, title, body + evidence, 'gpt-6-astra', space='00_Scope/W1',
@@ -175,37 +175,37 @@ class GrowthTests(unittest.TestCase):
             for limit in (3, 1, 2, 4, 5):
                 rows, first = [], []
                 for _ in range(8):
-                    planned = {key:[{'key':key+'-0'}, {'key':key+'-1'}] for key in growth._QUEUES}
+                    planned = {key:[{'key':key+'-0'}, {'key':key+'-1'}] for key in growth.QUEUES}
                     growth._select_work(planned,limit,rows)
                     order = planned['work_order']
                     first.append(order[0]['queue'])
                     assert len(order) == limit
                     assert len({(i['queue'],i['index']) for i in order}) == limit
-                    for key in growth._QUEUES:
+                    for key in growth.QUEUES:
                         assert [i['index'] for i in order if i['queue']==key] == list(range(len(planned[key])))
                         assert len(planned[key]) + planned['queued_not_selected'][key] == 2
                     rows.append({'kind':'plan',**planned})
                 # Even if each worker stops after its first job, every queue
                 # receives a turn within one attempt per queue.
-                q = len(growth._QUEUES)
-                assert all(set(first[n:n+q]) == set(growth._QUEUES) for n in range(9-q)), (limit,first)
+                q = len(growth.QUEUES)
+                assert all(set(first[n:n+q]) == set(growth.QUEUES) for n in range(9-q)), (limit,first)
         """)
 
     def test_execution_order_rotates_even_when_every_queue_is_selected(self):
         self.check_case("""
-            rows, first, q = [], [], len(growth._QUEUES)
+            rows, first, q = [], [], len(growth.QUEUES)
             for _ in range(2 * q):
-                planned = {key:[{'key':key}] for key in growth._QUEUES}
+                planned = {key:[{'key':key}] for key in growth.QUEUES}
                 growth._select_work(planned,q,rows)
                 order = planned['work_order']
                 first.append(order[0]['queue'])
-                assert len(order) == q and {i['queue'] for i in order} == set(growth._QUEUES)
+                assert len(order) == q and {i['queue'] for i in order} == set(growth.QUEUES)
                 rows.append({'kind':'plan',**planned})
-            assert first[:q] == list(growth._QUEUES), first
+            assert first[:q] == list(growth.QUEUES), first
             assert first[q:] == first[:q], first
-            daily = {key:[{'key':key}] for key in growth._QUEUES}
+            daily = {key:[{'key':key}] for key in growth.QUEUES}
             growth._select_work(daily,q,[dict(row,work_context='stop:W1') for row in rows])
-            assert daily['work_order'][0]['queue'] == growth._QUEUES[0], daily
+            assert daily['work_order'][0]['queue'] == growth.QUEUES[0], daily
         """)
 
     def test_eviction_settlement_needs_review_and_deferred_returns_to_queue(self):
@@ -311,7 +311,7 @@ class GrowthTests(unittest.TestCase):
             assert integration.status('claude','first')['reviewed_rounds'] == 1
             packet = json.loads((core.ROOT/'saved-checkpoint.json').read_text(encoding='utf-8'))
             assert growth.checkpoint(packet)['ok']
-            before = integration._load(integration.state_path('claude','first'),'claude','first')
+            before = integration.load_state(integration.state_path('claude','first'),'claude','first')
             assert len(before['reviews']) == 1
             retry = growth.run([sys.executable,'-B','-c','import sys; sys.stdin.read()'],limit=3)
             assert not retry['ok']
@@ -320,7 +320,7 @@ class GrowthTests(unittest.TestCase):
             visible = growth._reading_plan(next_plan)['scope_jobs'][0]
             assert visible['raw_review'] == {'state':'verified','rounds':1,'error':None}
             assert visible['capture_recovery']['state'] == 'ready'
-            after = integration._load(integration.state_path('claude','first'),'claude','first')
+            after = integration.load_state(integration.state_path('claude','first'),'claude','first')
             assert after == before
             assert integration.status('claude','second')['reviewed_rounds'] == 0
         """)
@@ -367,11 +367,11 @@ class GrowthTests(unittest.TestCase):
             assert not growth.daily_active(), 'failed daily work must yield rechecks to forks'
             core.ledger_append(growth.LEDGER, {'kind':'run','manifest':latest['rid'],'ok':True})
             assert growth.daily_active()
-            rows = growth._records()
+            rows = growth.ledger_records()
             old = (datetime.now(timezone.utc)-timedelta(days=4)).isoformat()
             for row in rows:
                 row['at'] = old
-            with patch.object(growth,'_records',return_value=rows):
+            with patch.object(growth,'ledger_records',return_value=rows):
                 assert not growth.daily_active(), 'expired success does not suppress fallback'
         """)
 
@@ -635,7 +635,7 @@ class GrowthTests(unittest.TestCase):
                 'recheck': [{'key': job['key'], 'outcome': 'deferred',
                              'reason': 'read both; the revision may narrow B', 'proposal': 'drop me'}]}})
             assert done['ok'] and any('carries no proposal' in n for n in done['notes']), done
-            row = [r for r in growth._records() if r.get('kind') == 'recheck_review'][-1]
+            row = [r for r in growth.ledger_records() if r.get('kind') == 'recheck_review'][-1]
             assert row['outcome'] == 'deferred' and 'proposal' not in row, row
             assert growth._recheck_status(job, graph.Index())['status'] == 'pending', 'a deferral closed the check'
             assert not rechecks.report(graph.Index()).get('escalated'), 'a deferral reached the user'
@@ -664,9 +664,9 @@ class GrowthTests(unittest.TestCase):
             job = growth.plan(3)['recheck_jobs'][0]
             only = {'candidates': [], 'scope_jobs': [], 'organization_jobs': [], 'eviction_jobs': [],
                     'recheck_jobs': [job]}
-            assert growth._needs_review(only, growth._records(), graph.Index()), 'an open recheck did not ask for the packet'
+            assert growth._needs_review(only, growth.ledger_records(), graph.Index()), 'an open recheck did not ask for the packet'
             write.update_node('B', rechecked=['A'])
-            assert not growth._needs_review(only, growth._records(), graph.Index())
+            assert not growth._needs_review(only, growth.ledger_records(), graph.Index())
         """)
 
     def test_evidence_section_changes_do_not_propagate_and_old_records_carry_over(self):
@@ -833,8 +833,8 @@ class GrowthTests(unittest.TestCase):
             integration.state_path('claude', 's').parent.mkdir(parents=True, exist_ok=True)
             with mock.patch.object(integration, 'hook_source', return_value=('claude', 's', None)), \\
                  mock.patch.object(integration, 'capture_due', return_value=False), \\
-                 mock.patch.object(integration, '_locked', lambda *a: contextlib.nullcontext(None)), \\
-                 mock.patch.object(integration, '_load', lambda *a: {}), \\
+                 mock.patch.object(integration, 'state_lock', lambda *a: contextlib.nullcontext(None)), \\
+                 mock.patch.object(integration, 'load_state', lambda *a: {}), \\
                  mock.patch.object(response_growth, '_probe_due', return_value=False), \\
                  mock.patch.object(validate, 'auto_activate') as auto:
                 response_growth.after_hook({'session': 'k'})
@@ -1042,7 +1042,7 @@ class GrowthTests(unittest.TestCase):
             name = 'claude-c38d8ef2' + '0' * 24
             old = core.ROOT / '00_Scope/W1/_raw/.records'
             old.mkdir(parents=True)
-            (old / (name + '.txt')).write_bytes(raw._block(1, '옛 자리의 질문', '답').encode())
+            (old / (name + '.txt')).write_bytes(raw.round_block(1, '옛 자리의 질문', '답').encode())
             # A also keeps the legacy `## 근거` heading: the v5.4 lines land in it, then the v5.6 rename takes
             # A at the hash v5.4 wrote — the confirmed hash carried forward, not a change after the yes.
             node('A', body='주장 A.' + chr(10) + chr(10) + '## 근거' + chr(10) + chr(10)
@@ -1057,7 +1057,7 @@ class GrowthTests(unittest.TestCase):
             assert code == 2 and [m[0] for m in plan['plan']['migrations']] == [v54, v52, v56], plan
             # A plan that changed after it was shown asks again: a second old-place record turned up.
             other = 'claude-d48d8ef2' + '0' * 24
-            (old / (other + '.txt')).write_bytes(raw._block(1, '또 다른 질문', '답').encode())
+            (old / (other + '.txt')).write_bytes(raw.round_block(1, '또 다른 질문', '답').encode())
             assert doctor.migrate()[1] == 2
             rep, code = doctor.migrate()
             applied = {a['migration']: a for a in rep['applied']}
@@ -1409,7 +1409,7 @@ class GrowthTests(unittest.TestCase):
             # not complete a comparison whose sources changed; those form a new comparison.
             for outcome in ('no_value','deferred'):
                 growth.review(candidate['key'], outcome, reason='Stale', manifest=manifest['rid'])
-            assert not growth._completed(candidate['key'], growth._records(), graph.Index())
+            assert not growth._completed(candidate['key'], growth.ledger_records(), graph.Index())
             assert candidate['key'] not in {c['key'] for c in growth.plan()['candidates']}
         """)
 
@@ -1559,9 +1559,9 @@ class GrowthTests(unittest.TestCase):
                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.DEVNULL, creationflags=0x08000200)
             with patch.object(growth.subprocess, 'run', lambda argv, **kw: (run(argv, **kw), lost)[1]):
-                assert growth._stop_tree(worker()) is None
+                assert growth.stop_tree(worker()) is None
             with patch.object(growth.subprocess, 'run', lambda argv, **kw: lost):  # kills nothing
-                error = growth._stop_tree(worker())
+                error = growth.stop_tree(worker())
             assert error and error.startswith('process-tree cleanup was not confirmed'), error
             # #231 review: after the snapshot the root starts a child and exits first, so taskkill
             # finds no root. The base interpreter keeps a venv launcher from between them, and the
@@ -1579,7 +1579,7 @@ class GrowthTests(unittest.TestCase):
                 root.wait(10)
                 return lost
             with patch.object(growth.subprocess, 'run', vanish):
-                error = growth._stop_tree(root)
+                error = growth.stop_tree(root)
             run(['taskkill', '/PID', str(child[0]), '/F'], capture_output=True)
             assert error and error.startswith('process-tree cleanup was not confirmed'), error
         """)
@@ -1842,16 +1842,16 @@ class GrowthTests(unittest.TestCase):
             key = old['candidates'][0]['key']
             assert key == new['candidates'][0]['key']
             growth.review(key, 'no_value', reason='Decided on the later selection.', manifest=new['rid'])
-            assert growth._completed(key, growth._records(), graph.Index())
+            assert growth._completed(key, growth.ledger_records(), graph.Index())
             # The earlier selection's worker reports late. Its report is kept, but it does not
             # undo the later selection's decision (the growth ledger is causal, so a late append
             # would otherwise become the latest).
             growth.review(key, 'deferred', reason='Late report from the earlier selection.', manifest=old['rid'])
-            assert growth._completed(key, growth._records(), graph.Index()), 'an older report reopened it'
+            assert growth._completed(key, growth.ledger_records(), graph.Index()), 'an older report reopened it'
             assert len([r for r in core.ledger_read(growth.LEDGER) if r['kind']=='review']) == 2
             # The same selection can still reopen its own decision on purpose.
             growth.review(key, 'deferred', reason='Reopened within the later selection.', manifest=new['rid'])
-            assert not growth._completed(key, growth._records(), graph.Index())
+            assert not growth._completed(key, growth.ledger_records(), graph.Index())
         """)
 
     def test_selections_made_apart_stay_undecided_until_a_later_one(self):
@@ -1867,15 +1867,15 @@ class GrowthTests(unittest.TestCase):
             branch = growth.LEDGER.read_bytes()[len(base):]
             growth.LEDGER.write_bytes(base)
             y = register()
-            assert y['candidates'][0]['key'] == key and core._rid_key(x['rid']) < core._rid_key(y['rid'])
+            assert y['candidates'][0]['key'] == key and core.rid_key(x['rid']) < core.rid_key(y['rid'])
             growth.review(key, 'no_value', reason='Device Y found nothing to keep.', manifest=y['rid'])
             growth.LEDGER.write_bytes(growth.LEDGER.read_bytes() + branch)    # the sync merge
-            rows = growth._records()
-            assert growth._latest(rows, key, 'key') is None
+            rows = growth.ledger_records()
+            assert growth.latest_report(rows, key, 'key') is None
             assert not growth._completed(key, rows, graph.Index()), 'the larger RID decided a fork'
             z = register()
             growth.review(key, 'no_value', reason='Decided after the merge.', manifest=z['rid'])
-            assert growth._completed(key, growth._records(), graph.Index())
+            assert growth._completed(key, growth.ledger_records(), graph.Index())
         """)
 
     def test_a_runner_stopped_while_applying_keeps_what_it_applied(self):
@@ -1904,7 +1904,7 @@ class GrowthTests(unittest.TestCase):
             reviews = [r for r in rows if r['kind']=='review']
             assert [r['key'] for r in reviews] == calls[:1], (reviews, calls)
             assert not [r for r in rows if r['kind']=='run']
-            assert growth._completed(calls[0], growth._records(), graph.Index())
+            assert growth._completed(calls[0], growth.ledger_records(), graph.Index())
             keys = [c['key'] for c in growth.plan(3)['candidates']]
             assert calls[0] not in keys and calls[1] in keys, (keys, calls)
         """)
@@ -1975,7 +1975,7 @@ class GrowthTests(unittest.TestCase):
                 result = growth.run(worker,limit=1)
                 assert result['selected'] == 1 and not result['ok'], result
                 plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
-                queue = next(k for k in growth._QUEUES if plan[k])
+                queue = next(k for k in growth.QUEUES if plan[k])
                 seen.append(queue)
                 if plan['scope_jobs']:
                     job = plan['scope_jobs'][0]
@@ -2045,13 +2045,13 @@ class GrowthTests(unittest.TestCase):
             os.utime(path, (ended, ended))
             for i in range(101):
                 sid, turn = 'lost' + str(i), '01900000-0000-7000-8000-%012d' % i
-                with integration._locked('codex', sid) as p:
-                    s = integration._load(p, 'codex', sid)
+                with integration.state_lock('codex', sid) as p:
+                    s = integration.load_state(p, 'codex', sid)
                     s.update(session='lost-project', space='00_Scope/W1', prompt_count=1,
                              transcript_path=str(core.ROOT / 'gone.jsonl'),
                              rounds=[{'id':sid+'-u1:'+turn, 'ref':'native:codex:'+sid+':'+turn,
                                       'hash':'sha256:' + '0'*64, 'completion':'completed'}])
-                    integration._save(p, s)
+                    integration.save_state(p, s)
             first = [x['conversation_id'] for x in integration._known_pending(100)[0]]
             assert len(first) == 100 and 'b' not in first, first[-3:]
             result = growth.run([sys.executable,'-c','import sys; sys.stdin.read()'], limit=1)
@@ -2073,7 +2073,7 @@ class GrowthTests(unittest.TestCase):
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
             assert integration.capture('claude','tree',str(path),'tree-project',space='00_Scope/W1')['ok']
             job = integration.prompt('claude','tree')
-            tree = organization.hub_tree(organization._scope_path('W1'))
+            tree = organization.hub_tree(organization.scope_path('W1'))
             assert job['hub_tree'] == tree and tree.startswith('- 00_Scope/W1 · 직속 노드 '), job['hub_tree']
             assert '이 scope의 허브 트리:' in job['text'] and tree in job['text']
             assert '하위 군집을 열지 않는다' in job['text']
@@ -2113,7 +2113,7 @@ class GrowthTests(unittest.TestCase):
                 os.utime(path, (ended, ended))
             ident = {'candidates': 'key', 'scope_jobs': 'conversation_id', 'organization_jobs': 'scope',
                      'eviction_jobs': 'of', 'recheck_jobs': 'key'}
-            assert set(ident) == set(growth._QUEUES)
+            assert set(ident) == set(growth.QUEUES)
             worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']    # never acknowledges
             seen = {k: [] for k in ident}
             with patch.object(evictions, 'age_days', return_value=17):
@@ -2145,10 +2145,10 @@ class GrowthTests(unittest.TestCase):
             worker = "import sys; from osk import core,growth,organization; sys.stdin.read(); p=[r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]; [organization.review(j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
             visited = []
             for i in range(8):
-                before = organization._load()['plans']
+                before = organization.load_state()['plans']
                 # Inventories and previews must never create/refresh attempts.
                 growth.plan(3)
-                assert organization._load()['plans'] == before
+                assert organization.load_state()['plans'] == before
                 with patch.object(core, 'now_kst', return_value=f'2026-09-20T12:00:{i:02d}+09:00'):
                     result = growth.run([sys.executable,'-c',worker],limit=3)
                 assert result['selected'] == 3 and not result['ok'], result
@@ -2157,11 +2157,11 @@ class GrowthTests(unittest.TestCase):
                 assert len(jobs) == 1 and len(manifest['scope_jobs']) == len(manifest['candidates']) == 1, manifest
                 selected = jobs[0]
                 visited.append(selected['scope'])
-                after = organization._load()['plans']
+                after = organization.load_state()['plans']
                 assert after[selected['key']]['last_attempt'] == f'2026-09-20T12:00:{i:02d}+09:00'
                 assert {k:v for k,v in after.items() if v['scope'] != selected['scope']} == {
                     k:v for k,v in before.items() if v['scope'] != selected['scope']}, (before, after)
-                assert organization._load()['reviews'][selected['scope']]['outcome'] == 'deferred'
+                assert organization.load_state()['reviews'][selected['scope']]['outcome'] == 'deferred'
             assert visited == ['W1','W2','W3','W1','W2','W3','W1','W2'], visited
             assert integration.status('claude','waiting')['reviewed_rounds'] == 0
         """)

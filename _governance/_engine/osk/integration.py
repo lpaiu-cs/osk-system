@@ -36,19 +36,19 @@ UNLANDED = (
     "이 프로젝트의 결속에 더한다. 그 scope를 overview로 보고 허브 트리에서 노드의 자리를 정한다.\n")
 
 
-def _identity(harness: str, conversation_id: str) -> str:
+def conversation_key(harness: str, conversation_id: str) -> str:
     if harness not in adapters.NAMES or not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", conversation_id):
         raise ValueError(f"explicit {'/'.join(adapters.NAMES)} harness and actual conversation_id required")
     return hashlib.sha256(f"{core.ROOT.resolve()}\n{harness}\n{conversation_id}".encode()).hexdigest()
 
 
 def state_path(harness: str, conversation_id: str) -> Path:
-    key = _identity(harness, conversation_id)
+    key = conversation_key(harness, conversation_id)
     root_key = hashlib.sha256(str(core.ROOT.resolve()).encode()).hexdigest()[:16]
     return core.local_lock_path(f"osk-integration-{root_key}-{key}.json", core.ROOT).with_suffix(".json")
 
 
-def _locked(harness: str, conversation_id: str):
+def state_lock(harness: str, conversation_id: str):
     return _locked_path(state_path(harness, conversation_id))
 
 
@@ -63,27 +63,27 @@ def _locked_path(p: Path):
             unlock(f)
 
 
-def _load(p: Path, harness: str, sid: str) -> dict:
+def load_state(p: Path, harness: str, sid: str) -> dict:
     if not p.exists():
         # Raw identity follows the native conversation across vault copies;
         # operational ownership remains ROOT-specific in state_path.
         return {"version": 1, "root": str(core.ROOT.resolve()), "harness": harness,
                 "conversation_id": sid, "session": None, "space": None, "transcript_path": None,
-                "record": _record(harness, sid),
+                "record": record_name(harness, sid),
                 "rounds": [], "reviewed_count": 0, "prompt_count": 0,
                 "reviewed_prompt_count": 0, "snapshots": {}, "reviews": [],
                 "capture_pending": False, "capture_error": None,
                 "native_fingerprint": None, "coverage": None}
     s = json.loads(p.read_text(encoding="utf-8"))
-    return _validate_state(s, harness, sid)
+    return validate_state(s, harness, sid)
 
 
-def _record(harness: str, sid: str) -> str:
+def record_name(harness: str, sid: str) -> str:
     key = hashlib.sha256((harness + "\n" + sid).encode()).hexdigest()[:32]
     return f"{harness}-{key}"
 
 
-def _validate_state(s: dict, harness: str, sid: str) -> dict:
+def validate_state(s: dict, harness: str, sid: str) -> dict:
     """Validate already read bytes; status reports must not reread or repair them."""
     if (s.get("version"), s.get("root"), s.get("harness"), s.get("conversation_id")) != (
             1, str(core.ROOT.resolve()), harness, sid):
@@ -95,7 +95,7 @@ def _validate_state(s: dict, harness: str, sid: str) -> dict:
     return s
 
 
-def _save(p: Path, s: dict) -> None:
+def save_state(p: Path, s: dict) -> None:
     write._atomic_write(p, json.dumps(s, ensure_ascii=False, sort_keys=True).encode("utf-8"))
 
 
@@ -129,7 +129,7 @@ def _capture_recovery(s: dict) -> dict:
         if phase == "source":
             # A recorded miss is checked too: Codex compresses a cold rollout in place (#203).
             try:
-                found = _locate_transcript(s["harness"], s["conversation_id"],
+                found = locate_transcript(s["harness"], s["conversation_id"],
                                            s.get("capture_path") or s.get("transcript_path"))
                 available = bool(found and Path(found).is_file())
                 missing = not found or not Path(found).exists()
@@ -162,7 +162,7 @@ def _capture_recovery(s: dict) -> dict:
     return {"state": "ready", "phase": "complete", "basis": "saved_cursor", "next_action": None}
 
 
-def _view(s: dict) -> dict:
+def state_view(s: dict) -> dict:
     rs, n = s["rounds"], s["reviewed_count"]
     repairs = s.get("repair_pending", {})
     repair_refs = {ref for item in repairs.values() for ref in item["refs"]}
@@ -195,8 +195,8 @@ def _view(s: dict) -> dict:
 
 
 def status(harness: str, conversation_id: str) -> dict:
-    with _locked(harness, conversation_id) as p:
-        return _current_view(_load(p, harness, conversation_id), p)
+    with state_lock(harness, conversation_id) as p:
+        return _current_view(load_state(p, harness, conversation_id), p)
 
 
 def blocked(limit: int = 10) -> dict:
@@ -222,16 +222,16 @@ def memory_seen(harness: str, conversation_id: str, digest: str, scope: str | No
     """Was this conversation last given the shared memory at exactly `digest`? A hook then
     carries one line instead of the whole text; a changed hash carries the whole again.
     `scope` names a bound scope other than the primary — each keeps its own last digest."""
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
         shown = (s.get("memory_shown_bound") or {}).get(scope) if scope else s.get("memory_shown")
         return shown == digest
 
 
 def note_memory(harness: str, conversation_id: str, digest: str, scope: str | None = None) -> None:
     """The hook's output really carried the whole shared memory at `digest`."""
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
         if scope:
             shown = dict(s.get("memory_shown_bound") or {})
             if shown.get(scope) == digest:
@@ -241,24 +241,24 @@ def note_memory(harness: str, conversation_id: str, digest: str, scope: str | No
             return
         else:
             s["memory_shown"] = digest
-        _save(p, s)
+        save_state(p, s)
 
 
 def shown_before(harness: str, conversation_id: str, slot: str, mark: str) -> bool:
     """Was this conversation last given the hook block `slot` at exactly `mark`? Then a hook
     carries one line instead of the same whole block again (#275)."""
-    with _locked(harness, conversation_id) as p:
-        return (_load(p, harness, conversation_id).get("shown") or {}).get(slot) == mark
+    with state_lock(harness, conversation_id) as p:
+        return (load_state(p, harness, conversation_id).get("shown") or {}).get(slot) == mark
 
 
 def note_shown(harness: str, conversation_id: str, slot: str, mark: str) -> None:
     """The hook's output really carried the whole block `slot` at `mark`."""
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
         shown = dict(s.get("shown") or {})
         if shown.get(slot) != mark:
             s["shown"] = {**shown, slot: mark}
-            _save(p, s)
+            save_state(p, s)
 
 
 def turn_key(harness: str, round_id: str) -> str:
@@ -351,7 +351,7 @@ def _scope_cursors(s: dict):
             data = json.loads(candidate.read_text(encoding="utf-8"))
             if data.get("harness") != "claude" or data.get("root") != s["root"]:
                 continue
-            owner = _load(candidate, "claude", data["conversation_id"])
+            owner = load_state(candidate, "claude", data["conversation_id"])
             if candidate != state_path("claude", owner["conversation_id"]):
                 continue
             # 부모의 착지는 부모의 작업 공간 판별로 정한다 — 이 프로세스의 작업 폴더로 정하지 않는다
@@ -382,16 +382,16 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
             # A parent tracked by original turn: same turn ID and the same reviewed text.
             return source["hash"] in _turn_hashes(pair, dialogue_v1)
         name, number = raw.parse_ref(source["ref"])
-        if "/".join(raw._raw_file(name).relative_to(core.ROOT).parts[:2]) != s["space"]:
+        if "/".join(raw.raw_file(name).relative_to(core.ROOT).parts[:2]) != s["space"]:
             raise ValueError("inherited source crossed scope; capture remains pending")
         if name not in cache:
-            text = raw.read_exact(raw._raw_file(name))
-            cache[name] = text, raw._round_spans(text)
+            text = raw.read_exact(raw.raw_file(name))
+            cache[name] = text, raw.round_spans(text)
         text, spans = cache[name]
         block = text[slice(*spans[number])]
         if core.sha256_bytes(block.rstrip("\n").encode()) != source["hash"]:
             raise ValueError("inherited raw changed; capture remains pending")
-        readable = raw._round_body(block).startswith(raw._DIALOGUE_V1)
+        readable = raw.round_body(block).startswith(raw.DIALOGUE_V1)
         if readable:
             pair = (dialogue_v1 or {})[pair["id"]]
         # A raw owner may have captured another conversation's copied history.
@@ -414,9 +414,9 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
                 lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
                 if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
                 else m[0], text)
-            expected = raw._block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent),
+            expected = raw.round_block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent),
                                   dialogue_id=pair["id"] if readable else None)
-            if raw._round_body(block) == raw._round_body(secrets.filter_text(expected)[0]):
+            if raw.round_body(block) == raw.round_body(secrets.filter_text(expected)[0]):
                 return True
         return False
 
@@ -453,9 +453,9 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
     return rounds
 
 
-def _locate_transcript(harness: str, sid: str, saved: str | None = None) -> str | None:
+def locate_transcript(harness: str, sid: str, saved: str | None = None) -> str | None:
     """Recover a moved native file by exact ID; ambiguity requires an explicit path."""
-    _identity(harness, sid)
+    conversation_key(harness, sid)
     if saved and (found := transcripts.on_disk(saved)):
         return str(found.resolve())
     matches = sorted({p.resolve() for p in adapters.get(harness).transcripts(sid) if p.is_file()})
@@ -505,10 +505,10 @@ def capture(harness: str, conversation_id: str, transcript_path: str | None,
                 rules.update(_copied_since(s, native_path))
             parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
         except Exception as exc:
-            with _locked(harness, conversation_id) as p:
-                return _capture_failed(p, _load(p, harness, conversation_id), exc, "read")
-        with _locked(harness, conversation_id) as p:
-            s = _load(p, harness, conversation_id)
+            with state_lock(harness, conversation_id) as p:
+                return _capture_failed(p, load_state(p, harness, conversation_id), exc, "read")
+        with state_lock(harness, conversation_id) as p:
+            s = load_state(p, harness, conversation_id)
             try:
                 return _capture_apply(p, s, parsed, native_path, rules)
             except Exception as exc:
@@ -527,7 +527,7 @@ def _capture_failed(p: Path, s: dict, exc: Exception, phase: str) -> dict:
     # keeps it for the next pathless retry.
     if phase != "landing" and isinstance(exc, ValueError):
         s.pop("capture_path", None)
-    _save(p, s)
+    save_state(p, s)
     return _current_view(s, p)
 
 
@@ -541,7 +541,7 @@ def _land(s: dict, transcript_path: str | None, session: str, space: str | None,
                             or s.get("capture_path") or s["transcript_path"], cwd)
     pinned = s["space"]
     if pinned:
-        scope = raw._scope_of_space(pinned)
+        scope = raw.scope_of_space(pinned)
         if not scope:
             raise ValueError("saved conversation scope is invalid; capture remains pending")
         pinned = (SCOPE + '/') + scope
@@ -574,22 +574,22 @@ def _capture_source(harness: str, conversation_id: str, transcript_path: str | N
                     session: str, space: str | None, cwd: str | None):
     """The landing and source steps of `capture`, under the state lock — `(native_path,
     rules, state)` to read, or the view of a refusal."""
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
         s["capture_pending"], s["capture_error"] = True, None
         s.pop("capture_failure_phase", None)
-        _save(p, s)  # Persist intent before reading; failures remain pending.
+        save_state(p, s)  # Persist intent before reading; failures remain pending.
         phase = "landing"
         try:
             requested_path = _land(s, transcript_path, session, space, cwd)
-            _save(p, s)
+            save_state(p, s)
             phase = "source"
-            native_path = _locate_transcript(harness, conversation_id, requested_path)
+            native_path = locate_transcript(harness, conversation_id, requested_path)
             present = bool(native_path) and Path(native_path).exists()
             if s.get("source_lost") and not present:
                 # 원본 소실로 닫은 커서는 다시 실패로 세지 않는다(#244)
                 s["capture_pending"] = False
-                _save(p, s)
+                save_state(p, s)
                 return _current_view(s, p)
             if not native_path:
                 if not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
@@ -600,7 +600,7 @@ def _capture_source(harness: str, conversation_id: str, transcript_path: str | N
             # Retain the attempted source across a crash, separately from the last
             # accepted source. Only a validation rejection clears this intent below.
             s["capture_path"] = native_path
-            _save(p, s)
+            save_state(p, s)
             phase = "read"
             return native_path, _turn_rules(s), s
         except Exception as exc:
@@ -617,12 +617,12 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
         s.update(excluded="codex_exec", capture_pending=False, capture_error=None,
                  transcript_path=native_path, native_fingerprint=parsed["native_fingerprint"])
         s.pop("capture_path", None)
-        _save(p, s)
+        save_state(p, s)
         return {**_current_view(s, p), "appended": 0, "changed": 0}
     coverage = parsed["coverage"]
     if not s["rounds"]:
         s["coverage"] = coverage
-    _save(p, s)
+    save_state(p, s)
     # ponytail: serialize tracking until its cursor is saved; use per-scope
     # locks if capture throughput matters.
     with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
@@ -699,17 +699,17 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
         if s["capture_error"]:
             s["capture_failure_phase"] = "read"
         s["native_fingerprint"] = parsed["native_fingerprint"]
-        _save(p, s)
+        save_state(p, s)
         return {**_current_view(s, p), "appended": appended, "changed": len(changed), "reverted": len(gone)}
 
 
 def tick(harness: str, conversation_id: str) -> dict:
     """Count the actual hook event even with empty/unbound shared memory; never reset on resume."""
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
         s["prompt_count"] += 1
         n = s["prompt_count"] - s["reviewed_prompt_count"]
-        _save(p, s)
+        save_state(p, s)
         current = _current_view(s, p)
         return {**current, "due": bool(current["repair_pending"]) or n > 0 and n % HARD in (SOFT, 0),
                 "hard": n > 0 and n % HARD == 0, "unreviewed_prompts": n}
@@ -721,8 +721,8 @@ def _stored_hashes(refs) -> dict:
     for ref in refs:
         name, index = raw.parse_ref(ref)
         if name not in raw_files:
-            text = raw.read_exact(raw._raw_file(name))
-            raw_files[name] = text, raw._round_spans(text)
+            text = raw.read_exact(raw.raw_file(name))
+            raw_files[name] = text, raw.round_spans(text)
         text, spans = raw_files[name]
         out[ref] = (core.sha256_bytes(text[slice(*spans[index])].rstrip("\n").encode("utf-8"))
                     if index in spans else None)
@@ -745,7 +745,7 @@ def _verify_native(s: dict, rounds: list) -> dict:
     native = [r for r in rounds if raw.is_native(r["ref"])]
     if not native:
         return {}
-    source = _locate_transcript(s["harness"], s["conversation_id"], s.get("capture_path") or s["transcript_path"])
+    source = locate_transcript(s["harness"], s["conversation_id"], s.get("capture_path") or s["transcript_path"])
     if not (source and Path(source).is_file()):
         raise ValueError("the original transcript is not on this device; review is not acknowledged")
     parsed = transcripts.read(source, s["harness"], s["conversation_id"], rules=_turn_rules(s))
@@ -767,13 +767,13 @@ def acknowledge(harness: str, conversation_id: str, through: str,
         raise ValueError("outcome preserved|summary|no_value|deferred and nonempty reason required")
     if primary_scope is not None and (not isinstance(primary_scope, str) or not primary_scope.strip()):
         raise ValueError("primary_scope must be a scope name")
-    with _locked(harness, conversation_id) as p, core.mutation_lock():
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p, core.mutation_lock():
+        s = load_state(p, harness, conversation_id)
         if primary_scope is not None:
             if _one_off(s) or not s["session"]:
                 raise ValueError("a one-off workspace conversation has no project to designate a primary scope for")
-            primary_scope = raw._scope_of_space(primary_scope) or primary_scope.strip()
-            if primary_scope not in raw._scope_names():
+            primary_scope = raw.scope_of_space(primary_scope) or primary_scope.strip()
+            if primary_scope not in raw.scope_names():
                 raise ValueError(f"primary_scope is not a scope: {primary_scope}")
         snap = s["snapshots"].get(through)
         repair = s.get("repair_pending", {}).get(through)
@@ -791,7 +791,7 @@ def acknowledge(harness: str, conversation_id: str, through: str,
             for target in targets:
                 if not isinstance(target, dict) or not isinstance(target.get("key"), str):
                     raise ValueError("preserved target must name a distillation key")
-                receipt = distillation._status_locked(target["key"])
+                receipt = distillation.status_locked(target["key"])
                 sources = receipt.get("sources", [])
                 # A cited round binds through the original turn it cites (Mechanism §9 9항), and
                 # only while the turn holds the words it cited.
@@ -846,8 +846,8 @@ def acknowledge(harness: str, conversation_id: str, through: str,
             # 검토 저장 **앞에** 적는다 — 대장 쓰기가 실패하면 검토도 남지 않아 같은 through로
             # 재시도할 수 있다. 지정이 먼저 서고 저장이 실패해도 재시도는 같은 판정이라 건너뛴다.
             write.set_primary(s["session"], primary_scope, "대화 검토의 소속 판정")
-        _save(p, s)
-        return _view(s)
+        save_state(p, s)
+        return state_view(s)
 
 
 def _review_state_locked(s: dict, through: str) -> dict:
@@ -923,8 +923,8 @@ def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
     receipt citing it — is reviewed again. No later check looks for any of this."""
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("reopen requires the correction's reason")
-    with _locked(harness, conversation_id) as p, core.mutation_lock():
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p, core.mutation_lock():
+        s = load_state(p, harness, conversation_id)
         wanted = {raw.canonical_ref(ref) for ref in refs or []}
         if not wanted or any(raw.is_native(ref) for ref in wanted):
             raise ValueError("reopen takes corrected stored or cited rounds; an original turn is not corrected here")
@@ -959,8 +959,8 @@ def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
         for token, (read, targets) in sorted(hits.items()):
             _register_repair(s, token, reason.strip(), version, sorted(read),
                              [targets[k] for k in sorted(targets)])
-        _save(p, s)
-        return _view(s)
+        save_state(p, s)
+        return state_view(s)
 
 
 # 4.2 이전에는 ACK 뒤 영수증과 요약 발췌를 상시 다시 확인하고, 바뀌면 검토를 다시 열었다.
@@ -975,18 +975,18 @@ def _current_view(s: dict, path: Path) -> dict:
     for token in old:
         del s["repair_pending"][token]
     if old:
-        _save(path, s)
-    return _view(s)
+        save_state(path, s)
+    return state_view(s)
 
 
-def _review_status_locked(harness: str, conversation_id: str, through: str) -> dict:
+def review_status_locked(harness: str, conversation_id: str, through: str) -> dict:
     # Pure while the caller owns mutation lock: never acquire the local lock or write state.
-    return _review_state_locked(_load(state_path(harness, conversation_id), harness, conversation_id), through)
+    return _review_state_locked(load_state(state_path(harness, conversation_id), harness, conversation_id), through)
 
 
 def review_status(harness: str, conversation_id: str, through: str) -> dict:
-    with _locked(harness, conversation_id) as p, core.mutation_lock():
-        return _review_state_locked(_load(p, harness, conversation_id), through)
+    with state_lock(harness, conversation_id) as p, core.mutation_lock():
+        return _review_state_locked(load_state(p, harness, conversation_id), through)
 
 
 def _turn_rules(s: dict) -> dict | None:
@@ -1068,12 +1068,12 @@ def _source_clock(s: dict, missing: bool) -> bool:
     return True
 
 
-def _ended_source(s: dict) -> str | None:
+def ended_source(s: dict) -> str | None:
     """This device's transcript of a conversation that has gone quiet. A worker without
     the conversation reads its unreviewed turns there; a conversation still running keeps
     its own review cadence, where the turns are already in context."""
     try:
-        path = _locate_transcript(s["harness"], s["conversation_id"],
+        path = locate_transcript(s["harness"], s["conversation_id"],
                                   s.get("capture_path") or s["transcript_path"])
         if path and time.time() - Path(path).stat().st_mtime >= ENDED_AFTER:
             return path
@@ -1137,14 +1137,14 @@ def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list
     for p in paths:
         try:
             value = json.loads(p.read_text(encoding="utf-8"))
-            with _locked(value["harness"], value["conversation_id"]) as locked_path:
+            with state_lock(value["harness"], value["conversation_id"]) as locked_path:
                 if p != locked_path:
                     raise ValueError("state filename identity mismatch")
-                s = _load(p, value["harness"], value["conversation_id"])
+                s = load_state(p, value["harness"], value["conversation_id"])
                 current = _current_view(s, p)
             changed, missing, native_path = False, False, None
             try:
-                native_path = _locate_transcript(
+                native_path = locate_transcript(
                     s["harness"], s["conversation_id"], s.get("capture_path") or s.get("transcript_path"))
                 if native_path:
                     changed = s.get("native_fingerprint") != transcripts.native_fingerprint(
@@ -1158,10 +1158,10 @@ def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list
                 errors.append({"state": str(p), "phase": "native_lookup", "error": str(exc)})
                 # Capture still fails closed, but stored raw remains reviewable.
             if missing or native_path and ("source_missing_since" in s or "source_lost" in s):
-                with _locked(s["harness"], s["conversation_id"]) as locked_path:
-                    s = _load(locked_path, s["harness"], s["conversation_id"])
+                with state_lock(s["harness"], s["conversation_id"]) as locked_path:
+                    s = load_state(locked_path, s["harness"], s["conversation_id"])
                     if _source_clock(s, missing):
-                        _save(locked_path, s)
+                        save_state(locked_path, s)
                     current = _current_view(s, locked_path)
             if missing and s.get("source_lost") and not current["pending_refs"]:
                 continue  # 닫힌 커서는 원본이 돌아올 때까지 다시 포착하지도, 나열하지도 않는다
@@ -1183,7 +1183,7 @@ def _known_pending(limit: int | None, tried=None) -> tuple[list, int, list, list
             retry = current["capture_recovery"]["state"] == "retryable"
             if (changed or retry or current["repair_pending"]
                     or any(not raw.is_native(ref) for ref in pending)
-                    or (pending or idle_tail) and _ended_source(s)):
+                    or (pending or idle_tail) and ended_source(s)):
                 at = _turn_at(s, native_path)
                 states.append((tried(s) if tried else 0, p.stat().st_mtime if at is None else at, s))
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1198,7 +1198,7 @@ def list_pending(limit: int = 20) -> dict:
     states, remaining, errors, awaiting_native = _known_pending(limit)
     jobs = []
     for s in states:
-        if not _view(s)["pending_refs"]:
+        if not state_view(s)["pending_refs"]:
             continue
         job = prompt(s["harness"], s["conversation_id"], offline=True)
         if not job["pending_refs"]:
@@ -1282,7 +1282,7 @@ def _fork_rewound(s: dict, copies: list) -> dict | None:
     if not kept or s.get("repair_pending"):
         return None
     start = max(max(kept) + 1, s["reviewed_count"])
-    native = _ended_source(s)
+    native = ended_source(s)
     if start >= len(ids) or not native:
         return None
     last = _turn_at(s, native, refs=[s["rounds"][-1]["ref"]])
@@ -1291,7 +1291,7 @@ def _fork_rewound(s: dict, copies: list) -> dict | None:
         if cut >= len(ids):
             continue
         try:
-            own = _locate_transcript(c["harness"], c["conversation_id"], c.get("capture_path") or c.get("transcript_path"))
+            own = locate_transcript(c["harness"], c["conversation_id"], c.get("capture_path") or c.get("transcript_path"))
         except (OSError, ValueError, KeyError):
             continue
         born = _turn_at(c, own, refs=[c["rounds"][0]["ref"]])
@@ -1303,8 +1303,8 @@ def _fork_rewound(s: dict, copies: list) -> dict | None:
 
 def _drop_fork_rewound(harness: str, conversation_id: str, copies: list) -> int:
     """`_fork_rewound`의 턴을 커서에서 뺀다 — Codex의 되돌린 턴처럼, 추적한 적 없던 것처럼 둔다."""
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
         found = _fork_rewound(s, copies)
         if not found:
             return 0
@@ -1315,15 +1315,15 @@ def _drop_fork_rewound(harness: str, conversation_id: str, copies: list) -> int:
         if s["rounds"]:
             s["snapshots"].setdefault(_snapshot(s), {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
         s["rewound"] = {"rounds": dropped, "copy": found["copy"], "at": core.now_iso()}
-        _save(p, s)
+        save_state(p, s)
         return len(dropped)
 
 
-def _review_scope(s: dict) -> str | None:
+def review_scope(s: dict) -> str | None:
     """대화 검토 문맥의 scope — 고정한 착지, 없으면 결속의 주된 scope부터(§9-3 1항). `prompt`의 허브
     트리 scope와 같다."""
     if s.get("space"):
-        return raw._scope_of_space(s["space"])
+        return raw.scope_of_space(s["space"])
     try:
         scopes = write.bound_scopes(s["session"]) if s.get("session") and not _one_off(s) else []
     except (OSError, ValueError, write.WriteError):
@@ -1355,11 +1355,11 @@ def catchup(limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None,
         if len(jobs) >= limit and room <= 0:
             break
         try:
-            if (s["harness"], s["conversation_id"]) in copies and _view(s)["pending_refs"]:
+            if (s["harness"], s["conversation_id"]) in copies and state_view(s)["pending_refs"]:
                 # 사본으로 되감아 버린 턴은 검토에 넣지 않는다(#235)
                 _drop_fork_rewound(s["harness"], s["conversation_id"], copies[s["harness"], s["conversation_id"]])
-            pending = _view(s)["pending_refs"]
-            if pending and len(jobs) >= limit and (len(pending) > room or _review_scope(s) != scope):
+            pending = state_view(s)["pending_refs"]
+            if pending and len(jobs) >= limit and (len(pending) > room or review_scope(s) != scope):
                 continue
             if pending:
                 job = prompt(s["harness"], s["conversation_id"], include_organization=False,
@@ -1384,14 +1384,14 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
            offline: bool = False) -> dict:
     if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= MAX_REVIEW_ROUNDS:
         raise ValueError(f"max_rounds must be between 1 and {MAX_REVIEW_ROUNDS}")
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
         st = _current_view(s, p)
         count = min(len(s["rounds"]), s["reviewed_count"] + max_rounds)
         if offline:
             # A worker without this conversation takes stored rounds, and original turns
             # only once the conversation has ended on this device (Mechanism §9-4 3항).
-            ended = _ended_source(s)
+            ended = ended_source(s)
             stored = s["reviewed_count"]
             while stored < count and (ended or not raw.is_native(s["rounds"][stored]["ref"])):
                 stored += 1
@@ -1415,7 +1415,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                 s["snapshots"][token]["repair_parts"] = parts
                 del s["repair_pending"][token]
                 token = parts[0]
-                _save(p, s)
+                save_state(p, s)
             st["through"] = token
             st["pending_refs"] = s["repair_pending"][token]["refs"]
             st["remaining_rounds"] = (len(s["rounds"]) - s["reviewed_count"]
@@ -1429,7 +1429,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
             # prompt counter does not claim newer unreviewed prompts as done.
             s["snapshots"].setdefault(token, {"count": count, "prompt_count": min(
                 s["prompt_count"], s["reviewed_prompt_count"] + count - s["reviewed_count"])})
-            _save(p, s)
+            save_state(p, s)
             st["through"] = token
             st["pending_refs"] = [r["ref"] for r in s["rounds"][s["reviewed_count"]:count]]
             st["remaining_rounds"] = len(s["rounds"]) - count
@@ -1507,7 +1507,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     jobs = []
     # 대화에 고정한 착지(capture의 space)가 검토 문맥의 scope다 — 프로젝트의 주된 scope와 다를 수
     # 있다(시행령 §3 9항). 고정이 없을 때만 결속 scope를 주된 scope부터, 없으면 결속 순서대로 본다(§9-3 1항).
-    pinned = raw._scope_of_space(s["space"]) if s.get("space") else None
+    pinned = raw.scope_of_space(s["space"]) if s.get("space") else None
     try:
         scopes = write.bound_scopes(st["session"]) if st.get("session") and not _one_off(s) else []
     except (OSError, ValueError, write.WriteError):
@@ -1534,7 +1534,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     def since():
         # The earliest pending turn's time bounds the receipt scan (#227); read only if needed.
         try:
-            path = _locate_transcript(harness, conversation_id,
+            path = locate_transcript(harness, conversation_id,
                                       s.get("capture_path") or s.get("transcript_path"))
         except (OSError, ValueError):
             return None
@@ -1588,12 +1588,12 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
              "부르지 않은 세션의 create_node는 거부된다(Mechanism §6-2 10항). "
              + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. ")
     # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
-    tree_scope = scope or (raw._scope_of_space(s["space"]) if s.get("space") else None)
+    tree_scope = scope or (raw.scope_of_space(s["space"]) if s.get("space") else None)
     st["review_scope"] = tree_scope
     if not tree_scope:
         text += UNLANDED
     try:
-        tree = organization.hub_tree(organization._scope_path(tree_scope)) if tree_scope else ""
+        tree = organization.hub_tree(organization.scope_path(tree_scope)) if tree_scope else ""
     except (OSError, ValueError):
         tree = ""
     st["hub_tree"] = tree
@@ -1666,7 +1666,7 @@ def _conversation(value: str) -> tuple[str, str]:
     harness, sep, sid = (value or "").strip().partition("/")
     if not sep:
         raise ValueError("conversation must be <harness>/<conversation ID>")
-    _identity(harness, sid)
+    conversation_key(harness, sid)
     return harness, sid
 
 
@@ -1679,8 +1679,8 @@ def cite(conversation: str, quote: str | None = None, turn: str | int | None = N
     harness, sid = _conversation(conversation)
     # 착지 확인·기록·고정을 이 대화의 잠금 하나 안에서 한다 — 같은 대화의 첫 인용 둘이 서로 다른
     # scope로 갈리지 않는다. 잠금 순서는 검토 ACK와 같다(대화 잠금 → 변경 잠금).
-    with _locked(harness, sid) as p:
-        return _cite(p, _load(p, harness, sid), harness, sid, quote, turn, note, session, space, user)
+    with state_lock(harness, sid) as p:
+        return _cite(p, load_state(p, harness, sid), harness, sid, quote, turn, note, session, space, user)
 
 
 def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, space, user) -> dict:
@@ -1689,7 +1689,7 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         raise ValueError("this conversation is not tracked yet; its hooks or `integration capture` set its session")
     # 인용 기록은 루트 `_cited/` 한 자리다(헌법 4조 3항) — 인용에 착지도 결속도 필요 없다. 대화의
     # 착지(`s["space"]`)는 검토의 문맥일 뿐이고, `space`는 호환 인자다.
-    source = _locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
+    source = locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
     if not (source and Path(source).is_file()):
         source = None
     if user is not None and source:
@@ -1751,8 +1751,8 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
     if owner != sid:
         # A fork parent's turn keeps its owner: the citation names the parent and joins
         # the parent's record, so the parent citing the same turn reuses that round.
-        with _locked(harness, owner) as pp:
-            parent = _load(pp, harness, owner)
+        with state_lock(harness, owner) as pp:
+            parent = load_state(pp, harness, owner)
         record = parent["record"]
     result = raw.append_rounds(session, record, [{"user": words, "agent": (note or "").strip()}],
                                cited=meta)
@@ -1786,8 +1786,8 @@ def read_review(conversation: str, through: str, query: str | None = None) -> di
     REVIEW_SIDES, so a reviewer whose context lost them (compaction) reads only that range.
     Nothing is written."""
     harness, sid = _conversation(conversation)
-    with _locked(harness, sid) as p:
-        s = _load(p, harness, sid)
+    with state_lock(harness, sid) as p:
+        s = load_state(p, harness, sid)
     refs = _review_refs(s, through)
     if len(refs) > MAX_REVIEW_ROUNDS:
         # A capture snapshot spans every unreviewed turn; a review reads the bounded one it was given.
@@ -1819,9 +1819,9 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
             raise ValueError("ref must be native:<harness>:<conversation ID>:<turn ID>")
         _, harness, sid, turn = parts
         if (harness, sid) not in conversations:
-            with _locked(harness, sid) as p:
-                s = _load(p, harness, sid)
-            source = _locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
+            with state_lock(harness, sid) as p:
+                s = load_state(p, harness, sid)
+            source = locate_transcript(harness, sid, s.get("capture_path") or s["transcript_path"])
             if not (source and Path(source).is_file()):
                 raise ValueError(f"the transcript of {harness}/{sid} is not on this device")
             parsed = transcripts.read(source, harness, sid, rules=_turn_rules(s))
@@ -1839,7 +1839,7 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
             raise ValueError(f"{turn} belongs to the fork parent; read {raw.native_ref(harness, owner, turn)}")
         # The hash binds the original; the text leaving through MCP is filtered first, as a citation
         # is — not every parser redacts (Antigravity words and replies, Kiro string replies).
-        chunk, hits = secrets.filter_text(raw._block(at + 1, pair["user"], pair["agent"]).rstrip("\n"))
+        chunk, hits = secrets.filter_text(raw.round_block(at + 1, pair["user"], pair["agent"]).rstrip("\n"))
         item = {"ref": ref, "turn": turn, "hash": hashes[0], "position": at + 1, "turns": len(turns),
                 "previous": raw.native_ref(harness, turns[at - 1][3], turns[at - 1][0]) if at else None}
         if hits:
@@ -1872,8 +1872,8 @@ def hook_source(env: dict) -> tuple[str, str, str | None]:
     candidates = []
     if not path:
         for kind in ([harness] if harness else list(adapters.NAMES)):
-            _identity(kind, sid)
-            saved = _locate_transcript(kind, sid, status(kind, sid).get("transcript_path"))
+            conversation_key(kind, sid)
+            saved = locate_transcript(kind, sid, status(kind, sid).get("transcript_path"))
             if saved:
                 candidates.append((kind, saved))
         if len(candidates) == 1:
@@ -1882,7 +1882,7 @@ def hook_source(env: dict) -> tuple[str, str, str | None]:
             raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
     if not harness:
         raise ValueError("native harness/transcript unavailable; provide harness and transcript_path")
-    _identity(harness, sid)
+    conversation_key(harness, sid)
     reason = adapters.get(harness).subagent(path, sid) if path and Path(path).is_file() else None
     if reason:
         raise SubagentEvent(reason)
@@ -1922,13 +1922,13 @@ def hook_land(env: dict, session: str) -> dict:
     one takes seconds (#192); the hooks' worker captures. A refused landing is kept as capture
     keeps it. Returns the saved view: the turns as of the last capture."""
     harness, sid, path = hook_source(env)
-    with _locked(harness, sid) as p:
-        s = _load(p, harness, sid)
+    with state_lock(harness, sid) as p:
+        s = load_state(p, harness, sid)
         try:
             _land(s, path, session, env.get("space"), env.get("cwd"))
         except Exception as exc:
             return _capture_failed(p, s, exc, "landing")
-        _save(p, s)
+        save_state(p, s)
         return _current_view(s, p)
 
 
@@ -1938,9 +1938,9 @@ def capture_due(harness: str, conversation_id: str, transcript_path: str | None)
     yet (before its first turn is written) has nothing to capture: the worker would count it
     missing after this prompt's tick, and a later hook's worker captures it. A tracked
     conversation's file that left the named path is the worker's to find by ID
-    (`_locate_transcript`) or to record missing."""
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    (`locate_transcript`) or to record missing."""
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
     if transcript_path and not os.path.exists(transcript_path):
         return bool(s["rounds"] or s.get("native_fingerprint"))
     if s["capture_pending"] or s["capture_error"] or not s.get("native_fingerprint") or not transcript_path:
@@ -1955,14 +1955,14 @@ def notice_once(harness: str, conversation_id: str, text: str, *, settled: bool 
     """Should a hook carry this standing diagnostic? Once per text: the same wait read again
     every prompt only fills the context, and `integration status` keeps it (#192). `settled`
     (nothing stands now) forgets it, so a later recurrence is news again."""
-    with _locked(harness, conversation_id) as p:
-        s = _load(p, harness, conversation_id)
+    with state_lock(harness, conversation_id) as p:
+        s = load_state(p, harness, conversation_id)
         if not text:
             if settled and s.pop("notice", None) is not None:
-                _save(p, s)
+                save_state(p, s)
             return False
         if s.get("notice") == text:
             return False
         s["notice"] = text
-        _save(p, s)
+        save_state(p, s)
         return True

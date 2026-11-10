@@ -38,7 +38,7 @@ _ONE = ("같은 호출에 함께 걸리는 등록을 하나로 합친다(Session
         "나눠도 된다) — osk는 같은 호출을 한 번만 처리하지만 호스트는 매번 두 번 띄운다")
 
 
-def _engine_dir() -> Path:
+def engine_dir() -> Path:
     """등록 명령이 가리켜야 할 엔진 — 이 vault 안의 사본이다. 훅과 MCP 서버는 자기 파일
     자리로 vault를 찾으므로, 다른 자리의 엔진을 부르는 등록은 이 vault가 아니다."""
     return core.ROOT / "_governance" / "_engine"
@@ -55,7 +55,7 @@ def _kst(at) -> str:
         return "?"
 
 
-def _python() -> Path:
+def venv_python() -> Path:
     """이 vault의 가상환경 Python — 등록 명령이 써야 하는 자리."""
     return core.ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
@@ -68,7 +68,7 @@ def _runnable(program: str) -> bool:
 
 def _pip(prefix) -> str:
     """그 해석기에 엔진 의존성을 까는 한 줄."""
-    engine = _engine_dir()
+    engine = engine_dir()
     return core.shell_join([*prefix, "-m", "pip", "install", "-r", engine / "requirements.txt",
                             "-c", engine / "constraints.txt"])
 
@@ -107,7 +107,7 @@ def _engine(records: dict) -> list[dict]:
                        None if ok else "엔진은 Python 3.11 이상이 필요하다"))
     if base.fold(str(Path(sys.prefix).resolve())) != base.fold(str((core.ROOT / ".venv").resolve())):
         items.append(_item("info", "가상환경", f"이 명령은 이 vault의 `.venv`가 아닌 {sys.prefix}에서 돈다",
-                           f"훅·MCP 등록 명령은 {_python()}를 쓴다"))
+                           f"훅·MCP 등록 명령은 {venv_python()}를 쓴다"))
     if importlib.util.find_spec("mcp") is None:
         items.append(_item("fail", "mcp 패키지", "이 Python에 `mcp`가 없다 — MCP 서버가 뜨지 않는다",
                            _pip([sys.executable])))
@@ -146,8 +146,8 @@ def _engine(records: dict) -> list[dict]:
 
 
 def _mcp(adapter, servers: list[dict]) -> list[dict]:
-    server = _engine_dir() / "mcp_server.py"
-    fix = adapter.mcp_command(_python(), server) or None
+    server = engine_dir() / "mcp_server.py"
+    fix = adapter.mcp_command(venv_python(), server) or None
     mine = [s for s in servers if base.mentions(s["tokens"], server)]
     if mine:
         out = []
@@ -174,11 +174,11 @@ def _mcp(adapter, servers: list[dict]) -> list[dict]:
 
 def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
     name = adapter.events[event]
-    script = _engine_dir() / "scripts" / "hooks" / adapters.SCRIPTS[event]
+    script = engine_dir() / "scripts" / "hooks" / adapters.SCRIPTS[event]
     files = ", ".join(str(f) for f in adapter.hook_files())
     try:
         fix = (f"안내서(docs/GETTING-STARTED.md) {adapter.guide}단계대로 hooks.{name}에 "
-               f"`{adapter.hook_command([_python().as_posix(), script.as_posix()])}`를 등록한다")
+               f"`{adapter.hook_command([venv_python().as_posix(), script.as_posix()])}`를 등록한다")
     except ValueError as e:
         fix = str(e)
     ran = f"마지막 실행 {_kst(run.get('at'))}" if run else ""
@@ -211,7 +211,7 @@ def _hook(adapter, event: str, hooks: list[dict], run: dict | None) -> dict:
             return _item("warn", f"훅 {name}", f"{where} · {ran}" if run else where, _ONE)
         limit = h.get("timeout")
         if isinstance(limit, (int, float)) and limit < base.HOOK_TIMEOUT:
-            setup = core.shell_join([str(_python()), str(_engine_dir() / "scripts" / "setup.py"), "--interactive"])
+            setup = core.shell_join([str(venv_python()), str(engine_dir() / "scripts" / "setup.py"), "--interactive"])
             return _item("warn", f"훅 {name}", f"{where} · 제한이 {limit}초다 — 설치는 {base.HOOK_TIMEOUT}초를 쓴다. "
                          "부하가 높으면 훅이 끝나기 전에 끊긴다", f"`{setup}`가 이 등록을 설치의 한 줄로 바꾼다")
         if run:

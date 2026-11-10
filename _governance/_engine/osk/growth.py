@@ -27,12 +27,12 @@ MAX_DOMAINS = 8
 MAX_LIMIT = 20
 # 대화별 검토(Stop fork)와 같은 9라운드다(#175 2026-10-18). 일반 세션은 따로 15라운드 상한을 쓴다.
 SCOPE_ROUNDS_PER_JOB = 9
-_QUEUES = ("candidates", "scope_jobs", "organization_jobs", "eviction_jobs", "recheck_jobs")
+QUEUES = ("candidates", "scope_jobs", "organization_jobs", "eviction_jobs", "recheck_jobs")
 # 실패가 아니라 대기다(#173): 다른 실행이 잠금을 쥐었거나(`busy`) 한도에 막혔다(`limited`).
 WAITS = {"busy", "limited"}
 
 
-def _records() -> list[dict]:
+def ledger_records() -> list[dict]:
     rows = core.ledger_read(LEDGER)
     errors = core.ledger_damage(rows, LEDGER)
     for row in rows:
@@ -51,7 +51,7 @@ def _records() -> list[dict]:
     return rows
 
 
-def _index() -> graph.Index:
+def node_index() -> graph.Index:
     idx = graph.Index()
     if idx.scan_errors or idx.broken or idx.dup_ids or idx.dup_stems:
         raise ValueError("growth needs a complete, unambiguous node inventory")
@@ -94,8 +94,8 @@ def _source_current(source: dict, idx: graph.Index) -> bool:
 def _proof(key: str, receipt: dict | None = None) -> dict:
     from . import distillation
     if receipt is not None:
-        return distillation._verify_receipt_locked(receipt)
-    return distillation._status_locked(key)
+        return distillation.verify_receipt_locked(receipt)
+    return distillation.status_locked(key)
 
 
 def _current(candidate: dict, idx: graph.Index, proof: dict | None = None) -> bool:
@@ -137,7 +137,7 @@ def _preservation(candidate: dict, idx: graph.Index, target: str | None = None,
     raise ValueError("no complete current Domain distillation covers a valid subset of this comparison")
 
 
-def _latest(rows: list[dict], value: str, field: str, par=None) -> dict | None:
+def latest_report(rows: list[dict], value: str, field: str, par=None) -> dict | None:
     """한 항목의 지금 보고. 앞 선택(manifest)을 인과로 이은 선택이 있으면 앞 선택의 보고는
     기록으로만 남는다 — 옛 선택의 보고가 늦게 붙어 인과 극대가 되어도 새 선택의 보고를
     되돌리지 않는다. 서로 잇지 않은 선택(동기화 전의 두 기기)은 함께 남고, 그 보고가
@@ -147,7 +147,7 @@ def _latest(rows: list[dict], value: str, field: str, par=None) -> dict | None:
     par = core.effective_parents(rows) if par is None else par
     plans = {r["manifest"] for r in rows
              if r.get(field) == value and isinstance(r.get("manifest"), str)}
-    anc = {m: core._ancestors(m, par) for m in plans}
+    anc = {m: core.ancestors(m, par) for m in plans}
     kept = {m for m in plans if not any(m in anc[o] for o in plans if o != m)}
     top = core.causal_maxima(rows, value, par, field, candidate=(
         (lambda r: r.get("manifest") in kept) if plans else None))
@@ -156,7 +156,7 @@ def _latest(rows: list[dict], value: str, field: str, par=None) -> dict | None:
 
 
 def _completed(key: str, rows: list[dict], idx: graph.Index, par=None) -> dict | None:
-    row = _latest(rows, key, "key", par)
+    row = latest_report(rows, key, "key", par)
     if not row or row.get("kind") != "review" or row.get("outcome") == "deferred":
         return None
     candidate = row.get("candidate")
@@ -182,7 +182,7 @@ def daily_status(days: int = 3) -> dict:
     넘길 까닭이 아니다. 적체 일괄 실행(`daily.backlog`)은 정기 실행이 아니다. 실패하거나 결과가 없는 새
     계획은 과거 성공으로 덮지 않는다."""
     now = datetime.now(timezone.utc)
-    rows = _records()
+    rows = ledger_records()
     plans = [r for r in rows if r.get("kind") == "plan" and r.get("work_context", "daily") == "daily"
              and not (r.get("daily") or {}).get("backlog")]
     runs = {r.get("manifest"): r for r in rows if r.get("kind") == "run"}
@@ -267,7 +267,7 @@ def _pick_rechecks(idx: graph.Index, limit: int, scope: str | None = None,
     """고를 재검토 작업 — 시도한 적 없는 것부터, 그다음 가장 오래전에 시도한 것부터
     `limit`개. 정기 실행과 Stop fork가 같이 쓴다: 자르고 나서 돌리면 앞쪽이 계속
     열려 있을 때 뒤쪽이 영영 뽑히지 않는다."""
-    rows = _records() if rows is None else rows
+    rows = ledger_records() if rows is None else rows
     tried = {j["key"]: r["rid"] for r in rows if r.get("kind") == "plan"
              for j in r.get("recheck_jobs", [])}
     jobs = sorted(_recheck_jobs(idx, scope), key=lambda j: (tried.get(j["key"], ""), j["key"]))
@@ -298,7 +298,7 @@ def _recheck_status(job: dict, idx: graph.Index) -> dict:
 def _plan(limit: int) -> dict:
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f"limit must be between 1 and {MAX_LIMIT}")
-    idx, rows = _index(), _records()
+    idx, rows = node_index(), ledger_records()
     sources, domains, clusters, refs = {}, {}, {}, {}
     for name, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] not in {"scope", "domain"} or graph.is_hub(path):
@@ -373,7 +373,7 @@ def _plan(limit: int) -> dict:
         available = related + [d for d in domains.values() if d not in related]
         candidate.update(domains=available[:MAX_DOMAINS],
                          other_domains=max(0, len(available) - MAX_DOMAINS))
-        last_review = _latest(rows, candidate["key"], "key", par)
+        last_review = latest_report(rows, candidate["key"], "key", par)
         if last_review and last_review.get("outcome") == "deferred":
             candidate["previous_deferral"] = _deferral(last_review)
         previous = [c["distill_key"] for row in rows if row.get("kind") == "plan"
@@ -474,7 +474,7 @@ def _stalled(rows: list[dict], now: datetime | None = None) -> set:
                 continue
         except (KeyError, TypeError, ValueError):
             continue
-        jobs = {j["key"]: j for queue in _QUEUES for j in (plans.get(r.get("manifest")) or {}).get(queue, [])
+        jobs = {j["key"]: j for queue in QUEUES for j in (plans.get(r.get("manifest")) or {}).get(queue, [])
                 if isinstance(j, dict) and "key" in j}
         for key in r["progress"].get("made", []):
             misses.pop(_job_place(jobs.get(key) or {"key": key}), None)
@@ -494,26 +494,26 @@ def _skip_stalled(jobs: list[dict], stalled: set, limit: int, planned: dict) -> 
 
 def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
     """Share the run budget across queues; recorded attempts drive fair rotation."""
-    last = {key: -1 for key in _QUEUES}
+    last = {key: -1 for key in QUEUES}
     last_first = dict(last)
-    for key in _QUEUES:
+    for key in QUEUES:
         planned.setdefault(key, [])
     for number, row in enumerate(rows):
         if (row.get("kind") == "plan" and
                 row.get("work_context", "daily") == planned.get("work_context", "daily")):
-            for key in _QUEUES:
+            for key in QUEUES:
                 if row.get(key):
                     last[key] = number
             if row.get("work_order"):
                 last_first[row["work_order"][0]["queue"]] = number
-    order = sorted(_QUEUES, key=last.get)
+    order = sorted(QUEUES, key=last.get)
     # 첫 차례가 가장 오래된 큐를 먼저 뽑는다 — 한도가 큐 수보다 작아도 첫 차례가
     # 큐마다 한 번씩 돈다(첫 작업 뒤 시간이 다 된 워커에도 굶는 큐가 없다).
-    lead = min((key for key in _QUEUES if planned[key]), key=last_first.get, default=None)
+    lead = min((key for key in QUEUES if planned[key]), key=last_first.get, default=None)
     if lead is not None:
         order.remove(lead)
         order.insert(0, lead)
-    selected = {key: [] for key in _QUEUES}
+    selected = {key: [] for key in QUEUES}
     work_order = []
     for _ in range(limit):
         for key in order:
@@ -530,7 +530,7 @@ def _select_work(planned: dict, limit: int, rows: list[dict]) -> None:
         # from workers that time out before reaching their later selected jobs.
         first = min(range(len(work_order)), key=lambda i: last_first[work_order[i]["queue"]])
         work_order.insert(0, work_order.pop(first))
-    planned["queued_not_selected"] = {key: len(planned[key]) - len(selected[key]) for key in _QUEUES}
+    planned["queued_not_selected"] = {key: len(planned[key]) - len(selected[key]) for key in QUEUES}
     planned.update(selected)
     planned["work_order"] = work_order
 
@@ -564,11 +564,11 @@ def _reading_plan(planned: dict) -> dict:
 def prompt(planned: dict | None = None, limit: int = 3) -> str:
     """Preview; receipts require a manifest registered by run()."""
     planned = plan(limit) if planned is None else planned
-    if not any(planned.get(key) for key in _QUEUES):
+    if not any(planned.get(key) for key in QUEUES):
         return "No changed Scope comparisons need review. Do not start a model."
     if "work_order" not in planned:
         planned = {**planned, "work_order": [{"queue": key, "index": i}
-                   for key in _QUEUES for i in range(len(planned.get(key, [])))]}
+                   for key in QUEUES for i in range(len(planned.get(key, [])))]}
     from . import organization
     drafter = planned.get("drafter")
     return organization.prompt(planned.get("organization_jobs", []), inventory=False) + (
@@ -774,7 +774,7 @@ def review(key: str, outcome: str, target: str | None = None, reason: str = "",
     if outcome != "preserved" and target is not None:
         raise ValueError("only preserved decisions have a target")
     with core.mutation_lock():
-        rows, idx = _records(), _index()
+        rows, idx = ledger_records(), node_index()
         matches = [(r, c) for r in rows if r.get("kind") == "plan"
                    and r.get("rid") == manifest
                    for c in r.get("candidates", []) if c.get("key") == key]
@@ -796,7 +796,7 @@ def review(key: str, outcome: str, target: str | None = None, reason: str = "",
         return core.ledger_append(LEDGER, record)
 
 
-def _strict_json(text: str):
+def strict_json(text: str):
     def pairs(items):
         value = {}
         for key, item in items:
@@ -822,12 +822,12 @@ def _final_packet(output: Path) -> dict:
     if not text.strip():
         raise ValueError("no structured final review packet")
     try:
-        whole = _strict_json(text)
+        whole = strict_json(text)
     except ValueError:
         whole = None
     if isinstance(whole, dict) and set(whole) == {"osk_reviews"}:
         return whole
-    events = [_strict_json(line) for line in text.split("\n") if line.strip()]
+    events = [strict_json(line) for line in text.split("\n") if line.strip()]
     if not events or not all(isinstance(event, dict) for event in events):
         raise ValueError("unknown provider final-output format")
     # Claude Code appends session metadata after its final result: task notifications and
@@ -857,16 +857,16 @@ def _final_packet(output: Path) -> dict:
 def _message_packet(text: str):
     """최종 메시지의 결과 묶음 — 메시지 전체이거나, 아니면 행 머리에서 시작해 메시지 끝까지 가는 끝
     블록 하나가 통째로 결과 묶음이어야 한다(#306 D1). 설명 한 줄 뒤에 붙인 묶음은 읽고, 산문 가운데의
-    JSON과 코드 펜스 안의 JSON은 읽지 않는다. 엄격 판독(`_strict_json`)은 같다."""
+    JSON과 코드 펜스 안의 JSON은 읽지 않는다. 엄격 판독(`strict_json`)은 같다."""
     try:
-        return _strict_json(text)
+        return strict_json(text)
     except ValueError as whole:
         for m in re.finditer(r"(?m)^\{", text):
             # 앞에 연 펜스가 홀수면 펜스 안이다 — 닫는 표시가 빠진 펜스도 결과로 읽지 않는다(#313 리뷰)
             if m.start() == 0 or len(re.findall(r"(?m)^ {0,3}(?:```|~~~)", text[:m.start()])) % 2:
                 continue
             try:
-                packet = _strict_json(text[m.start():])
+                packet = strict_json(text[m.start():])
             except ValueError:
                 continue
             if isinstance(packet, dict) and set(packet) == {"osk_reviews"}:
@@ -1001,11 +1001,11 @@ def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=Non
                      growth_par=None) -> dict:
     from . import evictions
     rows = evictions.records() if eviction_rows is None else eviction_rows
-    growth_rows = _records() if growth_rows is None else growth_rows
+    growth_rows = ledger_records() if growth_rows is None else growth_rows
     original = next((r for r in rows if r["rid"] == job["of"] and r["kind"] == "evict"), None)
     if not original or any(original[k] != job[k] for k in ("scope", "text")):
         return {"status": "pending", "reason": "selected eviction source changed"}
-    review = _latest(growth_rows, job["of"], "of", growth_par)
+    review = latest_report(growth_rows, job["of"], "of", growth_par)
     result = {"status": "pending", "review": review, "semantic_verified": False}
     settled = [r for r in rows if r["kind"] == "settle" and r["of"] == job["of"]]
     if not settled:
@@ -1014,7 +1014,7 @@ def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=Non
     result["settlement"] = last
     try:
         if last["outcome"] != "discarded":
-            evictions.require_target(last.get("target", ""), idx or _index())
+            evictions.require_target(last.get("target", ""), idx or node_index())
     except ValueError as exc:
         return {**result, "reason": str(exc)}
     reviewed_job = next((j for r in growth_rows if review and r["kind"] == "plan"
@@ -1041,7 +1041,7 @@ def checkpoint(packet: dict) -> dict:
         raise ValueError("checkpoint needs one osk_reviews object")
     manifest = packet["osk_reviews"].get("manifest") if isinstance(packet["osk_reviews"], dict) else None
     with core.mutation_lock():
-        row = next((r for r in _records() if r["kind"] == "plan" and r["rid"] == manifest), None)
+        row = next((r for r in ledger_records() if r["kind"] == "plan" and r["rid"] == manifest), None)
     if row is None:
         raise ValueError("checkpoint requires a recorded growth manifest")
     planned = {**row, "manifest": manifest}
@@ -1058,7 +1058,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
         key = entry["key"]
         try:
             with core.mutation_lock():
-                done = _completed(key, _records(), _index())
+                done = _completed(key, ledger_records(), node_index())
             if done:
                 result["domain"][key] = "already_complete"
             else:
@@ -1112,11 +1112,11 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                     if last and any(last.get(k) != entry.get(k) for k in ("outcome", "target")):
                         raise ValueError("eviction already has a different disposition")
                     if not last:
-                        last = evictions._settle_locked(**entry)
+                        last = evictions.settle_locked(**entry)
                     record["settlement"] = last["rid"]
                 previous = done.get("review") or {}
                 if isinstance(previous.get("manifest"), str) and (
-                        core._rid_key(previous["manifest"]) > core._rid_key(planned["manifest"])):
+                        core.rid_key(previous["manifest"]) > core.rid_key(planned["manifest"])):
                     result["notes"].append(f"Eviction {entry['of']}: a newer selection already reviewed it; "
                                            "this report is kept as history and does not change it")
                 if any(previous.get(k) != v for k, v in record.items()):
@@ -1130,7 +1130,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
         job = selected_rechecks[entry["key"]]
         try:
             with core.mutation_lock():
-                now = [i for i in rechecks.candidates(_index())[0]
+                now = [i for i in rechecks.candidates(node_index())[0]
                        if i["id"] == job["id"] and i["key"] == job["target_key"]]
                 if not now:
                     result["notes"].append(f"Recheck {entry['key']}: already closed; nothing to record")
@@ -1159,7 +1159,7 @@ def _needs_review(planned: dict, rows: list[dict], idx: graph.Index) -> bool:
     다섯 큐 모두다. 재검토만 남은 실행도 올림과 보류를 그 묶음으로 보고한다."""
     from . import integration, organization
     return (any(not _completed(c["key"], rows, idx) for c in planned["candidates"])
-            or any(integration._review_status_locked(
+            or any(integration.review_status_locked(
                 j["harness"], j["conversation_id"], j["through"])["status"] != "complete"
                 for j in planned["scope_jobs"])
             or any(organization.status(j, idx)["status"] != "complete"
@@ -1197,7 +1197,7 @@ def _running(tree: dict[int, int]) -> bool:
     return True
 
 
-def _stop_tree(proc: subprocess.Popen) -> str | None:
+def stop_tree(proc: subprocess.Popen) -> str | None:
     """Kill only the process tree/group created by this runner; report uncertain cleanup."""
     error = None
     try:
@@ -1303,7 +1303,7 @@ def _progress(planned: dict, outcomes: dict, scope: dict, organization: dict, ev
                or organization[j["key"]]["remaining_units"] < (j.get("coverage") or {}).get("remaining", 0)]
             + [j["key"] for j in planned["eviction_jobs"] if eviction[j["key"]]["status"] == "complete"]
             + [j["key"] for j in planned["recheck_jobs"] if recheck[j["key"]]["status"] == "complete"])
-    keys = [j["key"] for key in _QUEUES for j in planned.get(key, [])]
+    keys = [j["key"] for key in QUEUES for j in planned.get(key, [])]
     return {"made": made, "none": [k for k in keys if k not in made]}
 
 
@@ -1349,14 +1349,14 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
             return {"ok": False, "state": "busy"}
         try:
             from . import integration
-            wanted, exclude = set(_QUEUES if queues is None else queues), set(exclude)
+            wanted, exclude = set(QUEUES if queues is None else queues), set(exclude)
             # A response-triggered fork owns one frozen conversation snapshot.
             # Daily runs retain their existing cross-conversation/Domain queue.
             if scope_job is not None:
                 catchup = {"ok": not bool(scope_job.get("capture_error")), "jobs": [scope_job], "remaining": 0}
             elif "scope_jobs" in wanted:
                 catchup = integration.catchup(limit=min(100, limit), max_rounds=scope_rounds,
-                                              tried=_scope_tried(_records()), capture_new=capture,
+                                              tried=_scope_tried(ledger_records()), capture_new=capture,
                                               exclude=exclude, bundle=scope_bundle)
             else:
                 catchup = {"ok": True, "jobs": [], "remaining": 0}
@@ -1371,7 +1371,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                            {"candidates": [], "scope_jobs": [], "organization_jobs": []})
                 if scope_job is None:
                     planned["limit"] = limit
-                    for key in _QUEUES:
+                    for key in QUEUES:
                         if key != "scope_jobs":
                             planned[key] = [j for j in planned.get(key, [])
                                             if key in wanted and j["key"] not in exclude]
@@ -1393,13 +1393,13 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     planned["work_context"] = "stop:" + (scope or scope_job["session"])
                     # 거듭 진척 없던 작업은 빼고 그 뒤의 후보로 채운다(#259). 자른 뒤에 빼면 뺀 작업이
                     # 시도 기록을 남기지 않아 계속 앞에 서고, 뒤의 작업이 영영 뽑히지 않는다.
-                    rows = _records()
+                    rows = ledger_records()
                     stalled = _stalled(rows)
                     planned["organization_jobs"] = _skip_stalled(
                         organization.pending(scopes, limit=min(len(scopes), 20)) if scopes else [],
                         stalled, 1, planned)
                     # 정기 실행이 없으면 이 scope의 재검토를 fork가 맡는다.
-                    idx = _index()
+                    idx = node_index()
                     planned["recheck_jobs"] = _skip_stalled(
                         _pick_rechecks(idx, limit + len(stalled), scope, rows) if scope and not daily_active() else [],
                         stalled, limit, planned)
@@ -1408,12 +1408,12 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 # A Stop fork may organize only its own Scope. It reuses this one
                 # worker/deadline; no other conversation or Domain is selected.
                 _select_work(planned, max(limit, len(planned["scope_jobs"]))
-                             + bool(scope_job and planned["organization_jobs"]), _records())
+                             + bool(scope_job and planned["organization_jobs"]), ledger_records())
                 planned["scope_remaining"] += planned["queued_not_selected"]["scope_jobs"]
                 planned["timeout_seconds"] = timeout
                 if drafter := _drafter(command):
                     planned["drafter"] = drafter
-                if not any(planned[key] for key in _QUEUES):
+                if not any(planned[key] for key in QUEUES):
                     if not catchup.get("ok"):
                         return {"ok": False, "state": "capture_pending", "selected": 0,
                                 "capture": catchup}
@@ -1451,15 +1451,15 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                         proc.communicate(text.encode("utf-8"), timeout=timeout)
                     except subprocess.TimeoutExpired as exc:
                         error = str(exc)
-                        cleanup_error = _stop_tree(proc)
+                        cleanup_error = stop_tree(proc)
                     except BaseException:
-                        _stop_tree(proc)
+                        stop_tree(proc)
                         raise
                     returncode = proc.returncode
                 except OSError as exc:
                     error = str(exc)
             with core.mutation_lock():
-                needs_review = _needs_review(planned, _records(), _index())
+                needs_review = _needs_review(planned, ledger_records(), node_index())
             final_reviews = {"state": "not_needed", "errors": []}
             if needs_review:
                 final_reviews = (_apply_final_reviews(directory / "stdout.txt", planned)
@@ -1473,17 +1473,17 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 "rejected", "not_applied"}) and growth_daily.limited(stdout_path, command)
             usage = growth_daily.usage(stdout_path, command, cold_first=scope_job is None)
             with core.mutation_lock():
-                rows, idx = _records(), _index()
+                rows, idx = ledger_records(), node_index()
                 par = core.effective_parents(rows)
                 receipts = {c["key"]: _completed(c["key"], rows, idx, par)
                             for c in planned["candidates"]}
                 outcomes = {}
                 for key, receipt in receipts.items():
-                    last = _latest(rows, key, "key", par)
+                    last = latest_report(rows, key, "key", par)
                     outcomes[key] = receipt["outcome"] if receipt else (
                         "deferred" if last and last.get("manifest") == manifest["rid"]
                         and last.get("outcome") == "deferred" else "pending")
-                scope_outcomes = {job["key"]: integration._review_status_locked(
+                scope_outcomes = {job["key"]: integration.review_status_locked(
                     job["harness"], job["conversation_id"], job["through"])
                     for job in planned["scope_jobs"]}
                 organization_outcomes = {job["key"]: organization.status(job, idx)

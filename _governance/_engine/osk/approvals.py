@@ -27,7 +27,7 @@ from .core import (ROOT, LEDGER, ledger_damage, sha256_bytes, sha256_file,
                    posix_rel, atomic_write, fsync_dir, mkdirs_durable,
                    resolve_in_root, ledger_append, ledger_read, causal_maxima,
                    effective_parents, heads, mutation_lock, resolve_one,
-                   _rid_key, _canon_rel)
+                   rid_key, canon_rel)
 from . import signatures
 
 APPROVALS = LEDGER / "approvals.jsonl"
@@ -50,7 +50,7 @@ _SKIP_DIRS = {".git", ".venv", "__pycache__", "_ledger", "_cited", "_raw",
 
 # ── 영역 tree (내용 주소) ────────────────────────────────────────────────
 
-def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
+def region_files(region_dir: Path) -> list[tuple[str, Path]]:
     """영역 안 정규 파일 전수 — (vault 상대 POSIX 경로, 절대 경로), 경로
     오름차순. 저장소 살림살이·대장·`_raw`는 뺀다(위 _SKIP_DIRS).
 
@@ -83,7 +83,7 @@ def _region_files(region_dir: Path) -> list[tuple[str, Path]]:
     return sorted(out, key=lambda x: x[0])
 
 
-def _manifest_blob(entries: list) -> bytes:
+def manifest_blob(entries: list) -> bytes:
     """manifest의 **정본 직렬화** — 공백 없는 UTF-8 JSON. 생성(작업본 해시·
     `_store_tree`)과 판독이 같은 함수를 쓰므로 정본 형상의 정의가 한 곳이다."""
     return json.dumps(entries, ensure_ascii=False,
@@ -103,13 +103,13 @@ def working_tree_hash(region: str) -> str | None:
         return None
     if d.is_dir():
         try:
-            return sha256_bytes(_manifest_blob(
-                [[rel, sha256_file(p)] for rel, p in _region_files(d)]))
+            return sha256_bytes(manifest_blob(
+                [[rel, sha256_file(p)] for rel, p in region_files(d)]))
         except OSError:
             return None  # 불완전 관측은 판정 불능이며 clean이 아니다.
     if d.exists():
         return None                       # 디렉터리가 아닌 객체 — 판정 불능
-    return sha256_bytes(_manifest_blob([]))          # 부재 = 빈 작업본
+    return sha256_bytes(manifest_blob([]))          # 부재 = 빈 작업본
 
 
 # ── 내용 주소 저장소 ─────────────────────────────────────────────────────
@@ -250,11 +250,11 @@ def _store_tree(region_dir: Path) -> str:
     (manifest는 hash(A)를 가리키나 저장된 blob은 hash(B))해지는 일이 없다.
     판독 순서·직렬화는 `working_tree_hash`와 같아 tree 해시가 동일하다."""
     entries = []
-    for rel, p in _region_files(region_dir):
+    for rel, p in region_files(region_dir):
         data = p.read_bytes()          # 파일당 유일 판독
         h = _store_put(data)           # 그 bytes를 그대로 박제(반환 = 그 해시)
         entries.append([rel, h])
-    return _store_put(_manifest_blob(entries))
+    return _store_put(manifest_blob(entries))
 
 
 def _tree_table(tree_hash: str) -> dict[str, str] | None:
@@ -278,19 +278,19 @@ def _fold_eol(data: bytes) -> bytes:
     return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
-def _excluded_rel(rel: str, region: str) -> bool:
+def excluded_rel(rel: str, region: str) -> bool:
     """그 경로가 `region` **안에서** 지금 규칙(§3 4항)의 제외 구획에 드는가.
 
-    `_region_files`의 걸러내기와 같은 판정을 경로 문자열에 대해 한다 — 작업본
+    `region_files`의 걸러내기와 같은 판정을 경로 문자열에 대해 한다 — 작업본
     스캔과 승인본 판독이 같은 규칙을 써야 둘이 비교 가능하다. 그래서 판정은
-    **영역 루트 아래**의 구성요소만 본다: `_region_files(region_dir)`는 루트
+    **영역 루트 아래**의 구성요소만 본다: `region_files(region_dir)`는 루트
     자신에는 걸러내기를 걸지 않고 그 아래 자식 디렉터리와 파일 이름만 거른다
     (§3 4항도 "영역 **안에** 있어도"라고 적는다 — 루트는 판정 대상이 아니다).
 
     루트 경로까지 판정에 넣으면 두 해석이 갈린다. 루트에 제외 이름이나 점
     접두가 든 영역 — 개정 전에 합법적으로 지정된 `= …/_scope_memory`, 그리고
     `protect`가 **지금도 허용하는** `.foo` — 에서 승인본 table의 모든 행이
-    빠져 `table={}`가 되는데, 삭제 순회는 `_region_files`로 그 파일들을 정상
+    빠져 `table={}`가 되는데, 삭제 순회는 `region_files`로 그 파일들을 정상
     열거하므로 **반려가 영역을 통째로 지운다.** 그 뒤 이행 논리가 빈 manifest를
     새 `base`로 적어 삭제를 clean한 반려로 확정한다(4차 리뷰, 실측 재현)."""
     r = str(region).rstrip("/")
@@ -307,12 +307,12 @@ def legacy_excluded(tree_hash: str, region: str) -> list[str]:
     §3 4항 개정 전에 지정된 영역의 승인본은 `_scope_memory/*`를 담고 있을 수
     있다. 그 항목은 이제 영역 tree에 들지 않으므로, 그대로 두면 복원 계획이
     **현재의 공유 기억을 과거 승인본으로 덮는다.** 어느 자리가 그런지 여기서
-    한 번 답하고, 판독(`_tree_table_for_region`)과 반려가 같은 답을 쓴다."""
+    한 번 답하고, 판독(`tree_table_for_region`)과 반려가 같은 답을 쓴다."""
     table = _tree_table(tree_hash)
-    return sorted(r for r in (table or {}) if _excluded_rel(r, region))
+    return sorted(r for r in (table or {}) if excluded_rel(r, region))
 
 
-def _tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None:
+def tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None:
     """그 **영역의** 승인본 table — 형상이 정본이고 모든 rel이 `region/` 아래일
     때만 반환한다(아니면 None).
 
@@ -332,10 +332,10 @@ def _tree_table_for_region(region: str, tree_hash: str) -> dict[str, str] | None
     # 항목(`_scope_memory/*`)을 걸러 낸다 — 걸러 내지 않으면 복원 계획이 현재의
     # 공유 기억 위에 과거 승인본을 쓰고, 그 뒤 최종 확인이 새 규칙으로 계산되어
     # 어차피 실패한다(기록은 안 남는데 자료만 덮인다). 삭제 쪽은 위험이 없다 —
-    # `_apply_tree`의 삭제 순회가 `_region_files`를 쓰므로 제외 구획을 애초에
+    # `_apply_tree`의 삭제 순회가 `region_files`를 쓰므로 제외 구획을 애초에
     # 열거하지 않는다.
     return {rel: h for rel, h in table.items()
-            if not _excluded_rel(rel, r)}
+            if not excluded_rel(rel, r)}
 
 
 # ── 판정 (인과 극대) ─────────────────────────────────────────────────────
@@ -344,7 +344,7 @@ def records() -> list[dict]:
     return ledger_read(APPROVALS)
 
 
-def _damaged(recs: list[dict]) -> bool:
+def ledger_is_damaged(recs: list[dict]) -> bool:
     """대장에 **구조 손상**(rid 부재·형식 위반·중복)이 있는가.
 
     `core.unresolved_nodes`의 손상 접기는 `field == "node"`일 때만 돌아서
@@ -365,7 +365,7 @@ def region_record(region: str, recs: list[dict] | None = None) -> dict | None:
     """영역의 현행 기록 — 그 `region`의 **유일한 인과 극대**. 극대가 여럿
     (다기기 비교 불능 분기)이거나 대장이 구조 손상이면 None(stale)."""
     recs = records() if recs is None else recs
-    if _damaged(recs):
+    if ledger_is_damaged(recs):
         return None
     return resolve_one(recs, region, "region")
 
@@ -408,7 +408,7 @@ def protected_regions() -> list[str]:
     비싸진다)."""
     recs = records()
     named = {r.get("region") for r in recs if r.get("region")}
-    if _damaged(recs):
+    if ledger_is_damaged(recs):
         # 손상 위에서는 어느 영역이 해제됐는지도 말할 수 없다 — 이름이 오른 것을
         # 전부 남긴다(fail-closed). 빼면 `region_of`가 None을 돌려 그 아래 파일이
         # '보호영역 밖 = 제약 없음'으로 새어 나간다.
@@ -427,7 +427,7 @@ def state(region: str, recs: list[dict] | None = None) -> str:
     stale = 인과 극대가 유일하지 않음(승인·반려 보류). clean = 작업본 tree가
     승인본 tree와 같음. pending = 다름."""
     recs = records() if recs is None else recs
-    if _damaged(recs):
+    if ledger_is_damaged(recs):
         # 손상은 판정 불능이지 해제가 아니다. 이름이 대장에 오른 적 없는 영역만
         # `unprotected`이고, 나머지는 stale로 두어 승인·반려가 함께 막힌다.
         return ("stale" if any(r.get("region") == region for r in recs)
@@ -533,8 +533,8 @@ def _moves_since(region: str, recs: list[dict] | None = None) -> list[dict]:
     boundary = rec.get("moves_seen")
     if boundary is None:
         # 경계 미기록(이 필드 도입 전의 기록) — rid 시각 비교로 최선 노력
-        cut = _rid_key(rec["rid"])
-        return [r for r in rows if r.get("rid") and _rid_key(r["rid"]) > cut]
+        cut = rid_key(rec["rid"])
+        return [r for r in rows if r.get("rid") and rid_key(r["rid"]) > cut]
     par = effective_parents(rows)
     seen: set = set()
     stack = [r for r in boundary if isinstance(r, str)]
@@ -553,9 +553,9 @@ def _latest_move(rows: list[dict], key: str, rel: str, node: str | None = None,
     `node`로 id를, `before`/`after`로 rid 시각 경계를 좁힌다(사슬 추적용)."""
     hits = [r for r in rows if r.get(key) == rel and r.get("rid")
             and (node is None or r.get("node") == node)
-            and (before is None or _rid_key(r["rid"]) < _rid_key(before))
-            and (after is None or _rid_key(r["rid"]) > _rid_key(after))]
-    return max(hits, key=lambda r: _rid_key(r["rid"])) if hits else None
+            and (before is None or rid_key(r["rid"]) < rid_key(before))
+            and (after is None or rid_key(r["rid"]) > rid_key(after))]
+    return max(hits, key=lambda r: rid_key(r["rid"])) if hits else None
 
 
 def region_of(path: Path | str) -> str | None:
@@ -576,7 +576,7 @@ def changeset(region: str, *, record: dict | None = None,
     보고 판단할 수 있어야 승인이 확인 절차가 된다 — 해시 두 개만 보여주는 것은
     검토가 아니다."""
     recs = records()
-    if _damaged(recs):
+    if ledger_is_damaged(recs):
         return None
     if record is not None:
         if record.get("region") != region or record not in recs:
@@ -585,14 +585,14 @@ def changeset(region: str, *, record: dict | None = None,
     tree = approved_hash(region, recs)
     if record is not None and record.get("kind") == "unprotect":
         tree = record.get("base")  # 해제 갈래는 해제 직전 승인본과 비교한다.
-    table = _tree_table_for_region(region, tree) if tree else None
+    table = tree_table_for_region(region, tree) if tree else None
     if table is None:
         return None
     d = resolve_in_root(region)
-    files = ({rel: p for rel, p in _region_files(d)}
+    files = ({rel: p for rel, p in region_files(d)}
              if d is not None and d.is_dir() else {})
     cur = {rel: sha256_file(p) for rel, p in files.items()}
-    if expect_work is not None and sha256_bytes(_manifest_blob(
+    if expect_work is not None and sha256_bytes(manifest_blob(
             [[rel, cur[rel]] for rel in sorted(cur)])) != expect_work:
         raise ValueError("변경집합을 읽는 사이 작업본이 바뀌었다 — 다시 검토하라")
     cs = {
@@ -638,7 +638,7 @@ def changeset(region: str, *, record: dict | None = None,
             continue
         seen.add(node)
         chain = sorted((r for r in rows if r.get("node") == node),
-                       key=lambda r: _rid_key(r["rid"]))
+                       key=lambda r: rid_key(r["rid"]))
         region_real = Path(os.path.realpath(d)) if d is not None else None
 
         def _ins(rel):
@@ -687,7 +687,7 @@ def file_in_region_baseline(region: str, path: Path | str) -> bool:
     if p is None or not p.is_file():
         return False
     tree = approved_hash(region)
-    table = _tree_table_for_region(region, tree) if tree else None
+    table = tree_table_for_region(region, tree) if tree else None
     if not table:
         return False                  # 승인본 미해석 — fail-closed
     rel = posix_rel(p, Path(os.path.realpath(ROOT)))
@@ -778,10 +778,10 @@ def approve(region: str, base: str, expect_work: str,
     그 모든 head를 이어 분기를 봉합한다(Mechanism §3 5항 · 시행령 §6 3항의
     "해소는 사용자의 새 검토")."""
     with mutation_lock():
-        return _approve_locked(region, base, expect_work, reason, seal_heads)
+        return approve_locked(region, base, expect_work, reason, seal_heads)
 
 
-def _approve_locked(region: str, base: str, expect_work: str,
+def approve_locked(region: str, base: str, expect_work: str,
                     reason: str = "", seal_heads: list[str] | None = None) -> dict:
     """Shared CAS; updater already owns the mutation lock across its transaction."""
     d = resolve_in_root(region)
@@ -847,7 +847,7 @@ def _chain_position(node: str, chain: list[dict]) -> str | None:
     for r in reversed(chain):
         rel = r.get("to")
         q = resolve_in_root(rel or "")
-        if q is not None and q.is_file() and signatures._id_of(q) == node:
+        if q is not None and q.is_file() and signatures.id_of(q) == node:
             return rel
     return None
 
@@ -858,12 +858,12 @@ def _exact(rel: str, names: dict | None = None) -> Path:
     realpath가 다른 이름을 내면(대소문자만 바뀐 이름, 정션·링크 너머, vault 밖)
     그 경로로 쓰고 지우는 일은 사용자가 검토한 적 없는 다른 파일을 바꾼다 —
     방금 복원한 파일을 삭제 순회가 지우거나 남의 구획을 덮는다(실측). 판정은
-    갱신과 같은 계약(core._canon_rel)이고, 어긋나면 쓰기 전에 반려 전체를 멈춘다.
+    갱신과 같은 계약(core.canon_rel)이고, 어긋나면 쓰기 전에 반려 전체를 멈춘다.
 
     POSIX realpath는 대소문자·정규화를 접지 않는다(macOS 등 대소문자 무시 FS) —
     그래서 이미 있는 구성요소는 디렉터리 목록에 **그 이름 그대로** 있는지도 본다.
     `names`는 한 반려 안의 목록 캐시다."""
-    c = _canon_rel(ROOT, rel)
+    c = canon_rel(ROOT, rel)
     names = {} if names is None else names
     q = Path(os.path.realpath(ROOT))
     for part in Path(c).parts if c else ():
@@ -911,11 +911,11 @@ def _plan_unmoves(region_dir: Path, table: dict[str, str],
         return p is not None and (p == region_real
                                   or str(p).startswith(str(region_real) + os.sep))
 
-    cur = {rel: p for rel, p in _region_files(region_dir)}
+    cur = {rel: p for rel, p in region_files(region_dir)}
     cand = set()                          # 이 영역의 변경집합에 연루된 노드
     for rel in set(cur) - set(table):     # 추가분 — 이동으로 들어온 노드
         row = _latest_move(rows, "to", rel)
-        if row and signatures._id_of(cur[rel]) == row.get("node"):
+        if row and signatures.id_of(cur[rel]) == row.get("node"):
             cand.add(row["node"])
     for rel in set(table) - set(cur):     # 소실분 — 이동으로 나간 노드
         row = _latest_move(rows, "from", rel)
@@ -924,7 +924,7 @@ def _plan_unmoves(region_dir: Path, table: dict[str, str],
     plan, targets = [], set()
     for node in sorted(cand):
         chain = sorted((r for r in rows if r.get("node") == node),
-                       key=lambda r: _rid_key(r["rid"]))
+                       key=lambda r: rid_key(r["rid"]))
         touching = [r for r in chain
                     if _inside_rel(r.get("from")) or _inside_rel(r.get("to"))]
         if not touching:
@@ -990,7 +990,7 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         if cur != base:
             raise ValueError(
                 f"검토가 전제한 승인본이 현행이 아니다 (승인본 측): 전제={base} 현행={cur}")
-        table = _tree_table_for_region(reg, base)
+        table = tree_table_for_region(reg, base)
         if table is None:
             raise ValueError(
                 f"승인본 manifest를 해석하지 못했다(부재·영역 불일치) — 복원 불가: {base}")
@@ -1006,7 +1006,7 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         # 그 복원을 기록하는 `revert`가 다시 해석한 tree를 `base`로 적는다.
         stale_rels = legacy_excluded(base, reg)
         # **걸러내기가 작업본 스캔보다 많이 지우려 하면 멈춘다.** `table`은 승인본을
-        # 지금 규칙으로 해석한 것이고 삭제 순회는 `_region_files`가 연다 — 같은
+        # 지금 규칙으로 해석한 것이고 삭제 순회는 `region_files`가 연다 — 같은
         # 규칙을 두 곳에서 읽으므로 갈릴 수 있고, 갈리면 복원이 **승인본에 든 살아
         # 있는 파일을** 지운다. 그 뒤의 최종 확인은 잡지 못한다: 지운 결과로 다시
         # 계산한 해시가 같은 table에서 다시 유도한 해시와 맞아떨어져 삭제를
@@ -1014,7 +1014,7 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
         # 대조해 한 번 확인한다 — 승인본에 있고 지금도 영역 파일로 열거되는
         # 자리는 복원 계획에 반드시 남아 있어야 한다.
         stored = _tree_table(base) or {}
-        live = {rel for rel, _ in _region_files(d)}
+        live = {rel for rel, _ in region_files(d)}
         lost = sorted((live & set(stored)) - set(table))
         if lost:
             raise ValueError(
@@ -1060,7 +1060,7 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
             # 복원된 작업본이면, 그것이 이 영역의 승인본이다 — 내용은 하나도
             # 바뀌지 않고 manifest에서 제외 구획 항목만 빠진다. 저장소에 넣어야
             # 다음 판독이 해석할 수 있다(blob은 이미 전부 들어 있다).
-            rederived = _store_put(_manifest_blob(
+            rederived = _store_put(manifest_blob(
                 [[rel, table[rel]] for rel in sorted(table)]))
             if rederived == now:
                 record_base = rederived
@@ -1113,7 +1113,7 @@ def _stage_tree(region_dir: Path, table: dict[str, str]) -> list[tuple[Path, byt
     가르는 이유는 그 사이가 호출부가 전제를 마지막으로 확인할 자리이기
     때문이다 — 파괴가 시작된 뒤의 확인은 기록만 막을 뿐이다.
 
-    table의 rel이 영역 안이라는 것은 `_tree_table_for_region`이 이미 보장한다
+    table의 rel이 영역 안이라는 것은 `tree_table_for_region`이 이미 보장한다
     (그 함수를 거치지 않은 table은 복원의 근거가 아니다)."""
     region_real = Path(os.path.realpath(region_dir))
     staged: list[tuple[Path, bytes]] = []
@@ -1155,7 +1155,7 @@ def _apply_tree(region_dir: Path, table: dict[str, str],
     # 3) manifest에 없는 현재 파일 제거 (에이전트가 추가한 것)
     #    삭제 실패(권한 등)는 삼키지 않는다 — 조용히 넘기면 작업본이 승인본과
     #    다른 채로 남는데도 revert가 완료된 것처럼 기록될 수 있다.
-    for rel, p in _region_files(region_dir):
+    for rel, p in region_files(region_dir):
         if rel not in table:
             try:
                 p.unlink()
@@ -1190,7 +1190,7 @@ def integrity() -> list[str]:
             continue
         if is_protected(region, recs):
             tree = approved_hash(region, recs)
-            table = _tree_table_for_region(region, tree) if tree else None
+            table = tree_table_for_region(region, tree) if tree else None
             if table is None:
                 errs.append(
                     f"승인본 manifest 해석 불가(부재·영역 불일치): "

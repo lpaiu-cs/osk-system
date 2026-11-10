@@ -51,7 +51,7 @@ def run():
         import sync_daemon as sync
         import vault_sync as vs
         bare, peer = Path(td) / 'remote.git', Path(td) / 'peer'
-        original = vs._git
+        original = vs.run_git
 
         def git(*args, at=root):
             r = original(at, list(args), 30)
@@ -111,7 +111,7 @@ def run():
                 seen.append(sha)
             return original(at, args, timeout, **kwargs)
 
-        with patch.object(vs, '_git', instrument):
+        with patch.object(vs, 'run_git', instrument):
             assert sync.once(root) == 'ok'
         assert seen == [git('rev-parse', 'main', at=bare)]
         assert git('show', 'main:fetch.txt', at=bare) == 'fetch'
@@ -133,7 +133,7 @@ def run():
                 (root / 'note.txt').write_text('half applied')
             return result
 
-        with patch.object(vs, '_git', pending):
+        with patch.object(vs, 'run_git', pending):
             assert sync.once(root) == 'pending-txn'
         assert before == (git('rev-parse', 'HEAD'), git('ls-files', '--stage'))
         assert git('show', 'main:note.txt', at=bare) == 'base'
@@ -147,7 +147,7 @@ def run():
                 (root / 'note.txt').write_text('user work')
             return result
 
-        with patch.object(vs, '_git', switch):
+        with patch.object(vs, 'run_git', switch):
             assert '브랜치 고정 실패' in sync.once(root)
         assert git('branch', '--show-current') == 'side'
         assert (root / 'note.txt').read_text() == 'user work'
@@ -170,7 +170,7 @@ def run():
                 return result
             return original(at, args, timeout, **kwargs)
 
-        with patch.object(vs, '_git', reject):
+        with patch.object(vs, 'run_git', reject):
             assert sync.once(root) == 'ok'
         assert len(calls) == 2 and calls[0] != 0 and calls[1] == 0, calls
         assert (root / 'race.txt').read_text() == 'racer'
@@ -187,7 +187,7 @@ def run():
             assert args[0] != 'push', 'a failed fetch must not push'
             return original(at, args, timeout, **kwargs)
 
-        with patch.object(vs, '_git', offline):
+        with patch.object(vs, 'run_git', offline):
             assert 'pull 실패' in sync.once(root)
         assert git('show', 'HEAD:offline.txt') == 'saved locally'
         assert git('rev-parse', 'main', at=bare) == remote_head
@@ -233,7 +233,7 @@ def run():
                 return result
 
             if case == 'local-moved':
-                with patch.object(vs, '_git', move_local):
+                with patch.object(vs, 'run_git', move_local):
                     assert 'pull 실패' in sync.once(root)
                 assert git('rev-parse', 'main', at=bare) == new
                 assert (root / 'other.txt').read_text() == 'independent local history'
@@ -281,7 +281,7 @@ def run():
             (root / legacy).rename(destination)
             expected = destination.read_bytes()
             if offline_first:
-                with patch.object(vs, '_git', offline):
+                with patch.object(vs, 'run_git', offline):
                     assert 'pull 실패' in sync.once(root)
             else:
                 git('add', '-A')
@@ -332,7 +332,7 @@ def keep_local():
         import vault_sync as vs
 
         def git(*args, at=root):
-            r = vs._git(at, list(args), 30)
+            r = vs.run_git(at, list(args), 30)
             assert r.returncode == 0, (args, r.stdout, r.stderr)
             return r.stdout.strip()
 
@@ -377,7 +377,7 @@ def receiving_device():
             bare, a, b = Path(td) / 'remote.git', Path(td) / 'a', Path(td) / 'b'
 
             def git(*args, at):
-                r = vs._git(at, list(args), 30)
+                r = vs.run_git(at, list(args), 30)
                 assert r.returncode == 0, (args, r.stdout, r.stderr)
                 return r.stdout.strip()
 
@@ -450,7 +450,7 @@ def untrack_ahead_remote():
     설정을 되돌리지 않고, 다른 충돌로 rebase를 되돌려도 남는다(#283 리뷰)."""
     import sync_daemon as sync
     import vault_sync as vs
-    original, linkable = vs._git, can_link()
+    original, linkable = vs.run_git, can_link()
     for case in ('ahead', 'other-device', 'symlink', 'writer', 'conflict'):
         if case == 'symlink' and not linkable:
             print('untracking over an ahead remote: SKIP symlink case (this OS cannot create symlinks)')
@@ -462,7 +462,7 @@ def untrack_ahead_remote():
             root.mkdir()
 
             def git(*args, at=root):
-                r = vs._git(at, list(args), 30)
+                r = vs.run_git(at, list(args), 30)
                 assert r.returncode == 0, (args, r.stdout, r.stderr)
                 return r.stdout.strip()
 
@@ -523,7 +523,7 @@ def untrack_ahead_remote():
                             pass
                     return result
 
-                with patch.object(vs, '_git', racing):
+                with patch.object(vs, 'run_git', racing):
                     status = sync.once(root)
                 assert len(racers) == 1 and racers[0].wait(timeout=60) == 0, racers and racers[0].communicate()
                 assert 'at' in json.loads((root / '.osk/sync-targets.json').read_text(encoding='utf-8')), \
@@ -554,7 +554,7 @@ def local_only():
         os.environ.setdefault('OSK_VAULT_ROOT', str(root))
         import sync_daemon as sync
         import vault_sync as vs
-        original = vs._git
+        original = vs.run_git
 
         def git(*args):
             r = original(root, list(args), 30)
@@ -585,7 +585,7 @@ def local_only():
 
         def tick(expect_count):
             touched.clear()
-            with patch.object(vs, '_git', instrument):
+            with patch.object(vs, 'run_git', instrument):
                 status = sync.once(root)
             assert git('rev-list', '--count', 'HEAD') == str(expect_count), status
             return status

@@ -18,12 +18,12 @@ _OPAQUE = {"encrypted_content", "thinking", "signature",
            "internal_chat_message_metadata_passthrough"}
 
 
-def _text(value) -> str:
+def visible_text(value) -> str:
     """Visible text only. Transport metadata and image payloads are not prose."""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return "\n".join(filter(None, (_text(x) for x in value)))
+        return "\n".join(filter(None, (visible_text(x) for x in value)))
     if not isinstance(value, dict):
         return ""
     if value.get("type") in {"thinking", "reasoning", "redacted_thinking"}:
@@ -34,7 +34,7 @@ def _text(value) -> str:
         return "[attachment reference: " + str(value.get("native_result", "")) + "]"
     for key in ("text", "message", "content"):
         if key in value:
-            return _text(value[key])
+            return visible_text(value[key])
     return ""
 
 
@@ -69,7 +69,7 @@ def _native_event(value) -> bool:
             or isinstance(value.get("message"), str))
 
 
-def _events(chunk):
+def parse_events(chunk):
     """Accept both native JSON envelopes and manually written plain raw."""
     decoder = json.JSONDecoder()
     sections = list(_SECTIONS.finditer(chunk))
@@ -122,7 +122,7 @@ def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None,
         raise ValueError("query must contain 1..200 characters")
     terms = query.split() if query else []
     entries, omitted = [], Counter()
-    for number, (role, value) in enumerate(_events(chunk), 1):
+    for number, (role, value) in enumerate(parse_events(chunk), 1):
         typ = value.get("type") if isinstance(value, dict) else None
         if typ in {"reasoning", "thinking", "redacted_thinking"}:
             omitted["opaque_reasoning"] += 1
@@ -140,13 +140,13 @@ def project(chunk: str, max_chars: int = MAX_CHARS, query: str | None = None,
             if isinstance(value, list) and any(isinstance(x, dict) and x.get("type") == "tool_result" for x in value):
                 text, kind, priority = "", "tool_trace", 3
             else:
-                text, kind, priority = _text(value), "user", 0
+                text, kind, priority = visible_text(value), "user", 0
         elif (typ == "agent_message" and value.get("phase") == "final_answer"
               or typ == "message" and value.get("role") == "assistant"):
             final = value.get("phase") == "final_answer"
-            text, kind, priority = _text(value), "assistant_final" if final else "assistant", 0 if final else 2
+            text, kind, priority = visible_text(value), "assistant_final" if final else "assistant", 0 if final else 2
         elif role == "assistant" or role in {"agent", "plain"} and isinstance(value, (str, list)):
-            text, kind, priority = _text(value), "assistant", 2
+            text, kind, priority = visible_text(value), "assistant", 2
         else:
             text, kind, priority = "", "tool_trace", 3
         if terms:

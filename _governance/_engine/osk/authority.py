@@ -58,7 +58,7 @@ def _baseline_nodes() -> list[Path] | None:
     빠진다. 그래서 열거의 출처는 승인본 manifest다."""
     for region in sorted(covering_regions(), key=len, reverse=True):
         tree = approvals.approved_hash(region)
-        table = approvals._tree_table_for_region(region, tree) if tree else None
+        table = approvals.tree_table_for_region(region, tree) if tree else None
         if table is None:
             continue
         pre = DELEGATION_REGION + "/"

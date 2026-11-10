@@ -68,7 +68,7 @@ def _state_path() -> Path:
     return core.local_lock_path(f"osk-organization-{key}.json")
 
 
-def _load() -> dict:
+def load_state() -> dict:
     p = _state_path()
     if not p.exists():
         return {"version": 1, "plans": {}, "reviews": {}}
@@ -103,7 +103,7 @@ def record_move(plans: list, hub_links: list, idx) -> str:
               "to": core.posix_rel(dst, core.ROOT), "hash": core.sha256_file(src)}
              for src, dst, n in plans]
     key = core.sha256_bytes(json.dumps(items, sort_keys=True).encode())
-    state = _load()
+    state = load_state()
     # Also recover arrival if a previous process stopped before its checkpoint.
     _retire_arrived_moves(state, idx)
     state.setdefault("moves", {})[key] = {"items": items, "hub_links": hub_links}
@@ -113,12 +113,12 @@ def record_move(plans: list, hub_links: list, idx) -> str:
 
 def pending_moves(scope: str, idx) -> list:
     result = []
-    for key, move in _load().get("moves", {}).items():
+    for key, move in load_state().get("moves", {}).items():
         items = []
         for item in move["items"]:
-            if Path(item["from"]).parts[:2] != _scope_path(scope).relative_to(core.ROOT).parts:
+            if Path(item["from"]).parts[:2] != scope_path(scope).relative_to(core.ROOT).parts:
                 continue
-            path = write._live_locate(item["id"], idx)
+            path = write.live_locate(item["id"], idx)
             current = core.posix_rel(path, core.ROOT) if path else None
             if current != item["to"]:
                 items.append(dict(item, current=current,
@@ -130,7 +130,7 @@ def pending_moves(scope: str, idx) -> list:
 
 def checkpoint_moves(idx) -> None:
     # ponytail: rewrite the small journal per arrival; batch/append progress if large moves make this costly.
-    state = _load()
+    state = load_state()
     _retire_arrived_moves(state, idx)
     _save(state)
 
@@ -142,7 +142,7 @@ def _index():
     return idx
 
 
-def _scope_path(scope: str) -> Path:
+def scope_path(scope: str) -> Path:
     if not isinstance(scope, str) or not scope or "\\" in scope:
         raise ValueError("scope must name one existing Scope or Domain cluster")
     parts = scope.split("/") if scope.startswith((DOMAIN + '/')) else [SCOPE, scope]
@@ -156,7 +156,7 @@ def _scope_path(scope: str) -> Path:
 
 def snapshot(scope: str, idx=None) -> dict:
     """Read bytes once per node; do not combine cached bodies with current hashes."""
-    base = _scope_path(scope)
+    base = scope_path(scope)
     idx = _index() if idx is None else idx
     from . import evidence
     records = evidence.Records()     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
@@ -178,7 +178,7 @@ def snapshot(scope: str, idx=None) -> dict:
         references.extend(graph.reference_review(node, idx, records=records))
     links = {}
     for p, node in parsed.items():
-        links[p] = {write._live_locate(ref, idx) for ref in node.wikilinks()}
+        links[p] = {write.live_locate(ref, idx) for ref in node.wikilinks()}
     clusters, issues = [], []
     directories = {d for p in parsed for d in p.parents if d.is_relative_to(base)}
     for directory in sorted(directories):
@@ -265,7 +265,7 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
         raise ValueError("organization limit must be 1..20")
     idx = _index() if idx is None else idx
-    state, jobs = _load(), []
+    state, jobs = load_state(), []
     scopes = sorted(set(scopes if scopes is not None else
                         [k[1] if k[0] == "scope" else (DOMAIN + '/') + k[1]
                          for _, k in idx.nodes.values() if k[0] in {"scope", "domain"}] +
@@ -312,7 +312,7 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
             current["previous_deferral"] = {
                 k: reviewed[k] for k in ("key", "reason", "after", "at")}
             current["previous_deferral"]["snapshot_changed"] = reviewed["after"] != current["snapshot"]
-        current["hub_tree"] = hub_tree(_scope_path(scope), idx)
+        current["hub_tree"] = hub_tree(scope_path(scope), idx)
         jobs.append(current)
         if len(jobs) == limit:
             break
@@ -325,7 +325,7 @@ def record_attempts(jobs: list[dict]) -> None:
     """Caller holds the vault lock; register only the jobs actually selected."""
     if not jobs:
         return
-    state = _load()
+    state = load_state()
     for current in jobs:
         scope, key = current["scope"], current["key"]
         # The selected key retains the original unfinished snapshot across edits.
@@ -342,12 +342,12 @@ def record_attempts(jobs: list[dict]) -> None:
 
 def plan(scope: str, *, record: bool = True) -> dict:
     with core.mutation_lock():
-        _scope_path(scope)
+        scope_path(scope)
         jobs = pending([scope], limit=1, record=record)
         if jobs:
             return jobs[0]
         # 남은 구간이 모두 넘김 중이라 고르지 않은 것은 완료가 아니다 — 다음 검토자의 차례다
-        state = _load()
+        state = load_state()
         waiting = [u for u in _remaining(snapshot(scope), state) if u["unit"] in _cooling(state, scope)]
         if waiting:
             return {"scope": scope, "status": "handoff", "handoff": len(waiting),
@@ -376,7 +376,7 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
             for i in intentional):
         raise ValueError("only individual exploratory/source Links may have an explicit retention reason")
     with core.mutation_lock():
-        state = _load()
+        state = load_state()
         selected = state["plans"].get(key)
         if not selected or selected["scope"] != scope:
             raise ValueError("organization review has no selected scope snapshot")
@@ -417,7 +417,7 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
         state["reviews"][scope] = row
         if outcome == "complete":
             state["moves"] = {k: m for k, m in state.get("moves", {}).items()
-                              if any(Path(i["from"]).parts[:2] != _scope_path(scope).relative_to(core.ROOT).parts
+                              if any(Path(i["from"]).parts[:2] != scope_path(scope).relative_to(core.ROOT).parts
                                      for i in m["items"])}
         # 계획 뒤 바뀌거나 새로 생긴 노드는 이 검토자가 고친 것이다 — 그 구간은 자기
         # 정정을 스스로 검토하지 않도록 냉각 시간 동안 다른 검토자에게 넘긴다(넘김).
@@ -440,7 +440,7 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
 
 def status(job: dict, idx=None) -> dict:
     current = snapshot(job["scope"], idx)
-    state = _load()
+    state = load_state()
     row = state["reviews"].get(job["scope"], {})
     good = row.get("key") == job["key"] and _complete(job["scope"], state, current)
     return {"key": job["key"], "scope": job["scope"],
@@ -564,7 +564,7 @@ def bindings_audit(project: str | None = None) -> list[dict]:
     if project is not None:
         keys = [k for k in keys if k == (write.canonical_session(project, recs) or project)]
     try:
-        seen = _load().get("bindings_seen", {})
+        seen = load_state().get("bindings_seen", {})
     except ValueError:
         seen = {}
     names, out = set(write.graph.scope_names()), []
@@ -624,7 +624,7 @@ def apply_binding_decisions(decisions: list | None, state: dict | None = None) -
         if d["action"] == "primary" and d["scope"].strip() not in scopes:
             raise ValueError(f"{d['action']} names a scope that does not exist: {d['scope'].strip()}")
     own = state is None
-    state = _load() if own else state
+    state = load_state() if own else state
     seen = state.setdefault("bindings_seen", {})
     applied = []
     for d in decisions:

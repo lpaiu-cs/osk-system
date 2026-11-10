@@ -153,7 +153,7 @@ def _growth_cmd(a) -> None:
             result = growth.review(a.key, a.outcome, target=a.target,
                                    reason=a.reason, manifest=a.manifest)
         elif a.growth_cmd == "checkpoint":
-            result = growth.checkpoint(growth._strict_json(
+            result = growth.checkpoint(growth.strict_json(
                 Path(a.file).read_text(encoding="utf-8-sig")))
         else:
             commands = [json.loads(Path(f).read_text(encoding="utf-8-sig")) for f in a.command_file]

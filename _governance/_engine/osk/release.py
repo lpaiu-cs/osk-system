@@ -109,7 +109,7 @@ def build_attestation(root: Path, version: str, ref: str = "HEAD") -> dict:
     return {"version": version, "at": now_iso(), "files": files}
 
 
-def _validate_at(root: Path) -> list[str]:
+def validate_at(root: Path) -> list[str]:
     """release는 **자신이 릴리스하는 트리**를 그 트리의 **엔진으로** 검증한다.
 
     데이터만 스냅샷을 보고 검증기 코드는 원본 작업 트리에서 import하면, 선언
@@ -160,7 +160,7 @@ def guards(root: Path, base: str) -> list[str]:
         try:
             items = [(snap / rel, rel) for rel in tracked_files(snap)]
             errs += publish.guard_secrets(items)
-            errs += _validate_at(snap)
+            errs += validate_at(snap)
         finally:
             _git(root, "worktree", "remove", "--force", str(snap), timeout=120)
     return errs

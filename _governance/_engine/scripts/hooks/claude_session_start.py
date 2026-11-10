@@ -627,7 +627,7 @@ def _recheck_note(rechecks) -> str:
         from osk import growth
         status = growth.daily_status()
         daily = status["active"]
-        if daily and not any(r.get("kind") == "recheck_review" for r in growth._records()):
+        if daily and not any(r.get("kind") == "recheck_review" for r in growth.ledger_records()):
             return ""
         items, pending = rechecks.candidates()
     except Exception as exc:

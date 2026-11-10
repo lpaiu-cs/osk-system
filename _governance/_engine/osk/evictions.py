@@ -28,8 +28,8 @@ import time
 from datetime import datetime
 
 from .core import (EVICTIONS, RID_RE, ID_RE, ledger_read, ledger_damage,
-                   ledger_append, ledger_anchor_index, mutation_lock, _rid_parts,
-                   _rid_key)
+                   ledger_append, ledger_anchor_index, mutation_lock, rid_parts,
+                   rid_key)
 from . import graph
 
 KINDS = ("evict", "settle")
@@ -89,7 +89,7 @@ def row_ms(r: dict) -> int | None:
     계기(`osk_turn_ledger.py`)와 같은 판정이라 둘이 같은 나이를 낸다."""
     rid = str(r.get("rid", ""))
     if re.match(RID_RE, rid):
-        return _rid_parts(rid)[0]
+        return rid_parts(rid)[0]
     at = r.get("at")
     if at:
         try:
@@ -108,7 +108,7 @@ def unsettled(scope: str | None = None,
     rows = [r for r in recs
             if r.get("kind") == "evict" and r.get("rid") not in done
             and (scope is None or r.get("scope") == scope)]
-    rows.sort(key=lambda r: _rid_key(r["rid"]))
+    rows.sort(key=lambda r: rid_key(r["rid"]))
     return rows
 
 
@@ -171,7 +171,7 @@ def _record_settle(of: str, outcome: str, target: str | None, reason: str | None
     return ledger_append(EVICTIONS, rec, expect=lambda recs: _missing_evict(recs, of))
 
 
-def _after_node_write(result: dict, of: str | None, outcome: str, target: str) -> dict:
+def after_node_write(result: dict, of: str | None, outcome: str, target: str) -> dict:
     """노드 저장 뒤의 영수증. 기록 실패 때문에 보존한 지식을 되돌리지 않는다.
 
     fsync/응답 실패는 이미 기록된 뒤에도 생긴다. 미기록이라고 단정하거나
@@ -193,10 +193,10 @@ def _after_node_write(result: dict, of: str | None, outcome: str, target: str) -
 
 def settle(of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
     with mutation_lock():
-        return _settle_locked(of, outcome, target, reason)
+        return settle_locked(of, outcome, target, reason)
 
 
-def _settle_locked(of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
+def settle_locked(of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
     """처분 기록. `outcome`은 node·merged·discarded, `target`은 노드 제목이며
     폐기에는 없다. 노드가 서 있지 않으면 적지 않는다 — 처분은 한 일의 기록이지
     하겠다는 약속이 아니다. `of`는 잠금 안에서 다시 확인한다."""
@@ -328,7 +328,7 @@ def discard_transit(title: str, confirm: str | None = None) -> dict:
             # 그래프와 같은 해석(`Index.locate` — 제목·id·경로, 제목 속 `.md` 포함)으로 대조한다
             for _relation, text in n.references():
                 found = idx.locate(text.split("#", 1)[0].strip())
-                if found and graph._same_file(found[0], path):
+                if found and graph.same_file(found[0], path):
                     inbound.append(p.stem)
                     break
         memory = sorted(f.stem for f in scope_memory.sm_dir().glob("*.md")

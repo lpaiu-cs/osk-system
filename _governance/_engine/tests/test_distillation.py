@@ -170,7 +170,7 @@ def _child():
                             old = write.create_node(name, "prior", "prior body", "test-model", space="00_Scope/W1")
                             raw_path = core.ROOT / "00_Scope/W1/_raw" / (name + "-raw.md")
                             raw_path.parent.mkdir(exist_ok=True)
-                            raw_path.write_bytes(raw._block(1, "original source", "measured answer").encode())
+                            raw_path.write_bytes(raw.round_block(1, "original source", "measured answer").encode())
                             legacy = f'derived-from: "[[00_Scope/W1/_raw/{name}-raw.md#1]]"\n'
                             target.write_bytes(target.read_bytes().replace(b"summary:", legacy.encode() + b"summary:", 1))
                             request = dict(name=old["id"], body=self.args["body"], expect_hash=core.sha256_file(target))

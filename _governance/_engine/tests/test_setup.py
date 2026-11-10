@@ -303,7 +303,7 @@ baseline()
 # file through `cmd /c`. An unquoted `&` splits the command there: the CLI registers `C:/R`, and cmd
 # tries to run `D/osk/...`.
 odd = Path('C:/R&D/osk/.venv/Scripts/python.exe' if os.name == 'nt' else '/R&D/osk/.venv/bin/python')
-with mock.patch.object(S, '_python', lambda: odd):
+with mock.patch.object(S, 'venv_python', lambda: odd):
     S.run(apply=True, only=['claude', 'codex'])
     rep, code = S.run(apply=True, only=['claude', 'codex'])
     assert code == 0 and rep['ok'], rep
@@ -317,7 +317,7 @@ if os.name == 'nt':
     state = lambda: (len(calls()), read(claude_home / '.claude.json'), (claude_home / 'settings.json').read_bytes())
     before = state()
     for bad in ('C:/100%/osk/python.exe', 'C:/Hi!/osk/python.exe'):
-        with mock.patch.object(S, '_python', lambda: Path(bad)):
+        with mock.patch.object(S, 'venv_python', lambda: Path(bad)):
             rep, code = S.run(apply=True, only=['claude'])
         assert code == 1 and rep['applied'] is False, rep
         assert any('배치 파일' in e and '--harness' in e for e in rep['errors']), rep['errors']
@@ -327,7 +327,7 @@ if os.name == 'nt':
     # review): the line must still reach the CLI the user installs afterwards.
     full, moved = os.environ['PATH'], Path('C:/R&D/moved/.venv/Scripts/python.exe')
     os.environ['PATH'] = str(bin_dir.parent)
-    with mock.patch.object(S, '_python', lambda: moved):
+    with mock.patch.object(S, 'venv_python', lambda: moved):
         rep, _ = S.run(only=['claude'])
     os.environ['PATH'] = full
     manual = rep['hosts'][0]['mcp']['manual']
@@ -703,7 +703,7 @@ mock.patch.object(S, '_mcp', lambda adapter, uninstall: {'action': 'keep'}).star
 # A vault under C:/R&D/: setup writes each host the line its shell reads (test_harness runs them),
 # and reads it back as osk's own — the next plan keeps everything.
 lab = Path('C:/R&D/osk/.venv/Scripts/python.exe')
-with mock.patch.object(S, '_python', lambda: lab):
+with mock.patch.object(S, 'venv_python', lambda: lab):
     S.run(apply=True)
     rep, code = S.run(apply=True)
     assert code == 0 and rep['ok'], rep
@@ -718,7 +718,7 @@ with mock.patch.object(S, '_python', lambda: lab):
 # What a host's shell expands even inside double quotes is refused before anything is written.
 if os.name == 'nt':
     files = {p: p.read_bytes() for a in S.hosts() for p in a.hook_files() if p.is_file()}
-    with mock.patch.object(S, '_python', lambda: Path('C:/R&D/100%/.venv/Scripts/python.exe')):
+    with mock.patch.object(S, 'venv_python', lambda: Path('C:/R&D/100%/.venv/Scripts/python.exe')):
         rep, code = S.run(apply=True)
         assert code == 1 and not rep['applied'], rep
         assert [e for e in rep['errors'] if e.startswith('Kiro hooks:') and '100%' in e] == rep['errors'], rep
@@ -896,7 +896,7 @@ assert not rep['changes'], rep
 if os.name == 'nt':
     before = hooks_json.read_bytes()
     for odd in ('C:/Program Files/Python/python.exe', 'C:/R&D/Python/python.exe'):
-        with mock.patch.object(S, '_python', lambda: Path(odd)):
+        with mock.patch.object(S, 'venv_python', lambda: Path(odd)):
             rep, code = S.run(apply=True, only=['antigravity'])
             assert code == 1 and any('--harness' in e for e in rep['errors']), (odd, rep)
             rep, _ = S.run(uninstall=True, only=['antigravity'])

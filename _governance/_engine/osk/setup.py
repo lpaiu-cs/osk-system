@@ -39,7 +39,7 @@ from pathlib import Path
 
 from . import core, services, update
 from . import harness as adapters
-from .doctor import _engine_dir, _python
+from .doctor import engine_dir, venv_python
 from .harness import base
 
 TICKET = "osk-setup-confirmation.json"
@@ -60,11 +60,11 @@ class SetupError(Exception):
 
 
 def _script(event: str) -> Path:
-    return _engine_dir() / "scripts" / "hooks" / base.SCRIPTS[event]
+    return engine_dir() / "scripts" / "hooks" / base.SCRIPTS[event]
 
 
 def _server() -> Path:
-    return _engine_dir() / "mcp_server.py"
+    return engine_dir() / "mcp_server.py"
 
 
 def _command(adapter, event: str) -> str:
@@ -72,7 +72,7 @@ def _command(adapter, event: str) -> str:
     규칙으로 되읽힌다. 경로는 `/`로 쓴다: 호스트가 어느 셸로 돌리든(PowerShell·cmd·bash)
     같은 파일을 가리킨다. 그 셸이 풀 수 없는 경로면 어댑터가 올린다(Antigravity의 cmd는
     따옴표를 풀지 못한다)."""
-    return adapter.hook_command([_python().as_posix(), _script(event).as_posix()])
+    return adapter.hook_command([venv_python().as_posix(), _script(event).as_posix()])
 
 
 def hosts(only: list[str] | None = None) -> list:
@@ -163,7 +163,7 @@ def _mcp(adapter, uninstall: bool) -> dict:
     보고에는 싣지 않는다)이다. 제 것인지는 CLI가 실제로 고치는 파일(`mcp_target`)의 등록으로만
     가린다. 다른 파일에서 찾은 등록으로 CLI를 부르면, 그 파일이 아닌 곳에 있는 남의
     등록이 바뀐다."""
-    server, python, target = _server(), _python(), adapter.mcp_target()
+    server, python, target = _server(), venv_python(), adapter.mcp_target()
     try:
         servers, _hooks, errors = adapter.registrations()
     except (OSError, ValueError) as e:
@@ -304,7 +304,7 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
         cli = _native_cli(adapter)
         if not cli:
             return {**out, "error": f"{adapter.title} CLI를 찾지 못했다 — 설치한 뒤 다시 실행한다"}
-        argv = adapter.growth_argv(cli, _python().as_posix(), _server().as_posix(), core.ROOT.as_posix())
+        argv = adapter.growth_argv(cli, venv_python().as_posix(), _server().as_posix(), core.ROOT.as_posix())
         if not argv:
             return {**out, "error": f"{adapter.title}의 정기 실행 명령은 setup이 만들지 않는다 — 명령 "
                                     "파일을 직접 만든 뒤 다시 실행한다(SETUP 'Scope에서 Domain으로 "
@@ -324,7 +324,7 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
         if cli:
             files.append(spare)
             out["claude_command"] = {"action": "add", "file": str(spare), "argv": claude.growth_argv(
-                cli, _python().as_posix(), _server().as_posix(), core.ROOT.as_posix())}
+                cli, venv_python().as_posix(), _server().as_posix(), core.ROOT.as_posix())}
     notes = []
     for path in list(files):
         try:
@@ -417,7 +417,7 @@ def _release() -> str:
         version = json.loads((core.ROOT / update.ATTESTATION).read_text(encoding="utf-8"))["version"]
     except (OSError, ValueError, KeyError, TypeError) as e:
         raise SetupError(f"{update.ATTESTATION}에서 판을 읽지 못했다 — 릴리스 태그를 clone했는가: {e}")
-    if not update._semver(version):
+    if not update.semver(version):
         raise SetupError(f"{update.ATTESTATION}의 판이 정식 릴리스가 아니다: {version!r}")
     return version
 
@@ -484,7 +484,7 @@ def _extras_human(extras: dict) -> list[str]:
                      f"`{s['command']['argv'][0]} {adapter.login}`")
     if s.get("task", {}).get("action") in ("add", "replace"):
         steps.append("정기 실행을 한 번 직접 돌려 결과를 확인한다: `" + core.shell_join(
-            [str(_python()), str(services.script("growth")), "--command-file", s["command_file"],
+            [str(venv_python()), str(services.script("growth")), "--command-file", s["command_file"],
              "--limit", "1"]) + "`")
     y = extras.get("sync") or {}
     recording = (y.get("targets") or {}).get("action") == "record"
@@ -553,9 +553,9 @@ def plan(only: list[str] | None = None, uninstall: bool = False, *, fork: bool =
         errors.append(f"기준선: {baseline['error']}")
     # 확인 대상은 osk 조치다 — 설정 파일의 다른 내용은 쓰기 직전에 최신으로 다시 읽으므로
     # (`_write`) 그것이 바뀌었다고 다시 확인받을 일은 없다.
-    identity = {"root": str(core.ROOT), "python": str(_python()), "uninstall": uninstall,
+    identity = {"root": str(core.ROOT), "python": str(venv_python()), "uninstall": uninstall,
                 "items": _shown(items), "baseline": baseline, **extras}
-    return {"ok": not errors, "root": str(core.ROOT), "python": str(_python()),
+    return {"ok": not errors, "root": str(core.ROOT), "python": str(venv_python()),
             "uninstall": uninstall, "baseline": baseline, "hosts": items, **extras,
             "human": _human(items, baseline, uninstall, extras), "changes": changes,
             **({"errors": errors} if errors else {}),
@@ -749,13 +749,13 @@ def _stop_daemon() -> list[int]:
     """이 vault의 데몬을 멈춘다 — 작업 스케줄러의 작업은 데몬을 띄우고 끝나므로 작업을 지워도
     데몬은 남는다. 갱신과 같은 규율로 작업 트리 변경 잠금을 먼저 잡는다."""
     from ._portalock import unlock
-    pids = update._daemon_pids()
+    pids = update.daemon_pids()
     if pids:
-        with open(update._sync_lock_path(), "w") as lock:
-            update._lock_within(lock, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
+        with open(update.sync_lock_path(), "w") as lock:
+            update.lock_within(lock, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
                                            "잠시 후 다시 실행한다")
             try:
-                update._kill(pids)
+                update.kill_processes(pids)
             finally:
                 unlock(lock)
     return pids

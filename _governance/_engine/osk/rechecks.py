@@ -250,7 +250,7 @@ def _verdict(maxima: list[dict], node_state: str, target_state: str | None) -> s
     return None
 
 
-def _read() -> tuple[list[dict], bool]:
+def read_ledger() -> tuple[list[dict], bool]:
     """재검토 대장과, 그 판독을 믿을 수 있는가. 판독 실패(불완전한 행)나 구조 손상이면
     완료 상태를 믿을 수 없다 — 쌍은 후보로 남고 완료는 적히지 않지만, 노드 쓰기는
     막지 않는다."""
@@ -272,7 +272,7 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
     곳)와 `cascade`(대상의 지금 판이 재검토로 고친 판인가)를 싣는다. 재검토로 고친
     노드의 재전파가 또 수정을 부르면 그 수정은 사람이 본다(시행령 §7 2항)."""
     idx = idx or graph.Index()
-    recs, ok = _read()
+    recs, ok = read_ledger()
     damaged = not ok
     latest = {} if damaged else _latest(recs)
     revised = {(r.get("node"), r.get("node_state")) for r in recs
@@ -319,7 +319,7 @@ def _mark_reports(items: list[dict], idx, cache: dict) -> None:
     global misses
     try:
         from . import growth
-        rows = growth._records()
+        rows = growth.ledger_records()
     except OSError:
         misses += 1
         return
@@ -330,7 +330,7 @@ def _mark_reports(items: list[dict], idx, cache: dict) -> None:
     par = effective_parents(rows)
     for i in items:
         # 앞 선택을 이은 선택의 보고가 정한다 — 옛 상태에 대한 제안이 늦게 붙어도 지금 상태의 올림을 덮지 않는다.
-        r = growth._latest(rows, f"recheck:{i['id']}:{i['key']}", "key", par) or {}
+        r = growth.latest_report(rows, f"recheck:{i['id']}:{i['key']}", "key", par) or {}
         if r.get("kind") != "recheck_review":
             continue
         same = _alike(idx, i["id"], i["key"], i["node_state"], i["target_state"],
@@ -364,7 +364,7 @@ def report(idx=None, limit: int = 5) -> dict:
 def complete_keys(idx, path: Path, meta: dict) -> set[str]:
     """이 노드의 쌍 가운데 지금 점검 완료인 대상 키."""
     ps = pairs(idx, meta)
-    recs, ok = _read() if ps else ([], False)
+    recs, ok = read_ledger() if ps else ([], False)
     if not recs or not ok:
         return set()
     latest, lc = _latest(recs, meta["id"]), {}
@@ -416,7 +416,7 @@ def change(nid: str, key: str, ref: str, idx) -> dict:
     """마지막 점검 뒤 무엇이 바뀌었는가 — 검토자에게 싣는 변경분. 바뀐 쪽(`side`)의
     diff를 볼트의 git 이력에서 그때의 판(상태 해시가 같은 판)을 찾아 만든다.
     찾지 못하면 전문을 읽으라는 메모만 낸다."""
-    recs, ok = _read()
+    recs, ok = read_ledger()
     maxima = _latest(recs, nid).get((nid, key), []) if ok else []
     node = idx.by_id.get(nid)
     parsed = _name(ref)
@@ -472,7 +472,7 @@ def _carry(idx) -> int:
     남았으면 — 이미 `unchanged`로 이어 적은 노드(v5.0.x)나, 근거가 다시 바뀌어 이어 적을 쌍이
     없는 노드도 — 한 행을 더 적어 지금 판으로 옮긴다. 사용자 검토에 올린 기록도 잇는다. 적지
     않으면 그 근거 절을 처음 고칠 때 완료·cascade·사용자 검토가 풀린다(#177)."""
-    recs, ok = _read()
+    recs, ok = read_ledger()
     if not ok or not recs:
         return 0
     latest, lc, rows, held = _latest(recs), {}, [], {}
@@ -512,7 +512,7 @@ def _carry_reports(idx, held: dict, cache: dict) -> int:
         return 0
     try:
         from . import growth
-        rows = growth._records()
+        rows = growth.ledger_records()
     except Exception:
         return 0
     keys = {r.get("key") for r in rows if r.get("kind") == "recheck_review"} & held.keys()
@@ -521,7 +521,7 @@ def _carry_reports(idx, held: dict, cache: dict) -> int:
     par, out = effective_parents(rows), []
     for k in sorted(keys):
         nid, key, ns, ts = held[k]
-        r = growth._latest(rows, k, "key", par) or {}
+        r = growth.latest_report(rows, k, "key", par) or {}
         was = (r.get("node_state"), r.get("target_state"))
         if (r.get("kind") == "recheck_review" and r.get("outcome") == "escalated" and was != (ns, ts)
                 and _alike(idx, nid, key, ns, ts, *was, cache)):
@@ -569,7 +569,7 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
     ps = pairs(idx, meta)
     if not ps:
         return {}
-    if RECHECKS.exists() and not _read()[1]:
+    if RECHECKS.exists() and not read_ledger()[1]:
         return {"recheck_error": "재검토 대장을 읽을 수 없거나 손상됐다 — 완료를 적지 않았다"
                                  "(쌍은 후보로 남고 검증기가 대장을 보고한다)"}
     ns = state(path.read_bytes())

@@ -60,7 +60,7 @@ def run() -> dict:
         if n.id in ids:
             other, q = ids[n.id]
             link = (" — 같은 파일로 가는 링크다: 링크를 지워 한 자리만 남긴다"
-                    if graph._same_file(p, q) else "")
+                    if graph.same_file(p, q) else "")
             errs.append(f"id 중복 {n.id}: {stem} & {other}{link}")
         ids[n.id] = (stem, p)
     ok(f"노드 계약 ({len(idx.nodes) + len(broken)}개)", errs)
@@ -666,7 +666,7 @@ def surface_lint() -> list[str]:
     # ⓔ 군집 거부가 유효 목록을 싣는가
     try:
         import osk.write as _w
-        if "_cluster_names()" not in Path(_w.__file__).read_text(encoding="utf-8"):
+        if "cluster_names()" not in Path(_w.__file__).read_text(encoding="utf-8"):
             errs.append("군집 거부 문구가 유효 목록을 싣지 않는다")
     except Exception as e:
         errs.append(f"거부 문구 판독 실패: {e}")

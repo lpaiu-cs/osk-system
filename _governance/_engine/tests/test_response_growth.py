@@ -271,11 +271,11 @@ class ResponseGrowthTests(unittest.TestCase):
             rg.CONFIG.parent.mkdir(exist_ok=True)
             rg.CONFIG.write_text(json.dumps({'codex':sys.executable}))
             env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT)}
-            with integration._locked('codex','own') as p:
-                saved = integration._load(p,'codex','own')
+            with integration.state_lock('codex','own') as p:
+                saved = integration.load_state(p,'codex','own')
                 clock = {'counter':'finals','seen':['t1'],'count':9,'attempted_count':0,'history_baselined':True}
                 saved.update(prompt_count=15, response_growth=clock)
-                integration._save(p,saved)
+                integration.save_state(p,saved)
             def inspect(argv, **kwargs):
                 assert argv[0]=='git' or argv[1:] in (['--version'],['login','status']), argv
                 output = ('true' if argv[0]=='git' else 'codex-cli 0.155.0-alpha.16'
@@ -293,7 +293,7 @@ class ResponseGrowthTests(unittest.TestCase):
                         assert inherited['CODEX_THREAD_ID']=='own'
                         assert inherited['CODEX_VERSION']=='0.155.0-alpha.16'
                         assert inherited['OSK_GROWTH_WORKER']=='1'
-            state = integration._load(integration.state_path('codex','own'),'codex','own')
+            state = integration.load_state(integration.state_path('codex','own'),'codex','own')
             assert state['response_growth']==clock and state['prompt_count']==15, state
             assert state['reviewed_count']==saved['reviewed_count']
             assert state['rounds']==saved['rounds']
@@ -584,10 +584,10 @@ class ResponseGrowthTests(unittest.TestCase):
             save(parent, [header] + [r for n in range(9) for r in finish('old-'+str(n))])
             header['payload']['history_base'] = {'thread_id':'own','end_byte_offset':parent.stat().st_size}
             save(child, [header])
-            with integration._locked('codex','own') as path:
-                state = integration._load(path,'codex','own')
+            with integration.state_lock('codex','own') as path:
+                state = integration.load_state(path,'codex','own')
                 state['response_growth'] = {'counter':'finals','seen':[],'count':0,'attempted_count':0}
-                integration._save(path,state)
+                integration.save_state(path,state)
             with patch.dict(os.environ, {'CODEX_HOME':str(core.ROOT)}):
                 for n in range(1,10):
                     with child.open('a',encoding='utf-8') as f:
@@ -646,10 +646,10 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert source['transcript_path'] == str(child.resolve()), source
                 assert rg.observe(source)['count'] == 1
                 # Upgrade from a baseline that saw only the last page: no retroactive Stops.
-                with integration._locked('codex','own') as path:
-                    state = integration._load(path,'codex','own')
+                with integration.state_lock('codex','own') as path:
+                    state = integration.load_state(path,'codex','own')
                     state['response_growth'] = {'counter':'finals','seen':['second'],'count':3,'attempted_count':0}
-                    integration._save(path,state)
+                    integration.save_state(path,state)
                 assert rg.observe(source)['count'] == 3
                 with child.open('a',encoding='utf-8') as f:
                     f.write(''.join(json.dumps(r) + chr(10) for r in rows('same-parent-model','third')[1:]))

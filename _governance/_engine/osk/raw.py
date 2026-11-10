@@ -73,7 +73,7 @@ def rounds(text: str) -> list[int]:
     return [int(m.group(1)) for m in _ROUND.finditer(text)]
 
 
-def _next_index(text: str) -> int:
+def next_index(text: str) -> int:
     """다음 라운드 index. 기존 index의 **중복·역행은 계약 위반**이므로(시행령
     §2 7항 · Mechanism §8 3항) 그 위에 덧쓰지 않고 거부한다 — 손상된 기록에
     이어 붙이면 `[[경로#index]]`가 어느 라운드를 가리키는지 정해지지 않는다."""
@@ -89,9 +89,9 @@ def _next_index(text: str) -> int:
 CITED = graph.RECORD_DIRS[0]
 
 
-def _legacy_dirs():
+def legacy_dirs():
     """옛 자리 — scope 아래의 `_cited/`·`_raw/`와 Person의 `_cited/`(Mechanism §9 5항)."""
-    for scope in _scope_names():
+    for scope in scope_names():
         for name in graph.RECORD_DIRS:
             yield ROOT / SCOPE / scope / name
     yield ROOT / PERSON / CITED
@@ -103,7 +103,7 @@ def locate_record(record: str) -> Path | None:
     root = _record_file(ROOT / CITED / f"{record}.md")
     if root.exists():
         return root
-    for d in _legacy_dirs():
+    for d in legacy_dirs():
         if not d.is_dir():
             continue
         p = _record_file(d / f"{record}.md")     # 구·신 저장본이 함께 있으면 여기서 거부된다
@@ -223,7 +223,7 @@ def migrate(*, apply: bool = False) -> dict:
     """Preview or move existing raw files. Nodes and raw content are never edited."""
     with mutation_lock():
         plans = []
-        for scope in _scope_names():
+        for scope in scope_names():
             directory = ROOT / SCOPE / scope / "_raw"
             for path in sorted(directory.rglob("*")):
                 if path.is_file() and path.suffix.lower() == ".md":
@@ -253,7 +253,7 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
     (Mechanism §5 1~3항)."""
     with (mutation_lock() if apply else contextlib.nullcontext()):
         moves, conflicts, seen = [], [], {}
-        for d in _legacy_dirs():
+        for d in legacy_dirs():
             for f in sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt"),
                              *(d / ".records").glob("*/record.txt")}):
                 try:
@@ -306,7 +306,7 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
                 close = ["## 결과", "", f"- 옮긴 기록 {len(moves)}개 · 보류 {len(conflicts)}", "", "### 보류", "",
                          *(holds or ["없음"]), ""]
                 atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
-            for d in _legacy_dirs():     # 비운 옛 자리 — 다른 파일이 남은 디렉터리는 그대로 둔다
+            for d in legacy_dirs():     # 비운 옛 자리 — 다른 파일이 남은 디렉터리는 그대로 둔다
                 for sub in [*sorted((p for p in d.rglob("*") if p.is_dir()), reverse=True), d]:
                     try:
                         sub.rmdir()
@@ -334,7 +334,7 @@ def canonical_ref(ref: str) -> str:
     return posix_rel(physical, ROOT) + (sep + anchor if sep else "")
 
 
-def _round_body(chunk: str) -> str:
+def round_body(chunk: str) -> str:
     """라운드에서 제목 줄을 뺀 내용. 재시도가 만드는 중복은 번호만 다르므로,
     같음의 판정은 번호가 아니라 내용으로 한다."""
     return chunk.partition("\n")[2].strip()
@@ -354,8 +354,8 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
     n = len(blocks)
     if len(spans) < n:
         return
-    incoming = [_round_body(secrets.filter_text(b)[0]) for b in blocks]
-    tail = [_round_body(prior[s:e])
+    incoming = [round_body(secrets.filter_text(b)[0]) for b in blocks]
+    tail = [round_body(prior[s:e])
             for _, (s, e) in sorted(spans.items())[-n:]]
     if tail != incoming:
         return
@@ -370,7 +370,7 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
 
 _CODEX_V2 = "<!-- osk-capture: codex-user-items-v2 -->"
 _CODEX_V3 = "<!-- osk-capture: codex-terminal-v3 "
-_DIALOGUE_V1 = "<!-- osk-capture: dialogue-v1 "
+DIALOGUE_V1 = "<!-- osk-capture: dialogue-v1 "
 _CLAUDE_PREFIX = "<!-- osk-capture: claude-inherited-v1 "
 # 인용 라운드의 원본 턴 좌표(Mechanism §9 9항): harness·conversation·turn·source·
 # agent_sha256·user_by. 이 머리말이 그 라운드의 원본 신원이다 — 커서가 없어도 남는다.
@@ -388,7 +388,7 @@ def is_native(ref: str) -> bool:
 
 def cited_header(chunk: str) -> dict | None:
     """라운드 본문 첫 줄의 인용 머리말 → 값. 머리말이 없으면 None, 손상이면 거부."""
-    header = (_round_body(chunk).splitlines() or [""])[0]
+    header = (round_body(chunk).splitlines() or [""])[0]
     if not header.startswith(_CITED):
         return None
     if not header.endswith(" -->"):
@@ -414,8 +414,8 @@ def storage_error(path: str, text: str) -> str | None:
         return None
     if p.suffix.lower() == ".md":
         return "visible Markdown raw; migrate to hidden .txt storage"
-    if any(_round_body(text[s:e]).startswith((_CODEX_V2, _CODEX_V3))
-           for s, e in _round_spans(text).values()):
+    if any(round_body(text[s:e]).startswith((_CODEX_V2, _CODEX_V3))
+           for s, e in round_spans(text).values()):
         return "legacy capture codec; restore dialogue-v1 from the native transcript"
     return None
 
@@ -449,19 +449,19 @@ def inherited_prefix(path: Path) -> dict | None:
     return value
 
 
-def _block(index: int, user: str, agent: str, *, dialogue_id: str | None = None,
+def round_block(index: int, user: str, agent: str, *, dialogue_id: str | None = None,
            cited: dict | None = None) -> str:
     """한 라운드 = user 발화 + 그에 속한 에이전트 응답의 기록(시행령 §2 7항).
     `dialogue_id`는 옛 포착 라운드를 대조할 때만 쓴다 — 새로 쓰는 라운드는 인용뿐이다."""
     stamp = (_CITED + json.dumps(cited, ensure_ascii=False, sort_keys=True) + " -->\n\n" if cited is not None
-             else _DIALOGUE_V1 + json.dumps(dialogue_id) + " -->\n\n" if dialogue_id is not None else "")
+             else DIALOGUE_V1 + json.dumps(dialogue_id) + " -->\n\n" if dialogue_id is not None else "")
     return (f"## {index}\n\n{stamp}"
             f"### user\n\n{user.rstrip()}\n\n"
             f"### agent\n\n{agent.rstrip()}\n")
 
 
 # scope 열거·space 표기 판정은 `graph`가 한 벌로 소유한다(`wm`도 같은 것을 쓴다).
-_scope_names, _space_list, _scope_of_space = (
+scope_names, _space_list, scope_of_space = (
     graph.scope_names, graph.space_list, graph.scope_of_space)
 
 def append_rounds(session: str, record: str, pairs: list,
@@ -518,11 +518,11 @@ def append_rounds(session: str, record: str, pairs: list,
                             "filtered": [], "reused": True, "cited": header}
                 supersedes = f"{rel}#{index}"
         prior = read_exact(p) if p.exists() else ""
-        first = _next_index(prior)
+        first = next_index(prior)
         indices = [first + n for n in range(len(norm))]
-        blocks = [_block(i, escape_numeric_h2(u), escape_numeric_h2(a), cited=cited)
+        blocks = [round_block(i, escape_numeric_h2(u), escape_numeric_h2(a), cited=cited)
                   for i, (u, a) in zip(indices, norm)]
-        _reject_replay(prior, _round_spans(prior), blocks)
+        _reject_replay(prior, round_spans(prior), blocks)
         if prior and not prior.endswith("\n"):
             prior += "\n"
         # 되돌아온 경로를 쓴다 — 통로가 봉쇄·해소한 그 경로가 실제로 기록된
@@ -549,7 +549,7 @@ def find_cited(path: Path, native: str) -> tuple[int, dict] | None:
         return None
     text = read_exact(path)
     found = None
-    for index, (start, end) in sorted(_round_spans(text).items()):
+    for index, (start, end) in sorted(round_spans(text).items()):
         header = cited_header(text[start:end])
         if header and native_ref(header["harness"], header["conversation"], header["turn"]) == native:
             found = index, header
@@ -577,7 +577,7 @@ def parse_ref(ref: str) -> tuple[str, int | None]:
     return path.strip(), int(idx)
 
 
-def _raw_file(path: str) -> Path:
+def raw_file(path: str) -> Path:
     """`_raw/` 안의 실재 파일로 해소한다. 봉쇄는 쓰기와 **같은 규율**이다 —
     읽기라고 느슨하게 두면 `[[../../어딘가]]`가 vault 밖을 읽는 창이 된다."""
     from .core import resolve_in_root
@@ -599,7 +599,7 @@ def _raw_file(path: str) -> Path:
     return p
 
 
-def _round_spans(text: str) -> dict:
+def round_spans(text: str) -> dict:
     """index → (시작, 끝). 라운드 범위는 그 제목 행의 첫 바이트부터 다음 숫자
     라운드 제목의 직전까지이고, 다음이 없으면 파일 끝까지다(Mechanism §8 3항)."""
     ms = list(_ROUND.finditer(text))
@@ -608,7 +608,7 @@ def _round_spans(text: str) -> dict:
             for i, m in enumerate(ms)}
 
 
-def _recalled(chunk: str) -> str:
+def recalled_text(chunk: str) -> str:
     """파일 위의 라운드 범위 → 회상 본문. escape를 되돌리고(Mechanism §8 3항)
     범위 경계의 꼬리 개행을 턴다. 목차와 본문이 **같은 함수**를 지나야 둘이
     보고하는 길이가 어긋나지 않는다."""
@@ -617,9 +617,9 @@ def _recalled(chunk: str) -> str:
 
 def _preview(chunk: str, width: int = 60) -> str:
     """라운드의 첫 알맹이 한 줄 — 목차가 파일 전문을 쏟지 않게 한다."""
-    body = _round_body(chunk).splitlines()
+    body = round_body(chunk).splitlines()
     if (body[:3] == [_CODEX_V2, "", "### user"] or len(body) >= 3
-            and body[0].startswith((_CODEX_V3, _DIALOGUE_V1, _CITED)) and body[1:3] == ["", "### user"]):
+            and body[0].startswith((_CODEX_V3, DIALOGUE_V1, _CITED)) and body[1:3] == ["", "### user"]):
         chunk = "\n".join(body[2:])  # Only the header; user quotations stay visible.
     for line in chunk.splitlines():
         s = line.strip()
@@ -657,14 +657,14 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
     if query is not None and (view != "review" or index is None):
         raise ValueError("query requires view=review and an exact #N round")
     records = evidence.Records()
-    p = _raw_file(path) if "/" in path or "\\" in path else records.file(path)
+    p = raw_file(path) if "/" in path or "\\" in path else records.file(path)
     text = read_exact(p)
     rel = posix_rel(p, ROOT)
-    spans = _round_spans(text)
+    spans = round_spans(text)
 
     def one(index: int, budget: int) -> dict:
         stored = text[spans[index][0]:spans[index][1]]
-        chunk = _recalled(stored)
+        chunk = recalled_text(stored)
         identity = {"ok": True, "path": rel, "index": index,
                     "round_ref": canonical_ref(f"{rel}#{index}"),
                     "coordinate": evidence.coordinate(p, index, records), "hash": round_hash(stored)}
@@ -695,7 +695,7 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
         # 실제 응답과 다른 수를 쥔다(감사 지적).
         return {"ok": True, "path": rel, "rounds": len(spans),
                 "index": [{"index": i,
-                           "chars": len(_recalled(text[s:e])),
+                           "chars": len(recalled_text(text[s:e])),
                            "preview": _preview(text[s:e])}
                           for i, (s, e) in sorted(spans.items())]}
     if index not in spans:
@@ -714,8 +714,8 @@ def list_records(space: str | None = None) -> dict:
     elif is_person(space):
         scope, dirs = PERSON, [ROOT / PERSON / CITED]
     else:
-        scope = _scope_of_space(space)
-        if not scope or scope not in _scope_names():
+        scope = scope_of_space(space)
+        if not scope or scope not in scope_names():
             raise WriteError(
                 "없는 scope", [f"`{space}`는 scope가 아니다. 가능한 space: "
                               f"{_space_list()}"])

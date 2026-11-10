@@ -8,7 +8,7 @@
   "lazy_imports": 133,
   "two_module_cycles": 17,
   "tangled_modules": 28,
-  "private_access": 183,
+  "private_access": 6,
   "broad_except": 125,
   "oversize_functions": 119,
   "excess_lines": 2763,
@@ -68,35 +68,11 @@
  ],
  "tangled_modules": 28,
  "private_access": {
-  "mcp_server": 3,
-  "osk.approvals": 4,
-  "osk.authority": 1,
-  "osk.cli": 1,
-  "osk.distillation": 30,
-  "osk.evictions": 4,
-  "osk.evidence": 2,
-  "osk.evidence_migration": 7,
-  "osk.graph": 1,
-  "osk.growth": 8,
-  "osk.growth_daily": 12,
-  "osk.growth_status": 6,
-  "osk.harness": 1,
-  "osk.integration": 20,
-  "osk.organization": 3,
-  "osk.publish": 2,
-  "osk.rechecks": 4,
-  "osk.response_growth": 33,
-  "osk.roots": 1,
-  "osk.routing": 1,
-  "osk.scope_memory": 2,
-  "osk.services": 2,
-  "osk.setup": 7,
-  "osk.update": 11,
-  "osk.update_check": 3,
-  "osk.validate": 1,
-  "osk.write": 7,
-  "scripts.hooks.claude_session_start": 1,
-  "sync_daemon": 5
+  "osk.distillation": 1,
+  "osk.evictions": 1,
+  "osk.integration": 1,
+  "osk.organization": 1,
+  "osk.scope_memory": 2
  },
  "broad_except": {
   "mcp_server": 6,
@@ -141,13 +117,13 @@
    70,
    15
   ],
-  "osk.approvals:_approve_locked": [
-   52,
-   18
-  ],
   "osk.approvals:_plan_unmoves": [
    43,
    19
+  ],
+  "osk.approvals:approve_locked": [
+   52,
+   18
   ],
   "osk.approvals:changeset": [
    80,
@@ -541,17 +517,13 @@
    51,
    23
   ],
-  "osk.write:_create_node_locked": [
-   117,
-   29
-  ],
   "osk.write:_topology_of": [
    61,
    21
   ],
-  "osk.write:_update_node_locked": [
-   199,
-   67
+  "osk.write:create_node_locked": [
+   117,
+   29
   ],
   "osk.write:move_cluster": [
    62,
@@ -560,6 +532,10 @@
   "osk.write:move_nodes": [
    83,
    12
+  ],
+  "osk.write:update_node_locked": [
+   199,
+   67
   ],
   "scripts.hooks.claude_session_start:_checkout_cached": [
    29,

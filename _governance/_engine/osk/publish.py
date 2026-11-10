@@ -67,7 +67,7 @@ def parse_manifest(path: Path = MANIFEST) -> dict:
     return {"map": maps, "deny": deny, "skel": skel, "keep": keep}
 
 
-def _denied(rel: str, deny: list[str]) -> str | None:
+def denied_by(rel: str, deny: list[str]) -> str | None:
     for d in deny:
         if d in rel or rel.endswith(d.rstrip("/")):
             return d
@@ -89,13 +89,13 @@ def collect(man: dict, root: Path | None = None) -> list[tuple[Path, str]]:
                 if not p.is_file():
                     continue
                 rel = posix_rel(p, s)
-                if _denied(rel, man["deny"]):
+                if denied_by(rel, man["deny"]):
                     continue
                 out.append((p, dst.rstrip("/") + "/" + rel))
         else:
             if not s.is_file():
                 raise PublishError(f"MAP 출처가 파일이 아니다: {src}")
-            if not _denied(src, man["deny"]):
+            if not denied_by(src, man["deny"]):
                 out.append((s, dst))
     return out
 
@@ -144,8 +144,8 @@ def guard_vault(root: Path | None = None) -> list[str]:
     """깨진 vault에서 발행하지 않는다."""
     try:
         if root is not None:
-            from .release import _validate_at
-            return _validate_at(root)
+            from .release import validate_at
+            return validate_at(root)
         rep = validate.run()
     except Exception as e:
         return [f"검증기 실행 실패: {e}"]
@@ -172,7 +172,7 @@ def _snapshot_ignored(directory: str, names: list[str], mapped_roots: set[str]) 
         ignored.update(n for n in names if n.endswith(".pyc"))
     with os.scandir(root) as entries:
         for entry in entries:
-            if entry.name not in ignored and graph._is_reparse(entry):
+            if entry.name not in ignored and graph.is_reparse(entry):
                 raise PublishError(f"발행 스냅샷은 리파스 경로를 복사하지 않는다: {entry.path}")
     return ignored
 

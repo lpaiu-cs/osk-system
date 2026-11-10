@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 
 from . import graph, workspaces
-from .core import (PERSON, RID_RE, ROUTING, SCOPE, _rid_key, causal_maxima, ledger_append, ledger_damage,
+from .core import (PERSON, RID_RE, ROUTING, SCOPE, rid_key, causal_maxima, ledger_append, ledger_damage,
                    ledger_read, mutation_lock, resolve_one)
 from .errors import WriteError
 
@@ -120,7 +120,7 @@ def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
     key = canonical_session(session, recs)
     rows = [r for r in recs if r.get("session") == key and r.get("kind") in ("bind", "unbind")
             and r.get("scope")]
-    rows.sort(key=lambda r: _rid_key(r["rid"]) if re.match(RID_RE, str(r.get("rid"))) else (0, 0, ""))
+    rows.sort(key=lambda r: rid_key(r["rid"]) if re.match(RID_RE, str(r.get("rid"))) else (0, 0, ""))
     scopes, primary = [], None
     for r in rows:
         sc = str(r["scope"])
@@ -201,7 +201,7 @@ def bind_after_write(result: dict, session: str, scope: str, reason: str = "") -
     재시도하고, 그 재시도는 이름 충돌·중복 라운드로 거부된다(v4 감사 실측:
     공유 위반으로 라우팅 대장 append가 실패한 경우). 대장 append는 기록된 뒤에도
     (fsync) 실패할 수 있으므로 "미기록"이 아니라 "확인 불가"다 —
-    `evictions._after_node_write`의 처분 영수증과 같은 규율. 일회성 작업 폴더의 키는
+    `evictions.after_node_write`의 처분 영수증과 같은 규율. 일회성 작업 폴더의 키는
     결속하지 않는다 — 그 착지는 그 대화에만 적용된다(Mechanism §6-2 6항)."""
     if workspaces.is_one_off(session):
         result["binding"] = {
@@ -235,7 +235,7 @@ def _repo_owner(recs: list[dict], key: str) -> dict | None:
     한 번 선 소유는 뒤의 행(구판이 쓴 무소유 재결속 포함)이 바꾸지 않는다."""
     rows = [r for r in recs if r.get("session") == key and r.get("kind") == "bind"
             and isinstance(r.get("repo"), list) and re.match(RID_RE, str(r.get("rid")))]
-    return min(rows, key=lambda r: _rid_key(r["rid"]), default=None)
+    return min(rows, key=lambda r: rid_key(r["rid"]), default=None)
 
 
 def _derived_key(recs: list[dict], name: str, repo: list[str]) -> str:
@@ -250,7 +250,7 @@ def _derived_key(recs: list[dict], name: str, repo: list[str]) -> str:
     for k in {r.get("session") for r in recs if pat.fullmatch(str(r.get("session", "")))}:
         o = _repo_owner(recs, k)
         if o and set(o["repo"]) & mine:
-            owned[k] = _rid_key(o["rid"])
+            owned[k] = rid_key(o["rid"])
     if owned:
         return min(owned, key=owned.get)
     bound = {r.get("session") for r in recs if r.get("kind") == "bind"}

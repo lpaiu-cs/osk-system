@@ -49,15 +49,15 @@ def tag() -> str:
 
 
 def script(kind: str) -> Path:
-    from .doctor import _engine_dir
-    engine = _engine_dir()
+    from .doctor import engine_dir
+    engine = engine_dir()
     return engine / "scripts" / "growth_run.py" if kind == "growth" else engine / "sync_daemon.py"
 
 
 def interpreter() -> Path:
     """등록이 부를 Python — Windows는 창을 띄우지 않는 `pythonw.exe`다."""
-    from .doctor import _python
-    python = _python()
+    from .doctor import venv_python
+    python = venv_python()
     quiet = python.with_name("pythonw.exe")
     return quiet if os.name == "nt" and quiet.is_file() else python
 

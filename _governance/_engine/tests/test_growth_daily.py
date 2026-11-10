@@ -242,11 +242,11 @@ class DailyTests(unittest.TestCase):
                         'seven_day': {'utilization': utilization, 'resetsAt': resets}}}}])
                 core.ledger_append(growth.LEDGER, {'kind': 'run', 'manifest': rid, 'provider': 'claude',
                                                    'output': '.osk/growth/runs/' + rid})
-            assert growth_daily.claude_week(growth._records()) is None
+            assert growth_daily.claude_week(growth.ledger_records()) is None
             claude_run('r1', 0.95, future)
-            assert growth_daily.claude_week(growth._records()) == 0.95
+            assert growth_daily.claude_week(growth.ledger_records()) == 0.95
             claude_run('r2', 0.95, past)
-            assert growth_daily.claude_week(growth._records()) is None, 'the window has reset since'
+            assert growth_daily.claude_week(growth.ledger_records()) is None, 'the window has reset since'
             claude_run('r3', 0.92, future)
             commands = {'codex': ['C:/x/codex.exe', 'exec'], 'claude': ['C:/x/claude.exe', '-p']}
             week = lambda used: patch.object(growth_daily, 'codex_limits',
@@ -349,9 +349,9 @@ class DailyTests(unittest.TestCase):
                       state('claude', 'stored', core.ROOT / 'gone.jsonl', ['s1:a'], native=False)]
             view = lambda s: {'pending_refs': [r['ref'] for r in s['rounds']]}
             locate = lambda h, sid, saved=None: saved if Path(saved).exists() else None
-            with patch.object(growth_status, '_states', return_value=states), \\
-                    patch.object(integration, '_view', side_effect=view), \\
-                    patch.object(integration, '_locate_transcript', side_effect=locate):
+            with patch.object(growth_status, 'conversation_states', return_value=states), \\
+                    patch.object(integration, 'state_view', side_effect=view), \\
+                    patch.object(integration, 'locate_transcript', side_effect=locate):
                 got = growth_daily._measure(since)
             assert got['work'] == {'claude': 4 + 10 + 6, 'codex': 100 - 60 + 5}, got
             assert got['inflow'] == {'new_rounds': 2, 'new_jobs': 2, 'old_rounds': 12, 'old_jobs': 4, 'unread': 0}, got
@@ -457,7 +457,7 @@ class DailyTests(unittest.TestCase):
                         'stop_reason': 'end_turn'}})]
             lines(path, turns(2))
             integration.capture('claude', 'c1', str(path), 'c1-project', space='00_Scope/W1')
-            rounds = lambda: len(integration._load(integration.state_path('claude', 'c1'), 'claude', 'c1')['rounds'])
+            rounds = lambda: len(integration.load_state(integration.state_path('claude', 'c1'), 'claude', 'c1')['rounds'])
             assert rounds() == 2
             lines(path, turns(5))
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
@@ -762,7 +762,7 @@ class DailyTests(unittest.TestCase):
             worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']
             result = growth.run(worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'})
             plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind'] == 'plan'][-1]
-            assert [k for k in growth._QUEUES if plan[k]] == ['scope_jobs'], plan
+            assert [k for k in growth.QUEUES if plan[k]] == ['scope_jobs'], plan
             job = plan['scope_jobs'][0]
             assert len(job['pending_refs']) == 9 and job['remaining_rounds'] == 3, job
             assert plan['timeout_seconds'] == 900 and plan['daily'] == {'kind': 'scope'}, plan

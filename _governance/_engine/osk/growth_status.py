@@ -35,7 +35,7 @@ def _window(rows: list[dict], since: datetime | None, until: datetime) -> dict:
     return {'rows': selected, 'outside_window': outside, 'unknown_time': undated}
 
 
-def _states() -> list[dict]:
+def conversation_states() -> list[dict]:
     probe = integration.state_path('claude', 'inventory')
     prefix = '-'.join(probe.name.split('-')[:3]) + '-'
     states = []
@@ -44,14 +44,14 @@ def _states() -> list[dict]:
         data = json.loads(path.read_text(encoding='utf-8'))
         if path != integration.state_path(data['harness'], data['conversation_id']):
             raise ValueError(f'integration state filename identity mismatch: {path.name}')
-        states.append(integration._validate_state(data, data['harness'], data['conversation_id']))
+        states.append(integration.validate_state(data, data['harness'], data['conversation_id']))
     return states
 
 
 def _integration(states: list[dict]) -> dict:
     items = []
     for state in states:
-        view = integration._view(state)
+        view = integration.state_view(state)
         refs = {r['ref'] for r in state['rounds']}
         repairs = {ref for job in state.get('repair_pending', {}).values() for ref in job['refs']}
         if repairs - refs:
@@ -176,7 +176,7 @@ def _recheck_history(rows: list[dict], since: datetime | None, until: datetime) 
 def _organization(idx) -> dict:
     scopes = {k[1] if k[0] == 'scope' else core.DOMAIN + '/' + k[1]
               for _, k in idx.nodes.values() if k[0] in {'scope', 'domain'}}
-    scopes.update(p['scope'] for p in organization._load()['plans'].values())
+    scopes.update(p['scope'] for p in organization.load_state()['plans'].values())
     items = []
     for scope in sorted(scopes):
         for job in organization.pending([scope], limit=1, idx=idx, record=False):
@@ -244,7 +244,7 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
         out.pop('cli_preflight', None)
     saved, chosen, history = [], [], []
     def integration_inventory():
-        saved.extend(_states())
+        saved.extend(conversation_states())
         return _integration(saved)
     states = section('integration', integration_inventory)
     def review_history():
@@ -260,11 +260,11 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
     else:
         out['reviews'] = None
     def run_history():
-        history.extend(growth._records())
+        history.extend(growth.ledger_records())
         return _runs(history, begin, end)
     section('runs', run_history)
     def recheck_records():
-        records, valid = rechecks._read()
+        records, valid = rechecks.read_ledger()
         if not valid:
             raise ValueError('recheck ledger damaged')
         return _recheck_history(records, begin, end)
@@ -278,7 +278,7 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
                 'settlement_records': dict(Counter(r['outcome'] for r in records if r.get('kind') == 'settle'))}
     section('evictions', eviction_inventory)
     try:
-        idx = growth._index()
+        idx = growth.node_index()
     except (ValueError, OSError) as exc:
         out['ok'] = False
         out['errors'].append({'section': 'graph', 'error': str(exc)})
