@@ -239,6 +239,9 @@ def consolidate(*, apply: bool = False) -> dict:
             # 옮긴다. 지우지 않는다(2026-11-10 사용자 결정: 이행 뒤 옛 자리를 비운다).
             for f in sorted((d / ".records" / ".corrections").glob("*.json")):
                 dst = LEDGER / "migration" / "corrections" / f"{d.parent.name}{d.name}" / f.name
+                if resolve_in_root(f) != f or resolve_in_root(dst) != dst:   # `_record_pair`와 같은 경계
+                    conflicts.append({"path": posix_rel(f, ROOT), "reason": "보정 기록이 저장 구획을 벗어났다"})
+                    continue
                 if dst.exists():
                     conflicts.append({"path": posix_rel(f, ROOT), "reason": f"{posix_rel(dst, ROOT)}가 이미 있다"})
                     continue
@@ -280,6 +283,8 @@ def consolidate(*, apply: bool = False) -> dict:
                 atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
             for d in _legacy_dirs():     # 비운 옛 자리 — 다른 파일이 남은 디렉터리는 그대로 둔다
                 for sub in [*sorted((p for p in d.rglob("*") if p.is_dir()), reverse=True), d]:
+                    if sub.is_symlink():   # 링크는 따라가지도 지우지도 않는다(#318 리뷰)
+                        continue
                     if sub.is_dir() and [p.name for p in sub.iterdir()] == [".gitkeep"]:
                         (sub / ".gitkeep").unlink()   # 빈 자리 표시일 뿐이다
                     try:

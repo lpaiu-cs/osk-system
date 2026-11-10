@@ -3,6 +3,7 @@ import copy
 import os
 from pathlib import Path
 import sys
+import shutil
 import tempfile
 from unittest import mock
 
@@ -238,6 +239,22 @@ def main():
         shadow.unlink()
         raw.consolidate(apply=True)
         assert not base.exists()   # `.gitkeep`만 남은 옛 자리도 비운다
+        # 보정 기록 자리가 vault 밖을 가리키는 링크면 옮기지 않고 보류한다(#318 리뷰).
+        outside = Path(tempfile.mkdtemp())
+        (outside / "x.json").write_bytes(b"{}")
+        (base / ".records").mkdir(parents=True)
+        try:
+            (base / ".records" / ".corrections").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            print("SKIP symlink — 이 기기는 링크를 만들 수 없다")
+        else:
+            rep = raw.consolidate(apply=True)
+            assert rep["count"] == 0 and rep["conflicts"][0]["reason"] == "보정 기록이 저장 구획을 벗어났다", rep
+            assert (outside / "x.json").read_bytes() == b"{}"
+            assert (base / ".records" / ".corrections").is_symlink()   # 정리도 링크를 지우지 않는다
+            (base / ".records" / ".corrections").unlink()
+        shutil.rmtree(base)
+        shutil.rmtree(outside)
         print("PASS hidden storage, aliases, byte identity, conflict/retry, provenance, consolidation")
 
 
