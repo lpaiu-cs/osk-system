@@ -171,10 +171,9 @@ line:
   folders with pending changes. Each line says who does what; pending changes
   are the user's to approve or revert.
 
-`doctor --migrate` is two steps, like the update. The first run prints, for
-each migration, every record or note it would move, and exits with code 2. Explain
-both, wait for the yes, then run the same command again within an hour. The
-changes differ:
+`doctor --migrate` applies every due migration in one run; unlike the update it
+asks for no confirmation. Each migration lists its targets and results under
+`_ledger/migration/`. The changes differ:
 
 - Records move byte for byte into the root `_cited/`. This edits no note:
   old coordinates in notes keep working. A record whose name also exists in

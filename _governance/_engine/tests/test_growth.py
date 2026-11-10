@@ -986,29 +986,7 @@ class GrowthTests(unittest.TestCase):
             heading = next(i for k, i in vault.items() if '# 관측' in k)
             assert heading['level'] == 'warn' and '2개' in heading['detail'] and '--migrate' in heading['fix'], vault
             assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the report wrote'
-            # The first run only plans and asks for the user's yes; nothing moves yet.
-            plan, code = doctor.migrate()
-            assert code == 2 and plan['approval_required'] and [m[0] for m in plan['plan']['migrations']] == [
-                heading['check']] and len(plan['plan']['migrations'][0][1]) == 2, plan
-            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the plan wrote'
-            # The apply re-plans under the lock; a node the user did not confirm stops it before any write (#313 review).
-            only_l = [t for t in plan['plan']['migrations'][0][1] if t[0].endswith('/L.md')]
-            try:
-                em.heading_apply(expect=only_l)
-            except RuntimeError as e:
-                assert 'Tab.md' in str(e), e
-            else:
-                raise AssertionError('migrated a node that was not confirmed')
-            # A confirmed node that changed after the user's yes stops it too (#313 review, round 2).
-            stale = [[p, 'sha256:0' if p.endswith('/L.md') else h] for p, h in plan['plan']['migrations'][0][1]]
-            try:
-                em.heading_apply(expect=stale)
-            except RuntimeError as e:
-                assert 'L.md' in str(e) and 'Tab.md' not in str(e), e
-            else:
-                raise AssertionError('migrated a node that changed after it was confirmed')
-            assert all(p.read_bytes() == before[t] for t, p in paths.items()), 'the refused apply wrote'
-            assert not list(em.EVENTS.parent.glob('observation-heading-*')), 'the refused apply opened a manifest'
+            # One run applies (2026-11-10 user decision: only the update asks again).
             done, code = doctor.migrate()
             assert code == 0 and [d['migration'] for d in done['applied']] == [heading['check']], done
             assert (done['applied'][0]['nodes'], done['applied'][0]['holds']) == (2, 3), done
@@ -1053,12 +1031,8 @@ class GrowthTests(unittest.TestCase):
             git('add', '-A'); git('commit', '-qm', 'seed')
             v54, v52 = '비노드 derived-from → 관측 줄 (v5.4)', '옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)'
             v56 = '관측 절 제목 `## 근거` → `# 관측` (v5.6)'
-            plan, code = doctor.migrate()
-            assert code == 2 and [m[0] for m in plan['plan']['migrations']] == [v54, v52, v56], plan
-            # A plan that changed after it was shown asks again: a second old-place record turned up.
             other = 'claude-d48d8ef2' + '0' * 24
             (old / (other + '.txt')).write_bytes(raw._block(1, '또 다른 질문', '답').encode())
-            assert doctor.migrate()[1] == 2
             rep, code = doctor.migrate()
             applied = {a['migration']: a for a in rep['applied']}
             assert code == 0 and list(applied) == [v54, v52, v56], rep

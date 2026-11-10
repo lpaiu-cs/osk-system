@@ -80,10 +80,12 @@ raw citations use the plain form automatically.
 `doctor --vault` counts records still kept in an old place (`_cited/` or
 `_raw/` under a scope, and `00_Person/_cited/`), and `doctor --migrate`
 moves them into the root `_cited/.records/` — the data move Mechanism §9 5항
-leaves to a separately reviewed changeset. The first `--migrate` prints every
-source and exits 2; the same command within an hour applies. Each file is
-renamed under the mutation lock and its SHA-256 checked; emptied old
-directories are removed. A name already present at the root or in an earlier
+leaves to `osk doctor --migrate`. It lists every source in the migration
+ledger before it moves anything. Each file is
+renamed under the mutation lock and its SHA-256 checked. The v4 correction
+logs in `.records/.corrections/*.json` move next to the migration ledger, under
+`corrections/`, rather than being deleted; emptied old directories, including
+ones holding only a `.gitkeep`, are removed. A name already present at the root or in an earlier
 old place is reported as a conflict and left in place, so every coordinate
 keeps resolving to the copy it resolved to before. Nodes, receipts and ledgers
 are not edited; old coordinates resolve by record name.
