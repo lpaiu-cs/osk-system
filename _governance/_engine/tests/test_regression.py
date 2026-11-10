@@ -50,7 +50,7 @@ os.environ["OSK_UPDATE_CHECK"] = "0"
 # 띄우지 않는다 — 실행 자리가 지워진 뒤에도 남는 자식이 없고, 작업자의 몫은 시험이 직접 부른다.
 os.environ["OSK_HOOK_WORKER"] = "0"
 
-from osk import (core, graph, validate, authority, contract, write,  # noqa: E402
+from osk import (core, graph, validate, authority, contract, routing, write,  # noqa: E402
                  publish)  # noqa: E402
 import osk.signatures as S  # noqa: E402
 
@@ -2998,7 +2998,7 @@ def test_bind_after_write_receipt():
     check("search 없는 세션의 create_node는 거부되고 아무것도 쓰지 않는다",
           refused == {"ok": False, "violations": [M.SEARCH_FIRST]}
           and not (ROOT / "00_Scope/W1/regr-bindfail.md").exists(), refused)
-    with mock.patch.object(write, "ledger_append", failing):
+    with mock.patch.object(routing, "ledger_append", failing):
         M.search("bindfail")                       # 한 번 부르면 이 세션의 생성이 열린다
         r = M.create_node("regr-bindfail", "s", "본문", "fable-5",
                           session="regr-bindfail-a", space="00_Scope/W1")
@@ -5667,21 +5667,21 @@ def test_portable_title():
         "a" * 253: "ASCII 256바이트(ext4 상한 초과)",
     }
     valid += ["COMMENT", "CON2", "COM0", "가" * 84, "a" * 252]
-    bad_ok = [t for t in valid if write._title_errors(t)]
+    bad_ok = [t for t in valid if write.title_errors(t)]
     check("적격 제목은 통과한다", not bad_ok, bad_ok)
     missed = [f"{k!r}({why})" for k, why in invalid.items()
-              if not write._title_errors(k)]
+              if not write.title_errors(k)]
     check("부적격 제목은 전부 거부된다", not missed, missed)
 
     # 이식성 키 — 대소문자·유니코드 정규화만 다른 이름은 같은 경로다
     import unicodedata as _ud
     check("대소문자만 다른 이름은 같은 키",
-          write._portable_name_key("Example") == write._portable_name_key("example"))
+          write.portable_name_key("Example") == write.portable_name_key("example"))
     check("NFC·NFD만 다른 이름은 같은 키",
-          write._portable_name_key(_ud.normalize("NFC", "가나"))
-          == write._portable_name_key(_ud.normalize("NFD", "가나")))
+          write.portable_name_key(_ud.normalize("NFC", "가나"))
+          == write.portable_name_key(_ud.normalize("NFD", "가나")))
     check("서로 다른 이름은 다른 키",
-          write._portable_name_key("Example") != write._portable_name_key("Exampl3"))
+          write.portable_name_key("Example") != write.portable_name_key("Exampl3"))
 
     # create_node가 대소문자 변종을 거부한다 (Linux에서만 나던 구멍)
     made = ROOT / "00_Scope/W1/Regr-Case.md"
@@ -6213,7 +6213,7 @@ def test_obsidian_tag_defense():
     태그가 아님). 거부 없이 공백 하나를 넣어 태그화만 끊는다 — 종결 문자와
     코드 구획은 불변, `_raw/`는 전사 보존이라 적용하지 않는다."""
     from osk import scope_memory as sm
-    f = write._space_numeric_tags
+    f = write.space_numeric_tags
     check("조사 직결은 띄운다", f("#1227은 문제") == "#1227 은 문제")
     check("가운뎃점도 띄운다", f("#1227·1228") == "#1227 ·1228")
     check("종결 문자는 불변",
@@ -6321,10 +6321,10 @@ def test_code_regions_are_not_prose():
               [x["title"] for x in mcp_server._node_view(toc, "outline")["headings"]]
               == ["앞", "뒤"], mcp_server._node_view(toc, "outline"))
         check("문단 뒤 4칸 행은 코드가 아니다(문단을 끊지 못한다)",
-              write._space_numeric_tags("글\n    #1x [[A]]") == "글\n    #1 x [[A]]"
+              write.space_numeric_tags("글\n    #1x [[A]]") == "글\n    #1 x [[A]]"
               and contract.Node(ext, {}, "글\n    [[A]]").wikilinks() == ["A"])
         check("열고 닫는 백틱 수가 다르면 코드가 아니다",
-              write._space_numeric_tags("``#1x` #2x") == "``#1 x` #2 x")
+              write.space_numeric_tags("``#1x` #2x") == "``#1 x` #2 x")
     finally:
         rmtree_force(xs)
 
@@ -6451,7 +6451,7 @@ def test_code_region_commonmark_rules():
         "span-stops-at-item": ("- `a\n- b` #1ab [[X]]", True),
     }
     for label, (body, prose) in cases.items():
-        tags = write._space_numeric_tags(body)
+        tags = write.space_numeric_tags(body)
         links = contract.Node(Path("x.md"), {}, body.replace("\r\n", "\n")).wikilinks()
         check(f"[{label}] 태그 방어는 글에만",
               tags == (body.replace("#1ab", "#1 ab") if prose else body), tags)
@@ -6655,7 +6655,7 @@ def test_session_key_repo_identity():
             except OSError:
                 held.append(True)
         return real_append(*args, **kw)
-    with mock.patch.object(write, "ledger_append", spy):
+    with mock.patch.object(routing, "ledger_append", spy):
         check("무소유 결속은 처음 쓰는 저장소가 소유한다", hook.session_key(str(a)) == "api")
     check("소유 행은 변경 잠금 안에서 쓴다", held == [True], held)
     check("소유는 한 행", [r.get("repo") for r in rows()] == [None, [ra]], rows())
@@ -6894,7 +6894,7 @@ def test_derived_session_key_is_stable():
     kb = f"site-{m[:8]}"
     write.bind_session(kb, "W2")                     # 표면의 첫 쓰기 — 소유 기록 전
     before = core.ROUTING.read_bytes()
-    with mock.patch.object(write, "ledger_append", side_effect=PermissionError("읽기 전용")):
+    with mock.patch.object(routing, "ledger_append", side_effect=PermissionError("읽기 전용")):
         try:
             got = write.repo_session("site", [m])
         except Exception as e:
@@ -10368,7 +10368,7 @@ def test_audit_fixes_2026_09_02():
               str(got).count("[[W1]]") == 1, got)
 
         # ③ 앵커 편집은 파서가 읽을 형태로 쓴다 (#27)
-        #    되돌리면 — `_norm_body`의 개행 정규화를 지우면 둘째가 실패한다.
+        #    되돌리면 — `norm_body`의 개행 정규화를 지우면 둘째가 실패한다.
         r = _w(write.update_node, "audit-edge",
                old_text="본문", new_text="첫 줄\r\n둘째 줄")
         check("앵커 편집이 성공한다 (#27)", r.get("ok"), r)
@@ -10377,7 +10377,7 @@ def test_audit_fixes_2026_09_02():
         r = _w(write.update_node, "audit-edge",
                old_text="첫 줄\r\n둘째 줄", new_text="되찾음")
         check("CRLF 앵커로도 그 자리를 다시 찾는다 (#27)", r.get("ok"), r)
-        #    전문 치환 경로도 같다 — 앵커 정규화와 **별개로** `_norm_body`가
+        #    전문 치환 경로도 같다 — 앵커 정규화와 **별개로** `norm_body`가
         #    접는다. 앵커만 접으면 이 자리가 열린 채 남는다.
         r = _w(write.update_node, "audit-edge", body="가\r\n나\r\n",
                expect_hash=core.sha256_file(p))
@@ -12307,16 +12307,16 @@ def test_write_edge_coordinates():
         check("a stored round is not added again either", not refused.get("ok"), refused)
         write.update_node(p.stem, remove_edges={"derived-from": f"[[{first}]]"})
         check("removing one round, in either notation, preserves the other",
-              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second] + refs)
+              write.stored_edges(contract.parse(p).meta.get("derived-from")) == [second] + refs)
         write.update_node(p.stem, remove_edges={"derived-from": refs[0]})
         check("same filename in different source paths remains distinct",
-              write._stored_edges(contract.parse(p).meta.get("derived-from")) == [second, refs[1]])
+              write.stored_edges(contract.parse(p).meta.get("derived-from")) == [second, refs[1]])
         target = write.create_node("regr-coordinate-target", "target", "claim", "fable-5",
                                    space=base.relative_to(ROOT).as_posix())
         write.update_node(p.stem, add_edges={"derived-from": target["name"]})
         write.update_node(p.stem, add_edges={"derived-from": f"[[{target['name']}]]"})
         check("node title and wikilink still deduplicate",
-              len(write._stored_edges(contract.parse(p).meta.get("derived-from"))) == 3)
+              len(write.stored_edges(contract.parse(p).meta.get("derived-from"))) == 3)
     finally:
         rmtree_force(base)
         rmtree_force(sources)
@@ -12348,7 +12348,7 @@ def test_node_heading_edge_coordinates():
         path = ROOT / made["path"]
 
         def stored():
-            return write._stored_edges(contract.parse(path).meta.get("derived-from"))
+            return write.stored_edges(contract.parse(path).meta.get("derived-from"))
 
         def pending():
             return {i["target"] for i in rechecks.candidates(graph.Index())[0]
@@ -12420,7 +12420,7 @@ def test_derived_from_once_per_round():
     record = None
 
     def stored(p):
-        return write._stored_edges(contract.parse(p).meta.get("derived-from"))
+        return write.stored_edges(contract.parse(p).meta.get("derived-from"))
 
     def warned():
         return [d for d in graph.reference_report(graph.Index())["duplicate_edges"]

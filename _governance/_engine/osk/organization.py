@@ -14,7 +14,7 @@ import re
 import time
 from pathlib import Path
 
-from . import core, contract, graph, write
+from . import core, contract, graph, prose, write
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
 REVIEW_UNITS = 3
@@ -173,7 +173,7 @@ def snapshot(scope: str, idx=None) -> dict:
         units.extend({**u, "expect_view_hash": "view:" + digest} for u in _units(node))
         nodes.append({"id": node.id, "name": name, "path": core.posix_rel(path, core.ROOT),
                       "hash": digest, "summary": str(node.meta.get("summary", "")),
-                      "hub": graph.is_hub(path), "has_body": bool(write._norm_body(node.body)),
+                      "hub": graph.is_hub(path), "has_body": bool(prose.norm_body(node.body)),
                       "body_chars": len(node.body), **write.size_feedback(path, node.body)})
         references.extend(graph.reference_review(node, idx, records=records))
     links = {}

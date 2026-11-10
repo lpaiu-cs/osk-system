@@ -464,3 +464,22 @@ def validate(node: Node) -> list[str]:
     if node.fm_keys and len(node.fm_keys) != len(set(node.fm_keys)):
         errs.append(f"frontmatter 중복 필드: {node.fm_keys}")
     return errs
+
+
+def as_list(v) -> list:
+    return v if isinstance(v, list) else [v]
+
+
+def stored_edges(v) -> list[str]:
+    """frontmatter에 **저장된 표기 그대로**의 대상 목록.
+
+    `edge_targets`와 다르다 — 그쪽은 대상을 해소하려고 `[[…#앵커]]`의
+    `#` 뒤를 버린다(해석용으로는 옳다). 그 손실된 목록을 다시 저장 목록으로 쓰면
+    엣지를 하나 더하거나 빼는 것만으로 **남아 있던 라운드 좌표가 전부 지워진다**:
+    `[[…/_raw/rec#3]]` → `[[…/_raw/rec]]`. 근거에서 증거로 가는 길이 그렇게
+    끊긴다(시행령 §1 3항이 `_raw/` 참조에 라운드 제목을 요구한다).
+
+    그래서 델타는 **여기서 읽고** 동일성 비교는 `write._edge_key`로 한다."""
+    if v is None or v == "" or v == []:
+        return []
+    return [str(x) for x in as_list(v)]

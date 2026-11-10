@@ -30,9 +30,9 @@ KERNEL, MODEL, STORE, SERVICE, SURFACE = range(5)
 # 모듈의 층 — 위층만 아래층을 import한다. 새 모듈은 여기에 올려야 시험이 돈다.
 # 한 모듈에 책임이 섞인 것(`write`·`evidence`·`rechecks`)은 갈 곳이 아니라 지금 주로 하는 일로 배정했다.
 LAYERS = {
-    KERNEL: ["osk", "osk._portalock", "osk.epoch", "osk.layout", "osk.core"],
-    MODEL: ["osk.contract", "osk.secrets", "osk.raw_view"],
-    STORE: ["osk.graph", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures",
+    KERNEL: ["osk", "osk._portalock", "osk.epoch", "osk.layout", "osk.core", "osk.errors"],
+    MODEL: ["osk.contract", "osk.naming", "osk.prose", "osk.secrets", "osk.raw_view"],
+    STORE: ["osk.graph", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures", "osk.routing",
             "osk.approvals", "osk.scope_memory", "osk.evictions", "osk.rechecks", "osk.transcripts",
             "osk.native_cli", "osk.harness", "osk.harness.base", "osk.harness.runs", "osk.harness.claude",
             "osk.harness.codex", "osk.harness.kiro", "osk.harness.antigravity"],

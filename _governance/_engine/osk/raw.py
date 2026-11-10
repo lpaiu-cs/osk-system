@@ -24,7 +24,8 @@ from .core import ROOT, mutation_lock, posix_rel, resolve_in_root, sha256_file, 
 # `write`의 `_title_errors`·`_name_collision`을 그대로 쓴다 — 파일명 이식성
 # 규칙(Windows 예약명·링크 파서 충돌·ext4 바이트 상한·대소문자 접기)의 정본은
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
-from . import graph, secrets, write
+from . import graph, naming, routing, secrets
+from .errors import WriteError
 
 # 라운드 제목 — 행 머리의 `## ` 뒤에 양의 십진 index 하나(Mechanism §8 3항).
 # escape된 제목(`\## 3`)은 `^## `에 걸리지 않으므로 이 하나로 판정이 끝난다.
@@ -78,7 +79,7 @@ def _next_index(text: str) -> int:
     이어 붙이면 `[[경로#index]]`가 어느 라운드를 가리키는지 정해지지 않는다."""
     seen = rounds(text)
     if seen != sorted(set(seen)) or (seen and seen[0] != 1):
-        raise write.WriteError(
+        raise WriteError(
             "기록 손상 — 라운드 index가 1부터 단조 증가하지 않는다",
             [f"index 열: {seen} — 중복·역행·시작번호는 계약 위반이므로 "
              f"이어 쓰지 않는다 (시행령 §2 7항)"])
@@ -130,10 +131,10 @@ def _record_pair(path: Path | str) -> tuple[Path, Path]:
     """Confined physical path and its old Markdown alias. No content conversion."""
     p = resolve_in_root(path)
     if p is None or graph.space_of(p)[0] != "raw":
-        raise write.WriteError("vault 밖 또는 인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 기록을 열지 않았다")
+        raise WriteError("vault 밖 또는 인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 기록을 열지 않았다")
     requested = Path(path) if Path(path).is_absolute() else ROOT / path
     if requested.absolute() != p:
-        raise write.WriteError("raw 저장 경로의 심볼릭 링크·우회 경로는 허용하지 않는다")
+        raise WriteError("raw 저장 경로의 심볼릭 링크·우회 경로는 허용하지 않는다")
     if p.parent.name == ".records" and p.suffix.lower() == ".txt":
         d, stem = p.parent.parent, p.stem
     elif p.parent.parent.name == ".records" and p.name == "record.txt":
@@ -141,15 +142,15 @@ def _record_pair(path: Path | str) -> tuple[Path, Path]:
     elif p.suffix.lower() == ".md" or not p.suffix:
         d, stem = p.parent, p.stem if p.suffix else p.name
     else:
-        raise write.WriteError("지원하지 않는 raw 기록 경로")
-    old_name = write._name_collision(d, stem, unique=True)
+        raise WriteError("지원하지 않는 raw 기록 경로")
+    old_name = naming.name_collision(d, stem, unique=True)
     old = d / (old_name or f"{stem}.md")
     new_dir = d / ".records"
-    new_name = write._name_collision(new_dir, old.stem, ".txt", unique=True)
-    long_name = write._name_collision(new_dir, old.stem, None, unique=True)
+    new_name = naming.name_collision(new_dir, old.stem, ".txt", unique=True)
+    long_name = naming.name_collision(new_dir, old.stem, None, unique=True)
     if new_name and long_name:
-        raise write.WriteError("raw 파일·디렉터리 별칭이 함께 있다 — 정본을 고를 수 없다")
-    if long_name or (not new_name and len((old.stem + ".txt").encode("utf-8")) > write._MAX_FILENAME_BYTES):
+        raise WriteError("raw 파일·디렉터리 별칭이 함께 있다 — 정본을 고를 수 없다")
+    if long_name or (not new_name and len((old.stem + ".txt").encode("utf-8")) > naming.MAX_FILENAME_BYTES):
         # A legacy 252-byte stem fits .md, but not .txt. Keep its whole name
         # as a directory component, avoiding a lossy rename or alias registry.
         new = new_dir / (long_name or old.stem) / "record.txt"
@@ -159,14 +160,14 @@ def _record_pair(path: Path | str) -> tuple[Path, Path]:
     for candidate in (old, new):
         resolved = resolve_in_root(candidate)
         if resolved is None or resolved != candidate or graph.space_of(resolved) != graph.space_of(p):
-            raise write.WriteError("raw 별칭이 저장 구획을 벗어났다")
+            raise WriteError("raw 별칭이 저장 구획을 벗어났다")
     return old, new
 
 
 def _record_file(path: Path | str) -> Path:
     old, new = _record_pair(path)
     if old.exists() and new.exists():
-        raise write.WriteError("raw 구·신 저장본이 함께 있다 — 덮어쓰거나 임의로 합치지 않았다")
+        raise WriteError("raw 구·신 저장본이 함께 있다 — 덮어쓰거나 임의로 합치지 않았다")
     return old if old.exists() else new
 
 
@@ -179,7 +180,7 @@ def _migrate_file(path: Path) -> Path:
         new.parent.mkdir(parents=True, exist_ok=True)
         old.rename(new)
         if sha256_file(new) != digest:
-            raise write.WriteError("raw 이관 후 해시 불일치 — 성공으로 처리하지 않았다")
+            raise WriteError("raw 이관 후 해시 불일치 — 성공으로 처리하지 않았다")
     return new
 
 
@@ -224,10 +225,10 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
                     src = _record_file(f)
                     name = _record_pair(src)[0].stem
                     dst = _record_file(ROOT / CITED / f"{name}.md")
-                except write.WriteError as e:
+                except WriteError as e:
                     conflicts.append({"path": posix_rel(f, ROOT), "reason": e.args[0]})
                     continue
-                key = write._portable_name_key(name)
+                key = naming.portable_name_key(name)
                 if dst.exists() or key in seen:
                     other = posix_rel(dst, ROOT) if dst.exists() else seen[key]
                     conflicts.append({"path": posix_rel(src, ROOT), "reason": f"같은 이름의 기록이 {other}에 있다"})
@@ -236,7 +237,7 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
                 moves.append({"from": seen[key], "to": posix_rel(dst, ROOT),
                               "hash": sha256_file(src), "bytes": src.stat().st_size})
         if expect is not None and [[m["from"], m["hash"]] for m in moves] != expect:
-            raise write.WriteError("확인받은 이관 계획과 지금의 계획이 다르다 — 옮기지 않았다")
+            raise WriteError("확인받은 이관 계획과 지금의 계획이 다르다 — 옮기지 않았다")
         manifest = None
         if apply and moves:
             from .core import LEDGER, atomic_write, ledger_append, now_kst
@@ -259,13 +260,13 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
             for m in moves:
                 src, dst = ROOT / m["from"], ROOT / m["to"]
                 if dst.exists():
-                    raise write.WriteError(f"이관 대상이 이미 있다 — 덮지 않았다: {m['to']}")
+                    raise WriteError(f"이관 대상이 이미 있다 — 덮지 않았다: {m['to']}")
                 ledger_append(events, {"kind": "move", "source": m["from"], "dest": m["to"], "before": m["hash"],
                                        "after": m["hash"], "rule": CONSOLIDATE_RULE})
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 src.rename(dst)
                 if sha256_file(dst) != m["hash"]:
-                    raise write.WriteError(f"이관 후 해시 불일치 — 성공으로 처리하지 않았다: {m['to']}")
+                    raise WriteError(f"이관 후 해시 불일치 — 성공으로 처리하지 않았다: {m['to']}")
             if manifest:
                 close = ["## 결과", "", f"- 옮긴 기록 {len(moves)}개 · 보류 {len(conflicts)}", "", "### 보류", "",
                          *(holds or ["없음"]), ""]
@@ -324,7 +325,7 @@ def _reject_replay(prior: str, spans: dict, blocks: list) -> None:
     if tail != incoming:
         return
     last = sorted(spans)[-n:]
-    raise write.WriteError(
+    raise WriteError(
         "재시도로 보이는 중복 — 쓰지 않았다",
         [f"직전 라운드 {last}의 내용과 바이트가 같다. 응답을 못 받아 다시 "
          f"보내는 것이라면 이미 기록됐다 — `read_cited`로 목차를 보고 마지막 "
@@ -356,11 +357,11 @@ def cited_header(chunk: str) -> dict | None:
     if not header.startswith(_CITED):
         return None
     if not header.endswith(" -->"):
-        raise write.WriteError("damaged citation header")
+        raise WriteError("damaged citation header")
     value = json.loads(header[len(_CITED):-4])
     if not isinstance(value, dict) or not all(
             isinstance(value.get(k), str) and value[k] for k in ("harness", "conversation", "turn")):
-        raise write.WriteError("damaged citation header")
+        raise WriteError("damaged citation header")
     return value
 
 
@@ -406,10 +407,10 @@ def inherited_prefix(path: Path) -> dict | None:
     if not line.startswith(_CLAUDE_PREFIX):
         return None
     if not line.endswith(" -->"):
-        raise write.WriteError("damaged Claude inheritance header")
+        raise WriteError("damaged Claude inheritance header")
     value = json.loads(line[len(_CLAUDE_PREFIX):-4])
     if not isinstance(value, dict) or not isinstance(value.get("rounds"), list):
-        raise write.WriteError("damaged Claude inheritance manifest")
+        raise WriteError("damaged Claude inheritance manifest")
     return value
 
 
@@ -446,24 +447,24 @@ def append_rounds(session: str, record: str, pairs: list,
     if cited is not None and len(pairs) != 1:
         raise ValueError("a citation appends exactly one round")
     if not pairs:
-        raise write.WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
+        raise WriteError("빈 배치 — 쓰지 않았다", ["이을 라운드가 없다"])
     norm = []
     for i, r in enumerate(pairs):
         u = r.get("user") if isinstance(r, dict) else (r[0] if r else "")
         a = r.get("agent") if isinstance(r, dict) else (r[1] if len(r) > 1 else "")
         if not (u or "").strip() or not (a or "").strip() and cited is None:
-            raise write.WriteError(
+            raise WriteError(
                 "라운드는 user 발화와 그 응답을 함께 담는다",
                 [f"{i + 1}번째 라운드의 user·agent 중 빈 쪽이 있다 — 한 라운드는 "
                  f"user 발화와 그에 속한 에이전트 응답의 쌍이다 (시행령 §2 7항)"])
         norm.append((u, a or ""))
-    errs = write._title_errors(record)      # 기록 이름이 곧 파일명이다
+    errs = naming.title_errors(record)      # 기록 이름이 곧 파일명이다
     if errs:
-        raise write.WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
+        raise WriteError("기록 이름 부적격 — 쓰지 않았다", errs)
     # 프로젝트 키의 형식은 쓰기 전에 본다 — 대화 id를 키 자리에 넣은 호출을 돌려보낸다.
-    errs = write.ephemeral_session_errors(session)
+    errs = routing.ephemeral_session_errors(session)
     if errs:
-        raise write.WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
+        raise WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
 
     with mutation_lock():
         p = record_path(None, record)
@@ -548,9 +549,9 @@ def _raw_file(path: str) -> Path:
     from . import graph
     p = resolve_in_root(path)
     if p is None:
-        raise write.WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
+        raise WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
     if graph.space_of(p)[0] != "raw":
-        raise write.WriteError(
+        raise WriteError(
             "인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 이 도구로 읽지 않는다",
             [f"`{path}`는 세션 기록이 아니다. 노드는 `read_node`로 읽는다"])
     p = _record_file(p)
@@ -558,7 +559,7 @@ def _raw_file(path: str) -> Path:
         # 옛 자리의 좌표로 루트의 기록을, 또는 그 반대를 가리킨 경우 — 같은 이름은 같은 기록이다
         found = locate_record(_record_pair(p)[0].stem)
         if found is None:
-            raise write.WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
+            raise WriteError("없는 기록", [f"그런 세션 기록이 없다: {path}"])
         return found
     return p
 
@@ -614,7 +615,7 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
     if m and m["last"] and m["last"] != m["first"]:
         span = int(m["first"]), int(m["last"])
         if span[1] < span[0]:
-            raise write.WriteError("거꾸로 된 라운드 범위", [f"`{ref}` — 이어진 라운드는 #N–M(N<M)으로 쓴다"])
+            raise WriteError("거꾸로 된 라운드 범위", [f"`{ref}` — 이어진 라운드는 #N–M(N<M)으로 쓴다"])
         path, index = m["record"], None
     else:
         path, index = parse_ref(ref)
@@ -645,10 +646,10 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
         # 200자를 못 주는 범위는 받지 않는다. 그래서 응답이 max_chars를 넘지 않는다.
         got = [n for n in sorted(spans) if span[0] <= n <= span[1]]
         if len(got) != span[1] - span[0] + 1:
-            raise write.WriteError("없는 라운드", [f"`{rel}`에 라운드 {span[0]}–{span[1]}이(가) 다 있지 않다. "
+            raise WriteError("없는 라운드", [f"`{rel}`에 라운드 {span[0]}–{span[1]}이(가) 다 있지 않다. "
                                                 f"있는 라운드: {sorted(spans) if spans else '없음'}"])
         if max_chars // len(got) < 200:
-            raise write.WriteError("회상 예산보다 넓은 범위",
+            raise WriteError("회상 예산보다 넓은 범위",
                                    [f"`{ref}` — 라운드 {len(got)}개에 max_chars {max_chars}: 라운드마다 "
                                     "200자가 든다. 범위를 나누거나 max_chars를 키운다"])
         return {"ok": True, "path": rel, "range": list(span),
@@ -663,7 +664,7 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
                            "preview": _preview(text[s:e])}
                           for i, (s, e) in sorted(spans.items())]}
     if index not in spans:
-        raise write.WriteError(
+        raise WriteError(
             "없는 라운드",
             [f"`{rel}`에 라운드 {index}이(가) 없다. 있는 라운드: "
              f"{sorted(spans) if spans else '없음'}"])
@@ -680,7 +681,7 @@ def list_records(space: str | None = None) -> dict:
     else:
         scope = _scope_of_space(space)
         if not scope or scope not in _scope_names():
-            raise write.WriteError(
+            raise WriteError(
                 "없는 scope", [f"`{space}`는 scope가 아니다. 가능한 space: "
                               f"{_space_list()}"])
         dirs = [ROOT / SCOPE / scope / name for name in graph.RECORD_DIRS]

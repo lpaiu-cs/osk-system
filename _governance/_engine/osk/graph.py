@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .core import ROOT, LEDGER, ID_RE, resolve_in_root, SPACE_ROOTS, adapt_path
 from . import contract, roots
+from .errors import WriteError
 
 # 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
 _ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?(?![0-9a-z])")
@@ -959,7 +960,7 @@ def dangling_refs(idx: Index) -> list[str]:
 
 
 def reference_report(idx: Index, records=None) -> dict:
-    from . import evidence, write
+    from . import evidence
     records = records or evidence.Records()     # 노드마다 기록 색인을 다시 짓지 않는다
     out, items, dups = [], [], []
     for stem, (p, kind) in idx.nodes.items():
@@ -974,7 +975,7 @@ def reference_report(idx: Index, records=None) -> dict:
         # 엣지 집합은 같고, 그 노드의 다음 쓰기가 접는다(`write._update_node_locked`).
         for relation in contract.PREDICATES:
             seen = set()
-            for ref in write._stored_edges(n.meta.get(relation)):
+            for ref in contract.stored_edges(n.meta.get(relation)):
                 if ref in seen:
                     dups.append(f"{stem} [{relation}] → {ref}")
                 seen.add(ref)
@@ -1004,7 +1005,7 @@ def reference_review(node: contract.Node, idx: Index,
         elif relation == "Link" and kind == "nonnode":
             issue = "source_navigation"
         elif relation == "derived-from" and kind == "nonnode" and resolution[1][0] == "raw":
-            from . import raw, write
+            from . import raw
             if not anchor:
                 issue = "raw_round_required"
             elif raw.parse_ref(ref)[1] is None:
@@ -1012,7 +1013,7 @@ def reference_review(node: contract.Node, idx: Index,
             else:
                 try:
                     raw.read_round(ref, max_chars=0)
-                except (OSError, UnicodeError, ValueError, write.WriteError):
+                except (OSError, UnicodeError, ValueError, WriteError):
                     issue = "raw_round_unresolved"
         if issue:
             item = {"id": node.id, "relation": relation, "ref": ref,

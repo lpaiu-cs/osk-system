@@ -14,7 +14,8 @@ import re
 from pathlib import Path
 
 from .core import ROOT, posix_rel
-from . import graph, raw, roots, write
+from . import graph, raw, roots
+from .errors import WriteError
 
 # 줄 — `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`
 LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) · `([^`]+)` · (지지|조건|반례) — (\S.*)$")
@@ -77,12 +78,12 @@ class Records:
             else:
                 names = self.find(record)
                 if len(names) != 1:
-                    raise write.WriteError("없는 기록" if not names else "모호한 좌표",
+                    raise WriteError("없는 기록" if not names else "모호한 좌표",
                                            [f"`{record}`에 맞는 기록 {len(names)}개"
                                             + (f": {names[:3]}" if names else "")])
                 found = raw.locate_record(names[0])
                 if found is None:
-                    raise write.WriteError("없는 기록", [f"`{record}`"])
+                    raise WriteError("없는 기록", [f"`{record}`"])
                 self._files[record] = found
         return self._files[record]
 

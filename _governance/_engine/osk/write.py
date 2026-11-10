@@ -37,127 +37,18 @@ from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
                    new_node_id, now_kst, posix_rel, resolve_in_root,
                    resolve_one, sha256_bytes, sha256_file, atomic_write)
 from . import approvals, contract, evictions, graph, rechecks, signatures, workspaces
+from .contract import as_list, stored_edges
+from .errors import WriteError
+from .naming import MAX_FILENAME_BYTES, name_collision, portable_name_key, title_errors
+from .prose import norm_body, norm_newlines, space_numeric_tags
+# 결속·라우팅은 `routing`에 산다. 위층과 시험이 `write.<이름>`으로 부르는 동안 이 이름들을 남긴다.
+from .routing import (ALIAS_DEPTH, EPHEMERAL_SESSION_RE, alias_session, bind_after_write, bind_session,
+                      bindings, bound_scopes, canonical_session, ephemeral_session_errors, repo_session,
+                      resolve_landing, resolve_session, routing_errors, set_primary, unbind_session)
 
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
                    "delegation-overlap")   # Mechanism §4 3항 (lineage-fork 폐지)
-
-
-class WriteError(ValueError):
-    """계약 위반·거부. `violations`에 위반 목록을 담는다(부분 성공 없음)."""
-
-    def __init__(self, message: str, violations: list[str] | None = None,
-                 **extra):
-        super().__init__(message)
-        self.violations = violations or [message]
-        self.extra = extra
-
-
-# 제목은 곧 파일명이다. 인스턴스가 여러 기기에서 같은 트리를 git으로 공유하면,
-# **한쪽에서만 만들 수 있는 이름**은 다른 쪽의 체크아웃을 통째로 막는다 — 콜론이
-# 든 노드 하나 때문에 Windows에서 `git reset --hard origin/main`이 그 파일 하나가
-# 아니라 **전량** `invalid path`로 실패한 사례가 있다. 소비자 쪽에서 우회하지 않고,
-# 이름이 만들어지는 이 자리에서 막는다.
-_BAD_TITLE_CHARS = '<>:"|?*\\/'
-# MS "Naming Files, Paths, and Namespaces"의 열거 + CreateFile "Consoles"가
-# 콘솔 장치로 지정하는 `CONIN$`·`CONOUT$`. COM0·LPT0은 어느 쪽에도 없어 넣지 않는다.
-# 위첨자 ¹²³은 Windows가 **숫자로 읽어** COM#·LPT#로 취급한다는 문서 근거로 넣었다.
-#
-# 실측(Windows 11 + git 2.x): `CON.md`·`NUL.md`·`COM1.md`·`CONIN$.md`는 디스크에는
-# 만들어져도 `git add`가 `No such file or directory`로 실패하며, **그 하나가 add
-# 전체를 rc=128로 중단시킨다** — 콜론 사고와 같은 폭발 반경이다. `COM0.md`와
-# `LPT¹.md`는 이 조합에서는 통과했다(위첨자 차단은 문서 근거의 예방적 조치다).
-_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
-                 *(f"COM{i}" for i in range(1, 10)),
-                 *(f"LPT{i}" for i in range(1, 10)),
-                 "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"}
-
-# 파일명 한 구성요소의 상한. ext4는 255 **바이트**, NTFS는 255 **문자**라 단위가
-# 다르다 — 한글 제목은 문자 수로는 여유로워도 UTF-8 바이트로는 넘칠 수 있다
-# (한글 85자 + `.md` = 258바이트). 표면 스키마의 `max_length=120`은 문자 단위라
-# 이 제약을 표현하지 못한다.
-_MAX_FILENAME_BYTES = 255
-
-# 아래 둘은 파일명으로는 멀쩡하지만 **이 체계 자신의 Link 문법**을 깬다. 본문
-# Link 파서가 `\[\[([^\]#|]+)`이라 `#`·`]`·`|`에서 대상명이 잘린다 — 그런 제목의
-# 노드는 만들어지긴 해도 **아무도 링크로 가리킬 수 없다**(실측: `[[PR#1 판정]]`
-# → 대상 `PR`). `|`는 위 파일명 집합이 이미 막으므로 여기서는 나머지 둘이다.
-_LINK_BREAKING_CHARS = "#]"
-
-
-def _title_errors(title: str) -> list[str]:
-    """제목이 동기화 대상 **모든** 기기에서 파일명이 될 수 있는가.
-
-    검사 대상은 **원본 문자열**이다. 여기서 `strip()`을 하면 검사 대상이 실제로
-    파일명이 되는 문자열(`dest_dir / f"{title}.md"`)과 갈라져, 후행 공백과 양끝
-    제어문자가 검사를 통과한 뒤 파일명에 그대로 들어간다 — 검사는 `foo`를 보고
-    파일은 `foo .md`가 된다."""
-    t = title or ""
-    if not t.strip():
-        return ["부적격 제목: 비어 있다"]
-    errs = []
-    if t != t.strip():
-        errs.append("제목 앞뒤에 공백을 둘 수 없다 — 그대로 파일명이 되는데 "
-                    "Windows는 후행 공백을 조용히 잘라낸다")
-    bad = sorted({c for c in t if c in _BAD_TITLE_CHARS})
-    if bad:
-        errs.append(
-            f"제목에 쓸 수 없는 문자: {' '.join(bad)} — 제목이 곧 파일명이라 "
-            f"Windows에서 만들 수 없고, 그 기기의 체크아웃 전체를 막는다 "
-            f"(`/`는 `·`로, `:`는 `_`로 바꿔 쓴다)")
-    breaking = sorted({c for c in t if c in _LINK_BREAKING_CHARS})
-    if breaking:
-        errs.append(
-            f"제목에 쓸 수 없는 문자: {' '.join(breaking)} — 파일명으로는 되지만 "
-            f"본문 Link 파서가 `[[제목#헤딩]]`·`[[제목|별칭]]` 문법 때문에 여기서 "
-            f"대상명을 자른다. 이 제목으로 만든 노드는 아무도 링크로 가리킬 수 "
-            f"없다")
-    if any(ord(c) < 32 or c in "\x85\u2028\u2029" for c in t):
-        errs.append("제목에 제어문자·줄 구분 문자를 쓸 수 없다")
-    if t.startswith("."):
-        errs.append(f"제목은 `.`으로 시작할 수 없다: {title!r}")
-    if t.endswith((".", " ")):
-        errs.append("제목은 `.`이나 공백으로 끝낼 수 없다 — Windows가 잘라낸다")
-    # Windows의 DOS 장치명 판정은 장치명 뒤의 **공백을 무시**하고 그다음 `.`을 본다
-    # — `COM1 .foo`도 장치명으로 해석된다(실측: 그 이름은 git add가 실패한다).
-    if t.split(".", 1)[0].rstrip(" ").upper() in _WIN_RESERVED:
-        errs.append(f"Windows 예약 장치명은 파일명이 될 수 없다: {t}")
-    n = len(f"{t}.md".encode("utf-8"))
-    if n > _MAX_FILENAME_BYTES:
-        errs.append(
-            f"제목이 너무 길다 — `.md`를 포함한 UTF-8 파일명이 {n}바이트로 "
-            f"{_MAX_FILENAME_BYTES}바이트를 넘는다. ext4는 파일명을 **바이트**로 "
-            f"제한하므로 Linux 기기에서 만들 수 없다(한글은 글자당 3바이트다)")
-    return errs
-
-
-def _portable_name_key(name: str) -> str:
-    """**모든** 기기에서 같은 경로가 되는지 판정하는 파일명 동일성 키.
-
-    NTFS·APFS는 대소문자를 구별하지 않고, macOS는 한글을 NFD로 저장하기도 한다.
-    그래서 `path.exists()`처럼 **현재 OS에게** 물으면 Linux에서 `Example.md`와
-    `example.md`가 둘 다 만들어지고, 그 트리를 Windows·macOS에서 체크아웃할 때
-    두 경로가 충돌한다 — 한쪽만 워킹트리에 남는다.
-
-    `contract.target_stem`은 링크 대상 해소용 키라서 여기 쓰지 않는다. 그쪽을
-    접으면 Link가 대소문자를 무시하게 되는데, 그것은 다른 계약이다."""
-    return unicodedata.normalize("NFC", name).casefold()
-
-
-def _name_collision(dest_dir: Path, stem: str, suffix: str | None = ".md", *, unique: bool = False) -> str | None:
-    """같은 군집에 이식성 기준으로 충돌하는 파일이 있으면 그 이름을 돌려준다.
-    같은 이름 자신도 걸리므로 기존 존재 검사를 겸한다."""
-    key = _portable_name_key(stem)
-    hit = None
-    for p in dest_dir.glob("*"):
-        matches = p.is_dir() if suffix is None else p.suffix.lower() == suffix
-        if matches and _portable_name_key(p.name if suffix is None else p.stem) == key:
-            if not unique:
-                return p.name
-            if hit is not None:
-                raise WriteError(f"이식성 이름 충돌 — 정본을 고를 수 없다: {dest_dir / stem}")
-            hit = p.name
-    return hit
 
 
 # 전역 변경 잠금은 core가 소유한다 — 보호영역 조작(approvals)이 같은 잠금을
@@ -218,45 +109,6 @@ def _refuse_dup_id(paths: list[str]):
     raise WriteError(msg, [msg, graph.DUP_ID_ADVICE])
 
 
-# 옵시디언 태그 방어 (Mechanism §8 7항). `#1227` 같은 순수 숫자 참조는
-# 옵시디언 태그가 아니지만(태그는 비숫자 문자 1개 이상 필요), 조사·가운뎃점이
-# **붙는 순간**(`#1227은`·`#1227·1228`) 그 문자가 태그를 유효하게 만들어 의도
-# 없는 태그가 태그판을 오염한다(실측 확인). 거부하는 대신 숫자 뒤에 공백
-# 하나를 넣어 참조 의미를 보존한 채 태그화만 끊는다 — 규범이 아니라 옵시디언
-# 네이티브 계약을 지키는 방어 기제다. 이어지는 문자의 판정은 옵시디언 태그
-# 문자 집합을 따른다: 유니코드 문자·밑줄([^\W\d])과 `-`·`/`·`·`(U+00B7).
-# 마침표·쉼표·괄호·공백·전각 대시 등은 태그를 끝내므로 건드리지 않는다.
-_TAG_SPACE_RE = re.compile(r"(#\d+)(?=[^\W\d]|[-/·])")
-
-
-def _space_numeric_tags(text: str) -> str:
-    """본문의 `#<숫자>` 직결 태그화를 공백 삽입으로 끊는다.
-
-    코드 구획(펜스·들여쓰기 코드·인라인)은 옵시디언이 태그로 읽지 않으므로
-    건드리지 않는다 — 위험이 없는 코드를 고치면 그건 방어가 아니라 변조다.
-    구획 판정은 `wikilinks()`·목차와 같은 `contract.split_code`를 쓴다."""
-    return "".join(seg if i % 2 else _TAG_SPACE_RE.sub(r"\1 ", seg)
-                   for i, seg in enumerate(contract.split_code(text)))
-
-
-def _norm_newlines(text: str) -> str:
-    """`\\r\\n`·`\\r`을 `\\n`으로 — **파서가 읽을 형태**로 접는다.
-
-    `contract.parse_bytes`가 판독 시 이미 접으므로(universal newlines), 접지
-    않고 쓰면 쓴 바이트를 되읽을 수 없다: `new_text`에 CRLF를 담아 앵커 편집을
-    하면 파일에는 `\\r`이 들어가는데 다음 `read_node`의 본문에는 없어, 같은
-    `old_text`로 다시 부르면 "앵커가 본문에 없다"가 된다(실측 재현). 쓰는 자리가
-    읽는 자리와 같은 형태를 쓰면 그 창이 닫힌다."""
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _norm_body(body: str) -> str:
-    """`_render`가 쓸 형태로 접는다 — 변경 여부는 **쓰일 형태**로 판정해야
-    앞뒤 공백 차이가 헛 변경으로 잡히지 않고, 태그 방어(위)도 쓰일 형태에
-    이미 반영되어 같은 입력의 재전송이 헛 변경을 만들지 않는다."""
-    return _space_numeric_tags(_norm_newlines(body).lstrip("\n").rstrip())
-
-
 # 문단은 제목·목록 항목·표 행, 또는 빈 줄 뒤의 줄에서 시작한다. 노드 본문은 대개 한 줄짜리
 # 항목이라 빈 줄만 세면 절 하나가 통째로 한 문단이 된다.
 _PARAGRAPH = re.compile(r"[ \t]*(?:#{1,6}[ \t]|[-*+][ \t]|\d+[.)][ \t]|\|)")
@@ -272,7 +124,7 @@ def anchor_windows(body: str, quote: str, limit: int = 5) -> tuple[int, list[tup
     앵커 편집은 이 창을 싣는다. 이웃 문단은 창이 `WINDOW_CHARS` 안일 때만 붙인다."""
     # ponytail: 4000자를 넘는 한 문단은 이웃 없이 그 문단만 준다(볼트 노드 줄 중 3개). 문장 단위
     # 창은 그런 문단이 늘 때 넣는다.
-    quote = _norm_newlines(quote)
+    quote = norm_newlines(quote)
     if not quote:
         return 0, []
     starts, pos, blank = [], 0, True
@@ -317,7 +169,7 @@ def _frontmatter(meta: dict) -> str:
 
 
 def _render(meta: dict, body: str) -> bytes:
-    return (_frontmatter(meta) + "\n" + _norm_body(body) + "\n").encode()
+    return (_frontmatter(meta) + "\n" + norm_body(body) + "\n").encode()
 
 
 def _scalar(v):
@@ -502,7 +354,7 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
     # 확인 표식·디렉토리를 남기기 **전에** 자리를 본다 — 노드 자리가 아닌 곳
     # (`_misc`·`.notes`)은 물어볼 것도 없이 거부다.
     _require_node_cluster(graph.space_of(dest_dir / "x.md"), dest)
-    name_errs = _title_errors(dest_dir.name)
+    name_errs = title_errors(dest_dir.name)
     if name_errs:
         raise WriteError("군집 이름 부적격 — 이름이 곧 디렉토리명이다", name_errs)
     # 하위 군집에는 **2단계 확인을 붙이지 않는다.** 관문의 일은 "이거 신설인데
@@ -816,343 +668,6 @@ def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
             "그 사이 노드가 변경됐다 — 다시 읽고 재시도하라 (CAS 불일치)")
 
 
-# ── 세션 라우팅 (Mechanism §6-2 3항) ─────────────────────────────────────
-
-ALIAS_DEPTH = 8          # 별칭 사슬 추적 한계 — 순환·장난에 대한 보수적 상한
-
-# 1회용 대화 id의 형태 — UUID(하이픈 유무 무관). 실제 프로젝트 키(`open-hwp`,
-# `rhwp`, `lpaiu-cs/ltm-vault` 꼴)와는 겹치지 않는다.
-EPHEMERAL_SESSION_RE = re.compile(
-    r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    r"|[0-9a-f]{32})$", re.I)
-
-
-def ephemeral_session_errors(session: str | None) -> list[str]:
-    """1회용 대화 id는 프로젝트 키가 아니다 (Mechanism §6-2 6항) — 형식 검사다.
-
-    프로젝트 키는 훅이 작업 폴더에서 정한다. 대화마다 새로 나는 값을 키 자리에
-    넣으면 그 대화가 끝나는 순간 아무도 그 키로 다시 오지 않아 대장에 죽은 행만
-    쌓인다. 도구 설명만으로는 막히지 않는 것이 실측됐다(2026-08-24 관측:
-    `= Scope/Arel-Wars-2`·`= Scope/gh-hint`). 형식이 어긋난 `space`를 조용히 버리지
-    않는 `resolve_landing`의 규율과 같은 이유로 여기서도 거부한다.
-
-    쓰기 경로의 **가장 앞**에서 부른다. 결속은 파일 쓰기 뒤에 오는 경로가
-    있어(create_node) 거기서 막으면 부분 성공이 된다."""
-    if not session or not EPHEMERAL_SESSION_RE.match(session.strip()):
-        return []
-    return [f"`{session}`은 1회용 대화 id다 — 프로젝트 키가 아니다. 키는 훅이 작업 "
-            f"폴더에서 정한 값(`open-hwp`·`rhwp` 꼴)이며, 대화 id를 결속하면 아무도 그 "
-            f"키로 다시 오지 않아 대장에 죽은 행만 남는다."]
-
-
-def routing_errors(session: str | None) -> list[str]:
-    """결속을 세우기 **전에** 라우팅 대장이 판독·기록 가능한지 본다.
-
-    `resolve_session`은 판독 실패를 `None`으로 삼켜 "미결속"으로 진행한다. 그래서
-    손상된 대장 위에서도 쓰기가 끝까지 가고, 마지막의 `bind_session`이
-    `ledger_append`의 손상 거부에 걸려 죽는다 — 표면은 "쓰지 않았다"를 보고하는데
-    파일은 남는 **부분 성공**이다(Mechanism §6-2 3항 위반, 실측 재현). 손상은
-    언제나 외부 기원이므로(수동 복구·부분 병합) 여기서 fail-closed로 막는다.
-
-    `ephemeral_session_errors`와 같은 자리에서 부른다 — 잠금 앞이든 안이든
-    **첫 바이트를 쓰기 전**이면 된다."""
-    if not session:
-        return []                       # 결속을 세울 일이 없다
-    try:
-        recs = ledger_read(ROUTING)
-    except Exception as e:
-        return [f"세션 라우팅 대장을 읽지 못했다: {e} — 이 상태에서 쓰면 결속만 "
-                f"실패하고 파일은 남는다. Mechanism §3 8항의 수동 복구가 먼저다"]
-    dmg = ledger_damage(recs, ROUTING)
-    if dmg:
-        return ["세션 라우팅 대장이 손상됐다: " + "; ".join(dmg[:3])
-                + " — 손상 위에 이력을 더 쌓지 않는다(Mechanism §3 2항). "
-                  "수동 복구가 먼저다"]
-    return []
-
-
-def canonical_session(session: str | None,
-                      recs: list[dict] | None = None) -> str | None:
-    """프로젝트 키를 **정본 키**로 접는다 (Mechanism §6-2 6항).
-
-    저장소·서버의 개명은 흔한 일이고(이 체계도 llm-vault → ltm-vault →
-    osk-system을 거쳤다), 그때마다 세션이 다른 scope로 흩어지면 라우팅이
-    이름의 역사에 인질이 된다. 별칭 기록(`kind: "alias"`)이 구 이름을 정본
-    이름으로 접어 **어느 이름으로 들어오든 한 scope로 모이게** 한다.
-
-    별칭도 인과 극대가 정본이다 — 분기·순환이면 접지 않고 원래 키를 쓴다."""
-    if not session:
-        return None
-    if recs is None:
-        try:
-            recs = ledger_read(ROUTING)
-        except Exception:
-            return session
-    seen = {session}
-    cur = session
-    for _ in range(ALIAS_DEPTH):
-        r = resolve_one(recs, cur, "session")
-        if not r or r.get("kind") != "alias":
-            return cur
-        nxt = r.get("canonical")
-        if not nxt or nxt in seen:
-            return session      # 순환은 접지 않는다 — 원래 입력 키로 남는다
-        seen.add(nxt)
-        cur = nxt
-    return cur
-
-
-def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
-    """프로젝트 키의 결속 집합 — `{"scopes": [...], "primary": str | None, "undetermined": bool}`
-    (Mechanism §6-2 6항 · 시행령 §3 10항).
-
-    결속은 집합이다. 그 키의 `bind`·`unbind` 기록을 rid 순으로 접는다 — `bind`는
-    더하고 `unbind`는 뺀다. 주된 scope는 `primary`를 표시한 `bind`가 정한다. **v5.2
-    이전의 기록에는 `primary`가 없다** — 그 시절 키는 scope 하나에만 결속됐고 그것이
-    곧 저장소 자체의 활동이었으므로 주된 scope로 읽는다. 그 시절의 재결속은 **교체**였으므로
-    (새 인과 극대가 새 결속) 옛 기록은 집합을 그 scope 하나로 바꾼다 — 더하면 개명 전 scope가
-    결속에 되살아난다(`LLM-Second-Brain` → `osk-system` 실측). 새 기록은 `primary`를 늘
-    적는다(집합에만 더하는 쓰기는 False). 인과 극대가 갈리고 그 주된 scope가 다르면
-    미확정이다 — 착지를 명시하게 한다. 일회성 작업 폴더의 키는 결속하지 않는다."""
-    out = {"scopes": [], "primary": None, "undetermined": False}
-    if not session or workspaces.is_one_off(session):
-        return out
-    if recs is None:
-        try:
-            recs = ledger_read(ROUTING)
-        except Exception:
-            return out
-    key = canonical_session(session, recs)
-    rows = [r for r in recs if r.get("session") == key and r.get("kind") in ("bind", "unbind")
-            and r.get("scope")]
-    rows.sort(key=lambda r: _rid_key(r["rid"]) if re.match(RID_RE, str(r.get("rid"))) else (0, 0, ""))
-    scopes, primary = [], None
-    for r in rows:
-        sc = str(r["scope"])
-        if r["kind"] == "bind":
-            if "primary" not in r:              # v5.2 이전 기록 — 재결속은 교체였다
-                scopes = []
-            if sc not in scopes:
-                scopes.append(sc)
-            if r.get("primary", True):
-                primary = sc
-        else:
-            if sc in scopes:
-                scopes.remove(sc)
-            if primary == sc:
-                primary = None
-    # 미확정은 **지정 기록만으로** 판정한다 — 집합에만 더하는 결속은 지정 사이의 분기를 해소할
-    # 권한이 없다. 극대를 모든 결속 기록에서 구하면 분기 뒤의 일반 결속이 유일 극대가 되어
-    # 어느 쪽도 고르지 않은 채 rid 순서가 주된 scope를 정해 버린다(#191 리뷰).
-    heads = {str(r.get("scope")) for r in causal_maxima(
-        recs, key, field="session",
-        candidate=lambda r: r.get("kind") == "bind" and r.get("scope") and r.get("primary", True))}
-    if len(heads) > 1:
-        out["undetermined"], primary = True, None
-    out.update(scopes=scopes, primary=primary)
-    return out
-
-
-def resolve_session(session: str | None) -> str | None:
-    """프로젝트 키 → 주된 scope(기본 착지). 없거나 미확정이면 None — fail-closed."""
-    return bindings(session)["primary"]
-
-
-def bound_scopes(session: str | None) -> list[str]:
-    """결속 scope를 주된 scope부터, 없으면 결속 순서대로(Mechanism §9-3 1항) — 조직 검토와
-    기억 주입이 scope를 고르는 순서다."""
-    b = bindings(session)
-    return [s for s in b["scopes"] if s == b["primary"]] + [s for s in b["scopes"] if s != b["primary"]]
-
-
-def bind_session(session: str, scope: str, reason: str = "", *,
-                 primary: bool = True) -> dict:
-    """프로젝트→scope 결속 기록. `primary=True`(기본)는 주된 scope의 지정(표시 기록)이고,
-    `primary=False`는 집합에만 더하는 결속이다 — 쓰기 경로는 언제나 후자다. 쓰기는 주된
-    scope를 정하지 않는다(Mechanism §6-2 6항). 별칭은 정본 키로 접어 기록하므로 구 이름으로
-    들어와도 한 자리에 모인다. 재결속도 **새 행 append**다(append-only)."""
-    # 키는 `strip()`한 값으로 적는다 — `ephemeral_session_errors`가 이미
-    # 다듬은 값으로 검사하므로, 여기서 원문을 쓰면 `" open-hwp"`가 `open-hwp`와
-    # 다른 결속으로 앉아 다음 세션이 그 기억에 닿지 못한다.
-    session = (session or "").strip()
-    return ledger_append(ROUTING, {
-        "kind": "bind", "session": canonical_session(session) or session,
-        "scope": scope, "primary": bool(primary), "reason": reason or "최초 작업에서 확정"})
-
-
-def unbind_session(session: str, scope: str, reason: str = "") -> dict:
-    """결속 해제 기록 — 집합에서 뺀다. 주된 scope였으면 주된 scope도 비운다."""
-    session = (session or "").strip()
-    return ledger_append(ROUTING, {
-        "kind": "unbind", "session": canonical_session(session) or session,
-        "scope": scope, "reason": reason or "결속 해제"})
-
-
-def set_primary(session: str, scope: str, reason: str = "") -> dict:
-    """주된 scope의 지정 — 그 프로젝트 자체의 활동이 속한 scope로 확인됐을 때만 부른다
-    (대화 검토의 소속 판정이 결정 묶음으로 내어 실행기가 적용하거나 사용자가 한다 —
-    Mechanism §6-2 6항). 지정은 결속도 겸한다."""
-    if scope not in graph.scope_names():
-        raise WriteError("없는 scope — 지정하지 않았다",
-                         [f"`{scope}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
-    return bind_session(session, scope, reason or "주된 scope 지정", primary=True)
-
-
-def bind_after_write(result: dict, session: str, scope: str, reason: str = "") -> bool:
-    """파일을 **쓴 뒤**의 결속 — 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다
-    (Mechanism §6-2 6항). 실패를 쓰기 실패로 올리지 않고 영수증으로 남긴다.
-
-    올리면 표면은 `ok:false`를 내는데 파일은 서 있다 — 호출자는 잃은 줄 알고
-    재시도하고, 그 재시도는 이름 충돌·중복 라운드로 거부된다(v4 감사 실측:
-    공유 위반으로 라우팅 대장 append가 실패한 경우). 대장 append는 기록된 뒤에도
-    (fsync) 실패할 수 있으므로 "미기록"이 아니라 "확인 불가"다 —
-    `evictions._after_node_write`의 처분 영수증과 같은 규율. 일회성 작업 폴더의 키는
-    결속하지 않는다 — 그 착지는 그 대화에만 적용된다(Mechanism §6-2 6항)."""
-    if workspaces.is_one_off(session):
-        result["binding"] = {
-            "state": "not_bound", "scope": scope,
-            "note": "일회성 작업 폴더의 키라 결속하지 않았다 — 다음 쓰기에도 space를 준다"}
-        return False
-    if scope in bindings(session)["scopes"]:
-        return False                            # 이미 결속에 있다 — 새 결속이 아니다
-    try:
-        bind_session(session, scope, reason or "착지를 명시한 쓰기가 결속에 더함", primary=False)
-        return True
-    except Exception as e:
-        result["binding"] = {
-            "state": "unconfirmed", "scope": scope, "error": f"{type(e).__name__}: {e}",
-            "note": (f"쓴 것은 저장됐다 — 다시 보내지 마라. 프로젝트 결속은 확인하지 "
-                     f"못했다: 다음 쓰기에 같은 session과 space `{SCOPE}/{scope}`를 "
-                     f"함께 주면 결속에 더해진다.")}
-        return False
-
-
-def alias_session(alt: str, canonical: str, reason: str = "") -> dict:
-    """구 이름 → 정본 이름 별칭. 개명 이력을 대장에 남기는 일이며 MCP 표면에
-    노출하지 않는다 — 이름의 정본을 정하는 것은 사용자의 일이다."""
-    return ledger_append(ROUTING, {
-        "kind": "alias", "session": alt, "canonical": canonical,
-        "reason": reason or "개명 이력"})
-
-
-def _repo_owner(recs: list[dict], key: str) -> dict | None:
-    """그 키의 **첫 소유 기록** — `repo`를 적은 결속 중 rid가 가장 작은 것.
-    한 번 선 소유는 뒤의 행(구판이 쓴 무소유 재결속 포함)이 바꾸지 않는다."""
-    rows = [r for r in recs if r.get("session") == key and r.get("kind") == "bind"
-            and isinstance(r.get("repo"), list) and re.match(RID_RE, str(r.get("rid")))]
-    return min(rows, key=lambda r: _rid_key(r["rid"]), default=None)
-
-
-def _derived_key(recs: list[dict], name: str, repo: list[str]) -> str:
-    """이름을 남이 소유할 때 이 저장소가 쓰는 파생 키 `<이름>-<뿌리 앞 8자>`.
-
-    배정된 파생 키는 옮겨지지 않는다 — 뒤에 받은 브랜치가 뿌리를 더해 가장 작은
-    뿌리가 바뀌어도 그대로다. 그래서 ① 내 뿌리와 겹치는 소유자가 있는 파생 키,
-    ② 소유 기록 전이라도 내 뿌리로 만든 파생 키 중 이미 결속된 것, ③ 둘 다
-    없을 때만 가장 작은 뿌리로 만든 새 키 순으로 고른다."""
-    mine, pat = set(repo), re.compile(re.escape(name) + r"-[0-9a-f]{8}")
-    owned = {}
-    for k in {r.get("session") for r in recs if pat.fullmatch(str(r.get("session", "")))}:
-        o = _repo_owner(recs, k)
-        if o and set(o["repo"]) & mine:
-            owned[k] = _rid_key(o["rid"])
-    if owned:
-        return min(owned, key=owned.get)
-    bound = {r.get("session") for r in recs if r.get("kind") == "bind"}
-    for root in repo:                                   # 정렬된 뿌리 — 어느 기기에서나 같은 순서
-        k = f"{name}-{root[:8]}"
-        if k in bound and _repo_owner(recs, k) is None:
-            return k
-    return f"{name}-{repo[0][:8]}"
-
-
-def _repo_claim(recs: list[dict], name: str, repo: list[str]) -> tuple[str, dict | None]:
-    """(이 저장소의 프로젝트 키, 새로 적을 결속 행 또는 None)."""
-    key = canonical_session(name, recs) or name
-    owner, out = _repo_owner(recs, key), name
-    if owner and not set(owner["repo"]) & set(repo):
-        out = key = _derived_key(recs, name, repo)      # 남의 키 — 파생 키로 비켜 선다
-        owner = _repo_owner(recs, key)
-        if owner and not set(owner["repo"]) & set(repo):
-            return out, None                            # 파생 키마저 남의 것(앞 8자 충돌)
-    maxima = causal_maxima(recs, key, field="session")
-    scopes = {r.get("scope") for r in maxima if r.get("kind") == "bind"}
-    # 무소유 결속은 소유하고(첫 사용 신뢰), 내 소유 키가 같은 scope로 분기했으면
-    # (두 기기의 동시 소유) 봉합한다. scope가 갈린 분기는 지금처럼 미확정으로 둔다.
-    if (len(scopes) == 1 and all(r.get("kind") == "bind" for r in maxima)
-            and (owner is None or len(maxima) > 1)):
-        # 소유 행은 결속을 되풀이할 뿐 주된 scope를 바꾸지 않는다 — 극대의 표시를 그대로 잇는다
-        return out, {"kind": "bind", "session": key, "scope": scopes.pop(),
-                     "primary": all(r.get("primary", True) for r in maxima),
-                     "repo": repo, "reason": "저장소 동일성 기록"}
-    return out, None
-
-
-def repo_session(name: str, repo: list[str]) -> str:
-    """저장소 폴더 이름 + 저장소 동일성(정렬된 뿌리 커밋) → 그 저장소의 프로젝트 키.
-
-    폴더 이름만 키로 쓰면 무관한 두 저장소(`C:/a/api`·`D:/b/api`)가 한 결속을
-    나눠 가져 서로의 기억을 주입받고 서로의 대화를 포착했다. 결속 행에 `repo`를
-    적고, 그 키의 첫 소유자와 뿌리가 겹치지 않는 저장소는 파생 키
-    `<이름>-<뿌리 앞 8자>`를 쓴다 — 뿌리는 어느 기기·사본에서나 같으므로 파생
-    키도 같다. 두 기기의 동시 소유는 병합 뒤 rid가 작은 쪽이 소유자다.
-
-    쓰기는 판정과 같은 잠금 안에서 다시 확인한다(`ledger_append`의 `expect`).
-    대장 행도 working-tree 변경이므로 `mutation_lock` 안에서 쓴다 — 데몬의
-    commit→rebase 사이에 끼면 rebase가 멈추거나 `--abort`가 행을 지운다."""
-    key, row = _repo_claim(ledger_read(ROUTING), name, repo)
-    if row:
-        def same(recs):
-            k, r = _repo_claim(recs, name, repo)
-            return None if k == key and r and r["scope"] == row["scope"] else "소유 판정이 바뀌었다"
-        try:
-            with mutation_lock():
-                ledger_append(ROUTING, row, expect=same)
-        except ValueError:                          # 판정이 그사이 바뀌었다 — 다시 판정한다
-            try:
-                key = _repo_claim(ledger_read(ROUTING), name, repo)[0]
-            except Exception:
-                pass
-        except Exception:
-            # 소유 행을 못 적어도(읽기 전용 대장·공유 위반·낡은 엔진) 판정한 키를
-            # 쓴다 — 행은 다음 훅이 다시 적는다. 원래 이름으로 물러서면 남이 소유한
-            # 이름의 기억이 주입된다.
-            pass
-    return key
-
-
-def resolve_landing(session: str, space: str | None,
-                    confine_note: str) -> tuple[str | None, str | None]:
-    """프로젝트 키·space → 착지 scope. `(scope, primary)`를 돌려준다.
-
-    scope별 구획을 갖는 표면(scope 기억)이 같은 판정을 쓴다. 규율은 둘이고 **순서가
-    있다** — 형식 → 실재.
-
-    1. 형식이 어긋난 `space`를 **조용히 버리지 않는다.** 버리면 안 준 것과 같아져
-       호출부가 "결속이 없다"고 엉뚱한 원인을 지목하고, 받는 쪽은 결속이 멀쩡한데도
-       키를 바꿔가며 헤맨다(감사에서 실측된 오진).
-    2. 없는 scope는 유효 목록과 함께 거부한다.
-
-    결속에 없는 scope를 명시한 쓰기는 거부하지 않는다 — 한 프로젝트가 여러 scope의
-    활동을 품는다(Mechanism §6-2 6항 · 시행령 §3 10항). `confine_note`는 호환 인자다.
-    주된 scope가 없고 `space`도 없으면 `(None, None)` — 호출부가 fail-closed로 다룬다."""
-    bound = resolve_session(session)
-    if not space:
-        return bound, bound
-    scope = graph.scope_of_space(space)
-    if not scope:
-        raise WriteError(
-            "space 표기 아님 — 쓰지 않았다",
-            [f"`{space}`는 space 표기가 아니다 — `{SCOPE}/<이름>` **두 마디**로 "
-             f"준다. `overview`의 `clusters`에는 `{PERSON}/…`이나 더 깊은 경로도 "
-             f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {graph.space_list()}"])
-    if scope not in graph.scope_names():
-        raise WriteError(
-            "없는 scope — 쓰지 않았다",
-            [f"`{space}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
-    return scope, bound
-
-
 # ── 도구 ─────────────────────────────────────────────────────────────────
 
 def create_node(title: str, summary: str, body: str, drafter: str,
@@ -1219,7 +734,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     _require_complete(idx)
     if settle is not None:
         evictions.require_evict(settle)
-    errs = (_check_edges(edges, idx) + _title_errors(title)
+    errs = (_check_edges(edges, idx) + title_errors(title)
             + ephemeral_session_errors(session) + routing_errors(session))
     if errs:
         raise WriteError("계약 위반 — 쓰지 않았다", errs)
@@ -1274,15 +789,15 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     # 다른 군집에 함께 서고, 그 둘을 한 군집으로 옮기는 순간 대소문자를
     # 접는 파일시스템에서 한쪽이 조용히 덮인다(`move_nodes`). 제목이
     # 전역에서 유일하다는 계약(Mechanism §8 2항)은 "모든 기기에서"여야 한다.
-    pkey = _portable_name_key(title)
-    gclash = next((s for s in idx.names if _portable_name_key(s) == pkey),
+    pkey = portable_name_key(title)
+    gclash = next((s for s in idx.names if portable_name_key(s) == pkey),
                   None)
     if gclash is not None:
         raise WriteError(
             f"이식성 기준으로 같은 이름의 노드가 이미 있다: {gclash} — "
             f"대소문자나 유니코드 정규화만 다른 이름은 NTFS·APFS에서 같은 "
             f"경로가 된다. 한 군집으로 모이면 한쪽이 덮인다")
-    clash = _name_collision(dest_dir, title)
+    clash = name_collision(dest_dir, title)
     if clash is not None:
         raise WriteError(
             f"같은 군집에 이미 있는 이름이다: {clash} — 대소문자나 유니코드 "
@@ -1298,7 +813,7 @@ def _create_node_locked(title: str, summary: str, body: str, drafter: str,
     data, errs = _validate_render(path, meta, body, idx)
     if errs:
         raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
-    if settle is not None and not _norm_body(contract.parse_bytes(path, data).body):
+    if settle is not None and not norm_body(contract.parse_bytes(path, data).body):
         raise WriteError("보존할 본문이 없다 — 쓰지도 처분하지도 않았다")
 
     _baseline(idx)
@@ -1377,25 +892,6 @@ def _require_complete(idx) -> None:
 # 두어야 한다. 쓰기 통로는 그런 자리가 아니다.
 
 
-def _as_list(v) -> list:
-    return v if isinstance(v, list) else [v]
-
-
-def _stored_edges(v) -> list[str]:
-    """frontmatter에 **저장된 표기 그대로**의 대상 목록.
-
-    `contract.edge_targets`와 다르다 — 그쪽은 대상을 해소하려고 `[[…#앵커]]`의
-    `#` 뒤를 버린다(해석용으로는 옳다). 그 손실된 목록을 다시 저장 목록으로 쓰면
-    엣지를 하나 더하거나 빼는 것만으로 **남아 있던 라운드 좌표가 전부 지워진다**:
-    `[[…/_raw/rec#3]]` → `[[…/_raw/rec]]`. 근거에서 증거로 가는 길이 그렇게
-    끊긴다(시행령 §1 3항이 `_raw/` 참조에 라운드 제목을 요구한다).
-
-    그래서 델타는 **여기서 읽고** 동일성 비교는 `_edge_key`로 한다."""
-    if v is None or v == "" or v == []:
-        return []
-    return [str(x) for x in _as_list(v)]
-
-
 def _edge_key(target: str, idx) -> tuple[str, str]:
     """노드는 해석된 제목과 절 앵커, 비노드 근거는 전체 경로와 앵커로 구별한다.
     id·제목·경로 어느 표기든 같은 노드의 같은 범위면 같은 키다. 해석되지 않는 이름만 표기
@@ -1447,7 +943,7 @@ def _merge_edges(cur: list[str], add, idx) -> list[str]:
     지우게 된다. 저장 목록의 되풀이는 바이트가 같을 때만 접는다(`_update_node_locked`)."""
     seen = {_edge_key(t, idx) for t in cur}
     out = list(cur)
-    for t in _as_list(add):
+    for t in as_list(add):
         t = _titled(t, idx)
         k = _edge_key(t, idx)
         if k not in seen:
@@ -1469,7 +965,7 @@ def _as_links(pred: str, targets, *, legacy_raw: bool = False) -> str | list:
     간선이 바뀐다. 새로 받은 id는 `_merge_edges`가 `_titled`로 먼저 제목으로
     적는다."""
     out = []
-    for t in _as_list(targets):
+    for t in as_list(targets):
         s = str(t).strip()
         if (not legacy_raw and pred == "derived-from" and graph.is_record_ref(s)
                 and not re.match(r"^(?:\[\[\s*)?https?://", s)):
@@ -1533,10 +1029,10 @@ def _update_node_locked(name: str, body: str | None = None,
                 ["`body`는 전문 치환이고 앵커는 부분 편집이다. 둘을 함께 주면 "
                  "어느 쪽이 이겼는지 응답으로 구분되지 않는다. 하나만 보내라."])
         # 앵커도 **파서가 읽을 형태**로 접는다 — 본문은 CRLF 없이 저장되므로
-        # (`_norm_body`), CRLF 앵커를 그대로 대조하면 호출자가 방금 넣은 문장도
+        # (`norm_body`), CRLF 앵커를 그대로 대조하면 호출자가 방금 넣은 문장도
         # 못 찾는다. 접는 자리를 한 벌로 두어 대조와 치환이 갈리지 않게 한다.
-        old_text = _norm_newlines(old_text)
-        new_text = _norm_newlines(new_text or "")
+        old_text = norm_newlines(old_text)
+        new_text = norm_newlines(new_text or "")
         if not old_text:
             raise WriteError(
                 "`old_text`가 비어 있다 — 쓰지 않았다",
@@ -1574,7 +1070,7 @@ def _update_node_locked(name: str, body: str | None = None,
     rc_pre = rechecks.state(path.read_bytes())  # 검토자가 읽었어야 할 노드의 본문
     rc_prior = rechecks.complete_keys(idx, path, n.meta) if rc_before else set()
     rc_again, rc_stray = set(), []
-    for ref in _as_list(rechecked):
+    for ref in as_list(rechecked):
         t = rechecks.target(str(ref), idx)
         if t and t[0] in rc_before and t[1] is not None:
             rc_again.add(t[0])
@@ -1588,8 +1084,8 @@ def _update_node_locked(name: str, body: str | None = None,
         # 자리를 고치는 길이다. 하네스 `Edit` 실측에서 유일성 위반은
         # 5,454건 중 5건(0.09%)이라 이 계약은 실무에서 거의 공짜다.
         hits, windows = anchor_windows(n.body, old_text)
-        if hits == 0 and (spaced := _space_numeric_tags(old_text)) != old_text:
-            # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(`_norm_body`). 호출자가 방금 쓴 글 그대로의
+        if hits == 0 and (spaced := space_numeric_tags(old_text)) != old_text:
+            # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(`norm_body`). 호출자가 방금 쓴 글 그대로의
             # 앵커도 같은 변환으로 맞춘다(#292). 원문부터 보는 것은 조각이 코드 구획 한가운데서
             # 시작하면 변환의 구획 판정이 틀릴 수 있어서다.
             old_text = spaced
@@ -1629,8 +1125,8 @@ def _update_node_locked(name: str, body: str | None = None,
     # 빼고 제목으로 다시 대는 호출이 뒤의 제거에 지워지지 않는다. 같은 근거를
     # 함께 빼고 대면 남는다 — 근거를 조용히 잃지 않는다.
     for pred, tg in (remove_edges or {}).items():
-        drop = {_edge_key(t, idx) for t in _as_list(tg)}
-        cur = _stored_edges(meta.get(pred))
+        drop = {_edge_key(t, idx) for t in as_list(tg)}
+        cur = stored_edges(meta.get(pred))
         keep = [t for t in cur if _edge_key(t, idx) not in drop]
         if len(keep) != len(cur):
             changed = True
@@ -1639,7 +1135,7 @@ def _update_node_locked(name: str, body: str | None = None,
             else:
                 meta.pop(pred, None)
     for pred, tg in (add_edges or {}).items():
-        cur = _stored_edges(meta.get(pred))            # 저장 표기 그대로
+        cur = stored_edges(meta.get(pred))            # 저장 표기 그대로
         merged = _merge_edges(cur, tg, idx)  # 한 호출 안의 중복도 한 번만 앉는다
         if len(merged) != len(cur):
             meta[pred] = _as_links(pred, merged, legacy_raw=_legacy_raw)
@@ -1650,11 +1146,11 @@ def _update_node_locked(name: str, body: str | None = None,
     # raw 근거마다 해소 비용(Windows 실측 ~7 ms)을 내고, 키가 거친 자리에서 서로 다른
     # 근거를 지운다.
     for pred in contract.PREDICATES:
-        cur = _stored_edges(meta.get(pred))
+        cur = stored_edges(meta.get(pred))
         if len(set(cur)) != len(cur):
             meta[pred] = list(dict.fromkeys(cur))
     new_body = n.body if body is None else body
-    if body is not None and _norm_body(body) != _norm_body(n.body):
+    if body is not None and norm_body(body) != norm_body(n.body):
         changed = True
     extra_keys = [k for k in meta
                   if k not in contract.ORDER and k not in contract.PREDICATES]
@@ -1690,8 +1186,8 @@ def _update_node_locked(name: str, body: str | None = None,
     if errs:
         raise WriteError("계약·위상 위반 — 쓰지 않았다", errs)
     if settle is not None:
-        saved_body = _norm_body(contract.parse_bytes(path, data).body)
-        if not saved_body or saved_body == _norm_body(n.body):
+        saved_body = norm_body(contract.parse_bytes(path, data).body)
+        if not saved_body or saved_body == norm_body(n.body):
             raise WriteError("보존할 본문이 없거나 변경되지 않았다 — 쓰지도 처분하지도 않았다", [
                 "settle은 이 호출이 보존한 evict의 rid다. 이미 노드에 보존된 내용이면 "
                 "본문을 확인한 뒤 CLI tidy settle로 기록하라."])
@@ -1714,7 +1210,7 @@ def _update_node_locked(name: str, body: str | None = None,
         # 전문 치환은 긴 글을 다시 쓰다 흘릴 수 있다. 무엇이 빠졌는지 비추면 선의의 에이전트는
         # 스스로 되살린다(헌법 1조 3항). 앵커 편집은 지울 글을 호출자가 `old_text`에 직접
         # 적었으므로 비출 것이 없다.
-        dropped = _dropped(n.body, _norm_body(new_body))
+        dropped = _dropped(n.body, norm_body(new_body))
         if dropped:
             out["dropped"] = dropped
     if replaced_summary is not None:
@@ -1757,7 +1253,7 @@ def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
     target = dest_dir / path.name
     dst_kind = graph.space_of(target)   # 소속은 노드 파일 경로로 판정한다
     _require_node_cluster(dst_kind, dest_space)
-    clash = _name_collision(dest_dir, path.stem)
+    clash = name_collision(dest_dir, path.stem)
     if clash is not None:
         raise WriteError(
             f"목적지에 이미 있는 이름이다: {clash} — 대소문자나 유니코드 "
@@ -1938,7 +1434,7 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
         # 이미 옮긴 것은 남으므로 "전부 아니면 전무"가 깨진다.
         #
         # 그리고 **이식성 키**로도 본다. 대소문자·정규화만 다른 두 노드를 한
-        # 군집으로 옮기면 목적지 검사(`_plan_move`의 `_name_collision`)는 아직
+        # 군집으로 옮기면 목적지 검사(`_plan_move`의 `name_collision`)는 아직
         # 그 파일이 없으니 통과시키고, `os.replace`가 둘째로 첫째를 덮는다 —
         # 노드 하나가 소실되는데 응답은 `ok:true`였다(실측 재현).
         seen, seen_keys, plans = set(), {}, []
@@ -1948,7 +1444,7 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
             if src in seen:
                 raise WriteError(f"같은 노드를 두 번 옮길 수 없다: {name}")
             seen.add(src)
-            key = _portable_name_key(src.stem)
+            key = portable_name_key(src.stem)
             if key in seen_keys:
                 raise WriteError(
                     f"한 번에 옮길 수 없는 이름 충돌이다: {seen_keys[key]} / "
