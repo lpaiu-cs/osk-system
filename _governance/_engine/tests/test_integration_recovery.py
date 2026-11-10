@@ -144,7 +144,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             assert gone['structure'][0]['reason'] == 'target missing', gone
             path = it.state_path('claude', sid)
             before = path.read_bytes()
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 assert it.review_status_locked('claude', sid, first['through'])['status'] == 'complete'
             assert path.read_bytes() == before  # A status read never writes the cursor.
             assert not it.status('claude', sid)['pending']

@@ -26,6 +26,7 @@ from .core import ROOT, atomic_write, mutation_lock, posix_rel, resolve_in_root,
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
 from . import graph, naming, routing, secrets, raw_view
 from .errors import WriteError
+from .core import VAULT
 
 # 라운드 제목 — 행 머리의 `## ` 뒤에 양의 십진 index 하나(Mechanism §8 3항).
 # escape된 제목(`\## 3`)은 `^## `에 걸리지 않으므로 이 하나로 판정이 끝난다.
@@ -129,7 +130,7 @@ def is_person(space: str | None) -> bool:
 
 def _record_pair(path: Path | str) -> tuple[Path, Path]:
     """Confined physical path and its old Markdown alias. No content conversion."""
-    p = resolve_in_root(path)
+    p = resolve_in_root(VAULT, path)
     if p is None or graph.space_of(p)[0] != "raw":
         raise WriteError("vault 밖 또는 인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 기록을 열지 않았다")
     requested = Path(path) if Path(path).is_absolute() else ROOT / path
@@ -158,7 +159,7 @@ def _record_pair(path: Path | str) -> tuple[Path, Path]:
         new = new_dir / (new_name or f"{old.stem}.txt")
     # A symlink must not redirect the alias into another scope or outside raw.
     for candidate in (old, new):
-        resolved = resolve_in_root(candidate)
+        resolved = resolve_in_root(VAULT, candidate)
         if resolved is None or resolved != candidate or graph.space_of(resolved) != graph.space_of(p):
             raise WriteError("raw 별칭이 저장 구획을 벗어났다")
     return old, new
@@ -179,7 +180,7 @@ def write_raw(path: Path | str, text: str) -> tuple[Path, list[str]]:
     vault 밖 경로·기록 구획 밖 경로는 기록하지 않고 거부한다(fail-closed).
     `text`는 **파일 전문**이며, 기존 파일이 있으면 그 바이트를 접두부로
     보존해야 한다(아래 append 판정). 반환은 (기록한 경로, 적중 패턴 목록)."""
-    p = resolve_in_root(path)
+    p = resolve_in_root(VAULT, path)
     if p is None:
         raise ValueError(f"vault 밖 경로 — 인용 기록 거부: {path}")
     if graph.space_of(p)[0] != "raw":
@@ -221,7 +222,7 @@ def _migrate_file(path: Path) -> Path:
 
 def migrate(*, apply: bool = False) -> dict:
     """Preview or move existing raw files. Nodes and raw content are never edited."""
-    with mutation_lock():
+    with mutation_lock(VAULT):
         plans = []
         for scope in scope_names():
             directory = ROOT / SCOPE / scope / "_raw"
@@ -251,7 +252,7 @@ def consolidate(*, apply: bool = False, expect: list | None = None) -> dict:
     세울 때는 잠그지 않는다 — `osk doctor`는 읽기만 하고 잠금 파일도 만들지 않는다. 옮길 때는 이행
     기록에 전수 목록을 먼저 적고, 기록마다 옮기기 전에 이행 판정을 남긴 뒤, 결과와 보류로 목록을 닫는다
     (Mechanism §5 1~3항)."""
-    with (mutation_lock() if apply else contextlib.nullcontext()):
+    with (mutation_lock(VAULT) if apply else contextlib.nullcontext()):
         moves, conflicts, seen = [], [], {}
         for d in legacy_dirs():
             for f in sorted({*d.glob("*.md"), *(d / ".records").glob("*.txt"),
@@ -501,7 +502,7 @@ def append_rounds(session: str, record: str, pairs: list,
     if errs:
         raise WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
 
-    with mutation_lock():
+    with mutation_lock(VAULT):
         p = record_path(None, record)
         supersedes = None
         if cited is not None:
@@ -581,7 +582,7 @@ def raw_file(path: str) -> Path:
     """`_raw/` 안의 실재 파일로 해소한다. 봉쇄는 쓰기와 **같은 규율**이다 —
     읽기라고 느슨하게 두면 `[[../../어딘가]]`가 vault 밖을 읽는 창이 된다."""
     from .core import resolve_in_root
-    p = resolve_in_root(path)
+    p = resolve_in_root(VAULT, path)
     if p is None:
         raise WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
     if graph.space_of(p)[0] != "raw":

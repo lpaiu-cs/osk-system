@@ -120,7 +120,7 @@ def sig_status(node_id, path=None):
     r = m[0]
     hit = None
     for c in (path, r.get("path")):
-        c = core.resolve_in_root(c) if c else None
+        c = core.resolve_in_root(core.VAULT, c) if c else None
         if c is not None and c.exists() and S.id_of(c) == node_id:
             hit = c
             break
@@ -365,8 +365,8 @@ def test_ridless_unsign_not_swallowed():
 # ── 3f. 경로 봉쇄·KST 고정 ──────────────────────────────────────────────
 def test_root_confinement_and_kst():
     for bad in ("../outside/evil.md", "/etc/passwd", "00_Scope/../../etc/hosts"):
-        check(f"vault 밖 경로 해석 거부: {bad}", core.resolve_in_root(bad) is None)
-    inside = core.resolve_in_root("00_Scope/W1")
+        check(f"vault 밖 경로 해석 거부: {bad}", core.resolve_in_root(core.VAULT, bad) is None)
+    inside = core.resolve_in_root(core.VAULT, "00_Scope/W1")
     check("vault 안 경로는 해석", inside is not None and inside.exists())
     r = subprocess.run(
         [sys.executable, "-c",
@@ -2163,15 +2163,15 @@ def test_approval_serialized_with_writes():
     from osk import write
     import sync_daemon
     check("변경 잠금이 sync·update가 쓰는 그 잠금과 같은 파일이다",
-          core.mutation_lock_path()
+          core.mutation_lock_path(core.VAULT)
           == sync_daemon._lock_path(ROOT, "osk-mutation.lock"))
     check("잠금 파일은 추적 트리 밖이다",
-          not str(core.mutation_lock_path()).startswith(str(ROOT) + os.sep)
-          or ".git" in core.mutation_lock_path().parts)
+          not str(core.mutation_lock_path(core.VAULT)).startswith(str(ROOT) + os.sep)
+          or ".git" in core.mutation_lock_path(core.VAULT).parts)
     # 같은 경로를 가리키는 것만으로는 부족하다 — 실제로 상호배제되는지 본다.
     # flock은 open file description마다이므로 같은 프로세스의 두 번째 열기도
     # 경합한다(데몬이 다른 프로세스에서 잡는 상황과 같은 판정).
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         with open(sync_daemon._lock_path(ROOT, "osk-mutation.lock"), "w") as fh:
             try:
                 core.lock_exclusive(fh, blocking=False)
@@ -2317,7 +2317,7 @@ def test_revert_confirms_before_destroying():
         A.protect(reg, "지정")
         base = A.approved_hash(reg)                   # 승인본 A = v1
         f.write_text("v2", encoding="utf-8")
-        other = A._store_tree(A.resolve_in_root(reg))  # 다른 기기가 승인할 tree B = v2
+        other = A._store_tree(A.resolve_in_root(core.VAULT, reg))  # 다른 기기가 승인할 tree B = v2
         check("반려 전 상태는 pending", A.state(reg) == "pending")
 
         def racing(h):                    # 준비(blob 적재) 도중 승인 B가 유입
@@ -2390,7 +2390,7 @@ def test_unprotect_precondition_under_lock():
     try:
         A.protect(reg, "지정")
         base = A.approved_hash(reg)
-        d = A.resolve_in_root(reg)
+        d = A.resolve_in_root(core.VAULT, reg)
         f.write_text("v2", encoding="utf-8")
         other = A._store_tree(d)          # 다른 기기가 승인할 tree(B)
         f.write_text("v1", encoding="utf-8")          # 작업본은 되돌려 clean
@@ -6647,7 +6647,7 @@ def test_session_key_repo_identity():
 
     def spy(*args, **kw):
         # 소유 행도 working-tree 변경이다 — 데몬의 commit→rebase와 같은 잠금을 잡는다.
-        with open(core.mutation_lock_path(), "w") as fh:
+        with open(core.mutation_lock_path(core.VAULT), "w") as fh:
             try:
                 core.lock_exclusive(fh, blocking=False)
                 core.unlock(fh)
@@ -8030,7 +8030,7 @@ def test_evictions():
         copy.unlink(missing_ok=True)
     # 사본 이름은 확인받은 판의 해시다(#138 리뷰 P1). 손편집한 id가 경로 문자를 품어도
     # vault 밖을 쓰지 않고, 같은 id의 다른 판이 앞 사본을 덮지 않는다.
-    escape = Path(os.path.normpath(core.local_lock_path("osk-discarded-x/../../../regr-evi-outside.md")))
+    escape = Path(os.path.normpath(core.local_lock_path("osk-discarded-x/../../../regr-evi-outside.md", core.VAULT.root)))
     escape.write_text("관련 없는 파일\n", encoding="utf-8")
     copies = []
     for n, body in enumerate(("첫 판", "둘째 판"), 1):
@@ -8041,7 +8041,7 @@ def test_evictions():
         copies.append(Path(o["copy"]) if o.get("copy") else None)
         check(f"tidy discard: 사본은 확인한 판의 해시 이름으로 잠금 자리에 남는다({n})",
               o.get("ok") and not transit.exists() and copies[-1]
-              == core.local_lock_path("osk-discarded-" + h.removeprefix("sha256:") + ".md"), o)
+              == core.local_lock_path("osk-discarded-" + h.removeprefix("sha256:") + ".md", core.VAULT.root), o)
     check("tidy discard: 경로 문자를 품은 id가 vault 밖 파일을 덮지 않는다",
           escape.read_text(encoding="utf-8") == "관련 없는 파일\n", escape)
     check("tidy discard: 같은 id의 다른 판이 앞 사본을 덮지 않는다",
@@ -10225,7 +10225,7 @@ def test_engine_epoch_fence():
 
     core.lock_exclusive, core._fence = spy_lock, spy_fence
     try:
-        with core.mutation_lock():
+        with core.mutation_lock(core.VAULT):
             pass
     finally:
         core.lock_exclusive, core._fence = real_lock, real_fence
@@ -10287,7 +10287,7 @@ def test_engine_epoch_fence():
     try:
         epoch._LOADED = "0000deadbeef"
         try:
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 pass
         except core.StaleEngineError as e:
             held = e            # 프레임을 살려 둔다 — 참조계수에 기대지 않는다

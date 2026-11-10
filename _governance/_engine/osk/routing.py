@@ -12,6 +12,7 @@ from . import graph, workspaces
 from .core import (PERSON, RID_RE, ROUTING, SCOPE, rid_key, causal_maxima, ledger_append, ledger_damage,
                    ledger_read, mutation_lock, resolve_one)
 from .errors import WriteError
+from .core import VAULT
 
 ALIAS_DEPTH = 8          # 별칭 사슬 추적 한계 — 순환·장난에 대한 보수적 상한
 
@@ -301,7 +302,7 @@ def repo_session(name: str, repo: list[str]) -> str:
             k, r = _repo_claim(recs, name, repo)
             return None if k == key and r and r["scope"] == row["scope"] else "소유 판정이 바뀌었다"
         try:
-            with mutation_lock():
+            with mutation_lock(VAULT):
                 ledger_append(ROUTING, row, expect=same)
         except ValueError:                          # 판정이 그사이 바뀌었다 — 다시 판정한다
             try:

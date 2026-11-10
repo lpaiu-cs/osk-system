@@ -106,7 +106,7 @@ def add(harness: str, root: str, shape: str, version: str, note: str = "") -> di
     re.compile(shape)
     if not all(isinstance(v, str) and v.strip() for v in (harness, root, shape, version)):
         raise ValueError("harness, root, shape and version are required")
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         return core.ledger_append(LEDGER, {"kind": "rule", "harness": harness, "os": os.name,
                                            "version": version, "root": root, "shape": shape,
                                            "note": note})

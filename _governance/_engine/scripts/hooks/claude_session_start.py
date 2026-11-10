@@ -228,7 +228,7 @@ def _checkout_cached(cwd: str) -> tuple[str, list[str] | None]:
     — 첫 커밋 뒤에도 이름만 쓰면 같은 이름의 남의 결속을 받는다(#196 리뷰). git이 시간을
     넘기면 지난 판정이 있으면 그것을 쓰고, 그 판정은 캐시하지 않는다."""
     from osk import core
-    path, folder, now = core.local_lock_path("osk-checkouts.json"), os.path.normcase(os.path.abspath(cwd)), time.time()
+    path, folder, now = core.local_lock_path("osk-checkouts.json", core.VAULT.root), os.path.normcase(os.path.abspath(cwd)), time.time()
     try:
         table = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -390,7 +390,7 @@ def _conversation(st: dict, keep: int):
     from osk import core
     from osk.hook_text import Block
     n = len(st.get("pending_refs") or [])
-    command = core.cli_command("integration", "prompt", "--harness", st["harness"],
+    command = core.cli_command(core.VAULT, "integration", "prompt", "--harness", st["harness"],
                                "--conversation", st["conversation_id"])
     return Block("conversation", st["text"], keep,
                  label=f"대화 검토 대기 {n}라운드 — 이 턴에 검토한다" if n else "대화 검토 상태",
@@ -408,7 +408,7 @@ def _organization(jobs: list, keep: int, ident=None, *, startup: bool = False, s
     label = f"조직 검토 scope {j['scope']} 남은 구간 {j['coverage']['remaining']}/{j['coverage']['total']}"
     mark = organization.hook_mark(jobs)
     if ident and not startup and integration.shown_before(*ident, "organization", mark):
-        command = core.cli_command("organization", "plan", "--scope", j["scope"])
+        command = core.cli_command(core.VAULT, "organization", "plan", "--scope", j["scope"])
         return Block("organization", f"[osk 참조·조직 검토 대기 — 변화 없음, {label}. 이 대화에 실은 전문과 같다 — "
                                      f"`{command}`로 다시 읽는다]", keep, label=label, pull="overview:organization")
     return Block("organization", organization.hook_prompt(jobs, shown_tree), keep, label=label,
@@ -422,7 +422,7 @@ def _organization_jobs(key: str) -> list:
     scopes = write.bound_scopes(key)     # 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
     if not scopes:
         return []
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         return organization.pending(scopes, limit=1, record=True)
 
 
@@ -674,7 +674,7 @@ def _sync_notice(host=None) -> tuple[str, str]:
     try:
         import sync_daemon
         from osk import core
-        trouble = sync_daemon.trouble()
+        trouble = sync_daemon.trouble(core.VAULT.root)
     except Exception as exc:
         return f"[osk 동기화 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", ""
     if not trouble:
@@ -713,7 +713,7 @@ def main() -> None:
             from osk import core
             # 대장 행도 작업 트리의 변경이다 — 판독부터 쓰기까지 변경 잠금 안에서 한다(정기 실행과 같다).
             # 그 사이 다른 세션의 노드 쓰기가 끼면 낡은 판독으로 이어 적어 방금 닫은 쌍을 다시 연다.
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 rechecks.ensure_baseline(carry=True)
         except Exception:
             pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다

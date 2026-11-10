@@ -13,7 +13,7 @@ from .core import PERSON
 import re
 from pathlib import Path
 
-from .core import ROOT
+from .core import ROOT, VAULT
 from . import contract, approvals
 
 DELEGATION_FACET = ROOT / PERSON / "Delegation"
@@ -62,7 +62,7 @@ def _baseline_nodes() -> list[Path] | None:
         if table is None:
             continue
         pre = DELEGATION_REGION + "/"
-        return [p for p in (approvals.resolve_in_root(rel) for rel in sorted(table)
+        return [p for p in (approvals.resolve_in_root(VAULT, rel) for rel in sorted(table)
                             if rel.startswith(pre) and rel.lower().endswith(".md"))
                 if p is not None]
     return None

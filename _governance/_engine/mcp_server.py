@@ -365,7 +365,7 @@ def _hook_sections(session: str, include) -> dict:
             elif not scopes:
                 out[name] = ""
             else:
-                with core.mutation_lock():
+                with core.mutation_lock(core.VAULT):
                     jobs = organization.pending(scopes, limit=1, record=False)
                 out[name] = "\n\n".join(t for t in (organization.hook_prompt(jobs),
                                                    organization.bindings_prompt(session)) if t)

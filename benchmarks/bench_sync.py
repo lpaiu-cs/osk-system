@@ -43,13 +43,13 @@ def writer(a):
     def lock(f, *args, **kwargs):
         start = time.perf_counter()
         result = original_lock(f, *args, **kwargs)
-        if Path(f.name) == core.mutation_lock_path():
+        if Path(f.name) == core.mutation_lock_path(core.VAULT):
             timing.update(wait_ms=(time.perf_counter()-start)*1000,
                           acquired_at=time.perf_counter())
         return result
 
     def unlock(f):
-        if Path(f.name) == core.mutation_lock_path():
+        if Path(f.name) == core.mutation_lock_path(core.VAULT):
             timing["hold_ms"] = (time.perf_counter()-timing["acquired_at"])*1000
         return original_unlock(f)
 

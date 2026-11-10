@@ -17,6 +17,7 @@ from pathlib import Path
 from .core import ROOT, LEDGER, ID_RE, resolve_in_root, SPACE_ROOTS, adapt_path
 from . import contract, roots, signatures as _sig
 from .errors import WriteError
+from .core import VAULT
 
 # 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
 _ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?(?![0-9a-z])")
@@ -766,7 +767,7 @@ class Index:
         if re.match(ID_RE, name):
             return None if name in self.dup_ids else self.by_id.get(name)
         if "/" in name:
-            p = resolve_in_root(name)
+            p = resolve_in_root(VAULT, name)
             for cand in ((p, p.with_suffix(".md")) if p is not None else ()):
                 if cand.is_file():
                     return cand, space_of(cand)
@@ -811,7 +812,7 @@ class Index:
             hit = self.by_id.get(name)
             return ("node", hit[1]) if hit else ("dangling",)
         if "/" in name:
-            p = resolve_in_root(name)
+            p = resolve_in_root(VAULT, name)
             if p is None:
                 return ("dangling",)      # vault 밖 — 참조 대상이 아니다
             for cand in (p, p.with_suffix(".md")):

@@ -71,10 +71,9 @@ VALIDATORS = VAULT.validators
 ROUTING = VAULT.routing
 EVICTIONS = VAULT.evictions
 ROOTS = VAULT.roots
-_MUTATION_LOCK_PATH: Path | None = None
 
 
-def local_lock_path(name: str, root: Path | None = None) -> Path:
+def local_lock_path(name: str, root: Path) -> Path:
     """기기 로컬 잠금 파일의 경로 — **추적 트리 밖으로만** 고른다.
 
     엔진의 primitive다. 동기화는 이 체계의 필수 구성요소가 아니라 쓰는 사람만
@@ -89,7 +88,7 @@ def local_lock_path(name: str, root: Path | None = None) -> Path:
 
     추적 트리 안에 두지 않는 이유: `git add -A`에 딸려 들어가고, checkout이
     그 pathname의 inode를 갈면 "같은 경로 = 같은 mutex" 전제가 깨진다."""
-    r = Path(root) if root is not None else ROOT
+    r = Path(root)
     dot = r / ".git"
     try:
         if dot.is_dir():
@@ -113,16 +112,14 @@ def local_lock_path(name: str, root: Path | None = None) -> Path:
     return Path(tempfile.gettempdir()) / f"{stem}-{key}.lock"
 
 
-def mutation_lock_path() -> Path:
+@functools.cache
+def mutation_lock_path(vault: Vault) -> Path:
     """working-tree 변경 상호배제 잠금의 경로 — 동기화(sync·update)가 잡는
     `osk-mutation.lock`과 **같은 파일**이다.
 
     이름을 공유해야 데몬의 `pull(rebase)`가 반려의 파괴 구간과 경합하지 않는다.
-    프로세스마다 한 번만 해석한다 — 이 잠금은 모든 노드 쓰기가 잡는다."""
-    global _MUTATION_LOCK_PATH
-    if _MUTATION_LOCK_PATH is None:
-        _MUTATION_LOCK_PATH = local_lock_path("osk-mutation.lock")
-    return _MUTATION_LOCK_PATH
+    저장소마다 한 번만 해석한다 — 이 잠금은 모든 노드 쓰기가 잡는다."""
+    return local_lock_path("osk-mutation.lock", vault.root)
 
 
 class StaleEngineError(RuntimeError):
@@ -189,8 +186,11 @@ class mutation_lock:
     관문을 여기 두면 쓰는 쪽이 그것을 잊을 수 없다 — 호출부마다 걸면 새 쓰기
     통로가 생길 때 빠뜨리는 것이 언제나 가능해진다."""
 
+    def __init__(self, vault: Vault):
+        self.vault = vault
+
     def __enter__(self):
-        path = mutation_lock_path()
+        path = mutation_lock_path(self.vault)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._f = open(path, "w")
         lock_exclusive(self._f)
@@ -215,12 +215,12 @@ class mutation_lock:
 
 
 @contextmanager
-def device_lock():
+def device_lock(vault: Vault):
     """기기 로컬 설정(`.osk/`)을 읽고 고치는 동안 mutation 잠금을 쥔다. 동기화 데몬은 이 잠금 안에서
     rebase하고 그 rebase가 바꾼 `.osk/` 파일을 rebase 전 바이트로 되돌린다(`vault_sync.rebase_snapshot`)
     — 그 사이에 읽은 설정은 다른 기기의 판본일 수 있고, 쓴 설정은 되돌리기에 덮인다. 노드 쓰기가
     아니므로 판본 관문(`_fence`)은 세우지 않는다."""
-    path = mutation_lock_path()
+    path = mutation_lock_path(vault)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         lock_exclusive(f)
@@ -390,7 +390,7 @@ def atomic_write(path: Path, data: bytes) -> None:
 _DETACHED = 0x08000200
 
 
-def spawn_worker(module: str, *, env: dict | None = None, stdin: bytes | None = None,
+def spawn_worker(vault: Vault, module: str, *, env: dict | None = None, stdin: bytes | None = None,
                  stderr=None) -> subprocess.Popen:
     """이 vault 엔진의 모듈을 **분리 프로세스**로 띄우고 기다리지 않는다 — 훅과
     표면은 곧바로 돌아간다. 부모가 끝나도 자식은 남는다(POSIX는 새 세션, Windows는
@@ -399,14 +399,14 @@ def spawn_worker(module: str, *, env: dict | None = None, stdin: bytes | None = 
     부모의 표준 입출력은 물려주지 않는다. stdio로 도는 MCP 표면의 파이프를 자식이
     쥐면 표면의 입력을 가로채거나 표면의 종료를 붙잡는다. `stdin`을 주면 그 바이트만
     넘기고 닫는다. `stderr`는 열린 파일을 주면 거기 쓰고, 주지 않으면 버린다."""
-    child_env = {**os.environ, "OSK_VAULT_ROOT": str(ROOT),
+    child_env = {**os.environ, "OSK_VAULT_ROOT": str(vault.root),
                  "PYTHONPATH": str(Path(__file__).resolve().parents[1]), **(env or {})}
     proc = subprocess.Popen(
         [sys.executable, "-m", module],
         stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL if stderr is None else stderr,
-        env=child_env, cwd=ROOT, shell=False, start_new_session=os.name != "nt",
+        env=child_env, cwd=vault.root, shell=False, start_new_session=os.name != "nt",
         creationflags=_DETACHED if os.name == "nt" else 0)
     if stdin is not None:
         try:
@@ -431,11 +431,11 @@ def shell_join(argv) -> str:
     return ("& " if quoted and quoted[0] != argv[0] else "") + " ".join(quoted)
 
 
-def cli_command(*args: str) -> str:
+def cli_command(vault: Vault, *args: str) -> str:
     """이 vault의 `osk.cli`를 부르는 **한 줄 명령** — 에이전트가 제 셸에 그대로
     붙인다. vault 루트와 엔진 자리를 명령 안에 실으므로 작업 폴더·`PYTHONPATH`와
     무관하다."""
-    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(ROOT)!r};"
+    code = (f"import os,runpy,sys;os.environ['OSK_VAULT_ROOT']={str(vault.root)!r};"
             f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r});"
             "runpy.run_module('osk.cli',run_name='__main__')")
     return shell_join([sys.executable, "-c", code, *args])
@@ -455,20 +455,20 @@ def posix_rel(p: Path, relative_to: Path) -> str:
     return p.relative_to(relative_to).as_posix()
 
 
-def resolve_in_root(rel_or_abs: str | Path) -> Path | None:
+def resolve_in_root(vault: Vault, rel_or_abs: str | Path) -> Path | None:
     """대장·사건부에 적힌 경로 문자열을 **vault 안으로 봉쇄** 해석한다.
     대장은 다기기 병합으로 임의의 내용이 유입될 수 있는 신뢰 밖 입력이므로,
     `..`·절대 경로·심볼릭 링크로 루트를 벗어나면 None(=해석 실패)이다.
     실패는 호출부에서 언제나 거부·불일치 쪽으로 처리한다."""
     try:
         p = Path(rel_or_abs)
-        if p.is_absolute() and p.is_relative_to(ROOT):
-            p = Path(adapt_path(p.relative_to(ROOT).as_posix(), SPACE_ROOTS))
+        if p.is_absolute() and p.is_relative_to(vault.root):
+            p = Path(adapt_path(p.relative_to(vault.root).as_posix(), vault.space_roots))
         elif not p.is_absolute():
-            p = Path(adapt_path(str(p), SPACE_ROOTS))
-        cand = p if p.is_absolute() else ROOT / p
+            p = Path(adapt_path(str(p), vault.space_roots))
+        cand = p if p.is_absolute() else vault.root / p
         real = Path(os.path.realpath(cand))
-        root = Path(os.path.realpath(ROOT))
+        root = Path(os.path.realpath(vault.root))
         if real != root:
             real.relative_to(root)      # 벗어나면 ValueError
         return real

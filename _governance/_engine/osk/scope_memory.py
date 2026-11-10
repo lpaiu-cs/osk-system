@@ -30,6 +30,7 @@ from pathlib import Path
 from .core import ROOT, local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
 from . import evictions, graph, prose, routing, secrets, workspaces, write
 from .errors import WriteError
+from .core import VAULT
 
 # 계수는 mechanism이 정한다(시행령 서문). 한 세션의 배울 점을 적기에는 충분하고
 # 두 세션어치를 쌓아두기에는 모자란 크기여야 압력이 선다.
@@ -363,7 +364,7 @@ def replace(session: str, text: str | None = None,
     errs = routing.ephemeral_session_errors(session)
     if errs:
         raise WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
-    with mutation_lock():
+    with mutation_lock(VAULT):
         scope, bound = _landing(session, space)
         p = sm_path(scope)
         cur = _read(p)

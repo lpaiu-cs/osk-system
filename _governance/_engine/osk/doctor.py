@@ -129,9 +129,9 @@ def _engine(records: dict) -> list[dict]:
         items.append(_item("info", "릴리스", f"판독 실패 — {type(exc).__name__}: {exc}"))
     try:
         from . import sync_status
-        rec = sync_status.last()
+        rec = sync_status.last(core.VAULT.root)
         if rec:
-            trouble = sync_status.trouble()
+            trouble = sync_status.trouble(core.VAULT.root)
             items.append(_item("warn" if trouble else "ok", "동기화 데몬",
                                trouble or f"마지막 주기 {_kst(rec['at'])} — {rec.get('status')}",
                                "에이전트용 안내 docs/OPERATE-AGENT.md의 Check the connection 절을 따른다 — 전송 "
@@ -370,7 +370,7 @@ def migrate() -> tuple[dict, int]:
     if not plan["migrations"]:
         return {"ok": True, "applied": []}, 0
     review_id = core.sha256_bytes(json.dumps(plan, ensure_ascii=False, sort_keys=True).encode())
-    ticket = core.local_lock_path(CONFIRM_TICKET)
+    ticket = core.local_lock_path(CONFIRM_TICKET, core.VAULT.root)
     try:
         pending = json.loads(ticket.read_text(encoding="utf-8"))
     except (OSError, ValueError):

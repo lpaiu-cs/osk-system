@@ -50,7 +50,7 @@ def legacy(sid, transcript, scope='W1'):
     integration.save_state(path, s)
 def register(planned=None):
     planned = growth.plan(20) if planned is None else planned
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         return core.ledger_append(growth.LEDGER, {'kind':'plan', **planned})
 def no_value_all():
     manifest = register()

@@ -317,7 +317,7 @@ out = hook('capture_stop.py', raw=b'{broken')
 assert set(out) == {'systemMessage'} and 'capture diagnostic' in out['systemMessage'], out
 assert {'unknown/input', 'unknown/stop'} <= set(runs.read()['runs'])
 # A fork worker's own hooks neither answer nor record.
-state = core.local_lock_path(runs.STATE)
+state = core.local_lock_path(runs.STATE, core.VAULT.root)
 before = state.read_bytes()
 for name in ('claude_session_start.py', 'claude_prompt_submit.py', 'capture_stop.py'):
     assert hook(name, payload, OSK_GROWTH_WORKER='1') is None
@@ -598,7 +598,7 @@ with mock.patch.object(runs.time, 'time', side_effect=itertools.count(time.time(
         mock.patch.object(runs, '_update', claimed_while_waiting):
     assert runs.first_call('codex', 'input', again) is False, 'both calls were handled'
 # When the claim cannot be judged, the call is handled.
-with open(core.local_lock_path(runs.LOCK), 'w') as held:
+with open(core.local_lock_path(runs.LOCK, core.VAULT.root), 'w') as held:
     lock_exclusive(held)
     assert runs.first_call('codex', 'input', env) is True
     unlock(held)
@@ -629,7 +629,7 @@ assert codex.fires_on('start', '(') == frozenset(), 'a matcher that is not a reg
     def test_recording_waits_briefly_and_keeps_recent_sessions(self):
         self.check_case(r'''
 from osk._portalock import lock_exclusive, unlock
-with open(core.local_lock_path(runs.LOCK), 'w') as held:
+with open(core.local_lock_path(runs.LOCK, core.VAULT.root), 'w') as held:
     lock_exclusive(held)
     t = time.monotonic()
     assert runs.record_run('claude', 'start', 'k') is False, 'recorded under a held lock'
@@ -640,7 +640,7 @@ for n in range(runs.KEEP + 5):
     runs.record_overview(f's{n}')
 seen = runs.read()['overview']
 assert len(seen) == runs.KEEP and 's0' not in seen and f's{runs.KEEP + 4}' in seen, sorted(seen)
-core.local_lock_path(runs.STATE).write_text('{broken', encoding='utf-8')
+core.local_lock_path(runs.STATE, core.VAULT.root).write_text('{broken', encoding='utf-8')
 assert runs.read() == {'runs': {}, 'overview': {}}
 assert runs.record_overview('again') and runs.read()['overview'].keys() == {'again'}
 ''')

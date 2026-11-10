@@ -243,7 +243,7 @@ def main():
     a = ap.parse_args()
     if os.environ.get("SYNC_ENABLED", "").lower() not in ("1", "true", "yes"):
         sys.exit("sync 비활성 — SYNC_ENABLED=1 로 명시 활성화 (템플릿 계약: 키가 없으면 동기화하지 않는다)")
-    lock = open(_lock_path(), "w")
+    lock = open(_lock_path(ROOT), "w")
     try:
         lock_exclusive(lock, blocking=False)
     except OSError:

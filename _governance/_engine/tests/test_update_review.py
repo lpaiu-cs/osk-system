@@ -46,7 +46,7 @@ def run(**kw):
     return update.run(source='bundle', bundle=str(bundle), **kw)
 preview = run(adopt=True)
 assert preview['applied'] is False and 'review_id' in preview
-assert not core.local_lock_path('osk-update-confirmation.json').exists()
+assert not core.local_lock_path('osk-update-confirmation.json', core.VAULT.root).exists()
 before = approvals.APPROVALS.read_bytes()
 # First call does not acquire the daemon lock or write instance payloads.
 with mock.patch('osk.sync_status.lock_path', side_effect=AssertionError('daemon touched')):
@@ -66,7 +66,7 @@ assert applied['applied'] and applied['governance_accepted'], applied
 assert approvals.state('_governance') == 'clean'
 assert (root / '_governance/Policy.md').read_text() == 'new'
 assert (root / '_governance/Policy.md.local-v9.21.0').read_text() == 'changed while waiting'
-assert not core.local_lock_path('osk-update-confirmation.json').exists()
+assert not core.local_lock_path('osk-update-confirmation.json', core.VAULT.root).exists()
 # Each update asks again; a release label alone does not identify bytes.
 (bundle / '_governance/Policy.md').write_text('next')
 attest('v9.21.1')
@@ -77,7 +77,7 @@ attest('v9.21.1')
 fourth = run(apply=True)
 assert fourth['approval_required'] and third['review_id'] != fourth['review_id']
 # Expired or malformed tickets never authorize a write.
-ticket = core.local_lock_path('osk-update-confirmation.json')
+ticket = core.local_lock_path('osk-update-confirmation.json', core.VAULT.root)
 ticket.write_text(json.dumps({'review_id': fourth['review_id'], 'at': time.time()-3601}))
 assert run(apply=True)['approval_required']
 ticket.write_text('[]')
@@ -120,7 +120,7 @@ engine = core.ROOT / '_governance/_engine'
 engine.mkdir(parents=True)
 fake = engine / 'sync_daemon.py'
 fake.write_text("import time\nfrom osk import core\nfrom osk._portalock import lock_exclusive\n"
-                "f = open(core.local_lock_path('osk-sync.lock'), 'w')\n"
+                "f = open(core.local_lock_path('osk-sync.lock', core.VAULT.root), 'w')\n"
                 "lock_exclusive(f, blocking=False)\nprint('ready', flush=True)\ntime.sleep(300)\n")
 daemon = subprocess.Popen([sys.executable, str(fake)], stdout=subprocess.PIPE, text=True)
 try:
@@ -130,7 +130,7 @@ try:
     with mock.patch.object(update, 'DAEMON_RESTART_WAIT', 1):
         with update._daemon_stopped(info):
             assert daemon.wait(timeout=30) is not None, 'daemon still running during apply'
-            rival = open(core.local_lock_path('osk-sync.lock'), 'w')
+            rival = open(core.local_lock_path('osk-sync.lock', core.VAULT.root), 'w')
             try:
                 lock_exclusive(rival, blocking=False)
             except OSError:
@@ -142,12 +142,12 @@ try:
     assert daemon.pid in info['stopped'], info
     # A temp vault has no scheduled task or service, so the restart is reported, not faked.
     assert info['restarted'] is False and info['note'], info
-    probe = open(core.local_lock_path('osk-sync.lock'), 'w')
+    probe = open(core.local_lock_path('osk-sync.lock', core.VAULT.root), 'w')
     lock_exclusive(probe, blocking=False)
     unlock(probe)
     probe.close()
     # A held singleton with no matching daemon process is refused, not guessed at.
-    holder = open(core.local_lock_path('osk-sync.lock'), 'w')
+    holder = open(core.local_lock_path('osk-sync.lock', core.VAULT.root), 'w')
     lock_exclusive(holder, blocking=False)
     try:
         with update._daemon_stopped({}):

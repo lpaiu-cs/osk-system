@@ -289,7 +289,7 @@ def apply(expect=None) -> dict:
     """계획대로 옮긴다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항).
     끝나면 전수 목록을 결과와 보류로 닫는다. 동기화와 쓰기는 같은 잠금을 기다린다. `expect`는 확인받은
     대상이다(`_confirmed`)."""
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         p = plan()
         _confirmed([(n["path"], n["before"]) for n in p["nodes"] if n["new"] is not None], expect)
         day = core.now_kst()[:10]
@@ -385,7 +385,7 @@ def heading_plan() -> list[dict]:
 def heading_apply(expect=None) -> dict:
     """제목을 바꾼다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항).
     `expect`는 확인받은 대상이다(`_confirmed`)."""
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         items = heading_plan()
         _confirmed([(it["path"], it["before"]) for it in items if it["new"] is not None], expect)
         day = core.now_kst()[:10]

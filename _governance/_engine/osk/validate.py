@@ -405,7 +405,7 @@ def auto_activate(idx=None, *, now: float | None = None) -> list[str]:
     todo = [r for r in RULES if not any(x.get("rule") == r for x in ledger_read(VALIDATORS))]
     # worktree들은 git 디렉터리를 나눠 쓰지만 노드와 대장은 저마다다 — 잰 시각도 작업 트리마다 둔다
     key = hashlib.sha256(str(ROOT).encode("utf-8")).hexdigest()[:16]
-    mark = core.local_lock_path(f"osk-validators-auto-{key}.json")
+    mark = core.local_lock_path(f"osk-validators-auto-{key}.json", core.VAULT.root)
     now = time.time() if now is None else now
     try:
         if not todo or now - json.loads(mark.read_text(encoding="utf-8"))["at"] < AUTO_EVERY:

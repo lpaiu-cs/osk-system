@@ -42,7 +42,7 @@ BLIND = 5        # 전사 크기를 잴 수 없을 때의 창(초)
 
 def _load(name: str, keys: tuple[str, ...]) -> dict:
     try:
-        data = json.loads(core.local_lock_path(name).read_text(encoding="utf-8"))
+        data = json.loads(core.local_lock_path(name, core.VAULT.root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
     if not isinstance(data, dict):
@@ -63,7 +63,7 @@ def duplicates() -> dict:
 def _update(change, name: str = STATE, keys: tuple[str, ...] = ("runs", "overview")) -> bool:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return False
-    with open(core.local_lock_path(LOCK), "w") as f:
+    with open(core.local_lock_path(LOCK, core.VAULT.root), "w") as f:
         deadline = time.monotonic() + WAIT
         while True:
             try:
@@ -76,7 +76,7 @@ def _update(change, name: str = STATE, keys: tuple[str, ...] = ("runs", "overvie
         try:
             data = _load(name, keys)
             change(data)
-            core.atomic_write(core.local_lock_path(name),
+            core.atomic_write(core.local_lock_path(name, core.VAULT.root),
                               json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8"))
         finally:
             unlock(f)

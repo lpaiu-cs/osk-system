@@ -13,7 +13,7 @@ from pathlib import Path
 from . import core
 
 
-def lock_path(root: Path | None = None, name: str = "osk-sync.lock") -> Path:
+def lock_path(root: Path, name: str = "osk-sync.lock") -> Path:
     """잠금 파일의 경로 — 자리는 **엔진이 정한다**(`core.local_lock_path`).
     `name`으로 잠금을 구분한다: `osk-sync.lock`은 데몬 싱글턴(한 기기 한 데몬),
     `osk-mutation.lock`은 엔진의 working-tree 변경 잠금과 **같은 파일**이다.
@@ -32,7 +32,7 @@ STATUS = "osk-sync-status.json"
 STALE = 24 * 3600                       # 이보다 오래 성공하지 못했거나 돌지 않았으면 멈춘 것이다
 
 
-def last(root: Path | None = None) -> dict | None:
+def last(root: Path) -> dict | None:
     """마지막 주기의 기록 `{at, status, since}` — 없으면 이 기기는 데몬을 쓰지 않는다."""
     try:
         data = json.loads(lock_path(root, STATUS).read_text(encoding="utf-8"))
@@ -45,7 +45,7 @@ def _when(at: float) -> str:
     return datetime.fromtimestamp(at).strftime("%m-%d %H:%M")
 
 
-def trouble(root: Path | None = None, now: float | None = None) -> str | None:
+def trouble(root: Path, now: float | None = None) -> str | None:
     """동기화가 멈췄으면 그 사유 한 줄, 아니면 None. 전송 보류는 사람이 setup으로 풀어야 하므로
     곧바로, 그 밖의 실패는 하루 넘게 이어졌을 때, 기록이 하루 넘게 낡았으면 데몬이 돌지 않는 것이다."""
     rec = last(root)

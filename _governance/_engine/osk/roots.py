@@ -108,14 +108,14 @@ def declare(alias: str, note: str, origin: str | None = None) -> dict:
     if not NAME.fullmatch(alias) or alias in RESERVED:
         raise ValueError(f"쓸 수 없는 별칭: {alias!r} — 두 글자 이상의 [a-z][a-z0-9-]*이며 "
                          "http·https·native는 쓰지 않는다")
-    with core.mutation_lock():       # 대장도 작업 트리다 — 데몬의 rebase와 겹치지 않게 적는다
+    with core.mutation_lock(core.VAULT):       # 대장도 작업 트리다 — 데몬의 rebase와 겹치지 않게 적는다
         return core.ledger_append(ROOTS, {"kind": "declare", "alias": alias, "note": note,
                                           **({"origin": origin} if origin else {})})
 
 
 def retire(alias: str, note: str = "") -> dict:
     """별칭 해제 — 그 루트를 향한 근거 줄은 끊김이 된다. 선언이 갈린 별칭도 해제로 닫는다."""
-    with core.mutation_lock():       # 확인과 기록 사이에 동기화가 끼어들지 않게 한 잠금 안에서
+    with core.mutation_lock(core.VAULT):       # 확인과 기록 사이에 동기화가 끼어들지 않게 한 잠금 안에서
         if alias_problem(alias, declarations()) in ("선언되지 않은 별칭", "해제된 별칭"):
             raise ValueError(f"선언된 별칭이 아니다: {alias}")
         return core.ledger_append(ROOTS, {"kind": "retire", "alias": alias, "note": note})
@@ -127,14 +127,14 @@ def mount(alias: str, where: str) -> str:
     problem = alias_problem(alias, declarations()) or location_problem(where)
     if problem:
         raise ValueError(f"{problem} — `{alias}`의 위치를 두지 않았다")
-    with core.device_lock():         # 데몬의 rebase·`.osk/` 되돌리기와 겹치지 않게 읽고 쓴다
+    with core.device_lock(core.VAULT):         # 데몬의 rebase·`.osk/` 되돌리기와 겹치지 않게 읽고 쓴다
         _save({**locations(), alias: where})
     return where
 
 
 def unmount(alias: str) -> None:
     """이 기기에서 그 별칭의 위치를 지운다."""
-    with core.device_lock():
+    with core.device_lock(core.VAULT):
         places = locations()
         if places.pop(alias, None) is None:
             raise ValueError(f"이 기기에 위치가 없는 별칭: {alias}")

@@ -16,6 +16,7 @@ from pathlib import Path
 from .core import ROOT, posix_rel
 from . import graph, raw, roots
 from .errors import WriteError
+from .core import VAULT
 
 # 줄 — `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`
 LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) · `([^`]+)` · (지지|조건|반례) — (\S.*)$")
@@ -185,7 +186,7 @@ def check(coord: str, idx: "graph.Index | None" = None, records: Records | None 
     if k == "name":
         return f"알 수 없는 좌표: {coord}"
     from .core import resolve_in_root
-    p = resolve_in_root(target)
+    p = resolve_in_root(VAULT, target)
     if found != "nonnode" or p is None or not p.is_file():     # 색인은 디렉터리도 비노드로 본다
         return f"없는 파일: {coord}"
     heading = coord.partition("#")[2].strip()

@@ -29,6 +29,7 @@ from .core import (ROOT, LEDGER, ledger_damage, sha256_bytes, sha256_file,
                    effective_parents, heads, mutation_lock, resolve_one,
                    rid_key, canon_rel)
 from . import signatures
+from .core import VAULT
 
 APPROVALS = LEDGER / "approvals.jsonl"
 MOVES = LEDGER / "moves.jsonl"                # 이동 기록부 — 이동을 이동으로
@@ -98,7 +99,7 @@ def working_tree_hash(region: str) -> str | None:
     그렇게 봐야 반려가 그 사고를 되돌릴 수 있다. ③그 경로에 디렉터리가 아닌
     무언가가 있으면 None — 부재와 접으면 빈 승인본을 가진 영역이 구조가 깨진
     채로 clean으로 오판되고 해제까지 허용된다(fail-closed)."""
-    d = resolve_in_root(region)
+    d = resolve_in_root(VAULT, region)
     if d is None:
         return None
     if d.is_dir():
@@ -464,7 +465,7 @@ def governance_warning(recs: list[dict] | None = None) -> str | None:
 def containing_regions(path: Path | str) -> list[str]:
     """경로를 포함하는 보호영역 **전부** — 없으면 빈 목록. 영역은 중첩될 수
     있으므로(사용자가 하위 구획을 따로 지정) 포함 관계는 여럿일 수 있다."""
-    p = resolve_in_root(path)
+    p = resolve_in_root(VAULT, path)
     if p is None:
         return []
     rel = posix_rel(p, Path(os.path.realpath(ROOT)))
@@ -588,7 +589,7 @@ def changeset(region: str, *, record: dict | None = None,
     table = tree_table_for_region(region, tree) if tree else None
     if table is None:
         return None
-    d = resolve_in_root(region)
+    d = resolve_in_root(VAULT, region)
     files = ({rel: p for rel, p in region_files(d)}
              if d is not None and d.is_dir() else {})
     cur = {rel: sha256_file(p) for rel, p in files.items()}
@@ -642,7 +643,7 @@ def changeset(region: str, *, record: dict | None = None,
         region_real = Path(os.path.realpath(d)) if d is not None else None
 
         def _ins(rel):
-            q = resolve_in_root(rel or "")
+            q = resolve_in_root(VAULT, rel or "")
             return (region_real is not None and q is not None
                     and (q == region_real
                          or str(q).startswith(str(region_real) + os.sep)))
@@ -683,7 +684,7 @@ def file_in_region_baseline(region: str, path: Path | str) -> bool:
     그 하위 디렉터리만 보호된 경우로 우회되지 않는다(헌법 7조 3항). region이
     보호 중이 아니거나 파일이 그 승인본에 없거나 해시가 다르면 False(fail-closed)
     — 미보호·stale은 `approved_hash`가 None이라 같은 지점에서 걸린다."""
-    p = resolve_in_root(path)
+    p = resolve_in_root(VAULT, path)
     if p is None or not p.is_file():
         return False
     tree = approved_hash(region)
@@ -707,8 +708,8 @@ def protect(region: str, reason: str = "", *, expect_work: str | None = None,
     갱신은 트랜잭션 내내 mutation 잠금을 쥐고(`_locked`) 확인받은 통치 구획
     tree를 `expect_work`로 건다 — 박제한 작업본이 그와 다르면 지정하지 않는다
     (작업본 측 CAS, 단일 판독: 검사한 tree가 곧 박제한 tree다)."""
-    with (contextlib.nullcontext() if _locked else mutation_lock()):
-        d = resolve_in_root(region)
+    with (contextlib.nullcontext() if _locked else mutation_lock(VAULT)):
+        d = resolve_in_root(VAULT, region)
         if d is None or not d.is_dir():
             raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
         reg = posix_rel(d, Path(os.path.realpath(ROOT)))
@@ -777,14 +778,14 @@ def approve(region: str, base: str, expect_work: str,
     거부된다 — 사용자가 본 적 없는 갈래를 함께 봉합하지 않는다. 성립한 기록이
     그 모든 head를 이어 분기를 봉합한다(Mechanism §3 5항 · 시행령 §6 3항의
     "해소는 사용자의 새 검토")."""
-    with mutation_lock():
+    with mutation_lock(VAULT):
         return approve_locked(region, base, expect_work, reason, seal_heads)
 
 
 def approve_locked(region: str, base: str, expect_work: str,
                     reason: str = "", seal_heads: list[str] | None = None) -> dict:
     """Shared CAS; updater already owns the mutation lock across its transaction."""
-    d = resolve_in_root(region)
+    d = resolve_in_root(VAULT, region)
     if d is None or not d.is_dir():
         raise ValueError(f"영역이 vault 안의 디렉터리가 아니다: {region}")
     reg = posix_rel(d, Path(os.path.realpath(ROOT)))
@@ -846,7 +847,7 @@ def _chain_position(node: str, chain: list[dict]) -> str | None:
     실물로 확인한다(실패 잔행이 다시 무해해진다). 없으면 None."""
     for r in reversed(chain):
         rel = r.get("to")
-        q = resolve_in_root(rel or "")
+        q = resolve_in_root(VAULT, rel or "")
         if q is not None and q.is_file() and signatures.id_of(q) == node:
             return rel
     return None
@@ -907,7 +908,7 @@ def _plan_unmoves(region_dir: Path, table: dict[str, str],
     region_real = Path(os.path.realpath(region_dir))
 
     def _inside_rel(rel: str | None) -> bool:
-        p = resolve_in_root(rel or "")
+        p = resolve_in_root(VAULT, rel or "")
         return p is not None and (p == region_real
                                   or str(p).startswith(str(region_real) + os.sep))
 
@@ -965,8 +966,8 @@ def revert(region: str, base: str, expect_work: str, reason: str = "") -> dict:
     남는다). 삭제와 달리 이쪽은 사용자가 치울 것이 눈앞에 있고(`rm` 한 번),
     엔진이 승인본에 없던 객체를 말없이 지우는 것은 반려의 범위가 아니다 —
     승인본 밖 물건을 지우는 것은 영역 **안**에서만 하는 일이다."""
-    with mutation_lock():   # 엔진이 내는 변경을 직렬화
-        d = resolve_in_root(region)
+    with mutation_lock(VAULT):   # 엔진이 내는 변경을 직렬화
+        d = resolve_in_root(VAULT, region)
         if d is None:
             raise ValueError(f"영역이 vault 안의 경로가 아니다: {region}")
         if d.exists() and not d.is_dir():
@@ -1081,8 +1082,8 @@ def unprotect(region: str, reason: str = "") -> dict:
     (시행령 §6 5항). 상설 보호영역(위임 Facet·통치 구획·모듈 Facet)의 해제는
     제도 개정과 함께 한다 — 그 정책 판정은 사용자·CLI가 지고, 이 함수는 물리만
     본다."""
-    with mutation_lock():   # 엔진이 내는 변경을 직렬화
-        d = resolve_in_root(region)
+    with mutation_lock(VAULT):   # 엔진이 내는 변경을 직렬화
+        d = resolve_in_root(VAULT, region)
         reg = posix_rel(d, Path(os.path.realpath(ROOT))) if d else str(region).rstrip("/")
         recs = records()
         st = state(reg, recs)
