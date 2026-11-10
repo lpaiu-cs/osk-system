@@ -19,6 +19,8 @@
 #
 # 판 개발 브랜치(`vX.Y-devel`)로 가는 PR에서는 돌지 않는다. 검증은 릴리스 PR
 # (`vX.Y-devel` → `main`)에서 한 번 한다(docs/SETUP.md "판 개발 브랜치와 검증 시점").
+# `v6.0-devel`은 예외다 — 구조 개편은 바꾼 시험이 없어도 어디서든 깨질 수 있어 PR마다 돈다
+# (docs/v6.0-refactoring.md "안전망").
 
 name: ci
 
@@ -26,7 +28,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, v6.0-devel]
   workflow_call:
     inputs:
       upgrade-matrix:

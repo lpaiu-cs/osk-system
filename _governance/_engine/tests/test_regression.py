@@ -12700,6 +12700,18 @@ def test_release_workflow_subprocess():
     _suite("정식 발행은 검증한 SHA를 태그로 공개한다", "test_release_workflow.py")
 
 
+def test_architecture_subprocess():
+    """구조 규범(docs/CODE-STANDARD.md)의 실측이 기준선과 같다 — 위반이 늘어도, 줄이고 기준선을 낮추지
+    않아도 실패다. 엔진을 import하지 않는 `ast` 시험이라 엔진이 깨져 있어도 돈다."""
+    _suite("구조 규범: 층·지연 import·밑줄 접근·넓은 예외·함수 크기가 기준선과 같다", "test_architecture.py")
+
+
+def test_surface_snapshot_subprocess():
+    """MCP 도구의 설명·스키마와 `osk` CLI의 명령·옵션이 기록(`surface_snapshot.json`)과 전문으로 같다.
+    구조 개편이 표면을 건드리지 않았음을 본다 — 일부러 바꾸는 PR은 기록을 함께 고친다."""
+    _suite("표면 고정: MCP 도구와 CLI가 기록과 같다", "test_surface_snapshot.py")
+
+
 GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_codex_forks.py", "test_integration_recovery.py", "test_growth.py", "test_growth_daily.py", "test_growth_status.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py", "test_setup.py", "test_services.py")
 
 
@@ -12877,6 +12889,7 @@ if __name__ == "__main__":
                test_reparse_cache_membership,
                test_eviction_preservation_mcp,
                test_suite_timeout_is_isolated, test_suite_skip_is_not_pass,
+               test_architecture_subprocess, test_surface_snapshot_subprocess,
                 test_growth_loop_subprocesses, test_release_workflow_subprocess,
                 test_upgrade_matrix_subprocess]:
         try:
