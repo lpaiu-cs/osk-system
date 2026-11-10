@@ -1,0 +1,622 @@
+{
+ "limits": {
+  "function_lines": 60,
+  "function_branches": 15
+ },
+ "totals": {
+  "upward_imports": 12,
+  "lazy_imports": 137,
+  "two_module_cycles": 19,
+  "tangled_modules": 33,
+  "private_access": 187,
+  "broad_except": 125,
+  "oversize_functions": 119,
+  "excess_lines": 2763,
+  "excess_branches": 1606
+ },
+ "upward_imports": {
+  "osk.doctor -> sync_daemon": 1,
+  "osk.evictions -> osk.write": 1,
+  "osk.rechecks -> osk.growth": 2,
+  "osk.scope_memory -> osk.write": 1,
+  "osk.secrets -> osk.graph": 1,
+  "osk.secrets -> osk.raw": 1,
+  "osk.setup -> sync_daemon": 2,
+  "osk.update -> sync_daemon": 1,
+  "osk.validate -> mcp_server": 1,
+  "osk.validate -> osk.cli": 1
+ },
+ "lazy_imports": {
+  "osk.distillation": 1,
+  "osk.doctor": 13,
+  "osk.evictions": 3,
+  "osk.evidence": 3,
+  "osk.evidence_migration": 1,
+  "osk.graph": 8,
+  "osk.growth": 26,
+  "osk.growth_daily": 7,
+  "osk.growth_status": 4,
+  "osk.harness": 1,
+  "osk.harness.base": 1,
+  "osk.integration": 8,
+  "osk.organization": 1,
+  "osk.publish": 1,
+  "osk.raw": 7,
+  "osk.rechecks": 2,
+  "osk.response_growth": 5,
+  "osk.secrets": 3,
+  "osk.services": 2,
+  "osk.setup": 8,
+  "osk.signatures": 1,
+  "osk.transcripts": 2,
+  "osk.update": 5,
+  "osk.validate": 14,
+  "osk.write": 10
+ },
+ "two_module_cycles": [
+  "mcp_server <-> osk.validate",
+  "osk.cli <-> osk.validate",
+  "osk.distillation <-> osk.integration",
+  "osk.distillation <-> osk.write",
+  "osk.evictions <-> osk.scope_memory",
+  "osk.evictions <-> osk.write",
+  "osk.evidence <-> osk.graph",
+  "osk.evidence <-> osk.raw",
+  "osk.graph <-> osk.raw",
+  "osk.graph <-> osk.rechecks",
+  "osk.graph <-> osk.signatures",
+  "osk.growth <-> osk.growth_daily",
+  "osk.growth <-> osk.rechecks",
+  "osk.growth <-> osk.response_growth",
+  "osk.organization <-> osk.write",
+  "osk.publish <-> osk.release",
+  "osk.raw <-> osk.secrets",
+  "osk.update <-> osk.update_check",
+  "osk.update <-> sync_daemon"
+ ],
+ "tangled_modules": 33,
+ "private_access": {
+  "mcp_server": 3,
+  "osk.approvals": 4,
+  "osk.authority": 1,
+  "osk.cli": 1,
+  "osk.distillation": 30,
+  "osk.evictions": 4,
+  "osk.evidence": 2,
+  "osk.evidence_migration": 7,
+  "osk.graph": 1,
+  "osk.growth": 8,
+  "osk.growth_daily": 12,
+  "osk.growth_status": 6,
+  "osk.harness": 1,
+  "osk.integration": 20,
+  "osk.organization": 3,
+  "osk.publish": 2,
+  "osk.rechecks": 4,
+  "osk.response_growth": 33,
+  "osk.roots": 1,
+  "osk.routing": 1,
+  "osk.scope_memory": 2,
+  "osk.secrets": 2,
+  "osk.services": 2,
+  "osk.setup": 8,
+  "osk.update": 12,
+  "osk.update_check": 3,
+  "osk.validate": 1,
+  "osk.write": 7,
+  "scripts.hooks.claude_session_start": 1,
+  "sync_daemon": 5
+ },
+ "broad_except": {
+  "mcp_server": 6,
+  "osk.approvals": 1,
+  "osk.authority": 1,
+  "osk.cli": 4,
+  "osk.core": 2,
+  "osk.distillation": 2,
+  "osk.doctor": 3,
+  "osk.evictions": 2,
+  "osk.graph": 1,
+  "osk.growth": 2,
+  "osk.growth_daily": 1,
+  "osk.hook_text": 1,
+  "osk.integration": 6,
+  "osk.organization": 2,
+  "osk.publish": 1,
+  "osk.rechecks": 5,
+  "osk.release": 1,
+  "osk.response_growth": 2,
+  "osk.routing": 6,
+  "osk.scope_memory": 1,
+  "osk.search": 2,
+  "osk.update": 3,
+  "osk.update_check": 1,
+  "osk.validate": 18,
+  "osk.write": 8,
+  "scripts.hooks.capture_stop": 4,
+  "scripts.hooks.claude_prompt_submit": 2,
+  "scripts.hooks.claude_session_start": 25,
+  "scripts.osk_turn_ledger": 1,
+  "scripts.recover": 2,
+  "sync_daemon": 4,
+  "vault_sync": 5
+ },
+ "oversize_functions": {
+  "mcp_server:_node_view": [
+   35,
+   16
+  ],
+  "mcp_server:read_node": [
+   70,
+   15
+  ],
+  "osk.approvals:_approve_locked": [
+   52,
+   18
+  ],
+  "osk.approvals:_plan_unmoves": [
+   43,
+   19
+  ],
+  "osk.approvals:changeset": [
+   80,
+   34
+  ],
+  "osk.approvals:revert": [
+   109,
+   21
+  ],
+  "osk.cli:_growth_cmd": [
+   42,
+   18
+  ],
+  "osk.cli:build_parser": [
+   168,
+   9
+  ],
+  "osk.cli:main": [
+   215,
+   57
+  ],
+  "osk.contract:md_lines": [
+   67,
+   40
+  ],
+  "osk.contract:validate": [
+   56,
+   30
+  ],
+  "osk.core:effective_parents": [
+   22,
+   16
+  ],
+  "osk.distillation:_execute": [
+   170,
+   45
+  ],
+  "osk.distillation:_execute.prepare": [
+   47,
+   23
+  ],
+  "osk.distillation:discover": [
+   67,
+   30
+  ],
+  "osk.doctor:_engine": [
+   43,
+   18
+  ],
+  "osk.doctor:_hook": [
+   53,
+   19
+  ],
+  "osk.doctor:_vault_items": [
+   57,
+   25
+  ],
+  "osk.evictions:_check_settle": [
+   24,
+   16
+  ],
+  "osk.evictions:schema_errors": [
+   36,
+   20
+  ],
+  "osk.evidence:check": [
+   43,
+   23
+  ],
+  "osk.evidence_migration:_change": [
+   33,
+   18
+  ],
+  "osk.evidence_migration:heading_plan": [
+   38,
+   17
+  ],
+  "osk.graph:Index.resolve": [
+   52,
+   18
+  ],
+  "osk.graph:_place_of_parts": [
+   38,
+   19
+  ],
+  "osk.graph:reference_review": [
+   42,
+   19
+  ],
+  "osk.graph:topology_check": [
+   94,
+   37
+  ],
+  "osk.growth:_apply_reviews": [
+   101,
+   29
+  ],
+  "osk.growth:_check_entry": [
+   81,
+   62
+  ],
+  "osk.growth:_eviction_status": [
+   26,
+   21
+  ],
+  "osk.growth:_final_packet": [
+   36,
+   23
+  ],
+  "osk.growth:_plan": [
+   118,
+   36
+  ],
+  "osk.growth:_stalled": [
+   18,
+   16
+  ],
+  "osk.growth:daily_status": [
+   24,
+   28
+  ],
+  "osk.growth:prompt": [
+   197,
+   5
+  ],
+  "osk.growth:run": [
+   205,
+   74
+  ],
+  "osk.growth_daily:_scan": [
+   24,
+   21
+  ],
+  "osk.growth_daily:daily": [
+   116,
+   55
+  ],
+  "osk.growth_daily:idle": [
+   28,
+   16
+  ],
+  "osk.growth_status:_runs": [
+   54,
+   18
+  ],
+  "osk.growth_status:report": [
+   100,
+   8
+  ],
+  "osk.integration:_capture_apply": [
+   92,
+   35
+  ],
+  "osk.integration:_capture_recovery": [
+   51,
+   23
+  ],
+  "osk.integration:_cite": [
+   92,
+   49
+  ],
+  "osk.integration:_inherited_rounds": [
+   84,
+   27
+  ],
+  "osk.integration:_known_pending": [
+   64,
+   34
+  ],
+  "osk.integration:_land": [
+   31,
+   22
+  ],
+  "osk.integration:_turn_at": [
+   33,
+   22
+  ],
+  "osk.integration:acknowledge": [
+   85,
+   46
+  ],
+  "osk.integration:catchup": [
+   35,
+   22
+  ],
+  "osk.integration:prompt": [
+   277,
+   75
+  ],
+  "osk.integration:read_turns": [
+   48,
+   24
+  ],
+  "osk.native_cli:resolve": [
+   52,
+   35
+  ],
+  "osk.organization:apply_binding_decisions": [
+   29,
+   20
+  ],
+  "osk.organization:bindings_audit": [
+   30,
+   17
+  ],
+  "osk.organization:pending": [
+   57,
+   37
+  ],
+  "osk.organization:review": [
+   75,
+   46
+  ],
+  "osk.organization:snapshot": [
+   45,
+   17
+  ],
+  "osk.publish:run": [
+   73,
+   16
+  ],
+  "osk.raw:_record_pair": [
+   33,
+   23
+  ],
+  "osk.raw:append_rounds": [
+   61,
+   26
+  ],
+  "osk.raw:consolidate": [
+   63,
+   23
+  ],
+  "osk.raw:read_round": [
+   64,
+   20
+  ],
+  "osk.raw_view:project": [
+   105,
+   56
+  ],
+  "osk.rechecks:_carry": [
+   31,
+   21
+  ],
+  "osk.rechecks:after_write": [
+   31,
+   19
+  ],
+  "osk.rechecks:change": [
+   28,
+   20
+  ],
+  "osk.release:run": [
+   147,
+   37
+  ],
+  "osk.response_growth:doctor": [
+   74,
+   26
+  ],
+  "osk.response_growth:preflight": [
+   72,
+   44
+  ],
+  "osk.response_growth:process_stop": [
+   62,
+   15
+  ],
+  "osk.response_growth:profile": [
+   77,
+   46
+  ],
+  "osk.response_growth:route": [
+   22,
+   17
+  ],
+  "osk.routing:bindings": [
+   37,
+   18
+  ],
+  "osk.scope_memory:replace": [
+   219,
+   48
+  ],
+  "osk.services:plan": [
+   30,
+   19
+  ],
+  "osk.setup:_apply": [
+   59,
+   20
+  ],
+  "osk.setup:_apply_extras": [
+   42,
+   26
+  ],
+  "osk.setup:_extras_human": [
+   37,
+   17
+  ],
+  "osk.setup:_hooks": [
+   60,
+   30
+  ],
+  "osk.setup:_mcp": [
+   56,
+   30
+  ],
+  "osk.setup:_schedule": [
+   68,
+   22
+  ],
+  "osk.setup:_sync_checks": [
+   29,
+   16
+  ],
+  "osk.setup:plan": [
+   34,
+   27
+  ],
+  "osk.setup:text": [
+   48,
+   27
+  ],
+  "osk.transcripts:_antigravity": [
+   54,
+   22
+  ],
+  "osk.transcripts:_claude": [
+   198,
+   136
+  ],
+  "osk.transcripts:_codex": [
+   173,
+   99
+  ],
+  "osk.transcripts:_codex.add_user": [
+   32,
+   20
+  ],
+  "osk.transcripts:_codex_history": [
+   31,
+   20
+  ],
+  "osk.transcripts:_kiro": [
+   54,
+   22
+  ],
+  "osk.transcripts:_native_files": [
+   46,
+   26
+  ],
+  "osk.transcripts:read": [
+   67,
+   20
+  ],
+  "osk.update:_governance_review": [
+   40,
+   18
+  ],
+  "osk.update:_run_locked": [
+   230,
+   49
+  ],
+  "osk.update:_txn_recover": [
+   62,
+   17
+  ],
+  "osk.update:main": [
+   46,
+   19
+  ],
+  "osk.validate:run": [
+   295,
+   72
+  ],
+  "osk.validate:setup_doc_drift": [
+   73,
+   22
+  ],
+  "osk.validate:surface_lint": [
+   90,
+   31
+  ],
+  "osk.validate:surface_violations": [
+   44,
+   17
+  ],
+  "osk.write:_check_edges": [
+   51,
+   23
+  ],
+  "osk.write:_create_node_locked": [
+   117,
+   29
+  ],
+  "osk.write:_topology_of": [
+   61,
+   21
+  ],
+  "osk.write:_update_node_locked": [
+   199,
+   67
+  ],
+  "osk.write:move_cluster": [
+   62,
+   16
+  ],
+  "osk.write:move_nodes": [
+   83,
+   12
+  ],
+  "scripts.hooks.claude_session_start:_checkout_cached": [
+   29,
+   20
+  ],
+  "scripts.hooks.claude_session_start:capture_blocks": [
+   82,
+   34
+  ],
+  "scripts.hooks.claude_session_start:main": [
+   81,
+   16
+  ],
+  "scripts.osk_turn_ledger:attribute_costs": [
+   31,
+   16
+  ],
+  "scripts.osk_turn_ledger:episodes": [
+   81,
+   30
+  ],
+  "scripts.osk_turn_ledger:evictions": [
+   23,
+   16
+  ],
+  "scripts.osk_turn_ledger:read_corpus": [
+   69,
+   29
+  ],
+  "scripts.osk_turn_ledger:summarize": [
+   85,
+   40
+  ],
+  "scripts.recover:_recover": [
+   83,
+   21
+  ],
+  "sync_daemon:_once_locked": [
+   43,
+   18
+  ],
+  "vault_sync:_rebase": [
+   46,
+   17
+  ],
+  "vault_sync:_resolve_graph_scale": [
+   41,
+   18
+  ]
+ }
+}

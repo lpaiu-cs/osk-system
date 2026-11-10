@@ -155,7 +155,7 @@ def _child():
                 # distillation edges (Constitution art. 8 §5), so the record edge
                 # here is one the target held before the switch.
                 def v1_links(pred, targets, **_):
-                    values = [str(t).strip() for t in write._as_list(targets)]
+                    values = [str(t).strip() for t in write.as_list(targets)]
                     values = [s if s.startswith("[[") or (pred == "derived-from" and re.match(core.ID_RE, s))
                               else f"[[{s}]]" for s in values]
                     return values[0] if len(values) == 1 else values

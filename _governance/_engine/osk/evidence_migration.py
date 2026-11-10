@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import approvals, contract, core, evidence, graph, raw, raw_view, rechecks, write
+from . import approvals, contract, core, evidence, graph, prose, raw, raw_view, rechecks, write
 from .core import LEDGER, ROOT, posix_rel, sha256_bytes
 
 EVENTS = LEDGER / "migration" / "events.jsonl"
@@ -174,7 +174,7 @@ def _change(path: Path, n, items: list[dict]) -> dict:
     lines = [it["line"] for it in items if it["action"] == "line"]
     if lines:
         span = rechecks.evidence_span(body)
-        add = write._space_numeric_tags("\n".join(lines)) + "\n"
+        add = prose.space_numeric_tags("\n".join(lines)) + "\n"
         new_body = body.rstrip("\n") + "\n" + add if span else body + "# 관측\n\n" + add
         start = span[0] if span else len(body)
         if (span is None and NOT_AT_END in validate.evidence_errors(body, [])

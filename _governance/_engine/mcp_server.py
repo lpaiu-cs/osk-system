@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import (contract, epoch, graph, integration, raw, rechecks,  # noqa: E402
+from osk import (contract, epoch, graph, integration, prose, raw, rechecks,  # noqa: E402
                  update_check, validate, write)
 from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
@@ -294,7 +294,7 @@ def _node_view(body: str, view: str) -> dict:
     if view != "outline" and not re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", view):
         # 본문 인용 — 그 자리와 앞뒤 문단. 큰 노드의 앵커 편집이 연결어까지 고치게 한다(#273).
         hits, windows = write.anchor_windows(body, view)
-        if hits == 0 and (spaced := write._space_numeric_tags(view)) != view:
+        if hits == 0 and (spaced := prose.space_numeric_tags(view)) != view:
             hits, windows = write.anchor_windows(body, spaced)  # 저장본의 태그 방어(#292)와 같게
         if hits != 1:
             return {"error": "인용이 본문에 없다 — 공백·줄바꿈까지 그대로 옮겨라" if not hits else

@@ -28,7 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import ROOT, local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
-from . import evictions, graph, secrets, write
+from . import evictions, graph, prose, routing, secrets, workspaces, write
+from .errors import WriteError
 
 # 계수는 mechanism이 정한다(시행령 서문). 한 세션의 배울 점을 적기에는 충분하고
 # 두 세션어치를 쌓아두기에는 모자란 크기여야 압력이 선다.
@@ -114,15 +115,15 @@ def recovery(session: str) -> dict | None:
             modified = p.stat().st_mtime
         except FileNotFoundError:
             return None                     # 읽는 사이 성공한 쓰기가 끝냈다
-        record = {"scope": write.resolve_session(key), "base_hash": None,
+        record = {"scope": routing.resolve_session(key), "base_hash": None,
                   "since": datetime.fromtimestamp(modified, timezone.utc).isoformat(),
                   "legacy": True}
     else:
         record = json.loads(raw)
         if not isinstance(record, dict) or record.get("session") != key:
             raise ValueError("scope 복구 표식의 세션이 다르다")
-    scope = record.get("scope") or write.resolve_session(key)
-    bound = write.resolve_session(key)
+    scope = record.get("scope") or routing.resolve_session(key)
+    bound = routing.resolve_session(key)
     return {"session": key, "scope": scope, "since": record["since"],
             "legacy": record.get("legacy", False), "base_hash": record.get("base_hash"),
             "binding_changed": bool(bound and scope and bound != scope)}
@@ -177,7 +178,7 @@ def _runs_key(session: str) -> str:
     같은 세션이 다른 계수를 갖게 되어, `OVERFLOW_STOP`이 세 번째에 서지 않거나
     엉뚱한 자리에서 섰다."""
     try:
-        return write.canonical_session(session) or session
+        return routing.canonical_session(session) or session
     except Exception:
         return session              # 대장 판독 실패는 계수의 문제가 아니다
 
@@ -220,7 +221,7 @@ def session_note(session: str, scope: str | None) -> str:
     """훅과 도구 응답이 같은 호출 키를 이어 준다. scope 이름은 키가 아니다. 주된 scope 밖의 기억은
     수정 안내에도 `space`를 명시한다 — 빠지면 `edits`가 주된 scope의 기억을 고친다(#191 리뷰)."""
     arg = f"`session={json.dumps(session, ensure_ascii=False)}`"
-    if session and scope and write.resolve_session(session) != scope:
+    if session and scope and routing.resolve_session(session) != scope:
         return (f"`scope_memory`의 {arg}에 `space=\"{SCOPE}/{scope}\"`를 함께 준다 — 이 scope는 그 "
                 f"프로젝트의 주된 scope가 아니라 space 없는 읽기·`edits`는 다른 기억에 간다.")
     return (f"`scope_memory`의 {arg}를 그대로 쓴다. "
@@ -260,20 +261,20 @@ def _landing(session: str, space: str | None) -> tuple[str, str | None]:
     거부에도 전문과 잔여를 싣는다(§9-2 5항). 결속을 아는 거부 — 교차 scope 같은
     경우 — 는 낼 수 있는데 안 내면, 호출자가 고쳐 보내려고 다시 읽어야 한다."""
     try:
-        scope, bound = write.resolve_landing(session, space, _CONFINE)
-    except write.WriteError as e:
-        b = write.resolve_session(session)
+        scope, bound = routing.resolve_landing(session, space, _CONFINE)
+    except WriteError as e:
+        b = routing.resolve_session(session)
         if b:
-            raise write.WriteError(str(e), e.violations,
+            raise WriteError(str(e), e.violations,
                                    **_state(session, b, _read(sm_path(b)))) from None
         raise
     if not scope:
-        raise write.WriteError(
+        raise WriteError(
             "착지 미정 — 아무것도 하지 않았다",
             [f"세션 `{session}`의 scope 결속이 없다. `space`를 주면 그 자리의 "
              f"scope 기억을 쓴다. 가능한 space: {graph.space_list()}"])
     if scope not in graph.scope_names():
-        raise write.WriteError(
+        raise WriteError(
             "결속이 가리키는 scope가 없다 — 아무것도 하지 않았다",
             [f"세션 `{session}`은 `{SCOPE}/{scope}`에 결속돼 있으나 그 scope가 "
              f"없다. 가능한 space: {graph.space_list()}"])
@@ -321,19 +322,19 @@ def replace(session: str, text: str | None = None,
     하는 것도 표면 전체를 최대 수 분 세운다."""
     # 형태 검사는 잠금 **밖**에서 — 틀린 요청이 잠금을 잡을 이유가 없다.
     if (text is None) == (edits is None):
-        raise write.WriteError(
+        raise WriteError(
             "`text`(전체 치환)와 `edits`(앵커 일괄) 중 하나만 — 쓰지 않았다",
             ["둘 다 없으면 쓸 것이 없고, 둘 다 있으면 어느 쪽이 이겼는지 응답으로 "
              "구분되지 않는다. 읽기는 둘 다 없이 부른다."])
     if edits is not None:
         if not isinstance(edits, list) or not edits:
-            raise write.WriteError(
+            raise WriteError(
                 "`edits`가 비어 있다 — 쓰지 않았다",
                 ["`[{old_text, new_text}, …]` 목록을 보내라. 지울 때는 `new_text`에 "
                  "빈 문자열을 준다."])
         for i, e in enumerate(edits, 1):
             if not isinstance(e, dict) or "old_text" not in e or "new_text" not in e:
-                raise write.WriteError(
+                raise WriteError(
                     f"`edits[{i}]`의 형태가 틀렸다 — 쓰지 않았다",
                     ["각 항목은 `{old_text, new_text}`다. 한쪽만으로는 무엇을 "
                      "무엇으로 바꾸는지 정해지지 않는다."])
@@ -341,7 +342,7 @@ def replace(session: str, text: str | None = None,
                 # 문자열이 아니면 아래 `count`·`replace`가 원시 `TypeError`를
                 # 내고, 그 예외 문구가 그대로 위반 목록에 실려 호출자는 무엇을
                 # 고쳐야 할지 모른다. 계약 위반은 계약의 말로 낸다.
-                raise write.WriteError(
+                raise WriteError(
                     f"`edits[{i}]`의 값이 문자열이 아니다 — 쓰지 않았다",
                     ["`old_text`·`new_text`는 본문의 조각(문자열)이다. 지울 "
                      "때는 `new_text`에 빈 문자열을 준다."])
@@ -351,30 +352,30 @@ def replace(session: str, text: str | None = None,
             e["old_text"] = unicodedata.normalize("NFC", e["old_text"])
             e["new_text"] = unicodedata.normalize("NFC", e["new_text"])
             if not e["old_text"]:
-                raise write.WriteError(
+                raise WriteError(
                     f"`edits[{i}]`의 앵커가 비어 있다 — 쓰지 않았다",
                     ["빈 앵커는 모든 자리에 맞아 고칠 자리를 가리키지 못한다. "
                      "바꿀 대목을 그대로 넣어라."])
             if e["old_text"] == e["new_text"]:
-                raise write.WriteError(
+                raise WriteError(
                     f"`edits[{i}]`는 바뀌는 것이 없다 — 쓰지 않았다",
                     ["`old_text`와 `new_text`가 같다."])
-    errs = write.ephemeral_session_errors(session)
+    errs = routing.ephemeral_session_errors(session)
     if errs:
-        raise write.WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
+        raise WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
     with mutation_lock():
         scope, bound = _landing(session, space)
         p = sm_path(scope)
         cur = _read(p)
 
         if cur and expect_hash is None and edits is None:
-            raise write.WriteError(
+            raise WriteError(
                 "expect_hash 없음 — 쓰지 않았다",
                 ["기존 내용이 있다. 지금 상태를 읽고 그 `hash`를 `expect_hash`로 "
                  "함께 보내라 — 보지 않은 상태를 덮지 않기 위해서다."],
                 **_state(session, scope, cur))
         if expect_hash is not None and expect_hash != sha256_bytes(cur.encode("utf-8")):
-            raise write.WriteError(
+            raise WriteError(
                 "상태가 어긋났다 — 쓰지 않았다",
                 ["`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "
                  "들어왔을 수 있다 — 아래 전문 위에서 다시 통합하라."],
@@ -392,18 +393,18 @@ def replace(session: str, text: str | None = None,
             # 불일치와 같은 자리). 유일성이 안전 계약의 전부다 — 여러 곳에
             # 맞으면 어디를 고칠지 호출자가 정한 바가 없다.
             if not cur:
-                raise write.WriteError(
+                raise WriteError(
                     "기억이 비어 있다 — 쓰지 않았다",
                     ["`edits`는 기존 본문을 고친다. 첫 쓰기는 `text`로 하라."],
                     **_state(session, scope, cur))
             work = cur
             for i, e in enumerate(edits, 1):
                 n = work.count(e["old_text"])
-                if n == 0 and (spaced := write._space_numeric_tags(e["old_text"])) != e["old_text"]:
+                if n == 0 and (spaced := prose.space_numeric_tags(e["old_text"])) != e["old_text"]:
                     # 저장본은 태그 방어로 `#숫자` 뒤를 띄웠다(아래) — 쓴 글 그대로의 앵커도 맞춘다(#292)
                     e["old_text"], n = spaced, work.count(spaced)
                 if n != 1:
-                    raise write.WriteError(
+                    raise WriteError(
                         (f"`edits[{i}]` 앵커가 없다 — 쓰지 않았다" if n == 0 else
                          f"`edits[{i}]` 앵커가 {n}곳 맞는다 — 쓰지 않았다"),
                         ([f"`old_text`가 지금 저장본에 나오지 않는다. 저장본이 그 "
@@ -419,12 +420,12 @@ def replace(session: str, text: str | None = None,
         # 옵시디언 태그 방어 (Mechanism §8 7항) — scope 기억도 vault의 md라
         # 옵시디언이 렌더한다. 상한은 변환 **뒤** 길이로 잰다(저장되는 것이
         # 세어져야 한다 — 비밀값 치환과 같은 이유).
-        body = canon(write._space_numeric_tags(filtered))
+        body = canon(prose.space_numeric_tags(filtered))
 
         if body.startswith("---"):
             # `---`로 시작하면 색인이 frontmatter로 읽어 이 파일을 노드형으로
             # 본다 — 표면 도구 하나가 vault를 검증기 FAIL 상태로 만든다.
-            raise write.WriteError(
+            raise WriteError(
                 "`---`로 시작할 수 없다 — 쓰지 않았다",
                 ["scope 기억은 노드가 아니므로 frontmatter를 두지 않는다"
                  "(Mechanism §9-2 1항). 선두의 `---`는 색인이 frontmatter로 "
@@ -462,7 +463,7 @@ def replace(session: str, text: str | None = None,
                      "덜어 낸 줄은 퇴출 기록부에 남고, 다음 세션 시작이 처분을 "
                      "싣는다(§9-2 12항·§9-3). 아직 안 지운 저장본은 복구 대상으로 "
                      "남는다. 거부된 새 초안은 저장되지 않았다.")
-            raise write.WriteError(
+            raise WriteError(
                 "상한 초과 — 쓰지 않았다", v,
                 # 상한 초과에는 전문을 싣지 않는다(§9-2 5항). 이 거부는 **디스크를
                 # 바꾸지 않았고**, 호출자가 다듬을 것은 저장본이 아니라 방금 보낸
@@ -491,7 +492,7 @@ def replace(session: str, text: str | None = None,
             try:
                 ev = evictions.record_evict(scope, key, removed)
             except ValueError as e:
-                raise write.WriteError(
+                raise WriteError(
                     "퇴출 기록부에 적지 못했다 — 쓰지 않았다",
                     [f"퇴출 기록부에 적지 못했다 — {e}. 상한에 밀려 잘라 낸 것은 "
                      f"기록 없이 사라질 수 없다(§9-2 12항) — 대장을 복구한 뒤 "
@@ -501,8 +502,8 @@ def replace(session: str, text: str | None = None,
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
         # 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다(Mechanism §6-2 6항). 일회성 작업 폴더는 결속하지 않는다.
-        if not write.workspaces.is_one_off(session) and scope not in write.bindings(session)["scopes"]:
-            write.bind_session(session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
+        if not workspaces.is_one_off(session) and scope not in routing.bindings(session)["scopes"]:
+            routing.bind_session(session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
         _OVERFLOW_RUNS.pop(key, None)       # 성공이 연속 계수를 지운다

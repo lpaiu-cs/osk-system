@@ -15,7 +15,7 @@ import json
 import re
 from pathlib import Path
 
-from . import contract, evidence, graph, raw, secrets, write
+from . import contract, evidence, graph, prose, raw, secrets, write
 from .core import ROOT, local_lock_path, posix_rel, resolve_in_root, sha256_bytes, sha256_file
 
 # 증류가 쓰는 자리 — Person은 소속 scope 없는 세션이 Person에 둘 것만 남길 때다(시행령 §3 9항 3호).
@@ -82,7 +82,7 @@ def _source(ref: str, idx) -> dict:
     if p is None or not p.is_file() or graph.space_of(p)[0] not in ("scope", "domain"):
         raise write.WriteError("source must resolve to a Scope/Domain node or exact raw round")
     node = contract.parse(p)
-    if not write._norm_body(node.body):
+    if not prose.norm_body(node.body):
         raise write.WriteError("source node has no retained body")
     return {"ref": node.id, "path": posix_rel(p, ROOT), "hash": sha256_file(p),
             "id": node.id, "name": p.stem}
@@ -178,7 +178,7 @@ def _retained_target(target: dict, idx) -> Path:
             or graph.space_of(p)[0] not in _TARGETS):
         raise write.WriteError("target crossed its top-level cluster; pending")
     body = contract.parse(p).body
-    if not write._norm_body(body):
+    if not prose.norm_body(body):
         raise write.WriteError("target bytes changed; pending")
     if target.get("paragraphs"):
         # 증류한 단위가 그대로 남아 있으면 보존이다 — 같은 노드의 무관한 편집은 깨지 않는다.
@@ -226,7 +226,7 @@ def _cites(node, idx, *, legacy: bool = True) -> set[str]:
     5·6항). `legacy`면 이행 전 `derived-from`에 남은 인용 라운드도 센다 — 그때 적힌 영수증이
     그대로 확인된다. 새 증류는 줄만 받는다."""
     out = evidence.cited_rounds(node.body)
-    for ref in write._stored_edges(node.meta.get("derived-from")):
+    for ref in contract.stored_edges(node.meta.get("derived-from")):
         try:
             source = _source(ref, idx)
         except (write.WriteError, OSError, ValueError, TypeError):
@@ -285,7 +285,7 @@ def structure(receipt: dict, idx=None) -> str | None:
         if p.relative_to(ROOT).parts[:2] != Path(target["path"]).parts[:2]:
             return "target left its top-level cluster"
         node = contract.parse(p)
-        kept = {write._edge_key(ref, idx) for ref in (*write._stored_edges(node.meta.get("derived-from")),
+        kept = {write._edge_key(ref, idx) for ref in (*contract.stored_edges(node.meta.get("derived-from")),
                                                       *evidence.cited_rounds(node.body))}
         if any(write._edge_key(s["ref"], idx) not in kept for s in receipt["sources"]):
             return "target no longer cites its source"
@@ -475,7 +475,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
             # 어느 표기로 빼든 쓰기가 빼는 것이면 여기서도 잡힌다. 인용 라운드는 근거 절의 줄이 다므로
             # 이행 전 derived-from의 같은 라운드를 빼는 것은 출처를 빼는 것이 아니다.
             removed = {write._edge_key(str(ref), idx) for ref in
-                       write._as_list((request.get("remove_edges") or {}).get("derived-from", []))}
+                       contract.as_list((request.get("remove_edges") or {}).get("derived-from", []))}
             if removed & {write._edge_key(s["ref"], idx) for s in sources if s.get("id")}:
                 raise write.WriteError("required provenance was removed; no node written")
             if operation == "create":
@@ -494,9 +494,9 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 if request.get("old_text") is not None:
                     supplied_body = request.get("new_text")
                 if supplied_body is not None and request.get("body") is not None:
-                    if write._norm_body(supplied_body) == write._norm_body(old.body):
+                    if prose.norm_body(supplied_body) == prose.norm_body(old.body):
                         raise write.WriteError("distillation requires a changed retained body")
-            if not isinstance(supplied_body, str) or not write._norm_body(supplied_body):
+            if not isinstance(supplied_body, str) or not prose.norm_body(supplied_body):
                 raise write.WriteError("distillation requires retained body content")
         else:
             sources, hub = job["sources"], job["hub"]
@@ -508,7 +508,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
             current_hash = sha256_file(path) if path.exists() else None
             if current_hash != selected_hash:
                 raise write.WriteError("target changed before write; pending")
-            if operation == "update" and write._norm_body(n.body) == write._norm_body(contract.parse(path).body):
+            if operation == "update" and prose.norm_body(n.body) == prose.norm_body(contract.parse(path).body):
                 raise write.WriteError("distillation requires a changed retained body")
             if graph.space_of(path)[0] not in _TARGETS:
                 raise write.WriteError("distillation target must be a Scope/Domain/Person node")
@@ -516,7 +516,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("target must be a knowledge node under the selected hub")
             if any(s["path"] in (posix_rel(path, ROOT), hub["path"]) for s in sources):
                 raise write.WriteError("distillation cannot cite its target or wiring hub as input")
-            if not write._norm_body(n.body):
+            if not prose.norm_body(n.body):
                 raise write.WriteError("distillation has no retained body after validation")
             cites = _cites(n, idx, legacy=False)
             if not {source["ref"] for source in sources if source.get("id")}.issubset(cites):
@@ -569,7 +569,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 if nodes:
                     edge_arg = "edges" if operation == "create" else "add_edges"
                     edges = dict(request.get(edge_arg) or {})
-                    edges["derived-from"] = write._as_list(edges.get("derived-from", [])) + nodes
+                    edges["derived-from"] = contract.as_list(edges.get("derived-from", [])) + nodes
                     request[edge_arg] = edges
                 # v1 reserved wiki-form raw edges. Replay those exact bytes;
                 # never replace the journal's expected hash to permit a retry.

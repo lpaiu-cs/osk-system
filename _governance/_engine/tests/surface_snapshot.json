@@ -1,0 +1,1792 @@
+{
+ "generated_with": {
+  "mcp": "1.30.0",
+  "pydantic": "2.13.5",
+  "pydantic-core": "2.46.5"
+ },
+ "cli": {
+  "options": [],
+  "commands": {
+   "approve": {
+    "help": "[사용자 전속] 변경집합 승인",
+    "options": [
+     {
+      "flags": [
+       "region"
+      ],
+      "action": "_StoreAction",
+      "required": true
+     },
+     {
+      "flags": [
+       "--reason"
+      ],
+      "action": "_StoreAction",
+      "required": false,
+      "default": ""
+     }
+    ],
+    "commands": {}
+   },
+   "check": {
+    "help": "권한 사전 검사",
+    "options": [
+     {
+      "flags": [
+       "action"
+      ],
+      "action": "_StoreAction",
+      "required": true
+     }
+    ],
+    "commands": {}
+   },
+   "doctor": {
+    "help": "이 기기의 하네스 연결과 vault 이행 점검 — MCP·훅 등록, 훅 실행, 전달, 판본, fork, 남은 이행 (읽기 전용)",
+    "options": [
+     {
+      "flags": [
+       "--harness"
+      ],
+      "action": "_StoreAction",
+      "required": false,
+      "choices": [
+       "antigravity",
+       "claude",
+       "codex",
+       "kiro"
+      ],
+      "help": "기본: 모두"
+     },
+     {
+      "flags": [
+       "--json"
+      ],
+      "action": "_StoreTrueAction",
+      "nargs": 0,
+      "required": false,
+      "default": false
+     },
+     {
+      "flags": [
+       "--vault"
+      ],
+      "action": "_StoreTrueAction",
+      "nargs": 0,
+      "required": false,
+      "default": false,
+      "help": "연결 대신 vault 내용 점검 — 남은 이행, 검증기 위반, 정기 검토의 잔재, 대화 검토 적체"
+     },
+     {
+      "flags": [
+       "--migrate"
+      ],
+      "action": "_StoreTrueAction",
+      "nargs": 0,
+      "required": false,
+      "default": false,
+      "help": "남은 이행을 계획하고(종료코드 2), 확인된 다음 실행에서 순서대로 적용해 이행 기록을 남긴다"
+     }
+    ],
+    "commands": {}
+   },
+   "evidence": {
+    "help": "근거 절 (헌법 제8조 6항)",
+    "options": [],
+    "commands": {
+     "migrate": {
+      "help": "비노드 derived-from을 근거 절의 지지 줄로 옮기는 이행 계획 (v5.4)",
+      "options": [
+       {
+        "flags": [
+         "--apply"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false,
+        "help": "계획대로 옮기고 이행 기록을 남긴다"
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "fork": {
+    "help": "구독 fork 준비 점검 (읽기 전용)",
+    "options": [],
+    "commands": {
+     "doctor": {
+      "help": "route()의 판정과 근거 — 상태·설정을 쓰지 않는다",
+      "options": [
+       {
+        "flags": [
+         "--harness"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "choices": [
+         "claude",
+         "codex"
+        ],
+        "help": "기본: 모두"
+       },
+       {
+        "flags": [
+         "--session"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "실제 하네스 대화 ID"
+       },
+       {
+        "flags": [
+         "--transcript"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "전사 경로 (기본: 훅과 같은 방식으로 찾는다)"
+       },
+       {
+        "flags": [
+         "--json"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "growth": {
+    "help": "Scope→Domain 비교·검토·한정 실행",
+    "options": [],
+    "commands": {
+     "checkpoint": {
+      "help": "완료한 개별 작업의 명시적 검토를 즉시 기록",
+      "options": [
+       {
+        "flags": [
+         "--file"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "UTF-8 osk_reviews JSON 파일"
+       }
+      ],
+      "commands": {}
+     },
+     "plan": {
+      "options": [
+       {
+        "flags": [
+         "--limit"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": 3,
+        "type": "int"
+       }
+      ],
+      "commands": {}
+     },
+     "prompt": {
+      "options": [
+       {
+        "flags": [
+         "--limit"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": 3,
+        "type": "int"
+       }
+      ],
+      "commands": {}
+     },
+     "review": {
+      "options": [
+       {
+        "flags": [
+         "key"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       },
+       {
+        "flags": [
+         "outcome"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "choices": [
+         "deferred",
+         "no_value",
+         "preserved"
+        ]
+       },
+       {
+        "flags": [
+         "--target"
+        ],
+        "action": "_StoreAction",
+        "required": false
+       },
+       {
+        "flags": [
+         "--reason"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       },
+       {
+        "flags": [
+         "--manifest"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "실행 전에 고정한 plan rid"
+       }
+      ],
+      "commands": {}
+     },
+     "run": {
+      "options": [
+       {
+        "flags": [
+         "--limit"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": 3,
+        "type": "int"
+       },
+       {
+        "flags": [
+         "--command-file"
+        ],
+        "action": "_AppendAction",
+        "required": true,
+        "help": "에이전트 argv 배열 JSON 파일 — --daily는 공급자마다 하나(Codex, 대신 돌 Claude)"
+       },
+       {
+        "flags": [
+         "--timeout"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": 600,
+        "type": "int"
+       },
+       {
+        "flags": [
+         "--daily"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false,
+        "help": "하루 정기 실행: 주간 한도 조정, 묶음 실행, 묶음마다 한도 조회(--limit·--timeout 무시)"
+       },
+       {
+        "flags": [
+         "--backlog"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false,
+        "help": "--daily와 함께: 대화 검토 적체를 일괄로 — 하루 한도·벽시계 예산 없이 Scope 묶음만, 대기열이 빌 때까지(공급자는 주간 사용률 0.9에서 쉰다)"
+       },
+       {
+        "flags": [
+         "--check"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false,
+        "help": "실행 파일만 확인; 모델·포착·대장 쓰기 없음"
+       },
+       {
+        "flags": [
+         "--invocation"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": "unknown",
+        "choices": [
+         "manual",
+         "scheduled",
+         "unknown",
+         "user_request"
+        ],
+        "help": "명시한 기동 원인; 생략하면 추정하지 않는다"
+       }
+      ],
+      "commands": {}
+     },
+     "status": {
+      "help": "읽기 전용 성장 상태·기간별 증거 — 검토·복구·모델 실행 없음",
+      "options": [
+       {
+        "flags": [
+         "--since"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "이력 시작 ISO 시각(시간대 필수, 포함)"
+       },
+       {
+        "flags": [
+         "--until"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "이력 끝 ISO 시각(시간대 필수, 제외; 기본 현재)"
+       },
+       {
+        "flags": [
+         "--preflight"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false,
+        "help": "기존 fork doctor로 CLI·구독 인증도 조회(추론 없음)"
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "integration": {
+    "help": "대화별 포착·통합 대기 (scope 공유 기억과 별개)",
+    "options": [],
+    "commands": {
+     "capture": {
+      "options": [
+       {
+        "flags": [
+         "--harness"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "choices": [
+         "antigravity",
+         "claude",
+         "codex",
+         "kiro"
+        ]
+       },
+       {
+        "flags": [
+         "--conversation"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "실제 하네스 대화 ID"
+       },
+       {
+        "flags": [
+         "--transcript"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       },
+       {
+        "flags": [
+         "--session"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "프로젝트 키 — 훅이 작업 폴더에서 정한다(대화 ID가 아니다)"
+       },
+       {
+        "flags": [
+         "--space"
+        ],
+        "action": "_StoreAction",
+        "required": false
+       }
+      ],
+      "commands": {}
+     },
+     "catchup": {
+      "options": [
+       {
+        "flags": [
+         "--limit"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": 20,
+        "type": "int"
+       }
+      ],
+      "commands": {}
+     },
+     "list": {
+      "options": [
+       {
+        "flags": [
+         "--limit"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": 20,
+        "type": "int"
+       }
+      ],
+      "commands": {}
+     },
+     "prompt": {
+      "options": [
+       {
+        "flags": [
+         "--harness"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "choices": [
+         "antigravity",
+         "claude",
+         "codex",
+         "kiro"
+        ]
+       },
+       {
+        "flags": [
+         "--conversation"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "실제 하네스 대화 ID"
+       }
+      ],
+      "commands": {}
+     },
+     "reopen": {
+      "help": "저장·인용 라운드를 정정한 쪽이 그 라운드를 읽은 검토를 다시 연다",
+      "options": [
+       {
+        "flags": [
+         "--harness"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "choices": [
+         "antigravity",
+         "claude",
+         "codex",
+         "kiro"
+        ]
+       },
+       {
+        "flags": [
+         "--conversation"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "실제 하네스 대화 ID"
+       },
+       {
+        "flags": [
+         "--ref"
+        ],
+        "action": "_AppendAction",
+        "required": true,
+        "help": "정정한 저장·인용 라운드 좌표(반복 가능)"
+       },
+       {
+        "flags": [
+         "--reason"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "정정 사유"
+       }
+      ],
+      "commands": {}
+     },
+     "review": {
+      "options": [
+       {
+        "flags": [
+         "--harness"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "choices": [
+         "antigravity",
+         "claude",
+         "codex",
+         "kiro"
+        ]
+       },
+       {
+        "flags": [
+         "--conversation"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "실제 하네스 대화 ID"
+       }
+      ],
+      "commands": {}
+     },
+     "status": {
+      "options": [
+       {
+        "flags": [
+         "--harness"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "choices": [
+         "antigravity",
+         "claude",
+         "codex",
+         "kiro"
+        ]
+       },
+       {
+        "flags": [
+         "--conversation"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "실제 하네스 대화 ID"
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "organization": {
+    "help": "Scope 참조·허브 정돈의 선택과 검증",
+    "options": [],
+    "commands": {
+     "plan": {
+      "options": [
+       {
+        "flags": [
+         "--scope"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       },
+       {
+        "flags": [
+         "--preview"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false
+       }
+      ],
+      "commands": {}
+     },
+     "review": {
+      "options": [],
+      "commands": {}
+     }
+    }
+   },
+   "protect": {
+    "help": "[사용자 전속] 보호영역 지정",
+    "options": [
+     {
+      "flags": [
+       "region"
+      ],
+      "action": "_StoreAction",
+      "required": true
+     },
+     {
+      "flags": [
+       "--reason"
+      ],
+      "action": "_StoreAction",
+      "required": false,
+      "default": ""
+     }
+    ],
+    "commands": {}
+   },
+   "raw": {
+    "help": "`_raw/` 기록의 숨김 저장 이관",
+    "options": [],
+    "commands": {
+     "migrate": {
+      "help": "기존 Markdown 원료의 숨김 .txt 이관 계획",
+      "options": [
+       {
+        "flags": [
+         "--apply"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false,
+        "help": "계획을 적용; 생략하면 읽기 전용"
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "rechecks": {
+    "help": "근거 재검토 후보 전체 (시행령 §7 2항)",
+    "options": [],
+    "commands": {}
+   },
+   "release": {
+    "help": "[정본 전용] 정식 릴리스 선언 (osk.release로 위임)",
+    "options": [],
+    "commands": {}
+   },
+   "revert": {
+    "help": "[사용자 전속] 변경집합 반려(원상 복원)",
+    "options": [
+     {
+      "flags": [
+       "region"
+      ],
+      "action": "_StoreAction",
+      "required": true
+     },
+     {
+      "flags": [
+       "--reason"
+      ],
+      "action": "_StoreAction",
+      "required": false,
+      "default": ""
+     }
+    ],
+    "commands": {}
+   },
+   "roots": {
+    "help": "외부 루트 — 선언은 모든 기기에, 위치는 이 기기에 (Mechanism §1 6항)",
+    "options": [],
+    "commands": {
+     "declare": {
+      "help": "[사용자 전속] 별칭 선언 — 다시 선언하면 설명·원본을 고친다",
+      "options": [
+       {
+        "flags": [
+         "alias"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       },
+       {
+        "flags": [
+         "--note"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "설명"
+       },
+       {
+        "flags": [
+         "--origin"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "공유 원본의 주소"
+       }
+      ],
+      "commands": {}
+     },
+     "mount": {
+      "help": "[사용자 전속] 이 기기의 위치",
+      "options": [
+       {
+        "flags": [
+         "alias"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       },
+       {
+        "flags": [
+         "path"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       }
+      ],
+      "commands": {}
+     },
+     "retire": {
+      "help": "[사용자 전속] 별칭 해제",
+      "options": [
+       {
+        "flags": [
+         "alias"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       },
+       {
+        "flags": [
+         "--note"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": "",
+        "help": "해제 이유"
+       }
+      ],
+      "commands": {}
+     },
+     "show": {
+      "help": "별칭마다 선언 상태와 이 기기의 위치",
+      "options": [],
+      "commands": {}
+     },
+     "unmount": {
+      "help": "[사용자 전속] 이 기기의 위치를 지운다",
+      "options": [
+       {
+        "flags": [
+         "alias"
+        ],
+        "action": "_StoreAction",
+        "required": true
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "routing": {
+    "help": "프로젝트 결속 — 결속 집합과 주된 scope (Mechanism §6-2 6항)",
+    "options": [],
+    "commands": {
+     "bind": {
+      "help": "결속에 scope를 더한다 — 주된 scope는 정하지 않는다",
+      "options": [
+       {
+        "flags": [
+         "--project"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "프로젝트 키"
+       },
+       {
+        "flags": [
+         "--scope"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "scope 이름"
+       },
+       {
+        "flags": [
+         "--reason"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": ""
+       }
+      ],
+      "commands": {}
+     },
+     "primary": {
+      "help": "[사용자 전속] 주된 scope 지정 — 그 프로젝트 자체의 활동이 속한 scope",
+      "options": [
+       {
+        "flags": [
+         "--project"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "프로젝트 키"
+       },
+       {
+        "flags": [
+         "--scope"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "scope 이름"
+       },
+       {
+        "flags": [
+         "--reason"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": ""
+       }
+      ],
+      "commands": {}
+     },
+     "show": {
+      "help": "프로젝트의 결속 집합·주된 scope — 생략하면 검토 대상 전부",
+      "options": [
+       {
+        "flags": [
+         "--project"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "프로젝트 키(훅이 작업 폴더에서 정한 값)"
+       }
+      ],
+      "commands": {}
+     },
+     "unbind": {
+      "help": "결속에서 scope를 뺀다",
+      "options": [
+       {
+        "flags": [
+         "--project"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "프로젝트 키"
+       },
+       {
+        "flags": [
+         "--scope"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "scope 이름"
+       },
+       {
+        "flags": [
+         "--reason"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "default": ""
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "search": {
+    "help": "작업 검색",
+    "options": [
+     {
+      "flags": [
+       "query"
+      ],
+      "action": "_StoreAction",
+      "required": true
+     },
+     {
+      "flags": [
+       "-k"
+      ],
+      "action": "_StoreAction",
+      "required": false,
+      "default": 8,
+      "type": "int"
+     }
+    ],
+    "commands": {}
+   },
+   "sm": {
+    "help": "scope 기억 (훅 경로)",
+    "options": [],
+    "commands": {
+     "show": {
+      "help": "전문 출력 — 훅이 그대로 문맥에 주입한다",
+      "options": [
+       {
+        "flags": [
+         "--session"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "프로젝트 키(훅이 작업 폴더에서 정한다)"
+       },
+       {
+        "flags": [
+         "--space"
+        ],
+        "action": "_StoreAction",
+        "required": false
+       },
+       {
+        "flags": [
+         "--json"
+        ],
+        "action": "_StoreTrueAction",
+        "nargs": 0,
+        "required": false,
+        "default": false,
+        "help": "상태 전체를 JSON으로"
+       }
+      ],
+      "commands": {}
+     },
+     "write": {
+      "help": "전체 치환 — 본문은 stdin",
+      "options": [
+       {
+        "flags": [
+         "--session"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "프로젝트 키(훅이 작업 폴더에서 정한다)"
+       },
+       {
+        "flags": [
+         "--expect-hash"
+        ],
+        "action": "_StoreAction",
+        "required": false
+       },
+       {
+        "flags": [
+         "--space"
+        ],
+        "action": "_StoreAction",
+        "required": false
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "status": {
+    "help": "체계 현황",
+    "options": [],
+    "commands": {}
+   },
+   "store-reconcile": {
+    "help": "내용 주소 저장소를 파일 이름 기준으로 판독·이행",
+    "options": [
+     {
+      "flags": [
+       "--apply"
+      ],
+      "action": "_StoreTrueAction",
+      "nargs": 0,
+      "required": false,
+      "default": false,
+      "help": "판독만 하지 않고 색인·작업 트리를 실제로 맞춘다"
+     }
+    ],
+    "commands": {}
+   },
+   "tidy": {
+    "help": "정돈 — 미처분 퇴출 항목 (Mechanism §9-3)",
+    "options": [],
+    "commands": {
+     "discard": {
+      "help": "경유 노드 폐기 — 유입 참조가 없을 때, 사용자 확인 뒤",
+      "options": [
+       {
+        "flags": [
+         "title"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "Workbench 경유 노드 제목"
+       },
+       {
+        "flags": [
+         "--confirm"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "확인받은 판의 해시 (없으면 계획만 낸다)"
+       }
+      ],
+      "commands": {}
+     },
+     "list": {
+      "help": "scope별 미처분 evict 목록과 현황",
+      "options": [
+       {
+        "flags": [
+         "--scope"
+        ],
+        "action": "_StoreAction",
+        "required": false
+       }
+      ],
+      "commands": {}
+     },
+     "prompt": {
+      "help": "전용 정돈 세션의 프롬프트 — 새 세션에 붙여 넣는다",
+      "options": [
+       {
+        "flags": [
+         "--scope"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "기본: 가장 오래 밀린 scope"
+       }
+      ],
+      "commands": {}
+     },
+     "settle": {
+      "help": "처분 기록 — 노드로 증류·기존 노드에 통합·폐기",
+      "options": [
+       {
+        "flags": [
+         "of"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "help": "대상 evict의 rid"
+       },
+       {
+        "flags": [
+         "outcome"
+        ],
+        "action": "_StoreAction",
+        "required": true,
+        "choices": [
+         "discarded",
+         "merged",
+         "node"
+        ]
+       },
+       {
+        "flags": [
+         "--target"
+        ],
+        "action": "_AppendAction",
+        "required": false,
+        "help": "노드 제목 (폐기면 없음, 여럿이면 되풀이)"
+       },
+       {
+        "flags": [
+         "--reason"
+        ],
+        "action": "_StoreAction",
+        "required": false,
+        "help": "처분의 판단 이유"
+       }
+      ],
+      "commands": {}
+     }
+    }
+   },
+   "unprotect": {
+    "help": "[사용자 전속] 보호영역 해제",
+    "options": [
+     {
+      "flags": [
+       "region"
+      ],
+      "action": "_StoreAction",
+      "required": true
+     },
+     {
+      "flags": [
+       "--reason"
+      ],
+      "action": "_StoreAction",
+      "required": false,
+      "default": ""
+     }
+    ],
+    "commands": {}
+   },
+   "update": {
+    "help": "정본 릴리스로 갱신 (osk.update로 위임)",
+    "options": [],
+    "commands": {}
+   },
+   "validate": {
+    "help": "검증기 수트 전체 실행",
+    "options": [],
+    "commands": {}
+   },
+   "validators": {
+    "help": "검증기 활성화 현황, 해제·재활성화는 [사용자 전속] (Mechanism §6-1)",
+    "options": [
+     {
+      "flags": [
+       "--activate"
+      ],
+      "action": "_StoreAction",
+      "required": false
+     },
+     {
+      "flags": [
+       "--deactivate"
+      ],
+      "action": "_StoreAction",
+      "required": false
+     },
+     {
+      "flags": [
+       "--reason"
+      ],
+      "action": "_StoreAction",
+      "required": false,
+      "default": ""
+     }
+    ],
+    "commands": {}
+   },
+   "view": {
+    "help": "열람 검색",
+    "options": [
+     {
+      "flags": [
+       "query"
+      ],
+      "action": "_StoreAction",
+      "required": true
+     },
+     {
+      "flags": [
+       "-k"
+      ],
+      "action": "_StoreAction",
+      "required": false,
+      "default": 8,
+      "type": "int"
+     }
+    ],
+    "commands": {}
+   }
+  }
+ },
+ "mcp_tools": {
+  "search": {
+   "description": "query로 전 Space 어휘 검색(인용 기록·Workbench 제외). 결과 title이 다른 도구의\nname. summary는 미리보기이며 인용·판단 전에 read_node로 확인한다.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "query": {
+      "type": "string"
+     },
+     "k": {
+      "default": 8,
+      "maximum": 50,
+      "minimum": 1,
+      "type": "integer"
+     },
+     "session": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "type": "object"
+   }
+  },
+  "read_node": {
+   "description": "`name`의 전문·`hash`(재작성 `expect_hash`). `view`는 `outline`(목차),\n`시작:끝`(본문 0기반 문자, 끝 제외) 또는 본문 인용(앞뒤 문단째, 그대로 `old_text`).\n부분 열람은 전문 쓰기용 해시를 주지 않는다.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "view": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "type": "object"
+   }
+  },
+  "read_cited": {
+   "description": "인용 기록 회상: ref=경로#N·관측 줄 좌표(번호 없으면 목차)·원본 턴 native:…(이 기기 전사의\n그 턴만, previous=앞 턴). 인자 없으면 기록 목록(space=옛 scope 자리). 기본 review:\n발화·답변 선별 ≤6000자, query=원본 AND 검색, full=포렌식. 생략≠무가치. 전량 이어읽기\n금지. hash=원본 출처.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "ref": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "space": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "max_chars": {
+      "default": 6000,
+      "maximum": 100000,
+      "minimum": 200,
+      "type": "integer"
+     },
+     "view": {
+      "default": "review",
+      "enum": [
+       "review",
+       "full"
+      ],
+      "type": "string"
+     },
+     "query": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "conversation": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "through": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "type": "object"
+   }
+  },
+  "overview": {
+   "description": "구조 조망. **첫 쓰기 전에 한 번** 부른다. `clusters`=허브 있는 군집 경로\n(`create_node.space`), `open_cases`=`conflicts` 사건 번호,\n`broken`=검색에서 빠진 파손 파일. `session`을 주면 결속 `bindings`(scopes·primary)와\n주된 scope `session_scope`도 반환한다.\n`include`=훅 `[osk 접음]` 줄이 알려 준 블록 → `included`.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "session": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "include": {
+      "anyOf": [
+       {
+        "items": {
+         "enum": [
+          "tidy",
+          "organization",
+          "recovery"
+         ],
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "type": "object"
+   }
+  },
+  "run_validators": {
+   "description": "전역 검증(중복 id·위상·대장 손상·파싱 실패). 보고만 하며 수정하지 않는다.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+   }
+  },
+  "create_node": {
+   "description": "생성. 전역 유일 `title`=파일명=`name`, `body`=본문 전문.\n`space`는 전체 군집 경로(`00_Scope/W1`); 모르면 `overview`.\n`session`=훅이 준 프로젝트 키(대화 id 금지). `space` 생략 시 주된 scope;\n다른 scope도 되며 결속에 더한다. `bound_scope`는 새 결속만 보고한다.\n`edges`: `derived-from`은 근거 노드 제목만(비노드는 본문 끝 `# 관측` 줄),\n`conflicts`는 열린 사건 번호(`CASE-2026-1`).\n`settle`=보존한 evict rid. 처분 결과: `settlement`.\n증류는 `distill={key,sources,hub}`: 고정 작업 키·근거 ref 목록(라운드는 관측 줄 필수)·기존 허브.\n`distillation.status=complete`까지 같은 요청으로 재시도한다.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "title": {
+      "maxLength": 120,
+      "minLength": 1,
+      "type": "string"
+     },
+     "summary": {
+      "maxLength": 80,
+      "minLength": 1,
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     },
+     "drafter": {
+      "pattern": "^[a-z][a-z0-9.\\-]{0,39}$",
+      "type": "string"
+     },
+     "session": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "space": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "edges": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "items": {
+            "type": "string"
+           },
+           "type": "array"
+          }
+         ]
+        },
+        "propertyNames": {
+         "enum": [
+          "derived-from",
+          "conflicts"
+         ]
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "settle": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "distill": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "title",
+     "summary",
+     "body",
+     "drafter"
+    ],
+    "type": "object"
+   }
+  },
+  "update_node": {
+   "description": "`name`의 같은 주장·조건을 정정한다. 독립 주장은 분화한다.\n`old_text`→`new_text`는 유일 앵커 치환(해시 불필요).\n전문 `body`는 `expect_hash` 필수. 엣지는 선-읽기 없는 델타.\n`dangling`=대상 없는 링크. `settle`=이 본문 갱신으로 보존한 evict rid;\n처분 결과: `settlement`. `distill`은 `create_node`와 같다.\n저장 후 연결만 재개: `distill={resume:키}`.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "body": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "expect_hash": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "summary": {
+      "anyOf": [
+       {
+        "maxLength": 80,
+        "minLength": 1,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "add_edges": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "items": {
+            "type": "string"
+           },
+           "type": "array"
+          }
+         ]
+        },
+        "propertyNames": {
+         "enum": [
+          "derived-from",
+          "conflicts"
+         ]
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "remove_edges": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "anyOf": [
+          {
+           "type": "string"
+          },
+          {
+           "items": {
+            "type": "string"
+           },
+           "type": "array"
+          }
+         ]
+        },
+        "propertyNames": {
+         "enum": [
+          "derived-from",
+          "conflicts"
+         ]
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "old_text": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "new_text": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "settle": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "rechecked": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "distill": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "type": "object"
+   }
+  },
+  "move_nodes": {
+   "description": "군집 재배정 — 중단 시 남은 것 복구. `names`는 노드 제목 목록이고\n(하나여도 목록으로) `dest_space`는 `create_node`의 `space`와 같다. 없는\n군집이면 만들어지되 허브는 없다. 허브는 거부하니 군집째는 `move_cluster`다.\n응답의 `hub_links`가 **양쪽** 허브에서 뺄 것(`remove`)과 더할 것(`add`)을\n준다 — 둘 다 해야 도달이 산다. `crossed_scope`가 오면 먼저 읽어라.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "names": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "dest_space": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "names",
+     "dest_space"
+    ],
+    "type": "object"
+   }
+  },
+  "move_cluster": {
+   "description": "하위 군집을 폴더째 옮긴다 — `name`은 그 군집(=허브)의 이름, `dest_parent`\n는 새 부모(`clusters`). 아래 군집도 함께 가며 최상위는 못 건넌다.\n`hub_links`는 `move_nodes`와 같다.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "name": {
+      "type": "string"
+     },
+     "dest_parent": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "dest_parent"
+    ],
+    "type": "object"
+   }
+  },
+  "record_candidate": {
+   "description": "충돌 후보 상정 — 사용자 심의를 요청한다. 같은 근거가 이미 있으면 기존\n기록을 돌려주므로 재호출이 안전하다. `nodes`는 서로 다른 둘 이상의 노드\n이름이다.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "type": {
+      "enum": [
+       "contradiction",
+       "duplication",
+       "competition",
+       "delegation-overlap"
+      ],
+      "type": "string"
+     },
+     "nodes": {
+      "items": {
+       "type": "string"
+      },
+      "minItems": 2,
+      "type": "array"
+     },
+     "reason": {
+      "default": "",
+      "type": "string"
+     }
+    },
+    "required": [
+     "type",
+     "nodes"
+    ],
+    "type": "object"
+   }
+  },
+  "cite_round": {
+   "description": "근거로 쓸 원본 턴 하나를 남긴다. conversation=훅이 준 <하네스>/<대화 ID>.\nquote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —\n전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref.\ncoordinate=관측 줄 좌표.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "conversation": {
+      "type": "string"
+     },
+     "quote": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "turn": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "user": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "conversation"
+    ],
+    "type": "object"
+   }
+  },
+  "scope_memory": {
+   "description": "scope 기억 — 그 scope에서 지금 살아 있는 **배울 점**. 모든 세션과\n기기가 **같은 것을 본다** — 이 세션에만 유효한 작업 상태는 적지 않는다.\n아무것도 없이 부르면 읽는다. 쓰기는 **`edits`가 기본** —\n`[{old_text,new_text},…]`, 앵커는 본문에 정확히 한 번, 전부 아니면 전무,\n상한은 순결과에만, 해시 불요. `text`는 전체 치환이라 `expect_hash` 필수.\n`session`은 `create_node`와 같은 값, `space`는 `00_Scope/<이름>` **두 마디**만.\n상한 1500자.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "session": {
+      "type": "string"
+     },
+     "text": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "expect_hash": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "space": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "edits": {
+      "anyOf": [
+       {
+        "items": {
+         "additionalProperties": true,
+         "type": "object"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "required": [
+     "session"
+    ],
+    "type": "object"
+   }
+  }
+ }
+}

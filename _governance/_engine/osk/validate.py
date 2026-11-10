@@ -882,7 +882,7 @@ _NUM_KO = dict(enumerate(
 # 검사를 비켜가는 표류를 막기 위해서다(6차 판정). `osk/integration.py`·`osk/raw.py`는
 # cite_round의 통로이므로 같은 이유로 여기 든다.
 SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/raw.py", "osk/integration.py",
-                   "osk/scope_memory.py", "osk/distillation.py")
+                   "osk/scope_memory.py", "osk/distillation.py", "osk/routing.py")
 
 
 def surface_violations(engine_dir=None) -> list[str]:
