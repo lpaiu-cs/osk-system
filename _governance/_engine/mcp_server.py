@@ -500,6 +500,15 @@ def update_node(name: str, body: str | None = None,
 
 
 @mcp.tool()
+def verify_abstraction(manifest: str, entries: list[dict]) -> dict:
+    """v9/v10 추상화 저장·보고 검사. 최종 abstraction 배열을 entries로 전달한다.
+    deleted에는 preserved_at=[다른 근거 노드 이름 또는 evidence:<기존 근거 좌표>]가 필요하다.
+    문장 일치·의미 동일성은 검사하지 않는다. 오류 응답에 따라 저장·보고를 수정할 수 있다."""
+    from osk import abstraction
+    return _guard(abstraction.verify, manifest, entries)
+
+
+@mcp.tool()
 def move_nodes(names: list[str], dest_space: str) -> dict:
     """군집 재배정 — 중단 시 남은 것 복구. `names`는 노드 제목 목록이고
     (하나여도 목록으로) `dest_space`는 `create_node`의 `space`와 같다. 없는

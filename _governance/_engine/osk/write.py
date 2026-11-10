@@ -813,7 +813,9 @@ def _cas(path: Path, expect_hash: str | None, body_given: bool) -> None:
              "본문을 읽고 그 응답의 `hash`를 그대로 넣어라."])
     if expect_hash and sha256_file(path) != expect_hash:
         raise WriteError(
-            "그 사이 노드가 변경됐다 — 다시 읽고 재시도하라 (CAS 불일치)")
+            "그 사이 노드가 변경됐다 — 다시 읽고 재시도하라 (CAS 불일치)",
+            ["read_node로 현재 본문을 다시 읽고 변경 부분의 판단을 갱신하라. "
+             "이전 수정본을 그대로 덮지 말고 새로 읽은 hash로 저장하라."])
 
 
 # ── 세션 라우팅 (Mechanism §6-2 3항) ─────────────────────────────────────

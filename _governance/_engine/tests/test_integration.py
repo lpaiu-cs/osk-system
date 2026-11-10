@@ -138,6 +138,36 @@ class IntegrationTests(unittest.TestCase):
     def capture(self, harness="claude"):
         return it.capture(harness, self.sid, str(self.path), "capture-tests")
 
+    def test_citation_preserves_original_timestamp_without_changing_dialogue(self):
+        rows = claude_round(self.sid, 1) + claude_round(self.sid, 2, finished=False)
+        self.transcript(rows)
+        before = transcripts.read(str(self.path), 'claude', self.sid)
+        rows[0]['timestamp'] = '2026-11-05T23:30:00-05:00'
+        rows[len(claude_round(self.sid, 1))]['timestamp'] = '2026-11-06T04:31:00Z'
+        self.transcript(rows)
+        after = transcripts.read(str(self.path), 'claude', self.sid)
+        self.assertEqual(before['rounds'][0]['user'], after['rounds'][0]['user'])
+        self.assertEqual(before['rounds'][0]['agent'], after['rounds'][0]['agent'])
+        self.assertEqual(after['rounds'][0]['source_timestamp'], '2026-11-06T04:30:00Z')
+        self.capture()
+        for n, stamp in [(1, '2026-11-06T04:30:00Z'), (2, '2026-11-06T04:31:00Z')]:
+            cited = it.cite(f'claude/{self.sid}', turn=f'user-{n}', note='summary')
+            header = raw.cited_header(raw.read_round(cited['round_ref'], view='full')['text'])
+            self.assertEqual(header['source_timestamp'], stamp)
+        got = it.read_turns([raw.native_ref('claude', self.sid, 'user-1')])['turns'][0]
+        self.assertEqual(got['source_timestamp'], '2026-11-06T04:30:00Z')
+
+    def test_codex_timestamp_is_exact_turn_start_not_session_or_body_date(self):
+        rs = [{'type':'session_meta', 'timestamp':'2020-01-01T00:00:00Z', 'payload':{'id':self.sid}}] + codex_round(1)
+        rs[1]['timestamp'] = '2026-11-05T16:00:00Z'
+        self.transcript(rs)
+        parsed = transcripts.read(str(self.path), 'codex', self.sid)
+        self.assertEqual(parsed['rounds'][0]['source_timestamp'], '2026-11-05T16:00:00Z')
+        for value in ('2026-11-05', '2026-11-05T16:00:00', 'invalid', None):
+            rs[1]['timestamp'] = value
+            self.transcript(rs)
+            self.assertNotIn('source_timestamp', transcripts.read(str(self.path), 'codex', self.sid)['rounds'][0])
+
 
     def test_codex_history_rejects_missing_foreign_cyclic_and_partial_sources(self):
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):
