@@ -790,7 +790,7 @@ class Index:
         if alias:
             if self._roots is None:
                 try:
-                    self._roots = roots.declarations()
+                    self._roots = roots.declarations(VAULT)
                 except (OSError, ValueError):
                     return ("dangling",)    # 대장 손상 — 선언을 확인하지 못한 별칭은 끊김이다
             return ("external",) if roots.alias_problem(alias[0], self._roots) is None else ("dangling",)
@@ -961,7 +961,7 @@ def dangling_refs(idx: Index) -> list[str]:
 
 def reference_report(idx: Index, records=None) -> dict:
     from . import evidence
-    records = records or evidence.Records()     # 노드마다 기록 색인을 다시 짓지 않는다
+    records = records or evidence.Records(VAULT)     # 노드마다 기록 색인을 다시 짓지 않는다
     out, items, dups = [], [], []
     for stem, (p, kind) in idx.nodes.items():
         n = idx.node(p)
@@ -1026,9 +1026,9 @@ def reference_review(node: contract.Node, idx: Index,
     coords = evidence.coordinates(node.body)
     if coords:
         before = set(evidence.coordinates(previous.body)) if previous else set()
-        records = records or evidence.Records()
+        records = records or evidence.Records(VAULT)
         for coord in coords:
-            problem = evidence.check(coord, idx, records)
+            problem = evidence.check(VAULT, coord, idx, records)
             if problem and not problem.startswith(evidence.NODE_LINE):
                 out.append({"id": node.id, "relation": "근거", "ref": coord,
                             "resolution": "unresolved", "issue": "evidence_unresolved",

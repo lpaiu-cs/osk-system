@@ -76,7 +76,7 @@ def run() -> dict:
     records = None                        # 참조 경고와 근거 절 검사(17)가 함께 쓰는 기록 색인
     try:
         from . import evidence
-        records = evidence.Records()
+        records = evidence.Records(core.VAULT)
         rep["warnings"] = graph.reference_report(idx, records)
     except Exception as e:
         rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
@@ -299,7 +299,7 @@ def run() -> dict:
     #     노드처럼 언제나 검사해 보고하고, verdict 산입은 활성화 뒤에만 한다.
     try:
         from . import roots
-        external = roots.Roots()
+        external = roots.Roots(core.VAULT)
         ev = evidence_section_report(idx, external, records)
         # `derived-from`에 남은 비노드는 이행 전 노드마다 걸리므로 노드 수로만 싣는다 — 줄의
         # 위반이 그 수백 줄에 묻히지 않게 한다. verdict 산입(활성화 뒤)은 둘 다 센다.
@@ -344,7 +344,7 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
     if heads:
         errs.append("관측 절이 노드 끝에 있지 않다")
     if span is not None:
-        records = records or evidence.Records()
+        records = records or evidence.Records(core.VAULT)
         for line in text[span[0]:].split("\n")[1:]:
             line = line.rstrip("\r")
             if not line.strip():
@@ -353,7 +353,7 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
             if not m:
                 errs.append(f"형식이 다른 관측 줄: {line[:60]}")
                 continue
-            problem = evidence.check(m.group(2), idx, records, external)
+            problem = evidence.check(core.VAULT, m.group(2), idx, records, external)
             if problem:
                 errs.append(problem)
     left = evidence.leftovers(derived, idx)
@@ -365,7 +365,7 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
 def evidence_section_report(idx: "graph.Index", external=None, records=None) -> dict:
     """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다. 보류된 외부
     루트는 위반이 아니므로 여기 없고 `external.held`에 모인다."""
-    records = records or evidence.Records()
+    records = records or evidence.Records(core.VAULT)
     out = {}
     for name, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] == "governance":
@@ -415,7 +415,7 @@ def auto_activate(idx=None, *, now: float | None = None) -> list[str]:
     mark.write_text(json.dumps({"at": now}), encoding="utf-8")   # 먼저 적어 겹친 작업이 다시 재지 않게 한다
     idx = idx or graph.Index()
     clean = {"cluster-overview": lambda: not _cluster_overview_errors(cluster_overview_report(idx)),
-             "evidence-section": lambda: not evidence_section_report(idx, roots.Roots(), evidence.Records())}
+             "evidence-section": lambda: not evidence_section_report(idx, roots.Roots(core.VAULT), evidence.Records(core.VAULT))}
     on = []
     for r in todo:
         if not clean[r]():

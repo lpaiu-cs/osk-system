@@ -128,7 +128,7 @@ def _refs(derived) -> list:
 
 def _items(n, idx, records) -> list[dict]:
     """노드의 비노드 `derived-from` 항목(evidence.leftovers와 같은 대상)과 그 처리."""
-    coords, cited = set(evidence.coordinates(n.body)), evidence.cited_rounds(n.body, records)
+    coords, cited = set(evidence.coordinates(n.body)), evidence.cited_rounds(core.VAULT, n.body, records)
     out = []
     for ref in _refs(n.meta.get("derived-from")):
         s, it = _bare(ref), {"entry": str(ref)}
@@ -142,7 +142,7 @@ def _items(n, idx, records) -> list[dict]:
             if index is None:
                 out.append({**it, "kind": "round", "action": "hold", "reason": "라운드 번호가 없는 기록 참조"})
                 continue
-            it.update(kind="round", coord=evidence.coordinate(p, index, records), record=p, index=index)
+            it.update(kind="round", coord=evidence.coordinate(core.VAULT, p, index, records), record=p, index=index)
             covered = raw.canonical_ref(s) in cited
         elif evidence.kind(s) in ("url", "external"):
             it.update(kind=evidence.kind(s), coord=s)
@@ -154,7 +154,7 @@ def _items(n, idx, records) -> list[dict]:
             continue                        # 노드와 끊긴 대상은 이 이행의 것이 아니다
         if covered:
             it["action"] = "covered"
-        elif problem := evidence.check(it["coord"], idx, records):
+        elif problem := evidence.check(core.VAULT, it["coord"], idx, records):
             it.update(action="hold", reason=problem)
         out.append(it)
     return out
@@ -199,7 +199,7 @@ def _change(path: Path, n, items: list[dict]) -> dict:
 def plan() -> dict:
     """노드마다 옮길 항목과 새 바이트 — 쓰지 않는다. 통치 문서는 근거 절 검증기의 대상이 아니므로
     빠진다(validate.evidence_section_report와 같다)."""
-    idx, records = graph.Index(), evidence.Records()
+    idx, records = graph.Index(), evidence.Records(core.VAULT)
     found = []
     for _name_, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] != "governance":

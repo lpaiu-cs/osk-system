@@ -5831,7 +5831,7 @@ def test_external_roots():
     (Path(_TMP.name) / "outside.md").write_text("x", encoding="utf-8")
 
     def problem(coord, at=None):
-        return evidence.check(coord, None, None, at or roots.Roots())
+        return evidence.check(core.VAULT, coord, None, None, at or roots.Roots(core.VAULT))
 
     def refused(label, fn, *a, says=""):
         try:
@@ -5845,12 +5845,12 @@ def test_external_roots():
           and not any(roots.split(c) for c in ("C:/x", "c:x", "https://e.com/a", "native:claude:a:b",
                                                "docs:/x")))
     for bad in ("d", "Docs", "http", "a_b"):
-        refused(f"쓸 수 없는 별칭: {bad}", roots.declare, bad, "n", says="쓸 수 없는 별칭")
+        refused(f"쓸 수 없는 별칭: {bad}", roots.declare, core.VAULT, bad, "n", says="쓸 수 없는 별칭")
 
     check("선언 전 — 끊김", problem("docs:notes/a.md") == "선언되지 않은 별칭: docs:notes/a.md"
           and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
     with mock.patch.object(core, "mutation_lock", wraps=core.mutation_lock) as lock:
-        roots.declare("docs", "외부 문서", "https://example.com/docs.git")
+        roots.declare(core.VAULT, "docs", "외부 문서", "https://example.com/docs.git")
     check("선언은 작업 트리 잠금 안에서 적는다(데몬의 rebase와 직렬화)", lock.call_count == 1, lock.call_count)
     check("선언하면 `/`가 있어도 경로가 아니라 바깥이다",
           graph.Index().resolve("docs:notes/a.md") == ("external",))
@@ -5860,20 +5860,20 @@ def test_external_roots():
     check("한 색인은 선언 대장을 한 번 읽는다",
           same == [("external",), ("external",), ("dangling",)] and read.call_count == 1,
           (same, read.call_count))
-    held = roots.Roots()
+    held = roots.Roots(core.VAULT)
     check("선언됐지만 이 기기에 없으면 보류 — 루트마다 한 번",
           problem("docs:notes/a.md", held) is None and problem("docs:x.md", held) is None
           and held.held == {"docs": "이 기기에 위치가 없다"}, held.held)
 
-    refused("vault 안의 위치", roots.mount, "docs", str(ROOT / "00_Scope"), says="vault 안에 있거나")
-    refused("vault를 품는 위치", roots.mount, "docs", str(ROOT.parent), says="vault 안에 있거나")
-    refused("선언되지 않은 별칭에는 위치를 두지 않는다", roots.mount, "other", str(ext),
+    refused("vault 안의 위치", roots.mount, core.VAULT, "docs", str(ROOT / "00_Scope"), says="vault 안에 있거나")
+    refused("vault를 품는 위치", roots.mount, core.VAULT, "docs", str(ROOT.parent), says="vault 안에 있거나")
+    refused("선언되지 않은 별칭에는 위치를 두지 않는다", roots.mount, core.VAULT, "other", str(ext),
             says="선언되지 않은 별칭")
-    roots.mount("docs", str(ext))
-    check("위치는 이 기기의 설정에", roots.locations() == {"docs": os.path.abspath(ext)},
-          roots.locations())
+    roots.mount(core.VAULT, "docs", str(ext))
+    check("위치는 이 기기의 설정에", roots.locations(core.VAULT) == {"docs": os.path.abspath(ext)},
+          roots.locations(core.VAULT))
 
-    here = roots.Roots()
+    here = roots.Roots(core.VAULT)
     check("있는 파일과 제목", problem("docs:notes/a.md#결론", here) is None,
           problem("docs:notes/a.md#결론", here))
     check("없는 제목", problem("docs:notes/a.md#없다", here) == "없는 제목: docs:notes/a.md#없다")
@@ -5891,7 +5891,7 @@ def test_external_roots():
 
     moved = ext.with_name("ext-moved")
     ext.rename(moved)
-    gone = roots.Roots()
+    gone = roots.Roots(core.VAULT)
     check("위치가 사라지면 보류", problem("docs:notes/a.md", gone) is None
           and gone.held.get("docs", "").startswith("이 기기에 없는 위치"), gone.held)
     moved.rename(ext)
@@ -5902,10 +5902,10 @@ def test_external_roots():
             check("단말 없는 해제는 중단된다", False)
         except SystemExit as e:
             check("단말 없는 해제는 중단된다",
-                  "중단" in str(e.code) and roots.alias_problem("docs", roots.declarations()) is None,
+                  "중단" in str(e.code) and roots.alias_problem("docs", roots.declarations(core.VAULT)) is None,
                   e.code)
     with mock.patch.object(core, "mutation_lock", wraps=core.mutation_lock) as lock:
-        roots.retire("docs", "옮김")
+        roots.retire(core.VAULT, "docs", "옮김")
     check("해제는 확인과 기록을 한 작업 트리 잠금 안에서 한다", lock.call_count == 1, lock.call_count)
     check("해제한 별칭은 끊김", problem("docs:notes/a.md") == "해제된 별칭: docs:notes/a.md"
           and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
@@ -5913,14 +5913,14 @@ def test_external_roots():
     check("색인은 갱신 전까지 선언을 다시 읽지 않는다", seen.resolve("docs:notes/a.md") == ("external",))
     seen.refresh_nonnode()
     check("비노드 갱신이 선언을 다시 읽는다", seen.resolve("docs:notes/a.md") == ("dangling",))
-    refused("해제한 별칭은 다시 해제하지 않는다", roots.retire, "docs", says="선언된 별칭이 아니다")
+    refused("해제한 별칭은 다시 해제하지 않는다", roots.retire, core.VAULT, "docs", says="선언된 별칭이 아니다")
     check("조회는 선언 상태와 이 기기의 위치를 함께 낸다",
-          [(r["alias"], r["declaration"], r["note"], r.get("here")) for r in roots.show()["roots"]]
-          == [("docs", "해제된 별칭", "옮김", "있음")], roots.show())
-    roots.unmount("docs")
-    check("위치를 지운다", roots.locations() == {})
-    refused("없는 위치는 지우지 않는다", roots.unmount, "docs", says="위치가 없는")
-    roots.CONFIG.unlink()
+          [(r["alias"], r["declaration"], r["note"], r.get("here")) for r in roots.show(core.VAULT)["roots"]]
+          == [("docs", "해제된 별칭", "옮김", "있음")], roots.show(core.VAULT))
+    roots.unmount(core.VAULT, "docs")
+    check("위치를 지운다", roots.locations(core.VAULT) == {})
+    refused("없는 위치는 지우지 않는다", roots.unmount, core.VAULT, "docs", says="위치가 없는")
+    roots.config_path(core.VAULT).unlink()
 
 
 def test_non_node_evidence_is_an_evidence_line():
@@ -5937,7 +5937,7 @@ def test_non_node_evidence_is_an_evidence_line():
     from osk import distillation as D, evidence, raw, rechecks
     sp, dom = "00_Scope/W1", ROOT / "00_Domain/regr-EvD"
     rec = raw.append_rounds("repo/regr-evid", "regr-evid-rec", [{"user": "관측", "agent": "결과"}], sp)
-    ref, coord = rec["round_refs"][0], evidence.coordinate(rec["path"], 1)
+    ref, coord = rec["round_refs"][0], evidence.coordinate(core.VAULT, rec["path"], 1)
     src = ROOT / "_sources/regr-evid.md"
     src.parent.mkdir(exist_ok=True)
     src.write_text("# 결과\n\nx\n", encoding="utf-8")
@@ -5961,8 +5961,8 @@ def test_non_node_evidence_is_an_evidence_line():
         check("인용 라운드는 derived-from에 달지 않는다", "derived-from" not in contract.parse(made).meta)
         huge = line.replace("#1`", "#1–100000000`")
         check("기록에 다 있지 않은 범위는 펴지 않는다",
-              evidence.cited_rounds("주장.\n\n## 근거\n\n" + huge) == set()
-              and evidence.cited_rounds("주장.\n\n## 근거\n\n" + line) == {raw.canonical_ref(ref)})
+              evidence.cited_rounds(core.VAULT, "주장.\n\n## 근거\n\n" + huge) == set()
+              and evidence.cited_rounds(core.VAULT, "주장.\n\n## 근거\n\n" + line) == {raw.canonical_ref(ref)})
         r = _w(write.update_node, "regr-evid", old_text=line,
                new_text=line + "\n" + line.replace("#1`", "#9`"))
         items = (r.get("reference_review") or {}).get("items", [])

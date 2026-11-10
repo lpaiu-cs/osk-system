@@ -226,7 +226,7 @@ def _cites(node, idx, *, legacy: bool = True) -> set[str]:
     """노드가 다는 출처 — `derived-from`의 노드와 근거 절 줄이 가리키는 인용 라운드(헌법 제8조
     5·6항). `legacy`면 이행 전 `derived-from`에 남은 인용 라운드도 센다 — 그때 적힌 영수증이
     그대로 확인된다. 새 증류는 줄만 받는다."""
-    out = evidence.cited_rounds(node.body)
+    out = evidence.cited_rounds(VAULT, node.body)
     for ref in contract.stored_edges(node.meta.get("derived-from")):
         try:
             source = _source(ref, idx)
@@ -287,7 +287,7 @@ def structure(receipt: dict, idx=None) -> str | None:
             return "target left its top-level cluster"
         node = contract.parse(p)
         kept = {write.edge_key(ref, idx) for ref in (*contract.stored_edges(node.meta.get("derived-from")),
-                                                      *evidence.cited_rounds(node.body))}
+                                                      *evidence.cited_rounds(VAULT, node.body))}
         if any(write.edge_key(s["ref"], idx) not in kept for s in receipt["sources"]):
             return "target no longer cites its source"
     except (write.WriteError, OSError, ValueError, KeyError, TypeError) as e:
@@ -524,7 +524,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("required provenance was removed; no node written")
             unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(s["ref"]) not in cites]
             if unlined:
-                coords = [evidence.coordinate(s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
+                coords = [evidence.coordinate(VAULT, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
                 raise write.WriteError(
                     "출처 라운드를 관측 절의 줄로 달지 않았다 — 쓰지 않았다",
                     [f"노드 끝 `# 관측` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "

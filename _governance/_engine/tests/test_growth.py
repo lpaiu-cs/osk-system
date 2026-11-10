@@ -748,7 +748,7 @@ class GrowthTests(unittest.TestCase):
                             '형식이 다른 관측 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
             # a shortened hash two records share is ambiguous; a longer prefix tells them apart
             raw.append_rounds('repo/ev', 'codex-c38d8ef2' + '1' * 24, [{'user': 'q', 'agent': 'a'}], '00_Scope/W1')
-            records = evidence.Records()
+            records = evidence.Records(core.VAULT)
             assert validate.evidence_errors(text, [], idx, records)[0].startswith('모호한 좌표: c38d8ef2#1–2')
             assert records.short(claude) == 'c38d8ef20', records.short(claude)
             longer = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1–2` · 지지 — longer'])
@@ -796,7 +796,7 @@ class GrowthTests(unittest.TestCase):
                 assert write.create_node('B', 'B', 'B claim.', 'gpt-6-astra', space='00_Scope/W1',
                                          edges={'derived-from': first['round_refs'][0]})['ok']
             from osk import roots
-            roots.declare('brain', 'wiki')
+            roots.declare(core.VAULT, 'brain', 'wiki')
             rep = validate.run()
             # a non-node left in derived-from is counted by node, not listed line by line
             assert list(rep['evidence_section']) == ['A'] and rep['evidence_section_leftovers'] == 1, rep['evidence_section']

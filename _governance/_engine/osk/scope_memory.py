@@ -503,7 +503,7 @@ def replace(session: str, text: str | None = None,
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
         # 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다(Mechanism §6-2 6항). 일회성 작업 폴더는 결속하지 않는다.
-        if not workspaces.is_one_off(session) and scope not in routing.bindings(session)["scopes"]:
+        if not workspaces.is_one_off(VAULT, session) and scope not in routing.bindings(session)["scopes"]:
             routing.bind_session(session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")

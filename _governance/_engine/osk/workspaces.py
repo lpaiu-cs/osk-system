@@ -17,8 +17,13 @@ import re
 from pathlib import Path
 
 from . import core
+from .vault import Vault
 
-LEDGER = core.LEDGER / "workspaces.jsonl"
+
+def ledger_path(vault: Vault) -> Path:
+    """사용자가 더한 판별 규칙의 대장 — 동기화된다."""
+    return vault.ledger / "workspaces.jsonl"
+
 
 # 운영 기기(Windows)에서 확인한 규칙이다(2026-10-11, #179; Claude-Data는 2026-10-29). 다른 OS의 경로와
 # 규칙이 없는 하네스는 설치하는 에이전트가 같은 형식으로 대장에 더한다(SETUP의 일회성 작업 폴더).
@@ -40,11 +45,11 @@ RULES = (
 )
 
 
-def rules() -> list[dict]:
+def rules(vault: Vault) -> list[dict]:
     """이 기기의 OS에 맞는 규칙. 대장의 규칙(나중 것부터)이 엔진 규칙보다 먼저다 — 같은 뿌리를 다시
     확인해 더한 규칙이 앞선다. 대장을 읽지 못하면 엔진 규칙만 쓴다."""
     try:
-        extra = [r for r in core.ledger_read(LEDGER) if r.get("kind") == "rule"]
+        extra = [r for r in core.ledger_read(ledger_path(vault)) if r.get("kind") == "rule"]
     except (OSError, ValueError):
         extra = []
     return [r for r in (*reversed(extra), *RULES) if r.get("os") in (None, os.name)]
@@ -67,7 +72,7 @@ def _line(version) -> tuple:
     return tuple(int(n) for n in re.findall(r"\d+", str(version or ""))[:2])
 
 
-def judge(harness: str, cwd: str | None, version: str | None = None) -> dict | None:
+def judge(vault: Vault, harness: str, cwd: str | None, version: str | None = None) -> dict | None:
     """작업 폴더가 어느 규칙의 뿌리 아래면 그 판정, 아니면 None. 뿌리 아래에서 규칙에 없는 모양이나
     규칙을 확인한 판본과 주·부 번호가 다른 하네스 판본은 일회성으로 둔 채 `warning`으로 알린다.
     동기화된 규칙이 깨졌으면 그 규칙만 건너뛴다."""
@@ -77,7 +82,7 @@ def judge(harness: str, cwd: str | None, version: str | None = None) -> dict | N
         path = Path(cwd).resolve()
     except OSError:
         return None
-    for rule in rules():
+    for rule in rules(vault):
         try:
             root = _root(rule)
             rel = path.relative_to(root) if root else None
@@ -100,14 +105,14 @@ def judge(harness: str, cwd: str | None, version: str | None = None) -> dict | N
     return None
 
 
-def add(harness: str, root: str, shape: str, version: str, note: str = "") -> dict:
+def add(vault: Vault, harness: str, root: str, shape: str, version: str, note: str = "") -> dict:
     """규칙 하나를 대장에 더한다 — 규칙이 없는 하네스의 일회성 작업 폴더을 설치하는 에이전트가
     적는다. 이 기기의 OS에 묶는다. 대장 행도 작업 트리의 변경이라 변경 잠금 안에서 쓴다."""
     re.compile(shape)
     if not all(isinstance(v, str) and v.strip() for v in (harness, root, shape, version)):
         raise ValueError("harness, root, shape and version are required")
-    with core.mutation_lock(core.VAULT):
-        return core.ledger_append(LEDGER, {"kind": "rule", "harness": harness, "os": os.name,
+    with core.mutation_lock(vault):
+        return core.ledger_append(ledger_path(vault), {"kind": "rule", "harness": harness, "os": os.name,
                                            "version": version, "root": root, "shape": shape,
                                            "note": note})
 
@@ -115,20 +120,20 @@ def add(harness: str, root: str, shape: str, version: str, note: str = "") -> di
 _here: tuple[str, dict | None] | None = None     # (이 프로세스가 선 작업 폴더의 키, 판별)
 
 
-def enter(cwd: str | None) -> dict | None:
+def enter(vault: Vault, cwd: str | None) -> dict | None:
     """이 프로세스가 선 작업 폴더를 판별해 둔다 — 훅은 그 대화의 작업 폴더로 부른다. 부르지 않은
     프로세스(MCP 서버 등)는 처음 물을 때 자기 작업 폴더로 정한다."""
     global _here
-    found = judge("", cwd) if cwd else None
+    found = judge(vault, "", cwd) if cwd else None
     _here = (Path(cwd).name if cwd else "", found)
     return found
 
 
-def is_one_off(key: str | None) -> bool:
+def is_one_off(vault: Vault, key: str | None) -> bool:
     """`key`가 이 프로세스가 선 일회성 작업 폴더의 키인가. 키 문자열만으로 정하지 않는다 — 같은
     이름의 저장소 키가 다른 세션에 따로 있을 수 있다. 대화를 아는 자리(포착·인용·검토)는 그 대화에
     고정한 판별을 쓴다(`integration`)."""
     if _here is None:
-        enter(os.getcwd())
+        enter(vault, os.getcwd())
     key = (key or "").strip()
     return bool(key) and key == _here[0] and bool((_here[1] or {}).get("one_off"))

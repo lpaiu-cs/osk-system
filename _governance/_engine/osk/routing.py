@@ -111,7 +111,7 @@ def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
     적는다(집합에만 더하는 쓰기는 False). 인과 극대가 갈리고 그 주된 scope가 다르면
     미확정이다 — 착지를 명시하게 한다. 일회성 작업 폴더의 키는 결속하지 않는다."""
     out = {"scopes": [], "primary": None, "undetermined": False}
-    if not session or workspaces.is_one_off(session):
+    if not session or workspaces.is_one_off(VAULT, session):
         return out
     if recs is None:
         try:
@@ -204,7 +204,7 @@ def bind_after_write(result: dict, session: str, scope: str, reason: str = "") -
     (fsync) 실패할 수 있으므로 "미기록"이 아니라 "확인 불가"다 —
     `evictions.after_node_write`의 처분 영수증과 같은 규율. 일회성 작업 폴더의 키는
     결속하지 않는다 — 그 착지는 그 대화에만 적용된다(Mechanism §6-2 6항)."""
-    if workspaces.is_one_off(session):
+    if workspaces.is_one_off(VAULT, session):
         result["binding"] = {
             "state": "not_bound", "scope": scope,
             "note": "일회성 작업 폴더의 키라 결속하지 않았다 — 다음 쓰기에도 space를 준다"}

@@ -31,11 +31,9 @@ from .core import DOMAIN, PERSON, SCOPE
 import json, os, re, tempfile, time, unicodedata
 from pathlib import Path
 
-from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
-                   rid_key, causal_maxima, ledger_append, ledger_damage,
-                   ledger_read, mutation_lock,
-                   new_node_id, now_kst, posix_rel, resolve_in_root,
-                   resolve_one, sha256_bytes, sha256_file, atomic_write)
+from .core import (ROOT, CANDIDATES, PINS, ID_RE, CASE_RE, RID_RE, rid_key, causal_maxima, ledger_append,
+                   ledger_damage, ledger_read, mutation_lock, new_node_id, now_kst, posix_rel,
+                   resolve_in_root, resolve_one, sha256_bytes, sha256_file, atomic_write)
 from . import approvals, contract, evictions, graph, rechecks, signatures, workspaces, evidence, raw
 from .contract import as_list, stored_edges
 from .errors import WriteError
@@ -743,7 +741,7 @@ def create_node_locked(title: str, summary: str, body: str, drafter: str,
             "착지가 정해지지 않았다 — space를 지정하라. "
             f"지금 쓸 수 있는 군집: {', '.join(cluster_names()) or '없음'}. "
             + ("이 세션은 일회성 작업 폴더라 결속하지 않는다 — 쓸 때마다 space를 준다"
-               if workspaces.is_one_off(session) else
+               if workspaces.is_one_off(VAULT, session) else
                (f"이 프로젝트의 결속은 {', '.join(bound_set)}이지만 주된 scope가 없다 — "
                 f"쓸 때마다 space를 준다. 주된 scope의 지정은 대화 검토나 사용자가 한다"
                 if bound_set else

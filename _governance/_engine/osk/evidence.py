@@ -13,10 +13,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .core import ROOT, posix_rel
+from .core import posix_rel
 from . import graph, raw, roots
 from .errors import WriteError
-from .core import VAULT
+from .vault import Vault
 
 # 줄 — `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`
 LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) · `([^`]+)` · (지지|조건|반례) — (\S.*)$")
@@ -34,9 +34,10 @@ class Records:
     """인용 기록의 이름 색인. 한 번 훑어 여러 좌표를 해석한다 — 검증기는 근거 줄마다
     파일 목록을 다시 읽지 않는다."""
 
-    def __init__(self):
+    def __init__(self, vault: Vault):
+        self.vault = vault
         self.names: set[str] = set()
-        for d in (ROOT / raw.CITED, *raw.legacy_dirs()):
+        for d in (vault.root / raw.CITED, *raw.legacy_dirs()):
             if d.is_dir():
                 for f in (*d.glob("*.md"), *(d / ".records").glob("*.txt"),
                           *(d / ".records").glob("*/record.txt")):
@@ -109,16 +110,16 @@ def coordinates(text: str) -> list[str]:
     return [m[2] for m in lines(text)]
 
 
-def cited_rounds(text: str, records: Records | None = None) -> set[str]:
+def cited_rounds(vault: Vault, text: str, records: Records | None = None) -> set[str]:
     """근거 절의 줄이 가리키는 인용 라운드 — `raw.canonical_ref` 꼴. 해석되는 좌표만 담는다 —
     범위는 기록에 다 있을 때만 펴므로 펴는 수가 기록의 라운드 수를 넘지 않는다."""
-    records = records or Records()
+    records = records or Records(vault)
     out = set()
     for coord in coordinates(text):
         m = ROUND.match(coord) if kind(coord) == "round" else None
-        if m is None or check(coord, records=records) is not None:
+        if m is None or check(vault, coord, records=records) is not None:
             continue
-        rel = posix_rel(records.file(m["record"]), ROOT)
+        rel = posix_rel(records.file(m["record"]), vault.root)
         out |= {raw.canonical_ref(f"{rel}#{n}")
                 for n in range(int(m["first"]), int(m["last"] or m["first"]) + 1)}
     return out
@@ -130,9 +131,9 @@ def record_name(path: Path | str) -> str:
     return p.parent.name if p.name == "record.txt" else p.stem
 
 
-def coordinate(path: Path | str, index: int, records: Records | None = None) -> str:
+def coordinate(vault: Vault, path: Path | str, index: int, records: Records | None = None) -> str:
     """기록 파일과 라운드 → 근거 줄 좌표(Mechanism §8 9항)."""
-    return f"{(records or Records()).short(record_name(path))}#{index}"
+    return f"{(records or Records(vault)).short(record_name(path))}#{index}"
 
 
 def kind(coord: str) -> str:
@@ -146,7 +147,7 @@ def kind(coord: str) -> str:
     return "path" if "/" in coord else "name"
 
 
-def check(coord: str, idx: "graph.Index | None" = None, records: Records | None = None,
+def check(vault: Vault, coord: str, idx: "graph.Index | None" = None, records: Records | None = None,
           external: "roots.Roots | None" = None) -> str | None:
     """좌표 하나를 해석한다(Mechanism §6-1 4항 (b)). 문제가 없으면 None, 있으면 보고할 문구.
     이 기기에 없는 외부 루트는 문제가 아니라 보류다 — `external.held`가 루트마다 모은다."""
@@ -158,7 +159,7 @@ def check(coord: str, idx: "graph.Index | None" = None, records: Records | None 
         alias, rest = roots.split(coord)
         rel, _, heading = rest.partition("#")
         try:
-            p = (external or roots.Roots()).file(alias, rel.strip())
+            p = (external or roots.Roots(vault)).file(alias, rel.strip())
             if p and heading.strip() and heading_range(p.read_bytes(), heading.strip()) is None:
                 return f"없는 제목: {coord}"
         except (OSError, ValueError) as e:
@@ -168,7 +169,7 @@ def check(coord: str, idx: "graph.Index | None" = None, records: Records | None 
         m = ROUND.match(coord)
         if m is None:
             return f"라운드가 없는 기록 좌표: {coord}"
-        records = records or Records()
+        records = records or Records(vault)
         try:
             p = records.file(m["record"])
             have = records.rounds(p)
@@ -186,7 +187,7 @@ def check(coord: str, idx: "graph.Index | None" = None, records: Records | None 
     if k == "name":
         return f"알 수 없는 좌표: {coord}"
     from .core import resolve_in_root
-    p = resolve_in_root(VAULT, target)
+    p = resolve_in_root(vault, target)
     if found != "nonnode" or p is None or not p.is_file():     # 색인은 디렉터리도 비노드로 본다
         return f"없는 파일: {coord}"
     heading = coord.partition("#")[2].strip()

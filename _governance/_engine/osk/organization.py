@@ -158,7 +158,7 @@ def snapshot(scope: str, idx=None) -> dict:
     """Read bytes once per node; do not combine cached bodies with current hashes."""
     base = scope_path(scope)
     idx = _index() if idx is None else idx
-    records = evidence.Records()     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
+    records = evidence.Records(core.VAULT)     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
     nodes, parsed, references, units = [], {}, [], []
     for name, (path, kind) in sorted(idx.nodes.items()):
         if not path.is_relative_to(base):

@@ -221,7 +221,7 @@ def _child():
                 record = raw.append_rounds(self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 self.args["body"] += ("\n\n## 근거\n\n- 2026-10-31 · `"
-                                      + evidence.coordinate(record["path"], 1) + "` · 지지 — q")
+                                      + evidence.coordinate(core.VAULT, record["path"], 1) + "` · 지지 — q")
                 atomic = write._atomic_write
                 target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
                 reserved = []
@@ -429,12 +429,12 @@ def _child():
                      {"user": "second observation", "agent": "second result"}], space="00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 line = "- 2026-10-31 · `{}` · 지지 — first observation"
-                first, second = (evidence.coordinate(record["path"], n) for n in (1, 2))
+                first, second = (evidence.coordinate(core.VAULT, record["path"], n) for n in (1, 2))
                 self.args["body"] += "\n\n## 근거\n\n" + line.format(first)
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
                 node = contract.parse(core.ROOT / out["path"])
-                self.assertEqual(evidence.cited_rounds(node.body), {raw.canonical_ref(record["round_refs"][0])})
+                self.assertEqual(evidence.cited_rounds(core.VAULT, node.body), {raw.canonical_ref(record["round_refs"][0])})
                 raw.append_rounds(self.name, self.name,
                     [{"user": "third observation", "agent": "third result"}])
                 self.assertEqual(D.status(self.key)["status"], "complete")

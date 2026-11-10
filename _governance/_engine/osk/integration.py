@@ -473,7 +473,7 @@ def _workspace(s: dict, path: str | None, cwd: str | None) -> bool:
         seen = transcripts.workspace(path, s["harness"]) if path and Path(path).is_file() else None
         where = (seen or {}).get("cwd") or cwd
         if where:
-            s["workspace"] = (workspaces.judge(s["harness"], where, (seen or {}).get("version"))
+            s["workspace"] = (workspaces.judge(core.VAULT, s["harness"], where, (seen or {}).get("version"))
                               or {"one_off": False})
     return _one_off(s)
 
@@ -1755,7 +1755,7 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
            "index": result["indices"][0],
            # 근거 줄에 쓸 좌표 — 기록 이름 해시의 앞자리와 라운드(Mechanism §8 9항)
-           "coordinate": evidence.coordinate(result["path"], result["indices"][0]),
+           "coordinate": evidence.coordinate(core.VAULT, result["path"], result["indices"][0]),
            "turn": rid, "reused": result.get("reused", False),
            "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
            **({"binding": result["binding"]} if "binding" in result else {})}

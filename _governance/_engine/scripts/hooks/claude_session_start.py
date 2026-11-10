@@ -97,11 +97,11 @@ def note_run(event: str, env: dict | None, key: str | None):
     훅을 부른 호스트를 돌려준다(출력 형식). 판별·기록 실패는 훅을 막지 않는다."""
     host = None
     try:
-        from osk import harness
+        from osk import core, harness
         from osk.harness import runs
         host = harness.host_of(env) if isinstance(env, dict) else None
         _OUT["host"] = host
-        runs.record_run(host.name if host else None, event, key)
+        runs.record_run(core.VAULT, host.name if host else None, event, key)
     except Exception:
         pass
     return host
@@ -111,8 +111,9 @@ def first_call(event: str, env: dict, host) -> bool:
     """같은 사건이 두 자리에 등록돼 두 번 불렸으면 두 번째 호출은 거짓이다 — 호출자는
     아무것도 내지 않고 끝낸다(`osk.harness.runs.first_call`). 판정 실패는 호출을 막지 않는다."""
     try:
+        from osk import core
         from osk.harness import runs
-        return runs.first_call(host.name if host else None, event, env)
+        return runs.first_call(core.VAULT, host.name if host else None, event, env)
     except Exception:
         return True
 
@@ -265,8 +266,8 @@ def session_key(cwd: str) -> str:
     소유자와 뿌리가 다르면 파생 키를 받는다(`write.repo_session`)."""
     name, repo = _checkout_cached(cwd)
     try:
-        from osk import workspaces
-        workspaces.enter(cwd)        # 이 프로세스의 결속 판정이 그 작업 폴더를 알게 한다(Mechanism §6-2 6항)
+        from osk import core, workspaces
+        workspaces.enter(core.VAULT, cwd)        # 이 프로세스의 결속 판정이 그 작업 폴더를 알게 한다(Mechanism §6-2 6항)
     except Exception:
         pass
     if not repo:

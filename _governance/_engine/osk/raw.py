@@ -656,7 +656,7 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
         path, index = parse_ref(ref)
     if query is not None and (view != "review" or index is None):
         raise ValueError("query requires view=review and an exact #N round")
-    records = evidence.Records()
+    records = evidence.Records(VAULT)
     p = raw_file(path) if "/" in path or "\\" in path else records.file(path)
     text = read_exact(p)
     rel = posix_rel(p, ROOT)
@@ -667,7 +667,7 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
         chunk = recalled_text(stored)
         identity = {"ok": True, "path": rel, "index": index,
                     "round_ref": canonical_ref(f"{rel}#{index}"),
-                    "coordinate": evidence.coordinate(p, index, records), "hash": round_hash(stored)}
+                    "coordinate": evidence.coordinate(VAULT, p, index, records), "hash": round_hash(stored)}
         if view == "review":
             return {**identity, **raw_view.project(chunk, budget, query, sides=sides)}
         cut = len(chunk) > budget

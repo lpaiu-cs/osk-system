@@ -396,7 +396,7 @@ def migrate() -> tuple[dict, int]:
 
 def report(only: str | None = None) -> dict:
     """호스트별 점검 결과. `only`는 하네스 이름 하나로 좁힌다."""
-    records = {**runs.read(), "duplicates": runs.duplicates()}
+    records = {**runs.read(core.VAULT), "duplicates": runs.duplicates(core.VAULT)}
     engine = _engine(records)
     vault = _vault()
     hosts = [_host(a, records) for a in adapters.ADAPTERS if only in (None, a.name)]
