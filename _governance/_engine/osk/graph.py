@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 from .core import ROOT, LEDGER, ID_RE, resolve_in_root, SPACE_ROOTS, adapt_path
-from . import contract, roots
+from . import contract, roots, signatures as _sig
 from .errors import WriteError
 
 # 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
@@ -25,7 +25,6 @@ _ID_TOKEN_CACHE: dict[Path, tuple[tuple[int, int], frozenset]] = {}
 
 def load_cases() -> dict[str, dict]:
     """사건부 헤더 일괄 로드 — conflicts 적격 판정용."""
-    from . import signatures as _sig
     out = {}
     cdir = LEDGER / "case"
     if cdir.exists():

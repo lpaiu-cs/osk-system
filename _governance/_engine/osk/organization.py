@@ -14,7 +14,7 @@ import re
 import time
 from pathlib import Path
 
-from . import core, contract, graph, prose, write
+from . import core, contract, graph, prose, write, evidence
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
 REVIEW_UNITS = 3
@@ -158,7 +158,6 @@ def snapshot(scope: str, idx=None) -> dict:
     """Read bytes once per node; do not combine cached bodies with current hashes."""
     base = scope_path(scope)
     idx = _index() if idx is None else idx
-    from . import evidence
     records = evidence.Records()     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
     nodes, parsed, references, units = [], {}, [], []
     for name, (path, kind) in sorted(idx.nodes.items()):

@@ -20,6 +20,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from . import secrets
 
 IDLE_CLOSE = 12 * 3600  # seconds of silence after which an unfinished Claude turn closes
 
@@ -82,7 +83,6 @@ def _structured(value) -> str:
 
 def _redact(text: str) -> str:
     """Filter decoded string literals without rebuilding JSON objects or keys."""
-    from . import secrets
     decoder = json.JSONDecoder()
     parts, last, cursor = [], 0, 0
     while (cursor := text.find('"', cursor)) >= 0:

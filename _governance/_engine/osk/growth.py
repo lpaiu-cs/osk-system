@@ -18,7 +18,8 @@ import signal
 import subprocess
 import shutil
 
-from . import core, graph
+from . import (core, graph, distillation, evictions, harness as adapters, integration, native_cli,
+               organization, rechecks)
 from ._portalock import lock_exclusive, unlock
 
 LEDGER = core.LEDGER / "growth.jsonl"
@@ -92,7 +93,6 @@ def _source_current(source: dict, idx: graph.Index) -> bool:
 
 
 def _proof(key: str, receipt: dict | None = None) -> dict:
-    from . import distillation
     if receipt is not None:
         return distillation.verify_receipt_locked(receipt)
     return distillation.status_locked(key)
@@ -244,7 +244,6 @@ def run_failed(result: dict) -> bool:
 def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
     """근거 재검토 후보를 작업으로 낸다(시행령 §7 2항). `scope`를 주면 그 scope의
     노드만 — Stop fork는 원 대화의 scope만 다룬다(Mechanism §9-4 3항)."""
-    from . import rechecks
     items, pending = rechecks.candidates(idx)
     return [] if pending else [
         {"key": f"recheck:{i['id']}:{i['key']}", "node": i["node"], "target": i["target"],
@@ -256,7 +255,6 @@ def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
 
 def _with_change(jobs: list[dict], idx: graph.Index) -> list[dict]:
     """선택한 작업에만 마지막 점검 뒤의 변경분을 싣는다 — 후보 전부가 아니다."""
-    from . import rechecks
     for job in jobs:
         job["change"] = rechecks.change(job["id"], job["target_key"], job["target"], idx)
     return jobs
@@ -276,7 +274,6 @@ def _pick_rechecks(idx: graph.Index, limit: int, scope: str | None = None,
 
 def _recheck_status(job: dict, idx: graph.Index) -> dict:
     """그 쌍이 더는 후보가 아니면 완료다 — `rechecked`로 닫았거나 근거를 뺐다."""
-    from . import rechecks
     hit = idx.by_id.get(job["id"])
     if hit is None:
         return {"status": "complete", "reason": "node gone"}
@@ -384,7 +381,6 @@ def _plan(limit: int) -> dict:
             old_proof = _proof(old_key)
             if old_proof.get("target"):
                 candidate["previous_distillations"].append(old_proof)
-    from . import organization, evictions
     organization_jobs = organization.pending(limit=limit, idx=idx)
     attempts = {j["of"]: row["rid"] for row in plans for j in row.get("eviction_jobs", [])}
     eviction_rows = evictions.records()
@@ -555,7 +551,6 @@ def _reading_plan(planned: dict) -> dict:
         if (job.get("last_review") or {}).get("outcome") == "deferred":
             item["previous_deferral"] = _deferral(job["last_review"])
         jobs.append(item)
-    from . import organization
     # 하루 묶음의 판단 근거(한도·예산·주간 조정)는 실행기의 기록이지 작업자의 일이 아니다.
     return {**{k: v for k, v in planned.items() if k != "daily"}, "scope_jobs": jobs,
             "organization_jobs": organization.readout(planned.get("organization_jobs", []))}
@@ -569,7 +564,6 @@ def prompt(planned: dict | None = None, limit: int = 3) -> str:
     if "work_order" not in planned:
         planned = {**planned, "work_order": [{"queue": key, "index": i}
                    for key in QUEUES for i in range(len(planned.get(key, [])))]}
-    from . import organization
     drafter = planned.get("drafter")
     return organization.prompt(planned.get("organization_jobs", []), inventory=False) + (
         "This is a dedicated maintenance run. Follow work_order exactly, one selected job at a time; "
@@ -999,7 +993,6 @@ def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
 
 def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=None,
                      growth_par=None) -> dict:
-    from . import evictions
     rows = evictions.records() if eviction_rows is None else eviction_rows
     growth_rows = ledger_records() if growth_rows is None else growth_rows
     original = next((r for r in rows if r["rid"] == job["of"] and r["kind"] == "evict"), None)
@@ -1051,7 +1044,6 @@ def checkpoint(packet: dict) -> dict:
 
 
 def _apply_reviews(reviews: dict, planned: dict) -> dict:
-    from . import integration
     result = {"state": "applied", "domain": {}, "scope": {}, "organization": {}, "eviction": {},
               "errors": list(reviews.get("errors", [])), "notes": list(reviews.get("notes", []))}
     for entry in reviews["domain"]:
@@ -1077,7 +1069,6 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 result["scope"][key] = "recorded"
         except (ValueError, OSError) as exc:
             result["errors"].append(f"Scope {key}: {exc}")
-    from . import organization
     selected = {j["key"]: j for j in planned.get("organization_jobs", [])}
     for entry in reviews.get("organization", []):
         try:
@@ -1098,7 +1089,6 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
             result["organization"][entry["key"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Organization {entry['key']}: {exc}")
-    from . import evictions
     selected_evictions = {j["of"]: j for j in planned.get("eviction_jobs", [])}
     for entry in reviews.get("eviction", []):
         try:
@@ -1124,7 +1114,6 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                 result["eviction"][entry["of"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Eviction {entry['of']}: {exc}")
-    from . import rechecks
     selected_rechecks = {j["key"]: j for j in planned.get("recheck_jobs", [])}
     for entry in reviews.get("recheck", []):
         job = selected_rechecks[entry["key"]]
@@ -1157,7 +1146,6 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
 def _needs_review(planned: dict, rows: list[dict], idx: graph.Index) -> bool:
     """선택한 작업 가운데 아직 열린 것이 있으면 작업자의 최종 결과 묶음을 적용한다 —
     다섯 큐 모두다. 재검토만 남은 실행도 올림과 보류를 그 묶음으로 보고한다."""
-    from . import integration, organization
     return (any(not _completed(c["key"], rows, idx) for c in planned["candidates"])
             or any(integration.review_status_locked(
                 j["harness"], j["conversation_id"], j["through"])["status"] != "complete"
@@ -1239,7 +1227,6 @@ def check_command(command: list[str], *, follow_desktop_update: bool = True) -> 
             not isinstance(arg, str) or "\0" in arg for arg in command):
         raise ValueError("command must be a nonempty argv list")
     program = command[0]
-    from . import native_cli
     try:
         if follow_desktop_update:
             program = native_cli.resolve(program)
@@ -1330,7 +1317,6 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
     if scope_job is None and worker_env is None and checked["ok"]:
         # 구독 로그인만 쓰겠다고 밝힌 명령은 fork와 같은 자격으로만 띄운다 — API 자격 변수를
         # 걷고, 구독 로그인·설정·공급자를 모델을 부르기 전에 확인한다. 확인하지 못하면 돌지 않는다.
-        from . import harness as adapters
         declared = next((a.name for a in adapters.ADAPTERS if a.subscription_only(command)), None)
         if declared:
             from . import response_growth

@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import approvals, contract, core, evidence, graph, prose, raw, raw_view, rechecks, write
+from . import approvals, contract, core, evidence, graph, prose, raw, raw_view, rechecks, write, validate
 from .core import LEDGER, ROOT, posix_rel, sha256_bytes
 
 EVENTS = LEDGER / "migration" / "events.jsonl"
@@ -162,7 +162,6 @@ def _items(n, idx, records) -> list[dict]:
 
 def _change(path: Path, n, items: list[dict]) -> dict:
     """한 노드의 새 바이트 — frontmatter만 다시 쓰고, 본문은 그대로 둔 채 끝에 줄을 잇는다."""
-    from . import validate
     data = path.read_bytes()
     out = {"path": posix_rel(path, ROOT), "items": items, "before": sha256_bytes(data), "new": None}
     extra = set(n.meta) - set(contract.ORDER) - set(contract.PREDICATES)

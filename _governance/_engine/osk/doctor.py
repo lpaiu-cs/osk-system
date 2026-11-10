@@ -27,7 +27,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import core
+from . import (core, evictions, evidence_migration as em, growth_daily, integration, raw, rechecks,
+               response_growth, scope_memory, validate)
 from . import harness as adapters
 from .harness import base, runs
 
@@ -270,7 +271,6 @@ def _version(adapter, cli: str | None) -> dict:
 
 
 def _fork(adapter) -> dict:
-    from . import response_growth
     try:
         executable = response_growth.configured(adapter.name)
         if executable is False:
@@ -324,7 +324,6 @@ def _migrations() -> list[tuple[str, object, object]]:
     받은 뒤 이 순서로 한다. 대상은 옮길 것의 정체(자리·해시) 목록이고 확인은 그 목록에 묶인다. 근거 절
     이행이 기록 이관보다 먼저다 — 라운드 날짜를 기록의 지금 경로에 대한 git blame으로 정하므로, 먼저
     옮긴 기록은 거기서 추적되지 않아 그 항목이 보류된다. 앞 이행이 만든 표기는 뒤 이행이 받는다."""
-    from . import evidence_migration as em, raw
     return [("비노드 derived-from → 관측 줄 (v5.4)",
              lambda: [[n["path"], n["before"]] for n in em.plan()["nodes"] if n["new"]],
              lambda targets: em.apply(expect=targets)),
@@ -383,7 +382,6 @@ def migrate() -> tuple[dict, int]:
         return {"ok": False, "approval_required": True, "review_id": review_id, "plan": plan,
                 "instruction": MIGRATE_INSTRUCTION}, 2
     ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다
-    from . import rechecks
     rechecks.ensure_baseline(carry=True)
     confirmed = dict(plan["migrations"])
     after: dict[str, str] = {}   # 이 실행의 앞선 이행이 쓴 노드 → 결과 해시. 뒤 이행은 그것을 예상값으로 받는다
@@ -443,7 +441,6 @@ def _first(errs: list, n: int = 3) -> str:
 
 def _vault_items() -> list[dict]:
     """vault 내용 점검의 항목 — 남은 이행(`_vault`), 기록 충돌, 검증기, 잔재, 적체. 읽기만 한다."""
-    from . import evictions, integration, raw, scope_memory, validate
     rep = validate.run()
     items = _vault()
     for c in raw.consolidate()["conflicts"]:
@@ -482,7 +479,6 @@ def _vault_items() -> list[dict]:
         items.append(_item("warn" if s["overdue"] else "info", "정돈 대기",
                            f"{scope} — 미처분 {s['unsettled']}건, 가장 오래된 것 {s['oldest_days']}일",
                            f"`osk.cli tidy prompt --scope {scope}`의 프롬프트로 정돈 세션을 연다"))
-    from . import growth_daily
     try:
         b = growth_daily.backlog()
     except (OSError, ValueError, KeyError, TypeError) as exc:

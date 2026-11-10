@@ -28,7 +28,7 @@ import subprocess
 import threading
 import time
 
-from . import core, growth, integration
+from . import core, growth, integration, growth_status, harness as adapters, raw, response_growth, transcripts
 
 PROVIDERS = ("codex", "claude")          # 선호 순서 — Codex 예산을 넘는 몫은 Claude가 맡는다
 DAY_SECONDS = 90 * 60                    # 하루 벽시계 예산; 작업 스케줄러 제한은 이것 + 30분이다
@@ -63,7 +63,6 @@ def codex_limits(executable: str, timeout: float = 30) -> dict:
     소진은 크레딧까지 바닥난 상태다: `rateLimitReachedType`이나 `spendControlReached`가 서 있거나,
     포함 사용량도 크레딧도 없다. 주간 창이 100%여도 크레딧이 있으면 소진이 아니다. 답하지 못하면
     신호 없음이고 소진과 같이 다룬다."""
-    from . import response_growth
     requests = [{"id": 0, "method": "initialize", "params": {"clientInfo": {"name": "osk", "version": "1"}}},
                 {"method": "initialized"},
                 {"id": 1, "method": "account/rateLimits/read", "params": {"excludeResetCreditDetails": True}}]
@@ -162,7 +161,6 @@ def _claude_requests(output: Path) -> tuple[list, dict | None]:
 def _codex_requests(output: Path) -> tuple[list, None]:
     """요청마다 (입력 전체, 캐시 읽기, 출력) — 작업자 자신의 세션 기록(`thread.started`의 id)에서
     읽는다. fork는 원 대화의 행을 이어받으므로 자기 `session_meta` 뒤의 행만 센다."""
-    from . import harness as adapters
     tid = next((e.get("thread_id") for e in _events(output) if e.get("type") == "thread.started"), None)
     paths = adapters.get("codex").transcripts(tid) if isinstance(tid, str) and tid.isprintable() and tid else []
     if len(paths) != 1:
@@ -211,7 +209,6 @@ def _epoch(value) -> float | None:
 
 def _scan(path: str, harness: str, sid: str, since: float, wanted: set, times: dict) -> int:
     """한 대화의 `since` 뒤 작업 토큰(캐시 읽기 제외). 검토 대기 중인 Claude 턴의 시각도 함께 모은다."""
-    from . import transcripts
     tokens, messages = 0, {}
     for line in transcripts.native_lines(path, harness, sid):
         if harness == "codex" and b'"token_count"' not in line:
@@ -248,7 +245,6 @@ def _measure(since: float) -> dict:
     """이 vault가 추적하는 대화의 원본 전사에서 `since` 뒤의 공급자별 작업 토큰, 그리고 검토할 수
     있는 대기 라운드를 `since` 앞뒤로 갈라 센다. 작업은 대화마다 9라운드씩이다. 원본이 없는 대화의
     원본 라운드는 검토할 수 없어 세지 않는다."""
-    from . import growth_status, raw
     work = dict.fromkeys(PROVIDERS, 0)
     inflow = dict.fromkeys(("new_rounds", "new_jobs", "old_rounds", "old_jobs", "unread"), 0)
     for s in growth_status.conversation_states():
@@ -301,7 +297,6 @@ def backlog() -> dict:
     """대화 검토 적체(#306) — 정기 실행이 지금 검토할 수 있는 대화와 턴(끝난 대화의 원본 턴과 저장
     라운드), 같은 scope의 작은 꼬리를 9턴까지 묶는 Scope 묶음 수의 추정(남는 꼬리를 큰 것부터 채운다),
     예상 토큰(Scope 묶음 단가 × 묶음 수). 대화 상태를 쓰지 않고 읽기만 한다."""
-    from . import growth_status, raw
     unit, measured = _scope_unit(growth.ledger_records())
     scopes: dict = {}
     conversations = turns = 0
