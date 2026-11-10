@@ -49,7 +49,7 @@ assert preview['applied'] is False and 'review_id' in preview
 assert not core.local_lock_path('osk-update-confirmation.json').exists()
 before = approvals.APPROVALS.read_bytes()
 # First call does not acquire the daemon lock or write instance payloads.
-with mock.patch('sync_daemon._lock_path', side_effect=AssertionError('daemon touched')):
+with mock.patch('osk.sync_status.lock_path', side_effect=AssertionError('daemon touched')):
     first = run(apply=True, adopt=True)
 assert first['approval_required'] and not first['ok']
 assert '명시적 재승인' in first['instruction'] and '재시작' in first['instruction']
@@ -83,7 +83,7 @@ assert run(apply=True)['approval_required']
 ticket.write_text('[]')
 assert run(apply=True)['approval_required']
 # Consent is consumed even on an apply-lock failure.
-with mock.patch('sync_daemon._lock_path', side_effect=update.UpdateError('daemon busy')):
+with mock.patch('osk.sync_status.lock_path', side_effect=update.UpdateError('daemon busy')):
     try: run(apply=True)
     except update.UpdateError: pass
     else: raise AssertionError('expected lock failure')

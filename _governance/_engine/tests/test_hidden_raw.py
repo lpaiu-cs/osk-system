@@ -40,7 +40,7 @@ def main():
         assert raw.read_round("[[00_Scope/W1/_cited/new.md#1]]")["text"] == raw.read_round(first["round_ref"])["text"]
         assert graph.Index().resolve("00_Scope/W1/_cited/new.md") == ("nonnode", ("raw", None))
         assert graph.Index().resolve(first["path"]) == ("nonnode", ("raw", None))
-        reject(secrets.write_raw, base / "bypass.md", "not allowed")
+        reject(raw.write_raw, base / "bypass.md", "not allowed")
         assert not (base / "bypass.md").exists()
         url = "https://example.invalid/_raw/evidence.md#1"
         assert raw.canonical_ref(url) == url

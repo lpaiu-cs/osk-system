@@ -5766,7 +5766,7 @@ def test_raw_append():
     # 접두부 보존 — 증거를 소급해 고쳐 쓰지 못한다 (Mechanism §9 4항)
     before = p.read_bytes()
     try:
-        secrets.write_raw(p, "과거를 지운 새 내용")
+        raw.write_raw(p, "과거를 지운 새 내용")
         check("접두부 훼손을 거부한다", False, "거부하지 않았다")
     except ValueError as e:
         check("접두부 훼손을 거부한다", "append 아님" in str(e), e)
@@ -5782,7 +5782,7 @@ def test_raw_append():
 
     # 통로 fail-closed — `_raw/` 밖은 이 함수로 쓸 수 없다
     try:
-        secrets.write_raw(ROOT / "00_Scope/WRaw/노드.md", "x")
+        raw.write_raw(ROOT / "00_Scope/WRaw/노드.md", "x")
         check("`_raw/` 밖 경로를 거부한다", False, "거부하지 않았다")
     except ValueError as e:
         check("`_raw/` 밖 경로를 거부한다", "_raw" in str(e), e)
