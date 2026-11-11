@@ -12790,6 +12790,27 @@ def test_ledger_damage_is_a_kind():
             refused = "refusal"
         check("거부는 손상이 아니다", refused == "refusal", refused)
         check("없는 대장은 빈 대장이다", core.ledger_read(Path(td) / "absent.jsonl") == [])
+    # 제 행을 보고 손상을 말하는 기록부도 같다. 종류나 결과가 목록·객체인 행은 집합과 견줄 수 없어, 손상을
+    # 말하기 전에 TypeError가 났다 — 받는 쪽이 손상만 받게 좁혀진 뒤에는 그것이 위로 샌다.
+    from osk import growth_ledger, rechecks
+    book = growth_ledger.ledger_path(VAULT)
+    held = book.read_bytes() if book.exists() else None
+    book.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        for label, row in (("종류가 목록", {"kind": []}), ("종류가 객체", {"kind": {}}),
+                           ("결과가 목록", {"kind": "review", "outcome": []})):
+            book.write_text(json.dumps({"rid": core._make_rid(1, 1), **row}) + "\n", encoding="utf-8")
+            try:
+                growth_ledger.ledger_records(VAULT)
+                kind = "read"
+            except LedgerDamage:
+                kind = "damage"
+            except Exception as e:
+                kind = type(e).__name__
+            check(f"성장 기록부의 손상도 LedgerDamage다 — {label}", kind == "damage", kind)
+        check("재검토는 손상된 성장 기록부를 받아 넘긴다", rechecks._carry_reports(VAULT, None, {"held": {}}, {}) == 0)
+    finally:
+        book.write_bytes(held) if held is not None else book.unlink()
 
 
 def test_validate_at_uses_snapshot_engine():
