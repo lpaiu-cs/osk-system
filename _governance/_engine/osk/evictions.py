@@ -28,7 +28,7 @@ from datetime import datetime
 
 from .core import (RID_RE, ID_RE, ledger_read, ledger_damage, ledger_append, ledger_anchor_index,
                    mutation_lock, rid_parts, rid_key)
-from . import graph, nodefile
+from . import graph
 from .vault import Vault
 
 KINDS = ("evict", "settle")
@@ -292,69 +292,6 @@ def transit_titles(vault: Vault) -> list[str]:
     idx = graph.Index(vault)
     return sorted(stem for stem, (_p, kind) in idx.names.items()
                   if kind and kind[0] == "workbench-transit")
-
-
-def discard_transit(vault: Vault, title: str, confirm: str | None = None) -> dict:
-    """경유 노드의 폐기 — Workbench 계약 §3의 통합·폐기 출구를 실행한다.
-
-    들어오는 참조(Link·Predicate Edge)가 남았거나 scope 기억이 그 노드를 가리키면
-    거부한다 — 재배선·정정이 먼저다. `confirm` 없이 부르면 지울 판(해시)만 알린다.
-    사용자에게 확인받은 그 해시로 다시 부를 때만 지운다 — 확인한 뒤 바뀐 판은 지우지
-    않는다. 새 대장은 두지 않는다. 지우기 전 판은 이 기기에 사본으로 남긴다 — 동기화
-    전의 판은 vault git 이력에 없을 수 있다."""
-    from . import scope_memory      # 이 모듈을 부른다 — 순환을 피한다
-    from .core import local_lock_path, posix_rel, sha256_file
-    with mutation_lock(vault):
-        idx = graph.Index(vault)
-        if not idx.complete:
-            raise ValueError("vault를 전부 관측하지 못했다 — 폐기하지 않았다: "
-                             + "; ".join(idx.scan_errors[:3]))
-        hit = idx.locate(title)
-        if not hit or hit[1][0] != "workbench-transit":
-            raise ValueError(f"`{title}`는 Workbench 경유 노드가 아니다 — 폐기는 경유 노드의 "
-                             f"출구다(Workbench 계약 §3)")
-        path = hit[0]
-        # 입력이 id·경로여도 실제 제목과 id로 찾는다 — 참조와 기억은 그 둘로 적힌다
-        name, nid = path.stem, idx.node(path).id
-        inbound = []
-        for p in idx.mentioning([name, nid]):
-            if p == path:
-                continue
-            try:
-                n = idx.node(p)
-            except Exception:
-                continue          # 판독되지 않는 파일은 참조를 말하지 않는다
-            # 그래프와 같은 해석(`Index.locate` — 제목·id·경로, 제목 속 `.md` 포함)으로 대조한다
-            for _relation, text in n.references():
-                found = idx.locate(text.split("#", 1)[0].strip())
-                if found and graph.same_file(found[0], path):
-                    inbound.append(p.stem)
-                    break
-        memory = sorted(f.stem for f in scope_memory.sm_dir(vault).glob("*.md")
-                        if any(k in f.read_text(encoding="utf-8", errors="replace")
-                               for k in (name, nid)))
-        where = []
-        if inbound:
-            where.append("노드 " + ", ".join(sorted(inbound)))
-        if memory:
-            where.append("scope 기억 " + ", ".join(memory))
-        if where:
-            raise ValueError("폐기하지 않았다 — 이 노드를 가리키는 곳을 먼저 재배선·정정하라: "
-                             + "; ".join(where))
-        plan = {"title": name, "id": nid, "path": posix_rel(path, vault.root), "hash": sha256_file(path)}
-        if confirm is None:
-            return {"ok": False, "plan": plan, "next": (
-                "사용자에게 확인받은 뒤 같은 명령에 --confirm <hash>를 붙여 다시 실행한다. "
-                "지운 판은 이 기기의 사본(응답의 copy)이나, 동기화된 판이면 vault git 이력에서 되살린다")}
-        if confirm != plan["hash"]:
-            raise ValueError("확인한 판과 지금 판이 다르다 — 폐기하지 않았다. 다시 확인받아라")
-        # 사본 이름은 확인받은 판의 해시다 — frontmatter의 id는 검증 전 값이라 경로 문자가
-        # 들어 있으면 vault 밖을 가리키고, 같은 id의 다른 판(다른 worktree, 다시 만든 노드)은
-        # 앞 사본을 덮는다(#138 리뷰 P1).
-        copy = local_lock_path(f"osk-discarded-{plan['hash'].removeprefix('sha256:')}.md", vault.root)
-        nodefile.write_file(copy, path.read_bytes())
-        path.unlink()
-        return {"ok": True, "discarded": plan, "copy": str(copy)}
 
 
 def _item(r: dict, now_ms: int | None) -> str:
