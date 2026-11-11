@@ -120,7 +120,7 @@ def sig_status(node_id, path=None):
     r = m[0]
     hit = None
     for c in (path, r.get("path")):
-        c = core.resolve_in_root(c) if c else None
+        c = core.resolve_in_root(core.VAULT, c) if c else None
         if c is not None and c.exists() and S.id_of(c) == node_id:
             hit = c
             break
@@ -365,8 +365,8 @@ def test_ridless_unsign_not_swallowed():
 # ── 3f. 경로 봉쇄·KST 고정 ──────────────────────────────────────────────
 def test_root_confinement_and_kst():
     for bad in ("../outside/evil.md", "/etc/passwd", "00_Scope/../../etc/hosts"):
-        check(f"vault 밖 경로 해석 거부: {bad}", core.resolve_in_root(bad) is None)
-    inside = core.resolve_in_root("00_Scope/W1")
+        check(f"vault 밖 경로 해석 거부: {bad}", core.resolve_in_root(core.VAULT, bad) is None)
+    inside = core.resolve_in_root(core.VAULT, "00_Scope/W1")
     check("vault 안 경로는 해석", inside is not None and inside.exists())
     r = subprocess.run(
         [sys.executable, "-c",
@@ -2163,15 +2163,15 @@ def test_approval_serialized_with_writes():
     from osk import write
     import sync_daemon
     check("변경 잠금이 sync·update가 쓰는 그 잠금과 같은 파일이다",
-          core.mutation_lock_path()
+          core.mutation_lock_path(core.VAULT)
           == sync_daemon._lock_path(ROOT, "osk-mutation.lock"))
     check("잠금 파일은 추적 트리 밖이다",
-          not str(core.mutation_lock_path()).startswith(str(ROOT) + os.sep)
-          or ".git" in core.mutation_lock_path().parts)
+          not str(core.mutation_lock_path(core.VAULT)).startswith(str(ROOT) + os.sep)
+          or ".git" in core.mutation_lock_path(core.VAULT).parts)
     # 같은 경로를 가리키는 것만으로는 부족하다 — 실제로 상호배제되는지 본다.
     # flock은 open file description마다이므로 같은 프로세스의 두 번째 열기도
     # 경합한다(데몬이 다른 프로세스에서 잡는 상황과 같은 판정).
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         with open(sync_daemon._lock_path(ROOT, "osk-mutation.lock"), "w") as fh:
             try:
                 core.lock_exclusive(fh, blocking=False)
@@ -2317,7 +2317,7 @@ def test_revert_confirms_before_destroying():
         A.protect(reg, "지정")
         base = A.approved_hash(reg)                   # 승인본 A = v1
         f.write_text("v2", encoding="utf-8")
-        other = A._store_tree(A.resolve_in_root(reg))  # 다른 기기가 승인할 tree B = v2
+        other = A._store_tree(A.resolve_in_root(core.VAULT, reg))  # 다른 기기가 승인할 tree B = v2
         check("반려 전 상태는 pending", A.state(reg) == "pending")
 
         def racing(h):                    # 준비(blob 적재) 도중 승인 B가 유입
@@ -2390,7 +2390,7 @@ def test_unprotect_precondition_under_lock():
     try:
         A.protect(reg, "지정")
         base = A.approved_hash(reg)
-        d = A.resolve_in_root(reg)
+        d = A.resolve_in_root(core.VAULT, reg)
         f.write_text("v2", encoding="utf-8")
         other = A._store_tree(d)          # 다른 기기가 승인할 tree(B)
         f.write_text("v1", encoding="utf-8")          # 작업본은 되돌려 clean
@@ -5831,7 +5831,7 @@ def test_external_roots():
     (Path(_TMP.name) / "outside.md").write_text("x", encoding="utf-8")
 
     def problem(coord, at=None):
-        return evidence.check(coord, None, None, at or roots.Roots())
+        return evidence.check(core.VAULT, coord, None, None, at or roots.Roots(core.VAULT))
 
     def refused(label, fn, *a, says=""):
         try:
@@ -5845,12 +5845,12 @@ def test_external_roots():
           and not any(roots.split(c) for c in ("C:/x", "c:x", "https://e.com/a", "native:claude:a:b",
                                                "docs:/x")))
     for bad in ("d", "Docs", "http", "a_b"):
-        refused(f"쓸 수 없는 별칭: {bad}", roots.declare, bad, "n", says="쓸 수 없는 별칭")
+        refused(f"쓸 수 없는 별칭: {bad}", roots.declare, core.VAULT, bad, "n", says="쓸 수 없는 별칭")
 
     check("선언 전 — 끊김", problem("docs:notes/a.md") == "선언되지 않은 별칭: docs:notes/a.md"
           and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
     with mock.patch.object(core, "mutation_lock", wraps=core.mutation_lock) as lock:
-        roots.declare("docs", "외부 문서", "https://example.com/docs.git")
+        roots.declare(core.VAULT, "docs", "외부 문서", "https://example.com/docs.git")
     check("선언은 작업 트리 잠금 안에서 적는다(데몬의 rebase와 직렬화)", lock.call_count == 1, lock.call_count)
     check("선언하면 `/`가 있어도 경로가 아니라 바깥이다",
           graph.Index().resolve("docs:notes/a.md") == ("external",))
@@ -5860,20 +5860,20 @@ def test_external_roots():
     check("한 색인은 선언 대장을 한 번 읽는다",
           same == [("external",), ("external",), ("dangling",)] and read.call_count == 1,
           (same, read.call_count))
-    held = roots.Roots()
+    held = roots.Roots(core.VAULT)
     check("선언됐지만 이 기기에 없으면 보류 — 루트마다 한 번",
           problem("docs:notes/a.md", held) is None and problem("docs:x.md", held) is None
           and held.held == {"docs": "이 기기에 위치가 없다"}, held.held)
 
-    refused("vault 안의 위치", roots.mount, "docs", str(ROOT / "00_Scope"), says="vault 안에 있거나")
-    refused("vault를 품는 위치", roots.mount, "docs", str(ROOT.parent), says="vault 안에 있거나")
-    refused("선언되지 않은 별칭에는 위치를 두지 않는다", roots.mount, "other", str(ext),
+    refused("vault 안의 위치", roots.mount, core.VAULT, "docs", str(ROOT / "00_Scope"), says="vault 안에 있거나")
+    refused("vault를 품는 위치", roots.mount, core.VAULT, "docs", str(ROOT.parent), says="vault 안에 있거나")
+    refused("선언되지 않은 별칭에는 위치를 두지 않는다", roots.mount, core.VAULT, "other", str(ext),
             says="선언되지 않은 별칭")
-    roots.mount("docs", str(ext))
-    check("위치는 이 기기의 설정에", roots.locations() == {"docs": os.path.abspath(ext)},
-          roots.locations())
+    roots.mount(core.VAULT, "docs", str(ext))
+    check("위치는 이 기기의 설정에", roots.locations(core.VAULT) == {"docs": os.path.abspath(ext)},
+          roots.locations(core.VAULT))
 
-    here = roots.Roots()
+    here = roots.Roots(core.VAULT)
     check("있는 파일과 제목", problem("docs:notes/a.md#결론", here) is None,
           problem("docs:notes/a.md#결론", here))
     check("없는 제목", problem("docs:notes/a.md#없다", here) == "없는 제목: docs:notes/a.md#없다")
@@ -5891,7 +5891,7 @@ def test_external_roots():
 
     moved = ext.with_name("ext-moved")
     ext.rename(moved)
-    gone = roots.Roots()
+    gone = roots.Roots(core.VAULT)
     check("위치가 사라지면 보류", problem("docs:notes/a.md", gone) is None
           and gone.held.get("docs", "").startswith("이 기기에 없는 위치"), gone.held)
     moved.rename(ext)
@@ -5902,10 +5902,10 @@ def test_external_roots():
             check("단말 없는 해제는 중단된다", False)
         except SystemExit as e:
             check("단말 없는 해제는 중단된다",
-                  "중단" in str(e.code) and roots.alias_problem("docs", roots.declarations()) is None,
+                  "중단" in str(e.code) and roots.alias_problem("docs", roots.declarations(core.VAULT)) is None,
                   e.code)
     with mock.patch.object(core, "mutation_lock", wraps=core.mutation_lock) as lock:
-        roots.retire("docs", "옮김")
+        roots.retire(core.VAULT, "docs", "옮김")
     check("해제는 확인과 기록을 한 작업 트리 잠금 안에서 한다", lock.call_count == 1, lock.call_count)
     check("해제한 별칭은 끊김", problem("docs:notes/a.md") == "해제된 별칭: docs:notes/a.md"
           and graph.Index().resolve("docs:notes/a.md") == ("dangling",))
@@ -5913,14 +5913,14 @@ def test_external_roots():
     check("색인은 갱신 전까지 선언을 다시 읽지 않는다", seen.resolve("docs:notes/a.md") == ("external",))
     seen.refresh_nonnode()
     check("비노드 갱신이 선언을 다시 읽는다", seen.resolve("docs:notes/a.md") == ("dangling",))
-    refused("해제한 별칭은 다시 해제하지 않는다", roots.retire, "docs", says="선언된 별칭이 아니다")
+    refused("해제한 별칭은 다시 해제하지 않는다", roots.retire, core.VAULT, "docs", says="선언된 별칭이 아니다")
     check("조회는 선언 상태와 이 기기의 위치를 함께 낸다",
-          [(r["alias"], r["declaration"], r["note"], r.get("here")) for r in roots.show()["roots"]]
-          == [("docs", "해제된 별칭", "옮김", "있음")], roots.show())
-    roots.unmount("docs")
-    check("위치를 지운다", roots.locations() == {})
-    refused("없는 위치는 지우지 않는다", roots.unmount, "docs", says="위치가 없는")
-    roots.CONFIG.unlink()
+          [(r["alias"], r["declaration"], r["note"], r.get("here")) for r in roots.show(core.VAULT)["roots"]]
+          == [("docs", "해제된 별칭", "옮김", "있음")], roots.show(core.VAULT))
+    roots.unmount(core.VAULT, "docs")
+    check("위치를 지운다", roots.locations(core.VAULT) == {})
+    refused("없는 위치는 지우지 않는다", roots.unmount, core.VAULT, "docs", says="위치가 없는")
+    roots.config_path(core.VAULT).unlink()
 
 
 def test_non_node_evidence_is_an_evidence_line():
@@ -5937,7 +5937,7 @@ def test_non_node_evidence_is_an_evidence_line():
     from osk import distillation as D, evidence, raw, rechecks
     sp, dom = "00_Scope/W1", ROOT / "00_Domain/regr-EvD"
     rec = raw.append_rounds("repo/regr-evid", "regr-evid-rec", [{"user": "관측", "agent": "결과"}], sp)
-    ref, coord = rec["round_refs"][0], evidence.coordinate(rec["path"], 1)
+    ref, coord = rec["round_refs"][0], evidence.coordinate(core.VAULT, rec["path"], 1)
     src = ROOT / "_sources/regr-evid.md"
     src.parent.mkdir(exist_ok=True)
     src.write_text("# 결과\n\nx\n", encoding="utf-8")
@@ -5961,8 +5961,8 @@ def test_non_node_evidence_is_an_evidence_line():
         check("인용 라운드는 derived-from에 달지 않는다", "derived-from" not in contract.parse(made).meta)
         huge = line.replace("#1`", "#1–100000000`")
         check("기록에 다 있지 않은 범위는 펴지 않는다",
-              evidence.cited_rounds("주장.\n\n## 근거\n\n" + huge) == set()
-              and evidence.cited_rounds("주장.\n\n## 근거\n\n" + line) == {raw.canonical_ref(ref)})
+              evidence.cited_rounds(core.VAULT, "주장.\n\n## 근거\n\n" + huge) == set()
+              and evidence.cited_rounds(core.VAULT, "주장.\n\n## 근거\n\n" + line) == {raw.canonical_ref(ref)})
         r = _w(write.update_node, "regr-evid", old_text=line,
                new_text=line + "\n" + line.replace("#1`", "#9`"))
         items = (r.get("reference_review") or {}).get("items", [])
@@ -6647,7 +6647,7 @@ def test_session_key_repo_identity():
 
     def spy(*args, **kw):
         # 소유 행도 working-tree 변경이다 — 데몬의 commit→rebase와 같은 잠금을 잡는다.
-        with open(core.mutation_lock_path(), "w") as fh:
+        with open(core.mutation_lock_path(core.VAULT), "w") as fh:
             try:
                 core.lock_exclusive(fh, blocking=False)
                 core.unlock(fh)
@@ -7701,7 +7701,7 @@ def test_evictions():
     # git 없는 mini-vault는 루트 해시가 든 임시 경로로 떨어져 저절로 갈리므로,
     # 실제 모양 — 본 저장소 A와 그 `.git`을 `commondir`로 공유하는 linked
     # worktree B — 를 파일로 세운다(git 실행 없음). 둘의 잠금 자리는 같다.
-    # 운영의 ROOT는 vault_root()가 정규화한 경로다 — 시험 루트도 그렇게 세운다.
+    # 운영의 ROOT는 `Vault.open()`이 정규화한 경로다 — 시험 루트도 그렇게 세운다.
     # 날것(RUNNER~1·/var)이면 A는 그 철자, B는 commondir resolve로 실경로가 된다.
     wt = Path(tempfile.mkdtemp(prefix="osk-wt-")).resolve()
     A, B = wt / "A", wt / "B"
@@ -8030,7 +8030,7 @@ def test_evictions():
         copy.unlink(missing_ok=True)
     # 사본 이름은 확인받은 판의 해시다(#138 리뷰 P1). 손편집한 id가 경로 문자를 품어도
     # vault 밖을 쓰지 않고, 같은 id의 다른 판이 앞 사본을 덮지 않는다.
-    escape = Path(os.path.normpath(core.local_lock_path("osk-discarded-x/../../../regr-evi-outside.md")))
+    escape = Path(os.path.normpath(core.local_lock_path("osk-discarded-x/../../../regr-evi-outside.md", core.VAULT.root)))
     escape.write_text("관련 없는 파일\n", encoding="utf-8")
     copies = []
     for n, body in enumerate(("첫 판", "둘째 판"), 1):
@@ -8041,7 +8041,7 @@ def test_evictions():
         copies.append(Path(o["copy"]) if o.get("copy") else None)
         check(f"tidy discard: 사본은 확인한 판의 해시 이름으로 잠금 자리에 남는다({n})",
               o.get("ok") and not transit.exists() and copies[-1]
-              == core.local_lock_path("osk-discarded-" + h.removeprefix("sha256:") + ".md"), o)
+              == core.local_lock_path("osk-discarded-" + h.removeprefix("sha256:") + ".md", core.VAULT.root), o)
     check("tidy discard: 경로 문자를 품은 id가 vault 밖 파일을 덮지 않는다",
           escape.read_text(encoding="utf-8") == "관련 없는 파일\n", escape)
     check("tidy discard: 같은 id의 다른 판이 앞 사본을 덮지 않는다",
@@ -10225,7 +10225,7 @@ def test_engine_epoch_fence():
 
     core.lock_exclusive, core._fence = spy_lock, spy_fence
     try:
-        with core.mutation_lock():
+        with core.mutation_lock(core.VAULT):
             pass
     finally:
         core.lock_exclusive, core._fence = real_lock, real_fence
@@ -10287,7 +10287,7 @@ def test_engine_epoch_fence():
     try:
         epoch._LOADED = "0000deadbeef"
         try:
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 pass
         except core.StaleEngineError as e:
             held = e            # 프레임을 살려 둔다 — 참조계수에 기대지 않는다
@@ -11697,7 +11697,7 @@ def test_governance_amend_secrets_and_region():
         #    fail-closed를 지우면 셋째 검사가 실패한다.
         def _reconcile_case(tag, name_body, work_body, idx_body, expect):
             """이름(digest)·작업 트리·색인을 각각 세워 판정을 본다."""
-            # 갈아 끼우는 ROOT도 vault_root()가 주는 것처럼 정규 경로여야 한다 —
+            # 갈아 끼우는 ROOT도 `Vault.open()`이 주는 것처럼 정규 경로여야 한다 —
             # 러너 임시 경로가 별칭(RUNNER~1·/var)이면 STORE만 날것으로 남는다.
             lab3 = Path(os.path.realpath(tempfile.mkdtemp(prefix="osk-obj-")))
             try:
@@ -12712,6 +12712,12 @@ def test_surface_snapshot_subprocess():
     _suite("표면 고정: MCP 도구와 CLI가 기록과 같다", "test_surface_snapshot.py")
 
 
+def test_vault_subprocess():
+    """저장소는 값이다(docs/CODE-STANDARD.md 4항) — 한 프로세스에서 임시 저장소 둘을 열어 폴더 이름과 대장
+    자리가 서로 섞이지 않음을 본다. `osk.core`를 거치지 않는다."""
+    _suite("저장소 값: 한 프로세스에서 연 임시 저장소 둘이 섞이지 않는다", "test_vault.py")
+
+
 GROWTH_SUITES = ("test_distillation.py", "test_integration.py", "test_codex_forks.py", "test_integration_recovery.py", "test_growth.py", "test_growth_daily.py", "test_growth_status.py", "test_response_growth.py", "test_retrieval.py", "test_organization.py", "test_hidden_raw.py", "test_raw_view.py", "test_space_layout.py", "test_update_review.py", "test_update_notice.py", "test_harness.py", "test_setup.py", "test_services.py")
 
 
@@ -12890,7 +12896,7 @@ if __name__ == "__main__":
                test_reparse_cache_membership,
                test_eviction_preservation_mcp,
                test_suite_timeout_is_isolated, test_suite_skip_is_not_pass,
-               test_architecture_subprocess, test_surface_snapshot_subprocess,
+               test_architecture_subprocess, test_surface_snapshot_subprocess, test_vault_subprocess,
                 test_growth_loop_subprocesses, test_release_workflow_subprocess,
                 test_upgrade_matrix_subprocess]:
         try:

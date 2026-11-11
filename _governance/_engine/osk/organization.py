@@ -65,7 +65,7 @@ def _state_path() -> Path:
     # Worktrees share the mutation lock, but selections belong to this checkout.
     root = os.path.normcase(str(core.ROOT.resolve()))
     key = hashlib.sha256(root.encode()).hexdigest()[:16]
-    return core.local_lock_path(f"osk-organization-{key}.json")
+    return core.local_lock_path(f"osk-organization-{key}.json", core.VAULT.root)
 
 
 def load_state() -> dict:
@@ -88,7 +88,7 @@ def _retire_arrived_moves(state: dict, idx) -> None:
         remaining = []
         for item in move["items"]:
             # The destination is known; an ID lookup would parse the whole vault.
-            path = core.resolve_in_root(item["to"])
+            path = core.resolve_in_root(core.VAULT, item["to"])
             if path is None or not path.is_file() or idx.node(path).id != item["id"]:
                 remaining.append(item)
         if remaining:
@@ -148,7 +148,7 @@ def scope_path(scope: str) -> Path:
     parts = scope.split("/") if scope.startswith((DOMAIN + '/')) else [SCOPE, scope]
     if len(parts) != 2 or not parts[1] or "/" in parts[1] or parts[1] in {".", "..", "Workbench"}:
         raise ValueError("organization requires an existing top-level Scope or Domain cluster")
-    p = core.resolve_in_root(Path(*parts))
+    p = core.resolve_in_root(core.VAULT, Path(*parts))
     if p is None or not p.is_dir():
         raise ValueError("organization requires an existing Scope or Domain cluster")
     return p
@@ -158,7 +158,7 @@ def snapshot(scope: str, idx=None) -> dict:
     """Read bytes once per node; do not combine cached bodies with current hashes."""
     base = scope_path(scope)
     idx = _index() if idx is None else idx
-    records = evidence.Records()     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
+    records = evidence.Records(core.VAULT)     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
     nodes, parsed, references, units = [], {}, [], []
     for name, (path, kind) in sorted(idx.nodes.items()):
         if not path.is_relative_to(base):
@@ -340,7 +340,7 @@ def record_attempts(jobs: list[dict]) -> None:
 
 
 def plan(scope: str, *, record: bool = True) -> dict:
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         scope_path(scope)
         jobs = pending([scope], limit=1, record=record)
         if jobs:
@@ -374,7 +374,7 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
             i["relation"] != "Link" or not all(isinstance(v, str) and v.strip() for v in i.values())
             for i in intentional):
         raise ValueError("only individual exploratory/source Links may have an explicit retention reason")
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         state = load_state()
         selected = state["plans"].get(key)
         if not selected or selected["scope"] != scope:
@@ -494,7 +494,7 @@ def guidance() -> str:
 def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
     if not jobs:
         return ""
-    command = core.cli_command("organization")
+    command = core.cli_command(core.VAULT, "organization")
     return ("\n[osk 참조·조직 검토]\n" + guidance() + "\n"
             + "실행 명령 접두부: " + command + "\n"
             + (json.dumps(readout(jobs), ensure_ascii=False) if inventory else "목록은 아래 organization_jobs에 있다.\n"))
@@ -653,7 +653,7 @@ def hook_prompt(jobs: list[dict], shown_tree: str = "") -> str:
         if shown_tree and r.get("hub_tree") == shown_tree:
             r["hub_tree"] = "위 대화 검토의 허브 트리와 같다"
     return (f"[osk 참조·조직 검토 — {head}]\n" + HOOK_GUIDANCE + (_FLAGGED if flagged else "") + "\n"
-            + "실행 명령 접두부: " + core.cli_command("organization") + "\n"
+            + "실행 명령 접두부: " + core.cli_command(core.VAULT, "organization") + "\n"
             + json.dumps(readouts, ensure_ascii=False))
 
 

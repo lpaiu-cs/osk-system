@@ -414,7 +414,7 @@ def _plan(limit: int) -> dict:
 
 def plan(limit: int = 3) -> dict:
     """Read-only bounded inventory of changed/unreviewed comparison sets."""
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         return _plan(limit)
 
 
@@ -767,7 +767,7 @@ def review(key: str, outcome: str, target: str | None = None, reason: str = "",
         raise ValueError("the exact growth manifest is required")
     if outcome != "preserved" and target is not None:
         raise ValueError("only preserved decisions have a target")
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         rows, idx = ledger_records(), node_index()
         matches = [(r, c) for r in rows if r.get("kind") == "plan"
                    and r.get("rid") == manifest
@@ -1033,7 +1033,7 @@ def checkpoint(packet: dict) -> dict:
     if not isinstance(packet, dict) or set(packet) != {"osk_reviews"}:
         raise ValueError("checkpoint needs one osk_reviews object")
     manifest = packet["osk_reviews"].get("manifest") if isinstance(packet["osk_reviews"], dict) else None
-    with core.mutation_lock():
+    with core.mutation_lock(core.VAULT):
         row = next((r for r in ledger_records() if r["kind"] == "plan" and r["rid"] == manifest), None)
     if row is None:
         raise ValueError("checkpoint requires a recorded growth manifest")
@@ -1049,7 +1049,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
     for entry in reviews["domain"]:
         key = entry["key"]
         try:
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 done = _completed(key, ledger_records(), node_index())
             if done:
                 result["domain"][key] = "already_complete"
@@ -1072,7 +1072,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
     selected = {j["key"]: j for j in planned.get("organization_jobs", [])}
     for entry in reviews.get("organization", []):
         try:
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 done = organization.status(selected[entry["key"]])
                 # A worker without the CLI cannot read a fresh snapshot, so it is held to the
                 # one its plan gave it. Unit keys cover bodies, not references: any change in the
@@ -1092,7 +1092,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
     selected_evictions = {j["of"]: j for j in planned.get("eviction_jobs", [])}
     for entry in reviews.get("eviction", []):
         try:
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 done = _eviction_status(selected_evictions[entry["of"]])
                 if done.get("reason"):
                     raise ValueError(done["reason"])
@@ -1118,7 +1118,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
     for entry in reviews.get("recheck", []):
         job = selected_rechecks[entry["key"]]
         try:
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 now = [i for i in rechecks.candidates(node_index())[0]
                        if i["id"] == job["id"] and i["key"] == job["target_key"]]
                 if not now:
@@ -1326,7 +1326,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                                           checked["executable"], worker_env, require_version=False)
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 return {"ok": False, "state": "unavailable", "error": str(exc)}
-    lock_path = core.local_lock_path("osk-growth-run.lock")
+    lock_path = core.local_lock_path("osk-growth-run.lock", core.VAULT.root)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a") as lock:
         try:
@@ -1346,7 +1346,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                                               exclude=exclude, bundle=scope_bundle)
             else:
                 catchup = {"ok": True, "jobs": [], "remaining": 0}
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 try:
                     from . import rechecks
                     rechecks.ensure_baseline(carry=True)
@@ -1414,7 +1414,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 manifest = core.ledger_append(LEDGER, {"kind": "plan", **planned})
                 organization.record_attempts(planned["organization_jobs"])
             planned["manifest"] = manifest["rid"]
-            directory = core.resolve_in_root(Path(".osk/growth/runs") / manifest["rid"])
+            directory = core.resolve_in_root(core.VAULT, Path(".osk/growth/runs") / manifest["rid"])
             if directory is None:
                 raise ValueError("growth output directory leaves the vault")
             directory.mkdir(parents=True, exist_ok=True)
@@ -1444,7 +1444,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     returncode = proc.returncode
                 except OSError as exc:
                     error = str(exc)
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 needs_review = _needs_review(planned, ledger_records(), node_index())
             final_reviews = {"state": "not_needed", "errors": []}
             if needs_review:
@@ -1458,7 +1458,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
             limited = (returncode != 0 or error is not None or final_reviews["state"] in {
                 "rejected", "not_applied"}) and growth_daily.limited(stdout_path, command)
             usage = growth_daily.usage(stdout_path, command, cold_first=scope_job is None)
-            with core.mutation_lock():
+            with core.mutation_lock(core.VAULT):
                 rows, idx = ledger_records(), node_index()
                 par = core.effective_parents(rows)
                 receipts = {c["key"]: _completed(c["key"], rows, idx, par)

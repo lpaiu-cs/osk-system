@@ -17,6 +17,7 @@ from pathlib import Path
 
 from . import contract, evidence, graph, prose, raw, secrets, write
 from .core import ROOT, local_lock_path, mutation_lock, posix_rel, resolve_in_root, sha256_bytes, sha256_file
+from .core import VAULT
 
 # 증류가 쓰는 자리 — Person은 소속 scope 없는 세션이 Person에 둘 것만 남길 때다(시행령 §3 9항 3호).
 _TARGETS = ("scope", "domain", "person")
@@ -26,7 +27,7 @@ def _job_path(key: str) -> Path:
     if not isinstance(key, str) or not key.strip() or len(key) > 256:
         raise write.WriteError("distill.key must be a nonempty stable key (<=256 characters)")
     digest = hashlib.sha256((str(ROOT) + "\0" + key).encode()).hexdigest()
-    return local_lock_path("osk-distillation-" + digest + ".json").with_suffix(".json")
+    return local_lock_path("osk-distillation-" + digest + ".json", VAULT.root).with_suffix(".json")
 
 
 def _load(key: str) -> dict | None:
@@ -225,7 +226,7 @@ def _cites(node, idx, *, legacy: bool = True) -> set[str]:
     """노드가 다는 출처 — `derived-from`의 노드와 근거 절 줄이 가리키는 인용 라운드(헌법 제8조
     5·6항). `legacy`면 이행 전 `derived-from`에 남은 인용 라운드도 센다 — 그때 적힌 영수증이
     그대로 확인된다. 새 증류는 줄만 받는다."""
-    out = evidence.cited_rounds(node.body)
+    out = evidence.cited_rounds(VAULT, node.body)
     for ref in contract.stored_edges(node.meta.get("derived-from")):
         try:
             source = _source(ref, idx)
@@ -286,7 +287,7 @@ def structure(receipt: dict, idx=None) -> str | None:
             return "target left its top-level cluster"
         node = contract.parse(p)
         kept = {write.edge_key(ref, idx) for ref in (*contract.stored_edges(node.meta.get("derived-from")),
-                                                      *evidence.cited_rounds(node.body))}
+                                                      *evidence.cited_rounds(VAULT, node.body))}
         if any(write.edge_key(s["ref"], idx) not in kept for s in receipt["sources"]):
             return "target no longer cites its source"
     except (write.WriteError, OSError, ValueError, KeyError, TypeError) as e:
@@ -306,7 +307,7 @@ def verify_receipt_locked(receipt: dict, idx=None) -> dict:
 
 def verify_receipt(receipt: dict) -> dict:
     """Read-only structural verification of a saved receipt on any vault replica."""
-    with mutation_lock():
+    with mutation_lock(VAULT):
         return verify_receipt_locked(receipt)
 
 
@@ -318,7 +319,7 @@ def status_locked(key: str) -> dict:
 
 def status(key: str) -> dict:
     """Recheck actual source/target/hub bytes, not a cached success flag."""
-    with mutation_lock():
+    with mutation_lock(VAULT):
         return status_locked(key)
 
 
@@ -329,7 +330,7 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256, since=N
     if (not isinstance(raw_refs, list) or not raw_refs or len(raw_refs) > 64
             or not 1 <= limit <= 32 or not 1 <= scan_limit <= 1024):
         raise write.WriteError("bounded raw references and discovery limits required")
-    with mutation_lock():
+    with mutation_lock(VAULT):
         idx = graph.Index()
         write.require_complete(idx)
         # Original-turn refs are not vault paths; a proof binds one only through a cited round
@@ -380,7 +381,7 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256, since=N
                         {raw.canonical_ref(source["ref"]) for source in job["sources"]}
                         | {source["native"] for source in job["sources"] if source.get("native")}):
                     continue
-                target = resolve_in_root(job["target"]["path"])
+                target = resolve_in_root(VAULT, job["target"]["path"])
                 if target is None or graph.space_of(target)[0] not in ("scope", "person"):
                     continue
                 proof = _verify(job)
@@ -409,7 +410,7 @@ def _wire_hub(job: dict) -> dict:
 
 def resume(key: str, *, name: str | None = None) -> dict:
     """Resume hub wiring without reconstructing or changing the retained body."""
-    with mutation_lock():
+    with mutation_lock(VAULT):
         job = _load(key)
         if job is None:
             return {"ok": False, "distillation": {"key": key, "status": "pending",
@@ -448,7 +449,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
         if isinstance(request.get(field), str):
             request[field], hits = secrets.filter_text(request[field])
             filtered.update(hits)
-    with mutation_lock():
+    with mutation_lock(VAULT):
         job = _load(key)
         if job and job["binding"] != binding:
             raise write.WriteError("distill.key is already bound to a different request")
@@ -512,7 +513,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("distillation requires a changed retained body")
             if graph.space_of(path)[0] not in _TARGETS:
                 raise write.WriteError("distillation target must be a Scope/Domain/Person node")
-            if path.parent != resolve_in_root(hub["path"]).parent or path.stem == hub["name"]:
+            if path.parent != resolve_in_root(VAULT, hub["path"]).parent or path.stem == hub["name"]:
                 raise write.WriteError("target must be a knowledge node under the selected hub")
             if any(s["path"] in (posix_rel(path, ROOT), hub["path"]) for s in sources):
                 raise write.WriteError("distillation cannot cite its target or wiring hub as input")
@@ -523,7 +524,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("required provenance was removed; no node written")
             unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(s["ref"]) not in cites]
             if unlined:
-                coords = [evidence.coordinate(s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
+                coords = [evidence.coordinate(VAULT, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
                 raise write.WriteError(
                     "출처 라운드를 관측 절의 줄로 달지 않았다 — 쓰지 않았다",
                     [f"노드 끝 `# 관측` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "
@@ -555,7 +556,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
             if job:
                 _check_sources(job, idx)
                 target = job["target"]
-                path = resolve_in_root(target["path"])
+                path = resolve_in_root(VAULT, target["path"])
                 current = sha256_file(path) if path and path.is_file() else None
                 if current not in (target["before_hash"], target["hash"]):
                     raise write.WriteError("target changed concurrently; pending")
@@ -594,7 +595,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
             receipt = _verify(job)
             if receipt["status"] != "complete":
                 receipt["reason"] = str(e)
-            p = resolve_in_root(job["target"]["path"])
+            p = resolve_in_root(VAULT, job["target"]["path"])
             saved = bool(p and p.is_file() and sha256_file(p) == job["target"]["hash"])
             result = {"ok": saved, "name": job["target"]["name"], "id": job["target"]["id"],
                       "path": job["target"]["path"], "node_preserved": saved,

@@ -187,7 +187,7 @@ def defer(env: dict, session: str, *, probe_due: bool) -> bool:
     log.parent.mkdir(parents=True, exist_ok=True)
     try:
         with log.open('ab') as stderr:
-            core.spawn_worker('osk.response_growth', stderr=stderr,
+            core.spawn_worker(core.VAULT, 'osk.response_growth', stderr=stderr,
                               env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid, ask=False)},
                               stdin=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
     except OSError as exc:
@@ -355,7 +355,7 @@ def launch(env: dict, session: str) -> bool:
     log = integration.state_path(harness, sid).with_suffix('.growth.log')
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as stderr:
-        core.spawn_worker('osk.response_growth', stderr=stderr,
+        core.spawn_worker(core.VAULT, 'osk.response_growth', stderr=stderr,
                           env={'OSK_GROWTH_WORKER': '1', **runtime_env(harness, sid, ask=False)},
                           stdin=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
     return True

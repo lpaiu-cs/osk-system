@@ -17,6 +17,7 @@ from pathlib import Path
 from .core import ROOT, LEDGER, ID_RE, resolve_in_root, SPACE_ROOTS, adapt_path
 from . import contract, roots, signatures as _sig
 from .errors import WriteError
+from .core import VAULT
 
 # 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
 _ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?(?![0-9a-z])")
@@ -766,7 +767,7 @@ class Index:
         if re.match(ID_RE, name):
             return None if name in self.dup_ids else self.by_id.get(name)
         if "/" in name:
-            p = resolve_in_root(name)
+            p = resolve_in_root(VAULT, name)
             for cand in ((p, p.with_suffix(".md")) if p is not None else ()):
                 if cand.is_file():
                     return cand, space_of(cand)
@@ -789,7 +790,7 @@ class Index:
         if alias:
             if self._roots is None:
                 try:
-                    self._roots = roots.declarations()
+                    self._roots = roots.declarations(VAULT)
                 except (OSError, ValueError):
                     return ("dangling",)    # 대장 손상 — 선언을 확인하지 못한 별칭은 끊김이다
             return ("external",) if roots.alias_problem(alias[0], self._roots) is None else ("dangling",)
@@ -811,7 +812,7 @@ class Index:
             hit = self.by_id.get(name)
             return ("node", hit[1]) if hit else ("dangling",)
         if "/" in name:
-            p = resolve_in_root(name)
+            p = resolve_in_root(VAULT, name)
             if p is None:
                 return ("dangling",)      # vault 밖 — 참조 대상이 아니다
             for cand in (p, p.with_suffix(".md")):
@@ -960,7 +961,7 @@ def dangling_refs(idx: Index) -> list[str]:
 
 def reference_report(idx: Index, records=None) -> dict:
     from . import evidence
-    records = records or evidence.Records()     # 노드마다 기록 색인을 다시 짓지 않는다
+    records = records or evidence.Records(VAULT)     # 노드마다 기록 색인을 다시 짓지 않는다
     out, items, dups = [], [], []
     for stem, (p, kind) in idx.nodes.items():
         n = idx.node(p)
@@ -1025,9 +1026,9 @@ def reference_review(node: contract.Node, idx: Index,
     coords = evidence.coordinates(node.body)
     if coords:
         before = set(evidence.coordinates(previous.body)) if previous else set()
-        records = records or evidence.Records()
+        records = records or evidence.Records(VAULT)
         for coord in coords:
-            problem = evidence.check(coord, idx, records)
+            problem = evidence.check(VAULT, coord, idx, records)
             if problem and not problem.startswith(evidence.NODE_LINE):
                 out.append({"id": node.id, "relation": "근거", "ref": coord,
                             "resolution": "unresolved", "issue": "evidence_unresolved",

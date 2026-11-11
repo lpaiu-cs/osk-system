@@ -12,6 +12,7 @@ from .core import ROOT, StaleEngineError
 from . import (graph, approvals, authority, raw, scope_memory, validate, search,
                write, evictions)
 from . import harness as adapters
+from .core import VAULT
 
 ENGINE = Path(__file__).resolve().parents[1]     # …/_governance/_engine
 
@@ -297,7 +298,7 @@ def _routing_cmd(a) -> None:
             # 사용자 전속 — 대화형 단말의 확인을 거친다(헌법 10조 1~2항). 검토의 결정 묶음은 이 길이
             # 아니라 `integration review`·`organization review`의 실행기가 적용한다.
             _confirm(f"`{a.project}`의 주된 scope를 `{a.scope}`로 지정합니까? [y/N] ")
-        with mutation_lock():
+        with mutation_lock(VAULT):
             current = write.bindings(a.project)
             if a.routing_cmd == "bind":
                 if a.scope in current["scopes"]:
@@ -327,22 +328,22 @@ def _roots_cmd(a) -> None:
     from . import roots
     try:
         if a.roots_cmd == "show":
-            _emit(roots.show())
+            _emit(roots.show(VAULT))
             return
         if a.roots_cmd == "declare":
             _confirm(f"외부 루트 `{a.alias}`를 선언합니까? 선언은 모든 기기로 갑니다 [y/N] ")
-            out = {"rid": roots.declare(a.alias, a.note, a.origin)["rid"]}
+            out = {"rid": roots.declare(VAULT, a.alias, a.note, a.origin)["rid"]}
         elif a.roots_cmd == "retire":
             _confirm(f"외부 루트 `{a.alias}`를 해제합니까? 그 루트를 향한 근거 줄은 끊김이 됩니다 [y/N] ")
-            out = {"rid": roots.retire(a.alias, a.note)["rid"]}
+            out = {"rid": roots.retire(VAULT, a.alias, a.note)["rid"]}
         elif a.roots_cmd == "mount":
             _confirm(f"이 기기에서 `{a.alias}`의 위치를 {a.path}로 둡니까? [y/N] ")
-            out = {"location": roots.mount(a.alias, a.path)}
+            out = {"location": roots.mount(VAULT, a.alias, a.path)}
         else:
             _confirm(f"이 기기에서 `{a.alias}`의 위치를 지웁니까? [y/N] ")
-            roots.unmount(a.alias)
+            roots.unmount(VAULT, a.alias)
             out = {}
-        _emit({"ok": True, **out, **roots.show()})
+        _emit({"ok": True, **out, **roots.show(VAULT)})
     except (ValueError, OSError) as e:
         _emit({"ok": False, "violations": [str(e)]})
         sys.exit(1)

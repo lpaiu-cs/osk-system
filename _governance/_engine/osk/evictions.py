@@ -31,6 +31,7 @@ from .core import (EVICTIONS, RID_RE, ID_RE, ledger_read, ledger_damage,
                    ledger_append, ledger_anchor_index, mutation_lock, rid_parts,
                    rid_key)
 from . import graph
+from .core import VAULT
 
 KINDS = ("evict", "settle")
 OUTCOMES = ("node", "merged", "discarded")
@@ -192,7 +193,7 @@ def after_node_write(result: dict, of: str | None, outcome: str, target: str) ->
 
 
 def settle(of: str, outcome: str, target: str | None = None, reason: str | None = None) -> dict:
-    with mutation_lock():
+    with mutation_lock(VAULT):
         return settle_locked(of, outcome, target, reason)
 
 
@@ -208,7 +209,7 @@ def settle_many(of: str, outcome: str, targets: list | None = None,
     """대상이 여럿인 처분 — 대상마다 `settle`을 하나씩 적는다. 같은 항목의 `settle`
     여럿은 §9-3 4항의 union이 이미 허용하므로 기록 형식은 그대로다. 대상을 전부
     확인한 뒤에야 적는다 — 일부만 적히는 처분을 만들지 않는다."""
-    with mutation_lock():
+    with mutation_lock(VAULT):
         idx = graph.Index()
         checked = [_check_settle(outcome, t, reason, idx) for t in (targets or [None])]
         if len(set(checked)) != len(checked):
@@ -305,7 +306,7 @@ def discard_transit(title: str, confirm: str | None = None) -> dict:
     전의 판은 vault git 이력에 없을 수 있다."""
     from . import scope_memory, write   # 둘 다 이 모듈을 부른다 — 순환을 피한다
     from .core import ROOT, local_lock_path, posix_rel, sha256_file
-    with mutation_lock():
+    with mutation_lock(VAULT):
         idx = graph.Index()
         if not idx.complete:
             raise ValueError("vault를 전부 관측하지 못했다 — 폐기하지 않았다: "
@@ -352,7 +353,7 @@ def discard_transit(title: str, confirm: str | None = None) -> dict:
         # 사본 이름은 확인받은 판의 해시다 — frontmatter의 id는 검증 전 값이라 경로 문자가
         # 들어 있으면 vault 밖을 가리키고, 같은 id의 다른 판(다른 worktree, 다시 만든 노드)은
         # 앞 사본을 덮는다(#138 리뷰 P1).
-        copy = local_lock_path(f"osk-discarded-{plan['hash'].removeprefix('sha256:')}.md")
+        copy = local_lock_path(f"osk-discarded-{plan['hash'].removeprefix('sha256:')}.md", VAULT.root)
         write._atomic_write(copy, path.read_bytes())
         path.unlink()
         return {"ok": True, "discarded": plan, "copy": str(copy)}

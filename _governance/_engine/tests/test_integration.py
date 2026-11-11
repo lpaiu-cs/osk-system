@@ -66,7 +66,7 @@ def evidenced(body, *refs):
     """A body ending with one 근거 line per cited round — a distillation checks its round
     sources against these lines (Constitution art. 8 §6)."""
     from osk import evidence
-    lines = [f"- 2026-10-31 · `{evidence.coordinate(raw.raw_file(raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
+    lines = [f"- 2026-10-31 · `{evidence.coordinate(core.VAULT, raw.raw_file(raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
              " · 지지 — the cited turn" for ref in refs]
     return body + "\n\n## 근거\n\n" + "\n".join(lines)
 
@@ -1726,7 +1726,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(created["distillation"]["status"], "complete")
         node = contract.parse(core.ROOT / created["path"])
         hub = contract.parse(core.ROOT / "00_Scope/W1/W1.md")
-        self.assertEqual(evidence.cited_rounds(node.body), {raw.canonical_ref(ref)})
+        self.assertEqual(evidence.cited_rounds(core.VAULT, node.body), {raw.canonical_ref(ref)})
         self.assertNotIn("derived-from", node.meta)   # a round is a 근거 line, not an edge
         self.assertIn(created["name"], hub.wikilinks())
         # The cited round binds the review of the original turn it cites.
@@ -2886,9 +2886,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
     def test_a_one_off_workspace_key_is_neither_bound_nor_followed(self):
         from osk import workspaces
         root = Path(TMP.name) / f"{self.sid}-root"
-        core.ledger_append(workspaces.LEDGER, {"kind": "rule", "harness": "claude", "version": "2.1.281",
+        core.ledger_append(workspaces.ledger_path(core.VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
                                                "root": str(root), "shape": r"\d{4}-\d{2}-\d{2}/[^/]+"})
-        self.addCleanup(workspaces.LEDGER.unlink, missing_ok=True)
+        self.addCleanup(workspaces.ledger_path(core.VAULT).unlink, missing_ok=True)
         key = self.sid + "-chat"
 
         def talk(sid, folder, version="2.1.281"):
@@ -2921,18 +2921,18 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertIsNone(talk(self.sid + "-other", f"2026-10-12/{key}")["space"])
         # A write tool takes only a key; a process standing in the one-off folder does not bind it.
         self.addCleanup(setattr, workspaces, "_here", None)
-        workspaces.enter(str(root / f"2026-10-11/{key}"))
+        workspaces.enter(core.VAULT, str(root / f"2026-10-11/{key}"))
         self.assertIsNone(write.resolve_session(key))
         with self.assertRaisesRegex(write.WriteError, "일회성 작업 폴더"):
             write.create_node(self.sid + " node", "summary", "body", "gpt-6-astra", session=key)
-        workspaces.enter(str(TMP.name))
+        workspaces.enter(core.VAULT, str(TMP.name))
         self.assertEqual(write.resolve_session(key), "Capture")
         odd = talk(self.sid + "-odd", "artifacts/x")
         self.assertTrue(odd["workspace"]["one_off"])
         self.assertIn("규칙에 없는 모양", odd["workspace"]["warning"])
         self.assertIn("판본", talk(self.sid + "-newer", f"2026-10-13/{key}", "9.9.9")["workspace"]["warning"])
         self.assertNotIn("warning", talk(self.sid + "-patch", f"2026-10-13/{key}-p", "2.1.295")["workspace"])
-        workspaces.add("claude", str(root), r"\d{4}-\d{2}-\d{2}/[^/]+", "9.9.0", "re-checked")
+        workspaces.add(core.VAULT, "claude", str(root), r"\d{4}-\d{2}-\d{2}/[^/]+", "9.9.0", "re-checked")
         self.assertNotIn("warning", talk(self.sid + "-rechecked", f"2026-10-13/{key}-r", "9.9.9")["workspace"])
         (root / "2026-10-14" / "repo" / ".git").mkdir(parents=True)
         self.assertFalse(talk(self.sid + "-repo", "2026-10-14/repo")["workspace"]["one_off"])
@@ -2949,9 +2949,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             new = Path(local + "/Claude-Data/claude_pzs8sxrjxfjjc/scratch-workspaces" + tail)
             for cwd, version in ((roaming + "/Claude/scratch-workspaces" + tail, "2.1.281"),
                                  (str(new), "2.1.308"), (str(new / "chiikawa-addon"), "2.1.309")):
-                got = workspaces.judge("claude", cwd, version) or {}
+                got = workspaces.judge(core.VAULT, "claude", cwd, version) or {}
                 self.assertEqual((got.get("one_off"), got.get("warning")), (True, None), cwd)
-            self.assertIsNone(workspaces.judge("claude", local + "/Claude-Data/claude_pzs8sxrjxfjjc/claude-code"))
+            self.assertIsNone(workspaces.judge(core.VAULT, "claude", local + "/Claude-Data/claude_pzs8sxrjxfjjc/claude-code"))
             # A new scratch conversation starts unlanded even if its key was bound before the rule.
             new.mkdir(parents=True)
             write.bind_session(new.name, "Capture", "bound before the rule")
@@ -3005,9 +3005,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         # turns stay the parent's, and the copy continues in the parent's landing (#184 review).
         from osk import workspaces
         root = Path(TMP.name) / f"{self.sid}-root"
-        core.ledger_append(workspaces.LEDGER, {"kind": "rule", "harness": "claude", "version": "2.1.281",
+        core.ledger_append(workspaces.ledger_path(core.VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
                                                "root": str(root), "shape": r"[a-z]+-[a-z]+"})
-        self.addCleanup(workspaces.LEDGER.unlink, missing_ok=True)
+        self.addCleanup(workspaces.ledger_path(core.VAULT).unlink, missing_ok=True)
         cwd = root / "silver-gravity"
         cwd.mkdir(parents=True)
         parent = self.sid + "-parent"
@@ -3032,9 +3032,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         # that folder (a catch-up) must not read a same-named repository key's binding as it.
         from osk import workspaces
         root = Path(TMP.name) / f"{self.sid}-root"
-        core.ledger_append(workspaces.LEDGER, {"kind": "rule", "harness": "claude", "version": "2.1.281",
+        core.ledger_append(workspaces.ledger_path(core.VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
                                                "root": str(root), "shape": r"[a-z]+-[a-z]+"})
-        self.addCleanup(workspaces.LEDGER.unlink, missing_ok=True)
+        self.addCleanup(workspaces.ledger_path(core.VAULT).unlink, missing_ok=True)
         cwd = root / "amber-quartz"
         cwd.mkdir(parents=True)
         write.bind_session("amber-quartz", "W1", "a repository key of the same name")
@@ -3073,9 +3073,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         import threading
         from osk import workspaces
         root = Path(TMP.name) / f"{self.sid}-root"
-        core.ledger_append(workspaces.LEDGER, {"kind": "rule", "harness": "claude", "version": "2.1.281",
+        core.ledger_append(workspaces.ledger_path(core.VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
                                                "root": str(root), "shape": r"[a-z]+-[a-z]+"})
-        self.addCleanup(workspaces.LEDGER.unlink, missing_ok=True)
+        self.addCleanup(workspaces.ledger_path(core.VAULT).unlink, missing_ok=True)
         (root / "fusion-orion").mkdir(parents=True)
         key = "fusion-orion"
         self.forget(self.sid)

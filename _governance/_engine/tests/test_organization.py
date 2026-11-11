@@ -464,13 +464,13 @@ class OrganizationTests(unittest.TestCase):
                    "job=organization.plan('W1'); "
                    "assert not job.get('missing_ids'), job; "
                    "organization.review(job['key'],'W1','complete','This checkout only',after=job['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in job['review_units']]); "
-                   "print(json.dumps({'state':str(organization._state_path()),'lock':str(core.local_lock_path('osk-mutation.lock'))}))")
+                   "print(json.dumps({'state':str(organization._state_path()),'lock':str(core.local_lock_path('osk-mutation.lock', core.VAULT.root))}))")
             r=subprocess.run([sys.executable,"-B","-c",child],cwd=linked,
                              env=dict(os.environ,OSK_VAULT_ROOT=str(linked)),capture_output=True,text=True)
             assert r.returncode==0,r.stdout+r.stderr
             result=json.loads(r.stdout)
             assert result["state"]!=str(organization._state_path())
-            assert result["lock"]==str(core.local_lock_path("osk-mutation.lock"))
+            assert result["lock"]==str(core.local_lock_path("osk-mutation.lock", core.VAULT.root))
             assert organization._state_path().read_bytes()==before
             assert organization.plan("W1")["key"]==job["key"]
         """)

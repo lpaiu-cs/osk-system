@@ -31,11 +31,9 @@ from .core import DOMAIN, PERSON, SCOPE
 import json, os, re, tempfile, time, unicodedata
 from pathlib import Path
 
-from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
-                   rid_key, causal_maxima, ledger_append, ledger_damage,
-                   ledger_read, mutation_lock,
-                   new_node_id, now_kst, posix_rel, resolve_in_root,
-                   resolve_one, sha256_bytes, sha256_file, atomic_write)
+from .core import (ROOT, CANDIDATES, PINS, ID_RE, CASE_RE, RID_RE, rid_key, causal_maxima, ledger_append,
+                   ledger_damage, ledger_read, mutation_lock, new_node_id, now_kst, posix_rel,
+                   resolve_in_root, resolve_one, sha256_bytes, sha256_file, atomic_write)
 from . import approvals, contract, evictions, graph, rechecks, signatures, workspaces, evidence, raw
 from .contract import as_list, stored_edges
 from .errors import WriteError
@@ -45,15 +43,11 @@ from .prose import norm_body, norm_newlines, space_numeric_tags
 from .routing import (ALIAS_DEPTH, EPHEMERAL_SESSION_RE, alias_session, bind_after_write, bind_session,
                       bindings, bound_scopes, canonical_session, ephemeral_session_errors, repo_session,
                       resolve_landing, resolve_session, routing_errors, set_primary, unbind_session)
+from .core import VAULT
 
 GOVERNANCE = ("governance",)             # 표면 쓰기 제외 (설계 D8)
 CANDIDATE_TYPES = ("contradiction", "duplication", "competition",
                    "delegation-overlap")   # Mechanism §4 3항 (lineage-fork 폐지)
-
-
-# 전역 변경 잠금은 core가 소유한다 — 보호영역 조작(approvals)이 같은 잠금을
-# 써야 반려의 마지막 전제 확인과 첫 파괴 사이에 정상 쓰기가 끼어들지 않는다.
-_Lock = mutation_lock
 
 
 # ── 파일 해석·직렬화 ─────────────────────────────────────────────────────
@@ -304,7 +298,7 @@ def _ack_file() -> Path:
     다른 기기와 공유되지 않는다). 확인은 지금 이 대화의 일이지 저장소의
     상태가 아니다."""
     from .core import local_lock_path
-    return local_lock_path("osk-cluster-ack.json")
+    return local_lock_path("osk-cluster-ack.json", VAULT.root)
 
 
 def _read_ack() -> dict:
@@ -671,7 +665,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 session: str | None = None, space: str | None = None,
                 edges: dict | None = None, settle: str | None = None) -> dict:
     """Create an ordinary node under the shared mutation lock, then hang it in its place."""
-    with _Lock():
+    with mutation_lock(VAULT):
         idx = graph.Index()             # 생성과 자리 걸기가 이 한 벌을 쓴다
         return _place(create_node_locked(title, summary, body, drafter, session,
                                           space, edges, settle, _idx=idx), idx)
@@ -747,13 +741,13 @@ def create_node_locked(title: str, summary: str, body: str, drafter: str,
             "착지가 정해지지 않았다 — space를 지정하라. "
             f"지금 쓸 수 있는 군집: {', '.join(cluster_names()) or '없음'}. "
             + ("이 세션은 일회성 작업 폴더라 결속하지 않는다 — 쓸 때마다 space를 준다"
-               if workspaces.is_one_off(session) else
+               if workspaces.is_one_off(VAULT, session) else
                (f"이 프로젝트의 결속은 {', '.join(bound_set)}이지만 주된 scope가 없다 — "
                 f"쓸 때마다 space를 준다. 주된 scope의 지정은 대화 검토나 사용자가 한다"
                 if bound_set else
                 "session(훅이 준 프로젝트 키)도 함께 주면 그 scope가 결속에 더해진다. "
                 "주된 scope는 대화 검토의 소속 판정이나 사용자가 지정한다")))
-    dest_dir = resolve_in_root(dest)
+    dest_dir = resolve_in_root(VAULT, dest)
     if dest_dir is None or not dest_dir.is_dir():
         # 신설 후보 — 막는 대신 한 번 묻는다. 통과하면 디렉토리가 생긴다.
         # (구판은 "신설은 사용자 발의다"라며 전면 거부했으나 그 문구는
@@ -985,7 +979,7 @@ def update_node(name: str, body: str | None = None,
     `_seen` is the surface's record of the bodies its caller read (node id →
     `rechecks.state`); a recorded read must still match for a recheck to close
     (Mechanism §4-1)."""
-    with _Lock():
+    with mutation_lock(VAULT):
         return update_node_locked(name, body, expect_hash, summary, add_edges,
                                    remove_edges, old_text, new_text, settle, rechecked,
                                    _seen=_seen)
@@ -1366,7 +1360,7 @@ def _move_topology(plans, stale, idx) -> list[str]:
                 # 경로형은 옛 자리를 가리킨다 — 이동 뒤에는 끊긴 참조(경고)다.
                 # 옛 소속으로 판정하면 함께 옮기는 두 노드 사이의 경로형 Link가
                 # scope 간 위반으로 오판돼 이동이 거부됐다.
-                p = resolve_in_root(name)
+                p = resolve_in_root(VAULT, name)
                 return ("dangling",) if p is not None and {p, p.with_suffix(".md")} & gone else r
             return ("node", new_kind[name]) if name in new_kind else r
 
@@ -1417,10 +1411,10 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
     이동은 바이트 불변이라 되돌리기가 다시 옮기는 일이다)."""
     if not names:
         raise WriteError("옮길 노드가 없다")
-    with _Lock():
+    with mutation_lock(VAULT):
         idx = graph.Index()                     # 이 이동이 쓰는 색인은 하나다
         require_complete(idx)
-        dest_dir = resolve_in_root(dest_space)
+        dest_dir = resolve_in_root(VAULT, dest_space)
         if dest_dir is None or not dest_dir.is_dir():
             dest_dir = _new_cluster_gate(dest_space, dest_dir, "이 이동이")
         # 중복 판정은 **해석된 경로**로 한다. 이름 문자열로만 보면 같은 노드를
@@ -1517,7 +1511,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
     위상 검사를 다시 돌릴 필요가 없다 — 기존 참조가 전부 그대로 유효하다.
     이동 대장은 노드마다 남긴다(시행령 §6 4항 — 반려가 이동을 추가+삭제로
     오독하지 않게)."""
-    with _Lock():
+    with mutation_lock(VAULT):
         idx = graph.Index()
         require_complete(idx)
         src = live_locate(name, idx)
@@ -1529,7 +1523,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
                 f"군집째 옮길 수 있다. 노드 하나를 옮기려면 `move_nodes`를 쓴다")
         sdir = src.parent
         _reject_governance(graph.space_of(src))
-        ddir = resolve_in_root(dest_parent)
+        ddir = resolve_in_root(VAULT, dest_parent)
         if ddir is None or not ddir.is_dir():
             raise WriteError(
                 f"목적지 군집이 없다: {dest_parent} — 재편은 이미 있는 군집 "
@@ -1585,7 +1579,7 @@ def record_candidate(type: str, nodes: list[str], reason: str = "") -> dict:
     """충돌 후보 상정 (헌법 12조 2항). 같은 근거(basis)의 후보·각하가 이미
     있으면 append하지 않고 기존 기록을 돌려준다 — 12조 2항 후단의 중복 금지와
     12조 3항의 각하 억제가 여기서 함께 닫힌다. 각하는 사용자 전속이다."""
-    with _Lock():
+    with mutation_lock(VAULT):
         if type not in CANDIDATE_TYPES:
             raise WriteError(f"미정의 충돌 유형: {type} (Mechanism §4 3항)")
         idx = graph.Index()

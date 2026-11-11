@@ -16,20 +16,21 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-from .core import SIGNATURES, ledger_read
+from .core import ledger_read
 from . import contract
+from .vault import Vault
 
 
-def records() -> list[dict]:
+def records(vault: Vault) -> list[dict]:
     """구체제 서명 기록부 판독 — 사료 열람·감사 전용."""
-    return ledger_read(SIGNATURES)
+    return ledger_read(vault.signatures)
 
 
-def latest_by_node() -> dict[str, dict]:
+def latest_by_node(vault: Vault) -> dict[str, dict]:
     """노드별 마지막 서명 기록(사료 요약). 판정에는 쓰지 않는다 — 서명은
     더 이상 효력의 근거가 아니다."""
     out: dict[str, dict] = {}
-    for r in records():
+    for r in records(vault):
         n = r.get("node")
         if n:
             out[n] = r

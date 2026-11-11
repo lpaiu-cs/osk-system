@@ -271,7 +271,7 @@ payload = {'session_id': 'c1', 'transcript_path': str(claude_t), 'cwd': str(proj
 out = hook('claude_session_start.py', payload)
 assert out['hookSpecificOutput']['hookEventName'] == 'SessionStart', out
 assert out['hookSpecificOutput']['additionalContext'].startswith('[osk 세션 시작'), out
-start = runs.read()['runs']['claude/start']
+start = runs.read(core.VAULT)['runs']['claude/start']
 assert start['session'] == 'proj' and start['python'] == py and time.time() - start['at'] < 120, start
 out = hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit', 'prompt': 'q'})
 assert out is None or out['hookSpecificOutput']['hookEventName'] == 'UserPromptSubmit', out
@@ -305,19 +305,19 @@ assert out is None or set(out) == {'systemMessage'}, out
 rollout = rows(root.parent / 'rollout-x1.jsonl', {'type': 'session_meta', 'payload': {'id': 'x1'}})
 hook('claude_session_start.py', {'session_id': 'x1', 'transcript_path': str(rollout), 'cwd': str(proj),
                                  'hook_event_name': 'SessionStart', 'source': 'startup'})
-recorded = runs.read()['runs']
+recorded = runs.read(core.VAULT)['runs']
 assert {'claude/start', 'claude/input', 'claude/stop', 'codex/start'} <= set(recorded), recorded
 # Unreadable input still starts the session; the run is kept under an unknown host.
 out = hook('claude_session_start.py', raw=b'{broken')
 assert '훅 입력 판독 진단' in out['hookSpecificOutput']['additionalContext'], out
-assert runs.read()['runs']['unknown/start']['session'] is None
+assert runs.read(core.VAULT)['runs']['unknown/start']['session'] is None
 out = hook('claude_prompt_submit.py', raw=b'{broken')
 assert 'diagnostic' in out['hookSpecificOutput']['additionalContext'], out
 out = hook('capture_stop.py', raw=b'{broken')
 assert set(out) == {'systemMessage'} and 'capture diagnostic' in out['systemMessage'], out
-assert {'unknown/input', 'unknown/stop'} <= set(runs.read()['runs'])
+assert {'unknown/input', 'unknown/stop'} <= set(runs.read(core.VAULT)['runs'])
 # A fork worker's own hooks neither answer nor record.
-state = core.local_lock_path(runs.STATE)
+state = core.local_lock_path(runs.STATE, core.VAULT.root)
 before = state.read_bytes()
 for name in ('claude_session_start.py', 'claude_prompt_submit.py', 'capture_stop.py'):
     assert hook(name, payload, OSK_GROWTH_WORKER='1') is None
@@ -326,21 +326,21 @@ assert state.read_bytes() == before
 sys.path.insert(0, str(tested_hooks.parents[1]))
 import mcp_server as M
 M.overview()
-assert runs.read()['overview'] == {}, 'overview without a session was recorded'
+assert runs.read(core.VAULT)['overview'] == {}, 'overview without a session was recorded'
 out = M.overview(session='proj')
 assert 'session_scope' in out and not set(out) - {'clusters', 'open_cases', 'broken', 'nodes', 'engine_rev',
                                                   'engine_stale', 'engine_disk_rev', 'engine_observed_at',
                                                   'rechecks', 'update', 'session_scope', 'bindings'}, out
 assert out['bindings'] == {'scopes': [], 'primary': None, 'undetermined': False}, out   # 결속 집합(Mechanism §6-2 6항)
-assert runs.read()['overview']['proj'] >= runs.read()['runs']['claude/start']['at']
+assert runs.read(core.VAULT)['overview']['proj'] >= runs.read(core.VAULT)['runs']['claude/start']['at']
 # Blocks a hook folded for its host's limit come back by name (osk.hook_text).
 out = M.overview(session='proj', include=['tidy', 'organization', 'recovery'])
 assert set(out['included']) == {'tidy', 'organization', 'recovery'}, out
 # A fork's own overview is not evidence that the user's session received the text.
 with mock.patch.dict(os.environ, {'OSK_GROWTH_WORKER': '1'}):
     M.overview(session='fork-own')
-    assert runs.record_run('claude', 'start', 'fork-own') is False
-assert 'fork-own' not in runs.read()['overview'], runs.read()['overview']
+    assert runs.record_run(core.VAULT, 'claude', 'start', 'fork-own') is False
+assert 'fork-own' not in runs.read(core.VAULT)['overview'], runs.read(core.VAULT)['overview']
 ''')
 
     def test_doctor_reads_registration_runs_delivery_and_versions_without_writing(self):
@@ -376,10 +376,10 @@ integration.state_path('claude', 'c1').write_text(
     json.dumps({'harness': 'claude', 'transcript_path': str(native)}), encoding='utf-8')
 fake_cli('claude', '9.9.9 (Claude Code)')
 fake_cli('codex', 'codex-cli 0.1.0')
-runs.record_run('claude', 'start', 'proj')
+runs.record_run(core.VAULT, 'claude', 'start', 'proj')
 time.sleep(0.05)
-runs.record_overview('proj')
-runs.record_run(None, 'input', None)
+runs.record_overview(core.VAULT, 'proj')
+runs.record_run(core.VAULT, None, 'input', None)
 
 def snapshot():
     return {str(p): (p.stat().st_mtime_ns, p.read_bytes()) for base in (root, home) for p in base.rglob('*')
@@ -460,9 +460,9 @@ assert mcp_item({'command': py, 'args': [str(server)]})['level'] == 'ok'
 rows(codex_home / 'hooks.json', {'hooks': {'UserPromptSubmit': [{'hooks': [
     {'type': 'command', 'command': base.hook_line([py, hooks_dir / 'claude_prompt_submit.py'])}]}]}})
 (codex_home / 'config.toml').write_text('', encoding='utf-8')
-runs.record_run('codex', 'input', 'proj')
+runs.record_run(core.VAULT, 'codex', 'input', 'proj')
 def hook_item():
-    return doctor._hook(codex, 'input', codex.registrations()[1], runs.read()['runs'].get('codex/input'))
+    return doctor._hook(codex, 'input', codex.registrations()[1], runs.read(core.VAULT)['runs'].get('codex/input'))
 item = hook_item()
 assert item['level'] == 'warn' and '신뢰 기록이 없다' in item['detail'], item
 key = json.dumps(str(codex_home / 'hooks.json') + ':user_prompt_submit:0:0')
@@ -575,32 +575,32 @@ def start():
 with concurrent.futures.ThreadPoolExecutor(2) as pool:
     outs = list(pool.map(lambda _: start(), range(2)))
 assert sorted(bool(o) for o in outs) == [False, True], outs
-assert 'claude/start' in runs.duplicates(), runs.duplicates()
+assert 'claude/start' in runs.duplicates(core.VAULT), runs.duplicates(core.VAULT)
 # The next real event is not the same call: the transcript has grown.
 with transcript.open('a', encoding='utf-8') as f:
     f.write(json.dumps({'sessionId': 'd1', 'type': 'assistant'}) + '\n')
 assert start(), 'the next event was taken for a duplicate'
 # Without a transcript, only calls that arrive together count as one.
 env = {'session_id': 's', 'hook_event_name': 'UserPromptSubmit', 'prompt': 'q'}
-assert runs.first_call('codex', 'input', env) is True
-assert runs.first_call('codex', 'input', env) is False
-assert runs.first_call('claude', 'input', env) is True, 'another host'
-assert runs.first_call('codex', 'stop', env) is True, 'another event'
+assert runs.first_call(core.VAULT, 'codex', 'input', env) is True
+assert runs.first_call(core.VAULT, 'codex', 'input', env) is False
+assert runs.first_call(core.VAULT, 'claude', 'input', env) is True, 'another host'
+assert runs.first_call(core.VAULT, 'codex', 'stop', env) is True, 'another event'
 with mock.patch.object(runs.time, 'time', return_value=time.time() + runs.BLIND + 1):
-    assert runs.first_call('codex', 'input', env) is True, 'a later turn with the same prompt'
+    assert runs.first_call(core.VAULT, 'codex', 'input', env) is True, 'a later turn with the same prompt'
 # A claim made while this call waited for the lock is the earlier call's, not a future one.
 real, again = runs._update, {**env, 'prompt': 'r'}
 def claimed_while_waiting(change, *args):
     with mock.patch.object(runs, '_update', real):
-        assert runs.first_call('codex', 'input', again) is True
+        assert runs.first_call(core.VAULT, 'codex', 'input', again) is True
     return real(change, *args)
 with mock.patch.object(runs.time, 'time', side_effect=itertools.count(time.time(), 0.01).__next__), \
         mock.patch.object(runs, '_update', claimed_while_waiting):
-    assert runs.first_call('codex', 'input', again) is False, 'both calls were handled'
+    assert runs.first_call(core.VAULT, 'codex', 'input', again) is False, 'both calls were handled'
 # When the claim cannot be judged, the call is handled.
-with open(core.local_lock_path(runs.LOCK), 'w') as held:
+with open(core.local_lock_path(runs.LOCK, core.VAULT.root), 'w') as held:
     lock_exclusive(held)
-    assert runs.first_call('codex', 'input', env) is True
+    assert runs.first_call(core.VAULT, 'codex', 'input', env) is True
     unlock(held)
 # doctor names the doubled registration and the observed duplicate call.
 script = hooks_dir / 'claude_session_start.py'
@@ -629,20 +629,20 @@ assert codex.fires_on('start', '(') == frozenset(), 'a matcher that is not a reg
     def test_recording_waits_briefly_and_keeps_recent_sessions(self):
         self.check_case(r'''
 from osk._portalock import lock_exclusive, unlock
-with open(core.local_lock_path(runs.LOCK), 'w') as held:
+with open(core.local_lock_path(runs.LOCK, core.VAULT.root), 'w') as held:
     lock_exclusive(held)
     t = time.monotonic()
-    assert runs.record_run('claude', 'start', 'k') is False, 'recorded under a held lock'
+    assert runs.record_run(core.VAULT, 'claude', 'start', 'k') is False, 'recorded under a held lock'
     assert time.monotonic() - t < 5
     unlock(held)
-assert runs.record_run('claude', 'start', 'k') is True and runs.read()['runs']['claude/start']['session'] == 'k'
+assert runs.record_run(core.VAULT, 'claude', 'start', 'k') is True and runs.read(core.VAULT)['runs']['claude/start']['session'] == 'k'
 for n in range(runs.KEEP + 5):
-    runs.record_overview(f's{n}')
-seen = runs.read()['overview']
+    runs.record_overview(core.VAULT, f's{n}')
+seen = runs.read(core.VAULT)['overview']
 assert len(seen) == runs.KEEP and 's0' not in seen and f's{runs.KEEP + 4}' in seen, sorted(seen)
-core.local_lock_path(runs.STATE).write_text('{broken', encoding='utf-8')
-assert runs.read() == {'runs': {}, 'overview': {}}
-assert runs.record_overview('again') and runs.read()['overview'].keys() == {'again'}
+core.local_lock_path(runs.STATE, core.VAULT.root).write_text('{broken', encoding='utf-8')
+assert runs.read(core.VAULT) == {'runs': {}, 'overview': {}}
+assert runs.record_overview(core.VAULT, 'again') and runs.read(core.VAULT)['overview'].keys() == {'again'}
 ''')
 
     def test_kiro_hooks_answer_in_plain_text_and_capture_its_own_transcript(self):
@@ -726,13 +726,13 @@ assert integration.status('kiro', 'sess_other')['capture_error'], 'the failure i
 assert 'internal thought' not in text and 'FILE BODY' not in text, text
 assert '"tool_evidence_ref"' in text and '"read_file"' in text, text
 assert '"stopReason": "cancelled"' in text, text
-assert {'kiro/start', 'kiro/input', 'kiro/stop'} <= set(runs.read()['runs']), runs.read()['runs']
+assert {'kiro/start', 'kiro/input', 'kiro/stop'} <= set(runs.read(core.VAULT)['runs']), runs.read(core.VAULT)['runs']
 # Another host's hook started from a Kiro terminal keeps its own identity and envelope.
 claude_t = rows(claude_home / 'projects' / 'p' / 'c9.jsonl', {'type': 'user', 'sessionId': 'c9'})
 out = hook('claude_session_start.py', {'session_id': 'c9', 'transcript_path': str(claude_t),
                                        'cwd': str(proj), 'hook_event_name': 'SessionStart', 'source': 'startup'})
 assert json.loads(out)['hookSpecificOutput']['hookEventName'] == 'SessionStart', out
-assert 'claude/start' in runs.read()['runs'], runs.read()['runs']
+assert 'claude/start' in runs.read(core.VAULT)['runs'], runs.read(core.VAULT)['runs']
 # doctor reads Kiro's own hook file format, its MCP settings file and `kiro --version`.
 kiro = harness.get('kiro')
 table = {}
@@ -840,7 +840,7 @@ assert 'does not match' in (other['capture_error'] or ''), other
 # When capture has failed, Stop still answers JSON and lets the agent stop.
 assert hook('capture_stop.py', {**given, 'conversationId': 'b8d2e3f4-0000-4000-8000-000000000000'},
             ANTIGRAVITY_CONVERSATION_ID='b8d2e3f4-0000-4000-8000-000000000000') == '{}'
-assert {'antigravity/start', 'antigravity/input', 'antigravity/stop'} <= set(runs.read()['runs']), runs.read()['runs']
+assert {'antigravity/start', 'antigravity/input', 'antigravity/stop'} <= set(runs.read(core.VAULT)['runs']), runs.read(core.VAULT)['runs']
 # doctor reads the named hook in ~/.gemini/config/hooks.json and the global MCP file.
 ag = harness.get('antigravity')
 table = {}

@@ -37,6 +37,7 @@ from ._portalock import lock_exclusive, unlock
 from .layout import KINDS, PREFIXES, adapt_path
 from . import publish, approvals
 from . import sync_status
+from .core import VAULT
 
 UPDATE_JOURNAL = LEDGER / "update.jsonl"     # 운영 저널 — 권위 대장이 아니다
 CONFIG = ROOT / ".osk" / "config.json"       # 인스턴스 소유 로컬 설정
@@ -664,7 +665,7 @@ def sync_lock_path() -> Path:
     노드 쓰기·보호영역 조작·데몬의 working-tree 구간이 모두 이 하나를 잡으므로,
     update가 이걸 잡으면 그 사이 누구도 혼합 상태를 만들거나 커밋·push하지
     못한다. 자리의 정의는 엔진에 한 벌뿐이다(core.mutation_lock_path)."""
-    return core_mutation_lock_path()
+    return core_mutation_lock_path(VAULT)
 
 
 DAEMON_RESTART_WAIT = 30   # 초 — 멈춘 데몬이 다시 보일 때까지 기다리는 한도
@@ -965,9 +966,9 @@ def run(source: str | None = None, ref: str | None = None,
     # Crash recovery is different: restore the already-authorized pre-image first.
     if not TXN_MANIFEST.exists():
         preview = _run_locked(source, ref, bundle, False, adopt)
-        with _exclusive(local_lock_path("osk-update-review.lock"),
+        with _exclusive(local_lock_path("osk-update-review.lock", VAULT.root),
                         "다른 업데이트 확인이 진행 중이다 — 잠시 후 재시도한다"):
-            ticket = local_lock_path(CONFIRMATION)
+            ticket = local_lock_path(CONFIRMATION, VAULT.root)
             try:
                 pending = json.loads(ticket.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -1016,13 +1017,13 @@ def confirm(review_id: str) -> None:
     """이 갱신 계획이 확인됐다고 적는다 — 1시간 안의 다음 `--apply` 한 번이, 잠금 안에서
     다시 세운 계획이 이 `review_id`일 때만 적용한다. 설치 도구(`osk.setup`)는 사용자가
     확인한 자기 계획에 담긴 `review_id`를 여기 적고 적용을 한 번만 부른다."""
-    _write_atomic(local_lock_path(CONFIRMATION), json.dumps(
+    _write_atomic(local_lock_path(CONFIRMATION, VAULT.root), json.dumps(
         {"review_id": review_id, "at": time.time()}).encode())
 
 
 def withdraw() -> None:
     """확인표를 지운다 — 사용자에게 보이지 않은 계획의 확인이 남지 않게."""
-    local_lock_path(CONFIRMATION).unlink(missing_ok=True)
+    local_lock_path(CONFIRMATION, VAULT.root).unlink(missing_ok=True)
 
 
 def _request_approval(report: dict) -> dict:

@@ -30,6 +30,7 @@ from pathlib import Path
 from .core import ROOT, local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
 from . import evictions, graph, prose, routing, secrets, workspaces, write
 from .errors import WriteError
+from .core import VAULT
 
 # 계수는 mechanism이 정한다(시행령 서문). 한 세션의 배울 점을 적기에는 충분하고
 # 두 세션어치를 쌓아두기에는 모자란 크기여야 압력이 선다.
@@ -363,7 +364,7 @@ def replace(session: str, text: str | None = None,
     errs = routing.ephemeral_session_errors(session)
     if errs:
         raise WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
-    with mutation_lock():
+    with mutation_lock(VAULT):
         scope, bound = _landing(session, space)
         p = sm_path(scope)
         cur = _read(p)
@@ -502,7 +503,7 @@ def replace(session: str, text: str | None = None,
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
         # 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다(Mechanism §6-2 6항). 일회성 작업 폴더는 결속하지 않는다.
-        if not workspaces.is_one_off(session) and scope not in routing.bindings(session)["scopes"]:
+        if not workspaces.is_one_off(VAULT, session) and scope not in routing.bindings(session)["scopes"]:
             routing.bind_session(session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")

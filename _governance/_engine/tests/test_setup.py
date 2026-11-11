@@ -343,7 +343,7 @@ if os.name == 'nt':
         self.check_case(r'''
 fake_clis()
 (root / 'release.json').write_text(json.dumps({'version': 'v4.0.0', 'files': {}}), encoding='utf-8')
-ticket = core.local_lock_path(update.CONFIRMATION)
+ticket = core.local_lock_path(update.CONFIRMATION, core.VAULT.root)
 state, applied = {'id': 'r1'}, []
 def fake_run(source=None, ref=None, bundle=None, apply=False, adopt=False):
     # The updater's own gate: under its lock it plans again and applies only the confirmed plan.
@@ -611,7 +611,7 @@ rep, code = S.run(apply=True, sync=True)
 assert code == 0 and json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(other), rep
 # Uninstalling one feature leaves the hosts and the other features.
 import sync_daemon
-status = core.local_lock_path(sync_daemon.STATUS)
+status = core.local_lock_path(sync_daemon.STATUS, core.VAULT.root)
 status.write_text(json.dumps({'at': time.time(), 'status': 'ok', 'since': None}), encoding='utf-8')
 rep, code = S.run(apply=True, uninstall=True, sync=True)
 assert code == 2 and rep['hosts'] == [] and 'fork' not in rep and rep['sync']['task']['action'] == 'remove', rep

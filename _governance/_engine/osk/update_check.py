@@ -46,14 +46,14 @@ _GITHUB = re.compile(r"(?:https://github\.com/|git@github\.com:|ssh://git@github
 
 def _read(name: str) -> dict:
     try:
-        data = json.loads(core.local_lock_path(name).read_text(encoding="utf-8"))
+        data = json.loads(core.local_lock_path(name, core.VAULT.root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def _write(name: str, data: dict) -> None:
-    core.atomic_write(core.local_lock_path(name),
+    core.atomic_write(core.local_lock_path(name, core.VAULT.root),
                       json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
 
@@ -126,7 +126,7 @@ def check(*, unattended: bool = False) -> dict:
     끝났으면 곧바로 물러나고, 사람의 입력을 기다리지 않는다. 실패는 기록하되 지난
     성공의 `latest`는 지우지 않는다 — 잠깐 오프라인이라고 알림이 사라지지 않는다."""
     url = _url(_upstream())
-    with open(core.local_lock_path(LOCK), "w") as f:
+    with open(core.local_lock_path(LOCK, core.VAULT.root), "w") as f:
         try:
             lock_exclusive(f, blocking=not unattended)
         except OSError:
@@ -180,7 +180,7 @@ def ensure_fresh():
     프로세스를 돌려준다 — 띄우지 않았으면 None."""
     if off_reason() or not due(_read(STATE), _url(_upstream())):
         return None
-    return core.spawn_worker("osk.update_check")
+    return core.spawn_worker(core.VAULT, "osk.update_check")
 
 
 def acked(version: str) -> bool:
@@ -205,7 +205,7 @@ def ack(version: str) -> dict:
     _write(ACK, {"version": version, "at": time.time()})
     out = {"acked": version, "synced": True}
     try:
-        with core.mutation_lock():
+        with core.mutation_lock(core.VAULT):
             core.ledger_append(ACKS, {"kind": "ack", "version": version})
     except Exception as e:
         out.update(synced=False, error=f"{type(e).__name__}: {e}"[:300])
@@ -214,7 +214,7 @@ def ack(version: str) -> dict:
 
 def _ack_how(latest: str, when: str) -> str:
     return (f"이 알림은 받았다는 기록이 남을 때까지 세션 시작마다 다시 실린다 — {when} "
-            f"`{core.cli_command('update', '--ack', latest)}`로 기록한다. 기록은 동기화로 다른 "
+            f"`{core.cli_command(core.VAULT, 'update', '--ack', latest)}`로 기록한다. 기록은 동기화로 다른 "
             f"기기의 알림도 멈추며, 갱신이 아니다.")
 
 
@@ -236,7 +236,7 @@ def _how(latest: str) -> str:
             f"기기에서만 한다 — 다른 기기가 이미 갱신했으면 동기화 뒤 이 알림이 사라지고, "
             f"이 기기에서는 서버·데몬 재시작과 requirements.txt가 바뀌었을 때의 pip 재실행만 "
             f"한다. 요청을 받으면 "
-            f"`{core.cli_command('update', '--to', latest, '--apply')}`를 실행한다. 첫 "
+            f"`{core.cli_command(core.VAULT, 'update', '--to', latest, '--apply')}`를 실행한다. 첫 "
             f"실행은 변경집합만 내고 종료코드 2로 멈추니, 출력의 instruction대로 설명하고 "
             f"재승인을 받는다. 절차와 뒷정리(세션 재시작·requirements·커밋·다른 기기)는 이 vault의 "
             f"`{core.ROOT / 'docs' / 'OPERATE-AGENT.md'}`의 Update 절을 따른다.")
@@ -280,7 +280,7 @@ def surface() -> dict | None:
     # 성장 워커(정기 실행·fork)의 조회는 사용자에게 닿지 않는다 — 전하라고 하지 않는다.
     elif os.environ.get("OSK_GROWTH_WORKER") != "1":
         out["notify"] = ("받았다는 기록이 없다 — 사용자에게 한 줄로 알리고 "
-                         f"`{core.cli_command('update', '--ack', latest)}`로 기록한다")
+                         f"`{core.cli_command(core.VAULT, 'update', '--ack', latest)}`로 기록한다")
     return out
 
 

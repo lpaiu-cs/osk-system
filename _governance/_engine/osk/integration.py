@@ -473,7 +473,7 @@ def _workspace(s: dict, path: str | None, cwd: str | None) -> bool:
         seen = transcripts.workspace(path, s["harness"]) if path and Path(path).is_file() else None
         where = (seen or {}).get("cwd") or cwd
         if where:
-            s["workspace"] = (workspaces.judge(s["harness"], where, (seen or {}).get("version"))
+            s["workspace"] = (workspaces.judge(core.VAULT, s["harness"], where, (seen or {}).get("version"))
                               or {"one_off": False})
     return _one_off(s)
 
@@ -625,7 +625,7 @@ def _capture_apply(p: Path, s: dict, parsed: dict, native_path: str, rules: dict
     save_state(p, s)
     # ponytail: serialize tracking until its cursor is saved; use per-scope
     # locks if capture throughput matters.
-    with _locked_path(core.local_lock_path("osk-capture-prefix.lock")):
+    with _locked_path(core.local_lock_path("osk-capture-prefix.lock", core.VAULT.root)):
         rounds = _inherited_rounds(s, parsed["rounds"], parsed.get("dialogue_v1"))
         kept, gone = s["rounds"], []
         if harness == "codex" or parsed.get("reverted"):
@@ -767,7 +767,7 @@ def acknowledge(harness: str, conversation_id: str, through: str,
         raise ValueError("outcome preserved|summary|no_value|deferred and nonempty reason required")
     if primary_scope is not None and (not isinstance(primary_scope, str) or not primary_scope.strip()):
         raise ValueError("primary_scope must be a scope name")
-    with state_lock(harness, conversation_id) as p, core.mutation_lock():
+    with state_lock(harness, conversation_id) as p, core.mutation_lock(core.VAULT):
         s = load_state(p, harness, conversation_id)
         if primary_scope is not None:
             if _one_off(s) or not s["session"]:
@@ -813,7 +813,7 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                     raise ValueError(f"target {target['key']} cites no turn of this review ({_range_text(s, refs)}); "
                                      f"it cites {', '.join(cited) or 'nothing'}. A later turn's distillation "
                                      "belongs to that turn's review: judge this range on its own")
-                target_path = core.resolve_in_root(receipt.get("target", {}).get("path", ""))
+                target_path = core.resolve_in_root(core.VAULT, receipt.get("target", {}).get("path", ""))
                 kind = raw.graph.space_of(target_path)[0] if target_path is not None else None
                 if kind not in ("scope", "person"):
                     raise ValueError("preserved integration target must be a durable Scope or Person node")
@@ -921,7 +921,7 @@ def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
     receipt citing it — is reviewed again. No later check looks for any of this."""
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("reopen requires the correction's reason")
-    with state_lock(harness, conversation_id) as p, core.mutation_lock():
+    with state_lock(harness, conversation_id) as p, core.mutation_lock(core.VAULT):
         s = load_state(p, harness, conversation_id)
         wanted = {raw.canonical_ref(ref) for ref in refs or []}
         if not wanted or any(raw.is_native(ref) for ref in wanted):
@@ -983,7 +983,7 @@ def review_status_locked(harness: str, conversation_id: str, through: str) -> di
 
 
 def review_status(harness: str, conversation_id: str, through: str) -> dict:
-    with state_lock(harness, conversation_id) as p, core.mutation_lock():
+    with state_lock(harness, conversation_id) as p, core.mutation_lock(core.VAULT):
         return _review_state_locked(load_state(p, harness, conversation_id), through)
 
 
@@ -1437,7 +1437,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         st["raw_review"] = {"state": "none", "rounds": len(selected_refs), "error": None}
         if selected_refs:
             try:
-                with core.mutation_lock():
+                with core.mutation_lock(core.VAULT):
                     selected_rounds = [r for r in s["rounds"] if r["ref"] in selected_refs]
                     if {r["ref"] for r in selected_rounds} != selected_refs:
                         raise ValueError("selected raw coordinates are missing from the saved cursor")
@@ -1513,7 +1513,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         scopes = [pinned, *[x for x in scopes if x != pinned]]
     scope = scopes[0] if scopes else None       # 허브 트리의 scope — 고정한 착지, 없으면 주된 scope
     try:
-        with core.mutation_lock():
+        with core.mutation_lock(core.VAULT):
             jobs = (organization.pending(scopes, limit=1, record=True)
                     if scopes and include_organization else [])
     except (OSError, ValueError, write.WriteError) as exc:
@@ -1524,7 +1524,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         organization_text = ""  # the hook budgets organization_jobs as its own block (`osk.hook_text`)
     if not st["pending_refs"]:
         return {**st, "text": text + "검토할 완료 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다." + organization_text}
-    command = core.cli_command("integration", "review", "--harness", harness,
+    command = core.cli_command(core.VAULT, "integration", "review", "--harness", harness,
                                "--conversation", conversation_id)
 
     def since():
@@ -1755,7 +1755,7 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
            "index": result["indices"][0],
            # 근거 줄에 쓸 좌표 — 기록 이름 해시의 앞자리와 라운드(Mechanism §8 9항)
-           "coordinate": evidence.coordinate(result["path"], result["indices"][0]),
+           "coordinate": evidence.coordinate(core.VAULT, result["path"], result["indices"][0]),
            "turn": rid, "reused": result.get("reused", False),
            "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
            **({"binding": result["binding"]} if "binding" in result else {})}

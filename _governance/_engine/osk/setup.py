@@ -396,7 +396,7 @@ def _sync(manager, uninstall: bool) -> dict:
     file = core.ROOT / vault_sync.TARGETS
     if uninstall:
         # 데몬의 마지막 결과 기록도 걷는다 — 남으면 세션 시작이 "돌지 않는 데몬"을 알린다.
-        leftover = file.is_file() or sync_status.last() is not None
+        leftover = file.is_file() or sync_status.last(core.VAULT.root) is not None
         return {"task": services.plan(manager, "sync", None, True),
                 "targets": {"file": str(file), "action": "remove" if leftover else "absent"}}
     url, pushes, errors = _sync_checks()
@@ -707,7 +707,7 @@ def _write_fork(approved: dict, uninstall: bool, stamp: str) -> dict:
     데몬의 rebase·되돌리기와 겹치지 않게 `core.device_lock` 안에서 읽고 쓴다(이 파일의 다른 쓰기도 같다)."""
     path = Path(approved["file"])
     step = {"step": "fork CLI", "file": str(path)}
-    with core.device_lock():
+    with core.device_lock(core.VAULT):
         now = _fork([adapters.get(n) for n in approved["entries"]], uninstall)
         if ({n: e["action"] for n, e in now.get("entries", {}).items()}
                 != {n: e["action"] for n, e in approved["entries"].items()}):
@@ -732,7 +732,7 @@ def _write_command(file: str, argv: list[str]) -> dict:
     """정기 실행의 명령 파일을 만든다 — 그 사이 생겼으면 덮지 않는다."""
     path = Path(file)
     step = {"step": "growth command", "file": str(path)}
-    with core.device_lock():
+    with core.device_lock(core.VAULT):
         if path.exists():
             return {**step, "ok": False, "error": "확인 뒤 명령 파일이 생겼다 — 덮지 않았다. "
                                                   "setup을 다시 계획해 확인받는다"}
@@ -762,7 +762,7 @@ def _write_targets(part: dict, uninstall: bool) -> dict:
     path = core.ROOT / vault_sync.TARGETS
     step = {"step": "sync 전송 대상", "file": str(path)}
     try:
-        with core.device_lock():
+        with core.device_lock(core.VAULT):
             if uninstall:
                 path.unlink(missing_ok=True)
                 sync_status.lock_path(core.ROOT, sync_status.STATUS).unlink(missing_ok=True)
@@ -833,7 +833,7 @@ def run(*, apply: bool = False, uninstall: bool = False, only: list[str] | None 
         return {**report(p), "applied": False}, 1
     if not p["changes"]:
         return {**report(p), "applied": False, "note": "할 일이 없다 — 이미 이어져 있다"}, 0
-    ticket = core.local_lock_path(TICKET)
+    ticket = core.local_lock_path(TICKET, core.VAULT.root)
     try:
         pending = json.loads(ticket.read_text(encoding="utf-8"))
     except (OSError, ValueError):

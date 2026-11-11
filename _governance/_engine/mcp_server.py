@@ -33,7 +33,7 @@ from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
-from osk.core import (DRAFTER_RE, ROOT, StaleEngineError,  # noqa: E402
+from osk.core import (DRAFTER_RE, ROOT, VAULT, StaleEngineError,  # noqa: E402
                       posix_rel, sha256_bytes)
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
@@ -365,7 +365,7 @@ def _hook_sections(session: str, include) -> dict:
             elif not scopes:
                 out[name] = ""
             else:
-                with core.mutation_lock():
+                with core.mutation_lock(core.VAULT):
                     jobs = organization.pending(scopes, limit=1, record=False)
                 out[name] = "\n\n".join(t for t in (organization.hook_prompt(jobs),
                                                    organization.bindings_prompt(session)) if t)
@@ -416,7 +416,7 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         try:
             # 세션 시작 훅이 이 호출을 안내한다 — 그 뒤에 불렸으면 훅 문맥이 모델에
             # 닿았다고 `doctor`가 짐작한다(기기 로컬 기록, osk.harness.runs).
-            hook_runs.record_overview(session)
+            hook_runs.record_overview(VAULT, session)
         except Exception:
             pass
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
