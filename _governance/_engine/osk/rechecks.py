@@ -599,6 +599,6 @@ def after_write(vault: Vault, idx, path: Path, meta: dict, *, before=frozenset()
         "달라 완료를 적지 않았다 — 지금 판을 읽고 rechecked에 다시 적어라")}} if unread else {}
     try:
         ledger_extend(ledger_path(vault), rows)
-    except Exception as e:
+    except Exception as e:      # 격리: 쓰기는 끝났다 — 완료를 못 적으면 후보로 남는다
         return {**out, "recheck_error": f"재검토 완료를 기록하지 못했다 — 후보로 남는다: {e}"}
     return {**out, "rechecked": closed} if closed else out

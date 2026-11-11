@@ -214,7 +214,7 @@ def bind_after_write(vault: Vault, result: dict, session: str, scope: str, reaso
     try:
         bind_session(vault, session, scope, reason or "착지를 명시한 쓰기가 결속에 더함", primary=False)
         return True
-    except Exception as e:
+    except Exception as e:      # 격리: 쓴 것은 저장됐다 — 결속의 실패를 쓰기의 실패로 만들지 않는다
         result["binding"] = {
             "state": "unconfirmed", "scope": scope, "error": f"{type(e).__name__}: {e}",
             "note": (f"쓴 것은 저장됐다 — 다시 보내지 마라. 프로젝트 결속은 확인하지 "
@@ -307,9 +307,9 @@ def repo_session(vault: Vault, name: str, repo: list[str]) -> str:
         except ValueError:                          # 판정이 그사이 바뀌었다 — 다시 판정한다
             try:
                 key = _repo_claim(vault, ledger_read(vault.routing), name, repo)[0]
-            except Exception:
+            except Exception:      # 격리: 다시 판정하지 못하면 앞서 판정한 키를 쓴다
                 pass
-        except Exception:
+        except Exception:      # 격리: 소유 행을 못 적어도 판정한 키를 쓴다(아래)
             # 소유 행을 못 적어도(읽기 전용 대장·공유 위반·낡은 엔진) 판정한 키를
             # 쓴다 — 행은 다음 훅이 다시 적는다. 원래 이름으로 물러서면 남이 소유한
             # 이름의 기억이 주입된다.

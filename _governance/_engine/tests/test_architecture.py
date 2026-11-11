@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -70,9 +71,15 @@ BOUNDARIES = {
     # 검증기는 어떤 입력에도 죽지 않는다(시행령 §11). 검사 하나의 실패는 그 검사의 실패로 보고된다.
     "osk.validate": {"run"},
 }
+# 경계 밖에서 넓게 받는 자리는 그 `except` 줄에 까닭을 적는다: `# 격리: <까닭>`. 격리는 한 걸음의 실패를 그
+# 자리에서 받아 결과로 바꾸는 것이다 — 저장이 끝난 뒤의 딸린 일, 항목 하나의 실패를 적고 나머지를 잇는 자리,
+# 끝내지 못하면 닫힌 쪽으로 가는 관문. 까닭 없는 넓은 예외만 `broad_except`로 센다.
+ISOLATED = re.compile(r"#.*격리:\s*\S.{7,}")
 # 합계는 모두 "작을수록 좋다" — `--update`는 이 가운데 하나라도 느는 갱신을 거부한다.
 # `tangled_modules`는 여기 없다: 순환에 든 모듈을 둘로 가르면 의존은 그대로인데 수가 는다. 기준선과
 # 같은지는 보되 느는 갱신을 막지는 않는다. 끝의 기준(0)은 같다.
+# `isolated_excepts`도 여기 없다: 까닭을 적은 격리는 위반이 아니다. 기준선과 같은지만 본다 — 늘면 기준선의
+# 차이로 드러난다.
 TOTALS = ("upward_imports", "lazy_imports", "two_module_cycles", "private_access", "vault_fixed_names",
           "vault_unthreaded", "broad_except", "boundary_excepts", "oversize_functions", "excess_lines",
           "excess_branches", "late_loads")
@@ -551,9 +558,10 @@ _VAULT_WANT = {"vault_fixed_names": {"osk.held": 3, "osk.held2": 2, "osk.held3":
                "vault_unthreaded": {"osk.held": 9, "osk.held2": 4, "osk.held3": 4, "osk.vault": 1}}
 
 
-def _broad_except(tree: ast.Module, boundary) -> tuple[int, int]:
-    """넓은 예외 처리의 수 — `(경계 밖, 경계 안)`. `boundary`는 그 모듈에서 경계인 함수의 이름들이고, None이면
-    모듈 전체가 경계다. 정리만 하고 그대로 다시 올리는 것(끝이 맨 `raise`)은 세지 않는다 — 삼키는 것이 없다."""
+def _broad_except(tree: ast.Module, boundary, lines: list[str]) -> tuple[int, int, int]:
+    """넓은 예외 처리의 수 — `(까닭 없는 것, 경계 안, 까닭을 적은 격리)`. `boundary`는 그 모듈에서 경계인 함수의
+    이름들이고, None이면 모듈 전체가 경계다. 경계 밖의 것은 `except` 줄에 `# 격리: <까닭>`이 있으면 격리다.
+    정리만 하고 그대로 다시 올리는 것(끝이 맨 `raise`)은 세지 않는다 — 삼키는 것이 없다."""
     def broad(kind) -> bool:
         if kind is None:
             return True
@@ -563,17 +571,17 @@ def _broad_except(tree: ast.Module, boundary) -> tuple[int, int]:
     def reraises(handler) -> bool:
         return isinstance(handler.body[-1], ast.Raise) and handler.body[-1].exc is None
 
-    counts = [0, 0]
+    counts = [0, 0, 0]
 
     def visit(node, inside: bool) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ExceptHandler) and broad(child.type) and not reraises(child):
-                counts[inside] += 1
+                counts[1 if inside else 2 if ISOLATED.search(lines[child.lineno - 1]) else 0] += 1
             named = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name in (boundary or ())
             visit(child, inside or named)
 
     visit(tree, boundary is None)
-    return counts[0], counts[1]
+    return counts[0], counts[1], counts[2]
 
 
 def _branches(fn) -> int:
@@ -646,7 +654,7 @@ def measure(srcs: dict[str, str], layer_of: dict[str, int], long_lived: tuple = 
             boundaries: dict = BOUNDARIES) -> dict:
     """소스 묶음의 구조 실측 — 기준선 파일과 같은 모양."""
     known = set(srcs)
-    upward, lazy, private, broad, at_boundary, oversize = {}, {}, {}, {}, {}, {}
+    upward, lazy, private, broad, at_boundary, isolated, oversize = {}, {}, {}, {}, {}, {}, {}
     edges = {m: set() for m in known}
     imports = {m: [] for m in known}
     trees = {name: ast.parse(text) for name, text in srcs.items()}
@@ -670,11 +678,13 @@ def measure(srcs: dict[str, str], layer_of: dict[str, int], long_lived: tuple = 
         hits = len(_private_access(name, tree, bound, known)) + imported_private
         if hits:
             private[name] = hits
-        outside, inside = _broad_except(tree, boundaries.get(name, ()))
-        if outside:
-            broad[name] = outside
+        unexplained, inside, explained = _broad_except(tree, boundaries.get(name, ()), srcs[name].split("\n"))
+        if unexplained:
+            broad[name] = unexplained
         if inside:
             at_boundary[name] = inside
+        if explained:
+            isolated[name] = explained
         for qualname, lines, branches in _functions(tree):
             if lines > FUNCTION_LINES or branches > FUNCTION_BRANCHES:
                 key = f"{name}:{qualname}"
@@ -685,7 +695,7 @@ def measure(srcs: dict[str, str], layer_of: dict[str, int], long_lived: tuple = 
     report = {"upward_imports": upward, "lazy_imports": lazy, "two_module_cycles": cycles,
               "tangled_modules": _tangled(edges), "private_access": private,
               "vault_fixed_names": fixed_names, "vault_unthreaded": unthreaded, "broad_except": broad,
-              "boundary_excepts": at_boundary, "oversize_functions": oversize,
+              "boundary_excepts": at_boundary, "isolated_excepts": isolated, "oversize_functions": oversize,
               "late_loads": {entry: _late_loads(entry, imports, known) for entry in long_lived if entry in known}}
     return {"limits": {"function_lines": FUNCTION_LINES, "function_branches": FUNCTION_BRANCHES},
             "totals": totals(report), **{k: _sorted(v) for k, v in report.items()}}
@@ -710,6 +720,7 @@ def totals(report: dict) -> dict:
             "vault_unthreaded": sum(report["vault_unthreaded"].values()),
             "broad_except": sum(report["broad_except"].values()),
             "boundary_excepts": sum(report["boundary_excepts"].values()),
+            "isolated_excepts": sum(report["isolated_excepts"].values()),
             "oversize_functions": len(over),
             "excess_lines": sum(max(0, lines - FUNCTION_LINES) for lines, _ in over),
             "excess_branches": sum(max(0, branches - FUNCTION_BRANCHES) for _, branches in over),
@@ -742,7 +753,9 @@ def self_test() -> None:
                     "def h():\n    try:\n        return 1\n    except BaseException:\n        _hidden\n        raise\n"),
         "osk.high": ("from . import low\nfrom .low import _hidden\n\n"
                      "def g():\n    \"\"\"doc.\"\"\"\n    try:\n        return low._hidden\n"
-                     "    except Exception:\n        return None\n\n" + big),
+                     "    except Exception:\n        return None\n\n"
+                     "def k():\n    try:\n        return g()\n"
+                     "    except Exception:      # 격리: 이 걸음의 실패는 결과에 적는다\n        return None\n\n" + big),
         "edge": ("def main():\n    from osk import low\n    try:\n        return low.f()\n"
                  "    except Exception:\n        return None\n"),
         **_VAULT_SAMPLE,
@@ -753,6 +766,7 @@ def self_test() -> None:
     want = {"upward_imports": {"osk.held3 -> osk.front": 1, "osk.low -> osk.high": 1}, "lazy_imports": {"osk.low": 1},
             "two_module_cycles": ["osk.high <-> osk.low"], "tangled_modules": 2,
             "private_access": {"osk.high": 2}, "broad_except": {"osk.high": 1}, "boundary_excepts": {"edge": 1},
+            "isolated_excepts": {"osk.high": 1},
             **_VAULT_WANT,
             "oversize_functions": {"osk.high:big": [63, 31]},
             "late_loads": {"edge": ["edge -> osk.low"]}}

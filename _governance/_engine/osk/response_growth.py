@@ -189,8 +189,8 @@ def after_hook(vault: Vault, env: dict) -> None:
     try:
         from . import validate
         validate.auto_activate(vault)
-    except Exception:
-        pass        # a rule that is not turned on stays report-only
+    except Exception:      # 격리: a rule that is not turned on stays report-only
+        pass
 
 
 def check(vault: Vault, harness: str, sid: str | None, path: str | None, cwd: str, *, ask: bool = True,
@@ -395,7 +395,7 @@ def process_stop(vault: Vault, env: dict, *, flush_timeout: float = 5) -> dict:
                         from . import scope_memory
                         job['scope_recovery'] = scope_memory.recovery_block(vault, job['session'])
                     result = attempt(vault, source, job, executable)
-        except Exception as exc:
+        except Exception as exc:      # 격리: one failed review stays pending; the next Stop tries again
             result = {'ok': False, 'state': 'pending', 'error': f'{type(exc).__name__}: {exc}'}
         finally:
             unlock(lock)

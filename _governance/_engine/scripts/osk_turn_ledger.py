@@ -672,6 +672,6 @@ def main(argv=None) -> int:
 if __name__ == "__main__":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
+    except Exception:      # 격리: 표준 출력의 부호화를 못 바꿔도 보고는 낸다
         pass
     sys.exit(main())

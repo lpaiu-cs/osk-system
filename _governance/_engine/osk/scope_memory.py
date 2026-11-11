@@ -179,8 +179,8 @@ def _runs_key(vault: Vault, session: str) -> str:
     엉뚱한 자리에서 섰다."""
     try:
         return routing.canonical_session(vault, session) or session
-    except Exception:
-        return session              # 대장 판독 실패는 계수의 문제가 아니다
+    except Exception:      # 격리: 대장 판독 실패는 계수의 문제가 아니다
+        return session
 
 
 def sm_dir(vault: Vault) -> Path:

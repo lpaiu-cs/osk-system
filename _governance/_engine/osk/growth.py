@@ -321,8 +321,8 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
             with core.mutation_lock(vault):
                 try:
                     rechecks.ensure_baseline(vault, carry=True)
-                except Exception:
-                    pass        # 못 적으면 그 근거들이 후보로 남을 뿐이다
+                except Exception:      # 격리: 못 적으면 그 근거들이 후보로 남을 뿐이다
+                    pass
                 planned = (growth_plan.plan_locked(vault, min(growth_plan.MAX_LIMIT, limit + len(exclude)))
                            if scope_job is None and wanted - {"scope_jobs"} else
                            {"candidates": [], "scope_jobs": [], "organization_jobs": []})

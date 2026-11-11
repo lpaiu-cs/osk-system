@@ -60,7 +60,7 @@ def _lock_path(root: Path, name: str) -> Path:
                 d = root / d
             if d.is_dir():
                 return d / name
-    except Exception:                # noqa: BLE001
+    except Exception:  # noqa: BLE001 — 격리: git에 묻지 못하면 아래의 대체 자리를 쓴다
         pass
     key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
     return Path(tempfile.gettempdir()) / f"{name.rsplit('.', 1)[0]}-{key}.lock"

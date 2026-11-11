@@ -163,7 +163,7 @@ def ensure_branch(vault_root, branch=SYNC_BRANCH, timeout=30):
         return (True, "ok", f"{where} → {branch} 전환")
     except subprocess.TimeoutExpired:
         return (False, "error", f"git branch 확인 timeout ({timeout}s)")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — 격리: 동기화의 한 걸음 — 어떤 실패든 오류로 돌려주고 다음 주기가 다시 한다
         return (False, "error", repr(e))
 
 
@@ -205,7 +205,7 @@ def commit_local(vault_root, message, timeout=60):
         return (True, "ok", "")
     except subprocess.TimeoutExpired:
         return (False, "error", f"git commit timeout ({timeout}s)")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — 격리: 동기화의 한 걸음 — 어떤 실패든 오류로 돌려주고 다음 주기가 다시 한다
         return (False, "error", repr(e))
 
 
@@ -309,7 +309,7 @@ def fetch_snapshot(vault_root, timeout=60):
                     snapshot, status = (r.stdout.strip(), fork_point), "ok"
         except subprocess.TimeoutExpired:
             detail = f"git fetch timeout ({timeout}s)"
-        except Exception as e:
+        except Exception as e:      # 격리: 동기화의 한 걸음 — 어떤 실패든 오류로 돌려주고 다음 주기가 다시 한다
             detail = repr(e)
         yield snapshot, status, detail
     finally:
@@ -476,7 +476,7 @@ def _rebase(vault_root, command, timeout):
         return (before != after, "ok", detail)
     except subprocess.TimeoutExpired:
         return (False, "error", f"git pull timeout ({timeout}s)")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — 격리: 동기화의 한 걸음 — 어떤 실패든 오류로 돌려주고 다음 주기가 다시 한다
         return (False, "error", repr(e))
 
 
@@ -503,5 +503,5 @@ def push_snapshot(vault_root, commit, timeout=60):
         return (True, "ok", "")
     except subprocess.TimeoutExpired:
         return (False, "error", f"git push timeout ({timeout}s)")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — 격리: 동기화의 한 걸음 — 어떤 실패든 오류로 돌려주고 다음 주기가 다시 한다
         return (False, "error", repr(e))

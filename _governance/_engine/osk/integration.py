@@ -133,7 +133,7 @@ def capture_known(vault: Vault, tried=None) -> dict:
                 captures.append({**{k: result.get(k) for k in (
                     "harness", "conversation_id", "ok", "appended", "capture_error", "capture_recovery")},
                     "new_error": not result.get("ok") and result.get("capture_error") != s.get("capture_error")})
-        except Exception as exc:
+        except Exception as exc:      # 격리: 대화 하나의 실패를 적고 나머지 대화를 잇는다
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "captures": captures, "errors": errors,
             "awaiting_native": awaiting_native}
@@ -270,7 +270,7 @@ def catchup(vault: Vault, limit: int = 20, *, max_rounds: int = conversation_sta
                         room = bundle - len(job["pending_refs"]) if scope else 0
                     elif len(jobs) > limit:
                         room -= len(job["pending_refs"])
-        except Exception as exc:
+        except Exception as exc:      # 격리: 대화 하나의 실패를 적고 나머지 대화를 잇는다
             errors.append({"harness": s["harness"], "conversation_id": s["conversation_id"], "error": str(exc)})
     return {"ok": not errors and all(r["ok"] for r in captures), "jobs": jobs,
             "captures": captures, "remaining": len(states) - len(jobs), "errors": errors,

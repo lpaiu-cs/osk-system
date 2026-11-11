@@ -316,14 +316,14 @@ def capture(vault: Vault, harness: str, conversation_id: str, transcript_path: s
             if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
                 rules.update(_copied_since(vault, s, native_path))
             parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
-        except Exception as exc:
+        except Exception as exc:      # 격리: 읽지 못한 포착은 단계와 함께 상태에 적는다 — 다음 포착이 다시 한다
             with conversation_state.state_lock(vault, harness, conversation_id) as p:
                 return _capture_failed(vault, p, conversation_state.load_state(vault, p, harness, conversation_id), exc, "read")
         with conversation_state.state_lock(vault, harness, conversation_id) as p:
             s = conversation_state.load_state(vault, p, harness, conversation_id)
             try:
                 return _capture_apply(vault, p, s, parsed, native_path, rules)
-            except Exception as exc:
+            except Exception as exc:      # 격리: 되풀이하지 못한 포착도 단계와 함께 상태에 적는다
                 return _capture_failed(vault, p, s, exc, "replay")
 
 
@@ -415,7 +415,7 @@ def _capture_source(vault: Vault, harness: str, conversation_id: str, transcript
             conversation_state.save_state(p, s)
             phase = "read"
             return native_path, turn_rules(s), s
-        except Exception as exc:
+        except Exception as exc:      # 격리: 어느 단계에서 실패했는지와 함께 상태에 적는다
             return _capture_failed(vault, p, s, exc, phase)
 
 
@@ -746,7 +746,7 @@ def hook_land(vault: Vault, env: dict, session: str) -> dict:
         s = conversation_state.load_state(vault, p, harness, sid)
         try:
             _land(vault, s, path, session, env.get("space"), env.get("cwd"))
-        except Exception as exc:
+        except Exception as exc:      # 격리: 착지의 실패를 상태에 적는다 — 훅은 계속한다
             return _capture_failed(vault, p, s, exc, "landing")
         conversation_state.save_state(p, s)
         return current_view(vault, s, p)

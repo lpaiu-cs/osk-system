@@ -269,7 +269,7 @@ def _baseline(vault: Vault, idx) -> None:
     그 근거들이 후보로 남을 뿐이다."""
     try:
         rechecks.ensure_baseline(vault, idx)
-    except Exception:
+    except Exception:      # 격리: 기준선을 못 적어도 쓰기는 간다 — 그 근거들이 후보로 남을 뿐이다
         pass
 
 

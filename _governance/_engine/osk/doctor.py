@@ -126,7 +126,7 @@ def _engine(vault: Vault, records: dict) -> list[dict]:
             detail += f" · 마지막 확인 {rep['checked_at']}" if rep.get("checked_at") else ""
             detail += f" · 자동 확인 안 함: {rep['auto_off']}" if rep.get("auto_off") else ""
             items.append(_item("ok" if rep.get("current") else "info", "릴리스", detail))
-    except Exception as exc:
+    except Exception as exc:      # 격리: 진단 항목 하나의 판독 실패가 나머지 진단을 막지 않는다
         items.append(_item("info", "릴리스", f"판독 실패 — {type(exc).__name__}: {exc}"))
     try:
         from . import sync_status
@@ -138,7 +138,7 @@ def _engine(vault: Vault, records: dict) -> list[dict]:
                                "에이전트용 안내 docs/OPERATE-AGENT.md의 Check the connection 절을 따른다 — 전송 "
                                "보류는 `setup.py --apply --sync`를 두 단계로, 돌지 않는 데몬은 그 등록을 다시 "
                                "시작한다" if trouble else None))
-    except Exception as exc:
+    except Exception as exc:      # 격리: 진단 항목 하나의 판독 실패가 나머지 진단을 막지 않는다
         items.append(_item("info", "동기화 데몬", f"판독 실패 — {type(exc).__name__}: {exc}"))
     for key, run in sorted(records["runs"].items()):
         if key.startswith("unknown/") and isinstance(run, dict):
@@ -343,7 +343,7 @@ def _vault(vault: Vault) -> list[dict]:
     for name, targets, _apply in _migrations(vault):
         try:
             n = len(targets())
-        except Exception as exc:
+        except Exception as exc:      # 격리: 진단 항목 하나의 판독 실패가 나머지 진단을 막지 않는다
             items.append(_item("info", name, f"판독 실패 — {type(exc).__name__}: {exc}"))
             continue
         items.append(_item("warn", name, f"옮길 대상 {n}개", MIGRATE_FIX) if n
