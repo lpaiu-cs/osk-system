@@ -37,7 +37,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import core, services, update, growth_daily, response_growth, sync_status, growth_ledger, worker_process
+from . import core, services, update, growth_daily, response_growth, sync_status, growth_ledger, worker_process, daemon_control, update_source, update_state
 from . import harness as adapters
 from .doctor import engine_dir, venv_python
 from .harness import base
@@ -373,12 +373,12 @@ def _sync_checks(vault: Vault) -> tuple[str | None, list[str], list[str]]:
         if git("var", "GIT_COMMITTER_IDENT").returncode != 0:      # 데몬의 커밋이 쓰는 바로 그 판정
             errors.append("커밋할 작성자 정보가 없다 — `git config --global user.name`·`user.email`을 "
                           "둔다(INSTALL-AGENT 1단계). 데몬은 작성자 없이 커밋하지 못한다")
-        public = [u for u in dict.fromkeys([url, *pushes]) if u and update.is_canonical(u)]
+        public = [u for u in dict.fromkeys([url, *pushes]) if u and update_state.is_canonical(u)]
         if public:
             errors.append("origin의 fetch·push 대상에 공개 정본 저장소가 있다(" + ", ".join(public)
                           + ") — 개인 저장소만 둔다")
         elif url and main:
-            code, out, err = update.git_unattended(
+            code, out, err = update_source.git_unattended(
                 ["-C", str(vault.root), "push", "--dry-run", "--porcelain", "origin", "main"], timeout=90)
             # 원격이 앞서 있으면 거절(`[rejected]`)되지만 인증은 통과했다 — 데몬은 먼저 rebase한다.
             if code and "[rejected]" not in out:
@@ -411,11 +411,11 @@ def _sync(vault: Vault, manager, uninstall: bool) -> dict:
 
 def _release(vault: Vault) -> str:
     try:
-        version = json.loads((vault.root / update.ATTESTATION).read_text(encoding="utf-8"))["version"]
+        version = json.loads((vault.root / update_state.ATTESTATION).read_text(encoding="utf-8"))["version"]
     except (OSError, ValueError, KeyError, TypeError) as e:
-        raise SetupError(f"{update.ATTESTATION}에서 판을 읽지 못했다 — 릴리스 태그를 clone했는가: {e}")
-    if not update.semver(version):
-        raise SetupError(f"{update.ATTESTATION}의 판이 정식 릴리스가 아니다: {version!r}")
+        raise SetupError(f"{update_state.ATTESTATION}에서 판을 읽지 못했다 — 릴리스 태그를 clone했는가: {e}")
+    if not update_source.semver(version):
+        raise SetupError(f"{update_state.ATTESTATION}의 판이 정식 릴리스가 아니다: {version!r}")
     return version
 
 
@@ -424,7 +424,7 @@ def _baseline(vault: Vault, uninstall: bool) -> dict | None:
     if uninstall:
         return None
     try:
-        current = update.current_version(vault)
+        current = update_state.current_version(vault)
     except (OSError, ValueError) as e:
         return {"state": "error", "error": f"갱신 저널을 읽지 못했다: {e}"}
     if current:
@@ -432,7 +432,7 @@ def _baseline(vault: Vault, uninstall: bool) -> dict | None:
     try:
         version = _release(vault)
         rep = update.run(vault, ref=version)
-    except (SetupError, update.UpdateError, OSError) as e:
+    except (SetupError, update_state.UpdateError, OSError) as e:
         return {"state": "error", "error": str(e)}
     return {"state": "record", "version": version, "review_id": rep["review_id"],
             "files": rep.get("files"), "rebaseline": len(rep.get("rebaseline") or []),
@@ -588,14 +588,14 @@ def _record_baseline(vault: Vault, b: dict) -> dict:
     try:
         update.confirm(vault, b["review_id"])
         rep = update.run(vault, ref=version, apply=True)
-    except update.UpdateError as e:
+    except update_state.UpdateError as e:
         update.withdraw(vault)
         return {"ok": False, "error": str(e)}
     if rep.get("approval_required"):
         update.withdraw(vault)
         return {"ok": False, "error": "기준선 계획이 확인 뒤 바뀌었다 — 적용하지 않았다. "
                                       "setup을 다시 계획해 확인받는다"}
-    return {"ok": bool(rep.get("ok")), "current": update.current_version(vault),
+    return {"ok": bool(rep.get("ok")), "current": update_state.current_version(vault),
             "governance_protected": rep.get("governance_protected")}
 
 
@@ -746,13 +746,13 @@ def _stop_daemon(vault: Vault) -> list[int]:
     """이 vault의 데몬을 멈춘다 — 작업 스케줄러의 작업은 데몬을 띄우고 끝나므로 작업을 지워도
     데몬은 남는다. 갱신과 같은 규율로 작업 트리 변경 잠금을 먼저 잡는다."""
     from ._portalock import unlock
-    pids = update.daemon_pids(vault)
+    pids = daemon_control.daemon_pids(vault)
     if pids:
-        with open(update.sync_lock_path(vault), "w") as lock:
-            update.lock_within(lock, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
+        with open(daemon_control.sync_lock_path(vault), "w") as lock:
+            daemon_control.lock_within(lock, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
                                            "잠시 후 다시 실행한다")
             try:
-                update.kill_processes(pids)
+                daemon_control.kill_processes(pids)
             finally:
                 unlock(lock)
     return pids
@@ -815,7 +815,7 @@ def _apply_extras(vault: Vault, p: dict, stamp: str) -> list[dict]:
             result = services.apply(vault, manager, kind, job, part["task"], uninstall, stamp)
             if kind == "sync" and uninstall and result["ok"] and os.name == "nt":
                 result["stopped"] = _stop_daemon(vault)
-        except (OSError, ValueError, subprocess.SubprocessError, update.UpdateError) as e:
+        except (OSError, ValueError, subprocess.SubprocessError, update_state.UpdateError) as e:
             result = {"step": f"{kind} ({manager.name})", "ok": False, "error": f"{type(e).__name__}: {e}"}
         out.append(result)
         if targets == "remove" and result.get("ok"):

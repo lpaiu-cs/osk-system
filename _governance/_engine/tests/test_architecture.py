@@ -36,12 +36,13 @@ LAYERS = {
     STORE: ["osk.graph", "osk.nodefile", "osk.cluster_gate", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures", "osk.routing",
             "osk.approvals", "osk.scope_memory", "osk.evictions", "osk.rechecks", "osk.transcripts",
             "osk.conversation_state", "osk.growth_ledger", "osk.worker_process",
+            "osk.update_state", "osk.update_source", "osk.update_txn",
             "osk.native_cli", "osk.harness", "osk.harness.base", "osk.harness.runs", "osk.harness.claude",
             "osk.harness.codex", "osk.harness.kiro", "osk.harness.antigravity"],
     SERVICE: ["osk.write", "osk.node_checks", "osk.node_moves", "osk.search", "osk.authority", "osk.organization", "osk.distillation",
               "osk.validate", "osk.conversation_capture", "osk.conversation_review", "osk.conversation_cite",
               "osk.integration", "osk.growth_plan", "osk.growth_reviews", "osk.growth", "osk.growth_daily", "osk.growth_status",
-              "osk.response_growth", "osk.update", "osk.release", "osk.publish", "osk.update_check",
+              "osk.response_growth", "osk.update_plan", "osk.daemon_control", "osk.update", "osk.release", "osk.publish", "osk.update_check",
               "osk.setup", "osk.services", "osk.doctor", "osk.evidence_migration", "osk.hook_text", "osk.sync_status",
               "osk._fixture_approvals", "vault_sync"],
     SURFACE: ["osk.cli", "mcp_server", "sync_daemon", "scripts.growth_run", "scripts.setup",
@@ -59,7 +60,7 @@ TOTALS = ("upward_imports", "lazy_imports", "two_module_cycles", "private_access
           "late_loads")
 # 뜬 채로 오래 도는 진입점. 도는 프로세스는 뜬 시각의 코드를 쥔다(`osk.epoch`) — 뜬 뒤에 디스크에서
 # 읽는 엔진 모듈은 엔진이 갱신된 뒤라면 옛 판 위에 새 판으로 얹힌다. `late_loads`는 그 문을 센다.
-LONG_LIVED = ("mcp_server",)
+LONG_LIVED = ("mcp_server", "sync_daemon")
 
 
 def sources() -> dict[str, str]:

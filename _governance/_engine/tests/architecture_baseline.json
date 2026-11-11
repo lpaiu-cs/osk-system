@@ -5,8 +5,8 @@
  },
  "totals": {
   "upward_imports": 2,
-  "lazy_imports": 48,
-  "two_module_cycles": 13,
+  "lazy_imports": 46,
+  "two_module_cycles": 12,
   "tangled_modules": 23,
   "private_access": 0,
   "vault_fixed_names": 0,
@@ -15,7 +15,7 @@
   "oversize_functions": 119,
   "excess_lines": 2737,
   "excess_branches": 1605,
-  "late_loads": 3
+  "late_loads": 4
  },
  "upward_imports": {
   "osk.validate -> mcp_server": 1,
@@ -37,7 +37,6 @@
   "osk.setup": 1,
   "osk.signatures": 1,
   "osk.transcripts": 1,
-  "osk.update": 2,
   "osk.validate": 9,
   "osk.worker_process": 3,
   "osk.write": 2
@@ -54,8 +53,7 @@
   "osk.graph <-> osk.signatures",
   "osk.growth <-> osk.growth_daily",
   "osk.growth <-> osk.response_growth",
-  "osk.publish <-> osk.release",
-  "osk.update <-> osk.update_check"
+  "osk.publish <-> osk.release"
  ],
  "tangled_modules": 23,
  "private_access": {},
@@ -87,8 +85,9 @@
   "osk.routing": 6,
   "osk.scope_memory": 1,
   "osk.search": 2,
-  "osk.update": 3,
+  "osk.update": 2,
   "osk.update_check": 1,
+  "osk.update_txn": 1,
   "osk.validate": 18,
   "osk.write": 3,
   "scripts.hooks.capture_stop": 4,
@@ -496,13 +495,13 @@
    229,
    49
   ],
-  "osk.update:_txn_recover": [
+  "osk.update:main": [
+   45,
+   19
+  ],
+  "osk.update_txn:txn_recover": [
    62,
    17
-  ],
-  "osk.update:main": [
-   47,
-   19
   ],
   "osk.validate:run": [
    295,
@@ -580,8 +579,11 @@
  "late_loads": {
   "mcp_server": [
    "osk.harness -> osk.native_cli",
-   "osk.publish -> osk.release",
    "osk.validate -> osk.cli"
+  ],
+  "sync_daemon": [
+   "osk.evidence -> osk.rechecks",
+   "osk.graph -> osk.rechecks"
   ]
  }
 }

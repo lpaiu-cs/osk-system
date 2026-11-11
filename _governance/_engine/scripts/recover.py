@@ -123,7 +123,7 @@ def _mkdirs_durable(d: Path) -> None:
 def _fsync_file(p: Path) -> None:
     """파일 메타데이터 내구화 — chmod 결과가 유실되지 않게 한다.
 
-    엔진의 `osk.update._fsync_file`과 같은 정책이다: 핸들을 **쓰기 가능**으로
+    엔진의 `osk.update_txn._fsync_file`과 같은 정책이다: 핸들을 **쓰기 가능**으로
     연다(Windows CRT는 읽기 전용 핸들에 `_commit`을 허용하지 않아 `O_RDONLY`면
     `EBADF`가 나고, 그 오류가 복구 자체를 첫 파일에서 중단시킨다). 핸들을 못
     얻으면 조용히 넘긴다 — 복구를 못 끝내는 것보다 낫다."""

@@ -50,7 +50,7 @@ SETUP = r'''
 import json, os, subprocess, sys, time
 from pathlib import Path
 from unittest import mock
-from osk import core, harness, services, update, validate
+from osk import core, harness, services, update, validate, daemon_control, update_plan, update_source, update_state, update_txn
 from osk.vault import Vault
 VAULT = Vault.open()
 from osk import setup as S
@@ -93,7 +93,7 @@ def osk_entries(data, event):
     return [h for g in data.get('hooks', {}).get(harness.get('claude').events[event], [])
             for h in g.get('hooks', []) if base.mentions(base.command_tokens(h), script)]
 def baseline(version='v4.0.0'):
-    core.ledger_append(update.journal_path(VAULT), {'kind': 'done', 'version': version,
+    core.ledger_append(update_state.journal_path(VAULT), {'kind': 'done', 'version': version,
                                                'attest': 'sha256:' + '0' * 64})
 '''
 
@@ -376,7 +376,7 @@ with mock.patch.object(S.update, 'run', fake_run):
         rep, code = S.run(VAULT, apply=True, only=['claude'])
     step = rep['steps'][0]
     assert code == 1 and step['step'] == 'baseline' and not step['ok'] and '바뀌었다' in step['error'], rep
-    assert not applied and update.current_version(VAULT) is None and not ticket.exists(), (applied, ticket)
+    assert not applied and update_state.current_version(VAULT) is None and not ticket.exists(), (applied, ticket)
     # Planned and confirmed again, that plan is applied, through one call to the updater.
     rep, _ = S.run(VAULT, only=['claude'])
     b = rep['baseline']

@@ -25,7 +25,7 @@ class SpaceLayoutTests(unittest.TestCase):
                 for name in ("Scope", "Domain", "Person"):
                     (root / (prefix + name)).mkdir()
                 script = r'''
-from osk import core, graph, validate, approvals, raw, update
+from osk import core, graph, validate, approvals, raw, update, daemon_control, update_plan, update_source, update_state, update_txn
 from osk.vault import Vault
 VAULT = Vault.open()
 from osk.layout import space_roots
@@ -42,7 +42,7 @@ assert idx.resolve('00_Scope/W1/W1')[0] == 'node'
 assert graph.scope_of_space(VAULT, '00_Scope/W1') == 'W1'
 assert graph.scope_of_space(VAULT, '= Scope/W1') == 'W1'
 assert raw.record_path(VAULT, 'W1', 'fixture').is_relative_to(VAULT.root / '_cited')   # 루트 `_cited/` (헌법 4조 3항)
-assert update._allowed_skel(VAULT, '00_Scope') == VAULT.root / VAULT.scope
+assert update_plan._allowed_skel(VAULT, '00_Scope') == VAULT.root / VAULT.scope
 assert approvals.state(VAULT, region) == 'clean'
 assert approvals.working_tree_hash(VAULT, region) == snapshot
 assert approvals.ledger_path(VAULT).read_bytes() == before

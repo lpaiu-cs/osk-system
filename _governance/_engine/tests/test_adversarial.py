@@ -208,12 +208,12 @@ def committed_baselines(inst: Path) -> dict[str, str]:
     하네스가 자기 나름의 단순 판정(파일 순서로 dict 덮어쓰기)을 두면, 검사하는
     대상이 프로덕션이 아니라 하네스의 병렬 구현이 된다 — 실제로 그 때문에
     `committed()`가 인과 사슬을 끊던 결함을 이 하네스가 놓쳤다. oracle은 반드시
-    `osk.update.managed_paths`(=`causal_maxima` 경유)를 그 인스턴스의
+    `osk.update_state.managed_paths`(=`causal_maxima` 경유)를 그 인스턴스의
     `OSK_VAULT_ROOT`로 호출해 얻는다."""
     code = (
         "import json,sys; sys.path.insert(0, r'%s');"
-        "from osk import core, update; from osk.vault import Vault; VAULT = Vault.open();"
-        "print(json.dumps(update.managed_paths(core.ledger_read(update.journal_path(VAULT)))))"
+        "from osk import core, update, daemon_control, update_plan, update_source, update_state, update_txn; from osk.vault import Vault; VAULT = Vault.open();"
+        "print(json.dumps(update_state.managed_paths(core.ledger_read(update_state.journal_path(VAULT)))))"
         % str(ENGINE))
     r = sh(PY, "-c", code, env={**os.environ, "OSK_VAULT_ROOT": str(inst)})
     if r.returncode != 0:
