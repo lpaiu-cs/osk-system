@@ -33,8 +33,8 @@ def capture(n):
     native.write_text(rounds(n), encoding='utf-8')
     result = it.capture('claude', sid, str(native), sid, '00_Scope/W1')
     assert result['ok'], result
-    if write.resolve_session(sid) != 'W1':
-        write.set_primary(sid, 'W1', 'fixture')   # 인용·추적은 결속하지 않는다 — 주된 scope는 지정으로(v5.2)
+    if write.resolve_session(core.VAULT, sid) != 'W1':
+        write.set_primary(core.VAULT, sid, 'W1', 'fixture')   # 인용·추적은 결속하지 않는다 — 주된 scope는 지정으로(v5.2)
     return result
 def preserved(through, key=None):
     return it.acknowledge('claude', sid, through, 'preserved',
@@ -118,10 +118,10 @@ class IntegrationRecoveryTests(unittest.TestCase):
                                         expect_hash=created['new_hash'])
             assert changed['ok'], changed
             second = capture(2)
-            scope_memory.replace(sid, 'retained summary', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, sid, 'retained summary', space='00_Scope/W1')
             it.acknowledge('claude', sid, second['through'], 'summary', 'Kept as shared memory.',
                            [{'text': 'retained summary'}])
-            scope_memory.replace(sid, 'pruned summary', expect_hash=scope_memory.read(sid)['hash'])
+            scope_memory.replace(core.VAULT, sid, 'pruned summary', expect_hash=scope_memory.read(core.VAULT, sid)['hash'])
             for through in (first['through'], second['through']):
                 done = it.review_status('claude', sid, through)
                 assert done['status'] == 'complete' and 'structure' not in done, done
@@ -226,10 +226,10 @@ class IntegrationRecoveryTests(unittest.TestCase):
             # The cited round is not among the review's own refs: the repair names it, and the node
             # whose receipt cited it, for whoever rereads — the conversation or a worker.
             repair = view['repair_pending'][first['through']]
-            assert repair['corrected'] == [raw.canonical_ref(first['cited'])], repair
+            assert repair['corrected'] == [raw.canonical_ref(core.VAULT, first['cited'])], repair
             assert [(t['key'], t['id']) for t in repair['targets']] == [(proof_key, created['id'])], repair
             text = it.prompt('claude', sid)['text']
-            assert raw.canonical_ref(first['cited']) in text and created['name'] in text, text
+            assert raw.canonical_ref(core.VAULT, first['cited']) in text and created['name'] in text, text
             # A worker's scope job is the listed job, read through the worker's field filter.
             job = own_jobs(it.list_pending())[0]
             seen = growth._reading_plan({'scope_jobs': [job]})['scope_jobs'][0]
@@ -261,7 +261,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             latest = it.prompt('claude', sid)
             assert latest['through'] != earlier['through'] and latest['key'] != earlier['key'], latest
             assert latest['repair']['reason'] == 'Second correction.', latest
-            assert latest['repair']['corrected'] == [raw.canonical_ref(refs[0])], latest
+            assert latest['repair']['corrected'] == [raw.canonical_ref(core.VAULT, refs[0])], latest
             done = it.acknowledge('claude', sid, latest['through'], 'no_value', 'Read the second correction.')
             assert not done['pending'] and done['repair_pending'] == {}, done
             assert it.review_status('claude', sid, through)['status'] == 'complete'
@@ -325,7 +325,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
                 'from pathlib import Path',
                 'from osk import core,growth,integration as it,write',
                 'sys.stdin.read()',
-                "plan = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]",
+                "plan = [r for r in core.ledger_read(growth.ledger_path(core.VAULT)) if r['kind']=='plan'][-1]",
                 "job = plan['scope_jobs'][0]",
                 "it.acknowledge('claude', SID, job['through'], 'preserved', 'Retained useful observation.', [{'key':PROOF}])",
                 "Path(NATIVE).write_text(SECOND, encoding='utf-8')",

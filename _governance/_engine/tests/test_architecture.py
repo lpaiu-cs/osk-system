@@ -207,6 +207,44 @@ def _passed_on(srcs: dict[str, str], trees: dict[str, ast.Module], bound: dict) 
     return out
 
 
+def _resolver(srcs: dict[str, str], trees: dict[str, ast.Module]):
+    """표현식이 가리키는 `(모듈, 이름)`을 찾는 함수와 그 재료 — `(named, passed, bound)`.
+
+    다른 모듈을 거친 이름을 끝까지 따라간다. `raw.graph.space_of`는 `raw`가 머리에서 import한 `graph`의 것이고
+    (모듈 속성 사슬), `write.bind_session`은 `write`가 다시 내놓은 `routing`의 것이다(`_passed_on`).
+    `named(module, node, local, cls, mods=None, names=None)` — 엔진 밖 파일(시험)은 제 import 표를 넘긴다."""
+    known = set(srcs)
+    bound = {m: _bindings(m, trees[m], known, _is_package(m, srcs)) for m in srcs}
+    passed = _passed_on(srcs, trees, bound)
+    attrs = {}                                 # (모듈, 이름) → 그 이름이 묶은 모듈. 모듈 머리의 import만 속성이 된다
+    for module, tree in trees.items():
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                one = ast.Module(body=[node], type_ignores=[])
+                for name, target in _bindings(module, one, known, _is_package(module, srcs))[0].items():
+                    attrs[(module, name)] = target
+
+    def named(module, node, local, cls, mods=None, names=None):
+        if mods is None:
+            mods, names = bound[module]
+        key = _named(module, node, mods, names, known, local, cls)
+        if key is None and isinstance(node, ast.Attribute):
+            head, *rest = (_dotted(node.value) or "").split(".")
+            target = mods.get(head) if rest and head not in local else None
+            for part in rest:
+                if target is None:
+                    break
+                target = f"{target}.{part}" if f"{target}.{part}" in known else attrs.get((target, part))
+            if target is not None:
+                key = (target, node.attr)
+        seen = set()
+        while key in passed and key not in seen:
+            seen.add(key)
+            key = passed[key]
+        return key
+    return named, passed, bound
+
+
 def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[set, set, dict]:
     """4항의 두 집합 — `(import할 때 저장소에서 고정하는 이름, 저장소가 필요한데 받지 않는 함수, 다시 내놓는 이름 표)`.
 
@@ -217,22 +255,12 @@ def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[set
 
     두 수는 옮기는 동안 줄어들기만 한다: 함수를 옮기면 그 함수가 빠지고, 아직 옮기지 않은 호출자는 전에는
     "그런 함수를 부르는 함수"였고 뒤에는 `core.VAULT`를 읽는 함수라 그대로 남는다. 그러려면 호출을 놓치지
-    않아야 하므로, 다른 모듈이 다시 내놓은 이름(`_passed_on`)을 따라가고 클래스를 쓰면 그 메서드 전부를 부른
+    않아야 하므로, 다른 모듈을 거친 이름(`_resolver`)을 따라가고 클래스를 쓰면 그 메서드 전부를 부른
     것으로 본다.
 
     못 보는 것: `getattr(core, "ROOT")`처럼 이름을 문자열로 읽는 것, `self`가 아닌 객체의 메서드 호출,
     `import *`. `vault`가 첫 인자가 아니면 받은 것으로 치지 않는다."""
-    known = set(srcs)
-    bound = {m: _bindings(m, trees[m], known, _is_package(m, srcs)) for m in srcs}
-    passed = _passed_on(srcs, trees, bound)
-
-    def named(module, node, local, cls):
-        key = _named(module, node, *bound[module], known, local, cls)
-        seen = set()
-        while key in passed and key not in seen:
-            seen.add(key)
-            key = passed[key]
-        return key
+    named, passed, _ = _resolver(srcs, trees)
 
     units, methods, assigns = {}, {}, []       # (모듈, 이름) → (함수, 클래스), (모듈, 클래스) → 메서드들, 본문의 대입들
     for module, tree in trees.items():
@@ -373,7 +401,8 @@ class K:
     def m(self):
         return self.HERE
 ''',
-    # 다시 내놓은 이름을 거쳐서: 고정은 X(못 받은 함수를 불러 얻은 값). 못 받은 함수: through·alias.
+    # 다른 모듈을 거쳐서: 고정은 X(못 받은 함수를 불러 얻은 값). 못 받은 함수: through·alias(다시 내놓은 이름),
+    # hop(모듈 속성 사슬 `held2.held.reader`).
     "osk.held3": '''
 from . import held2
 X = held2.via()
@@ -383,10 +412,13 @@ def through():
 
 def alias():
     return held2.ALIAS()
+
+def hop():
+    return held2.held.reader()
 ''',
 }
 _VAULT_WANT = {"vault_fixed_names": {"osk.held": 2, "osk.held2": 2, "osk.held3": 1},
-               "vault_unthreaded": {"osk.held": 5, "osk.held2": 4, "osk.held3": 2}}
+               "vault_unthreaded": {"osk.held": 5, "osk.held2": 4, "osk.held3": 3}}
 
 
 def _broad_except(tree: ast.Module) -> int:

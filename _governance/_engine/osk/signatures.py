@@ -48,7 +48,7 @@ def id_of(p: Path) -> str | None:
     return i or None
 
 
-def locate_by_id(node_id: str) -> Path | None:
+def locate_by_id(vault: Vault, node_id: str) -> Path | None:
     """현재 vault에서 id로 노드 파일을 찾는다 — 경로 이동은 동일성을 깨지
     않으므로(경로는 상태) id 해석이 정본이다.
 
@@ -59,7 +59,7 @@ def locate_by_id(node_id: str) -> Path | None:
     연다. 서명 판정에서 `None`은 fail-closed(=`unsigned`)로 떨어진다."""
     from . import graph
     hit = None
-    for p, _k in graph.iter_nodes():
+    for p, _k in graph.iter_nodes(vault):
         if id_of(p) == node_id:
             if hit is not None:
                 return None       # 모호 — 표면이 임의로 한쪽을 택하지 않는다

@@ -328,8 +328,8 @@ def _migrations() -> list[tuple[str, object, object]]:
              lambda: [[n["path"], n["before"]] for n in em.plan()["nodes"] if n["new"]],
              lambda targets: em.apply(expect=targets)),
             ("옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)",
-             lambda: [[m["from"], m["hash"]] for m in raw.consolidate()["files"]],
-             lambda targets: raw.consolidate(apply=True, expect=targets)),
+             lambda: [[m["from"], m["hash"]] for m in raw.consolidate(core.VAULT)["files"]],
+             lambda targets: raw.consolidate(core.VAULT, apply=True, expect=targets)),
             ("관측 절 제목 `## 근거` → `# 관측` (v5.6)",
              lambda: [[it["path"], it["before"]] for it in em.heading_plan() if it["new"] is not None],
              lambda targets: em.heading_apply(expect=targets))]
@@ -382,7 +382,7 @@ def migrate() -> tuple[dict, int]:
         return {"ok": False, "approval_required": True, "review_id": review_id, "plan": plan,
                 "instruction": MIGRATE_INSTRUCTION}, 2
     ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다
-    rechecks.ensure_baseline(carry=True)
+    rechecks.ensure_baseline(core.VAULT, carry=True)
     confirmed = dict(plan["migrations"])
     after: dict[str, str] = {}   # 이 실행의 앞선 이행이 쓴 노드 → 결과 해시. 뒤 이행은 그것을 예상값으로 받는다
     done = []
@@ -443,7 +443,7 @@ def _vault_items() -> list[dict]:
     """vault 내용 점검의 항목 — 남은 이행(`_vault`), 기록 충돌, 검증기, 잔재, 적체. 읽기만 한다."""
     rep = validate.run()
     items = _vault()
-    for c in raw.consolidate()["conflicts"]:
+    for c in raw.consolidate(core.VAULT)["conflicts"]:
         items.append(_item("warn", "기록 충돌", f"{c['path']} — {c['reason']}",
                            "어느 사본이 정본인지 사용자와 정한다 — 엔진은 덮거나 합치지 않는다"))
 
@@ -472,10 +472,10 @@ def _vault_items() -> list[dict]:
                            + (f" — 그중 {gone}건은 원본 전사가 이 기기에서 지워졌다" if gone else "")
                            + f" · 최근 오류: {blocked['conversations'][0]['error'][:160]}",
                            "잃은 것은 없다 — 검토는 9·15턴에 계속된다. 오류를 사용자에게 보인다"))
-    for r in scope_memory.recovery_status():
+    for r in scope_memory.recovery_status(core.VAULT):
         items.append(_item("warn", "scope 복구 대기", f"{r['session']} → {r['scope'] or '착지 미정'} · {r['since']}부터",
                            f"프로젝트 {r['session']}의 새 세션을 열면 시작 훅이 복구 절차를 싣는다"))
-    for scope, s in sorted(evictions.status().items()):
+    for scope, s in sorted(evictions.status(core.VAULT).items()):
         items.append(_item("warn" if s["overdue"] else "info", "정돈 대기",
                            f"{scope} — 미처분 {s['unsettled']}건, 가장 오래된 것 {s['oldest_days']}일",
                            f"`osk.cli tidy prompt --scope {scope}`의 프롬프트로 정돈 세션을 연다"))

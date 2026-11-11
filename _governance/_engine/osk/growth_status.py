@@ -262,14 +262,14 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
         return _runs(history, begin, end)
     section('runs', run_history)
     def recheck_records():
-        records, valid = rechecks.read_ledger()
+        records, valid = rechecks.read_ledger(core.VAULT)
         if not valid:
             raise ValueError('recheck ledger damaged')
         return _recheck_history(records, begin, end)
     section('recheck_history', recheck_records)
     def eviction_inventory():
-        records = evictions.records()
-        pending = evictions.unsettled(recs=records)
+        records = evictions.records(core.VAULT)
+        pending = evictions.unsettled(core.VAULT, recs=records)
         return {'pending_entries': len(pending),
                 'oldest_days': max((evictions.age_days(r) for r in pending), default=0),
                 'pending_ids': [r['rid'] for r in pending],
@@ -284,7 +284,7 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
     else:
         section('organization', lambda: _organization(idx))
         def current_rechecks():
-            items, baseline = rechecks.candidates(idx)
+            items, baseline = rechecks.candidates(core.VAULT, idx)
             return {'baseline_pending': baseline, 'candidate_pairs': len(items),
                     'awaiting_agent': sum('escalated' not in i for i in items),
                     'deferred': sum('deferred' in i and 'escalated' not in i for i in items),

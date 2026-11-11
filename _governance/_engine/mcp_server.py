@@ -72,7 +72,8 @@ def _vault_fingerprint() -> tuple[tuple[str, str], bool]:
     되어 창이 닫힌 뒤에도 무엇과도 맞지 않는다. 믿을지 말지는 호출부가 정한다."""
     import hashlib
     errors = []
-    entries, racy = graph.index_signature(errors)
+    from osk import core
+    entries, racy = graph.index_signature(core.VAULT, errors)
     h = hashlib.sha256()
     for rel, mtime_ns, size, kind, target in entries:
         h.update(f"{rel}|{mtime_ns}|{size}|{kind}|{target}\n".encode())
@@ -101,7 +102,8 @@ def _idx():
                 and _fingerprint is not None and fp[1] == _fingerprint[1]):
             _index.refresh_nonnode()
         else:
-            _index = graph.Index()
+            from osk import core
+            _index = graph.Index(core.VAULT)
             _searcher = None
         if not _index.complete:
             _searcher = None
@@ -195,7 +197,8 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
     # `session`의 결속 scope가 순위 자질이 된다(시행령 §8 3항 locality). 쓰는 법은 세션 시작
     # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, validate.SCHEMA_BUDGET).
     global _searched
-    hits = _s().view_search(query, k, write.bindings(session) if session else None)
+    from osk import core
+    hits = _s().view_search(query, k, write.bindings(core.VAULT, session) if session else None)
     _searched = True
     return hits
 
@@ -345,21 +348,23 @@ def read_cited(ref: str | None = None, space: str | None = None,
     if ref and raw.is_native(ref):
         return _guard(lambda: {"ok": True, **integration.read_turns([ref], max_chars, view, query)["turns"][0]})
     if ref:
-        return _guard(raw.read_round, ref, max_chars, view, query)
-    return _guard(raw.list_records, space)
+        from osk import core
+        return _guard(raw.read_round, core.VAULT, ref, max_chars, view, query)
+    from osk import core
+    return _guard(raw.list_records, core.VAULT, space)
 
 
 def _hook_sections(session: str, include) -> dict:
     """훅이 한도 때문에 접은 블록 — 훅이 실었을 글 그대로 돌려준다(`osk.hook_text`)."""
     from osk import core, evictions, organization
-    scope, scopes = write.resolve_session(session), write.bound_scopes(session)
+    scope, scopes = write.resolve_session(core.VAULT, session), write.bound_scopes(core.VAULT, session)
     out = {}
     for name in dict.fromkeys(include):
         try:
             if name == "recovery":
-                out[name] = scope_memory_mod.recovery_block(session)
+                out[name] = scope_memory_mod.recovery_block(core.VAULT, session)
             elif name == "tidy":
-                parts = (evictions.hook_parts(scope, sys.executable, str(Path(__file__).resolve().parent))
+                parts = (evictions.hook_parts(core.VAULT, scope, sys.executable, str(Path(__file__).resolve().parent))
                          if scope else {"banner": "", "block": ""})
                 out[name] = "\n\n".join(p for p in (parts["banner"], parts["block"]) if p)
             elif not scopes:
@@ -396,7 +401,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         hit = getattr(idx, "recheck_report", None)
         if _fingerprint is None or not hit or hit[0] != _fingerprint:
             missed = rechecks.misses
-            rc = rechecks.report(idx)
+            from osk import core
+            rc = rechecks.report(core.VAULT, idx)
             hit = idx.recheck_report = (_fingerprint if rechecks.misses == missed else None, rc)
         rc = hit[1]
     except Exception as e:                      # 조망은 죽지 않는다(시행령 §11)
@@ -422,7 +428,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         # 별칭 해소 결과(`canonical_session`)는 싣지 않는다 — Mechanism §6-2
         # 6항이 "이름의 정본을 정하는 것은 사용자의 일이므로 별칭은 표면에
         # 노출하지 않는다"고 못박는다. 착지 판단에는 `session_scope`로 족하다.
-        out["bindings"] = write.bindings(session)
+        from osk import core
+        out["bindings"] = write.bindings(core.VAULT, session)
         out["session_scope"] = out["bindings"]["primary"]
         if out["session_scope"]:
             # 새 노드의 자리는 이 트리에서 주제를 덮는 가장 깊은 군집이다(시행령 §3 8항)
@@ -550,8 +557,10 @@ def scope_memory(session: str, text: str | None = None,
     `session`은 `create_node`와 같은 값, `space`는 `00_Scope/<이름>` **두 마디**만.
     상한 1500자."""
     if text is None and edits is None:
-        return _guard(scope_memory_mod.read, session, space)
-    return _guard(scope_memory_mod.replace, session, text, expect_hash, space,
+        from osk import core
+        return _guard(scope_memory_mod.read, core.VAULT, session, space)
+    from osk import core
+    return _guard(scope_memory_mod.replace, core.VAULT, session, text, expect_hash, space,
                   edits)
 
 

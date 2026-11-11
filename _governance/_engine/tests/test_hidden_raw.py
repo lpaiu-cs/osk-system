@@ -19,7 +19,7 @@ def main():
         base.mkdir(exist_ok=True)
 
         def append_round(session, record, user, agent, space=None):
-            r = raw.append_rounds(session, record, [{"user": user, "agent": agent}], space)
+            r = raw.append_rounds(core.VAULT, session, record, [{"user": user, "agent": agent}], space)
             return {"path": r["path"], "index": r["indices"][0], "round_ref": r["round_refs"][0]}
 
         def reject(fn, *args, **kwargs):
@@ -37,23 +37,23 @@ def main():
         assert "[[" not in first["round_ref"]
         assert not (base / "new.md").exists() and not (base / ".records/new.txt").exists()
         # 옛 scope 자리의 좌표는 같은 이름의 루트 기록으로 접힌다(Mechanism §8 2항 · §9 5항)
-        assert raw.read_round("[[00_Scope/W1/_cited/new.md#1]]")["text"] == raw.read_round(first["round_ref"])["text"]
-        assert graph.Index().resolve("00_Scope/W1/_cited/new.md") == ("nonnode", ("raw", None))
-        assert graph.Index().resolve(first["path"]) == ("nonnode", ("raw", None))
-        reject(raw.write_raw, base / "bypass.md", "not allowed")
+        assert raw.read_round(core.VAULT, "[[00_Scope/W1/_cited/new.md#1]]")["text"] == raw.read_round(core.VAULT, first["round_ref"])["text"]
+        assert graph.Index(core.VAULT).resolve("00_Scope/W1/_cited/new.md") == ("nonnode", ("raw", None))
+        assert graph.Index(core.VAULT).resolve(first["path"]) == ("nonnode", ("raw", None))
+        reject(raw.write_raw, core.VAULT, base / "bypass.md", "not allowed")
         assert not (base / "bypass.md").exists()
         url = "https://example.invalid/_raw/evidence.md#1"
-        assert raw.canonical_ref(url) == url
+        assert raw.canonical_ref(core.VAULT, url) == url
         assert write._as_links("derived-from", url) == f"[[{url}]]"
         assert write._as_links("derived-from", f"[[{url}]]") == f"[[{url}]]"
         assert write._as_links("derived-from", f"[[ {url} ]]") == f"[[ {url} ]]"
-        assert raw.canonical_ref("[[ 00_Scope/W1/_cited/new.md#1 ]]") == first["round_ref"]
-        assert raw.canonical_ref("00_Scope/W1/_cited/new.md #1") == first["round_ref"]
-        assert graph.Index().resolve(url) == ("external",)
+        assert raw.canonical_ref(core.VAULT, "[[ 00_Scope/W1/_cited/new.md#1 ]]") == first["round_ref"]
+        assert raw.canonical_ref(core.VAULT, "00_Scope/W1/_cited/new.md #1") == first["round_ref"]
+        assert graph.Index(core.VAULT).resolve(url) == ("external",)
         reject(append_round, "hidden-test", "x" * 253, "q", "a")
         # A contained symlink must not move another scope's canonical record.
         with mock.patch.object(raw, "resolve_in_root", return_value=new):
-            reject(raw._record_pair, base / "redirect.md")
+            reject(raw._record_pair, core.VAULT, base / "redirect.md")
 
         # CRLF, Unicode, escaped headings and markers survive a byte-exact rename.
         old = base / "Legacy.MD"
@@ -61,21 +61,21 @@ def main():
                     .replace("\n", "\r\n").encode())
         old.write_bytes(original)
         legacy = "[[00_Scope/W1/_raw/Legacy.MD#1]]"
-        before = raw.read_round(legacy)["text"]
-        plan = raw.migrate()
+        before = raw.read_round(core.VAULT, legacy)["text"]
+        plan = raw.migrate(core.VAULT)
         assert plan["count"] == 1 and old.read_bytes() == original
-        moved = raw.migrate(apply=True)
+        moved = raw.migrate(core.VAULT, apply=True)
         dest = root / moved["files"][0]["to"]
         assert not old.exists() and dest.read_bytes() == original
-        assert raw.read_round(legacy)["text"] == before
-        assert raw.migrate(apply=True)["count"] == 0
-        assert {r["record"] for r in raw.list_records("00_Scope/W1")["records"]} == {"Legacy"}   # 옛 자리
-        assert {r["record"] for r in raw.list_records()["records"]} == {"new"}                 # 루트
-        assert raw.record_path("W1", "LEGACY") == dest
+        assert raw.read_round(core.VAULT, legacy)["text"] == before
+        assert raw.migrate(core.VAULT, apply=True)["count"] == 0
+        assert {r["record"] for r in raw.list_records(core.VAULT, "00_Scope/W1")["records"]} == {"Legacy"}   # 옛 자리
+        assert {r["record"] for r in raw.list_records(core.VAULT)["records"]} == {"new"}                 # 루트
+        assert raw.record_path(core.VAULT, "W1", "LEGACY") == dest
 
         # Duplicate destinations fail closed, including a same-byte duplicate.
         old.write_bytes(original)
-        reject(raw.migrate, apply=True)
+        reject(raw.migrate, core.VAULT, apply=True)
         reject(append_round, "hidden-test", "Legacy", "new question", "new answer")
         assert old.read_bytes() == dest.read_bytes() == original
         old.unlink()  # Test fixture cleanup only.
@@ -89,12 +89,12 @@ def main():
             if os.path.samefile(*duplicates):
                 # APFS/HFS+ fold normalization: the second write reopened the first
                 # file, so one physical record exists and there is nothing to choose.
-                assert os.path.samefile(raw.record_path("W1", "caf\u00e9"), duplicates[0])
+                assert os.path.samefile(raw.record_path(core.VAULT, "W1", "caf\u00e9"), duplicates[0])
             else:
-                reject(raw.record_path, "W1", "caf\u00e9")
+                reject(raw.record_path, core.VAULT, "W1", "caf\u00e9")
                 reject(append_round, "hidden-test", "caf\u00e9", "q2", "a2")
                 if suffix == ".md":
-                    reject(raw.migrate, apply=True)
+                    reject(raw.migrate, core.VAULT, apply=True)
             assert all(path.read_bytes() == data for path, data in frozen.items())
             for path in duplicates:
                 path.unlink(missing_ok=True)  # Isolated conflicting fixtures only.
@@ -106,24 +106,24 @@ def main():
             original = raw.round_block(1, "q", "a").encode()
             old.write_bytes(original)
             ref = f"00_Scope/W1/_raw/{name}.md#1"
-            assert raw.read_round(ref)["index"] == 1
-            assert name in {r["record"] for r in raw.list_records("00_Scope/W1")["records"]}
-            raw.migrate(apply=True)
-            dest = raw.record_path("W1", name)
+            assert raw.read_round(core.VAULT, ref)["index"] == 1
+            assert name in {r["record"] for r in raw.list_records(core.VAULT, "00_Scope/W1")["records"]}
+            raw.migrate(core.VAULT, apply=True)
+            dest = raw.record_path(core.VAULT, "W1", name)
             assert dest.name == "record.txt" and dest.parent.name == name
             assert all(len(p.encode("utf-8")) <= 255 for p in dest.relative_to(base).parts)
             assert dest.read_bytes() == original and not old.exists()
-            assert raw.read_round(ref)["text"] == raw.read_round(str(dest) + "#1")["text"]
-            assert raw.canonical_ref(ref) == raw.canonical_ref(str(dest) + "#1")
+            assert raw.read_round(core.VAULT, ref)["text"] == raw.read_round(core.VAULT, str(dest) + "#1")["text"]
+            assert raw.canonical_ref(core.VAULT, ref) == raw.canonical_ref(core.VAULT, str(dest) + "#1")
             alternate = write.unicodedata.normalize("NFC", name.upper())
-            assert raw.record_path("W1", alternate) == dest
+            assert raw.record_path(core.VAULT, "W1", alternate) == dest
             assert append_round("hidden-test", alternate, "q2", "a2")["index"] == 2
             assert dest.read_bytes().startswith(original)
-            assert name in {r["record"] for r in raw.list_records("00_Scope/W1")["records"]}
+            assert name in {r["record"] for r in raw.list_records(core.VAULT, "00_Scope/W1")["records"]}
             # No old/new ambiguity or normalization-equivalent directory twin.
             old.write_bytes(original)
-            reject(raw.read_round, ref)
-            reject(raw.migrate, apply=True)
+            reject(raw.read_round, core.VAULT, ref)
+            reject(raw.migrate, core.VAULT, apply=True)
             old.unlink()
             normalized = write.unicodedata.normalize("NFC", name)
             if normalized != name:
@@ -132,14 +132,14 @@ def main():
                     assert os.path.samefile(twin, dest.parent)
                 else:
                     twin.mkdir()
-                    reject(raw.record_path, "W1", name)
+                    reject(raw.record_path, core.VAULT, "W1", name)
                     reject(append_round, "hidden-test", name, "q3", "a3")
                     twin.rmdir()
                 flat = base / ".records" / (normalized + ".txt")
                 flat.write_bytes(original)
-                reject(raw.record_path, "W1", name)
+                reject(raw.record_path, core.VAULT, "W1", name)
                 flat.unlink()
-        assert raw.migrate(apply=True)["count"] == 0
+        assert raw.migrate(core.VAULT, apply=True)["count"] == 0
 
         # New maximum-length names use the same lossless layout.
         fresh_long = append_round("hidden-test", "z" * 252, "q", "a")
@@ -150,17 +150,17 @@ def main():
         crash = base / "crash.md"
         crash.write_bytes(raw.round_block(1, "q", "a").encode())
         with mock.patch.object(Path, "rename", side_effect=OSError("injected rename failure")):
-            reject(raw.migrate, apply=True)
+            reject(raw.migrate, core.VAULT, apply=True)
         assert crash.is_file()
-        raw.migrate(apply=True)
-        assert raw.read_round("00_Scope/W1/_raw/crash.md#1")["index"] == 1
+        raw.migrate(core.VAULT, apply=True)
+        assert raw.read_round(core.VAULT, "00_Scope/W1/_raw/crash.md#1")["index"] == 1
 
         # The next append to a visible legacy record migrates it and keeps its rounds.
         retry = base / "retry.md"
         retry.write_bytes(raw.round_block(1, "q", "a").encode())
         appended = append_round("hidden-test", "retry", "q2", "a2")
         assert appended["index"] == 2 and not retry.exists()
-        assert raw.read_round("00_Scope/W1/_raw/retry.md")["rounds"] == 2
+        assert raw.read_round(core.VAULT, "00_Scope/W1/_raw/retry.md")["rounds"] == 2
 
         # Old receipts still verify after migration; the round is bound by its evidence line.
         record = base / "proof.md"
@@ -177,16 +177,16 @@ def main():
         assert "derived-from" not in contract.parse(target).meta
         historic = copy.deepcopy(out["distillation"])
         historic["sources"][0].update(ref=ref, path="00_Scope/W1/_raw/proof.md")
-        raw.migrate(apply=True)
+        raw.migrate(core.VAULT, apply=True)
         assert target.read_bytes() == saved
         assert D.verify_receipt(historic)["status"] == "complete"
         assert D.status("legacy-proof")["status"] == "complete"
         append_round("hidden-test", "proof", "later", "reply")
         assert D.verify_receipt(historic)["status"] == "complete"
-        proof_path = raw.raw_file("00_Scope/W1/_raw/proof.md")
+        proof_path = raw.raw_file(core.VAULT, "00_Scope/W1/_raw/proof.md")
         proof_path.write_bytes(proof_path.read_bytes().replace(b"verified result", b"tampered result"))
         assert D.verify_receipt(historic)["status"] == "pending"
-        reject(raw.read_round, "../../outside.md#1")
+        reject(raw.read_round, core.VAULT, "../../outside.md#1")
         assert not list(base.glob("*.md")) and not list(base.glob("*.MD"))
 
         # `doctor --migrate` gathers old-place records into the root `_cited/` (Mechanism §9 5항):
@@ -195,12 +195,12 @@ def main():
         from osk import doctor
         proof_path.write_bytes(proof_path.read_bytes().replace(b"tampered result", b"verified result"))
         assert D.verify_receipt(historic)["status"] == "complete"
-        before = {r["record"]: raw.read_round(r["path"] + "#1")["text"]
-                  for r in raw.list_records("00_Scope/W1")["records"]}
+        before = {r["record"]: raw.read_round(core.VAULT, r["path"] + "#1")["text"]
+                  for r in raw.list_records(core.VAULT, "00_Scope/W1")["records"]}
         shadow = base / ".records" / "new.txt"
         shadow.write_bytes(raw.round_block(1, "older copy", "a").encode())
         frozen = {p: p.read_bytes() for p in base.rglob("*") if p.is_file()}
-        plan = raw.consolidate()
+        plan = raw.consolidate(core.VAULT)
         assert plan["count"] == len(before) and not plan["applied"], plan
         assert [c["path"] for c in plan["conflicts"]] == ["00_Scope/W1/_raw/.records/new.txt"], plan
         records = "옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)"
@@ -234,9 +234,9 @@ def main():
             dest = root / m["to"]
             assert dest.is_relative_to(root / "_cited/.records") and core.sha256_file(dest) == m["hash"]
         for name, text in before.items():
-            assert raw.read_round(f"00_Scope/W1/_raw/{name}.md#1")["text"] == text   # 옛 좌표
+            assert raw.read_round(core.VAULT, f"00_Scope/W1/_raw/{name}.md#1")["text"] == text   # 옛 좌표
         assert target.read_bytes() == saved and D.verify_receipt(historic)["status"] == "complete"
-        assert raw.consolidate()["count"] == 0
+        assert raw.consolidate(core.VAULT)["count"] == 0
         shadow.unlink()
         print("PASS hidden storage, aliases, byte identity, conflict/retry, provenance, consolidation")
 

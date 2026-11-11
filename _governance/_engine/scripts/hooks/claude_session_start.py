@@ -274,7 +274,7 @@ def session_key(cwd: str) -> str:
         return name
     try:
         from osk import write
-        return write.repo_session(name, repo)
+        return write.repo_session(core.VAULT, name, repo)
     except Exception:
         return name
 
@@ -313,8 +313,8 @@ def _memory_line(st: dict, key: str, space: str | None = None) -> str:
 
 def _memory_block(scope_memory, key: str, st: dict | None = None) -> str:
     """scope 기억 전문 — 비었으면 빈 문자열."""
-    from osk.core import SCOPE
-    st = st or scope_memory.read(key)
+    from osk.core import SCOPE, VAULT
+    st = st or scope_memory.read(VAULT, key)
     text = (st.get("text") or "").strip()
     if not text:
         return ""
@@ -420,7 +420,7 @@ def _organization(jobs: list, keep: int, ident=None, *, startup: bool = False, s
 def _organization_jobs(key: str) -> list:
     """세션 시작의 조직 검토 — 포착 대기와 따로 고른다(짧은 대화도 시작에서 착수할 수 있다)."""
     from osk import core, organization, write
-    scopes = write.bound_scopes(key)     # 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
+    scopes = write.bound_scopes(core.VAULT, key)     # 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
     if not scopes:
         return []
     with core.mutation_lock(core.VAULT):
@@ -448,8 +448,9 @@ def _start_organization(key: str, ident=None):
 
 
 def _recovery(scope_memory, key: str):
+    from osk.core import VAULT
     from osk.hook_text import Block
-    return Block("recovery", scope_memory.recovery_block(key), 90,
+    return Block("recovery", scope_memory.recovery_block(VAULT, key), 90,
                  label="scope 복구 대기", pull="overview:recovery")
 
 
@@ -457,9 +458,9 @@ def _memory(scope_memory, key: str, ident, *, gate: bool, keep: int, space: str 
     """scope 기억 블록. `gate`면 이 대화가 같은 해시의 전문을 이미 받았을 때 한 줄로 싣고,
     전문이 실제로 실렸을 때만 그 해시를 적는다(`integration.note_memory`). `space`는 주된 scope가
     아닌 결속 scope의 기억을 실을 때 준다(Mechanism §9-3 1항)."""
-    from osk import integration
+    from osk import core, integration
     from osk.hook_text import Block
-    st = scope_memory.read(key, space)
+    st = scope_memory.read(core.VAULT, key, space)
     full = _memory_block(scope_memory, key, st)
     name = "memory" if space is None else f"memory:{st['scope']}"
     if not full:
@@ -575,8 +576,8 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
     # recovery instructions. SessionStart already emits shared memory below.
     if not startup:
         try:
-            from osk import scope_memory, write
-            bindings = write.bindings(key)
+            from osk import core, scope_memory, write
+            bindings = write.bindings(core.VAULT, key)
             if bindings["primary"]:
                 recovery = _recovery(scope_memory, key)
                 # 복구는 현재 엔트리를 정리하는 일이라 앵커를 베낄 전문이 그 자리에 있어야 한다
@@ -625,12 +626,12 @@ def _recheck_note(rechecks) -> str:
     정기 실행이 없을 때 쌓이는 후보(그 처리는 대화 검토 fork가 이 scope 몫을 맡는다).
     둘 다 없으면 아무것도 싣지 않는다."""
     try:
-        from osk import growth
+        from osk import core, growth
         status = growth.daily_status()
         daily = status["active"]
         if daily and not any(r.get("kind") == "recheck_review" for r in growth.ledger_records()):
             return ""
-        items, pending = rechecks.candidates()
+        items, pending = rechecks.candidates(core.VAULT)
     except Exception as exc:
         return f"[osk 근거 재검토 판독 진단 — {type(exc).__name__}: {exc}]"
     if pending:
@@ -705,17 +706,16 @@ def main() -> None:
 
     host = None
     try:
-        from osk import scope_memory, write, evictions, rechecks
+        from osk import core, scope_memory, write, evictions, rechecks
         key = session_key(project_cwd(env))
         host = note_run("start", env, key)
         if not first_call("start", env, host):
             return
         try:
-            from osk import core
             # 대장 행도 작업 트리의 변경이다 — 판독부터 쓰기까지 변경 잠금 안에서 한다(정기 실행과 같다).
             # 그 사이 다른 세션의 노드 쓰기가 끼면 낡은 판독으로 이어 적어 방금 닫은 쌍을 다시 연다.
             with core.mutation_lock(core.VAULT):
-                rechecks.ensure_baseline(carry=True)
+                rechecks.ensure_baseline(core.VAULT, carry=True)
         except Exception:
             pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다
         from osk.hook_text import Block, assemble
@@ -731,7 +731,7 @@ def main() -> None:
         sync = Block("sync", sync_text)      # 짧고 사람이 풀어야 하는 경고 — 접지 않는다
         shown = "\n".join(s for s in (shown, sync_shown) if s)
         try:
-            bindings = write.bindings(key)
+            bindings = write.bindings(core.VAULT, key)
         except Exception:
             bindings = {"scopes": [], "primary": None, "undetermined": False}
         scope = bindings["primary"]
@@ -757,7 +757,7 @@ def main() -> None:
                 mem = Block("memory", f"[osk 공유 기억 판독 진단 — {type(exc).__name__}: {exc}]")
             banner, tidy = Block("banner", ""), Block("tidy", "")
             try:
-                parts = evictions.hook_parts(scope, sys.executable, str(ENGINE))
+                parts = evictions.hook_parts(core.VAULT, scope, sys.executable, str(ENGINE))
                 banner = Block("banner", parts["banner"])
                 tidy = Block("tidy", parts["block"], 80, label=parts["label"], pull="overview:tidy")
             except Exception as exc:

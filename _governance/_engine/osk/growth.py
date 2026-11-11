@@ -21,8 +21,14 @@ import shutil
 from . import (core, graph, distillation, evictions, harness as adapters, integration, native_cli,
                organization, rechecks)
 from ._portalock import lock_exclusive, unlock
+from .vault import Vault
 
-LEDGER = core.LEDGER / "growth.jsonl"
+
+def ledger_path(vault: Vault) -> Path:
+    """성장 기록부."""
+    return vault.ledger / "growth.jsonl"
+
+
 BATCH_SIZE = 4                 # two batches fit in one eight-source comparison
 MAX_DOMAINS = 8
 MAX_LIMIT = 20
@@ -34,8 +40,8 @@ WAITS = {"busy", "limited"}
 
 
 def ledger_records() -> list[dict]:
-    rows = core.ledger_read(LEDGER)
-    errors = core.ledger_damage(rows, LEDGER)
+    rows = core.ledger_read(ledger_path(core.VAULT))
+    errors = core.ledger_damage(rows, ledger_path(core.VAULT))
     for row in rows:
         if row.get("kind") not in {"plan", "review", "run", "eviction_review", "recheck_review"}:
             errors.append("unknown growth record kind")
@@ -53,7 +59,7 @@ def ledger_records() -> list[dict]:
 
 
 def node_index() -> graph.Index:
-    idx = graph.Index()
+    idx = graph.Index(core.VAULT)
     if idx.scan_errors or idx.broken or idx.dup_ids or idx.dup_stems:
         raise ValueError("growth needs a complete, unambiguous node inventory")
     return idx
@@ -244,7 +250,7 @@ def run_failed(result: dict) -> bool:
 def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
     """근거 재검토 후보를 작업으로 낸다(시행령 §7 2항). `scope`를 주면 그 scope의
     노드만 — Stop fork는 원 대화의 scope만 다룬다(Mechanism §9-4 3항)."""
-    items, pending = rechecks.candidates(idx)
+    items, pending = rechecks.candidates(core.VAULT, idx)
     return [] if pending else [
         {"key": f"recheck:{i['id']}:{i['key']}", "node": i["node"], "target": i["target"],
          "why": i["why"], "cascade": i["cascade"], "next": i["next"], "id": i["id"],
@@ -256,7 +262,7 @@ def _recheck_jobs(idx: graph.Index, scope: str | None = None) -> list[dict]:
 def _with_change(jobs: list[dict], idx: graph.Index) -> list[dict]:
     """선택한 작업에만 마지막 점검 뒤의 변경분을 싣는다 — 후보 전부가 아니다."""
     for job in jobs:
-        job["change"] = rechecks.change(job["id"], job["target_key"], job["target"], idx)
+        job["change"] = rechecks.change(core.VAULT, job["id"], job["target_key"], job["target"], idx)
     return jobs
 
 
@@ -283,9 +289,9 @@ def _recheck_status(job: dict, idx: graph.Index) -> dict:
         stored = meta.get("derived-from") or []
         kept = job["target"] in (stored if isinstance(stored, list) else [stored])
         return {"status": "complete", "reason": "basis dangling" if kept else "basis removed"}
-    if job["target_key"] in rechecks.complete_keys(idx, hit[0], meta):
+    if job["target_key"] in rechecks.complete_keys(core.VAULT, idx, hit[0], meta):
         return {"status": "complete"}
-    open_ = [i for i in rechecks.candidates(idx)[0]
+    open_ = [i for i in rechecks.candidates(core.VAULT, idx)[0]
              if i["id"] == job["id"] and i["key"] == job["target_key"]]
     if open_ and "escalated" in open_[0]:
         return {"status": "complete", "reason": "escalated to the user"}
@@ -383,7 +389,7 @@ def _plan(limit: int) -> dict:
                 candidate["previous_distillations"].append(old_proof)
     organization_jobs = organization.pending(limit=limit, idx=idx)
     attempts = {j["of"]: row["rid"] for row in plans for j in row.get("eviction_jobs", [])}
-    eviction_rows = evictions.records()
+    eviction_rows = evictions.records(core.VAULT)
     settled = {r["of"] for r in eviction_rows if r["kind"] == "settle"}
     eviction_jobs = []
     for r in eviction_rows:
@@ -787,7 +793,7 @@ def review(key: str, outcome: str, target: str | None = None, reason: str = "",
         if proof:
             cited = {s["ref"] for s in proof["sources"]}
             record["omitted_sources"] = [s["id"] for s in candidate["sources"] if s["id"] not in cited]
-        return core.ledger_append(LEDGER, record)
+        return core.ledger_append(ledger_path(core.VAULT), record)
 
 
 def strict_json(text: str):
@@ -993,7 +999,7 @@ def _check_entry(queue: str, entry, planned: dict, notes: list) -> dict:
 
 def _eviction_status(job: dict, idx=None, *, growth_rows=None, eviction_rows=None,
                      growth_par=None) -> dict:
-    rows = evictions.records() if eviction_rows is None else eviction_rows
+    rows = evictions.records(core.VAULT) if eviction_rows is None else eviction_rows
     growth_rows = ledger_records() if growth_rows is None else growth_rows
     original = next((r for r in rows if r["rid"] == job["of"] and r["kind"] == "evict"), None)
     if not original or any(original[k] != job[k] for k in ("scope", "text")):
@@ -1102,7 +1108,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                     if last and any(last.get(k) != entry.get(k) for k in ("outcome", "target")):
                         raise ValueError("eviction already has a different disposition")
                     if not last:
-                        last = evictions.settle_locked(**entry)
+                        last = evictions.settle_locked(core.VAULT, **entry)
                     record["settlement"] = last["rid"]
                 previous = done.get("review") or {}
                 if isinstance(previous.get("manifest"), str) and (
@@ -1110,7 +1116,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                     result["notes"].append(f"Eviction {entry['of']}: a newer selection already reviewed it; "
                                            "this report is kept as history and does not change it")
                 if any(previous.get(k) != v for k, v in record.items()):
-                    core.ledger_append(LEDGER, record)
+                    core.ledger_append(ledger_path(core.VAULT), record)
                 result["eviction"][entry["of"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Eviction {entry['of']}: {exc}")
@@ -1119,7 +1125,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
         job = selected_rechecks[entry["key"]]
         try:
             with core.mutation_lock(core.VAULT):
-                now = [i for i in rechecks.candidates(node_index())[0]
+                now = [i for i in rechecks.candidates(core.VAULT, node_index())[0]
                        if i["id"] == job["id"] and i["key"] == job["target_key"]]
                 if not now:
                     result["notes"].append(f"Recheck {entry['key']}: already closed; nothing to record")
@@ -1131,7 +1137,7 @@ def _apply_reviews(reviews: dict, planned: dict) -> dict:
                     result["notes"].append(f"Recheck {entry['key']}: the node or target changed since "
                                            "selection; the report is kept for the selected states")
                 if "escalated" not in now[0]:
-                    core.ledger_append(LEDGER, {
+                    core.ledger_append(ledger_path(core.VAULT), {
                         "kind": "recheck_review", "manifest": planned["manifest"], **entry,
                         "node": job["node"], "target": job["target"],
                         "node_state": job["node_state"], "target_state": job["target_state"]})
@@ -1349,7 +1355,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
             with core.mutation_lock(core.VAULT):
                 try:
                     from . import rechecks
-                    rechecks.ensure_baseline(carry=True)
+                    rechecks.ensure_baseline(core.VAULT, carry=True)
                 except Exception:
                     pass        # 못 적으면 그 근거들이 후보로 남을 뿐이다
                 planned = (_plan(min(MAX_LIMIT, limit + len(exclude)))
@@ -1374,7 +1380,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                     # 일회성 작업 폴더의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
                     # 결속 scope는 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
                     scopes = ([] if (scope_job.get("workspace") or {}).get("one_off")
-                              else write.bound_scopes(scope_job["session"]))
+                              else write.bound_scopes(core.VAULT, scope_job["session"]))
                     scope = scopes[0] if scopes else None
                     planned["work_context"] = "stop:" + (scope or scope_job["session"])
                     # 거듭 진척 없던 작업은 빼고 그 뒤의 후보로 채운다(#259). 자른 뒤에 빼면 뺀 작업이
@@ -1411,7 +1417,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                 attempt = uuid.uuid4().hex
                 for candidate in planned["candidates"]:
                     candidate["distill_key"] = f"growth:{attempt}:{candidate['key']}"
-                manifest = core.ledger_append(LEDGER, {"kind": "plan", **planned})
+                manifest = core.ledger_append(ledger_path(core.VAULT), {"kind": "plan", **planned})
                 organization.record_attempts(planned["organization_jobs"])
             planned["manifest"] = manifest["rid"]
             directory = core.resolve_in_root(core.VAULT, Path(".osk/growth/runs") / manifest["rid"])
@@ -1505,7 +1511,7 @@ def run(command: list[str], limit: int = 3, timeout: int = 600, *,
                           "final_reviews": final_reviews,
                           "capture": catchup,
                           "output": core.posix_rel(directory, core.ROOT)}
-                core.ledger_append(LEDGER, result)
+                core.ledger_append(ledger_path(core.VAULT), result)
             return result
         finally:
             unlock(lock)

@@ -45,7 +45,7 @@ def covering_regions() -> list[str]:
     지정했어도 위임은 성립한다. 반대로 Facet **하위**만 지정한 것은 덮지 못한다
     — 하위 구획만 protect해 Facet의 미보호를 우회할 수 없다(헌법 7조 3항)."""
     reg = DELEGATION_REGION
-    return [r for r in approvals.protected_regions()
+    return [r for r in approvals.protected_regions(VAULT)
             if reg == r.rstrip("/") or reg.startswith(r.rstrip("/") + "/")]
 
 
@@ -57,8 +57,8 @@ def _baseline_nodes() -> list[Path] | None:
     훑으면 승인본에 있으나 지금 지워진 노드를 놓치고, 하위 디렉터리의 노드도
     빠진다. 그래서 열거의 출처는 승인본 manifest다."""
     for region in sorted(covering_regions(), key=len, reverse=True):
-        tree = approvals.approved_hash(region)
-        table = approvals.tree_table_for_region(region, tree) if tree else None
+        tree = approvals.approved_hash(VAULT, region)
+        table = approvals.tree_table_for_region(VAULT, region, tree) if tree else None
         if table is None:
             continue
         pre = DELEGATION_REGION + "/"
@@ -109,7 +109,7 @@ def enumerate_delegations() -> list[dict]:
             })
             continue
         clause = parse_clause(n.body)
-        approved = any(approvals.file_in_region_baseline(r, p)
+        approved = any(approvals.file_in_region_baseline(VAULT, r, p)
                        for r in covering_regions())
         out.append({
             "path": rel, "node": n.id,

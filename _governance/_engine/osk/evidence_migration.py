@@ -135,7 +135,7 @@ def _items(n, idx, records) -> list[dict]:
         if graph.is_record_ref(s):
             rec, index = raw.parse_ref(s)
             try:
-                p = raw.raw_file(rec)
+                p = raw.raw_file(core.VAULT, rec)
             except (OSError, ValueError):
                 out.append({**it, "kind": "round", "action": "hold", "reason": f"없는 기록: {rec}"})
                 continue
@@ -143,7 +143,7 @@ def _items(n, idx, records) -> list[dict]:
                 out.append({**it, "kind": "round", "action": "hold", "reason": "라운드 번호가 없는 기록 참조"})
                 continue
             it.update(kind="round", coord=evidence.coordinate(core.VAULT, p, index, records), record=p, index=index)
-            covered = raw.canonical_ref(s) in cited
+            covered = raw.canonical_ref(core.VAULT, s) in cited
         elif evidence.kind(s) in ("url", "external"):
             it.update(kind=evidence.kind(s), coord=s)
             covered = s in coords
@@ -199,7 +199,7 @@ def _change(path: Path, n, items: list[dict]) -> dict:
 def plan() -> dict:
     """노드마다 옮길 항목과 새 바이트 — 쓰지 않는다. 통치 문서는 근거 절 검증기의 대상이 아니므로
     빠진다(validate.evidence_section_report와 같다)."""
-    idx, records = graph.Index(), evidence.Records(core.VAULT)
+    idx, records = graph.Index(core.VAULT), evidence.Records(core.VAULT)
     found = []
     for _name_, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] != "governance":
@@ -233,7 +233,7 @@ def plan() -> dict:
         nodes.append(_change(path, n, items))
     counts = Counter(it["action"] for node in nodes for it in node["items"])
     return {"nodes": nodes, "counts": {k: counts[k] for k in ("line", "covered", "hold")},
-            "regions": sorted({r for node in nodes if node["new"] for r in approvals.containing_regions(node["path"])})}
+            "regions": sorted({r for node in nodes if node["new"] for r in approvals.containing_regions(core.VAULT, node["path"])})}
 
 
 def _manifest(p: dict, day: str) -> str:
@@ -342,7 +342,7 @@ def heading_plan() -> list[dict]:
     않거나(본문 맨 앞의 `# 관측`은 노드 제목이다) 상태가 달라지거나, 다른 노드가 `derived-from`이나
     본문 링크로 가리킨 제목 범위가 달라지면(`#근거`가 사라지고, H1 `# 관측`이 앞 H1의 범위를 닫는다)
     보류로 둔다 — `## 근거`도 읽힌다."""
-    idx = graph.Index()
+    idx = graph.Index(core.VAULT)
     cited: dict[str, set[str]] = defaultdict(set)   # 노드 id → 제목으로 참조된 제목
     for _n, (path, kind) in idx.nodes.items():
         n = idx.node(path)
@@ -402,7 +402,7 @@ def heading_apply(expect=None) -> dict:
                 f"## 대상 — 노드 {len(todo)}개 · 보류 {len(holds)}", "", *(f"- `{it['path']}` → 바꾼다" for it in todo),
                 *(h.replace("` — ", "` → 보류 — ", 1) for h in holds), ""]
         core.atomic_write(manifest, "\n".join(head).encode("utf-8"))
-        regions = sorted({r for it in todo for r in approvals.containing_regions(it["path"])})
+        regions = sorted({r for it in todo for r in approvals.containing_regions(core.VAULT, it["path"])})
         for it in todo:
             path = ROOT / it["path"]
             if sha256_bytes(path.read_bytes()) != it["before"]:

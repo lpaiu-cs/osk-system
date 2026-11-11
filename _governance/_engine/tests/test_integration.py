@@ -33,8 +33,8 @@ if ROOT != Path(os.environ["OSK_VAULT_ROOT"]).resolve():
 
 validate.make_mini_vault(ROOT)
 (ROOT / "00_Scope/Capture").mkdir()
-scope_memory.replace("capture-tests", "", space="00_Scope/Capture")
-write.set_primary("capture-tests", "Capture", "fixture")      # 쓰기는 결속만 더한다 — 주된 scope는 지정으로(Mechanism §6-2 6항)
+scope_memory.replace(core.VAULT, "capture-tests", "", space="00_Scope/Capture")
+write.set_primary(core.VAULT, "capture-tests", "Capture", "fixture")      # 쓰기는 결속만 더한다 — 주된 scope는 지정으로(Mechanism §6-2 6항)
 
 
 def claude_round(sid, n, *, finished=True):
@@ -66,7 +66,7 @@ def evidenced(body, *refs):
     """A body ending with one 근거 line per cited round — a distillation checks its round
     sources against these lines (Constitution art. 8 §6)."""
     from osk import evidence
-    lines = [f"- 2026-10-31 · `{evidence.coordinate(core.VAULT, raw.raw_file(raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
+    lines = [f"- 2026-10-31 · `{evidence.coordinate(core.VAULT, raw.raw_file(core.VAULT, raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
              " · 지지 — the cited turn" for ref in refs]
     return body + "\n\n## 근거\n\n" + "\n".join(lines)
 
@@ -252,7 +252,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["captured_rounds"], 1)
         self.assertTrue(st["capture_pending"])
-        self.assertFalse(raw.record_path("Capture", st["record"]).exists())  # tracking copies no dialogue
+        self.assertFalse(raw.record_path(core.VAULT, "Capture", st["record"]).exists())  # tracking copies no dialogue
         [turn] = self.turns()
         text = turn["user"] + "\n" + turn["agent"]
         self.assertNotIn("evidence result", text)
@@ -867,8 +867,8 @@ class IntegrationTests(unittest.TestCase):
             self.assertFalse(it.tick("claude", self.sid)["due"])
         self.assertTrue(it.tick("claude", self.sid)["due"])
         self.assertIn("공유 기억이 비어 있어도", it.prompt("claude", self.sid)["text"])
-        cur = scope_memory.read("capture-tests")
-        scope_memory.replace("other-writer", "other session writes shared memory", cur["hash"], "00_Scope/Capture")
+        cur = scope_memory.read(core.VAULT, "capture-tests")
+        scope_memory.replace(core.VAULT, "other-writer", "other session writes shared memory", cur["hash"], "00_Scope/Capture")
         resumed = it.hook_capture({"harness": "claude", "session_id": self.sid, "transcript_path": str(self.path)}, "capture-tests")
         self.assertEqual(resumed["prompt_count"], 9)
         self.assertIsNone(resumed["reviewed_through"])
@@ -880,11 +880,11 @@ class IntegrationTests(unittest.TestCase):
     def test_scope_routing_changes_are_recorded_and_same_scope_keys_resume(self):
         self.transcript(claude_round(self.sid, 1))
         first = self.capture()
-        write.bind_session(self.sid + "-renamed", "Capture")
+        write.bind_session(core.VAULT, self.sid + "-renamed", "Capture")
         resumed = it.capture("claude", self.sid, str(self.path), self.sid + "-renamed")
         self.assertTrue(resumed["ok"], resumed)
         self.assertEqual(first["pending_refs"], resumed["pending_refs"])
-        write.alias_session(self.sid + "-alias", self.sid + "-renamed")
+        write.alias_session(core.VAULT, self.sid + "-alias", self.sid + "-renamed")
         self.assertTrue(it.capture("claude", self.sid, str(self.path), self.sid + "-alias")["ok"])
         refused = it.capture("claude", self.sid, str(self.path), self.sid + "-elsewhere", "00_Scope/W1")
         self.assertFalse(refused["ok"])
@@ -916,16 +916,16 @@ class IntegrationTests(unittest.TestCase):
         other = it.capture("claude", self.sid + "w", str(self.path), "capture-tests", "00_Scope/W1")
         self.assertTrue(other["ok"], other)
         self.assertEqual(other["space"], "00_Scope/W1")
-        self.assertEqual(write.resolve_session("capture-tests"), "Capture")
+        self.assertEqual(write.resolve_session(core.VAULT, "capture-tests"), "Capture")
         # 고정한 착지가 검토 문맥이다 — 허브 트리와 summary 확인은 W1이지 주된 scope Capture가 아니다(#191 리뷰 2차)
         review = it.prompt("claude", self.sid + "w", include_organization=False)
         self.assertTrue(review["hub_tree"].startswith("- 00_Scope/W1 "), review["hub_tree"])
-        pinned = scope_memory.replace("capture-tests", "- pinned summary", space="00_Scope/W1")
+        pinned = scope_memory.replace(core.VAULT, "capture-tests", "- pinned summary", space="00_Scope/W1")
         it.acknowledge("claude", self.sid + "w", review["through"], "summary", "fixture",
                        targets=[{"text": "pinned summary"}])
         self.assertEqual(it.status("claude", self.sid + "w")["reviewed_rounds"], 1)
-        scope_memory.replace("capture-tests", "", pinned["hash"], "00_Scope/W1")      # 다른 시험에 남기지 않는다
-        write.unbind_session("capture-tests", "W1", "fixture")
+        scope_memory.replace(core.VAULT, "capture-tests", "", pinned["hash"], "00_Scope/W1")      # 다른 시험에 남기지 않는다
+        write.unbind_session(core.VAULT, "capture-tests", "W1", "fixture")
         for n, space in enumerate(("00_Scope/Absent", "Capture")):
             sid = self.sid + str(n)
             self.transcript(claude_round(sid, 1))
@@ -935,7 +935,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(rejected["captured_rounds"], 0)
             state = json.loads(it.state_path("claude", sid).read_text(encoding="utf-8"))
             self.assertIsNone(state["space"])
-            self.assertFalse(raw.record_path("Capture", rejected["record"]).exists())
+            self.assertFalse(raw.record_path(core.VAULT, "Capture", rejected["record"]).exists())
             resumed = it.capture("claude", sid, str(self.path), "capture-tests")
             self.assertTrue(resumed["ok"], resumed)
             self.assertEqual(resumed["appended"], 1)
@@ -1086,8 +1086,8 @@ class IntegrationTests(unittest.TestCase):
         st = self.capture()
         with self.assertRaises(ValueError):
             it.acknowledge("claude", self.sid, st["through"], "summary", "summary only", [{"text": "missing excerpt"}])
-        cur = scope_memory.read("capture-tests")
-        scope_memory.replace("capture-tests", "an exact saved summary", cur["hash"])
+        cur = scope_memory.read(core.VAULT, "capture-tests")
+        scope_memory.replace(core.VAULT, "capture-tests", "an exact saved summary", cur["hash"])
         done = it.acknowledge("claude", self.sid, st["through"], "summary", "temporary summary is sufficient", [{"text": "exact saved summary"}])
         self.assertFalse(done["pending"])
         self.assertFalse(done["last_review"]["mechanical_preservation"])
@@ -1378,11 +1378,11 @@ class IntegrationTests(unittest.TestCase):
         captured = it.capture('claude', self.sid, str(self.path), 'capture-tests', '00_Scope/Capture')
         self.assertTrue(captured['ok'], captured)
         self.assertEqual(captured['captured_rounds'], 1)
-        self.assertIsNone(write.resolve_session(generic))
+        self.assertIsNone(write.resolve_session(core.VAULT, generic))
         resumed = it.hook_capture({'harness': 'claude', 'session_id': self.sid}, generic)
         self.assertTrue(resumed['ok'], resumed)
         self.assertEqual(resumed['session'], 'capture-tests')
-        self.assertIsNone(write.resolve_session(generic))
+        self.assertIsNone(write.resolve_session(core.VAULT, generic))
         other = it.capture('claude', self.sid + '-other', str(self.path), generic)
         self.assertFalse(other['ok'])
         self.assertIsNone(it.load_state(it.state_path('claude', self.sid + '-other'),
@@ -1623,17 +1623,17 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(pending["capture_pending"])
         self.assertEqual(pending["capture_recovery"]["state"], "pending")
         self.assertEqual(it.prompt("claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
-        self.assertIsNone(write.resolve_session(self.sid))
+        self.assertIsNone(write.resolve_session(core.VAULT, self.sid))
         self.transcript(claude_round(self.sid, 1))
         done = it.catchup(100)
         capture = next(c for c in done["captures"] if c["conversation_id"] == self.sid)
         self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
         # Tracking writes nothing, so it binds nothing; citing writes the one root record and binds nothing
         # either — only a node written with a space adds that scope to the project's binding.
-        self.assertIsNone(write.resolve_session(self.sid))
+        self.assertIsNone(write.resolve_session(core.VAULT, self.sid))
         cited = it.cite(f"claude/{self.sid}", quote="question 1")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
-        self.assertIsNone(write.resolve_session(self.sid))
+        self.assertIsNone(write.resolve_session(core.VAULT, self.sid))
         self.assertEqual(it.status("claude", self.sid)["space"], "00_Scope/Capture")   # the explicit landing stays
 
 
@@ -1665,9 +1665,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["appended"], 0)
         self.assertEqual(st["captured_rounds"], 3)
         parsed = transcripts.read(str(self.path), "claude", self.sid)
-        raw.append_rounds("capture-tests", self.sid + "-manual", [parsed["rounds"][-1]])
+        raw.append_rounds(core.VAULT, "capture-tests", self.sid + "-manual", [parsed["rounds"][-1]])
         with self.assertRaises(write.WriteError):
-            raw.append_rounds("capture-tests", self.sid + "-manual", [parsed["rounds"][-1]])
+            raw.append_rounds(core.VAULT, "capture-tests", self.sid + "-manual", [parsed["rounds"][-1]])
 
     def test_storage_boundary_retains_long_dialogue_not_native_bulk(self):
         long_text = "USER START " + "visible statement " * 2000 + "MIDPOINT CORRECTION " + "more words " * 2000 + " USER END"
@@ -1726,7 +1726,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(created["distillation"]["status"], "complete")
         node = contract.parse(core.ROOT / created["path"])
         hub = contract.parse(core.ROOT / "00_Scope/W1/W1.md")
-        self.assertEqual(evidence.cited_rounds(core.VAULT, node.body), {raw.canonical_ref(ref)})
+        self.assertEqual(evidence.cited_rounds(core.VAULT, node.body), {raw.canonical_ref(core.VAULT, ref)})
         self.assertNotIn("derived-from", node.meta)   # a round is a 근거 line, not an edge
         self.assertIn(created["name"], hub.wikilinks())
         # The cited round binds the review of the original turn it cites.
@@ -1790,7 +1790,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(replayed["pending_refs"], [old_ref])
         self.assertEqual(replayed["appended"], 0)
         self.assertEqual(legacy.read_bytes(), saved)  # tracking never rewrites a record
-        moved = raw.migrate(apply=True)
+        moved = raw.migrate(core.VAULT, apply=True)
         self.assertIn(legacy.relative_to(ROOT).as_posix(), [f["from"] for f in moved["files"]])
         self.assertFalse(legacy.exists())
         self.assertEqual(physical.read_bytes(), saved)
@@ -1873,14 +1873,14 @@ class IntegrationTests(unittest.TestCase):
         proofs = own["previous_distillations"]
         self.assertEqual([proof["key"] for proof in proofs], [key])
         self.assertEqual(proofs[0]["status"], "complete")
-        nodes_before = set(graph.Index().nodes)
+        nodes_before = set(graph.Index(core.VAULT).nodes)
         ack = it.acknowledge("claude", self.sid, own["through"], "preserved",
                              "Reuse the verified saved decision; the previous ACK was lost.",
                              [{"key": proofs[0]["key"]}])
         self.assertFalse(ack["pending"])
         self.assertEqual(it.review_status("claude", self.sid, own["through"])["status"], "complete")
         self.assertEqual(target.read_bytes(), before)
-        self.assertEqual(set(graph.Index().nodes), nodes_before)
+        self.assertEqual(set(graph.Index(core.VAULT).nodes), nodes_before)
 
 
     def test_discovery_excludes_other_conversation_and_root(self):
@@ -2179,7 +2179,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(after['snapshots'][first['through']], before['snapshots'][first['through']])
             self.assertEqual([r['id'] for r in after['rounds']], ['turn-1', 'turn-2'])
             self.assertNotIn('question 99', json.dumps(transcripts.read(str(child), 'codex', self.sid)['dialogue_v1']))
-            self.assertFalse(raw.record_path('Capture', captured['record']).exists())
+            self.assertFalse(raw.record_path(core.VAULT, 'Capture', captured['record']).exists())
             self.assertEqual(it.capture('codex', self.sid, str(child), 'capture-tests')['appended'], 0)
             # A lost local cursor tracks the same original turns again, under the same refs.
             refs = [r['ref'] for r in after['rounds']]
@@ -2247,14 +2247,14 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(self.capture("codex")["ok"])
         refs = [it.cite(f"codex/{self.sid}", quote=f"question {n}")["round_ref"] for n in (1, 2)]
         name = raw.parse_ref(refs[0])[0]
-        path = raw.raw_file(name)
+        path = raw.raw_file(core.VAULT, name)
         before = path.read_bytes()
-        toc = raw.read_round(name)["index"]
+        toc = raw.read_round(core.VAULT, name)["index"]
         self.assertEqual(len(toc), 2)
         for n, item in enumerate(toc, 1):
             self.assertIn(f"question {n}", item["preview"])
             self.assertNotIn("osk-cited", item["preview"])
-            recalled = raw.read_round(f"{name}#{n}")
+            recalled = raw.read_round(core.VAULT, f"{name}#{n}")
             self.assertEqual(raw.cited_header(recalled["text"])["turn"], f"turn-{n}")
             self.assertEqual(item["chars"], recalled["chars"])
         self.assertEqual(path.read_bytes(), before)
@@ -2404,7 +2404,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("[FILTERED:github-token]", stored)
         self.assertIn("\\## 12", stored)  # a numeric H2 in the words is escaped, not a round
         self.assertNotIn(token, it.state_path("claude", self.sid).read_text(encoding="utf-8"))
-        source = D._source(cited["round_ref"], graph.Index())
+        source = D._source(cited["round_ref"], graph.Index(core.VAULT))
         self.assertEqual(source["native"], st["pending_refs"][0])
         saved = D.create_node({"key": self.sid, "sources": [cited["round_ref"]], "hub": "W1"},
                               title=self.sid, summary="cited question",
@@ -2606,15 +2606,15 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         st = self.capture()
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["pending_refs"], [raw.native_ref("claude", self.sid, f"user-{n}") for n in (1, 2)])
-        self.assertFalse(raw.record_path("Capture", st["record"]).exists())
+        self.assertFalse(raw.record_path(core.VAULT, "Capture", st["record"]).exists())
         conversation = f"claude/{self.sid}"
         cited = it.cite(conversation, quote="  question\n1 ")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
         # The 근거 line's coordinate: the record hash shortened, and the round (Mechanism §8 9항).
         self.assertRegex(cited["coordinate"], r"^[0-9a-f]{8}#1$")
-        self.assertEqual(raw.read_round(cited["coordinate"])["round_ref"], cited["round_ref"])
+        self.assertEqual(raw.read_round(core.VAULT, cited["coordinate"])["round_ref"], cited["round_ref"])
         self.assertEqual((cited["turn"], cited["user_by"], cited["reused"]), ("user-1", "engine", False))
-        text = raw.read_round(cited["round_ref"])["text"]
+        text = raw.read_round(core.VAULT, cited["round_ref"])["text"]
         self.assertIn("question 1", text)
         self.assertNotIn("answer 1", text)  # the reply stays in the transcript, kept as its hash
         header = raw.cited_header(text)
@@ -2627,7 +2627,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         # The open turn is citable before it finishes and agrees with its finished round.
         open_turn = it.cite(conversation, turn="-1", note="decision under discussion")
         self.assertEqual((open_turn["turn"], open_turn["agent_sha256"]), ("user-3", None))
-        self.assertIn("decision under discussion", raw.read_round(open_turn["round_ref"])["text"])
+        self.assertIn("decision under discussion", raw.read_round(core.VAULT, open_turn["round_ref"])["text"])
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
         self.capture()
         self.assertEqual(it.cite(conversation, quote="question 3")["round_ref"], open_turn["round_ref"])
@@ -2651,7 +2651,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             it.cite(conversation, quote="question 1")
         cited = it.cite(conversation, user="question 1, as the agent recalls it", turn="user-1:final-1")
         self.assertEqual((cited["user_by"], cited["turn"], cited["agent_sha256"]), ("caller", "user-1", None))
-        self.assertEqual(raw.cited_header(raw.read_round(cited["round_ref"])["text"])["user_by"], "caller")
+        self.assertEqual(raw.cited_header(raw.read_round(core.VAULT, cited["round_ref"])["text"])["user_by"], "caller")
         self.assertTrue(it.cite(conversation, user="anything", turn="user-1")["reused"])
 
     def test_offline_review_takes_stored_rounds_and_leaves_turns_to_their_conversation(self):
@@ -2808,13 +2808,13 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         st = it.capture("claude", self.sid, str(self.path), key)
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["captured_rounds"], st["space"]), (2, None))
-        self.assertIsNone(write.resolve_session(key))       # tracking writes nothing and binds nothing
+        self.assertIsNone(write.resolve_session(core.VAULT, key))       # tracking writes nothing and binds nothing
         self.assertIn("시행령 §3 9항", it.prompt("claude", self.sid, include_organization=False)["text"])
         # Citing needs no landing: the record is the one root `_cited/` (Constitution art. 4 §3).
         cited = it.cite(f"claude/{self.sid}", quote="question 1")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
         self.assertIsNone(it.status("claude", self.sid)["space"])
-        self.assertIsNone(write.resolve_session(key))
+        self.assertIsNone(write.resolve_session(core.VAULT, key))
         self.assertEqual(it.cite(f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")["path"],
                          cited["path"])                   # any named space: the same record
         # A node written with a space adds that scope to the project's binding without making it
@@ -2824,7 +2824,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         made = write.create_node(self.sid + " node", "summary", "body", "gpt-6-astra",
                                  session=key, space="00_Scope/Capture")
         self.assertTrue(made["ok"], made)
-        self.assertEqual((made["bound_scope"], write.bindings(key)["scopes"], write.resolve_session(key)),
+        self.assertEqual((made["bound_scope"], write.bindings(core.VAULT, key)["scopes"], write.resolve_session(core.VAULT, key)),
                          ("Capture", ["Capture"], None))
         with self.assertRaisesRegex(write.WriteError, "주된 scope가 없다"):
             write.create_node(self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)
@@ -2836,9 +2836,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             with self.assertRaises(OSError):
                 it.acknowledge("claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
         self.assertEqual(it.status("claude", self.sid)["reviewed_rounds"], 0)
-        self.assertIsNone(write.resolve_session(key))
+        self.assertIsNone(write.resolve_session(core.VAULT, key))
         it.acknowledge("claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
-        self.assertEqual(write.resolve_session(key), "Capture")
+        self.assertEqual(write.resolve_session(core.VAULT, key), "Capture")
         self.assertTrue(write.create_node(self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)["ok"])
 
     def test_no_value_closes_only_the_judged_turns_and_a_new_turn_reopens(self):
@@ -2848,7 +2848,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         st = it.capture("claude", self.sid, str(self.path), key)
         done = it.acknowledge("claude", self.sid, st["through"], "no_value", "a one-off question")
         self.assertEqual((done["reviewed_rounds"], done["pending"], done["space"]), (1, False, None))
-        self.assertIsNone(write.resolve_session(key))
+        self.assertIsNone(write.resolve_session(core.VAULT, key))
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
         again = it.capture("claude", self.sid, str(self.path), key)
         self.assertTrue(again["pending"], again)
@@ -2902,7 +2902,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
 
         # The key also names an ordinary scope elsewhere: a binding made before the rule, or a
         # repository folder of the same name. The one-off conversation does not follow it.
-        write.bind_session(key, "Capture", "a binding of the same name")
+        write.bind_session(core.VAULT, key, "Capture", "a binding of the same name")
         st = talk(self.sid, f"2026-10-11/{key}")
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["workspace"]["one_off"], st["space"]), (True, None))
@@ -2917,16 +2917,16 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual(it.capture("claude", self.sid, None, key, "00_Scope/W1")["space"], "00_Scope/W1")
         self.assertEqual(len(core.ledger_read(core.ROUTING)), rows)          # still nothing bound
         # The judgment belongs to the conversation, not to the key: elsewhere the key keeps its scope.
-        self.assertEqual(write.resolve_session(key), "Capture")
+        self.assertEqual(write.resolve_session(core.VAULT, key), "Capture")
         self.assertIsNone(talk(self.sid + "-other", f"2026-10-12/{key}")["space"])
         # A write tool takes only a key; a process standing in the one-off folder does not bind it.
         self.addCleanup(setattr, workspaces, "_here", None)
         workspaces.enter(core.VAULT, str(root / f"2026-10-11/{key}"))
-        self.assertIsNone(write.resolve_session(key))
+        self.assertIsNone(write.resolve_session(core.VAULT, key))
         with self.assertRaisesRegex(write.WriteError, "일회성 작업 폴더"):
             write.create_node(self.sid + " node", "summary", "body", "gpt-6-astra", session=key)
         workspaces.enter(core.VAULT, str(TMP.name))
-        self.assertEqual(write.resolve_session(key), "Capture")
+        self.assertEqual(write.resolve_session(core.VAULT, key), "Capture")
         odd = talk(self.sid + "-odd", "artifacts/x")
         self.assertTrue(odd["workspace"]["one_off"])
         self.assertIn("규칙에 없는 모양", odd["workspace"]["warning"])
@@ -2954,7 +2954,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             self.assertIsNone(workspaces.judge(core.VAULT, "claude", local + "/Claude-Data/claude_pzs8sxrjxfjjc/claude-code"))
             # A new scratch conversation starts unlanded even if its key was bound before the rule.
             new.mkdir(parents=True)
-            write.bind_session(new.name, "Capture", "bound before the rule")
+            write.bind_session(core.VAULT, new.name, "Capture", "bound before the rule")
             self.transcript([{**r, "cwd": str(new), "version": "2.1.308"} for r in claude_round(self.sid, 1)])
             st = it.capture("claude", self.sid, str(self.path), new.name)
             self.assertEqual((st["workspace"]["one_off"], st["space"]), (True, None), st)
@@ -3037,7 +3037,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.addCleanup(workspaces.ledger_path(core.VAULT).unlink, missing_ok=True)
         cwd = root / "amber-quartz"
         cwd.mkdir(parents=True)
-        write.bind_session("amber-quartz", "W1", "a repository key of the same name")
+        write.bind_session(core.VAULT, "amber-quartz", "W1", "a repository key of the same name")
         parent = self.sid + "-parent"
         self.forget(parent, self.sid)
         rows = [{**r, "cwd": str(cwd)} for r in claude_round(parent, 1)]
@@ -3058,13 +3058,13 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.forget(self.sid)
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
         st = it.capture("claude", self.sid, str(self.path), key)
-        raw.append_rounds(key, st["record"], [{"user": "question 1", "agent": ""}], "00_Scope/Capture",
+        raw.append_rounds(core.VAULT, key, st["record"], [{"user": "question 1", "agent": ""}], "00_Scope/Capture",
                           cited={"harness": "claude", "conversation": self.sid, "turn": "user-1"}, bind=False)
         second = it.cite(f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")
         self.assertTrue(second["round_ref"].startswith("_cited/.records/"), second)
         self.assertEqual(second["index"], 2)
         self.assertIsNone(it.status("claude", self.sid)["space"])
-        self.assertIsNone(write.resolve_session(key))                 # citing binds nothing
+        self.assertIsNone(write.resolve_session(core.VAULT, key))                 # citing binds nothing
 
     def test_concurrent_first_citations_land_the_conversation_once(self):
         # The landing check, the write and the pin are one step under the conversation's lock:
@@ -3120,8 +3120,8 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         cited = it.cite(f"claude/{self.sid}", quote="question 1")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)   # the one root record
         self.assertIsNone(it.status("claude", self.sid)["space"])
-        self.assertIsNone(write.resolve_session(key))
-        self.assertIn("question 1", raw.read_round(cited["round_ref"])["text"])
+        self.assertIsNone(write.resolve_session(core.VAULT, key))
+        self.assertIn("question 1", raw.read_round(core.VAULT, cited["round_ref"])["text"])
         hub = ROOT / "00_Person" / "Habits" / "Habits.md"
         hub.parent.mkdir(parents=True, exist_ok=True)
         hub.write_text('---\nid: "260801-zzzz-hbit"\ncreated: "2026-08-01 00:00 (KST)"\n'
@@ -3144,7 +3144,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         it.capture("claude", self.sid, str(self.path), key, "00_Scope/Capture")
         later = it.cite(f"claude/{self.sid}", quote="question 3")
         self.assertEqual(later["path"], cited["path"], later)
-        self.assertTrue(raw.read_round(cited["round_ref"])["ok"])
+        self.assertTrue(raw.read_round(core.VAULT, cited["round_ref"])["ok"])
         # A record belongs to no scope: a Person node may be distilled from any cited round
         # (Constitution art. 8 §3).
         job2 = it.prompt("claude", self.sid, include_organization=False)
@@ -3155,9 +3155,9 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                                          drafter="gpt-6-astra",
                                          space="00_Person/Habits")
         self.assertEqual(made2["distillation"]["status"], "complete", made2)
-        self.assertTrue(raw.is_person("00_Person") and raw.is_person("Person") and raw.is_person("= Person"))
-        self.assertFalse(raw.is_person("00_Person/Habits"))
-        listed = [r["path"] for r in raw.list_records()["records"]]        # the root `_cited/` listing
+        self.assertTrue(raw.is_person(core.VAULT, "00_Person") and raw.is_person(core.VAULT, "Person") and raw.is_person(core.VAULT, "= Person"))
+        self.assertFalse(raw.is_person(core.VAULT, "00_Person/Habits"))
+        listed = [r["path"] for r in raw.list_records(core.VAULT)["records"]]        # the root `_cited/` listing
         self.assertIn(cited["path"], listed)
 
 

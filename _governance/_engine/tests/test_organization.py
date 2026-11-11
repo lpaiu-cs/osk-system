@@ -19,7 +19,7 @@ def node(name, body="Reusable evidence", edges=None):
     wire("W1", name)
     return out
 def wire(hub, name):
-    idx=graph.Index(); p=write.live_locate(hub,idx); n=contract.parse(p)
+    idx=graph.Index(core.VAULT); p=write.live_locate(hub,idx); n=contract.parse(p)
     if name not in n.wikilinks():
         write.update_node(hub, body=n.body.rstrip()+chr(10)+"- [["+name+"]]",expect_hash=core.sha256_file(p))
 def rejected(fn):
@@ -47,7 +47,7 @@ class OrganizationTests(unittest.TestCase):
             added = node('Later destination')
             later = organization.plan('W1')
             assert later['key'] == original['key']
-            path = write.live_locate(added['id'], graph.Index()); path.unlink()
+            path = write.live_locate(added['id'], graph.Index(core.VAULT)); path.unlink()
             write.update_node('W1',old_text='- [[Later destination]]',new_text='')
             missing = organization.plan('W1')
             assert added['id'] in missing['missing_ids']
@@ -168,7 +168,7 @@ class OrganizationTests(unittest.TestCase):
             assert changed['previous_deferral']['snapshot_changed']
             result = growth.run([sys.executable, '-B', '-c', 'import sys; p=sys.stdin.read(); assert "section Limits; verify condition X." in p'], limit=3)
             assert result['returncode'] == 0, result
-            manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            manifest = [r for r in core.ledger_read(growth.ledger_path(core.VAULT)) if r['kind']=='plan'][-1]
             carried = next(j for j in manifest['organization_jobs'] if j['scope']=='W1')
             assert carried['previous_deferral'] == changed['previous_deferral']
             finish_review('W1', 'Checked D as well.')
@@ -261,7 +261,7 @@ class OrganizationTests(unittest.TestCase):
             body = ''.join('Measured value stays within the bounded range for case ' + str(i) + '. '
                            for i in range(160))
             node('Ledger', body)
-            n = contract.parse(write.live_locate('Ledger', graph.Index()))
+            n = contract.parse(write.live_locate('Ledger', graph.Index(core.VAULT)))
             units = organization._units(n)
             assert len(units) > 2, units
             for u in units[:-1]:
@@ -318,7 +318,7 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             a=node("A", "A fact with [[future question]]", {"derived-from":"missing source"})
             assert a["reference_review"]["status"]=="pending"
-            assert any("[derived-from]" in x for x in graph.dangling_refs(graph.Index()))
+            assert any("[derived-from]" in x for x in graph.dangling_refs(core.VAULT, graph.Index(core.VAULT)))
             job=organization.plan("W1")
             intent=[{"id":a["id"],"relation":"Link","ref":"future question","reason":"Explicit open question"}]
             current=organization.snapshot("W1")
@@ -344,7 +344,7 @@ class OrganizationTests(unittest.TestCase):
             items=a["reference_review"]["items"]
             assert {i["issue"] for i in items}=={"source_navigation","raw_round_required"},items
             assert any(i["ref"].endswith("#1") for i in items)
-            assert not any(p==rp for p,k in graph.Index().nodes.values())
+            assert not any(p==rp for p,k in graph.Index(core.VAULT).nodes.values())
             old=core.sha256_file(rp)
             rejected(lambda: write.update_node("A",add_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md#1]]"}))
             write.update_node("A",remove_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md]]"})
@@ -366,7 +366,7 @@ class OrganizationTests(unittest.TestCase):
             assert not now["issues"],now["issues"]
             finish_review("W1", "One meaningful branch; original IDs retained")
             assert organization.status(job)["status"]=="complete"
-            path=write.live_locate(a["id"],graph.Index()); path.unlink()
+            path=write.live_locate(a["id"],graph.Index(core.VAULT)); path.unlink()
             assert organization.status(job)["status"]=="pending"
         """)
 
@@ -376,7 +376,7 @@ class OrganizationTests(unittest.TestCase):
             write.create_node("Child","Child","Nested entrance","gpt-6-astra",space="00_Scope/W1/Gap/Child")
             write.create_node("A","A","Retained nested knowledge","gpt-6-astra",space="00_Scope/W1/Gap/Child")
             wire("Child","A")
-            gap=write.live_locate("Gap",graph.Index()); original=gap.read_bytes(); gap.unlink()
+            gap=write.live_locate("Gap",graph.Index(core.VAULT)); original=gap.read_bytes(); gap.unlink()
             assert not organization._state_path().exists()
             job=organization.plan("W1")
             assert any(i["path"]=="00_Scope/W1/Gap" and i["hub"] is None for i in job["issues"]),job
@@ -420,7 +420,7 @@ class OrganizationTests(unittest.TestCase):
             branch = core.ROOT / "00_Scope/W1/Branch"
             (branch / "Branch.md").rename(branch / "Branch.MD")
             assert "Branch.MD" in [p.name for p in branch.iterdir()]
-            tree = organization.hub_tree(organization.scope_path("W1"), graph.Index())
+            tree = organization.hub_tree(organization.scope_path("W1"), graph.Index(core.VAULT))
             assert "  - 00_Scope/W1/Branch · 직속 노드 1 — Branch entry" in tree.splitlines(), tree
         """)
 
@@ -434,7 +434,7 @@ class OrganizationTests(unittest.TestCase):
             write.update_node("W1", old_text=chr(10)*2+"- [[Loose]]", new_text="")
             job = organization.plan("W1")
             assert any(i["path"]=="00_Scope/W1" and "Loose" in i["missing_links"] for i in job["issues"]), job["issues"]
-            assert "Loose" in validate.cluster_overview_report(graph.Index())["00_Scope/W1"].get("orphans", [])
+            assert "Loose" in validate.cluster_overview_report(graph.Index(core.VAULT))["00_Scope/W1"].get("orphans", [])
             try:
                 finish_review("W1", "Read every unit")
                 raise AssertionError("an unlinked node let the review complete")
@@ -494,7 +494,7 @@ class OrganizationTests(unittest.TestCase):
             out=write.move_nodes(out["remaining"],"00_Scope/W1/Branch"); assert out["ok"],out
             assert not organization.snapshot("W1")["pending_moves"]
             for n in [a,b]:
-                p=write.live_locate(n["id"],graph.Index()); assert core.sha256_file(p)==n["new_hash"]
+                p=write.live_locate(n["id"],graph.Index(core.VAULT)); assert core.sha256_file(p)==n["new_hash"]
             write.create_node("Other","Other","Another meaningful branch","gpt-6-astra",space="00_Scope/W1/Other")
             assert write.move_nodes(["A"],"00_Scope/W1/Other")["ok"]
             wire("W1","Branch"); wire("W1","Other"); wire("Branch","B"); wire("Other","A")
@@ -532,7 +532,7 @@ class OrganizationTests(unittest.TestCase):
             with patch("osk.write._apply_move",side_effect=OSError("injected I/O failure")):
                 failed=write.move_node("A","00_Scope/W1/Branch")
             assert not failed["ok"] and failed["moved"]==[] and failed["remaining"]==["A"],failed
-            assert core.sha256_file(write.live_locate(a["id"],graph.Index()))==a["new_hash"]
+            assert core.sha256_file(write.live_locate(a["id"],graph.Index(core.VAULT)))==a["new_hash"]
             assert write.move_node("A","00_Scope/W1/Branch")["ok"]
             assert not organization.snapshot("W1")["pending_moves"]
         """)
@@ -559,7 +559,7 @@ class OrganizationTests(unittest.TestCase):
             a=node("A"); job=organization.plan("W1")
             write.update_node("A",body="",expect_hash=a["new_hash"])
             rejected(lambda: organization.review(job["key"],"W1","complete","No content retained",after=organization.snapshot("W1")["snapshot"]))
-            p=write.live_locate(a["id"],graph.Index())
+            p=write.live_locate(a["id"],graph.Index(core.VAULT))
             write.update_node("A",body="Restored knowledge",expect_hash=core.sha256_file(p))
             rp=core.ROOT/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
             rp.write_text("## 1"+chr(10)+"Observed",encoding="utf-8")
@@ -593,7 +593,7 @@ class OrganizationTests(unittest.TestCase):
                   {"type":"assistant","sessionId":"trial","uuid":"a","message":{"role":"assistant","id":"m","stop_reason":"end_turn","content":[{"type":"text","text":"A bounded conclusion"}]}}]
             transcript.write_text(chr(10).join(json.dumps(r) for r in rows),encoding="utf-8")
             from osk import write
-            write.bind_session("trial","W1")  # tracking alone binds nothing
+            write.bind_session(core.VAULT, "trial","W1")  # tracking alone binds nothing
             st=integration.capture("claude","trial",str(transcript),"trial",space="00_Scope/W1")
             assert st["pending_refs"],st
             broken=core.ROOT/"00_Scope/W2/Broken.md"; broken.parent.mkdir(parents=True)

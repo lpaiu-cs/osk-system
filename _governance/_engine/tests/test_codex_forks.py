@@ -17,7 +17,7 @@ if core.ROOT != Path(os.environ["OSK_VAULT_ROOT"]).resolve():
 validate.make_mini_vault(core.ROOT)
 for scope in ("Forks", "Other"):
     (core.ROOT / "00_Scope" / scope).mkdir()
-    scope_memory.replace(scope.lower(), "", space="00_Scope/" + scope)
+    scope_memory.replace(core.VAULT, scope.lower(), "", space="00_Scope/" + scope)
 
 
 def event(kind, **payload):

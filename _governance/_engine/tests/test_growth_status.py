@@ -135,13 +135,13 @@ class GrowthStatusTests(unittest.TestCase):
             with patch.object(core,'now_iso',return_value=AT):
                 jobs={}
                 for name in cases:
-                    row=evictions.record_evict('W1','test','Anonymous source '+name)
+                    row=evictions.record_evict(core.VAULT, 'W1','test','Anonymous source '+name)
                     jobs[name]={'key':'eviction:'+row['rid'],'of':row['rid'],
                                 'scope':row['scope'],'text':row['text']}
-                plan=core.ledger_append(growth.LEDGER,{'kind':'plan','candidates':[],
+                plan=core.ledger_append(growth.ledger_path(core.VAULT),{'kind':'plan','candidates':[],
                     'scope_jobs':[],'eviction_jobs':list(jobs.values())})
-                evictions.settle(jobs['settled_unreviewed']['of'],'merged',target='Retained')
-                evictions.settle(jobs['settled_deferred']['of'],'node',target='Retained')
+                evictions.settle(core.VAULT, jobs['settled_unreviewed']['of'],'merged',target='Retained')
+                evictions.settle(core.VAULT, jobs['settled_deferred']['of'],'node',target='Retained')
                 reviews=[]
                 for name,outcome in cases.items():
                     if outcome is None: continue
@@ -152,10 +152,10 @@ class GrowthStatusTests(unittest.TestCase):
                                        'scope':[],'eviction':reviews}})
                 assert done['ok'],done
                 outcomes={job['key']:growth._eviction_status(job) for job in jobs.values()}
-                core.ledger_append(growth.LEDGER,{'kind':'run','manifest':plan['rid'],
+                core.ledger_append(growth.ledger_path(core.VAULT),{'kind':'run','manifest':plan['rid'],
                                    'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
             with patch.object(core,'now_iso',return_value=END):
-                core.ledger_append(growth.LEDGER,{'kind':'run','manifest':plan['rid'],
+                core.ledger_append(growth.ledger_path(core.VAULT),{'kind':'run','manifest':plan['rid'],
                                    'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
             before=files()
             result=report()
@@ -281,8 +281,8 @@ class GrowthStatusTests(unittest.TestCase):
             assert not damaged['ok'] and damaged['integration'] is None,damaged
             assert damaged['reviews'] is None and damaged['preservation'] is None,damaged
             path.unlink()
-            growth.LEDGER.parent.mkdir(parents=True,exist_ok=True)
-            growth.LEDGER.write_text('not json'+chr(10),encoding='utf-8')
+            growth.ledger_path(core.VAULT).parent.mkdir(parents=True,exist_ok=True)
+            growth.ledger_path(core.VAULT).write_text('not json'+chr(10),encoding='utf-8')
             damaged=report()
             assert not damaged['ok'] and damaged['runs'] is None,damaged
         ''')

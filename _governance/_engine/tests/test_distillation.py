@@ -195,7 +195,7 @@ def _child():
                         journal = D._job_path(self.key).read_bytes()
                         job = D._load(self.key)
                         self.assertEqual(job["target"]["hash"], core.sha256_bytes(reserved[0]))
-                        raw.migrate(apply=True)
+                        raw.migrate(core.VAULT, apply=True)
                         evidence = source.read_bytes()
                         source.write_bytes(evidence.replace(b"observed evidence", b"changed evidence"))
                         failed = D._execute(operation, self.spec, request)
@@ -218,7 +218,7 @@ def _child():
                         D._job_path(self.key).unlink()
 
             def test_new_raw_journal_retries_with_its_evidence_line(self):
-                record = raw.append_rounds(self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
+                record = raw.append_rounds(core.VAULT, self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 self.args["body"] += ("\n\n## 근거\n\n- 2026-10-31 · `"
                                       + evidence.coordinate(core.VAULT, record["path"], 1) + "` · 지지 — q")
@@ -326,7 +326,7 @@ def _child():
                         stale = case in ("source_changed", "target_changed")
 
                         def pending():
-                            return [r for r in rechecks.candidates()[0] if r["id"] == existing["id"]]
+                            return [r for r in rechecks.candidates(core.VAULT)[0] if r["id"] == existing["id"]]
 
                         try:
                             out = M.update_node(**request)
@@ -424,7 +424,7 @@ def _child():
                 self.assertEqual(out["distillation"]["sources"][0]["ref"], self.source["id"])
 
             def test_exact_raw_anchor_and_append_stability(self):
-                record = raw.append_rounds(self.name, self.name,
+                record = raw.append_rounds(core.VAULT, self.name, self.name,
                     [{"user": "first observation", "agent": "first result"},
                      {"user": "second observation", "agent": "second result"}], space="00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
@@ -434,8 +434,8 @@ def _child():
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
                 node = contract.parse(core.ROOT / out["path"])
-                self.assertEqual(evidence.cited_rounds(core.VAULT, node.body), {raw.canonical_ref(record["round_refs"][0])})
-                raw.append_rounds(self.name, self.name,
+                self.assertEqual(evidence.cited_rounds(core.VAULT, node.body), {raw.canonical_ref(core.VAULT, record["round_refs"][0])})
+                raw.append_rounds(core.VAULT, self.name, self.name,
                     [{"user": "third observation", "agent": "third result"}])
                 self.assertEqual(D.status(self.key)["status"], "complete")
                 # Isolate exact-anchor verification: even a matching target byte

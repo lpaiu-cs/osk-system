@@ -260,7 +260,7 @@ def cluster_names() -> list[str]:
         with os.scandir(d) as entries:
             dirs = [Path(e.path) for e in entries if e.is_dir()]
         for sub in sorted(dirs):
-            k = graph.space_of(sub / "x.md")
+            k = graph.space_of(VAULT, sub / "x.md")
             if not (graph.is_node_home(k) and _is_cluster(k)
                     and k[:1] != GOVERNANCE):
                 continue
@@ -347,7 +347,7 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
             f"있다. 지금 쓸 수 있는 군집: {', '.join(cluster_names()) or '없음'}")
     # 확인 표식·디렉토리를 남기기 **전에** 자리를 본다 — 노드 자리가 아닌 곳
     # (`_misc`·`.notes`)은 물어볼 것도 없이 거부다.
-    _require_node_cluster(graph.space_of(dest_dir / "x.md"), dest)
+    _require_node_cluster(graph.space_of(VAULT, dest_dir / "x.md"), dest)
     name_errs = title_errors(dest_dir.name)
     if name_errs:
         raise WriteError("군집 이름 부적격 — 이름이 곧 디렉토리명이다", name_errs)
@@ -383,7 +383,7 @@ def _new_cluster_gate(dest: str, dest_dir: Path | None, doing: str) -> Path:
 
 def open_cases() -> list[str]:
     """열린(docketed) 사건 번호 — conflicts 거부에 실어 보낸다."""
-    return sorted(no for no, c in graph.load_cases().items()
+    return sorted(no for no, c in graph.load_cases(VAULT).items()
                   if str(c.get("status")) == "docketed")
 
 
@@ -494,7 +494,7 @@ def _validate_node(path: Path, node, body: str, idx) -> list[str]:
     """계약 + 그 노드에서 **나가는 참조**의 위상. 전역 검사는 하지 않는다 —
     남이 만든 위반 때문에 내 쓰기가 막히면 안 된다 (설계 D10)."""
     errs = list(contract.validate(node))
-    kind = graph.space_of(path)
+    kind = graph.space_of(VAULT, path)
     for pred in contract.PREDICATES:
         for t in node.edges(pred):
             errs += _topology_of(idx, kind, path.stem, t, pred, node.id)
@@ -520,7 +520,7 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
     if pred == "conflicts":
         # 사건 표지는 참조 위상의 예외다(헌법 8조). 표면에서는 열린 사건에
         # 당사자로서 다는 것만 허용한다 — 전역 topology_check와 같은 의미론.
-        case = graph.load_cases().get(name)
+        case = graph.load_cases(VAULT).get(name)
         if not case:
             return [f"실재하지 않는 사건 참조: {stem} → {name}"]
         if str(case.get("status")) != "docketed":
@@ -573,7 +573,7 @@ def _dangling_of(path: Path, meta: dict, body: str, idx) -> list[str]:
     조용히 dangling을 쌓지 않게 한다(`list_nodes` 제거의 부작용 차단)."""
     node = meta if isinstance(meta, contract.Node) else\
         contract.Node(path=path, meta=meta, body=body)
-    return sorted({r["ref"].split("#", 1)[0] for r in graph.reference_review(node, idx)
+    return sorted({r["ref"].split("#", 1)[0] for r in graph.reference_review(VAULT, node, idx)
                    if r["resolution"] == "dangling"})
 
 
@@ -611,7 +611,7 @@ def _edge_report(node) -> dict:
 
 def _reference_feedback(path, meta, body, idx, previous=None) -> dict:
     node = contract.Node(path=path, meta=meta, body=body)
-    refs = graph.reference_review(node, idx, previous)
+    refs = graph.reference_review(VAULT, node, idx, previous)
     out = {"dangling": sorted({r["ref"].split("#", 1)[0] for r in refs
                                if r["resolution"] == "dangling"})}
     if refs:
@@ -666,7 +666,7 @@ def create_node(title: str, summary: str, body: str, drafter: str,
                 edges: dict | None = None, settle: str | None = None) -> dict:
     """Create an ordinary node under the shared mutation lock, then hang it in its place."""
     with mutation_lock(VAULT):
-        idx = graph.Index()             # 생성과 자리 걸기가 이 한 벌을 쓴다
+        idx = graph.Index(VAULT)             # 생성과 자리 걸기가 이 한 벌을 쓴다
         return _place(create_node_locked(title, summary, body, drafter, session,
                                           space, edges, settle, _idx=idx), idx)
 
@@ -681,7 +681,7 @@ def _place(out: dict, idx) -> dict:
     if not out.get("ok"):
         return out
     path = ROOT / out["path"]
-    if (graph.space_of(path)[0] not in ("scope", "domain", "person")
+    if (graph.space_of(VAULT, path)[0] not in ("scope", "domain", "person")
             or graph.is_hub(path) and len(path.parent.relative_to(ROOT).parts) <= 2):
         return out
     from . import distillation      # distillation이 write를 부르므로 쓸 때 읽는다
@@ -721,22 +721,22 @@ def create_node_locked(title: str, summary: str, body: str, drafter: str,
     # 세 벌을 지었다 — 계약 검사·이름 유일성·검증·dangling이 각자 지었고,
     # 그래서 체감 비용이 단가의 3배였다. 잠금 안이라 그 사이에 파일이
     # 바뀌지 않으므로 한 벌이면 족하다. 자리 걸기(`_place`)도 같은 벌을 받는다.
-    idx = graph.Index() if _idx is None else _idx
+    idx = graph.Index(VAULT) if _idx is None else _idx
     require_complete(idx)
     if settle is not None:
-        evictions.require_evict(settle)
+        evictions.require_evict(VAULT, settle)
     errs = (_check_edges(edges, idx) + title_errors(title)
-            + ephemeral_session_errors(session) + routing_errors(session))
+            + ephemeral_session_errors(session) + routing_errors(VAULT, session))
     if errs:
         raise WriteError("계약 위반 — 쓰지 않았다", errs)
 
     # 기본 착지는 프로젝트의 주된 scope다. 결속에 없는 scope를 명시해도 거부하지 않는다 —
     # 한 프로젝트가 여러 scope의 활동을 품고, 성공한 쓰기가 그 scope를 결속에 더한다
     # (Mechanism §6-2 6항 · 시행령 §3 10항). Domain·Person 착지는 결속과 무관하다.
-    bound = resolve_session(session)
+    bound = resolve_session(VAULT, session)
     dest = space or (f"{SCOPE}/{bound}" if bound else None)
     if not dest:
-        bound_set = bindings(session)["scopes"]
+        bound_set = bindings(VAULT, session)["scopes"]
         raise WriteError(
             "착지가 정해지지 않았다 — space를 지정하라. "
             f"지금 쓸 수 있는 군집: {', '.join(cluster_names()) or '없음'}. "
@@ -754,7 +754,7 @@ def create_node_locked(title: str, summary: str, body: str, drafter: str,
         # 규범 무근거였다 — 헌법은 형성의 자동화를 기본으로 둔다.)
         dest_dir = _new_cluster_gate(dest, dest_dir, "이 쓰기가")
     path = dest_dir / f"{title}.md"
-    kind = graph.space_of(path)      # 소속은 노드 파일 경로로 판정한다
+    kind = graph.space_of(VAULT, path)      # 소속은 노드 파일 경로로 판정한다
     _require_node_cluster(kind, dest)
     # 새 군집의 첫 노드는 **동명 허브 노드**다 (시행령 §3 6항). 신설
     # 관문을 지나 방금 생겼든 이미 비어 있든, 허브 없이 출발한 군집은
@@ -829,22 +829,22 @@ def create_node_locked(title: str, summary: str, body: str, drafter: str,
         # `Scope/Sub/_raw/`라는 유령 scope를 만들고, 노드 생성은 최상위
         # 신설 관문으로 갔다. 깊이는 갈래이지 소속이 아니며(Mechanism §1
         # 2항), 소속은 `space_of`가 이미 정확히 말해 준다.
-        if bind_after_write(receipt, session, kind[1]):
+        if bind_after_write(VAULT, receipt, session, kind[1]):
             bound_now = kind[1]         # 실제로 결속했을 때만 보고한다
     result = {"ok": True, "name": title,
             "path": posix_rel(path, ROOT), "id": meta["id"],
             "new_hash": sha256_bytes(data),
             "bound_scope": bound_now, **receipt,
             **_reference_feedback(path, meta, body, idx)}
-    result.update(rechecks.after_write(idx, path, meta))
-    return evictions.after_node_write(result, settle, "node", title)
+    result.update(rechecks.after_write(VAULT, idx, path, meta))
+    return evictions.after_node_write(VAULT, result, settle, "node", title)
 
 
 def _baseline(idx) -> None:
     """재검토 기준선(`rechecks.ensure_baseline`). 적지 못해도 쓰기를 막지 않는다 —
     그 근거들이 후보로 남을 뿐이다."""
     try:
-        rechecks.ensure_baseline(idx)
+        rechecks.ensure_baseline(VAULT, idx)
     except Exception:
         pass
 
@@ -887,7 +887,7 @@ def edge_key(target: str, idx) -> tuple[str, str]:
     """노드는 해석된 제목과 절 앵커, 비노드 근거는 전체 경로와 앵커로 구별한다.
     id·제목·경로 어느 표기든 같은 노드의 같은 범위면 같은 키다. 해석되지 않는 이름만 표기
     규칙(`contract.target_stem`)으로 접는다 — 제목에 든 `.md`를 떼지 않기 위해서다."""
-    s = raw.canonical_ref(target).strip()
+    s = raw.canonical_ref(VAULT, target).strip()
     if s.startswith("[[") and s.endswith("]]"):
         s = s[2:-2]
     path, sep, anchor = s.split("|", 1)[0].strip().partition("#")
@@ -959,7 +959,7 @@ def _as_links(pred: str, targets, *, legacy_raw: bool = False) -> str | list:
         s = str(t).strip()
         if (not legacy_raw and pred == "derived-from" and graph.is_record_ref(s)
                 and not re.match(r"^(?:\[\[\s*)?https?://", s)):
-            out.append(raw.canonical_ref(s))
+            out.append(raw.canonical_ref(VAULT, s))
         elif s.startswith("[[") or (pred == "derived-from" and re.match(ID_RE, s)):
             out.append(s)
         else:
@@ -1032,17 +1032,17 @@ def update_node_locked(name: str, body: str | None = None,
                 "`old_text`와 `new_text`가 같다 — 쓰지 않았다",
                 ["바뀌는 것이 없다. 고칠 내용을 `new_text`에 담아라."])
     # 이 쓰기가 쓰는 색인은 하나다. 같은 잠금 안의 허브 배선은 앞 쓰기의 색인을 넘긴다.
-    idx = graph.Index() if _idx is None else _idx
+    idx = graph.Index(VAULT) if _idx is None else _idx
     require_complete(idx)
     if settle is not None:
-        evictions.require_evict(settle)
+        evictions.require_evict(VAULT, settle)
     errs = _check_edges(add_edges, idx) + _check_edges(remove_edges, idx, adding=False)
     if errs:
         raise WriteError("계약 위반 — 쓰지 않았다", errs)
     path = live_locate(name, idx)
     if path is None or not path.is_file():
         raise WriteError(f"노드 없음: {name}")
-    kind = graph.space_of(path)
+    kind = graph.space_of(VAULT, path)
     _reject_governance(kind)
     if settle is not None:
         evictions.require_target(path.stem, idx)
@@ -1057,7 +1057,7 @@ def update_node_locked(name: str, body: str | None = None,
     _baseline(idx)
     rc_before = rechecks.pairs(idx, n.meta)
     rc_pre = rechecks.state(path.read_bytes())  # 검토자가 읽었어야 할 노드의 본문
-    rc_prior = rechecks.complete_keys(idx, path, n.meta) if rc_before else set()
+    rc_prior = rechecks.complete_keys(VAULT, idx, path, n.meta) if rc_before else set()
     rc_again, rc_stray = set(), []
     for ref in as_list(rechecked):
         t = rechecks.target(str(ref), idx)
@@ -1164,7 +1164,7 @@ def update_node_locked(name: str, body: str | None = None,
                "edges": _edge_report(n),
                **_reference_feedback(path, n.meta, n.body, idx, n), **rc_note}
         if rc_again:     # 바꿀 것 없이 점검을 적었다 — 점검 완료(unchanged)
-            res.update(rechecks.after_write(idx, path, n.meta, before=rc_before.keys(),
+            res.update(rechecks.after_write(VAULT, idx, path, n.meta, before=rc_before.keys(),
                                             prior=rc_prior, rechecked=rc_again,
                                             changed=False, pre=rc_pre, seen=_seen))
         return res
@@ -1188,7 +1188,7 @@ def update_node_locked(name: str, body: str | None = None,
            "updated_kept": only_conflicts,
            "edges": _edge_report(contract.Node(path=path, meta=meta, body=new_body)),
            **_reference_feedback(path, meta, new_body, idx, n), **rc_note}
-    out.update(rechecks.after_write(idx, path, meta, before=rc_before.keys(),
+    out.update(rechecks.after_write(VAULT, idx, path, meta, before=rc_before.keys(),
                                     prior=rc_prior, rechecked=rc_again,
                                     pre=rc_pre, seen=_seen))
     # 쓰기 직전 본문을 읽었던 호출자는 방금 쓴 본문도 안다 — 쓰기 응답의 해시를 다음
@@ -1204,7 +1204,7 @@ def update_node_locked(name: str, body: str | None = None,
             out["dropped"] = dropped
     if replaced_summary is not None:
         out["replaced_summary"] = replaced_summary
-    return evictions.after_node_write(out, settle, "merged", path.stem)
+    return evictions.after_node_write(VAULT, out, settle, "merged", path.stem)
 
 
 def _dropped(old_body: str, new_body: str) -> list[str]:
@@ -1229,7 +1229,7 @@ def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
         # 결과를 함께 말한다 — "전부 아니면 전무"를 문안으로만 약속하면 받는
         # 쪽이 못 믿고 확인 질의를 한 번 더 한다(표면 감사 실측).
         raise WriteError(f"노드 없음: {name} — 아무것도 옮기지 않았다")
-    _reject_governance(graph.space_of(path))
+    _reject_governance(graph.space_of(VAULT, path))
     # 허브 노드는 이름이 군집에 결박한다 (시행령 §3 6항) — 밖으로 나가면
     # 군집이 허브를 잃고, 도착지에는 남의 군집 이름을 단 노드가 앉는다.
     # 하위 허브도 같은 식으로 걸린다(`graph.is_hub`) — 하위 군집의 재편은
@@ -1240,7 +1240,7 @@ def _plan_move(name: str, dest_dir: Path, dest_space: str, idx):
             [f"`{name}`은 `= …/{path.parent.name}` 군집의 동명 허브 노드다"
              f"(시행령 §3 6항). 군집째 옮기려면 `move_cluster`를 쓴다"])
     target = dest_dir / path.name
-    dst_kind = graph.space_of(target)   # 소속은 노드 파일 경로로 판정한다
+    dst_kind = graph.space_of(VAULT, target)   # 소속은 노드 파일 경로로 판정한다
     _require_node_cluster(dst_kind, dest_space)
     clash = name_collision(dest_dir, path.stem)
     if clash is not None:
@@ -1276,13 +1276,13 @@ def _apply_move(path: Path, target: Path, n, idx) -> None:
     # 이동을 이동으로 기록한다(시행령 §6 4항) — 기록이 없으면 반려가 이동을
     # 추가+삭제로 보아 노드를 지우거나 복제한다. 실패한 이동의 잔행은
     # 무해하므로(그 자리에 그 id가 없으면 안 쓰인다) 이동 **전에** 적는다.
-    approvals.record_move(n.id, path, target)
+    approvals.record_move(VAULT, n.id, path, target)
     os.replace(path, target)
     # 손에 든 색인은 이동 **전** 경로를 쥐고 있다. 갱신하지 않으면 아래
     # `_dangling_of`가 옛 경로를 열려다 실패해 이 노드의 자기링크를
     # dangling으로 오보한다 — `create_node`가 `register_new`로 막는 것과
     # 같은 실패이고, 오타가 아닌 것을 오타라고 알리게 된다.
-    idx.retarget(path, target, graph.space_of(target))
+    idx.retarget(path, target, graph.space_of(VAULT, target))
 
 
 def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
@@ -1338,8 +1338,8 @@ def _move_topology(plans, stale, idx) -> list[str]:
     위반 때문에 내 쓰기가 막히면 안 된다). 출발지 허브의 Link는 `hub_links`의
     `remove`가 닫으므로 뺀다. 들어오는 참조의 후보는 바이트에서 고르고
     (`mentioning`), 판정은 판독한 노드로 한다 — 전수 판독을 부르지 않는다."""
-    after = {src: graph.space_of(dst) for src, dst, _n in plans}
-    moved = {src: n for src, _dst, n in plans if after[src] != graph.space_of(src)}
+    after = {src: graph.space_of(VAULT, dst) for src, dst, _n in plans}
+    moved = {src: n for src, _dst, n in plans if after[src] != graph.space_of(VAULT, src)}
     if not moved:
         return []                     # 소속이 그대로면 판정도 그대로다
     new_kind = {}
@@ -1370,7 +1370,7 @@ def _move_topology(plans, stale, idx) -> list[str]:
         if not idx._readable(p):
             continue                  # 판독 불가 파일은 참조를 말하지 않는다
         n = idx.parsed[p]
-        k0 = graph.space_of(p)
+        k0 = graph.space_of(VAULT, p)
         k1 = after.get(p, k0)
         refs = [(t, pred) for pred in contract.PREDICATES for t in n.edges(pred)]
         refs += [(t, None) for t in n.wikilinks()]
@@ -1412,7 +1412,7 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
     if not names:
         raise WriteError("옮길 노드가 없다")
     with mutation_lock(VAULT):
-        idx = graph.Index()                     # 이 이동이 쓰는 색인은 하나다
+        idx = graph.Index(VAULT)                     # 이 이동이 쓰는 색인은 하나다
         require_complete(idx)
         dest_dir = resolve_in_root(VAULT, dest_space)
         if dest_dir is None or not dest_dir.is_dir():
@@ -1512,7 +1512,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
     이동 대장은 노드마다 남긴다(시행령 §6 4항 — 반려가 이동을 추가+삭제로
     오독하지 않게)."""
     with mutation_lock(VAULT):
-        idx = graph.Index()
+        idx = graph.Index(VAULT)
         require_complete(idx)
         src = live_locate(name, idx)
         if src is None or not src.is_file():
@@ -1522,14 +1522,14 @@ def move_cluster(name: str, dest_parent: str) -> dict:
                 f"군집이 아니다: {name} — 군집의 허브(폴더와 동명인 노드)만 "
                 f"군집째 옮길 수 있다. 노드 하나를 옮기려면 `move_nodes`를 쓴다")
         sdir = src.parent
-        _reject_governance(graph.space_of(src))
+        _reject_governance(graph.space_of(VAULT, src))
         ddir = resolve_in_root(VAULT, dest_parent)
         if ddir is None or not ddir.is_dir():
             raise WriteError(
                 f"목적지 군집이 없다: {dest_parent} — 재편은 이미 있는 군집 "
                 f"안으로만 한다(먼저 그 군집을 만든다)")
-        _reject_governance(graph.space_of(ddir / "x.md"))
-        _require_node_cluster(graph.space_of(ddir / sdir.name / "x.md"),
+        _reject_governance(graph.space_of(VAULT, ddir / "x.md"))
+        _require_node_cluster(graph.space_of(VAULT, ddir / sdir.name / "x.md"),
                               dest_parent)
         srel, drel = sdir.relative_to(ROOT).parts, ddir.relative_to(ROOT).parts
         if srel[:2] != drel[:2]:
@@ -1546,7 +1546,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
                 f"자기 안으로 옮길 수 없다: {posix_rel(sdir, ROOT)} → {dest_parent}")
         if not graph.hub_file(ddir)\
                 and ddir.parent.resolve() not in {
-                    (ROOT / s).resolve() for s in graph.NODE_SPACES}:
+                    (ROOT / s).resolve() for s in graph.node_spaces(VAULT)}:
             raise WriteError(
                 f"허브 없는 군집 안으로는 옮길 수 없다: {dest_parent}")
         target = ddir / sdir.name
@@ -1562,7 +1562,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
                 "pin으로 고정됐거나 pin 판정이 미확정인 군집·노드가 있다 "
                 "— 사용자 발의로만 옮긴다 (시행령 §3 4항)")
         for p, _k in inside:
-            approvals.record_move(idx.node(p).id, p,
+            approvals.record_move(VAULT, idx.node(p).id, p,
                                   target / p.relative_to(sdir))
         os.replace(sdir, target)          # 같은 볼륨 — 원자적 rename
         for p, k in inside:
@@ -1582,7 +1582,7 @@ def record_candidate(type: str, nodes: list[str], reason: str = "") -> dict:
     with mutation_lock(VAULT):
         if type not in CANDIDATE_TYPES:
             raise WriteError(f"미정의 충돌 유형: {type} (Mechanism §4 3항)")
-        idx = graph.Index()
+        idx = graph.Index(VAULT)
         require_complete(idx)
         parties = []
         for nm in nodes:

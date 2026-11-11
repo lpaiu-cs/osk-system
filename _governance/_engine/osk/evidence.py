@@ -37,7 +37,7 @@ class Records:
     def __init__(self, vault: Vault):
         self.vault = vault
         self.names: set[str] = set()
-        for d in (vault.root / raw.CITED, *raw.legacy_dirs()):
+        for d in (vault.root / raw.CITED, *raw.legacy_dirs(vault)):
             if d.is_dir():
                 for f in (*d.glob("*.md"), *(d / ".records").glob("*.txt"),
                           *(d / ".records").glob("*/record.txt")):
@@ -76,14 +76,14 @@ class Records:
         """좌표의 기록 부분 → 기록 파일. 줄인 해시·옛 이름·전체 경로를 받는다."""
         if record not in self._files:
             if "/" in record:
-                self._files[record] = raw.raw_file(record)
+                self._files[record] = raw.raw_file(self.vault, record)
             else:
                 names = self.find(record)
                 if len(names) != 1:
                     raise WriteError("없는 기록" if not names else "모호한 좌표",
                                            [f"`{record}`에 맞는 기록 {len(names)}개"
                                             + (f": {names[:3]}" if names else "")])
-                found = raw.locate_record(names[0])
+                found = raw.locate_record(self.vault, names[0])
                 if found is None:
                     raise WriteError("없는 기록", [f"`{record}`"])
                 self._files[record] = found
@@ -120,7 +120,7 @@ def cited_rounds(vault: Vault, text: str, records: Records | None = None) -> set
         if m is None or check(vault, coord, records=records) is not None:
             continue
         rel = posix_rel(records.file(m["record"]), vault.root)
-        out |= {raw.canonical_ref(f"{rel}#{n}")
+        out |= {raw.canonical_ref(vault, f"{rel}#{n}")
                 for n in range(int(m["first"]), int(m["last"] or m["first"]) + 1)}
     return out
 
@@ -181,7 +181,7 @@ def check(vault: Vault, coord: str, idx: "graph.Index | None" = None, records: R
             return f"없는 라운드: {coord}"
         return None
     target = coord.split("#", 1)[0].strip()
-    found = (idx or graph.Index()).resolve(target)[0]
+    found = (idx or graph.Index(vault)).resolve(target)[0]
     if found == "node":
         return f"{NODE_LINE}: {coord} — 노드 근거는 derived-from으로 옮긴다"
     if k == "name":

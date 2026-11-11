@@ -44,7 +44,7 @@ def run() -> dict:
         except Exception as e:
             rep["fail"].append({name: [f"검사 자체 실패: {e}"]})
 
-    idx = graph.Index()
+    idx = graph.Index(core.VAULT)
 
     # 1. 노드 계약 (시행령 §1 · Mechanism §2) — 색인이 못 읽은 파일도 오류다
     broken = getattr(idx, "broken", None) or {}
@@ -67,17 +67,17 @@ def run() -> dict:
     ok(f"노드 계약 ({len(idx.nodes) + len(broken)}개)", errs)
 
     # 2. 배치 (Mechanism §1)
-    guard("공간 배치·`_` 규칙", graph.layout_violations)
-    guard("raw 저장 경계", raw.storage_violations)
+    guard("공간 배치·`_` 규칙", lambda: graph.layout_violations(core.VAULT))
+    guard("raw 저장 경계", lambda: raw.storage_violations(core.VAULT))
 
     # 3. 참조 위상 (헌법 8조 3항)
-    guard("참조 위상", lambda: graph.topology_check(idx))
+    guard("참조 위상", lambda: graph.topology_check(core.VAULT, idx))
     ok("동명 노드 중복", [f"{s}: {v}" for s, v in idx.dup_stems.items()])
     records = None                        # 참조 경고와 근거 절 검사(17)가 함께 쓰는 기록 색인
     try:
         from . import evidence
         records = evidence.Records(core.VAULT)
-        rep["warnings"] = graph.reference_report(idx, records)
+        rep["warnings"] = graph.reference_report(core.VAULT, idx, records)
     except Exception as e:
         rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
         skip("미해석 참조 경고", f"산출 실패: {e}")
@@ -85,7 +85,7 @@ def run() -> dict:
     # 근거 재검토 후보 (시행령 §7 2항) — 표시일 뿐 verdict 밖이다.
     try:
         from . import rechecks
-        rc = rechecks.report(idx)
+        rc = rechecks.report(core.VAULT, idx)
         if rc:
             rep["warnings"]["rechecks"] = rc
     except Exception as e:
@@ -95,15 +95,15 @@ def run() -> dict:
     #    판독 실패는 플래그로 남긴다 — 빈 recs를 검사한 헛 PASS를 막는다.
     errs, arecs, appr_ok = [], [], True
     try:
-        arecs = approvals.records()
+        arecs = approvals.records(core.VAULT)
     except Exception as e:
         errs.append(str(e))
         appr_ok = False
     if appr_ok:
         try:
             rep["protected_regions"] = {
-                r: approvals.state(r) for r in approvals.protected_regions()}
-            gw = approvals.governance_warning(arecs)   # 경고일 뿐 verdict 밖
+                r: approvals.state(core.VAULT, r) for r in approvals.protected_regions(core.VAULT)}
+            gw = approvals.governance_warning(core.VAULT, arecs)   # 경고일 뿐 verdict 밖
             if gw:
                 rep["warnings"]["governance_unprotected"] = gw
         except Exception as e:
@@ -112,9 +112,9 @@ def run() -> dict:
 
     # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
     #    대장이다. signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상).
-    errs, ledgers = [], ([(approvals.APPROVALS, arecs)] if appr_ok else [])
+    errs, ledgers = [], ([(approvals.ledger_path(core.VAULT), arecs)] if appr_ok else [])
     for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, VALIDATORS, ROOTS,
-              approvals.MOVES, EVICTIONS,
+              approvals.moves_path(core.VAULT), EVICTIONS,
               LEDGER / "migration" / "events.jsonl", LEDGER / "rechecks.jsonl",
               LEDGER / "update.jsonl", LEDGER / "growth.jsonl", LEDGER / "release.jsonl"]:
         try:
@@ -161,7 +161,7 @@ def run() -> dict:
 
     # 10. 승인 기록부 정합성 (인과 극대 유일·승인본 해석 — 시행령 §6 7항)
     if appr_ok:
-        guard("승인 기록부 정합(stale·승인본 해석)", approvals.integrity)
+        guard("승인 기록부 정합(stale·승인본 해석)", lambda: approvals.integrity(core.VAULT))
     else:
         skip("승인 기록부 정합", "승인 대장 판독 실패 — 판정 보류")
 
@@ -413,7 +413,7 @@ def auto_activate(idx=None, *, now: float | None = None) -> list[str]:
     except (OSError, ValueError, KeyError, TypeError):
         pass
     mark.write_text(json.dumps({"at": now}), encoding="utf-8")   # 먼저 적어 겹친 작업이 다시 재지 않게 한다
-    idx = idx or graph.Index()
+    idx = idx or graph.Index(core.VAULT)
     clean = {"cluster-overview": lambda: not _cluster_overview_errors(cluster_overview_report(idx)),
              "evidence-section": lambda: not evidence_section_report(idx, roots.Roots(core.VAULT), evidence.Records(core.VAULT))}
     on = []

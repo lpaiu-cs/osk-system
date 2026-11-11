@@ -9,10 +9,10 @@ from __future__ import annotations
 import re
 
 from . import graph, workspaces
-from .core import (PERSON, RID_RE, ROUTING, SCOPE, rid_key, causal_maxima, ledger_append, ledger_damage,
-                   ledger_read, mutation_lock, resolve_one)
+from .core import (RID_RE, rid_key, causal_maxima, ledger_append, ledger_damage, ledger_read, mutation_lock,
+                   resolve_one)
 from .errors import WriteError
-from .core import VAULT
+from .vault import Vault
 
 ALIAS_DEPTH = 8          # 별칭 사슬 추적 한계 — 순환·장난에 대한 보수적 상한
 
@@ -41,7 +41,7 @@ def ephemeral_session_errors(session: str | None) -> list[str]:
             f"키로 다시 오지 않아 대장에 죽은 행만 남는다."]
 
 
-def routing_errors(session: str | None) -> list[str]:
+def routing_errors(vault: Vault, session: str | None) -> list[str]:
     """결속을 세우기 **전에** 라우팅 대장이 판독·기록 가능한지 본다.
 
     `resolve_session`은 판독 실패를 `None`으로 삼켜 "미결속"으로 진행한다. 그래서
@@ -55,11 +55,11 @@ def routing_errors(session: str | None) -> list[str]:
     if not session:
         return []                       # 결속을 세울 일이 없다
     try:
-        recs = ledger_read(ROUTING)
+        recs = ledger_read(vault.routing)
     except Exception as e:
         return [f"세션 라우팅 대장을 읽지 못했다: {e} — 이 상태에서 쓰면 결속만 "
                 f"실패하고 파일은 남는다. Mechanism §3 8항의 수동 복구가 먼저다"]
-    dmg = ledger_damage(recs, ROUTING)
+    dmg = ledger_damage(recs, vault.routing)
     if dmg:
         return ["세션 라우팅 대장이 손상됐다: " + "; ".join(dmg[:3])
                 + " — 손상 위에 이력을 더 쌓지 않는다(Mechanism §3 2항). "
@@ -67,7 +67,7 @@ def routing_errors(session: str | None) -> list[str]:
     return []
 
 
-def canonical_session(session: str | None,
+def canonical_session(vault: Vault, session: str | None,
                       recs: list[dict] | None = None) -> str | None:
     """프로젝트 키를 **정본 키**로 접는다 (Mechanism §6-2 6항).
 
@@ -81,7 +81,7 @@ def canonical_session(session: str | None,
         return None
     if recs is None:
         try:
-            recs = ledger_read(ROUTING)
+            recs = ledger_read(vault.routing)
         except Exception:
             return session
     seen = {session}
@@ -98,7 +98,7 @@ def canonical_session(session: str | None,
     return cur
 
 
-def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
+def bindings(vault: Vault, session: str | None, recs: list[dict] | None = None) -> dict:
     """프로젝트 키의 결속 집합 — `{"scopes": [...], "primary": str | None, "undetermined": bool}`
     (Mechanism §6-2 6항 · 시행령 §3 10항).
 
@@ -111,14 +111,14 @@ def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
     적는다(집합에만 더하는 쓰기는 False). 인과 극대가 갈리고 그 주된 scope가 다르면
     미확정이다 — 착지를 명시하게 한다. 일회성 작업 폴더의 키는 결속하지 않는다."""
     out = {"scopes": [], "primary": None, "undetermined": False}
-    if not session or workspaces.is_one_off(VAULT, session):
+    if not session or workspaces.is_one_off(vault, session):
         return out
     if recs is None:
         try:
-            recs = ledger_read(ROUTING)
+            recs = ledger_read(vault.routing)
         except Exception:
             return out
-    key = canonical_session(session, recs)
+    key = canonical_session(vault, session, recs)
     rows = [r for r in recs if r.get("session") == key and r.get("kind") in ("bind", "unbind")
             and r.get("scope")]
     rows.sort(key=lambda r: rid_key(r["rid"]) if re.match(RID_RE, str(r.get("rid"))) else (0, 0, ""))
@@ -149,19 +149,19 @@ def bindings(session: str | None, recs: list[dict] | None = None) -> dict:
     return out
 
 
-def resolve_session(session: str | None) -> str | None:
+def resolve_session(vault: Vault, session: str | None) -> str | None:
     """프로젝트 키 → 주된 scope(기본 착지). 없거나 미확정이면 None — fail-closed."""
-    return bindings(session)["primary"]
+    return bindings(vault, session)["primary"]
 
 
-def bound_scopes(session: str | None) -> list[str]:
+def bound_scopes(vault: Vault, session: str | None) -> list[str]:
     """결속 scope를 주된 scope부터, 없으면 결속 순서대로(Mechanism §9-3 1항) — 조직 검토와
     기억 주입이 scope를 고르는 순서다."""
-    b = bindings(session)
+    b = bindings(vault, session)
     return [s for s in b["scopes"] if s == b["primary"]] + [s for s in b["scopes"] if s != b["primary"]]
 
 
-def bind_session(session: str, scope: str, reason: str = "", *,
+def bind_session(vault: Vault, session: str, scope: str, reason: str = "", *,
                  primary: bool = True) -> dict:
     """프로젝트→scope 결속 기록. `primary=True`(기본)는 주된 scope의 지정(표시 기록)이고,
     `primary=False`는 집합에만 더하는 결속이다 — 쓰기 경로는 언제나 후자다. 쓰기는 주된
@@ -171,30 +171,30 @@ def bind_session(session: str, scope: str, reason: str = "", *,
     # 다듬은 값으로 검사하므로, 여기서 원문을 쓰면 `" open-hwp"`가 `open-hwp`와
     # 다른 결속으로 앉아 다음 세션이 그 기억에 닿지 못한다.
     session = (session or "").strip()
-    return ledger_append(ROUTING, {
-        "kind": "bind", "session": canonical_session(session) or session,
+    return ledger_append(vault.routing, {
+        "kind": "bind", "session": canonical_session(vault, session) or session,
         "scope": scope, "primary": bool(primary), "reason": reason or "최초 작업에서 확정"})
 
 
-def unbind_session(session: str, scope: str, reason: str = "") -> dict:
+def unbind_session(vault: Vault, session: str, scope: str, reason: str = "") -> dict:
     """결속 해제 기록 — 집합에서 뺀다. 주된 scope였으면 주된 scope도 비운다."""
     session = (session or "").strip()
-    return ledger_append(ROUTING, {
-        "kind": "unbind", "session": canonical_session(session) or session,
+    return ledger_append(vault.routing, {
+        "kind": "unbind", "session": canonical_session(vault, session) or session,
         "scope": scope, "reason": reason or "결속 해제"})
 
 
-def set_primary(session: str, scope: str, reason: str = "") -> dict:
+def set_primary(vault: Vault, session: str, scope: str, reason: str = "") -> dict:
     """주된 scope의 지정 — 그 프로젝트 자체의 활동이 속한 scope로 확인됐을 때만 부른다
     (대화 검토의 소속 판정이 결정 묶음으로 내어 실행기가 적용하거나 사용자가 한다 —
     Mechanism §6-2 6항). 지정은 결속도 겸한다."""
-    if scope not in graph.scope_names():
+    if scope not in graph.scope_names(vault):
         raise WriteError("없는 scope — 지정하지 않았다",
-                         [f"`{scope}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
-    return bind_session(session, scope, reason or "주된 scope 지정", primary=True)
+                         [f"`{scope}`는 scope가 아니다. 가능한 space: {graph.space_list(vault)}"])
+    return bind_session(vault, session, scope, reason or "주된 scope 지정", primary=True)
 
 
-def bind_after_write(result: dict, session: str, scope: str, reason: str = "") -> bool:
+def bind_after_write(vault: Vault, result: dict, session: str, scope: str, reason: str = "") -> bool:
     """파일을 **쓴 뒤**의 결속 — 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다
     (Mechanism §6-2 6항). 실패를 쓰기 실패로 올리지 않고 영수증으로 남긴다.
 
@@ -204,29 +204,29 @@ def bind_after_write(result: dict, session: str, scope: str, reason: str = "") -
     (fsync) 실패할 수 있으므로 "미기록"이 아니라 "확인 불가"다 —
     `evictions.after_node_write`의 처분 영수증과 같은 규율. 일회성 작업 폴더의 키는
     결속하지 않는다 — 그 착지는 그 대화에만 적용된다(Mechanism §6-2 6항)."""
-    if workspaces.is_one_off(VAULT, session):
+    if workspaces.is_one_off(vault, session):
         result["binding"] = {
             "state": "not_bound", "scope": scope,
             "note": "일회성 작업 폴더의 키라 결속하지 않았다 — 다음 쓰기에도 space를 준다"}
         return False
-    if scope in bindings(session)["scopes"]:
+    if scope in bindings(vault, session)["scopes"]:
         return False                            # 이미 결속에 있다 — 새 결속이 아니다
     try:
-        bind_session(session, scope, reason or "착지를 명시한 쓰기가 결속에 더함", primary=False)
+        bind_session(vault, session, scope, reason or "착지를 명시한 쓰기가 결속에 더함", primary=False)
         return True
     except Exception as e:
         result["binding"] = {
             "state": "unconfirmed", "scope": scope, "error": f"{type(e).__name__}: {e}",
             "note": (f"쓴 것은 저장됐다 — 다시 보내지 마라. 프로젝트 결속은 확인하지 "
-                     f"못했다: 다음 쓰기에 같은 session과 space `{SCOPE}/{scope}`를 "
+                     f"못했다: 다음 쓰기에 같은 session과 space `{vault.scope}/{scope}`를 "
                      f"함께 주면 결속에 더해진다.")}
         return False
 
 
-def alias_session(alt: str, canonical: str, reason: str = "") -> dict:
+def alias_session(vault: Vault, alt: str, canonical: str, reason: str = "") -> dict:
     """구 이름 → 정본 이름 별칭. 개명 이력을 대장에 남기는 일이며 MCP 표면에
     노출하지 않는다 — 이름의 정본을 정하는 것은 사용자의 일이다."""
-    return ledger_append(ROUTING, {
+    return ledger_append(vault.routing, {
         "kind": "alias", "session": alt, "canonical": canonical,
         "reason": reason or "개명 이력"})
 
@@ -262,9 +262,9 @@ def _derived_key(recs: list[dict], name: str, repo: list[str]) -> str:
     return f"{name}-{repo[0][:8]}"
 
 
-def _repo_claim(recs: list[dict], name: str, repo: list[str]) -> tuple[str, dict | None]:
+def _repo_claim(vault: Vault, recs: list[dict], name: str, repo: list[str]) -> tuple[str, dict | None]:
     """(이 저장소의 프로젝트 키, 새로 적을 결속 행 또는 None)."""
-    key = canonical_session(name, recs) or name
+    key = canonical_session(vault, name, recs) or name
     owner, out = _repo_owner(recs, key), name
     if owner and not set(owner["repo"]) & set(repo):
         out = key = _derived_key(recs, name, repo)      # 남의 키 — 파생 키로 비켜 선다
@@ -284,7 +284,7 @@ def _repo_claim(recs: list[dict], name: str, repo: list[str]) -> tuple[str, dict
     return out, None
 
 
-def repo_session(name: str, repo: list[str]) -> str:
+def repo_session(vault: Vault, name: str, repo: list[str]) -> str:
     """저장소 폴더 이름 + 저장소 동일성(정렬된 뿌리 커밋) → 그 저장소의 프로젝트 키.
 
     폴더 이름만 키로 쓰면 무관한 두 저장소(`C:/a/api`·`D:/b/api`)가 한 결속을
@@ -296,17 +296,17 @@ def repo_session(name: str, repo: list[str]) -> str:
     쓰기는 판정과 같은 잠금 안에서 다시 확인한다(`ledger_append`의 `expect`).
     대장 행도 working-tree 변경이므로 `mutation_lock` 안에서 쓴다 — 데몬의
     commit→rebase 사이에 끼면 rebase가 멈추거나 `--abort`가 행을 지운다."""
-    key, row = _repo_claim(ledger_read(ROUTING), name, repo)
+    key, row = _repo_claim(vault, ledger_read(vault.routing), name, repo)
     if row:
         def same(recs):
-            k, r = _repo_claim(recs, name, repo)
+            k, r = _repo_claim(vault, recs, name, repo)
             return None if k == key and r and r["scope"] == row["scope"] else "소유 판정이 바뀌었다"
         try:
-            with mutation_lock(VAULT):
-                ledger_append(ROUTING, row, expect=same)
+            with mutation_lock(vault):
+                ledger_append(vault.routing, row, expect=same)
         except ValueError:                          # 판정이 그사이 바뀌었다 — 다시 판정한다
             try:
-                key = _repo_claim(ledger_read(ROUTING), name, repo)[0]
+                key = _repo_claim(vault, ledger_read(vault.routing), name, repo)[0]
             except Exception:
                 pass
         except Exception:
@@ -317,7 +317,7 @@ def repo_session(name: str, repo: list[str]) -> str:
     return key
 
 
-def resolve_landing(session: str, space: str | None,
+def resolve_landing(vault: Vault, session: str, space: str | None,
                     confine_note: str) -> tuple[str | None, str | None]:
     """프로젝트 키·space → 착지 scope. `(scope, primary)`를 돌려준다.
 
@@ -332,18 +332,18 @@ def resolve_landing(session: str, space: str | None,
     결속에 없는 scope를 명시한 쓰기는 거부하지 않는다 — 한 프로젝트가 여러 scope의
     활동을 품는다(Mechanism §6-2 6항 · 시행령 §3 10항). `confine_note`는 호환 인자다.
     주된 scope가 없고 `space`도 없으면 `(None, None)` — 호출부가 fail-closed로 다룬다."""
-    bound = resolve_session(session)
+    bound = resolve_session(vault, session)
     if not space:
         return bound, bound
-    scope = graph.scope_of_space(space)
+    scope = graph.scope_of_space(vault, space)
     if not scope:
         raise WriteError(
             "space 표기 아님 — 쓰지 않았다",
-            [f"`{space}`는 space 표기가 아니다 — `{SCOPE}/<이름>` **두 마디**로 "
-             f"준다. `overview`의 `clusters`에는 `{PERSON}/…`이나 더 깊은 경로도 "
-             f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {graph.space_list()}"])
-    if scope not in graph.scope_names():
+            [f"`{space}`는 space 표기가 아니다 — `{vault.scope}/<이름>` **두 마디**로 "
+             f"준다. `overview`의 `clusters`에는 `{vault.person}/…`이나 더 깊은 경로도 "
+             f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {graph.space_list(vault)}"])
+    if scope not in graph.scope_names(vault):
         raise WriteError(
             "없는 scope — 쓰지 않았다",
-            [f"`{space}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
+            [f"`{space}`는 scope가 아니다. 가능한 space: {graph.space_list(vault)}"])
     return scope, bound

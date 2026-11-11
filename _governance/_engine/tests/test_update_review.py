@@ -31,7 +31,7 @@ from osk import approvals, core, update
 root = core.ROOT
 (root / '_governance').mkdir(parents=True)
 (root / '_governance/Policy.md').write_text('old')
-approvals.protect('_governance')
+approvals.protect(core.VAULT, '_governance')
 bundle = root.parent / 'bundle'
 (bundle / '_governance/_engine/scripts').mkdir(parents=True)
 manifest = bundle / '_governance/_engine/scripts/publish-manifest.txt'
@@ -47,14 +47,14 @@ def run(**kw):
 preview = run(adopt=True)
 assert preview['applied'] is False and 'review_id' in preview
 assert not core.local_lock_path('osk-update-confirmation.json', core.VAULT.root).exists()
-before = approvals.APPROVALS.read_bytes()
+before = approvals.ledger_path(core.VAULT).read_bytes()
 # First call does not acquire the daemon lock or write instance payloads.
 with mock.patch('osk.sync_status.lock_path', side_effect=AssertionError('daemon touched')):
     first = run(apply=True, adopt=True)
 assert first['approval_required'] and not first['ok']
 assert '명시적 재승인' in first['instruction'] and '재시작' in first['instruction']
 assert (root / '_governance/Policy.md').read_text() == 'old'
-assert approvals.APPROVALS.read_bytes() == before
+assert approvals.ledger_path(core.VAULT).read_bytes() == before
 assert not update.TXN_MANIFEST.exists()
 # Local drift invalidates the checkpoint even for the same command.
 (root / '_governance/Policy.md').write_text('changed while waiting')
@@ -63,7 +63,7 @@ assert second['approval_required'] and second['review_id'] != first['review_id']
 # This retry represents the explicit user response to the new plan.
 applied = run(apply=True, adopt=True)
 assert applied['applied'] and applied['governance_accepted'], applied
-assert approvals.state('_governance') == 'clean'
+assert approvals.state(core.VAULT, '_governance') == 'clean'
 assert (root / '_governance/Policy.md').read_text() == 'new'
 assert (root / '_governance/Policy.md.local-v9.21.0').read_text() == 'changed while waiting'
 assert not core.local_lock_path('osk-update-confirmation.json', core.VAULT.root).exists()
@@ -89,7 +89,7 @@ with mock.patch('osk.sync_status.lock_path', side_effect=update.UpdateError('dae
     else: raise AssertionError('expected lock failure')
 assert run(apply=True)['approval_required']
 # A failure after acceptance restores both approval and framework bytes.
-old_ledger = approvals.APPROVALS.read_bytes()
+old_ledger = approvals.ledger_path(core.VAULT).read_bytes()
 old_policy = (root / '_governance/Policy.md').read_bytes()
 real_accept = approvals.approve_locked
 def fail_after_accept(*args, **kw):
@@ -99,9 +99,9 @@ with mock.patch.object(approvals, 'approve_locked', side_effect=fail_after_accep
     try: run(apply=True)
     except update.UpdateError as e: assert '원상복구' in str(e)
     else: raise AssertionError('expected rollback')
-assert approvals.APPROVALS.read_bytes() == old_ledger
+assert approvals.ledger_path(core.VAULT).read_bytes() == old_ledger
 assert (root / '_governance/Policy.md').read_bytes() == old_policy
-assert approvals.state('_governance') == 'clean'
+assert approvals.state(core.VAULT, '_governance') == 'clean'
 '''
             result = subprocess.run([sys.executable, '-c', script],
                                     env=dict(os.environ, OSK_VAULT_ROOT=str(Path(td) / 'vault'),
@@ -200,7 +200,7 @@ def older_engine(*a):
 with mock.patch.object(update, '_governance_review', side_effect=older_engine):
     rep = run()
 assert rep['applied'] and rep['governance_protected'] is None, rep
-assert approvals.state('_governance') == 'unprotected'
+assert approvals.state(core.VAULT, '_governance') == 'unprotected'
 real = approvals.protect
 def fail_after_protect(*a, **kw):
     real(*a, **kw)
@@ -209,26 +209,26 @@ with mock.patch.object(approvals, 'protect', side_effect=fail_after_protect):
     try: run()
     except update.UpdateError as e: assert '원상복구' in str(e), e
     else: raise AssertionError('expected rollback')
-assert not approvals.APPROVALS.exists() and approvals.state('_governance') == 'unprotected'
+assert not approvals.ledger_path(core.VAULT).exists() and approvals.state(core.VAULT, '_governance') == 'unprotected'
 assert update.current_version() == 'v9.41.0'
 rep = run()
 assert rep['governance_protected'] == 'established' and rep['applied_files'] == 0, rep
-assert approvals.state('_governance') == 'clean'
+assert approvals.state(core.VAULT, '_governance') == 'clean'
 # A later update of a protected region is acceptance, not a second protect.
 (bundle / '_governance/Policy.md').write_text('v2')
 files['_governance/Policy.md'] = core.sha256_file(bundle / '_governance/Policy.md')
 (bundle / 'release.json').write_text(json.dumps({'version': 'v9.41.1', 'files': files}))
 rep = run()
 assert rep['governance_accepted'] and rep['governance_protected'] is None, rep
-assert [r['kind'] for r in approvals.records()] == ['protect', 'approve']
+assert [r['kind'] for r in approvals.records(core.VAULT)] == ['protect', 'approve']
 # A region the user released is not re-protected by an update.
-approvals.unprotect('_governance')
+approvals.unprotect(core.VAULT, '_governance')
 (bundle / '_governance/Policy.md').write_text('v3')
 files['_governance/Policy.md'] = core.sha256_file(bundle / '_governance/Policy.md')
 (bundle / 'release.json').write_text(json.dumps({'version': 'v9.41.2', 'files': files}))
 rep = run()
 assert rep['governance_protected'] == 'released', rep
-assert approvals.state('_governance') == 'unprotected'
+assert approvals.state(core.VAULT, '_governance') == 'unprotected'
 '''
             result = subprocess.run([sys.executable, '-c', script],
                                     env=dict(os.environ, OSK_VAULT_ROOT=str(Path(td) / 'vault'),

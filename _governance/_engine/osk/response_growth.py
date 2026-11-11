@@ -425,7 +425,7 @@ def process_stop(env: dict, *, flush_timeout: float = 5) -> dict:
                     job = integration.prompt(harness, sid, include_organization=False, max_rounds=EVERY)
                     if job.get('session'):
                         from . import scope_memory
-                        job['scope_recovery'] = scope_memory.recovery_block(job['session'])
+                        job['scope_recovery'] = scope_memory.recovery_block(core.VAULT, job['session'])
                     result = attempt(source, job, executable)
         except Exception as exc:
             result = {'ok': False, 'state': 'pending', 'error': f'{type(exc).__name__}: {exc}'}

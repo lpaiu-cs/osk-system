@@ -142,7 +142,7 @@ def centrality_checks():
         ('W1', 'scope', ['C'], '[[A]] [[B]]'),
         ('Note', 'workbench-transit', ['B'], 'transit'),
     ])
-    explain, depend = graph.centrality(nodes)
+    explain, depend = graph.centrality(core.VAULT, nodes)
     assert explain['A'] == 3 + 1 + (2 - 1), explain     # derived-from 3, Link 1, 지지 2 − 반례 1
     assert explain['C'] == 3, explain                   # the repeated derived-from counts once
     assert depend['B'] == 3 + 1 + 3 and depend['A'] == 0 and depend['C'] == 0, depend
@@ -150,7 +150,7 @@ def centrality_checks():
     # Σ D = Σ (E − w_O·(|O⁺| − |O⁻|)) — only A has observation lines, net 2 − 1
     assert sum(depend.values()) == sum(explain.values()) - (2 - 1), (explain, depend)
     legacy = obs.replace('# 관측', '## 근거')
-    assert graph.centrality(Index([('A', 'scope', [], legacy)]))[0]['A'] == 1
+    assert graph.centrality(core.VAULT, Index([('A', 'scope', [], legacy)]))[0]['A'] == 1
 
 
 def read_checks():
@@ -208,8 +208,8 @@ def read_checks():
     assert '#9 x' in tag.get('body', ''), tag
     # `search(session=…)` reads the session's bindings: its primary scope's nodes rank up (#170).
     # Scores in this two-node vault are negative (common terms' idf): the boost still pulls up.
-    write.set_primary('retrieval-key', 'W1', 'fixture')
-    assert write.bindings('retrieval-key')['primary'] == 'W1'
+    write.set_primary(core.VAULT, 'retrieval-key', 'W1', 'fixture')
+    assert write.bindings(core.VAULT, 'retrieval-key')['primary'] == 'W1'
     plain = {h['title']: h['score'] for h in m.search('Selective read', 5)}
     near = {h['title']: h['score'] for h in m.search('Selective read', 5, session='retrieval-key')}
     assert near['Selective read'] > plain['Selective read'] and near.keys() == plain.keys(), (plain, near)

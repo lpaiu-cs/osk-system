@@ -356,7 +356,7 @@ def _scope_cursors(s: dict):
             if candidate != state_path("claude", owner["conversation_id"]):
                 continue
             # 부모의 착지는 부모의 작업 공간 판별로 정한다 — 이 프로세스의 작업 폴더로 정하지 않는다
-            bound = write.resolve_session(owner["session"]) if owner["session"] and not _one_off(owner) else None
+            bound = write.resolve_session(core.VAULT, owner["session"]) if owner["session"] and not _one_off(owner) else None
             landing = owner["space"] or (f"{SCOPE}/{bound}" if bound else None)
             # 착지 없는 대화는 어느 커서와도 견준다 — 이어받는 것은 원본 턴뿐이고, 부모가 착지했으면
             # 그 착지를 잇는다(`_inherited_rounds`). 착지한 대화는 같은 scope의 커서와만 견준다.
@@ -372,7 +372,7 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         return _fork_parent_turns(s, rounds, dialogue_v1)
     if s["harness"] != "claude":
         return rounds
-    path = raw.locate_record(s["record"])        # 루트 `_cited/` 또는 옛 자리 — 착지와 무관하다
+    path = raw.locate_record(core.VAULT, s["record"])        # 루트 `_cited/` 또는 옛 자리 — 착지와 무관하다
     inherited = (raw.inherited_prefix(path) if path else None) or s.get("inherited")
     if not inherited and (path and path.exists() or s["rounds"]):
         return rounds  # A conversation already tracking its own turns keeps them.
@@ -383,10 +383,10 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
             # A parent tracked by original turn: same turn ID and the same reviewed text.
             return source["hash"] in _turn_hashes(pair, dialogue_v1)
         name, number = raw.parse_ref(source["ref"])
-        if "/".join(raw.raw_file(name).relative_to(core.ROOT).parts[:2]) != s["space"]:
+        if "/".join(raw.raw_file(core.VAULT, name).relative_to(core.ROOT).parts[:2]) != s["space"]:
             raise ValueError("inherited source crossed scope; capture remains pending")
         if name not in cache:
-            text = raw.read_exact(raw.raw_file(name))
+            text = raw.read_exact(raw.raw_file(core.VAULT, name))
             cache[name] = text, raw.round_spans(text)
         text, spans = cache[name]
         block = text[slice(*spans[number])]
@@ -541,20 +541,20 @@ def _land(s: dict, transcript_path: str | None, session: str, space: str | None,
                             or s.get("capture_path") or s["transcript_path"], cwd)
     pinned = s["space"]
     if pinned:
-        scope = raw.scope_of_space(pinned)
+        scope = raw.scope_of_space(core.VAULT, pinned)
         if not scope:
             raise ValueError("saved conversation scope is invalid; capture remains pending")
         pinned = (SCOPE + '/') + scope
     # 착지는 검토의 문맥(허브 트리·조직 검토)이지 인용 기록의 자리가 아니다 — 기록은 루트
     # `_cited/` 한 자리다(헌법 4조 3항). 명시한 space가 먼저, 다음이 고정된 착지, 그 다음이
     # 프로젝트의 주된 scope다. 한 대화가 여러 scope의 활동을 품을 수 있으니 바뀌어도 거부하지 않는다.
-    destination, primary = write.resolve_landing(session if follow else None, space, "")
+    destination, primary = write.resolve_landing(core.VAULT, session if follow else None, space, "")
     requested = (SCOPE + '/') + destination if destination else None
     if pinned and not requested and s["session"]:
         # 흔한 작업 폴더 키가 무관한 대화를 제 결속으로 끌지 않게 — 착지가 고정된 대화는
         # 제가 고른 키로 이어진다
         session = s["session"]
-        destination, primary = write.resolve_landing(session if follow else None, pinned, "")
+        destination, primary = write.resolve_landing(core.VAULT, session if follow else None, pinned, "")
         requested = (SCOPE + '/') + destination
     if (s["session"] and s["session"] != session
             and not (primary and requested == pinned or not pinned and requested)):
@@ -721,7 +721,7 @@ def _stored_hashes(refs) -> dict:
     for ref in refs:
         name, index = raw.parse_ref(ref)
         if name not in raw_files:
-            text = raw.read_exact(raw.raw_file(name))
+            text = raw.read_exact(raw.raw_file(core.VAULT, name))
             raw_files[name] = text, raw.round_spans(text)
         text, spans = raw_files[name]
         out[ref] = (core.sha256_bytes(text[slice(*spans[index])].rstrip("\n").encode("utf-8"))
@@ -772,8 +772,8 @@ def acknowledge(harness: str, conversation_id: str, through: str,
         if primary_scope is not None:
             if _one_off(s) or not s["session"]:
                 raise ValueError("a one-off workspace conversation has no project to designate a primary scope for")
-            primary_scope = raw.scope_of_space(primary_scope) or primary_scope.strip()
-            if primary_scope not in raw.scope_names():
+            primary_scope = raw.scope_of_space(core.VAULT, primary_scope) or primary_scope.strip()
+            if primary_scope not in raw.scope_names(core.VAULT):
                 raise ValueError(f"primary_scope is not a scope: {primary_scope}")
         snap = s["snapshots"].get(through)
         repair = s.get("repair_pending", {}).get(through)
@@ -794,14 +794,14 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 sources = receipt.get("sources", [])
                 # A cited round binds through the original turn it cites (Mechanism §9 9항), and
                 # only while the turn holds the words it cited.
-                bound = ({raw.canonical_ref(r["ref"]) for r in sources}
+                bound = ({raw.canonical_ref(core.VAULT, r["ref"]) for r in sources}
                          | {r["native"] for r in sources if r.get("native") and r.get("native_user")
                             in (None, words.get(r["native"], r.get("native_user")))})
                 # Each refusal says which condition failed and what the target cites (#219).
                 if receipt.get("status") != "complete":
                     raise ValueError(f"target {target['key']} has no complete body/source/hub receipt: "
                                      f"{receipt.get('reason') or receipt.get('status')}")
-                covered = {raw.canonical_ref(ref) for ref in refs}
+                covered = {raw.canonical_ref(core.VAULT, ref) for ref in refs}
                 if not covered & bound:
                     short = _short_ids(s)
                     changed = [short(r["native"]) for r in sources if r.get("native") in covered]
@@ -814,14 +814,14 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                                      f"it cites {', '.join(cited) or 'nothing'}. A later turn's distillation "
                                      "belongs to that turn's review: judge this range on its own")
                 target_path = core.resolve_in_root(core.VAULT, receipt.get("target", {}).get("path", ""))
-                kind = raw.graph.space_of(target_path)[0] if target_path is not None else None
+                kind = raw.graph.space_of(core.VAULT, target_path)[0] if target_path is not None else None
                 if kind not in ("scope", "person"):
                     raise ValueError("preserved integration target must be a durable Scope or Person node")
                 receipts.append(receipt)
         elif outcome == "summary":
             # 일회성 작업 폴더의 대화는 그 키의 결속이 아니라 대화에 고정한 착지의 기억을 본다
             # 대화에 고정한 착지가 있으면 그 scope의 기억이다 — 프로젝트의 주된 scope와 다를 수 있다
-            memory = scope_memory.read(None if _one_off(s) else s["session"], s.get("space"))
+            memory = scope_memory.read(core.VAULT, None if _one_off(s) else s["session"], s.get("space"))
             if not isinstance(targets, list) or not targets or not all(
                     isinstance(t, dict) and isinstance(t.get("text"), str) and t["text"].strip()
                     and t["text"] in memory["text"] for t in targets):
@@ -841,10 +841,10 @@ def acknowledge(harness: str, conversation_id: str, through: str,
                 s["reviewed_prompt_count"] = s["prompt_count"]
                 if s.get("response_growth"):
                     s["response_growth"]["attempted_count"] = s["response_growth"]["count"]
-        if primary_scope is not None and write.bindings(s["session"])["primary"] != primary_scope:
+        if primary_scope is not None and write.bindings(core.VAULT, s["session"])["primary"] != primary_scope:
             # 검토 저장 **앞에** 적는다 — 대장 쓰기가 실패하면 검토도 남지 않아 같은 through로
             # 재시도할 수 있다. 지정이 먼저 서고 저장이 실패해도 재시도는 같은 판정이라 건너뛴다.
-            write.set_primary(s["session"], primary_scope, "대화 검토의 소속 판정")
+            write.set_primary(core.VAULT, s["session"], primary_scope, "대화 검토의 소속 판정")
         save_state(p, s)
         return state_view(s)
 
@@ -870,7 +870,7 @@ def _review_state_locked(s: dict, through: str) -> dict:
     # append-only라 바뀌지 않고, 정정은 정정하는 쪽이 reopen으로 등록한다.
     out = {**result, "status": "complete", "review": last, "semantic_verified": False}
     if last["outcome"] == "preserved":
-        idx = raw.graph.Index()
+        idx = raw.graph.Index(core.VAULT)
         broken = [{"key": r["key"], "reason": why} for r in last["receipts"]
                   if (why := distillation.structure(r, idx))]
         if broken:
@@ -923,7 +923,7 @@ def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
         raise ValueError("reopen requires the correction's reason")
     with state_lock(harness, conversation_id) as p, core.mutation_lock(core.VAULT):
         s = load_state(p, harness, conversation_id)
-        wanted = {raw.canonical_ref(ref) for ref in refs or []}
+        wanted = {raw.canonical_ref(core.VAULT, ref) for ref in refs or []}
         if not wanted or any(raw.is_native(ref) for ref in wanted):
             raise ValueError("reopen takes corrected stored or cited rounds; an original turn is not corrected here")
         current = _stored_hashes(sorted(wanted))
@@ -935,10 +935,10 @@ def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
             if v["outcome"] == "deferred":
                 continue
             # Old cursors keep their original coordinates: compare both sides canonically.
-            read = wanted & {raw.canonical_ref(ref) for ref in v["refs"]}
+            read = wanted & {raw.canonical_ref(core.VAULT, ref) for ref in v["refs"]}
             cited = {}
             for receipt in v.get("receipts", []):
-                hit = wanted & {raw.canonical_ref(src["ref"]) for src in receipt.get("sources", [])}
+                hit = wanted & {raw.canonical_ref(core.VAULT, src["ref"]) for src in receipt.get("sources", [])}
                 if hit:
                     read |= hit
                     cited[receipt["key"]] = {"key": receipt["key"], "id": receipt["target"]["id"],
@@ -951,8 +951,8 @@ def reopen(harness: str, conversation_id: str, refs: list, reason: str) -> dict:
         if not hits:
             raise ValueError("no acknowledged review of this conversation read these rounds")
         for r in s["rounds"]:
-            if raw.canonical_ref(r["ref"]) in wanted:
-                r["hash"] = current[raw.canonical_ref(r["ref"])]
+            if raw.canonical_ref(core.VAULT, r["ref"]) in wanted:
+                r["hash"] = current[raw.canonical_ref(core.VAULT, r["ref"])]
         version = core.sha256_bytes(json.dumps(sorted(current.items())).encode("utf-8"))
         for token, (read, targets) in sorted(hits.items()):
             _register_repair(s, token, reason.strip(), version, sorted(read),
@@ -1321,9 +1321,9 @@ def review_scope(s: dict) -> str | None:
     """대화 검토 문맥의 scope — 고정한 착지, 없으면 결속의 주된 scope부터(§9-3 1항). `prompt`의 허브
     트리 scope와 같다."""
     if s.get("space"):
-        return raw.scope_of_space(s["space"])
+        return raw.scope_of_space(core.VAULT, s["space"])
     try:
-        scopes = write.bound_scopes(s["session"]) if s.get("session") and not _one_off(s) else []
+        scopes = write.bound_scopes(core.VAULT, s["session"]) if s.get("session") and not _one_off(s) else []
     except (OSError, ValueError, write.WriteError):
         scopes = []
     return scopes[0] if scopes else None
@@ -1504,9 +1504,9 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
     jobs = []
     # 대화에 고정한 착지(capture의 space)가 검토 문맥의 scope다 — 프로젝트의 주된 scope와 다를 수
     # 있다(시행령 §3 9항). 고정이 없을 때만 결속 scope를 주된 scope부터, 없으면 결속 순서대로 본다(§9-3 1항).
-    pinned = raw.scope_of_space(s["space"]) if s.get("space") else None
+    pinned = raw.scope_of_space(core.VAULT, s["space"]) if s.get("space") else None
     try:
-        scopes = write.bound_scopes(st["session"]) if st.get("session") and not _one_off(s) else []
+        scopes = write.bound_scopes(core.VAULT, st["session"]) if st.get("session") and not _one_off(s) else []
     except (OSError, ValueError, write.WriteError):
         scopes = []
     if pinned and scopes:
@@ -1569,7 +1569,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
                  "쓰기 도구에 session을 주지 말고, 노드를 쓸 때마다 space를 준다.\n")
     elif st.get("session"):
         # 한 프로젝트가 여러 scope의 활동을 품는다(시행령 §3 10항) — 결속과 주된 scope를 알려 착지를 고르게 한다
-        b = write.bindings(st["session"])
+        b = write.bindings(core.VAULT, st["session"])
         if b["scopes"]:
             text += (f"이 프로젝트의 결속: {', '.join(b['scopes'])}"
                      + (f" · 주된 scope {b['primary']}" if b["primary"] else
@@ -1584,7 +1584,7 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
              "부르지 않은 세션의 create_node는 거부된다(Mechanism §6-2 10항). "
              + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. ")
     # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
-    tree_scope = scope or (raw.scope_of_space(s["space"]) if s.get("space") else None)
+    tree_scope = scope or (raw.scope_of_space(core.VAULT, s["space"]) if s.get("space") else None)
     st["review_scope"] = tree_scope
     if not tree_scope:
         text += UNLANDED
@@ -1750,7 +1750,7 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         with state_lock(harness, owner) as pp:
             parent = load_state(pp, harness, owner)
         record = parent["record"]
-    result = raw.append_rounds(session, record, [{"user": words, "agent": (note or "").strip()}],
+    result = raw.append_rounds(core.VAULT, session, record, [{"user": words, "agent": (note or "").strip()}],
                                cited=meta)
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
            "index": result["indices"][0],
@@ -1791,7 +1791,7 @@ def read_review(conversation: str, through: str, query: str | None = None) -> di
     native = [ref for ref in refs if raw.is_native(ref)]
     seen = {t["ref"]: t for t in read_turns(native, view="review", query=query, sides=REVIEW_SIDES)["turns"]} if native else {}
     short = _short_ids(s)
-    turns = [{"short": short(ref), **(seen.get(ref) or raw.read_round(ref, view="review", query=query,
+    turns = [{"short": short(ref), **(seen.get(ref) or raw.read_round(core.VAULT, ref, view="review", query=query,
                                                                       sides=REVIEW_SIDES))} for ref in refs]
     return {"ok": True, "through": through, "range": _range_text(s, refs), "turns": turns}
 

@@ -26,7 +26,7 @@ def main():
             {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"text": "Keep cache rule; confirm CACHE_LIMIT in the retest evidence."}]},
         ]
         agent = "\n\n".join(json.dumps(x) for x in events)
-        first = raw.append_rounds("reading-test", "evidence", [{"user": user, "agent": agent}], "00_Scope/W1")
+        first = raw.append_rounds(core.VAULT, "reading-test", "evidence", [{"user": user, "agent": agent}], "00_Scope/W1")
         ref = first["round_refs"][0]
         path = core.ROOT / first["path"]
         before = path.read_bytes()
@@ -42,11 +42,11 @@ def main():
         command = mcp_server.read_cited(ref, query="remote checksum")
         assert "call remote-check-77" in command["text"]
         assert "abcdef0123456789" in mcp_server.read_cited(ref, query="remote-check-77")["text"]
-        assert hits["hash"] == view["hash"] == distillation._source(ref, graph.Index())["hash"]
+        assert hits["hash"] == view["hash"] == distillation._source(ref, graph.Index(core.VAULT))["hash"]
         assert path.read_bytes() == before, "reading must not rewrite immutable evidence"
-        assert "opaque-secret" in raw.read_round(ref, 3000000)["text"], "legacy full view changed"
-        raw.append_rounds("reading-test", "evidence", [{"user": "next", "agent": "next answer"}], "00_Scope/W1")
-        assert raw.read_round(ref, view="review")["hash"] == view["hash"], "append changed source identity"
+        assert "opaque-secret" in raw.read_round(core.VAULT, ref, 3000000)["text"], "legacy full view changed"
+        raw.append_rounds(core.VAULT, "reading-test", "evidence", [{"user": "next", "agent": "next answer"}], "00_Scope/W1")
+        assert raw.read_round(core.VAULT, ref, view="review")["hash"] == view["hash"], "append changed source identity"
         for bad in (dict(query=""), dict(query="x" * 201), dict(view="full", query="cache")):
             assert not mcp_server.read_cited(ref, **bad)["ok"], bad
         assert not mcp_server.read_cited(first["path"], query="cache")["ok"]

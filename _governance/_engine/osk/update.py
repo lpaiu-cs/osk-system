@@ -1054,15 +1054,15 @@ _PROTECT_NOTE = {
 def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
                        targets: list, rel: dict) -> dict:
     """Hash the exact post-update region, including pre-existing local changes."""
-    recs = approvals.records()
-    state = approvals.state("_governance", recs)
+    recs = approvals.records(VAULT)
+    state = approvals.state(VAULT, "_governance", recs)
     if state == "stale":
         raise UpdateError("통치 구획 승인본이 stale이다 — 사용자 검토로 먼저 해소한다")
     files = {rel: sha256_file(path) for rel, path in
-             approvals.region_files(ROOT / "_governance")}
+             approvals.region_files(VAULT, ROOT / "_governance")}
     before = sha256_bytes(approvals.manifest_blob(sorted(files.items())))
-    base = approvals.approved_hash("_governance")
-    prior = approvals.changeset("_governance") if base else None
+    base = approvals.approved_hash(VAULT, "_governance")
+    prior = approvals.changeset(VAULT, "_governance") if base else None
     for src, dest in p["add"] + p["update"] + side_write:
         if dest.startswith("_governance/") and not approvals.excluded_rel(dest, "_governance"):
             files[dest] = sha256_file(tree / src)
@@ -1089,7 +1089,7 @@ def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
                 and not approvals.excluded_rel(dest, "_governance")}
     diff = sorted(k for k in files.keys() | attested.keys()
                   if files.get(k) != attested.get(k))
-    out["protect"] = "withheld" if diff or approvals.ledger_is_damaged(recs) else "establish"
+    out["protect"] = "withheld" if diff or approvals.ledger_is_damaged(VAULT, recs) else "establish"
     if diff:
         out["unattested"] = diff[:20]
     return out
@@ -1243,7 +1243,7 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         accept_governance = governance["base"] and governance["after"] != governance["base"]
         establish = governance.get("protect") == "establish"
         if accept_governance or establish:
-            touch.append(posix_rel(approvals.APPROVALS, ROOT))
+            touch.append(posix_rel(approvals.ledger_path(VAULT), ROOT))
         _txn_begin(txn, v, touch)
         ledger_append(UPDATE_JOURNAL, {"kind": "begin", "txn": txn,
                                        "version": v, "adopt": bool(adopt)})
@@ -1271,11 +1271,11 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
                     _write_atomic(d / ".gitkeep", b"")
                     made_skel.append(posix_rel(d, ROOT))
             if accept_governance:
-                approvals.approve_locked("_governance", governance["base"],
+                approvals.approve_locked(VAULT, "_governance", governance["base"],
                                           governance["after"],
                                           f"osk.update {v}; user confirmation: {reviewed}")
             if establish:                     # 확인받은 증빙 tree 그대로만 지정
-                approvals.protect("_governance",
+                approvals.protect(VAULT, "_governance",
                                   f"osk.update {v}; user confirmation: {reviewed}",
                                   expect_work=governance["after"], _locked=True)
         except (OSError, ValueError) as e:

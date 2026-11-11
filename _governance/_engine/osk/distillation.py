@@ -62,7 +62,7 @@ def _source(ref: str, idx) -> dict:
         path, number = raw.parse_ref(value)
         if number is None:
             raise write.WriteError("raw source requires an exact numeric round anchor")
-        p = raw.raw_file(path)
+        p = raw.raw_file(VAULT, path)
         text = raw.read_exact(p)
         raw.next_index(text)  # duplicate/damaged rounds are not resolvable evidence
         span = raw.round_spans(text).get(number)
@@ -70,7 +70,7 @@ def _source(ref: str, idx) -> dict:
             raise write.WriteError("source round does not exist")
         # Trailing round separators are not evidence; later append must not
         # invalidate the unchanged round. Hash the full stored round, untruncated.
-        source = {"ref": raw.canonical_ref(f"{posix_rel(p, ROOT)}#{number}"),
+        source = {"ref": raw.canonical_ref(VAULT, f"{posix_rel(p, ROOT)}#{number}"),
                   "path": posix_rel(p, ROOT), "hash": raw.round_hash(text[span[0]:span[1]])}
         native = raw.cited_native(text[span[0]:span[1]])
         if native:
@@ -80,7 +80,7 @@ def _source(ref: str, idx) -> dict:
                 source["native_user"] = words  # with the words it cited.
         return source
     p = write.live_locate(value, idx)
-    if p is None or not p.is_file() or graph.space_of(p)[0] not in ("scope", "domain"):
+    if p is None or not p.is_file() or graph.space_of(VAULT, p)[0] not in ("scope", "domain"):
         raise write.WriteError("source must resolve to a Scope/Domain node or exact raw round")
     node = contract.parse(p)
     if not prose.norm_body(node.body):
@@ -111,7 +111,7 @@ def _hub(name: str, idx) -> dict:
     p = write.live_locate(name, idx)
     if p is None or not p.is_file() or not graph.is_hub(p):
         raise write.WriteError("distill.hub must name an existing hub")
-    if graph.space_of(p)[0] not in _TARGETS:
+    if graph.space_of(VAULT, p)[0] not in _TARGETS:
         raise write.WriteError("distillation cannot write protected or other spaces")
     node = contract.parse(p)
     return {"name": p.stem, "id": node.id, "path": posix_rel(p, ROOT),
@@ -123,7 +123,7 @@ def _check_sources(job: dict, idx) -> None:
         current = _source(old["ref"], idx)
         if not old.get("id"):
             if (current["hash"] != old["hash"]
-                    or raw.raw_file(current["path"]) != raw.raw_file(old["path"])):
+                    or raw.raw_file(VAULT, current["path"]) != raw.raw_file(VAULT, old["path"])):
                 raise write.WriteError("raw source changed; pending")
             continue
         if current["hash"] != old["hash"] or (
@@ -176,7 +176,7 @@ def _retained_target(target: dict, idx) -> Path:
     if p is None or not p.is_file():
         raise write.WriteError("target missing; original request or review is required")
     if (tuple(p.relative_to(ROOT).parts[:2]) != tuple(Path(target["path"]).parts[:2])
-            or graph.space_of(p)[0] not in _TARGETS):
+            or graph.space_of(VAULT, p)[0] not in _TARGETS):
         raise write.WriteError("target crossed its top-level cluster; pending")
     body = contract.parse(p).body
     if not prose.norm_body(body):
@@ -250,13 +250,13 @@ def _receipt(job: dict, reason: str | None = None) -> dict:
 def _verify(job: dict, idx=None) -> dict:
     retained = False
     try:
-        idx = graph.Index() if idx is None else idx
+        idx = graph.Index(VAULT) if idx is None else idx
         write.require_complete(idx)
         _check_sources(job, idx)
         target, hub = job["target"], job["hub"]
         p = _retained_target(target, idx)
         node = contract.parse(p)
-        if not {raw.canonical_ref(s["ref"]) for s in job["sources"]}.issubset(_cites(node, idx)):
+        if not {raw.canonical_ref(VAULT, s["ref"]) for s in job["sources"]}.issubset(_cites(node, idx)):
             raise write.WriteError("target provenance is incomplete; pending")
         retained = True
         placement = node_placement(p, idx, selected=job)
@@ -278,7 +278,7 @@ def structure(receipt: dict, idx=None) -> str | None:
     문단·허브·출처 해시는 ACK 때 확인했고 다시 보지 않는다.
     걸리면 그 이유를 돌려줄 뿐 검토를 다시 열지 않는다."""
     try:
-        idx = graph.Index() if idx is None else idx
+        idx = graph.Index(VAULT) if idx is None else idx
         target = receipt["target"]
         p = write.live_locate(target["id"], idx)
         if p is None or not p.is_file():
@@ -331,7 +331,7 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256, since=N
             or not 1 <= limit <= 32 or not 1 <= scan_limit <= 1024):
         raise write.WriteError("bounded raw references and discovery limits required")
     with mutation_lock(VAULT):
-        idx = graph.Index()
+        idx = graph.Index(VAULT)
         write.require_complete(idx)
         # Original-turn refs are not vault paths; a proof binds one only through a cited round
         # (`_source` keeps its `native`). A turn never cited has no proof to find, so it needs no
@@ -341,7 +341,7 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256, since=N
         native = [ref for ref in raw_refs if raw.is_native(ref)]
         cited = set()
         for record in {record_name(*ref.split(":", 3)[1:3]) for ref in native}:
-            path = raw.locate_record(record)
+            path = raw.locate_record(VAULT, record)
             text = raw.read_exact(path) if path else ""
             cited |= {raw.cited_native(text[a:b]) for a, b in raw.round_spans(text).values()}
         wanted = {ref for ref in native if ref in cited}
@@ -378,11 +378,11 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256, since=N
                 if job.get("version") not in (1, 2):
                     raise ValueError("unsupported journal version")
                 if not wanted.intersection(
-                        {raw.canonical_ref(source["ref"]) for source in job["sources"]}
+                        {raw.canonical_ref(VAULT, source["ref"]) for source in job["sources"]}
                         | {source["native"] for source in job["sources"] if source.get("native")}):
                     continue
                 target = resolve_in_root(VAULT, job["target"]["path"])
-                if target is None or graph.space_of(target)[0] not in ("scope", "person"):
+                if target is None or graph.space_of(VAULT, target)[0] not in ("scope", "person"):
                     continue
                 proof = _verify(job)
                 if (proof["status"] == "complete"
@@ -398,7 +398,7 @@ def discover(raw_refs: list[str], limit: int = 8, scan_limit: int = 256, since=N
 
 def _wire_hub(job: dict) -> dict:
     """Resume current navigation without rewriting the historical receipt."""
-    idx = graph.Index()
+    idx = graph.Index(VAULT)
     write.require_complete(idx)
     proof = _verify(job)
     if proof.get("preservation", {}).get("status") != "complete":
@@ -423,7 +423,7 @@ def resume(key: str, *, name: str | None = None) -> dict:
         except Exception as exc:
             receipt = _receipt(job, str(exc))
         try:
-            path = _retained_target(target, graph.Index())   # 영수증과 같은 보존 판정
+            path = _retained_target(target, graph.Index(VAULT))   # 영수증과 같은 보존 판정
         except (write.WriteError, OSError, ValueError):
             path = None
         saved = path is not None
@@ -453,7 +453,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
         job = _load(key)
         if job and job["binding"] != binding:
             raise write.WriteError("distill.key is already bound to a different request")
-        idx = graph.Index()
+        idx = graph.Index(VAULT)
         write.require_complete(idx)
         if job and _verify(job).get("preservation", {}).get("status") == "complete":
             try:
@@ -487,7 +487,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 target_path = write.live_locate(request["name"], idx)
                 if target_path is None or not target_path.is_file():
                     raise write.WriteError("distillation target does not exist")
-                if graph.space_of(target_path)[0] not in _TARGETS:
+                if graph.space_of(VAULT, target_path)[0] not in _TARGETS:
                     raise write.WriteError("distillation target must be a Scope/Domain/Person node")
                 old = contract.parse(target_path)
                 selected_hash = sha256_file(target_path)
@@ -511,7 +511,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("target changed before write; pending")
             if operation == "update" and prose.norm_body(n.body) == prose.norm_body(contract.parse(path).body):
                 raise write.WriteError("distillation requires a changed retained body")
-            if graph.space_of(path)[0] not in _TARGETS:
+            if graph.space_of(VAULT, path)[0] not in _TARGETS:
                 raise write.WriteError("distillation target must be a Scope/Domain/Person node")
             if path.parent != resolve_in_root(VAULT, hub["path"]).parent or path.stem == hub["name"]:
                 raise write.WriteError("target must be a knowledge node under the selected hub")
@@ -522,7 +522,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
             cites = _cites(n, idx, legacy=False)
             if not {source["ref"] for source in sources if source.get("id")}.issubset(cites):
                 raise write.WriteError("required provenance was removed; no node written")
-            unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(s["ref"]) not in cites]
+            unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(VAULT, s["ref"]) not in cites]
             if unlined:
                 coords = [evidence.coordinate(VAULT, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
                 raise write.WriteError(
@@ -549,7 +549,7 @@ def _execute(operation: str, distill: dict, request: dict, *,
                        "sources": sources, "hub": hub, "target": planned,
                        "identity": {"id": n.id, "created": n.meta["created"]},
                        "stamp": n.meta["updated"]}
-                _check_sources(job, graph.Index())
+                _check_sources(job, graph.Index(VAULT))
                 _save(job)  # identity and exact expected bytes BEFORE graph write
 
         try:

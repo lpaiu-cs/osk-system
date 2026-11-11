@@ -1016,7 +1016,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', '', space='00_Scope/W1')
             assert not rg.CONFIG.exists()
             def transcript(sid, kind, originator):
                 native = core.ROOT / f'{sid}.jsonl'
@@ -1059,7 +1059,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', '', space='00_Scope/W1')
             native = core.ROOT / 'native.jsonl'
             rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),'cli_version':'0.155.0',
                         'model_provider':'openai','source':'cli','originator':'codex_cli_rs'}},
@@ -1107,7 +1107,7 @@ class ResponseGrowthTests(unittest.TestCase):
             patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', '', space='00_Scope/W1')
             native = core.ROOT / 'native.jsonl'
             rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),
                         'cli_version':'0.155.0','model_provider':'openai'}},
@@ -1216,7 +1216,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', '', space='00_Scope/W1')
             native = core.ROOT / 'native.jsonl'
             rg.CONFIG.parent.mkdir(exist_ok=True)
             rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
@@ -1271,7 +1271,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', '', space='00_Scope/W1')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
@@ -1322,7 +1322,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', '', space='00_Scope/W1')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
@@ -1366,7 +1366,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', '', space='00_Scope/W1')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
@@ -1416,9 +1416,9 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', 'shared memory sentinel', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', 'shared memory sentinel', space='00_Scope/W1')
             from osk import write
-            write.set_primary('own', 'W1', 'test')
+            write.set_primary(core.VAULT, 'own', 'W1', 'test')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
@@ -1714,7 +1714,7 @@ class ResponseGrowthTests(unittest.TestCase):
         base_tests.GrowthTests().check_case('''
             import os, subprocess, time
             from osk import response_growth as rg, integration, scope_memory
-            scope_memory.replace(core.ROOT.name, '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, core.ROOT.name, '', space='00_Scope/W1')
             native = core.ROOT / 'native.jsonl'
             rg.CONFIG.parent.mkdir(exist_ok=True)
             rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
@@ -1747,7 +1747,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             node('Unrelated Domain candidate')
             node('Other Scope claim', scope='W2')
-            scope_memory.replace('own', '', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', '', space='00_Scope/W1')
             native = core.ROOT / 'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'one-off question'}}) + '\\n' +
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','stop_reason':'end_turn','content':[{'type':'text','text':'one-off answer'}]}}) + '\\n')
@@ -1762,7 +1762,7 @@ class ResponseGrowthTests(unittest.TestCase):
             argv = json.loads((core.ROOT / result['output'] / 'argv.json').read_text(encoding='utf-8'))
             assert argv[1:] == ['-c', script], argv
             assert result['domain_selected'] == 0 and result['scope_selected'] == 1, result
-            manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            manifest = [r for r in core.ledger_read(growth.ledger_path(core.VAULT)) if r['kind']=='plan'][-1]
             assert [j['scope'] for j in manifest['organization_jobs']] == ['W1'], manifest
             assert result['selected'] == 2 and manifest['timeout_seconds'] == 600
             assert integration.status('claude','own')['reviewed_rounds'] == 1
@@ -1903,9 +1903,9 @@ class HookBudgetTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', 'first memory sentinel', space='00_Scope/W1')
+            scope_memory.replace(core.VAULT, 'own', 'first memory sentinel', space='00_Scope/W1')
             from osk import write
-            write.set_primary('own', 'W1', 'test')
+            write.set_primary(core.VAULT, 'own', 'W1', 'test')
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
@@ -1918,7 +1918,7 @@ class HookBudgetTests(unittest.TestCase):
                 seen = {}
                 for n in range(1,25):
                     if n == 20:
-                        scope_memory.replace('own', 'second memory sentinel', scope_memory.read('own')['hash'])
+                        scope_memory.replace(core.VAULT, 'own', 'second memory sentinel', scope_memory.read(core.VAULT, 'own')['hash'])
                     seen[n] = hook.capture_block(env,'own')
             assert 'first memory sentinel' in seen[9], seen[9]
             assert 'first memory sentinel' not in seen[15] and 'scope_memory(session="own")' in seen[15], seen[15]
@@ -1944,8 +1944,8 @@ class HookBudgetTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', 'bound memory sentinel', space='00_Scope/W1')
-            assert write.bindings('own') == {'scopes': ['W1'], 'primary': None, 'undetermined': False}
+            scope_memory.replace(core.VAULT, 'own', 'bound memory sentinel', space='00_Scope/W1')
+            assert write.bindings(core.VAULT, 'own') == {'scopes': ['W1'], 'primary': None, 'undetermined': False}
             native = core.ROOT/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')

@@ -651,7 +651,7 @@ from osk import doctor, write
 from osk.harness import base
 proj = root.parent / 'proj'
 proj.mkdir()
-write.bind_session('proj', 'W1')
+write.bind_session(core.VAULT, 'proj', 'W1')
 sid = 'sess_0f8a2c4e-1111-4222-8333-944455556666'
 transcript = home / '.kiro' / 'sessions' / 'ws1' / sid / 'messages.jsonl'
 def row(n, payload):
@@ -756,7 +756,7 @@ from osk import doctor, write
 from osk.harness import base
 proj = root.parent / 'proj'
 proj.mkdir()
-write.bind_session('proj', 'W1')
+write.bind_session(core.VAULT, 'proj', 'W1')
 sid = 'a7c1d2e3-1111-4222-8333-944455556666'
 transcript = home / '.gemini' / 'antigravity' / 'brain' / sid / '.system_generated' / 'logs' / 'transcript_full.jsonl'
 def step(n, typ, source='MODEL', **extra):

@@ -38,7 +38,7 @@ def _print_changeset(region: str, *, record: dict | None = None,
                      expect_work: str | None = None) -> None:
     """헌법 10조 2항 — 사용자는 **차이를 검토하여** 승인·반려한다. 해시 두 개는
     검토가 아니므로 무엇이 생기고 사라지고 바뀌는지를 파일 단위로 낸다."""
-    cs = approvals.changeset(region, record=record, expect_work=expect_work)
+    cs = approvals.changeset(VAULT, region, record=record, expect_work=expect_work)
     if cs is None:
         raise ValueError("차이를 판정할 수 없다 — 승인본을 복구한 뒤 다시 검토하라")
     moved = {m["to"] for m in cs.get("moves", [])}\
@@ -100,7 +100,7 @@ def _raw_cmd(a) -> None:
     """`osk raw migrate` — `_raw/`의 Markdown 기록을 숨김 `.txt`로 옮긴다(Mechanism §9 5항).
     대화를 기록에 옮겨 쌓는 경로는 두지 않는다 — 인용은 `cite_round`가 맡는다."""
     try:
-        _emit(raw.migrate(apply=a.apply))
+        _emit(raw.migrate(VAULT, apply=a.apply))
     except (write.WriteError, StaleEngineError, OSError) as e:
         _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
         sys.exit(1)
@@ -264,7 +264,7 @@ def _sm_cmd(a) -> None:
         # 문맥에 넣거나 종료코드를 보고 조용히 건너뛴다 — 둘 다 나쁘다.
         # 착지를 못 정하면 주입할 것이 없을 뿐이니 빈 출력으로 넘긴다.
         try:
-            st = scope_memory.read(a.session, a.space)
+            st = scope_memory.read(VAULT, a.session, a.space)
         except (write.WriteError, StaleEngineError) as e:
             if a.json:
                 _emit({"ok": False, "violations": e.violations, **e.extra})
@@ -277,7 +277,7 @@ def _sm_cmd(a) -> None:
             sys.stdout.buffer.flush()
         return
     try:
-        _emit(scope_memory.replace(a.session, _stdin_text(), a.expect_hash, a.space))
+        _emit(scope_memory.replace(VAULT, a.session, _stdin_text(), a.expect_hash, a.space))
     except (write.WriteError, StaleEngineError) as e:
         _emit({"ok": False, "violations": e.violations, **e.extra})
         sys.exit(1)
@@ -291,7 +291,7 @@ def _routing_cmd(a) -> None:
     from .core import mutation_lock
     try:
         if a.routing_cmd == "show":
-            _emit({"project": a.project, **write.bindings(a.project)} if a.project
+            _emit({"project": a.project, **write.bindings(VAULT, a.project)} if a.project
                   else {"audit": organization.bindings_audit()})
             return
         if a.routing_cmd == "primary":
@@ -299,23 +299,23 @@ def _routing_cmd(a) -> None:
             # 아니라 `integration review`·`organization review`의 실행기가 적용한다.
             _confirm(f"`{a.project}`의 주된 scope를 `{a.scope}`로 지정합니까? [y/N] ")
         with mutation_lock(VAULT):
-            current = write.bindings(a.project)
+            current = write.bindings(VAULT, a.project)
             if a.routing_cmd == "bind":
                 if a.scope in current["scopes"]:
                     _emit({"ok": True, "project": a.project, **current, "note": "이미 결속에 있다"})
                     return
-                if a.scope not in graph.scope_names():
+                if a.scope not in graph.scope_names(VAULT):
                     raise write.WriteError("없는 scope — 결속하지 않았다",
-                                           [f"`{a.scope}`는 scope가 아니다. 가능한 space: {graph.space_list()}"])
-                row = write.bind_session(a.project, a.scope, a.reason or "CLI 결속 추가", primary=False)
+                                           [f"`{a.scope}`는 scope가 아니다. 가능한 space: {graph.space_list(VAULT)}"])
+                row = write.bind_session(VAULT, a.project, a.scope, a.reason or "CLI 결속 추가", primary=False)
             elif a.routing_cmd == "unbind":
                 if a.scope not in current["scopes"]:
                     raise write.WriteError("결속에 없는 scope — 해제하지 않았다",
                                            [f"`{a.project}`의 결속: {current['scopes']}"])
-                row = write.unbind_session(a.project, a.scope, a.reason or "CLI 결속 해제")
+                row = write.unbind_session(VAULT, a.project, a.scope, a.reason or "CLI 결속 해제")
             else:
-                row = write.set_primary(a.project, a.scope, a.reason or "사용자 지정")
-        _emit({"ok": True, "rid": row.get("rid"), "project": a.project, **write.bindings(a.project)})
+                row = write.set_primary(VAULT, a.project, a.scope, a.reason or "사용자 지정")
+        _emit({"ok": True, "rid": row.get("rid"), "project": a.project, **write.bindings(VAULT, a.project)})
     except (write.WriteError, StaleEngineError, ValueError, OSError) as e:
         _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
         sys.exit(1)
@@ -376,19 +376,19 @@ def _tidy_cmd(a) -> None:
     지우므로 사용자가 확인한 해시(`--confirm`)가 있어야 실행한다."""
     try:
         if a.tidy_cmd == "list":
-            rows = evictions.unsettled(a.scope)
-            _emit({"status": evictions.status(), "items": [
+            rows = evictions.unsettled(VAULT, a.scope)
+            _emit({"status": evictions.status(VAULT), "items": [
                 {"rid": r["rid"], "scope": r.get("scope"), "session": r.get("session"),
                  "at": r.get("at"), "age_days": evictions.age_days(r),
                  "text": r.get("text")} for r in rows]})
         elif a.tidy_cmd == "prompt":
-            out = evictions.tidy_prompt(a.scope, sys.executable, str(ENGINE))
+            out = evictions.tidy_prompt(VAULT, a.scope, sys.executable, str(ENGINE))
             sys.stdout.buffer.write(out.encode("utf-8"))
             sys.stdout.buffer.flush()
         elif a.tidy_cmd == "discard":
-            _emit(evictions.discard_transit(a.title, a.confirm))
+            _emit(evictions.discard_transit(VAULT, a.title, a.confirm))
         else:
-            recs = evictions.settle_many(a.of, a.outcome, a.target, a.reason)
+            recs = evictions.settle_many(VAULT, a.of, a.outcome, a.target, a.reason)
             out = {"ok": True, "rid": recs[0]["rid"], "of": a.of,
                    "outcome": a.outcome, "target": recs[0].get("target")}
             if len(recs) > 1:
@@ -610,7 +610,7 @@ def main(argv=None):
         validate.main()
     elif a.cmd == "rechecks":
         from . import rechecks
-        items, pending = rechecks.candidates()
+        items, pending = rechecks.candidates(VAULT)
         _emit({"baseline_pending": pending, "count": len(items), "items": items,
                "close": rechecks.CLOSE})
     elif a.cmd == "validators":
@@ -641,16 +641,16 @@ def main(argv=None):
                 print(f"{r}: "
                       f"{'활성' if validate.validator_active(r) else '비활성'}")
     elif a.cmd == "status":
-        idx = graph.Index()
-        regions = approvals.protected_regions()
+        idx = graph.Index(VAULT)
+        regions = approvals.protected_regions(VAULT)
         try:
             # 건너뛴 정돈은 보인다(§9-3 3항) — scope별 미처분·가장 오래된 나이
-            ev = evictions.status()
+            ev = evictions.status(VAULT)
         except Exception as e:                  # 대장 손상은 현황을 막지 않는다
             ev = {"error": str(e)}
         try:
             from . import scope_memory
-            recovery = scope_memory.recovery_status()
+            recovery = scope_memory.recovery_status(VAULT)
         except Exception as e:
             recovery = {"error": str(e)}
         try:
@@ -665,10 +665,10 @@ def main(argv=None):
             release = update_check.report()
         except Exception as e:
             release = {"error": str(e)}
-        gw = approvals.governance_warning()
+        gw = approvals.governance_warning(VAULT)
         print(json.dumps({
             "nodes": len(idx.nodes),
-            "protected_regions": {r: approvals.state(r) for r in regions},
+            "protected_regions": {r: approvals.state(VAULT, r) for r in regions},
             "delegations": [d["title"] for d in authority.enumerate_delegations()
                             if d["effective"]],
             "evictions": ev,
@@ -708,22 +708,22 @@ def main(argv=None):
     elif a.cmd == "tidy":
         return _tidy_cmd(a)
     elif a.cmd == "protect":
-        st = approvals.state(a.region)
+        st = approvals.state(VAULT, a.region)
         print(f"보호영역 지정: {a.region}\n현재 상태: {st}")
         _confirm("지정 시점의 작업본이 초기 승인본이 됩니다. 지정합니까? [y/N] ")
-        rec = approvals.protect(a.region, a.reason)
+        rec = approvals.protect(VAULT, a.region, a.reason)
         print("지정 등재:", rec["rid"], "| 승인본:", rec["accepted"])
     elif a.cmd == "unprotect":
         _confirm(f"{a.region} 보호를 해제합니까? (clean 상태에서만) [y/N] ")
-        rec = approvals.unprotect(a.region, a.reason)
+        rec = approvals.unprotect(VAULT, a.region, a.reason)
         print("해제 등재:", rec["rid"])
     elif a.cmd == "approve":
-        st = approvals.state(a.region)
+        st = approvals.state(VAULT, a.region)
         if st == "stale":
             # 봉합 승인 — 승인 기록이 갈렸다(다기기 병합). 사용자가 갈래를 보고
             # 현재 작업본을 새 승인본으로 삼는다(Mechanism §3 5항).
-            forks = approvals.divergence(a.region)
-            work = approvals.working_tree_hash(a.region)
+            forks = approvals.divergence(VAULT, a.region)
+            work = approvals.working_tree_hash(VAULT, a.region)
             if not forks or work is None:
                 raise ValueError("갈래 또는 작업본을 판정할 수 없다 — 봉합하지 않았다")
             print(f"영역이 stale입니다 — 승인 기록이 {len(forks)}갈래로 갈렸습니다.")
@@ -738,7 +738,7 @@ def main(argv=None):
             # 검토한 갈래 집합을 프롬프트 **전에** 고정해 넘긴다 — 프롬프트
             # 사이 동기화로 새 갈래가 오면 봉합이 거부된다(본 적 없는 갈래를
             # 함께 봉합하지 않는다).
-            rec = approvals.approve(a.region, None, expect_work=work,
+            rec = approvals.approve(VAULT, a.region, None, expect_work=work,
                                     reason=a.reason or "분기 봉합",
                                     seal_heads=[f["rid"] for f in forks])
             print("봉합 승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
@@ -747,27 +747,27 @@ def main(argv=None):
             sys.exit(f"승인할 변경집합이 없다 — 상태: {st}")
         # 양측 CAS의 두 예상값을 확인 프롬프트 **전에** 고정한다 — 프롬프트
         # 사이에 작업본이 바뀌면 approve가 거부한다(검토한 것만 승인).
-        base = approvals.approved_hash(a.region)
-        work = approvals.working_tree_hash(a.region)
+        base = approvals.approved_hash(VAULT, a.region)
+        work = approvals.working_tree_hash(VAULT, a.region)
         print(f"승인 대상: {a.region}\n승인본→작업본: {base} → {work}")
         _print_changeset(a.region, expect_work=work)
         _confirm("검토한 이 변경집합을 승인본으로 받아들입니까? [y/N] ")
-        rec = approvals.approve(a.region, base, expect_work=work, reason=a.reason)
+        rec = approvals.approve(VAULT, a.region, base, expect_work=work, reason=a.reason)
         print("승인 등재:", rec["rid"], "| 새 승인본:", rec["accepted"])
     elif a.cmd == "revert":
-        st = approvals.state(a.region)
+        st = approvals.state(VAULT, a.region)
         if st != "pending":
             sys.exit(f"반려할 변경집합이 없다 — 상태: {st}")
         # 반려도 파괴적이므로 승인과 **같은 결속**을 쓴다 — 버릴 변경집합
         # (승인본→작업본)을 프롬프트 **전에** 고정한다. 프롬프트 사이에
         # 에이전트가 더 쓴 변경이 '사용자가 승인한 반려'에 묶여 사라지지 않게.
-        base = approvals.approved_hash(a.region)
-        work = approvals.working_tree_hash(a.region)
+        base = approvals.approved_hash(VAULT, a.region)
+        work = approvals.working_tree_hash(VAULT, a.region)
         print(f"반려 대상: {a.region} — 작업본을 승인본으로 원상 복원합니다")
         print(f"버릴 변경집합(작업본→승인본): {work} → {base}")
         _print_changeset(a.region, expect_work=work)
         _confirm("에이전트의 변경을 버리고 승인본으로 되돌립니까? [y/N] ")
-        rec = approvals.revert(a.region, base, expect_work=work, reason=a.reason)
+        rec = approvals.revert(VAULT, a.region, base, expect_work=work, reason=a.reason)
         print("반려 등재:", rec["rid"], "| 복원 승인본:", rec["base"])
     elif a.cmd == "store-reconcile":
         # EOL 이행의 저장소 몫. `-text`를 얻은 구획은 어느 쪽을 무조건 택해도
@@ -788,7 +788,7 @@ def main(argv=None):
             else:
                 _sp.run(["git", "-C", _root, "checkout", "--", rel], check=True)
 
-        res = approvals.reconcile_store(
+        res = approvals.reconcile_store(VAULT,
             _index_bytes, _apply if a.apply else None)
         print(f"객체 {res['checked']}건 판독 — 색인을 고칠 것 {len(res['stage'])}, "
               f"작업 트리를 고칠 것 {len(res['restore'])}, "

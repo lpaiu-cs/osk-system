@@ -136,7 +136,7 @@ def checkpoint_moves(idx) -> None:
 
 
 def _index():
-    idx = graph.Index()
+    idx = graph.Index(core.VAULT)
     if idx.scan_errors or idx.broken or idx.dup_ids or idx.dup_stems:
         raise ValueError("organization needs a complete, unambiguous inventory")
     return idx
@@ -174,7 +174,7 @@ def snapshot(scope: str, idx=None) -> dict:
                       "hash": digest, "summary": str(node.meta.get("summary", "")),
                       "hub": graph.is_hub(path), "has_body": bool(prose.norm_body(node.body)),
                       "body_chars": len(node.body), **write.size_feedback(path, node.body)})
-        references.extend(graph.reference_review(node, idx, records=records))
+        references.extend(graph.reference_review(core.VAULT, node, idx, records=records))
     links = {}
     for p, node in parsed.items():
         links[p] = {write.live_locate(ref, idx) for ref in node.wikilinks()}
@@ -559,16 +559,16 @@ def bindings_audit(project: str | None = None) -> list[dict]:
         return []
     keys = sorted({str(r.get("session")) for r in recs
                    if r.get("kind") in ("bind", "unbind") and r.get("session")})
-    keys = [k for k in keys if write.canonical_session(k, recs) == k]       # 별칭은 정본 키로 접힌다
+    keys = [k for k in keys if write.canonical_session(core.VAULT, k, recs) == k]       # 별칭은 정본 키로 접힌다
     if project is not None:
-        keys = [k for k in keys if k == (write.canonical_session(project, recs) or project)]
+        keys = [k for k in keys if k == (write.canonical_session(core.VAULT, project, recs) or project)]
     try:
         seen = load_state().get("bindings_seen", {})
     except ValueError:
         seen = {}
-    names, out = set(write.graph.scope_names()), []
+    names, out = set(write.graph.scope_names(core.VAULT)), []
     for key in keys:
-        b = write.bindings(key, recs)
+        b = write.bindings(core.VAULT, key, recs)
         if not b["scopes"]:
             continue
         flags = []
@@ -618,7 +618,7 @@ def apply_binding_decisions(decisions: list | None, state: dict | None = None) -
             or (d["action"] != "keep" and not (isinstance(d.get("scope"), str) and d["scope"].strip()))
             for d in decisions):
         raise ValueError("bindings decisions are [{project, action: keep|unbind|primary, scope?, reason}]")
-    scopes = write.graph.scope_names()
+    scopes = write.graph.scope_names(core.VAULT)
     for d in decisions:
         if d["action"] == "primary" and d["scope"].strip() not in scopes:
             raise ValueError(f"{d['action']} names a scope that does not exist: {d['scope'].strip()}")
@@ -628,12 +628,12 @@ def apply_binding_decisions(decisions: list | None, state: dict | None = None) -
     applied = []
     for d in decisions:
         project, action = d["project"].strip(), d["action"]
-        current = write.bindings(project)
+        current = write.bindings(core.VAULT, project)
         if action == "unbind" and d["scope"].strip() in current["scopes"]:
-            write.unbind_session(project, d["scope"].strip(), d["reason"].strip())
+            write.unbind_session(core.VAULT, project, d["scope"].strip(), d["reason"].strip())
         elif action == "primary" and current["primary"] != d["scope"].strip():
-            write.set_primary(project, d["scope"].strip(), d["reason"].strip())
-        seen[project] = len(write.bindings(project)["scopes"])
+            write.set_primary(core.VAULT, project, d["scope"].strip(), d["reason"].strip())
+        seen[project] = len(write.bindings(core.VAULT, project)["scopes"])
         applied.append({"project": project, "action": action, "scope": d.get("scope")})
     if own:
         _save(state)
