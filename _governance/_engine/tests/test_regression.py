@@ -12763,6 +12763,8 @@ def test_ledger_damage_is_a_kind():
         nested = "[" * 100_000 + "]" * 100_000
         for label, data in (("찢긴 행", b'{"rid": 1'), ("기록이 아닌 행", b"[1, 2]\n"),
                             ("깊이 겹친 행", nested.encode("ascii")), ("UTF-8이 아닌 바이트", b'{"a": "\xff"}\n'),
+                            # 해석기는 자릿수 상한을 넘는 정수에 `JSONDecodeError`가 아닌 `ValueError`를 낸다
+                            ("자릿수 상한을 넘는 정수", b'{"n": ' + b"9" * 5000 + b"}\n"),
                             ("rid 형식 위반", b'{"rid": "not-a-rid"}\n')):
             ledger.write_bytes(data)
             structural = label == "rid 형식 위반"       # 행은 읽히고, 잇는 자리에서 손상으로 막힌다
