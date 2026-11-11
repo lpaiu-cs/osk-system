@@ -10,8 +10,8 @@ from collections import Counter
 from datetime import datetime
 import json
 
-from . import (core, epoch, organization, rechecks, evictions, distillation, harness, response_growth, update,
-               conversation_capture, conversation_state, growth_ledger, growth_plan)
+from . import (core, epoch, organization, rechecks, evictions, distillation, harness, response_growth,
+               conversation_capture, conversation_state, growth_ledger, growth_plan, update_state)
 from .vault import Vault
 
 
@@ -231,7 +231,7 @@ def report(vault: Vault, *, since: str | None = None, until: str | None = None, 
         return {'observer': 'this CLI process, not the connected MCP server',
                 'engine_path': str(epoch.ENGINE_ROOT), 'engine_rev': epoch.loaded(),
                 'engine_disk_rev': disk, 'engine_stale': None if epoch.loaded() == epoch.UNKNOWN else epoch.loaded() != disk,
-                'applied_version': update.current_version(vault),
+                'applied_version': update_state.current_version(vault),
                 'manifest_version': json.loads(manifest.read_text(encoding='utf-8')).get('version') if manifest.exists() else None,
                 'mcp': 'not_observed; pair with overview engine_rev, engine_disk_rev and engine_observed_at',
                 'cli_preflight': None}

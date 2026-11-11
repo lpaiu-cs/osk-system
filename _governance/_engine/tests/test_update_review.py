@@ -28,7 +28,7 @@ class UpdateReviewTests(unittest.TestCase):
 import json, time
 from pathlib import Path
 from unittest import mock
-from osk import approvals, core, update
+from osk import approvals, core, update, daemon_control, update_plan, update_source, update_state, update_txn
 from osk.vault import Vault
 VAULT = Vault.open()
 root = VAULT.root
@@ -58,7 +58,7 @@ assert first['approval_required'] and not first['ok']
 assert '명시적 재승인' in first['instruction'] and '재시작' in first['instruction']
 assert (root / '_governance/Policy.md').read_text() == 'old'
 assert approvals.ledger_path(VAULT).read_bytes() == before
-assert not update.txn_manifest(VAULT).exists()
+assert not update_txn.txn_manifest(VAULT).exists()
 # Local drift invalidates the checkpoint even for the same command.
 (root / '_governance/Policy.md').write_text('changed while waiting')
 second = run(apply=True, adopt=True)
@@ -86,9 +86,9 @@ assert run(apply=True)['approval_required']
 ticket.write_text('[]')
 assert run(apply=True)['approval_required']
 # Consent is consumed even on an apply-lock failure.
-with mock.patch('osk.sync_status.lock_path', side_effect=update.UpdateError('daemon busy')):
+with mock.patch('osk.sync_status.lock_path', side_effect=update_state.UpdateError('daemon busy')):
     try: run(apply=True)
-    except update.UpdateError: pass
+    except update_state.UpdateError: pass
     else: raise AssertionError('expected lock failure')
 assert run(apply=True)['approval_required']
 # A failure after acceptance restores both approval and framework bytes.
@@ -100,7 +100,7 @@ def fail_after_accept(*args, **kw):
     raise OSError('injected failure after approval')
 with mock.patch.object(approvals, 'approve_locked', side_effect=fail_after_accept):
     try: run(apply=True)
-    except update.UpdateError as e: assert '원상복구' in str(e)
+    except update_state.UpdateError as e: assert '원상복구' in str(e)
     else: raise AssertionError('expected rollback')
 assert approvals.ledger_path(VAULT).read_bytes() == old_ledger
 assert (root / '_governance/Policy.md').read_bytes() == old_policy
@@ -117,7 +117,7 @@ assert approvals.state(VAULT, '_governance') == 'clean'
             script = r'''
 import subprocess, sys
 from unittest import mock
-from osk import core, update
+from osk import core, update, daemon_control, update_plan, update_source, update_state, update_txn
 from osk.vault import Vault
 VAULT = Vault.open()
 from osk._portalock import lock_exclusive, unlock
@@ -130,10 +130,10 @@ fake.write_text("import time\nfrom osk import core\nfrom osk.vault import Vault\
 daemon = subprocess.Popen([sys.executable, str(fake)], stdout=subprocess.PIPE, text=True)
 try:
     assert daemon.stdout.readline().strip() == 'ready'
-    assert daemon.pid in update.daemon_pids(VAULT)
+    assert daemon.pid in daemon_control.daemon_pids(VAULT)
     info = {}
-    with mock.patch.object(update, 'DAEMON_RESTART_WAIT', 1):
-        with update._daemon_stopped(VAULT, info):
+    with mock.patch.object(daemon_control, 'DAEMON_RESTART_WAIT', 1):
+        with daemon_control.daemon_stopped(VAULT, info):
             assert daemon.wait(timeout=30) is not None, 'daemon still running during apply'
             rival = open(core.local_lock_path('osk-sync.lock', VAULT.root), 'w')
             try:
@@ -155,9 +155,9 @@ try:
     holder = open(core.local_lock_path('osk-sync.lock', VAULT.root), 'w')
     lock_exclusive(holder, blocking=False)
     try:
-        with update._daemon_stopped(VAULT, {}):
+        with daemon_control.daemon_stopped(VAULT, {}):
             raise AssertionError('entered without the singleton')
-    except update.UpdateError as e:
+    except update_state.UpdateError as e:
         assert '프로세스를 찾지 못했다' in str(e), e
     finally:
         unlock(holder)
@@ -178,7 +178,7 @@ finally:
             script = r'''
 import json
 from unittest import mock
-from osk import approvals, core, update
+from osk import approvals, core, update, daemon_control, update_plan, update_source, update_state, update_txn
 from osk.vault import Vault
 VAULT = Vault.open()
 root = VAULT.root
@@ -214,10 +214,10 @@ def fail_after_protect(*a, **kw):
     raise OSError('injected failure after protect')
 with mock.patch.object(approvals, 'protect', side_effect=fail_after_protect):
     try: run()
-    except update.UpdateError as e: assert '원상복구' in str(e), e
+    except update_state.UpdateError as e: assert '원상복구' in str(e), e
     else: raise AssertionError('expected rollback')
 assert not approvals.ledger_path(VAULT).exists() and approvals.state(VAULT, '_governance') == 'unprotected'
-assert update.current_version(VAULT) == 'v9.41.0'
+assert update_state.current_version(VAULT) == 'v9.41.0'
 rep = run()
 assert rep['governance_protected'] == 'established' and rep['applied_files'] == 0, rep
 assert approvals.state(VAULT, '_governance') == 'clean'

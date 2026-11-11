@@ -18,7 +18,7 @@ SETUP = r'''
 import json, os, subprocess, sys, time
 from pathlib import Path
 from unittest import mock
-from osk import core, update, update_check, validate
+from osk import core, update, update_check, validate, daemon_control, update_plan, update_source, update_state, update_txn
 from osk.vault import Vault
 VAULT = Vault.open()
 root = VAULT.root
@@ -42,7 +42,7 @@ def configure(**upstream):
                                                **upstream}}), encoding='utf-8')
 configure()
 def done(version, fill):
-    core.ledger_append(update.journal_path(VAULT), {'kind': 'done', 'version': version,
+    core.ledger_append(update_state.journal_path(VAULT), {'kind': 'done', 'version': version,
                                                'attest': 'sha256:' + fill * 64})
 state_path = core.local_lock_path(update_check.STATE, VAULT.root)
 def cached(**over):
@@ -69,7 +69,7 @@ class UpdateNoticeTests(unittest.TestCase):
     def test_check_notices_every_session_until_acked_and_clears_when_the_journal_catches_up(self):
         self.check_case(r'''
 done('v4.0.0', '0')
-assert update.current_version(VAULT) == 'v4.0.0'
+assert update_state.current_version(VAULT) == 'v4.0.0'
 # The first surface asks nothing of the network itself: it starts a detached check.
 assert update_check.available(VAULT) is None
 proc = update_check.ensure_fresh(VAULT)
@@ -138,7 +138,7 @@ assert update_check.session_notice(VAULT)[0].startswith('[osk 새 릴리스 — 
 cached()
 # Another device updated and the synced journal arrived: nothing is left to announce.
 done('v4.10.0', '1')
-assert update.current_version(VAULT) == 'v4.10.0'
+assert update_state.current_version(VAULT) == 'v4.10.0'
 assert update_check.available(VAULT) is None and update_check.surface(VAULT) is None
 assert update_check.session_notice(VAULT) == ('', '')
 ''')
@@ -218,8 +218,8 @@ def fake_run(cmd, **kw):
         return subprocess.CompletedProcess(cmd, 0)
     return subprocess.CompletedProcess(cmd, 0, TAGS, '')
 os.environ['GIT_ASKPASS'] = os.environ['SSH_ASKPASS'] = 'ask'
-with mock.patch.object(update.subprocess, 'run', side_effect=fake_run):
-    assert update.latest_release_tag('U', timeout=5, unattended=True) == 'v1.2.3'
+with mock.patch.object(update_source.subprocess, 'run', side_effect=fake_run):
+    assert update_source.latest_release_tag('U', timeout=5, unattended=True) == 'v1.2.3'
     assert seen['cmd'][:3] == ['git', '-c', 'core.askPass='], seen['cmd']
     assert not {'GIT_ASKPASS', 'SSH_ASKPASS'} & set(seen['env']), seen
     assert seen['stdin'] is subprocess.DEVNULL and seen['timeout'] == 5, seen
@@ -229,7 +229,7 @@ with mock.patch.object(update.subprocess, 'run', side_effect=fake_run):
     assert seen['env']['GIT_TERMINAL_PROMPT'] == '0', seen
     assert seen['env']['GCM_INTERACTIVE'] == 'never', seen
     assert seen['creationflags'] == (0x08000000 if os.name == 'nt' else 0), seen
-    assert update.latest_release_tag('U') == 'v1.2.3'
+    assert update_source.latest_release_tag('U') == 'v1.2.3'
     assert seen['cmd'][:2] == ['git', 'ls-remote'], seen['cmd']
     assert 'env' not in seen and 'stdin' not in seen and seen['timeout'] == 60, seen
     assert seen['capture_output'] is True, seen
@@ -237,7 +237,7 @@ with mock.patch.object(update.subprocess, 'run', side_effect=fake_run):
 def slow_run(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd, kw['timeout'])
 done('v4.0.0', '0')
-with mock.patch.object(update.subprocess, 'run', side_effect=slow_run):
+with mock.patch.object(update_source.subprocess, 'run', side_effect=slow_run):
     rep = update_check.check(VAULT, unattended=True)
 assert rep['error'] and 'TimeoutExpired' in rep['error'], rep
 with mock.patch.object(core.subprocess, 'Popen') as popen:
@@ -292,8 +292,8 @@ def prompts(route, unattended):
             os.environ.pop(name, None)
     asked.unlink(missing_ok=True)
     try:
-        update.latest_release_tag(url, timeout=60, unattended=unattended)
-    except update.UpdateError as e:
+        update_source.latest_release_tag(url, timeout=60, unattended=unattended)
+    except update_state.UpdateError as e:
         return (asked.read_text(encoding='utf-8') if asked.exists() else ''), str(e)
     raise AssertionError('a denied query returned tags')
 for route in ('GIT_ASKPASS', 'core.askPass', 'SSH_ASKPASS'):

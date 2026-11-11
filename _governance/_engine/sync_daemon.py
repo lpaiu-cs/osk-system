@@ -21,7 +21,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_sync  # noqa: E402
-from osk import core, epoch, raw, update  # noqa: E402
+from osk import core, epoch, raw, update_state  # noqa: E402
+# `raw`와 `graph`가 함수 안에서 읽는 `evidence`를 뜰 때 읽어 둔다 — 도는 프로세스는 뜬 시각의 코드를
+# 쥔다(`osk.epoch`). 빼면 구조 시험의 `late_loads`에 문이 는다.
+from osk import evidence  # noqa: E402,F401
 from osk._portalock import lock_exclusive, unlock  # noqa: E402
 # 잠금 자리와 마지막 주기의 기록은 `osk.sync_status`에 산다 — update·setup·doctor가 데몬을 import하지 않고 읽는다.
 from osk.sync_status import STALE, STATUS, last, trouble  # noqa: E402,F401
@@ -61,7 +64,7 @@ def _once(root: Path) -> str:
         return "ok (로컬 커밋만 — 원격 없음)" if status == "ok" else status
     # 전송 경계의 보호 — 등록 뒤에 origin이나 push 대상이 바뀌어도 여기서 막는다. 공개 정본은 어디에
     # 있든 안 되고, 그 밖의 대상은 setup이 확인해 적은 것(`vault_sync.TARGETS`)과 같아야 한다.
-    if any(update.is_canonical(u) for u in [url, *pushes]):
+    if any(update_state.is_canonical(u) for u in [url, *pushes]):
         status, _head = _apply(root)
         return ("전송 보류 — origin의 fetch·push 대상에 공개 정본이 있다(로컬 커밋만)"
                 if status == "ok" else status)

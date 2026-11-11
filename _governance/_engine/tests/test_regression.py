@@ -969,7 +969,7 @@ def test_jsonl_readers_line_separators():
     """대장 밖의 JSONL(제공자 출력·갱신 저널)도 행 경계는 "\\n"뿐이다 — serde_json·
     JSON.stringify·`ensure_ascii=False`는 U+2028 등을 날것으로 둔다."""
     import importlib.util as _ilu
-    from osk import response_growth as rg, update, growth_reviews
+    from osk import response_growth as rg, growth_reviews, update_txn
     _spec = _ilu.spec_from_file_location("osk_recover_seps", ENGINE / "scripts" / "recover.py")
     _rec = _ilu.module_from_spec(_spec)
     _spec.loader.exec_module(_rec)
@@ -996,7 +996,7 @@ def test_jsonl_readers_line_separators():
         j.write_text(json.dumps({"kind": "done", "txn": "TSEP", "note": _LINE_SEPS},
                                 ensure_ascii=False) + "\n", encoding="utf-8")
         ok("갱신 저널 관대한 판독 — 구분 문자 행",
-           lambda: [r.get("txn") for r in update._journal_lenient(_vault_at(td))] == ["TSEP"])
+           lambda: [r.get("txn") for r in update_txn.journal_lenient(_vault_at(td))] == ["TSEP"])
         ok("recover.py 저널 판독 — 구분 문자 행", lambda: _rec._journal_done(td, "TSEP"))
     finally:
         rmtree_force(td)
@@ -4287,37 +4287,37 @@ def test_conflict_candidates():
 # ── 15b. 정본 릴리스와 갱신 (Mechanism §1-2 · 시행령 §10 6항) ────────────
 def test_current_version_equivalent_heads():
     """#41: 판본 문자열뿐 아니라 같은 릴리스 증빙인 병렬 극대만 수렴한다."""
-    from osk import update
+    from osk import update_state
     old = {"rid": core._make_rid(1754000000000, 0), "parents": [],
            "kind": "done", "version": "v3.16.0", "attest": "sha256:" + "a" * 64}
     a = {"rid": core._make_rid(1754000000001, 0), "parents": [old["rid"]],
          "kind": "done", "version": "v3.17.1", "attest": "sha256:" + "b" * 64}
     b = dict(a, rid=core._make_rid(1754000000002, 0))
     check("현재 판본: 동일 릴리스 병렬 적용은 동치로 수렴한다",
-          update.current_version(VAULT, [old, a, b]) == "v3.17.1")
+          update_state.current_version(VAULT, [old, a, b]) == "v3.17.1")
     check("현재 판본: 병렬 기록의 물리 순서와 무관하다",
-          update.current_version(VAULT, [old, b, a]) == "v3.17.1")
+          update_state.current_version(VAULT, [old, b, a]) == "v3.17.1")
     for title, changed in (
             ("서로 다른 판본", {"version": "v3.16.1"}),
             ("같은 판본의 서로 다른 증빙", {"attest": "sha256:" + "c" * 64}),
             ("구판·현행 기록 혼합", {"attest": None})):
         check(f"현재 판본: {title}는 미확정을 유지한다",
-              update.current_version(VAULT, [old, a, dict(b, **changed)]) is None)
+              update_state.current_version(VAULT, [old, a, dict(b, **changed)]) is None)
     legacy_a = {k: v for k, v in a.items() if k != "attest"}
     legacy_b = {k: v for k, v in b.items() if k != "attest"}
     check("현재 판본: 증빙 없는 구판의 병렬 기록은 추측하지 않는다",
-          update.current_version(VAULT, [old, legacy_a, legacy_b]) is None)
+          update_state.current_version(VAULT, [old, legacy_a, legacy_b]) is None)
     check("현재 판본: 구판 단일 기록과 빈 저널은 종전대로 해석한다",
-          update.current_version(VAULT, [old, legacy_a]) == "v3.17.1"
-          and update.current_version(VAULT, []) is None)
+          update_state.current_version(VAULT, [old, legacy_a]) == "v3.17.1"
+          and update_state.current_version(VAULT, []) is None)
     for invalid in ("", "sha256:broken", ["same"]):
         check(f"현재 판본: 같은 값이어도 부적격 증빙은 동치 근거가 아니다 {invalid!r}",
-              update.current_version(VAULT, [old, dict(a, attest=invalid),
+              update_state.current_version(VAULT, [old, dict(a, attest=invalid),
                                       dict(b, attest=invalid)]) is None)
     next_done = dict(b, parents=[a["rid"]], version="v3.17.2",
                      attest="sha256:" + "c" * 64)
     check("현재 판본: 선형 갱신은 최신 인과 기록을 반환한다",
-          update.current_version(VAULT, [old, a, next_done]) == "v3.17.2")
+          update_state.current_version(VAULT, [old, a, next_done]) == "v3.17.2")
 
 
 def test_fresh_install_protects_governance():
@@ -4451,7 +4451,7 @@ def test_fresh_install_protects_governance():
 
 
 def test_release_and_update():
-    from osk import release, update
+    from osk import _portalock, release, update, update_plan, update_source, update_state, update_txn
     def confirmed_update(*args, **kwargs):
         # The fixture supplies the user response. Checkpoint semantics are tested
         # independently in test_update_review.py, including stale/refused retries.
@@ -4534,7 +4534,7 @@ def test_release_and_update():
                 try:
                     f()
                     return None
-                except (release.ReleaseError, update.UpdateError) as e:
+                except (release.ReleaseError, update_state.UpdateError) as e:
                     return str(e)
             check("중복 버전은 선언 전에 거부(버전 불변)",
                   "이미 선언된 버전" in (uerr(lambda: release.run(VAULT,
@@ -4554,11 +4554,11 @@ def test_release_and_update():
             (ROOT / "_governance").mkdir(parents=True, exist_ok=True)
             (ROOT / "_governance/UpdDoc.md").write_text(
                 "기존 인스턴스의 다른 내용\n", encoding="utf-8")
-            check("최초 편입 전 저널은 비어 있다", not update.has_history(VAULT))
+            check("최초 편입 전 저널은 비어 있다", not update_state.has_history(VAULT))
             # **덮기가 시작조차 되지 않는다** — 내용이 다른 사이드카가 이미 있으면
             #   adopt는 중단한다(#41 · PR 리뷰). 진행하면 지금 파일의 로컬 수정이
             #   어디에도 남지 않는다: 사이드카는 못 쓰고 원본은 덮이며 pre-image는
-            #   성공 뒤 `_txn_clear`가 지운다. conflict의 `held`는 원본이 제자리에
+            #   성공 뒤 `update_txn.txn_clear`가 지운다. conflict의 `held`는 원본이 제자리에
             #   남아 안전하지만 adopt는 그렇지 않다.
             #   되돌리면 — `if ad_blocked: raise`를 지우면 아래 셋이 실패한다.
             _pre = (ROOT / "_governance/UpdDoc.md").read_bytes()
@@ -4569,7 +4569,7 @@ def test_release_and_update():
                 confirmed_update(source="bundle", bundle=str(can), apply=True,
                            adopt=True)
                 _blocked_msg = None
-            except update.UpdateError as e:
+            except update_state.UpdateError as e:
                 _blocked_msg = str(e)
             check("사이드카가 이미 있고 다르면 adopt가 중단한다 (#41)",
                   _blocked_msg is not None
@@ -4590,8 +4590,8 @@ def test_release_and_update():
             # **덮은 것을 옆에 남기고 그렇다고 말한다** (#41 4항).
             #   편입의 뜻이 "현재 릴리스를 기준선 삼는다"이므로 덮는 것은 맞다.
             #   맞지 않았던 것은 그것이 보고에서 평범한 `update`와 구별되지 않고,
-            #   성공하면 `_txn_clear`가 pre-image까지 지워 되돌릴 길이 없다는 것이다.
-            #   되돌리면 — `plan`의 `adopted` 집계나 `_adopt_sidecar_plan`을 지우면
+            #   성공하면 `update_txn.txn_clear`가 pre-image까지 지워 되돌릴 길이 없다는 것이다.
+            #   되돌리면 — `plan`의 `adopted` 집계나 `update_plan.adopt_sidecar_plan`을 지우면
             #   아래 셋 중 하나가 실패한다.
             _side = ROOT / f"_governance/UpdDoc.md.local-{r1['version']}"
             mine.append(_side)
@@ -4612,7 +4612,7 @@ def test_release_and_update():
             #   conflict의 `held`가 안전한 것은 원본이 제자리에 남기 때문이다.
             #   adopt는 원본을 덮으므로 같은 규율을 쓰면, 사이드카를 못 쓴 채
             #   원본을 덮어 로컬 수정이 어디에도 남지 않는다(pre-image는 성공 뒤
-            #   `_txn_clear`가 지운다). 되돌리면 — `blocked`를 `held`처럼 흘려
+            #   `update_txn.txn_clear`가 지운다). 되돌리면 — `blocked`를 `held`처럼 흘려
             #   보내면 아래 둘이 실패한다.
             _b = ROOT / "_governance/UpdDoc2.md"
             _bside = ROOT / "_governance/UpdDoc2.md.local-v9.9.9"
@@ -4620,7 +4620,7 @@ def test_release_and_update():
             _b.write_bytes("잃으면 안 되는 로컬 수정".encode("utf-8"))
             _bside.write_bytes("남이 먼저 차지한 사이드카".encode("utf-8"))
             _fake = {"adopted": [("x", "_governance/UpdDoc2.md")]}
-            _w, _k, _blocked, _c = update._adopt_sidecar_plan(VAULT,
+            _w, _k, _blocked, _c = update_plan.adopt_sidecar_plan(VAULT,
                 _fake, "v9.9.9", set())
             check("내용이 다른 adopt 사이드카는 blocked로 갈린다 (#41)",
                   _blocked == ["_governance/UpdDoc2.md.local-v9.9.9"]
@@ -4630,7 +4630,7 @@ def test_release_and_update():
                   and _bside.read_bytes()
                   == "남이 먼저 차지한 사이드카".encode("utf-8"),
                   (_b.read_bytes()[:20], _bside.read_bytes()[:20]))
-            check("편입 후 관리 이력이 생긴다", update.has_history(VAULT))
+            check("편입 후 관리 이력이 생긴다", update_state.has_history(VAULT))
             mine += [ROOT / "_governance/UpdDoc.md",
                      ROOT / "_governance/records/갱신 사료.md",
                      ROOT / "_governance/_engine/eng_upd.py",
@@ -4644,15 +4644,15 @@ def test_release_and_update():
             check("허용 밖 SKEL은 만들어지지 않는다",
                   not (ROOT / "= UpdSkel").exists())
             check("_allowed_skel: 최상위 Space 루트만 허용",
-                  update._allowed_skel(VAULT, "00_Scope") is not None
-                  and update._allowed_skel(VAULT, "00_Domain") is not None
-                  and update._allowed_skel(VAULT, "00_Scope/UserData") is None
-                  and update._allowed_skel(VAULT, "00_Scope/UserData/newdir") is None
-                  and update._allowed_skel(VAULT, "= NotASpace") is None)
-            recs = core.ledger_read(update.journal_path(VAULT))
+                  update_plan._allowed_skel(VAULT, "00_Scope") is not None
+                  and update_plan._allowed_skel(VAULT, "00_Domain") is not None
+                  and update_plan._allowed_skel(VAULT, "00_Scope/UserData") is None
+                  and update_plan._allowed_skel(VAULT, "00_Scope/UserData/newdir") is None
+                  and update_plan._allowed_skel(VAULT, "= NotASpace") is None)
+            recs = core.ledger_read(update_state.journal_path(VAULT))
             check("저널: begin·apply·done",
                   {"begin", "apply", "done"} <= {r.get("kind") for r in recs})
-            check("현재 버전 판정", update.current_version(VAULT) == "v9.0.0")
+            check("현재 버전 판정", update_state.current_version(VAULT) == "v9.0.0")
 
             # 멱등 — 재실행은 전부 same
             r2 = confirmed_update(source="bundle", bundle=str(can))
@@ -4708,7 +4708,7 @@ def test_release_and_update():
             confirmed_update(source="bundle", bundle=str(can), apply=True)
             check("갱신이 통치 문서를 정본 내용으로 덮는다",
                   "1조 개정" in gp.read_text(encoding="utf-8"))
-            check("갱신 후 현재 버전 갱신", update.current_version(VAULT) == "v9.0.1")
+            check("갱신 후 현재 버전 갱신", update_state.current_version(VAULT) == "v9.0.1")
 
             # 비준증빙 위반 — 변조·부재는 중단. 증빙 밖 미추적 파일은 허용.
             (can / "docs/UPD-SETUP.md").write_text("# 변조\n", encoding="utf-8")
@@ -4729,8 +4729,8 @@ def test_release_and_update():
 
             # 갱신 기본은 브랜치 HEAD가 아니라 최신 정식 릴리스 태그다 (P2)
             check("갱신 기본은 최신 릴리스 태그",
-                  update.latest_release_tag(str(can)) == "v9.0.1",
-                  update.latest_release_tag(str(can)))
+                  update_source.latest_release_tag(str(can)) == "v9.0.1",
+                  update_source.latest_release_tag(str(can)))
 
             # 삭제 전파 — 정본에서 빠진 파일은 인스턴스에서도 제거(로컬 무수정) (P1)
             (can / "_governance/DropMe.md").write_text(
@@ -4788,7 +4788,7 @@ def test_release_and_update():
             # 동명 브랜치가 태그를 가리지 못한다 — refs/tags 명시 fetch (P1)
             # 태그 v9.0.0과 동명인 브랜치를 HEAD(다른·최신 커밋)에 만들어 둔다
             git(can, "branch", "v9.0.0", "HEAD")
-            tf = update.fetch_git(str(can), "v9.0.0", Path(td) / "ftag")
+            tf = update_source.fetch_git(str(can), "v9.0.0", Path(td) / "ftag")
             relf = json.loads((tf / "release.json").read_text(encoding="utf-8"))
             check("동명 브랜치가 있어도 태그의 커밋을 받는다",
                   relf["version"] == "v9.0.0", relf.get("version"))
@@ -4900,8 +4900,8 @@ def test_release_and_update():
                               for f in ev.rglob("*") if f.is_file()}}
             (ev / "release.json").write_text(
                 json.dumps(att2, ensure_ascii=False), encoding="utf-8")
-            ev_rel = update.load_release(ev)
-            ev_targets, ev_skel, ev_skipped = update.apply_set(VAULT, ev, ev_rel)
+            ev_rel = update_source.load_release(ev)
+            ev_targets, ev_skel, ev_skipped = update_plan.apply_set(VAULT, ev, ev_rel)
             ev_dests = [d for _s, d in ev_targets]      # apply_set는 (src,dest) 사상
             check("Space 바닥은 target이 아니라 skip(침투 차단)",
                   "00_Scope/침투.md" not in ev_dests
@@ -4913,23 +4913,23 @@ def test_release_and_update():
                   and sum("SKEL 허용 밖" in s for s in ev_skipped) == 2,
                   (ev_skel, ev_skipped))
             check("_allowed_skel: 빈 Space 루트만 허용",
-                  update._allowed_skel(VAULT, "00_Scope") is not None
-                  and update._allowed_skel(VAULT, "00_Scope/Workbench/_ledger") is None
-                  and update._allowed_skel(VAULT, "../evil") is None
-                  and update._allowed_skel(VAULT, "_ledger") is None)
+                  update_plan._allowed_skel(VAULT, "00_Scope") is not None
+                  and update_plan._allowed_skel(VAULT, "00_Scope/Workbench/_ledger") is None
+                  and update_plan._allowed_skel(VAULT, "../evil") is None
+                  and update_plan._allowed_skel(VAULT, "_ledger") is None)
 
             # 경로 봉쇄 — 증빙 key·저널 path의 vault 탈출 차단 (P1)
             check("resolve_within: 정상 상대경로는 통과",
-                  update.resolve_within(ROOT, "_governance/Constitution.md") is not None)
+                  core.resolve_within(ROOT, "_governance/Constitution.md") is not None)
             check("resolve_within: 상위 탈출·절대경로는 봉쇄",
-                  update.resolve_within(ROOT, "_governance/../../payload") is None
-                  and update.resolve_within(ROOT, "../escape") is None
-                  and update.resolve_within(ROOT, "/etc/passwd") is None)
+                  core.resolve_within(ROOT, "_governance/../../payload") is None
+                  and core.resolve_within(ROOT, "../escape") is None
+                  and core.resolve_within(ROOT, "/etc/passwd") is None)
             esc = {"version": "v1.0.0",
                    "files": {"_governance/../../payload": "sha256:00"}}
             check("증빙 경로 탈출은 대조 단계에서 중단",
-                  any("트리 밖" in e for e in update.verify_attestation(can, esc)),
-                  update.verify_attestation(can, esc))
+                  any("트리 밖" in e for e in update_source.verify_attestation(can, esc)),
+                  update_source.verify_attestation(can, esc))
 
             # ROOT 내부 symlink alias는 경로 정체성 훼손으로 거부 — 다른 파일로
             # write 재지정 차단 (P1). docs가 _governance로 가는 symlink라 하자.
@@ -4944,8 +4944,8 @@ def test_release_and_update():
                 sy_ok = True                     # symlink 불가 환경이면 통과 처리
             if (syroot / "docs").is_symlink():
                 check("ROOT 내부 symlink alias(docs->_governance)는 거부",
-                      update.canon_rel(syroot, "docs/target.md") is None
-                      and update.canon_rel(syroot, "_governance/target.md")
+                      core.canon_rel(syroot, "docs/target.md") is None
+                      and core.canon_rel(syroot, "_governance/target.md")
                       == "_governance/target.md")
 
             # 적용 트랜잭션 — 도중 실패 시 파일 원상복구, 저널에 apply 안 남김 (P1)
@@ -4965,7 +4965,7 @@ def test_release_and_update():
                 json.dumps(att_t, ensure_ascii=False), encoding="utf-8")
             # _write_atomic이 B.md write에서 OSError를 던지게 해 트랜잭션 실패 유발
             # (A는 써진 뒤 B에서 실패 → 원상복구로 A·B 모두 사라져야 한다)
-            real_wa = update._write_atomic
+            real_wa = update_txn.write_atomic
 
             def _boom(dst, data):
                 if dst.name == "B.md":
@@ -4973,12 +4973,12 @@ def test_release_and_update():
                 return real_wa(dst, data)
             uj0 = VAULT.ledger / "update.jsonl"
             j_before = uj0.read_text(encoding="utf-8") if uj0.exists() else ""
-            update._write_atomic = _boom
+            update_txn.write_atomic = _boom
             try:
                 et = uerr(lambda: confirmed_update(source="bundle", bundle=str(trbase),
                                              apply=True))
             finally:
-                update._write_atomic = real_wa
+                update_txn.write_atomic = real_wa
             j_after = uj0.read_text(encoding="utf-8") if uj0.exists() else ""
             check("적용 중 실패는 UpdateError로 중단",
                   et is not None and "원상복구" in et, et)
@@ -4997,33 +4997,33 @@ def test_release_and_update():
 
             def _stage_txn(txn):
                 """_txn_begin으로 실제 프로토콜대로 트랜잭션을 시작해 둔다."""
-                update._txn_begin(VAULT, txn, "v9.9.9", [victim_rel])
+                update_txn.txn_begin(VAULT, txn, "v9.9.9", [victim_rel])
 
             # ① 미커밋(done 없음) → pre-image로 rollback
             _stage_txn("txnAAA")
             victim.write_bytes(b"HALF-APPLIED\n")     # 크래시로 남은 부분 적용
-            act = update._txn_recover(VAULT, [{"kind": "begin", "txn": "txnAAA"}])
+            act = update_txn.txn_recover(VAULT, [{"kind": "begin", "txn": "txnAAA"}])
             check("미커밋 트랜잭션은 pre-image로 rollback",
                   act == "rollback" and victim.read_bytes() == orig_v
-                  and not update.txn_manifest(VAULT).exists(), act)
+                  and not update_txn.txn_manifest(VAULT).exists(), act)
             # ② 커밋됨(done(txn) 있음) → 파일은 새 판 유지, 표식만 정리
             _stage_txn("txnBBB")
             victim.write_bytes(b"NEW-VERSION\n")
-            act = update._txn_recover(VAULT, [{"kind": "done", "txn": "txnBBB"}])
+            act = update_txn.txn_recover(VAULT, [{"kind": "done", "txn": "txnBBB"}])
             check("커밋된 트랜잭션은 roll-forward(파일 유지·표식 정리)",
                   act == "roll-forward"
                   and victim.read_bytes() == b"NEW-VERSION\n"
-                  and not update.txn_manifest(VAULT).exists(), act)
+                  and not update_txn.txn_manifest(VAULT).exists(), act)
             victim.write_bytes(orig_v)
             # ③ 백업 손상 → fail-closed(백업 보존·중단)
             _stage_txn("txnCCC")
-            (update.txn_backup(VAULT) / "000000").write_bytes(b"CORRUPT\n")
-            ec = uerr(lambda: update._txn_recover(VAULT, [{"kind": "begin",
+            (update_txn.txn_backup(VAULT) / "000000").write_bytes(b"CORRUPT\n")
+            ec = uerr(lambda: update_txn.txn_recover(VAULT, [{"kind": "begin",
                                                     "txn": "txnCCC"}]))
             check("백업 손상은 fail-closed로 중단하고 txn 영역을 보존",
-                  ec is not None and "손상" in ec and update.txn_manifest(VAULT).is_file(),
+                  ec is not None and "손상" in ec and update_txn.txn_manifest(VAULT).is_file(),
                   ec)
-            update._txn_clear(VAULT)
+            update_txn.txn_clear(VAULT)
             victim.write_bytes(orig_v)
 
             # 커밋 전 apply 기록은 판정에서 보이지 않는다 (파일↔저널 정합, P1)
@@ -5032,16 +5032,16 @@ def test_release_and_update():
                  "kind": "apply", "txn": "T1", "path": "F", "hash": "sha256:aa"},
             ]
             check("미커밋 apply는 baseline이 되지 않는다",
-                  update.last_applied_hash(uncommitted, "F") is None
-                  and "F" not in update.managed_paths(uncommitted)
-                  and not update.has_history(VAULT, uncommitted))
+                  update_state.last_applied_hash(uncommitted, "F") is None
+                  and "F" not in update_state.managed_paths(uncommitted)
+                  and not update_state.has_history(VAULT, uncommitted))
             committed_recs = uncommitted + [
                 {"rid": "00000000-0000-7000-8000-00000000c002",
                  "parents": ["00000000-0000-7000-8000-00000000c001"],
                  "kind": "done", "txn": "T1"}]
             check("done(txn) 이후에는 같은 기록이 baseline이 된다",
-                  update.last_applied_hash(committed_recs, "F") == "sha256:aa"
-                  and update.has_history(VAULT, committed_recs))
+                  update_state.last_applied_hash(committed_recs, "F") == "sha256:aa"
+                  and update_state.has_history(VAULT, committed_recs))
 
             # 미커밋 기록은 **후보**에서만 빠지고 인과 사슬은 남아야 한다 —
             # 목록에서 빼면 parents 간선이 끊겨 정상 복구·재적용 뒤에도 baseline이
@@ -5059,20 +5059,20 @@ def test_release_and_update():
                 {"rid": _r(15), "parents": [_r(14)], "kind": "done", "txn": "T3"},
             ]
             check("미커밋이 사슬을 끊지 않는다(재적용 baseline 유지)",
-                  update.last_applied_hash(chain3, "F") == "sha256:new"
-                  and update.managed_paths(chain3) == {"F": "sha256:new"},
-                  (update.last_applied_hash(chain3, "F"),
-                   update.managed_paths(chain3)))
+                  update_state.last_applied_hash(chain3, "F") == "sha256:new"
+                  and update_state.managed_paths(chain3) == {"F": "sha256:new"},
+                  (update_state.last_applied_hash(chain3, "F"),
+                   update_state.managed_paths(chain3)))
             check("미커밋만 있으면 직전 커밋 baseline이 남는다",
-                  update.last_applied_hash(chain3[:3], "F") == "sha256:old",
-                  update.last_applied_hash(chain3[:3], "F"))
+                  update_state.last_applied_hash(chain3[:3], "F") == "sha256:old",
+                  update_state.last_applied_hash(chain3[:3], "F"))
             rm3 = chain3 + [
                 {"rid": _r(16), "parents": [_r(15)], "kind": "remove",
                  "txn": "T4", "path": "F"},
                 {"rid": _r(17), "parents": [_r(16)], "kind": "done", "txn": "T4"}]
             check("커밋된 remove가 극대면 관리에서 빠진다",
-                  update.last_applied_hash(rm3, "F") is None
-                  and update.managed_paths(rm3) == {})
+                  update_state.last_applied_hash(rm3, "F") is None
+                  and update_state.managed_paths(rm3) == {})
 
             # release 증빙은 **커밋 트리**에서 뜬다 — guard 이후 working tree가
             # 바뀌어도 증빙이 커밋과 어긋나지 않는다(TOCTOU) (P1)
@@ -5152,8 +5152,8 @@ def test_release_and_update():
                                  core.sha256_file(_noman / "_governance/X.md")}}
             (_noman / "release.json").write_text(
                 json.dumps(_att_nm, ensure_ascii=False), encoding="utf-8")
-            enm = uerr(lambda: update.apply_set(VAULT, _noman,
-                                                update.load_release(_noman)))
+            enm = uerr(lambda: update_plan.apply_set(VAULT, _noman,
+                                                update_source.load_release(_noman)))
             check("증빙에 없는 매니페스트는 적용 범위로 쓰지 않는다",
                   enm is not None and "비준증빙에 없다" in enm, enm)
 
@@ -5196,40 +5196,40 @@ def test_release_and_update():
             # 사이드카 충돌 판정은 **삭제 예정 경로**도 본다 (P2)
             _p_rm = {"conflict": [("_governance/UpdDoc.md", "_governance/A.md")],
                      "remove": ["_governance/A.md.upstream-v9.9.9"]}
-            _coll = update._sidecar_plan(VAULT,
+            _coll = update_plan.sidecar_plan(VAULT,
                 _p_rm, can, "v9.9.9",
                 set() | set(_p_rm["remove"]))[3]
             check("삭제 예정 경로와 겹치는 사이드카는 충돌로 잡는다",
                   "_governance/A.md.upstream-v9.9.9" in _coll, _coll)
 
             # 디렉터리 rollback 실패는 fail-closed — 허용은 ENOENT·ENOTEMPTY뿐 (P2)
-            update._txn_begin(VAULT, "txnDF", "v9.9.9", ["_governance/dfx/f.md"])
-            _saved_rmdir = update.Path.rmdir
+            update_txn.txn_begin(VAULT, "txnDF", "v9.9.9", ["_governance/dfx/f.md"])
+            _saved_rmdir = Path.rmdir
 
             def _boom_rmdir(self):
                 raise OSError(errno.EACCES, "denied")
             try:
-                update.Path.rmdir = _boom_rmdir
-                edf = uerr(lambda: update._txn_recover(VAULT,
+                Path.rmdir = _boom_rmdir
+                edf = uerr(lambda: update_txn.txn_recover(VAULT,
                     [{"kind": "begin", "txn": "txnDF"}]))
                 check("디렉터리 복구의 권한 오류는 fail-closed",
                       edf is not None and "디렉터리 복구 실패" in edf, edf)
             finally:
-                update.Path.rmdir = _saved_rmdir
-                update._txn_clear(VAULT)
+                Path.rmdir = _saved_rmdir
+                update_txn.txn_clear(VAULT)
 
             # 새 디렉터리도 rollback 대상 — 파일만 되돌리면 SKEL 잔재가 남는다 (P2)
             deep = "_governance/_engine/newpkg/sub/mod.py"
-            update._txn_begin(VAULT, "txnDIR", "v9.9.9", [deep])
-            man_d = json.loads(update.txn_manifest(VAULT).read_text(encoding="utf-8"))
+            update_txn.txn_begin(VAULT, "txnDIR", "v9.9.9", [deep])
+            man_d = json.loads(update_txn.txn_manifest(VAULT).read_text(encoding="utf-8"))
             check("manifest가 새 디렉터리를 기록한다",
                   "_governance/_engine/newpkg" in (man_d.get("dirs") or [])
                   and "_governance/_engine/newpkg/sub" in (man_d.get("dirs") or []),
                   man_d.get("dirs"))
-            update._write_atomic(ROOT / deep, b"X = 1\n")   # 디렉터리까지 생성
+            update_txn.write_atomic(ROOT / deep, b"X = 1\n")   # 디렉터리까지 생성
             check("적용으로 깊은 디렉터리가 생긴다",
                   (ROOT / "_governance/_engine/newpkg/sub").is_dir())
-            act_d = update._txn_recover(VAULT, [{"kind": "begin", "txn": "txnDIR"}])
+            act_d = update_txn.txn_recover(VAULT, [{"kind": "begin", "txn": "txnDIR"}])
             check("rollback이 파일과 새 디렉터리를 모두 되돌린다",
                   act_d == "rollback"
                   and not (ROOT / deep).exists()
@@ -5241,15 +5241,15 @@ def test_release_and_update():
             (ROOT / sc_side).write_text("사용자 수동 병합 작업\n", encoding="utf-8")
             mine.append(ROOT / sc_side)
             _pfake = {"conflict": [("_governance/UpdDoc.md", sc_dest)]}
-            w, kept, held, coll = update._sidecar_plan(VAULT, _pfake, can, "v9.9.9", set())
+            w, kept, held, coll = update_plan.sidecar_plan(VAULT, _pfake, can, "v9.9.9", set())
             check("다른 내용의 기존 사이드카는 손대지 않는다(보존·보고)",
                   not w and not kept and sc_side in held and not coll,
                   (w, kept, held, coll))
             (ROOT / sc_side).write_bytes((can / "_governance/UpdDoc.md").read_bytes())
-            w2, kept2, held2, _c = update._sidecar_plan(VAULT, _pfake, can, "v9.9.9", set())
+            w2, kept2, held2, _c = update_plan.sidecar_plan(VAULT, _pfake, can, "v9.9.9", set())
             check("같은 내용이면 그대로 인정(재기록 없음)",
                   not w2 and sc_side in kept2 and not held2, (w2, kept2, held2))
-            _c2 = update._sidecar_plan(VAULT, _pfake, can, "v9.9.9", {sc_side})[3]
+            _c2 = update_plan.sidecar_plan(VAULT, _pfake, can, "v9.9.9", {sc_side})[3]
             check("사이드카가 관리 파일과 겹치면 충돌로 잡는다",
                   sc_side in _c2, _c2)
             (ROOT / sc_side).unlink(missing_ok=True)
@@ -5258,12 +5258,12 @@ def test_release_and_update():
             # 때 엄격 판독으로 막히면 '다음 실행이 복구'가 성립하지 않는다 (P1).
             # 실제 저널을 오염시키지 않도록 임시 저널로 격리해 검사한다.
             _vault_apart = _vault_at(Path(td) / "uj_partial")
-            _tmp_j = update.journal_path(_vault_apart)
+            _tmp_j = update_state.journal_path(_vault_apart)
             _tmp_j.parent.mkdir(parents=True)
             _tmp_j.write_text('{"kind": "done", "txn": "TOK"}\n'
                               '{"kind": "begin", "txn": "TPART"',   # 잘린 행
                               encoding="utf-8")
-            lenient = update._journal_lenient(_vault_apart)
+            lenient = update_txn.journal_lenient(_vault_apart)
             check("관대한 판독은 부분 행을 건너뛰고 나머지를 읽는다",
                   [r.get("txn") for r in lenient] == ["TOK"], lenient)
             try:
@@ -5275,9 +5275,9 @@ def test_release_and_update():
             # 부분 행뿐인 저널에서도 복구는 수행된다(목록이 비어도 rollback)
             victim2 = ROOT / "_governance/UpdDoc.md"
             orig_v2 = victim2.read_bytes()
-            update._txn_begin(VAULT, "txnPART2", "v9.9.9", ["_governance/UpdDoc.md"])
+            update_txn.txn_begin(VAULT, "txnPART2", "v9.9.9", ["_governance/UpdDoc.md"])
             victim2.write_bytes(b"HALF\n")
-            actp = update._txn_recover(VAULT, [])          # done 기록을 못 읽은 상황
+            actp = update_txn.txn_recover(VAULT, [])          # done 기록을 못 읽은 상황
             check("판독 가능한 done이 없으면 복구는 rollback",
                   actp == "rollback" and victim2.read_bytes() == orig_v2, actp)
 
@@ -5285,7 +5285,7 @@ def test_release_and_update():
             check("적용 완료 기록에 릴리스 identity(attest)가 남는다",
                   any(r.get("kind") == "done" and r.get("attest")
                       for r in core.ledger_read(VAULT.ledger / "update.jsonl")))
-            _ver_now = update.current_version(VAULT)
+            _ver_now = update_state.current_version(VAULT)
             if _ver_now:                     # 같은 버전으로 다시 릴리스(force-move 모사)
                 forced = Path(td) / "forced"
                 # 작업 트리만 복사한다 — 정본의 `.git`은 새 이력으로 갈아 낄
@@ -5323,27 +5323,27 @@ def test_release_and_update():
                 {"rid": _rr(34), "parents": [_rr(33)], "kind": "done", "txn": "TB"},
             ]
             check("값이 같은 병렬 극대는 동치로 수렴(baseline 유지)",
-                  update.last_applied_hash(forked, "F") == "sha256:same",
-                  update.last_applied_hash(forked, "F"))
+                  update_state.last_applied_hash(forked, "F") == "sha256:same",
+                  update_state.last_applied_hash(forked, "F"))
             conflicted = forked[:3] + [
                 {"rid": _rr(35), "parents": [_rr(33)], "kind": "done", "txn": "TB"}]
             conflicted[2] = dict(conflicted[2], hash="sha256:other")
             check("값이 갈리는 병렬 극대는 여전히 미확정",
-                  update.last_applied_hash(conflicted, "F") is None,
-                  update.last_applied_hash(conflicted, "F"))
+                  update_state.last_applied_hash(conflicted, "F") is None,
+                  update_state.last_applied_hash(conflicted, "F"))
 
             # 저널 디렉터리 엔트리 내구화 — 표식을 지우기 전에 저널의 이름이
             # 살아 있어야 baseline이 유실되지 않는다 (P1)
             _fs_calls = []
-            _real_fsd = update._fsync_dir
+            _real_fsd = update_txn._fsync_dir
             try:
-                update._fsync_dir = lambda d: (_fs_calls.append(str(d)),
+                update_txn._fsync_dir = lambda d: (_fs_calls.append(str(d)),
                                                _real_fsd(d))[1]
-                update._fsync_journal_home(VAULT)
+                update_txn.fsync_journal_home(VAULT)
             finally:
-                update._fsync_dir = _real_fsd
+                update_txn._fsync_dir = _real_fsd
             check("저널 홈과 그 조상이 ROOT까지 내구화된다",
-                  str(update.journal_path(VAULT).parent) in _fs_calls
+                  str(update_state.journal_path(VAULT).parent) in _fs_calls
                   and str(ROOT) in _fs_calls, _fs_calls[:4])
 
             # 삭제됐던 파일의 rollback은 **권한까지** 되돌린다 (P2)
@@ -5351,15 +5351,15 @@ def test_release_and_update():
             _permf.write_text("x\n", encoding="utf-8")
             os.chmod(_permf, 0o600)
             mine.append(_permf)
-            update._txn_begin(VAULT, "txnPERM", "v9.9.9", ["_governance/permtest.md"])
-            _manp = json.loads(update.txn_manifest(VAULT).read_text(encoding="utf-8"))
+            update_txn.txn_begin(VAULT, "txnPERM", "v9.9.9", ["_governance/permtest.md"])
+            _manp = json.loads(update_txn.txn_manifest(VAULT).read_text(encoding="utf-8"))
             check("manifest가 pre-image의 mode를 담는다",
                   _manp["entries"][0].get("mode")
                   == (0o600 if POSIX_MODE
                       else stat.S_IMODE(_permf.stat().st_mode)),
                   _manp["entries"][0].get("mode"))
             _permf.unlink()                       # remove를 적용한 상태를 모사
-            update._txn_recover(VAULT, [{"kind": "begin", "txn": "txnPERM"}])
+            update_txn.txn_recover(VAULT, [{"kind": "begin", "txn": "txnPERM"}])
             check("삭제 rollback이 내용을 복원한다",
                   _permf.exists()
                   and _permf.read_text(encoding="utf-8") == "x\n",
@@ -5374,34 +5374,34 @@ def test_release_and_update():
 
             # roll-forward도 저널 홈 내구화를 재시도한 뒤에 표식을 지운다 (P1)
             _fs2 = []
-            _real_fsd2 = update._fsync_dir
-            update._txn_begin(VAULT, "txnRF", "v9.9.9", [])
+            _real_fsd2 = update_txn._fsync_dir
+            update_txn.txn_begin(VAULT, "txnRF", "v9.9.9", [])
             try:
-                update._fsync_dir = lambda d: (_fs2.append(str(d)),
+                update_txn._fsync_dir = lambda d: (_fs2.append(str(d)),
                                                _real_fsd2(d))[1]
-                actrf = update._txn_recover(VAULT, [{"kind": "done", "txn": "txnRF"}])
+                actrf = update_txn.txn_recover(VAULT, [{"kind": "done", "txn": "txnRF"}])
             finally:
-                update._fsync_dir = _real_fsd2
+                update_txn._fsync_dir = _real_fsd2
             check("roll-forward가 저널 홈을 내구화한 뒤 표식을 지운다",
                   actrf == "roll-forward"
-                  and str(update.journal_path(VAULT).parent) in _fs2
-                  and not update.txn_manifest(VAULT).exists(), (actrf, _fs2[:3]))
+                  and str(update_state.journal_path(VAULT).parent) in _fs2
+                  and not update_txn.txn_manifest(VAULT).exists(), (actrf, _fs2[:3]))
 
             # chmod 결과까지 내구화한다 (P2)
             _permf2 = ROOT / "_governance/permtest2.md"
             _permf2.write_text("y\n", encoding="utf-8")
             os.chmod(_permf2, 0o600)
             mine.append(_permf2)
-            update._txn_begin(VAULT, "txnPERM2", "v9.9.9", ["_governance/permtest2.md"])
+            update_txn.txn_begin(VAULT, "txnPERM2", "v9.9.9", ["_governance/permtest2.md"])
             _permf2.unlink()
             _ff = []
-            _real_ffile = update._fsync_file
+            _real_ffile = update_txn._fsync_file
             try:
-                update._fsync_file = lambda q: (_ff.append(str(q)),
+                update_txn._fsync_file = lambda q: (_ff.append(str(q)),
                                                 _real_ffile(q))[1]
-                update._txn_recover(VAULT, [{"kind": "begin", "txn": "txnPERM2"}])
+                update_txn.txn_recover(VAULT, [{"kind": "begin", "txn": "txnPERM2"}])
             finally:
-                update._fsync_file = _real_ffile
+                update_txn._fsync_file = _real_ffile
             check("권한 복원 뒤 파일 메타데이터를 내구화한다",
                   str(_permf2) in _ff, _ff[:3])
             if POSIX_MODE:
@@ -5423,7 +5423,7 @@ def test_release_and_update():
             #
             # `scripts/recover.py`는 이 함수의 의도적 중복이므로 같은 잣대를 댄다 —
             # 중복이 갈라지는 순간을 여기서 잡는다.
-            def _mode_before_fsync(mod, tag, drop_fchmod):
+            def _mode_before_fsync(write, tag, drop_fchmod):
                 order = []
                 real_fchmod = getattr(os, "fchmod", None)
                 real_chmod, real_fsync = os.chmod, os.fsync
@@ -5442,7 +5442,7 @@ def test_release_and_update():
                                                real_chmod(p_, m_))[1]
                     os.fsync = lambda fd_: (order.append("fsync"),
                                             real_fsync(fd_))[1]
-                    mod._write_atomic(f, b"new\n")
+                    write(f, b"new\n")
                 finally:
                     if real_fchmod is not None:
                         os.fchmod = real_fchmod
@@ -5458,12 +5458,12 @@ def test_release_and_update():
                 "osk_recover_probe", ENGINE / "scripts" / "recover.py")
             _rmod = _ilu.module_from_spec(_rspec)
             _rspec.loader.exec_module(_rmod)
-            for _mod, _who in ((update, "update"), (_rmod, "recover")):
+            for _write, _who in ((update_txn.write_atomic, "update"), (_rmod._write_atomic, "recover")):
                 for _tag, _drop, _via in ((_who + "a", False, "fchmod"),
                                           (_who + "b", True, "chmod 대체")):
                     if _drop is False and not hasattr(os, "fchmod"):
                         continue                       # Windows — 그 분기가 없다
-                    _o, _k, _d = _mode_before_fsync(_mod, _tag, _drop)
+                    _o, _k, _d = _mode_before_fsync(_write, _tag, _drop)
                     check("%s: 원자 교체는 mode를 fsync 앞에서 확정한다(%s)"
                           % (_who, _via), _o, _d)
                     if POSIX_MODE:
@@ -5475,28 +5475,28 @@ def test_release_and_update():
                              "Windows는 POSIX mode를 보존하지 않는다")
 
             # 트랜잭션 정리 실패는 fail-closed (P2)
-            update._txn_begin(VAULT, "txnCLR", "v9.9.9", [])
-            _saved = update.shutil.rmtree
+            update_txn.txn_begin(VAULT, "txnCLR", "v9.9.9", [])
+            _saved = shutil.rmtree
             try:
-                update.shutil.rmtree = lambda *a, **k: None   # 정리가 안 되는 상황
-                ecl = uerr(lambda: update._txn_clear(VAULT))
+                shutil.rmtree = lambda *a, **k: None   # 정리가 안 되는 상황
+                ecl = uerr(lambda: update_txn.txn_clear(VAULT))
                 check("트랜잭션 정리 실패는 fail-closed",
                       ecl is not None and "정리 실패" in ecl, ecl)
             finally:
-                update.shutil.rmtree = _saved
-                update._txn_clear(VAULT)
+                shutil.rmtree = _saved
+                update_txn.txn_clear(VAULT)
 
             # has_history — apply/remove/done 이력 유무 (adopt 게이팅 근거) (P2)
             check("has_history: 빈/이력",
-                  not update.has_history(VAULT, [])
-                  and not update.has_history(VAULT, [{"kind": "begin"}])
-                  and update.has_history(VAULT, [{"kind": "apply"}]))
+                  not update_state.has_history(VAULT, [])
+                  and not update_state.has_history(VAULT, [{"kind": "begin"}])
+                  and update_state.has_history(VAULT, [{"kind": "apply"}]))
 
             # 디렉터리 bundle은 snapshot을 뜬다 — 검증 후 원본 변경 TOCTOU 차단 (P1)
             snb = Path(td) / "snapbundle"
             (snb / "docs").mkdir(parents=True)
             (snb / "docs/x.md").write_text("orig\n", encoding="utf-8")
-            snap = update.fetch_bundle(str(snb), Path(td) / "snapdst")
+            snap = update_source.fetch_bundle(str(snb), Path(td) / "snapdst")
             (snb / "docs/x.md").write_text("MUTATED\n", encoding="utf-8")  # 이후 변경
             check("디렉터리 bundle은 snapshot이라 원본 변경에 영향 없다",
                   (snap / "docs/x.md").read_text(encoding="utf-8") == "orig\n"
@@ -5508,11 +5508,11 @@ def test_release_and_update():
             _lp = _sd._lock_path(can, "osk-mutation.lock")
             _held = open(_lp, "w")
             try:
-                update.lock_exclusive(_held, blocking=False)   # update처럼 선점
+                _portalock.lock_exclusive(_held, blocking=False)   # update처럼 선점
                 check("데몬은 update가 잡은 mutation 잠금에서 tick을 건너뛴다",
                       _sd.once(can) == "locked")
             finally:
-                update.unlock(_held); _held.close()
+                _portalock.unlock(_held); _held.close()
 
             # 데몬이 pending 트랜잭션 표식을 보면 tick을 거부한다 (P1)
             _tm = can / ".osk" / "txn" / "manifest.json"
@@ -5527,27 +5527,27 @@ def test_release_and_update():
             # 데몬 실행 중에는 갱신하지 않는다 — 구버전 데몬 bootstrap 방어 (P1)
             _sing = open(_sd._lock_path(ROOT, "osk-sync.lock"), "w")
             try:
-                update.lock_exclusive(_sing, blocking=False)   # 데몬처럼 선점
+                _portalock.lock_exclusive(_sing, blocking=False)   # 데몬처럼 선점
                 eds = uerr(lambda: confirmed_update(source="bundle", bundle=str(can),
                                               apply=True))
                 check("데몬 실행 중 갱신은 거부",
                       eds is not None and "데몬" in eds, eds)
             finally:
-                update.unlock(_sing); _sing.close()
+                _portalock.unlock(_sing); _sing.close()
 
             # MAP 사상 — publish.collect과 같은 src/a -> dst/a (P2)
             man_id = {"map": [("_governance/", "_governance/"),
                               (".mcp.json.example", ".mcp.json.example")],
                       "deny": [], "skel": [], "keep": []}
             check("MAP 항등 사상",
-                  update._map_dest("_governance/C.md", man_id) == "_governance/C.md"
-                  and update._map_dest(".mcp.json.example", man_id)
+                  update_plan._map_dest("_governance/C.md", man_id) == "_governance/C.md"
+                  and update_plan._map_dest(".mcp.json.example", man_id)
                   == ".mcp.json.example")
             man_nz = {"map": [("src/", "dst/")],
                       "deny": [], "skel": [], "keep": []}
             check("MAP 비항등 사상(src/a -> dst/a)·미매칭은 None",
-                  update._map_dest("src/a/b.md", man_nz) == "dst/a/b.md"
-                  and update._map_dest("other/x", man_nz) is None)
+                  update_plan._map_dest("src/a/b.md", man_nz) == "dst/a/b.md"
+                  and update_plan._map_dest("other/x", man_nz) is None)
 
             # 버전 계약 — release와 updater 자동 탐색이 같은 vX.Y.Z를 쓴다 (P2)
             check("release: 느슨한 버전(v2.2)은 선언 전에 거부",
@@ -5561,13 +5561,13 @@ def test_release_and_update():
                 json.dumps({"version": "v2.2", "files": {}}), encoding="utf-8")
             check("load_release: 느슨한 version은 증빙 판독에서 거부",
                   "version 형식" in (uerr(
-                      lambda: update.load_release(badrel)) or ""))
+                      lambda: update_source.load_release(badrel)) or ""))
 
             # ROOT 내부 `..` 재진입도 거부 — floor 판정 우회 차단 (P1)
             check("resolve_within/canon_rel: ROOT 내부 재진입(../)은 거부, 정상은 통과",
-                  update.resolve_within(ROOT, "docs/../00_Scope/x") is None
-                  and update.canon_rel(ROOT, "00_Scope/../_governance/x") is None
-                  and update.canon_rel(ROOT, "_governance/x") == "_governance/x")
+                  core.resolve_within(ROOT, "docs/../00_Scope/x") is None
+                  and core.canon_rel(ROOT, "00_Scope/../_governance/x") is None
+                  and core.canon_rel(ROOT, "_governance/x") == "_governance/x")
 
             # skip은 적용 baseline을 가리지 않는다 — conflict 사건과 상태 분리 (P2)
             j = [{"rid": "00000000-0000-7000-8000-00000000ba01",
@@ -5577,15 +5577,15 @@ def test_release_and_update():
                   "parents": ["00000000-0000-7000-8000-00000000ba01"],
                   "kind": "skip", "skipped_path": "F", "why": "conflict"}]
             check("skip 뒤에도 baseline은 마지막 apply",
-                  update.last_applied_hash(j, "F") == "sha256:aaa"
-                  and "F" in update.managed_paths(j))
+                  update_state.last_applied_hash(j, "F") == "sha256:aaa"
+                  and "F" in update_state.managed_paths(j))
 
             # 명시 ref/pin은 정식 태그여야 한다 — 브랜치로 경계 우회 금지 (P2)
             check("tag_exists: 태그만 인정(브랜치·부재는 False)",
-                  update.tag_exists(str(can), "v9.0.1")
-                  and not update.tag_exists(str(can), "main")
-                  and not update.tag_exists(str(can), "master")
-                  and not update.tag_exists(str(can), "v0.0.0"))
+                  update_source.tag_exists(str(can), "v9.0.1")
+                  and not update_source.tag_exists(str(can), "main")
+                  and not update_source.tag_exists(str(can), "master")
+                  and not update_source.tag_exists(str(can), "v0.0.0"))
             check("git: 비형식 ref(main)는 형식에서 거부(네트워크 전)",
                   "vX.Y.Z" in (uerr(
                       lambda: confirmed_update(source="git", ref="main")) or ""))
@@ -5600,16 +5600,16 @@ def test_release_and_update():
                  "kind": "done", "version": "vB", "at": "t2"},
             ]
             check("선형 사슬은 인과 첨단(tip)을 낸다",
-                  update.current_version(VAULT, chain) == "vB",
-                  update.current_version(VAULT, chain))
+                  update_state.current_version(VAULT, chain) == "vB",
+                  update_state.current_version(VAULT, chain))
             # 두 기기의 동시 갱신(비교 불능 분기) — done[-1]이라면 물리 마지막
             # 하나를 결정적인 양 내지만, 인과 극대는 미확정 None이다(fail-closed)
             fork = chain[:1] + [
                 {"rid": "00000000-0000-7000-8000-0000000000ff",
                  "parents": [], "kind": "done", "version": "vX", "at": "t9"}]
             check("동시 갱신(비교 불능 분기)은 미확정 None",
-                  update.current_version(VAULT, fork) is None,
-                  update.current_version(VAULT, fork))
+                  update_state.current_version(VAULT, fork) is None,
+                  update_state.current_version(VAULT, fork))
 
     finally:
         # 뒷정리 — 이후 기준선 PASS 유지
@@ -10326,7 +10326,7 @@ def test_audit_fixes_2026_09_02():
     실패한다**는 성질만 공유하기 때문이다. 항목마다 무엇을 망가뜨리면 어느
     단언이 실패하는지 적는다 — 통과 건수가 아니라 그것이 이 검사들의 근거다.
     """
-    from osk import approvals as A, raw as R, scope_memory as SM, update as U
+    from osk import approvals as A, raw as R, scope_memory as SM, update_source, update_txn
     mine, restore = [], []
     try:
         # ① 이식성 충돌은 표면이 만들지도, 이동이 덮지도 않는다 (#25)
@@ -10623,7 +10623,7 @@ def test_audit_fixes_2026_09_02():
             _old = os.environ.get("GIT_CONFIG_GLOBAL")
             os.environ["GIT_CONFIG_GLOBAL"] = str(gcfg)
             try:
-                tree = U.fetch_git(str(src), "v0.0.1", dest)
+                tree = update_source.fetch_git(str(src), "v0.0.1", dest)
                 got = (tree / "f.txt").read_bytes()
             finally:
                 if _old is None:
@@ -10657,12 +10657,12 @@ def test_audit_fixes_2026_09_02():
         _orig = _rf.read_bytes()
         mine.append(_rf)
         os.chmod(_rf, 0o600)           # mode 항목이 있어야 그 경로를 지난다
-        U._txn_begin(VAULT, "txnAUDR", "v9.9.9", ["_governance/audit-recov.md"])
+        update_txn.txn_begin(VAULT, "txnAUDR", "v9.9.9", ["_governance/audit-recov.md"])
         _rf.write_bytes(b"HALF\n")     # 반쯤 적용된 상태를 모사
         _rc = _rec._recover(ROOT)
         check("독립 복구 부트스트랩이 롤백을 끝낸다 (#24)",
               _rc == 0 and _rf.read_bytes() == _orig
-              and not U.txn_manifest(VAULT).exists(), (_rc, _rf.read_bytes()))
+              and not update_txn.txn_manifest(VAULT).exists(), (_rc, _rf.read_bytes()))
     finally:
         for p, data in reversed(restore):
             try:

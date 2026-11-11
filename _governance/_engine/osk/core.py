@@ -339,7 +339,7 @@ def atomic_write(path: Path, data: bytes) -> None:
     fsync**. 호출부가 이 뒤에 그 파일을 가리키는 대장 기록을 남기므로, 엔트리가
     기록보다 먼저 내구화돼야 전원 차단 뒤 '기록은 있는데 파일은 없는' 상태가
     생기지 않는다. 권한은 mkstemp 기본이다 — 기존 권한을 보존해야 하는 갱신은
-    `update._write_atomic`을 쓴다.
+    `update_txn.write_atomic`을 쓴다.
 
     Windows에서는 대상이나 임시 파일을 FILE_SHARE_DELETE 없이 연 읽기(Python의
     `open()`이 그렇다)가 있으면 교체가 WinError 5·32로 실패한다. 그런 읽기는 곧

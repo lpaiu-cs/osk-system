@@ -26,7 +26,7 @@ import subprocess
 import time
 from datetime import datetime
 
-from . import core, update
+from . import core, update_source, update_state
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
 
@@ -65,11 +65,11 @@ def _write(vault: Vault, name: str, data: dict) -> None:
 
 def _upstream(vault: Vault) -> dict:
     """`osk.update`가 읽는 것과 같은 출처 설정(`.osk/config.json`의 upstream)."""
-    return update.load_config(vault).get("upstream", {})
+    return update_state.load_config(vault).get("upstream", {})
 
 
 def _url(up: dict) -> str:
-    return up.get("url", update.DEFAULT_UPSTREAM)
+    return up.get("url", update_state.DEFAULT_UPSTREAM)
 
 
 def _kst(at) -> str | None:
@@ -85,14 +85,14 @@ def current(vault: Vault) -> str | None:
     """이 vault의 판본 — 갱신 저널의 인과 극대. 기록이 없거나 정할 수 없으면
     (분기·손상) None이고, 그때는 비교하지 않는다."""
     try:
-        return update.current_version(vault)
+        return update_state.current_version(vault)
     except (OSError, ValueError):
         return None
 
 
 def newer(latest, cur) -> bool:
     """`latest`가 `cur`보다 새 정식 판본인가 — 둘 다 `vX.Y.Z`일 때만 참이다."""
-    a, b = update.semver(latest), update.semver(cur)
+    a, b = update_source.semver(latest), update_source.semver(cur)
     return bool(a and b and a > b)
 
 
@@ -101,8 +101,8 @@ def off_reason(vault: Vault) -> str | None:
     if os.environ.get("OSK_UPDATE_CHECK") == "0":
         return "환경 OSK_UPDATE_CHECK=0"
     try:
-        cfg = update.load_config(vault)
-    except update.UpdateError as e:
+        cfg = update_state.load_config(vault)
+    except update_state.UpdateError as e:
         return str(e)
     if cfg.get("update_check") is False:
         return ".osk/config.json의 update_check가 false다"
@@ -144,9 +144,9 @@ def check(vault: Vault, *, unattended: bool = False) -> dict:
             state = {"at": time.time(), "url": url, "error": None,
                      "latest": prev.get("latest") if prev.get("url") == url else None}
             try:
-                state["latest"] = update.latest_release_tag(
+                state["latest"] = update_source.latest_release_tag(
                     url, timeout=TIMEOUT if unattended else 60, unattended=unattended)
-            except (update.UpdateError, OSError, ValueError,
+            except (update_state.UpdateError, OSError, ValueError,
                     subprocess.TimeoutExpired) as e:
                 state["error"] = f"{type(e).__name__}: {e}"[:300]
             _write(vault, STATE, state)
@@ -197,7 +197,7 @@ def acked(vault: Vault, version: str) -> bool:
         got += [r.get("version") for r in core.ledger_read(acks_path(vault)) if r.get("kind") == "ack"]
     except (OSError, ValueError):
         pass
-    return any(update.semver(v) and not newer(version, v) for v in got)
+    return any(update_source.semver(v) and not newer(version, v) for v in got)
 
 
 def ack(vault: Vault, version: str) -> dict:
@@ -205,9 +205,9 @@ def ack(vault: Vault, version: str) -> dict:
     대장에. 대장에 못 적으면 이 기기의 알림만 멈추고 `synced`가 거짓이다."""
     avail = available(vault)
     if not avail:
-        raise update.UpdateError("알리는 새 릴리스가 없다 — 받았다고 기록할 것이 없다")
+        raise update_state.UpdateError("알리는 새 릴리스가 없다 — 받았다고 기록할 것이 없다")
     if version != avail["latest"]:
-        raise update.UpdateError(f"지금 알리는 새 릴리스는 {avail['latest']}다 — {version}이 아니다")
+        raise update_state.UpdateError(f"지금 알리는 새 릴리스는 {avail['latest']}다 — {version}이 아니다")
     _write(vault, ACK, {"version": version, "at": time.time()})
     out = {"acked": version, "synced": True}
     try:
@@ -229,7 +229,7 @@ def notes_url(vault: Vault, version: str) -> str | None:
     이행 안내를 가리킨다."""
     try:
         m = _GITHUB.fullmatch(_url(_upstream(vault)))
-    except update.UpdateError:
+    except update_state.UpdateError:
         return None
     return f"https://github.com/{m[1]}/{m[2]}/releases/tag/{version}" if m else None
 
