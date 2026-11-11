@@ -11,7 +11,7 @@ import re
 from . import workspaces, placement
 from .core import (RID_RE, rid_key, causal_maxima, ledger_append, ledger_damage, ledger_read, mutation_lock,
                    resolve_one)
-from .errors import WriteError
+from .errors import LedgerDamage, WriteError
 from .vault import Vault
 
 ALIAS_DEPTH = 8          # 별칭 사슬 추적 한계 — 순환·장난에 대한 보수적 상한
@@ -56,7 +56,7 @@ def routing_errors(vault: Vault, session: str | None) -> list[str]:
         return []                       # 결속을 세울 일이 없다
     try:
         recs = ledger_read(vault.routing)
-    except Exception as e:
+    except (OSError, LedgerDamage) as e:
         return [f"세션 라우팅 대장을 읽지 못했다: {e} — 이 상태에서 쓰면 결속만 "
                 f"실패하고 파일은 남는다. Mechanism §3 8항의 수동 복구가 먼저다"]
     dmg = ledger_damage(recs, vault.routing)
@@ -82,7 +82,7 @@ def canonical_session(vault: Vault, session: str | None,
     if recs is None:
         try:
             recs = ledger_read(vault.routing)
-        except Exception:
+        except (OSError, LedgerDamage):
             return session
     seen = {session}
     cur = session
@@ -116,7 +116,7 @@ def bindings(vault: Vault, session: str | None, recs: list[dict] | None = None) 
     if recs is None:
         try:
             recs = ledger_read(vault.routing)
-        except Exception:
+        except (OSError, LedgerDamage):
             return out
     key = canonical_session(vault, session, recs)
     rows = [r for r in recs if r.get("session") == key and r.get("kind") in ("bind", "unbind")

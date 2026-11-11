@@ -21,6 +21,7 @@ from pathlib import Path
 from .core import (ID_RE, causal_maxima, effective_parents, ledger_damage, ledger_extend, ledger_read,
                    posix_rel, sha256_bytes)
 from . import contract, graph, growth_ledger, placement
+from .errors import LedgerDamage
 from .vault import Vault
 
 
@@ -328,7 +329,7 @@ def _mark_reports(vault: Vault, items: list[dict], idx, cache: dict) -> None:
     except OSError:
         misses += 1
         return
-    except Exception:
+    except LedgerDamage:
         return
     if not items or not any(r.get("kind") == "recheck_review" for r in rows):
         return
@@ -517,7 +518,7 @@ def _carry_reports(vault: Vault, idx, held: dict, cache: dict) -> int:
         return 0
     try:
         rows = growth_ledger.ledger_records(vault)
-    except Exception:
+    except (OSError, LedgerDamage):
         return 0
     keys = {r.get("key") for r in rows if r.get("kind") == "recheck_review"} & held.keys()
     if not keys:

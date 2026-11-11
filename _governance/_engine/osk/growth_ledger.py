@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from . import core
+from .errors import LedgerDamage
 from .vault import Vault
 
 
@@ -36,7 +37,7 @@ def ledger_records(vault: Vault) -> list[dict]:
                 "node", "merged", "discarded", "deferred"}:
             errors.append("unknown eviction review outcome")
     if errors:
-        raise ValueError("growth ledger damaged: " + "; ".join(errors[:5]))
+        raise LedgerDamage("growth ledger damaged: " + "; ".join(errors[:5]))
     return rows
 
 
