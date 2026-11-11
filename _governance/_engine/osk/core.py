@@ -34,6 +34,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import epoch
+from .errors import LedgerDamage
 from .layout import adapt_path
 from .vault import Vault
 from ._portalock import lock_exclusive, unlock
@@ -549,22 +550,32 @@ def _parse_lines(text: str, path: Path) -> list[dict]:
             continue
         try:
             rec = json.loads(line)
-        except json.JSONDecodeError as e:
-            raise ValueError(
+        except (json.JSONDecodeError, RecursionError) as e:    # 깊이 겹친 행은 해석기가 RecursionError를 낸다
+            raise LedgerDamage(
                 f"대장 손상(부분 행) {path}:{i+1} — 수동 복구 절차 필요") from e
         if not isinstance(rec, dict):
-            raise ValueError(
+            raise LedgerDamage(
                 f"대장 손상(기록이 아닌 행) {path}:{i+1} — 수동 복구 절차 필요")
         out.append(rec)
     return out
 
 
+def _not_utf8(path: Path, e: UnicodeDecodeError) -> LedgerDamage:
+    return LedgerDamage(f"대장 손상(UTF-8이 아닌 바이트 {e.start}) {path} — 수동 복구 절차 필요")
+
+
 def ledger_read(path: Path) -> list[dict]:
     """파일 순서 그대로 반환한다. 판정의 정본은 인과(parents)이며,
-    유산 구간(앵커 이전)은 파일 순서가 인과다."""
+    유산 구간(앵커 이전)은 파일 순서가 인과다.
+
+    올리는 것은 둘뿐이다 — 읽지 못하면 `OSError`, 읽었는데 기록으로 해석되지 않으면 `LedgerDamage`."""
     if not path.exists():
         return []
-    return _parse_lines(path.read_text(encoding="utf-8"), path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise _not_utf8(path, e) from e
+    return _parse_lines(text, path)
 
 
 def ledger_damage(records: list[dict], path: Path | str = "") -> list[str]:
@@ -740,11 +751,14 @@ def ledger_extend(path: Path, new: list[dict], expect=None) -> list[dict]:
         lock_exclusive(f)
         try:
             f.seek(0)
-            text = f.read()
+            try:
+                text = f.read()
+            except UnicodeDecodeError as e:
+                raise _not_utf8(path, e) from e
             records = _parse_lines(text, path)
             dmg = ledger_damage(records, path)
             if dmg:
-                raise ValueError(
+                raise LedgerDamage(
                     f"대장 손상 — 수동 복구 절차 필요 (Mechanism §3 8항): "
                     + "; ".join(dmg[:5]))
             if expect is not None:

@@ -18,6 +18,7 @@ from .core import (CASE_RE, RID_RE, ID_RE, ledger_read, ledger_append, ledger_da
                    resolve_one)
 from . import (contract, graph, signatures, approvals, authority, secrets, evictions, raw, core, evidence,
                roots, placement, topology, cli_parser)
+from .errors import LedgerDamage
 from .vault import Vault
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
@@ -387,7 +388,7 @@ def validator_active(vault: Vault, rule: str) -> bool:
     보고-전용으로 남는 쪽이 안전하다(시행령 §11 2항: 집행은 활성화 뒤에만)."""
     try:
         recs = ledger_read(vault.validators)
-    except Exception:
+    except (OSError, LedgerDamage):
         return False
     r = resolve_one(recs, rule, "rule")
     return bool(r and r.get("kind") == "activate")

@@ -12693,6 +12693,44 @@ def test_publish_preserves_mapped_dot_directories():
                   error is not None and "비밀값" in error and before == after)
 
 
+def test_ledger_damage_is_a_kind():
+    """대장의 손상은 형으로 말한다(코드 규범 7항). 읽지 못한 것(`OSError`)과도, 거부(`ValueError`)와도 다른
+    형이고, 대장을 기록으로 해석하지 못하는 길은 모두 그 형으로 오른다 — 받는 쪽이 문구를 읽지 않게 한다."""
+    from osk.errors import LedgerDamage
+    with tempfile.TemporaryDirectory(prefix="osk-ledger-damage-") as td:
+        ledger = Path(td) / "ledger.jsonl"
+        nested = "[" * 100_000 + "]" * 100_000
+        for label, data in (("찢긴 행", b'{"rid": 1'), ("기록이 아닌 행", b"[1, 2]\n"),
+                            ("깊이 겹친 행", nested.encode("ascii")), ("UTF-8이 아닌 바이트", b'{"a": "\xff"}\n'),
+                            ("rid 형식 위반", b'{"rid": "not-a-rid"}\n')):
+            ledger.write_bytes(data)
+            structural = label == "rid 형식 위반"       # 행은 읽히고, 잇는 자리에서 손상으로 막힌다
+            try:
+                core.ledger_read(ledger)
+                read_as = None
+            except LedgerDamage as e:
+                read_as = e
+            check(f"읽기 — {label}", (read_as is None) == structural
+                  and (structural or "수동 복구" in str(read_as)), read_as)
+            try:
+                core.ledger_append(ledger, {"kind": "x"})
+                appended = "appended"
+            except LedgerDamage:
+                appended = "damage"
+            check(f"손상된 대장에는 잇지 않는다 — {label}", appended == "damage" and ledger.read_bytes() == data,
+                  appended)
+        sound = Path(td) / "sound.jsonl"
+        try:
+            core.ledger_append(sound, {"kind": "x"}, expect=lambda records: "거부한다")
+            refused = None
+        except LedgerDamage:
+            refused = "damage"
+        except ValueError:
+            refused = "refusal"
+        check("거부는 손상이 아니다", refused == "refusal", refused)
+        check("없는 대장은 빈 대장이다", core.ledger_read(Path(td) / "absent.jsonl") == [])
+
+
 def test_validate_at_uses_snapshot_engine():
     """PYTHONPATH보다 앞서는 호출 cwd가 스냅샷 검증기를 바꿔치기하지 못한다."""
     with tempfile.TemporaryDirectory(prefix="osk-validation-import-") as td:
@@ -12946,6 +12984,7 @@ if __name__ == "__main__":
                test_publish_binds_checked_bytes,
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
+               test_ledger_damage_is_a_kind,
                 test_write_edge_coordinates, test_node_heading_edge_coordinates,
                 test_derived_from_once_per_round,
                test_write_pin_subtree_and_fork,

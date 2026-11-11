@@ -29,6 +29,7 @@ from pathlib import Path
 from .core import (ledger_damage, sha256_bytes, sha256_file, posix_rel, resolve_in_root, ledger_append,
                    ledger_read, causal_maxima, effective_parents, heads, resolve_one, rid_key)
 from . import region_tree, signatures
+from .errors import LedgerDamage
 from .vault import Vault
 
 
@@ -436,7 +437,7 @@ def integrity(vault: Vault) -> list[str]:
     errs = []
     try:
         recs = records(vault)
-    except Exception as e:
+    except (OSError, LedgerDamage) as e:
         return [f"승인 기록부 판독 실패: {e}"]
     for i, r in enumerate(recs):
         if r.get("kind") not in KINDS:

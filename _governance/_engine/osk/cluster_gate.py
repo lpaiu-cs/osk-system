@@ -7,7 +7,7 @@ import json, os, time
 from pathlib import Path
 from .core import ledger_damage, ledger_read, posix_rel, resolve_one
 from . import placement
-from .errors import WriteError
+from .errors import LedgerDamage, WriteError
 from .naming import title_errors
 from .vault import Vault
 
@@ -45,7 +45,7 @@ def pinned(vault: Vault, *targets: str, subtree: str | None = None) -> bool:
     """대상 또는 이동할 하위 군집의 pin·미확정 여부. 대장은 한 번만 읽는다."""
     try:
         recs = ledger_read(vault.pins)
-    except Exception:
+    except (OSError, LedgerDamage):
         return True             # 판독 실패는 보수적으로 '고정됨' — fail-closed
     if ledger_damage(recs, vault.pins):
         return True

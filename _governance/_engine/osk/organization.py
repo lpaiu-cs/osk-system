@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from . import core, contract, graph, node_checks, nodefile, placement, prose, raw, routing, topology
+from .errors import LedgerDamage
 from .vault import Vault
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
@@ -555,7 +556,7 @@ def bindings_audit(vault: Vault, project: str | None = None) -> list[dict]:
     상태가 기억한다."""
     try:
         recs = core.ledger_read(vault.routing)
-    except Exception:
+    except (OSError, LedgerDamage):
         return []
     keys = sorted({str(r.get("session")) for r in recs
                    if r.get("kind") in ("bind", "unbind") and r.get("session")})

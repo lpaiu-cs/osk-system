@@ -34,6 +34,7 @@ from pathlib import Path
 from .core import ledger_append, ledger_damage, ledger_read, sha256_file, sha256_bytes, posix_rel, local_lock_path
 from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from . import approvals, daemon_control, update_check, update_plan, update_source, update_state, update_txn, approval_acts, region_tree
+from .errors import LedgerDamage
 from .vault import Vault
 
 
@@ -308,7 +309,7 @@ def _run_locked(vault: Vault, source: str | None, ref: str | None, bundle: str |
         # 수 없는 상태다(실측). 손상 위에 이력을 더 쌓지 않는다(Mechanism §3 2항).
         try:
             _dmg = ledger_damage(ledger_read(update_state.journal_path(vault)), update_state.journal_path(vault))
-        except Exception as e:
+        except (OSError, LedgerDamage) as e:
             raise update_state.UpdateError(f"갱신 저널을 읽지 못했다 — 아무것도 쓰지 않았다: {e}")
         if _dmg:
             raise update_state.UpdateError(

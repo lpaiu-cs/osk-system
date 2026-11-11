@@ -29,6 +29,7 @@ from datetime import datetime
 from .core import (RID_RE, ID_RE, ledger_read, ledger_damage, ledger_append, ledger_anchor_index,
                    mutation_lock, rid_parts, rid_key)
 from . import graph
+from .errors import LedgerDamage
 from .vault import Vault
 
 KINDS = ("evict", "settle")
@@ -78,7 +79,7 @@ def records(vault: Vault) -> list[dict]:
     recs = ledger_read(vault.evictions)
     dmg = ledger_damage(recs, vault.evictions)
     if dmg:
-        raise ValueError("퇴출 기록부 손상 — 수동 복구 절차 필요 (Mechanism §3 8항): "
+        raise LedgerDamage("퇴출 기록부 손상 — 수동 복구 절차 필요 (Mechanism §3 8항): "
                          + "; ".join(dmg[:3]))
     return recs
 
