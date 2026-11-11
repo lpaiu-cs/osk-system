@@ -14,7 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from . import contract, conversation_state, evidence, graph, nodefile, prose, raw, secrets, write
+from . import contract, conversation_state, evidence, graph, nodefile, prose, raw, secrets, write, placement
 from .core import local_lock_path, mutation_lock, posix_rel, resolve_in_root, sha256_bytes, sha256_file
 from .vault import Vault
 
@@ -79,7 +79,7 @@ def _source(vault: Vault, ref: str, idx) -> dict:
                 source["native_user"] = words  # with the words it cited.
         return source
     p = nodefile.live_locate(vault, value, idx)
-    if p is None or not p.is_file() or graph.space_of(vault, p)[0] not in ("scope", "domain"):
+    if p is None or not p.is_file() or placement.space_of(vault, p)[0] not in ("scope", "domain"):
         raise write.WriteError("source must resolve to a Scope/Domain node or exact raw round")
     node = contract.parse(p)
     if not prose.norm_body(node.body):
@@ -108,9 +108,9 @@ def _sources(vault: Vault, items, idx) -> list[dict]:
 
 def _hub(vault: Vault, name: str, idx) -> dict:
     p = nodefile.live_locate(vault, name, idx)
-    if p is None or not p.is_file() or not graph.is_hub(p):
+    if p is None or not p.is_file() or not placement.is_hub(p):
         raise write.WriteError("distill.hub must name an existing hub")
-    if graph.space_of(vault, p)[0] not in _TARGETS:
+    if placement.space_of(vault, p)[0] not in _TARGETS:
         raise write.WriteError("distillation cannot write protected or other spaces")
     node = contract.parse(p)
     return {"name": p.stem, "id": node.id, "path": posix_rel(p, vault.root),
@@ -147,7 +147,7 @@ def _retained_target(vault: Vault, target: dict, idx) -> Path:
     if p is None or not p.is_file():
         raise write.WriteError("target missing; original request or review is required")
     if (tuple(p.relative_to(vault.root).parts[:2]) != tuple(Path(target["path"]).parts[:2])
-            or graph.space_of(vault, p)[0] not in _TARGETS):
+            or placement.space_of(vault, p)[0] not in _TARGETS):
         raise write.WriteError("target crossed its top-level cluster; pending")
     body = contract.parse(p).body
     if not prose.norm_body(body):
@@ -320,7 +320,7 @@ def discover(vault: Vault, raw_refs: list[str], limit: int = 8, scan_limit: int 
                         | {source["native"] for source in job["sources"] if source.get("native")}):
                     continue
                 target = resolve_in_root(vault, job["target"]["path"])
-                if target is None or graph.space_of(vault, target)[0] not in ("scope", "person"):
+                if target is None or placement.space_of(vault, target)[0] not in ("scope", "person"):
                     continue
                 proof = _verify(vault, job)
                 if (proof["status"] == "complete"
@@ -425,7 +425,7 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
                 target_path = nodefile.live_locate(vault, request["name"], idx)
                 if target_path is None or not target_path.is_file():
                     raise write.WriteError("distillation target does not exist")
-                if graph.space_of(vault, target_path)[0] not in _TARGETS:
+                if placement.space_of(vault, target_path)[0] not in _TARGETS:
                     raise write.WriteError("distillation target must be a Scope/Domain/Person node")
                 old = contract.parse(target_path)
                 selected_hash = sha256_file(target_path)
@@ -449,7 +449,7 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("target changed before write; pending")
             if operation == "update" and prose.norm_body(n.body) == prose.norm_body(contract.parse(path).body):
                 raise write.WriteError("distillation requires a changed retained body")
-            if graph.space_of(vault, path)[0] not in _TARGETS:
+            if placement.space_of(vault, path)[0] not in _TARGETS:
                 raise write.WriteError("distillation target must be a Scope/Domain/Person node")
             if path.parent != resolve_in_root(vault, hub["path"]).parent or path.stem == hub["name"]:
                 raise write.WriteError("target must be a knowledge node under the selected hub")
@@ -462,7 +462,7 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("required provenance was removed; no node written")
             unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(vault, s["ref"]) not in cites]
             if unlined:
-                coords = [evidence.coordinate(vault, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
+                coords = [raw.coordinate(vault, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
                 raise write.WriteError(
                     "출처 라운드를 관측 절의 줄로 달지 않았다 — 쓰지 않았다",
                     [f"노드 끝 `# 관측` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "

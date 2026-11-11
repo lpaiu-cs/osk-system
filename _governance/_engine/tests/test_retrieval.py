@@ -114,7 +114,7 @@ def centrality_checks():
     references and Links inside the observation section are not in R, so Σ D = Σ (E − observation
     term). Workbench and governance count on neither side."""
     import re
-    from osk import core, graph
+    from osk import core, topology
     from osk.vault import Vault
     VAULT = Vault.open()
 
@@ -148,7 +148,7 @@ def centrality_checks():
         ('W1', 'scope', ['C'], '[[A]] [[B]]'),
         ('Note', 'workbench-transit', ['B'], 'transit'),
     ])
-    explain, depend = graph.centrality(VAULT, nodes)
+    explain, depend = topology.centrality(VAULT, nodes)
     assert explain['A'] == 3 + 1 + (2 - 1), explain     # derived-from 3, Link 1, 지지 2 − 반례 1
     assert explain['C'] == 3, explain                   # the repeated derived-from counts once
     assert depend['B'] == 3 + 1 + 3 and depend['A'] == 0 and depend['C'] == 0, depend
@@ -156,7 +156,7 @@ def centrality_checks():
     # Σ D = Σ (E − w_O·(|O⁺| − |O⁻|)) — only A has observation lines, net 2 − 1
     assert sum(depend.values()) == sum(explain.values()) - (2 - 1), (explain, depend)
     legacy = obs.replace('# 관측', '## 근거')
-    assert graph.centrality(VAULT, Index([('A', 'scope', [], legacy)]))[0]['A'] == 1
+    assert topology.centrality(VAULT, Index([('A', 'scope', [], legacy)]))[0]['A'] == 1
 
 
 def read_checks():

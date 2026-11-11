@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from . import graph, workspaces
+from . import workspaces, placement
 from .core import (RID_RE, rid_key, causal_maxima, ledger_append, ledger_damage, ledger_read, mutation_lock,
                    resolve_one)
 from .errors import WriteError
@@ -188,9 +188,9 @@ def set_primary(vault: Vault, session: str, scope: str, reason: str = "") -> dic
     """주된 scope의 지정 — 그 프로젝트 자체의 활동이 속한 scope로 확인됐을 때만 부른다
     (대화 검토의 소속 판정이 결정 묶음으로 내어 실행기가 적용하거나 사용자가 한다 —
     Mechanism §6-2 6항). 지정은 결속도 겸한다."""
-    if scope not in graph.scope_names(vault):
+    if scope not in placement.scope_names(vault):
         raise WriteError("없는 scope — 지정하지 않았다",
-                         [f"`{scope}`는 scope가 아니다. 가능한 space: {graph.space_list(vault)}"])
+                         [f"`{scope}`는 scope가 아니다. 가능한 space: {placement.space_list(vault)}"])
     return bind_session(vault, session, scope, reason or "주된 scope 지정", primary=True)
 
 
@@ -335,15 +335,15 @@ def resolve_landing(vault: Vault, session: str, space: str | None,
     bound = resolve_session(vault, session)
     if not space:
         return bound, bound
-    scope = graph.scope_of_space(vault, space)
+    scope = placement.scope_of_space(vault, space)
     if not scope:
         raise WriteError(
             "space 표기 아님 — 쓰지 않았다",
             [f"`{space}`는 space 표기가 아니다 — `{vault.scope}/<이름>` **두 마디**로 "
              f"준다. `overview`의 `clusters`에는 `{vault.person}/…`이나 더 깊은 경로도 "
-             f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {graph.space_list(vault)}"])
-    if scope not in graph.scope_names(vault):
+             f"섞여 있으니 그대로 옮기지 마라. 가능한 space: {placement.space_list(vault)}"])
+    if scope not in placement.scope_names(vault):
         raise WriteError(
             "없는 scope — 쓰지 않았다",
-            [f"`{space}`는 scope가 아니다. 가능한 space: {graph.space_list(vault)}"])
+            [f"`{space}`는 scope가 아니다. 가능한 space: {placement.space_list(vault)}"])
     return scope, bound

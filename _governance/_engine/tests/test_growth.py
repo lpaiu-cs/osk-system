@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process
+from osk import core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process, placement, topology
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -750,7 +750,7 @@ class GrowthTests(unittest.TestCase):
                             '형식이 다른 관측 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
             # a shortened hash two records share is ambiguous; a longer prefix tells them apart
             raw.append_rounds(VAULT, 'repo/ev', 'codex-c38d8ef2' + '1' * 24, [{'user': 'q', 'agent': 'a'}], '00_Scope/W1')
-            records = evidence.Records(VAULT)
+            records = raw.Records(VAULT)
             assert validate.evidence_errors(VAULT, text, [], idx, records)[0].startswith('모호한 좌표: c38d8ef2#1–2')
             assert records.short(claude) == 'c38d8ef20', records.short(claude)
             longer = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1–2` · 지지 — longer'])
@@ -1610,7 +1610,7 @@ class GrowthTests(unittest.TestCase):
             worker = "import sys; from osk import core,growth,organization, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [growth_reviews.review(VAULT, c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(VAULT, j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(VAULT, j['scope'])['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in j['review_units']]) for j in p['organization_jobs']]"
             outcome = growth.run(VAULT, [sys.executable,'-c',worker],limit=2)
             assert outcome['ok'], outcome
-            assert len([1 for p,k in graph.Index(VAULT).nodes.values() if k[0]=='domain' and not graph.is_hub(p)]) == 1
+            assert len([1 for p,k in graph.Index(VAULT).nodes.values() if k[0]=='domain' and not placement.is_hub(p)]) == 1
         """)
 
     def test_short_finished_transcript_waits_for_its_own_fork(self):

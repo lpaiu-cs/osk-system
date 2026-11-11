@@ -27,7 +27,7 @@ def _child():
     with tempfile.TemporaryDirectory(prefix="osk-distillation-test-") as folder:
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(ENGINE))
-        from osk import core, contract, distillation as D, evidence, raw, validate, write, nodefile
+        from osk import core, contract, distillation as D, evidence, placement, raw, validate, write, nodefile
         from osk.vault import Vault
         VAULT = Vault.open()
         validate.make_mini_vault(VAULT, folder)
@@ -107,7 +107,7 @@ def _child():
                     self.hub.unlink()
                     replaced.write_text(text.replace(old_id, other_id), encoding="utf-8")
                     try:
-                        with mock.patch.object(D.graph, "hub_file", side_effect=on_disk):
+                        with mock.patch.object(placement, "hub_file", side_effect=on_disk):
                             again = self.create()
                         self.assertEqual(again["distillation"]["status"], "pending", (name, again))
                         self.assertIn("hub identity changed", again["distillation"]["reason"], name)
@@ -223,7 +223,7 @@ def _child():
                 record = raw.append_rounds(VAULT, self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 self.args["body"] += ("\n\n## 근거\n\n- 2026-10-31 · `"
-                                      + evidence.coordinate(VAULT, record["path"], 1) + "` · 지지 — q")
+                                      + raw.coordinate(VAULT, record["path"], 1) + "` · 지지 — q")
                 atomic = nodefile.write_file
                 target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 reserved = []
@@ -431,7 +431,7 @@ def _child():
                      {"user": "second observation", "agent": "second result"}], space="00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 line = "- 2026-10-31 · `{}` · 지지 — first observation"
-                first, second = (evidence.coordinate(VAULT, record["path"], n) for n in (1, 2))
+                first, second = (raw.coordinate(VAULT, record["path"], n) for n in (1, 2))
                 self.args["body"] += "\n\n## 근거\n\n" + line.format(first)
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")

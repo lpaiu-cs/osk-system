@@ -16,7 +16,7 @@ from pathlib import Path
 from .core import (CASE_RE, RID_RE, ID_RE, ledger_read, ledger_append, ledger_damage, ledger_anchor_index,
                    resolve_one)
 from . import (contract, graph, signatures, approvals, authority, secrets, evictions, raw, core, evidence,
-               roots)
+               roots, placement, topology)
 from .vault import Vault
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
@@ -67,17 +67,16 @@ def run(vault: Vault) -> dict:
     ok(f"노드 계약 ({len(idx.nodes) + len(broken)}개)", errs)
 
     # 2. 배치 (Mechanism §1)
-    guard("공간 배치·`_` 규칙", lambda: graph.layout_violations(vault))
+    guard("공간 배치·`_` 규칙", lambda: placement.layout_violations(vault))
     guard("raw 저장 경계", lambda: raw.storage_violations(vault))
 
     # 3. 참조 위상 (헌법 8조 3항)
-    guard("참조 위상", lambda: graph.topology_check(vault, idx))
+    guard("참조 위상", lambda: topology.topology_check(vault, idx))
     ok("동명 노드 중복", [f"{s}: {v}" for s, v in idx.dup_stems.items()])
     records = None                        # 참조 경고와 근거 절 검사(17)가 함께 쓰는 기록 색인
     try:
-        from . import evidence
-        records = evidence.Records(vault)
-        rep["warnings"] = graph.reference_report(vault, idx, records)
+        records = raw.Records(vault)
+        rep["warnings"] = topology.reference_report(vault, idx, records)
     except Exception as e:
         rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
         skip("미해석 참조 경고", f"산출 실패: {e}")
@@ -344,7 +343,7 @@ def evidence_errors(vault: Vault, text: str, derived, idx: "graph.Index | None" 
     if heads:
         errs.append("관측 절이 노드 끝에 있지 않다")
     if span is not None:
-        records = records or evidence.Records(vault)
+        records = records or raw.Records(vault)
         for line in text[span[0]:].split("\n")[1:]:
             line = line.rstrip("\r")
             if not line.strip():
@@ -365,7 +364,7 @@ def evidence_errors(vault: Vault, text: str, derived, idx: "graph.Index | None" 
 def evidence_section_report(vault: Vault, idx: "graph.Index", external=None, records=None) -> dict:
     """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다. 보류된 외부
     루트는 위반이 아니므로 여기 없고 `external.held`에 모인다."""
-    records = records or evidence.Records(vault)
+    records = records or raw.Records(vault)
     out = {}
     for name, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] == "governance":
@@ -415,7 +414,7 @@ def auto_activate(vault: Vault, idx=None, *, now: float | None = None) -> list[s
     mark.write_text(json.dumps({"at": now}), encoding="utf-8")   # 먼저 적어 겹친 작업이 다시 재지 않게 한다
     idx = idx or graph.Index(vault)
     clean = {"cluster-overview": lambda: not _cluster_overview_errors(cluster_overview_report(vault, idx)),
-             "evidence-section": lambda: not evidence_section_report(vault, idx, roots.Roots(vault), evidence.Records(vault))}
+             "evidence-section": lambda: not evidence_section_report(vault, idx, roots.Roots(vault), raw.Records(vault))}
     on = []
     for r in todo:
         if not clean[r]():
@@ -462,7 +461,7 @@ def cluster_overview_report(vault: Vault, idx: "graph.Index") -> dict:
     허브를 거쳐"* 닿는 것이므로, 출발점은 하나이고 구성원은 하위를 포함한다.
 
     하위 허브의 식별은 **이름이 한다** — 군집 폴더와 이름이 같은 노드가 그
-    군집의 허브다(`graph.is_hub`). 별도의 종이 아니라 자리이므로 노드에 표식이
+    군집의 허브다(`placement.is_hub`). 별도의 종이 아니라 자리이므로 노드에 표식이
     붙지 않는다(시행령 §3 7항). 허브가 없는 하위 폴더는 `hubless`로 보고한다 —
     그 안의 노드는 부모가 직접 가리키지 않는 한 미직결이 된다.
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from .core import local_lock_path, mutation_lock, posix_rel, resolve_in_root, sha256_file
-from . import approvals, cluster_gate, contract, evidence, graph, node_checks, nodefile, rechecks, scope_memory
+from . import approvals, cluster_gate, contract, evidence, graph, node_checks, nodefile, rechecks, scope_memory, placement
 from .errors import WriteError
 from .naming import name_collision, portable_name_key
 from .vault import Vault
@@ -24,18 +24,18 @@ def _plan_move(vault: Vault, name: str, dest_dir: Path, dest_space: str, idx):
         # 결과를 함께 말한다 — "전부 아니면 전무"를 문안으로만 약속하면 받는
         # 쪽이 못 믿고 확인 질의를 한 번 더 한다(표면 감사 실측).
         raise WriteError(f"노드 없음: {name} — 아무것도 옮기지 않았다")
-    cluster_gate.reject_governance(graph.space_of(vault, path))
+    cluster_gate.reject_governance(placement.space_of(vault, path))
     # 허브 노드는 이름이 군집에 결박한다 (시행령 §3 6항) — 밖으로 나가면
     # 군집이 허브를 잃고, 도착지에는 남의 군집 이름을 단 노드가 앉는다.
-    # 하위 허브도 같은 식으로 걸린다(`graph.is_hub`) — 하위 군집의 재편은
+    # 하위 허브도 같은 식으로 걸린다(`placement.is_hub`) — 하위 군집의 재편은
     # 허브만 옮기는 일이 아니라 폴더째 옮기는 일이므로 `move_cluster`가 맡는다.
-    if graph.is_hub(path):
+    if placement.is_hub(path):
         raise WriteError(
             "허브 노드는 군집 밖으로 이동할 수 없다 — 옮기지 않았다",
             [f"`{name}`은 `= …/{path.parent.name}` 군집의 동명 허브 노드다"
              f"(시행령 §3 6항). 군집째 옮기려면 `move_cluster`를 쓴다"])
     target = dest_dir / path.name
-    dst_kind = graph.space_of(vault, target)   # 소속은 노드 파일 경로로 판정한다
+    dst_kind = placement.space_of(vault, target)   # 소속은 노드 파일 경로로 판정한다
     cluster_gate.require_node_cluster(dst_kind, dest_space)
     clash = name_collision(dest_dir, path.stem)
     if clash is not None:
@@ -77,7 +77,7 @@ def _apply_move(vault: Vault, path: Path, target: Path, n, idx) -> None:
     # `node_checks.dangling_of`가 옛 경로를 열려다 실패해 이 노드의 자기링크를
     # dangling으로 오보한다 — `create_node`가 `register_new`로 막는 것과
     # 같은 실패이고, 오타가 아닌 것을 오타라고 알리게 된다.
-    idx.retarget(path, target, graph.space_of(vault, target))
+    idx.retarget(path, target, placement.space_of(vault, target))
 
 
 def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
@@ -98,7 +98,7 @@ def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
     여기만 경로를 내면 호출자가 변환을 스스로 해야 한다(감사 지적)."""
     out = []
     for h in sorted(srcs):
-        hub = graph.hub_file(h)
+        hub = placement.hub_file(h)
         if hub is None:
             continue
         try:
@@ -108,7 +108,7 @@ def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
         gone = sorted({contract.target_stem(t) for t in n.wikilinks()} & moved)
         if gone:
             out.append({"hub": hub.stem, "remove": gone})
-    dhub = graph.hub_file(dest)
+    dhub = placement.hub_file(dest)
     if dhub:
         try:
             have = {contract.target_stem(t) for t in idx.node(dhub).wikilinks()}
@@ -133,8 +133,8 @@ def _move_topology(vault: Vault, plans, stale, idx) -> list[str]:
     위반 때문에 내 쓰기가 막히면 안 된다). 출발지 허브의 Link는 `hub_links`의
     `remove`가 닫으므로 뺀다. 들어오는 참조의 후보는 바이트에서 고르고
     (`mentioning`), 판정은 판독한 노드로 한다 — 전수 판독을 부르지 않는다."""
-    after = {src: graph.space_of(vault, dst) for src, dst, _n in plans}
-    moved = {src: n for src, _dst, n in plans if after[src] != graph.space_of(vault, src)}
+    after = {src: placement.space_of(vault, dst) for src, dst, _n in plans}
+    moved = {src: n for src, _dst, n in plans if after[src] != placement.space_of(vault, src)}
     if not moved:
         return []                     # 소속이 그대로면 판정도 그대로다
     new_kind = {}
@@ -165,7 +165,7 @@ def _move_topology(vault: Vault, plans, stale, idx) -> list[str]:
         if not idx._readable(p):
             continue                  # 판독 불가 파일은 참조를 말하지 않는다
         n = idx.parsed[p]
-        k0 = graph.space_of(vault, p)
+        k0 = placement.space_of(vault, p)
         k1 = after.get(p, k0)
         refs = [(t, pred) for pred in contract.PREDICATES for t in n.edges(pred)]
         refs += [(t, None) for t in n.wikilinks()]
@@ -296,7 +296,7 @@ def move_cluster(vault: Vault, name: str, dest_parent: str) -> dict:
     새 부모 군집의 경로다. 폴더가 통째로 가므로 **그 아래의 하위 군집도 함께
     간다** — 재귀 처리가 따로 필요 없다.
 
-    **같은 최상위 군집 안에서만** 옮긴다. `_space_of_parts`가 소속을 `parts[1]`
+    **같은 최상위 군집 안에서만** 옮긴다. `placement.space_of_parts`가 소속을 `parts[1]`
     로 정하므로 최상위를 건너면 그 안 노드 **전부의 scope가 한꺼번에 바뀌고**,
     그러면 기존 참조가 무더기로 헌법 8조 3항 위반이 된다. scope를 건너는 것은
     재편이 아니라 **증류**이며(헌법 8조 3항 — "scope 사이에 공유되는 지식은
@@ -312,19 +312,19 @@ def move_cluster(vault: Vault, name: str, dest_parent: str) -> dict:
         src = nodefile.live_locate(vault, name, idx)
         if src is None or not src.is_file():
             raise WriteError(f"노드 없음: {name}")
-        if not graph.is_hub(src):
+        if not placement.is_hub(src):
             raise WriteError(
                 f"군집이 아니다: {name} — 군집의 허브(폴더와 동명인 노드)만 "
                 f"군집째 옮길 수 있다. 노드 하나를 옮기려면 `move_nodes`를 쓴다")
         sdir = src.parent
-        cluster_gate.reject_governance(graph.space_of(vault, src))
+        cluster_gate.reject_governance(placement.space_of(vault, src))
         ddir = resolve_in_root(vault, dest_parent)
         if ddir is None or not ddir.is_dir():
             raise WriteError(
                 f"목적지 군집이 없다: {dest_parent} — 재편은 이미 있는 군집 "
                 f"안으로만 한다(먼저 그 군집을 만든다)")
-        cluster_gate.reject_governance(graph.space_of(vault, ddir / "x.md"))
-        cluster_gate.require_node_cluster(graph.space_of(vault, ddir / sdir.name / "x.md"),
+        cluster_gate.reject_governance(placement.space_of(vault, ddir / "x.md"))
+        cluster_gate.require_node_cluster(placement.space_of(vault, ddir / sdir.name / "x.md"),
                               dest_parent)
         srel, drel = sdir.relative_to(vault.root).parts, ddir.relative_to(vault.root).parts
         if srel[:2] != drel[:2]:
@@ -339,9 +339,9 @@ def move_cluster(vault: Vault, name: str, dest_parent: str) -> dict:
         if sdir in ddir.parents or sdir == ddir:
             raise WriteError(
                 f"자기 안으로 옮길 수 없다: {posix_rel(sdir, vault.root)} → {dest_parent}")
-        if not graph.hub_file(ddir)\
+        if not placement.hub_file(ddir)\
                 and ddir.parent.resolve() not in {
-                    (vault.root / s).resolve() for s in graph.node_spaces(vault)}:
+                    (vault.root / s).resolve() for s in placement.node_spaces(vault)}:
             raise WriteError(
                 f"허브 없는 군집 안으로는 옮길 수 없다: {dest_parent}")
         target = ddir / sdir.name

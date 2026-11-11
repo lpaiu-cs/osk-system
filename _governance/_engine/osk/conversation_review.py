@@ -6,8 +6,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from . import (conversation_capture, conversation_state, core, distillation, raw, scope_memory, transcripts,
-               write)
+from . import (conversation_capture, conversation_state, core, distillation, graph, placement, raw, scope_memory,
+               transcripts, write)
 from .vault import Vault
 
 
@@ -110,7 +110,7 @@ def acknowledge(vault: Vault, harness: str, conversation_id: str, through: str,
                                      f"it cites {', '.join(cited) or 'nothing'}. A later turn's distillation "
                                      "belongs to that turn's review: judge this range on its own")
                 target_path = core.resolve_in_root(vault, receipt.get("target", {}).get("path", ""))
-                kind = raw.graph.space_of(vault, target_path)[0] if target_path is not None else None
+                kind = placement.space_of(vault, target_path)[0] if target_path is not None else None
                 if kind not in ("scope", "person"):
                     raise ValueError("preserved integration target must be a durable Scope or Person node")
                 receipts.append(receipt)
@@ -166,7 +166,7 @@ def _review_state_locked(vault: Vault, s: dict, through: str) -> dict:
     # append-only라 바뀌지 않고, 정정은 정정하는 쪽이 reopen으로 등록한다.
     out = {**result, "status": "complete", "review": last, "semantic_verified": False}
     if last["outcome"] == "preserved":
-        idx = raw.graph.Index(vault)
+        idx = graph.Index(vault)
         broken = [{"key": r["key"], "reason": why} for r in last["receipts"]
                   if (why := distillation.structure(vault, r, idx))]
         if broken:

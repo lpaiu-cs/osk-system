@@ -32,7 +32,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 쥔다(`osk.epoch`). 그래서 쓰는 모듈은 함수 안이 아니라 여기서 읽는다. 구조 시험의 `late_loads`가 지킨다.
 from osk import (contract, distillation, epoch, graph, organization, prose, raw, rechecks,  # noqa: E402
                  update_check, validate, write, cluster_gate, node_checks, node_moves, nodefile,
-                 conversation_cite)
+                 conversation_cite, placement)
 from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
@@ -93,7 +93,7 @@ def _vault_fingerprint() -> tuple[tuple[str, str], bool]:
     else:
         nodes = hashlib.sha256()
         for rel, mtime_ns, size, kind, target in entries:
-            if graph.is_node_home(kind):
+            if placement.is_node_home(kind):
                 nodes.update(f"{rel}|{mtime_ns}|{size}|{kind}|{target}\n".encode())
         node_key = nodes.hexdigest()
     # Evidence still invalidates the name map. Only unchanged node contracts

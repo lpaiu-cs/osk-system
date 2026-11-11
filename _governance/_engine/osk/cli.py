@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .core import StaleEngineError
 from . import (graph, approvals, authority, raw, scope_memory, validate, search,
-               write, evictions, approval_acts, node_moves, region_tree)
+               write, evictions, approval_acts, node_moves, region_tree, placement)
 from . import harness as adapters
 from .vault import Vault
 
@@ -304,9 +304,9 @@ def _routing_cmd(vault: Vault, a) -> None:
                 if a.scope in current["scopes"]:
                     _emit({"ok": True, "project": a.project, **current, "note": "이미 결속에 있다"})
                     return
-                if a.scope not in graph.scope_names(vault):
+                if a.scope not in placement.scope_names(vault):
                     raise write.WriteError("없는 scope — 결속하지 않았다",
-                                           [f"`{a.scope}`는 scope가 아니다. 가능한 space: {graph.space_list(vault)}"])
+                                           [f"`{a.scope}`는 scope가 아니다. 가능한 space: {placement.space_list(vault)}"])
                 row = write.bind_session(vault, a.project, a.scope, a.reason or "CLI 결속 추가", primary=False)
             elif a.routing_cmd == "unbind":
                 if a.scope not in current["scopes"]:

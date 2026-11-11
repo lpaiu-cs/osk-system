@@ -5,17 +5,17 @@
  },
  "totals": {
   "upward_imports": 2,
-  "lazy_imports": 40,
-  "two_module_cycles": 8,
-  "tangled_modules": 18,
+  "lazy_imports": 29,
+  "two_module_cycles": 4,
+  "tangled_modules": 13,
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
   "broad_except": 125,
   "oversize_functions": 119,
-  "excess_lines": 2737,
+  "excess_lines": 2734,
   "excess_branches": 1605,
-  "late_loads": 4
+  "late_loads": 2
  },
  "upward_imports": {
   "osk.validate -> mcp_server": 1,
@@ -24,30 +24,25 @@
  "lazy_imports": {
   "osk.cluster_gate": 1,
   "osk.doctor": 2,
-  "osk.evidence": 3,
-  "osk.graph": 7,
+  "osk.evidence": 1,
   "osk.growth": 3,
   "osk.harness": 1,
   "osk.node_moves": 1,
-  "osk.raw": 4,
+  "osk.raw": 3,
   "osk.response_growth": 2,
   "osk.services": 2,
   "osk.setup": 1,
   "osk.transcripts": 1,
-  "osk.validate": 9,
+  "osk.validate": 8,
   "osk.worker_process": 3
  },
  "two_module_cycles": [
   "mcp_server <-> osk.validate",
   "osk.cli <-> osk.validate",
-  "osk.evidence <-> osk.graph",
-  "osk.evidence <-> osk.raw",
-  "osk.graph <-> osk.raw",
-  "osk.graph <-> osk.rechecks",
   "osk.growth <-> osk.growth_daily",
   "osk.growth <-> osk.response_growth"
  ],
- "tangled_modules": 18,
+ "tangled_modules": 13,
  "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
@@ -203,7 +198,7 @@
    20
   ],
   "osk.evidence:check": [
-   43,
+   42,
    23
   ],
   "osk.evidence_migration:_change": [
@@ -215,20 +210,8 @@
    17
   ],
   "osk.graph:Index.resolve": [
-   52,
+   51,
    18
-  ],
-  "osk.graph:_place_of_parts": [
-   38,
-   19
-  ],
-  "osk.graph:reference_review": [
-   42,
-   19
-  ],
-  "osk.graph:topology_check": [
-   94,
-   37
   ],
   "osk.growth:prompt": [
    196,
@@ -338,6 +321,10 @@
    44,
    17
   ],
+  "osk.placement:_place_of_parts": [
+   38,
+   19
+  ],
   "osk.publish:run": [
    73,
    16
@@ -355,7 +342,7 @@
    23
   ],
   "osk.raw:read_round": [
-   63,
+   62,
    20
   ],
   "osk.raw_view:project": [
@@ -446,6 +433,14 @@
    48,
    27
   ],
+  "osk.topology:reference_review": [
+   40,
+   19
+  ],
+  "osk.topology:topology_check": [
+   93,
+   37
+  ],
   "osk.transcripts:_antigravity": [
    54,
    22
@@ -495,7 +490,7 @@
    17
   ],
   "osk.validate:run": [
-   295,
+   294,
    72
   ],
   "osk.validate:setup_doc_drift": [
@@ -572,9 +567,6 @@
    "osk.harness -> osk.native_cli",
    "osk.validate -> osk.cli"
   ],
-  "sync_daemon": [
-   "osk.evidence -> osk.rechecks",
-   "osk.graph -> osk.rechecks"
-  ]
+  "sync_daemon": []
  }
 }

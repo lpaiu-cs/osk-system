@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
-from . import evictions, graph, nodefile, prose, routing, secrets, workspaces
+from . import evictions, nodefile, prose, routing, secrets, workspaces, placement
 from .errors import WriteError
 from .vault import Vault
 
@@ -272,12 +272,12 @@ def _landing(vault: Vault, session: str, space: str | None) -> tuple[str, str | 
         raise WriteError(
             "착지 미정 — 아무것도 하지 않았다",
             [f"세션 `{session}`의 scope 결속이 없다. `space`를 주면 그 자리의 "
-             f"scope 기억을 쓴다. 가능한 space: {graph.space_list(vault)}"])
-    if scope not in graph.scope_names(vault):
+             f"scope 기억을 쓴다. 가능한 space: {placement.space_list(vault)}"])
+    if scope not in placement.scope_names(vault):
         raise WriteError(
             "결속이 가리키는 scope가 없다 — 아무것도 하지 않았다",
             [f"세션 `{session}`은 `{vault.scope}/{scope}`에 결속돼 있으나 그 scope가 "
-             f"없다. 가능한 space: {graph.space_list(vault)}"])
+             f"없다. 가능한 space: {placement.space_list(vault)}"])
     return scope, bound
 
 
