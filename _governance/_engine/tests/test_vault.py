@@ -26,8 +26,9 @@ def _node(folder: Path) -> None:
 
 
 def writes() -> None:
-    """한 프로세스에서 임시 저장소 둘에 노드를 쓴다 — 노드·허브의 Link·색인·검색이 제 저장소에만 닿는다."""
-    from osk import graph, search, validate, workspaces, write
+    """한 프로세스에서 임시 저장소 둘에 노드와 인용 기록을 쓴다 — 노드·허브의 Link·색인·검색·기록 판독이 제
+    저장소에만 닿고, 저장소마다 접어 두는 값이 섞이지 않는다."""
+    from osk import evidence, graph, raw, search, validate, workspaces, write
     saved = os.environ.get("OSK_VAULT_ROOT")
     with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as c, \
             tempfile.TemporaryDirectory() as d:
@@ -49,6 +50,16 @@ def writes() -> None:
                 assert out["name"] in idx.names and theirs not in idx.names, sorted(idx.names)
                 hits = {h["title"] for h in search.Searcher(vault, idx).view_search("본문", 5)}
                 assert out["name"] in hits and theirs not in hits, hits
+            # 같은 이름의 인용 기록이 두 저장소에 있어도 제 저장소의 것만 읽는다 — 라운드 수가 다르다.
+            for vault, rounds in ((va, 2), (vb, 1)):
+                pairs = [{"user": f"질문 {n}", "agent": f"답 {n}"} for n in range(1, rounds + 1)]
+                assert raw.append_rounds(vault, "two-vaults", "same-record", pairs)["ok"]
+            for vault, have in ((va, {1, 2}), (vb, {1})):
+                records = evidence.Records(vault)
+                file = records.file("same-record")
+                assert vault.root in file.parents and records.rounds(file) == have, (file, records.rounds(file))
+            assert evidence.check(va, "same-record#2") is None
+            assert evidence.check(vb, "same-record#2") == "없는 라운드: same-record#2"   # 첫 저장소에만 있다
             # 저장소마다 접어 두는 값 둘 — 한 저장소에서 정한 것이 다른 저장소에 닿지 않는다.
             # 시각의 눈금은 그 저장소가 놓인 볼륨의 것이다.
             graph._racy_margin_cache[va.root] = 123_456_789
