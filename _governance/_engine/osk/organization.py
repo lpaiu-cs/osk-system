@@ -13,7 +13,7 @@ import re
 import time
 from pathlib import Path
 
-from . import core, contract, graph, node_checks, nodefile, prose, raw, routing
+from . import core, contract, graph, node_checks, nodefile, placement, prose, raw, routing, topology
 from .vault import Vault
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
@@ -172,9 +172,9 @@ def snapshot(vault: Vault, scope: str, idx=None) -> dict:
         units.extend({**u, "expect_view_hash": "view:" + digest} for u in _units(node))
         nodes.append({"id": node.id, "name": name, "path": core.posix_rel(path, vault.root),
                       "hash": digest, "summary": str(node.meta.get("summary", "")),
-                      "hub": graph.is_hub(path), "has_body": bool(prose.norm_body(node.body)),
+                      "hub": placement.is_hub(path), "has_body": bool(prose.norm_body(node.body)),
                       "body_chars": len(node.body), **node_checks.size_feedback(path, node.body)})
-        references.extend(graph.reference_review(vault, node, idx, records=records))
+        references.extend(topology.reference_review(vault, node, idx, records=records))
     links = {}
     for p, node in parsed.items():
         links[p] = {nodefile.live_locate(vault, ref, idx) for ref in node.wikilinks()}
@@ -183,7 +183,7 @@ def snapshot(vault: Vault, scope: str, idx=None) -> dict:
     for directory in sorted(directories):
         hub = directory / (directory.name + ".md")
         local = {p for p in parsed if p.parent == directory and p != hub}
-        children = {p for p in parsed if graph.is_hub(p) and p.parent.parent == directory}
+        children = {p for p in parsed if placement.is_hub(p) and p.parent.parent == directory}
         wanted = local | children
         linked = links.get(hub, set())
         missing = sorted(p.stem for p in wanted - linked)
@@ -213,8 +213,8 @@ def hub_tree(vault: Vault, base: Path, idx=None) -> str:
             members.setdefault(path.parent, []).append(path)
     lines = []
     for d in sorted(members, key=lambda p: p.relative_to(base).parts):
-        # 허브 판정은 graph.is_hub 그대로다 — 확장자의 대소문자를 가리지 않는다(Mechanism §1 4항)
-        hub = next((p for p in members[d] if graph.is_hub(p)), None)
+        # 허브 판정은 placement.is_hub 그대로다 — 확장자의 대소문자를 가리지 않는다(Mechanism §1 4항)
+        hub = next((p for p in members[d] if placement.is_hub(p)), None)
         if hub is None:
             continue
         try:
@@ -566,7 +566,7 @@ def bindings_audit(vault: Vault, project: str | None = None) -> list[dict]:
         seen = load_state(vault).get("bindings_seen", {})
     except ValueError:
         seen = {}
-    names, out = set(graph.scope_names(vault)), []
+    names, out = set(placement.scope_names(vault)), []
     for key in keys:
         b = routing.bindings(vault, key, recs)
         if not b["scopes"]:
@@ -618,7 +618,7 @@ def apply_binding_decisions(vault: Vault, decisions: list | None, state: dict | 
             or (d["action"] != "keep" and not (isinstance(d.get("scope"), str) and d["scope"].strip()))
             for d in decisions):
         raise ValueError("bindings decisions are [{project, action: keep|unbind|primary, scope?, reason}]")
-    scopes = graph.scope_names(vault)
+    scopes = placement.scope_names(vault)
     for d in decisions:
         if d["action"] == "primary" and d["scope"].strip() not in scopes:
             raise ValueError(f"{d['action']} names a scope that does not exist: {d['scope'].strip()}")

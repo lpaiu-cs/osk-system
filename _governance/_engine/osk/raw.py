@@ -23,7 +23,7 @@ from .core import atomic_write, mutation_lock, posix_rel, resolve_in_root, sha25
 # `naming`의 `title_errors`·`name_collision`을 그대로 쓴다 — 파일명 이식성
 # 규칙(Windows 예약명·링크 파서 충돌·ext4 바이트 상한·대소문자 접기)의 정본은
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
-from . import graph, naming, routing, secrets, raw_view
+from . import naming, placement, raw_view, routing, secrets
 from .errors import WriteError
 from .vault import Vault
 
@@ -86,13 +86,13 @@ def next_index(text: str) -> int:
     return (seen[-1] + 1) if seen else 1
 
 
-CITED = graph.RECORD_DIRS[0]
+CITED = placement.RECORD_DIRS[0]
 
 
 def legacy_dirs(vault: Vault):
     """옛 자리 — scope 아래의 `_cited/`·`_raw/`와 Person의 `_cited/`(Mechanism §9 5항)."""
     for scope in scope_names(vault):
-        for name in graph.RECORD_DIRS:
+        for name in placement.RECORD_DIRS:
             yield vault.root / vault.scope / scope / name
     yield vault.root / vault.person / CITED
 
@@ -129,7 +129,7 @@ def is_person(vault: Vault, space: str | None) -> bool:
 def _record_pair(vault: Vault, path: Path | str) -> tuple[Path, Path]:
     """Confined physical path and its old Markdown alias. No content conversion."""
     p = resolve_in_root(vault, path)
-    if p is None or graph.space_of(vault, p)[0] != "raw":
+    if p is None or placement.space_of(vault, p)[0] != "raw":
         raise WriteError("vault 밖 또는 인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 기록을 열지 않았다")
     requested = Path(path) if Path(path).is_absolute() else vault.root / path
     if requested.absolute() != p:
@@ -158,7 +158,7 @@ def _record_pair(vault: Vault, path: Path | str) -> tuple[Path, Path]:
     # A symlink must not redirect the alias into another scope or outside raw.
     for candidate in (old, new):
         resolved = resolve_in_root(vault, candidate)
-        if resolved is None or resolved != candidate or graph.space_of(vault, resolved) != graph.space_of(vault, p):
+        if resolved is None or resolved != candidate or placement.space_of(vault, resolved) != placement.space_of(vault, p):
             raise WriteError("raw 별칭이 저장 구획을 벗어났다")
     return old, new
 
@@ -181,7 +181,7 @@ def write_raw(vault: Vault, path: Path | str, text: str) -> tuple[Path, list[str
     p = resolve_in_root(vault, path)
     if p is None:
         raise ValueError(f"vault 밖 경로 — 인용 기록 거부: {path}")
-    if graph.space_of(vault, p)[0] != "raw":
+    if placement.space_of(vault, p)[0] != "raw":
         raise ValueError(f"인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 이 통로로 기록할 수 없다: {p}")
     if p != _record_pair(vault, p)[1] or p != _record_file(vault, p):
         raise ValueError("raw 쓰기는 숨김 .records의 정본 .txt 경로에만 허용한다")
@@ -322,7 +322,7 @@ def canonical_ref(vault: Vault, ref: str) -> str:
         value = value[2:-2].strip()
     path, sep, anchor = value.split("|", 1)[0].partition("#")
     path = path.strip()
-    if re.match(r"^https?://", path) or not graph.is_record_ref(path):
+    if re.match(r"^https?://", path) or not placement.is_record_ref(path):
         return ref  # Node IDs and node links keep their existing identity.
     old, physical = _record_pair(vault, path)
     if not physical.exists() and not old.exists():
@@ -408,7 +408,7 @@ def cited_native(chunk: str) -> str | None:
 def storage_error(path: str, text: str) -> str | None:
     """Check a changed raw record, without exposing its payload in diagnostics."""
     p = Path(path)
-    if (not any(d in p.parts for d in graph.RECORD_DIRS) or not p.parts
+    if (not any(d in p.parts for d in placement.RECORD_DIRS) or not p.parts
             or p.parts[0] not in {"00_Scope", "= Scope", "Scope", "00_Person", "= Person", "Person", CITED}):
         return None
     if p.suffix.lower() == ".md":
@@ -421,7 +421,7 @@ def storage_error(path: str, text: str) -> str | None:
 
 def storage_violations(vault: Vault) -> list[str]:
     errors = []
-    dirs = [d for name in graph.RECORD_DIRS for d in (vault.root / vault.scope).glob(f"*/{name}")]
+    dirs = [d for name in placement.RECORD_DIRS for d in (vault.root / vault.scope).glob(f"*/{name}")]
     for directory in sorted(d for d in (*dirs, vault.root / vault.person / CITED, vault.root / CITED) if d.is_dir()):
         for p in directory.rglob("*"):
             if p.is_file() and p.suffix.lower() in {".md", ".txt"}:
@@ -461,7 +461,7 @@ def round_block(index: int, user: str, agent: str, *, dialogue_id: str | None = 
 
 # scope 열거·space 표기 판정은 `graph`가 한 벌로 소유한다(`wm`도 같은 것을 쓴다).
 scope_names, _space_list, scope_of_space = (
-    graph.scope_names, graph.space_list, graph.scope_of_space)
+    placement.scope_names, placement.space_list, placement.scope_of_space)
 
 def append_rounds(vault: Vault, session: str, record: str, pairs: list,
                   space: str | None = None, *, cited: dict | None = None, bind: bool = True) -> dict:
@@ -583,7 +583,7 @@ def raw_file(vault: Vault, path: str) -> Path:
     p = resolve_in_root(vault, path)
     if p is None:
         raise WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
-    if graph.space_of(vault, p)[0] != "raw":
+    if placement.space_of(vault, p)[0] != "raw":
         raise WriteError(
             "인용 기록 구획(`_cited/`·`_raw/`) 밖 경로 — 이 도구로 읽지 않는다",
             [f"`{path}`는 세션 기록이 아니다. 노드는 `read_node`로 읽는다"])
@@ -799,7 +799,7 @@ def list_records(vault: Vault, space: str | None = None) -> dict:
             raise WriteError(
                 "없는 scope", [f"`{space}`는 scope가 아니다. 가능한 space: "
                               f"{_space_list(vault)}"])
-        dirs = [vault.root / vault.scope / scope / name for name in graph.RECORD_DIRS]
+        dirs = [vault.root / vault.scope / scope / name for name in placement.RECORD_DIRS]
     out = []
     files = sorted({f for d in dirs
                     for f in (*d.glob("*.md"), *(d / ".records").glob("*.txt"),

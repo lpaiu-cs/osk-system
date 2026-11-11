@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import approvals, contract, core, evidence, graph, nodefile, prose, raw, raw_view, rechecks, validate
+from . import approvals, contract, core, evidence, graph, nodefile, prose, raw, raw_view, rechecks, validate, placement
 from .core import posix_rel, sha256_bytes
 from .vault import Vault
 
@@ -142,7 +142,7 @@ def _items(vault: Vault, n, idx, records) -> list[dict]:
     out = []
     for ref in _refs(n.meta.get("derived-from")):
         s, it = _bare(ref), {"entry": str(ref)}
-        if graph.is_record_ref(s):
+        if placement.is_record_ref(s):
             rec, index = raw.parse_ref(s)
             try:
                 p = raw.raw_file(vault, rec)

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from .core import (ID_RE, causal_maxima, effective_parents, ledger_damage, ledger_extend, ledger_read,
                    posix_rel, sha256_bytes)
-from . import contract, graph, growth_ledger
+from . import contract, graph, growth_ledger, placement
 from .vault import Vault
 
 
@@ -142,7 +142,7 @@ def _name(ref: str) -> tuple[str, str] | None:
     if s.startswith("[[") and s.endswith("]]"):
         s = s[2:-2]
     s = s.split("|", 1)[0].strip()
-    if graph.is_record_ref(s) or re.match(r"^https?://", s):
+    if placement.is_record_ref(s) or re.match(r"^https?://", s):
         return None
     name, _, heading = (x.strip() for x in s.partition("#"))
     return name, heading
@@ -160,7 +160,7 @@ def target(ref: str, idx, cache: dict | None = None) -> tuple[str, str | None] |
     if cache is not None and (name, heading) in cache:
         return cache[(name, heading)]
     out, hit = None, idx.locate(name) if name else None
-    if hit and (not graph.is_node_home(hit[1]) or graph.is_hub(hit[0])):
+    if hit and (not placement.is_node_home(hit[1]) or placement.is_hub(hit[0])):
         hit = None
     if hit:
         path = hit[0]
@@ -433,7 +433,7 @@ def change(vault: Vault, nid: str, key: str, ref: str, idx) -> dict:
         return {"note": "점검 기록이 없다 — 근거와 노드의 전문을 읽는다"}
     m, heading = maxima[-1], parsed[1]
     if now and now[1] != m.get("target_state"):
-        side, path, want, body = "target", hit[0], m.get("target_state"), graph.is_node_home(hit[1])
+        side, path, want, body = "target", hit[0], m.get("target_state"), placement.is_node_home(hit[1])
     else:
         side, path, want, heading, body = "node", node[0], m.get("node_state"), "", True
     # 상태를 잰 그 범위끼리 비교한다(`state`) — 요약·배선의 변경은 변경분이 아니다. 노드 본문은

@@ -9,7 +9,7 @@
 |---|---|
 | `osk/core.py` | Mechanism §1~§3 공통 — 루트·시각·id·rid·대장 append 규율 |
 | `osk/contract.py` | 시행령 §1·Mechanism §2 — 노드 계약 파싱·검증(2술어·순서·형식·정합) |
-| `osk/graph.py` | Mechanism §1·헌법 8조·4조 5항·11조 2항 — 배치·참조 위상(id 해석)·중심성 |
+| `osk/placement.py`·`graph.py`·`topology.py` | Mechanism §1·헌법 8조·4조 5항·11조 2항 — 배치(`placement`), 색인과 id 해석(`graph`), 참조 위상·중심성(`topology`) |
 | `osk/approvals.py`·`region_tree.py`·`approval_acts.py` | 헌법 10조·시행령 §6·Mechanism §3 — 보호영역: 승인 기록부와 그 판정(`approvals`), 영역의 tree와 승인본 보관(`region_tree`), 사용자 전속인 지정·승인·반려·해제의 발의(`approval_acts`) |
 | `osk/signatures.py` | 헌법 14조 6항 — 구체제 서명 기록부(사료 판독) + id·사건 헤더 헬퍼 |
 | `osk/authority.py` | 헌법 7조·시행령 §5·Mechanism §7 — 위임 전수·승인본 반영·3값·fail-closed |

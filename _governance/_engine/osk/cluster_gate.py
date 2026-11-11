@@ -6,7 +6,7 @@ from __future__ import annotations
 import json, os, time
 from pathlib import Path
 from .core import ledger_damage, ledger_read, posix_rel, resolve_one
-from . import graph
+from . import placement
 from .errors import WriteError
 from .naming import title_errors
 from .vault import Vault
@@ -27,7 +27,7 @@ def _is_cluster(kind: tuple) -> bool:
 def require_node_cluster(kind: tuple, dest: str) -> None:
     """노드를 둘 자리인가 — 생성·이동·군집 이동이 같은 판정을 쓴다."""
     reject_governance(kind)
-    if not graph.is_node_home(kind) or not _is_cluster(kind):
+    if not placement.is_node_home(kind) or not _is_cluster(kind):
         raise WriteError(
             f"노드를 둘 수 없는 구획이다: {dest} {kind} — 노드는 군집 안에 둔다. "
             f"Space 루트 직속과 `_`·`.` 접두 구획은 노드 자리가 아니다 "
@@ -79,8 +79,8 @@ def cluster_names(vault: Vault) -> list[str]:
         with os.scandir(d) as entries:
             dirs = [Path(e.path) for e in entries if e.is_dir()]
         for sub in sorted(dirs):
-            k = graph.space_of(vault, sub / "x.md")
-            if not (graph.is_node_home(k) and _is_cluster(k)
+            k = placement.space_of(vault, sub / "x.md")
+            if not (placement.is_node_home(k) and _is_cluster(k)
                     and k[:1] != GOVERNANCE):
                 continue
             # 허브가 있어야 군집이다 — 허브 없는 자리는 **싣지 않는다.**
@@ -91,7 +91,7 @@ def cluster_names(vault: Vault) -> list[str]:
             # 헛걸음시킨다). 허브를 세우는 첫 쓰기는 이 목록을 거치지 않고
             # 관문이 안내하므로 잃는 것이 없다.
             path = f"{prefix}/{sub.name}"
-            if graph.hub_file(sub):
+            if placement.hub_file(sub):
                 out.add(path)
                 walk(sub, path)
 
@@ -156,7 +156,7 @@ def new_cluster_gate(vault: Vault, dest: str, dest_dir: Path | None, doing: str)
     roots = {(vault.root / vault.scope).resolve(), (vault.root / vault.domain).resolve(),
              (vault.root / vault.person).resolve()}
     top_level = parent in roots
-    if not top_level and not graph.hub_file(parent):
+    if not top_level and not placement.hub_file(parent):
         raise WriteError(
             f"선언되지 않은 군집이다: {dest}. 신설은 Space 루트 바로 아래이거나 "
             f"**허브가 있는 군집 안**이어야 한다(Mechanism §1 2항 · 시행령 §3 7항). "
@@ -164,7 +164,7 @@ def new_cluster_gate(vault: Vault, dest: str, dest_dir: Path | None, doing: str)
             f"있다. 지금 쓸 수 있는 군집: {', '.join(cluster_names(vault)) or '없음'}")
     # 확인 표식·디렉토리를 남기기 **전에** 자리를 본다 — 노드 자리가 아닌 곳
     # (`_misc`·`.notes`)은 물어볼 것도 없이 거부다.
-    require_node_cluster(graph.space_of(vault, dest_dir / "x.md"), dest)
+    require_node_cluster(placement.space_of(vault, dest_dir / "x.md"), dest)
     name_errs = title_errors(dest_dir.name)
     if name_errs:
         raise WriteError("군집 이름 부적격 — 이름이 곧 디렉토리명이다", name_errs)

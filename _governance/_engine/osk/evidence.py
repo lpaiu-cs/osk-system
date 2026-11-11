@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from .core import posix_rel
-from . import graph, raw, roots
+from . import graph, placement, raw, rechecks, roots
 from .errors import WriteError
 from .vault import Vault
 
@@ -27,8 +27,7 @@ NODE_LINE = "노드를 가리키는 근거 줄"
 
 def lines(text: str) -> list[re.Match]:
     """노드 끝 관측 절에서 형식이 맞는 줄(시행령 §1 5항). 형식이 다른 줄은 검증기가 보고한다."""
-    from .rechecks import evidence_span
-    span = evidence_span(text)
+    span = rechecks.evidence_span(text)
     if span is None:
         return []
     return [m for line in text[span[0]:].split("\n")[1:] if (m := LINE.match(line.rstrip("\r")))]
@@ -60,7 +59,7 @@ def kind(coord: str) -> str:
         return "url"
     if roots.split(coord):
         return "external"
-    if graph.is_record_ref(coord) or "/" not in coord and raw.ROUND.match(coord):
+    if placement.is_record_ref(coord) or "/" not in coord and raw.ROUND.match(coord):
         return "round"
     return "path" if "/" in coord else "name"
 
@@ -69,7 +68,6 @@ def check(vault: Vault, coord: str, idx: "graph.Index | None" = None, records: r
           external: "roots.Roots | None" = None) -> str | None:
     """좌표 하나를 해석한다(Mechanism §6-1 4항 (b)). 문제가 없으면 None, 있으면 보고할 문구.
     이 기기에 없는 외부 루트는 문제가 아니라 보류다 — `external.held`가 루트마다 모은다."""
-    from .rechecks import heading_range
     k = kind(coord)
     if k == "url":
         return None
@@ -78,7 +76,7 @@ def check(vault: Vault, coord: str, idx: "graph.Index | None" = None, records: r
         rel, _, heading = rest.partition("#")
         try:
             p = (external or roots.Roots(vault)).file(alias, rel.strip())
-            if p and heading.strip() and heading_range(p.read_bytes(), heading.strip()) is None:
+            if p and heading.strip() and rechecks.heading_range(p.read_bytes(), heading.strip()) is None:
                 return f"없는 제목: {coord}"
         except (OSError, ValueError) as e:
             return f"{e}: {coord}"
@@ -109,7 +107,7 @@ def check(vault: Vault, coord: str, idx: "graph.Index | None" = None, records: r
     if found != "nonnode" or p is None or not p.is_file():     # 색인은 디렉터리도 비노드로 본다
         return f"없는 파일: {coord}"
     heading = coord.partition("#")[2].strip()
-    if heading and heading_range(p.read_bytes(), heading) is None:
+    if heading and rechecks.heading_range(p.read_bytes(), heading) is None:
         return f"없는 제목: {coord}"
     return None
 
@@ -125,7 +123,7 @@ def leftovers(derived, idx: "graph.Index | None" = None) -> list[str]:
             s = s[2:-2]
         s = s.split("|", 1)[0].strip()
         name = s.split("#", 1)[0].strip()
-        if graph.is_record_ref(s) or kind(s) in ("url", "external"):
+        if placement.is_record_ref(s) or kind(s) in ("url", "external"):
             out.append(str(ref))
         # 노드 제목은 열어 보지 않는다 — 경로이거나 비노드 이름일 때만 해석한다
         elif idx is not None and ("/" in name or name in idx.nonnode) and idx.resolve(name)[0] == "nonnode":

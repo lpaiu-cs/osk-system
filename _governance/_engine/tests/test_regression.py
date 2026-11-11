@@ -51,7 +51,7 @@ os.environ["OSK_UPDATE_CHECK"] = "0"
 os.environ["OSK_HOOK_WORKER"] = "0"
 
 from osk import (core, graph, validate, authority, contract, routing, write,  # noqa: E402
-                 publish, cluster_gate, node_moves, nodefile)  # noqa: E402
+                 publish, cluster_gate, node_moves, nodefile, placement, topology)  # noqa: E402
 from osk.vault import Vault
 VAULT = Vault.open()
 import osk.signatures as S  # noqa: E402
@@ -819,7 +819,7 @@ def test_conflicts_semantics():
             p = ROOT / f"00_Scope/W1/{stem}.md"
             p.write_text(text, encoding="utf-8")
             paths.append(p)
-        errs = graph.topology_check(VAULT, graph.Index(VAULT))
+        errs = topology.topology_check(VAULT, graph.Index(VAULT))
         check("열린(docketed) 사건 참조는 적격",
               not any("regr-ca" in e for e in errs), [e for e in errs if "regr-ca" in e])
         check("종결(adjudicated) 사건 참조는 부적격",
@@ -2074,20 +2074,20 @@ def test_topology_rejects_wiki_node_derived_from():
         bad.write_text(node_text("260802-zzzz-tbad", "제목 근거", "본문",
                                  'derived-from: "[[regr-topo-t]]"\n'),
                        encoding="utf-8")
-        errs = graph.topology_check(VAULT, graph.Index(VAULT))
+        errs = topology.topology_check(VAULT, graph.Index(VAULT))
         check("제목 표기의 노드 근거는 위반이 아니다 (v3.7.3)",
               not any("regr-topo-bad" in e for e in errs), errs)
         bad.write_text(node_text("260802-zzzz-tbad", "경로 근거", "본문",
                                  'derived-from: "[[00_Scope/W1/regr-topo-t]]"\n'),
                        encoding="utf-8")
-        errs = graph.topology_check(VAULT, graph.Index(VAULT))
+        errs = topology.topology_check(VAULT, graph.Index(VAULT))
         check("경로 표기의 노드 근거를 위반으로 잡는다",
               any("경로 표기는 쓰지 않는다" in e and "regr-topo-bad" in e
                   for e in errs), errs)
         bad.write_text(node_text("260802-zzzz-tbad", "id 근거", "본문",
                                  "derived-from: 260802-zzzz-topo\n"),
                        encoding="utf-8")
-        errs = graph.topology_check(VAULT, graph.Index(VAULT))
+        errs = topology.topology_check(VAULT, graph.Index(VAULT))
         check("id 근거는 위반이 아니다",
               not any("regr-topo-bad" in e for e in errs), errs)
     finally:
@@ -6015,7 +6015,7 @@ def test_non_node_evidence_is_an_evidence_line():
         (dom / "regr-evd-hand.md").write_text(node_text("260802-zzzz-evd3",
                                                         body="주장.\n\n## 근거\n\n" + line), encoding="utf-8")
         check("손으로 쓴 Domain 근거 줄은 전역 위상 검사가 잡는다",
-              any("regr-evd-hand → " + coord in e for e in graph.topology_check(VAULT, graph.Index(VAULT))))
+              any("regr-evd-hand → " + coord in e for e in topology.topology_check(VAULT, graph.Index(VAULT))))
         idx = graph.Index(VAULT)
         check("재검토는 비노드를 재지 않는다",
               rechecks.target("[[_sources/regr-evid.md]]", idx) is None
@@ -7058,7 +7058,7 @@ def test_scope_memory():
     # frontmatter로 오독되면 검증기가 통째로 FAIL한다 — 통로에서 막는다
     dash = _w(wm.replace, VAULT, S, "---" + chr(10) + "본문", _w(wm.read, VAULT, S)["hash"])
     check("`---` 선두 거부", dash.get("ok") is False, dash)
-    check("거부 뒤에도 배치 검증기는 깨끗하다", not graph.layout_violations(VAULT))
+    check("거부 뒤에도 배치 검증기는 깨끗하다", not placement.layout_violations(VAULT))
 
     # 승격 지시가 **근거가 무엇인지**까지 알려야 한다. 말해주지 않으면 코드를
     # 못 보는 호출자는 (2)에서 멈춘다(감사에서 실측). 근거는 그 지식이 나온
@@ -8354,7 +8354,7 @@ def test_nested_clusters():
 
     무엇을 망가뜨리면 실패하는가:
       · `cluster_overview_report`를 폴더별 묶음으로 되돌리면 → 층 단언이 실패
-      · `graph.is_hub`가 stem/parent 비교를 놓으면 → 허브 판정 전부가 실패
+      · `placement.is_hub`가 stem/parent 비교를 놓으면 → 허브 판정 전부가 실패
       · 하위 신설에 2단계 관문을 붙이면 → 한-번-에 단언이 실패
     """
     import osk.core as C
@@ -8372,9 +8372,9 @@ def test_nested_clusters():
         check("허브가 폴더와 동명으로 앉는다",
               (base / "regr-nc/regr-nc.md").is_file())
         check("is_hub가 그것을 허브로 본다",
-              graph.is_hub(base / "regr-nc/regr-nc.md"))
+              placement.is_hub(base / "regr-nc/regr-nc.md"))
         check("is_hub가 평범한 노드는 허브로 보지 않는다",
-              not graph.is_hub(base / "regr-nc/regr-nc-a.md"))
+              not placement.is_hub(base / "regr-nc/regr-nc-a.md"))
         for nm in ("regr-nc-a", "regr-nc-b"):
             rn = _w(write.create_node, VAULT, nm, "요", "본문", "fable-5",
                     space="00_Scope/W1/regr-nc")
@@ -8887,7 +8887,7 @@ def test_duplicate_id_by_name_refused():
         idx.id_twins(p)
         moved = p.with_name("regr-dupn moved.md")
         os.replace(p, moved)
-        idx.retarget(p, moved, graph.space_of(VAULT, moved))
+        idx.retarget(p, moved, placement.space_of(VAULT, moved))
         check("이동 뒤 같은 색인에서 자기 옛 경로는 사본이 아니다",
               idx.id_twins(moved) == [], idx.id_twins(moved))
         moved.unlink()
@@ -8964,9 +8964,9 @@ def test_format_alignment():
     try:
         rootfile.write_text(node_text("260925-0000-rootfile"), encoding="utf-8")
         check("Space 루트 바로 아래 파일은 노드 자리가 아니다",
-              graph.space_of(VAULT, rootfile)[0] == "support", graph.space_of(VAULT, rootfile))
+              placement.space_of(VAULT, rootfile)[0] == "support", placement.space_of(VAULT, rootfile))
         check("배치 검증기가 루트 바로 아래 노드형 파일을 보고한다",
-              any("regr-rootfile.md" in v for v in graph.layout_violations(VAULT)))
+              any("regr-rootfile.md" in v for v in placement.layout_violations(VAULT)))
         rootfile.unlink()
 
         img.parent.mkdir(exist_ok=True)
@@ -8975,11 +8975,11 @@ def test_format_alignment():
               graph.Index(VAULT).resolve("regr-diagram.png")[0] == "nonnode")
 
         hubdir.mkdir(parents=True, exist_ok=True)
-        check("허브 파일이 없는 군집", graph.hub_file(hubdir) is None)
+        check("허브 파일이 없는 군집", placement.hub_file(hubdir) is None)
         (hubdir / "RegrHubCase.MD").write_text(node_text("260925-0001-hubcase1"),
                                                encoding="utf-8")
         check("확장자 대소문자와 무관하게 허브를 찾는다",
-              graph.hub_file(hubdir) is not None)
+              placement.hub_file(hubdir) is not None)
         shutil.rmtree(hubdir)
 
         ra = _w(write.create_node, VAULT, "regr-fmt-src", "s", "근거.", "fable-5",
@@ -9523,12 +9523,12 @@ def test_node_place_rule():
     트리가 기기마다 다른 노드 집합이었다.
 
     무엇을 망가뜨리면 실패하는가:
-      · `graph._space_of_parts`의 `_off_node` 판정을 지우면 → 점·밑줄 구획의
+      · `placement.space_of_parts`의 `_off_node` 판정을 지우면 → 점·밑줄 구획의
         파일이 색인·scope 목록에 돌아오고 배치 검증기가 조용해진다
       · `cluster_gate.new_cluster_gate`의 자리 검사를 지우면 → `_misc` 신설이 확인 한 번으로
         통과한다(디렉토리가 남는다)
       · `move_cluster`의 자리 검사를 지우면 → 이미 있는 `_` 구획 안으로 군집이 간다
-      · `_is_md`를 호스트에 묶으면 → 대소문자 구분 호스트에서 `.MD` 노드가 빠진다
+      · `placement.is_md`를 호스트에 묶으면 → 대소문자 구분 호스트에서 `.MD` 노드가 빠진다
     """
     made = []
     D, S = VAULT.domain, VAULT.scope
@@ -9556,12 +9556,12 @@ def test_node_place_rule():
         check("점 접두 구획으로의 생성은 거부된다",
               r.get("ok") is False
               and not (inner.parent / "regr-dot-new.md").exists(), r)
-        lv = graph.layout_violations(VAULT)
+        lv = placement.layout_violations(VAULT)
         check("배치 검증기가 점 접두 구획의 노드형 파일을 보고한다",
               sum(".regr-hidden.md" in v or "regr-dot-inner.md" in v
                   for v in lv) == 2, lv)
         check("`_raw` 안의 점 구획은 그대로 raw다",
-              graph.space_of(VAULT, ROOT / S / "W1/_raw/.records/x.txt")[0] == "raw")
+              placement.space_of(VAULT, ROOT / S / "W1/_raw/.records/x.txt")[0] == "raw")
 
         # (b) 밑줄 접두 디렉토리 — 표면이 새로 만들지 못한다.
         ack_before = set(cluster_gate._read_ack(VAULT))
@@ -9595,10 +9595,10 @@ def test_node_place_rule():
         check("밑줄 구획의 노드형 파일은 색인에 들지 않는다",
               "_regr-priv" not in i.names and "_regr-sub2" not in i.names)
         check("밑줄 구획은 scope가 아니다",
-              "_regr-priv" not in graph.scope_names(VAULT), graph.scope_names(VAULT))
+              "_regr-priv" not in placement.scope_names(VAULT), placement.scope_names(VAULT))
         check("밑줄 구획은 조망의 군집이 아니다",
               not any("_regr-" in c for c in cluster_gate.cluster_names(VAULT)))
-        lv = graph.layout_violations(VAULT)
+        lv = placement.layout_violations(VAULT)
         check("배치 검증기가 밑줄 구획의 노드형 파일을 보고한다",
               sum("_regr-priv.md" in v or "_regr-sub2.md" in v
                   for v in lv) == 2, lv)
@@ -9608,7 +9608,7 @@ def test_node_place_rule():
               r.get("ok") is False
               and not (priv / "regr-und-leaf.md").exists(), r)
         check("밑줄로 시작하는 **파일 이름**은 여전히 노드 자리다",
-              graph.is_node_home(graph._space_of_parts(VAULT, (D, "X", "_a.md"))))
+              placement.is_node_home(placement.space_of_parts(VAULT, (D, "X", "_a.md"))))
         # 군집째 옮기기도 같은 판정을 받는다.
         mc = ROOT / S / "W1/regr-mc"
         mc.mkdir(parents=True, exist_ok=True)
@@ -9632,7 +9632,7 @@ def test_node_place_rule():
         graph._MD_CASE_INSENSITIVE = False
         try:
             check("대소문자 구분 호스트에서도 `.MD`는 노드다",
-                  graph._is_md("Note.MD") and graph._is_md("Note.Md")
+                  placement.is_md("Note.MD") and placement.is_md("Note.Md")
                   and "regr-Host" in graph.Index(VAULT).names)
         finally:
             if had:
@@ -9686,8 +9686,8 @@ def test_upgrading_underscore_scope():
         check("옮긴 scope 기억을 같은 세션이 읽는다",
               m.get("ok") and "옛 scope의 기억" in m.get("text", ""), m)
         check("옮긴 폴더에는 배치 위반이 없다",
-              not [v for v in graph.layout_violations(VAULT) if "regr-legacy" in v],
-              graph.layout_violations(VAULT))
+              not [v for v in placement.layout_violations(VAULT) if "regr-legacy" in v],
+              placement.layout_violations(VAULT))
     finally:
         shutil.rmtree(old, ignore_errors=True)
         shutil.rmtree(new, ignore_errors=True)
@@ -9814,14 +9814,14 @@ def test_scan_confinement_and_case():
         probe.write_text(node_text("260806-eeee-3333", "리파스 배선", "본문"),
                          encoding="utf-8")
         seen_paths = []
-        real_space_of, real_isr = graph.space_of, graph.is_reparse
-        graph.space_of = lambda vault, p: (seen_paths.append(Path(p)),
+        real_space_of, real_isr = placement.space_of, placement.is_reparse
+        placement.space_of = lambda vault, p: (seen_paths.append(Path(p)),
                                            real_space_of(vault, p))[1]
-        graph.is_reparse = lambda e: Path(getattr(e, "path", e)).name == "regr-reparse.md"
+        placement.is_reparse = lambda e: Path(getattr(e, "path", e)).name == "regr-reparse.md"
         try:
-            list(graph.iter_nodes(VAULT))
+            list(placement.iter_nodes(VAULT))
         finally:
-            graph.space_of, graph.is_reparse = real_space_of, real_isr
+            placement.space_of, placement.is_reparse = real_space_of, real_isr
             probe.unlink(missing_ok=True)
         check("리파스로 판정된 **파일**은 봉쇄 경로(`space_of`)로 간다",
               any(p.name == "regr-reparse.md" for p in seen_paths),
@@ -9870,8 +9870,8 @@ def test_fingerprint_scope_and_racy():
               kinds <= {"domain", "person", "scope", "workbench-transit",
                         "governance", "raw", "sources", "ledger"}, kinds)
         check("노드 군집에서는 .md만 센다 — 색인이 그것만 읽는다",
-              all(graph._is_md(rel.rsplit("/", 1)[-1]) for rel, _m, _sz, k, _t in entries
-                  if graph.is_node_home(k)))
+              all(placement.is_md(rel.rsplit("/", 1)[-1]) for rel, _m, _sz, k, _t in entries
+                  if placement.is_node_home(k)))
 
         # 경로·크기가 서명에 실제로 실리는가
         _age_all()
@@ -10070,16 +10070,16 @@ def test_index_split():
 def test_traversal_deterministic():
     """동명이 둘이면 색인에서 **뒤에 오는 쪽이 이긴다.** 순서가 기기마다
     다르면 같은 트리가 기기마다 다른 노드를 가리킨다 — 정렬이 그것을 막는다."""
-    real = graph._scan
+    real = placement.scan
 
     def reversed_scan(root, prefix, errors=None):
         return reversed(list(real(root, prefix, errors)))
 
-    base = [(p, k) for p, k in graph.iter_nodes(VAULT)]
+    base = [(p, k) for p, k in placement.iter_nodes(VAULT)]
     non = dict(graph.Index(VAULT).nonnode)
-    graph._scan = reversed_scan
+    placement.scan = reversed_scan
     try:
-        flipped = [(p, k) for p, k in graph.iter_nodes(VAULT)]
+        flipped = [(p, k) for p, k in placement.iter_nodes(VAULT)]
         check("열거 순서를 뒤집어도 `iter_nodes`의 순서는 같다 — 정렬이 선다",
               base == flipped,
               (len(base), len(flipped),
@@ -10087,7 +10087,7 @@ def test_traversal_deterministic():
         check("`nonnode` 등재도 순서에 흔들리지 않는다",
               non == dict(graph.Index(VAULT).nonnode))
     finally:
-        graph._scan = real
+        placement.scan = real
 
 
 # ── 쓰기 1회 = 색인 1회 (v3.7.0) ────────────────────────────────────────
@@ -10454,7 +10454,7 @@ def test_audit_fixes_2026_09_02():
             extra='derived-from: "[[00_Scope/Workbench/audit-note]]"\n'),
             encoding="utf-8")
         mine.append(dnode)
-        errs = graph.topology_check(VAULT, graph.Index(VAULT))
+        errs = topology.topology_check(VAULT, graph.Index(VAULT))
         check("Domain의 작업 상태 참조를 검증기가 잡는다 (#36)",
               any("작업 상태는 근거로 쓰지 않는다" in e and "audit-dom" in e
                   for e in errs), [e for e in errs if "audit-dom" in e])
@@ -12017,7 +12017,7 @@ def test_reparse_cache_membership():
     # All fixture bytes stay inside the mini-vault; outside resolution is simulated.
     alias.write_text(node_text("260922-benc-00000009", body="fixture"), encoding="utf-8")
     destination = ROOT / "00_Scope/W1/cache-target.md"
-    resolve, reparse = Path.resolve, graph.is_reparse
+    resolve, reparse = Path.resolve, placement.is_reparse
 
     def resolved(path, *args, **kwargs):
         return destination if path == alias else resolve(path, *args, **kwargs)
@@ -12028,7 +12028,7 @@ def test_reparse_cache_membership():
     try:
         _age_all()
         M._index, M._searcher, M._fingerprint = None, None, None
-        with mock.patch.object(Path, "resolve", resolved), mock.patch.object(graph, "is_reparse", is_reparse):
+        with mock.patch.object(Path, "resolve", resolved), mock.patch.object(placement, "is_reparse", is_reparse):
             check("raw 안의 노드 별칭은 실제 소속으로 조회한다", "error" not in M.read_node(alias.stem))
             first, fp = M._index, M._fingerprint
             destination = ROOT / "00_Scope/W2/cache-target.md"
@@ -12467,7 +12467,7 @@ def test_derived_from_once_per_round():
       · 응답 `edges`를 `Node.edges`로 되돌리면 → ①의 응답 단언
       · 갱신의 바이트 되풀이 접기를 지우면 → ②의 본문 쓰기·표기 변형 단언
       · 생성이 `_merge_edges`를 건너뛰면 → ③
-      · `graph.reference_report`의 중복 보고를 지우면 → ②의 경고 단언
+      · `topology.reference_report`의 중복 보고를 지우면 → ②의 경고 단언
       · `edge_key`가 앵커를 버리면 → ①의 저장 단언(다른 절이 하나로 접힌다)
       · `edge_key`가 URL에서도 `.md`를 떼면 → ④의 URL 단언
       · `_merge_edges`가 저장 목록까지 키로 줄이면 → ④의 저장 근거 단언
@@ -12482,7 +12482,7 @@ def test_derived_from_once_per_round():
         return write.stored_edges(contract.parse(p).meta.get("derived-from"))
 
     def warned():
-        return [d for d in graph.reference_report(VAULT, graph.Index(VAULT))["duplicate_edges"]
+        return [d for d in topology.reference_report(VAULT, graph.Index(VAULT))["duplicate_edges"]
                 if d.startswith("regr-edge-once")]
     try:
         base.mkdir(parents=True)

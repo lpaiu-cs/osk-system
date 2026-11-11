@@ -37,7 +37,7 @@ from pathlib import Path
 from .core import (ID_RE, ledger_append, ledger_read, mutation_lock, new_node_id, now_kst, posix_rel,
                    resolve_in_root, sha256_bytes, sha256_file)
 from . import (approvals, cluster_gate, contract, evictions, graph, node_checks, nodefile, prose, raw, rechecks,
-               workspaces)
+               workspaces, placement)
 from .contract import as_list, stored_edges
 from .errors import WriteError
 from .naming import name_collision, portable_name_key, title_errors
@@ -68,10 +68,10 @@ def node_placement(vault: Vault, p: Path, idx, *, repair: bool = False, selected
     """Current navigation is separate from the immutable selected source/target."""
     top = vault.root.joinpath(*p.relative_to(vault.root).parts[:2])
     child = p
-    directory = p.parent.parent if graph.is_hub(p) else p.parent
+    directory = p.parent.parent if placement.is_hub(p) else p.parent
     current_hubs = []
     while len(directory.relative_to(vault.root).parts) >= 2:
-        hp = graph.hub_file(directory)
+        hp = placement.hub_file(directory)
         if hp is None:
             raise WriteError("current placement hub missing; pending")
         hn = contract.parse(hp)
@@ -106,8 +106,8 @@ def _place(vault: Vault, out: dict, idx) -> dict:
     if not out.get("ok"):
         return out
     path = vault.root / out["path"]
-    if (graph.space_of(vault, path)[0] not in ("scope", "domain", "person")
-            or graph.is_hub(path) and len(path.parent.relative_to(vault.root).parts) <= 2):
+    if (placement.space_of(vault, path)[0] not in ("scope", "domain", "person")
+            or placement.is_hub(path) and len(path.parent.relative_to(vault.root).parts) <= 2):
         return out
     try:
         placed = node_placement(vault, path, idx, repair=True)
@@ -122,8 +122,8 @@ def _unwired(vault: Vault, path: Path, idx) -> list[dict]:
     """아래 고리를 Link로 가리키지 않는 허브 — `move_nodes`의 `hub_links`와 같은 꼴이다. 허브
     없는 층에서 멈춘다. 그 자리는 검증기가 hubless로 알린다."""
     out, child = [], path
-    d = path.parent.parent if graph.is_hub(path) else path.parent
-    while len(d.relative_to(vault.root).parts) >= 2 and (hub := graph.hub_file(d)) is not None:
+    d = path.parent.parent if placement.is_hub(path) else path.parent
+    while len(d.relative_to(vault.root).parts) >= 2 and (hub := placement.hub_file(d)) is not None:
         try:
             linked = child in {nodefile.live_locate(vault, r, idx) for r in contract.parse(hub).wikilinks()}
         except (WriteError, OSError, ValueError):
@@ -178,7 +178,7 @@ def create_node_locked(vault: Vault, title: str, summary: str, body: str, drafte
         # 규범 무근거였다 — 헌법은 형성의 자동화를 기본으로 둔다.)
         dest_dir = cluster_gate.new_cluster_gate(vault, dest, dest_dir, "이 쓰기가")
     path = dest_dir / f"{title}.md"
-    kind = graph.space_of(vault, path)      # 소속은 노드 파일 경로로 판정한다
+    kind = placement.space_of(vault, path)      # 소속은 노드 파일 경로로 판정한다
     cluster_gate.require_node_cluster(kind, dest)
     # 새 군집의 첫 노드는 **동명 허브 노드**다 (시행령 §3 6항). 신설
     # 관문을 지나 방금 생겼든 이미 비어 있든, 허브 없이 출발한 군집은
@@ -307,7 +307,7 @@ def edge_key(vault: Vault, target: str, idx) -> tuple[str, str]:
         if kind != "node":
             return path.removesuffix(".md"), anchor
     hit = idx.locate(path) if path else None
-    if hit and graph.is_node_home(hit[1]):
+    if hit and placement.is_node_home(hit[1]):
         return hit[0].stem, anchor.strip()
     return contract.target_stem(path), anchor.strip()
 
@@ -363,7 +363,7 @@ def _as_links(vault: Vault, pred: str, targets, *, legacy_raw: bool = False) -> 
     out = []
     for t in as_list(targets):
         s = str(t).strip()
-        if (not legacy_raw and pred == "derived-from" and graph.is_record_ref(s)
+        if (not legacy_raw and pred == "derived-from" and placement.is_record_ref(s)
                 and not re.match(r"^(?:\[\[\s*)?https?://", s)):
             out.append(raw.canonical_ref(vault, s))
         elif s.startswith("[[") or (pred == "derived-from" and re.match(ID_RE, s)):
@@ -448,7 +448,7 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
     path = nodefile.live_locate(vault, name, idx)
     if path is None or not path.is_file():
         raise WriteError(f"노드 없음: {name}")
-    kind = graph.space_of(vault, path)
+    kind = placement.space_of(vault, path)
     cluster_gate.reject_governance(kind)
     if settle is not None:
         evictions.require_target(path.stem, idx)

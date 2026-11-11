@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, contract, graph, write, validate, organization, distillation, cluster_gate, node_checks, node_moves, nodefile
+from osk import core, contract, graph, write, validate, organization, distillation, cluster_gate, node_checks, node_moves, nodefile, placement, topology
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -320,7 +320,7 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             a=node("A", "A fact with [[future question]]", {"derived-from":"missing source"})
             assert a["reference_review"]["status"]=="pending"
-            assert any("[derived-from]" in x for x in graph.dangling_refs(VAULT, graph.Index(VAULT)))
+            assert any("[derived-from]" in x for x in topology.dangling_refs(VAULT, graph.Index(VAULT)))
             job=organization.plan(VAULT, "W1")
             intent=[{"id":a["id"],"relation":"Link","ref":"future question","reason":"Explicit open question"}]
             current=organization.snapshot(VAULT, "W1")
@@ -413,7 +413,7 @@ class OrganizationTests(unittest.TestCase):
 
     def test_hub_tree_keeps_a_hub_whose_extension_is_upper_case(self):
         self.case("""
-            # A hub is a hub whatever the case of its .md extension (graph.is_hub, hub_file). The
+            # A hub is a hub whatever the case of its .md extension (placement.is_hub, hub_file). The
             # tree must keep such a sub-cluster as a place to put nodes (#155 review).
             write.create_node(VAULT, "Branch","Branch entry","Branch of related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("W1","Branch")

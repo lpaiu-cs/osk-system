@@ -27,7 +27,7 @@ def _child():
     with tempfile.TemporaryDirectory(prefix="osk-distillation-test-") as folder:
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(ENGINE))
-        from osk import core, contract, distillation as D, evidence, raw, validate, write, nodefile
+        from osk import core, contract, distillation as D, evidence, placement, raw, validate, write, nodefile
         from osk.vault import Vault
         VAULT = Vault.open()
         validate.make_mini_vault(VAULT, folder)
@@ -107,7 +107,7 @@ def _child():
                     self.hub.unlink()
                     replaced.write_text(text.replace(old_id, other_id), encoding="utf-8")
                     try:
-                        with mock.patch.object(D.graph, "hub_file", side_effect=on_disk):
+                        with mock.patch.object(placement, "hub_file", side_effect=on_disk):
                             again = self.create()
                         self.assertEqual(again["distillation"]["status"], "pending", (name, again))
                         self.assertIn("hub identity changed", again["distillation"]["reason"], name)

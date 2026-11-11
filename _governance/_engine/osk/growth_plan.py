@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-from . import core, distillation, evictions, graph, growth_ledger, organization, rechecks
+from . import core, distillation, evictions, graph, growth_ledger, organization, rechecks, placement
 from .vault import Vault
 
 
@@ -186,7 +186,7 @@ def plan_locked(vault: Vault, limit: int) -> dict:
     idx, rows = node_index(vault), growth_ledger.ledger_records(vault)
     sources, domains, clusters, refs = {}, {}, {}, {}
     for name, (path, kind) in sorted(idx.nodes.items()):
-        if kind[0] not in {"scope", "domain"} or graph.is_hub(path):
+        if kind[0] not in {"scope", "domain"} or placement.is_hub(path):
             continue
         snap = _snapshot(vault, idx, name)
         refs[snap["id"]] = _references(idx, name)

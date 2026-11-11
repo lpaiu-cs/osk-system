@@ -30,7 +30,7 @@ import argparse, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 from .core import posix_rel
-from . import graph, secrets, validate
+from . import secrets, validate, placement
 from .vault import Vault
 
 
@@ -200,7 +200,7 @@ def _snapshot_ignored(vault: Vault, directory: str, names: list[str], mapped_roo
         ignored.update(n for n in names if n.endswith(".pyc"))
     with os.scandir(root) as entries:
         for entry in entries:
-            if entry.name not in ignored and graph.is_reparse(entry):
+            if entry.name not in ignored and placement.is_reparse(entry):
                 raise PublishError(f"발행 스냅샷은 리파스 경로를 복사하지 않는다: {entry.path}")
     return ignored
 

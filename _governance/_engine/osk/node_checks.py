@@ -6,7 +6,7 @@ from __future__ import annotations
 import os, re, tempfile
 from pathlib import Path
 from .core import ID_RE, CASE_RE, sha256_file
-from . import contract, evidence, graph, nodefile, rechecks
+from . import contract, evidence, graph, nodefile, rechecks, placement, topology
 from .errors import WriteError
 from .vault import Vault
 
@@ -124,7 +124,7 @@ def _validate_node(vault: Vault, path: Path, node, body: str, idx) -> list[str]:
     """계약 + 그 노드에서 **나가는 참조**의 위상. 전역 검사는 하지 않는다 —
     남이 만든 위반 때문에 내 쓰기가 막히면 안 된다 (설계 D10)."""
     errs = list(contract.validate(node))
-    kind = graph.space_of(vault, path)
+    kind = placement.space_of(vault, path)
     for pred in contract.PREDICATES:
         for t in node.edges(pred):
             errs += topology_of(vault, idx, kind, path.stem, t, pred, node.id)
@@ -164,7 +164,7 @@ def topology_of(vault: Vault, idx, kind, stem, name, pred, node_id=None) -> list
         # 파일의 실재를 조건으로 걸지 않는데, 구판은 dangling을 먼저 걸러
         # "없는 `_raw` 라운드"를 Domain 노드에 다는 것이 통과했다(그 파일이
         # 생기는 순간 검증기 FAIL이 된다).
-        if r[0] == "dangling" and kind[0] == "domain" and graph.is_record_ref(str(name)):
+        if r[0] == "dangling" and kind[0] == "domain" and placement.is_record_ref(str(name)):
             return [f"Domain의 인용 기록 직접 참조: {stem} → {name} — 대상이 아직 "
                     f"없어도 그 자리는 인용 기록 구획이다. 근거는 노드로 증류해 "
                     f"참조한다(헌법 8조 3항)"]
@@ -203,7 +203,7 @@ def dangling_of(vault: Vault, path: Path, meta: dict, body: str, idx) -> list[st
     조용히 dangling을 쌓지 않게 한다(`list_nodes` 제거의 부작용 차단)."""
     node = meta if isinstance(meta, contract.Node) else\
         contract.Node(path=path, meta=meta, body=body)
-    return sorted({r["ref"].split("#", 1)[0] for r in graph.reference_review(vault, node, idx)
+    return sorted({r["ref"].split("#", 1)[0] for r in topology.reference_review(vault, node, idx)
                    if r["resolution"] == "dangling"})
 
 
@@ -217,7 +217,7 @@ CLAIM_GUIDANCE = (
 
 def size_feedback(path, body: str) -> dict:
     """Reading-cost hint, not a storage cap or permission to discard knowledge."""
-    hub = graph.is_hub(path)
+    hub = placement.is_hub(path)
     # ponytail: fixed triage thresholds; calibrate from review costs if they become noisy.
     if len(body) <= (6000 if hub else 12000):
         return {}
@@ -241,7 +241,7 @@ def edge_report(node) -> dict:
 
 def reference_feedback(vault: Vault, path, meta, body, idx, previous=None) -> dict:
     node = contract.Node(path=path, meta=meta, body=body)
-    refs = graph.reference_review(vault, node, idx, previous)
+    refs = topology.reference_review(vault, node, idx, previous)
     out = {"dangling": sorted({r["ref"].split("#", 1)[0] for r in refs
                                if r["resolution"] == "dangling"})}
     if refs:
