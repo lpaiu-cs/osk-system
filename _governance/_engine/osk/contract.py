@@ -316,6 +316,26 @@ def _no_dup_keys(loader, node, deep=False):
 # 임계의 1/80이다. 33~493 구간은 구판이 받아들이던 자리이므로 이것은
 # **조이는 변경**이며, 실 vault에 그 구간의 파일은 0건이다.
 _MAX_FM_DEPTH = 32
+# 블록 컬렉션은 괄호 없이 겹친다 — `- - - x`는 세 단이고, 2만 단(40 KB 한 줄)이면 C 로더가 같은 네이티브
+# 스택 오버플로로 죽는다(실측, Windows 종료코드 0xC00000FD). 블록이 한 단 깊어지려면 그 줄의 머리에 들여쓰기
+# 한 칸이나 표지(`- `·`? `·`: `) 하나가 더 들므로, 줄 머리의 길이가 중첩이 넘을 수 없는 값이다. 상한은 흐름의
+# 상한을 네 칸 들여쓰기로 쓴 길이다. 실 vault 6,746건의 줄 머리는 모두 0이다.
+_MAX_FM_LEAD = 4 * _MAX_FM_DEPTH
+# 상한을 넘는 줄 머리 하나를 찾는다. 줄은 YAML이 줄로 보는 자리에서 시작한다 — 줄바꿈 문자만 보면 U+2028
+# 뒤의 줄이 숨는다.
+_LINE = "\n\x85" + chr(0x2028) + chr(0x2029)          # YAML이 줄을 가르는 문자
+_DEEP_LEAD = re.compile(r"(?:\A|[%s])((?:[ \t]|[-?:](?![^ \t%s])){%d,})" % (_LINE, _LINE, _MAX_FM_LEAD + 1))
+
+
+def _nesting_error(text: str) -> str | None:
+    """YAML 로더에 넘기기 전의 깊이 관문 — 너무 깊으면 무엇이 얼마나 넘는지, 아니면 None."""
+    depth = _flow_depth(text)
+    if depth > _MAX_FM_DEPTH:
+        return f"깊이 {depth}(상한 {_MAX_FM_DEPTH})"
+    lead = _DEEP_LEAD.search(text)
+    if lead:
+        return f"줄 머리 {len(lead.group(1))}칸(상한 {_MAX_FM_LEAD})"
+    return None
 
 
 def _flow_depth(text: str) -> int:
@@ -370,11 +390,9 @@ def parse_bytes(path: Path | str, data: bytes) -> Node:
     if end < 0:
         raise ValueError(f"frontmatter 미종결: {p}")
     fm_text = t[4:end]
-    depth = _flow_depth(fm_text)
-    if depth > _MAX_FM_DEPTH:
-        raise ValueError(
-            f"frontmatter 중첩이 너무 깊다: {p} — 깊이 {depth}(상한 "
-            f"{_MAX_FM_DEPTH}). 노드 frontmatter는 평평하다")
+    too_deep = _nesting_error(fm_text)
+    if too_deep:
+        raise ValueError(f"frontmatter 중첩이 너무 깊다: {p} — {too_deep}. 노드 frontmatter는 평평하다")
     # 파서를 바꾸면서 **거부되던 것이 통과하게** 두면 최적화가 아니라 계약의
     # 완화다. C 로더는 평문 스칼라 안의 탭(`summary: a<TAB>b`, `a:<TAB>b`)을
     # 통과시키는데 순수 로더는 ScannerError로 거부한다(실측). 그 입력만 순수

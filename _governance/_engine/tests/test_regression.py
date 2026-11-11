@@ -9487,6 +9487,19 @@ def test_parse_guards():
     check("상한 바로 아래는 통과",
           parse(HEAD + "summary: " + "[" * contract._MAX_FM_DEPTH
                 + "]" * contract._MAX_FM_DEPTH, "at") is None)
+    # 블록 컬렉션은 괄호 없이 겹친다 — 같은 크래시다. 표지 사이가 탭이어도, 줄을 U+2028로 갈라도, 복합 키여도
+    # 로더에 닿기 전에 막는다.
+    for label, fm in (("블록 시퀀스", HEAD + "edges:\n  " + "- " * 30000 + "x"),
+                      ("탭으로 띄운 표지", HEAD + "edges:\n  " + "-\t" * 30000 + "x"),
+                      ("U+2028로 가른 줄", HEAD + "edges:\u2028  " + "- " * 30000 + "x"),
+                      ("복합 키", HEAD + "? " * 30000 + "x"),
+                      ("들여쓰기", HEAD + "a:\n" + " " * 30000 + "b: 1")):
+        refused = parse(fm, "block")
+        check(f"깊이 겹친 블록은 로더에 닿기 전에 거부된다 — {label}",
+              refused is not None and "줄 머리" in refused and str(contract._MAX_FM_LEAD) in refused, (refused or "")[:120])
+    check("목록을 든 평범한 frontmatter는 통과", parse(HEAD + "edges:\n  - a\n  - b:\n      - c", "list") is None)
+    check("줄 머리의 상한까지는 로더가 읽는다",
+          parse(HEAD + "edges:\n" + "- " * (contract._MAX_FM_LEAD // 2) + "x", "lead") is None)
 
     # (b) 탭 — 두 로더가 갈리는 것은 **평문 스칼라**뿐이다. 그 자리만 순수
     # 로더에게 맡겨 구판과 같은 판정을 받는다. 전부 거부하면 구판이 받아들이던
