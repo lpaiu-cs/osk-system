@@ -18,11 +18,17 @@ import re
 import subprocess
 from pathlib import Path
 
-from .core import (LEDGER, ID_RE, ROOT, causal_maxima, effective_parents, ledger_damage,
-                   ledger_extend, ledger_read, posix_rel, sha256_bytes)
+from .core import (ID_RE, causal_maxima, effective_parents, ledger_damage, ledger_extend, ledger_read,
+                   posix_rel, sha256_bytes)
 from . import contract, graph
+from .vault import Vault
 
-RECHECKS = LEDGER / "rechecks.jsonl"
+
+def ledger_path(vault: Vault) -> Path:
+    """재검토 대장."""
+    return vault.ledger / "rechecks.jsonl"
+
+
 BASELINE = "기준선"
 CARRIED = "이어받음"
 CLOSE = ("근거와 노드를 read_node로 읽는다(전문이나 필요한 범위). 노드가 맞으면 update_node(name, "
@@ -250,29 +256,29 @@ def _verdict(maxima: list[dict], node_state: str, target_state: str | None) -> s
     return None
 
 
-def read_ledger() -> tuple[list[dict], bool]:
+def read_ledger(vault: Vault) -> tuple[list[dict], bool]:
     """재검토 대장과, 그 판독을 믿을 수 있는가. 판독 실패(불완전한 행)나 구조 손상이면
     완료 상태를 믿을 수 없다 — 쌍은 후보로 남고 완료는 적히지 않지만, 노드 쓰기는
     막지 않는다."""
     global misses
     try:
-        recs = ledger_read(RECHECKS)
+        recs = ledger_read(ledger_path(vault))
     except OSError:
         misses += 1
         return [], False
     except ValueError:
         return [], False
-    return recs, not ledger_damage(recs, RECHECKS)
+    return recs, not ledger_damage(recs, ledger_path(vault))
 
 
-def candidates(idx=None) -> tuple[list[dict], bool]:
+def candidates(vault: Vault, idx=None) -> tuple[list[dict], bool]:
     """(재검토 후보, 기준선 대기). 읽기만 한다.
 
     후보마다 `next`(이 노드를 인용한 노드들 — 이 노드를 고치면 다음에 재검토될
     곳)와 `cascade`(대상의 지금 판이 재검토로 고친 판인가)를 싣는다. 재검토로 고친
     노드의 재전파가 또 수정을 부르면 그 수정은 사람이 본다(시행령 §7 2항)."""
-    idx = idx or graph.Index()
-    recs, ok = read_ledger()
+    idx = idx or graph.Index(vault)
+    recs, ok = read_ledger(vault)
     damaged = not ok
     latest = {} if damaged else _latest(recs)
     revised = {(r.get("node"), r.get("node_state")) for r in recs
@@ -308,18 +314,18 @@ def candidates(idx=None) -> tuple[list[dict], bool]:
                             "scope": kind[1] if kind[0] == "scope" else None,
                             "node_state": ns, "target_state": ts, "cascade": cascade(key),
                             "next": sorted(set(cited.get(nid, [])))})
-    _mark_reports(out, idx, lc)
+    _mark_reports(vault, out, idx, lc)
     return out, ok and not recs
 
 
-def _mark_reports(items: list[dict], idx, cache: dict) -> None:
+def _mark_reports(vault: Vault, items: list[dict], idx, cache: dict) -> None:
     """후보에 지금 보고를 붙인다. 사람에게 올린 것은 `escalated` — 그때의 두 상태가 지금과
     같은 동안만. 판단하지 못한 것은 `deferred` — 쌍을 닫지 않고 그 이유를 다음 작업에
     넘긴다(시행령 §7 2항). 그 사이 두 상태가 바뀌었으면 `state_changed`가 알린다."""
     global misses
     try:
         from . import growth
-        rows = growth.ledger_records()
+        rows = growth.ledger_records(vault)
     except OSError:
         misses += 1
         return
@@ -343,9 +349,9 @@ def _mark_reports(items: list[dict], idx, cache: dict) -> None:
                              "at": r.get("at"), "state_changed": not same}
 
 
-def report(idx=None, limit: int = 5) -> dict:
+def report(vault: Vault, idx=None, limit: int = 5) -> dict:
     """표면·검증기가 싣는 요약. 후보가 없으면 빈 dict."""
-    items, pending = candidates(idx)
+    items, pending = candidates(vault, idx)
     if not items:
         return {}
     if pending:
@@ -361,10 +367,10 @@ def report(idx=None, limit: int = 5) -> dict:
     return out
 
 
-def complete_keys(idx, path: Path, meta: dict) -> set[str]:
+def complete_keys(vault: Vault, idx, path: Path, meta: dict) -> set[str]:
     """이 노드의 쌍 가운데 지금 점검 완료인 대상 키."""
     ps = pairs(idx, meta)
-    recs, ok = read_ledger() if ps else ([], False)
+    recs, ok = read_ledger(vault) if ps else ([], False)
     if not recs or not ok:
         return set()
     latest, lc = _latest(recs, meta["id"]), {}
@@ -383,17 +389,17 @@ def _row(node: str, node_state: str, key: str, target_state: str, result: str,
     return row
 
 
-def _versions(rel: str, at: str) -> list[bytes]:
+def _versions(vault: Vault, rel: str, at: str) -> list[bytes]:
     """`at` 바로 앞과 바로 뒤에 그 경로를 바꾼 커밋의 판. 이력이 없으면 빈 목록.
     정기 실행은 Windows에서 창 없이(`pythonw`) 돈다 — 콘솔 프로그램인 git에 창을 만들지 않는다."""
     out, quiet = [], 0x08000000 if os.name == "nt" else 0
     for args in (("-1", f"--before={at}"), ("--reverse", f"--after={at}")):
         try:
-            r = subprocess.run(["git", "-C", str(ROOT), "log", *args, "--format=%H", "--", rel],
+            r = subprocess.run(["git", "-C", str(vault.root), "log", *args, "--format=%H", "--", rel],
                                capture_output=True, timeout=20, creationflags=quiet)
             sha = r.stdout.decode("ascii", "replace").split()[:1] if r.returncode == 0 else []
             if sha:
-                b = subprocess.run(["git", "-C", str(ROOT), "show", f"{sha[0]}:./{rel}"],
+                b = subprocess.run(["git", "-C", str(vault.root), "show", f"{sha[0]}:./{rel}"],
                                    capture_output=True, timeout=20, creationflags=quiet)
                 if b.returncode == 0:
                     out.append(b.stdout)
@@ -412,11 +418,11 @@ def _diff(old: bytes, new: bytes, limit: int = 3000) -> str | None:
     return text if len(text) <= limit else text[:limit] + "\n… (잘림)"
 
 
-def change(nid: str, key: str, ref: str, idx) -> dict:
+def change(vault: Vault, nid: str, key: str, ref: str, idx) -> dict:
     """마지막 점검 뒤 무엇이 바뀌었는가 — 검토자에게 싣는 변경분. 바뀐 쪽(`side`)의
     diff를 볼트의 git 이력에서 그때의 판(상태 해시가 같은 판)을 찾아 만든다.
     찾지 못하면 전문을 읽으라는 메모만 낸다."""
-    recs, ok = read_ledger()
+    recs, ok = read_ledger(vault)
     maxima = _latest(recs, nid).get((nid, key), []) if ok else []
     node = idx.by_id.get(nid)
     parsed = _name(ref)
@@ -435,7 +441,7 @@ def change(nid: str, key: str, ref: str, idx) -> dict:
     # 지금 정의(근거 절 제외)로도, 그 전 정의(본문 전체)로도 적혀 있을 수 있다.
     cut = ((lambda b: heading_range(b, heading)) if heading else
            (lambda b: b[contract.body_offset(b):]) if body else (lambda b: b))
-    for version in _versions(posix_rel(path, ROOT), str(m.get("at", ""))):
+    for version in _versions(vault, posix_rel(path, vault.root), str(m.get("at", ""))):
         old = cut(version)
         if old is not None and want is not None and want in (
                 sha256_bytes(old), state(version) if body and not heading else None):
@@ -446,18 +452,18 @@ def change(nid: str, key: str, ref: str, idx) -> dict:
     return {"side": side, "note": "점검 때의 판을 이력에서 찾지 못했다 — 전문을 읽는다"}
 
 
-def ensure_baseline(idx=None, *, carry: bool = False) -> int:
+def ensure_baseline(vault: Vault, idx=None, *, carry: bool = False) -> int:
     """기록이 하나도 없는 대장에 지금 추적되는 쌍을 `bound`로 한 번 적는다 —
     재검토 기록이 없던 vault의 근거가 한꺼번에 후보가 되지 않게 한다. 적은 수를
     돌려준다. 이미 기록이 있으면 `carry`일 때만(세션 시작·성장 실행) 옛 정의로 적은
     기록을 이어 적고, 노드 쓰기는 전수 판독을 하지 않는다."""
-    if RECHECKS.exists() and RECHECKS.stat().st_size:
-        return _carry(idx or graph.Index()) if carry else 0
+    if ledger_path(vault).exists() and ledger_path(vault).stat().st_size:
+        return _carry(vault, idx or graph.Index(vault)) if carry else 0
     rows = [_row(nid, ns, key, ts, "bound", BASELINE)
-            for _name, nid, ns, ps, _kind in _citing(idx or graph.Index(), {})
+            for _name, nid, ns, ps, _kind in _citing(idx or graph.Index(vault), {})
             for key, (ts, _ref) in ps.items() if ts is not None]
     try:
-        ledger_extend(RECHECKS, rows, expect=lambda recs: _ALREADY if recs else None)
+        ledger_extend(ledger_path(vault), rows, expect=lambda recs: _ALREADY if recs else None)
     except ValueError as e:
         if str(e) != _ALREADY:
             raise
@@ -465,14 +471,14 @@ def ensure_baseline(idx=None, *, carry: bool = False) -> int:
     return len(rows)
 
 
-def _carry(idx) -> int:
+def _carry(vault: Vault, idx) -> int:
     """근거 절을 빼기 전의 정의로 잰 기록을, 내용이 그대로인 동안 지금 정의로 다시 적는다
     (사유 `이어받음`, Mechanism §4-1 2항). 노드의 지금 판이 재검토의 `updated`로 만들어졌으면
     이어 적는 행은 `updated`(cascade의 근거), 아니면 `unchanged`다. 그 사실이 옛 정의로만
     남았으면 — 이미 `unchanged`로 이어 적은 노드(v5.0.x)나, 근거가 다시 바뀌어 이어 적을 쌍이
     없는 노드도 — 한 행을 더 적어 지금 판으로 옮긴다. 사용자 검토에 올린 기록도 잇는다. 적지
     않으면 그 근거 절을 처음 고칠 때 완료·cascade·사용자 검토가 풀린다(#177)."""
-    recs, ok = read_ledger()
+    recs, ok = read_ledger(vault)
     if not ok or not recs:
         return 0
     latest, lc, rows, held = _latest(recs), {}, [], {}
@@ -501,18 +507,18 @@ def _carry(idx) -> int:
             if old is not None:
                 rows.append(_row(nid, ns, old.get("target"), old.get("target_state"), "updated", CARRIED))
     if rows:
-        ledger_extend(RECHECKS, rows)
-    return len(rows) + _carry_reports(idx, held, lc)
+        ledger_extend(ledger_path(vault), rows)
+    return len(rows) + _carry_reports(vault, idx, held, lc)
 
 
-def _carry_reports(idx, held: dict, cache: dict) -> int:
+def _carry_reports(vault: Vault, idx, held: dict, cache: dict) -> int:
     """후보로 남은 쌍의 사용자 검토 기록(`recheck_review`, `escalated`)을 내용이 그대로인 동안
     지금 정의의 두 상태로 다시 적는다 — 수정안과 이유는 그대로다."""
     if not held:
         return 0
     try:
         from . import growth
-        rows = growth.ledger_records()
+        rows = growth.ledger_records(vault)
     except Exception:
         return 0
     keys = {r.get("key") for r in rows if r.get("kind") == "recheck_review"} & held.keys()
@@ -528,7 +534,7 @@ def _carry_reports(idx, held: dict, cache: dict) -> int:
             out.append({**{f: v for f, v in r.items() if f not in ("rid", "parents", "at")},
                         "node_state": ns, "target_state": ts})
     if out:
-        ledger_extend(growth.LEDGER, out)
+        ledger_extend(growth.ledger_path(vault), out)
     return len(out)
 
 
@@ -554,7 +560,7 @@ def _reviewed(idx, meta: dict, pre: str, key: str, ref: str, seen: dict | None) 
         return False
 
 
-def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozenset(),
+def after_write(vault: Vault, idx, path: Path, meta: dict, *, before=frozenset(), prior=frozenset(),
                 rechecked=frozenset(), changed: bool = True, pre: str | None = None,
                 seen: dict | None = None) -> dict:
     """노드 쓰기가 성공한 뒤의 완료 기록(§4-1).
@@ -569,7 +575,7 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
     ps = pairs(idx, meta)
     if not ps:
         return {}
-    if RECHECKS.exists() and not read_ledger()[1]:
+    if ledger_path(vault).exists() and not read_ledger(vault)[1]:
         return {"recheck_error": "재검토 대장을 읽을 수 없거나 손상됐다 — 완료를 적지 않았다"
                                  "(쌍은 후보로 남고 검증기가 대장을 보고한다)"}
     ns = state(path.read_bytes())
@@ -593,7 +599,7 @@ def after_write(idx, path: Path, meta: dict, *, before=frozenset(), prior=frozen
         "노드나 근거의 본문이 read_node로 읽은 판(비노드 근거는 정기 실행 작업이 보여 준 판)과 "
         "달라 완료를 적지 않았다 — 지금 판을 읽고 rechecked에 다시 적어라")}} if unread else {}
     try:
-        ledger_extend(RECHECKS, rows)
+        ledger_extend(ledger_path(vault), rows)
     except Exception as e:
         return {**out, "recheck_error": f"재검토 완료를 기록하지 못했다 — 후보로 남는다: {e}"}
     return {**out, "rechecked": closed} if closed else out

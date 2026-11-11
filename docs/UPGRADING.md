@@ -513,7 +513,7 @@ and `_raw` coordinates record. For each folder that `validate` reports:
      by a new row):
 
      ```bash
-     .venv/bin/python -c "from osk import write; print(write.bind_session('<key>', 'inbox', 'v4 upgrade'))"
+     .venv/bin/python -c "from osk import write; from osk.vault import Vault; print(write.bind_session(Vault.open(), '<key>', 'inbox', 'v4 upgrade'))"
      ```
 
 5. Review the changesets of protected regions. In a region that contains the

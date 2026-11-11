@@ -56,23 +56,6 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-# 구조 개편 2단계의 임시 자리 — import할 때 저장소를 한 번 열어 아래 상수로 푼다. 함수가 저장소를
-# 인자로 받게 되는 대로 이 상수를 읽는 곳이 줄고, 다 옮기면 `VAULT`와 함께 지운다
-# (docs/v6.0-refactoring.md 2단계).
-VAULT = Vault.open()
-ROOT = VAULT.root
-SPACE_ROOTS = VAULT.space_roots
-SCOPE, DOMAIN, PERSON = VAULT.scope, VAULT.domain, VAULT.person
-LEDGER = VAULT.ledger
-SIGNATURES = VAULT.signatures
-CANDIDATES = VAULT.candidates
-PINS = VAULT.pins
-VALIDATORS = VAULT.validators
-ROUTING = VAULT.routing
-EVICTIONS = VAULT.evictions
-ROOTS = VAULT.roots
-
-
 def local_lock_path(name: str, root: Path) -> Path:
     """기기 로컬 잠금 파일의 경로 — **추적 트리 밖으로만** 고른다.
 

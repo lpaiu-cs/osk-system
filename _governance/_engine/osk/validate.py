@@ -9,15 +9,15 @@
 찍는 대신 보류로 남긴다.
 """
 from __future__ import annotations
-from .core import DOMAIN, PERSON, SCOPE
+import ast
 import hashlib, json, re
 from pathlib import Path
 
-from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER, EVICTIONS,
-                   VALIDATORS, ROOTS, CASE_RE, RID_RE, ID_RE, ledger_read,
-                   ledger_append, ledger_damage, ledger_anchor_index, resolve_one)
+from .core import (CASE_RE, RID_RE, ID_RE, ledger_read, ledger_append, ledger_damage, ledger_anchor_index,
+                   resolve_one)
 from . import (contract, graph, signatures, approvals, authority, secrets, evictions, raw, core, evidence,
                roots)
+from .vault import Vault
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
 # 새 기록에는 두지 않으므로 필수에서 뺐다(기존 사건에는 사료로 남는다).
@@ -27,7 +27,7 @@ CASE_STATUS = ("docketed", "adjudicated")
 CASE_VERDICT = ("기각", "수정", "존치")
 
 
-def run() -> dict:
+def run(vault: Vault) -> dict:
     rep = {"pass": [], "fail": [], "skipped": []}
 
     def ok(name, errs):
@@ -44,7 +44,7 @@ def run() -> dict:
         except Exception as e:
             rep["fail"].append({name: [f"검사 자체 실패: {e}"]})
 
-    idx = graph.Index()
+    idx = graph.Index(vault)
 
     # 1. 노드 계약 (시행령 §1 · Mechanism §2) — 색인이 못 읽은 파일도 오류다
     broken = getattr(idx, "broken", None) or {}
@@ -67,17 +67,17 @@ def run() -> dict:
     ok(f"노드 계약 ({len(idx.nodes) + len(broken)}개)", errs)
 
     # 2. 배치 (Mechanism §1)
-    guard("공간 배치·`_` 규칙", graph.layout_violations)
-    guard("raw 저장 경계", raw.storage_violations)
+    guard("공간 배치·`_` 규칙", lambda: graph.layout_violations(vault))
+    guard("raw 저장 경계", lambda: raw.storage_violations(vault))
 
     # 3. 참조 위상 (헌법 8조 3항)
-    guard("참조 위상", lambda: graph.topology_check(idx))
+    guard("참조 위상", lambda: graph.topology_check(vault, idx))
     ok("동명 노드 중복", [f"{s}: {v}" for s, v in idx.dup_stems.items()])
     records = None                        # 참조 경고와 근거 절 검사(17)가 함께 쓰는 기록 색인
     try:
         from . import evidence
-        records = evidence.Records(core.VAULT)
-        rep["warnings"] = graph.reference_report(idx, records)
+        records = evidence.Records(vault)
+        rep["warnings"] = graph.reference_report(vault, idx, records)
     except Exception as e:
         rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
         skip("미해석 참조 경고", f"산출 실패: {e}")
@@ -85,7 +85,7 @@ def run() -> dict:
     # 근거 재검토 후보 (시행령 §7 2항) — 표시일 뿐 verdict 밖이다.
     try:
         from . import rechecks
-        rc = rechecks.report(idx)
+        rc = rechecks.report(vault, idx)
         if rc:
             rep["warnings"]["rechecks"] = rc
     except Exception as e:
@@ -95,15 +95,15 @@ def run() -> dict:
     #    판독 실패는 플래그로 남긴다 — 빈 recs를 검사한 헛 PASS를 막는다.
     errs, arecs, appr_ok = [], [], True
     try:
-        arecs = approvals.records()
+        arecs = approvals.records(vault)
     except Exception as e:
         errs.append(str(e))
         appr_ok = False
     if appr_ok:
         try:
             rep["protected_regions"] = {
-                r: approvals.state(r) for r in approvals.protected_regions()}
-            gw = approvals.governance_warning(arecs)   # 경고일 뿐 verdict 밖
+                r: approvals.state(vault, r) for r in approvals.protected_regions(vault)}
+            gw = approvals.governance_warning(vault, arecs)   # 경고일 뿐 verdict 밖
             if gw:
                 rep["warnings"]["governance_unprotected"] = gw
         except Exception as e:
@@ -112,11 +112,11 @@ def run() -> dict:
 
     # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
     #    대장이다. signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상).
-    errs, ledgers = [], ([(approvals.APPROVALS, arecs)] if appr_ok else [])
-    for p in [SIGNATURES, CANDIDATES, PINS, ROUTING, VALIDATORS, ROOTS,
-              approvals.MOVES, EVICTIONS,
-              LEDGER / "migration" / "events.jsonl", LEDGER / "rechecks.jsonl",
-              LEDGER / "update.jsonl", LEDGER / "growth.jsonl", LEDGER / "release.jsonl"]:
+    errs, ledgers = [], ([(approvals.ledger_path(vault), arecs)] if appr_ok else [])
+    for p in [vault.signatures, vault.candidates, vault.pins, vault.routing, vault.validators, vault.roots,
+              approvals.moves_path(vault), vault.evictions,
+              vault.ledger / "migration" / "events.jsonl", vault.ledger / "rechecks.jsonl",
+              vault.ledger / "update.jsonl", vault.ledger / "growth.jsonl", vault.ledger / "release.jsonl"]:
         try:
             ledgers.append((p, ledger_read(p)))
         except Exception as e:
@@ -135,7 +135,7 @@ def run() -> dict:
     # 7. 위임 성립 요건 (시행령 §5) — 대장 손상에도 죽지 않는다
     errs = []
     try:
-        dels = authority.enumerate_delegations()
+        dels = authority.enumerate_delegations(vault)
         for d in dels:
             if not d["effective"]:
                 errs.append(f"{d['title']}: 절={d['valid_clause']} 승인본={d['approved']}")
@@ -149,19 +149,19 @@ def run() -> dict:
 
     # 8b. 구현이 §9 1항의 표를 그대로 담는가 (§9 2항). 표를 못 읽으면 검사가
     #     성립하지 않으므로 생략한다 — 표면 계약(§6-2)과 같은 규율이다.
-    if declared_secret_patterns() is None:
+    if declared_secret_patterns(vault) is None:
         skip("비밀값 패턴 동치", "Mechanism §9 1항 패턴 표 부재 — 검사 불성립")
     else:
-        ok("비밀값 패턴이 규범과 동치", secret_pattern_drift())
+        ok("비밀값 패턴이 규범과 동치", secret_pattern_drift(vault))
 
     # 9. 보호영역 생애 fixture — 매 검증 실행 (회귀 방지)
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        guard("보호영역 생애 fixture", lambda: fixture_approval_lifecycle(td))
+        guard("보호영역 생애 fixture", lambda: fixture_approval_lifecycle(vault, td))
 
     # 10. 승인 기록부 정합성 (인과 극대 유일·승인본 해석 — 시행령 §6 7항)
     if appr_ok:
-        guard("승인 기록부 정합(stale·승인본 해석)", approvals.integrity)
+        guard("승인 기록부 정합(stale·승인본 해석)", lambda: approvals.integrity(vault))
     else:
         skip("승인 기록부 정합", "승인 대장 판독 실패 — 판정 보류")
 
@@ -200,7 +200,7 @@ def run() -> dict:
 
     # 11b. 퇴출 기록부 스키마 (Mechanism §9-2 12항) — 같은 규율에 kind별 필수
     #      필드와 `settle`→`evict` 참조를 더한다. 판독 실패는 5번이 이미 보고했다.
-    erecs = next((rs for p, rs in ledgers if p == EVICTIONS), None)
+    erecs = next((rs for p, rs in ledgers if p == vault.evictions), None)
     if erecs is not None:
         ok(f"퇴출 기록부 스키마({len(erecs)}행)", evictions.schema_errors(erecs))
     else:
@@ -209,7 +209,7 @@ def run() -> dict:
     # 12. 사건 파일 헤더 (Mechanism §4 3항) — 파싱 실패를 여기서 직접 보고한다
     #     (topology_check의 'conflicts 대상 부적격'으로 오보되지 않게).
     errs = []
-    cdir = LEDGER / "case"
+    cdir = vault.ledger / "case"
     cases = sorted(cdir.glob("CASE-*.md")) if cdir.is_dir() else []
     for f in cases:
         if not re.match(CASE_RE, f.stem):
@@ -238,9 +238,9 @@ def run() -> dict:
     # `_wm`도 함께 훑는다 — 통로에는 필터가 걸려 있지만(osk/wm.py), 통로 밖
     # 유입(수동 편집·구 엔진 기기에서의 동기화·나중에 추가된 패턴)은 그 필터를
     # 지나지 않는다. §9 1항이 검증기를 집행 지점으로 두는 이유가 그것이다.
-    for d in sorted([*(ROOT / SCOPE).rglob("_cited"), *(ROOT / SCOPE).rglob("_raw"),
-                     *(ROOT / SCOPE).rglob("_scope_memory"), ROOT / PERSON / "_cited",
-                     ROOT / "_cited"]):
+    for d in sorted([*(vault.root / vault.scope).rglob("_cited"), *(vault.root / vault.scope).rglob("_raw"),
+                     *(vault.root / vault.scope).rglob("_scope_memory"), vault.root / vault.person / "_cited",
+                     vault.root / "_cited"]):
         if not d.is_dir():
             continue
         for p in sorted(d.rglob("*")):
@@ -249,11 +249,11 @@ def run() -> dict:
             try:
                 text = p.read_text(encoding="utf-8", errors="ignore")
             except OSError as e:
-                errs.append(f"{p.relative_to(ROOT)}: 판독 실패 {e}")
+                errs.append(f"{p.relative_to(vault.root)}: 판독 실패 {e}")
                 continue
             _, hits = secrets.filter_text(text)
             if hits:
-                errs.append(f"{p.relative_to(ROOT)}: {sorted(set(hits))}")
+                errs.append(f"{p.relative_to(vault.root)}: {sorted(set(hits))}")
     ok("인용 기록·_scope_memory 비밀값 미기록", errs)
 
     # 14. 정합성 검사 — 충돌 후보 (헌법 12조 1·2항). 기계 판정이 가능한 유형만
@@ -263,11 +263,11 @@ def run() -> dict:
 
     # 15. 외부 표면 (Mechanism §6-2). 규범이 선언한 도구 목록이 정본이고,
     #     구현이 그와 동치인지 + 권위 대장에 손대지 않는지를 대조한다.
-    if declared_tools() is None:
+    if declared_tools(vault) is None:
         skip("외부 표면 계약", "Mechanism §6-2 도구 목록 부재 — 검사 불성립")
     else:
-        guard("외부 표면 계약(도구 목록·권위 비노출)", surface_violations)
-        guard("표면 린트(스키마 건전·가르침)", surface_lint)
+        guard("외부 표면 계약(도구 목록·권위 비노출)", lambda: surface_violations(vault))
+        guard("표면 린트(스키마 건전·가르침)", lambda: surface_lint(vault))
         if _last_surface_cost:
             rep["surface_cost"] = dict(_last_surface_cost)
 
@@ -275,15 +275,15 @@ def run() -> dict:
     #      검증기가 문서를 보지 않으면 감사로만 드러나고, 그 사이 새 세션이
     #      안내문을 먼저 읽고 시작한다(감사 2026-09-02: 도구 수·이름·CLI 표).
     #      인스턴스에 `docs/`가 없으면 빈 목록이라 자연히 통과한다.
-    guard("운용 안내문 대조(도구 목록·CLI 표)", setup_doc_drift)
+    guard("운용 안내문 대조(도구 목록·CLI 표)", lambda: setup_doc_drift(vault))
 
     # 16. 군집 허브 노드 (헌법 3조 8항 · 시행령 §3 6항 · Mechanism §6-1). 검사는 언제나
     #     수행해 보고하고, verdict 산입은 활성화 뒤에만 한다(시행령 §11
     #     2항·3항) — 활성화 순간 무엇이 FAIL이 될지 사용자가 미리 본다.
     try:
-        co = cluster_overview_report(idx)
+        co = cluster_overview_report(vault, idx)
         rep["cluster_overview"] = co
-        co_active = validator_active("cluster-overview")
+        co_active = validator_active(vault, "cluster-overview")
         rep["cluster_overview_active"] = co_active
         co_errs = _cluster_overview_errors(co)
         if co_active:
@@ -299,8 +299,8 @@ def run() -> dict:
     #     노드처럼 언제나 검사해 보고하고, verdict 산입은 활성화 뒤에만 한다.
     try:
         from . import roots
-        external = roots.Roots(core.VAULT)
-        ev = evidence_section_report(idx, external, records)
+        external = roots.Roots(vault)
+        ev = evidence_section_report(vault, idx, external, records)
         # `derived-from`에 남은 비노드는 이행 전 노드마다 걸리므로 노드 수로만 싣는다 — 줄의
         # 위반이 그 수백 줄에 묻히지 않게 한다. verdict 산입(활성화 뒤)은 둘 다 센다.
         left = [n for n, es in ev.items() if any(e.startswith(LEFTOVER) for e in es)]
@@ -309,7 +309,7 @@ def run() -> dict:
         rep["evidence_section_leftovers"] = len(left)
         # 이 기기에 없는 외부 루트 — 위반이 아니라 보류이며 루트마다 한 번 알린다
         rep["evidence_section_held"] = external.held
-        ev_active = validator_active("evidence-section")
+        ev_active = validator_active(vault, "evidence-section")
         rep["evidence_section_active"] = ev_active
         ev_errs = [f"{n}: {e}" for n, es in sorted(ev.items()) for e in es]
         if ev_active:
@@ -328,7 +328,7 @@ def run() -> dict:
 LEFTOVER = "derived-from에 비노드 대상"
 
 
-def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, records=None,
+def evidence_errors(vault: Vault, text: str, derived, idx: "graph.Index | None" = None, records=None,
                     external=None) -> list[str]:
     """노드 끝 관측 절의 줄마다 형식과 좌표의 해석, 그리고 `derived-from`에 남은 비노드
     대상(Mechanism §6-1 4항). `text`는 본문, `derived`는 frontmatter의 `derived-from` 값이다."""
@@ -344,7 +344,7 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
     if heads:
         errs.append("관측 절이 노드 끝에 있지 않다")
     if span is not None:
-        records = records or evidence.Records(core.VAULT)
+        records = records or evidence.Records(vault)
         for line in text[span[0]:].split("\n")[1:]:
             line = line.rstrip("\r")
             if not line.strip():
@@ -353,7 +353,7 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
             if not m:
                 errs.append(f"형식이 다른 관측 줄: {line[:60]}")
                 continue
-            problem = evidence.check(core.VAULT, m.group(2), idx, records, external)
+            problem = evidence.check(vault, m.group(2), idx, records, external)
             if problem:
                 errs.append(problem)
     left = evidence.leftovers(derived, idx)
@@ -362,10 +362,10 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
     return errs
 
 
-def evidence_section_report(idx: "graph.Index", external=None, records=None) -> dict:
+def evidence_section_report(vault: Vault, idx: "graph.Index", external=None, records=None) -> dict:
     """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다. 보류된 외부
     루트는 위반이 아니므로 여기 없고 `external.held`에 모인다."""
-    records = records or evidence.Records(core.VAULT)
+    records = records or evidence.Records(vault)
     out = {}
     for name, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] == "governance":
@@ -374,18 +374,18 @@ def evidence_section_report(idx: "graph.Index", external=None, records=None) -> 
             n = idx.node(path)
         except Exception:
             continue
-        errs = evidence_errors(n.body, n.meta.get("derived-from"), idx, records, external)
+        errs = evidence_errors(vault, n.body, n.meta.get("derived-from"), idx, records, external)
         if errs:
             out[name] = errs
     return out
 
 
-def validator_active(rule: str) -> bool:
+def validator_active(vault: Vault, rule: str) -> bool:
     """검증기 규칙의 활성 여부 (Mechanism §6-1). 규칙별 인과 극대가 현재
     상태이고, 대장이 없거나 미확정(분기)이면 비활성이다 — fail-open이 아니라
     보고-전용으로 남는 쪽이 안전하다(시행령 §11 2항: 집행은 활성화 뒤에만)."""
     try:
-        recs = ledger_read(VALIDATORS)
+        recs = ledger_read(vault.validators)
     except Exception:
         return False
     r = resolve_one(recs, rule, "rule")
@@ -397,15 +397,15 @@ AUTO_REASON = "위반 0 — 자동 활성화"
 AUTO_EVERY = 24 * 3600      # 근거 절 검사는 노드 2천여 개에 8초 — 하루 한 번만 잰다
 
 
-def auto_activate(idx=None, *, now: float | None = None) -> list[str]:
+def auto_activate(vault: Vault, idx=None, *, now: float | None = None) -> list[str]:
     """기록이 없는 규칙의 위반이 0이면 활성화를 적는다(시행령 §11 3항, Mechanism §6-1 2항).
     기록이 있는 규칙 — 사용자가 해제한 것도 — 은 건드리지 않는다. 잰 시각은 기기 로컬에 두고
     하루 한 번만 잰다. 켠 규칙을 낸다."""
     import time
-    todo = [r for r in RULES if not any(x.get("rule") == r for x in ledger_read(VALIDATORS))]
+    todo = [r for r in RULES if not any(x.get("rule") == r for x in ledger_read(vault.validators))]
     # worktree들은 git 디렉터리를 나눠 쓰지만 노드와 대장은 저마다다 — 잰 시각도 작업 트리마다 둔다
-    key = hashlib.sha256(str(ROOT).encode("utf-8")).hexdigest()[:16]
-    mark = core.local_lock_path(f"osk-validators-auto-{key}.json", core.VAULT.root)
+    key = hashlib.sha256(str(vault.root).encode("utf-8")).hexdigest()[:16]
+    mark = core.local_lock_path(f"osk-validators-auto-{key}.json", vault.root)
     now = time.time() if now is None else now
     try:
         if not todo or now - json.loads(mark.read_text(encoding="utf-8"))["at"] < AUTO_EVERY:
@@ -413,16 +413,16 @@ def auto_activate(idx=None, *, now: float | None = None) -> list[str]:
     except (OSError, ValueError, KeyError, TypeError):
         pass
     mark.write_text(json.dumps({"at": now}), encoding="utf-8")   # 먼저 적어 겹친 작업이 다시 재지 않게 한다
-    idx = idx or graph.Index()
-    clean = {"cluster-overview": lambda: not _cluster_overview_errors(cluster_overview_report(idx)),
-             "evidence-section": lambda: not evidence_section_report(idx, roots.Roots(core.VAULT), evidence.Records(core.VAULT))}
+    idx = idx or graph.Index(vault)
+    clean = {"cluster-overview": lambda: not _cluster_overview_errors(cluster_overview_report(vault, idx)),
+             "evidence-section": lambda: not evidence_section_report(vault, idx, roots.Roots(vault), evidence.Records(vault))}
     on = []
     for r in todo:
         if not clean[r]():
             continue
         try:
             # 재는 사이 생긴 기록 — 사용자의 해제도 — 은 대장 잠금 안에서 보고 물러선다
-            ledger_append(VALIDATORS, {"kind": "activate", "rule": r, "reason": AUTO_REASON},
+            ledger_append(vault.validators, {"kind": "activate", "rule": r, "reason": AUTO_REASON},
                           expect=lambda recs, r=r: any(x.get("rule") == r for x in recs) and "기록이 생겼다")
             on.append(r)
         except ValueError:
@@ -444,7 +444,7 @@ def _cluster_overview_errors(co: dict) -> list[str]:
     return errs
 
 
-def cluster_overview_report(idx: "graph.Index") -> dict:
+def cluster_overview_report(vault: Vault, idx: "graph.Index") -> dict:
     """군집 허브 노드 검사 (헌법 3조 8항 · 시행령 §3 6항) — 군집별 (a) 동명
     허브 노드 존재, (b) 허브에서 **Link의 방향**(헌법 8조 4항)을 따라
     출발했을 때 전 구성 노드의 도달 가능성. 도달은 허브가 가리키는 것으로
@@ -473,17 +473,17 @@ def cluster_overview_report(idx: "graph.Index") -> dict:
     clusters: dict = {}
     subdirs: dict = {}
     for stem, (p, _k) in idx.nodes.items():
-        rel = p.relative_to(ROOT)
+        rel = p.relative_to(vault.root)
         if "Workbench" in rel.parts or rel.parts[0] == "_governance":
             continue
         if len(rel.parts) < 3:
             continue                      # Space 루트 직속은 군집이 아니다
-        top = ROOT / rel.parts[0] / rel.parts[1]
+        top = vault.root / rel.parts[0] / rel.parts[1]
         clusters.setdefault(top, set()).add(stem)
         subdirs.setdefault(top, set()).add(p.parent)
     out = {}
     for cdir, members in clusters.items():
-        key = str(cdir.relative_to(ROOT)).replace("\\", "/")
+        key = str(cdir.relative_to(vault.root)).replace("\\", "/")
         ov = cdir.name
         if ov not in members:
             out[key] = {"overview": False, "nodes": len(members),
@@ -499,7 +499,7 @@ def cluster_overview_report(idx: "graph.Index") -> dict:
         # 미직결이 된다. 원인을 미직결 목록이 아니라 **자리**로 보고해야
         # 고치는 쪽이 무엇을 만들지 안다.
         hubless = sorted(
-            str(d.relative_to(ROOT)).replace("\\", "/")
+            str(d.relative_to(vault.root)).replace("\\", "/")
             for d in subdirs.get(cdir, ()) if d.name not in members)
         st = {"overview": True, "nodes": len(members),
               "unreachable": len(unreach)}
@@ -569,7 +569,7 @@ def _outgoing_refs(idx: "graph.Index", stem: str, members: set) -> set:
 #     가르치므로 설명에는 싣지 않는다.
 #   7800 → 7900: `cite_round`의 `space`(시행령 §3 9항·Mechanism §9-4 3항, 2026-10-12). 소속
 #     scope 없는 대화의 첫 인용이 그 대화의 착지를 정한다. 스키마만 자란다(+60). 쓰는 법은
-#     소속 없는 대화의 검토 지시(`integration.UNLANDED`)가 가르치므로 설명에는 싣지 않는다.
+#     소속 없는 대화의 검토 지시(`integration.unlanded`)가 가르치므로 설명에는 싣지 않는다.
 #   7900 → 8000: `read_cited`의 `conversation`·`through`(#219·#220, 2026-10-22). 밀린 검토의 범위를
 #     한 번에 읽는다. 스키마만 자란다(+129). 쓰는 법과 `cite_round`의 짧은 턴 ID는 대화 검토
 #     안내(`integration.prompt`)가 가르치므로 설명에는 싣지 않는다.
@@ -583,7 +583,7 @@ SCHEMA_BUDGET = 8000
 _last_surface_cost: dict | None = None
 
 
-def surface_lint() -> list[str]:
+def surface_lint(vault: Vault) -> list[str]:
     """발행 스키마의 **결정론적 불변식**. 이번 감사가 도출한 것들이며, 이 검사가
     잡는 것은 엔진의 옳음이 아니라 **표면의 가르침**이 낡는 일이다(10차 ④).
 
@@ -641,7 +641,7 @@ def surface_lint() -> list[str]:
     #    (FastMCP에 실재하는 API다). 여기는 이미 **런타임 등록부**를 읽고 있으니
     #    같은 자리에서 대조하면 정적 분석의 사각이 닫힌다 — 무엇이 선언됐는지가
     #    곧 클라이언트의 능력이라는 §6-2 1항의 전제가 그렇게 지켜진다.
-    declared = declared_tools()
+    declared = declared_tools(vault)
     if declared is not None:      # 정본 부재는 `surface_violations`가 이미 보고한다
         reg_names = {t.name for t in tools}
         for extra in sorted(reg_names - set(declared)):
@@ -664,7 +664,7 @@ def surface_lint() -> list[str]:
     # ⓔ 군집 거부가 유효 목록을 싣는가
     try:
         import osk.write as _w
-        if "cluster_names()" not in Path(_w.__file__).read_text(encoding="utf-8"):
+        if "cluster_names(vault)" not in Path(_w.__file__).read_text(encoding="utf-8"):
             errs.append("군집 거부 문구가 유효 목록을 싣지 않는다")
     except Exception as e:
         errs.append(f"거부 문구 판독 실패: {e}")
@@ -684,10 +684,38 @@ def surface_lint() -> list[str]:
 # Mechanism §6-2 2항 — 표면에서 금지된 권위 심벌 (보호영역 권위·구체제 서명)
 FORBIDDEN_CALLS = ("protect", "unprotect", "approve", "revert",
                    "sign", "unsign", "restore_for_dismissal")
-AUTHORITY_LEDGERS = ("APPROVALS", "SIGNATURES", "PINS", "ROOTS")   # ROOTS — Mechanism §1 6항
+# 권위 대장을 가리키는 식 — 저장소의 대장 자리(`vault.pins`)이거나 승인 기록부의 자리(`approvals.ledger_path(vault)`).
+AUTHORITY_LEDGERS = ("signatures", "pins", "roots")   # roots — Mechanism §1 6항
 
 
-def declared_secret_patterns() -> dict[str, str] | None:
+def _approvals_ledger_names(tree) -> set[str]:
+    """이 파일이 승인 기록부의 자리를 부르는 이름들 — `approvals.ledger_path`, 별칭, 이름으로 가져온 것."""
+    names = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            from_approvals = (n.module or "").split(".")[-1] == "approvals"
+            for a in n.names:
+                if a.name == "approvals":
+                    names.add(f"{a.asname or a.name}.ledger_path")
+                elif from_approvals and a.name == "ledger_path":
+                    names.add(a.asname or a.name)
+        elif isinstance(n, ast.Import):
+            names.update(f"{a.asname or a.name}.ledger_path" for a in n.names if a.name.split(".")[-1] == "approvals")
+    return names
+
+
+def _authority_ledger(arg, approvals: set[str]) -> str | None:
+    """`ledger_append`의 첫 인자가 권위 대장을 가리키면 그 이름."""
+    if isinstance(arg, ast.Attribute) and arg.attr in AUTHORITY_LEDGERS:
+        return arg.attr
+    if isinstance(arg, ast.Call):
+        callee = ast.unparse(arg.func)             # 다른 모듈을 거친 것도 본다: `write.approvals.ledger_path(vault)`
+        if callee in approvals or (callee.rsplit(".", 1)[-1] == "ledger_path" and "approvals" in callee):
+            return "approvals"
+    return None
+
+
+def declared_secret_patterns(vault: Vault) -> dict[str, str] | None:
     """Mechanism §9 1항의 패턴 표 — **규범이 필터의 정본이다.**
 
     `declared_tools`와 같은 규율이다. 이 표가 조문에 있다는 것은 코드만 고치면
@@ -698,7 +726,7 @@ def declared_secret_patterns() -> dict[str, str] | None:
     표를 못 읽으면 `None`이다 — 호출부가 그것을 거부로 다룬다(fail-closed)."""
     import re as _re
     try:
-        text = (ROOT / "_governance/Mechanism.md").read_text(encoding="utf-8")
+        text = (vault.root / "_governance/Mechanism.md").read_text(encoding="utf-8")
     except OSError:
         return None
     # 종결자는 `§9-2`**또는 문서 끝**이다 — 규범 원본에서는 §9-2가 뒤따르지만,
@@ -716,9 +744,9 @@ def declared_secret_patterns() -> dict[str, str] | None:
     return out or None
 
 
-def secret_pattern_drift() -> list[str]:
+def secret_pattern_drift(vault: Vault) -> list[str]:
     """구현(`secrets.PATTERNS`)과 조문(§9 1항 표)의 차이 — 빈 목록이면 동치."""
-    declared = declared_secret_patterns()
+    declared = declared_secret_patterns(vault)
     if declared is None:
         return ["Mechanism §9 1항의 패턴 표를 읽지 못했다 — 필터의 정본 부재"]
     errs = []
@@ -734,11 +762,11 @@ def secret_pattern_drift() -> list[str]:
     return errs
 
 
-def declared_tools() -> list[str] | None:
+def declared_tools(vault: Vault) -> list[str] | None:
     """Mechanism §6-2 4항의 도구 목록 — 규범이 표면의 정본이다."""
     import re as _re
     try:
-        text = (ROOT / "_governance/Mechanism.md").read_text(encoding="utf-8")
+        text = (vault.root / "_governance/Mechanism.md").read_text(encoding="utf-8")
     except OSError:
         return None
     m = _re.search(r"^## §6-2 .*?```\n(.*?)```", text, _re.M | _re.S)
@@ -777,7 +805,7 @@ def cli_commands() -> tuple[set[str], set[str]]:
     return allc, leaves
 
 
-def setup_doc_drift() -> list[str]:
+def setup_doc_drift(vault: Vault) -> list[str]:
     """운용 안내문(`docs/SETUP.md`)이 규범·구현과 어긋나는가.
 
     표류는 코드에서만 나는 것이 아니다. 감사 2026-09-02이 찾은 한 무리는
@@ -796,10 +824,10 @@ def setup_doc_drift() -> list[str]:
     '검사 불성립' 관례)."""
     import re as _re
     try:
-        text = (ROOT / "docs/SETUP.md").read_text(encoding="utf-8")
+        text = (vault.root / "docs/SETUP.md").read_text(encoding="utf-8")
     except OSError:
         return []
-    errs, declared = [], declared_tools()
+    errs, declared = [], declared_tools(vault)
 
     # ⓐ 도구 목록 — 정본은 Mechanism §6-2 7항이고 안내문은 그 사본이다.
     #    목록이 적힌 **문단만** 본다. 절 전체를 훑으면 본문에 backtick으로 적힌
@@ -883,7 +911,7 @@ SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/raw.py", "osk/integrati
                    "osk/scope_memory.py", "osk/distillation.py", "osk/routing.py")
 
 
-def surface_violations(engine_dir=None) -> list[str]:
+def surface_violations(vault: Vault, engine_dir=None) -> list[str]:
     """MCP 표면 검사 (Mechanism §6-2). 정적 도달성 분석은 파이썬에서 취약하므로
     결정론적인 두 가지만 본다: ⅰ)선언 목록과 구현 도구의 동치 ⅱ)금지 심벌
     (보호영역·구체제 서명 권위 호출·권위 대장 append)의 부재. 금지선은 **권위 대장**이지
@@ -891,10 +919,9 @@ def surface_violations(engine_dir=None) -> list[str]:
 
     검사 대상은 경로 사본이 아니라 **지금 도는 엔진**이다(시험은 engine_dir로
     사본을 준다)."""
-    import ast
     from pathlib import Path as _Path
     errs = []
-    declared = declared_tools()
+    declared = declared_tools(vault)
     if declared is None:
         return ["Mechanism §6-2의 도구 목록을 읽지 못했다 — 표면의 정본 부재"]
     base = _Path(engine_dir) if engine_dir else _Path(__file__).resolve().parent.parent
@@ -923,6 +950,7 @@ def surface_violations(engine_dir=None) -> list[str]:
         errs.append(f"선언된 도구가 구현에 없다: {missing}")
 
     for rel, t in trees.items():
+        approvals = _approvals_ledger_names(t)
         for n in ast.walk(t):
             if not isinstance(n, ast.Call):
                 continue
@@ -930,9 +958,8 @@ def surface_violations(engine_dir=None) -> list[str]:
             if name in FORBIDDEN_CALLS:
                 errs.append(f"표면이 권위 심벌을 호출한다: {rel}:{n.lineno} {name}")
             if name == "ledger_append" and n.args:
-                tgt = (getattr(n.args[0], "attr", None)
-                       or getattr(n.args[0], "id", None))
-                if tgt in AUTHORITY_LEDGERS:
+                tgt = _authority_ledger(n.args[0], approvals)
+                if tgt:
                     errs.append(f"표면이 권위 대장에 기록한다: {rel}:{n.lineno} {tgt}")
     return errs
 
@@ -952,17 +979,17 @@ def conflict_candidates(idx: "graph.Index") -> list[str]:
     return out
 
 
-def make_mini_vault(dst) -> None:
+def make_mini_vault(vault: Vault, dst) -> None:
     """fixture·회귀 시험용 최소 vault 골격."""
     from pathlib import Path
     dst = Path(dst)
-    for d in [(SCOPE + '/' + 'W1'), (SCOPE + '/' + 'Workbench/_ledger/case'),
-              (SCOPE + '/' + 'Workbench/transit'), DOMAIN,
-              (PERSON + '/' + 'Delegation'), (PERSON + '/' + 'Module'), "_sources"]:
+    for d in [(vault.scope + '/' + 'W1'), (vault.scope + '/' + 'Workbench/_ledger/case'),
+              (vault.scope + '/' + 'Workbench/transit'), vault.domain,
+              (vault.person + '/' + 'Delegation'), (vault.person + '/' + 'Module'), "_sources"]:
         (dst / d).mkdir(parents=True, exist_ok=True)
     # W1 허브 노드 — 첫-노드 규칙(시행령 §3 6항) 아래에서 시험들이 W1에
     # 자유로 노드를 만들 수 있으려면 허브가 먼저 서 있어야 한다.
-    idx_md = dst / (SCOPE + '/' + 'W1/W1.md')
+    idx_md = dst / (vault.scope + '/' + 'W1/W1.md')
     if not idx_md.exists():
         idx_md.write_text(
             '---\nid: "260801-zzzz-w1ix"\ncreated: "2026-08-01 00:00 (KST)"\n'
@@ -971,7 +998,7 @@ def make_mini_vault(dst) -> None:
             "\n# W1\n\n시험 군집의 허브 노드.\n", encoding="utf-8")
 
 
-def fixture_approval_lifecycle(tmp_root) -> list[str]:
+def fixture_approval_lifecycle(vault: Vault, tmp_root) -> list[str]:
     """보호영역 생애 fixture — **격리 subprocess**에서 실행한다: OSK_VAULT_ROOT가
     임시 mini-vault를 가리키는 별도 프로세스이므로 서버 프로세스의 전역 상태를
     일절 건드리지 않는다. protect→pending→approve(양측 CAS)→revert→unprotect의
@@ -989,7 +1016,7 @@ def fixture_approval_lifecycle(tmp_root) -> list[str]:
     import sys as _sys
     from pathlib import Path
     mini = Path(tmp_root) / "mini-vault"
-    make_mini_vault(mini)
+    make_mini_vault(vault, mini)
     script = Path(__file__).parent / "_fixture_approvals.py"
     env = dict(_os.environ, OSK_VAULT_ROOT=str(mini))
     r = _sp.run([_sys.executable, str(script)], capture_output=True,
@@ -1003,7 +1030,8 @@ def fixture_approval_lifecycle(tmp_root) -> list[str]:
 
 
 def main():
-    rep = run()
+    vault = Vault.open()
+    rep = run(vault)
     print(json.dumps(rep, ensure_ascii=False, indent=2))
     raise SystemExit(0 if rep["verdict"] == "PASS" else 1)
 

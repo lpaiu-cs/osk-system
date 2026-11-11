@@ -28,8 +28,10 @@ def _child():
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(ENGINE))
         from osk import core, contract, distillation as D, evidence, raw, validate, write
-        validate.make_mini_vault(folder)
-        assert core.ROOT == Path(folder).resolve()
+        from osk.vault import Vault
+        VAULT = Vault.open()
+        validate.make_mini_vault(VAULT, folder)
+        assert VAULT.root == Path(folder).resolve()
 
         class Crash(BaseException):
             pass
@@ -38,7 +40,7 @@ def _child():
             def setUp(self):
                 self.name = self._testMethodName
                 self.key = "test-" + self.name
-                self.source = write.create_node(self.name + "-source", "source",
+                self.source = write.create_node(VAULT, self.name + "-source", "source",
                                                 "observed evidence", "fable-5", space="00_Scope/W1")
                 self.spec = {"key": self.key,
                              "sources": [{"ref": self.source["id"], "hash": self.source["new_hash"]}],
@@ -46,13 +48,13 @@ def _child():
                 self.args = {"title": self.name + "-target", "summary": "retained decision",
                              "body": "Use a bounded operation because retries can lose their response.",
                              "drafter": "fable-5", "space": "00_Scope/W1"}
-                self.hub = core.ROOT / "00_Scope/W1/W1.md"
+                self.hub = VAULT.root / "00_Scope/W1/W1.md"
 
             def tearDown(self):
-                D._job_path(self.key).unlink(missing_ok=True)
+                D._job_path(VAULT, self.key).unlink(missing_ok=True)
 
             def create(self):
-                return D.create_node(self.spec, **self.args)
+                return D.create_node(VAULT, self.spec, **self.args)
 
             def fail_hub(self):
                 atomic = write._atomic_write
@@ -66,13 +68,13 @@ def _child():
                 out = self.create()
                 self.assertTrue(out["ok"])
                 self.assertEqual(out["distillation"]["status"], "complete")
-                path = core.ROOT / out["path"]
+                path = VAULT.root / out["path"]
                 saved = path.read_bytes()
                 again = self.create()
                 self.assertTrue(again["resumed"])
                 self.assertEqual(again["id"], out["id"])
                 self.assertEqual(path.read_bytes(), saved)
-                self.assertEqual(D.status(self.key)["status"], "complete")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "complete")
 
             def test_partial_hub_preserves_and_resumes(self):
                 with self.fail_hub():
@@ -80,10 +82,10 @@ def _child():
                 self.assertTrue(out["ok"])
                 self.assertTrue(out["node_preserved"])
                 self.assertEqual(out["distillation"]["status"], "pending")
-                before = (core.ROOT / out["path"]).read_bytes()
+                before = (VAULT.root / out["path"]).read_bytes()
                 again = self.create()
                 self.assertEqual(again["distillation"]["status"], "complete")
-                self.assertEqual((core.ROOT / out["path"]).read_bytes(), before)
+                self.assertEqual((VAULT.root / out["path"]).read_bytes(), before)
 
             def test_resume_refuses_a_replaced_hub_whatever_its_extension_case(self):
                 # The journal binds the selected hub's id. A hub replaced before resume stays
@@ -117,7 +119,7 @@ def _child():
 
             def test_crash_before_node_uses_reserved_identity(self):
                 atomic = write._atomic_write
-                target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
+                target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     if path == target:
                         raise Crash()
@@ -125,16 +127,16 @@ def _child():
                 with mock.patch.object(write, "_atomic_write", side_effect=crash):
                     with self.assertRaises(Crash):
                         self.create()
-                job = D._load(self.key)
+                job = D._load(VAULT, self.key)
                 self.assertFalse(target.exists())
-                self.assertEqual(job["target"]["path"], target.relative_to(core.ROOT).as_posix())
+                self.assertEqual(job["target"]["path"], target.relative_to(VAULT.root).as_posix())
                 again = self.create()
                 self.assertEqual(again["id"], job["target"]["id"])
                 self.assertEqual(again["distillation"]["status"], "complete")
 
             def test_crash_after_node_before_hub(self):
                 atomic = write._atomic_write
-                target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
+                target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     atomic(path, data)
                     if path == target:
@@ -143,7 +145,7 @@ def _child():
                     with self.assertRaises(Crash):
                         self.create()
                 saved = target.read_bytes()
-                self.assertEqual(D.status(self.key)["status"], "pending")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(target.read_bytes(), saved)
@@ -154,21 +156,21 @@ def _child():
                 # stored record edges as wikilinks. Raw rounds are no longer
                 # distillation edges (Constitution art. 8 §5), so the record edge
                 # here is one the target held before the switch.
-                def v1_links(pred, targets, **_):
+                def v1_links(vault, pred, targets, **_):
                     values = [str(t).strip() for t in write.as_list(targets)]
                     values = [s if s.startswith("[[") or (pred == "derived-from" and re.match(core.ID_RE, s))
                               else f"[[{s}]]" for s in values]
                     return values[0] if len(values) == 1 else values
 
-                source = core.ROOT / self.source["path"]
+                source = VAULT.root / self.source["path"]
                 for operation in ("create", "update"):
                     with self.subTest(operation=operation):
                         name = self.name + "-" + operation
                         request = dict(self.args, title=name)
-                        target = core.ROOT / "00_Scope/W1" / (name + ".md")
+                        target = VAULT.root / "00_Scope/W1" / (name + ".md")
                         if operation == "update":
-                            old = write.create_node(name, "prior", "prior body", "test-model", space="00_Scope/W1")
-                            raw_path = core.ROOT / "00_Scope/W1/_raw" / (name + "-raw.md")
+                            old = write.create_node(VAULT, name, "prior", "prior body", "test-model", space="00_Scope/W1")
+                            raw_path = VAULT.root / "00_Scope/W1/_raw" / (name + "-raw.md")
                             raw_path.parent.mkdir(exist_ok=True)
                             raw_path.write_bytes(raw.round_block(1, "original source", "measured answer").encode())
                             legacy = f'derived-from: "[[00_Scope/W1/_raw/{name}-raw.md#1]]"\n'
@@ -177,9 +179,9 @@ def _child():
                         atomic, save = write._atomic_write, D._save
                         reserved = []
 
-                        def v1_save(job):
+                        def v1_save(vault, job):
                             job["version"] = 1
-                            save(job)
+                            save(vault, job)
 
                         def crash(path, data):
                             if path == target:
@@ -191,39 +193,39 @@ def _child():
                                 mock.patch.object(D, "_save", side_effect=v1_save),\
                                 mock.patch.object(write, "_atomic_write", side_effect=crash):
                             with self.assertRaises(Crash):
-                                D._execute(operation, self.spec, request)
-                        journal = D._job_path(self.key).read_bytes()
-                        job = D._load(self.key)
+                                D._execute(VAULT, operation, self.spec, request)
+                        journal = D._job_path(VAULT, self.key).read_bytes()
+                        job = D._load(VAULT, self.key)
                         self.assertEqual(job["target"]["hash"], core.sha256_bytes(reserved[0]))
-                        raw.migrate(apply=True)
+                        raw.migrate(VAULT, apply=True)
                         evidence = source.read_bytes()
                         source.write_bytes(evidence.replace(b"observed evidence", b"changed evidence"))
-                        failed = D._execute(operation, self.spec, request)
+                        failed = D._execute(VAULT, operation, self.spec, request)
                         self.assertEqual(failed["distillation"]["status"], "pending")
                         self.assertIn("source", failed["distillation"]["reason"])
                         source.write_bytes(evidence)
                         with self.assertRaises(write.WriteError):
-                            D._execute(operation, self.spec, dict(request, body="different request"))
+                            D._execute(VAULT, operation, self.spec, dict(request, body="different request"))
                         # A forged expected hash cannot be replaced by retry.
                         job["target"]["hash"] = "sha256:" + "0" * 64
-                        D._save(job)
-                        failed = D._execute(operation, self.spec, request)
+                        D._save(VAULT, job)
+                        failed = D._execute(VAULT, operation, self.spec, request)
                         self.assertEqual(failed["distillation"]["status"], "pending")
                         self.assertIn("prepared target changed", failed["distillation"]["reason"])
-                        D._job_path(self.key).write_bytes(journal)
-                        result = D._execute(operation, self.spec, request)
+                        D._job_path(VAULT, self.key).write_bytes(journal)
+                        result = D._execute(VAULT, operation, self.spec, request)
                         self.assertEqual(result["distillation"]["status"], "complete")
                         self.assertEqual(target.read_bytes(), reserved[0])
-                        self.assertEqual(D._job_path(self.key).read_bytes(), journal)
-                        D._job_path(self.key).unlink()
+                        self.assertEqual(D._job_path(VAULT, self.key).read_bytes(), journal)
+                        D._job_path(VAULT, self.key).unlink()
 
             def test_new_raw_journal_retries_with_its_evidence_line(self):
-                record = raw.append_rounds(self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
+                record = raw.append_rounds(VAULT, self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 self.args["body"] += ("\n\n## 근거\n\n- 2026-10-31 · `"
-                                      + evidence.coordinate(core.VAULT, record["path"], 1) + "` · 지지 — q")
+                                      + evidence.coordinate(VAULT, record["path"], 1) + "` · 지지 — q")
                 atomic = write._atomic_write
-                target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
+                target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 reserved = []
 
                 def crash(path, data):
@@ -235,30 +237,30 @@ def _child():
                 with mock.patch.object(write, "_atomic_write", side_effect=crash):
                     with self.assertRaises(Crash):
                         self.create()
-                self.assertEqual(D._load(self.key)["version"], 2)
+                self.assertEqual(D._load(VAULT, self.key)["version"], 2)
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(target.read_bytes(), reserved[0])
                 self.assertNotIn("derived-from", contract.parse(target).meta)   # the line binds the round
-                self.assertEqual(D.discover([record["round_refs"][0]])["proofs"][0]["key"], self.key)
+                self.assertEqual(D.discover(VAULT, [record["round_refs"][0]])["proofs"][0]["key"], self.key)
 
             def test_source_mutation_blocks_resume(self):
                 with self.fail_hub():
                     out = self.create()
-                before = (core.ROOT / out["path"]).read_bytes()
-                write.update_node(self.source["id"], body="evidence was corrected",
+                before = (VAULT.root / out["path"]).read_bytes()
+                write.update_node(VAULT, self.source["id"], body="evidence was corrected",
                                   expect_hash=self.source["new_hash"])
                 again = self.create()
                 self.assertEqual(again["distillation"]["status"], "pending")
                 self.assertIn("source", again["distillation"]["reason"])
-                self.assertEqual((core.ROOT / out["path"]).read_bytes(), before)
+                self.assertEqual((VAULT.root / out["path"]).read_bytes(), before)
                 self.assertNotIn(self.args["title"], contract.parse(self.hub).wikilinks())
 
             def test_concurrent_target_update_is_not_overwritten(self):
                 with self.fail_hub():
                     out = self.create()
-                target = core.ROOT / out["path"]
-                write.update_node(out["id"], body="another conversation revised this",
+                target = VAULT.root / out["path"]
+                write.update_node(VAULT, out["id"], body="another conversation revised this",
                                   expect_hash=core.sha256_file(target))
                 concurrent = target.read_bytes()
                 again = self.create()
@@ -275,26 +277,26 @@ def _child():
                     dict(self.spec, sources=[dict(self.spec["sources"][0], hash="stale")]),
                 ):
                     with self.assertRaises(write.WriteError):
-                        D.create_node(spec, **self.args)
+                        D.create_node(VAULT, spec, **self.args)
                 with self.assertRaises(write.WriteError):
-                    D.create_node(self.spec, **dict(self.args, body=" \n"))
-                self.assertIsNone(D._load(self.key))
-                self.assertFalse((core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")).exists())
+                    D.create_node(VAULT, self.spec, **dict(self.args, body=" \n"))
+                self.assertIsNone(D._load(VAULT, self.key))
+                self.assertFalse((VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")).exists())
 
             def test_key_cannot_bind_different_request(self):
                 out = self.create()
                 with self.assertRaises(write.WriteError):
-                    D.create_node(self.spec, **dict(self.args, body="different conclusion"))
-                self.assertEqual(D.status(self.key)["target"]["hash"], out["new_hash"])
+                    D.create_node(VAULT, self.spec, **dict(self.args, body="different conclusion"))
+                self.assertEqual(D.status(VAULT, self.key)["target"]["hash"], out["new_hash"])
 
             def test_update_records_before_hash(self):
-                existing = write.create_node(self.args["title"], "old", "old knowledge",
+                existing = write.create_node(VAULT, self.args["title"], "old", "old knowledge",
                                              "fable-5", space="00_Scope/W1")
-                out = D.update_node(self.spec, name=existing["id"],
+                out = D.update_node(VAULT, self.spec, name=existing["id"],
                                     body=self.args["body"], expect_hash=existing["new_hash"])
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(out["distillation"]["target"]["before_hash"], existing["new_hash"])
-                again = D.update_node(self.spec, name=existing["id"],
+                again = D.update_node(VAULT, self.spec, name=existing["id"],
                                       body=self.args["body"], expect_hash=existing["new_hash"])
                 self.assertEqual(again["distillation"]["status"], "complete")
                 self.assertEqual(again["id"], existing["id"])
@@ -306,17 +308,17 @@ def _child():
                 for case in ("fresh", "source_changed", "target_changed", "unread"):
                     with self.subTest(case=case):
                         M._SEEN.clear()
-                        existing = write.create_node(self.args["title"] + "-" + case,
+                        existing = write.create_node(VAULT, self.args["title"] + "-" + case,
                             "old", "old knowledge", "fable-5", space="00_Scope/W1",
                             edges={"derived-from": self.source["id"]})
                         if case != "unread":
                             M.read_node(self.source["id"])
                             M.read_node(existing["id"])
                         if case == "source_changed":
-                            write.update_node(self.source["id"], old_text="observed evidence",
+                            write.update_node(VAULT, self.source["id"], old_text="observed evidence",
                                               new_text="corrected evidence")
                         if case == "target_changed":
-                            write.update_node(existing["id"], old_text="old knowledge",
+                            write.update_node(VAULT, existing["id"], old_text="old knowledge",
                                               new_text="old knowledge\nConcurrent addition.")
                         spec = dict(self.spec, sources=[self.source["id"]])
                         request = dict(name=existing["id"], old_text="old knowledge",
@@ -326,7 +328,7 @@ def _child():
                         stale = case in ("source_changed", "target_changed")
 
                         def pending():
-                            return [r for r in rechecks.candidates()[0] if r["id"] == existing["id"]]
+                            return [r for r in rechecks.candidates(VAULT)[0] if r["id"] == existing["id"]]
 
                         try:
                             out = M.update_node(**request)
@@ -348,16 +350,16 @@ def _child():
                             self.assertTrue(closed.get("rechecked"), closed)
                             self.assertFalse(pending())
                         finally:
-                            D._job_path(self.key).unlink(missing_ok=True)
+                            D._job_path(VAULT, self.key).unlink(missing_ok=True)
                             M._SEEN.clear()
 
             def test_mcp_retry_keeps_the_binding_of_a_request_without_rechecked(self):
                 import mcp_server as M
-                existing = write.create_node(self.args["title"], "old", "old knowledge",
+                existing = write.create_node(VAULT, self.args["title"], "old", "old knowledge",
                                              "fable-5", space="00_Scope/W1")
                 # The request exactly as the surface sent it before `rechecked` existed: a job
                 # journaled then must resume, not count as a different request.
-                first = D.update_node(self.spec, name=existing["id"], body=None, expect_hash=None,
+                first = D.update_node(VAULT, self.spec, name=existing["id"], body=None, expect_hash=None,
                                       summary=None, add_edges=None, remove_edges=None,
                                       old_text="old knowledge", new_text="revised knowledge",
                                       settle=None)
@@ -369,11 +371,11 @@ def _child():
             def test_update_crash_after_node_before_hub_resumes_without_rewrite(self):
                 # M3: an update stopped after the body is saved resumes linking under the same
                 # key; the saved body is neither lost nor written again.
-                existing = write.create_node(self.args["title"], "old", "old knowledge",
+                existing = write.create_node(VAULT, self.args["title"], "old", "old knowledge",
                                              "fable-5", space="00_Scope/W1")
                 # A plain write hangs the node on its hub; this case resumes an unlinked one.
-                write.update_node("W1", old_text="\n\n- [[" + self.args["title"] + "]]", new_text="")
-                target = core.ROOT / existing["path"]
+                write.update_node(VAULT, "W1", old_text="\n\n- [[" + self.args["title"] + "]]", new_text="")
+                target = VAULT.root / existing["path"]
                 request = dict(name=existing["id"], body=self.args["body"],
                                expect_hash=existing["new_hash"])
                 atomic = write._atomic_write
@@ -383,69 +385,69 @@ def _child():
                         raise Crash()
                 with mock.patch.object(write, "_atomic_write", side_effect=crash):
                     with self.assertRaises(Crash):
-                        D.update_node(self.spec, **request)
+                        D.update_node(VAULT, self.spec, **request)
                 saved = target.read_bytes()
                 self.assertIn(self.args["body"].encode(), saved)
-                self.assertEqual(D.status(self.key)["status"], "pending")
-                out = D.update_node(self.spec, **request)
+                self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
+                out = D.update_node(VAULT, self.spec, **request)
                 self.assertEqual(out["distillation"]["status"], "complete", out)
                 self.assertEqual(out["id"], existing["id"])
                 self.assertEqual(target.read_bytes(), saved)
 
             def test_receipt_rereads_every_entry_up_to_the_top_cluster(self):
                 # M3: completion re-reads the local hub and every upper entry, not the write's ok.
-                (core.ROOT / "00_Scope/W1/Sub").mkdir()
-                write.create_node("Sub", "sub entry", "Sub cluster entry.", "fable-5",
+                (VAULT.root / "00_Scope/W1/Sub").mkdir()
+                write.create_node(VAULT, "Sub", "sub entry", "Sub cluster entry.", "fable-5",
                                   space="00_Scope/W1/Sub")
-                out = D.create_node(dict(self.spec, hub="Sub"),
+                out = D.create_node(VAULT, dict(self.spec, hub="Sub"),
                                     **dict(self.args, space="00_Scope/W1/Sub"))
                 self.assertEqual(out["distillation"]["status"], "complete", out)
                 self.assertEqual([h["path"] for h in out["distillation"]["placement"]["hubs"]],
                                  ["00_Scope/W1/Sub/Sub.md", "00_Scope/W1/W1.md"])
                 # The upper entry stops linking the sub-cluster: the receipt is pending again,
                 # the body stays preserved, and reading the status repairs nothing.
-                write.update_node("W1", old_text="[[Sub]]", new_text="Sub")
-                top = (core.ROOT / "00_Scope/W1/W1.md").read_bytes()
-                status = D.status(self.key)
+                write.update_node(VAULT, "W1", old_text="[[Sub]]", new_text="Sub")
+                top = (VAULT.root / "00_Scope/W1/W1.md").read_bytes()
+                status = D.status(VAULT, self.key)
                 self.assertEqual(status["status"], "pending", status)
                 self.assertEqual(status["preservation"]["status"], "complete", status)
                 self.assertIn("does not link", status["reason"])
-                self.assertEqual((core.ROOT / "00_Scope/W1/W1.md").read_bytes(), top)
+                self.assertEqual((VAULT.root / "00_Scope/W1/W1.md").read_bytes(), top)
 
             def test_domain_distillation_uses_scope_provenance(self):
-                domain = core.ROOT / "00_Domain" / self.name
+                domain = VAULT.root / "00_Domain" / self.name
                 domain.mkdir()
-                write.create_node(self.name, "domain hub", "general reusable knowledge",
-                                  "fable-5", space=domain.relative_to(core.ROOT).as_posix())
+                write.create_node(VAULT, self.name, "domain hub", "general reusable knowledge",
+                                  "fable-5", space=domain.relative_to(VAULT.root).as_posix())
                 self.spec["hub"] = self.name
-                self.args["space"] = domain.relative_to(core.ROOT).as_posix()
+                self.args["space"] = domain.relative_to(VAULT.root).as_posix()
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(out["distillation"]["sources"][0]["ref"], self.source["id"])
 
             def test_exact_raw_anchor_and_append_stability(self):
-                record = raw.append_rounds(self.name, self.name,
+                record = raw.append_rounds(VAULT, self.name, self.name,
                     [{"user": "first observation", "agent": "first result"},
                      {"user": "second observation", "agent": "second result"}], space="00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 line = "- 2026-10-31 · `{}` · 지지 — first observation"
-                first, second = (evidence.coordinate(core.VAULT, record["path"], n) for n in (1, 2))
+                first, second = (evidence.coordinate(VAULT, record["path"], n) for n in (1, 2))
                 self.args["body"] += "\n\n## 근거\n\n" + line.format(first)
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
-                node = contract.parse(core.ROOT / out["path"])
-                self.assertEqual(evidence.cited_rounds(core.VAULT, node.body), {raw.canonical_ref(record["round_refs"][0])})
-                raw.append_rounds(self.name, self.name,
+                node = contract.parse(VAULT.root / out["path"])
+                self.assertEqual(evidence.cited_rounds(VAULT, node.body), {raw.canonical_ref(VAULT, record["round_refs"][0])})
+                raw.append_rounds(VAULT, self.name, self.name,
                     [{"user": "third observation", "agent": "third result"}])
-                self.assertEqual(D.status(self.key)["status"], "complete")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "complete")
                 # Isolate exact-anchor verification: even a matching target byte
                 # receipt cannot turn round #2 into evidence from round #1.
-                write.update_node(out["id"], old_text=line.format(first), new_text=line.format(second))
-                job = D._load(self.key)
+                write.update_node(VAULT, out["id"], old_text=line.format(first), new_text=line.format(second))
+                job = D._load(VAULT, self.key)
                 job["target"].pop("paragraphs", None)
-                job["target"]["hash"] = core.sha256_file(core.ROOT / out["path"])
-                D._save(job)
-                checked = D.status(self.key)
+                job["target"]["hash"] = core.sha256_file(VAULT.root / out["path"])
+                D._save(VAULT, job)
+                checked = D.status(VAULT, self.key)
                 self.assertEqual(checked["status"], "pending")
                 self.assertIn("provenance", checked["reason"])
 
@@ -453,9 +455,9 @@ def _child():
             def test_later_worker_resumes_without_original_request(self):
                 with self.fail_hub():
                     out = self.create()
-                target = core.ROOT / out["path"]
+                target = VAULT.root / out["path"]
                 before = target.read_bytes()
-                resumed = D.update_node({"resume": self.key}, name=out["id"],
+                resumed = D.update_node(VAULT, {"resume": self.key}, name=out["id"],
                                         body=None, expect_hash=None, summary=None,
                                         add_edges=None, remove_edges=None, old_text=None,
                                         new_text=None, settle=None)
@@ -466,16 +468,16 @@ def _child():
                 with self.fail_hub():
                     out = self.create()
                 with self.assertRaises(write.WriteError):
-                    D.update_node({"resume": self.key}, name=self.source["id"])
+                    D.update_node(VAULT, {"resume": self.key}, name=self.source["id"])
                 for extra in ({"body": "mutation"}, {"summary": "mutation"},
                               {"add_edges": {}}, {"old_text": "old", "new_text": "new"},
                               {"settle": "anything"}, {"expect_hash": out["new_hash"]}):
                     with self.assertRaises(write.WriteError):
-                        D.update_node({"resume": self.key}, name=out["id"], **extra)
+                        D.update_node(VAULT, {"resume": self.key}, name=out["id"], **extra)
 
             def test_later_worker_cannot_create_missing_reserved_target(self):
                 atomic = write._atomic_write
-                target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
+                target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     if path == target:
                         raise Crash()
@@ -483,8 +485,8 @@ def _child():
                 with mock.patch.object(write, "_atomic_write", side_effect=crash):
                     with self.assertRaises(Crash):
                         self.create()
-                job = D._load(self.key)
-                out = D.update_node({"resume": self.key}, name=job["target"]["id"])
+                job = D._load(VAULT, self.key)
+                out = D.update_node(VAULT, {"resume": self.key}, name=job["target"]["id"])
                 self.assertFalse(out["ok"])
                 self.assertEqual(out["distillation"]["status"], "pending")
                 self.assertIn("original request", out["distillation"]["reason"])
@@ -493,13 +495,13 @@ def _child():
             def test_shared_receipt_survives_local_journal_loss(self):
                 out = self.create()
                 receipt = out["distillation"]
-                D._job_path(self.key).unlink()
-                self.assertEqual(D.status(self.key)["status"], "pending")
-                self.assertEqual(D.verify_receipt(receipt)["status"], "complete")
-                target = core.ROOT / out["path"]
-                write.update_node(out["id"], body="changed after synchronization",
+                D._job_path(VAULT, self.key).unlink()
+                self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
+                self.assertEqual(D.verify_receipt(VAULT, receipt)["status"], "complete")
+                target = VAULT.root / out["path"]
+                write.update_node(VAULT, out["id"], body="changed after synchronization",
                                   expect_hash=core.sha256_file(target))
-                self.assertEqual(D.verify_receipt(receipt)["status"], "pending")
+                self.assertEqual(D.verify_receipt(VAULT, receipt)["status"], "pending")
 
             def test_unrelated_edit_keeps_the_distilled_paragraph_receipt(self):
                 # 파일 전체에 결속한 영수증은 무관한 편집 하나에도 깨져, 이미 보존한 내용을
@@ -507,53 +509,53 @@ def _child():
                 out = self.create()
                 receipt = out["distillation"]
                 self.assertTrue(receipt["target"].get("paragraphs"))
-                target = core.ROOT / out["path"]
+                target = VAULT.root / out["path"]
                 body = contract.parse(target).body
-                write.update_node(out["id"], body=body.rstrip() + "\n\nA later, unrelated note.\n",
+                write.update_node(VAULT, out["id"], body=body.rstrip() + "\n\nA later, unrelated note.\n",
                                   expect_hash=core.sha256_file(target))
-                self.assertEqual(D.status(self.key)["status"], "complete")
-                self.assertEqual(D.verify_receipt(receipt)["status"], "complete")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "complete")
+                self.assertEqual(D.verify_receipt(VAULT, receipt)["status"], "complete")
                 # 같은 요청을 다시 보내면 옛 판이 아니라 지금 판의 해시를 준다(PR #135 리뷰)
                 again = self.create()
                 self.assertTrue(again["resumed"])
                 self.assertEqual(again["new_hash"], core.sha256_file(target))
-                write.update_node(out["id"], old_text="bounded operation", new_text="bounded retry")
-                self.assertEqual(D.status(self.key)["status"], "pending")
+                write.update_node(VAULT, out["id"], old_text="bounded operation", new_text="bounded retry")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
 
             def test_list_item_receipt_survives_an_edit_of_another_item(self):
-                existing = write.create_node(self.args["title"], "list", "- first fact\n- second fact",
+                existing = write.create_node(VAULT, self.args["title"], "list", "- first fact\n- second fact",
                                              "fable-5", space="00_Scope/W1")
-                out = D.update_node(self.spec, name=existing["id"], old_text="- second fact",
+                out = D.update_node(VAULT, self.spec, name=existing["id"], old_text="- second fact",
                                     new_text="- second fact\n- distilled third fact")
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(len(out["distillation"]["target"]["paragraphs"]), 1)
-                write.update_node(existing["id"], old_text="- first fact", new_text="- first fact, corrected")
-                self.assertEqual(D.status(self.key)["status"], "complete")
-                write.update_node(existing["id"], old_text="distilled third fact",
+                write.update_node(VAULT, existing["id"], old_text="- first fact", new_text="- first fact, corrected")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "complete")
+                write.update_node(VAULT, existing["id"], old_text="distilled third fact",
                                   new_text="third fact, rewritten")
-                self.assertEqual(D.status(self.key)["status"], "pending")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
 
             def test_distilled_heading_is_a_unit_of_the_receipt(self):
                 # 결론이 제목에만 있으면 문단만 재는 영수증은 그 제목을 지워도 보존으로 남았다(#138 리뷰 P2).
-                out = D.create_node(self.spec, **dict(
+                out = D.create_node(VAULT, self.spec, **dict(
                     self.args, body="## Retry only idempotent requests\n\nVerified on Linux."))
                 self.assertEqual(out["distillation"]["status"], "complete")
                 self.assertEqual(len(out["distillation"]["target"]["paragraphs"]), 2)
-                write.update_node(out["id"], old_text="## Retry only idempotent requests",
+                write.update_node(VAULT, out["id"], old_text="## Retry only idempotent requests",
                                   new_text="### Retry only idempotent requests")
-                self.assertEqual(D.status(self.key)["status"], "complete")  # 단계만 바꿨다
+                self.assertEqual(D.status(VAULT, self.key)["status"], "complete")  # 단계만 바꿨다
                 # 이 수정 전에 만든 영수증은 문단만 결속했고, 그대로 맞는다
                 earlier = dict(out["distillation"], target=dict(
                     out["distillation"]["target"], paragraphs=[core.sha256_bytes(b"Verified on Linux.")]))
-                self.assertEqual(D.verify_receipt(earlier)["status"], "complete")
-                write.update_node(out["id"], old_text="### Retry only idempotent requests", new_text="")
-                self.assertEqual(D.status(self.key)["status"], "pending")
-                self.assertEqual(D.verify_receipt(out["distillation"])["status"], "pending")
+                self.assertEqual(D.verify_receipt(VAULT, earlier)["status"], "complete")
+                write.update_node(VAULT, out["id"], old_text="### Retry only idempotent requests", new_text="")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
+                self.assertEqual(D.verify_receipt(VAULT, out["distillation"])["status"], "pending")
 
             def test_journal_saved_before_heading_units_replays_its_binding(self):
                 # 업그레이드 전에 저장하고 쓰기 전에 끊긴 저널은 문단만 결속했다(#141 리뷰 P2).
                 atomic = write._atomic_write
-                target = core.ROOT / "00_Scope/W1" / (self.args["title"] + ".md")
+                target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     if path == target:
                         raise Crash()
@@ -561,12 +563,12 @@ def _child():
                 args = dict(self.args, body="## Retry only idempotent requests\n\nVerified on Linux.")
                 with mock.patch.object(write, "_atomic_write", side_effect=crash):
                     with self.assertRaises(Crash):
-                        D.create_node(self.spec, **args)
-                job = D._load(self.key)
+                        D.create_node(VAULT, self.spec, **args)
+                job = D._load(VAULT, self.key)
                 self.assertFalse(target.exists())
                 job["target"]["paragraphs"] = [core.sha256_bytes(b"Verified on Linux.")]  # the earlier engine's
-                D._save(job)
-                again = D.create_node(self.spec, **args)
+                D._save(VAULT, job)
+                again = D.create_node(VAULT, self.spec, **args)
                 self.assertEqual(again["distillation"]["status"], "complete")
                 self.assertEqual(again["id"], job["target"]["id"])
                 self.assertEqual(again["distillation"]["target"]["paragraphs"], job["target"]["paragraphs"])
@@ -575,28 +577,28 @@ def _child():
                 out = self.create()
                 legacy = dict(out["distillation"])
                 legacy["target"] = {k: v for k, v in legacy["target"].items() if k != "paragraphs"}
-                target = core.ROOT / out["path"]
+                target = VAULT.root / out["path"]
                 body = contract.parse(target).body
-                write.update_node(out["id"], body=body.rstrip() + "\n\nA later, unrelated note.\n",
+                write.update_node(VAULT, out["id"], body=body.rstrip() + "\n\nA later, unrelated note.\n",
                                   expect_hash=core.sha256_file(target))
-                self.assertEqual(D.verify_receipt(legacy)["status"], "pending")
+                self.assertEqual(D.verify_receipt(VAULT, legacy)["status"], "pending")
 
             def test_two_jobs_same_hub_keep_receipts_complete(self):
                 self.create()
                 second_key = self.key + "-second"
                 try:
-                    second = D.create_node(dict(self.spec, key=second_key),
+                    second = D.create_node(VAULT, dict(self.spec, key=second_key),
                                            **dict(self.args, title=self.args["title"] + "-second"))
                     self.assertEqual(second["distillation"]["status"], "complete")
-                    self.assertEqual(D.status(self.key)["status"], "complete")
+                    self.assertEqual(D.status(VAULT, self.key)["status"], "complete")
                 finally:
-                    D._job_path(second_key).unlink(missing_ok=True)
+                    D._job_path(VAULT, second_key).unlink(missing_ok=True)
 
             def test_resume_preserves_concurrent_hub_addition(self):
                 with self.fail_hub():
                     self.create()
                 prior = contract.parse(self.hub).body
-                write.update_node("W1", body=prior + "\\n- [[" + self.source["name"] + "]]",
+                write.update_node(VAULT, "W1", body=prior + "\\n- [[" + self.source["name"] + "]]",
                                   expect_hash=core.sha256_file(self.hub))
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")
@@ -606,54 +608,54 @@ def _child():
 
             def test_hub_link_removal_invalidates_receipt(self):
                 self.create()
-                write.update_node("W1", old_text="- [[" + self.args["title"] + "]]",
+                write.update_node(VAULT, "W1", old_text="- [[" + self.args["title"] + "]]",
                                   new_text="")
-                self.assertEqual(D.status(self.key)["status"], "pending")
+                self.assertEqual(D.status(VAULT, self.key)["status"], "pending")
 
             def test_unrelated_existing_citation_survives(self):
                 # A citation the target held before v5.4 — a record section, which is no
                 # longer a derived-from target — need not be a valid distillation input.
-                record = core.ROOT / "00_Scope/W1/_raw/legacy-reference.md"
+                record = VAULT.root / "00_Scope/W1/_raw/legacy-reference.md"
                 record.parent.mkdir(exist_ok=True)
                 record.write_text("legacy section content", encoding="utf-8")
-                existing = write.create_node(self.args["title"], "old", "old retained knowledge",
+                existing = write.create_node(VAULT, self.args["title"], "old", "old retained knowledge",
                                              "fable-5", space="00_Scope/W1")
-                path = core.ROOT / existing["path"]
+                path = VAULT.root / existing["path"]
                 legacy = b'derived-from: "[[00_Scope/W1/_raw/legacy-reference.md#section]]"\n'
                 path.write_bytes(path.read_bytes().replace(b"summary:", legacy + b"summary:", 1))
-                out = D.update_node(self.spec, name=existing["id"], body=self.args["body"],
+                out = D.update_node(VAULT, self.spec, name=existing["id"], body=self.args["body"],
                                     expect_hash=core.sha256_file(path))
                 self.assertEqual(out["distillation"]["status"], "complete")
 
             def test_anchor_normalization_noop_is_rejected(self):
-                existing = write.create_node(self.args["title"], "old", "retained knowledge",
+                existing = write.create_node(VAULT, self.args["title"], "old", "retained knowledge",
                                              "fable-5", space="00_Scope/W1")
                 with self.assertRaises(write.WriteError):
-                    D.update_node(self.spec, name=existing["id"],
+                    D.update_node(VAULT, self.spec, name=existing["id"],
                                   old_text="retained knowledge", new_text="retained knowledge  ")
-                self.assertIsNone(D._load(self.key))
-                self.assertEqual(core.sha256_file(core.ROOT / existing["path"]), existing["new_hash"])
+                self.assertIsNone(D._load(VAULT, self.key))
+                self.assertEqual(core.sha256_file(VAULT.root / existing["path"]), existing["new_hash"])
 
             def test_required_provenance_alias_cannot_be_removed(self):
-                existing = write.create_node(self.args["title"], "old", "old retained knowledge",
+                existing = write.create_node(VAULT, self.args["title"], "old", "old retained knowledge",
                                              "fable-5", space="00_Scope/W1")
                 alias = "[[" + self.name + "-source|근거]]"
                 with self.assertRaises(write.WriteError):
-                    D.update_node(self.spec, name=existing["id"], body="new retained knowledge",
+                    D.update_node(VAULT, self.spec, name=existing["id"], body="new retained knowledge",
                                   expect_hash=existing["new_hash"],
                                   remove_edges={"derived-from": alias})
-                self.assertIsNone(D._load(self.key))
-                self.assertEqual(core.sha256_file(core.ROOT / existing["path"]), existing["new_hash"])
+                self.assertIsNone(D._load(VAULT, self.key))
+                self.assertEqual(core.sha256_file(VAULT.root / existing["path"]), existing["new_hash"])
 
             def test_required_provenance_cannot_be_removed(self):
-                existing = write.create_node(self.args["title"], "old", "old retained knowledge",
+                existing = write.create_node(VAULT, self.args["title"], "old", "old retained knowledge",
                                              "fable-5", space="00_Scope/W1")
                 with self.assertRaises(write.WriteError):
-                    D.update_node(self.spec, name=existing["id"], body="new retained knowledge",
+                    D.update_node(VAULT, self.spec, name=existing["id"], body="new retained knowledge",
                                   expect_hash=existing["new_hash"],
                                   remove_edges={"derived-from": self.source["id"]})
-                self.assertIsNone(D._load(self.key))
-                self.assertEqual(core.sha256_file(core.ROOT / existing["path"]), existing["new_hash"])
+                self.assertIsNone(D._load(VAULT, self.key))
+                self.assertEqual(core.sha256_file(VAULT.root / existing["path"]), existing["new_hash"])
 
 
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(Recovery)

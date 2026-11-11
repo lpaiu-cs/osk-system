@@ -5,16 +5,16 @@
  },
  "totals": {
   "upward_imports": 6,
-  "lazy_imports": 57,
+  "lazy_imports": 56,
   "two_module_cycles": 17,
   "tangled_modules": 28,
   "private_access": 6,
-  "vault_fixed_names": 41,
-  "vault_unthreaded": 538,
+  "vault_fixed_names": 0,
+  "vault_unthreaded": 0,
   "broad_except": 125,
   "oversize_functions": 119,
-  "excess_lines": 2742,
-  "excess_branches": 1606
+  "excess_lines": 2741,
+  "excess_branches": 1605
  },
  "upward_imports": {
   "osk.evictions -> osk.write": 1,
@@ -32,7 +32,7 @@
   "osk.growth": 9,
   "osk.harness": 1,
   "osk.publish": 1,
-  "osk.raw": 5,
+  "osk.raw": 4,
   "osk.rechecks": 2,
   "osk.response_growth": 2,
   "osk.services": 2,
@@ -70,58 +70,8 @@
   "osk.organization": 1,
   "osk.scope_memory": 2
  },
- "vault_fixed_names": {
-  "osk._fixture_approvals": 6,
-  "osk.approvals": 3,
-  "osk.authority": 2,
-  "osk.core": 14,
-  "osk.evidence_migration": 2,
-  "osk.graph": 1,
-  "osk.growth": 1,
-  "osk.integration": 1,
-  "osk.publish": 1,
-  "osk.rechecks": 1,
-  "osk.response_growth": 1,
-  "osk.update": 5,
-  "osk.update_check": 1,
-  "scripts.setup": 1,
-  "sync_daemon": 1
- },
- "vault_unthreaded": {
-  "mcp_server": 16,
-  "osk.approvals": 38,
-  "osk.authority": 4,
-  "osk.cli": 13,
-  "osk.distillation": 22,
-  "osk.doctor": 15,
-  "osk.evictions": 18,
-  "osk.evidence_migration": 11,
-  "osk.graph": 32,
-  "osk.growth": 26,
-  "osk.growth_daily": 10,
-  "osk.growth_status": 5,
-  "osk.integration": 54,
-  "osk.organization": 21,
-  "osk.publish": 6,
-  "osk.raw": 16,
-  "osk.rechecks": 11,
-  "osk.release": 2,
-  "osk.response_growth": 18,
-  "osk.routing": 13,
-  "osk.scope_memory": 15,
-  "osk.search": 3,
-  "osk.services": 22,
-  "osk.setup": 27,
-  "osk.signatures": 1,
-  "osk.update": 27,
-  "osk.update_check": 17,
-  "osk.validate": 15,
-  "osk.write": 31,
-  "scripts.hooks.capture_stop": 1,
-  "scripts.hooks.claude_session_start": 22,
-  "scripts.setup": 3,
-  "sync_daemon": 3
- },
+ "vault_fixed_names": {},
+ "vault_unthreaded": {},
  "broad_except": {
   "mcp_server": 6,
   "osk.approvals": 1,
@@ -542,7 +492,7 @@
    17
   ],
   "osk.update:main": [
-   46,
+   47,
    19
   ],
   "osk.validate:run": [
@@ -558,8 +508,8 @@
    31
   ],
   "osk.validate:surface_violations": [
-   44,
-   17
+   43,
+   16
   ],
   "osk.write:_check_edges": [
    50,
@@ -594,7 +544,7 @@
    34
   ],
   "scripts.hooks.claude_session_start:main": [
-   81,
+   80,
    16
   ],
   "scripts.osk_turn_ledger:attribute_costs": [

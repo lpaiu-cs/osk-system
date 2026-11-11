@@ -37,19 +37,21 @@ def writer(a):
     os.environ["OSK_VAULT_ROOT"] = str(a.root.resolve())
     sys.path.insert(0, str(a.engine.resolve()))
     from osk import core, write, contract
+    from osk.vault import Vault
+    VAULT = Vault.open()
     original_lock, original_unlock = core.lock_exclusive, core.unlock
     timing = {}
 
     def lock(f, *args, **kwargs):
         start = time.perf_counter()
         result = original_lock(f, *args, **kwargs)
-        if Path(f.name) == core.mutation_lock_path(core.VAULT):
+        if Path(f.name) == core.mutation_lock_path(VAULT):
             timing.update(wait_ms=(time.perf_counter()-start)*1000,
                           acquired_at=time.perf_counter())
         return result
 
     def unlock(f):
-        if Path(f.name) == core.mutation_lock_path(core.VAULT):
+        if Path(f.name) == core.mutation_lock_path(VAULT):
             timing["hold_ms"] = (time.perf_counter()-timing["acquired_at"])*1000
         return original_unlock(f)
 
@@ -62,11 +64,11 @@ def writer(a):
         start = time.perf_counter()
         op, seq = cmd.get("op", "update"), cmd["seq"]
         if op == "update":
-            result = write.update_node("node-00020", summary=f"측정 {seq}")
+            result = write.update_node(VAULT, "node-00020", summary=f"측정 {seq}")
             parsed = contract.parse(a.root / "00_Scope/Bench00/node-00020.md")
             assert parsed.meta["summary"] == f"측정 {seq}"
         elif op == "create":
-            result = write.create_node(f"created-{seq}", "새 노드 측정", "[[Bench00]]",
+            result = write.create_node(VAULT, f"created-{seq}", "새 노드 측정", "[[Bench00]]",
                                        "agent", space="00_Scope/Bench00")
             assert (a.root / f"00_Scope/Bench00/created-{seq}.md").exists()
         else:

@@ -1,6 +1,6 @@
 """services registers this vault's daily run and sync daemon with the OS service manager.
 
-Each case runs in its own process because `core.ROOT` is fixed at import. The home folder is
+Each case runs in its own process because `VAULT.root` is fixed at import. The home folder is
 temporary and the service manager's commands (`launchctl`, `systemctl`, PowerShell's task
 cmdlets) are recorded fakes, so no case touches this device's scheduler. The one exception is
 `test_real_task_scheduler`, which registers and removes a real Windows task and runs only when
@@ -19,7 +19,9 @@ PRELUDE = r'''
 import json, os, plistlib, subprocess, sys
 from pathlib import Path
 from osk import core, services
-root = core.ROOT
+from osk.vault import Vault
+VAULT = Vault.open()
+root = VAULT.root
 engine = root / '_governance' / '_engine'
 growth_py, daemon_py = engine / 'scripts' / 'growth_run.py', engine / 'sync_daemon.py'
 calls = []
@@ -27,8 +29,8 @@ def run(argv):
     calls.append(argv)
     return subprocess.CompletedProcess(argv, 0, b'', b'')
 command_file = root / '.osk' / 'growth-command.json'
-growth = services.job('growth', command_files=[command_file], at='07:30')
-sync = services.job('sync')
+growth = services.job(VAULT, 'growth', command_files=[command_file], at='07:30')
+sync = services.job(VAULT, 'sync')
 home = Path.home()
 '''
 
@@ -53,7 +55,7 @@ class ServicesTests(unittest.TestCase):
 
     def test_launchd_agents_are_this_vaults_and_replace_the_example(self):
         self.check_case(r'''
-m = services.Launchd(run)
+m = services.Launchd(VAULT, run)
 agents = home / 'Library' / 'LaunchAgents'
 # The example from `scripts/launchd/`, filled in for this vault: this vault's daemon, another label.
 agents.mkdir(parents=True)
@@ -62,9 +64,9 @@ agents.mkdir(parents=True)
 # Another vault's agent and an unrelated agent stay untouched.
 (agents / 'com.other.plist').write_bytes(plistlib.dumps(
     {'Label': 'com.other', 'ProgramArguments': ['/x/other-vault/_governance/_engine/sync_daemon.py']}))
-p = services.plan(m, 'sync', sync, False)
+p = services.plan(VAULT, m, 'sync', sync, False)
 assert (p['action'], p['remove']) == ('replace', ['com.example.ltm-vault-daemon']), p
-result = services.apply(m, 'sync', sync, p, False, '20260927-090000')
+result = services.apply(VAULT, m, 'sync', sync, p, False, '20260927-090000')
 assert result['ok'] and result['done'] == ['com.example.ltm-vault-daemon', m.ident('sync')], result
 assert not (agents / 'com.example.ltm-vault-daemon.plist').exists()
 assert Path(result['backups'][0]).parent == home / '.osk-system' / 'backups', result
@@ -74,54 +76,54 @@ assert data['ProgramArguments'] == [sync['python'], str(daemon_py)], data
 assert data['KeepAlive'] is True and data['EnvironmentVariables']['SYNC_ENABLED'] == '1', data
 assert data['EnvironmentVariables']['OSK_VAULT_ROOT'] == str(root), data
 assert ['launchctl', 'bootstrap'] == calls[-1][:2] and calls[-1][-1] == str(agents / f"{m.ident('sync')}.plist"), calls
-assert services.plan(m, 'sync', sync, False)['action'] == 'keep'
+assert services.plan(VAULT, m, 'sync', sync, False)['action'] == 'keep'
 assert (agents / 'com.other.plist').is_file()
 # The daily run fires at the chosen minute.
-p = services.plan(m, 'growth', growth, False)
+p = services.plan(VAULT, m, 'growth', growth, False)
 assert p['action'] == 'add' and '07:30' in p['command'], p
-services.apply(m, 'growth', growth, p, False, '20260927-090001')
+services.apply(VAULT, m, 'growth', growth, p, False, '20260927-090001')
 data = plistlib.loads((agents / f"{m.ident('growth')}.plist").read_bytes())
 assert data['StartCalendarInterval'] == {'Hour': 7, 'Minute': 30} and 'KeepAlive' not in data, data
 assert data['ProgramArguments'][1:4] == [str(growth_py), '--command-file', str(command_file)], data
 # A changed minute is a replacement; uninstalling removes both and backs them up.
-later = services.job('growth', command_files=[command_file], at='08:00')
-assert services.plan(m, 'growth', later, False)['action'] == 'replace'
+later = services.job(VAULT, 'growth', command_files=[command_file], at='08:00')
+assert services.plan(VAULT, m, 'growth', later, False)['action'] == 'replace'
 for kind in ('growth', 'sync'):
-    p = services.plan(m, kind, None, True)
+    p = services.plan(VAULT, m, kind, None, True)
     assert p['action'] == 'remove', p
-    assert services.apply(m, kind, None, p, True, '20260927-090002')['ok']
+    assert services.apply(VAULT, m, kind, None, p, True, '20260927-090002')['ok']
 assert sorted(f.name for f in agents.iterdir()) == ['com.other.plist']
-assert services.plan(m, 'growth', None, True)['action'] == 'absent'
+assert services.plan(VAULT, m, 'growth', None, True)['action'] == 'absent'
 ''')
 
     def test_systemd_units_quote_paths_and_pair_the_timer(self):
         self.check_case(r'''
-m = services.Systemd(run)
+m = services.Systemd(VAULT, run)
 units = home / '.config' / 'systemd' / 'user'
 units.mkdir(parents=True)
 # The example service from `scripts/systemd/`, filled in for this vault.
 (units / 'ltm-vault-daemon.service').write_text(
     f'[Service]\nExecStart=/usr/bin/python3 "{daemon_py}"\n', encoding='utf-8')
-p = services.plan(m, 'sync', sync, False)
+p = services.plan(VAULT, m, 'sync', sync, False)
 assert (p['action'], p['remove']) == ('replace', ['ltm-vault-daemon']), p
-assert services.apply(m, 'sync', sync, p, False, '20260927-090000')['ok']
+assert services.apply(VAULT, m, 'sync', sync, p, False, '20260927-090000')['ok']
 assert ['systemctl', '--user', 'disable', '--now', 'ltm-vault-daemon.service'] in calls, calls
 assert calls[-1] == ['systemctl', '--user', 'enable', '--now', f"{m.ident('sync')}.service"], calls
 text = (units / f"{m.ident('sync')}.service").read_text(encoding='utf-8')
 assert 'Environment=SYNC_ENABLED=1' in text and 'Restart=always' in text, text
 # The vault path has a space and a percent sign: ExecStart round-trips to the same files.
 entry = next(e for e in m.entries() if e['id'] == m.ident('sync'))
-assert services.owns('sync', entry['name'], entry['tokens']), entry
-assert services.plan(m, 'sync', sync, False)['action'] == 'keep'
+assert services.owns(VAULT, 'sync', entry['name'], entry['tokens']), entry
+assert services.plan(VAULT, m, 'sync', sync, False)['action'] == 'keep'
 calls.clear()
-p = services.plan(m, 'growth', growth, False)
-services.apply(m, 'growth', growth, p, False, '20260927-090001')
+p = services.plan(VAULT, m, 'growth', growth, False)
+services.apply(VAULT, m, 'growth', growth, p, False, '20260927-090001')
 timer = (units / f"{m.ident('growth')}.timer").read_text(encoding='utf-8')
 assert 'OnCalendar=*-*-* 07:30:00' in timer and 'Persistent=true' in timer, timer
 assert f"Unit={m.ident('growth')}.service" in timer, timer
 assert calls[-1] == ['systemctl', '--user', 'enable', '--now', f"{m.ident('growth')}.timer"], calls
-p = services.plan(m, 'growth', None, True)
-result = services.apply(m, 'growth', None, p, True, '20260927-090002')
+p = services.plan(VAULT, m, 'growth', None, True)
+result = services.apply(VAULT, m, 'growth', None, p, True, '20260927-090002')
 assert len(result['backups']) == 2 and not (units / f"{m.ident('growth')}.timer").exists(), result
 assert any('OnCalendar' in Path(b).read_text(encoding='utf-8') for b in result['backups']), result
 assert calls[-2][:4] == ['systemctl', '--user', 'disable', '--now'] and calls[-2][4].endswith('.timer'), calls
@@ -147,7 +149,7 @@ class Tasks(services.TaskScheduler):
         return '<Task/>'
     def _unregister(self, path, name):
         del self.store[path + name]
-m = Tasks(run)
+m = Tasks(VAULT, run)
 vault = str(root)
 # What the manual guides produced on this user's device: a wrapper under .osk and a cmd.exe daemon.
 m.store['\\osk-domain-growth'] = {'path': '\\', 'name': 'osk-domain-growth', 'battery': True, 'limit': 'PT15M',
@@ -161,10 +163,10 @@ m.store['\\osk-sync-daemon'] = {'path': '\\', 'name': 'osk-sync-daemon', 'batter
 # A task that only opens the vault in an editor is reported, not touched.
 m.store['\\open-notes'] = {'path': '\\', 'name': 'open-notes', 'battery': True, 'limit': 'PT1H',
     'actions': [{'execute': 'notepad.exe', 'arguments': f'"{vault}\\README.md"', 'workdir': ''}], 'triggers': []}
-p = services.plan(m, 'growth', growth, False)
+p = services.plan(VAULT, m, 'growth', growth, False)
 assert (p['action'], p['remove']) == ('replace', ['\\osk-domain-growth']), p
 assert any('open-notes' in n for n in p['notes']), p
-result = services.apply(m, 'growth', growth, p, False, '20260927-090000')
+result = services.apply(VAULT, m, 'growth', growth, p, False, '20260927-090000')
 assert result['ok'] and Path(result['backups'][0]).name == 'osk-domain-growth.osk-backup-20260927-090000.xml', result
 assert Path(result['backups'][0]).read_text(encoding='utf-8') == '<Task/>'
 task = m.store['\\' + m.ident('growth')]
@@ -173,35 +175,35 @@ assert subprocess.list2cmdline(growth['args']) == task['actions'][0]['arguments'
 # The task starts python itself with the day's batches, so its time limit — the engine's 1.5-hour
 # budget plus 30 minutes — stops the runner. The wrapper's Start-Process python outlived its 15 minutes.
 assert growth['args'][-1] == '--daily' and task['limit'] == 'PT2H', task
-assert services.plan(m, 'growth', growth, False)['action'] == 'keep'
+assert services.plan(VAULT, m, 'growth', growth, False)['action'] == 'keep'
 # The Claude worker that runs on a day Codex is exhausted is a second command file: a new registration.
-both = services.job('growth', command_files=[command_file, root / '.osk' / 'growth-command-claude.json'], at='07:30')
+both = services.job(VAULT, 'growth', command_files=[command_file, root / '.osk' / 'growth-command-claude.json'], at='07:30')
 assert both['args'][1:6] == ['--command-file', str(command_file), '--command-file',
                              str(root / '.osk' / 'growth-command-claude.json'), '--daily'], both
-assert services.plan(m, 'growth', both, False)['action'] == 'replace'
-p = services.plan(m, 'sync', sync, False)
+assert services.plan(VAULT, m, 'growth', both, False)['action'] == 'replace'
+p = services.plan(VAULT, m, 'sync', sync, False)
 assert (p['action'], p['remove']) == ('replace', ['\\osk-sync-daemon']), p
-services.apply(m, 'sync', sync, p, False, '20260927-090001')
+services.apply(VAULT, m, 'sync', sync, p, False, '20260927-090001')
 action = m.store['\\' + m.ident('sync')]['actions'][0]
 assert action['execute'] == 'cmd.exe', action
 assert action['arguments'] == f'/c set SYNC_ENABLED=1&& start "" "{sync["python"]}" "{daemon_py}"', action
 # `osk.update` finds the task that starts this daemon by the daemon path in its action.
 assert str(daemon_py).lower().replace('/', '\\') in (action['execute'] + ' ' + action['arguments']).lower().replace('/', '\\')
-assert services.plan(m, 'sync', sync, False)['action'] == 'keep'
+assert services.plan(VAULT, m, 'sync', sync, False)['action'] == 'keep'
 # A task switched off in Task Scheduler is registered again: the user chose the feature.
 m.store['\\' + m.ident('sync')]['enabled'] = False
-assert services.plan(m, 'sync', sync, False)['action'] == 'replace'
+assert services.plan(VAULT, m, 'sync', sync, False)['action'] == 'replace'
 m.store['\\' + m.ident('sync')]['enabled'] = True
 # A task at Task Scheduler's default priority 7 (BELOW_NORMAL) starves under a full CPU while it
 # holds the mutation lock: it is registered again at the normal priority.
 assert m.store['\\' + m.ident('sync')]['priority'] == services.TASK_PRIORITY == 5
 m.store['\\' + m.ident('sync')]['priority'] = 7
-assert services.plan(m, 'sync', sync, False)['action'] == 'replace'
+assert services.plan(VAULT, m, 'sync', sync, False)['action'] == 'replace'
 m.store['\\' + m.ident('sync')]['priority'] = 5
 # A registration that appears after the confirmation is not overwritten.
-p = services.plan(m, 'growth', None, True)
+p = services.plan(VAULT, m, 'growth', None, True)
 m.store['\\osk-domain-growth'] = dict(m.store['\\' + m.ident('growth')], name='osk-domain-growth')
-result = services.apply(m, 'growth', None, p, True, '20260927-090002')
+result = services.apply(VAULT, m, 'growth', None, p, True, '20260927-090002')
 assert not result['ok'] and '바뀌었다' in result['error'], result
 assert '\\' + m.ident('growth') in m.store
 ''')
@@ -236,11 +238,11 @@ def manager(argv):
     elif verb in ('is-active', 'print'):
         return subprocess.CompletedProcess(argv, 0 if argv[-1].rsplit('/', 1)[-1] in running else 1, b'', b'')
     return subprocess.CompletedProcess(argv, 0, b'', b'')
-for m, kind in ((services.Systemd(manager), 'growth'), (services.Launchd(manager), 'sync')):
+for m, kind in ((services.Systemd(VAULT, manager), 'growth'), (services.Launchd(VAULT, manager), 'sync')):
     job = growth if kind == 'growth' else sync
-    p = services.plan(m, kind, job, False)
+    p = services.plan(VAULT, m, kind, job, False)
     try:
-        services.apply(m, kind, job, p, False, '20260927-090000')
+        services.apply(VAULT, m, kind, job, p, False, '20260927-090000')
         raise AssertionError('the failed activation was reported as done')
     except OSError:
         pass
@@ -248,30 +250,30 @@ for m, kind in ((services.Systemd(manager), 'growth'), (services.Launchd(manager
         assert m._ok(['systemctl', '--user', 'is-enabled', m.ident(kind) + '.timer'])
     # The definition is on disk but not running: the next run retries instead of `keep`.
     assert any(e['name'] == m.ident(kind) for e in m.entries())
-    p = services.plan(m, kind, job, False)
+    p = services.plan(VAULT, m, kind, job, False)
     assert (p['action'], p['remove']) == ('replace', [m.ident(kind)]), p
-    assert services.apply(m, kind, job, p, False, '20260927-090001')['ok']
-    assert services.plan(m, kind, job, False)['action'] == 'keep'
+    assert services.apply(VAULT, m, kind, job, p, False, '20260927-090001')['ok']
+    assert services.plan(VAULT, m, kind, job, False)['action'] == 'keep'
 # Without a service manager nothing can be registered, and nothing needs removing.
-assert services.plan(None, 'sync', None, True)['action'] == 'absent'
-assert services.plan(None, 'sync', sync, False)['action'] == 'error'
+assert services.plan(VAULT, None, 'sync', None, True)['action'] == 'absent'
+assert services.plan(VAULT, None, 'sync', sync, False)['action'] == 'error'
 ''')
 
     @unittest.skipUnless(os.name == 'nt' and os.environ.get('OSK_TEST_REAL_TASKS') == '1',
                          'registers a real Windows task; CI Windows jobs set OSK_TEST_REAL_TASKS=1')
     def test_real_task_scheduler(self):
         self.check_case(r'''
-m = services.TaskScheduler()
-p = services.plan(m, 'growth', growth, False)
+m = services.TaskScheduler(VAULT)
+p = services.plan(VAULT, m, 'growth', growth, False)
 assert p['action'] == 'add', p
 try:
-    assert services.apply(m, 'growth', growth, p, False, '20260927-090000')['ok']
-    assert services.plan(m, 'growth', growth, False)['action'] == 'keep', m.entries()
+    assert services.apply(VAULT, m, 'growth', growth, p, False, '20260927-090000')['ok']
+    assert services.plan(VAULT, m, 'growth', growth, False)['action'] == 'keep', m.entries()
 finally:
-    p = services.plan(m, 'growth', None, True)
-    result = services.apply(m, 'growth', None, p, True, '20260927-090001')
+    p = services.plan(VAULT, m, 'growth', None, True)
+    result = services.apply(VAULT, m, 'growth', None, p, True, '20260927-090001')
 assert result['ok'] and Path(result['backups'][0]).read_text(encoding='utf-8').lstrip().startswith('<'), result
-assert services.plan(m, 'growth', None, True)['action'] == 'absent'
+assert services.plan(VAULT, m, 'growth', None, True)['action'] == 'absent'
 ''')
 
 

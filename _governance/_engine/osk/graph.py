@@ -6,7 +6,6 @@ Domain의 인용 기록 직접 참조 금지), 헌법 4조 5항(Workbench 예외
 conflicts·비노드 대상·Workbench 비산입).
 """
 from __future__ import annotations
-from .core import DOMAIN, PERSON, SCOPE
 import os
 import re
 import stat
@@ -14,20 +13,20 @@ import tempfile
 import time
 from pathlib import Path
 
-from .core import ROOT, LEDGER, ID_RE, resolve_in_root, SPACE_ROOTS, adapt_path
+from .core import ID_RE, resolve_in_root, adapt_path
 from . import contract, roots, signatures as _sig
 from .errors import WriteError
-from .core import VAULT
+from .vault import Vault
 
 # 바이트 속 id꼴 토큰 — `ID_RE`의 앵커 없는 판(동 id 후보표 전용, 판정 아님)
 _ID_TOKEN = re.compile(rb"(?<![0-9a-z])\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?(?![0-9a-z])")
 _ID_TOKEN_CACHE: dict[Path, tuple[tuple[int, int], frozenset]] = {}
 
 
-def load_cases() -> dict[str, dict]:
+def load_cases(vault: Vault) -> dict[str, dict]:
     """사건부 헤더 일괄 로드 — conflicts 적격 판정용."""
     out = {}
-    cdir = LEDGER / "case"
+    cdir = vault.ledger / "case"
     if cdir.exists():
         for f in sorted(cdir.glob("CASE-*.md")):
             c = _sig.parse_case(f)
@@ -35,7 +34,12 @@ def load_cases() -> dict[str, dict]:
                 out[f.stem] = c
     return out
 
-NODE_SPACES = (DOMAIN, PERSON, SCOPE)
+
+def node_spaces(vault: Vault) -> tuple[str, str, str]:
+    """노드가 사는 세 공간의 폴더 이름."""
+    return (vault.domain, vault.person, vault.scope)
+
+
 W_LINK, W_DERIVED = 1.0, 3.0  # 계수는 mechanism 재량 — 초기값 (Link·derived-from)
 W_OBSERVATION = 1.0           # 관측 줄 하나의 가중 w_O (Mechanism §8 6항)
 
@@ -115,10 +119,10 @@ def is_reparse(entry) -> bool:
 # 셈이다. 프로세스마다 한 번 실제 눈금을 재고, 그 8배에 바닥·천장을 씌운다.
 _RACY_FLOOR_NS = 10_000_000          # 10 ms — 이 기기 실측 눈금(~1 ms)의 10배
 _RACY_CEIL_NS = 2_000_000_000        # 2 s — 못 쟀을 때의 보수적 폴백(FAT 입도)
-_racy_margin_cache: int | None = None
+_racy_margin_cache: dict[Path, int] = {}      # 저장소 루트 → 여유. 시험은 값을 고정하려고 이 표를 직접 채운다
 
 
-def _probe_mtime_granularity(rounds: int = 40) -> int | None:
+def _probe_mtime_granularity(vault: Vault, rounds: int = 40) -> int | None:
     """이 파일시스템의 mtime 눈금 — 같은 파일을 연달아 고쳐 쓰며 시각이 얼마나
     벌어지는지 본다. 한 번도 벌어지지 않으면 눈금이 이 반복보다 굵다는 뜻이라
     `None`(=모름)을 낸다.
@@ -141,7 +145,7 @@ def _probe_mtime_granularity(rounds: int = 40) -> int | None:
     2초를 잡았고, 파일 mtime이 1.6초 전인데도 racy로 판정했다)."""
     probe = None
     try:
-        d = ROOT / ".osk"
+        d = vault.root / ".osk"
         d.mkdir(parents=True, exist_ok=True)
         fd, nm = tempfile.mkstemp(dir=str(d), prefix="mtime-probe-")
         os.close(fd)
@@ -165,17 +169,17 @@ def _probe_mtime_granularity(rounds: int = 40) -> int | None:
     return min(deltas) if deltas else None
 
 
-def racy_margin_ns() -> int:
-    """서명을 믿지 않을 시간 폭. 프로세스마다 한 번 재고 접어 둔다."""
-    global _racy_margin_cache
-    if _racy_margin_cache is None:
-        g = _probe_mtime_granularity()
-        _racy_margin_cache = (_RACY_CEIL_NS if g is None else
-                              max(_RACY_FLOOR_NS, min(_RACY_CEIL_NS, g * 8)))
-    return _racy_margin_cache
+def racy_margin_ns(vault: Vault) -> int:
+    """서명을 믿지 않을 시간 폭. 저장소마다 한 번 재고 접어 둔다 — 시각의 눈금은 그 저장소가 놓인 볼륨의
+    것이라, 한 저장소에서 잰 값을 다른 저장소에 쓰지 않는다."""
+    if vault.root not in _racy_margin_cache:
+        g = _probe_mtime_granularity(vault)
+        _racy_margin_cache[vault.root] = (_RACY_CEIL_NS if g is None else
+                                          max(_RACY_FLOOR_NS, min(_RACY_CEIL_NS, g * 8)))
+    return _racy_margin_cache[vault.root]
 
 
-def space_of(path: Path) -> tuple:
+def space_of(vault: Vault, path: Path) -> tuple:
     """경로 → 소속. ('domain', d) ('person', f) ('scope', s) ('workbench',)
     ('workbench-transit',) ('ledger',) ('raw', s) ('archive',) ('sources',)
     ('engine',) ('support',). vault 밖 경로는 소속이 없다 — ('support',)로
@@ -187,41 +191,41 @@ def space_of(path: Path) -> tuple:
     이미 봉쇄 안이므로 순회기는 `_space_of_parts`를 직접 부른다 — 파일당
     `resolve()`가 색인 구축 전체의 32%였다(v3.7.0 실측)."""
     try:
-        if path.is_relative_to(ROOT):
-            path = ROOT / adapt_path(path.relative_to(ROOT).as_posix(), SPACE_ROOTS)
-        rel = path.resolve().relative_to(ROOT)
+        if path.is_relative_to(vault.root):
+            path = vault.root / adapt_path(path.relative_to(vault.root).as_posix(), vault.space_roots)
+        rel = path.resolve().relative_to(vault.root)
     except (ValueError, OSError):
         return ("support",)
-    return _space_of_parts(rel.parts)
+    return _space_of_parts(vault, rel.parts)
 
 
-def _space_of_parts(parts: tuple) -> tuple:
+def _space_of_parts(vault: Vault, parts: tuple) -> tuple:
     """**ROOT 상대** 경로 조각 → 소속. `space_of`의 판정 본체이며, 봉쇄는 하지
     않는다 — 부르는 쪽이 이미 ROOT 아래임을 아는 경우에만 직접 쓴다.
 
     노드 자리로 판정된 경로라도 살림 구획(`_off_node`)을 지나면 비노드다.
     `_raw`·`_ledger`·`_engine`처럼 이름이 정해진 구획은 그보다 먼저 제 소속을
     받으므로(`_raw/.records`는 그대로 raw) 이 판정이 건드리지 않는다."""
-    kind = _place_of_parts(parts)
+    kind = _place_of_parts(vault, parts)
     if is_node_home(kind) and (_off_node(parts[1:]) or (
             len(parts) == 2 and kind[0] != "governance" and _is_md(parts[1]))):
         return ("support",)       # 노드는 군집 안에만 둔다 — Space 루트 바로 아래는 아니다
     return kind
 
 
-def _place_of_parts(parts: tuple) -> tuple:
+def _place_of_parts(vault: Vault, parts: tuple) -> tuple:
     if not parts:
         return ("support",)
     head = parts[0]
     if head == RECORD_DIRS[0]:
         # 루트 `_cited/` — Space 밖의 상설 비노드 구획(헌법 4조 3항). 소속 scope가 없다.
         return ("raw", None)
-    if head == DOMAIN:
+    if head == vault.domain:
         return ("domain", parts[1] if len(parts) > 2 else None)
-    if head == PERSON:
+    if head == vault.person:
         if len(parts) > 1 and parts[1] == RECORD_DIRS[0]:
             # 소속 scope 없이 Person 노드를 남긴 세션의 인용 기록(Mechanism §1 2항 · 시행령 §2 8항)
-            return ("raw", PERSON)
+            return ("raw", vault.person)
         return ("person", parts[1] if len(parts) > 2 else None)
     if head == "_governance":
         # 통치 구획 — Space 밖의 상설 구획. 통치 문서·사료는 특수한 노드다
@@ -230,7 +234,7 @@ def _place_of_parts(parts: tuple) -> tuple:
         if "_engine" in parts:
             return ("engine",)
         return ("governance",)
-    if head == SCOPE:
+    if head == vault.scope:
         s = parts[1] if len(parts) > 1 else None
         if s == "Workbench":
             if "_ledger" in parts:
@@ -331,7 +335,7 @@ def _scan(root: Path, prefix: tuple, errors: list | None = None):
                 continue
 
 
-def iter_nodes(errors: list | None = None, dirents: dict | None = None):
+def iter_nodes(vault: Vault, errors: list | None = None, dirents: dict | None = None):
     # 통치 구획의 통치 문서·사료는 특수한 노드다(시행령 §10 1항) — 색인에
     # 있어야 명시 조회(read_node)가 도달하고 갱신 후 승인(수용 기록)이
     # 성립한다. `_engine`의 .md는 소속 판정이 ("engine",)으로 걸러낸다.
@@ -339,8 +343,8 @@ def iter_nodes(errors: list | None = None, dirents: dict | None = None):
     # 정렬을 유지하는 것은 취향이 아니다 — 동명 노드가 둘이면 색인에서 **뒤에
     # 오는 쪽이 이긴다.** 순서가 기기마다 다르면 같은 트리가 기기마다 다른
     # 노드를 가리키게 된다. 구판의 `sorted(rglob(...))`과 같은 키로 접는다.
-    for base in NODE_SPACES + ("_governance",):
-        root = ROOT / base
+    for base in node_spaces(vault) + ("_governance",):
+        root = vault.root / base
         if not root.exists():
             continue
         found = []
@@ -350,8 +354,8 @@ def iter_nodes(errors: list | None = None, dirents: dict | None = None):
             # 리파스 파일만 옛 경로로 보낸다 — 그것이 vault 밖을 가리키면
             # `resolve()`가 걸러야 하고, 조각만 보는 판정은 못 본다.
             p = Path(e.path)
-            found.append((p, space_of(p) if is_reparse(e)
-                          else _space_of_parts(parts)))
+            found.append((p, space_of(vault, p) if is_reparse(e)
+                          else _space_of_parts(vault, parts)))
             if dirents is not None:
                 dirents[p] = e        # 디렉토리 판독의 stat — 동 id 후보표가 쓴다
         for p, k in sorted(found, key=lambda x: x[0]):
@@ -359,7 +363,7 @@ def iter_nodes(errors: list | None = None, dirents: dict | None = None):
                 yield p, k
 
 
-def index_signature(errors: list | None = None):
+def index_signature(vault: Vault, errors: list | None = None):
     """`Index`가 읽는 것의 (상대경로, mtime_ns, 크기, 소속, 링크 목적지)와,
     그중 채취 시각에 너무 가까워 믿을 수 없는 항목이 있었는가.
 
@@ -375,17 +379,17 @@ def index_signature(errors: list | None = None):
     `stat`을 부르므로 그쪽에서는 절감이 없다)."""
     out = []
     racy = False
-    margin = racy_margin_ns()
+    margin = racy_margin_ns(vault)
     now = time.time_ns()
     lo, hi = now - margin, now + margin
-    for base in NODE_SPACES + ("_governance", "_sources"):
-        root = ROOT / base
+    for base in node_spaces(vault) + ("_governance", "_sources"):
+        root = vault.root / base
         if not root.exists():
             continue
         for e, parts in _scan(root, (base,), errors):
             reparse = is_reparse(e)
             p = Path(e.path) if reparse else None
-            k = space_of(p) if reparse else _space_of_parts(parts)
+            k = space_of(vault, p) if reparse else _space_of_parts(vault, parts)
             if is_node_home(k):
                 if base == "_sources" or not _is_md(e.name):
                     continue
@@ -409,12 +413,12 @@ def index_signature(errors: list | None = None):
     return out, racy
 
 
-def _vault_md():
+def _vault_md(vault: Vault):
     """vault의 md 전수. 점(.)으로 시작하는 도구 구획(.git·.venv·.obsidian 등)은
     저장소의 살림살이지 vault의 배치가 아니다 — 순회에서 뺀다."""
-    if not ROOT.exists():
+    if not vault.root.exists():
         return
-    for top in sorted(ROOT.iterdir()):
+    for top in sorted(vault.root.iterdir()):
         if top.name.startswith(".") or top.name == "__pycache__":
             continue
         if top.is_dir():
@@ -424,17 +428,17 @@ def _vault_md():
             yield top
 
 
-def layout_violations() -> list[str]:
+def layout_violations(vault: Vault) -> list[str]:
     """노드형(frontmatter 보유) 파일은 선언표의 노드 군집에만 둘 수 있다
     (Mechanism §1 4항 — 통치 구획을 제외한 `_` 구획·Workbench 루트·비선언
     루트 디렉토리는 노드를 두지 않는다)."""
     errs = []
-    for p in _vault_md():
-        k = space_of(p)
+    for p in _vault_md(vault):
+        k = space_of(vault, p)
         if is_node_home(k):
             continue
         if p.read_text(encoding="utf-8", errors="ignore").startswith("---\n"):
-            errs.append(f"비노드 구획에 노드형 파일: {p.relative_to(ROOT)} ({k[0]})")
+            errs.append(f"비노드 구획에 노드형 파일: {p.relative_to(vault.root)} ({k[0]})")
     return errs
 
 
@@ -469,13 +473,14 @@ class Index:
     만들었고, 그 `모호`에는 소속이 없어 뒤따르는 헌법 8조 검사가 아예 제기되지
     않았다(독립 검토 4인 확인)."""
 
-    def __init__(self):
+    def __init__(self, vault: Vault):
         # 관측이 불완전하면(디렉토리 하나라도 못 읽었으면) 유일성을 말할 수
         # 없다. 그 사실을 색인이 들고 있어야 쓰기가 거부할 수 있다.
+        self.vault = vault
         self.scan_errors: list[str] = []
         self._dirents: dict = {}
         self._entries: list[tuple[Path, tuple]] = list(
-            iter_nodes(self.scan_errors, self._dirents))
+            iter_nodes(vault, self.scan_errors, self._dirents))
         self.names: dict[str, tuple[Path, tuple]] = {}
         self._by_name: dict[str, list[tuple[Path, tuple]]] = {}
         self.parsed: dict[Path, contract.Node] = {}
@@ -508,14 +513,14 @@ class Index:
         self.nonnode: dict[str, tuple] = {}
         # 외부 루트 선언(`roots.jsonl`)도 대장이라 같이 낡는다 — 처음 묻는 별칭이 다시 읽는다
         self._roots: dict | None = None
-        for base in ("_sources", SCOPE, PERSON):
-            root = ROOT / base
+        for base in ("_sources", self.vault.scope, self.vault.person):
+            root = self.vault.root / base
             if not root.exists():
                 continue
             found = []
             for e, parts in _scan(root, (base,), self.scan_errors):
                 p = Path(e.path)
-                k = space_of(p) if is_reparse(e) else _space_of_parts(parts)
+                k = space_of(self.vault, p) if is_reparse(e) else _space_of_parts(self.vault, parts)
                 if k[0] in ("raw", "sources", "ledger"):
                     found.append((p, k))
             for p, k in sorted(found, key=lambda x: x[0]):
@@ -537,7 +542,7 @@ class Index:
             # 판독 불가 파일(임시 메모 등)은 노드에서 분리해 소비자가 건너뛰게
             # 하고 별도로 보고한다 — 하나가 검증기·검색 전체를 죽이지 않는다
             # (시행령 §11 — 실패는 보류·보고).
-            self._failed[p] = f"{p.relative_to(ROOT)}: {e}"
+            self._failed[p] = f"{p.relative_to(self.vault.root)}: {e}"
             return False
 
     def parse_all(self) -> None:
@@ -562,8 +567,8 @@ class Index:
                 continue
             if p.stem in nodes:
                 dup.setdefault(p.stem, [
-                    str(nodes[p.stem][0].relative_to(ROOT))]).append(
-                    str(p.relative_to(ROOT)))
+                    str(nodes[p.stem][0].relative_to(self.vault.root))]).append(
+                    str(p.relative_to(self.vault.root)))
             nodes[p.stem] = (p, k)
             nid = self.parsed[p].id
             if nid:
@@ -576,8 +581,8 @@ class Index:
                     # 경로는 POSIX 표기 — 이 목록은 `read_node`의 오류로 MCP
                     # 표면까지 나간다(도구마다 구분자가 갈리면 호출자가 혼선).
                     dupid.setdefault(nid, [
-                        by_id[nid][0].relative_to(ROOT).as_posix()]).append(
-                        p.relative_to(ROOT).as_posix())
+                        by_id[nid][0].relative_to(self.vault.root).as_posix()]).append(
+                        p.relative_to(self.vault.root).as_posix())
                 by_id[nid] = (p, k)
         self._nodes, self._by_id = nodes, by_id
         self._broken, self._dup_stems = broken, dup
@@ -699,7 +704,7 @@ class Index:
         쓰기 한 번이 수백 ms 늘었다(실측). racy 창 안의 파일은 접지 않는다."""
         # ponytail: 캐시는 지운 경로를 비우지 않는다(프로세스 수명 동안 vault
         # 크기에 비례). 장수 프로세스에서 문제가 되면 색인 구축 때 솎는다.
-        margin, now = racy_margin_ns(), time.time_ns()
+        margin, now = racy_margin_ns(self.vault), time.time_ns()
         for p, _k in self._entries:
             try:
                 e = self._dirents.get(p)
@@ -729,7 +734,7 @@ class Index:
             return []
         nid = self.parsed[path].id
         if self._all_parsed:
-            same = [ROOT / s for s in self.dup_ids.get(nid, [])]
+            same = [self.vault.root / s for s in self.dup_ids.get(nid, [])]
         else:
             if self._id_tokens is None:
                 self._id_tokens = {}
@@ -741,7 +746,7 @@ class Index:
         # 같은 파일로 가는 파일 링크도 한 노드를 두 자리에 두는 중복 소속이다 —
         # 사본과 같이 거부한다(Mechanism §2 1항).
         others = [p for p in same if p != path]
-        return sorted(q.relative_to(ROOT).as_posix() for q in [path, *others]) if others else []
+        return sorted(q.relative_to(self.vault.root).as_posix() for q in [path, *others]) if others else []
 
     def node(self, path: Path) -> contract.Node:
         if path not in self.parsed:
@@ -767,10 +772,10 @@ class Index:
         if re.match(ID_RE, name):
             return None if name in self.dup_ids else self.by_id.get(name)
         if "/" in name:
-            p = resolve_in_root(VAULT, name)
+            p = resolve_in_root(self.vault, name)
             for cand in ((p, p.with_suffix(".md")) if p is not None else ()):
                 if cand.is_file():
-                    return cand, space_of(cand)
+                    return cand, space_of(self.vault, cand)
             return None
         live, _errors = self.lookup_name(name)
         if len(live) == 1:
@@ -790,14 +795,14 @@ class Index:
         if alias:
             if self._roots is None:
                 try:
-                    self._roots = roots.declarations(VAULT)
+                    self._roots = roots.declarations(self.vault)
                 except (OSError, ValueError):
                     return ("dangling",)    # 대장 손상 — 선언을 확인하지 못한 별칭은 끊김이다
             return ("external",) if roots.alias_problem(alias[0], self._roots) is None else ("dangling",)
         if is_record_ref(name):
             from . import raw
             try:
-                return ("nonnode", space_of(raw.raw_file(name.split("#", 1)[0])))
+                return ("nonnode", space_of(self.vault, raw.raw_file(self.vault, name.split("#", 1)[0])))
             except (OSError, ValueError):
                 return ("dangling",)
         if re.match(ID_RE, name):
@@ -812,12 +817,12 @@ class Index:
             hit = self.by_id.get(name)
             return ("node", hit[1]) if hit else ("dangling",)
         if "/" in name:
-            p = resolve_in_root(VAULT, name)
+            p = resolve_in_root(self.vault, name)
             if p is None:
                 return ("dangling",)      # vault 밖 — 참조 대상이 아니다
             for cand in (p, p.with_suffix(".md")):
                 if cand.exists():
-                    k = space_of(cand)
+                    k = space_of(self.vault, cand)
                     return (("node", k) if is_node_home(k) else ("nonnode", k))
             return ("dangling",)
         # 이름 색인이 **후보들**을 주고, 그것만 열어 판정한다. 구판은 여기서
@@ -855,7 +860,7 @@ DUP_ID_ADVICE = (
     "vault 밖으로 치운다. 그때까지 둘 다 이름으로도 id로도 읽거나 고치지 않는다")
 
 
-def topology_check(idx: Index) -> list[str]:
+def topology_check(vault: Vault, idx: Index) -> list[str]:
     """참조 위상 검증 (헌법 8조 3항 + 4조 5항 + conflicts 예외). 근거 절의 좌표도 참조다
     (8조 2항) — 인용 기록은 모양으로 가리고, vault의 비노드 파일은 Link와 같은 규칙을 지난다."""
     from . import evidence
@@ -879,7 +884,7 @@ def topology_check(idx: Index) -> list[str]:
             if pred == "conflicts":
                 # 사건 표지의 예외 — 열린(docketed) 사건 또는 존치 판결 결속 노드뿐
                 if cases is None:
-                    cases = load_cases()
+                    cases = load_cases(vault)
                 if r[0] == "nonnode" and r[1][0] == "ledger":
                     # 헌법 12조 5항 — 사건을 참조하는 것은 **당사자 노드**뿐이다
                     case = cases.get(name) or {}
@@ -954,18 +959,18 @@ def topology_check(idx: Index) -> list[str]:
     return errs
 
 
-def dangling_refs(idx: Index) -> list[str]:
+def dangling_refs(vault: Vault, idx: Index) -> list[str]:
     """미해석 참조 목록 — 위반이 아니라 경고(탐색 링크는 자유)."""
-    return reference_report(idx)["dangling_refs"]
+    return reference_report(vault, idx)["dangling_refs"]
 
 
-def reference_report(idx: Index, records=None) -> dict:
+def reference_report(vault: Vault, idx: Index, records=None) -> dict:
     from . import evidence
-    records = records or evidence.Records(VAULT)     # 노드마다 기록 색인을 다시 짓지 않는다
+    records = records or evidence.Records(vault)     # 노드마다 기록 색인을 다시 짓지 않는다
     out, items, dups = [], [], []
     for stem, (p, kind) in idx.nodes.items():
         n = idx.node(p)
-        for item in reference_review(n, idx, records=records):
+        for item in reference_review(vault, n, idx, records=records):
             items.append(dict(item, name=stem))
             if item["resolution"] == "dangling":
                 relation, ref = item["relation"], item["ref"]
@@ -983,7 +988,7 @@ def reference_report(idx: Index, records=None) -> dict:
             "reference_review": items}
 
 
-def reference_review(node: contract.Node, idx: Index,
+def reference_review(vault: Vault, node: contract.Node, idx: Index,
                      previous: contract.Node | None = None, records=None) -> list[dict]:
     """One readout for writes, global checks and durable organization work.
 
@@ -1012,7 +1017,7 @@ def reference_review(node: contract.Node, idx: Index,
                 issue = "raw_round_unresolved"
             else:
                 try:
-                    raw.read_round(ref, max_chars=0)
+                    raw.read_round(vault, ref, max_chars=0)
                 except (OSError, UnicodeError, ValueError, WriteError):
                     issue = "raw_round_unresolved"
         if issue:
@@ -1026,9 +1031,9 @@ def reference_review(node: contract.Node, idx: Index,
     coords = evidence.coordinates(node.body)
     if coords:
         before = set(evidence.coordinates(previous.body)) if previous else set()
-        records = records or evidence.Records(VAULT)
+        records = records or evidence.Records(vault)
         for coord in coords:
-            problem = evidence.check(VAULT, coord, idx, records)
+            problem = evidence.check(vault, coord, idx, records)
             if problem and not problem.startswith(evidence.NODE_LINE):
                 out.append({"id": node.id, "relation": "근거", "ref": coord,
                             "resolution": "unresolved", "issue": "evidence_unresolved",
@@ -1040,7 +1045,7 @@ OBSERVATION_SIGN = {"지지": 1, "반례": -1, "조건": 0}   # 관측 줄의 �
 REFERENCE_WEIGHT = {"derived-from": W_DERIVED, "Link": W_LINK}
 
 
-def centrality(idx: Index) -> tuple[dict[str, float], dict[str, float]]:
+def centrality(vault: Vault, idx: Index) -> tuple[dict[str, float], dict[str, float]]:
     """중심성 C(v) = (E(v), D(v)) — (설명적, 의존적)을 stem으로 키잡은 두 사전으로 낸다(헌법 제11조
     2항, Mechanism §8 6항). R의 참조 하나가 참조하는 쪽의 E와 참조받는 쪽의 D에 같은 가중을
     더하고, 관측 절의 줄은 E에만 지지 +1·반례 −1·조건 0으로 더한다(w_O = 1). R은 참조의 유무를
@@ -1085,24 +1090,24 @@ def _score_key(idx: "Index", t: str) -> str:
 # 배치가 정본이므로(시행령 §3 3항) scope 목록은 디렉토리에서 읽는다. `raw`와
 # `wm`이 같은 판정을 쓰므로 여기 한 벌만 둔다 — 두 벌이면 조용히 갈라진다.
 
-def scope_names() -> list[str]:
+def scope_names(vault: Vault) -> list[str]:
     """`00_Scope/` 아래의 scope 이름. Workbench도 하나의 scope다(헌법 4조 5항).
     살림 구획(`_off_node` — `.x`·`_x`)은 scope가 아니다."""
-    d = ROOT / SCOPE
+    d = vault.root / vault.scope
     return sorted(x.name for x in d.iterdir()
-                  if x.is_dir() and _space_of_parts(
-                      (SCOPE, x.name, "x.md")) != ("support",)) if d.is_dir() else []
+                  if x.is_dir() and _space_of_parts(vault,
+                      (vault.scope, x.name, "x.md")) != ("support",)) if d.is_dir() else []
 
 
-def space_list() -> str:
+def space_list(vault: Vault) -> str:
     """거부 메시지에 싣는 유효 space 목록 — 틀린 값을 준 호출자가 다음에 무엇을
     써야 하는지 그 자리에서 알 수 있어야 한다."""
-    return ", ".join(f"{SCOPE}/{s}" for s in scope_names())
+    return ", ".join(f"{vault.scope}/{s}" for s in scope_names(vault))
 
 
-def scope_of_space(space: str) -> str | None:
+def scope_of_space(vault: Vault, space: str) -> str | None:
     """`"00_Scope/<이름>"` → `<이름>`. 맨 이름은 접지 않는다 — `create_node`가
     맨 이름을 거부하는 것과 같은 규율이며, 같은 표면에서 같은 인자가 다른
     관대함을 가지면 호출자가 규칙을 하나로 배우지 못한다."""
-    parts = [x for x in adapt_path((space or "").strip().strip("/"), SPACE_ROOTS).split("/") if x]
-    return parts[1] if len(parts) == 2 and parts[0] == SCOPE else None
+    parts = [x for x in adapt_path((space or "").strip().strip("/"), vault.space_roots).split("/") if x]
+    return parts[1] if len(parts) == 2 and parts[0] == vault.scope else None

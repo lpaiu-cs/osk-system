@@ -36,32 +36,33 @@ def main() -> None:
         return
     host = None
     try:
-        from claude_session_start import first_call, normalize, note_run, project_cwd, session_key
+        from claude_session_start import first_call, normalize, note_run, open_vault, project_cwd, session_key
         try:
             env = json.load(sys.stdin)
             if not isinstance(env, dict):
                 raise ValueError("hook input must be a JSON object")
         except Exception:
-            note_run("stop", None, None)
+            note_run(None, "stop", None, None)
             raise
         from osk import integration, response_growth
+        vault = open_vault()
         env = normalize(env)
-        key = session_key(project_cwd(env))
-        host = note_run("stop", env, key)
-        if not first_call("stop", env, host):
+        key = session_key(vault, project_cwd(env))
+        host = note_run(vault, "stop", env, key)
+        if not first_call(vault, "stop", env, host):
             return
         try:
-            if response_growth.launch(env, key):
+            if response_growth.launch(vault, env, key):
                 return
-            response_growth.defer(env, key, probe_due=False)
-            harness, sid, _ = integration.hook_source(env)
-            seen = integration.status(harness, sid)
+            response_growth.defer(vault, env, key, probe_due=False)
+            harness, sid, _ = integration.hook_source(vault, env)
+            seen = integration.status(vault, harness, sid)
         except integration.SubagentEvent:
             return  # The root conversation's own Stop owns its state.
         # The worker's result lands after this hook: say the last capture's standing failure,
         # once as the input hook does — a new conversation's missing file is no failure.
         standing = seen["capture_error"] if seen["capture_recovery"]["state"] != "awaiting_input" else None
-        if standing and integration.notice_once(harness, sid, standing):
+        if standing and integration.notice_once(vault, harness, sid, standing):
             raise ValueError(standing)
     except Exception as exc:
         _notice(host, f"[osk capture diagnostic - {type(exc).__name__}: {exc}; "

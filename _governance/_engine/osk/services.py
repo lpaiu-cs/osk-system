@@ -28,6 +28,7 @@ from pathlib import Path
 
 from . import core
 from .harness import base
+from .vault import Vault
 
 KINDS = ("growth", "sync")
 LEGACY = {"growth": {"osk-domain-growth"},
@@ -43,38 +44,38 @@ LAUNCHD_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
-def tag() -> str:
+def tag(vault: Vault) -> str:
     """이 vault의 등록 이름에 다는 값 — 경로 표기(구분자·대소문자)와 무관하다."""
-    return hashlib.sha256(base.fold(str(core.ROOT)).encode("utf-8")).hexdigest()[:8]
+    return hashlib.sha256(base.fold(str(vault.root)).encode("utf-8")).hexdigest()[:8]
 
 
-def script(kind: str) -> Path:
+def script(vault: Vault, kind: str) -> Path:
     from .doctor import engine_dir
-    engine = engine_dir()
+    engine = engine_dir(vault)
     return engine / "scripts" / "growth_run.py" if kind == "growth" else engine / "sync_daemon.py"
 
 
-def interpreter() -> Path:
+def interpreter(vault: Vault) -> Path:
     """등록이 부를 Python — Windows는 창을 띄우지 않는 `pythonw.exe`다."""
     from .doctor import venv_python
-    python = venv_python()
+    python = venv_python(vault)
     quiet = python.with_name("pythonw.exe")
     return quiet if os.name == "nt" and quiet.is_file() else python
 
 
-def job(kind: str, *, command_files: list[Path] = (), at: str | None = None) -> dict:
+def job(vault: Vault, kind: str, *, command_files: list[Path] = (), at: str | None = None) -> dict:
     """등록할 일 — 해석기·인자·시각(정기 실행). 명령 파일은 공급자마다 하나다(Codex, 대신 돌 Claude)."""
-    args = [str(script(kind))]
+    args = [str(script(vault, kind))]
     if kind == "growth":
         args += [part for f in command_files for part in ("--command-file", str(f))] + list(GROWTH_ARGS)
-    return {"python": str(interpreter()), "args": args, "at": at}
+    return {"python": str(interpreter(vault)), "args": args, "at": at}
 
 
-def owns(kind: str, name: str, tokens: list[str]) -> bool:
+def owns(vault: Vault, kind: str, name: str, tokens: list[str]) -> bool:
     """그 등록이 이 vault의 `kind`인가."""
-    if base.mentions(tokens, script(kind)):
+    if base.mentions(tokens, script(vault, kind)):
         return True
-    inside = base.fold(str(core.ROOT)) + "/"
+    inside = base.fold(str(vault.root)) + "/"
     return name in LEGACY[kind] and any(base.fold(t).startswith(inside) for t in tokens)
 
 
@@ -103,7 +104,8 @@ class Backend:
     `name`, 명령 `tokens`, 비교할 `definition`을 싣는다."""
     name = ""
 
-    def __init__(self, run=None):
+    def __init__(self, vault: Vault, run=None):
+        self.vault = vault
         self._run = run or _run
 
     def ident(self, kind: str) -> str:
@@ -193,7 +195,7 @@ class TaskScheduler(Backend):
     name = "task-scheduler"
 
     def ident(self, kind: str) -> str:
-        return f"osk-{kind}-{tag()}"
+        return f"osk-{kind}-{tag(self.vault)}"
 
     def _ps(self, script: str) -> str:
         code = ("$ErrorActionPreference = 'Stop'\n"
@@ -203,7 +205,7 @@ class TaskScheduler(Backend):
 
     # 네 호출만 PowerShell에 닿는다 — 시험은 이 넷을 바꿔 끼운다.
     def _list(self) -> list[dict]:
-        root = str(core.ROOT).replace("/", "\\").lower()
+        root = str(self.vault.root).replace("/", "\\").lower()
         return json.loads(self._ps(_LIST.replace("__ROOT__", _ps_literal(root))) or "[]")
 
     def _register(self, spec: dict) -> None:
@@ -244,9 +246,9 @@ class TaskScheduler(Backend):
             execute = "cmd.exe"
             arguments = '/c set SYNC_ENABLED=1&& start "" "{}" "{}"'.format(job["python"], job["args"][0])
         return {"name": self.ident(kind), "execute": execute, "arguments": arguments,
-                "workdir": str(core.ROOT), "at": job["at"],
+                "workdir": str(self.vault.root), "at": job["at"],
                 "minutes": GROWTH_MINUTES if kind == "growth" else 0, "priority": TASK_PRIORITY,
-                "description": f"osk-system {kind} — {core.ROOT}", "start": kind == "sync"}
+                "description": f"osk-system {kind} — {self.vault.root}", "start": kind == "sync"}
 
     def definition(self, kind: str, job: dict) -> dict:
         s = self._spec(kind, job)
@@ -282,7 +284,7 @@ class Launchd(Backend):
         return Path.home() / "Library" / "LaunchAgents"
 
     def ident(self, kind: str) -> str:
-        return f"com.osk-system.{kind}.{tag()}"
+        return f"com.osk-system.{kind}.{tag(self.vault)}"
 
     def _domain(self) -> str:
         return f"gui/{os.getuid() if hasattr(os, 'getuid') else 0}"
@@ -307,10 +309,10 @@ class Launchd(Backend):
         return out
 
     def definition(self, kind: str, job: dict) -> dict:
-        log = str(Path.home() / "Library" / "Logs" / f"osk-{kind}-{tag()}.log")
-        env = {"PATH": LAUNCHD_PATH, "OSK_VAULT_ROOT": str(core.ROOT)}
+        log = str(Path.home() / "Library" / "Logs" / f"osk-{kind}-{tag(self.vault)}.log")
+        env = {"PATH": LAUNCHD_PATH, "OSK_VAULT_ROOT": str(self.vault.root)}
         data = {"Label": self.ident(kind), "ProgramArguments": [job["python"], *job["args"]],
-                "WorkingDirectory": str(core.ROOT), "EnvironmentVariables": env,
+                "WorkingDirectory": str(self.vault.root), "EnvironmentVariables": env,
                 "StandardOutPath": log, "StandardErrorPath": log, "ProcessType": "Background"}
         if kind == "sync":
             env["SYNC_ENABLED"] = "1"
@@ -356,7 +358,7 @@ class Systemd(Backend):
         return Path(config) / "systemd" / "user"
 
     def ident(self, kind: str) -> str:
-        return f"osk-{kind}-{tag()}"
+        return f"osk-{kind}-{tag(self.vault)}"
 
     def active(self, kind: str) -> bool:
         # 켜짐 링크(`is-enabled`)만으로는 모른다 — `enable --now`는 링크를 만든 뒤 시작에서
@@ -388,7 +390,7 @@ class Systemd(Backend):
         return out
 
     def definition(self, kind: str, job: dict) -> dict:
-        unit, root = self.ident(kind), _sd_value(str(core.ROOT))
+        unit, root = self.ident(kind), _sd_value(str(self.vault.root))
         start = " ".join(_sd_quote(a) for a in [job["python"], *job["args"]])
         env = f'Environment="OSK_VAULT_ROOT={root}"\n'
         if kind == "sync":
@@ -426,20 +428,20 @@ class Systemd(Backend):
         return {"id": entry["id"], "removed": True, "backup": backup}
 
 
-def backend(run=None) -> Backend | None:
+def backend(vault: Vault, run=None) -> Backend | None:
     """이 기기의 서비스 관리자 — 없으면 None(수동 절차를 따른다)."""
     if os.name == "nt":
-        return TaskScheduler(run)
+        return TaskScheduler(vault, run)
     if sys.platform == "darwin":
-        return Launchd(run)
-    return Systemd(run) if shutil.which("systemctl") else None
+        return Launchd(vault, run)
+    return Systemd(vault, run) if shutil.which("systemctl") else None
 
 
 def display(job: dict) -> str:
     return core.shell_join([job["python"], *job["args"]])
 
 
-def plan(manager: Backend | None, kind: str, job: dict | None, uninstall: bool) -> dict:
+def plan(vault: Vault, manager: Backend | None, kind: str, job: dict | None, uninstall: bool) -> dict:
     """등록 하나의 조치 — `keep`·`add`·`replace`·`remove`·`absent`. 이 vault의 옛 등록은
     `remove`에 싣고, 이 vault를 부르지만 osk 등록이 아닌 것은 `notes`로 알린다."""
     if manager is None:
@@ -454,9 +456,9 @@ def plan(manager: Backend | None, kind: str, job: dict | None, uninstall: bool) 
         rows = manager.entries()
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         return {**out, "action": "error", "error": f"등록을 읽지 못했다: {e}"}
-    mine = [r for r in rows if owns(kind, r["name"], r["tokens"])]
-    inside = base.fold(str(core.ROOT)) + "/"
-    others = [r["id"] for r in rows if not any(owns(k, r["name"], r["tokens"]) for k in KINDS)
+    mine = [r for r in rows if owns(vault, kind, r["name"], r["tokens"])]
+    inside = base.fold(str(vault.root)) + "/"
+    others = [r["id"] for r in rows if not any(owns(vault, k, r["name"], r["tokens"]) for k in KINDS)
               and any(base.fold(t).startswith(inside) for t in r["tokens"])]
     if others:
         out["notes"] = [f"{i}: 이 vault를 부르는 다른 등록이 있다 — 건드리지 않는다" for i in others]
@@ -474,11 +476,11 @@ def plan(manager: Backend | None, kind: str, job: dict | None, uninstall: bool) 
     return out
 
 
-def apply(manager: Backend, kind: str, job: dict | None, approved: dict, uninstall: bool,
+def apply(vault: Vault, manager: Backend, kind: str, job: dict | None, approved: dict, uninstall: bool,
           stamp: str) -> dict:
     """확인한 조치를 한다 — 실행 직전에 다시 계획해, 확인한 것과 다르면 하지 않는다."""
     step = {"step": f"{kind} ({manager.name})"}
-    now = plan(manager, kind, job, uninstall)
+    now = plan(vault, manager, kind, job, uninstall)
     if (now.get("action"), now.get("remove")) != (approved.get("action"), approved.get("remove")):
         return {**step, "ok": False, "error": "확인 뒤 등록이 바뀌었다 — 하지 않았다. "
                                               "setup을 다시 계획해 확인받는다"}

@@ -92,28 +92,35 @@ def emit_context(event: str, text: str, system_message: str = "", host=None) -> 
     emit_raw(output if isinstance(output, str) else json.dumps(output, ensure_ascii=False))
 
 
-def note_run(event: str, env: dict | None, key: str | None):
+def open_vault():
+    """이 훅이 맡은 저장소 — 엔진을 여기서 처음 읽는다. 열지 못하면(엔진이 깨졌거나 같은 공간의 폴더가
+    둘이다) 예외가 호출자의 진단으로 나간다."""
+    from osk.vault import Vault
+    return Vault.open()
+
+
+def note_run(vault, event: str, env: dict | None, key: str | None):
     """이 기기에서 이 훅이 불렸다는 기록(`osk.harness.runs`) — `doctor`가 등록과 대조한다.
-    훅을 부른 호스트를 돌려준다(출력 형식). 판별·기록 실패는 훅을 막지 않는다."""
+    훅을 부른 호스트를 돌려준다(출력 형식). 판별·기록 실패는 훅을 막지 않는다. 입력을 읽지 못한 호출은
+    아직 저장소를 열지 않았으므로 `vault` 없이(None) 부르고, 여기서 연다 — 열지 못해도 마찬가지다."""
     host = None
     try:
-        from osk import core, harness
+        from osk import harness
         from osk.harness import runs
         host = harness.host_of(env) if isinstance(env, dict) else None
         _OUT["host"] = host
-        runs.record_run(core.VAULT, host.name if host else None, event, key)
+        runs.record_run(vault or open_vault(), host.name if host else None, event, key)
     except Exception:
         pass
     return host
 
 
-def first_call(event: str, env: dict, host) -> bool:
+def first_call(vault, event: str, env: dict, host) -> bool:
     """같은 사건이 두 자리에 등록돼 두 번 불렸으면 두 번째 호출은 거짓이다 — 호출자는
     아무것도 내지 않고 끝낸다(`osk.harness.runs.first_call`). 판정 실패는 호출을 막지 않는다."""
     try:
-        from osk import core
         from osk.harness import runs
-        return runs.first_call(core.VAULT, host.name if host else None, event, env)
+        return runs.first_call(vault, host.name if host else None, event, env)
     except Exception:
         return True
 
@@ -222,14 +229,14 @@ def _dotgit(cwd: str) -> list | None:
         d = os.path.dirname(d)
 
 
-def _checkout_cached(cwd: str) -> tuple[str, list[str] | None]:
+def _checkout_cached(vault, cwd: str) -> tuple[str, list[str] | None]:
     """`_checkout`을 작업 폴더별로 CHECKOUT_TTL 동안 다시 쓴다(기기 로컬 `osk-checkouts.json`).
     다시 쓰는 판정은 둘이다 — 위로 `.git`이 없는 폴더(`.git`이 생기면 바뀐다)와, 가장 가까운
     `.git`과 저장소의 동일성 캐시가 그대로인 저장소. 미확정(커밋 없음·얕은 사본)은 다시 잰다
     — 첫 커밋 뒤에도 이름만 쓰면 같은 이름의 남의 결속을 받는다(#196 리뷰). git이 시간을
     넘기면 지난 판정이 있으면 그것을 쓰고, 그 판정은 캐시하지 않는다."""
     from osk import core
-    path, folder, now = core.local_lock_path("osk-checkouts.json", core.VAULT.root), os.path.normcase(os.path.abspath(cwd)), time.time()
+    path, folder, now = core.local_lock_path("osk-checkouts.json", vault.root), os.path.normcase(os.path.abspath(cwd)), time.time()
     try:
         table = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -259,22 +266,22 @@ def _checkout_cached(cwd: str) -> tuple[str, list[str] | None]:
     return name, repo
 
 
-def session_key(cwd: str) -> str:
+def session_key(vault, cwd: str) -> str:
     """프로젝트 키를 정하는 **유일한** 자리 — 세 훅이 모두 이것을 부른다.
 
     이름만으로는 무관한 두 저장소가 한 키를 나눠 가지므로, Git 저장소는 결속의
     소유자와 뿌리가 다르면 파생 키를 받는다(`write.repo_session`)."""
-    name, repo = _checkout_cached(cwd)
+    name, repo = _checkout_cached(vault, cwd)
     try:
-        from osk import core, workspaces
-        workspaces.enter(core.VAULT, cwd)        # 이 프로세스의 결속 판정이 그 작업 폴더를 알게 한다(Mechanism §6-2 6항)
+        from osk import workspaces
+        workspaces.enter(vault, cwd)        # 이 프로세스의 결속 판정이 그 작업 폴더를 알게 한다(Mechanism §6-2 6항)
     except Exception:
         pass
     if not repo:
         return name
     try:
         from osk import write
-        return write.repo_session(name, repo)
+        return write.repo_session(vault, name, repo)
     except Exception:
         return name
 
@@ -298,23 +305,21 @@ def project_cwd(env: dict) -> str:
     return cwd
 
 
-def _memory_line(st: dict, key: str, space: str | None = None) -> str:
+def _memory_line(vault, st: dict, key: str, space: str | None = None) -> str:
     """전문 대신 싣는 한 줄 — 이 대화가 같은 해시의 전문을 이미 받았을 때(§9-2 5항의 뜻:
     전문은 호출자가 저장본을 모를 때 싣는다). 해시가 바뀌면 다시 전문이다. `space`는 주된
     scope 밖의 결속 scope일 때 준다 — 읽는 호출도 그 space를 함께 준다."""
-    from osk.core import SCOPE
     arg = json.dumps(key, ensure_ascii=False) + (f", space={json.dumps(space, ensure_ascii=False)}" if space else "")
-    return (f"[osk scope 기억 — {SCOPE}/{st['scope']} · {st['chars']}/{st['limit']}자 · "
+    return (f"[osk scope 기억 — {vault.scope}/{st['scope']} · {st['chars']}/{st['limit']}자 · "
             f"여유 {st['limit'] - st['chars']}자 · hash {st['hash'][:19]}…] 이 대화에 앞서 실은 전문과 "
             f"같다. 요약을 고치기 전에 `scope_memory(session={arg})`로 현재 저장본을 읽는다. 대화 검토 시에는 "
             "자기 대화의 raw와 공유 기억을 함께 검토하고, 오래 쓸 지식은 search로 찾은 기존 Scope 노드 "
             "갱신을 우선해 출처·허브를 완성한다. 남길 것이 없으면 사유를 남긴다.")
 
 
-def _memory_block(scope_memory, key: str, st: dict | None = None) -> str:
+def _memory_block(vault, scope_memory, key: str, st: dict | None = None) -> str:
     """scope 기억 전문 — 비었으면 빈 문자열."""
-    from osk.core import SCOPE
-    st = st or scope_memory.read(key)
+    st = st or scope_memory.read(vault, key)
     text = (st.get("text") or "").strip()
     if not text:
         return ""
@@ -324,7 +329,7 @@ def _memory_block(scope_memory, key: str, st: dict | None = None) -> str:
     # 프로젝트 키도 싣는다. 도구의 `session`은 이 값이어야 하는데 훅만 알고
     # 호출자는 몰라서 매번 지어냈고, 그 결속은 append-only로 영구히 쌓였다.
     return (
-        f"[osk scope 기억 — {SCOPE}/{st['scope']} · "
+        f"[osk scope 기억 — {vault.scope}/{st['scope']} · "
         f"{st['chars']}/{st['limit']}자 · 여유 {st['limit'] - st['chars']}자]\n"
         f"모든 세션·기기가 공유하는 기억이다 — 세션 한정 상태를 적지 말 것.\n"
         f"{st['session_note']}\n"
@@ -339,7 +344,7 @@ def _memory_block(scope_memory, key: str, st: dict | None = None) -> str:
         f"hash: {st['hash']}\n---\n{text}")
 
 
-def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: dict | None = None,
+def _bootstrap(vault, key: str, *, bound: bool, ident: tuple | None = None, workspace: dict | None = None,
                landing: str | None = None, bindings: dict | None = None) -> str:
     arg = json.dumps(key, ensure_ascii=False)
     workspace = workspace or {}
@@ -362,8 +367,7 @@ def _bootstrap(key: str, *, bound: bool, ident: tuple | None = None, workspace: 
     else:
         landing_note = ("아직 scope 결속이 없다. 착지를 추측하지 말고 overview의 군집에서 해당 프로젝트를 "
                         "확인한 뒤 scope_memory를 읽어라.")
-    from osk import core
-    guide = core.ROOT / "docs" / "OPERATE-AGENT.md"     # 세션은 vault 밖 작업 폴더에서 돈다 — 절대 경로로
+    guide = vault.root / "docs" / "OPERATE-AGENT.md"     # 세션은 vault 밖 작업 폴더에서 돈다 — 절대 경로로
     return (f"[osk 세션 시작 — session={arg}{conversation}]\n"
             f"이 세션에서 노드를 처음 쓰기 전에 `overview(session={arg})`를 한 번 불러 군집·허브 트리(`hub_tree`)·열린 사건·근거 "
             "재검토 후보를 확인하라. 새 노드는 허브 트리에서 주제를 덮는 가장 깊은 군집에 둔다(시행령 §3 8항). "
@@ -386,19 +390,19 @@ def _budget(env: dict, host=None) -> int | None:
     return (host or harness.host_of(env) or harness.FALLBACK).hook_budget
 
 
-def _conversation(st: dict, keep: int):
+def _conversation(vault, st: dict, keep: int):
     """대화별 통합 대기 — 접히면 같은 지시를 CLI `integration prompt`의 text로 읽는다."""
     from osk import core
     from osk.hook_text import Block
     n = len(st.get("pending_refs") or [])
-    command = core.cli_command(core.VAULT, "integration", "prompt", "--harness", st["harness"],
+    command = core.cli_command(vault, "integration", "prompt", "--harness", st["harness"],
                                "--conversation", st["conversation_id"])
     return Block("conversation", st["text"], keep,
                  label=f"대화 검토 대기 {n}라운드 — 이 턴에 검토한다" if n else "대화 검토 상태",
                  pull=f"`{command}`의 text")
 
 
-def _organization(jobs: list, keep: int, ident=None, *, startup: bool = False, shown_tree: str = ""):
+def _organization(vault, jobs: list, keep: int, ident=None, *, startup: bool = False, shown_tree: str = ""):
     """조직 검토 블록. 이 대화가 같은 작업(key·snapshot·구간)의 전문을 이미 받았으면 한 줄로
     싣는다 — 같은 글이 9·15턴마다 쌓이지 않게(#275). 시작은 새 문맥이라 다시 전문을 싣는다."""
     from osk import core, integration, organization
@@ -408,59 +412,59 @@ def _organization(jobs: list, keep: int, ident=None, *, startup: bool = False, s
     j = jobs[0]
     label = f"조직 검토 scope {j['scope']} 남은 구간 {j['coverage']['remaining']}/{j['coverage']['total']}"
     mark = organization.hook_mark(jobs)
-    if ident and not startup and integration.shown_before(*ident, "organization", mark):
-        command = core.cli_command(core.VAULT, "organization", "plan", "--scope", j["scope"])
+    if ident and not startup and integration.shown_before(vault, *ident, "organization", mark):
+        command = core.cli_command(vault, "organization", "plan", "--scope", j["scope"])
         return Block("organization", f"[osk 참조·조직 검토 대기 — 변화 없음, {label}. 이 대화에 실은 전문과 같다 — "
                                      f"`{command}`로 다시 읽는다]", keep, label=label, pull="overview:organization")
-    return Block("organization", organization.hook_prompt(jobs, shown_tree), keep, label=label,
+    return Block("organization", organization.hook_prompt(vault, jobs, shown_tree), keep, label=label,
                  pull="overview:organization",
-                 on_shown=(lambda: integration.note_shown(*ident, "organization", mark)) if ident else None)
+                 on_shown=(lambda: integration.note_shown(vault, *ident, "organization", mark)) if ident else None)
 
 
-def _organization_jobs(key: str) -> list:
+def _organization_jobs(vault, key: str) -> list:
     """세션 시작의 조직 검토 — 포착 대기와 따로 고른다(짧은 대화도 시작에서 착수할 수 있다)."""
     from osk import core, organization, write
-    scopes = write.bound_scopes(key)     # 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
+    scopes = write.bound_scopes(vault, key)     # 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
     if not scopes:
         return []
-    with core.mutation_lock(core.VAULT):
-        return organization.pending(scopes, limit=1, record=True)
+    with core.mutation_lock(vault):
+        return organization.pending(vault, scopes, limit=1, record=True)
 
 
-def _bindings_block(key: str):
+def _bindings_block(vault, key: str):
     """이 프로젝트의 결속 검토(시행령 §3 10항) — 검토 대상이 아니면 빈 블록이다."""
     from osk import organization
     from osk.hook_text import Block
     try:
-        return Block("bindings", organization.bindings_prompt(key), 65,
+        return Block("bindings", organization.bindings_prompt(vault, key), 65,
                      label="프로젝트 결속 검토", pull="overview:organization")
     except Exception as exc:
         return Block("bindings", f"[osk 결속 검토 판독 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다.]")
 
 
-def _start_organization(key: str, ident=None):
+def _start_organization(vault, key: str, ident=None):
     from osk.hook_text import Block
     try:
-        return _organization(_organization_jobs(key), 60, ident, startup=True)
+        return _organization(vault, _organization_jobs(vault, key), 60, ident, startup=True)
     except Exception as exc:    # 조직 검토를 못 골라도 시작의 경고·나머지는 싣는다
         return Block("organization", f"[osk 참조·조직 검토 판독 진단 — {type(exc).__name__}: {exc}. "
                                      "본 작업은 계속한다.]")
 
 
-def _recovery(scope_memory, key: str):
+def _recovery(vault, scope_memory, key: str):
     from osk.hook_text import Block
-    return Block("recovery", scope_memory.recovery_block(key), 90,
+    return Block("recovery", scope_memory.recovery_block(vault, key), 90,
                  label="scope 복구 대기", pull="overview:recovery")
 
 
-def _memory(scope_memory, key: str, ident, *, gate: bool, keep: int, space: str | None = None):
+def _memory(vault, scope_memory, key: str, ident, *, gate: bool, keep: int, space: str | None = None):
     """scope 기억 블록. `gate`면 이 대화가 같은 해시의 전문을 이미 받았을 때 한 줄로 싣고,
     전문이 실제로 실렸을 때만 그 해시를 적는다(`integration.note_memory`). `space`는 주된 scope가
     아닌 결속 scope의 기억을 실을 때 준다(Mechanism §9-3 1항)."""
     from osk import integration
     from osk.hook_text import Block
-    st = scope_memory.read(key, space)
-    full = _memory_block(scope_memory, key, st)
+    st = scope_memory.read(vault, key, space)
+    full = _memory_block(vault, scope_memory, key, st)
     name = "memory" if space is None else f"memory:{st['scope']}"
     if not full:
         return Block(name, "")
@@ -468,36 +472,35 @@ def _memory(scope_memory, key: str, ident, *, gate: bool, keep: int, space: str 
     arg = f"session={json.dumps(key, ensure_ascii=False)}" + (f", space={json.dumps(space, ensure_ascii=False)}" if space else "")
     pull = f"`scope_memory({arg})`"
     seen_as = st["scope"] if space else None     # 주된 scope 밖의 결속 scope는 제 해시를 따로 기억한다
-    if gate and ident and integration.memory_seen(*ident, st["hash"], seen_as):
-        return Block(name, _memory_line(st, key, space), keep, label="scope 기억(이 대화에 실은 전문과 같다)", pull=pull)
+    if gate and ident and integration.memory_seen(vault, *ident, st["hash"], seen_as):
+        return Block(name, _memory_line(vault, st, key, space), keep, label="scope 기억(이 대화에 실은 전문과 같다)", pull=pull)
     return Block(name, full, keep, label=f"scope 기억 전문 {st['scope']}(여유 {st['limit'] - st['chars']}자)", pull=pull,
-                 on_shown=(lambda: integration.note_memory(*ident, st["hash"], seen_as)) if ident else None)
+                 on_shown=(lambda: integration.note_memory(vault, *ident, st["hash"], seen_as)) if ident else None)
 
 
-def _bound_memories(scope_memory, key: str, ident, bindings: dict, *, keep: int, gate: bool = False):
+def _bound_memories(vault, scope_memory, key: str, ident, bindings: dict, *, keep: int, gate: bool = False):
     """주된 scope가 아닌 결속 scope들의 기억 — 주된 scope 다음에, 한도 안에서 싣는다(§9-3 1항)."""
-    from osk.core import SCOPE
     from osk.hook_text import Block
     out = []
     for sc in bindings.get("scopes", []):
         if sc == bindings.get("primary"):
             continue
         try:
-            out.append(_memory(scope_memory, key, ident, gate=gate, keep=keep, space=f"{SCOPE}/{sc}"))
+            out.append(_memory(vault, scope_memory, key, ident, gate=gate, keep=keep, space=f"{vault.scope}/{sc}"))
         except Exception as exc:
             out.append(Block(f"memory:{sc}", f"[osk 공유 기억 판독 진단 — {sc}: {type(exc).__name__}: {exc}]"))
     return out
 
 
-def _once(ident, text: str, view: dict, startup: bool) -> bool:
+def _once(vault, ident, text: str, view: dict, startup: bool) -> bool:
     """이어지는 대기·진단을 실을지 — 같은 글은 처음 한 번만이고 나머지는 `integration status`가
     보인다(#192). 시작은 새 문맥이라 다시 싣는다. 포착 중이 아니고 대기가 풀렸으면 잊는다."""
     from osk import integration
-    shown = integration.notice_once(*ident, text, settled=not view.get("capture_pending"))
+    shown = integration.notice_once(vault, *ident, text, settled=not view.get("capture_pending"))
     return bool(text) and (shown or startup)
 
 
-def capture_blocks(env: dict, key: str, *, startup: bool = False):
+def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
     """이 대화의 포착·검토 조각 — `([Block], (harness, 대화 ID) | None)`. 조립과 예산은
     호출자가 한다(`osk.hook_text`). None이면 이 대화의 사건이 아니다.
 
@@ -510,17 +513,17 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
     ident = None
     try:
         if startup:
-            captured = integration.hook_land(env, key)
+            captured = integration.hook_land(vault, env, key)
             harness, sid, cadence = captured["harness"], captured["conversation_id"], None
         else:
-            harness, sid, _ = integration.hook_source(env)
+            harness, sid, _ = integration.hook_source(vault, env)
             # Always retain the input clock, even while Stop owns background scheduling.
             # Losing CLI auth must not start the fallback's overdue work at zero again.
-            captured = cadence = integration.tick(harness, sid)
+            captured = cadence = integration.tick(vault, harness, sid)
         ident = (harness, sid)
-        selected = response_growth.route(env)
+        selected = response_growth.route(vault, env)
         try:
-            response_growth.defer(env, key, probe_due=selected['probe_due'])
+            response_growth.defer(vault, env, key, probe_due=selected['probe_due'])
         except (OSError, ValueError):
             pass        # 다음 훅이나 Stop의 포착이 다시 넘긴다
         # 새 대화의 전사는 첫 턴 뒤에야 생긴다 — 그 사이의 '없다'는 진단이 아니다
@@ -532,7 +535,7 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
                         if selected['mode'] == 'background' and r and not r.get('ok', True)
                         and not r.get('reviewed') and r.get('state') not in {'running', 'unavailable'}]
             error = standing or '; '.join(r.get('error') or r['state'] for r in failures)
-            if _once(ident, error, captured, startup):
+            if _once(vault, ident, error, captured, startup):
                 return [Block("route", f"[osk 백그라운드 검토 대기 — {error}; 본 작업은 계속한다. 완료로 처리하지 않았다.]")], ident
             if selected['mode'] == 'off':
                 # 끈 하네스: fork도 세션 안 9·15턴 검토도 없다. 포착과 대기는 그대로다.
@@ -547,9 +550,9 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
                                    "UserPromptSubmit 기준 9·15턴 통합을 수행한다. 검토 대기와 계수는 유지한다.]")
         if startup:
             if not captured["pending"]:
-                return [warning, _start_organization(key, ident)], ident
-            st = integration.prompt(harness, sid, organization_in_text=False)
-            return [warning, _conversation(st, 70), _organization(st["organization_jobs"], 60, ident, startup=True,
+                return [warning, _start_organization(vault, key, ident)], ident
+            st = integration.prompt(vault, harness, sid, organization_in_text=False)
+            return [warning, _conversation(vault, st, 70), _organization(vault, st["organization_jobs"], 60, ident, startup=True,
                                                                   shown_tree=st.get("hub_tree", ""))], ident
         overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= integration.SOFT
         if not cadence["due"] and not overdue_switch:
@@ -558,15 +561,15 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
             blocked = (f"[osk 포착 대기 — {standing}. 이 대화의 검토 대기와 계수는 "
                        "유지하고 9·15턴에는 상태와 함께 싣는다. 본 작업은 계속한다; 완료로 처리하지 "
                        "않았다. 처음 보면 사용자에게 한 번 알린다.]"
-                       if _once(ident, standing or "", captured, startup) else "")
+                       if _once(vault, ident, standing or "", captured, startup) else "")
             return [warning if selected['changed'] else Block("warning", ""), Block("blocked", blocked)], ident
         lead = Block("lead", f"[osk 케이던스 — user 턴 {cadence['unreviewed_prompts']}] "
                      + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] or
                         overdue_switch and cadence['unreviewed_prompts'] >= integration.HARD else
                         "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
-        st = integration.prompt(harness, sid, organization_in_text=False)
-        blocks = [warning, lead, _conversation(st, 95),
-                  _organization(st["organization_jobs"], 60, ident, shown_tree=st.get("hub_tree", ""))]
+        st = integration.prompt(vault, harness, sid, organization_in_text=False)
+        blocks = [warning, lead, _conversation(vault, st, 95),
+                  _organization(vault, st["organization_jobs"], 60, ident, shown_tree=st.get("hub_tree", ""))]
     except integration.SubagentEvent:
         return None  # Not this subagent's conversation: no capture, route or root review text.
     except Exception as exc:
@@ -576,23 +579,23 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
     if not startup:
         try:
             from osk import scope_memory, write
-            bindings = write.bindings(key)
+            bindings = write.bindings(vault, key)
             if bindings["primary"]:
-                recovery = _recovery(scope_memory, key)
+                recovery = _recovery(vault, scope_memory, key)
                 # 복구는 현재 엔트리를 정리하는 일이라 앵커를 베낄 전문이 그 자리에 있어야 한다
                 # — 복구 대기 중에는 해시가 같아도 전문을 싣는다.
-                blocks += [recovery, _memory(scope_memory, key, ident, gate=not recovery.text, keep=85)]
+                blocks += [recovery, _memory(vault, scope_memory, key, ident, gate=not recovery.text, keep=85)]
             # 주된 scope가 아닌 결속 scope의 기억도 — 주된 scope 다음에, 한도 안에서(§9-3 1항)
-            blocks += _bound_memories(scope_memory, key, ident, bindings, gate=True, keep=75)
+            blocks += _bound_memories(vault, scope_memory, key, ident, bindings, gate=True, keep=75)
         except Exception as exc:
             blocks.append(Block("memory", f"[osk 공유 기억 판독 진단 — {type(exc).__name__}: {exc}]"))
     return blocks, ident
 
 
-def capture_block(env: dict, key: str, *, startup: bool = False, budget: int | None = None) -> str | None:
+def capture_block(vault, env: dict, key: str, *, startup: bool = False, budget: int | None = None) -> str | None:
     """입력 훅의 문맥 — 호스트의 예산 안에 블록 단위로 조립한다(`osk.hook_text`)."""
     from osk.hook_text import assemble
-    found = capture_blocks(env, key, startup=startup)
+    found = capture_blocks(vault, env, key, startup=startup)
     if found is None:
         return None
     text, _ = assemble(found[0], budget if budget is not None else _budget(env), session=key)
@@ -604,12 +607,12 @@ IDLE_STATES = {"limited": "공급자 한도 소진, 대신 돌 워커도 없음"
                "worker_fault": "작업자 이상", "missing": "실행 기록이 없음 — 정기 실행이 시작되지 않았다"}
 
 
-def _daily_note() -> str:
+def _daily_note(vault) -> str:
     """정기 실행이 묶음을 하나도 돌지 못한 날이 이어지면 그 날들과 까닭(#306 D6) — 공백이 안내 없이
     지나가지 않게 한다. 이어지지 않으면 아무것도 싣지 않는다."""
     try:
         from osk import growth_daily
-        idle = growth_daily.idle()
+        idle = growth_daily.idle(vault)
     except Exception as exc:
         return f"[osk 정기 실행 판독 진단 — {type(exc).__name__}: {exc}]"
     if not idle:
@@ -620,17 +623,17 @@ def _daily_note() -> str:
             "대화 검토와 재검토가 쌓인다. `osk growth status`로 확인한다. 본 작업은 계속한다.]")
 
 
-def _recheck_note(rechecks) -> str:
+def _recheck_note(vault, rechecks) -> str:
     """근거 재검토에서 본 세션이 알아야 할 것 — 사용자 검토를 기다리는 수정, 그리고
     정기 실행이 없을 때 쌓이는 후보(그 처리는 대화 검토 fork가 이 scope 몫을 맡는다).
     둘 다 없으면 아무것도 싣지 않는다."""
     try:
         from osk import growth
-        status = growth.daily_status()
+        status = growth.daily_status(vault)
         daily = status["active"]
-        if daily and not any(r.get("kind") == "recheck_review" for r in growth.ledger_records()):
+        if daily and not any(r.get("kind") == "recheck_review" for r in growth.ledger_records(vault)):
             return ""
-        items, pending = rechecks.candidates()
+        items, pending = rechecks.candidates(vault)
     except Exception as exc:
         return f"[osk 근거 재검토 판독 진단 — {type(exc).__name__}: {exc}]"
     if pending:
@@ -657,32 +660,31 @@ def _recheck_note(rechecks) -> str:
     return "\n".join(notes)
 
 
-def _release_notice(host=None) -> tuple[str, str]:
+def _release_notice(vault, host=None) -> tuple[str, str]:
     """(에이전트 문맥, 사용자 화면) — 새 릴리스를 에이전트가 받았다고 기록할 때까지 세션마다.
     확인은 기다리지 않는다: 지난 확인이 낡았으면 분리 프로세스로 띄우고, 이번 세션에는 지난
     결과만 싣는다(`osk.update_check`)."""
     try:
         from osk import update_check
-        update_check.ensure_fresh()
-        return update_check.session_notice(screen=host is None or host.screen)
+        update_check.ensure_fresh(vault)
+        return update_check.session_notice(vault, screen=host is None or host.screen)
     except Exception as exc:
         return f"[osk 릴리스 확인 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", ""
 
 
-def _sync_notice(host=None) -> tuple[str, str]:
+def _sync_notice(vault, host=None) -> tuple[str, str]:
     """(에이전트 문맥, 사용자 화면) — 이 기기의 동기화 데몬이 멈췄을 때만(`sync_daemon.trouble`).
     데몬은 로그에만 남기므로, 여기서 알리지 않으면 사용자는 백업이 멈춘 줄 모른다."""
     try:
         import sync_daemon
-        from osk import core
-        trouble = sync_daemon.trouble(core.VAULT.root)
+        trouble = sync_daemon.trouble(vault.root)
     except Exception as exc:
         return f"[osk 동기화 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", ""
     if not trouble:
         return "", ""
     user = (f"osk-system 동기화가 멈췄다 — {trouble}. 이 vault의 변경이 이 기기 밖으로 가지 않는다. "
             "에이전트에게 \"osk 점검해 줘\"라고 요청한다.")
-    how = (f"고치는 법은 `{core.ROOT / 'docs' / 'OPERATE-AGENT.md'}`의 Check the connection 절이다. "
+    how = (f"고치는 법은 `{vault.root / 'docs' / 'OPERATE-AGENT.md'}`의 Check the connection 절이다. "
            "사용자가 요청할 때만 고친다.")
     if host is None or host.screen:
         return f"[osk 동기화 멈춤 — {trouble}] 사용자 화면에 같은 알림을 띄웠다. {how}", user
@@ -698,73 +700,72 @@ def main() -> None:
         if not isinstance(env, dict):
             raise ValueError("hook input must be a JSON object")
     except Exception as exc:
-        note_run("start", None, None)
+        note_run(None, "start", None, None)
         emit_context("start", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
         return
     env = normalize(env)
-
     host = None
     try:
-        from osk import scope_memory, write, evictions, rechecks
-        key = session_key(project_cwd(env))
-        host = note_run("start", env, key)
-        if not first_call("start", env, host):
+        vault = open_vault()
+        from osk import core, scope_memory, write, evictions, rechecks
+        key = session_key(vault, project_cwd(env))
+        host = note_run(vault, "start", env, key)
+        if not first_call(vault, "start", env, host):
             return
         try:
-            from osk import core
             # 대장 행도 작업 트리의 변경이다 — 판독부터 쓰기까지 변경 잠금 안에서 한다(정기 실행과 같다).
             # 그 사이 다른 세션의 노드 쓰기가 끼면 낡은 판독으로 이어 적어 방금 닫은 쌍을 다시 연다.
-            with core.mutation_lock(core.VAULT):
-                rechecks.ensure_baseline(carry=True)
+            with core.mutation_lock(vault):
+                rechecks.ensure_baseline(vault, carry=True)
         except Exception:
             pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다
         from osk.hook_text import Block, assemble
-        recheck = Block("recheck", _recheck_note(rechecks), 50, label="근거 재검토 안내(overview의 rechecks)")
-        idle = Block("idle", _daily_note(), 45, label="정기 실행 공백 안내(`osk growth status`)")
-        found = capture_blocks(env, key, startup=True)
+        recheck = Block("recheck", _recheck_note(vault, rechecks), 50, label="근거 재검토 안내(overview의 rechecks)")
+        idle = Block("idle", _daily_note(vault), 45, label="정기 실행 공백 안내(`osk growth status`)")
+        found = capture_blocks(vault, env, key, startup=True)
         if found is None:
             return
         captured, ident = found
-        notice, shown = _release_notice(host)
+        notice, shown = _release_notice(vault, host)
         notice = Block("notice", notice, 40, label="새 릴리스 알림(overview의 update)")
-        sync_text, sync_shown = _sync_notice(host)
+        sync_text, sync_shown = _sync_notice(vault, host)
         sync = Block("sync", sync_text)      # 짧고 사람이 풀어야 하는 경고 — 접지 않는다
         shown = "\n".join(s for s in (shown, sync_shown) if s)
         try:
-            bindings = write.bindings(key)
+            bindings = write.bindings(vault, key)
         except Exception:
             bindings = {"scopes": [], "primary": None, "undetermined": False}
         scope = bindings["primary"]
         try:
             from osk import integration
-            seen = integration.status(*ident) if ident else {}
+            seen = integration.status(vault, *ident) if ident else {}
         except Exception:
             seen = {}           # 판별을 못 읽어도 시작 안내는 싣는다
-        bootstrap = Block("bootstrap", _bootstrap(key, bound=bool(scope), ident=ident, workspace=seen.get("workspace"),
+        bootstrap = Block("bootstrap", _bootstrap(vault, key, bound=bool(scope), ident=ident, workspace=seen.get("workspace"),
                                                   landing=seen.get("space"), bindings=bindings))
         try:
-            recovery = _recovery(scope_memory, key)
+            recovery = _recovery(vault, scope_memory, key)
         except Exception:
             recovery = Block("recovery", "[osk scope 복구 표식을 읽지 못했다 — CLI status로 확인하라]")
         # 주된 scope가 아닌 결속 scope의 기억도 싣는다 — 주된 scope 다음, 한도 안에서(§9-3 1항)
-        others = _bound_memories(scope_memory, key, ident, bindings, keep=75)
+        others = _bound_memories(vault, scope_memory, key, ident, bindings, keep=75)
         if not scope:
-            blocks = [bootstrap, sync, notice, idle, recheck, recovery, *others, *captured, _bindings_block(key)]
+            blocks = [bootstrap, sync, notice, idle, recheck, recovery, *others, *captured, _bindings_block(vault, key)]
         else:
             try:
-                mem = _memory(scope_memory, key, ident, gate=False, keep=95)
+                mem = _memory(vault, scope_memory, key, ident, gate=False, keep=95)
             except Exception as exc:
                 mem = Block("memory", f"[osk 공유 기억 판독 진단 — {type(exc).__name__}: {exc}]")
             banner, tidy = Block("banner", ""), Block("tidy", "")
             try:
-                parts = evictions.hook_parts(scope, sys.executable, str(ENGINE))
+                parts = evictions.hook_parts(vault, scope, sys.executable, str(ENGINE))
                 banner = Block("banner", parts["banner"])
                 tidy = Block("tidy", parts["block"], 80, label=parts["label"], pull="overview:tidy")
             except Exception as exc:
                 tidy = Block("tidy", f"[osk 정돈 판독 진단 — {type(exc).__name__}: {exc}]")
             # 순서가 조문이다(§9-3 3항) — 밀림 경고가 맨 앞, 기억, 정돈 블록. 넘치면 블록째 접는다(1항).
             blocks = [banner, bootstrap, sync, notice, idle, recheck, recovery, mem, *others, *captured, tidy,
-                      _bindings_block(key)]
+                      _bindings_block(vault, key)]
         out, _ = assemble(blocks, _budget(env, host), session=key)
         if not out:
             return

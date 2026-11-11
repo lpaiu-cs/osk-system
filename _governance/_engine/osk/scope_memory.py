@@ -20,17 +20,16 @@ working_memory는 인지과학 은유(한 마음의 사유물)라 "내 세션의
 없고, 통합할 때마다 자리값 못하는 엔트리가 퇴출되므로 decay 스케줄러도 없다.
 """
 from __future__ import annotations
-from .core import SCOPE
 import hashlib
 import json
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .core import ROOT, local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
+from .core import local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
 from . import evictions, graph, prose, routing, secrets, workspaces, write
 from .errors import WriteError
-from .core import VAULT
+from .vault import Vault
 
 # 계수는 mechanism이 정한다(시행령 서문). 한 세션의 배울 점을 적기에는 충분하고
 # 두 세션어치를 쌓아두기에는 모자란 크기여야 압력이 선다.
@@ -56,21 +55,21 @@ _OVERFLOW_RUNS: dict[str, int] = {}
 # 프로젝트 키는 기기를 넘지 않는다.
 
 
-def _pending_path(key: str) -> Path:
+def _pending_path(vault: Vault, key: str) -> Path:
     # 키에 **이 작업 트리**를 넣는다(리뷰 2차 P1). 잠금 자리는 linked worktree
     # 사이에 공유되는데(`commondir`), 프로젝트 키도 worktree를 본 저장소 이름으로
     # 접으므로, 트리를 빼면 A 트리의 거부를 B 트리의 평범한 성공이 소비한다 —
     # 거부는 그 트리의 사본 위에서 났고, 덜어 내는 쓰기도 그 사본에 온다.
-    h = hashlib.sha256(f"{ROOT.resolve()}\n{key}".encode("utf-8")).hexdigest()[:16]
-    return local_lock_path(f"osk-pending-evict-{h}", ROOT)
+    h = hashlib.sha256(f"{vault.root.resolve()}\n{key}".encode("utf-8")).hexdigest()[:16]
+    return local_lock_path(f"osk-pending-evict-{h}", vault.root)
 
 
-def _pending(key: str) -> bool:
-    return _pending_path(key).is_file()
+def _pending(vault: Vault, key: str) -> bool:
+    return _pending_path(vault, key).is_file()
 
 
-def _pending_set(key: str, scope: str | None = None, base_hash: str | None = None) -> None:
-    p = _pending_path(key)
+def _pending_set(vault: Vault, key: str, scope: str | None = None, base_hash: str | None = None) -> None:
+    p = _pending_path(vault, key)
     p.parent.mkdir(parents=True, exist_ok=True)
     if p.is_file():
         return                              # 재거부로 대기 시작을 늦추지 않는다
@@ -80,8 +79,8 @@ def _pending_set(key: str, scope: str | None = None, base_hash: str | None = Non
     }, ensure_ascii=False).encode("utf-8"))
 
 
-def _pending_clear(key: str) -> None:
-    _pending_path(key).unlink(missing_ok=True)
+def _pending_clear(vault: Vault, key: str) -> None:
+    _pending_path(vault, key).unlink(missing_ok=True)
 
 
 RECOVERY_NOTE = (
@@ -99,14 +98,14 @@ RECOVERY_NOTE = (
     "거부된 새 초안은 저장되지 않았다 — 이 표식은 그 초안의 보관함이 아니다.")
 
 
-def recovery(session: str) -> dict | None:
+def recovery(vault: Vault, session: str) -> dict | None:
     """이 사본·정본 세션의 미완료 통합. 읽기는 소비하지 않는다.
 
     v3.12.0의 키만 든 표식도 읽는다. 그 파일의 mtime은 마지막으로 관측한
     거부 시점일 뿐 최초 실패 시점이라고 소급해서 주장하지 않는다.
     """
-    key = _runs_key(session)
-    p = _pending_path(key)
+    key = _runs_key(vault, session)
+    p = _pending_path(vault, key)
     try:
         raw = p.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -116,39 +115,39 @@ def recovery(session: str) -> dict | None:
             modified = p.stat().st_mtime
         except FileNotFoundError:
             return None                     # 읽는 사이 성공한 쓰기가 끝냈다
-        record = {"scope": routing.resolve_session(key), "base_hash": None,
+        record = {"scope": routing.resolve_session(vault, key), "base_hash": None,
                   "since": datetime.fromtimestamp(modified, timezone.utc).isoformat(),
                   "legacy": True}
     else:
         record = json.loads(raw)
         if not isinstance(record, dict) or record.get("session") != key:
             raise ValueError("scope 복구 표식의 세션이 다르다")
-    scope = record.get("scope") or routing.resolve_session(key)
-    bound = routing.resolve_session(key)
+    scope = record.get("scope") or routing.resolve_session(vault, key)
+    bound = routing.resolve_session(vault, key)
     return {"session": key, "scope": scope, "since": record["since"],
             "legacy": record.get("legacy", False), "base_hash": record.get("base_hash"),
             "binding_changed": bool(bound and scope and bound != scope)}
 
 
-def recovery_status() -> list[dict]:
+def recovery_status(vault: Vault) -> list[dict]:
     """evict와 별도로 현황에 싣는다. 공통 git 디렉터리의 다른 사본은 제외한다."""
     rows = []
-    for p in sorted(_pending_path("").parent.glob("osk-pending-evict-*")):
+    for p in sorted(_pending_path(vault, "").parent.glob("osk-pending-evict-*")):
         try:
             raw = p.read_text(encoding="utf-8")
         except FileNotFoundError:             # 동시에 성공한 쓰기가 표식을 끝냈다
             continue
         key = json.loads(raw)["session"] if raw.startswith("{") else raw
-        if _pending_path(key) != p:
+        if _pending_path(vault, key) != p:
             continue
-        row = recovery(key)
+        row = recovery(vault, key)
         if row:
             rows.append(row)
     return sorted(rows, key=lambda r: (r["since"], r["session"]))
 
 
-def recovery_block(session: str) -> str:
-    row = recovery(session)
+def recovery_block(vault: Vault, session: str) -> str:
+    row = recovery(vault, session)
     if not row:
         return ""
     head = (f"[osk scope 복구 대기 — {row['scope'] or '착지 확인 필요'} · "
@@ -156,7 +155,7 @@ def recovery_block(session: str) -> str:
             f"관측 {row['since']}]\n")
     if row["binding_changed"]:
         return head + "실패 당시와 지금의 scope 결속이 다르다. 기존 복구 대기를 다른 scope에 적용하지 말고 사용자에게 알려라."
-    return head + session_note(session, row["scope"]) + "\n" + RECOVERY_NOTE
+    return head + session_note(vault, session, row["scope"]) + "\n" + RECOVERY_NOTE
 
 _CONFINE = ("scope 기억은 scope당 하나이므로 한 세션의 것을 다른 scope로 "
             "번지게 하지 않는다 —")
@@ -172,27 +171,27 @@ EVICTION_NOTE = ("엔트리는 자리를 다툰다. 자리값 못하는 것은 �
                  "반복하지 말고 엔트리 단위로 자리를 만든다.")
 
 
-def _runs_key(session: str) -> str:
+def _runs_key(vault: Vault, session: str) -> str:
     """연속 거부 계수의 키 — **정본 프로젝트 키**로 접는다.
 
     구판은 호출자가 보낸 원문으로 키잡았다. 별칭(구 저장소 이름)으로 들어온
     같은 세션이 다른 계수를 갖게 되어, `OVERFLOW_STOP`이 세 번째에 서지 않거나
     엉뚱한 자리에서 섰다."""
     try:
-        return routing.canonical_session(session) or session
+        return routing.canonical_session(vault, session) or session
     except Exception:
         return session              # 대장 판독 실패는 계수의 문제가 아니다
 
 
-def sm_dir() -> Path:
-    return ROOT / SCOPE / "Workbench" / "_scope_memory"
+def sm_dir(vault: Vault) -> Path:
+    return vault.root / vault.scope / "Workbench" / "_scope_memory"
 
 
-def sm_path(scope: str) -> Path:
+def sm_path(vault: Vault, scope: str) -> Path:
     """`00_Scope/Workbench/_scope_memory/<scope>.md`. scope의 지도가 scope 밖에 사는 것은
     scope 디렉토리를 노드만으로 깔끔히 두기 위해서이고, 접근이 어차피 엔진을
     지나므로 물리 자리가 사용성을 좌우하지 않는다."""
-    return sm_dir() / f"{scope}.md"
+    return sm_dir(vault) / f"{scope}.md"
 
 
 def canon(text: str) -> str:
@@ -218,18 +217,18 @@ def _read(p: Path) -> str:
     return canon(p.read_bytes().decode("utf-8")) if p.is_file() else ""
 
 
-def session_note(session: str, scope: str | None) -> str:
+def session_note(vault: Vault, session: str, scope: str | None) -> str:
     """훅과 도구 응답이 같은 호출 키를 이어 준다. scope 이름은 키가 아니다. 주된 scope 밖의 기억은
     수정 안내에도 `space`를 명시한다 — 빠지면 `edits`가 주된 scope의 기억을 고친다(#191 리뷰)."""
     arg = f"`session={json.dumps(session, ensure_ascii=False)}`"
-    if session and scope and routing.resolve_session(session) != scope:
-        return (f"`scope_memory`의 {arg}에 `space=\"{SCOPE}/{scope}\"`를 함께 준다 — 이 scope는 그 "
+    if session and scope and routing.resolve_session(vault, session) != scope:
+        return (f"`scope_memory`의 {arg}에 `space=\"{vault.scope}/{scope}\"`를 함께 준다 — 이 scope는 그 "
                 f"프로젝트의 주된 scope가 아니라 space 없는 읽기·`edits`는 다른 기억에 간다.")
     return (f"`scope_memory`의 {arg}를 그대로 쓴다. "
-            f"`{SCOPE}/{scope}`는 저장 위치이며 session 키를 대신하지 않는다.")
+            f"`{vault.scope}/{scope}`는 저장 위치이며 session 키를 대신하지 않는다.")
 
 
-def _state(session: str, scope: str, text: str, *, full: bool = True, **extra) -> dict:
+def _state(vault: Vault, session: str, scope: str, text: str, *, full: bool = True, **extra) -> dict:
     """**잔여는 늘, 전문은 읽기와 거부에만** 싣는다(§9-2 5항).
 
     잔여가 매 응답에 실려야 호출자가 넘치기 전에 정리한다 — 호출자는 글자를 셀
@@ -244,9 +243,9 @@ def _state(session: str, scope: str, text: str, *, full: bool = True, **extra) -
     특히 해시 불일치는 다른 기기의 통합이 들어왔다는 뜻이라(§9-2 8항) 전문
     없이는 그 위에서 다시 통합할 수 없다."""
     text = canon(text)
-    st = {"session": session, "canonical_session": _runs_key(session),
-          "session_note": session_note(session, scope),
-          "scope": scope, "path": posix_rel(sm_path(scope), ROOT)}
+    st = {"session": session, "canonical_session": _runs_key(vault, session),
+          "session_note": session_note(vault, session, scope),
+          "scope": scope, "path": posix_rel(sm_path(vault, scope), vault.root)}
     if full:
         st["text"] = text
     st.update({"chars": len(text), "limit": LIMIT,
@@ -256,48 +255,48 @@ def _state(session: str, scope: str, text: str, *, full: bool = True, **extra) -
     return st
 
 
-def _landing(session: str, space: str | None) -> tuple[str, str | None]:
+def _landing(vault: Vault, session: str, space: str | None) -> tuple[str, str | None]:
     """`(scope, bound)` — 첫 쓰기가 결속을 세워야 하므로 결속 여부도 함께 낸다.
 
     거부에도 전문과 잔여를 싣는다(§9-2 5항). 결속을 아는 거부 — 교차 scope 같은
     경우 — 는 낼 수 있는데 안 내면, 호출자가 고쳐 보내려고 다시 읽어야 한다."""
     try:
-        scope, bound = routing.resolve_landing(session, space, _CONFINE)
+        scope, bound = routing.resolve_landing(vault, session, space, _CONFINE)
     except WriteError as e:
-        b = routing.resolve_session(session)
+        b = routing.resolve_session(vault, session)
         if b:
             raise WriteError(str(e), e.violations,
-                                   **_state(session, b, _read(sm_path(b)))) from None
+                                   **_state(vault, session, b, _read(sm_path(vault, b)))) from None
         raise
     if not scope:
         raise WriteError(
             "착지 미정 — 아무것도 하지 않았다",
             [f"세션 `{session}`의 scope 결속이 없다. `space`를 주면 그 자리의 "
-             f"scope 기억을 쓴다. 가능한 space: {graph.space_list()}"])
-    if scope not in graph.scope_names():
+             f"scope 기억을 쓴다. 가능한 space: {graph.space_list(vault)}"])
+    if scope not in graph.scope_names(vault):
         raise WriteError(
             "결속이 가리키는 scope가 없다 — 아무것도 하지 않았다",
-            [f"세션 `{session}`은 `{SCOPE}/{scope}`에 결속돼 있으나 그 scope가 "
-             f"없다. 가능한 space: {graph.space_list()}"])
+            [f"세션 `{session}`은 `{vault.scope}/{scope}`에 결속돼 있으나 그 scope가 "
+             f"없다. 가능한 space: {graph.space_list(vault)}"])
     return scope, bound
 
 
-def read(session: str, space: str | None = None) -> dict:
+def read(vault: Vault, session: str, space: str | None = None) -> dict:
     """그 scope의 scope 기억 전문. 결속이 없고 `space`도 없으면 거부한다."""
-    scope, _ = _landing(session, space)     # 읽기는 결속을 세우지 않는다
+    scope, _ = _landing(vault, session, space)     # 읽기는 결속을 세우지 않는다
     # 성공한 읽기도 **연속**을 끊는다. §9-2 4항의 상한은 "연속 3회 거부"인데,
     # 구판은 성공한 쓰기만 계수를 지워서 사이에 낀 읽기·앵커 불일치·해시
     # 불일치가 연속으로 세어졌다. 읽기는 호출자가 저장본을 다시 본 순간이니
     # 그 다음 시도는 새 시도다. (계수는 프로세스 안에만 산다 — 이 초기화가
     # 없으면 서버를 대화 사이에 유지하는 클라이언트에서 지난 대화의 거부가
     # 다음 대화의 첫 초과를 곧장 "3회째"로 만든다.)
-    _OVERFLOW_RUNS.pop(_runs_key(session), None)
-    pending = recovery(session)
+    _OVERFLOW_RUNS.pop(_runs_key(vault, session), None)
+    pending = recovery(vault, session)
     extra = {"recovery": pending} if pending else {}
-    return {"ok": True, **_state(session, scope, _read(sm_path(scope)), **extra)}
+    return {"ok": True, **_state(vault, session, scope, _read(sm_path(vault, scope)), **extra)}
 
 
-def replace(session: str, text: str | None = None,
+def replace(vault: Vault, session: str, text: str | None = None,
             expect_hash: str | None = None, space: str | None = None,
             edits: list | None = None) -> dict:
     """scope 기억을 쓴다 — **전체 치환**(`text`) 또는 **앵커 일괄**(`edits`).
@@ -364,9 +363,9 @@ def replace(session: str, text: str | None = None,
     errs = routing.ephemeral_session_errors(session)
     if errs:
         raise WriteError("프로젝트 키 부적격 — 쓰지 않았다", errs)
-    with mutation_lock(VAULT):
-        scope, bound = _landing(session, space)
-        p = sm_path(scope)
+    with mutation_lock(vault):
+        scope, bound = _landing(vault, session, space)
+        p = sm_path(vault, scope)
         cur = _read(p)
 
         if cur and expect_hash is None and edits is None:
@@ -374,13 +373,13 @@ def replace(session: str, text: str | None = None,
                 "expect_hash 없음 — 쓰지 않았다",
                 ["기존 내용이 있다. 지금 상태를 읽고 그 `hash`를 `expect_hash`로 "
                  "함께 보내라 — 보지 않은 상태를 덮지 않기 위해서다."],
-                **_state(session, scope, cur))
+                **_state(vault, session, scope, cur))
         if expect_hash is not None and expect_hash != sha256_bytes(cur.encode("utf-8")):
             raise WriteError(
                 "상태가 어긋났다 — 쓰지 않았다",
                 ["`expect_hash`가 현재 상태와 다르다. 다른 기기의 통합이 "
                  "들어왔을 수 있다 — 아래 전문 위에서 다시 통합하라."],
-                **_state(session, scope, cur))
+                **_state(vault, session, scope, cur))
 
         # 비밀값 필터의 적용 지점이 여기다. 전사는 vault 밖이라 필터가 닿지
         # 않지만, scope 기억은 vault 안이고 에이전트가 쓴다 — 요약에 섞이면
@@ -397,7 +396,7 @@ def replace(session: str, text: str | None = None,
                 raise WriteError(
                     "기억이 비어 있다 — 쓰지 않았다",
                     ["`edits`는 기존 본문을 고친다. 첫 쓰기는 `text`로 하라."],
-                    **_state(session, scope, cur))
+                    **_state(vault, session, scope, cur))
             work = cur
             for i, e in enumerate(edits, 1):
                 n = work.count(e["old_text"])
@@ -414,7 +413,7 @@ def replace(session: str, text: str | None = None,
                          if n == 0 else
                          ["어느 자리를 고칠지 정해지지 않는다. 앞뒤 줄을 함께 "
                           "넣어 앵커를 **유일하게** 만들어라."]),
-                        **_state(session, scope, cur))
+                        **_state(vault, session, scope, cur))
                 work = work.replace(e["old_text"], e["new_text"], 1)
             text = work
         filtered, hits = secrets.filter_text(text)
@@ -431,13 +430,13 @@ def replace(session: str, text: str | None = None,
                 ["scope 기억은 노드가 아니므로 frontmatter를 두지 않는다"
                  "(Mechanism §9-2 1항). 선두의 `---`는 색인이 frontmatter로 "
                  "읽어 검증기를 깨뜨린다 — 다른 줄로 시작하라."],
-                **_state(session, scope, cur))
+                **_state(vault, session, scope, cur))
 
         if len(body) > LIMIT:
-            key = _runs_key(session)
+            key = _runs_key(vault, session)
             runs = _OVERFLOW_RUNS.get(key, 0) + 1
             _OVERFLOW_RUNS[key] = runs
-            _pending_set(key, scope, sha256_bytes(cur.encode("utf-8")))
+            _pending_set(vault, key, scope, sha256_bytes(cur.encode("utf-8")))
             # §9-2 4항은 3회째에 "**재시도 지시를 거두고** … 다음 통합으로
             # 넘긴다"고 정한다. 구판은 거두지 않고 "접고 가라"를 덧붙이기만 해서
             # 상반된 두 지시가 한 응답에 실렸다 — 거두는 것이 조문이다.
@@ -449,7 +448,7 @@ def replace(session: str, text: str | None = None,
                       "말고 `edits`로 빼고 넣어라 — 한 호출로 끝난다."))
             v = [f"{len(body)}자로 상한 {LIMIT}자를 {len(body) - LIMIT}자 "
                  f"넘는다. 복구할 키는 `session={json.dumps(session, ensure_ascii=False)}`, "
-                 f"저장 위치는 `{SCOPE}/{scope}`다."]
+                 f"저장 위치는 `{vault.scope}/{scope}`다."]
             if not stop:
                 v.append(RECOVERY_NOTE + " " + retry)
             if stop:
@@ -471,17 +470,17 @@ def replace(session: str, text: str | None = None,
                 # 자기 초안이다. 해시 불일치와 다른 점이 그것이다 — 거기서는 다른
                 # 기기의 통합이 들어와 저장본이 호출자가 모르는 것이 돼 있다.
                 # `hash`·`remaining`·넘긴 자수는 그대로 온다.
-                **_state(session, scope, cur, full=False, rejected_chars=len(body),
-                         recovery=recovery(session)))
+                **_state(vault, session, scope, cur, full=False, rejected_chars=len(body),
+                         recovery=recovery(vault, session)))
 
         # 퇴출 기록 (§9-2 12항) — 상한 초과 거부 직후의 첫 성공한 쓰기가 덜어
         # 낸 구간. 엔진은 자르지 않는다: 호출자가 뺀 것을 적을 뿐이다. 거부와
         # 무관한 정리는 표식이 없어 적히지 않는다. **파일보다 먼저** 적는다 —
         # 파일이 먼저면 대장 손상 때 잘린 것이 기록 없이 사라지고, 그것이 이
         # 조문이 막는 유일한 손실이다. 대장이 거부하면 아무것도 쓰지 않는다.
-        key = _runs_key(session)
+        key = _runs_key(vault, session)
         removed = ""
-        pending = recovery(session)
+        pending = recovery(vault, session)
         if pending and (not pending["scope"] or pending["scope"] == scope):
             # 전체 치환이든 앵커 일괄이든 **저장본의 전후**로 잰다 — 원시
             # `edits`의 중간 문자열은 저장된 적이 없고 비밀값 필터도 지나지
@@ -491,25 +490,25 @@ def replace(session: str, text: str | None = None,
         ev = None
         if removed:
             try:
-                ev = evictions.record_evict(scope, key, removed)
+                ev = evictions.record_evict(vault, scope, key, removed)
             except ValueError as e:
                 raise WriteError(
                     "퇴출 기록부에 적지 못했다 — 쓰지 않았다",
                     [f"퇴출 기록부에 적지 못했다 — {e}. 상한에 밀려 잘라 낸 것은 "
                      f"기록 없이 사라질 수 없다(§9-2 12항) — 대장을 복구한 뒤 "
                      f"다시 보내라. 저장본은 그대로다."],
-                    **_state(session, scope, cur, full=False)) from None
+                    **_state(vault, session, scope, cur, full=False)) from None
         # 결속을 **쓰기 전에** 세운다. 뒤에 두면 대장이 손상됐을 때 파일은
         # 남고 결속은 안 서서, 표면이 "아무것도 쓰지 않았다"고 보고하는데도
         # 호출자가 방금 쓴 것에 닿지 못하는 상태가 된다(부분 성공 금지).
         # 집합에 없는 scope만 더하고 주된 scope는 정하지 않는다(Mechanism §6-2 6항). 일회성 작업 폴더는 결속하지 않는다.
-        if not workspaces.is_one_off(VAULT, session) and scope not in routing.bindings(session)["scopes"]:
-            routing.bind_session(session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
+        if not workspaces.is_one_off(vault, session) and scope not in routing.bindings(vault, session)["scopes"]:
+            routing.bind_session(vault, session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
         p.parent.mkdir(parents=True, exist_ok=True)
         write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
         _OVERFLOW_RUNS.pop(key, None)       # 성공이 연속 계수를 지운다
         if body != cur and pending and (not pending["scope"] or pending["scope"] == scope):
-            _pending_clear(key)             # no-op·다른 scope의 성공은 복구가 아니다
+            _pending_clear(vault, key)             # no-op·다른 scope의 성공은 복구가 아니다
 
         # 크게 줄어든 쓰기에는 **사라진 전문**을 함께 돌려준다. 전체 치환이라
         # 직전 상태가 남지 않고 표면에 복구 수단도 없는데, 자리가 모자라 다급한
@@ -517,7 +516,7 @@ def replace(session: str, text: str | None = None,
         # 가까운 순간에 놓여 있다. 금지하는 대신(비울 수 없는 scope 기억은 작업
         # 기억이 아니다) 같은 턴 안에서 되돌릴 수 있게 한다.
         extra = {"filtered": sorted(set(hits)), "changed": body != cur}
-        remaining_recovery = recovery(session)
+        remaining_recovery = recovery(vault, session)
         if remaining_recovery:
             extra["recovery"] = remaining_recovery
         if ev:
@@ -540,4 +539,4 @@ def replace(session: str, text: str | None = None,
                 f"직전 상태는 여기 말고 어디에도 남지 않는다.")
         # 성공에는 전문을 싣지 않는다(§9-2 5항) — 호출자가 방금 보낸 것이다.
         # `hash`는 남는다: 다음 쓰기가 재읽기 없이 연쇄한다.
-        return {"ok": True, **_state(session, scope, body, full=False, **extra)}
+        return {"ok": True, **_state(vault, session, scope, body, full=False, **extra)}

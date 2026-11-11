@@ -436,9 +436,11 @@ def can_link():
 WRITER = r'''
 import sys
 sys.path.insert(0, sys.argv[1])
-from osk import setup
+from osk import core, setup
+from osk.vault import Vault
+VAULT = Vault.open()
 print('ready', flush=True)
-result = setup._write_targets({'origin': sys.argv[2], 'push': [sys.argv[2]]}, False)
+result = setup._write_targets(VAULT, {'origin': sys.argv[2], 'push': [sys.argv[2]]}, False)
 assert result['ok'], result
 '''
 

@@ -176,6 +176,40 @@ def _opens_vault(expr) -> bool:
     return False
 
 
+def _opens_ambient(fn) -> bool:
+    """받지 않고 스스로 정한다 — 루트를 주지 않는 `Vault.open()`(`None`을 주는 것도), `default_root()`, 환경
+    변수 `OSK_VAULT_ROOT` 읽기. 루트를 인자로 주고 여는 것(`Vault.open(root)`)과 자식 프로세스의 환경에 적어
+    주는 것은 아니다."""
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call):
+            name = (_dotted(n.func) or "").split(".")
+            given = [*n.args, *(k.value for k in n.keywords)]
+            if name[-1] == "default_root" or (name[-2:] == ["Vault", "open"] and all(
+                    isinstance(a, ast.Constant) and a.value is None for a in given)):
+                return True
+            reads_env = name[-1] == "getenv" or name[-2:] == ["environ", "get"]
+            if reads_env and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "OSK_VAULT_ROOT":
+                return True
+        elif (isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Load) and isinstance(n.slice, ast.Constant)
+              and n.slice.value == "OSK_VAULT_ROOT" and (_dotted(n.value) or "").split(".")[-1] == "environ"):
+            return True
+    return False
+
+
+def _module_level(body):
+    """모듈을 import할 때 도는 문장들 — `if`·`try`·`with`·`for` 안에 든 것까지. 함수와 클래스의 안, 그리고
+    `if __name__ == "__main__":` 아래(import할 때는 돌지 않는다)는 들어가지 않는다."""
+    for node in body:
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if isinstance(node, ast.If) and ast.unparse(node.test).replace("'", '"') == '__name__ == "__main__"':
+            continue
+        for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+            for child in getattr(node, field, None) or []:
+                yield from _module_level(child.body if isinstance(child, (ast.ExceptHandler, ast.match_case)) else [child])
+
+
 def _takes_vault(fn, method: bool) -> bool:
     static = any((_dotted(d) or "").split(".")[-1] == "staticmethod" for d in fn.decorator_list)
     args = [*fn.args.posonlyargs, *fn.args.args][1 if method and not static else 0:]
@@ -207,36 +241,73 @@ def _passed_on(srcs: dict[str, str], trees: dict[str, ast.Module], bound: dict) 
     return out
 
 
-def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[set, set, dict]:
-    """4항의 두 집합 — `(import할 때 저장소에서 고정하는 이름, 저장소가 필요한데 받지 않는 함수, 다시 내놓는 이름 표)`.
+def _resolver(srcs: dict[str, str], trees: dict[str, ast.Module]):
+    """표현식이 가리키는 `(모듈, 이름)`을 찾는 함수와 그 재료 — `(named, passed, bound)`.
 
-    고정하는 이름: 모듈 본문이나 클래스 본문에서 저장소를 정하는 식(`_opens_vault`)으로 만든 이름, 그런 이름에서
-    다시 계산한 이름, 받지 않는 함수를 **불러서** 얻은 이름. 받지 않는 함수: 고정된 이름을 읽는 함수, 그리고
-    `vault`를 첫 인자로 받지 않으면서 그런 함수를 부르는 함수. 단위는 최상위 함수와 메서드다(안에 든 함수는 그
-    단위의 몫). 생성자가 `vault`를 받는 클래스의 메서드는 받은 것으로 본다.
-
-    두 수는 옮기는 동안 줄어들기만 한다: 함수를 옮기면 그 함수가 빠지고, 아직 옮기지 않은 호출자는 전에는
-    "그런 함수를 부르는 함수"였고 뒤에는 `core.VAULT`를 읽는 함수라 그대로 남는다. 그러려면 호출을 놓치지
-    않아야 하므로, 다른 모듈이 다시 내놓은 이름(`_passed_on`)을 따라가고 클래스를 쓰면 그 메서드 전부를 부른
-    것으로 본다.
-
-    못 보는 것: `getattr(core, "ROOT")`처럼 이름을 문자열로 읽는 것, `self`가 아닌 객체의 메서드 호출,
-    `import *`. `vault`가 첫 인자가 아니면 받은 것으로 치지 않는다."""
+    다른 모듈을 거친 이름을 끝까지 따라간다. `raw.graph.space_of`는 `raw`가 머리에서 import한 `graph`의 것이고
+    (모듈 속성 사슬), `write.bind_session`은 `write`가 다시 내놓은 `routing`의 것이다(`_passed_on`).
+    `named(module, node, local, cls, mods=None, names=None)` — 엔진 밖 파일(시험)은 제 import 표를 넘긴다."""
     known = set(srcs)
     bound = {m: _bindings(m, trees[m], known, _is_package(m, srcs)) for m in srcs}
     passed = _passed_on(srcs, trees, bound)
+    attrs = {}                                 # (모듈, 이름) → 그 이름이 묶은 모듈. 모듈 머리의 import만 속성이 된다
+    for module, tree in trees.items():
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                one = ast.Module(body=[node], type_ignores=[])
+                for name, target in _bindings(module, one, known, _is_package(module, srcs))[0].items():
+                    attrs[(module, name)] = target
 
-    def named(module, node, local, cls):
-        key = _named(module, node, *bound[module], known, local, cls)
+    def named(module, node, local, cls, mods=None, names=None):
+        if mods is None:
+            mods, names = bound[module]
+        key = _named(module, node, mods, names, known, local, cls)
+        if key is None and isinstance(node, ast.Attribute):
+            head, *rest = (_dotted(node.value) or "").split(".")
+            target = mods.get(head) if rest and head not in local else None
+            for part in rest:
+                if target is None:
+                    break
+                target = f"{target}.{part}" if f"{target}.{part}" in known else attrs.get((target, part))
+            if target is not None:
+                key = (target, node.attr)
         seen = set()
         while key in passed and key not in seen:
             seen.add(key)
             key = passed[key]
         return key
+    return named, passed, bound
+
+
+def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module], layer_of: dict | None = None) -> tuple[set, set, dict]:
+    """4항의 두 집합 — `(import할 때 저장소에서 고정하는 이름, 저장소가 필요한데 받지 않는 함수, 다시 내놓는 이름 표)`.
+
+    고정하는 이름: 모듈 본문이나 클래스 본문에서 저장소를 정하는 식(`_opens_vault`)으로 만든 이름, 그런 이름에서
+    다시 계산한 이름, 받지 않는 함수를 **불러서** 얻은 이름. 받지 않는 함수: 고정된 이름을 읽는 함수, 진입점이
+    아닌데 저장소를 스스로 여는 함수(`_opens_ambient`), 그리고 `vault`를 첫 인자로 받지 않으면서 그런 함수를
+    부르는 함수. 단위는 최상위 함수와 메서드다(안에 든 함수는 그 단위의 몫). 생성자가 `vault`를 받는 클래스의
+    메서드는 받은 것으로 본다.
+
+    저장소를 여는 것은 진입점의 일이다: 표면 층의 모듈, 어느 모듈이든 최상위 `main`, 그리고 `osk.vault`의
+    `default_root`와 `Vault.open`. 그 밖의 함수가 열면 상수가 접근자로 이름만 바뀐 것이라 센다 — `osk.vault`에
+    더한 접근자도, 표면 층의 여는 함수를 아래층에서 부르는 것도 같다(`vault`를 받는 함수여도 센다).
+
+    두 수는 2단계가 끝나며 0이 됐다. 기준선이 0이라 하나라도 생기면 시험이 실패한다. 새는 것을 보려면
+    호출을 놓치지 않아야 하므로, 다른 모듈을 거친 이름(`_resolver`)을 따라가고 클래스를 쓰면 그 메서드
+    전부를 부른 것으로 본다.
+
+    못 보는 것: `getattr(core, "ROOT")`처럼 이름을 문자열로 읽는 것, `self`가 아닌 객체의 메서드 호출,
+    `import *`. `vault`가 첫 인자가 아니면 받은 것으로 치지 않는다. 여는 쪽에서는: 다른 이름으로 들여온 것
+    (`Vault as V`, `OPEN = Vault.open`), 기본값이 `None`인 변수를 넘기는 `Vault.open(root)`, 진입점이 받은
+    저장소를 모듈 전역이나 다른 모듈의 속성에 적어 두고 아래에서 읽는 것, 엔진 파일의 자리로 루트를 직접
+    계산하는 것, 환경을 통째로 복사해 읽는 것. 이 가운데 전역에 쥔 저장소는 회귀가 값으로 본다
+    (`test_validate_global_invariance`). 나머지는 리뷰가 본다."""
+    named, passed, _ = _resolver(srcs, trees)
+    layer_of = LAYER_OF if layer_of is None else layer_of
 
     units, methods, assigns = {}, {}, []       # (모듈, 이름) → (함수, 클래스), (모듈, 클래스) → 메서드들, 본문의 대입들
     for module, tree in trees.items():
-        for node in tree.body:
+        for node in _module_level(tree.body):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 units[(module, node.name)] = (node, None)
             elif isinstance(node, ast.ClassDef):
@@ -271,6 +342,11 @@ def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[set
             threaded.add(key)
         reach[key] = {named(module, n, local, cls) for n in ast.walk(fn)
                       if isinstance(n, (ast.Name, ast.Attribute)) and not isinstance(n.ctx, ast.Store)} - {None, key}
+    entry = {key for key, (_, cls) in units.items()
+             if layer_of.get(key[0]) == SURFACE or (cls is None and key[1] == "main")
+             or key in (("osk.vault", "default_root"), ("osk.vault", "Vault.open"))}
+    openers = {key for key, (fn, _) in units.items() if _opens_ambient(fn)}
+    ambient = {key for key in units if key not in entry and (key in openers or reach[key] & openers)}
 
     def with_methods(keys) -> set:
         return set(keys).union(*(methods.get(k, ()) for k in keys))
@@ -284,15 +360,16 @@ def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[set
                 fixed.add(name)
                 grew = True
         for key in units:
-            if key not in need and (reach[key] & fixed or (key not in threaded and with_methods(reach[key]) & need)):
+            if key not in need and (reach[key] & fixed or key in ambient
+                                    or (key not in threaded and with_methods(reach[key]) & need)):
                 need.add(key)
                 grew = True
     return fixed, need, passed
 
 
-def _vault(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[dict, dict]:
+def _vault(srcs: dict[str, str], trees: dict[str, ast.Module], layer_of: dict | None = None) -> tuple[dict, dict]:
     """`_vault_sets`의 두 집합을 모듈별 수로."""
-    fixed, need, _ = _vault_sets(srcs, trees)
+    fixed, need, _ = _vault_sets(srcs, trees, layer_of)
 
     def count(keys) -> dict[str, int]:
         return {m: sum(1 for k in keys if k[0] == m) for m in sorted({k[0] for k in keys})}
@@ -301,13 +378,24 @@ def _vault(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[dict, di
 
 # 자가 계량의 표본 — 4항. 모듈 이름 → 소스.
 _VAULT_SAMPLE = {
+    # 못 받은 함수: current(여기에 더한 접근자). default_root와 Vault.open은 여는 것이 제 일이다.
     "osk.vault": '''
+import os
+
+def default_root():
+    return os.environ.get("OSK_VAULT_ROOT")
+
 class Vault:
     @classmethod
-    def open(cls):
-        return cls()
+    def open(cls, root=None):
+        return cls() if root else cls(default_root())
+
+def current():
+    return Vault.open()
 ''',
-    # 고정: VAULT·ROOT. 못 받은 함수: reader·caller·passes·Lock.__enter__·locks. takes·opens·shadow·Box는 아니다.
+    # 고정: VAULT·ROOT, 그리고 `try` 안에서 정한 LATE. RUN은 아니다(`__main__` 아래는 import할 때 돌지 않는다).
+    # 못 받은 함수: reader·caller·passes·Lock.__enter__·locks, 스스로 여는 opens·env·none, `if` 아래의 under_if.
+    # takes·shadow·Box·main(진입점)·child(자식의 환경에 적는다)·other(루트를 받아 연다)는 아니다.
     "osk.held": '''
 from .vault import Vault
 VAULT = Vault.open()
@@ -327,6 +415,34 @@ def passes():
 
 def opens():
     return takes(Vault.open())
+
+def env():
+    import os
+    return os.environ.get("OSK_VAULT_ROOT")
+
+def main():
+    return takes(Vault.open())
+
+def child(vault):
+    return {"OSK_VAULT_ROOT": str(vault.root)}
+
+def other(root):
+    return takes(Vault.open(root))
+
+def none():
+    return takes(Vault.open(None))
+
+try:
+    LATE = Vault.open()
+except RuntimeError:
+    LATE = None
+
+if LATE:
+    def under_if():
+        return LATE
+
+if __name__ == "__main__":
+    RUN = Vault.open()
 
 def shadow(ROOT):
     return ROOT
@@ -373,20 +489,34 @@ class K:
     def m(self):
         return self.HERE
 ''',
-    # 다시 내놓은 이름을 거쳐서: 고정은 X(못 받은 함수를 불러 얻은 값). 못 받은 함수: through·alias.
+    # 표면 층의 모듈은 연다 — opener는 세지 않는다.
+    "osk.front": '''
+from .vault import Vault
+
+def opener():
+    return Vault.open()
+''',
+    # 다른 모듈을 거쳐서: 고정은 X(못 받은 함수를 불러 얻은 값). 못 받은 함수: through·alias(다시 내놓은 이름),
+    # hop(모듈 속성 사슬 `held2.held.reader`), reaches(표면의 여는 함수를 아래에서 부른다 — 받았어도 센다).
     "osk.held3": '''
-from . import held2
+from . import held2, front
 X = held2.via()
+
+def reaches(vault):
+    return front.opener()
 
 def through():
     return held2.reader()
 
 def alias():
     return held2.ALIAS()
+
+def hop():
+    return held2.held.reader()
 ''',
 }
-_VAULT_WANT = {"vault_fixed_names": {"osk.held": 2, "osk.held2": 2, "osk.held3": 1},
-               "vault_unthreaded": {"osk.held": 5, "osk.held2": 4, "osk.held3": 2}}
+_VAULT_WANT = {"vault_fixed_names": {"osk.held": 3, "osk.held2": 2, "osk.held3": 1},
+               "vault_unthreaded": {"osk.held": 9, "osk.held2": 4, "osk.held3": 4, "osk.vault": 1}}
 
 
 def _broad_except(tree: ast.Module) -> int:
@@ -452,7 +582,7 @@ def measure(srcs: dict[str, str], layer_of: dict[str, int]) -> dict:
     upward, lazy, private, broad, oversize = {}, {}, {}, {}, {}
     edges = {m: set() for m in known}
     trees = {name: ast.parse(text) for name, text in srcs.items()}
-    fixed_names, unthreaded = _vault(srcs, trees)
+    fixed_names, unthreaded = _vault(srcs, trees, layer_of)
     for name, tree in trees.items():
         bound, imported_private, counted = {}, 0, set()
         for target, in_function, line, names, privates in _imports(name, tree, known, _is_package(name, srcs)):
@@ -541,8 +671,8 @@ def self_test() -> None:
         **_VAULT_SAMPLE,
     }
     got = measure(sample, {"osk": KERNEL, "osk.low": KERNEL, "osk.high": SERVICE, "edge": SURFACE,
-                           **{name: KERNEL for name in _VAULT_SAMPLE}})
-    want = {"upward_imports": {"osk.low -> osk.high": 1}, "lazy_imports": {"osk.low": 1},
+                           **{name: SURFACE if name == "osk.front" else KERNEL for name in _VAULT_SAMPLE}})
+    want = {"upward_imports": {"osk.held3 -> osk.front": 1, "osk.low -> osk.high": 1}, "lazy_imports": {"osk.low": 1},
             "two_module_cycles": ["osk.high <-> osk.low"], "tangled_modules": 2,
             "private_access": {"osk.high": 2}, "broad_except": {"osk.high": 1},
             **_VAULT_WANT,

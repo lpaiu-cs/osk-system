@@ -29,17 +29,20 @@ from __future__ import annotations
 import argparse, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
-from .core import ROOT, posix_rel
+from .core import posix_rel
 from . import graph, secrets, validate
+from .vault import Vault
 
-MANIFEST = ROOT / "_governance" / "_engine" / "scripts" / "publish-manifest.txt"
+
+def manifest_path(vault: Vault) -> Path:
+    return vault.root / "_governance" / "_engine" / "scripts" / "publish-manifest.txt"
 
 
 class PublishError(RuntimeError):
     """발행 중단. 어느 단계에서 걸려도 공개 저장소에는 아무것도 쓰지 않는다."""
 
 
-def parse_manifest(path: Path = MANIFEST) -> dict:
+def parse_manifest(path: Path) -> dict:
     """MAP·DENY·SKEL 세 갈래. 코드를 읽지 않고 이 파일만 보면 무엇이 나가는지
     알 수 있어야 하므로, 형식은 일부러 단순하다."""
     maps, deny, skel, keep = [], [], [], []
@@ -74,10 +77,10 @@ def denied_by(rel: str, deny: list[str]) -> str | None:
     return None
 
 
-def collect(man: dict, root: Path | None = None) -> list[tuple[Path, str]]:
+def collect(vault: Vault, man: dict, root: Path | None = None) -> list[tuple[Path, str]]:
     """(사설 절대경로, 공개 상대경로) 목록. DENY에 걸리는 것은 여기서 빠진다."""
     out: list[tuple[Path, str]] = []
-    root = ROOT if root is None else root
+    root = vault.root if root is None else root
     for src, dst in man["map"]:
         s = root / src.rstrip("/")
         if not s.resolve().is_relative_to(root.resolve()):
@@ -140,13 +143,13 @@ def guard_secrets(items: list[tuple[Path, str]]) -> list[str]:
     return errs
 
 
-def guard_vault(root: Path | None = None) -> list[str]:
+def guard_vault(vault: Vault, root: Path | None = None) -> list[str]:
     """깨진 vault에서 발행하지 않는다."""
     try:
         if root is not None:
             from .release import validate_at
             return validate_at(root)
-        rep = validate.run()
+        rep = validate.run(vault)
     except Exception as e:
         return [f"검증기 실행 실패: {e}"]
     if rep["verdict"] != "PASS":
@@ -157,12 +160,12 @@ def guard_vault(root: Path | None = None) -> list[str]:
 
 # ── 빌드·비교 ────────────────────────────────────────────────────────────
 
-def _snapshot_ignored(directory: str, names: list[str], mapped_roots: set[str]) -> set[str]:
+def _snapshot_ignored(vault: Vault, directory: str, names: list[str], mapped_roots: set[str]) -> set[str]:
     # layout_violations가 보지 않는 루트 도구 디렉터리만 뺀다. 노드 군집의
     # 같은 이름 폴더나 승인 blob·대장·raw는 전역 검증 대상이므로 보존한다.
     root = Path(directory)
     # 검증기 제외 구획이어도 명시적인 MAP 출처와 그 조상은 발행에 필요하다.
-    ignored = {n for n in names if root == ROOT and "" not in mapped_roots
+    ignored = {n for n in names if root == vault.root and "" not in mapped_roots
                and n not in mapped_roots and
                (n == ".git" or ((n.startswith(".") or n == "__pycache__")
                                 and (root / n).is_dir()))}
@@ -230,27 +233,27 @@ def plan(public: Path, man: dict, items: list[tuple[Path, str]]) -> dict:
             "stray": sorted(_untracked(public) - want)}
 
 
-def run(public: Path, apply: bool = False, push: bool = False,
+def run(vault: Vault, public: Path, apply: bool = False, push: bool = False,
         message: str | None = None, manifest: Path | None = None) -> dict:
     """기본은 보고다. `apply`가 있어야 공개 트리에 쓰고, `push`가 있어야 올린다."""
     if not (public / ".git").exists():
         raise PublishError(f"공개 저장소가 아니다: {public}")
-    man = parse_manifest(manifest or MANIFEST)
+    man = parse_manifest(manifest or manifest_path(vault))
     mapped_roots = set()
     for src, _dst in man["map"]:
-        source = (ROOT / src.rstrip("/")).resolve()
-        if not source.is_relative_to(ROOT.resolve()):
+        source = (vault.root / src.rstrip("/")).resolve()
+        if not source.is_relative_to(vault.root.resolve()):
             raise PublishError(f"MAP 출처가 vault 밖이다: {src}")
-        parts = source.relative_to(ROOT.resolve()).parts
+        parts = source.relative_to(vault.root.resolve()).parts
         mapped_roots.add(parts[0] if parts else "")  # vault 전체 MAP도 보존한다.
     # ponytail: 발행마다 검증 대상 전체를 복사한다. 복사 비용이 병목으로
     # 측정되면 검증 가능한 파일시스템 snapshot으로 대체한다.
     with tempfile.TemporaryDirectory(prefix="osk-publish-") as td:
         snap = Path(td) / "vault"
         try:
-            shutil.copytree(ROOT, snap, symlinks=True,
-                            ignore=lambda d, ns: _snapshot_ignored(d, ns, mapped_roots))
-            items = collect(man, snap)
+            shutil.copytree(vault.root, snap, symlinks=True,
+                            ignore=lambda d, ns: _snapshot_ignored(vault, d, ns, mapped_roots))
+            items = collect(vault, man, snap)
             # OSK_VAULT_ROOT로 데이터만 별도 배치한 경우에도 검증기는 이
             # 프로세스의 엔진 사본을 쓴다. 추가한 엔진은 발행 목록에 넣지 않는다.
             snap_engine = snap / "_governance" / "_engine"
@@ -262,7 +265,7 @@ def run(public: Path, apply: bool = False, push: bool = False,
                                 else shutil.copy2(src, dst))
         except OSError as e:
             raise PublishError(f"발행 스냅샷 생성 실패 — 아무것도 쓰지 않았다: {e}") from e
-        errs = guard_knowledge(items) + guard_secrets(items) + guard_vault(snap)
+        errs = guard_knowledge(items) + guard_secrets(items) + guard_vault(vault, snap)
         if errs:
             raise PublishError("발행 가드 위반 — 아무것도 쓰지 않았다:\n  "
                                + "\n  ".join(errs))
@@ -309,6 +312,7 @@ def run(public: Path, apply: bool = False, push: bool = False,
 
 
 def main(argv=None):
+    vault = Vault.open()
     ap = argparse.ArgumentParser(
         prog="osk-publish",
         description="공개 미러 발행 — 기본은 보고, 쓰기는 --apply, 올리기는 --push")
@@ -324,7 +328,7 @@ def main(argv=None):
     if a.push and not sys.stdin.isatty():
         sys.exit("발행은 바깥으로 나가는 행위다 — 대화형 단말에서만 push한다")
     try:
-        rep = run(Path(a.public).resolve(), a.apply, a.push, a.message,
+        rep = run(vault, Path(a.public).resolve(), a.apply, a.push, a.message,
                   Path(a.manifest) if a.manifest else None)
     except PublishError as e:
         sys.exit(f"[중단] {e}")

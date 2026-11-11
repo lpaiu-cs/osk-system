@@ -156,7 +156,7 @@ on Windows. For a harness the user works in that has no rule on this OS, find
 the folder it creates under its root, and add a rule from the vault root:
 
 ```bash
-PYTHONPATH=_governance/_engine .venv/bin/python -c "from osk import workspaces; print(workspaces.add('<harness>', '<root folder>', r'<regex of the path under the root>', '<harness version>', '<note>'))"
+PYTHONPATH=_governance/_engine .venv/bin/python -c "from osk import workspaces; from osk.vault import Vault; print(workspaces.add(Vault.open(), '<harness>', '<root folder>', r'<regex of the path under the root>', '<harness version>', '<note>'))"
 ```
 
 On Windows, use `.venv\Scripts\python.exe`. The root may use `~` and

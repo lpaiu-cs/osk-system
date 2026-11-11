@@ -28,22 +28,41 @@ import argparse, base64, errno, json, os, re, shutil, signal, stat, subprocess, 
 from contextlib import contextmanager
 from pathlib import Path
 
-from .core import (ROOT, LEDGER, causal_maxima, ledger_append, ledger_damage,
-                   ledger_read, resolve_one, sha256_file, sha256_bytes, posix_rel,
-                   local_lock_path, SPACE_ROOTS, resolve_within, canon_rel)
+from .core import (causal_maxima, ledger_append, ledger_damage, ledger_read, resolve_one, sha256_file,
+                   sha256_bytes, posix_rel, local_lock_path, resolve_within, canon_rel)
 from .core import mutation_lock_path as core_mutation_lock_path
 from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from ._portalock import lock_exclusive, unlock
 from .layout import KINDS, PREFIXES, adapt_path
 from . import publish, approvals
 from . import sync_status
-from .core import VAULT
+from .vault import Vault
 
-UPDATE_JOURNAL = LEDGER / "update.jsonl"     # 운영 저널 — 권위 대장이 아니다
-CONFIG = ROOT / ".osk" / "config.json"       # 인스턴스 소유 로컬 설정
-TXN_DIR = ROOT / ".osk" / "txn"              # 크래시-안전 트랜잭션 영역(비동기화)
-TXN_MANIFEST = TXN_DIR / "manifest.json"     # 존재 = 미완료 트랜잭션(복구 대상)
-TXN_BACKUP = TXN_DIR / "backup"
+
+def journal_path(vault: Vault) -> Path:
+    """운영 저널 — 권위 대장이 아니다"""
+    return vault.ledger / "update.jsonl"
+
+
+def config_path(vault: Vault) -> Path:
+    """인스턴스 소유 로컬 설정"""
+    return vault.root / ".osk" / "config.json"
+
+
+def txn_dir(vault: Vault) -> Path:
+    """크래시-안전 트랜잭션 영역(비동기화)"""
+    return vault.root / ".osk" / "txn"
+
+
+def txn_manifest(vault: Vault) -> Path:
+    """존재 = 미완료 트랜잭션(복구 대상)"""
+    return txn_dir(vault) / "manifest.json"
+
+
+def txn_backup(vault: Vault) -> Path:
+    return txn_dir(vault) / "backup"
+
+
 DEFAULT_UPSTREAM = "https://github.com/lpaiu-cs/osk-system.git"
 
 
@@ -78,31 +97,31 @@ def _floor(rel: str) -> bool:
 # 골격을 만들어도 되는 곳은 **최상위 Space 루트 셋**뿐이다. 그 아래는 전부
 # 인스턴스 소유 바닥이므로, `SKEL Scope/UserData/newdir` 같은 지시는 사용자
 # 영역에 디렉터리를 만들게 된다 — 접두만 보지 않고 정확히 이 셋만 허용한다.
-def _allowed_skel(s: str) -> Path | None:
+def _allowed_skel(vault: Vault, s: str) -> Path | None:
     """SKEL이 만들어도 되는 절대 경로 — 아니면 None. 골격은 **루트 안으로
     봉쇄된 최상위 Space 루트**만 만든다(Mechanism §1-2 5항의 바닥은 매니페스트가
     무엇을 말하든 지켜진다). `../` 탈출·하위 경로·비Space 경로는 거부."""
     if s not in SKEL_ROOTS:
         return None
-    s = adapt_path(s, SPACE_ROOTS)
-    p = resolve_within(ROOT, s)                         # `..`·절대경로·심볼릭 탈출은 None
+    s = adapt_path(s, vault.space_roots)
+    p = resolve_within(vault.root, s)                         # `..`·절대경로·심볼릭 탈출은 None
     if p is None:
         return None
     try:
-        parts = p.relative_to(Path(os.path.realpath(ROOT))).parts
+        parts = p.relative_to(Path(os.path.realpath(vault.root))).parts
     except ValueError:
         return None
-    if len(parts) != 1 or parts[0] not in SPACE_ROOTS.values():
+    if len(parts) != 1 or parts[0] not in vault.space_roots.values():
         return None                              # 최상위 Space 루트만 골격 대상
     return p
 
 
-def load_config() -> dict:
-    if CONFIG.exists():
+def load_config(vault: Vault) -> dict:
+    if config_path(vault).exists():
         try:
-            return json.loads(CONFIG.read_text(encoding="utf-8"))
+            return json.loads(config_path(vault).read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            raise UpdateError(f"로컬 설정 판독 실패 {CONFIG}: {e}")
+            raise UpdateError(f"로컬 설정 판독 실패 {config_path(vault)}: {e}")
     return {"upstream": {"source": "git", "url": DEFAULT_UPSTREAM, "pin": None}}
 
 
@@ -278,7 +297,7 @@ def _map_dest(ap: str, man: dict) -> str | None:
     return None
 
 
-def apply_set(tree: Path, rel: dict):
+def apply_set(vault: Vault, tree: Path, rel: dict):
     """((source, dest) 사상 목록, 골격 절대경로 목록, 건너뜀 보고).
     KEEP은 정본 저장소 전용이라 제외. dest는 floor·루트 봉쇄를 통과한 것만."""
     man_rel = "_governance/_engine/scripts/publish-manifest.txt"
@@ -308,7 +327,7 @@ def apply_set(tree: Path, rel: dict):
             continue
         # dest는 신뢰 밖 입력에서 파생된다 — canonical 경로로 봉쇄한 뒤 그
         # canonical에 floor를 건다(정규화 전 문자열 판정 우회 차단, P1).
-        cdest = canon_rel(ROOT, dest)
+        cdest = canon_rel(vault.root, dest)
         if cdest is None or _floor(cdest):
             skipped.append(f"{dest} (바닥·경로 봉쇄 — 쓰지 않는다)")
             continue
@@ -316,7 +335,7 @@ def apply_set(tree: Path, rel: dict):
     # SKEL은 허용 골격(루트 봉쇄된 빈 Space 루트)만 통과시킨다
     skel = []
     for s in man["skel"]:
-        d = _allowed_skel(s.rstrip("/"))
+        d = _allowed_skel(vault, s.rstrip("/"))
         if d is None:
             skipped.append(f"{s} (SKEL 허용 밖 — 쓰지 않는다)")
         else:
@@ -384,13 +403,13 @@ def managed_paths(recs: list[dict]) -> dict[str, str]:
     return out
 
 
-def current_version(recs: list[dict] | None = None) -> str | None:
+def current_version(vault: Vault, recs: list[dict] | None = None) -> str | None:
     """현재 판본 — `done` 기록의 **인과 극대**(물리 마지막 행이 아니다).
     update.jsonl은 union 병합되는 대장이므로 파일 순서는 정본이 아니다
     (core 판정 계약 · sibling `last_applied_hash`와 같은 규율). 병렬 극대도
     version과 릴리스 증빙 해시(attest)가 모두 같으면 같은 판본이다. 증빙 없는
     구판 기록은 유일 극대일 때만 읽고, 동치를 증명할 수 없는 분기는 None."""
-    recs = ledger_read(UPDATE_JOURNAL) if recs is None else recs
+    recs = ledger_read(journal_path(vault)) if recs is None else recs
     maxima = causal_maxima(recs, "done", field="kind")
     if len(maxima) <= 1:
         return maxima[0].get("version") if maxima else None
@@ -403,11 +422,11 @@ def current_version(recs: list[dict] | None = None) -> str | None:
     return None
 
 
-def has_history(recs: list[dict] | None = None) -> bool:
+def has_history(vault: Vault, recs: list[dict] | None = None) -> bool:
     """이 인스턴스가 이미 갱신 관리 이력을 가졌는가 — **커밋된** apply·remove·
     done 중 하나라도 있으면 참. adopt(최초 편입)의 허용 판정에 쓴다. 커밋 전에
     죽어 남은 기록으로 adopt가 막히면 복구가 불가능해지므로 committed로 본다."""
-    recs = committed(ledger_read(UPDATE_JOURNAL) if recs is None else recs)
+    recs = committed(ledger_read(journal_path(vault)) if recs is None else recs)
     return any(r.get("kind") in ("apply", "remove", "done") for r in recs)
 
 
@@ -449,14 +468,14 @@ def _fsync_file(p: Path) -> None:
         os.close(fd)
 
 
-def _fsync_journal_home() -> None:
+def _fsync_journal_home(vault: Vault) -> None:
     """저널 파일의 **디렉터리 엔트리**를 내구화한다. `ledger_append`가 처음
     만든 대장의 엔트리를 내구화하지만, 직전 실행이 행 fsync 직후·엔트리 내구화
     전에 죽었으면 이름 자체가 전원 차단에 유실될 수 있다 — 그 상태에서 트랜잭션
     표식까지 지우면 파일은 새 판인데 baseline·관리 이력이 통째로 사라진다. ROOT
     까지 조상을 함께 내구화한다(대장 구획도 이번에 생겼을 수 있다)."""
-    d = UPDATE_JOURNAL.parent
-    root_real = Path(os.path.realpath(ROOT))
+    d = journal_path(vault).parent
+    root_real = Path(os.path.realpath(vault.root))
     while True:
         _fsync_dir(d)
         if Path(os.path.realpath(d)) == root_real or d.parent == d:
@@ -464,17 +483,17 @@ def _fsync_journal_home() -> None:
         d = d.parent
 
 
-def _planned_dirs(rels: list[str]) -> list[str]:
+def _planned_dirs(vault: Vault, rels: list[str]) -> list[str]:
     """이 트랜잭션이 새로 만들 수 있는 디렉터리(canonical 상대, 얕은 순).
     manifest에 미리 담아 두면 rollback이 **비어 있는 것만** 되돌릴 수 있다 —
     SKEL은 디렉터리 존재 자체가 적용 결과이므로 잔재로 남겨서는 안 된다."""
     out: set[str] = set()
-    root_real = Path(os.path.realpath(ROOT))
+    root_real = Path(os.path.realpath(vault.root))
     for rel in rels:
-        p = (ROOT / rel).parent
+        p = (vault.root / rel).parent
         while True:
             try:
-                cp = p.relative_to(ROOT)
+                cp = p.relative_to(vault.root)
             except ValueError:
                 break
             if not cp.parts or p.exists() or Path(os.path.realpath(p)) == root_real:
@@ -484,50 +503,50 @@ def _planned_dirs(rels: list[str]) -> list[str]:
     return sorted(out, key=lambda s: (s.count("/"), s))
 
 
-def _txn_clear() -> None:
+def _txn_clear(vault: Vault) -> None:
     """트랜잭션 영역을 지운다. 정리도 상태 전이의 일부이므로 **성공을 확인**한다 —
     표식이 남으면 데몬이 모든 tick을 거부하고 다음 갱신이 남은 백업과 충돌한다."""
-    if TXN_DIR.exists():
-        shutil.rmtree(TXN_DIR, ignore_errors=True)
-    if TXN_DIR.exists() or TXN_MANIFEST.exists():
+    if txn_dir(vault).exists():
+        shutil.rmtree(txn_dir(vault), ignore_errors=True)
+    if txn_dir(vault).exists() or txn_manifest(vault).exists():
         raise UpdateError(
             f"트랜잭션 영역 정리 실패 — 수동 개입 필요(권한·파일시스템 확인): "
-            f"{TXN_DIR}")
-    _fsync_dir(TXN_DIR.parent if TXN_DIR.parent.exists() else ROOT)
+            f"{txn_dir(vault)}")
+    _fsync_dir(txn_dir(vault).parent if txn_dir(vault).parent.exists() else vault.root)
 
 
-def _txn_begin(txn: str, version: str, touch: list[str]) -> None:
+def _txn_begin(vault: Vault, txn: str, version: str, touch: list[str]) -> None:
     """건드릴 파일(canonical ROOT-상대 경로)의 pre-image를 영속 백업·fsync한 뒤
     manifest를 원자 기록한다. manifest 기록이 트랜잭션 시작의 커밋 지점이므로,
     그 전에 죽으면 target은 아직 손대지 않은 상태다. 경로는 절대경로로 굳히지
     않는다 — 복구 시 다시 봉쇄·정체성 검증하기 위해 canonical 상대로 남긴다."""
-    _txn_clear()
+    _txn_clear(vault)
     # `.osk/`까지 처음 만들 수 있다 — 만든 각 디렉터리의 부모(최상단은 ROOT)를
     # 내구화해야 target은 남고 복구 표식만 유실되는 창이 닫힌다.
-    _mkdirs_durable(TXN_BACKUP)
+    _mkdirs_durable(txn_backup(vault))
     entries = []
     for i, rel in enumerate(touch):
         key = f"{i:06d}"
-        p = ROOT / rel
+        p = vault.root / rel
         existed = p.is_file()
         h = mode = None
         if existed:
             mode = stat.S_IMODE(p.stat().st_mode)   # 권한도 pre-image의 일부다
             data = p.read_bytes()
-            bp = TXN_BACKUP / key
+            bp = txn_backup(vault) / key
             _write_atomic(bp, data)              # 백업 자체도 fsync된다
             h = sha256_file(bp)
         entries.append({"rel": rel, "backup": key, "existed": existed,
                         "hash": h, "mode": mode})
-    _fsync_dir(TXN_BACKUP)
-    _write_atomic(TXN_MANIFEST, json.dumps(
+    _fsync_dir(txn_backup(vault))
+    _write_atomic(txn_manifest(vault), json.dumps(
         {"txn": txn, "version": version, "entries": entries,
-         "dirs": _planned_dirs(touch)},           # rollback이 되돌릴 새 디렉터리
+         "dirs": _planned_dirs(vault, touch)},           # rollback이 되돌릴 새 디렉터리
         ensure_ascii=False).encode())
-    _fsync_dir(TXN_DIR)
+    _fsync_dir(txn_dir(vault))
 
 
-def _journal_lenient() -> list[dict]:
+def _journal_lenient(vault: Vault) -> list[dict]:
     """**복구 판정 전용** 관대한 판독 — 판독 가능한 행만 모은다.
 
     크래시가 저널 append 도중이었으면 부분 JSON 행이 남는데, 엄격 판독
@@ -535,10 +554,10 @@ def _journal_lenient() -> list[dict]:
     그 상황에서 복구에 도달하지 못한다 — 복구 판정에 필요한 것은 `done(txn)`의
     존재 여부뿐이므로, 그 판정만 관대하게 하고 저널의 엄격 검증은 복구 뒤
     정상 경로에 맡긴다(독립 `recover.py`와 같은 규율)."""
-    if not UPDATE_JOURNAL.exists():
+    if not journal_path(vault).exists():
         return []
     out = []
-    for line in UPDATE_JOURNAL.read_text(encoding="utf-8",
+    for line in journal_path(vault).read_text(encoding="utf-8",
                                          errors="ignore").split("\n"):
         line = line.strip()
         if not line:
@@ -552,31 +571,31 @@ def _journal_lenient() -> list[dict]:
     return out
 
 
-def _txn_pending() -> dict | None:
+def _txn_pending(vault: Vault) -> dict | None:
     """미완료(또는 미정리) 트랜잭션 manifest — 없으면 None. 판독 실패는 손상이며
     **지우지 않는다**(유일한 복구 자료다) — 호출부가 fail-closed로 중단한다."""
-    if not TXN_MANIFEST.is_file():
+    if not txn_manifest(vault).is_file():
         return None
     try:
-        man = json.loads(TXN_MANIFEST.read_text(encoding="utf-8"))
+        man = json.loads(txn_manifest(vault).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise UpdateError(
             f"트랜잭션 manifest 손상 — 자동 복구 불가, 수동 개입 필요: {e} "
-            f"(백업은 {TXN_DIR} 에 보존했다)")
+            f"(백업은 {txn_dir(vault)} 에 보존했다)")
     if not isinstance(man.get("entries"), list) or not man.get("txn"):
         raise UpdateError(
-            f"트랜잭션 manifest 형식 위반 — 수동 개입 필요 (보존: {TXN_DIR})")
+            f"트랜잭션 manifest 형식 위반 — 수동 개입 필요 (보존: {txn_dir(vault)})")
     return man
 
 
-def _txn_recover(recs: list[dict]) -> str | None:
+def _txn_recover(vault: Vault, recs: list[dict]) -> str | None:
     """미완료 트랜잭션을 결정적으로 처리한다 — 'rollback'|'roll-forward'|None.
 
     저널에 그 txn의 `done`이 있으면 커밋된 것이므로 파일은 새 판이 정답이고
     manifest만 정리한다(roll-forward). 없으면 pre-image로 되돌린다(rollback).
     복구 대상 경로는 다시 봉쇄·정체성 검증하며, 하나라도 되돌리지 못하면
     백업을 보존한 채 중단한다(fail-closed)."""
-    man = _txn_pending()
+    man = _txn_pending(vault)
     if man is None:
         return None
     txn = man["txn"]
@@ -584,19 +603,19 @@ def _txn_recover(recs: list[dict]) -> str | None:
         # 커밋됨 — 파일은 그대로 둔다. 다만 직전 실행이 `done` 기록 직후·저널
         # 홈 내구화 **전에** 죽었을 수 있으므로, 그 내구화를 여기서 재시도한
         # 뒤에만 표식을 지운다(안 그러면 누락된 fsync가 영영 재시도되지 않는다).
-        _fsync_journal_home()
-        _txn_clear()
+        _fsync_journal_home(vault)
+        _txn_clear(vault)
         return "roll-forward"
     for e in man["entries"]:
         rel = e.get("rel")
-        cp = canon_rel(ROOT, str(rel)) if rel else None
+        cp = canon_rel(vault.root, str(rel)) if rel else None
         if cp is None:
             raise UpdateError(
-                f"복구 경로가 봉쇄·정체성 검증에 실패했다 — 중단(보존: {TXN_DIR}): {rel}")
-        p = ROOT / cp
+                f"복구 경로가 봉쇄·정체성 검증에 실패했다 — 중단(보존: {txn_dir(vault)}): {rel}")
+        p = vault.root / cp
         try:
             if e.get("existed"):
-                bp = TXN_BACKUP / str(e.get("backup"))
+                bp = txn_backup(vault) / str(e.get("backup"))
                 if not bp.is_file():
                     raise UpdateError(
                         f"백업이 없다 — 복구 불가, 수동 개입 필요: {rel}")
@@ -614,17 +633,17 @@ def _txn_recover(recs: list[dict]) -> str | None:
                 _fsync_dir(p.parent)
         except OSError as ex:
             raise UpdateError(
-                f"복구 실패 — 중단(백업 보존: {TXN_DIR}): {rel} {ex}")
+                f"복구 실패 — 중단(백업 보존: {txn_dir(vault)}): {rel} {ex}")
     # 파일을 되돌린 뒤, 이 트랜잭션이 만든 디렉터리 중 **비어 있는 것만** 깊은
     # 순서로 제거한다 — SKEL은 디렉터리 존재 자체가 적용 결과라 잔재로 남으면
     # 'pre-image로 복구'가 성립하지 않는다. 비어 있지 않으면(사용자 파일 등) 둔다.
     for rel in sorted(man.get("dirs") or [], key=lambda s: -s.count("/")):
-        cp = canon_rel(ROOT, str(rel))
+        cp = canon_rel(vault.root, str(rel))
         if cp is None:
             raise UpdateError(                   # 경로 정체성이 바뀌었다 — 중단
                 f"복구 대상 디렉터리가 봉쇄·정체성 검증에 실패했다 "
-                f"— 중단(보존: {TXN_DIR}): {rel}")
-        d = ROOT / cp
+                f"— 중단(보존: {txn_dir(vault)}): {rel}")
+        d = vault.root / cp
         try:
             d.rmdir()
         except OSError as ex:
@@ -634,9 +653,9 @@ def _txn_recover(recs: list[dict]) -> str | None:
             if ex.errno in (errno.ENOENT, errno.ENOTEMPTY, errno.EEXIST):
                 continue
             raise UpdateError(
-                f"디렉터리 복구 실패 — 중단(백업 보존: {TXN_DIR}): {cp} {ex}")
+                f"디렉터리 복구 실패 — 중단(백업 보존: {txn_dir(vault)}): {cp} {ex}")
         _fsync_dir(d.parent)
-    _txn_clear()
+    _txn_clear(vault)
     return "rollback"
 
 
@@ -660,19 +679,19 @@ def _exclusive(path: Path, busy: str):
         f.close()
 
 
-def sync_lock_path() -> Path:
+def sync_lock_path(vault: Vault) -> Path:
     """엔진·데몬과 **공유하는 mutation 잠금** — 데몬 싱글턴 잠금이 아니다.
     노드 쓰기·보호영역 조작·데몬의 working-tree 구간이 모두 이 하나를 잡으므로,
     update가 이걸 잡으면 그 사이 누구도 혼합 상태를 만들거나 커밋·push하지
     못한다. 자리의 정의는 엔진에 한 벌뿐이다(core.mutation_lock_path)."""
-    return core_mutation_lock_path(VAULT)
+    return core_mutation_lock_path(vault)
 
 
 DAEMON_RESTART_WAIT = 30   # 초 — 멈춘 데몬이 다시 보일 때까지 기다리는 한도
 
 
-def _daemon_script() -> Path:
-    return ROOT / "_governance" / "_engine" / "sync_daemon.py"
+def _daemon_script(vault: Vault) -> Path:
+    return vault.root / "_governance" / "_engine" / "sync_daemon.py"
 
 
 def _powershell(script: str) -> str:
@@ -684,11 +703,11 @@ def _powershell(script: str) -> str:
     return r.stdout.decode("utf-8", "replace")
 
 
-def daemon_pids() -> list[int]:
+def daemon_pids(vault: Vault) -> list[int]:
     """이 vault의 `sync_daemon.py`를 **절대 경로로** 실행 중인 프로세스들.
     예약 작업·launchd·systemd 예시가 모두 절대 경로로 띄운다. Windows의 venv
     pythonw는 실제 인터프리터를 자식으로 띄우므로 둘 다 걸린다."""
-    target = str(_daemon_script())
+    target = str(_daemon_script(vault))
     if os.name == "nt":
         rows = _powershell("Get-CimInstance Win32_Process -Filter \"Name LIKE 'python%'\" | "
                            "ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }")
@@ -726,13 +745,13 @@ def lock_within(f, seconds: float, busy: str) -> None:
             time.sleep(0.05)
 
 
-def _start_daemon() -> dict:
+def _start_daemon(vault: Vault) -> dict:
     """멈춘 데몬을 다시 띄우고 돌아왔는지 보고한다. Windows는 그 데몬을 띄우는
     예약 작업을 실행하고, launchd KeepAlive·systemd Restart=always는 잠금이
     풀리면 스스로 다시 띄운다."""
     via = "launchd KeepAlive / systemd Restart=always"
     if os.name == "nt":
-        path = str(_daemon_script()).lower().replace("'", "''")
+        path = str(_daemon_script(vault)).lower().replace("'", "''")
         task = _powershell(
             "$p = '__P__'\n"
             "$t = Get-ScheduledTask | Where-Object { (($_.Actions | ForEach-Object "
@@ -746,7 +765,7 @@ def _start_daemon() -> dict:
         via = f"scheduled task {task}"
     deadline = time.monotonic() + DAEMON_RESTART_WAIT
     while time.monotonic() < deadline:
-        if daemon_pids():
+        if daemon_pids(vault):
             return {"restarted": True, "via": via}
         time.sleep(2)
     return {"restarted": False, "via": via,
@@ -754,26 +773,26 @@ def _start_daemon() -> dict:
 
 
 @contextmanager
-def _daemon_stopped(info: dict):
+def _daemon_stopped(vault: Vault, info: dict):
     """적용 내내 데몬 싱글턴(osk-sync.lock)을 쥔다. 이 vault의 데몬이 쥐고
     있으면 **mutation 잠금을 먼저 잡고** 그 데몬을 끝낸다 — 그러면 데몬은
     작업 트리 변경 구간 안에 있지 않고, Git 전송 중 강제 종료는 데몬이 이미
     견딘다(SETUP 동기화 데몬). 풀리는 즉시 싱글턴을 넘겨받아, 서비스 관리자가
     먼저 띄운 구판 데몬이 적용 도중 끼어들지 못하게 한다. 끝나면(실패해도)
     멈춘 데몬을 다시 띄우고 결과를 `info`에 남긴다."""
-    f = open(sync_status.lock_path(ROOT, "osk-sync.lock"), "w")
+    f = open(sync_status.lock_path(vault.root, "osk-sync.lock"), "w")
     held = False
     try:
         try:
             lock_exclusive(f, blocking=False)
             held = True
         except OSError:
-            pids = daemon_pids()
+            pids = daemon_pids(vault)
             if not pids:
                 raise UpdateError(
                     "동기화 데몬 잠금이 잡혀 있는데 이 vault의 sync_daemon.py 프로세스를 "
                     "찾지 못했다 — 데몬을 멈춘 뒤 다시 실행한다")
-            m = open(sync_lock_path(), "w")
+            m = open(sync_lock_path(vault), "w")
             try:
                 lock_within(m, 120, "작업 트리 변경 잠금이 2분 넘게 풀리지 않는다 — "
                                      "잠시 후 다시 실행한다")
@@ -793,22 +812,22 @@ def _daemon_stopped(info: dict):
             unlock(f)
         f.close()
         if "stopped" in info:
-            info.update(_start_daemon())
+            info.update(_start_daemon(vault))
 
 
 # ── 계획과 적용 ──────────────────────────────────────────────────────────
 
-def plan(tree: Path, targets: list, adopt: bool) -> dict:
+def plan(vault: Vault, tree: Path, targets: list, adopt: bool) -> dict:
     """targets는 (source, dest) 사상. add/update/rebaseline/conflict는 파일을
     읽어야 하므로 (source, dest)를, engine_drift/remove/remove_conflict는 보고·
     삭제만 하므로 dest 문자열을 담는다."""
-    recs = ledger_read(UPDATE_JOURNAL)
+    recs = ledger_read(journal_path(vault))
     add, same, rebaseline = [], [], []
     update, conflict, engine_drift, adopted = [], [], [], []
     dests = set()
     for src, dest in targets:
         dests.add(dest)
-        s, d = tree / src, ROOT / dest
+        s, d = tree / src, vault.root / dest
         if not d.exists():
             add.append((src, dest))
             continue
@@ -841,10 +860,10 @@ def plan(tree: Path, targets: list, adopt: bool) -> dict:
     # 있는 삭제 대상은 지우지 않고 보존·보고한다. 바닥은 애초에 관리 대상이 아니다.
     remove, remove_conflict = [], []
     for p, h in sorted(managed_paths(recs).items()):
-        cp = canon_rel(ROOT, p)                 # 병합된 저널 path도 봉쇄(P1)
+        cp = canon_rel(vault.root, p)                 # 병합된 저널 path도 봉쇄(P1)
         if cp is None or cp in dests or _floor(cp):
             continue
-        rp = ROOT / cp
+        rp = vault.root / cp
         if not rp.exists():
             continue
         (remove if sha256_file(rp) == h else remove_conflict).append(cp)
@@ -854,7 +873,7 @@ def plan(tree: Path, targets: list, adopt: bool) -> dict:
             "remove": remove, "remove_conflict": remove_conflict}
 
 
-def _sidecar_plan(p: dict, tree: Path, version: str, dests: set) -> tuple:
+def _sidecar_plan(vault: Vault, p: dict, tree: Path, version: str, dests: set) -> tuple:
     """conflict 사이드카를 (쓸 것, 이미 같아 인정할 것, 손대지 않을 것)으로 가른다.
 
     사이드카는 사용자가 **수동 병합에 쓰는 작업 파일**이다. 같은 버전을 다시
@@ -871,7 +890,7 @@ def _sidecar_plan(p: dict, tree: Path, version: str, dests: set) -> tuple:
         if side in dests:                        # 관리·삭제 예정 경로와 충돌
             collide.append(side)
             continue
-        sp = ROOT / side
+        sp = vault.root / side
         if not sp.exists():
             write.append((src, side))
         elif sp.read_bytes() == (tree / src).read_bytes():
@@ -881,7 +900,7 @@ def _sidecar_plan(p: dict, tree: Path, version: str, dests: set) -> tuple:
     return write, kept, held, collide
 
 
-def _adopt_sidecar_plan(p: dict, version: str, dests: set) -> tuple:
+def _adopt_sidecar_plan(vault: Vault, p: dict, version: str, dests: set) -> tuple:
     """adopt가 덮을 로컬 내용을 옆에 남길 계획 — (쓸 것, 인정할 것, 보존할 것,
     겹친 것). 반환의 첫 항은 `(로컬 바이트, 사이드카 경로)`다.
 
@@ -911,8 +930,8 @@ def _adopt_sidecar_plan(p: dict, version: str, dests: set) -> tuple:
         if side in dests:
             collide.append(side)
             continue
-        local = (ROOT / dest).read_bytes()      # **덮기 전** 바이트
-        sp = ROOT / side
+        local = (vault.root / dest).read_bytes()      # **덮기 전** 바이트
+        sp = vault.root / side
         if not sp.exists():
             write.append((local, side))
         elif sp.read_bytes() == local:
@@ -953,22 +972,22 @@ def _write_atomic(dst: Path, data: bytes) -> None:
         raise
 
 
-def run(source: str | None = None, ref: str | None = None,
+def run(vault: Vault, source: str | None = None, ref: str | None = None,
         bundle: str | None = None, apply: bool = False,
         adopt: bool = False) -> dict:
     """기본은 보고. `apply`면 **가장 먼저** mutation 잠금을 잡고 미완료 트랜잭션을
     복구한 뒤에야 상태를 판정한다(Mechanism §1-2 7항) — 복구가 판정 뒤에 오면
     half-applied 상태가 drift·adopt 거부로 오판되어 복구에 도달하지 못한다."""
     if not apply:
-        return _run_locked(source, ref, bundle, False, adopt)
+        return _run_locked(vault, source, ref, bundle, False, adopt)
     reviewed = None
     # The first attempt must show the plan while the daemon and MCP can stay up.
     # Crash recovery is different: restore the already-authorized pre-image first.
-    if not TXN_MANIFEST.exists():
-        preview = _run_locked(source, ref, bundle, False, adopt)
-        with _exclusive(local_lock_path("osk-update-review.lock", VAULT.root),
+    if not txn_manifest(vault).exists():
+        preview = _run_locked(vault, source, ref, bundle, False, adopt)
+        with _exclusive(local_lock_path("osk-update-review.lock", vault.root),
                         "다른 업데이트 확인이 진행 중이다 — 잠시 후 재시도한다"):
-            ticket = local_lock_path(CONFIRMATION, VAULT.root)
+            ticket = local_lock_path(CONFIRMATION, vault.root)
             try:
                 pending = json.loads(ticket.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -977,7 +996,7 @@ def run(source: str | None = None, ref: str | None = None,
                     or pending.get("review_id") != preview["review_id"]
                     or not isinstance(pending.get("at"), (int, float))
                     or not 0 <= time.time() - pending["at"] < 3600):
-                return _request_approval(preview)
+                return _request_approval(vault, preview)
             ticket.unlink()  # One retry only; even a failed apply needs fresh consent.
             reviewed = preview["review_id"]
     # 잠금 순서는 데몬과 같다: **싱글턴 → mutation**. 싱글턴(osk-sync.lock)은
@@ -986,23 +1005,23 @@ def run(source: str | None = None, ref: str | None = None,
     # 새 mutation 규약을 모르는 구 데몬의 동시 실행까지 함께 막힌다. 데몬이
     # 쥐고 있으면 `_daemon_stopped`가 멈추고 적용 뒤 다시 띄운다.
     daemon: dict = {}
-    with _daemon_stopped(daemon),\
-            _exclusive(sync_lock_path(),
+    with _daemon_stopped(vault, daemon),\
+            _exclusive(sync_lock_path(vault),
                        "다른 갱신이 vault를 잠갔다 — 잠시 후 다시 실행한다"):
         # 복구는 어떤 상태 판정보다 먼저다(잠금 안에서). 저널은 **관대하게**
         # 읽는다 — 크래시가 append 도중이면 부분 행이 남는데, 엄격 판독으로
         # 여기서 실패하면 정작 복구에 도달하지 못한다.
-        recovered = _txn_recover(_journal_lenient())
+        recovered = _txn_recover(vault, _journal_lenient(vault))
         if recovered == "rollback":
             try:
-                ledger_append(UPDATE_JOURNAL,
+                ledger_append(journal_path(vault),
                               {"kind": "rollback",
                                "why": "미완료 트랜잭션 크래시 복구"})
             except Exception:
                 pass                    # 저널이 손상돼 기록을 못 남겨도 **파일
                                         # 복구는 유효하다**. 손상 자체는 아래
                                         # 정상 경로의 엄격 판독이 보고한다.
-        rep = _run_locked(source, ref, bundle, True, adopt, reviewed)
+        rep = _run_locked(vault, source, ref, bundle, True, adopt, reviewed)
         if recovered:
             rep["recovered"] = recovered
     if daemon:
@@ -1013,22 +1032,22 @@ def run(source: str | None = None, ref: str | None = None,
 CONFIRMATION = "osk-update-confirmation.json"   # 기기 로컬 확인표 {review_id, at}
 
 
-def confirm(review_id: str) -> None:
+def confirm(vault: Vault, review_id: str) -> None:
     """이 갱신 계획이 확인됐다고 적는다 — 1시간 안의 다음 `--apply` 한 번이, 잠금 안에서
     다시 세운 계획이 이 `review_id`일 때만 적용한다. 설치 도구(`osk.setup`)는 사용자가
     확인한 자기 계획에 담긴 `review_id`를 여기 적고 적용을 한 번만 부른다."""
-    _write_atomic(local_lock_path(CONFIRMATION, VAULT.root), json.dumps(
+    _write_atomic(local_lock_path(CONFIRMATION, vault.root), json.dumps(
         {"review_id": review_id, "at": time.time()}).encode())
 
 
-def withdraw() -> None:
+def withdraw(vault: Vault) -> None:
     """확인표를 지운다 — 사용자에게 보이지 않은 계획의 확인이 남지 않게."""
-    local_lock_path(CONFIRMATION, VAULT.root).unlink(missing_ok=True)
+    local_lock_path(CONFIRMATION, vault.root).unlink(missing_ok=True)
 
 
-def _request_approval(report: dict) -> dict:
+def _request_approval(vault: Vault, report: dict) -> dict:
     """A workflow checkpoint, not proof of a human utterance or a security boundary."""
-    confirm(report["review_id"])
+    confirm(vault, report["review_id"])
     return dict(report, ok=False, approval_required=True, instruction=(
         "여기서 멈추고 사용자에게 이번 업데이트 변경사항과 하네스 재시작 필요성을 "
         "설명한 뒤 명시적 재승인을 요청하라. 기존 구현·릴리스 승인으로 대신하지 마라. "
@@ -1051,18 +1070,18 @@ _PROTECT_NOTE = {
 }
 
 
-def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
+def _governance_review(vault: Vault, tree: Path, p: dict, side_write: list, ad_write: list,
                        targets: list, rel: dict) -> dict:
     """Hash the exact post-update region, including pre-existing local changes."""
-    recs = approvals.records()
-    state = approvals.state("_governance", recs)
+    recs = approvals.records(vault)
+    state = approvals.state(vault, "_governance", recs)
     if state == "stale":
         raise UpdateError("통치 구획 승인본이 stale이다 — 사용자 검토로 먼저 해소한다")
     files = {rel: sha256_file(path) for rel, path in
-             approvals.region_files(ROOT / "_governance")}
+             approvals.region_files(vault, vault.root / "_governance")}
     before = sha256_bytes(approvals.manifest_blob(sorted(files.items())))
-    base = approvals.approved_hash("_governance")
-    prior = approvals.changeset("_governance") if base else None
+    base = approvals.approved_hash(vault, "_governance")
+    prior = approvals.changeset(vault, "_governance") if base else None
     for src, dest in p["add"] + p["update"] + side_write:
         if dest.startswith("_governance/") and not approvals.excluded_rel(dest, "_governance"):
             files[dest] = sha256_file(tree / src)
@@ -1089,20 +1108,20 @@ def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
                 and not approvals.excluded_rel(dest, "_governance")}
     diff = sorted(k for k in files.keys() | attested.keys()
                   if files.get(k) != attested.get(k))
-    out["protect"] = "withheld" if diff or approvals.ledger_is_damaged(recs) else "establish"
+    out["protect"] = "withheld" if diff or approvals.ledger_is_damaged(vault, recs) else "establish"
     if diff:
         out["unattested"] = diff[:20]
     return out
 
 
-def _run_locked(source: str | None, ref: str | None, bundle: str | None,
+def _run_locked(vault: Vault, source: str | None, ref: str | None, bundle: str | None,
                 apply: bool, adopt: bool, reviewed: str | None = None) -> dict:
-    cfg = load_config().get("upstream", {})
+    cfg = load_config(vault).get("upstream", {})
     source = source or ("bundle" if bundle else cfg.get("source", "git"))
     self_tag = None
     # adopt는 **최초 편입** 전용이다 — 이미 관리 이력이 있으면 거부한다. 안 그러면
     # 정상 관리 인스턴스에서 로컬 수정(엔진 포함)을 아무 때나 덮는 force가 된다.
-    if adopt and has_history():
+    if adopt and has_history(vault):
         raise UpdateError(
             "이미 갱신 관리 이력이 있다 — adopt는 최초 편입에만 허용된다. "
             "로컬 수정은 정본에서 고치거나 로컬 사본을 정리한 뒤 갱신한다")
@@ -1147,18 +1166,18 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         # force-move한 뒤 자기일관적 증빙만 갖추면 그대로 통과한다(엔진까지
         # 덮인다). 증빙 파일 자체의 해시를 identity로 삼아 저널에 고정한다.
         attest_id = sha256_file(tree / ATTESTATION)
-        for r in _journal_lenient():
+        for r in _journal_lenient(vault):
             if (r.get("kind") == "done" and r.get("version") == rel["version"]
                     and r.get("attest") and r["attest"] != attest_id):
                 raise UpdateError(
                     f"같은 버전인데 릴리스 identity가 다르다 — 중단"
                     f"(태그 force-move·위조 의심): {rel['version']}\n"
                     f"  적용된 증빙: {r['attest']}\n  받은 증빙: {attest_id}")
-        targets, skel, skipped = apply_set(tree, rel)
-        p = plan(tree, targets, adopt)
+        targets, skel, skipped = apply_set(vault, tree, rel)
+        p = plan(vault, tree, targets, adopt)
         dests = lambda pairs: [d for _s, d in pairs]
         out = {"ok": True, "applied": False, "version": rel["version"],
-               "current": current_version(), "files": len(targets),
+               "current": current_version(vault), "files": len(targets),
                "add": dests(p["add"]), "update": dests(p["update"]),
                "same": p["same"], "rebaseline": dests(p["rebaseline"]),
                "conflict": dests(p["conflict"]), "engine_drift": p["engine_drift"],
@@ -1176,11 +1195,11 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         # 사이드카는 사용자의 수동 병합 작업 파일이다 — 덮을 것/인정할 것/보존할
         # 것을 먼저 가른다. 관리 파일과 경로가 겹치면 중단한다.
         _dests = {d for _s, d in targets} | set(p["remove"])
-        side_write, side_kept, side_held, side_collide = _sidecar_plan(
+        side_write, side_kept, side_held, side_collide = _sidecar_plan(vault,
             p, tree, v, _dests)
         # adopt가 덮을 로컬 내용도 같은 규율로 옆에 남긴다 — 덮기 전 바이트를
         # 여기서 읽어 둔다(아래 적용 루프가 그 자리를 먼저 덮을 수 있다).
-        ad_write, ad_kept, ad_blocked, ad_collide = _adopt_sidecar_plan(
+        ad_write, ad_kept, ad_blocked, ad_collide = _adopt_sidecar_plan(vault,
             p, v, _dests)
         out["sidecar_held"] = side_held
         out["adopt_blocked"] = ad_blocked
@@ -1196,34 +1215,34 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
             raise UpdateError(
                 "사이드카 경로가 정식 관리 파일과 겹친다 — 갱신을 중단한다"
                 "(관리 파일을 되덮게 된다):\n  " + "\n  ".join(side_collide[:10]))
-        governance = _governance_review(tree, p, side_write, ad_write, targets, rel)
+        governance = _governance_review(vault, tree, p, side_write, ad_write, targets, rel)
         out["governance"] = governance
         out["restart_required"] = True
         out["attestation"] = attest_id
-        out["layout"] = SPACE_ROOTS
+        out["layout"] = vault.space_roots
         # Bind consent to content, not mtime or the version label. The second read
         # under the mutation lock catches changes during the confirmation window.
         paths = sorted(_dests | {s for _, s in side_write + ad_write}
-                       | {posix_rel(d / ".gitkeep", ROOT) for d in skel})
-        local = [(path, sha256_file(ROOT / path) if (ROOT / path).is_file()
-                  else "directory" if (ROOT / path).exists() else None) for path in paths]
-        identity = {"root": str(ROOT), "plan": out, "local": local,
-                    "adopt": adopt, "journal": _journal_lenient()}
+                       | {posix_rel(d / ".gitkeep", vault.root) for d in skel})
+        local = [(path, sha256_file(vault.root / path) if (vault.root / path).is_file()
+                  else "directory" if (vault.root / path).exists() else None) for path in paths]
+        identity = {"root": str(vault.root), "plan": out, "local": local,
+                    "adopt": adopt, "journal": _journal_lenient(vault)}
         out["review_id"] = sha256_bytes(json.dumps(
             identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
         if not apply:
-            if TXN_MANIFEST.is_file():
+            if txn_manifest(vault).is_file():
                 out["pending_txn"] = True
             return out
         if reviewed != out["review_id"]:
-            return _request_approval(out)
+            return _request_approval(vault, out)
         # 저널이 **기록 가능한지 먼저 본다.** `_txn_begin`이 manifest를 남긴
         # 뒤에 `ledger_append`가 손상으로 죽으면(그 호출은 아래 try 밖이다)
         # 표식만 남아 데몬이 영원히 `pending-txn`으로 tick을 거부하고, 다음
         # `--apply`가 같은 자리에서 또 죽으며 표식을 다시 만든다 — 지워도 벗어날
         # 수 없는 상태다(실측). 손상 위에 이력을 더 쌓지 않는다(Mechanism §3 2항).
         try:
-            _dmg = ledger_damage(ledger_read(UPDATE_JOURNAL), UPDATE_JOURNAL)
+            _dmg = ledger_damage(ledger_read(journal_path(vault)), journal_path(vault))
         except Exception as e:
             raise UpdateError(f"갱신 저널을 읽지 못했다 — 아무것도 쓰지 않았다: {e}")
         if _dmg:
@@ -1239,48 +1258,48 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         touch += list(p["remove"])
         touch += [side for _s, side in side_write]
         touch += [side for _b, side in ad_write]
-        touch += [posix_rel(d / ".gitkeep", ROOT) for d in skel if not d.exists()]
+        touch += [posix_rel(d / ".gitkeep", vault.root) for d in skel if not d.exists()]
         accept_governance = governance["base"] and governance["after"] != governance["base"]
         establish = governance.get("protect") == "establish"
         if accept_governance or establish:
-            touch.append(posix_rel(approvals.APPROVALS, ROOT))
-        _txn_begin(txn, v, touch)
-        ledger_append(UPDATE_JOURNAL, {"kind": "begin", "txn": txn,
+            touch.append(posix_rel(approvals.ledger_path(vault), vault.root))
+        _txn_begin(vault, txn, v, touch)
+        ledger_append(journal_path(vault), {"kind": "begin", "txn": txn,
                                        "version": v, "adopt": bool(adopt)})
         applied, removed, sidecars, made_skel = [], [], [], []
         try:
             for local, side in ad_write:      # **덮기 전에** 로컬을 옆에 남긴다
-                _write_atomic(ROOT / side, local)
+                _write_atomic(vault.root / side, local)
                 sidecars.append(side)
             sidecars += ad_kept
             for src, dest in p["add"] + p["update"]:
-                _write_atomic(ROOT / dest, (tree / src).read_bytes())
+                _write_atomic(vault.root / dest, (tree / src).read_bytes())
                 applied.append(dest)
             for path in p["remove"]:              # path는 이미 canonical(P1)
-                tp = ROOT / path
+                tp = vault.root / path
                 tp.unlink(missing_ok=True)
                 _fsync_dir(tp.parent)             # 삭제 엔트리 내구화(전원 차단)
                 removed.append(path)
             for src, side in side_write:          # 없던 사이드카만 쓴다
-                _write_atomic(ROOT / side, (tree / src).read_bytes())
+                _write_atomic(vault.root / side, (tree / src).read_bytes())
                 sidecars.append(side)
             sidecars += side_kept                 # 이미 같은 것은 그대로 인정
             for d in skel:                        # 이미 _allowed_skel로 봉쇄·검증됨
                 if not d.exists():
                     _mkdirs_durable(d)            # 만든 각 조상의 부모까지 내구화
                     _write_atomic(d / ".gitkeep", b"")
-                    made_skel.append(posix_rel(d, ROOT))
+                    made_skel.append(posix_rel(d, vault.root))
             if accept_governance:
-                approvals.approve_locked("_governance", governance["base"],
+                approvals.approve_locked(vault, "_governance", governance["base"],
                                           governance["after"],
                                           f"osk.update {v}; user confirmation: {reviewed}")
             if establish:                     # 확인받은 증빙 tree 그대로만 지정
-                approvals.protect("_governance",
+                approvals.protect(vault, "_governance",
                                   f"osk.update {v}; user confirmation: {reviewed}",
                                   expect_work=governance["after"], _locked=True)
         except (OSError, ValueError) as e:
-            _txn_recover(ledger_read(UPDATE_JOURNAL))   # done(txn) 없음 → rollback
-            ledger_append(UPDATE_JOURNAL,
+            _txn_recover(vault, ledger_read(journal_path(vault)))   # done(txn) 없음 → rollback
+            ledger_append(journal_path(vault),
                           {"kind": "rollback", "txn": txn, "version": v,
                            "why": str(e)[:200]})
             raise UpdateError(f"갱신 적용 중 실패 — 원상복구했다: {e}")
@@ -1289,35 +1308,35 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         # `done(txn)`이 append될 때까지 `committed()`가 판정에서 가린다 —
         # 중간에 죽어도 파일(pre-image 복구)과 판정이 어긋나지 않는다.
         for dest in applied:
-            ledger_append(UPDATE_JOURNAL, {
+            ledger_append(journal_path(vault), {
                 "kind": "apply", "txn": txn, "version": v, "path": dest,
-                "hash": sha256_file(ROOT / dest)})
+                "hash": sha256_file(vault.root / dest)})
         for _src, dest in p["rebaseline"]:        # 내용 동일·기준선만 갱신
-            ledger_append(UPDATE_JOURNAL, {
+            ledger_append(journal_path(vault), {
                 "kind": "apply", "txn": txn, "version": v, "path": dest,
-                "hash": sha256_file(ROOT / dest)})
+                "hash": sha256_file(vault.root / dest)})
         for path in removed:
-            ledger_append(UPDATE_JOURNAL, {"kind": "remove", "txn": txn,
+            ledger_append(journal_path(vault), {"kind": "remove", "txn": txn,
                                            "version": v, "path": path})
         # skip은 conflict **사건**이지 적용 상태 변경이 아니다 — `skipped_path`로
         # 남겨 baseline/관리 판정(`path` 키)이 이를 보지 않게 한다(P2).
         for _src, dest in p["conflict"]:
-            ledger_append(UPDATE_JOURNAL, {
+            ledger_append(journal_path(vault), {
                 "kind": "skip", "txn": txn, "version": v, "skipped_path": dest,
                 "why": "로컬 수정 — upstream 사본을 옆에 두었다"})
         for path in p["remove_conflict"]:
-            ledger_append(UPDATE_JOURNAL, {
+            ledger_append(journal_path(vault), {
                 "kind": "skip", "txn": txn, "version": v, "skipped_path": path,
                 "why": "upstream 삭제됐으나 로컬 수정 — 보존한다"})
-        ledger_append(UPDATE_JOURNAL, {
+        ledger_append(journal_path(vault), {
             "kind": "done", "txn": txn, "version": v, "attest": attest_id,
             "applied": len(applied), "removed": len(removed),
             "conflicts": len(sidecars)})
         # 커밋 기록의 **디렉터리 엔트리**까지 내구화한 뒤에만 표식을 지운다 —
         # 저널이 이번에 처음 생겼으면 이름이 유실될 수 있고, 그러면 파일은 새
         # 판인데 복구 표식도 없어 baseline이 통째로 사라진다.
-        _fsync_journal_home()
-        _txn_clear()                              # 커밋 완료 — 트랜잭션 영역 정리
+        _fsync_journal_home(vault)
+        _txn_clear(vault)                              # 커밋 완료 — 트랜잭션 영역 정리
         out.update(applied=True, applied_files=len(applied),
                    removed=removed, sidecars=sidecars, skel_created=made_skel,
                    governance_accepted=bool(accept_governance),
@@ -1329,6 +1348,7 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
 
 
 def main(argv=None):
+    vault = Vault.open()
     ap = argparse.ArgumentParser(
         prog="osk-update",
         description="정본 릴리스로 갱신 — 기본은 보고, 쓰기는 --apply")
@@ -1349,7 +1369,7 @@ def main(argv=None):
             sys.exit("[중단] --ack는 다른 선택지와 함께 쓰지 않는다 — 받음만 기록한다")
         from . import update_check
         try:
-            rep = update_check.ack(a.ack)
+            rep = update_check.ack(vault, a.ack)
         except UpdateError as e:
             sys.exit(f"[중단] {e}")
         print(json.dumps(rep, ensure_ascii=False, indent=2))
@@ -1361,7 +1381,7 @@ def main(argv=None):
             sys.exit("[중단] --check는 다른 선택지와 함께 쓰지 않는다 — 태그만 묻는다")
         from . import update_check
         try:
-            rep = update_check.check()
+            rep = update_check.check(vault)
         except UpdateError as e:
             sys.exit(f"[중단] {e}")
         print(json.dumps(rep, ensure_ascii=False, indent=2))
@@ -1369,7 +1389,7 @@ def main(argv=None):
             raise SystemExit(1)
         return
     try:
-        rep = run(a.source, a.to, a.bundle, a.apply, a.adopt)
+        rep = run(vault, a.source, a.to, a.bundle, a.apply, a.adopt)
     except UpdateError as e:
         sys.exit(f"[중단] {e}")
     print(json.dumps(rep, ensure_ascii=False, indent=2))

@@ -987,7 +987,7 @@ Kiro, Claude Code CLI, Codex CLI는 사용자가 연 폴더를 쓰므로 규칙�
 
 ```powershell
 $env:PYTHONPATH='_governance/_engine'
-.venv/Scripts/python.exe -c "from osk import workspaces; print(workspaces.add('<하네스>', '<뿌리 폴더>', r'<뿌리 아래 모양의 정규식>', '<확인한 판본>', '<설명>'))"
+.venv/Scripts/python.exe -c "from osk import workspaces; from osk.vault import Vault; print(workspaces.add(Vault.open(), '<하네스>', '<뿌리 폴더>', r'<뿌리 아래 모양의 정규식>', '<확인한 판본>', '<설명>'))"
 ```
 
 뿌리 폴더에는 `~`와 `%APPDATA%` 같은 환경 변수를 쓸 수 있다. 대장의 규칙은 엔진 규칙보다 먼저

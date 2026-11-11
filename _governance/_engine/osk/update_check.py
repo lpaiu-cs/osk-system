@@ -28,6 +28,7 @@ from datetime import datetime
 
 from . import core, update
 from ._portalock import lock_exclusive, unlock
+from .vault import Vault
 
 # 기기 로컬 자리. 비Git vault의 대체 자리는 이름의 stem으로 갈리므로
 # (core.local_lock_path) 세 이름의 stem이 서로 달라야 한다.
@@ -35,7 +36,12 @@ STATE = "osk-release-check.json"     # 마지막 확인 {at, url, latest, error}
 ACK = "osk-release-ack.json"         # 이 기기의 받음 기록 {version, at}
 LOCK = "osk-release-checking.lock"   # 한 번에 한 확인
 # 받음 기록의 동기화 자리 — `ack` 행만 쌓는다. 받음은 되돌리지 않으므로 주제 키가 없다.
-ACKS = core.LEDGER / "release.jsonl"
+
+
+def acks_path(vault: Vault) -> Path:
+    return vault.ledger / "release.jsonl"
+
+
 CHECK_EVERY = 24 * 3600              # 성공한 확인이 유효한 시간(초)
 RETRY_AFTER = 3600                   # 실패한 확인을 다시 하기까지(초)
 TIMEOUT = 20                         # 분리 프로세스의 태그 조회 한도(초)
@@ -44,22 +50,22 @@ _GITHUB = re.compile(r"(?:https://github\.com/|git@github\.com:|ssh://git@github
                      r"([\w.-]+)/([\w.-]+?)(?:\.git)?/?")
 
 
-def _read(name: str) -> dict:
+def _read(vault: Vault, name: str) -> dict:
     try:
-        data = json.loads(core.local_lock_path(name, core.VAULT.root).read_text(encoding="utf-8"))
+        data = json.loads(core.local_lock_path(name, vault.root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _write(name: str, data: dict) -> None:
-    core.atomic_write(core.local_lock_path(name, core.VAULT.root),
+def _write(vault: Vault, name: str, data: dict) -> None:
+    core.atomic_write(core.local_lock_path(name, vault.root),
                       json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
 
-def _upstream() -> dict:
+def _upstream(vault: Vault) -> dict:
     """`osk.update`가 읽는 것과 같은 출처 설정(`.osk/config.json`의 upstream)."""
-    return update.load_config().get("upstream", {})
+    return update.load_config(vault).get("upstream", {})
 
 
 def _url(up: dict) -> str:
@@ -75,11 +81,11 @@ def _kst(at) -> str | None:
         return None
 
 
-def current() -> str | None:
+def current(vault: Vault) -> str | None:
     """이 vault의 판본 — 갱신 저널의 인과 극대. 기록이 없거나 정할 수 없으면
     (분기·손상) None이고, 그때는 비교하지 않는다."""
     try:
-        return update.current_version()
+        return update.current_version(vault)
     except (OSError, ValueError):
         return None
 
@@ -90,12 +96,12 @@ def newer(latest, cur) -> bool:
     return bool(a and b and a > b)
 
 
-def off_reason() -> str | None:
+def off_reason(vault: Vault) -> str | None:
     """자동 확인·알림을 하지 않는 이유 — 하면 None."""
     if os.environ.get("OSK_UPDATE_CHECK") == "0":
         return "환경 OSK_UPDATE_CHECK=0"
     try:
-        cfg = update.load_config()
+        cfg = update.load_config(vault)
     except update.UpdateError as e:
         return str(e)
     if cfg.get("update_check") is False:
@@ -105,7 +111,7 @@ def off_reason() -> str | None:
         return "갱신 출처가 git이 아니다 — bundle은 오프라인 반입이다"
     if up.get("pin"):
         return f"판본을 {up['pin']}에 고정했다(pin)"
-    if current() is None:
+    if current(vault) is None:
         return "갱신 저널에서 판본을 정할 수 없다 — 릴리스 기준선이 없거나 저널이 갈라졌다"
     return None
 
@@ -119,22 +125,22 @@ def due(state: dict, url: str, now: float | None = None) -> bool:
     return not 0 <= now - at < (RETRY_AFTER if state.get("error") else CHECK_EVERY)
 
 
-def check(*, unattended: bool = False) -> dict:
+def check(vault: Vault, *, unattended: bool = False) -> dict:
     """정본의 최신 정식 태그를 묻고 결과를 이 기기에 남긴다. 적용은 하지 않는다.
 
     `unattended`는 분리 프로세스의 확인이다 — 다른 확인이 진행 중이거나 방금
     끝났으면 곧바로 물러나고, 사람의 입력을 기다리지 않는다. 실패는 기록하되 지난
     성공의 `latest`는 지우지 않는다 — 잠깐 오프라인이라고 알림이 사라지지 않는다."""
-    url = _url(_upstream())
-    with open(core.local_lock_path(LOCK, core.VAULT.root), "w") as f:
+    url = _url(_upstream(vault))
+    with open(core.local_lock_path(LOCK, vault.root), "w") as f:
         try:
             lock_exclusive(f, blocking=not unattended)
         except OSError:
-            return report()                  # 다른 확인이 돌고 있다
+            return report(vault)                  # 다른 확인이 돌고 있다
         try:
-            prev = _read(STATE)
+            prev = _read(vault, STATE)
             if unattended and not due(prev, url):
-                return report(prev)
+                return report(vault, prev)
             state = {"at": time.time(), "url": url, "error": None,
                      "latest": prev.get("latest") if prev.get("url") == url else None}
             try:
@@ -143,151 +149,152 @@ def check(*, unattended: bool = False) -> dict:
             except (update.UpdateError, OSError, ValueError,
                     subprocess.TimeoutExpired) as e:
                 state["error"] = f"{type(e).__name__}: {e}"[:300]
-            _write(STATE, state)
+            _write(vault, STATE, state)
         finally:
             unlock(f)
-    return report(state)
+    return report(vault, state)
 
 
-def report(state: dict | None = None) -> dict:
+def report(vault: Vault, state: dict | None = None) -> dict:
     """마지막 확인과 지금 판본의 비교 — `osk.update --check`와 `osk.cli status`가
     싣는다. 네트워크에 닿지 않는다."""
-    state = _read(STATE) if state is None else state
-    cur, latest = current(), state.get("latest")
+    state = _read(vault, STATE) if state is None else state
+    cur, latest = current(vault), state.get("latest")
     out = {"current": cur, "latest": latest, "available": newer(latest, cur),
            "checked_at": _kst(state.get("at")), "error": state.get("error")}
     if out["available"]:
-        out["acked"] = acked(latest)
-    reason = off_reason()
+        out["acked"] = acked(vault, latest)
+    reason = off_reason(vault)
     if reason:
         out["auto_off"] = reason
     return out
 
 
-def available() -> dict | None:
+def available(vault: Vault) -> dict | None:
     """알릴 새 릴리스 `{latest, current}` — 없거나 자동 확인을 끈 설치면 None."""
-    if off_reason():
+    if off_reason(vault):
         return None
-    state = _read(STATE)
-    if state.get("url") != _url(_upstream()):
+    state = _read(vault, STATE)
+    if state.get("url") != _url(_upstream(vault)):
         return None                          # 다른 출처의 결과로는 알리지 않는다
-    cur, latest = current(), state.get("latest")
+    cur, latest = current(vault), state.get("latest")
     return {"latest": latest, "current": cur} if newer(latest, cur) else None
 
 
-def ensure_fresh():
+def ensure_fresh(vault: Vault):
     """지난 확인이 낡았으면 분리 프로세스로 확인을 띄우고 기다리지 않는다. 띄운
     프로세스를 돌려준다 — 띄우지 않았으면 None."""
-    if off_reason() or not due(_read(STATE), _url(_upstream())):
+    if off_reason(vault) or not due(_read(vault, STATE), _url(_upstream(vault))):
         return None
-    return core.spawn_worker(core.VAULT, "osk.update_check")
+    return core.spawn_worker(vault, "osk.update_check")
 
 
-def acked(version: str) -> bool:
+def acked(vault: Vault, version: str) -> bool:
     """에이전트가 이 릴리스나 그보다 새 판을 받았다고 기록했는가 — 이 기기의 기록이나
     동기화로 들어온 다른 기기의 기록. 대장을 읽지 못하면 받지 않은 것으로 본다(알림이 남는다)."""
-    got = [_read(ACK).get("version")]
+    got = [_read(vault, ACK).get("version")]
     try:
-        got += [r.get("version") for r in core.ledger_read(ACKS) if r.get("kind") == "ack"]
+        got += [r.get("version") for r in core.ledger_read(acks_path(vault)) if r.get("kind") == "ack"]
     except (OSError, ValueError):
         pass
     return any(update.semver(v) and not newer(version, v) for v in got)
 
 
-def ack(version: str) -> dict:
+def ack(vault: Vault, version: str) -> dict:
     """지금 알리는 새 릴리스를 에이전트가 받았다고 기록한다 — 이 기기에 먼저, 그다음 동기화
     대장에. 대장에 못 적으면 이 기기의 알림만 멈추고 `synced`가 거짓이다."""
-    avail = available()
+    avail = available(vault)
     if not avail:
         raise update.UpdateError("알리는 새 릴리스가 없다 — 받았다고 기록할 것이 없다")
     if version != avail["latest"]:
         raise update.UpdateError(f"지금 알리는 새 릴리스는 {avail['latest']}다 — {version}이 아니다")
-    _write(ACK, {"version": version, "at": time.time()})
+    _write(vault, ACK, {"version": version, "at": time.time()})
     out = {"acked": version, "synced": True}
     try:
-        with core.mutation_lock(core.VAULT):
-            core.ledger_append(ACKS, {"kind": "ack", "version": version})
+        with core.mutation_lock(vault):
+            core.ledger_append(acks_path(vault), {"kind": "ack", "version": version})
     except Exception as e:
         out.update(synced=False, error=f"{type(e).__name__}: {e}"[:300])
     return out
 
 
-def _ack_how(latest: str, when: str) -> str:
+def _ack_how(vault: Vault, latest: str, when: str) -> str:
     return (f"이 알림은 받았다는 기록이 남을 때까지 세션 시작마다 다시 실린다 — {when} "
-            f"`{core.cli_command(core.VAULT, 'update', '--ack', latest)}`로 기록한다. 기록은 동기화로 다른 "
+            f"`{core.cli_command(vault, 'update', '--ack', latest)}`로 기록한다. 기록은 동기화로 다른 "
             f"기기의 알림도 멈추며, 갱신이 아니다.")
 
 
-def notes_url(version: str) -> str | None:
+def notes_url(vault: Vault, version: str) -> str | None:
     """그 판의 릴리스 노트 주소 — 출처가 GitHub 저장소일 때만. 메이저 판이면 노트 머리가
     이행 안내를 가리킨다."""
     try:
-        m = _GITHUB.fullmatch(_url(_upstream()))
+        m = _GITHUB.fullmatch(_url(_upstream(vault)))
     except update.UpdateError:
         return None
     return f"https://github.com/{m[1]}/{m[2]}/releases/tag/{version}" if m else None
 
 
-def _how(latest: str) -> str:
-    notes = notes_url(latest)
+def _how(vault: Vault, latest: str) -> str:
+    notes = notes_url(vault, latest)
     read = (f"먼저 릴리스 노트({notes})를 읽는다 — 메이저 판이면 노트 머리가 가리키는 이행 "
             f"안내가 먼저다. " if notes else "")
     return (f"갱신은 사용자가 요청할 때만 한다. {read}이 vault를 여러 기기에서 쓰면 갱신은 한 "
             f"기기에서만 한다 — 다른 기기가 이미 갱신했으면 동기화 뒤 이 알림이 사라지고, "
             f"이 기기에서는 서버·데몬 재시작과 requirements.txt가 바뀌었을 때의 pip 재실행만 "
             f"한다. 요청을 받으면 "
-            f"`{core.cli_command(core.VAULT, 'update', '--to', latest, '--apply')}`를 실행한다. 첫 "
+            f"`{core.cli_command(vault, 'update', '--to', latest, '--apply')}`를 실행한다. 첫 "
             f"실행은 변경집합만 내고 종료코드 2로 멈추니, 출력의 instruction대로 설명하고 "
             f"재승인을 받는다. 절차와 뒷정리(세션 재시작·requirements·커밋·다른 기기)는 이 vault의 "
-            f"`{core.ROOT / 'docs' / 'OPERATE-AGENT.md'}`의 Update 절을 따른다.")
+            f"`{vault.root / 'docs' / 'OPERATE-AGENT.md'}`의 Update 절을 따른다.")
 
 
-def session_notice(screen: bool = True) -> tuple[str, str]:
+def session_notice(vault: Vault, screen: bool = True) -> tuple[str, str]:
     """(에이전트 문맥, 사용자 화면) — 알릴 새 릴리스가 있고 받았다는 기록이 아직 없으면
     세션마다. 사용자 화면의 문구는 모델 문맥이 아니다(훅의 `systemMessage`).
 
     사용자 화면이 없는 호스트(`screen=False`, Kiro·Antigravity)에서는 모델이 전달하는
     유일한 길이라 사용자에게 한 줄로 전하게 한다. 어느 호스트든 에이전트가 `--ack`로 받음을
     기록해야 멈춘다 — 블록이 접혀 에이전트가 못 봤으면 다음 세션에 다시 실린다."""
-    avail = available()
-    if not avail or acked(avail["latest"]):
+    avail = available(vault)
+    if not avail or acked(vault, avail["latest"]):
         return "", ""
     latest, cur = avail["latest"], avail["current"]
-    notes = notes_url(latest)
+    notes = notes_url(vault, latest)
     user = (f"osk-system 새 릴리스 {latest} (이 vault는 {cur}) — 적용하려면 에이전트에게 "
             f"\"osk 업데이트해 줘\"라고 요청한다." + (f" 릴리스 노트: {notes}" if notes else ""))
     if not screen:
         return (f"[osk 새 릴리스 — {latest} · 이 vault {cur}] 이 호스트에는 사용자 화면 알림이 "
                 f"없다 — 사용자에게 한 줄로 전한다: {user} 갱신은 먼저 권하거나 실행하지 않는다. "
-                + _how(latest) + " " + _ack_how(latest, "사용자에게 전했으면")), ""
+                + _how(vault, latest) + " " + _ack_how(vault, latest, "사용자에게 전했으면")), ""
     agent = (f"[osk 새 릴리스 — {latest} · 이 vault {cur}] 사용자 화면에 같은 알림을 "
-             f"띄웠다. 갱신은 먼저 권하거나 실행하지 않는다. " + _how(latest) + " "
-             + _ack_how(latest, "받았으면"))
+             f"띄웠다. 갱신은 먼저 권하거나 실행하지 않는다. " + _how(vault, latest) + " "
+             + _ack_how(vault, latest, "받았으면"))
     return agent, user
 
 
-def surface() -> dict | None:
+def surface(vault: Vault) -> dict | None:
     """`overview`의 `update` 필드 — 알릴 새 릴리스가 있을 때만. 훅이 없는 하네스도
     이 길로 알게 된다: 받았다는 기록이 없으면 `notify`를 싣는다."""
-    avail = available()
+    avail = available(vault)
     if not avail:
         return None
     latest = avail["latest"]
-    notes = notes_url(latest)
-    out = {**avail, **({"notes": notes} if notes else {}), "how": _how(latest)}
-    if acked(latest):
+    notes = notes_url(vault, latest)
+    out = {**avail, **({"notes": notes} if notes else {}), "how": _how(vault, latest)}
+    if acked(vault, latest):
         out["acked"] = True
     # 성장 워커(정기 실행·fork)의 조회는 사용자에게 닿지 않는다 — 전하라고 하지 않는다.
     elif os.environ.get("OSK_GROWTH_WORKER") != "1":
         out["notify"] = ("받았다는 기록이 없다 — 사용자에게 한 줄로 알리고 "
-                         f"`{core.cli_command(core.VAULT, 'update', '--ack', latest)}`로 기록한다")
+                         f"`{core.cli_command(vault, 'update', '--ack', latest)}`로 기록한다")
     return out
 
 
 def main() -> None:
     """분리 프로세스의 확인. 끈 설치이거나 아직 유효한 확인이 있으면 하지 않는다."""
-    if off_reason() is None:
-        check(unattended=True)
+    vault = Vault.open()
+    if off_reason(vault) is None:
+        check(vault, unattended=True)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from osk import response_growth as rg
+from osk import core, response_growth as rg
+from osk.vault import Vault
+VAULT = Vault.open()
 import test_growth as base_tests
 
 REAL_HOOK_READY = rg._codex_hook_ready  # setUp stands it in; one test drives the real query.
@@ -45,7 +47,7 @@ class ResponseGrowthTests(unittest.TestCase):
                           'Logged in using ChatGPT')
                 return subprocess.CompletedProcess(argv, 0, output, '')
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                argv = rg.command(source, executable, runtime)
+                argv = rg.command(VAULT, source, executable, runtime)
                 self.assertEqual(argv[0], executable)
                 self.assertEqual(argv[argv.index('--model')+1], 'parent-model')
                 self.assertIn('--ephemeral', argv)
@@ -54,9 +56,9 @@ class ResponseGrowthTests(unittest.TestCase):
                             {'CODEX_VERSION':runtime['CODEX_VERSION']},
                             {**runtime,'CODEX_VERSION':'0.156.0'}):
                     with self.subTest(env=env), self.assertRaisesRegex(ValueError, 'version differs'):
-                        rg.command(source, executable, env)
+                        rg.command(VAULT, source, executable, env)
                 with self.assertRaisesRegex(ValueError, 'runtime version'):
-                    rg.command(source, executable, {**runtime,'CODEX_VERSION':'invalid'})
+                    rg.command(VAULT, source, executable, {**runtime,'CODEX_VERSION':'invalid'})
             self.assertTrue(all(c[1:] in (['--version'], ['login','status']) or c[0]=='git'
                                 for c in calls), 'preflight started inference')
 
@@ -82,8 +84,8 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.object(native_cli.subprocess, 'run', side_effect=inspect):
                 self.assertEqual(native_cli.resolve(str(old), version='0.155.0-alpha.16'), str(same))
                 self.assertEqual(native_cli.resolve(str(old)), str(newer))
-                self.assertEqual(growth.check_command([str(old)])['executable'], str(newer))
-                self.assertEqual(growth.check_command([str(same)], follow_desktop_update=False)['executable'], str(same))
+                self.assertEqual(growth.check_command(VAULT, [str(old)])['executable'], str(newer))
+                self.assertEqual(growth.check_command(VAULT, [str(same)], follow_desktop_update=False)['executable'], str(same))
                 old.parent.mkdir(); old.touch()
                 self.assertEqual(native_cli.resolve(str(old)), str(newer))
                 with self.assertRaisesRegex(ValueError, 'matching Codex'):
@@ -92,10 +94,10 @@ class ResponseGrowthTests(unittest.TestCase):
                           'cli_version':'0.155.0-alpha.16','model':'same-model','model_provider':'openai',
                           'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}
                 with self.assertRaisesRegex(ValueError, 'ChatGPT subscription'):
-                    rg.command(source, str(old), {})
+                    rg.command(VAULT, source, str(old), {})
                 source['cli_version'] = '0.154.0'  # Creation version survives an app update.
                 with self.assertRaisesRegex(ValueError, 'ChatGPT subscription'):
-                    rg.command(source, str(old), {'CODEX_THREAD_ID':'own',
+                    rg.command(VAULT, source, str(old), {'CODEX_THREAD_ID':'own',
                                                 'CODEX_VERSION':'0.155.0-alpha.16'})
             self.assertTrue(all(Path(c[0]) != base / 'codex.exe' for c in calls))
             foreign = Path(folder) / 'other-cli.exe'
@@ -127,23 +129,23 @@ class ResponseGrowthTests(unittest.TestCase):
                         json.dumps({'loggedIn': True, 'authMethod': 'claude.ai', 'subscriptionType': 'max'}))
                 return subprocess.CompletedProcess(argv, 0, text, '')
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                self.assertEqual(rg.command(source, str(old), env)[0], str(same))
+                self.assertEqual(rg.command(VAULT, source, str(old), env)[0], str(same))
                 with self.assertRaisesRegex(ValueError, 'matching Claude'):
-                    rg.command({**source, 'version': '2.1.266'}, str(old), env)
+                    rg.command(VAULT, {**source, 'version': '2.1.266'}, str(old), env)
             self.assertTrue(calls and all(c[0] == str(same) and c[1:] in (['--version'], ['auth', 'status'])
                                           for c in calls), 'preflight started inference')
             # The relocated file still faces the exact --version guard.
             with patch.object(rg.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '2.1.275', '')):
                 with self.assertRaisesRegex(ValueError, 'version differs'):
-                    rg.command(source, str(old), env)
+                    rg.command(VAULT, source, str(old), env)
             # Desktop pruned the configured release: a new conversation's routing checks an
             # installed one, but a version-less source still never reaches a fork.
             gone, fresh = str(base / '2.1.270/claude.exe'), {**source, 'version': None}
             self.assertEqual(native_cli.resolve(gone), str(same))
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                self.assertEqual(rg.preflight(fresh, gone, env, require_version=False), str(same))
+                self.assertEqual(rg.preflight(VAULT, fresh, gone, env, require_version=False), str(same))
                 with self.assertRaisesRegex(ValueError, 'version differs'):
-                    rg.command(fresh, gone, env)
+                    rg.command(VAULT, fresh, gone, env)
 
     def test_claude_desktop_hash_directory_keeps_version_and_installation_boundary(self):
         from osk import native_cli, growth
@@ -159,7 +161,7 @@ class ResponseGrowthTests(unittest.TestCase):
             self.assertEqual(native_cli.resolve(str(old), version='2.1.286'), str(same))
             self.assertEqual(native_cli.resolve(str(same), version='2.1.287'), str(newer))
             self.assertEqual(native_cli.resolve(str(old)), str(newer))
-            self.assertEqual(growth.check_command([str(old)])['executable'], str(newer))
+            self.assertEqual(growth.check_command(VAULT, [str(old)])['executable'], str(newer))
             self.assertEqual(native_cli.resolve(str(same)), str(same))
             for version in ('2.1.285', '../2.1.286'):
                 with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'matching Claude'):
@@ -173,7 +175,7 @@ class ResponseGrowthTests(unittest.TestCase):
                         json.dumps({'loggedIn':True, 'authMethod':'claude.ai', 'subscriptionType':'max'}))
                 return subprocess.CompletedProcess(argv, 0, text, '')
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                self.assertEqual(rg.command(source, str(old), {'CLAUDE_CONFIG_DIR':folder})[0], str(same))
+                self.assertEqual(rg.command(VAULT, source, str(old), {'CLAUDE_CONFIG_DIR':folder})[0], str(same))
             # Two unpinned builds of one version are ambiguous; an existing explicit pin is not.
             other = same.parent.parent / 'abcdef012345/claude.exe'
             other.parent.mkdir(); other.touch()
@@ -215,7 +217,7 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.dict(os.environ, {'LOCALAPPDATA': str(local)}):
                 self.assertEqual(native_cli.resolve(str(pinned), version='2.1.304'), str(same))
                 self.assertEqual(native_cli.resolve(str(pinned)), str(same))
-                self.assertEqual(growth.check_command([str(pinned)])['executable'], str(same))
+                self.assertEqual(growth.check_command(VAULT, [str(pinned)])['executable'], str(same))
                 # A pin into the new folder follows the source's version like any Desktop install.
                 self.assertEqual(native_cli.resolve(str(older), version='2.1.304'), str(same))
                 with self.assertRaisesRegex(ValueError, 'matching Claude'):
@@ -248,7 +250,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 p.chmod(0o700)
             with patch.dict(os.environ, {'LOCALAPPDATA': str(local)}):
                 self.assertEqual(native_cli.resolve(str(pinned)), str(newest))
-                self.assertEqual(growth.check_command([str(pinned)])['executable'], str(newest))
+                self.assertEqual(growth.check_command(VAULT, [str(pinned)])['executable'], str(newest))
                 self.assertEqual(native_cli.resolve(str(pinned), version='2.1.304'), str(older))
                 (local / 'Claude-Data/claude_otherpackage1/claude-code').mkdir(parents=True)
                 with self.assertRaisesRegex(ValueError, 'matching Claude'):
@@ -260,19 +262,19 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch, Mock
             import os, subprocess
             patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
-            native = core.ROOT / 'native.jsonl'
+            native = VAULT.root / 'native.jsonl'
             rows = [
-                {'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),
+                {'type':'session_meta','payload':{'id':'own','cwd':str(VAULT.root),
                     'cli_version':'0.155.0-alpha.9.2','model_provider':'openai'}},
                 {'type':'turn_context','payload':{'model':'parent-model','effort':'high',
-                    'cwd':str(core.ROOT),'approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
+                    'cwd':str(VAULT.root),'approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
                 {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'done'}}]
             native.write_text(''.join(json.dumps(r)+chr(10) for r in rows), encoding='utf-8')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'codex':sys.executable}))
-            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT)}
-            with integration.state_lock('codex','own') as p:
-                saved = integration.load_state(p,'codex','own')
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'codex':sys.executable}))
+            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root)}
+            with integration.state_lock(VAULT, 'codex','own') as p:
+                saved = integration.load_state(VAULT, p,'codex','own')
                 clock = {'counter':'finals','seen':['t1'],'count':9,'attempted_count':0,'history_baselined':True}
                 saved.update(prompt_count=15, response_growth=clock)
                 integration.save_state(p,saved)
@@ -284,16 +286,16 @@ class ResponseGrowthTests(unittest.TestCase):
             # The hooks' worker asks the CLI (probe); route() reads its verdict.
             with patch.object(rg.subprocess,'run',side_effect=inspect), patch.dict(os.environ,
                     {'CODEX_THREAD_ID':'other','CODEX_VERSION':'0.155.0-alpha.16'}):
-                assert rg.probe(env)['mode']=='foreground' and rg.route(env)['mode']=='foreground'
+                assert rg.probe(VAULT, env)['mode']=='foreground' and rg.route(VAULT, env)['mode']=='foreground'
                 with patch.dict(os.environ,{'CODEX_THREAD_ID':'own'}):
-                    assert rg.probe(env)['mode']=='background' and rg.route(env)['mode']=='background'
+                    assert rg.probe(VAULT, env)['mode']=='background' and rg.route(VAULT, env)['mode']=='background'
                     with patch.object(rg.subprocess,'Popen',return_value=Mock()) as launch:
-                        assert rg.launch(env,'own')
+                        assert rg.launch(VAULT, env,'own')
                         inherited = launch.call_args.kwargs['env']
                         assert inherited['CODEX_THREAD_ID']=='own'
                         assert inherited['CODEX_VERSION']=='0.155.0-alpha.16'
                         assert inherited['OSK_GROWTH_WORKER']=='1'
-            state = integration.load_state(integration.state_path('codex','own'),'codex','own')
+            state = integration.load_state(VAULT, integration.state_path(VAULT, 'codex','own'),'codex','own')
             assert state['response_growth']==clock and state['prompt_count']==15, state
             assert state['reviewed_count']==saved['reviewed_count']
             assert state['rounds']==saved['rounds']
@@ -334,18 +336,18 @@ class ResponseGrowthTests(unittest.TestCase):
             patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             for key in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS'):
                 os.environ.pop(key, None)  # Codex hook processes carry none of these.
-            native = core.ROOT / 'native.jsonl'
+            native = VAULT.root / 'native.jsonl'
             rows = [
-                {'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),
+                {'type':'session_meta','payload':{'id':'own','cwd':str(VAULT.root),
                     'cli_version':'0.155.0-alpha.9.2','model_provider':'openai'}},
                 {'type':'turn_context','payload':{'model':'parent-model','effort':'high',
-                    'cwd':str(core.ROOT),'approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
+                    'cwd':str(VAULT.root),'approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
                 {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'done'}}]
             native.write_text(''.join(json.dumps(r)+chr(10) for r in rows), encoding='utf-8')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'codex':sys.executable}))
-            env = {'session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT)}
-            managed = core.ROOT / 'OpenAI/Codex/bin' / ('a'*16) / 'codex.exe'
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'codex':sys.executable}))
+            env = {'session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root)}
+            managed = VAULT.root / 'OpenAI/Codex/bin' / ('a'*16) / 'codex.exe'
             managed.parent.mkdir(parents=True)
             managed.touch()
             def inspect(argv, **kwargs):
@@ -355,7 +357,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv,0,output,'')
             with patch.object(rg.subprocess,'run',side_effect=inspect):
                 with patch.object(native_cli,'_ancestors',return_value=[]):
-                    route = rg.probe(env)  # No managed ancestor: strict transcript version.
+                    route = rg.probe(VAULT, env)  # No managed ancestor: strict transcript version.
                     assert route['mode']=='foreground' and 'version differs' in route['reason'], route
                 chain = [('cmd.exe', 'cmd.exe'), ('codex.exe', str(managed))]
                 # The hook names its Desktop binary to its detached worker, whose ancestry
@@ -364,10 +366,10 @@ class ResponseGrowthTests(unittest.TestCase):
                     named = rg.runtime_env('codex','own',ask=False)
                 assert named == {'CODEX_THREAD_ID':'own', native_cli.DESKTOP_ENV:str(managed)}, named
                 with patch.dict(os.environ, named), patch.object(native_cli,'_ancestors',return_value=[]):
-                    assert rg.probe(env)['mode']=='background' and rg.route(env)['mode']=='background'
+                    assert rg.probe(VAULT, env)['mode']=='background' and rg.route(VAULT, env)['mode']=='background'
                 with patch.object(native_cli,'_ancestors',return_value=chain):
                     with patch.object(rg.subprocess,'Popen',return_value=Mock()) as launch:
-                        assert rg.launch(env,'own')
+                        assert rg.launch(VAULT, env,'own')
                 inherited = launch.call_args.kwargs['env']
                 # Stop names its Desktop binary too (#192); the supervisor asks its version (run()).
                 assert inherited['CODEX_THREAD_ID']=='own' and inherited[native_cli.DESKTOP_ENV]==str(managed)
@@ -376,15 +378,15 @@ class ResponseGrowthTests(unittest.TestCase):
                 # command() re-runs full preflight on that binding.
                 with patch.dict(os.environ, inherited), patch.object(native_cli,'_ancestors',return_value=[]), \\
                         patch.object(rg.growth,'run',return_value={'ok':True}) as fork:
-                    rg.run(rg.profile(str(native),'codex','own'), {'harness':'codex','conversation_id':'own'}, sys.executable)
-                argv, forked = fork.call_args.args[0], fork.call_args.kwargs['worker_env']
+                    rg.run(VAULT, rg.profile(VAULT, str(native),'codex','own'), {'harness':'codex','conversation_id':'own'}, sys.executable)
+                argv, forked = fork.call_args.args[1], fork.call_args.kwargs['worker_env']
                 assert argv[0]==sys.executable and argv[argv.index('--model')+1]=='parent-model', argv
                 assert forked['CODEX_VERSION']=='0.155.0-alpha.16', forked.get('CODEX_VERSION')
             # Before a rollout exists the runtime binding, not the newest install, picks the binary.
-            newer = core.ROOT / 'OpenAI/Codex/bin' / ('b'*16) / 'codex.exe'
+            newer = VAULT.root / 'OpenAI/Codex/bin' / ('b'*16) / 'codex.exe'
             newer.parent.mkdir(parents=True)
             newer.touch()
-            rg.CONFIG.write_text(json.dumps({'codex':str(newer)}))
+            rg.config_path(VAULT).write_text(json.dumps({'codex':str(newer)}))
             logins = []
             def installed(argv, **kwargs):
                 if argv[1:] == ['login','status']:
@@ -394,7 +396,7 @@ class ResponseGrowthTests(unittest.TestCase):
                                                    if '--version' in argv else 'Logged in using ChatGPT','')
             with patch.object(rg.subprocess,'run',side_effect=installed), \\
                     patch.object(native_cli,'_ancestors',return_value=chain):
-                assert rg.probe({'harness':'codex','session_id':'fresh','cwd':str(core.ROOT)})['mode']=='background'
+                assert rg.probe(VAULT, {'harness':'codex','session_id':'fresh','cwd':str(VAULT.root)})['mode']=='background'
             assert logins == [str(managed)], logins
         ''')
 
@@ -425,11 +427,11 @@ class ResponseGrowthTests(unittest.TestCase):
                     config.write_text(body, encoding='utf-8')
                     with self.subTest(body=body):
                         if error is None:
-                            argv = rg.command(source, str(exe), env)
+                            argv = rg.command(VAULT, source, str(exe), env)
                             self.assertNotIn('--skip-git-repo-check', argv)
                         else:
                             with self.assertRaisesRegex(ValueError, error):
-                                rg.command(source, str(exe), env)
+                                rg.command(VAULT, source, str(exe), env)
 
     def test_codex_pins_endpoint_and_refuses_unpinnable_ones_before_login_check(self):
         with tempfile.TemporaryDirectory() as home:
@@ -469,12 +471,12 @@ class ResponseGrowthTests(unittest.TestCase):
                     env, calls[:] = {'CODEX_HOME': home, **extra}, []
                     with self.subTest(body=body, env=extra, layer=layer):
                         if allowed:
-                            argv = rg.command(source, str(exe), env)
+                            argv = rg.command(VAULT, source, str(exe), env)
                             pins = [argv[i+1] for i, v in enumerate(argv) if v == '-c' and 'base_url' in argv[i+1]]
                             self.assertEqual(pins, ['openai_base_url="https://chatgpt.com/backend-api/codex"'])
                         else:
-                            for check in (lambda: rg.command(source, str(exe), env),
-                                          lambda: rg.preflight(source, str(exe), env, require_version=False)):
+                            for check in (lambda: rg.command(VAULT, source, str(exe), env),
+                                          lambda: rg.preflight(VAULT, source, str(exe), env, require_version=False)):
                                 with self.assertRaisesRegex(ValueError, 'non-first-party'):
                                     check()
                             self.assertFalse([c for c in calls if c[1:] == ['login', 'status']])
@@ -526,12 +528,12 @@ class ResponseGrowthTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, 'true' if argv[0] == 'git' else 'codex-cli 0.155.0'
                                                    if '--version' in argv else 'Logged in using ChatGPT', '')
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                self.assertEqual(rg.preflight(fresh, str(exe), {}, require_version=False), str(exe))
+                self.assertEqual(rg.preflight(VAULT, fresh, str(exe), {}, require_version=False), str(exe))
                 for source, require in ((dict(fresh, finals=['t1']), False), (fresh, True)):
                     with self.subTest(require=require), self.assertRaisesRegex(ValueError, 'sandbox policy'):
-                        rg.preflight(source, str(exe), {}, require_version=require)
+                        rg.preflight(VAULT, source, str(exe), {}, require_version=require)
                 with self.assertRaisesRegex(ValueError, 'sandbox policy'):
-                    rg.command(dict(fresh, model='parent-model'), str(exe), {})
+                    rg.command(VAULT, dict(fresh, model='parent-model'), str(exe), {})
 
     def test_codex_subagent_hook_changes_no_conversation_state(self):
         base_tests.GrowthTests().check_case('''
@@ -541,30 +543,30 @@ class ResponseGrowthTests(unittest.TestCase):
             sys.path.insert(0, str(hooks))
             import claude_session_start as hook
             os.environ.pop('OSK_GROWTH_WORKER', None)
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'codex':sys.executable}))
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'codex':sys.executable}))
             def rollout(name, meta):
-                path = core.ROOT / name
-                path.write_text(json.dumps({'type':'session_meta','payload':{'cwd':str(core.ROOT), **meta}})+chr(10)+
+                path = VAULT.root / name
+                path.write_text(json.dumps({'type':'session_meta','payload':{'cwd':str(VAULT.root), **meta}})+chr(10)+
                     json.dumps({'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'done'}})+chr(10),
                     encoding='utf-8')
                 return str(path)
             child = rollout('rollout-child.jsonl', {'id':'child','session_id':'own','parent_thread_id':'own'})
-            env = {'session_id':'own','transcript_path':child,'cwd':str(core.ROOT)}
+            env = {'session_id':'own','transcript_path':child,'cwd':str(VAULT.root)}
             for harness in (None, 'codex'):
                 event = dict(env, harness=harness) if harness else env
-                assert hook.capture_block(event,'own') is None
-                assert hook.capture_block(event,'own',startup=True) is None
+                assert hook.capture_block(VAULT, event,'own') is None
+                assert hook.capture_block(VAULT, event,'own',startup=True) is None
                 for script in ('capture_stop.py', 'claude_session_start.py', 'claude_prompt_submit.py'):
                     done = subprocess.run([sys.executable, str(hooks / script)], input=json.dumps(event).encode(),
                                           capture_output=True, timeout=30)
                     assert done.returncode == 0 and not done.stdout, (script, done.stdout, done.stderr)
             for sid in ('own', 'child'):
-                assert not integration.state_path('codex', sid).exists(), sid
+                assert not integration.state_path(VAULT, 'codex', sid).exists(), sid
             # A foreign transcript is still an identity error, not a silent subagent.
             foreign = dict(env, transcript_path=rollout('rollout-foreign.jsonl', {'id':'child','session_id':'another'}))
-            rg.probe(foreign)
-            route = rg.route(foreign)
+            rg.probe(VAULT, foreign)
+            route = rg.route(VAULT, foreign)
             assert route['mode']=='foreground' and 'identity' in route['reason'], route
         ''')
 
@@ -573,8 +575,8 @@ class ResponseGrowthTests(unittest.TestCase):
             from osk import response_growth as rg, integration
             from unittest.mock import patch
             import os
-            parent = core.ROOT / 'rollout-parent-own.jsonl'
-            child = core.ROOT / 'rollout-child-own_next.jsonl'
+            parent = VAULT.root / 'rollout-parent-own.jsonl'
+            child = VAULT.root / 'rollout-child-own_next.jsonl'
             def finish(identity):
                 return [{'type':'event_msg','payload':{'type':'task_started','turn_id':identity}},
                         {'type':'event_msg','payload':{'type':'task_complete','turn_id':identity,'last_agent_message':'done'}}]
@@ -584,37 +586,37 @@ class ResponseGrowthTests(unittest.TestCase):
             save(parent, [header] + [r for n in range(9) for r in finish('old-'+str(n))])
             header['payload']['history_base'] = {'thread_id':'own','end_byte_offset':parent.stat().st_size}
             save(child, [header])
-            with integration.state_lock('codex','own') as path:
-                state = integration.load_state(path,'codex','own')
+            with integration.state_lock(VAULT, 'codex','own') as path:
+                state = integration.load_state(VAULT, path,'codex','own')
                 state['response_growth'] = {'counter':'finals','seen':[],'count':0,'attempted_count':0}
                 integration.save_state(path,state)
-            with patch.dict(os.environ, {'CODEX_HOME':str(core.ROOT)}):
+            with patch.dict(os.environ, {'CODEX_HOME':str(VAULT.root)}):
                 for n in range(1,10):
                     with child.open('a',encoding='utf-8') as f:
                         f.write(''.join(json.dumps(r)+chr(10) for r in finish('new-'+str(n))))
-                    source = rg.profile(str(child),'codex','own')
-                    clock = rg.observe(source)
+                    source = rg.profile(VAULT, str(child),'codex','own')
+                    clock = rg.observe(VAULT, source)
                     assert clock['count'] == n and clock['due'] == (n == 9), clock
-                    assert rg.observe(source) == clock
+                    assert rg.observe(VAULT, source) == clock
                 # A modern baseline actually observed before these completions
                 # must count them even if they now live in an ancestor page.
-                integration.state_path('codex','own').unlink()
+                integration.state_path(VAULT, 'codex','own').unlink()
                 original_parent = parent.read_bytes()
                 save(parent, [{'type':'session_meta','payload':{'id':'own'}}])
                 env = {'harness':'codex','session_id':'own','transcript_path':str(parent)}
                 with patch.object(rg,'configured',return_value='unused'):
-                    rg.initialize(env)
+                    rg.initialize(VAULT, env)
                 parent.write_bytes(original_parent)
-                source = rg.profile(str(child),'codex','own')
-                assert rg.observe(source)['count'] == 18
+                source = rg.profile(VAULT, str(child),'codex','own')
+                assert rg.observe(VAULT, source)['count'] == 18
                 # SessionStart before a new page exists also has no history baseline.
-                integration.state_path('codex','own').unlink()
+                integration.state_path(VAULT, 'codex','own').unlink()
                 original_child = child.read_bytes()
                 child.unlink()
                 with patch.object(rg,'configured',return_value='unused'):
-                    rg.initialize(dict(env,transcript_path=str(child)))
+                    rg.initialize(VAULT, dict(env,transcript_path=str(child)))
                 child.write_bytes(original_child)
-                assert rg.observe(rg.profile(str(child),'codex','own'))['count'] == 9
+                assert rg.observe(VAULT, rg.profile(VAULT, str(child),'codex','own'))['count'] == 9
         ''')
 
     def test_paginated_final_counter_keeps_baseline_and_active_page_model(self):
@@ -622,7 +624,7 @@ class ResponseGrowthTests(unittest.TestCase):
             from osk import response_growth as rg, integration
             from unittest.mock import patch
             import os
-            folder = core.ROOT / 'native'
+            folder = VAULT.root / 'native'
             folder.mkdir()
             parent = folder / 'rollout-first-own.jsonl'
             child = folder / 'rollout-next-own_page.jsonl'
@@ -637,29 +639,29 @@ class ResponseGrowthTests(unittest.TestCase):
             def save(path, data):
                 path.write_text(''.join(json.dumps(r) + chr(10) for r in data), encoding='utf-8')
             save(parent, rows('old-model', 'first'))
-            with patch.dict(os.environ, {'CODEX_HOME':str(core.ROOT)}):
-                assert rg.observe(rg.profile(str(parent),'codex','own'))['count'] == 0
+            with patch.dict(os.environ, {'CODEX_HOME':str(VAULT.root)}):
+                assert rg.observe(VAULT, rg.profile(VAULT, str(parent),'codex','own'))['count'] == 0
                 save(child, rows('same-parent-model','second',{'thread_id':'own','end_byte_offset':parent.stat().st_size}))
-                source = rg.profile(str(child),'codex','own')
+                source = rg.profile(VAULT, str(child),'codex','own')
                 assert source['finals'] == ['first','second'], source
                 assert source['model'] == source['cli_version'] == 'same-parent-model', source
                 assert source['transcript_path'] == str(child.resolve()), source
-                assert rg.observe(source)['count'] == 1
+                assert rg.observe(VAULT, source)['count'] == 1
                 # Upgrade from a baseline that saw only the last page: no retroactive Stops.
-                with integration.state_lock('codex','own') as path:
-                    state = integration.load_state(path,'codex','own')
+                with integration.state_lock(VAULT, 'codex','own') as path:
+                    state = integration.load_state(VAULT, path,'codex','own')
                     state['response_growth'] = {'counter':'finals','seen':['second'],'count':3,'attempted_count':0}
                     integration.save_state(path,state)
-                assert rg.observe(source)['count'] == 3
+                assert rg.observe(VAULT, source)['count'] == 3
                 with child.open('a',encoding='utf-8') as f:
                     f.write(''.join(json.dumps(r) + chr(10) for r in rows('same-parent-model','third')[1:]))
-                source = rg.profile(str(child),'codex','own')
-                assert rg.observe(source)['count'] == 4
-                assert rg.observe(source)['count'] == 4
+                source = rg.profile(VAULT, str(child),'codex','own')
+                assert rg.observe(VAULT, source)['count'] == 4
+                assert rg.observe(VAULT, source)['count'] == 4
                 parent.write_bytes(parent.read_bytes().replace(b'old-model',b'bad-model'))
                 assert not rg._source_unchanged(source)
                 try:
-                    rg.observe(dict(source,finals=['first','third']))
+                    rg.observe(VAULT, dict(source,finals=['first','third']))
                     raise AssertionError('lost completion accepted')
                 except ValueError:
                     pass
@@ -678,21 +680,21 @@ class ResponseGrowthTests(unittest.TestCase):
                     {'type': 'event_msg', 'payload': {'type': 'task_complete', 'turn_id': 't1', 'last_agent_message': 'done'}},
                     {'type': 'turn_context', 'payload': {'model': 'next-model', 'effort': 'low'}}]
             path.write_text(''.join(json.dumps(r) + '\n' for r in rows) + '{"partial":', encoding='utf-8')
-            result = rg.profile(str(path), 'codex', 'own')
+            result = rg.profile(VAULT, str(path), 'codex', 'own')
             self.assertEqual(result['usage'], total)
             self.assertEqual(result['finals'], ['t1'])
             self.assertEqual(result['model'], 'same-model')
             self.assertEqual((result['source'], result['originator']), ('vscode', 'Codex Desktop'))
             self.assertTrue(result['active'])
             with self.assertRaisesRegex(ValueError, 'identity mismatch'):
-                rg.profile(str(path), 'codex', 'other')
+                rg.profile(VAULT, str(path), 'codex', 'other')
             rows = rows[:-1] + [
                 {'type':'event_msg','payload':{'type':'task_started','turn_id':'failed'}},
                 {'type':'event_msg','payload':{'type':'task_complete','turn_id':'failed','error':'failure','last_agent_message':'error reply'}},
                 {'type':'event_msg','payload':{'type':'task_started','turn_id':'aborted'}},
                 {'type':'event_msg','payload':{'type':'turn_aborted','turn_id':'aborted'}}]
             path.write_text(''.join(json.dumps(r)+'\n' for r in rows), encoding='utf-8')
-            result = rg.profile(str(path), 'codex', 'own')
+            result = rg.profile(VAULT, str(path), 'codex', 'own')
             self.assertEqual(result['finals'], ['t1'])
             self.assertFalse(result['last_successful'])
 
@@ -703,17 +705,17 @@ class ResponseGrowthTests(unittest.TestCase):
             rows = [assistant('m1'), assistant('m1'), assistant('m2', 'end_turn'),
                     assistant('side', 'end_turn', isSidechain=True), assistant('agent', agentId='worker')]
             path.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8')
-            result = rg.profile(str(path), 'claude', 'own')
+            result = rg.profile(VAULT, str(path), 'claude', 'own')
             self.assertEqual(result['finals'], ['m2'])
             self.assertFalse(result['active'])
             thinking = assistant('m3', 'end_turn')
             thinking['message']['content'] = [{'type':'thinking','thinking':'internal'}]
             with path.open('a', encoding='utf-8') as f:
                 f.write(json.dumps(thinking) + '\n')
-            self.assertTrue(rg.profile(str(path), 'claude', 'own')['active'])
+            self.assertTrue(rg.profile(VAULT, str(path), 'claude', 'own')['active'])
             with path.open('a', encoding='utf-8') as f:
                 f.write(json.dumps(assistant('m3', 'end_turn')) + '\n')
-            self.assertEqual(rg.profile(str(path), 'claude', 'own')['finals'], ['m2','m3'])
+            self.assertEqual(rg.profile(VAULT, str(path), 'claude', 'own')['finals'], ['m2','m3'])
 
     def test_subscription_gate_and_exact_model_no_fallback(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -729,26 +731,26 @@ class ResponseGrowthTests(unittest.TestCase):
                                              'subscriptionType': subscription}))
             with patch.object(rg.subprocess, 'run', side_effect=[completed('2.1.266'), auth(None)]):
                 with self.assertRaisesRegex(ValueError, 'subscription login'):
-                    rg.command(source, str(exe), env)
+                    rg.command(VAULT, source, str(exe), env)
             with patch.object(rg.subprocess, 'run', side_effect=[completed('2.1.266'), auth('max')]):
-                command = rg.command(source, str(exe), env)
+                command = rg.command(VAULT, source, str(exe), env)
             self.assertIn('--no-session-persistence', command)
             self.assertEqual(command[command.index('--model') + 1], source['model'])
             self.assertNotIn('--bare', command)
             with patch.object(rg.subprocess, 'run', return_value=completed('2.1.251')) as call:
                 with self.assertRaisesRegex(ValueError, 'version differs'):
-                    rg.command(source, str(exe), env)
+                    rg.command(VAULT, source, str(exe), env)
                 self.assertEqual(call.call_count, 1)
             (Path(folder) / 'settings.json').write_text('{"apiKeyHelper":"external-command"}', encoding='utf-8')
             with patch.object(rg.subprocess, 'run', return_value=completed('2.1.266')) as call:
                 with self.assertRaisesRegex(ValueError, 'unverified API'):
-                    rg.command(source, str(exe), env)
+                    rg.command(VAULT, source, str(exe), env)
                 self.assertEqual(call.call_count, 1)
 
             source.update(harness='codex', cli_version='0.155.0', model='parent-model', model_provider='openai',
                           effort='max', approval_policy='never', sandbox_policy={'type': 'read-only'})
             with patch.object(rg.subprocess, 'run', side_effect=[completed('codex-cli 0.155.0'), completed('Logged in using ChatGPT'), completed('true')]):
-                command = rg.command(source, str(exe), env)
+                command = rg.command(VAULT, source, str(exe), env)
             self.assertIn('--ephemeral', command)
             self.assertEqual(command[-2:], ['own', '-'])
             self.assertIn('model_reasoning_effort="max"', command)
@@ -756,7 +758,7 @@ class ResponseGrowthTests(unittest.TestCase):
             self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', command)
             with patch.object(rg.subprocess, 'run', side_effect=[completed('codex-cli 0.155.0'), completed('Logged in using an API key')]):
                 with self.assertRaisesRegex(ValueError, 'ChatGPT subscription login'):
-                    rg.preflight(source, str(exe), env)
+                    rg.preflight(VAULT, source, str(exe), env)
             with patch.dict(rg.os.environ, {'OPENAI_API_KEY': 'fixture', 'ANTHROPIC_API_KEY': 'fixture',
                                             'OPENAI_BASE_URL': 'http://127.0.0.1:17841/v1'}):
                 self.assertNotIn('OPENAI_API_KEY', rg.subscription_env())
@@ -776,7 +778,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     'content': [{'type': 'text', 'text': 'answer'}]}}
             def write(rows):
                 path.write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8')
-                return rg.profile(str(path), 'claude', 'own')
+                return rg.profile(VAULT, str(path), 'claude', 'own')
             # The mode in force at the last final: later rows without the field and sidechains keep it.
             rows = [user('auto'), final('m1'), user('bypassPermissions'), user(),
                     user('plan', isSidechain=True), final('m2')]
@@ -792,7 +794,7 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.object(rg.subprocess, 'run', side_effect=inspect) as call:
                 for mode in ('acceptEdits', 'auto', 'bypassPermissions', 'default', 'manual', 'dontAsk', 'plan'):
                     with self.subTest(mode=mode):
-                        argv = rg.command({**source, 'permission_mode': mode}, str(exe), env)
+                        argv = rg.command(VAULT, {**source, 'permission_mode': mode}, str(exe), env)
                         self.assertEqual(argv.count('--permission-mode'), 1)
                         self.assertEqual(argv[argv.index('--permission-mode') + 1], mode)
                         # Only the deny hook is added (#85): tool definitions and MCP stay the source's.
@@ -804,13 +806,13 @@ class ResponseGrowthTests(unittest.TestCase):
                                           '--allow-dangerously-skip-permissions'} & set(argv))
                 for mode in (None, '', 'bogus', 'BypassPermissions', ['auto']):
                     with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'permission mode'):
-                        rg.command({**source, 'permission_mode': mode}, str(exe), env)
-                for gate in (lambda s: rg.command(s, str(exe), env),
-                             lambda s: rg.preflight(s, str(exe), env, require_version=False)):
+                        rg.command(VAULT, {**source, 'permission_mode': mode}, str(exe), env)
+                for gate in (lambda s: rg.command(VAULT, s, str(exe), env),
+                             lambda s: rg.preflight(VAULT, s, str(exe), env, require_version=False)):
                     with self.assertRaisesRegex(ValueError, 'permission mode'):
                         gate(missing)
                 # Before the first final there is no mode to copy yet; routing still checks the CLI.
-                self.assertEqual(rg.preflight({**missing, 'finals': []}, str(exe), env, require_version=False), str(exe))
+                self.assertEqual(rg.preflight(VAULT, {**missing, 'finals': []}, str(exe), env, require_version=False), str(exe))
             self.assertTrue(all(c.args[0][1:] in (['--version'], ['auth', 'status']) for c in call.call_args_list))
             # A mode change between the checked source and the fork never forks. The file is the
             # checked source again, so the mode is the only difference (the control below forks).
@@ -818,11 +820,11 @@ class ResponseGrowthTests(unittest.TestCase):
             job = {'harness': 'claude', 'conversation_id': 'own'}
             with patch.object(rg, 'preflight', return_value=str(exe)), \
                     patch.object(rg.growth, 'run', return_value={'ok': True, 'state': 'complete'}) as fork:
-                result = rg.run({**source, 'permission_mode': 'default'}, job, str(exe))
+                result = rg.run(VAULT, {**source, 'permission_mode': 'default'}, job, str(exe))
                 self.assertEqual(result['state'], 'unavailable')
                 self.assertIn('source advanced', result['error'])
                 self.assertFalse(fork.called)
-                self.assertEqual(rg.run(source, job, str(exe))['state'], 'complete')
+                self.assertEqual(rg.run(VAULT, source, job, str(exe))['state'], 'complete')
                 self.assertEqual(fork.call_count, 1)
 
     def test_subscription_env_strips_only_first_party_default_and_host_auth(self):
@@ -846,7 +848,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     self.assertFalse({'ANTHROPIC_BASE_URL', *host} & set(env))
                     envs.clear()
                     with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                        rg.command(source, str(exe), env)
+                        rg.command(VAULT, source, str(exe), env)
                     self.assertTrue(all(e is env for e in envs))  # auth status sees the child's env
             for url in ('http://127.0.0.1:8080', 'https://api.anthropic.com.proxy', 'https://api.anthropic.com/v2'):
                 with self.subTest(url=url), patch.dict(rg.os.environ, {'ANTHROPIC_BASE_URL': url,
@@ -855,7 +857,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     self.assertEqual(env['ANTHROPIC_BASE_URL'], url)
                     with patch.object(rg.subprocess, 'run', side_effect=inspect) as call:
                         with self.assertRaisesRegex(ValueError, 'unverified provider'):
-                            rg.command(source, str(exe), env)
+                            rg.command(VAULT, source, str(exe), env)
                         self.assertEqual(call.call_count, 1)
 
     def test_codex_permission_overrides_roundtrip_through_toml(self):
@@ -871,7 +873,7 @@ class ResponseGrowthTests(unittest.TestCase):
                        {'type': 'workspace-write', 'writable_roots': ['relative'], 'network_access': True,
                         'exclude_slash_tmp': 'true', 'exclude_tmpdir_env_var': False}):
             with self.subTest(policy=policy), patch.object(rg, 'preflight'):
-                argv = rg.command({**source, 'sandbox_policy': policy}, 'unused', {})
+                argv = rg.command(VAULT, {**source, 'sandbox_policy': policy}, 'unused', {})
                 config = tomllib.loads('\n'.join(argv[i+1] for i, v in enumerate(argv) if v == '-c'))
                 self.assertEqual(config['approval_policy'], source['approval_policy'])
                 self.assertEqual(config['approvals_reviewer'], source['approvals_reviewer'])
@@ -973,13 +975,13 @@ class ResponseGrowthTests(unittest.TestCase):
                                                    if '--version' in argv else 'Logged in using ChatGPT', '')
             executable = str(Path(sys.executable).resolve())
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                argv = rg.command(source, executable, {})
+                argv = rg.command(VAULT, source, executable, {})
                 (asked, cwd, *_), _ = self.hook_ready.call_args
                 self.assertEqual((asked, cwd), ([executable, *rg._codex_hook_args(), 'app-server'], folder))
                 self.assertEqual(argv[-6:-2], rg._codex_hook_args())
                 self.hook_ready.return_value = False
                 with self.assertRaisesRegex(ValueError, 'deny hook'):
-                    rg.command(source, executable, {})
+                    rg.command(VAULT, source, executable, {})
 
     def test_desktop_source_routes_off_and_never_forks(self):
         # Desktop's first request leads with tool definitions only the running app serves
@@ -994,17 +996,17 @@ class ResponseGrowthTests(unittest.TestCase):
                 encoding='utf-8')
             with patch.object(rg, 'configured', return_value='cli'), \
                     patch.object(rg, 'preflight', side_effect=AssertionError('CLI asked')):
-                self.assertEqual(rg.check('codex', 'own', str(native), folder),
+                self.assertEqual(rg.check(VAULT, 'codex', 'own', str(native), folder),
                                  {'mode': 'off', 'reason': rg.DESKTOP_OFF})
         with patch.object(rg, '_remember') as remember, \
                 patch.object(rg, 'preflight', side_effect=AssertionError('CLI asked')), \
                 patch.object(rg.growth, 'run', side_effect=AssertionError('fork started')):
-            result = rg.run(desktop, {'harness': 'codex', 'conversation_id': 'own'}, 'unused')
+            result = rg.run(VAULT, desktop, {'harness': 'codex', 'conversation_id': 'own'}, 'unused')
         self.assertEqual(result['state'], 'unavailable')   # not a fork failure: never falls back in-session
-        remember.assert_called_once_with('codex', 'own', {'mode': 'off', 'reason': rg.DESKTOP_OFF})
+        remember.assert_called_once_with(VAULT, 'codex', 'own', {'mode': 'off', 'reason': rg.DESKTOP_OFF})
         for kind, originator in (('exec', 'Codex Desktop'), ('cli', 'codex_cli_rs')):
             with self.subTest(source=kind), patch.object(rg, 'preflight'):
-                argv = rg.command({**source, 'source': kind, 'originator': originator}, 'unused', {})
+                argv = rg.command(VAULT, {**source, 'source': kind, 'originator': originator}, 'unused', {})
                 self.assertEqual(argv[argv.index('--model')+1], source['model'])
                 self.assertFalse([a for a in argv if 'code_mode_host' in a or 'codex_app' in a])
 
@@ -1016,40 +1018,40 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
-            assert not rg.CONFIG.exists()
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            assert not rg.config_path(VAULT).exists()
             def transcript(sid, kind, originator):
-                native = core.ROOT / f'{sid}.jsonl'
-                rows = [{'type':'session_meta','payload':{'id':sid,'cwd':str(core.ROOT),'cli_version':'0.155.0',
+                native = VAULT.root / f'{sid}.jsonl'
+                rows = [{'type':'session_meta','payload':{'id':sid,'cwd':str(VAULT.root),'cli_version':'0.155.0',
                             'model_provider':'openai','source':kind,'originator':originator}},
-                        {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(core.ROOT),'model':'same-model',
+                        {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(VAULT.root),'model':'same-model',
                             'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
                         {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'answer'}}]
                 native.write_text(''.join(json.dumps(r)+chr(10) for r in rows))
-            env = {'harness':'codex','session_id':'own','transcript_path':str(core.ROOT / 'own.jsonl'),
-                   'cwd':str(core.ROOT),'session':'own'}
+            env = {'harness':'codex','session_id':'own','transcript_path':str(VAULT.root / 'own.jsonl'),
+                   'cwd':str(VAULT.root),'session':'own'}
             with patch.object(rg.subprocess, 'run', side_effect=AssertionError('CLI asked')):
                 # Before the first turn there is no transcript: in-session, asked again once it exists.
-                assert rg.probe(env) == {'mode':'foreground','reason':rg.NOT_CONFIGURED}
-                route = rg.route(env)
+                assert rg.probe(VAULT, env) == {'mode':'foreground','reason':rg.NOT_CONFIGURED}
+                route = rg.route(VAULT, env)
                 assert route['mode'] == 'foreground' and not route['probe_due'], route
                 transcript('own', 'vscode', 'Codex Desktop')
-                assert rg.route(env)['probe_due']
-                assert rg.probe(env) == {'mode':'off','reason':rg.DESKTOP_OFF}
-                route = rg.route(env)
+                assert rg.route(VAULT, env)['probe_due']
+                assert rg.probe(VAULT, env) == {'mode':'off','reason':rg.DESKTOP_OFF}
+                route = rg.route(VAULT, env)
                 assert route['mode'] == 'off' and route['changed'] and not route['probe_due'], route
-                start = hook.capture_block(env, 'own', startup=True)
+                start = hook.capture_block(VAULT, env, 'own', startup=True)
                 assert '대화 검토 꺼짐' in start and '검토 경고' not in start, start
                 for n in range(1, 16):
-                    text = hook.capture_block(env, 'own') or ''
+                    text = hook.capture_block(VAULT, env, 'own') or ''
                     assert '케이던스' not in text and '검토 경고' not in text, (n, text)
-                    assert not rg.launch(env, 'own')
-                assert integration.status('codex','own')['response_growth_route']['mode'] == 'off'
+                    assert not rg.launch(VAULT, env, 'own')
+                assert integration.status(VAULT, 'codex','own')['response_growth_route']['mode'] == 'off'
                 # A CLI conversation of the same host keeps its in-session review.
                 transcript('cli', 'cli', 'codex_cli_rs')
-                cli = {**env, 'session_id':'cli', 'transcript_path':str(core.ROOT / 'cli.jsonl')}
-                assert rg.probe(cli) == {'mode':'foreground','reason':rg.NOT_CONFIGURED}
-                assert rg.route(cli)['mode'] == 'foreground'
+                cli = {**env, 'session_id':'cli', 'transcript_path':str(VAULT.root / 'cli.jsonl')}
+                assert rg.probe(VAULT, cli) == {'mode':'foreground','reason':rg.NOT_CONFIGURED}
+                assert rg.route(VAULT, cli)['mode'] == 'foreground'
         ''')
 
     def test_turned_off_harness_neither_forks_nor_reviews_in_session(self):
@@ -1059,11 +1061,11 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
-            native = core.ROOT / 'native.jsonl'
-            rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),'cli_version':'0.155.0',
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            native = VAULT.root / 'native.jsonl'
+            rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(VAULT.root),'cli_version':'0.155.0',
                         'model_provider':'openai','source':'cli','originator':'codex_cli_rs'}},
-                    {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(core.ROOT),'model':'same-model',
+                    {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(VAULT.root),'model':'same-model',
                         'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
                     {'type':'response_item','payload':{'type':'message','role':'user',
                         'content':[{'type':'input_text','text':'question'}]}},
@@ -1071,29 +1073,29 @@ class ResponseGrowthTests(unittest.TestCase):
                         'content':[{'type':'output_text','text':'answer'}]}},
                     {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'answer'}}]
             native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'codex': False}))
-            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'codex': False}))
+            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             with patch.object(rg.subprocess, 'run', side_effect=AssertionError('CLI asked')):
-                assert rg.probe(env) == {'mode':'off','reason':rg.OFF}
-                start = hook.capture_block(env, 'own', startup=True)
+                assert rg.probe(VAULT, env) == {'mode':'off','reason':rg.OFF}
+                start = hook.capture_block(VAULT, env, 'own', startup=True)
                 assert '대화 검토 꺼짐' in start and '검토 경고' not in start, start
-                pending = integration.status('codex','own')['pending_refs']
+                pending = integration.status(VAULT, 'codex','own')['pending_refs']
                 for n in range(1, 16):
-                    text = hook.capture_block(env, 'own') or ''
+                    text = hook.capture_block(VAULT, env, 'own') or ''
                     assert '케이던스' not in text and '검토 경고' not in text, (n, text)
-                    assert not rg.launch(env, 'own')
-                state = integration.status('codex','own')
+                    assert not rg.launch(VAULT, env, 'own')
+                state = integration.status(VAULT, 'codex','own')
                 assert state['pending_refs'] == pending and state['reviewed_rounds'] == 0, state
                 assert state['response_growth_route']['mode'] == 'off', state
-                assert rg.process_stop(env)['state'] == 'disabled'
-            item = doctor._fork(adapters.get('codex'))
+                assert rg.process_stop(VAULT, env)['state'] == 'disabled'
+            item = doctor._fork(VAULT, adapters.get('codex'))
             assert item['level'] == 'info' and '껐다' in item['detail'], item
-            assert setup._fork([adapters.get('codex')], False)['entries']['codex'] == {'action':'keep','path':False}
+            assert setup._fork(VAULT, [adapters.get('codex')], False)['entries']['codex'] == {'action':'keep','path':False}
             for bad in (True, 0, '', ' '):
-                rg.CONFIG.write_text(json.dumps({'codex': bad}))
+                rg.config_path(VAULT).write_text(json.dumps({'codex': bad}))
                 try:
-                    rg.configured('codex')
+                    rg.configured(VAULT, 'codex')
                     raise AssertionError(bad)
                 except ValueError:
                     pass
@@ -1107,11 +1109,11 @@ class ResponseGrowthTests(unittest.TestCase):
             patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
-            native = core.ROOT / 'native.jsonl'
-            rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(core.ROOT),
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            native = VAULT.root / 'native.jsonl'
+            rows = [{'type':'session_meta','payload':{'id':'own','cwd':str(VAULT.root),
                         'cli_version':'0.155.0','model_provider':'openai'}},
-                    {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(core.ROOT),'model':'same-model',
+                    {'type':'turn_context','payload':{'turn_id':'t1','cwd':str(VAULT.root),'model':'same-model',
                         'effort':'high','approval_policy':'never','sandbox_policy':{'type':'read-only'}}},
                     {'type':'event_msg','payload':{'type':'user_message','message':'question'}},
                     {'type':'response_item','payload':{'type':'message','role':'user',
@@ -1120,9 +1122,9 @@ class ResponseGrowthTests(unittest.TestCase):
                         'content':[{'type':'output_text','text':'answer'}]}},
                     {'type':'event_msg','payload':{'type':'task_complete','turn_id':'t1','last_agent_message':'answer'}}]
             native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'codex':sys.executable}))
-            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'codex':sys.executable}))
+            env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             real_run = subprocess.run
             def inspect(argv, **kwargs):
                 if argv[0] == 'git':
@@ -1131,39 +1133,39 @@ class ResponseGrowthTests(unittest.TestCase):
                     'codex-cli 0.155.0' if '--version' in argv else 'Logged in using ChatGPT', '')
             # Exercise the real Git boundary without spawning a model. The hooks' worker asks (probe).
             with patch.object(rg.subprocess,'run',side_effect=inspect):
-                rg.probe(env)
-                start = hook.capture_block(env,'own',startup=True)
+                rg.probe(VAULT, env)
+                start = hook.capture_block(VAULT, env,'own',startup=True)
                 assert 'Git worktree' in start and '검토 경고' in start, start
-                pending = integration.status('codex','own')['pending_refs']
+                pending = integration.status(VAULT, 'codex','own')['pending_refs']
                 for n in range(1,16):
-                    text = hook.capture_block(env,'own')
+                    text = hook.capture_block(VAULT, env,'own')
                     assert ('[osk 케이던스' in text) == (n in {9,15}), (n,text)
-                    assert not rg.launch(env,'own')
-                state = integration.status('codex','own')
+                    assert not rg.launch(VAULT, env,'own')
+                state = integration.status(VAULT, 'codex','own')
                 assert state['pending_refs'] == pending and state['reviewed_rounds'] == 0
                 assert state['response_growth']['attempted_count'] == 0
-                real_run(['git','init','-q','-b','main',str(core.ROOT)],check=True,capture_output=True)
-                assert rg.probe(env)['mode'] == 'background'
+                real_run(['git','init','-q','-b','main',str(VAULT.root)],check=True,capture_output=True)
+                assert rg.probe(VAULT, env)['mode'] == 'background'
                 # A future restriction must refuse even when Git/auth/version pass.
                 rows[1]['payload']['sandbox_policy']['future_restriction'] = True
                 native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
-                route = rg.probe(env)
+                route = rg.probe(VAULT, env)
                 assert route['mode'] == 'foreground' and 'cannot be represented' in route['reason'], route
                 # The ChatGPT Web bridge route is refused by name before any native query.
                 del rows[1]['payload']['sandbox_policy']['future_restriction']
                 rows[1]['payload']['model'] = 'chatgpt-web/pro'
                 native.write_text(''.join(json.dumps(r)+'\\n' for r in rows))
                 with patch.object(rg.subprocess,'run',side_effect=AssertionError('native query')):
-                    route = rg.probe(env)
+                    route = rg.probe(VAULT, env)
                     assert route['mode'] == 'foreground' and 'ChatGPT Web bridge' in route['reason'], route
                     try:
-                        rg.command(rg.profile(str(native),'codex','own'), sys.executable, {})
+                        rg.command(VAULT, rg.profile(VAULT, str(native),'codex','own'), sys.executable, {})
                         raise AssertionError('web route accepted')
                     except ValueError as exc:
                         assert 'ChatGPT Web bridge' in str(exc), exc
-                source = rg.profile(str(native),'codex','own')
+                source = rg.profile(VAULT, str(native),'codex','own')
                 with patch.object(growth,'run',side_effect=AssertionError('provider started')):
-                    result = rg.run(source, {'harness':'codex','conversation_id':'own'}, sys.executable)
+                    result = rg.run(VAULT, source, {'harness':'codex','conversation_id':'own'}, sys.executable)
                 assert result['state'] == 'unavailable', result
         ''')
 
@@ -1193,18 +1195,18 @@ class ResponseGrowthTests(unittest.TestCase):
             from osk import response_growth as rg, integration
             from unittest.mock import patch
             source = {'harness':'claude','conversation_id':'own','finals':[]}
-            assert not rg.observe(source)['due']
+            assert not rg.observe(VAULT, source)['due']
             source['finals'] = [str(i) for i in range(9)]
-            assert rg.observe(source)['due']
-            assert rg.observe(source)['count'] == 9
+            assert rg.observe(VAULT, source)['due']
+            assert rg.observe(VAULT, source)['count'] == 9
             with patch.object(rg, 'run', return_value={'ok':False,'state':'incomplete'}):
-                result = rg.attempt(source, {'pending_refs':['fixture'], 'capture_error':None}, 'unused')
+                result = rg.attempt(VAULT, source, {'pending_refs':['fixture'], 'capture_error':None}, 'unused')
             assert result['state'] == 'incomplete'
-            assert not rg.observe(source)['due']
-            assert integration.status('claude','own')['reviewed_rounds'] == 0
+            assert not rg.observe(VAULT, source)['due']
+            assert integration.status(VAULT, 'claude','own')['reviewed_rounds'] == 0
             source['finals'] = source['finals'][:8]
             try:
-                rg.observe(source)
+                rg.observe(VAULT, source)
                 assert False, 'truncated native history was accepted'
             except ValueError:
                 pass
@@ -1216,13 +1218,13 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
-            native = core.ROOT / 'native.jsonl'
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            native = VAULT.root / 'native.jsonl'
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'session':'own',
                    'permission_mode':'bypassPermissions'}
-            rg.initialize(env)
+            rg.initialize(VAULT, env)
             def append(n):
                 rows = [{'type':'user','sessionId':'own','uuid':f'u{n}','permissionMode':'bypassPermissions',
                          'message':{'role':'user','content':f'question {n}'}},
@@ -1234,35 +1236,35 @@ class ResponseGrowthTests(unittest.TestCase):
                     patch.object(rg,'preflight'):
                 for n in range(1, 10):
                     append(n)
-                    hook.capture_block(env, 'own')
-                    before = integration.status('claude','own')
+                    hook.capture_block(VAULT, env, 'own')
+                    before = integration.status(VAULT, 'claude','own')
                     assert before['prompt_count'] == n, before
                     assert before['response_growth']['count'] == n-1, before
                     if n == 9:  # A switch after the prompt writes no row; Stop's mode in force refuses.
-                        switched = rg.process_stop(dict(env, permission_mode='default'))
+                        switched = rg.process_stop(VAULT, dict(env, permission_mode='default'))
                         assert switched['state'] == 'unavailable' and not worker.called, switched
-                    result = rg.process_stop(env)
+                    result = rg.process_stop(VAULT, env)
                     assert worker.call_count == (1 if n == 9 else 0), result
-                    rg.process_stop(env)  # duplicate notification must not count or launch
+                    rg.process_stop(VAULT, env)  # duplicate notification must not count or launch
                 assert worker.call_count == 1
                 with patch.object(rg.subprocess, 'Popen') as popen:
-                    assert rg.launch(env, 'own')
+                    assert rg.launch(VAULT, env, 'own')
                 payload = json.loads(popen.return_value.stdin.write.call_args.args[0])
                 assert payload['permission_mode'] == 'bypassPermissions', payload
-                source, job, exe = worker.call_args.args
+                _vault, source, job, exe = worker.call_args.args
                 assert len(job['pending_refs']) == 9 and job['conversation_id'] == 'own', job
                 assert not job['organization_jobs']
                 planned = {'scope_jobs':[job], 'candidates':[], 'organization_jobs':[]}
-                assert 'RECOVERY_SENTINEL' in growth.prompt(planned)
+                assert 'RECOVERY_SENTINEL' in growth.prompt(VAULT, planned)
                 assert source['model'] == 'parent-model'
-                rg.initialize(env)  # resume must not reset the durable clock
-                status = integration.status('claude','own')
+                rg.initialize(VAULT, env)  # resume must not reset the durable clock
+                status = integration.status(VAULT, 'claude','own')
                 assert status['response_growth']['count'] == 9 and status['reviewed_rounds'] == 0, status
-                assert 'incomplete' in hook.capture_block(env, 'own', startup=True)
+                assert 'incomplete' in hook.capture_block(VAULT, env, 'own', startup=True)
             source['finals'] += [str(n) for n in range(9,18)]
             with patch.object(rg, 'run', return_value={'ok':False,'state':'busy'}):
-                assert rg.attempt(source,job,exe)['state'] == 'busy'
-            assert rg.observe(source)['due'], 'busy worker consumed a due attempt'
+                assert rg.attempt(VAULT, source,job,exe)['state'] == 'busy'
+            assert rg.observe(VAULT, source)['due'], 'busy worker consumed a due attempt'
         ''')
 
     def test_unavailable_cli_routes_to_9_15_input_review_and_recovers_without_reset(self):
@@ -1271,49 +1273,49 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
-            native = core.ROOT/'native.jsonl'
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            native = VAULT.root/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             # The hooks' worker asks the CLI (probe); the hooks read its verdict.
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \
                     patch.object(rg.subprocess,'Popen',side_effect=AssertionError('unavailable fork launched')):
-                rg.probe(env)
-                start = hook.capture_block(env,'own',startup=True)
+                rg.probe(VAULT, env)
+                start = hook.capture_block(VAULT, env,'own',startup=True)
                 assert '검토 경고' in start and 'subscription login required' in start, start
-                rg.after_hook(env)   # the hooks' worker captures (#192)
-                assert integration.status('claude','own')['prompt_count'] == 0
-                original = integration.status('claude','own')['pending_refs']
+                rg.after_hook(VAULT, env)   # the hooks' worker captures (#192)
+                assert integration.status(VAULT, 'claude','own')['prompt_count'] == 0
+                original = integration.status(VAULT, 'claude','own')['pending_refs']
                 cue = 'cite_round(conversation="claude/own"'
                 for n in range(1,16):
-                    text = hook.capture_block(env,'own')
+                    text = hook.capture_block(VAULT, env,'own')
                     assert ('[osk 케이던스' in text) == (n in {9,15}), (n,text)
                     if n in {9,15}:
                         assert '검토 경고' in text and cue in text, text
-                    assert not rg.launch(env,'own')
-                before = integration.status('claude','own')
+                    assert not rg.launch(VAULT, env,'own')
+                before = integration.status(VAULT, 'claude','own')
                 assert before['prompt_count'] == 15 and before['reviewed_rounds'] == 0, before
             with patch.object(rg,'preflight'):
-                rg.probe(env)
-                hook.capture_block(env,'own',startup=True)
-                restored = integration.status('claude','own')
+                rg.probe(VAULT, env)
+                hook.capture_block(VAULT, env,'own',startup=True)
+                restored = integration.status(VAULT, 'claude','own')
                 assert restored['response_growth_route']['mode'] == 'background'
                 assert restored['prompt_count'] == 15 and restored['pending_refs'] == original
                 assert restored['response_growth']['count'] == before['response_growth']['count']
-                hook.capture_block(env,'own')
+                hook.capture_block(VAULT, env,'own')
             # Losing auth between cadence boundaries must surface the overdue review immediately.
             with patch.object(rg,'preflight',side_effect=ValueError('login expired')):
-                rg.probe(env)
-                text = hook.capture_block(env,'own')
+                rg.probe(VAULT, env)
+                text = hook.capture_block(VAULT, env,'own')
                 assert 'user 턴 17' in text and cue in text and '단독 턴' in text, text
-                assert integration.status('claude','own')['reviewed_rounds'] == 0
-            rg.CONFIG.write_text('{broken')
-            text = hook.capture_block(env,'own',startup=True)
+                assert integration.status(VAULT, 'claude','own')['reviewed_rounds'] == 0
+            rg.config_path(VAULT).write_text('{broken')
+            text = hook.capture_block(VAULT, env,'own',startup=True)
             assert '검토 경고' in text and 'UserPromptSubmit' in text
-            assert not rg.launch(env,'own'), 'bad configuration prevented capture fallback'
+            assert not rg.launch(VAULT, env,'own'), 'bad configuration prevented capture fallback'
         ''')
 
     def test_failing_forks_fall_back_to_9_15_review_and_retry_a_day_later(self):
@@ -1322,42 +1324,42 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
-            native = core.ROOT/'native.jsonl'
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            native = VAULT.root/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             source = {'harness':'claude','conversation_id':'own','finals':[]}
             job = {'pending_refs':['fixture'], 'capture_error':None}
             def stop(n, result):
                 source['finals'] = [str(i) for i in range(9 * n)]
                 with patch.object(rg, 'run', return_value=result):
-                    return rg.attempt(source, job, 'unused')
+                    return rg.attempt(VAULT, source, job, 'unused')
             with patch.object(rg, 'preflight'):
-                rg.observe(source)
-                assert rg.probe(env)['mode'] == 'background'  # the CLI is ready (the hooks' worker asked)
+                rg.observe(VAULT, source)
+                assert rg.probe(VAULT, env)['mode'] == 'background'  # the CLI is ready (the hooks' worker asked)
                 # One unfinished fork review keeps the fork; a busy worker says nothing about it.
                 assert stop(1, {'ok': False, 'state': 'incomplete'})['state'] == 'incomplete'
                 assert stop(2, {'ok': False, 'state': 'busy'})['state'] == 'busy'
-                assert rg.route(env)['mode'] == 'background'
+                assert rg.route(VAULT, env)['mode'] == 'background'
                 # The second unfinished review in a row hands the review to the session
                 # (measured 2026-10-01: rejected forks left 82 conversations waiting).
                 stop(3, {'ok': False, 'state': 'rejected', 'error': 'provider output has no successful final result'})
-                route = rg.route(env)
+                route = rg.route(VAULT, env)
                 assert route['mode'] == 'foreground' and 'did not finish' in route['reason'], route
                 assert 'no successful final result' in route['reason'], route
-                assert rg.route(env)['changed'] is False, 'the reason must be stable between turns'
-                assert not rg.launch(env, 'own'), 'a failing fork was launched again'
-                text = hook.capture_block(env, 'own', startup=True)
+                assert rg.route(VAULT, env)['changed'] is False, 'the reason must be stable between turns'
+                assert not rg.launch(VAULT, env, 'own'), 'a failing fork was launched again'
+                text = hook.capture_block(VAULT, env, 'own', startup=True)
                 assert '검토 경고' in text and 'did not finish' in text, text
                 # A day after the last failure the fork is tried again; a finished review clears the run.
                 with patch.object(rg.time, 'time', return_value=rg.time.time() + rg.RETRY_AFTER + 1):
-                    assert rg.route(env)['mode'] == 'background'
+                    assert rg.route(VAULT, env)['mode'] == 'background'
                 stop(4, {'ok': True, 'state': 'complete'})
-                assert 'failed' not in integration.status('claude', 'own')['response_growth']
-                assert rg.route(env)['mode'] == 'background'
+                assert 'failed' not in integration.status(VAULT, 'claude', 'own')['response_growth']
+                assert rg.route(VAULT, env)['mode'] == 'background'
         ''')
 
     def test_fork_that_finished_its_review_is_not_failed_by_remaining_organization(self):
@@ -1366,19 +1368,19 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', '', space='00_Scope/W1')
-            native = core.ROOT/'native.jsonl'
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            native = VAULT.root/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             source = {'harness':'claude','conversation_id':'own','finals':[]}
             job = {'pending_refs':['fixture'], 'capture_error':None}
             def stop(n, result):
                 source['finals'] = [str(i) for i in range(9 * n)]
                 with patch.object(rg, 'run', return_value=result):
-                    return rg.attempt(source, job, 'unused')
+                    return rg.attempt(VAULT, source, job, 'unused')
             def run(review, **changed):
                 return {'kind': 'run', 'ok': False, 'state': 'incomplete', 'returncode': 0, 'error': None,
                         'final_reviews': {'state': 'applied', 'errors': []},
@@ -1386,27 +1388,27 @@ class ResponseGrowthTests(unittest.TestCase):
                         'organization_outcomes': {'organization:x': {'status': 'pending', 'remaining_units': 5}},
                         **changed}
             with patch.object(rg, 'preflight'):
-                rg.observe(source)
+                rg.observe(VAULT, source)
                 # The scope's organization takes several passes (Mechanism §9-4 4). After v5.0.0
                 # two forks that preserved their review were counted as failed and handed the
                 # conversation to in-session review for a day.
                 for n in (1, 2, 3):
                     stop(n, run('complete'))
-                    assert 'failed' not in integration.status('claude', 'own')['response_growth']
+                    assert 'failed' not in integration.status(VAULT, 'claude', 'own')['response_growth']
                 # A refused decision for another job does not undo the review this fork made.
                 stop(4, run('complete', final_reviews={'state': 'rejected',
                                                        'errors': ['provider output has no successful final result']}))
-                assert 'failed' not in integration.status('claude', 'own')['response_growth']
-                assert rg.route(env)['mode'] == 'background'
+                assert 'failed' not in integration.status(VAULT, 'claude', 'own')['response_growth']
+                assert rg.route(VAULT, env)['mode'] == 'background'
                 # Nor does its conversation hear that a review waits (#228: org deferral alone made
                 # the hook say "백그라운드 검토 대기 — incomplete").
-                assert '검토 대기' not in hook.capture_block(env, 'own', startup=True)
+                assert '검토 대기' not in hook.capture_block(VAULT, env, 'own', startup=True)
                 # A fork that left its own conversation's review unfinished still counts.
                 stop(5, run('pending'))
-                assert '백그라운드 검토 대기 — incomplete' in hook.capture_block(env, 'own', startup=True)
+                assert '백그라운드 검토 대기 — incomplete' in hook.capture_block(VAULT, env, 'own', startup=True)
                 stop(6, run('pending', returncode=1,
                             final_reviews={'state': 'not_applied', 'errors': ['worker did not exit successfully']}))
-                route = rg.route(env)
+                route = rg.route(VAULT, env)
                 assert route['mode'] == 'foreground' and 'did not finish' in route['reason'], route
         ''')
 
@@ -1416,23 +1418,23 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', 'shared memory sentinel', space='00_Scope/W1')
+            scope_memory.replace(VAULT, 'own', 'shared memory sentinel', space='00_Scope/W1')
             from osk import write
-            write.set_primary('own', 'W1', 'test')
-            native = core.ROOT/'native.jsonl'
+            write.set_primary(VAULT, 'own', 'W1', 'test')
+            native = VAULT.root/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             stuck = ValueError('copied native round ID has different content; capture remains pending')
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
                     patch.object(integration,'_inherited_rounds',side_effect=stuck):
-                rg.probe(env)
-                assert '검토 경고' in hook.capture_block(env,'own',startup=True)
-                rg.after_hook(env)   # the hooks' worker captures (#192)
+                rg.probe(VAULT, env)
+                assert '검토 경고' in hook.capture_block(VAULT, env,'own',startup=True)
+                rg.after_hook(VAULT, env)   # the hooks' worker captures (#192)
                 for n in range(1,16):
-                    text = hook.capture_block(env,'own')
+                    text = hook.capture_block(VAULT, env,'own')
                     if n in {9,15}:
                         assert '[osk 케이던스' in text and '포착 진단' in text, (n,text)
                         # The review turn still carries memory: the text once, then its hash line.
@@ -1444,10 +1446,10 @@ class ResponseGrowthTests(unittest.TestCase):
                     else:
                         # The same wait is said once; `integration status` keeps it (#192).
                         assert text == '', (n,text)
-                state = integration.status('claude','own')
+                state = integration.status(VAULT, 'claude','own')
                 assert state['prompt_count'] == 15 and state['capture_pending'], state
                 assert state['reviewed_rounds'] == 0, 'a stuck capture is not a review'
-                blocked = integration.blocked()
+                blocked = integration.blocked(VAULT)
                 assert blocked['count'] == 1 and blocked['conversations'][0]['conversation_id'] == 'own', blocked
                 assert blocked['conversations'][0]['observed'].endswith('(KST)'), blocked
         ''')
@@ -1463,15 +1465,15 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_prompt_submit as hook
-            native = core.ROOT / 'native.jsonl'
+            native = VAULT.root / 'native.jsonl'
             def turn(n):
                 with native.open('a', encoding='utf-8') as f:
                     f.write(json.dumps({'type':'user','sessionId':'own','uuid':f'u{n}','message':{'role':'user','content':'q'}})+'\\n'+
                         json.dumps({'type':'assistant','sessionId':'own','uuid':f'a{n}','message':{'role':'assistant','id':f'm{n}',
                                     'model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'a'}]}})+'\\n')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),
                    'hook_event_name':'UserPromptSubmit'}
             os.environ.pop('OSK_HOOK_WORKER')
             def submit(n):
@@ -1486,8 +1488,8 @@ class ResponseGrowthTests(unittest.TestCase):
                 job = json.loads(worker.call_args.kwargs['stdin'])
                 assert worker.call_count == 1 and job['defer'], worker.call_args
                 with patch.object(rg,'preflight'):
-                    rg.after_hook(job)   # the worker: capture what is new, ask the fork CLI when due
-                return integration.status('claude','own')
+                    rg.after_hook(VAULT, job)   # the worker: capture what is new, ask the fork CLI when due
+                return integration.status(VAULT, 'claude','own')
             # A new conversation's transcript is written after its first prompt: the worker
             # asks the CLI, and nothing is missing yet. (The first hook learns the folder's
             # session key with git.)
@@ -1510,7 +1512,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 submit(4)
             assert not started and not read and '진단' not in quiet, (started, read, quiet)
             assert worker.call_count == 1 and json.loads(worker.call_args.kwargs['stdin'])['defer']
-            assert integration.status('claude','own')['prompt_count'] == 4
+            assert integration.status(VAULT, 'claude','own')['prompt_count'] == 4
         ''')
 
     def test_worker_that_cannot_start_hands_review_to_the_session(self):
@@ -1521,16 +1523,16 @@ class ResponseGrowthTests(unittest.TestCase):
             import os
             from osk import response_growth as rg
             from unittest.mock import patch
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(core.ROOT / 'native.jsonl'),
-                   'cwd':str(core.ROOT),'hook_event_name':'UserPromptSubmit'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(VAULT.root / 'native.jsonl'),
+                   'cwd':str(VAULT.root),'hook_event_name':'UserPromptSubmit'}
             os.environ.pop('OSK_HOOK_WORKER')
-            unchecked = rg.route(env)
+            unchecked = rg.route(VAULT, env)
             assert unchecked['mode'] == 'background' and unchecked['probe_due'], unchecked
             with patch.object(rg.core,'spawn_worker',side_effect=OSError('no processes left')):
-                assert rg.defer(env,'key',probe_due=True) is False
-            fallback = rg.route(env)
+                assert rg.defer(VAULT, env,'key',probe_due=True) is False
+            fallback = rg.route(VAULT, env)
             assert fallback['mode'] == 'foreground' and fallback['changed'], fallback
             assert 'no processes left' in fallback['reason'] and not fallback['probe_due'], fallback
         ''')
@@ -1546,16 +1548,16 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as start, capture_stop as stop
-            native = core.ROOT / 'native.jsonl'
+            native = VAULT.root / 'native.jsonl'
             def turn(n):
                 with native.open('a', encoding='utf-8') as f:
                     f.write(json.dumps({'type':'user','sessionId':'own','uuid':f'u{n}','message':{'role':'user','content':'q'}})+'\\n'+
                         json.dumps({'type':'assistant','sessionId':'own','uuid':f'a{n}','message':{'role':'assistant','id':f'm{n}',
                                     'model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'a'}]}})+'\\n')
             # No fork CLI is configured: Stop's route is the foreground one, where it captured in place.
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT)}
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root)}
             os.environ.pop('OSK_HOOK_WORKER')
-            os.environ.update(OSK_UPDATE_CHECK='0', CLAUDE_CONFIG_DIR=str(core.ROOT / 'claude-home'))
+            os.environ.update(OSK_UPDATE_CHECK='0', CLAUDE_CONFIG_DIR=str(VAULT.root / 'claude-home'))
             def run(hook, event, n):
                 out = types.SimpleNamespace(buffer=io.BytesIO())
                 with patch.object(sys,'stdin',io.StringIO(json.dumps(dict(env, hook_event_name=event, source='resume', turn_id=n)))), \\
@@ -1564,8 +1566,8 @@ class ResponseGrowthTests(unittest.TestCase):
                 return out.buffer.getvalue().decode('utf-8'), [json.loads(c.kwargs['stdin']) for c in worker.call_args_list]
             turn(1)
             _, jobs = run(start, 'SessionStart', 1)    # (the first hook learns the folder's session key with git)
-            rg.after_hook(jobs[0])
-            assert integration.status('claude','own')['captured_rounds'] == 1
+            rg.after_hook(VAULT, jobs[0])
+            assert integration.status(VAULT, 'claude','own')['captured_rounds'] == 1
             started, read = [], []
             def process(*a, **k):
                 started.append(a)
@@ -1582,29 +1584,29 @@ class ResponseGrowthTests(unittest.TestCase):
             assert not started and not read and '진단' not in begun and not ended, (started, read, begun, ended)
             assert [j['defer'] for j in jobs + more] == [True, True], (jobs, more)
             # A worker that finds another one running waits its turn: Stop's turn is not dropped.
-            with integration.state_path('claude','own').with_suffix('.defer.lock').open('a+b') as busy:
+            with integration.state_path(VAULT, 'claude','own').with_suffix('.defer.lock').open('a+b') as busy:
                 lock_exclusive(busy)
-                waiting = threading.Thread(target=rg.after_hook, args=(more[0],))
+                waiting = threading.Thread(target=rg.after_hook, args=(VAULT, more[0]))
                 waiting.start()
                 waiting.join(2)
                 assert waiting.is_alive(), 'a busy worker dropped the turn Stop handed over'
                 unlock(busy)
             waiting.join(60)
-            assert integration.status('claude','own')['captured_rounds'] == 3
+            assert integration.status(VAULT, 'claude','own')['captured_rounds'] == 3
             # A tracked conversation whose file left the hook's path is no new one: its worker
             # finds the file by ID, as the in-place capture did (#199 review).
-            moved = core.ROOT / 'claude-home/projects/elsewhere/own.jsonl'
+            moved = VAULT.root / 'claude-home/projects/elsewhere/own.jsonl'
             moved.parent.mkdir(parents=True)
             turn(4)
             native.replace(moved)
             _, jobs = run(stop, 'Stop', 4)
             assert jobs, 'a moved transcript was skipped as a new conversation'
-            rg.after_hook(jobs[0])
-            assert integration.status('claude','own')['captured_rounds'] == 4
+            rg.after_hook(VAULT, jobs[0])
+            assert integration.status(VAULT, 'claude','own')['captured_rounds'] == 4
             native = moved
             # The worker's failure lands after its Stop: the next Stop says it once, as the input hook does.
             native.write_text(native.read_text(encoding='utf-8').replace('"u1"', '"u0"'), encoding='utf-8')
-            rg.after_hook(more[0])
+            rg.after_hook(VAULT, more[0])
             said = [run(stop, 'Stop', n)[0] for n in (5, 6)]
             assert 'capture diagnostic' in said[0] and 'prefix changed' in said[0] and not said[1], said
         ''')
@@ -1615,7 +1617,7 @@ class ResponseGrowthTests(unittest.TestCase):
         base_tests.GrowthTests().check_case('''
             import re, subprocess
             hook = Path(core.__file__).resolve().parents[1] / 'scripts/hooks/claude_prompt_submit.py'
-            prompt = {'session_id':'own','transcript_path':str(core.ROOT / 'native.jsonl'),'cwd':str(core.ROOT),
+            prompt = {'session_id':'own','transcript_path':str(VAULT.root / 'native.jsonl'),'cwd':str(VAULT.root),
                       'hook_event_name':'UserPromptSubmit','prompt':'q'}
             r = subprocess.run([sys.executable, '-X', 'importtime', str(hook)], input=json.dumps(prompt),
                                capture_output=True, text=True, encoding='utf-8', timeout=60)
@@ -1629,29 +1631,29 @@ class ResponseGrowthTests(unittest.TestCase):
             from osk import response_growth as rg, integration
             from unittest.mock import patch
             source = {'harness':'claude','conversation_id':'own','model':'same-model','finals':[]}
-            rg.observe(source)
+            rg.observe(VAULT, source)
             source['finals'] = [str(i) for i in range(9)]
             job = {'harness':'claude','conversation_id':'own','pending_refs':['fixture']}
             with patch.object(rg,'preflight',side_effect=ValueError('login expired')), \
                     patch.object(growth,'run',side_effect=AssertionError('provider started')):
-                result = rg.attempt(source,job,'unused')
+                result = rg.attempt(VAULT, source,job,'unused')
             assert result['state'] == 'unavailable', result
-            status = integration.status('claude','own')
+            status = integration.status(VAULT, 'claude','own')
             assert status['response_growth']['attempted_count'] == 0
-            assert status['reviewed_rounds'] == 0 and rg.observe(source)['due']
+            assert status['reviewed_rounds'] == 0 and rg.observe(VAULT, source)['due']
         ''')
 
     def test_source_advanced_before_fork_does_not_consume_stop_attempt(self):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg, integration
             from unittest.mock import patch
-            native = core.ROOT / 'native.jsonl'
-            rows = [{'type':'assistant','sessionId':'own','uuid':f'a{n}','cwd':str(core.ROOT),'message':{'role':'assistant','id':f'm{n}',
+            native = VAULT.root / 'native.jsonl'
+            rows = [{'type':'assistant','sessionId':'own','uuid':f'a{n}','cwd':str(VAULT.root),'message':{'role':'assistant','id':f'm{n}',
                      'model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}}
                     for n in range(9)]
             native.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
-            source = rg.profile(str(native),'claude','own')
-            rg.observe(dict(source, finals=[]))
+            source = rg.profile(VAULT, str(native),'claude','own')
+            rg.observe(VAULT, dict(source, finals=[]))
             job = {'harness':'claude','conversation_id':'own','pending_refs':['fixture']}
             def append(row):
                 with native.open('a', encoding='utf-8') as f:
@@ -1660,21 +1662,21 @@ class ResponseGrowthTests(unittest.TestCase):
             trailer = lambda *a, **k: append({'type':'system','subtype':'stop_hook_summary','sessionId':'own'})
             with patch.object(rg,'preflight',side_effect=trailer), \\
                     patch.object(growth,'run',return_value={'ok':False,'state':'incomplete'}) as fork:
-                assert rg.attempt(source,job,'unused')['state'] == 'incomplete'
-            assert fork.call_count == 1 and integration.status('claude','own')['response_growth']['attempted_count'] == 9
+                assert rg.attempt(VAULT, source,job,'unused')['state'] == 'incomplete'
+            assert fork.call_count == 1 and integration.status(VAULT, 'claude','own')['response_growth']['attempted_count'] == 9
             # A new user turn before launch never forks and never spends the attempt.
             with native.open('a', encoding='utf-8') as f:
                 f.write(''.join(json.dumps(dict(rows[0], uuid=f'a{n}', message=dict(rows[0]['message'], id=f'm{n}')))+'\\n'
                                 for n in range(9, 18)))
-            source = rg.profile(str(native),'claude','own')
+            source = rg.profile(VAULT, str(native),'claude','own')
             new_turn = lambda *a, **k: append({'type':'user','sessionId':'own','message':{'role':'user','content':'next'}})
             with patch.object(rg,'preflight',side_effect=new_turn), \\
                     patch.object(growth,'run',side_effect=AssertionError('fork started')):
-                result = rg.attempt(source,job,'unused')
+                result = rg.attempt(VAULT, source,job,'unused')
             assert result['state'] == 'unavailable' and 'source advanced' in result['error'], result
-            status = integration.status('claude','own')
+            status = integration.status(VAULT, 'claude','own')
             assert status['response_growth']['attempted_count'] == 9, status
-            assert status['reviewed_rounds'] == 0 and rg.observe(source)['due']
+            assert status['reviewed_rounds'] == 0 and rg.observe(VAULT, source)['due']
         ''')
 
     def test_claude_auth_refresh_race_retries_the_fork_once(self):
@@ -1682,18 +1684,18 @@ class ResponseGrowthTests(unittest.TestCase):
         base_tests.GrowthTests().check_case('''
             from osk import response_growth as rg
             from unittest.mock import patch
-            native = core.ROOT / 'native.jsonl'
-            native.write_text(json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','cwd':str(core.ROOT),
+            native = VAULT.root / 'native.jsonl'
+            native.write_text(json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','cwd':str(VAULT.root),
                 'message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn',
                            'content':[{'type':'text','text':'answer'}]}})+'\\n', encoding='utf-8')
-            source = rg.profile(str(native),'claude','own')
+            source = rg.profile(VAULT, str(native),'claude','own')
             job = {'harness':'claude','conversation_id':'own','pending_refs':['fixture']}
-            (core.ROOT / 'raced').mkdir()
-            (core.ROOT / 'raced/stdout.txt').write_text(json.dumps({'type':'result','is_error':True,
+            (VAULT.root / 'raced').mkdir()
+            (VAULT.root / 'raced/stdout.txt').write_text(json.dumps({'type':'result','is_error':True,
                 'result':'Failed to refresh OAuth token: another Claude Code process is refreshing it'})+'\\n', encoding='utf-8')
             # A reviewed conversation may quote the message; only the CLI's own final result counts.
-            (core.ROOT / 'quoted').mkdir()
-            (core.ROOT / 'quoted/stdout.txt').write_text(json.dumps({'type':'assistant','message':{'content':[
+            (VAULT.root / 'quoted').mkdir()
+            (VAULT.root / 'quoted/stdout.txt').write_text(json.dumps({'type':'assistant','message':{'content':[
                 {'type':'text','text':'Failed to refresh OAuth token appeared in this conversation.'}]}})+'\\n'+json.dumps(
                 {'type':'result','is_error':True,'result':'Reached the turn limit'})+'\\n', encoding='utf-8')
             raced = {'ok':False,'state':'incomplete','returncode':1,'output':'raced'}
@@ -1705,7 +1707,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 with patch.object(rg,'preflight',return_value='claude'), patch.object(rg.time,'sleep') as wait, \\
                         patch.object(rg,'cache_usage',return_value={}), \\
                         patch.object(growth,'run',side_effect=runs) as fork:
-                    result = rg.run(source,job,'unused')
+                    result = rg.run(VAULT, source,job,'unused')
                 assert fork.call_count == calls and wait.call_count == waits, (runs, fork.call_count)
                 assert result['state'] == final['state'] and result.get('returncode') == final['returncode'], result
         ''')
@@ -1714,12 +1716,12 @@ class ResponseGrowthTests(unittest.TestCase):
         base_tests.GrowthTests().check_case('''
             import os, subprocess, time
             from osk import response_growth as rg, integration, scope_memory
-            scope_memory.replace(core.ROOT.name, '', space='00_Scope/W1')
-            native = core.ROOT / 'native.jsonl'
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native), 'cwd':str(core.ROOT)}
-            rg.initialize(env)
+            scope_memory.replace(VAULT, VAULT.root.name, '', space='00_Scope/W1')
+            native = VAULT.root / 'native.jsonl'
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native), 'cwd':str(VAULT.root)}
+            rg.initialize(VAULT, env)
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n')
             hook = Path(rg.__file__).resolve().parents[1]/'scripts/hooks/capture_stop.py'
             child_env = dict(os.environ)
@@ -1732,7 +1734,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 f.write(json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
             deadline = time.monotonic()+10
             while time.monotonic() < deadline:
-                status = integration.status('claude','own')
+                status = integration.status(VAULT, 'claude','own')
                 if status.get('response_growth_stop'):
                     break
                 time.sleep(0.05)
@@ -1747,26 +1749,26 @@ class ResponseGrowthTests(unittest.TestCase):
             from unittest.mock import patch
             node('Unrelated Domain candidate')
             node('Other Scope claim', scope='W2')
-            scope_memory.replace('own', '', space='00_Scope/W1')
-            native = core.ROOT / 'native.jsonl'
+            scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
+            native = VAULT.root / 'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'one-off question'}}) + '\\n' +
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','stop_reason':'end_turn','content':[{'type':'text','text':'one-off answer'}]}}) + '\\n')
-            assert integration.capture('claude','own',str(native),'own')['ok']
-            job = integration.prompt('claude','own',include_organization=False,max_rounds=3)
-            source_cwd = core.ROOT / 'project'
+            assert integration.capture(VAULT, 'claude','own',str(native),'own')['ok']
+            job = integration.prompt(VAULT, 'claude','own',include_organization=False,max_rounds=3)
+            source_cwd = VAULT.root / 'project'
             source_cwd.mkdir()
             script = packet_worker(change="assert Path.cwd().name == 'project'".replace('Path.cwd()', '__import__(\"pathlib\").Path.cwd()'))
             with patch.object(integration, 'catchup', side_effect=AssertionError('global catchup')):
-                result = growth.run([sys.executable,'-c',script], scope_job=job, cwd=source_cwd)
+                result = growth.run(VAULT, [sys.executable,'-c',script], scope_job=job, cwd=source_cwd)
             assert result['ok'], result
-            argv = json.loads((core.ROOT / result['output'] / 'argv.json').read_text(encoding='utf-8'))
+            argv = json.loads((VAULT.root / result['output'] / 'argv.json').read_text(encoding='utf-8'))
             assert argv[1:] == ['-c', script], argv
             assert result['domain_selected'] == 0 and result['scope_selected'] == 1, result
-            manifest = [r for r in core.ledger_read(growth.LEDGER) if r['kind']=='plan'][-1]
+            manifest = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['scope'] for j in manifest['organization_jobs']] == ['W1'], manifest
             assert result['selected'] == 2 and manifest['timeout_seconds'] == 600
-            assert integration.status('claude','own')['reviewed_rounds'] == 1
-            assert growth.plan()['candidates'], 'unrelated Domain work was incorrectly acknowledged'
+            assert integration.status(VAULT, 'claude','own')['reviewed_rounds'] == 1
+            assert growth.plan(VAULT)['candidates'], 'unrelated Domain work was incorrectly acknowledged'
         ''')
 
     def test_fork_doctor_shows_route_verdict_without_writing_state_or_secrets(self):
@@ -1775,16 +1777,16 @@ class ResponseGrowthTests(unittest.TestCase):
             from types import SimpleNamespace
             from unittest.mock import patch
             import io, os, subprocess
-            subprocess.run(['git','init','-q','-b','main',str(core.ROOT)], check=True, capture_output=True)
-            home = core.ROOT / 'claude-home'
+            subprocess.run(['git','init','-q','-b','main',str(VAULT.root)], check=True, capture_output=True)
+            home = VAULT.root / 'claude-home'
             native = home / 'projects' / 'p' / 'own.jsonl'
             native.parent.mkdir(parents=True)
-            native.write_text(json.dumps({'type':'user','sessionId':'own','cwd':str(core.ROOT),'version':'2.1.280',
+            native.write_text(json.dumps({'type':'user','sessionId':'own','cwd':str(VAULT.root),'version':'2.1.280',
                 'permissionMode':'auto','message':{'role':'user','content':'q'}}) + chr(10) +
                 json.dumps({'type':'assistant','sessionId':'own','message':{'id':'m1','model':'claude-same',
                 'stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}}) + chr(10), encoding='utf-8')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude': sys.executable}))
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude': sys.executable}))
             bridge = 'http://127.0.0.1:17841/v1'
             Path(os.environ['CODEX_HOME']).mkdir(parents=True, exist_ok=True)
             (Path(os.environ['CODEX_HOME']) / 'config.toml').write_text(f'openai_base_url = "{bridge}"', encoding='utf-8')
@@ -1798,7 +1800,7 @@ class ResponseGrowthTests(unittest.TestCase):
                                     'email': 'person@example.com', 'orgId': 'org-s3cret'}))
                 return subprocess.CompletedProcess(argv, 0, text, '')
             def snapshot():
-                roots = {core.ROOT, integration.state_path('claude', 'own').parent, Path(os.environ['CODEX_HOME'])}
+                roots = {VAULT.root, integration.state_path(VAULT, 'claude', 'own').parent, Path(os.environ['CODEX_HOME'])}
                 return {str(p): (p.stat().st_mtime_ns, p.is_file() and p.read_bytes())
                         for root in roots for p in root.rglob('*')}
             def doctor(*args):
@@ -1835,8 +1837,8 @@ class ResponseGrowthTests(unittest.TestCase):
             # The doctor's verdict is the hooks' worker's (probe), which route() reads; both write
             # the state the doctor skipped.
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                rg.probe({'harness': 'claude', 'session_id': 'own', 'transcript_path': str(native)})
-                route = rg.route({'harness': 'claude', 'session_id': 'own', 'transcript_path': str(native)})
+                rg.probe(VAULT, {'harness': 'claude', 'session_id': 'own', 'transcript_path': str(native)})
+                route = rg.route(VAULT, {'harness': 'claude', 'session_id': 'own', 'transcript_path': str(native)})
             assert {k: route[k] for k in ('mode', 'reason')} == ready['verdict'], route
             assert snapshot() != before
         ''')
@@ -1881,13 +1883,13 @@ class HookBudgetTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            env = {'harness':'claude','session_id':'own','cwd':str(core.ROOT),'session':'own'}
+            env = {'harness':'claude','session_id':'own','cwd':str(VAULT.root),'session':'own'}
             idle = {'harness':'claude','conversation_id':'own','pending':False,'capture_error':None,
                     'capture_recovery':{'state':'ready'}}
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
                     patch.object(integration,'hook_capture',return_value=idle), \\
                     patch.object(hook,'_organization_jobs',side_effect=ValueError('damaged organization state')):
-                start = hook.capture_block(env,'own',startup=True)
+                start = hook.capture_block(VAULT, env,'own',startup=True)
             assert '검토 경고' in start and '참조·조직 검토 판독 진단' in start, start
             assert 'damaged organization state' in start and '포착·통합 진단' not in start, start
         ''')
@@ -1903,36 +1905,36 @@ class HookBudgetTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', 'first memory sentinel', space='00_Scope/W1')
+            scope_memory.replace(VAULT, 'own', 'first memory sentinel', space='00_Scope/W1')
             from osk import write
-            write.set_primary('own', 'W1', 'test')
-            native = core.ROOT/'native.jsonl'
+            write.set_primary(VAULT, 'own', 'W1', 'test')
+            native = VAULT.root/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
-                rg.probe(env)
-                hook.capture_block(env,'own',startup=True)
+                rg.probe(VAULT, env)
+                hook.capture_block(VAULT, env,'own',startup=True)
                 seen = {}
                 for n in range(1,25):
                     if n == 20:
-                        scope_memory.replace('own', 'second memory sentinel', scope_memory.read('own')['hash'])
-                    seen[n] = hook.capture_block(env,'own')
+                        scope_memory.replace(VAULT, 'own', 'second memory sentinel', scope_memory.read(VAULT, 'own')['hash'])
+                    seen[n] = hook.capture_block(VAULT, env,'own')
             assert 'first memory sentinel' in seen[9], seen[9]
             assert 'first memory sentinel' not in seen[15] and 'scope_memory(session="own")' in seen[15], seen[15]
             assert '출처·허브를 완성한다' in seen[15], 'the one line keeps the node-first guidance'
             assert 'second memory sentinel' in seen[24], 'a changed hash carries the whole text again'
             # Kiro's limit folds whole blocks; the review itself is pulled by command.
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
-                while integration.status('claude','own')['prompt_count'] < 29:
-                    integration.tick('claude','own')
-                small = hook.capture_block(env,'own',budget=2800)
+                while integration.status(VAULT, 'claude','own')['prompt_count'] < 29:
+                    integration.tick(VAULT, 'claude','own')
+                small = hook.capture_block(VAULT, env,'own',budget=2800)
             assert len(small) <= 2800 and '[osk 케이던스 — user 턴 30]' in small, small
             # The one line can fold too (Kiro, 2026-09-27): the folded line still names it and where to read it.
             from osk.hook_text import assemble
-            line = hook._memory(scope_memory, 'own', ('claude','own'), gate=True, keep=85)
+            line = hook._memory(VAULT, scope_memory, 'own', ('claude','own'), gate=True, keep=85)
             assert '이 대화에 앞서 실은 전문과' in line.text and line.label.startswith('scope 기억'), line
             folded, gone = assemble([line], 200, session='own')
             assert gone == {'memory'} and 'scope_memory(session="own")' in folded, folded
@@ -1944,19 +1946,19 @@ class HookBudgetTests(unittest.TestCase):
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
-            scope_memory.replace('own', 'bound memory sentinel', space='00_Scope/W1')
-            assert write.bindings('own') == {'scopes': ['W1'], 'primary': None, 'undetermined': False}
-            native = core.ROOT/'native.jsonl'
+            scope_memory.replace(VAULT, 'own', 'bound memory sentinel', space='00_Scope/W1')
+            assert write.bindings(VAULT, 'own') == {'scopes': ['W1'], 'primary': None, 'undetermined': False}
+            native = VAULT.root/'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'question'}})+'\\n'+
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
-            rg.CONFIG.parent.mkdir(exist_ok=True)
-            rg.CONFIG.write_text(json.dumps({'claude':sys.executable}))
-            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(core.ROOT),'session':'own'}
+            rg.config_path(VAULT).parent.mkdir(exist_ok=True)
+            rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
+            env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
-                rg.probe(env)
-                hook.capture_block(env,'own',startup=True)
-                rg.after_hook(env)   # the hooks' worker captures (#192)
-                seen = {n: hook.capture_block(env,'own') for n in range(1,16)}
+                rg.probe(VAULT, env)
+                hook.capture_block(VAULT, env,'own',startup=True)
+                rg.after_hook(VAULT, env)   # the hooks' worker captures (#192)
+                seen = {n: hook.capture_block(VAULT, env,'own') for n in range(1,16)}
             assert 'bound memory sentinel' in seen[9], seen[9]
             assert 'space="00_Scope/W1"' in seen[9], seen[9]          # 전문 블록의 수정 안내도 space를 명시한다
             assert 'bound memory sentinel' not in seen[15], seen[15]
