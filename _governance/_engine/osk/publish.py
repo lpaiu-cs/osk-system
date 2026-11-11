@@ -30,7 +30,7 @@ import argparse, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 from .core import posix_rel
-from . import secrets, validate, placement
+from . import secrets, placement
 from .vault import Vault
 
 
@@ -154,7 +154,8 @@ def validate_at(root: Path) -> list[str]:
     engine = root / "_governance" / "_engine"
     if not (engine / "osk").is_dir():
         return [f"스냅샷에 엔진이 없다 — 검증 불성립: {engine}"]
-    code = ("import json; from osk import validate; from osk.vault import Vault; r = validate.run(Vault.open()); "
+    code = ("import json; from osk import cli, validate; from osk.vault import Vault; "
+            "r = validate.run(Vault.open(), cli.published_tools); "
             "print(json.dumps({'v': r['verdict'], "
             "'f': [list(x)[0] for x in r['fail']]}))")
     env = dict(os.environ, OSK_VAULT_ROOT=str(root), PYTHONPATH=str(engine))
@@ -169,18 +170,12 @@ def validate_at(root: Path) -> list[str]:
     return [] if rep["v"] == "PASS" else [f"검증기 {rep['v']}: {'; '.join(rep['f'])}"]
 
 
-def guard_vault(vault: Vault, root: Path | None = None) -> list[str]:
-    """깨진 vault에서 발행하지 않는다."""
+def guard_vault(root: Path) -> list[str]:
+    """깨진 vault에서 발행하지 않는다 — 내보낼 트리(`root`)를 그 트리의 엔진으로 검증한다."""
     try:
-        if root is not None:
-            return validate_at(root)
-        rep = validate.run(vault)
+        return validate_at(root)
     except Exception as e:
         return [f"검증기 실행 실패: {e}"]
-    if rep["verdict"] != "PASS":
-        return [f"검증기 {rep['verdict']}: "
-                + "; ".join(list(f)[0] for f in rep["fail"])]
-    return []
 
 
 # ── 빌드·비교 ────────────────────────────────────────────────────────────
@@ -290,7 +285,7 @@ def run(vault: Vault, public: Path, apply: bool = False, push: bool = False,
                                 else shutil.copy2(src, dst))
         except OSError as e:
             raise PublishError(f"발행 스냅샷 생성 실패 — 아무것도 쓰지 않았다: {e}") from e
-        errs = guard_knowledge(items) + guard_secrets(items) + guard_vault(vault, snap)
+        errs = guard_knowledge(items) + guard_secrets(items) + guard_vault(snap)
         if errs:
             raise PublishError("발행 가드 위반 — 아무것도 쓰지 않았다:\n  "
                                + "\n  ".join(errs))

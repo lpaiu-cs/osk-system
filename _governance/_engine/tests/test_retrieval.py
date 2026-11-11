@@ -161,7 +161,7 @@ def centrality_checks():
 
 def read_checks():
     import mcp_server as m
-    from osk import core, validate, write
+    from osk import cli, core, validate, write
     from osk.vault import Vault
     VAULT = Vault.open()
     validate.make_mini_vault(VAULT, VAULT.root)
@@ -249,7 +249,7 @@ def read_checks():
         assert after['start'] == sample.index('## After')
         assert m._node_view(sample, after['view'])['body'] == '## After\n중요한 결론😀\n'
     assert m._node_view('```in`valid\n# Visible\n', 'outline')['headings'][0]['title'] == 'Visible'
-    assert not validate.surface_lint(VAULT), validate.surface_lint(VAULT)
+    assert not validate.surface_lint(VAULT, cli.published_tools), validate.surface_lint(VAULT, cli.published_tools)
 
 
 async def transport_checks():

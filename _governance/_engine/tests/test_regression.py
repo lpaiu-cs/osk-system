@@ -50,7 +50,7 @@ os.environ["OSK_UPDATE_CHECK"] = "0"
 # 띄우지 않는다 — 실행 자리가 지워진 뒤에도 남는 자식이 없고, 작업자의 몫은 시험이 직접 부른다.
 os.environ["OSK_HOOK_WORKER"] = "0"
 
-from osk import (core, graph, validate, authority, contract, routing, write,  # noqa: E402
+from osk import (cli, core, graph, validate, authority, contract, routing, write,  # noqa: E402
                  publish, cluster_gate, node_moves, nodefile, placement, topology)  # noqa: E402
 from osk.vault import Vault
 VAULT = Vault.open()
@@ -849,7 +849,7 @@ def test_ledger_corruption_resilience():
         approvals.ledger_path(VAULT).write_text('{"rid": "x", "kind": "protect"\n',
                                        encoding="utf-8")   # 부분 행(손상)
         try:
-            rep = validate.run(VAULT)
+            rep = validate.run(VAULT, cli.published_tools)
             check("손상 대장에도 검증기 생존", True)
             check("손상은 FAIL로 보고", rep["verdict"] == "FAIL"
                   and any("승인 기록부" in list(f)[0] for f in rep["fail"]))
@@ -1024,7 +1024,7 @@ def test_ledger_schema_segment():
         approvals.ledger_path(VAULT).parent.mkdir(parents=True, exist_ok=True)
         approvals.ledger_path(VAULT).write_text(
             "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-        rep = validate.run(VAULT)
+        rep = validate.run(VAULT, cli.published_tools)
         seg = next((list(f.values())[0] for f in rep["fail"]
                     if "승인 대장 스키마" in list(f)[0]), None)
         check("승인 대장 스키마 세그먼트가 위반을 적발", seg is not None, rep["fail"])
@@ -1054,7 +1054,7 @@ def test_validate_global_invariance():
         return (held, id(sys.modules["osk.core"]), id(sys.modules["osk.signatures"]),
                 os.environ.get("OSK_VAULT_ROOT"))
     before = state()
-    validate.run(VAULT)
+    validate.run(VAULT, cli.published_tools)
     after = state()
     check("validate.run 전후 전역 불변(재대입·reload 없음)", before == after,
           (before, after))
@@ -2746,7 +2746,7 @@ def test_baseline_pass():
     reg = "00_Scope/W1"
     if not approvals.is_protected(VAULT, reg):
         approval_acts.protect(VAULT, reg, "기준선")
-    rep = validate.run(VAULT)
+    rep = validate.run(VAULT, cli.published_tools)
     check("정상 vault 기준선 PASS", rep["verdict"] == "PASS", rep["fail"])
     check("보호영역 현황이 clean으로 판정",
           rep.get("protected_regions", {}).get(reg) == "clean",
@@ -2757,7 +2757,7 @@ def test_baseline_pass():
     try:
         check("영역 내 쓰기가 pending으로 전이", approvals.state(VAULT, reg) == "pending",
               approvals.state(VAULT, reg))
-        rep2 = validate.run(VAULT)
+        rep2 = validate.run(VAULT, cli.published_tools)
         check("검증기 리포트도 pending을 싣는다",
               rep2.get("protected_regions", {}).get(reg) == "pending",
               rep2.get("protected_regions"))
@@ -2879,7 +2879,7 @@ def test_ledger_row_shape():
     VAULT.signatures.write_text("123\n", encoding="utf-8")
     check("비-dict 행은 부분 행과 동류의 손상으로 거부",
           _raises(lambda: core.ledger_read(VAULT.signatures))())
-    rep = validate.run(VAULT)
+    rep = validate.run(VAULT, cli.published_tools)
     check("비-dict 행에도 검증기가 죽지 않고 FAIL 보고",
           rep["verdict"] == "FAIL")
 
@@ -3512,7 +3512,7 @@ def test_conflicts_open_case_path():
     check("conflicts 표지 부착은 updated을 갱신하지 않는다(시행령 §1 4항)",
           r2.get("updated_kept") is True, r2)
     check("전역 검증기도 이 상태를 위반으로 보지 않는다",
-          not any("regr-cparty" in str(f) for f in validate.run(VAULT)["fail"]))
+          not any("regr-cparty" in str(f) for f in validate.run(VAULT, cli.published_tools)["fail"]))
     # 비당사자·미종결 아님·부재 사건은 거부
     r3 = _w(write.create_node, VAULT, "regr-nonparty", "비당사자", "본문",
             "fable-5", space="00_Scope/W1",
@@ -3967,8 +3967,8 @@ def test_dup_stem_write_refused():
 
 # ── 14v. 표면 린트 — 스키마 건전·가르침의 회귀를 잡는다 (10차 ④) ────────
 def test_surface_lint():
-    check("실 표면이 린트를 통과", not validate.surface_lint(VAULT),
-          validate.surface_lint(VAULT))
+    check("실 표면이 린트를 통과", not validate.surface_lint(VAULT, cli.published_tools),
+          validate.surface_lint(VAULT, cli.published_tools))
     import mcp_server as M
     import asyncio, json as _json
     ts = asyncio.run(M.mcp.list_tools())
@@ -4191,7 +4191,7 @@ def test_publish_guards():
 
             # 매니페스트 밖 파일이 디스크에 있어도 커밋되지 않는다
             # (`git add -A`가 가드를 통째로 우회한 실사고의 고정)
-            _rep = validate.run(VAULT)
+            _rep = validate.run(VAULT, cli.published_tools)
             check("가드 전제: 검증기 PASS", _rep["verdict"] == "PASS",
                   _rep["fail"])
             # 비ASCII 이름 — git ls-files의 기본 출력은 이 이름을 따옴표와
@@ -4270,12 +4270,12 @@ def test_conflict_candidates():
         cands = validate.conflict_candidates(graph.Index(VAULT))
         check("duplication 검출(동명 stem)",
               any("duplication" in x and "regr-dup" in x for x in cands), cands)
-        rep = validate.run(VAULT)
+        rep = validate.run(VAULT, cli.published_tools)
         check("충돌 후보는 검증기 FAIL로 사용자 심의 요청",
               rep["verdict"] == "FAIL"
               and any("정합성 검사" in list(f)[0] for f in rep["fail"]))
         before = len(core.ledger_read(VAULT.candidates))
-        validate.run(VAULT)
+        validate.run(VAULT, cli.published_tools)
         check("검증기는 후보를 대장에 자동 기록하지 않는다(자동 집행 없음)",
               len(core.ledger_read(VAULT.candidates)) == before)
     finally:
@@ -4802,7 +4802,7 @@ def test_release_and_update():
             with open(uj, "a", encoding="utf-8") as _f:
                 _f.write('{"rid":"bad-rid","kind":"apply","path":"X",'
                          '"hash":"h"}\n')
-            repv = validate.run(VAULT)
+            repv = validate.run(VAULT, cli.published_tools)
             check("손상된 update.jsonl은 검증기 FAIL",
                   repv["verdict"] == "FAIL"
                   and any("update.jsonl" in str(v) for v in repv["fail"]),
@@ -6228,7 +6228,7 @@ def test_index_node_not_delegation():
         dels = authority.enumerate_delegations(VAULT)
         check("허브 노드는 위임으로 열거되지 않는다",
               all(d["title"] != "Delegation" for d in dels), dels)
-        rep = validate.run(VAULT)
+        rep = validate.run(VAULT, cli.published_tools)
         check("허브 노드가 위임 3요건을 깨뜨리지 않는다",
               not any("위임 3요건" in k for d in rep["fail"] for k in d),
               rep["fail"])
@@ -6338,7 +6338,7 @@ def test_code_regions_are_not_prose():
               u.get("ok") and ext.read_text(encoding="utf-8").endswith(ext_body),
               (u, ext.read_text(encoding="utf-8")))
         external("regr-code-xsext", "cxsx", "구문:\n\n~~~\n[[regr-xs-target]]\n~~~\n")
-        rep = validate.run(VAULT)
+        rep = validate.run(VAULT, cli.published_tools)
         bad = [m for d in rep["fail"] for v in d.values()
                for m in (v if isinstance(v, list) else [v]) if "regr-code-" in str(m)]
         check("코드 속 scope 밖 예시로 검증기가 FAIL하지 않는다", not bad, bad)
@@ -6579,14 +6579,14 @@ def test_cluster_overview():
 
     # 활성화 게이트 — 기본 비활성(보고만), 활성화 후 verdict 산입, 해제 원복
     check("기본 비활성", validate.validator_active(VAULT, "cluster-overview") is False)
-    rep = validate.run(VAULT)
+    rep = validate.run(VAULT, cli.published_tools)
     check("비활성이면 verdict 불산입(그 이유의 fail 없음)",
           not any("군집 허브 노드" in f for d in rep["fail"] for f in d), rep["fail"])
     check("보고는 언제나 실린다", "00_Scope/OVW" in rep.get("cluster_overview", {}))
     core.ledger_append(VAULT.validators,
                        {"kind": "activate", "rule": "cluster-overview"})
     check("활성 판정", validate.validator_active(VAULT, "cluster-overview") is True)
-    rep2 = validate.run(VAULT)
+    rep2 = validate.run(VAULT, cli.published_tools)
     check("활성이면 위반이 verdict에 산입", rep2["verdict"] == "FAIL"
           and any("군집 허브 노드" in f for d in rep2["fail"] for f in d), rep2["verdict"])
     core.ledger_append(VAULT.validators,
@@ -7854,7 +7854,7 @@ def test_evictions():
     # 검증기 — 스키마 세그먼트
     def names(lst):
         return [x if isinstance(x, str) else list(x)[0] for x in lst]
-    rep = validate.run(VAULT)
+    rep = validate.run(VAULT, cli.published_tools)
     check("퇴출 기록부 스키마가 통과에 있다",
           any("퇴출 기록부 스키마" in n for n in names(rep["pass"])), names(rep["fail"]))
     backup = VAULT.evictions.read_bytes()
@@ -7869,7 +7869,7 @@ def test_evictions():
     with open(VAULT.evictions, "a", encoding="utf-8") as f:
         for row in bad_rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    rep = validate.run(VAULT)
+    rep = validate.run(VAULT, cli.published_tools)
     seg = next((list(f.values())[0] for f in rep["fail"]
                 if "퇴출 기록부 스키마" in list(f)[0]), None)
     check("스키마 세그먼트가 위반을 적발", seg is not None, names(rep["fail"]))
@@ -8931,7 +8931,7 @@ def test_same_file_link_is_duplicate():
         check("링크가 걸린 노드는 이름 쓰기를 거부한다", r1.get("ok") is False, r1)
         check("거부가 링크를 지우라고 알린다", "링크를 지워" in str(r1), r1)
         check("바이트는 그대로다", p.read_bytes() == before)
-        fails = str(validate.run(VAULT)["fail"])
+        fails = str(validate.run(VAULT, cli.published_tools)["fail"])
         check("검증기가 링크를 id 중복으로 보고하고 지우라고 알린다",
               "id 중복" in fails and "같은 파일로 가는 링크" in fails, fails[:600])
         alias.unlink()
@@ -9010,7 +9010,7 @@ def test_format_alignment():
         with open(growth, "a", encoding="utf-8") as f:
             f.write('{"kind": "plan"}\n')
         check("검증기가 growth.jsonl의 rid 손상을 보고한다",
-              "growth.jsonl" in str(validate.run(VAULT)["fail"]))
+              "growth.jsonl" in str(validate.run(VAULT, cli.published_tools)["fail"]))
 
         case.write_text("---\ncase_no: CASE-2026-9300\n---\n\n본문\n", encoding="utf-8")
         check("`---`로 감싼 사건 헤더는 읽지 않는다", S.parse_case(case) is None)
@@ -12252,9 +12252,9 @@ def test_publish_binds_checked_bytes():
                 "MAP _governance/publish-snapshot.txt -> reviewed.txt\n"
                 "KEEP LICENSE\n", encoding="utf-8")
             # run이 파일 내용 가드를 완료한 직후 원본을 변경한다.
-            def changed_after_content_guards(vault, root=None):
+            def changed_after_content_guards(root):
                 src.write_bytes(changed)
-                return held_guard(vault, root)
+                return held_guard(root)
             publish.guard_vault = changed_after_content_guards
             result = publish.run(VAULT, pub, apply=True, manifest=man,
                                  message="Fix publish checked-byte fixture")
@@ -12311,12 +12311,12 @@ def test_publish_validator_uses_snapshot():
                 before = subprocess.run(
                     ["git", "-C", str(pub), "rev-parse", "HEAD"],
                     check=True, capture_output=True).stdout
-                def repaired_original(vault, root=None):
+                def repaired_original(root):
                     if broken == other:
                         broken.unlink()
                     else:
                         broken.write_text(good, encoding="utf-8")
-                    return original_guard(vault, root)
+                    return original_guard(root)
                 publish.guard_vault = repaired_original
                 refused = None
                 try:
@@ -12657,9 +12657,9 @@ def test_publish_preserves_mapped_dot_directories():
         (data / ".cache/unmapped.txt").write_text("unmapped", encoding="utf-8")
         actual_guard = publish.guard_vault
         skipped = []
-        def snapshot_guard(vault, root=None):
+        def snapshot_guard(root):
             skipped.append(not (root / ".cache").exists())
-            return actual_guard(vault, root)
+            return actual_guard(root)
         cases = ((".github/", ".github/"),
                  (".github/workflows/check.yml", ".github/workflows/check.yml"),
                  ("./.github/", ".github/"))
@@ -12708,8 +12708,9 @@ def test_validate_at_uses_snapshot_engine():
             (package / "vault.py").write_text(
                 "class Vault:\n    @classmethod\n    def open(cls):\n        return cls()\n", encoding="utf-8")
             (package / "validate.py").write_text(
-                "def run(vault):\n    return " + repr({"verdict": verdict, "fail": failures}) + "\n",
+                "def run(vault, read_tools):\n    return " + repr({"verdict": verdict, "fail": failures}) + "\n",
                 encoding="utf-8")
+            (package / "cli.py").write_text("def published_tools():\n    return []\n", encoding="utf-8")
         previous = Path.cwd()
         try:
             os.chdir(caller)

@@ -17,6 +17,7 @@
 | `osk/search.py` | 헌법 11조 3~4항·시행령 §7 4항 — 작업/열람 검색·summary 확장 |
 | `osk/validate.py` | 시행령 §11 — 검증기 수트(보고 전용)·보호영역 생애 fixture |
 | `osk/cli.py` | 사용자 명령 — protect·unprotect·approve·revert는 대화형 확인 강제(사용자 전속) |
+| `osk/cli_parser.py` | 명령의 문법 — 무엇을 칠 수 있는지. 검증기가 운용 안내문의 CLI 표를 이것과 대조한다 |
 | `osk/write.py` | Mechanism §6-2 3항 — 노드 쓰기의 단일 통로: 생성·갱신·충돌 후보 기록 |
 | `osk/nodefile.py` | 시행령 §1·Mechanism §6-2 3항 — 노드 파일의 해석(이름 → 파일)과 직렬화, 디스크 쓰기의 한 자리 |
 | `osk/cluster_gate.py` | Mechanism §6-2 3항·시행령 §3 4항 — 군집의 자리 규칙(통치 구획·pin)과 신설 관문 |

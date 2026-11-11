@@ -12,11 +12,12 @@ from __future__ import annotations
 import ast
 import hashlib, json, re
 from pathlib import Path
+from types import SimpleNamespace
 
 from .core import (CASE_RE, RID_RE, ID_RE, ledger_read, ledger_append, ledger_damage, ledger_anchor_index,
                    resolve_one)
 from . import (contract, graph, signatures, approvals, authority, secrets, evictions, raw, core, evidence,
-               roots, placement, topology)
+               roots, placement, topology, cli_parser)
 from .vault import Vault
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
@@ -27,7 +28,8 @@ CASE_STATUS = ("docketed", "adjudicated")
 CASE_VERDICT = ("기각", "수정", "존치")
 
 
-def run(vault: Vault) -> dict:
+def run(vault: Vault, read_tools) -> dict:
+    """수트 전체. `read_tools`는 표면이 내놓는 도구의 목록을 읽는 함수다 — 표면 린트(15)가 부른다."""
     rep = {"pass": [], "fail": [], "skipped": []}
 
     def ok(name, errs):
@@ -266,7 +268,7 @@ def run(vault: Vault) -> dict:
         skip("외부 표면 계약", "Mechanism §6-2 도구 목록 부재 — 검사 불성립")
     else:
         guard("외부 표면 계약(도구 목록·권위 비노출)", lambda: surface_violations(vault))
-        guard("표면 린트(스키마 건전·가르침)", lambda: surface_lint(vault))
+        guard("표면 린트(스키마 건전·가르침)", lambda: surface_lint(vault, read_tools))
         if _last_surface_cost:
             rep["surface_cost"] = dict(_last_surface_cost)
 
@@ -582,23 +584,20 @@ SCHEMA_BUDGET = 8000
 _last_surface_cost: dict | None = None
 
 
-def surface_lint(vault: Vault) -> list[str]:
+def surface_lint(vault: Vault, read_tools) -> list[str]:
     """발행 스키마의 **결정론적 불변식**. 이번 감사가 도출한 것들이며, 이 검사가
     잡는 것은 엔진의 옳음이 아니라 **표면의 가르침**이 낡는 일이다(10차 ④).
 
     실제 수행 시뮬레이션은 여기 넣지 않는다 — 비결정론적이고, 그 자리는 시험이
-    아니라 §6-2 7항의 개정 관문이다."""
+    아니라 §6-2 7항의 개정 관문이다.
+
+    `read_tools`는 도구마다 `name`·`description`·`inputSchema`를 내놓는 함수다
+    (`mcp_server.published_tools`). 표면이 건넨다 — 검증기는 표면을 읽지 않는다. 읽다가 난 실패는
+    이 검사의 실패다."""
     import json as _json
     errs = []
     try:
-        # 등록부를 직접 읽는다 — `list_tools()`는 코루틴이라 서버 자신의 이벤트
-        # 루프 안에서 `asyncio.run`으로 부를 수 없다. 이 검사는 `run_validators`
-        # 도구로도 불리므로 동기 경로여야 한다.
-        import mcp_server as srv
-        reg = srv.mcp._tool_manager._tools
-        tools = [type("T", (), {"name": n, "description": t.description,
-                                "inputSchema": t.parameters})
-                 for n, t in sorted(reg.items())]
+        tools = [SimpleNamespace(**tool) for tool in read_tools()]
     except Exception as e:
         return [f"표면 판독 실패: {e}"]
     blob = _json.dumps([{"name": t.name, "description": t.description,
@@ -784,7 +783,6 @@ def cli_commands() -> tuple[set[str], set[str]]:
     하위 명령을 요구하는 묶음이다. 안내문이 적어야 하는 것은 사용자가 실제로
     치는 `raw migrate` 쪽이고, 묶음 이름을 적는 것은 잘못이 아니다."""
     import argparse as _ap
-    from .cli import build_parser
     allc: set[str] = set()
     leaves: set[str] = set()
 
@@ -800,7 +798,7 @@ def cli_commands() -> tuple[set[str], set[str]]:
                 allc.add(path)
                 walk(sp, path)
 
-    walk(build_parser())
+    walk(cli_parser.build_parser())
     return allc, leaves
 
 
@@ -1032,12 +1030,13 @@ def fixture_approval_lifecycle(vault: Vault, tmp_root) -> list[str]:
         return [f"fixture 출력 파싱 실패: {r.stdout[-200:]!r}"]
 
 
-def main():
+def main(read_tools):
     vault = Vault.open()
-    rep = run(vault)
+    rep = run(vault, read_tools)
     print(json.dumps(rep, ensure_ascii=False, indent=2))
     raise SystemExit(0 if rep["verdict"] == "PASS" else 1)
 
 
 if __name__ == "__main__":
-    main()
+    from . import cli                # 이 파일이 진입점일 때만 — 도구의 목록은 표면이 내놓는다
+    main(cli.published_tools)
