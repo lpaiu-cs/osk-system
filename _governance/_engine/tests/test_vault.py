@@ -27,9 +27,10 @@ def _node(folder: Path) -> None:
 
 def writes() -> None:
     """한 프로세스에서 임시 저장소 둘에 노드를 쓴다 — 노드·허브의 Link·색인·검색이 제 저장소에만 닿는다."""
-    from osk import graph, search, validate, write
+    from osk import graph, search, validate, workspaces, write
     saved = os.environ.get("OSK_VAULT_ROOT")
-    with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as c:
+    with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as c, \
+            tempfile.TemporaryDirectory() as d:
         os.environ["OSK_VAULT_ROOT"] = c                      # 어느 쪽도 아닌 자리
         try:
             va, vb = Vault.open(a), Vault.open(b)
@@ -48,6 +49,16 @@ def writes() -> None:
                 assert out["name"] in idx.names and theirs not in idx.names, sorted(idx.names)
                 hits = {h["title"] for h in search.Searcher(vault, idx).view_search("본문", 5)}
                 assert out["name"] in hits and theirs not in hits, hits
+            # 저장소마다 접어 두는 값 둘 — 한 저장소에서 정한 것이 다른 저장소에 닿지 않는다.
+            # 시각의 눈금은 그 저장소가 놓인 볼륨의 것이다.
+            graph._racy_margin_cache[va.root] = 123_456_789
+            assert graph.racy_margin_ns(va) == 123_456_789 != graph.racy_margin_ns(vb), graph._racy_margin_cache
+            # 일회성 작업 폴더의 판별은 그 저장소의 규칙으로 한다: 규칙은 첫 저장소에만 있다.
+            spot = Path(d).resolve() / "run-1"
+            spot.mkdir()
+            workspaces.add(va, "claude", str(spot.parent), "run-[0-9]+", "1.0")
+            assert workspaces.enter(va, str(spot))["one_off"] and workspaces.enter(vb, str(spot)) is None
+            assert workspaces.is_one_off(va, "run-1") and not workspaces.is_one_off(vb, "run-1")
             assert not any(Path(c).iterdir()), sorted(Path(c).iterdir())
         finally:
             os.environ.pop("OSK_VAULT_ROOT", None)

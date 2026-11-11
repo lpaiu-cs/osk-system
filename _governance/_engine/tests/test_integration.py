@@ -2924,7 +2924,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual(write.resolve_session(VAULT, key), "Capture")
         self.assertIsNone(talk(self.sid + "-other", f"2026-10-12/{key}")["space"])
         # A write tool takes only a key; a process standing in the one-off folder does not bind it.
-        self.addCleanup(setattr, workspaces, "_here", None)
+        self.addCleanup(workspaces._here.clear)
         workspaces.enter(VAULT, str(root / f"2026-10-11/{key}"))
         self.assertIsNone(write.resolve_session(VAULT, key))
         with self.assertRaisesRegex(write.WriteError, "일회성 작업 폴더"):
@@ -2970,7 +2970,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         from osk import workspaces
         sys.path.insert(0, str(ENGINE / "scripts/hooks"))
         hook = importlib.import_module("claude_session_start")
-        self.addCleanup(setattr, workspaces, "_here", None)
+        self.addCleanup(workspaces._here.clear)
         start = Path(TMP.name) / f"{self.sid}-brain"
         sub, elsewhere = start / "wiki/courses/em2", Path(TMP.name) / f"{self.sid}-other"
         sub.mkdir(parents=True)

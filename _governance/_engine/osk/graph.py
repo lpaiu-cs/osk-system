@@ -119,7 +119,7 @@ def is_reparse(entry) -> bool:
 # 셈이다. 프로세스마다 한 번 실제 눈금을 재고, 그 8배에 바닥·천장을 씌운다.
 _RACY_FLOOR_NS = 10_000_000          # 10 ms — 이 기기 실측 눈금(~1 ms)의 10배
 _RACY_CEIL_NS = 2_000_000_000        # 2 s — 못 쟀을 때의 보수적 폴백(FAT 입도)
-_racy_margin_cache: int | None = None
+_racy_margin_cache: dict[Path, int] = {}      # 저장소 루트 → 여유. 시험은 값을 고정하려고 이 표를 직접 채운다
 
 
 def _probe_mtime_granularity(vault: Vault, rounds: int = 40) -> int | None:
@@ -170,14 +170,13 @@ def _probe_mtime_granularity(vault: Vault, rounds: int = 40) -> int | None:
 
 
 def racy_margin_ns(vault: Vault) -> int:
-    """서명을 믿지 않을 시간 폭. 프로세스마다 한 번 재고 접어 둔다 — 저장소가 둘이어도 먼저 잰 값을 쓴다.
-    둘이 같은 볼륨이면 같은 값이다. 볼륨이 다른 저장소를 한 프로세스에서 열게 되면 저장소별로 갈라야 한다."""
-    global _racy_margin_cache
-    if _racy_margin_cache is None:
+    """서명을 믿지 않을 시간 폭. 저장소마다 한 번 재고 접어 둔다 — 시각의 눈금은 그 저장소가 놓인 볼륨의
+    것이라, 한 저장소에서 잰 값을 다른 저장소에 쓰지 않는다."""
+    if vault.root not in _racy_margin_cache:
         g = _probe_mtime_granularity(vault)
-        _racy_margin_cache = (_RACY_CEIL_NS if g is None else
-                              max(_RACY_FLOOR_NS, min(_RACY_CEIL_NS, g * 8)))
-    return _racy_margin_cache
+        _racy_margin_cache[vault.root] = (_RACY_CEIL_NS if g is None else
+                                          max(_RACY_FLOOR_NS, min(_RACY_CEIL_NS, g * 8)))
+    return _racy_margin_cache[vault.root]
 
 
 def space_of(vault: Vault, path: Path) -> tuple:

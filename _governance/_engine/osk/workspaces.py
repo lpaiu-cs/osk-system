@@ -117,15 +117,15 @@ def add(vault: Vault, harness: str, root: str, shape: str, version: str, note: s
                                            "note": note})
 
 
-_here: tuple[str, dict | None] | None = None     # (이 프로세스가 선 작업 폴더의 키, 판별)
+# 저장소 → (이 프로세스가 선 작업 폴더의 키, 판별). 판별은 그 저장소의 규칙으로 하므로 저장소마다 둔다.
+_here: dict[Vault, tuple[str, dict | None]] = {}
 
 
 def enter(vault: Vault, cwd: str | None) -> dict | None:
     """이 프로세스가 선 작업 폴더를 판별해 둔다 — 훅은 그 대화의 작업 폴더로 부른다. 부르지 않은
     프로세스(MCP 서버 등)는 처음 물을 때 자기 작업 폴더로 정한다."""
-    global _here
     found = judge(vault, "", cwd) if cwd else None
-    _here = (Path(cwd).name if cwd else "", found)
+    _here[vault] = (Path(cwd).name if cwd else "", found)
     return found
 
 
@@ -133,7 +133,8 @@ def is_one_off(vault: Vault, key: str | None) -> bool:
     """`key`가 이 프로세스가 선 일회성 작업 폴더의 키인가. 키 문자열만으로 정하지 않는다 — 같은
     이름의 저장소 키가 다른 세션에 따로 있을 수 있다. 대화를 아는 자리(포착·인용·검토)는 그 대화에
     고정한 판별을 쓴다(`integration`)."""
-    if _here is None:
+    if vault not in _here:
         enter(vault, os.getcwd())
+    here, found = _here[vault]
     key = (key or "").strip()
-    return bool(key) and key == _here[0] and bool((_here[1] or {}).get("one_off"))
+    return bool(key) and key == here and bool((found or {}).get("one_off"))

@@ -9879,9 +9879,7 @@ def test_fingerprint_scope_and_racy():
         # racy 창 — 아래로도 위로도 닫혀 있어야 한다. 여유는 아래 캐시 시험처럼
         # 고정한다: 실측 여유는 10 ms대라, 쓰기와 판정 사이가 그보다 길어지면(부하 걸린
         # CI) 방금 쓴 파일이 창 밖으로 나가 판정 논리가 아니라 시계를 시험하게 된다.
-        held_margin = graph._racy_margin_cache
-        graph._racy_margin_cache = 5_000_000_000
-        try:
+        with mock.patch.dict(graph._racy_margin_cache, {VAULT.root: 5_000_000_000}):
             _age_all()
             check("전제: 지금은 안정적", not graph.index_signature(VAULT)[1])
             b.write_text(node_text("260802-zzzz-rg07"), encoding="utf-8")
@@ -9893,16 +9891,12 @@ def test_fingerprint_scope_and_racy():
             os.utime(b, (future, future))
             check("먼 미래의 mtime은 racy가 아니다 — 창은 위로도 닫힌다",
                   not graph.index_signature(VAULT)[1])
-        finally:
-            graph._racy_margin_cache = held_margin
         _age_all()
 
         # racy 창에서는 캐시를 접지 않는다. 여유를 넉넉히 **고정해** 시험이
         # 시계에 의존하지 않게 한다 — 실측 여유는 10 ms대라 그대로 두면 파이썬
         # 몇 줄 사이에 창이 닫혀 무엇을 시험했는지 알 수 없어진다.
-        held_margin = graph._racy_margin_cache
-        graph._racy_margin_cache = 5_000_000_000
-        try:
+        with mock.patch.dict(graph._racy_margin_cache, {VAULT.root: 5_000_000_000}):
             M._searcher, M._fingerprint = None, None
             b.write_text(node_text("260802-zzzz-rg07") + "\n덧",
                          encoding="utf-8")
@@ -9916,11 +9910,9 @@ def test_fingerprint_scope_and_racy():
             s3 = M._s()
             check("창이 닫히면 캐시가 선다", M._s() is s3)
             check("그때는 지문이 키로 선다", M._fingerprint is not None)
-        finally:
-            graph._racy_margin_cache = held_margin
 
         # 여유는 상수가 아니라 **재서** 정한다
-        graph._racy_margin_cache = None
+        graph._racy_margin_cache.pop(VAULT.root, None)
         m = graph.racy_margin_ns(VAULT)
         check("racy 여유는 바닥과 천장 사이에서 측정으로 정해진다",
               graph._RACY_FLOOR_NS <= m <= graph._RACY_CEIL_NS, m)
