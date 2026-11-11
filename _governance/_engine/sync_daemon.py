@@ -26,7 +26,7 @@ from osk._portalock import lock_exclusive, unlock  # noqa: E402
 # 잠금 자리와 마지막 주기의 기록은 `osk.sync_status`에 산다 — update·setup·doctor가 데몬을 import하지 않고 읽는다.
 from osk.sync_status import STALE, STATUS, last, trouble  # noqa: E402,F401
 from osk.sync_status import lock_path as _lock_path, record as _record  # noqa: E402
-from osk.vault import default_root  # noqa: E402
+from osk.vault import Vault  # noqa: E402
 
 _stop = False
 
@@ -226,7 +226,7 @@ def _normal_priority() -> None:
 
 
 def main():
-    root = default_root()
+    root = Vault.open().root      # 여는 것이 배치 점검이다 — 같은 공간의 폴더가 둘이면 동기화하지 않고 멈춘다
     if sys.stderr is None:
         # 콘솔 없이 떴다(Windows 작업의 `pythonw.exe`) — 알림을 버리지 않고 기기 로컬 로그에
         # 남긴다. 추적 트리 밖이라 데몬 자신의 `git add -A`가 싣지 않는다.

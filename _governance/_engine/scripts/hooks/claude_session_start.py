@@ -101,14 +101,15 @@ def open_vault():
 
 def note_run(vault, event: str, env: dict | None, key: str | None):
     """이 기기에서 이 훅이 불렸다는 기록(`osk.harness.runs`) — `doctor`가 등록과 대조한다.
-    훅을 부른 호스트를 돌려준다(출력 형식). 판별·기록 실패는 훅을 막지 않는다."""
+    훅을 부른 호스트를 돌려준다(출력 형식). 판별·기록 실패는 훅을 막지 않는다. 입력을 읽지 못한 호출은
+    아직 저장소를 열지 않았으므로 `vault` 없이(None) 부르고, 여기서 연다 — 열지 못해도 마찬가지다."""
     host = None
     try:
         from osk import harness
         from osk.harness import runs
         host = harness.host_of(env) if isinstance(env, dict) else None
         _OUT["host"] = host
-        runs.record_run(vault, host.name if host else None, event, key)
+        runs.record_run(vault or open_vault(), host.name if host else None, event, key)
     except Exception:
         pass
     return host
@@ -694,18 +695,18 @@ def _sync_notice(vault, host=None) -> tuple[str, str]:
 def main() -> None:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return  # maintenance evidence belongs to its run, not a new integration queue
+    try:
+        env = json.load(sys.stdin)
+        if not isinstance(env, dict):
+            raise ValueError("hook input must be a JSON object")
+    except Exception as exc:
+        note_run(None, "start", None, None)
+        emit_context("start", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
+        return
+    env = normalize(env)
     host = None
     try:
         vault = open_vault()
-        try:
-            env = json.load(sys.stdin)
-            if not isinstance(env, dict):
-                raise ValueError("hook input must be a JSON object")
-        except Exception as exc:
-            note_run(vault, "start", None, None)
-            emit_context("start", f"[osk 훅 입력 판독 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]")
-            return
-        env = normalize(env)
         from osk import core, scope_memory, write, evictions, rechecks
         key = session_key(vault, project_cwd(env))
         host = note_run(vault, "start", env, key)

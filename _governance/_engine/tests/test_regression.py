@@ -59,7 +59,7 @@ import osk.signatures as S  # noqa: E402
 
 def _vault_at(root):
     """mini-vault와 배치가 같고 루트만 다른 저장소 값 — 다른 저장소를 세워 보는 시험이 쓴다."""
-    return dataclasses.replace(VAULT, root=Path(root))
+    return dataclasses.replace(VAULT, root=Path(root).resolve())
 
 validate.make_mini_vault(VAULT, MINI)
 ROOT = VAULT.root
@@ -1041,15 +1041,24 @@ def test_ledger_schema_segment():
 
 # ── 12. validate.run은 전역을 오염시키지 않는다 ─────────────────────────
 def test_validate_global_invariance():
-    before = (VAULT.root, VAULT.signatures, VAULT.ledger,
-              id(sys.modules["osk.core"]), id(sys.modules["osk.signatures"]),
-              os.environ.get("OSK_VAULT_ROOT"))
+    """검증기는 모듈을 다시 읽지 않고 환경을 바꾸지 않으며, 받은 저장소를 어느 모듈에도 전역으로 남기지
+    않는다. 전에는 `core`의 저장소 상수가 재대입되지 않는지를 봤다 — 그 상수는 없어졌고, 남은 위험은
+    누군가 저장소를 모듈 전역에 쥐는 것이다(구조 시험이 못 보는 모양도 여기서는 값으로 드러난다)."""
+    from osk.vault import Vault
+
+    def state():
+        held = sorted(f"{name}.{attr}" for name, module in list(sys.modules.items())
+                      if module is not None and (name == "osk" or name.startswith("osk.")
+                                                 or name in ("mcp_server", "sync_daemon", "vault_sync"))
+                      for attr, value in list(vars(module).items()) if isinstance(value, Vault))
+        return (held, id(sys.modules["osk.core"]), id(sys.modules["osk.signatures"]),
+                os.environ.get("OSK_VAULT_ROOT"))
+    before = state()
     validate.run(VAULT)
-    after = (VAULT.root, VAULT.signatures, VAULT.ledger,
-             id(sys.modules["osk.core"]), id(sys.modules["osk.signatures"]),
-             os.environ.get("OSK_VAULT_ROOT"))
+    after = state()
     check("validate.run 전후 전역 불변(재대입·reload 없음)", before == after,
           (before, after))
+    check("엔진의 어느 모듈도 저장소를 전역으로 쥐지 않는다", not after[0], after[0])
 
 
 # ── 13. 권한 검사는 봉투 평가기 전까지 절대 proceed를 내지 않는다 ────────
@@ -2825,6 +2834,10 @@ def test_surface_contract():
          "osk/raw.py", "def append_rounds", "권위 대장에 기록"),
         ('def sneak_roots(vault):\n    return ledger_append(vault.roots, {})\n\n\n',
          "osk/routing.py", "def bind_session", "권위 대장에 기록"),
+        # 표면은 `approvals`를 import하지 않는다 — 닿는다면 다른 모듈을 거쳐서다
+        ('@mcp.tool()\ndef approve_it() -> dict:\n'
+         '    return ledger_append(write.approvals.ledger_path(_vault()), {})\n\n\n',
+         "mcp_server.py", "@mcp.tool()", "권위 대장에 기록"),
         # 승인 기록부는 저장소의 속성이 아니라 `approvals`의 함수가 자리를 낸다
         ('def sneak_approval(vault):\n    return ledger_append(approvals.ledger_path(vault), {})\n\n\n',
          "osk/write.py", "def create_node", "권위 대장에 기록"),
@@ -10822,56 +10835,50 @@ def test_setup_doc_drift():
               real == [], real)
 
 
-def _one_liner_misfits(code: str) -> list[str]:
-    """`python -c`에 넘기는 한 줄 코드가 부르는 엔진 함수마다, 호출이 지금 서명에 맞지 않는 까닭. 돌리지는
-    않는다 — 인자는 자리 표시(`'<하네스>'`)다."""
-    import ast, importlib, inspect
-    tree, bound, out = ast.parse(code), {}, []
-    for node in tree.body:
-        if isinstance(node, ast.ImportFrom):
-            for a in node.names:
-                try:
-                    bound[a.asname or a.name] = importlib.import_module(f"{node.module}.{a.name}")
-                except ImportError:
-                    bound[a.asname or a.name] = getattr(importlib.import_module(node.module), a.name)
-    for call in ast.walk(tree):
-        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
-                and isinstance(call.func.value, ast.Name) and inspect.ismodule(bound.get(call.func.value.id))):
-            continue
-        name = f"{call.func.value.id}.{call.func.attr}"
-        signature = inspect.signature(getattr(bound[call.func.value.id], call.func.attr))
-        try:
-            signature.bind(*call.args, **{k.arg: k.value for k in call.keywords})
-        except TypeError as e:
-            out.append(f"{name}: {e}")
-            continue
-        takes = next(iter(signature.parameters), None) == "vault"
-        opens = bool(call.args) and ast.unparse(call.args[0]) == "Vault.open()"
-        if takes != opens:
-            out.append(f"{name}: 저장소를 {'받는데 넘기지 않는다' if takes else '받지 않는데 넘긴다'}")
-    return out
+_SHAPE_ERRORS = ("TypeError", "NameError", "AttributeError", "ImportError", "ModuleNotFoundError", "SyntaxError")
+
+
+def _one_liner_breaks(code: str, root: Path) -> str | None:
+    """`python -c`에 넘기는 한 줄 코드를 임시 저장소에서 실제로 돌린다. 호출 모양이 틀려서 나는 오류(인자 수,
+    없는 이름, 없는 모듈)면 그 줄을 돌려준다. 자리 표시 인자(`'<하네스>'`)가 값으로서 거부되는 것은 모양의
+    문제가 아니다."""
+    r = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", stdin=subprocess.DEVNULL, timeout=120, cwd=str(root),
+                       env={**os.environ, "OSK_VAULT_ROOT": str(root), "PYTHONPATH": str(ENGINE), "PYTHONUTF8": "1"})
+    last = (r.stderr.strip().splitlines() or [""])[-1]
+    return last if last.split(":")[0].rsplit(".", 1)[-1] in _SHAPE_ERRORS else None
 
 
 def test_documented_one_liners():
     """문서가 안내하는 `python -c "from osk import …"` 한 줄 명령은 엔진 함수를 직접 부른다 — 대응하는 CLI가
     없는 자리다. 표면 고정 시험은 여기를 보지 않아서, 함수의 서명이 바뀌면 문서가 조용히 틀린다(구조 개편
-    2단계에서 `workspaces.add`가 저장소를 받게 됐는데 문서는 그대로였다).
+    2단계에서 `workspaces.add`가 저장소를 받게 됐는데 문서는 그대로였다). 문서의 한 줄을 그대로 돌려 본다.
 
     무엇을 망가뜨리면 실패하는가:
       · 문서의 한 줄 명령이 부르는 함수의 인자를 바꾸고 문서를 두면 → 그 문서의 단언이 실패
-      · 맞지 않는 호출을 맞다고 보면 → 대조군 단언이 실패"""
+      · 한 줄 명령에서 import를 빼면 → 그 문서의 단언이 실패
+      · 틀린 호출을 맞다고 보면 → 대조군 단언 둘이 실패"""
     import re
-    check("한 줄 명령 대조: 저장소를 넘기지 않는 호출을 잡는다",
-          bool(_one_liner_misfits("from osk import workspaces; print(workspaces.add('h', 'r', r's', 'v', 'n'))")))
-    docs = ENGINE.parent.parent / "docs"
-    found = [(p.name, code) for p in (sorted(docs.glob("*.md")) if docs.is_dir() else [])
-             for code in re.findall(r'python(?:\.exe)? -c "(from osk import [^"\n]+)"', p.read_text(encoding="utf-8"))]
-    if not found:
-        skip("문서의 한 줄 명령이 엔진의 서명과 맞는다", "docs에 한 줄 명령이 없다 — 인스턴스다")
-        return
-    for name, code in found:
-        misfits = _one_liner_misfits(code)
-        check(f"문서의 한 줄 명령이 엔진의 서명과 맞는다: {name}", not misfits, misfits or code)
+    repo = ENGINE.parent.parent
+    files = [*sorted(repo.glob("*.md")), *sorted((repo / "docs").rglob("*.md")), *sorted((repo / "_governance").glob("*.md"))]
+    found = [(p.relative_to(repo).as_posix(), m.group(2)) for p in files if p.is_file()
+             for m in re.finditer(r"""(?:python[\w.]*|py)(?: -\w+)* -c (["'])(.*\bosk\b.*)\1""",
+                                  p.read_text(encoding="utf-8"))]
+    # 엔진을 import하는 것만 돌린다 — 저장소 주소에 `osk`가 든 다른 한 줄 명령(릴리스 태그 조회)은 네트워크를 탄다
+    found = [(name, code) for name, code in found if re.search(r"(?:from|import)\s+osk\b", code)]
+    with tempfile.TemporaryDirectory(prefix="osk-one-liner-") as td:
+        root = Path(td).resolve()
+        validate.make_mini_vault(VAULT, root)
+        check("한 줄 명령 대조: 저장소를 넘기지 않는 호출을 잡는다",
+              bool(_one_liner_breaks("from osk import workspaces; print(workspaces.add('h', 'r', r's', 'v', 'n'))", root)))
+        check("한 줄 명령 대조: import하지 않은 이름을 잡는다",
+              bool(_one_liner_breaks("from osk import workspaces; print(workspaces.add(Vault.open(), 'h', 'r', r's', 'v', 'n'))", root)))
+        if not found:
+            skip("문서의 한 줄 명령이 지금 엔진에서 돈다", "문서에 한 줄 명령이 없다 — 인스턴스다")
+            return
+        for name, code in found:
+            broken = _one_liner_breaks(code, root)
+            check(f"문서의 한 줄 명령이 지금 엔진에서 돈다: {name}", not broken, f"{broken} ← {code}")
 
 
 def test_turn_ledger():

@@ -37,15 +37,15 @@ def main() -> None:
     host = None
     try:
         from claude_session_start import first_call, normalize, note_run, open_vault, project_cwd, session_key
-        vault = open_vault()
         try:
             env = json.load(sys.stdin)
             if not isinstance(env, dict):
                 raise ValueError("hook input must be a JSON object")
         except Exception:
-            note_run(vault, "stop", None, None)
+            note_run(None, "stop", None, None)
             raise
         from osk import integration, response_growth
+        vault = open_vault()
         env = normalize(env)
         key = session_key(vault, project_cwd(env))
         host = note_run(vault, "stop", env, key)

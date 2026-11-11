@@ -58,7 +58,8 @@ _fingerprint: tuple[str, str] | None = None
 
 @functools.cache
 def _vault() -> Vault:
-    """이 서버가 맡은 저장소 — 처음 쓸 때 한 번 연다. 색인 캐시(`_index`)와 수명이 같다."""
+    """이 서버가 맡은 저장소 — 한 번 연다. 서버는 뜨기 전에 열고(아래 `__main__`), 모듈로 읽힌 때는 처음
+    쓸 때 연다. 색인 캐시(`_index`)와 수명이 같다."""
     return Vault.open()
 
 
@@ -594,4 +595,5 @@ _apply_prune()
 
 
 if __name__ == "__main__":
+    _vault()      # 열 수 없는 저장소(같은 공간의 폴더가 둘)에서는 뜨지 않는다 — 떠서 도구마다 실패하지 않는다
     mcp.run()

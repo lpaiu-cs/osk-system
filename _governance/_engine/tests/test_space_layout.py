@@ -117,5 +117,52 @@ assert problems == [], problems
                 space_roots(root)
 
 
+    def test_every_entry_point_stops_on_ambiguous_roots(self):
+        # The engine does not pick between two populated roots of one Space: every entry point stops
+        # there. That held by itself while importing the engine opened the vault. Each entry point
+        # opens it now, so each one is held to it here — a daemon that goes on syncing such a vault
+        # spreads the state to the other devices.
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for name in ('00_Scope/a', '= Scope/b'):
+                (root / name).mkdir(parents=True)
+                (root / name / 'n.md').write_text('data')
+            env = {**os.environ, 'OSK_VAULT_ROOT': str(root), 'PYTHONPATH': str(ENGINE), 'PYTHONUTF8': '1',
+                   'SYNC_ENABLED': '1', 'OSK_UPDATE_CHECK': '0', 'OSK_HOOK_WORKER': '0'}
+
+            def run(argv, stdin=None):
+                return subprocess.run([sys.executable, '-B', *argv], env=env, input=stdin, capture_output=True,
+                                      text=True, encoding='utf-8', timeout=120,
+                                      **({} if stdin is not None else {'stdin': subprocess.DEVNULL}))
+            def left():
+                return sorted(p.relative_to(root).as_posix() for p in root.rglob('*'))
+            before = left()
+            # The arguments keep a failure offline and local: `update --ack` records on this device
+            # where plain `update` asks the upstream, and `OSK_UPDATE_CHECK=0` turns the check off.
+            for argv in (['-m', 'osk.cli', 'status'], ['-m', 'osk.validate'],
+                         [str(ENGINE / 'sync_daemon.py'), '--once'], [str(ENGINE / 'mcp_server.py')],
+                         ['-m', 'osk.update', '--ack', 'v0.0.0'], ['-m', 'osk.setup'], ['-m', 'osk.publish'],
+                         ['-m', 'osk.release', '--version', 'v0.0.0'], ['-m', 'osk.update_check']):
+                with self.subTest(argv=argv[:2] if argv[0] == '-m' else argv[-2:]):
+                    done = run(argv)
+                    self.assertNotEqual(done.returncode, 0, done.stdout[-300:])
+                    self.assertIn('Ambiguous Space roots', done.stderr)
+            self.assertEqual(left(), before)            # nothing was written: no ledger row, no `.git`
+            # A hook never fails the host's turn: it says what is wrong and exits 0. Input it cannot
+            # read is still reported as that, as it was when the hook met the vault only later.
+            event = '{"session_id": "s", "cwd": "%s", "hook_event_name": "SessionStart"}' % root.as_posix()
+            for script, stdin, want in (('claude_session_start.py', event, 'Ambiguous Space roots'),
+                                        ('claude_session_start.py', 'not json', 'JSONDecodeError'),
+                                        ('claude_prompt_submit.py', event, 'Ambiguous Space roots'),
+                                        ('claude_prompt_submit.py', 'not json', 'JSONDecodeError'),
+                                        ('capture_stop.py', event, 'Ambiguous Space roots'),
+                                        ('capture_stop.py', 'not json', 'JSONDecodeError')):
+                with self.subTest(script=script, stdin=stdin[:8]):
+                    done = run([str(ENGINE / 'scripts/hooks' / script)], stdin)
+                    self.assertEqual(done.returncode, 0, done.stderr[-300:])
+                    self.assertIn(want, done.stdout)
+            self.assertEqual(left(), before)
+
+
 if __name__ == '__main__':
     unittest.main()

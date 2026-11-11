@@ -708,8 +708,10 @@ def _authority_ledger(arg, approvals: set[str]) -> str | None:
     """`ledger_append`의 첫 인자가 권위 대장을 가리키면 그 이름."""
     if isinstance(arg, ast.Attribute) and arg.attr in AUTHORITY_LEDGERS:
         return arg.attr
-    if isinstance(arg, ast.Call) and ast.unparse(arg.func) in approvals:
-        return "approvals"
+    if isinstance(arg, ast.Call):
+        callee = ast.unparse(arg.func)             # 다른 모듈을 거친 것도 본다: `write.approvals.ledger_path(vault)`
+        if callee in approvals or (callee.rsplit(".", 1)[-1] == "ledger_path" and "approvals" in callee):
+            return "approvals"
     return None
 
 
