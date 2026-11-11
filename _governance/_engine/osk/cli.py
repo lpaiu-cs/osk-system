@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .core import StaleEngineError
 from . import (graph, approvals, authority, raw, scope_memory, validate, search,
-               write, evictions, approval_acts, region_tree)
+               write, evictions, approval_acts, node_moves, region_tree)
 from . import harness as adapters
 from .vault import Vault
 
@@ -386,7 +386,7 @@ def _tidy_cmd(vault: Vault, a) -> None:
             sys.stdout.buffer.write(out.encode("utf-8"))
             sys.stdout.buffer.flush()
         elif a.tidy_cmd == "discard":
-            _emit(evictions.discard_transit(vault, a.title, a.confirm))
+            _emit(node_moves.discard_transit(vault, a.title, a.confirm))
         else:
             recs = evictions.settle_many(vault, a.of, a.outcome, a.target, a.reason)
             out = {"ok": True, "rid": recs[0]["rid"], "of": a.of,

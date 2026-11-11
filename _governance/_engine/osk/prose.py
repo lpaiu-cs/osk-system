@@ -2,6 +2,9 @@
 
 구현 근거: Mechanism §8 7항(옵시디언 태그 방어). 노드 본문과 scope 기억이 같은 변환을 쓰고,
 앵커 대조도 같은 변환을 따른다 — 쓰는 자리와 읽는 자리가 같은 형태를 봐야 한다.
+
+본문을 보존 확인의 단위(문단·목록 항목·제목)로 가르는 것도 여기 있다(`segment_texts`). 쓰기의
+되먹임과 증류의 영수증이 같은 단위를 쓴다.
 """
 from __future__ import annotations
 
@@ -46,3 +49,31 @@ def norm_body(body: str) -> str:
     앞뒤 공백 차이가 헛 변경으로 잡히지 않고, 태그 방어(위)도 쓰일 형태에
     이미 반영되어 같은 입력의 재전송이 헛 변경을 만들지 않는다."""
     return space_numeric_tags(norm_newlines(body).lstrip("\n").rstrip())
+
+
+_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d+[.)])\s")
+_HEADING = re.compile(r"^ {0,3}#{1,6}(?:\s|$)")
+_HEADING_MARKS = re.compile(r"^ {0,3}#{1,6}(?:\s+|$)|\s+#+\s*$")   # 여는 표식과 닫는 `#`열
+
+
+def segment_texts(body: str, headings: bool = True) -> list[str]:
+    """보존 확인의 단위 — 빈 줄로 나뉜 문단이고, 목록은 항목 하나씩, 제목은 줄 하나씩이다.
+    항목을 하나씩 재는 것은 목록에 한 줄 덧붙인 증류가 같은 목록의 다른 항목이 고쳐질 때마다
+    깨지지 않게 하려는 것이다. 제목도 단위다 — 증류한 결론이 제목에만 있으면 문단만 재는
+    영수증은 그 제목이 지워져도 보존으로 남는다(#138 리뷰 P2). 제목은 표식(`#`)을 떼고 재어
+    단계만 바꾼 것은 잃은 것으로 보지 않는다."""
+    out, cur = [], []
+    for block in re.split(r"\n[ \t]*\n", body):
+        for line in block.splitlines():
+            if _HEADING.match(line) or (_ITEM.match(line) and cur):
+                out.append(cur)
+                cur = []
+            if _HEADING.match(line):
+                if headings:
+                    out.append([_HEADING_MARKS.sub("", line)])
+            else:
+                cur.append(line)
+        out.append(cur)
+        cur = []
+    texts = ("\n".join(s).strip() for s in out)
+    return [t for t in texts if t]

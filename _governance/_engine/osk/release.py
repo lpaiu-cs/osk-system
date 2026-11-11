@@ -110,32 +110,6 @@ def build_attestation(root: Path, version: str, ref: str = "HEAD") -> dict:
     return {"version": version, "at": now_iso(), "files": files}
 
 
-def validate_at(root: Path) -> list[str]:
-    """release는 **자신이 릴리스하는 트리**를 그 트리의 **엔진으로** 검증한다.
-
-    데이터만 스냅샷을 보고 검증기 코드는 원본 작업 트리에서 import하면, 선언
-    도중 외부가 엔진을 고쳤을 때 "스냅샷을 그 스냅샷의 규칙으로 검증했다"가
-    성립하지 않는다. 그래서 `PYTHONPATH`도 스냅샷 안의 엔진을 가리킨다.
-    (엔진을 스냅샷의 것으로 바꿔 읽어야 하므로 별도 프로세스여야 한다 —
-    fixture_approval_lifecycle와 같은 선례.)"""
-    engine = root / "_governance" / "_engine"
-    if not (engine / "osk").is_dir():
-        return [f"스냅샷에 엔진이 없다 — 검증 불성립: {engine}"]
-    code = ("import json; from osk import validate; from osk.vault import Vault; r = validate.run(Vault.open()); "
-            "print(json.dumps({'v': r['verdict'], "
-            "'f': [list(x)[0] for x in r['fail']]}))")
-    env = dict(os.environ, OSK_VAULT_ROOT=str(root), PYTHONPATH=str(engine))
-    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                       text=True, env=env, cwd=engine, timeout=120)
-    if not r.stdout.strip():
-        return [f"검증기 실행 실패: {r.stderr.strip()[-300:]}"]
-    try:
-        rep = json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
-        return [f"검증기 출력 파싱 실패: {r.stdout[-200:]!r}"]
-    return [] if rep["v"] == "PASS" else [f"검증기 {rep['v']}: {'; '.join(rep['f'])}"]
-
-
 def guards(root: Path, base: str) -> list[str]:
     """선언의 전제를 **고정 커밋 스냅샷 `base`에서** 검사한다.
 
@@ -161,7 +135,7 @@ def guards(root: Path, base: str) -> list[str]:
         try:
             items = [(snap / rel, rel) for rel in tracked_files(snap)]
             errs += publish.guard_secrets(items)
-            errs += validate_at(snap)
+            errs += publish.validate_at(snap)
         finally:
             _git(root, "worktree", "remove", "--force", str(snap), timeout=120)
     return errs

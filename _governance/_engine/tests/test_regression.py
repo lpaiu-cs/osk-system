@@ -132,7 +132,7 @@ def sig_status(node_id, path=None):
             hit = c
             break
     if hit is None:
-        hit = S.locate_by_id(VAULT, node_id)
+        hit = graph.locate_by_id(VAULT, node_id)
         if hit is None:
             return "unsigned"
     try:
@@ -8787,7 +8787,7 @@ def test_duplicate_id_refused():
         # 세 번째 해석 경로도 고르지 않는다. 지금 생산 호출자는 없지만
         # 동점 규칙이 갈린 채로 두면 다음 호출자가 함정을 다시 연다.
         check("locate_by_id도 고르지 않는다",
-              S.locate_by_id(VAULT, nid) is None, S.locate_by_id(VAULT, nid))
+              graph.locate_by_id(VAULT, nid) is None, graph.locate_by_id(VAULT, nid))
 
         # 계약의 본체 — 거부했으면 **어느 쪽도** 바뀌지 않았다.
         check("원본 바이트 불변", p.read_bytes() == before_p)
@@ -12696,7 +12696,6 @@ def test_publish_preserves_mapped_dot_directories():
 
 def test_validate_at_uses_snapshot_engine():
     """PYTHONPATH보다 앞서는 호출 cwd가 스냅샷 검증기를 바꿔치기하지 못한다."""
-    from osk import release
     with tempfile.TemporaryDirectory(prefix="osk-validation-import-") as td:
         snapshot = Path(td) / "snapshot"
         caller = Path(td) / "caller-engine"
@@ -12714,7 +12713,7 @@ def test_validate_at_uses_snapshot_engine():
         previous = Path.cwd()
         try:
             os.chdir(caller)
-            errors = release.validate_at(snapshot)
+            errors = publish.validate_at(snapshot)
         finally:
             os.chdir(previous)
         check("원본 엔진 cwd에서도 snapshot 검증기를 실행",

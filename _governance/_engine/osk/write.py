@@ -36,7 +36,8 @@ from pathlib import Path
 
 from .core import (ID_RE, ledger_append, ledger_read, mutation_lock, new_node_id, now_kst, posix_rel,
                    resolve_in_root, sha256_bytes, sha256_file)
-from . import approvals, cluster_gate, contract, evictions, graph, node_checks, nodefile, raw, rechecks, workspaces
+from . import (approvals, cluster_gate, contract, evictions, graph, node_checks, nodefile, prose, raw, rechecks,
+               workspaces)
 from .contract import as_list, stored_edges
 from .errors import WriteError
 from .naming import name_collision, portable_name_key, title_errors
@@ -63,6 +64,38 @@ def create_node(vault: Vault, title: str, summary: str, body: str, drafter: str,
                                           space, edges, settle, _idx=idx), idx)
 
 
+def node_placement(vault: Vault, p: Path, idx, *, repair: bool = False, selected: dict | None = None) -> dict:
+    """Current navigation is separate from the immutable selected source/target."""
+    top = vault.root.joinpath(*p.relative_to(vault.root).parts[:2])
+    child = p
+    directory = p.parent.parent if graph.is_hub(p) else p.parent
+    current_hubs = []
+    while len(directory.relative_to(vault.root).parts) >= 2:
+        hp = graph.hub_file(directory)
+        if hp is None:
+            raise WriteError("current placement hub missing; pending")
+        hn = contract.parse(hp)
+        # 선택한 허브는 그 군집(폴더)으로 가린다 — 확장자 표기가 바뀐 허브도 저장한 id와 대조한다.
+        if (selected and posix_rel(p, vault.root) == selected["target"]["path"]
+                and directory == vault.root / Path(selected["hub"]["path"]).parent
+                and hn.id != selected["hub"]["id"]):
+            raise WriteError("hub identity changed; pending")
+        if child not in {nodefile.live_locate(vault, ref, idx) for ref in hn.wikilinks()}:
+            if not repair:
+                raise WriteError("selected hub does not link to target; pending")
+            # 이름으로 부른다 — id 핸들은 색인 전수 판독을 부른다(`live_locate`). 같은 잠금 안의 색인을 잇는다.
+            update_node_locked(vault, hp.stem,
+                body=hn.body.rstrip() + "\n\n- [[" + child.stem + "]]\n",
+                expect_hash=sha256_file(hp), _idx=idx)
+        current_hubs.append({"id": hn.id, "path": posix_rel(hp, vault.root), "hash": sha256_file(hp)})
+        if directory == top:
+            break
+        child, directory = hp, directory.parent
+    if not current_hubs:
+        raise WriteError("current placement has no parent hub; pending")
+    return {"status": "complete", "target_path": posix_rel(p, vault.root), "hubs": current_hubs}
+
+
 def _place(vault: Vault, out: dict, idx) -> dict:
     """새 노드를 같은 작업 안에서 자리에 건다(시행령 §3 8항) — 착지 군집의 허브부터 최상위
     허브까지 각 층이 아래 고리를 Link로 가리키게 한다. 증류와 같은 배선이며, 허브 본문 끝에
@@ -76,9 +109,8 @@ def _place(vault: Vault, out: dict, idx) -> dict:
     if (graph.space_of(vault, path)[0] not in ("scope", "domain", "person")
             or graph.is_hub(path) and len(path.parent.relative_to(vault.root).parts) <= 2):
         return out
-    from . import distillation      # distillation이 write를 부르므로 쓸 때 읽는다
     try:
-        placed = distillation.node_placement(vault, path, idx, repair=True)
+        placed = node_placement(vault, path, idx, repair=True)
         out["placed"] = [Path(h["path"]).stem for h in placed["hubs"]]
     except (WriteError, OSError, ValueError) as e:
         out["hub_links"] = _unwired(vault, path, idx)
@@ -585,8 +617,7 @@ def _dropped(old_body: str, new_body: str) -> list[str]:
     """옛 본문의 단위(문단·목록 항목·제목) 가운데 새 본문에 글자 그대로 없는 것.
     고쳐 쓴 단위도 옛 판이 나온다 — 고친 것인지 흘린 것인지는 읽는 쪽이 가른다.
     많으면 앞의 10개를 300자까지만 싣고 나머지는 개수로 알린다."""
-    from . import distillation      # distillation이 write를 부르므로 쓸 때 읽는다
-    gone = [t for t in distillation.segment_texts(old_body) if t not in new_body]
+    gone = [t for t in prose.segment_texts(old_body) if t not in new_body]
     shown = [t if len(t) <= 300 else t[:299] + "…" for t in gone[:10]]
     return shown + ([f"… 외 {len(gone) - 10}개"] if len(gone) > 10 else [])
 
