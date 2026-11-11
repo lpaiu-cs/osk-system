@@ -14,7 +14,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
-from . import core, distillation, evictions, graph, growth_ledger, organization, rechecks, placement
+from . import core, distillation, evictions, graph, growth_ledger, organization, rechecks, placement, ledger, locks
 from .vault import Vault
 
 
@@ -223,7 +223,7 @@ def plan_locked(vault: Vault, limit: int) -> dict:
         return any((s["id"], s["hash"]) not in seen_versions for s in candidate["sources"])
 
     reviewed = {row.get("key") for row in rows if row.get("kind") == "review"}
-    par = core.effective_parents(rows)
+    par = ledger.effective_parents(rows)
     rotation = None
     def pending():
         nonlocal rotation
@@ -302,7 +302,7 @@ def plan_locked(vault: Vault, limit: int) -> dict:
 
 def plan(vault: Vault, limit: int = 3) -> dict:
     """Read-only bounded inventory of changed/unreviewed comparison sets."""
-    with core.mutation_lock(vault):
+    with locks.mutation_lock(vault):
         return plan_locked(vault, limit)
 
 

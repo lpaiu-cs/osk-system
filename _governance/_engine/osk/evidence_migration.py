@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import (approvals, contract, core, evidence, graph, nodefile, prose, raw, raw_view, rechecks, placement,
-               activated_rules)
+               activated_rules, durable, ledger, locks)
 from .core import posix_rel, sha256_bytes
 from .vault import Vault
 
@@ -300,7 +300,7 @@ def apply(vault: Vault, expect=None) -> dict:
     """계획대로 옮긴다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항).
     끝나면 전수 목록을 결과와 보류로 닫는다. 동기화와 쓰기는 같은 잠금을 기다린다. `expect`는 확인받은
     대상이다(`_confirmed`)."""
-    with core.mutation_lock(vault):
+    with locks.mutation_lock(vault):
         p = plan(vault)
         _confirmed([(n["path"], n["before"]) for n in p["nodes"] if n["new"] is not None], expect)
         day = core.now_kst()[:10]
@@ -309,7 +309,7 @@ def apply(vault: Vault, expect=None) -> dict:
         while manifest.exists():
             k += 1
             manifest = events_path(vault).parent / f"evidence-section-{day}-{k}.md"
-        core.atomic_write(manifest, _manifest(p, day).encode("utf-8"))
+        durable.atomic_write(manifest, _manifest(p, day).encode("utf-8"))
         written = 0
         for node in p["nodes"]:
             if node["new"] is None:
@@ -318,10 +318,10 @@ def apply(vault: Vault, expect=None) -> dict:
             if sha256_bytes(path.read_bytes()) != node["before"]:
                 raise RuntimeError(f"계획 뒤에 바뀐 노드 — 멈췄다: {node['path']}")
             done = Counter(it["action"] for it in node["items"])
-            core.ledger_append(events_path(vault), {"kind": "transform", "source": node["path"], "dest": node["path"],
+            ledger.ledger_append(events_path(vault), {"kind": "transform", "source": node["path"], "dest": node["path"],
                                         "before": node["before"], "after": sha256_bytes(node["new"]),
                                         "rule": RULE, "note": f"줄 {done['line']} · 덮임 {done['covered']}"})
-            core.atomic_write(path, node["new"])
+            durable.atomic_write(path, node["new"])
             written += 1
         holds = [f"- `{n['path']}` `{it['entry']}` — {it['reason']}"
                  for n in p["nodes"] for it in n["items"] if it["action"] == "hold"]
@@ -329,7 +329,7 @@ def apply(vault: Vault, expect=None) -> dict:
         close = ["## 결과", "", f"- 쓴 노드 {written}개 · 줄 {c['line']} · 덮임 {c['covered']} · 보류 {c['hold']}",
                  "- 보호영역: " + (", ".join(p["regions"]) + " — 사용자 승인(`osk approve`)이 필요하다"
                                   if p["regions"] else "없음"), "", "### 보류", "", *(holds or ["없음"]), ""]
-        core.atomic_write(manifest, (_manifest(p, day) + "\n" + "\n".join(close)).encode("utf-8"))
+        durable.atomic_write(manifest, (_manifest(p, day) + "\n" + "\n".join(close)).encode("utf-8"))
     return {"ok": True, "nodes": written, **c, "protected_regions": p["regions"],
             "holds": len(holds), "manifest": posix_rel(manifest, vault.root),
             "after": {n["path"]: sha256_bytes(n["new"]) for n in p["nodes"] if n["new"] is not None}}
@@ -396,7 +396,7 @@ def heading_plan(vault: Vault) -> list[dict]:
 def heading_apply(vault: Vault, expect=None) -> dict:
     """제목을 바꾼다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항).
     `expect`는 확인받은 대상이다(`_confirmed`)."""
-    with core.mutation_lock(vault):
+    with locks.mutation_lock(vault):
         items = heading_plan(vault)
         _confirmed([(it["path"], it["before"]) for it in items if it["new"] is not None], expect)
         day = core.now_kst()[:10]
@@ -412,19 +412,19 @@ def heading_apply(vault: Vault, expect=None) -> dict:
                 "frontmatter·수정시간·관련 상태는 그대로다.", "",
                 f"## 대상 — 노드 {len(todo)}개 · 보류 {len(holds)}", "", *(f"- `{it['path']}` → 바꾼다" for it in todo),
                 *(h.replace("` — ", "` → 보류 — ", 1) for h in holds), ""]
-        core.atomic_write(manifest, "\n".join(head).encode("utf-8"))
+        durable.atomic_write(manifest, "\n".join(head).encode("utf-8"))
         regions = sorted({r for it in todo for r in approvals.containing_regions(vault, it["path"])})
         for it in todo:
             path = vault.root / it["path"]
             if sha256_bytes(path.read_bytes()) != it["before"]:
                 raise RuntimeError(f"계획 뒤에 바뀐 노드 — 멈췄다: {it['path']}")
-            core.ledger_append(events_path(vault), {"kind": "transform", "source": it["path"], "dest": it["path"],
+            ledger.ledger_append(events_path(vault), {"kind": "transform", "source": it["path"], "dest": it["path"],
                                         "before": it["before"], "after": sha256_bytes(it["new"]),
                                         "rule": HEADING_RULE})
-            core.atomic_write(path, it["new"])
+            durable.atomic_write(path, it["new"])
         close = ["## 결과", "", f"- 쓴 노드 {len(todo)}개 · 보류 {len(holds)}",
                  "- 보호영역: " + (", ".join(regions) + " — 사용자 승인(`osk approve`)이 필요하다"
                                   if regions else "없음"), "", "### 보류", "", *(holds or ["없음"]), ""]
-        core.atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
+        durable.atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
     return {"ok": True, "nodes": len(todo), "holds": len(holds), "protected_regions": regions,
             "manifest": posix_rel(manifest, vault.root), "after": {it["path"]: sha256_bytes(it["new"]) for it in todo}}

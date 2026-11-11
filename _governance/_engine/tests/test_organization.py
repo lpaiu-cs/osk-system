@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, contract, graph, write, validate, organization, distillation, cluster_gate, node_checks, node_moves, nodefile, placement, topology, activated_rules
+from osk import core, contract, graph, write, validate, organization, distillation, cluster_gate, node_checks, node_moves, nodefile, placement, topology, activated_rules, durable, ledger, locks
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -170,7 +170,7 @@ class OrganizationTests(unittest.TestCase):
             assert changed['previous_deferral']['snapshot_changed']
             result = growth.run(VAULT, [sys.executable, '-B', '-c', 'import sys; p=sys.stdin.read(); assert "section Limits; verify condition X." in p'], limit=3)
             assert result['returncode'] == 0, result
-            manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            manifest = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             carried = next(j for j in manifest['organization_jobs'] if j['scope']=='W1')
             assert carried['previous_deferral'] == changed['previous_deferral']
             finish_review('W1', 'Checked D as well.')
@@ -330,7 +330,7 @@ class OrganizationTests(unittest.TestCase):
             finish_review("W1", "Bad source removed, question remains", intentional=intent)
             assert organization.plan(VAULT, "W1")["status"]=="complete"
             import subprocess,os
-            r=subprocess.run([sys.executable,"-B","-c","from osk import core, organization; from osk.vault import Vault; VAULT = Vault.open(); assert organization.plan(VAULT, 'W1')['status']=='complete'"],env=os.environ,capture_output=True)
+            r=subprocess.run([sys.executable,"-B","-c","from osk import core, organization, durable, ledger, locks; from osk.vault import Vault; VAULT = Vault.open(); assert organization.plan(VAULT, 'W1')['status']=='complete'"],env=os.environ,capture_output=True)
             assert r.returncode==0,r.stderr
             write.update_node(VAULT, "A",old_text="A fact",new_text="A revised fact")
             assert organization.plan(VAULT, "W1")["key"]!=job["key"]
@@ -462,17 +462,17 @@ class OrganizationTests(unittest.TestCase):
             git("worktree","add","--quiet","--detach",str(linked),"HEAD")
             only=node("OnlyHere"); job=organization.plan(VAULT, "W1")
             before=organization._state_path(VAULT).read_bytes()
-            child=("import json; from osk import core,organization; from osk.vault import Vault; VAULT = Vault.open(); "
+            child=("import json; from osk import core,organization, durable, ledger, locks; from osk.vault import Vault; VAULT = Vault.open(); "
                    "job=organization.plan(VAULT, 'W1'); "
                    "assert not job.get('missing_ids'), job; "
                    "organization.review(VAULT, job['key'],'W1','complete','This checkout only',after=job['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in job['review_units']]); "
-                   "print(json.dumps({'state':str(organization._state_path(VAULT)),'lock':str(core.local_lock_path('osk-mutation.lock', VAULT.root))}))")
+                   "print(json.dumps({'state':str(organization._state_path(VAULT)),'lock':str(locks.local_lock_path('osk-mutation.lock', VAULT.root))}))")
             r=subprocess.run([sys.executable,"-B","-c",child],cwd=linked,
                              env=dict(os.environ,OSK_VAULT_ROOT=str(linked)),capture_output=True,text=True)
             assert r.returncode==0,r.stdout+r.stderr
             result=json.loads(r.stdout)
             assert result["state"]!=str(organization._state_path(VAULT))
-            assert result["lock"]==str(core.local_lock_path("osk-mutation.lock", VAULT.root))
+            assert result["lock"]==str(locks.local_lock_path("osk-mutation.lock", VAULT.root))
             assert organization._state_path(VAULT).read_bytes()==before
             assert organization.plan(VAULT, "W1")["key"]==job["key"]
         """)

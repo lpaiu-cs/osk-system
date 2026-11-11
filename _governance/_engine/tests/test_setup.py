@@ -50,7 +50,7 @@ SETUP = r'''
 import json, os, subprocess, sys, time
 from pathlib import Path
 from unittest import mock
-from osk import core, harness, services, update, validate, daemon_control, update_plan, update_source, update_state, update_txn
+from osk import core, harness, services, update, validate, daemon_control, update_plan, update_source, update_state, update_txn, durable, ledger, locks
 from osk.vault import Vault
 VAULT = Vault.open()
 from osk import setup as S
@@ -93,7 +93,7 @@ def osk_entries(data, event):
     return [h for g in data.get('hooks', {}).get(harness.get('claude').events[event], [])
             for h in g.get('hooks', []) if base.mentions(base.command_tokens(h), script)]
 def baseline(version='v4.0.0'):
-    core.ledger_append(update_state.journal_path(VAULT), {'kind': 'done', 'version': version,
+    ledger.ledger_append(update_state.journal_path(VAULT), {'kind': 'done', 'version': version,
                                                'attest': 'sha256:' + '0' * 64})
 '''
 
@@ -345,7 +345,7 @@ if os.name == 'nt':
         self.check_case(r'''
 fake_clis()
 (root / 'release.json').write_text(json.dumps({'version': 'v4.0.0', 'files': {}}), encoding='utf-8')
-ticket = core.local_lock_path(update.CONFIRMATION, VAULT.root)
+ticket = locks.local_lock_path(update.CONFIRMATION, VAULT.root)
 state, applied = {'id': 'r1'}, []
 def fake_run(vault, source=None, ref=None, bundle=None, apply=False, adopt=False):
     # The updater's own gate: under its lock it plans again and applies only the confirmed plan.
@@ -613,7 +613,7 @@ rep, code = S.run(VAULT, apply=True, sync=True)
 assert code == 0 and json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(other), rep
 # Uninstalling one feature leaves the hosts and the other features.
 import sync_daemon
-status = core.local_lock_path(sync_daemon.STATUS, VAULT.root)
+status = locks.local_lock_path(sync_daemon.STATUS, VAULT.root)
 status.write_text(json.dumps({'at': time.time(), 'status': 'ok', 'since': None}), encoding='utf-8')
 rep, code = S.run(VAULT, apply=True, uninstall=True, sync=True)
 assert code == 2 and rep['hosts'] == [] and 'fork' not in rep and rep['sync']['task']['action'] == 'remove', rep

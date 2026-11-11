@@ -9,8 +9,9 @@ from __future__ import annotations
 import re
 
 from . import workspaces, placement
-from .core import (RID_RE, rid_key, causal_maxima, ledger_append, ledger_damage, ledger_read, mutation_lock,
-                   resolve_one)
+from .core import RID_RE
+from .ledger import rid_key, causal_maxima, ledger_append, ledger_damage, ledger_read, resolve_one
+from .locks import mutation_lock
 from .errors import WriteError
 from .vault import Vault
 

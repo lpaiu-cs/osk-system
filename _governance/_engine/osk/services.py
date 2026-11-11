@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import core
+from . import core, durable
 from .harness import base
 from .vault import Vault
 
@@ -326,7 +326,7 @@ class Launchd(Backend):
         data = self.definition(kind, job)
         file = self.folder() / f"{data['Label']}.plist"
         file.parent.mkdir(parents=True, exist_ok=True)
-        core.atomic_write(file, plistlib.dumps(data))
+        durable.atomic_write(file, plistlib.dumps(data))
         self._call(["launchctl", "bootout", f"{self._domain()}/{data['Label']}"], check=False)
         self._call(["launchctl", "bootstrap", self._domain(), str(file)])
         return {"id": data["Label"], "installed": True, "file": str(file)}
@@ -412,7 +412,7 @@ class Systemd(Backend):
         files = self.definition(kind, job)
         self.folder().mkdir(parents=True, exist_ok=True)
         for name, text in files.items():
-            core.atomic_write(self.folder() / name, text.encode("utf-8"))
+            durable.atomic_write(self.folder() / name, text.encode("utf-8"))
         unit = self.ident(kind) + (".timer" if kind == "growth" else ".service")
         self._call(["systemctl", "--user", "daemon-reload"])
         self._call(["systemctl", "--user", "enable", "--now", unit])

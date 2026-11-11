@@ -13,7 +13,7 @@ import re
 import time
 from pathlib import Path
 
-from . import core, contract, graph, node_checks, nodefile, placement, prose, raw, routing, topology
+from . import core, contract, graph, node_checks, nodefile, placement, prose, raw, routing, topology, ledger, locks
 from .vault import Vault
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
@@ -65,7 +65,7 @@ def _state_path(vault: Vault) -> Path:
     # Worktrees share the mutation lock, but selections belong to this checkout.
     root = os.path.normcase(str(vault.root.resolve()))
     key = hashlib.sha256(root.encode()).hexdigest()[:16]
-    return core.local_lock_path(f"osk-organization-{key}.json", vault.root)
+    return locks.local_lock_path(f"osk-organization-{key}.json", vault.root)
 
 
 def load_state(vault: Vault) -> dict:
@@ -340,7 +340,7 @@ def record_attempts(vault: Vault, jobs: list[dict]) -> None:
 
 
 def plan(vault: Vault, scope: str, *, record: bool = True) -> dict:
-    with core.mutation_lock(vault):
+    with locks.mutation_lock(vault):
         scope_path(vault, scope)
         jobs = pending(vault, [scope], limit=1, record=record)
         if jobs:
@@ -374,7 +374,7 @@ def review(vault: Vault, key: str, scope: str, outcome: str, reason: str, after:
             i["relation"] != "Link" or not all(isinstance(v, str) and v.strip() for v in i.values())
             for i in intentional):
         raise ValueError("only individual exploratory/source Links may have an explicit retention reason")
-    with core.mutation_lock(vault):
+    with locks.mutation_lock(vault):
         state = load_state(vault)
         selected = state["plans"].get(key)
         if not selected or selected["scope"] != scope:
@@ -554,7 +554,7 @@ def bindings_audit(vault: Vault, project: str | None = None) -> list[dict]:
     주면 그 프로젝트만 본다. 판정은 라우팅 대장에서 다시 계산하고, '지난 검토'는 이 기기의 조직 검토
     상태가 기억한다."""
     try:
-        recs = core.ledger_read(vault.routing)
+        recs = ledger.ledger_read(vault.routing)
     except Exception:
         return []
     keys = sorted({str(r.get("session")) for r in recs

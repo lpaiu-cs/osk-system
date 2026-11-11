@@ -6,7 +6,8 @@
 from __future__ import annotations
 import json, os, re
 from pathlib import Path
-from .core import sha256_bytes, sha256_file, posix_rel, atomic_write, resolve_in_root
+from .core import sha256_bytes, sha256_file, posix_rel, resolve_in_root
+from .durable import atomic_write
 from .vault import Vault
 
 

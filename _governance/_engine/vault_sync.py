@@ -389,7 +389,7 @@ def _snapshot_local_state(vault_root, onto, upstream, timeout):
         paths.update(os.fsdecode(p) for p in r.stdout.split(b"\0") if p)
     paths.discard(".osk/.gitignore")
     # ponytail: 바이트를 메모리에 쥐고 rebase 뒤 되돌린다. 엔진의 `.osk/` 설정 쓰기는 같은 잠금
-    # (`core.device_lock`)으로 이 구간과 겹치지 않지만, 그 사이 손으로 고친 것은 rebase 전 판본으로
+    # (`locks.device_lock`)으로 이 구간과 겹치지 않지만, 그 사이 손으로 고친 것은 rebase 전 판본으로
     # 돌아간다. 경로는 옛 vault가 추적하던 것뿐이라 이행이 끝나면 빈다.
     local = {}
     for p in paths:

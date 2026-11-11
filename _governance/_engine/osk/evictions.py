@@ -26,8 +26,9 @@ import re
 import time
 from datetime import datetime
 
-from .core import (RID_RE, ID_RE, ledger_read, ledger_damage, ledger_append, ledger_anchor_index,
-                   mutation_lock, rid_parts, rid_key)
+from .core import RID_RE, ID_RE
+from .ledger import ledger_read, ledger_damage, ledger_append, ledger_anchor_index, rid_parts, rid_key
+from .locks import mutation_lock
 from . import graph
 from .vault import Vault
 

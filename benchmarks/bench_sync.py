@@ -36,26 +36,26 @@ def configure(root):
 def writer(a):
     os.environ["OSK_VAULT_ROOT"] = str(a.root.resolve())
     sys.path.insert(0, str(a.engine.resolve()))
-    from osk import core, write, contract
+    from osk import write, contract, locks
     from osk.vault import Vault
     VAULT = Vault.open()
-    original_lock, original_unlock = core.lock_exclusive, core.unlock
+    original_lock, original_unlock = locks.lock_exclusive, locks.unlock
     timing = {}
 
     def lock(f, *args, **kwargs):
         start = time.perf_counter()
         result = original_lock(f, *args, **kwargs)
-        if Path(f.name) == core.mutation_lock_path(VAULT):
+        if Path(f.name) == locks.mutation_lock_path(VAULT):
             timing.update(wait_ms=(time.perf_counter()-start)*1000,
                           acquired_at=time.perf_counter())
         return result
 
     def unlock(f):
-        if Path(f.name) == core.mutation_lock_path(VAULT):
+        if Path(f.name) == locks.mutation_lock_path(VAULT):
             timing["hold_ms"] = (time.perf_counter()-timing["acquired_at"])*1000
         return original_unlock(f)
 
-    core.lock_exclusive, core.unlock = lock, unlock
+    locks.lock_exclusive, locks.unlock = lock, unlock
     emit({"ready": True})
     for line in sys.stdin:
         cmd = json.loads(line)

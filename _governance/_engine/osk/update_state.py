@@ -5,7 +5,7 @@
 from __future__ import annotations
 import json, re
 from pathlib import Path
-from .core import causal_maxima, ledger_read
+from .ledger import causal_maxima, ledger_read
 from .vault import Vault
 
 

@@ -31,7 +31,8 @@ KERNEL, MODEL, STORE, SERVICE, SURFACE = range(5)
 # 모듈의 층 — 위층만 아래층을 import한다. 새 모듈은 여기에 올려야 시험이 돈다.
 # 한 모듈에 책임이 섞인 것(`write`·`evidence`·`rechecks`)은 갈 곳이 아니라 지금 주로 하는 일로 배정했다.
 LAYERS = {
-    KERNEL: ["osk", "osk._portalock", "osk.epoch", "osk.layout", "osk.vault", "osk.core", "osk.errors"],
+    KERNEL: ["osk", "osk._portalock", "osk.epoch", "osk.layout", "osk.vault", "osk.core", "osk.ledger", "osk.locks", "osk.durable",
+             "osk.errors"],
     MODEL: ["osk.contract", "osk.naming", "osk.prose", "osk.secrets", "osk.raw_view", "osk.dialogue_codec"],
     STORE: ["osk.placement", "osk.graph", "osk.topology", "osk.nodefile", "osk.cluster_gate", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures", "osk.routing",
             "osk.region_tree", "osk.approvals", "osk.approval_acts", "osk.scope_memory", "osk.evictions", "osk.rechecks", "osk.transcripts", "osk.transcript_files",
@@ -261,7 +262,7 @@ def _passed_on(srcs: dict[str, str], trees: dict[str, ast.Module], bound: dict) 
 def _resolver(srcs: dict[str, str], trees: dict[str, ast.Module]):
     """표현식이 가리키는 `(모듈, 이름)`을 찾는 함수와 그 재료 — `(named, passed, bound)`.
 
-    다른 모듈을 거친 이름을 끝까지 따라간다. `core.epoch.loaded`는 `core`가 머리에서 import한 `epoch`의 것이고
+    다른 모듈을 거친 이름을 끝까지 따라간다. `locks.epoch.loaded`는 `locks`가 머리에서 import한 `epoch`의 것이고
     (모듈 속성 사슬), `write.bind_session`은 `write`가 다시 내놓은 `routing`의 것이다(`_passed_on`).
     `named(module, node, local, cls, mods=None, names=None)` — 엔진 밖 파일(시험)은 제 import 표를 넘긴다."""
     known = set(srcs)

@@ -34,8 +34,9 @@ from __future__ import annotations
 import re, unicodedata
 from pathlib import Path
 
-from .core import (ID_RE, ledger_append, ledger_read, mutation_lock, new_node_id, now_kst, posix_rel,
-                   resolve_in_root, sha256_bytes, sha256_file)
+from .core import ID_RE, new_node_id, now_kst, posix_rel, resolve_in_root, sha256_bytes, sha256_file
+from .ledger import ledger_append, ledger_read
+from .locks import mutation_lock
 from . import (approvals, cluster_gate, contract, evictions, graph, node_checks, nodefile, prose, raw, rechecks,
                workspaces, placement)
 from .contract import as_list, stored_edges

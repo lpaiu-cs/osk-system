@@ -7,7 +7,10 @@
 
 | 모듈 | 구현 조문 |
 |---|---|
-| `osk/core.py` | Mechanism §1~§3 공통 — 루트·시각·id·rid·대장 append 규율 |
+| `osk/core.py` | Mechanism §1·§2 공통 — 시각·id·해시·저장소 안의 경로·명령줄 |
+| `osk/ledger.py` | Mechanism §3 — 대장: rid, 판독과 손상 진단, 인과 DAG, append 규율 |
+| `osk/locks.py` | 저장소 잠금·기기 잠금과 판본 관문(뜬 뒤 엔진이 바뀐 프로세스는 쓰지 못한다) |
+| `osk/durable.py` | Mechanism §1-2 7항·§3 1항 — 꺼져도 남는 쓰기: 디렉터리 내구화와 원자 쓰기 |
 | `osk/contract.py` | 시행령 §1·Mechanism §2 — 노드 계약 파싱·검증(2술어·순서·형식·정합) |
 | `osk/placement.py`·`graph.py`·`topology.py` | Mechanism §1·헌법 8조·4조 5항·11조 2항 — 배치(`placement`), 색인과 id 해석(`graph`), 참조 위상·중심성(`topology`) |
 | `osk/approvals.py`·`region_tree.py`·`approval_acts.py` | 헌법 10조·시행령 §6·Mechanism §3 — 보호영역: 승인 기록부와 그 판정(`approvals`), 영역의 tree와 승인본 보관(`region_tree`), 사용자 전속인 지정·승인·반려·해제의 발의(`approval_acts`) |

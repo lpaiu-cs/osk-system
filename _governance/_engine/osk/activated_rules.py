@@ -5,8 +5,8 @@
 (`validator_active`)와 위반이 없을 때의 자동 활성화(`auto_activate`)도 여기 있다."""
 from __future__ import annotations
 import hashlib, json, re
-from .core import ledger_read, ledger_append, resolve_one
-from . import contract, core, evidence, graph, raw, roots
+from .ledger import ledger_read, ledger_append, resolve_one
+from . import contract, evidence, graph, raw, roots, locks
 from .vault import Vault
 
 
@@ -94,7 +94,7 @@ def auto_activate(vault: Vault, idx=None, *, now: float | None = None) -> list[s
     todo = [r for r in RULES if not any(x.get("rule") == r for x in ledger_read(vault.validators))]
     # worktree들은 git 디렉터리를 나눠 쓰지만 노드와 대장은 저마다다 — 잰 시각도 작업 트리마다 둔다
     key = hashlib.sha256(str(vault.root).encode("utf-8")).hexdigest()[:16]
-    mark = core.local_lock_path(f"osk-validators-auto-{key}.json", vault.root)
+    mark = locks.local_lock_path(f"osk-validators-auto-{key}.json", vault.root)
     now = time.time() if now is None else now
     try:
         if not todo or now - json.loads(mark.read_text(encoding="utf-8"))["at"] < AUTO_EVERY:

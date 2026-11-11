@@ -18,8 +18,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from .core import (ID_RE, causal_maxima, effective_parents, ledger_damage, ledger_extend, ledger_read,
-                   posix_rel, sha256_bytes)
+from .core import ID_RE, posix_rel, sha256_bytes
+from .ledger import causal_maxima, effective_parents, ledger_damage, ledger_extend, ledger_read
 from . import contract, graph, growth_ledger, placement
 from .vault import Vault
 

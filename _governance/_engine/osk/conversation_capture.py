@@ -11,7 +11,7 @@ import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from . import conversation_state, core, raw, secrets, transcripts, workspaces, write, transcript_files
+from . import conversation_state, core, raw, secrets, transcripts, workspaces, write, transcript_files, locks
 from . import harness as adapters
 from .vault import Vault
 
@@ -437,7 +437,7 @@ def _capture_apply(vault: Vault, p: Path, s: dict, parsed: dict, native_path: st
     conversation_state.save_state(p, s)
     # ponytail: serialize tracking until its cursor is saved; use per-scope
     # locks if capture throughput matters.
-    with conversation_state.locked_path(core.local_lock_path("osk-capture-prefix.lock", vault.root)):
+    with conversation_state.locked_path(locks.local_lock_path("osk-capture-prefix.lock", vault.root)):
         rounds = _inherited_rounds(vault, s, parsed["rounds"], parsed.get("dialogue_v1"))
         kept, gone = s["rounds"], []
         if harness == "codex" or parsed.get("reverted"):

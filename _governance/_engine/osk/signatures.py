@@ -16,7 +16,7 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-from .core import ledger_read
+from .ledger import ledger_read
 from . import contract
 from .vault import Vault
 

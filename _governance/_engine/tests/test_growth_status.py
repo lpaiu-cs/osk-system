@@ -12,7 +12,7 @@ BOOT = '''
 import json, os, sys
 from pathlib import Path
 from unittest.mock import patch
-from osk import core, growth, growth_status as S, integration, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process
+from osk import core, growth, growth_status as S, integration, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process, durable, ledger, locks
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -140,7 +140,7 @@ class GrowthStatusTests(unittest.TestCase):
                     row=evictions.record_evict(VAULT, 'W1','test','Anonymous source '+name)
                     jobs[name]={'key':'eviction:'+row['rid'],'of':row['rid'],
                                 'scope':row['scope'],'text':row['text']}
-                plan=core.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'plan','candidates':[],
+                plan=ledger.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'plan','candidates':[],
                     'scope_jobs':[],'eviction_jobs':list(jobs.values())})
                 evictions.settle(VAULT, jobs['settled_unreviewed']['of'],'merged',target='Retained')
                 evictions.settle(VAULT, jobs['settled_deferred']['of'],'node',target='Retained')
@@ -154,10 +154,10 @@ class GrowthStatusTests(unittest.TestCase):
                                        'scope':[],'eviction':reviews}})
                 assert done['ok'],done
                 outcomes={job['key']:growth_plan.eviction_status(VAULT, job) for job in jobs.values()}
-                core.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
+                ledger.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
                                    'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
             with patch.object(core,'now_iso',return_value=END):
-                core.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
+                ledger.ledger_append(growth_ledger.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
                                    'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
             before=files()
             result=report()
@@ -231,7 +231,7 @@ class GrowthStatusTests(unittest.TestCase):
             with patch.object(conversation_capture,'status',side_effect=AssertionError('status writes repairs')), \
                  patch.object(conversation_state,'save_state',side_effect=AssertionError('unexpected write')), \
                  patch.object(growth_plan,'plan',side_effect=AssertionError('report selected work')), \
-                 patch.object(core,'ledger_append',side_effect=AssertionError('unexpected ledger write')):
+                 patch.object(ledger,'ledger_append',side_effect=AssertionError('unexpected ledger write')):
                 first,second=report(),report()
             assert first['ok'],first
             assert first['reviews']['outcomes']=={'no_value':1},first

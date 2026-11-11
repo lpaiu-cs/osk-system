@@ -5,7 +5,8 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from .core import local_lock_path, mutation_lock, posix_rel, resolve_in_root, sha256_file
+from .core import posix_rel, resolve_in_root, sha256_file
+from .locks import local_lock_path, mutation_lock
 from . import approvals, cluster_gate, contract, evidence, graph, node_checks, nodefile, rechecks, scope_memory, placement
 from .errors import WriteError
 from .naming import name_collision, portable_name_key

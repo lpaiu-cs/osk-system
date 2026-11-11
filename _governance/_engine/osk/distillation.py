@@ -15,7 +15,8 @@ import json
 from pathlib import Path
 
 from . import contract, conversation_state, evidence, graph, nodefile, prose, raw, secrets, write, placement
-from .core import local_lock_path, mutation_lock, posix_rel, resolve_in_root, sha256_bytes, sha256_file
+from .core import posix_rel, resolve_in_root, sha256_bytes, sha256_file
+from .locks import local_lock_path, mutation_lock
 from .vault import Vault
 
 # 증류가 쓰는 자리 — Person은 소속 scope 없는 세션이 Person에 둘 것만 남길 때다(시행령 §3 9항 3호).

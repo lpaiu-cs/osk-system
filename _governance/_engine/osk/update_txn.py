@@ -6,7 +6,7 @@ from __future__ import annotations
 import errno, json, os, shutil, stat, tempfile
 from pathlib import Path
 from .core import sha256_file, canon_rel
-from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
+from .durable import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from . import update_state
 from .vault import Vault
 

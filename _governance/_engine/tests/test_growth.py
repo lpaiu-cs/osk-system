@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import cli, core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process, placement, topology, activated_rules
+from osk import cli, core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process, placement, topology, activated_rules, durable, ledger, locks
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -52,15 +52,15 @@ def legacy(sid, transcript, scope='W1'):
     conversation_state.save_state(path, s)
 def register(planned=None):
     planned = growth_plan.plan(VAULT, 20) if planned is None else planned
-    with core.mutation_lock(VAULT):
-        return core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'plan', **planned})
+    with locks.mutation_lock(VAULT):
+        return ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'plan', **planned})
 def no_value_all():
     manifest = register()
     for candidate in manifest['candidates']:
         growth_reviews.review(VAULT, candidate['key'], 'no_value', reason='No reusable synthesis in this exact set.', manifest=manifest['rid'])
 def packet_worker(change='', wrapper='plain', code=0, org='complete', read='True'):
     # org: the organization review outcome; read: which review units u the worker read
-    source = "import json,sys; from osk import core,growth,distillation,integration, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
+    source = "import json,sys; from osk import core,growth,distillation,integration, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process, durable, ledger, locks; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
     if change:
         source += change + '; '
     source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'" + org + "','reason':'The fixture is one coherent, directly wired group.','intentional':[],'checked':[{'unit':u['unit'],'reason':'Known fixture claim and conditions'} for u in j['review_units'] if " + read + "]} for j in p['organization_jobs']]; "
@@ -118,21 +118,21 @@ UPGRADE_CARRY = """
     if V50_CARRY:
         for basis in ('D', 'A'):
             t = idx.locate(basis)[0]
-            core.ledger_append(rechecks.ledger_path(VAULT), rechecks._row(
+            ledger.ledger_append(rechecks.ledger_path(VAULT), rechecks._row(
                 idx.node(b).id, rechecks.state(b.read_bytes()), idx.node(t).id, rechecks.state(t.read_bytes()),
                 'unchanged', rechecks.CARRIED))
         held()
     assert rechecks.ensure_baseline(VAULT, carry=True) == (2 if V50_CARRY else 3), 'cascade and review not both carried'
-    results = {r['result'] for r in core.ledger_read(rechecks.ledger_path(VAULT))[-2:] if r['node'] == idx.node(b).id
+    results = {r['result'] for r in ledger.ledger_read(rechecks.ledger_path(VAULT))[-2:] if r['node'] == idx.node(b).id
                and r['reason'] == rechecks.CARRIED and r['node_state'] == rechecks.state(b.read_bytes())}
     assert 'updated' in results and (V50_CARRY or results == {'updated'}), results
-    review = core.ledger_read(growth_ledger.ledger_path(VAULT))[-1]
+    review = ledger.ledger_read(growth_ledger.ledger_path(VAULT))[-1]
     assert review['kind'] == 'recheck_review' and (review['reason'], review['proposal']) == (
         'A second correction needs the user.', 'Change C later.'), review
     held()
     # Another device carried the same review before the two synced: a sibling row, equal but for its id.
     with open(growth_ledger.ledger_path(VAULT), 'a', encoding='utf-8') as f:
-        f.write(json.dumps({**review, 'rid': core._next_rid(review['rid'])}, ensure_ascii=False) + chr(10))
+        f.write(json.dumps({**review, 'rid': ledger._next_rid(review['rid'])}, ensure_ascii=False) + chr(10))
     held()
     # a 근거 section is not a related state — editing the cited node's, then the citing node's
     write.update_node(VAULT, 'B', old_text='— an observation', new_text='— an observation, reworded')
@@ -225,7 +225,7 @@ class GrowthTests(unittest.TestCase):
                 result = growth.run(VAULT, [sys.executable, '-B', '-c', packet_worker(action)], limit=1)
                 assert not result['ok'], result
                 assert result['eviction_outcomes']['eviction:'+item['rid']]['status'] == 'pending', result
-                manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                manifest = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                 job = manifest['eviction_jobs'][0]
                 assert item['rid'] not in {r['rid'] for r in evictions.unsettled(VAULT)}
                 again = growth_plan.plan(VAULT)['eviction_jobs']
@@ -247,9 +247,9 @@ class GrowthTests(unittest.TestCase):
                                        'reason':'Both claims now checked; second is a one-off value.'}]}}
                 assert growth_reviews.checkpoint(VAULT, packet)['ok']
                 assert growth_plan.eviction_status(VAULT, job)['status'] == 'complete'
-                count = len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='eviction_review'])
+                count = len([r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='eviction_review'])
                 assert growth_reviews.checkpoint(VAULT, packet)['ok']
-                assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='eviction_review']) == count
+                assert len([r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='eviction_review']) == count
                 assert not growth_plan.plan(VAULT)['eviction_jobs']
                 # A later explicit deferral must supersede even a completed review.
                 packet['osk_reviews']['eviction'] = [{'of':item['rid'],'outcome':'deferred','reason':'Reopen a newly disputed condition.'}]
@@ -272,15 +272,15 @@ class GrowthTests(unittest.TestCase):
             assert result['final_reviews']['state'] == 'not_applied', result['final_reviews']
             assert list(result['domain_outcomes'].values()).count('no_value') == 1, result
             assert 'pending' in result['domain_outcomes'].values(), result
-            rows = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'review']
+            rows = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'review']
             assert len(rows) == 1
             packet = json.loads((VAULT.root/'checkpoint.json').read_text(encoding='utf-8'))
             assert growth_reviews.checkpoint(VAULT, packet)['ok']  # Retry is idempotent.
-            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
+            assert len([r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
             packet['osk_reviews']['domain'][0]['key'] = 'unselected'
             refused = growth_reviews.checkpoint(VAULT, packet)   # only that entry is set aside, with its reason
             assert not refused['ok'] and any('unselected domain review' in e for e in refused['errors']), refused
-            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
+            assert len([r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
             # The manual path applies decisions only to a plan the runner recorded.
             packet['osk_reviews']['manifest'] = 'not-a-recorded-plan'
             try:
@@ -288,7 +288,7 @@ class GrowthTests(unittest.TestCase):
                 raise AssertionError('a checkpoint applied decisions without a recorded plan')
             except ValueError as e:
                 assert 'recorded growth manifest' in str(e), e
-            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
+            assert len([r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 1
         """)
 
     def test_scope_checkpoint_survives_worker_failure_and_resumes_only_pending_work(self):
@@ -308,7 +308,7 @@ class GrowthTests(unittest.TestCase):
             change = "q['osk_reviews']['domain']=[]; q['osk_reviews']['scope']=q['osk_reviews']['scope'][:1]; (VAULT.root/'saved-checkpoint.json').write_text(json.dumps(q),encoding='utf-8'); assert growth_reviews.checkpoint(VAULT, q)['ok']; sys.exit(7)"
             result = growth.run(VAULT, [sys.executable,'-B','-c',packet_worker(change)],limit=3)
             assert not result['ok'] and result['returncode'] == 7, result
-            first_plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            first_plan = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['conversation_id'] for j in first_plan['scope_jobs']] == ['first']
             assert conversation_capture.status(VAULT, 'claude','first')['reviewed_rounds'] == 1
             packet = json.loads((VAULT.root/'saved-checkpoint.json').read_text(encoding='utf-8'))
@@ -317,7 +317,7 @@ class GrowthTests(unittest.TestCase):
             assert len(before['reviews']) == 1
             retry = growth.run(VAULT, [sys.executable,'-B','-c','import sys; sys.stdin.read()'],limit=3)
             assert not retry['ok']
-            next_plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            next_plan = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['conversation_id'] for j in next_plan['scope_jobs']] == ['second'], next_plan
             visible = growth._reading_plan(next_plan)['scope_jobs'][0]
             assert visible['raw_review'] == {'state':'verified','rounds':1,'error':None}
@@ -344,7 +344,7 @@ class GrowthTests(unittest.TestCase):
             assert not growth_ledger.daily_active(VAULT)
             manifest = register(planned)
             assert not growth_ledger.daily_active(VAULT), 'a plan is not completed work'
-            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':manifest['rid'],'ok':True})
+            ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':manifest['rid'],'ok':True})
             assert growth_ledger.daily_active(VAULT)
             write.update_node(VAULT, 'B', add_edges={'derived-from': 'A'})
             assert growth_plan.recheck_status(VAULT, jobs[0], graph.Index(VAULT))['status'] == 'pending', 'wiring is not a check'
@@ -359,15 +359,15 @@ class GrowthTests(unittest.TestCase):
             from unittest.mock import patch
             planned = register()
             assert not growth_ledger.daily_active(VAULT)
-            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':planned['rid'],'ok':True})
+            ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':planned['rid'],'ok':True})
             assert growth_ledger.daily_active(VAULT)
-            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'plan','work_context':'stop:W1'})
+            ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'plan','work_context':'stop:W1'})
             assert growth_ledger.daily_active(VAULT), 'Stop work must not replace daily health'
             latest = register()
             assert not growth_ledger.daily_active(VAULT), 'a newer unfinished plan supersedes old success'
-            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':latest['rid'],'ok':False})
+            ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':latest['rid'],'ok':False})
             assert not growth_ledger.daily_active(VAULT), 'failed daily work must yield rechecks to forks'
-            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':latest['rid'],'ok':True})
+            ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':latest['rid'],'ok':True})
             assert growth_ledger.daily_active(VAULT)
             rows = growth_ledger.ledger_records(VAULT)
             old = (datetime.now(timezone.utc)-timedelta(days=4)).isoformat()
@@ -415,12 +415,12 @@ class GrowthTests(unittest.TestCase):
             from datetime import datetime, timezone
             day = datetime.now(timezone.utc).astimezone().date().isoformat()
             def batch(kind, run=None, rechecks=(), waiting=0, **daily):
-                plan = core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'plan', 'work_context': 'daily',
+                plan = ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'plan', 'work_context': 'daily',
                                                           'daily': {'day': day, 'kind': kind, **daily},
                                                           'recheck_jobs': [{'key': k} for k in rechecks],
                                                           'queued_not_selected': {'recheck_jobs': waiting}})
                 if run is not None:
-                    core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'returncode': 0, **run})
+                    ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'returncode': 0, **run})
                 return plan
             def fresh():
                 growth_ledger.ledger_path(VAULT).unlink(missing_ok=True)
@@ -435,7 +435,7 @@ class GrowthTests(unittest.TestCase):
             plan = batch('light', {'state': 'incomplete', 'ok': False,
                                    'recheck_outcomes': {'r3': {'status': 'pending'}}}, ['r3'])
             assert not growth_ledger.daily_active(VAULT), 'a selected recheck left open'
-            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'recheck_review', 'manifest': plan['rid'], 'key': 'r3',
+            ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'recheck_review', 'manifest': plan['rid'], 'key': 'r3',
                                                'outcome': 'deferred', 'reason': 'cannot judge yet'})
             assert growth_ledger.daily_active(VAULT), 'a deferral is a judgement'
             batch('light', {'state': 'incomplete', 'ok': False, 'returncode': 1,
@@ -519,7 +519,7 @@ class GrowthTests(unittest.TestCase):
             planned = register()
             status = growth_ledger.daily_status(VAULT)
             assert status['ran'] and not status['active'] and status['last']['state'] is None, status
-            core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':planned['rid'],'ok':True,
+            ledger.ledger_append(growth_ledger.ledger_path(VAULT), {'kind':'run','manifest':planned['rid'],'ok':True,
                                                'state':'complete'})
             assert growth_ledger.daily_status(VAULT)['active'] and growth_ledger.daily_active(VAULT)
         """)
@@ -692,12 +692,12 @@ class GrowthTests(unittest.TestCase):
             data = a.read_bytes()
             whole = core.sha256_bytes(data[contract.body_offset(data):])
             assert whole != rechecks.state(data)
-            core.ledger_append(rechecks.ledger_path(VAULT), rechecks._row(idx.node(b).id, rechecks.state(b.read_bytes()),
+            ledger.ledger_append(rechecks.ledger_path(VAULT), rechecks._row(idx.node(b).id, rechecks.state(b.read_bytes()),
                                                                   idx.node(a).id, whole, 'unchanged'))
             assert not rechecks.candidates(VAULT, graph.Index(VAULT))[0], 'an unchanged old-definition record stopped holding'
             assert rechecks.ensure_baseline(VAULT) == 0, 'a node write would scan every pair'
             assert rechecks.ensure_baseline(VAULT, carry=True) == 1
-            row = core.ledger_read(rechecks.ledger_path(VAULT))[-1]
+            row = ledger.ledger_read(rechecks.ledger_path(VAULT))[-1]
             assert row['reason'] == '이어받음' and row['target_state'] == rechecks.state(data), row
             write.update_node(VAULT, 'A', old_text='— second', new_text='— second, again')
             assert not rechecks.candidates(VAULT, graph.Index(VAULT))[0], 'the carried record did not hold'
@@ -807,7 +807,7 @@ class GrowthTests(unittest.TestCase):
             assert rep['evidence_section_held'] == {'brain': '이 기기에 위치가 없다'}, rep['evidence_section_held']
             assert not rep['evidence_section_active']
             assert not any('근거 절' in f for d in rep['fail'] for f in d), rep['fail']
-            core.ledger_append(VAULT.validators, {'kind': 'activate', 'rule': 'evidence-section'})
+            ledger.ledger_append(VAULT.validators, {'kind': 'activate', 'rule': 'evidence-section'})
             assert any('근거 절' in f for d in validate.run(VAULT, cli.published_tools)['fail'] for f in d), 'an active rule did not count'
         """)
 
@@ -825,8 +825,8 @@ class GrowthTests(unittest.TestCase):
             assert activated_rules.auto_activate(VAULT, now=day + 60) == [], 'checked twice in a day'
             assert 'evidence-section' in activated_rules.auto_activate(VAULT, now=2 * day + 60)
             assert activated_rules.validator_active(VAULT, 'evidence-section')
-            assert core.ledger_read(VAULT.validators)[-1]['reason'] == activated_rules.AUTO_REASON
-            core.ledger_append(VAULT.validators, {'kind': 'deactivate', 'rule': 'evidence-section'})
+            assert ledger.ledger_read(VAULT.validators)[-1]['reason'] == activated_rules.AUTO_REASON
+            ledger.ledger_append(VAULT.validators, {'kind': 'deactivate', 'rule': 'evidence-section'})
             assert activated_rules.auto_activate(VAULT, now=9 * day) == [] and not activated_rules.validator_active(VAULT, 'evidence-section')
             # the hooks' background worker is where it runs on every install
             import contextlib
@@ -848,7 +848,7 @@ class GrowthTests(unittest.TestCase):
         # mutation lock, so the ledger lock (`expect`) is where an activation backs off.
         self.check_case("""
             from unittest import mock
-            real = core.ledger_append
+            real = ledger.ledger_append
             def user_first(path, record, expect=None):
                 # the user's `--deactivate` lands right before the activation takes the ledger lock
                 if record.get('rule') == 'evidence-section':
@@ -857,7 +857,7 @@ class GrowthTests(unittest.TestCase):
             with mock.patch.object(activated_rules, 'ledger_append', user_first):
                 assert 'evidence-section' not in activated_rules.auto_activate(VAULT, now=24 * 3600)
             assert not activated_rules.validator_active(VAULT, 'evidence-section')
-            assert [r['kind'] for r in core.ledger_read(VAULT.validators) if r['rule'] == 'evidence-section'] == ['deactivate']
+            assert [r['kind'] for r in ledger.ledger_read(VAULT.validators) if r['rule'] == 'evidence-section'] == ['deactivate']
         """)
 
     def test_an_anchor_written_before_tag_spacing_still_matches(self):
@@ -880,10 +880,10 @@ class GrowthTests(unittest.TestCase):
         # Constitution 8(3): a Scope node may reference any non-node. The ledger sits under Workbench but
         # is an institutional record (Workbench contract 2.3), not work state, so it is no cross-scope reference.
         self.check_case("""
-            core.ledger_append(VAULT.validators, {'kind': 'activate', 'rule': 'evidence-section'})
-            ledger = VAULT.validators.relative_to(VAULT.root).as_posix()
+            ledger.ledger_append(VAULT.validators, {'kind': 'activate', 'rule': 'evidence-section'})
+            recorded = VAULT.validators.relative_to(VAULT.root).as_posix()
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '',
-                                         '- 2026-11-01 · `' + ledger + '` · 지지 — 활성화 기록']))
+                                         '- 2026-11-01 · `' + recorded + '` · 지지 — 활성화 기록']))
             rep = validate.run(VAULT, cli.published_tools)
             assert not any('scope 간' in f for d in rep['fail'] for v in d.values() for f in v), rep['fail']
             assert 'A' not in rep.get('evidence_section', {}), rep.get('evidence_section')
@@ -955,7 +955,7 @@ class GrowthTests(unittest.TestCase):
                 '- 2026-10-05 · `c38d8ef2#2` · 지지 — 이미 있다', first,
                 '- 2026-01-01 · `c38d8ef2#4` · 지지 — 작업이 끝나 결과를 정리했다'], nb.body
             assert activated_rules.evidence_errors(VAULT, nb.body, nb.meta.get('derived-from')) == []
-            events = [r for r in core.ledger_read(em.events_path(VAULT)) if r.get('rule') == em.RULE]
+            events = [r for r in ledger.ledger_read(em.events_path(VAULT)) if r.get('rule') == em.RULE]
             assert [(e['source'], e['after']) for e in events] == [
                 (p.relative_to(VAULT.root).as_posix(), core.sha256_file(p)) for p in (a, b)], events
             manifest = (VAULT.root / done['manifest']).read_text(encoding='utf-8')
@@ -1023,7 +1023,7 @@ class GrowthTests(unittest.TestCase):
             manifest = (VAULT.root / done['applied'][0]['manifest']).read_text(encoding='utf-8')
             assert '`00_Scope/W1/X.md` → 보류 — 제목으로 참조된다(`#X`)' in manifest, manifest
             assert '`00_Scope/W1/Y.md` → 보류 — 제목으로 참조된다(`#근거`)' in manifest, manifest
-            assert sorted(e['source'] for e in core.ledger_read(em.events_path(VAULT))
+            assert sorted(e['source'] for e in ledger.ledger_read(em.events_path(VAULT))
                           if e.get('rule') == em.HEADING_RULE) == ['00_Scope/W1/L.md', '00_Scope/W1/Tab.md']
             assert all(i['level'] == 'ok' for i in doctor._vault(VAULT)), doctor._vault(VAULT)
             # nothing left: a rerun applies nothing and opens no empty manifest
@@ -1329,7 +1329,7 @@ class GrowthTests(unittest.TestCase):
             text = (VAULT.root / result['output'] / 'prompt.txt').read_text(encoding='utf-8')
             assert 'Every create_node uses drafter "gpt-5.6-sol"' in text, text[:600]
             assert 'not notes about this review' in text and 'such as -2' in text
-            assert [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]['drafter'] == 'gpt-5.6-sol'
+            assert [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]['drafter'] == 'gpt-5.6-sol'
         """)
 
     def test_reviews_keep_current_claims_and_bind_existing_ones_by_evidence_line(self):
@@ -1424,13 +1424,13 @@ class GrowthTests(unittest.TestCase):
                 assert result['returncode'] == code
                 assert set(result['outcomes'].values()) == {'pending'}
                 assert growth_plan.plan(VAULT)['candidates']
-            assert not [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r.get('kind') == 'review']
+            assert not [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r.get('kind') == 'review']
         """)
 
     def test_worker_receipt_and_deferred_next_run(self):
         self.check_case("""
             node('A')
-            worker = "import sys; from osk import core,growth, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); assert sys.stdin.read(); plans=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r.get('kind')=='plan']; [growth_reviews.review(VAULT, c['key'], 'deferred', reason='Need more evidence',manifest=plans[-1]['rid']) for c in plans[-1]['candidates']]"
+            worker = "import sys; from osk import core,growth, growth_ledger, growth_plan, growth_reviews, worker_process, durable, ledger, locks; from osk.vault import Vault; VAULT = Vault.open(); assert sys.stdin.read(); plans=[r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r.get('kind')=='plan']; [growth_reviews.review(VAULT, c['key'], 'deferred', reason='Need more evidence',manifest=plans[-1]['rid']) for c in plans[-1]['candidates']]"
             result = growth.run(VAULT, [sys.executable, '-c', worker])
             assert not result['ok'], result
             assert growth_plan.plan(VAULT)['candidates']
@@ -1598,7 +1598,7 @@ class GrowthTests(unittest.TestCase):
                 pass
             assert write.create_node(VAULT, **request)['ok']
             growth.run(VAULT, [sys.executable,'-c','import sys; sys.stdin.read()'],limit=1)
-            first = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
+            first = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
             candidate = first['candidates'][0]
             result = distillation.create_node(VAULT, 
                 {'key':candidate['distill_key'],'sources':[{'ref':s['id'],'hash':s['hash']} for s in candidate['sources']],'hub':'Principles'},
@@ -1607,7 +1607,7 @@ class GrowthTests(unittest.TestCase):
             assert result['ok'], result
             next_candidate = growth_plan.plan(VAULT, 1)['candidates'][0]
             assert next_candidate['previous_distillations'][0]['key'] == candidate['distill_key']
-            worker = "import sys; from osk import core,growth,organization, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [growth_reviews.review(VAULT, c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(VAULT, j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(VAULT, j['scope'])['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in j['review_units']]) for j in p['organization_jobs']]"
+            worker = "import sys; from osk import core,growth,organization, growth_ledger, growth_plan, growth_reviews, worker_process, durable, ledger, locks; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [growth_reviews.review(VAULT, c['key'],'preserved',target='Retained rule',reason='Existing saved result still covers A and B.',manifest=p['rid']) for c in p['candidates']]; [organization.review(VAULT, j['key'],j['scope'],'complete','Sources and local hub read; one coherent group.',after=organization.snapshot(VAULT, j['scope'])['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in j['review_units']]) for j in p['organization_jobs']]"
             outcome = growth.run(VAULT, [sys.executable,'-c',worker],limit=2)
             assert outcome['ok'], outcome
             assert len([1 for p,k in graph.Index(VAULT).nodes.values() if k[0]=='domain' and not placement.is_hub(p)]) == 1
@@ -1661,7 +1661,7 @@ class GrowthTests(unittest.TestCase):
             os.utime(path, (old, old))
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker()],limit=3)
             assert result['ok'] and result['scope_selected'] == 1, result
-            plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            plan = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             job = growth._reading_plan(plan)['scope_jobs'][0]
             assert job['pending_refs'] == ['native:claude:ended:u' + str(i) for i in (1, 2, 3)], job
             assert 'read_command' not in job, job
@@ -1800,7 +1800,7 @@ class GrowthTests(unittest.TestCase):
                 assert set(result['domain_outcomes'].values()) == {'pending'}, result
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(code=7)])
             assert not result['ok'] and result['final_reviews']['state'] == 'not_applied', result
-            assert not [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
+            assert not [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
         """)
 
     def test_a_wrong_packet_is_refused_whole_and_a_wrong_entry_only_itself(self):
@@ -1808,7 +1808,7 @@ class GrowthTests(unittest.TestCase):
             node('A')
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker("q['osk_reviews']['manifest']='old-manifest'")])
             assert not result['ok'] and result['final_reviews']['state'] == 'rejected', result
-            assert not [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
+            assert not [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
         """)
         for change, kept in (
                 ("q['osk_reviews']['domain'][0]['key']='unselected'", False),
@@ -1824,7 +1824,7 @@ class GrowthTests(unittest.TestCase):
                 assert not result['ok'] and result['final_reviews']['state'] == 'incomplete', result
                 assert result['final_reviews']['errors'], result
                 assert {{s['status'] for s in result['organization_outcomes'].values()}} == {{'complete'}}, result
-                reviews = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
+                reviews = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
                 assert bool(reviews) == {kept}, reviews
             """)
         # A decision with a needless part (a target on no_value) keeps its meaning; the part is
@@ -1834,7 +1834,7 @@ class GrowthTests(unittest.TestCase):
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker("q['osk_reviews']['domain'][0]['target']='Whatever'")])
             assert result['ok'], result
             assert any('target was dropped' in n for n in result['final_reviews']['notes']), result
-            assert [r['outcome'] for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review'] == ['no_value']
+            assert [r['outcome'] for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review'] == ['no_value']
         """)
 
     def test_a_report_from_an_older_selection_does_not_undo_a_newer_one(self):
@@ -1850,7 +1850,7 @@ class GrowthTests(unittest.TestCase):
             # would otherwise become the latest).
             growth_reviews.review(VAULT, key, 'deferred', reason='Late report from the earlier selection.', manifest=old['rid'])
             assert growth_plan.completed(VAULT, key, growth_ledger.ledger_records(VAULT), graph.Index(VAULT)), 'an older report reopened it'
-            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 2
+            assert len([r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == 2
             # The same selection can still reopen its own decision on purpose.
             growth_reviews.review(VAULT, key, 'deferred', reason='Reopened within the later selection.', manifest=new['rid'])
             assert not growth_plan.completed(VAULT, key, growth_ledger.ledger_records(VAULT), graph.Index(VAULT))
@@ -1869,7 +1869,7 @@ class GrowthTests(unittest.TestCase):
             branch = growth_ledger.ledger_path(VAULT).read_bytes()[len(base):]
             growth_ledger.ledger_path(VAULT).write_bytes(base)
             y = register()
-            assert y['candidates'][0]['key'] == key and core.rid_key(x['rid']) < core.rid_key(y['rid'])
+            assert y['candidates'][0]['key'] == key and ledger.rid_key(x['rid']) < ledger.rid_key(y['rid'])
             growth_reviews.review(VAULT, key, 'no_value', reason='Device Y found nothing to keep.', manifest=y['rid'])
             growth_ledger.ledger_path(VAULT).write_bytes(growth_ledger.ledger_path(VAULT).read_bytes() + branch)    # the sync merge
             rows = growth_ledger.ledger_records(VAULT)
@@ -1902,7 +1902,7 @@ class GrowthTests(unittest.TestCase):
                     raise AssertionError('the run went on after the runner died')
                 except Crash:
                     pass
-            rows = core.ledger_read(growth_ledger.ledger_path(VAULT))
+            rows = ledger.ledger_read(growth_ledger.ledger_path(VAULT))
             reviews = [r for r in rows if r['kind']=='review']
             assert [r['key'] for r in reviews] == calls[:1], (reviews, calls)
             assert not [r for r in rows if r['kind']=='run']
@@ -1919,18 +1919,18 @@ class GrowthTests(unittest.TestCase):
             # replies. Nothing applied is undone or presented again.
             class Crash(BaseException):
                 pass
-            real = core.ledger_append
+            real = ledger.ledger_append
             def append(path, record, *a, **kw):
                 if record.get('kind') == 'run':
                     raise Crash()
                 return real(path, record, *a, **kw)
-            with patch.object(core, 'ledger_append', side_effect=append):
+            with patch.object(ledger, 'ledger_append', side_effect=append):
                 try:
                     growth.run(VAULT, [sys.executable,'-c',packet_worker()], limit=3)
                     raise AssertionError('the run went on after the runner died')
                 except Crash:
                     pass
-            rows = core.ledger_read(growth_ledger.ledger_path(VAULT))
+            rows = ledger.ledger_read(growth_ledger.ledger_path(VAULT))
             assert [r for r in rows if r['kind']=='review'] and not [r for r in rows if r['kind']=='run'], rows
             again = growth_plan.plan(VAULT, 3)
             assert not again['candidates'], again['candidates']
@@ -1944,7 +1944,7 @@ class GrowthTests(unittest.TestCase):
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change)])
             assert not result['ok'] and result['final_reviews']['state'] == 'incomplete', result
             assert result['final_reviews']['errors'], result
-            assert not [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
+            assert not [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']
         """)
 
     def test_final_packet_does_not_duplicate_existing_valid_review(self):
@@ -1955,7 +1955,7 @@ class GrowthTests(unittest.TestCase):
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change)],limit=3)
             assert result['ok'], result
             assert 'already_complete' in result['final_reviews']['domain'].values(), result
-            assert len([r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == result['domain_selected'] == 2
+            assert len([r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='review']) == result['domain_selected'] == 2
         """)
 
     def test_total_budget_and_queue_rotation_do_not_ack_unselected_scope(self):
@@ -1976,7 +1976,7 @@ class GrowthTests(unittest.TestCase):
             for i in range(3):
                 result = growth.run(VAULT, worker,limit=1)
                 assert result['selected'] == 1 and not result['ok'], result
-                plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                plan = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                 queue = next(k for k in growth_ledger.QUEUES if plan[k])
                 seen.append(queue)
                 if plan['scope_jobs']:
@@ -2023,7 +2023,7 @@ class GrowthTests(unittest.TestCase):
             for _ in range(3):
                 result = growth.run(VAULT, worker, limit=3)
                 assert not result['ok'], result
-                plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                plan = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                 picks.append(plan['scope_jobs'][0]['conversation_id'])
             assert picks == ['early', 'late', 'early'], picks
         """)
@@ -2058,7 +2058,7 @@ class GrowthTests(unittest.TestCase):
             assert len(first) == 100 and 'b' not in first, first[-3:]
             result = growth.run(VAULT, [sys.executable,'-c','import sys; sys.stdin.read()'], limit=1)
             assert result.get('state') != 'capture_pending', result
-            plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            plan = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['conversation_id'] for j in plan['scope_jobs']] == ['b'], plan['scope_jobs']
             assert conversation_capture.status(VAULT, 'codex','lost0')['capture_error'], 'the failure stays visible'
         """)
@@ -2125,7 +2125,7 @@ class GrowthTests(unittest.TestCase):
                 for _ in range(5):
                     result = growth.run(VAULT, worker, limit=3)
                     assert not result['ok'] and result['selected'] == 3, result
-                    plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                    plan = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                     for k, field in ident.items():
                         seen[k] += [j[field] for j in plan[k]]
             assert all(len(set(v)) >= 2 for v in seen.values()), seen
@@ -2144,7 +2144,7 @@ class GrowthTests(unittest.TestCase):
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows),encoding='utf-8')
             assert conversation_capture.capture(VAULT, 'claude','waiting',str(path),'waiting',space='00_Scope/W1')['ok']
             legacy('waiting', path)
-            worker = "import sys; from osk import core,growth,organization, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [organization.review(VAULT, j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
+            worker = "import sys; from osk import core,growth,organization, growth_ledger, growth_plan, growth_reviews, worker_process, durable, ledger, locks; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [organization.review(VAULT, j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
             visited = []
             for i in range(8):
                 before = organization.load_state(VAULT)['plans']
@@ -2154,7 +2154,7 @@ class GrowthTests(unittest.TestCase):
                 with patch.object(core, 'now_kst', return_value=f'2026-09-20T12:00:{i:02d}+09:00'):
                     result = growth.run(VAULT, [sys.executable,'-c',worker],limit=3)
                 assert result['selected'] == 3 and not result['ok'], result
-                manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                manifest = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                 jobs = manifest['organization_jobs']
                 assert len(jobs) == 1 and len(manifest['scope_jobs']) == len(manifest['candidates']) == 1, manifest
                 selected = jobs[0]
@@ -2221,7 +2221,7 @@ class GrowthTests(unittest.TestCase):
                 for _ in range(3):
                     result = growth.run(VAULT, worker, limit=1)
                     assert result['selected'] == 1 and not result['ok'], result
-                    manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+                    manifest = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
                     selected.extend(manifest['eviction_jobs'])
                 assert len(selected) == 1 and selected[0]['of'] == items[0]['rid'], selected
                 assert growth_plan.plan(VAULT, 1)['eviction_jobs'][0]['of'] == items[1]['rid']  # Unattempted work progresses.

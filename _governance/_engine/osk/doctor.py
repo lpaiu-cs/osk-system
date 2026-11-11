@@ -28,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import (core, evictions, evidence_migration as em, growth_daily, raw, rechecks, response_growth, scope_memory,
-               validate, conversation_capture, conversation_state)
+               validate, conversation_capture, conversation_state, durable, locks)
 from . import harness as adapters
 from .harness import base, runs
 from .vault import Vault
@@ -370,7 +370,7 @@ def migrate(vault: Vault) -> tuple[dict, int]:
     if not plan["migrations"]:
         return {"ok": True, "applied": []}, 0
     review_id = core.sha256_bytes(json.dumps(plan, ensure_ascii=False, sort_keys=True).encode())
-    ticket = core.local_lock_path(CONFIRM_TICKET, vault.root)
+    ticket = locks.local_lock_path(CONFIRM_TICKET, vault.root)
     try:
         pending = json.loads(ticket.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -378,7 +378,7 @@ def migrate(vault: Vault) -> tuple[dict, int]:
     if (not isinstance(pending, dict) or pending.get("review_id") != review_id
             or not isinstance(pending.get("at"), (int, float))
             or not 0 <= time.time() - pending["at"] < CONFIRM_WITHIN):
-        core.atomic_write(ticket, json.dumps({"review_id": review_id, "at": time.time()}).encode())
+        durable.atomic_write(ticket, json.dumps({"review_id": review_id, "at": time.time()}).encode())
         return {"ok": False, "approval_required": True, "review_id": review_id, "plan": plan,
                 "instruction": MIGRATE_INSTRUCTION}, 2
     ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다

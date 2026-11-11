@@ -9,7 +9,7 @@ import json
 import re
 from contextlib import contextmanager
 from pathlib import Path
-from . import core, nodefile
+from . import core, nodefile, locks
 from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
@@ -27,7 +27,7 @@ def conversation_key(vault: Vault, harness: str, conversation_id: str) -> str:
 def state_path(vault: Vault, harness: str, conversation_id: str) -> Path:
     key = conversation_key(vault, harness, conversation_id)
     root_key = hashlib.sha256(str(vault.root.resolve()).encode()).hexdigest()[:16]
-    return core.local_lock_path(f"osk-integration-{root_key}-{key}.json", vault.root).with_suffix(".json")
+    return locks.local_lock_path(f"osk-integration-{root_key}-{key}.json", vault.root).with_suffix(".json")
 
 
 def state_lock(vault: Vault, harness: str, conversation_id: str):

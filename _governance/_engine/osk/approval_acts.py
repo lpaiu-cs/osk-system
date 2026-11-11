@@ -6,8 +6,10 @@
 from __future__ import annotations
 import contextlib, os
 from pathlib import Path
-from .core import (posix_rel, atomic_write, fsync_dir, mkdirs_durable, resolve_in_root, ledger_append,
-                   causal_maxima, mutation_lock, rid_key, canon_rel)
+from .core import posix_rel, resolve_in_root, canon_rel
+from .durable import atomic_write, fsync_dir, mkdirs_durable
+from .ledger import ledger_append, causal_maxima, rid_key
+from .locks import mutation_lock
 from . import approvals, region_tree, signatures
 from .vault import Vault
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json, sys
 from pathlib import Path
 
-from .core import StaleEngineError
+from .locks import StaleEngineError
 from . import (graph, approvals, authority, raw, scope_memory, validate, search,
                write, evictions, approval_acts, node_moves, region_tree, placement, activated_rules)
 from . import harness as adapters
@@ -284,7 +284,7 @@ def _routing_cmd(vault: Vault, a) -> None:
     생략하면 검토 대상 전부), `bind`·`unbind`는 집합의 증감, `primary`는 주된 scope의 지정이다 —
     지정은 사용자나, 검토의 결정 묶음을 적용하는 실행기만 한다."""
     from . import organization
-    from .core import mutation_lock
+    from .locks import mutation_lock
     try:
         if a.routing_cmd == "show":
             _emit({"project": a.project, **write.bindings(vault, a.project)} if a.project
@@ -457,7 +457,7 @@ def main(argv=None):
             else:
                 _confirm(f"{rule}을(를) 해제하면 같은 검사가 보고 전용으로 돌아가고, "
                          f"다시 켤 때까지 자동으로 켜지지 않습니다. 해제합니까? [y/N] ")
-            from .core import ledger_append
+            from .ledger import ledger_append
             rec = ledger_append(vault.validators, {
                 "kind": kind, "rule": rule, "reason": a.reason})
             print("기록 등재:", rec["rid"])

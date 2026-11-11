@@ -7,7 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 from . import (conversation_capture, conversation_state, core, distillation, graph, placement, raw, scope_memory,
-               transcripts, write)
+               transcripts, write, locks)
 from .vault import Vault
 
 
@@ -63,7 +63,7 @@ def acknowledge(vault: Vault, harness: str, conversation_id: str, through: str,
         raise ValueError("outcome preserved|summary|no_value|deferred and nonempty reason required")
     if primary_scope is not None and (not isinstance(primary_scope, str) or not primary_scope.strip()):
         raise ValueError("primary_scope must be a scope name")
-    with conversation_state.state_lock(vault, harness, conversation_id) as p, core.mutation_lock(vault):
+    with conversation_state.state_lock(vault, harness, conversation_id) as p, locks.mutation_lock(vault):
         s = conversation_state.load_state(vault, p, harness, conversation_id)
         if primary_scope is not None:
             if conversation_capture.one_off(s) or not s["session"]:
@@ -217,7 +217,7 @@ def reopen(vault: Vault, harness: str, conversation_id: str, refs: list, reason:
     receipt citing it — is reviewed again. No later check looks for any of this."""
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("reopen requires the correction's reason")
-    with conversation_state.state_lock(vault, harness, conversation_id) as p, core.mutation_lock(vault):
+    with conversation_state.state_lock(vault, harness, conversation_id) as p, locks.mutation_lock(vault):
         s = conversation_state.load_state(vault, p, harness, conversation_id)
         wanted = {raw.canonical_ref(vault, ref) for ref in refs or []}
         if not wanted or any(raw.is_native(ref) for ref in wanted):
@@ -263,7 +263,7 @@ def review_status_locked(vault: Vault, harness: str, conversation_id: str, throu
 
 
 def review_status(vault: Vault, harness: str, conversation_id: str, through: str) -> dict:
-    with conversation_state.state_lock(vault, harness, conversation_id) as p, core.mutation_lock(vault):
+    with conversation_state.state_lock(vault, harness, conversation_id) as p, locks.mutation_lock(vault):
         return _review_state_locked(vault, conversation_state.load_state(vault, p, harness, conversation_id), through)
 
 

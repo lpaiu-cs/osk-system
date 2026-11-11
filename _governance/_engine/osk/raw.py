@@ -19,7 +19,10 @@ import json
 import re
 from pathlib import Path
 
-from .core import atomic_write, mutation_lock, posix_rel, resolve_in_root, sha256_file, sha256_bytes
+from .core import now_kst, posix_rel, resolve_in_root, sha256_file, sha256_bytes
+from .durable import atomic_write
+from .ledger import ledger_append
+from .locks import mutation_lock
 # `naming`의 `title_errors`·`name_collision`을 그대로 쓴다 — 파일명 이식성
 # 규칙(Windows 예약명·링크 파서 충돌·ext4 바이트 상한·대소문자 접기)의 정본은
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
@@ -274,7 +277,6 @@ def consolidate(vault: Vault, *, apply: bool = False, expect: list | None = None
             raise WriteError("확인받은 이관 계획과 지금의 계획이 다르다 — 옮기지 않았다")
         manifest = None
         if apply and moves:
-            from .core import atomic_write, ledger_append, now_kst
             events = vault.ledger / "migration" / "events.jsonl"
             day = now_kst()[:10]
             manifest = events.parent / f"cited-records-{day}.md"

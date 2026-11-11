@@ -37,7 +37,8 @@ from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
 from osk import search as search_mod  # noqa: E402
-from osk.core import DRAFTER_RE, StaleEngineError, posix_rel, sha256_bytes  # noqa: E402
+from osk.core import DRAFTER_RE, posix_rel, sha256_bytes  # noqa: E402
+from osk.locks import StaleEngineError  # noqa: E402
 from osk.vault import Vault  # noqa: E402
 
 # 계약이 정한 집합을 스키마가 그대로 든다 — 강제와 교육과 발견이 한 번에
@@ -140,7 +141,7 @@ def _engine_state() -> dict:
     stdio 파이프 위에서 자식 프로세스에 막히던 위험도 함께 사라졌다.
 
     `engine_stale`이 `None`이면 판정 불가다 — 그 상태에서 쓰기는 관문이
-    거부한다(core._fence)."""
+    거부한다(locks._fence)."""
     from osk import core
     state = {"engine_rev": epoch.loaded(), "engine_observed_at": core.now_iso()}
     try:
@@ -362,7 +363,7 @@ def read_cited(ref: str | None = None, space: str | None = None,
 
 def _hook_sections(session: str, include) -> dict:
     """훅이 한도 때문에 접은 블록 — 훅이 실었을 글 그대로 돌려준다(`osk.hook_text`)."""
-    from osk import core, evictions
+    from osk import evictions, locks
     scope, scopes = write.resolve_session(_vault(), session), write.bound_scopes(_vault(), session)
     out = {}
     for name in dict.fromkeys(include):
@@ -376,7 +377,7 @@ def _hook_sections(session: str, include) -> dict:
             elif not scopes:
                 out[name] = ""
             else:
-                with core.mutation_lock(_vault()):
+                with locks.mutation_lock(_vault()):
                     jobs = organization.pending(_vault(), scopes, limit=1, record=False)
                 out[name] = "\n\n".join(t for t in (organization.hook_prompt(_vault(), jobs),
                                                    organization.bindings_prompt(_vault(), session)) if t)

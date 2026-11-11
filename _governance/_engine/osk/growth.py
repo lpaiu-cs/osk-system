@@ -12,8 +12,8 @@ from pathlib import Path
 import re
 import subprocess
 
-from . import (core, growth_ledger, growth_plan, growth_reviews, harness as adapters, integration, organization,
-               rechecks, conversation_review, worker_preflight, worker_process, worker_usage)
+from . import (core, epoch, growth_ledger, growth_plan, growth_reviews, harness as adapters, integration, organization,
+               rechecks, conversation_review, worker_preflight, worker_process, worker_usage, ledger, locks)
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
 
@@ -299,7 +299,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                                           checked["executable"], worker_env, require_version=False)
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 return {"ok": False, "state": "unavailable", "error": str(exc)}
-    lock_path = core.local_lock_path("osk-growth-run.lock", vault.root)
+    lock_path = locks.local_lock_path("osk-growth-run.lock", vault.root)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a") as lock:
         try:
@@ -318,7 +318,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                                               exclude=exclude, bundle=scope_bundle)
             else:
                 catchup = {"ok": True, "jobs": [], "remaining": 0}
-            with core.mutation_lock(vault):
+            with locks.mutation_lock(vault):
                 try:
                     rechecks.ensure_baseline(vault, carry=True)
                 except Exception:
@@ -338,7 +338,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                 # Queue ownership is not the trigger. Keep older `daily` semantics for
                 # selection/fallback, and record only the caller's explicit attribution.
                 planned["invocation"] = invocation
-                planned["engine_rev"] = core.epoch.loaded()
+                planned["engine_rev"] = epoch.loaded()
                 if scope_job is not None and scope_job.get("session"):
                     from . import write
                     # 일회성 작업 폴더의 대화는 그 키의 결속을 따르지 않는다(Mechanism §6-2 6항)
@@ -381,7 +381,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                 attempt = uuid.uuid4().hex
                 for candidate in planned["candidates"]:
                     candidate["distill_key"] = f"growth:{attempt}:{candidate['key']}"
-                manifest = core.ledger_append(growth_ledger.ledger_path(vault), {"kind": "plan", **planned})
+                manifest = ledger.ledger_append(growth_ledger.ledger_path(vault), {"kind": "plan", **planned})
                 organization.record_attempts(vault, planned["organization_jobs"])
             planned["manifest"] = manifest["rid"]
             directory = core.resolve_in_root(vault, Path(".osk/growth/runs") / manifest["rid"])
@@ -414,7 +414,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                     returncode = proc.returncode
                 except OSError as exc:
                     error = str(exc)
-            with core.mutation_lock(vault):
+            with locks.mutation_lock(vault):
                 needs_review = growth_reviews.needs_review(vault, planned, growth_ledger.ledger_records(vault), growth_plan.node_index(vault))
             final_reviews = {"state": "not_needed", "errors": []}
             if needs_review:
@@ -427,9 +427,9 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
             limited = (returncode != 0 or error is not None or final_reviews["state"] in {
                 "rejected", "not_applied"}) and worker_usage.limited(vault, stdout_path, command)
             usage = worker_usage.usage(stdout_path, command, cold_first=scope_job is None)
-            with core.mutation_lock(vault):
+            with locks.mutation_lock(vault):
                 rows, idx = growth_ledger.ledger_records(vault), growth_plan.node_index(vault)
-                par = core.effective_parents(rows)
+                par = ledger.effective_parents(rows)
                 receipts = {c["key"]: growth_plan.completed(vault, c["key"], rows, idx, par)
                             for c in planned["candidates"]}
                 outcomes = {}
@@ -474,7 +474,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                           "final_reviews": final_reviews,
                           "capture": catchup,
                           "output": core.posix_rel(directory, vault.root)}
-                core.ledger_append(growth_ledger.ledger_path(vault), result)
+                ledger.ledger_append(growth_ledger.ledger_path(vault), result)
             return result
         finally:
             unlock(lock)

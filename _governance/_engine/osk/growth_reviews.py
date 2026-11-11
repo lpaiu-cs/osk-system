@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from . import conversation_review, core, evictions, graph, growth_ledger, growth_plan, organization, rechecks
+from . import conversation_review, evictions, graph, growth_ledger, growth_plan, organization, rechecks, ledger, locks
 from .vault import Vault
 
 
@@ -22,7 +22,7 @@ def review(vault: Vault, key: str, outcome: str, target: str | None = None, reas
         raise ValueError("the exact growth manifest is required")
     if outcome != "preserved" and target is not None:
         raise ValueError("only preserved decisions have a target")
-    with core.mutation_lock(vault):
+    with locks.mutation_lock(vault):
         rows, idx = growth_ledger.ledger_records(vault), growth_plan.node_index(vault)
         matches = [(r, c) for r in rows if r.get("kind") == "plan"
                    and r.get("rid") == manifest
@@ -42,7 +42,7 @@ def review(vault: Vault, key: str, outcome: str, target: str | None = None, reas
         if proof:
             cited = {s["ref"] for s in proof["sources"]}
             record["omitted_sources"] = [s["id"] for s in candidate["sources"] if s["id"] not in cited]
-        return core.ledger_append(growth_ledger.ledger_path(vault), record)
+        return ledger.ledger_append(growth_ledger.ledger_path(vault), record)
 
 
 def strict_json(text: str):
@@ -259,7 +259,7 @@ def checkpoint(vault: Vault, packet: dict) -> dict:
     if not isinstance(packet, dict) or set(packet) != {"osk_reviews"}:
         raise ValueError("checkpoint needs one osk_reviews object")
     manifest = packet["osk_reviews"].get("manifest") if isinstance(packet["osk_reviews"], dict) else None
-    with core.mutation_lock(vault):
+    with locks.mutation_lock(vault):
         row = next((r for r in growth_ledger.ledger_records(vault) if r["kind"] == "plan" and r["rid"] == manifest), None)
     if row is None:
         raise ValueError("checkpoint requires a recorded growth manifest")
@@ -275,7 +275,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
     for entry in reviews["domain"]:
         key = entry["key"]
         try:
-            with core.mutation_lock(vault):
+            with locks.mutation_lock(vault):
                 done = growth_plan.completed(vault, key, growth_ledger.ledger_records(vault), growth_plan.node_index(vault))
             if done:
                 result["domain"][key] = "already_complete"
@@ -298,7 +298,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
     selected = {j["key"]: j for j in planned.get("organization_jobs", [])}
     for entry in reviews.get("organization", []):
         try:
-            with core.mutation_lock(vault):
+            with locks.mutation_lock(vault):
                 done = organization.status(vault, selected[entry["key"]])
                 # A worker without the CLI cannot read a fresh snapshot, so it is held to the
                 # one its plan gave it. Unit keys cover bodies, not references: any change in the
@@ -318,7 +318,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
     selected_evictions = {j["of"]: j for j in planned.get("eviction_jobs", [])}
     for entry in reviews.get("eviction", []):
         try:
-            with core.mutation_lock(vault):
+            with locks.mutation_lock(vault):
                 done = growth_plan.eviction_status(vault, selected_evictions[entry["of"]])
                 if done.get("reason"):
                     raise ValueError(done["reason"])
@@ -332,11 +332,11 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
                     record["settlement"] = last["rid"]
                 previous = done.get("review") or {}
                 if isinstance(previous.get("manifest"), str) and (
-                        core.rid_key(previous["manifest"]) > core.rid_key(planned["manifest"])):
+                        ledger.rid_key(previous["manifest"]) > ledger.rid_key(planned["manifest"])):
                     result["notes"].append(f"Eviction {entry['of']}: a newer selection already reviewed it; "
                                            "this report is kept as history and does not change it")
                 if any(previous.get(k) != v for k, v in record.items()):
-                    core.ledger_append(growth_ledger.ledger_path(vault), record)
+                    ledger.ledger_append(growth_ledger.ledger_path(vault), record)
                 result["eviction"][entry["of"]] = "recorded"
         except (ValueError, KeyError, OSError) as exc:
             result["errors"].append(f"Eviction {entry['of']}: {exc}")
@@ -344,7 +344,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
     for entry in reviews.get("recheck", []):
         job = selected_rechecks[entry["key"]]
         try:
-            with core.mutation_lock(vault):
+            with locks.mutation_lock(vault):
                 now = [i for i in rechecks.candidates(vault, growth_plan.node_index(vault))[0]
                        if i["id"] == job["id"] and i["key"] == job["target_key"]]
                 if not now:
@@ -357,7 +357,7 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
                     result["notes"].append(f"Recheck {entry['key']}: the node or target changed since "
                                            "selection; the report is kept for the selected states")
                 if "escalated" not in now[0]:
-                    core.ledger_append(growth_ledger.ledger_path(vault), {
+                    ledger.ledger_append(growth_ledger.ledger_path(vault), {
                         "kind": "recheck_review", "manifest": planned["manifest"], **entry,
                         "node": job["node"], "target": job["target"],
                         "node_state": job["node_state"], "target_state": job["target_state"]})

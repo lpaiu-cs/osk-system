@@ -16,7 +16,7 @@ import os
 import re
 from pathlib import Path
 
-from . import core
+from . import ledger, locks
 from .vault import Vault
 
 
@@ -49,7 +49,7 @@ def rules(vault: Vault) -> list[dict]:
     """이 기기의 OS에 맞는 규칙. 대장의 규칙(나중 것부터)이 엔진 규칙보다 먼저다 — 같은 뿌리를 다시
     확인해 더한 규칙이 앞선다. 대장을 읽지 못하면 엔진 규칙만 쓴다."""
     try:
-        extra = [r for r in core.ledger_read(ledger_path(vault)) if r.get("kind") == "rule"]
+        extra = [r for r in ledger.ledger_read(ledger_path(vault)) if r.get("kind") == "rule"]
     except (OSError, ValueError):
         extra = []
     return [r for r in (*reversed(extra), *RULES) if r.get("os") in (None, os.name)]
@@ -111,8 +111,8 @@ def add(vault: Vault, harness: str, root: str, shape: str, version: str, note: s
     re.compile(shape)
     if not all(isinstance(v, str) and v.strip() for v in (harness, root, shape, version)):
         raise ValueError("harness, root, shape and version are required")
-    with core.mutation_lock(vault):
-        return core.ledger_append(ledger_path(vault), {"kind": "rule", "harness": harness, "os": os.name,
+    with locks.mutation_lock(vault):
+        return ledger.ledger_append(ledger_path(vault), {"kind": "rule", "harness": harness, "os": os.name,
                                            "version": version, "root": root, "shape": shape,
                                            "note": note})
 

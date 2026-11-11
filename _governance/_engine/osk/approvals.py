@@ -26,8 +26,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .core import (ledger_damage, sha256_bytes, sha256_file, posix_rel, resolve_in_root, ledger_append,
-                   ledger_read, causal_maxima, effective_parents, heads, resolve_one, rid_key)
+from .core import sha256_bytes, sha256_file, posix_rel, resolve_in_root
+from .ledger import (ledger_damage, ledger_append, ledger_read, causal_maxima, effective_parents, heads,
+                     resolve_one, rid_key)
 from . import region_tree, signatures
 from .vault import Vault
 
@@ -63,7 +64,7 @@ def records(vault: Vault) -> list[dict]:
 def ledger_is_damaged(vault: Vault, recs: list[dict]) -> bool:
     """대장에 **구조 손상**(rid 부재·형식 위반·중복)이 있는가.
 
-    `core.unresolved_nodes`의 손상 접기는 `field == "node"`일 때만 돌아서
+    `ledger.unresolved_nodes`의 손상 접기는 `field == "node"`일 때만 돌아서
     `region` 키에는 적용되지 않았다. 그 결과가 fail-**open**이었다: 손상된 행은
     `effective_parents`가 DAG에서 아예 빼므로 극대가 0이 되고, `state()`는 그것을
     `unprotected`로 읽었다 — 보호영역이 조용히 사라진 것처럼 보이고, 남은 행만

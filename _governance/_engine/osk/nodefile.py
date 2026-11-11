@@ -7,7 +7,8 @@
 from __future__ import annotations
 import json, re
 from pathlib import Path
-from .core import ID_RE, posix_rel, atomic_write
+from .core import ID_RE, posix_rel
+from .durable import atomic_write
 from . import contract, graph
 from .errors import WriteError
 from .prose import norm_body, norm_newlines

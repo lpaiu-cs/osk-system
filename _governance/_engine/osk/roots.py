@@ -15,7 +15,7 @@ import os
 import re
 from pathlib import Path
 
-from . import core
+from . import core, durable, ledger, locks
 from .vault import Vault
 
 
@@ -40,8 +40,8 @@ def split(coord: str) -> tuple[str, str] | None:
 def declarations(vault: Vault) -> dict[str, dict | None]:
     """별칭 → 현재 기록, 곧 그 별칭의 인과 극대(Mechanism §3). 극대가 갈리면 None이다 — 다시
     선언하거나 해제하면 새 기록이 모든 머리를 부모로 받아 닫는다."""
-    records = core.ledger_read(vault.roots)
-    return {a: core.resolve_one(records, a, "alias")
+    records = ledger.ledger_read(vault.roots)
+    return {a: ledger.resolve_one(records, a, "alias")
             for a in {r.get("alias") for r in records} if isinstance(a, str)}
 
 
@@ -114,17 +114,17 @@ def declare(vault: Vault, alias: str, note: str, origin: str | None = None) -> d
     if not NAME.fullmatch(alias) or alias in RESERVED:
         raise ValueError(f"쓸 수 없는 별칭: {alias!r} — 두 글자 이상의 [a-z][a-z0-9-]*이며 "
                          "http·https·native는 쓰지 않는다")
-    with core.mutation_lock(vault):       # 대장도 작업 트리다 — 데몬의 rebase와 겹치지 않게 적는다
-        return core.ledger_append(vault.roots, {"kind": "declare", "alias": alias, "note": note,
+    with locks.mutation_lock(vault):       # 대장도 작업 트리다 — 데몬의 rebase와 겹치지 않게 적는다
+        return ledger.ledger_append(vault.roots, {"kind": "declare", "alias": alias, "note": note,
                                           **({"origin": origin} if origin else {})})
 
 
 def retire(vault: Vault, alias: str, note: str = "") -> dict:
     """별칭 해제 — 그 루트를 향한 근거 줄은 끊김이 된다. 선언이 갈린 별칭도 해제로 닫는다."""
-    with core.mutation_lock(vault):       # 확인과 기록 사이에 동기화가 끼어들지 않게 한 잠금 안에서
+    with locks.mutation_lock(vault):       # 확인과 기록 사이에 동기화가 끼어들지 않게 한 잠금 안에서
         if alias_problem(alias, declarations(vault)) in ("선언되지 않은 별칭", "해제된 별칭"):
             raise ValueError(f"선언된 별칭이 아니다: {alias}")
-        return core.ledger_append(vault.roots, {"kind": "retire", "alias": alias, "note": note})
+        return ledger.ledger_append(vault.roots, {"kind": "retire", "alias": alias, "note": note})
 
 
 def mount(vault: Vault, alias: str, where: str) -> str:
@@ -133,14 +133,14 @@ def mount(vault: Vault, alias: str, where: str) -> str:
     problem = alias_problem(alias, declarations(vault)) or location_problem(vault, where)
     if problem:
         raise ValueError(f"{problem} — `{alias}`의 위치를 두지 않았다")
-    with core.device_lock(vault):         # 데몬의 rebase·`.osk/` 되돌리기와 겹치지 않게 읽고 쓴다
+    with locks.device_lock(vault):         # 데몬의 rebase·`.osk/` 되돌리기와 겹치지 않게 읽고 쓴다
         _save(vault, {**locations(vault), alias: where})
     return where
 
 
 def unmount(vault: Vault, alias: str) -> None:
     """이 기기에서 그 별칭의 위치를 지운다."""
-    with core.device_lock(vault):
+    with locks.device_lock(vault):
         places = locations(vault)
         if places.pop(alias, None) is None:
             raise ValueError(f"이 기기에 위치가 없는 별칭: {alias}")
@@ -148,7 +148,7 @@ def unmount(vault: Vault, alias: str) -> None:
 
 
 def _save(vault: Vault, places: dict[str, str]) -> None:
-    core.atomic_write(config_path(vault), (json.dumps(places, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    durable.atomic_write(config_path(vault), (json.dumps(places, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
 
 
 def show(vault: Vault) -> dict:

@@ -15,7 +15,7 @@ ENGINE = Path(__file__).resolve().parents[1]
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, distillation as D, growth, integration as it, raw, transcripts, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process
+from osk import core, distillation as D, growth, integration as it, raw, transcripts, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process, durable, ledger, locks
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -146,7 +146,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             assert gone['structure'][0]['reason'] == 'target missing', gone
             path = conversation_state.state_path(VAULT, 'claude', sid)
             before = path.read_bytes()
-            with core.mutation_lock(VAULT):
+            with locks.mutation_lock(VAULT):
                 assert conversation_review.review_status_locked(VAULT, 'claude', sid, first['through'])['status'] == 'complete'
             assert path.read_bytes() == before  # A status read never writes the cursor.
             assert not conversation_capture.status(VAULT, 'claude', sid)['pending']
@@ -325,9 +325,9 @@ class IntegrationRecoveryTests(unittest.TestCase):
             worker = '\\n'.join([
                 'import json,sys',
                 'from pathlib import Path',
-                'from osk import core,growth,integration as it,write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open()',
+                'from osk import core,growth,integration as it,write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process, durable, ledger, locks; from osk.vault import Vault; VAULT = Vault.open()',
                 'sys.stdin.read()',
-                "plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]",
+                "plan = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]",
                 "job = plan['scope_jobs'][0]",
                 "conversation_review.acknowledge(VAULT, 'claude', SID, job['through'], 'preserved', 'Retained useful observation.', [{'key':PROOF}])",
                 "Path(NATIVE).write_text(SECOND, encoding='utf-8')",

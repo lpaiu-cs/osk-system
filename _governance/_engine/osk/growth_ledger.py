@@ -5,7 +5,7 @@
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from . import core
+from . import ledger
 from .vault import Vault
 
 
@@ -22,8 +22,8 @@ WAITS = {"busy", "limited"}
 
 
 def ledger_records(vault: Vault) -> list[dict]:
-    rows = core.ledger_read(ledger_path(vault))
-    errors = core.ledger_damage(rows, ledger_path(vault))
+    rows = ledger.ledger_read(ledger_path(vault))
+    errors = ledger.ledger_damage(rows, ledger_path(vault))
     for row in rows:
         if row.get("kind") not in {"plan", "review", "run", "eviction_review", "recheck_review"}:
             errors.append("unknown growth record kind")
@@ -47,12 +47,12 @@ def latest_report(rows: list[dict], value: str, field: str, par=None) -> dict | 
     갈리면 정하지 않는다(Mechanism §3 1항). 같은 보고를 두 기기가 따로 적었으면(이어 적기
     등) 갈린 것이 아니므로 하나로 본다. 같은 선택 안에서는 인과상 나중 기록이 정한다.
     `par`는 같은 `rows`의 `effective_parents`다 — 여러 항목을 판정할 때 한 번만 잰다."""
-    par = core.effective_parents(rows) if par is None else par
+    par = ledger.effective_parents(rows) if par is None else par
     plans = {r["manifest"] for r in rows
              if r.get(field) == value and isinstance(r.get("manifest"), str)}
-    anc = {m: core.ancestors(m, par) for m in plans}
+    anc = {m: ledger.ancestors(m, par) for m in plans}
     kept = {m for m in plans if not any(m in anc[o] for o in plans if o != m)}
-    top = core.causal_maxima(rows, value, par, field, candidate=(
+    top = ledger.causal_maxima(rows, value, par, field, candidate=(
         (lambda r: r.get("manifest") in kept) if plans else None))
     said = lambda r: {k: v for k, v in r.items() if k not in ("rid", "parents", "at")}
     return top[0] if top and all(said(r) == said(top[0]) for r in top) else None

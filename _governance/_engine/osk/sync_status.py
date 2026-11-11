@@ -1,7 +1,7 @@
 """osk.sync_status — 동기화 데몬의 잠금 자리와 마지막 주기의 기록.
 
 데몬(`sync_daemon.py`)은 진입점이다. 갱신·설치·점검이 데몬이 쥔 잠금과 데몬이 남긴 결과를 읽으려고
-진입점을 import하지 않게, 둘이 함께 쓰는 것을 여기에 둔다. 자리는 엔진이 정한다(`core.local_lock_path`).
+진입점을 import하지 않게, 둘이 함께 쓰는 것을 여기에 둔다. 자리는 엔진이 정한다(`locks.local_lock_path`).
 """
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import core
+from . import durable, locks
 
 
 def lock_path(root: Path, name: str = "osk-sync.lock") -> Path:
-    """잠금 파일의 경로 — 자리는 **엔진이 정한다**(`core.local_lock_path`).
+    """잠금 파일의 경로 — 자리는 **엔진이 정한다**(`locks.local_lock_path`).
     `name`으로 잠금을 구분한다: `osk-sync.lock`은 데몬 싱글턴(한 기기 한 데몬),
     `osk-mutation.lock`은 엔진의 working-tree 변경 잠금과 **같은 파일**이다.
 
@@ -23,10 +23,10 @@ def lock_path(root: Path, name: str = "osk-sync.lock") -> Path:
     정의는 엔진에 한 벌만 둔다. 엔진의 해석기는 git을 **실행하지 않고**
     파일시스템으로 읽으므로, 매 tick마다 git.exe를 띄우던 비용과 Windows
     콘솔 깜빡임도 함께 사라진다."""
-    return core.local_lock_path(name, root)
+    return locks.local_lock_path(name, root)
 
 
-# 마지막 주기의 결과 — 기기 로컬(`core.local_lock_path`). 실패가 데몬 로그에만 묻히면 사용자는 백업이
+# 마지막 주기의 결과 — 기기 로컬(`locks.local_lock_path`). 실패가 데몬 로그에만 묻히면 사용자는 백업이
 # 멈춘 줄 모른다(v5.4의 전송 보류가 그 예다). 세션 시작 훅과 doctor가 `trouble`로 읽는다.
 STATUS = "osk-sync-status.json"
 STALE = 24 * 3600                       # 이보다 오래 성공하지 못했거나 돌지 않았으면 멈춘 것이다
@@ -69,7 +69,7 @@ def record(root: Path, status: str) -> None:
     now = time.time()
     since = None if status.startswith("ok") else (prev.get("since") or now)
     try:
-        core.atomic_write(lock_path(root, STATUS),
+        durable.atomic_write(lock_path(root, STATUS),
                           json.dumps({"at": now, "status": status, "since": since},
                                      ensure_ascii=False).encode("utf-8"))
     except OSError:

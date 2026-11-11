@@ -6,7 +6,8 @@
 from __future__ import annotations
 import os
 from pathlib import Path
-from .core import ledger_read, sha256_file, resolve_within, canon_rel
+from .core import sha256_file, resolve_within, canon_rel
+from .ledger import ledger_read
 from .layout import KINDS, PREFIXES, adapt_path
 from . import publish, update_state
 from .vault import Vault

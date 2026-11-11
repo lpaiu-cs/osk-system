@@ -11,7 +11,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="osk-hidden-raw-") as folder:
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from osk import core, contract, distillation as D, graph, raw, secrets, validate, write
+        from osk import core, contract, distillation as D, graph, raw, secrets, validate, write, ledger
         from osk.vault import Vault
         VAULT = Vault.open()
         validate.make_mini_vault(VAULT, folder)
@@ -224,7 +224,7 @@ def main():
         # Mechanism §5: each move is in the migration ledger before it runs, and the manifest opens with every
         # record and closes with the result and the conflicts held (#317 review).
         from osk import evidence_migration as em
-        moved = [e for e in core.ledger_read(em.events_path(VAULT)) if e.get("rule") == raw.CONSOLIDATE_RULE]
+        moved = [e for e in ledger.ledger_read(em.events_path(VAULT)) if e.get("rule") == raw.CONSOLIDATE_RULE]
         assert [(e["kind"], e["source"], e["before"]) for e in moved] == [
             ("move", m["from"], m["hash"]) for m in plan["files"]], moved
         listing = (root / rep["applied"][0]["manifest"]).read_text(encoding="utf-8")

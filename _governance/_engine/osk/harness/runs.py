@@ -7,7 +7,7 @@
 문맥이 모델까지 닿았는지는 직접 알 수 없다. 세션 시작 훅은 `overview(session=…)`를
 부르라고 싣으므로, 그 프로젝트 키의 overview가 그 뒤에 불렸으면 닿았다고 짐작한다.
 
-기록은 기기 로컬(`core.local_lock_path`)이며 동기화되지 않는다. 호스트 이름·프로젝트 키·
+기록은 기기 로컬(`locks.local_lock_path`)이며 동기화되지 않는다. 호스트 이름·프로젝트 키·
 그 훅을 돌린 Python 경로와 시각만 적고 대화 내용은 적지 않는다. 기록은 잠금을 잠깐만
 기다리고, 못 적으면 거짓을 돌려준다 — 훅과 표면을 막지 않는다.
 
@@ -24,12 +24,12 @@ import os
 import sys
 import time
 
-from .. import core
+from .. import core, durable, locks
 from .._portalock import lock_exclusive, unlock
 from ..vault import Vault
 
 STATE = "osk-hook-runs.json"
-# 비Git vault의 대체 자리는 이름의 stem으로 갈리므로(core.local_lock_path) 세 이름의 stem이 달라야 한다.
+# 비Git vault의 대체 자리는 이름의 stem으로 갈리므로(locks.local_lock_path) 세 이름의 stem이 달라야 한다.
 LOCK = "osk-hook-recording.lock"
 CLAIMS = "osk-hook-claims.json"   # {"claims": {지문: at}, "duplicates": {"<호스트>/<사건>": at}}
 KEEP = 64        # overview를 기억하는 세션 수
@@ -43,7 +43,7 @@ BLIND = 5        # 전사 크기를 잴 수 없을 때의 창(초)
 
 def _load(vault: Vault, name: str, keys: tuple[str, ...]) -> dict:
     try:
-        data = json.loads(core.local_lock_path(name, vault.root).read_text(encoding="utf-8"))
+        data = json.loads(locks.local_lock_path(name, vault.root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
     if not isinstance(data, dict):
@@ -64,7 +64,7 @@ def duplicates(vault: Vault) -> dict:
 def _update(vault: Vault, change, name: str = STATE, keys: tuple[str, ...] = ("runs", "overview")) -> bool:
     if os.environ.get("OSK_GROWTH_WORKER") == "1":
         return False
-    with open(core.local_lock_path(LOCK, vault.root), "w") as f:
+    with open(locks.local_lock_path(LOCK, vault.root), "w") as f:
         deadline = time.monotonic() + WAIT
         while True:
             try:
@@ -77,7 +77,7 @@ def _update(vault: Vault, change, name: str = STATE, keys: tuple[str, ...] = ("r
         try:
             data = _load(vault, name, keys)
             change(data)
-            core.atomic_write(core.local_lock_path(name, vault.root),
+            durable.atomic_write(locks.local_lock_path(name, vault.root),
                               json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8"))
         finally:
             unlock(f)

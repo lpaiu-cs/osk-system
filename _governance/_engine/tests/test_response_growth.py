@@ -1764,7 +1764,7 @@ class ResponseGrowthTests(unittest.TestCase):
             argv = json.loads((VAULT.root / result['output'] / 'argv.json').read_text(encoding='utf-8'))
             assert argv[1:] == ['-c', script], argv
             assert result['domain_selected'] == 0 and result['scope_selected'] == 1, result
-            manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            manifest = [r for r in ledger.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['scope'] for j in manifest['organization_jobs']] == ['W1'], manifest
             assert result['selected'] == 2 and manifest['timeout_seconds'] == 600
             assert conversation_capture.status(VAULT, 'claude','own')['reviewed_rounds'] == 1

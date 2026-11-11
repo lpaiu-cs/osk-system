@@ -31,8 +31,10 @@ from __future__ import annotations
 import argparse, json, os, re, sys, tempfile, time
 from pathlib import Path
 
-from .core import ledger_append, ledger_damage, ledger_read, sha256_file, sha256_bytes, posix_rel, local_lock_path
-from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
+from .core import sha256_file, sha256_bytes, posix_rel
+from .ledger import ledger_append, ledger_damage, ledger_read
+from .locks import local_lock_path
+from .durable import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from . import approvals, daemon_control, update_check, update_plan, update_source, update_state, update_txn, approval_acts, region_tree
 from .vault import Vault
 

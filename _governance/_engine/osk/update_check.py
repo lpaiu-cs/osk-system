@@ -1,7 +1,7 @@
 """osk.update_check — 새 정식 릴리스를 알린다. 받지도 적용하지도 않는다.
 
 정본에는 태그 목록만 묻는다(`git ls-remote`) — vault의 내용은 보내지 않는다.
-확인 결과는 기기 로컬이다(`core.local_lock_path`): 동기화되지 않고 추적 트리에
+확인 결과는 기기 로컬이다(`locks.local_lock_path`): 동기화되지 않고 추적 트리에
 들어가지 않는다. 비교할 판본은 동기화되는 갱신 저널에서 매번 다시 읽는다 — 다른
 기기가 갱신해 그 저널이 들어오면, 확인을 다시 하지 않아도 알림이 사라진다.
 
@@ -26,12 +26,12 @@ import subprocess
 import time
 from datetime import datetime
 
-from . import core, update_source, update_state
+from . import core, update_source, update_state, durable, ledger, locks
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
 
 # 기기 로컬 자리. 비Git vault의 대체 자리는 이름의 stem으로 갈리므로
-# (core.local_lock_path) 세 이름의 stem이 서로 달라야 한다.
+# (locks.local_lock_path) 세 이름의 stem이 서로 달라야 한다.
 STATE = "osk-release-check.json"     # 마지막 확인 {at, url, latest, error}
 ACK = "osk-release-ack.json"         # 이 기기의 받음 기록 {version, at}
 LOCK = "osk-release-checking.lock"   # 한 번에 한 확인
@@ -52,14 +52,14 @@ _GITHUB = re.compile(r"(?:https://github\.com/|git@github\.com:|ssh://git@github
 
 def _read(vault: Vault, name: str) -> dict:
     try:
-        data = json.loads(core.local_lock_path(name, vault.root).read_text(encoding="utf-8"))
+        data = json.loads(locks.local_lock_path(name, vault.root).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def _write(vault: Vault, name: str, data: dict) -> None:
-    core.atomic_write(core.local_lock_path(name, vault.root),
+    durable.atomic_write(locks.local_lock_path(name, vault.root),
                       json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
 
@@ -132,7 +132,7 @@ def check(vault: Vault, *, unattended: bool = False) -> dict:
     끝났으면 곧바로 물러나고, 사람의 입력을 기다리지 않는다. 실패는 기록하되 지난
     성공의 `latest`는 지우지 않는다 — 잠깐 오프라인이라고 알림이 사라지지 않는다."""
     url = _url(_upstream(vault))
-    with open(core.local_lock_path(LOCK, vault.root), "w") as f:
+    with open(locks.local_lock_path(LOCK, vault.root), "w") as f:
         try:
             lock_exclusive(f, blocking=not unattended)
         except OSError:
@@ -194,7 +194,7 @@ def acked(vault: Vault, version: str) -> bool:
     동기화로 들어온 다른 기기의 기록. 대장을 읽지 못하면 받지 않은 것으로 본다(알림이 남는다)."""
     got = [_read(vault, ACK).get("version")]
     try:
-        got += [r.get("version") for r in core.ledger_read(acks_path(vault)) if r.get("kind") == "ack"]
+        got += [r.get("version") for r in ledger.ledger_read(acks_path(vault)) if r.get("kind") == "ack"]
     except (OSError, ValueError):
         pass
     return any(update_source.semver(v) and not newer(version, v) for v in got)
@@ -211,8 +211,8 @@ def ack(vault: Vault, version: str) -> dict:
     _write(vault, ACK, {"version": version, "at": time.time()})
     out = {"acked": version, "synced": True}
     try:
-        with core.mutation_lock(vault):
-            core.ledger_append(acks_path(vault), {"kind": "ack", "version": version})
+        with locks.mutation_lock(vault):
+            ledger.ledger_append(acks_path(vault), {"kind": "ack", "version": version})
     except Exception as e:
         out.update(synced=False, error=f"{type(e).__name__}: {e}"[:300])
     return out

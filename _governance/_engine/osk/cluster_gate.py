@@ -5,7 +5,8 @@
 from __future__ import annotations
 import json, os, time
 from pathlib import Path
-from .core import ledger_damage, ledger_read, posix_rel, resolve_one
+from .core import posix_rel
+from .ledger import ledger_damage, ledger_read, resolve_one
 from . import placement
 from .errors import WriteError
 from .naming import title_errors
@@ -114,7 +115,7 @@ def _ack_file(vault: Vault) -> Path:
     """표식은 **기기 로컬**이다(추적 트리 밖 — `git add -A`에 딸려 가지 않고
     다른 기기와 공유되지 않는다). 확인은 지금 이 대화의 일이지 저장소의
     상태가 아니다."""
-    from .core import local_lock_path
+    from .locks import local_lock_path
     return local_lock_path("osk-cluster-ack.json", vault.root)
 
 

@@ -24,7 +24,8 @@ TMP = tempfile.TemporaryDirectory(prefix="osk-integration-test-")
 os.environ["OSK_VAULT_ROOT"] = str(Path(TMP.name) / "vault")
 sys.path.insert(0, str(ENGINE))
 from osk import (core, integration as it, raw, scope_memory, transcripts, validate, write, nodefile,
-                 conversation_capture, conversation_cite, conversation_review, conversation_state, dialogue_codec)
+                 conversation_capture, conversation_cite, conversation_review, conversation_state, dialogue_codec,
+                 ledger)
 from osk.vault import Vault
 VAULT = Vault.open()
 ROOT = VAULT.root
@@ -2570,7 +2571,7 @@ class IntegrationTests(unittest.TestCase):
         code = """import json, os, sys
 from pathlib import Path
 sys.path.insert(0, os.environ['OSK_PROBE_ENGINE'])
-from osk import core, integration as it, raw, validate, conversation_capture, conversation_cite, conversation_review, conversation_state
+from osk import core, integration as it, raw, validate, conversation_capture, conversation_cite, conversation_review, conversation_state, durable, ledger, locks
 from osk.vault import Vault
 VAULT = Vault.open()
 if not (VAULT.root / '00_Scope/W1').is_dir():
@@ -2890,7 +2891,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
     def test_a_one_off_workspace_key_is_neither_bound_nor_followed(self):
         from osk import workspaces
         root = Path(TMP.name) / f"{self.sid}-root"
-        core.ledger_append(workspaces.ledger_path(VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
+        ledger.ledger_append(workspaces.ledger_path(VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
                                                "root": str(root), "shape": r"\d{4}-\d{2}-\d{2}/[^/]+"})
         self.addCleanup(workspaces.ledger_path(VAULT).unlink, missing_ok=True)
         key = self.sid + "-chat"
@@ -2911,15 +2912,15 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["workspace"]["one_off"], st["space"]), (True, None))
         self.assertNotIn("warning", st["workspace"])
-        rows = len(core.ledger_read(VAULT.routing))
+        rows = len(ledger.ledger_read(VAULT.routing))
         cited = conversation_cite.cite(VAULT, f"claude/{self.sid}", quote="question 1", space="00_Scope/W1")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)   # the one root record
         self.assertNotIn("binding", cited)
-        self.assertEqual(len(core.ledger_read(VAULT.routing)), rows)          # nothing bound
+        self.assertEqual(len(ledger.ledger_read(VAULT.routing)), rows)          # nothing bound
         self.assertIsNone(conversation_capture.status(VAULT, "claude", self.sid)["space"])            # citing pins no landing
         # An explicit landing at capture is this conversation's review context only.
         self.assertEqual(conversation_capture.capture(VAULT, "claude", self.sid, None, key, "00_Scope/W1")["space"], "00_Scope/W1")
-        self.assertEqual(len(core.ledger_read(VAULT.routing)), rows)          # still nothing bound
+        self.assertEqual(len(ledger.ledger_read(VAULT.routing)), rows)          # still nothing bound
         # The judgment belongs to the conversation, not to the key: elsewhere the key keeps its scope.
         self.assertEqual(write.resolve_session(VAULT, key), "Capture")
         self.assertIsNone(talk(self.sid + "-other", f"2026-10-12/{key}")["space"])
@@ -3009,7 +3010,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         # turns stay the parent's, and the copy continues in the parent's landing (#184 review).
         from osk import workspaces
         root = Path(TMP.name) / f"{self.sid}-root"
-        core.ledger_append(workspaces.ledger_path(VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
+        ledger.ledger_append(workspaces.ledger_path(VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
                                                "root": str(root), "shape": r"[a-z]+-[a-z]+"})
         self.addCleanup(workspaces.ledger_path(VAULT).unlink, missing_ok=True)
         cwd = root / "silver-gravity"
@@ -3036,7 +3037,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         # that folder (a catch-up) must not read a same-named repository key's binding as it.
         from osk import workspaces
         root = Path(TMP.name) / f"{self.sid}-root"
-        core.ledger_append(workspaces.ledger_path(VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
+        ledger.ledger_append(workspaces.ledger_path(VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
                                                "root": str(root), "shape": r"[a-z]+-[a-z]+"})
         self.addCleanup(workspaces.ledger_path(VAULT).unlink, missing_ok=True)
         cwd = root / "amber-quartz"
@@ -3077,7 +3078,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         import threading
         from osk import workspaces
         root = Path(TMP.name) / f"{self.sid}-root"
-        core.ledger_append(workspaces.ledger_path(VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
+        ledger.ledger_append(workspaces.ledger_path(VAULT), {"kind": "rule", "harness": "claude", "version": "2.1.281",
                                                "root": str(root), "shape": r"[a-z]+-[a-z]+"})
         self.addCleanup(workspaces.ledger_path(VAULT).unlink, missing_ok=True)
         (root / "fusion-orion").mkdir(parents=True)

@@ -18,7 +18,7 @@ SETUP = r'''
 import json, os, subprocess, sys, time
 from pathlib import Path
 from unittest import mock
-from osk import cli, core, update, update_check, validate, daemon_control, update_plan, update_source, update_state, update_txn
+from osk import cli, core, update, update_check, validate, daemon_control, update_plan, update_source, update_state, update_txn, durable, ledger, locks
 from osk.vault import Vault
 VAULT = Vault.open()
 root = VAULT.root
@@ -42,9 +42,9 @@ def configure(**upstream):
                                                **upstream}}), encoding='utf-8')
 configure()
 def done(version, fill):
-    core.ledger_append(update_state.journal_path(VAULT), {'kind': 'done', 'version': version,
+    ledger.ledger_append(update_state.journal_path(VAULT), {'kind': 'done', 'version': version,
                                                'attest': 'sha256:' + fill * 64})
-state_path = core.local_lock_path(update_check.STATE, VAULT.root)
+state_path = locks.local_lock_path(update_check.STATE, VAULT.root)
 def cached(**over):
     state = {'at': time.time(), 'url': str(up), 'latest': 'v4.10.0', 'error': None, **over}
     state_path.write_text(json.dumps(state), encoding='utf-8')
@@ -125,8 +125,8 @@ assert r.returncode != 0 and '--ack' in r.stderr, (r.returncode, r.stderr)
 assert update_check.session_notice(VAULT)[0], 'a refused ack recorded nothing'
 r = ack_run('--ack', 'v4.10.0')
 assert r.returncode == 0 and json.loads(r.stdout) == {'acked': 'v4.10.0', 'synced': True}, (r.stdout, r.stderr)
-assert json.loads(core.local_lock_path(update_check.ACK, VAULT.root).read_text(encoding='utf-8'))['version'] == 'v4.10.0'
-assert [x['version'] for x in core.ledger_read(update_check.acks_path(VAULT))] == ['v4.10.0']
+assert json.loads(locks.local_lock_path(update_check.ACK, VAULT.root).read_text(encoding='utf-8'))['version'] == 'v4.10.0'
+assert [x['version'] for x in ledger.ledger_read(update_check.acks_path(VAULT))] == ['v4.10.0']
 assert update_check.session_notice(VAULT) == ('', '')
 seen = update_check.surface(VAULT)
 assert seen['acked'] is True and 'notify' not in seen and command in seen['how'], seen
@@ -400,18 +400,18 @@ with mock.patch.dict(os.environ, {'OSK_GROWTH_WORKER': '1'}):
 assert seen['latest'] == 'v4.10.0' and 'notify' not in seen and 'acked' not in seen, seen
 assert update_check.session_notice(VAULT)[0], 'the worker spent nothing'
 # Another device acked and its ledger row arrived by sync: this device has no record of its own.
-core.ledger_append(update_check.acks_path(VAULT), {'kind': 'ack', 'version': 'v4.10.0'})
-assert not core.local_lock_path(update_check.ACK, VAULT.root).exists()
+ledger.ledger_append(update_check.acks_path(VAULT), {'kind': 'ack', 'version': 'v4.10.0'})
+assert not locks.local_lock_path(update_check.ACK, VAULT.root).exists()
 assert update_check.session_notice(VAULT) == ('', '') == update_check.session_notice(VAULT, screen=False)
 assert update_check.surface(VAULT)['acked'] is True
 # The ledger cannot take the row: this device still stops on its own record, and the CLI says so.
 cached(latest='v4.12.0')
-with mock.patch.object(core, 'ledger_append', side_effect=OSError('read-only')):
+with mock.patch.object(ledger, 'ledger_append', side_effect=OSError('read-only')):
     rep = update_check.ack(VAULT, 'v4.12.0')
 assert rep['acked'] == 'v4.12.0' and rep['synced'] is False and 'read-only' in rep['error'], rep
 assert update_check.session_notice(VAULT) == ('', '')
 # A damaged ledger is read as no ack: without this device's record the notice stays.
-core.local_lock_path(update_check.ACK, VAULT.root).unlink()
+locks.local_lock_path(update_check.ACK, VAULT.root).unlink()
 with update_check.acks_path(VAULT).open('a', encoding='utf-8') as f:
     f.write('{"kind": "ack", "vers\n')
 assert update_check.session_notice(VAULT)[0].startswith('[osk 새 릴리스 — v4.12.0'), 'damaged ledger'

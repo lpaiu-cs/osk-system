@@ -31,7 +31,7 @@ for _i, (_k, _v) in enumerate(_cfg, _n):
     os.environ[f"GIT_CONFIG_KEY_{_i}"] = _k
     os.environ[f"GIT_CONFIG_VALUE_{_i}"] = _v
 sys.path.insert(0, str(ENGINE))
-# git 없는 vault의 잠금·상태 자리(core.local_lock_path)는 임시 디렉터리다 — 시험
+# git 없는 vault의 잠금·상태 자리(locks.local_lock_path)는 임시 디렉터리다 — 시험
 # vault마다 osk-integration-* 따위가 실 임시 디렉터리에 쌓였다. 이 실행과 자식
 # 프로세스의 임시 자리를 _TMP 안으로 돌리고(env 상속), 끝에서 _TMP째 지운다.
 # 둘 다 돌려야 한다 — 부모와 자식(훅)이 다른 자리를 보면 상태를 못 나눈다.
@@ -51,7 +51,7 @@ os.environ["OSK_UPDATE_CHECK"] = "0"
 os.environ["OSK_HOOK_WORKER"] = "0"
 
 from osk import (cli, core, graph, validate, authority, contract, routing, write,  # noqa: E402
-                 publish, cluster_gate, node_moves, nodefile, placement, topology, activated_rules, surface_checks)  # noqa: E402
+                 publish, cluster_gate, node_moves, nodefile, placement, topology, activated_rules, surface_checks, durable, ledger, locks)  # noqa: E402
 from osk.vault import Vault
 VAULT = Vault.open()
 import osk.signatures as S  # noqa: E402
@@ -118,10 +118,10 @@ def sig_status(node_id, path=None):
     causal_maxima·unresolved_nodes·id 해석)는 그대로 존속하며, 이 재현으로
     그 기계를 signatures 모듈 없이 계속 소진한다. SIGNATURES는 이 수트에서
     임의 append가 가능한 임시 대장으로 쓰인다."""
-    recs = core.ledger_read(VAULT.signatures)
-    if node_id in core.unresolved_nodes(recs):
+    recs = ledger.ledger_read(VAULT.signatures)
+    if node_id in ledger.unresolved_nodes(recs):
         return "unsigned"
-    m = core.causal_maxima(recs, node_id)
+    m = ledger.causal_maxima(recs, node_id)
     if len(m) != 1 or m[0].get("kind") not in ("sign", "restore"):
         return "unsigned"
     r = m[0]
@@ -167,33 +167,33 @@ def test_rid_monotone():
         with mock.patch("time.time", return_value=1754000000.0):  # ms 고정
             for i in range(100):
                 # 매 호출이 파일에서 최대 rid를 읽는다 = 프로세스 재시작 등가
-                r = core.ledger_append(led, {"kind": "sign", "node": f"x{i}",
+                r = ledger.ledger_append(led, {"kind": "sign", "node": f"x{i}",
                                              "hash": "h", "path": "p"})
-                r2 = core.ledger_append(led, {"kind": "unsign", "node": f"x{i}",
+                r2 = ledger.ledger_append(led, {"kind": "unsign", "node": f"x{i}",
                                               "hash": "h", "path": "p"})
                 rids += [r["rid"], r2["rid"]]
         check("rid 단조(같은 ms 200연속·재시작 등가)", rids == sorted(rids))
-        recs = core.ledger_read(led)
+        recs = ledger.ledger_read(led)
         check("parents 인과 사슬 연속", all(
             recs[i]["parents"] == [recs[i - 1]["rid"]] for i in range(1, len(recs))))
         bad = sum(1 for i in range(100)
-                  if core.causal_maxima(recs, f"x{i}")[0]["kind"] != "unsign")
+                  if ledger.causal_maxima(recs, f"x{i}")[0]["kind"] != "unsign")
         check("sign→unsign 인과 판정 오판 0/100", bad == 0, f"{bad}/100")
 
         # 병합 산물: 물리 마지막 행이 최대 rid가 아니어도 최대값이 바닥
         led2 = Path(td) / "m.jsonl"
         now_ms = int(1754000000.0 * 1000)
-        hi = core._make_rid(now_ms + 60_000, 7)      # 미래 ms(다른 기기 시계 앞섬)
-        lo = core._make_rid(now_ms - 60_000, 3)
+        hi = ledger._make_rid(now_ms + 60_000, 7)      # 미래 ms(다른 기기 시계 앞섬)
+        lo = ledger._make_rid(now_ms - 60_000, 3)
         for rid in (hi, lo):                          # 물리 순서: hi 먼저, lo가 마지막 행
             with open(led2, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"rid": rid, "kind": "sign", "node": "m",
                                     "path": "p", "hash": "h"}) + "\n")
         with mock.patch("time.time", return_value=1754000000.0):
-            r = core.ledger_append(led2, {"kind": "sign", "node": "m",
+            r = ledger.ledger_append(led2, {"kind": "sign", "node": "m",
                                           "path": "p", "hash": "h"})
         check("병합 후 rid 바닥=정본 최대값(마지막 행 아님)",
-              core.rid_key(r["rid"]) > core.rid_key(hi) > core.rid_key(lo))
+              ledger.rid_key(r["rid"]) > ledger.rid_key(hi) > ledger.rid_key(lo))
 
 
 # ── 2. 같은 ms라도 인과 사슬이면 comparable → signed ─────────────────────
@@ -202,14 +202,14 @@ def test_same_ms_chain_signed():
     node = ROOT / "00_Scope/W1/regr-chain.md"
     node.write_text(node_text("260802-zzzz-rg01", "사슬"), encoding="utf-8")
     with mock.patch("time.time", return_value=1754000100.0):
-        core.ledger_append(VAULT.signatures, {
+        ledger.ledger_append(VAULT.signatures, {
             "kind": "sign", "node": "260802-zzzz-rg01",
             "path": str(node.relative_to(ROOT)), "hash": "sha256:stale"})
-        core.ledger_append(VAULT.signatures, {
+        ledger.ledger_append(VAULT.signatures, {
             "kind": "sign", "node": "260802-zzzz-rg01",
             "path": str(node.relative_to(ROOT)), "hash": core.sha256_file(node)})
-    recs = core.ledger_read(VAULT.signatures)
-    same = core.rid_parts(recs[0]["rid"])[0] == core.rid_parts(recs[1]["rid"])[0]
+    recs = ledger.ledger_read(VAULT.signatures)
+    same = ledger.rid_parts(recs[0]["rid"])[0] == ledger.rid_parts(recs[1]["rid"])[0]
     check("같은 ms 사슬 성립(전제)", same)
     check("같은 ms라도 인과 사슬이면 signed(비교 가능)",
           sig_status("260802-zzzz-rg01", node) == "signed")
@@ -219,16 +219,16 @@ def test_same_ms_chain_signed():
 def test_fork_failclosed_and_reseal():
     node = ROOT / "00_Scope/W1/regr-chain.md"     # 2번의 상태를 이어받는다
     h = core.sha256_file(node)
-    fork_rid = core._make_rid(int(1754000100.0 * 1000), 0xF00)
+    fork_rid = ledger._make_rid(int(1754000100.0 * 1000), 0xF00)
     raw_append({"rid": fork_rid, "parents": [], "kind": "sign",
                 "node": "260802-zzzz-rg01", "path": str(node.relative_to(ROOT)),
                 "hash": h, "at": core.now_iso()})     # 다른 기기 유래 뿌리(병합 산물)
     check("분기(비교 불능) → unsigned fail-closed",
           sig_status("260802-zzzz-rg01", node) == "unsigned")
     check("분기 상태는 판정 불가로 표면화(fail-closed)",
-          "260802-zzzz-rg01" in core.unresolved_nodes(
-              core.ledger_read(VAULT.signatures)))
-    r = core.ledger_append(VAULT.signatures, {
+          "260802-zzzz-rg01" in ledger.unresolved_nodes(
+              ledger.ledger_read(VAULT.signatures)))
+    r = ledger.ledger_append(VAULT.signatures, {
         "kind": "sign", "node": "260802-zzzz-rg01",
         "path": str(node.relative_to(ROOT)), "hash": h,
         "reason": "재서명 — 분기 해소"})
@@ -256,25 +256,25 @@ def test_anchor_no_order_fallback():
     h = core.sha256_file(node)
     rel = str(node.relative_to(ROOT))
     ms = int(1754000300.0 * 1000)
-    L1 = core._make_rid(ms, 0)                       # 유산 sign (parents 없음)
+    L1 = ledger._make_rid(ms, 0)                       # 유산 sign (parents 없음)
     raw_append({"rid": L1, "kind": "sign", "node": "260802-zzzz-rg10",
                 "path": rel, "hash": "sha256:stale", "at": core.now_iso()})
     with mock.patch("time.time", return_value=1754000300.5):
-        U = core.ledger_append(VAULT.signatures, {                   # 앵커 = 해제
+        U = ledger.ledger_append(VAULT.signatures, {                   # 앵커 = 해제
             "kind": "unsign", "node": "260802-zzzz-rg10", "path": rel,
             "hash": "sha256:stale", "reason": "사용자 해제"})
     check("앵커가 유산 head를 봉합", U["parents"] == [L1], U["parents"])
-    B1 = core._make_rid(ms, 5)      # 구 엔진이 다른 클론에서 쓴 행(병합 유입)
+    B1 = ledger._make_rid(ms, 5)      # 구 엔진이 다른 클론에서 쓴 행(병합 유입)
     raw_append({"rid": B1, "kind": "sign", "node": "260802-zzzz-rg10",
                 "path": rel, "hash": h, "at": core.now_iso()})
-    recs = core.ledger_read(VAULT.signatures)
+    recs = ledger.ledger_read(VAULT.signatures)
     check("앵커 이후 parents-부재는 고립 루트(파일 순서 fallback 금지)",
-          core.effective_parents(recs)[B1] == [], core.effective_parents(recs)[B1])
+          ledger.effective_parents(recs)[B1] == [], ledger.effective_parents(recs)[B1])
     check("해제가 서명으로 뒤집히지 않는다(fail-closed)",
           sig_status("260802-zzzz-rg10", node) == "unsigned")
     check("판정 불가 노드로 표면화",
-          "260802-zzzz-rg10" in core.unresolved_nodes(recs))
-    r = core.ledger_append(VAULT.signatures, {
+          "260802-zzzz-rg10" in ledger.unresolved_nodes(recs))
+    r = ledger.ledger_append(VAULT.signatures, {
         "kind": "sign", "node": "260802-zzzz-rg10", "path": rel, "hash": h,
         "reason": "사용자 재서명 — 유입 분기 봉합"})
     check("재서명이 유입 분기까지 봉합(해소 가능성 보존)",
@@ -289,13 +289,13 @@ def test_cycle_normalization():
     node.write_text(node_text("260802-zzzz-rg11", "순환"), encoding="utf-8")
     h, rel = core.sha256_file(node), str(node.relative_to(ROOT))
     ms = int(1754000400.0 * 1000)
-    A, B, X = (core._make_rid(ms, i) for i in (0, 1, 2))
+    A, B, X = (ledger._make_rid(ms, i) for i in (0, 1, 2))
     for rid, parents in ((A, [B]), (B, [A]), (X, [X])):   # 순환 + self-parent
         raw_append({"rid": rid, "parents": parents, "kind": "sign",
                     "node": "260802-zzzz-rg11", "path": rel, "hash": h,
                     "at": core.now_iso()})
-    recs = core.ledger_read(VAULT.signatures)
-    par = core.effective_parents(recs)
+    recs = ledger.ledger_read(VAULT.signatures)
+    par = ledger.effective_parents(recs)
     check("자기 참조·전방 참조 간선 절단(A→B, X→X)",
           par[A] == [] and par[X] == [], par)
     check("후방 참조는 정상 인과로 보존(B→A)", par[B] == [A], par)
@@ -311,13 +311,13 @@ def test_cycle_normalization():
         return seen
     check("대장은 언제나 비순환(자기 조상 없음)",
           all(rid not in reachable(rid) - {rid} for rid in par))
-    maxima = core.causal_maxima(recs, "260802-zzzz-rg11")
+    maxima = ledger.causal_maxima(recs, "260802-zzzz-rg11")
     check("순환 잔재에서도 기록이 소거되지 않는다(극대 0 아님)",
           len(maxima) >= 1, len(maxima))
     check("판정 불가로 표면화(극대≠1)",
-          "260802-zzzz-rg11" in core.unresolved_nodes(recs))
-    check("손상은 아니다(구조는 온전)", not core.ledger_damage(recs))
-    r = core.ledger_append(VAULT.signatures, {
+          "260802-zzzz-rg11" in ledger.unresolved_nodes(recs))
+    check("손상은 아니다(구조는 온전)", not ledger.ledger_damage(recs))
+    r = ledger.ledger_append(VAULT.signatures, {
         "kind": "sign", "node": "260802-zzzz-rg11", "path": rel, "hash": h,
         "reason": "재서명 — 순환 잔재 봉합"})
     check("재서명이 남은 head 전부를 봉합 → 해소",
@@ -334,23 +334,23 @@ def test_structural_damage():
     ):
         wipe_sig()
         raw_append(bad)
-        recs = core.ledger_read(VAULT.signatures)
-        check(f"손상 표면화: {label}", bool(core.ledger_damage(recs)))
+        recs = ledger.ledger_read(VAULT.signatures)
+        check(f"손상 표면화: {label}", bool(ledger.ledger_damage(recs)))
         check(f"손상 노드 fail-closed: {label}",
-              "n-d" in core.damaged_nodes(recs)
-              and "n-d" in core.unresolved_nodes(recs))
+              "n-d" in ledger.damaged_nodes(recs)
+              and "n-d" in ledger.unresolved_nodes(recs))
         check(f"손상 대장에는 append 거부: {label}",
-              _raises(lambda: core.ledger_append(VAULT.signatures, {
+              _raises(lambda: ledger.ledger_append(VAULT.signatures, {
                   "kind": "sign", "node": "n-x", "path": "p", "hash": "h"}))())
     wipe_sig()                                   # 중복 rid
-    dup = core._make_rid(int(1754000500.0 * 1000), 0)
+    dup = ledger._make_rid(int(1754000500.0 * 1000), 0)
     for node_id in ("n-e", "n-f"):
         raw_append({"rid": dup, "kind": "sign", "node": node_id,
                     "path": "p", "hash": "h", "at": core.now_iso()})
-    recs = core.ledger_read(VAULT.signatures)
-    check("중복 rid 표면화", any("중복" in d for d in core.ledger_damage(recs)))
+    recs = ledger.ledger_read(VAULT.signatures)
+    check("중복 rid 표면화", any("중복" in d for d in ledger.ledger_damage(recs)))
     check("중복 rid 연루 노드 전부 fail-closed",
-          {"n-e", "n-f"} <= core.damaged_nodes(recs))
+          {"n-e", "n-f"} <= ledger.damaged_nodes(recs))
 
 
 # ── 3e. rid 없는 해제가 삼켜지지 않는다 (fail-open 방지) ────────────────
@@ -359,7 +359,7 @@ def test_ridless_unsign_not_swallowed():
     node = ROOT / "00_Scope/W1/regr-ridless.md"
     node.write_text(node_text("260802-zzzz-rg12", "삼킴"), encoding="utf-8")
     rel = str(node.relative_to(ROOT))
-    core.ledger_append(VAULT.signatures, {
+    ledger.ledger_append(VAULT.signatures, {
         "kind": "sign", "node": "260802-zzzz-rg12", "path": rel,
         "hash": core.sha256_file(node)})
     check("정상 서명은 signed", sig_status("260802-zzzz-rg12", node) == "signed")
@@ -377,7 +377,7 @@ def test_root_confinement_and_kst():
     check("vault 안 경로는 해석", inside is not None and inside.exists())
     r = subprocess.run(
         [sys.executable, "-c",
-         "import sys; sys.path.insert(0, %r); from osk import core; from osk.vault import Vault; VAULT = Vault.open(); print(core.now_kst())"
+         "import sys; sys.path.insert(0, %r); from osk import core, durable, ledger, locks; from osk.vault import Vault; VAULT = Vault.open(); print(core.now_kst())"
          % str(ENGINE)],
         capture_output=True, text=True,
         env=dict(os.environ, TZ="America/New_York", OSK_VAULT_ROOT=str(MINI)))
@@ -402,7 +402,7 @@ def test_path_reuse():
     b = ROOT / "00_Scope/W1/regr-dest.md"
     try:
         a.write_text(node_text("260802-zzzz-rg02"), encoding="utf-8")
-        core.ledger_append(VAULT.signatures, {
+        ledger.ledger_append(VAULT.signatures, {
             "kind": "sign", "node": "260802-zzzz-rg02",
             "path": str(a.relative_to(ROOT)), "hash": core.sha256_file(a)})
         shutil.move(str(a), str(b))                                    # 이동
@@ -874,10 +874,10 @@ def test_ledger_line_boundaries():
     seps = _LINE_SEPS
     p = VAULT.signatures.parent / "regr-linebound.jsonl"
     try:
-        r1 = core.ledger_append(p, {"kind": "a"})
+        r1 = ledger.ledger_append(p, {"kind": "a"})
         p.write_bytes(p.read_bytes().rstrip(b"\r\n"))       # 수동 복구가 남기는 꼬리
-        r2 = core.ledger_append(p, {"kind": "b", "note": seps})
-        recs = core.ledger_read(p)
+        r2 = ledger.ledger_append(p, {"kind": "b", "note": seps})
+        recs = ledger.ledger_read(p)
         check("개행 없는 완결 꼬리 뒤 append — 두 기록 모두 판독",
               [r.get("rid") for r in recs] == [r1["rid"], r2["rid"]]
               and r2["parents"] == [r1["rid"]], recs)
@@ -887,17 +887,17 @@ def test_ledger_line_boundaries():
               [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
               == [ln for ln in p.read_text(encoding="utf-8").split("\n") if ln.strip()])
         with open(p, "a", encoding="utf-8") as f:              # 구판이 날것으로 쓴 행
-            f.write(json.dumps({**r2, "rid": core._next_rid(r2["rid"]), "parents": [r2["rid"]]},
+            f.write(json.dumps({**r2, "rid": ledger._next_rid(r2["rid"]), "parents": [r2["rid"]]},
                                ensure_ascii=False) + "\n")
         check("구판이 날것으로 쓴 구분 문자 행도 판독된다",
-              core.ledger_read(p)[-1].get("note") == seps)
-        check("그 뒤 append도 성립", core.ledger_append(p, {"kind": "d"}).get("rid"))
+              ledger.ledger_read(p)[-1].get("note") == seps)
+        check("그 뒤 append도 성립", ledger.ledger_append(p, {"kind": "d"}).get("rid"))
         p.write_bytes(json.dumps(r1).encode() + b"\r\n")
-        check("CRLF 행도 판독된다", len(core.ledger_read(p)) == 1)
+        check("CRLF 행도 판독된다", len(ledger.ledger_read(p)) == 1)
         torn = json.dumps(r1).encode() + b'\n{"rid": "x", "kind"'
         p.write_bytes(torn)
         try:
-            core.ledger_append(p, {"kind": "c"})
+            ledger.ledger_append(p, {"kind": "c"})
             check("찢긴 꼬리 뒤 append는 거부된다", False)
         except ValueError as e:
             check("찢긴 꼬리 뒤 append는 거부된다", "부분 행" in str(e), e)
@@ -917,7 +917,7 @@ def test_ledger_separators_candidate():
         r = M.record_candidate("duplication", ["regr-ls1", "regr-ls2"], seps)
         check("구분 문자 사유의 후보 상정", r.get("ok"), r)
         try:
-            last = core.ledger_read(VAULT.candidates)[-1]
+            last = ledger.ledger_read(VAULT.candidates)[-1]
             check("후보 대장이 판독되고 사유가 보존된다", last.get("reason") == seps, last)
         except ValueError as e:
             check("후보 대장이 판독되고 사유가 보존된다", False, e)
@@ -943,7 +943,7 @@ def test_ledger_separators_move():
         mv = M.move_nodes([t], "00_Scope/W3")
         check("구분 문자 제목 노드의 보호영역 이동", mv.get("ok"), mv)
         try:
-            row = A.latest_move(core.ledger_read(A.moves_path(VAULT)), "to", f"00_Scope/W3/{t}.md")
+            row = A.latest_move(ledger.ledger_read(A.moves_path(VAULT)), "to", f"00_Scope/W3/{t}.md")
             check("이동 대장이 판독되고 이동이 기록됐다",
                   row is not None and row["node"] == "260924-zzzz-ls03", row)
         except ValueError as e:
@@ -1008,7 +1008,7 @@ def test_ledger_schema_segment():
     backup = approvals.ledger_path(VAULT).read_bytes() if approvals.ledger_path(VAULT).exists() else None
     try:
         ms = int(1754000200.0 * 1000)
-        r1, r2, r3, r5 = (core._make_rid(ms, i) for i in range(4))
+        r1, r2, r3, r5 = (ledger._make_rid(ms, i) for i in range(4))
         rows = [
             {"rid": r1, "kind": "protect", "region": "00_Scope/W1", "at": "t"},   # 유산(parents 없음)
             {"rid": r2, "parents": [r1], "kind": "approve", "region": "00_Scope/W1",
@@ -1019,7 +1019,7 @@ def test_ledger_schema_segment():
              "region": "00_Scope/W1", "at": "t"},               # 위반: rid 형식
             {"rid": r5, "parents": ["ghost-rid"], "kind": "revert",
              "region": "00_Scope/W1", "at": "t"},               # 위반: 미지의 parent
-            {"rid": core._make_rid(ms, 9), "parents": [r5], "kind": "protect"},  # 필드 누락
+            {"rid": ledger._make_rid(ms, 9), "parents": [r5], "kind": "protect"},  # 필드 누락
         ]
         approvals.ledger_path(VAULT).parent.mkdir(parents=True, exist_ok=True)
         approvals.ledger_path(VAULT).write_text(
@@ -1246,12 +1246,12 @@ def test_dir_entries_durable_before_ledger():
     fsync하고 부모 디렉터리를 fsync하지 않으면, 전원 차단 뒤 대장 기록은
     남았는데 그것이 가리키는 승인본 객체·복원 파일이 사라질 수 있다(POSIX).
     보호·승인·반려와 노드 쓰기·대장 첫 생성은 **공유 헬퍼 한 곳**
-    (`core.fsync_dir`)으로 부모를 내구화하고, 그 순서가 대장 기록보다 앞선다.
+    (`durable.fsync_dir`)으로 부모를 내구화하고, 그 순서가 대장 기록보다 앞선다.
     Windows에서 그 헬퍼는 의도된 no-op이다(디렉터리를 열 수 없고 NTFS가
     메타데이터를 저널링한다) — 호출 순서는 두 OS에서 보고, 실제 디렉터리
     fsync는 POSIX에서만 본다."""
     from osk import approvals as A, approval_acts, region_tree
-    real_fd = getattr(core, "fsync_dir", None)
+    real_fd = getattr(durable, "fsync_dir", None)
     # 헬퍼가 없는 엔진(v3.22.x)에서도 아래 순서 검사가 **각각** 실패로 드러나도록
     # 여기서 멈추지 않는다 — 가로챌 자리가 없으면 만들어 두고(create) 호출을 센다.
     check("core가 디렉터리 엔트리 내구화 헬퍼를 둔다", callable(real_fd))
@@ -1289,7 +1289,7 @@ def test_dir_entries_durable_before_ledger():
         return li is not None and di is not None and di < li
 
     def spying():
-        return [mock.patch.object(core, "fsync_dir", spy_fd, create=True),
+        return [mock.patch.object(durable, "fsync_dir", spy_fd, create=True),
                 mock.patch.object(A, "fsync_dir", spy_fd, create=True),
                 mock.patch.object(A, "ledger_append", spy_append),
                 mock.patch.object(approval_acts, "fsync_dir", spy_fd),
@@ -1328,7 +1328,7 @@ def test_dir_entries_durable_before_ledger():
             late = [core.posix_rel(e, ROOT) for e in new
                     if not before_ledger("dir", e.parent, A.ledger_path(VAULT))]
             check(f"{label}: 새 객체·객체 디렉터리의 부모가 승인 기록 **전에** "
-                  f"내구화된다(core.fsync_dir)", not late, (late, ev[:8]))
+                  f"내구화된다(durable.fsync_dir)", not late, (late, ev[:8]))
             if POSIX_MODE:
                 late_os = [core.posix_rel(e, ROOT) for e in new
                            if not before_ledger("os-dir", e.parent, A.ledger_path(VAULT))]
@@ -1391,11 +1391,11 @@ def test_dir_entries_durable_before_ledger():
         check("노드 쓰기: 파일의 부모와 새로 만든 조상의 부모를 내구화한다",
               {norm(deep), norm(deep.parent), norm(regdir)} <= got, sorted(got))
         led = VAULT.ledger / f"dur-{tag}" / "probe.jsonl"
-        run(lambda: core.ledger_append(led, {"kind": "probe"}))
+        run(lambda: ledger.ledger_append(led, {"kind": "probe"}))
         got = [e[1] for e in ev if e[0] == "dir"]
         check("대장 첫 생성: 대장 디렉터리와 그 부모를 내구화한다",
               norm(led.parent) in got and norm(led.parent.parent) in got, got)
-        run(lambda: core.ledger_append(led, {"kind": "probe"}))
+        run(lambda: ledger.ledger_append(led, {"kind": "probe"}))
         check("기존 대장의 append는 디렉터리를 다시 fsync하지 않는다",
               not [e for e in ev if e[0] == "dir"], ev)
         if os.name == "nt":
@@ -1438,7 +1438,7 @@ def test_atomic_write_waits_out_open_reader():
 
         try:
             with mock.patch.object(os, "replace", replace):
-                core.atomic_write(p, b"new")
+                durable.atomic_write(p, b"new")
         finally:
             reader.close()
         check("전제: 첫 교체는 열린 읽기 때문에 WinError 5로 실패한다", failed == [5], failed)
@@ -1464,7 +1464,7 @@ def test_approve_precondition_under_lock():
 
         def racing(vault, d):             # 스냅샷 도중 다른 기기 기록이 착지
             region_tree.store_tree = real
-            core.ledger_append(A.ledger_path(VAULT), {
+            ledger.ledger_append(A.ledger_path(VAULT), {
                 "kind": "approve", "region": reg, "base": base,
                 "accepted": work, "reason": "다른 기기(시험)"})
             return real(vault, d)
@@ -1504,7 +1504,7 @@ def test_protect_precondition_rejects_stale():
             rid = head
             with open(A.ledger_path(VAULT), "a", encoding="utf-8") as fh:
                 for i in (1, 2):
-                    rid = core._next_rid(rid)
+                    rid = ledger._next_rid(rid)
                     fh.write(json.dumps({
                         "rid": rid, "parents": [head] if head else [],
                         "at": core.now_iso(), "kind": "protect", "region": reg,
@@ -1569,7 +1569,7 @@ def test_move_recorded_and_reverted_in():
         base = A.approved_hash(VAULT, "00_Scope/W3")
         r = node_moves.move_node(VAULT, "regr-mvin", "00_Scope/W3")
         check("이동 성립", r["ok"], r)
-        row = A.latest_move(core.ledger_read(A.moves_path(VAULT)), "to",
+        row = A.latest_move(ledger.ledger_read(A.moves_path(VAULT)), "to",
                              "00_Scope/W3/regr-mvin.md")
         check("이동이 이동으로 기록됐다",
               row is not None and row["from"] == "00_Scope/W1/regr-mvin.md"
@@ -1669,7 +1669,7 @@ def test_move_chain_reverted_no_duplicate():
         check("hop1 성립", node_moves.move_node(VAULT, "regr-mvchain", "00_Scope/W1")["ok"])
         check("hop2 성립(양끝 미보호)",
               node_moves.move_node(VAULT, "regr-mvchain", "00_Scope/W4")["ok"])
-        rows = [r for r in core.ledger_read(A.moves_path(VAULT))
+        rows = [r for r in ledger.ledger_read(A.moves_path(VAULT))
                 if r.get("node") == "260802-zzzz-chn1"]
         check("두 hop 모두 사슬로 기록됐다", len(rows) == 2, rows)
         approval_acts.revert(VAULT, "00_Scope/W3", base, region_tree.working_tree_hash(VAULT, "00_Scope/W3"), "반려")
@@ -1772,13 +1772,13 @@ def test_move_cutoff_causal_not_clock():
         check("생애 기록이 이동 경계를 박제한다", "moves_seen" in prot, prot)
         base = A.approved_hash(VAULT, reg)
         # 뒤처진 시계의 기기에서 승인 **이후** 실행된 이동 — rid는 승인보다 작다
-        ms = core.rid_parts(prot["rid"])[0] - 60_000
-        rid = core._make_rid(ms, 0)
+        ms = ledger.rid_parts(prot["rid"])[0] - 60_000
+        rid = ledger._make_rid(ms, 0)
         check("편차 전제: 이동 rid < 승인 rid",
-              core.rid_key(rid) < core.rid_key(prot["rid"]))
+              ledger.rid_key(rid) < ledger.rid_key(prot["rid"]))
         with open(A.moves_path(VAULT), "a", encoding="utf-8") as fh:
             fh.write(json.dumps({
-                "rid": rid, "parents": core.heads(core.ledger_read(A.moves_path(VAULT))),
+                "rid": rid, "parents": ledger.heads(ledger.ledger_read(A.moves_path(VAULT))),
                 "at": core.now_iso(), "kind": "move", "node": "260802-zzzz-skw1",
                 "from": "00_Domain/skew/regr-skew.md",
                 "to": "00_Scope/W1/regr-skew.md"}, ensure_ascii=False) + "\n")
@@ -1850,9 +1850,9 @@ def test_move_unrecorded_outside_protection():
     try:
         src.write_text(node_text("260802-zzzz-mvf1", "자유 이동", "본문"),
                        encoding="utf-8")
-        before = len(core.ledger_read(A.moves_path(VAULT)))
+        before = len(ledger.ledger_read(A.moves_path(VAULT)))
         check("이동 성립", node_moves.move_node(VAULT, "regr-mvfree", "00_Scope/W3")["ok"])
-        check("기록부는 그대로", len(core.ledger_read(A.moves_path(VAULT))) == before)
+        check("기록부는 그대로", len(ledger.ledger_read(A.moves_path(VAULT))) == before)
     finally:
         src.unlink(missing_ok=True)
         dst.unlink(missing_ok=True)
@@ -1910,7 +1910,7 @@ def test_stale_sealed_by_approve():
         rid = head
         with open(A.ledger_path(VAULT), "a", encoding="utf-8") as fh:
             for i in (1, 2):
-                rid = core._next_rid(rid)
+                rid = ledger._next_rid(rid)
                 fh.write(json.dumps({
                     "rid": rid, "parents": [head], "at": core.now_iso(),
                     "kind": "approve", "region": reg, "base": A.approved_hash(VAULT, reg),
@@ -1927,8 +1927,8 @@ def test_stale_sealed_by_approve():
                                         region_tree.working_tree_hash(VAULT, reg)))())
         # 검토 사이 새 갈래 유입 — 검토한 집합과 어긋나면 봉합 거부(본 적 없는
         # 갈래를 함께 봉합하지 않는다)
-        rid3 = core._next_rid(max((r["rid"] for r in A.records(VAULT)),
-                                  key=core.rid_key))
+        rid3 = ledger._next_rid(max((r["rid"] for r in A.records(VAULT)),
+                                  key=ledger.rid_key))
         with open(A.ledger_path(VAULT), "a", encoding="utf-8") as fh:
             fh.write(json.dumps({
                 "rid": rid3, "parents": [head], "at": core.now_iso(),
@@ -1995,7 +1995,7 @@ def test_stale_changeset_before_confirmation():
         for kind, tree, boundary in (("approve", tree_a, initial["moves_seen"]),
                                      ("revert", tree_b, A.moves_boundary(VAULT)),
                                      ("unprotect", tree_b, A.moves_boundary(VAULT))):
-            rid = core._next_rid(rid)
+            rid = ledger._next_rid(rid)
             forks.append({"rid": rid, "parents": [initial["rid"]],
                           "region": reg, "kind": kind, "base": tree,
                           "accepted": tree if kind == "approve" else None,
@@ -2007,7 +2007,7 @@ def test_stale_changeset_before_confirmation():
         (directory / "gone.txt").unlink()
         for i in range(25):
             (directory / f"new-{i:02}.txt").write_text("new", encoding="utf-8")
-        work, ledger = region_tree.working_tree_hash(VAULT, reg), A.ledger_path(VAULT).read_bytes()
+        work, recorded = region_tree.working_tree_hash(VAULT, reg), A.ledger_path(VAULT).read_bytes()
         a = A.changeset(VAULT, reg, record=forks[0], expect_work=work)
         b = A.changeset(VAULT, reg, record=forks[1], expect_work=work)
         check("stale은 갈래를 명시하지 않으면 변경집합을 고르지 않는다",
@@ -2029,7 +2029,7 @@ def test_stale_changeset_before_confirmation():
               and text.count(f"{reg}/new-24.txt") == 3
               and "보호 해제 갈래" in text
               and f"{reg}/before.md → {reg}/after.md" in text)
-        check("검토 거절은 승인 기록을 만들지 않는다", A.ledger_path(VAULT).read_bytes() == ledger)
+        check("검토 거절은 승인 기록을 만들지 않는다", A.ledger_path(VAULT).read_bytes() == recorded)
 
         read_table = region_tree.tree_table_for_region
         with mock.patch.object(region_tree, "tree_table_for_region", side_effect=lambda vault, r, h:
@@ -2052,7 +2052,7 @@ def test_stale_changeset_before_confirmation():
         _, error, prompted, called = preview(changed_after_preview)
         check("확인 중 편집도 기존 작업본 CAS가 봉합을 거부한다",
               prompted == called == 1 and error and "작업본" in error
-              and A.ledger_path(VAULT).read_bytes() == ledger)
+              and A.ledger_path(VAULT).read_bytes() == recorded)
     finally:
         rmtree_force(directory)
         for path, data in saved.items():
@@ -2105,7 +2105,7 @@ def test_local_lock_path_git_shapes():
     try:
         plain = base / "plain"; (plain / ".git").mkdir(parents=True)
         check("`.git` 디렉터리 → 그 안",
-              core.local_lock_path("x.lock", plain) == plain / ".git" / "x.lock")
+              locks.local_lock_path("x.lock", plain) == plain / ".git" / "x.lock")
         # worktree: `.git`이 파일이고 그 대상 안에 commondir가 있다
         main_git = base / "main" / ".git"
         (main_git / "worktrees" / "wt").mkdir(parents=True)
@@ -2115,18 +2115,18 @@ def test_local_lock_path_git_shapes():
         (wt / ".git").write_text(
             f"gitdir: {main_git / 'worktrees' / 'wt'}\n", encoding="utf-8")
         check("worktree → 공용 git 디렉터리(commondir)",
-              core.local_lock_path("x.lock", wt).resolve()
+              locks.local_lock_path("x.lock", wt).resolve()
               == (main_git / "x.lock").resolve(),
-              core.local_lock_path("x.lock", wt))
+              locks.local_lock_path("x.lock", wt))
         # submodule 등: `.git` 파일이 commondir 없는 디렉터리를 가리킨다
         sub_git = base / "modules" / "s"; sub_git.mkdir(parents=True)
         sm = base / "sm"; sm.mkdir()
         (sm / ".git").write_text(f"gitdir: {sub_git}\n", encoding="utf-8")
         check("gitdir 파일 → 그 디렉터리",
-              core.local_lock_path("x.lock", sm).resolve()
+              locks.local_lock_path("x.lock", sm).resolve()
               == (sub_git / "x.lock").resolve())
         nogit = base / "nogit"; nogit.mkdir()
-        p = core.local_lock_path("x.lock", nogit)
+        p = locks.local_lock_path("x.lock", nogit)
         check("git 부재 → 추적 트리 밖 임시 자리",
               not str(p).startswith(str(nogit)) and p.name.startswith("x-"), p)
     finally:
@@ -2178,26 +2178,26 @@ def test_approval_serialized_with_writes():
     from osk import write
     import sync_daemon
     check("변경 잠금이 sync·update가 쓰는 그 잠금과 같은 파일이다",
-          core.mutation_lock_path(VAULT)
+          locks.mutation_lock_path(VAULT)
           == sync_daemon._lock_path(ROOT, "osk-mutation.lock"))
     check("잠금 파일은 추적 트리 밖이다",
-          not str(core.mutation_lock_path(VAULT)).startswith(str(ROOT) + os.sep)
-          or ".git" in core.mutation_lock_path(VAULT).parts)
+          not str(locks.mutation_lock_path(VAULT)).startswith(str(ROOT) + os.sep)
+          or ".git" in locks.mutation_lock_path(VAULT).parts)
     # 같은 경로를 가리키는 것만으로는 부족하다 — 실제로 상호배제되는지 본다.
     # flock은 open file description마다이므로 같은 프로세스의 두 번째 열기도
     # 경합한다(데몬이 다른 프로세스에서 잡는 상황과 같은 판정).
-    with core.mutation_lock(VAULT):
+    with locks.mutation_lock(VAULT):
         with open(sync_daemon._lock_path(ROOT, "osk-mutation.lock"), "w") as fh:
             try:
-                core.lock_exclusive(fh, blocking=False)
-                core.unlock(fh)
+                locks.lock_exclusive(fh, blocking=False)
+                locks.unlock(fh)
                 got = True
             except OSError:
                 got = False
         check("변경 잠금 보유 중에는 데몬 쪽 획득이 실패한다(실 상호배제)",
               got is False)
     held = []
-    real = core.mutation_lock
+    real = locks.mutation_lock
 
     class _Spy(real):
         def __enter__(self):
@@ -2337,7 +2337,7 @@ def test_revert_confirms_before_destroying():
 
         def racing(vault, h):             # 준비(blob 적재) 도중 승인 B가 유입
             region_tree.store_get = real_get
-            core.ledger_append(A.ledger_path(VAULT), {
+            ledger.ledger_append(A.ledger_path(VAULT), {
                 "kind": "approve", "region": reg, "base": base,
                 "accepted": other, "reason": "다른 기기(시험)"})
             return real_get(vault, h)
@@ -2454,7 +2454,7 @@ def test_stale_region_not_unprotected():
         rid = head
         with open(A.ledger_path(VAULT), "a", encoding="utf-8") as fh:
             for i in (1, 2):
-                rid = core._next_rid(rid)
+                rid = ledger._next_rid(rid)
                 fh.write(json.dumps({
                     "rid": rid, "parents": [head], "at": core.now_iso(),
                     "kind": "approve", "region": reg, "base": base_h,
@@ -2716,7 +2716,7 @@ def test_baseline_bound_to_region():
         check("혼합 tree 자체는 형상 검증을 통과", region_tree.tree_table(VAULT, evil) is not None)
         check("그러나 그 영역의 tree로는 해석되지 않는다",
               region_tree.tree_table_for_region(VAULT, reg, evil) is None)
-        core.ledger_append(A.ledger_path(VAULT), {
+        ledger.ledger_append(A.ledger_path(VAULT), {
             "kind": "approve", "region": reg, "base": good,
             "accepted": evil, "reason": "영역 밖 항목 혼입(시험)"})
         check("integrity가 영역 불일치를 적발",
@@ -2731,7 +2731,7 @@ def test_baseline_bound_to_region():
         check("영역 밖 파일이 변하지 않음", outsider.read_text() == "영역 밖 파일")
     finally:
         if good:
-            core.ledger_append(A.ledger_path(VAULT), {
+            ledger.ledger_append(A.ledger_path(VAULT), {
                 "kind": "approve", "region": reg, "base": None,
                 "accepted": good, "reason": "시험 정리"})
         try: approval_acts.unprotect(VAULT, reg, "정리")
@@ -2878,7 +2878,7 @@ def test_ledger_row_shape():
     wipe_sig()
     VAULT.signatures.write_text("123\n", encoding="utf-8")
     check("비-dict 행은 부분 행과 동류의 손상으로 거부",
-          _raises(lambda: core.ledger_read(VAULT.signatures))())
+          _raises(lambda: ledger.ledger_read(VAULT.signatures))())
     rep = validate.run(VAULT, cli.published_tools)
     check("비-dict 행에도 검증기가 죽지 않고 FAIL 보고",
           rep["verdict"] == "FAIL")
@@ -2887,20 +2887,20 @@ def test_ledger_row_shape():
     node = ROOT / "00_Scope/W1/regr-shape.md"
     node.write_text(node_text("260802-zzzz-rg41", "형상"), encoding="utf-8")
     rel = str(node.relative_to(ROOT))
-    r1 = core.ledger_append(VAULT.signatures, {
+    r1 = ledger.ledger_append(VAULT.signatures, {
         "kind": "sign", "node": "260802-zzzz-rg41", "path": rel,
         "hash": core.sha256_file(node)})
-    raw_append({"rid": core._make_rid(core.rid_parts(r1["rid"])[0] + 1, 0),
+    raw_append({"rid": ledger._make_rid(ledger.rid_parts(r1["rid"])[0] + 1, 0),
                 "parents": [{"x": 1}, 42, r1["rid"]], "kind": "unsign",
                 "node": "260802-zzzz-rg41", "path": rel,
                 "hash": r1["hash"], "at": core.now_iso()})
-    par = core.effective_parents(core.ledger_read(VAULT.signatures))
+    par = ledger.effective_parents(ledger.ledger_read(VAULT.signatures))
     check("비문자열 parents 원소는 여과되고 판정이 죽지 않는다",
           all(all(isinstance(x, str) for x in v) for v in par.values()), par)
     check("남은 정상 부모는 보존된다",
           sig_status("260802-zzzz-rg41", node) == "unsigned")
     check("형상 이상에도 ledger_append가 산다",
-          bool(core.ledger_append(VAULT.signatures, {
+          bool(ledger.ledger_append(VAULT.signatures, {
               "kind": "sign", "node": "260802-zzzz-rg41", "path": rel,
               "hash": core.sha256_file(node), "reason": "봉합"})))
 
@@ -2927,7 +2927,7 @@ def _w(fn, *a, **kw):
     # 좁으면 거부가 수트에서만 예외로 터져 시험이 통로를 대변하지 못한다.
     try:
         return fn(*a, **kw)
-    except (write.WriteError, core.StaleEngineError) as e:
+    except (write.WriteError, locks.StaleEngineError) as e:
         return {"ok": False, "violations": e.violations, **e.extra}
 
 
@@ -3275,7 +3275,7 @@ def test_write_move_and_pin():
     check("scope를 건너면 출발지 허브의 줄을 빼라고 알린다",
           {"hub": "W1", "remove": ["regr-w1"]} in r.get("hub_links", []), r)
     check("안내대로 출발지 허브의 줄을 뺀다", _unhang("W1", "regr-w1").get("ok"))
-    core.ledger_append(VAULT.pins, {"kind": "pin", "target": "00_Scope/W2/",
+    ledger.ledger_append(VAULT.pins, {"kind": "pin", "target": "00_Scope/W2/",
                                    "reason": "시험"})
     r = _w(node_moves.move_node, VAULT, "regr-w1", "00_Scope/W1")
     check("pin된 군집은 재배정 거부(시행령 §3 4항)", not r["ok"], r)
@@ -3298,9 +3298,9 @@ def test_write_routing():
            session="repo/alpha")
     check("두 번째부터는 space 없이 착지", r["ok"] and "W1" in r["path"], r)
     # 다기기 동시 최초-확정 = 분기 → 미확정으로 fail-closed
-    recs = core.ledger_read(VAULT.routing)
+    recs = ledger.ledger_read(VAULT.routing)
     fork = dict(recs[-1])
-    raw = {"rid": core._make_rid(core.rid_parts(fork["rid"])[0] + 5, 0),
+    raw = {"rid": ledger._make_rid(ledger.rid_parts(fork["rid"])[0] + 5, 0),
            "parents": [], "kind": "bind", "session": "repo/alpha",
            "scope": "W2", "at": core.now_iso()}
     with open(VAULT.routing, "a", encoding="utf-8") as f:
@@ -3329,7 +3329,7 @@ def test_write_session_alias():
     for name in ("older-name", "old-name", "new-name"):
         check(f"{name}으로 들어와도 같은 scope",
               write.resolve_session(VAULT, name) == "W1", write.resolve_session(VAULT, name))
-    rec = [x for x in core.ledger_read(VAULT.routing) if x.get("kind") == "bind"][-1]
+    rec = [x for x in ledger.ledger_read(VAULT.routing) if x.get("kind") == "bind"][-1]
     check("결속은 정본 키로 기록된다", rec["session"] == "new-name", rec)
 
     # 순환 별칭은 접지 않는다(무한 루프 방지)
@@ -3370,7 +3370,7 @@ def test_write_serialized():
     """동시 쓰기 2건이 전역 잠금으로 직렬화되는가 (subprocess 실측)."""
     script = (
         "import sys, json; sys.path.insert(0, %r)\n"
-        "from osk import core, write, cluster_gate, node_checks, node_moves, nodefile\nfrom osk.vault import Vault\nVAULT = Vault.open()\n"
+        "from osk import core, write, cluster_gate, node_checks, node_moves, nodefile, durable, ledger, locks\nfrom osk.vault import Vault\nVAULT = Vault.open()\n"
         "import sys as s\n"
         "r = write.update_node(VAULT, 'regr-r2', add_edges={'derived-from': s.argv[1]})\n"
         "print(json.dumps({'ok': r['ok'], 'edges': r['edges']['derived-from']}))\n"
@@ -3705,13 +3705,13 @@ def test_project_bindings():
     r = _w(write.create_node, VAULT, "regr-pb-5", "기본 착지", "본문", "fable-5", session=P)
     check("space 없는 쓰기는 주된 scope로", r.get("ok") and "WBindA" in r["path"], r)
     # ④ v5.2 전의 결속 기록(`primary` 없음)은 주된 scope로 읽는다
-    core.ledger_append(VAULT.routing, {"kind": "bind", "session": "repo/regr-legacy",
+    ledger.ledger_append(VAULT.routing, {"kind": "bind", "session": "repo/regr-legacy",
                                       "scope": "WBindC", "reason": "구판"})
     check("옛 결속은 주된 scope다", write.resolve_session(VAULT, "repo/regr-legacy") == "WBindC")
     # ④-2 옛 재결속은 교체였다 — 개명 전 scope가 집합에 되살아나지 않는다(`LLM-Second-Brain` 실측)
     L = "repo/regr-legacy-rebind"
-    core.ledger_append(VAULT.routing, {"kind": "bind", "session": L, "scope": "WBindOld", "reason": "구판"})
-    core.ledger_append(VAULT.routing, {"kind": "bind", "session": L, "scope": "WBindC", "reason": "구판 개명"})
+    ledger.ledger_append(VAULT.routing, {"kind": "bind", "session": L, "scope": "WBindOld", "reason": "구판"})
+    ledger.ledger_append(VAULT.routing, {"kind": "bind", "session": L, "scope": "WBindC", "reason": "구판 개명"})
     b = write.bindings(VAULT, L)
     check("옛 재결속은 집합을 바꾼다", b["scopes"] == ["WBindC"] and b["primary"] == "WBindC", b)
     write.bind_session(VAULT, L, "WBindD", "시험", primary=False)
@@ -3784,16 +3784,16 @@ def test_project_bindings():
     # ⑨ 주된 scope 지정의 분기는 일반 결속이 해소하지 못한다(#191 리뷰 P1)
     F = "repo/regr-fork"
     a = write.set_primary(VAULT, F, "WBindA", "기기 A의 지정")
-    ms = core.rid_parts(a["rid"])[0]
+    ms = ledger.rid_parts(a["rid"])[0]
 
     def forged(rid_ms, parents, scope, primary):
         with open(VAULT.routing, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"rid": core._make_rid(rid_ms, 0), "parents": parents, "kind": "bind",
+            f.write(json.dumps({"rid": ledger._make_rid(rid_ms, 0), "parents": parents, "kind": "bind",
                                 "session": F, "scope": scope, "primary": primary,
                                 "at": core.now_iso()}) + "\n")
     forged(ms + 5, [], "WBindB", True)                 # 다른 기기의 지정 — 비교 불능 분기
     check("지정이 갈리면 미확정", write.bindings(VAULT, F)["undetermined"] and write.resolve_session(VAULT, F) is None)
-    forged(ms + 10, [a["rid"], core._make_rid(ms + 5, 0)], "WBindC", False)   # 양쪽을 조상으로 둔 일반 결속
+    forged(ms + 10, [a["rid"], ledger._make_rid(ms + 5, 0)], "WBindC", False)   # 양쪽을 조상으로 둔 일반 결속
     b = write.bindings(VAULT, F)
     check("일반 결속은 지정의 분기를 해소하지 못한다",
           b["undetermined"] and b["primary"] is None and b["scopes"] == ["WBindA", "WBindB", "WBindC"], b)
@@ -4274,10 +4274,10 @@ def test_conflict_candidates():
         check("충돌 후보는 검증기 FAIL로 사용자 심의 요청",
               rep["verdict"] == "FAIL"
               and any("정합성 검사" in list(f)[0] for f in rep["fail"]))
-        before = len(core.ledger_read(VAULT.candidates))
+        before = len(ledger.ledger_read(VAULT.candidates))
         validate.run(VAULT, cli.published_tools)
         check("검증기는 후보를 대장에 자동 기록하지 않는다(자동 집행 없음)",
-              len(core.ledger_read(VAULT.candidates)) == before)
+              len(ledger.ledger_read(VAULT.candidates)) == before)
     finally:
         for p_ in (a, b):
             p_.unlink(missing_ok=True)
@@ -4290,11 +4290,11 @@ def test_conflict_candidates():
 def test_current_version_equivalent_heads():
     """#41: 판본 문자열뿐 아니라 같은 릴리스 증빙인 병렬 극대만 수렴한다."""
     from osk import update_state
-    old = {"rid": core._make_rid(1754000000000, 0), "parents": [],
+    old = {"rid": ledger._make_rid(1754000000000, 0), "parents": [],
            "kind": "done", "version": "v3.16.0", "attest": "sha256:" + "a" * 64}
-    a = {"rid": core._make_rid(1754000000001, 0), "parents": [old["rid"]],
+    a = {"rid": ledger._make_rid(1754000000001, 0), "parents": [old["rid"]],
          "kind": "done", "version": "v3.17.1", "attest": "sha256:" + "b" * 64}
-    b = dict(a, rid=core._make_rid(1754000000002, 0))
+    b = dict(a, rid=ledger._make_rid(1754000000002, 0))
     check("현재 판본: 동일 릴리스 병렬 적용은 동치로 수렴한다",
           update_state.current_version(VAULT, [old, a, b]) == "v3.17.1")
     check("현재 판본: 병렬 기록의 물리 순서와 무관하다",
@@ -4651,7 +4651,7 @@ def test_release_and_update():
                   and update_plan._allowed_skel(VAULT, "00_Scope/UserData") is None
                   and update_plan._allowed_skel(VAULT, "00_Scope/UserData/newdir") is None
                   and update_plan._allowed_skel(VAULT, "= NotASpace") is None)
-            recs = core.ledger_read(update_state.journal_path(VAULT))
+            recs = ledger.ledger_read(update_state.journal_path(VAULT))
             check("저널: begin·apply·done",
                   {"begin", "apply", "done"} <= {r.get("kind") for r in recs})
             check("현재 버전 판정", update_state.current_version(VAULT) == "v9.0.0")
@@ -5269,7 +5269,7 @@ def test_release_and_update():
             check("관대한 판독은 부분 행을 건너뛰고 나머지를 읽는다",
                   [r.get("txn") for r in lenient] == ["TOK"], lenient)
             try:
-                core.ledger_read(_tmp_j)
+                ledger.ledger_read(_tmp_j)
                 _strict_failed = False
             except ValueError:
                 _strict_failed = True     # 엄격 판독은 손상으로 본다
@@ -5286,7 +5286,7 @@ def test_release_and_update():
             # 같은 버전인데 릴리스 identity가 다르면 거부 — 태그 force-move 방어 (P1)
             check("적용 완료 기록에 릴리스 identity(attest)가 남는다",
                   any(r.get("kind") == "done" and r.get("attest")
-                      for r in core.ledger_read(VAULT.ledger / "update.jsonl")))
+                      for r in ledger.ledger_read(VAULT.ledger / "update.jsonl")))
             _ver_now = update_state.current_version(VAULT)
             if _ver_now:                     # 같은 버전으로 다시 릴리스(force-move 모사)
                 forced = Path(td) / "forced"
@@ -5879,7 +5879,7 @@ def test_external_roots():
 
     check("선언 전 — 끊김", problem("docs:notes/a.md") == "선언되지 않은 별칭: docs:notes/a.md"
           and graph.Index(VAULT).resolve("docs:notes/a.md") == ("dangling",))
-    with mock.patch.object(core, "mutation_lock", wraps=core.mutation_lock) as lock:
+    with mock.patch.object(locks, "mutation_lock", wraps=locks.mutation_lock) as lock:
         roots.declare(VAULT, "docs", "외부 문서", "https://example.com/docs.git")
     check("선언은 작업 트리 잠금 안에서 적는다(데몬의 rebase와 직렬화)", lock.call_count == 1, lock.call_count)
     check("선언하면 `/`가 있어도 경로가 아니라 바깥이다",
@@ -5934,7 +5934,7 @@ def test_external_roots():
             check("단말 없는 해제는 중단된다",
                   "중단" in str(e.code) and roots.alias_problem("docs", roots.declarations(VAULT)) is None,
                   e.code)
-    with mock.patch.object(core, "mutation_lock", wraps=core.mutation_lock) as lock:
+    with mock.patch.object(locks, "mutation_lock", wraps=locks.mutation_lock) as lock:
         roots.retire(VAULT, "docs", "옮김")
     check("해제는 확인과 기록을 한 작업 트리 잠금 안에서 한다", lock.call_count == 1, lock.call_count)
     check("해제한 별칭은 끊김", problem("docs:notes/a.md") == "해제된 별칭: docs:notes/a.md"
@@ -6583,13 +6583,13 @@ def test_cluster_overview():
     check("비활성이면 verdict 불산입(그 이유의 fail 없음)",
           not any("군집 허브 노드" in f for d in rep["fail"] for f in d), rep["fail"])
     check("보고는 언제나 실린다", "00_Scope/OVW" in rep.get("cluster_overview", {}))
-    core.ledger_append(VAULT.validators,
+    ledger.ledger_append(VAULT.validators,
                        {"kind": "activate", "rule": "cluster-overview"})
     check("활성 판정", activated_rules.validator_active(VAULT, "cluster-overview") is True)
     rep2 = validate.run(VAULT, cli.published_tools)
     check("활성이면 위반이 verdict에 산입", rep2["verdict"] == "FAIL"
           and any("군집 허브 노드" in f for d in rep2["fail"] for f in d), rep2["verdict"])
-    core.ledger_append(VAULT.validators,
+    ledger.ledger_append(VAULT.validators,
                        {"kind": "deactivate", "rule": "cluster-overview"})
     check("해제 원복", activated_rules.validator_active(VAULT, "cluster-overview") is False)
 
@@ -6664,7 +6664,7 @@ def test_session_key_repo_identity():
     ra, rb = repo(a, "alpha 뿌리"), repo(b, "beta 뿌리")
     loose.mkdir(parents=True)
     VAULT.routing.unlink(missing_ok=True)
-    rows = lambda: [r for r in core.ledger_read(VAULT.routing) if r.get("session") == "api"]
+    rows = lambda: [r for r in ledger.ledger_read(VAULT.routing) if r.get("session") == "api"]
 
     check("Git 밖 폴더는 전과 같이 폴더 이름", hook.session_key(VAULT, str(loose)) == "Downloads")
     check("결속 전에는 두 저장소 모두 폴더 이름이고 아무것도 쓰지 않는다",
@@ -6677,10 +6677,10 @@ def test_session_key_repo_identity():
 
     def spy(*args, **kw):
         # 소유 행도 working-tree 변경이다 — 데몬의 commit→rebase와 같은 잠금을 잡는다.
-        with open(core.mutation_lock_path(VAULT), "w") as fh:
+        with open(locks.mutation_lock_path(VAULT), "w") as fh:
             try:
-                core.lock_exclusive(fh, blocking=False)
-                core.unlock(fh)
+                locks.lock_exclusive(fh, blocking=False)
+                locks.unlock(fh)
                 held.append(False)
             except OSError:
                 held.append(True)
@@ -6800,11 +6800,11 @@ def test_session_key_repo_identity():
     # 두 기기의 동시 소유 — 병합(union)이 무소유 결속 아래 두 소유 행을 남긴다.
     VAULT.routing.unlink(missing_ok=True)
     legacy = write.bind_session(VAULT, "api", "W1")
-    ms = core.rid_parts(legacy["rid"])[0]
+    ms = ledger.rid_parts(legacy["rid"])[0]
 
     def claim(rid_ms, who):
         with open(VAULT.routing, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"rid": core._make_rid(rid_ms, 0), "parents": [legacy["rid"]],
+            f.write(json.dumps({"rid": ledger._make_rid(rid_ms, 0), "parents": [legacy["rid"]],
                                 "kind": "bind", "session": "api", "scope": "W1",
                                 "repo": [who], "at": core.now_iso()}) + "\n")
     claim(ms + 20, rb)          # 파일 순서가 아닌 rid가 소유를 가린다
@@ -6817,14 +6817,14 @@ def test_session_key_repo_identity():
     # 같은 저장소를 두 기기가 동시에 소유한 분기도 봉합된다.
     VAULT.routing.unlink(missing_ok=True)
     legacy = write.bind_session(VAULT, "api", "W1")
-    ms = core.rid_parts(legacy["rid"])[0]
+    ms = ledger.rid_parts(legacy["rid"])[0]
     claim(ms + 10, ra)
     claim(ms + 20, ra)
     check("같은 저장소의 동시 소유도 풀린다",
           hook.session_key(VAULT, str(far)) == "api" and write.resolve_session(VAULT, "api") == "W1")
     # 구판 기기의 판독 — 새 필드는 손상도 판정 변화도 아니다.
     check("repo 필드는 대장 손상이 아니다",
-          core.ledger_damage(core.ledger_read(VAULT.routing)) == [])
+          ledger.ledger_damage(ledger.ledger_read(VAULT.routing)) == [])
     VAULT.routing.unlink(missing_ok=True)
     if prior is None:
         memory.unlink(missing_ok=True)
@@ -6862,7 +6862,7 @@ def test_session_key_identity_ignores_checkout():
     g("checkout", "-q", "gh-pages", cwd=a)          # A는 gh-pages에서 처음 훅을 돌린다
     g("clone", "-q", str(origin), str(b))           # B는 main에서
     VAULT.routing.unlink(missing_ok=True)
-    rows = lambda: [r for r in core.ledger_read(VAULT.routing) if r.get("session") == "site"]
+    rows = lambda: [r for r in ledger.ledger_read(VAULT.routing) if r.get("session") == "site"]
     ia, ib = hook._checkout(str(a))[1], hook._checkout(str(b))[1]
     check("동일성은 체크아웃한 브랜치와 무관한 뿌리 합집합이다", ia == ib == both, (ia, ib))
     write.bind_session(VAULT, "site", "W1")
@@ -6899,7 +6899,7 @@ def test_derived_session_key_is_stable():
     other, m, g = "a" * 40, "f2c23286" + "0" * 32, "64cad3f2" + "0" * 32
     grown = sorted([g, m])
     VAULT.routing.unlink(missing_ok=True)
-    rows = lambda k: [r for r in core.ledger_read(VAULT.routing) if r.get("session") == k]
+    rows = lambda k: [r for r in ledger.ledger_read(VAULT.routing) if r.get("session") == k]
     write.bind_session(VAULT, "site", "W1")
     check("다른 저장소가 이름을 소유한다",
           write.repo_session(VAULT, "site", [other]) == "site" and rows("site")[-1].get("repo") == [other])
@@ -7637,7 +7637,7 @@ def test_evictions():
     # 두어 나이가 rid에서 나오는지 본다(계기와 같은 판정).
     old, prev = [], []
     for d in (20, 19, 18, 17):
-        rid = core._make_rid(now_ms - d * 86_400_000, 0)
+        rid = ledger._make_rid(now_ms - d * 86_400_000, 0)
         old.append({"rid": rid, "parents": prev, "kind": "evict", "scope": "WEvi",
                     "session": S, "text": f"- 옛 조각 {d}", "at": core.now_iso()})
         prev = [rid]
@@ -7740,7 +7740,7 @@ def test_evictions():
     (B / ".git").write_text(f"gitdir: {A / '.git' / 'worktrees' / 'B'}", encoding="utf-8")
     (A / ".git" / "worktrees" / "B" / "commondir").write_text("../..", encoding="utf-8")
     check("두 트리의 잠금 자리는 같다",
-          core.local_lock_path("x", A) == core.local_lock_path("x", B), (A, B))
+          locks.local_lock_path("x", A) == locks.local_lock_path("x", B), (A, B))
     wm._pending_set(_vault_at(A), S)
     check("A 트리에 표식", wm._pending(_vault_at(A), S))
     check("같은 git을 쓰는 B 트리에서는 A의 표식이 보이지 않는다", not wm._pending(_vault_at(B), S),
@@ -7797,7 +7797,7 @@ def test_evictions():
     check("폐기에 target 거부", bad(lambda: ev.settle(VAULT, live, "discarded", "x")))
     check("node에 target 없음 거부", bad(lambda: ev.settle(VAULT, live, "node")))
     check("없는 노드 거부", bad(lambda: ev.settle(VAULT, live, "node", "없는-노드-제목")))
-    check("없는 evict 거부", bad(lambda: ev.settle(VAULT, core._make_rid(now_ms, 99), "discarded")))
+    check("없는 evict 거부", bad(lambda: ev.settle(VAULT, ledger._make_rid(now_ms, 99), "discarded")))
     # 파손 파일·동명은 노드가 아니다(리뷰 P2) — 후보 파일이 아니라 판독되는
     # 비모호 노드여야 한다. 아니면 증류된 적 없는 조각이 정돈 큐에서 영구히 빠진다.
     broken = ROOT / "00_Scope/W1/regr-evi-broken.md"
@@ -7841,8 +7841,8 @@ def test_evictions():
     s1 = ev.settle(VAULT, live, "node", "regr-evi-distilled")
     check("settle 행", s1["kind"] == "settle" and s1["of"] == live
           and s1["target"] == "regr-evi-distilled", s1)
-    par = core.effective_parents(ev.records(VAULT))
-    check("settle은 그 evict를 조상으로 갖는다 (§9-3 4항)", live in core.ancestors(s1["rid"], par))
+    par = ledger.effective_parents(ev.records(VAULT))
+    check("settle은 그 evict를 조상으로 갖는다 (§9-3 4항)", live in ledger.ancestors(s1["rid"], par))
     check("처분된 것은 미처분에서 빠진다", live not in {r["rid"] for r in ev.unsettled(VAULT, "WEvi")})
     s2 = ev.settle(VAULT, live, "discarded")
     check("두 번째 settle도 산다 — 다기기 동시 처분은 손상이 아니다",
@@ -7858,9 +7858,9 @@ def test_evictions():
     check("퇴출 기록부 스키마가 통과에 있다",
           any("퇴출 기록부 스키마" in n for n in names(rep["pass"])), names(rep["fail"]))
     backup = VAULT.evictions.read_bytes()
-    b0, b1, b2 = (core._make_rid(now_ms + 1000, i) for i in range(3))
+    b0, b1, b2 = (ledger._make_rid(now_ms + 1000, i) for i in range(3))
     bad_rows = [
-        {"rid": b0, "parents": core.heads(ev.records(VAULT)), "kind": "settle",
+        {"rid": b0, "parents": ledger.heads(ev.records(VAULT)), "kind": "settle",
          "of": "ghost", "outcome": "burned", "at": "t"},
         {"rid": b1, "parents": [b0], "kind": "settle", "of": live,
          "outcome": "discarded", "target": "x", "at": "t"},
@@ -7987,7 +7987,7 @@ def test_evictions():
     second = ev.unsettled(VAULT, "WEvi")[0]["rid"]
     o, _ = run(["tidy", "settle", second, "merged", "--target", "W1",
                 "--target", "regr-evi-transit", "--reason", "두 노드로 나뉘어 옮겨졌다"])
-    rows = [r for r in core.ledger_read(VAULT.evictions)
+    rows = [r for r in ledger.ledger_read(VAULT.evictions)
             if r.get("kind") == "settle" and r.get("of") == second]
     check("tidy settle: 대상마다 settle 하나와 사유",
           o.get("ok") and len(o.get("records", [])) == 2
@@ -7997,7 +7997,7 @@ def test_evictions():
     o, _ = run(["tidy", "settle", third, "merged", "--target", "W1", "--target", "regr-없는-노드"])
     check("tidy settle: 대상 하나라도 없으면 아무것도 적지 않는다",
           str(o.get("exit", "")).startswith("[중단]")
-          and not [r for r in core.ledger_read(VAULT.evictions)
+          and not [r for r in ledger.ledger_read(VAULT.evictions)
                    if r.get("kind") == "settle" and r.get("of") == third], o)
 
     # 퇴출이 0이어도 경유 노드는 독립적으로 정돈한다.
@@ -8057,7 +8057,7 @@ def test_evictions():
         copy.unlink(missing_ok=True)
     # 사본 이름은 확인받은 판의 해시다(#138 리뷰 P1). 손편집한 id가 경로 문자를 품어도
     # vault 밖을 쓰지 않고, 같은 id의 다른 판이 앞 사본을 덮지 않는다.
-    escape = Path(os.path.normpath(core.local_lock_path("osk-discarded-x/../../../regr-evi-outside.md", VAULT.root)))
+    escape = Path(os.path.normpath(locks.local_lock_path("osk-discarded-x/../../../regr-evi-outside.md", VAULT.root)))
     escape.write_text("관련 없는 파일\n", encoding="utf-8")
     copies = []
     for n, body in enumerate(("첫 판", "둘째 판"), 1):
@@ -8068,7 +8068,7 @@ def test_evictions():
         copies.append(Path(o["copy"]) if o.get("copy") else None)
         check(f"tidy discard: 사본은 확인한 판의 해시 이름으로 잠금 자리에 남는다({n})",
               o.get("ok") and not transit.exists() and copies[-1]
-              == core.local_lock_path("osk-discarded-" + h.removeprefix("sha256:") + ".md", VAULT.root), o)
+              == locks.local_lock_path("osk-discarded-" + h.removeprefix("sha256:") + ".md", VAULT.root), o)
     check("tidy discard: 경로 문자를 품은 id가 vault 밖 파일을 덮지 않는다",
           escape.read_text(encoding="utf-8") == "관련 없는 파일\n", escape)
     check("tidy discard: 같은 id의 다른 판이 앞 사본을 덮지 않는다",
@@ -9062,7 +9062,7 @@ def test_rechecks():
 
     def last(title, **kw):
         nid = graph.Index(VAULT).node(W / f"{title}.md").id
-        rs = [r for r in core.ledger_read(led) if r.get("node") == nid
+        rs = [r for r in ledger.ledger_read(led) if r.get("node") == nid
               and all(r.get(k) == v for k, v in kw.items())]
         return rs[-1] if rs else {}
 
@@ -9087,10 +9087,10 @@ def test_rechecks():
         _w(write.update_node, VAULT, "regr-rc-S", summary="근거 요약만 바꾼다")
         _w(write.update_node, VAULT, "regr-rc-S", add_edges={"derived-from": "regr-rc-T"})
         check("근거의 요약·배선만 바뀌면 후보가 아니다", not why("regr-rc-R"))
-        rows0 = len(core.ledger_read(led))
+        rows0 = len(ledger.ledger_read(led))
         _w(write.update_node, VAULT, "regr-rc-R", summary="참조 노드 요약만 바꾼다")
         check("참조 노드의 요약만 바뀌면 완료가 그대로이고 새로 적지 않는다",
-              not why("regr-rc-R") and len(core.ledger_read(led)) == rows0)
+              not why("regr-rc-R") and len(ledger.ledger_read(led)) == rows0)
         _w(write.update_node, VAULT, "regr-rc-S", old_text="근거.", new_text="근거를 고쳤다.")
         check("근거의 본문이 바뀌면 후보다", why("regr-rc-R") == {"근거가 바뀌었다"})
         idof = lambda title: graph.Index(VAULT).node(W / f"{title}.md").id
@@ -9294,7 +9294,7 @@ def test_rechecks():
         check("첫 쓰기가 기존 쌍을 기준선으로 적는다",
               not why("regr-rc-Old")
               and last("regr-rc-Old").get("reason") == rechecks.BASELINE, last("regr-rc-Old"))
-        rows = core.ledger_read(led)
+        rows = ledger.ledger_read(led)
         check("한 번에 적은 기록은 앞 기록을 부모로 잇는다",
               all(b["parents"] == [a["rid"]] for a, b in zip(rows, rows[1:])), rows[:2])
         check("기록이 있으면 기준선은 다시 적지 않는다", rechecks.ensure_baseline(VAULT) == 0)
@@ -10230,8 +10230,8 @@ def test_engine_epoch_fence():
     # 관문은 **잠금을 잡은 뒤**에 선다 — 밖에서 재면 재고 잡기까지 사이에
     # 갱신이 끼어드는 창이 열린다
     order = []
-    real_lock = core.lock_exclusive
-    real_fence = core._fence
+    real_lock = locks.lock_exclusive
+    real_fence = locks._fence
 
     def spy_lock(f, *a, **kw):
         order.append("lock")
@@ -10241,12 +10241,12 @@ def test_engine_epoch_fence():
         order.append("fence")
         return real_fence()
 
-    core.lock_exclusive, core._fence = spy_lock, spy_fence
+    locks.lock_exclusive, locks._fence = spy_lock, spy_fence
     try:
-        with core.mutation_lock(VAULT):
+        with locks.mutation_lock(VAULT):
             pass
     finally:
-        core.lock_exclusive, core._fence = real_lock, real_fence
+        locks.lock_exclusive, locks._fence = real_lock, real_fence
     check("관문은 잠금 안에서 선다", order == ["lock", "fence"], order)
 
     # 낡음 위조 — 관문이 없으면 **성공했을** 인자로 부른다. 그래야 거부가
@@ -10305,9 +10305,9 @@ def test_engine_epoch_fence():
     try:
         epoch._LOADED = "0000deadbeef"
         try:
-            with core.mutation_lock(VAULT):
+            with locks.mutation_lock(VAULT):
                 pass
-        except core.StaleEngineError as e:
+        except locks.StaleEngineError as e:
             held = e            # 프레임을 살려 둔다 — 참조계수에 기대지 않는다
     finally:
         epoch._LOADED = real_loaded
@@ -10485,10 +10485,10 @@ def test_audit_fixes_2026_09_02():
         # ⑨ pin은 노드 id에도 걸린다 (#36)
         #    되돌리면 — `_plan_move`의 `cluster_gate.pinned` 검사를 지우면 실패한다.
         nid = contract.parse(ROOT / "00_Scope/W1/AudX/audit-bind.md").id
-        core.ledger_append(VAULT.pins, {"kind": "pin", "target": nid,
+        ledger.ledger_append(VAULT.pins, {"kind": "pin", "target": nid,
                                        "reason": "감사 회귀 시험"})
         r = _w(node_moves.move_nodes, VAULT, ["audit-bind"], "00_Scope/W1/AudZ")
-        core.ledger_append(VAULT.pins, {"kind": "unpin", "target": nid,
+        ledger.ledger_append(VAULT.pins, {"kind": "unpin", "target": nid,
                                        "reason": "시험 종료"})
         check("노드 id pin이 이동을 막는다 (#36)",
               not r.get("ok") and any("pin" in v for v in
@@ -11393,7 +11393,7 @@ def test_region_root_is_not_an_excluded_compartment():
                 # 모사하려면 대장에 직접 적는다 — 그것이 이 경로의 현실이다.
                 check("제외 이름을 루트로 하는 새 지정은 거부된다 (4차)",
                       _raises(lambda r=reg: approval_acts.protect(VAULT, r, "시험"))())
-                core.ledger_append(A.ledger_path(VAULT), {
+                ledger.ledger_append(A.ledger_path(VAULT), {
                     "kind": "protect", "region": reg, "base": None,
                     "accepted": region_tree.store_tree(VAULT, d),
                     "moves_seen": A.moves_boundary(VAULT),
@@ -11572,7 +11572,7 @@ def test_governance_amend_secrets_and_region():
                                region_tree.store_put(VAULT, old_mem)])
         legacy_entries.sort(key=lambda e: e[0])
         legacy_hash = region_tree.store_put(VAULT, region_tree.manifest_blob(legacy_entries))
-        core.ledger_append(A.ledger_path(VAULT), {
+        ledger.ledger_append(A.ledger_path(VAULT), {
             "kind": "approve", "region": reg, "base": A.approved_hash(VAULT, reg),
             "accepted": legacy_hash, "reason": "개정 전 형상 모사"})
         check("개정 전 승인본의 제외 구획 항목이 드러난다 (#37)",
@@ -12586,23 +12586,23 @@ def test_write_pin_subtree_and_fork():
             result = _w(node_moves.move_cluster, VAULT, src.name, dest.relative_to(ROOT).as_posix())
             return result.get("ok") is False and "pin" in str(result) and src.is_dir()
         for target in (n["id"], dirs[3].relative_to(ROOT).as_posix() + "/"):
-            core.ledger_append(VAULT.pins, {"kind": "pin", "target": target})
+            ledger.ledger_append(VAULT.pins, {"kind": "pin", "target": target})
             check("containing cluster respects pin " + target, refused())
-            core.ledger_append(VAULT.pins, {"kind": "unpin", "target": target})
-        parent = core.ledger_read(VAULT.pins)[-1]["rid"]
+            ledger.ledger_append(VAULT.pins, {"kind": "unpin", "target": target})
+        parent = ledger.ledger_read(VAULT.pins)[-1]["rid"]
         last = parent
         with VAULT.pins.open("a", encoding="utf-8") as f:
             for _ in range(2):
-                last = core._next_rid(last)
+                last = ledger._next_rid(last)
                 f.write(json.dumps({"rid": last, "parents": [parent], "kind": "pin",
                                     "target": n["id"], "at": core.now_iso()}) + "\n")
         check("valid union-merged pin branches are unresolved",
-              not core.ledger_damage(core.ledger_read(VAULT.pins)) and
-              core.resolve_one(core.ledger_read(VAULT.pins), n["id"], "target") is None)
+              not ledger.ledger_damage(ledger.ledger_read(VAULT.pins)) and
+              ledger.resolve_one(ledger.ledger_read(VAULT.pins), n["id"], "target") is None)
         direct = _w(node_moves.move_nodes, VAULT, [n["name"]], dest.relative_to(ROOT).as_posix())
         check("unresolved pin blocks a direct move", direct.get("ok") is False and "pin" in str(direct))
         check("unresolved pin blocks a containing-cluster move", refused())
-        core.ledger_append(VAULT.pins, {"kind": "unpin", "target": n["id"]})
+        ledger.ledger_append(VAULT.pins, {"kind": "unpin", "target": n["id"]})
         clean_pins = VAULT.pins.read_bytes()
         VAULT.pins.write_bytes(clean_pins + clean_pins.splitlines(keepends=True)[0])
         check("structurally damaged pins block automatic movement", refused())

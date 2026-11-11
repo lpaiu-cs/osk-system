@@ -38,7 +38,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import (core, services, update, response_growth, sync_status, growth_ledger, worker_process, daemon_control,
-               update_source, update_state, worker_usage)
+               update_source, update_state, worker_usage, durable, locks)
 from . import harness as adapters
 from .doctor import engine_dir, venv_python
 from .harness import base
@@ -624,7 +624,7 @@ def _write(step: dict, path: Path, replan, keys: tuple, approved: dict, stamp: s
             path.unlink(missing_ok=True)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            core.atomic_write(path, (json.dumps(fresh["content"], ensure_ascii=False, indent=2)
+            durable.atomic_write(path, (json.dumps(fresh["content"], ensure_ascii=False, indent=2)
                                      + "\n").encode("utf-8"))
         return {**step, "ok": True, key: fresh[key], **({"backup": backup} if backup else {})}
     return {**step, "ok": False, "error": "쓰는 동안 설정 파일이 계속 바뀌었다 — 쓰지 않았다"}
@@ -706,10 +706,10 @@ def _apply(vault: Vault, p: dict) -> dict:
 
 def _write_fork(vault: Vault, approved: dict, uninstall: bool, stamp: str) -> dict:
     """fork 설정을 쓴다 — 확인한 호스트의 항목만 더하거나 걷고, 다른 키는 그대로 둔다. `.osk/` 설정은
-    데몬의 rebase·되돌리기와 겹치지 않게 `core.device_lock` 안에서 읽고 쓴다(이 파일의 다른 쓰기도 같다)."""
+    데몬의 rebase·되돌리기와 겹치지 않게 `locks.device_lock` 안에서 읽고 쓴다(이 파일의 다른 쓰기도 같다)."""
     path = Path(approved["file"])
     step = {"step": "fork CLI", "file": str(path)}
-    with core.device_lock(vault):
+    with locks.device_lock(vault):
         now = _fork(vault, [adapters.get(n) for n in approved["entries"]], uninstall)
         if ({n: e["action"] for n, e in now.get("entries", {}).items()}
                 != {n: e["action"] for n, e in approved["entries"].items()}):
@@ -724,7 +724,7 @@ def _write_fork(vault: Vault, approved: dict, uninstall: bool, stamp: str) -> di
         backup = _backup(path, stamp)
         if data:
             path.parent.mkdir(parents=True, exist_ok=True)
-            core.atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+            durable.atomic_write(path, (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
         else:
             path.unlink(missing_ok=True)
     return {**step, "ok": True, **({"backups": [backup]} if backup else {})}
@@ -734,12 +734,12 @@ def _write_command(vault: Vault, file: str, argv: list[str]) -> dict:
     """정기 실행의 명령 파일을 만든다 — 그 사이 생겼으면 덮지 않는다."""
     path = Path(file)
     step = {"step": "growth command", "file": str(path)}
-    with core.device_lock(vault):
+    with locks.device_lock(vault):
         if path.exists():
             return {**step, "ok": False, "error": "확인 뒤 명령 파일이 생겼다 — 덮지 않았다. "
                                                   "setup을 다시 계획해 확인받는다"}
         path.parent.mkdir(parents=True, exist_ok=True)
-        core.atomic_write(path, (json.dumps(argv, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+        durable.atomic_write(path, (json.dumps(argv, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return {**step, "ok": True}
 
 
@@ -764,13 +764,13 @@ def _write_targets(vault: Vault, part: dict, uninstall: bool) -> dict:
     path = vault.root / vault_sync.TARGETS
     step = {"step": "sync 전송 대상", "file": str(path)}
     try:
-        with core.device_lock(vault):
+        with locks.device_lock(vault):
             if uninstall:
                 path.unlink(missing_ok=True)
                 sync_status.lock_path(vault.root, sync_status.STATUS).unlink(missing_ok=True)
                 return {**step, "ok": True, "action": "remove"}
             path.parent.mkdir(parents=True, exist_ok=True)
-            core.atomic_write(path, json.dumps(
+            durable.atomic_write(path, json.dumps(
                 {"origin": part["origin"], "push": part["push"], "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
                 ensure_ascii=False, indent=1).encode("utf-8"))
         return {**step, "ok": True, "action": "record", "origin": part["origin"], "push": part["push"]}
@@ -835,7 +835,7 @@ def run(vault: Vault, *, apply: bool = False, uninstall: bool = False, only: lis
         return {**report(p), "applied": False}, 1
     if not p["changes"]:
         return {**report(p), "applied": False, "note": "할 일이 없다 — 이미 이어져 있다"}, 0
-    ticket = core.local_lock_path(TICKET, vault.root)
+    ticket = locks.local_lock_path(TICKET, vault.root)
     try:
         pending = json.loads(ticket.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -843,7 +843,7 @@ def run(vault: Vault, *, apply: bool = False, uninstall: bool = False, only: lis
     if (not isinstance(pending, dict) or pending.get("review_id") != p["review_id"]
             or not isinstance(pending.get("at"), (int, float))
             or not 0 <= time.time() - pending["at"] < CONFIRM_WITHIN):
-        core.atomic_write(ticket, json.dumps({"review_id": p["review_id"], "at": time.time()}).encode())
+        durable.atomic_write(ticket, json.dumps({"review_id": p["review_id"], "at": time.time()}).encode())
         return {**report(p), "ok": False, "approval_required": True, "instruction": INSTRUCTION}, 2
     ticket.unlink(missing_ok=True)   # 한 번만 — 실패한 적용도 새 확인을 요구한다
     result = _apply(vault, p)

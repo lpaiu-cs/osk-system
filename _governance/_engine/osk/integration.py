@@ -12,7 +12,7 @@ import json
 import os
 
 from . import (conversation_capture, conversation_review, conversation_state, core, distillation, node_checks,
-               organization, raw, write, transcript_files)
+               organization, raw, write, transcript_files, locks)
 from .vault import Vault
 
 
@@ -337,7 +337,7 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
         st["raw_review"] = {"state": "none", "rounds": len(selected_refs), "error": None}
         if selected_refs:
             try:
-                with core.mutation_lock(vault):
+                with locks.mutation_lock(vault):
                     selected_rounds = [r for r in s["rounds"] if r["ref"] in selected_refs]
                     if {r["ref"] for r in selected_rounds} != selected_refs:
                         raise ValueError("selected raw coordinates are missing from the saved cursor")
@@ -413,7 +413,7 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
         scopes = [pinned, *[x for x in scopes if x != pinned]]
     scope = scopes[0] if scopes else None       # 허브 트리의 scope — 고정한 착지, 없으면 주된 scope
     try:
-        with core.mutation_lock(vault):
+        with locks.mutation_lock(vault):
             jobs = (organization.pending(vault, scopes, limit=1, record=True)
                     if scopes and include_organization else [])
     except (OSError, ValueError, write.WriteError) as exc:

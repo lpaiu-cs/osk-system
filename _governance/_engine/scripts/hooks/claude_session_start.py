@@ -235,8 +235,8 @@ def _checkout_cached(vault, cwd: str) -> tuple[str, list[str] | None]:
     `.git`과 저장소의 동일성 캐시가 그대로인 저장소. 미확정(커밋 없음·얕은 사본)은 다시 잰다
     — 첫 커밋 뒤에도 이름만 쓰면 같은 이름의 남의 결속을 받는다(#196 리뷰). git이 시간을
     넘기면 지난 판정이 있으면 그것을 쓰고, 그 판정은 캐시하지 않는다."""
-    from osk import core
-    path, folder, now = core.local_lock_path("osk-checkouts.json", vault.root), os.path.normcase(os.path.abspath(cwd)), time.time()
+    from osk import durable, locks
+    path, folder, now = locks.local_lock_path("osk-checkouts.json", vault.root), os.path.normcase(os.path.abspath(cwd)), time.time()
     try:
         table = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -260,7 +260,7 @@ def _checkout_cached(vault, cwd: str) -> tuple[str, list[str] | None]:
     table[folder] = {"name": name, "repo": repo, "gd": str(gd) if gd else None, "stamp": _stamp(gd),
                      "dotgit": dotgit, "at": now}
     try:
-        core.atomic_write(path, json.dumps(table, ensure_ascii=False).encode("utf-8"))
+        durable.atomic_write(path, json.dumps(table, ensure_ascii=False).encode("utf-8"))
     except OSError:
         pass        # 캐시를 못 적으면 다음 훅이 다시 잰다
     return name, repo
@@ -423,11 +423,11 @@ def _organization(vault, jobs: list, keep: int, ident=None, *, startup: bool = F
 
 def _organization_jobs(vault, key: str) -> list:
     """세션 시작의 조직 검토 — 포착 대기와 따로 고른다(짧은 대화도 시작에서 착수할 수 있다)."""
-    from osk import core, organization, write
+    from osk import organization, write, locks
     scopes = write.bound_scopes(vault, key)     # 주된 scope부터, 없으면 결속 순서대로(§9-3 1항)
     if not scopes:
         return []
-    with core.mutation_lock(vault):
+    with locks.mutation_lock(vault):
         return organization.pending(vault, scopes, limit=1, record=True)
 
 
@@ -707,7 +707,7 @@ def main() -> None:
     host = None
     try:
         vault = open_vault()
-        from osk import core, scope_memory, write, evictions, rechecks
+        from osk import scope_memory, write, evictions, rechecks, locks
         key = session_key(vault, project_cwd(env))
         host = note_run(vault, "start", env, key)
         if not first_call(vault, "start", env, host):
@@ -715,7 +715,7 @@ def main() -> None:
         try:
             # 대장 행도 작업 트리의 변경이다 — 판독부터 쓰기까지 변경 잠금 안에서 한다(정기 실행과 같다).
             # 그 사이 다른 세션의 노드 쓰기가 끼면 낡은 판독으로 이어 적어 방금 닫은 쌍을 다시 연다.
-            with core.mutation_lock(vault):
+            with locks.mutation_lock(vault):
                 rechecks.ensure_baseline(vault, carry=True)
         except Exception:
             pass    # 다음 쓰기가 다시 적는다 — 못 적으면 근거가 후보로 남을 뿐이다

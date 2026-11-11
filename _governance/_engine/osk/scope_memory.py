@@ -26,7 +26,8 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .core import local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
+from .core import now_iso, posix_rel, sha256_bytes
+from .locks import local_lock_path, mutation_lock
 from . import evictions, nodefile, prose, routing, secrets, workspaces, placement
 from .errors import WriteError
 from .vault import Vault
