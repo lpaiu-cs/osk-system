@@ -12805,6 +12805,30 @@ def test_node_parse_raises_only_its_kinds():
         bad.unlink(missing_ok=True)
 
 
+def test_validate_suite_survives_a_crashing_check():
+    """검사가 예외를 올려도 수트는 죽지 않는다(시행령 §11). 그 검사의 실패로 적고 다음 검사로 간다 — 받는 자리는
+    등록부(`validate.CHECKS`)를 도는 한 곳이다. 승인 기록부를 읽다 죽으면, 그 행에 기대는 검사는 빈 행을 검사한
+    헛 PASS 대신 보류로 남는다."""
+    def boom(s):
+        raise RuntimeError("터졌다")
+
+    saved = validate.CHECKS
+    try:
+        validate.CHECKS = (("앞 검사", lambda s: []), ("터지는 검사", boom), ("뒤 검사", lambda s: ["위반"]))
+        rep = validate.run(VAULT, cli.published_tools)
+        check("터진 검사는 그 검사의 실패이고 뒤의 검사는 돈다",
+              rep["pass"] == ["앞 검사"] and rep["verdict"] == "FAIL"
+              and rep["fail"] == [{"터지는 검사": ["검사 자체 실패: 터졌다"]}, {"뒤 검사": ["위반"]}], rep)
+        validate.CHECKS = tuple((name, boom if name == "승인 기록부" else fn) for name, fn in saved)
+        rep = validate.run(VAULT, cli.published_tools)
+        held = {name for item in rep["skipped"] for name in item}
+        check("승인 기록부를 읽다 죽으면 기대는 검사는 보류한다",
+              {"승인 기록부": ["검사 자체 실패: 터졌다"]} in rep["fail"]
+              and {"승인 대장 rid 유일·형식", "승인 기록부 정합", "승인 대장 스키마"} <= held, rep)
+    finally:
+        validate.CHECKS = saved
+
+
 def test_ledger_damage_is_a_kind():
     """대장의 손상은 형으로 말한다(코드 규범 7항). 읽지 못한 것(`OSError`)과도, 거부(`ValueError`)와도 다른
     형이고, 대장을 기록으로 해석하지 못하는 길은 모두 그 형으로 오른다 — 받는 쪽이 문구를 읽지 않게 한다."""
@@ -13120,7 +13144,7 @@ if __name__ == "__main__":
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
                test_ledger_damage_is_a_kind, test_node_parse_raises_only_its_kinds,
-               test_validate_at_reads_only_a_report,
+               test_validate_at_reads_only_a_report, test_validate_suite_survives_a_crashing_check,
                 test_write_edge_coordinates, test_node_heading_edge_coordinates,
                 test_derived_from_once_per_round,
                test_write_pin_subtree_and_fork,

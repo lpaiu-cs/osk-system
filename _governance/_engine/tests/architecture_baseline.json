@@ -5,18 +5,18 @@
  },
  "totals": {
   "upward_imports": 0,
-  "lazy_imports": 25,
+  "lazy_imports": 24,
   "two_module_cycles": 0,
   "tangled_modules": 0,
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
   "broad_except": 0,
-  "boundary_excepts": 52,
-  "isolated_excepts": 40,
-  "oversize_functions": 119,
-  "excess_lines": 2725,
-  "excess_branches": 1605,
+  "boundary_excepts": 43,
+  "isolated_excepts": 44,
+  "oversize_functions": 118,
+  "excess_lines": 2491,
+  "excess_branches": 1548,
   "late_loads": 1
  },
  "upward_imports": {},
@@ -32,7 +32,7 @@
   "osk.services": 2,
   "osk.setup": 1,
   "osk.transcripts": 1,
-  "osk.validate": 6,
+  "osk.validate": 5,
   "osk.worker_process": 3
  },
  "two_module_cycles": [],
@@ -44,7 +44,7 @@
  "boundary_excepts": {
   "mcp_server": 5,
   "osk.cli": 4,
-  "osk.validate": 10,
+  "osk.validate": 1,
   "scripts.hooks.capture_stop": 3,
   "scripts.hooks.claude_prompt_submit": 2,
   "scripts.hooks.claude_session_start": 25,
@@ -68,7 +68,7 @@
   "osk.signatures": 1,
   "osk.update": 1,
   "osk.update_check": 1,
-  "osk.validate": 5,
+  "osk.validate": 9,
   "osk.write": 1,
   "scripts.osk_turn_ledger": 1,
   "scripts.recover": 1,
@@ -474,10 +474,6 @@
   "osk.update_txn:txn_recover": [
    62,
    17
-  ],
-  "osk.validate:run": [
-   294,
-   72
   ],
   "osk.validate:setup_doc_drift": [
    73,

@@ -29,34 +29,46 @@ CASE_STATUS = ("docketed", "adjudicated")
 CASE_VERDICT = ("기각", "수정", "존치")
 
 
-def run(vault: Vault, read_tools) -> dict:
-    """수트 전체. `read_tools`는 표면이 내놓는 도구의 목록을 읽는 함수다 — 표면 린트(15)가 부른다."""
-    rep = {"pass": [], "fail": [], "skipped": []}
+class _Suite:
+    """검증 한 번 — 보고(`rep`)와, 앞의 검사가 읽어 뒤의 검사가 쓰는 것."""
 
-    def ok(name, errs):
-        (rep["pass"].append(name) if not errs
-         else rep["fail"].append({name: errs[:20]}))
+    def __init__(self, vault: Vault, read_tools):
+        self.vault, self.read_tools = vault, read_tools
+        self.rep = {"pass": [], "fail": [], "skipped": []}
+        self.idx = graph.Index(vault)
+        self.records = None                     # 인용 기록의 색인 — 참조 경고와 근거 절(17)이 함께 쓴다
+        self.arecs, self.appr_ok = [], False    # 승인 기록부의 행과 판독의 성패 — 못 읽었으면 뒤의 검사가 보류한다
+        self.ledgers = []                       # 읽힌 대장 `(경로, 행)` — 5번이 채운다
 
-    def skip(name, why):
-        rep["skipped"].append({name: why})
+    def ok(self, name: str, errs: list) -> None:
+        (self.rep["pass"].append(name) if not errs
+         else self.rep["fail"].append({name: errs[:20]}))
 
-    def guard(name, fn):
-        """검증기는 어떤 입력에도 죽지 않는다(시행령 §11) — 예외도 실패로 보고."""
-        try:
-            ok(name, fn())
-        except Exception as e:
-            rep["fail"].append({name: [f"검사 자체 실패: {e}"]})
+    def skip(self, name: str, why: str) -> None:
+        self.rep["skipped"].append({name: why})
 
-    idx = graph.Index(vault)
+    def gated(self, name: str, errs: list, active: bool) -> None:
+        """언제나 검사해 보고하고, verdict 산입은 활성화 뒤에만 한다(시행령 §11 2항·3항) — 활성화 순간
+        무엇이 FAIL이 될지 사용자가 미리 본다."""
+        if errs and not active:
+            self.skip(name, f"비활성 — 보고만 (위반 {len(errs)}건)")
+        else:
+            self.ok(name, errs)
 
-    # 1. 노드 계약 (시행령 §1 · Mechanism §2) — 색인이 못 읽은 파일도 오류다
+
+# 검사는 `_Suite`를 받는다. 위반 목록을 돌려주면 등록부(`CHECKS`)의 이름으로 보고되고, 이름이 그때 정해지거나
+# 보류가 갈리는 검사는 제 손으로 보고하고 None을 돌려준다. 번호는 등록부의 순서다 — 순서가 보고의 순서다.
+
+def _nodes(s: _Suite) -> None:
+    """1. 노드 계약 (시행령 §1 · Mechanism §2) — 색인이 못 읽은 파일도 오류다."""
+    idx = s.idx
     broken = getattr(idx, "broken", None) or {}
     errs = [f"{stem}: 파싱 실패 {why}" for stem, why in sorted(broken.items())]
     ids = {}
     for stem, (p, kind) in idx.nodes.items():
         try:
             n = idx.node(p)
-        except Exception as e:
+        except (OSError, ValueError) as e:
             errs.append(f"{stem}: 파싱 실패 {e}")
             continue
         for e in contract.validate(n):
@@ -67,151 +79,171 @@ def run(vault: Vault, read_tools) -> dict:
                     if graph.same_file(p, q) else "")
             errs.append(f"id 중복 {n.id}: {stem} & {other}{link}")
         ids[n.id] = (stem, p)
-    ok(f"노드 계약 ({len(idx.nodes) + len(broken)}개)", errs)
+    s.ok(f"노드 계약 ({len(idx.nodes) + len(broken)}개)", errs)
 
-    # 2. 배치 (Mechanism §1)
-    guard("공간 배치·`_` 규칙", lambda: placement.layout_violations(vault))
-    guard("raw 저장 경계", lambda: raw.storage_violations(vault))
 
-    # 3. 참조 위상 (헌법 8조 3항)
-    guard("참조 위상", lambda: topology.topology_check(vault, idx))
-    ok("동명 노드 중복", [f"{s}: {v}" for s, v in idx.dup_stems.items()])
-    records = None                        # 참조 경고와 근거 절 검사(17)가 함께 쓰는 기록 색인
+def _reference_warnings(s: _Suite) -> None:
+    """3. 미해석 참조 경고 — verdict 밖이다. 기록 색인은 근거 절 검사(17)가 다시 쓴다."""
     try:
-        records = raw.Records(vault)
-        rep["warnings"] = topology.reference_report(vault, idx, records)
-    except Exception as e:
-        rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
-        skip("미해석 참조 경고", f"산출 실패: {e}")
+        s.records = raw.Records(s.vault)
+        s.rep["warnings"] = topology.reference_report(s.vault, s.idx, s.records)
+    except Exception as e:      # 격리: 경고의 산출이 깨져도 검증은 잇는다 — 실패가 아니라 보류로 적는다
+        s.rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
+        s.skip("미해석 참조 경고", f"산출 실패: {e}")
 
-    # 근거 재검토 후보 (시행령 §7 2항) — 표시일 뿐 verdict 밖이다.
+
+def _rechecks(s: _Suite) -> None:
+    """근거 재검토 후보 (시행령 §7 2항) — 표시일 뿐 verdict 밖이다."""
     try:
         from . import rechecks
-        rc = rechecks.report(vault, idx)
+        rc = rechecks.report(s.vault, s.idx)
         if rc:
-            rep["warnings"]["rechecks"] = rc
-    except Exception as e:
-        skip("근거 재검토 후보", f"산출 실패: {e}")
+            s.rep["warnings"]["rechecks"] = rc
+    except Exception as e:      # 격리: 표시의 산출이 깨져도 검증은 잇는다 — 실패가 아니라 보류로 적는다
+        s.skip("근거 재검토 후보", f"산출 실패: {e}")
 
-    # 4. 승인 기록부 (시행령 §6 · Mechanism §3) — 보호영역 현황.
-    #    판독 실패는 플래그로 남긴다 — 빈 recs를 검사한 헛 PASS를 막는다.
-    errs, arecs, appr_ok = [], [], True
+
+def _approvals(s: _Suite) -> None:
+    """4. 승인 기록부 (시행령 §6 · Mechanism §3) — 보호영역 현황.
+    판독 실패는 `appr_ok`로 남긴다 — 빈 행을 검사한 헛 PASS를 막는다."""
+    errs = []
     try:
-        arecs = approvals.records(vault)
-    except Exception as e:
+        s.arecs = approvals.records(s.vault)
+        s.appr_ok = True
+    except (OSError, LedgerDamage) as e:
         errs.append(str(e))
-        appr_ok = False
-    if appr_ok:
+    if s.appr_ok:
         try:
-            rep["protected_regions"] = {
-                r: approvals.state(vault, r) for r in approvals.protected_regions(vault)}
-            gw = approvals.governance_warning(vault, arecs)   # 경고일 뿐 verdict 밖
+            s.rep["protected_regions"] = {
+                r: approvals.state(s.vault, r) for r in approvals.protected_regions(s.vault)}
+            gw = approvals.governance_warning(s.vault, s.arecs)   # 경고일 뿐 verdict 밖
             if gw:
-                rep["warnings"]["governance_unprotected"] = gw
-        except Exception as e:
+                s.rep["warnings"]["governance_unprotected"] = gw
+        except Exception as e:      # 격리: 현황의 판정이 무엇으로 깨지든 이 기록부의 오류로 적는다
             errs.append(str(e))
-    ok(f"승인 기록부 ({len(arecs)}행)", errs)
+    s.ok(f"승인 기록부 ({len(s.arecs)}행)", errs)
 
-    # 5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는
-    #    대장이다. signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상).
-    errs, ledgers = [], ([(approvals.ledger_path(vault), arecs)] if appr_ok else [])
+
+def _ledgers(s: _Suite) -> list[str]:
+    """5. 대장 판독 (Mechanism §3 1항 공통). update.jsonl도 이 규율을 따르는 대장이다.
+    signatures.jsonl은 구체제 사료로 판독만 한다(무결 검사 대상)."""
+    vault, errs = s.vault, []
+    s.ledgers = [(approvals.ledger_path(vault), s.arecs)] if s.appr_ok else []
     for p in [vault.signatures, vault.candidates, vault.pins, vault.routing, vault.validators, vault.roots,
               approvals.moves_path(vault), vault.evictions,
               vault.ledger / "migration" / "events.jsonl", vault.ledger / "rechecks.jsonl",
               vault.ledger / "update.jsonl", vault.ledger / "growth.jsonl", vault.ledger / "release.jsonl"]:
         try:
-            ledgers.append((p, ledger_read(p)))
-        except Exception as e:
+            s.ledgers.append((p, ledger_read(p)))
+        except (OSError, LedgerDamage) as e:
             errs.append(str(e))
-    ok("대장 JSON 무결", errs)
+    return errs
 
-    # 6. 대장 구조 손상 — rid 부재·형식 위반·중복 (Mechanism §3 8항 · §3 2항).
-    #    중복 rid는 기록의 동일성을 깨뜨려 판정을 뒤집으므로 전 대장에 건다.
+
+def _ledger_structure(s: _Suite) -> None:
+    """6. 대장 구조 손상 — rid 부재·형식 위반·중복 (Mechanism §3 8항 · §3 2항).
+    중복 rid는 기록의 동일성을 깨뜨려 판정을 뒤집으므로 전 대장에 건다."""
     dmg = []
-    for p, rs in ledgers:
+    for p, rs in s.ledgers:
         dmg += ledger_damage(rs, p.name)
-    ok(f"대장 rid 유일·형식 ({len(ledgers)}개 대장)", dmg)
-    if not appr_ok:
-        skip("승인 대장 rid 유일·형식", "승인 대장 판독 실패 — 검사 불성립")
+    s.ok(f"대장 rid 유일·형식 ({len(s.ledgers)}개 대장)", dmg)
+    if not s.appr_ok:
+        s.skip("승인 대장 rid 유일·형식", "승인 대장 판독 실패 — 검사 불성립")
 
-    # 7. 위임 성립 요건 (시행령 §5) — 대장 손상에도 죽지 않는다
+
+def _delegations(s: _Suite) -> list[str]:
+    """7. 위임 성립 요건 (시행령 §5) — 대장 손상에도 죽지 않는다."""
     errs = []
     try:
-        dels = authority.enumerate_delegations(vault)
+        dels = authority.enumerate_delegations(s.vault)
         for d in dels:
             if not d["effective"]:
                 errs.append(f"{d['title']}: 절={d['valid_clause']} 승인본={d['approved']}")
-        rep["delegations"] = len(dels)
-    except Exception as e:
+        s.rep["delegations"] = len(dels)
+    except Exception as e:      # 격리: 위임의 열거가 무엇으로 깨지든 이 검사의 오류로 적는다
         errs.append(f"위임 검사 실패: {e}")
-    ok("위임 3요건", errs)
+    return errs
 
-    # 8. 비밀값 필터 fixture (Mechanism §9 2항)
-    ok("비밀값 필터 양성/음성", secrets.self_test())
 
-    # 8b. 구현이 §9 1항의 표를 그대로 담는가 (§9 2항). 표를 못 읽으면 검사가
-    #     성립하지 않으므로 생략한다 — 표면 계약(§6-2)과 같은 규율이다.
-    if declared_secret_patterns(vault) is None:
-        skip("비밀값 패턴 동치", "Mechanism §9 1항 패턴 표 부재 — 검사 불성립")
-    else:
-        ok("비밀값 패턴이 규범과 동치", secret_pattern_drift(vault))
+def _secret_patterns(s: _Suite) -> list[str] | None:
+    """8b. 구현이 §9 1항의 표를 그대로 담는가 (§9 2항). 표를 못 읽으면 검사가 성립하지 않으므로
+    생략한다 — 표면 계약(§6-2)과 같은 규율이다."""
+    if declared_secret_patterns(s.vault) is None:
+        return s.skip("비밀값 패턴 동치", "Mechanism §9 1항 패턴 표 부재 — 검사 불성립")
+    return secret_pattern_drift(s.vault)
 
-    # 9. 보호영역 생애 fixture — 매 검증 실행 (회귀 방지)
+
+def _approval_fixture(s: _Suite) -> list[str]:
+    """9. 보호영역 생애 fixture — 매 검증 실행 (회귀 방지)."""
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        guard("보호영역 생애 fixture", lambda: fixture_approval_lifecycle(vault, td))
+        return fixture_approval_lifecycle(s.vault, td)
 
-    # 10. 승인 기록부 정합성 (인과 극대 유일·승인본 해석 — 시행령 §6 7항)
-    if appr_ok:
-        guard("승인 기록부 정합(stale·승인본 해석)", lambda: approvals.integrity(vault))
-    else:
-        skip("승인 기록부 정합", "승인 대장 판독 실패 — 판정 보류")
 
-    # 11. 대장 스키마 — 기록 동일성·필수 필드는 **전 구간**, parents 계약만
-    #     앵커(첫 parents 기록) 이후. 유산 구간을 무검증으로 두면 앵커 위에
-    #     끼운 위조 행이 검증을 통째로 우회한다. 대상은 승인 기록부다.
-    if appr_ok:
-        errs = []
-        anchor = ledger_anchor_index(arecs)
-        known = set()
-        for i, r in enumerate(arecs):
-            where = f"행{i+1}"
-            rid = r.get("rid")
-            if not re.match(RID_RE, str(rid)):
-                errs.append(f"{where}: rid 형식 위반 {rid}")
-            for k in ("kind", "region", "at"):
-                if k not in r:
-                    errs.append(f"{where}: 필수 필드 누락 {k}")
-            if r.get("kind") not in approvals.KINDS:
-                errs.append(f"{where}: 미정의 kind {r.get('kind')}")
-            if anchor is not None and i >= anchor:
-                if not isinstance(r.get("parents"), list) or (not r["parents"] and i != 0):
-                    errs.append(f"{where}: parents 부재")   # 빈 parents는 파일 첫 기록만 허용
-                else:
-                    for pp in r["parents"]:
-                        if not isinstance(pp, str):
-                            errs.append(f"{where}: parents 원소가 문자열이 아님 {pp!r}")
-                        elif pp not in known:
-                            errs.append(f"{where}: 미지의 parent {pp}")
-            if isinstance(rid, str):
-                known.add(rid)
-        after = 0 if anchor is None else len(arecs) - anchor
-        ok(f"승인 대장 스키마(전 {len(arecs)}행 · parents는 앵커 이후 {after}행)", errs)
-    else:
-        skip("승인 대장 스키마", "승인 대장 판독 실패 — 검사 불성립")
+def _approval_integrity(s: _Suite) -> list[str] | None:
+    """10. 승인 기록부 정합성 (인과 극대 유일·승인본 해석 — 시행령 §6 7항)."""
+    if not s.appr_ok:
+        return s.skip("승인 기록부 정합", "승인 대장 판독 실패 — 판정 보류")
+    return approvals.integrity(s.vault)
 
-    # 11b. 퇴출 기록부 스키마 (Mechanism §9-2 12항) — 같은 규율에 kind별 필수
-    #      필드와 `settle`→`evict` 참조를 더한다. 판독 실패는 5번이 이미 보고했다.
-    erecs = next((rs for p, rs in ledgers if p == vault.evictions), None)
-    if erecs is not None:
-        ok(f"퇴출 기록부 스키마({len(erecs)}행)", evictions.schema_errors(erecs))
-    else:
-        skip("퇴출 기록부 스키마", "퇴출 기록부 판독 실패 — 검사 불성립")
 
-    # 12. 사건 파일 헤더 (Mechanism §4 3항) — 파싱 실패를 여기서 직접 보고한다
-    #     (topology_check의 'conflicts 대상 부적격'으로 오보되지 않게).
+def _row_errors(r: dict) -> list[str]:
+    """승인 기록부 한 행의 기록 동일성·필수 필드 — 전 구간에 건다."""
     errs = []
-    cdir = vault.ledger / "case"
+    if not re.match(RID_RE, str(r.get("rid"))):
+        errs.append(f"rid 형식 위반 {r.get('rid')}")
+    errs += [f"필수 필드 누락 {k}" for k in ("kind", "region", "at") if k not in r]
+    if r.get("kind") not in approvals.KINDS:
+        errs.append(f"미정의 kind {r.get('kind')}")
+    return errs
+
+
+def _parent_errors(r: dict, first: bool, known: set) -> list[str]:
+    """승인 기록부 한 행의 parents 계약 — 앵커 이후에만 건다. 빈 parents는 파일 첫 기록만 허용한다."""
+    parents = r.get("parents")
+    if not isinstance(parents, list) or (not parents and not first):
+        return ["parents 부재"]
+    errs = []
+    for pp in parents:
+        if not isinstance(pp, str):
+            errs.append(f"parents 원소가 문자열이 아님 {pp!r}")
+        elif pp not in known:
+            errs.append(f"미지의 parent {pp}")
+    return errs
+
+
+def _approval_schema(s: _Suite) -> None:
+    """11. 대장 스키마 — 기록 동일성·필수 필드는 **전 구간**, parents 계약만 앵커(첫 parents 기록) 이후.
+    유산 구간을 무검증으로 두면 앵커 위에 끼운 위조 행이 검증을 통째로 우회한다. 대상은 승인 기록부다."""
+    if not s.appr_ok:
+        return s.skip("승인 대장 스키마", "승인 대장 판독 실패 — 검사 불성립")
+    arecs, errs, known = s.arecs, [], set()
+    anchor = ledger_anchor_index(arecs)
+    for i, r in enumerate(arecs):
+        found = _row_errors(r)
+        if anchor is not None and i >= anchor:
+            found += _parent_errors(r, i == 0, known)
+        errs += [f"행{i+1}: {e}" for e in found]
+        if isinstance(r.get("rid"), str):
+            known.add(r["rid"])
+    after = 0 if anchor is None else len(arecs) - anchor
+    s.ok(f"승인 대장 스키마(전 {len(arecs)}행 · parents는 앵커 이후 {after}행)", errs)
+
+
+def _eviction_schema(s: _Suite) -> None:
+    """11b. 퇴출 기록부 스키마 (Mechanism §9-2 12항) — 같은 규율에 kind별 필수 필드와 `settle`→`evict`
+    참조를 더한다. 판독 실패는 5번이 이미 보고했다."""
+    erecs = next((rs for p, rs in s.ledgers if p == s.vault.evictions), None)
+    if erecs is None:
+        return s.skip("퇴출 기록부 스키마", "퇴출 기록부 판독 실패 — 검사 불성립")
+    s.ok(f"퇴출 기록부 스키마({len(erecs)}행)", evictions.schema_errors(erecs))
+
+
+def _case_headers(s: _Suite) -> None:
+    """12. 사건 파일 헤더 (Mechanism §4 3항) — 파싱 실패를 여기서 직접 보고한다
+    (topology_check의 'conflicts 대상 부적격'으로 오보되지 않게)."""
+    errs = []
+    cdir = s.vault.ledger / "case"
     cases = sorted(cdir.glob("CASE-*.md")) if cdir.is_dir() else []
     for f in cases:
         if not re.match(CASE_RE, f.stem):
@@ -232,14 +264,17 @@ def run(vault: Vault, read_tools) -> dict:
             errs.append(f"{f.name}: 미정의 verdict {v}")
         if "parties" in c and not isinstance(c["parties"], list):
             errs.append(f"{f.name}: parties가 목록이 아님")
-    ok(f"사건 파일 헤더 ({len(cases)}건)", errs)
+    s.ok(f"사건 파일 헤더 ({len(cases)}건)", errs)
 
-    # 13. _raw 비밀값 (Mechanism §9 1항 — '기록 시 치환'의 집행 지점).
-    #     보고에는 경로와 패턴 이름만 싣는다 — 비밀값 자체는 절대 싣지 않는다.
-    errs = []
-    # `_wm`도 함께 훑는다 — 통로에는 필터가 걸려 있지만(osk/wm.py), 통로 밖
-    # 유입(수동 편집·구 엔진 기기에서의 동기화·나중에 추가된 패턴)은 그 필터를
-    # 지나지 않는다. §9 1항이 검증기를 집행 지점으로 두는 이유가 그것이다.
+
+def _recorded_secrets(s: _Suite) -> list[str]:
+    """13. _raw 비밀값 (Mechanism §9 1항 — '기록 시 치환'의 집행 지점).
+    보고에는 경로와 패턴 이름만 싣는다 — 비밀값 자체는 절대 싣지 않는다.
+
+    `_wm`도 함께 훑는다 — 통로에는 필터가 걸려 있지만(osk/wm.py), 통로 밖 유입(수동 편집·구 엔진
+    기기에서의 동기화·나중에 추가된 패턴)은 그 필터를 지나지 않는다. §9 1항이 검증기를 집행 지점으로
+    두는 이유가 그것이다."""
+    vault, errs = s.vault, []
     for d in sorted([*(vault.root / vault.scope).rglob("_cited"), *(vault.root / vault.scope).rglob("_raw"),
                      *(vault.root / vault.scope).rglob("_scope_memory"), vault.root / vault.person / "_cited",
                      vault.root / "_cited"]):
@@ -256,75 +291,103 @@ def run(vault: Vault, read_tools) -> dict:
             _, hits = secrets.filter_text(text)
             if hits:
                 errs.append(f"{p.relative_to(vault.root)}: {sorted(set(hits))}")
-    ok("인용 기록·_scope_memory 비밀값 미기록", errs)
+    return errs
 
-    # 14. 정합성 검사 — 충돌 후보 (헌법 12조 1·2항). 기계 판정이 가능한 유형만
-    #     검출해 **보고**한다. 상정·각하는 사용자 전속이므로 대장에 자동으로
-    #     기록하지 않는다(헌법 12조 3항 · 시행령 §11 3항 — 자동 집행 없음).
-    guard("정합성 검사(충돌 후보 없음)", lambda: conflict_candidates(idx))
 
-    # 15. 외부 표면 (Mechanism §6-2). 규범이 선언한 도구 목록이 정본이고,
-    #     구현이 그와 동치인지 + 권위 대장에 손대지 않는지를 대조한다.
-    if declared_tools(vault) is None:
-        skip("외부 표면 계약", "Mechanism §6-2 도구 목록 부재 — 검사 불성립")
-    else:
-        guard("외부 표면 계약(도구 목록·권위 비노출)", lambda: surface_violations(vault))
-        guard("표면 린트(스키마 건전·가르침)", lambda: surface_lint(vault, read_tools))
-        if _last_surface_cost:
-            rep["surface_cost"] = dict(_last_surface_cost)
+def _surface_contract(s: _Suite) -> list[str] | None:
+    """15. 외부 표면 (Mechanism §6-2). 규범이 선언한 도구 목록이 정본이고, 구현이 그와 동치인지 +
+    권위 대장에 손대지 않는지를 대조한다."""
+    if declared_tools(s.vault) is None:
+        return s.skip("외부 표면 계약", "Mechanism §6-2 도구 목록 부재 — 검사 불성립")
+    return surface_violations(s.vault)
 
-    # 15b. 운용 안내문(docs/SETUP.md) ↔ 규범·파서. 문서 표류는 조용하다 —
-    #      검증기가 문서를 보지 않으면 감사로만 드러나고, 그 사이 새 세션이
-    #      안내문을 먼저 읽고 시작한다(감사 2026-09-02: 도구 수·이름·CLI 표).
-    #      인스턴스에 `docs/`가 없으면 빈 목록이라 자연히 통과한다.
-    guard("운용 안내문 대조(도구 목록·CLI 표)", lambda: setup_doc_drift(vault))
 
-    # 16. 군집 허브 노드 (헌법 3조 8항 · 시행령 §3 6항 · Mechanism §6-1). 검사는 언제나
-    #     수행해 보고하고, verdict 산입은 활성화 뒤에만 한다(시행령 §11
-    #     2항·3항) — 활성화 순간 무엇이 FAIL이 될지 사용자가 미리 본다.
-    try:
-        co = cluster_overview_report(vault, idx)
-        rep["cluster_overview"] = co
-        co_active = validator_active(vault, "cluster-overview")
-        rep["cluster_overview_active"] = co_active
-        co_errs = _cluster_overview_errors(co)
-        if co_active:
-            ok("군집 허브 노드", co_errs)
-        elif co_errs:
-            skip("군집 허브 노드", f"비활성 — 보고만 (위반 {len(co_errs)}건)")
-        else:
-            ok("군집 허브 노드", [])
-    except Exception as e:
-        rep["fail"].append({"군집 허브 노드": [f"검사 자체 실패: {e}"]})
+def _surface_lint(s: _Suite) -> list[str] | None:
+    """15. 표면 린트 — 도구 목록이 선언된 때만 돈다. 잰 상주 비용을 보고에 싣는다."""
+    if declared_tools(s.vault) is None:
+        return None
+    errs = surface_lint(s.vault, s.read_tools)
+    if _last_surface_cost:
+        s.rep["surface_cost"] = dict(_last_surface_cost)
+    return errs
 
-    # 17. 노드 끝 근거 절 (헌법 9조 2항 · 시행령 §7 2항 · Mechanism §6-1 4항). 군집 허브
-    #     노드처럼 언제나 검사해 보고하고, verdict 산입은 활성화 뒤에만 한다.
-    try:
-        from . import roots
-        external = roots.Roots(vault)
-        ev = evidence_section_report(vault, idx, external, records)
-        # `derived-from`에 남은 비노드는 이행 전 노드마다 걸리므로 노드 수로만 싣는다 — 줄의
-        # 위반이 그 수백 줄에 묻히지 않게 한다. verdict 산입(활성화 뒤)은 둘 다 센다.
-        left = [n for n, es in ev.items() if any(e.startswith(LEFTOVER) for e in es)]
-        rep["evidence_section"] = {n: shown for n, es in ev.items()
-                                   if (shown := [e for e in es if not e.startswith(LEFTOVER)])}
-        rep["evidence_section_leftovers"] = len(left)
-        # 이 기기에 없는 외부 루트 — 위반이 아니라 보류이며 루트마다 한 번 알린다
-        rep["evidence_section_held"] = external.held
-        ev_active = validator_active(vault, "evidence-section")
-        rep["evidence_section_active"] = ev_active
-        ev_errs = [f"{n}: {e}" for n, es in sorted(ev.items()) for e in es]
-        if ev_active:
-            ok("근거 절", ev_errs)
-        elif ev_errs:
-            skip("근거 절", f"비활성 — 보고만 (위반 {len(ev_errs)}건)")
-        else:
-            ok("근거 절", [])
-    except Exception as e:
-        rep["fail"].append({"근거 절": [f"검사 자체 실패: {e}"]})
 
-    rep["verdict"] = "PASS" if not rep["fail"] else "FAIL"
-    return rep
+def _cluster_overview(s: _Suite) -> None:
+    """16. 군집 허브 노드 (헌법 3조 8항 · 시행령 §3 6항 · Mechanism §6-1)."""
+    co = cluster_overview_report(s.vault, s.idx)
+    s.rep["cluster_overview"] = co
+    active = validator_active(s.vault, "cluster-overview")
+    s.rep["cluster_overview_active"] = active
+    s.gated("군집 허브 노드", _cluster_overview_errors(co), active)
+
+
+def _evidence_section(s: _Suite) -> None:
+    """17. 노드 끝 근거 절 (헌법 9조 2항 · 시행령 §7 2항 · Mechanism §6-1 4항)."""
+    external = roots.Roots(s.vault)
+    ev = evidence_section_report(s.vault, s.idx, external, s.records)
+    # `derived-from`에 남은 비노드는 이행 전 노드마다 걸리므로 노드 수로만 싣는다 — 줄의
+    # 위반이 그 수백 줄에 묻히지 않게 한다. verdict 산입(활성화 뒤)은 둘 다 센다.
+    left = [n for n, es in ev.items() if any(e.startswith(LEFTOVER) for e in es)]
+    s.rep["evidence_section"] = {n: shown for n, es in ev.items()
+                                 if (shown := [e for e in es if not e.startswith(LEFTOVER)])}
+    s.rep["evidence_section_leftovers"] = len(left)
+    # 이 기기에 없는 외부 루트 — 위반이 아니라 보류이며 루트마다 한 번 알린다
+    s.rep["evidence_section_held"] = external.held
+    active = validator_active(s.vault, "evidence-section")
+    s.rep["evidence_section_active"] = active
+    s.gated("근거 절", [f"{n}: {e}" for n, es in sorted(ev.items()) for e in es], active)
+
+
+# 검사의 등록부 — `(이름, 검사)`. 이름은 검사가 위반 목록을 돌려줄 때의 보고 이름이고, 검사가 예외를 올렸을 때
+# 그 실패를 적는 이름이다. 검사를 더하는 일은 여기에 한 줄을 더하는 일이다.
+CHECKS = (
+    ("노드 계약", _nodes),
+    ("공간 배치·`_` 규칙", lambda s: placement.layout_violations(s.vault)),              # 2. 배치 (Mechanism §1)
+    ("raw 저장 경계", lambda s: raw.storage_violations(s.vault)),
+    ("참조 위상", lambda s: topology.topology_check(s.vault, s.idx)),                    # 3. 헌법 8조 3항
+    ("동명 노드 중복", lambda s: [f"{stem}: {v}" for stem, v in s.idx.dup_stems.items()]),
+    ("미해석 참조 경고", _reference_warnings),
+    ("근거 재검토 후보", _rechecks),
+    ("승인 기록부", _approvals),
+    ("대장 JSON 무결", _ledgers),
+    ("대장 rid 유일·형식", _ledger_structure),
+    ("위임 3요건", _delegations),
+    ("비밀값 필터 양성/음성", lambda s: secrets.self_test()),                            # 8. Mechanism §9 2항
+    ("비밀값 패턴이 규범과 동치", _secret_patterns),
+    ("보호영역 생애 fixture", _approval_fixture),
+    ("승인 기록부 정합(stale·승인본 해석)", _approval_integrity),
+    ("승인 대장 스키마", _approval_schema),
+    ("퇴출 기록부 스키마", _eviction_schema),
+    ("사건 파일 헤더", _case_headers),
+    ("인용 기록·_scope_memory 비밀값 미기록", _recorded_secrets),
+    # 14. 정합성 검사 — 충돌 후보 (헌법 12조 1·2항). 기계 판정이 가능한 유형만 검출해 **보고**한다.
+    #     상정·각하는 사용자 전속이므로 대장에 자동으로 기록하지 않는다(헌법 12조 3항 · 시행령 §11 3항).
+    ("정합성 검사(충돌 후보 없음)", lambda s: conflict_candidates(s.idx)),
+    ("외부 표면 계약(도구 목록·권위 비노출)", _surface_contract),
+    ("표면 린트(스키마 건전·가르침)", _surface_lint),
+    # 15b. 운용 안내문(docs/SETUP.md) ↔ 규범·파서. 문서 표류는 조용하다 — 검증기가 문서를 보지 않으면
+    #      감사로만 드러나고, 그 사이 새 세션이 안내문을 먼저 읽고 시작한다(감사 2026-09-02: 도구 수·이름·
+    #      CLI 표). 인스턴스에 `docs/`가 없으면 빈 목록이라 자연히 통과한다.
+    ("운용 안내문 대조(도구 목록·CLI 표)", lambda s: setup_doc_drift(s.vault)),
+    ("군집 허브 노드", _cluster_overview),
+    ("근거 절", _evidence_section),
+)
+
+
+def run(vault: Vault, read_tools) -> dict:
+    """수트 전체. `read_tools`는 표면이 내놓는 도구의 목록을 읽는 함수다 — 표면 린트(15)가 부른다.
+
+    검증기는 어떤 입력에도 죽지 않는다(시행령 §11) — 검사가 올린 예외도 그 검사의 실패로 보고한다."""
+    s = _Suite(vault, read_tools)
+    for name, check in CHECKS:
+        try:
+            errs = check(s)
+            if errs is not None:
+                s.ok(name, errs)
+        except Exception as e:
+            s.rep["fail"].append({name: [f"검사 자체 실패: {e}"]})
+    s.rep["verdict"] = "PASS" if not s.rep["fail"] else "FAIL"
+    return s.rep
 
 
 LEFTOVER = "derived-from에 비노드 대상"

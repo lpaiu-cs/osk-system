@@ -444,7 +444,7 @@ def integrity(vault: Vault) -> list[str]:
             errs.append(f"행{i+1}: 미정의 kind {r.get('kind')}")
         if not r.get("region"):
             errs.append(f"행{i+1}: region 부재")
-    for region in {r.get("region") for r in recs if r.get("region")}:
+    for region in sorted({r.get("region") for r in recs if r.get("region")}, key=str):   # 보고의 순서를 고정한다
         st = state(vault, region, recs)
         if st == "stale":
             errs.append(f"영역 stale(인과 극대 비유일) — 사용자 봉합 필요: {region}")
