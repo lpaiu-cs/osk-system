@@ -628,10 +628,10 @@ def _recheck_note(vault, rechecks) -> str:
     정기 실행이 없을 때 쌓이는 후보(그 처리는 대화 검토 fork가 이 scope 몫을 맡는다).
     둘 다 없으면 아무것도 싣지 않는다."""
     try:
-        from osk import growth
-        status = growth.daily_status(vault)
+        from osk import growth_ledger
+        status = growth_ledger.daily_status(vault)
         daily = status["active"]
-        if daily and not any(r.get("kind") == "recheck_review" for r in growth.ledger_records(vault)):
+        if daily and not any(r.get("kind") == "recheck_review" for r in growth_ledger.ledger_records(vault)):
             return ""
         items, pending = rechecks.candidates(vault)
     except Exception as exc:

@@ -39,7 +39,7 @@ def adjustment(limit, at=None, **budgets):
     return {'at': (at or datetime.now(timezone.utc).astimezone()).isoformat(timespec='seconds'), 'limit': limit,
             'providers': {p: {'budget': b} for p, b in budgets.items()}}
 # The day resolves argv[0] as the runner does; these cases name executables that do not exist.
-resolved = patch.object(growth, 'check_command', lambda vault, command, **k: {'ok': True, 'executable': command[0]})
+resolved = patch.object(worker_process, 'check_command', lambda vault, command, **k: {'ok': True, 'executable': command[0]})
 """
 
 
@@ -187,11 +187,11 @@ class DailyTests(unittest.TestCase):
                                   timeout=120)
             result = json.loads(proc.stdout)
             assert result['state'] == 'limited' and result['provider'] == 'claude', result
-            assert proc.returncode == 0 and not growth.run_failed(result), (proc.returncode, result)
-            assert growth.run_failed({**result, 'state': 'incomplete'})
-            assert not growth.run_failed({'ok': False, 'state': 'busy'})
-            assert not growth.run_failed({'ok': False, 'state': 'limited'})
-            assert growth.run_failed({'ok': False, 'state': 'unavailable'})
+            assert proc.returncode == 0 and not growth_ledger.run_failed(result), (proc.returncode, result)
+            assert growth_ledger.run_failed({**result, 'state': 'incomplete'})
+            assert not growth_ledger.run_failed({'ok': False, 'state': 'busy'})
+            assert not growth_ledger.run_failed({'ok': False, 'state': 'limited'})
+            assert growth_ledger.run_failed({'ok': False, 'state': 'unavailable'})
         """)
 
     def test_weekly_limit_follows_inflow_and_change_rules(self):
@@ -240,13 +240,13 @@ class DailyTests(unittest.TestCase):
                         'five_hour': {'utilization': 0.1, 'resetsAt': future}}}},
                     {'type': 'rate_limit_event', 'rate_limit_info': {'status': 'allowed_warning', 'unifiedWindows': {
                         'seven_day': {'utilization': utilization, 'resetsAt': resets}}}}])
-                core.ledger_append(growth.ledger_path(VAULT), {'kind': 'run', 'manifest': rid, 'provider': 'claude',
+                core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'run', 'manifest': rid, 'provider': 'claude',
                                                    'output': '.osk/growth/runs/' + rid})
-            assert growth_daily.claude_week(VAULT, growth.ledger_records(VAULT)) is None
+            assert growth_daily.claude_week(VAULT, growth_ledger.ledger_records(VAULT)) is None
             claude_run('r1', 0.95, future)
-            assert growth_daily.claude_week(VAULT, growth.ledger_records(VAULT)) == 0.95
+            assert growth_daily.claude_week(VAULT, growth_ledger.ledger_records(VAULT)) == 0.95
             claude_run('r2', 0.95, past)
-            assert growth_daily.claude_week(VAULT, growth.ledger_records(VAULT)) is None, 'the window has reset since'
+            assert growth_daily.claude_week(VAULT, growth_ledger.ledger_records(VAULT)) is None, 'the window has reset since'
             claude_run('r3', 0.92, future)
             commands = {'codex': ['C:/x/codex.exe', 'exec'], 'claude': ['C:/x/claude.exe', '-p']}
             week = lambda used: patch.object(growth_daily, 'codex_limits',
@@ -285,10 +285,10 @@ class DailyTests(unittest.TestCase):
             day_of = datetime.now(timezone.utc).astimezone().date().isoformat()
             begun = datetime.now(timezone.utc).astimezone() - timedelta(hours=3)
             for n in range(10):
-                plan = core.ledger_append(growth.ledger_path(VAULT), {'kind': 'plan', 'at': begun.isoformat(timespec='seconds'),
+                plan = core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'plan', 'at': begun.isoformat(timespec='seconds'),
                                                           'work_context': 'daily', 'daily': {
                                                               'day': day_of, 'kind': 'scope', 'backlog': True}})
-                core.ledger_append(growth.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'state': 'incomplete',
+                core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'state': 'incomplete',
                                                    'at': (begun + timedelta(minutes=15)).isoformat(timespec='seconds'),
                                                    'selected': 1, 'progress': {'made': [], 'none': ['stuck' + str(n)]}})
             calls.clear()
@@ -570,11 +570,11 @@ class DailyTests(unittest.TestCase):
             now = datetime.now(timezone.utc).astimezone()
             today, yesterday = now.date().isoformat(), (now - timedelta(days=1)).date().isoformat()
             def ledger(adjusted_days_ago):
-                growth.ledger_path(VAULT).unlink(missing_ok=True)
+                growth_ledger.ledger_path(VAULT).unlink(missing_ok=True)
                 for rid, day, stalled in (('p1', yesterday, 'old-job'), ('p2', today, 'stalled-job')):
-                    plan = core.ledger_append(growth.ledger_path(VAULT), {'kind': 'plan', 'work_context': 'daily', 'daily': {
+                    plan = core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'plan', 'work_context': 'daily', 'daily': {
                         'day': day, 'adjustment': adjustment(7, now - timedelta(days=adjusted_days_ago))}})
-                    core.ledger_append(growth.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'ok': False,
+                    core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'ok': False,
                                                        'progress': {'made': [], 'none': [stalled]}})
             measure = patch.object(growth_daily, 'adjust', return_value=adjustment(9))
             with patch.object(growth, 'run', side_effect=fake), measure as adjust:
@@ -592,10 +592,10 @@ class DailyTests(unittest.TestCase):
             if late > now - timedelta(days=7):
                 with patch.object(growth, 'run', side_effect=fake), \\
                         patch.object(growth_daily, 'adjust', return_value=adjustment(9)) as adjust:
-                    growth.ledger_path(VAULT).unlink(missing_ok=True)
-                    plan = core.ledger_append(growth.ledger_path(VAULT), {'kind': 'plan', 'work_context': 'daily', 'daily': {
+                    growth_ledger.ledger_path(VAULT).unlink(missing_ok=True)
+                    plan = core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'plan', 'work_context': 'daily', 'daily': {
                         'day': late.date().isoformat(), 'adjustment': adjustment(7, late)}})
-                    core.ledger_append(growth.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'ok': False,
+                    core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'ok': False,
                                                        'progress': {'made': [], 'none': []}})
                     day = growth_daily.daily(VAULT, [['worker']])
                     assert adjust.called and day['limit'] == 9, day
@@ -612,9 +612,9 @@ class DailyTests(unittest.TestCase):
             today = now.date().isoformat()
             def batch(kind, selected, minutes_ago, state='incomplete'):
                 begun = now - timedelta(minutes=minutes_ago)
-                plan = core.ledger_append(growth.ledger_path(VAULT), {'kind': 'plan', 'at': begun.isoformat(timespec='seconds'),
+                plan = core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'plan', 'at': begun.isoformat(timespec='seconds'),
                                                           'work_context': 'daily', 'daily': {'day': today, 'kind': kind}})
-                core.ledger_append(growth.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'state': state,
+                core.ledger_append(growth_ledger.ledger_path(VAULT), {'kind': 'run', 'manifest': plan['rid'], 'state': state,
                                                    'at': (begun + timedelta(minutes=10)).isoformat(timespec='seconds'),
                                                    'selected': selected, 'progress': {'made': ['k'], 'none': []}})
             # The 09:00 run did three Scope jobs and three light ones; a light batch Codex refused
@@ -656,7 +656,7 @@ class DailyTests(unittest.TestCase):
             assert proc.returncode == 0, proc.stdout + proc.stderr
             day = json.loads(proc.stdout)
             assert day['ok'] and day['state'] in {'empty', 'daily_limit'} and day['limit'] == 6, day
-            rows = core.ledger_read(growth.ledger_path(VAULT))
+            rows = core.ledger_read(growth_ledger.ledger_path(VAULT))
             plans = [r for r in rows if r['kind'] == 'plan']
             runs = [r for r in rows if r['kind'] == 'run']
             # No conversation is waiting, so the first batch is a light one: three jobs, 600 s.
@@ -734,7 +734,7 @@ class DailyTests(unittest.TestCase):
             queue()
             result = growth.run(VAULT, worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'},
                                 scope_bundle=9)
-            plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
+            plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
             assert [j['conversation_id'] for j in plan['scope_jobs']] == ['a', 'c', 'e'], plan['scope_jobs']
             assert result['selected'] == 3 and growth_daily._counted('scope', result) == 1, result
             # The backlog: 5 conversations, 16 turns; W1's tails 6, 4, 3, 2 fill two batches (6+3, 4+2), W2's one.
@@ -761,8 +761,8 @@ class DailyTests(unittest.TestCase):
             legacy('long', path)
             worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']
             result = growth.run(VAULT, worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'})
-            plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
-            assert [k for k in growth.QUEUES if plan[k]] == ['scope_jobs'], plan
+            plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
+            assert [k for k in growth_ledger.QUEUES if plan[k]] == ['scope_jobs'], plan
             job = plan['scope_jobs'][0]
             assert len(job['pending_refs']) == 9 and job['remaining_rounds'] == 3, job
             assert plan['timeout_seconds'] == 900 and plan['daily'] == {'kind': 'scope'}, plan
@@ -772,7 +772,7 @@ class DailyTests(unittest.TestCase):
             # A light batch neither captures nor selects conversations.
             with patch.object(integration, 'catchup', side_effect=AssertionError('captured')):
                 result = growth.run(VAULT, worker, limit=3, queues=growth_daily.LIGHT, capture=False)
-            plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
+            plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
             assert not plan['scope_jobs'] and result['selected'] >= 1, (plan, result)
             # Selection without capture does not read new turns.
             with patch.object(conversation_capture, 'capture', side_effect=AssertionError('captured')):

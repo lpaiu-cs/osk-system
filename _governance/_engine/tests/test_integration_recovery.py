@@ -15,7 +15,7 @@ ENGINE = Path(__file__).resolve().parents[1]
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, distillation as D, growth, integration as it, raw, transcripts, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state
+from osk import core, distillation as D, growth, integration as it, raw, transcripts, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -237,7 +237,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
             seen = growth._reading_plan({'scope_jobs': [job]})['scope_jobs'][0]
             assert seen['repair']['corrected'] == repair['corrected'], seen
             assert seen['repair']['targets'] == repair['targets'], seen
-            assert 'repair.corrected' in growth.prompt(VAULT, growth.plan(VAULT, 3))
+            assert 'repair.corrected' in growth.prompt(VAULT, growth_plan.plan(VAULT, 3))
             refused(lambda: preserved(first['through']))  # its receipt cited the earlier bytes
             again = D.update_node(VAULT, {'key': proof_key + '-2', 'sources': [first['cited']], 'hub': 'W1'},
                                   name=created['id'],
@@ -325,9 +325,9 @@ class IntegrationRecoveryTests(unittest.TestCase):
             worker = '\\n'.join([
                 'import json,sys',
                 'from pathlib import Path',
-                'from osk import core,growth,integration as it,write, conversation_capture, conversation_cite, conversation_review, conversation_state; from osk.vault import Vault; VAULT = Vault.open()',
+                'from osk import core,growth,integration as it,write, conversation_capture, conversation_cite, conversation_review, conversation_state, growth_ledger, growth_plan, growth_reviews, worker_process; from osk.vault import Vault; VAULT = Vault.open()',
                 'sys.stdin.read()',
-                "plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]",
+                "plan = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]",
                 "job = plan['scope_jobs'][0]",
                 "conversation_review.acknowledge(VAULT, 'claude', SID, job['through'], 'preserved', 'Retained useful observation.', [{'key':PROOF}])",
                 "Path(NATIVE).write_text(SECOND, encoding='utf-8')",
@@ -335,7 +335,7 @@ class IntegrationRecoveryTests(unittest.TestCase):
                 "assert newer['ok'], newer",
                 "conversation_review.acknowledge(VAULT, 'claude', SID, newer['through'], 'no_value', 'The later check is transient.')",
                 "for candidate in plan['candidates']:",
-                "    growth.review(VAULT, candidate['key'], 'no_value', reason='No common rule in this comparison.', manifest=plan['rid'])",
+                "    growth_reviews.review(VAULT, candidate['key'], 'no_value', reason='No common rule in this comparison.', manifest=plan['rid'])",
                 "write.update_node(VAULT, 'W1', old_text=LINK, new_text='')"])
             worker = ('SID=' + repr(sid) + '; NATIVE=' + repr(str(native)) + '; SECOND='
                       + repr(rounds(2)) + '; LINK=' + repr('- [[' + created['name'] + ']]')

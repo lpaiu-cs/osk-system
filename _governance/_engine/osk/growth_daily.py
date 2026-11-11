@@ -29,7 +29,7 @@ import threading
 import time
 
 from . import (core, growth, integration, growth_status, harness as adapters, raw, response_growth, transcripts,
-               conversation_capture, conversation_review)
+               conversation_capture, conversation_review, growth_ledger, worker_process)
 from .vault import Vault
 
 PROVIDERS = ("codex", "claude")          # 선호 순서 — Codex 예산을 넘는 몫은 Claude가 맡는다
@@ -37,7 +37,7 @@ DAY_SECONDS = 90 * 60                    # 하루 벽시계 예산; 작업 스�
 SCOPE_ROUNDS = growth.SCOPE_ROUNDS_PER_JOB
 SCOPE_TIMEOUT = 900                      # 9라운드 작업은 대화별 검토 실측으로 최대 9.8분이다
 LIGHT_SIZE, LIGHT_TIMEOUT = 3, 600
-LIGHT = tuple(q for q in growth.QUEUES if q != "scope_jobs")
+LIGHT = tuple(q for q in growth_ledger.QUEUES if q != "scope_jobs")
 BUSY_WAIT = 600                          # 잠금을 쥔 대화별 검토는 작업자 시한(600초) 안에 끝난다
 MISS_BELOW = 0.9                         # 적중률(캐시 읽기 ÷ 입력)이 이보다 낮은 요청이 미스다
 WEEK = 7                                 # D — 소진일에도 Claude로 대신 돌므로 매일 돈다
@@ -94,7 +94,7 @@ def codex_limits(vault: Vault, executable: str, timeout: float = 30) -> dict:
     except OSError:
         pass
     reader.join(timeout)
-    growth.stop_tree(proc)
+    worker_process.stop_tree(proc)
     result = answer.get("result")
     snap = result.get("rateLimits") if isinstance(result, dict) else None
     if not isinstance(snap, dict):
@@ -299,7 +299,7 @@ def backlog(vault: Vault) -> dict:
     """대화 검토 적체(#306) — 정기 실행이 지금 검토할 수 있는 대화와 턴(끝난 대화의 원본 턴과 저장
     라운드), 같은 scope의 작은 꼬리를 9턴까지 묶는 Scope 묶음 수의 추정(남는 꼬리를 큰 것부터 채운다),
     예상 토큰(Scope 묶음 단가 × 묶음 수). 대화 상태를 쓰지 않고 읽기만 한다."""
-    unit, measured = _scope_unit(growth.ledger_records(vault))
+    unit, measured = _scope_unit(growth_ledger.ledger_records(vault))
     scopes: dict = {}
     conversations = turns = 0
     for s in growth_status.conversation_states(vault):
@@ -433,14 +433,14 @@ def _choose(vault: Vault, commands: dict, off: dict) -> tuple[str | None, dict |
         if who == "codex":
             # 실행기가 띄울 바이너리로 묻는다 — Desktop이 갱신되면 명령 파일의 옛 경로는 지워진다.
             # 쓸 수 없는 명령은 묻지 않는다: 그 묶음이 `invalid_command`로 알린다.
-            checked = growth.check_command(vault, commands[who])
+            checked = worker_process.check_command(vault, commands[who])
             if checked["ok"] and (limits := codex_limits(vault, checked["executable"]))["exhausted"]:
                 skipped[who] = "exhausted" if limits["signal"] else "no_signal"
                 continue
             if checked["ok"] and (limits.get("weekly") or 0) >= REST_AT * 100:
                 skipped[who] = "rest"
                 continue
-        elif who == "claude" and (claude_week(vault, growth.ledger_records(vault)) or 0) >= REST_AT:
+        elif who == "claude" and (claude_week(vault, growth_ledger.ledger_records(vault)) or 0) >= REST_AT:
             skipped[who] = "rest"
             continue
         return who, limits, skipped
@@ -481,7 +481,7 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
     failed = captured["errors"] + [c for c in captured["captures"] if c.get("new_error")]
     if failed:
         errors.append({"capture": failed})
-    rows = growth.ledger_records(vault)
+    rows = growth_ledger.ledger_records(vault)
     now = datetime.now(timezone.utc).astimezone()
     day = now.date().isoformat()
     last = (_adjustments(rows) or [None])[-1]
@@ -512,7 +512,7 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
     for plan, run in today:
         if plan["daily"].get("backlog"):
             continue
-        if plan["daily"].get("kind") in done and run.get("state") not in growth.WAITS:
+        if plan["daily"].get("kind") in done and run.get("state") not in growth_ledger.WAITS:
             done[plan["daily"]["kind"]] += _counted(plan["daily"]["kind"], run)
         if (begun := _at(plan)) and (ended := _at(run)):
             earlier += max(0.0, (ended - begun).total_seconds())
@@ -557,7 +557,7 @@ def daily(vault: Vault, commands: list[list[str]], *, invocation: str = "schedul
         else:
             done[kind] += _counted(kind, result)
             exclude |= set(result["progress"]["none"])
-            if growth.run_failed(result):
+            if growth_ledger.run_failed(result):
                 errors.append({"manifest": result["manifest"], "state": state, "error": result.get("error")})
                 faults.add(kind)
                 left.discard(kind)   # 작업자 이상 — 이 큐만 그날 멈춘다

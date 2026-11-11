@@ -63,7 +63,7 @@ class ResponseGrowthTests(unittest.TestCase):
                                 for c in calls), 'preflight started inference')
 
     def test_desktop_update_resolves_only_matching_sibling_and_keeps_auth_gate(self):
-        from osk import native_cli, growth
+        from osk import native_cli, worker_process
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder) / 'OpenAI/Codex/bin'
             old = base / ('1' * 16) / 'codex.exe'
@@ -84,8 +84,8 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.object(native_cli.subprocess, 'run', side_effect=inspect):
                 self.assertEqual(native_cli.resolve(str(old), version='0.155.0-alpha.16'), str(same))
                 self.assertEqual(native_cli.resolve(str(old)), str(newer))
-                self.assertEqual(growth.check_command(VAULT, [str(old)])['executable'], str(newer))
-                self.assertEqual(growth.check_command(VAULT, [str(same)], follow_desktop_update=False)['executable'], str(same))
+                self.assertEqual(worker_process.check_command(VAULT, [str(old)])['executable'], str(newer))
+                self.assertEqual(worker_process.check_command(VAULT, [str(same)], follow_desktop_update=False)['executable'], str(same))
                 old.parent.mkdir(); old.touch()
                 self.assertEqual(native_cli.resolve(str(old)), str(newer))
                 with self.assertRaisesRegex(ValueError, 'matching Codex'):
@@ -148,7 +148,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     rg.command(VAULT, fresh, gone, env)
 
     def test_claude_desktop_hash_directory_keeps_version_and_installation_boundary(self):
-        from osk import native_cli, growth
+        from osk import native_cli, worker_process
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder) / 'Claude/claude-code'
             old = base / '2.1.280/claude.exe'
@@ -161,7 +161,7 @@ class ResponseGrowthTests(unittest.TestCase):
             self.assertEqual(native_cli.resolve(str(old), version='2.1.286'), str(same))
             self.assertEqual(native_cli.resolve(str(same), version='2.1.287'), str(newer))
             self.assertEqual(native_cli.resolve(str(old)), str(newer))
-            self.assertEqual(growth.check_command(VAULT, [str(old)])['executable'], str(newer))
+            self.assertEqual(worker_process.check_command(VAULT, [str(old)])['executable'], str(newer))
             self.assertEqual(native_cli.resolve(str(same)), str(same))
             for version in ('2.1.285', '../2.1.286'):
                 with self.subTest(version=version), self.assertRaisesRegex(ValueError, 'matching Claude'):
@@ -201,7 +201,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # 10-21: app 3.16 moved a store install's data from Packages/Claude_<package>/LocalCache/
         # Roaming/Claude to %LOCALAPPDATA%/Claude-Data/claude_<package> and left the old folder empty.
         # The pinned CLI follows the same package's new folder, and that folder is a Desktop layout.
-        from osk import native_cli, growth
+        from osk import native_cli, worker_process
         with tempfile.TemporaryDirectory() as folder:
             local = Path(folder) / 'Local'
             store = local / 'Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude'
@@ -217,7 +217,7 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.dict(os.environ, {'LOCALAPPDATA': str(local)}):
                 self.assertEqual(native_cli.resolve(str(pinned), version='2.1.304'), str(same))
                 self.assertEqual(native_cli.resolve(str(pinned)), str(same))
-                self.assertEqual(growth.check_command(VAULT, [str(pinned)])['executable'], str(same))
+                self.assertEqual(worker_process.check_command(VAULT, [str(pinned)])['executable'], str(same))
                 # A pin into the new folder follows the source's version like any Desktop install.
                 self.assertEqual(native_cli.resolve(str(older), version='2.1.304'), str(same))
                 with self.assertRaisesRegex(ValueError, 'matching Claude'):
@@ -238,7 +238,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # #257: setup ran inside the store package and wrote the pin as %APPDATA%/Claude/claude-code,
         # which the scheduled task does not see. The pin names no package, so it follows the one
         # Claude-Data install; with two installs it stays a dead pin.
-        from osk import native_cli, growth
+        from osk import native_cli, worker_process
         with tempfile.TemporaryDirectory() as folder:
             local = Path(folder) / 'Local'
             pinned = Path(folder) / 'Roaming/Claude/claude-code/2.1.299/f0584be0fbaf/claude.exe'
@@ -250,7 +250,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 p.chmod(0o700)
             with patch.dict(os.environ, {'LOCALAPPDATA': str(local)}):
                 self.assertEqual(native_cli.resolve(str(pinned)), str(newest))
-                self.assertEqual(growth.check_command(VAULT, [str(pinned)])['executable'], str(newest))
+                self.assertEqual(worker_process.check_command(VAULT, [str(pinned)])['executable'], str(newest))
                 self.assertEqual(native_cli.resolve(str(pinned), version='2.1.304'), str(older))
                 (local / 'Claude-Data/claude_otherpackage1/claude-code').mkdir(parents=True)
                 with self.assertRaisesRegex(ValueError, 'matching Claude'):
@@ -1764,11 +1764,11 @@ class ResponseGrowthTests(unittest.TestCase):
             argv = json.loads((VAULT.root / result['output'] / 'argv.json').read_text(encoding='utf-8'))
             assert argv[1:] == ['-c', script], argv
             assert result['domain_selected'] == 0 and result['scope_selected'] == 1, result
-            manifest = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
+            manifest = [r for r in core.ledger_read(growth_ledger.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['scope'] for j in manifest['organization_jobs']] == ['W1'], manifest
             assert result['selected'] == 2 and manifest['timeout_seconds'] == 600
             assert conversation_capture.status(VAULT, 'claude','own')['reviewed_rounds'] == 1
-            assert growth.plan(VAULT)['candidates'], 'unrelated Domain work was incorrectly acknowledged'
+            assert growth_plan.plan(VAULT)['candidates'], 'unrelated Domain work was incorrectly acknowledged'
         ''')
 
     def test_fork_doctor_shows_route_verdict_without_writing_state_or_secrets(self):

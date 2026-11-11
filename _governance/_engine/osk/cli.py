@@ -140,21 +140,21 @@ def _integration_cmd(vault: Vault, a) -> None:
 
 def _growth_cmd(vault: Vault, a) -> None:
     """Bounded growth execution and read-only evidence reporting."""
-    from . import growth
+    from . import growth, growth_ledger, growth_plan, growth_reviews, worker_process
     try:
         if a.growth_cmd == "status":
             from . import growth_status
             result = growth_status.report(vault, since=a.since, until=a.until, preflight=a.preflight)
         elif a.growth_cmd in ("plan", "prompt"):
-            result = growth.plan(vault, limit=a.limit)
+            result = growth_plan.plan(vault, limit=a.limit)
             if a.growth_cmd == "prompt":
                 sys.stdout.buffer.write(growth.prompt(vault, result).encode("utf-8"))
                 return
         elif a.growth_cmd == "review":
-            result = growth.review(vault, a.key, a.outcome, target=a.target,
+            result = growth_reviews.review(vault, a.key, a.outcome, target=a.target,
                                    reason=a.reason, manifest=a.manifest)
         elif a.growth_cmd == "checkpoint":
-            result = growth.checkpoint(vault, growth.strict_json(
+            result = growth_reviews.checkpoint(vault, growth_reviews.strict_json(
                 Path(a.file).read_text(encoding="utf-8-sig")))
         else:
             commands = [json.loads(Path(f).read_text(encoding="utf-8-sig")) for f in a.command_file]
@@ -162,10 +162,10 @@ def _growth_cmd(vault: Vault, a) -> None:
                 raise ValueError("several --command-file go only with --daily (one per provider)")
             if a.backlog and not a.daily:
                 raise ValueError("--backlog goes with --daily")
-            # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
+            # argv 검사는 실행기의 계약 하나(`worker_process.check_command`)를 따른다 — 여기서 따로
             # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
             if a.check:
-                checks = [growth.check_command(vault, c) for c in commands]
+                checks = [worker_process.check_command(vault, c) for c in commands]
                 result = checks[0] if len(checks) == 1 else {"ok": all(c["ok"] for c in checks), "commands": checks}
             elif a.daily:
                 from . import growth_daily
@@ -176,7 +176,7 @@ def _growth_cmd(vault: Vault, a) -> None:
         # 실행은 작업이 남아도(`incomplete`) 실패가 아니다 — 남은 것을 실패 코드로 내면
         # 운영체제 스케줄러에 매일 도는 실행이 매일 실패로 남는다. 하루 묶음은 대기(한도·잠금)를
         # 오류로 세지 않으므로 `ok`가 곧 판정이다 — 대기로 끝난 날의 포착 실패도 실패다.
-        if (growth.run_failed(result) if a.growth_cmd == "run" and not (a.check or a.daily)
+        if (growth_ledger.run_failed(result) if a.growth_cmd == "run" and not (a.check or a.daily)
                 else not result.get("ok", True)):
             sys.exit(1)
     except (write.WriteError, StaleEngineError, ValueError, OSError) as e:

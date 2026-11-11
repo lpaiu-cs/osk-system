@@ -29,12 +29,10 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
 # 서버가 뜬 뒤에 디스크에서 새로 읽는 엔진 모듈이 늘면 안 된다 — 도는 프로세스는 뜬 시각의 코드를
-# 쥔다(`osk.epoch`). 그래서 쓰는 모듈은 함수 안이 아니라 여기서 읽고, 이름으로 쓰지 않는 `integration`도
-# 읽어 둔다: 뒤늦게 읽힐 수 있는 모듈이 그것을 읽는다. 구조 시험의 `late_loads`가 지킨다.
+# 쥔다(`osk.epoch`). 그래서 쓰는 모듈은 함수 안이 아니라 여기서 읽는다. 구조 시험의 `late_loads`가 지킨다.
 from osk import (contract, distillation, epoch, graph, organization, prose, raw, rechecks,  # noqa: E402
                  update_check, validate, write, cluster_gate, node_checks, node_moves, nodefile,
                  conversation_cite)
-from osk import integration  # noqa: E402, F401
 from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
