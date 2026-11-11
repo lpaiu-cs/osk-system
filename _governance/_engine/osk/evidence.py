@@ -5,17 +5,15 @@ Mechanism §8 9항(줄과 좌표의 형식)·§6-1 4항(검증기)·§9 8항(회
 
 좌표는 대상에 따라 넷이다 — 인용 기록의 라운드, vault의 비노드 파일, 외부 루트의 파일, URL.
 종류는 모양만으로 갈린다. 라운드는 기록 이름 해시의 앞자리로 줄여 쓰므로(`c38d8ef2#46`)
-그 앞자리를 기록으로 되돌리는 색인이 여기 있다. 대응표는 두지 않는다 — 기록 이름의 해시가
+그 앞자리를 기록으로 되돌리는 색인이 있다(`raw.Records`). 대응표는 두지 않는다 — 기록 이름의 해시가
 곧 정체이고, 자리·접두·확장자는 파일 목록에서 다시 계산된다.
 """
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from .core import posix_rel
 from . import graph, placement, raw, rechecks, roots
-from .errors import WriteError
 from .vault import Vault
 
 # 줄 — `- YYYY-MM-DD · `좌표` · 지지|조건|반례 — 내용`
