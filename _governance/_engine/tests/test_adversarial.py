@@ -125,7 +125,7 @@ def _release_direct(root: Path, version: str) -> None:
     """대화형 요구를 우회해 run()을 직접 부른다 — 픽스처 생성 목적."""
     code = (
         "import sys; sys.path.insert(0, r'%s');"
-        "from osk import core, release; release.run(core.VAULT, %r, apply=True, root=__import__('pathlib').Path(r'%s'))"
+        "from osk import core, release; from osk.vault import Vault; VAULT = Vault.open(); release.run(VAULT, %r, apply=True, root=__import__('pathlib').Path(r'%s'))"
         % (str(ENGINE), version, str(root)))
     r = sh(PY, "-c", code, env={**os.environ, "OSK_VAULT_ROOT": str(root)})
     if r.returncode != 0:
@@ -212,8 +212,8 @@ def committed_baselines(inst: Path) -> dict[str, str]:
     `OSK_VAULT_ROOT`로 호출해 얻는다."""
     code = (
         "import json,sys; sys.path.insert(0, r'%s');"
-        "from osk import core, update;"
-        "print(json.dumps(update.managed_paths(core.ledger_read(update.journal_path(core.VAULT)))))"
+        "from osk import core, update; from osk.vault import Vault; VAULT = Vault.open();"
+        "print(json.dumps(update.managed_paths(core.ledger_read(update.journal_path(VAULT)))))"
         % str(ENGINE))
     r = sh(PY, "-c", code, env={**os.environ, "OSK_VAULT_ROOT": str(inst)})
     if r.returncode != 0:

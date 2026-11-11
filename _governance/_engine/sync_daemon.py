@@ -26,10 +26,8 @@ from osk._portalock import lock_exclusive, unlock  # noqa: E402
 # 잠금 자리와 마지막 주기의 기록은 `osk.sync_status`에 산다 — update·setup·doctor가 데몬을 import하지 않고 읽는다.
 from osk.sync_status import STALE, STATUS, last, trouble  # noqa: E402,F401
 from osk.sync_status import lock_path as _lock_path, record as _record  # noqa: E402
+from osk.vault import default_root  # noqa: E402
 
-ROOT = (Path(os.environ["OSK_VAULT_ROOT"]).resolve()
-        if os.environ.get("OSK_VAULT_ROOT")
-        else Path(__file__).resolve().parent.parent.parent)
 _stop = False
 
 
@@ -38,7 +36,7 @@ def _on_signal(signum, frame):
     _stop = True
 
 
-def once(root: Path = ROOT) -> str:
+def once(root: Path) -> str:
     """한 주기를 돌고 그 결과를 기기 로컬에 남긴다(`last`·`trouble`)."""
     try:
         status = _once(root)
@@ -49,7 +47,7 @@ def once(root: Path = ROOT) -> str:
     return status
 
 
-def _once(root: Path = ROOT) -> str:
+def _once(root: Path) -> str:
     """Fetch → locked commit/rebase/snapshot → push the captured SHA.
 
     Network waits do not exclude writers. Recheck pending transactions and Git
@@ -228,10 +226,11 @@ def _normal_priority() -> None:
 
 
 def main():
+    root = default_root()
     if sys.stderr is None:
         # 콘솔 없이 떴다(Windows 작업의 `pythonw.exe`) — 알림을 버리지 않고 기기 로컬 로그에
         # 남긴다. 추적 트리 밖이라 데몬 자신의 `git add -A`가 싣지 않는다.
-        sys.stdout = sys.stderr = open(_lock_path(ROOT, "osk-sync-daemon.log"), "a",
+        sys.stdout = sys.stderr = open(_lock_path(root, "osk-sync-daemon.log"), "a",
                                        encoding="utf-8", buffering=1)
     try:
         _normal_priority()
@@ -243,7 +242,7 @@ def main():
     a = ap.parse_args()
     if os.environ.get("SYNC_ENABLED", "").lower() not in ("1", "true", "yes"):
         sys.exit("sync 비활성 — SYNC_ENABLED=1 로 명시 활성화 (템플릿 계약: 키가 없으면 동기화하지 않는다)")
-    lock = open(_lock_path(ROOT), "w")
+    lock = open(_lock_path(root), "w")
     try:
         lock_exclusive(lock, blocking=False)
     except OSError:
@@ -252,7 +251,7 @@ def main():
     signal.signal(signal.SIGINT, _on_signal)
     if a.once:
         try:
-            print(once())
+            print(once(root))
         except Exception as e:  # 루프와 같이 git이 답하지 못한 것을 traceback 없이 알린다.
             sys.exit(f"sync 실패: {e}")
         return
@@ -265,7 +264,7 @@ def main():
                            # 참/거짓 래치로 두면 두 번째 교체가 침묵한다.
     while not _stop:
         try:
-            st = once()
+            st = once(root)
             if not st.startswith("ok"):      # "ok (로컬 커밋만 — 원격 없음)"은 정상이다
                 print(f"sync 상태: {st}", file=sys.stderr)
         except Exception as e:

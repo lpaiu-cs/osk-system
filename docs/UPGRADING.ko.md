@@ -384,7 +384,7 @@ v4는 대신 옮기지 않는다 — 개명은 대장·승인본·`_raw` 좌표�
      (Mechanism §6-2 6항: 결속의 변경도 새 기록의 추가다):
 
      ```bash
-     .venv/bin/python -c "from osk import write; print(write.bind_session('<키>', 'inbox', 'v4 upgrade'))"
+     .venv/bin/python -c "from osk import write; from osk.vault import Vault; print(write.bind_session(Vault.open(), '<키>', 'inbox', 'v4 upgrade'))"
      ```
 
 5. 보호영역의 변경집합을 검토한다. 폴더를 담은 보호영역에서는 이동이, 3에서 다시

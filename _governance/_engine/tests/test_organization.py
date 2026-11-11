@@ -12,16 +12,18 @@ BOOT = """
 import json, sys
 from pathlib import Path
 from osk import core, contract, graph, write, validate, organization, distillation
-validate.make_mini_vault(core.VAULT, core.ROOT)
+from osk.vault import Vault
+VAULT = Vault.open()
+validate.make_mini_vault(VAULT, VAULT.root)
 def node(name, body="Reusable evidence", edges=None):
-    out = write.create_node(core.VAULT, name, name, body, "gpt-6-astra", space="00_Scope/W1", edges=edges)
+    out = write.create_node(VAULT, name, name, body, "gpt-6-astra", space="00_Scope/W1", edges=edges)
     assert out["ok"], out
     wire("W1", name)
     return out
 def wire(hub, name):
-    idx=graph.Index(core.VAULT); p=write.live_locate(core.VAULT, hub,idx); n=contract.parse(p)
+    idx=graph.Index(VAULT); p=write.live_locate(VAULT, hub,idx); n=contract.parse(p)
     if name not in n.wikilinks():
-        write.update_node(core.VAULT, hub, body=n.body.rstrip()+chr(10)+"- [["+name+"]]",expect_hash=core.sha256_file(p))
+        write.update_node(VAULT, hub, body=n.body.rstrip()+chr(10)+"- [["+name+"]]",expect_hash=core.sha256_file(p))
 def rejected(fn):
     try: fn()
     except (ValueError, write.WriteError): return
@@ -30,11 +32,11 @@ def finish_review(scope, reason, intentional=None):
     # These tiny synthetic facts are known to the fixture. Exercise the same
     # bounded receipt protocol a reader must use, including multi-batch progress.
     for _ in range(30):
-        job = organization.plan(core.VAULT, scope)
+        job = organization.plan(VAULT, scope)
         if job.get('status') == 'complete': return
         checked = [{'unit':u['unit'], 'reason':reason} for u in job['review_units']]
         outcome = 'complete' if job['coverage']['remaining'] <= len(checked) else 'deferred'
-        organization.review(core.VAULT, job['key'],scope,outcome,reason,after=job['snapshot'],
+        organization.review(VAULT, job['key'],scope,outcome,reason,after=job['snapshot'],
                             checked=checked,intentional=intentional)
     raise AssertionError('fixture review did not finish')
 """
@@ -43,13 +45,13 @@ def finish_review(scope, reason, intentional=None):
 class OrganizationTests(unittest.TestCase):
     def test_later_selected_destination_cannot_disappear_before_completion(self):
         self.case("""
-            node('A'); original = organization.plan(core.VAULT, 'W1')
+            node('A'); original = organization.plan(VAULT, 'W1')
             added = node('Later destination')
-            later = organization.plan(core.VAULT, 'W1')
+            later = organization.plan(VAULT, 'W1')
             assert later['key'] == original['key']
-            path = write.live_locate(core.VAULT, added['id'], graph.Index(core.VAULT)); path.unlink()
-            write.update_node(core.VAULT, 'W1',old_text='- [[Later destination]]',new_text='')
-            missing = organization.plan(core.VAULT, 'W1')
+            path = write.live_locate(VAULT, added['id'], graph.Index(VAULT)); path.unlink()
+            write.update_node(VAULT, 'W1',old_text='- [[Later destination]]',new_text='')
+            missing = organization.plan(VAULT, 'W1')
             assert added['id'] in missing['missing_ids']
             rejected(lambda: finish_review('W1','The first node alone remains'))
         """)
@@ -58,41 +60,41 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             request = dict(title='Principles',summary='Shared principles',body='General conclusions',
                            drafter='fixture',space='00_Domain/Principles')
-            rejected(lambda: write.create_node(core.VAULT, **request))
-            assert write.create_node(core.VAULT, **request)['ok']  # fixture confirmation only
-            result = write.create_node(core.VAULT, 'Rule','Qualified rule','Identical paragraph. '*1000,
+            rejected(lambda: write.create_node(VAULT, **request))
+            assert write.create_node(VAULT, **request)['ok']  # fixture confirmation only
+            result = write.create_node(VAULT, 'Rule','Qualified rule','Identical paragraph. '*1000,
                                        'fixture',space='00_Domain/Principles')
             assert result['ok']; wire('Principles','Rule')
-            current = organization.snapshot(core.VAULT, '00_Domain/Principles')
+            current = organization.snapshot(VAULT, '00_Domain/Principles')
             ids = [u['unit'] for u in current['units']]
             assert len(ids) == len(set(ids)) and len(ids) > 3
-            assert not organization.pending(core.VAULT, ['W1']), 'empty Scope must not claim Domain work'
-            assert organization.pending(core.VAULT)[0]['scope'] == '00_Domain/Principles'
+            assert not organization.pending(VAULT, ['W1']), 'empty Scope must not claim Domain work'
+            assert organization.pending(VAULT)[0]['scope'] == '00_Domain/Principles'
             finish_review('00_Domain/Principles','Synthetic rule has one explicitly bounded condition')
-            assert organization.plan(core.VAULT, '00_Domain/Principles')['status'] == 'complete'
-            rejected(lambda: organization.plan(core.VAULT, '00_Person/think'))
+            assert organization.plan(VAULT, '00_Domain/Principles')['status'] == 'complete'
+            rejected(lambda: organization.plan(VAULT, '00_Person/think'))
         """)
 
     def test_partial_read_cannot_complete_scope_and_append_keeps_prior_coverage(self):
         self.case("""
             body = '\\n\\n'.join('## Claim '+str(i)+'\\n'+('bounded evidence '+str(i)+' ')*170 for i in range(20))
             node('Large', body)
-            job = organization.plan(core.VAULT, 'W1')
+            job = organization.plan(VAULT, 'W1')
             assert job['coverage']['remaining'] > 3
             assert len(job['review_units']) == 3
             assert all(u['chars'] <= 4000 for u in job['review_units'])
             assert sum(u['chars'] for u in job['review_units']) <= 12000
-            rejected(lambda: organization.review(core.VAULT, job['key'],'W1','complete','Same procedure',after=job['snapshot']))
+            rejected(lambda: organization.review(VAULT, job['key'],'W1','complete','Same procedure',after=job['snapshot']))
             checked = [{'unit':u['unit'],'reason':'Independent fixture claim '+u['view']} for u in job['review_units']]
-            rejected(lambda: organization.review(core.VAULT, job['key'],'W1','complete','Read three only',after=job['snapshot'],checked=checked))
+            rejected(lambda: organization.review(VAULT, job['key'],'W1','complete','Read three only',after=job['snapshot'],checked=checked))
             # M4: progress is a unit and its claim/conditions assessment; a bare unit is not recorded.
-            rejected(lambda: organization.review(core.VAULT, job['key'],'W1','deferred','No unit reasons',after=job['snapshot'],
+            rejected(lambda: organization.review(VAULT, job['key'],'W1','deferred','No unit reasons',after=job['snapshot'],
                                                  checked=[{'unit':u['unit']} for u in job['review_units']]))
-            rejected(lambda: organization.review(core.VAULT, job['key'],'W1','deferred','Blank unit reason',after=job['snapshot'],
+            rejected(lambda: organization.review(VAULT, job['key'],'W1','deferred','Blank unit reason',after=job['snapshot'],
                                                  checked=[{'unit':u['unit'],'reason':' '} for u in job['review_units']]))
-            assert not organization.load_state(core.VAULT).get('coverage'), 'failed completion must not mutate receipts'
-            saved = organization.review(core.VAULT, job['key'],'W1','deferred','Continue at the next selected range',after=job['snapshot'],checked=checked)
-            before = organization.plan(core.VAULT, 'W1')
+            assert not organization.load_state(VAULT).get('coverage'), 'failed completion must not mutate receipts'
+            saved = organization.review(VAULT, job['key'],'W1','deferred','Continue at the next selected range',after=job['snapshot'],checked=checked)
+            before = organization.plan(VAULT, 'W1')
             from osk import growth
             packet = {'osk_reviews':{'manifest':'fixture','domain':[],'scope':[],
                       'organization':[{'key':job['key'],'scope':'W1','outcome':'deferred',
@@ -107,42 +109,42 @@ class OrganizationTests(unittest.TestCase):
                                               'scope_jobs':[],'organization_jobs':[job]})
                 assert not out['organization'] and out['errors'], out   # only that entry is set aside
             assert saved['remaining_units'] == job['coverage']['remaining'] - 3
-            write.update_node(core.VAULT, 'Large',old_text='## Claim 19',new_text='## Claim 19 revised')
-            after = organization.plan(core.VAULT, 'W1')
+            write.update_node(VAULT, 'Large',old_text='## Claim 19',new_text='## Claim 19 revised')
+            after = organization.plan(VAULT, 'W1')
             assert after['coverage']['remaining'] == before['coverage']['remaining']
             assert not {u['unit'] for u in checked} & {u['unit'] for u in after['review_units']}
-            write.update_node(core.VAULT, 'Large',summary='Updated current result; earlier claim text unchanged')
-            assert organization.plan(core.VAULT, 'W1')['coverage']['remaining'] == after['coverage']['remaining'] + 1
+            write.update_node(VAULT, 'Large',summary='Updated current result; earlier claim text unchanged')
+            assert organization.plan(VAULT, 'W1')['coverage']['remaining'] == after['coverage']['remaining'] + 1
             # Stale and unselected units cannot be claimed, even with a current snapshot: a deferred
             # review keeps its other progress and names them back unrecorded.
-            replay = organization.review(core.VAULT, after['key'],'W1','deferred','replay',after=after['snapshot'],checked=checked)
+            replay = organization.review(VAULT, after['key'],'W1','deferred','replay',after=after['snapshot'],checked=checked)
             assert replay['skipped'] == [u['unit'] for u in checked] and not replay['checked'], replay
             changed = after['review_units'][0]
-            write.update_node(core.VAULT, 'Large',old_text='## Claim 3',new_text='## Claim 3 changed')
-            stale = organization.review(core.VAULT, after['key'],'W1','deferred','old bytes',after=after['snapshot'],
+            write.update_node(VAULT, 'Large',old_text='## Claim 3',new_text='## Claim 3 changed')
+            stale = organization.review(VAULT, after['key'],'W1','deferred','old bytes',after=after['snapshot'],
                                         checked=[{'unit':changed['unit'],'reason':'old claim'}])
             assert stale['skipped'] == [changed['unit']], stale
-            assert changed['unit'] not in organization.load_state(core.VAULT)['coverage']['W1']
-            rejected(lambda: organization.review(core.VAULT, after['key'],'W1','complete','old bytes',after=after['snapshot'],
+            assert changed['unit'] not in organization.load_state(VAULT)['coverage']['W1']
+            rejected(lambda: organization.review(VAULT, after['key'],'W1','complete','old bytes',after=after['snapshot'],
                                                  checked=[{'unit':changed['unit'],'reason':'old claim'}]))
             # The accepted deferred reviews handed 'Large' (edited after the plan) to another
             # reviewer; let that cooling pass before finishing.
-            state = organization.load_state(core.VAULT)
+            state = organization.load_state(VAULT)
             state['handoff']['W1'] = {u: at - organization.HANDOFF_SECONDS - 1
                                       for u, at in state['handoff']['W1'].items()}
-            organization._save(core.VAULT, state)
+            organization._save(VAULT, state)
             finish_review('W1','Each synthetic claim is bounded and retained in this fixture')
-            assert organization.status(core.VAULT, job)['status'] == 'complete'
-            write.update_node(core.VAULT, 'Large',old_text='## Claim 0',new_text='## Claim 0 corrected')
-            reopened = organization.plan(core.VAULT, 'W1')
+            assert organization.status(VAULT, job)['status'] == 'complete'
+            write.update_node(VAULT, 'Large',old_text='## Claim 0',new_text='## Claim 0 corrected')
+            reopened = organization.plan(VAULT, 'W1')
             assert 0 < reopened['coverage']['remaining'] < 4, reopened['coverage']
             # A pre-upgrade blanket completion cannot suppress semantic review.
-            state = organization.load_state(core.VAULT); state.pop('coverage')
-            state['reviews']['W1']['after'] = organization.snapshot(core.VAULT, 'W1')['snapshot']
-            organization._save(core.VAULT, state)
-            assert organization.plan(core.VAULT, 'W1')['coverage']['remaining'] > 3
+            state = organization.load_state(VAULT); state.pop('coverage')
+            state['reviews']['W1']['after'] = organization.snapshot(VAULT, 'W1')['snapshot']
+            organization._save(VAULT, state)
+            assert organization.plan(VAULT, 'W1')['coverage']['remaining'] > 3
             node('Small unselected', 'Another independent fixture claim')
-            selected = organization.plan(core.VAULT, 'W1')
+            selected = organization.plan(VAULT, 'W1')
             compact = organization.readout([selected])[0]
             assert len(compact['nodes']) < len(selected['nodes'])
             assert compact['review_units'] == selected['review_units'] and compact['other_nodes'] > 0
@@ -153,26 +155,26 @@ class OrganizationTests(unittest.TestCase):
             from osk import growth
             for name in ('A', 'B', 'C', 'D'):
                 node(name)
-            job = organization.plan(core.VAULT, 'W1')
+            job = organization.plan(VAULT, 'W1')
             target = next(n for n in job['nodes'] if n['name']=='D')
             reason = 'Reviewed A, B and C. Next: '+target['id']+' section Limits; verify condition X.'
-            saved = organization.review(core.VAULT, job['key'], 'W1', 'deferred', reason)
-            again = organization.plan(core.VAULT, 'W1')
+            saved = organization.review(VAULT, job['key'], 'W1', 'deferred', reason)
+            again = organization.plan(VAULT, 'W1')
             assert again['key'] == job['key']
             assert again['previous_deferral']['reason'] == reason, again
             assert again['previous_deferral']['after'] == saved['after']
             assert not again['previous_deferral']['snapshot_changed']
-            write.update_node(core.VAULT, 'D', old_text='Reusable evidence', new_text='Revised evidence with condition X')
-            changed = organization.plan(core.VAULT, 'W1')
+            write.update_node(VAULT, 'D', old_text='Reusable evidence', new_text='Revised evidence with condition X')
+            changed = organization.plan(VAULT, 'W1')
             assert changed['previous_deferral']['reason'] == reason
             assert changed['previous_deferral']['snapshot_changed']
-            result = growth.run(core.VAULT, [sys.executable, '-B', '-c', 'import sys; p=sys.stdin.read(); assert "section Limits; verify condition X." in p'], limit=3)
+            result = growth.run(VAULT, [sys.executable, '-B', '-c', 'import sys; p=sys.stdin.read(); assert "section Limits; verify condition X." in p'], limit=3)
             assert result['returncode'] == 0, result
-            manifest = [r for r in core.ledger_read(growth.ledger_path(core.VAULT)) if r['kind']=='plan'][-1]
+            manifest = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             carried = next(j for j in manifest['organization_jobs'] if j['scope']=='W1')
             assert carried['previous_deferral'] == changed['previous_deferral']
             finish_review('W1', 'Checked D as well.')
-            assert organization.plan(core.VAULT, 'W1')['status'] == 'complete'
+            assert organization.plan(VAULT, 'W1')['status'] == 'complete'
         """)
 
     def test_hook_readout_keeps_what_the_judgement_binds_to(self):
@@ -180,10 +182,10 @@ class OrganizationTests(unittest.TestCase):
             from osk import cli
             for name in ('A', 'B', 'C', 'D'):
                 node(name)
-            job = organization.plan(core.VAULT, 'W1')
-            organization.review(core.VAULT, job['key'], 'W1', 'deferred', 'Reviewed A. Next: D section Limits.')
-            write.update_node(core.VAULT, 'D', old_text='Reusable evidence', new_text='Revised evidence')
-            job = organization.plan(core.VAULT, 'W1')
+            job = organization.plan(VAULT, 'W1')
+            organization.review(VAULT, job['key'], 'W1', 'deferred', 'Reviewed A. Next: D section Limits.')
+            write.update_node(VAULT, 'D', old_text='Reusable evidence', new_text='Revised evidence')
+            job = organization.plan(VAULT, 'W1')
             short = organization.hook_readout(job)
             assert not {'review_command', 'clusters', 'nodes'} & set(short), short
             # The selected units stay whole, under the plan's own field names; each carries its
@@ -193,7 +195,7 @@ class OrganizationTests(unittest.TestCase):
             assert all(u['expect_view_hash'] == 'view:' + full[u['id']] for u in short['review_units'])
             prior = short['previous_deferral']
             assert prior['snapshot_changed'] and prior['reason'].endswith('section Limits.'), prior
-            text = organization.hook_prompt(core.VAULT, [job])
+            text = organization.hook_prompt(VAULT, [job])
             assert text.startswith('[osk 참조·조직 검토 — scope W1') and organization.HOOK_GUIDANCE in text
             assert json.loads(text.rsplit(chr(10), 1)[1]) == [short]
             assert 'references·issues' not in text
@@ -201,7 +203,7 @@ class OrganizationTests(unittest.TestCase):
             job['references'] = [{'ref': str(i)} for i in range(12)]
             short = organization.hook_readout(job)
             assert len(short['references']) == 10 and short['references_total'] == 12, short
-            assert 'references·issues' in organization.hook_prompt(core.VAULT, [job])
+            assert 'references·issues' in organization.hook_prompt(VAULT, [job])
             got = {}
             cli._emit = got.update
             cli.main(['organization', 'plan', '--scope', 'W1', '--preview'])
@@ -215,7 +217,7 @@ class OrganizationTests(unittest.TestCase):
             assert M.read_node(name=unit['id'], view=unit['view'])['view_hash'] == expected
             current = M.read_node(name=unit['id'])
             inserted = '## Inserted' + chr(10) * 2 + 'New section' + chr(10) * 2 + current['body']
-            assert write.update_node(core.VAULT, current['name'], body=inserted, expect_hash=current['hash'])['ok']
+            assert write.update_node(VAULT, current['name'], body=inserted, expect_hash=current['hash'])['ok']
             assert M.read_node(name=unit['id'], view=unit['view'])['view_hash'] != expected
         """)
 
@@ -227,7 +229,7 @@ class OrganizationTests(unittest.TestCase):
             node('Large', (chr(10) * 2).join('## Claim ' + str(i) + chr(10) + ('bounded evidence ' + str(i) + ' ') * 170
                                              for i in range(2)))
             node('Small')
-            job = organization.plan(core.VAULT, 'W1')
+            job = organization.plan(VAULT, 'W1')
             units = organization.readout([job])[0]['review_units']
             assert len(units) == 3 and len({u['id'] for u in units}) == 2, units  # one node, two ranges
             for u in units:
@@ -243,16 +245,16 @@ class OrganizationTests(unittest.TestCase):
             text = 'Durable qualified conclusion. ' * 600
             a = node('Large', text)
             assert a['organization_advice']['read_view'] == 'outline', a
-            p = core.ROOT / a['path']
+            p = VAULT.root / a['path']
             assert contract.parse(p).body.strip() == text.strip()
-            current = organization.snapshot(core.VAULT, 'W1')
+            current = organization.snapshot(VAULT, 'W1')
             item = next(n for n in current['nodes'] if n['name'] == 'Large')
             assert item['body_chars'] > 12000 and item['organization_advice']
             assert 'body' not in item
-            changed = write.update_node(core.VAULT, 'Large', body='Qualified conclusion with its evidence retained.',
+            changed = write.update_node(VAULT, 'Large', body='Qualified conclusion with its evidence retained.',
                                         expect_hash=core.sha256_file(p))
             assert 'organization_advice' not in changed
-            assert '최대 3개' in organization.prompt(core.VAULT, [current])
+            assert '최대 3개' in organization.prompt(VAULT, [current])
         """)
 
     def test_long_paragraph_is_cut_at_a_sentence_end(self):
@@ -261,7 +263,7 @@ class OrganizationTests(unittest.TestCase):
             body = ''.join('Measured value stays within the bounded range for case ' + str(i) + '. '
                            for i in range(160))
             node('Ledger', body)
-            n = contract.parse(write.live_locate(core.VAULT, 'Ledger', graph.Index(core.VAULT)))
+            n = contract.parse(write.live_locate(VAULT, 'Ledger', graph.Index(VAULT)))
             units = organization._units(n)
             assert len(units) > 2, units
             for u in units[:-1]:
@@ -275,33 +277,33 @@ class OrganizationTests(unittest.TestCase):
             # 정정을 검토하거나 끝없이 미루게 된다(Pelican 17/19, 10-04).
             node('A', 'First independent claim.')
             node('B', 'Second independent claim.')
-            job = organization.plan(core.VAULT, 'W1')
+            job = organization.plan(VAULT, 'W1')
             assert {'A', 'B'} <= {u['name'] for u in job['review_units']}, job['review_units']
-            write.update_node(core.VAULT, 'B', old_text='Second', new_text='Corrected second')
-            current = organization.snapshot(core.VAULT, 'W1')
+            write.update_node(VAULT, 'B', old_text='Second', new_text='Corrected second')
+            current = organization.snapshot(VAULT, 'W1')
             checked = [{'unit': u['unit'], 'reason': 'The claim holds'} for u in job['review_units']
                        if u['name'] == 'A']
-            organization.review(core.VAULT, job['key'], 'W1', 'deferred', 'A checked; B corrected in this review',
+            organization.review(VAULT, job['key'], 'W1', 'deferred', 'A checked; B corrected in this review',
                                 after=current['snapshot'], checked=checked)
-            nxt = organization.plan(core.VAULT, 'W1')
+            nxt = organization.plan(VAULT, 'W1')
             assert 'B' not in {u['name'] for u in nxt['review_units']}, nxt['review_units']
             assert nxt['coverage']['handoff'] == 1, nxt['coverage']
             rest = [{'unit': u['unit'], 'reason': 'ok'} for u in nxt['review_units']]
-            rejected(lambda: organization.review(core.VAULT, nxt['key'], 'W1', 'complete', 'Handed-off range is unread',
+            rejected(lambda: organization.review(VAULT, nxt['key'], 'W1', 'complete', 'Handed-off range is unread',
                                                  after=nxt['snapshot'], checked=rest))
-            organization.review(core.VAULT, nxt['key'], 'W1', 'deferred', 'Only the handed-off range remains',
+            organization.review(VAULT, nxt['key'], 'W1', 'deferred', 'Only the handed-off range remains',
                                 after=nxt['snapshot'], checked=rest)
             # 남은 구간이 모두 넘김 중이면 완료가 아니라 넘김이라고 답하고, 정기 실행도 고르지 않는다
-            waiting = organization.plan(core.VAULT, 'W1')
+            waiting = organization.plan(VAULT, 'W1')
             assert waiting['status'] == 'handoff' and waiting['handoff'] == 1, waiting
-            assert not organization.pending(core.VAULT, ['W1']), 'a cooling range is not offered to anyone yet'
-            assert organization.status(core.VAULT, job)['status'] == 'pending'
+            assert not organization.pending(VAULT, ['W1']), 'a cooling range is not offered to anyone yet'
+            assert organization.status(VAULT, job)['status'] == 'pending'
             # 냉각이 지나면 다른 검토자에게 다시 온다
-            state = organization.load_state(core.VAULT)
+            state = organization.load_state(VAULT)
             state['handoff']['W1'] = {u: at - organization.HANDOFF_SECONDS - 1
                                       for u, at in state['handoff']['W1'].items()}
-            organization._save(core.VAULT, state)
-            later = organization.plan(core.VAULT, 'W1')
+            organization._save(VAULT, state)
+            later = organization.plan(VAULT, 'W1')
             assert 'B' in {u['name'] for u in later['review_units']}, later['review_units']
             assert 'handoff' not in later['coverage'], later['coverage']
         """)
@@ -318,25 +320,25 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             a=node("A", "A fact with [[future question]]", {"derived-from":"missing source"})
             assert a["reference_review"]["status"]=="pending"
-            assert any("[derived-from]" in x for x in graph.dangling_refs(core.VAULT, graph.Index(core.VAULT)))
-            job=organization.plan(core.VAULT, "W1")
+            assert any("[derived-from]" in x for x in graph.dangling_refs(VAULT, graph.Index(VAULT)))
+            job=organization.plan(VAULT, "W1")
             intent=[{"id":a["id"],"relation":"Link","ref":"future question","reason":"Explicit open question"}]
-            current=organization.snapshot(core.VAULT, "W1")
-            rejected(lambda: organization.review(core.VAULT, job["key"],"W1","complete","Keep question",after=current["snapshot"],intentional=intent))
-            write.update_node(core.VAULT, "A",remove_edges={"derived-from":"missing source"})
-            current=organization.snapshot(core.VAULT, "W1")
+            current=organization.snapshot(VAULT, "W1")
+            rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","Keep question",after=current["snapshot"],intentional=intent))
+            write.update_node(VAULT, "A",remove_edges={"derived-from":"missing source"})
+            current=organization.snapshot(VAULT, "W1")
             finish_review("W1", "Bad source removed, question remains", intentional=intent)
-            assert organization.plan(core.VAULT, "W1")["status"]=="complete"
+            assert organization.plan(VAULT, "W1")["status"]=="complete"
             import subprocess,os
-            r=subprocess.run([sys.executable,"-B","-c","from osk import core, organization; assert organization.plan(core.VAULT, 'W1')['status']=='complete'"],env=os.environ,capture_output=True)
+            r=subprocess.run([sys.executable,"-B","-c","from osk import core, organization; from osk.vault import Vault; VAULT = Vault.open(); assert organization.plan(VAULT, 'W1')['status']=='complete'"],env=os.environ,capture_output=True)
             assert r.returncode==0,r.stderr
-            write.update_node(core.VAULT, "A",old_text="A fact",new_text="A revised fact")
-            assert organization.plan(core.VAULT, "W1")["key"]!=job["key"]
+            write.update_node(VAULT, "A",old_text="A fact",new_text="A revised fact")
+            assert organization.plan(VAULT, "W1")["key"]!=job["key"]
         """)
 
     def test_source_navigation_and_raw_round_are_not_knowledge_nodes(self):
         self.case("""
-            rp=core.ROOT/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
+            rp=VAULT.root/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
             rp.write_text("## 1"+chr(10)+"User evidence",encoding="utf-8")
             from unittest import mock
             with mock.patch.object(write, "_check_edges", return_value=[]):   # written before v5.4
@@ -344,49 +346,49 @@ class OrganizationTests(unittest.TestCase):
             items=a["reference_review"]["items"]
             assert {i["issue"] for i in items}=={"source_navigation","raw_round_required"},items
             assert any(i["ref"].endswith("#1") for i in items)
-            assert not any(p==rp for p,k in graph.Index(core.VAULT).nodes.values())
+            assert not any(p==rp for p,k in graph.Index(VAULT).nodes.values())
             old=core.sha256_file(rp)
-            rejected(lambda: write.update_node(core.VAULT, "A",add_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md#1]]"}))
-            write.update_node(core.VAULT, "A",remove_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md]]"})
+            rejected(lambda: write.update_node(VAULT, "A",add_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md#1]]"}))
+            write.update_node(VAULT, "A",remove_edges={"derived-from":"[[00_Scope/W1/_raw/evidence.md]]"})
             assert core.sha256_file(rp)==old
         """)
 
     def test_real_hub_placement_and_identity_preservation(self):
         self.case("""
-            a=node("A"); b=node("B"); job=organization.plan(core.VAULT, "W1")
-            write.create_node(core.VAULT, "Branch","Branch","Two related facts","gpt-6-astra",space="00_Scope/W1/Branch")
+            a=node("A"); b=node("B"); job=organization.plan(VAULT, "W1")
+            write.create_node(VAULT, "Branch","Branch","Two related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("W1","Branch")
-            moved=write.move_nodes(core.VAULT, ["A","B"],"00_Scope/W1/Branch"); assert moved["ok"]
-            now=organization.snapshot(core.VAULT, "W1")
-            rejected(lambda: organization.review(core.VAULT, job["key"],"W1","complete","Moved",after=now["snapshot"]))
+            moved=write.move_nodes(VAULT, ["A","B"],"00_Scope/W1/Branch"); assert moved["ok"]
+            now=organization.snapshot(VAULT, "W1")
+            rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","Moved",after=now["snapshot"]))
             wire("Branch","A"); wire("Branch","B")
-            write.update_node(core.VAULT, "W1",old_text="- [[A]]",new_text="")
-            write.update_node(core.VAULT, "W1",old_text="- [[B]]",new_text="")
-            now=organization.snapshot(core.VAULT, "W1")
+            write.update_node(VAULT, "W1",old_text="- [[A]]",new_text="")
+            write.update_node(VAULT, "W1",old_text="- [[B]]",new_text="")
+            now=organization.snapshot(VAULT, "W1")
             assert not now["issues"],now["issues"]
             finish_review("W1", "One meaningful branch; original IDs retained")
-            assert organization.status(core.VAULT, job)["status"]=="complete"
-            path=write.live_locate(core.VAULT, a["id"],graph.Index(core.VAULT)); path.unlink()
-            assert organization.status(core.VAULT, job)["status"]=="pending"
+            assert organization.status(VAULT, job)["status"]=="complete"
+            path=write.live_locate(VAULT, a["id"],graph.Index(VAULT)); path.unlink()
+            assert organization.status(VAULT, job)["status"]=="pending"
         """)
 
     def test_missing_intermediate_hub_is_found_without_local_state(self):
         self.case("""
-            write.create_node(core.VAULT, "Gap","Gap","Intermediate entrance","gpt-6-astra",space="00_Scope/W1/Gap")
-            write.create_node(core.VAULT, "Child","Child","Nested entrance","gpt-6-astra",space="00_Scope/W1/Gap/Child")
-            write.create_node(core.VAULT, "A","A","Retained nested knowledge","gpt-6-astra",space="00_Scope/W1/Gap/Child")
+            write.create_node(VAULT, "Gap","Gap","Intermediate entrance","gpt-6-astra",space="00_Scope/W1/Gap")
+            write.create_node(VAULT, "Child","Child","Nested entrance","gpt-6-astra",space="00_Scope/W1/Gap/Child")
+            write.create_node(VAULT, "A","A","Retained nested knowledge","gpt-6-astra",space="00_Scope/W1/Gap/Child")
             wire("Child","A")
-            gap=write.live_locate(core.VAULT, "Gap",graph.Index(core.VAULT)); original=gap.read_bytes(); gap.unlink()
-            assert not organization._state_path(core.VAULT).exists()
-            job=organization.plan(core.VAULT, "W1")
+            gap=write.live_locate(VAULT, "Gap",graph.Index(VAULT)); original=gap.read_bytes(); gap.unlink()
+            assert not organization._state_path(VAULT).exists()
+            job=organization.plan(VAULT, "W1")
             assert any(i["path"]=="00_Scope/W1/Gap" and i["hub"] is None for i in job["issues"]),job
-            rejected(lambda: organization.review(core.VAULT, job["key"],"W1","complete","Disconnected subtree",after=job["snapshot"]))
+            rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","Disconnected subtree",after=job["snapshot"]))
             gap.write_bytes(original)
             wire("W1","Gap"); wire("Gap","Child")
-            now=organization.snapshot(core.VAULT, "W1")
+            now=organization.snapshot(VAULT, "W1")
             assert not now["issues"],now["issues"]
             finish_review("W1", "Complete ancestor hub chain")
-            assert organization.plan(core.VAULT, "W1")["status"]=="complete"
+            assert organization.plan(VAULT, "W1")["status"]=="complete"
         """)
 
     def test_hub_tree_shows_every_hub_with_its_direct_nodes_in_the_review(self):
@@ -394,15 +396,15 @@ class OrganizationTests(unittest.TestCase):
             # Mechanism §9-4 3: the organization review owns hub differentiation and carries
             # the scope's hub tree (hub path, direct node count, hub summary; indent = depth).
             node("A"); node("B")
-            write.create_node(core.VAULT, "Branch","Branch entry","Branch of related facts","gpt-6-astra",space="00_Scope/W1/Branch")
+            write.create_node(VAULT, "Branch","Branch entry","Branch of related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("W1","Branch")
-            write.create_node(core.VAULT, "C","C","A branch fact","gpt-6-astra",space="00_Scope/W1/Branch")
+            write.create_node(VAULT, "C","C","A branch fact","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("Branch","C")
-            tree = organization.hub_tree(core.VAULT, organization.scope_path(core.VAULT, "W1"))
+            tree = organization.hub_tree(VAULT, organization.scope_path(VAULT, "W1"))
             lines = tree.splitlines()
             assert lines[0].startswith("- 00_Scope/W1 · 직속 노드 "), lines
             assert lines[1] == "  - 00_Scope/W1/Branch · 직속 노드 1 — Branch entry", lines
-            job = organization.plan(core.VAULT, "W1")
+            job = organization.plan(VAULT, "W1")
             assert job["hub_tree"] == tree, job.get("hub_tree")
             assert organization.hook_readout(job)["hub_tree"] == tree
             rule = "허브의 분화(시행령 §3 7항)는 이 검토가 맡는다"
@@ -413,14 +415,14 @@ class OrganizationTests(unittest.TestCase):
         self.case("""
             # A hub is a hub whatever the case of its .md extension (graph.is_hub, hub_file). The
             # tree must keep such a sub-cluster as a place to put nodes (#155 review).
-            write.create_node(core.VAULT, "Branch","Branch entry","Branch of related facts","gpt-6-astra",space="00_Scope/W1/Branch")
+            write.create_node(VAULT, "Branch","Branch entry","Branch of related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("W1","Branch")
-            write.create_node(core.VAULT, "C","C","A branch fact","gpt-6-astra",space="00_Scope/W1/Branch")
+            write.create_node(VAULT, "C","C","A branch fact","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("Branch","C")
-            branch = core.ROOT / "00_Scope/W1/Branch"
+            branch = VAULT.root / "00_Scope/W1/Branch"
             (branch / "Branch.md").rename(branch / "Branch.MD")
             assert "Branch.MD" in [p.name for p in branch.iterdir()]
-            tree = organization.hub_tree(core.VAULT, organization.scope_path(core.VAULT, "W1"), graph.Index(core.VAULT))
+            tree = organization.hub_tree(VAULT, organization.scope_path(VAULT, "W1"), graph.Index(VAULT))
             assert "  - 00_Scope/W1/Branch · 직속 노드 1 — Branch entry" in tree.splitlines(), tree
         """)
 
@@ -429,21 +431,21 @@ class OrganizationTests(unittest.TestCase):
             # M3: a plain write hangs its node on the hub; a node that loses that link through a
             # hub edit is found again by the organization review and the validator, and the
             # review cannot complete until the hub links it.
-            out = write.create_node(core.VAULT, "Loose","Loose","A claim nobody linked","gpt-6-astra",space="00_Scope/W1")
+            out = write.create_node(VAULT, "Loose","Loose","A claim nobody linked","gpt-6-astra",space="00_Scope/W1")
             assert out["ok"] and out["placed"] == ["W1"], out
-            write.update_node(core.VAULT, "W1", old_text=chr(10)*2+"- [[Loose]]", new_text="")
-            job = organization.plan(core.VAULT, "W1")
+            write.update_node(VAULT, "W1", old_text=chr(10)*2+"- [[Loose]]", new_text="")
+            job = organization.plan(VAULT, "W1")
             assert any(i["path"]=="00_Scope/W1" and "Loose" in i["missing_links"] for i in job["issues"]), job["issues"]
-            assert "Loose" in validate.cluster_overview_report(core.VAULT, graph.Index(core.VAULT))["00_Scope/W1"].get("orphans", [])
+            assert "Loose" in validate.cluster_overview_report(VAULT, graph.Index(VAULT))["00_Scope/W1"].get("orphans", [])
             try:
                 finish_review("W1", "Read every unit")
                 raise AssertionError("an unlinked node let the review complete")
             except ValueError as e:
                 assert "hub wiring" in str(e), e
             wire("W1","Loose")
-            assert not organization.snapshot(core.VAULT, "W1")["issues"]
+            assert not organization.snapshot(VAULT, "W1")["issues"]
             finish_review("W1", "Linked from its hub")
-            assert organization.plan(core.VAULT, "W1")["status"]=="complete"
+            assert organization.plan(VAULT, "W1")["status"]=="complete"
         """)
 
     def test_linked_worktrees_share_lock_but_not_organization_state(self):
@@ -451,154 +453,154 @@ class OrganizationTests(unittest.TestCase):
             import os,subprocess
             node("Shared")
             def git(*args):
-                r=subprocess.run(["git",*args],cwd=core.ROOT,capture_output=True,text=True)
+                r=subprocess.run(["git",*args],cwd=VAULT.root,capture_output=True,text=True)
                 assert r.returncode==0,r.stdout+r.stderr
             git("init","--quiet","-b","main")
             git("add",".")
             git("-c","user.name=Fixture","-c","user.email=fixture@example.invalid","commit","--quiet","-m","Fixture")
-            linked=core.ROOT/"linked"
+            linked=VAULT.root/"linked"
             git("worktree","add","--quiet","--detach",str(linked),"HEAD")
-            only=node("OnlyHere"); job=organization.plan(core.VAULT, "W1")
-            before=organization._state_path(core.VAULT).read_bytes()
-            child=("import json; from osk import core,organization; "
-                   "job=organization.plan(core.VAULT, 'W1'); "
+            only=node("OnlyHere"); job=organization.plan(VAULT, "W1")
+            before=organization._state_path(VAULT).read_bytes()
+            child=("import json; from osk import core,organization; from osk.vault import Vault; VAULT = Vault.open(); "
+                   "job=organization.plan(VAULT, 'W1'); "
                    "assert not job.get('missing_ids'), job; "
-                   "organization.review(core.VAULT, job['key'],'W1','complete','This checkout only',after=job['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in job['review_units']]); "
-                   "print(json.dumps({'state':str(organization._state_path(core.VAULT)),'lock':str(core.local_lock_path('osk-mutation.lock', core.VAULT.root))}))")
+                   "organization.review(VAULT, job['key'],'W1','complete','This checkout only',after=job['snapshot'],checked=[{'unit':u['unit'],'reason':'Known fixture claim'} for u in job['review_units']]); "
+                   "print(json.dumps({'state':str(organization._state_path(VAULT)),'lock':str(core.local_lock_path('osk-mutation.lock', VAULT.root))}))")
             r=subprocess.run([sys.executable,"-B","-c",child],cwd=linked,
                              env=dict(os.environ,OSK_VAULT_ROOT=str(linked)),capture_output=True,text=True)
             assert r.returncode==0,r.stdout+r.stderr
             result=json.loads(r.stdout)
-            assert result["state"]!=str(organization._state_path(core.VAULT))
-            assert result["lock"]==str(core.local_lock_path("osk-mutation.lock", core.VAULT.root))
-            assert organization._state_path(core.VAULT).read_bytes()==before
-            assert organization.plan(core.VAULT, "W1")["key"]==job["key"]
+            assert result["state"]!=str(organization._state_path(VAULT))
+            assert result["lock"]==str(core.local_lock_path("osk-mutation.lock", VAULT.root))
+            assert organization._state_path(VAULT).read_bytes()==before
+            assert organization.plan(VAULT, "W1")["key"]==job["key"]
         """)
 
     def test_partial_move_restarts_from_remaining_identical_nodes(self):
         self.case("""
             from unittest.mock import patch
             a=node("A"); b=node("B")
-            write.create_node(core.VAULT, "Branch","Branch","Related facts","gpt-6-astra",space="00_Scope/W1/Branch")
-            job=organization.plan(core.VAULT, "W1")
+            write.create_node(VAULT, "Branch","Branch","Related facts","gpt-6-astra",space="00_Scope/W1/Branch")
+            job=organization.plan(VAULT, "W1")
             original=write._apply_move; calls=[]
             def injected(*args):
                 calls.append(args[0])
                 if len(calls)==2: raise OSError("injected second move failure")
                 return original(*args)
             with patch("osk.write._apply_move",side_effect=injected):
-                out=write.move_nodes(core.VAULT, ["A","B"],"00_Scope/W1/Branch")
+                out=write.move_nodes(VAULT, ["A","B"],"00_Scope/W1/Branch")
             assert not out["ok"] and out["remaining"]==["B"],out
-            pending=organization.snapshot(core.VAULT, "W1")["pending_moves"]
+            pending=organization.snapshot(VAULT, "W1")["pending_moves"]
             assert len(pending)==1 and pending[0]["remaining"][0]["intact"]
-            out=write.move_nodes(core.VAULT, out["remaining"],"00_Scope/W1/Branch"); assert out["ok"],out
-            assert not organization.snapshot(core.VAULT, "W1")["pending_moves"]
+            out=write.move_nodes(VAULT, out["remaining"],"00_Scope/W1/Branch"); assert out["ok"],out
+            assert not organization.snapshot(VAULT, "W1")["pending_moves"]
             for n in [a,b]:
-                p=write.live_locate(core.VAULT, n["id"],graph.Index(core.VAULT)); assert core.sha256_file(p)==n["new_hash"]
-            write.create_node(core.VAULT, "Other","Other","Another meaningful branch","gpt-6-astra",space="00_Scope/W1/Other")
-            assert write.move_nodes(core.VAULT, ["A"],"00_Scope/W1/Other")["ok"]
+                p=write.live_locate(VAULT, n["id"],graph.Index(VAULT)); assert core.sha256_file(p)==n["new_hash"]
+            write.create_node(VAULT, "Other","Other","Another meaningful branch","gpt-6-astra",space="00_Scope/W1/Other")
+            assert write.move_nodes(VAULT, ["A"],"00_Scope/W1/Other")["ok"]
             wire("W1","Branch"); wire("W1","Other"); wire("Branch","B"); wire("Other","A")
-            write.update_node(core.VAULT, "W1",old_text="- [[A]]",new_text="")
-            write.update_node(core.VAULT, "W1",old_text="- [[B]]",new_text="")
-            now=organization.snapshot(core.VAULT, "W1")
+            write.update_node(VAULT, "W1",old_text="- [[A]]",new_text="")
+            write.update_node(VAULT, "W1",old_text="- [[B]]",new_text="")
+            now=organization.snapshot(VAULT, "W1")
             assert not now["issues"],now["issues"]
             assert not now["pending_moves"],now["pending_moves"]
             finish_review("W1", "Finished retry, then valid new placement")
-            assert organization.plan(core.VAULT, "W1")["status"]=="complete"
+            assert organization.plan(VAULT, "W1")["status"]=="complete"
         """)
 
     def test_relocation_keeps_history_and_rechecks_current_navigation(self):
         self.case("""
             s=node("Source","Observed mechanism")
-            out=distillation.create_node(core.VAULT, {"key":"retained","sources":["Source"],"hub":"W1"},title="Conclusion",summary="Conclusion",body="Mechanism with scope limits",drafter="gpt-6-astra",space="00_Scope/W1")
+            out=distillation.create_node(VAULT, {"key":"retained","sources":["Source"],"hub":"W1"},title="Conclusion",summary="Conclusion",body="Mechanism with scope limits",drafter="gpt-6-astra",space="00_Scope/W1")
             assert out["distillation"]["status"]=="complete",out
-            original=distillation._load(core.VAULT, "retained")
-            write.create_node(core.VAULT, "Branch","Branch","Mechanism knowledge","gpt-6-astra",space="00_Scope/W1/Branch")
-            assert write.move_nodes(core.VAULT, ["Source","Conclusion"],"00_Scope/W1/Branch")["ok"]
-            proof=distillation.status(core.VAULT, "retained")
+            original=distillation._load(VAULT, "retained")
+            write.create_node(VAULT, "Branch","Branch","Mechanism knowledge","gpt-6-astra",space="00_Scope/W1/Branch")
+            assert write.move_nodes(VAULT, ["Source","Conclusion"],"00_Scope/W1/Branch")["ok"]
+            proof=distillation.status(VAULT, "retained")
             assert proof["preservation"]["status"]=="complete" and proof["placement"]["status"]=="pending",proof
-            proof=distillation.resume(core.VAULT, "retained",name="Conclusion")["distillation"]
+            proof=distillation.resume(VAULT, "retained",name="Conclusion")["distillation"]
             assert proof["status"]=="complete",proof
-            assert distillation._load(core.VAULT, "retained")==original
-            write.update_node(core.VAULT, "Source",old_text="Observed mechanism",new_text="Contrary measurement")
-            assert distillation.status(core.VAULT, "retained")["preservation"]["status"]=="pending"
+            assert distillation._load(VAULT, "retained")==original
+            write.update_node(VAULT, "Source",old_text="Observed mechanism",new_text="Contrary measurement")
+            assert distillation.status(VAULT, "retained")["preservation"]["status"]=="pending"
         """)
 
     def test_single_move_adapter_preserves_partial_failure_response(self):
         self.case("""
             from unittest.mock import patch
             a=node("A")
-            write.create_node(core.VAULT, "Branch","Branch","Related facts","gpt-6-astra",space="00_Scope/W1/Branch")
+            write.create_node(VAULT, "Branch","Branch","Related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             with patch("osk.write._apply_move",side_effect=OSError("injected I/O failure")):
-                failed=write.move_node(core.VAULT, "A","00_Scope/W1/Branch")
+                failed=write.move_node(VAULT, "A","00_Scope/W1/Branch")
             assert not failed["ok"] and failed["moved"]==[] and failed["remaining"]==["A"],failed
-            assert core.sha256_file(write.live_locate(core.VAULT, a["id"],graph.Index(core.VAULT)))==a["new_hash"]
-            assert write.move_node(core.VAULT, "A","00_Scope/W1/Branch")["ok"]
-            assert not organization.snapshot(core.VAULT, "W1")["pending_moves"]
+            assert core.sha256_file(write.live_locate(VAULT, a["id"],graph.Index(VAULT)))==a["new_hash"]
+            assert write.move_node(VAULT, "A","00_Scope/W1/Branch")["ok"]
+            assert not organization.snapshot(VAULT, "W1")["pending_moves"]
         """)
 
     def test_cas_review_and_graph_settings_preserve_existing_preferences(self):
         self.case("""
-            node("A"); job=organization.plan(core.VAULT, "W1"); old=organization.snapshot(core.VAULT, "W1")
-            write.update_node(core.VAULT, "A",old_text="Reusable evidence",new_text="A later observation")
-            rejected(lambda: organization.review(core.VAULT, job["key"],"W1","complete","Reviewed earlier bytes",after=old["snapshot"]))
+            node("A"); job=organization.plan(VAULT, "W1"); old=organization.snapshot(VAULT, "W1")
+            write.update_node(VAULT, "A",old_text="Reusable evidence",new_text="A later observation")
+            rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","Reviewed earlier bytes",after=old["snapshot"]))
             sys.path.insert(0,str(Path(organization.__file__).resolve().parents[1]/"scripts"))
             import configure_obsidian_graph as config
-            settings=core.ROOT/".obsidian/graph.json"; settings.parent.mkdir(exist_ok=True)
+            settings=VAULT.root/".obsidian/graph.json"; settings.parent.mkdir(exist_ok=True)
             settings.write_text(json.dumps({"search":"old","scale":2,"showOrphans":True}),encoding="utf-8")
-            out=config.configure(core.ROOT,True)
+            out=config.configure(VAULT.root,True)
             now=json.loads(settings.read_text(encoding="utf-8"))
             assert now["scale"]==2 and now["showOrphans"] is True and now["search"]==config.QUERY
             assert json.loads(Path(out["backup"]).read_text(encoding="utf-8"))["search"]=="old"
-            assert not config.configure(core.ROOT,True)["changed"]
+            assert not config.configure(VAULT.root,True)["changed"]
         """)
 
 
     def test_adversarial_empty_body_raw_coordinates_and_lost_id_restart(self):
         self.case("""
-            a=node("A"); job=organization.plan(core.VAULT, "W1")
-            write.update_node(core.VAULT, "A",body="",expect_hash=a["new_hash"])
-            rejected(lambda: organization.review(core.VAULT, job["key"],"W1","complete","No content retained",after=organization.snapshot(core.VAULT, "W1")["snapshot"]))
-            p=write.live_locate(core.VAULT, a["id"],graph.Index(core.VAULT))
-            write.update_node(core.VAULT, "A",body="Restored knowledge",expect_hash=core.sha256_file(p))
-            rp=core.ROOT/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
+            a=node("A"); job=organization.plan(VAULT, "W1")
+            write.update_node(VAULT, "A",body="",expect_hash=a["new_hash"])
+            rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","No content retained",after=organization.snapshot(VAULT, "W1")["snapshot"]))
+            p=write.live_locate(VAULT, a["id"],graph.Index(VAULT))
+            write.update_node(VAULT, "A",body="Restored knowledge",expect_hash=core.sha256_file(p))
+            rp=VAULT.root/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
             rp.write_text("## 1"+chr(10)+"Observed",encoding="utf-8")
             for anchor in ("999","not-a-round"):
                 section=chr(10)*2+"## 근거"+chr(10)*2+"- 2026-10-31 · `evidence#"+anchor+"` · 지지 — observed"
-                result=write.update_node(core.VAULT, "A",old_text="Restored knowledge",new_text="Restored knowledge"+section)
+                result=write.update_node(VAULT, "A",old_text="Restored knowledge",new_text="Restored knowledge"+section)
                 assert any(i["issue"]=="evidence_unresolved" for i in result["reference_review"]["items"]),result
-                rejected(lambda: organization.review(core.VAULT, job["key"],"W1","complete","Invalid evidence coordinate",after=organization.snapshot(core.VAULT, "W1")["snapshot"]))
-                write.update_node(core.VAULT, "A",old_text=section,new_text="")
+                rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","Invalid evidence coordinate",after=organization.snapshot(VAULT, "W1")["snapshot"]))
+                write.update_node(VAULT, "A",old_text=section,new_text="")
             p.unlink()
-            write.update_node(core.VAULT, "W1",old_text="- [[A]]",new_text="")
-            resumed=organization.plan(core.VAULT, "W1")
+            write.update_node(VAULT, "W1",old_text="- [[A]]",new_text="")
+            resumed=organization.plan(VAULT, "W1")
             assert resumed["key"]==job["key"] and a["id"] in resumed["missing_ids"],resumed
             from osk import growth
-            assert growth.plan(core.VAULT, 20)["organization_jobs"],"lost ID fell out of next run"
+            assert growth.plan(VAULT, 20)["organization_jobs"],"lost ID fell out of next run"
         """)
 
     def test_id_hub_navigation_matches_title_navigation(self):
         self.case("""
             s=node("Source")
-            out=distillation.create_node(core.VAULT, {"key":"by-id","sources":["Source"],"hub":"W1"},title="Conclusion",summary="Conclusion",body="A bounded rule",drafter="gpt-6-astra",space="00_Scope/W1")
-            write.update_node(core.VAULT, "W1",old_text="[[Conclusion]]",new_text="[["+out["id"]+"]]")
-            assert distillation.status(core.VAULT, "by-id")["status"]=="complete"
+            out=distillation.create_node(VAULT, {"key":"by-id","sources":["Source"],"hub":"W1"},title="Conclusion",summary="Conclusion",body="A bounded rule",drafter="gpt-6-astra",space="00_Scope/W1")
+            write.update_node(VAULT, "W1",old_text="[[Conclusion]]",new_text="[["+out["id"]+"]]")
+            assert distillation.status(VAULT, "by-id")["status"]=="complete"
         """)
 
     def test_other_scope_damage_does_not_hide_integration_prompt(self):
         self.case("""
             from osk import integration
-            transcript=core.ROOT/"trial.jsonl"
+            transcript=VAULT.root/"trial.jsonl"
             rows=[{"type":"user","sessionId":"trial","uuid":"u","message":{"role":"user","content":"Observed a durable rule"}},
                   {"type":"assistant","sessionId":"trial","uuid":"a","message":{"role":"assistant","id":"m","stop_reason":"end_turn","content":[{"type":"text","text":"A bounded conclusion"}]}}]
             transcript.write_text(chr(10).join(json.dumps(r) for r in rows),encoding="utf-8")
             from osk import write
-            write.bind_session(core.VAULT, "trial","W1")  # tracking alone binds nothing
-            st=integration.capture(core.VAULT, "claude","trial",str(transcript),"trial",space="00_Scope/W1")
+            write.bind_session(VAULT, "trial","W1")  # tracking alone binds nothing
+            st=integration.capture(VAULT, "claude","trial",str(transcript),"trial",space="00_Scope/W1")
             assert st["pending_refs"],st
-            broken=core.ROOT/"00_Scope/W2/Broken.md"; broken.parent.mkdir(parents=True)
+            broken=VAULT.root/"00_Scope/W2/Broken.md"; broken.parent.mkdir(parents=True)
             broken.write_text("No frontmatter",encoding="utf-8")
-            result=integration.prompt(core.VAULT, "claude","trial")
+            result=integration.prompt(VAULT, "claude","trial")
             assert 'cite_round(conversation="claude/trial"' in result["text"],result
             assert "organization needs" in result["text"],result
         """)

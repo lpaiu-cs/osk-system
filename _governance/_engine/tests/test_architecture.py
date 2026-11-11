@@ -176,6 +176,23 @@ def _opens_vault(expr) -> bool:
     return False
 
 
+def _opens_ambient(fn) -> bool:
+    """받지 않고 스스로 정한다 — 인자 없는 `Vault.open()`, `default_root()`, 환경 변수 `OSK_VAULT_ROOT` 읽기.
+    루트를 인자로 주고 여는 것(`Vault.open(root)`)과 자식 프로세스의 환경에 적어 주는 것은 아니다."""
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call):
+            name = (_dotted(n.func) or "").split(".")
+            if name[-1] == "default_root" or (name[-2:] == ["Vault", "open"] and not n.args and not n.keywords):
+                return True
+            reads_env = name[-1] == "getenv" or name[-2:] == ["environ", "get"]
+            if reads_env and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "OSK_VAULT_ROOT":
+                return True
+        elif (isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Load) and isinstance(n.slice, ast.Constant)
+              and n.slice.value == "OSK_VAULT_ROOT" and (_dotted(n.value) or "").split(".")[-1] == "environ"):
+            return True
+    return False
+
+
 def _takes_vault(fn, method: bool) -> bool:
     static = any((_dotted(d) or "").split(".")[-1] == "staticmethod" for d in fn.decorator_list)
     args = [*fn.args.posonlyargs, *fn.args.args][1 if method and not static else 0:]
@@ -245,22 +262,26 @@ def _resolver(srcs: dict[str, str], trees: dict[str, ast.Module]):
     return named, passed, bound
 
 
-def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[set, set, dict]:
+def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module], layer_of: dict | None = None) -> tuple[set, set, dict]:
     """4항의 두 집합 — `(import할 때 저장소에서 고정하는 이름, 저장소가 필요한데 받지 않는 함수, 다시 내놓는 이름 표)`.
 
     고정하는 이름: 모듈 본문이나 클래스 본문에서 저장소를 정하는 식(`_opens_vault`)으로 만든 이름, 그런 이름에서
-    다시 계산한 이름, 받지 않는 함수를 **불러서** 얻은 이름. 받지 않는 함수: 고정된 이름을 읽는 함수, 그리고
-    `vault`를 첫 인자로 받지 않으면서 그런 함수를 부르는 함수. 단위는 최상위 함수와 메서드다(안에 든 함수는 그
-    단위의 몫). 생성자가 `vault`를 받는 클래스의 메서드는 받은 것으로 본다.
+    다시 계산한 이름, 받지 않는 함수를 **불러서** 얻은 이름. 받지 않는 함수: 고정된 이름을 읽는 함수, 진입점이
+    아닌데 저장소를 스스로 여는 함수(`_opens_ambient`), 그리고 `vault`를 첫 인자로 받지 않으면서 그런 함수를
+    부르는 함수. 단위는 최상위 함수와 메서드다(안에 든 함수는 그 단위의 몫). 생성자가 `vault`를 받는 클래스의
+    메서드는 받은 것으로 본다.
 
-    두 수는 옮기는 동안 줄어들기만 한다: 함수를 옮기면 그 함수가 빠지고, 아직 옮기지 않은 호출자는 전에는
-    "그런 함수를 부르는 함수"였고 뒤에는 `core.VAULT`를 읽는 함수라 그대로 남는다. 그러려면 호출을 놓치지
-    않아야 하므로, 다른 모듈을 거친 이름(`_resolver`)을 따라가고 클래스를 쓰면 그 메서드 전부를 부른
-    것으로 본다.
+    저장소를 여는 것은 진입점의 일이다: 표면 층의 모듈, 어느 모듈이든 최상위 `main`, 그리고 `osk.vault` 자신.
+    그 밖의 함수가 열면 상수가 접근자로 이름만 바뀐 것이라 센다.
+
+    두 수는 2단계가 끝나며 0이 됐다. 기준선이 0이라 하나라도 생기면 시험이 실패한다. 새는 것을 보려면
+    호출을 놓치지 않아야 하므로, 다른 모듈을 거친 이름(`_resolver`)을 따라가고 클래스를 쓰면 그 메서드
+    전부를 부른 것으로 본다.
 
     못 보는 것: `getattr(core, "ROOT")`처럼 이름을 문자열로 읽는 것, `self`가 아닌 객체의 메서드 호출,
     `import *`. `vault`가 첫 인자가 아니면 받은 것으로 치지 않는다."""
     named, passed, _ = _resolver(srcs, trees)
+    layer_of = LAYER_OF if layer_of is None else layer_of
 
     units, methods, assigns = {}, {}, []       # (모듈, 이름) → (함수, 클래스), (모듈, 클래스) → 메서드들, 본문의 대입들
     for module, tree in trees.items():
@@ -299,6 +320,9 @@ def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[set
             threaded.add(key)
         reach[key] = {named(module, n, local, cls) for n in ast.walk(fn)
                       if isinstance(n, (ast.Name, ast.Attribute)) and not isinstance(n.ctx, ast.Store)} - {None, key}
+    entry = {key for key, (_, cls) in units.items()
+             if layer_of.get(key[0]) == SURFACE or key[0] == "osk.vault" or (cls is None and key[1] == "main")}
+    ambient = {key for key, (fn, _) in units.items() if key not in entry and _opens_ambient(fn)}
 
     def with_methods(keys) -> set:
         return set(keys).union(*(methods.get(k, ()) for k in keys))
@@ -312,15 +336,16 @@ def _vault_sets(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[set
                 fixed.add(name)
                 grew = True
         for key in units:
-            if key not in need and (reach[key] & fixed or (key not in threaded and with_methods(reach[key]) & need)):
+            if key not in need and (reach[key] & fixed or key in ambient
+                                    or (key not in threaded and with_methods(reach[key]) & need)):
                 need.add(key)
                 grew = True
     return fixed, need, passed
 
 
-def _vault(srcs: dict[str, str], trees: dict[str, ast.Module]) -> tuple[dict, dict]:
+def _vault(srcs: dict[str, str], trees: dict[str, ast.Module], layer_of: dict | None = None) -> tuple[dict, dict]:
     """`_vault_sets`의 두 집합을 모듈별 수로."""
-    fixed, need, _ = _vault_sets(srcs, trees)
+    fixed, need, _ = _vault_sets(srcs, trees, layer_of)
 
     def count(keys) -> dict[str, int]:
         return {m: sum(1 for k in keys if k[0] == m) for m in sorted({k[0] for k in keys})}
@@ -335,7 +360,8 @@ class Vault:
     def open(cls):
         return cls()
 ''',
-    # 고정: VAULT·ROOT. 못 받은 함수: reader·caller·passes·Lock.__enter__·locks. takes·opens·shadow·Box는 아니다.
+    # 고정: VAULT·ROOT. 못 받은 함수: reader·caller·passes·Lock.__enter__·locks, 그리고 스스로 여는 opens·env.
+    # takes·shadow·Box·main(진입점)·child(자식의 환경에 적는다)·other(루트를 받아 연다)는 아니다.
     "osk.held": '''
 from .vault import Vault
 VAULT = Vault.open()
@@ -355,6 +381,19 @@ def passes():
 
 def opens():
     return takes(Vault.open())
+
+def env():
+    import os
+    return os.environ.get("OSK_VAULT_ROOT")
+
+def main():
+    return takes(Vault.open())
+
+def child(vault):
+    return {"OSK_VAULT_ROOT": str(vault.root)}
+
+def other(root):
+    return takes(Vault.open(root))
 
 def shadow(ROOT):
     return ROOT
@@ -418,7 +457,7 @@ def hop():
 ''',
 }
 _VAULT_WANT = {"vault_fixed_names": {"osk.held": 2, "osk.held2": 2, "osk.held3": 1},
-               "vault_unthreaded": {"osk.held": 5, "osk.held2": 4, "osk.held3": 3}}
+               "vault_unthreaded": {"osk.held": 7, "osk.held2": 4, "osk.held3": 3}}
 
 
 def _broad_except(tree: ast.Module) -> int:
@@ -484,7 +523,7 @@ def measure(srcs: dict[str, str], layer_of: dict[str, int]) -> dict:
     upward, lazy, private, broad, oversize = {}, {}, {}, {}, {}
     edges = {m: set() for m in known}
     trees = {name: ast.parse(text) for name, text in srcs.items()}
-    fixed_names, unthreaded = _vault(srcs, trees)
+    fixed_names, unthreaded = _vault(srcs, trees, layer_of)
     for name, tree in trees.items():
         bound, imported_private, counted = {}, 0, set()
         for target, in_function, line, names, privates in _imports(name, tree, known, _is_package(name, srcs)):

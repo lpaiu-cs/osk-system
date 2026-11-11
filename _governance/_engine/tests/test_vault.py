@@ -1,7 +1,8 @@
-"""저장소 값(`osk.vault.Vault`) — 한 프로세스에서 임시 저장소 둘을 열어 서로 섞이지 않음을 본다.
+"""저장소 값(`osk.vault.Vault`) — 한 프로세스에서 임시 저장소 둘을 열어 서로 섞이지 않음을 보고,
+그 둘에 노드를 쓴다.
 
-`osk.vault`만 import한다. 저장소를 import 시각에 고정하는 모듈(`osk.core`)을 거치지 않으므로,
-이 시험이 여는 저장소는 이 시험이 고른 둘뿐이다.
+엔진의 어떤 모듈도 import할 때 저장소를 정하지 않는다. 이 시험이 여는 저장소는 이 시험이 고른 둘뿐이고,
+환경 변수는 셋째 자리를 가리키게 둔다 — 거기에 무엇이든 생기면 전역이 남은 것이다.
 
     python tests/test_vault.py
 """
@@ -22,6 +23,36 @@ PATHS = ("ledger", "signatures", "candidates", "pins", "validators", "routing", 
 def _node(folder: Path) -> None:
     folder.mkdir(parents=True)
     (folder / "n.md").write_text("x", encoding="utf-8")
+
+
+def writes() -> None:
+    """한 프로세스에서 임시 저장소 둘에 노드를 쓴다 — 노드·허브의 Link·색인·검색이 제 저장소에만 닿는다."""
+    from osk import graph, search, validate, write
+    saved = os.environ.get("OSK_VAULT_ROOT")
+    with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b, tempfile.TemporaryDirectory() as c:
+        os.environ["OSK_VAULT_ROOT"] = c                      # 어느 쪽도 아닌 자리
+        try:
+            va, vb = Vault.open(a), Vault.open(b)
+            for vault in (va, vb):
+                validate.make_mini_vault(vault, vault.root)
+            made = {va: write.create_node(va, "only in a", "첫 저장소의 노드", "alpha 본문", "fable-5", space=f"{va.scope}/W1"),
+                    vb: write.create_node(vb, "only in b", "둘째 저장소의 노드", "beta 본문", "fable-5", space=f"{vb.scope}/W1")}
+            for vault, other in ((va, vb), (vb, va)):
+                out, theirs = made[vault], made[other]["name"]
+                assert out["ok"] and out.get("placed") == ["W1"], out
+                files = {p.stem for p in vault.root.rglob("*.md")}
+                assert out["name"] in files and theirs not in files, (vault.root, sorted(files))
+                hub = (vault.root / vault.scope / "W1" / "W1.md").read_text(encoding="utf-8")
+                assert f"[[{out['name']}]]" in hub and f"[[{theirs}]]" not in hub, hub
+                idx = graph.Index(vault)
+                assert out["name"] in idx.names and theirs not in idx.names, sorted(idx.names)
+                hits = {h["title"] for h in search.Searcher(vault, idx).view_search("본문", 5)}
+                assert out["name"] in hits and theirs not in hits, hits
+            assert not any(Path(c).iterdir()), sorted(Path(c).iterdir())
+        finally:
+            os.environ.pop("OSK_VAULT_ROOT", None)
+            if saved is not None:
+                os.environ["OSK_VAULT_ROOT"] = saved
 
 
 def main() -> int:
@@ -74,7 +105,8 @@ def main() -> int:
             pass
         else:
             raise AssertionError("공간 폴더가 둘인데 열렸다")
-    print("저장소 값: 임시 저장소 둘이 섞이지 않는다")
+    writes()
+    print("저장소 값: 임시 저장소 둘이 섞이지 않고, 둘에 쓴 노드가 제 저장소에만 있다")
     return 0
 
 

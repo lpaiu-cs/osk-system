@@ -22,7 +22,6 @@ from .core import (ID_RE, causal_maxima, effective_parents, ledger_damage, ledge
                    posix_rel, sha256_bytes)
 from . import contract, graph
 from .vault import Vault
-from .core import VAULT
 
 
 def ledger_path(vault: Vault) -> Path:
@@ -315,18 +314,18 @@ def candidates(vault: Vault, idx=None) -> tuple[list[dict], bool]:
                             "scope": kind[1] if kind[0] == "scope" else None,
                             "node_state": ns, "target_state": ts, "cascade": cascade(key),
                             "next": sorted(set(cited.get(nid, [])))})
-    _mark_reports(out, idx, lc)
+    _mark_reports(vault, out, idx, lc)
     return out, ok and not recs
 
 
-def _mark_reports(items: list[dict], idx, cache: dict) -> None:
+def _mark_reports(vault: Vault, items: list[dict], idx, cache: dict) -> None:
     """후보에 지금 보고를 붙인다. 사람에게 올린 것은 `escalated` — 그때의 두 상태가 지금과
     같은 동안만. 판단하지 못한 것은 `deferred` — 쌍을 닫지 않고 그 이유를 다음 작업에
     넘긴다(시행령 §7 2항). 그 사이 두 상태가 바뀌었으면 `state_changed`가 알린다."""
     global misses
     try:
         from . import growth
-        rows = growth.ledger_records(VAULT)
+        rows = growth.ledger_records(vault)
     except OSError:
         misses += 1
         return

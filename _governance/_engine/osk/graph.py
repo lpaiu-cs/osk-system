@@ -6,7 +6,6 @@ Domain의 인용 기록 직접 참조 금지), 헌법 4조 5항(Workbench 예외
 conflicts·비노드 대상·Workbench 비산입).
 """
 from __future__ import annotations
-from .core import DOMAIN, SCOPE
 import os
 import re
 import stat

@@ -13,6 +13,8 @@ sys.path.insert(0, str(ENGINE))
 
 def search_checks():
     from osk import core, search
+    from osk.vault import Vault
+    VAULT = Vault.open()
 
     class Index:
         def __init__(self):
@@ -26,7 +28,7 @@ def search_checks():
                 ('Rules', 'Long exact title', 'governance'),
                 ('Other', 'independent control', 'scope'),
             ]):
-                path = core.ROOT / f'{i}.md'
+                path = VAULT.root / f'{i}.md'
                 self.nodes[title] = (path, (kind, 'W1'))
                 self.parsed[path] = SimpleNamespace(id=str(i), meta={}, body=body,
                                                     edges=lambda _predicate: [], wikilinks=lambda _end=None: [])
@@ -34,7 +36,7 @@ def search_checks():
         def node(self, path):
             return self.parsed[path]
 
-    s = search.Searcher(core.VAULT, Index())
+    s = search.Searcher(VAULT, Index())
     for query, expected in [('Long exact title', 'Long exact title'),
                             ('LONG EXACT TITLE', 'LONG EXACT TITLE'), ('!!!', '!!!')]:
         assert s.work_search(query, 1)[0]['title'] == expected, query
@@ -59,13 +61,15 @@ def ranking_checks():
     relevance; a hub gets neither recency nor centrality; locality pulls, never filters."""
     from datetime import datetime, timedelta
     from osk import core, search
+    from osk.vault import Vault
+    VAULT = Vault.open()
     now = datetime.now(core.KST)
 
     class Index:
         def __init__(self, specs):
             self.nodes, self.parsed = {}, {}
             for title, space, days, links in specs:
-                path = core.ROOT / space[1] / f'{title}.md'
+                path = VAULT.root / space[1] / f'{title}.md'
                 self.nodes[title] = (path, space)
                 self.parsed[path] = SimpleNamespace(
                     id=title, body='shared ranking words', edges=lambda _predicate: [],
@@ -79,7 +83,7 @@ def ranking_checks():
             return ('node', self.nodes[name][1]) if name in self.nodes else ('dangling',)
 
     w1, w2 = ('scope', 'W1'), ('scope', 'W2')
-    s = search.Searcher(core.VAULT, Index([
+    s = search.Searcher(VAULT, Index([
         ('Fresh', w1, 0, []), ('Stale', w1, 365, []), ('Core', w1, 365, []),
         *[(f'Link {i}', w1, 365, ['Core', 'W1']) for i in range(3)],
         ('W1', w1, 0, []),                      # the W1 hub: fresh and linked, boosted by neither
@@ -111,12 +115,14 @@ def centrality_checks():
     term). Workbench and governance count on neither side."""
     import re
     from osk import core, graph
+    from osk.vault import Vault
+    VAULT = Vault.open()
 
     class Index:
         def __init__(self, specs):
             self.nodes, self.parsed = {}, {}
             for title, kind, derived, body in specs:
-                path = core.ROOT / 'W1' / f'{title}.md'
+                path = VAULT.root / 'W1' / f'{title}.md'
                 self.nodes[title] = (path, (kind, 'W1'))
                 self.parsed[path] = SimpleNamespace(
                     id=title, meta={}, body=body,
@@ -142,7 +148,7 @@ def centrality_checks():
         ('W1', 'scope', ['C'], '[[A]] [[B]]'),
         ('Note', 'workbench-transit', ['B'], 'transit'),
     ])
-    explain, depend = graph.centrality(core.VAULT, nodes)
+    explain, depend = graph.centrality(VAULT, nodes)
     assert explain['A'] == 3 + 1 + (2 - 1), explain     # derived-from 3, Link 1, 지지 2 − 반례 1
     assert explain['C'] == 3, explain                   # the repeated derived-from counts once
     assert depend['B'] == 3 + 1 + 3 and depend['A'] == 0 and depend['C'] == 0, depend
@@ -150,20 +156,22 @@ def centrality_checks():
     # Σ D = Σ (E − w_O·(|O⁺| − |O⁻|)) — only A has observation lines, net 2 − 1
     assert sum(depend.values()) == sum(explain.values()) - (2 - 1), (explain, depend)
     legacy = obs.replace('# 관측', '## 근거')
-    assert graph.centrality(core.VAULT, Index([('A', 'scope', [], legacy)]))[0]['A'] == 1
+    assert graph.centrality(VAULT, Index([('A', 'scope', [], legacy)]))[0]['A'] == 1
 
 
 def read_checks():
     import mcp_server as m
     from osk import core, validate, write
-    validate.make_mini_vault(core.VAULT, core.ROOT)
+    from osk.vault import Vault
+    VAULT = Vault.open()
+    validate.make_mini_vault(VAULT, VAULT.root)
     body = ('Introduction 한글😀\n# First\n' + '가😀 value\n' * 800 +
             '\n```markdown\n# Fake\n```\n~~~\n## Also fake\n~~~\n'
             '\n- ```python\n  # List comment\n  ```\n'
             '## Repeated\nFirst instance\n## Repeated\nSecond instance\n')
-    assert write.create_node(core.VAULT, 'Selective read', 'Read fixture', body,
+    assert write.create_node(VAULT, 'Selective read', 'Read fixture', body,
                              'gpt-6-astra', space='00_Scope/W1')['ok']
-    path = core.ROOT / '00_Scope/W1/Selective read.md'
+    path = VAULT.root / '00_Scope/W1/Selective read.md'
     path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
     full = m.read_node('Selective read')
     outline = m.read_node(full['id'], view='outline')
@@ -192,7 +200,7 @@ def read_checks():
     assert m.update_node(full['name'], old_text='First instance', new_text='Revised instance')['ok']
     assert m.read_node(full['name'], view='outline')['view_hash'] != outline['view_hash']
     # A quote returns its paragraph plus one each side; that window is the edit's anchor (#273).
-    assert write.create_node(core.VAULT, 'Window read', 'Anchor window',
+    assert write.create_node(VAULT, 'Window read', 'Anchor window',
                              '# 결론\n\n- 첫째.\n- 둘째에 59덱이 있다.\n  - 하위.\n- 셋째.\n\n산문 첫 줄\n이어짐.',
                              'gpt-6-astra', space='00_Scope/W1')['ok']
     got = m.read_node('Window read', view='59덱')
@@ -208,17 +216,17 @@ def read_checks():
     assert '#9 x' in tag.get('body', ''), tag
     # `search(session=…)` reads the session's bindings: its primary scope's nodes rank up (#170).
     # Scores in this two-node vault are negative (common terms' idf): the boost still pulls up.
-    write.set_primary(core.VAULT, 'retrieval-key', 'W1', 'fixture')
-    assert write.bindings(core.VAULT, 'retrieval-key')['primary'] == 'W1'
+    write.set_primary(VAULT, 'retrieval-key', 'W1', 'fixture')
+    assert write.bindings(VAULT, 'retrieval-key')['primary'] == 'W1'
     plain = {h['title']: h['score'] for h in m.search('Selective read', 5)}
     near = {h['title']: h['score'] for h in m.search('Selective read', 5, session='retrieval-key')}
     assert near['Selective read'] > plain['Selective read'] and near.keys() == plain.keys(), (plain, near)
     # A heading-free body is still pageable; huge outlines have a visible ceiling.
-    assert write.create_node(core.VAULT, 'No headings', 'Plain', 'plain ' * 900,
+    assert write.create_node(VAULT, 'No headings', 'Plain', 'plain ' * 900,
                              'gpt-6-astra', space='00_Scope/W1')['ok']
     assert not m.read_node('No headings', view='outline')['headings']
     assert m.read_node('No headings', view='0:5000')['next_view']
-    assert write.create_node(core.VAULT, 'Many headings', 'Outline', '\n'.join(f'# H{i}' for i in range(100)),
+    assert write.create_node(VAULT, 'Many headings', 'Outline', '\n'.join(f'# H{i}' for i in range(100)),
                              'gpt-6-astra', space='00_Scope/W1')['ok']
     many = m.read_node('Many headings', view='outline')
     assert len(many['headings']) == 40 and many['outline_truncated']
@@ -241,7 +249,7 @@ def read_checks():
         assert after['start'] == sample.index('## After')
         assert m._node_view(sample, after['view'])['body'] == '## After\n중요한 결론😀\n'
     assert m._node_view('```in`valid\n# Visible\n', 'outline')['headings'][0]['title'] == 'Visible'
-    assert not validate.surface_lint(core.VAULT), validate.surface_lint(core.VAULT)
+    assert not validate.surface_lint(VAULT), validate.surface_lint(VAULT)
 
 
 async def transport_checks():

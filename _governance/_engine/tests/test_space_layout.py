@@ -26,29 +26,31 @@ class SpaceLayoutTests(unittest.TestCase):
                     (root / (prefix + name)).mkdir()
                 script = r'''
 from osk import core, graph, validate, approvals, raw, update
+from osk.vault import Vault
+VAULT = Vault.open()
 from osk.layout import space_roots
-validate.make_mini_vault(core.VAULT, core.ROOT)
-assert core.SCOPE == PREFIX + 'Scope', core.SCOPE
-assert core.LEDGER == core.ROOT / (PREFIX + 'Scope/Workbench/_ledger')
+validate.make_mini_vault(VAULT, VAULT.root)
+assert VAULT.scope == PREFIX + 'Scope', VAULT.scope
+assert VAULT.ledger == VAULT.root / (PREFIX + 'Scope/Workbench/_ledger')
 region = PREFIX + 'Person/Delegation'
-approvals.protect(core.VAULT, region)
-before = approvals.ledger_path(core.VAULT).read_bytes()
-snapshot = approvals.working_tree_hash(core.VAULT, region)
-idx = graph.Index(core.VAULT)
+approvals.protect(VAULT, region)
+before = approvals.ledger_path(VAULT).read_bytes()
+snapshot = approvals.working_tree_hash(VAULT, region)
+idx = graph.Index(VAULT)
 assert idx.nodes and not idx.broken
 assert idx.resolve('00_Scope/W1/W1')[0] == 'node'
-assert graph.scope_of_space(core.VAULT, '00_Scope/W1') == 'W1'
-assert graph.scope_of_space(core.VAULT, '= Scope/W1') == 'W1'
-assert raw.record_path(core.VAULT, 'W1', 'fixture').is_relative_to(core.ROOT / '_cited')   # 루트 `_cited/` (헌법 4조 3항)
-assert update._allowed_skel(core.VAULT, '00_Scope') == core.ROOT / core.SCOPE
-assert approvals.state(core.VAULT, region) == 'clean'
-assert approvals.working_tree_hash(core.VAULT, region) == snapshot
-assert approvals.ledger_path(core.VAULT).read_bytes() == before
-assert space_roots(core.ROOT)['Scope'] == core.SCOPE
+assert graph.scope_of_space(VAULT, '00_Scope/W1') == 'W1'
+assert graph.scope_of_space(VAULT, '= Scope/W1') == 'W1'
+assert raw.record_path(VAULT, 'W1', 'fixture').is_relative_to(VAULT.root / '_cited')   # 루트 `_cited/` (헌법 4조 3항)
+assert update._allowed_skel(VAULT, '00_Scope') == VAULT.root / VAULT.scope
+assert approvals.state(VAULT, region) == 'clean'
+assert approvals.working_tree_hash(VAULT, region) == snapshot
+assert approvals.ledger_path(VAULT).read_bytes() == before
+assert space_roots(VAULT.root)['Scope'] == VAULT.scope
 # The validator's isolated fixture builds its mini-vault in this vault's layout.
 import tempfile
 with tempfile.TemporaryDirectory() as fx:
-    problems = validate.fixture_approval_lifecycle(core.VAULT, fx)
+    problems = validate.fixture_approval_lifecycle(VAULT, fx)
 assert problems == [], problems
 '''
                 result = subprocess.run([sys.executable, '-c', f'PREFIX={prefix!r}\n' + script],

@@ -11,7 +11,9 @@ def main():
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from osk import core, distillation, graph, raw, raw_view, validate
-        validate.make_mini_vault(core.VAULT, folder)
+        from osk.vault import Vault
+        VAULT = Vault.open()
+        validate.make_mini_vault(VAULT, folder)
         import mcp_server
 
         user = json.dumps({"content": [{"type": "text", "text": "Keep the cache rule and its limitation."}]})
@@ -26,9 +28,9 @@ def main():
             {"type": "message", "role": "assistant", "phase": "final_answer", "content": [{"text": "Keep cache rule; confirm CACHE_LIMIT in the retest evidence."}]},
         ]
         agent = "\n\n".join(json.dumps(x) for x in events)
-        first = raw.append_rounds(core.VAULT, "reading-test", "evidence", [{"user": user, "agent": agent}], "00_Scope/W1")
+        first = raw.append_rounds(VAULT, "reading-test", "evidence", [{"user": user, "agent": agent}], "00_Scope/W1")
         ref = first["round_refs"][0]
-        path = core.ROOT / first["path"]
+        path = VAULT.root / first["path"]
         before = path.read_bytes()
         view = mcp_server.read_cited(ref, max_chars=100000)
         assert view["ok"] and view["view"] == "review", view
@@ -42,11 +44,11 @@ def main():
         command = mcp_server.read_cited(ref, query="remote checksum")
         assert "call remote-check-77" in command["text"]
         assert "abcdef0123456789" in mcp_server.read_cited(ref, query="remote-check-77")["text"]
-        assert hits["hash"] == view["hash"] == distillation._source(core.VAULT, ref, graph.Index(core.VAULT))["hash"]
+        assert hits["hash"] == view["hash"] == distillation._source(VAULT, ref, graph.Index(VAULT))["hash"]
         assert path.read_bytes() == before, "reading must not rewrite immutable evidence"
-        assert "opaque-secret" in raw.read_round(core.VAULT, ref, 3000000)["text"], "legacy full view changed"
-        raw.append_rounds(core.VAULT, "reading-test", "evidence", [{"user": "next", "agent": "next answer"}], "00_Scope/W1")
-        assert raw.read_round(core.VAULT, ref, view="review")["hash"] == view["hash"], "append changed source identity"
+        assert "opaque-secret" in raw.read_round(VAULT, ref, 3000000)["text"], "legacy full view changed"
+        raw.append_rounds(VAULT, "reading-test", "evidence", [{"user": "next", "agent": "next answer"}], "00_Scope/W1")
+        assert raw.read_round(VAULT, ref, view="review")["hash"] == view["hash"], "append changed source identity"
         for bad in (dict(query=""), dict(query="x" * 201), dict(view="full", query="cache")):
             assert not mcp_server.read_cited(ref, **bad)["ok"], bad
         assert not mcp_server.read_cited(first["path"], query="cache")["ok"]

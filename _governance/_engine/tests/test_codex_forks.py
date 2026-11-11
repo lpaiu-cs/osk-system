@@ -11,13 +11,15 @@ TMP = tempfile.TemporaryDirectory(prefix="osk-codex-fork-test-")
 os.environ["OSK_VAULT_ROOT"] = str(Path(TMP.name) / "vault")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from osk import core, integration as it, raw, scope_memory, transcripts, validate
+from osk.vault import Vault
+VAULT = Vault.open()
 
-if core.ROOT != Path(os.environ["OSK_VAULT_ROOT"]).resolve():
+if VAULT.root != Path(os.environ["OSK_VAULT_ROOT"]).resolve():
     raise RuntimeError("Codex fork tests require their own process")
-validate.make_mini_vault(core.VAULT, core.ROOT)
+validate.make_mini_vault(VAULT, VAULT.root)
 for scope in ("Forks", "Other"):
-    (core.ROOT / "00_Scope" / scope).mkdir()
-    scope_memory.replace(core.VAULT, scope.lower(), "", space="00_Scope/" + scope)
+    (VAULT.root / "00_Scope" / scope).mkdir()
+    scope_memory.replace(VAULT, scope.lower(), "", space="00_Scope/" + scope)
 
 
 def event(kind, **payload):
@@ -70,32 +72,32 @@ class CodexForkTests(unittest.TestCase):
         return parent, child
 
     def guidance(self):
-        return it.prompt(core.VAULT, "codex", self.child, include_organization=False)["text"]
+        return it.prompt(VAULT, "codex", self.child, include_organization=False)["text"]
 
     def test_parent_turns_and_ack_remain_owned_by_parent(self):
         parent = self.page(self.parent, self.parent, turn(self.parent, "p1"))
-        first = it.capture(core.VAULT, "codex", self.parent, str(parent), "forks")
-        it.acknowledge(core.VAULT, "codex", self.parent, first["through"], "no_value", "synthetic fixture")
+        first = it.capture(VAULT, "codex", self.parent, str(parent), "forks")
+        it.acknowledge(VAULT, "codex", self.parent, first["through"], "no_value", "synthetic fixture")
         with parent.open("a", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in turn(self.parent, "p2")))
-        pending = it.capture(core.VAULT, "codex", self.parent, str(parent), "forks")
+        pending = it.capture(VAULT, "codex", self.parent, str(parent), "forks")
         self.assertEqual((pending["captured_rounds"], pending["reviewed_rounds"]), (2, 1))
         child = self.page(self.child, self.child, turn(self.child, "c1"),
                           base=(self.parent, parent.stat().st_size), fork=self.parent)
-        parent_state = it.state_path(core.VAULT, "codex", self.parent)
+        parent_state = it.state_path(VAULT, "codex", self.parent)
         before_state = parent_state.read_bytes()
-        found = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        found = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertTrue(found["ok"], found)
         self.assertEqual((found["captured_rounds"], found["inherited_rounds"], found["reviewed_rounds"]), (1, 2, 0))
         self.assertEqual(found["pending_refs"], [raw.native_ref("codex", self.child, "c1")])
         self.assertEqual(parent_state.read_bytes(), before_state)
         self.assertIn("fork 부모 대화의 과거 2턴은 부모의 몫이다", self.guidance())
         # A lost child cursor tracks the same turns again, still without the parent's.
-        it.state_path(core.VAULT, "codex", self.child).unlink()
-        restored = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        it.state_path(VAULT, "codex", self.child).unlink()
+        restored = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertEqual((restored["ok"], restored["captured_rounds"], restored["inherited_rounds"]), (True, 1, 2))
         # The parent's unreviewed turn stays the parent's.
-        self.assertEqual(it.status(core.VAULT, "codex", self.parent)["pending_refs"], [raw.native_ref("codex", self.parent, "p2")])
+        self.assertEqual(it.status(VAULT, "codex", self.parent)["pending_refs"], [raw.native_ref("codex", self.parent, "p2")])
 
     def test_untracked_parent_turns_stay_out_of_the_child(self):
         _, child = self.fork()
@@ -103,18 +105,18 @@ class CodexForkTests(unittest.TestCase):
         self.assertEqual([(r["id"], r["origin_conversation_id"]) for r in parsed["rounds"]],
                          [("p1", self.parent), ("c1", self.child)])
         self.assertIn("codex:" + self.parent + ":p1", parsed["dialogue_v1"]["p1"]["agent"])
-        found = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        found = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertTrue(found["ok"], found)
         # The parent is not tracked here; its turn is still the parent's, not the child's.
         self.assertEqual((found["captured_rounds"], found["inherited_rounds"]), (1, 1))
-        self.assertEqual(it.capture(core.VAULT, "codex", self.child, None, "forks")["appended"], 0)
+        self.assertEqual(it.capture(VAULT, "codex", self.child, None, "forks")["appended"], 0)
         self.assertIn("부모 대화를 capture해 그쪽에서 검토한다", self.guidance())
         # Cited or read through the child, the turn still names its parent.
-        cited = it.cite(core.VAULT, "codex/" + self.child, quote="question p1")
-        _, header = raw.find_cited(core.ROOT / cited["path"], raw.native_ref("codex", self.parent, "p1"))
+        cited = it.cite(VAULT, "codex/" + self.child, quote="question p1")
+        _, header = raw.find_cited(VAULT.root / cited["path"], raw.native_ref("codex", self.parent, "p1"))
         self.assertEqual(header["conversation"], self.parent)
-        [own] = it.read_turns(core.VAULT, [raw.native_ref("codex", self.child, "c1")])["turns"]
-        [back] = it.read_turns(core.VAULT, [own["previous"]])["turns"]  # the parent's own transcript, untracked here
+        [own] = it.read_turns(VAULT, [raw.native_ref("codex", self.child, "c1")])["turns"]
+        [back] = it.read_turns(VAULT, [own["previous"]])["turns"]  # the parent's own transcript, untracked here
         self.assertEqual((back["ref"], back["turn"]), (raw.native_ref("codex", self.parent, "p1"), "p1"))
 
     def test_review_short_id_cites_the_childs_turn_past_a_parent_and_tail_with_its_prefix(self):
@@ -123,30 +125,30 @@ class CodexForkTests(unittest.TestCase):
         # review read gives must cite that turn, as the prefix is unique only among tracked turns.
         _, child = self.fork(parent_rows=turn(self.parent, "019a0000-p"),
                              child_rows=turn(self.child, "019a0000-c") + turn(self.child, "019a0000-t", finished=False))
-        self.assertTrue(it.capture(core.VAULT, "codex", self.child, str(child), "forks")["ok"])
-        through = it.prompt(core.VAULT, "codex", self.child, include_organization=False)["through"]
-        [read] = it.read_review(core.VAULT, "codex/" + self.child, through)["turns"]
+        self.assertTrue(it.capture(VAULT, "codex", self.child, str(child), "forks")["ok"])
+        through = it.prompt(VAULT, "codex", self.child, include_organization=False)["through"]
+        [read] = it.read_review(VAULT, "codex/" + self.child, through)["turns"]
         self.assertEqual((read["short"], read["turn"]), ("019a0000", "019a0000-c"))
-        self.assertEqual(it.cite(core.VAULT, "codex/" + self.child, turn=read["short"])["turn"], "019a0000-c")
+        self.assertEqual(it.cite(VAULT, "codex/" + self.child, turn=read["short"])["turn"], "019a0000-c")
         # Exact IDs still reach the parent's turn and the open tail.
-        self.assertEqual(it.cite(core.VAULT, "codex/" + self.child, turn="019a0000-t")["turn"], "019a0000-t")
+        self.assertEqual(it.cite(VAULT, "codex/" + self.child, turn="019a0000-t")["turn"], "019a0000-t")
 
     def test_parent_turns_keep_their_owner_when_cited_or_read_from_the_child(self):
         parent, child = self.fork()
-        it.capture(core.VAULT, "codex", self.parent, str(parent), "forks")
-        it.capture(core.VAULT, "codex", self.child, str(child), "forks")
-        cited = it.cite(core.VAULT, "codex/" + self.child, quote="question p1")
-        _, header = raw.find_cited(core.ROOT / cited["path"], raw.native_ref("codex", self.parent, "p1"))
+        it.capture(VAULT, "codex", self.parent, str(parent), "forks")
+        it.capture(VAULT, "codex", self.child, str(child), "forks")
+        cited = it.cite(VAULT, "codex/" + self.child, quote="question p1")
+        _, header = raw.find_cited(VAULT.root / cited["path"], raw.native_ref("codex", self.parent, "p1"))
         self.assertEqual((cited["turn"], header["conversation"]), ("p1", self.parent))
         # The parent's own citation of that turn is the same round of the same record.
-        again = it.cite(core.VAULT, "codex/" + self.parent, quote="question p1")
+        again = it.cite(VAULT, "codex/" + self.parent, quote="question p1")
         self.assertEqual((again["reused"], again["round_ref"]), (True, cited["round_ref"]))
-        [own] = it.read_turns(core.VAULT, [raw.native_ref("codex", self.child, "c1")])["turns"]
+        [own] = it.read_turns(VAULT, [raw.native_ref("codex", self.child, "c1")])["turns"]
         self.assertEqual(own["previous"], raw.native_ref("codex", self.parent, "p1"))
         # A child coordinate cannot pass for the parent's turn.
         with self.assertRaisesRegex(ValueError, "belongs to the fork parent; read native:codex:"):
-            it.read_turns(core.VAULT, [raw.native_ref("codex", self.child, "p1")])
-        [back] = it.read_turns(core.VAULT, [own["previous"]])["turns"]
+            it.read_turns(VAULT, [raw.native_ref("codex", self.child, "p1")])
+        [back] = it.read_turns(VAULT, [own["previous"]])["turns"]
         self.assertEqual((back["ref"], back["position"], back["previous"]), (own["previous"], 1, None))
 
     def test_paginated_parent_and_child_follow_declared_byte_bounds(self):
@@ -162,7 +164,7 @@ class CodexForkTests(unittest.TestCase):
         parsed = transcripts.read(str(child), "codex", self.child)
         self.assertEqual([r["id"] for r in parsed["rounds"]], ["p1", "p2", "c1", "c2"])
         self.assertFalse(parsed["pending_tail"])
-        found = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        found = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertEqual((found["captured_rounds"], found["inherited_rounds"]), (2, 2))
 
     def test_unlinked_parent_and_foreign_user_items_are_rejected(self):
@@ -183,37 +185,37 @@ class CodexForkTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in parsed["rounds"]], ["c1"])
         self.assertFalse(parsed["pending_tail"])
         self.assertEqual(parsed["coverage"]["ancestor_pending_tails"], 1)
-        found = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        found = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertEqual((found["ok"], found["captured_rounds"], found["inherited_rounds"]), (True, 1, 0))
         self.assertIn("fork 부모의 선언된 history 범위에 미완료 꼬리가 있다", self.guidance())
 
     def test_parent_tracked_in_another_scope_keeps_its_turns(self):
         parent, child = self.fork()
-        first = it.capture(core.VAULT, "codex", self.parent, str(parent), "other")
+        first = it.capture(VAULT, "codex", self.parent, str(parent), "other")
         self.assertTrue(first["ok"], first)
-        captured = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        captured = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertTrue(captured["ok"], captured)
         # The parent reviews its turn in its own scope; the child does not take it over.
         self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
-        self.assertEqual(it.status(core.VAULT, "codex", self.parent)["pending_refs"], [raw.native_ref("codex", self.parent, "p1")])
+        self.assertEqual(it.status(VAULT, "codex", self.parent)["pending_refs"], [raw.native_ref("codex", self.parent, "p1")])
         # Evidence the child needs from that turn still names the parent.
-        cited = it.cite(core.VAULT, "codex/" + self.child, quote="question p1")
-        _, header = raw.find_cited(core.ROOT / cited["path"], raw.native_ref("codex", self.parent, "p1"))
+        cited = it.cite(VAULT, "codex/" + self.child, quote="question p1")
+        _, header = raw.find_cited(VAULT.root / cited["path"], raw.native_ref("codex", self.parent, "p1"))
         self.assertEqual(header["conversation"], self.parent)
         self.assertTrue(cited["path"].startswith("_cited/.records/"), cited)     # the one root record
 
     def test_parent_cursor_with_stored_and_native_turns_is_left_alone(self):
         parent = self.page(self.parent, self.parent, turn(self.parent, "p1") + turn(self.parent, "p2"))
-        it.capture(core.VAULT, "codex", self.parent, str(parent), "forks")
+        it.capture(VAULT, "codex", self.parent, str(parent), "forks")
         # An upgraded parent keeps its first turn as a stored `_raw/` round.
-        path = it.state_path(core.VAULT, "codex", self.parent)
+        path = it.state_path(VAULT, "codex", self.parent)
         state = json.loads(path.read_text(encoding="utf-8"))
         state["rounds"][0]["ref"] = "00_Scope/Forks/_raw/.records/codex-legacy.txt#1"
         path.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         before = path.read_bytes()
         child = self.page(self.child, self.child, turn(self.child, "c1"),
                           base=(self.parent, parent.stat().st_size), fork=self.parent)
-        found = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        found = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertEqual((found["ok"], found["captured_rounds"], found["inherited_rounds"]), (True, 1, 2))
         self.assertEqual(path.read_bytes(), before)
 
@@ -223,11 +225,11 @@ class CodexForkTests(unittest.TestCase):
                         name="send_message_to_thread", output="synthetic delivered task",
                         internal_chat_message_metadata_passthrough={"turn_id": "c1"})
         parent, child = self.fork(child_rows=rows)
-        it.capture(core.VAULT, "codex", self.parent, str(parent), "forks")
+        it.capture(VAULT, "codex", self.parent, str(parent), "forks")
         parsed = transcripts.read(str(child), "codex", self.child)
         self.assertFalse(parsed["pending_tail"])
         self.assertIn('"native_trigger": "thread_message"', parsed["dialogue_v1"]["c1"]["user"])
-        captured = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        captured = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertTrue(captured["ok"], captured)
         self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
         self.assertIn("다른 대화에서 전달된 메시지", self.guidance())
@@ -260,46 +262,46 @@ class CodexForkTests(unittest.TestCase):
                 else:
                     rows.insert(2, delivered)
                 path = self.page(sid, sid, rows)
-                first = it.capture(core.VAULT, "codex", sid, str(path), "forks")
+                first = it.capture(VAULT, "codex", sid, str(path), "forks")
                 self.assertTrue(first["ok"], first)
                 # The tracked hash holds: a turn with input or resumable context reads as before.
                 delivered["payload"]["name"] = "send_message_to_thread"
                 self.page(sid, sid, rows)
-                repeated = it.capture(core.VAULT, "codex", sid, None, "forks")
+                repeated = it.capture(VAULT, "codex", sid, None, "forks")
                 self.assertTrue(repeated["ok"], repeated)
                 self.assertEqual((repeated["appended"], repeated["changed"]), (0, 0))
                 self.assertEqual(repeated["through"], first["through"])
 
     def test_changed_parent_prefix_is_refused_without_tracking(self):
         parent, child = self.fork()
-        found = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        found = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertTrue(found["ok"], found)
         # A same-length edit inside the declared parent range keeps the byte bound.
         parent.write_bytes(parent.read_bytes().replace(b"answer p1", b"ANSWER p1"))
-        refused = it.capture(core.VAULT, "codex", self.child, None, "forks")
+        refused = it.capture(VAULT, "codex", self.child, None, "forks")
         self.assertFalse(refused["ok"], refused)
         self.assertIn("inherited native prefix changed", refused["capture_error"])
         self.assertEqual((refused["captured_rounds"], refused["inherited_rounds"]), (1, 1))
 
     def test_legacy_empty_fields_require_failed_source_discovery(self):
-        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "codex", self.child), "codex", self.child)
+        s = it.load_state(VAULT, it.state_path(VAULT, "codex", self.child), "codex", self.child)
         s.update(capture_pending=True, capture_error="ValueError: native transcript path unavailable")
         before = json.dumps(s, sort_keys=True)
         existing = self.page(self.child, self.child, turn(self.child, "c1"))
         for found, expected in ((None, "awaiting_input"), (str(self.home / "missing.jsonl"), "awaiting_input"),
                                 (str(existing), "retryable"), (str(self.home), "action_required")):
             with self.subTest(found=found), mock.patch.object(it, "locate_transcript", return_value=found):
-                self.assertEqual(it._capture_recovery(core.VAULT, s)["state"], expected)
+                self.assertEqual(it._capture_recovery(VAULT, s)["state"], expected)
                 self.assertEqual(json.dumps(s, sort_keys=True), before)
         with mock.patch.object(it, "locate_transcript", side_effect=PermissionError("fixture")):
-            advice = it._capture_recovery(core.VAULT, s)
+            advice = it._capture_recovery(VAULT, s)
             self.assertEqual((advice["state"], advice["basis"]), ("action_required", "source_lookup_failed"))
         s["prompt_count"] = 1
         with mock.patch.object(it, "locate_transcript", return_value=None):
-            self.assertEqual(it._capture_recovery(core.VAULT, s)["state"], "action_required")
+            self.assertEqual(it._capture_recovery(VAULT, s)["state"], "action_required")
 
     def test_legacy_failure_phase_does_not_infer_no_input_from_empty_fields(self):
-        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "codex", self.child), "codex", self.child)
+        s = it.load_state(VAULT, it.state_path(VAULT, "codex", self.child), "codex", self.child)
         for error, phase in (("WriteError: 착지 미정", "landing"),
                              ("ValueError: conversation scope changed", "landing"),
                              ("ValueError: native round identity prefix changed", "replay"),
@@ -307,17 +309,17 @@ class CodexForkTests(unittest.TestCase):
                              ("unrecognized old failure", "unknown")):
             with self.subTest(error=error):
                 s["capture_error"] = error
-                advice = it._capture_recovery(core.VAULT, s)
+                advice = it._capture_recovery(VAULT, s)
                 self.assertEqual((advice["state"], advice["phase"]), ("action_required", phase))
         s["capture_failure_phase"] = "read"
         with mock.patch.object(it, "locate_transcript", side_effect=AssertionError("recorded phase is sufficient")):
-            self.assertEqual(it._capture_recovery(core.VAULT, s)["basis"], "recorded_phase")
+            self.assertEqual(it._capture_recovery(VAULT, s)["basis"], "recorded_phase")
         # A recorded miss is checked against the disk: the source may be there now (#203).
         s["capture_failure_phase"] = "source"
         s["capture_error"] = "FileNotFoundError: fixture"
         existing = self.page(self.child, self.child, turn(self.child, "c1"))
         with mock.patch.object(it, "locate_transcript", return_value=str(existing)):
-            self.assertEqual(it._capture_recovery(core.VAULT, s)["state"], "retryable")
+            self.assertEqual(it._capture_recovery(VAULT, s)["state"], "retryable")
 
 
 def compress(path, *, keep=False):
@@ -349,7 +351,7 @@ class CompressedRolloutTests(unittest.TestCase):
     setUp, page, fork = CodexForkTests.setUp, CodexForkTests.page, CodexForkTests.fork
 
     def stored(self, sid):
-        return json.loads(it.state_path(core.VAULT, "codex", sid).read_text(encoding="utf-8"))
+        return json.loads(it.state_path(VAULT, "codex", sid).read_text(encoding="utf-8"))
 
     def test_compressed_rollout_is_the_same_conversation_not_a_new_one(self):
         from osk import response_growth
@@ -357,45 +359,45 @@ class CompressedRolloutTests(unittest.TestCase):
         rows = (turn(self.parent, "p1") + [event("event_msg", type="token_count", info={"total_token_usage": usage})]
                 + turn(self.parent, "p2"))
         plain = self.page(self.parent, self.parent, rows)
-        first = it.capture(core.VAULT, "codex", self.parent, str(plain), "forks")
-        it.acknowledge(core.VAULT, "codex", self.parent, first["through"], "no_value", "synthetic fixture")
+        first = it.capture(VAULT, "codex", self.parent, str(plain), "forks")
+        it.acknowledge(VAULT, "codex", self.parent, first["through"], "no_value", "synthetic fixture")
         fingerprint = self.stored(self.parent)["native_fingerprint"]
         zst = compress(plain)
-        self.assertEqual(it.locate_transcript(core.VAULT, "codex", self.parent, str(plain)), str(zst.resolve()))
+        self.assertEqual(it.locate_transcript(VAULT, "codex", self.parent, str(plain)), str(zst.resolve()))
         self.assertEqual(it.adapters.get("codex").transcripts(self.parent), [zst])
         # Plain bytes and the kept mtime: the stored fingerprint holds, so nothing is due.
         self.assertEqual(transcripts.native_fingerprint(str(zst), "codex", self.parent), fingerprint)
-        self.assertEqual(it._known_pending(core.VAULT, None)[0], [])
-        again = it.capture(core.VAULT, "codex", self.parent, None, "forks")
+        self.assertEqual(it._known_pending(VAULT, None)[0], [])
+        again = it.capture(VAULT, "codex", self.parent, None, "forks")
         self.assertTrue(again["ok"], again)
         self.assertEqual((again["appended"], again["changed"], again["through"]), (0, 0, first["through"]))
         self.assertEqual(again["transcript_path"], str(zst.resolve()))
         # The other native readers see the plain bytes too.
-        self.assertEqual(response_growth.profile(core.VAULT, str(zst), "codex", self.parent)["usage"], usage)
+        self.assertEqual(response_growth.profile(VAULT, str(zst), "codex", self.parent)["usage"], usage)
         self.assertIsNone(it.adapters.get("codex").subagent(str(zst), self.parent))
         # Resumed, Codex restores the plain file first; only a new turn is new.
         plain = restore(zst)
         with plain.open("a", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in turn(self.parent, "p3")))
-        resumed = it.capture(core.VAULT, "codex", self.parent, None, "forks")
+        resumed = it.capture(VAULT, "codex", self.parent, None, "forks")
         self.assertEqual((resumed["ok"], resumed["appended"], resumed["transcript_path"]),
                          (True, 1, str(plain.resolve())))
 
     def test_both_forms_during_the_switch_read_as_one_rollout(self):
         parent, child = self.fork()
-        before = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        before = it.capture(VAULT, "codex", self.child, str(child), "forks")
         fingerprint = self.stored(self.child)["native_fingerprint"]
         for path in (parent, child):
             compress(path, keep=True)
         self.assertEqual(it.adapters.get("codex").transcripts(self.child), [child])
         self.assertEqual(transcripts.native_fingerprint(str(child), "codex", self.child), fingerprint)
-        during = it.capture(core.VAULT, "codex", self.child, None, "forks")
+        during = it.capture(VAULT, "codex", self.child, None, "forks")
         self.assertEqual((during["ok"], during["appended"]), (True, 0))
         # The plain file goes between the lookup and the read: the read takes the `.zst`.
         for path in (parent, child):
             path.unlink()
         self.assertEqual([r["id"] for r in transcripts.read(str(child), "codex", self.child)["rounds"]], ["p1", "c1"])
-        after = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        after = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertEqual((after["ok"], after["appended"], after["through"]), (True, 0, before["through"]))
         self.assertEqual(self.stored(self.child)["native_fingerprint"], fingerprint)
 
@@ -407,7 +409,7 @@ class CompressedRolloutTests(unittest.TestCase):
         child = self.page(self.child, self.child, turn(self.child, "c1"), base=(self.parent, bound), fork=self.parent)
         with second.open("a", encoding="utf-8") as f:   # past the declared bound
             f.write("".join(json.dumps(r) + "\n" for r in turn(self.parent, "excluded")))
-        before = it.capture(core.VAULT, "codex", self.child, str(child), "forks")
+        before = it.capture(VAULT, "codex", self.child, str(child), "forks")
         self.assertEqual((before["captured_rounds"], before["inherited_rounds"]), (1, 2))
         fingerprint = self.stored(self.child)["native_fingerprint"]
         compress(first), compress(second)
@@ -417,7 +419,7 @@ class CompressedRolloutTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in parsed["rounds"]], ["p1", "p2", "c1"])
         # The conversation's own page compressed as well.
         compress(child)
-        again = it.capture(core.VAULT, "codex", self.child, None, "forks")
+        again = it.capture(VAULT, "codex", self.child, None, "forks")
         self.assertEqual((again["ok"], again["appended"], again["through"]), (True, 0, before["through"]))
         # A bound past the plain bytes is refused as before, not read short.
         sid = self.child + "-far"
@@ -427,23 +429,23 @@ class CompressedRolloutTests(unittest.TestCase):
 
     def test_missing_source_error_with_a_compressed_rollout_is_retried(self):
         plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
-        first = it.capture(core.VAULT, "codex", self.parent, str(plain), "forks")
-        it.acknowledge(core.VAULT, "codex", self.parent, first["through"], "no_value", "synthetic fixture")
+        first = it.capture(VAULT, "codex", self.parent, str(plain), "forks")
+        it.acknowledge(VAULT, "codex", self.parent, first["through"], "no_value", "synthetic fixture")
         compress(plain)
         # What an engine without `.zst` support left: a miss of the source that is there.
-        path = it.state_path(core.VAULT, "codex", self.parent)
+        path = it.state_path(VAULT, "codex", self.parent)
         s = self.stored(self.parent)
         s.update(capture_pending=True, capture_failure_phase="source", capture_path=str(plain),
                  capture_error=f"FileNotFoundError: [Errno 2] No such file or directory: '{plain}'")
         path.write_text(json.dumps(s, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        advice = it.status(core.VAULT, "codex", self.parent)["capture_recovery"]
+        advice = it.status(VAULT, "codex", self.parent)["capture_recovery"]
         self.assertEqual((advice["state"], advice["phase"], advice["basis"]), ("retryable", "source", "source_lookup"))
         self.assertIn("Codex 압축본 포함", advice["next_action"])
         # The fingerprint did not change, yet the error is retried and cleared.
-        [due] = it._known_pending(core.VAULT, None)[0]
+        [due] = it._known_pending(VAULT, None)[0]
         self.assertEqual(due["conversation_id"], self.parent)
-        self.assertEqual(it.catchup(core.VAULT, 1)["jobs"], [])
-        cleared = it.status(core.VAULT, "codex", self.parent)
+        self.assertEqual(it.catchup(VAULT, 1)["jobs"], [])
+        cleared = it.status(VAULT, "codex", self.parent)
         self.assertEqual((cleared["ok"], cleared["capture_error"], cleared["capture_recovery"]["state"]),
                          (True, None, "ready"))
         # With neither form on this device the advice says so.
@@ -451,7 +453,7 @@ class CompressedRolloutTests(unittest.TestCase):
         s = self.stored(self.parent)
         s.update(capture_pending=True, capture_failure_phase="source", capture_error="FileNotFoundError: gone")
         path.write_text(json.dumps(s, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        advice = it.status(core.VAULT, "codex", self.parent)["capture_recovery"]
+        advice = it.status(VAULT, "codex", self.parent)["capture_recovery"]
         self.assertEqual(advice["state"], "action_required")
         self.assertIn("Codex 압축본(`.jsonl.zst`)으로도 없다", advice["next_action"])
 
@@ -459,27 +461,27 @@ class CompressedRolloutTests(unittest.TestCase):
         plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
         with plain.open("a", encoding="utf-8") as f:
             f.write('{"type": "event_msg", "payl')      # a tail the writer never finished
-        first = it.capture(core.VAULT, "codex", self.parent, str(plain), "forks")
+        first = it.capture(VAULT, "codex", self.parent, str(plain), "forks")
         self.assertIn("incomplete JSONL tail", first["capture_error"])
-        it.acknowledge(core.VAULT, "codex", self.parent, first["through"], "no_value", "synthetic fixture")
+        it.acknowledge(VAULT, "codex", self.parent, first["through"], "no_value", "synthetic fixture")
         compress(plain)
         # The error stands, but nothing changed: the next catch-up does not decompress it again.
-        self.assertEqual(it.status(core.VAULT, "codex", self.parent)["capture_recovery"]["state"], "action_required")
-        self.assertEqual(it._known_pending(core.VAULT, None)[0], [])
+        self.assertEqual(it.status(VAULT, "codex", self.parent)["capture_recovery"]["state"], "action_required")
+        self.assertEqual(it._known_pending(VAULT, None)[0], [])
 
     def test_a_missing_decompressor_is_named_not_taken_for_a_lost_source(self):
         plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
-        it.capture(core.VAULT, "codex", self.parent, str(plain), "forks")
+        it.capture(VAULT, "codex", self.parent, str(plain), "forks")
         zst = compress(plain)
         with mock.patch.object(transcripts, "_zstd", side_effect=transcripts.ZstdMissing("no zstandard")):
-            failed = it.capture(core.VAULT, "codex", self.parent, None, "forks")
-            self.assertEqual(it._known_pending(core.VAULT, None)[2][0]["phase"], "native_lookup")
+            failed = it.capture(VAULT, "codex", self.parent, None, "forks")
+            self.assertEqual(it._known_pending(VAULT, None)[2][0]["phase"], "native_lookup")
         self.assertFalse(failed["ok"])
         self.assertEqual((failed["capture_recovery"]["state"], failed["capture_recovery"]["phase"]),
                          ("action_required", "dependency"))
         self.assertIn("zstandard", failed["capture_recovery"]["next_action"])
         self.assertEqual(self.stored(self.parent)["capture_path"], str(zst.resolve()))   # kept for the retry
-        self.assertTrue(it.capture(core.VAULT, "codex", self.parent, None, "forks")["ok"])
+        self.assertTrue(it.capture(VAULT, "codex", self.parent, None, "forks")["ok"])
 
 
 class RevertedTurnTests(unittest.TestCase):
@@ -490,36 +492,36 @@ class RevertedTurnTests(unittest.TestCase):
         """Page A holds t1·t2 and the cursor tracks both; page B keeps A up to t2 and adds t2b."""
         old = self.page(sid, sid + "-a", turn(sid, "t1"))
         bound = old.stat().st_size
-        first = it.capture(core.VAULT, "codex", sid, str(old), "forks")
+        first = it.capture(VAULT, "codex", sid, str(old), "forks")
         with old.open("a", encoding="utf-8") as f:
             f.write("".join(json.dumps(r) + "\n" for r in turn(sid, "t2")))
-        second = it.capture(core.VAULT, "codex", sid, str(old), "forks")
+        second = it.capture(VAULT, "codex", sid, str(old), "forks")
         if reviewed:
-            it.acknowledge(core.VAULT, "codex", sid, second["through"], "no_value", "synthetic fixture")
+            it.acknowledge(VAULT, "codex", sid, second["through"], "no_value", "synthetic fixture")
         new = self.page(sid, sid + "-b", turn(sid, "t2b"), base=(sid + "-a", bound))
         return first, second, old, new
 
     def test_an_unreviewed_reverted_turn_leaves_the_cursor(self):
         first, second, _, new = self.revert(self.parent)
-        found = it.capture(core.VAULT, "codex", self.parent, str(new), "forks")
+        found = it.capture(VAULT, "codex", self.parent, str(new), "forks")
         self.assertTrue(found["ok"], found)
         self.assertEqual(transcripts.read(str(new), "codex", self.parent)["reverted"], ["t2"])
         self.assertEqual((found["captured_rounds"], found["appended"], found["reverted"]), (2, 1, 1))
         self.assertEqual(found["pending_refs"], [raw.native_ref("codex", self.parent, t) for t in ("t1", "t2b")])
         # The snapshot that held t2 is gone; the one before it still closes t1.
-        snapshots = json.loads(it.state_path(core.VAULT, "codex", self.parent).read_text(encoding="utf-8"))["snapshots"]
+        snapshots = json.loads(it.state_path(VAULT, "codex", self.parent).read_text(encoding="utf-8"))["snapshots"]
         self.assertEqual(set(snapshots), {first["through"], found["through"]})
         with self.assertRaisesRegex(ValueError, "not an unreviewed snapshot"):
-            it.acknowledge(core.VAULT, "codex", self.parent, second["through"], "no_value", "synthetic fixture")
-        self.assertEqual(it.capture(core.VAULT, "codex", self.parent, None, "forks")["appended"], 0)
+            it.acknowledge(VAULT, "codex", self.parent, second["through"], "no_value", "synthetic fixture")
+        self.assertEqual(it.capture(VAULT, "codex", self.parent, None, "forks")["appended"], 0)
 
     def test_a_reviewed_reverted_turn_is_refused_by_name(self):
         _, second, _, new = self.revert(self.parent, reviewed=True)
-        before = json.loads(it.state_path(core.VAULT, "codex", self.parent).read_text(encoding="utf-8"))["rounds"]
-        found = it.capture(core.VAULT, "codex", self.parent, str(new), "forks")
+        before = json.loads(it.state_path(VAULT, "codex", self.parent).read_text(encoding="utf-8"))["rounds"]
+        found = it.capture(VAULT, "codex", self.parent, str(new), "forks")
         self.assertFalse(found["ok"])
         self.assertIn("Codex reverted a reviewed turn", found["capture_error"])
-        after = json.loads(it.state_path(core.VAULT, "codex", self.parent).read_text(encoding="utf-8"))["rounds"]
+        after = json.loads(it.state_path(VAULT, "codex", self.parent).read_text(encoding="utf-8"))["rounds"]
         self.assertEqual(after, before)
 
     def test_a_missing_turn_that_was_not_reverted_is_still_refused(self):
@@ -527,29 +529,29 @@ class RevertedTurnTests(unittest.TestCase):
         # The old page itself loses t2: no later page declares a bound, so nothing reverted it.
         old.write_text("".join(json.dumps(r) + "\n" for r in [event("session_meta", id=self.parent)]
                                + turn(self.parent, "t1")), encoding="utf-8")
-        found = it.capture(core.VAULT, "codex", self.parent, str(old), "forks")
+        found = it.capture(VAULT, "codex", self.parent, str(old), "forks")
         self.assertIn("identity prefix changed", found["capture_error"])
 
     def test_response_growth_drops_the_reverted_turn_and_keeps_its_stop(self):
         from osk import response_growth
         _, _, old, new = self.revert(self.parent)
-        self.assertEqual(response_growth.observe(core.VAULT, response_growth.profile(core.VAULT, str(old), "codex", self.parent))["count"], 0)
-        source = response_growth.profile(core.VAULT, str(new), "codex", self.parent)
-        self.assertEqual(response_growth.observe(core.VAULT, source)["count"], 1)
+        self.assertEqual(response_growth.observe(VAULT, response_growth.profile(VAULT, str(old), "codex", self.parent))["count"], 0)
+        source = response_growth.profile(VAULT, str(new), "codex", self.parent)
+        self.assertEqual(response_growth.observe(VAULT, source)["count"], 1)
         self.assertEqual((source["finals"], source["reverted"]), (["t1", "t2b"], ["t2"]))
-        saved = json.loads(it.state_path(core.VAULT, "codex", self.parent).read_text(encoding="utf-8"))["response_growth"]
+        saved = json.loads(it.state_path(VAULT, "codex", self.parent).read_text(encoding="utf-8"))["response_growth"]
         self.assertEqual(saved["seen"], ["t1", "t2b"])
 
     def test_a_legacy_cursor_whose_every_seen_turn_was_reverted_keeps_its_baseline(self):
         from osk import response_growth
         _, _, _, new = self.revert(self.parent)
         # An older engine saw only its current page: its cursor starts at t2, after t1.
-        path = it.state_path(core.VAULT, "codex", self.parent)
+        path = it.state_path(VAULT, "codex", self.parent)
         state = json.loads(path.read_text(encoding="utf-8"))
         state["response_growth"] = {"counter": "finals", "seen": ["t2"], "count": 3, "attempted_count": 0}
         path.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         # Only t2b is new; t1 came before the cursor and is no new Stop.
-        self.assertEqual(response_growth.observe(core.VAULT, response_growth.profile(core.VAULT, str(new), "codex", self.parent))["count"], 4)
+        self.assertEqual(response_growth.observe(VAULT, response_growth.profile(VAULT, str(new), "codex", self.parent))["count"], 4)
 
     def test_a_fork_parents_later_turns_are_not_reverted(self):
         parent = self.page(self.parent, self.parent, turn(self.parent, "p1"))

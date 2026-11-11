@@ -13,23 +13,25 @@ import json, os, sys
 from pathlib import Path
 from unittest.mock import patch
 from osk import core, growth, growth_status as S, integration, validate, write
-validate.make_mini_vault(core.VAULT, core.ROOT)
-(core.ROOT / '.git').mkdir(exist_ok=True)
+from osk.vault import Vault
+VAULT = Vault.open()
+validate.make_mini_vault(VAULT, VAULT.root)
+(VAULT.root / '.git').mkdir(exist_ok=True)
 START = '2026-10-01T00:00:00+09:00'
 AT = '2026-10-01T12:00:00+09:00'
 END = '2026-10-02T00:00:00+09:00'
 def cursor(sid, rounds=0, reviewed=0, **extra):
-    p = integration.state_path(core.VAULT, 'claude', sid)
-    state = integration.load_state(core.VAULT, p, 'claude', sid)
+    p = integration.state_path(VAULT, 'claude', sid)
+    state = integration.load_state(VAULT, p, 'claude', sid)
     state.update(rounds=[{'id':str(n),'ref':'anonymous#'+str(n),'completion':'complete'} for n in range(rounds)],
                  reviewed_count=reviewed, **extra)
     integration.save_state(p,state)
     return p,state
 def report():
-    return S.report(core.VAULT, since=START,until=END)
+    return S.report(VAULT, since=START,until=END)
 def files():
-    return {str(p.relative_to(core.ROOT)):(p.read_bytes(),p.stat().st_mtime_ns)
-            for p in core.ROOT.rglob('*') if p.is_file()}
+    return {str(p.relative_to(VAULT.root)):(p.read_bytes(),p.stat().st_mtime_ns)
+            for p in VAULT.root.rglob('*') if p.is_file()}
 '''
 
 
@@ -128,34 +130,34 @@ class GrowthStatusTests(unittest.TestCase):
     def test_eviction_reports_real_review_settlement_and_completion_separately(self):
         self.check_case('''
             from osk import evictions
-            saved=write.create_node(core.VAULT, 'Retained','retained','A reusable claim.','test',space='00_Scope/W1')
+            saved=write.create_node(VAULT, 'Retained','retained','A reusable claim.','test',space='00_Scope/W1')
             assert saved['ok'],saved
             cases={'node':'node','merged':'merged','discarded':'discarded','deferred':'deferred',
                    'unreviewed':None,'settled_unreviewed':None,'settled_deferred':'deferred'}
             with patch.object(core,'now_iso',return_value=AT):
                 jobs={}
                 for name in cases:
-                    row=evictions.record_evict(core.VAULT, 'W1','test','Anonymous source '+name)
+                    row=evictions.record_evict(VAULT, 'W1','test','Anonymous source '+name)
                     jobs[name]={'key':'eviction:'+row['rid'],'of':row['rid'],
                                 'scope':row['scope'],'text':row['text']}
-                plan=core.ledger_append(growth.ledger_path(core.VAULT),{'kind':'plan','candidates':[],
+                plan=core.ledger_append(growth.ledger_path(VAULT),{'kind':'plan','candidates':[],
                     'scope_jobs':[],'eviction_jobs':list(jobs.values())})
-                evictions.settle(core.VAULT, jobs['settled_unreviewed']['of'],'merged',target='Retained')
-                evictions.settle(core.VAULT, jobs['settled_deferred']['of'],'node',target='Retained')
+                evictions.settle(VAULT, jobs['settled_unreviewed']['of'],'merged',target='Retained')
+                evictions.settle(VAULT, jobs['settled_deferred']['of'],'node',target='Retained')
                 reviews=[]
                 for name,outcome in cases.items():
                     if outcome is None: continue
                     entry={'of':jobs[name]['of'],'outcome':outcome,'reason':'Fixture review decision.'}
                     if outcome in ('node','merged'): entry['target']='Retained'
                     reviews.append(entry)
-                done=growth.checkpoint(core.VAULT, {'osk_reviews':{'manifest':plan['rid'],'domain':[],
+                done=growth.checkpoint(VAULT, {'osk_reviews':{'manifest':plan['rid'],'domain':[],
                                        'scope':[],'eviction':reviews}})
                 assert done['ok'],done
-                outcomes={job['key']:growth._eviction_status(core.VAULT, job) for job in jobs.values()}
-                core.ledger_append(growth.ledger_path(core.VAULT),{'kind':'run','manifest':plan['rid'],
+                outcomes={job['key']:growth._eviction_status(VAULT, job) for job in jobs.values()}
+                core.ledger_append(growth.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
                                    'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
             with patch.object(core,'now_iso',return_value=END):
-                core.ledger_append(growth.ledger_path(core.VAULT),{'kind':'run','manifest':plan['rid'],
+                core.ledger_append(growth.ledger_path(VAULT),{'kind':'run','manifest':plan['rid'],
                                    'selected':len(jobs),'ok':False,'eviction_outcomes':outcomes})
             before=files()
             result=report()
@@ -246,8 +248,8 @@ class GrowthStatusTests(unittest.TestCase):
     def test_preservation_reports_structure_not_placement(self):
         self.check_case('''
             from osk import distillation
-            source=write.create_node(core.VAULT, 'Source','source','Reusable source claim.','test',space='00_Scope/W1')
-            result=distillation.create_node(core.VAULT, {'key':'fixed','sources':[source['id']],'hub':'W1'},
+            source=write.create_node(VAULT, 'Source','source','Reusable source claim.','test',space='00_Scope/W1')
+            result=distillation.create_node(VAULT, {'key':'fixed','sources':[source['id']],'hub':'W1'},
                 title='Retained',summary='retained',body='A durable claim.',drafter='test',space='00_Scope/W1')
             receipt=result['distillation']
             assert receipt['status']=='complete',result
@@ -255,7 +257,7 @@ class GrowthStatusTests(unittest.TestCase):
             good=report()['preservation']
             assert good['receipt_versions']==1 and good['structure']=={'intact':1},good
             # A hub that stops linking the target is organization's to fix, not a lost preservation.
-            hub=core.ROOT/'00_Scope/W1/W1.md'
+            hub=VAULT.root/'00_Scope/W1/W1.md'
             before=hub.read_text(encoding='utf-8')
             after=before.replace('[[Retained]]','').replace('[['+result['id']+']]','')
             assert before!=after,before
@@ -263,7 +265,7 @@ class GrowthStatusTests(unittest.TestCase):
             unlinked=report()
             assert unlinked['ok'] and unlinked['preservation']['structure']=={'intact':1},unlinked
             hub.write_text(before,encoding='utf-8')
-            dropped=write.update_node(core.VAULT, result['id'],remove_edges={'derived-from':source['id']},expect_hash=result['new_hash'])
+            dropped=write.update_node(VAULT, result['id'],remove_edges={'derived-from':source['id']},expect_hash=result['new_hash'])
             assert dropped['ok'],dropped
             broken=report()
             proof=broken['preservation']
@@ -281,8 +283,8 @@ class GrowthStatusTests(unittest.TestCase):
             assert not damaged['ok'] and damaged['integration'] is None,damaged
             assert damaged['reviews'] is None and damaged['preservation'] is None,damaged
             path.unlink()
-            growth.ledger_path(core.VAULT).parent.mkdir(parents=True,exist_ok=True)
-            growth.ledger_path(core.VAULT).write_text('not json'+chr(10),encoding='utf-8')
+            growth.ledger_path(VAULT).parent.mkdir(parents=True,exist_ok=True)
+            growth.ledger_path(VAULT).write_text('not json'+chr(10),encoding='utf-8')
             damaged=report()
             assert not damaged['ok'] and damaged['runs'] is None,damaged
         ''')
@@ -290,7 +292,7 @@ class GrowthStatusTests(unittest.TestCase):
     def test_timezone_bounds_and_undated_evidence(self):
         self.check_case('''
             for kwargs in ({'since':'2026-10-01'},{'since':END,'until':START}):
-                try: S.report(core.VAULT, **kwargs)
+                try: S.report(VAULT, **kwargs)
                 except ValueError: pass
                 else: raise AssertionError(kwargs)
             out=S._window([{'rid':'equal','at':'2026-09-30T15:00:00Z'},
@@ -304,7 +306,7 @@ class GrowthStatusTests(unittest.TestCase):
         self.check_case('''
             from osk import epoch, response_growth
             with patch.object(response_growth,'doctor',return_value={'verdict':{'mode':'foreground','reason':'login required'}}) as doctor:
-                out=S.report(core.VAULT, since=START,until=END,preflight=True)
+                out=S.report(VAULT, since=START,until=END,preflight=True)
             assert out['ok'],out
             assert doctor.call_count==2,doctor.call_count
             assert len(out['runtime']['cli_preflight'])==2,out
@@ -325,20 +327,20 @@ class GrowthStatusTests(unittest.TestCase):
         self.check_case('''
             import subprocess
             from osk import epoch
-            result=write.create_node(core.VAULT, 'Evidence','evidence','Reusable observation.','test',space='00_Scope/W1')
+            result=write.create_node(VAULT, 'Evidence','evidence','Reusable observation.','test',space='00_Scope/W1')
             assert result['ok'],result
-            command_file=core.ROOT/'command.json'
+            command_file=VAULT.root/'command.json'
             command_file.write_text(json.dumps([sys.executable,'-B','-c','import sys;sys.stdin.read()']),encoding='utf-8')
             proc=subprocess.run([sys.executable,'-B','-m','osk.cli','growth','run',
                                  '--command-file',str(command_file),'--invocation','user_request','--limit','1'],
                                 capture_output=True,text=True,encoding='utf-8',timeout=30)
             assert proc.returncode==1,(proc.stdout,proc.stderr)
             assert json.loads(proc.stdout)['state']=='incomplete',proc.stdout
-            plan=[r for r in growth.ledger_records(core.VAULT) if r['kind']=='plan'][-1]
+            plan=[r for r in growth.ledger_records(VAULT) if r['kind']=='plan'][-1]
             assert plan['invocation']=='user_request' and plan['work_context']=='daily',plan
             assert plan['engine_rev']==epoch.loaded(),plan
             with patch.object(growth,'check_command',side_effect=AssertionError('launched invalid invocation')):
-                try: growth.run(core.VAULT, ['worker'],invocation='invented')
+                try: growth.run(VAULT, ['worker'],invocation='invented')
                 except ValueError: pass
                 else: raise AssertionError('invalid invocation accepted')
         ''')
@@ -346,13 +348,13 @@ class GrowthStatusTests(unittest.TestCase):
     def test_response_worker_records_hook_entry_without_claiming_user_intent(self):
         self.check_case('''
             from osk import response_growth
-            source={'harness':'claude','conversation_id':'a','cwd':str(core.ROOT),
+            source={'harness':'claude','conversation_id':'a','cwd':str(VAULT.root),
                     'transcript_path':'fixture','active':False}
             job={'harness':'claude','conversation_id':'a'}
             with patch.object(response_growth,'command',return_value=['worker']), \
                  patch.object(response_growth,'profile',return_value=source), \
                  patch.object(growth,'run',return_value={'ok':False}) as run:
-                response_growth.run(core.VAULT, source,job,'worker')
+                response_growth.run(VAULT, source,job,'worker')
             assert run.call_args.kwargs['invocation']=='stop_hook',run.call_args
             assert run.call_args.kwargs['scope_job']==job,run.call_args
         ''')

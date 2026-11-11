@@ -1,6 +1,6 @@
 """setup connects this vault to the hosts on this device: only osk entries, backed up, idempotent.
 
-Each case runs in its own process because `core.ROOT` is fixed at import. Every host
+Each case runs in its own process because `VAULT.root` is fixed at import. Every host
 home (`HOME`/`USERPROFILE`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) is a temporary folder, and
 fake `claude`/`codex` CLIs come first on `PATH`: they log their arguments and write the
 MCP entry the real CLI would write, so no case touches the developer's configuration.
@@ -51,10 +51,12 @@ import json, os, subprocess, sys, time
 from pathlib import Path
 from unittest import mock
 from osk import core, harness, services, update, validate
+from osk.vault import Vault
+VAULT = Vault.open()
 from osk import setup as S
 from osk.harness import base
-root = core.ROOT
-validate.make_mini_vault(core.VAULT, root)
+root = VAULT.root
+validate.make_mini_vault(VAULT, root)
 subprocess.run(['git', 'init', '-q', '-b', 'main', str(root)], check=True, capture_output=True)
 home = Path.home()
 claude_home = Path(os.environ['CLAUDE_CONFIG_DIR'])
@@ -91,7 +93,7 @@ def osk_entries(data, event):
     return [h for g in data.get('hooks', {}).get(harness.get('claude').events[event], [])
             for h in g.get('hooks', []) if base.mentions(base.command_tokens(h), script)]
 def baseline(version='v4.0.0'):
-    core.ledger_append(update.journal_path(core.VAULT), {'kind': 'done', 'version': version,
+    core.ledger_append(update.journal_path(VAULT), {'kind': 'done', 'version': version,
                                                'attest': 'sha256:' + '0' * 64})
 '''
 
@@ -102,7 +104,7 @@ class Fake(services.Backend):
     name = 'fake'
     rows = {}
     def ident(self, kind):
-        return f'osk-{kind}-{services.tag(core.VAULT)}'
+        return f'osk-{kind}-{services.tag(VAULT)}'
     def entries(self):
         return [dict(r) for r in self.rows.values()]
     def definition(self, kind, job):
@@ -190,7 +192,7 @@ others = {'theme': 'dark', 'hooks': {
 settings.write_text(json.dumps(others), encoding='utf-8')
 original = settings.read_bytes()
 # The plan changes nothing and names every step.
-rep, code = S.run(core.VAULT)
+rep, code = S.run(VAULT)
 assert code == 0 and rep['changes'] and rep['baseline']['state'] == 'recorded', rep
 c, x = rep['hosts']
 assert (c['harness'], c['mcp']['action'], x['mcp']['action']) == ('claude', 'add', 'add'), rep
@@ -199,10 +201,10 @@ assert any('/elsewhere/' in n for n in c['hooks']['notes']), c['hooks']
 assert harness.get('codex').trust in rep['human'], rep['human']
 assert settings.read_bytes() == original and not calls() and not (codex_home / 'hooks.json').exists()
 # --apply asks first; the same command within the hour applies.
-rep, code = S.run(core.VAULT, apply=True)
+rep, code = S.run(VAULT, apply=True)
 assert code == 2 and rep['approval_required'] and rep['instruction'], rep
 assert settings.read_bytes() == original and not calls()
-rep, code = S.run(core.VAULT, apply=True)
+rep, code = S.run(VAULT, apply=True)
 assert code == 0 and rep['ok'] and rep['applied'], rep
 kept = read(settings)
 assert kept['theme'] == 'dark' and kept['hooks']['PreToolUse'] == others['hooks']['PreToolUse'], kept
@@ -227,7 +229,7 @@ for name in ('claude', 'codex'):
         assert sum(base.mentions(h['tokens'], hooks_dir / script) for h in hooks) == 1, (name, event)
 # Running again finds nothing to do: no confirmation, no backup, no CLI call.
 before = (len(calls()), sorted(p.name for p in claude_home.iterdir()))
-rep, code = S.run(core.VAULT, apply=True)
+rep, code = S.run(VAULT, apply=True)
 assert code == 0 and not rep['changes'] and rep['applied'] is False, rep
 assert all(v == 'keep' for h in rep['hosts'] for v in h['hooks']['events'].values()), rep
 assert (len(calls()), sorted(p.name for p in claude_home.iterdir())) == before
@@ -238,19 +240,19 @@ for group in data['hooks']['SessionStart']:
         if base.mentions(base.command_tokens(h), hooks_dir / 'claude_session_start.py'):
             h['command'] = h['command'].replace(vpy.as_posix(), '/old/python')
 settings.write_text(json.dumps(data), encoding='utf-8')
-rep, _ = S.run(core.VAULT)
+rep, _ = S.run(VAULT)
 assert rep['hosts'][0]['hooks']['events']['SessionStart'] == 'replace', rep['hosts'][0]
-S.run(core.VAULT, apply=True)
-rep, code = S.run(core.VAULT, apply=True)
+S.run(VAULT, apply=True)
+rep, code = S.run(VAULT, apply=True)
 assert code == 0 and rep['ok'], rep
 assert len(osk_entries(read(settings), 'start')) == 1 and '/old/python' not in settings.read_text(encoding='utf-8')
 # An osk entry that changed after the request needs a new confirmation.
-S.run(core.VAULT, apply=True, uninstall=True)
+S.run(VAULT, apply=True, uninstall=True)
 data = read(settings)
 data['hooks']['SessionStart'] = [g for g in data['hooks']['SessionStart'] if not any(
     base.mentions(base.command_tokens(h), hooks_dir / 'claude_session_start.py') for h in g['hooks'])]
 settings.write_text(json.dumps(data), encoding='utf-8')
-rep, code = S.run(core.VAULT, apply=True, uninstall=True)
+rep, code = S.run(VAULT, apply=True, uninstall=True)
 assert code == 2 and rep['approval_required'], 'applied a plan the user had not seen'
 # Other changes made after the request are kept: the write merges into the newest file
 # (PR #106 review) — a permission rule and another tool's hook must not be lost.
@@ -261,7 +263,7 @@ settings.write_text(json.dumps(data), encoding='utf-8')
 (codex_home / 'hooks.json').write_text(json.dumps({**read(codex_home / 'hooks.json'), 'note': 1}),
                                        encoding='utf-8')
 # Uninstall takes out only this vault's entries.
-rep, code = S.run(core.VAULT, apply=True, uninstall=True)
+rep, code = S.run(VAULT, apply=True, uninstall=True)
 assert code == 0 and rep['ok'], rep
 left = read(settings)
 assert left['permissions'] == {'deny': ['Bash(rm:*)']} and len(left['hooks']['PreToolUse']) == 2, left
@@ -280,17 +282,17 @@ for name in ('claude', 'codex'):
         self.check_case(r'''
 baseline()
 os.environ['PATH'] = str(bin_dir)      # a real Codex CLI on the test machine must not be found
-rep, code = S.run(core.VAULT, only=['codex'])
+rep, code = S.run(VAULT, only=['codex'])
 mcp = rep['hosts'][0]['mcp']
 assert code == 0 and mcp['action'] == 'add' and 'run' not in mcp, mcp
 assert mcp['manual'].startswith('codex mcp add osk-system -- '), mcp
 assert any(mcp['manual'] in step for step in rep['human']), rep['human']
-S.run(core.VAULT, apply=True, only=['codex'])
-rep, code = S.run(core.VAULT, apply=True, only=['codex'])
+S.run(VAULT, apply=True, only=['codex'])
+rep, code = S.run(VAULT, apply=True, only=['codex'])
 assert code == 0 and rep['ok'] and (codex_home / 'hooks.json').is_file() and not calls(), rep
 # Unreadable settings are reported and left alone.
 (codex_home / 'hooks.json').write_text('{broken', encoding='utf-8')
-rep, code = S.run(core.VAULT, apply=True, only=['codex'])
+rep, code = S.run(VAULT, apply=True, only=['codex'])
 assert code == 1 and not rep['ok'] and 'hooks' in rep['errors'][0], rep
 assert (codex_home / 'hooks.json').read_text(encoding='utf-8') == '{broken'
 ''')
@@ -304,13 +306,13 @@ baseline()
 # tries to run `D/osk/...`.
 odd = Path('C:/R&D/osk/.venv/Scripts/python.exe' if os.name == 'nt' else '/R&D/osk/.venv/bin/python')
 with mock.patch.object(S, 'venv_python', lambda vault: odd):
-    S.run(core.VAULT, apply=True, only=['claude', 'codex'])
-    rep, code = S.run(core.VAULT, apply=True, only=['claude', 'codex'])
+    S.run(VAULT, apply=True, only=['claude', 'codex'])
+    rep, code = S.run(VAULT, apply=True, only=['claude', 'codex'])
     assert code == 0 and rep['ok'], rep
     added = [c for c in calls() if c[1:3] == ['mcp', 'add']]
     assert [c[0] for c in added] == ['claude', 'codex'], calls()
     assert all(c[-2:] == [odd.as_posix(), server.as_posix()] for c in added), added
-    rep, _ = S.run(core.VAULT, only=['claude', 'codex'])
+    rep, _ = S.run(VAULT, only=['claude', 'codex'])
     assert [h['mcp']['action'] for h in rep['hosts']] == ['keep', 'keep'], rep['hosts']
 if os.name == 'nt':
     # cmd expands `%` and `!` even inside double quotes: the plan stops before anything runs or is written.
@@ -318,7 +320,7 @@ if os.name == 'nt':
     before = state()
     for bad in ('C:/100%/osk/python.exe', 'C:/Hi!/osk/python.exe'):
         with mock.patch.object(S, 'venv_python', lambda vault: Path(bad)):
-            rep, code = S.run(core.VAULT, apply=True, only=['claude'])
+            rep, code = S.run(VAULT, apply=True, only=['claude'])
         assert code == 1 and rep['applied'] is False, rep
         assert any('배치 파일' in e and '--harness' in e for e in rep['errors']), rep['errors']
     assert state() == before
@@ -328,7 +330,7 @@ if os.name == 'nt':
     full, moved = os.environ['PATH'], Path('C:/R&D/moved/.venv/Scripts/python.exe')
     os.environ['PATH'] = str(bin_dir.parent)
     with mock.patch.object(S, 'venv_python', lambda vault: moved):
-        rep, _ = S.run(core.VAULT, only=['claude'])
+        rep, _ = S.run(VAULT, only=['claude'])
     os.environ['PATH'] = full
     manual = rep['hosts'][0]['mcp']['manual']
     r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
@@ -343,7 +345,7 @@ if os.name == 'nt':
         self.check_case(r'''
 fake_clis()
 (root / 'release.json').write_text(json.dumps({'version': 'v4.0.0', 'files': {}}), encoding='utf-8')
-ticket = core.local_lock_path(update.CONFIRMATION, core.VAULT.root)
+ticket = core.local_lock_path(update.CONFIRMATION, VAULT.root)
 state, applied = {'id': 'r1'}, []
 def fake_run(vault, source=None, ref=None, bundle=None, apply=False, adopt=False):
     # The updater's own gate: under its lock it plans again and applies only the confirmed plan.
@@ -356,7 +358,7 @@ def fake_run(vault, source=None, ref=None, bundle=None, apply=False, adopt=False
         return plan
     pending = json.loads(ticket.read_text(encoding='utf-8')) if ticket.is_file() else {}
     if pending.get('review_id') != plan['review_id']:
-        update.confirm(core.VAULT, plan['review_id'])
+        update.confirm(VAULT, plan['review_id'])
         return {**plan, 'ok': False, 'approval_required': True}
     ticket.unlink()
     applied.append(plan['review_id'])
@@ -369,25 +371,25 @@ def drifting(vault, b):
 with mock.patch.object(S.update, 'run', fake_run):
     # The release plan changes after the user confirmed this setup plan, before the baseline
     # step (PR #106 review): nothing is applied and no confirmation of the unseen plan is left.
-    S.run(core.VAULT, apply=True, only=['claude'])
+    S.run(VAULT, apply=True, only=['claude'])
     with mock.patch.object(S, '_record_baseline', drifting):
-        rep, code = S.run(core.VAULT, apply=True, only=['claude'])
+        rep, code = S.run(VAULT, apply=True, only=['claude'])
     step = rep['steps'][0]
     assert code == 1 and step['step'] == 'baseline' and not step['ok'] and '바뀌었다' in step['error'], rep
-    assert not applied and update.current_version(core.VAULT) is None and not ticket.exists(), (applied, ticket)
+    assert not applied and update.current_version(VAULT) is None and not ticket.exists(), (applied, ticket)
     # Planned and confirmed again, that plan is applied, through one call to the updater.
-    rep, _ = S.run(core.VAULT, only=['claude'])
+    rep, _ = S.run(VAULT, only=['claude'])
     b = rep['baseline']
     assert (b['state'], b['version'], b['review_id'], b['governance']) == ('record', 'v4.0.0', 'r2', 'establish'), b
     assert any('update.jsonl' in step for step in rep['human']), rep['human']
-    S.run(core.VAULT, apply=True, only=['claude'])
-    rep, code = S.run(core.VAULT, apply=True, only=['claude'])
+    S.run(VAULT, apply=True, only=['claude'])
+    rep, code = S.run(VAULT, apply=True, only=['claude'])
     step = rep['steps'][0]
     assert code == 0 and step == {'step': 'baseline', 'ok': True, 'current': 'v4.0.0',
                                   'governance_protected': 'established'}, rep
     assert applied == ['r2'], applied
 # Once recorded, the baseline is not planned again.
-rep, _ = S.run(core.VAULT, only=['claude'])
+rep, _ = S.run(VAULT, only=['claude'])
 assert rep['baseline'] == {'state': 'recorded', 'current': 'v4.0.0'}, rep['baseline']
 ''')
 
@@ -397,27 +399,27 @@ fake_clis()
 baseline()
 settings = claude_home / 'settings.json'
 settings.write_text(json.dumps({'hooks': {}}), encoding='utf-8')
-p = S.plan(core.VAULT, ['claude'])
+p = S.plan(VAULT, ['claude'])
 # While the user reads the plan, another tool tightens the settings (PR #106 review).
 guard = {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'echo guard'}]}
 settings.write_text(json.dumps({'permissions': {'deny': ['Bash(rm:*)']}, 'hooks': {'PreToolUse': [guard]}}),
                     encoding='utf-8')
-res = S._apply(core.VAULT, p)
+res = S._apply(VAULT, p)
 kept = read(settings)
 assert res['ok'] and kept['permissions'] == {'deny': ['Bash(rm:*)']}, (res, kept)
 assert kept['hooks']['PreToolUse'] == [guard], kept
 assert all(len(osk_entries(kept, e)) == 1 for e in base.SCRIPTS), kept
 # If what the plan would change changed after the plan, nothing is written or run: here
 # the osk hook appeared by hand, and another vault took the MCP name.
-S.run(core.VAULT, apply=True, uninstall=True, only=['claude'])
-S.run(core.VAULT, apply=True, uninstall=True, only=['claude'])
-p = S.plan(core.VAULT, ['claude'])
-start = harness.get('claude').hook_group('start', S._command(core.VAULT, harness.get('claude'), 'start'))
+S.run(VAULT, apply=True, uninstall=True, only=['claude'])
+S.run(VAULT, apply=True, uninstall=True, only=['claude'])
+p = S.plan(VAULT, ['claude'])
+start = harness.get('claude').hook_group('start', S._command(VAULT, harness.get('claude'), 'start'))
 settings.write_text(json.dumps({'hooks': {'SessionStart': [start]}}), encoding='utf-8')
 (claude_home / '.claude.json').write_text(json.dumps({'mcpServers': {'osk-system': {
     'command': py, 'args': ['/elsewhere/_governance/_engine/mcp_server.py']}}}), encoding='utf-8')
 before, ran = settings.read_bytes(), len(calls())
-res = S._apply(core.VAULT, p)
+res = S._apply(VAULT, p)
 steps = {s['step']: s for s in res['steps']}
 assert not res['ok'] and '다시 계획' in steps['claude hooks']['error'], res
 assert '다시 계획' in steps['claude mcp']['error'] and len(calls()) == ran, (res, calls()[ran:])
@@ -435,23 +437,23 @@ elsewhere = '/elsewhere/_governance/_engine/mcp_server.py'
     'command': vpy.as_posix(), 'args': [server.as_posix()]}}}), encoding='utf-8')
 (claude_home / '.claude.json').write_text(json.dumps({'mcpServers': {'osk-system': {
     'command': py, 'args': [elsewhere]}}}), encoding='utf-8')
-rep, _ = S.run(core.VAULT, uninstall=True, only=['claude'])
+rep, _ = S.run(VAULT, uninstall=True, only=['claude'])
 mcp = rep['hosts'][0]['mcp']
 assert mcp['action'] == 'absent' and 'run' not in mcp and 'manual' not in mcp, mcp
 assert any(str(home / '.claude.json') in n for n in mcp['notes']), mcp
 assert mcp['file'] == str(claude_home / '.claude.json'), mcp
 # Installing replaces the other vault's entry only as a confirmed, named step.
-rep, _ = S.run(core.VAULT, only=['claude'])
+rep, _ = S.run(VAULT, only=['claude'])
 mcp = rep['hosts'][0]['mcp']
 assert mcp['action'] == 'replace' and elsewhere in mcp['replaces'][0], mcp
 # If a third vault took the name after the plan, the confirmed commands are the same but the
 # entry they would remove is not: nothing runs (PR #114 review).
-p = S.plan(core.VAULT, ['claude'])
+p = S.plan(VAULT, ['claude'])
 third = '/third/_governance/_engine/mcp_server.py'
 (claude_home / '.claude.json').write_text(json.dumps({'mcpServers': {'osk-system': {
     'command': py, 'args': [third]}}}), encoding='utf-8')
 ran = len(calls())
-res = S._apply(core.VAULT, p)
+res = S._apply(VAULT, p)
 steps = {s['step']: s for s in res['steps']}
 assert not res['ok'] and '다시 계획' in steps['claude mcp']['error'] and len(calls()) == ran, (res, calls()[ran:])
 assert read(claude_home / '.claude.json')['mcpServers']['osk-system']['args'] == [third]
@@ -487,16 +489,16 @@ assert code == 0 and 'hosts' in json.loads(out), (out, err)
         self.check_case(FAKE_SERVICES + r'''
 fake_clis()
 baseline()
-S.run(core.VAULT, apply=True)
-S.run(core.VAULT, apply=True)                       # hosts connected; only the chosen features remain
-rep, _ = S.run(core.VAULT)
+S.run(VAULT, apply=True)
+S.run(VAULT, apply=True)                       # hosts connected; only the chosen features remain
+rep, _ = S.run(VAULT)
 assert not rep['changes'] and not any(k in rep for k in ('fork', 'schedule', 'sync')), rep
 # fork: the CLI each host would use is written once confirmed.
-rep, code = S.run(core.VAULT, apply=True, fork=True)
+rep, code = S.run(VAULT, apply=True, fork=True)
 assert code == 2 and {n: e['action'] for n, e in rep['fork']['entries'].items()} == \
     {'claude': 'add', 'codex': 'add'}, rep.get('fork')
 assert any('auth login' in s for s in rep['human']) and any('fork doctor' in s for s in rep['human']), rep['human']
-rep, code = S.run(core.VAULT, apply=True, fork=True)
+rep, code = S.run(VAULT, apply=True, fork=True)
 config_file = root / '.osk' / 'response-growth.json'
 config = read(config_file)
 assert code == 0 and rep['ok'] and set(config) == {'claude', 'codex'} and Path(config['claude']).is_file(), rep
@@ -504,10 +506,10 @@ assert code == 0 and rep['ok'] and set(config) == {'claude', 'codex'} and Path(c
 mine = bin_dir / 'my-claude.exe'
 mine.write_text('', encoding='utf-8')
 config_file.write_text(json.dumps({**config, 'claude': str(mine)}), encoding='utf-8')
-rep, code = S.run(core.VAULT, apply=True, fork=True)
+rep, code = S.run(VAULT, apply=True, fork=True)
 assert code == 0 and not rep['changes'] and rep['fork']['entries']['claude'] == {'action': 'keep', 'path': str(mine)}, rep
 # Daily run: the command is this vault's MCP only, the subscription only, no other tool.
-rep, code = S.run(core.VAULT, apply=True, schedule='claude', at='07:30')
+rep, code = S.run(VAULT, apply=True, schedule='claude', at='07:30')
 argv = rep['schedule']['command']['argv']
 assert code == 2 and rep['schedule']['command']['action'] == 'add', rep
 assert argv[1] == '-p' and argv[argv.index('--permission-mode') + 1] == 'dontAsk', argv
@@ -519,25 +521,25 @@ server_entry = json.loads(argv[argv.index('--mcp-config') + 1])['mcpServers']['o
 assert server_entry['args'] == [server.as_posix()] and server_entry['env'] == {'OSK_VAULT_ROOT': root.as_posix()}, argv
 assert rep['schedule']['task']['action'] == 'add' and '07:30' in rep['schedule']['task']['command'], rep['schedule']
 assert any('--limit 1' in s for s in rep['human']), rep['human']
-rep, code = S.run(core.VAULT, apply=True, schedule='claude', at='07:30')
+rep, code = S.run(VAULT, apply=True, schedule='claude', at='07:30')
 command_file = root / '.osk' / 'growth-command.json'
 assert code == 0 and rep['ok'] and read(command_file) == argv, rep
-assert Fake.rows[f'osk-growth-{services.tag(core.VAULT)}']['definition']['at'] == '07:30'
+assert Fake.rows[f'osk-growth-{services.tag(VAULT)}']['definition']['at'] == '07:30'
 # A new time replaces the task and keeps the command file, which may carry the user's edits.
-rep, code = S.run(core.VAULT, apply=True, schedule='claude', at='08:00')
+rep, code = S.run(VAULT, apply=True, schedule='claude', at='08:00')
 assert code == 2 and rep['schedule']['command']['action'] == 'keep' and rep['schedule']['task']['action'] == 'replace', rep
 # The confirmation covers the chosen features: 08:00 was asked, 09:30 was not.
-rep, code = S.run(core.VAULT, apply=True, schedule='claude', at='09:30')
-assert code == 2 and Fake.rows[f'osk-growth-{services.tag(core.VAULT)}']['definition']['at'] == '07:30', rep
-rep, _ = S.run(core.VAULT, schedule='claude', at='25:00')
+rep, code = S.run(VAULT, apply=True, schedule='claude', at='09:30')
+assert code == 2 and Fake.rows[f'osk-growth-{services.tag(VAULT)}']['definition']['at'] == '07:30', rep
+rep, _ = S.run(VAULT, schedule='claude', at='25:00')
 assert not rep['ok'] and 'HH:MM' in rep['errors'][0], rep
 # setup writes no daily command for Codex; the user's own command file is used as it is.
 command_file.unlink()
-rep, code = S.run(core.VAULT, apply=True, schedule='codex')
+rep, code = S.run(VAULT, apply=True, schedule='codex')
 assert code == 1 and not rep['ok'] and '만들지 않는다' in rep['errors'][0] and not command_file.exists(), rep
 import shutil
 command_file.write_text(json.dumps([shutil.which('codex'), 'exec', '-']), encoding='utf-8')
-rep, _ = S.run(core.VAULT, schedule='codex')
+rep, _ = S.run(VAULT, schedule='codex')
 assert rep['ok'] and rep['schedule']['command']['action'] == 'keep', rep
 # A Codex command gets the Claude worker that runs the day Codex is exhausted (#175): a second
 # command file, registered with the first for the day's batches.
@@ -546,57 +548,57 @@ spare = rep['schedule']['claude_command']
 assert spare['action'] == 'add' and harness.get('claude').subscription_only(spare['argv']), spare
 assert rep['schedule']['command_files'] == [str(command_file), str(spare_file)], rep['schedule']
 assert 'Claude 워커' in S.text(rep), S.text(rep)
-rep, code = S.run(core.VAULT, apply=True, schedule='codex')
+rep, code = S.run(VAULT, apply=True, schedule='codex')
 assert code == 2, rep
-rep, code = S.run(core.VAULT, apply=True, schedule='codex')
+rep, code = S.run(VAULT, apply=True, schedule='codex')
 assert code == 0 and rep['ok'] and read(spare_file) == spare['argv'] and read(command_file)[1] == 'exec', rep
-assert Fake.rows[f'osk-growth-{services.tag(core.VAULT)}']['definition']['argv'][-5:] == [
+assert Fake.rows[f'osk-growth-{services.tag(VAULT)}']['definition']['argv'][-5:] == [
     '--command-file', str(command_file), '--command-file', str(spare_file), '--daily'], Fake.rows
-rep, _ = S.run(core.VAULT, schedule='codex')
+rep, _ = S.run(VAULT, schedule='codex')
 assert rep['schedule']['claude_command'] == {'action': 'keep', 'file': str(spare_file)}, rep['schedule']
 # The user later points the daily command at their own worker: the Claude file left behind is not
 # registered, or Claude would run before that worker.
 codex_argv = read(command_file)
 command_file.write_text(json.dumps([sys.executable, '-c', 'pass']), encoding='utf-8')
-rep, _ = S.run(core.VAULT, schedule='codex')
+rep, _ = S.run(VAULT, schedule='codex')
 assert rep['ok'] and 'claude_command' not in rep['schedule'], rep['schedule']
 assert rep['schedule']['command_files'] == [str(command_file)], rep['schedule']
 command_file.write_text(json.dumps(codex_argv), encoding='utf-8')
 # Sync: a local main; with an origin, a private one and a push that does not ask.
-rep, _ = S.run(core.VAULT, sync=True)
+rep, _ = S.run(VAULT, sync=True)
 assert not rep['ok'] and 'main' in rep['errors'][0], rep
 git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
 git('add', '-A')
 git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vault')
 # The daemon commits on its own, so the repository must be able to name a committer.
 git('config', 'user.useConfigOnly', 'true')
-rep, _ = S.run(core.VAULT, sync=True)
+rep, _ = S.run(VAULT, sync=True)
 assert not rep['ok'] and '작성자' in rep['errors'][0], rep
 git('config', 'user.name', 't')
 git('config', 'user.email', 't@example.com')
 # No origin: the daemon is registered to commit only, and the human steps say so.
-rep, _ = S.run(core.VAULT, sync=True)
+rep, _ = S.run(VAULT, sync=True)
 assert rep['ok'] and rep['sync']['origin'] is None and rep['sync']['task']['action'] == 'add', rep
 assert rep['sync']['targets']['action'] == 'record', rep['sync']
 assert any('커밋만' in s for s in rep['human']), rep['human']
 git('remote', 'add', 'origin', 'git@github.com:LPAIU-CS/osk-system.git')
-rep, _ = S.run(core.VAULT, sync=True)
+rep, _ = S.run(VAULT, sync=True)
 assert not rep['ok'] and '정본' in rep['errors'][0], rep
 bare = root.parent / 'private.git'
 git('remote', 'set-url', 'origin', str(bare))
-rep, _ = S.run(core.VAULT, sync=True)
+rep, _ = S.run(VAULT, sync=True)
 assert not rep['ok'] and 'push' in rep['errors'][0], rep      # the remote is not there yet
 subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True, capture_output=True)
 # The recorded targets are the precondition of the registration: if they cannot be written, no daemon.
-S.run(core.VAULT, apply=True, sync=True)
+S.run(VAULT, apply=True, sync=True)
 with mock.patch.object(S, '_write_targets', return_value={'step': 'sync 전송 대상', 'ok': False, 'error': 'disk'}):
-    rep, code = S.run(core.VAULT, apply=True, sync=True)
-assert code == 1 and f'osk-sync-{services.tag(core.VAULT)}' not in Fake.rows, rep
-rep, code = S.run(core.VAULT, apply=True, sync=True)
+    rep, code = S.run(VAULT, apply=True, sync=True)
+assert code == 1 and f'osk-sync-{services.tag(VAULT)}' not in Fake.rows, rep
+rep, code = S.run(VAULT, apply=True, sync=True)
 assert code == 2 and rep['sync']['task']['action'] == 'add' and rep['sync']['origin'] == str(bare), rep
 assert any('비공개' in s for s in rep['human']), rep['human']
-rep, code = S.run(core.VAULT, apply=True, sync=True)
-assert code == 0 and rep['ok'] and f'osk-sync-{services.tag(core.VAULT)}' in Fake.rows, rep
+rep, code = S.run(VAULT, apply=True, sync=True)
+assert code == 0 and rep['ok'] and f'osk-sync-{services.tag(VAULT)}' in Fake.rows, rep
 targets = root / '.osk' / 'sync-targets.json'
 assert json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(bare), rep
 # The transfer targets are part of what was confirmed: a changed origin is a change to confirm
@@ -604,25 +606,25 @@ assert json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(bare), r
 other = root.parent / 'other.git'
 subprocess.run(['git', 'init', '-q', '--bare', str(other)], check=True, capture_output=True)
 git('remote', 'set-url', 'origin', str(other))
-rep, code = S.run(core.VAULT, apply=True, sync=True)
+rep, code = S.run(VAULT, apply=True, sync=True)
 assert code == 2 and rep['sync']['task']['action'] == 'keep' and rep['sync']['targets']['action'] == 'record', rep['sync']
 assert any('sync-targets' in s for s in rep['human']) and any('비공개' in s for s in rep['human']), rep['human']
-rep, code = S.run(core.VAULT, apply=True, sync=True)
+rep, code = S.run(VAULT, apply=True, sync=True)
 assert code == 0 and json.loads(targets.read_text(encoding='utf-8'))['origin'] == str(other), rep
 # Uninstalling one feature leaves the hosts and the other features.
 import sync_daemon
-status = core.local_lock_path(sync_daemon.STATUS, core.VAULT.root)
+status = core.local_lock_path(sync_daemon.STATUS, VAULT.root)
 status.write_text(json.dumps({'at': time.time(), 'status': 'ok', 'since': None}), encoding='utf-8')
-rep, code = S.run(core.VAULT, apply=True, uninstall=True, sync=True)
+rep, code = S.run(VAULT, apply=True, uninstall=True, sync=True)
 assert code == 2 and rep['hosts'] == [] and 'fork' not in rep and rep['sync']['task']['action'] == 'remove', rep
-rep, code = S.run(core.VAULT, apply=True, uninstall=True, sync=True)
-assert code == 0 and f'osk-sync-{services.tag(core.VAULT)}' not in Fake.rows and f'osk-growth-{services.tag(core.VAULT)}' in Fake.rows, rep
+rep, code = S.run(VAULT, apply=True, uninstall=True, sync=True)
+assert code == 0 and f'osk-sync-{services.tag(VAULT)}' not in Fake.rows and f'osk-growth-{services.tag(VAULT)}' in Fake.rows, rep
 assert not targets.exists(), 'uninstalling sync left the recorded transfer targets'
 assert not status.exists(), 'uninstalling sync left the daemon status, which would read as a stopped daemon'
 assert osk_entries(read(claude_home / 'settings.json'), 'start'), 'uninstalling sync removed a hook'
 # Uninstalling everything takes every osk registration of this vault, not the command file.
-S.run(core.VAULT, apply=True, uninstall=True)
-rep, code = S.run(core.VAULT, apply=True, uninstall=True)
+S.run(VAULT, apply=True, uninstall=True)
+rep, code = S.run(VAULT, apply=True, uninstall=True)
 assert code == 0 and rep['ok'] and not Fake.rows and not config_file.exists() and command_file.exists(), rep
 assert not osk_entries(read(claude_home / 'settings.json'), 'start')
 ''')
@@ -631,12 +633,12 @@ assert not osk_entries(read(claude_home / 'settings.json'), 'start')
         self.check_case(FAKE_SERVICES + r'''
 fake_clis()
 baseline()
-p = S.plan(core.VAULT, fork=True, schedule='claude')
+p = S.plan(VAULT, fork=True, schedule='claude')
 config_file = root / '.osk' / 'response-growth.json'
 config_file.parent.mkdir(parents=True, exist_ok=True)
 config_file.write_text(json.dumps({'claude': str(py)}), encoding='utf-8')
 (root / '.osk' / 'growth-command.json').write_text('["x"]', encoding='utf-8')
-result = S._apply(core.VAULT, p)
+result = S._apply(VAULT, p)
 steps = {s['step']: s for s in result['steps']}
 assert not result['ok'] and '바뀌었다' in steps['fork CLI']['error'], result
 assert '생겼다' in steps['growth command']['error'] and not Fake.rows, result
@@ -647,8 +649,8 @@ assert read(config_file) == {'claude': str(py)}
         self.check_case(FAKE_SERVICES + r'''
 fake_clis()
 baseline()
-S.run(core.VAULT, apply=True)
-S.run(core.VAULT, apply=True)
+S.run(VAULT, apply=True)
+S.run(VAULT, apply=True)
 git = lambda *a: subprocess.run(['git', '-C', str(root), *a], check=True, capture_output=True)
 git('add', '-A')
 git('-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'vault')
@@ -660,18 +662,18 @@ git('config', 'user.email', 't@example.com')
 git('remote', 'add', 'origin', str(private))
 # The fetch URL is private, but pushes go to the public canonical repository.
 git('config', 'remote.origin.pushurl', 'https://github.com/lpaiu-cs/osk-system.git')
-rep, code = S.run(core.VAULT, apply=True, sync=True)
+rep, code = S.run(VAULT, apply=True, sync=True)
 assert code == 1 and '정본' in rep['errors'][0] and not Fake.rows, rep
 # Every push target is shown and confirmed; a target added afterwards needs a new confirmation.
 git('config', 'remote.origin.pushurl', str(private))
-rep, code = S.run(core.VAULT, apply=True, sync=True)
+rep, code = S.run(VAULT, apply=True, sync=True)
 assert code == 2 and rep['sync']['push'] == [str(private)], rep
 git('config', '--add', 'remote.origin.pushurl', str(second))
-rep, code = S.run(core.VAULT, apply=True, sync=True)
+rep, code = S.run(VAULT, apply=True, sync=True)
 assert code == 2 and rep['sync']['push'] == [str(private), str(second)] and not Fake.rows, rep
 assert any(str(second) in s for s in rep['human']), rep['human']
-rep, code = S.run(core.VAULT, apply=True, sync=True)
-assert code == 0 and rep['ok'] and f'osk-sync-{services.tag(core.VAULT)}' in Fake.rows, rep
+rep, code = S.run(VAULT, apply=True, sync=True)
+assert code == 0 and rep['ok'] and f'osk-sync-{services.tag(VAULT)}' in Fake.rows, rep
 # The daemon will transfer to exactly the push targets that were shown and confirmed.
 assert json.loads((root / '.osk' / 'sync-targets.json').read_text(encoding='utf-8'))['push'] == [str(private), str(second)]
 ''')
@@ -680,17 +682,17 @@ assert json.loads((root / '.osk' / 'sync-targets.json').read_text(encoding='utf-
         self.check_case(r'''
 fake_clis()
 baseline()
-S.run(core.VAULT, apply=True)
-S.run(core.VAULT, apply=True)
+S.run(VAULT, apply=True)
+S.run(VAULT, apply=True)
 assert osk_entries(read(claude_home / 'settings.json'), 'start')
 mock.patch.object(S.services, 'backend', lambda vault, run=None: None).start()
-rep, code = S.run(core.VAULT, apply=True, uninstall=True)
+rep, code = S.run(VAULT, apply=True, uninstall=True)
 assert code == 2 and rep['approval_required'] and 'errors' not in rep, rep
 assert (rep['schedule']['task']['action'], rep['sync']['task']['action']) == ('absent', 'absent'), rep
-rep, code = S.run(core.VAULT, apply=True, uninstall=True)
+rep, code = S.run(VAULT, apply=True, uninstall=True)
 assert code == 0 and rep['ok'] and not osk_entries(read(claude_home / 'settings.json'), 'start'), rep
 # Registering a feature still needs one.
-rep, _ = S.run(core.VAULT, schedule='claude')
+rep, _ = S.run(VAULT, schedule='claude')
 assert not rep['ok'] and '서비스 관리자' in rep['errors'][0], rep
 ''')
 
@@ -704,10 +706,10 @@ mock.patch.object(S, '_mcp', lambda vault, adapter, uninstall: {'action': 'keep'
 # and reads it back as osk's own — the next plan keeps everything.
 lab = Path('C:/R&D/osk/.venv/Scripts/python.exe')
 with mock.patch.object(S, 'venv_python', lambda vault: lab):
-    S.run(core.VAULT, apply=True)
-    rep, code = S.run(core.VAULT, apply=True)
+    S.run(VAULT, apply=True)
+    rep, code = S.run(VAULT, apply=True)
     assert code == 0 and rep['ok'], rep
-    rep, _ = S.run(core.VAULT)
+    rep, _ = S.run(VAULT)
     assert not rep['changes'] and all(set(h['hooks']['events'].values()) == {'keep'} for h in rep['hosts']), rep
     quoted = f'"{lab.as_posix()}"' if os.name == 'nt' else f"'{lab.as_posix()}'"
     for adapter in S.hosts():
@@ -719,11 +721,11 @@ with mock.patch.object(S, 'venv_python', lambda vault: lab):
 if os.name == 'nt':
     files = {p: p.read_bytes() for a in S.hosts() for p in a.hook_files() if p.is_file()}
     with mock.patch.object(S, 'venv_python', lambda vault: Path('C:/R&D/100%/.venv/Scripts/python.exe')):
-        rep, code = S.run(core.VAULT, apply=True)
+        rep, code = S.run(VAULT, apply=True)
         assert code == 1 and not rep['applied'], rep
         assert [e for e in rep['errors'] if e.startswith('Kiro hooks:') and '100%' in e] == rep['errors'], rep
-        assert S.plan(core.VAULT, ['kiro'], uninstall=True)['ok'], 'uninstall does not need a line it cannot write'
-        rep, code = S.run(core.VAULT, apply=True, only=['claude', 'codex'])
+        assert S.plan(VAULT, ['kiro'], uninstall=True)['ok'], 'uninstall does not need a line it cannot write'
+        rep, code = S.run(VAULT, apply=True, only=['claude', 'codex'])
         assert code == 2 and rep['approval_required'], 'the other hosts can still be connected'
     assert {p: p.read_bytes() for p in files} == files
 ''')
@@ -744,14 +746,14 @@ lint = hooks / 'lint.json'
 lint.write_text(json.dumps({'version': 'v1', 'hooks': [{'name': 'lint', 'trigger': 'PostFileSave',
                 'action': {'type': 'command', 'command': 'npm run lint'}}]}), encoding='utf-8')
 assert 'kiro' in [a.name for a in S.hosts()]
-rep, code = S.run(core.VAULT, only=['kiro'])
+rep, code = S.run(VAULT, only=['kiro'])
 k = rep['hosts'][0]
 assert (k['mcp']['action'], k['mcp']['file']) == ('add', str(mcp_json)), k
 assert k['hooks']['file'] == str(mine) and set(k['hooks']['events'].values()) == {'add'}, k
 assert 'content' not in k['mcp'] and 'content' not in k['hooks'], 'the plan shows no file bodies'
 assert rep['changes'] and any('신뢰' in s for s in rep['human']), rep['human']
-S.run(core.VAULT, apply=True, only=['kiro'])
-rep, code = S.run(core.VAULT, apply=True, only=['kiro'])
+S.run(VAULT, apply=True, only=['kiro'])
+rep, code = S.run(VAULT, apply=True, only=['kiro'])
 assert code == 0 and rep['ok'], rep
 data = read(mcp_json)
 assert data['note'] == 'kept' and data['mcpServers']['other'] == other, data
@@ -765,7 +767,7 @@ for h, event in zip(written['hooks'], ('start', 'input', 'stop')):
 assert read(lint)['hooks'][0]['name'] == 'lint'
 assert not [c for c in calls() if c[0] == 'kiro'], calls()
 # Planned again, everything is kept.
-rep, _ = S.run(core.VAULT, only=['kiro'])
+rep, _ = S.run(VAULT, only=['kiro'])
 k = rep['hosts'][0]
 assert k['mcp']['action'] == 'keep' and set(k['hooks']['events'].values()) == {'keep'}, k
 assert not rep['changes'], rep
@@ -773,10 +775,10 @@ assert not rep['changes'], rep
 data = read(mcp_json)
 del data['mcpServers']['osk-system']
 mcp_json.write_text(json.dumps(data), encoding='utf-8')
-rep, _ = S.run(core.VAULT, only=['kiro'])
+rep, _ = S.run(VAULT, only=['kiro'])
 assert rep['hosts'][0]['mcp']['action'] == 'add' and rep['changes'], rep
-S.run(core.VAULT, apply=True, only=['kiro'])
-rep, code = S.run(core.VAULT, apply=True, only=['kiro'])
+S.run(VAULT, apply=True, only=['kiro'])
+rep, code = S.run(VAULT, apply=True, only=['kiro'])
 assert code == 0 and 'osk-system' in read(mcp_json)['mcpServers'], (rep, read(mcp_json))
 # Another vault's registration under the name is replaced only as confirmed: if it changed
 # after the plan, nothing is written.
@@ -784,16 +786,16 @@ elsewhere = {'command': py, 'args': ['/elsewhere/_governance/_engine/mcp_server.
 data = read(mcp_json)
 data['mcpServers']['osk-system'] = elsewhere
 mcp_json.write_text(json.dumps(data), encoding='utf-8')
-p = S.plan(core.VAULT, ['kiro'])
+p = S.plan(VAULT, ['kiro'])
 assert p['hosts'][0]['mcp']['action'] == 'replace' and p['hosts'][0]['mcp']['replaces'], p['hosts'][0]['mcp']
 data['mcpServers']['osk-system'] = {'command': py, 'args': ['/third/_governance/_engine/mcp_server.py']}
 mcp_json.write_text(json.dumps(data), encoding='utf-8')
 before = mcp_json.read_bytes()
-res = S._apply(core.VAULT, p)
+res = S._apply(VAULT, p)
 steps = {s['step']: s for s in res['steps']}
 assert not res['ok'] and '다시 계획' in steps['kiro mcp']['error'] and mcp_json.read_bytes() == before, res
-S.run(core.VAULT, apply=True, only=['kiro'])
-rep, code = S.run(core.VAULT, apply=True, only=['kiro'])
+S.run(VAULT, apply=True, only=['kiro'])
+rep, code = S.run(VAULT, apply=True, only=['kiro'])
 assert code == 0 and read(mcp_json)['mcpServers']['osk-system']['args'] == [server.as_posix()], read(mcp_json)
 # A path update does not lift the user's policy on the entry (PR #108 review). This vault's
 # entry run by another Python keeps every field but its command, including a restriction
@@ -803,11 +805,11 @@ data = read(mcp_json)
 data['mcpServers']['osk-system'] = {'command': '/old/python', 'args': [server.as_posix()],
                                     'env': {'A': '1'}, **policy}
 mcp_json.write_text(json.dumps(data), encoding='utf-8')
-p = S.plan(core.VAULT, ['kiro'])
+p = S.plan(VAULT, ['kiro'])
 assert p['hosts'][0]['mcp']['action'] == 'replace', p['hosts'][0]['mcp']
 data['mcpServers']['osk-system']['disabledTools'].append('create_node')
 mcp_json.write_text(json.dumps(data), encoding='utf-8')
-res = S._apply(core.VAULT, p)
+res = S._apply(VAULT, p)
 assert res['ok'], res
 assert read(mcp_json)['mcpServers']['osk-system'] == {
     'command': vpy.as_posix(), 'args': [server.as_posix()], 'env': {'A': '1'},
@@ -817,8 +819,8 @@ data = read(mcp_json)
 data['mcpServers']['osk-system'] = {'command': py, 'args': ['/elsewhere/_governance/_engine/mcp_server.py'],
                                     'env': {'OSK_VAULT_ROOT': '/elsewhere'}, 'cwd': '/elsewhere', **policy}
 mcp_json.write_text(json.dumps(data), encoding='utf-8')
-S.run(core.VAULT, apply=True, only=['kiro'])
-rep, code = S.run(core.VAULT, apply=True, only=['kiro'])
+S.run(VAULT, apply=True, only=['kiro'])
+rep, code = S.run(VAULT, apply=True, only=['kiro'])
 assert code == 0 and read(mcp_json)['mcpServers']['osk-system'] == {
     'command': vpy.as_posix(), 'args': [server.as_posix()], **policy}, (rep, read(mcp_json))
 # A hook the user added to osk's file stays, even one Kiro cannot read; osk's own entries are
@@ -829,25 +831,25 @@ drifted = read(mine)
 drifted['hooks'] += [added, odd]
 drifted['hooks'][0]['action']['command'] = base.hook_line(['/old/python', hooks_dir / base.SCRIPTS['start']])
 mine.write_text(json.dumps(drifted), encoding='utf-8')
-rep, _ = S.run(core.VAULT, only=['kiro'])
+rep, _ = S.run(VAULT, only=['kiro'])
 assert rep['hosts'][0]['hooks']['events'] == {'SessionStart': 'replace', 'UserPromptSubmit': 'keep',
                                               'Stop': 'keep'}, rep['hosts'][0]
-S.run(core.VAULT, apply=True, only=['kiro'])
-rep, code = S.run(core.VAULT, apply=True, only=['kiro'])
+S.run(VAULT, apply=True, only=['kiro'])
+rep, code = S.run(VAULT, apply=True, only=['kiro'])
 assert code == 0 and rep['ok'], rep
 now = read(mine)['hooks']
 assert added in now and odd in now and sum(
     base.mentions(base.command_tokens(h), hooks_dir / base.SCRIPTS['start']) for h in now) == 1, now
 # Uninstall takes out only osk's entries: the user's hooks keep osk's file alive.
-S.run(core.VAULT, apply=True, uninstall=True, only=['kiro'])
-rep, code = S.run(core.VAULT, apply=True, uninstall=True, only=['kiro'])
+S.run(VAULT, apply=True, uninstall=True, only=['kiro'])
+rep, code = S.run(VAULT, apply=True, uninstall=True, only=['kiro'])
 assert code == 0 and read(mine)['hooks'] == [added, odd], read(mine)
 assert read(mcp_json) == {'mcpServers': {'other': other}, 'note': 'kept'}, read(mcp_json)
 # Without other entries the file goes — an empty Kiro hook file fails Kiro's schema.
 mine.write_text(json.dumps({'version': 'v1', 'hooks': [kiro_hook for kiro_hook in drifted['hooks'][:1]]}),
                 encoding='utf-8')
-S.run(core.VAULT, apply=True, uninstall=True, only=['kiro'])
-rep, code = S.run(core.VAULT, apply=True, uninstall=True, only=['kiro'])
+S.run(VAULT, apply=True, uninstall=True, only=['kiro'])
+rep, code = S.run(VAULT, apply=True, uninstall=True, only=['kiro'])
 assert code == 0 and not mine.exists() and lint.exists(), rep
 assert any(p.name.startswith('osk-system.json.osk-backup-') for p in hooks.iterdir())
 assert not [c for c in calls() if c[0] == 'kiro'], calls()
@@ -866,13 +868,13 @@ lint = {'PostToolUse': [{'matcher': 'run_command', 'hooks': [{'type': 'command',
 quiet = {'enabled': False, 'Stop': [{'type': 'command', 'command': 'echo bye'}]}
 hooks_json.write_text(json.dumps({'lint': lint, 'quiet': quiet}), encoding='utf-8')
 assert 'antigravity' in [a.name for a in S.hosts()]
-rep, code = S.run(core.VAULT, only=['antigravity'])
+rep, code = S.run(VAULT, only=['antigravity'])
 a = rep['hosts'][0]
 assert (a['mcp']['action'], a['mcp']['file']) == ('add', str(mcp_json)), a
 assert a['hooks']['file'] == str(hooks_json) and a['hooks']['events'] == {
     'SessionStart': 'add', 'PreInvocation': 'add', 'Stop': 'add'}, a
-S.run(core.VAULT, apply=True, only=['antigravity'])
-rep, code = S.run(core.VAULT, apply=True, only=['antigravity'])
+S.run(VAULT, apply=True, only=['antigravity'])
+rep, code = S.run(VAULT, apply=True, only=['antigravity'])
 assert code == 0 and rep['ok'], rep
 assert read(mcp_json) == {'mcpServers': {'other': other, 'osk-system': {
     'command': vpy.as_posix(), 'args': [server.as_posix()]}}}, read(mcp_json)
@@ -886,7 +888,7 @@ for event in ('start', 'input', 'stop'):
     assert h['type'] == 'command' and '"' not in h['command'], h
     assert base.mentions(base.command_tokens(h), hooks_dir / base.SCRIPTS[event]), h
 # Planned again, everything is kept.
-rep, _ = S.run(core.VAULT, only=['antigravity'])
+rep, _ = S.run(VAULT, only=['antigravity'])
 a = rep['hosts'][0]
 assert a['mcp']['action'] == 'keep' and set(a['hooks']['events'].values()) == {'keep'}, a
 assert not rep['changes'], rep
@@ -897,19 +899,19 @@ if os.name == 'nt':
     before = hooks_json.read_bytes()
     for odd in ('C:/Program Files/Python/python.exe', 'C:/R&D/Python/python.exe'):
         with mock.patch.object(S, 'venv_python', lambda vault: Path(odd)):
-            rep, code = S.run(core.VAULT, apply=True, only=['antigravity'])
+            rep, code = S.run(VAULT, apply=True, only=['antigravity'])
             assert code == 1 and any('--harness' in e for e in rep['errors']), (odd, rep)
-            rep, _ = S.run(core.VAULT, uninstall=True, only=['antigravity'])
+            rep, _ = S.run(VAULT, uninstall=True, only=['antigravity'])
             assert rep['ok'] and set(rep['hosts'][0]['hooks']['events'].values()) == {'remove'}, rep
     assert hooks_json.read_bytes() == before
 # Uninstall takes out only osk's name; with nothing else left the file goes.
-S.run(core.VAULT, apply=True, uninstall=True, only=['antigravity'])
-rep, code = S.run(core.VAULT, apply=True, uninstall=True, only=['antigravity'])
+S.run(VAULT, apply=True, uninstall=True, only=['antigravity'])
+rep, code = S.run(VAULT, apply=True, uninstall=True, only=['antigravity'])
 assert code == 0 and read(hooks_json) == {'lint': lint, 'quiet': quiet}, read(hooks_json)
 assert read(mcp_json) == {'mcpServers': {'other': other}}, read(mcp_json)
 hooks_json.write_text(json.dumps({'osk-system': mine}), encoding='utf-8')
-S.run(core.VAULT, apply=True, uninstall=True, only=['antigravity'])
-rep, code = S.run(core.VAULT, apply=True, uninstall=True, only=['antigravity'])
+S.run(VAULT, apply=True, uninstall=True, only=['antigravity'])
+rep, code = S.run(VAULT, apply=True, uninstall=True, only=['antigravity'])
 assert code == 0 and not hooks_json.exists(), rep
 ''')
 
