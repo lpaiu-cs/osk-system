@@ -9,12 +9,12 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from osk import core, response_growth as rg
+from osk import core, response_growth as rg, worker_preflight
 from osk.vault import Vault
 VAULT = Vault.open()
 import test_growth as base_tests
 
-REAL_HOOK_READY = rg._codex_hook_ready  # setUp stands it in; one test drives the real query.
+REAL_HOOK_READY = worker_preflight._codex_hook_ready  # setUp stands it in; one test drives the real query.
 
 
 class ResponseGrowthTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class ResponseGrowthTests(unittest.TestCase):
         environ.start()
         self.addCleanup(environ.stop)
         # The native hooks/list query runs the real CLI; test_codex_preflight_requires_* drives it.
-        hooks = patch.object(rg, '_codex_hook_ready', return_value=True)
+        hooks = patch.object(worker_preflight, '_codex_hook_ready', return_value=True)
         self.hook_ready = hooks.start()
         self.addCleanup(hooks.stop)
 
@@ -143,7 +143,7 @@ class ResponseGrowthTests(unittest.TestCase):
             gone, fresh = str(base / '2.1.270/claude.exe'), {**source, 'version': None}
             self.assertEqual(native_cli.resolve(gone), str(same))
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                self.assertEqual(rg.preflight(VAULT, fresh, gone, env, require_version=False), str(same))
+                self.assertEqual(worker_preflight.preflight(VAULT, fresh, gone, env, require_version=False), str(same))
                 with self.assertRaisesRegex(ValueError, 'version differs'):
                     rg.command(VAULT, fresh, gone, env)
 
@@ -258,10 +258,10 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_runtime_version_recovery_preserves_counters_and_reaches_supervisor(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch, Mock
             import os, subprocess
-            patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
+            patch.object(worker_preflight, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             native = VAULT.root / 'native.jsonl'
             rows = [
                 {'type':'session_meta','payload':{'id':'own','cwd':str(VAULT.root),
@@ -330,10 +330,10 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_codex_hook_binds_desktop_runtime_for_route_and_supervisor(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, native_cli
+            from osk import response_growth as rg, native_cli, worker_preflight
             from unittest.mock import patch, Mock
             import os, subprocess
-            patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
+            patch.object(worker_preflight, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             for key in ('CODEX_THREAD_ID', 'CODEX_VERSION', 'OSK_HARNESS'):
                 os.environ.pop(key, None)  # Codex hook processes carry none of these.
             native = VAULT.root / 'native.jsonl'
@@ -476,7 +476,7 @@ class ResponseGrowthTests(unittest.TestCase):
                             self.assertEqual(pins, ['openai_base_url="https://chatgpt.com/backend-api/codex"'])
                         else:
                             for check in (lambda: rg.command(VAULT, source, str(exe), env),
-                                          lambda: rg.preflight(VAULT, source, str(exe), env, require_version=False)):
+                                          lambda: worker_preflight.preflight(VAULT, source, str(exe), env, require_version=False)):
                                 with self.assertRaisesRegex(ValueError, 'non-first-party'):
                                     check()
                             self.assertFalse([c for c in calls if c[1:] == ['login', 'status']])
@@ -495,7 +495,7 @@ class ResponseGrowthTests(unittest.TestCase):
             layer = lambda folder: str(folder / '.codex/config.toml')
             def layers(user):
                 (home / 'config.toml').write_text(user, encoding='utf-8')
-                return list(rg._codex_layers(env, str(cwd)))
+                return list(worker_preflight.codex_layers(env, str(cwd)))
             user = str(home / 'config.toml')
             # From the Git root down to cwd; a folder above the root is not a native layer.
             self.assertEqual(layers(''), [user, layer(repo), layer(cwd)])
@@ -508,7 +508,7 @@ class ResponseGrowthTests(unittest.TestCase):
             (Path(layer(repo))).write_text('[profiles.p]\nmodel_provider = "bridge"', encoding='utf-8')
             (Path(layer(cwd))).write_text('[profiles.p]\nmodel_provider = "openai"', encoding='utf-8')
             layers('profile = "p"')
-            self.assertEqual(rg._codex_unpinned(rg._codex_layers(env, str(cwd))),
+            self.assertEqual(worker_preflight.codex_unpinned(worker_preflight.codex_layers(env, str(cwd))),
                              {layer(repo) + ': profiles.p.model_provider': 'bridge'})
             if rg.os.name == 'nt':  # %ProgramData%\OpenAI\Codex\config.toml sets system defaults.
                 system = top / 'OpenAI/Codex/config.toml'
@@ -516,7 +516,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 system.write_text('chatgpt_base_url = "http://127.0.0.1:17841/"', encoding='utf-8')
                 with patch.dict(rg.os.environ, {'ProgramData': str(top)}):
                     self.assertEqual(layers('')[0], str(system))
-                    self.assertIn(str(system) + ': chatgpt_base_url', rg._codex_unpinned(rg._codex_layers(env, str(cwd))))
+                    self.assertIn(str(system) + ': chatgpt_base_url', worker_preflight.codex_unpinned(worker_preflight.codex_layers(env, str(cwd))))
 
     def test_codex_route_before_first_final_needs_no_sandbox_policy(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -528,16 +528,16 @@ class ResponseGrowthTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, 'true' if argv[0] == 'git' else 'codex-cli 0.155.0'
                                                    if '--version' in argv else 'Logged in using ChatGPT', '')
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
-                self.assertEqual(rg.preflight(VAULT, fresh, str(exe), {}, require_version=False), str(exe))
+                self.assertEqual(worker_preflight.preflight(VAULT, fresh, str(exe), {}, require_version=False), str(exe))
                 for source, require in ((dict(fresh, finals=['t1']), False), (fresh, True)):
                     with self.subTest(require=require), self.assertRaisesRegex(ValueError, 'sandbox policy'):
-                        rg.preflight(VAULT, source, str(exe), {}, require_version=require)
+                        worker_preflight.preflight(VAULT, source, str(exe), {}, require_version=require)
                 with self.assertRaisesRegex(ValueError, 'sandbox policy'):
                     rg.command(VAULT, dict(fresh, model='parent-model'), str(exe), {})
 
     def test_codex_subagent_hook_changes_no_conversation_state(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             import os, subprocess
             hooks = Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'
             sys.path.insert(0, str(hooks))
@@ -572,7 +572,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_empty_legacy_baseline_excludes_ancestor_finals_once(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             import os
             parent = VAULT.root / 'rollout-parent-own.jsonl'
@@ -621,7 +621,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_paginated_final_counter_keeps_baseline_and_active_page_model(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             import os
             folder = VAULT.root / 'native'
@@ -758,12 +758,12 @@ class ResponseGrowthTests(unittest.TestCase):
             self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', command)
             with patch.object(rg.subprocess, 'run', side_effect=[completed('codex-cli 0.155.0'), completed('Logged in using an API key')]):
                 with self.assertRaisesRegex(ValueError, 'ChatGPT subscription login'):
-                    rg.preflight(VAULT, source, str(exe), env)
+                    worker_preflight.preflight(VAULT, source, str(exe), env)
             with patch.dict(rg.os.environ, {'OPENAI_API_KEY': 'fixture', 'ANTHROPIC_API_KEY': 'fixture',
                                             'OPENAI_BASE_URL': 'http://127.0.0.1:17841/v1'}):
-                self.assertNotIn('OPENAI_API_KEY', rg.subscription_env())
-                self.assertNotIn('OPENAI_BASE_URL', rg.subscription_env())
-                self.assertNotIn('ANTHROPIC_API_KEY', rg.subscription_env())
+                self.assertNotIn('OPENAI_API_KEY', worker_preflight.subscription_env())
+                self.assertNotIn('OPENAI_BASE_URL', worker_preflight.subscription_env())
+                self.assertNotIn('ANTHROPIC_API_KEY', worker_preflight.subscription_env())
 
     def test_claude_fork_runs_with_source_permission_mode_verbatim(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -798,7 +798,7 @@ class ResponseGrowthTests(unittest.TestCase):
                         self.assertEqual(argv.count('--permission-mode'), 1)
                         self.assertEqual(argv[argv.index('--permission-mode') + 1], mode)
                         # Only the deny hook is added (#85): tool definitions and MCP stay the source's.
-                        self.assertEqual(argv[argv.index('--settings') + 1], rg.CLAUDE_FORK_SETTINGS)
+                        self.assertEqual(argv[argv.index('--settings') + 1], worker_preflight.CLAUDE_FORK_SETTINGS)
                         self.assertFalse({'--tools', '--allowedTools', '--disallowedTools', '--strict-mcp-config',
                                           '--mcp-config'} & set(argv))
                         # --permission-mode bypassPermissions alone enables bypass; nothing wider is added.
@@ -808,17 +808,17 @@ class ResponseGrowthTests(unittest.TestCase):
                     with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'permission mode'):
                         rg.command(VAULT, {**source, 'permission_mode': mode}, str(exe), env)
                 for gate in (lambda s: rg.command(VAULT, s, str(exe), env),
-                             lambda s: rg.preflight(VAULT, s, str(exe), env, require_version=False)):
+                             lambda s: worker_preflight.preflight(VAULT, s, str(exe), env, require_version=False)):
                     with self.assertRaisesRegex(ValueError, 'permission mode'):
                         gate(missing)
                 # Before the first final there is no mode to copy yet; routing still checks the CLI.
-                self.assertEqual(rg.preflight(VAULT, {**missing, 'finals': []}, str(exe), env, require_version=False), str(exe))
+                self.assertEqual(worker_preflight.preflight(VAULT, {**missing, 'finals': []}, str(exe), env, require_version=False), str(exe))
             self.assertTrue(all(c.args[0][1:] in (['--version'], ['auth', 'status']) for c in call.call_args_list))
             # A mode change between the checked source and the fork never forks. The file is the
             # checked source again, so the mode is the only difference (the control below forks).
             write(rows)
             job = {'harness': 'claude', 'conversation_id': 'own'}
-            with patch.object(rg, 'preflight', return_value=str(exe)), \
+            with patch.object(worker_preflight, 'preflight', return_value=str(exe)), \
                     patch.object(rg.growth, 'run', return_value={'ok': True, 'state': 'complete'}) as fork:
                 result = rg.run(VAULT, {**source, 'permission_mode': 'default'}, job, str(exe))
                 self.assertEqual(result['state'], 'unavailable')
@@ -844,7 +844,7 @@ class ResponseGrowthTests(unittest.TestCase):
             for url in ('https://api.anthropic.com', 'https://api.anthropic.com/'):
                 with self.subTest(url=url), patch.dict(rg.os.environ, {**host, 'ANTHROPIC_BASE_URL': url,
                                                                        'CLAUDE_CONFIG_DIR': folder}):
-                    env = rg.subscription_env()
+                    env = worker_preflight.subscription_env()
                     self.assertFalse({'ANTHROPIC_BASE_URL', *host} & set(env))
                     envs.clear()
                     with patch.object(rg.subprocess, 'run', side_effect=inspect):
@@ -853,7 +853,7 @@ class ResponseGrowthTests(unittest.TestCase):
             for url in ('http://127.0.0.1:8080', 'https://api.anthropic.com.proxy', 'https://api.anthropic.com/v2'):
                 with self.subTest(url=url), patch.dict(rg.os.environ, {'ANTHROPIC_BASE_URL': url,
                                                                        'CLAUDE_CONFIG_DIR': folder}):
-                    env = rg.subscription_env()
+                    env = worker_preflight.subscription_env()
                     self.assertEqual(env['ANTHROPIC_BASE_URL'], url)
                     with patch.object(rg.subprocess, 'run', side_effect=inspect) as call:
                         with self.assertRaisesRegex(ValueError, 'unverified provider'):
@@ -872,7 +872,7 @@ class ResponseGrowthTests(unittest.TestCase):
         for policy in ({'type': 'danger-full-access'}, {'type': 'read-only'}, {'type': 'read-only', 'network_access': True},
                        {'type': 'workspace-write', 'writable_roots': ['relative'], 'network_access': True,
                         'exclude_slash_tmp': 'true', 'exclude_tmpdir_env_var': False}):
-            with self.subTest(policy=policy), patch.object(rg, 'preflight'):
+            with self.subTest(policy=policy), patch.object(worker_preflight, 'preflight'):
                 argv = rg.command(VAULT, {**source, 'sandbox_policy': policy}, 'unused', {})
                 config = tomllib.loads('\n'.join(argv[i+1] for i, v in enumerate(argv) if v == '-c'))
                 self.assertEqual(config['approval_policy'], source['approval_policy'])
@@ -882,22 +882,22 @@ class ResponseGrowthTests(unittest.TestCase):
                 self.assertNotIn('--skip-git-repo-check', argv)
                 # The deny hook rides along as a trusted session-flag hook, on even if the user turned hooks off.
                 self.assertIs(config['features']['hooks'], True)
-                self.assertEqual(config['hooks'], rg.CODEX_FORK_HOOKS)
+                self.assertEqual(config['hooks'], worker_preflight.CODEX_FORK_HOOKS)
                 self.assertNotIn('--dangerously-bypass-hook-trust', argv)
         # Read-only reads the whole disk, so it cannot stand in for an external sandbox or an
         # unknown field such as a read limit: those still refuse.
         for policy in (None, {}, {'type': 'external-sandbox'}, {'type': 'workspace-write', 'future_restriction': True},
                        {'type': 'read-only', 'access': {'type': 'restricted', 'readable_roots': []}}):
             with self.subTest(policy=policy), self.assertRaisesRegex(ValueError, 'sandbox'):
-                rg._codex_overrides({**source, 'sandbox_policy': policy})
+                worker_preflight.codex_overrides({**source, 'sandbox_policy': policy})
         for approval in ('bogus', {'granular': {'rules': True}}, {'granular': {
                 'sandbox_approval': False, 'rules': True, 'mcp_elicitations': 'no'}}):
             with self.subTest(approval=approval), self.assertRaisesRegex(ValueError, 'approval policy'):
-                rg._codex_overrides({**source, 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': approval})
+                worker_preflight.codex_overrides({**source, 'sandbox_policy': {'type': 'read-only'}, 'approval_policy': approval})
 
     def test_claude_fork_hook_denies_every_tool_but_osk_mcp(self):
         import re, shutil
-        (entry,) = json.loads(rg.CLAUDE_FORK_SETTINGS)['hooks']['PreToolUse']
+        (entry,) = json.loads(worker_preflight.CLAUDE_FORK_SETTINGS)['hooks']['PreToolUse']
         for name, denied in (('Bash', True), ('Read', True), ('Edit', True), ('Agent', True), ('Skill', True),
                              ('WebFetch', True), ('mcp__notion__search', True), ('mcp__osk-system-x__search', True),
                              ('mcp__osk-systemx__search', True), ('ToolSearchX', True), ('xToolSearch', True),
@@ -922,7 +922,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_codex_fork_hook_denies_every_tool_but_osk_mcp(self):
         import re
-        (group,) = rg.CODEX_FORK_HOOKS['PreToolUse']
+        (group,) = worker_preflight.CODEX_FORK_HOOKS['PreToolUse']
         matcher = group['matcher']
         # Codex compiles the matcher with Rust `regex`; lookaround fails to compile and drops the hook.
         self.assertFalse(re.search(r'\(\?<?[=!]', matcher))
@@ -936,18 +936,18 @@ class ResponseGrowthTests(unittest.TestCase):
                 # Codex tests the regex unanchored; the pattern anchors both ends itself.
                 self.assertEqual(bool(re.search(matcher, name)), denied)
         # The same deny line as Claude's, so the shell test above covers both.
-        (claude,) = json.loads(rg.CLAUDE_FORK_SETTINGS)['hooks']['PreToolUse']
+        (claude,) = json.loads(worker_preflight.CLAUDE_FORK_SETTINGS)['hooks']['PreToolUse']
         self.assertEqual(group['hooks'], claude['hooks'])
         # The trust Codex itself computed for this hook (app-server hooks/list `currentHash`, 0.154.0 and
         # 0.163.0-alpha.10.2): a hook the engine changes must be measured again, or it never runs.
-        (key, state), = rg.CODEX_FORK_HOOKS['state'].items()
+        (key, state), = worker_preflight.CODEX_FORK_HOOKS['state'].items()
         self.assertEqual(state, {'trusted_hash': 'sha256:1a48d3f94a018f06ae75f2f4af98283fd738c113841802c4186d2096501ed2dc'})
         self.assertEqual(key, ('C:\\<session-flags>\\config.toml' if rg.os.name == 'nt' else '/<session-flags>/config.toml')
                          + ':pre_tool_use:0:0')
 
     def test_codex_preflight_requires_native_hooks_list_to_run_the_deny_hook(self):
         import time
-        (key, state), = rg.CODEX_FORK_HOOKS['state'].items()
+        (key, state), = worker_preflight.CODEX_FORK_HOOKS['state'].items()
         ok = {'key': key, 'source': 'sessionFlags', 'enabled': True, 'trustStatus': 'trusted',
               'currentHash': state['trusted_hash']}
         # Stands in for `codex … app-server`: answers hooks/list, or leaves at EOF/hangs as told.
@@ -977,8 +977,8 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.object(rg.subprocess, 'run', side_effect=inspect):
                 argv = rg.command(VAULT, source, executable, {})
                 (asked, cwd, *_), _ = self.hook_ready.call_args
-                self.assertEqual((asked, cwd), ([executable, *rg._codex_hook_args(), 'app-server'], folder))
-                self.assertEqual(argv[-6:-2], rg._codex_hook_args())
+                self.assertEqual((asked, cwd), ([executable, *worker_preflight._codex_hook_args(), 'app-server'], folder))
+                self.assertEqual(argv[-6:-2], worker_preflight._codex_hook_args())
                 self.hook_ready.return_value = False
                 with self.assertRaisesRegex(ValueError, 'deny hook'):
                     rg.command(VAULT, source, executable, {})
@@ -995,17 +995,17 @@ class ResponseGrowthTests(unittest.TestCase):
                 'id': 'own', 'cwd': folder, 'source': 'vscode', 'originator': 'Codex Desktop'}}) + '\n',
                 encoding='utf-8')
             with patch.object(rg, 'configured', return_value='cli'), \
-                    patch.object(rg, 'preflight', side_effect=AssertionError('CLI asked')):
+                    patch.object(worker_preflight, 'preflight', side_effect=AssertionError('CLI asked')):
                 self.assertEqual(rg.check(VAULT, 'codex', 'own', str(native), folder),
                                  {'mode': 'off', 'reason': rg.DESKTOP_OFF})
         with patch.object(rg, '_remember') as remember, \
-                patch.object(rg, 'preflight', side_effect=AssertionError('CLI asked')), \
+                patch.object(worker_preflight, 'preflight', side_effect=AssertionError('CLI asked')), \
                 patch.object(rg.growth, 'run', side_effect=AssertionError('fork started')):
             result = rg.run(VAULT, desktop, {'harness': 'codex', 'conversation_id': 'own'}, 'unused')
         self.assertEqual(result['state'], 'unavailable')   # not a fork failure: never falls back in-session
         remember.assert_called_once_with(VAULT, 'codex', 'own', {'mode': 'off', 'reason': rg.DESKTOP_OFF})
         for kind, originator in (('exec', 'Codex Desktop'), ('cli', 'codex_cli_rs')):
-            with self.subTest(source=kind), patch.object(rg, 'preflight'):
+            with self.subTest(source=kind), patch.object(worker_preflight, 'preflight'):
                 argv = rg.command(VAULT, {**source, 'source': kind, 'originator': originator}, 'unused', {})
                 self.assertEqual(argv[argv.index('--model')+1], source['model'])
                 self.assertFalse([a for a in argv if 'code_mode_host' in a or 'codex_app' in a])
@@ -1014,7 +1014,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # No fork CLI is no reason to review a Desktop conversation in-session: the hooks never
         # read the transcript, so the worker's verdict must outrank the missing-CLI one (PR #204).
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1056,7 +1056,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_turned_off_harness_neither_forks_nor_reviews_in_session(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, doctor, setup, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, doctor, setup, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from osk import harness as adapters
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
@@ -1103,10 +1103,10 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_codex_ineligible_source_routes_to_foreground_without_consuming_review(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             import subprocess
-            patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
+            patch.object(worker_preflight, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
             scope_memory.replace(VAULT, 'own', '', space='00_Scope/W1')
@@ -1192,7 +1192,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_counter_survives_resume_and_worker_failure_does_not_ack(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             source = {'harness':'claude','conversation_id':'own','finals':[]}
             assert not rg.observe(VAULT, source)['due']
@@ -1214,7 +1214,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_shadow_prompt_clock_does_not_trigger_a_fork_and_ninth_stop_does(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1233,7 +1233,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     f.write(''.join(json.dumps(r)+'\\n' for r in rows))
             with patch.object(rg, 'run', return_value={'ok':False,'state':'incomplete'}) as worker, \
                     patch.object(scope_memory,'recovery_block',return_value='RECOVERY_SENTINEL'), \
-                    patch.object(rg,'preflight'):
+                    patch.object(worker_preflight,'preflight'):
                 for n in range(1, 10):
                     append(n)
                     hook.capture_block(VAULT, env, 'own')
@@ -1269,7 +1269,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_unavailable_cli_routes_to_9_15_input_review_and_recovers_without_reset(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1281,7 +1281,7 @@ class ResponseGrowthTests(unittest.TestCase):
             rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             # The hooks' worker asks the CLI (probe); the hooks read its verdict.
-            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('subscription login required')), \
                     patch.object(rg.subprocess,'Popen',side_effect=AssertionError('unavailable fork launched')):
                 rg.probe(VAULT, env)
                 start = hook.capture_block(VAULT, env,'own',startup=True)
@@ -1298,7 +1298,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     assert not rg.launch(VAULT, env,'own')
                 before = conversation_capture.status(VAULT, 'claude','own')
                 assert before['prompt_count'] == 15 and before['reviewed_rounds'] == 0, before
-            with patch.object(rg,'preflight'):
+            with patch.object(worker_preflight,'preflight'):
                 rg.probe(VAULT, env)
                 hook.capture_block(VAULT, env,'own',startup=True)
                 restored = conversation_capture.status(VAULT, 'claude','own')
@@ -1307,7 +1307,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert restored['response_growth']['count'] == before['response_growth']['count']
                 hook.capture_block(VAULT, env,'own')
             # Losing auth between cadence boundaries must surface the overdue review immediately.
-            with patch.object(rg,'preflight',side_effect=ValueError('login expired')):
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('login expired')):
                 rg.probe(VAULT, env)
                 text = hook.capture_block(VAULT, env,'own')
                 assert 'user 턴 17' in text and cue in text and '단독 턴' in text, text
@@ -1320,7 +1320,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_failing_forks_fall_back_to_9_15_review_and_retry_a_day_later(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1337,7 +1337,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 source['finals'] = [str(i) for i in range(9 * n)]
                 with patch.object(rg, 'run', return_value=result):
                     return rg.attempt(VAULT, source, job, 'unused')
-            with patch.object(rg, 'preflight'):
+            with patch.object(worker_preflight, 'preflight'):
                 rg.observe(VAULT, source)
                 assert rg.probe(VAULT, env)['mode'] == 'background'  # the CLI is ready (the hooks' worker asked)
                 # One unfinished fork review keeps the fork; a busy worker says nothing about it.
@@ -1364,7 +1364,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_fork_that_finished_its_review_is_not_failed_by_remaining_organization(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1387,7 +1387,7 @@ class ResponseGrowthTests(unittest.TestCase):
                         'scope_outcomes': {'scope-review-x': {'status': review}},
                         'organization_outcomes': {'organization:x': {'status': 'pending', 'remaining_units': 5}},
                         **changed}
-            with patch.object(rg, 'preflight'):
+            with patch.object(worker_preflight, 'preflight'):
                 rg.observe(VAULT, source)
                 # The scope's organization takes several passes (Mechanism §9-4 4). After v5.0.0
                 # two forks that preserved their review were counted as failed and handed the
@@ -1414,7 +1414,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_stuck_capture_says_one_line_once_between_review_turns(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1428,7 +1428,7 @@ class ResponseGrowthTests(unittest.TestCase):
             rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             stuck = ValueError('copied native round ID has different content; capture remains pending')
-            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('subscription login required')), \\
                     patch.object(conversation_capture,'_inherited_rounds',side_effect=stuck):
                 rg.probe(VAULT, env)
                 assert '검토 경고' in hook.capture_block(VAULT, env,'own',startup=True)
@@ -1461,7 +1461,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # one detached worker.
         base_tests.GrowthTests().check_case('''
             import io, os, subprocess, types
-            from osk import response_growth as rg, integration, transcripts, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, transcripts, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_prompt_submit as hook
@@ -1487,7 +1487,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     submit(n)
                 job = json.loads(worker.call_args.kwargs['stdin'])
                 assert worker.call_count == 1 and job['defer'], worker.call_args
-                with patch.object(rg,'preflight'):
+                with patch.object(worker_preflight,'preflight'):
                     rg.after_hook(VAULT, job)   # the worker: capture what is new, ask the fork CLI when due
                 return conversation_capture.status(VAULT, 'claude','own')
             # A new conversation's transcript is written after its first prompt: the worker
@@ -1521,7 +1521,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # 9·15-turn review never took over.
         base_tests.GrowthTests().check_case('''
             import os
-            from osk import response_growth as rg
+            from osk import response_growth as rg, worker_preflight
             from unittest.mock import patch
             rg.config_path(VAULT).parent.mkdir(exist_ok=True)
             rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
@@ -1543,7 +1543,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # Both hand the capture to the input hook's worker now.
         base_tests.GrowthTests().check_case('''
             import io, os, subprocess, threading, types
-            from osk import response_growth as rg, integration, transcripts, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, transcripts, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from osk._portalock import lock_exclusive, unlock
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
@@ -1628,13 +1628,13 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_login_loss_after_input_does_not_consume_stop_attempt(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             source = {'harness':'claude','conversation_id':'own','model':'same-model','finals':[]}
             rg.observe(VAULT, source)
             source['finals'] = [str(i) for i in range(9)]
             job = {'harness':'claude','conversation_id':'own','pending_refs':['fixture']}
-            with patch.object(rg,'preflight',side_effect=ValueError('login expired')), \
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('login expired')), \
                     patch.object(growth,'run',side_effect=AssertionError('provider started')):
                 result = rg.attempt(VAULT, source,job,'unused')
             assert result['state'] == 'unavailable', result
@@ -1645,7 +1645,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_source_advanced_before_fork_does_not_consume_stop_attempt(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             native = VAULT.root / 'native.jsonl'
             rows = [{'type':'assistant','sessionId':'own','uuid':f'a{n}','cwd':str(VAULT.root),'message':{'role':'assistant','id':f'm{n}',
@@ -1660,7 +1660,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     f.write(json.dumps(row)+'\\n')
             # Claude appends trailers such as stop_hook_summary seconds after Stop, during preflight.
             trailer = lambda *a, **k: append({'type':'system','subtype':'stop_hook_summary','sessionId':'own'})
-            with patch.object(rg,'preflight',side_effect=trailer), \\
+            with patch.object(worker_preflight,'preflight',side_effect=trailer), \\
                     patch.object(growth,'run',return_value={'ok':False,'state':'incomplete'}) as fork:
                 assert rg.attempt(VAULT, source,job,'unused')['state'] == 'incomplete'
             assert fork.call_count == 1 and conversation_capture.status(VAULT, 'claude','own')['response_growth']['attempted_count'] == 9
@@ -1670,7 +1670,7 @@ class ResponseGrowthTests(unittest.TestCase):
                                 for n in range(9, 18)))
             source = rg.profile(VAULT, str(native),'claude','own')
             new_turn = lambda *a, **k: append({'type':'user','sessionId':'own','message':{'role':'user','content':'next'}})
-            with patch.object(rg,'preflight',side_effect=new_turn), \\
+            with patch.object(worker_preflight,'preflight',side_effect=new_turn), \\
                     patch.object(growth,'run',side_effect=AssertionError('fork started')):
                 result = rg.attempt(VAULT, source,job,'unused')
             assert result['state'] == 'unavailable' and 'source advanced' in result['error'], result
@@ -1682,7 +1682,7 @@ class ResponseGrowthTests(unittest.TestCase):
     def test_claude_auth_refresh_race_retries_the_fork_once(self):
         # 14 of 86 Claude forks (2026-09-25..10-05) exited before inference with this message.
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg
+            from osk import response_growth as rg, worker_preflight
             from unittest.mock import patch
             native = VAULT.root / 'native.jsonl'
             native.write_text(json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','cwd':str(VAULT.root),
@@ -1704,7 +1704,7 @@ class ResponseGrowthTests(unittest.TestCase):
             done = {'ok':True,'state':'complete','returncode':0}
             for runs, calls, waits, final in (([raced, done], 2, 1, done), ([raced, raced], 2, 1, raced),
                                                ([other, done], 1, 0, other), ([quoted, done], 1, 0, quoted)):
-                with patch.object(rg,'preflight',return_value='claude'), patch.object(rg.time,'sleep') as wait, \\
+                with patch.object(worker_preflight,'preflight',return_value='claude'), patch.object(rg.time,'sleep') as wait, \\
                         patch.object(rg,'cache_usage',return_value={}), \\
                         patch.object(growth,'run',side_effect=runs) as fork:
                     result = rg.run(VAULT, source,job,'unused')
@@ -1715,7 +1715,7 @@ class ResponseGrowthTests(unittest.TestCase):
     def test_stop_detaches_and_waits_for_native_final_flush(self):
         base_tests.GrowthTests().check_case('''
             import os, subprocess, time
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             scope_memory.replace(VAULT, VAULT.root.name, '', space='00_Scope/W1')
             native = VAULT.root / 'native.jsonl'
             rg.config_path(VAULT).parent.mkdir(exist_ok=True)
@@ -1773,7 +1773,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_fork_doctor_shows_route_verdict_without_writing_state_or_secrets(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, cli, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, cli, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from types import SimpleNamespace
             from unittest.mock import patch
             import io, os, subprocess
@@ -1824,7 +1824,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert codex['verdict'] == {'mode': 'foreground', 'reason': 'subscription fork CLI is not configured'}
                 assert codex['endpoint']['top_level_overridden'] == bridge, codex
                 assert codex['endpoint']['env_dropped'] == 'https://relay.example/v1', codex
-                assert codex['endpoint']['pinned_for_forks'] == rg.OPENAI_ENDPOINT, codex
+                assert codex['endpoint']['pinned_for_forks'] == worker_preflight.OPENAI_ENDPOINT, codex
                 assert codex['endpoint']['refused'] is None, codex
                 for secret in ('s3cret', 'user:', 'person@example.com'):
                     assert secret not in text, secret
@@ -1879,14 +1879,14 @@ class HookBudgetTests(unittest.TestCase):
 
     def test_start_keeps_its_warning_when_organization_cannot_be_read(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
             env = {'harness':'claude','session_id':'own','cwd':str(VAULT.root),'session':'own'}
             idle = {'harness':'claude','conversation_id':'own','pending':False,'capture_error':None,
                     'capture_recovery':{'state':'ready'}}
-            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('subscription login required')), \\
                     patch.object(conversation_capture,'hook_capture',return_value=idle), \\
                     patch.object(hook,'_organization_jobs',side_effect=ValueError('damaged organization state')):
                 start = hook.capture_block(VAULT, env,'own',startup=True)
@@ -1901,7 +1901,7 @@ class HookBudgetTests(unittest.TestCase):
 
     def test_review_turn_carries_memory_once_per_hash(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1914,7 +1914,7 @@ class HookBudgetTests(unittest.TestCase):
             rg.config_path(VAULT).parent.mkdir(exist_ok=True)
             rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
-            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('subscription login required')):
                 rg.probe(VAULT, env)
                 hook.capture_block(VAULT, env,'own',startup=True)
                 seen = {}
@@ -1927,7 +1927,7 @@ class HookBudgetTests(unittest.TestCase):
             assert '출처·허브를 완성한다' in seen[15], 'the one line keeps the node-first guidance'
             assert 'second memory sentinel' in seen[24], 'a changed hash carries the whole text again'
             # Kiro's limit folds whole blocks; the review itself is pulled by command.
-            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('subscription login required')):
                 while conversation_capture.status(VAULT, 'claude','own')['prompt_count'] < 29:
                     conversation_capture.tick(VAULT, 'claude','own')
                 small = hook.capture_block(VAULT, env,'own',budget=2800)
@@ -1942,7 +1942,7 @@ class HookBudgetTests(unittest.TestCase):
 
     def test_review_turn_carries_bound_scope_memory_without_a_primary(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, write, conversation_capture, conversation_cite, conversation_review, conversation_state
+            from osk import response_growth as rg, integration, scope_memory, write, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_preflight
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1954,7 +1954,7 @@ class HookBudgetTests(unittest.TestCase):
             rg.config_path(VAULT).parent.mkdir(exist_ok=True)
             rg.config_path(VAULT).write_text(json.dumps({'claude':sys.executable}))
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
-            with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
+            with patch.object(worker_preflight,'preflight',side_effect=ValueError('subscription login required')):
                 rg.probe(VAULT, env)
                 hook.capture_block(VAULT, env,'own',startup=True)
                 rg.after_hook(VAULT, env)   # the hooks' worker captures (#192)

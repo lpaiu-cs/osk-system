@@ -17,7 +17,7 @@ DAILY = BOOT + """
 import os, subprocess, time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
-from osk import growth_daily, integration, services, conversation_capture, conversation_cite, conversation_review, conversation_state
+from osk import growth_daily, integration, services, conversation_capture, conversation_cite, conversation_review, conversation_state, worker_usage
 def shell(name, script):
     # A native-looking executable (`codex`, `claude`) that runs a Python fixture.
     fake = VAULT.root / (name + '-fake.py')
@@ -70,7 +70,7 @@ class DailyTests(unittest.TestCase):
                 "        print(json.dumps({'id': 1, **json.loads(answer)}), flush=True)"]))
             def read(answer):
                 os.environ['OSK_TEST_LIMITS'] = json.dumps(answer) if answer != 'silent' else answer
-                return growth_daily.codex_limits(VAULT, codex)
+                return worker_usage.codex_limits(VAULT, codex)
             week = {'usedPercent': 100, 'windowDurationMins': 10080, 'resetsAt': 1}
             hour = {'usedPercent': 3, 'windowDurationMins': 300, 'resetsAt': 1}
             snap = lambda **k: {'primary': hour, 'secondary': week, 'rateLimitReachedType': None,
@@ -96,7 +96,7 @@ class DailyTests(unittest.TestCase):
                 got = read(answer)
                 assert not got['signal'] and got['exhausted'], got
                 assert time.monotonic() - started < 25, 'an exited app-server must not wait out the timeout'
-            got = growth_daily.codex_limits(VAULT, str(VAULT.root / 'no-such-codex.exe'))
+            got = worker_usage.codex_limits(VAULT, str(VAULT.root / 'no-such-codex.exe'))
             assert not got['signal'] and got['exhausted'], got
             # The day asks the binary the runner will start. After a Desktop update the command file's
             # path is gone and the runner follows to the new one; the limit read must not stay behind.
@@ -131,11 +131,11 @@ class DailyTests(unittest.TestCase):
                 {'type': 'result', 'is_error': False, 'usage': {'input_tokens': 2015, 'cache_creation_input_tokens': 35100,
                                                                 'cache_read_input_tokens': 50000, 'output_tokens': 80},
                  'modelUsage': {'claude-opus-5-5': {'inputTokens': 9999999, 'cacheReadInputTokens': 99999999}}}])
-            got = growth_daily.usage(out, claude, cold_first=True)
+            got = worker_usage.usage(out, claude, cold_first=True)
             assert got == {'measured': True, 'tokens': 2015 + 35100 + 80, 'cache_read': 50000, 'requests': 3,
                            'misses': [[2, 0.741]], 'cold_start': {'tokens': 30030, 'hit': 0.0}}, got
             # A conversation review's first request must reuse the parent's cache: it is judged.
-            got = growth_daily.usage(out, claude, cold_first=False)
+            got = worker_usage.usage(out, claude, cold_first=False)
             assert got['misses'] == [[0, 0.0], [2, 0.741]] and 'cold_start' not in got, got
             # Codex: the worker's own rollout, by the thread id its exec output names. A fork's rollout
             # carries the parent's rows; only rows from its own session_meta on count.
@@ -150,12 +150,12 @@ class DailyTests(unittest.TestCase):
                 count('2026-10-18T00:25:37Z', 31107, 6912, 532),    # cold start
                 count('2026-10-18T00:26:00Z', 101409, 97536, 2679),
                 count('2026-10-18T00:27:00Z', 50000, 40000, 10)])
-            got = growth_daily.usage(out, codex, cold_first=True)
+            got = worker_usage.usage(out, codex, cold_first=True)
             tokens = (31107 - 6912 + 532) + (101409 - 97536 + 2679) + (50000 - 40000 + 10)
             assert got == {'measured': True, 'tokens': tokens, 'cache_read': 6912 + 97536 + 40000, 'requests': 3,
                            'misses': [[2, 0.8]], 'cold_start': {'tokens': 31107 - 6912 + 532, 'hit': 0.222}}, got
-            assert not growth_daily.usage(out, ['/x/worker.exe'], cold_first=True)['measured']
-            assert not growth_daily.usage(VAULT.root / 'missing.txt', claude, cold_first=True)['measured']
+            assert not worker_usage.usage(out, ['/x/worker.exe'], cold_first=True)['measured']
+            assert not worker_usage.usage(VAULT.root / 'missing.txt', claude, cold_first=True)['measured']
         """)
 
     def test_limit_rejections_and_busy_wait_instead_of_failing(self):
@@ -166,14 +166,14 @@ class DailyTests(unittest.TestCase):
             rejected = lines(VAULT.root / 'rejected.txt', [event('rejected'), {'type': 'result', 'is_error': True,
                                                                                  'result': "You've hit your limit"}])
             allowed = lines(VAULT.root / 'allowed.txt', [event('allowed_warning')])
-            assert growth_daily.limited(VAULT, rejected, ['claude.exe']) and not growth_daily.limited(VAULT, allowed, ['claude.exe'])
-            with patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': True}):
-                assert growth_daily.limited(VAULT, allowed, ['codex.exe'])
-            with patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False}):
-                assert not growth_daily.limited(VAULT, allowed, ['codex.exe'])
+            assert worker_usage.limited(VAULT, rejected, ['claude.exe']) and not worker_usage.limited(VAULT, allowed, ['claude.exe'])
+            with patch.object(worker_usage, 'codex_limits', return_value={'signal': True, 'exhausted': True}):
+                assert worker_usage.limited(VAULT, allowed, ['codex.exe'])
+            with patch.object(worker_usage, 'codex_limits', return_value={'signal': True, 'exhausted': False}):
+                assert not worker_usage.limited(VAULT, allowed, ['codex.exe'])
             # An unanswered query after a failed worker is no rejection: the failure stays a failure.
-            with patch.object(growth_daily, 'codex_limits', return_value={'signal': False, 'exhausted': True}):
-                assert not growth_daily.limited(VAULT, allowed, ['codex.exe'])
+            with patch.object(worker_usage, 'codex_limits', return_value={'signal': False, 'exhausted': True}):
+                assert not worker_usage.limited(VAULT, allowed, ['codex.exe'])
             # A worker rejected by its limit leaves a waiting run, not a failed one, and the CLI exits 0.
             cli = shell('claude', chr(10).join([
                 'import json, sys', 'sys.stdin.read()',
@@ -249,7 +249,7 @@ class DailyTests(unittest.TestCase):
             assert growth_daily.claude_week(VAULT, growth_ledger.ledger_records(VAULT)) is None, 'the window has reset since'
             claude_run('r3', 0.92, future)
             commands = {'codex': ['C:/x/codex.exe', 'exec'], 'claude': ['C:/x/claude.exe', '-p']}
-            week = lambda used: patch.object(growth_daily, 'codex_limits',
+            week = lambda used: patch.object(worker_usage, 'codex_limits',
                                              return_value={'signal': True, 'exhausted': False, 'weekly': used})
             with resolved, week(91):
                 who, _, skipped = growth_daily._choose(VAULT, commands, {})
@@ -374,7 +374,7 @@ class DailyTests(unittest.TestCase):
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=fixed), \\
                     patch.object(integration, 'capture_known', wraps=integration.capture_known) as capture, \\
-                    patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 2}):
+                    patch.object(worker_usage, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 2}):
                 day = growth_daily.daily(VAULT, [['C:/x/codex.exe', 'exec']])
             # #306 D2: a batch without progress (a hold, too) does not end the day — the next batch runs
             # without the jobs that made none, until the queues have nothing left to pick.
@@ -426,7 +426,7 @@ class DailyTests(unittest.TestCase):
             commands = [['C:/x/codex.exe', 'exec'], ['C:/x/claude.exe', '-p']]
             seen = []
             def fake(vault, command, **args):
-                who = growth_daily.provider(command)
+                who = worker_usage.provider(command)
                 seen.append((who, args['daily']['kind']))
                 if len(seen) > 4:
                     return {'ok': True, 'state': 'skipped', 'selected': 0}
@@ -440,7 +440,7 @@ class DailyTests(unittest.TestCase):
                           {'signal': True, 'exhausted': False}])
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(8)), \\
-                    patch.object(growth_daily, 'codex_limits', side_effect=lambda vault, exe: next(reads)):
+                    patch.object(worker_usage, 'codex_limits', side_effect=lambda vault, exe: next(reads)):
                 day = growth_daily.daily(VAULT, commands)
             # Exhausted Codex → Claude; next batch Codex again; Codex rejected mid-run → the same light
             # batch again on Claude, and Codex stays off for the day.
@@ -462,7 +462,7 @@ class DailyTests(unittest.TestCase):
             lines(path, turns(5))
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)), \\
-                    patch.object(growth_daily, 'codex_limits', return_value={'signal': False, 'exhausted': True}):
+                    patch.object(worker_usage, 'codex_limits', return_value={'signal': False, 'exhausted': True}):
                 seen.clear()
                 day = growth_daily.daily(VAULT, commands[:1])
             assert day['state'] == 'limited' and day['ok'] and not seen and day['skipped'] == {'codex': 'no_signal'}, day
@@ -484,7 +484,7 @@ class DailyTests(unittest.TestCase):
             seen.clear()
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6, codex=0, claude=-5)), \\
-                    patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 21}):
+                    patch.object(worker_usage, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 21}):
                 day = growth_daily.daily(VAULT, commands)
             assert seen and seen[0][0] == 'codex' and day['state'] != 'budget', (seen, day)
         """)

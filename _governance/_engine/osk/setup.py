@@ -37,7 +37,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import core, services, update, growth_daily, response_growth, sync_status, growth_ledger, worker_process, daemon_control, update_source, update_state
+from . import (core, services, update, response_growth, sync_status, growth_ledger, worker_process, daemon_control,
+               update_source, update_state, worker_usage)
 from . import harness as adapters
 from .doctor import engine_dir, venv_python
 from .harness import base
@@ -314,10 +315,10 @@ def _schedule(vault: Vault, manager, harness: str | None, at: str, uninstall: bo
     # Codex가 소진인 날은 Claude 워커가 대신 돈다(#175) — 그 명령도 공급자별 파일로 둔다. 주 명령이
     # Codex일 때만이다: 사용자가 바꿔 둔 다른 실행기보다 Claude가 먼저 돌면 안 된다.
     spare = vault.root / ".osk" / "growth-command-claude.json"
-    if growth_daily.provider(argv) == "codex" and spare.is_file():
+    if worker_usage.provider(argv) == "codex" and spare.is_file():
         files.append(spare)
         out["claude_command"] = {"action": "keep", "file": str(spare)}
-    elif growth_daily.provider(argv) == "codex":
+    elif worker_usage.provider(argv) == "codex":
         claude = adapters.get("claude")
         cli = _native_cli(claude)
         if cli:

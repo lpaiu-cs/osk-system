@@ -13,7 +13,7 @@ import re
 import subprocess
 
 from . import (core, growth_ledger, growth_plan, growth_reviews, harness as adapters, integration, organization,
-               rechecks, conversation_review, worker_process)
+               rechecks, conversation_review, worker_preflight, worker_process, worker_usage)
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
 
@@ -293,10 +293,9 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
         # 걷고, 구독 로그인·설정·공급자를 모델을 부르기 전에 확인한다. 확인하지 못하면 돌지 않는다.
         declared = next((a.name for a in adapters.ADAPTERS if a.subscription_only(command)), None)
         if declared:
-            from . import response_growth
-            worker_env = response_growth.subscription_env()
+            worker_env = worker_preflight.subscription_env()
             try:
-                response_growth.preflight(vault, {"harness": declared, "cwd": str(vault.root)},
+                worker_preflight.preflight(vault, {"harness": declared, "cwd": str(vault.root)},
                                           checked["executable"], worker_env, require_version=False)
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 return {"ok": False, "state": "unavailable", "error": str(exc)}
@@ -422,13 +421,12 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                 final_reviews = (growth_reviews.apply_final_reviews(vault, directory / "stdout.txt", planned)
                                  if returncode == 0 and error is None else
                                  {"state": "not_applied", "errors": ["worker did not exit successfully"]})
-            from . import growth_daily
             stdout_path = directory / "stdout.txt"
             # 작업자가 끝내지 못했고 그 까닭이 한도 거절이면 실패가 아니라 대기다(#173). Codex는 다시
             # 조회하므로 변경 잠금 밖에서 잰다.
             limited = (returncode != 0 or error is not None or final_reviews["state"] in {
-                "rejected", "not_applied"}) and growth_daily.limited(vault, stdout_path, command)
-            usage = growth_daily.usage(stdout_path, command, cold_first=scope_job is None)
+                "rejected", "not_applied"}) and worker_usage.limited(vault, stdout_path, command)
+            usage = worker_usage.usage(stdout_path, command, cold_first=scope_job is None)
             with core.mutation_lock(vault):
                 rows, idx = growth_ledger.ledger_records(vault), growth_plan.node_index(vault)
                 par = core.effective_parents(rows)
@@ -462,7 +460,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                             and all(s["status"] == "complete" for s in recheck_outcomes.values()))
                 result = {"kind": "run", "manifest": manifest["rid"],
                           "ok": complete, "state": "complete" if complete else "limited" if limited else "incomplete",
-                          "provider": growth_daily.provider(command), "usage": usage,
+                          "provider": worker_usage.provider(command), "usage": usage,
                           "progress": _progress(planned, outcomes, scope_outcomes, organization_outcomes,
                                                 eviction_outcomes, recheck_outcomes),
                           "selected": len(receipts) + len(scope_outcomes) + len(organization_outcomes)

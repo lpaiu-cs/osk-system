@@ -5,15 +5,15 @@
  },
  "totals": {
   "upward_imports": 2,
-  "lazy_imports": 29,
-  "two_module_cycles": 4,
-  "tangled_modules": 13,
+  "lazy_imports": 27,
+  "two_module_cycles": 2,
+  "tangled_modules": 12,
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
   "broad_except": 125,
   "oversize_functions": 119,
-  "excess_lines": 2734,
+  "excess_lines": 2732,
   "excess_branches": 1605,
   "late_loads": 2
  },
@@ -25,7 +25,7 @@
   "osk.cluster_gate": 1,
   "osk.doctor": 2,
   "osk.evidence": 1,
-  "osk.growth": 3,
+  "osk.growth": 1,
   "osk.harness": 1,
   "osk.node_moves": 1,
   "osk.raw": 3,
@@ -38,11 +38,9 @@
  },
  "two_module_cycles": [
   "mcp_server <-> osk.validate",
-  "osk.cli <-> osk.validate",
-  "osk.growth <-> osk.growth_daily",
-  "osk.growth <-> osk.response_growth"
+  "osk.cli <-> osk.validate"
  ],
- "tangled_modules": 13,
+ "tangled_modules": 12,
  "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
@@ -218,7 +216,7 @@
    5
   ],
   "osk.growth:run": [
-   201,
+   199,
    74
   ],
   "osk.growth_daily:_scan": [
@@ -369,10 +367,6 @@
    73,
    26
   ],
-  "osk.response_growth:preflight": [
-   71,
-   44
-  ],
   "osk.response_growth:process_stop": [
    62,
    15
@@ -504,6 +498,10 @@
   "osk.validate:surface_violations": [
    43,
    16
+  ],
+  "osk.worker_preflight:preflight": [
+   71,
+   44
   ],
   "osk.write:create_node_locked": [
    117,
