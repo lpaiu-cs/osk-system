@@ -76,6 +76,13 @@ def _emit(obj) -> None:
     sys.stdout.buffer.flush()
 
 
+def _refuse(violations: list, extra: dict | None = None) -> None:
+    """명령의 거부 — 위반 목록을 내고 종료코드 1로 끝난다. 거부의 모양은 여기 한 곳에 있다. 무엇을 거부로
+    받는지는 명령마다 다르고, 그 명령이 정한다."""
+    _emit({"ok": False, "violations": violations, **(extra or {})})
+    sys.exit(1)
+
+
 def _raw_stdin():
     """훅이 보내는 봉투를 읽는다. **바이트로 읽어 UTF-8로 푼다** — 콘솔
     인코딩을 타면 기록이 그 기기의 코드페이지에 인질이 되는데, `_raw/`는
@@ -98,8 +105,7 @@ def _raw_cmd(vault: Vault, a) -> None:
     try:
         _emit(raw.migrate(vault, apply=a.apply))
     except (write.WriteError, StaleEngineError, OSError) as e:
-        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
-        sys.exit(1)
+        _refuse(getattr(e, "violations", [str(e)]))
 
 
 def _integration_cmd(vault: Vault, a) -> None:
@@ -130,8 +136,7 @@ def _integration_cmd(vault: Vault, a) -> None:
         if not result.get("ok", True):
             sys.exit(1)
     except (write.WriteError, StaleEngineError, ValueError, KeyError, OSError) as e:
-        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
-        sys.exit(1)
+        _refuse(getattr(e, "violations", [str(e)]))
 
 
 def _growth_cmd(vault: Vault, a) -> None:
@@ -176,8 +181,7 @@ def _growth_cmd(vault: Vault, a) -> None:
                 else not result.get("ok", True)):
             sys.exit(1)
     except (write.WriteError, StaleEngineError, ValueError, OSError) as e:
-        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
-        sys.exit(1)
+        _refuse(getattr(e, "violations", [str(e)]))
 
 
 def _fork_cmd(vault: Vault, a) -> None:
@@ -187,8 +191,7 @@ def _fork_cmd(vault: Vault, a) -> None:
         reports = [response_growth.doctor(vault, h, a.session, a.transcript)
                    for h in ([a.harness] if a.harness else adapters.fork_names())]
     except (ValueError, OSError) as e:
-        _emit({"ok": False, "violations": [str(e)]})
-        sys.exit(1)
+        _refuse([str(e)])
     if a.json:
         return _emit(reports)
     lines = []
@@ -244,8 +247,7 @@ def _organization_cmd(vault: Vault, a) -> None:
                 result = {**result, "guidance": organization.guidance()}
         _emit(result)
     except (write.WriteError, StaleEngineError, ValueError, KeyError, TypeError, OSError) as exc:
-        _emit({"ok": False, "violations": [str(exc)]})
-        sys.exit(1)
+        _refuse([str(exc)])
 
 
 def _sm_cmd(vault: Vault, a) -> None:
@@ -263,8 +265,7 @@ def _sm_cmd(vault: Vault, a) -> None:
             st = scope_memory.read(vault, a.session, a.space)
         except (write.WriteError, StaleEngineError) as e:
             if a.json:
-                _emit({"ok": False, "violations": e.violations, **e.extra})
-                sys.exit(1)
+                _refuse(e.violations, e.extra)
             return                      # 빈 stdout · 종료코드 0
         if a.json:
             _emit(st)
@@ -275,8 +276,7 @@ def _sm_cmd(vault: Vault, a) -> None:
     try:
         _emit(scope_memory.replace(vault, a.session, _stdin_text(), a.expect_hash, a.space))
     except (write.WriteError, StaleEngineError) as e:
-        _emit({"ok": False, "violations": e.violations, **e.extra})
-        sys.exit(1)
+        _refuse(e.violations, e.extra)
 
 
 def _routing_cmd(vault: Vault, a) -> None:
@@ -313,8 +313,7 @@ def _routing_cmd(vault: Vault, a) -> None:
                 row = write.set_primary(vault, a.project, a.scope, a.reason or "사용자 지정")
         _emit({"ok": True, "rid": row.get("rid"), "project": a.project, **write.bindings(vault, a.project)})
     except (write.WriteError, StaleEngineError, ValueError, OSError) as e:
-        _emit({"ok": False, "violations": getattr(e, "violations", [str(e)])})
-        sys.exit(1)
+        _refuse(getattr(e, "violations", [str(e)]))
 
 
 def _roots_cmd(vault: Vault, a) -> None:
@@ -341,8 +340,7 @@ def _roots_cmd(vault: Vault, a) -> None:
             out = {}
         _emit({"ok": True, **out, **roots.show(vault)})
     except (ValueError, OSError) as e:
-        _emit({"ok": False, "violations": [str(e)]})
-        sys.exit(1)
+        _refuse([str(e)])
 
 
 def _evidence_cmd(vault: Vault, a) -> None:
@@ -357,8 +355,7 @@ def _evidence_cmd(vault: Vault, a) -> None:
             return
         _emit(evidence_migration.apply(vault))
     except (ValueError, OSError, RuntimeError) as e:
-        _emit({"ok": False, "violations": [str(e)]})
-        sys.exit(1)
+        _refuse([str(e)])
 
 
 def _tidy_cmd(vault: Vault, a) -> None:
