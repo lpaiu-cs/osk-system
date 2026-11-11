@@ -663,8 +663,8 @@ def surface_lint(vault: Vault) -> list[str]:
             errs.append(f"search 계약 판독 실패: {e}")
     # ⓔ 군집 거부가 유효 목록을 싣는가
     try:
-        import osk.write as _w
-        if "cluster_names(vault)" not in Path(_w.__file__).read_text(encoding="utf-8"):
+        import osk.cluster_gate as _g
+        if "cluster_names(vault)" not in Path(_g.__file__).read_text(encoding="utf-8"):
             errs.append("군집 거부 문구가 유효 목록을 싣지 않는다")
     except Exception as e:
         errs.append(f"거부 문구 판독 실패: {e}")

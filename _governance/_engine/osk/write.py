@@ -204,7 +204,7 @@ def create_node_locked(vault: Vault, title: str, summary: str, body: str, drafte
         _before_write(path, data)
     nodefile.write_file(path, data)
     # 방금 쓴 노드를 손에 든 색인의 **이름 색인**에 등재한다 —
-    # `_dangling_of`가 보는 것은 쓰기 **후**의 상태여야 한다. 구판은 여기서
+    # `node_checks.dangling_of`가 보는 것은 쓰기 **후**의 상태여야 한다. 구판은 여기서
     # 색인을 새로 지어 그 상태를 얻었다. 등재하지 않으면 자기 자신을
     # 가리키는 Link가 dangling으로 잘못 실려, 오타가 아닌 것을 오타라고
     # 알리게 된다. 판독은 `resolve`가 그때 한 번 한다(파일은 이미 있다).

@@ -219,7 +219,7 @@ TS_RE = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} \(KST\)$"
 #
 # 이것은 유효성 검사가 아니라 **판별자**다 — "이 문자열은 id인가 이름인가"를
 # 가르는 자리로 여섯 곳에서 쓰인다(resolve·_score_key·live_locate·_as_links·
-# _check_edges·read_node). 넓히면 id로 읽히는 노드 제목의 집합이 넓어지므로,
+# node_checks.check_edges·read_node). 넓히면 id로 읽히는 노드 제목의 집합이 넓어지므로,
 # 넓히는 폭은 4|8 두 값으로 한정한다.
 ID_RE = r"^\d{6}-[0-9a-z]{4}-[0-9a-z]{4}(?:[0-9a-z]{4})?$"
 RID_RE = r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$"

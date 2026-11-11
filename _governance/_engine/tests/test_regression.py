@@ -2841,6 +2841,11 @@ def test_surface_contract():
         # 승인 기록부는 저장소의 속성이 아니라 `approvals`의 함수가 자리를 낸다
         ('def sneak_approval(vault):\n    return ledger_append(approvals.ledger_path(vault), {})\n\n\n',
          "osk/write.py", "def create_node", "권위 대장에 기록"),
+        # 표면 모듈에서 갈라져 나온 모듈도 같은 통로다 — 파일마다 하나씩 심는다. `SURFACE_MODULES`에서
+        # 그 파일이 빠지면 사본에 파일이 없어 여기서 깨진다(목록이 분해를 따라가는지는 이 줄들이 지킨다).
+        *(('def sneak_split(vault):\n    return ledger_append(vault.pins, {})\n\n\n', rel, anchor, "권위 대장에 기록")
+          for rel, anchor in (("osk/nodefile.py", "def render"), ("osk/cluster_gate.py", "def cluster_names"),
+                              ("osk/node_checks.py", "def check_edges"), ("osk/node_moves.py", "def move_nodes"))),
     ):
         with tempfile.TemporaryDirectory() as td:
             eng = Path(td) / "_engine"
@@ -5946,7 +5951,7 @@ def test_non_node_evidence_is_an_evidence_line():
     """`derived-from`은 노드만 받고 비노드 근거는 노드 끝 근거 절의 줄이다(헌법 제8조 5·6항).
 
     무엇을 망가뜨리면 실패하는가:
-      · `_check_edges`의 비노드 거부를 지우면 → 첫 단언 묶음
+      · `node_checks.check_edges`의 비노드 거부를 지우면 → 첫 단언 묶음
       · 빼는 갈래(`adding=False`)까지 거부하면 → 옛 대상 제거 단언
       · 증류가 인용 라운드를 derived-from에 다시 달거나 줄을 보지 않으면 → 증류 단언 셋
       · 미해석 근거 좌표를 참조 판독에서 빼면 → 쓰기 응답 단언
@@ -9514,7 +9519,7 @@ def test_node_place_rule():
     무엇을 망가뜨리면 실패하는가:
       · `graph._space_of_parts`의 `_off_node` 판정을 지우면 → 점·밑줄 구획의
         파일이 색인·scope 목록에 돌아오고 배치 검증기가 조용해진다
-      · `_new_cluster_gate`의 자리 검사를 지우면 → `_misc` 신설이 확인 한 번으로
+      · `cluster_gate.new_cluster_gate`의 자리 검사를 지우면 → `_misc` 신설이 확인 한 번으로
         통과한다(디렉토리가 남는다)
       · `move_cluster`의 자리 검사를 지우면 → 이미 있는 `_` 구획 안으로 군집이 간다
       · `_is_md`를 호스트에 묶으면 → 대소문자 구분 호스트에서 `.MD` 노드가 빠진다
@@ -10427,7 +10432,7 @@ def test_audit_fixes_2026_09_02():
             pass
 
         # ⑦ 작업 상태 참조 금지는 소속을 가리지 않는다 (#36)
-        #    되돌리면 — `_topology_of`의 workbench 갈래를 scope 안으로 되돌리면
+        #    되돌리면 — `node_checks.topology_of`의 workbench 갈래를 scope 안으로 되돌리면
         #    Domain 노드가 통과해 실패한다.
         note = ROOT / "00_Scope/Workbench/audit-note.md"
         note.write_text("작업 상태(비노드)\n", encoding="utf-8")
@@ -10472,7 +10477,7 @@ def test_audit_fixes_2026_09_02():
             (ROOT / f"00_Scope/W1/{sub}/audit-dup.md").unlink()
 
         # ⑨ pin은 노드 id에도 걸린다 (#36)
-        #    되돌리면 — `_plan_move`의 `_pinned(n.id)`를 지우면 실패한다.
+        #    되돌리면 — `_plan_move`의 `cluster_gate.pinned` 검사를 지우면 실패한다.
         nid = contract.parse(ROOT / "00_Scope/W1/AudX/audit-bind.md").id
         core.ledger_append(VAULT.pins, {"kind": "pin", "target": nid,
                                        "reason": "감사 회귀 시험"})
