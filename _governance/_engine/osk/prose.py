@@ -42,7 +42,7 @@ def norm_newlines(text: str) -> str:
 
 
 def norm_body(body: str) -> str:
-    """`_render`가 쓸 형태로 접는다 — 변경 여부는 **쓰일 형태**로 판정해야
+    """`nodefile.render`가 쓸 형태로 접는다 — 변경 여부는 **쓰일 형태**로 판정해야
     앞뒤 공백 차이가 헛 변경으로 잡히지 않고, 태그 방어(위)도 쓰일 형태에
     이미 반영되어 같은 입력의 재전송이 헛 변경을 만들지 않는다."""
     return space_numeric_tags(norm_newlines(body).lstrip("\n").rstrip())

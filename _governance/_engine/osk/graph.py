@@ -629,7 +629,7 @@ class Index:
 
         판독 실패 파일을 여기 세면 안 된다. 세면 남이 흘린 임시 메모 하나가
         멀쩡한 노드로 가는 참조를 `('ambiguous',)`로 만드는데, 그 판정에는
-        **소속이 없어서**(1-튜플) `_topology_of`의 다음 줄 `tkind = r[1]`이
+        **소속이 없어서**(1-튜플) `node_checks.topology_of`의 다음 줄 `tkind = r[1]`이
         서지 못한다 — 그 뒤의 헌법 8조 검사(Domain의 `_raw` 참조·scope 간 직접
         참조)가 아예 제기되지 않는다. 값싼 신호 셋을 얻고 비싼 신호 하나를 잃는
         교환이었고, 독립 검토 4인이 같은 자리를 지목했다."""
@@ -655,7 +655,7 @@ class Index:
 
     def register_new(self, path: Path, kind: tuple) -> None:
         """방금 쓴 노드를 손에 든 색인에 등재한다 — 쓰기 **후** 상태를 봐야
-        하는 소비자(`_dangling_of`)가 자기 자신을 가리키는 Link를 dangling으로
+        하는 소비자(`node_checks.dangling_of`)가 자기 자신을 가리키는 Link를 dangling으로
         오보하지 않게 한다. 이름 색인은 생성 시점의 스냅숏이라 그냥 두면 방금
         만든 이름이 없는 것으로 읽힌다."""
         self.names.setdefault(path.stem, (path, kind))
@@ -664,7 +664,7 @@ class Index:
             lst.append((path, kind))
 
     def retarget(self, src: Path, dst: Path, kind: tuple) -> None:
-        """이동을 손에 든 색인에 반영한다. 안 하면 `_dangling_of`가 이동 **후**
+        """이동을 손에 든 색인에 반영한다. 안 하면 `node_checks.dangling_of`가 이동 **후**
         옛 경로를 열려다 실패해 그 노드의 자기링크를 dangling으로 오보한다 —
         `create_node`에서 `register_new`가 막는 것과 같은 실패다."""
         stem = src.stem
@@ -937,7 +937,7 @@ def topology_check(vault: Vault, idx: Index) -> list[str]:
             # 작업 상태 참조 금지는 **소속과 무관하다** — Workbench 계약 4.2의
             # 주어에 소속 제한이 없다. 구판은 이 판정이 아래 `scope` 갈래 안에
             # 있어 Domain·Person 노드의 작업 상태 참조를 보고하지 않았다
-            # (쓰기 통로 `write._topology_of`도 같은 자리에서 함께 고쳤다).
+            # (쓰기 통로 `node_checks.topology_of`도 같은 자리에서 함께 고쳤다).
             if tkind[0] == "workbench":
                 errs.append(f"작업 상태는 근거로 쓰지 않는다: {stem} → {name} "
                             f"(Workbench 계약 4.2)")

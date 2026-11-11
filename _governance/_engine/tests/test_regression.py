@@ -51,7 +51,7 @@ os.environ["OSK_UPDATE_CHECK"] = "0"
 os.environ["OSK_HOOK_WORKER"] = "0"
 
 from osk import (core, graph, validate, authority, contract, routing, write,  # noqa: E402
-                 publish, cluster_gate, node_checks, node_moves, nodefile)  # noqa: E402
+                 publish, cluster_gate, node_moves, nodefile)  # noqa: E402
 from osk.vault import Vault
 VAULT = Vault.open()
 import osk.signatures as S  # noqa: E402
@@ -1556,7 +1556,7 @@ def test_move_recorded_and_reverted_in():
     """밖→보호영역 이동을 반려하면 노드는 삭제되지 않고 **원위치로 돌아간다**.
     기록이 없으면 반려가 이동을 '추가'로만 보아 노드를 지운다 — 출발지에는
     복원할 정보가 없으므로 그대로 소실이다(사용자 판정: 이동을 이동으로)."""
-    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import approvals as A, write, node_moves
     src = ROOT / "00_Scope/W1/regr-mvin.md"
     dst = ROOT / "00_Scope/W3/regr-mvin.md"
     (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
@@ -1592,7 +1592,7 @@ def test_move_recorded_and_reverted_in():
 def test_move_reverted_out_no_duplicate():
     """보호영역→밖 이동을 반려하면 밖의 사본을 **되가져와** 승인본을 복원한다 —
     승인본 재생성만 하면 같은 id가 두 곳에 남는다(복제 금지)."""
-    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import approvals as A, write, node_moves
     home = ROOT / "00_Scope/W3/regr-mvout.md"
     away = ROOT / "00_Scope/W1/regr-mvout.md"
     (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
@@ -1621,7 +1621,7 @@ def test_move_reverted_out_no_duplicate():
 def test_move_return_blocked_origin_occupied():
     """이동으로 온 노드는 지우지 않는다 — 되돌리거나 거부한다. 원위치가 다른
     파일로 차 있으면 반려를 거부하고 아무것도 건드리지 않는다."""
-    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import approvals as A, write, node_moves
     src = ROOT / "00_Scope/W1/regr-mvocc.md"
     dst = ROOT / "00_Scope/W3/regr-mvocc.md"
     (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
@@ -1653,7 +1653,7 @@ def test_move_chain_reverted_no_duplicate():
     """보호영역을 나온 노드가 미처리인 채 한 번 더 이동하면(양끝 미보호) 그
     hop도 사슬로 기록되고, 반려가 **최종 위치**에서 되가져온다 — 옛 도착지만
     보면 '밖 사본 없음'으로 승인본을 재생성해 같은 id가 둘 남는다(복제 금지)."""
-    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import approvals as A, write, node_moves
     home = ROOT / "00_Scope/W3/regr-mvchain.md"
     hop1 = ROOT / "00_Scope/W1/regr-mvchain.md"
     hop2 = ROOT / "00_Scope/W4/regr-mvchain.md"
@@ -1687,7 +1687,7 @@ def test_move_lifecycle_cutoff():
     """승인으로 처분된 과거 이동은 새 반려의 해석 대상이 아니다 — 해석의 경계는
     현재 승인본이 성립한 기록이다. 경계가 없으면 처분된 첫 이탈의 출발지가
     '영역 안 생성분'으로 오독돼 재진입 노드가 **삭제**된다."""
-    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import approvals as A, write, node_moves
     p1 = ROOT / "00_Person/P1"; p2 = ROOT / "00_Person/P2"
     p1.mkdir(parents=True, exist_ok=True); p2.mkdir(parents=True, exist_ok=True)
     node_p1, node_p2 = p1 / "regr-lc.md", p2 / "regr-lc.md"
@@ -1724,7 +1724,7 @@ def test_move_reentry_single_plan():
     rel이면 한 파일에 계획이 둘 잡혀 복원이 중도에 깨진다(실측: os.replace
     FileNotFoundError로 부분 변경 방치). 노드 단위 해석은 계획을 하나만 세워
     승인본 원적으로 되돌린다."""
-    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import approvals as A, write, node_moves
     p1 = ROOT / "00_Person/P1"; p2 = ROOT / "00_Person/P2"
     p1.mkdir(parents=True, exist_ok=True); p2.mkdir(parents=True, exist_ok=True)
     node_p1, node_p2 = p1 / "regr-re.md", p2 / "regr-re.md"
@@ -1806,7 +1806,7 @@ def test_move_phantom_tail_row_harmless():
     해석이 마지막 행의 to(의도)가 아니라 **실물이 있는 가장 최근 hop**(사실)을
     현재 위치로 삼는다. 의도를 믿으면 앞선 성공 이동의 실물을 못 보고 승인본을
     재생성해 같은 id가 둘 남는다."""
-    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import approvals as A, write, node_moves
     home = ROOT / "00_Scope/W3/regr-phantom.md"
     w1 = ROOT / "00_Scope/W1/regr-phantom.md"
     w4 = ROOT / "00_Scope/W4/regr-phantom.md"
@@ -1841,7 +1841,7 @@ def test_move_phantom_tail_row_harmless():
 def test_move_unrecorded_outside_protection():
     """양끝 다 보호 밖인 이동은 변경집합과 무관하므로 기록하지 않는다
     (시행령 §6 4항의 범위 그대로 — 기록부를 소음으로 채우지 않는다)."""
-    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import approvals as A, write, node_moves
     src = ROOT / "00_Scope/W1/regr-mvfree.md"
     dst = ROOT / "00_Scope/W3/regr-mvfree.md"
     (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
@@ -2173,7 +2173,7 @@ def test_approval_serialized_with_writes():
     않은 변경이 사라진다. 네 조작 모두 노드 쓰기와 **같은** 전역 변경 잠금을
     잡는다 — 엔진이 통제하는 writer는 그 사이에 들어올 수 없다."""
     from osk import approvals as A
-    from osk import write, cluster_gate, node_checks, node_moves, nodefile
+    from osk import write
     import sync_daemon
     check("변경 잠금이 sync·update가 쓰는 그 잠금과 같은 파일이다",
           core.mutation_lock_path(VAULT)
@@ -2841,6 +2841,15 @@ def test_surface_contract():
         # 승인 기록부는 저장소의 속성이 아니라 `approvals`의 함수가 자리를 낸다
         ('def sneak_approval(vault):\n    return ledger_append(approvals.ledger_path(vault), {})\n\n\n',
          "osk/write.py", "def create_node", "권위 대장에 기록"),
+        # 표면 모듈에서 갈라져 나온 모듈도 같은 통로다 — 파일마다 하나씩 심는다. `SURFACE_MODULES`에서
+        # 그 파일이 빠지면 사본에 파일이 없어 여기서 깨진다(목록이 분해를 따라가는지는 이 줄들이 지킨다).
+        *(('def sneak_split(vault):\n    return ledger_append(vault.pins, {})\n\n\n', rel, anchor, "권위 대장에 기록")
+          for rel, anchor in (("osk/nodefile.py", "def render"), ("osk/cluster_gate.py", "def cluster_names"),
+                              ("osk/node_checks.py", "def check_edges"), ("osk/node_moves.py", "def move_nodes"),
+                              ("osk/conversation_state.py", "def save_state"),
+                              ("osk/conversation_capture.py", "def capture"),
+                              ("osk/conversation_review.py", "def acknowledge"),
+                              ("osk/conversation_cite.py", "def cite"))),
     ):
         with tempfile.TemporaryDirectory() as td:
             eng = Path(td) / "_engine"
@@ -3400,7 +3409,7 @@ def test_surface_smoke():
     node = ROOT / "00_Scope/W1/regr-smoke.md"
     node.write_text(node_text("260802-zzzz-rg60", "스모크"), encoding="utf-8")
     # cite_round은 추적 중인 대화의 원본 턴을 인용한다 — 대화 하나를 추적해 둔다.
-    from osk import integration
+    from osk import conversation_capture
     talk = Path(tempfile.mkdtemp(prefix="osk-regr-talk-")) / "regr-smoke-talk.jsonl"
     talk.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in (
         {"type": "user", "sessionId": "regr-smoke-talk", "uuid": "u1",
@@ -3408,7 +3417,7 @@ def test_surface_smoke():
         {"type": "assistant", "sessionId": "regr-smoke-talk", "uuid": "a1",
          "message": {"role": "assistant", "id": "m1", "stop_reason": "end_turn",
                      "content": [{"type": "text", "text": "응답"}]}})), encoding="utf-8")
-    tracked = integration.capture(VAULT, "claude", "regr-smoke-talk", str(talk), "repo/smoke-raw", "00_Scope/W1")
+    tracked = conversation_capture.capture(VAULT, "claude", "regr-smoke-talk", str(talk), "repo/smoke-raw", "00_Scope/W1")
     check("스모크 대화가 추적된다", tracked.get("ok"), tracked)
     calls = {
         "overview": lambda: M.overview("repo/smoke"),
@@ -5946,7 +5955,7 @@ def test_non_node_evidence_is_an_evidence_line():
     """`derived-from`은 노드만 받고 비노드 근거는 노드 끝 근거 절의 줄이다(헌법 제8조 5·6항).
 
     무엇을 망가뜨리면 실패하는가:
-      · `_check_edges`의 비노드 거부를 지우면 → 첫 단언 묶음
+      · `node_checks.check_edges`의 비노드 거부를 지우면 → 첫 단언 묶음
       · 빼는 갈래(`adding=False`)까지 거부하면 → 옛 대상 제거 단언
       · 증류가 인용 라운드를 derived-from에 다시 달거나 줄을 보지 않으면 → 증류 단언 셋
       · 미해석 근거 좌표를 참조 판독에서 빼면 → 쓰기 응답 단언
@@ -7215,7 +7224,7 @@ def _hook_context(raw, event):
 def test_cadence_hook():
     """Own-conversation timing survives empty memory, resume and other writers."""
     import io, importlib, types, uuid
-    from osk import integration, scope_memory as wm
+    from osk import scope_memory as wm, conversation_capture
     hooks = ENGINE / "scripts/hooks"
     sys.path.insert(0, str(hooks))
     hook = importlib.import_module("claude_prompt_submit")
@@ -7250,16 +7259,16 @@ def test_cadence_hook():
         check("원문 부재를 증류 완료로 가장하지 않는다", "아직 없다" in outs[8], outs[8])
         for _ in range(3):
             turn()
-        before = integration.status(VAULT, "codex", sid)["prompt_count"]
+        before = conversation_capture.status(VAULT, "codex", sid)["prompt_count"]
         turn(start_hook, "SessionStart")
-        check("같은 대화 재개는 통합 시계를 지우지 않는다", integration.status(VAULT, "codex", sid)["prompt_count"] == before)
+        check("같은 대화 재개는 통합 시계를 지우지 않는다", conversation_capture.status(VAULT, "codex", sid)["prompt_count"] == before)
         prior = wm.read(VAULT, cwd.name)
         wm.replace(VAULT, cwd.name, "- 다른 작성자가 보존한 지식", prior["hash"])
         outs = [turn() for _ in range(3)]
         check("다른 작성자의 공유 기억 갱신은 내 15턴 검토를 닫지 않는다",
               not any(outs[:2]) and "단독 턴이어도" in outs[2] and "다른 작성자" in outs[2], outs)
         check("15턴 뒤 매 턴 재촉하지 않는다", turn() == "")
-        check("내 대화의 계수는 공유 hash와 별개", integration.status(VAULT, "codex", sid)["prompt_count"] == 16)
+        check("내 대화의 계수는 공유 hash와 별개", conversation_capture.status(VAULT, "codex", sid)["prompt_count"] == 16)
         wm.replace(VAULT, cwd.name, prior["text"], wm.read(VAULT, cwd.name)["hash"])
 
 
@@ -7306,7 +7315,7 @@ def test_scope_recovery_handoff():
     hooks = ENGINE / "scripts" / "hooks"
     payload = {"session_id": sid, "cwd": str(cwd), "source": "startup",
                "hook_event_name": "SessionStart", "permission_mode": "default"}
-    from osk import integration
+    from osk import conversation_capture
     native = cwd / "native.jsonl"
     native.write_text(json.dumps({"type": "session_meta", "payload": {"id": sid}}) + "\n", encoding="utf-8")
     payload.update(harness="codex", transcript_path=str(native))
@@ -7351,8 +7360,8 @@ def test_scope_recovery_handoff():
         payload["prompt"] = "계속"
         # The unbound probe above uses its own ID, not this scope's conversation.
         for count in (8, 14):
-            while integration.status(VAULT, "codex", sid)["prompt_count"] < count:
-                integration.tick(VAULT, "codex", sid)
+            while conversation_capture.status(VAULT, "codex", sid)["prompt_count"] < count:
+                conversation_capture.tick(VAULT, "codex", sid)
             out = run_hook("claude_prompt_submit.py")
             check(f"{count + 1}턴은 새 요약 추가 대신 복구를 싣는다",
                    "[osk scope 복구 대기" in out and "이 세션에서 배운 것을" not in out and cur in out)
@@ -9514,7 +9523,7 @@ def test_node_place_rule():
     무엇을 망가뜨리면 실패하는가:
       · `graph._space_of_parts`의 `_off_node` 판정을 지우면 → 점·밑줄 구획의
         파일이 색인·scope 목록에 돌아오고 배치 검증기가 조용해진다
-      · `_new_cluster_gate`의 자리 검사를 지우면 → `_misc` 신설이 확인 한 번으로
+      · `cluster_gate.new_cluster_gate`의 자리 검사를 지우면 → `_misc` 신설이 확인 한 번으로
         통과한다(디렉토리가 남는다)
       · `move_cluster`의 자리 검사를 지우면 → 이미 있는 `_` 구획 안으로 군집이 간다
       · `_is_md`를 호스트에 묶으면 → 대소문자 구분 호스트에서 `.MD` 노드가 빠진다
@@ -10427,7 +10436,7 @@ def test_audit_fixes_2026_09_02():
             pass
 
         # ⑦ 작업 상태 참조 금지는 소속을 가리지 않는다 (#36)
-        #    되돌리면 — `_topology_of`의 workbench 갈래를 scope 안으로 되돌리면
+        #    되돌리면 — `node_checks.topology_of`의 workbench 갈래를 scope 안으로 되돌리면
         #    Domain 노드가 통과해 실패한다.
         note = ROOT / "00_Scope/Workbench/audit-note.md"
         note.write_text("작업 상태(비노드)\n", encoding="utf-8")
@@ -10472,7 +10481,7 @@ def test_audit_fixes_2026_09_02():
             (ROOT / f"00_Scope/W1/{sub}/audit-dup.md").unlink()
 
         # ⑨ pin은 노드 id에도 걸린다 (#36)
-        #    되돌리면 — `_plan_move`의 `_pinned(n.id)`를 지우면 실패한다.
+        #    되돌리면 — `_plan_move`의 `cluster_gate.pinned` 검사를 지우면 실패한다.
         nid = contract.parse(ROOT / "00_Scope/W1/AudX/audit-bind.md").id
         core.ledger_append(VAULT.pins, {"kind": "pin", "target": nid,
                                        "reason": "감사 회귀 시험"})

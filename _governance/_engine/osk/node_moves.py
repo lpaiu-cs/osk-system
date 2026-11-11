@@ -74,7 +74,7 @@ def _apply_move(vault: Vault, path: Path, target: Path, n, idx) -> None:
     approvals.record_move(vault, n.id, path, target)
     os.replace(path, target)
     # 손에 든 색인은 이동 **전** 경로를 쥐고 있다. 갱신하지 않으면 아래
-    # `_dangling_of`가 옛 경로를 열려다 실패해 이 노드의 자기링크를
+    # `node_checks.dangling_of`가 옛 경로를 열려다 실패해 이 노드의 자기링크를
     # dangling으로 오보한다 — `create_node`가 `register_new`로 막는 것과
     # 같은 실패이고, 오타가 아닌 것을 오타라고 알리게 된다.
     idx.retarget(path, target, graph.space_of(vault, target))
@@ -145,7 +145,7 @@ def _move_topology(vault: Vault, plans, stale, idx) -> list[str]:
 
     gone = {Path(os.path.realpath(src)) for src in after}
 
-    class _After:                     # `_topology_of`가 색인에 묻는 것은 해석뿐이다
+    class _After:                     # `node_checks.topology_of`가 색인에 묻는 것은 해석뿐이다
         @staticmethod
         def resolve(name):
             r = idx.resolve(name)

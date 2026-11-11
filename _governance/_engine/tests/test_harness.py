@@ -19,7 +19,7 @@ SETUP = r'''
 import json, os, subprocess, sys, time
 from pathlib import Path
 from unittest import mock
-from osk import core, harness, integration, validate
+from osk import core, harness, integration, validate, conversation_capture, conversation_cite, conversation_review, conversation_state
 from osk.vault import Vault
 VAULT = Vault.open()
 from osk.harness import runs
@@ -84,7 +84,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_adapters_keep_the_v4_judgment_and_names(self):
         self.check_case(r'''
-# integration.hook_source's judgment before the adapters (v4.0.0), verbatim.
+# conversation_capture.hook_source's judgment before the adapters (v4.0.0), verbatim.
 def before(env):
     sid = env.get("session_id") or env.get("conversation_id") or os.environ.get("CODEX_THREAD_ID")
     found = env.get("harness") or os.environ.get("OSK_HARNESS")
@@ -146,32 +146,32 @@ assert outcome(after, cases[5][0], {}) == ('own', 'claude')
 assert outcome(after, cases[7][0], {}) == ('own', 'codex')
 # Without an ID nothing is judged, even with an unreadable transcript (same error as v4.0.0).
 try:
-    integration.hook_source(VAULT, {'transcript_path': str(malformed)})
+    conversation_capture.hook_source(VAULT, {'transcript_path': str(malformed)})
     raise AssertionError('judged without a conversation ID')
 except ValueError as exc:
     assert 'no actual conversation ID' in str(exc), exc
 # A Codex subagent's hook that names its root conversation changes nothing.
 child = rows(root.parent / 'child.jsonl', {'type': 'session_meta', 'payload': {'id': 'child', 'session_id': 'own'}})
 try:
-    integration.hook_source(VAULT, {'session_id': 'own', 'transcript_path': str(child)})
+    conversation_capture.hook_source(VAULT, {'session_id': 'own', 'transcript_path': str(child)})
     raise AssertionError('subagent event was not recognized')
-except integration.SubagentEvent as exc:
+except conversation_capture.SubagentEvent as exc:
     assert 'Codex subagent' in str(exc), exc
 
 assert harness.NAMES == ('claude', 'codex', 'kiro', 'antigravity') and harness.fork_names() == ('claude', 'codex')
 try:
-    integration.conversation_key(VAULT, 'gemini', 'x')
+    conversation_state.conversation_key(VAULT, 'gemini', 'x')
     raise AssertionError('unknown harness accepted')
 except ValueError as exc:
     assert str(exc) == 'explicit claude/codex/kiro/antigravity harness and actual conversation_id required', exc
 # Transcripts are found where each host keeps them; two candidates need an explicit path.
 mine = rows(claude_home / 'projects' / 'p2' / 'c1.jsonl', {'sessionId': 'c1'})
-assert integration.locate_transcript(VAULT, 'claude', 'c1') == str(mine.resolve())
+assert conversation_capture.locate_transcript(VAULT, 'claude', 'c1') == str(mine.resolve())
 live = rows(codex_home / 'sessions' / '2026' / '09' / '26' / 'rollout-2026-09-26T00-00-00-x1.jsonl', {})
-assert integration.locate_transcript(VAULT, 'codex', 'x1') == str(live.resolve())
+assert conversation_capture.locate_transcript(VAULT, 'codex', 'x1') == str(live.resolve())
 rows(codex_home / 'archived_sessions' / 'rollout-old-x1.jsonl', {})
 try:
-    integration.locate_transcript(VAULT, 'codex', 'x1')
+    conversation_capture.locate_transcript(VAULT, 'codex', 'x1')
     raise AssertionError('ambiguous transcripts accepted')
 except ValueError as exc:
     assert 'multiple transcripts' in str(exc), exc
@@ -278,13 +278,13 @@ assert start['session'] == 'proj' and start['python'] == py and time.time() - st
 out = hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit', 'prompt': 'q'})
 assert out is None or out['hookSpecificOutput']['hookEventName'] == 'UserPromptSubmit', out
 # A notice the harness put in the user's turn is not the user's input: no count, no answer (#275).
-counted = integration.status(VAULT, 'claude', 'c1')['prompt_count']
+counted = conversation_capture.status(VAULT, 'claude', 'c1')['prompt_count']
 notice = '<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n</task-notification>'
 assert hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit', 'prompt': notice}) is None
-assert integration.status(VAULT, 'claude', 'c1')['prompt_count'] == counted
+assert conversation_capture.status(VAULT, 'claude', 'c1')['prompt_count'] == counted
 hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit',
                                  'prompt': '<system-reminder>s</system-reminder>' + chr(10) + 'q2'})
-assert integration.status(VAULT, 'claude', 'c1')['prompt_count'] == counted + 1, 'words beside a reminder are the user’s'
+assert conversation_capture.status(VAULT, 'claude', 'c1')['prompt_count'] == counted + 1, 'words beside a reminder are the user’s'
 # An organization job this conversation already got whole comes back as one line; the hub tree the
 # conversation block carries is not repeated (#275).
 sys.path.insert(0, str(tested_hooks))
@@ -374,7 +374,7 @@ codex_config(gone)
 # The newest captured Claude conversation gives its version; Codex falls back to PATH.
 native = rows(claude_home / 'projects' / 'p' / 'c1.jsonl', {'sessionId': 'c1', 'version': '2.1.200'},
               {'sessionId': 'c1', 'version': '2.1.999'})
-integration.state_path(VAULT, 'claude', 'c1').write_text(
+conversation_state.state_path(VAULT, 'claude', 'c1').write_text(
     json.dumps({'harness': 'claude', 'transcript_path': str(native)}), encoding='utf-8')
 fake_cli('claude', '9.9.9 (Claude Code)')
 fake_cli('codex', 'codex-cli 0.1.0')
@@ -705,7 +705,7 @@ assert not out.lstrip().startswith('{'), out
 assert hook('capture_stop.py', {**given, 'hook_event_name': 'Stop'}) == ''
 from osk import response_growth as rg
 rg.after_hook(VAULT, {**given, 'harness': 'kiro', 'session': 'proj'})
-st = integration.status(VAULT, 'kiro', sid)
+st = conversation_capture.status(VAULT, 'kiro', sid)
 assert (st['captured_rounds'], st['aborted_rounds'], st['interrupted_rounds']) == (5, 1, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
 assert Path(st['transcript_path']) == transcript.resolve(), st
@@ -718,12 +718,12 @@ assert '첫 질문' in text and '읽어 보겠습니다.' in text and '답은 42
 assert '"type": "superseded"' in text and '하다 만 답' in text and '넷째 답' in text, text
 assert '"native_trigger": "inputless"' in text and '다섯 번째' not in text, text
 # A transcript in another conversation's folder is not read.
-other = integration.capture(VAULT, 'kiro', 'sess_other', str(transcript), 'proj')
+other = conversation_capture.capture(VAULT, 'kiro', 'sess_other', str(transcript), 'proj')
 assert 'does not match' in (other['capture_error'] or ''), other
 # When capture has failed, Kiro's stop hook still prints nothing: it has no place to show a notice.
 assert hook('capture_stop.py', {'session_id': 'sess_other', 'cwd': str(proj), 'hook_event_name': 'Stop'},
             KIRO_SESSION_ID='sess_other') == ''
-assert integration.status(VAULT, 'kiro', 'sess_other')['capture_error'], 'the failure is kept in the state'
+assert conversation_capture.status(VAULT, 'kiro', 'sess_other')['capture_error'], 'the failure is kept in the state'
 # Reasoning is outside the capture scope; tool payloads are references (Bylaws §2 2).
 assert 'internal thought' not in text and 'FILE BODY' not in text, text
 assert '"tool_evidence_ref"' in text and '"read_file"' in text, text
@@ -804,12 +804,12 @@ text = out['injectSteps'][0]['ephemeralMessage']
 assert text.startswith(f'[osk 세션 시작 — session="proj" · conversation="antigravity/{sid}"]'), text
 assert 'Antigravity has no subscription fork' in text, text
 # PreInvocation runs before every model call: only the first after an input is osk's input.
-before = integration.status(VAULT, 'antigravity', sid)['prompt_count']
+before = conversation_capture.status(VAULT, 'antigravity', sid)['prompt_count']
 assert hook('claude_prompt_submit.py', {**given, 'invocationNum': 3, 'initialNumSteps': 11}) == '{}'
-assert integration.status(VAULT, 'antigravity', sid)['prompt_count'] == before, 'a later model call ticked the clock'
+assert conversation_capture.status(VAULT, 'antigravity', sid)['prompt_count'] == before, 'a later model call ticked the clock'
 out = hook('claude_prompt_submit.py', {**given, 'invocationNum': 0, 'initialNumSteps': 11})
 assert out == '{}' or 'injectSteps' in json.loads(out), out
-assert integration.status(VAULT, 'antigravity', sid)['prompt_count'] == before + 1
+assert conversation_capture.status(VAULT, 'antigravity', sid)['prompt_count'] == before + 1
 # Stop answers `{}` (no decision); its worker (#192 — the suite runs that step here) captures the
 # transcript it was given.
 assert hook('capture_stop.py', {**given, 'executionNum': 0,
@@ -817,7 +817,7 @@ assert hook('capture_stop.py', {**given, 'executionNum': 0,
 from osk import response_growth as rg
 rg.after_hook(VAULT, {'harness': 'antigravity', 'session_id': sid, 'transcript_path': str(transcript),
                'cwd': str(proj), 'session': 'proj'})
-st = integration.status(VAULT, 'antigravity', sid)
+st = conversation_capture.status(VAULT, 'antigravity', sid)
 assert (st['captured_rounds'], st['failed_rounds']) == (3, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
 assert Path(st['transcript_path']) == transcript.resolve(), st
@@ -837,7 +837,7 @@ for odd in ('no wrapper', '<USER_REQUEST>\nopen only', '<USER_REQUEST>\nx\n</USE
     assert transcripts._ag_user(odd) == odd, odd
 assert '"tool_evidence_ref"' in raw_text and '"view_file"' in raw_text, raw_text
 # A transcript in another conversation's folder is not read.
-other = integration.capture(VAULT, 'antigravity', 'b8d2e3f4-0000-4000-8000-000000000000', str(transcript), 'proj')
+other = conversation_capture.capture(VAULT, 'antigravity', 'b8d2e3f4-0000-4000-8000-000000000000', str(transcript), 'proj')
 assert 'does not match' in (other['capture_error'] or ''), other
 # When capture has failed, Stop still answers JSON and lets the agent stop.
 assert hook('capture_stop.py', {**given, 'conversationId': 'b8d2e3f4-0000-4000-8000-000000000000'},

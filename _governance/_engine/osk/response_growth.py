@@ -12,7 +12,7 @@ import threading
 import time
 from contextlib import closing
 
-from . import core, growth, integration, transcripts, native_cli
+from . import core, growth, integration, transcripts, native_cli, conversation_capture, conversation_state
 from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
@@ -107,18 +107,18 @@ def _desktop(source: dict) -> bool:
 
 def initialize(vault: Vault, env: dict) -> dict | None:
     """Baseline once at startup/input. Neither event increments the Stop counter."""
-    harness, sid, path = integration.hook_source(vault, env)
+    harness, sid, path = conversation_capture.hook_source(vault, env)
     if not configured(vault, harness):
         return None
-    with integration.state_lock(vault, harness, sid) as p:
-        state = integration.load_state(vault, p, harness, sid)
+    with conversation_state.state_lock(vault, harness, sid) as p:
+        state = conversation_state.load_state(vault, p, harness, sid)
         saved = state.get('response_growth')
         if saved is None:
             source = profile(vault, path, harness, sid) if path and Path(path).exists() else None
             saved = {'counter': 'finals', 'seen': source['finals'] if source else [],
                      'count': 0, 'attempted_count': 0, 'history_baselined': source is not None}
             state['response_growth'] = saved
-            integration.save_state(p, state)
+            conversation_state.save_state(p, state)
         return {k: v for k, v in saved.items() if k != 'seen'}
 
 
@@ -128,10 +128,10 @@ def route(vault: Vault, env: dict) -> dict:
     does neither (`OFF`, `DESKTOP_OFF`), otherwise the verdict is the
     one the hooks' worker last asked (`probe`) — the fork until it has answered. `probe_due`
     asks the hook to start the worker (`defer`)."""
-    harness, sid, path = integration.hook_source(vault, env)
+    harness, sid, path = conversation_capture.hook_source(vault, env)
     verdict = check(vault, harness, sid, path, env.get('cwd') or os.getcwd(), ask=False)
-    with integration.state_lock(vault, harness, sid) as p:
-        state = integration.load_state(vault, p, harness, sid)
+    with conversation_state.state_lock(vault, harness, sid) as p:
+        state = conversation_state.load_state(vault, p, harness, sid)
         asked = state.get('response_growth_probe')
         provisional = bool(verdict and verdict.pop('probe', False))
         due = (verdict is None or provisional) and _probe_due(state, path)
@@ -148,7 +148,7 @@ def route(vault: Vault, env: dict) -> dict:
         # A default nobody has checked yet is no news ("구독 CLI를 확인했다" would be false).
         changed = state.get('response_growth_route') != selected and bool(verdict or asked)
         state['response_growth_route'] = selected
-        integration.save_state(p, state)
+        conversation_state.save_state(p, state)
     return {**selected, 'changed': changed, 'probe_due': due}
 
 
@@ -161,7 +161,7 @@ def _probe_due(state: dict, path: str | None = None) -> bool:
 
 def probe(vault: Vault, env: dict) -> dict:
     """Ask the fork CLI for route()'s verdict, off the hooks' time limit (their worker)."""
-    harness, sid, path = integration.hook_source(vault, env)
+    harness, sid, path = conversation_capture.hook_source(vault, env)
     try:
         if configured(vault, harness):
             initialize(vault, env)
@@ -172,10 +172,10 @@ def probe(vault: Vault, env: dict) -> dict:
 
 
 def _remember(vault: Vault, harness: str, sid: str, verdict: dict, *, unread: bool = False) -> dict:
-    with integration.state_lock(vault, harness, sid) as p:
-        state = integration.load_state(vault, p, harness, sid)
+    with conversation_state.state_lock(vault, harness, sid) as p:
+        state = conversation_state.load_state(vault, p, harness, sid)
         state['response_growth_probe'] = {**verdict, 'at': time.time(), **({'unread': True} if unread else {})}
-        integration.save_state(p, state)
+        conversation_state.save_state(p, state)
     return verdict
 
 
@@ -183,12 +183,12 @@ def defer(vault: Vault, env: dict, session: str, *, probe_due: bool) -> bool:
     """Hand the hook's slow part to a detached worker (`after_hook`) when there is any: new
     transcript rows to capture, or a fork CLI verdict to ask again. Never waits on it.
     `OSK_HOOK_WORKER=0` keeps it from starting (the test suites drive its steps themselves)."""
-    harness, sid, path = integration.hook_source(vault, env)
-    if os.environ.get('OSK_HOOK_WORKER') == '0' or not probe_due and not integration.capture_due(vault, harness, sid, path):
+    harness, sid, path = conversation_capture.hook_source(vault, env)
+    if os.environ.get('OSK_HOOK_WORKER') == '0' or not probe_due and not conversation_capture.capture_due(vault, harness, sid, path):
         return False
     payload = {'defer': True, 'harness': harness, 'session_id': sid, 'transcript_path': path,
                'cwd': env.get('cwd'), 'session': session, 'space': env.get('space')}
-    log = integration.state_path(vault, harness, sid).with_suffix('.growth.log')
+    log = conversation_state.state_path(vault, harness, sid).with_suffix('.growth.log')
     log.parent.mkdir(parents=True, exist_ok=True)
     try:
         with log.open('ab') as stderr:
@@ -210,15 +210,15 @@ def after_hook(vault: Vault, env: dict) -> None:
     parsing is not dropped. Last, once a day, it turns on a validator rule that has no record
     and no violations (Bylaws §11(3)) — every install runs this worker, not every install the
     daily growth run."""
-    harness, sid, path = integration.hook_source(vault, env)
-    lock_path = integration.state_path(vault, harness, sid).with_suffix('.defer.lock')
+    harness, sid, path = conversation_capture.hook_source(vault, env)
+    lock_path = conversation_state.state_path(vault, harness, sid).with_suffix('.defer.lock')
     with lock_path.open('a+b') as lock:
         lock_exclusive(lock)
         try:
-            if integration.capture_due(vault, harness, sid, path):
-                integration.hook_capture(vault, env, env['session'])
-            with integration.state_lock(vault, harness, sid) as p:
-                due = _probe_due(integration.load_state(vault, p, harness, sid), path)
+            if conversation_capture.capture_due(vault, harness, sid, path):
+                conversation_capture.hook_capture(vault, env, env['session'])
+            with conversation_state.state_lock(vault, harness, sid) as p:
+                due = _probe_due(conversation_state.load_state(vault, p, harness, sid), path)
             if due:
                 probe(vault, env)
         finally:
@@ -271,8 +271,8 @@ def doctor(vault: Vault, harness: str, sid: str | None = None, transcript: str |
     if transcript and not sid:
         raise ValueError('--transcript needs the conversation ID (--session)')
     if sid:
-        integration.conversation_key(vault, harness, sid)
-        transcript = transcript or integration.locate_transcript(vault, harness, sid)
+        conversation_state.conversation_key(vault, harness, sid)
+        transcript = transcript or conversation_capture.locate_transcript(vault, harness, sid)
     cwd = os.getcwd()
     report = {'harness': harness, 'verdict': check(vault, harness, sid, transcript, cwd),
               'conversation_id': sid, 'transcript': transcript}
@@ -345,9 +345,9 @@ def doctor(vault: Vault, harness: str, sid: str | None = None, transcript: str |
 
 def launch(vault: Vault, env: dict, session: str) -> bool:
     """Detach only a small supervisor; Stop returns before native final markers flush."""
-    harness, sid, path = integration.hook_source(vault, env)
-    with integration.state_lock(vault, harness, sid) as p:
-        state = integration.load_state(vault, p, harness, sid)
+    harness, sid, path = conversation_capture.hook_source(vault, env)
+    with conversation_state.state_lock(vault, harness, sid) as p:
+        state = conversation_state.load_state(vault, p, harness, sid)
         if state.get('response_growth_route', {}).get('mode') in ('foreground', 'off'):
             return False
     try:
@@ -357,7 +357,7 @@ def launch(vault: Vault, env: dict, session: str) -> bool:
         return False  # Input/startup routing reports the error; Stop still captures raw.
     payload = {'harness': harness, 'session_id': sid, 'transcript_path': path,
                'session': session, 'space': env.get('space'), 'permission_mode': env.get('permission_mode')}
-    log = integration.state_path(vault, harness, sid).with_suffix('.growth.log')
+    log = conversation_state.state_path(vault, harness, sid).with_suffix('.growth.log')
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open('ab') as stderr:
         core.spawn_worker(vault, 'osk.response_growth', stderr=stderr,
@@ -380,12 +380,12 @@ def runtime_env(harness: str, sid: str, *, ask: bool = True) -> dict:
 
 def process_stop(vault: Vault, env: dict, *, flush_timeout: float = 5) -> dict:
     """One native final completion, bounded flush wait, then the existing supervisor."""
-    harness, sid, _ = integration.hook_source(vault, env)
+    harness, sid, _ = conversation_capture.hook_source(vault, env)
     executable = configured(vault, harness)
     if not executable:
         return {'ok': True, 'state': 'disabled'}
     # ponytail: one worker per conversation; missed Stops catch up by native IDs.
-    lock_path = integration.state_path(vault, harness, sid).with_suffix('.growth.lock')
+    lock_path = conversation_state.state_path(vault, harness, sid).with_suffix('.growth.lock')
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open('a+b') as lock:
         try:
@@ -396,7 +396,7 @@ def process_stop(vault: Vault, env: dict, *, flush_timeout: float = 5) -> dict:
             deadline = time.monotonic() + flush_timeout
             while True:
                 try:
-                    _, _, path = integration.hook_source(vault, env)
+                    _, _, path = conversation_capture.hook_source(vault, env)
                     if not path:
                         raise ValueError('native transcript is not available yet')
                     source = profile(vault, path, harness, sid)
@@ -408,17 +408,17 @@ def process_stop(vault: Vault, env: dict, *, flush_timeout: float = 5) -> dict:
                 if time.monotonic() >= deadline:
                     raise ValueError(error)
                 time.sleep(0.1)
-            captured = integration.hook_capture(vault, env, env['session'])
+            captured = conversation_capture.hook_capture(vault, env, env['session'])
             if not source['last_successful']:
                 result = {'ok': True, 'state': 'not_final'}
             else:
-                with integration.state_lock(vault, harness, sid) as p:
-                    state = integration.load_state(vault, p, harness, sid)
+                with conversation_state.state_lock(vault, harness, sid) as p:
+                    state = conversation_state.load_state(vault, p, harness, sid)
                     if 'response_growth' not in state:
                         # First notification after installation counts once, never replays history.
                         state['response_growth'] = {'counter': 'finals', 'seen': source['finals'][:-1],
                                                     'count': 0, 'attempted_count': 0, 'history_baselined': True}
-                        integration.save_state(p, state)
+                        conversation_state.save_state(p, state)
                 clock = observe(vault, source)
                 if not clock['due']:
                     result = {'ok': not bool(captured['capture_error']), 'state': 'not_due', **clock}
@@ -436,17 +436,17 @@ def process_stop(vault: Vault, env: dict, *, flush_timeout: float = 5) -> dict:
             result = {'ok': False, 'state': 'pending', 'error': f'{type(exc).__name__}: {exc}'}
         finally:
             unlock(lock)
-    with integration.state_lock(vault, harness, sid) as p:
-        state = integration.load_state(vault, p, harness, sid)
+    with conversation_state.state_lock(vault, harness, sid) as p:
+        state = conversation_state.load_state(vault, p, harness, sid)
         state['response_growth_stop'] = {**{k: result[k] for k in ('ok', 'state', 'error') if k in result},
                                          'reviewed': _review_done(result)}
-        integration.save_state(p, state)
+        conversation_state.save_state(p, state)
     return result
 
 
 def profile(vault: Vault, path: str, harness: str, sid: str) -> dict:
     """Read native metadata locally, without copying history into a prompt or raw."""
-    integration.conversation_key(vault, harness, sid)
+    conversation_state.conversation_key(vault, harness, sid)
     native = Path(path).resolve()
     before = transcripts.native_fingerprint(str(native), harness, sid)
     result = {'harness': harness, 'conversation_id': sid, 'finals': [], 'active': False,
@@ -550,8 +550,8 @@ def observe(vault: Vault, source: dict) -> dict:
     ids = source['finals']
     if not isinstance(ids, list) or len(ids) != len(set(ids)):
         raise ValueError('completion identities must be unique')
-    with integration.state_lock(vault, harness, sid) as path:
-        state = integration.load_state(vault, path, harness, sid)
+    with conversation_state.state_lock(vault, harness, sid) as path:
+        state = conversation_state.load_state(vault, path, harness, sid)
         saved = state.get('response_growth')
         if saved is None:
             saved = {'counter': 'finals', 'seen': ids, 'count': 0, 'attempted_count': 0,
@@ -576,7 +576,7 @@ def observe(vault: Vault, source: dict) -> dict:
             saved['count'] += len(ids) - start - len(seen)
             saved['seen'] = ids
             saved['history_baselined'] = True
-        integration.save_state(path, state)
+        conversation_state.save_state(path, state)
         return {'count': saved['count'], 'attempted_count': saved['attempted_count'],
                 'due': saved['count'] - saved['attempted_count'] >= EVERY,
                 'counter': 'finals'}
@@ -601,21 +601,21 @@ def attempt(vault: Vault, source: dict, job: dict, executable: str) -> dict:
         return {'ok': True, 'state': 'not_due', **clock}
     if job.get('capture_error') or job.get('capture_pending'):
         return {'ok': False, 'state': 'capture_pending', **clock}
-    with integration.state_lock(vault, harness, sid) as path:
-        state = integration.load_state(vault, path, harness, sid)
+    with conversation_state.state_lock(vault, harness, sid) as path:
+        state = conversation_state.load_state(vault, path, harness, sid)
         saved = state['response_growth']
         if saved['count'] - saved['attempted_count'] < EVERY:
             return {'ok': True, 'state': 'already_claimed'}
         saved['attempted_count'] = clock['count']
         saved['last_result'] = {'ok': False, 'state': 'running'}
-        integration.save_state(path, state)  # A crashed worker is not relaunched in a tight loop.
+        conversation_state.save_state(path, state)  # A crashed worker is not relaunched in a tight loop.
     try:
         result = (run(vault, source, job, executable) if job.get('pending_refs') else
                   {'ok': True, 'state': 'already_reviewed'})
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         result = {'ok': False, 'state': 'blocked', 'error': str(exc)}
-    with integration.state_lock(vault, harness, sid) as path:
-        state = integration.load_state(vault, path, harness, sid)
+    with conversation_state.state_lock(vault, harness, sid) as path:
+        state = conversation_state.load_state(vault, path, harness, sid)
         saved = state['response_growth']
         # `reviewed` keeps the fork's own verdict for the hook: an unfinished side job is not a
         # wait for this conversation (#228).
@@ -630,7 +630,7 @@ def attempt(vault: Vault, source: dict, job: dict, executable: str) -> dict:
                                'reason': result.get('error') or result.get('state')}
         if result.get('state') in {'busy', 'unavailable'}:
             saved['attempted_count'] = clock['attempted_count']
-        integration.save_state(path, state)
+        conversation_state.save_state(path, state)
     return result
 
 
@@ -792,7 +792,7 @@ def preflight(vault: Vault, source: dict, executable: str, env: dict, *, require
               timeout: float = 5) -> str:
     """Local authentication/version queries only; used by routing and rechecked before inference."""
     harness = source['harness']
-    integration.conversation_key(vault, harness, 'preflight')
+    conversation_state.conversation_key(vault, harness, 'preflight')
     expected = source.get('cli_version') if harness == 'codex' else source.get('version')
     if harness == 'codex':
         if str(source.get('model') or '').startswith('chatgpt-web/'):
@@ -867,7 +867,7 @@ def preflight(vault: Vault, source: dict, executable: str, env: dict, *, require
 def command(vault: Vault, source: dict, executable: str, env: dict) -> list[str]:
     """Fail closed before inference. Never fall back to API credentials or a cheaper model."""
     harness, sid = source['harness'], source['conversation_id']
-    integration.conversation_key(vault, harness, sid)
+    conversation_state.conversation_key(vault, harness, sid)
     # Preflight first: it names the ChatGPT Web route the model check would only reject generically.
     executable = preflight(vault, source, executable, env)
     model = source.get('model')

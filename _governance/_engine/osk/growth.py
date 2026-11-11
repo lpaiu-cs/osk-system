@@ -18,8 +18,8 @@ import signal
 import subprocess
 import shutil
 
-from . import (core, graph, distillation, evictions, harness as adapters, integration, native_cli,
-               organization, rechecks)
+from . import (core, graph, distillation, evictions, harness as adapters, integration, native_cli, organization,
+               rechecks, conversation_review)
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
 
@@ -1067,11 +1067,11 @@ def _apply_reviews(vault: Vault, reviews: dict, planned: dict) -> dict:
     for entry in reviews["scope"]:
         key = ":".join(entry[k] for k in ("harness", "conversation_id", "through"))
         try:
-            done = integration.review_status(vault, entry["harness"], entry["conversation_id"], entry["through"])
+            done = conversation_review.review_status(vault, entry["harness"], entry["conversation_id"], entry["through"])
             if done["status"] == "complete":
                 result["scope"][key] = "already_complete"
             else:
-                integration.acknowledge(vault, **entry)
+                conversation_review.acknowledge(vault, **entry)
                 result["scope"][key] = "recorded"
         except (ValueError, OSError) as exc:
             result["errors"].append(f"Scope {key}: {exc}")
@@ -1153,7 +1153,7 @@ def _needs_review(vault: Vault, planned: dict, rows: list[dict], idx: graph.Inde
     """선택한 작업 가운데 아직 열린 것이 있으면 작업자의 최종 결과 묶음을 적용한다 —
     다섯 큐 모두다. 재검토만 남은 실행도 올림과 보류를 그 묶음으로 보고한다."""
     return (any(not _completed(vault, c["key"], rows, idx) for c in planned["candidates"])
-            or any(integration.review_status_locked(vault,
+            or any(conversation_review.review_status_locked(vault,
                 j["harness"], j["conversation_id"], j["through"])["status"] != "complete"
                 for j in planned["scope_jobs"])
             or any(organization.status(vault, j, idx)["status"] != "complete"
@@ -1340,7 +1340,6 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
         except OSError:
             return {"ok": False, "state": "busy"}
         try:
-            from . import integration
             wanted, exclude = set(QUEUES if queues is None else queues), set(exclude)
             # A response-triggered fork owns one frozen conversation snapshot.
             # Daily runs retain their existing cross-conversation/Domain queue.
@@ -1475,7 +1474,7 @@ def run(vault: Vault, command: list[str], limit: int = 3, timeout: int = 600, *,
                     outcomes[key] = receipt["outcome"] if receipt else (
                         "deferred" if last and last.get("manifest") == manifest["rid"]
                         and last.get("outcome") == "deferred" else "pending")
-                scope_outcomes = {job["key"]: integration.review_status_locked(vault,
+                scope_outcomes = {job["key"]: conversation_review.review_status_locked(vault,
                     job["harness"], job["conversation_id"], job["through"])
                     for job in planned["scope_jobs"]}
                 organization_outcomes = {job["key"]: organization.status(vault, job, idx)

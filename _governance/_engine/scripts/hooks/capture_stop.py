@@ -44,7 +44,7 @@ def main() -> None:
         except Exception:
             note_run(None, "stop", None, None)
             raise
-        from osk import integration, response_growth
+        from osk import response_growth, conversation_capture, conversation_state
         vault = open_vault()
         env = normalize(env)
         key = session_key(vault, project_cwd(env))
@@ -55,14 +55,14 @@ def main() -> None:
             if response_growth.launch(vault, env, key):
                 return
             response_growth.defer(vault, env, key, probe_due=False)
-            harness, sid, _ = integration.hook_source(vault, env)
-            seen = integration.status(vault, harness, sid)
-        except integration.SubagentEvent:
+            harness, sid, _ = conversation_capture.hook_source(vault, env)
+            seen = conversation_capture.status(vault, harness, sid)
+        except conversation_capture.SubagentEvent:
             return  # The root conversation's own Stop owns its state.
         # The worker's result lands after this hook: say the last capture's standing failure,
         # once as the input hook does — a new conversation's missing file is no failure.
         standing = seen["capture_error"] if seen["capture_recovery"]["state"] != "awaiting_input" else None
-        if standing and integration.notice_once(vault, harness, sid, standing):
+        if standing and conversation_state.notice_once(vault, harness, sid, standing):
             raise ValueError(standing)
     except Exception as exc:
         _notice(host, f"[osk capture diagnostic - {type(exc).__name__}: {exc}; "

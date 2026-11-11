@@ -589,14 +589,14 @@ class OrganizationTests(unittest.TestCase):
 
     def test_other_scope_damage_does_not_hide_integration_prompt(self):
         self.case("""
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             transcript=VAULT.root/"trial.jsonl"
             rows=[{"type":"user","sessionId":"trial","uuid":"u","message":{"role":"user","content":"Observed a durable rule"}},
                   {"type":"assistant","sessionId":"trial","uuid":"a","message":{"role":"assistant","id":"m","stop_reason":"end_turn","content":[{"type":"text","text":"A bounded conclusion"}]}}]
             transcript.write_text(chr(10).join(json.dumps(r) for r in rows),encoding="utf-8")
             from osk import write, cluster_gate, node_checks, node_moves, nodefile
             write.bind_session(VAULT, "trial","W1")  # tracking alone binds nothing
-            st=integration.capture(VAULT, "claude","trial",str(transcript),"trial",space="00_Scope/W1")
+            st=conversation_capture.capture(VAULT, "claude","trial",str(transcript),"trial",space="00_Scope/W1")
             assert st["pending_refs"],st
             broken=VAULT.root/"00_Scope/W2/Broken.md"; broken.parent.mkdir(parents=True)
             broken.write_text("No frontmatter",encoding="utf-8")

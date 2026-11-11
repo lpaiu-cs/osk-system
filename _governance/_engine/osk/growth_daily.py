@@ -28,7 +28,8 @@ import subprocess
 import threading
 import time
 
-from . import core, growth, integration, growth_status, harness as adapters, raw, response_growth, transcripts
+from . import (core, growth, integration, growth_status, harness as adapters, raw, response_growth, transcripts,
+               conversation_capture, conversation_review)
 from .vault import Vault
 
 PROVIDERS = ("codex", "claude")          # 선호 순서 — Codex 예산을 넘는 몫은 Claude가 맡는다
@@ -253,12 +254,12 @@ def _measure(vault: Vault, since: float) -> dict:
         if harness not in work:
             continue
         try:
-            path = integration.locate_transcript(vault, harness, sid, s.get("capture_path") or s["transcript_path"])
+            path = conversation_capture.locate_transcript(vault, harness, sid, s.get("capture_path") or s["transcript_path"])
             recent = bool(path) and Path(path).stat().st_mtime >= since
         except (OSError, ValueError):
             path, recent = None, False
         by_ref = {r["ref"]: r for r in s["rounds"]}
-        pending = [by_ref[ref] for ref in dict.fromkeys(integration.state_view(vault, s)["pending_refs"])
+        pending = [by_ref[ref] for ref in dict.fromkeys(conversation_capture.state_view(vault, s)["pending_refs"])
                    if ref in by_ref and (path or not raw.is_native(ref))]
         times = {}
         if recent:
@@ -302,12 +303,12 @@ def backlog(vault: Vault) -> dict:
     scopes: dict = {}
     conversations = turns = 0
     for s in growth_status.conversation_states(vault):
-        refs = integration.state_view(vault, s)["pending_refs"]
-        ended = bool(refs) and integration.ended_source(vault, s)
+        refs = conversation_capture.state_view(vault, s)["pending_refs"]
+        ended = bool(refs) and conversation_capture.ended_source(vault, s)
         n = sum(1 for ref in refs if ended or not raw.is_native(ref))
         if n:
             conversations, turns = conversations + 1, turns + n
-            scopes.setdefault(integration.review_scope(vault, s), []).append(n)
+            scopes.setdefault(conversation_review.review_scope(vault, s), []).append(n)
     batches = 0
     for scope, sizes in scopes.items():
         batches += sum(n // SCOPE_ROUNDS for n in sizes)

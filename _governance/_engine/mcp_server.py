@@ -28,8 +28,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import (contract, epoch, graph, integration, prose, raw, rechecks,  # noqa: E402
-                 update_check, validate, write, cluster_gate, node_checks, node_moves, nodefile)
+# 서버가 뜬 뒤에 디스크에서 새로 읽는 엔진 모듈이 늘면 안 된다 — 도는 프로세스는 뜬 시각의 코드를
+# 쥔다(`osk.epoch`). 그래서 쓰는 모듈은 함수 안이 아니라 여기서 읽고, 이름으로 쓰지 않는 `integration`도
+# 읽어 둔다: 뒤늦게 읽힐 수 있는 모듈이 그것을 읽는다. 구조 시험의 `late_loads`가 지킨다.
+from osk import (contract, distillation, epoch, graph, organization, prose, raw, rechecks,  # noqa: E402
+                 update_check, validate, write, cluster_gate, node_checks, node_moves, nodefile,
+                 conversation_cite)
+from osk import integration  # noqa: E402, F401
 from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
@@ -349,9 +354,9 @@ def read_cited(ref: str | None = None, space: str | None = None,
     if through is not None or conversation is not None:
         if not (through and conversation) or ref or space or view != "review":
             return {"ok": False, "violations": ["a review range read takes conversation and through only (view=review)"]}
-        return _guard(integration.read_review, _vault(), conversation, through, query)
+        return _guard(conversation_cite.read_review, _vault(), conversation, through, query)
     if ref and raw.is_native(ref):
-        return _guard(lambda: {"ok": True, **integration.read_turns(_vault(), [ref], max_chars, view, query)["turns"][0]})
+        return _guard(lambda: {"ok": True, **conversation_cite.read_turns(_vault(), [ref], max_chars, view, query)["turns"][0]})
     if ref:
         return _guard(raw.read_round, _vault(), ref, max_chars, view, query)
     return _guard(raw.list_records, _vault(), space)
@@ -359,7 +364,7 @@ def read_cited(ref: str | None = None, space: str | None = None,
 
 def _hook_sections(session: str, include) -> dict:
     """훅이 한도 때문에 접은 블록 — 훅이 실었을 글 그대로 돌려준다(`osk.hook_text`)."""
-    from osk import core, evictions, organization
+    from osk import core, evictions
     scope, scopes = write.resolve_session(_vault(), session), write.bound_scopes(_vault(), session)
     out = {}
     for name in dict.fromkeys(include):
@@ -434,7 +439,6 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
         out["session_scope"] = out["bindings"]["primary"]
         if out["session_scope"]:
             # 새 노드의 자리는 이 트리에서 주제를 덮는 가장 깊은 군집이다(시행령 §3 8항)
-            from osk import organization
             try:
                 out["hub_tree"] = organization.hub_tree(_vault(),
                     organization.scope_path(_vault(), out["session_scope"]), idx)
@@ -470,7 +474,6 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
     if not _searched:
         return {"ok": False, "violations": [SEARCH_FIRST]}
     if distill is not None:
-        from osk import distillation
         return _guard(distillation.create_node, _vault(), distill, title=title,
                       summary=summary, body=body, drafter=drafter,
                       session=session, space=space, edges=edges, settle=settle)
@@ -495,7 +498,6 @@ def update_node(name: str, body: str | None = None,
     처분 결과: `settlement`. `distill`은 `create_node`와 같다.
     저장 후 연결만 재개: `distill={resume:키}`."""
     if distill is not None:
-        from osk import distillation
         # 주지 않은 `rechecked`는 싣지 않는다 — 요청 결속이 이 인자 이전의 작업과 같게 남는다
         extra = {} if rechecked is None else {"rechecked": rechecked}
         return _guard(distillation.update_node, _vault(), distill, name=name, body=body,
@@ -542,7 +544,7 @@ def cite_round(conversation: str, quote: str | None = None, turn: str | None = N
     quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
     전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref.
     coordinate=관측 줄 좌표."""
-    return _guard(integration.cite, _vault(), conversation, quote, turn, note, user=user)
+    return _guard(conversation_cite.cite, _vault(), conversation, quote, turn, note, user=user)
 
 
 @mcp.tool()
