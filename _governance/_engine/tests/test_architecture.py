@@ -55,7 +55,11 @@ BROAD = {"Exception", "BaseException"}
 # `tangled_modules`는 여기 없다: 순환에 든 모듈을 둘로 가르면 의존은 그대로인데 수가 는다. 기준선과
 # 같은지는 보되 느는 갱신을 막지는 않는다. 끝의 기준(0)은 같다.
 TOTALS = ("upward_imports", "lazy_imports", "two_module_cycles", "private_access", "vault_fixed_names",
-          "vault_unthreaded", "broad_except", "oversize_functions", "excess_lines", "excess_branches")
+          "vault_unthreaded", "broad_except", "oversize_functions", "excess_lines", "excess_branches",
+          "late_loads")
+# 뜬 채로 오래 도는 진입점. 도는 프로세스는 뜬 시각의 코드를 쥔다(`osk.epoch`) — 뜬 뒤에 디스크에서
+# 읽힐 수 있는 엔진 모듈(`late_loads`)은 엔진이 갱신된 뒤라면 옛 판 위에 새 판으로 얹힌다.
+LONG_LIVED = ("mcp_server",)
 
 
 def sources() -> dict[str, str]:
@@ -578,11 +582,31 @@ def _tangled(edges: dict[str, set[str]]) -> int:
     return sum(1 for m in edges if m in closure[m])
 
 
-def measure(srcs: dict[str, str], layer_of: dict[str, int]) -> dict:
+def _late_loads(entry: str, imports: dict[str, list], known: set[str]) -> list[str]:
+    """`entry`가 뜬 뒤에 디스크에서 읽힐 수 있는 엔진 모듈. 맨 위 import를 따라 닿는 모듈은 뜰 때 읽힌다.
+    거기서 함수 안 import로만 닿는 모듈과 그 모듈이 읽는 것은 처음 쓰일 때 그 시점의 디스크에서 온다."""
+    def reach(start: set[str], lazy_too: bool) -> set[str]:
+        seen, stack = set(start), list(start)
+        while stack:
+            for target, in_function in imports.get(stack.pop(), ()):
+                if in_function and not lazy_too:
+                    continue
+                parts = target.split(".")                  # 모듈을 읽으면 그 위의 패키지도 읽힌다
+                for module in (".".join(parts[:i]) for i in range(1, len(parts) + 1)):
+                    if module in known and module not in seen:
+                        seen.add(module)
+                        stack.append(module)
+        return seen
+    at_start = reach({entry}, False)
+    return sorted(reach(at_start, True) - at_start)
+
+
+def measure(srcs: dict[str, str], layer_of: dict[str, int], long_lived: tuple = LONG_LIVED) -> dict:
     """소스 묶음의 구조 실측 — 기준선 파일과 같은 모양."""
     known = set(srcs)
     upward, lazy, private, broad, oversize = {}, {}, {}, {}, {}
     edges = {m: set() for m in known}
+    imports = {m: [] for m in known}
     trees = {name: ast.parse(text) for name, text in srcs.items()}
     fixed_names, unthreaded = _vault(srcs, trees, layer_of)
     for name, tree in trees.items():
@@ -593,6 +617,7 @@ def measure(srcs: dict[str, str], layer_of: dict[str, int]) -> dict:
                 continue
             imported_private += len(privates)
             edges[name].add(target)
+            imports[name].append((target, in_function))
             if (line, target) in counted:              # 한 import 문은 이름을 여럿 가져와도 한 번 센다
                 continue
             counted.add((line, target))
@@ -615,7 +640,8 @@ def measure(srcs: dict[str, str], layer_of: dict[str, int]) -> dict:
     report = {"upward_imports": upward, "lazy_imports": lazy, "two_module_cycles": cycles,
               "tangled_modules": _tangled(edges), "private_access": private,
               "vault_fixed_names": fixed_names, "vault_unthreaded": unthreaded, "broad_except": broad,
-              "oversize_functions": oversize}
+              "oversize_functions": oversize,
+              "late_loads": {entry: _late_loads(entry, imports, known) for entry in long_lived if entry in known}}
     return {"limits": {"function_lines": FUNCTION_LINES, "function_branches": FUNCTION_BRANCHES},
             "totals": totals(report), **{k: _sorted(v) for k, v in report.items()}}
 
@@ -640,7 +666,8 @@ def totals(report: dict) -> dict:
             "broad_except": sum(report["broad_except"].values()),
             "oversize_functions": len(over),
             "excess_lines": sum(max(0, lines - FUNCTION_LINES) for lines, _ in over),
-            "excess_branches": sum(max(0, branches - FUNCTION_BRANCHES) for _, branches in over)}
+            "excess_branches": sum(max(0, branches - FUNCTION_BRANCHES) for _, branches in over),
+            "late_loads": sum(len(late) for late in report["late_loads"].values())}
 
 
 def differences(actual: dict, baseline: dict) -> list[str]:
@@ -673,12 +700,14 @@ def self_test() -> None:
         **_VAULT_SAMPLE,
     }
     got = measure(sample, {"osk": KERNEL, "osk.low": KERNEL, "osk.high": SERVICE, "edge": SURFACE,
-                           **{name: SURFACE if name == "osk.front" else KERNEL for name in _VAULT_SAMPLE}})
+                           **{name: SURFACE if name == "osk.front" else KERNEL for name in _VAULT_SAMPLE}},
+                  long_lived=("edge",))
     want = {"upward_imports": {"osk.held3 -> osk.front": 1, "osk.low -> osk.high": 1}, "lazy_imports": {"osk.low": 1},
             "two_module_cycles": ["osk.high <-> osk.low"], "tangled_modules": 2,
             "private_access": {"osk.high": 2}, "broad_except": {"osk.high": 1},
             **_VAULT_WANT,
-            "oversize_functions": {"osk.high:big": [63, 31]}}
+            "oversize_functions": {"osk.high:big": [63, 31]},
+            "late_loads": {"edge": ["osk", "osk.high", "osk.low"]}}
     for key, value in want.items():
         assert got[key] == value, f"자가 계량 실패 — {key}: {got[key]} != {value}"
     assert got["totals"]["excess_lines"] == 3 and got["totals"]["excess_branches"] == 16, got["totals"]

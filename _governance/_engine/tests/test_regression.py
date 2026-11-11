@@ -2845,7 +2845,11 @@ def test_surface_contract():
         # 그 파일이 빠지면 사본에 파일이 없어 여기서 깨진다(목록이 분해를 따라가는지는 이 줄들이 지킨다).
         *(('def sneak_split(vault):\n    return ledger_append(vault.pins, {})\n\n\n', rel, anchor, "권위 대장에 기록")
           for rel, anchor in (("osk/nodefile.py", "def render"), ("osk/cluster_gate.py", "def cluster_names"),
-                              ("osk/node_checks.py", "def check_edges"), ("osk/node_moves.py", "def move_nodes"))),
+                              ("osk/node_checks.py", "def check_edges"), ("osk/node_moves.py", "def move_nodes"),
+                              ("osk/conversation_state.py", "def save_state"),
+                              ("osk/conversation_capture.py", "def capture"),
+                              ("osk/conversation_review.py", "def acknowledge"),
+                              ("osk/conversation_cite.py", "def cite"))),
     ):
         with tempfile.TemporaryDirectory() as td:
             eng = Path(td) / "_engine"

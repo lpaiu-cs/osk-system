@@ -1,6 +1,6 @@
 """Read-only growth evidence: inventory now, recorded decisions in a time window.
 
-Never call conversation_capture.status/list_pending: those write state (they close repair
+Never call conversation_capture.status or integration.list_pending: those write state (they close repair
 entries left by the pre-4.2 receipt recheck). A report is an observation, not an
 acknowledgement or a semantic growth verdict.
 """
