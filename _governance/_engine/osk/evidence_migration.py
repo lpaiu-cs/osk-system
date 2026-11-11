@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import approvals, contract, core, evidence, graph, prose, raw, raw_view, rechecks, write, validate
+from . import approvals, contract, core, evidence, graph, nodefile, prose, raw, raw_view, rechecks, validate
 from .core import posix_rel, sha256_bytes
 from .vault import Vault
 
@@ -202,7 +202,7 @@ def _change(vault: Vault, path: Path, n, items: list[dict]) -> dict:
         else:
             meta.pop("derived-from", None)
         meta["updated"] = core.now_kst()
-        out["new"] = (write.frontmatter(meta) + body).encode("utf-8")
+        out["new"] = (nodefile.frontmatter(meta) + body).encode("utf-8")
     return out
 
 

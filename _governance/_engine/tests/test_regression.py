@@ -51,7 +51,7 @@ os.environ["OSK_UPDATE_CHECK"] = "0"
 os.environ["OSK_HOOK_WORKER"] = "0"
 
 from osk import (core, graph, validate, authority, contract, routing, write,  # noqa: E402
-                 publish)  # noqa: E402
+                 publish, cluster_gate, node_checks, node_moves, nodefile)  # noqa: E402
 from osk.vault import Vault
 VAULT = Vault.open()
 import osk.signatures as S  # noqa: E402
@@ -1373,7 +1373,7 @@ def test_dir_entries_durable_before_ledger():
             (start / f"{stem}.md").write_text(node_text(nid), encoding="utf-8")
             if start == regdir:
                 A.approve(VAULT, reg, A.approved_hash(VAULT, reg), A.working_tree_hash(VAULT, reg), "내구화")
-            check(f"{label} 이동 성립", write.move_node(VAULT, stem, dest)["ok"])
+            check(f"{label} 이동 성립", node_moves.move_node(VAULT, stem, dest)["ok"])
             run(lambda: A.revert(VAULT, reg, A.approved_hash(VAULT, reg),
                                  A.working_tree_hash(VAULT, reg), "내구화"))
             check(f"반려: {label} 이동의 원상 복구가 영역 밖 엔트리까지 revert "
@@ -1382,9 +1382,9 @@ def test_dir_entries_durable_before_ledger():
                   and before_ledger("dir", outside, A.ledger_path(VAULT)), ev[:8])
             (away / f"{stem}.md").unlink(missing_ok=True)
 
-        # 노드 쓰기(write._atomic_write)와 대장의 첫 생성
+        # 노드 쓰기(nodefile.write_file)와 대장의 첫 생성
         deep = ROOT / "00_Scope" / "DUR" / "nest" / f"n{tag}"
-        run(lambda: write._atomic_write(deep / "x.json", b"{}"))
+        run(lambda: nodefile.write_file(deep / "x.json", b"{}"))
         got = {e[1] for e in ev if e[0] == "dir"}
         check("노드 쓰기: 파일의 부모와 새로 만든 조상의 부모를 내구화한다",
               {norm(deep), norm(deep.parent), norm(regdir)} <= got, sorted(got))
@@ -1556,7 +1556,7 @@ def test_move_recorded_and_reverted_in():
     """밖→보호영역 이동을 반려하면 노드는 삭제되지 않고 **원위치로 돌아간다**.
     기록이 없으면 반려가 이동을 '추가'로만 보아 노드를 지운다 — 출발지에는
     복원할 정보가 없으므로 그대로 소실이다(사용자 판정: 이동을 이동으로)."""
-    from osk import approvals as A, write
+    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
     src = ROOT / "00_Scope/W1/regr-mvin.md"
     dst = ROOT / "00_Scope/W3/regr-mvin.md"
     (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
@@ -1565,7 +1565,7 @@ def test_move_recorded_and_reverted_in():
                        encoding="utf-8")
         A.protect(VAULT, "00_Scope/W3", "도착지 보호")
         base = A.approved_hash(VAULT, "00_Scope/W3")
-        r = write.move_node(VAULT, "regr-mvin", "00_Scope/W3")
+        r = node_moves.move_node(VAULT, "regr-mvin", "00_Scope/W3")
         check("이동 성립", r["ok"], r)
         row = A._latest_move(core.ledger_read(A.moves_path(VAULT)), "to",
                              "00_Scope/W3/regr-mvin.md")
@@ -1592,7 +1592,7 @@ def test_move_recorded_and_reverted_in():
 def test_move_reverted_out_no_duplicate():
     """보호영역→밖 이동을 반려하면 밖의 사본을 **되가져와** 승인본을 복원한다 —
     승인본 재생성만 하면 같은 id가 두 곳에 남는다(복제 금지)."""
-    from osk import approvals as A, write
+    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
     home = ROOT / "00_Scope/W3/regr-mvout.md"
     away = ROOT / "00_Scope/W1/regr-mvout.md"
     (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
@@ -1601,7 +1601,7 @@ def test_move_reverted_out_no_duplicate():
                         encoding="utf-8")
         A.protect(VAULT, "00_Scope/W3", "출발지 보호")
         base = A.approved_hash(VAULT, "00_Scope/W3")
-        check("이동 성립", write.move_node(VAULT, "regr-mvout", "00_Scope/W1")["ok"])
+        check("이동 성립", node_moves.move_node(VAULT, "regr-mvout", "00_Scope/W1")["ok"])
         check("출발 영역은 pending", A.state(VAULT, "00_Scope/W3") == "pending")
         cs = A.changeset(VAULT, "00_Scope/W3")
         check("나간 이동도 이동으로 보인다",
@@ -1621,7 +1621,7 @@ def test_move_reverted_out_no_duplicate():
 def test_move_return_blocked_origin_occupied():
     """이동으로 온 노드는 지우지 않는다 — 되돌리거나 거부한다. 원위치가 다른
     파일로 차 있으면 반려를 거부하고 아무것도 건드리지 않는다."""
-    from osk import approvals as A, write
+    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
     src = ROOT / "00_Scope/W1/regr-mvocc.md"
     dst = ROOT / "00_Scope/W3/regr-mvocc.md"
     (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
@@ -1630,7 +1630,7 @@ def test_move_return_blocked_origin_occupied():
                        encoding="utf-8")
         A.protect(VAULT, "00_Scope/W3", "도착지 보호")
         base = A.approved_hash(VAULT, "00_Scope/W3")
-        check("이동 성립", write.move_node(VAULT, "regr-mvocc", "00_Scope/W3")["ok"])
+        check("이동 성립", node_moves.move_node(VAULT, "regr-mvocc", "00_Scope/W3")["ok"])
         src.write_text("원위치에 새로 생긴 다른 파일", encoding="utf-8")
         check("원위치가 차 있으면 반려 거부",
               _raises(lambda: A.revert(VAULT, "00_Scope/W3", base,
@@ -1653,7 +1653,7 @@ def test_move_chain_reverted_no_duplicate():
     """보호영역을 나온 노드가 미처리인 채 한 번 더 이동하면(양끝 미보호) 그
     hop도 사슬로 기록되고, 반려가 **최종 위치**에서 되가져온다 — 옛 도착지만
     보면 '밖 사본 없음'으로 승인본을 재생성해 같은 id가 둘 남는다(복제 금지)."""
-    from osk import approvals as A, write
+    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
     home = ROOT / "00_Scope/W3/regr-mvchain.md"
     hop1 = ROOT / "00_Scope/W1/regr-mvchain.md"
     hop2 = ROOT / "00_Scope/W4/regr-mvchain.md"
@@ -1664,9 +1664,9 @@ def test_move_chain_reverted_no_duplicate():
                         encoding="utf-8")
         A.protect(VAULT, "00_Scope/W3", "출발지 보호")
         base = A.approved_hash(VAULT, "00_Scope/W3")
-        check("hop1 성립", write.move_node(VAULT, "regr-mvchain", "00_Scope/W1")["ok"])
+        check("hop1 성립", node_moves.move_node(VAULT, "regr-mvchain", "00_Scope/W1")["ok"])
         check("hop2 성립(양끝 미보호)",
-              write.move_node(VAULT, "regr-mvchain", "00_Scope/W4")["ok"])
+              node_moves.move_node(VAULT, "regr-mvchain", "00_Scope/W4")["ok"])
         rows = [r for r in core.ledger_read(A.moves_path(VAULT))
                 if r.get("node") == "260802-zzzz-chn1"]
         check("두 hop 모두 사슬로 기록됐다", len(rows) == 2, rows)
@@ -1687,7 +1687,7 @@ def test_move_lifecycle_cutoff():
     """승인으로 처분된 과거 이동은 새 반려의 해석 대상이 아니다 — 해석의 경계는
     현재 승인본이 성립한 기록이다. 경계가 없으면 처분된 첫 이탈의 출발지가
     '영역 안 생성분'으로 오독돼 재진입 노드가 **삭제**된다."""
-    from osk import approvals as A, write
+    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
     p1 = ROOT / "00_Person/P1"; p2 = ROOT / "00_Person/P2"
     p1.mkdir(parents=True, exist_ok=True); p2.mkdir(parents=True, exist_ok=True)
     node_p1, node_p2 = p1 / "regr-lc.md", p2 / "regr-lc.md"
@@ -1698,12 +1698,12 @@ def test_move_lifecycle_cutoff():
                            encoding="utf-8")
         A.protect(VAULT, "00_Person", "지정")
         base = A.approved_hash(VAULT, "00_Person")
-        check("이탈 이동 성립", write.move_node(VAULT, "regr-lc", "00_Scope/W1")["ok"])
+        check("이탈 이동 성립", node_moves.move_node(VAULT, "regr-lc", "00_Scope/W1")["ok"])
         A.approve(VAULT, "00_Person", base, A.working_tree_hash(VAULT, "00_Person"), "이탈 수용")
         base2 = A.approved_hash(VAULT, "00_Person")
         check("처분 뒤 방랑 hop 성립(사슬 기록)",
-              write.move_node(VAULT, "regr-lc", "00_Scope/W4")["ok"])
-        check("재진입 성립", write.move_node(VAULT, "regr-lc", "00_Person/P2")["ok"])
+              node_moves.move_node(VAULT, "regr-lc", "00_Scope/W4")["ok"])
+        check("재진입 성립", node_moves.move_node(VAULT, "regr-lc", "00_Person/P2")["ok"])
         A.revert(VAULT, "00_Person", base2, A.working_tree_hash(VAULT, "00_Person"), "재진입 반려")
         check("노드는 직전 위치로 돌아간다(삭제되지 않음)", w4.is_file())
         check("재진입 자리는 비었다", not node_p2.exists())
@@ -1724,7 +1724,7 @@ def test_move_reentry_single_plan():
     rel이면 한 파일에 계획이 둘 잡혀 복원이 중도에 깨진다(실측: os.replace
     FileNotFoundError로 부분 변경 방치). 노드 단위 해석은 계획을 하나만 세워
     승인본 원적으로 되돌린다."""
-    from osk import approvals as A, write
+    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
     p1 = ROOT / "00_Person/P1"; p2 = ROOT / "00_Person/P2"
     p1.mkdir(parents=True, exist_ok=True); p2.mkdir(parents=True, exist_ok=True)
     node_p1, node_p2 = p1 / "regr-re.md", p2 / "regr-re.md"
@@ -1734,9 +1734,9 @@ def test_move_reentry_single_plan():
                            encoding="utf-8")
         A.protect(VAULT, "00_Person", "지정")
         base = A.approved_hash(VAULT, "00_Person")
-        check("이탈 성립", write.move_node(VAULT, "regr-re", "00_Scope/W1")["ok"])
+        check("이탈 성립", node_moves.move_node(VAULT, "regr-re", "00_Scope/W1")["ok"])
         check("다른 facet 재진입 성립",
-              write.move_node(VAULT, "regr-re", "00_Person/P2")["ok"])
+              node_moves.move_node(VAULT, "regr-re", "00_Person/P2")["ok"])
         A.revert(VAULT, "00_Person", base, A.working_tree_hash(VAULT, "00_Person"), "반려")
         check("노드가 승인본 원적으로 돌아왔다",
               node_p1.is_file() and "본문" in node_p1.read_text())
@@ -1806,7 +1806,7 @@ def test_move_phantom_tail_row_harmless():
     해석이 마지막 행의 to(의도)가 아니라 **실물이 있는 가장 최근 hop**(사실)을
     현재 위치로 삼는다. 의도를 믿으면 앞선 성공 이동의 실물을 못 보고 승인본을
     재생성해 같은 id가 둘 남는다."""
-    from osk import approvals as A, write
+    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
     home = ROOT / "00_Scope/W3/regr-phantom.md"
     w1 = ROOT / "00_Scope/W1/regr-phantom.md"
     w4 = ROOT / "00_Scope/W4/regr-phantom.md"
@@ -1817,7 +1817,7 @@ def test_move_phantom_tail_row_harmless():
                         encoding="utf-8")
         A.protect(VAULT, "00_Scope/W3", "지정")
         base = A.approved_hash(VAULT, "00_Scope/W3")
-        check("이탈 성립", write.move_node(VAULT, "regr-phantom", "00_Scope/W1")["ok"])
+        check("이탈 성립", node_moves.move_node(VAULT, "regr-phantom", "00_Scope/W1")["ok"])
         # 두 번째 이동 — 기록만 남고 rename이 실패한 상황(권한·IO 오류)
         A.record_move(VAULT, "260802-zzzz-phm2", w1, w4)
         check("실물은 여전히 첫 도착지에", w1.is_file() and not w4.exists())
@@ -1841,7 +1841,7 @@ def test_move_phantom_tail_row_harmless():
 def test_move_unrecorded_outside_protection():
     """양끝 다 보호 밖인 이동은 변경집합과 무관하므로 기록하지 않는다
     (시행령 §6 4항의 범위 그대로 — 기록부를 소음으로 채우지 않는다)."""
-    from osk import approvals as A, write
+    from osk import approvals as A, write, cluster_gate, node_checks, node_moves, nodefile
     src = ROOT / "00_Scope/W1/regr-mvfree.md"
     dst = ROOT / "00_Scope/W3/regr-mvfree.md"
     (ROOT / "00_Scope/W3").mkdir(parents=True, exist_ok=True)
@@ -1849,7 +1849,7 @@ def test_move_unrecorded_outside_protection():
         src.write_text(node_text("260802-zzzz-mvf1", "자유 이동", "본문"),
                        encoding="utf-8")
         before = len(core.ledger_read(A.moves_path(VAULT)))
-        check("이동 성립", write.move_node(VAULT, "regr-mvfree", "00_Scope/W3")["ok"])
+        check("이동 성립", node_moves.move_node(VAULT, "regr-mvfree", "00_Scope/W3")["ok"])
         check("기록부는 그대로", len(core.ledger_read(A.moves_path(VAULT))) == before)
     finally:
         src.unlink(missing_ok=True)
@@ -2173,7 +2173,7 @@ def test_approval_serialized_with_writes():
     않은 변경이 사라진다. 네 조작 모두 노드 쓰기와 **같은** 전역 변경 잠금을
     잡는다 — 엔진이 통제하는 writer는 그 사이에 들어올 수 없다."""
     from osk import approvals as A
-    from osk import write
+    from osk import write, cluster_gate, node_checks, node_moves, nodefile
     import sync_daemon
     check("변경 잠금이 sync·update가 쓰는 그 잠금과 같은 파일이다",
           core.mutation_lock_path(VAULT)
@@ -3125,8 +3125,8 @@ def test_anchor_edit():
               int(r["views"][1].split(":")[0]):int(r["views"][1].split(":")[1])], r)
     big = "가\n\n" + "나" * 4100 + "\n\n다"
     check("창 끝에 인용의 줄바꿈을 넣지 않는다(#273)",
-          write.anchor_windows(big, "나" * 4100 + "\n")[1] == [(3, 4103)],
-          write.anchor_windows(big, "나" * 4100 + "\n"))
+          nodefile.anchor_windows(big, "나" * 4100 + "\n")[1] == [(3, 4103)],
+          nodefile.anchor_windows(big, "나" * 4100 + "\n"))
     check("여러 곳 거부는 파일을 건드리지 않는다",
           contract.parse(p).body.count("같은 말이 두 번 나온다.") == 2)
     r = _w(write.update_node, VAULT, "regr-anchoredit",
@@ -3255,7 +3255,7 @@ def test_edge_single_list_roundtrip():
 def test_write_move_and_pin():
     (ROOT / "00_Scope/W2").mkdir(exist_ok=True)
     before = core.sha256_file(ROOT / "00_Scope/W1/regr-w1.md")
-    r = _w(write.move_node, VAULT, "regr-w1", "00_Scope/W2")
+    r = _w(node_moves.move_node, VAULT, "regr-w1", "00_Scope/W2")
     check("move는 바이트 불변(해시 동일)", r["ok"] and r["new_hash"] == before, r)
     check("이동 후 구 경로에 파일이 없다",
           not (ROOT / "00_Scope/W1/regr-w1.md").exists())
@@ -3266,7 +3266,7 @@ def test_write_move_and_pin():
     check("안내대로 출발지 허브의 줄을 뺀다", _unhang("W1", "regr-w1").get("ok"))
     core.ledger_append(VAULT.pins, {"kind": "pin", "target": "00_Scope/W2/",
                                    "reason": "시험"})
-    r = _w(write.move_node, VAULT, "regr-w1", "00_Scope/W1")
+    r = _w(node_moves.move_node, VAULT, "regr-w1", "00_Scope/W1")
     check("pin된 군집은 재배정 거부(시행령 §3 4항)", not r["ok"], r)
     check("거부 후에도 제자리", (ROOT / "00_Scope/W2/regr-w1.md").exists())
 
@@ -3359,7 +3359,7 @@ def test_write_serialized():
     """동시 쓰기 2건이 전역 잠금으로 직렬화되는가 (subprocess 실측)."""
     script = (
         "import sys, json; sys.path.insert(0, %r)\n"
-        "from osk import core, write\nfrom osk.vault import Vault\nVAULT = Vault.open()\n"
+        "from osk import core, write, cluster_gate, node_checks, node_moves, nodefile\nfrom osk.vault import Vault\nVAULT = Vault.open()\n"
         "import sys as s\n"
         "r = write.update_node(VAULT, 'regr-r2', add_edges={'derived-from': s.argv[1]})\n"
         "print(json.dumps({'ok': r['ok'], 'edges': r['edges']['derived-from']}))\n"
@@ -3752,7 +3752,7 @@ def test_project_bindings():
     except ValueError:
         check("잘못된 판정 묶음은 통째로 거부된다", write.bindings(VAULT, P) == before, write.bindings(VAULT, P))
     # ⑧-2 중간에 실패한 묶음은 같은 묶음의 재시도가 남은 판정부터 잇는다(#191 리뷰 3차)
-    real_unbind, calls = write.unbind_session, []
+    real_unbind, calls = routing.unbind_session, []
 
     def flaky(*a, **kw):
         calls.append(a)
@@ -3760,7 +3760,7 @@ def test_project_bindings():
             raise OSError("disk")
         return real_unbind(*a, **kw)
     batch = [{"project": P, "action": "unbind", "scope": s, "reason": "x"} for s in ("WBindD", "WBindE")]
-    with mock.patch.object(write, "unbind_session", flaky):
+    with mock.patch.object(routing, "unbind_session", flaky):
         try:
             organization.apply_binding_decisions(VAULT, batch)
             check("중간 실패는 예외로 드러난다", False, "예외가 없었다")
@@ -3941,7 +3941,7 @@ def test_dup_stem_write_refused():
         check("허브가 중복을 인지", "regr-dup" in graph.Index(VAULT).dup_stems)
         for label, call in (
             ("update", lambda: write.update_node(VAULT, "regr-dup", summary="x")),
-            ("move", lambda: write.move_node(VAULT, "regr-dup", "00_Scope/W2")),
+            ("move", lambda: node_moves.move_node(VAULT, "regr-dup", "00_Scope/W2")),
         ):
             r = _w(call)
             check(f"{label}는 동명 중복을 거부", not r["ok"], r)
@@ -6561,7 +6561,7 @@ def test_cluster_overview():
           st["unreachable"] == len(orphans) == 5, st)
 
     # 허브 노드는 군집 밖으로 이동 불가
-    r7 = _w(write.move_node, VAULT, "OVW", "00_Scope/W1")
+    r7 = _w(node_moves.move_node, VAULT, "OVW", "00_Scope/W1")
     check("허브 노드 이동 거부", r7.get("ok") is False, r7)
     check("이동 거부가 결박을 설명",
           "허브 노드" in " ".join(r7.get("violations", [])), r7)
@@ -7541,7 +7541,7 @@ def test_eviction_preservation_mcp():
         check("요약·엣지·공백·본문 삭제만으로 보존 완료로 세지 않는다",
               not metadata_only.get("ok") and p.read_bytes() == before
               and VAULT.evictions.read_bytes() == ledger, metadata_only)
-    with mock.patch.object(write, "_atomic_write", side_effect=OSError("node write failed")):
+    with mock.patch.object(nodefile, "write_file", side_effect=OSError("node write failed")):
         failed = M.update_node(created["id"], old_text=fact, new_text=fact + next_fact, settle=source)
     check("디스크 쓰기 실패도 미처분을 유지한다",
           not failed.get("ok") and p.read_bytes() == before and VAULT.evictions.read_bytes() == ledger, failed)
@@ -8104,9 +8104,9 @@ def test_new_cluster_two_phase():
     r3 = _w(write.create_node, VAULT, "이상 신설 시험", "s", "본문", "fable-5",
             space="00_Scope/W2P")
     check("허브가 선 군집은 관문 없이 통과", r3.get("ok"), r3)
-    r4 = _w(write.move_node, VAULT, "이상 신설 시험", "00_Domain/D2P")
+    r4 = _w(node_moves.move_node, VAULT, "이상 신설 시험", "00_Domain/D2P")
     check("move의 새 군집도 1차 거부", r4.get("ok") is False, r4)
-    r5 = _w(write.move_node, VAULT, "이상 신설 시험", "00_Domain/D2P")
+    r5 = _w(node_moves.move_node, VAULT, "이상 신설 시험", "00_Domain/D2P")
     check("move 재시도는 통과 — 이동 형성은 허브 강제가 없다(§3 1항 보호)",
           r5.get("ok"), r5)
     # v3.8.0 — 하위 군집 신설이 열렸다. 분화는 시행령 §3 7항이 권장하는 정상
@@ -8135,7 +8135,7 @@ def test_new_cluster_two_phase():
     check("부적격 신설은 디렉토리를 남기지 않는다",
           not (ROOT / "00_Scope/COM1").is_dir())
     # 만료 — 잊힌 표식이 뒷날의 다른 요청을 무확인 통과시키지 않는다
-    write._ack_file(VAULT).write_text(
+    cluster_gate._ack_file(VAULT).write_text(
         json.dumps({"00_Scope/WStale2P": _time.time() - 7200}), encoding="utf-8")
     r8 = _w(write.create_node, VAULT, "WStale2P", "허브", "본문", "fable-5",
             space="00_Scope/WStale2P")
@@ -8397,7 +8397,7 @@ def test_nested_clusters():
         # 허브 없는 폴더는 자리로 보고된다.
         (base / "regr-nc-hl").mkdir(exist_ok=True)
         made.append(base / "regr-nc-hl")
-        _w(write.move_nodes, VAULT, ["regr-nc-b"], "00_Scope/W1/regr-nc-hl")
+        _w(node_moves.move_nodes, VAULT, ["regr-nc-b"], "00_Scope/W1/regr-nc-hl")
         st = validate.cluster_overview_report(VAULT, graph.Index(VAULT))["00_Scope/W1"]
         check("허브 없는 하위 폴더를 hubless로 지목한다",
               "00_Scope/W1/regr-nc-hl" in (st.get("hubless") or []), st)
@@ -8517,13 +8517,13 @@ def test_move_nodes_and_cluster():
            expect_hash=C.sha256_file(hub))
 
         # 전부-아니면-전무 — 허브를 섞으면 아무것도 안 옮긴다.
-        bad = _w(write.move_nodes, VAULT, ["regr-mv-a", "regr-mv"],
+        bad = _w(node_moves.move_nodes, VAULT, ["regr-mv-a", "regr-mv"],
                  "00_Scope/W1/regr-mv2")
         check("허브가 섞이면 거부", bad.get("ok") is False, bad)
         check("거부했으므로 아무것도 안 옮겼다",
               (base / "regr-mv/regr-mv-a.md").is_file())
 
-        r = _w(write.move_nodes, VAULT, ["regr-mv-a", "regr-mv-b"],
+        r = _w(node_moves.move_nodes, VAULT, ["regr-mv-a", "regr-mv-b"],
                "00_Scope/W1/regr-mv2")
         check("묶음 이동", r.get("ok") and r["count"] == 2, r)
         # 안내는 **양쪽**이어야 한다. 출발지만 알리면 그 안내를 따른 호출자가
@@ -8537,13 +8537,13 @@ def test_move_nodes_and_cluster():
                   for h in hl), hl)
         check("허브 손잡이는 제목이다 — 경로가 아니라",
               all("/" not in h["hub"] for h in hl), hl)
-        dup = _w(write.move_nodes, VAULT, ["regr-mv-a", "regr-mv-a"], "00_Scope/W1/regr-mv")
+        dup = _w(node_moves.move_nodes, VAULT, ["regr-mv-a", "regr-mv-a"], "00_Scope/W1/regr-mv")
         check("같은 노드를 두 번 옮길 수 없다", dup.get("ok") is False, dup)
 
         # 재편 — 폴더째, 그리고 하위의 하위가 따라간다.
         _w(write.create_node, VAULT, "regr-mv-deep", "갈래", "개요\n", "fable-5",
            space="00_Scope/W1/regr-mv2/regr-mv-deep")
-        rc = _w(write.move_cluster, VAULT, "regr-mv2", "00_Scope/W1/regr-mv")
+        rc = _w(node_moves.move_cluster, VAULT, "regr-mv2", "00_Scope/W1/regr-mv")
         check("군집째 이동", rc.get("ok"), rc)
         check("하위의 하위가 따라왔다",
               (base / "regr-mv/regr-mv2/regr-mv-deep/regr-mv-deep.md").is_file())
@@ -8551,17 +8551,17 @@ def test_move_nodes_and_cluster():
 
         # `WriteError`는 violations가 있으면 메시지를 그쪽에 싣는다 — 단언은
         # 실제로 오는 자리에 건다(v3.7.0에서 값을 치르고 배운 것).
-        bad2 = _w(write.move_cluster, VAULT, "regr-mv2", "00_Person/Module")
+        bad2 = _w(node_moves.move_cluster, VAULT, "regr-mv2", "00_Person/Module")
         check("최상위 군집을 건널 수 없다",
               bad2.get("ok") is False
               and any("증류" in v for v in bad2.get("violations", [])), bad2)
-        bad3 = _w(write.move_cluster, VAULT, "regr-mv-a", "00_Scope/W1/regr-mv")
+        bad3 = _w(node_moves.move_cluster, VAULT, "regr-mv-a", "00_Scope/W1/regr-mv")
         check("허브가 아니면 군집째 옮길 수 없다",
               bad3.get("ok") is False and "군집이 아니다" in str(bad3), bad3)
 
         # 노드는 scope를 건널 수 있다 — 막지 않고 **알린다.** 침묵하면
         # 호출자가 ok:true를 받고 검증기 FAIL로 알게 된다(표면 감사 실측).
-        cs = _w(write.move_nodes, VAULT, ["regr-mv-a"], "00_Person/Module")
+        cs = _w(node_moves.move_nodes, VAULT, ["regr-mv-a"], "00_Person/Module")
         check("노드의 scope 건너기는 허용된다", cs.get("ok"), cs)
         check("건넜다는 사실을 알린다",
               cs.get("crossed_scope", {}).get("nodes") == ["regr-mv-a"], cs)
@@ -8569,10 +8569,10 @@ def test_move_nodes_and_cluster():
               "hub_links" in cs["crossed_scope"]["why"], cs["crossed_scope"])
         # 되돌아오는 것도 건너는 이동이다(Person → Scope). 같은 최상위 안의
         # 이동을 보려면 W1 안에서 옮겨야 한다.
-        back = _w(write.move_nodes, VAULT, ["regr-mv-a"], "00_Scope/W1/regr-mv")
+        back = _w(node_moves.move_nodes, VAULT, ["regr-mv-a"], "00_Scope/W1/regr-mv")
         check("되돌아오는 것도 건너는 이동이다",
               back.get("crossed_scope", {}).get("nodes") == ["regr-mv-a"], back)
-        same = _w(write.move_nodes, VAULT, ["regr-mv-a"], "00_Scope/W1/regr-mv2")
+        same = _w(node_moves.move_nodes, VAULT, ["regr-mv-a"], "00_Scope/W1/regr-mv2")
         check("같은 최상위 안에서는 알리지 않는다",
               "crossed_scope" not in same, same)
     finally:
@@ -8788,7 +8788,7 @@ def test_duplicate_id_refused():
         _age_all()
         rr2 = M.read_node(nid)
         check("중복 해소 후 읽기 복구", rr2.get("path"), rr2)
-        live = write.live_locate(VAULT, nid, graph.Index(VAULT))
+        live = nodefile.live_locate(VAULT, nid, graph.Index(VAULT))
         check("읽기와 쓰기가 같은 파일을 가리킨다",
               rr2.get("path") == core.posix_rel(live, ROOT),
               (rr2.get("path"), live))
@@ -8844,7 +8844,7 @@ def test_duplicate_id_by_name_refused():
                   r1.get("ok") is False and str(want) in str(r1), r1)
         r2 = _w(write.update_node, VAULT, "regr-dupn restored", summary="사본 고침")
         check("사본 이름 쓰기도 거부한다", r2.get("ok") is False, r2)
-        mv = _w(write.move_nodes, VAULT, ["regr-dupn restored"], "00_Scope/W1")
+        mv = _w(node_moves.move_nodes, VAULT, ["regr-dupn restored"], "00_Scope/W1")
         check("사본 이동도 거부한다", mv.get("ok") is False and twin.is_file(), mv)
         rc = _w(write.record_candidate, VAULT, "duplication",
                 ["regr-dupn", "regr-dupn restored"], "사본")
@@ -9245,13 +9245,13 @@ def test_rechecks():
         # 읽은 기록은 노드 id에 묶인다 — 읽은 뒤 근거가 다른 군집으로 옮겨지고 고쳐져도 '기록
         # 없음'이 되어 낡은 점검이 완료로 적히지 않는다
         moved = {n_id: st(W / "regr-rc-N.md"), t_id: st(t)}
-        mv = _w(write.move_nodes, VAULT, ["regr-rc-T"], "00_Scope/W1/regr-rc-sub")
+        mv = _w(node_moves.move_nodes, VAULT, ["regr-rc-T"], "00_Scope/W1/regr-rc-sub")
         check("전제: 근거를 하위 군집으로 옮긴다", mv.get("ok"), mv)
         _w(write.update_node, VAULT, "regr-rc-T", old_text="7판", new_text="8판")
         r = _w(write.update_node, VAULT, "regr-rc-N", rechecked=["regr-rc-T"], _seen=moved)
         check("읽은 뒤 옮겨지고 바뀐 근거는 완료를 적지 않는다",
               r.get("recheck_unread") and why("regr-rc-N") == {"근거가 바뀌었다"}, r)
-        _w(write.move_nodes, VAULT, ["regr-rc-T"], "00_Scope/W1")
+        _w(node_moves.move_nodes, VAULT, ["regr-rc-T"], "00_Scope/W1")
 
         # 이행 전 derived-from에 남은 비노드 근거는 재지 않는다 — 바뀌어도 후보가 아니고,
         # rechecked에 적어도 닫을 쌍이 없다(헌법 제8조 5항)
@@ -9412,7 +9412,7 @@ def test_move_topology_refused():
         for stem, text in files.items():
             (w1 / f"{stem}.md").write_text(text, encoding="utf-8")
         _age_all()
-        r1 = _w(write.move_nodes, VAULT, ["regr-mt1"], "00_Scope/regr-MT")
+        r1 = _w(node_moves.move_nodes, VAULT, ["regr-mt1"], "00_Scope/regr-MT")
         v1 = " | ".join(r1.get("violations") or [])
         check("scope를 건너 참조를 끊는 이동은 거부한다",
               r1.get("ok") is False and "regr-mt1 → regr-mt2" in v1, r1)
@@ -9420,26 +9420,26 @@ def test_move_topology_refused():
               "regr-mt2 → regr-mt1" in v1 and "regr-mt2 → 260925-rgmt-0001" in v1, v1)
         check("고칠 길을 준다", "remove_edges" in v1 and "names" in v1, v1)
         check("아무것도 옮기지 않았다", (w1 / "regr-mt1.md").is_file())
-        r2 = _w(write.move_nodes, VAULT, ["regr-mt3"], "00_Domain/regr-MD")
+        r2 = _w(node_moves.move_nodes, VAULT, ["regr-mt3"], "00_Domain/regr-MD")
         check("인용 기록 근거를 단 노드는 Domain으로 못 간다",
               r2.get("ok") is False and "Domain의 인용 기록" in str(r2)
               and (w1 / "regr-mt3.md").is_file(), r2)
-        r8 = _w(write.move_nodes, VAULT, ["regr-mt8"], "00_Domain/regr-MD")
+        r8 = _w(node_moves.move_nodes, VAULT, ["regr-mt8"], "00_Domain/regr-MD")
         check("근거 절에 인용 라운드를 단 노드도 Domain으로 못 간다",
               r8.get("ok") is False and "(근거 절)" in str(r8)
               and (w1 / "regr-mt8.md").is_file(), r8)
-        r3 = _w(write.move_nodes, VAULT, ["regr-mt1", "regr-mt2"], "00_Scope/regr-MT")
+        r3 = _w(node_moves.move_nodes, VAULT, ["regr-mt1", "regr-mt2"], "00_Scope/regr-MT")
         check("서로 잇는 노드는 함께 옮기면 된다", r3.get("ok"), r3)
-        r4 = _w(write.move_nodes, VAULT, ["regr-mt4"], "00_Domain/regr-MD")
+        r4 = _w(node_moves.move_nodes, VAULT, ["regr-mt4"], "00_Domain/regr-MD")
         check("참조 없는 노드의 건너기는 그대로 된다", r4.get("ok"), r4)
         # 이미 있던 위반은 이 이동의 몫이 아니다(설계 D10)
         (w1 / "regr-mt5.md").write_text(
             node_text("260925-rgmt-0005", body="남의 scope [[regr-mt1]]"), encoding="utf-8")
         _age_all()
-        r5 = _w(write.move_nodes, VAULT, ["regr-mt5"], "00_Scope/regr-MX")
+        r5 = _w(node_moves.move_nodes, VAULT, ["regr-mt5"], "00_Scope/regr-MX")
         check("이미 있던 위반은 이동을 막지 않는다", r5.get("ok"), r5)
         # 경로형 Link는 옛 자리를 가리킨다 — 함께 옮기면 끊긴 참조이지 위반이 아니다
-        r6 = _w(write.move_nodes, VAULT, ["regr-mt6", "regr-mt7"], "00_Scope/regr-MX")
+        r6 = _w(node_moves.move_nodes, VAULT, ["regr-mt6", "regr-mt7"], "00_Scope/regr-MX")
         check("함께 옮기는 노드 사이의 경로형 Link는 이동을 막지 않는다",
               r6.get("ok"), r6)
     finally:
@@ -9553,14 +9553,14 @@ def test_node_place_rule():
               graph.space_of(VAULT, ROOT / S / "W1/_raw/.records/x.txt")[0] == "raw")
 
         # (b) 밑줄 접두 디렉토리 — 표면이 새로 만들지 못한다.
-        ack_before = set(write._read_ack(VAULT))
+        ack_before = set(cluster_gate._read_ack(VAULT))
         for space in (f"{D}/_regr-misc", f"{S}/W1/_regr-sub", f"{S}/_regr-new"):
             hub = space.rsplit("/", 1)[1]
             rs = [_w(write.create_node, VAULT, hub, "허브", "본문", "fable-5",
                      space=space)]
             # 표식은 **1차 뒤에** 본다 — 재시도가 표식을 소비하므로 두 번 뒤에는
             # 남긴 적이 있어도 보이지 않는다.
-            acked = space in set(write._read_ack(VAULT)) - ack_before
+            acked = space in set(cluster_gate._read_ack(VAULT)) - ack_before
             rs.append(_w(write.create_node, VAULT, hub, "허브", "본문", "fable-5",
                          space=space))
             check(f"밑줄 구획 신설은 확인을 거쳐도 거부된다: {space}",
@@ -9586,7 +9586,7 @@ def test_node_place_rule():
         check("밑줄 구획은 scope가 아니다",
               "_regr-priv" not in graph.scope_names(VAULT), graph.scope_names(VAULT))
         check("밑줄 구획은 조망의 군집이 아니다",
-              not any("_regr-" in c for c in write.cluster_names(VAULT)))
+              not any("_regr-" in c for c in cluster_gate.cluster_names(VAULT)))
         lv = graph.layout_violations(VAULT)
         check("배치 검증기가 밑줄 구획의 노드형 파일을 보고한다",
               sum("_regr-priv.md" in v or "_regr-sub2.md" in v
@@ -9605,7 +9605,7 @@ def test_node_place_rule():
         (mc / "regr-mc.md").write_text(
             node_text("260802-und0-0003", "옮길 하위 허브", "MC"),
             encoding="utf-8")
-        r = _w(write.move_cluster, VAULT, "regr-mc", f"{S}/W1/_regr-sub2")
+        r = _w(node_moves.move_cluster, VAULT, "regr-mc", f"{S}/W1/_regr-sub2")
         check("밑줄 구획 안으로는 군집을 옮기지 못한다",
               r.get("ok") is False and (mc / "regr-mc.md").is_file()
               and not (sub / "regr-mc").exists(), r)
@@ -10047,7 +10047,7 @@ def test_index_split():
               full_reads("update_node", lambda: write.update_node(VAULT,
                   "regr-split-w", summary="고침")) == 0)
         check("move_node는 전수 판독을 부르지 않는다",
-              full_reads("move_node", lambda: write.move_node(VAULT,
+              full_reads("move_node", lambda: node_moves.move_node(VAULT,
                   "regr-split-w", "00_Scope/Workbench/transit")) == 0)
     finally:
         graph.Index.parse_all = real
@@ -10116,7 +10116,7 @@ def test_one_index_per_write():
             edges={"derived-from": "[[없는근거]]"}))
         once("record_candidate", lambda: write.record_candidate(VAULT,
             "duplication", ["regr-amp", "regr-amp2"]))
-        m = once("move_node", lambda: write.move_node(VAULT,
+        m = once("move_node", lambda: node_moves.move_node(VAULT,
             "regr-amp", "00_Scope/Workbench/transit"))
         # 이동 후에도 손에 든 색인이 옛 경로를 쥐고 있으면 자기링크가 오타로
         # 실린다 — `create_node`가 막은 것과 같은 실패다
@@ -10257,7 +10257,7 @@ def test_engine_epoch_fence():
                                       "본문", "fable-5", space="00_Scope/W1"),
             "update_node": lambda: _w(write.update_node, VAULT, "regr-fence",
                                       body="새 본문", expect_hash=h),
-            "move_node": lambda: _w(write.move_node, VAULT, "regr-fence",
+            "move_node": lambda: _w(node_moves.move_node, VAULT, "regr-fence",
                                     "00_Scope/Workbench/transit"),
             "record_candidate": lambda: _w(write.record_candidate, VAULT,
                                            "duplication",
@@ -10343,7 +10343,7 @@ def test_audit_fixes_2026_09_02():
         ext.write_text(node_text("260802-audt-0f00", "외부 기원 동명"),
                        encoding="utf-8")
         mine.append(ext)
-        r = _w(write.move_nodes, VAULT, ["AudFoo", "audfoo"], "00_Scope/W1/AudZ")
+        r = _w(node_moves.move_nodes, VAULT, ["AudFoo", "audfoo"], "00_Scope/W1/AudZ")
         check("이식성 충돌 묶음 이동은 거부된다 (#25)",
               not r.get("ok"), r)
         check("아무것도 옮기지 않았다 (#25)",
@@ -10476,7 +10476,7 @@ def test_audit_fixes_2026_09_02():
         nid = contract.parse(ROOT / "00_Scope/W1/AudX/audit-bind.md").id
         core.ledger_append(VAULT.pins, {"kind": "pin", "target": nid,
                                        "reason": "감사 회귀 시험"})
-        r = _w(write.move_nodes, VAULT, ["audit-bind"], "00_Scope/W1/AudZ")
+        r = _w(node_moves.move_nodes, VAULT, ["audit-bind"], "00_Scope/W1/AudZ")
         core.ledger_append(VAULT.pins, {"kind": "unpin", "target": nid,
                                        "reason": "시험 종료"})
         check("노드 id pin이 이동을 막는다 (#36)",
@@ -12572,7 +12572,7 @@ def test_write_pin_subtree_and_fork():
         n = write.create_node(VAULT, "regr-pin-contained", "test node", "claim", "fable-5",
                               space=src.relative_to(ROOT).as_posix())
         def refused():
-            result = _w(write.move_cluster, VAULT, src.name, dest.relative_to(ROOT).as_posix())
+            result = _w(node_moves.move_cluster, VAULT, src.name, dest.relative_to(ROOT).as_posix())
             return result.get("ok") is False and "pin" in str(result) and src.is_dir()
         for target in (n["id"], dirs[3].relative_to(ROOT).as_posix() + "/"):
             core.ledger_append(VAULT.pins, {"kind": "pin", "target": target})
@@ -12588,7 +12588,7 @@ def test_write_pin_subtree_and_fork():
         check("valid union-merged pin branches are unresolved",
               not core.ledger_damage(core.ledger_read(VAULT.pins)) and
               core.resolve_one(core.ledger_read(VAULT.pins), n["id"], "target") is None)
-        direct = _w(write.move_nodes, VAULT, [n["name"]], dest.relative_to(ROOT).as_posix())
+        direct = _w(node_moves.move_nodes, VAULT, [n["name"]], dest.relative_to(ROOT).as_posix())
         check("unresolved pin blocks a direct move", direct.get("ok") is False and "pin" in str(direct))
         check("unresolved pin blocks a containing-cluster move", refused())
         core.ledger_append(VAULT.pins, {"kind": "unpin", "target": n["id"]})
@@ -12596,7 +12596,7 @@ def test_write_pin_subtree_and_fork():
         VAULT.pins.write_bytes(clean_pins + clean_pins.splitlines(keepends=True)[0])
         check("structurally damaged pins block automatic movement", refused())
         VAULT.pins.write_bytes(clean_pins)
-        moved = write.move_cluster(VAULT, src.name, dest.relative_to(ROOT).as_posix())
+        moved = node_moves.move_cluster(VAULT, src.name, dest.relative_to(ROOT).as_posix())
         check("a resolved unpin permits the cluster move",
               moved["ok"] and (dest / src.name / (n["name"] + ".md")).is_file())
     finally:

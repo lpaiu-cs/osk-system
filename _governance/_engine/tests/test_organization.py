@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, contract, graph, write, validate, organization, distillation
+from osk import core, contract, graph, write, validate, organization, distillation, cluster_gate, node_checks, node_moves, nodefile
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -21,7 +21,7 @@ def node(name, body="Reusable evidence", edges=None):
     wire("W1", name)
     return out
 def wire(hub, name):
-    idx=graph.Index(VAULT); p=write.live_locate(VAULT, hub,idx); n=contract.parse(p)
+    idx=graph.Index(VAULT); p=nodefile.live_locate(VAULT, hub,idx); n=contract.parse(p)
     if name not in n.wikilinks():
         write.update_node(VAULT, hub, body=n.body.rstrip()+chr(10)+"- [["+name+"]]",expect_hash=core.sha256_file(p))
 def rejected(fn):
@@ -49,7 +49,7 @@ class OrganizationTests(unittest.TestCase):
             added = node('Later destination')
             later = organization.plan(VAULT, 'W1')
             assert later['key'] == original['key']
-            path = write.live_locate(VAULT, added['id'], graph.Index(VAULT)); path.unlink()
+            path = nodefile.live_locate(VAULT, added['id'], graph.Index(VAULT)); path.unlink()
             write.update_node(VAULT, 'W1',old_text='- [[Later destination]]',new_text='')
             missing = organization.plan(VAULT, 'W1')
             assert added['id'] in missing['missing_ids']
@@ -263,7 +263,7 @@ class OrganizationTests(unittest.TestCase):
             body = ''.join('Measured value stays within the bounded range for case ' + str(i) + '. '
                            for i in range(160))
             node('Ledger', body)
-            n = contract.parse(write.live_locate(VAULT, 'Ledger', graph.Index(VAULT)))
+            n = contract.parse(nodefile.live_locate(VAULT, 'Ledger', graph.Index(VAULT)))
             units = organization._units(n)
             assert len(units) > 2, units
             for u in units[:-1]:
@@ -341,7 +341,7 @@ class OrganizationTests(unittest.TestCase):
             rp=VAULT.root/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
             rp.write_text("## 1"+chr(10)+"User evidence",encoding="utf-8")
             from unittest import mock
-            with mock.patch.object(write, "_check_edges", return_value=[]):   # written before v5.4
+            with mock.patch.object(node_checks, "check_edges", return_value=[]):   # written before v5.4
                 a=node("A","See [[00_Scope/W1/_raw/evidence.md#1]]",{"derived-from":"[[00_Scope/W1/_raw/evidence.md]]"})
             items=a["reference_review"]["items"]
             assert {i["issue"] for i in items}=={"source_navigation","raw_round_required"},items
@@ -358,7 +358,7 @@ class OrganizationTests(unittest.TestCase):
             a=node("A"); b=node("B"); job=organization.plan(VAULT, "W1")
             write.create_node(VAULT, "Branch","Branch","Two related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             wire("W1","Branch")
-            moved=write.move_nodes(VAULT, ["A","B"],"00_Scope/W1/Branch"); assert moved["ok"]
+            moved=node_moves.move_nodes(VAULT, ["A","B"],"00_Scope/W1/Branch"); assert moved["ok"]
             now=organization.snapshot(VAULT, "W1")
             rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","Moved",after=now["snapshot"]))
             wire("Branch","A"); wire("Branch","B")
@@ -368,7 +368,7 @@ class OrganizationTests(unittest.TestCase):
             assert not now["issues"],now["issues"]
             finish_review("W1", "One meaningful branch; original IDs retained")
             assert organization.status(VAULT, job)["status"]=="complete"
-            path=write.live_locate(VAULT, a["id"],graph.Index(VAULT)); path.unlink()
+            path=nodefile.live_locate(VAULT, a["id"],graph.Index(VAULT)); path.unlink()
             assert organization.status(VAULT, job)["status"]=="pending"
         """)
 
@@ -378,7 +378,7 @@ class OrganizationTests(unittest.TestCase):
             write.create_node(VAULT, "Child","Child","Nested entrance","gpt-6-astra",space="00_Scope/W1/Gap/Child")
             write.create_node(VAULT, "A","A","Retained nested knowledge","gpt-6-astra",space="00_Scope/W1/Gap/Child")
             wire("Child","A")
-            gap=write.live_locate(VAULT, "Gap",graph.Index(VAULT)); original=gap.read_bytes(); gap.unlink()
+            gap=nodefile.live_locate(VAULT, "Gap",graph.Index(VAULT)); original=gap.read_bytes(); gap.unlink()
             assert not organization._state_path(VAULT).exists()
             job=organization.plan(VAULT, "W1")
             assert any(i["path"]=="00_Scope/W1/Gap" and i["hub"] is None for i in job["issues"]),job
@@ -483,22 +483,22 @@ class OrganizationTests(unittest.TestCase):
             a=node("A"); b=node("B")
             write.create_node(VAULT, "Branch","Branch","Related facts","gpt-6-astra",space="00_Scope/W1/Branch")
             job=organization.plan(VAULT, "W1")
-            original=write._apply_move; calls=[]
+            original=node_moves._apply_move; calls=[]
             def injected(*args):
                 calls.append(args[0])
                 if len(calls)==2: raise OSError("injected second move failure")
                 return original(*args)
-            with patch("osk.write._apply_move",side_effect=injected):
-                out=write.move_nodes(VAULT, ["A","B"],"00_Scope/W1/Branch")
+            with patch("osk.node_moves._apply_move",side_effect=injected):
+                out=node_moves.move_nodes(VAULT, ["A","B"],"00_Scope/W1/Branch")
             assert not out["ok"] and out["remaining"]==["B"],out
             pending=organization.snapshot(VAULT, "W1")["pending_moves"]
             assert len(pending)==1 and pending[0]["remaining"][0]["intact"]
-            out=write.move_nodes(VAULT, out["remaining"],"00_Scope/W1/Branch"); assert out["ok"],out
+            out=node_moves.move_nodes(VAULT, out["remaining"],"00_Scope/W1/Branch"); assert out["ok"],out
             assert not organization.snapshot(VAULT, "W1")["pending_moves"]
             for n in [a,b]:
-                p=write.live_locate(VAULT, n["id"],graph.Index(VAULT)); assert core.sha256_file(p)==n["new_hash"]
+                p=nodefile.live_locate(VAULT, n["id"],graph.Index(VAULT)); assert core.sha256_file(p)==n["new_hash"]
             write.create_node(VAULT, "Other","Other","Another meaningful branch","gpt-6-astra",space="00_Scope/W1/Other")
-            assert write.move_nodes(VAULT, ["A"],"00_Scope/W1/Other")["ok"]
+            assert node_moves.move_nodes(VAULT, ["A"],"00_Scope/W1/Other")["ok"]
             wire("W1","Branch"); wire("W1","Other"); wire("Branch","B"); wire("Other","A")
             write.update_node(VAULT, "W1",old_text="- [[A]]",new_text="")
             write.update_node(VAULT, "W1",old_text="- [[B]]",new_text="")
@@ -516,7 +516,7 @@ class OrganizationTests(unittest.TestCase):
             assert out["distillation"]["status"]=="complete",out
             original=distillation._load(VAULT, "retained")
             write.create_node(VAULT, "Branch","Branch","Mechanism knowledge","gpt-6-astra",space="00_Scope/W1/Branch")
-            assert write.move_nodes(VAULT, ["Source","Conclusion"],"00_Scope/W1/Branch")["ok"]
+            assert node_moves.move_nodes(VAULT, ["Source","Conclusion"],"00_Scope/W1/Branch")["ok"]
             proof=distillation.status(VAULT, "retained")
             assert proof["preservation"]["status"]=="complete" and proof["placement"]["status"]=="pending",proof
             proof=distillation.resume(VAULT, "retained",name="Conclusion")["distillation"]
@@ -531,11 +531,11 @@ class OrganizationTests(unittest.TestCase):
             from unittest.mock import patch
             a=node("A")
             write.create_node(VAULT, "Branch","Branch","Related facts","gpt-6-astra",space="00_Scope/W1/Branch")
-            with patch("osk.write._apply_move",side_effect=OSError("injected I/O failure")):
-                failed=write.move_node(VAULT, "A","00_Scope/W1/Branch")
+            with patch("osk.node_moves._apply_move",side_effect=OSError("injected I/O failure")):
+                failed=node_moves.move_node(VAULT, "A","00_Scope/W1/Branch")
             assert not failed["ok"] and failed["moved"]==[] and failed["remaining"]==["A"],failed
-            assert core.sha256_file(write.live_locate(VAULT, a["id"],graph.Index(VAULT)))==a["new_hash"]
-            assert write.move_node(VAULT, "A","00_Scope/W1/Branch")["ok"]
+            assert core.sha256_file(nodefile.live_locate(VAULT, a["id"],graph.Index(VAULT)))==a["new_hash"]
+            assert node_moves.move_node(VAULT, "A","00_Scope/W1/Branch")["ok"]
             assert not organization.snapshot(VAULT, "W1")["pending_moves"]
         """)
 
@@ -561,7 +561,7 @@ class OrganizationTests(unittest.TestCase):
             a=node("A"); job=organization.plan(VAULT, "W1")
             write.update_node(VAULT, "A",body="",expect_hash=a["new_hash"])
             rejected(lambda: organization.review(VAULT, job["key"],"W1","complete","No content retained",after=organization.snapshot(VAULT, "W1")["snapshot"]))
-            p=write.live_locate(VAULT, a["id"],graph.Index(VAULT))
+            p=nodefile.live_locate(VAULT, a["id"],graph.Index(VAULT))
             write.update_node(VAULT, "A",body="Restored knowledge",expect_hash=core.sha256_file(p))
             rp=VAULT.root/"00_Scope/W1/_raw/evidence.md"; rp.parent.mkdir(parents=True,exist_ok=True)
             rp.write_text("## 1"+chr(10)+"Observed",encoding="utf-8")
@@ -594,7 +594,7 @@ class OrganizationTests(unittest.TestCase):
             rows=[{"type":"user","sessionId":"trial","uuid":"u","message":{"role":"user","content":"Observed a durable rule"}},
                   {"type":"assistant","sessionId":"trial","uuid":"a","message":{"role":"assistant","id":"m","stop_reason":"end_turn","content":[{"type":"text","text":"A bounded conclusion"}]}}]
             transcript.write_text(chr(10).join(json.dumps(r) for r in rows),encoding="utf-8")
-            from osk import write
+            from osk import write, cluster_gate, node_checks, node_moves, nodefile
             write.bind_session(VAULT, "trial","W1")  # tracking alone binds nothing
             st=integration.capture(VAULT, "claude","trial",str(transcript),"trial",space="00_Scope/W1")
             assert st["pending_refs"],st

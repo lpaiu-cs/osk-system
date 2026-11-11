@@ -4,11 +4,11 @@
   "function_branches": 15
  },
  "totals": {
-  "upward_imports": 6,
-  "lazy_imports": 56,
-  "two_module_cycles": 17,
-  "tangled_modules": 28,
-  "private_access": 6,
+  "upward_imports": 4,
+  "lazy_imports": 55,
+  "two_module_cycles": 15,
+  "tangled_modules": 32,
+  "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
   "broad_except": 125,
@@ -17,20 +17,20 @@
   "excess_branches": 1605
  },
  "upward_imports": {
-  "osk.evictions -> osk.write": 1,
   "osk.rechecks -> osk.growth": 2,
-  "osk.scope_memory -> osk.write": 1,
   "osk.validate -> mcp_server": 1,
   "osk.validate -> osk.cli": 1
  },
  "lazy_imports": {
+  "osk.cluster_gate": 1,
   "osk.distillation": 1,
   "osk.doctor": 3,
-  "osk.evictions": 3,
+  "osk.evictions": 2,
   "osk.evidence": 3,
   "osk.graph": 7,
   "osk.growth": 9,
   "osk.harness": 1,
+  "osk.node_moves": 1,
   "osk.publish": 1,
   "osk.raw": 4,
   "osk.rechecks": 2,
@@ -41,7 +41,7 @@
   "osk.transcripts": 1,
   "osk.update": 2,
   "osk.validate": 9,
-  "osk.write": 4
+  "osk.write": 2
  },
  "two_module_cycles": [
   "mcp_server <-> osk.validate",
@@ -49,7 +49,6 @@
   "osk.distillation <-> osk.integration",
   "osk.distillation <-> osk.write",
   "osk.evictions <-> osk.scope_memory",
-  "osk.evictions <-> osk.write",
   "osk.evidence <-> osk.graph",
   "osk.evidence <-> osk.raw",
   "osk.graph <-> osk.raw",
@@ -58,18 +57,11 @@
   "osk.growth <-> osk.growth_daily",
   "osk.growth <-> osk.rechecks",
   "osk.growth <-> osk.response_growth",
-  "osk.organization <-> osk.write",
   "osk.publish <-> osk.release",
   "osk.update <-> osk.update_check"
  ],
- "tangled_modules": 28,
- "private_access": {
-  "osk.distillation": 1,
-  "osk.evictions": 1,
-  "osk.integration": 1,
-  "osk.organization": 1,
-  "osk.scope_memory": 2
- },
+ "tangled_modules": 32,
+ "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
  "broad_except": {
@@ -77,6 +69,7 @@
   "osk.approvals": 1,
   "osk.authority": 1,
   "osk.cli": 4,
+  "osk.cluster_gate": 1,
   "osk.core": 2,
   "osk.distillation": 2,
   "osk.doctor": 3,
@@ -86,6 +79,8 @@
   "osk.growth_daily": 1,
   "osk.hook_text": 1,
   "osk.integration": 6,
+  "osk.node_checks": 1,
+  "osk.node_moves": 3,
   "osk.organization": 2,
   "osk.publish": 1,
   "osk.rechecks": 5,
@@ -97,7 +92,7 @@
   "osk.update": 3,
   "osk.update_check": 1,
   "osk.validate": 18,
-  "osk.write": 8,
+  "osk.write": 3,
   "scripts.hooks.capture_stop": 4,
   "scripts.hooks.claude_prompt_submit": 2,
   "scripts.hooks.claude_session_start": 25,
@@ -319,6 +314,22 @@
    52,
    35
   ],
+  "osk.node_checks:check_edges": [
+   50,
+   23
+  ],
+  "osk.node_checks:topology_of": [
+   60,
+   21
+  ],
+  "osk.node_moves:move_cluster": [
+   62,
+   16
+  ],
+  "osk.node_moves:move_nodes": [
+   83,
+   12
+  ],
   "osk.organization:apply_binding_decisions": [
    29,
    20
@@ -511,25 +522,9 @@
    43,
    16
   ],
-  "osk.write:_check_edges": [
-   50,
-   23
-  ],
-  "osk.write:_topology_of": [
-   60,
-   21
-  ],
   "osk.write:create_node_locked": [
    117,
    29
-  ],
-  "osk.write:move_cluster": [
-   62,
-   16
-  ],
-  "osk.write:move_nodes": [
-   83,
-   12
   ],
   "osk.write:update_node_locked": [
    199,

@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .core import local_lock_path, mutation_lock, now_iso, posix_rel, sha256_bytes
-from . import evictions, graph, prose, routing, secrets, workspaces, write
+from . import evictions, graph, nodefile, prose, routing, secrets, workspaces
 from .errors import WriteError
 from .vault import Vault
 
@@ -74,7 +74,7 @@ def _pending_set(vault: Vault, key: str, scope: str | None = None, base_hash: st
     if p.is_file():
         return                              # 재거부로 대기 시작을 늦추지 않는다
     # 초안은 저장하지 않는다. 기존 표식에 복구할 자리·시점만 붙인다.
-    write._atomic_write(p, json.dumps({
+    nodefile.write_file(p, json.dumps({
         "session": key, "scope": scope, "since": now_iso(), "base_hash": base_hash,
     }, ensure_ascii=False).encode("utf-8"))
 
@@ -209,7 +209,7 @@ def _read(p: Path) -> str:
     """저장본을 **바이트 그대로** 읽어 정본 형태로 접는다.
 
     `read_text`의 universal newlines를 쓰면 읽기와 쓰기가 다른 문자열을 본다 —
-    쓰기(`_atomic_write`)는 `\\r`을 그대로 저장하는데 읽기만 접으므로, 성공
+    쓰기(`nodefile.write_file`)는 `\\r`을 그대로 저장하는데 읽기만 접으므로, 성공
     응답의 `hash`와 다음 CAS가 재는 `hash`가 갈린다. 그러면 자기가 방금 쓴
     해시로 다시 부른 호출자가 "다른 기기의 통합이 들어왔다"는 거짓 진단을
     받는다(실측 재현 — PowerShell 파이프가 CRLF를 내므로 `sm write` 훅 경로가
@@ -505,7 +505,7 @@ def replace(vault: Vault, session: str, text: str | None = None,
         if not workspaces.is_one_off(vault, session) and scope not in routing.bindings(vault, session)["scopes"]:
             routing.bind_session(vault, session, scope, "scope 기억 쓰기가 결속에 더함", primary=False)
         p.parent.mkdir(parents=True, exist_ok=True)
-        write._atomic_write(p, (body + chr(10)).encode("utf-8") if body else b"")
+        nodefile.write_file(p, (body + chr(10)).encode("utf-8") if body else b"")
         _OVERFLOW_RUNS.pop(key, None)       # 성공이 연속 계수를 지운다
         if body != cur and pending and (not pending["scope"] or pending["scope"] == scope):
             _pending_clear(vault, key)             # no-op·다른 scope의 성공은 복구가 아니다

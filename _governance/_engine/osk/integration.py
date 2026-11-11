@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import (core, raw, scope_memory, transcripts, workspaces, write, distillation, evidence, organization,
-               raw_view, secrets)
+               raw_view, secrets, node_checks, nodefile)
 from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
@@ -99,7 +99,7 @@ def validate_state(vault: Vault, s: dict, harness: str, sid: str) -> dict:
 
 
 def save_state(p: Path, s: dict) -> None:
-    write._atomic_write(p, json.dumps(s, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    nodefile.write_file(p, json.dumps(s, ensure_ascii=False, sort_keys=True).encode("utf-8"))
 
 
 def _snapshot(s: dict) -> str | None:
@@ -1584,7 +1584,7 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
              "scope 밖의 다른 scope와 Domain 노드도 든다(시행령 §3 8항). 주장이 같으면 그 노드를 갱신하고, 새 노드가 "
              "찾은 노드의 주장에 실제로 기대면 derived-from으로 건다. 주제만 겹치면 걸지 않는다. search를 한 번도 "
              "부르지 않은 세션의 create_node는 거부된다(Mechanism §6-2 10항). "
-             + write.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. ")
+             + node_checks.CLAIM_GUIDANCE + "오래 쓸 지식만 Scope 노드로 옮긴다. ")
     # 세션이 아직 결속되지 않았으면(첫 노드 쓰기 전) 이 대화가 착지한 scope로 본다
     tree_scope = scope or (raw.scope_of_space(vault, s["space"]) if s.get("space") else None)
     st["review_scope"] = tree_scope

@@ -15,7 +15,7 @@ import json
 import re
 from pathlib import Path
 
-from . import contract, evidence, graph, prose, raw, secrets, write
+from . import contract, evidence, graph, prose, raw, secrets, write, nodefile
 from .core import local_lock_path, mutation_lock, posix_rel, resolve_in_root, sha256_bytes, sha256_file
 from .vault import Vault
 
@@ -45,7 +45,7 @@ def _load(vault: Vault, key: str) -> dict | None:
 
 def _save(vault: Vault, job: dict) -> None:
     # This is operational state outside the tracked graph, not a node write.
-    write._atomic_write(_job_path(vault, job["key"]),
+    nodefile.write_file(_job_path(vault, job["key"]),
                         json.dumps(job, ensure_ascii=False, sort_keys=True).encode())
 
 
@@ -79,7 +79,7 @@ def _source(vault: Vault, ref: str, idx) -> dict:
             if words:
                 source["native_user"] = words  # with the words it cited.
         return source
-    p = write.live_locate(vault, value, idx)
+    p = nodefile.live_locate(vault, value, idx)
     if p is None or not p.is_file() or graph.space_of(vault, p)[0] not in ("scope", "domain"):
         raise write.WriteError("source must resolve to a Scope/Domain node or exact raw round")
     node = contract.parse(p)
@@ -108,7 +108,7 @@ def _sources(vault: Vault, items, idx) -> list[dict]:
 
 
 def _hub(vault: Vault, name: str, idx) -> dict:
-    p = write.live_locate(vault, name, idx)
+    p = nodefile.live_locate(vault, name, idx)
     if p is None or not p.is_file() or not graph.is_hub(p):
         raise write.WriteError("distill.hub must name an existing hub")
     if graph.space_of(vault, p)[0] not in _TARGETS:
@@ -172,7 +172,7 @@ def _added_segments(old_body: str, new_body: str, headings: bool = True) -> list
 
 
 def _retained_target(vault: Vault, target: dict, idx) -> Path:
-    p = write.live_locate(vault, target["id"], idx)
+    p = nodefile.live_locate(vault, target["id"], idx)
     if p is None or not p.is_file():
         raise write.WriteError("target missing; original request or review is required")
     if (tuple(p.relative_to(vault.root).parts[:2]) != tuple(Path(target["path"]).parts[:2])
@@ -206,7 +206,7 @@ def node_placement(vault: Vault, p: Path, idx, *, repair: bool = False, selected
                 and directory == vault.root / Path(selected["hub"]["path"]).parent
                 and hn.id != selected["hub"]["id"]):
             raise write.WriteError("hub identity changed; pending")
-        if child not in {write.live_locate(vault, ref, idx) for ref in hn.wikilinks()}:
+        if child not in {nodefile.live_locate(vault, ref, idx) for ref in hn.wikilinks()}:
             if not repair:
                 raise write.WriteError("selected hub does not link to target; pending")
             # 이름으로 부른다 — id 핸들은 색인 전수 판독을 부른다(`live_locate`). 같은 잠금 안의 색인을 잇는다.
@@ -251,7 +251,7 @@ def _verify(vault: Vault, job: dict, idx=None) -> dict:
     retained = False
     try:
         idx = graph.Index(vault) if idx is None else idx
-        write.require_complete(idx)
+        nodefile.require_complete(idx)
         _check_sources(vault, job, idx)
         target, hub = job["target"], job["hub"]
         p = _retained_target(vault, target, idx)
@@ -280,7 +280,7 @@ def structure(vault: Vault, receipt: dict, idx=None) -> str | None:
     try:
         idx = graph.Index(vault) if idx is None else idx
         target = receipt["target"]
-        p = write.live_locate(vault, target["id"], idx)
+        p = nodefile.live_locate(vault, target["id"], idx)
         if p is None or not p.is_file():
             return "target missing"
         if p.relative_to(vault.root).parts[:2] != Path(target["path"]).parts[:2]:
@@ -332,7 +332,7 @@ def discover(vault: Vault, raw_refs: list[str], limit: int = 8, scan_limit: int 
         raise write.WriteError("bounded raw references and discovery limits required")
     with mutation_lock(vault):
         idx = graph.Index(vault)
-        write.require_complete(idx)
+        nodefile.require_complete(idx)
         # Original-turn refs are not vault paths; a proof binds one only through a cited round
         # (`_source` keeps its `native`). A turn never cited has no proof to find, so it needs no
         # receipt scan — scanning the newest receipts made every review read "incomplete" once
@@ -399,7 +399,7 @@ def discover(vault: Vault, raw_refs: list[str], limit: int = 8, scan_limit: int 
 def _wire_hub(vault: Vault, job: dict) -> dict:
     """Resume current navigation without rewriting the historical receipt."""
     idx = graph.Index(vault)
-    write.require_complete(idx)
+    nodefile.require_complete(idx)
     proof = _verify(vault, job)
     if proof.get("preservation", {}).get("status") != "complete":
         raise write.WriteError(proof.get("reason", "retained knowledge is not verified"))
@@ -454,7 +454,7 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
         if job and job["binding"] != binding:
             raise write.WriteError("distill.key is already bound to a different request")
         idx = graph.Index(vault)
-        write.require_complete(idx)
+        nodefile.require_complete(idx)
         if job and _verify(vault, job).get("preservation", {}).get("status") == "complete":
             try:
                 receipt = _wire_hub(vault, job)
@@ -484,7 +484,7 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
                 target_path = None
                 selected_hash = None
             else:
-                target_path = write.live_locate(vault, request["name"], idx)
+                target_path = nodefile.live_locate(vault, request["name"], idx)
                 if target_path is None or not target_path.is_file():
                     raise write.WriteError("distillation target does not exist")
                 if graph.space_of(vault, target_path)[0] not in _TARGETS:

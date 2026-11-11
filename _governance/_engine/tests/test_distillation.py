@@ -27,7 +27,7 @@ def _child():
     with tempfile.TemporaryDirectory(prefix="osk-distillation-test-") as folder:
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(ENGINE))
-        from osk import core, contract, distillation as D, evidence, raw, validate, write
+        from osk import core, contract, distillation as D, evidence, raw, validate, write, cluster_gate, node_checks, node_moves, nodefile
         from osk.vault import Vault
         VAULT = Vault.open()
         validate.make_mini_vault(VAULT, folder)
@@ -57,12 +57,12 @@ def _child():
                 return D.create_node(VAULT, self.spec, **self.args)
 
             def fail_hub(self):
-                atomic = write._atomic_write
+                atomic = nodefile.write_file
                 def fail(path, data):
                     if path == self.hub:
                         raise OSError("injected hub failure")
                     return atomic(path, data)
-                return mock.patch.object(write, "_atomic_write", side_effect=fail)
+                return mock.patch.object(nodefile, "write_file", side_effect=fail)
 
             def test_create_and_response_retry(self):
                 out = self.create()
@@ -118,13 +118,13 @@ def _child():
                 self.assertEqual(self.create()["distillation"]["status"], "complete")
 
             def test_crash_before_node_uses_reserved_identity(self):
-                atomic = write._atomic_write
+                atomic = nodefile.write_file
                 target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     if path == target:
                         raise Crash()
                     return atomic(path, data)
-                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                with mock.patch.object(nodefile, "write_file", side_effect=crash):
                     with self.assertRaises(Crash):
                         self.create()
                 job = D._load(VAULT, self.key)
@@ -135,13 +135,13 @@ def _child():
                 self.assertEqual(again["distillation"]["status"], "complete")
 
             def test_crash_after_node_before_hub(self):
-                atomic = write._atomic_write
+                atomic = nodefile.write_file
                 target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     atomic(path, data)
                     if path == target:
                         raise Crash()
-                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                with mock.patch.object(nodefile, "write_file", side_effect=crash):
                     with self.assertRaises(Crash):
                         self.create()
                 saved = target.read_bytes()
@@ -176,7 +176,7 @@ def _child():
                             legacy = f'derived-from: "[[00_Scope/W1/_raw/{name}-raw.md#1]]"\n'
                             target.write_bytes(target.read_bytes().replace(b"summary:", legacy.encode() + b"summary:", 1))
                             request = dict(name=old["id"], body=self.args["body"], expect_hash=core.sha256_file(target))
-                        atomic, save = write._atomic_write, D._save
+                        atomic, save = nodefile.write_file, D._save
                         reserved = []
 
                         def v1_save(vault, job):
@@ -191,7 +191,7 @@ def _child():
 
                         with mock.patch.object(write, "_as_links", side_effect=v1_links),\
                                 mock.patch.object(D, "_save", side_effect=v1_save),\
-                                mock.patch.object(write, "_atomic_write", side_effect=crash):
+                                mock.patch.object(nodefile, "write_file", side_effect=crash):
                             with self.assertRaises(Crash):
                                 D._execute(VAULT, operation, self.spec, request)
                         journal = D._job_path(VAULT, self.key).read_bytes()
@@ -224,7 +224,7 @@ def _child():
                 self.spec["sources"] = [record["round_refs"][0]]
                 self.args["body"] += ("\n\n## 근거\n\n- 2026-10-31 · `"
                                       + evidence.coordinate(VAULT, record["path"], 1) + "` · 지지 — q")
-                atomic = write._atomic_write
+                atomic = nodefile.write_file
                 target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 reserved = []
 
@@ -234,7 +234,7 @@ def _child():
                         raise Crash()
                     return atomic(path, data)
 
-                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                with mock.patch.object(nodefile, "write_file", side_effect=crash):
                     with self.assertRaises(Crash):
                         self.create()
                 self.assertEqual(D._load(VAULT, self.key)["version"], 2)
@@ -378,12 +378,12 @@ def _child():
                 target = VAULT.root / existing["path"]
                 request = dict(name=existing["id"], body=self.args["body"],
                                expect_hash=existing["new_hash"])
-                atomic = write._atomic_write
+                atomic = nodefile.write_file
                 def crash(path, data):
                     atomic(path, data)
                     if path == target:
                         raise Crash()
-                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                with mock.patch.object(nodefile, "write_file", side_effect=crash):
                     with self.assertRaises(Crash):
                         D.update_node(VAULT, self.spec, **request)
                 saved = target.read_bytes()
@@ -476,13 +476,13 @@ def _child():
                         D.update_node(VAULT, {"resume": self.key}, name=out["id"], **extra)
 
             def test_later_worker_cannot_create_missing_reserved_target(self):
-                atomic = write._atomic_write
+                atomic = nodefile.write_file
                 target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     if path == target:
                         raise Crash()
                     return atomic(path, data)
-                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                with mock.patch.object(nodefile, "write_file", side_effect=crash):
                     with self.assertRaises(Crash):
                         self.create()
                 job = D._load(VAULT, self.key)
@@ -554,14 +554,14 @@ def _child():
 
             def test_journal_saved_before_heading_units_replays_its_binding(self):
                 # 업그레이드 전에 저장하고 쓰기 전에 끊긴 저널은 문단만 결속했다(#141 리뷰 P2).
-                atomic = write._atomic_write
+                atomic = nodefile.write_file
                 target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 def crash(path, data):
                     if path == target:
                         raise Crash()
                     return atomic(path, data)
                 args = dict(self.args, body="## Retry only idempotent requests\n\nVerified on Linux.")
-                with mock.patch.object(write, "_atomic_write", side_effect=crash):
+                with mock.patch.object(nodefile, "write_file", side_effect=crash):
                     with self.assertRaises(Crash):
                         D.create_node(VAULT, self.spec, **args)
                 job = D._load(VAULT, self.key)
