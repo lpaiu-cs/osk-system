@@ -28,13 +28,13 @@ class UpdateReviewTests(unittest.TestCase):
 import json, time
 from pathlib import Path
 from unittest import mock
-from osk import approvals, core, update, daemon_control, update_plan, update_source, update_state, update_txn
+from osk import approvals, core, update, daemon_control, update_plan, update_source, update_state, update_txn, approval_acts, region_tree
 from osk.vault import Vault
 VAULT = Vault.open()
 root = VAULT.root
 (root / '_governance').mkdir(parents=True)
 (root / '_governance/Policy.md').write_text('old')
-approvals.protect(VAULT, '_governance')
+approval_acts.protect(VAULT, '_governance')
 bundle = root.parent / 'bundle'
 (bundle / '_governance/_engine/scripts').mkdir(parents=True)
 manifest = bundle / '_governance/_engine/scripts/publish-manifest.txt'
@@ -94,11 +94,11 @@ assert run(apply=True)['approval_required']
 # A failure after acceptance restores both approval and framework bytes.
 old_ledger = approvals.ledger_path(VAULT).read_bytes()
 old_policy = (root / '_governance/Policy.md').read_bytes()
-real_accept = approvals.approve_locked
+real_accept = approval_acts.approve_locked
 def fail_after_accept(*args, **kw):
     real_accept(*args, **kw)
     raise OSError('injected failure after approval')
-with mock.patch.object(approvals, 'approve_locked', side_effect=fail_after_accept):
+with mock.patch.object(approval_acts, 'approve_locked', side_effect=fail_after_accept):
     try: run(apply=True)
     except update_state.UpdateError as e: assert '원상복구' in str(e)
     else: raise AssertionError('expected rollback')
@@ -178,7 +178,7 @@ finally:
             script = r'''
 import json
 from unittest import mock
-from osk import approvals, core, update, daemon_control, update_plan, update_source, update_state, update_txn
+from osk import approvals, core, update, daemon_control, update_plan, update_source, update_state, update_txn, approval_acts, region_tree
 from osk.vault import Vault
 VAULT = Vault.open()
 root = VAULT.root
@@ -208,11 +208,11 @@ with mock.patch.object(update, '_governance_review', side_effect=older_engine):
     rep = run()
 assert rep['applied'] and rep['governance_protected'] is None, rep
 assert approvals.state(VAULT, '_governance') == 'unprotected'
-real = approvals.protect
+real = approval_acts.protect
 def fail_after_protect(*a, **kw):
     real(*a, **kw)
     raise OSError('injected failure after protect')
-with mock.patch.object(approvals, 'protect', side_effect=fail_after_protect):
+with mock.patch.object(approval_acts, 'protect', side_effect=fail_after_protect):
     try: run()
     except update_state.UpdateError as e: assert '원상복구' in str(e), e
     else: raise AssertionError('expected rollback')
@@ -229,7 +229,7 @@ rep = run()
 assert rep['governance_accepted'] and rep['governance_protected'] is None, rep
 assert [r['kind'] for r in approvals.records(VAULT)] == ['protect', 'approve']
 # A region the user released is not re-protected by an update.
-approvals.unprotect(VAULT, '_governance')
+approval_acts.unprotect(VAULT, '_governance')
 (bundle / '_governance/Policy.md').write_text('v3')
 files['_governance/Policy.md'] = core.sha256_file(bundle / '_governance/Policy.md')
 (bundle / 'release.json').write_text(json.dumps({'version': 'v9.41.2', 'files': files}))

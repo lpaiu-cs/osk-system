@@ -107,21 +107,21 @@
    70,
    15
   ],
-  "osk.approvals:_plan_unmoves": [
+  "osk.approval_acts:_plan_unmoves": [
    43,
    19
   ],
-  "osk.approvals:approve_locked": [
+  "osk.approval_acts:approve_locked": [
    52,
    18
+  ],
+  "osk.approval_acts:revert": [
+   109,
+   21
   ],
   "osk.approvals:changeset": [
    80,
    34
-  ],
-  "osk.approvals:revert": [
-   109,
-   21
   ],
   "osk.cli:_growth_cmd": [
    42,

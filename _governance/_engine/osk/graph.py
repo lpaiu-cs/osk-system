@@ -72,7 +72,7 @@ def _off_node(parts: tuple) -> bool:
     """노드 자리 **안의** 살림 구획인가 — 점 접두 조각(파일 포함)과 밑줄 접두
     디렉토리. 점 접두는 도구의 살림살이이고(`.obsidian`·`.trash`·AppleDouble
     `._x`), 밑줄 접두 구획에는 노드를 두지 않는다(Mechanism §1 4항). 구판은
-    이것을 소비자마다 따로 보았다 — 보호영역(`approvals.region_files`)은 점
+    이것을 소비자마다 따로 보았다 — 보호영역(`region_tree.region_files`)은 점
     접두를 빼는데 색인은 넣어서, 승인되지 않은 `.hidden.md`가 기억으로 읽히고
     고쳐지는 동안 영역은 clean이었다. 판정은 여기 한 벌이다."""
     return bool(parts) and (parts[-1].startswith(".") or any(

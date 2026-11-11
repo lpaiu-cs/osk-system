@@ -34,7 +34,7 @@ LAYERS = {
     KERNEL: ["osk", "osk._portalock", "osk.epoch", "osk.layout", "osk.vault", "osk.core", "osk.errors"],
     MODEL: ["osk.contract", "osk.naming", "osk.prose", "osk.secrets", "osk.raw_view"],
     STORE: ["osk.graph", "osk.nodefile", "osk.cluster_gate", "osk.raw", "osk.evidence", "osk.roots", "osk.workspaces", "osk.signatures", "osk.routing",
-            "osk.approvals", "osk.scope_memory", "osk.evictions", "osk.rechecks", "osk.transcripts",
+            "osk.region_tree", "osk.approvals", "osk.approval_acts", "osk.scope_memory", "osk.evictions", "osk.rechecks", "osk.transcripts",
             "osk.conversation_state", "osk.growth_ledger", "osk.worker_process",
             "osk.update_state", "osk.update_source", "osk.update_txn",
             "osk.native_cli", "osk.harness", "osk.harness.base", "osk.harness.runs", "osk.harness.claude",
