@@ -194,7 +194,7 @@ def main():
         # `doctor --migrate` gathers old-place records into the root `_cited/` (Mechanism §9 5항):
         # it plans first, moves only on the confirmed second call, and keeps bytes, old
         # coordinates and receipts. A copy shadowed by a root record is reported, never moved.
-        from osk import doctor
+        from osk import cli, doctor
         proof_path.write_bytes(proof_path.read_bytes().replace(b"tampered result", b"verified result"))
         assert D.verify_receipt(VAULT, historic)["status"] == "complete"
         before = {r["record"]: raw.read_round(VAULT, r["path"] + "#1")["text"]
@@ -206,7 +206,7 @@ def main():
         assert plan["count"] == len(before) and not plan["applied"], plan
         assert [c["path"] for c in plan["conflicts"]] == ["00_Scope/W1/_raw/.records/new.txt"], plan
         records = "옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)"
-        rep, code = doctor.vault(VAULT)
+        rep, code = doctor.vault(VAULT, cli.published_tools)
         checks = {i["check"]: i for i in rep["items"]}
         assert checks[records]["level"] == "warn" and "기록 충돌" in checks, rep["items"]
         rep, code = doctor.migrate(VAULT)
@@ -230,7 +230,7 @@ def main():
         listing = (root / rep["applied"][0]["manifest"]).read_text(encoding="utf-8")
         assert all(f"`{m['from']}` → `{m['to']}`" in listing for m in plan["files"]), listing
         assert "## 결과" in listing and "→ 보류 — " in listing, listing
-        assert {i["check"]: i["level"] for i in doctor.vault(VAULT)[0]["items"]}[records] == "ok"
+        assert {i["check"]: i["level"] for i in doctor.vault(VAULT, cli.published_tools)[0]["items"]}[records] == "ok"
         assert [p for p in base.rglob("*") if p.is_file()] == [shadow]
         for m in plan["files"]:
             dest = root / m["to"]

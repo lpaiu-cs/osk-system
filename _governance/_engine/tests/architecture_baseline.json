@@ -4,23 +4,20 @@
   "function_branches": 15
  },
  "totals": {
-  "upward_imports": 2,
-  "lazy_imports": 27,
-  "two_module_cycles": 2,
-  "tangled_modules": 12,
+  "upward_imports": 0,
+  "lazy_imports": 25,
+  "two_module_cycles": 0,
+  "tangled_modules": 0,
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
   "broad_except": 125,
   "oversize_functions": 119,
-  "excess_lines": 2732,
+  "excess_lines": 2725,
   "excess_branches": 1605,
-  "late_loads": 2
+  "late_loads": 1
  },
- "upward_imports": {
-  "osk.validate -> mcp_server": 1,
-  "osk.validate -> osk.cli": 1
- },
+ "upward_imports": {},
  "lazy_imports": {
   "osk.cluster_gate": 1,
   "osk.doctor": 2,
@@ -33,14 +30,11 @@
   "osk.services": 2,
   "osk.setup": 1,
   "osk.transcripts": 1,
-  "osk.validate": 8,
+  "osk.validate": 6,
   "osk.worker_process": 3
  },
- "two_module_cycles": [
-  "mcp_server <-> osk.validate",
-  "osk.cli <-> osk.validate"
- ],
- "tangled_modules": 12,
+ "two_module_cycles": [],
+ "tangled_modules": 0,
  "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
@@ -111,13 +105,13 @@
    42,
    18
   ],
-  "osk.cli:build_parser": [
-   168,
-   9
-  ],
   "osk.cli:main": [
    215,
    57
+  ],
+  "osk.cli_parser:build_parser": [
+   168,
+   9
   ],
   "osk.contract:md_lines": [
    67,
@@ -492,7 +486,7 @@
    22
   ],
   "osk.validate:surface_lint": [
-   90,
+   83,
    31
   ],
   "osk.validate:surface_violations": [
@@ -562,8 +556,7 @@
  },
  "late_loads": {
   "mcp_server": [
-   "osk.harness -> osk.native_cli",
-   "osk.validate -> osk.cli"
+   "osk.harness -> osk.native_cli"
   ],
   "sync_daemon": []
  }

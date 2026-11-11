@@ -18,7 +18,7 @@ SETUP = r'''
 import json, os, subprocess, sys, time
 from pathlib import Path
 from unittest import mock
-from osk import core, update, update_check, validate, daemon_control, update_plan, update_source, update_state, update_txn
+from osk import cli, core, update, update_check, validate, daemon_control, update_plan, update_source, update_state, update_txn
 from osk.vault import Vault
 VAULT = Vault.open()
 root = VAULT.root
@@ -131,7 +131,7 @@ assert update_check.session_notice(VAULT) == ('', '')
 seen = update_check.surface(VAULT)
 assert seen['acked'] is True and 'notify' not in seen and command in seen['how'], seen
 assert update_check.report(VAULT)['acked'] is True
-assert '대장 JSON 무결' in validate.run(VAULT)['pass']
+assert '대장 JSON 무결' in validate.run(VAULT, cli.published_tools)['pass']
 # A newer release is not covered by the ack of an older one.
 cached(latest='v4.12.0')
 assert update_check.session_notice(VAULT)[0].startswith('[osk 새 릴리스 — v4.12.0'), 'newer release'
@@ -415,7 +415,7 @@ core.local_lock_path(update_check.ACK, VAULT.root).unlink()
 with update_check.acks_path(VAULT).open('a', encoding='utf-8') as f:
     f.write('{"kind": "ack", "vers\n')
 assert update_check.session_notice(VAULT)[0].startswith('[osk 새 릴리스 — v4.12.0'), 'damaged ledger'
-assert any('release.jsonl' in str(f) for f in validate.run(VAULT)['fail']), 'the validator reads it'
+assert any('release.jsonl' in str(f) for f in validate.run(VAULT, cli.published_tools)['fail']), 'the validator reads it'
 r = subprocess.run([sys.executable, '-m', 'osk.update', '--ack', 'v4.12.0'], capture_output=True,
                    text=True, encoding='utf-8')
 assert r.returncode == 1 and json.loads(r.stdout)['synced'] is False, (r.returncode, r.stdout)

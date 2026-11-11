@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process, placement, topology
+from osk import cli, core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process, placement, topology
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -799,7 +799,7 @@ class GrowthTests(unittest.TestCase):
                                          edges={'derived-from': first['round_refs'][0]})['ok']
             from osk import roots
             roots.declare(VAULT, 'brain', 'wiki')
-            rep = validate.run(VAULT)
+            rep = validate.run(VAULT, cli.published_tools)
             # a non-node left in derived-from is counted by node, not listed line by line
             assert list(rep['evidence_section']) == ['A'] and rep['evidence_section_leftovers'] == 1, rep['evidence_section']
             # a declared root that is not on this device is held, not a violation (Mechanism §6-1 4)
@@ -808,7 +808,7 @@ class GrowthTests(unittest.TestCase):
             assert not rep['evidence_section_active']
             assert not any('근거 절' in f for d in rep['fail'] for f in d), rep['fail']
             core.ledger_append(VAULT.validators, {'kind': 'activate', 'rule': 'evidence-section'})
-            assert any('근거 절' in f for d in validate.run(VAULT)['fail'] for f in d), 'an active rule did not count'
+            assert any('근거 절' in f for d in validate.run(VAULT, cli.published_tools)['fail'] for f in d), 'an active rule did not count'
         """)
 
     def test_a_clean_rule_without_records_turns_itself_on_once_a_day(self):
@@ -884,7 +884,7 @@ class GrowthTests(unittest.TestCase):
             ledger = VAULT.validators.relative_to(VAULT.root).as_posix()
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '',
                                          '- 2026-11-01 · `' + ledger + '` · 지지 — 활성화 기록']))
-            rep = validate.run(VAULT)
+            rep = validate.run(VAULT, cli.published_tools)
             assert not any('scope 간' in f for d in rep['fail'] for v in d.values() for f in v), rep['fail']
             assert 'A' not in rep.get('evidence_section', {}), rep.get('evidence_section')
         """)

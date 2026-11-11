@@ -741,8 +741,8 @@ class DailyTests(unittest.TestCase):
             b = growth_daily.backlog(VAULT)
             assert (b['conversations'], b['turns'], b['batches']) == (5, 16, 3), b
             assert b['unit_tokens'] == growth_daily.SCOPE_UNIT_COST and b['tokens'] == 3 * b['unit_tokens'], b
-            from osk import doctor
-            item = next(i for i in doctor._vault_items(VAULT) if i['check'] == '대화 검토 적체')
+            from osk import cli, doctor
+            item = next(i for i in doctor._vault_items(VAULT, cli.published_tools) if i['check'] == '대화 검토 적체')
             assert '묶음 약 3개' in item['detail'] and '450,000 토큰' in item['detail'], item
             assert '--backlog' in item['fix'] and '0.9' in item['fix'], item
         """)

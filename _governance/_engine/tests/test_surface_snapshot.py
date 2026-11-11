@@ -74,9 +74,9 @@ def cli_tree(parser: argparse.ArgumentParser) -> dict:
 
 
 def surface() -> dict:
-    from osk import cli
+    from osk import cli, cli_parser
     return {"generated_with": {name: metadata.version(name) for name in SCHEMA_MAKERS},
-            "cli": cli_tree(cli.build_parser()), "mcp_tools": mcp_tools()}
+            "cli": cli_tree(cli_parser.build_parser()), "mcp_tools": mcp_tools()}
 
 
 def _leaves(tree: dict) -> int:

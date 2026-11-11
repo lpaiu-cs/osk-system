@@ -44,7 +44,7 @@ LAYERS = {
               "osk.validate", "osk.conversation_capture", "osk.conversation_review", "osk.conversation_cite",
               "osk.integration", "osk.growth_plan", "osk.growth_reviews", "osk.growth", "osk.growth_daily", "osk.growth_status",
               "osk.response_growth", "osk.update_plan", "osk.daemon_control", "osk.update", "osk.release", "osk.publish", "osk.update_check",
-              "osk.setup", "osk.services", "osk.doctor", "osk.evidence_migration", "osk.hook_text", "osk.sync_status",
+              "osk.setup", "osk.services", "osk.doctor", "osk.cli_parser", "osk.evidence_migration", "osk.hook_text", "osk.sync_status",
               "osk._fixture_approvals", "vault_sync"],
     SURFACE: ["osk.cli", "mcp_server", "sync_daemon", "scripts.growth_run", "scripts.setup",
               "scripts.recover", "scripts.osk_turn_ledger", "scripts.configure_obsidian_graph",
@@ -81,7 +81,8 @@ def _package(name: str, is_package: bool) -> list[str]:
 
 
 def _imports(name: str, tree: ast.Module, known: set[str], is_package: bool):
-    """엔진 내부 import마다 `(대상 모듈, 함수 안인가, 줄, 묶인 이름 → 모듈, 가져온 밑줄 이름)`."""
+    """엔진 내부 import마다 `(대상 모듈, 함수 안인가, 줄, 묶인 이름 → 모듈, 가져온 밑줄 이름)`. 진입점 블록
+    (`_entry_block`) 안의 것은 내지 않는다 — 그 모듈을 읽는 쪽에게는 없는 의존이다."""
     def inside_function(node, stack):
         return any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) for n in stack)
 
@@ -104,7 +105,8 @@ def _imports(name: str, tree: ast.Module, known: set[str], is_package: bool):
                     private = [alias.name] if alias.name.startswith("_") and not alias.name.startswith("__") else []
                     yield module, inside_function(node, stack), node.lineno, {}, private
         for child in ast.iter_child_nodes(node):
-            yield from visit(child, [*stack, node])
+            if not _entry_block(child):
+                yield from visit(child, [*stack, node])
 
     yield from visit(tree, [])
 
@@ -204,6 +206,11 @@ def _opens_ambient(fn) -> bool:
     return False
 
 
+def _entry_block(node) -> bool:
+    """`if __name__ == "__main__":` — 그 파일이 진입점으로 불릴 때만 돈다. import할 때는 돌지 않는다."""
+    return isinstance(node, ast.If) and ast.unparse(node.test).replace("'", '"') == '__name__ == "__main__"'
+
+
 def _module_level(body):
     """모듈을 import할 때 도는 문장들 — `if`·`try`·`with`·`for` 안에 든 것까지. 함수와 클래스의 안, 그리고
     `if __name__ == "__main__":` 아래(import할 때는 돌지 않는다)는 들어가지 않는다."""
@@ -211,7 +218,7 @@ def _module_level(body):
         yield node
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
-        if isinstance(node, ast.If) and ast.unparse(node.test).replace("'", '"') == '__name__ == "__main__"':
+        if _entry_block(node):
             continue
         for field in ("body", "orelse", "finalbody", "handlers", "cases"):
             for child in getattr(node, field, None) or []:

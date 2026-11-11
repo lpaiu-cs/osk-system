@@ -447,10 +447,19 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     return out
 
 
+def published_tools() -> list[dict]:
+    """등록부가 내놓는 도구의 이름·설명·스키마 — 검증기의 표면 린트가 읽는다(`validate.surface_lint`).
+
+    등록부를 직접 읽는다 — `list_tools()`는 코루틴이라 서버 자신의 이벤트 루프 안에서 `asyncio.run`으로 부를
+    수 없다. 이 목록은 `run_validators` 도구로도 읽히므로 동기 경로여야 한다."""
+    return [{"name": name, "description": tool.description, "inputSchema": tool.parameters}
+            for name, tool in sorted(mcp._tool_manager._tools.items())]
+
+
 @mcp.tool()
 def run_validators() -> dict:
     """전역 검증(중복 id·위상·대장 손상·파싱 실패). 보고만 하며 수정하지 않는다."""
-    return validate.run(_vault())
+    return validate.run(_vault(), published_tools)
 
 
 # ── 쓰기 (osk.write 단일 통로) ───────────────────────────────────────────

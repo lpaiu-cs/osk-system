@@ -439,9 +439,9 @@ def _first(errs: list, n: int = 3) -> str:
     return " / ".join(map(str, errs[:n])) + (f" 외 {len(errs) - n}건" if len(errs) > n else "")
 
 
-def _vault_items(vault: Vault) -> list[dict]:
+def _vault_items(vault: Vault, read_tools) -> list[dict]:
     """vault 내용 점검의 항목 — 남은 이행(`_vault`), 기록 충돌, 검증기, 잔재, 적체. 읽기만 한다."""
-    rep = validate.run(vault)
+    rep = validate.run(vault, read_tools)
     items = _vault(vault)
     for c in raw.consolidate(vault)["conflicts"]:
         items.append(_item("warn", "기록 충돌", f"{c['path']} — {c['reason']}",
@@ -498,9 +498,10 @@ def _vault_items(vault: Vault) -> list[dict]:
     return items
 
 
-def vault(vault: Vault) -> tuple[dict, int]:
-    """(보고, 종료 코드) — 읽기만 한다. 실패가 있으면 1이다. 남은 이행의 적용은 `migrate`가 한다."""
-    items = _vault_items(vault)
+def vault(vault: Vault, read_tools) -> tuple[dict, int]:
+    """(보고, 종료 코드) — 읽기만 한다. 실패가 있으면 1이다. 남은 이행의 적용은 `migrate`가 한다.
+    `read_tools`는 검증기에 건넬 표면의 도구 목록이다(`validate.run`)."""
+    items = _vault_items(vault, read_tools)
     counts = {level: sum(i["level"] == level for i in items) for level in LEVELS}
     rep = {"ok": not counts["fail"], "root": str(vault.root), "counts": counts, "items": items}
     return rep, 0 if rep["ok"] else 1
