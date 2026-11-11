@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from pathlib import Path
 
 from . import contract, conversation_state, evidence, graph, nodefile, prose, raw, secrets, write
@@ -132,37 +131,9 @@ def _check_sources(vault: Vault, job: dict, idx) -> None:
             raise write.WriteError("source changed or crossed its top-level cluster; pending")
 
 
-_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d+[.)])\s")
-_HEADING = re.compile(r"^ {0,3}#{1,6}(?:\s|$)")
-_HEADING_MARKS = re.compile(r"^ {0,3}#{1,6}(?:\s+|$)|\s+#+\s*$")   # 여는 표식과 닫는 `#`열
-
-
-def segment_texts(body: str, headings: bool = True) -> list[str]:
-    """보존 확인의 단위 — 빈 줄로 나뉜 문단이고, 목록은 항목 하나씩, 제목은 줄 하나씩이다.
-    항목을 하나씩 재는 것은 목록에 한 줄 덧붙인 증류가 같은 목록의 다른 항목이 고쳐질 때마다
-    깨지지 않게 하려는 것이다. 제목도 단위다 — 증류한 결론이 제목에만 있으면 문단만 재는
-    영수증은 그 제목이 지워져도 보존으로 남는다(#138 리뷰 P2). 제목은 표식(`#`)을 떼고 재어
-    단계만 바꾼 것은 잃은 것으로 보지 않는다."""
-    out, cur = [], []
-    for block in re.split(r"\n[ \t]*\n", body):
-        for line in block.splitlines():
-            if _HEADING.match(line) or (_ITEM.match(line) and cur):
-                out.append(cur)
-                cur = []
-            if _HEADING.match(line):
-                if headings:
-                    out.append([_HEADING_MARKS.sub("", line)])
-            else:
-                cur.append(line)
-        out.append(cur)
-        cur = []
-    texts = ("\n".join(s).strip() for s in out)
-    return [t for t in texts if t]
-
-
 def _segments(body: str, headings: bool = True) -> list[str]:
     """보존 확인의 단위 해시."""
-    return [sha256_bytes(t.encode()) for t in segment_texts(body, headings)]
+    return [sha256_bytes(t.encode()) for t in prose.segment_texts(body, headings)]
 
 
 def _added_segments(old_body: str, new_body: str, headings: bool = True) -> list[str]:
@@ -188,38 +159,6 @@ def _retained_target(vault: Vault, target: dict, idx) -> Path:
     elif sha256_file(p) != target["hash"]:
         raise write.WriteError("target bytes changed; pending")
     return p
-
-
-def node_placement(vault: Vault, p: Path, idx, *, repair: bool = False, selected: dict | None = None) -> dict:
-    """Current navigation is separate from the immutable selected source/target."""
-    top = vault.root.joinpath(*p.relative_to(vault.root).parts[:2])
-    child = p
-    directory = p.parent.parent if graph.is_hub(p) else p.parent
-    current_hubs = []
-    while len(directory.relative_to(vault.root).parts) >= 2:
-        hp = graph.hub_file(directory)
-        if hp is None:
-            raise write.WriteError("current placement hub missing; pending")
-        hn = contract.parse(hp)
-        # 선택한 허브는 그 군집(폴더)으로 가린다 — 확장자 표기가 바뀐 허브도 저장한 id와 대조한다.
-        if (selected and posix_rel(p, vault.root) == selected["target"]["path"]
-                and directory == vault.root / Path(selected["hub"]["path"]).parent
-                and hn.id != selected["hub"]["id"]):
-            raise write.WriteError("hub identity changed; pending")
-        if child not in {nodefile.live_locate(vault, ref, idx) for ref in hn.wikilinks()}:
-            if not repair:
-                raise write.WriteError("selected hub does not link to target; pending")
-            # 이름으로 부른다 — id 핸들은 색인 전수 판독을 부른다(`live_locate`). 같은 잠금 안의 색인을 잇는다.
-            write.update_node_locked(vault, hp.stem,
-                body=hn.body.rstrip() + "\n\n- [[" + child.stem + "]]\n",
-                expect_hash=sha256_file(hp), _idx=idx)
-        current_hubs.append({"id": hn.id, "path": posix_rel(hp, vault.root), "hash": sha256_file(hp)})
-        if directory == top:
-            break
-        child, directory = hp, directory.parent
-    if not current_hubs:
-        raise write.WriteError("current placement has no parent hub; pending")
-    return {"status": "complete", "target_path": posix_rel(p, vault.root), "hubs": current_hubs}
 
 
 def _cites(vault: Vault, node, idx, *, legacy: bool = True) -> set[str]:
@@ -259,7 +198,7 @@ def _verify(vault: Vault, job: dict, idx=None) -> dict:
         if not {raw.canonical_ref(vault, s["ref"]) for s in job["sources"]}.issubset(_cites(vault, node, idx)):
             raise write.WriteError("target provenance is incomplete; pending")
         retained = True
-        placement = node_placement(vault, p, idx, selected=job)
+        placement = write.node_placement(vault, p, idx, selected=job)
         receipt = _receipt(job)
         receipt["preservation"] = {"status": "complete"}
         receipt["placement"] = placement
@@ -403,7 +342,7 @@ def _wire_hub(vault: Vault, job: dict) -> dict:
     if proof.get("preservation", {}).get("status") != "complete":
         raise write.WriteError(proof.get("reason", "retained knowledge is not verified"))
     p = _retained_target(vault, job["target"], idx)
-    node_placement(vault, p, idx, repair=True, selected=job)
+    write.node_placement(vault, p, idx, repair=True, selected=job)
     return _verify(vault, job)
 
 

@@ -5,9 +5,9 @@
  },
  "totals": {
   "upward_imports": 2,
-  "lazy_imports": 46,
-  "two_module_cycles": 12,
-  "tangled_modules": 23,
+  "lazy_imports": 44,
+  "two_module_cycles": 11,
+  "tangled_modules": 21,
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
@@ -38,13 +38,11 @@
   "osk.signatures": 1,
   "osk.transcripts": 1,
   "osk.validate": 9,
-  "osk.worker_process": 3,
-  "osk.write": 2
+  "osk.worker_process": 3
  },
  "two_module_cycles": [
   "mcp_server <-> osk.validate",
   "osk.cli <-> osk.validate",
-  "osk.distillation <-> osk.write",
   "osk.evictions <-> osk.scope_memory",
   "osk.evidence <-> osk.graph",
   "osk.evidence <-> osk.raw",
@@ -55,7 +53,7 @@
   "osk.growth <-> osk.response_growth",
   "osk.publish <-> osk.release"
  ],
- "tangled_modules": 23,
+ "tangled_modules": 21,
  "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
