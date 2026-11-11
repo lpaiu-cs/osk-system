@@ -36,7 +36,7 @@ sys.path.insert(0, str(ENGINE))
 
 
 def mcp_tools() -> dict:
-    """등록된 도구의 설명과 스키마 — 검증기의 표면 린트(`validate.surface_lint`)와 같은 등록부를 읽는다.
+    """등록된 도구의 설명과 스키마 — 검증기의 표면 린트(`surface_checks.surface_lint`)와 같은 등록부를 읽는다.
     순서도 표면이다: 도구는 등록한 순서로, 인자는 선언한 순서로 클라이언트에 나간다."""
     import mcp_server
     registry = mcp_server.mcp._tool_manager._tools

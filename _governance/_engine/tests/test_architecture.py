@@ -41,7 +41,7 @@ LAYERS = {
             "osk.native_cli", "osk.harness", "osk.harness.base", "osk.harness.runs", "osk.harness.claude",
             "osk.harness.codex", "osk.harness.kiro", "osk.harness.antigravity"],
     SERVICE: ["osk.write", "osk.node_checks", "osk.node_moves", "osk.search", "osk.authority", "osk.organization", "osk.distillation",
-              "osk.validate", "osk.conversation_capture", "osk.conversation_review", "osk.conversation_cite",
+              "osk.validate", "osk.surface_checks", "osk.activated_rules", "osk.conversation_capture", "osk.conversation_review", "osk.conversation_cite",
               "osk.integration", "osk.growth_plan", "osk.growth_reviews", "osk.growth", "osk.growth_daily", "osk.growth_status",
               "osk.response_growth", "osk.update_plan", "osk.daemon_control", "osk.update", "osk.release", "osk.publish", "osk.update_check",
               "osk.setup", "osk.services", "osk.doctor", "osk.cli_parser", "osk.evidence_migration", "osk.hook_text", "osk.sync_status",

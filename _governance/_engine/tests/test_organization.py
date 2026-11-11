@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, contract, graph, write, validate, organization, distillation, cluster_gate, node_checks, node_moves, nodefile, placement, topology
+from osk import core, contract, graph, write, validate, organization, distillation, cluster_gate, node_checks, node_moves, nodefile, placement, topology, activated_rules
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -436,7 +436,7 @@ class OrganizationTests(unittest.TestCase):
             write.update_node(VAULT, "W1", old_text=chr(10)*2+"- [[Loose]]", new_text="")
             job = organization.plan(VAULT, "W1")
             assert any(i["path"]=="00_Scope/W1" and "Loose" in i["missing_links"] for i in job["issues"]), job["issues"]
-            assert "Loose" in validate.cluster_overview_report(VAULT, graph.Index(VAULT))["00_Scope/W1"].get("orphans", [])
+            assert "Loose" in activated_rules.cluster_overview_report(VAULT, graph.Index(VAULT))["00_Scope/W1"].get("orphans", [])
             try:
                 finish_review("W1", "Read every unit")
                 raise AssertionError("an unlinked node let the review complete")

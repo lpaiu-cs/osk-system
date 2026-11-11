@@ -16,6 +16,8 @@
 | `osk/secrets.py` | 시행령 §2 3항·Mechanism §9 — 비밀값 필터 + fixture |
 | `osk/search.py` | 헌법 11조 3~4항·시행령 §7 4항 — 작업/열람 검색·summary 확장 |
 | `osk/validate.py` | 시행령 §11 — 검증기 수트(보고 전용)·보호영역 생애 fixture |
+| `osk/surface_checks.py` | Mechanism §6-2 — 내놓는 표면의 검사: 스키마 린트, 도구 목록과 규범의 동치, 권위 심벌의 부재, 운용 안내문 대조 |
+| `osk/activated_rules.py` | 시행령 §11 2항·3항 — 활성화된 뒤에만 판정에 드는 규칙(군집 허브 노드, 근거 절)과 그 활성화 |
 | `osk/cli.py` | 사용자 명령 — protect·unprotect·approve·revert는 대화형 확인 강제(사용자 전속) |
 | `osk/cli_parser.py` | 명령의 문법 — 무엇을 칠 수 있는지. 검증기가 운용 안내문의 CLI 표를 이것과 대조한다 |
 | `osk/write.py` | Mechanism §6-2 3항 — 노드 쓰기의 단일 통로: 생성·갱신·충돌 후보 기록 |

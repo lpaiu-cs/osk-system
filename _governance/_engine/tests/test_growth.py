@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import cli, core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process, placement, topology
+from osk import cli, core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile, growth_ledger, growth_plan, growth_reviews, worker_process, placement, topology, activated_rules
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -743,7 +743,7 @@ class GrowthTests(unittest.TestCase):
                      '- 10-05 · c38d8ef2#1 · 지지 — form']
             text = chr(10).join(['x', '', '## 근거', ''] + lines)
             idx = graph.Index(VAULT)
-            errs = validate.evidence_errors(VAULT, text, [], idx)
+            errs = activated_rules.evidence_errors(VAULT, text, [], idx)
             assert errs == ['없는 라운드: c38d8ef2#3', '없는 제목: _sources/r.md#없다', '없는 파일: _sources/d',
                             '노드를 가리키는 근거 줄: N — 노드 근거는 derived-from으로 옮긴다',
                             '선언되지 않은 별칭: brain:wiki/x.md',
@@ -751,16 +751,16 @@ class GrowthTests(unittest.TestCase):
             # a shortened hash two records share is ambiguous; a longer prefix tells them apart
             raw.append_rounds(VAULT, 'repo/ev', 'codex-c38d8ef2' + '1' * 24, [{'user': 'q', 'agent': 'a'}], '00_Scope/W1')
             records = raw.Records(VAULT)
-            assert validate.evidence_errors(VAULT, text, [], idx, records)[0].startswith('모호한 좌표: c38d8ef2#1–2')
+            assert activated_rules.evidence_errors(VAULT, text, [], idx, records)[0].startswith('모호한 좌표: c38d8ef2#1–2')
             assert records.short(claude) == 'c38d8ef20', records.short(claude)
             longer = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1–2` · 지지 — longer'])
-            assert validate.evidence_errors(VAULT, longer, [], idx, records) == []
+            assert activated_rules.evidence_errors(VAULT, longer, [], idx, records) == []
             # `# 관측` opens the section as the pre-v5.6 `## 근거` does (Mechanism §4-1 1), and renaming
             # the heading leaves the relevant state as it was — it is measured up to the heading line
             from osk import rechecks
             observed = longer.replace('## 근거', '# 관측')
-            assert validate.evidence_errors(VAULT, observed, [], idx, records) == []
-            assert validate.evidence_errors(VAULT, observed + chr(10) + '## 이력' + chr(10), []) == ['관측 절이 노드 끝에 있지 않다']
+            assert activated_rules.evidence_errors(VAULT, observed, [], idx, records) == []
+            assert activated_rules.evidence_errors(VAULT, observed + chr(10) + '## 이력' + chr(10), []) == ['관측 절이 노드 끝에 있지 않다']
             assert rechecks.evidence_span('x' + chr(10) + '## 관측' + chr(10) + '- a') is None
             assert rechecks.evidence_span('x' + chr(10) + '# 근거' + chr(10) + '- a') is None
             fm = '---' + chr(10) + 'id: x' + chr(10) + '---' + chr(10)
@@ -769,26 +769,26 @@ class GrowthTests(unittest.TestCase):
             # so editing it changes the state and still reaches the nodes that derive from it (#310 review)
             titled = '# 관측' + chr(10) + chr(10) + '주장 A.' + chr(10)
             assert rechecks.evidence_span(titled) is None
-            assert validate.evidence_errors(VAULT, titled, []) == []
+            assert activated_rules.evidence_errors(VAULT, titled, []) == []
             assert rechecks.state((fm + titled).encode()) != rechecks.state((fm + titled.replace('A', 'B')).encode())
             # a `# 관측` section added after a legacy `## 근거` one turns the older lines into body text —
             # the validator reports the stranded heading (review of #311)
             stranded = longer + chr(10) + chr(10) + '# 관측' + chr(10) + chr(10) + '- 2026-11-09 · `c38d8ef20#1` · 지지 — new'
-            assert validate.evidence_errors(VAULT, stranded, [], idx, records) == ['관측 절이 노드 끝에 있지 않다']
+            assert activated_rules.evidence_errors(VAULT, stranded, [], idx, records) == ['관측 절이 노드 끝에 있지 않다']
             # a non-node left in derived-from is reported once; a node there is not
-            assert validate.evidence_errors(VAULT, 'x', ['N', first['round_refs'][0]], idx) == [
+            assert activated_rules.evidence_errors(VAULT, 'x', ['N', first['round_refs'][0]], idx) == [
                 'derived-from에 비노드 대상 1개가 남아 있다 — 관측 절로 옮긴다']
             moved = chr(10).join(['x', '', '## 근거', '', '- a', '', '## 이력', '', 'y'])
-            assert validate.evidence_errors(VAULT, moved, []) == ['관측 절이 노드 끝에 있지 않다']
+            assert activated_rules.evidence_errors(VAULT, moved, []) == ['관측 절이 노드 끝에 있지 않다']
             # any list marker is a list item
             starred = chr(10).join(['x', '', '## 근거', '', '* 2026-10-05 · `c38d8ef20#1` · 지지 — star'])
-            assert validate.evidence_errors(VAULT, starred, [])[0].startswith('형식이 다른 관측 줄: * 2026'), 'a * item was skipped'
+            assert activated_rules.evidence_errors(VAULT, starred, [])[0].startswith('형식이 다른 관측 줄: * 2026'), 'a * item was skipped'
             nested = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1` · 지지 — fine',
                                    '    * 2026-10-05 · `c38d8ef20#1` · 지지 — nested', 'a paragraph'])
-            errs = validate.evidence_errors(VAULT, nested, [])
+            errs = activated_rules.evidence_errors(VAULT, nested, [])
             assert [e.split(':')[0] for e in errs] == ['형식이 다른 관측 줄'] * 2, errs
             quoted = chr(10).join(['x', '', '> ## 근거', '>', '> - a'])
-            assert validate.evidence_errors(VAULT, quoted, []) == [], 'a quoted heading was read as the section'
+            assert activated_rules.evidence_errors(VAULT, quoted, []) == [], 'a quoted heading was read as the section'
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- 2026-10-05 · `deadbeef#2` · 지지 — none',
                                          '- 2026-10-05 · `brain:wiki/x.md` · 지지 — held']))
             # B was written before v5.4 with a round in derived-from; writes no longer add one
@@ -818,16 +818,16 @@ class GrowthTests(unittest.TestCase):
             from osk import response_growth
             day = 24 * 3600
             node('A', body=chr(10).join(['A claim.', '', '## 근거', '', '- not a line']))
-            assert 'evidence-section' not in validate.auto_activate(VAULT, now=day)
-            assert not validate.validator_active(VAULT, 'evidence-section')
+            assert 'evidence-section' not in activated_rules.auto_activate(VAULT, now=day)
+            assert not activated_rules.validator_active(VAULT, 'evidence-section')
             assert write.update_node(VAULT, 'A', old_text='- not a line',
                                      new_text='- 2026-11-01 · `https://example.com/a` · 지지 — a page')['ok']
-            assert validate.auto_activate(VAULT, now=day + 60) == [], 'checked twice in a day'
-            assert 'evidence-section' in validate.auto_activate(VAULT, now=2 * day + 60)
-            assert validate.validator_active(VAULT, 'evidence-section')
-            assert core.ledger_read(VAULT.validators)[-1]['reason'] == validate.AUTO_REASON
+            assert activated_rules.auto_activate(VAULT, now=day + 60) == [], 'checked twice in a day'
+            assert 'evidence-section' in activated_rules.auto_activate(VAULT, now=2 * day + 60)
+            assert activated_rules.validator_active(VAULT, 'evidence-section')
+            assert core.ledger_read(VAULT.validators)[-1]['reason'] == activated_rules.AUTO_REASON
             core.ledger_append(VAULT.validators, {'kind': 'deactivate', 'rule': 'evidence-section'})
-            assert validate.auto_activate(VAULT, now=9 * day) == [] and not validate.validator_active(VAULT, 'evidence-section')
+            assert activated_rules.auto_activate(VAULT, now=9 * day) == [] and not activated_rules.validator_active(VAULT, 'evidence-section')
             # the hooks' background worker is where it runs on every install
             import contextlib
             from unittest import mock
@@ -838,7 +838,7 @@ class GrowthTests(unittest.TestCase):
                  mock.patch.object(conversation_state, 'state_lock', lambda *a: contextlib.nullcontext(None)), \\
                  mock.patch.object(conversation_state, 'load_state', lambda *a: {}), \\
                  mock.patch.object(response_growth, '_probe_due', return_value=False), \\
-                 mock.patch.object(validate, 'auto_activate') as auto:
+                 mock.patch.object(activated_rules, 'auto_activate') as auto:
                 response_growth.after_hook(VAULT, {'session': 'k'})
             assert auto.called
         """)
@@ -854,9 +854,9 @@ class GrowthTests(unittest.TestCase):
                 if record.get('rule') == 'evidence-section':
                     real(VAULT.validators, {'kind': 'deactivate', 'rule': 'evidence-section'})
                 return real(path, record, expect)
-            with mock.patch.object(validate, 'ledger_append', user_first):
-                assert 'evidence-section' not in validate.auto_activate(VAULT, now=24 * 3600)
-            assert not validate.validator_active(VAULT, 'evidence-section')
+            with mock.patch.object(activated_rules, 'ledger_append', user_first):
+                assert 'evidence-section' not in activated_rules.auto_activate(VAULT, now=24 * 3600)
+            assert not activated_rules.validator_active(VAULT, 'evidence-section')
             assert [r['kind'] for r in core.ledger_read(VAULT.validators) if r['rule'] == 'evidence-section'] == ['deactivate']
         """)
 
@@ -954,7 +954,7 @@ class GrowthTests(unittest.TestCase):
             assert nb.body.rstrip(chr(10)).split(chr(10))[-3:] == [
                 '- 2026-10-05 · `c38d8ef2#2` · 지지 — 이미 있다', first,
                 '- 2026-01-01 · `c38d8ef2#4` · 지지 — 작업이 끝나 결과를 정리했다'], nb.body
-            assert validate.evidence_errors(VAULT, nb.body, nb.meta.get('derived-from')) == []
+            assert activated_rules.evidence_errors(VAULT, nb.body, nb.meta.get('derived-from')) == []
             events = [r for r in core.ledger_read(em.events_path(VAULT)) if r.get('rule') == em.RULE]
             assert [(e['source'], e['after']) for e in events] == [
                 (p.relative_to(VAULT.root).as_posix(), core.sha256_file(p)) for p in (a, b)], events

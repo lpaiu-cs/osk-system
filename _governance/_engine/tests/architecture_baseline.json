@@ -19,6 +19,7 @@
  },
  "upward_imports": {},
  "lazy_imports": {
+  "osk.activated_rules": 1,
   "osk.cluster_gate": 1,
   "osk.doctor": 2,
   "osk.evidence": 1,
@@ -29,8 +30,9 @@
   "osk.response_growth": 2,
   "osk.services": 2,
   "osk.setup": 1,
+  "osk.surface_checks": 3,
   "osk.transcripts": 1,
-  "osk.validate": 6,
+  "osk.validate": 2,
   "osk.worker_process": 3
  },
  "two_module_cycles": [],
@@ -40,6 +42,7 @@
  "vault_unthreaded": {},
  "broad_except": {
   "mcp_server": 6,
+  "osk.activated_rules": 2,
   "osk.approvals": 1,
   "osk.authority": 1,
   "osk.cli": 4,
@@ -63,10 +66,11 @@
   "osk.routing": 6,
   "osk.scope_memory": 1,
   "osk.search": 2,
+  "osk.surface_checks": 5,
   "osk.update": 2,
   "osk.update_check": 1,
   "osk.update_txn": 1,
-  "osk.validate": 18,
+  "osk.validate": 11,
   "osk.write": 3,
   "scripts.hooks.capture_stop": 4,
   "scripts.hooks.claude_prompt_submit": 2,
@@ -421,6 +425,18 @@
    48,
    27
   ],
+  "osk.surface_checks:setup_doc_drift": [
+   73,
+   22
+  ],
+  "osk.surface_checks:surface_lint": [
+   83,
+   31
+  ],
+  "osk.surface_checks:surface_violations": [
+   43,
+   16
+  ],
   "osk.topology:reference_review": [
    40,
    19
@@ -480,18 +496,6 @@
   "osk.validate:run": [
    294,
    72
-  ],
-  "osk.validate:setup_doc_drift": [
-   73,
-   22
-  ],
-  "osk.validate:surface_lint": [
-   83,
-   31
-  ],
-  "osk.validate:surface_violations": [
-   43,
-   16
   ],
   "osk.worker_preflight:preflight": [
    71,

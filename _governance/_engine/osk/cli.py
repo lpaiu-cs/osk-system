@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .core import StaleEngineError
 from . import (graph, approvals, authority, raw, scope_memory, validate, search,
-               write, evictions, approval_acts, node_moves, region_tree, placement)
+               write, evictions, approval_acts, node_moves, region_tree, placement, activated_rules)
 from . import harness as adapters
 from .vault import Vault
 from . import cli_parser
@@ -441,7 +441,7 @@ def main(argv=None):
     elif a.cmd == "validators":
         # 기록이 없는 규칙은 위반이 0이면 엔진이 켠다. 그 뒤의 해제·재활성화는 사용자
         # 전속이다(시행령 §11 3항) — 표면(MCP)에는 없다.
-        known = list(validate.RULES)
+        known = list(activated_rules.RULES)
         rule = a.activate or a.deactivate
         if rule:
             if a.activate and a.deactivate:
@@ -449,7 +449,7 @@ def main(argv=None):
             if rule not in known:
                 sys.exit(f"모르는 규칙: {rule} — 가능한 규칙: {', '.join(known)}")
             kind = "activate" if a.activate else "deactivate"
-            cur = "활성" if validate.validator_active(vault, rule) else "비활성"
+            cur = "활성" if activated_rules.validator_active(vault, rule) else "비활성"
             print(f"규칙 {rule}: 현재 {cur}")
             if kind == "activate":
                 _confirm(f"{rule}을(를) 활성화하면 위반이 검증기 verdict에 "
@@ -464,7 +464,7 @@ def main(argv=None):
         else:
             for r in known:
                 print(f"{r}: "
-                      f"{'활성' if validate.validator_active(vault, r) else '비활성'}")
+                      f"{'활성' if activated_rules.validator_active(vault, r) else '비활성'}")
     elif a.cmd == "status":
         idx = graph.Index(vault)
         regions = approvals.protected_regions(vault)

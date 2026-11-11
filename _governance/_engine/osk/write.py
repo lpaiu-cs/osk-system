@@ -9,7 +9,7 @@ MCP 도구와 CLI가 **같은 이 통로**를 쓴다 — 쓰기 경로가 둘로
 
 통로의 부분은 제 모듈에 산다: 파일 해석과 직렬화는 `nodefile`, 군집의 자리 규칙과
 신설 관문은 `cluster_gate`, 쓰기 전 검사는 `node_checks`, 이동은 `node_moves`다. 여기에는
-생성·갱신·충돌 후보 기록이 남는다. 표면 검사(`validate.SURFACE_MODULES`)는 이 모두를 본다.
+생성·갱신·충돌 후보 기록이 남는다. 표면 검사(`surface_checks.SURFACE_MODULES`)는 이 모두를 본다.
 
 이 모듈은 승인 기록부와 pin 기록에 **결코 쓰지 않는다**(Mechanism §6-2 2항).
 보호영역의 승인·반려는 사용자 전속(대화형 단말)이며, 표면 쓰기는 언제나

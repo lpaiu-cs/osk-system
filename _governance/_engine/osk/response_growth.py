@@ -187,8 +187,8 @@ def after_hook(vault: Vault, env: dict) -> None:
         finally:
             unlock(lock)
     try:
-        from . import validate
-        validate.auto_activate(vault)
+        from . import activated_rules
+        activated_rules.auto_activate(vault)
     except Exception:
         pass        # a rule that is not turned on stays report-only
 

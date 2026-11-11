@@ -22,7 +22,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import approvals, contract, core, evidence, graph, nodefile, prose, raw, raw_view, rechecks, validate, placement
+from . import (approvals, contract, core, evidence, graph, nodefile, prose, raw, raw_view, rechecks, placement,
+               activated_rules)
 from .core import posix_rel, sha256_bytes
 from .vault import Vault
 
@@ -186,7 +187,7 @@ def _change(vault: Vault, path: Path, n, items: list[dict]) -> dict:
         add = prose.space_numeric_tags("\n".join(lines)) + "\n"
         new_body = body.rstrip("\n") + "\n" + add if span else body + "# 관측\n\n" + add
         start = span[0] if span else len(body)
-        if (span is None and NOT_AT_END in validate.evidence_errors(vault, body, [])
+        if (span is None and NOT_AT_END in activated_rules.evidence_errors(vault, body, [])
                 or not body.endswith("\n") or (rechecks.evidence_span(new_body) or (None,))[0] != start):
             for it in items:
                 if it["action"] == "line":

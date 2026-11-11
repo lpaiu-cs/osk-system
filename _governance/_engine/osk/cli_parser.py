@@ -1,7 +1,7 @@
 """osk.cli_parser — 명령의 문법.
 
 무엇을 칠 수 있는지가 여기 있고, 그것이 하는 일은 `cli`에 있다. 검증기가 운용 안내문의 CLI 표를 이 파서와
-대조하므로(`validate.cli_commands`) 명령의 실행보다 아래에 둔다."""
+대조하므로(`surface_checks.cli_commands`) 명령의 실행보다 아래에 둔다."""
 from __future__ import annotations
 import argparse
 from . import evictions

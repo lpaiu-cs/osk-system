@@ -204,7 +204,7 @@ def search(query: str, k: Annotated[int, Field(ge=1, le=50)] = 8,
     """query로 전 Space 어휘 검색(인용 기록·Workbench 제외). 결과 title이 다른 도구의
     name. summary는 미리보기이며 인용·판단 전에 read_node로 확인한다."""
     # `session`의 결속 scope가 순위 자질이 된다(시행령 §8 3항 locality). 쓰는 법은 세션 시작
-    # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, validate.SCHEMA_BUDGET).
+    # 문구가 가르치므로 설명에는 싣지 않는다(상주 예산, surface_checks.SCHEMA_BUDGET).
     global _searched
     hits = _s().view_search(query, k, write.bindings(_vault(), session) if session else None)
     _searched = True
@@ -448,7 +448,7 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
 
 
 def published_tools() -> list[dict]:
-    """등록부가 내놓는 도구의 이름·설명·스키마 — 검증기의 표면 린트가 읽는다(`validate.surface_lint`).
+    """등록부가 내놓는 도구의 이름·설명·스키마 — 검증기의 표면 린트가 읽는다(`surface_checks.surface_lint`).
 
     등록부를 직접 읽는다 — `list_tools()`는 코루틴이라 서버 자신의 이벤트 루프 안에서 `asyncio.run`으로 부를
     수 없다. 이 목록은 `run_validators` 도구로도 읽히므로 동기 경로여야 한다."""

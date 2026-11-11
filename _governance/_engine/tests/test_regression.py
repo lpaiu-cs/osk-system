@@ -51,7 +51,7 @@ os.environ["OSK_UPDATE_CHECK"] = "0"
 os.environ["OSK_HOOK_WORKER"] = "0"
 
 from osk import (cli, core, graph, validate, authority, contract, routing, write,  # noqa: E402
-                 publish, cluster_gate, node_moves, nodefile, placement, topology)  # noqa: E402
+                 publish, cluster_gate, node_moves, nodefile, placement, topology, activated_rules, surface_checks)  # noqa: E402
 from osk.vault import Vault
 VAULT = Vault.open()
 import osk.signatures as S  # noqa: E402
@@ -2808,9 +2808,9 @@ def test_surface_contract():
         node_text("260802-zzzz-rg50", "표면 계약 시험용",
                   sec.group(0) + "\n" + sec9.group(0)),
         encoding="utf-8")
-    check("실 표면은 선언과 동치·권위 비노출", not validate.surface_violations(VAULT),
-          validate.surface_violations(VAULT))
-    declared = validate.declared_tools(VAULT)
+    check("실 표면은 선언과 동치·권위 비노출", not surface_checks.surface_violations(VAULT),
+          surface_checks.surface_violations(VAULT))
+    declared = surface_checks.declared_tools(VAULT)
     check("Mechanism이 도구 목록을 선언한다", bool(declared), declared)
     check("선언 목록에 서명 권위가 없다",
           declared is not None
@@ -2821,7 +2821,7 @@ def test_surface_contract():
     # 여기 손으로 적은 파일 목록이 따라오지 않으면, 검사가 "판독 실패"로 무너져
     # 정작 심은 위반을 못 본다(실측 — raw.py 편입에서 세 시험이 함께 죽었다).
     srcs = {rel: (ENGINE / rel).read_text(encoding="utf-8")
-            for rel in validate.SURFACE_MODULES}
+            for rel in surface_checks.SURFACE_MODULES}
     real = srcs["mcp_server.py"]
     for inject, into, anchor, want in (
         ('@mcp.tool()\ndef sign_node(x: str) -> dict:\n'
@@ -2861,12 +2861,12 @@ def test_surface_contract():
             f = eng / into
             f.write_text(f.read_text(encoding="utf-8").replace(
                 anchor, inject + anchor, 1), encoding="utf-8")
-            errs = validate.surface_violations(VAULT, eng)
+            errs = surface_checks.surface_violations(VAULT, eng)
             check(f"표면 드리프트 적발: {into} — {want}",
                   any(want in e for e in errs), errs)
     check("시험이 엔진 원본을 건드리지 않았다",
           (ENGINE / "mcp_server.py").read_text(encoding="utf-8") == real
-          and not validate.surface_violations(VAULT))
+          and not surface_checks.surface_violations(VAULT))
 
 
 # ── 14d. (입건-재서명 차단 시험 폐지 — 서명 제도가 폐지됐다. 입건 당사자
@@ -3438,7 +3438,7 @@ def test_surface_smoke():
         "scope_memory": lambda: M.scope_memory("repo/smoke-wm",
                                                    space="00_Scope/W1"),
     }
-    declared = set(validate.declared_tools(VAULT) or [])
+    declared = set(surface_checks.declared_tools(VAULT) or [])
     check("스모크가 선언된 도구를 전부 부른다",
           declared == set(calls), sorted(declared ^ set(calls)))
     for name, fn in calls.items():
@@ -3863,7 +3863,7 @@ def test_mcp_transport():
         check("전송 계층 왕복", False, f"{type(e).__name__}: {e}")
         return
     check("전송: 선언 목록과 도구 목록이 동치",
-          o["names"] == sorted(validate.declared_tools(VAULT) or []), o["names"])
+          o["names"] == sorted(surface_checks.declared_tools(VAULT) or []), o["names"])
     check("전송: search 전의 create_node는 새 서버 프로세스에서 거부된다",
           o["unsearched"].get("ok") is False and "search" in str(o["unsearched"].get("violations")),
           o["unsearched"])
@@ -3967,8 +3967,8 @@ def test_dup_stem_write_refused():
 
 # ── 14v. 표면 린트 — 스키마 건전·가르침의 회귀를 잡는다 (10차 ④) ────────
 def test_surface_lint():
-    check("실 표면이 린트를 통과", not validate.surface_lint(VAULT, cli.published_tools),
-          validate.surface_lint(VAULT, cli.published_tools))
+    check("실 표면이 린트를 통과", not surface_checks.surface_lint(VAULT, cli.published_tools),
+          surface_checks.surface_lint(VAULT, cli.published_tools))
     import mcp_server as M
     import asyncio, json as _json
     ts = asyncio.run(M.mcp.list_tools())
@@ -6499,7 +6499,7 @@ def test_cluster_overview():
     따라 도달 가능해야 한다(헌법 3조 8항). 도달은 허브가 가리키는 것으로
     성립하며, 역링크도 `derived-from`도 도달을 만들지 않는다. 저작 신설의 첫 노드는 허브 강제, 이동 형성은
     검증기 보고. 활성화 전에는 보고만 한다(시행령 §11 2항·3항)."""
-    from osk import validate
+    from osk import validate, activated_rules
 
     # 저작 신설: 1차는 신설 관문, 2차는 첫-노드 규칙이 허브를 요구한다
     r = _w(write.create_node, VAULT, "허브 아닌 첫 노드", "s", "본문", "fable-5",
@@ -6551,7 +6551,7 @@ def test_cluster_overview():
     rr = _w(write.update_node, VAULT, "OVW", body="갈래: [[OVW-head]] · [[OVW-a]]",
             expect_hash=core.sha256_file(hub))
     check("전제: 허브를 처음 본문으로 되돌린다", rr.get("ok"), rr)
-    co = validate.cluster_overview_report(VAULT, graph.Index(VAULT))
+    co = activated_rules.cluster_overview_report(VAULT, graph.Index(VAULT))
     st = co.get("00_Scope/OVW")
     check("검사가 군집을 본다", st is not None, co)
     check("허브 존재 인식", st and st["overview"] is True, st)
@@ -6578,20 +6578,20 @@ def test_cluster_overview():
           "허브 노드" in " ".join(r7.get("violations", [])), r7)
 
     # 활성화 게이트 — 기본 비활성(보고만), 활성화 후 verdict 산입, 해제 원복
-    check("기본 비활성", validate.validator_active(VAULT, "cluster-overview") is False)
+    check("기본 비활성", activated_rules.validator_active(VAULT, "cluster-overview") is False)
     rep = validate.run(VAULT, cli.published_tools)
     check("비활성이면 verdict 불산입(그 이유의 fail 없음)",
           not any("군집 허브 노드" in f for d in rep["fail"] for f in d), rep["fail"])
     check("보고는 언제나 실린다", "00_Scope/OVW" in rep.get("cluster_overview", {}))
     core.ledger_append(VAULT.validators,
                        {"kind": "activate", "rule": "cluster-overview"})
-    check("활성 판정", validate.validator_active(VAULT, "cluster-overview") is True)
+    check("활성 판정", activated_rules.validator_active(VAULT, "cluster-overview") is True)
     rep2 = validate.run(VAULT, cli.published_tools)
     check("활성이면 위반이 verdict에 산입", rep2["verdict"] == "FAIL"
           and any("군집 허브 노드" in f for d in rep2["fail"] for f in d), rep2["verdict"])
     core.ledger_append(VAULT.validators,
                        {"kind": "deactivate", "rule": "cluster-overview"})
-    check("해제 원복", validate.validator_active(VAULT, "cluster-overview") is False)
+    check("해제 원복", activated_rules.validator_active(VAULT, "cluster-overview") is False)
 
 
 # ── 21. 1회용 대화 id는 프로젝트 키가 아니다 (Mechanism §6-2 6항) ──────────
@@ -8383,7 +8383,7 @@ def test_nested_clusters():
         # 최상위가 하위 허브를 가리키지 않는 상태는 허브 편집으로 생긴다
         check("전제: 최상위에서 하위 허브 줄을 뺀다", _unhang("W1", "regr-nc").get("ok"))
 
-        rep = validate.cluster_overview_report(VAULT, graph.Index(VAULT))
+        rep = activated_rules.cluster_overview_report(VAULT, graph.Index(VAULT))
         check("묶음은 최상위 군집이다 — 하위 폴더가 따로 서지 않는다",
               "00_Scope/W1/regr-nc" not in rep, sorted(rep))
         st = rep["00_Scope/W1"]
@@ -8397,7 +8397,7 @@ def test_nested_clusters():
         top_body = contract.parse(top).body
         _w(write.update_node, VAULT, "W1", body=top_body + "\n- [[regr-nc]]\n",
            expect_hash=C.sha256_file(top))
-        st = validate.cluster_overview_report(VAULT, graph.Index(VAULT))["00_Scope/W1"]
+        st = activated_rules.cluster_overview_report(VAULT, graph.Index(VAULT))["00_Scope/W1"]
         check("하위 허브를 가리키니 하위 허브가 산다",
               "regr-nc" not in (st.get("orphans") or []), st.get("orphans"))
         check("그 아래 노드도 층을 거쳐 산다 — 이것이 구판이 못 보던 것",
@@ -8409,7 +8409,7 @@ def test_nested_clusters():
         (base / "regr-nc-hl").mkdir(exist_ok=True)
         made.append(base / "regr-nc-hl")
         _w(node_moves.move_nodes, VAULT, ["regr-nc-b"], "00_Scope/W1/regr-nc-hl")
-        st = validate.cluster_overview_report(VAULT, graph.Index(VAULT))["00_Scope/W1"]
+        st = activated_rules.cluster_overview_report(VAULT, graph.Index(VAULT))["00_Scope/W1"]
         check("허브 없는 하위 폴더를 hubless로 지목한다",
               "00_Scope/W1/regr-nc-hl" in (st.get("hubless") or []), st)
     finally:
@@ -10582,8 +10582,8 @@ def test_audit_fixes_2026_09_02():
 
         # ⑯ 표면 AST 검사가 scope 기억 통로를 본다 (#37)
         check("SURFACE_MODULES가 scope 기억 통로를 담는다 (#37)",
-              "osk/scope_memory.py" in validate.SURFACE_MODULES,
-              validate.SURFACE_MODULES)
+              "osk/scope_memory.py" in surface_checks.SURFACE_MODULES,
+              surface_checks.SURFACE_MODULES)
 
         # ⑰ mtime 탐침은 프로세스마다 유일하다 (#32)
         #    되돌리면 — 고정 이름으로 되돌리면 둘째가 실패한다(같은 이름 재사용).
@@ -10711,7 +10711,7 @@ def test_setup_doc_drift():
 
         #    표의 행은 **파서에서** 만든다 — 여기에 손으로 적으면 그 목록이
         #    또 하나의 표류 원천이 된다(검사가 막으려는 바로 그것이다).
-        _all, _leaves = validate.cli_commands()
+        _all, _leaves = surface_checks.cli_commands()
         check("파서에서 만든 명령 집합이 위임 명령을 담는다 (#42)",
               {"update", "release"} <= _leaves, sorted(_leaves))
         rows_of = lambda names: chr(10).join(
@@ -10728,7 +10728,7 @@ def test_setup_doc_drift():
             (lab / "docs/SETUP.md").write_bytes(body.encode("utf-8"))
 
         def _drift():
-            return validate.setup_doc_drift(_vault_at(lab))
+            return surface_checks.setup_doc_drift(_vault_at(lab))
 
         rows = rows_of(_leaves)
         full = "`overview` `search` `read_node` `scope_memory`."
@@ -10813,7 +10813,7 @@ def test_setup_doc_drift():
         #       파서를 세우지 못하는 경우도 통과가 아니다 — 검사가 스스로
         #       꺼지는 자리를 남기지 않는다.
         _setup(full, "넷", rows)
-        with mock.patch.object(validate, "cli_commands",
+        with mock.patch.object(surface_checks, "cli_commands",
                                side_effect=RuntimeError("파서 고장")):
             e = _drift()
         check("파서를 못 세우면 검사 불성립을 보고한다 (#42)",
@@ -10833,7 +10833,7 @@ def test_setup_doc_drift():
     if not (repo / "docs/SETUP.md").is_file():
         skip("이 저장소의 안내문 대조 (#42)", "docs/SETUP.md 부재 — 인스턴스다")
     else:
-        real = validate.setup_doc_drift(_vault_at(repo))
+        real = surface_checks.setup_doc_drift(_vault_at(repo))
         check("이 저장소의 안내문이 규범·파서와 어긋나지 않는다 (#42)",
               real == [], real)
 
