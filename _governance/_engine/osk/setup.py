@@ -37,10 +37,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import core, services, update
+from . import core, services, update, growth, growth_daily, response_growth, sync_status
 from . import harness as adapters
 from .doctor import engine_dir, venv_python
 from .harness import base
+import vault_sync
 
 TICKET = "osk-setup-confirmation.json"
 CONFIRM_WITHIN = 3600
@@ -254,7 +255,6 @@ def _fork(targets: list, uninstall: bool) -> dict:
     """백그라운드 fork가 부를 CLI(`.osk/response-growth.json`) — 호스트마다 `keep`·`add`·
     `replace`·`remove`, CLI를 찾지 못하면 `manual`. 적힌 경로가 살아 있으면 그대로 둔다 —
     사용자가 고른 CLI일 수 있다."""
-    from . import response_growth
     path = response_growth.CONFIG
     out: dict = {"file": str(path), "entries": {}}
     try:
@@ -283,7 +283,6 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
     """정기 실행 — 에이전트 명령 파일(`.osk/growth-command.json`)과 운영체제의 매일 작업.
     명령 파일이 이미 있으면 그대로 쓴다(사용자가 고친 명령일 수 있다). 없으면 고른
     하네스가 내는 무인 명령을 만든다 — 어댑터가 내지 않으면 사용자가 만든다."""
-    from . import growth
     file = core.ROOT / ".osk" / "growth-command.json"
     out: dict = {"command_file": str(file), "at": at}
     if uninstall:
@@ -313,7 +312,6 @@ def _schedule(manager, harness: str | None, at: str, uninstall: bool) -> dict:
     files = [file]
     # Codex가 소진인 날은 Claude 워커가 대신 돈다(#175) — 그 명령도 공급자별 파일로 둔다. 주 명령이
     # Codex일 때만이다: 사용자가 바꿔 둔 다른 실행기보다 Claude가 먼저 돌면 안 된다.
-    from . import growth_daily
     spare = core.ROOT / ".osk" / "growth-command-claude.json"
     if growth_daily.provider(argv) == "codex" and spare.is_file():
         files.append(spare)
@@ -395,8 +393,6 @@ def _sync(manager, uninstall: bool) -> dict:
     확인 대상이 된다. `origin`이 없으면 계획의 `origin`은 None이고 데몬은 커밋만 한다.
     확인한 fetch·push 대상은 적용 때 `.osk/sync-targets.json`에 적는다(`targets`) — 데몬은 그
     대상으로만 보내므로, origin이 바뀌면 작업 등록이 `keep`이어도 다시 확인할 변경이다."""
-    import vault_sync
-    from . import sync_status
     file = core.ROOT / vault_sync.TARGETS
     if uninstall:
         # 데몬의 마지막 결과 기록도 걷는다 — 남으면 세션 시작이 "돌지 않는 데몬"을 알린다.
@@ -763,8 +759,6 @@ def _stop_daemon() -> list[int]:
 
 def _write_targets(part: dict, uninstall: bool) -> dict:
     """데몬이 보낼 대상을 적는다 — 확인한 계획의 origin·push 대상 그대로. 해제면 지운다."""
-    import vault_sync
-    from . import sync_status
     path = core.ROOT / vault_sync.TARGETS
     step = {"step": "sync 전송 대상", "file": str(path)}
     try:

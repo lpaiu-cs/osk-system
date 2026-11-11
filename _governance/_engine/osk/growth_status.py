@@ -10,7 +10,8 @@ from collections import Counter
 from datetime import datetime
 import json
 
-from . import core, epoch, growth, integration, organization, rechecks, evictions
+from . import (core, epoch, growth, integration, organization, rechecks, evictions, distillation, harness,
+               response_growth, update)
 
 
 def _time(value: str) -> datetime:
@@ -190,7 +191,6 @@ def _organization(idx) -> dict:
 
 
 def _preservation(receipts: list[dict], idx) -> dict:
-    from . import distillation
     unique = {json.dumps(r, sort_keys=True): r for r in receipts}
     items = [{'key': r['key'], 'target_id': r['target'].get('id'),
               'structure': distillation.structure(r, idx)} for r in unique.values()]
@@ -225,7 +225,6 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
             return None
 
     def runtime():
-        from . import update
         disk = epoch.on_disk()
         manifest = core.ROOT / 'release.json'
         return {'observer': 'this CLI process, not the connected MCP server',
@@ -238,7 +237,6 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
 
     runtime_state = section('runtime', runtime)
     if preflight and runtime_state is not None:
-        from . import response_growth, harness
         runtime_state['cli_preflight'] = section('cli_preflight', lambda: [
             response_growth.doctor(h) for h in harness.fork_names()])
         out.pop('cli_preflight', None)

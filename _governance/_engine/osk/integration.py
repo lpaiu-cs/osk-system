@@ -12,7 +12,8 @@ from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import core, raw, scope_memory, transcripts, workspaces, write
+from . import (core, raw, scope_memory, transcripts, workspaces, write, distillation, evidence, organization,
+               raw_view, secrets)
 from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 
@@ -406,7 +407,6 @@ def _inherited_rounds(s: dict, rounds: list, dialogue_v1: dict | None = None) ->
         if any(occurrences[ref] != count for ref, count in references.items()
                if ref.startswith("claude:" + s["conversation_id"] + ":")):
             return False  # A dialogue quotation makes replacement ambiguous.
-        from . import secrets
         # The copy may hold the tool evidence in message order; the original
         # captured append order, which the rows' timestamps still give.
         for text in filter(None, (pair["agent"], *pair.get("agent_time_orders", ()))):
@@ -785,7 +785,6 @@ def acknowledge(harness: str, conversation_id: str, through: str,
             words = _verify_native(s, [r for r in s["rounds"] if r["ref"] in refs])
         receipts = []
         if outcome == "preserved":
-            from . import distillation
             if not isinstance(targets, list) or not targets:
                 raise ValueError("preserved requires completed distillation targets [{key:...}]")
             for target in targets:
@@ -871,7 +870,6 @@ def _review_state_locked(s: dict, through: str) -> dict:
     # append-only라 바뀌지 않고, 정정은 정정하는 쪽이 reopen으로 등록한다.
     out = {**result, "status": "complete", "review": last, "semantic_verified": False}
     if last["outcome"] == "preserved":
-        from . import distillation
         idx = raw.graph.Index()
         broken = [{"key": r["key"], "reason": why} for r in last["receipts"]
                   if (why := distillation.structure(r, idx))]
@@ -1503,7 +1501,6 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         if st["repair"].get("targets"):
             text += ("그 라운드를 출처로 쓴 노드(정정본에 비추어 다시 판단한다): "
                      + ", ".join(t.get("name") or t["id"] for t in st["repair"]["targets"]) + "\n")
-    from . import organization
     jobs = []
     # 대화에 고정한 착지(capture의 space)가 검토 문맥의 scope다 — 프로젝트의 주된 scope와 다를 수
     # 있다(시행령 §3 9항). 고정이 없을 때만 결속 scope를 주된 scope부터, 없으면 결속 순서대로 본다(§9-3 1항).
@@ -1529,7 +1526,6 @@ def prompt(harness: str, conversation_id: str, *, include_organization: bool = T
         return {**st, "text": text + "검토할 완료 라운드가 아직 없다. 종료 꼬리는 같은 대화 재개 또는 명시 capture로 따라잡는다." + organization_text}
     command = core.cli_command("integration", "review", "--harness", harness,
                                "--conversation", conversation_id)
-    from . import distillation
 
     def since():
         # The earliest pending turn's time bounds the receipt scan (#227); read only if needed.
@@ -1756,7 +1752,6 @@ def _cite(p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, 
         record = parent["record"]
     result = raw.append_rounds(session, record, [{"user": words, "agent": (note or "").strip()}],
                                cited=meta)
-    from . import evidence
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
            "index": result["indices"][0],
            # 근거 줄에 쓸 좌표 — 기록 이름 해시의 앞자리와 라운드(Mechanism §8 9항)
@@ -1807,7 +1802,6 @@ def read_turns(refs: list, max_chars: int = 6000, view: str = "review",
     Only the named turns are read, never the whole conversation; each names the turn
     before it as `previous`, for earlier context only when a judgment needs it
     (Mechanism §9-4 3항). Nothing is written."""
-    from . import raw_view, secrets
     if view not in {"review", "full"} or not isinstance(refs, list) or not 1 <= len(refs) <= MAX_REVIEW_ROUNDS:
         raise ValueError(f"1..{MAX_REVIEW_ROUNDS} original-turn refs and view review|full are required")
     if sides is not None and view != "review":

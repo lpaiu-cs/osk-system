@@ -12,7 +12,7 @@ import threading
 import time
 from contextlib import closing
 
-from . import core, growth, integration, transcripts
+from . import core, growth, integration, transcripts, native_cli
 from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 
@@ -263,7 +263,6 @@ def _shown(url) -> str | None:
 
 def doctor(harness: str, sid: str | None = None, transcript: str | None = None) -> dict:
     """Read-only `fork doctor`: check()'s verdict plus the local facts behind it; no state writes."""
-    from . import native_cli
     if transcript and not sid:
         raise ValueError('--transcript needs the conversation ID (--session)')
     if sid:
@@ -368,7 +367,6 @@ def runtime_env(harness: str, sid: str, *, ask: bool = True) -> dict:
     ancestry no longer reaches Codex; the worker asks its version (`native_cli.runtime_codex`)."""
     if harness != 'codex' or not sid or os.environ.get('CODEX_THREAD_ID', sid) != sid:
         return {}  # Another thread's environment proves this process is not that hook.
-    from . import native_cli
     if not ask:
         return {'CODEX_THREAD_ID': sid, native_cli.DESKTOP_ENV: native_cli.codex_ancestor() or ''}
     version = native_cli.runtime_codex()
@@ -791,7 +789,6 @@ def preflight(source: dict, executable: str, env: dict, *, require_version: bool
     harness = source['harness']
     integration.conversation_key(harness, 'preflight')
     expected = source.get('cli_version') if harness == 'codex' else source.get('version')
-    from . import native_cli
     if harness == 'codex':
         if str(source.get('model') or '').startswith('chatgpt-web/'):
             raise ValueError('source model uses the ChatGPT Web bridge route; fork would not use the Codex backend')

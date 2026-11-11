@@ -16,7 +16,8 @@ from pathlib import Path
 from .core import (ROOT, SIGNATURES, CANDIDATES, PINS, ROUTING, LEDGER, EVICTIONS,
                    VALIDATORS, ROOTS, CASE_RE, RID_RE, ID_RE, ledger_read,
                    ledger_append, ledger_damage, ledger_anchor_index, resolve_one)
-from . import contract, graph, signatures, approvals, authority, secrets, evictions, raw
+from . import (contract, graph, signatures, approvals, authority, secrets, evictions, raw, core, evidence,
+               roots)
 
 # 사건 파일 머리의 고정 헤더 (Mechanism §4 4항). pre_sign은 구체제 필드로,
 # 새 기록에는 두지 않으므로 필수에서 뺐다(기존 사건에는 사료로 남는다).
@@ -331,7 +332,6 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
                     external=None) -> list[str]:
     """노드 끝 관측 절의 줄마다 형식과 좌표의 해석, 그리고 `derived-from`에 남은 비노드
     대상(Mechanism §6-1 4항). `text`는 본문, `derived`는 frontmatter의 `derived-from` 값이다."""
-    from . import evidence
     from .rechecks import EVIDENCE, OBSERVATION, evidence_span
     span = evidence_span(text)
     errs = []
@@ -365,7 +365,6 @@ def evidence_errors(text: str, derived, idx: "graph.Index | None" = None, record
 def evidence_section_report(idx: "graph.Index", external=None, records=None) -> dict:
     """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다. 보류된 외부
     루트는 위반이 아니므로 여기 없고 `external.held`에 모인다."""
-    from . import evidence
     records = records or evidence.Records()
     out = {}
     for name, (path, kind) in sorted(idx.nodes.items()):
@@ -403,7 +402,6 @@ def auto_activate(idx=None, *, now: float | None = None) -> list[str]:
     기록이 있는 규칙 — 사용자가 해제한 것도 — 은 건드리지 않는다. 잰 시각은 기기 로컬에 두고
     하루 한 번만 잰다. 켠 규칙을 낸다."""
     import time
-    from . import core, evidence, roots
     todo = [r for r in RULES if not any(x.get("rule") == r for x in ledger_read(VALIDATORS))]
     # worktree들은 git 디렉터리를 나눠 쓰지만 노드와 대장은 저마다다 — 잰 시각도 작업 트리마다 둔다
     key = hashlib.sha256(str(ROOT).encode("utf-8")).hexdigest()[:16]

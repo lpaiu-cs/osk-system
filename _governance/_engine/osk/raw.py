@@ -21,10 +21,10 @@ import re
 from pathlib import Path
 
 from .core import ROOT, atomic_write, mutation_lock, posix_rel, resolve_in_root, sha256_file, sha256_bytes
-# `write`의 `_title_errors`·`_name_collision`을 그대로 쓴다 — 파일명 이식성
+# `naming`의 `title_errors`·`name_collision`을 그대로 쓴다 — 파일명 이식성
 # 규칙(Windows 예약명·링크 파서 충돌·ext4 바이트 상한·대소문자 접기)의 정본은
 # 한 벌이어야 한다. 여기서 다시 쓰면 두 규칙이 조용히 갈라진다.
-from . import graph, naming, routing, secrets
+from . import graph, naming, routing, secrets, raw_view
 from .errors import WriteError
 
 # 라운드 제목 — 행 머리의 `## ` 뒤에 양의 십진 index 하나(Mechanism §8 3항).
@@ -581,7 +581,6 @@ def raw_file(path: str) -> Path:
     """`_raw/` 안의 실재 파일로 해소한다. 봉쇄는 쓰기와 **같은 규율**이다 —
     읽기라고 느슨하게 두면 `[[../../어딘가]]`가 vault 밖을 읽는 창이 된다."""
     from .core import resolve_in_root
-    from . import graph
     p = resolve_in_root(path)
     if p is None:
         raise WriteError("vault 밖 경로 — 읽지 않았다", [f"경로: {path}"])
@@ -669,7 +668,6 @@ def read_round(ref: str, max_chars: int = 20000, view: str = "full",
                     "round_ref": canonical_ref(f"{rel}#{index}"),
                     "coordinate": evidence.coordinate(p, index, records), "hash": round_hash(stored)}
         if view == "review":
-            from . import raw_view
             return {**identity, **raw_view.project(chunk, budget, query, sides=sides)}
         cut = len(chunk) > budget
         return {**identity, "view": "full",

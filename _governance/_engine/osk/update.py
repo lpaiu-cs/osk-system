@@ -35,7 +35,7 @@ from .core import mutation_lock_path as core_mutation_lock_path
 from .core import fsync_dir as _fsync_dir, mkdirs_durable as _mkdirs_durable
 from ._portalock import lock_exclusive, unlock
 from .layout import KINDS, PREFIXES, adapt_path
-from . import publish
+from . import publish, approvals
 from . import sync_status
 
 UPDATE_JOURNAL = LEDGER / "update.jsonl"     # 운영 저널 — 권위 대장이 아니다
@@ -1053,7 +1053,6 @@ _PROTECT_NOTE = {
 def _governance_review(tree: Path, p: dict, side_write: list, ad_write: list,
                        targets: list, rel: dict) -> dict:
     """Hash the exact post-update region, including pre-existing local changes."""
-    from . import approvals
     recs = approvals.records()
     state = approvals.state("_governance", recs)
     if state == "stale":
@@ -1240,7 +1239,6 @@ def _run_locked(source: str | None, ref: str | None, bundle: str | None,
         touch += [side for _s, side in side_write]
         touch += [side for _b, side in ad_write]
         touch += [posix_rel(d / ".gitkeep", ROOT) for d in skel if not d.exists()]
-        from . import approvals
         accept_governance = governance["base"] and governance["after"] != governance["base"]
         establish = governance.get("protect") == "establish"
         if accept_governance or establish:

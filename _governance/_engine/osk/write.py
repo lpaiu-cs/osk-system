@@ -36,7 +36,7 @@ from .core import (ROOT, CANDIDATES, PINS, ROUTING, ID_RE, CASE_RE, RID_RE,
                    ledger_read, mutation_lock,
                    new_node_id, now_kst, posix_rel, resolve_in_root,
                    resolve_one, sha256_bytes, sha256_file, atomic_write)
-from . import approvals, contract, evictions, graph, rechecks, signatures, workspaces
+from . import approvals, contract, evictions, graph, rechecks, signatures, workspaces, evidence, raw
 from .contract import as_list, stored_edges
 from .errors import WriteError
 from .naming import MAX_FILENAME_BYTES, name_collision, portable_name_key, title_errors
@@ -408,7 +408,6 @@ def _check_edges(edges: dict | None, idx, *, adding: bool = True) -> list[str]:
     `idx`는 호출부가 잠금 안에서 **한 번 지어** 내려보낸다 (v3.7.0). 기본값을
     두지 않는 것은 규율이다 — 기본값이 있으면 새 호출부가 색인을 또 짓는 것이
     언제나 가능해지고, 증폭은 조용히 돌아온다."""
-    from . import evidence
     errs = []
     for pred, targets in (edges or {}).items():
         if pred not in contract.PREDICATES:
@@ -500,7 +499,6 @@ def _validate_render(path: Path, meta: dict, body: str,
 def _validate_node(path: Path, node, body: str, idx) -> list[str]:
     """계약 + 그 노드에서 **나가는 참조**의 위상. 전역 검사는 하지 않는다 —
     남이 만든 위반 때문에 내 쓰기가 막히면 안 된다 (설계 D10)."""
-    from . import evidence
     errs = list(contract.validate(node))
     kind = graph.space_of(path)
     for pred in contract.PREDICATES:
@@ -518,7 +516,6 @@ def _topology_of(idx, kind, stem, name, pred, node_id=None) -> list[str]:
         # 근거 절의 좌표도 참조다(헌법 제8조 2·3항). 인용 기록은 모양으로 가린다 — 줄인 좌표는
         # 경로가 아니라 색인이 해석하지 못한다. vault의 비노드 파일은 Link와 같은 규칙을 지나고,
         # URL·외부 루트는 vault 밖이다.
-        from . import evidence
         k = evidence.kind(name)
         if k == "round":
             return ([f"Domain의 인용 기록 직접 참조(근거 절): {stem} → {name} — 근거는 노드로 "
@@ -896,7 +893,6 @@ def edge_key(target: str, idx) -> tuple[str, str]:
     """노드는 해석된 제목과 절 앵커, 비노드 근거는 전체 경로와 앵커로 구별한다.
     id·제목·경로 어느 표기든 같은 노드의 같은 범위면 같은 키다. 해석되지 않는 이름만 표기
     규칙(`contract.target_stem`)으로 접는다 — 제목에 든 `.md`를 떼지 않기 위해서다."""
-    from . import raw
     s = raw.canonical_ref(target).strip()
     if s.startswith("[[") and s.endswith("]]"):
         s = s[2:-2]
@@ -969,7 +965,6 @@ def _as_links(pred: str, targets, *, legacy_raw: bool = False) -> str | list:
         s = str(t).strip()
         if (not legacy_raw and pred == "derived-from" and graph.is_record_ref(s)
                 and not re.match(r"^(?:\[\[\s*)?https?://", s)):
-            from . import raw
             out.append(raw.canonical_ref(s))
         elif s.startswith("[[") or (pred == "derived-from" and re.match(ID_RE, s)):
             out.append(s)
@@ -1349,7 +1344,6 @@ def _move_topology(plans, stale, idx) -> list[str]:
     위반 때문에 내 쓰기가 막히면 안 된다). 출발지 허브의 Link는 `hub_links`의
     `remove`가 닫으므로 뺀다. 들어오는 참조의 후보는 바이트에서 고르고
     (`mentioning`), 판정은 판독한 노드로 한다 — 전수 판독을 부르지 않는다."""
-    from . import evidence
     after = {src: graph.space_of(dst) for src, dst, _n in plans}
     moved = {src: n for src, _dst, n in plans if after[src] != graph.space_of(src)}
     if not moved:
