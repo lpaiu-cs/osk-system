@@ -12706,6 +12706,29 @@ def test_publish_preserves_mapped_dot_directories():
                   error is not None and "비밀값" in error and before == after)
 
 
+def test_validate_at_reads_only_a_report():
+    """발행과 릴리스의 검증은 자식 프로세스의 마지막 줄을 보고로 읽는다. 보고가 아닌 줄은 무엇이든 "출력 파싱
+    실패"라는 거부가 된다 — 릴리스는 이 함수를 관문 없이 부르므로, 여기서 새는 예외는 릴리스를 죽인다."""
+    for label, emits in (("JSON이 아닌 줄", "print('not a report')"),
+                         ("깊이 겹친 줄", "print('[' * 100000)"),
+                         ("자릿수 상한을 넘는 정수", "print('9' * 5000)")):
+        with tempfile.TemporaryDirectory(prefix="osk-validation-output-") as td:
+            package = Path(td) / "_governance/_engine/osk"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "vault.py").write_text(
+                "class Vault:\n    @classmethod\n    def open(cls):\n        return cls()\n", encoding="utf-8")
+            (package / "cli.py").write_text("def published_tools():\n    return []\n", encoding="utf-8")
+            (package / "validate.py").write_text(
+                "import sys\n\ndef run(vault, read_tools):\n    " + emits + "\n    sys.exit(0)\n", encoding="utf-8")
+            try:
+                errors = publish.validate_at(Path(td))
+            except Exception as e:
+                errors = [f"올랐다: {type(e).__name__}"]
+        check(f"보고가 아닌 출력은 거부다 — {label}",
+              len(errors) == 1 and errors[0].startswith("검증기 출력 파싱 실패"), errors)
+
+
 def test_node_parse_raises_only_its_kinds():
     """노드 파일의 판독이 올리는 것은 둘뿐이다 — 읽지 못하면 `OSError`, 노드로 해석되지 않으면 `ValueError`.
     받는 쪽은 그 둘만 받는다(코드 규범 7항). 다른 형이 새면 사람이 고치거나 동기화로 들어온 파일 하나가 색인을
@@ -13069,6 +13092,7 @@ if __name__ == "__main__":
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
                test_ledger_damage_is_a_kind, test_node_parse_raises_only_its_kinds,
+               test_validate_at_reads_only_a_report,
                 test_write_edge_coordinates, test_node_heading_edge_coordinates,
                 test_derived_from_once_per_round,
                test_write_pin_subtree_and_fork,

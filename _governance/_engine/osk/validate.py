@@ -1027,7 +1027,7 @@ def fixture_approval_lifecycle(vault: Vault, tmp_root) -> list[str]:
         return [f"fixture 프로세스 실패: {r.stderr.strip()[-400:]}"]
     try:
         return _json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
+    except (ValueError, IndexError, RecursionError):      # 출력이 없거나 JSON으로 해석되지 않는다
         return [f"fixture 출력 파싱 실패: {r.stdout[-200:]!r}"]
 
 

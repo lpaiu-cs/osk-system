@@ -11,7 +11,7 @@
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
-  "broad_except": 2,
+  "broad_except": 0,
   "boundary_excepts": 52,
   "isolated_excepts": 38,
   "oversize_functions": 119,
@@ -40,10 +40,7 @@
  "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
- "broad_except": {
-  "osk.publish": 1,
-  "osk.validate": 1
- },
+ "broad_except": {},
  "boundary_excepts": {
   "mcp_server": 5,
   "osk.cli": 4,

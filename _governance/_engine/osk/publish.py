@@ -165,7 +165,7 @@ def validate_at(root: Path) -> list[str]:
         return [f"검증기 실행 실패: {r.stderr.strip()[-300:]}"]
     try:
         rep = json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
+    except (ValueError, RecursionError):      # 자식의 마지막 줄이 JSON으로 해석되지 않는다
         return [f"검증기 출력 파싱 실패: {r.stdout[-200:]!r}"]
     return [] if rep["v"] == "PASS" else [f"검증기 {rep['v']}: {'; '.join(rep['f'])}"]
 
