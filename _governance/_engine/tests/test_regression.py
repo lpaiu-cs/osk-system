@@ -5967,7 +5967,7 @@ def test_non_node_evidence_is_an_evidence_line():
     from osk import distillation as D, evidence, raw, rechecks
     sp, dom = "00_Scope/W1", ROOT / "00_Domain/regr-EvD"
     rec = raw.append_rounds(VAULT, "repo/regr-evid", "regr-evid-rec", [{"user": "관측", "agent": "결과"}], sp)
-    ref, coord = rec["round_refs"][0], evidence.coordinate(VAULT, rec["path"], 1)
+    ref, coord = rec["round_refs"][0], raw.coordinate(VAULT, rec["path"], 1)
     src = ROOT / "_sources/regr-evid.md"
     src.parent.mkdir(exist_ok=True)
     src.write_text("# 결과\n\nx\n", encoding="utf-8")

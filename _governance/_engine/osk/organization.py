@@ -13,7 +13,7 @@ import re
 import time
 from pathlib import Path
 
-from . import core, contract, evidence, graph, node_checks, nodefile, prose, routing
+from . import core, contract, graph, node_checks, nodefile, prose, raw, routing
 from .vault import Vault
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
@@ -158,7 +158,7 @@ def snapshot(vault: Vault, scope: str, idx=None) -> dict:
     """Read bytes once per node; do not combine cached bodies with current hashes."""
     base = scope_path(vault, scope)
     idx = _index(vault) if idx is None else idx
-    records = evidence.Records(vault)     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
+    records = raw.Records(vault)     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
     nodes, parsed, references, units = [], {}, [], []
     for name, (path, kind) in sorted(idx.nodes.items()):
         if not path.is_relative_to(base):

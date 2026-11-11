@@ -223,7 +223,7 @@ def _child():
                 record = raw.append_rounds(VAULT, self.name, self.name + "-raw", [{"user": "q", "agent": "a"}], "00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 self.args["body"] += ("\n\n## 근거\n\n- 2026-10-31 · `"
-                                      + evidence.coordinate(VAULT, record["path"], 1) + "` · 지지 — q")
+                                      + raw.coordinate(VAULT, record["path"], 1) + "` · 지지 — q")
                 atomic = nodefile.write_file
                 target = VAULT.root / "00_Scope/W1" / (self.args["title"] + ".md")
                 reserved = []
@@ -431,7 +431,7 @@ def _child():
                      {"user": "second observation", "agent": "second result"}], space="00_Scope/W1")
                 self.spec["sources"] = [record["round_refs"][0]]
                 line = "- 2026-10-31 · `{}` · 지지 — first observation"
-                first, second = (evidence.coordinate(VAULT, record["path"], n) for n in (1, 2))
+                first, second = (raw.coordinate(VAULT, record["path"], n) for n in (1, 2))
                 self.args["body"] += "\n\n## 근거\n\n" + line.format(first)
                 out = self.create()
                 self.assertEqual(out["distillation"]["status"], "complete")

@@ -55,7 +55,7 @@ def writes() -> None:
                 pairs = [{"user": f"질문 {n}", "agent": f"답 {n}"} for n in range(1, rounds + 1)]
                 assert raw.append_rounds(vault, "two-vaults", "same-record", pairs)["ok"]
             for vault, have in ((va, {1, 2}), (vb, {1})):
-                records = evidence.Records(vault)
+                records = raw.Records(vault)
                 file = records.file("same-record")
                 assert vault.root in file.parents and records.rounds(file) == have, (file, records.rounds(file))
             assert evidence.check(va, "same-record#2") is None

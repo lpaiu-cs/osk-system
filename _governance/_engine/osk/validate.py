@@ -75,8 +75,7 @@ def run(vault: Vault) -> dict:
     ok("동명 노드 중복", [f"{s}: {v}" for s, v in idx.dup_stems.items()])
     records = None                        # 참조 경고와 근거 절 검사(17)가 함께 쓰는 기록 색인
     try:
-        from . import evidence
-        records = evidence.Records(vault)
+        records = raw.Records(vault)
         rep["warnings"] = graph.reference_report(vault, idx, records)
     except Exception as e:
         rep["warnings"] = {"dangling_refs": [], "duplicate_edges": []}
@@ -344,7 +343,7 @@ def evidence_errors(vault: Vault, text: str, derived, idx: "graph.Index | None" 
     if heads:
         errs.append("관측 절이 노드 끝에 있지 않다")
     if span is not None:
-        records = records or evidence.Records(vault)
+        records = records or raw.Records(vault)
         for line in text[span[0]:].split("\n")[1:]:
             line = line.rstrip("\r")
             if not line.strip():
@@ -365,7 +364,7 @@ def evidence_errors(vault: Vault, text: str, derived, idx: "graph.Index | None" 
 def evidence_section_report(vault: Vault, idx: "graph.Index", external=None, records=None) -> dict:
     """노드별 근거 절 위반(Mechanism §6-1 4항). 위반이 없는 노드는 싣지 않는다. 보류된 외부
     루트는 위반이 아니므로 여기 없고 `external.held`에 모인다."""
-    records = records or evidence.Records(vault)
+    records = records or raw.Records(vault)
     out = {}
     for name, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] == "governance":
@@ -415,7 +414,7 @@ def auto_activate(vault: Vault, idx=None, *, now: float | None = None) -> list[s
     mark.write_text(json.dumps({"at": now}), encoding="utf-8")   # 먼저 적어 겹친 작업이 다시 재지 않게 한다
     idx = idx or graph.Index(vault)
     clean = {"cluster-overview": lambda: not _cluster_overview_errors(cluster_overview_report(vault, idx)),
-             "evidence-section": lambda: not evidence_section_report(vault, idx, roots.Roots(vault), evidence.Records(vault))}
+             "evidence-section": lambda: not evidence_section_report(vault, idx, roots.Roots(vault), raw.Records(vault))}
     on = []
     for r in todo:
         if not clean[r]():

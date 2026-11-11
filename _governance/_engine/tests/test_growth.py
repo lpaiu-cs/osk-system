@@ -750,7 +750,7 @@ class GrowthTests(unittest.TestCase):
                             '형식이 다른 관측 줄: - 10-05 · c38d8ef2#1 · 지지 — form'], errs
             # a shortened hash two records share is ambiguous; a longer prefix tells them apart
             raw.append_rounds(VAULT, 'repo/ev', 'codex-c38d8ef2' + '1' * 24, [{'user': 'q', 'agent': 'a'}], '00_Scope/W1')
-            records = evidence.Records(VAULT)
+            records = raw.Records(VAULT)
             assert validate.evidence_errors(VAULT, text, [], idx, records)[0].startswith('모호한 좌표: c38d8ef2#1–2')
             assert records.short(claude) == 'c38d8ef20', records.short(claude)
             longer = chr(10).join(['x', '', '## 근거', '', '- 2026-10-05 · `c38d8ef20#1–2` · 지지 — longer'])

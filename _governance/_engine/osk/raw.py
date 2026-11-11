@@ -631,6 +631,90 @@ def round_hash(stored: str) -> str:
     return sha256_bytes(stored.rstrip("\n").encode())
 
 
+# 라운드 좌표 — `<기록>#N`, 이어진 라운드는 `<기록>#N–M`
+ROUND = re.compile(r"^(?P<record>[^#\s][^#]*)#(?P<first>\d+)(?:[–-](?P<last>\d+))?$")
+# 해시 이름의 기록 — `<하네스>-<16진 32자>`
+HASHED = re.compile(r"^(?P<harness>.+)-(?P<hex>[0-9a-f]{32})$")
+PREFIX = re.compile(r"^[0-9a-f]{8,32}$")
+
+
+class Records:
+    """인용 기록의 이름 색인. 한 번 훑어 여러 좌표를 해석한다 — 검증기는 근거 줄마다
+    파일 목록을 다시 읽지 않는다."""
+
+    def __init__(self, vault: Vault):
+        self.vault = vault
+        self.names: set[str] = set()
+        for d in (vault.root / CITED, *legacy_dirs(vault)):
+            if d.is_dir():
+                for f in (*d.glob("*.md"), *(d / ".records").glob("*.txt"),
+                          *(d / ".records").glob("*/record.txt")):
+                    self.names.add(f.parent.name if f.name == "record.txt" else f.stem)
+        self.hexes: dict[str, list[str]] = {}
+        for name in self.names:
+            m = HASHED.match(name)
+            if m:
+                self.hexes.setdefault(m["hex"], []).append(name)
+        self._files: dict[str, Path] = {}
+        self._rounds: dict[Path, set[int]] = {}
+
+    def find(self, record: str) -> list[str]:
+        """좌표의 기록 부분 → 그에 맞는 기록 이름들. 줄인 해시는 앞자리가 같은 해시 이름의
+        기록 모두이고, 그 밖은 같은 이름 하나다."""
+        if record in self.names:
+            return [record]
+        if PREFIX.match(record):
+            return sorted(n for h, names in self.hexes.items() if h.startswith(record) for n in names)
+        return []
+
+    def short(self, record: str) -> str:
+        """근거 줄에 쓸 기록 표기 — 해시 이름은 다른 기록과 갈리는 가장 짧은 앞자리(8자
+        이상)이고, 해시 이름이 아닌 옛 기록은 이름 그대로다."""
+        m = HASHED.match(record)
+        if not m:
+            return record
+        mine = m["hex"]
+        others = [h for h in self.hexes if h != mine]
+        n = 8
+        while n < 32 and any(h.startswith(mine[:n]) for h in others):
+            n += 1
+        return mine[:n]
+
+    def file(self, record: str) -> Path:
+        """좌표의 기록 부분 → 기록 파일. 줄인 해시·옛 이름·전체 경로를 받는다."""
+        if record not in self._files:
+            if "/" in record:
+                self._files[record] = raw_file(self.vault, record)
+            else:
+                names = self.find(record)
+                if len(names) != 1:
+                    raise WriteError("없는 기록" if not names else "모호한 좌표",
+                                           [f"`{record}`에 맞는 기록 {len(names)}개"
+                                            + (f": {names[:3]}" if names else "")])
+                found = locate_record(self.vault, names[0])
+                if found is None:
+                    raise WriteError("없는 기록", [f"`{record}`"])
+                self._files[record] = found
+        return self._files[record]
+
+    def rounds(self, path: Path) -> set[int]:
+        """기록에 실재하는 라운드 — 한 기록을 인용한 근거 줄이 많아도 한 번만 읽는다."""
+        if path not in self._rounds:
+            self._rounds[path] = set(rounds(read_exact(path)))
+        return self._rounds[path]
+
+
+def record_name(path: Path | str) -> str:
+    """기록 파일 → 기록 이름(긴 이름은 디렉터리가 이름이다)."""
+    p = Path(path)
+    return p.parent.name if p.name == "record.txt" else p.stem
+
+
+def coordinate(vault: Vault, path: Path | str, index: int, records: Records | None = None) -> str:
+    """기록 파일과 라운드 → 근거 줄 좌표(Mechanism §8 9항)."""
+    return f"{(records or Records(vault)).short(record_name(path))}#{index}"
+
+
 def read_round(vault: Vault, ref: str, max_chars: int = 20000, view: str = "full",
                query: str | None = None, *, sides: tuple[int, int] | None = None) -> dict:
     """좌표 하나를 연다. `index`가 없으면 그 기록의 **목차**를 낸다 — 전문을
@@ -641,9 +725,8 @@ def read_round(vault: Vault, ref: str, max_chars: int = 20000, view: str = "full
     if view not in {"review", "full"}:
         raise ValueError("view must be review or full")
     # 근거 줄의 좌표(Mechanism §8 9항·§9 8항) — 줄인 해시·옛 기록 이름, 이어진 라운드 `#N–M`
-    from . import evidence
     bare = ref.strip()[2:-2].strip() if ref.strip().startswith("[[") and ref.strip().endswith("]]") else ref.strip()
-    m = evidence.ROUND.match(bare)
+    m = ROUND.match(bare)
     span = None
     if m and m["last"] and m["last"] != m["first"]:
         span = int(m["first"]), int(m["last"])
@@ -654,7 +737,7 @@ def read_round(vault: Vault, ref: str, max_chars: int = 20000, view: str = "full
         path, index = parse_ref(ref)
     if query is not None and (view != "review" or index is None):
         raise ValueError("query requires view=review and an exact #N round")
-    records = evidence.Records(vault)
+    records = Records(vault)
     p = raw_file(vault, path) if "/" in path or "\\" in path else records.file(path)
     text = read_exact(p)
     rel = posix_rel(p, vault.root)
@@ -665,7 +748,7 @@ def read_round(vault: Vault, ref: str, max_chars: int = 20000, view: str = "full
         chunk = recalled_text(stored)
         identity = {"ok": True, "path": rel, "index": index,
                     "round_ref": canonical_ref(vault, f"{rel}#{index}"),
-                    "coordinate": evidence.coordinate(vault, p, index, records), "hash": round_hash(stored)}
+                    "coordinate": coordinate(vault, p, index, records), "hash": round_hash(stored)}
         if view == "review":
             return {**identity, **raw_view.project(chunk, budget, query, sides=sides)}
         cut = len(chunk) > budget

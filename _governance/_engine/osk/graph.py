@@ -983,8 +983,8 @@ def dangling_refs(vault: Vault, idx: Index) -> list[str]:
 
 
 def reference_report(vault: Vault, idx: Index, records=None) -> dict:
-    from . import evidence
-    records = records or evidence.Records(vault)     # 노드마다 기록 색인을 다시 짓지 않는다
+    from . import raw
+    records = records or raw.Records(vault)     # 노드마다 기록 색인을 다시 짓지 않는다
     out, items, dups = [], [], []
     for stem, (p, kind) in idx.nodes.items():
         n = idx.node(p)
@@ -1016,6 +1016,7 @@ def reference_review(vault: Vault, node: contract.Node, idx: Index,
     a held external root and a line pointing at a node are the validator's to report.
     """
     import difflib
+    from . import evidence, raw
     old = set(previous.references()) if previous else set()
     out = []
     for relation, ref in node.references():
@@ -1028,7 +1029,6 @@ def reference_review(vault: Vault, node: contract.Node, idx: Index,
         elif relation == "Link" and kind == "nonnode":
             issue = "source_navigation"
         elif relation == "derived-from" and kind == "nonnode" and resolution[1][0] == "raw":
-            from . import raw
             if not anchor:
                 issue = "raw_round_required"
             elif raw.parse_ref(ref)[1] is None:
@@ -1045,11 +1045,10 @@ def reference_review(vault: Vault, node: contract.Node, idx: Index,
             if kind == "dangling":
                 item["candidates"] = difflib.get_close_matches(target, idx.names, n=3, cutoff=0.65)
             out.append(item)
-    from . import evidence
     coords = evidence.coordinates(node.body)
     if coords:
         before = set(evidence.coordinates(previous.body)) if previous else set()
-        records = records or evidence.Records(vault)
+        records = records or raw.Records(vault)
         for coord in coords:
             problem = evidence.check(vault, coord, idx, records)
             if problem and not problem.startswith(evidence.NODE_LINE):

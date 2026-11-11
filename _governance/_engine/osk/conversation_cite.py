@@ -4,7 +4,7 @@
 from __future__ import annotations
 import re
 from pathlib import Path
-from . import conversation_capture, conversation_state, core, evidence, raw, raw_view, secrets, transcripts
+from . import conversation_capture, conversation_state, core, raw, raw_view, secrets, transcripts
 from .vault import Vault
 
 
@@ -106,7 +106,7 @@ def _cite(vault: Vault, p: Path, s: dict, harness: str, sid: str, quote, turn, n
     out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
            "index": result["indices"][0],
            # 근거 줄에 쓸 좌표 — 기록 이름 해시의 앞자리와 라운드(Mechanism §8 9항)
-           "coordinate": evidence.coordinate(vault, result["path"], result["indices"][0]),
+           "coordinate": raw.coordinate(vault, result["path"], result["indices"][0]),
            "turn": rid, "reused": result.get("reused", False),
            "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
            **({"binding": result["binding"]} if "binding" in result else {})}

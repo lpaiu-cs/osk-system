@@ -68,8 +68,7 @@ def stamped(rows, base, step=1):
 def evidenced(body, *refs):
     """A body ending with one 근거 line per cited round — a distillation checks its round
     sources against these lines (Constitution art. 8 §6)."""
-    from osk import evidence
-    lines = [f"- 2026-10-31 · `{evidence.coordinate(VAULT, raw.raw_file(VAULT, raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
+    lines = [f"- 2026-10-31 · `{raw.coordinate(VAULT, raw.raw_file(VAULT, raw.parse_ref(ref)[0]), raw.parse_ref(ref)[1])}`"
              " · 지지 — the cited turn" for ref in refs]
     return body + "\n\n## 근거\n\n" + "\n".join(lines)
 

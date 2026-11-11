@@ -152,7 +152,7 @@ def _items(vault: Vault, n, idx, records) -> list[dict]:
             if index is None:
                 out.append({**it, "kind": "round", "action": "hold", "reason": "라운드 번호가 없는 기록 참조"})
                 continue
-            it.update(kind="round", coord=evidence.coordinate(vault, p, index, records), record=p, index=index)
+            it.update(kind="round", coord=raw.coordinate(vault, p, index, records), record=p, index=index)
             covered = raw.canonical_ref(vault, s) in cited
         elif evidence.kind(s) in ("url", "external"):
             it.update(kind=evidence.kind(s), coord=s)
@@ -209,7 +209,7 @@ def _change(vault: Vault, path: Path, n, items: list[dict]) -> dict:
 def plan(vault: Vault) -> dict:
     """노드마다 옮길 항목과 새 바이트 — 쓰지 않는다. 통치 문서는 근거 절 검증기의 대상이 아니므로
     빠진다(validate.evidence_section_report와 같다)."""
-    idx, records = graph.Index(vault), evidence.Records(vault)
+    idx, records = graph.Index(vault), raw.Records(vault)
     found = []
     for _name_, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] != "governance":

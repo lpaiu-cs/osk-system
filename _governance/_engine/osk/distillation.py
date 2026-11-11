@@ -462,7 +462,7 @@ def _execute(vault: Vault, operation: str, distill: dict, request: dict, *,
                 raise write.WriteError("required provenance was removed; no node written")
             unlined = [s for s in sources if not s.get("id") and raw.canonical_ref(vault, s["ref"]) not in cites]
             if unlined:
-                coords = [evidence.coordinate(vault, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
+                coords = [raw.coordinate(vault, s["path"], raw.parse_ref(s["ref"])[1]) for s in unlined]
                 raise write.WriteError(
                     "출처 라운드를 관측 절의 줄로 달지 않았다 — 쓰지 않았다",
                     [f"노드 끝 `# 관측` 절에 `- 날짜 · `{c}` · 지지|조건|반례 — 그 턴이 보인 것` "
