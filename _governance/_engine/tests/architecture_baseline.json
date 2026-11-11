@@ -15,7 +15,7 @@
   "oversize_functions": 119,
   "excess_lines": 2739,
   "excess_branches": 1605,
-  "late_loads": 9
+  "late_loads": 4
  },
  "upward_imports": {
   "osk.rechecks -> osk.growth": 2,
@@ -581,15 +581,10 @@
  },
  "late_loads": {
   "mcp_server": [
-   "osk.cli",
-   "osk.doctor",
-   "osk.evidence_migration",
-   "osk.growth",
-   "osk.growth_daily",
-   "osk.growth_status",
-   "osk.native_cli",
-   "osk.release",
-   "osk.response_growth"
+   "osk.harness -> osk.native_cli",
+   "osk.publish -> osk.release",
+   "osk.rechecks -> osk.growth",
+   "osk.validate -> osk.cli"
   ]
  }
 }
