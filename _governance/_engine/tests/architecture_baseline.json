@@ -5,15 +5,15 @@
  },
  "totals": {
   "upward_imports": 4,
-  "lazy_imports": 55,
-  "two_module_cycles": 15,
-  "tangled_modules": 32,
+  "lazy_imports": 52,
+  "two_module_cycles": 14,
+  "tangled_modules": 36,
   "private_access": 0,
   "vault_fixed_names": 0,
   "vault_unthreaded": 0,
   "broad_except": 125,
   "oversize_functions": 119,
-  "excess_lines": 2741,
+  "excess_lines": 2739,
   "excess_branches": 1605
  },
  "upward_imports": {
@@ -23,12 +23,11 @@
  },
  "lazy_imports": {
   "osk.cluster_gate": 1,
-  "osk.distillation": 1,
-  "osk.doctor": 3,
+  "osk.doctor": 2,
   "osk.evictions": 2,
   "osk.evidence": 3,
   "osk.graph": 7,
-  "osk.growth": 9,
+  "osk.growth": 8,
   "osk.harness": 1,
   "osk.node_moves": 1,
   "osk.publish": 1,
@@ -46,7 +45,6 @@
  "two_module_cycles": [
   "mcp_server <-> osk.validate",
   "osk.cli <-> osk.validate",
-  "osk.distillation <-> osk.integration",
   "osk.distillation <-> osk.write",
   "osk.evictions <-> osk.scope_memory",
   "osk.evidence <-> osk.graph",
@@ -60,7 +58,7 @@
   "osk.publish <-> osk.release",
   "osk.update <-> osk.update_check"
  ],
- "tangled_modules": 32,
+ "tangled_modules": 36,
  "private_access": {},
  "vault_fixed_names": {},
  "vault_unthreaded": {},
@@ -70,6 +68,7 @@
   "osk.authority": 1,
   "osk.cli": 4,
   "osk.cluster_gate": 1,
+  "osk.conversation_capture": 4,
   "osk.core": 2,
   "osk.distillation": 2,
   "osk.doctor": 3,
@@ -78,7 +77,7 @@
   "osk.growth": 2,
   "osk.growth_daily": 1,
   "osk.hook_text": 1,
-  "osk.integration": 6,
+  "osk.integration": 2,
   "osk.node_checks": 1,
   "osk.node_moves": 3,
   "osk.organization": 2,
@@ -146,6 +145,38 @@
    56,
    30
   ],
+  "osk.conversation_capture:_capture_apply": [
+   92,
+   35
+  ],
+  "osk.conversation_capture:_capture_recovery": [
+   51,
+   23
+  ],
+  "osk.conversation_capture:_inherited_rounds": [
+   83,
+   27
+  ],
+  "osk.conversation_capture:_land": [
+   31,
+   22
+  ],
+  "osk.conversation_capture:turn_at": [
+   33,
+   22
+  ],
+  "osk.conversation_cite:_cite": [
+   91,
+   49
+  ],
+  "osk.conversation_cite:read_turns": [
+   47,
+   24
+  ],
+  "osk.conversation_review:acknowledge": [
+   84,
+   46
+  ],
   "osk.core:effective_parents": [
    22,
    16
@@ -159,7 +190,7 @@
    23
   ],
   "osk.distillation:discover": [
-   67,
+   66,
    30
   ],
   "osk.doctor:_engine": [
@@ -243,7 +274,7 @@
    5
   ],
   "osk.growth:run": [
-   204,
+   203,
    74
   ],
   "osk.growth_daily:_scan": [
@@ -266,37 +297,9 @@
    98,
    8
   ],
-  "osk.integration:_capture_apply": [
-   92,
-   35
-  ],
-  "osk.integration:_capture_recovery": [
-   51,
-   23
-  ],
-  "osk.integration:_cite": [
-   91,
-   49
-  ],
-  "osk.integration:_inherited_rounds": [
-   83,
-   27
-  ],
   "osk.integration:_known_pending": [
    64,
    34
-  ],
-  "osk.integration:_land": [
-   31,
-   22
-  ],
-  "osk.integration:_turn_at": [
-   33,
-   22
-  ],
-  "osk.integration:acknowledge": [
-   84,
-   46
   ],
   "osk.integration:catchup": [
    35,
@@ -305,10 +308,6 @@
   "osk.integration:prompt": [
    275,
    75
-  ],
-  "osk.integration:read_turns": [
-   47,
-   24
   ],
   "osk.native_cli:resolve": [
    52,

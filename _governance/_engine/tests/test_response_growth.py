@@ -258,7 +258,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_runtime_version_recovery_preserves_counters_and_reaches_supervisor(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch, Mock
             import os, subprocess
             patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
@@ -273,11 +273,11 @@ class ResponseGrowthTests(unittest.TestCase):
             rg.config_path(VAULT).parent.mkdir(exist_ok=True)
             rg.config_path(VAULT).write_text(json.dumps({'codex':sys.executable}))
             env = {'harness':'codex','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root)}
-            with integration.state_lock(VAULT, 'codex','own') as p:
-                saved = integration.load_state(VAULT, p,'codex','own')
+            with conversation_state.state_lock(VAULT, 'codex','own') as p:
+                saved = conversation_state.load_state(VAULT, p,'codex','own')
                 clock = {'counter':'finals','seen':['t1'],'count':9,'attempted_count':0,'history_baselined':True}
                 saved.update(prompt_count=15, response_growth=clock)
-                integration.save_state(p,saved)
+                conversation_state.save_state(p,saved)
             def inspect(argv, **kwargs):
                 assert argv[0]=='git' or argv[1:] in (['--version'],['login','status']), argv
                 output = ('true' if argv[0]=='git' else 'codex-cli 0.155.0-alpha.16'
@@ -295,7 +295,7 @@ class ResponseGrowthTests(unittest.TestCase):
                         assert inherited['CODEX_THREAD_ID']=='own'
                         assert inherited['CODEX_VERSION']=='0.155.0-alpha.16'
                         assert inherited['OSK_GROWTH_WORKER']=='1'
-            state = integration.load_state(VAULT, integration.state_path(VAULT, 'codex','own'),'codex','own')
+            state = conversation_state.load_state(VAULT, conversation_state.state_path(VAULT, 'codex','own'),'codex','own')
             assert state['response_growth']==clock and state['prompt_count']==15, state
             assert state['reviewed_count']==saved['reviewed_count']
             assert state['rounds']==saved['rounds']
@@ -537,7 +537,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_codex_subagent_hook_changes_no_conversation_state(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             import os, subprocess
             hooks = Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'
             sys.path.insert(0, str(hooks))
@@ -562,7 +562,7 @@ class ResponseGrowthTests(unittest.TestCase):
                                           capture_output=True, timeout=30)
                     assert done.returncode == 0 and not done.stdout, (script, done.stdout, done.stderr)
             for sid in ('own', 'child'):
-                assert not integration.state_path(VAULT, 'codex', sid).exists(), sid
+                assert not conversation_state.state_path(VAULT, 'codex', sid).exists(), sid
             # A foreign transcript is still an identity error, not a silent subagent.
             foreign = dict(env, transcript_path=rollout('rollout-foreign.jsonl', {'id':'child','session_id':'another'}))
             rg.probe(VAULT, foreign)
@@ -572,7 +572,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_empty_legacy_baseline_excludes_ancestor_finals_once(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             import os
             parent = VAULT.root / 'rollout-parent-own.jsonl'
@@ -586,10 +586,10 @@ class ResponseGrowthTests(unittest.TestCase):
             save(parent, [header] + [r for n in range(9) for r in finish('old-'+str(n))])
             header['payload']['history_base'] = {'thread_id':'own','end_byte_offset':parent.stat().st_size}
             save(child, [header])
-            with integration.state_lock(VAULT, 'codex','own') as path:
-                state = integration.load_state(VAULT, path,'codex','own')
+            with conversation_state.state_lock(VAULT, 'codex','own') as path:
+                state = conversation_state.load_state(VAULT, path,'codex','own')
                 state['response_growth'] = {'counter':'finals','seen':[],'count':0,'attempted_count':0}
-                integration.save_state(path,state)
+                conversation_state.save_state(path,state)
             with patch.dict(os.environ, {'CODEX_HOME':str(VAULT.root)}):
                 for n in range(1,10):
                     with child.open('a',encoding='utf-8') as f:
@@ -600,7 +600,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     assert rg.observe(VAULT, source) == clock
                 # A modern baseline actually observed before these completions
                 # must count them even if they now live in an ancestor page.
-                integration.state_path(VAULT, 'codex','own').unlink()
+                conversation_state.state_path(VAULT, 'codex','own').unlink()
                 original_parent = parent.read_bytes()
                 save(parent, [{'type':'session_meta','payload':{'id':'own'}}])
                 env = {'harness':'codex','session_id':'own','transcript_path':str(parent)}
@@ -610,7 +610,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 source = rg.profile(VAULT, str(child),'codex','own')
                 assert rg.observe(VAULT, source)['count'] == 18
                 # SessionStart before a new page exists also has no history baseline.
-                integration.state_path(VAULT, 'codex','own').unlink()
+                conversation_state.state_path(VAULT, 'codex','own').unlink()
                 original_child = child.read_bytes()
                 child.unlink()
                 with patch.object(rg,'configured',return_value='unused'):
@@ -621,7 +621,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_paginated_final_counter_keeps_baseline_and_active_page_model(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             import os
             folder = VAULT.root / 'native'
@@ -648,10 +648,10 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert source['transcript_path'] == str(child.resolve()), source
                 assert rg.observe(VAULT, source)['count'] == 1
                 # Upgrade from a baseline that saw only the last page: no retroactive Stops.
-                with integration.state_lock(VAULT, 'codex','own') as path:
-                    state = integration.load_state(VAULT, path,'codex','own')
+                with conversation_state.state_lock(VAULT, 'codex','own') as path:
+                    state = conversation_state.load_state(VAULT, path,'codex','own')
                     state['response_growth'] = {'counter':'finals','seen':['second'],'count':3,'attempted_count':0}
-                    integration.save_state(path,state)
+                    conversation_state.save_state(path,state)
                 assert rg.observe(VAULT, source)['count'] == 3
                 with child.open('a',encoding='utf-8') as f:
                     f.write(''.join(json.dumps(r) + chr(10) for r in rows('same-parent-model','third')[1:]))
@@ -1014,7 +1014,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # No fork CLI is no reason to review a Desktop conversation in-session: the hooks never
         # read the transcript, so the worker's verdict must outrank the missing-CLI one (PR #204).
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1046,7 +1046,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     text = hook.capture_block(VAULT, env, 'own') or ''
                     assert '케이던스' not in text and '검토 경고' not in text, (n, text)
                     assert not rg.launch(VAULT, env, 'own')
-                assert integration.status(VAULT, 'codex','own')['response_growth_route']['mode'] == 'off'
+                assert conversation_capture.status(VAULT, 'codex','own')['response_growth_route']['mode'] == 'off'
                 # A CLI conversation of the same host keeps its in-session review.
                 transcript('cli', 'cli', 'codex_cli_rs')
                 cli = {**env, 'session_id':'cli', 'transcript_path':str(VAULT.root / 'cli.jsonl')}
@@ -1056,7 +1056,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_turned_off_harness_neither_forks_nor_reviews_in_session(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, doctor, setup
+            from osk import response_growth as rg, integration, scope_memory, doctor, setup, conversation_capture, conversation_cite, conversation_review, conversation_state
             from osk import harness as adapters
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
@@ -1080,12 +1080,12 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert rg.probe(VAULT, env) == {'mode':'off','reason':rg.OFF}
                 start = hook.capture_block(VAULT, env, 'own', startup=True)
                 assert '대화 검토 꺼짐' in start and '검토 경고' not in start, start
-                pending = integration.status(VAULT, 'codex','own')['pending_refs']
+                pending = conversation_capture.status(VAULT, 'codex','own')['pending_refs']
                 for n in range(1, 16):
                     text = hook.capture_block(VAULT, env, 'own') or ''
                     assert '케이던스' not in text and '검토 경고' not in text, (n, text)
                     assert not rg.launch(VAULT, env, 'own')
-                state = integration.status(VAULT, 'codex','own')
+                state = conversation_capture.status(VAULT, 'codex','own')
                 assert state['pending_refs'] == pending and state['reviewed_rounds'] == 0, state
                 assert state['response_growth_route']['mode'] == 'off', state
                 assert rg.process_stop(VAULT, env)['state'] == 'disabled'
@@ -1103,7 +1103,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_codex_ineligible_source_routes_to_foreground_without_consuming_review(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             import subprocess
             patch.object(rg, '_codex_hook_ready', return_value=True).start()  # see test_codex_preflight_requires_*
@@ -1136,12 +1136,12 @@ class ResponseGrowthTests(unittest.TestCase):
                 rg.probe(VAULT, env)
                 start = hook.capture_block(VAULT, env,'own',startup=True)
                 assert 'Git worktree' in start and '검토 경고' in start, start
-                pending = integration.status(VAULT, 'codex','own')['pending_refs']
+                pending = conversation_capture.status(VAULT, 'codex','own')['pending_refs']
                 for n in range(1,16):
                     text = hook.capture_block(VAULT, env,'own')
                     assert ('[osk 케이던스' in text) == (n in {9,15}), (n,text)
                     assert not rg.launch(VAULT, env,'own')
-                state = integration.status(VAULT, 'codex','own')
+                state = conversation_capture.status(VAULT, 'codex','own')
                 assert state['pending_refs'] == pending and state['reviewed_rounds'] == 0
                 assert state['response_growth']['attempted_count'] == 0
                 real_run(['git','init','-q','-b','main',str(VAULT.root)],check=True,capture_output=True)
@@ -1192,7 +1192,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_counter_survives_resume_and_worker_failure_does_not_ack(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             source = {'harness':'claude','conversation_id':'own','finals':[]}
             assert not rg.observe(VAULT, source)['due']
@@ -1203,7 +1203,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 result = rg.attempt(VAULT, source, {'pending_refs':['fixture'], 'capture_error':None}, 'unused')
             assert result['state'] == 'incomplete'
             assert not rg.observe(VAULT, source)['due']
-            assert integration.status(VAULT, 'claude','own')['reviewed_rounds'] == 0
+            assert conversation_capture.status(VAULT, 'claude','own')['reviewed_rounds'] == 0
             source['finals'] = source['finals'][:8]
             try:
                 rg.observe(VAULT, source)
@@ -1214,7 +1214,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_shadow_prompt_clock_does_not_trigger_a_fork_and_ninth_stop_does(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1237,7 +1237,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 for n in range(1, 10):
                     append(n)
                     hook.capture_block(VAULT, env, 'own')
-                    before = integration.status(VAULT, 'claude','own')
+                    before = conversation_capture.status(VAULT, 'claude','own')
                     assert before['prompt_count'] == n, before
                     assert before['response_growth']['count'] == n-1, before
                     if n == 9:  # A switch after the prompt writes no row; Stop's mode in force refuses.
@@ -1258,7 +1258,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert 'RECOVERY_SENTINEL' in growth.prompt(VAULT, planned)
                 assert source['model'] == 'parent-model'
                 rg.initialize(VAULT, env)  # resume must not reset the durable clock
-                status = integration.status(VAULT, 'claude','own')
+                status = conversation_capture.status(VAULT, 'claude','own')
                 assert status['response_growth']['count'] == 9 and status['reviewed_rounds'] == 0, status
                 assert 'incomplete' in hook.capture_block(VAULT, env, 'own', startup=True)
             source['finals'] += [str(n) for n in range(9,18)]
@@ -1269,7 +1269,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_unavailable_cli_routes_to_9_15_input_review_and_recovers_without_reset(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1287,8 +1287,8 @@ class ResponseGrowthTests(unittest.TestCase):
                 start = hook.capture_block(VAULT, env,'own',startup=True)
                 assert '검토 경고' in start and 'subscription login required' in start, start
                 rg.after_hook(VAULT, env)   # the hooks' worker captures (#192)
-                assert integration.status(VAULT, 'claude','own')['prompt_count'] == 0
-                original = integration.status(VAULT, 'claude','own')['pending_refs']
+                assert conversation_capture.status(VAULT, 'claude','own')['prompt_count'] == 0
+                original = conversation_capture.status(VAULT, 'claude','own')['pending_refs']
                 cue = 'cite_round(conversation="claude/own"'
                 for n in range(1,16):
                     text = hook.capture_block(VAULT, env,'own')
@@ -1296,12 +1296,12 @@ class ResponseGrowthTests(unittest.TestCase):
                     if n in {9,15}:
                         assert '검토 경고' in text and cue in text, text
                     assert not rg.launch(VAULT, env,'own')
-                before = integration.status(VAULT, 'claude','own')
+                before = conversation_capture.status(VAULT, 'claude','own')
                 assert before['prompt_count'] == 15 and before['reviewed_rounds'] == 0, before
             with patch.object(rg,'preflight'):
                 rg.probe(VAULT, env)
                 hook.capture_block(VAULT, env,'own',startup=True)
-                restored = integration.status(VAULT, 'claude','own')
+                restored = conversation_capture.status(VAULT, 'claude','own')
                 assert restored['response_growth_route']['mode'] == 'background'
                 assert restored['prompt_count'] == 15 and restored['pending_refs'] == original
                 assert restored['response_growth']['count'] == before['response_growth']['count']
@@ -1311,7 +1311,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 rg.probe(VAULT, env)
                 text = hook.capture_block(VAULT, env,'own')
                 assert 'user 턴 17' in text and cue in text and '단독 턴' in text, text
-                assert integration.status(VAULT, 'claude','own')['reviewed_rounds'] == 0
+                assert conversation_capture.status(VAULT, 'claude','own')['reviewed_rounds'] == 0
             rg.config_path(VAULT).write_text('{broken')
             text = hook.capture_block(VAULT, env,'own',startup=True)
             assert '검토 경고' in text and 'UserPromptSubmit' in text
@@ -1320,7 +1320,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_failing_forks_fall_back_to_9_15_review_and_retry_a_day_later(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1358,13 +1358,13 @@ class ResponseGrowthTests(unittest.TestCase):
                 with patch.object(rg.time, 'time', return_value=rg.time.time() + rg.RETRY_AFTER + 1):
                     assert rg.route(VAULT, env)['mode'] == 'background'
                 stop(4, {'ok': True, 'state': 'complete'})
-                assert 'failed' not in integration.status(VAULT, 'claude', 'own')['response_growth']
+                assert 'failed' not in conversation_capture.status(VAULT, 'claude', 'own')['response_growth']
                 assert rg.route(VAULT, env)['mode'] == 'background'
         ''')
 
     def test_fork_that_finished_its_review_is_not_failed_by_remaining_organization(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1394,11 +1394,11 @@ class ResponseGrowthTests(unittest.TestCase):
                 # conversation to in-session review for a day.
                 for n in (1, 2, 3):
                     stop(n, run('complete'))
-                    assert 'failed' not in integration.status(VAULT, 'claude', 'own')['response_growth']
+                    assert 'failed' not in conversation_capture.status(VAULT, 'claude', 'own')['response_growth']
                 # A refused decision for another job does not undo the review this fork made.
                 stop(4, run('complete', final_reviews={'state': 'rejected',
                                                        'errors': ['provider output has no successful final result']}))
-                assert 'failed' not in integration.status(VAULT, 'claude', 'own')['response_growth']
+                assert 'failed' not in conversation_capture.status(VAULT, 'claude', 'own')['response_growth']
                 assert rg.route(VAULT, env)['mode'] == 'background'
                 # Nor does its conversation hear that a review waits (#228: org deferral alone made
                 # the hook say "백그라운드 검토 대기 — incomplete").
@@ -1414,7 +1414,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_stuck_capture_says_one_line_once_between_review_turns(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1429,7 +1429,7 @@ class ResponseGrowthTests(unittest.TestCase):
             env = {'harness':'claude','session_id':'own','transcript_path':str(native),'cwd':str(VAULT.root),'session':'own'}
             stuck = ValueError('copied native round ID has different content; capture remains pending')
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
-                    patch.object(integration,'_inherited_rounds',side_effect=stuck):
+                    patch.object(conversation_capture,'_inherited_rounds',side_effect=stuck):
                 rg.probe(VAULT, env)
                 assert '검토 경고' in hook.capture_block(VAULT, env,'own',startup=True)
                 rg.after_hook(VAULT, env)   # the hooks' worker captures (#192)
@@ -1446,10 +1446,10 @@ class ResponseGrowthTests(unittest.TestCase):
                     else:
                         # The same wait is said once; `integration status` keeps it (#192).
                         assert text == '', (n,text)
-                state = integration.status(VAULT, 'claude','own')
+                state = conversation_capture.status(VAULT, 'claude','own')
                 assert state['prompt_count'] == 15 and state['capture_pending'], state
                 assert state['reviewed_rounds'] == 0, 'a stuck capture is not a review'
-                blocked = integration.blocked(VAULT)
+                blocked = conversation_state.blocked(VAULT)
                 assert blocked['count'] == 1 and blocked['conversations'][0]['conversation_id'] == 'own', blocked
                 assert blocked['conversations'][0]['observed'].endswith('(KST)'), blocked
         ''')
@@ -1461,7 +1461,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # one detached worker.
         base_tests.GrowthTests().check_case('''
             import io, os, subprocess, types
-            from osk import response_growth as rg, integration, transcripts
+            from osk import response_growth as rg, integration, transcripts, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_prompt_submit as hook
@@ -1489,7 +1489,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert worker.call_count == 1 and job['defer'], worker.call_args
                 with patch.object(rg,'preflight'):
                     rg.after_hook(VAULT, job)   # the worker: capture what is new, ask the fork CLI when due
-                return integration.status(VAULT, 'claude','own')
+                return conversation_capture.status(VAULT, 'claude','own')
             # A new conversation's transcript is written after its first prompt: the worker
             # asks the CLI, and nothing is missing yet. (The first hook learns the folder's
             # session key with git.)
@@ -1512,7 +1512,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 submit(4)
             assert not started and not read and '진단' not in quiet, (started, read, quiet)
             assert worker.call_count == 1 and json.loads(worker.call_args.kwargs['stdin'])['defer']
-            assert integration.status(VAULT, 'claude','own')['prompt_count'] == 4
+            assert conversation_capture.status(VAULT, 'claude','own')['prompt_count'] == 4
         ''')
 
     def test_worker_that_cannot_start_hands_review_to_the_session(self):
@@ -1543,7 +1543,7 @@ class ResponseGrowthTests(unittest.TestCase):
         # Both hand the capture to the input hook's worker now.
         base_tests.GrowthTests().check_case('''
             import io, os, subprocess, threading, types
-            from osk import response_growth as rg, integration, transcripts
+            from osk import response_growth as rg, integration, transcripts, conversation_capture, conversation_cite, conversation_review, conversation_state
             from osk._portalock import lock_exclusive, unlock
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
@@ -1567,7 +1567,7 @@ class ResponseGrowthTests(unittest.TestCase):
             turn(1)
             _, jobs = run(start, 'SessionStart', 1)    # (the first hook learns the folder's session key with git)
             rg.after_hook(VAULT, jobs[0])
-            assert integration.status(VAULT, 'claude','own')['captured_rounds'] == 1
+            assert conversation_capture.status(VAULT, 'claude','own')['captured_rounds'] == 1
             started, read = [], []
             def process(*a, **k):
                 started.append(a)
@@ -1584,7 +1584,7 @@ class ResponseGrowthTests(unittest.TestCase):
             assert not started and not read and '진단' not in begun and not ended, (started, read, begun, ended)
             assert [j['defer'] for j in jobs + more] == [True, True], (jobs, more)
             # A worker that finds another one running waits its turn: Stop's turn is not dropped.
-            with integration.state_path(VAULT, 'claude','own').with_suffix('.defer.lock').open('a+b') as busy:
+            with conversation_state.state_path(VAULT, 'claude','own').with_suffix('.defer.lock').open('a+b') as busy:
                 lock_exclusive(busy)
                 waiting = threading.Thread(target=rg.after_hook, args=(VAULT, more[0]))
                 waiting.start()
@@ -1592,7 +1592,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 assert waiting.is_alive(), 'a busy worker dropped the turn Stop handed over'
                 unlock(busy)
             waiting.join(60)
-            assert integration.status(VAULT, 'claude','own')['captured_rounds'] == 3
+            assert conversation_capture.status(VAULT, 'claude','own')['captured_rounds'] == 3
             # A tracked conversation whose file left the hook's path is no new one: its worker
             # finds the file by ID, as the in-place capture did (#199 review).
             moved = VAULT.root / 'claude-home/projects/elsewhere/own.jsonl'
@@ -1602,7 +1602,7 @@ class ResponseGrowthTests(unittest.TestCase):
             _, jobs = run(stop, 'Stop', 4)
             assert jobs, 'a moved transcript was skipped as a new conversation'
             rg.after_hook(VAULT, jobs[0])
-            assert integration.status(VAULT, 'claude','own')['captured_rounds'] == 4
+            assert conversation_capture.status(VAULT, 'claude','own')['captured_rounds'] == 4
             native = moved
             # The worker's failure lands after its Stop: the next Stop says it once, as the input hook does.
             native.write_text(native.read_text(encoding='utf-8').replace('"u1"', '"u0"'), encoding='utf-8')
@@ -1628,7 +1628,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_login_loss_after_input_does_not_consume_stop_attempt(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             source = {'harness':'claude','conversation_id':'own','model':'same-model','finals':[]}
             rg.observe(VAULT, source)
@@ -1638,14 +1638,14 @@ class ResponseGrowthTests(unittest.TestCase):
                     patch.object(growth,'run',side_effect=AssertionError('provider started')):
                 result = rg.attempt(VAULT, source,job,'unused')
             assert result['state'] == 'unavailable', result
-            status = integration.status(VAULT, 'claude','own')
+            status = conversation_capture.status(VAULT, 'claude','own')
             assert status['response_growth']['attempted_count'] == 0
             assert status['reviewed_rounds'] == 0 and rg.observe(VAULT, source)['due']
         ''')
 
     def test_source_advanced_before_fork_does_not_consume_stop_attempt(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             native = VAULT.root / 'native.jsonl'
             rows = [{'type':'assistant','sessionId':'own','uuid':f'a{n}','cwd':str(VAULT.root),'message':{'role':'assistant','id':f'm{n}',
@@ -1663,7 +1663,7 @@ class ResponseGrowthTests(unittest.TestCase):
             with patch.object(rg,'preflight',side_effect=trailer), \\
                     patch.object(growth,'run',return_value={'ok':False,'state':'incomplete'}) as fork:
                 assert rg.attempt(VAULT, source,job,'unused')['state'] == 'incomplete'
-            assert fork.call_count == 1 and integration.status(VAULT, 'claude','own')['response_growth']['attempted_count'] == 9
+            assert fork.call_count == 1 and conversation_capture.status(VAULT, 'claude','own')['response_growth']['attempted_count'] == 9
             # A new user turn before launch never forks and never spends the attempt.
             with native.open('a', encoding='utf-8') as f:
                 f.write(''.join(json.dumps(dict(rows[0], uuid=f'a{n}', message=dict(rows[0]['message'], id=f'm{n}')))+'\\n'
@@ -1674,7 +1674,7 @@ class ResponseGrowthTests(unittest.TestCase):
                     patch.object(growth,'run',side_effect=AssertionError('fork started')):
                 result = rg.attempt(VAULT, source,job,'unused')
             assert result['state'] == 'unavailable' and 'source advanced' in result['error'], result
-            status = integration.status(VAULT, 'claude','own')
+            status = conversation_capture.status(VAULT, 'claude','own')
             assert status['response_growth']['attempted_count'] == 9, status
             assert status['reviewed_rounds'] == 0 and rg.observe(VAULT, source)['due']
         ''')
@@ -1715,7 +1715,7 @@ class ResponseGrowthTests(unittest.TestCase):
     def test_stop_detaches_and_waits_for_native_final_flush(self):
         base_tests.GrowthTests().check_case('''
             import os, subprocess, time
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             scope_memory.replace(VAULT, VAULT.root.name, '', space='00_Scope/W1')
             native = VAULT.root / 'native.jsonl'
             rg.config_path(VAULT).parent.mkdir(exist_ok=True)
@@ -1734,7 +1734,7 @@ class ResponseGrowthTests(unittest.TestCase):
                 f.write(json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','model':'same-model','stop_reason':'end_turn','content':[{'type':'text','text':'answer'}]}})+'\\n')
             deadline = time.monotonic()+10
             while time.monotonic() < deadline:
-                status = integration.status(VAULT, 'claude','own')
+                status = conversation_capture.status(VAULT, 'claude','own')
                 if status.get('response_growth_stop'):
                     break
                 time.sleep(0.05)
@@ -1745,7 +1745,7 @@ class ResponseGrowthTests(unittest.TestCase):
 
     def test_fork_supervisor_selects_only_own_snapshot_and_preserves_cwd(self):
         base_tests.GrowthTests().check_case('''
-            from osk import integration, scope_memory
+            from osk import integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             node('Unrelated Domain candidate')
             node('Other Scope claim', scope='W2')
@@ -1753,7 +1753,7 @@ class ResponseGrowthTests(unittest.TestCase):
             native = VAULT.root / 'native.jsonl'
             native.write_text(json.dumps({'type':'user','sessionId':'own','uuid':'u1','message':{'role':'user','content':'one-off question'}}) + '\\n' +
                 json.dumps({'type':'assistant','sessionId':'own','uuid':'a1','message':{'role':'assistant','id':'m1','stop_reason':'end_turn','content':[{'type':'text','text':'one-off answer'}]}}) + '\\n')
-            assert integration.capture(VAULT, 'claude','own',str(native),'own')['ok']
+            assert conversation_capture.capture(VAULT, 'claude','own',str(native),'own')['ok']
             job = integration.prompt(VAULT, 'claude','own',include_organization=False,max_rounds=3)
             source_cwd = VAULT.root / 'project'
             source_cwd.mkdir()
@@ -1767,13 +1767,13 @@ class ResponseGrowthTests(unittest.TestCase):
             manifest = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['scope'] for j in manifest['organization_jobs']] == ['W1'], manifest
             assert result['selected'] == 2 and manifest['timeout_seconds'] == 600
-            assert integration.status(VAULT, 'claude','own')['reviewed_rounds'] == 1
+            assert conversation_capture.status(VAULT, 'claude','own')['reviewed_rounds'] == 1
             assert growth.plan(VAULT)['candidates'], 'unrelated Domain work was incorrectly acknowledged'
         ''')
 
     def test_fork_doctor_shows_route_verdict_without_writing_state_or_secrets(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, cli
+            from osk import response_growth as rg, integration, cli, conversation_capture, conversation_cite, conversation_review, conversation_state
             from types import SimpleNamespace
             from unittest.mock import patch
             import io, os, subprocess
@@ -1800,7 +1800,7 @@ class ResponseGrowthTests(unittest.TestCase):
                                     'email': 'person@example.com', 'orgId': 'org-s3cret'}))
                 return subprocess.CompletedProcess(argv, 0, text, '')
             def snapshot():
-                roots = {VAULT.root, integration.state_path(VAULT, 'claude', 'own').parent, Path(os.environ['CODEX_HOME'])}
+                roots = {VAULT.root, conversation_state.state_path(VAULT, 'claude', 'own').parent, Path(os.environ['CODEX_HOME'])}
                 return {str(p): (p.stat().st_mtime_ns, p.is_file() and p.read_bytes())
                         for root in roots for p in root.rglob('*')}
             def doctor(*args):
@@ -1879,7 +1879,7 @@ class HookBudgetTests(unittest.TestCase):
 
     def test_start_keeps_its_warning_when_organization_cannot_be_read(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration
+            from osk import response_growth as rg, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1887,7 +1887,7 @@ class HookBudgetTests(unittest.TestCase):
             idle = {'harness':'claude','conversation_id':'own','pending':False,'capture_error':None,
                     'capture_recovery':{'state':'ready'}}
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')), \\
-                    patch.object(integration,'hook_capture',return_value=idle), \\
+                    patch.object(conversation_capture,'hook_capture',return_value=idle), \\
                     patch.object(hook,'_organization_jobs',side_effect=ValueError('damaged organization state')):
                 start = hook.capture_block(VAULT, env,'own',startup=True)
             assert '검토 경고' in start and '참조·조직 검토 판독 진단' in start, start
@@ -1901,7 +1901,7 @@ class HookBudgetTests(unittest.TestCase):
 
     def test_review_turn_carries_memory_once_per_hash(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory
+            from osk import response_growth as rg, integration, scope_memory, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
@@ -1928,8 +1928,8 @@ class HookBudgetTests(unittest.TestCase):
             assert 'second memory sentinel' in seen[24], 'a changed hash carries the whole text again'
             # Kiro's limit folds whole blocks; the review itself is pulled by command.
             with patch.object(rg,'preflight',side_effect=ValueError('subscription login required')):
-                while integration.status(VAULT, 'claude','own')['prompt_count'] < 29:
-                    integration.tick(VAULT, 'claude','own')
+                while conversation_capture.status(VAULT, 'claude','own')['prompt_count'] < 29:
+                    conversation_capture.tick(VAULT, 'claude','own')
                 small = hook.capture_block(VAULT, env,'own',budget=2800)
             assert len(small) <= 2800 and '[osk 케이던스 — user 턴 30]' in small, small
             # The one line can fold too (Kiro, 2026-09-27): the folded line still names it and where to read it.
@@ -1942,7 +1942,7 @@ class HookBudgetTests(unittest.TestCase):
 
     def test_review_turn_carries_bound_scope_memory_without_a_primary(self):
         base_tests.GrowthTests().check_case('''
-            from osk import response_growth as rg, integration, scope_memory, write
+            from osk import response_growth as rg, integration, scope_memory, write, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             sys.path.insert(0, str(Path(rg.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook

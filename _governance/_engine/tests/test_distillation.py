@@ -27,7 +27,7 @@ def _child():
     with tempfile.TemporaryDirectory(prefix="osk-distillation-test-") as folder:
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(ENGINE))
-        from osk import core, contract, distillation as D, evidence, raw, validate, write, cluster_gate, node_checks, node_moves, nodefile
+        from osk import core, contract, distillation as D, evidence, raw, validate, write, nodefile
         from osk.vault import Vault
         VAULT = Vault.open()
         validate.make_mini_vault(VAULT, folder)

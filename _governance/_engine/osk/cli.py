@@ -108,28 +108,28 @@ def _raw_cmd(vault: Vault, a) -> None:
 
 def _integration_cmd(vault: Vault, a) -> None:
     """Own-conversation capture/review; shared scope writes do not acknowledge it."""
-    from . import integration
+    from . import integration, conversation_capture, conversation_review
     try:
         if a.integration_cmd in ("list", "catchup"):
             fn = integration.list_pending if a.integration_cmd == "list" else integration.catchup
             result = fn(vault, limit=a.limit)
         elif a.integration_cmd == "capture":
-            result = integration.capture(vault, a.harness, a.conversation,
+            result = conversation_capture.capture(vault, a.harness, a.conversation,
                                          a.transcript, a.session, a.space)
         elif a.integration_cmd == "prompt":
             result = integration.prompt(vault, a.harness, a.conversation)
         elif a.integration_cmd == "reopen":
-            result = integration.reopen(vault, a.harness, a.conversation, a.ref, a.reason)
+            result = conversation_review.reopen(vault, a.harness, a.conversation, a.ref, a.reason)
         elif a.integration_cmd == "review":
             data = _raw_stdin()
             if not isinstance(data, dict):
                 raise ValueError("review stdin must be a JSON object")
-            result = integration.acknowledge(vault,
+            result = conversation_review.acknowledge(vault,
                 a.harness, a.conversation, data["through"], data["outcome"],
                 data["reason"], targets=data.get("targets"),
                 primary_scope=data.get("primary_scope"))
         else:
-            result = integration.status(vault, a.harness, a.conversation)
+            result = conversation_capture.status(vault, a.harness, a.conversation)
         _emit(result)
         if not result.get("ok", True):
             sys.exit(1)
@@ -655,8 +655,8 @@ def main(argv=None):
             recovery = {"error": str(e)}
         try:
             # 포착이 막힌 대화 — 훅은 막힌 사실을 한 번만 싣는다(§9-3 3항, #192)
-            from . import integration
-            capture = integration.blocked(vault)
+            from . import conversation_state
+            capture = conversation_state.blocked(vault)
         except Exception as e:
             capture = {"error": str(e)}
         try:

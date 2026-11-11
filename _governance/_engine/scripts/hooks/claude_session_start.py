@@ -405,20 +405,20 @@ def _conversation(vault, st: dict, keep: int):
 def _organization(vault, jobs: list, keep: int, ident=None, *, startup: bool = False, shown_tree: str = ""):
     """조직 검토 블록. 이 대화가 같은 작업(key·snapshot·구간)의 전문을 이미 받았으면 한 줄로
     싣는다 — 같은 글이 9·15턴마다 쌓이지 않게(#275). 시작은 새 문맥이라 다시 전문을 싣는다."""
-    from osk import core, integration, organization
+    from osk import core, organization, conversation_state
     from osk.hook_text import Block
     if not jobs:
         return Block("organization", "")
     j = jobs[0]
     label = f"조직 검토 scope {j['scope']} 남은 구간 {j['coverage']['remaining']}/{j['coverage']['total']}"
     mark = organization.hook_mark(jobs)
-    if ident and not startup and integration.shown_before(vault, *ident, "organization", mark):
+    if ident and not startup and conversation_state.shown_before(vault, *ident, "organization", mark):
         command = core.cli_command(vault, "organization", "plan", "--scope", j["scope"])
         return Block("organization", f"[osk 참조·조직 검토 대기 — 변화 없음, {label}. 이 대화에 실은 전문과 같다 — "
                                      f"`{command}`로 다시 읽는다]", keep, label=label, pull="overview:organization")
     return Block("organization", organization.hook_prompt(vault, jobs, shown_tree), keep, label=label,
                  pull="overview:organization",
-                 on_shown=(lambda: integration.note_shown(vault, *ident, "organization", mark)) if ident else None)
+                 on_shown=(lambda: conversation_state.note_shown(vault, *ident, "organization", mark)) if ident else None)
 
 
 def _organization_jobs(vault, key: str) -> list:
@@ -459,9 +459,9 @@ def _recovery(vault, scope_memory, key: str):
 
 def _memory(vault, scope_memory, key: str, ident, *, gate: bool, keep: int, space: str | None = None):
     """scope 기억 블록. `gate`면 이 대화가 같은 해시의 전문을 이미 받았을 때 한 줄로 싣고,
-    전문이 실제로 실렸을 때만 그 해시를 적는다(`integration.note_memory`). `space`는 주된 scope가
+    전문이 실제로 실렸을 때만 그 해시를 적는다(`conversation_state.note_memory`). `space`는 주된 scope가
     아닌 결속 scope의 기억을 실을 때 준다(Mechanism §9-3 1항)."""
-    from osk import integration
+    from osk import conversation_state
     from osk.hook_text import Block
     st = scope_memory.read(vault, key, space)
     full = _memory_block(vault, scope_memory, key, st)
@@ -472,10 +472,10 @@ def _memory(vault, scope_memory, key: str, ident, *, gate: bool, keep: int, spac
     arg = f"session={json.dumps(key, ensure_ascii=False)}" + (f", space={json.dumps(space, ensure_ascii=False)}" if space else "")
     pull = f"`scope_memory({arg})`"
     seen_as = st["scope"] if space else None     # 주된 scope 밖의 결속 scope는 제 해시를 따로 기억한다
-    if gate and ident and integration.memory_seen(vault, *ident, st["hash"], seen_as):
+    if gate and ident and conversation_state.memory_seen(vault, *ident, st["hash"], seen_as):
         return Block(name, _memory_line(vault, st, key, space), keep, label="scope 기억(이 대화에 실은 전문과 같다)", pull=pull)
     return Block(name, full, keep, label=f"scope 기억 전문 {st['scope']}(여유 {st['limit'] - st['chars']}자)", pull=pull,
-                 on_shown=(lambda: integration.note_memory(vault, *ident, st["hash"], seen_as)) if ident else None)
+                 on_shown=(lambda: conversation_state.note_memory(vault, *ident, st["hash"], seen_as)) if ident else None)
 
 
 def _bound_memories(vault, scope_memory, key: str, ident, bindings: dict, *, keep: int, gate: bool = False):
@@ -495,8 +495,8 @@ def _bound_memories(vault, scope_memory, key: str, ident, bindings: dict, *, kee
 def _once(vault, ident, text: str, view: dict, startup: bool) -> bool:
     """이어지는 대기·진단을 실을지 — 같은 글은 처음 한 번만이고 나머지는 `integration status`가
     보인다(#192). 시작은 새 문맥이라 다시 싣는다. 포착 중이 아니고 대기가 풀렸으면 잊는다."""
-    from osk import integration
-    shown = integration.notice_once(vault, *ident, text, settled=not view.get("capture_pending"))
+    from osk import conversation_state
+    shown = conversation_state.notice_once(vault, *ident, text, settled=not view.get("capture_pending"))
     return bool(text) and (shown or startup)
 
 
@@ -506,20 +506,20 @@ def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
 
     훅은 전사를 읽지 않고 구독 CLI도 묻지 않는다 — 둘 다 부하에서 수 초라 훅 제한을
     넘겼다(#192). 저장된 커서로 세고, 새 턴의 포착과 CLI 판정은 분리 작업자가 한다
-    (`response_growth.defer`). 세션 시작은 대화의 착지만 고정하고(`integration.hook_land`)
+    (`response_growth.defer`). 세션 시작은 대화의 착지만 고정하고(`conversation_capture.hook_land`)
     마지막 포착 때의 대기를 싣는다 — 그 뒤의 턴은 작업자가 포착해 다음 입력부터 보인다."""
-    from osk import integration, response_growth
+    from osk import integration, response_growth, conversation_capture
     from osk.hook_text import Block
     ident = None
     try:
         if startup:
-            captured = integration.hook_land(vault, env, key)
+            captured = conversation_capture.hook_land(vault, env, key)
             harness, sid, cadence = captured["harness"], captured["conversation_id"], None
         else:
-            harness, sid, _ = integration.hook_source(vault, env)
+            harness, sid, _ = conversation_capture.hook_source(vault, env)
             # Always retain the input clock, even while Stop owns background scheduling.
             # Losing CLI auth must not start the fallback's overdue work at zero again.
-            captured = cadence = integration.tick(vault, harness, sid)
+            captured = cadence = conversation_capture.tick(vault, harness, sid)
         ident = (harness, sid)
         selected = response_growth.route(vault, env)
         try:
@@ -554,7 +554,7 @@ def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
             st = integration.prompt(vault, harness, sid, organization_in_text=False)
             return [warning, _conversation(vault, st, 70), _organization(vault, st["organization_jobs"], 60, ident, startup=True,
                                                                   shown_tree=st.get("hub_tree", ""))], ident
-        overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= integration.SOFT
+        overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= conversation_capture.SOFT
         if not cadence["due"] and not overdue_switch:
             # A stuck capture has no raw to review: one line once, not the whole review
             # every turn. The wait and the count stay (§9-3 1항).
@@ -565,12 +565,12 @@ def capture_blocks(vault, env: dict, key: str, *, startup: bool = False):
             return [warning if selected['changed'] else Block("warning", ""), Block("blocked", blocked)], ident
         lead = Block("lead", f"[osk 케이던스 — user 턴 {cadence['unreviewed_prompts']}] "
                      + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] or
-                        overdue_switch and cadence['unreviewed_prompts'] >= integration.HARD else
+                        overdue_switch and cadence['unreviewed_prompts'] >= conversation_capture.HARD else
                         "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
         st = integration.prompt(vault, harness, sid, organization_in_text=False)
         blocks = [warning, lead, _conversation(vault, st, 95),
                   _organization(vault, st["organization_jobs"], 60, ident, shown_tree=st.get("hub_tree", ""))]
-    except integration.SubagentEvent:
+    except conversation_capture.SubagentEvent:
         return None  # Not this subagent's conversation: no capture, route or root review text.
     except Exception as exc:
         blocks = [Block("diagnostic", f"[osk 포착·통합 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다; 대기를 완료로 처리하지 않았다.]")]
@@ -737,8 +737,8 @@ def main() -> None:
             bindings = {"scopes": [], "primary": None, "undetermined": False}
         scope = bindings["primary"]
         try:
-            from osk import integration
-            seen = integration.status(vault, *ident) if ident else {}
+            from osk import conversation_capture
+            seen = conversation_capture.status(vault, *ident) if ident else {}
         except Exception:
             seen = {}           # 판별을 못 읽어도 시작 안내는 싣는다
         bootstrap = Block("bootstrap", _bootstrap(vault, key, bound=bool(scope), ident=ident, workspace=seen.get("workspace"),

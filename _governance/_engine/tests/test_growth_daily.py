@@ -17,7 +17,7 @@ DAILY = BOOT + """
 import os, subprocess, time
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
-from osk import growth_daily, integration, services
+from osk import growth_daily, integration, services, conversation_capture, conversation_cite, conversation_review, conversation_state
 def shell(name, script):
     # A native-looking executable (`codex`, `claude`) that runs a Python fixture.
     fake = VAULT.root / (name + '-fake.py')
@@ -350,8 +350,8 @@ class DailyTests(unittest.TestCase):
             view = lambda vault, s: {'pending_refs': [r['ref'] for r in s['rounds']]}
             locate = lambda vault, h, sid, saved=None: saved if Path(saved).exists() else None
             with patch.object(growth_status, 'conversation_states', return_value=states), \\
-                    patch.object(integration, 'state_view', side_effect=view), \\
-                    patch.object(integration, 'locate_transcript', side_effect=locate):
+                    patch.object(conversation_capture, 'state_view', side_effect=view), \\
+                    patch.object(conversation_capture, 'locate_transcript', side_effect=locate):
                 got = growth_daily._measure(VAULT, since)
             assert got['work'] == {'claude': 4 + 10 + 6, 'codex': 100 - 60 + 5}, got
             assert got['inflow'] == {'new_rounds': 2, 'new_jobs': 2, 'old_rounds': 12, 'old_jobs': 4, 'unread': 0}, got
@@ -456,8 +456,8 @@ class DailyTests(unittest.TestCase):
                         'role': 'assistant', 'id': 'm' + str(i), 'content': [{'type': 'text', 'text': 'a' + str(i)}],
                         'stop_reason': 'end_turn'}})]
             lines(path, turns(2))
-            integration.capture(VAULT, 'claude', 'c1', str(path), 'c1-project', space='00_Scope/W1')
-            rounds = lambda: len(integration.load_state(VAULT, integration.state_path(VAULT, 'claude', 'c1'), 'claude', 'c1')['rounds'])
+            conversation_capture.capture(VAULT, 'claude', 'c1', str(path), 'c1-project', space='00_Scope/W1')
+            rounds = lambda: len(conversation_state.load_state(VAULT, conversation_state.state_path(VAULT, 'claude', 'c1'), 'claude', 'c1')['rounds'])
             assert rounds() == 2
             lines(path, turns(5))
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
@@ -711,13 +711,13 @@ class DailyTests(unittest.TestCase):
                               'message': {'role': 'assistant', 'id': sid + '-m' + str(i),
                                           'content': [{'type': 'text', 'text': 'answer ' + str(i)}], 'stop_reason': 'end_turn'}}]
                 path.write_text(''.join(json.dumps(row) + chr(10) for row in rows), encoding='utf-8')
-                integration.capture(VAULT, 'claude', sid, str(path), sid + '-project', space='00_Scope/' + scope)
+                conversation_capture.capture(VAULT, 'claude', sid, str(path), sid + '-project', space='00_Scope/' + scope)
                 legacy(sid, path, scope)
             def queue():
                 # These cursors have no turn times, so they queue by state mtime — and building a job saves
                 # its cursor. Put the order back before each pick.
                 for n, sid in enumerate('abcde'):
-                    os.utime(integration.state_path(VAULT, 'claude', sid), (now - 1000 + n, now - 1000 + n))
+                    os.utime(conversation_state.state_path(VAULT, 'claude', sid), (now - 1000 + n, now - 1000 + n))
             def pick(**options):
                 queue()
                 return [j['conversation_id'] for j in integration.catchup(VAULT, limit=1, max_rounds=9, capture_new=False,
@@ -757,7 +757,7 @@ class DailyTests(unittest.TestCase):
                          {'type':'assistant','sessionId':'long','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),
                           'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(row)+chr(10) for row in rows), encoding='utf-8')
-            integration.capture(VAULT, 'claude','long',str(path),'long-project',space='00_Scope/W1')
+            conversation_capture.capture(VAULT, 'claude','long',str(path),'long-project',space='00_Scope/W1')
             legacy('long', path)
             worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']
             result = growth.run(VAULT, worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'})
@@ -775,7 +775,7 @@ class DailyTests(unittest.TestCase):
             plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind'] == 'plan'][-1]
             assert not plan['scope_jobs'] and result['selected'] >= 1, (plan, result)
             # Selection without capture does not read new turns.
-            with patch.object(integration, 'capture', side_effect=AssertionError('captured')):
+            with patch.object(conversation_capture, 'capture', side_effect=AssertionError('captured')):
                 assert integration.catchup(VAULT, limit=1, max_rounds=9, capture_new=False)['jobs']
         """)
 

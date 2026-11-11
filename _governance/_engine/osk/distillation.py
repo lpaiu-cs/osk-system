@@ -15,7 +15,7 @@ import json
 import re
 from pathlib import Path
 
-from . import contract, evidence, graph, prose, raw, secrets, write, nodefile
+from . import contract, conversation_state, evidence, graph, nodefile, prose, raw, secrets, write
 from .core import local_lock_path, mutation_lock, posix_rel, resolve_in_root, sha256_bytes, sha256_file
 from .vault import Vault
 
@@ -337,10 +337,9 @@ def discover(vault: Vault, raw_refs: list[str], limit: int = 8, scan_limit: int 
         # (`_source` keeps its `native`). A turn never cited has no proof to find, so it needs no
         # receipt scan — scanning the newest receipts made every review read "incomplete" once
         # there were more than scan_limit (#227).
-        from .integration import record_name
         native = [ref for ref in raw_refs if raw.is_native(ref)]
         cited = set()
-        for record in {record_name(*ref.split(":", 3)[1:3]) for ref in native}:
+        for record in {conversation_state.record_name(*ref.split(":", 3)[1:3]) for ref in native}:
             path = raw.locate_record(vault, record)
             text = raw.read_exact(path) if path else ""
             cited |= {raw.cited_native(text[a:b]) for a, b in raw.round_spans(text).values()}

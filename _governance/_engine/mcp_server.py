@@ -28,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
-from osk import (contract, epoch, graph, integration, prose, raw, rechecks,  # noqa: E402
-                 update_check, validate, write, cluster_gate, node_checks, node_moves, nodefile)
+from osk import (contract, epoch, graph, prose, raw, rechecks, update_check, validate, write,  # noqa: E402
+                 cluster_gate, node_checks, node_moves, nodefile, conversation_cite)
 from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
@@ -349,9 +349,9 @@ def read_cited(ref: str | None = None, space: str | None = None,
     if through is not None or conversation is not None:
         if not (through and conversation) or ref or space or view != "review":
             return {"ok": False, "violations": ["a review range read takes conversation and through only (view=review)"]}
-        return _guard(integration.read_review, _vault(), conversation, through, query)
+        return _guard(conversation_cite.read_review, _vault(), conversation, through, query)
     if ref and raw.is_native(ref):
-        return _guard(lambda: {"ok": True, **integration.read_turns(_vault(), [ref], max_chars, view, query)["turns"][0]})
+        return _guard(lambda: {"ok": True, **conversation_cite.read_turns(_vault(), [ref], max_chars, view, query)["turns"][0]})
     if ref:
         return _guard(raw.read_round, _vault(), ref, max_chars, view, query)
     return _guard(raw.list_records, _vault(), space)
@@ -542,7 +542,7 @@ def cite_round(conversation: str, quote: str | None = None, turn: str | None = N
     quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
     전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref.
     coordinate=관측 줄 좌표."""
-    return _guard(integration.cite, _vault(), conversation, quote, turn, note, user=user)
+    return _guard(conversation_cite.cite, _vault(), conversation, quote, turn, note, user=user)
 
 
 @mcp.tool()

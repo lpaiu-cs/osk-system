@@ -35,9 +35,9 @@ def node(title, scope='W1', body=None):
 def legacy(sid, transcript, scope='W1'):
     # Rewrite a fresh cursor as the full-capture engine (<= v4.1) left it: rounds stored
     # in _raw/. The daily worker reviews only these; original turns stay with their conversation.
-    from osk import integration, raw, transcripts
-    path = integration.state_path(VAULT, 'claude', sid)
-    s = integration.load_state(VAULT, path, 'claude', sid)
+    from osk import integration, raw, transcripts, conversation_capture, conversation_cite, conversation_review, conversation_state
+    path = conversation_state.state_path(VAULT, 'claude', sid)
+    s = conversation_state.load_state(VAULT, path, 'claude', sid)
     shown = list(transcripts.read(str(transcript), 'claude', sid)['dialogue_v1'].values())
     record = VAULT.root / '00_Scope' / scope / '_raw' / '.records' / (s['record'] + '.txt')
     blocks = [raw.round_block(i, raw.escape_numeric_h2(r['user']), raw.escape_numeric_h2(r['agent']),
@@ -48,8 +48,8 @@ def legacy(sid, transcript, scope='W1'):
     s['rounds'] = [{'id': r['id'], 'ref': rel + '#' + str(i), 'completion': r['completion'],
                     'hash': core.sha256_bytes(b.rstrip(chr(10)).encode('utf-8'))}
                    for i, (r, b) in enumerate(zip(shown, blocks), 1)]
-    s['snapshots'] = {integration._snapshot(s): {'count': len(s['rounds']), 'prompt_count': s['prompt_count']}}
-    integration.save_state(path, s)
+    s['snapshots'] = {conversation_state.snapshot(s): {'count': len(s['rounds']), 'prompt_count': s['prompt_count']}}
+    conversation_state.save_state(path, s)
 def register(planned=None):
     planned = growth.plan(VAULT, 20) if planned is None else planned
     with core.mutation_lock(VAULT):
@@ -60,7 +60,7 @@ def no_value_all():
         growth.review(VAULT, candidate['key'], 'no_value', reason='No reusable synthesis in this exact set.', manifest=manifest['rid'])
 def packet_worker(change='', wrapper='plain', code=0, org='complete', read='True'):
     # org: the organization review outcome; read: which review units u the worker read
-    source = "import json,sys; from osk import core,growth,distillation,integration; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
+    source = "import json,sys; from osk import core,growth,distillation,integration, conversation_capture, conversation_cite, conversation_review, conversation_state; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]; q={'osk_reviews':{'manifest':p['rid'],'domain':[{'key':c['key'],'outcome':'no_value','reason':'No reusable synthesis in these compared sources.'} for c in p['candidates']],'scope':[dict((k,j[k]) for k in ('harness','conversation_id','through')) | {'outcome':'no_value','reason':'Only a completed one-off job.'} for j in p['scope_jobs']]}}; "
     if change:
         source += change + '; '
     source += "from osk import organization; q['osk_reviews']['organization']=[{'key':j['key'],'scope':j['scope'],'outcome':'" + org + "','reason':'The fixture is one coherent, directly wired group.','intentional':[],'checked':[{'unit':u['unit'],'reason':'Known fixture claim and conditions'} for u in j['review_units'] if " + read + "]} for j in p['organization_jobs']]; "
@@ -293,7 +293,7 @@ class GrowthTests(unittest.TestCase):
 
     def test_scope_checkpoint_survives_worker_failure_and_resumes_only_pending_work(self):
         self.check_case("""
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
             for sid in ('first', 'second'):
                 path = VAULT.root / (sid + '.jsonl')
@@ -303,17 +303,17 @@ class GrowthTests(unittest.TestCase):
                         'role':'assistant','id':sid+'-m','content':[{'type':'text','text':'fixture answer'}],
                         'stop_reason':'end_turn'}}]
                 path.write_text(''.join(json.dumps(row)+'\\n' for row in rows), encoding='utf-8')
-                assert integration.capture(VAULT, 'claude',sid,str(path),'checkpoint-fixture',space='00_Scope/W1')['ok']
+                assert conversation_capture.capture(VAULT, 'claude',sid,str(path),'checkpoint-fixture',space='00_Scope/W1')['ok']
                 legacy(sid, path)
             change = "q['osk_reviews']['domain']=[]; q['osk_reviews']['scope']=q['osk_reviews']['scope'][:1]; (VAULT.root/'saved-checkpoint.json').write_text(json.dumps(q),encoding='utf-8'); assert growth.checkpoint(VAULT, q)['ok']; sys.exit(7)"
             result = growth.run(VAULT, [sys.executable,'-B','-c',packet_worker(change)],limit=3)
             assert not result['ok'] and result['returncode'] == 7, result
             first_plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['conversation_id'] for j in first_plan['scope_jobs']] == ['first']
-            assert integration.status(VAULT, 'claude','first')['reviewed_rounds'] == 1
+            assert conversation_capture.status(VAULT, 'claude','first')['reviewed_rounds'] == 1
             packet = json.loads((VAULT.root/'saved-checkpoint.json').read_text(encoding='utf-8'))
             assert growth.checkpoint(VAULT, packet)['ok']
-            before = integration.load_state(VAULT, integration.state_path(VAULT, 'claude','first'),'claude','first')
+            before = conversation_state.load_state(VAULT, conversation_state.state_path(VAULT, 'claude','first'),'claude','first')
             assert len(before['reviews']) == 1
             retry = growth.run(VAULT, [sys.executable,'-B','-c','import sys; sys.stdin.read()'],limit=3)
             assert not retry['ok']
@@ -322,9 +322,9 @@ class GrowthTests(unittest.TestCase):
             visible = growth._reading_plan(next_plan)['scope_jobs'][0]
             assert visible['raw_review'] == {'state':'verified','rounds':1,'error':None}
             assert visible['capture_recovery']['state'] == 'ready'
-            after = integration.load_state(VAULT, integration.state_path(VAULT, 'claude','first'),'claude','first')
+            after = conversation_state.load_state(VAULT, conversation_state.state_path(VAULT, 'claude','first'),'claude','first')
             assert after == before
-            assert integration.status(VAULT, 'claude','second')['reviewed_rounds'] == 0
+            assert conversation_capture.status(VAULT, 'claude','second')['reviewed_rounds'] == 0
         """)
 
     def test_recheck_jobs_queue_in_daily_runs_and_fork_scope(self):
@@ -565,7 +565,7 @@ class GrowthTests(unittest.TestCase):
 
     def test_unrelated_capture_error_does_not_fail_completed_selected_work(self):
         self.check_case("""
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             from unittest.mock import patch
             node('A')
             catchup = {'ok':False,'jobs':[],'captures':[], 'remaining':1,
@@ -580,7 +580,7 @@ class GrowthTests(unittest.TestCase):
                 'message':{'role':'user','content':'question'}})+'\\n'+json.dumps(
                 {'type':'assistant','sessionId':'own','uuid':'a','message':{'role':'assistant',
                  'id':'m','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}})+'\\n',encoding='utf-8')
-            assert integration.capture(VAULT, 'claude','own',str(native),'own',space='00_Scope/W1')['ok']
+            assert conversation_capture.capture(VAULT, 'claude','own',str(native),'own',space='00_Scope/W1')['ok']
             job = integration.prompt(VAULT, 'claude','own')
             job.update(ok=False,capture_error='selected conversation capture failed')
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker()],scope_job=job)
@@ -831,12 +831,12 @@ class GrowthTests(unittest.TestCase):
             # the hooks' background worker is where it runs on every install
             import contextlib
             from unittest import mock
-            integration = response_growth.integration
-            integration.state_path(VAULT, 'claude', 's').parent.mkdir(parents=True, exist_ok=True)
-            with mock.patch.object(integration, 'hook_source', return_value=('claude', 's', None)), \\
-                 mock.patch.object(integration, 'capture_due', return_value=False), \\
-                 mock.patch.object(integration, 'state_lock', lambda *a: contextlib.nullcontext(None)), \\
-                 mock.patch.object(integration, 'load_state', lambda *a: {}), \\
+            from osk import conversation_capture, conversation_state
+            conversation_state.state_path(VAULT, 'claude', 's').parent.mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(conversation_capture, 'hook_source', return_value=('claude', 's', None)), \\
+                 mock.patch.object(conversation_capture, 'capture_due', return_value=False), \\
+                 mock.patch.object(conversation_state, 'state_lock', lambda *a: contextlib.nullcontext(None)), \\
+                 mock.patch.object(conversation_state, 'load_state', lambda *a: {}), \\
                  mock.patch.object(response_growth, '_probe_due', return_value=False), \\
                  mock.patch.object(validate, 'auto_activate') as auto:
                 response_growth.after_hook(VAULT, {'session': 'k'})
@@ -1336,7 +1336,7 @@ class GrowthTests(unittest.TestCase):
         # 2026-10-05: an old round must not roll back a newer claim, and a round that only
         # supports a held claim gets a `# 관측` line instead of a rewritten body.
         self.check_case("""
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
             worker = growth.prompt(VAULT, growth.plan(VAULT, 3))
             assert 'never replace, weaken or reorder a current claim' in worker
@@ -1346,7 +1346,7 @@ class GrowthTests(unittest.TestCase):
                     {'type':'assistant','sessionId':'held','uuid':'a1','message':{'role':'assistant','id':'m1',
                      'content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(r) + '\\n' for r in rows), encoding='utf-8')
-            assert integration.capture(VAULT, 'claude','held',str(path),'held-project',space='00_Scope/W1')['ok']
+            assert conversation_capture.capture(VAULT, 'claude','held',str(path),'held-project',space='00_Scope/W1')['ok']
             own = integration.prompt(VAULT, 'claude','held')['text']
             assert '현행 주장을 옛 내용으로 바꾸거나 약화·재배열하지 않는다' in own
             assert '`# 관측` 절' in own and '`42cf0fc0#1`' in own
@@ -1615,18 +1615,18 @@ class GrowthTests(unittest.TestCase):
 
     def test_short_finished_transcript_waits_for_its_own_fork(self):
         self.check_case("""
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             path = VAULT.root / 'native.jsonl'
             user = {'type':'user','sessionId':'short','uuid':'u1','message':{'role':'user','content':'Report this temporary completed job.'}}
             final = {'type':'assistant','sessionId':'short','uuid':'a1','message':{'role':'assistant','id':'m1','content':[{'type':'text','text':'Temporary job finished.'}],'stop_reason':'end_turn'}}
             path.write_text(json.dumps(user)+'\\n',encoding='utf-8')
-            state = integration.capture(VAULT, 'claude','short',str(path),'short-project',space='00_Scope/W1')
+            state = conversation_capture.capture(VAULT, 'claude','short',str(path),'short-project',space='00_Scope/W1')
             assert state['capture_pending'], state
             with path.open('a',encoding='utf-8') as f:
                 f.write(json.dumps(final)+'\\n')
             # The daily run tracks the finished turn but has no copy of it to review.
             assert growth.run(VAULT, ['unused-command'])['state'] == 'skipped'
-            assert integration.status(VAULT, 'claude','short')['captured_rounds'] == 1
+            assert conversation_capture.status(VAULT, 'claude','short')['captured_rounds'] == 1
             # The conversation's own Stop fork holds the turn and reviews it.
             job = integration.prompt(VAULT, 'claude','short',include_organization=False)
             for change in (
@@ -1645,19 +1645,19 @@ class GrowthTests(unittest.TestCase):
     def test_daily_run_reads_an_ended_conversation_and_restarts_its_cadence(self):
         self.check_case("""
             import os, time
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             path = VAULT.root / 'ended.jsonl'
             rows = []
             for i in range(1, 4):
                 rows += [{'type':'user','sessionId':'ended','uuid':'u'+str(i),'message':{'role':'user','content':'question '+str(i)}},
                          {'type':'assistant','sessionId':'ended','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
-            assert integration.capture(VAULT, 'claude','ended',str(path),'ended-project',space='00_Scope/W1')['ok']
+            assert conversation_capture.capture(VAULT, 'claude','ended',str(path),'ended-project',space='00_Scope/W1')['ok']
             for _ in range(5):
-                integration.tick(VAULT, 'claude','ended')
+                conversation_capture.tick(VAULT, 'claude','ended')
             # Still running: its turns stay with the conversation's own review cadence.
             assert growth.run(VAULT, ['unused-command'])['state'] == 'skipped'
-            old = time.time() - integration.ENDED_AFTER - 60
+            old = time.time() - conversation_capture.ENDED_AFTER - 60
             os.utime(path, (old, old))
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker()],limit=3)
             assert result['ok'] and result['scope_selected'] == 1, result
@@ -1666,7 +1666,7 @@ class GrowthTests(unittest.TestCase):
             assert job['pending_refs'] == ['native:claude:ended:u' + str(i) for i in (1, 2, 3)], job
             assert 'read_command' not in job, job
             assert 'read_cited(ref=' in growth.prompt(VAULT, plan), 'a sandboxed worker reads through MCP'
-            state = integration.status(VAULT, 'claude','ended')
+            state = conversation_capture.status(VAULT, 'claude','ended')
             assert (state['reviewed_rounds'], state['pending']) == (3, False), state
             assert state['prompt_count'] == state['reviewed_prompt_count'] == 5, state
         """)
@@ -1960,7 +1960,7 @@ class GrowthTests(unittest.TestCase):
 
     def test_total_budget_and_queue_rotation_do_not_ack_unselected_scope(self):
         self.check_case("""
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
             path = VAULT.root / 'native.jsonl'
             rows = []
@@ -1968,9 +1968,9 @@ class GrowthTests(unittest.TestCase):
                 rows += [{'type':'user','sessionId':'bounded','uuid':'u'+str(i),'message':{'role':'user','content':'question '+str(i)}},
                          {'type':'assistant','sessionId':'bounded','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(row)+'\\n' for row in rows),encoding='utf-8')
-            integration.capture(VAULT, 'claude','bounded',str(path),'bounded-project',space='00_Scope/W1')
+            conversation_capture.capture(VAULT, 'claude','bounded',str(path),'bounded-project',space='00_Scope/W1')
             legacy('bounded', path)
-            original = integration.status(VAULT, 'claude','bounded')
+            original = conversation_capture.status(VAULT, 'claude','bounded')
             seen = []
             worker = [sys.executable,'-c','import sys; sys.stdin.read()']  # no ACKs
             for i in range(3):
@@ -1990,24 +1990,24 @@ class GrowthTests(unittest.TestCase):
                     visible = growth._reading_plan(plan)['scope_jobs'][0]
                     assert visible['previous_deferral']['reason'] == job['last_review']['reason']
             assert seen == ['candidates', 'scope_jobs', 'organization_jobs'], seen
-            assert integration.status(VAULT, 'claude','bounded')['pending_refs'] == original['pending_refs']
+            assert conversation_capture.status(VAULT, 'claude','bounded')['pending_refs'] == original['pending_refs']
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker()],limit=3)
             assert result['ok'] and result['selected'] == 3, result
-            state = integration.status(VAULT, 'claude','bounded')
+            state = conversation_capture.status(VAULT, 'claude','bounded')
             assert len(state['pending_refs']) == 3, state  # selected nine only, not the whole conversation
         """)
 
     def test_scope_queue_goes_by_turn_time_and_passes_a_stalled_conversation(self):
         self.check_case("""
             import os, time
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
             # Two ended conversations compete for one Scope slot per run (limit=3 shares the
             # budget with the candidate and organization queues). 'early' holds the older turns
             # although its state was touched last, so time order picks it first. A run that ends
             # without an ACK leaves it in place; the next run gives 'late' its turn instead of
             # choosing 'early' again (#136 M4: six such runs all chose the first conversation).
-            ended = time.time() - integration.ENDED_AFTER - 60
+            ended = time.time() - conversation_capture.ENDED_AFTER - 60
             for n, (sid, day) in enumerate((('late', '02'), ('early', '01'))):
                 path = VAULT.root / (sid + '.jsonl')
                 rows = []
@@ -2015,9 +2015,9 @@ class GrowthTests(unittest.TestCase):
                     rows += [{'type':'user','sessionId':sid,'uuid':sid+'-u'+str(i),'timestamp':'2026-10-'+day+'T0'+str(i)+':00:00Z','message':{'role':'user','content':'question '+str(i)}},
                              {'type':'assistant','sessionId':sid,'uuid':sid+'-a'+str(i),'message':{'role':'assistant','id':sid+'-m'+str(i),'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
                 path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
-                assert integration.capture(VAULT, 'claude',sid,str(path),sid+'-project',space='00_Scope/W1')['ok']
+                assert conversation_capture.capture(VAULT, 'claude',sid,str(path),sid+'-project',space='00_Scope/W1')['ok']
                 os.utime(path, (ended, ended))
-                os.utime(integration.state_path(VAULT, 'claude', sid), (ended + n, ended + n))
+                os.utime(conversation_state.state_path(VAULT, 'claude', sid), (ended + n, ended + n))
             worker = [sys.executable,'-c','import sys; sys.stdin.read()']   # no ACKs
             picks = []
             for _ in range(3):
@@ -2031,41 +2031,41 @@ class GrowthTests(unittest.TestCase):
     def test_conversations_that_yield_no_job_do_not_hold_the_catch_up_slots(self):
         self.check_case("""
             import os, time
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             os.environ['CODEX_HOME'] = str(VAULT.root / 'codex-home')    # never the real sessions
             # Codex conversations whose original transcripts are gone still date their next turn
             # from the stored UUIDv7 turn ids, so they sort first, yet catch-up cannot build jobs
             # from them. Catch-up walks the whole sorted queue to the next conversation that yields
             # a job: neither the run limit nor a lookup cap lets them hold the slots (#152 review:
             # with nothing else queued, run after run reviewed nothing and B waited).
-            ended = time.time() - integration.ENDED_AFTER - 60
+            ended = time.time() - conversation_capture.ENDED_AFTER - 60
             path = VAULT.root / 'b.jsonl'
             rows = [{'type':'user','sessionId':'b','uuid':'b-u1','timestamp':'2026-10-02T01:00:00Z','message':{'role':'user','content':'question'}},
                     {'type':'assistant','sessionId':'b','uuid':'b-a1','message':{'role':'assistant','id':'b-m1','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
-            assert integration.capture(VAULT, 'claude','b',str(path),'b-project',space='00_Scope/W1')['ok']
+            assert conversation_capture.capture(VAULT, 'claude','b',str(path),'b-project',space='00_Scope/W1')['ok']
             os.utime(path, (ended, ended))
             for i in range(101):
                 sid, turn = 'lost' + str(i), '01900000-0000-7000-8000-%012d' % i
-                with integration.state_lock(VAULT, 'codex', sid) as p:
-                    s = integration.load_state(VAULT, p, 'codex', sid)
+                with conversation_state.state_lock(VAULT, 'codex', sid) as p:
+                    s = conversation_state.load_state(VAULT, p, 'codex', sid)
                     s.update(session='lost-project', space='00_Scope/W1', prompt_count=1,
                              transcript_path=str(VAULT.root / 'gone.jsonl'),
                              rounds=[{'id':sid+'-u1:'+turn, 'ref':'native:codex:'+sid+':'+turn,
                                       'hash':'sha256:' + '0'*64, 'completion':'completed'}])
-                    integration.save_state(p, s)
+                    conversation_state.save_state(p, s)
             first = [x['conversation_id'] for x in integration._known_pending(VAULT, 100)[0]]
             assert len(first) == 100 and 'b' not in first, first[-3:]
             result = growth.run(VAULT, [sys.executable,'-c','import sys; sys.stdin.read()'], limit=1)
             assert result.get('state') != 'capture_pending', result
             plan = [r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]
             assert [j['conversation_id'] for j in plan['scope_jobs']] == ['b'], plan['scope_jobs']
-            assert integration.status(VAULT, 'codex','lost0')['capture_error'], 'the failure stays visible'
+            assert conversation_capture.status(VAULT, 'codex','lost0')['capture_error'], 'the failure stays visible'
         """)
 
     def test_conversation_review_carries_its_scope_hub_tree(self):
         self.check_case("""
-            from osk import integration, organization
+            from osk import integration, organization, conversation_capture, conversation_cite, conversation_review, conversation_state
             node('A')
             # Mechanism §9-4 3: the conversation review decides node splitting and placement and
             # carries its scope's hub tree; hub differentiation is left to the organization review.
@@ -2073,7 +2073,7 @@ class GrowthTests(unittest.TestCase):
             rows = [{'type':'user','sessionId':'tree','uuid':'u1','message':{'role':'user','content':'question'}},
                     {'type':'assistant','sessionId':'tree','uuid':'a1','message':{'role':'assistant','id':'m1','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
-            assert integration.capture(VAULT, 'claude','tree',str(path),'tree-project',space='00_Scope/W1')['ok']
+            assert conversation_capture.capture(VAULT, 'claude','tree',str(path),'tree-project',space='00_Scope/W1')['ok']
             job = integration.prompt(VAULT, 'claude','tree')
             tree = organization.hub_tree(VAULT, organization.scope_path(VAULT, 'W1'))
             assert job['hub_tree'] == tree and tree.startswith('- 00_Scope/W1 · 직속 노드 '), job['hub_tree']
@@ -2093,7 +2093,7 @@ class GrowthTests(unittest.TestCase):
         self.check_case("""
             import os, time
             from unittest.mock import patch
-            from osk import evictions, integration
+            from osk import evictions, integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             # #136 M4 fixture: two candidates in each of the five queues and a worker that never
             # acknowledges or submits a packet. Within five runs of limit=3 every queue is chosen,
             # and so is the second candidate of every queue: a stalled first one holds no budget.
@@ -2105,13 +2105,13 @@ class GrowthTests(unittest.TestCase):
             write.update_node(VAULT, 'A', old_text='A reusable observation', new_text='A revised observation')
             for i in range(2):
                 evictions.record_evict(VAULT, 'W1', 'session', 'Temporary observation ' + str(i))
-            ended = time.time() - integration.ENDED_AFTER - 60
+            ended = time.time() - conversation_capture.ENDED_AFTER - 60
             for sid in ('c1', 'c2'):
                 path = VAULT.root / (sid + '.jsonl')
                 rows = [{'type':'user','sessionId':sid,'uuid':sid+'-u','message':{'role':'user','content':'question'}},
                         {'type':'assistant','sessionId':sid,'uuid':sid+'-a','message':{'role':'assistant','id':sid+'-m','content':[{'type':'text','text':'answer'}],'stop_reason':'end_turn'}}]
                 path.write_text(''.join(json.dumps(r)+'\\n' for r in rows), encoding='utf-8')
-                assert integration.capture(VAULT, 'claude', sid, str(path), sid + '-project', space='00_Scope/W1')['ok']
+                assert conversation_capture.capture(VAULT, 'claude', sid, str(path), sid + '-project', space='00_Scope/W1')['ok']
                 os.utime(path, (ended, ended))
             ident = {'candidates': 'key', 'scope_jobs': 'conversation_id', 'organization_jobs': 'scope',
                      'eviction_jobs': 'of', 'recheck_jobs': 'key'}
@@ -2134,7 +2134,7 @@ class GrowthTests(unittest.TestCase):
     def test_only_dispatched_organization_jobs_advance_attempts(self):
         self.check_case("""
             from unittest.mock import patch
-            from osk import integration
+            from osk import integration, conversation_capture, conversation_cite, conversation_review, conversation_state
             for name, scope in (('A','W1'),('B','W2'),('C','W3')):
                 node(name, scope)
             path = VAULT.root / 'native.jsonl'
@@ -2142,7 +2142,7 @@ class GrowthTests(unittest.TestCase):
                 {'type':'user','sessionId':'waiting','uuid':'u1','message':{'role':'user','content':'Keep this scoped fact.'}},
                 {'type':'assistant','sessionId':'waiting','uuid':'a1','message':{'role':'assistant','id':'m1','content':[{'type':'text','text':'A bounded fact.'}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(r)+'\\n' for r in rows),encoding='utf-8')
-            assert integration.capture(VAULT, 'claude','waiting',str(path),'waiting',space='00_Scope/W1')['ok']
+            assert conversation_capture.capture(VAULT, 'claude','waiting',str(path),'waiting',space='00_Scope/W1')['ok']
             legacy('waiting', path)
             worker = "import sys; from osk import core,growth,organization; from osk.vault import Vault; VAULT = Vault.open(); sys.stdin.read(); p=[r for r in core.ledger_read(growth.ledger_path(VAULT)) if r['kind']=='plan'][-1]; [organization.review(VAULT, j['key'],j['scope'],'deferred','Needs a later targeted review.') for j in p['organization_jobs']]"
             visited = []
@@ -2165,7 +2165,7 @@ class GrowthTests(unittest.TestCase):
                     k:v for k,v in before.items() if v['scope'] != selected['scope']}, (before, after)
                 assert organization.load_state(VAULT)['reviews'][selected['scope']]['outcome'] == 'deferred'
             assert visited == ['W1','W2','W3','W1','W2','W3','W1','W2'], visited
-            assert integration.status(VAULT, 'claude','waiting')['reviewed_rounds'] == 0
+            assert conversation_capture.status(VAULT, 'claude','waiting')['reviewed_rounds'] == 0
         """)
 
     def test_stop_fork_skips_jobs_that_stalled_twice_this_week(self):

@@ -12,7 +12,7 @@ BOOT = '''
 import json, os, sys
 from pathlib import Path
 from unittest.mock import patch
-from osk import core, growth, growth_status as S, integration, validate, write
+from osk import core, growth, growth_status as S, integration, validate, write, conversation_capture, conversation_cite, conversation_review, conversation_state
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -21,11 +21,11 @@ START = '2026-10-01T00:00:00+09:00'
 AT = '2026-10-01T12:00:00+09:00'
 END = '2026-10-02T00:00:00+09:00'
 def cursor(sid, rounds=0, reviewed=0, **extra):
-    p = integration.state_path(VAULT, 'claude', sid)
-    state = integration.load_state(VAULT, p, 'claude', sid)
+    p = conversation_state.state_path(VAULT, 'claude', sid)
+    state = conversation_state.load_state(VAULT, p, 'claude', sid)
     state.update(rounds=[{'id':str(n),'ref':'anonymous#'+str(n),'completion':'complete'} for n in range(rounds)],
                  reviewed_count=reviewed, **extra)
-    integration.save_state(p,state)
+    conversation_state.save_state(p,state)
     return p,state
 def report():
     return S.report(VAULT, since=START,until=END)
@@ -72,8 +72,8 @@ class GrowthStatusTests(unittest.TestCase):
             cursor('prefix',capture_pending=True,capture_error='ValueError: native round identity prefix changed')
             cursor('tail',capture_pending=True)
             before=files()
-            with patch.object(integration,'locate_transcript',return_value=None), \\
-                 patch.object(integration,'save_state',side_effect=AssertionError('report must not save')):
+            with patch.object(conversation_capture,'locate_transcript',return_value=None), \\
+                 patch.object(conversation_state,'save_state',side_effect=AssertionError('report must not save')):
                 result=report()
             assert result['ok'],result
             counts=result['integration']
@@ -228,8 +228,8 @@ class GrowthStatusTests(unittest.TestCase):
             import subprocess
             cursor('a',1,reviews=[{'through':'frozen','at':AT,'outcome':'no_value','receipts':[]}])
             before=files()
-            with patch.object(integration,'status',side_effect=AssertionError('status writes repairs')), \
-                 patch.object(integration,'save_state',side_effect=AssertionError('unexpected write')), \
+            with patch.object(conversation_capture,'status',side_effect=AssertionError('status writes repairs')), \
+                 patch.object(conversation_state,'save_state',side_effect=AssertionError('unexpected write')), \
                  patch.object(growth,'plan',side_effect=AssertionError('report selected work')), \
                  patch.object(core,'ledger_append',side_effect=AssertionError('unexpected ledger write')):
                 first,second=report(),report()

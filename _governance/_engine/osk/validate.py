@@ -907,10 +907,12 @@ _NUM_KO = dict(enumerate(
 # 표면이 거치는 쓰기 통로 — 금지 심벌 검사를 여기까지 건다. 코드를 옮겨
 # 검사를 비켜가는 표류를 막기 위해서다(6차 판정). `osk/integration.py`·`osk/raw.py`는
 # cite_round의 통로이므로 같은 이유로 여기 든다.
-# `write`에서 갈라져 나온 모듈도 같은 통로다 — 가를 때마다 이 목록이 따라가야 검사가 눈멀지 않는다.
+# `write`·`integration`에서 갈라져 나온 모듈도 같은 통로다 — 가를 때마다 이 목록이 따라가야 검사가
+# 눈멀지 않는다.
 SURFACE_MODULES = ("mcp_server.py", "osk/write.py", "osk/nodefile.py", "osk/cluster_gate.py",
                    "osk/node_checks.py", "osk/node_moves.py", "osk/raw.py", "osk/integration.py",
-                   "osk/scope_memory.py", "osk/distillation.py", "osk/routing.py")
+                   "osk/conversation_state.py", "osk/conversation_capture.py", "osk/conversation_review.py",
+                   "osk/conversation_cite.py", "osk/scope_memory.py", "osk/distillation.py", "osk/routing.py")
 
 
 def surface_violations(vault: Vault, engine_dir=None) -> list[str]:

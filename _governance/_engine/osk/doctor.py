@@ -27,8 +27,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import (core, evictions, evidence_migration as em, growth_daily, integration, raw, rechecks,
-               response_growth, scope_memory, validate)
+from . import (core, evictions, evidence_migration as em, growth_daily, raw, rechecks, response_growth, scope_memory,
+               validate, conversation_capture, conversation_state)
 from . import harness as adapters
 from .harness import base, runs
 from .vault import Vault
@@ -247,8 +247,7 @@ def _delivery(start: dict | None, overview: dict) -> dict | None:
 def _version(vault: Vault, adapter, cli: str | None) -> dict:
     version, source = None, ""
     try:
-        from . import integration
-        path = integration.recent_transcript(vault, adapter.name)
+        path = conversation_capture.recent_transcript(vault, adapter.name)
         if path:
             version, source = adapter.transcript_version(path), "최근 대화"
     except (OSError, ValueError):
@@ -466,7 +465,7 @@ def _vault_items(vault: Vault) -> list[dict]:
         items.append(_item("warn", "근거 재검토", f"후보 {rc}건이 닫히지 않았다",
                            "`osk.cli rechecks`의 후보마다 노드와 근거를 읽고, 맞으면 update_node(rechecked=[대상])로 "
                            "닫는다 — cascade거나 다음 노드까지 고치게 되는 수정은 사용자에게 올린다"))
-    blocked = integration.blocked(vault, limit=1000)
+    blocked = conversation_state.blocked(vault, limit=1000)
     if blocked["count"]:
         gone = sum(c["error"].startswith("FileNotFoundError") for c in blocked["conversations"])
         items.append(_item("warn", "포착 막힘", f"대화 {blocked['count']}건"

@@ -1,26 +1,20 @@
-"""Durable, local conversation capture/review cursors; shared scope memory is not an ACK."""
+"""osk.integration — 대화들을 가로질러 무엇이 밀려 있는지와 검토 안내 (Mechanism §9-4).
+
+대화 하나의 커서는 `conversation_state`, 포착은 `conversation_capture`, 검토를 닫는 일은
+`conversation_review`, 인용은 `conversation_cite`가 맡는다. 여기에는 여러 대화에 걸친 일이 남는다:
+밀린 대화의 목록과 따라잡기(`list_pending`·`capture_known`·`catchup`), 그리고 세션에 싣는 검토
+안내(`prompt`). 공유 scope 기억에 쓴 것은 검토를 닫은 것이 아니다.
+"""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import re
-import time
-from collections import Counter
-from datetime import datetime
-from contextlib import contextmanager
-from pathlib import Path
 
-from . import (core, raw, scope_memory, transcripts, workspaces, write, distillation, evidence, organization,
-               raw_view, secrets, node_checks, nodefile)
-from . import harness as adapters
-from ._portalock import lock_exclusive, unlock
+from . import (conversation_capture, conversation_review, conversation_state, core, distillation, node_checks,
+               organization, raw, transcripts, write)
 from .vault import Vault
 
-SOFT, HARD = 9, 15
-MAX_REVIEW_ROUNDS = 15
-ENDED_AFTER = 12 * 3600  # seconds without a transcript change: the conversation ended (Mechanism §9-4 3항)
-SOURCE_LOST_AFTER = 7 * 86400  # seconds a native transcript stays missing before its cursor closes as lost (#244)
 
 def unlanded(vault: Vault) -> str:
     """소속 scope가 없는 대화의 검토가 소속을 정하는 순서(시행령 §3 9항 · Mechanism §9-4 3항)."""
@@ -39,1090 +33,6 @@ def unlanded(vault: Vault) -> str:
         "이 프로젝트의 결속에 더한다. 그 scope를 overview로 보고 허브 트리에서 노드의 자리를 정한다.\n")
 
 
-def conversation_key(vault: Vault, harness: str, conversation_id: str) -> str:
-    if harness not in adapters.NAMES or not isinstance(conversation_id, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", conversation_id):
-        raise ValueError(f"explicit {'/'.join(adapters.NAMES)} harness and actual conversation_id required")
-    return hashlib.sha256(f"{vault.root.resolve()}\n{harness}\n{conversation_id}".encode()).hexdigest()
-
-
-def state_path(vault: Vault, harness: str, conversation_id: str) -> Path:
-    key = conversation_key(vault, harness, conversation_id)
-    root_key = hashlib.sha256(str(vault.root.resolve()).encode()).hexdigest()[:16]
-    return core.local_lock_path(f"osk-integration-{root_key}-{key}.json", vault.root).with_suffix(".json")
-
-
-def state_lock(vault: Vault, harness: str, conversation_id: str):
-    return _locked_path(state_path(vault, harness, conversation_id))
-
-
-@contextmanager
-def _locked_path(p: Path):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with p.with_suffix(".lock").open("a+b") as f:
-        lock_exclusive(f)
-        try:
-            yield p
-        finally:
-            unlock(f)
-
-
-def load_state(vault: Vault, p: Path, harness: str, sid: str) -> dict:
-    if not p.exists():
-        # Raw identity follows the native conversation across vault copies;
-        # operational ownership remains ROOT-specific in state_path.
-        return {"version": 1, "root": str(vault.root.resolve()), "harness": harness,
-                "conversation_id": sid, "session": None, "space": None, "transcript_path": None,
-                "record": record_name(harness, sid),
-                "rounds": [], "reviewed_count": 0, "prompt_count": 0,
-                "reviewed_prompt_count": 0, "snapshots": {}, "reviews": [],
-                "capture_pending": False, "capture_error": None,
-                "native_fingerprint": None, "coverage": None}
-    s = json.loads(p.read_text(encoding="utf-8"))
-    return validate_state(vault, s, harness, sid)
-
-
-def record_name(harness: str, sid: str) -> str:
-    key = hashlib.sha256((harness + "\n" + sid).encode()).hexdigest()[:32]
-    return f"{harness}-{key}"
-
-
-def validate_state(vault: Vault, s: dict, harness: str, sid: str) -> dict:
-    """Validate already read bytes; status reports must not reread or repair them."""
-    if (s.get("version"), s.get("root"), s.get("harness"), s.get("conversation_id")) != (
-            1, str(vault.root.resolve()), harness, sid):
-        raise ValueError("integration state identity/version mismatch; not reset")
-    if not (isinstance(s.get("rounds"), list) and isinstance(s.get("snapshots"), dict)
-            and isinstance(s.get("reviewed_count"), int)
-            and 0 <= s["reviewed_count"] <= len(s["rounds"])):
-        raise ValueError("damaged integration cursor; not reset")
-    return s
-
-
-def save_state(p: Path, s: dict) -> None:
-    nodefile.write_file(p, json.dumps(s, ensure_ascii=False, sort_keys=True).encode("utf-8"))
-
-
-def _snapshot(s: dict) -> str | None:
-    if not s["rounds"]:
-        return None
-    return "sha256:" + hashlib.sha256(json.dumps(
-        [s["root"], s["harness"], s["conversation_id"], s["rounds"]],
-        sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-
-
-def _capture_recovery(vault: Vault, s: dict) -> dict:
-    """Advice only; it never relaxes capture identity or acknowledges stored raw."""
-    if s.get("source_lost"):
-        return {"state": "closed", "phase": "source_lost", "basis": "source_lookup",
-                "next_action": "원본이 다시 나타나면 같은 대화를 capture해 이어 간다. 검토하지 못한 원본 턴은 "
-                               "`source_lost.refs`에 남아 있다."}
-    phase = s.get("capture_failure_phase", "unknown")
-    if s.get("capture_error"):
-        basis = "recorded_phase" if phase != "unknown" else "legacy_diagnostic"
-        if phase == "unknown":
-            error = s["capture_error"]
-            if any(t in error for t in ("착지", "프로젝트 키", "프로젝트 키", "scope changed", "project changed", "scope is invalid")):
-                phase = "landing"
-            elif any(t in error for t in ("prefix", "접두부", "저장된 기록보다 짧다")):
-                phase = "replay"
-            elif any(t in error for t in ("identity", "session_meta", "sessionId", "history_base")):
-                phase = "read"
-            elif "FileNotFoundError" in error or "native transcript path unavailable" in error:
-                phase = "source"
-        if phase == "source":
-            # A recorded miss is checked too: Codex compresses a cold rollout in place (#203).
-            try:
-                found = locate_transcript(vault, s["harness"], s["conversation_id"],
-                                           s.get("capture_path") or s.get("transcript_path"))
-                available = bool(found and Path(found).is_file())
-                missing = not found or not Path(found).exists()
-            except (OSError, ValueError):
-                basis = "source_lookup_failed"
-            else:
-                basis = "source_lookup"
-                if available:
-                    return {"state": "retryable", "phase": phase, "basis": basis,
-                            "next_action": "같은 ID의 원본 후보(Codex 압축본 포함)를 찾았다. 현재 엔진으로 capture하여 신원·접두부를 다시 검증한다."}
-                if missing and not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
-                    phase = "awaiting_native"
-        actions = {
-            "awaiting_native": "같은 대화의 원본이 생성된 뒤 다시 capture한다.",
-            "landing": "기존 대화의 scope를 유지하며 명시적인 프로젝트 키와 착지를 확인한다.",
-            "source": "이 기기에 같은 대화 ID의 원본이 평문으로도 Codex 압축본(`.jsonl.zst`)으로도 없다. 원본을 복구하거나 올바른 전사 경로를 명시한다.",
-            "dependency": "원본은 있으나 Codex 압축본(`.jsonl.zst`)을 풀 `zstandard`가 이 vault의 .venv에 없다. `_governance/_engine/requirements.txt`를 다시 설치한 뒤 같은 대화를 capture한다.",
-            "read": "원본의 대화 ID·형식·연결된 과거 전사를 확인하고 같은 대화로 재시도한다.",
-            "replay": "추적 중인 턴 순서와 원본 접두부(이어받은 부모 턴 포함)를 확인한다. 기존 좌표나 검토 커서를 초기화하지 않는다.",
-        }
-        return {"state": "awaiting_input" if phase == "awaiting_native" else "action_required",
-                "phase": phase, "basis": basis, "next_action": actions.get(
-                    phase, "원본 경로·대화 신원·착지를 확인하고 같은 대화를 다시 capture한다.")}
-    if s.get("capture_pending"):
-        return {"state": "pending", "phase": "tail", "basis": "saved_cursor",
-                "next_action": "종료 기록을 확인한 뒤 같은 대화를 다시 capture한다. 열린 꼬리를 완료로 처리하지 않는다."}
-    if not (s.get("native_fingerprint") or s["rounds"]):
-        return {"state": "awaiting_input", "phase": "unobserved", "basis": "saved_cursor",
-                "next_action": "같은 대화의 원본이 생성된 뒤 다시 capture한다."}
-    return {"state": "ready", "phase": "complete", "basis": "saved_cursor", "next_action": None}
-
-
-def state_view(vault: Vault, s: dict) -> dict:
-    rs, n = s["rounds"], s["reviewed_count"]
-    repairs = s.get("repair_pending", {})
-    repair_refs = {ref for item in repairs.values() for ref in item["refs"]}
-    lost = set((s.get("source_lost") or {}).get("refs", []))   # 원본 없이 검토할 수 없는 턴(#244)
-    return {"ok": not bool(s["capture_error"]), "harness": s["harness"],
-            "conversation_id": s["conversation_id"], "session": s["session"],
-            "record": s["record"], "transcript_path": s["transcript_path"],
-            "captured_through": rs[-1]["id"] if rs else None,
-            "reviewed_through": rs[n-1]["id"] if n else None,
-            "captured_rounds": len(rs), "reviewed_rounds": n,
-            "aborted_rounds": sum(r.get("completion") == "aborted" for r in rs),
-            "failed_rounds": sum(r.get("completion") == "failed" for r in rs),
-            "interrupted_rounds": sum(r.get("completion") == "interrupted" for r in rs),
-            "pending": bool(s["capture_pending"] or any(r["ref"] not in lost for r in rs[n:]) or repairs),
-            "repair_pending": repairs,
-            "capture_pending": s["capture_pending"], "capture_error": s["capture_error"],
-            "capture_recovery": _capture_recovery(vault, s),
-            "coverage": s.get("coverage"), "excluded": s.get("excluded"),
-            "source_lost": s.get("source_lost"),
-            "space": s["space"], "workspace": s.get("workspace"),
-            "inherited_rounds": len((s.get("inherited") or {}).get("rounds", [])),
-            "pending_refs": [r["ref"] for i, r in enumerate(rs)
-                             if i >= n and r["ref"] not in lost or r["ref"] in repair_refs],
-            "through": _snapshot(s),
-            "prompt_count": s["prompt_count"], "reviewed_prompt_count": s["reviewed_prompt_count"],
-            "response_growth": {k: v for k, v in s.get("response_growth", {}).items() if k != "seen"},
-            "response_growth_stop": s.get("response_growth_stop"),
-            "response_growth_route": s.get("response_growth_route"),
-            "last_review": s["reviews"][-1] if s["reviews"] else None}
-
-
-def status(vault: Vault, harness: str, conversation_id: str) -> dict:
-    with state_lock(vault, harness, conversation_id) as p:
-        return _current_view(vault, load_state(vault, p, harness, conversation_id), p)
-
-
-def blocked(vault: Vault, limit: int = 10) -> dict:
-    """Conversations whose capture is stuck on this device, newest first (§9-3 3항).
-    `observed` is the cursor's last save; the hooks keep only a one-line notice."""
-    from datetime import datetime
-    probe = state_path(vault, "claude", "probe")
-    rows = []
-    for p in probe.parent.glob("-".join(probe.name.split("-")[:3]) + "-*.json"):
-        try:
-            s = json.loads(p.read_text(encoding="utf-8"))
-            if s.get("capture_error") and s.get("root") == str(vault.root.resolve()):
-                rows.append({"harness": s["harness"], "conversation_id": s["conversation_id"],
-                             "error": s["capture_error"], "observed": datetime.fromtimestamp(
-                                 p.stat().st_mtime, core.KST).strftime(core.TS_FMT)})
-        except (OSError, ValueError, KeyError):
-            continue
-    rows.sort(key=lambda r: r["observed"], reverse=True)
-    return {"count": len(rows), "conversations": rows[:limit]}
-
-
-def memory_seen(vault: Vault, harness: str, conversation_id: str, digest: str, scope: str | None = None) -> bool:
-    """Was this conversation last given the shared memory at exactly `digest`? A hook then
-    carries one line instead of the whole text; a changed hash carries the whole again.
-    `scope` names a bound scope other than the primary — each keeps its own last digest."""
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
-        shown = (s.get("memory_shown_bound") or {}).get(scope) if scope else s.get("memory_shown")
-        return shown == digest
-
-
-def note_memory(vault: Vault, harness: str, conversation_id: str, digest: str, scope: str | None = None) -> None:
-    """The hook's output really carried the whole shared memory at `digest`."""
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
-        if scope:
-            shown = dict(s.get("memory_shown_bound") or {})
-            if shown.get(scope) == digest:
-                return
-            s["memory_shown_bound"] = {**shown, scope: digest}
-        elif s.get("memory_shown") == digest:
-            return
-        else:
-            s["memory_shown"] = digest
-        save_state(p, s)
-
-
-def shown_before(vault: Vault, harness: str, conversation_id: str, slot: str, mark: str) -> bool:
-    """Was this conversation last given the hook block `slot` at exactly `mark`? Then a hook
-    carries one line instead of the same whole block again (#275)."""
-    with state_lock(vault, harness, conversation_id) as p:
-        return (load_state(vault, p, harness, conversation_id).get("shown") or {}).get(slot) == mark
-
-
-def note_shown(vault: Vault, harness: str, conversation_id: str, slot: str, mark: str) -> None:
-    """The hook's output really carried the whole block `slot` at `mark`."""
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
-        shown = dict(s.get("shown") or {})
-        if shown.get(slot) != mark:
-            s["shown"] = {**shown, slot: mark}
-            save_state(p, s)
-
-
-def turn_key(harness: str, round_id: str) -> str:
-    """The original turn's identity for citations and review refs. A Claude round is
-    `<first user row>:<final message>` and an Antigravity round `<user input step>:<last
-    step>`; the first part already names the turn while it is still open, so a citation of
-    the open turn and of the finished round agree."""
-    return round_id.split(":", 1)[0] if harness in ("claude", "antigravity") else round_id
-
-
-SHORT_ID = 8  # the least prefix a citation may name a turn by (#219)
-
-
-def _short_ids(s: dict):
-    """A turn ref → the shortest prefix of its turn ID, at least SHORT_ID, that tells this
-    conversation's tracked turns apart. Codex IDs share time-ordered prefixes, so the length
-    grows until every tracked turn differs; an untracked ref keeps SHORT_ID."""
-    keys = {r["ref"]: turn_key(s["harness"], r["id"]) for r in s["rounds"]}
-    n = SHORT_ID
-    while len({k[:n] for k in keys.values()}) < len(set(keys.values())):
-        n += 1
-    return lambda ref: keys[ref][:n] if ref in keys else ref.rsplit(":", 1)[-1][:n]
-
-
-def _range_text(s: dict, refs) -> str:
-    """Where a review's turns sit in the conversation, by position and short ID."""
-    at = {r["ref"]: i + 1 for i, r in enumerate(s["rounds"])}
-    refs = sorted(refs, key=lambda ref: at.get(ref, 0))
-    pos, short, total = [at.get(ref, 0) for ref in refs], _short_ids(s), f"전체 {len(s['rounds'])}턴"
-    if len(refs) == 1:
-        return f"{pos[0]}번째 턴 1개(`{short(refs[0])}`, {total})"
-    if pos == list(range(pos[0], pos[0] + len(pos))):
-        return f"{pos[0]}–{pos[-1]}번째 턴 {len(refs)}개(`{short(refs[0])}` … `{short(refs[-1])}`, {total})"
-    return f"{'·'.join(map(str, pos))}번째 턴 {len(refs)}개({total})"
-
-
-def _review_refs(s: dict, through: str) -> list:
-    """The turns a review of `through` covers — what its ACK closes and its batch read shows."""
-    snap = s["snapshots"].get(through)
-    repair = s.get("repair_pending", {}).get(through)
-    if not snap or snap["count"] <= s["reviewed_count"] and not repair:
-        raise ValueError("through is not an unreviewed snapshot of this conversation")
-    return list(repair["refs"]) if repair else [r["ref"] for r in s["rounds"][s["reviewed_count"]:snap["count"]]]
-
-
-# Only the locators the parser writes into `native_result` fields; words that merely mention
-# a locator are hashed as written.
-_SESSION_LOCATOR = re.compile(r'("native_result":\s*")claude:[A-Za-z0-9_.-]+:')
-
-
-def _turn_hashes(pair: dict, dialogue_v1: dict | None = None) -> list[str]:
-    """Local evidence of what was reviewed — the dialogue text never enters the vault.
-    The first hash is the turn's own; a resumed copy also offers its original's row orders.
-    A copy may rewrite result locators with its own conversation ID, so that part is
-    left out: a copied turn hashes the same in parent and child. The user's words and any
-    locator they mention are hashed as they are."""
-    shown = (dialogue_v1 or {}).get(pair["id"], pair)
-    digest = lambda agent: core.sha256_bytes(json.dumps(
-        [shown["user"], _SESSION_LOCATOR.sub(r"\1claude:*:", agent)], ensure_ascii=False).encode("utf-8"))
-    return [digest(a) for a in filter(None, (shown["agent"], *shown.get("agent_time_orders", ())))] or [digest("")]
-
-
-def _fork_parent_turns(s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
-    """A Codex fork declares each page's owner. The parent's turns stay the parent's to
-    review — by its own cursor, in its own scope — and never become this conversation's
-    new work, whether or not the parent is tracked here. They are kept as references with
-    their hashes, so a later capture refuses a changed parent prefix."""
-    parent = [r for r in rounds if r.get("origin_conversation_id") not in (None, s["conversation_id"])]
-    if rounds[:len(parent)] != parent:
-        raise ValueError("Codex fork parent turns must precede the conversation's own; capture remains pending")
-    known = (s.get("inherited") or {}).get("rounds")
-    if known is not None and ([k["id"] for k in known] != [r["id"] for r in parent] or any(
-            k["hash"] not in _turn_hashes(r, dialogue_v1) for k, r in zip(known, parent))):
-        raise ValueError("inherited native prefix changed; capture remains pending")
-    if parent and known is None:
-        s["inherited"] = {"rounds": [
-            {"id": r["id"], "ref": raw.native_ref("codex", r["origin_conversation_id"], r["id"]),
-             "hash": _turn_hashes(r, dialogue_v1)[0]} for r in parent]}
-    return rounds[len(parent):]
-
-
-def _scope_cursors(vault: Vault, s: dict):
-    """같은 scope의 다른 Claude 커서 — 복제된 앞부분의 주인을 찾을 때만 읽는다."""
-    probe = state_path(vault, "claude", s["conversation_id"])
-    prefix = "-".join(probe.name.split("-")[:3]) + "-"
-    for candidate in sorted(probe.parent.glob(prefix + "*.json")):
-        if candidate == probe:
-            continue
-        try:
-            data = json.loads(candidate.read_text(encoding="utf-8"))
-            if data.get("harness") != "claude" or data.get("root") != s["root"]:
-                continue
-            owner = load_state(vault, candidate, "claude", data["conversation_id"])
-            if candidate != state_path(vault, "claude", owner["conversation_id"]):
-                continue
-            # 부모의 착지는 부모의 작업 공간 판별로 정한다 — 이 프로세스의 작업 폴더로 정하지 않는다
-            bound = write.resolve_session(vault, owner["session"]) if owner["session"] and not _one_off(owner) else None
-            landing = owner["space"] or (f"{vault.scope}/{bound}" if bound else None)
-            # 착지 없는 대화는 어느 커서와도 견준다 — 이어받는 것은 원본 턴뿐이고, 부모가 착지했으면
-            # 그 착지를 잇는다(`_inherited_rounds`). 착지한 대화는 같은 scope의 커서와만 견준다.
-            if s["space"] is None or landing == s["space"]:
-                yield owner, landing
-        except (OSError, ValueError, KeyError):
-            continue
-
-
-def _inherited_rounds(vault: Vault, s: dict, rounds: list, dialogue_v1: dict | None = None) -> list:
-    """Reuse only the caller's copied prefix, with native ID and byte evidence."""
-    if s["harness"] == "codex":
-        return _fork_parent_turns(s, rounds, dialogue_v1)
-    if s["harness"] != "claude":
-        return rounds
-    path = raw.locate_record(vault, s["record"])        # 루트 `_cited/` 또는 옛 자리 — 착지와 무관하다
-    inherited = (raw.inherited_prefix(path) if path else None) or s.get("inherited")
-    if not inherited and (path and path.exists() or s["rounds"]):
-        return rounds  # A conversation already tracking its own turns keeps them.
-    cache = {}
-
-    def matches(pair, source):
-        if raw.is_native(source["ref"]):
-            # A parent tracked by original turn: same turn ID and the same reviewed text.
-            return source["hash"] in _turn_hashes(pair, dialogue_v1)
-        name, number = raw.parse_ref(source["ref"])
-        if "/".join(raw.raw_file(vault, name).relative_to(vault.root).parts[:2]) != s["space"]:
-            raise ValueError("inherited source crossed scope; capture remains pending")
-        if name not in cache:
-            text = raw.read_exact(raw.raw_file(vault, name))
-            cache[name] = text, raw.round_spans(text)
-        text, spans = cache[name]
-        block = text[slice(*spans[number])]
-        if core.sha256_bytes(block.rstrip("\n").encode()) != source["hash"]:
-            raise ValueError("inherited raw changed; capture remains pending")
-        readable = raw.round_body(block).startswith(raw.DIALOGUE_V1)
-        if readable:
-            pair = (dialogue_v1 or {})[pair["id"]]
-        # A raw owner may have captured another conversation's copied history.
-        # Match generated result locators by native result UUID, not raw ownership.
-        locator = re.compile(
-            (r'("native_result": "claude:)' if readable else
-             r'("content": \{"coverage": "tool-output-reference", "native_result": "claude:)')
-            + r'([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+)(")')
-        origins = {m[3]: m[2] for m in locator.finditer(block)}
-        references = Counter(pair.get("native_results", []))
-        occurrences = Counter("claude:" + m[2] + ":" + m[3] for m in locator.finditer(pair["agent"]))
-        if any(occurrences[ref] != count for ref, count in references.items()
-               if ref.startswith("claude:" + s["conversation_id"] + ":")):
-            return False  # A dialogue quotation makes replacement ambiguous.
-        # The copy may hold the tool evidence in message order; the original
-        # captured append order, which the rows' timestamps still give.
-        for text in filter(None, (pair["agent"], *pair.get("agent_time_orders", ()))):
-            agent = locator.sub(
-                lambda m: m[1] + origins.get(m[3], m[2]) + ":" + m[3] + m[4]
-                if m[2] == s["conversation_id"] and references["claude:" + m[2] + ":" + m[3]]
-                else m[0], text)
-            expected = raw.round_block(number, raw.escape_numeric_h2(pair["user"]), raw.escape_numeric_h2(agent),
-                                  dialogue_id=pair["id"] if readable else None)
-            if raw.round_body(block) == raw.round_body(secrets.filter_text(expected)[0]):
-                return True
-        return False
-
-    if inherited is None:
-        known, landings = {}, {}
-        if rounds and re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
-            # ponytail: one local-state scan on first capture; index native IDs if this grows costly.
-            for owner, landing in _scope_cursors(vault, s):
-                for source in owner["rounds"]:
-                    if s["space"] or raw.is_native(source["ref"]):   # 저장 라운드는 그 scope의 것이다
-                        known.setdefault(source["id"], []).append(source)
-                        landings[source["id"], source["ref"]] = landing
-        shared = []
-        for pair in rounds:
-            candidates = known.get(pair["id"], [])
-            if not candidates:
-                break
-            source = next((r for r in candidates if matches(pair, r)), None)
-            if source is None:
-                raise ValueError("copied native round ID has different content; capture remains pending")
-            shared.append(source)
-        inherited = {"rounds": shared} if shared else None
-        if shared and not s["space"]:
-            # 재개 사본은 같은 대화가 이어진 것이다 — 부모가 고정한 착지를 잇는다
-            s["space"] = next((landings[r["id"], r["ref"]] for r in shared if landings.get((r["id"], r["ref"]))), None)
-    if inherited:
-        prefix = inherited["rounds"]
-        if (len(rounds) < len(prefix)
-                or any(pair["id"] != source["id"] or not matches(pair, source)
-                       for pair, source in zip(rounds, prefix))):
-            raise ValueError("inherited native prefix changed; capture remains pending")
-        s["inherited"] = inherited
-        return rounds[len(prefix):]
-    return rounds
-
-
-def locate_transcript(vault: Vault, harness: str, sid: str, saved: str | None = None) -> str | None:
-    """Recover a moved native file by exact ID; ambiguity requires an explicit path."""
-    conversation_key(vault, harness, sid)
-    if saved and (found := transcripts.on_disk(saved)):
-        return str(found.resolve())
-    matches = sorted({p.resolve() for p in adapters.get(harness).transcripts(sid) if p.is_file()})
-    if len(matches) > 1:
-        raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
-    # transcripts.read checks the native identity before this path is saved.
-    return str(matches[0]) if matches else saved
-
-
-def _workspace(vault: Vault, s: dict, path: str | None, cwd: str | None) -> bool:
-    """이 대화의 작업 폴더가 일회성 작업 폴더인가(Mechanism §6-2 6항) — 처음 알 수 있을 때 한 번
-    판별해 대화에 고정한다. 원본 전사가 적은 작업 폴더를 먼저 쓰고, 없으면 훅의 작업 폴더를 쓴다.
-    판별은 그 대화의 것이다 — 같은 이름의 키를 쓰는 다른 세션에 번지지 않는다."""
-    if "workspace" not in s:
-        seen = transcripts.workspace(path, s["harness"]) if path and Path(path).is_file() else None
-        where = (seen or {}).get("cwd") or cwd
-        if where:
-            s["workspace"] = (workspaces.judge(vault, s["harness"], where, (seen or {}).get("version"))
-                              or {"one_off": False})
-    return _one_off(s)
-
-
-def _one_off(s: dict) -> bool:
-    return bool((s.get("workspace") or {}).get("one_off"))
-
-
-def capture(vault: Vault, harness: str, conversation_id: str, transcript_path: str | None,
-            session: str, space: str | None = None, cwd: str | None = None) -> dict:
-    """Track this conversation's completed turns for review. The dialogue stays in the
-    harness transcript: the cursor keeps original-turn refs and hashes, never vault text
-    (헌법 4조 3항 · 시행령 §2 2항). Evidence enters `_cited/` only through `cite`.
-    Tracking does not wait for a landing: citing a turn and writing a node need one, and
-    the review of an unlanded conversation decides it (Mechanism §9-4 3항).
-
-    The transcript is parsed outside the conversation's state lock — a large one takes
-    seconds, and the hooks' own short reads of the state (tick, route) must not wait on
-    it (#192). Captures of one conversation still take turns (`.capture.lock`), and only
-    capture writes the fields it reads back after the parse."""
-    p = state_path(vault, harness, conversation_id)
-    with _locked_path(p.with_name(p.stem + ".capture.json")):
-        found = _capture_source(vault, harness, conversation_id, transcript_path, session, space, cwd)
-        if isinstance(found, dict):
-            return found
-        native_path, rules, s = found
-        try:
-            if rules and "turns_since" not in s and not s["rounds"] and not s.get("inherited"):
-                rules.update(_copied_since(vault, s, native_path))
-            parsed = transcripts.read(native_path, harness, conversation_id, rules=rules)
-        except Exception as exc:
-            with state_lock(vault, harness, conversation_id) as p:
-                return _capture_failed(vault, p, load_state(vault, p, harness, conversation_id), exc, "read")
-        with state_lock(vault, harness, conversation_id) as p:
-            s = load_state(vault, p, harness, conversation_id)
-            try:
-                return _capture_apply(vault, p, s, parsed, native_path, rules)
-            except Exception as exc:
-                return _capture_failed(vault, p, s, exc, "replay")
-
-
-def _capture_failed(vault: Vault, p: Path, s: dict, exc: Exception, phase: str) -> dict:
-    if isinstance(exc, FileNotFoundError) and phase in {"source", "read"}:
-        phase = ("source" if s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")
-                 else "awaiting_native")
-    if isinstance(exc, transcripts.ZstdMissing):
-        phase = "dependency"
-    s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
-    s["capture_failure_phase"] = phase
-    # Only a validation refusal discards the candidate source; an I/O failure
-    # keeps it for the next pathless retry.
-    if phase != "landing" and isinstance(exc, ValueError):
-        s.pop("capture_path", None)
-    save_state(p, s)
-    return _current_view(vault, s, p)
-
-
-def _land(vault: Vault, s: dict, transcript_path: str | None, session: str, space: str | None,
-          cwd: str | None) -> str | None:
-    """The landing step of `capture`: pin the conversation's work folder judgment, project
-    key, landing and first transcript path in `s`, reading at most the transcript's head.
-    Returns the path to look for; a refused landing raises ValueError."""
-    # 일회성 작업 폴더의 대화는 그 키에 선 결속을 따르지 않는다 — 착지는 대화에 고정한 것뿐이다
-    follow = not _workspace(vault, s, (str(Path(transcript_path).resolve()) if transcript_path else None)
-                            or s.get("capture_path") or s["transcript_path"], cwd)
-    pinned = s["space"]
-    if pinned:
-        scope = raw.scope_of_space(vault, pinned)
-        if not scope:
-            raise ValueError("saved conversation scope is invalid; capture remains pending")
-        pinned = (vault.scope + '/') + scope
-    # 착지는 검토의 문맥(허브 트리·조직 검토)이지 인용 기록의 자리가 아니다 — 기록은 루트
-    # `_cited/` 한 자리다(헌법 4조 3항). 명시한 space가 먼저, 다음이 고정된 착지, 그 다음이
-    # 프로젝트의 주된 scope다. 한 대화가 여러 scope의 활동을 품을 수 있으니 바뀌어도 거부하지 않는다.
-    destination, primary = write.resolve_landing(vault, session if follow else None, space, "")
-    requested = (vault.scope + '/') + destination if destination else None
-    if pinned and not requested and s["session"]:
-        # 흔한 작업 폴더 키가 무관한 대화를 제 결속으로 끌지 않게 — 착지가 고정된 대화는
-        # 제가 고른 키로 이어진다
-        session = s["session"]
-        destination, primary = write.resolve_landing(vault, session if follow else None, pinned, "")
-        requested = (vault.scope + '/') + destination
-    if (s["session"] and s["session"] != session
-            and not (primary and requested == pinned or not pinned and requested)):
-        # 키가 바뀐 재포착은 같은 scope로 이어질 때만 받는다 — 흔한 폴더 이름의 키가
-        # 무관한 대화를 제 결속으로 끌어가지 않게 한다
-        raise ValueError("conversation scope changed; existing capture was not moved")
-    s["session"] = session
-    s["space"] = requested if space else (pinned or requested)
-    requested_path = (str(Path(transcript_path).resolve()) if transcript_path else
-                      s.get("capture_path") or s["transcript_path"])
-    if not s["transcript_path"]:
-        s["transcript_path"] = requested_path  # First-capture intent survives an absent/unflushed file.
-    return requested_path
-
-
-def _capture_source(vault: Vault, harness: str, conversation_id: str, transcript_path: str | None,
-                    session: str, space: str | None, cwd: str | None):
-    """The landing and source steps of `capture`, under the state lock — `(native_path,
-    rules, state)` to read, or the view of a refusal."""
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
-        s["capture_pending"], s["capture_error"] = True, None
-        s.pop("capture_failure_phase", None)
-        save_state(p, s)  # Persist intent before reading; failures remain pending.
-        phase = "landing"
-        try:
-            requested_path = _land(vault, s, transcript_path, session, space, cwd)
-            save_state(p, s)
-            phase = "source"
-            native_path = locate_transcript(vault, harness, conversation_id, requested_path)
-            present = bool(native_path) and Path(native_path).exists()
-            if s.get("source_lost") and not present:
-                # 원본 소실로 닫은 커서는 다시 실패로 세지 않는다(#244)
-                s["capture_pending"] = False
-                save_state(p, s)
-                return _current_view(vault, s, p)
-            if not native_path:
-                if not (s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")):
-                    phase = "awaiting_native"
-                raise ValueError("native transcript path unavailable; use integration capture with --transcript")
-            if present:
-                _source_clock(s, missing=False)   # 원본이 돌아왔다 — 닫음을 풀고 이어 간다
-            # Retain the attempted source across a crash, separately from the last
-            # accepted source. Only a validation rejection clears this intent below.
-            s["capture_path"] = native_path
-            save_state(p, s)
-            phase = "read"
-            return native_path, _turn_rules(s), s
-        except Exception as exc:
-            return _capture_failed(vault, p, s, exc, phase)
-
-
-def _capture_apply(vault: Vault, p: Path, s: dict, parsed: dict, native_path: str, rules: dict | None) -> dict:
-    """The read transcript into the cursor, under the state lock (`capture`)."""
-    harness, conversation_id = s["harness"], s["conversation_id"]
-    if parsed.get("originator") == "codex_exec":
-        # A scripted `codex exec` run — osk's own scheduled runs included — is not a
-        # conversation to learn from: its turns are neither tracked nor reviewed
-        # (Mechanism §9-4 3항). Rounds an earlier engine stored keep their review.
-        s.update(excluded="codex_exec", capture_pending=False, capture_error=None,
-                 transcript_path=native_path, native_fingerprint=parsed["native_fingerprint"])
-        s.pop("capture_path", None)
-        save_state(p, s)
-        return {**_current_view(vault, s, p), "appended": 0, "changed": 0}
-    coverage = parsed["coverage"]
-    if not s["rounds"]:
-        s["coverage"] = coverage
-    save_state(p, s)
-    # ponytail: serialize tracking until its cursor is saved; use per-scope
-    # locks if capture throughput matters.
-    with _locked_path(core.local_lock_path("osk-capture-prefix.lock", vault.root)):
-        rounds = _inherited_rounds(vault, s, parsed["rounds"], parsed.get("dialogue_v1"))
-        kept, gone = s["rounds"], []
-        if harness == "codex" or parsed.get("reverted"):
-            by_id = {r["id"]: r for r in rounds}
-            if len(by_id) != len(rounds):
-                raise ValueError("native round identity prefix changed; the review cursor was not moved")
-            # Codex `thread/revert` keeps an earlier page only up to a turn (#208), and a Claude
-            # rewind leaves its dropped branch behind (#235): an unreviewed turn either took out
-            # leaves the cursor as if it had never been tracked. Any other missing turn is a
-            # changed prefix.
-            gone = [i for i, r in enumerate(kept) if r["id"] not in by_id]
-            if any(kept[i]["id"] not in parsed.get("reverted", ()) for i in gone):
-                raise ValueError("native round identity prefix changed; the review cursor was not moved")
-            if gone and gone[0] < s["reviewed_count"]:
-                raise ValueError("Codex reverted a reviewed turn (thread/revert); the review cursor was not moved"
-                                 if harness == "codex" else
-                                 "Claude rewound past a reviewed turn; the review cursor was not moved")
-            kept = [r for r in kept if r["id"] in by_id]
-            # A recovered past turn follows the turns already tracked: keep the saved order.
-            known = {r["id"] for r in kept}
-            rounds = [by_id[r["id"]] for r in kept] + [r for r in rounds if r["id"] not in known]
-        if s.get("rewound"):
-            # Turns a rewind into a copy left behind (`_fork_rewound`) stay out until the
-            # conversation goes on past them; then they come back to review with the new turns.
-            later = [r["id"] for r in rounds[len(kept):]]
-            if later == s["rewound"]["rounds"][:len(later)]:
-                rounds = rounds[:len(kept)]
-            else:
-                del s["rewound"]
-        ids = [r["id"] for r in rounds]
-        if len(ids) != len(set(ids)) or ids[:len(kept)] != [r["id"] for r in kept]:
-            raise ValueError("native round identity prefix changed; the review cursor was not moved")
-        # Existing snapshots bind the saved entries: keep them, add the new turns.
-        # An unreviewed original turn whose words changed under its ID is tracked
-        # as it reads now, and snapshots taken before the change are dropped: no
-        # review closes words the reviewer did not see. A reviewed turn keeps the
-        # version its review judged. A reverted turn drops its snapshots the same way.
-        prior = {r["id"]: r for r in kept}
-        tracked, changed = [], []
-        for i, r in enumerate(rounds):
-            hashes = _turn_hashes(r, parsed.get("dialogue_v1"))
-            entry = prior.get(r["id"])
-            if (entry and raw.is_native(entry["ref"]) and entry["hash"] not in hashes
-                    and i >= s["reviewed_count"]):
-                entry = {**entry, "hash": hashes[0]}
-                changed.append(i)
-            tracked.append(entry or {
-                "id": r["id"], "ref": raw.native_ref(harness, conversation_id, turn_key(harness, r["id"])),
-                "completion": r["completion"], "hash": hashes[0], **({"cut": r["cut"]} if r.get("cut") else {})})
-        s["rounds"] = tracked
-        if rules:
-            s.setdefault("turns_since", rules["since"])
-            s.setdefault("prompts_since", rules["prompts_since"])
-            if "harness_since" in rules:
-                s.setdefault("harness_since", rules["harness_since"])
-        if changed or gone:
-            first = min(changed[:1] + gone[:1])
-            s["snapshots"] = {t: v for t, v in s["snapshots"].items()
-                              if v.get("repair_refs") or v["count"] <= first}
-        appended = len(s["rounds"]) - len(prior)
-        if (appended or changed or gone) and s["rounds"]:
-            token = _snapshot(s)
-            s["snapshots"].setdefault(token, {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
-        s["capture_pending"] = parsed["pending_tail"]
-        s["capture_error"] = "; ".join(parsed["diagnostics"]) or None
-        # Replace an established source only after identity and raw-prefix replay
-        # succeed. A rejected explicit path must not poison later pathless retries.
-        s["transcript_path"] = native_path
-        s.pop("capture_path", None)
-        s["coverage"] = coverage
-        if s["capture_error"]:
-            s["capture_failure_phase"] = "read"
-        s["native_fingerprint"] = parsed["native_fingerprint"]
-        save_state(p, s)
-        return {**_current_view(vault, s, p), "appended": appended, "changed": len(changed), "reverted": len(gone)}
-
-
-def tick(vault: Vault, harness: str, conversation_id: str) -> dict:
-    """Count the actual hook event even with empty/unbound shared memory; never reset on resume."""
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
-        s["prompt_count"] += 1
-        n = s["prompt_count"] - s["reviewed_prompt_count"]
-        save_state(p, s)
-        current = _current_view(vault, s, p)
-        return {**current, "due": bool(current["repair_pending"]) or n > 0 and n % HARD in (SOFT, 0),
-                "hard": n > 0 and n % HARD == 0, "unreviewed_prompts": n}
-
-
-def _stored_hashes(vault: Vault, refs) -> dict:
-    """Each stored round's hash as it is in the vault now (None if the round is gone)."""
-    raw_files, out = {}, {}
-    for ref in refs:
-        name, index = raw.parse_ref(ref)
-        if name not in raw_files:
-            text = raw.read_exact(raw.raw_file(vault, name))
-            raw_files[name] = text, raw.round_spans(text)
-        text, spans = raw_files[name]
-        out[ref] = (core.sha256_bytes(text[slice(*spans[index])].rstrip("\n").encode("utf-8"))
-                    if index in spans else None)
-    return out
-
-
-def _verify_raw(vault: Vault, rounds: list) -> None:
-    """Stored rounds must still match their saved hashes. An original-turn ref has no
-    vault copy to check — the reviewer judged the turn from the conversation itself."""
-    stored = [r for r in rounds if not raw.is_native(r["ref"])]
-    current = _stored_hashes(vault, [r["ref"] for r in stored])
-    if any(current[r["ref"]] != r["hash"] for r in stored):
-        raise ValueError("raw snapshot changed; review is not acknowledged")
-
-
-def _verify_native(vault: Vault, s: dict, rounds: list) -> dict:
-    """An original turn has no vault copy: this device's transcript must still hold the
-    words the snapshot tracked, or the review would close what its reviewer did not read.
-    Returns each turn's user words hash, which a citation of that turn must match."""
-    native = [r for r in rounds if raw.is_native(r["ref"])]
-    if not native:
-        return {}
-    source = locate_transcript(vault, s["harness"], s["conversation_id"], s.get("capture_path") or s["transcript_path"])
-    if not (source and Path(source).is_file()):
-        raise ValueError("the original transcript is not on this device; review is not acknowledged")
-    parsed = transcripts.read(source, s["harness"], s["conversation_id"], rules=_turn_rules(s))
-    shown = parsed.get("dialogue_v1") or {}
-    current = {r["id"]: _turn_hashes(r, shown) for r in parsed["rounds"]}
-    if any(r["hash"] not in current.get(r["id"], []) for r in native):
-        raise ValueError("an original turn changed after this snapshot; capture again and review the current one")
-    words = {r["id"]: core.sha256_bytes(shown.get(r["id"], r)["user"].encode("utf-8")) for r in parsed["rounds"]}
-    return {r["ref"]: words.get(r["id"]) for r in native}
-
-
-def acknowledge(vault: Vault, harness: str, conversation_id: str, through: str,
-                outcome: str, reason: str, targets: list | None = None,
-                primary_scope: str | None = None) -> dict:
-    """`primary_scope`는 이 검토의 소속 판정이 **그 프로젝트 자체의 활동**이 속한 scope로 확인한
-    것이다 — 결정 묶음의 한 항목이며 실행기(이 함수)가 주된 scope 지정 기록으로 적는다(Mechanism
-    §6-2 6항 · §9-4 3항). 일회성 작업 폴더의 대화에는 프로젝트가 없어 받지 않는다."""
-    if outcome not in ("preserved", "summary", "no_value", "deferred") or not isinstance(reason, str) or not reason.strip():
-        raise ValueError("outcome preserved|summary|no_value|deferred and nonempty reason required")
-    if primary_scope is not None and (not isinstance(primary_scope, str) or not primary_scope.strip()):
-        raise ValueError("primary_scope must be a scope name")
-    with state_lock(vault, harness, conversation_id) as p, core.mutation_lock(vault):
-        s = load_state(vault, p, harness, conversation_id)
-        if primary_scope is not None:
-            if _one_off(s) or not s["session"]:
-                raise ValueError("a one-off workspace conversation has no project to designate a primary scope for")
-            primary_scope = raw.scope_of_space(vault, primary_scope) or primary_scope.strip()
-            if primary_scope not in raw.scope_names(vault):
-                raise ValueError(f"primary_scope is not a scope: {primary_scope}")
-        snap = s["snapshots"].get(through)
-        repair = s.get("repair_pending", {}).get(through)
-        refs = set(_review_refs(s, through))
-        _verify_raw(vault, [r for r in s["rounds"] if r["ref"] in refs])
-        words = {}
-        if not repair and outcome != "deferred":
-            # A reopened review rereads only its corrected stored rounds; a deferral closes nothing.
-            words = _verify_native(vault, s, [r for r in s["rounds"] if r["ref"] in refs])
-        receipts = []
-        if outcome == "preserved":
-            if not isinstance(targets, list) or not targets:
-                raise ValueError("preserved requires completed distillation targets [{key:...}]")
-            for target in targets:
-                if not isinstance(target, dict) or not isinstance(target.get("key"), str):
-                    raise ValueError("preserved target must name a distillation key")
-                receipt = distillation.status_locked(vault, target["key"])
-                sources = receipt.get("sources", [])
-                # A cited round binds through the original turn it cites (Mechanism §9 9항), and
-                # only while the turn holds the words it cited.
-                bound = ({raw.canonical_ref(vault, r["ref"]) for r in sources}
-                         | {r["native"] for r in sources if r.get("native") and r.get("native_user")
-                            in (None, words.get(r["native"], r.get("native_user")))})
-                # Each refusal says which condition failed and what the target cites (#219).
-                if receipt.get("status") != "complete":
-                    raise ValueError(f"target {target['key']} has no complete body/source/hub receipt: "
-                                     f"{receipt.get('reason') or receipt.get('status')}")
-                covered = {raw.canonical_ref(vault, ref) for ref in refs}
-                if not covered & bound:
-                    short = _short_ids(s)
-                    changed = [short(r["native"]) for r in sources if r.get("native") in covered]
-                    if changed:
-                        raise ValueError(f"target {target['key']} cites {', '.join(changed)} of this review, but the "
-                                         "turn's words changed after it was cited; cite the turn again and "
-                                         "distill from the new citation")
-                    cited = [short(r["native"]) if r.get("native") else r["ref"] for r in sources]
-                    raise ValueError(f"target {target['key']} cites no turn of this review ({_range_text(s, refs)}); "
-                                     f"it cites {', '.join(cited) or 'nothing'}. A later turn's distillation "
-                                     "belongs to that turn's review: judge this range on its own")
-                target_path = core.resolve_in_root(vault, receipt.get("target", {}).get("path", ""))
-                kind = raw.graph.space_of(vault, target_path)[0] if target_path is not None else None
-                if kind not in ("scope", "person"):
-                    raise ValueError("preserved integration target must be a durable Scope or Person node")
-                receipts.append(receipt)
-        elif outcome == "summary":
-            # 일회성 작업 폴더의 대화는 그 키의 결속이 아니라 대화에 고정한 착지의 기억을 본다
-            # 대화에 고정한 착지가 있으면 그 scope의 기억이다 — 프로젝트의 주된 scope와 다를 수 있다
-            memory = scope_memory.read(vault, None if _one_off(s) else s["session"], s.get("space"))
-            if not isinstance(targets, list) or not targets or not all(
-                    isinstance(t, dict) and isinstance(t.get("text"), str) and t["text"].strip()
-                    and t["text"] in memory["text"] for t in targets):
-                raise ValueError("summary requires exact excerpts present in current shared memory")
-            receipts = [{"scope": memory["scope"], "hash": memory["hash"], "targets": targets}]
-        review = {"through": through, "outcome": outcome, "reason": reason.strip(),
-                  "at": core.now_iso(), "refs": sorted(refs), "receipts": receipts,
-                  "mechanical_preservation": outcome == "preserved", "semantic_verified": False}
-        s["reviews"].append(review)
-        if outcome != "deferred":
-            s["reviewed_count"] = max(s["reviewed_count"], snap["count"])
-            s["reviewed_prompt_count"] = max(s["reviewed_prompt_count"], snap["prompt_count"])
-            s.get("repair_pending", {}).pop(through, None)
-            if s["reviewed_count"] == len(s["rounds"]) and not s.get("repair_pending"):
-                # Every tracked turn is reviewed, whoever reviewed it: the conversation's
-                # user-turn and Stop counts start over (Mechanism §9-3 1항).
-                s["reviewed_prompt_count"] = s["prompt_count"]
-                if s.get("response_growth"):
-                    s["response_growth"]["attempted_count"] = s["response_growth"]["count"]
-        if primary_scope is not None and write.bindings(vault, s["session"])["primary"] != primary_scope:
-            # 검토 저장 **앞에** 적는다 — 대장 쓰기가 실패하면 검토도 남지 않아 같은 through로
-            # 재시도할 수 있다. 지정이 먼저 서고 저장이 실패해도 재시도는 같은 판정이라 건너뛴다.
-            write.set_primary(vault, s["session"], primary_scope, "대화 검토의 소속 판정")
-        save_state(p, s)
-        return state_view(vault, s)
-
-
-def _review_state_locked(vault: Vault, s: dict, through: str) -> dict:
-    snap = s["snapshots"].get(through)
-    last = next((r for r in reversed(s["reviews"]) if r["through"] == through), {})
-    result = {"harness": s["harness"], "conversation_id": s["conversation_id"], "through": through,
-              "status": "pending", "outcome": last.get("outcome")}
-    if snap and snap.get("repair_parts"):
-        parts = [_review_state_locked(vault, s, token) for token in snap["repair_parts"]]
-        complete = all(part["status"] == "complete" for part in parts)
-        return {**result, "status": "complete" if complete else "pending",
-                "reason": None if complete else "bounded repair reviews remain pending",
-                "parts": parts, "semantic_verified": False}
-    repair = s.get("repair_pending", {}).get(through)
-    if repair:
-        return {**result, "reason": repair["reason"], "repair_pending": True}
-    if not snap or not last or last.get("outcome") == "deferred" or s["reviewed_count"] < snap["count"]:
-        return result
-    # ACK가 출처·대상·출처 링크·허브를 확인했다. 그 뒤에는 구조 신호만 보고 검토를 다시 열지
-    # 않는다 — 문단 편집·허브 이동·scope 기억 정리는 보존을 무르지 않는다. 출처 라운드는
-    # append-only라 바뀌지 않고, 정정은 정정하는 쪽이 reopen으로 등록한다.
-    out = {**result, "status": "complete", "review": last, "semantic_verified": False}
-    if last["outcome"] == "preserved":
-        idx = raw.graph.Index(vault)
-        broken = [{"key": r["key"], "reason": why} for r in last["receipts"]
-                  if (why := distillation.structure(vault, r, idx))]
-        if broken:
-            out["structure"] = broken
-    return out
-
-
-def _register_repair(s: dict, through: str, reason: str, version: str,
-                     corrected: list, targets: list) -> bool:
-    """Reopen an acknowledged review until an explicit replacement ACK. The repair keeps the
-    corrected coordinates and the nodes whose receipts cited them: they are what a reviewer
-    rereads, and a cited round is not among the review's own refs. A review already reopened by
-    an earlier correction moves to a new token for this version — an ACK of the earlier bytes
-    names the old token, which no longer closes anything — and keeps both corrections."""
-    snap = s["snapshots"].get(through, {})
-    if snap.get("repair_parts"):
-        return any([_register_repair(s, token, reason, version, corrected, targets)
-                    for token in snap["repair_parts"]])
-    pending = s.setdefault("repair_pending", {})
-    if through in pending:
-        old = pending[through]
-        if old.get("version") == version:
-            return False
-        child = "sha256:" + hashlib.sha256(json.dumps([through, version]).encode()).hexdigest()
-        s["snapshots"][child] = {"count": snap["count"], "prompt_count": snap["prompt_count"],
-                                 "repair_refs": old["refs"]}
-        snap["repair_parts"] = [child]
-        kept = {t["key"]: t for t in old.get("targets", []) + targets}
-        pending[child] = {**pending.pop(through), "reason": reason, "since": core.now_iso(),
-                          "review_count": len(s["reviews"]), "version": version,
-                          "corrected": sorted(set(old.get("corrected", [])) | set(corrected)),
-                          "targets": [kept[k] for k in sorted(kept)]}
-        return True
-    prior = next((r for r in reversed(s["reviews"])
-                  if r["through"] == through and r["outcome"] != "deferred"), None)
-    if not prior:
-        return False
-    pending[through] = {"reason": reason, "refs": prior["refs"], "since": core.now_iso(),
-                        "review_count": len(s["reviews"]), "version": version,
-                        "corrected": corrected, "targets": targets}
-    return True
-
-
-def reopen(vault: Vault, harness: str, conversation_id: str, refs: list, reason: str) -> dict:
-    """Stored and cited records are append-only (헌법 4조 4항). A correction is the exception,
-    and the corrector registers it here. A corrected round this conversation tracks takes its
-    current bytes; every acknowledged review that read it — as its own round, or through a
-    receipt citing it — is reviewed again. No later check looks for any of this."""
-    if not isinstance(reason, str) or not reason.strip():
-        raise ValueError("reopen requires the correction's reason")
-    with state_lock(vault, harness, conversation_id) as p, core.mutation_lock(vault):
-        s = load_state(vault, p, harness, conversation_id)
-        wanted = {raw.canonical_ref(vault, ref) for ref in refs or []}
-        if not wanted or any(raw.is_native(ref) for ref in wanted):
-            raise ValueError("reopen takes corrected stored or cited rounds; an original turn is not corrected here")
-        current = _stored_hashes(vault, sorted(wanted))
-        if None in current.values():
-            raise ValueError("a corrected round is missing from its record")
-
-        hits = {}   # through -> (corrected refs it read, receipts that cited them, by key)
-        for v in s["reviews"]:
-            if v["outcome"] == "deferred":
-                continue
-            # Old cursors keep their original coordinates: compare both sides canonically.
-            read = wanted & {raw.canonical_ref(vault, ref) for ref in v["refs"]}
-            cited = {}
-            for receipt in v.get("receipts", []):
-                hit = wanted & {raw.canonical_ref(vault, src["ref"]) for src in receipt.get("sources", [])}
-                if hit:
-                    read |= hit
-                    cited[receipt["key"]] = {"key": receipt["key"], "id": receipt["target"]["id"],
-                                             "name": receipt["target"].get("name"),
-                                             "path": receipt["target"]["path"]}
-            if read:
-                seen, targets = hits.setdefault(v["through"], (set(), {}))
-                seen |= read
-                targets.update(cited)
-        if not hits:
-            raise ValueError("no acknowledged review of this conversation read these rounds")
-        for r in s["rounds"]:
-            if raw.canonical_ref(vault, r["ref"]) in wanted:
-                r["hash"] = current[raw.canonical_ref(vault, r["ref"])]
-        version = core.sha256_bytes(json.dumps(sorted(current.items())).encode("utf-8"))
-        for token, (read, targets) in sorted(hits.items()):
-            _register_repair(s, token, reason.strip(), version, sorted(read),
-                             [targets[k] for k in sorted(targets)])
-        save_state(p, s)
-        return state_view(vault, s)
-
-
-# 4.2 이전에는 ACK 뒤 영수증과 요약 발췌를 상시 다시 확인하고, 바뀌면 검토를 다시 열었다.
-# 그 사유로 열린 복구 대기만 처음 볼 때 닫는다. 출처 정정으로 연 것(사유가 다르다)은 남긴다.
-_RECHECK_REASONS = {"preserved target/source/hub receipt changed",
-                    "reviewed summary excerpt no longer exists"}
-
-
-def _current_view(vault: Vault, s: dict, path: Path) -> dict:
-    old = [token for token, repair in s.get("repair_pending", {}).items()
-           if repair.get("reason") in _RECHECK_REASONS]
-    for token in old:
-        del s["repair_pending"][token]
-    if old:
-        save_state(path, s)
-    return state_view(vault, s)
-
-
-def review_status_locked(vault: Vault, harness: str, conversation_id: str, through: str) -> dict:
-    # Pure while the caller owns mutation lock: never acquire the local lock or write state.
-    return _review_state_locked(vault, load_state(vault, state_path(vault, harness, conversation_id), harness, conversation_id), through)
-
-
-def review_status(vault: Vault, harness: str, conversation_id: str, through: str) -> dict:
-    with state_lock(vault, harness, conversation_id) as p, core.mutation_lock(vault):
-        return _review_state_locked(vault, load_state(vault, p, harness, conversation_id), through)
-
-
-def _turn_rules(s: dict) -> dict | None:
-    """Claude의 새 턴 규칙(턴 도중 메시지, 멈춘 미완료 턴)은 이 엔진이 처음 추적한 뒤의
-    턴부터다. 새 프롬프트가 도구 호출로 끝난 턴을 닫는 규칙(#218)도 그 규칙을 처음 쓴 엔진이
-    추적한 뒤부터다(`prompts_since`). 하네스가 프롬프트로 보낸 알림과 되감기로 버린 갈래를
-    가리는 규칙(#275·#235)도 그렇다(`harness_since`). 그 앞에 저장된 라운드는 저장된 경계와
-    표현 그대로 다시 읽힌다. 모든 판독이 같은 규칙을 써야 저장된 경계가 바뀌지 않는다."""
-    if s["harness"] != "claude":
-        return None
-    tracked = (s.get("inherited") or {}).get("rounds", []) + s["rounds"]
-    last = tracked[-1]["id"] if tracked else None
-    return {"since": s.get("turns_since", last), "prompts_since": s.get("prompts_since", last),
-            "harness_since": s.get("harness_since", last),
-            "cuts": [r["cut"] for r in tracked if r.get("cut")], "now": time.time()}
-
-
-def _copied_since(vault: Vault, s: dict, native_path: str) -> dict:
-    """처음 포착하는 Claude 사본(resume·fork)의 새 규칙 경계 — 턴 규칙(`since`), 프롬프트
-    규칙(`prompts_since`), 하네스 행 규칙(`harness_since`) 각각. 복제된 앞부분은 그 턴을 추적한 같은 scope 커서가 쓴 경계를
-    따른다 — 새 규칙으로 읽으면 부모가 옛 규칙으로 추적한 턴과 경계·표현이 갈라진다. 그
-    커서들의 경계 가운데 이 전사에서 가장 뒤에 오는 것을 쓴다. 부모가 갈래 지점 뒤로 이어
-    추적했으면 그 경계는 사본에 없다 — 복제된 앞부분은 모두 그 앞이니, 경계까지 추적한
-    라운드 가운데 사본에 있는 마지막 것이 경계다. 처음부터 새 규칙을 쓴 커서(경계 None)는 그대로다.
-    부모가 저장한 절단 지점은 넘기지 않는다 — 사본에서도 행 시각의 12시간 공백이 같은
-    자리를 나눈다. 프롬프트 경계는 부모가 턴 규칙으로 읽은 라운드다 — 유휴 닫기가 나눈
-    라운드는 규칙 없는 판독에 없으므로, 찾은 턴 규칙으로 다시 읽어 찾는다(#233 리뷰)."""
-    best = {"since": None, "prompts_since": None, "harness_since": None}
-    rounds = transcripts.read(native_path, "claude", s["conversation_id"])["rounds"]
-    if not rounds or not re.fullmatch(r"[0-9a-fA-F-]{36}", rounds[0]["id"].split(":")[0]):
-        return best   # 복제는 원래 행 id(UUID)로만 알아본다 — _inherited_rounds와 같은 기준
-    cursors = [([r["id"] for r in (owner.get("inherited") or {}).get("rounds", []) + owner["rounds"]], owner)
-               for owner, _landing in _scope_cursors(vault, s)]
-
-    def latest(rounds: list, key: str) -> str | None:
-        order, found = {r["id"]: i for i, r in enumerate(rounds)}, None
-        for ids, owner in cursors:
-            bound = owner.get(key, ids[-1] if ids else None)
-            if bound in ids:
-                bound = next((i for i in reversed(ids[:ids.index(bound) + 1]) if i in order), None)
-            if bound in order and (found is None or order[bound] > order[found]):
-                found = bound
-        return found
-
-    best["since"] = latest(rounds, "turns_since")
-    ruled = transcripts.read(native_path, "claude", s["conversation_id"],
-                             rules={"since": best["since"], "cuts": [], "now": time.time()})["rounds"]
-    best["prompts_since"] = latest(ruled, "prompts_since")
-    ruled = transcripts.read(native_path, "claude", s["conversation_id"],
-                             rules={"since": best["since"], "prompts_since": best["prompts_since"],
-                                    "cuts": [], "now": time.time()})["rounds"]
-    best["harness_since"] = latest(ruled, "harness_since")
-    return best
-
-
-def _source_clock(s: dict, missing: bool) -> bool:
-    """원본이 없는 동안의 시계(#244). 처음 못 찾은 때를 적고, SOURCE_LOST_AFTER 동안 계속 없으면
-    원본 소실로 닫는다 — 하루 묶음이 다시 포착하지 않고, 포착 오류·대기와 검토 대기에서 빠진다.
-    검토하지 못한 원본 턴은 지우지 않고 그 처분(`source_lost.refs`)에 남긴다. 인용 기록으로 남은
-    턴은 원본 없이도 검토할 수 있어 대기에 둔다. 원본을 찾으면 시계와 닫음을 푼다. 바꿨으면 True."""
-    if not missing:
-        changed = "source_missing_since" in s or "source_lost" in s
-        s.pop("source_missing_since", None)
-        s.pop("source_lost", None)
-        return changed
-    if s.get("source_lost"):
-        return False
-    now = time.time()
-    if "source_missing_since" not in s:
-        s["source_missing_since"] = now
-        return True
-    if now - s["source_missing_since"] < SOURCE_LOST_AFTER:
-        return False
-    s["source_lost"] = {"since": s["source_missing_since"], "closed": now,
-                        "refs": [r["ref"] for r in s["rounds"][s["reviewed_count"]:] if raw.is_native(r["ref"])]}
-    s.update(capture_pending=False, capture_error=None)
-    s.pop("capture_failure_phase", None)
-    s.pop("capture_path", None)
-    return True
-
-
-def ended_source(vault: Vault, s: dict) -> str | None:
-    """This device's transcript of a conversation that has gone quiet. A worker without
-    the conversation reads its unreviewed turns there; a conversation still running keeps
-    its own review cadence, where the turns are already in context."""
-    try:
-        path = locate_transcript(vault, s["harness"], s["conversation_id"],
-                                  s.get("capture_path") or s["transcript_path"])
-        if path and time.time() - Path(path).stat().st_mtime >= ENDED_AFTER:
-            return path
-    except (OSError, ValueError):
-        pass
-    return None
-
-
-def _turn_at(s: dict, native_path: str | None, refs: list[str] | None = None) -> float | None:
-    """다음에 검토할 턴의 원래 시각(epoch 초). 복구 대기면 그 대상 가운데 가장 이른 턴이다.
-    `refs`를 주면 그 턴들 가운데 가장 이른 시각이고, 한 턴이라도 모르면 None이다 — 증거 조회가
-    그보다 늦은 시각에서 멈추면 그 턴의 영수증을 놓친다(#227).
-    Codex 턴 id는 UUIDv7이라 id에서 읽고, Claude는 원본 전사에서 그 사용자 발화 행의 시각을
-    읽는다. 알 수 없으면 None."""
-    if refs is not None:
-        wanted = set(refs)
-        ids = [r["id"] for r in s["rounds"] if r["ref"] in wanted]
-        if len(ids) != len(wanted):
-            return None
-    else:
-        repair = {ref for r in (s.get("repair_pending") or {}).values() for ref in r.get("refs", [])}
-        ids = ([r["id"] for r in s["rounds"] if r["ref"] in repair] if repair else
-               [s["rounds"][s["reviewed_count"]]["id"]] if s["reviewed_count"] < len(s["rounds"]) else [])
-    if not ids:
-        return None
-    if s["harness"] == "codex":
-        turns = [i.rsplit(":", 1)[-1] for i in ids]
-        if not all(re.match(core.RID_RE, t) for t in turns):
-            return None
-        return min(int(t.replace("-", "")[:12], 16) / 1000 for t in turns)
-    if s["harness"] != "claude" or not native_path:
-        return None
-    want, found = {i.split(":", 1)[0] for i in ids}, []
-    try:
-        for line in transcripts.native_lines(native_path, s["harness"], s["conversation_id"]):
-            for uuid in [u for u in want if u.encode() in line]:
-                row = json.loads(line)
-                if row.get("uuid") == uuid and isinstance(row.get("timestamp"), str):
-                    found.append(datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00")).timestamp())
-                    want.discard(uuid)
-            if not want:
-                break
-    except (OSError, ValueError):
-        return None
-    if refs is not None and want:
-        return None
-    return min(found) if found else None
-
-
 def _known_pending(vault: Vault, limit: int | None, tried=None) -> tuple[list, int, list, list]:
     """처리할 대화를 고른다. 같은 자리에서 고른 횟수(`tried(s)`)가 적은 대화가 먼저다 — 진척
     없이 끝난 대화가 예산을 계속 차지하지 않는다. 횟수가 같으면 다음 미검토 턴이 이른 대화가
@@ -1130,21 +40,21 @@ def _known_pending(vault: Vault, limit: int | None, tried=None) -> tuple[list, i
     고친 시각으로 본다. `limit`이 None이면 정렬한 대기 전체를 돌려준다."""
     if limit is not None and (not isinstance(limit, int) or not 1 <= limit <= 100):
         raise ValueError("limit must be between 1 and 100")
-    probe = state_path(vault, "claude", "inventory")
+    probe = conversation_state.state_path(vault, "claude", "inventory")
     prefix = "-".join(probe.name.split("-")[:3]) + "-"
     paths = sorted(probe.parent.glob(prefix + "*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name))
     states, errors, awaiting_native = [], [], []
     for p in paths:
         try:
             value = json.loads(p.read_text(encoding="utf-8"))
-            with state_lock(vault, value["harness"], value["conversation_id"]) as locked_path:
+            with conversation_state.state_lock(vault, value["harness"], value["conversation_id"]) as locked_path:
                 if p != locked_path:
                     raise ValueError("state filename identity mismatch")
-                s = load_state(vault, p, value["harness"], value["conversation_id"])
-                current = _current_view(vault, s, p)
+                s = conversation_state.load_state(vault, p, value["harness"], value["conversation_id"])
+                current = conversation_capture.current_view(vault, s, p)
             changed, missing, native_path = False, False, None
             try:
-                native_path = locate_transcript(vault,
+                native_path = conversation_capture.locate_transcript(vault,
                     s["harness"], s["conversation_id"], s.get("capture_path") or s.get("transcript_path"))
                 if native_path:
                     changed = s.get("native_fingerprint") != transcripts.native_fingerprint(
@@ -1158,11 +68,11 @@ def _known_pending(vault: Vault, limit: int | None, tried=None) -> tuple[list, i
                 errors.append({"state": str(p), "phase": "native_lookup", "error": str(exc)})
                 # Capture still fails closed, but stored raw remains reviewable.
             if missing or native_path and ("source_missing_since" in s or "source_lost" in s):
-                with state_lock(vault, s["harness"], s["conversation_id"]) as locked_path:
-                    s = load_state(vault, locked_path, s["harness"], s["conversation_id"])
-                    if _source_clock(s, missing):
-                        save_state(locked_path, s)
-                    current = _current_view(vault, s, locked_path)
+                with conversation_state.state_lock(vault, s["harness"], s["conversation_id"]) as locked_path:
+                    s = conversation_state.load_state(vault, locked_path, s["harness"], s["conversation_id"])
+                    if conversation_capture.source_clock(s, missing):
+                        conversation_state.save_state(locked_path, s)
+                    current = conversation_capture.current_view(vault, s, locked_path)
             if missing and s.get("source_lost") and not current["pending_refs"]:
                 continue  # 닫힌 커서는 원본이 돌아올 때까지 다시 포착하지도, 나열하지도 않는다
             if missing and not (s["prompt_count"] or s["rounds"] or s.get("native_fingerprint")):
@@ -1183,8 +93,8 @@ def _known_pending(vault: Vault, limit: int | None, tried=None) -> tuple[list, i
             retry = current["capture_recovery"]["state"] == "retryable"
             if (changed or retry or current["repair_pending"]
                     or any(not raw.is_native(ref) for ref in pending)
-                    or (pending or idle_tail) and ended_source(vault, s)):
-                at = _turn_at(s, native_path)
+                    or (pending or idle_tail) and conversation_capture.ended_source(vault, s)):
+                at = conversation_capture.turn_at(s, native_path)
                 states.append((tried(s) if tried else 0, p.stat().st_mtime if at is None else at, s))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append({"state": str(p), "error": str(exc)})
@@ -1198,7 +108,7 @@ def list_pending(vault: Vault, limit: int = 20) -> dict:
     states, remaining, errors, awaiting_native = _known_pending(vault, limit)
     jobs = []
     for s in states:
-        if not state_view(vault, s)["pending_refs"]:
+        if not conversation_capture.state_view(vault, s)["pending_refs"]:
             continue
         job = prompt(vault, s["harness"], s["conversation_id"], offline=True)
         if not job["pending_refs"]:
@@ -1217,7 +127,7 @@ def capture_known(vault: Vault, tried=None) -> dict:
     captures = []
     for s in states:
         try:
-            result = capture(vault, s["harness"], s["conversation_id"],
+            result = conversation_capture.capture(vault, s["harness"], s["conversation_id"],
                              s.get("capture_path") or s["transcript_path"], s["session"], s.get("space"))
             if result.get("appended") or not result.get("ok"):   # 실행 기록에는 바뀐 것만 남긴다
                 captures.append({**{k: result.get(k) for k in (
@@ -1232,7 +142,7 @@ def capture_known(vault: Vault, tried=None) -> dict:
 def _copies_by_parent(vault: Vault) -> dict:
     """대화마다 그 앞부분을 이어받은 사본(resume·fork)의 커서와 갈래 지점 — 이어받은 마지막 턴의
     주인이 부모다. 커서 파일을 잠그지 않고 읽는다(검토 선택의 판단 재료일 뿐이다)."""
-    probe = state_path(vault, "claude", "inventory")
+    probe = conversation_state.state_path(vault, "claude", "inventory")
     prefix = "-".join(probe.name.split("-")[:3]) + "-"
     out = {}
     for p in probe.parent.glob(prefix + "*.json"):
@@ -1282,19 +192,19 @@ def _fork_rewound(vault: Vault, s: dict, copies: list) -> dict | None:
     if not kept or s.get("repair_pending"):
         return None
     start = max(max(kept) + 1, s["reviewed_count"])
-    native = ended_source(vault, s)
+    native = conversation_capture.ended_source(vault, s)
     if start >= len(ids) or not native:
         return None
-    last = _turn_at(s, native, refs=[s["rounds"][-1]["ref"]])
+    last = conversation_capture.turn_at(s, native, refs=[s["rounds"][-1]["ref"]])
     for c, branch in copies:
         cut = ids.index(branch) + 1 if branch in ids else len(ids)
         if cut >= len(ids):
             continue
         try:
-            own = locate_transcript(vault, c["harness"], c["conversation_id"], c.get("capture_path") or c.get("transcript_path"))
+            own = conversation_capture.locate_transcript(vault, c["harness"], c["conversation_id"], c.get("capture_path") or c.get("transcript_path"))
         except (OSError, ValueError, KeyError):
             continue
-        born = _turn_at(c, own, refs=[c["rounds"][0]["ref"]])
+        born = conversation_capture.turn_at(c, own, refs=[c["rounds"][0]["ref"]])
         if (last is not None and born is not None and born > last
                 and _cut_before(c, own, ids[cut].split(":", 1)[0])):
             return {"start": start, "copy": c["conversation_id"], "born": born}
@@ -1303,8 +213,8 @@ def _fork_rewound(vault: Vault, s: dict, copies: list) -> dict | None:
 
 def _drop_fork_rewound(vault: Vault, harness: str, conversation_id: str, copies: list) -> int:
     """`_fork_rewound`의 턴을 커서에서 뺀다 — Codex의 되돌린 턴처럼, 추적한 적 없던 것처럼 둔다."""
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
+    with conversation_state.state_lock(vault, harness, conversation_id) as p:
+        s = conversation_state.load_state(vault, p, harness, conversation_id)
         found = _fork_rewound(vault, s, copies)
         if not found:
             return 0
@@ -1313,25 +223,13 @@ def _drop_fork_rewound(vault: Vault, harness: str, conversation_id: str, copies:
         s["rounds"] = s["rounds"][:start]
         s["snapshots"] = {t: v for t, v in s["snapshots"].items() if v.get("repair_refs") or v["count"] <= start}
         if s["rounds"]:
-            s["snapshots"].setdefault(_snapshot(s), {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
+            s["snapshots"].setdefault(conversation_state.snapshot(s), {"count": len(s["rounds"]), "prompt_count": s["prompt_count"]})
         s["rewound"] = {"rounds": dropped, "copy": found["copy"], "at": core.now_iso()}
-        save_state(p, s)
+        conversation_state.save_state(p, s)
         return len(dropped)
 
 
-def review_scope(vault: Vault, s: dict) -> str | None:
-    """대화 검토 문맥의 scope — 고정한 착지, 없으면 결속의 주된 scope부터(§9-3 1항). `prompt`의 허브
-    트리 scope와 같다."""
-    if s.get("space"):
-        return raw.scope_of_space(vault, s["space"])
-    try:
-        scopes = write.bound_scopes(vault, s["session"]) if s.get("session") and not _one_off(s) else []
-    except (OSError, ValueError, write.WriteError):
-        scopes = []
-    return scopes[0] if scopes else None
-
-
-def catchup(vault: Vault, limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True,
+def catchup(vault: Vault, limit: int = 20, *, max_rounds: int = conversation_state.MAX_REVIEW_ROUNDS, tried=None, capture_new: bool = True,
             exclude=frozenset(), bundle: int = 0) -> dict:
     """Bounded scheduler catch-up of known own vault states; never inject these in a normal session.
     포착(모델 비용이 없다)과 작업 선택을 나눈다. 대기 전체를 먼저 포착하고, 따라잡은 커서로
@@ -1355,11 +253,11 @@ def catchup(vault: Vault, limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUND
         if len(jobs) >= limit and room <= 0:
             break
         try:
-            if (s["harness"], s["conversation_id"]) in copies and state_view(vault, s)["pending_refs"]:
+            if (s["harness"], s["conversation_id"]) in copies and conversation_capture.state_view(vault, s)["pending_refs"]:
                 # 사본으로 되감아 버린 턴은 검토에 넣지 않는다(#235)
                 _drop_fork_rewound(vault, s["harness"], s["conversation_id"], copies[s["harness"], s["conversation_id"]])
-            pending = state_view(vault, s)["pending_refs"]
-            if pending and len(jobs) >= limit and (len(pending) > room or review_scope(vault, s) != scope):
+            pending = conversation_capture.state_view(vault, s)["pending_refs"]
+            if pending and len(jobs) >= limit and (len(pending) > room or conversation_review.review_scope(vault, s) != scope):
                 continue
             if pending:
                 job = prompt(vault, s["harness"], s["conversation_id"], include_organization=False,
@@ -1380,18 +278,18 @@ def catchup(vault: Vault, limit: int = 20, *, max_rounds: int = MAX_REVIEW_ROUND
 
 
 def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organization: bool = True,
-           max_rounds: int = MAX_REVIEW_ROUNDS, organization_in_text: bool = True,
+           max_rounds: int = conversation_state.MAX_REVIEW_ROUNDS, organization_in_text: bool = True,
            offline: bool = False) -> dict:
-    if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= MAX_REVIEW_ROUNDS:
-        raise ValueError(f"max_rounds must be between 1 and {MAX_REVIEW_ROUNDS}")
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
-        st = _current_view(vault, s, p)
+    if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or not 1 <= max_rounds <= conversation_state.MAX_REVIEW_ROUNDS:
+        raise ValueError(f"max_rounds must be between 1 and {conversation_state.MAX_REVIEW_ROUNDS}")
+    with conversation_state.state_lock(vault, harness, conversation_id) as p:
+        s = conversation_state.load_state(vault, p, harness, conversation_id)
+        st = conversation_capture.current_view(vault, s, p)
         count = min(len(s["rounds"]), s["reviewed_count"] + max_rounds)
         if offline:
             # A worker without this conversation takes stored rounds, and original turns
             # only once the conversation has ended on this device (Mechanism §9-4 3항).
-            ended = ended_source(vault, s)
+            ended = conversation_capture.ended_source(vault, s)
             stored = s["reviewed_count"]
             while stored < count and (ended or not raw.is_native(s["rounds"][stored]["ref"])):
                 stored += 1
@@ -1415,7 +313,7 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
                 s["snapshots"][token]["repair_parts"] = parts
                 del s["repair_pending"][token]
                 token = parts[0]
-                save_state(p, s)
+                conversation_state.save_state(p, s)
             st["through"] = token
             st["pending_refs"] = s["repair_pending"][token]["refs"]
             st["remaining_rounds"] = (len(s["rounds"]) - s["reviewed_count"]
@@ -1424,12 +322,12 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
             st["repair"] = s["repair_pending"][token]
         elif count > s["reviewed_count"]:
             selected = {**s, "rounds": s["rounds"][:count]}
-            token = _snapshot(selected)
+            token = conversation_state.snapshot(selected)
             # A bounded review may end inside the initial catch-up batch. Its
             # prompt counter does not claim newer unreviewed prompts as done.
             s["snapshots"].setdefault(token, {"count": count, "prompt_count": min(
                 s["prompt_count"], s["reviewed_prompt_count"] + count - s["reviewed_count"])})
-            save_state(p, s)
+            conversation_state.save_state(p, s)
             st["through"] = token
             st["pending_refs"] = [r["ref"] for r in s["rounds"][s["reviewed_count"]:count]]
             st["remaining_rounds"] = len(s["rounds"]) - count
@@ -1443,7 +341,7 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
                     selected_rounds = [r for r in s["rounds"] if r["ref"] in selected_refs]
                     if {r["ref"] for r in selected_rounds} != selected_refs:
                         raise ValueError("selected raw coordinates are missing from the saved cursor")
-                    _verify_raw(vault, selected_rounds)
+                    conversation_review.verify_raw(vault, selected_rounds)
                 st["raw_review"]["state"] = ("native" if all(raw.is_native(ref) for ref in selected_refs)
                                              else "verified")
             except (ValueError, OSError, write.WriteError) as exc:
@@ -1463,7 +361,7 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
     if st["raw_review"]["state"] == "native" and not offline:
         # The range by position and short ID: the reviewer's latest turn is usually past it (#219).
         # A Stop fork gets it as a field; its packet drops this text (#226).
-        st["range"] = _range_text(s, st["pending_refs"])
+        st["range"] = conversation_state.range_text(s, st["pending_refs"])
         text += (f"이번 검토 범위는 이 대화의 {st['range']}다. 원문은 vault에 "
                  "옮기지 않았다(시행령 §2 2항). 범위 밖의 턴은 이 검토의 근거가 되지 못한다 — 그 턴은 "
                  "자기 차례의 검토에서 다룬다.\n")
@@ -1508,7 +406,7 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
     # 있다(시행령 §3 9항). 고정이 없을 때만 결속 scope를 주된 scope부터, 없으면 결속 순서대로 본다(§9-3 1항).
     pinned = raw.scope_of_space(vault, s["space"]) if s.get("space") else None
     try:
-        scopes = write.bound_scopes(vault, st["session"]) if st.get("session") and not _one_off(s) else []
+        scopes = write.bound_scopes(vault, st["session"]) if st.get("session") and not conversation_capture.one_off(s) else []
     except (OSError, ValueError, write.WriteError):
         scopes = []
     if pinned and scopes:
@@ -1532,11 +430,11 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
     def since():
         # The earliest pending turn's time bounds the receipt scan (#227); read only if needed.
         try:
-            path = locate_transcript(vault, harness, conversation_id,
+            path = conversation_capture.locate_transcript(vault, harness, conversation_id,
                                       s.get("capture_path") or s.get("transcript_path"))
         except (OSError, ValueError):
             return None
-        return _turn_at(s, path, st["pending_refs"])
+        return conversation_capture.turn_at(s, path, st["pending_refs"])
     try:
         discovered = distillation.discover(vault, st["pending_refs"], since=since)
     except (ValueError, OSError, write.WriteError) as exc:
@@ -1657,308 +555,3 @@ def prompt(vault: Vault, harness: str, conversation_id: str, *, include_organiza
              "no_value도 사유를 남기고, deferred는 대기를 유지한다. 기억 hash 변화만으로 완료되지 않는다. "
              "기계 검사는 저장·배선만 확인하며 의미 타당성은 원문과 따로 대조한다.")
     return {**st, "text": text + organization_text}
-
-
-def _conversation(vault: Vault, value: str) -> tuple[str, str]:
-    """`<harness>/<conversation ID>` — the pair the hooks show the session."""
-    harness, sep, sid = (value or "").strip().partition("/")
-    if not sep:
-        raise ValueError("conversation must be <harness>/<conversation ID>")
-    conversation_key(vault, harness, sid)
-    return harness, sid
-
-
-def cite(vault: Vault, conversation: str, quote: str | None = None, turn: str | int | None = None,
-         note: str | None = None, session: str | None = None, space: str | None = None,
-         user: str | None = None) -> dict:
-    """Keep one original turn as evidence (시행령 §2 2항 · Mechanism §9 9항). The engine
-    copies the user's words from the harness transcript and keeps the agent's reply as
-    location and hash; the caller names the turn and never resends its text."""
-    harness, sid = _conversation(vault, conversation)
-    # 착지 확인·기록·고정을 이 대화의 잠금 하나 안에서 한다 — 같은 대화의 첫 인용 둘이 서로 다른
-    # scope로 갈리지 않는다. 잠금 순서는 검토 ACK와 같다(대화 잠금 → 변경 잠금).
-    with state_lock(vault, harness, sid) as p:
-        return _cite(vault, p, load_state(vault, p, harness, sid), harness, sid, quote, turn, note, session, space, user)
-
-
-def _cite(vault: Vault, p: Path, s: dict, harness: str, sid: str, quote, turn, note, session, space, user) -> dict:
-    session = session or s["session"]
-    if not session:
-        raise ValueError("this conversation is not tracked yet; its hooks or `integration capture` set its session")
-    # 인용 기록은 루트 `_cited/` 한 자리다(헌법 4조 3항) — 인용에 착지도 결속도 필요 없다. 대화의
-    # 착지(`s["space"]`)는 검토의 문맥일 뿐이고, `space`는 호환 인자다.
-    source = locate_transcript(vault, harness, sid, s.get("capture_path") or s["transcript_path"])
-    if not (source and Path(source).is_file()):
-        source = None
-    if user is not None and source:
-        raise ValueError("the original transcript is readable; name the turn by quote or turn")
-    if user is None:
-        if not source:
-            raise ValueError("original transcript unavailable; pass user= to keep caller-supplied words")
-        parsed = transcripts.read(source, harness, sid, rules=_turn_rules(s))
-        shown = parsed.get("dialogue_v1") or {}
-        turns = [{"id": turn_key(harness, r["id"]), "user": shown.get(r["id"], r)["user"],
-                  "agent": shown.get(r["id"], r)["agent"], "owner": r.get("origin_conversation_id") or sid}
-                 for r in parsed["rounds"]]
-        tail = parsed.get("tail")
-        if tail and tail.get("user") and turn_key(harness, tail["id"]) not in {t["id"] for t in turns}:
-            turns.append({"id": turn_key(harness, tail["id"]), "user": tail["user"], "agent": None, "owner": sid})
-        # Only "-N" counts back from the latest. Any other string is a turn ID — Antigravity's are
-        # step numbers ("2"), and the ID read_cited returns must name the same turn here.
-        n = (turn if isinstance(turn, int) and not isinstance(turn, bool) else
-             int(turn) if isinstance(turn, str) and re.fullmatch(r"-\d+", turn.strip()) else None)
-        # "-N" and the default latest count the user's turns: a round a harness notice started
-        # has no words of theirs to cite (#275).
-        spoken = [t for t in turns if t["user"].strip()]
-        if n is not None:
-            if n >= 0:
-                raise ValueError("a relative turn counts back from the latest: -1, -2, ...")
-            matched = spoken[n:n + 1 or None] if -n <= len(spoken) else []
-        elif isinstance(turn, str) and turn.strip():
-            key = turn_key(harness, turn.strip())
-            matched = [t for t in turns if t["id"] == key]
-            if not matched and len(key) >= SHORT_ID:
-                # A review range names its turns by a prefix unique among the tracked turns
-                # (`_short_ids`, #219), so it resolves among those alone — not a fork parent's turn
-                # or the open tail. An exact ID wins, so a short step number ("2") never matches "20".
-                tracked = {turn_key(harness, r["id"]) for r in s["rounds"]}
-                matched = [t for t in turns if t["id"] in tracked and t["id"].startswith(key)]
-        elif quote and quote.strip():
-            needle = " ".join(quote.split())
-            matched = [t for t in turns if needle in " ".join(t["user"].split())]
-        else:
-            matched = spoken[-1:]
-        if len(matched) != 1:
-            seen = [f"{t['id']}: {' '.join(t['user'].split())[:40]}" for t in (matched or turns)[-5:]]
-            raise ValueError(f"{len(matched)} turns match; narrow by quote or turn. Candidates: {seen}")
-        words, rid, agent, by = matched[0]["user"], matched[0]["id"], matched[0]["agent"], "engine"
-        owner = matched[0]["owner"]
-    else:
-        if not user.strip():
-            raise ValueError("user= needs the words to keep")
-        words, agent, by, owner = user, None, "caller", sid
-        rid = (turn_key(harness, turn.strip()) if isinstance(turn, str) and turn.strip() else
-               "caller-" + core.sha256_bytes(user.encode("utf-8")).removeprefix("sha256:")[:16])
-    meta = {"harness": harness, "conversation": owner, "turn": rid, "source": source,
-            "agent_sha256": core.sha256_bytes(agent.encode("utf-8")) if agent else None, "user_by": by}
-    if by == "engine":
-        # The words the engine copied: the same turn ID with other words is other evidence. A
-        # caller's recollection is not the turn's words and does not decide that.
-        meta["user_sha256"] = core.sha256_bytes(words.encode("utf-8"))
-    record = s["record"]
-    if owner != sid:
-        # A fork parent's turn keeps its owner: the citation names the parent and joins
-        # the parent's record, so the parent citing the same turn reuses that round.
-        with state_lock(vault, harness, owner) as pp:
-            parent = load_state(vault, pp, harness, owner)
-        record = parent["record"]
-    result = raw.append_rounds(vault, session, record, [{"user": words, "agent": (note or "").strip()}],
-                               cited=meta)
-    out = {"ok": True, "round_ref": result["round_refs"][0], "path": result["path"],
-           "index": result["indices"][0],
-           # 근거 줄에 쓸 좌표 — 기록 이름 해시의 앞자리와 라운드(Mechanism §8 9항)
-           "coordinate": evidence.coordinate(vault, result["path"], result["indices"][0]),
-           "turn": rid, "reused": result.get("reused", False),
-           "user_by": by, "agent_sha256": meta["agent_sha256"], "filtered": result["filtered"],
-           **({"binding": result["binding"]} if "binding" in result else {})}
-    if result.get("supersedes"):
-        out["supersedes"] = result["supersedes"]   # the turn's words changed since that citation
-    if out["reused"]:
-        # The record is append-only: report what it holds, and what this read saw apart.
-        kept = result["cited"]
-        out.update(user_by=kept.get("user_by"), agent_sha256=kept.get("agent_sha256"))
-        seen = {k: v for k, v in (("user_by", by), ("agent_sha256", meta["agent_sha256"])) if kept.get(k) != v}
-        if seen:
-            out["observed"] = seen
-        if (note or "").strip():
-            out["note_saved"] = False
-    return out
-
-
-REVIEW_SIDES = (1500, 1500)  # 묶음 읽기의 턴당 발화·응답 상한 — 15턴이면 45k자 안팎(10-22 사용자 결정, #219)
-
-
-def read_review(vault: Vault, conversation: str, through: str, query: str | None = None) -> dict:
-    """The turns one review covers, in one call: each turn's words and response within
-    REVIEW_SIDES, so a reviewer whose context lost them (compaction) reads only that range.
-    Nothing is written."""
-    harness, sid = _conversation(vault, conversation)
-    with state_lock(vault, harness, sid) as p:
-        s = load_state(vault, p, harness, sid)
-    refs = _review_refs(s, through)
-    if len(refs) > MAX_REVIEW_ROUNDS:
-        # A capture snapshot spans every unreviewed turn; a review reads the bounded one it was given.
-        raise ValueError(f"this snapshot covers {len(refs)} turns; read the through the review prompt gave "
-                         f"(at most {MAX_REVIEW_ROUNDS})")
-    native = [ref for ref in refs if raw.is_native(ref)]
-    seen = {t["ref"]: t for t in read_turns(vault, native, view="review", query=query, sides=REVIEW_SIDES)["turns"]} if native else {}
-    short = _short_ids(s)
-    turns = [{"short": short(ref), **(seen.get(ref) or raw.read_round(vault, ref, view="review", query=query,
-                                                                      sides=REVIEW_SIDES))} for ref in refs]
-    return {"ok": True, "through": through, "range": _range_text(s, refs), "turns": turns}
-
-
-def read_turns(vault: Vault, refs: list, max_chars: int = 6000, view: str = "review",
-               query: str | None = None, *, sides: tuple[int, int] | None = None) -> dict:
-    """Original turns from this device's transcript, for a reviewer without the conversation.
-    Only the named turns are read, never the whole conversation; each names the turn
-    before it as `previous`, for earlier context only when a judgment needs it
-    (Mechanism §9-4 3항). Nothing is written."""
-    if view not in {"review", "full"} or not isinstance(refs, list) or not 1 <= len(refs) <= MAX_REVIEW_ROUNDS:
-        raise ValueError(f"1..{MAX_REVIEW_ROUNDS} original-turn refs and view review|full are required")
-    if sides is not None and view != "review":
-        raise ValueError("sides apply only to view=review")
-    out, conversations = [], {}
-    for ref in refs:
-        parts = ref.split(":", 3) if raw.is_native(ref) else []
-        if len(parts) != 4:
-            raise ValueError("ref must be native:<harness>:<conversation ID>:<turn ID>")
-        _, harness, sid, turn = parts
-        if (harness, sid) not in conversations:
-            with state_lock(vault, harness, sid) as p:
-                s = load_state(vault, p, harness, sid)
-            source = locate_transcript(vault, harness, sid, s.get("capture_path") or s["transcript_path"])
-            if not (source and Path(source).is_file()):
-                raise ValueError(f"the transcript of {harness}/{sid} is not on this device")
-            parsed = transcripts.read(source, harness, sid, rules=_turn_rules(s))
-            shown = parsed.get("dialogue_v1") or {}
-            tracked = {turn_key(harness, r["id"]): r["hash"] for r in s["rounds"] if raw.is_native(r["ref"])}
-            conversations[harness, sid] = tracked, [
-                (turn_key(harness, r["id"]), shown.get(r["id"], r), _turn_hashes(r, parsed.get("dialogue_v1")),
-                 r.get("origin_conversation_id") or sid) for r in parsed["rounds"]]
-        tracked, turns = conversations[harness, sid]
-        at = next((i for i, (key, *_) in enumerate(turns) if key == turn), None)
-        if at is None:
-            raise ValueError(f"{turn} is not a completed turn of {harness}/{sid}")
-        _, pair, hashes, owner = turns[at]
-        if owner != sid:
-            raise ValueError(f"{turn} belongs to the fork parent; read {raw.native_ref(harness, owner, turn)}")
-        # The hash binds the original; the text leaving through MCP is filtered first, as a citation
-        # is — not every parser redacts (Antigravity words and replies, Kiro string replies).
-        chunk, hits = secrets.filter_text(raw.round_block(at + 1, pair["user"], pair["agent"]).rstrip("\n"))
-        item = {"ref": ref, "turn": turn, "hash": hashes[0], "position": at + 1, "turns": len(turns),
-                "previous": raw.native_ref(harness, turns[at - 1][3], turns[at - 1][0]) if at else None}
-        if hits:
-            item["filtered"] = sorted(set(hits))
-        if turn in tracked and tracked[turn] not in hashes:
-            # Changed since tracking: its review waits for the next capture's snapshot.
-            item["changed"] = True
-        if view == "review":
-            item.update(raw_view.project(chunk, max_chars, query, sides=sides))
-        else:
-            cut = len(chunk) > max_chars
-            item.update(view="full", chars=len(chunk), truncated=cut,
-                        text=chunk[:max_chars] if cut else chunk)
-        out.append(item)
-    return {"ok": True, "turns": out}
-
-
-class SubagentEvent(Exception):
-    """Codex subagent hooks send the root session_id with the child's rollout. Not a
-    ValueError: no fallback may record it in the root conversation's state."""
-
-
-def hook_source(vault: Vault, env: dict) -> tuple[str, str, str | None]:
-    """Locate only the caller's native transcript, never another conversation's backlog."""
-    sid = adapters.session_id(env)
-    path = env.get("transcript_path")
-    if not sid:
-        raise ValueError("hook has no actual conversation ID; capture not acknowledged")
-    harness = adapters.detect(env, sid, path)
-    candidates = []
-    if not path:
-        for kind in ([harness] if harness else list(adapters.NAMES)):
-            conversation_key(vault, kind, sid)
-            saved = locate_transcript(vault, kind, sid, status(vault, kind, sid).get("transcript_path"))
-            if saved:
-                candidates.append((kind, saved))
-        if len(candidates) == 1:
-            harness, path = candidates[0]
-        elif len(candidates) > 1:
-            raise ValueError("multiple transcripts for this ID; provide explicit harness/transcript_path")
-    if not harness:
-        raise ValueError("native harness/transcript unavailable; provide harness and transcript_path")
-    conversation_key(vault, harness, sid)
-    reason = adapters.get(harness).subagent(path, sid) if path and Path(path).is_file() else None
-    if reason:
-        raise SubagentEvent(reason)
-    return harness, sid, path
-
-
-def recent_transcript(vault: Vault, harness: str) -> str | None:
-    """이 vault가 가장 최근에 포착한 그 하네스 대화의 전사 — `doctor`가 판본을 읽는다.
-    상태를 쓰지 않는다."""
-    probe = state_path(vault, harness, "inventory")
-    prefix = "-".join(probe.name.split("-")[:3]) + "-"
-    dated = []
-    for p in probe.parent.glob(prefix + "*.json"):
-        try:
-            dated.append((p.stat().st_mtime_ns, p))
-        except OSError:
-            continue                     # 그 사이 사라진 상태
-    for _, p in sorted(dated, reverse=True):
-        try:
-            s = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        path = s.get("transcript_path") if isinstance(s, dict) and s.get("harness") == harness else None
-        if isinstance(path, str) and Path(path).is_file():
-            return path
-    return None
-
-
-def hook_capture(vault: Vault, env: dict, session: str) -> dict:
-    harness, sid, path = hook_source(vault, env)
-    return capture(vault, harness, sid, path, session, env.get("space"), cwd=env.get("cwd"))
-
-
-def hook_land(vault: Vault, env: dict, session: str) -> dict:
-    """SessionStart's part of `capture`: pin the conversation's landing (`_land`) so its first
-    turn cites and reviews under it, without parsing the transcript — a resumed or compacted
-    one takes seconds (#192); the hooks' worker captures. A refused landing is kept as capture
-    keeps it. Returns the saved view: the turns as of the last capture."""
-    harness, sid, path = hook_source(vault, env)
-    with state_lock(vault, harness, sid) as p:
-        s = load_state(vault, p, harness, sid)
-        try:
-            _land(vault, s, path, session, env.get("space"), env.get("cwd"))
-        except Exception as exc:
-            return _capture_failed(vault, p, s, exc, "landing")
-        save_state(p, s)
-        return _current_view(vault, s, p)
-
-
-def capture_due(vault: Vault, harness: str, conversation_id: str, transcript_path: str | None) -> bool:
-    """Is there anything new for `capture`? A stat, never a read — the hooks hand a capture
-    to their worker only then (#192). A new conversation's named transcript that does not exist
-    yet (before its first turn is written) has nothing to capture: the worker would count it
-    missing after this prompt's tick, and a later hook's worker captures it. A tracked
-    conversation's file that left the named path is the worker's to find by ID
-    (`locate_transcript`) or to record missing."""
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
-    if transcript_path and not os.path.exists(transcript_path):
-        return bool(s["rounds"] or s.get("native_fingerprint"))
-    if s["capture_pending"] or s["capture_error"] or not s.get("native_fingerprint") or not transcript_path:
-        return True
-    try:
-        return transcripts.native_fingerprint(transcript_path, harness, conversation_id) != s["native_fingerprint"]
-    except (OSError, ValueError):
-        return True
-
-
-def notice_once(vault: Vault, harness: str, conversation_id: str, text: str, *, settled: bool = False) -> bool:
-    """Should a hook carry this standing diagnostic? Once per text: the same wait read again
-    every prompt only fills the context, and `integration status` keeps it (#192). `settled`
-    (nothing stands now) forgets it, so a later recurrence is news again."""
-    with state_lock(vault, harness, conversation_id) as p:
-        s = load_state(vault, p, harness, conversation_id)
-        if not text:
-            if settled and s.pop("notice", None) is not None:
-                save_state(p, s)
-            return False
-        if s.get("notice") == text:
-            return False
-        s["notice"] = text
-        save_state(p, s)
-        return True

@@ -1,6 +1,6 @@
 """Read-only growth evidence: inventory now, recorded decisions in a time window.
 
-Never call integration.status/list_pending: those write state (they close repair
+Never call conversation_capture.status/list_pending: those write state (they close repair
 entries left by the pre-4.2 receipt recheck). A report is an observation, not an
 acknowledgement or a semantic growth verdict.
 """
@@ -10,8 +10,8 @@ from collections import Counter
 from datetime import datetime
 import json
 
-from . import (core, epoch, growth, integration, organization, rechecks, evictions, distillation, harness,
-               response_growth, update)
+from . import (core, epoch, growth, organization, rechecks, evictions, distillation, harness, response_growth, update,
+               conversation_capture, conversation_state)
 from .vault import Vault
 
 
@@ -38,22 +38,22 @@ def _window(rows: list[dict], since: datetime | None, until: datetime) -> dict:
 
 
 def conversation_states(vault: Vault) -> list[dict]:
-    probe = integration.state_path(vault, 'claude', 'inventory')
+    probe = conversation_state.state_path(vault, 'claude', 'inventory')
     prefix = '-'.join(probe.name.split('-')[:3]) + '-'
     states = []
     # glob can suppress directory access errors and report a false empty inventory.
     for path in sorted(p for p in probe.parent.iterdir() if p.match(prefix + '*.json')):
         data = json.loads(path.read_text(encoding='utf-8'))
-        if path != integration.state_path(vault, data['harness'], data['conversation_id']):
+        if path != conversation_state.state_path(vault, data['harness'], data['conversation_id']):
             raise ValueError(f'integration state filename identity mismatch: {path.name}')
-        states.append(integration.validate_state(vault, data, data['harness'], data['conversation_id']))
+        states.append(conversation_state.validate_state(vault, data, data['harness'], data['conversation_id']))
     return states
 
 
 def _integration(vault: Vault, states: list[dict]) -> dict:
     items = []
     for state in states:
-        view = integration.state_view(vault, state)
+        view = conversation_capture.state_view(vault, state)
         refs = {r['ref'] for r in state['rounds']}
         repairs = {ref for job in state.get('repair_pending', {}).values() for ref in job['refs']}
         if repairs - refs:

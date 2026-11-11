@@ -2,7 +2,7 @@
 
 누구인지(이름·판별), 대화 전사가 어디 있는지, 훅이 무엇을 내야 하는지, MCP·훅을
 어디에 등록하고 무엇을 신뢰해야 하는지, 어느 판까지 확인했는지를 어댑터가 말한다.
-포착(`osk.integration`), 훅 스크립트, `doctor`는 하네스 이름을 직접 가르지 않고 이
+포착(`osk.conversation_capture`), 훅 스크립트, `doctor`는 하네스 이름을 직접 가르지 않고 이
 등록부에 묻는다. 새 호스트는 어댑터를 더하고, 지원하지 않는 기능은 비워 둔다.
 
 깊은 구현은 제 모듈에 있다 — 전사 형식은 `osk.transcripts`, 구독 fork는
@@ -53,7 +53,7 @@ def session_id(env: dict) -> str | None:
 
 def detect(env: dict, sid: str, path: str | None) -> str | None:
     """하네스 이름 — 명시한 이름, 어댑터가 전사를 읽지 않고 아는 것, 전사의 첫 식별
-    행 순이다. 명시한 이름은 그대로 돌려주고 판정은 `integration.conversation_key`가 한다.
+    행 순이다. 명시한 이름은 그대로 돌려주고 판정은 `conversation_state.conversation_key`가 한다.
     어댑터의 표지(환경의 대화 ID, 전사의 자리·형식)는 서로 배타적이다.
 
     전사를 읽지 못하면 올린다 — 판별 실패를 추측으로 덮지 않는다."""
