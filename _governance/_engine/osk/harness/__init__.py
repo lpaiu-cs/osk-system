@@ -5,7 +5,8 @@
 포착(`osk.conversation_capture`), 훅 스크립트, `doctor`는 하네스 이름을 직접 가르지 않고 이
 등록부에 묻는다. 새 호스트는 어댑터를 더하고, 지원하지 않는 기능은 비워 둔다.
 
-깊은 구현은 제 모듈에 있다 — 전사 형식은 `osk.transcripts`, 구독 fork는
+전사의 행을 라운드로 읽는 파서는 어댑터 옆에 있다(`<하네스>_transcript`) — 파일을 찾아 읽는 일은
+`osk.transcript_files`, 그것들을 잇는 일은 `osk.transcripts`가 한다. 그 밖의 깊은 구현은 제 모듈에 있다 — 구독 fork는
 `osk.response_growth`·`osk.native_cli`, 성장 실행의 출력은 `osk.growth`. 어댑터는
 fork를 지원하는지만 선언한다(`fork`).
 """

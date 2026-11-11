@@ -294,9 +294,9 @@ def project_cwd(env: dict) -> str:
     훅의 작업 폴더다."""
     cwd = env.get("cwd") or os.getcwd()
     try:
-        from osk import harness, transcripts
+        from osk import harness, transcript_files
         host, path = harness.host_of(env), env.get("transcript_path")
-        start = (transcripts.workspace(path, host.name) or {}).get("cwd") if host and path else None
+        start = (transcript_files.workspace(path, host.name) or {}).get("cwd") if host and path else None
         if (start and Path(cwd).resolve().is_relative_to(Path(start).resolve())
                 and (_dotgit(cwd) or [None])[0] == (_dotgit(start) or [None])[0]):
             return start

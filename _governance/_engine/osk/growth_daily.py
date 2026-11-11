@@ -25,8 +25,8 @@ from pathlib import Path
 import re
 import time
 
-from . import (core, growth, integration, growth_status, raw, transcripts, conversation_capture, conversation_review,
-               growth_ledger, worker_process)
+from . import (core, growth, integration, growth_status, raw, conversation_capture, conversation_review,
+               growth_ledger, worker_process, transcript_files)
 from .vault import Vault
 from . import worker_usage
 
@@ -59,7 +59,7 @@ def _epoch(value) -> float | None:
 def _scan(path: str, harness: str, sid: str, since: float, wanted: set, times: dict) -> int:
     """한 대화의 `since` 뒤 작업 토큰(캐시 읽기 제외). 검토 대기 중인 Claude 턴의 시각도 함께 모은다."""
     tokens, messages = 0, {}
-    for line in transcripts.native_lines(path, harness, sid):
+    for line in transcript_files.native_lines(path, harness, sid):
         if harness == "codex" and b'"token_count"' not in line:
             continue
         if harness == "claude" and b'"usage"' not in line and not any(u.encode() in line for u in wanted):

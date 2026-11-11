@@ -822,6 +822,7 @@ assert (st['captured_rounds'], st['failed_rounds']) == (3, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
 assert Path(st['transcript_path']) == transcript.resolve(), st
 from osk import transcripts
+from osk.harness import antigravity_transcript
 turns = list(transcripts.read(str(transcript), 'antigravity', sid)['dialogue_v1'].values())
 raw_text = '\n'.join(t['user'] + '\n' + t['agent'] for t in turns)
 assert len(turns) == 3 and not (root / '00_Scope' / 'W1' / '_cited').exists(), turns
@@ -834,7 +835,7 @@ for outside in ('주입된 문맥', 'internal thought', 'FILE BODY', 'ADDITIONAL
     assert outside not in raw_text, (outside, raw_text)
 # An input of a shape the parser does not know is kept whole rather than cut.
 for odd in ('no wrapper', '<USER_REQUEST>\nopen only', '<USER_REQUEST>\nx\n</USER_REQUEST>\ntrailing'):
-    assert transcripts._ag_user(odd) == odd, odd
+    assert antigravity_transcript._ag_user(odd) == odd, odd
 assert '"tool_evidence_ref"' in raw_text and '"view_file"' in raw_text, raw_text
 # A transcript in another conversation's folder is not read.
 other = conversation_capture.capture(VAULT, 'antigravity', 'b8d2e3f4-0000-4000-8000-000000000000', str(transcript), 'proj')

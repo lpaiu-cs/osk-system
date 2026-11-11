@@ -33,7 +33,8 @@
 | `osk/epoch.py` | 판본 관문 — 이 프로세스가 적재한 엔진과 디스크의 대조 |
 | `osk/update.py`·`osk/release.py` | Mechanism §1-2 — 정본 릴리스와 인스턴스 갱신. 갱신은 받은 것의 기록(`update_state`), 릴리스를 받고 비준증빙과 대조하기(`update_source`), 무엇을 쓸 수 있는지와 계획(`update_plan`), 크래시-안전 트랜잭션(`update_txn`), 적용하는 동안 데몬 세워 두기(`daemon_control`), 계획과 적용(`update`)으로 나뉜다 |
 | `osk/update_check.py` | 새 릴리스 알림 — 태그만 묻는 하루 한 번의 분리 확인, 에이전트가 `--ack`로 받을 때까지 세션 시작마다 알림, `overview`·`status` 표시(적용하지 않는다) |
-| `osk/harness/` | 하네스 어댑터 — 호스트(Claude Code·Codex·Kiro·Antigravity)마다 다른 판별·전사 위치·훅 출력·등록 자리·신뢰·확인한 판본의 한 자리, 훅 실행 기록(`runs.py`) |
+| `osk/harness/` | 하네스 어댑터 — 호스트(Claude Code·Codex·Kiro·Antigravity)마다 다른 판별·전사 위치·훅 출력·등록 자리·신뢰·확인한 판본의 한 자리, 훅 실행 기록(`runs.py`), 전사의 행을 라운드로 읽는 파서(`<하네스>_transcript.py`) |
+| `osk/transcripts.py` | 전사 읽기 — 파일(`transcript_files`)의 행을 그 하네스의 파서에 건네 포착의 꼴로 낸다. 대화는 글자 그대로, 운용 페이로드는 참조로 적는 부호화가 `dialogue_codec`이다(시행령 §2) |
 | `osk/doctor.py` | `osk doctor` — 이 기기의 하네스 연결 점검(등록·실행·전달·판본·fork, 읽기 전용) |
 | `osk/setup.py`·`scripts/setup.py` | Mechanism §1-2 8항 — 설치 도구: `.venv` 준비(부트스트랩), 릴리스 기준선, 하네스 MCP·훅 등록과 해제(확인한 계획만, 백업, 이 vault의 osk 항목만), 고를 때만 fork CLI·정기 실행·동기화 데몬 |
 | `osk/services.py` | 운영체제 서비스 등록 — 정기 실행·동기화 데몬을 작업 스케줄러·launchd·systemd에(이 vault의 스크립트를 부르는 등록만, 원래 정의 백업) |

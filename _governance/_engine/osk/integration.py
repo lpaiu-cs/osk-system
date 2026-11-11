@@ -12,7 +12,7 @@ import json
 import os
 
 from . import (conversation_capture, conversation_review, conversation_state, core, distillation, node_checks,
-               organization, raw, transcripts, write)
+               organization, raw, write, transcript_files)
 from .vault import Vault
 
 
@@ -57,7 +57,7 @@ def _known_pending(vault: Vault, limit: int | None, tried=None) -> tuple[list, i
                 native_path = conversation_capture.locate_transcript(vault,
                     s["harness"], s["conversation_id"], s.get("capture_path") or s.get("transcript_path"))
                 if native_path:
-                    changed = s.get("native_fingerprint") != transcripts.native_fingerprint(
+                    changed = s.get("native_fingerprint") != transcript_files.native_fingerprint(
                         native_path, s["harness"], s["conversation_id"])
                 else:
                     changed, missing = True, True
@@ -166,7 +166,7 @@ def _cut_before(c: dict, native_path: str | None, message: str) -> bool:
     if c["harness"] != "claude" or not native_path:
         return False
     try:
-        for line in transcripts.native_lines(native_path, c["harness"], c["conversation_id"]):
+        for line in transcript_files.native_lines(native_path, c["harness"], c["conversation_id"]):
             if message.encode() not in line:
                 continue
             try:

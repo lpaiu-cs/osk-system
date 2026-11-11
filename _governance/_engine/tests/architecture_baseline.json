@@ -5,7 +5,7 @@
  },
  "totals": {
   "upward_imports": 0,
-  "lazy_imports": 25,
+  "lazy_imports": 24,
   "two_module_cycles": 0,
   "tangled_modules": 0,
   "private_access": 0,
@@ -13,7 +13,7 @@
   "vault_unthreaded": 0,
   "broad_except": 125,
   "oversize_functions": 119,
-  "excess_lines": 2725,
+  "excess_lines": 2724,
   "excess_branches": 1605,
   "late_loads": 1
  },
@@ -31,7 +31,6 @@
   "osk.services": 2,
   "osk.setup": 1,
   "osk.surface_checks": 3,
-  "osk.transcripts": 1,
   "osk.validate": 2,
   "osk.worker_process": 3
  },
@@ -265,6 +264,30 @@
    98,
    8
   ],
+  "osk.harness.antigravity_transcript:parse": [
+   54,
+   22
+  ],
+  "osk.harness.claude_transcript:parse": [
+   197,
+   136
+  ],
+  "osk.harness.codex_transcript:history": [
+   31,
+   20
+  ],
+  "osk.harness.codex_transcript:parse": [
+   173,
+   99
+  ],
+  "osk.harness.codex_transcript:parse.add_user": [
+   32,
+   20
+  ],
+  "osk.harness.kiro_transcript:parse": [
+   54,
+   22
+  ],
   "osk.integration:_known_pending": [
    64,
    34
@@ -445,31 +468,7 @@
    93,
    37
   ],
-  "osk.transcripts:_antigravity": [
-   54,
-   22
-  ],
-  "osk.transcripts:_claude": [
-   198,
-   136
-  ],
-  "osk.transcripts:_codex": [
-   173,
-   99
-  ],
-  "osk.transcripts:_codex.add_user": [
-   32,
-   20
-  ],
-  "osk.transcripts:_codex_history": [
-   31,
-   20
-  ],
-  "osk.transcripts:_kiro": [
-   54,
-   22
-  ],
-  "osk.transcripts:_native_files": [
+  "osk.transcript_files:native_files": [
    46,
    26
   ],

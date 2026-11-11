@@ -10,7 +10,7 @@ import sys
 import time
 from contextlib import closing
 
-from . import core, growth, integration, transcripts, native_cli, conversation_capture, conversation_state
+from . import core, growth, integration, native_cli, conversation_capture, conversation_state, transcript_files
 from . import harness as adapters
 from ._portalock import lock_exclusive, unlock
 from .vault import Vault
@@ -411,13 +411,13 @@ def profile(vault: Vault, path: str, harness: str, sid: str) -> dict:
     """Read native metadata locally, without copying history into a prompt or raw."""
     conversation_state.conversation_key(vault, harness, sid)
     native = Path(path).resolve()
-    before = transcripts.native_fingerprint(str(native), harness, sid)
+    before = transcript_files.native_fingerprint(str(native), harness, sid)
     result = {'harness': harness, 'conversation_id': sid, 'finals': [], 'active': False,
               'last_successful': False,
               'transcript_path': str(native), 'fingerprint': before,
-              'reverted': transcripts.reverted(str(native), harness, sid)}
+              'reverted': transcript_files.reverted(str(native), harness, sid)}
     finals, identified, context, turn, permission = set(), False, {}, None, None
-    with closing(transcripts.native_lines(str(native), harness, sid)) as stream:
+    with closing(transcript_files.native_lines(str(native), harness, sid)) as stream:
         for line in stream:
             if not line.endswith(b'\n'):
                 result['active'] = True
@@ -489,7 +489,7 @@ def profile(vault: Vault, path: str, harness: str, sid: str) -> dict:
 
 
 def _source_unchanged(source: dict) -> bool:
-    return transcripts.native_fingerprint(source['transcript_path'], source['harness'],
+    return transcript_files.native_fingerprint(source['transcript_path'], source['harness'],
                                          source['conversation_id']) == source['fingerprint']
 
 

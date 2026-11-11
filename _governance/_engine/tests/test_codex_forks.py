@@ -11,7 +11,7 @@ TMP = tempfile.TemporaryDirectory(prefix="osk-codex-fork-test-")
 os.environ["OSK_VAULT_ROOT"] = str(Path(TMP.name) / "vault")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from osk import (core, harness as adapters, integration as it, raw, scope_memory, transcripts, validate,
-                 conversation_capture, conversation_cite, conversation_review, conversation_state)
+                 conversation_capture, conversation_cite, conversation_review, conversation_state, transcript_files)
 from osk.vault import Vault
 VAULT = Vault.open()
 
@@ -367,7 +367,7 @@ class CompressedRolloutTests(unittest.TestCase):
         self.assertEqual(conversation_capture.locate_transcript(VAULT, "codex", self.parent, str(plain)), str(zst.resolve()))
         self.assertEqual(adapters.get("codex").transcripts(self.parent), [zst])
         # Plain bytes and the kept mtime: the stored fingerprint holds, so nothing is due.
-        self.assertEqual(transcripts.native_fingerprint(str(zst), "codex", self.parent), fingerprint)
+        self.assertEqual(transcript_files.native_fingerprint(str(zst), "codex", self.parent), fingerprint)
         self.assertEqual(it._known_pending(VAULT, None)[0], [])
         again = conversation_capture.capture(VAULT, "codex", self.parent, None, "forks")
         self.assertTrue(again["ok"], again)
@@ -391,7 +391,7 @@ class CompressedRolloutTests(unittest.TestCase):
         for path in (parent, child):
             compress(path, keep=True)
         self.assertEqual(adapters.get("codex").transcripts(self.child), [child])
-        self.assertEqual(transcripts.native_fingerprint(str(child), "codex", self.child), fingerprint)
+        self.assertEqual(transcript_files.native_fingerprint(str(child), "codex", self.child), fingerprint)
         during = conversation_capture.capture(VAULT, "codex", self.child, None, "forks")
         self.assertEqual((during["ok"], during["appended"]), (True, 0))
         # The plain file goes between the lookup and the read: the read takes the `.zst`.
@@ -414,7 +414,7 @@ class CompressedRolloutTests(unittest.TestCase):
         self.assertEqual((before["captured_rounds"], before["inherited_rounds"]), (1, 2))
         fingerprint = self.stored(self.child)["native_fingerprint"]
         compress(first), compress(second)
-        self.assertEqual(transcripts.native_fingerprint(str(child), "codex", self.child), fingerprint)
+        self.assertEqual(transcript_files.native_fingerprint(str(child), "codex", self.child), fingerprint)
         self.assertTrue(all(page["path"].endswith(".jsonl") for page in fingerprint["history"]), fingerprint)
         parsed = transcripts.read(str(child), "codex", self.child)
         self.assertEqual([r["id"] for r in parsed["rounds"]], ["p1", "p2", "c1"])
@@ -450,7 +450,7 @@ class CompressedRolloutTests(unittest.TestCase):
         self.assertEqual((cleared["ok"], cleared["capture_error"], cleared["capture_recovery"]["state"]),
                          (True, None, "ready"))
         # With neither form on this device the advice says so.
-        transcripts.on_disk(plain).unlink()
+        transcript_files.on_disk(plain).unlink()
         s = self.stored(self.parent)
         s.update(capture_pending=True, capture_failure_phase="source", capture_error="FileNotFoundError: gone")
         path.write_text(json.dumps(s, ensure_ascii=False, sort_keys=True), encoding="utf-8")
@@ -474,7 +474,7 @@ class CompressedRolloutTests(unittest.TestCase):
         plain = self.page(self.parent, self.parent, turn(self.parent, "p1"))
         conversation_capture.capture(VAULT, "codex", self.parent, str(plain), "forks")
         zst = compress(plain)
-        with mock.patch.object(transcripts, "_zstd", side_effect=transcripts.ZstdMissing("no zstandard")):
+        with mock.patch.object(transcript_files, "_zstd", side_effect=transcript_files.ZstdMissing("no zstandard")):
             failed = conversation_capture.capture(VAULT, "codex", self.parent, None, "forks")
             self.assertEqual(it._known_pending(VAULT, None)[2][0]["phase"], "native_lookup")
         self.assertFalse(failed["ok"])

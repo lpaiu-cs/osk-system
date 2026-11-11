@@ -11,7 +11,7 @@ import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from . import conversation_state, core, raw, secrets, transcripts, workspaces, write
+from . import conversation_state, core, raw, secrets, transcripts, workspaces, write, transcript_files
 from . import harness as adapters
 from .vault import Vault
 
@@ -268,7 +268,7 @@ def _inherited_rounds(vault: Vault, s: dict, rounds: list, dialogue_v1: dict | N
 def locate_transcript(vault: Vault, harness: str, sid: str, saved: str | None = None) -> str | None:
     """Recover a moved native file by exact ID; ambiguity requires an explicit path."""
     conversation_state.conversation_key(vault, harness, sid)
-    if saved and (found := transcripts.on_disk(saved)):
+    if saved and (found := transcript_files.on_disk(saved)):
         return str(found.resolve())
     matches = sorted({p.resolve() for p in adapters.get(harness).transcripts(sid) if p.is_file()})
     if len(matches) > 1:
@@ -282,7 +282,7 @@ def _workspace(vault: Vault, s: dict, path: str | None, cwd: str | None) -> bool
     판별해 대화에 고정한다. 원본 전사가 적은 작업 폴더를 먼저 쓰고, 없으면 훅의 작업 폴더를 쓴다.
     판별은 그 대화의 것이다 — 같은 이름의 키를 쓰는 다른 세션에 번지지 않는다."""
     if "workspace" not in s:
-        seen = transcripts.workspace(path, s["harness"]) if path and Path(path).is_file() else None
+        seen = transcript_files.workspace(path, s["harness"]) if path and Path(path).is_file() else None
         where = (seen or {}).get("cwd") or cwd
         if where:
             s["workspace"] = (workspaces.judge(vault, s["harness"], where, (seen or {}).get("version"))
@@ -331,7 +331,7 @@ def _capture_failed(vault: Vault, p: Path, s: dict, exc: Exception, phase: str) 
     if isinstance(exc, FileNotFoundError) and phase in {"source", "read"}:
         phase = ("source" if s["rounds"] or s["prompt_count"] or s.get("native_fingerprint")
                  else "awaiting_native")
-    if isinstance(exc, transcripts.ZstdMissing):
+    if isinstance(exc, transcript_files.ZstdMissing):
         phase = "dependency"
     s["capture_pending"], s["capture_error"] = True, f"{type(exc).__name__}: {exc}"
     s["capture_failure_phase"] = phase
@@ -662,7 +662,7 @@ def turn_at(s: dict, native_path: str | None, refs: list[str] | None = None) -> 
         return None
     want, found = {i.split(":", 1)[0] for i in ids}, []
     try:
-        for line in transcripts.native_lines(native_path, s["harness"], s["conversation_id"]):
+        for line in transcript_files.native_lines(native_path, s["harness"], s["conversation_id"]):
             for uuid in [u for u in want if u.encode() in line]:
                 row = json.loads(line)
                 if row.get("uuid") == uuid and isinstance(row.get("timestamp"), str):
@@ -766,6 +766,6 @@ def capture_due(vault: Vault, harness: str, conversation_id: str, transcript_pat
     if s["capture_pending"] or s["capture_error"] or not s.get("native_fingerprint") or not transcript_path:
         return True
     try:
-        return transcripts.native_fingerprint(transcript_path, harness, conversation_id) != s["native_fingerprint"]
+        return transcript_files.native_fingerprint(transcript_path, harness, conversation_id) != s["native_fingerprint"]
     except (OSError, ValueError):
         return True

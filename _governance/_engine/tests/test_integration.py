@@ -24,7 +24,7 @@ TMP = tempfile.TemporaryDirectory(prefix="osk-integration-test-")
 os.environ["OSK_VAULT_ROOT"] = str(Path(TMP.name) / "vault")
 sys.path.insert(0, str(ENGINE))
 from osk import (core, integration as it, raw, scope_memory, transcripts, validate, write, nodefile,
-                 conversation_capture, conversation_cite, conversation_review, conversation_state)
+                 conversation_capture, conversation_cite, conversation_review, conversation_state, dialogue_codec)
 from osk.vault import Vault
 VAULT = Vault.open()
 ROOT = VAULT.root
@@ -2100,7 +2100,7 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(first["appended"], 1)
                 cited = conversation_cite.cite(VAULT, f"{harness}/{sid}", turn="-1")
                 saved_first = (ROOT / cited["path"]).read_bytes()
-                self.assertEqual(transcripts._dump(dialogue), dialogue)
+                self.assertEqual(dialogue_codec.dump(dialogue), dialogue)
                 # raw.round_block already strips trailing whitespace from whole sections.
                 expected = dialogue.rstrip() if harness == "claude" else json.dumps(dialogue)
                 self.assertIn(expected.encode(), saved_first)
@@ -2124,7 +2124,7 @@ class IntegrationTests(unittest.TestCase):
         encoded = ('{"same":"\\ud800\\n\\u0067' + token[1:]
                    + '","same":"benign"}')
         nested = json.dumps({"encoded": encoded})
-        filtered = transcripts._dump(nested)
+        filtered = dialogue_codec.dump(nested)
         filtered.encode("utf-8")  # changed literals must not emit lone surrogates
         retained = json.loads(filtered)["encoded"]
         pairs = json.loads(retained, object_pairs_hook=list)
@@ -2134,20 +2134,20 @@ class IntegrationTests(unittest.TestCase):
         clean = " \t" + json.dumps(
             {"quoted": '"backslash\\ /"', "unicode": "\ud800 한글 😀"},
             ensure_ascii=True, indent=2).replace("/", "\\/") + "\n"
-        self.assertEqual(transcripts._dump(clean), clean)
+        self.assertEqual(dialogue_codec.dump(clean), clean)
 
     def test_secret_filter_preserves_native_reference_hash_and_clean_json(self):
         import hashlib
         token = "ghp_" + "h" * 36
         original = {"text": "result\n" + token}
-        reference = transcripts._result_content(
+        reference = dialogue_codec.result_content(
             {"name": "read_file", "input": {"path": "safe.txt"}}, original, "native:reference")
-        rendered = json.loads(transcripts._dump(reference))
+        rendered = json.loads(dialogue_codec.dump(reference))
         expected = hashlib.sha256(json.dumps(original, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         self.assertEqual(rendered["sha256"], expected)
         self.assertNotIn(token, json.dumps(rendered))
         unchanged = ' { "items" : [ "normal text", "ghp_short" ], "n": 3 } '
-        self.assertEqual(transcripts._dump(unchanged), unchanged)
+        self.assertEqual(dialogue_codec.dump(unchanged), unchanged)
 
     def turns(self, harness="claude", rules=None):
         """The parsed dialogue — tracked by hash, copied into the vault only by `cite`."""
