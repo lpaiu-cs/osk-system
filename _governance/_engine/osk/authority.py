@@ -109,7 +109,7 @@ def enumerate_delegations(vault: Vault) -> list[dict]:
             continue
         try:
             n = contract.parse(p)
-        except Exception as e:
+        except (OSError, ValueError) as e:
             out.append({
                 "path": rel, "node": None,
                 "title": p.stem, "clause": None, "broken": str(e),

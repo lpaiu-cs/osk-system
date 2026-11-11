@@ -454,7 +454,7 @@ def update_node_locked(vault: Vault, name: str, body: str | None = None,
         evictions.require_target(path.stem, idx)
     try:
         n = contract.parse(path)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
 
     node_checks.cas(path, expect_hash, body is not None)   # 위반 시 raise
@@ -642,7 +642,7 @@ def record_candidate(vault: Vault, type: str, nodes: list[str], reason: str = ""
                 raise WriteError(f"당사자 노드 없음: {nm} — 근거가 성립하지 않는다")
             try:
                 parties.append((idx.node(p).id, sha256_file(p)))
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 raise WriteError(f"당사자 판독 실패: {nm} ({e})")
         # 같은 노드를 제목과 id로 두 번 줘도 근거 키는 하나여야 한다 — 안 그러면
         # 같은 쌍의 후보가 다른 `basis`로 두 번 앉아 중복 억제가 빗나간다.

@@ -273,7 +273,7 @@ class Index:
         try:
             self.parsed[p] = contract.parse(p)
             return True
-        except Exception as e:
+        except (OSError, ValueError) as e:
             # 판독 불가 파일(임시 메모 등)은 노드에서 분리해 소비자가 건너뛰게
             # 하고 별도로 보고한다 — 하나가 검증기·검색 전체를 죽이지 않는다
             # (시행령 §11 — 실패는 보류·보고).

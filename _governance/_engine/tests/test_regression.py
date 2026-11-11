@@ -12706,6 +12706,54 @@ def test_publish_preserves_mapped_dot_directories():
                   error is not None and "비밀값" in error and before == after)
 
 
+def test_node_parse_raises_only_its_kinds():
+    """노드 파일의 판독이 올리는 것은 둘뿐이다 — 읽지 못하면 `OSError`, 노드로 해석되지 않으면 `ValueError`.
+    받는 쪽은 그 둘만 받는다(코드 규범 7항). 다른 형이 새면 사람이 고치거나 동기화로 들어온 파일 하나가 색인을
+    만드는 프로세스를 죽인다."""
+    hostile = {
+        "frontmatter 없음": b"hello",
+        "닫히지 않음": b"---\nid: x\n",
+        "UTF-8이 아님": b"---\n\xff\n---\n",
+        "YAML 문법": b"---\na: [1\n---\n",
+        "중복 키": b"---\na: 1\na: 2\n---\n",
+        "매핑이 아님": b"---\n- 1\n---\n",
+        "깊은 흐름": b"---\na: " + b"[" * 300 + b"]" * 300 + b"\n---\n",
+        "깊은 블록": b"---\na:\n  " + b"- " * 30000 + b"x\n---\n",
+        "없는 날짜": b"---\nd: 2026-13-45\n---\n",
+        "너무 큰 정수": b"---\nn: " + b"9" * 6000 + b"\n---\n",
+        "파이썬 태그": b"---\na: !!python/object:os.system x\n---\n",
+        "병합 키 오용": b"---\n<<: 1\n---\n",
+        "평문 스칼라의 탭": b"---\na:\tb\n---\n",
+        "NUL": b"---\na: \x00\n---\n",
+    }
+    for label, data in hostile.items():
+        try:
+            contract.parse_bytes("hostile.md", data)
+            kind = "parsed"
+        except ValueError:
+            kind = "ValueError"
+        except Exception as e:                      # 이 시험이 잡으려는 것 — 계약 밖의 형
+            kind = type(e).__name__
+        check(f"해석되지 않는 노드는 ValueError다 — {label}", kind == "ValueError", kind)
+    check("읽히는 노드는 읽힌다", contract.parse_bytes("ok.md", b"---\nid: x\n---\nbody\n").id == "x")
+    with tempfile.TemporaryDirectory(prefix="osk-node-parse-") as td:
+        try:
+            contract.parse(Path(td) / "absent.md")
+            kind = "parsed"
+        except OSError:
+            kind = "OSError"
+        check("읽지 못한 노드는 OSError다", kind == "OSError", kind)
+        # 사건 파일의 머리는 순수 로더로 읽는다 — 깊이 겹치면 RecursionError였다. 머리를 읽지 못한 것으로 본다.
+        case = Path(td) / "CASE-2026-1.md"
+        case.write_text("parties:\n  " + "- " * 3000 + "x\n\n본문\n", encoding="utf-8")
+        try:
+            header = S.parse_case(case)
+            kind = "returned"
+        except Exception as e:
+            header, kind = None, type(e).__name__
+        check("깊이 겹친 사건 머리는 읽지 못한 머리다", kind == "returned" and header is None, kind)
+
+
 def test_ledger_damage_is_a_kind():
     """대장의 손상은 형으로 말한다(코드 규범 7항). 읽지 못한 것(`OSError`)과도, 거부(`ValueError`)와도 다른
     형이고, 대장을 기록으로 해석하지 못하는 길은 모두 그 형으로 오른다 — 받는 쪽이 문구를 읽지 않게 한다."""
@@ -12997,7 +13045,7 @@ if __name__ == "__main__":
                test_publish_binds_checked_bytes,
                test_publish_validator_uses_snapshot, test_publish_external_engine_preserves_manifest,
                test_validate_at_uses_snapshot_engine, test_publish_preserves_mapped_dot_directories,
-               test_ledger_damage_is_a_kind,
+               test_ledger_damage_is_a_kind, test_node_parse_raises_only_its_kinds,
                 test_write_edge_coordinates, test_node_heading_edge_coordinates,
                 test_derived_from_once_per_round,
                test_write_pin_subtree_and_fork,

@@ -220,7 +220,7 @@ def hub_tree(vault: Vault, base: Path, idx=None) -> str:
             continue
         try:
             summary = str(idx.node(hub).meta.get("summary", ""))
-        except Exception:
+        except (OSError, ValueError):
             summary = ""
         lines.append("  " * len(d.relative_to(base).parts)
                      + f"- {core.posix_rel(d, vault.root)} · 직속 노드 {len(members[d]) - 1} — {summary}")

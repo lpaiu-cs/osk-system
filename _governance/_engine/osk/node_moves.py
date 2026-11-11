@@ -44,7 +44,7 @@ def _plan_move(vault: Vault, name: str, dest_dir: Path, dest_space: str, idx):
             f"정규화만 달라도 NTFS·APFS에서 같은 경로가 된다")
     try:
         n = contract.parse(path)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         raise WriteError(f"파손된 노드다 — 수동 확인이 먼저다: {name} ({e})")
     # pin은 **군집 경로 또는 노드 id**를 대상으로 한다(Mechanism §6 1항 ·
     # 시행령 §3 4항 "필요하면 개별 노드의 배치에도 붙일 수 있다"). 구판은
@@ -103,7 +103,7 @@ def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
             continue
         try:
             n = idx.node(hub)
-        except Exception:
+        except (OSError, ValueError):
             continue
         gone = sorted({contract.target_stem(t) for t in n.wikilinks()} & moved)
         if gone:
@@ -113,7 +113,7 @@ def _hub_links(srcs: set, dest: Path, moved: set, idx) -> list:
         try:
             have = {contract.target_stem(t) for t in idx.node(dhub).wikilinks()}
             need = sorted(moved - have)
-        except Exception:
+        except (OSError, ValueError):
             need = sorted(moved)
         if need:
             out.append({"hub": dhub.stem, "add": need})
@@ -396,7 +396,7 @@ def discard_transit(vault: Vault, title: str, confirm: str | None = None) -> dic
                 continue
             try:
                 n = idx.node(p)
-            except Exception:
+            except (OSError, ValueError):
                 continue          # 판독되지 않는 파일은 참조를 말하지 않는다
             # 그래프와 같은 해석(`Index.locate` — 제목·id·경로, 제목 속 `.md` 포함)으로 대조한다
             for _relation, text in n.references():
