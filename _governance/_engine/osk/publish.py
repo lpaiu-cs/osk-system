@@ -26,7 +26,7 @@ cherry-pick하는 방식이었고, 그것은 두 저장소의 **경로가 같다
 서명은 각 인스턴스 사용자의 수용 기록이지 발행·효력의 요건이 아니다.
 """
 from __future__ import annotations
-import argparse, os, re, shutil, subprocess, sys, tempfile
+import argparse, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 from .core import posix_rel
@@ -143,11 +143,36 @@ def guard_secrets(items: list[tuple[Path, str]]) -> list[str]:
     return errs
 
 
+def validate_at(root: Path) -> list[str]:
+    """발행과 릴리스는 **자신이 내보내는 트리**를 그 트리의 **엔진으로** 검증한다.
+
+    데이터만 스냅샷을 보고 검증기 코드는 원본 작업 트리에서 import하면, 선언
+    도중 외부가 엔진을 고쳤을 때 "스냅샷을 그 스냅샷의 규칙으로 검증했다"가
+    성립하지 않는다. 그래서 `PYTHONPATH`도 스냅샷 안의 엔진을 가리킨다.
+    (엔진을 스냅샷의 것으로 바꿔 읽어야 하므로 별도 프로세스여야 한다 —
+    fixture_approval_lifecycle와 같은 선례.)"""
+    engine = root / "_governance" / "_engine"
+    if not (engine / "osk").is_dir():
+        return [f"스냅샷에 엔진이 없다 — 검증 불성립: {engine}"]
+    code = ("import json; from osk import validate; from osk.vault import Vault; r = validate.run(Vault.open()); "
+            "print(json.dumps({'v': r['verdict'], "
+            "'f': [list(x)[0] for x in r['fail']]}))")
+    env = dict(os.environ, OSK_VAULT_ROOT=str(root), PYTHONPATH=str(engine))
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, env=env, cwd=engine, timeout=120)
+    if not r.stdout.strip():
+        return [f"검증기 실행 실패: {r.stderr.strip()[-300:]}"]
+    try:
+        rep = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        return [f"검증기 출력 파싱 실패: {r.stdout[-200:]!r}"]
+    return [] if rep["v"] == "PASS" else [f"검증기 {rep['v']}: {'; '.join(rep['f'])}"]
+
+
 def guard_vault(vault: Vault, root: Path | None = None) -> list[str]:
     """깨진 vault에서 발행하지 않는다."""
     try:
         if root is not None:
-            from .release import validate_at
             return validate_at(root)
         rep = validate.run(vault)
     except Exception as e:

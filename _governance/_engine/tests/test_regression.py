@@ -12696,7 +12696,6 @@ def test_publish_preserves_mapped_dot_directories():
 
 def test_validate_at_uses_snapshot_engine():
     """PYTHONPATH보다 앞서는 호출 cwd가 스냅샷 검증기를 바꿔치기하지 못한다."""
-    from osk import release
     with tempfile.TemporaryDirectory(prefix="osk-validation-import-") as td:
         snapshot = Path(td) / "snapshot"
         caller = Path(td) / "caller-engine"
@@ -12714,7 +12713,7 @@ def test_validate_at_uses_snapshot_engine():
         previous = Path.cwd()
         try:
             os.chdir(caller)
-            errors = release.validate_at(snapshot)
+            errors = publish.validate_at(snapshot)
         finally:
             os.chdir(previous)
         check("원본 엔진 cwd에서도 snapshot 검증기를 실행",
