@@ -13,7 +13,7 @@ import re
 import time
 from pathlib import Path
 
-from . import core, contract, graph, prose, write, evidence
+from . import core, contract, evidence, graph, node_checks, nodefile, prose, routing
 from .vault import Vault
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
@@ -79,7 +79,7 @@ def load_state(vault: Vault) -> dict:
 
 
 def _save(vault: Vault, state: dict) -> None:
-    write._atomic_write(_state_path(vault), json.dumps(state, ensure_ascii=False, sort_keys=True).encode())
+    nodefile.write_file(_state_path(vault), json.dumps(state, ensure_ascii=False, sort_keys=True).encode())
 
 
 def _retire_arrived_moves(vault: Vault, state: dict, idx) -> None:
@@ -118,7 +118,7 @@ def pending_moves(vault: Vault, scope: str, idx) -> list:
         for item in move["items"]:
             if Path(item["from"]).parts[:2] != scope_path(vault, scope).relative_to(vault.root).parts:
                 continue
-            path = write.live_locate(vault, item["id"], idx)
+            path = nodefile.live_locate(vault, item["id"], idx)
             current = core.posix_rel(path, vault.root) if path else None
             if current != item["to"]:
                 items.append(dict(item, current=current,
@@ -173,11 +173,11 @@ def snapshot(vault: Vault, scope: str, idx=None) -> dict:
         nodes.append({"id": node.id, "name": name, "path": core.posix_rel(path, vault.root),
                       "hash": digest, "summary": str(node.meta.get("summary", "")),
                       "hub": graph.is_hub(path), "has_body": bool(prose.norm_body(node.body)),
-                      "body_chars": len(node.body), **write.size_feedback(path, node.body)})
+                      "body_chars": len(node.body), **node_checks.size_feedback(path, node.body)})
         references.extend(graph.reference_review(vault, node, idx, records=records))
     links = {}
     for p, node in parsed.items():
-        links[p] = {write.live_locate(vault, ref, idx) for ref in node.wikilinks()}
+        links[p] = {nodefile.live_locate(vault, ref, idx) for ref in node.wikilinks()}
     clusters, issues = [], []
     directories = {d for p in parsed for d in p.parents if d.is_relative_to(base)}
     for directory in sorted(directories):
@@ -467,7 +467,7 @@ def guidance() -> str:
             "이전 deferred의 질문과 필요한 근거부터 이어서 확인한다. 예산 안에 판단하지 못하면 checked에 넣지 말고 "
             "필요한 절과 질문을 deferred에 남긴다. 긴 본문 전문을 반복해서 읽지 않는다. "
             "previous_deferral.snapshot_changed가 참이면 이전 판단을 현재 완료로 간주하지 말고 대상 ID의 현행 내용을 확인한다. "
-            + write.CLAIM_GUIDANCE +
+            + node_checks.CLAIM_GUIDANCE +
             "허브의 분화(시행령 §3 7항)는 이 검토가 맡는다 — hub_tree가 그 scope의 허브와 허브마다 직속 노드 "
             "수를 보인다. 분화 시에는 현재 구조 유지·기존 입구 통합·분화 중 본문에 맞는 선택을 하며 "
             "수량만으로 분화하지 않는다. "
@@ -559,16 +559,16 @@ def bindings_audit(vault: Vault, project: str | None = None) -> list[dict]:
         return []
     keys = sorted({str(r.get("session")) for r in recs
                    if r.get("kind") in ("bind", "unbind") and r.get("session")})
-    keys = [k for k in keys if write.canonical_session(vault, k, recs) == k]       # 별칭은 정본 키로 접힌다
+    keys = [k for k in keys if routing.canonical_session(vault, k, recs) == k]       # 별칭은 정본 키로 접힌다
     if project is not None:
-        keys = [k for k in keys if k == (write.canonical_session(vault, project, recs) or project)]
+        keys = [k for k in keys if k == (routing.canonical_session(vault, project, recs) or project)]
     try:
         seen = load_state(vault).get("bindings_seen", {})
     except ValueError:
         seen = {}
-    names, out = set(write.graph.scope_names(vault)), []
+    names, out = set(graph.scope_names(vault)), []
     for key in keys:
-        b = write.bindings(vault, key, recs)
+        b = routing.bindings(vault, key, recs)
         if not b["scopes"]:
             continue
         flags = []
@@ -618,7 +618,7 @@ def apply_binding_decisions(vault: Vault, decisions: list | None, state: dict | 
             or (d["action"] != "keep" and not (isinstance(d.get("scope"), str) and d["scope"].strip()))
             for d in decisions):
         raise ValueError("bindings decisions are [{project, action: keep|unbind|primary, scope?, reason}]")
-    scopes = write.graph.scope_names(vault)
+    scopes = graph.scope_names(vault)
     for d in decisions:
         if d["action"] == "primary" and d["scope"].strip() not in scopes:
             raise ValueError(f"{d['action']} names a scope that does not exist: {d['scope'].strip()}")
@@ -628,12 +628,12 @@ def apply_binding_decisions(vault: Vault, decisions: list | None, state: dict | 
     applied = []
     for d in decisions:
         project, action = d["project"].strip(), d["action"]
-        current = write.bindings(vault, project)
+        current = routing.bindings(vault, project)
         if action == "unbind" and d["scope"].strip() in current["scopes"]:
-            write.unbind_session(vault, project, d["scope"].strip(), d["reason"].strip())
+            routing.unbind_session(vault, project, d["scope"].strip(), d["reason"].strip())
         elif action == "primary" and current["primary"] != d["scope"].strip():
-            write.set_primary(vault, project, d["scope"].strip(), d["reason"].strip())
-        seen[project] = len(write.bindings(vault, project)["scopes"])
+            routing.set_primary(vault, project, d["scope"].strip(), d["reason"].strip())
+        seen[project] = len(routing.bindings(vault, project)["scopes"])
         applied.append({"project": project, "action": action, "scope": d.get("scope")})
     if own:
         _save(vault, state)

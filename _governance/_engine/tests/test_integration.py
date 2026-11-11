@@ -23,7 +23,7 @@ TMP = tempfile.TemporaryDirectory(prefix="osk-integration-test-")
 # expected path from the root the engine canonicalised at its boundary.
 os.environ["OSK_VAULT_ROOT"] = str(Path(TMP.name) / "vault")
 sys.path.insert(0, str(ENGINE))
-from osk import core, integration as it, raw, scope_memory, transcripts, validate, write
+from osk import core, integration as it, raw, scope_memory, transcripts, validate, write, cluster_gate, node_checks, node_moves, nodefile
 from osk.vault import Vault
 VAULT = Vault.open()
 ROOT = VAULT.root
@@ -1909,7 +1909,7 @@ class IntegrationTests(unittest.TestCase):
         foreign_path = own_path.with_name(own_path.name.replace(own_digest, digest))
         self.assertNotEqual(foreign_path, D._job_path(VAULT, foreign_key))
         self.addCleanup(foreign_path.unlink, missing_ok=True)
-        write._atomic_write(foreign_path, json.dumps(foreign).encode())
+        nodefile.write_file(foreign_path, json.dumps(foreign).encode())
         found = D.discover(VAULT, own["pending_refs"])
         self.assertEqual([proof["key"] for proof in found["proofs"]], [key])
         self.assertFalse(found["errors"], found)
@@ -1973,13 +1973,13 @@ class IntegrationTests(unittest.TestCase):
         from osk import distillation as D
         st = self._discovery_source()
         key = self.sid + "-interrupted"
-        atomic = write._atomic_write
+        atomic = nodefile.write_file
         hub = ROOT / "00_Scope/W1/W1.md"
         def fail_hub(path, data):
             if path == hub:
                 raise OSError("injected lost hub write")
             return atomic(path, data)
-        with mock.patch.object(write, "_atomic_write", side_effect=fail_hub):
+        with mock.patch.object(nodefile, "write_file", side_effect=fail_hub):
             saved = self._discovery_save(st, key)
         self.assertTrue(saved["ok"])
         before = (ROOT / saved["path"]).read_bytes()
@@ -2003,7 +2003,7 @@ class IntegrationTests(unittest.TestCase):
                           expect_hash=saved["new_hash"])
         damaged = D._job_path(VAULT, self.sid + "-damaged")
         self.addCleanup(damaged.unlink, missing_ok=True)
-        write._atomic_write(damaged, b"{bad-json")
+        nodefile.write_file(damaged, b"{bad-json")
         prompt = it.prompt(VAULT, "claude", self.sid)
         self.assertEqual(prompt["previous_distillations"], [])
         self.assertTrue(prompt["proof_discovery"]["errors"])

@@ -11,7 +11,7 @@ ENGINE = Path(__file__).resolve().parent.parent
 BOOT = """
 import json, sys
 from pathlib import Path
-from osk import core, graph, growth, validate, write, contract, organization
+from osk import core, graph, growth, validate, write, contract, organization, cluster_gate, node_checks, node_moves, nodefile
 from osk.vault import Vault
 VAULT = Vault.open()
 validate.make_mini_vault(VAULT, VAULT.root)
@@ -217,7 +217,7 @@ class GrowthTests(unittest.TestCase):
             from osk import evictions
             item = evictions.record_evict(VAULT, 'W1', 'session', 'Reusable fact; second claim needs verification.')
             with patch.object(evictions, 'age_days', return_value=17):
-                action = "from osk import evictions, write; j=p['eviction_jobs'][0]; saved=write.create_node(VAULT, 'Partial', 'Partial evidence', 'Only the first claim is verified.', 'fixture', space='00_Scope/W1', settle=j['of']); assert saved['ok']; "
+                action = "from osk import evictions, write, cluster_gate, node_checks, node_moves, nodefile; j=p['eviction_jobs'][0]; saved=write.create_node(VAULT, 'Partial', 'Partial evidence', 'Only the first claim is verified.', 'fixture', space='00_Scope/W1', settle=j['of']); assert saved['ok']; "
                 if DEFERRED_CASE:
                     action += "q['osk_reviews']['eviction']=[{'of':j['of'],'outcome':'deferred','reason':'First claim saved; resume second claim against the source.'}]; assert growth.checkpoint(VAULT, q)['ok']"
                 else:
@@ -793,8 +793,8 @@ class GrowthTests(unittest.TestCase):
                                          '- 2026-10-05 · `brain:wiki/x.md` · 지지 — held']))
             # B was written before v5.4 with a round in derived-from; writes no longer add one
             from unittest import mock
-            assert 'derived-from은 노드만' in str(write._check_edges(VAULT, {'derived-from': first['round_refs'][0]}, idx))
-            with mock.patch.object(write, '_check_edges', return_value=[]):
+            assert 'derived-from은 노드만' in str(node_checks.check_edges(VAULT, {'derived-from': first['round_refs'][0]}, idx))
+            with mock.patch.object(node_checks, 'check_edges', return_value=[]):
                 assert write.create_node(VAULT, 'B', 'B', 'B claim.', 'gpt-6-astra', space='00_Scope/W1',
                                          edges={'derived-from': first['round_refs'][0]})['ok']
             from osk import roots
@@ -923,7 +923,7 @@ class GrowthTests(unittest.TestCase):
             def legacy(title, refs):
                 p = VAULT.root / '00_Scope/W1' / (title + '.md')
                 n = contract.parse(p)
-                p.write_bytes(write._render({**n.meta, 'derived-from': refs}, n.body))
+                p.write_bytes(nodefile.render({**n.meta, 'derived-from': refs}, n.body))
                 return p
             missing, late = rounds[0].replace('#1', '#9'), rounds[0].replace('#1', '#5')
             a = legacy('A', ['[[N]]', rounds[0], noted, '[[_sources/r.md]]', '[[' + url + ']]', missing, late])
@@ -1051,7 +1051,7 @@ class GrowthTests(unittest.TestCase):
                  + '- 2026-11-09 · `https://example.com/a` · 지지 — page')
             a = VAULT.root / '00_Scope/W1/A.md'
             n = contract.parse(a)
-            a.write_bytes(write._render({**n.meta, 'derived-from': ['00_Scope/W1/_raw/.records/' + name + '.txt#1']}, n.body))
+            a.write_bytes(nodefile.render({**n.meta, 'derived-from': ['00_Scope/W1/_raw/.records/' + name + '.txt#1']}, n.body))
             git('add', '-A'); git('commit', '-qm', 'seed')
             v54, v52 = '비노드 derived-from → 관측 줄 (v5.4)', '옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)'
             v56 = '관측 절 제목 `## 근거` → `# 관측` (v5.6)'
@@ -1678,7 +1678,7 @@ class GrowthTests(unittest.TestCase):
             assert 'growth checkpoint --file' not in growth.prompt(VAULT, growth.plan(VAULT, 3))
             # The worker has no CLI snapshot. A unit it read that changes before the
             # runner applies the packet no longer matches its content key.
-            change = ("from osk import write; n=VAULT.root/'00_Scope/W1/A.md'; "
+            change = ("from osk import write, cluster_gate, node_checks, node_moves, nodefile; n=VAULT.root/'00_Scope/W1/A.md'; "
                       "assert write.update_node(VAULT, 'A',body='Changed after the worker read it.',expect_hash=core.sha256_file(n))['ok']")
             stale = growth.run(VAULT, [sys.executable,'-c',packet_worker(change)],limit=3)
             assert any('changed review unit' in e for e in stale['final_reviews']['errors']), stale
@@ -1694,7 +1694,7 @@ class GrowthTests(unittest.TestCase):
             node('B')
             # Another session swaps A's evidence after the plan. Unit keys cover bodies only,
             # so the planned snapshot is what tells the reviewed state from the current one.
-            change = "from osk import write; assert write.update_node(VAULT, 'A',add_edges={'derived-from':'B'})['ok']"
+            change = "from osk import write, cluster_gate, node_checks, node_moves, nodefile; assert write.update_node(VAULT, 'A',add_edges={'derived-from':'B'})['ok']"
             stale = growth.run(VAULT, [sys.executable,'-c',packet_worker(change)],limit=3)
             assert any('changed after inspection' in e for e in stale['final_reviews']['errors']), stale
             assert {s['status'] for s in stale['organization_outcomes'].values()} != {'complete'}, stale
@@ -1710,7 +1710,7 @@ class GrowthTests(unittest.TestCase):
             # The worker reads A, corrects B and checkpoints A as deferred. Its own write moves
             # the scope past the planned snapshot; A's unchanged unit is still its progress and
             # B goes to another reviewer (#136 M4: the packet was refused and nothing was kept).
-            change = ("from osk import write; n=VAULT.root/'00_Scope/W1/B.md'; "
+            change = ("from osk import write, cluster_gate, node_checks, node_moves, nodefile; n=VAULT.root/'00_Scope/W1/B.md'; "
                       "assert write.update_node(VAULT, 'B',body='Corrected by the worker.',expect_hash=core.sha256_file(n))['ok']")
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change, org='deferred', read="u['name']=='A'")],
                                 limit=3)
@@ -1729,7 +1729,7 @@ class GrowthTests(unittest.TestCase):
             node('B')
             # The worker also lists B, which it then corrected. B's judgment was of the old body,
             # so only A is kept; B is named back and goes to another reviewer.
-            change = ("from osk import write; n=VAULT.root/'00_Scope/W1/B.md'; "
+            change = ("from osk import write, cluster_gate, node_checks, node_moves, nodefile; n=VAULT.root/'00_Scope/W1/B.md'; "
                       "assert write.update_node(VAULT, 'B',body='Corrected by the worker.',expect_hash=core.sha256_file(n))['ok']")
             result = growth.run(VAULT, [sys.executable,'-c',packet_worker(change, org='deferred')], limit=3)
             errors = result['final_reviews']['errors']

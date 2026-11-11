@@ -29,7 +29,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 # 도구 함수명이 모듈명을 가리지 않게 별칭으로 들여온다 — `def search(...)`가
 # 모듈 전역의 `search`를 재결속하면 `search.Searcher`가 죽는다(7차 치명).
 from osk import (contract, epoch, graph, integration, prose, raw, rechecks,  # noqa: E402
-                 update_check, validate, write)
+                 update_check, validate, write, cluster_gate, node_checks, node_moves, nodefile)
 from osk.harness import runs as hook_runs  # noqa: E402
 # 도구명이 모듈명을 가린다 — search와 같은 이유로 별칭 import.
 from osk import scope_memory as scope_memory_mod  # noqa: E402
@@ -301,9 +301,9 @@ def _dup_id_error(paths: list[str]) -> dict:
 def _node_view(body: str, view: str) -> dict:
     if view != "outline" and not re.fullmatch(r"[0-9]{1,10}:[0-9]{1,10}", view):
         # 본문 인용 — 그 자리와 앞뒤 문단. 큰 노드의 앵커 편집이 연결어까지 고치게 한다(#273).
-        hits, windows = write.anchor_windows(body, view)
+        hits, windows = nodefile.anchor_windows(body, view)
         if hits == 0 and (spaced := prose.space_numeric_tags(view)) != view:
-            hits, windows = write.anchor_windows(body, spaced)  # 저장본의 태그 방어(#292)와 같게
+            hits, windows = nodefile.anchor_windows(body, spaced)  # 저장본의 태그 방어(#292)와 같게
         if hits != 1:
             return {"error": "인용이 본문에 없다 — 공백·줄바꿈까지 그대로 옮겨라" if not hits else
                     f"인용이 본문에 {hits}곳 맞는다 — 더 길게 인용하거나 views를 범위로 읽어라",
@@ -391,8 +391,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     `include`=훅 `[osk 접음]` 줄이 알려 준 블록 → `included`."""
     idx = _idx()
     out = {
-        "clusters": write.cluster_names(_vault()),
-        "open_cases": write.open_cases(_vault()),
+        "clusters": cluster_gate.cluster_names(_vault()),
+        "open_cases": node_checks.open_cases(_vault()),
         "broken": sorted(getattr(idx, "broken", None) or {}),
         "nodes": len(idx.nodes),
         **_engine_state(),
@@ -514,7 +514,7 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
     군집이면 만들어지되 허브는 없다. 허브는 거부하니 군집째는 `move_cluster`다.
     응답의 `hub_links`가 **양쪽** 허브에서 뺄 것(`remove`)과 더할 것(`add`)을
     준다 — 둘 다 해야 도달이 산다. `crossed_scope`가 오면 먼저 읽어라."""
-    return _guard(write.move_nodes, _vault(), names, dest_space)
+    return _guard(node_moves.move_nodes, _vault(), names, dest_space)
 
 
 @mcp.tool()
@@ -522,7 +522,7 @@ def move_cluster(name: str, dest_parent: str) -> dict:
     """하위 군집을 폴더째 옮긴다 — `name`은 그 군집(=허브)의 이름, `dest_parent`
     는 새 부모(`clusters`). 아래 군집도 함께 가며 최상위는 못 건넌다.
     `hub_links`는 `move_nodes`와 같다."""
-    return _guard(write.move_cluster, _vault(), name, dest_parent)
+    return _guard(node_moves.move_cluster, _vault(), name, dest_parent)
 
 
 @mcp.tool()

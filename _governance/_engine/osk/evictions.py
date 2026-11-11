@@ -28,7 +28,7 @@ from datetime import datetime
 
 from .core import (RID_RE, ID_RE, ledger_read, ledger_damage, ledger_append, ledger_anchor_index,
                    mutation_lock, rid_parts, rid_key)
-from . import graph
+from . import graph, nodefile
 from .vault import Vault
 
 KINDS = ("evict", "settle")
@@ -302,7 +302,7 @@ def discard_transit(vault: Vault, title: str, confirm: str | None = None) -> dic
     사용자에게 확인받은 그 해시로 다시 부를 때만 지운다 — 확인한 뒤 바뀐 판은 지우지
     않는다. 새 대장은 두지 않는다. 지우기 전 판은 이 기기에 사본으로 남긴다 — 동기화
     전의 판은 vault git 이력에 없을 수 있다."""
-    from . import scope_memory, write   # 둘 다 이 모듈을 부른다 — 순환을 피한다
+    from . import scope_memory      # 이 모듈을 부른다 — 순환을 피한다
     from .core import local_lock_path, posix_rel, sha256_file
     with mutation_lock(vault):
         idx = graph.Index(vault)
@@ -352,7 +352,7 @@ def discard_transit(vault: Vault, title: str, confirm: str | None = None) -> dic
         # 들어 있으면 vault 밖을 가리키고, 같은 id의 다른 판(다른 worktree, 다시 만든 노드)은
         # 앞 사본을 덮는다(#138 리뷰 P1).
         copy = local_lock_path(f"osk-discarded-{plan['hash'].removeprefix('sha256:')}.md", vault.root)
-        write._atomic_write(copy, path.read_bytes())
+        nodefile.write_file(copy, path.read_bytes())
         path.unlink()
         return {"ok": True, "discarded": plan, "copy": str(copy)}
 
