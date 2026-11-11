@@ -59,7 +59,7 @@ TOTALS = ("upward_imports", "lazy_imports", "two_module_cycles", "private_access
           "late_loads")
 # 뜬 채로 오래 도는 진입점. 도는 프로세스는 뜬 시각의 코드를 쥔다(`osk.epoch`) — 뜬 뒤에 디스크에서
 # 읽는 엔진 모듈은 엔진이 갱신된 뒤라면 옛 판 위에 새 판으로 얹힌다. `late_loads`는 그 문을 센다.
-LONG_LIVED = ("mcp_server",)
+LONG_LIVED = ("mcp_server", "sync_daemon")
 
 
 def sources() -> dict[str, str]:

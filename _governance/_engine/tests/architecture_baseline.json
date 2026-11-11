@@ -15,7 +15,7 @@
   "oversize_functions": 119,
   "excess_lines": 2737,
   "excess_branches": 1605,
-  "late_loads": 3
+  "late_loads": 14
  },
  "upward_imports": {
   "osk.validate -> mcp_server": 1,
@@ -582,6 +582,19 @@
    "osk.harness -> osk.native_cli",
    "osk.publish -> osk.release",
    "osk.validate -> osk.cli"
+  ],
+  "sync_daemon": [
+   "osk.evictions -> osk.scope_memory",
+   "osk.evidence -> osk.rechecks",
+   "osk.graph -> osk.rechecks",
+   "osk.publish -> osk.release",
+   "osk.update -> osk.update_check",
+   "osk.validate -> mcp_server",
+   "osk.validate -> osk.cli",
+   "osk.validate -> osk.cluster_gate",
+   "osk.validate -> osk.rechecks",
+   "osk.validate -> osk.scope_memory",
+   "osk.validate -> osk.search"
   ]
  }
 }
