@@ -23,11 +23,21 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import approvals, contract, core, evidence, graph, prose, raw, raw_view, rechecks, write, validate
-from .core import LEDGER, ROOT, posix_rel, sha256_bytes
+from .core import posix_rel, sha256_bytes
+from .vault import Vault
 
-EVENTS = LEDGER / "migration" / "events.jsonl"
+
+def events_path(vault: Vault) -> Path:
+    return vault.ledger / "migration" / "events.jsonl"
+
+
 RULE = "비노드 derived-from을 근거 절의 지지 줄로 (v5.4 — 헌법 제8조 5·6항)"
-PREVIEW = ROOT / ".osk" / "evidence-section-plan.md"
+
+
+def preview_path(vault: Vault) -> Path:
+    return vault.root / ".osk" / "evidence-section-plan.md"
+
+
 WIDTH = 50                                  # 보인 것 — 50자 안팎
 NOT_AT_END = "관측 절이 노드 끝에 있지 않다"
 from .harness.base import GOAL as _GOAL, INJECTED as _SYSTEM   # 하네스가 끼워 넣은 알림
@@ -47,9 +57,9 @@ def _clip(text: str) -> str:
     return text if len(text) <= WIDTH else text[:WIDTH].rstrip() + "…"
 
 
-def _git(*args: str) -> str | None:
+def _git(vault: Vault, *args: str) -> str | None:
     try:
-        r = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True,
+        r = subprocess.run(["git", "-C", str(vault.root), *args], capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=300)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -77,15 +87,15 @@ def _seen(chunk: str) -> str:
     return ""
 
 
-def _rounds_seen(path: Path, indices: set[int]) -> dict[int, tuple[str | None, str]]:
+def _rounds_seen(vault: Vault, path: Path, indices: set[int]) -> dict[int, tuple[str | None, str]]:
     """기록의 라운드 → (그 제목 행이 기록에 들어온 커밋의 날, 보인 것). 기록마다 한 번 읽고 git blame도
     한 번 부른다. 날짜는 커밋한 기기의 시간대로 읽는다."""
     text = raw.read_exact(path)
     spans = raw.round_spans(text)
     rows = {text.count("\n", 0, spans[i][0]) + 1: i for i in indices if i in spans}
     days, row, when = {}, None, None
-    out = _git("blame", "--line-porcelain", *(f"-L{n},{n}" for n in sorted(rows)), "--",
-               posix_rel(path, ROOT)) if rows else None
+    out = _git(vault, "blame", "--line-porcelain", *(f"-L{n},{n}" for n in sorted(rows)), "--",
+               posix_rel(path, vault.root)) if rows else None
     for line in (out or "").splitlines():
         if m := re.match(r"([0-9a-f]{40}) \d+ (\d+)", line):
             row = int(m[2]) if m[1].strip("0") else None    # 커밋 전의 줄(영 해시)에는 날짜가 없다
@@ -98,15 +108,15 @@ def _rounds_seen(path: Path, indices: set[int]) -> dict[int, tuple[str | None, s
     return {i: (days.get(i), _seen(raw.recalled_text(text[s:e]))) for i, (s, e) in spans.items() if i in indices}
 
 
-def _entry_day(node: Path, entry: str) -> str | None:
+def _entry_day(vault: Vault, node: Path, entry: str) -> str | None:
     """그 항목을 frontmatter에 처음 단 커밋의 날 — 노드가 옮겨지고 이름이 바뀌어도 따라간다. `-S`는 본문의
     같은 글자도 잡으므로, 이른 후보부터 그 판의 frontmatter에 항목이 있는지 본다."""
-    out = _git("-c", "core.quotepath=off", "log", "--follow", "--name-only",
-               "--format=%x1e%H %ad", "--date=short", "-S" + entry, "--", posix_rel(node, ROOT)) or ""
+    out = _git(vault, "-c", "core.quotepath=off", "log", "--follow", "--name-only",
+               "--format=%x1e%H %ad", "--date=short", "-S" + entry, "--", posix_rel(node, vault.root)) or ""
     for block in reversed(out.split("\x1e")[1:]):        # `--follow`는 `--reverse`와 함께면 아무것도 내지 않는다
         head, _, names = block.partition("\n")
         sha, day = head.split()
-        old = (_git("show", f"{sha}:{names.strip().split(chr(10))[0]}") or "").replace("\r\n", "\n")
+        old = (_git(vault, "show", f"{sha}:{names.strip().split(chr(10))[0]}") or "").replace("\r\n", "\n")
         if old.startswith("---\n") and entry in old.split("\n---\n", 1)[0]:
             return day
     return None
@@ -126,24 +136,24 @@ def _refs(derived) -> list:
     return derived if isinstance(derived, list) else [] if derived in (None, "") else [derived]
 
 
-def _items(n, idx, records) -> list[dict]:
+def _items(vault: Vault, n, idx, records) -> list[dict]:
     """노드의 비노드 `derived-from` 항목(evidence.leftovers와 같은 대상)과 그 처리."""
-    coords, cited = set(evidence.coordinates(n.body)), evidence.cited_rounds(core.VAULT, n.body, records)
+    coords, cited = set(evidence.coordinates(n.body)), evidence.cited_rounds(vault, n.body, records)
     out = []
     for ref in _refs(n.meta.get("derived-from")):
         s, it = _bare(ref), {"entry": str(ref)}
         if graph.is_record_ref(s):
             rec, index = raw.parse_ref(s)
             try:
-                p = raw.raw_file(core.VAULT, rec)
+                p = raw.raw_file(vault, rec)
             except (OSError, ValueError):
                 out.append({**it, "kind": "round", "action": "hold", "reason": f"없는 기록: {rec}"})
                 continue
             if index is None:
                 out.append({**it, "kind": "round", "action": "hold", "reason": "라운드 번호가 없는 기록 참조"})
                 continue
-            it.update(kind="round", coord=evidence.coordinate(core.VAULT, p, index, records), record=p, index=index)
-            covered = raw.canonical_ref(core.VAULT, s) in cited
+            it.update(kind="round", coord=evidence.coordinate(vault, p, index, records), record=p, index=index)
+            covered = raw.canonical_ref(vault, s) in cited
         elif evidence.kind(s) in ("url", "external"):
             it.update(kind=evidence.kind(s), coord=s)
             covered = s in coords
@@ -154,16 +164,16 @@ def _items(n, idx, records) -> list[dict]:
             continue                        # 노드와 끊긴 대상은 이 이행의 것이 아니다
         if covered:
             it["action"] = "covered"
-        elif problem := evidence.check(core.VAULT, it["coord"], idx, records):
+        elif problem := evidence.check(vault, it["coord"], idx, records):
             it.update(action="hold", reason=problem)
         out.append(it)
     return out
 
 
-def _change(path: Path, n, items: list[dict]) -> dict:
+def _change(vault: Vault, path: Path, n, items: list[dict]) -> dict:
     """한 노드의 새 바이트 — frontmatter만 다시 쓰고, 본문은 그대로 둔 채 끝에 줄을 잇는다."""
     data = path.read_bytes()
-    out = {"path": posix_rel(path, ROOT), "items": items, "before": sha256_bytes(data), "new": None}
+    out = {"path": posix_rel(path, vault.root), "items": items, "before": sha256_bytes(data), "new": None}
     extra = set(n.meta) - set(contract.ORDER) - set(contract.PREDICATES)
     if extra:
         for it in items:
@@ -176,7 +186,7 @@ def _change(path: Path, n, items: list[dict]) -> dict:
         add = prose.space_numeric_tags("\n".join(lines)) + "\n"
         new_body = body.rstrip("\n") + "\n" + add if span else body + "# 관측\n\n" + add
         start = span[0] if span else len(body)
-        if (span is None and NOT_AT_END in validate.evidence_errors(body, [])
+        if (span is None and NOT_AT_END in validate.evidence_errors(vault, body, [])
                 or not body.endswith("\n") or (rechecks.evidence_span(new_body) or (None,))[0] != start):
             for it in items:
                 if it["action"] == "line":
@@ -196,22 +206,22 @@ def _change(path: Path, n, items: list[dict]) -> dict:
     return out
 
 
-def plan() -> dict:
+def plan(vault: Vault) -> dict:
     """노드마다 옮길 항목과 새 바이트 — 쓰지 않는다. 통치 문서는 근거 절 검증기의 대상이 아니므로
     빠진다(validate.evidence_section_report와 같다)."""
-    idx, records = graph.Index(core.VAULT), evidence.Records(core.VAULT)
+    idx, records = graph.Index(vault), evidence.Records(vault)
     found = []
     for _name_, (path, kind) in sorted(idx.nodes.items()):
         if kind[0] != "governance":
             n = idx.node(path)
-            if items := _items(n, idx, records):
+            if items := _items(vault, n, idx, records):
                 found.append((path, n, items))
     want = defaultdict(set)
     for _p, _n, items in found:
         for it in items:
             if it["kind"] == "round" and "action" not in it:
                 want[it["record"]].add(it["index"])
-    seen = {p: _rounds_seen(p, ix) for p, ix in want.items()}
+    seen = {p: _rounds_seen(vault, p, ix) for p, ix in want.items()}
     nodes = []
     for path, n, items in found:
         for it in items:
@@ -220,7 +230,7 @@ def plan() -> dict:
             if it["kind"] == "round":
                 day, text = seen[it["record"]].get(it["index"], (None, ""))
             else:
-                day, text = _entry_day(path, _bare(it["entry"])), _clip(_name(it["coord"], it["kind"]))
+                day, text = _entry_day(vault, path, _bare(it["entry"])), _clip(_name(it["coord"], it["kind"]))
             line = f"- {day} · `{it['coord']}` · 지지 — {text}"
             if not day:
                 it.update(action="hold", reason="날짜를 정할 수 없다 — git 기록에 없다")
@@ -230,10 +240,10 @@ def plan() -> dict:
                 it.update(action="hold", reason="근거 줄의 형식을 이루지 못한다")
             else:
                 it.update(action="line", line=line)
-        nodes.append(_change(path, n, items))
+        nodes.append(_change(vault, path, n, items))
     counts = Counter(it["action"] for node in nodes for it in node["items"])
     return {"nodes": nodes, "counts": {k: counts[k] for k in ("line", "covered", "hold")},
-            "regions": sorted({r for node in nodes if node["new"] for r in approvals.containing_regions(core.VAULT, node["path"])})}
+            "regions": sorted({r for node in nodes if node["new"] for r in approvals.containing_regions(vault, node["path"])})}
 
 
 def _manifest(p: dict, day: str) -> str:
@@ -262,15 +272,15 @@ def _manifest(p: dict, day: str) -> str:
     return "\n".join(out)
 
 
-def preview() -> dict:
+def preview(vault: Vault) -> dict:
     """계획만 낸다 — 전수 목록은 이 기기의 `.osk/`에 쓰고, 대장과 노드는 건드리지 않는다."""
-    p = plan()
-    PREVIEW.parent.mkdir(parents=True, exist_ok=True)
-    PREVIEW.write_text(_manifest(p, core.now_kst()[:10]), encoding="utf-8")
+    p = plan(vault)
+    preview_path(vault).parent.mkdir(parents=True, exist_ok=True)
+    preview_path(vault).write_text(_manifest(p, core.now_kst()[:10]), encoding="utf-8")
     holds = [{"path": n["path"], "entry": it["entry"], "reason": it["reason"]}
              for n in p["nodes"] for it in n["items"] if it["action"] == "hold"]
     return {"ok": True, "nodes": sum(1 for n in p["nodes"] if n["new"]), **p["counts"],
-            "protected_regions": p["regions"], "holds": holds, "plan": posix_rel(PREVIEW, ROOT)}
+            "protected_regions": p["regions"], "holds": holds, "plan": posix_rel(preview_path(vault), vault.root)}
 
 
 def _confirmed(planned: list[tuple[str, str]], expect) -> None:
@@ -285,29 +295,29 @@ def _confirmed(planned: list[tuple[str, str]], expect) -> None:
                            "`osk doctor --migrate`로 새 확인을 받는다: " + ", ".join(extra))
 
 
-def apply(expect=None) -> dict:
+def apply(vault: Vault, expect=None) -> dict:
     """계획대로 옮긴다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항).
     끝나면 전수 목록을 결과와 보류로 닫는다. 동기화와 쓰기는 같은 잠금을 기다린다. `expect`는 확인받은
     대상이다(`_confirmed`)."""
-    with core.mutation_lock(core.VAULT):
-        p = plan()
+    with core.mutation_lock(vault):
+        p = plan(vault)
         _confirmed([(n["path"], n["before"]) for n in p["nodes"] if n["new"] is not None], expect)
         day = core.now_kst()[:10]
-        manifest = EVENTS.parent / f"evidence-section-{day}.md"
+        manifest = events_path(vault).parent / f"evidence-section-{day}.md"
         k = 1
         while manifest.exists():
             k += 1
-            manifest = EVENTS.parent / f"evidence-section-{day}-{k}.md"
+            manifest = events_path(vault).parent / f"evidence-section-{day}-{k}.md"
         core.atomic_write(manifest, _manifest(p, day).encode("utf-8"))
         written = 0
         for node in p["nodes"]:
             if node["new"] is None:
                 continue
-            path = ROOT / node["path"]
+            path = vault.root / node["path"]
             if sha256_bytes(path.read_bytes()) != node["before"]:
                 raise RuntimeError(f"계획 뒤에 바뀐 노드 — 멈췄다: {node['path']}")
             done = Counter(it["action"] for it in node["items"])
-            core.ledger_append(EVENTS, {"kind": "transform", "source": node["path"], "dest": node["path"],
+            core.ledger_append(events_path(vault), {"kind": "transform", "source": node["path"], "dest": node["path"],
                                         "before": node["before"], "after": sha256_bytes(node["new"]),
                                         "rule": RULE, "note": f"줄 {done['line']} · 덮임 {done['covered']}"})
             core.atomic_write(path, node["new"])
@@ -320,14 +330,14 @@ def apply(expect=None) -> dict:
                                   if p["regions"] else "없음"), "", "### 보류", "", *(holds or ["없음"]), ""]
         core.atomic_write(manifest, (_manifest(p, day) + "\n" + "\n".join(close)).encode("utf-8"))
     return {"ok": True, "nodes": written, **c, "protected_regions": p["regions"],
-            "holds": len(holds), "manifest": posix_rel(manifest, ROOT),
+            "holds": len(holds), "manifest": posix_rel(manifest, vault.root),
             "after": {n["path"]: sha256_bytes(n["new"]) for n in p["nodes"] if n["new"] is not None}}
 
 
-def pending() -> int:
+def pending(vault: Vault) -> int:
     """옮길 노드 수 — `osk doctor`의 점검(읽기만). 보류만 남은 노드는 세지 않는다 — 세면 doctor가
     영구히 경고하고 `--migrate`마다 빈 전수 목록이 생긴다. 계획은 남은 항목에만 비싸다."""
-    return sum(1 for n in plan()["nodes"] if n["new"])
+    return sum(1 for n in plan(vault)["nodes"] if n["new"])
 
 
 # ── v5.6: 관측 절 제목 `## 근거` → `# 관측` (헌법 제8조 6항, Mechanism §4-1 1항) ──
@@ -335,14 +345,14 @@ HEADING_RULE = "관측 절 제목 `## 근거` → `# 관측` (v5.6 — 헌법 �
 _OLD_HEAD = re.compile(r"^ {0,3}##[ \t]+" + rechecks.EVIDENCE + r"[ \t#]*(\r?)$")
 
 
-def heading_plan() -> list[dict]:
+def heading_plan(vault: Vault) -> list[dict]:
     """관측 절이 이행 전 제목 `## 근거`로 열리는 노드와 바꾼 바이트 — 쓰지 않는다. 제목 행만 바꾸고
     frontmatter와 수정시간은 그대로 둔다. 주장과 관측 줄은 한 글자도 바뀌지 않는 표기 이행이고, 관련
     상태(제목 앞까지)도 그대로라 재검토 후보가 생기지 않는다. 바꾼 뒤 같은 자리에서 관측 절로 읽히지
     않거나(본문 맨 앞의 `# 관측`은 노드 제목이다) 상태가 달라지거나, 다른 노드가 `derived-from`이나
     본문 링크로 가리킨 제목 범위가 달라지면(`#근거`가 사라지고, H1 `# 관측`이 앞 H1의 범위를 닫는다)
     보류로 둔다 — `## 근거`도 읽힌다."""
-    idx = graph.Index(core.VAULT)
+    idx = graph.Index(vault)
     cited: dict[str, set[str]] = defaultdict(set)   # 노드 id → 제목으로 참조된 제목
     for _n, (path, kind) in idx.nodes.items():
         n = idx.node(path)
@@ -369,7 +379,7 @@ def heading_plan() -> list[dict]:
         line_end = span[0] + m.end()
         new_body = body[:span[0]] + "# " + rechecks.OBSERVATION + m.group(1) + body[line_end:]
         new = data[:off] + new_body.encode("utf-8")
-        item = {"path": posix_rel(path, ROOT), "before": sha256_bytes(data), "new": new}
+        item = {"path": posix_rel(path, vault.root), "before": sha256_bytes(data), "new": new}
         moved = sorted(h for h in cited.get(idx.node(path).id, ())
                        if rechecks.heading_range(data, h) != rechecks.heading_range(new, h))
         if ((rechecks.evidence_span(new_body) or (None,))[0] != span[0]
@@ -382,18 +392,18 @@ def heading_plan() -> list[dict]:
     return out
 
 
-def heading_apply(expect=None) -> dict:
+def heading_apply(vault: Vault, expect=None) -> dict:
     """제목을 바꾼다. 전수 목록을 먼저 적고, 노드마다 이행 기록을 남긴 뒤 쓴다(Mechanism §5 1·3항).
     `expect`는 확인받은 대상이다(`_confirmed`)."""
-    with core.mutation_lock(core.VAULT):
-        items = heading_plan()
+    with core.mutation_lock(vault):
+        items = heading_plan(vault)
         _confirmed([(it["path"], it["before"]) for it in items if it["new"] is not None], expect)
         day = core.now_kst()[:10]
-        manifest = EVENTS.parent / f"observation-heading-{day}.md"
+        manifest = events_path(vault).parent / f"observation-heading-{day}.md"
         k = 1
         while manifest.exists():
             k += 1
-            manifest = EVENTS.parent / f"observation-heading-{day}-{k}.md"
+            manifest = events_path(vault).parent / f"observation-heading-{day}-{k}.md"
         holds = [f"- `{it['path']}` — {it['reason']}" for it in items if it["new"] is None]
         todo = [it for it in items if it["new"] is not None]
         head = [f"# 관측 절 제목 이행 — {day}", "",
@@ -402,12 +412,12 @@ def heading_apply(expect=None) -> dict:
                 f"## 대상 — 노드 {len(todo)}개 · 보류 {len(holds)}", "", *(f"- `{it['path']}` → 바꾼다" for it in todo),
                 *(h.replace("` — ", "` → 보류 — ", 1) for h in holds), ""]
         core.atomic_write(manifest, "\n".join(head).encode("utf-8"))
-        regions = sorted({r for it in todo for r in approvals.containing_regions(core.VAULT, it["path"])})
+        regions = sorted({r for it in todo for r in approvals.containing_regions(vault, it["path"])})
         for it in todo:
-            path = ROOT / it["path"]
+            path = vault.root / it["path"]
             if sha256_bytes(path.read_bytes()) != it["before"]:
                 raise RuntimeError(f"계획 뒤에 바뀐 노드 — 멈췄다: {it['path']}")
-            core.ledger_append(EVENTS, {"kind": "transform", "source": it["path"], "dest": it["path"],
+            core.ledger_append(events_path(vault), {"kind": "transform", "source": it["path"], "dest": it["path"],
                                         "before": it["before"], "after": sha256_bytes(it["new"]),
                                         "rule": HEADING_RULE})
             core.atomic_write(path, it["new"])
@@ -416,4 +426,4 @@ def heading_apply(expect=None) -> dict:
                                   if regions else "없음"), "", "### 보류", "", *(holds or ["없음"]), ""]
         core.atomic_write(manifest, ("\n".join(head) + "\n" + "\n".join(close)).encode("utf-8"))
     return {"ok": True, "nodes": len(todo), "holds": len(holds), "protected_regions": regions,
-            "manifest": posix_rel(manifest, ROOT), "after": {it["path"]: sha256_bytes(it["new"]) for it in todo}}
+            "manifest": posix_rel(manifest, vault.root), "after": {it["path"]: sha256_bytes(it["new"]) for it in todo}}

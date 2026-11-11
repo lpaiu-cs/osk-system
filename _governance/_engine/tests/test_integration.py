@@ -31,7 +31,7 @@ ROOT = core.ROOT
 if ROOT != Path(os.environ["OSK_VAULT_ROOT"]).resolve():
     raise RuntimeError(f"test_integration needs its own process: osk is already bound to {ROOT}")
 
-validate.make_mini_vault(ROOT)
+validate.make_mini_vault(core.VAULT, ROOT)
 (ROOT / "00_Scope/Capture").mkdir()
 scope_memory.replace(core.VAULT, "capture-tests", "", space="00_Scope/Capture")
 write.set_primary(core.VAULT, "capture-tests", "Capture", "fixture")      # 쓰기는 결속만 더한다 — 주된 scope는 지정으로(Mechanism §6-2 6항)
@@ -108,8 +108,8 @@ def codex_user_item(sid, n, text):
 def legacy_cursor(harness, sid, transcript, scope="Capture"):
     """Rewrite a fresh cursor as the full-capture engine (<= v4.1) left it: each completed
     round stored in `_raw/` and tracked by its block hash. Upgraded instances keep these."""
-    path = it.state_path(harness, sid)
-    s = it.load_state(path, harness, sid)
+    path = it.state_path(core.VAULT, harness, sid)
+    s = it.load_state(core.VAULT, path, harness, sid)
     parsed = transcripts.read(str(transcript), harness, sid)
     shown = parsed["dialogue_v1"]
     record = ROOT / "00_Scope" / scope / "_raw/.records" / (s["record"] + ".txt")
@@ -136,7 +136,7 @@ class IntegrationTests(unittest.TestCase):
         self.path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
 
     def capture(self, harness="claude"):
-        return it.capture(harness, self.sid, str(self.path), "capture-tests")
+        return it.capture(core.VAULT, harness, self.sid, str(self.path), "capture-tests")
 
 
     def test_codex_history_rejects_missing_foreign_cyclic_and_partial_sources(self):
@@ -302,12 +302,12 @@ class IntegrationTests(unittest.TestCase):
                 if "uuid" in row:   # native rows carry UUIDs; a copy keeps them
                     row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
         self.transcript(rows)
-        self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
+        self.assertTrue(it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")["ok"])
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
         copied = self.path.read_bytes().replace(b"evidence\\u2028result", b"evidence\nresult")
         self.assertNotEqual(copied, self.path.read_bytes())
         self.path.write_bytes(copied)
-        st = it.capture("claude", child, str(self.path), "capture-tests")
+        st = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (2, 1), st)
 
@@ -327,7 +327,7 @@ class IntegrationTests(unittest.TestCase):
         st = self.capture()
         self.assertTrue(st["ok"], st)
         self.assertFalse(st["capture_pending"], st)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual([r["completion"] for r in s["rounds"]], ["completed", "interrupted"])
         self.assertEqual(s["rounds"][1]["cut"], "result-2")
         closed = s["rounds"][1]
@@ -341,7 +341,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(first + more)
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual(s["rounds"][1], closed, "a later row moved the closed boundary")
         self.assertEqual([r["completion"] for r in s["rounds"]],
                          ["completed", "interrupted", "completed", "completed"])
@@ -350,7 +350,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("late answer 2", parsed["rounds"][2]["agent"])
         self.assertIn("question 3", parsed["rounds"][3]["user"])
         # the closed turn still acknowledges against the transcript
-        self.assertEqual(len(it._verify_native(s, s["rounds"])), 4)
+        self.assertEqual(len(it._verify_native(core.VAULT, s, s["rounds"])), 4)
 
     def test_claude_turn_rules_start_after_the_turns_already_tracked(self):
         # A conversation tracked before this engine keeps its boundaries: there an unfinished
@@ -362,7 +362,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(merged)
         with mock.patch.object(it, "_turn_rules", return_value=None):
             self.assertTrue(self.capture()["ok"])
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         before = list(s["rounds"])
         self.assertEqual([r["id"] for r in before], ["user-1:final-2"])
         self.assertNotIn("turns_since", s)
@@ -375,7 +375,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(merged + later)
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual(s["turns_since"], "user-1:final-2")
         self.assertEqual(s["rounds"][0], before[0], "the tracked round changed under the new rules")
         self.assertEqual([r["completion"] for r in s["rounds"]], ["completed", "interrupted", "completed"])
@@ -393,7 +393,7 @@ class IntegrationTests(unittest.TestCase):
         one = prompted(claude_round(self.sid, 1, finished=False), "p1")
         self.transcript(one)
         self.assertTrue(self.capture()["ok"])
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual(s["rounds"], [])
         tail = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))["tail"]
         stop = claude_row(self.sid, "user", [{"type": "text", "text": "[Request interrupted by user for tool use]"}], "stop-2")
@@ -402,7 +402,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(one + later)
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual([(r["id"], r["completion"]) for r in s["rounds"]],
                          [("user-1:result-1", "completed"), ("user-2:stop-2", "interrupted"),
                           ("user-3:final-3", "completed")])
@@ -419,13 +419,13 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(merged)
         with mock.patch.object(it, "_turn_rules", return_value=None):
             self.assertTrue(self.capture()["ok"])
-        before = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        before = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)["rounds"]
         self.assertEqual([r["id"] for r in before], ["user-1:final-2"])
         self.transcript(merged + prompted(claude_round(self.sid, 3, finished=False), "p3")
                         + prompted(claude_round(self.sid, 4), "p4"))
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual(s["prompts_since"], "user-1:final-2")
         self.assertEqual(s["rounds"][0], before[0], "the tracked round changed under the new rule")
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-2", "user-3:result-3", "user-4:final-4"])
@@ -447,7 +447,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(rows)
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertIsNone(s["harness_since"])
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "n-2:final-n2", "user-3:final-3"])
         turns = self.turns(rules=it._turn_rules(s))
@@ -455,8 +455,8 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("question 1", turns[0]["user"])
         self.assertEqual(turns[1]["user"], "")
         self.assertIn("the task ended", turns[1]["agent"])
-        self.assertEqual(it.cite(f"claude/{self.sid}", turn="-2")["turn"], "user-1")
-        self.assertEqual(it.cite(f"claude/{self.sid}")["turn"], "user-3")
+        self.assertEqual(it.cite(core.VAULT, f"claude/{self.sid}", turn="-2")["turn"], "user-1")
+        self.assertEqual(it.cite(core.VAULT, f"claude/{self.sid}")["turn"], "user-3")
 
     def test_claude_notice_rule_starts_after_the_turns_already_tracked(self):
         # #275: rounds an engine without the rule tracked keep their boundaries and words.
@@ -468,13 +468,13 @@ class IntegrationTests(unittest.TestCase):
         with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
                 mock.patch.object(it, "_copied_since", return_value=legacy):
             self.assertTrue(self.capture()["ok"])
-        before = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        before = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)["rounds"]
         self.assertEqual([r["id"] for r in before], ["user-1:result-1", "n-1:final-1"])
         self.transcript(old + prompted(claude_round(self.sid, 2, finished=False), "p2")
                         + [self.notice("n-2", "pn2")] + prompted(claude_round(self.sid, 2)[3:], "p2"))
         st = self.capture()
         self.assertTrue(st["ok"], st)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual(s["harness_since"], "n-1:final-1")
         self.assertEqual(s["rounds"][:2], before, "the tracked rounds changed under the new rule")
         self.assertEqual([r["id"] for r in s["rounds"][2:]], ["user-2:final-2"])
@@ -493,7 +493,7 @@ class IntegrationTests(unittest.TestCase):
         found = self.capture()
         self.assertTrue(found["ok"], found)
         self.assertEqual((found["captured_rounds"], found["appended"], found["reverted"]), (2, 1, 1), found)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "user-3:final-3"])
         parsed = transcripts.read(str(self.path), "claude", self.sid, rules=it._turn_rules(s))
         self.assertEqual(parsed["reverted"], ["user-2:final-2"])
@@ -504,13 +504,13 @@ class IntegrationTests(unittest.TestCase):
         one, two = claude_round(self.sid, 1), claude_round(self.sid, 2)
         self.transcript(one + two)
         first = self.capture()
-        it.acknowledge("claude", self.sid, first["through"], "no_value", "synthetic fixture")
-        before = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)["rounds"]
+        it.acknowledge(core.VAULT, "claude", self.sid, first["through"], "no_value", "synthetic fixture")
+        before = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)["rounds"]
         self.transcript(one + two + [self.rewind("answer-1")] + claude_round(self.sid, 3))
         found = self.capture()
         self.assertFalse(found["ok"])
         self.assertIn("Claude rewound past a reviewed turn", found["capture_error"])
-        self.assertEqual(it.load_state(it.state_path("claude", self.sid), "claude", self.sid)["rounds"], before)
+        self.assertEqual(it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)["rounds"], before)
 
     def fork(self, at, own_at, went_on=False, cut=True):
         """The app's rewind: a copy of the original up to round 1 that goes on at `own_at`. It carries
@@ -523,17 +523,17 @@ class IntegrationTests(unittest.TestCase):
         opath, cpath = Path(TMP.name) / f"{parent}.jsonl", Path(TMP.name) / f"{child}.jsonl"
         write = lambda path, rows: path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         write(opath, original)
-        self.assertTrue(it.capture("claude", parent, str(opath), "capture-tests")["ok"])
+        self.assertTrue(it.capture(core.VAULT, "claude", parent, str(opath), "capture-tests")["ok"])
         prompt = original[5]["uuid"]
         trace = [{"type": "file-history-snapshot", "messageId": prompt, "isSnapshotUpdate": False,
                   "snapshot": {"messageId": prompt, "trackedFileBackups": {}}}] if cut else []
         write(cpath, [dict(r, sessionId=child) for r in original[:5]] + trace
               + ours(child, stamped(claude_round(child, 4), own_at)))
-        st = it.capture("claude", child, str(cpath), "capture-tests")
+        st = it.capture(core.VAULT, "claude", child, str(cpath), "capture-tests")
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
         if went_on:
             write(opath, original + ours(parent, stamped(claude_round(parent, 5), own_at + 60)))
-            self.assertTrue(it.capture("claude", parent, str(opath), "capture-tests")["ok"])
+            self.assertTrue(it.capture(core.VAULT, "claude", parent, str(opath), "capture-tests")["ok"])
         quiet = time.time() - 13 * 3600   # the original has gone quiet
         os.utime(opath, (quiet, quiet))
         return parent, opath, original
@@ -544,31 +544,31 @@ class IntegrationTests(unittest.TestCase):
         # copy's first turn leave tracking unreviewed — as Codex's reverted turns do (#208).
         at = time.time() - 2 * 86400
         parent, opath, original = self.fork(at, at + 100)
-        copies = it._copies_by_parent()[("claude", parent)]
-        self.assertEqual(it._drop_fork_rewound("claude", parent, copies), 2)
-        s = it.load_state(it.state_path("claude", parent), "claude", parent)
+        copies = it._copies_by_parent(core.VAULT)[("claude", parent)]
+        self.assertEqual(it._drop_fork_rewound(core.VAULT, "claude", parent, copies), 2)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", parent), "claude", parent)
         self.assertEqual(len(s["rounds"]), 1)
         self.assertEqual(len(s["rewound"]["rounds"]), 2)
-        self.assertEqual(it.state_view(s)["pending_refs"], [s["rounds"][0]["ref"]])
-        self.assertEqual(it._drop_fork_rewound("claude", parent, copies), 0)
+        self.assertEqual(it.state_view(core.VAULT, s)["pending_refs"], [s["rounds"][0]["ref"]])
+        self.assertEqual(it._drop_fork_rewound(core.VAULT, "claude", parent, copies), 0)
         # A capture of the unchanged original keeps them out ...
-        self.assertEqual(it.capture("claude", parent, str(opath), "capture-tests")["captured_rounds"], 1)
+        self.assertEqual(it.capture(core.VAULT, "claude", parent, str(opath), "capture-tests")["captured_rounds"], 1)
         # ... until the original goes on: then they come back to review with the new turn.
         opath.write_text("".join(json.dumps(r) + "\n" for r in original + [
             dict(r, uuid=str(uuid.uuid5(uuid.NAMESPACE_URL, parent + r["uuid"])))
             for r in stamped(claude_round(parent, 5), time.time())]), encoding="utf-8")
-        st = it.capture("claude", parent, str(opath), "capture-tests")
+        st = it.capture(core.VAULT, "claude", parent, str(opath), "capture-tests")
         self.assertEqual(st["captured_rounds"], 4, st)
-        self.assertNotIn("rewound", it.load_state(it.state_path("claude", parent), "claude", parent))
+        self.assertNotIn("rewound", it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", parent), "claude", parent))
 
     def test_claude_copy_the_original_went_on_from_is_not_a_rewind(self):
         at = time.time() - 2 * 86400
         # the copy's first turn came before the original's last turn: a parallel fork
         parent, _, _ = self.fork(at, at + 6)
-        self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
+        self.assertEqual(it._drop_fork_rewound(core.VAULT, "claude", parent, it._copies_by_parent(core.VAULT)[("claude", parent)]), 0)
         # the original went on after the copy's first turn
         parent, _, _ = self.fork(at - 86400, at - 86400 + 100, went_on=True)
-        self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
+        self.assertEqual(it._drop_fork_rewound(core.VAULT, "claude", parent, it._copies_by_parent(core.VAULT)[("claude", parent)]), 0)
 
     def test_claude_copy_split_at_a_turn_boundary_is_not_a_rewind(self):
         # The copy's first turn came after the original's last and the original went quiet, but
@@ -576,8 +576,8 @@ class IntegrationTests(unittest.TestCase):
         # turn. Time alone cannot tell it from a rewind, so the original keeps its turns.
         at = time.time() - 2 * 86400
         parent, _, _ = self.fork(at, at + 100, cut=False)
-        self.assertEqual(it._drop_fork_rewound("claude", parent, it._copies_by_parent()[("claude", parent)]), 0)
-        self.assertEqual(len(it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]), 3)
+        self.assertEqual(it._drop_fork_rewound(core.VAULT, "claude", parent, it._copies_by_parent(core.VAULT)[("claude", parent)]), 0)
+        self.assertEqual(len(it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", parent), "claude", parent)["rounds"]), 3)
 
     def test_codex_fork_is_not_a_rewind(self):
         # Codex leaves a rewind in the same thread (`thread/revert`, #208). A fork carries no trace
@@ -593,7 +593,7 @@ class IntegrationTests(unittest.TestCase):
                   "rounds": [{"id": t, "ref": raw.native_ref("codex", "p", t)} for t in turns]}
         copy = lambda first: ({"harness": "codex", "conversation_id": "c", "transcript_path": None,
                                "rounds": [{"id": first, "ref": raw.native_ref("codex", "c", first)}]}, turns[0])
-        self.assertIsNone(it._fork_rewound(parent, [copy(tid(base + 5000))]))
+        self.assertIsNone(it._fork_rewound(core.VAULT, parent, [copy(tid(base + 5000))]))
 
     def test_claude_rewind_rule_starts_after_the_turns_already_tracked(self):
         # A turn an engine without the rule tracked stays tracked though a later rewind dropped it.
@@ -606,7 +606,7 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(one + two + [self.rewind("answer-1")] + claude_round(self.sid, 3))
         found = self.capture()
         self.assertTrue(found["ok"], found)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual(s["harness_since"], "user-2:final-2")
         self.assertEqual([r["id"] for r in s["rounds"]], ["user-1:final-1", "user-2:final-2", "user-3:final-3"])
 
@@ -619,9 +619,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["captured_rounds"], 0)
         # twelve hours on, the scheduled catch-up reads the unchanged file once more and closes it
         with mock.patch.object(it.time, "time", return_value=time.time() + 12 * 3600):
-            out = it.catchup(limit=100)
+            out = it.catchup(core.VAULT, limit=100)
         self.assertIn(self.sid, [j["conversation_id"] for j in out["jobs"]], out)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted"])
         self.assertFalse(s["capture_pending"])
 
@@ -636,10 +636,10 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(st["capture_pending"], "the idle clock ignored the message")
         st = self.capture()
         self.assertFalse(st["capture_pending"], st)
-        s = it.load_state(it.state_path("claude", self.sid), "claude", self.sid)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", self.sid), "claude", self.sid)
         self.assertEqual(s["rounds"][0]["cut"], "q-1")
         self.assertIn("one more thing", self.turns(rules=it._turn_rules(s))[0]["user"])
-        self.assertEqual(len(it._verify_native(s, s["rounds"])), 1)
+        self.assertEqual(len(it._verify_native(core.VAULT, s, s["rounds"])), 1)
 
     def test_claude_copy_reads_its_copied_prefix_with_its_parents_rules(self):
         # #164 review: a resume or fork copy must not re-cut the turns its parent tracked
@@ -655,14 +655,14 @@ class IntegrationTests(unittest.TestCase):
                     row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
         self.transcript(rows)
         with mock.patch.object(it, "_turn_rules", return_value=None):
-            self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
+            self.assertTrue(it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")["ok"])
+        tracked = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", parent), "claude", parent)["rounds"]
         self.assertEqual(len(tracked), 1, "the parent's legacy round joins the turn and the next prompt")
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
-        st = it.capture("claude", child, str(self.path), "capture-tests")
+        st = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["inherited_rounds"], 1, st)
-        s = it.load_state(it.state_path("claude", child), "claude", child)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", child), "claude", child)
         self.assertEqual(s["turns_since"], tracked[0]["id"])
         self.assertEqual(s["prompts_since"], tracked[0]["id"])
         self.assertEqual([r["completion"] for r in s["rounds"]], ["interrupted", "completed"])
@@ -687,18 +687,18 @@ class IntegrationTests(unittest.TestCase):
         legacy = {"since": None, "prompts_since": "never"}   # turn rules, no prompt rule
         with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
                 mock.patch.object(it, "_copied_since", return_value=legacy):
-            self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        with it.state_lock("claude", parent) as p:     # that engine wrote no prompts_since
-            s = it.load_state(p, "claude", parent)
+            self.assertTrue(it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")["ok"])
+        with it.state_lock(core.VAULT, "claude", parent) as p:     # that engine wrote no prompts_since
+            s = it.load_state(core.VAULT, p, "claude", parent)
             del s["prompts_since"]
             it.save_state(p, s)
-        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
+        tracked = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", parent), "claude", parent)["rounds"]
         self.assertEqual([r["completion"] for r in tracked], ["completed", "interrupted", "completed"])
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
-        st = it.capture("claude", child, str(self.path), "capture-tests")
+        st = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["inherited_rounds"], 3, st)
-        s = it.load_state(it.state_path("claude", child), "claude", child)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", child), "claude", child)
         self.assertEqual(s["prompts_since"], tracked[-1]["id"])
 
     def test_claude_copy_keeps_its_parents_prompt_boundary_when_the_parent_went_on(self):
@@ -719,18 +719,18 @@ class IntegrationTests(unittest.TestCase):
         legacy = {"since": None, "prompts_since": "never"}   # turn rules, no prompt rule
         with mock.patch.object(it, "_turn_rules", return_value={**legacy, "cuts": [], "now": time.time()}), \
                 mock.patch.object(it, "_copied_since", return_value=legacy):
-            self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        with it.state_lock("claude", parent) as p:     # that engine wrote no prompts_since
-            s = it.load_state(p, "claude", parent)
+            self.assertTrue(it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")["ok"])
+        with it.state_lock(core.VAULT, "claude", parent) as p:     # that engine wrote no prompts_since
+            s = it.load_state(core.VAULT, p, "claude", parent)
             del s["prompts_since"]
             it.save_state(p, s)
-        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
+        tracked = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", parent), "claude", parent)["rounds"]
         self.assertEqual(len(tracked), 2, "the parent's tool-ended turn joins the next prompt")
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
-        st = it.capture("claude", child, str(self.path), "capture-tests")
+        st = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
-        s = it.load_state(it.state_path("claude", child), "claude", child)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", child), "claude", child)
         self.assertEqual((s["turns_since"], s["prompts_since"]), (None, tracked[0]["id"]))
 
     def test_claude_copy_keeps_its_parents_turn_boundary_when_the_parent_went_on(self):
@@ -747,13 +747,13 @@ class IntegrationTests(unittest.TestCase):
                     row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
         self.transcript(rows + went_on)
         with mock.patch.object(it, "_turn_rules", return_value=None):
-            self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
+            self.assertTrue(it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")["ok"])
+        tracked = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", parent), "claude", parent)["rounds"]
         self.transcript([dict(r, sessionId=child) for r in rows] + own)
-        st = it.capture("claude", child, str(self.path), "capture-tests")
+        st = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
-        s = it.load_state(it.state_path("claude", child), "claude", child)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", child), "claude", child)
         self.assertEqual((s["turns_since"], s["prompts_since"]), (tracked[0]["id"], tracked[0]["id"]))
 
     def test_claude_copy_ignores_a_cut_its_sibling_stored(self):
@@ -769,18 +769,18 @@ class IntegrationTests(unittest.TestCase):
             for row in part:
                 row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, owner + row["uuid"]))
         self.transcript([dict(r, sessionId=sibling) for r in shared])
-        self.assertTrue(it.capture("claude", sibling, str(self.path), "capture-tests")["ok"])
-        stopped = it.load_state(it.state_path("claude", sibling), "claude", sibling)["rounds"]
+        self.assertTrue(it.capture(core.VAULT, "claude", sibling, str(self.path), "capture-tests")["ok"])
+        stopped = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", sibling), "claude", sibling)["rounds"]
         self.assertEqual([r["completion"] for r in stopped], ["interrupted"])
         self.transcript([dict(r, sessionId=parent) for r in shared + went_on])
-        self.assertTrue(it.capture("claude", parent, str(self.path), "capture-tests")["ok"])
-        tracked = it.load_state(it.state_path("claude", parent), "claude", parent)["rounds"]
+        self.assertTrue(it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")["ok"])
+        tracked = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", parent), "claude", parent)["rounds"]
         self.assertEqual([r["completion"] for r in tracked], ["completed"], "the sibling's cut split the parent")
         self.transcript([dict(r, sessionId=child) for r in shared + went_on] + own)
-        st = it.capture("claude", child, str(self.path), "capture-tests")
+        st = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["inherited_rounds"], st["captured_rounds"]), (1, 1), st)
-        s = it.load_state(it.state_path("claude", child), "claude", child)
+        s = it.load_state(core.VAULT, it.state_path(core.VAULT, "claude", child), "claude", child)
         self.assertEqual(s["inherited"]["rounds"][0]["id"], tracked[0]["id"])
 
     def test_codex_requires_matching_task_complete(self):
@@ -864,41 +864,41 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(claude_round(self.sid, 1))
         st = self.capture()
         for _ in range(8):
-            self.assertFalse(it.tick("claude", self.sid)["due"])
-        self.assertTrue(it.tick("claude", self.sid)["due"])
-        self.assertIn("공유 기억이 비어 있어도", it.prompt("claude", self.sid)["text"])
+            self.assertFalse(it.tick(core.VAULT, "claude", self.sid)["due"])
+        self.assertTrue(it.tick(core.VAULT, "claude", self.sid)["due"])
+        self.assertIn("공유 기억이 비어 있어도", it.prompt(core.VAULT, "claude", self.sid)["text"])
         cur = scope_memory.read(core.VAULT, "capture-tests")
         scope_memory.replace(core.VAULT, "other-writer", "other session writes shared memory", cur["hash"], "00_Scope/Capture")
-        resumed = it.hook_capture({"harness": "claude", "session_id": self.sid, "transcript_path": str(self.path)}, "capture-tests")
+        resumed = it.hook_capture(core.VAULT, {"harness": "claude", "session_id": self.sid, "transcript_path": str(self.path)}, "capture-tests")
         self.assertEqual(resumed["prompt_count"], 9)
         self.assertIsNone(resumed["reviewed_through"])
         self.assertTrue(resumed["pending"])
-        other = it.status("claude", self.sid + "-other")
+        other = it.status(core.VAULT, "claude", self.sid + "-other")
         self.assertFalse(other["pending"])
-        self.assertNotIn(st["pending_refs"][0], it.prompt("claude", self.sid + "-other")["text"])
+        self.assertNotIn(st["pending_refs"][0], it.prompt(core.VAULT, "claude", self.sid + "-other")["text"])
 
     def test_scope_routing_changes_are_recorded_and_same_scope_keys_resume(self):
         self.transcript(claude_round(self.sid, 1))
         first = self.capture()
         write.bind_session(core.VAULT, self.sid + "-renamed", "Capture")
-        resumed = it.capture("claude", self.sid, str(self.path), self.sid + "-renamed")
+        resumed = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid + "-renamed")
         self.assertTrue(resumed["ok"], resumed)
         self.assertEqual(first["pending_refs"], resumed["pending_refs"])
         write.alias_session(core.VAULT, self.sid + "-alias", self.sid + "-renamed")
-        self.assertTrue(it.capture("claude", self.sid, str(self.path), self.sid + "-alias")["ok"])
-        refused = it.capture("claude", self.sid, str(self.path), self.sid + "-elsewhere", "00_Scope/W1")
+        self.assertTrue(it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid + "-alias")["ok"])
+        refused = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid + "-elsewhere", "00_Scope/W1")
         self.assertFalse(refused["ok"])
-        self.assertTrue(it.status("claude", self.sid)["capture_pending"])
-        self.assertIn("scope changed", it.status("claude", self.sid)["capture_error"])
+        self.assertTrue(it.status(core.VAULT, "claude", self.sid)["capture_pending"])
+        self.assertIn("scope changed", it.status(core.VAULT, "claude", self.sid)["capture_error"])
         self.assertEqual(first["pending_refs"], refused["pending_refs"])
-        self.assertTrue(it.capture("claude", self.sid, str(self.path), self.sid + "-renamed")["ok"])
+        self.assertTrue(it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid + "-renamed")["ok"])
 
     def test_capture_normalizes_saved_and_requested_scope(self):
         self.transcript(claude_round(self.sid, 1))
-        first = it.capture("claude", self.sid, str(self.path), "capture-tests", "00_Scope/Capture/")
+        first = it.capture(core.VAULT, "claude", self.sid, str(self.path), "capture-tests", "00_Scope/Capture/")
         self.assertTrue(first["ok"], first)
         # Also repair a successful cursor written with the previous spelling.
-        path = it.state_path("claude", self.sid)
+        path = it.state_path(core.VAULT, "claude", self.sid)
         state = json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(state["space"], "00_Scope/Capture")
         state["space"] = "00_Scope/Capture/"
@@ -913,30 +913,30 @@ class IntegrationTests(unittest.TestCase):
         # A scope other than the key's primary is a legitimate landing now (Bylaws §3 10): it pins
         # the conversation's review context without touching the binding.
         self.transcript(claude_round(self.sid + "w", 1))
-        other = it.capture("claude", self.sid + "w", str(self.path), "capture-tests", "00_Scope/W1")
+        other = it.capture(core.VAULT, "claude", self.sid + "w", str(self.path), "capture-tests", "00_Scope/W1")
         self.assertTrue(other["ok"], other)
         self.assertEqual(other["space"], "00_Scope/W1")
         self.assertEqual(write.resolve_session(core.VAULT, "capture-tests"), "Capture")
         # 고정한 착지가 검토 문맥이다 — 허브 트리와 summary 확인은 W1이지 주된 scope Capture가 아니다(#191 리뷰 2차)
-        review = it.prompt("claude", self.sid + "w", include_organization=False)
+        review = it.prompt(core.VAULT, "claude", self.sid + "w", include_organization=False)
         self.assertTrue(review["hub_tree"].startswith("- 00_Scope/W1 "), review["hub_tree"])
         pinned = scope_memory.replace(core.VAULT, "capture-tests", "- pinned summary", space="00_Scope/W1")
-        it.acknowledge("claude", self.sid + "w", review["through"], "summary", "fixture",
+        it.acknowledge(core.VAULT, "claude", self.sid + "w", review["through"], "summary", "fixture",
                        targets=[{"text": "pinned summary"}])
-        self.assertEqual(it.status("claude", self.sid + "w")["reviewed_rounds"], 1)
+        self.assertEqual(it.status(core.VAULT, "claude", self.sid + "w")["reviewed_rounds"], 1)
         scope_memory.replace(core.VAULT, "capture-tests", "", pinned["hash"], "00_Scope/W1")      # 다른 시험에 남기지 않는다
         write.unbind_session(core.VAULT, "capture-tests", "W1", "fixture")
         for n, space in enumerate(("00_Scope/Absent", "Capture")):
             sid = self.sid + str(n)
             self.transcript(claude_round(sid, 1))
-            rejected = it.capture("claude", sid, str(self.path), "capture-tests", space)
+            rejected = it.capture(core.VAULT, "claude", sid, str(self.path), "capture-tests", space)
             self.assertFalse(rejected["ok"], rejected)
             self.assertTrue(rejected["capture_pending"])
             self.assertEqual(rejected["captured_rounds"], 0)
-            state = json.loads(it.state_path("claude", sid).read_text(encoding="utf-8"))
+            state = json.loads(it.state_path(core.VAULT, "claude", sid).read_text(encoding="utf-8"))
             self.assertIsNone(state["space"])
             self.assertFalse(raw.record_path(core.VAULT, "Capture", rejected["record"]).exists())
-            resumed = it.capture("claude", sid, str(self.path), "capture-tests")
+            resumed = it.capture(core.VAULT, "claude", sid, str(self.path), "capture-tests")
             self.assertTrue(resumed["ok"], resumed)
             self.assertEqual(resumed["appended"], 1)
 
@@ -945,13 +945,13 @@ class IntegrationTests(unittest.TestCase):
         native = base / "projects" / "project" / (self.sid + ".jsonl")
         env = {"session_id": self.sid, "transcript_path": str(native)}
         with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(base)}, clear=False):
-            failed = it.hook_capture(env, "capture-tests")
+            failed = it.hook_capture(core.VAULT, env, "capture-tests")
             self.assertFalse(failed["ok"])
             self.assertIn("FileNotFoundError", failed["capture_error"])
-            self.assertTrue(it.state_path("claude", self.sid).exists())
+            self.assertTrue(it.state_path(core.VAULT, "claude", self.sid).exists())
             native.parent.mkdir(parents=True)
             native.write_text("".join(json.dumps(r) + "\n" for r in claude_round(self.sid, 1)), encoding="utf-8")
-            recovered = it.hook_capture(env, "capture-tests")
+            recovered = it.hook_capture(core.VAULT, env, "capture-tests")
             self.assertTrue(recovered["ok"], recovered)
             self.assertEqual(recovered["captured_rounds"], 1)
 
@@ -961,10 +961,10 @@ class IntegrationTests(unittest.TestCase):
         rows = claude_round(parent, 1)
         rows[0]["uuid"] = str(uuid.uuid4())
         self.transcript(rows)
-        original = it.capture("claude", parent, str(self.path), "capture-tests")
+        original = it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")
         self.assertTrue(original["ok"], original)
         self.transcript([dict(r, sessionId=self.sid) for r in rows])
-        copied = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        copied = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         self.assertTrue(copied["ok"], copied)
         self.assertEqual((copied["captured_rounds"], copied["inherited_rounds"]), (1, 0))
         self.assertEqual(copied["pending_refs"], [raw.native_ref("claude", self.sid, rows[0]["uuid"])])
@@ -990,7 +990,7 @@ class IntegrationTests(unittest.TestCase):
                                   row("user", result(2), "r2", 5),
                                   row("assistant", [{"type": "text", "text": "answer"}], "end", 6, "end_turn", "m-2"))
         self.transcript([q, c1, r1, c2, r2, end])
-        self.assertEqual(it.capture("claude", parent, str(self.path), "capture-tests")["captured_rounds"], 1)
+        self.assertEqual(it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")["captured_rounds"], 1)
         for child, changed in ((self.sid + "-copied", False), (self.sid + "-altered", True)):
             tail = claude_round(child, 2)
             for n, r in enumerate(tail):
@@ -1000,14 +1000,14 @@ class IntegrationTests(unittest.TestCase):
             if changed:  # Order is forgiven, content is not.
                 copied[3]["message"]["content"][0]["content"] = "other evidence"
             self.transcript(copied + tail)
-            captured = it.capture("claude", child, str(self.path), "capture-tests")
+            captured = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
             if changed:
                 self.assertFalse(captured["ok"])
                 self.assertIn("copied native round ID has different content", captured["capture_error"])
             else:
                 self.assertTrue(captured["ok"], captured)
                 self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
-                self.assertEqual(it.capture("claude", child, str(self.path), "capture-tests")["appended"], 0)
+                self.assertEqual(it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")["appended"], 0)
 
     def test_claude_copied_prefix_matches_results_written_out_of_time_order(self):
         # Parallel results can reach the original out of their own time order — the one
@@ -1028,7 +1028,7 @@ class IntegrationTests(unittest.TestCase):
         c1, c2, c3 = (row("assistant", call(n), f"c{n}", ms, "tool_use", "m-1") for n, ms in ((1, 2000), (2, 4000), (3, 5000)))
         r1, r2, r3 = (row("user", result(n), f"r{n}", ms) for n, ms in ((1, 3000), (2, 6001), (3, 6002)))
         self.transcript([q, c1, r1, c2, c3, r3, r2, end])
-        self.assertEqual(it.capture("claude", parent, str(self.path), "capture-tests")["captured_rounds"], 1)
+        self.assertEqual(it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")["captured_rounds"], 1)
         for child, changed in ((self.sid + "-copied", False), (self.sid + "-altered", True)):
             tail = claude_round(child, 2)
             for n, r in enumerate(tail):
@@ -1038,14 +1038,14 @@ class IntegrationTests(unittest.TestCase):
             if changed:  # Order is forgiven, content is not.
                 copied[6]["message"]["content"][0]["content"] = "other evidence"
             self.transcript(copied + tail)
-            captured = it.capture("claude", child, str(self.path), "capture-tests")
+            captured = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
             if changed:
                 self.assertFalse(captured["ok"])
                 self.assertIn("copied native round ID has different content", captured["capture_error"])
             else:
                 self.assertTrue(captured["ok"], captured)
                 self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
-                self.assertEqual(it.capture("claude", child, str(self.path), "capture-tests")["appended"], 0)
+                self.assertEqual(it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")["appended"], 0)
 
     def test_claude_foreign_history_requires_actual_parent_chain(self):
         parent = claude_round("parent", 1)
@@ -1069,26 +1069,26 @@ class IntegrationTests(unittest.TestCase):
     def test_exact_snapshot_ack_leaves_newer_round_pending(self):
         self.transcript(claude_round(self.sid, 1))
         first = self.capture()
-        it.tick("claude", self.sid)
+        it.tick(core.VAULT, "claude", self.sid)
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
         latest = self.capture()
-        deferred = it.acknowledge("claude", self.sid, first["through"], "deferred", "need a source check")
+        deferred = it.acknowledge(core.VAULT, "claude", self.sid, first["through"], "deferred", "need a source check")
         self.assertEqual(deferred["reviewed_rounds"], 0)
-        ack = it.acknowledge("claude", self.sid, first["through"], "no_value", "first round is transient")
+        ack = it.acknowledge(core.VAULT, "claude", self.sid, first["through"], "no_value", "first round is transient")
         self.assertEqual(ack["reviewed_rounds"], 1)
         self.assertEqual(ack["pending_refs"], latest["pending_refs"][1:])
         self.assertFalse(ack["last_review"]["mechanical_preservation"])
         with self.assertRaises(ValueError):
-            it.acknowledge("claude", self.sid + "-other", latest["through"], "no_value", "cannot acknowledge another conversation")
+            it.acknowledge(core.VAULT, "claude", self.sid + "-other", latest["through"], "no_value", "cannot acknowledge another conversation")
 
     def test_summary_is_verified_and_not_node_success(self):
         self.transcript(claude_round(self.sid, 1))
         st = self.capture()
         with self.assertRaises(ValueError):
-            it.acknowledge("claude", self.sid, st["through"], "summary", "summary only", [{"text": "missing excerpt"}])
+            it.acknowledge(core.VAULT, "claude", self.sid, st["through"], "summary", "summary only", [{"text": "missing excerpt"}])
         cur = scope_memory.read(core.VAULT, "capture-tests")
         scope_memory.replace(core.VAULT, "capture-tests", "an exact saved summary", cur["hash"])
-        done = it.acknowledge("claude", self.sid, st["through"], "summary", "temporary summary is sufficient", [{"text": "exact saved summary"}])
+        done = it.acknowledge(core.VAULT, "claude", self.sid, st["through"], "summary", "temporary summary is sufficient", [{"text": "exact saved summary"}])
         self.assertFalse(done["pending"])
         self.assertFalse(done["last_review"]["mechanical_preservation"])
         self.assertFalse(done["last_review"]["semantic_verified"])
@@ -1099,19 +1099,19 @@ class IntegrationTests(unittest.TestCase):
         first = self.capture()
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
         self.capture()
-        unreviewed = it.acknowledge("claude", self.sid, first["through"], "no_value", "fixture")["pending_refs"]
+        unreviewed = it.acknowledge(core.VAULT, "claude", self.sid, first["through"], "no_value", "fixture")["pending_refs"]
         away = self.path.with_name(self.path.name + ".away")
         self.path.rename(away)
-        mine = lambda: [s for s in it._known_pending(None)[0] if s["conversation_id"] == self.sid]
+        mine = lambda: [s for s in it._known_pending(core.VAULT, None)[0] if s["conversation_id"] == self.sid]
         self.assertTrue(mine(), "the first day without the source still retries it")
         with mock.patch.object(it.time, "time", return_value=time.time() + it.SOURCE_LOST_AFTER + 1):
             self.assertEqual(mine(), [], "a week later the closed cursor is neither captured nor listed")
-        st = it.status("claude", self.sid)
+        st = it.status(core.VAULT, "claude", self.sid)
         self.assertEqual(st["capture_recovery"]["state"], "closed")
         self.assertEqual(st["source_lost"]["refs"], unreviewed)   # 처분에 남고 지워지지 않는다
         self.assertEqual((st["pending_refs"], st["pending"], st["capture_error"]), ([], False, None))
         self.assertEqual(st["captured_rounds"], 2)
-        again = it.capture("claude", self.sid, None, "capture-tests")
+        again = it.capture(core.VAULT, "claude", self.sid, None, "capture-tests")
         self.assertEqual((again["capture_recovery"]["state"], again["capture_error"]), ("closed", None))
         away.rename(self.path)
         back = self.capture()
@@ -1129,7 +1129,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(st["captured_rounds"], 1)
         self.assertTrue(st["capture_pending"])
         self.assertIn("incomplete JSONL", st["capture_error"])
-        job = it.prompt("claude", self.sid, include_organization=False)
+        job = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertEqual(job["raw_review"]["state"], "native")
         self.assertEqual(job["raw_review"]["rounds"], 1)
 
@@ -1138,16 +1138,16 @@ class IntegrationTests(unittest.TestCase):
         absent = self.capture()
         self.assertTrue(absent['pending'])
         self.assertEqual(absent["capture_recovery"]["state"], "awaiting_input")
-        state_path = it.state_path('claude', self.sid)
+        state_path = it.state_path(core.VAULT, 'claude', self.sid)
         before = state_path.read_bytes()
-        states, _, _, waiting = it._known_pending(100)
+        states, _, _, waiting = it._known_pending(core.VAULT, 100)
         self.assertNotIn(self.sid, [s['conversation_id'] for s in states])
         self.assertIn(self.sid, [s['conversation_id'] for s in waiting])
         after = json.loads(state_path.read_bytes())
         self.assertIsInstance(after.pop('source_missing_since'), float)   # 원본 시계만 더한다(#244)
         self.assertEqual(after, json.loads(before))
-        it.tick('claude', self.sid)
-        states, _, _, waiting = it._known_pending(100)
+        it.tick(core.VAULT, 'claude', self.sid)
+        states, _, _, waiting = it._known_pending(core.VAULT, 100)
         self.assertIn(self.sid, [s['conversation_id'] for s in states])
         self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
         missing = self.capture()
@@ -1156,14 +1156,14 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(claude_round(self.sid,1))
         self.assertEqual(self.capture()['appended'], 1)
         self.path.unlink()
-        states, _, _, waiting = it._known_pending(100)
+        states, _, _, waiting = it._known_pending(core.VAULT, 100)
         self.assertIn(self.sid, [s['conversation_id'] for s in states])
         self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
 
     def test_unstarted_native_arrival_is_discovered_without_prompt_tick(self):
         self.capture()
         self.transcript(claude_round(self.sid,1))
-        states, _, _, waiting = it._known_pending(100)
+        states, _, _, waiting = it._known_pending(core.VAULT, 100)
         self.assertIn(self.sid, [s['conversation_id'] for s in states])
         self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
         self.assertEqual(self.capture()['appended'], 1)
@@ -1171,19 +1171,19 @@ class IntegrationTests(unittest.TestCase):
     def test_archived_codex_recovery_keeps_prefix_and_review_receipts(self):
         self.transcript([{'type': 'session_meta', 'payload': {'id': self.sid}}] + codex_round(1))
         first = self.capture('codex')
-        it.acknowledge('codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
-        old = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
+        it.acknowledge(core.VAULT, 'codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
+        old = it.load_state(core.VAULT, it.state_path(core.VAULT, 'codex', self.sid), 'codex', self.sid)
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {'CODEX_HOME': home}):
             archived = Path(home) / 'archived_sessions' / f'rollout-date-{self.sid}.jsonl'
             archived.parent.mkdir()
             self.path.replace(archived)
             with archived.open('a', encoding='utf-8') as f:
                 f.write(''.join(json.dumps(r) + '\n' for r in codex_round(2)))
-            recovered = it.hook_capture({'harness': 'codex', 'session_id': self.sid}, 'capture-tests')
+            recovered = it.hook_capture(core.VAULT, {'harness': 'codex', 'session_id': self.sid}, 'capture-tests')
             self.assertTrue(recovered['ok'], recovered)
             self.assertEqual(recovered['appended'], 1)
             self.assertEqual(recovered['transcript_path'], str(archived.resolve()))
-            new = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
+            new = it.load_state(core.VAULT, it.state_path(core.VAULT, 'codex', self.sid), 'codex', self.sid)
             self.assertEqual(new['rounds'][:1], old['rounds'])
             self.assertEqual(new['reviews'], old['reviews'])
             self.assertEqual(new['reviewed_count'], 1)
@@ -1198,7 +1198,7 @@ class IntegrationTests(unittest.TestCase):
             resumed.parent.mkdir(parents=True)
             body = [{'type': 'session_meta', 'payload': {'id': self.sid}}] + codex_round(1)
             archived.write_text(''.join(json.dumps(r) + '\n' for r in body), encoding='utf-8')
-            states, _, _, waiting = it._known_pending(100)
+            states, _, _, waiting = it._known_pending(core.VAULT, 100)
             self.assertIn(self.sid, [s['conversation_id'] for s in states])
             self.assertNotIn(self.sid, [s['conversation_id'] for s in waiting])
             resumed.write_bytes(archived.read_bytes())
@@ -1217,7 +1217,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(self.capture('codex')['appended'], 1)
             archived.write_bytes(resumed.read_bytes())
             # An existing explicit source stays authoritative, even with two candidates.
-            self.assertTrue(it.capture('codex', self.sid, str(resumed), 'capture-tests')['ok'])
+            self.assertTrue(it.capture(core.VAULT, 'codex', self.sid, str(resumed), 'capture-tests')['ok'])
 
     def test_native_identity_mismatch_and_changed_prefix_fail_closed(self):
         self.transcript(claude_round("not-this-conversation", 1))
@@ -1245,46 +1245,46 @@ class IntegrationTests(unittest.TestCase):
                     return ([{"type": "session_meta", "payload": {"id": identity}}]
                             + sum((codex_round(n) for n in range(1, count + 1)), []))
                 self.transcript(rows(sid, 1))
-                first = it.capture(harness, sid, str(self.path), "capture-tests")
-                it.acknowledge(harness, sid, first["through"], "no_value", "Completed fixture only.")
-                state_path = it.state_path(harness, sid)
-                before = it.load_state(state_path, harness, sid)
+                first = it.capture(core.VAULT, harness, sid, str(self.path), "capture-tests")
+                it.acknowledge(core.VAULT, harness, sid, first["through"], "no_value", "Completed fixture only.")
+                state_path = it.state_path(core.VAULT, harness, sid)
+                before = it.load_state(core.VAULT, state_path, harness, sid)
                 other = self.path.with_suffix(".foreign.jsonl")
                 other.write_text("".join(json.dumps(r) + "\n" for r in rows("foreign", 1)), encoding="utf-8")
-                refused = it.capture(harness, sid, str(other), "capture-tests")
+                refused = it.capture(core.VAULT, harness, sid, str(other), "capture-tests")
                 self.assertFalse(refused["ok"], refused)
                 self.assertEqual(refused["capture_recovery"]["phase"], "read")
-                self.assertEqual(it.load_state(state_path, harness, sid)["transcript_path"], before["transcript_path"])
+                self.assertEqual(it.load_state(core.VAULT, state_path, harness, sid)["transcript_path"], before["transcript_path"])
                 self.transcript(rows(sid, 2))
-                recovered = it.capture(harness, sid, None, "capture-tests")
+                recovered = it.capture(core.VAULT, harness, sid, None, "capture-tests")
                 self.assertTrue(recovered["ok"], recovered)
                 self.assertEqual(recovered["appended"], 1)
-                after = it.load_state(state_path, harness, sid)
+                after = it.load_state(core.VAULT, state_path, harness, sid)
                 self.assertEqual(after["rounds"][:1], before["rounds"])
                 self.assertEqual(after["reviews"], before["reviews"])
                 self.assertEqual(after["reviewed_count"], 1)
-                self.assertEqual(it.review_status(harness, sid, first["through"])["status"], "complete")
-                self.assertEqual(it.capture(harness, sid, None, "capture-tests")["appended"], 0)
+                self.assertEqual(it.review_status(core.VAULT, harness, sid, first["through"])["status"], "complete")
+                self.assertEqual(it.capture(core.VAULT, harness, sid, None, "capture-tests")["appended"], 0)
 
 
     def test_changed_prefix_at_another_path_does_not_replace_the_verified_source(self):
         self.transcript(claude_round(self.sid, 1))
         first = self.capture()
-        it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
-        state_path = it.state_path("claude", self.sid)
-        before = it.load_state(state_path, "claude", self.sid)
+        it.acknowledge(core.VAULT, "claude", self.sid, first["through"], "no_value", "Completed fixture only.")
+        state_path = it.state_path(core.VAULT, "claude", self.sid)
+        before = it.load_state(core.VAULT, state_path, "claude", self.sid)
         changed = claude_round(self.sid, 1) + claude_round(self.sid, 2)
         changed[0]["uuid"] = "user-1-rewritten"
         candidate = self.path.with_suffix(".changed.jsonl")
         candidate.write_text("".join(json.dumps(r) + "\n" for r in changed), encoding="utf-8")
-        refused = it.capture("claude", self.sid, str(candidate), "capture-tests")
+        refused = it.capture(core.VAULT, "claude", self.sid, str(candidate), "capture-tests")
         self.assertFalse(refused["ok"], refused)
         self.assertEqual(refused["capture_recovery"]["phase"], "replay")
-        after = it.load_state(state_path, "claude", self.sid)
+        after = it.load_state(core.VAULT, state_path, "claude", self.sid)
         self.assertEqual(after["transcript_path"], before["transcript_path"])
         for key in ("rounds", "reviews", "reviewed_count", "snapshots", "native_fingerprint", "coverage"):
             self.assertEqual(after[key], before[key], key)
-        recovered = it.capture("claude", self.sid, None, "capture-tests")
+        recovered = it.capture(core.VAULT, "claude", self.sid, None, "capture-tests")
         self.assertTrue(recovered["ok"], recovered)
         self.assertEqual(recovered["appended"], 0)
 
@@ -1296,74 +1296,74 @@ class IntegrationTests(unittest.TestCase):
         through = it._snapshot(state)
         raw_before = record.read_bytes()
         self.path.unlink()
-        missing = it.capture("claude", self.sid, None, "capture-tests")
+        missing = it.capture(core.VAULT, "claude", self.sid, None, "capture-tests")
         self.assertFalse(missing["ok"])
         self.assertEqual(missing["capture_recovery"]["state"], "action_required")
         self.assertEqual(missing["capture_recovery"]["phase"], "source")
-        job = it.prompt("claude", self.sid, include_organization=False)
+        job = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertEqual(job["raw_review"], {"state": "verified", "rounds": 1, "error": None})
         self.assertEqual(job["through"], through)
         self.assertEqual(record.read_bytes(), raw_before)
         record.write_bytes(raw_before.replace(b"question 1", b"altered question"))
-        blocked = it.prompt("claude", self.sid, include_organization=False)
+        blocked = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertEqual(blocked["raw_review"]["state"], "unavailable")
         self.assertTrue(blocked["raw_review"]["error"])
         with self.assertRaises((ValueError, write.WriteError)):
-            it.acknowledge("claude", self.sid, through, "no_value", "Fixture only.")
-        self.assertEqual(it.status("claude", self.sid)["reviewed_rounds"], 0)
+            it.acknowledge(core.VAULT, "claude", self.sid, through, "no_value", "Fixture only.")
+        self.assertEqual(it.status(core.VAULT, "claude", self.sid)["reviewed_rounds"], 0)
         record.write_bytes(raw_before)
         # This ACK judges only the verified stored round; it cannot close capture.
-        reviewed = it.acknowledge("claude", self.sid, through, "no_value", "Stored fixture has no reusable claim.")
+        reviewed = it.acknowledge(core.VAULT, "claude", self.sid, through, "no_value", "Stored fixture has no reusable claim.")
         self.assertTrue(reviewed["capture_pending"])
         self.assertTrue(reviewed["capture_error"])
         self.assertTrue(reviewed["pending"])
-        self.assertEqual(it.prompt("claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
+        self.assertEqual(it.prompt(core.VAULT, "claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
 
 
     def test_relocated_capture_io_failure_keeps_candidate_until_cursor_recovery(self):
         # Catch up only this fault matrix, not every unrelated suite fixture.
         state_path_for = it.state_path
         state_dir = Path(TMP.name) / self.sid
-        patcher = mock.patch.object(it, "state_path", side_effect=lambda harness, sid:
-                                    state_dir / state_path_for(harness, sid).name)
+        patcher = mock.patch.object(it, "state_path", side_effect=lambda vault, harness, sid:
+                                    state_dir / state_path_for(vault, harness, sid).name)
         patcher.start()
         self.addCleanup(patcher.stop)
         for retry in ("pathless", "catchup"):
             with self.subTest(retry=retry):
                 sid = f"{self.sid}-{retry}"
                 self.transcript(claude_round(sid, 1))
-                first = it.capture("claude", sid, str(self.path), "capture-tests")
-                it.acknowledge("claude", sid, first["through"], "no_value", "Completed fixture only.")
-                state_path = it.state_path("claude", sid)
-                before = it.load_state(state_path, "claude", sid)
+                first = it.capture(core.VAULT, "claude", sid, str(self.path), "capture-tests")
+                it.acknowledge(core.VAULT, "claude", sid, first["through"], "no_value", "Completed fixture only.")
+                state_path = it.state_path(core.VAULT, "claude", sid)
+                before = it.load_state(core.VAULT, state_path, "claude", sid)
                 candidate = self.path.with_name(sid + ".relocated.jsonl")
                 candidate.write_text("".join(json.dumps(r) + "\n" for r in
                                             claude_round(sid, 1) + claude_round(sid, 2)), encoding="utf-8")
                 # A transient read failure, explicit or pathless, keeps the candidate source.
                 for attempt in (str(candidate), None):
                     with mock.patch.object(transcripts, "read", side_effect=PermissionError("Native temporarily locked.")):
-                        failed = it.capture("claude", sid, attempt, "capture-tests")
+                        failed = it.capture(core.VAULT, "claude", sid, attempt, "capture-tests")
                     self.assertFalse(failed["ok"], failed)
                     self.assertTrue(failed["capture_pending"])
                     self.assertEqual((failed["captured_rounds"], failed["reviewed_rounds"]), (1, 1))
-                    failed_state = it.load_state(state_path, "claude", sid)
+                    failed_state = it.load_state(core.VAULT, state_path, "claude", sid)
                     self.assertEqual(failed_state["transcript_path"], before["transcript_path"])
                     self.assertEqual(failed_state.get("capture_path"), str(candidate.resolve()))
                 if retry == "pathless":
-                    recovered = it.capture("claude", sid, None, "capture-tests")
+                    recovered = it.capture(core.VAULT, "claude", sid, None, "capture-tests")
                 else:
-                    caught = it.catchup(100)
+                    caught = it.catchup(core.VAULT, 100)
                     recovered = next(c for c in caught["captures"] if c["conversation_id"] == sid)
                 self.assertTrue(recovered["ok"], recovered)
                 self.assertEqual(recovered["appended"], 1)
-                after = it.load_state(state_path, "claude", sid)
+                after = it.load_state(core.VAULT, state_path, "claude", sid)
                 self.assertEqual(after["transcript_path"], str(candidate.resolve()))
                 self.assertNotIn("capture_path", after)
                 self.assertEqual(after["rounds"][:1], before["rounds"])
                 self.assertEqual(after["reviews"], before["reviews"])
                 self.assertEqual(after["snapshots"][first["through"]], before["snapshots"][first["through"]])
                 self.assertEqual((len(after["rounds"]), after["reviewed_count"]), (2, 1))
-                job = it.prompt("claude", sid, include_organization=False)
+                job = it.prompt(core.VAULT, "claude", sid, include_organization=False)
                 self.assertEqual(job["pending_refs"], [after["rounds"][1]["ref"]])
                 self.assertEqual(job["raw_review"], {"state": "native", "rounds": 1, "error": None})
 
@@ -1372,28 +1372,28 @@ class IntegrationTests(unittest.TestCase):
         self.transcript(claude_round(self.sid, 1))
         generic = self.sid + '-unbound'
         # Tracking does not wait for a landing (#179): the turns are tracked and nothing is bound.
-        tracked = it.capture('claude', self.sid, str(self.path), generic)
+        tracked = it.capture(core.VAULT, 'claude', self.sid, str(self.path), generic)
         self.assertTrue(tracked['ok'], tracked)
         self.assertEqual((tracked['captured_rounds'], tracked['space']), (1, None))
-        captured = it.capture('claude', self.sid, str(self.path), 'capture-tests', '00_Scope/Capture')
+        captured = it.capture(core.VAULT, 'claude', self.sid, str(self.path), 'capture-tests', '00_Scope/Capture')
         self.assertTrue(captured['ok'], captured)
         self.assertEqual(captured['captured_rounds'], 1)
         self.assertIsNone(write.resolve_session(core.VAULT, generic))
-        resumed = it.hook_capture({'harness': 'claude', 'session_id': self.sid}, generic)
+        resumed = it.hook_capture(core.VAULT, {'harness': 'claude', 'session_id': self.sid}, generic)
         self.assertTrue(resumed['ok'], resumed)
         self.assertEqual(resumed['session'], 'capture-tests')
         self.assertIsNone(write.resolve_session(core.VAULT, generic))
-        other = it.capture('claude', self.sid + '-other', str(self.path), generic)
+        other = it.capture(core.VAULT, 'claude', self.sid + '-other', str(self.path), generic)
         self.assertFalse(other['ok'])
-        self.assertIsNone(it.load_state(it.state_path('claude', self.sid + '-other'),
+        self.assertIsNone(it.load_state(core.VAULT, it.state_path(core.VAULT, 'claude', self.sid + '-other'),
                                   'claude', self.sid + '-other')['space'])
-        self.assertFalse(it.capture('claude', self.sid, str(self.path), generic, '00_Scope/W1')['ok'])
+        self.assertFalse(it.capture(core.VAULT, 'claude', self.sid, str(self.path), generic, '00_Scope/W1')['ok'])
 
     def test_hook_process_resume_keeps_pending_and_diagnostics_are_visible(self):
         self.transcript(claude_round(self.sid, 1))
         self.capture()
         for _ in range(9):
-            it.tick("claude", self.sid)
+            it.tick(core.VAULT, "claude", self.sid)
         cwd = Path(TMP.name) / "capture-tests"
         cwd.mkdir(exist_ok=True)
         payload = {"session_id": self.sid, "harness": "claude", "transcript_path": str(self.path), "source": "resume", "cwd": str(cwd)}
@@ -1402,7 +1402,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         out = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn(self.sid, out)
-        self.assertEqual(it.status("claude", self.sid)["prompt_count"], 9)
+        self.assertEqual(it.status(core.VAULT, "claude", self.sid)["prompt_count"], 9)
         broken = subprocess.run([sys.executable, str(ENGINE / "scripts/hooks/claude_prompt_submit.py")],
                                 input=b"{broken", capture_output=True, env=os.environ, timeout=30)
         self.assertEqual(broken.returncode, 0)
@@ -1485,21 +1485,21 @@ class IntegrationTests(unittest.TestCase):
         pending = self.capture("codex")
         self.assertTrue(pending["capture_pending"])
         self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1))
-        caught = it.catchup(100)
+        caught = it.catchup(core.VAULT, 100)
         capture = next(c for c in caught["captures"] if c["conversation_id"] == self.sid)
         self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
         self.assertNotIn(self.sid, [j["conversation_id"] for j in caught["jobs"]])
         # The conversation itself reviews its turns at its next prompt.
-        job = it.prompt("codex", self.sid, include_organization=False)
+        job = it.prompt(core.VAULT, "codex", self.sid, include_organization=False)
         self.assertEqual(len(job["pending_refs"]), 1)
         self.assertIn(sys.executable, job["text"])
-        it.acknowledge("codex", self.sid, job["through"], "no_value", "bounded test round")
-        self.assertEqual(it.review_status("codex", self.sid, job["through"])["status"], "complete")
-        self.assertFalse(it.status("codex", self.sid)["pending"])
+        it.acknowledge(core.VAULT, "codex", self.sid, job["through"], "no_value", "bounded test round")
+        self.assertEqual(it.review_status(core.VAULT, "codex", self.sid, job["through"])["status"], "complete")
+        self.assertFalse(it.status(core.VAULT, "codex", self.sid)["pending"])
         # The session can append and exit before Stop; the fingerprint only says to look again.
         self.transcript([{"type": "session_meta", "payload": {"id": self.sid}}] + codex_round(1) + codex_round(2))
-        it.catchup(100)
-        job2 = it.prompt("codex", self.sid, include_organization=False)
+        it.catchup(core.VAULT, 100)
+        job2 = it.prompt(core.VAULT, "codex", self.sid, include_organization=False)
         self.assertEqual(len(job2["pending_refs"]), 1)
         self.assertNotEqual(job["through"], job2["through"])
 
@@ -1512,19 +1512,19 @@ class IntegrationTests(unittest.TestCase):
         # The same turn ID now carries other words.
         rows[second]["message"]["content"] = "question 2, for every project"
         self.transcript(rows)
-        [seen] = it.read_turns([ref])["turns"]
+        [seen] = it.read_turns(core.VAULT, [ref])["turns"]
         self.assertTrue(seen["changed"], seen)
         with self.assertRaisesRegex(ValueError, "changed after this snapshot"):
-            it.acknowledge("claude", self.sid, first["through"], "no_value", "judged the old words")
+            it.acknowledge(core.VAULT, "claude", self.sid, first["through"], "no_value", "judged the old words")
         again = self.capture()
         self.assertEqual((again["ok"], again["appended"], again["changed"]), (True, 0, 1))
         self.assertNotEqual(again["through"], first["through"])
-        [seen] = it.read_turns([ref])["turns"]
+        [seen] = it.read_turns(core.VAULT, [ref])["turns"]
         self.assertNotIn("changed", seen)
         self.assertTrue(seen["hash"])
         with self.assertRaisesRegex(ValueError, "not an unreviewed snapshot"):
-            it.acknowledge("claude", self.sid, first["through"], "no_value", "judged the old words")
-        done = it.acknowledge("claude", self.sid, again["through"], "no_value", "judged the current words")
+            it.acknowledge(core.VAULT, "claude", self.sid, first["through"], "no_value", "judged the old words")
+        done = it.acknowledge(core.VAULT, "claude", self.sid, again["through"], "no_value", "judged the current words")
         self.assertEqual((done["reviewed_rounds"], done["pending"]), (2, False))
         # A reviewed turn keeps the version its review judged.
         rows[second]["message"]["content"] = "question 2, changed after its review"
@@ -1537,12 +1537,12 @@ class IntegrationTests(unittest.TestCase):
         third = self.capture()
         self.path.unlink()
         with self.assertRaisesRegex(ValueError, "not on this device"):
-            it.acknowledge("claude", self.sid, third["through"], "no_value", "unread")
-        it.acknowledge("claude", self.sid, third["through"], "deferred", "the transcript is away")
+            it.acknowledge(core.VAULT, "claude", self.sid, third["through"], "no_value", "unread")
+        it.acknowledge(core.VAULT, "claude", self.sid, third["through"], "deferred", "the transcript is away")
 
     def test_scripted_codex_exec_run_is_not_tracked_or_reviewed(self):
-        path = it.state_path("codex", self.sid)
-        old = it.load_state(path, "codex", self.sid)
+        path = it.state_path(core.VAULT, "codex", self.sid)
+        old = it.load_state(core.VAULT, path, "codex", self.sid)
         # An earlier engine left an open-tail error on this run.
         old.update(session="capture-tests", capture_pending=True, capture_error="ValueError: old open tail")
         it.save_state(path, old)
@@ -1554,23 +1554,23 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(found["capture_error"])
         ended = time.time() - it.ENDED_AFTER - 60
         os.utime(self.path, (ended, ended))
-        self.assertNotIn(self.sid, [j["conversation_id"] for j in it.list_pending(100)["jobs"]])
+        self.assertNotIn(self.sid, [j["conversation_id"] for j in it.list_pending(core.VAULT, 100)["jobs"]])
         # An interactive Codex conversation is still tracked.
         meta["payload"].update(originator="codex_cli_rs", source="cli")
         other = f"{self.sid}-interactive"
         meta["payload"]["id"] = other
         talk = Path(TMP.name) / f"{other}.jsonl"
         talk.write_text("".join(json.dumps(r) + "\n" for r in [meta] + codex_round(1)), encoding="utf-8")
-        tracked = it.capture("codex", other, str(talk), "capture-tests")
+        tracked = it.capture(core.VAULT, "codex", other, str(talk), "capture-tests")
         self.assertEqual((tracked["ok"], tracked["captured_rounds"], tracked["excluded"]), (True, 1, None))
 
     def test_recited_turn_reports_the_stored_record_and_what_it_sees_now(self):
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2, finished=False))
         self.capture()
-        first = it.cite(f"claude/{self.sid}", turn="user-2")
+        first = it.cite(core.VAULT, f"claude/{self.sid}", turn="user-2")
         self.assertIsNone(first["agent_sha256"])  # the open turn has no reply yet
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
-        again = it.cite(f"claude/{self.sid}", turn="user-2", note="a later gist")
+        again = it.cite(core.VAULT, f"claude/{self.sid}", turn="user-2", note="a later gist")
         self.assertEqual((again["reused"], again["round_ref"]), (True, first["round_ref"]))
         # The record is append-only: the answer reports what it holds, this read apart.
         self.assertIsNone(again["agent_sha256"])
@@ -1581,10 +1581,10 @@ class IntegrationTests(unittest.TestCase):
         # Words the caller supplied while the transcript was away stay the caller's.
         away = self.path.with_suffix(".away")
         self.path.rename(away)
-        kept = it.cite(f"claude/{self.sid}", user="question 1", turn="user-1")
+        kept = it.cite(core.VAULT, f"claude/{self.sid}", user="question 1", turn="user-1")
         self.assertEqual(kept["user_by"], "caller")
         away.rename(self.path)
-        back = it.cite(f"claude/{self.sid}", turn="user-1")
+        back = it.cite(core.VAULT, f"claude/{self.sid}", turn="user-1")
         self.assertEqual((back["reused"], back["user_by"]), (True, "caller"))
         self.assertEqual(back["observed"]["user_by"], "engine")
         self.assertNotIn("note_saved", back)
@@ -1593,24 +1593,24 @@ class IntegrationTests(unittest.TestCase):
     def test_review_manifests_are_bounded_and_find_root_specific_states(self):
         self.transcript([r for n in range(1, 19) for r in claude_round(self.sid, n)])
         self.capture()
-        job = it.prompt("claude", self.sid, include_organization=False)
+        job = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertEqual(len(job["pending_refs"]), 15)
         self.assertEqual(job["remaining_rounds"], 3)
-        ack = it.acknowledge("claude", self.sid, job["through"], "no_value", "first fifteen reviewed")
+        ack = it.acknowledge(core.VAULT, "claude", self.sid, job["through"], "no_value", "first fifteen reviewed")
         self.assertEqual(ack["reviewed_rounds"], 15)
         self.assertEqual(len(ack["pending_refs"]), 3)
         # .git directories and nongit fallback retain the identical root prefix.
-        expected = it.state_path("claude", "inventory").name.split("-")[2]
-        self.assertEqual(it.state_path("claude", self.sid).name.split("-")[2], expected)
+        expected = it.state_path(core.VAULT, "claude", "inventory").name.split("-")[2]
+        self.assertEqual(it.state_path(core.VAULT, "claude", self.sid).name.split("-")[2], expected)
         (ROOT / ".git").mkdir()
         try:
             git_sid = self.sid + "-git"
             git_path = Path(TMP.name) / (git_sid + ".jsonl")
             git_path.write_text("".join(json.dumps(r) + "\n" for r in claude_round(git_sid, 1)), encoding="utf-8")
-            it.capture("claude", git_sid, str(git_path), "capture-tests")
+            it.capture(core.VAULT, "claude", git_sid, str(git_path), "capture-tests")
             git_path.write_text("".join(json.dumps(r) + "\n" for r in
                                         claude_round(git_sid, 1) + claude_round(git_sid, 2)), encoding="utf-8")
-            states, _, _, _ = it._known_pending(100)
+            states, _, _, _ = it._known_pending(core.VAULT, 100)
             self.assertIn(git_sid, [s["conversation_id"] for s in states])
         finally:
             import shutil
@@ -1619,29 +1619,29 @@ class IntegrationTests(unittest.TestCase):
 
     def test_unbound_incomplete_capture_retains_explicit_landing_for_catchup(self):
         self.transcript(claude_round(self.sid, 1, finished=False))
-        pending = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/Capture")
+        pending = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/Capture")
         self.assertTrue(pending["capture_pending"])
         self.assertEqual(pending["capture_recovery"]["state"], "pending")
-        self.assertEqual(it.prompt("claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
+        self.assertEqual(it.prompt(core.VAULT, "claude", self.sid, include_organization=False)["raw_review"]["state"], "none")
         self.assertIsNone(write.resolve_session(core.VAULT, self.sid))
         self.transcript(claude_round(self.sid, 1))
-        done = it.catchup(100)
+        done = it.catchup(core.VAULT, 100)
         capture = next(c for c in done["captures"] if c["conversation_id"] == self.sid)
         self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
         # Tracking writes nothing, so it binds nothing; citing writes the one root record and binds nothing
         # either — only a node written with a space adds that scope to the project's binding.
         self.assertIsNone(write.resolve_session(core.VAULT, self.sid))
-        cited = it.cite(f"claude/{self.sid}", quote="question 1")
+        cited = it.cite(core.VAULT, f"claude/{self.sid}", quote="question 1")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
         self.assertIsNone(write.resolve_session(core.VAULT, self.sid))
-        self.assertEqual(it.status("claude", self.sid)["space"], "00_Scope/Capture")   # the explicit landing stays
+        self.assertEqual(it.status(core.VAULT, "claude", self.sid)["space"], "00_Scope/Capture")   # the explicit landing stays
 
 
     def test_claude_hook_detects_identity_after_leading_metadata(self):
         self.transcript([{"type": "file-history-snapshot", "snapshot": {}},
                          {"type": "queue-operation", "operation": "enqueue"}]
                         + claude_round(self.sid, 1))
-        st = it.hook_capture({"session_id": self.sid, "transcript_path": str(self.path)}, "capture-tests")
+        st = it.hook_capture(core.VAULT, {"session_id": self.sid, "transcript_path": str(self.path)}, "capture-tests")
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["harness"], "claude")
         self.assertEqual(st["captured_rounds"], 1)
@@ -1701,11 +1701,11 @@ class IntegrationTests(unittest.TestCase):
                 self.assertNotEqual(list(clean.values())[-1]["agent"], list(noisy.values())[-1]["agent"],
                                     "changed tool payload must change its evidence hash")
                 self.assertIn(long_text, noisy[next(iter(noisy))]["user"])
-                st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                st = it.capture(core.VAULT, harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertEqual(st["captured_rounds"], 2)
-                record = ROOT / it.cite(f"{harness}/{sid}", quote="MIDPOINT CORRECTION")["path"]
-                it.cite(f"{harness}/{sid}", turn="-1")
+                record = ROOT / it.cite(core.VAULT, f"{harness}/{sid}", quote="MIDPOINT CORRECTION")["path"]
+                it.cite(core.VAULT, f"{harness}/{sid}", turn="-1")
                 stored = record.read_bytes()
                 for kept in (b"USER START", b"MIDPOINT CORRECTION", b"USER END", b"question 2"):
                     self.assertIn(kept, stored)
@@ -1716,13 +1716,13 @@ class IntegrationTests(unittest.TestCase):
     def test_actual_preserved_scope_node_ack_and_later_receipt_validation(self):
         from osk import contract, distillation as D, evidence
         self.transcript(claude_round(self.sid, 1))
-        st = it.capture("claude", self.sid, str(self.path), self.sid, space="00_Scope/W1")
-        ref = it.cite(f"claude/{self.sid}", quote="question 1")["round_ref"]
+        st = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, space="00_Scope/W1")
+        ref = it.cite(core.VAULT, f"claude/{self.sid}", quote="question 1")["round_ref"]
         spec = {"key": self.sid, "sources": [ref], "hub": "W1"}
         args = {"title": "A retained integration decision", "summary": "bounded retry",
                 "body": evidenced("A retry is identified by native identity rather than repeated wording.", ref),
                 "drafter": "fable-5", "space": "00_Scope/W1"}
-        created = D.create_node(spec, **args)
+        created = D.create_node(core.VAULT, spec, **args)
         self.assertEqual(created["distillation"]["status"], "complete")
         node = contract.parse(core.ROOT / created["path"])
         hub = contract.parse(core.ROOT / "00_Scope/W1/W1.md")
@@ -1730,61 +1730,61 @@ class IntegrationTests(unittest.TestCase):
         self.assertNotIn("derived-from", node.meta)   # a round is a 근거 line, not an edge
         self.assertIn(created["name"], hub.wikilinks())
         # The cited round binds the review of the original turn it cites.
-        ack = it.acknowledge("claude", self.sid, st["through"], "preserved",
+        ack = it.acknowledge(core.VAULT, "claude", self.sid, st["through"], "preserved",
                              "The cited observation is retained in the existing project cluster.",
                              [{"key": spec["key"]}])
         self.assertFalse(ack["pending"])
         self.assertEqual(ack["reviewed_rounds"], 1)
         self.assertTrue(ack["last_review"]["mechanical_preservation"])
         self.assertFalse(ack["last_review"]["semantic_verified"])
-        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
-        sibling = D.create_node(dict(spec, key=self.sid + "-sibling"),
+        self.assertEqual(it.review_status(core.VAULT, "claude", self.sid, st["through"])["status"], "complete")
+        sibling = D.create_node(core.VAULT, dict(spec, key=self.sid + "-sibling"),
                                 **dict(args, title="A sibling retained decision",
                                        body=evidenced("Another reusable observation.", ref)))
         self.assertEqual(sibling["distillation"]["status"], "complete")
-        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
+        self.assertEqual(it.review_status(core.VAULT, "claude", self.sid, st["through"])["status"], "complete")
         # After ACK only structure is observed: a body edit keeps the review closed.
-        changed = write.update_node(created["id"], body=evidenced("Changed after review.", ref),
+        changed = write.update_node(core.VAULT, created["id"], body=evidenced("Changed after review.", ref),
                                     expect_hash=created["new_hash"])
-        after = it.review_status("claude", self.sid, st["through"])
+        after = it.review_status(core.VAULT, "claude", self.sid, st["through"])
         self.assertEqual(after["status"], "complete")
         self.assertNotIn("structure", after)
         # Dropping the source is reported, still without reopening the conversation's review.
-        write.update_node(created["id"], body="Changed after review.", expect_hash=changed["new_hash"])
-        broken = it.review_status("claude", self.sid, st["through"])
+        write.update_node(core.VAULT, created["id"], body="Changed after review.", expect_hash=changed["new_hash"])
+        broken = it.review_status(core.VAULT, "claude", self.sid, st["through"])
         self.assertEqual(broken["status"], "complete")
         self.assertEqual(broken["structure"], [{"key": spec["key"], "reason": "target no longer cites its source"}])
-        self.assertFalse(it.status("claude", self.sid)["pending"])
+        self.assertFalse(it.status(core.VAULT, "claude", self.sid)["pending"])
 
 
     def test_existing_saved_record_name_is_preserved(self):
         self.transcript(claude_round(self.sid, 1))
-        path = it.state_path("claude", self.sid)
-        state = it.load_state(path, "claude", self.sid)
+        path = it.state_path(core.VAULT, "claude", self.sid)
+        state = it.load_state(core.VAULT, path, "claude", self.sid)
         state["record"] = "legacy-record-name"
         it.save_state(path, state)
         st = self.capture()
         self.assertTrue(st["ok"], st)
         self.assertEqual(st["record"], "legacy-record-name")
-        cited = it.cite(f"claude/{self.sid}", turn="-1")
+        cited = it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")
         self.assertIn("/.records/legacy-record-name.txt#1", cited["round_ref"])
 
 
     def test_raw_migration_preserves_pending_snapshot_and_legacy_receipt_match(self):
         from osk import distillation as D
         self.transcript(claude_round(self.sid, 1))
-        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         state, physical = legacy_cursor("claude", self.sid, self.path, "W1")
         legacy = physical.parent.parent / (physical.stem + ".md")
         physical.rename(legacy)  # Simulate the pre-upgrade visible record and cursor.
         saved = legacy.read_bytes()
         old_ref = f"[[{legacy.relative_to(ROOT).as_posix()}#1]]"
-        state_path = it.state_path("claude", self.sid)
+        state_path = it.state_path(core.VAULT, "claude", self.sid)
         state["rounds"][0]["ref"] = old_ref
         token = it._snapshot(state)
         state["snapshots"] = {token: {"count": 1, "prompt_count": state["prompt_count"]}}
         it.save_state(state_path, state)
-        replayed = it.capture("claude", self.sid, str(self.path), self.sid)
+        replayed = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid)
         self.assertTrue(replayed["ok"], replayed)
         self.assertEqual(replayed["through"], token)
         self.assertEqual(replayed["pending_refs"], [old_ref])
@@ -1794,12 +1794,12 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn(legacy.relative_to(ROOT).as_posix(), [f["from"] for f in moved["files"]])
         self.assertFalse(legacy.exists())
         self.assertEqual(physical.read_bytes(), saved)
-        out = D.create_node({"key": self.sid, "sources": [old_ref], "hub": "W1"},
+        out = D.create_node(core.VAULT, {"key": self.sid, "sources": [old_ref], "hub": "W1"},
                             title=self.sid, summary="retained observation",
                             body=evidenced("Observation retained with its original source.", old_ref),
                             drafter="test-model", space="00_Scope/W1")
         self.assertEqual(out["distillation"]["status"], "complete")
-        ack = it.acknowledge("claude", self.sid, token, "preserved", "fixture retained",
+        ack = it.acknowledge(core.VAULT, "claude", self.sid, token, "preserved", "fixture retained",
                              [{"key": self.sid}])
         self.assertTrue(ack["ok"], ack)
 
@@ -1807,55 +1807,55 @@ class IntegrationTests(unittest.TestCase):
     def test_review_key_tracks_snapshot_and_recovers_saved_proof(self):
         from osk import distillation as D
         self.transcript(claude_round(self.sid, 1))
-        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        first = it.prompt("claude", self.sid)
-        self.assertEqual(first["key"], it.prompt("claude", self.sid)["key"])
-        cited = it.cite(f"claude/{self.sid}", turn="-1")["round_ref"]
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        first = it.prompt(core.VAULT, "claude", self.sid)
+        self.assertEqual(first["key"], it.prompt(core.VAULT, "claude", self.sid)["key"])
+        cited = it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")["round_ref"]
         spec = {"key": first["key"] + ":stable-target", "sources": [cited], "hub": "W1"}
-        saved = D.create_node(spec, title="Snapshot-specific retained observation", summary="native observation",
+        saved = D.create_node(core.VAULT, spec, title="Snapshot-specific retained observation", summary="native observation",
                               body=evidenced("The observation is preserved before its review acknowledgement arrives.",
                                              cited),
                               drafter="fable-5", space="00_Scope/W1")
         self.assertEqual(saved["distillation"]["status"], "complete")
-        retry = it.prompt("claude", self.sid)
+        retry = it.prompt(core.VAULT, "claude", self.sid)
         self.assertEqual(first["key"], retry["key"])
         proof = next(p for p in retry["previous_distillations"] if p["key"] == spec["key"])
         self.assertEqual(proof["status"], "complete")
         self.assertIn(spec["key"], retry["text"])
         self.assertIn("대상별 고정 접미사", retry["text"])
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
-        it.capture("claude", self.sid, str(self.path), self.sid)
-        later = it.prompt("claude", self.sid)
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid)
+        later = it.prompt(core.VAULT, "claude", self.sid)
         self.assertNotEqual(later["through"], first["through"])
         self.assertNotEqual(later["key"], first["key"])
-        self.assertEqual(later["key"], it.prompt("claude", self.sid)["key"])
+        self.assertEqual(later["key"], it.prompt(core.VAULT, "claude", self.sid)["key"])
         self.assertTrue(any(p["key"] == spec["key"] for p in later["previous_distillations"]))
 
 
     def test_worker_batch_does_not_reduce_ordinary_cadence_or_ack_the_tail(self):
         self.transcript([row for n in range(20) for row in claude_round(self.sid, n)])
         original = self.capture()
-        worker = it.prompt("claude", self.sid, include_organization=False, max_rounds=3)
-        ordinary = it.prompt("claude", self.sid, include_organization=False)
+        worker = it.prompt(core.VAULT, "claude", self.sid, include_organization=False, max_rounds=3)
+        ordinary = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertEqual(len(worker["pending_refs"]), 3)
         self.assertEqual(len(ordinary["pending_refs"]), 15)
         self.assertNotEqual(worker["through"], ordinary["through"])
-        self.assertEqual(it.status("claude", self.sid)["pending_refs"], original["pending_refs"])
-        it.acknowledge("claude", self.sid, worker["through"], "no_value", "Only fixture questions in selected first three rounds.")
-        pending = it.status("claude", self.sid)["pending_refs"]
+        self.assertEqual(it.status(core.VAULT, "claude", self.sid)["pending_refs"], original["pending_refs"])
+        it.acknowledge(core.VAULT, "claude", self.sid, worker["through"], "no_value", "Only fixture questions in selected first three rounds.")
+        pending = it.status(core.VAULT, "claude", self.sid)["pending_refs"]
         self.assertEqual(pending, original["pending_refs"][3:])
-        self.assertEqual(it.prompt("claude", self.sid, max_rounds=3)["pending_refs"], pending[:3])
+        self.assertEqual(it.prompt(core.VAULT, "claude", self.sid, max_rounds=3)["pending_refs"], pending[:3])
 
     def _discovery_source(self):
         self.transcript(claude_round(self.sid, 1))
-        st = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        return {**st, "cited": it.cite(f"claude/{self.sid}", turn="-1")["round_ref"]}
+        st = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        return {**st, "cited": it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")["round_ref"]}
 
 
     def _discovery_save(self, st, key, title=None):
         from osk import distillation as D
-        self.addCleanup(D._job_path(key).unlink, missing_ok=True)
-        return D.create_node({"key": key, "sources": [st["cited"]], "hub": "W1"},
+        self.addCleanup(D._job_path(core.VAULT, key).unlink, missing_ok=True)
+        return D.create_node(core.VAULT, {"key": key, "sources": [st["cited"]], "hub": "W1"},
                              title=title or self.sid + "-node", summary="lost ACK recovery",
                              body=evidenced("Keep the already retained decision and finish its missing "
                                             "acknowledgement.", st["cited"]),
@@ -1869,16 +1869,16 @@ class IntegrationTests(unittest.TestCase):
         saved = self._discovery_save(st, key)
         target = core.ROOT / saved["path"]
         before = target.read_bytes()
-        own = it.prompt("claude", self.sid)
+        own = it.prompt(core.VAULT, "claude", self.sid)
         proofs = own["previous_distillations"]
         self.assertEqual([proof["key"] for proof in proofs], [key])
         self.assertEqual(proofs[0]["status"], "complete")
         nodes_before = set(graph.Index(core.VAULT).nodes)
-        ack = it.acknowledge("claude", self.sid, own["through"], "preserved",
+        ack = it.acknowledge(core.VAULT, "claude", self.sid, own["through"], "preserved",
                              "Reuse the verified saved decision; the previous ACK was lost.",
                              [{"key": proofs[0]["key"]}])
         self.assertFalse(ack["pending"])
-        self.assertEqual(it.review_status("claude", self.sid, own["through"])["status"], "complete")
+        self.assertEqual(it.review_status(core.VAULT, "claude", self.sid, own["through"])["status"], "complete")
         self.assertEqual(target.read_bytes(), before)
         self.assertEqual(set(graph.Index(core.VAULT).nodes), nodes_before)
 
@@ -1892,27 +1892,27 @@ class IntegrationTests(unittest.TestCase):
         other_sid = self.sid + "-other"
         other_path = Path(TMP.name) / (other_sid + ".jsonl")
         other_path.write_text("".join(json.dumps(row) + "\n" for row in claude_round(other_sid, 1)), encoding="utf-8")
-        other = it.capture("claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
-        other["cited"] = it.cite(f"claude/{other_sid}", turn="-1")["round_ref"]
+        other = it.capture(core.VAULT, "claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
+        other["cited"] = it.cite(core.VAULT, f"claude/{other_sid}", turn="-1")["round_ref"]
         other_key = self.sid + "-unrelated"
         self._discovery_save(other, other_key, self.sid + "-other-node")
         # Model a journal in the same common git directory with a different ROOT.
         # Its valid body/source bytes would pass if canonical filename binding
         # were omitted. The key is never exposed to this conversation.
         foreign_key = self.sid + "-foreign-root"
-        foreign = dict(D._load(key), key=foreign_key)
+        foreign = dict(D._load(core.VAULT, key), key=foreign_key)
         digest = hashlib.sha256((str(ROOT / "other-root") + "\0" + foreign_key).encode()).hexdigest()
-        own_path = D._job_path(foreign_key)
+        own_path = D._job_path(core.VAULT, foreign_key)
         own_digest = hashlib.sha256((str(core.ROOT) + "\0" + foreign_key).encode()).hexdigest()
         foreign_path = own_path.with_name(own_path.name.replace(own_digest, digest))
-        self.assertNotEqual(foreign_path, D._job_path(foreign_key))
+        self.assertNotEqual(foreign_path, D._job_path(core.VAULT, foreign_key))
         self.addCleanup(foreign_path.unlink, missing_ok=True)
         write._atomic_write(foreign_path, json.dumps(foreign).encode())
-        found = D.discover(own["pending_refs"])
+        found = D.discover(core.VAULT, own["pending_refs"])
         self.assertEqual([proof["key"] for proof in found["proofs"]], [key])
         self.assertFalse(found["errors"], found)
-        self.assertNotIn(other_key, json.dumps(it.prompt("claude", self.sid)))
-        self.assertNotIn(foreign_key, json.dumps(it.prompt("claude", self.sid)))
+        self.assertNotIn(other_key, json.dumps(it.prompt(core.VAULT, "claude", self.sid)))
+        self.assertNotIn(foreign_key, json.dumps(it.prompt(core.VAULT, "claude", self.sid)))
 
 
     def test_uncited_pending_turns_need_no_receipt_scan(self):
@@ -1922,19 +1922,19 @@ class IntegrationTests(unittest.TestCase):
         other_sid = self.sid + "-other"
         other_path = Path(TMP.name) / (other_sid + ".jsonl")
         other_path.write_text("".join(json.dumps(row) + "\n" for row in claude_round(other_sid, 1)), encoding="utf-8")
-        other = it.capture("claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
-        other["cited"] = it.cite(f"claude/{other_sid}", turn="-1")["round_ref"]
+        other = it.capture(core.VAULT, "claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
+        other["cited"] = it.cite(core.VAULT, f"claude/{other_sid}", turn="-1")["round_ref"]
         for n in range(2):
             self._discovery_save(other, f"{self.sid}-other-{n}", f"{self.sid}-other-node-{n}")
         self.transcript(claude_round(self.sid, 1))
-        own = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        self.assertEqual(D.discover(own["pending_refs"], scan_limit=1),
+        own = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        self.assertEqual(D.discover(core.VAULT, own["pending_refs"], scan_limit=1),
                          {"proofs": [], "errors": [], "scanned": 0, "truncated": False})
-        self.assertNotIn("조회가 불완전", it.prompt("claude", self.sid)["text"])
+        self.assertNotIn("조회가 불완전", it.prompt(core.VAULT, "claude", self.sid)["text"])
         # A cited turn of unknown time (these rows carry no timestamp) may have a proof among
         # the older receipts: the count-bounded scan says so.
-        it.cite(f"claude/{self.sid}", turn="-1")
-        found = D.discover(own["pending_refs"], scan_limit=1)
+        it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")
+        found = D.discover(core.VAULT, own["pending_refs"], scan_limit=1)
         self.assertEqual((found["scanned"], found["truncated"]), (1, True), found)
 
 
@@ -1945,26 +1945,26 @@ class IntegrationTests(unittest.TestCase):
         other_sid = self.sid + "-older"
         other_path = Path(TMP.name) / (other_sid + ".jsonl")
         other_path.write_text("".join(json.dumps(row) + "\n" for row in claude_round(other_sid, 1)), encoding="utf-8")
-        other = it.capture("claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
-        other["cited"] = it.cite(f"claude/{other_sid}", turn="-1")["round_ref"]
+        other = it.capture(core.VAULT, "claude", other_sid, str(other_path), other_sid, "00_Scope/W1")
+        other["cited"] = it.cite(core.VAULT, f"claude/{other_sid}", turn="-1")["round_ref"]
         self._discovery_save(other, f"{self.sid}-older", f"{self.sid}-older-node")
-        receipt = D._job_path(f"{self.sid}-older")
+        receipt = D._job_path(core.VAULT, f"{self.sid}-older")
         # The turn is stamped two days ahead, so every receipt on disk (this suite's too) is older.
         at = time.time() + 2 * 86400
         self.transcript(stamped(claude_round(self.sid, 1), at))
-        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        it.cite(f"claude/{self.sid}", turn="-1")
-        st = it.prompt("claude", self.sid)
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")
+        st = it.prompt(core.VAULT, "claude", self.sid)
         self.assertEqual(st["proof_discovery"], {"errors": [], "truncated": False, "scanned": 0})
         self.assertNotIn("조회가 불완전", st["text"])
         # A receipt written after the turn is still read.
         os.utime(receipt, (at + 60, at + 60))
-        self.assertEqual(it.prompt("claude", self.sid)["proof_discovery"]["scanned"], 1)
+        self.assertEqual(it.prompt(core.VAULT, "claude", self.sid)["proof_discovery"]["scanned"], 1)
         # A pending turn of unknown time leaves no bound: the older receipts are read again.
         os.utime(receipt)
         self.transcript(stamped(claude_round(self.sid, 1), at) + claude_round(self.sid, 2))
-        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        self.assertGreaterEqual(it.prompt("claude", self.sid)["proof_discovery"]["scanned"], 1)
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        self.assertGreaterEqual(it.prompt(core.VAULT, "claude", self.sid)["proof_discovery"]["scanned"], 1)
 
 
     def test_discovered_pending_hub_resumes_without_body_rewrite(self):
@@ -1981,13 +1981,13 @@ class IntegrationTests(unittest.TestCase):
             saved = self._discovery_save(st, key)
         self.assertTrue(saved["ok"])
         before = (ROOT / saved["path"]).read_bytes()
-        prompt = it.prompt("claude", self.sid)
+        prompt = it.prompt(core.VAULT, "claude", self.sid)
         proof = next(proof for proof in prompt["previous_distillations"] if proof["key"] == key)
         self.assertEqual(proof["status"], "pending")
         self.assertIn("distill={resume:proof.key}", prompt["text"])
-        repaired = D.update_node({"resume": proof["key"]}, name=proof["target"]["id"])
+        repaired = D.update_node(core.VAULT, {"resume": proof["key"]}, name=proof["target"]["id"])
         self.assertEqual(repaired["distillation"]["status"], "complete")
-        ack = it.acknowledge("claude", self.sid, prompt["through"], "preserved",
+        ack = it.acknowledge(core.VAULT, "claude", self.sid, prompt["through"], "preserved",
                              "Recovered the saved target and its hub link.", [{"key": proof["key"]}])
         self.assertFalse(ack["pending"])
         self.assertEqual((ROOT / saved["path"]).read_bytes(), before)
@@ -1997,12 +1997,12 @@ class IntegrationTests(unittest.TestCase):
         st = self._discovery_source()
         key = self.sid + "-saved"
         saved = self._discovery_save(st, key)
-        write.update_node(saved["id"], body="A later writer changed this decision.",
+        write.update_node(core.VAULT, saved["id"], body="A later writer changed this decision.",
                           expect_hash=saved["new_hash"])
-        damaged = D._job_path(self.sid + "-damaged")
+        damaged = D._job_path(core.VAULT, self.sid + "-damaged")
         self.addCleanup(damaged.unlink, missing_ok=True)
         write._atomic_write(damaged, b"{bad-json")
-        prompt = it.prompt("claude", self.sid)
+        prompt = it.prompt(core.VAULT, "claude", self.sid)
         self.assertEqual(prompt["previous_distillations"], [])
         self.assertTrue(prompt["proof_discovery"]["errors"])
         self.assertIn("조회가 불완전", prompt["text"])
@@ -2025,11 +2025,11 @@ class IntegrationTests(unittest.TestCase):
                     rows[5]["payload"]["arguments"] = json.dumps(collision)
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
-                st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                st = it.capture(core.VAULT, harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertFalse(st["capture_pending"])
                 self.assertEqual(st["captured_rounds"], 1)
-                cited = it.cite(f"{harness}/{sid}", turn="-1")
+                cited = it.cite(core.VAULT, f"{harness}/{sid}", turn="-1")
                 saved = (ROOT / cited["path"]).read_bytes()
                 self.assertEqual(saved.count(b"[FILTERED:github-token]"), 2)
                 self.assertIn(b"first", saved)
@@ -2062,11 +2062,11 @@ class IntegrationTests(unittest.TestCase):
                     rows[5]["payload"]["arguments"] = encoded
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
-                st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                st = it.capture(core.VAULT, harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertFalse(st["capture_pending"])
                 self.assertEqual(st["captured_rounds"], 1)
-                cited = it.cite(f"{harness}/{sid}", turn="-1")
+                cited = it.cite(core.VAULT, f"{harness}/{sid}", turn="-1")
                 saved = (ROOT / cited["path"]).read_bytes()
                 # Exact encoded content retains all duplicate pairs and whitespace.
                 self.assertIn(json.dumps(expected).encode(), saved)
@@ -2092,11 +2092,11 @@ class IntegrationTests(unittest.TestCase):
                     later = codex_round(2)
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
-                first = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                first = it.capture(core.VAULT, harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(first["ok"], first)
                 self.assertFalse(first["capture_pending"])
                 self.assertEqual(first["appended"], 1)
-                cited = it.cite(f"{harness}/{sid}", turn="-1")
+                cited = it.cite(core.VAULT, f"{harness}/{sid}", turn="-1")
                 saved_first = (ROOT / cited["path"]).read_bytes()
                 self.assertEqual(transcripts._dump(dialogue), dialogue)
                 # raw.round_block already strips trailing whitespace from whole sections.
@@ -2105,11 +2105,11 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), native)
                 native += "".join(json.dumps(row) + "\n" for row in later).encode("utf-8")
                 path.write_bytes(native)
-                second = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                second = it.capture(core.VAULT, harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(second["ok"], second)
                 self.assertFalse(second["capture_pending"])
                 self.assertEqual((second["captured_rounds"], second["appended"]), (2, 1))
-                self.assertEqual(it.cite(f"{harness}/{sid}", turn="-1")["index"], 2)
+                self.assertEqual(it.cite(core.VAULT, f"{harness}/{sid}", turn="-1")["index"], 2)
                 saved = (ROOT / cited["path"]).read_bytes()
                 self.assertTrue(saved.startswith(saved_first))
                 self.assertIn(b"question 2", saved)
@@ -2159,9 +2159,9 @@ class IntegrationTests(unittest.TestCase):
             child = folder / f'rollout-second-{self.sid}_continuation.jsonl'
             header = {'type': 'session_meta', 'payload': {'id': self.sid}}
             parent.write_text(''.join(json.dumps(r) + '\n' for r in [header] + codex_round(1)), encoding='utf-8')
-            first = it.capture('codex', self.sid, str(parent), 'capture-tests')
-            it.acknowledge('codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
-            before = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
+            first = it.capture(core.VAULT, 'codex', self.sid, str(parent), 'capture-tests')
+            it.acknowledge(core.VAULT, 'codex', self.sid, first['through'], 'no_value', 'synthetic fixture')
+            before = it.load_state(core.VAULT, it.state_path(core.VAULT, 'codex', self.sid), 'codex', self.sid)
             offset = parent.stat().st_size
             # The declared history excludes later events in the ancestor file.
             with parent.open('a', encoding='utf-8') as f:
@@ -2170,21 +2170,21 @@ class IntegrationTests(unittest.TestCase):
                 'history_base': {'thread_id': self.sid, 'end_byte_offset': offset}}}
             child.write_text(''.join(json.dumps(r) + '\n' for r in [child_header] + codex_round(2)), encoding='utf-8')
             child_name = '\\\\?\\' + str(child.resolve()) if os.name == 'nt' else str(child)
-            captured = it.capture('codex', self.sid, child_name, 'capture-tests')
+            captured = it.capture(core.VAULT, 'codex', self.sid, child_name, 'capture-tests')
             self.assertTrue(captured['ok'], captured)
             self.assertEqual((captured['appended'], captured['captured_rounds'], captured['reviewed_rounds']), (1, 2, 1))
-            after = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
+            after = it.load_state(core.VAULT, it.state_path(core.VAULT, 'codex', self.sid), 'codex', self.sid)
             self.assertEqual(after['rounds'][:1], before['rounds'])
             self.assertEqual(after['reviews'], before['reviews'])
             self.assertEqual(after['snapshots'][first['through']], before['snapshots'][first['through']])
             self.assertEqual([r['id'] for r in after['rounds']], ['turn-1', 'turn-2'])
             self.assertNotIn('question 99', json.dumps(transcripts.read(str(child), 'codex', self.sid)['dialogue_v1']))
             self.assertFalse(raw.record_path(core.VAULT, 'Capture', captured['record']).exists())
-            self.assertEqual(it.capture('codex', self.sid, str(child), 'capture-tests')['appended'], 0)
+            self.assertEqual(it.capture(core.VAULT, 'codex', self.sid, str(child), 'capture-tests')['appended'], 0)
             # A lost local cursor tracks the same original turns again, under the same refs.
             refs = [r['ref'] for r in after['rounds']]
-            it.state_path('codex', self.sid).unlink()
-            rebuilt = it.capture('codex', self.sid, str(child), 'capture-tests')
+            it.state_path(core.VAULT, 'codex', self.sid).unlink()
+            rebuilt = it.capture(core.VAULT, 'codex', self.sid, str(child), 'capture-tests')
             self.assertEqual((rebuilt['appended'], rebuilt['pending_refs']), (2, refs))
 
     def test_codex_missing_ancestor_keeps_tracked_turns_pending(self):
@@ -2195,20 +2195,20 @@ class IntegrationTests(unittest.TestCase):
             parent.write_text(''.join(json.dumps(r)+'\n' for r in [header] + codex_round(1)), encoding='utf-8')
             header['payload']['history_base'] = {'thread_id':self.sid,'end_byte_offset':parent.stat().st_size}
             child.write_text(''.join(json.dumps(r)+'\n' for r in [header] + codex_round(2)), encoding='utf-8')
-            first = it.capture('codex', self.sid, str(child), 'capture-tests')
+            first = it.capture(core.VAULT, 'codex', self.sid, str(child), 'capture-tests')
             self.assertTrue(first['ok'], first)
             parent.unlink()
-            listed = it.list_pending(100)
+            listed = it.list_pending(core.VAULT, 100)
             self.assertFalse(listed['ok'])
             self.assertTrue(any('history_base' in e['error'] for e in listed['errors']))
             # An offline worker has no copy of these turns; they wait for their own conversation.
             self.assertNotIn(self.sid, [j['conversation_id'] for j in listed['jobs']])
-            caught = it.catchup(100)
+            caught = it.catchup(core.VAULT, 100)
             capture = next(c for c in caught['captures'] if c['conversation_id'] == self.sid)
             self.assertFalse(capture['ok'])
             self.assertIn('history_base', capture['capture_error'])
             self.assertNotIn(self.sid, [j['conversation_id'] for j in caught['jobs']])
-            st = it.status('codex', self.sid)
+            st = it.status(core.VAULT, 'codex', self.sid)
             self.assertEqual((st['pending_refs'], st['reviewed_rounds']), (first['pending_refs'], 0))
 
     def test_codex_recovered_past_turn_follows_tracked_turns(self):
@@ -2222,18 +2222,18 @@ class IntegrationTests(unittest.TestCase):
         with mock.patch.object(transcripts, 'read', return_value=older):
             first = self.capture('codex')
         self.assertEqual(first['captured_rounds'], 2)
-        it.acknowledge('codex', self.sid, first['through'], 'no_value', 'fixture turns only')
-        old = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
+        it.acknowledge(core.VAULT, 'codex', self.sid, first['through'], 'no_value', 'fixture turns only')
+        old = it.load_state(core.VAULT, it.state_path(core.VAULT, 'codex', self.sid), 'codex', self.sid)
         captured = self.capture('codex')
         self.assertTrue(captured['ok'], captured)
         self.assertEqual((captured['appended'], captured['reviewed_rounds']), (1, 2))
-        state = it.load_state(it.state_path('codex', self.sid), 'codex', self.sid)
+        state = it.load_state(core.VAULT, it.state_path(core.VAULT, 'codex', self.sid), 'codex', self.sid)
         self.assertEqual(state['rounds'][:2], old['rounds'])
         self.assertEqual(state['reviews'], old['reviews'])
         self.assertEqual([r['id'] for r in state['rounds']], ['turn-1', 'turn-3', 'turn-2'])
         self.assertEqual(captured['pending_refs'], [raw.native_ref('codex', self.sid, 'turn-2')])
         # Without the local cursor, the turns are tracked again in transcript order.
-        it.state_path('codex', self.sid).unlink()
+        it.state_path(core.VAULT, 'codex', self.sid).unlink()
         rebuilt = self.capture('codex')
         self.assertEqual((rebuilt['ok'], rebuilt['appended']), (True, 3))
 
@@ -2245,7 +2245,7 @@ class IntegrationTests(unittest.TestCase):
             rows += turn
         self.transcript(rows)
         self.assertTrue(self.capture("codex")["ok"])
-        refs = [it.cite(f"codex/{self.sid}", quote=f"question {n}")["round_ref"] for n in (1, 2)]
+        refs = [it.cite(core.VAULT, f"codex/{self.sid}", quote=f"question {n}")["round_ref"] for n in (1, 2)]
         name = raw.parse_ref(refs[0])[0]
         path = raw.raw_file(core.VAULT, name)
         before = path.read_bytes()
@@ -2272,11 +2272,11 @@ class IntegrationTests(unittest.TestCase):
         with mock.patch.object(transcripts, "read", side_effect=SystemExit("simulated power loss mid-capture")):
             with self.assertRaises(SystemExit):
                 self.capture()
-        self.assertTrue(it.status("claude", self.sid)["pending"])
+        self.assertTrue(it.status(core.VAULT, "claude", self.sid)["pending"])
         st = self.capture()
         self.assertEqual((st["appended"], st["captured_rounds"]), (1, 1))
         self.assertEqual(self.capture()["appended"], 0)
-        it.state_path("claude", self.sid).unlink()
+        it.state_path(core.VAULT, "claude", self.sid).unlink()
         again = self.capture()
         self.assertEqual((again["appended"], again["pending_refs"]), (1, st["pending_refs"]))
 
@@ -2289,7 +2289,7 @@ class IntegrationTests(unittest.TestCase):
             row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, parent + row["uuid"]))
             row["parentUuid"], previous = previous, row["uuid"]
         self.transcript(rows)
-        original = it.capture("claude", parent, str(self.path), "capture-tests")
+        original = it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")
         self.assertEqual(original["captured_rounds"], 1)
         # The native desktop may preserve parent IDs or rewrite all IDs to the child.
         for rewrite in (False, True):
@@ -2300,29 +2300,29 @@ class IntegrationTests(unittest.TestCase):
                 row["uuid"] = str(uuid.uuid5(uuid.NAMESPACE_URL, child + row["uuid"]))
             tail[0]["parentUuid"] = rows[-1]["uuid"]
             self.transcript(inherited + tail)
-            captured = it.capture("claude", child, str(self.path), "capture-tests")
+            captured = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
             self.assertTrue(captured["ok"], captured)
             self.assertEqual((captured["captured_rounds"], captured["inherited_rounds"]), (1, 1))
             self.assertEqual(captured["reviewed_rounds"], 0)
             self.assertNotIn(original["pending_refs"][0], captured["pending_refs"])
-            self.assertIn("과거 1라운드", it.prompt("claude", child)["text"])
-            self.assertEqual(it.capture("claude", child, str(self.path), "capture-tests")["appended"], 0)
-            it.state_path("claude", child).unlink()
-            rebuilt = it.capture("claude", child, str(self.path), "capture-tests")
+            self.assertIn("과거 1라운드", it.prompt(core.VAULT, "claude", child)["text"])
+            self.assertEqual(it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")["appended"], 0)
+            it.state_path(core.VAULT, "claude", child).unlink()
+            rebuilt = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
             self.assertTrue(rebuilt["ok"], rebuilt)
             self.assertEqual((rebuilt["appended"], rebuilt["inherited_rounds"]), (1, 1))
             changed = json.loads(json.dumps(inherited + tail))
             changed[0]["message"]["content"] = "changed copied question"
             self.transcript(changed)
-            refused = it.capture("claude", child, str(self.path), "capture-tests")
+            refused = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
             self.assertFalse(refused["ok"])
             self.assertIn("inherited native prefix changed", refused["capture_error"])
-        self.assertEqual(it.status("claude", parent)["reviewed_rounds"], 0)
+        self.assertEqual(it.status(core.VAULT, "claude", parent)["reviewed_rounds"], 0)
         # Without both local cursors the copy is the child's own history again.
-        it.state_path("claude", parent).unlink()
-        it.state_path("claude", child).unlink()
+        it.state_path(core.VAULT, "claude", parent).unlink()
+        it.state_path(core.VAULT, "claude", child).unlink()
         self.transcript(inherited + tail)
-        rebuilt = it.capture("claude", child, str(self.path), "capture-tests")
+        rebuilt = it.capture(core.VAULT, "claude", child, str(self.path), "capture-tests")
         self.assertEqual((rebuilt["appended"], rebuilt["inherited_rounds"]), (2, 0), rebuilt)
 
     def test_claude_fork_copy_matches_turns_whichever_session_owns_rows(self):
@@ -2340,8 +2340,8 @@ class IntegrationTests(unittest.TestCase):
             "coverage": "tool-output-reference",
             "native_result": "claude:" + grandparent + ":" + rows[2]["uuid"]}}, sort_keys=True)
         self.transcript(rows)
-        self.assertFalse(it.state_path("claude", grandparent).exists())
-        original = it.capture("claude", parent, str(self.path), "capture-tests")
+        self.assertFalse(it.state_path(core.VAULT, "claude", grandparent).exists())
+        original = it.capture(core.VAULT, "claude", parent, str(self.path), "capture-tests")
         self.assertTrue(original["ok"], original)
         self.assertEqual(original["captured_rounds"], 2)
         # The copy rewrites every row, and so every result locator, to the child's ID.
@@ -2366,30 +2366,30 @@ class IntegrationTests(unittest.TestCase):
     def test_relocated_capture_crash_keeps_candidate_for_catchup(self):
         self.transcript(claude_round(self.sid, 1))
         first = self.capture()
-        it.acknowledge("claude", self.sid, first["through"], "no_value", "Completed fixture only.")
-        state_path = it.state_path("claude", self.sid)
-        before = it.load_state(state_path, "claude", self.sid)
+        it.acknowledge(core.VAULT, "claude", self.sid, first["through"], "no_value", "Completed fixture only.")
+        state_path = it.state_path(core.VAULT, "claude", self.sid)
+        before = it.load_state(core.VAULT, state_path, "claude", self.sid)
         candidate = self.path.with_suffix(".relocated.jsonl")
         candidate.write_text("".join(json.dumps(r) + "\n" for r in
                                     claude_round(self.sid, 1) + claude_round(self.sid, 2)), encoding="utf-8")
         with mock.patch.object(transcripts, "read", side_effect=SystemExit("Power loss while reading the relocated source.")):
             with self.assertRaises(SystemExit):
-                it.capture("claude", self.sid, str(candidate), "capture-tests")
-        crashed = it.load_state(state_path, "claude", self.sid)
+                it.capture(core.VAULT, "claude", self.sid, str(candidate), "capture-tests")
+        crashed = it.load_state(core.VAULT, state_path, "claude", self.sid)
         self.assertEqual(crashed["transcript_path"], before["transcript_path"])
         self.assertEqual(crashed.get("capture_path"), str(candidate.resolve()))
-        caught = it.catchup(100)
+        caught = it.catchup(core.VAULT, 100)
         capture = next(c for c in caught["captures"] if c["conversation_id"] == self.sid)
         self.assertEqual((capture["ok"], capture["appended"]), (True, 1))
         # The new turn waits for its own conversation; no offline worker reviews it.
         self.assertNotIn(self.sid, [j["conversation_id"] for j in caught["jobs"]])
-        recovered = it.load_state(state_path, "claude", self.sid)
+        recovered = it.load_state(core.VAULT, state_path, "claude", self.sid)
         self.assertEqual(recovered["transcript_path"], str(candidate.resolve()))
         self.assertNotIn("capture_path", recovered)
         self.assertEqual(recovered["rounds"][:1], before["rounds"])
         self.assertEqual(recovered["reviews"], before["reviews"])
         self.assertEqual((len(recovered["rounds"]), recovered["reviewed_count"]), (2, 1))
-        self.assertEqual(it.capture("claude", self.sid, None, "capture-tests")["appended"], 0)
+        self.assertEqual(it.capture(core.VAULT, "claude", self.sid, None, "capture-tests")["appended"], 0)
 
     def test_cited_round_filters_secrets_and_a_later_hand_edit_does_not_reopen_review(self):
         from osk import distillation as D, graph
@@ -2397,29 +2397,29 @@ class IntegrationTests(unittest.TestCase):
         rows = claude_round(self.sid, 1)
         rows[0]["message"]["content"] = "## 12\nsecret " + token
         self.transcript(rows)
-        st = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        cited = it.cite(f"claude/{self.sid}", turn="-1", note="the question that carried a secret")
+        st = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        cited = it.cite(core.VAULT, f"claude/{self.sid}", turn="-1", note="the question that carried a secret")
         stored = (ROOT / cited["path"]).read_text(encoding="utf-8")
         self.assertNotIn(token, stored)
         self.assertIn("[FILTERED:github-token]", stored)
         self.assertIn("\\## 12", stored)  # a numeric H2 in the words is escaped, not a round
-        self.assertNotIn(token, it.state_path("claude", self.sid).read_text(encoding="utf-8"))
-        source = D._source(cited["round_ref"], graph.Index(core.VAULT))
+        self.assertNotIn(token, it.state_path(core.VAULT, "claude", self.sid).read_text(encoding="utf-8"))
+        source = D._source(core.VAULT, cited["round_ref"], graph.Index(core.VAULT))
         self.assertEqual(source["native"], st["pending_refs"][0])
-        saved = D.create_node({"key": self.sid, "sources": [cited["round_ref"]], "hub": "W1"},
+        saved = D.create_node(core.VAULT, {"key": self.sid, "sources": [cited["round_ref"]], "hub": "W1"},
                               title=self.sid, summary="cited question",
                               body=evidenced("The question is kept with its cited turn.", cited["round_ref"]),
                               drafter="test-model",
                               space="00_Scope/W1")
         self.assertEqual(saved["distillation"]["status"], "complete")
-        it.acknowledge("claude", self.sid, st["through"], "preserved", "Cited and kept.", [{"key": self.sid}])
-        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
+        it.acknowledge(core.VAULT, "claude", self.sid, st["through"], "preserved", "Cited and kept.", [{"key": self.sid}])
+        self.assertEqual(it.review_status(core.VAULT, "claude", self.sid, st["through"])["status"], "complete")
         # Records are append-only; ACK checked the round, and nothing rechecks it later. A real
         # correction is registered by its corrector (reopen), which a hand edit skips.
         path = ROOT / cited["path"]
         path.write_bytes(path.read_bytes().replace(b"secret", b"tampered"))
-        self.assertEqual(it.review_status("claude", self.sid, st["through"])["status"], "complete")
-        self.assertFalse(it.status("claude", self.sid)["pending"])
+        self.assertEqual(it.review_status(core.VAULT, "claude", self.sid, st["through"])["status"], "complete")
+        self.assertFalse(it.status(core.VAULT, "claude", self.sid)["pending"])
 
     def antigravity(self, cid, steps):
         path = Path(TMP.name) / cid / "transcript_full.jsonl"   # the file sits under its conversation
@@ -2433,10 +2433,10 @@ class IntegrationTests(unittest.TestCase):
         step = lambda i, typ, text: {"step_index": i, "source": "x", "type": typ, "status": "DONE", "content": text}
         path = self.antigravity(self.sid, [step(0, "USER_INPUT", f"<USER_REQUEST>\nuse {token}\n</USER_REQUEST>"),
                                            step(1, "PLANNER_RESPONSE", f"stored {token}")])
-        st = it.capture("antigravity", self.sid, str(path), self.sid, "00_Scope/W1")
-        tracked = json.loads(it.state_path("antigravity", self.sid).read_text(encoding="utf-8"))["rounds"][0]["hash"]
+        st = it.capture(core.VAULT, "antigravity", self.sid, str(path), self.sid, "00_Scope/W1")
+        tracked = json.loads(it.state_path(core.VAULT, "antigravity", self.sid).read_text(encoding="utf-8"))["rounds"][0]["hash"]
         for view in ("full", "review"):
-            got = it.read_turns(st["pending_refs"], view=view)["turns"][0]
+            got = it.read_turns(core.VAULT, st["pending_refs"], view=view)["turns"][0]
             self.assertNotIn(token, json.dumps(got, ensure_ascii=False))
             self.assertEqual(got["filtered"], ["github-token"])
             self.assertEqual(got["hash"], tracked)  # the original is what was tracked
@@ -2454,22 +2454,22 @@ class IntegrationTests(unittest.TestCase):
         rows = claude_round(self.sid, 1)
         rows[0]["message"]["content"] = "apply the rule to project A only"
         self.transcript(rows)
-        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
-        first = it.cite(f"claude/{self.sid}", turn="-1")
-        again = it.cite(f"claude/{self.sid}", turn="-1")
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        first = it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")
+        again = it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")
         self.assertTrue(again["reused"])
         self.assertEqual(again["round_ref"], first["round_ref"])
-        saved = D.create_node({"key": self.sid, "sources": [first["round_ref"]], "hub": "W1"},
+        saved = D.create_node(core.VAULT, {"key": self.sid, "sources": [first["round_ref"]], "hub": "W1"},
                               title=self.sid, summary="scope of a rule",
                               body=evidenced("The rule applies to project A only.", first["round_ref"]),
                               drafter="test-model", space="00_Scope/W1")
         self.assertEqual(saved["distillation"]["status"], "complete")
         rows[0]["message"]["content"] = "apply the rule to every project"
         self.transcript(rows)
-        changed = it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        changed = it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         with self.assertRaisesRegex(ValueError, "words changed after it was cited"):  # the receipt cited the earlier words
-            it.acknowledge("claude", self.sid, changed["through"], "preserved", "Kept.", [{"key": self.sid}])
-        second = it.cite(f"claude/{self.sid}", turn="-1")
+            it.acknowledge(core.VAULT, "claude", self.sid, changed["through"], "preserved", "Kept.", [{"key": self.sid}])
+        second = it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")
         self.assertFalse(second["reused"])
         self.assertEqual(second["supersedes"], first["round_ref"])
         self.assertNotEqual(second["round_ref"], first["round_ref"])
@@ -2487,9 +2487,9 @@ class IntegrationTests(unittest.TestCase):
             r[0]["message"]["content"] = f"question {n} " + "w" * 2000
             rows += r
         self.transcript(rows)
-        it.capture("claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), self.sid, "00_Scope/W1")
         conversation = f"claude/{self.sid}"
-        st = it.prompt("claude", self.sid, include_organization=False, max_rounds=2)
+        st = it.prompt(core.VAULT, "claude", self.sid, include_organization=False, max_rounds=2)
         self.assertIn("1–2번째 턴 2개(`aaaaaaaa-1` … `aaaaaaaa-2`, 전체 4턴)", st["text"])
         self.assertIn(f'read_cited(conversation="{conversation}", through=', st["text"])
         read = mcp_server.read_cited(conversation=conversation, through=st["through"])
@@ -2499,24 +2499,24 @@ class IntegrationTests(unittest.TestCase):
                             and "question" in t["text"] for t in read["turns"]), read)
         self.assertFalse(mcp_server.read_cited(ref="x", conversation=conversation, through=st["through"])["ok"])
         with self.assertRaisesRegex(ValueError, "4 turns match"):
-            it.cite(conversation, turn="aaaaaaaa")
-        late = it.cite(conversation, turn="aaaaaaaa-4")
+            it.cite(core.VAULT, conversation, turn="aaaaaaaa")
+        late = it.cite(core.VAULT, conversation, turn="aaaaaaaa-4")
         self.assertEqual(late["turn"], "aaaaaaaa-4-turn")
         key = self.sid + "-late"
-        self.addCleanup(D._job_path(key).unlink, missing_ok=True)
-        D.create_node({"key": key, "sources": [late["round_ref"]], "hub": "W1"}, title=self.sid,
+        self.addCleanup(D._job_path(core.VAULT, key).unlink, missing_ok=True)
+        D.create_node(core.VAULT, {"key": key, "sources": [late["round_ref"]], "hub": "W1"}, title=self.sid,
                       summary="a later turn", body=evidenced("Knowledge from the latest turn.", late["round_ref"]),
                       drafter="test-model",
                       space="00_Scope/W1")
         with self.assertRaisesRegex(ValueError, r"cites no turn of this review \(1–2번째 턴 2개.*it cites aaaaaaaa-4"):
-            it.acknowledge("claude", self.sid, st["through"], "preserved", "Late.", [{"key": key}])
+            it.acknowledge(core.VAULT, "claude", self.sid, st["through"], "preserved", "Late.", [{"key": key}])
         with self.assertRaisesRegex(ValueError, "no complete body/source/hub receipt: unknown job"):
-            it.acknowledge("claude", self.sid, st["through"], "preserved", "Lost.", [{"key": self.sid + "-missing"}])
+            it.acknowledge(core.VAULT, "claude", self.sid, st["through"], "preserved", "Lost.", [{"key": self.sid + "-missing"}])
         # The range closes on its own; the later distillation waits for its own turn's review.
-        it.acknowledge("claude", self.sid, st["through"], "no_value", "fixture questions only")
-        rest = it.prompt("claude", self.sid, include_organization=False)
+        it.acknowledge(core.VAULT, "claude", self.sid, st["through"], "no_value", "fixture questions only")
+        rest = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertIn("3–4번째 턴 2개", rest["text"])
-        ack = it.acknowledge("claude", self.sid, rest["through"], "preserved", "Later turn kept.", [{"key": key}])
+        ack = it.acknowledge(core.VAULT, "claude", self.sid, rest["through"], "preserved", "Later turn kept.", [{"key": key}])
         self.assertFalse(ack["pending"])
 
     def test_open_kiro_and_antigravity_turns_are_cited_under_their_final_ids(self):
@@ -2524,11 +2524,11 @@ class IntegrationTests(unittest.TestCase):
         steps = [step(0, "USER_INPUT", "<USER_REQUEST>\nfirst\n</USER_REQUEST>"), step(1, "PLANNER_RESPONSE", "answered"),
                  step(2, "USER_INPUT", "<USER_REQUEST>\nthe current request\n</USER_REQUEST>")]
         ag = self.antigravity(self.sid, steps)
-        it.capture("antigravity", self.sid, str(ag), self.sid, "00_Scope/W1")
-        self.assertEqual(it.cite(f"antigravity/{self.sid}", turn="-1")["turn"], "2")
-        self.assertEqual(it.cite(f"antigravity/{self.sid}", quote="current request")["turn"], "2")
+        it.capture(core.VAULT, "antigravity", self.sid, str(ag), self.sid, "00_Scope/W1")
+        self.assertEqual(it.cite(core.VAULT, f"antigravity/{self.sid}", turn="-1")["turn"], "2")
+        self.assertEqual(it.cite(core.VAULT, f"antigravity/{self.sid}", quote="current request")["turn"], "2")
         self.antigravity(self.sid, steps + [step(3, "PLANNER_RESPONSE", "answered now")])
-        done = it.capture("antigravity", self.sid, str(ag), self.sid, "00_Scope/W1")
+        done = it.capture(core.VAULT, "antigravity", self.sid, str(ag), self.sid, "00_Scope/W1")
         self.assertIn(f"native:antigravity:{self.sid}:2", done["pending_refs"])
         cid = self.sid + "-kiro"
         kiro = Path(TMP.name) / cid / "messages.jsonl"  # Kiro's folder is the conversation's
@@ -2537,12 +2537,12 @@ class IntegrationTests(unittest.TestCase):
         open_turn = [row(1, {"type": "user", "content": "the current request"}),
                      row(2, {"type": "turn_start", "executionId": "exec-1"})]
         kiro.write_text("".join(open_turn), encoding="utf-8")
-        it.capture("kiro", cid, str(kiro), self.sid, "00_Scope/W1")
-        self.assertEqual(it.cite(f"kiro/{cid}", turn="-1")["turn"], "exec-1")
+        it.capture(core.VAULT, "kiro", cid, str(kiro), self.sid, "00_Scope/W1")
+        self.assertEqual(it.cite(core.VAULT, f"kiro/{cid}", turn="-1")["turn"], "exec-1")
         kiro.write_text("".join(open_turn + [
             row(3, {"type": "assistant", "operationType": "Say", "content": "done"}),
             row(4, {"type": "turn_end", "executionId": "exec-1", "stopReason": "end_turn"})]), encoding="utf-8")
-        done = it.capture("kiro", cid, str(kiro), self.sid, "00_Scope/W1")
+        done = it.capture(core.VAULT, "kiro", cid, str(kiro), self.sid, "00_Scope/W1")
         self.assertIn(f"native:kiro:{cid}:exec-1", done["pending_refs"])
 
     def test_numeric_turn_ids_name_turns_and_only_minus_counts_back(self):
@@ -2553,14 +2553,14 @@ class IntegrationTests(unittest.TestCase):
                                            step(1, "PLANNER_RESPONSE", "first"),
                                            step(2, "USER_INPUT", "<USER_REQUEST>\nretry\n</USER_REQUEST>"),
                                            step(3, "PLANNER_RESPONSE", "second")])
-        st = it.capture("antigravity", self.sid, str(path), self.sid, "00_Scope/W1")
-        read = it.read_turns(st["pending_refs"], view="full")["turns"]
+        st = it.capture(core.VAULT, "antigravity", self.sid, str(path), self.sid, "00_Scope/W1")
+        read = it.read_turns(core.VAULT, st["pending_refs"], view="full")["turns"]
         self.assertEqual([t["turn"] for t in read], ["0", "2"])
         for t in read:
-            self.assertEqual(it.cite(f"antigravity/{self.sid}", turn=t["turn"])["turn"], t["turn"])
-        self.assertEqual(it.cite(f"antigravity/{self.sid}", turn="-1")["turn"], "2")
+            self.assertEqual(it.cite(core.VAULT, f"antigravity/{self.sid}", turn=t["turn"])["turn"], t["turn"])
+        self.assertEqual(it.cite(core.VAULT, f"antigravity/{self.sid}", turn="-1")["turn"], "2")
         with self.assertRaisesRegex(ValueError, "counts back"):
-            it.cite(f"antigravity/{self.sid}", turn=1)  # a position counts back; 1 is none
+            it.cite(core.VAULT, f"antigravity/{self.sid}", turn=1)  # a position counts back; 1 is none
 
     def test_record_identity_survives_vault_copy(self):
         import shutil
@@ -2570,13 +2570,13 @@ from pathlib import Path
 sys.path.insert(0, os.environ['OSK_PROBE_ENGINE'])
 from osk import core, integration as it, raw, validate
 if not (core.ROOT / '00_Scope/W1').is_dir():
-    validate.make_mini_vault(core.ROOT)
+    validate.make_mini_vault(core.VAULT, core.ROOT)
 sid = os.environ['OSK_PROBE_SID']
-st = it.capture('claude', sid, os.environ['OSK_PROBE_TRANSCRIPT'], 'copy-session', '00_Scope/W1')
+st = it.capture(core.VAULT, 'claude', sid, os.environ['OSK_PROBE_TRANSCRIPT'], 'copy-session', '00_Scope/W1')
 assert st['ok'], st
-cited = it.cite('claude/' + sid, turn='-1')
+cited = it.cite(core.VAULT, 'claude/' + sid, turn='-1')
 print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended': st['appended'],
-                  'state_path': str(it.state_path('claude', sid)), 'cited': cited['round_ref'],
+                  'state_path': str(it.state_path(core.VAULT, 'claude', sid)), 'cited': cited['round_ref'],
                   'reused': cited['reused']}))
 """
         with tempfile.TemporaryDirectory(prefix="osk-vault-copy-test-") as folder:
@@ -2608,7 +2608,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual(st["pending_refs"], [raw.native_ref("claude", self.sid, f"user-{n}") for n in (1, 2)])
         self.assertFalse(raw.record_path(core.VAULT, "Capture", st["record"]).exists())
         conversation = f"claude/{self.sid}"
-        cited = it.cite(conversation, quote="  question\n1 ")
+        cited = it.cite(core.VAULT, conversation, quote="  question\n1 ")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
         # The 근거 line's coordinate: the record hash shortened, and the round (Mechanism §8 9항).
         self.assertRegex(cited["coordinate"], r"^[0-9a-f]{8}#1$")
@@ -2622,25 +2622,25 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual(header["agent_sha256"], cited["agent_sha256"])
         self.assertEqual(raw.cited_native(text), st["pending_refs"][0])
         # The same turn, named again either way, keeps its one coordinate.
-        again = it.cite(conversation, turn="user-1")
+        again = it.cite(core.VAULT, conversation, turn="user-1")
         self.assertEqual((again["round_ref"], again["reused"]), (cited["round_ref"], True))
         # The open turn is citable before it finishes and agrees with its finished round.
-        open_turn = it.cite(conversation, turn="-1", note="decision under discussion")
+        open_turn = it.cite(core.VAULT, conversation, turn="-1", note="decision under discussion")
         self.assertEqual((open_turn["turn"], open_turn["agent_sha256"]), ("user-3", None))
         self.assertIn("decision under discussion", raw.read_round(core.VAULT, open_turn["round_ref"])["text"])
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
         self.capture()
-        self.assertEqual(it.cite(conversation, quote="question 3")["round_ref"], open_turn["round_ref"])
+        self.assertEqual(it.cite(core.VAULT, conversation, quote="question 3")["round_ref"], open_turn["round_ref"])
         with self.assertRaisesRegex(ValueError, "3 turns match"):
-            it.cite(conversation, quote="question")
+            it.cite(core.VAULT, conversation, quote="question")
         with self.assertRaisesRegex(ValueError, "relative turn"):
-            it.cite(conversation, turn=2)
+            it.cite(core.VAULT, conversation, turn=2)
         with self.assertRaisesRegex(ValueError, "0 turns match"):
-            it.cite(conversation, turn="2")  # a string other than "-N" is a turn ID
+            it.cite(core.VAULT, conversation, turn="2")  # a string other than "-N" is a turn ID
         with self.assertRaisesRegex(ValueError, "transcript is readable"):
-            it.cite(conversation, user="words supplied by the caller")
+            it.cite(core.VAULT, conversation, user="words supplied by the caller")
         with self.assertRaisesRegex(ValueError, "harness"):
-            it.cite("claude:" + self.sid, quote="question 1")
+            it.cite(core.VAULT, "claude:" + self.sid, quote="question 1")
 
     def test_cite_without_transcript_marks_caller_supplied_words(self):
         self.transcript(claude_round(self.sid, 1))
@@ -2648,11 +2648,11 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.path.unlink()
         conversation = f"claude/{self.sid}"
         with self.assertRaisesRegex(ValueError, "pass user="):
-            it.cite(conversation, quote="question 1")
-        cited = it.cite(conversation, user="question 1, as the agent recalls it", turn="user-1:final-1")
+            it.cite(core.VAULT, conversation, quote="question 1")
+        cited = it.cite(core.VAULT, conversation, user="question 1, as the agent recalls it", turn="user-1:final-1")
         self.assertEqual((cited["user_by"], cited["turn"], cited["agent_sha256"]), ("caller", "user-1", None))
         self.assertEqual(raw.cited_header(raw.read_round(core.VAULT, cited["round_ref"])["text"])["user_by"], "caller")
-        self.assertTrue(it.cite(conversation, user="anything", turn="user-1")["reused"])
+        self.assertTrue(it.cite(core.VAULT, conversation, user="anything", turn="user-1")["reused"])
 
     def test_offline_review_takes_stored_rounds_and_leaves_turns_to_their_conversation(self):
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
@@ -2664,21 +2664,21 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         turn = raw.native_ref("claude", self.sid, "user-3")
         self.assertEqual((st["appended"], st["pending_refs"]), (1, stored + [turn]))
         # The conversation itself sees both: stored rounds to read, its own turn to cite.
-        online = it.prompt("claude", self.sid, include_organization=False)
+        online = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertEqual(online["pending_refs"], st["pending_refs"])
         self.assertIn("read_cited", online["text"])
         self.assertIn(f'cite_round(conversation="claude/{self.sid}"', online["text"])
         # An offline worker has only the stored rounds.
-        job = next(j for j in it.list_pending(100)["jobs"] if j["conversation_id"] == self.sid)
+        job = next(j for j in it.list_pending(core.VAULT, 100)["jobs"] if j["conversation_id"] == self.sid)
         self.assertEqual(job["pending_refs"], stored)
         self.assertEqual(job["raw_review"]["state"], "verified")
         self.assertNotIn("cite_round", job["prompt"])
-        it.acknowledge("claude", self.sid, job["through"], "no_value", "stored fixture rounds only")
-        self.assertNotIn(self.sid, [j["conversation_id"] for j in it.list_pending(100)["jobs"]])
-        rest = it.prompt("claude", self.sid, include_organization=False)
+        it.acknowledge(core.VAULT, "claude", self.sid, job["through"], "no_value", "stored fixture rounds only")
+        self.assertNotIn(self.sid, [j["conversation_id"] for j in it.list_pending(core.VAULT, 100)["jobs"]])
+        rest = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertEqual((rest["pending_refs"], rest["raw_review"]["state"]), ([turn], "native"))
         # A same-name record in `_raw/` stays the record and takes the new citation.
-        cited = it.cite(f"claude/{self.sid}", turn="-1")
+        cited = it.cite(core.VAULT, f"claude/{self.sid}", turn="-1")
         self.assertEqual(cited["path"], record.relative_to(ROOT).as_posix())
         self.assertEqual(cited["index"], 3)
 
@@ -2705,21 +2705,21 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                     rows[7]["payload"]["content"][0]["text"] = block(tokens[1])
                 native = "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
                 path.write_bytes(native)
-                st = it.capture(harness, sid, str(path), sid, "00_Scope/W1")
+                st = it.capture(core.VAULT, harness, sid, str(path), sid, "00_Scope/W1")
                 self.assertTrue(st["ok"], st)
                 self.assertEqual(st["captured_rounds"], 1)
                 with mock.patch.object(raw, "write_raw", wraps=raw.write_raw) as sink:
-                    cited = it.cite(f"{harness}/{sid}", turn="-1", note="the reply is kept as its hash")
+                    cited = it.cite(core.VAULT, f"{harness}/{sid}", turn="-1", note="the reply is kept as its hash")
                 self.assertEqual(sink.call_count, 1)  # mandatory final filter still runs
                 saved = (ROOT / cited["path"]).read_bytes()
-                cursor = it.state_path(harness, sid).read_bytes()
+                cursor = it.state_path(core.VAULT, harness, sid).read_bytes()
                 for token in tokens:
                     self.assertNotIn(token.encode(), saved)
                     self.assertNotIn(token.encode(), cursor)
                 self.assertEqual(saved.count(b"[FILTERED:github-token]"), 1)  # the user's words only
                 self.assertTrue(cited["agent_sha256"])
                 self.assertEqual(path.read_bytes(), native)  # native evidence is not edited
-                again = it.cite(f"{harness}/{sid}", turn="-1")
+                again = it.cite(core.VAULT, f"{harness}/{sid}", turn="-1")
                 self.assertTrue(again["reused"])
                 self.assertEqual((ROOT / cited["path"]).read_bytes(), saved)
 
@@ -2728,8 +2728,8 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         # Inventory only this test's conversations.
         state_path_for = it.state_path
         state_dir = Path(TMP.name) / self.sid
-        patcher = mock.patch.object(it, "state_path", side_effect=lambda harness, sid:
-                                    state_dir / state_path_for(harness, sid).name)
+        patcher = mock.patch.object(it, "state_path", side_effect=lambda vault, harness, sid:
+                                    state_dir / state_path_for(vault, harness, sid).name)
         patcher.start()
         self.addCleanup(patcher.stop)
         talks = {}
@@ -2738,18 +2738,18 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             path = Path(TMP.name) / f"{sid}.jsonl"
             path.write_text("".join(json.dumps(r) + "\n" for n in range(1, count + 1)
                                     for r in claude_round(sid, n)), encoding="utf-8")
-            st = it.capture("claude", sid, str(path), "capture-tests")
+            st = it.capture(core.VAULT, "claude", sid, str(path), "capture-tests")
             self.assertTrue(st["ok"], st)
             talks[name] = sid, path, st
         sid, path, st = talks["done"]
-        it.acknowledge("claude", sid, st["through"], "no_value", "fixture turns only")
+        it.acknowledge(core.VAULT, "claude", sid, st["through"], "no_value", "fixture turns only")
         sid, path, st = talks["short"]
-        first = it.prompt("claude", sid, include_organization=False, max_rounds=2)
-        it.acknowledge("claude", sid, first["through"], "no_value", "first two fixture turns")
+        first = it.prompt(core.VAULT, "claude", sid, include_organization=False, max_rounds=2)
+        it.acknowledge(core.VAULT, "claude", sid, first["through"], "no_value", "first two fixture turns")
         ended = time.time() - it.ENDED_AFTER - 60
         for name in ("done", "short"):
             os.utime(talks[name][1], (ended, ended))
-        jobs = {j["conversation_id"]: j for j in it.list_pending(100)["jobs"]}
+        jobs = {j["conversation_id"]: j for j in it.list_pending(core.VAULT, 100)["jobs"]}
         # A fully reviewed conversation is not read; a running one keeps its own cadence.
         self.assertEqual(set(jobs), {sid})
         job = jobs[sid]
@@ -2757,103 +2757,103 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         # A sandboxed worker reads them through MCP, not the CLI.
         self.assertIn("read_cited(ref=", job["prompt"])
         self.assertNotIn("read_command", job)
-        read = it.read_turns(job["pending_refs"])["turns"]
+        read = it.read_turns(core.VAULT, job["pending_refs"])["turns"]
         self.assertEqual([t["position"] for t in read], [3, 4, 5])
         self.assertTrue(all(f"question {t['position']}" in t["text"] for t in read), read)
         self.assertNotIn("question 2", json.dumps(read))
         self.assertEqual(read[0]["previous"], raw.native_ref("claude", sid, "user-2"))
         # Earlier context only on demand, one turn back at a time.
-        [back] = it.read_turns([read[0]["previous"]])["turns"]
+        [back] = it.read_turns(core.VAULT, [read[0]["previous"]])["turns"]
         self.assertEqual((back["position"], back["previous"]), (2, raw.native_ref("claude", sid, "user-1")))
         out = mcp_server.read_cited(job["pending_refs"][0], view="full")
         self.assertEqual((out["ok"], out["position"]), (True, 3), out)
         self.assertIn("answer 3", out["text"])
         with self.assertRaisesRegex(ValueError, "not a completed turn"):
-            it.read_turns([raw.native_ref("claude", sid, "user-9")])
-        done = it.acknowledge("claude", sid, job["through"], "no_value", "ended fixture turns")
+            it.read_turns(core.VAULT, [raw.native_ref("claude", sid, "user-9")])
+        done = it.acknowledge(core.VAULT, "claude", sid, job["through"], "no_value", "ended fixture turns")
         self.assertEqual((done["reviewed_rounds"], done["pending"]), (5, False))
-        self.assertNotIn(sid, [j["conversation_id"] for j in it.list_pending(100)["jobs"]])
+        self.assertNotIn(sid, [j["conversation_id"] for j in it.list_pending(core.VAULT, 100)["jobs"]])
 
     def test_complete_review_restarts_the_conversation_cadence(self):
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
         self.capture()
         for _ in range(6):
-            it.tick("claude", self.sid)
-        path = it.state_path("claude", self.sid)
-        state = it.load_state(path, "claude", self.sid)
+            it.tick(core.VAULT, "claude", self.sid)
+        path = it.state_path(core.VAULT, "claude", self.sid)
+        state = it.load_state(core.VAULT, path, "claude", self.sid)
         state["response_growth"] = {"counter": "finals", "seen": ["final"], "count": 6,
                                     "attempted_count": 0, "history_baselined": True}
         it.save_state(path, state)
-        part = it.prompt("claude", self.sid, include_organization=False, max_rounds=2)
-        it.acknowledge("claude", self.sid, part["through"], "no_value", "first two fixture turns")
-        state = it.load_state(path, "claude", self.sid)
+        part = it.prompt(core.VAULT, "claude", self.sid, include_organization=False, max_rounds=2)
+        it.acknowledge(core.VAULT, "claude", self.sid, part["through"], "no_value", "first two fixture turns")
+        state = it.load_state(core.VAULT, path, "claude", self.sid)
         # A partial review leaves both counts running.
         self.assertEqual((state["reviewed_prompt_count"], state["response_growth"]["attempted_count"]), (2, 0))
-        rest = it.prompt("claude", self.sid, include_organization=False)
-        it.acknowledge("claude", self.sid, rest["through"], "no_value", "last fixture turn")
-        state = it.load_state(path, "claude", self.sid)
+        rest = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
+        it.acknowledge(core.VAULT, "claude", self.sid, rest["through"], "no_value", "last fixture turn")
+        state = it.load_state(core.VAULT, path, "claude", self.sid)
         self.assertEqual((state["reviewed_prompt_count"], state["response_growth"]["attempted_count"]), (6, 6))
-        self.assertEqual(it.tick("claude", self.sid)["unreviewed_prompts"], 1)
+        self.assertEqual(it.tick(core.VAULT, "claude", self.sid)["unreviewed_prompts"], 1)
 
     # ── 소속 scope 없는 대화 (#179 · 시행령 §3 9항 · Mechanism §6-2 6항·§9-4 3항) ──
 
     def forget(self, *sids):
         for sid in sids:
-            self.addCleanup(it.state_path("claude", sid).unlink, missing_ok=True)
+            self.addCleanup(it.state_path(core.VAULT, "claude", sid).unlink, missing_ok=True)
 
     def test_an_unlanded_conversation_is_tracked_and_its_first_citation_lands_it(self):
         key = self.sid + "-key"
         self.forget(self.sid)
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
-        st = it.capture("claude", self.sid, str(self.path), key)
+        st = it.capture(core.VAULT, "claude", self.sid, str(self.path), key)
         self.assertTrue(st["ok"], st)
         self.assertEqual((st["captured_rounds"], st["space"]), (2, None))
         self.assertIsNone(write.resolve_session(core.VAULT, key))       # tracking writes nothing and binds nothing
-        self.assertIn("시행령 §3 9항", it.prompt("claude", self.sid, include_organization=False)["text"])
+        self.assertIn("시행령 §3 9항", it.prompt(core.VAULT, "claude", self.sid, include_organization=False)["text"])
         # Citing needs no landing: the record is the one root `_cited/` (Constitution art. 4 §3).
-        cited = it.cite(f"claude/{self.sid}", quote="question 1")
+        cited = it.cite(core.VAULT, f"claude/{self.sid}", quote="question 1")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)
-        self.assertIsNone(it.status("claude", self.sid)["space"])
+        self.assertIsNone(it.status(core.VAULT, "claude", self.sid)["space"])
         self.assertIsNone(write.resolve_session(core.VAULT, key))
-        self.assertEqual(it.cite(f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")["path"],
+        self.assertEqual(it.cite(core.VAULT, f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")["path"],
                          cited["path"])                   # any named space: the same record
         # A node written with a space adds that scope to the project's binding without making it
         # primary (Mechanism §6-2 6); the primary scope is designated.
         if not (ROOT / "00_Scope/Capture/Capture.md").exists():        # a cluster's first node is its hub
-            write.create_node("Capture", "Capture 허브", "시험 scope", "gpt-6-astra", space="00_Scope/Capture")
-        made = write.create_node(self.sid + " node", "summary", "body", "gpt-6-astra",
+            write.create_node(core.VAULT, "Capture", "Capture 허브", "시험 scope", "gpt-6-astra", space="00_Scope/Capture")
+        made = write.create_node(core.VAULT, self.sid + " node", "summary", "body", "gpt-6-astra",
                                  session=key, space="00_Scope/Capture")
         self.assertTrue(made["ok"], made)
         self.assertEqual((made["bound_scope"], write.bindings(core.VAULT, key)["scopes"], write.resolve_session(core.VAULT, key)),
                          ("Capture", ["Capture"], None))
         with self.assertRaisesRegex(write.WriteError, "주된 scope가 없다"):
-            write.create_node(self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)
-        review = it.prompt("claude", self.sid, include_organization=False)
+            write.create_node(core.VAULT, self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)
+        review = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertIn("주된 scope 없음", review["text"])
         # 결속 지정이 실패하면 검토도 남지 않는다 — 같은 through로 재시도한다(#191 리뷰 P2)
         from unittest import mock as _mock
         with _mock.patch.object(write, "set_primary", side_effect=OSError("ledger refused")):
             with self.assertRaises(OSError):
-                it.acknowledge("claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
-        self.assertEqual(it.status("claude", self.sid)["reviewed_rounds"], 0)
+                it.acknowledge(core.VAULT, "claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
+        self.assertEqual(it.status(core.VAULT, "claude", self.sid)["reviewed_rounds"], 0)
         self.assertIsNone(write.resolve_session(core.VAULT, key))
-        it.acknowledge("claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
+        it.acknowledge(core.VAULT, "claude", self.sid, review["through"], "no_value", "fixture", primary_scope="00_Scope/Capture")
         self.assertEqual(write.resolve_session(core.VAULT, key), "Capture")
-        self.assertTrue(write.create_node(self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)["ok"])
+        self.assertTrue(write.create_node(core.VAULT, self.sid + " node 2", "summary", "body", "gpt-6-astra", session=key)["ok"])
 
     def test_no_value_closes_only_the_judged_turns_and_a_new_turn_reopens(self):
         key = self.sid + "-key"
         self.forget(self.sid)
         self.transcript(claude_round(self.sid, 1))
-        st = it.capture("claude", self.sid, str(self.path), key)
-        done = it.acknowledge("claude", self.sid, st["through"], "no_value", "a one-off question")
+        st = it.capture(core.VAULT, "claude", self.sid, str(self.path), key)
+        done = it.acknowledge(core.VAULT, "claude", self.sid, st["through"], "no_value", "a one-off question")
         self.assertEqual((done["reviewed_rounds"], done["pending"], done["space"]), (1, False, None))
         self.assertIsNone(write.resolve_session(core.VAULT, key))
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
-        again = it.capture("claude", self.sid, str(self.path), key)
+        again = it.capture(core.VAULT, "claude", self.sid, str(self.path), key)
         self.assertTrue(again["pending"], again)
         self.assertEqual(again["pending_refs"], [raw.native_ref("claude", self.sid, "user-2")])
-        job = it.prompt("claude", self.sid, include_organization=False)
+        job = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
         self.assertNotEqual(job["through"], st["through"])
         self.assertIn("시행령 §3 9항", job["text"])
 
@@ -2867,21 +2867,21 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             path = Path(TMP.name) / f"{sid}.jsonl"
             path.write_text("".join(json.dumps(r) + "\n" for r in stamped(claude_round(sid, 1), at)),
                             encoding="utf-8")
-            talks[name] = sid, path, it.capture("claude", sid, str(path), "capture-tests")
+            talks[name] = sid, path, it.capture(core.VAULT, "claude", sid, str(path), "capture-tests")
             self.forget(sid)
         sid, path, st = talks["reopened"]
-        it.acknowledge("claude", sid, st["through"], "no_value", "fixture turn")
+        it.acknowledge(core.VAULT, "claude", sid, st["through"], "no_value", "fixture turn")
         path.write_text("".join(json.dumps(r) + "\n" for r in stamped(
             claude_round(sid, 1) + claude_round(sid, 2), 1_000_100_000)), encoding="utf-8")
         for _, p, _ in talks.values():
             os.utime(p, (ended, ended))
-        first = it.catchup(1)
+        first = it.catchup(core.VAULT, 1)
         captured = {c["conversation_id"]: c for c in first["captures"]}
         self.assertEqual(captured[sid]["appended"], 1, first)
         self.assertEqual([j["conversation_id"] for j in first["jobs"]], [talks["oldest"][0]])
         job = first["jobs"][0]
-        it.acknowledge("claude", job["conversation_id"], job["through"], "no_value", "fixture turn")
-        self.assertEqual([j["conversation_id"] for j in it.catchup(1)["jobs"]], [sid])
+        it.acknowledge(core.VAULT, "claude", job["conversation_id"], job["through"], "no_value", "fixture turn")
+        self.assertEqual([j["conversation_id"] for j in it.catchup(core.VAULT, 1)["jobs"]], [sid])
 
     def test_a_one_off_workspace_key_is_neither_bound_nor_followed(self):
         from osk import workspaces
@@ -2898,7 +2898,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             path.write_text("".join(json.dumps({**r, "cwd": str(cwd), "version": version}) + "\n"
                                     for r in claude_round(sid, 1)), encoding="utf-8")
             self.forget(sid)
-            return it.capture("claude", sid, str(path), key)
+            return it.capture(core.VAULT, "claude", sid, str(path), key)
 
         # The key also names an ordinary scope elsewhere: a binding made before the rule, or a
         # repository folder of the same name. The one-off conversation does not follow it.
@@ -2908,13 +2908,13 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertEqual((st["workspace"]["one_off"], st["space"]), (True, None))
         self.assertNotIn("warning", st["workspace"])
         rows = len(core.ledger_read(core.ROUTING))
-        cited = it.cite(f"claude/{self.sid}", quote="question 1", space="00_Scope/W1")
+        cited = it.cite(core.VAULT, f"claude/{self.sid}", quote="question 1", space="00_Scope/W1")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)   # the one root record
         self.assertNotIn("binding", cited)
         self.assertEqual(len(core.ledger_read(core.ROUTING)), rows)          # nothing bound
-        self.assertIsNone(it.status("claude", self.sid)["space"])            # citing pins no landing
+        self.assertIsNone(it.status(core.VAULT, "claude", self.sid)["space"])            # citing pins no landing
         # An explicit landing at capture is this conversation's review context only.
-        self.assertEqual(it.capture("claude", self.sid, None, key, "00_Scope/W1")["space"], "00_Scope/W1")
+        self.assertEqual(it.capture(core.VAULT, "claude", self.sid, None, key, "00_Scope/W1")["space"], "00_Scope/W1")
         self.assertEqual(len(core.ledger_read(core.ROUTING)), rows)          # still nothing bound
         # The judgment belongs to the conversation, not to the key: elsewhere the key keeps its scope.
         self.assertEqual(write.resolve_session(core.VAULT, key), "Capture")
@@ -2924,7 +2924,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         workspaces.enter(core.VAULT, str(root / f"2026-10-11/{key}"))
         self.assertIsNone(write.resolve_session(core.VAULT, key))
         with self.assertRaisesRegex(write.WriteError, "일회성 작업 폴더"):
-            write.create_node(self.sid + " node", "summary", "body", "gpt-6-astra", session=key)
+            write.create_node(core.VAULT, self.sid + " node", "summary", "body", "gpt-6-astra", session=key)
         workspaces.enter(core.VAULT, str(TMP.name))
         self.assertEqual(write.resolve_session(core.VAULT, key), "Capture")
         odd = talk(self.sid + "-odd", "artifacts/x")
@@ -2956,7 +2956,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             new.mkdir(parents=True)
             write.bind_session(core.VAULT, new.name, "Capture", "bound before the rule")
             self.transcript([{**r, "cwd": str(new), "version": "2.1.308"} for r in claude_round(self.sid, 1)])
-            st = it.capture("claude", self.sid, str(self.path), new.name)
+            st = it.capture(core.VAULT, "claude", self.sid, str(self.path), new.name)
             self.assertEqual((st["workspace"]["one_off"], st["space"]), (True, None), st)
 
     def test_a_subfolder_of_the_starting_folder_keeps_the_conversation_key(self):
@@ -2977,8 +2977,8 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
             {"harness": "claude", "session_id": self.sid, "transcript_path": str(self.path), "cwd": str(cwd)}))
         self.assertEqual((key(start), key(sub), key(elsewhere)), (start.name, start.name, elsewhere.name))
         self.assertEqual(hook.project_cwd({"cwd": str(sub)}), str(sub))       # no transcript: the hook's folder
-        self.assertTrue(it.capture("claude", self.sid, str(self.path), key(start))["ok"])
-        st = it.capture("claude", self.sid, str(self.path), key(sub))
+        self.assertTrue(it.capture(core.VAULT, "claude", self.sid, str(self.path), key(start))["ok"])
+        st = it.capture(core.VAULT, "claude", self.sid, str(self.path), key(sub))
         self.assertTrue(st["ok"], st)
         self.assertIsNone(st["capture_error"])
         # Another repository below the starting folder is its own project: a repository under the
@@ -3015,14 +3015,14 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         rows = [{**r, "cwd": str(cwd)} for r in claude_round(parent, 1)]
         rows[0]["uuid"] = str(uuid.uuid4())
         self.transcript(rows)
-        self.assertTrue(it.capture("claude", parent, str(self.path), "silver-gravity")["workspace"]["one_off"])
+        self.assertTrue(it.capture(core.VAULT, "claude", parent, str(self.path), "silver-gravity")["workspace"]["one_off"])
         # the parent lands by an explicit capture landing; its citation goes to the one root record
-        self.assertEqual(it.capture("claude", parent, str(self.path), "silver-gravity", "00_Scope/W1")["space"],
+        self.assertEqual(it.capture(core.VAULT, "claude", parent, str(self.path), "silver-gravity", "00_Scope/W1")["space"],
                          "00_Scope/W1")
-        it.cite(f"claude/{parent}", quote="question 1")
+        it.cite(core.VAULT, f"claude/{parent}", quote="question 1")
         self.transcript([dict(r, sessionId=self.sid) for r in rows]
                         + [{**r, "cwd": str(cwd)} for r in claude_round(self.sid, 2)])
-        copied = it.capture("claude", self.sid, str(self.path), "silver-gravity")
+        copied = it.capture(core.VAULT, "claude", self.sid, str(self.path), "silver-gravity")
         self.assertTrue(copied["ok"], copied)
         self.assertEqual((copied["inherited_rounds"], copied["captured_rounds"], copied["space"]),
                          (1, 1, "00_Scope/W1"), copied)
@@ -3043,10 +3043,10 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         rows = [{**r, "cwd": str(cwd)} for r in claude_round(parent, 1)]
         rows[0]["uuid"] = str(uuid.uuid4())
         self.transcript(rows)
-        self.assertIsNone(it.capture("claude", parent, str(self.path), "amber-quartz")["space"])
+        self.assertIsNone(it.capture(core.VAULT, "claude", parent, str(self.path), "amber-quartz")["space"])
         self.transcript([dict(r, sessionId=self.sid) for r in rows]
                         + [{**r, "cwd": str(cwd)} for r in claude_round(self.sid, 2)])
-        copied = it.capture("claude", self.sid, str(self.path), "amber-quartz")
+        copied = it.capture(core.VAULT, "claude", self.sid, str(self.path), "amber-quartz")
         self.assertTrue(copied["ok"], copied)
         self.assertEqual((copied["inherited_rounds"], copied["captured_rounds"], copied["space"]),
                          (1, 1, None), copied)
@@ -3057,13 +3057,13 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         key = self.sid + "-key"
         self.forget(self.sid)
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
-        st = it.capture("claude", self.sid, str(self.path), key)
+        st = it.capture(core.VAULT, "claude", self.sid, str(self.path), key)
         raw.append_rounds(core.VAULT, key, st["record"], [{"user": "question 1", "agent": ""}], "00_Scope/Capture",
                           cited={"harness": "claude", "conversation": self.sid, "turn": "user-1"}, bind=False)
-        second = it.cite(f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")
+        second = it.cite(core.VAULT, f"claude/{self.sid}", quote="question 2", space="00_Scope/W1")
         self.assertTrue(second["round_ref"].startswith("_cited/.records/"), second)
         self.assertEqual(second["index"], 2)
-        self.assertIsNone(it.status("claude", self.sid)["space"])
+        self.assertIsNone(it.status(core.VAULT, "claude", self.sid)["space"])
         self.assertIsNone(write.resolve_session(core.VAULT, key))                 # citing binds nothing
 
     def test_concurrent_first_citations_land_the_conversation_once(self):
@@ -3081,7 +3081,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.forget(self.sid)
         self.transcript([{**r, "cwd": str(root / "fusion-orion")}
                          for r in claude_round(self.sid, 1) + claude_round(self.sid, 2)])
-        self.assertTrue(it.capture("claude", self.sid, str(self.path), key)["workspace"]["one_off"])
+        self.assertTrue(it.capture(core.VAULT, "claude", self.sid, str(self.path), key)["workspace"]["one_off"])
         original, inside, outcomes = raw.append_rounds, threading.Event(), {}
 
         def slow(*args, **kwargs):
@@ -3091,7 +3091,7 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
 
         def cite(name, space, quote):
             try:
-                outcomes[name] = it.cite(f"claude/{self.sid}", quote=quote, space=space)
+                outcomes[name] = it.cite(core.VAULT, f"claude/{self.sid}", quote=quote, space=space)
             except ValueError as exc:
                 outcomes[name] = exc
 
@@ -3108,18 +3108,18 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         self.assertTrue(outcomes["first"]["round_ref"].startswith("_cited/.records/"), outcomes)
         self.assertEqual(outcomes["second"]["path"], outcomes["first"]["path"], outcomes)
         self.assertEqual({outcomes["first"]["index"], outcomes["second"]["index"]}, {1, 2}, outcomes)
-        self.assertFalse(any((ROOT / "00_Scope/W1/_cited").glob(f".records/{it.status('claude', self.sid)['record']}*")))
-        self.assertIsNone(it.status("claude", self.sid)["space"])
+        self.assertFalse(any((ROOT / "00_Scope/W1/_cited").glob(f".records/{it.status(core.VAULT, 'claude', self.sid)['record']}*")))
+        self.assertIsNone(it.status(core.VAULT, "claude", self.sid)["space"])
 
     def test_a_person_only_conversation_cites_and_distills_into_person_space(self):
         from osk import distillation
         key = self.sid + "-key"
         self.forget(self.sid)
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2))
-        it.capture("claude", self.sid, str(self.path), key)
-        cited = it.cite(f"claude/{self.sid}", quote="question 1")
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), key)
+        cited = it.cite(core.VAULT, f"claude/{self.sid}", quote="question 1")
         self.assertTrue(cited["round_ref"].startswith("_cited/.records/"), cited)   # the one root record
-        self.assertIsNone(it.status("claude", self.sid)["space"])
+        self.assertIsNone(it.status(core.VAULT, "claude", self.sid)["space"])
         self.assertIsNone(write.resolve_session(core.VAULT, key))
         self.assertIn("question 1", raw.read_round(core.VAULT, cited["round_ref"])["text"])
         hub = ROOT / "00_Person" / "Habits" / "Habits.md"
@@ -3127,8 +3127,8 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
         hub.write_text('---\nid: "260801-zzzz-hbit"\ncreated: "2026-08-01 00:00 (KST)"\n'
                        'updated: "2026-08-01 00:00 (KST)"\nauthor: "agent"\ndrafter: "sonnet-5"\n'
                        'summary: "Person 시험 facet 허브"\n---\n\n# Habits\n\n시험 facet.\n', encoding="utf-8")
-        job = it.prompt("claude", self.sid, include_organization=False)
-        made = distillation.create_node({"key": job["key"] + ":habit", "sources": [cited["round_ref"]],
+        job = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
+        made = distillation.create_node(core.VAULT, {"key": job["key"] + ":habit", "sources": [cited["round_ref"]],
                                          "hub": "Habits"},
                                         title=self.sid + " habit", summary="a habit the user stated",
                                         body=evidenced("The user keeps a habit they stated.", cited["round_ref"]),
@@ -3136,19 +3136,19 @@ print(json.dumps({'record': st['record'], 'refs': st['pending_refs'], 'appended'
                                         space="00_Person/Habits")
         self.assertEqual(made["distillation"]["status"], "complete", made)
         self.assertFalse(made.get("dangling"), made)
-        done = it.acknowledge("claude", self.sid, job["through"], "preserved", "a Person fact",
+        done = it.acknowledge(core.VAULT, "claude", self.sid, job["through"], "preserved", "a Person fact",
                               [{"key": job["key"] + ":habit"}])
         self.assertEqual((done["reviewed_rounds"], done["space"]), (2, None))
         # The same conversation later lands in a scope: its new rounds join the same root record.
         self.transcript(claude_round(self.sid, 1) + claude_round(self.sid, 2) + claude_round(self.sid, 3))
-        it.capture("claude", self.sid, str(self.path), key, "00_Scope/Capture")
-        later = it.cite(f"claude/{self.sid}", quote="question 3")
+        it.capture(core.VAULT, "claude", self.sid, str(self.path), key, "00_Scope/Capture")
+        later = it.cite(core.VAULT, f"claude/{self.sid}", quote="question 3")
         self.assertEqual(later["path"], cited["path"], later)
         self.assertTrue(raw.read_round(core.VAULT, cited["round_ref"])["ok"])
         # A record belongs to no scope: a Person node may be distilled from any cited round
         # (Constitution art. 8 §3).
-        job2 = it.prompt("claude", self.sid, include_organization=False)
-        made2 = distillation.create_node({"key": job2["key"] + ":scope-habit", "sources": [later["round_ref"]],
+        job2 = it.prompt(core.VAULT, "claude", self.sid, include_organization=False)
+        made2 = distillation.create_node(core.VAULT, {"key": job2["key"] + ":scope-habit", "sources": [later["round_ref"]],
                                           "hub": "Habits"},
                                          title=self.sid + " scope habit", summary="from a later round",
                                          body=evidenced("A habit the user stated later.", later["round_ref"]),

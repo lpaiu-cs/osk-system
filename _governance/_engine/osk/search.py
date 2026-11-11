@@ -22,8 +22,9 @@ from datetime import datetime
 from rank_bm25 import BM25Okapi
 
 from . import core
-from .core import ROOT, TS_FMT, posix_rel
+from .core import TS_FMT, posix_rel
 from . import graph
+from .vault import Vault
 
 # 노출 순위의 계수(Mechanism §8 8항). 관련성에 상한 있는 가산을 곱하며, 모두 0이면 BM25 순서다.
 W_RECENT, HALF_LIFE = 0.2, 30 * 86400   # 갓 고친 노드 +20%, 30일마다 반
@@ -51,8 +52,9 @@ def _tokens(text: str) -> list[str]:
 
 
 class Searcher:
-    def __init__(self, idx: graph.Index | None = None):
-        self.idx = idx or graph.Index(core.VAULT)
+    def __init__(self, vault: Vault, idx: graph.Index | None = None):
+        self.vault = vault
+        self.idx = idx or graph.Index(vault)
         self.paths, self.tokens, corpus = [], [], []
         # 파싱 실패 노드는 검색에서 빼고 목록으로 보고한다 — 파일 하나가
         # 검색 전체를 멈추지 않는다 (시행령 §11 — 실패는 보류·보고)
@@ -80,7 +82,7 @@ class Searcher:
         # 검색할 때 잰다 — 파일이 그대로인 채 검색기를 오래 쓰는 서버에서도 시간이 흐른다(#234 리뷰).
         # 허브는 갈래의 입구라 둘 다 얹지 않는다 — 본문이 배선마다 바뀌고(시행령 §7 2항이 그 변경을
         # 상태 변경으로 보지 않는다) 구성 노드의 Link가 모인다.
-        central = graph.centrality(core.VAULT, self.idx)[1]   # 순위에는 의존적 중심성 D만 얹는다(Mechanism §8 8항)
+        central = graph.centrality(vault, self.idx)[1]   # 순위에는 의존적 중심성 D만 얹는다(Mechanism §8 8항)
         knowledge = [(stem, n) for stem, p, n in self.paths if not graph.is_hub(p)]
         top = math.log1p(max((central.get(stem, 0.0) for stem, _ in knowledge), default=0.0))
         self.static, self.stamps = [], []
@@ -117,7 +119,7 @@ class Searcher:
         for score, _, (stem, p, n) in ranked:
             out.append({
                 "title": stem,
-                "path": posix_rel(p, ROOT),
+                "path": posix_rel(p, self.vault.root),
                 "id": n.id,
                 "summary": str(n.meta.get("summary", "")),
                 "updated": str(n.meta.get("updated", "")),

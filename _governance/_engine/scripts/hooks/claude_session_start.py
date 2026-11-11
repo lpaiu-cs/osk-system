@@ -408,13 +408,13 @@ def _organization(jobs: list, keep: int, ident=None, *, startup: bool = False, s
     j = jobs[0]
     label = f"조직 검토 scope {j['scope']} 남은 구간 {j['coverage']['remaining']}/{j['coverage']['total']}"
     mark = organization.hook_mark(jobs)
-    if ident and not startup and integration.shown_before(*ident, "organization", mark):
+    if ident and not startup and integration.shown_before(core.VAULT, *ident, "organization", mark):
         command = core.cli_command(core.VAULT, "organization", "plan", "--scope", j["scope"])
         return Block("organization", f"[osk 참조·조직 검토 대기 — 변화 없음, {label}. 이 대화에 실은 전문과 같다 — "
                                      f"`{command}`로 다시 읽는다]", keep, label=label, pull="overview:organization")
-    return Block("organization", organization.hook_prompt(jobs, shown_tree), keep, label=label,
+    return Block("organization", organization.hook_prompt(core.VAULT, jobs, shown_tree), keep, label=label,
                  pull="overview:organization",
-                 on_shown=(lambda: integration.note_shown(*ident, "organization", mark)) if ident else None)
+                 on_shown=(lambda: integration.note_shown(core.VAULT, *ident, "organization", mark)) if ident else None)
 
 
 def _organization_jobs(key: str) -> list:
@@ -424,7 +424,7 @@ def _organization_jobs(key: str) -> list:
     if not scopes:
         return []
     with core.mutation_lock(core.VAULT):
-        return organization.pending(scopes, limit=1, record=True)
+        return organization.pending(core.VAULT, scopes, limit=1, record=True)
 
 
 def _bindings_block(key: str):
@@ -432,7 +432,8 @@ def _bindings_block(key: str):
     from osk import organization
     from osk.hook_text import Block
     try:
-        return Block("bindings", organization.bindings_prompt(key), 65,
+        from osk import core
+        return Block("bindings", organization.bindings_prompt(core.VAULT, key), 65,
                      label="프로젝트 결속 검토", pull="overview:organization")
     except Exception as exc:
         return Block("bindings", f"[osk 결속 검토 판독 진단 — {type(exc).__name__}: {exc}. 본 작업은 계속한다.]")
@@ -469,10 +470,10 @@ def _memory(scope_memory, key: str, ident, *, gate: bool, keep: int, space: str 
     arg = f"session={json.dumps(key, ensure_ascii=False)}" + (f", space={json.dumps(space, ensure_ascii=False)}" if space else "")
     pull = f"`scope_memory({arg})`"
     seen_as = st["scope"] if space else None     # 주된 scope 밖의 결속 scope는 제 해시를 따로 기억한다
-    if gate and ident and integration.memory_seen(*ident, st["hash"], seen_as):
+    if gate and ident and integration.memory_seen(core.VAULT, *ident, st["hash"], seen_as):
         return Block(name, _memory_line(st, key, space), keep, label="scope 기억(이 대화에 실은 전문과 같다)", pull=pull)
     return Block(name, full, keep, label=f"scope 기억 전문 {st['scope']}(여유 {st['limit'] - st['chars']}자)", pull=pull,
-                 on_shown=(lambda: integration.note_memory(*ident, st["hash"], seen_as)) if ident else None)
+                 on_shown=(lambda: integration.note_memory(core.VAULT, *ident, st["hash"], seen_as)) if ident else None)
 
 
 def _bound_memories(scope_memory, key: str, ident, bindings: dict, *, keep: int, gate: bool = False):
@@ -494,7 +495,8 @@ def _once(ident, text: str, view: dict, startup: bool) -> bool:
     """이어지는 대기·진단을 실을지 — 같은 글은 처음 한 번만이고 나머지는 `integration status`가
     보인다(#192). 시작은 새 문맥이라 다시 싣는다. 포착 중이 아니고 대기가 풀렸으면 잊는다."""
     from osk import integration
-    shown = integration.notice_once(*ident, text, settled=not view.get("capture_pending"))
+    from osk import core
+    shown = integration.notice_once(core.VAULT, *ident, text, settled=not view.get("capture_pending"))
     return bool(text) and (shown or startup)
 
 
@@ -506,22 +508,22 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
     넘겼다(#192). 저장된 커서로 세고, 새 턴의 포착과 CLI 판정은 분리 작업자가 한다
     (`response_growth.defer`). 세션 시작은 대화의 착지만 고정하고(`integration.hook_land`)
     마지막 포착 때의 대기를 싣는다 — 그 뒤의 턴은 작업자가 포착해 다음 입력부터 보인다."""
-    from osk import integration, response_growth
+    from osk import core, integration, response_growth
     from osk.hook_text import Block
     ident = None
     try:
         if startup:
-            captured = integration.hook_land(env, key)
+            captured = integration.hook_land(core.VAULT, env, key)
             harness, sid, cadence = captured["harness"], captured["conversation_id"], None
         else:
-            harness, sid, _ = integration.hook_source(env)
+            harness, sid, _ = integration.hook_source(core.VAULT, env)
             # Always retain the input clock, even while Stop owns background scheduling.
             # Losing CLI auth must not start the fallback's overdue work at zero again.
-            captured = cadence = integration.tick(harness, sid)
+            captured = cadence = integration.tick(core.VAULT, harness, sid)
         ident = (harness, sid)
-        selected = response_growth.route(env)
+        selected = response_growth.route(core.VAULT, env)
         try:
-            response_growth.defer(env, key, probe_due=selected['probe_due'])
+            response_growth.defer(core.VAULT, env, key, probe_due=selected['probe_due'])
         except (OSError, ValueError):
             pass        # 다음 훅이나 Stop의 포착이 다시 넘긴다
         # 새 대화의 전사는 첫 턴 뒤에야 생긴다 — 그 사이의 '없다'는 진단이 아니다
@@ -549,7 +551,7 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
         if startup:
             if not captured["pending"]:
                 return [warning, _start_organization(key, ident)], ident
-            st = integration.prompt(harness, sid, organization_in_text=False)
+            st = integration.prompt(core.VAULT, harness, sid, organization_in_text=False)
             return [warning, _conversation(st, 70), _organization(st["organization_jobs"], 60, ident, startup=True,
                                                                   shown_tree=st.get("hub_tree", ""))], ident
         overdue_switch = selected['changed'] and cadence['unreviewed_prompts'] >= integration.SOFT
@@ -565,7 +567,7 @@ def capture_blocks(env: dict, key: str, *, startup: bool = False):
                      + ("이번엔 단독 턴이어도 된다. " if cadence["hard"] or
                         overdue_switch and cadence['unreviewed_prompts'] >= integration.HARD else
                         "다음 도구 호출에 함께 실어 검토하라 — 검토만을 위한 턴을 따로 쓰지 마라. "))
-        st = integration.prompt(harness, sid, organization_in_text=False)
+        st = integration.prompt(core.VAULT, harness, sid, organization_in_text=False)
         blocks = [warning, lead, _conversation(st, 95),
                   _organization(st["organization_jobs"], 60, ident, shown_tree=st.get("hub_tree", ""))]
     except integration.SubagentEvent:
@@ -610,7 +612,8 @@ def _daily_note() -> str:
     지나가지 않게 한다. 이어지지 않으면 아무것도 싣지 않는다."""
     try:
         from osk import growth_daily
-        idle = growth_daily.idle()
+        from osk import core
+        idle = growth_daily.idle(core.VAULT)
     except Exception as exc:
         return f"[osk 정기 실행 판독 진단 — {type(exc).__name__}: {exc}]"
     if not idle:
@@ -627,9 +630,9 @@ def _recheck_note(rechecks) -> str:
     둘 다 없으면 아무것도 싣지 않는다."""
     try:
         from osk import core, growth
-        status = growth.daily_status()
+        status = growth.daily_status(core.VAULT)
         daily = status["active"]
-        if daily and not any(r.get("kind") == "recheck_review" for r in growth.ledger_records()):
+        if daily and not any(r.get("kind") == "recheck_review" for r in growth.ledger_records(core.VAULT)):
             return ""
         items, pending = rechecks.candidates(core.VAULT)
     except Exception as exc:
@@ -664,8 +667,10 @@ def _release_notice(host=None) -> tuple[str, str]:
     결과만 싣는다(`osk.update_check`)."""
     try:
         from osk import update_check
-        update_check.ensure_fresh()
-        return update_check.session_notice(screen=host is None or host.screen)
+        from osk import core
+        update_check.ensure_fresh(core.VAULT)
+        from osk import core
+        return update_check.session_notice(core.VAULT, screen=host is None or host.screen)
     except Exception as exc:
         return f"[osk 릴리스 확인 진단 — {type(exc).__name__}: {exc}; 본 작업은 계속한다.]", ""
 
@@ -737,7 +742,7 @@ def main() -> None:
         scope = bindings["primary"]
         try:
             from osk import integration
-            seen = integration.status(*ident) if ident else {}
+            seen = integration.status(core.VAULT, *ident) if ident else {}
         except Exception:
             seen = {}           # 판별을 못 읽어도 시작 안내는 싣는다
         bootstrap = Block("bootstrap", _bootstrap(key, bound=bool(scope), ident=ident, workspace=seen.get("workspace"),

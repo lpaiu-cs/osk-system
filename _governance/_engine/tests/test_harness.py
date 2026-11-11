@@ -22,7 +22,7 @@ from unittest import mock
 from osk import core, harness, integration, validate
 from osk.harness import runs
 root = core.ROOT
-validate.make_mini_vault(root)
+validate.make_mini_vault(core.VAULT, root)
 subprocess.run(['git', 'init', '-q', '-b', 'main', str(root)], check=True, capture_output=True)
 home = Path.home()
 claude_home = Path(os.environ['CLAUDE_CONFIG_DIR'])
@@ -144,44 +144,44 @@ assert outcome(after, cases[5][0], {}) == ('own', 'claude')
 assert outcome(after, cases[7][0], {}) == ('own', 'codex')
 # Without an ID nothing is judged, even with an unreadable transcript (same error as v4.0.0).
 try:
-    integration.hook_source({'transcript_path': str(malformed)})
+    integration.hook_source(core.VAULT, {'transcript_path': str(malformed)})
     raise AssertionError('judged without a conversation ID')
 except ValueError as exc:
     assert 'no actual conversation ID' in str(exc), exc
 # A Codex subagent's hook that names its root conversation changes nothing.
 child = rows(root.parent / 'child.jsonl', {'type': 'session_meta', 'payload': {'id': 'child', 'session_id': 'own'}})
 try:
-    integration.hook_source({'session_id': 'own', 'transcript_path': str(child)})
+    integration.hook_source(core.VAULT, {'session_id': 'own', 'transcript_path': str(child)})
     raise AssertionError('subagent event was not recognized')
 except integration.SubagentEvent as exc:
     assert 'Codex subagent' in str(exc), exc
 
 assert harness.NAMES == ('claude', 'codex', 'kiro', 'antigravity') and harness.fork_names() == ('claude', 'codex')
 try:
-    integration.conversation_key('gemini', 'x')
+    integration.conversation_key(core.VAULT, 'gemini', 'x')
     raise AssertionError('unknown harness accepted')
 except ValueError as exc:
     assert str(exc) == 'explicit claude/codex/kiro/antigravity harness and actual conversation_id required', exc
 # Transcripts are found where each host keeps them; two candidates need an explicit path.
 mine = rows(claude_home / 'projects' / 'p2' / 'c1.jsonl', {'sessionId': 'c1'})
-assert integration.locate_transcript('claude', 'c1') == str(mine.resolve())
+assert integration.locate_transcript(core.VAULT, 'claude', 'c1') == str(mine.resolve())
 live = rows(codex_home / 'sessions' / '2026' / '09' / '26' / 'rollout-2026-09-26T00-00-00-x1.jsonl', {})
-assert integration.locate_transcript('codex', 'x1') == str(live.resolve())
+assert integration.locate_transcript(core.VAULT, 'codex', 'x1') == str(live.resolve())
 rows(codex_home / 'archived_sessions' / 'rollout-old-x1.jsonl', {})
 try:
-    integration.locate_transcript('codex', 'x1')
+    integration.locate_transcript(core.VAULT, 'codex', 'x1')
     raise AssertionError('ambiguous transcripts accepted')
 except ValueError as exc:
     assert 'multiple transcripts' in str(exc), exc
 from osk import response_growth as rg
-rg.CONFIG.parent.mkdir(parents=True, exist_ok=True)
-rg.CONFIG.write_text(json.dumps({'gemini': py}), encoding='utf-8')
+rg.config_path(core.VAULT).parent.mkdir(parents=True, exist_ok=True)
+rg.config_path(core.VAULT).write_text(json.dumps({'gemini': py}), encoding='utf-8')
 try:
-    rg.configured('claude')
+    rg.configured(core.VAULT, 'claude')
     raise AssertionError('unknown fork harness accepted')
 except ValueError as exc:
     assert 'must map harness names' in str(exc), exc
-rg.CONFIG.unlink()
+rg.config_path(core.VAULT).unlink()
 for argv in (['integration', 'status', '--harness', 'gemini', '--conversation', 'x'],
              ['fork', 'doctor', '--harness', 'gemini'], ['doctor', '--harness', 'gemini']):
     r = subprocess.run([py, '-m', 'osk.cli', *argv], capture_output=True, text=True, encoding='utf-8')
@@ -276,13 +276,13 @@ assert start['session'] == 'proj' and start['python'] == py and time.time() - st
 out = hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit', 'prompt': 'q'})
 assert out is None or out['hookSpecificOutput']['hookEventName'] == 'UserPromptSubmit', out
 # A notice the harness put in the user's turn is not the user's input: no count, no answer (#275).
-counted = integration.status('claude', 'c1')['prompt_count']
+counted = integration.status(core.VAULT, 'claude', 'c1')['prompt_count']
 notice = '<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n</task-notification>'
 assert hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit', 'prompt': notice}) is None
-assert integration.status('claude', 'c1')['prompt_count'] == counted
+assert integration.status(core.VAULT, 'claude', 'c1')['prompt_count'] == counted
 hook('claude_prompt_submit.py', {**payload, 'hook_event_name': 'UserPromptSubmit',
                                  'prompt': '<system-reminder>s</system-reminder>' + chr(10) + 'q2'})
-assert integration.status('claude', 'c1')['prompt_count'] == counted + 1, 'words beside a reminder are the user’s'
+assert integration.status(core.VAULT, 'claude', 'c1')['prompt_count'] == counted + 1, 'words beside a reminder are the user’s'
 # An organization job this conversation already got whole comes back as one line; the hub tree the
 # conversation block carries is not repeated (#275).
 sys.path.insert(0, str(tested_hooks))
@@ -372,7 +372,7 @@ codex_config(gone)
 # The newest captured Claude conversation gives its version; Codex falls back to PATH.
 native = rows(claude_home / 'projects' / 'p' / 'c1.jsonl', {'sessionId': 'c1', 'version': '2.1.200'},
               {'sessionId': 'c1', 'version': '2.1.999'})
-integration.state_path('claude', 'c1').write_text(
+integration.state_path(core.VAULT, 'claude', 'c1').write_text(
     json.dumps({'harness': 'claude', 'transcript_path': str(native)}), encoding='utf-8')
 fake_cli('claude', '9.9.9 (Claude Code)')
 fake_cli('codex', 'codex-cli 0.1.0')
@@ -442,19 +442,19 @@ from osk.harness import base
 claude, codex = harness.get('claude'), harness.get('codex')
 def mcp_item(entry):
     rows(home / '.claude.json', {'mcpServers': {'osk-system': {'type': 'stdio', **entry}}})
-    return doctor._mcp(claude, claude.registrations()[0])[0]
+    return doctor._mcp(core.VAULT, claude, claude.registrations()[0])[0]
 # The registered interpreter, not the one running doctor, must start the server.
 bare = root.parent / 'bare'
 subprocess.run([py, '-m', 'venv', '--without-pip', str(bare)], check=True, capture_output=True)
 bare_py = str(bare / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python'))
 item = mcp_item({'command': bare_py, 'args': [str(server)]})
 assert item['level'] == 'fail' and 'mcp' in item['detail'], item
-assert item['fix'] == doctor._pip([bare_py]) and 'pip' in item['fix'], item
+assert item['fix'] == doctor._pip(core.VAULT, [bare_py]) and 'pip' in item['fix'], item
 old = root.parent / 'old_python.py'
 old.write_text("import sys\nprint('Python 3.10.9')\nsys.exit(3)\n", encoding='utf-8')
 item = mcp_item({'command': py, 'args': [str(old), str(server)]})
 assert item['level'] == 'fail' and 'Python 3.10.9' in item['detail'], item
-assert item['fix'] == claude.mcp_command(doctor.venv_python(), server), item
+assert item['fix'] == claude.mcp_command(doctor.venv_python(core.VAULT), server), item
 assert mcp_item({'command': py, 'args': [str(server)]})['level'] == 'ok'
 # A run left by an earlier registration does not stand in for trust in the current one.
 rows(codex_home / 'hooks.json', {'hooks': {'UserPromptSubmit': [{'hooks': [
@@ -462,7 +462,7 @@ rows(codex_home / 'hooks.json', {'hooks': {'UserPromptSubmit': [{'hooks': [
 (codex_home / 'config.toml').write_text('', encoding='utf-8')
 runs.record_run(core.VAULT, 'codex', 'input', 'proj')
 def hook_item():
-    return doctor._hook(codex, 'input', codex.registrations()[1], runs.read(core.VAULT)['runs'].get('codex/input'))
+    return doctor._hook(core.VAULT, codex, 'input', codex.registrations()[1], runs.read(core.VAULT)['runs'].get('codex/input'))
 item = hook_item()
 assert item['level'] == 'warn' and '신뢰 기록이 없다' in item['detail'], item
 key = json.dumps(str(codex_home / 'hooks.json') + ':user_prompt_submit:0:0')
@@ -547,8 +547,8 @@ if os.name == 'nt':
             raise AssertionError((a.name, path))
         except ValueError as e:
             assert path in str(e) and '--harness' in str(e), e
-        with mock.patch.object(doctor, 'venv_python', lambda: Path(path)):
-            item = doctor._hook(a, 'start', [], None)
+        with mock.patch.object(doctor, 'venv_python', lambda vault: Path(path)):
+            item = doctor._hook(core.VAULT, a, 'start', [], None)
         assert path in item['fix'], item
 ''')
 
@@ -607,7 +607,7 @@ script = hooks_dir / 'claude_session_start.py'
 rows(claude_home / 'settings.json', {'hooks': {'SessionStart': [
     {'hooks': [{'type': 'command', 'command': f'"{py}" "{script}"'}]},
     {'hooks': [{'type': 'command', 'command': py, 'args': [str(script)]}]}]}})
-checks = {i['check']: i for i in doctor.report('claude')['hosts'][0]['items']}
+checks = {i['check']: i for i in doctor.report(core.VAULT, 'claude')['hosts'][0]['items']}
 assert checks['훅 SessionStart']['level'] == 'warn', checks['훅 SessionStart']
 assert '2곳' in checks['훅 SessionStart']['detail'] and checks['훅 SessionStart']['fix'] == doctor._ONE
 assert checks['중복 호출 SessionStart']['level'] == 'warn', checks
@@ -615,7 +615,7 @@ assert checks['중복 호출 SessionStart']['level'] == 'warn', checks
 def start_groups(*matchers):
     rows(claude_home / 'settings.json', {'hooks': {'SessionStart': [
         {'matcher': m, 'hooks': [{'type': 'command', 'command': f'"{py}" "{script}"'}]} for m in matchers]}})
-    return {i['check']: i for i in doctor.report('claude')['hosts'][0]['items']}['훅 SessionStart']
+    return {i['check']: i for i in doctor.report(core.VAULT, 'claude')['hosts'][0]['items']}['훅 SessionStart']
 item = start_groups('startup', 'resume|clear|compact')
 assert item['level'] == 'ok' and '겹치지 않는다' in item['detail'], item
 item = start_groups('startup|resume', 'resume')
@@ -702,8 +702,8 @@ assert not out.lstrip().startswith('{'), out
 # that step here) captures the transcript found by the conversation ID, since Kiro gives no path.
 assert hook('capture_stop.py', {**given, 'hook_event_name': 'Stop'}) == ''
 from osk import response_growth as rg
-rg.after_hook({**given, 'harness': 'kiro', 'session': 'proj'})
-st = integration.status('kiro', sid)
+rg.after_hook(core.VAULT, {**given, 'harness': 'kiro', 'session': 'proj'})
+st = integration.status(core.VAULT, 'kiro', sid)
 assert (st['captured_rounds'], st['aborted_rounds'], st['interrupted_rounds']) == (5, 1, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
 assert Path(st['transcript_path']) == transcript.resolve(), st
@@ -716,12 +716,12 @@ assert '첫 질문' in text and '읽어 보겠습니다.' in text and '답은 42
 assert '"type": "superseded"' in text and '하다 만 답' in text and '넷째 답' in text, text
 assert '"native_trigger": "inputless"' in text and '다섯 번째' not in text, text
 # A transcript in another conversation's folder is not read.
-other = integration.capture('kiro', 'sess_other', str(transcript), 'proj')
+other = integration.capture(core.VAULT, 'kiro', 'sess_other', str(transcript), 'proj')
 assert 'does not match' in (other['capture_error'] or ''), other
 # When capture has failed, Kiro's stop hook still prints nothing: it has no place to show a notice.
 assert hook('capture_stop.py', {'session_id': 'sess_other', 'cwd': str(proj), 'hook_event_name': 'Stop'},
             KIRO_SESSION_ID='sess_other') == ''
-assert integration.status('kiro', 'sess_other')['capture_error'], 'the failure is kept in the state'
+assert integration.status(core.VAULT, 'kiro', 'sess_other')['capture_error'], 'the failure is kept in the state'
 # Reasoning is outside the capture scope; tool payloads are references (Bylaws §2 2).
 assert 'internal thought' not in text and 'FILE BODY' not in text, text
 assert '"tool_evidence_ref"' in text and '"read_file"' in text, text
@@ -742,7 +742,7 @@ for event in harness.SCRIPTS:
 rows(home / '.kiro' / 'hooks' / 'osk-system.json', kiro.hook_content({}, table))
 rows(home / '.kiro' / 'settings' / 'mcp.json', kiro.mcp_write({}, py, str(server)))
 fake_cli('kiro', '1.1.70')
-rep = doctor.report('kiro')
+rep = doctor.report(core.VAULT, 'kiro')
 got = {i['check']: i for i in rep['hosts'][0]['items']}
 assert got['MCP']['level'] == 'ok', got
 assert all(got[f'훅 {n}']['level'] == 'ok' for n in ('SessionStart', 'UserPromptSubmit', 'Stop')), got
@@ -802,20 +802,20 @@ text = out['injectSteps'][0]['ephemeralMessage']
 assert text.startswith(f'[osk 세션 시작 — session="proj" · conversation="antigravity/{sid}"]'), text
 assert 'Antigravity has no subscription fork' in text, text
 # PreInvocation runs before every model call: only the first after an input is osk's input.
-before = integration.status('antigravity', sid)['prompt_count']
+before = integration.status(core.VAULT, 'antigravity', sid)['prompt_count']
 assert hook('claude_prompt_submit.py', {**given, 'invocationNum': 3, 'initialNumSteps': 11}) == '{}'
-assert integration.status('antigravity', sid)['prompt_count'] == before, 'a later model call ticked the clock'
+assert integration.status(core.VAULT, 'antigravity', sid)['prompt_count'] == before, 'a later model call ticked the clock'
 out = hook('claude_prompt_submit.py', {**given, 'invocationNum': 0, 'initialNumSteps': 11})
 assert out == '{}' or 'injectSteps' in json.loads(out), out
-assert integration.status('antigravity', sid)['prompt_count'] == before + 1
+assert integration.status(core.VAULT, 'antigravity', sid)['prompt_count'] == before + 1
 # Stop answers `{}` (no decision); its worker (#192 — the suite runs that step here) captures the
 # transcript it was given.
 assert hook('capture_stop.py', {**given, 'executionNum': 0,
             'terminationReason': 'NO_TOOL_CALL', 'fullyIdle': True, 'error': ''}) == '{}'
 from osk import response_growth as rg
-rg.after_hook({'harness': 'antigravity', 'session_id': sid, 'transcript_path': str(transcript),
+rg.after_hook(core.VAULT, {'harness': 'antigravity', 'session_id': sid, 'transcript_path': str(transcript),
                'cwd': str(proj), 'session': 'proj'})
-st = integration.status('antigravity', sid)
+st = integration.status(core.VAULT, 'antigravity', sid)
 assert (st['captured_rounds'], st['failed_rounds']) == (3, 1), st
 assert st['capture_pending'] and not st['capture_error'], st
 assert Path(st['transcript_path']) == transcript.resolve(), st
@@ -835,7 +835,7 @@ for odd in ('no wrapper', '<USER_REQUEST>\nopen only', '<USER_REQUEST>\nx\n</USE
     assert transcripts._ag_user(odd) == odd, odd
 assert '"tool_evidence_ref"' in raw_text and '"view_file"' in raw_text, raw_text
 # A transcript in another conversation's folder is not read.
-other = integration.capture('antigravity', 'b8d2e3f4-0000-4000-8000-000000000000', str(transcript), 'proj')
+other = integration.capture(core.VAULT, 'antigravity', 'b8d2e3f4-0000-4000-8000-000000000000', str(transcript), 'proj')
 assert 'does not match' in (other['capture_error'] or ''), other
 # When capture has failed, Stop still answers JSON and lets the agent stop.
 assert hook('capture_stop.py', {**given, 'conversationId': 'b8d2e3f4-0000-4000-8000-000000000000'},
@@ -849,7 +849,7 @@ for event in harness.SCRIPTS:
     table.setdefault(ag.events[event], []).append(ag.hook_group(event, command))
 rows(hooks_home / 'hooks.json', ag.hook_content({}, table))
 rows(hooks_home / 'mcp_config.json', ag.mcp_write({}, py, str(server)))
-rep = doctor.report('antigravity')
+rep = doctor.report(core.VAULT, 'antigravity')
 got = {i['check']: i for i in rep['hosts'][0]['items']}
 assert got['MCP']['level'] == 'ok', got
 assert all(got[f'훅 {n}']['level'] == 'ok' for n in ('SessionStart', 'PreInvocation', 'Stop')), got

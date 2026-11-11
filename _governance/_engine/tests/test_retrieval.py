@@ -34,7 +34,7 @@ def search_checks():
         def node(self, path):
             return self.parsed[path]
 
-    s = search.Searcher(Index())
+    s = search.Searcher(core.VAULT, Index())
     for query, expected in [('Long exact title', 'Long exact title'),
                             ('LONG EXACT TITLE', 'LONG EXACT TITLE'), ('!!!', '!!!')]:
         assert s.work_search(query, 1)[0]['title'] == expected, query
@@ -79,7 +79,7 @@ def ranking_checks():
             return ('node', self.nodes[name][1]) if name in self.nodes else ('dangling',)
 
     w1, w2 = ('scope', 'W1'), ('scope', 'W2')
-    s = search.Searcher(Index([
+    s = search.Searcher(core.VAULT, Index([
         ('Fresh', w1, 0, []), ('Stale', w1, 365, []), ('Core', w1, 365, []),
         *[(f'Link {i}', w1, 365, ['Core', 'W1']) for i in range(3)],
         ('W1', w1, 0, []),                      # the W1 hub: fresh and linked, boosted by neither
@@ -156,12 +156,12 @@ def centrality_checks():
 def read_checks():
     import mcp_server as m
     from osk import core, validate, write
-    validate.make_mini_vault(core.ROOT)
+    validate.make_mini_vault(core.VAULT, core.ROOT)
     body = ('Introduction 한글😀\n# First\n' + '가😀 value\n' * 800 +
             '\n```markdown\n# Fake\n```\n~~~\n## Also fake\n~~~\n'
             '\n- ```python\n  # List comment\n  ```\n'
             '## Repeated\nFirst instance\n## Repeated\nSecond instance\n')
-    assert write.create_node('Selective read', 'Read fixture', body,
+    assert write.create_node(core.VAULT, 'Selective read', 'Read fixture', body,
                              'gpt-6-astra', space='00_Scope/W1')['ok']
     path = core.ROOT / '00_Scope/W1/Selective read.md'
     path.write_bytes(path.read_bytes().replace(b'\n', b'\r\n'))
@@ -192,7 +192,7 @@ def read_checks():
     assert m.update_node(full['name'], old_text='First instance', new_text='Revised instance')['ok']
     assert m.read_node(full['name'], view='outline')['view_hash'] != outline['view_hash']
     # A quote returns its paragraph plus one each side; that window is the edit's anchor (#273).
-    assert write.create_node('Window read', 'Anchor window',
+    assert write.create_node(core.VAULT, 'Window read', 'Anchor window',
                              '# 결론\n\n- 첫째.\n- 둘째에 59덱이 있다.\n  - 하위.\n- 셋째.\n\n산문 첫 줄\n이어짐.',
                              'gpt-6-astra', space='00_Scope/W1')['ok']
     got = m.read_node('Window read', view='59덱')
@@ -214,11 +214,11 @@ def read_checks():
     near = {h['title']: h['score'] for h in m.search('Selective read', 5, session='retrieval-key')}
     assert near['Selective read'] > plain['Selective read'] and near.keys() == plain.keys(), (plain, near)
     # A heading-free body is still pageable; huge outlines have a visible ceiling.
-    assert write.create_node('No headings', 'Plain', 'plain ' * 900,
+    assert write.create_node(core.VAULT, 'No headings', 'Plain', 'plain ' * 900,
                              'gpt-6-astra', space='00_Scope/W1')['ok']
     assert not m.read_node('No headings', view='outline')['headings']
     assert m.read_node('No headings', view='0:5000')['next_view']
-    assert write.create_node('Many headings', 'Outline', '\n'.join(f'# H{i}' for i in range(100)),
+    assert write.create_node(core.VAULT, 'Many headings', 'Outline', '\n'.join(f'# H{i}' for i in range(100)),
                              'gpt-6-astra', space='00_Scope/W1')['ok']
     many = m.read_node('Many headings', view='outline')
     assert len(many['headings']) == 40 and many['outline_truncated']
@@ -241,7 +241,7 @@ def read_checks():
         assert after['start'] == sample.index('## After')
         assert m._node_view(sample, after['view'])['body'] == '## After\n중요한 결론😀\n'
     assert m._node_view('```in`valid\n# Visible\n', 'outline')['headings'][0]['title'] == 'Visible'
-    assert not validate.surface_lint(), validate.surface_lint()
+    assert not validate.surface_lint(core.VAULT), validate.surface_lint(core.VAULT)
 
 
 async def transport_checks():

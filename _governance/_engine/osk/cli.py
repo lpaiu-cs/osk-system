@@ -112,24 +112,24 @@ def _integration_cmd(a) -> None:
     try:
         if a.integration_cmd in ("list", "catchup"):
             fn = integration.list_pending if a.integration_cmd == "list" else integration.catchup
-            result = fn(limit=a.limit)
+            result = fn(VAULT, limit=a.limit)
         elif a.integration_cmd == "capture":
-            result = integration.capture(a.harness, a.conversation,
+            result = integration.capture(VAULT, a.harness, a.conversation,
                                          a.transcript, a.session, a.space)
         elif a.integration_cmd == "prompt":
-            result = integration.prompt(a.harness, a.conversation)
+            result = integration.prompt(VAULT, a.harness, a.conversation)
         elif a.integration_cmd == "reopen":
-            result = integration.reopen(a.harness, a.conversation, a.ref, a.reason)
+            result = integration.reopen(VAULT, a.harness, a.conversation, a.ref, a.reason)
         elif a.integration_cmd == "review":
             data = _raw_stdin()
             if not isinstance(data, dict):
                 raise ValueError("review stdin must be a JSON object")
-            result = integration.acknowledge(
+            result = integration.acknowledge(VAULT,
                 a.harness, a.conversation, data["through"], data["outcome"],
                 data["reason"], targets=data.get("targets"),
                 primary_scope=data.get("primary_scope"))
         else:
-            result = integration.status(a.harness, a.conversation)
+            result = integration.status(VAULT, a.harness, a.conversation)
         _emit(result)
         if not result.get("ok", True):
             sys.exit(1)
@@ -144,17 +144,17 @@ def _growth_cmd(a) -> None:
     try:
         if a.growth_cmd == "status":
             from . import growth_status
-            result = growth_status.report(since=a.since, until=a.until, preflight=a.preflight)
+            result = growth_status.report(VAULT, since=a.since, until=a.until, preflight=a.preflight)
         elif a.growth_cmd in ("plan", "prompt"):
-            result = growth.plan(limit=a.limit)
+            result = growth.plan(VAULT, limit=a.limit)
             if a.growth_cmd == "prompt":
-                sys.stdout.buffer.write(growth.prompt(result).encode("utf-8"))
+                sys.stdout.buffer.write(growth.prompt(VAULT, result).encode("utf-8"))
                 return
         elif a.growth_cmd == "review":
-            result = growth.review(a.key, a.outcome, target=a.target,
+            result = growth.review(VAULT, a.key, a.outcome, target=a.target,
                                    reason=a.reason, manifest=a.manifest)
         elif a.growth_cmd == "checkpoint":
-            result = growth.checkpoint(growth.strict_json(
+            result = growth.checkpoint(VAULT, growth.strict_json(
                 Path(a.file).read_text(encoding="utf-8-sig")))
         else:
             commands = [json.loads(Path(f).read_text(encoding="utf-8-sig")) for f in a.command_file]
@@ -165,13 +165,13 @@ def _growth_cmd(a) -> None:
             # argv 검사는 실행기의 계약 하나(`growth.check_command`)를 따른다 — 여기서 따로
             # 검사하면 둘이 어긋난다. 빈 인자도 argv다(Claude의 `--tools ""`).
             if a.check:
-                checks = [growth.check_command(c) for c in commands]
+                checks = [growth.check_command(VAULT, c) for c in commands]
                 result = checks[0] if len(checks) == 1 else {"ok": all(c["ok"] for c in checks), "commands": checks}
             elif a.daily:
                 from . import growth_daily
-                result = growth_daily.daily(commands, invocation=a.invocation, backlog=a.backlog)
+                result = growth_daily.daily(VAULT, commands, invocation=a.invocation, backlog=a.backlog)
             else:
-                result = growth.run(commands[0], limit=a.limit, timeout=a.timeout, invocation=a.invocation)
+                result = growth.run(VAULT, commands[0], limit=a.limit, timeout=a.timeout, invocation=a.invocation)
         _emit(result)
         # 실행은 작업이 남아도(`incomplete`) 실패가 아니다 — 남은 것을 실패 코드로 내면
         # 운영체제 스케줄러에 매일 도는 실행이 매일 실패로 남는다. 하루 묶음은 대기(한도·잠금)를
@@ -188,7 +188,7 @@ def _fork_cmd(a) -> None:
     """`osk fork doctor` — route()의 판정과 근거를 **읽기만** 한다. 상태·설정을 쓰지 않는다."""
     from . import response_growth
     try:
-        reports = [response_growth.doctor(h, a.session, a.transcript)
+        reports = [response_growth.doctor(VAULT, h, a.session, a.transcript)
                    for h in ([a.harness] if a.harness else adapters.fork_names())]
     except (ValueError, OSError) as e:
         _emit({"ok": False, "violations": [str(e)]})
@@ -213,7 +213,7 @@ def _doctor_cmd(a) -> None:
     from . import doctor
     if a.migrate or a.vault:
         try:
-            rep, code = doctor.migrate() if a.migrate else doctor.vault()
+            rep, code = doctor.migrate(VAULT) if a.migrate else doctor.vault(VAULT)
         except (write.WriteError, StaleEngineError, ValueError, OSError, RuntimeError) as e:
             rep, code = {"ok": False, "violations": getattr(e, "violations", None) or [str(e)]}, 1
         if a.json or "items" not in rep:
@@ -224,7 +224,7 @@ def _doctor_cmd(a) -> None:
         if code:
             sys.exit(code)
         return
-    rep = doctor.report(a.harness)
+    rep = doctor.report(VAULT, a.harness)
     if a.json:
         _emit(rep)
     else:
@@ -241,9 +241,9 @@ def _organization_cmd(a) -> None:
             data = _raw_stdin()
             if not isinstance(data, dict):
                 raise ValueError("organization review needs a JSON object")
-            result = organization.review(**data)
+            result = organization.review(VAULT, **data)
         else:
-            result = organization.plan(a.scope, record=not a.preview)
+            result = organization.plan(VAULT, a.scope, record=not a.preview)
             if result.get("key"):   # 훅은 규칙의 요지만 싣는다 — 전문은 작업 직전 여기서 읽는다
                 result = {**result, "guidance": organization.guidance()}
         _emit(result)
@@ -292,7 +292,7 @@ def _routing_cmd(a) -> None:
     try:
         if a.routing_cmd == "show":
             _emit({"project": a.project, **write.bindings(VAULT, a.project)} if a.project
-                  else {"audit": organization.bindings_audit()})
+                  else {"audit": organization.bindings_audit(VAULT)})
             return
         if a.routing_cmd == "primary":
             # 사용자 전속 — 대화형 단말의 확인을 거친다(헌법 10조 1~2항). 검토의 결정 묶음은 이 길이
@@ -357,9 +357,9 @@ def _evidence_cmd(a) -> None:
     from . import evidence_migration
     try:
         if not a.apply:
-            _emit(evidence_migration.preview())
+            _emit(evidence_migration.preview(VAULT))
             return
-        _emit(evidence_migration.apply())
+        _emit(evidence_migration.apply(VAULT))
     except (ValueError, OSError, RuntimeError) as e:
         _emit({"ok": False, "violations": [str(e)]})
         sys.exit(1)
@@ -624,7 +624,7 @@ def main(argv=None):
             if rule not in known:
                 sys.exit(f"모르는 규칙: {rule} — 가능한 규칙: {', '.join(known)}")
             kind = "activate" if a.activate else "deactivate"
-            cur = "활성" if validate.validator_active(rule) else "비활성"
+            cur = "활성" if validate.validator_active(VAULT, rule) else "비활성"
             print(f"규칙 {rule}: 현재 {cur}")
             if kind == "activate":
                 _confirm(f"{rule}을(를) 활성화하면 위반이 검증기 verdict에 "
@@ -639,7 +639,7 @@ def main(argv=None):
         else:
             for r in known:
                 print(f"{r}: "
-                      f"{'활성' if validate.validator_active(r) else '비활성'}")
+                      f"{'활성' if validate.validator_active(VAULT, r) else '비활성'}")
     elif a.cmd == "status":
         idx = graph.Index(VAULT)
         regions = approvals.protected_regions(VAULT)
@@ -656,20 +656,20 @@ def main(argv=None):
         try:
             # 포착이 막힌 대화 — 훅은 막힌 사실을 한 번만 싣는다(§9-3 3항, #192)
             from . import integration
-            capture = integration.blocked()
+            capture = integration.blocked(VAULT)
         except Exception as e:
             capture = {"error": str(e)}
         try:
             # 판본과 마지막 릴리스 확인 — 네트워크에 닿지 않는다(`osk.update --check`)
             from . import update_check
-            release = update_check.report()
+            release = update_check.report(VAULT)
         except Exception as e:
             release = {"error": str(e)}
         gw = approvals.governance_warning(VAULT)
         print(json.dumps({
             "nodes": len(idx.nodes),
             "protected_regions": {r: approvals.state(VAULT, r) for r in regions},
-            "delegations": [d["title"] for d in authority.enumerate_delegations()
+            "delegations": [d["title"] for d in authority.enumerate_delegations(VAULT)
                             if d["effective"]],
             "evictions": ev,
             "scope_recovery": recovery,
@@ -679,12 +679,12 @@ def main(argv=None):
             "root": str(ROOT),
         }, ensure_ascii=False, indent=2))
     elif a.cmd in ("search", "view"):
-        s = search.Searcher()
+        s = search.Searcher(VAULT)
         rows = s.work_search(a.query, a.k) if a.cmd == "search"\
             else s.view_search(a.query, a.k)
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     elif a.cmd == "check":
-        print(json.dumps(authority.check(a.action), ensure_ascii=False, indent=2))
+        print(json.dumps(authority.check(VAULT, a.action), ensure_ascii=False, indent=2))
     elif a.cmd == "raw":
         return _raw_cmd(a)
     elif a.cmd == "integration":

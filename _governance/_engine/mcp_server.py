@@ -118,7 +118,8 @@ def _s():
     global _searcher
     idx = _idx()
     if _searcher is None:
-        _searcher = search_mod.Searcher(idx)
+        from osk import core
+        _searcher = search_mod.Searcher(core.VAULT, idx)
     return _searcher
 
 
@@ -344,9 +345,11 @@ def read_cited(ref: str | None = None, space: str | None = None,
     if through is not None or conversation is not None:
         if not (through and conversation) or ref or space or view != "review":
             return {"ok": False, "violations": ["a review range read takes conversation and through only (view=review)"]}
-        return _guard(integration.read_review, conversation, through, query)
+        from osk import core
+        return _guard(integration.read_review, core.VAULT, conversation, through, query)
     if ref and raw.is_native(ref):
-        return _guard(lambda: {"ok": True, **integration.read_turns([ref], max_chars, view, query)["turns"][0]})
+        from osk import core
+        return _guard(lambda: {"ok": True, **integration.read_turns(core.VAULT, [ref], max_chars, view, query)["turns"][0]})
     if ref:
         from osk import core
         return _guard(raw.read_round, core.VAULT, ref, max_chars, view, query)
@@ -371,9 +374,9 @@ def _hook_sections(session: str, include) -> dict:
                 out[name] = ""
             else:
                 with core.mutation_lock(core.VAULT):
-                    jobs = organization.pending(scopes, limit=1, record=False)
-                out[name] = "\n\n".join(t for t in (organization.hook_prompt(jobs),
-                                                   organization.bindings_prompt(session)) if t)
+                    jobs = organization.pending(core.VAULT, scopes, limit=1, record=False)
+                out[name] = "\n\n".join(t for t in (organization.hook_prompt(core.VAULT, jobs),
+                                                   organization.bindings_prompt(core.VAULT, session)) if t)
         except Exception as e:                  # 조망은 죽지 않는다(시행령 §11)
             out[name] = f"{type(e).__name__}: {e}"
     return out
@@ -387,9 +390,10 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     주된 scope `session_scope`도 반환한다.
     `include`=훅 `[osk 접음]` 줄이 알려 준 블록 → `included`."""
     idx = _idx()
+    from osk import core
     out = {
-        "clusters": write.cluster_names(),
-        "open_cases": write.open_cases(),
+        "clusters": write.cluster_names(core.VAULT),
+        "open_cases": write.open_cases(core.VAULT),
         "broken": sorted(getattr(idx, "broken", None) or {}),
         "nodes": len(idx.nodes),
         **_engine_state(),
@@ -412,8 +416,10 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
     try:
         # 새 릴리스는 있을 때만 싣는다 — 훅이 없는 하네스도 이 길로 알게 된다. 확인이
         # 낡았으면 기다리지 않고 분리 프로세스로 띄운다(osk.update_check).
-        update_check.ensure_fresh()
-        up = update_check.surface()
+        from osk import core
+        update_check.ensure_fresh(core.VAULT)
+        from osk import core
+        up = update_check.surface(core.VAULT)
     except Exception as e:
         up = {"error": f"{type(e).__name__}: {e}"}
     if up:
@@ -435,8 +441,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
             # 새 노드의 자리는 이 트리에서 주제를 덮는 가장 깊은 군집이다(시행령 §3 8항)
             from osk import organization
             try:
-                out["hub_tree"] = organization.hub_tree(
-                    organization.scope_path(out["session_scope"]), idx)
+                out["hub_tree"] = organization.hub_tree(core.VAULT,
+                    organization.scope_path(core.VAULT, out["session_scope"]), idx)
             except (OSError, ValueError):
                 pass
         if include:
@@ -447,7 +453,8 @@ def overview(session: str | None = None, include: list[HookSection] | None = Non
 @mcp.tool()
 def run_validators() -> dict:
     """전역 검증(중복 id·위상·대장 손상·파싱 실패). 보고만 하며 수정하지 않는다."""
-    return validate.run()
+    from osk import core
+    return validate.run(core.VAULT)
 
 
 # ── 쓰기 (osk.write 단일 통로) ───────────────────────────────────────────
@@ -470,10 +477,12 @@ def create_node(title: Title, summary: Summary, body: str, drafter: Drafter,
         return {"ok": False, "violations": [SEARCH_FIRST]}
     if distill is not None:
         from osk import distillation
-        return _guard(distillation.create_node, distill, title=title,
+        from osk import core
+        return _guard(distillation.create_node, core.VAULT, distill, title=title,
                       summary=summary, body=body, drafter=drafter,
                       session=session, space=space, edges=edges, settle=settle)
-    return _guard(write.create_node, title, summary, body, drafter,
+    from osk import core
+    return _guard(write.create_node, core.VAULT, title, summary, body, drafter,
                   session, space, edges, settle)
 
 
@@ -497,11 +506,13 @@ def update_node(name: str, body: str | None = None,
         from osk import distillation
         # 주지 않은 `rechecked`는 싣지 않는다 — 요청 결속이 이 인자 이전의 작업과 같게 남는다
         extra = {} if rechecked is None else {"rechecked": rechecked}
-        return _guard(distillation.update_node, distill, name=name, body=body,
+        from osk import core
+        return _guard(distillation.update_node, core.VAULT, distill, name=name, body=body,
                       expect_hash=expect_hash, summary=summary, add_edges=add_edges,
                       remove_edges=remove_edges, old_text=old_text,
                       new_text=new_text, settle=settle, **extra, _seen=_SEEN)
-    return _guard(write.update_node, name, body, expect_hash, summary,
+    from osk import core
+    return _guard(write.update_node, core.VAULT, name, body, expect_hash, summary,
                   add_edges, remove_edges, old_text, new_text, settle, rechecked,
                   _seen=_SEEN)
 
@@ -513,7 +524,8 @@ def move_nodes(names: list[str], dest_space: str) -> dict:
     군집이면 만들어지되 허브는 없다. 허브는 거부하니 군집째는 `move_cluster`다.
     응답의 `hub_links`가 **양쪽** 허브에서 뺄 것(`remove`)과 더할 것(`add`)을
     준다 — 둘 다 해야 도달이 산다. `crossed_scope`가 오면 먼저 읽어라."""
-    return _guard(write.move_nodes, names, dest_space)
+    from osk import core
+    return _guard(write.move_nodes, core.VAULT, names, dest_space)
 
 
 @mcp.tool()
@@ -521,7 +533,8 @@ def move_cluster(name: str, dest_parent: str) -> dict:
     """하위 군집을 폴더째 옮긴다 — `name`은 그 군집(=허브)의 이름, `dest_parent`
     는 새 부모(`clusters`). 아래 군집도 함께 가며 최상위는 못 건넌다.
     `hub_links`는 `move_nodes`와 같다."""
-    return _guard(write.move_cluster, name, dest_parent)
+    from osk import core
+    return _guard(write.move_cluster, core.VAULT, name, dest_parent)
 
 
 @mcp.tool()
@@ -531,7 +544,8 @@ def record_candidate(type: CandidateType,
     """충돌 후보 상정 — 사용자 심의를 요청한다. 같은 근거가 이미 있으면 기존
     기록을 돌려주므로 재호출이 안전하다. `nodes`는 서로 다른 둘 이상의 노드
     이름이다."""
-    return _guard(write.record_candidate, type, nodes, reason)
+    from osk import core
+    return _guard(write.record_candidate, core.VAULT, type, nodes, reason)
 
 
 @mcp.tool()
@@ -541,7 +555,8 @@ def cite_round(conversation: str, quote: str | None = None, turn: str | None = N
     quote(사용자 발화 일부)·turn(ID, -1=최신)으로 고르면 엔진이 발화를 옮긴다 —
     전문을 보내지 않는다. note=요지, user=원본 없을 때만. 같은 턴은 같은 round_ref.
     coordinate=관측 줄 좌표."""
-    return _guard(integration.cite, conversation, quote, turn, note, user=user)
+    from osk import core
+    return _guard(integration.cite, core.VAULT, conversation, quote, turn, note, user=user)
 
 
 @mcp.tool()

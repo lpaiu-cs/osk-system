@@ -9,17 +9,25 @@
 않는다(헌법 11조 3항).
 """
 from __future__ import annotations
-from .core import PERSON
 import re
 from pathlib import Path
 
-from .core import ROOT, VAULT
 from . import contract, approvals
+from .vault import Vault
 
-DELEGATION_FACET = ROOT / PERSON / "Delegation"
+
+def delegation_facet(vault: Vault) -> Path:
+    return vault.root / vault.person / "Delegation"
+
+
 # 위임 Facet의 정본 region key — 권한 판정은 **이 정확한 region**의 승인본으로만
 # 한다(하위 영역만 보호된 경우로 우회되지 않게).
-DELEGATION_REGION = DELEGATION_FACET.relative_to(ROOT).as_posix()
+
+
+def delegation_region(vault: Vault) -> str:
+    return delegation_facet(vault).relative_to(vault.root).as_posix()
+
+
 CLAUSE_KEYS = ("대상", "범위", "조건", "종료")
 
 
@@ -37,38 +45,38 @@ def parse_clause(body: str) -> dict | None:
     return out
 
 
-def covering_regions() -> list[str]:
+def covering_regions(vault: Vault) -> list[str]:
     """위임 Facet을 덮는 보호영역 — Facet 자신과 그 **상위** 구획들.
 
     헌법 10조 1항: "상위 구획의 보호는 그 하위 전체에 미치며, 에이전트는 하위에
     보호의 예외를 만들 수 없다." 그래서 사용자가 Facet 대신 `Person`을
     지정했어도 위임은 성립한다. 반대로 Facet **하위**만 지정한 것은 덮지 못한다
     — 하위 구획만 protect해 Facet의 미보호를 우회할 수 없다(헌법 7조 3항)."""
-    reg = DELEGATION_REGION
-    return [r for r in approvals.protected_regions(VAULT)
+    reg = delegation_region(vault)
+    return [r for r in approvals.protected_regions(vault)
             if reg == r.rstrip("/") or reg.startswith(r.rstrip("/") + "/")]
 
 
-def _baseline_nodes() -> list[Path] | None:
+def _baseline_nodes(vault: Vault) -> list[Path] | None:
     """승인본에 담긴 위임 Facet 안의 노드 파일 전수 — 덮는 보호영역이 없으면
     None(미보호).
 
     시행령 §5 2항은 "**승인본의** 위임 노드를 전수 열거"라고 한다 — 작업본을
     훑으면 승인본에 있으나 지금 지워진 노드를 놓치고, 하위 디렉터리의 노드도
     빠진다. 그래서 열거의 출처는 승인본 manifest다."""
-    for region in sorted(covering_regions(), key=len, reverse=True):
-        tree = approvals.approved_hash(VAULT, region)
-        table = approvals.tree_table_for_region(VAULT, region, tree) if tree else None
+    for region in sorted(covering_regions(vault), key=len, reverse=True):
+        tree = approvals.approved_hash(vault, region)
+        table = approvals.tree_table_for_region(vault, region, tree) if tree else None
         if table is None:
             continue
-        pre = DELEGATION_REGION + "/"
-        return [p for p in (approvals.resolve_in_root(VAULT, rel) for rel in sorted(table)
+        pre = delegation_region(vault) + "/"
+        return [p for p in (approvals.resolve_in_root(vault, rel) for rel in sorted(table)
                             if rel.startswith(pre) and rel.lower().endswith(".md"))
                 if p is not None]
     return None
 
 
-def enumerate_delegations() -> list[dict]:
+def enumerate_delegations(vault: Vault) -> list[dict]:
     """위임 Facet 전수 열거. 각 항목: 성립 3요건(배치·유효 위임 절·승인본
     반영) 평가를 포함한다.
 
@@ -78,11 +86,11 @@ def enumerate_delegations() -> list[dict]:
     파일은 위임으로 세지 않고 `broken`으로 표시한다 — 그 파일 하나가 권한
     검사를 죽이지 않는다(시행령 §11)."""
     out = []
-    nodes = _baseline_nodes()
+    nodes = _baseline_nodes(vault)
     if nodes is None:                      # 미보호 — 성립한 위임이 없다
-        if not DELEGATION_FACET.exists():
+        if not delegation_facet(vault).exists():
             return out
-        nodes = sorted(p for p in DELEGATION_FACET.iterdir()   # 보고용(전부 미성립)
+        nodes = sorted(p for p in delegation_facet(vault).iterdir()   # 보고용(전부 미성립)
                        if p.name.lower().endswith(".md") and p.is_file())
     for p in nodes:
         # 군집 허브 노드(헌법 3조 8항)는 위임이 아니다 — Delegation Facet도
@@ -90,9 +98,9 @@ def enumerate_delegations() -> list[dict]:
         # 검사가 영구 실패한다(v3.3.0 실측: 허브 승인 직후 위임 3요건 FAIL).
         # 허브에 위임 절을 위장시키는 것도, Facet만 허브 예외로 하는 것도
         # 답이 아니다 — 열거가 거른다(시행령 §5 1항).
-        if p.parent == DELEGATION_FACET and p.stem == DELEGATION_FACET.name:
+        if p.parent == delegation_facet(vault) and p.stem == delegation_facet(vault).name:
             continue
-        rel = str(p.relative_to(ROOT))
+        rel = str(p.relative_to(vault.root))
         if not p.is_file():                # 승인본에는 있으나 작업본에서 사라짐
             out.append({"path": rel, "node": None, "title": p.stem,
                         "clause": None, "broken": "작업본에 없음",
@@ -109,8 +117,8 @@ def enumerate_delegations() -> list[dict]:
             })
             continue
         clause = parse_clause(n.body)
-        approved = any(approvals.file_in_region_baseline(VAULT, r, p)
-                       for r in covering_regions())
+        approved = any(approvals.file_in_region_baseline(vault, r, p)
+                       for r in covering_regions(vault))
         out.append({
             "path": rel, "node": n.id,
             "title": p.stem, "clause": clause,
@@ -137,14 +145,14 @@ def evaluate(delegation: dict, action: str) -> tuple[str, str]:
     return "불명", "적용 봉투(범위·조건·종료)의 기계 평가 미구현"
 
 
-def check(action: str) -> dict:
+def check(vault: Vault, action: str) -> dict:
     """행동 계획 전 검사 (시행령 §5 2항). 위임 Facet을 전수 열거해 각 위임을
     적용·비적용·불명으로 평가하고, 하나라도 불명이 남으면 그 행위는 보류다.
 
     v0 의미론: 적용 봉투 평가기가 없으므로 성립한 위임은 전부 불명이고,
     따라서 **판정은 언제나 보류(hold)다** — 이 검사는 proceed를 내지 않는다.
     불명은 비적용으로 대체하지 않는다(헌법 7조 9항)."""
-    dels = enumerate_delegations()
+    dels = enumerate_delegations(vault)
     evaluated = []
     for d in dels:
         verdict, why = evaluate(d, action)

@@ -39,7 +39,7 @@ def adjustment(limit, at=None, **budgets):
     return {'at': (at or datetime.now(timezone.utc).astimezone()).isoformat(timespec='seconds'), 'limit': limit,
             'providers': {p: {'budget': b} for p, b in budgets.items()}}
 # The day resolves argv[0] as the runner does; these cases name executables that do not exist.
-resolved = patch.object(growth, 'check_command', lambda command, **k: {'ok': True, 'executable': command[0]})
+resolved = patch.object(growth, 'check_command', lambda vault, command, **k: {'ok': True, 'executable': command[0]})
 """
 
 
@@ -70,7 +70,7 @@ class DailyTests(unittest.TestCase):
                 "        print(json.dumps({'id': 1, **json.loads(answer)}), flush=True)"]))
             def read(answer):
                 os.environ['OSK_TEST_LIMITS'] = json.dumps(answer) if answer != 'silent' else answer
-                return growth_daily.codex_limits(codex)
+                return growth_daily.codex_limits(core.VAULT, codex)
             week = {'usedPercent': 100, 'windowDurationMins': 10080, 'resetsAt': 1}
             hour = {'usedPercent': 3, 'windowDurationMins': 300, 'resetsAt': 1}
             snap = lambda **k: {'primary': hour, 'secondary': week, 'rateLimitReachedType': None,
@@ -96,7 +96,7 @@ class DailyTests(unittest.TestCase):
                 got = read(answer)
                 assert not got['signal'] and got['exhausted'], got
                 assert time.monotonic() - started < 25, 'an exited app-server must not wait out the timeout'
-            got = growth_daily.codex_limits(str(core.ROOT / 'no-such-codex.exe'))
+            got = growth_daily.codex_limits(core.VAULT, str(core.ROOT / 'no-such-codex.exe'))
             assert not got['signal'] and got['exhausted'], got
             # The day asks the binary the runner will start. After a Desktop update the command file's
             # path is gone and the runner follows to the new one; the limit read must not stay behind.
@@ -105,13 +105,13 @@ class DailyTests(unittest.TestCase):
                                                                    'rateLimits': snap(credits=None, secondary={**week, 'usedPercent': 40})}})
             old = str(core.ROOT / 'Codex' / 'bin' / 'old' / 'codex.exe')
             with patch.object(native_cli, 'resolve', side_effect=lambda p: codex if p == old else p):
-                who, limits, skipped = growth_daily._choose({'codex': [old, 'exec']}, {})
+                who, limits, skipped = growth_daily._choose(core.VAULT, {'codex': [old, 'exec']}, {})
             assert who == 'codex' and limits['signal'] and not limits['exhausted'] and not skipped, (who, limits, skipped)
             # #306 D3: at 0.9 of the week Codex rests, credits or not — what is left is its user's.
             os.environ['OSK_TEST_LIMITS'] = json.dumps({'result': {'ordinaryUsageAllowed': False, 'rateLimits': snap(
                 credits={'hasCredits': True, 'unlimited': False, 'balance': '11594.3'})}})
             with patch.object(native_cli, 'resolve', side_effect=lambda p: codex if p == old else p):
-                who, limits, skipped = growth_daily._choose({'codex': [old, 'exec']}, {})
+                who, limits, skipped = growth_daily._choose(core.VAULT, {'codex': [old, 'exec']}, {})
             assert who is None and skipped == {'codex': 'rest'} and limits['weekly'] == 100, (who, skipped)
         """)
 
@@ -166,14 +166,14 @@ class DailyTests(unittest.TestCase):
             rejected = lines(core.ROOT / 'rejected.txt', [event('rejected'), {'type': 'result', 'is_error': True,
                                                                                  'result': "You've hit your limit"}])
             allowed = lines(core.ROOT / 'allowed.txt', [event('allowed_warning')])
-            assert growth_daily.limited(rejected, ['claude.exe']) and not growth_daily.limited(allowed, ['claude.exe'])
+            assert growth_daily.limited(core.VAULT, rejected, ['claude.exe']) and not growth_daily.limited(core.VAULT, allowed, ['claude.exe'])
             with patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': True}):
-                assert growth_daily.limited(allowed, ['codex.exe'])
+                assert growth_daily.limited(core.VAULT, allowed, ['codex.exe'])
             with patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False}):
-                assert not growth_daily.limited(allowed, ['codex.exe'])
+                assert not growth_daily.limited(core.VAULT, allowed, ['codex.exe'])
             # An unanswered query after a failed worker is no rejection: the failure stays a failure.
             with patch.object(growth_daily, 'codex_limits', return_value={'signal': False, 'exhausted': True}):
-                assert not growth_daily.limited(allowed, ['codex.exe'])
+                assert not growth_daily.limited(core.VAULT, allowed, ['codex.exe'])
             # A worker rejected by its limit leaves a waiting run, not a failed one, and the CLI exits 0.
             cli = shell('claude', chr(10).join([
                 'import json, sys', 'sys.stdin.read()',
@@ -202,7 +202,7 @@ class DailyTests(unittest.TestCase):
                         'inflow': {'new_rounds': 0, 'new_jobs': new_jobs, 'old_rounds': 0, 'old_jobs': old_jobs, 'unread': 0}}
             def adjust(rows, m, providers=('codex', 'claude')):
                 with patch.object(growth_daily, '_measure', return_value=m):
-                    return growth_daily.adjust(rows, list(providers), now)
+                    return growth_daily.adjust(core.VAULT, rows, list(providers), now)
             # N = new jobs + ⌈old jobs ÷ 4⌉, S = ⌈N ÷ 7⌉, L = max(6, S + 3); before any adjustment L was 3.
             got = adjust([], measured(70, 20, codex=66_310_000, claude=145_000_000))
             assert (got['N'], got['S'], got['target'], got['previous'], got['limit']) == (75, 11, 14, 3, 14), got
@@ -242,32 +242,32 @@ class DailyTests(unittest.TestCase):
                         'seven_day': {'utilization': utilization, 'resetsAt': resets}}}}])
                 core.ledger_append(growth.ledger_path(core.VAULT), {'kind': 'run', 'manifest': rid, 'provider': 'claude',
                                                    'output': '.osk/growth/runs/' + rid})
-            assert growth_daily.claude_week(growth.ledger_records()) is None
+            assert growth_daily.claude_week(core.VAULT, growth.ledger_records(core.VAULT)) is None
             claude_run('r1', 0.95, future)
-            assert growth_daily.claude_week(growth.ledger_records()) == 0.95
+            assert growth_daily.claude_week(core.VAULT, growth.ledger_records(core.VAULT)) == 0.95
             claude_run('r2', 0.95, past)
-            assert growth_daily.claude_week(growth.ledger_records()) is None, 'the window has reset since'
+            assert growth_daily.claude_week(core.VAULT, growth.ledger_records(core.VAULT)) is None, 'the window has reset since'
             claude_run('r3', 0.92, future)
             commands = {'codex': ['C:/x/codex.exe', 'exec'], 'claude': ['C:/x/claude.exe', '-p']}
             week = lambda used: patch.object(growth_daily, 'codex_limits',
                                              return_value={'signal': True, 'exhausted': False, 'weekly': used})
             with resolved, week(91):
-                who, _, skipped = growth_daily._choose(commands, {})
+                who, _, skipped = growth_daily._choose(core.VAULT, commands, {})
             assert who is None and skipped == {'codex': 'rest', 'claude': 'rest'}, skipped
             with resolved, week(40):
-                assert growth_daily._choose(commands, {})[0] == 'codex'
+                assert growth_daily._choose(core.VAULT, commands, {})[0] == 'codex'
             claude_run('r4', 0.5, future)
             with resolved, week(91):
-                assert growth_daily._choose(commands, {})[:3:2] == ('claude', {'codex': 'rest'})
+                assert growth_daily._choose(core.VAULT, commands, {})[:3:2] == ('claude', {'codex': 'rest'})
             # With every provider resting the day waits: not a failure.
             claude_run('r5', 0.9, future)
             with resolved, week(95), patch.object(growth, 'run', side_effect=AssertionError('ran')), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
-                day = growth_daily.daily([commands['codex'], commands['claude']])
+                day = growth_daily.daily(core.VAULT, [commands['codex'], commands['claude']])
             assert day['state'] == 'rest' and day['ok'] and not day['batches'], day
             # The backlog runs Scope batches only, past the daily limit and the wall clock, until nothing is left.
             calls = []
-            def fake(command, **args):
+            def fake(vault, command, **args):
                 calls.append(args)
                 if len(calls) > 8:
                     return {'ok': True, 'state': 'skipped', 'selected': 0}
@@ -276,7 +276,7 @@ class DailyTests(unittest.TestCase):
                         'usage': {'measured': False}}
             with patch.object(growth, 'run', side_effect=fake), patch.object(growth_daily, 'DAY_SECONDS', 0), \\
                     patch.object(growth_daily, 'adjust', side_effect=AssertionError('the backlog measures no week')):
-                day = growth_daily.daily([['worker']], backlog=True)
+                day = growth_daily.daily(core.VAULT, [['worker']], backlog=True)
             assert day['state'] == 'empty' and day['backlog'] and len(day['batches']) == 8, day
             assert {c['queues'] for c in calls} == {('scope_jobs',)} and all(c['daily']['backlog'] for c in calls)
             assert all(c['scope_bundle'] == 9 for c in calls)
@@ -292,7 +292,7 @@ class DailyTests(unittest.TestCase):
                                                    'at': (begun + timedelta(minutes=15)).isoformat(timespec='seconds'),
                                                    'selected': 1, 'progress': {'made': [], 'none': ['stuck' + str(n)]}})
             calls.clear()
-            def light_only(command, **args):
+            def light_only(vault, command, **args):
                 calls.append(args)
                 if args['queues'] == ('scope_jobs',) or len(calls) > 3:
                     return {'ok': True, 'state': 'skipped', 'selected': 0}
@@ -300,7 +300,7 @@ class DailyTests(unittest.TestCase):
                         'selected': 3, 'provider': None, 'progress': {'made': ['x'], 'none': []}, 'usage': {'measured': False}}
             with patch.object(growth, 'run', side_effect=light_only), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
             assert any(c['queues'] == growth_daily.LIGHT for c in calls) and day['done'] == {'scope': 0, 'light': 6}, (calls, day)
             assert day['day_seconds'] < 60 * 60 and 'stuck3' in calls[0]['exclude'], (day, calls[0]['exclude'])
             # The CLI keeps --backlog to the daily run.
@@ -347,12 +347,12 @@ class DailyTests(unittest.TestCase):
                       # no original: its native rounds cannot be reviewed; stored rounds still can
                       state('claude', 'gone', core.ROOT / 'gone.jsonl', ['g1:a', 'g2:a']),
                       state('claude', 'stored', core.ROOT / 'gone.jsonl', ['s1:a'], native=False)]
-            view = lambda s: {'pending_refs': [r['ref'] for r in s['rounds']]}
-            locate = lambda h, sid, saved=None: saved if Path(saved).exists() else None
+            view = lambda vault, s: {'pending_refs': [r['ref'] for r in s['rounds']]}
+            locate = lambda vault, h, sid, saved=None: saved if Path(saved).exists() else None
             with patch.object(growth_status, 'conversation_states', return_value=states), \\
                     patch.object(integration, 'state_view', side_effect=view), \\
                     patch.object(integration, 'locate_transcript', side_effect=locate):
-                got = growth_daily._measure(since)
+                got = growth_daily._measure(core.VAULT, since)
             assert got['work'] == {'claude': 4 + 10 + 6, 'codex': 100 - 60 + 5}, got
             assert got['inflow'] == {'new_rounds': 2, 'new_jobs': 2, 'old_rounds': 12, 'old_jobs': 4, 'unread': 0}, got
         """)
@@ -360,7 +360,7 @@ class DailyTests(unittest.TestCase):
     def test_day_runs_scope_first_then_light_and_goes_on_past_a_batch_without_progress(self):
         self.check_case("""
             calls = []
-            def fake(command, **args):
+            def fake(vault, command, **args):
                 calls.append(args)
                 kind = 'scope' if args['queues'] == ('scope_jobs',) else 'light'
                 n = len(calls)
@@ -375,7 +375,7 @@ class DailyTests(unittest.TestCase):
                     patch.object(growth_daily, 'adjust', return_value=fixed), \\
                     patch.object(integration, 'capture_known', wraps=integration.capture_known) as capture, \\
                     patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 2}):
-                day = growth_daily.daily([['C:/x/codex.exe', 'exec']])
+                day = growth_daily.daily(core.VAULT, [['C:/x/codex.exe', 'exec']])
             # #306 D2: a batch without progress (a hold, too) does not end the day — the next batch runs
             # without the jobs that made none, until the queues have nothing left to pick.
             assert day['state'] == 'empty' and day['ok'], day
@@ -400,23 +400,23 @@ class DailyTests(unittest.TestCase):
             assert 'budget_left' not in day and day['done'] == {'scope': 3, 'light': 3}, day
             # The daily limit and the wall-clock budget stop the day; so does running out of work.
             calls.clear()
-            done = lambda command, **args: (calls.append(args), {
+            done = lambda vault, command, **args: (calls.append(args), {
                 'kind': 'run', 'manifest': 'm', 'state': 'complete', 'returncode': 0, 'selected': args['limit'],
                 'provider': None, 'progress': {'made': ['k'], 'none': []}, 'usage': {'measured': False}})[1]
             with patch.object(growth, 'run', side_effect=done), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
             # L = 6: Scope takes L − 3 jobs, one at a time; the light batch keeps its three places.
             assert day['state'] == 'daily_limit' and day['done'] == {'scope': 3, 'light': 3}, day
             assert [(c['limit'], c['queues'] == growth_daily.LIGHT) for c in calls] == [
                 (1, False), (3, True), (1, False), (1, False)], calls
             with patch.object(growth, 'run', side_effect=done), patch.object(growth_daily, 'DAY_SECONDS', 0), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
-                assert growth_daily.daily([['worker']])['state'] == 'time_budget'
-            skipped = lambda command, **args: {'ok': True, 'state': 'skipped', 'selected': 0}
+                assert growth_daily.daily(core.VAULT, [['worker']])['state'] == 'time_budget'
+            skipped = lambda vault, command, **args: {'ok': True, 'state': 'skipped', 'selected': 0}
             with patch.object(growth, 'run', side_effect=skipped), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
             assert day['state'] == 'empty' and day['ok'] and not day['batches'], day
             assert services.GROWTH_MINUTES == growth_daily.DAY_SECONDS // 60 + 30
         """)
@@ -425,7 +425,7 @@ class DailyTests(unittest.TestCase):
         self.check_case("""
             commands = [['C:/x/codex.exe', 'exec'], ['C:/x/claude.exe', '-p']]
             seen = []
-            def fake(command, **args):
+            def fake(vault, command, **args):
                 who = growth_daily.provider(command)
                 seen.append((who, args['daily']['kind']))
                 if len(seen) > 4:
@@ -440,8 +440,8 @@ class DailyTests(unittest.TestCase):
                           {'signal': True, 'exhausted': False}])
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(8)), \\
-                    patch.object(growth_daily, 'codex_limits', side_effect=lambda exe: next(reads)):
-                day = growth_daily.daily(commands)
+                    patch.object(growth_daily, 'codex_limits', side_effect=lambda vault, exe: next(reads)):
+                day = growth_daily.daily(core.VAULT, commands)
             # Exhausted Codex → Claude; next batch Codex again; Codex rejected mid-run → the same light
             # batch again on Claude, and Codex stays off for the day.
             assert seen[:4] == [('claude', 'scope'), ('codex', 'light'), ('claude', 'light'), ('claude', 'scope')], seen
@@ -456,27 +456,27 @@ class DailyTests(unittest.TestCase):
                         'role': 'assistant', 'id': 'm' + str(i), 'content': [{'type': 'text', 'text': 'a' + str(i)}],
                         'stop_reason': 'end_turn'}})]
             lines(path, turns(2))
-            integration.capture('claude', 'c1', str(path), 'c1-project', space='00_Scope/W1')
-            rounds = lambda: len(integration.load_state(integration.state_path('claude', 'c1'), 'claude', 'c1')['rounds'])
+            integration.capture(core.VAULT, 'claude', 'c1', str(path), 'c1-project', space='00_Scope/W1')
+            rounds = lambda: len(integration.load_state(core.VAULT, integration.state_path(core.VAULT, 'claude', 'c1'), 'claude', 'c1')['rounds'])
             assert rounds() == 2
             lines(path, turns(5))
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)), \\
                     patch.object(growth_daily, 'codex_limits', return_value={'signal': False, 'exhausted': True}):
                 seen.clear()
-                day = growth_daily.daily(commands[:1])
+                day = growth_daily.daily(core.VAULT, commands[:1])
             assert day['state'] == 'limited' and day['ok'] and not seen and day['skipped'] == {'codex': 'no_signal'}, day
             assert rounds() == 5 and day['capture'] == {'ok': True, 'appended': 1, 'failed': 0, 'known_errors': 0}, (rounds(), day)
             # A capture that fails is the day's failure even when the batches succeed; the same error
             # again the next time is the conversation's known state, not a new failure every day.
             path.unlink()
-            ran = lambda command, **args: {'kind': 'run', 'manifest': 'r', 'state': 'complete', 'returncode': 0,
+            ran = lambda vault, command, **args: {'kind': 'run', 'manifest': 'r', 'state': 'complete', 'returncode': 0,
                                            'selected': args['limit'], 'provider': None,
                                            'progress': {'made': ['k'], 'none': []}, 'usage': {'measured': False}}
             with patch.object(growth, 'run', side_effect=ran), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
-                day = growth_daily.daily([['worker']])
-                again = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
+                again = growth_daily.daily(core.VAULT, [['worker']])
             assert day['batches'] and not day['ok'] and day['capture']['failed'] == 1, day
             assert [c['conversation_id'] for e in day['errors'] for c in e.get('capture', [])] == ['c1'], day['errors']
             assert again['ok'] and again['capture'] == {'ok': True, 'appended': 0, 'failed': 0, 'known_errors': 1}, again
@@ -485,7 +485,7 @@ class DailyTests(unittest.TestCase):
             with patch.object(growth, 'run', side_effect=fake), resolved, \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6, codex=0, claude=-5)), \\
                     patch.object(growth_daily, 'codex_limits', return_value={'signal': True, 'exhausted': False, 'weekly': 21}):
-                day = growth_daily.daily(commands)
+                day = growth_daily.daily(core.VAULT, commands)
             assert seen and seen[0][0] == 'codex' and day['state'] != 'budget', (seen, day)
         """)
 
@@ -494,7 +494,7 @@ class DailyTests(unittest.TestCase):
             # #306 D2: 11-06 and 11-07 stopped at the first Scope batch, so no recheck batch ran. A worker
             # fault (non-zero exit, timeout, rejected packet) stops that queue only; the light queues still run.
             calls = []
-            def fake(command, **args):
+            def fake(vault, command, **args):
                 calls.append(args['queues'])
                 failed = args['queues'] == ('scope_jobs',) or len(calls) > 2
                 return {'kind': 'run', 'manifest': 'm' + str(len(calls)), 'state': 'incomplete', 'selected': 1,
@@ -502,34 +502,34 @@ class DailyTests(unittest.TestCase):
                         'progress': {'made': [] if failed else ['r1'], 'none': ['k' + str(len(calls))] if failed else []}}
             with patch.object(growth, 'run', side_effect=fake), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(9)):
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
             assert calls == [('scope_jobs',), growth_daily.LIGHT, growth_daily.LIGHT], calls
             assert day['state'] == 'worker_fault' and not day['ok'] and len(day['errors']) == 2, day
             # #306 D6: each day leaves its stop and batch count; a run of days without a batch is reported.
             log = core.ROOT / growth_daily.DAYS
             assert [json.loads(l)['state'] for l in log.read_text(encoding='utf-8').splitlines()] == ['worker_fault']
-            assert growth_daily.idle() is None, 'a day with batches is not idle'
+            assert growth_daily.idle(core.VAULT) is None, 'a day with batches is not idle'
             def days(*rows):
                 lines(log, [{'day': d, 'state': s, 'batches': b} for d, s, b in rows])
             days(('2026-11-01', 'limited', 0), ('2026-11-02', 'budget', 0), ('2026-11-02', 'unavailable', 0),
                  ('2026-11-03', 'limited', 0))
-            assert growth_daily.idle('2026-11-03') == {'days': 3, 'first': '2026-11-01', 'last': '2026-11-03',
+            assert growth_daily.idle(core.VAULT, '2026-11-03') == {'days': 3, 'first': '2026-11-01', 'last': '2026-11-03',
                                                        'state': 'limited'}
             days(('2026-11-01', 'limited', 0), ('2026-11-02', 'daily_limit', 4), ('2026-11-03', 'unavailable', 0))
-            assert growth_daily.idle('2026-11-03') == {'days': 1, 'first': '2026-11-03', 'last': '2026-11-03',
+            assert growth_daily.idle(core.VAULT, '2026-11-03') == {'days': 1, 'first': '2026-11-03', 'last': '2026-11-03',
                                                        'state': 'unavailable'}
             days(('2026-11-01', 'limited', 0), ('2026-11-02', 'empty', 0))
-            assert growth_daily.idle('2026-11-02') is None, 'nothing to pick is not idleness'
+            assert growth_daily.idle(core.VAULT, '2026-11-02') is None, 'nothing to pick is not idleness'
             # #313 review: days without a record (the scheduler stopped) count; today counts only once it ran.
             days(('2026-11-01', 'daily_limit', 4))
-            assert growth_daily.idle('2026-11-05') == {'days': 3, 'first': '2026-11-02', 'last': '2026-11-04',
-                                                       'state': 'missing'}, growth_daily.idle('2026-11-05')
+            assert growth_daily.idle(core.VAULT, '2026-11-05') == {'days': 3, 'first': '2026-11-02', 'last': '2026-11-04',
+                                                       'state': 'missing'}, growth_daily.idle(core.VAULT, '2026-11-05')
             # A backlog run is not the daily run: its batches do not end the gap.
             lines(log, [{'day': '2026-11-01', 'state': 'daily_limit', 'batches': 4},
                         {'day': '2026-11-02', 'state': 'limited', 'batches': 0},
                         {'day': '2026-11-02', 'state': 'empty', 'batches': 5, 'backlog': True}])
-            assert growth_daily.idle('2026-11-02') == {'days': 1, 'first': '2026-11-02', 'last': '2026-11-02',
-                                                       'state': 'limited'}, growth_daily.idle('2026-11-02')
+            assert growth_daily.idle(core.VAULT, '2026-11-02') == {'days': 1, 'first': '2026-11-02', 'last': '2026-11-02',
+                                                       'state': 'limited'}, growth_daily.idle(core.VAULT, '2026-11-02')
             sys.path.insert(0, str(Path(growth.__file__).resolve().parents[1] / 'scripts/hooks'))
             import claude_session_start as hook
             from datetime import date, timedelta
@@ -544,7 +544,7 @@ class DailyTests(unittest.TestCase):
     def test_day_waits_once_on_a_busy_lock(self):
         self.check_case("""
             answers = []
-            def fake(command, **args):
+            def fake(vault, command, **args):
                 return answers.pop(0)
             ok = {'kind': 'run', 'manifest': 'm', 'state': 'complete', 'returncode': 0, 'selected': 1,
                   'provider': None, 'progress': {'made': [], 'none': ['k']}, 'usage': {'measured': False}}
@@ -553,17 +553,17 @@ class DailyTests(unittest.TestCase):
             with patch.object(growth, 'run', side_effect=fake), patch.object(growth_daily, 'BUSY_WAIT', 0), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
                 answers[:] = [busy, ok, skipped, skipped]
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
                 assert day['state'] == 'empty' and len(day['batches']) == 1 and not answers, day
                 answers[:] = [busy, busy]
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
                 assert day['state'] == 'busy' and day['ok'] and not day['batches'] and not answers, day
         """)
 
     def test_week_is_measured_once_and_todays_stalled_jobs_stay_out(self):
         self.check_case("""
             calls = []
-            def fake(command, **args):
+            def fake(vault, command, **args):
                 calls.append(args)
                 return {'kind': 'run', 'manifest': 'm', 'state': 'incomplete', 'returncode': 0, 'selected': 1,
                         'provider': None, 'progress': {'made': [], 'none': []}, 'usage': {'measured': False}}
@@ -579,12 +579,12 @@ class DailyTests(unittest.TestCase):
             measure = patch.object(growth_daily, 'adjust', return_value=adjustment(9))
             with patch.object(growth, 'run', side_effect=fake), measure as adjust:
                 ledger(2)
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
                 assert not adjust.called and day['limit'] == 7 and 'adjustment' not in calls[-1]['daily'], day
                 assert calls[-1]['exclude'] == {'stalled-job'}, calls[-1]
                 ledger(7)
                 first = len(calls)
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
                 assert adjust.called and day['limit'] == 9 and calls[first]['daily']['adjustment']['limit'] == 9, day
             # #258: the week counts dates. An adjustment written later in its day than today's run (capture
             # took longer that day) is still seven days old on the seventh day, not a few minutes short.
@@ -597,12 +597,12 @@ class DailyTests(unittest.TestCase):
                         'day': late.date().isoformat(), 'adjustment': adjustment(7, late)}})
                     core.ledger_append(growth.ledger_path(core.VAULT), {'kind': 'run', 'manifest': plan['rid'], 'ok': False,
                                                        'progress': {'made': [], 'none': []}})
-                    day = growth_daily.daily([['worker']])
+                    day = growth_daily.daily(core.VAULT, [['worker']])
                     assert adjust.called and day['limit'] == 9, day
             # A week that cannot be measured is not recorded: the last L holds and the next run measures again.
             with patch.object(growth, 'run', side_effect=fake), \\
                     patch.object(growth_daily, '_measure', side_effect=ValueError('state damaged')):
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
             assert not day['ok'] and day['limit'] == 7 and 'adjustment' not in calls[-1]['daily'], day
         """)
 
@@ -624,23 +624,23 @@ class DailyTests(unittest.TestCase):
             batch('light', 3, 60)
             batch('light', 3, 50, state='limited')
             calls = []
-            def fake(command, **args):
+            def fake(vault, command, **args):
                 calls.append(args)
                 return {'kind': 'run', 'manifest': 'm', 'state': 'complete', 'returncode': 0, 'selected': args['limit'],
                         'provider': None, 'progress': {'made': ['k'], 'none': []}, 'usage': {'measured': False}}
             with patch.object(growth, 'run', side_effect=fake), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(6)):
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
             assert day['state'] == 'daily_limit' and not calls and day['done'] == {'scope': 3, 'light': 3}, day
             with patch.object(growth, 'run', side_effect=fake), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(9)):
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
             # L = 9 leaves three places: Scope takes them up to L − 3.
             assert day['state'] == 'daily_limit' and [c['queues'] for c in calls] == [('scope_jobs',)] * 3, (day, calls)
             calls.clear()
             with patch.object(growth, 'run', side_effect=fake), patch.object(growth_daily, 'DAY_SECONDS', 50 * 60), \\
                     patch.object(growth_daily, 'adjust', return_value=adjustment(9)):
-                day = growth_daily.daily([['worker']])
+                day = growth_daily.daily(core.VAULT, [['worker']])
             assert day['state'] == 'time_budget' and not calls and day['day_seconds'] >= 50 * 60, day
         """)
 
@@ -670,7 +670,7 @@ class DailyTests(unittest.TestCase):
             prompt = (core.ROOT / runs[0]['output'] / 'prompt.txt').read_text(encoding='utf-8')
             assert 'budget_left' not in prompt and 'adjustment' not in prompt, prompt[-500:]
             from osk import growth_status
-            item = growth_status.report(until=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())['runs']['items'][0]
+            item = growth_status.report(core.VAULT, until=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())['runs']['items'][0]
             assert item['batch'] == {'day': day['day'], 'batch': 1, 'kind': 'light'} and item['usage'] == runs[0]['usage'], item
             # Several command files go only with --daily.
             proc = subprocess.run([sys.executable, '-B', '-m', 'osk.cli', 'growth', 'run', '--command-file',
@@ -711,38 +711,38 @@ class DailyTests(unittest.TestCase):
                               'message': {'role': 'assistant', 'id': sid + '-m' + str(i),
                                           'content': [{'type': 'text', 'text': 'answer ' + str(i)}], 'stop_reason': 'end_turn'}}]
                 path.write_text(''.join(json.dumps(row) + chr(10) for row in rows), encoding='utf-8')
-                integration.capture('claude', sid, str(path), sid + '-project', space='00_Scope/' + scope)
+                integration.capture(core.VAULT, 'claude', sid, str(path), sid + '-project', space='00_Scope/' + scope)
                 legacy(sid, path, scope)
             def queue():
                 # These cursors have no turn times, so they queue by state mtime — and building a job saves
                 # its cursor. Put the order back before each pick.
                 for n, sid in enumerate('abcde'):
-                    os.utime(integration.state_path('claude', sid), (now - 1000 + n, now - 1000 + n))
+                    os.utime(integration.state_path(core.VAULT, 'claude', sid), (now - 1000 + n, now - 1000 + n))
             def pick(**options):
                 queue()
-                return [j['conversation_id'] for j in integration.catchup(limit=1, max_rounds=9, capture_new=False,
+                return [j['conversation_id'] for j in integration.catchup(core.VAULT, limit=1, max_rounds=9, capture_new=False,
                                                                           **options)['jobs']]
             assert pick() == ['a']
             # a (2) + c (3) + e (4): b is another scope, d (6) no longer fits after c
             got = pick(bundle=9)
             assert got == ['a', 'c', 'e'], got
             queue()
-            head = integration.catchup(limit=1, max_rounds=9, capture_new=False)['jobs'][0]
+            head = integration.catchup(core.VAULT, limit=1, max_rounds=9, capture_new=False)['jobs'][0]
             got = pick(bundle=9, exclude={head['key']})
             assert got == ['b'], ('a stalled head gives way; its scope has no tails', got)
             worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']
             queue()
-            result = growth.run(worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'},
+            result = growth.run(core.VAULT, worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'},
                                 scope_bundle=9)
             plan = [r for r in core.ledger_read(growth.ledger_path(core.VAULT)) if r['kind'] == 'plan'][-1]
             assert [j['conversation_id'] for j in plan['scope_jobs']] == ['a', 'c', 'e'], plan['scope_jobs']
             assert result['selected'] == 3 and growth_daily._counted('scope', result) == 1, result
             # The backlog: 5 conversations, 16 turns; W1's tails 6, 4, 3, 2 fill two batches (6+3, 4+2), W2's one.
-            b = growth_daily.backlog()
+            b = growth_daily.backlog(core.VAULT)
             assert (b['conversations'], b['turns'], b['batches']) == (5, 16, 3), b
             assert b['unit_tokens'] == growth_daily.SCOPE_UNIT_COST and b['tokens'] == 3 * b['unit_tokens'], b
             from osk import doctor
-            item = next(i for i in doctor._vault_items() if i['check'] == '대화 검토 적체')
+            item = next(i for i in doctor._vault_items(core.VAULT) if i['check'] == '대화 검토 적체')
             assert '묶음 약 3개' in item['detail'] and '450,000 토큰' in item['detail'], item
             assert '--backlog' in item['fix'] and '0.9' in item['fix'], item
         """)
@@ -757,10 +757,10 @@ class DailyTests(unittest.TestCase):
                          {'type':'assistant','sessionId':'long','uuid':'a'+str(i),'message':{'role':'assistant','id':'m'+str(i),
                           'content':[{'type':'text','text':'answer '+str(i)}],'stop_reason':'end_turn'}}]
             path.write_text(''.join(json.dumps(row)+chr(10) for row in rows), encoding='utf-8')
-            integration.capture('claude','long',str(path),'long-project',space='00_Scope/W1')
+            integration.capture(core.VAULT, 'claude','long',str(path),'long-project',space='00_Scope/W1')
             legacy('long', path)
             worker = [sys.executable, '-c', 'import sys; sys.stdin.read()']
-            result = growth.run(worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'})
+            result = growth.run(core.VAULT, worker, limit=1, timeout=900, queues=('scope_jobs',), daily={'kind': 'scope'})
             plan = [r for r in core.ledger_read(growth.ledger_path(core.VAULT)) if r['kind'] == 'plan'][-1]
             assert [k for k in growth.QUEUES if plan[k]] == ['scope_jobs'], plan
             job = plan['scope_jobs'][0]
@@ -768,15 +768,15 @@ class DailyTests(unittest.TestCase):
             assert plan['timeout_seconds'] == 900 and plan['daily'] == {'kind': 'scope'}, plan
             assert result['progress'] == {'made': [], 'none': [job['key']]}, result
             # The stalled job stays out; with nothing else waiting the Scope batch has nothing to run.
-            assert growth.run(worker, limit=1, queues=('scope_jobs',), exclude={job['key']})['state'] == 'skipped'
+            assert growth.run(core.VAULT, worker, limit=1, queues=('scope_jobs',), exclude={job['key']})['state'] == 'skipped'
             # A light batch neither captures nor selects conversations.
             with patch.object(integration, 'catchup', side_effect=AssertionError('captured')):
-                result = growth.run(worker, limit=3, queues=growth_daily.LIGHT, capture=False)
+                result = growth.run(core.VAULT, worker, limit=3, queues=growth_daily.LIGHT, capture=False)
             plan = [r for r in core.ledger_read(growth.ledger_path(core.VAULT)) if r['kind'] == 'plan'][-1]
             assert not plan['scope_jobs'] and result['selected'] >= 1, (plan, result)
             # Selection without capture does not read new turns.
             with patch.object(integration, 'capture', side_effect=AssertionError('captured')):
-                assert integration.catchup(limit=1, max_rounds=9, capture_new=False)['jobs']
+                assert integration.catchup(core.VAULT, limit=1, max_rounds=9, capture_new=False)['jobs']
         """)
 
 

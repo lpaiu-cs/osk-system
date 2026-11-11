@@ -22,6 +22,7 @@ from .core import (ID_RE, causal_maxima, effective_parents, ledger_damage, ledge
                    posix_rel, sha256_bytes)
 from . import contract, graph
 from .vault import Vault
+from .core import VAULT
 
 
 def ledger_path(vault: Vault) -> Path:
@@ -325,7 +326,7 @@ def _mark_reports(items: list[dict], idx, cache: dict) -> None:
     global misses
     try:
         from . import growth
-        rows = growth.ledger_records()
+        rows = growth.ledger_records(VAULT)
     except OSError:
         misses += 1
         return
@@ -518,7 +519,7 @@ def _carry_reports(vault: Vault, idx, held: dict, cache: dict) -> int:
         return 0
     try:
         from . import growth
-        rows = growth.ledger_records()
+        rows = growth.ledger_records(vault)
     except Exception:
         return 0
     keys = {r.get("key") for r in rows if r.get("kind") == "recheck_review"} & held.keys()

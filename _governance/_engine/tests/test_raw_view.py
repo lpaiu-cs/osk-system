@@ -11,7 +11,7 @@ def main():
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from osk import core, distillation, graph, raw, raw_view, validate
-        validate.make_mini_vault(folder)
+        validate.make_mini_vault(core.VAULT, folder)
         import mcp_server
 
         user = json.dumps({"content": [{"type": "text", "text": "Keep the cache rule and its limitation."}]})
@@ -42,7 +42,7 @@ def main():
         command = mcp_server.read_cited(ref, query="remote checksum")
         assert "call remote-check-77" in command["text"]
         assert "abcdef0123456789" in mcp_server.read_cited(ref, query="remote-check-77")["text"]
-        assert hits["hash"] == view["hash"] == distillation._source(ref, graph.Index(core.VAULT))["hash"]
+        assert hits["hash"] == view["hash"] == distillation._source(core.VAULT, ref, graph.Index(core.VAULT))["hash"]
         assert path.read_bytes() == before, "reading must not rewrite immutable evidence"
         assert "opaque-secret" in raw.read_round(core.VAULT, ref, 3000000)["text"], "legacy full view changed"
         raw.append_rounds(core.VAULT, "reading-test", "evidence", [{"user": "next", "agent": "next answer"}], "00_Scope/W1")

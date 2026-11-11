@@ -4,7 +4,6 @@ Knowledge files themselves retain unresolved work. A version-bound review only
 suppresses the exact inspected state; no new model runner or graph store exists.
 """
 from __future__ import annotations
-from .core import DOMAIN, SCOPE
 
 from bisect import bisect_right
 import hashlib
@@ -15,6 +14,7 @@ import time
 from pathlib import Path
 
 from . import core, contract, graph, prose, write, evidence
+from .vault import Vault
 
 REVIEW_CHARS = 4000  # Same bounded range returned by read_node.
 REVIEW_UNITS = 3
@@ -61,15 +61,15 @@ def _remaining(current: dict, state: dict) -> list[dict]:
     return [u for u in current["units"] if u["unit"] not in covered]
 
 
-def _state_path() -> Path:
+def _state_path(vault: Vault) -> Path:
     # Worktrees share the mutation lock, but selections belong to this checkout.
-    root = os.path.normcase(str(core.ROOT.resolve()))
+    root = os.path.normcase(str(vault.root.resolve()))
     key = hashlib.sha256(root.encode()).hexdigest()[:16]
-    return core.local_lock_path(f"osk-organization-{key}.json", core.VAULT.root)
+    return core.local_lock_path(f"osk-organization-{key}.json", vault.root)
 
 
-def load_state() -> dict:
-    p = _state_path()
+def load_state(vault: Vault) -> dict:
+    p = _state_path(vault)
     if not p.exists():
         return {"version": 1, "plans": {}, "reviews": {}}
     state = json.loads(p.read_text(encoding="utf-8"))
@@ -78,17 +78,17 @@ def load_state() -> dict:
     return state
 
 
-def _save(state: dict) -> None:
-    write._atomic_write(_state_path(), json.dumps(state, ensure_ascii=False, sort_keys=True).encode())
+def _save(vault: Vault, state: dict) -> None:
+    write._atomic_write(_state_path(vault), json.dumps(state, ensure_ascii=False, sort_keys=True).encode())
 
 
-def _retire_arrived_moves(state: dict, idx) -> None:
+def _retire_arrived_moves(vault: Vault, state: dict, idx) -> None:
     """Persist arrival, so a later legitimate placement cannot revive old intent."""
     for key, move in list(state.get("moves", {}).items()):
         remaining = []
         for item in move["items"]:
             # The destination is known; an ID lookup would parse the whole vault.
-            path = core.resolve_in_root(core.VAULT, item["to"])
+            path = core.resolve_in_root(vault, item["to"])
             if path is None or not path.is_file() or idx.node(path).id != item["id"]:
                 remaining.append(item)
         if remaining:
@@ -97,29 +97,29 @@ def _retire_arrived_moves(state: dict, idx) -> None:
             del state["moves"][key]
 
 
-def record_move(plans: list, hub_links: list, idx) -> str:
+def record_move(vault: Vault, plans: list, hub_links: list, idx) -> str:
     """Caller holds mutation lock; record intent before the first filesystem move."""
-    items = [{"id": n.id, "name": src.stem, "from": core.posix_rel(src, core.ROOT),
-              "to": core.posix_rel(dst, core.ROOT), "hash": core.sha256_file(src)}
+    items = [{"id": n.id, "name": src.stem, "from": core.posix_rel(src, vault.root),
+              "to": core.posix_rel(dst, vault.root), "hash": core.sha256_file(src)}
              for src, dst, n in plans]
     key = core.sha256_bytes(json.dumps(items, sort_keys=True).encode())
-    state = load_state()
+    state = load_state(vault)
     # Also recover arrival if a previous process stopped before its checkpoint.
-    _retire_arrived_moves(state, idx)
+    _retire_arrived_moves(vault, state, idx)
     state.setdefault("moves", {})[key] = {"items": items, "hub_links": hub_links}
-    _save(state)
+    _save(vault, state)
     return key
 
 
-def pending_moves(scope: str, idx) -> list:
+def pending_moves(vault: Vault, scope: str, idx) -> list:
     result = []
-    for key, move in load_state().get("moves", {}).items():
+    for key, move in load_state(vault).get("moves", {}).items():
         items = []
         for item in move["items"]:
-            if Path(item["from"]).parts[:2] != scope_path(scope).relative_to(core.ROOT).parts:
+            if Path(item["from"]).parts[:2] != scope_path(vault, scope).relative_to(vault.root).parts:
                 continue
-            path = write.live_locate(item["id"], idx)
-            current = core.posix_rel(path, core.ROOT) if path else None
+            path = write.live_locate(vault, item["id"], idx)
+            current = core.posix_rel(path, vault.root) if path else None
             if current != item["to"]:
                 items.append(dict(item, current=current,
                                   intact=bool(path and core.sha256_file(path) == item["hash"])))
@@ -128,37 +128,37 @@ def pending_moves(scope: str, idx) -> list:
     return result
 
 
-def checkpoint_moves(idx) -> None:
+def checkpoint_moves(vault: Vault, idx) -> None:
     # ponytail: rewrite the small journal per arrival; batch/append progress if large moves make this costly.
-    state = load_state()
-    _retire_arrived_moves(state, idx)
-    _save(state)
+    state = load_state(vault)
+    _retire_arrived_moves(vault, state, idx)
+    _save(vault, state)
 
 
-def _index():
-    idx = graph.Index(core.VAULT)
+def _index(vault: Vault):
+    idx = graph.Index(vault)
     if idx.scan_errors or idx.broken or idx.dup_ids or idx.dup_stems:
         raise ValueError("organization needs a complete, unambiguous inventory")
     return idx
 
 
-def scope_path(scope: str) -> Path:
+def scope_path(vault: Vault, scope: str) -> Path:
     if not isinstance(scope, str) or not scope or "\\" in scope:
         raise ValueError("scope must name one existing Scope or Domain cluster")
-    parts = scope.split("/") if scope.startswith((DOMAIN + '/')) else [SCOPE, scope]
+    parts = scope.split("/") if scope.startswith((vault.domain + '/')) else [vault.scope, scope]
     if len(parts) != 2 or not parts[1] or "/" in parts[1] or parts[1] in {".", "..", "Workbench"}:
         raise ValueError("organization requires an existing top-level Scope or Domain cluster")
-    p = core.resolve_in_root(core.VAULT, Path(*parts))
+    p = core.resolve_in_root(vault, Path(*parts))
     if p is None or not p.is_dir():
         raise ValueError("organization requires an existing Scope or Domain cluster")
     return p
 
 
-def snapshot(scope: str, idx=None) -> dict:
+def snapshot(vault: Vault, scope: str, idx=None) -> dict:
     """Read bytes once per node; do not combine cached bodies with current hashes."""
-    base = scope_path(scope)
-    idx = _index() if idx is None else idx
-    records = evidence.Records(core.VAULT)     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
+    base = scope_path(vault, scope)
+    idx = _index(vault) if idx is None else idx
+    records = evidence.Records(vault)     # 근거 절 좌표의 기록 색인 — 노드마다 다시 짓지 않는다
     nodes, parsed, references, units = [], {}, [], []
     for name, (path, kind) in sorted(idx.nodes.items()):
         if not path.is_relative_to(base):
@@ -170,14 +170,14 @@ def snapshot(scope: str, idx=None) -> dict:
         # read_node(view=...)가 이 바이트에서 돌려줄 view_hash다. unit 속 sha256은 구간
         # 내용 키라 view_hash와 같을 수 없다 — 작업자가 그것과 비교해 결정을 버렸다(10-04).
         units.extend({**u, "expect_view_hash": "view:" + digest} for u in _units(node))
-        nodes.append({"id": node.id, "name": name, "path": core.posix_rel(path, core.ROOT),
+        nodes.append({"id": node.id, "name": name, "path": core.posix_rel(path, vault.root),
                       "hash": digest, "summary": str(node.meta.get("summary", "")),
                       "hub": graph.is_hub(path), "has_body": bool(prose.norm_body(node.body)),
                       "body_chars": len(node.body), **write.size_feedback(path, node.body)})
-        references.extend(graph.reference_review(core.VAULT, node, idx, records=records))
+        references.extend(graph.reference_review(vault, node, idx, records=records))
     links = {}
     for p, node in parsed.items():
-        links[p] = {write.live_locate(ref, idx) for ref in node.wikilinks()}
+        links[p] = {write.live_locate(vault, ref, idx) for ref in node.wikilinks()}
     clusters, issues = [], []
     directories = {d for p in parsed for d in p.parents if d.is_relative_to(base)}
     for directory in sorted(directories):
@@ -188,7 +188,7 @@ def snapshot(scope: str, idx=None) -> dict:
         linked = links.get(hub, set())
         missing = sorted(p.stem for p in wanted - linked)
         bypass = sorted(p.stem for p in linked if p in parsed and p != hub and p not in wanted)
-        item = {"path": core.posix_rel(directory, core.ROOT),
+        item = {"path": core.posix_rel(directory, vault.root),
                 "hub": hub.stem if hub in parsed else None,
                 "local_nodes": len(local), "child_hubs": sorted(p.stem for p in children),
                 "missing_links": missing, "branch_bypass": bypass}
@@ -199,14 +199,14 @@ def snapshot(scope: str, idx=None) -> dict:
         sorted((n["id"], n["path"], n["hash"]) for n in nodes), separators=(",", ":")).encode())
     return {"scope": scope, "key": "organization:" + version, "snapshot": version,
             "nodes": nodes, "units": units, "clusters": clusters, "issues": issues, "references": references,
-            "pending_moves": pending_moves(scope, idx)}
+            "pending_moves": pending_moves(vault, scope, idx)}
 
 
-def hub_tree(base: Path, idx=None) -> str:
+def hub_tree(vault: Vault, base: Path, idx=None) -> str:
     """그 scope의 허브 트리(Mechanism §9-4 3항) — 허브가 있는 군집마다 군집 경로·직속 노드 수·
     허브 요약을 한 줄로 싣고, 들여쓰기로 상하를 보인다. 노드는 수만 센다. 허브 없는 폴더는
     군집이 아니므로(자리가 될 수 없다) 싣지 않는다."""
-    idx = _index() if idx is None else idx
+    idx = _index(vault) if idx is None else idx
     members: dict[Path, list[Path]] = {}
     for _name, (path, _kind) in idx.nodes.items():
         if path.is_relative_to(base):
@@ -222,7 +222,7 @@ def hub_tree(base: Path, idx=None) -> str:
         except Exception:
             summary = ""
         lines.append("  " * len(d.relative_to(base).parts)
-                     + f"- {core.posix_rel(d, core.ROOT)} · 직속 노드 {len(members[d]) - 1} — {summary}")
+                     + f"- {core.posix_rel(d, vault.root)} · 직속 노드 {len(members[d]) - 1} — {summary}")
     shown, size = [], 0
     for line in lines:
         # ponytail: 실측 최대 허브 9개·852자다. 넘치면 깊은 순서를 따라 자르고 남은 수만 알린다.
@@ -259,14 +259,14 @@ def _cooling(state: dict, scope: str) -> set:
             if isinstance(at, (int, float)) and now - at < HANDOFF_SECONDS}
 
 
-def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> list[dict]:
+def pending(vault: Vault, scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> list[dict]:
     """Caller holds the vault lock. Pending references survive missing local state."""
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
         raise ValueError("organization limit must be 1..20")
-    idx = _index() if idx is None else idx
-    state, jobs = load_state(), []
+    idx = _index(vault) if idx is None else idx
+    state, jobs = load_state(vault), []
     scopes = sorted(set(scopes if scopes is not None else
-                        [k[1] if k[0] == "scope" else (DOMAIN + '/') + k[1]
+                        [k[1] if k[0] == "scope" else (vault.domain + '/') + k[1]
                          for _, k in idx.nodes.values() if k[0] in {"scope", "domain"}] +
                         [p["scope"] for p in state["plans"].values()]))
     attempts = {p["scope"]: p.get("last_attempt", "") for p in state["plans"].values()}
@@ -278,10 +278,10 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
         reviewed = state["reviews"].get(scope, {})
         unfinished = prior and not (reviewed.get("key") == prior["key"] and reviewed.get("outcome") == "complete")
         if not prior and not any((k[0] == "scope" and k[1] == scope) or
-                                (k[0] == "domain" and (DOMAIN + '/') + k[1] == scope)
+                                (k[0] == "domain" and (vault.domain + '/') + k[1] == scope)
                                 for _, k in idx.nodes.values()):
             continue  # A raw-only capture has no knowledge organization to review yet.
-        current = snapshot(scope, idx)
+        current = snapshot(vault, scope, idx)
         missing_ids = sorted({n["id"] for n in prior["nodes"]} - {n["id"] for n in current["nodes"]}) if prior else []
         if missing_ids:
             current["missing_ids"] = missing_ids
@@ -311,20 +311,20 @@ def pending(scopes=None, limit: int = 3, *, idx=None, record: bool = False) -> l
             current["previous_deferral"] = {
                 k: reviewed[k] for k in ("key", "reason", "after", "at")}
             current["previous_deferral"]["snapshot_changed"] = reviewed["after"] != current["snapshot"]
-        current["hub_tree"] = hub_tree(scope_path(scope), idx)
+        current["hub_tree"] = hub_tree(vault, scope_path(vault, scope), idx)
         jobs.append(current)
         if len(jobs) == limit:
             break
     if record:
-        record_attempts(jobs)
+        record_attempts(vault, jobs)
     return jobs
 
 
-def record_attempts(jobs: list[dict]) -> None:
+def record_attempts(vault: Vault, jobs: list[dict]) -> None:
     """Caller holds the vault lock; register only the jobs actually selected."""
     if not jobs:
         return
-    state = load_state()
+    state = load_state(vault)
     for current in jobs:
         scope, key = current["scope"], current["key"]
         # The selected key retains the original unfinished snapshot across edits.
@@ -336,18 +336,18 @@ def record_attempts(jobs: list[dict]) -> None:
             state["plans"][key]["nodes"] + current["nodes"]}.values())
         state["plans"][key]["review_units"] = current["review_units"]
         state["plans"][key]["last_attempt"] = core.now_kst()
-    _save(state)
+    _save(vault, state)
 
 
-def plan(scope: str, *, record: bool = True) -> dict:
-    with core.mutation_lock(core.VAULT):
-        scope_path(scope)
-        jobs = pending([scope], limit=1, record=record)
+def plan(vault: Vault, scope: str, *, record: bool = True) -> dict:
+    with core.mutation_lock(vault):
+        scope_path(vault, scope)
+        jobs = pending(vault, [scope], limit=1, record=record)
         if jobs:
             return jobs[0]
         # 남은 구간이 모두 넘김 중이라 고르지 않은 것은 완료가 아니다 — 다음 검토자의 차례다
-        state = load_state()
-        waiting = [u for u in _remaining(snapshot(scope), state) if u["unit"] in _cooling(state, scope)]
+        state = load_state(vault)
+        waiting = [u for u in _remaining(snapshot(vault, scope), state) if u["unit"] in _cooling(state, scope)]
         if waiting:
             return {"scope": scope, "status": "handoff", "handoff": len(waiting),
                     "reason": "remaining ranges were corrected by their last reviewer; "
@@ -355,7 +355,7 @@ def plan(scope: str, *, record: bool = True) -> dict:
         return {"scope": scope, "status": "complete"}
 
 
-def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
+def review(vault: Vault, key: str, scope: str, outcome: str, reason: str, after: str = "",
            intentional: list | None = None, checked: list | None = None,
            bindings: list | None = None) -> dict:
     """Check saved state, not a claim that a plan was executed. `bindings`는 결속 검토의 판정
@@ -374,12 +374,12 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
             i["relation"] != "Link" or not all(isinstance(v, str) and v.strip() for v in i.values())
             for i in intentional):
         raise ValueError("only individual exploratory/source Links may have an explicit retention reason")
-    with core.mutation_lock(core.VAULT):
-        state = load_state()
+    with core.mutation_lock(vault):
+        state = load_state(vault)
         selected = state["plans"].get(key)
         if not selected or selected["scope"] != scope:
             raise ValueError("organization review has no selected scope snapshot")
-        current = snapshot(scope)
+        current = snapshot(vault, scope)
         allowed = {u["unit"] for u in selected.get("review_units", [])}
         live = {u["unit"] for u in current["units"]}
         skipped = [i["unit"] for i in checked if i["unit"] not in allowed & live]
@@ -416,7 +416,7 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
         state["reviews"][scope] = row
         if outcome == "complete":
             state["moves"] = {k: m for k, m in state.get("moves", {}).items()
-                              if any(Path(i["from"]).parts[:2] != scope_path(scope).relative_to(core.ROOT).parts
+                              if any(Path(i["from"]).parts[:2] != scope_path(vault, scope).relative_to(vault.root).parts
                                      for i in m["items"])}
         # 계획 뒤 바뀌거나 새로 생긴 노드는 이 검토자가 고친 것이다 — 그 구간은 자기
         # 정정을 스스로 검토하지 않도록 냉각 시간 동안 다른 검토자에게 넘긴다(넘김).
@@ -432,14 +432,14 @@ def review(key: str, scope: str, outcome: str, reason: str, after: str = "",
         state.setdefault("handoff", {})[scope] = handoff
         if bindings:
             # 결속 기록은 검토 저장 **앞에** — 대장 쓰기가 실패하면 검토도 남지 않는다(#191 리뷰)
-            row["bindings"] = apply_binding_decisions(bindings, state)
-        _save(state)
+            row["bindings"] = apply_binding_decisions(vault, bindings, state)
+        _save(vault, state)
         return row
 
 
-def status(job: dict, idx=None) -> dict:
-    current = snapshot(job["scope"], idx)
-    state = load_state()
+def status(vault: Vault, job: dict, idx=None) -> dict:
+    current = snapshot(vault, job["scope"], idx)
+    state = load_state(vault)
     row = state["reviews"].get(job["scope"], {})
     good = row.get("key") == job["key"] and _complete(job["scope"], state, current)
     return {"key": job["key"], "scope": job["scope"],
@@ -491,10 +491,10 @@ def guidance() -> str:
             "정돈이 불필요하면 현재 구조가 맞는 이유를 기록하고, 미완료면 deferred로 남긴다.")
 
 
-def prompt(jobs: list[dict], *, inventory: bool = True) -> str:
+def prompt(vault: Vault, jobs: list[dict], *, inventory: bool = True) -> str:
     if not jobs:
         return ""
-    command = core.cli_command(core.VAULT, "organization")
+    command = core.cli_command(vault, "organization")
     return ("\n[osk 참조·조직 검토]\n" + guidance() + "\n"
             + "실행 명령 접두부: " + command + "\n"
             + (json.dumps(readout(jobs), ensure_ascii=False) if inventory else "목록은 아래 organization_jobs에 있다.\n"))
@@ -548,27 +548,27 @@ def hook_readout(job: dict) -> dict:
 BINDING_LIMIT = 3       # 결속 검토 임계 — 시행령 §3 10항(기계 상한이 아니라 검토 임계)
 
 
-def bindings_audit(project: str | None = None) -> list[dict]:
+def bindings_audit(vault: Vault, project: str | None = None) -> list[dict]:
     """프로젝트 결속의 검토 대상(시행령 §3 10항 · Mechanism §9-4 3항) — 결속이 셋을 넘거나, 지난
     검토 뒤 늘어났거나, 주된 scope가 없거나, 없는 scope(개명·삭제)에 결속된 프로젝트. `project`를
     주면 그 프로젝트만 본다. 판정은 라우팅 대장에서 다시 계산하고, '지난 검토'는 이 기기의 조직 검토
     상태가 기억한다."""
     try:
-        recs = core.ledger_read(core.ROUTING)
+        recs = core.ledger_read(vault.routing)
     except Exception:
         return []
     keys = sorted({str(r.get("session")) for r in recs
                    if r.get("kind") in ("bind", "unbind") and r.get("session")})
-    keys = [k for k in keys if write.canonical_session(core.VAULT, k, recs) == k]       # 별칭은 정본 키로 접힌다
+    keys = [k for k in keys if write.canonical_session(vault, k, recs) == k]       # 별칭은 정본 키로 접힌다
     if project is not None:
-        keys = [k for k in keys if k == (write.canonical_session(core.VAULT, project, recs) or project)]
+        keys = [k for k in keys if k == (write.canonical_session(vault, project, recs) or project)]
     try:
-        seen = load_state().get("bindings_seen", {})
+        seen = load_state(vault).get("bindings_seen", {})
     except ValueError:
         seen = {}
-    names, out = set(write.graph.scope_names(core.VAULT)), []
+    names, out = set(write.graph.scope_names(vault)), []
     for key in keys:
-        b = write.bindings(core.VAULT, key, recs)
+        b = write.bindings(vault, key, recs)
         if not b["scopes"]:
             continue
         flags = []
@@ -585,10 +585,10 @@ def bindings_audit(project: str | None = None) -> list[dict]:
     return out
 
 
-def bindings_prompt(project: str | None = None) -> str:
+def bindings_prompt(vault: Vault, project: str | None = None) -> str:
     """결속 검토의 훅 블록 — 검토 대상이 없으면 빈 문자열이다. 판정 넷 중 하나를 보고한다:
     유지·노드 이동 뒤 해제·scope 분리 제안·주된 scope 지정(시행령 §3 10항)."""
-    items = bindings_audit(project)
+    items = bindings_audit(vault, project)
     if not items:
         return ""
     head = " · ".join(f"{i['project']} {len(i['scopes'])}개 결속({', '.join(i['flags'])})" for i in items)
@@ -601,7 +601,7 @@ def bindings_prompt(project: str | None = None) -> str:
             + json.dumps(items, ensure_ascii=False))
 
 
-def apply_binding_decisions(decisions: list | None, state: dict | None = None) -> list[dict]:
+def apply_binding_decisions(vault: Vault, decisions: list | None, state: dict | None = None) -> list[dict]:
     """조직 검토가 낸 결속 판정을 적용한다 — `keep`은 지금 결속 수를 '지난 검토'로 기억하고, `unbind`는
     집합에서 빼며, `primary`는 주된 scope를 지정한다. 호출자가 변경 잠금을 쥔다. 묶음을 먼저 검증해
     하나라도 틀리면(없는 scope의 지정) 아무것도 적지 않는다. 적용은 **멱등**이다 — 이미 뺀 scope와 이미 주된
@@ -618,29 +618,29 @@ def apply_binding_decisions(decisions: list | None, state: dict | None = None) -
             or (d["action"] != "keep" and not (isinstance(d.get("scope"), str) and d["scope"].strip()))
             for d in decisions):
         raise ValueError("bindings decisions are [{project, action: keep|unbind|primary, scope?, reason}]")
-    scopes = write.graph.scope_names(core.VAULT)
+    scopes = write.graph.scope_names(vault)
     for d in decisions:
         if d["action"] == "primary" and d["scope"].strip() not in scopes:
             raise ValueError(f"{d['action']} names a scope that does not exist: {d['scope'].strip()}")
     own = state is None
-    state = load_state() if own else state
+    state = load_state(vault) if own else state
     seen = state.setdefault("bindings_seen", {})
     applied = []
     for d in decisions:
         project, action = d["project"].strip(), d["action"]
-        current = write.bindings(core.VAULT, project)
+        current = write.bindings(vault, project)
         if action == "unbind" and d["scope"].strip() in current["scopes"]:
-            write.unbind_session(core.VAULT, project, d["scope"].strip(), d["reason"].strip())
+            write.unbind_session(vault, project, d["scope"].strip(), d["reason"].strip())
         elif action == "primary" and current["primary"] != d["scope"].strip():
-            write.set_primary(core.VAULT, project, d["scope"].strip(), d["reason"].strip())
-        seen[project] = len(write.bindings(core.VAULT, project)["scopes"])
+            write.set_primary(vault, project, d["scope"].strip(), d["reason"].strip())
+        seen[project] = len(write.bindings(vault, project)["scopes"])
         applied.append({"project": project, "action": action, "scope": d.get("scope")})
     if own:
-        _save(state)
+        _save(vault, state)
     return applied
 
 
-def hook_prompt(jobs: list[dict], shown_tree: str = "") -> str:
+def hook_prompt(vault: Vault, jobs: list[dict], shown_tree: str = "") -> str:
     """조직 검토의 훅 블록. 빈 목록이면 빈 문자열이다. `shown_tree`는 같은 주입의 대화 검토
     블록이 이미 실은 허브 트리다 — 같은 트리는 한 번만 싣는다(#275)."""
     if not jobs:
@@ -653,7 +653,7 @@ def hook_prompt(jobs: list[dict], shown_tree: str = "") -> str:
         if shown_tree and r.get("hub_tree") == shown_tree:
             r["hub_tree"] = "위 대화 검토의 허브 트리와 같다"
     return (f"[osk 참조·조직 검토 — {head}]\n" + HOOK_GUIDANCE + (_FLAGGED if flagged else "") + "\n"
-            + "실행 명령 접두부: " + core.cli_command(core.VAULT, "organization") + "\n"
+            + "실행 명령 접두부: " + core.cli_command(vault, "organization") + "\n"
             + json.dumps(readouts, ensure_ascii=False))
 
 

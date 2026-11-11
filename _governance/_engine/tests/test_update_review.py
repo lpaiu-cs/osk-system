@@ -13,13 +13,14 @@ class UpdateReviewTests(unittest.TestCase):
     def test_release_entrypoint_accepts_noninteractive_apply(self):
         sys.path.insert(0, str(ENGINE))
         from osk import release
+        from osk.vault import Vault
         from unittest import mock
         with mock.patch.object(release.sys.stdin, 'isatty', return_value=False), \
                 mock.patch.object(release, 'run', return_value={'applied': True}) as run, \
                 mock.patch('builtins.print'), \
                 mock.patch('builtins.input', side_effect=AssertionError('interactive prompt')):
             release.main(['--version', 'v9.21.0', '--apply'])
-        run.assert_called_once_with('v9.21.0', True)
+        run.assert_called_once_with(Vault.open(), 'v9.21.0', True)
 
     def test_checkpoint_and_governance_acceptance(self):
         with tempfile.TemporaryDirectory() as td:
@@ -43,7 +44,7 @@ def attest(version):
     (bundle / 'release.json').write_text(json.dumps({'version': version, 'files': files}))
 attest('v9.21.0')
 def run(**kw):
-    return update.run(source='bundle', bundle=str(bundle), **kw)
+    return update.run(core.VAULT, source='bundle', bundle=str(bundle), **kw)
 preview = run(adopt=True)
 assert preview['applied'] is False and 'review_id' in preview
 assert not core.local_lock_path('osk-update-confirmation.json', core.VAULT.root).exists()
@@ -55,7 +56,7 @@ assert first['approval_required'] and not first['ok']
 assert '명시적 재승인' in first['instruction'] and '재시작' in first['instruction']
 assert (root / '_governance/Policy.md').read_text() == 'old'
 assert approvals.ledger_path(core.VAULT).read_bytes() == before
-assert not update.TXN_MANIFEST.exists()
+assert not update.txn_manifest(core.VAULT).exists()
 # Local drift invalidates the checkpoint even for the same command.
 (root / '_governance/Policy.md').write_text('changed while waiting')
 second = run(apply=True, adopt=True)
@@ -125,10 +126,10 @@ fake.write_text("import time\nfrom osk import core\nfrom osk._portalock import l
 daemon = subprocess.Popen([sys.executable, str(fake)], stdout=subprocess.PIPE, text=True)
 try:
     assert daemon.stdout.readline().strip() == 'ready'
-    assert daemon.pid in update.daemon_pids()
+    assert daemon.pid in update.daemon_pids(core.VAULT)
     info = {}
     with mock.patch.object(update, 'DAEMON_RESTART_WAIT', 1):
-        with update._daemon_stopped(info):
+        with update._daemon_stopped(core.VAULT, info):
             assert daemon.wait(timeout=30) is not None, 'daemon still running during apply'
             rival = open(core.local_lock_path('osk-sync.lock', core.VAULT.root), 'w')
             try:
@@ -150,7 +151,7 @@ try:
     holder = open(core.local_lock_path('osk-sync.lock', core.VAULT.root), 'w')
     lock_exclusive(holder, blocking=False)
     try:
-        with update._daemon_stopped({}):
+        with update._daemon_stopped(core.VAULT, {}):
             raise AssertionError('entered without the singleton')
     except update.UpdateError as e:
         assert '프로세스를 찾지 못했다' in str(e), e
@@ -187,8 +188,8 @@ for rel in files:                      # a fresh clone: same bytes, no baseline 
     (root / rel).parent.mkdir(parents=True, exist_ok=True)
     (root / rel).write_bytes((bundle / rel).read_bytes())
 def run():
-    rep = update.run(source='bundle', bundle=str(bundle), apply=True)
-    return update.run(source='bundle', bundle=str(bundle), apply=True) \
+    rep = update.run(core.VAULT, source='bundle', bundle=str(bundle), apply=True)
+    return update.run(core.VAULT, source='bundle', bundle=str(bundle), apply=True) \
         if rep.get('approval_required') else rep
 # An install that an older engine already baselined (no protect step) gets
 # protected by rerunning the same release: nothing to write but the protect row.
@@ -210,7 +211,7 @@ with mock.patch.object(approvals, 'protect', side_effect=fail_after_protect):
     except update.UpdateError as e: assert '원상복구' in str(e), e
     else: raise AssertionError('expected rollback')
 assert not approvals.ledger_path(core.VAULT).exists() and approvals.state(core.VAULT, '_governance') == 'unprotected'
-assert update.current_version() == 'v9.41.0'
+assert update.current_version(core.VAULT) == 'v9.41.0'
 rep = run()
 assert rep['governance_protected'] == 'established' and rep['applied_files'] == 0, rep
 assert approvals.state(core.VAULT, '_governance') == 'clean'

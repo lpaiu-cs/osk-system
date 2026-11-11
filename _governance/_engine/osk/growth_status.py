@@ -12,6 +12,7 @@ import json
 
 from . import (core, epoch, growth, integration, organization, rechecks, evictions, distillation, harness,
                response_growth, update)
+from .vault import Vault
 
 
 def _time(value: str) -> datetime:
@@ -36,23 +37,23 @@ def _window(rows: list[dict], since: datetime | None, until: datetime) -> dict:
     return {'rows': selected, 'outside_window': outside, 'unknown_time': undated}
 
 
-def conversation_states() -> list[dict]:
-    probe = integration.state_path('claude', 'inventory')
+def conversation_states(vault: Vault) -> list[dict]:
+    probe = integration.state_path(vault, 'claude', 'inventory')
     prefix = '-'.join(probe.name.split('-')[:3]) + '-'
     states = []
     # glob can suppress directory access errors and report a false empty inventory.
     for path in sorted(p for p in probe.parent.iterdir() if p.match(prefix + '*.json')):
         data = json.loads(path.read_text(encoding='utf-8'))
-        if path != integration.state_path(data['harness'], data['conversation_id']):
+        if path != integration.state_path(vault, data['harness'], data['conversation_id']):
             raise ValueError(f'integration state filename identity mismatch: {path.name}')
-        states.append(integration.validate_state(data, data['harness'], data['conversation_id']))
+        states.append(integration.validate_state(vault, data, data['harness'], data['conversation_id']))
     return states
 
 
-def _integration(states: list[dict]) -> dict:
+def _integration(vault: Vault, states: list[dict]) -> dict:
     items = []
     for state in states:
-        view = integration.state_view(state)
+        view = integration.state_view(vault, state)
         refs = {r['ref'] for r in state['rounds']}
         repairs = {ref for job in state.get('repair_pending', {}).values() for ref in job['refs']}
         if repairs - refs:
@@ -174,13 +175,13 @@ def _recheck_history(rows: list[dict], since: datetime | None, until: datetime) 
     return {**window, 'records': len(items), 'by_category': dict(counts), 'items': items}
 
 
-def _organization(idx) -> dict:
-    scopes = {k[1] if k[0] == 'scope' else core.DOMAIN + '/' + k[1]
+def _organization(vault: Vault, idx) -> dict:
+    scopes = {k[1] if k[0] == 'scope' else vault.domain + '/' + k[1]
               for _, k in idx.nodes.values() if k[0] in {'scope', 'domain'}}
-    scopes.update(p['scope'] for p in organization.load_state()['plans'].values())
+    scopes.update(p['scope'] for p in organization.load_state(vault)['plans'].values())
     items = []
     for scope in sorted(scopes):
-        for job in organization.pending([scope], limit=1, idx=idx, record=False):
+        for job in organization.pending(vault, [scope], limit=1, idx=idx, record=False):
             items.append({'scope': scope, **job['coverage'],
                           'wiring_issues': len(job['issues']),
                           'reference_issues': len(job['references']),
@@ -190,10 +191,10 @@ def _organization(idx) -> dict:
             'basis': 'current body ranges and structural receipts; not semantic verification'}
 
 
-def _preservation(receipts: list[dict], idx) -> dict:
+def _preservation(vault: Vault, receipts: list[dict], idx) -> dict:
     unique = {json.dumps(r, sort_keys=True): r for r in receipts}
     items = [{'key': r['key'], 'target_id': r['target'].get('id'),
-              'structure': distillation.structure(r, idx)} for r in unique.values()]
+              'structure': distillation.structure(vault, r, idx)} for r in unique.values()]
     return {'receipt_versions': len(items),
             'structure': dict(Counter('broken' if i['structure'] else 'intact' for i in items)),
             'items': items,
@@ -202,12 +203,12 @@ def _preservation(receipts: list[dict], idx) -> dict:
                      'not reopened; not new-node counts'}
 
 
-def report(*, since: str | None = None, until: str | None = None, preflight: bool = False) -> dict:
+def report(vault: Vault, *, since: str | None = None, until: str | None = None, preflight: bool = False) -> dict:
     started = core.now_iso()
     begin, end = _time(since) if since else None, _time(until or started)
     if begin is not None and begin >= end:
         raise ValueError('since must be earlier than until')
-    out = {'ok': True, 'schema': 'osk-growth-status/1', 'root': str(core.ROOT),
+    out = {'ok': True, 'schema': 'osk-growth-status/1', 'root': str(vault.root),
            'window': {'since': since, 'until': end.isoformat(), 'bounds': '[since, until)'},
            'observation': {'started_at': started, 'atomic': False},
            'meaning': {'ok': 'report sections were read, not growth success',
@@ -226,11 +227,11 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
 
     def runtime():
         disk = epoch.on_disk()
-        manifest = core.ROOT / 'release.json'
+        manifest = vault.root / 'release.json'
         return {'observer': 'this CLI process, not the connected MCP server',
                 'engine_path': str(epoch.ENGINE_ROOT), 'engine_rev': epoch.loaded(),
                 'engine_disk_rev': disk, 'engine_stale': None if epoch.loaded() == epoch.UNKNOWN else epoch.loaded() != disk,
-                'applied_version': update.current_version(),
+                'applied_version': update.current_version(vault),
                 'manifest_version': json.loads(manifest.read_text(encoding='utf-8')).get('version') if manifest.exists() else None,
                 'mcp': 'not_observed; pair with overview engine_rev, engine_disk_rev and engine_observed_at',
                 'cli_preflight': None}
@@ -238,12 +239,12 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
     runtime_state = section('runtime', runtime)
     if preflight and runtime_state is not None:
         runtime_state['cli_preflight'] = section('cli_preflight', lambda: [
-            response_growth.doctor(h) for h in harness.fork_names()])
+            response_growth.doctor(vault, h) for h in harness.fork_names()])
         out.pop('cli_preflight', None)
     saved, chosen, history = [], [], []
     def integration_inventory():
-        saved.extend(conversation_states())
-        return _integration(saved)
+        saved.extend(conversation_states(vault))
+        return _integration(vault, saved)
     states = section('integration', integration_inventory)
     def review_history():
         reviews = _window([{**r, 'harness': s['harness'], 'conversation_id': s['conversation_id']}
@@ -258,33 +259,33 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
     else:
         out['reviews'] = None
     def run_history():
-        history.extend(growth.ledger_records())
+        history.extend(growth.ledger_records(vault))
         return _runs(history, begin, end)
     section('runs', run_history)
     def recheck_records():
-        records, valid = rechecks.read_ledger(core.VAULT)
+        records, valid = rechecks.read_ledger(vault)
         if not valid:
             raise ValueError('recheck ledger damaged')
         return _recheck_history(records, begin, end)
     section('recheck_history', recheck_records)
     def eviction_inventory():
-        records = evictions.records(core.VAULT)
-        pending = evictions.unsettled(core.VAULT, recs=records)
+        records = evictions.records(vault)
+        pending = evictions.unsettled(vault, recs=records)
         return {'pending_entries': len(pending),
                 'oldest_days': max((evictions.age_days(r) for r in pending), default=0),
                 'pending_ids': [r['rid'] for r in pending],
                 'settlement_records': dict(Counter(r['outcome'] for r in records if r.get('kind') == 'settle'))}
     section('evictions', eviction_inventory)
     try:
-        idx = growth.node_index()
+        idx = growth.node_index(vault)
     except (ValueError, OSError) as exc:
         out['ok'] = False
         out['errors'].append({'section': 'graph', 'error': str(exc)})
         out.update(organization=None, rechecks=None, preservation=None)
     else:
-        section('organization', lambda: _organization(idx))
+        section('organization', lambda: _organization(vault, idx))
         def current_rechecks():
-            items, baseline = rechecks.candidates(core.VAULT, idx)
+            items, baseline = rechecks.candidates(vault, idx)
             return {'baseline_pending': baseline, 'candidate_pairs': len(items),
                     'awaiting_agent': sum('escalated' not in i for i in items),
                     'deferred': sum('deferred' in i and 'escalated' not in i for i in items),
@@ -297,7 +298,7 @@ def report(*, since: str | None = None, until: str | None = None, preflight: boo
                 raise ValueError('receipt history is incomplete')
             domain = _window([r for r in history if r.get('kind') == 'review'], begin, end)
             receipts += [r['distillation'] for r in domain['rows'] if r.get('outcome') == 'preserved']
-            return _preservation(receipts, idx)
+            return _preservation(vault, receipts, idx)
         section('preservation', preservation)
     out['observation']['finished_at'] = core.now_iso()
     return out

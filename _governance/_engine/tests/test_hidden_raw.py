@@ -12,7 +12,7 @@ def main():
         os.environ["OSK_VAULT_ROOT"] = folder
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from osk import core, contract, distillation as D, graph, raw, secrets, validate, write
-        validate.make_mini_vault(folder)
+        validate.make_mini_vault(core.VAULT, folder)
         root = core.ROOT
         assert root == Path(folder).resolve()
         base = root / "00_Scope/W1/_raw"
@@ -44,9 +44,9 @@ def main():
         assert not (base / "bypass.md").exists()
         url = "https://example.invalid/_raw/evidence.md#1"
         assert raw.canonical_ref(core.VAULT, url) == url
-        assert write._as_links("derived-from", url) == f"[[{url}]]"
-        assert write._as_links("derived-from", f"[[{url}]]") == f"[[{url}]]"
-        assert write._as_links("derived-from", f"[[ {url} ]]") == f"[[ {url} ]]"
+        assert write._as_links(core.VAULT, "derived-from", url) == f"[[{url}]]"
+        assert write._as_links(core.VAULT, "derived-from", f"[[{url}]]") == f"[[{url}]]"
+        assert write._as_links(core.VAULT, "derived-from", f"[[ {url} ]]") == f"[[ {url} ]]"
         assert raw.canonical_ref(core.VAULT, "[[ 00_Scope/W1/_cited/new.md#1 ]]") == first["round_ref"]
         assert raw.canonical_ref(core.VAULT, "00_Scope/W1/_cited/new.md #1") == first["round_ref"]
         assert graph.Index(core.VAULT).resolve(url) == ("external",)
@@ -166,7 +166,7 @@ def main():
         record = base / "proof.md"
         record.write_bytes(raw.round_block(1, "durable observation", "verified result").encode())
         ref = "[[00_Scope/W1/_raw/proof.md#1]]"
-        out = D.create_node({"key": "legacy-proof", "sources": [ref], "hub": "W1"},
+        out = D.create_node(core.VAULT, {"key": "legacy-proof", "sources": [ref], "hub": "W1"},
                             title="hidden-raw-proof", summary="preserved observation",
                             body="The observed result is retained.\n\n# 관측\n\n"
                                  "- 2026-10-31 · `proof#1` · 지지 — durable observation",
@@ -179,13 +179,13 @@ def main():
         historic["sources"][0].update(ref=ref, path="00_Scope/W1/_raw/proof.md")
         raw.migrate(core.VAULT, apply=True)
         assert target.read_bytes() == saved
-        assert D.verify_receipt(historic)["status"] == "complete"
-        assert D.status("legacy-proof")["status"] == "complete"
+        assert D.verify_receipt(core.VAULT, historic)["status"] == "complete"
+        assert D.status(core.VAULT, "legacy-proof")["status"] == "complete"
         append_round("hidden-test", "proof", "later", "reply")
-        assert D.verify_receipt(historic)["status"] == "complete"
+        assert D.verify_receipt(core.VAULT, historic)["status"] == "complete"
         proof_path = raw.raw_file(core.VAULT, "00_Scope/W1/_raw/proof.md")
         proof_path.write_bytes(proof_path.read_bytes().replace(b"verified result", b"tampered result"))
-        assert D.verify_receipt(historic)["status"] == "pending"
+        assert D.verify_receipt(core.VAULT, historic)["status"] == "pending"
         reject(raw.read_round, core.VAULT, "../../outside.md#1")
         assert not list(base.glob("*.md")) and not list(base.glob("*.MD"))
 
@@ -194,7 +194,7 @@ def main():
         # coordinates and receipts. A copy shadowed by a root record is reported, never moved.
         from osk import doctor
         proof_path.write_bytes(proof_path.read_bytes().replace(b"tampered result", b"verified result"))
-        assert D.verify_receipt(historic)["status"] == "complete"
+        assert D.verify_receipt(core.VAULT, historic)["status"] == "complete"
         before = {r["record"]: raw.read_round(core.VAULT, r["path"] + "#1")["text"]
                   for r in raw.list_records(core.VAULT, "00_Scope/W1")["records"]}
         shadow = base / ".records" / "new.txt"
@@ -204,38 +204,38 @@ def main():
         assert plan["count"] == len(before) and not plan["applied"], plan
         assert [c["path"] for c in plan["conflicts"]] == ["00_Scope/W1/_raw/.records/new.txt"], plan
         records = "옛 자리의 인용 기록 → 루트 `_cited/` (v5.2)"
-        rep, code = doctor.vault()
+        rep, code = doctor.vault(core.VAULT)
         checks = {i["check"]: i for i in rep["items"]}
         assert checks[records]["level"] == "warn" and "기록 충돌" in checks, rep["items"]
-        rep, code = doctor.migrate()
+        rep, code = doctor.migrate(core.VAULT)
         assert code == 2 and rep["approval_required"], rep
         assert dict(rep["plan"]["migrations"]) == {records: [[m["from"], m["hash"]] for m in plan["files"]]}, rep
         assert rep["plan"]["root"] == str(root)            # worktree끼리 확인표 자리를 함께 써도 계획이 갈린다
         assert {p: p.read_bytes() for p in base.rglob("*") if p.is_file()} == frozen   # 계획은 옮기지 않는다
         changed = base / ".records" / "retry.txt"
         changed.write_bytes(frozen[changed] + b"\n")       # 보인 뒤에 바뀐 기록은 다시 확인받는다
-        assert doctor.migrate()[1] == 2 and changed.exists()
+        assert doctor.migrate(core.VAULT)[1] == 2 and changed.exists()
         changed.write_bytes(frozen[changed])
-        assert doctor.migrate()[1] == 2
-        rep, code = doctor.migrate()
+        assert doctor.migrate(core.VAULT)[1] == 2
+        rep, code = doctor.migrate(core.VAULT)
         assert code == 0 and [(a["migration"], a["count"]) for a in rep["applied"]] == [(records, len(before))], rep
         # Mechanism §5: each move is in the migration ledger before it runs, and the manifest opens with every
         # record and closes with the result and the conflicts held (#317 review).
         from osk import evidence_migration as em
-        moved = [e for e in core.ledger_read(em.EVENTS) if e.get("rule") == raw.CONSOLIDATE_RULE]
+        moved = [e for e in core.ledger_read(em.events_path(core.VAULT)) if e.get("rule") == raw.CONSOLIDATE_RULE]
         assert [(e["kind"], e["source"], e["before"]) for e in moved] == [
             ("move", m["from"], m["hash"]) for m in plan["files"]], moved
         listing = (root / rep["applied"][0]["manifest"]).read_text(encoding="utf-8")
         assert all(f"`{m['from']}` → `{m['to']}`" in listing for m in plan["files"]), listing
         assert "## 결과" in listing and "→ 보류 — " in listing, listing
-        assert {i["check"]: i["level"] for i in doctor.vault()[0]["items"]}[records] == "ok"
+        assert {i["check"]: i["level"] for i in doctor.vault(core.VAULT)[0]["items"]}[records] == "ok"
         assert [p for p in base.rglob("*") if p.is_file()] == [shadow]
         for m in plan["files"]:
             dest = root / m["to"]
             assert dest.is_relative_to(root / "_cited/.records") and core.sha256_file(dest) == m["hash"]
         for name, text in before.items():
             assert raw.read_round(core.VAULT, f"00_Scope/W1/_raw/{name}.md#1")["text"] == text   # 옛 좌표
-        assert target.read_bytes() == saved and D.verify_receipt(historic)["status"] == "complete"
+        assert target.read_bytes() == saved and D.verify_receipt(core.VAULT, historic)["status"] == "complete"
         assert raw.consolidate(core.VAULT)["count"] == 0
         shadow.unlink()
         print("PASS hidden storage, aliases, byte identity, conflict/retry, provenance, consolidation")

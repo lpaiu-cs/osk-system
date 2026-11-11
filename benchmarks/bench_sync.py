@@ -62,11 +62,11 @@ def writer(a):
         start = time.perf_counter()
         op, seq = cmd.get("op", "update"), cmd["seq"]
         if op == "update":
-            result = write.update_node("node-00020", summary=f"측정 {seq}")
+            result = write.update_node(core.VAULT, "node-00020", summary=f"측정 {seq}")
             parsed = contract.parse(a.root / "00_Scope/Bench00/node-00020.md")
             assert parsed.meta["summary"] == f"측정 {seq}"
         elif op == "create":
-            result = write.create_node(f"created-{seq}", "새 노드 측정", "[[Bench00]]",
+            result = write.create_node(core.VAULT, f"created-{seq}", "새 노드 측정", "[[Bench00]]",
                                        "agent", space="00_Scope/Bench00")
             assert (a.root / f"00_Scope/Bench00/created-{seq}.md").exists()
         else:
