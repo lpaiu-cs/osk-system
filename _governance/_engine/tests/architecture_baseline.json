@@ -13,7 +13,7 @@
   "vault_unthreaded": 0,
   "broad_except": 0,
   "boundary_excepts": 52,
-  "isolated_excepts": 38,
+  "isolated_excepts": 40,
   "oversize_functions": 119,
   "excess_lines": 2725,
   "excess_branches": 1605,
@@ -51,6 +51,7 @@
   "sync_daemon": 3
  },
  "isolated_excepts": {
+  "osk.contract": 1,
   "osk.conversation_capture": 4,
   "osk.distillation": 2,
   "osk.doctor": 3,
@@ -64,6 +65,7 @@
   "osk.response_growth": 2,
   "osk.routing": 3,
   "osk.scope_memory": 1,
+  "osk.signatures": 1,
   "osk.update": 1,
   "osk.update_check": 1,
   "osk.validate": 5,

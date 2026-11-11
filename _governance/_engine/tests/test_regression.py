@@ -12748,6 +12748,13 @@ def test_node_parse_raises_only_its_kinds():
         "병합 키 오용": b"---\n<<: 1\n---\n",
         "평문 스칼라의 탭": b"---\na:\tb\n---\n",
         "NUL": b"---\na: \x00\n---\n",
+        # 로더는 YAMLError가 아닌 것도 낸다 — 키가 될 수 없는 값은 중복 키 검사에서 TypeError, 태그에 맞지 않는
+        # 값은 로더 안에서 AttributeError·KeyError다. 형을 세어 받으면 끝이 없다.
+        "목록을 키로": b"---\n? [a, b]\n: v\n---\n",
+        "매핑을 키로": b"---\n? {a: b}\n: v\n---\n",
+        "제 자신을 담은 키": b"---\n? &k [*k]\n: v\n---\n",
+        "날짜가 아닌 timestamp": b"---\na: !!timestamp not-a-date\n---\n",
+        "참거짓이 아닌 bool": b"---\na: !!bool maybe\n---\n",
     }
     for label, data in hostile.items():
         try:
@@ -12775,6 +12782,27 @@ def test_node_parse_raises_only_its_kinds():
         except Exception as e:
             header, kind = None, type(e).__name__
         check("깊이 겹친 사건 머리는 읽지 못한 머리다", kind == "returned" and header is None, kind)
+        case.write_text("status: !!bool maybe\n\n본문\n", encoding="utf-8")
+        try:
+            header = S.parse_case(case)
+            kind = "returned"
+        except Exception as e:
+            header, kind = None, type(e).__name__
+        check("태그에 맞지 않는 값이 든 사건 머리도 읽지 못한 머리다", kind == "returned" and header is None, kind)
+    # 그런 파일 하나는 깨진 파일로 따로 서고, 색인은 선다.
+    bad = ROOT / "00_Scope/W1/regr-key-list.md"
+    try:
+        bad.write_text("---\n? [a, b]\n: v\n---\n본문\n", encoding="utf-8")
+        try:
+            index = graph.Index(VAULT)
+            broken, others = "regr-key-list" in index.broken, len(index.nodes)
+            kind = "built"
+        except Exception as e:
+            broken, others, kind = False, 0, type(e).__name__
+        check("키가 될 수 없는 값이 든 노드 하나가 색인을 죽이지 않는다", kind == "built" and broken and others > 0,
+              (kind, broken, others))
+    finally:
+        bad.unlink(missing_ok=True)
 
 
 def test_ledger_damage_is_a_kind():
